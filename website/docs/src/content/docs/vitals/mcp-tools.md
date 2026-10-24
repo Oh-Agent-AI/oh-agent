@@ -23,7 +23,7 @@ Agent Vitals, the data layer of Oh Agent, has a local MCP server. Run `agent-vit
 
 ## Key facts
 
-- **Command:** `agent-vitals data-mcp serve`. The server name is `agent-vitals-data`.
+- **Command:** `agent-vitals data-mcp serve`. The handshake `serverInfo.name` is `Oh Agent MCP`. The sample client key is `oh-agent`.
 - **Transport:** stdio, JSON-RPC 2.0, one JSON message per line. MCP protocol version `2025-06-18`.
 - **Methods:** `initialize`, `tools/list`, `tools/call`, `ping`. No resources or prompts.
 - **Read-only by default.** It opens the database read-only and never creates or migrates it.
@@ -31,7 +31,7 @@ Agent Vitals, the data layer of Oh Agent, has a local MCP server. Run `agent-vit
 - **No network listener.** It only runs while a client keeps its stdin open.
 
 <!-- source: apps/cli/src/main.rs (DataMcp / DataMcpAction::Serve { allow_local_writes }: "Arbitrary SQL, raw source payloads, and generic filesystem writes remain unavailable") -->
-<!-- source: apps/cli/src/mcp.rs (PROTOCOL_VERSION = "2025-06-18"; SERVER_NAME = "agent-vitals-data"; line-delimited framing; methods; stdin EOF → exit 0) -->
+<!-- source: apps/cli/src/mcp.rs (PROTOCOL_VERSION = "2025-06-18"; SERVER_NAME = "Oh Agent MCP"; line-delimited framing; methods; stdin EOF → exit 0) -->
 <!-- source: docs/AGENT_VITALS_DATA_MCP_SPEC.md §6.4 ("不实现 resources/*、prompts/*"); crates/agent-vitals-mcp/src/mcp/mod.rs (AuthorityHandle: 只读打开权威库，不建库、不迁移) -->
 
 ## Which tools are available?

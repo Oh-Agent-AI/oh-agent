@@ -7,6 +7,8 @@ v1.1 修订：建筑写入只有一条 Rust 函数；MCP 写入会通知已经�
 
 v1.2 修订：插件请求按描述符分发。解析器和投影不再写 `plugin_id == "city"`。
 
+已按第 9 节落地：`serverInfo.name` 是 `Oh Agent MCP`；设置页与 SKILL.md 的连接键样例是 `oh-agent`。命令仍是 `agent-vitals data-mcp serve`。旧连接键不用改。工具名、SQLite 和建筑存储格式未改。`city.building.*` 仍是示例，没有登记成插件方法。
+
 ## 1. 目标
 
 定义 Oh Agent 对外 MCP 服务的产品名称、职责边界，以及它与应用内 App Plugin 的关系。设计目标是让外部 Agent 能通过一个本地 MCP 连接查询本机 Agent 使用数据；同时让 Oh Agent 内的 City 等官方插件通过 App Plugin 宿主接口读取获准的数据并操作自己的界面。

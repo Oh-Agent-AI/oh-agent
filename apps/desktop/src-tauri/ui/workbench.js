@@ -1330,9 +1330,9 @@ function mcpConfigTexts(cliPath) {
   const bin = cliPath || "/path/to/agent-vitals";
   const shellBin = bin.includes(" ") ? JSON.stringify(bin) : bin;
   return {
-    claude: "claude mcp add agent-vitals -- " + shellBin + " data-mcp serve --allow-local-writes",
-    codex: "[mcp_servers.agent-vitals]\ncommand = " + JSON.stringify(bin) + "\nargs = [\"data-mcp\", \"serve\", \"--allow-local-writes\"]",
-    json: JSON.stringify({ mcpServers: { "agent-vitals": { command: bin, args: ["data-mcp", "serve", "--allow-local-writes"] } } }, null, 2),
+    claude: "claude mcp add oh-agent -- " + shellBin + " data-mcp serve --allow-local-writes",
+    codex: "[mcp_servers.oh-agent]\ncommand = " + JSON.stringify(bin) + "\nargs = [\"data-mcp\", \"serve\", \"--allow-local-writes\"]",
+    json: JSON.stringify({ mcpServers: { "oh-agent": { command: bin, args: ["data-mcp", "serve", "--allow-local-writes"] } } }, null, 2),
   };
 }
 async function copyTextFrom(el) {
