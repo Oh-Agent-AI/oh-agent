@@ -21,6 +21,7 @@ import { supportsBackgroundFilm } from "./export/filmJob";
 import { cityText, cityView, useCityLanguage } from "./i18n";
 import { replayStartMs } from "./replayRange";
 import { useCityGame } from "./game/useCityGame";
+import { MechaBoard } from "./game/MechaBoard";
 import { prewarmAudioContext } from "./game/GameSfx";
 import { useCityDrivingPlay } from "./game/useCityDrivingPlay";
 import { DrivingHud } from "./game/DrivingHud";
@@ -73,6 +74,7 @@ export function CityApp() {
   const [labels, setLabels] = useState(true);
   const [cinema, setCinema] = useState(false);
   const [roadAuditOpen, setRoadAuditOpen] = useState(false);
+  const [mechaOpen, setMechaOpen] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const experience = useCityExperience(engineRef, projection);
   // 飞机与汽车共用宿主运行时；当前城市的自由驾驶从工具栏进入。
@@ -511,7 +513,9 @@ export function CityApp() {
         onFocus={(assetRef) => { engineRef.current?.focusBuilding(assetRef); }} />}
       <div hidden={driving.active}><CityExperience ui={experience} disabled={!sceneReady} cinema={cinema} status={status} quality={quality} game={game} planRepair={planRepair}
         windowDays={windowDays} windowOptions={windowOptions} onWindowDays={(days) => setWindowDays(days as WindowDays)} labels={labels} onLabels={(next) => { engineRef.current?.setLabelsVisible(next); setLabels(next); }}
-        onQuality={(value) => { if (["auto", "high", "eco"].includes(value)) { engineRef.current?.setQualityMode(value as EngineQualityMode); setQuality(value as EngineQualityMode); } }} /></div>
+        onQuality={(value) => { if (["auto", "high", "eco"].includes(value)) { engineRef.current?.setQualityMode(value as EngineQualityMode); setQuality(value as EngineQualityMode); } }}
+        onMecha={() => { if (!game.active && !driving.active && !cinema) setMechaOpen(true); }} /></div>
+      {mechaOpen && !game.active && !driving.active && <MechaBoard locale={language === "en" ? "en" : "zh-Hans"} onClose={() => setMechaOpen(false)} />}
       <CityMinimap engine={engineRef} language={language} driving={{ active: driving.active, pose: driving.pose }}
         hidden={!sceneReady || cinema || game.active || !!experience.film || driving.hud.phase === "preparing" || driving.hud.phase === "error"} />
       <DrivingHud model={{ active: driving.active, choosingVehicle: driving.choosingVehicle, vtol: driving.vtol, entryError: driving.entryError,
