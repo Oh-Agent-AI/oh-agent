@@ -211,14 +211,14 @@ function hurtBoss(state: MatchState, amount: number) {
 }
 
 function refresh(state: MatchState) {
-  if (state.outcome) return;
-  if (state.boss.hp <= 0) {
-    state.outcome = "victory";
-    state.phase = "finished";
-  } else if (living(state).length === 0) {
-    state.outcome = "defeat_wipe";
-    state.phase = "finished";
+  if (!state.outcome) {
+    if (state.boss.hp <= 0) state.outcome = "victory";
+    else if (living(state).length === 0) state.outcome = "defeat_wipe";
   }
+  // The pack applier stamps resolving_boss after a killing action already
+  // stored the outcome. City does not execute a dead boss, so put the phase
+  // back to finished or the match stays mid-resolution under a victory banner.
+  if (state.outcome) state.phase = "finished";
 }
 
 function reproject(state: MatchState) {

@@ -299,13 +299,18 @@ impl Match {
     }
 
     pub(crate) fn refresh_outcome(&mut self) {
-        if self.outcome.is_some() {
-            return;
+        if self.outcome.is_none() {
+            if self.boss_dead() {
+                self.set_outcome(Outcome::Victory);
+            } else if self.all_mechs_dead() {
+                self.set_outcome(Outcome::DefeatWipe);
+            }
         }
-        if self.boss_dead() {
-            self.set_outcome(Outcome::Victory);
-        } else if self.all_mechs_dead() {
-            self.set_outcome(Outcome::DefeatWipe);
+        // validate_and_apply_plan stamps ResolvingBoss after a killing action
+        // already stored the outcome. City never executes a dead boss, so a
+        // stale ResolvingBoss would leave the match mid-resolution.
+        if self.outcome.is_some() {
+            self.phase = Phase::Finished;
         }
     }
 

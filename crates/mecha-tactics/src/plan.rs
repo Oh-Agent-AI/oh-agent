@@ -476,3 +476,54 @@ pub fn legal_actions(m: &Match, id: MechId) -> Vec<Action> {
     out
 }
 
+#[cfg(test)]
+mod lethal_phase_tests {
+    use crate::covers::CoverPreset;
+    use crate::geom::Cell;
+    use crate::scripts::boss_script_tick_prepare;
+    use crate::state::Phase;
+    use crate::types::{Action, BossScript, MechId, Outcome, UnitId};
+    use crate::{ArenaPlan, Match, MatchSeed, MechOrder};
+
+    #[test]
+    fn killing_melee_finishes_and_does_not_move_the_boss() {
+        let mut seed = MatchSeed::new(9, CoverPreset::SparseMid, BossScript::StationarySmash);
+        seed.board.covers.clear();
+        seed.deploy.mechs = vec![
+            (MechId::Assault, Cell::new(5, 3)),
+            (MechId::Gunner, Cell::new(0, 9)),
+            (MechId::Support, Cell::new(9, 9)),
+        ];
+        seed.deploy.boss = Cell::new(4, 4);
+        let mut m = Match::from_seed(seed);
+        m.boss_mut().hp = 2;
+        let anchor = m.boss().anchor;
+        boss_script_tick_prepare(&mut m).expect("prepare");
+        let plan = ArenaPlan {
+            revision: Some(m.revision()),
+            items: vec![
+                MechOrder {
+                    mech_id: MechId::Assault,
+                    move_to: None,
+                    action: Action::Melee { target: UnitId::Boss },
+                },
+                MechOrder {
+                    mech_id: MechId::Gunner,
+                    move_to: None,
+                    action: Action::Skip,
+                },
+                MechOrder {
+                    mech_id: MechId::Support,
+                    move_to: None,
+                    action: Action::Skip,
+                },
+            ],
+        };
+        super::validate_and_apply_plan(&mut m, &plan).expect("lethal melee");
+        assert_eq!(m.boss().hp, 0);
+        assert_eq!(m.boss().anchor, anchor, "lethal damage skips the push");
+        assert_eq!(m.outcome(), Some(Outcome::Victory));
+        assert_eq!(m.phase(), Phase::Finished);
+    }
+}
+
