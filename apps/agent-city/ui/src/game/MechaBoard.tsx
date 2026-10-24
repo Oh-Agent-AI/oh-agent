@@ -1,6 +1,7 @@
 /** City test surface for GDD v1.3. Rules live in `mecha/rules.ts`. */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { gameText, type GameLocale } from "./gameCopy";
+import { squadPlan } from "./mecha/ai";
 import { MechaLineup, type MechaBoardView } from "./MechaLineup";
 import {
   BOARD, bossDamageTo, bossExecute, bossPrepare, COVERS, createMatch, legalActions, living, pathDistance, STATS_MOVE,
@@ -53,6 +54,12 @@ function same(a: Cell, b: Cell) {
   return a.x === b.x && a.y === b.y;
 }
 
+function draftFromPlan(state: MatchState, plan: { items: Array<{ mechId: MechId; moveTo: Cell | null; action: Action }> }): Record<MechId, Draft> {
+  const next = blankDraft(state);
+  for (const item of plan.items) next[item.mechId] = { moveTo: item.moveTo, action: item.action, explicit: true };
+  return next;
+}
+
 export function MechaBoard({ locale, onClose }: { locale: GameLocale; onClose: () => void }) {
   const t = (text: string) => gameText(text, locale);
   const [preset, setPreset] = useState<CoverPresetId>("covers_sparse_mid");
@@ -61,6 +68,8 @@ export function MechaBoard({ locale, onClose }: { locale: GameLocale; onClose: (
   const [draft, setDraft] = useState<Record<MechId, Draft>>(() => blankDraft(fresh("covers_sparse_mid", "cadence_ssw")));
   const [selected, setSelected] = useState<MechId>("Assault");
   const [notice, setNotice] = useState<string | null>(null);
+  const [auto, setAuto] = useState(false);
+  const [beat, setBeat] = useState<"show" | "resolve">("show");
 
   const restart = (nextPreset = preset, nextScript = script) => {
     const match = fresh(nextPreset, nextScript);
@@ -70,6 +79,8 @@ export function MechaBoard({ locale, onClose }: { locale: GameLocale; onClose: (
     setDraft(blankDraft(match));
     setSelected(living(match)[0]?.id ?? "Assault");
     setNotice(null);
+    setAuto(false);
+    setBeat("show");
   };
 
   const selectedMech = living(state).find((m) => m.id === selected);
@@ -107,8 +118,47 @@ export function MechaBoard({ locale, onClose }: { locale: GameLocale; onClose: (
     return classes.filter(Boolean).join(" ");
   };
 
+  useEffect(() => {
+    if (!auto) return undefined;
+    if (state.outcome) {
+      setAuto(false);
+      return undefined;
+    }
+    const timer = window.setTimeout(() => {
+      if (state.phase === "enemy_prepare") {
+        const next = structuredClone(state);
+        bossPrepare(next);
+        setState(next);
+        setDraft(blankDraft(next));
+        setBeat("show");
+        return;
+      }
+      if (state.phase !== "player_plan") return;
+      if (beat === "show") {
+        setDraft(draftFromPlan(state, squadPlan(state)));
+        setBeat("resolve");
+        return;
+      }
+      const next = structuredClone(state);
+      const result = validateAndApplyPlan(next, squadPlan(state));
+      if (!("ok" in result)) {
+        setAuto(false);
+        setNotice(gameText("整包被拒，局面未变，可以重提。", locale));
+        return;
+      }
+      if (next.boss.hp > 0 && next.phase === "resolving_boss") bossExecute(next);
+      if (next.phase === "enemy_prepare") bossPrepare(next);
+      const alive = living(next);
+      setState(next);
+      setDraft(blankDraft(next));
+      setBeat("show");
+      if (!alive.some((m) => m.id === selected) && alive[0]) setSelected(alive[0].id);
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [auto, beat, locale, selected, state]);
+
   const clickCell = (x: number, y: number) => {
-    if (state.phase !== "player_plan") return;
+    if (auto || state.phase !== "player_plan") return;
     const occupant = living(state).find((m) => same(m.pos, { x, y }));
     if (occupant && occupant.id !== selected) {
       setSelected(occupant.id);
@@ -193,6 +243,7 @@ export function MechaBoard({ locale, onClose }: { locale: GameLocale; onClose: (
           <label>{t("布局")}<select value={preset} onChange={(e) => restart(e.target.value as CoverPresetId, script)}>{PRESETS.map((p) => <option key={p.id} value={p.id}>{t(p.label)}</option>)}</select></label>
           <label>{t("脚本")}<select value={script} onChange={(e) => restart(preset, e.target.value as BossScriptId)}>{SCRIPTS.map((s) => <option key={s.id} value={s.id}>{t(s.label)}</option>)}</select></label>
           <button type="button" onClick={() => restart()}>{t("新开一局")}</button>
+          <button type="button" disabled={Boolean(state.outcome)} onClick={() => { setBeat("show"); setAuto((on) => !on); }}>{auto ? t("停止自动") : t("自动对战")}</button>
         </div>
         <p>{t("回合")} {Math.min(state.turn, 15)} · {t("预告")} {skillLabel} · {t("Boss 生命")} {state.boss.hp}{outcome ? ` · ${outcome}` : ""}</p>
         <div className="mecha-grid" style={{ gridTemplateColumns: `repeat(${BOARD}, 28px)` }}>
@@ -207,9 +258,9 @@ export function MechaBoard({ locale, onClose }: { locale: GameLocale; onClose: (
             const label = actionLabel(action);
             const chosen = draft[selected];
             const on = Boolean(chosen?.explicit) && actionKey(chosen.action) === actionKey(action);
-            return <button key={action.kind === "repair" ? `repair-${action.target}` : action.kind} type="button" className={on ? "is-selected" : ""} disabled={state.phase !== "player_plan"} onClick={() => setDraft((prev) => ({ ...prev, [selected]: { ...prev[selected], action, explicit: true } }))}>{t(label)}{action.kind === "repair" ? ` ${t(NAMES[action.target])}` : ""}</button>;
+            return <button key={action.kind === "repair" ? `repair-${action.target}` : action.kind} type="button" className={on ? "is-selected" : ""} disabled={auto || state.phase !== "player_plan"} onClick={() => setDraft((prev) => ({ ...prev, [selected]: { ...prev[selected], action, explicit: true } }))}>{t(label)}{action.kind === "repair" ? ` ${t(NAMES[action.target])}` : ""}</button>;
           })}
-          <button type="button" disabled={state.phase !== "player_plan" || !packReady} onClick={submit}>{t("提交三机行动")}</button>
+          <button type="button" disabled={auto || state.phase !== "player_plan" || !packReady} onClick={submit}>{t("提交三机行动")}</button>
         </div>
         {notice && <p role="alert">{notice}</p>}
         <p className="mecha-legend">{t("掩体")} {COVERS[preset].length} · {state.ruleset}</p>

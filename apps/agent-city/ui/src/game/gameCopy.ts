@@ -157,6 +157,8 @@ const ENGLISH: Record<string, string> = {
   "机甲战棋": "Mecha tactics",
   "在城市上打开 3 机对 Boss 的棋盘。整包提交，非法则整包退回。": "Open the 3-mech versus Boss board over the city. Submit the pack together; an illegal action rolls the whole pack back.",
   "新开一局": "New match",
+  "自动对战": "Auto battle",
+  "停止自动": "Stop auto",
   "关闭机甲战棋": "Close mecha tactics",
   "提交三机行动": "Submit the three-mech pack",
   "回合": "Turn",
