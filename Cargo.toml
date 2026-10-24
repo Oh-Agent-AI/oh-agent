@@ -1,5 +1,5 @@
 [workspace]
-members = ["apps/cli", "crates/agent-vitals-data", "crates/agent-vitals-harnesses", "crates/agent-vitals-domain", "crates/agent-vitals-probe", "crates/agent-vitals-runtime", "crates/agent-vitals-runtime-core", "crates/agent-vitals-mcp", "crates/agent-vitals-trust", "crates/agent-vitals-ingest", "crates/agent-vitals-billing", "crates/agent-vitals-query", "crates/agent-vitals-provider", "crates/agent-vitals-wasm", "crates/vitals-core"]
+members = ["apps/cli", "crates/agent-vitals-data", "crates/agent-vitals-harnesses", "crates/agent-vitals-domain", "crates/agent-vitals-probe", "crates/agent-vitals-runtime", "crates/agent-vitals-runtime-core", "crates/agent-vitals-mcp", "crates/agent-vitals-trust", "crates/agent-vitals-ingest", "crates/agent-vitals-billing", "crates/agent-vitals-query", "crates/agent-vitals-provider", "crates/agent-vitals-wasm", "crates/vitals-core", "crates/mecha-tactics"]
 # wasm crate 只在 `wasm-pack build --target wasm32` 下构建，不参与宿主侧的
 # 默认 test/build/clippy —— 否则 `cargo test` 会为 aarch64-apple-darwin 编译
 # wasm-bindgen 入口，既无意义又可能触发非 wasm 目标的告警。
@@ -8,7 +8,7 @@ members = ["apps/cli", "crates/agent-vitals-data", "crates/agent-vitals-harnesse
 # 里：M0 阶段它不接入 CLI/agent-vitals-domain（§5.2 单向依赖只允许反过来），
 # 但必须参与默认 `cargo test`/`cargo clippy`，否则它的边界测试
 # （crates/vitals-core/tests/dependency_boundary.rs）不会被 CI 跑到。
-default-members = ["apps/cli", "crates/agent-vitals-data", "crates/agent-vitals-harnesses", "crates/agent-vitals-domain", "crates/agent-vitals-probe", "crates/agent-vitals-runtime", "crates/agent-vitals-runtime-core", "crates/agent-vitals-mcp", "crates/agent-vitals-trust", "crates/agent-vitals-ingest", "crates/agent-vitals-billing", "crates/agent-vitals-query", "crates/vitals-core"]
+default-members = ["apps/cli", "crates/agent-vitals-data", "crates/agent-vitals-harnesses", "crates/agent-vitals-domain", "crates/agent-vitals-probe", "crates/agent-vitals-runtime", "crates/agent-vitals-runtime-core", "crates/agent-vitals-mcp", "crates/agent-vitals-trust", "crates/agent-vitals-ingest", "crates/agent-vitals-billing", "crates/agent-vitals-query", "crates/vitals-core", "crates/mecha-tactics"]
 resolver = "2"
 
 # v0.8 Phase E3：二进制包从根 `[package]` 移进 `apps/cli`（spec §11：`src/` →
