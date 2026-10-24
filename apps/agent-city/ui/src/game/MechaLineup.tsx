@@ -9,6 +9,7 @@ const BOARD_SPAN = CELL * 10;
 export type MechaBoardView = {
   figures: Array<{ id: "Assault" | "Gunner" | "Support"; x: number; y: number; alive: boolean; selected: boolean }>;
   boss: { x: number; y: number; alive: boolean };
+  raiders?: Array<{ id: string; x: number; y: number; alive: boolean }>;
   covers: Array<{ x: number; y: number }>;
   telegraph: Array<{ x: number; y: number }>;
 };
@@ -74,7 +75,7 @@ export function MechaLineup({ label, view }: { label: string; view: MechaBoardVi
     const coverMat = new THREE.MeshStandardMaterial({ color: "#5c6b4a", roughness: 0.9 });
     const covers = pool(scene, 8, coverMat, 0.12);
     const telegraphMat = new THREE.MeshStandardMaterial({ color: "#ff4d4d", emissive: "#8a1c1c", emissiveIntensity: 0.45, transparent: true, opacity: 0.72 });
-    const telegraphs = pool(scene, 4, telegraphMat, 0.2);
+    const telegraphs = pool(scene, 8, telegraphMat, 0.2);
     const selectMat = new THREE.MeshStandardMaterial({ color: "#f4f7fb", emissive: "#d7e6f5", emissiveIntensity: 0.3 });
     const selected = new THREE.Mesh(new THREE.BoxGeometry(7.4, 0.08, 7.4), selectMat);
     scene.add(selected);
@@ -83,8 +84,12 @@ export function MechaLineup({ label, view }: { label: string; view: MechaBoardVi
     const gunner = createGunner();
     const support = createSupport();
     const boss = createBoss();
+    const raiderWest = createBoss();
+    const raiderEast = createBoss();
+    raiderWest.scale.setScalar(0.38);
+    raiderEast.scale.setScalar(0.38);
     const figures = { Assault: assault, Gunner: gunner, Support: support };
-    for (const figure of [assault, gunner, support, boss]) scene.add(figure);
+    for (const figure of [assault, gunner, support, boss, raiderWest, raiderEast]) scene.add(figure);
 
     const camera = new THREE.PerspectiveCamera(36, 1, 0.5, 500);
     const center = new THREE.Vector3(BOARD_SPAN / 2, 2, 40);
@@ -120,6 +125,19 @@ export function MechaLineup({ label, view }: { label: string; view: MechaBoardVi
       const bossSpot = new THREE.Vector3((current.boss.x + 1) * CELL, 0, (current.boss.y + 1) * CELL);
       slide(boss, bossSpot, reduce);
       boss.visible = current.boss.alive;
+      const small = [raiderWest, raiderEast];
+      const raiders = current.raiders ?? [];
+      for (let i = 0; i < small.length; i += 1) {
+        const mesh = small[i];
+        const raider = raiders[i];
+        if (!mesh) continue;
+        if (!raider) {
+          mesh.visible = false;
+          continue;
+        }
+        slide(mesh, cellTop(raider.x, raider.y, 0), reduce);
+        mesh.visible = raider.alive;
+      }
       renderer.render(scene, camera);
       frame = requestAnimationFrame(draw);
     };
@@ -127,7 +145,7 @@ export function MechaLineup({ label, view }: { label: string; view: MechaBoardVi
 
     return () => {
       cancelAnimationFrame(frame);
-      for (const figure of [assault, gunner, support, boss]) disposeMechaModel(figure);
+      for (const figure of [assault, gunner, support, boss, raiderWest, raiderEast]) disposeMechaModel(figure);
       disposeMesh(deck);
       tile.geometry.dispose();
       (tile.material as THREE.Material).dispose();

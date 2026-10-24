@@ -4,13 +4,18 @@
  * 有楼时，楼全毁和机甲全灭一样是输。
  */
 import {
-  BOARD, BOSS_HP, bossExecute, footprintCenter, legalActions, living, pathDistance, STATS_MOVE,
+  BOARD, BOSS_HP, RAIDER_HP, bossExecute, footprintCenter, legalActions, living, pathDistance, STATS_MOVE,
   validateAndApplyPlan,
   type Action, type ArenaPlan, type Cell, type MatchState, type MechId, type MechOrder,
 } from "./rules";
 
 function same(a: Cell, b: Cell): boolean {
   return a.x === b.x && a.y === b.y;
+}
+
+function threatened(state: MatchState, dest: Cell): boolean {
+  if (state.boss.intent?.projected.some((c) => same(c, dest))) return true;
+  return state.raiders.some((raider) => raider.hp > 0 && raider.intent?.projected.some((c) => same(c, dest)));
 }
 
 function mechAt(state: MatchState, id: MechId) {
@@ -53,7 +58,7 @@ function localScore(state: MatchState, id: MechId, dest: Cell, action: Action): 
   const center = footprintCenter(state.boss.anchor);
   score -= Math.abs(dest.x + 0.5 - center.x) + Math.abs(dest.y + 0.5 - center.y);
   if (id === "Assault") score -= Math.abs(dest.x + 0.5 - center.x);
-  if (state.boss.intent?.projected.some((c) => same(c, dest))) score -= 8;
+  if (threatened(state, dest)) score -= 8;
   return score;
 }
 
@@ -96,9 +101,10 @@ function scorePlan(state: MatchState, plan: ArenaPlan): number | null {
   const clone = structuredClone(state);
   const result = validateAndApplyPlan(clone, plan);
   if (!("ok" in result)) return null;
-  if (clone.boss.hp > 0 && clone.phase === "resolving_boss") bossExecute(clone);
+  if (clone.phase === "resolving_boss") bossExecute(clone);
   const center = footprintCenter(clone.boss.anchor);
   let score = (BOSS_HP - clone.boss.hp) * 20;
+  for (const raider of clone.raiders) score += (RAIDER_HP - raider.hp) * 12;
   for (const m of clone.mechs) {
     score += m.hp * 3;
     if (m.hp > 0) score -= Math.abs(m.pos.x + 0.5 - center.x) + Math.abs(m.pos.y + 0.5 - center.y);

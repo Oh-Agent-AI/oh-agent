@@ -3,6 +3,7 @@
  * 2×2 footprint center is anchor + (1, 1). arena_plan is whole-pack.
  * cadence_ssw is smash, smash, sweep. smash_2 is not in v1.
  * raid_ssw is that cadence plus a move toward a living building or mech.
+ * siege adds two 1×1 raiders and ends at turn 15.
  * Buildings have one HP pool; every pool at 0 is defeat_buildings.
  */
 
@@ -15,6 +16,10 @@ export const BOSS_DEF = 3;
 export const BOSS_MOVE = 3;
 export const BUILDING_HP = 16;
 export const BUILDING_DEF = 0;
+export const RAIDER_HP = 8;
+export const RAIDER_ATK = 3;
+export const RAIDER_DEF = 1;
+export const RAIDER_MOVE = 4;
 /** Spawn samples are one plane when the spread is at most 1 world unit (2 m). */
 export const FLAT_SPAWN_MAX_DELTA = 1;
 
@@ -22,17 +27,17 @@ export type Cell = { x: number; y: number };
 export type MechId = "Assault" | "Gunner" | "Support";
 export const MECH_IDS: MechId[] = ["Assault", "Gunner", "Support"];
 export type CoverPresetId = "covers_sparse_mid" | "covers_diag_corridor" | "covers_twin_clusters";
-export type BossScriptId = "stationary_smash" | "cadence_ssw" | "raid_ssw";
+export type BossScriptId = "stationary_smash" | "cadence_ssw" | "raid_ssw" | "siege";
 export type BossSkill = "smash" | "sweep" | "skip";
 export type Phase = "enemy_prepare" | "player_plan" | "resolving_boss" | "finished";
 export type Outcome = "victory" | "defeat_wipe" | "defeat_timeout" | "defeat_buildings";
 
 export type Action =
   | { kind: "skip" }
-  | { kind: "melee" }
-  | { kind: "shoot" }
-  | { kind: "charge" }
-  | { kind: "pierce" }
+  | { kind: "melee"; target?: string }
+  | { kind: "shoot"; target?: string }
+  | { kind: "charge"; target?: string }
+  | { kind: "pierce"; target?: string }
   | { kind: "repair"; target: MechId };
 
 export type MechOrder = { mechId: MechId; moveTo: Cell | null; action: Action };
@@ -64,6 +69,18 @@ export type Intent = {
 type Mech = { id: MechId; pos: Cell; hp: number; cd: number; skillUsed: boolean };
 type Boss = { anchor: Cell; hp: number; cdSweep: number; cadence: number; intent: Intent | null };
 
+export type Raider = { id: string; pos: Cell; hp: number; intent: Intent | null };
+
+export const SIEGE_BUILDINGS: Array<{ id: string; cells: Cell[]; hp?: number }> = [
+  { id: "west", cells: [{ x: 4, y: 4 }] },
+  { id: "mid", cells: [{ x: 5, y: 4 }] },
+  { id: "north", cells: [{ x: 4, y: 5 }] },
+];
+export const SIEGE_RAIDERS: Array<{ id: string; pos: Cell; hp?: number }> = [
+  { id: "raider-w", pos: { x: 1, y: 4 } },
+  { id: "raider-e", pos: { x: 8, y: 4 } },
+];
+
 export type Building = { id: string; cells: Cell[]; hp: number; maxHp: number };
 
 export type MatchState = {
@@ -72,6 +89,7 @@ export type MatchState = {
   script: BossScriptId;
   covers: Cell[];
   buildings: Building[];
+  raiders: Raider[];
   mechs: Mech[];
   boss: Boss;
   turn: number;
@@ -153,6 +171,20 @@ export function bossDamageTo(id: MechId): number {
   return strike(BOSS_ATK, STATS[id].def);
 }
 
+export function raiderDamageTo(id: MechId): number {
+  return strike(RAIDER_ATK, STATS[id].def);
+}
+
+/** Damage a mech would take from every telegraph currently on this cell. */
+export function incomingDamage(state: MatchState, id: MechId, cell: Cell): number {
+  let total = 0;
+  if (state.boss.hp > 0 && state.boss.intent?.projected.some((c) => eq(c, cell))) total += bossDamageTo(id);
+  for (const raider of state.raiders) {
+    if (raider.hp > 0 && raider.intent?.projected.some((c) => eq(c, cell))) total += raiderDamageTo(id);
+  }
+  return total;
+}
+
 export function buildingDamage(): number {
   return strike(BOSS_ATK, BUILDING_DEF);
 }
@@ -184,21 +216,29 @@ export function createMatch(opts: {
   script: BossScriptId;
   covers?: Cell[];
   buildings?: Array<{ id: string; cells: Cell[]; hp?: number }>;
+  raiders?: Array<{ id: string; pos: Cell; hp?: number }>;
   mechs?: Array<{ id: MechId; pos: Cell }>;
   boss?: Cell;
 }): MatchState {
   const deploy = standardDeploy();
   const placed = opts.mechs ?? deploy.mechs;
+  const siege = opts.script === "siege";
   return {
     ruleset: GDD_RULESET,
     preset: opts.preset,
     script: opts.script,
-    covers: (opts.covers ?? COVERS[opts.preset]).map((c) => ({ ...c })),
-    buildings: (opts.buildings ?? []).map((b) => ({
+    covers: (opts.covers ?? (siege ? [] : COVERS[opts.preset])).map((c) => ({ ...c })),
+    buildings: (opts.buildings ?? (siege ? SIEGE_BUILDINGS : [])).map((b) => ({
       id: b.id,
       cells: b.cells.map((c) => ({ ...c })),
       hp: b.hp ?? BUILDING_HP,
       maxHp: b.hp ?? BUILDING_HP,
+    })),
+    raiders: (opts.raiders ?? (siege ? SIEGE_RAIDERS : [])).map((r) => ({
+      id: r.id,
+      pos: { ...r.pos },
+      hp: r.hp ?? RAIDER_HP,
+      intent: null,
     })),
     mechs: placed.map((m) => ({ id: m.id, pos: { ...m.pos }, hp: STATS[m.id].maxHp, cd: 0, skillUsed: false })),
     boss: { anchor: { ...(opts.boss ?? deploy.boss) }, hp: BOSS_HP, cdSweep: 0, cadence: 0, intent: null },
@@ -217,6 +257,14 @@ export function livingBuildings(state: MatchState): Building[] {
   return state.buildings.filter((b) => b.hp > 0);
 }
 
+export function livingRaiders(state: MatchState): Raider[] {
+  return state.raiders.filter((r) => r.hp > 0);
+}
+
+function enemiesRemain(state: MatchState): boolean {
+  return state.boss.hp > 0 || livingRaiders(state).length > 0;
+}
+
 /** Mech cells and the boss footprint sit on cells with no cover and no building. */
 export function spawnsAreOpenGround(state: MatchState): boolean {
   const blocked = new Set<string>();
@@ -233,6 +281,11 @@ export function spawnsAreOpenGround(state: MatchState): boolean {
     if (!inb(c) || blocked.has(id) || seen.has(id)) return false;
     seen.add(id);
   }
+  for (const raider of state.raiders) {
+    const id = key(raider.pos);
+    if (!inb(raider.pos) || blocked.has(id) || seen.has(id)) return false;
+    seen.add(id);
+  }
   return true;
 }
 
@@ -244,7 +297,11 @@ function isCover(state: MatchState, c: Cell): boolean {
   return state.covers.some((k) => eq(k, c));
 }
 
-type Occ = "empty" | "cover" | "building" | "rubble" | "boss" | MechId;
+type Occ = "empty" | "cover" | "building" | "rubble" | "boss" | "raider" | MechId;
+
+function raiderAt(state: MatchState, c: Cell): Raider | undefined {
+  return state.raiders.find((r) => r.hp > 0 && eq(r.pos, c));
+}
 
 function livingBuildingAt(state: MatchState, c: Cell): Building | undefined {
   return state.buildings.find((b) => b.hp > 0 && b.cells.some((k) => eq(k, c)));
@@ -259,6 +316,7 @@ function occupant(state: MatchState, c: Cell): Occ {
   if (state.boss.hp > 0 && onFootprint(state.boss.anchor, c)) return "boss";
   const who = living(state).find((m) => eq(m.pos, c));
   if (who) return who.id;
+  if (raiderAt(state, c)) return "raider";
   if (livingBuildingAt(state, c)) return "building";
   if (isRubble(state, c)) return "rubble";
   if (isCover(state, c)) return "cover";
@@ -285,9 +343,18 @@ function hurtBoss(state: MatchState, amount: number) {
   }
 }
 
+function hurtRaider(raider: Raider, amount: number) {
+  if (raider.hp <= 0) return;
+  raider.hp = Math.max(0, raider.hp - amount);
+  if (raider.hp === 0 && raider.intent) {
+    raider.intent.status = "void";
+    raider.intent.projected = [];
+  }
+}
+
 function refresh(state: MatchState) {
   if (!state.outcome) {
-    if (state.boss.hp <= 0) state.outcome = "victory";
+    if (!enemiesRemain(state)) state.outcome = "victory";
     else if (living(state).length === 0) state.outcome = "defeat_wipe";
     else if (state.buildings.length > 0 && livingBuildings(state).length === 0) state.outcome = "defeat_buildings";
   }
@@ -317,6 +384,13 @@ function tryTranslateBoss(state: MatchState, dir: Cell): boolean {
       return false;
     }
     if (onFootprint(anchor, nc)) continue;
+    const rider = raiderAt(state, nc);
+    if (rider) {
+      hurtBoss(state, 2);
+      hurtRaider(rider, 2);
+      refresh(state);
+      return false;
+    }
     const occ = occupant(state, nc);
     if (occ === "Assault" || occ === "Gunner" || occ === "Support") {
       hit = occ;
@@ -349,6 +423,13 @@ function tryPushMech(state: MatchState, id: MechId, dir: Cell): boolean {
     refresh(state);
     return false;
   }
+  const rider = raiderAt(state, dest);
+  if (rider) {
+    hurtMech(state, id, 2);
+    hurtRaider(rider, 2);
+    refresh(state);
+    return false;
+  }
   const occ = occupant(state, dest);
   if (occ !== "empty") {
     hurtMech(state, id, 2);
@@ -361,18 +442,33 @@ function tryPushMech(state: MatchState, id: MechId, dir: Cell): boolean {
   return true;
 }
 
-function meleeBoss(state: MatchState, id: MechId, bonus: number) {
+function meleeTargets(state: MatchState, pos: Cell): string[] {
+  const ids: string[] = [];
+  if (state.boss.hp > 0 && adjacentToFootprint(state.boss.anchor, pos)) ids.push("boss");
+  for (const raider of livingRaiders(state)) if (cheb(pos, raider.pos) === 1) ids.push(raider.id);
+  return ids;
+}
+
+function strikeEnemy(state: MatchState, target: string, atk: number) {
+  if (target === "boss") hurtBoss(state, strike(atk, BOSS_DEF));
+  else {
+    const raider = state.raiders.find((r) => r.id === target && r.hp > 0);
+    if (raider) hurtRaider(raider, strike(atk, RAIDER_DEF));
+  }
+}
+
+function meleeEnemy(state: MatchState, id: MechId, target: string, bonus: number) {
   const m = mech(state, id);
   if (!m) return;
   const from = m.pos;
-  hurtBoss(state, strike(STATS[id].atk + bonus, BOSS_DEF));
+  strikeEnemy(state, target, STATS[id].atk + bonus);
   refresh(state);
-  if (state.boss.hp > 0) tryTranslateBoss(state, knockbackFromAttacker(from, state.boss.anchor));
+  if (target === "boss" && state.boss.hp > 0) tryTranslateBoss(state, knockbackFromAttacker(from, state.boss.anchor));
 }
 
-function shootBoss(state: MatchState, id: MechId) {
+function shootEnemy(state: MatchState, id: MechId, target: string) {
   if (!mech(state, id)) return;
-  hurtBoss(state, strike(STATS[id].atk, BOSS_DEF));
+  strikeEnemy(state, target, STATS[id].atk);
   refresh(state);
 }
 
@@ -422,10 +518,9 @@ function los(state: MatchState, from: Cell, to: Cell, ignoreCovers: number): boo
   return true;
 }
 
-function aimBoss(state: MatchState, from: Cell): Cell | null {
-  if (state.boss.hp <= 0) return null;
+function aimCell(from: Cell, cells: Cell[]): Cell | null {
   let best: { d: number; c: Cell } | null = null;
-  for (const c of footprint(state.boss.anchor)) {
+  for (const c of cells) {
     if (c.x !== from.x && c.y !== from.y) continue;
     const d = cheb(from, c);
     if (!best || d < best.d) best = { d, c };
@@ -433,12 +528,27 @@ function aimBoss(state: MatchState, from: Cell): Cell | null {
   return best?.c ?? null;
 }
 
-function canShot(state: MatchState, from: Cell, range: number, ignore: number): boolean {
-  const aim = aimBoss(state, from);
-  if (!aim) return false;
+function canShotCell(state: MatchState, from: Cell, aim: Cell, range: number, ignore: number): boolean {
   const d = cheb(from, aim);
   if (d < 1 || d > range) return false;
   return los(state, from, aim, ignore);
+}
+
+function shotTargets(state: MatchState, from: Cell, range: number, ignore: number): string[] {
+  const ids: string[] = [];
+  if (state.boss.hp > 0) {
+    const aim = aimCell(from, footprint(state.boss.anchor));
+    if (aim && canShotCell(state, from, aim, range, ignore)) ids.push("boss");
+  }
+  for (const raider of livingRaiders(state)) {
+    if (canShotCell(state, from, raider.pos, range, ignore)) ids.push(raider.id);
+  }
+  return ids;
+}
+
+function tagged(kind: "melee" | "shoot" | "charge" | "pierce", ids: string[]): Action[] {
+  if (ids.length === 1) return [{ kind }];
+  return ids.map((target) => ({ kind, target }));
 }
 
 export function legalActions(state: MatchState, id: MechId): Action[] {
@@ -446,12 +556,21 @@ export function legalActions(state: MatchState, id: MechId): Action[] {
   if (!m) return [{ kind: "skip" }];
   const stats = STATS[id];
   const out: Action[] = [{ kind: "skip" }];
-  if (stats.melee && state.boss.hp > 0 && adjacentToFootprint(state.boss.anchor, m.pos)) {
-    out.push({ kind: "melee" });
-    if (id === "Assault" && m.cd === 0) out.push({ kind: "charge" });
+  if (stats.melee) {
+    const ids = meleeTargets(state, m.pos);
+    if (ids.length > 0) {
+      out.push(...tagged("melee", ids));
+      if (id === "Assault" && m.cd === 0) out.push(...tagged("charge", ids));
+    }
   }
-  if (stats.shoot > 0 && canShot(state, m.pos, stats.shoot, 0)) out.push({ kind: "shoot" });
-  if (id === "Gunner" && m.cd === 0 && canShot(state, m.pos, stats.shoot, 1)) out.push({ kind: "pierce" });
+  if (stats.shoot > 0) {
+    const shots = shotTargets(state, m.pos, stats.shoot, 0);
+    if (shots.length > 0) out.push(...tagged("shoot", shots));
+    if (id === "Gunner" && m.cd === 0) {
+      const pierced = shotTargets(state, m.pos, stats.shoot, 1);
+      if (pierced.length > 0) out.push(...tagged("pierce", pierced));
+    }
+  }
   if (id === "Support" && m.cd === 0) {
     for (const ally of living(state)) {
       if (ally.id !== id && cheb(m.pos, ally.pos) === 1) out.push({ kind: "repair", target: ally.id });
@@ -469,8 +588,10 @@ function applyAction(state: MatchState, id: MechId, action: Action): string | nu
     if (action.kind === "charge" && id !== "Assault") return "charge is Assault-only";
     if (action.kind === "charge" && m.cd !== 0) return "skill on cooldown";
     if (!stats.melee) return "this mech has no melee";
-    if (state.boss.hp <= 0 || !adjacentToFootprint(state.boss.anchor, m.pos)) return "not adjacent to boss";
-    meleeBoss(state, id, action.kind === "charge" ? 2 : 0);
+    const meleeIds = meleeTargets(state, m.pos);
+    const target = action.target ?? (meleeIds.length === 1 ? meleeIds[0] : undefined);
+    if (!target || !meleeIds.includes(target)) return "not adjacent to an enemy";
+    meleeEnemy(state, id, target, action.kind === "charge" ? 2 : 0);
     if (action.kind === "charge") {
       m.cd = 1;
       m.skillUsed = true;
@@ -481,8 +602,10 @@ function applyAction(state: MatchState, id: MechId, action: Action): string | nu
     if (action.kind === "pierce" && id !== "Gunner") return "pierce is Gunner-only";
     if (action.kind === "pierce" && m.cd !== 0) return "skill on cooldown";
     const ignore = action.kind === "pierce" ? 1 : 0;
-    if (!canShot(state, m.pos, stats.shoot, ignore)) return "shot blocked or out of range";
-    shootBoss(state, id);
+    const shots = shotTargets(state, m.pos, stats.shoot, ignore);
+    const target = action.target ?? (shots.length === 1 ? shots[0] : undefined);
+    if (!target || !shots.includes(target)) return "shot blocked or out of range";
+    shootEnemy(state, id, target);
     if (action.kind === "pierce") {
       m.cd = 1;
       m.skillUsed = true;
@@ -651,35 +774,193 @@ function smashIntent(state: MatchState, cell: Cell | null): Intent {
   return { skillId: "smash", local, projected: inb(cell) ? [cell] : [], cdSweep: state.boss.cdSweep, status: inb(cell) ? "planned" : "void" };
 }
 
-export function bossPrepare(state: MatchState): Intent {
-  if (state.phase !== "enemy_prepare" || state.boss.hp <= 0) {
-    state.phase = state.boss.hp <= 0 ? "finished" : state.phase;
-    return { skillId: "skip", local: [], projected: [], cdSweep: state.boss.cdSweep, status: "void" };
+function nearestBuilding(state: MatchState, from: Cell[]): Building | null {
+  let best: Building | null = null;
+  let bestD = 99;
+  for (const building of livingBuildings(state)) {
+    const d = gapTo(from, building.cells);
+    if (!best || d < bestD || (d === bestD && building.id < best.id)) {
+      best = building;
+      bestD = d;
+    }
   }
-  let intent: Intent;
-  if (state.script === "raid_ssw") stepBossTowardObjectives(state);
-  if (state.script === "stationary_smash") intent = smashIntent(state, pickSmash(state));
-  else {
-    const step = state.boss.cadence % 3;
-    const wantSweep = step === 2;
-    if (wantSweep && state.boss.cdSweep === 0) {
-      const pair = pickSweep(state);
-      if (pair) {
-        const local = pair.map((c) => ({ x: c.x - state.boss.anchor.x, y: c.y - state.boss.anchor.y }));
-        intent = { skillId: "sweep", local, projected: pair.filter(inb), cdSweep: state.boss.cdSweep, status: "planned" };
+  return best;
+}
+
+function gapTo(from: Cell[], goals: Cell[]): number {
+  if (goals.length === 0) return 0;
+  let best = 99;
+  for (const cell of from) {
+    for (const goal of goals) {
+      const d = manh(cell, goal);
+      if (d < best) best = d;
+    }
+  }
+  return best;
+}
+
+function raiderGoals(state: MatchState): Map<string, Cell[]> {
+  const bossGoal = state.boss.hp > 0 ? nearestBuilding(state, footprint(state.boss.anchor)) : null;
+  const pool = livingBuildings(state).filter((b) => b.id !== bossGoal?.id);
+  const left = [...(pool.length > 0 ? pool : livingBuildings(state))];
+  const goals = new Map<string, Cell[]>();
+  const raiders = [...livingRaiders(state)].sort((a, b) => (a.id < b.id ? -1 : 1));
+  for (const raider of raiders) {
+    let best: Building | null = null;
+    let bestD = 99;
+    for (const building of left) {
+      const d = gapTo([raider.pos], building.cells);
+      if (!best || d < bestD || (d === bestD && building.id < best.id)) {
+        best = building;
+        bestD = d;
+      }
+    }
+    if (best) {
+      goals.set(raider.id, best.cells.map((c) => ({ ...c })));
+      const index = left.findIndex((b) => b.id === best?.id);
+      if (index >= 0) left.splice(index, 1);
+    } else {
+      goals.set(raider.id, living(state).map((m) => ({ ...m.pos })));
+    }
+  }
+  return goals;
+}
+
+function adjacentToUnit(pos: Cell): Cell[] {
+  const out: Cell[] = [];
+  for (let y = pos.y - 1; y <= pos.y + 1; y += 1) {
+    for (let x = pos.x - 1; x <= pos.x + 1; x += 1) {
+      const cell = { x, y };
+      if (inb(cell) && !eq(cell, pos)) out.push(cell);
+    }
+  }
+  return out;
+}
+
+function stepRaider(state: MatchState, raider: Raider, goals: Cell[]) {
+  const start = raider.pos;
+  const queue: Array<{ x: number; y: number; steps: number }> = [{ x: start.x, y: start.y, steps: 0 }];
+  const seen = new Set<string>([key(start)]);
+  let best = { x: start.x, y: start.y, steps: 0, gap: gapTo([start], goals) };
+  while (queue.length) {
+    const cur = queue.shift();
+    if (!cur) break;
+    const gap = gapTo([cur], goals);
+    const closer = gap < best.gap
+      || (gap === best.gap && cur.steps < best.steps)
+      || (gap === best.gap && cur.steps === best.steps && (cur.x < best.x || (cur.x === best.x && cur.y < best.y)));
+    if (closer) best = { x: cur.x, y: cur.y, steps: cur.steps, gap };
+    if (cur.steps >= RAIDER_MOVE) continue;
+    for (const dir of STEP_DIRS) {
+      const nxt = { x: cur.x + dir.x, y: cur.y + dir.y, steps: cur.steps + 1 };
+      const id = `${nxt.x},${nxt.y}`;
+      if (seen.has(id) || !inb(nxt)) continue;
+      const occ = occupant(state, nxt);
+      if (occ !== "empty" && !eq(nxt, raider.pos)) continue;
+      seen.add(id);
+      queue.push(nxt);
+    }
+  }
+  raider.pos = { x: best.x, y: best.y };
+}
+
+function planRaiders(state: MatchState) {
+  const goals = raiderGoals(state);
+  for (const raider of livingRaiders(state)) {
+    stepRaider(state, raider, goals.get(raider.id) ?? []);
+    const cell = pickSmashCells(state, adjacentToUnit(raider.pos));
+    raider.intent = cell
+      ? { skillId: "smash", local: [{ x: cell.x - raider.pos.x, y: cell.y - raider.pos.y }], projected: [cell], cdSweep: 0, status: "planned" }
+      : { skillId: "skip", local: [], projected: [], cdSweep: 0, status: "planned" };
+  }
+}
+
+function pickSmashCells(state: MatchState, cells: Cell[]): Cell | null {
+  let best: { t: number; d: number; c: Cell } | null = null;
+  for (const c of cells) {
+    const t = threat(state, c);
+    const d = approachDistance(state, c);
+    if (!best || t > best.t || (t === best.t && (d < best.d || (d === best.d && cellBefore(c, best.c))))) best = { t, d, c };
+  }
+  return best?.c ?? null;
+}
+
+export function bossPrepare(state: MatchState): Intent {
+  const skip: Intent = { skillId: "skip", local: [], projected: [], cdSweep: state.boss.cdSweep, status: "void" };
+  if (state.phase !== "enemy_prepare") return skip;
+  if (!enemiesRemain(state)) {
+    refresh(state);
+    return skip;
+  }
+  let intent = skip;
+  if (state.boss.hp > 0) {
+    if (state.script === "raid_ssw" || state.script === "siege") stepBossTowardObjectives(state);
+    if (state.script === "stationary_smash") intent = smashIntent(state, pickSmash(state));
+    else {
+      const step = state.boss.cadence % 3;
+      const wantSweep = step === 2;
+      if (wantSweep && state.boss.cdSweep === 0) {
+        const pair = pickSweep(state);
+        if (pair) {
+          const local = pair.map((c) => ({ x: c.x - state.boss.anchor.x, y: c.y - state.boss.anchor.y }));
+          intent = { skillId: "sweep", local, projected: pair.filter(inb), cdSweep: state.boss.cdSweep, status: "planned" };
+        } else intent = smashIntent(state, pickSmash(state));
       } else intent = smashIntent(state, pickSmash(state));
-    } else intent = smashIntent(state, pickSmash(state));
-    state.boss.cadence = (step + 1) % 3;
+      state.boss.cadence = (step + 1) % 3;
+    }
   }
   state.boss.intent = intent;
+  planRaiders(state);
   state.phase = "player_plan";
   state.revision += 1;
   return intent;
 }
 
+function resolveRaider(state: MatchState, raider: Raider) {
+  if (raider.hp <= 0) return;
+  const intent = raider.intent;
+  if (!intent || intent.skillId === "skip" || intent.status === "void") {
+    raider.intent = null;
+    return;
+  }
+  const struck = new Set<string>();
+  for (const cell of intent.projected) {
+    const occ = occupant(state, cell);
+    if (occ === "building") {
+      const hit = livingBuildingAt(state, cell);
+      if (hit && !struck.has(hit.id)) {
+        struck.add(hit.id);
+        hit.hp = Math.max(0, hit.hp - strike(RAIDER_ATK, BUILDING_DEF));
+        refresh(state);
+      }
+      continue;
+    }
+    if (occ === "Assault" || occ === "Gunner" || occ === "Support") {
+      hurtMech(state, occ, strike(RAIDER_ATK, STATS[occ].def));
+      refresh(state);
+    }
+  }
+  raider.intent = null;
+}
+
 export function bossExecute(state: MatchState) {
-  if (state.outcome || state.boss.hp <= 0) {
+  if (state.outcome) {
     refresh(state);
+    return;
+  }
+  if (state.boss.hp <= 0) {
+    for (const raider of state.raiders) resolveRaider(state, raider);
+    refresh(state);
+    if (!state.outcome) {
+      state.turn += 1;
+      if (state.turn > MAX_TURNS) {
+        state.outcome = "defeat_timeout";
+        state.phase = "finished";
+      } else {
+        state.phase = "enemy_prepare";
+        state.revision += 1;
+      }
+    }
     return;
   }
   const intent = state.boss.intent;
@@ -701,7 +982,7 @@ export function bossExecute(state: MatchState) {
         }
         continue;
       }
-      if (occ === "empty" || occ === "cover" || occ === "boss" || occ === "rubble") continue;
+      if (occ === "empty" || occ === "cover" || occ === "boss" || occ === "rubble" || occ === "raider") continue;
       const target = mech(state, occ);
       if (!target) continue;
       hurtMech(state, occ, strike(BOSS_ATK, STATS[occ].def));
@@ -714,6 +995,10 @@ export function bossExecute(state: MatchState) {
   else if (state.boss.cdSweep > 0) state.boss.cdSweep -= 1;
   if (!any && state.boss.intent) state.boss.intent.status = "void";
   state.boss.intent = null;
+  for (const raider of state.raiders) {
+    if (state.outcome) break;
+    resolveRaider(state, raider);
+  }
   refresh(state);
   if (!state.outcome) {
     state.turn += 1;

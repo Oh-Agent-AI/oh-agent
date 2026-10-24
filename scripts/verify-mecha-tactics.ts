@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   attackerCenter, bossExecute, bossPrepare, BUILDING_HP, createMatch, footprintCenter, knockbackFromAttacker,
-  setScriptCounters, spawnsAreOpenGround, validateAndApplyPlan, type MatchState,
+  livingRaiders, MAX_TURNS, RAIDER_ATK, setScriptCounters, spawnsAreOpenGround, validateAndApplyPlan, type MatchState,
 } from "../apps/agent-city/ui/src/game/mecha/rules.ts";
 
 function hold(state: MatchState) {
@@ -122,4 +122,85 @@ test("raid damages a building and does not lose until every building is gone", (
   assert.equal(state.buildings[0]?.hp, BUILDING_HP - 6);
   assert.equal(state.buildings[1]?.hp, BUILDING_HP);
   assert.equal(state.outcome, null);
+});
+
+test("siege fields a boss and two raiders, and turn 15 is the last turn", () => {
+  const state = createMatch({ preset: "covers_sparse_mid", script: "siege" });
+  assert.equal(spawnsAreOpenGround(state), true);
+  assert.equal(state.raiders.length, 2);
+  assert.equal(MAX_TURNS, 15);
+  const intent = bossPrepare(state);
+  assert.equal(intent.skillId, "smash");
+  for (const raider of livingRaiders(state)) {
+    assert.equal(raider.intent?.skillId, "smash");
+    assert.equal(raider.intent?.projected.length, 1);
+  }
+  const west = state.raiders.find((r) => r.id === "raider-w");
+  const east = state.raiders.find((r) => r.id === "raider-e");
+  assert.ok(west && east);
+  assert.notDeepEqual(west.pos, east.pos);
+
+  const strike = createMatch({
+    preset: "covers_sparse_mid",
+    script: "stationary_smash",
+    covers: [],
+    boss: { x: 0, y: 0 },
+    buildings: [{ id: "shed", cells: [{ x: 9, y: 1 }] }],
+    raiders: [{ id: "raider-e", pos: { x: 9, y: 2 } }],
+    mechs: [
+      { id: "Assault", pos: { x: 2, y: 9 } },
+      { id: "Gunner", pos: { x: 5, y: 9 } },
+      { id: "Support", pos: { x: 8, y: 9 } },
+    ],
+  });
+  bossPrepare(strike);
+  assert.deepEqual(strike.raiders[0]?.pos, { x: 9, y: 2 });
+  assert.deepEqual(strike.raiders[0]?.intent?.projected, [{ x: 9, y: 1 }]);
+  assert.equal("ok" in validateAndApplyPlan(strike, hold(strike)), true);
+  const bossHp = strike.boss.hp;
+  bossExecute(strike);
+  assert.equal(strike.buildings[0]?.hp, BUILDING_HP - RAIDER_ATK);
+  assert.deepEqual(strike.raiders[0]?.pos, { x: 9, y: 2 });
+  assert.equal(strike.boss.hp, bossHp);
+  assert.equal(strike.outcome, null);
+
+  const capped = createMatch({
+    preset: "covers_sparse_mid",
+    script: "stationary_smash",
+    covers: [],
+    raiders: [{ id: "raider-w", pos: { x: 0, y: 0 } }],
+  });
+  capped.turn = MAX_TURNS;
+  bossPrepare(capped);
+  assert.equal("ok" in validateAndApplyPlan(capped, hold(capped)), true);
+  bossExecute(capped);
+  assert.equal(capped.outcome, "defeat_timeout");
+  assert.equal(capped.turn, MAX_TURNS + 1);
+  assert.equal(capped.phase, "finished");
+
+  const bossOnly = createMatch({
+    preset: "covers_sparse_mid",
+    script: "stationary_smash",
+    covers: [],
+    boss: { x: 4, y: 4 },
+    raiders: [{ id: "raider-e", pos: { x: 9, y: 2 }, hp: 8 }],
+    gunner: undefined,
+  });
+  bossOnly.boss.hp = 0;
+  bossOnly.raiders[0]!.hp = 3;
+  const gunner = bossOnly.mechs.find((m) => m.id === "Gunner");
+  assert.ok(gunner);
+  gunner.pos = { x: 9, y: 6 };
+  bossPrepare(bossOnly);
+  const shot = validateAndApplyPlan(bossOnly, {
+    revision: bossOnly.revision,
+    items: [
+      { mechId: "Assault", moveTo: null, action: { kind: "skip" } },
+      { mechId: "Gunner", moveTo: null, action: { kind: "shoot", target: "raider-e" } },
+      { mechId: "Support", moveTo: null, action: { kind: "skip" } },
+    ],
+  });
+  assert.equal("ok" in shot, true);
+  assert.equal(bossOnly.outcome, "victory");
+  assert.equal(livingRaiders(bossOnly).length, 0);
 });

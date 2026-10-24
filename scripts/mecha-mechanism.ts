@@ -286,7 +286,7 @@ function localScore(state: MatchState, id: MechId, dest: Cell, action: Action): 
   const center = footprintCenter(state.boss.anchor);
   score -= Math.abs(dest.x + 0.5 - center.x) + Math.abs(dest.y + 0.5 - center.y);
   if (id === "Assault") score -= Math.abs(dest.x + 0.5 - center.x);
-  if (state.boss.intent?.projected.some((c) => same(c, dest))) score -= 8;
+  if (state.boss.intent?.projected.some((c) => same(c, dest)) || state.raiders.some((raider) => raider.intent?.projected.some((c) => same(c, dest)))) score -= 8;
   return score;
 }
 
@@ -327,9 +327,10 @@ function scorePlan(state: MatchState, plan: ArenaPlan): number | null {
   const clone = structuredClone(state);
   const result = validateAndApplyPlan(clone, plan);
   if (!("ok" in result)) return null;
-  if (clone.boss.hp > 0 && clone.phase === "resolving_boss") bossExecute(clone);
+  if (clone.phase === "resolving_boss") bossExecute(clone);
   const center = footprintCenter(clone.boss.anchor);
   let score = (BOSS_HP - clone.boss.hp) * 20;
+  for (const raider of clone.raiders) score += (8 - raider.hp) * 12;
   for (const m of clone.mechs) {
     score += m.hp * 3;
     if (m.hp > 0) score -= Math.abs(m.pos.x + 0.5 - center.x) + Math.abs(m.pos.y + 0.5 - center.y);
