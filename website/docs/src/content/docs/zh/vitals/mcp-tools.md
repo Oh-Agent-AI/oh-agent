@@ -23,7 +23,7 @@ Oh Agent 的数据层 Agent Vitals 带一个本地 MCP 服务。运行 `agent-vi
 
 ## 关键事实
 
-- **命令**：`agent-vitals data-mcp serve`，服务名是 `agent-vitals-data`。
+- **命令**：`agent-vitals data-mcp serve`。握手里的 `serverInfo.name` 是 `Oh Agent MCP`。配置样例的连接键是 `oh-agent`。
 - **传输**：stdio，JSON-RPC 2.0，每行一条 JSON 消息。MCP 协议版本 `2025-06-18`。
 - **方法**：`initialize`、`tools/list`、`tools/call`、`ping`。没有 resources 和 prompts。
 - **默认只读**：只读打开数据库，从不建库或迁移。
@@ -31,7 +31,7 @@ Oh Agent 的数据层 Agent Vitals 带一个本地 MCP 服务。运行 `agent-vi
 - **不监听网络**：只在客户端保持 stdin 打开时运行。
 
 <!-- source: apps/cli/src/main.rs (DataMcp / DataMcpAction::Serve { allow_local_writes }) -->
-<!-- source: apps/cli/src/mcp.rs (PROTOCOL_VERSION = "2025-06-18"; SERVER_NAME = "agent-vitals-data"; line-delimited framing; methods; stdin EOF → exit 0) -->
+<!-- source: apps/cli/src/mcp.rs (PROTOCOL_VERSION = "2025-06-18"; SERVER_NAME = "Oh Agent MCP"; line-delimited framing; methods; stdin EOF → exit 0) -->
 <!-- source: docs/AGENT_VITALS_DATA_MCP_SPEC.md §6.4; crates/agent-vitals-mcp/src/mcp/mod.rs (AuthorityHandle: 只读打开权威库，不建库、不迁移) -->
 
 ## 有哪些工具？

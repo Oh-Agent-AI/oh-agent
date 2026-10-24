@@ -20,7 +20,9 @@ use serde_json::{json, Value};
 use agent_vitals_runtime::mcp;
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
-const SERVER_NAME: &str = "agent-vitals-data";
+/// `serverInfo.name` is display metadata for clients and logs. It is not an
+/// auth credential. The binary name stays `agent-vitals`.
+const SERVER_NAME: &str = "Oh Agent MCP";
 
 /// `agent-vitals data-mcp serve` 的入口。永不返回（stdin EOF → exit 0）。
 pub fn serve(allow_local_writes: bool) -> ! {
@@ -417,7 +419,7 @@ mod tests {
         assert_eq!(out[0]["result"]["protocolVersion"], PROTOCOL_VERSION);
         assert!(out[0]["result"]["capabilities"]["tools"].is_object());
         assert!(out[0]["result"]["capabilities"].get("resources").is_none());
-        assert_eq!(out[0]["result"]["serverInfo"]["name"], SERVER_NAME);
+        assert_eq!(out[0]["result"]["serverInfo"]["name"], "Oh Agent MCP");
     }
 
     #[test]

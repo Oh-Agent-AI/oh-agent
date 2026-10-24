@@ -4494,13 +4494,13 @@ Oh Agent runs on the user's machine and reads their AI coding tools' session log
 Claude Code:
 
 ```bash
-claude mcp add agent-vitals -- {shell_bin} data-mcp serve --allow-local-writes
+claude mcp add oh-agent -- {shell_bin} data-mcp serve --allow-local-writes
 ```
 
 Codex CLI (`~/.codex/config.toml`):
 
 ```toml
-[mcp_servers.agent-vitals]
+[mcp_servers.oh-agent]
 command = "{bin}"
 args = ["data-mcp", "serve", "--allow-local-writes"]
 ```
@@ -4508,8 +4508,10 @@ args = ["data-mcp", "serve", "--allow-local-writes"]
 Any MCP client (`mcpServers` JSON):
 
 ```json
-{{ "mcpServers": {{ "agent-vitals": {{ "command": "{bin}", "args": ["data-mcp", "serve", "--allow-local-writes"] }} }} }}
+{{ "mcpServers": {{ "oh-agent": {{ "command": "{bin}", "args": ["data-mcp", "serve", "--allow-local-writes"] }} }} }}
 ```
+
+`oh-agent` is the connection name in the client config, not a credential. An existing key such as `agent-vitals` keeps working while `command` and `args` stay the same. Restart the client only after you rename the key.
 
 Drop `--allow-local-writes` for a strictly read-only server. With it, the only writes are typed local actions (price cards, billing declarations, budget settings, source controls, city building model overrides) — never SQL, never files, never URLs.
 
@@ -6978,6 +6980,9 @@ mod tests {
         for t in agent_vitals_runtime::mcp::tool_specs() {
             assert!(md.contains(&format!("- `{}` — ", t.name)), "工具 {} 不在清单里", t.name);
         }
+        assert!(md.contains("claude mcp add oh-agent -- "));
+        assert!(md.contains("[mcp_servers.oh-agent]"));
+        assert!(md.contains("\"oh-agent\""));
         assert!(md.contains("data-mcp serve --allow-local-writes"));
         assert!(md.contains("Never invent prices"), "诚实规则必须在");
     }
