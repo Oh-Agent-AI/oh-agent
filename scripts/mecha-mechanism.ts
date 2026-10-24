@@ -29,7 +29,8 @@ const report = {
   cadenceHolds: 0,
   playerPhases: 0,
   deterministicReplays: 0,
-  outcomes: [] as Array<{ preset: string; strategy: string; outcome: string | null; bossHp: number; turn: number; living: number }>,
+  outcomes: [] as Array<{ preset: string; strategy: string; outcome: string | null; bossHp: number; turn: number; living: number; bossDamage: number }>,
+  spread: [] as Array<{ preset: string; strategy: string; n: number; wins: number; timeouts: number; wipes: number; minTurn: number; medianTurn: number; maxTurn: number; matchesHit: number; medianBossDamage: number }>,
 };
 
 after(() => {
@@ -126,14 +127,27 @@ function specThreat(state: MatchState, c: Cell): number {
   return 1;
 }
 
+function specApproach(state: MatchState, c: Cell): number {
+  let best = 99;
+  for (const m of state.mechs) {
+    if (m.hp <= 0) continue;
+    const d = Math.abs(m.pos.x - c.x) + Math.abs(m.pos.y - c.y);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
 function specSmash(state: MatchState): Cell | null {
   let best: Cell | null = null;
   let bestT = -1;
+  let bestD = 99;
   for (const c of adjacent(state.boss.anchor)) {
     const t = specThreat(state, c);
-    if (!best || t > bestT || (t === bestT && cellLess(c, best))) {
+    const d = specApproach(state, c);
+    if (!best || t > bestT || (t === bestT && (d < bestD || (d === bestD && cellLess(c, best))))) {
       best = c;
       bestT = t;
+      bestD = d;
     }
   }
   return best;
@@ -141,7 +155,7 @@ function specSmash(state: MatchState): Cell | null {
 
 function specSweep(state: MatchState): [Cell, Cell] | null {
   const cells = adjacent(state.boss.anchor);
-  let best: { sum: number; mx: number; a: Cell; b: Cell } | null = null;
+  let best: { sum: number; mx: number; near: number; a: Cell; b: Cell } | null = null;
   for (let i = 0; i < cells.length; i += 1) {
     for (let j = i + 1; j < cells.length; j += 1) {
       const a = cells[i];
@@ -152,13 +166,15 @@ function specSweep(state: MatchState): [Cell, Cell] | null {
       const tb = specThreat(state, b);
       const sum = ta + tb;
       const mx = Math.max(ta, tb);
+      const near = specApproach(state, a) + specApproach(state, b);
       const [c0, c1] = cellLess(b, a) ? [b, a] : [a, b];
       const tiedHead = best !== null && c0.x === best.a.x && c0.y === best.a.y;
       const better = best === null
         || sum > best.sum
         || (sum === best.sum && mx > best.mx)
-        || (sum === best.sum && mx === best.mx && (cellLess(c0, best.a) || (tiedHead && cellLess(c1, best.b))));
-      if (better) best = { sum, mx, a: c0, b: c1 };
+        || (sum === best.sum && mx === best.mx && near < best.near)
+        || (sum === best.sum && mx === best.mx && near === best.near && (cellLess(c0, best.a) || (tiedHead && cellLess(c1, best.b))));
+      if (better) best = { sum, mx, near, a: c0, b: c1 };
     }
   }
   return best ? [best.a, best.b] : null;
@@ -371,10 +387,15 @@ function randomPlan(state: MatchState, rng: () => number): ArenaPlan {
   return hold(state);
 }
 
-function play(preset: CoverPresetId, strategy: "random" | "search", seed: number): MatchState {
+function squadHp(state: MatchState): number {
+  return state.mechs.reduce((sum, m) => sum + m.hp, 0);
+}
+
+function play(preset: CoverPresetId, strategy: "random" | "search", seed: number): { state: MatchState; bossDamage: number } {
   const state = createMatch({ preset, script: "cadence_ssw" });
   const rng = mulberry32(seed);
   let guard = 0;
+  let bossDamage = 0;
   while (state.outcome === null) {
     guard += 1;
     assert.ok(guard <= 15, "match did not reach an outcome");
@@ -388,12 +409,14 @@ function play(preset: CoverPresetId, strategy: "random" | "search", seed: number
     report.playerPhases += 1;
     if (state.outcome) break;
     assert.equal(state.phase, "resolving_boss");
+    const before = squadHp(state);
     bossExecute(state);
+    bossDamage += before - squadHp(state);
     checkBoard(state);
   }
   assert.equal(state.phase, "finished");
   assert.ok(state.outcome === "victory" || state.outcome === "defeat_wipe" || state.outcome === "defeat_timeout");
-  return state;
+  return { state, bossDamage };
 }
 
 test("knockback uses the 2x2 center on every adjacent cell", () => {
@@ -753,6 +776,9 @@ test("preset covers stay on the named cells", () => {
     assert.deepEqual(intent.projected, specSmash(state) ? [specSmash(state)] : []);
     checkBoard(state);
   }
+  const aimed = createMatch({ preset: "covers_sparse_mid", script: "cadence_ssw" });
+  const opening = bossPrepare(aimed);
+  assert.deepEqual(opening.projected, [{ x: 5, y: 2 }]);
 });
 
 test("seeded search and random play stay inside the rules", { timeout: 120_000 }, () => {
@@ -764,15 +790,65 @@ test("seeded search and random play stay inside the rules", { timeout: 120_000 }
   for (const job of jobs) {
     const first = play(job.preset, job.strategy, job.seed);
     const second = play(job.preset, job.strategy, job.seed);
-    assert.equal(snap(first), snap(second));
+    assert.equal(snap(first.state), snap(second.state));
     report.deterministicReplays += 1;
     report.outcomes.push({
       preset: job.preset,
       strategy: job.strategy,
-      outcome: first.outcome,
-      bossHp: first.boss.hp,
-      turn: first.turn,
-      living: first.mechs.filter((m) => m.hp > 0).length,
+      outcome: first.state.outcome,
+      bossHp: first.state.boss.hp,
+      turn: first.state.turn,
+      living: first.state.mechs.filter((m) => m.hp > 0).length,
+      bossDamage: first.bossDamage,
     });
+  }
+});
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 1) return sorted[mid] ?? 0;
+  return ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2;
+}
+
+test("eight seeds record turn spread and whether the telegraph lands", { timeout: 180_000 }, () => {
+  for (const preset of PRESETS) {
+    for (const strategy of ["search", "random"] as const) {
+      const turns: number[] = [];
+      const damage: number[] = [];
+      let wins = 0;
+      let timeouts = 0;
+      let wipes = 0;
+      let matchesHit = 0;
+      for (let i = 0; i < 8; i += 1) {
+        const seed = (strategy === "search" ? 0x51a7 : 0xc0f1) + i * 17;
+        const played = play(preset, strategy, seed);
+        turns.push(played.state.turn);
+        damage.push(played.bossDamage);
+        if (played.bossDamage > 0) matchesHit += 1;
+        if (played.state.outcome === "victory") wins += 1;
+        else if (played.state.outcome === "defeat_timeout") timeouts += 1;
+        else wipes += 1;
+      }
+      report.spread.push({
+        preset,
+        strategy,
+        n: 8,
+        wins,
+        timeouts,
+        wipes,
+        minTurn: Math.min(...turns),
+        medianTurn: median(turns),
+        maxTurn: Math.max(...turns),
+        matchesHit,
+        medianBossDamage: median(damage),
+      });
+    }
+  }
+  assert.equal(report.spread.length, 6);
+  for (const row of report.spread) {
+    assert.equal(row.n, 8);
+    assert.ok(row.minTurn <= row.medianTurn && row.medianTurn <= row.maxTurn);
+    assert.equal(row.wins + row.timeouts + row.wipes, 8);
   }
 });

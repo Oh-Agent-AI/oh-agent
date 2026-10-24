@@ -1,9 +1,9 @@
 /** City test surface for GDD v1.3. Rules live in `mecha/rules.ts`. */
 import { useMemo, useState } from "react";
 import { gameText, type GameLocale } from "./gameCopy";
-import { MechaLineup } from "./MechaLineup";
+import { MechaLineup, type MechaBoardView } from "./MechaLineup";
 import {
-  BOARD, bossExecute, bossPrepare, COVERS, createMatch, legalActions, living, pathDistance, STATS_MOVE,
+  BOARD, bossDamageTo, bossExecute, bossPrepare, COVERS, createMatch, legalActions, living, pathDistance, STATS_MOVE,
   validateAndApplyPlan, type Action, type BossScriptId, type Cell, type CoverPresetId, type MatchState, type MechId,
 } from "./mecha/rules";
 import "./game.css";
@@ -19,7 +19,20 @@ const SCRIPTS: Array<{ id: BossScriptId; label: string }> = [
 ];
 const NAMES: Record<MechId, string> = { Assault: "突击", Gunner: "射手", Support: "支援" };
 
-type Draft = { moveTo: Cell | null; action: Action };
+type Draft = { moveTo: Cell | null; action: Action; explicit: boolean };
+
+function actionKey(action: Action): string {
+  return action.kind === "repair" ? `repair:${action.target}` : action.kind;
+}
+
+function actionLabel(action: Action): string {
+  if (action.kind === "melee") return "近战";
+  if (action.kind === "shoot") return "射击";
+  if (action.kind === "charge") return "冲撞";
+  if (action.kind === "pierce") return "穿射";
+  if (action.kind === "repair") return "维修";
+  return "待机";
+}
 
 function fresh(preset: CoverPresetId, script: BossScriptId): MatchState {
   const state = createMatch({ preset, script });
@@ -29,10 +42,10 @@ function fresh(preset: CoverPresetId, script: BossScriptId): MatchState {
 
 function blankDraft(state: MatchState): Record<MechId, Draft> {
   return {
-    Assault: { moveTo: null, action: { kind: "skip" } },
-    Gunner: { moveTo: null, action: { kind: "skip" } },
-    Support: { moveTo: null, action: { kind: "skip" } },
-    ...Object.fromEntries(living(state).map((m) => [m.id, { moveTo: null, action: { kind: "skip" as const } }])),
+    Assault: { moveTo: null, action: { kind: "skip" }, explicit: false },
+    Gunner: { moveTo: null, action: { kind: "skip" }, explicit: false },
+    Support: { moveTo: null, action: { kind: "skip" }, explicit: false },
+    ...Object.fromEntries(living(state).map((m) => [m.id, { moveTo: null, action: { kind: "skip" as const }, explicit: false }])),
   } as Record<MechId, Draft>;
 }
 
@@ -95,15 +108,40 @@ export function MechaBoard({ locale, onClose }: { locale: GameLocale; onClose: (
   };
 
   const clickCell = (x: number, y: number) => {
-    if (!selectedMech || state.phase !== "player_plan") return;
+    if (state.phase !== "player_plan") return;
+    const occupant = living(state).find((m) => same(m.pos, { x, y }));
+    if (occupant && occupant.id !== selected) {
+      setSelected(occupant.id);
+      return;
+    }
+    if (!selectedMech) return;
     if (!reach.some((k) => k.x === x && k.y === y)) return;
     const moveTo = same(selectedMech.pos, { x, y }) ? null : { x, y };
-    setDraft((prev) => ({ ...prev, [selected]: { moveTo, action: { kind: "skip" } } }));
+    const scratch = structuredClone(state);
+    const who = scratch.mechs.find((m) => m.id === selected && m.hp > 0);
+    if (who && moveTo) who.pos = moveTo;
+    const legal = new Set(legalActions(scratch, selected).map(actionKey));
+    setDraft((prev) => {
+      const current = prev[selected];
+      const keep = current?.explicit && legal.has(actionKey(current.action));
+      return { ...prev, [selected]: { moveTo, action: keep ? current.action : { kind: "skip" }, explicit: Boolean(keep) } };
+    });
     setNotice(null);
   };
 
+  const packReady = living(state).every((m) => draft[m.id]?.explicit);
+  const view = useMemo<MechaBoardView>(() => ({
+    figures: state.mechs.map((m) => {
+      const planned = m.hp > 0 ? draft[m.id]?.moveTo : null;
+      return { id: m.id, x: planned?.x ?? m.pos.x, y: planned?.y ?? m.pos.y, alive: m.hp > 0, selected: m.id === selected };
+    }),
+    boss: { x: state.boss.anchor.x, y: state.boss.anchor.y, alive: state.boss.hp > 0 },
+    covers: state.covers,
+    telegraph: state.boss.intent?.projected ?? [],
+  }), [state, draft, selected]);
+
   const submit = () => {
-    if (state.phase !== "player_plan") return;
+    if (state.phase !== "player_plan" || !packReady) return;
     const next = structuredClone(state);
     const result = validateAndApplyPlan(next, {
       revision: next.revision,
@@ -133,8 +171,24 @@ export function MechaBoard({ locale, onClose }: { locale: GameLocale; onClose: (
           <h2>{t("机甲战棋")}</h2>
           <button type="button" onClick={onClose} aria-label={t("关闭机甲战棋")}>×</button>
         </header>
-        <p className="mecha-help">{t("点击一台机甲，再点能走到的格子，然后选行动。")}</p>
-        <MechaLineup label={t("机甲与怪兽")} />
+        <p className="mecha-help">{t("点一台机甲，再点能走到的格子，然后给三台都选行动。站上红色预告格会吃下这一击。")}</p>
+        <MechaLineup label={t("机甲与怪兽")} view={view} />
+        <ul className="mecha-pack">
+          {living(state).map((m) => {
+            const row = draft[m.id];
+            const dest = row?.moveTo ?? m.pos;
+            const hit = state.boss.intent?.projected.some((c) => same(c, dest)) ?? false;
+            const chosen = row?.explicit ? t(actionLabel(row.action)) : t("未选择");
+            return (
+              <li key={m.id} className={!row?.explicit ? "is-open" : hit ? "is-hit" : ""}>
+                <button type="button" className={m.id === selected ? "is-selected" : ""} onClick={() => setSelected(m.id)}>{t(NAMES[m.id])} {m.hp}</button>
+                <span>{row?.moveTo ? `${row.moveTo.x},${row.moveTo.y}` : t("原位")}</span>
+                <span>{chosen}{row?.explicit && row.action.kind === "repair" ? ` ${t(NAMES[row.action.target])}` : ""}</span>
+                {hit ? <span>{t("预告伤害")} {bossDamageTo(m.id)}</span> : null}
+              </li>
+            );
+          })}
+        </ul>
         <div className="mecha-toolbar">
           <label>{t("布局")}<select value={preset} onChange={(e) => restart(e.target.value as CoverPresetId, script)}>{PRESETS.map((p) => <option key={p.id} value={p.id}>{t(p.label)}</option>)}</select></label>
           <label>{t("脚本")}<select value={script} onChange={(e) => restart(preset, e.target.value as BossScriptId)}>{SCRIPTS.map((s) => <option key={s.id} value={s.id}>{t(s.label)}</option>)}</select></label>
@@ -148,20 +202,14 @@ export function MechaBoard({ locale, onClose }: { locale: GameLocale; onClose: (
             return <button key={`${x},${y}`} type="button" className={paint(x, y)} aria-label={`${x},${y}`} onClick={() => clickCell(x, y)} />;
           })}
         </div>
-        <div className="mecha-roster">
-          {living(state).map((m) => (
-            <button key={m.id} type="button" className={m.id === selected ? "is-selected" : ""} onClick={() => setSelected(m.id)}>
-              {t(NAMES[m.id])} {m.hp} @ {m.pos.x},{m.pos.y}
-            </button>
-          ))}
-        </div>
         <div className="mecha-actions">
           {actions.map((action) => {
-            const label = action.kind === "melee" ? "近战" : action.kind === "shoot" ? "射击" : action.kind === "charge" ? "冲撞" : action.kind === "pierce" ? "穿射" : action.kind === "repair" ? "维修" : "待机";
-            const on = draft[selected]?.action.kind === action.kind && (action.kind !== "repair" || draft[selected]?.action.kind === "repair" && action.kind === "repair" && draft[selected].action.target === action.target);
-            return <button key={action.kind === "repair" ? `repair-${action.target}` : action.kind} type="button" className={on ? "is-selected" : ""} disabled={state.phase !== "player_plan"} onClick={() => setDraft((prev) => ({ ...prev, [selected]: { ...prev[selected], action } }))}>{t(label)}{action.kind === "repair" ? ` ${t(NAMES[action.target])}` : ""}</button>;
+            const label = actionLabel(action);
+            const chosen = draft[selected];
+            const on = Boolean(chosen?.explicit) && actionKey(chosen.action) === actionKey(action);
+            return <button key={action.kind === "repair" ? `repair-${action.target}` : action.kind} type="button" className={on ? "is-selected" : ""} disabled={state.phase !== "player_plan"} onClick={() => setDraft((prev) => ({ ...prev, [selected]: { ...prev[selected], action, explicit: true } }))}>{t(label)}{action.kind === "repair" ? ` ${t(NAMES[action.target])}` : ""}</button>;
           })}
-          <button type="button" disabled={state.phase !== "player_plan"} onClick={submit}>{t("提交三机行动")}</button>
+          <button type="button" disabled={state.phase !== "player_plan" || !packReady} onClick={submit}>{t("提交三机行动")}</button>
         </div>
         {notice && <p role="alert">{notice}</p>}
         <p className="mecha-legend">{t("掩体")} {COVERS[preset].length} · {state.ruleset}</p>

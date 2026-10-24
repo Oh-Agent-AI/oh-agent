@@ -73,7 +73,11 @@
 
 .mecha-overlay { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; background: #020a14cc; }
 .mecha-panel { width: min(880px, calc(100% - 24px)); max-height: calc(100% - 24px); overflow: auto; padding: 16px; border-radius: 12px; background: #101d2f; color: var(--city-text, #e8eef6); border: 1px solid #ffffff22; }
-.mecha-stage { height: 340px; margin: 8px 0; border-radius: 8px; background: #0b1726; }
+.mecha-stage { height: 300px; margin: 8px 0; border-radius: 8px; background: #0b1726; }
+.mecha-pack { list-style: none; display: grid; gap: 4px; margin: 8px 0; padding: 0; font-size: 13px; }
+.mecha-pack li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.mecha-pack .is-open { color: #ffb15a; }
+.mecha-pack .is-hit { color: #ff8d8d; }
 .mecha-stage canvas { width: 100%; height: 100%; display: block; }
 .mecha-panel header { display: flex; justify-content: space-between; align-items: center; }
 .mecha-panel h2 { margin: 0; font-size: 18px; }
@@ -84,7 +88,7 @@
 .mecha-cell { width: 28px; height: 28px; padding: 0; border: 1px solid #ffffff18; background: #163047; }
 .mecha-cell.is-cover { background: #5c6b4a; }
 .mecha-cell.is-boss { background: #c45c26; }
-.mecha-cell.is-telegraph { box-shadow: inset 0 0 0 2px #e23b3b; }
+.mecha-cell.is-telegraph { background: #6a2430; box-shadow: inset 0 0 0 2px #ff5a5a; }
 .mecha-cell.is-assault { background: #d4a017; }
 .mecha-cell.is-gunner { background: #3d8bfd; }
 .mecha-cell.is-support { background: #3dba8b; }

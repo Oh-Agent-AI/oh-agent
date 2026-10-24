@@ -69,6 +69,18 @@ fn stationary_smash_never_sweeps() {
 }
 
 #[test]
+fn smash_aims_at_the_squad_approach_not_the_near_corner() {
+    // Standard deploy. Lexicographic adjacency would mark (3, 0). Gunner at
+    // (5, 9) makes (5, 2) the closest door, seven steps due south of him.
+    let seed = MatchSeed::new(21, CoverPreset::SparseMid, BossScript::CadenceSsw);
+    let mut m = Match::from_seed(seed);
+    let intent = boss_script_tick_prepare(&mut m).expect("prepare");
+    assert_eq!(intent.skill_id, BossSkill::Smash);
+    assert_eq!(intent.projected_cells, vec![Cell::new(5, 2)]);
+    assert_ne!(intent.projected_cells, vec![Cell::new(3, 0)]);
+}
+
+#[test]
 fn smash_2_is_not_a_v1_skill_id() {
     let seed = MatchSeed::new(15, CoverPreset::TwinClusters, BossScript::CadenceSsw);
     let mut m = Match::from_seed(seed);

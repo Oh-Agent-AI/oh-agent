@@ -240,24 +240,43 @@ pub fn threat_score(m: &Match, cell: crate::geom::Cell) -> u8 {
     }
 }
 
-pub fn pick_smash_cell(m: &Match) -> Option<crate::geom::Cell> {
-    let mut best: Option<(u8, crate::geom::Cell)> = None;
-    for c in adjacent_cells(m.boss().anchor) {
-        let t = threat_score(m, c);
-        let take = match best {
-            None => true,
-            Some((bt, bc)) => t > bt || (t == bt && c < bc),
-        };
-        if take {
-            best = Some((t, c));
+/// Distance from an adjacent cell to the nearest living mech.
+/// Equal threat used to fall through to the lexicographic corner. On the
+/// standard deploy that corner is (3, 0), off the squad's road, so the one
+/// smash cell was never a step anyone wanted and a search could melee the
+/// whole match without taking boss damage. Aim the tie at the squad first.
+fn approach_distance(m: &Match, cell: crate::geom::Cell) -> i8 {
+    let mut best = i8::MAX;
+    for id in m.living_ids() {
+        if let Some(mech) = m.mech(id) {
+            let d = manhattan(cell, mech.pos);
+            if d < best {
+                best = d;
+            }
         }
     }
-    best.map(|(_, c)| c)
+    best
+}
+
+pub fn pick_smash_cell(m: &Match) -> Option<crate::geom::Cell> {
+    let mut best: Option<(u8, i8, crate::geom::Cell)> = None;
+    for c in adjacent_cells(m.boss().anchor) {
+        let t = threat_score(m, c);
+        let d = approach_distance(m, c);
+        let take = match best {
+            None => true,
+            Some((bt, bd, bc)) => t > bt || (t == bt && (d < bd || (d == bd && c < bc))),
+        };
+        if take {
+            best = Some((t, d, c));
+        }
+    }
+    best.map(|(_, _, c)| c)
 }
 
 pub fn pick_sweep_pair(m: &Match) -> Option<(crate::geom::Cell, crate::geom::Cell)> {
     let cells = adjacent_cells(m.boss().anchor);
-    let mut best: Option<(u8, u8, crate::geom::Cell, crate::geom::Cell)> = None;
+    let mut best: Option<(u8, u8, i8, crate::geom::Cell, crate::geom::Cell)> = None;
     for i in 0..cells.len() {
         for j in (i + 1)..cells.len() {
             let a = cells[i];
@@ -269,19 +288,21 @@ pub fn pick_sweep_pair(m: &Match) -> Option<(crate::geom::Cell, crate::geom::Cel
             let tb = threat_score(m, b);
             let sum = ta + tb;
             let mx = ta.max(tb);
+            let near = approach_distance(m, a).saturating_add(approach_distance(m, b));
             let (c0, c1) = if a < b { (a, b) } else { (b, a) };
             let take = match best {
                 None => true,
-                Some((bs, bm, ba, bb)) => {
+                Some((bs, bm, bn, ba, bb)) => {
                     sum > bs
                         || (sum == bs && mx > bm)
-                        || (sum == bs && mx == bm && (c0, c1) < (ba, bb))
+                        || (sum == bs && mx == bm && near < bn)
+                        || (sum == bs && mx == bm && near == bn && (c0, c1) < (ba, bb))
                 }
             };
             if take {
-                best = Some((sum, mx, c0, c1));
+                best = Some((sum, mx, near, c0, c1));
             }
         }
     }
-    best.map(|(_, _, a, b)| (a, b))
+    best.map(|(_, _, _, a, b)| (a, b))
 }

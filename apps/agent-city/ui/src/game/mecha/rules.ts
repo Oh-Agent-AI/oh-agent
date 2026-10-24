@@ -138,6 +138,11 @@ function strike(atk: number, def: number): number {
   return Math.max(1, atk - def);
 }
 
+/** Boss smash/sweep damage against a mech. Same formula as `strike(BOSS_ATK, def)`. */
+export function bossDamageTo(id: MechId): number {
+  return strike(BOSS_ATK, STATS[id].def);
+}
+
 export function standardDeploy(): { mechs: Array<{ id: MechId; pos: Cell }>; boss: Cell } {
   return {
     mechs: [
@@ -466,18 +471,35 @@ function threat(state: MatchState, c: Cell): number {
   return 1;
 }
 
+/** Closest living mech. Equal threat used to prefer the low corner, which on
+ * the standard deploy is off the squad's road, so the smash cell was free to ignore. */
+function approachDistance(state: MatchState, c: Cell): number {
+  let best = 99;
+  for (const m of state.mechs) {
+    if (m.hp <= 0) continue;
+    const d = manh(c, m.pos);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+function cellBefore(a: Cell, b: Cell): boolean {
+  return a.x < b.x || (a.x === b.x && a.y < b.y);
+}
+
 function pickSmash(state: MatchState): Cell | null {
-  let best: { t: number; c: Cell } | null = null;
+  let best: { t: number; d: number; c: Cell } | null = null;
   for (const c of adjacentCells(state.boss.anchor)) {
     const t = threat(state, c);
-    if (!best || t > best.t || (t === best.t && (c.x < best.c.x || (c.x === best.c.x && c.y < best.c.y)))) best = { t, c };
+    const d = approachDistance(state, c);
+    if (!best || t > best.t || (t === best.t && (d < best.d || (d === best.d && cellBefore(c, best.c))))) best = { t, d, c };
   }
   return best?.c ?? null;
 }
 
 function pickSweep(state: MatchState): [Cell, Cell] | null {
   const cells = adjacentCells(state.boss.anchor);
-  let best: { sum: number; mx: number; a: Cell; b: Cell } | null = null;
+  let best: { sum: number; mx: number; near: number; a: Cell; b: Cell } | null = null;
   for (let i = 0; i < cells.length; i += 1) {
     for (let j = i + 1; j < cells.length; j += 1) {
       const a = cells[i];
@@ -487,10 +509,13 @@ function pickSweep(state: MatchState): [Cell, Cell] | null {
       const tb = threat(state, b);
       const sum = ta + tb;
       const mx = Math.max(ta, tb);
+      const near = approachDistance(state, a) + approachDistance(state, b);
       const [c0, c1] = a.x < b.x || (a.x === b.x && a.y <= b.y) ? [a, b] : [b, a];
+      const headTied = best !== null && c0.x === best.a.x && c0.y === best.a.y;
       const better = !best || sum > best.sum || (sum === best.sum && mx > best.mx)
-        || (sum === best.sum && mx === best.mx && (c0.x < best.a.x || (c0.x === best.a.x && (c0.y < best.a.y || (c0.y === best.a.y && c1.x < best.b.x || (c1.x === best.b.x && c1.y < best.b.y))))));
-      if (better) best = { sum, mx, a: c0, b: c1 };
+        || (sum === best.sum && mx === best.mx && near < best.near)
+        || (sum === best.sum && mx === best.mx && near === best.near && (cellBefore(c0, best.a) || (headTied && cellBefore(c1, best.b))));
+      if (better) best = { sum, mx, near, a: c0, b: c1 };
     }
   }
   return best ? [best.a, best.b] : null;
