@@ -92,7 +92,9 @@ struct PluginDefinition { id: String, name: String, entry: String, command_names
     #[serde(default)] data_projections: Vec<String>, #[serde(default)] allow_local_exports: bool,
     #[serde(default)] navigation_targets: Vec<String>,
     /// 允许的 plugin.state.* 键（如 flight-profile:v1）；描述表声明即边界（游戏模式 §9）。
-    #[serde(default)] state_keys: Vec<String> }
+    #[serde(default)] state_keys: Vec<String>,
+    /// 活动插件要接收的宿主推送（building / squad）。未声明则不投递，不按插件 id 判断。
+    #[serde(default)] host_events: Vec<String> }
 
 #[derive(Deserialize)]
 struct PluginRegistry { version: u16, plugins: Vec<PluginDefinition> }
@@ -335,12 +337,14 @@ static ENTITY_DELIVERED: OnceLock<Mutex<String>> = OnceLock::new();
 static SQUAD_DELIVERED: OnceLock<Mutex<String>> = OnceLock::new();
 static ENTITY_BRIDGE: OnceLock<()> = OnceLock::new();
 
-fn city_view_id(app: &tauri::AppHandle) -> Option<String> {
+fn subscriber_view_id(app: &tauri::AppHandle, event: &str) -> Option<String> {
     let host = app.state::<PluginHost>();
     let guard = host.0.lock().unwrap();
-    guard.current.as_ref().and_then(|i| {
-        if i.plugin_id == "city" && i.ready && i.failed.is_none() && !i.suspended { Some(i.id.clone()) } else { None }
-    })
+    let instance = guard.current.as_ref()?;
+    if !instance.ready || instance.failed.is_some() || instance.suspended { return None; }
+    let subscribed = definitions().iter().find(|plugin| plugin.id == instance.plugin_id)
+        .is_some_and(|plugin| plugin.host_events.iter().any(|name| name == event));
+    if subscribed { Some(instance.id.clone()) } else { None }
 }
 
 fn deliver_entity_event(app: &tauri::AppHandle, payload: &serde_json::Value) -> bool {
@@ -351,7 +355,7 @@ fn deliver_entity_event(app: &tauri::AppHandle, payload: &serde_json::Value) -> 
         let delivered = ENTITY_DELIVERED.get_or_init(|| Mutex::new(String::new())).lock().unwrap();
         if delivered.as_str() == event_id { return true; }
     }
-    let Some(id) = city_view_id(app) else { return false; };
+    let Some(id) = subscriber_view_id(app, "building") else { return false; };
     let Some(view) = app.get_webview(&id) else { return false; };
     if view.eval(entity_event_script(payload)).is_err() { return false; }
     *ENTITY_DELIVERED.get_or_init(|| Mutex::new(String::new())).lock().unwrap() = event_id.to_string();
@@ -368,7 +372,7 @@ fn deliver_squad_event(app: &tauri::AppHandle, payload: &serde_json::Value) -> b
         let delivered = SQUAD_DELIVERED.get_or_init(|| Mutex::new(String::new())).lock().unwrap();
         if delivered.as_str() == event_id { return true; }
     }
-    let Some(id) = city_view_id(app) else { return false; };
+    let Some(id) = subscriber_view_id(app, "squad") else { return false; };
     let Some(view) = app.get_webview(&id) else { return false; };
     if view.eval(squad_event_script(payload)).is_err() { return false; }
     *SQUAD_DELIVERED.get_or_init(|| Mutex::new(String::new())).lock().unwrap() = event_id.to_string();
@@ -960,7 +964,11 @@ mod tests {
         let tools: Vec<Tool> = serde_json::from_value(json!([{"id":"refresh","commandId":"metrics.refresh","label":"Refresh","kind":"button","enabled":true}])).unwrap();
         assert!(valid_tools("metrics", &tools));
         assert!(!valid_tools("city", &tools));
-        assert!(!definitions().is_empty());
+        let registry = definitions();
+        assert!(!registry.is_empty());
+        let city = registry.iter().find(|plugin| plugin.id == "city").unwrap();
+        assert!(city.host_events.iter().any(|event| event == "building"));
+        assert!(city.host_events.iter().any(|event| event == "squad"));
     }
 
     #[test]

@@ -10,6 +10,7 @@
       "stateKeys": ["flight-profile:v1", "game-links:v1"],
       "allowLocalExports": true,
       "navigationTargets": ["session"],
+      "hostEvents": ["building", "squad"],
       "source": "apps/agent-city/ui",
       "debugProbeMarker": "__CITY_PROBE_SPIN__"
     }

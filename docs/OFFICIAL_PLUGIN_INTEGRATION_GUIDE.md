@@ -49,6 +49,7 @@ apps/desktop/src-tauri/src/
 | `dataProjections` | 允许读取的投影键，例如 `metrics:v1`；默认无数据权限。登记权限不等于实现处理器。 |
 | `allowLocalExports` | 可选，默认 false；允许活动插件 blob 下载，原生通过保存对话框确认，不允许网络下载。 |
 | `navigationTargets` | 可选，默认空。声明 `["session"]` 后，宿主用活动插件的 id 解析本插件自己的 opaque handle（`app:{pluginId}:{session_key}`）。不按插件名字再写一套解析器。 |
+| `hostEvents` | 可选，默认空。`building` 接收施工/预览事件，`squad` 接收小队信封。只投递给当前活动且声明了该事件的插件。 |
 
 `debugProbeMarker` 是可选的诊断构建检查标记，仅有故障注入需求时设置；普通插件不必复制 City 的标记。
 

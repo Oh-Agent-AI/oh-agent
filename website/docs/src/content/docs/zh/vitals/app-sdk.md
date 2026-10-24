@@ -71,8 +71,8 @@ Agent City 是构建在 Agent Vitals 引擎上的第一个应用，以插件的�
 | `harnesses:v1` | `harnesses.list` | 数据源：不透明 id、显示名、能力 | 声明了它的任何插件 |
 | `harnesses:v1` | `harnesses.sessions` | 7/30/90/366 天窗口内每个数据源的会话统计，每个数据源最多 500 个会话，不含摘录和费用 | 声明了它的任何插件 |
 | `city:v2` | `data.read` | City 的视图：最多 4,000 个会话，含 Token 拆分、模型 ID、费用估算和状态、有长度上限的标题和摘录，以及全窗口合计、模型和每日活动 | 声明了它的插件（目前只有 City） |
-| `city:v3` | 带 `operation` 的 `data.read` | 基于同一数据快照的分页 City 视图（见下文） | 只有 City（检查 `plugin_id`） |
-| `city-settings:v1` | `data.read` | City 私有的种子设置 | 只有 City |
+| `city:v3` | 带 `operation` 的 `data.read` | 基于同一数据快照的分页 City 视图（见下文） | 声明了它的插件 |
+| `city-settings:v1` | `data.read` | 种子设置，存在 `state/plugins/{pluginId}.json` | 声明了它的插件 |
 
 `harnesses:v1` 是通用的 Agent Vitals 接口，`city:v2` 和 `city:v3` 是专为 City 设计的。**待确认**：要不要推出一个通用的、有文档的“Vitals 数据接口”供新应用依赖。目前新插件只能拿到 `harnesses:v1`，除非新增一个 Rust 投影处理器。
 
