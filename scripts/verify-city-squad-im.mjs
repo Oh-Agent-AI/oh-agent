@@ -62,7 +62,8 @@ feed = applySquadEnvelope(feed, set, 1_761_180_020);
 assert.equal(feed.claims[ASSET], undefined, "set_won / set envelope clears tint");
 assert.equal(isWriteKind("set"), true);
 assert.equal(isWriteKind("chat"), false);
-assert.match(envelopeSummary(set), /set ok/);
+assert.match(envelopeSummary(set), /Saved revision 1/);
+assert.doesNotMatch(envelopeSummary(set), /set ok/);
 
 const mcp = { agent_id: "city-mcp", agent_name: "City MCP" };
 const nano = { agent_id: "nano", agent_name: "Nano" };

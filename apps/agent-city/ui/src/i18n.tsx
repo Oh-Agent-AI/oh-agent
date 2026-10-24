@@ -186,7 +186,7 @@ const english: Record<string, string> = {
   "合成会话没有宿主日志详情，请使用原生真实数据模式。": "Synthetic sessions have no host log details. Use native local data mode.",
   "无法打开宿主会话详情，数据可能已删除或当前实例已失效。": "Could not open host session details; data may have been deleted or the instance expired.",
   "小队频道": "Squad channel", "收起小队": "Hide squad", "小队快讯": "Squad kill feed",
-  "多 Agent 施工频道。写入由 City MCP 广播；Agent 只发聊天/占用/释放。": "Multi-agent build channel. Writes are broadcast by City MCP; agents only publish chat, claim, or release.",
+  "施工记录标出这次 MCP 连接的客户端，例如 Claude Code 或 Codex。对方没报名字时显示 City MCP。": "Each row names the MCP client for this connection, such as Claude Code or Codex. City MCP is shown when the client did not identify itself.",
   "还没有施工事件。": "No build events yet.",
   "定位": "Focus", "定位建筑": "Focus building",
   "聊天": "Chat", "占用": "Claim", "释放": "Release", "预览": "Preview", "拒绝": "Reject", "写入": "Set", "重置": "Reset", "观察": "Observe",

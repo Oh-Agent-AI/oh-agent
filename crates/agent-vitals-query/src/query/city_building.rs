@@ -23,7 +23,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 
 use super::city_assets;
-use super::city_im::{self, ImActor};
+use super::city_im;
 use super::city_building_compliance::{self, compliant_catalog_ids, derive_slot, slot_to_json};
 use super::city_building_design;
 use super::city_building_inheritance::{
@@ -839,7 +839,8 @@ fn attach_edit_notify(
     })
 }
 
-fn with_preview_notify(mut out: Value, home: &Path, identity: &BuildingIdentity, model: &Value) -> Value {
+fn with_preview_notify(mut out: Value, home: &Path, identity: &BuildingIdentity, model: &Value, warnings: &[Value]) -> Value {
+    let summary = geometric_summary(model);
     out["notify"] = attach_edit_notify(home, identity, ENTITY_ACTION_PREVIEW, json!({
         "source": "preview",
         "ephemeral": true,
@@ -847,11 +848,11 @@ fn with_preview_notify(mut out: Value, home: &Path, identity: &BuildingIdentity,
         "model": model,
         "error": Value::Null,
     }));
-    attach_squad(out, home, identity, ENTITY_ACTION_PREVIEW, json!({
+    attach_squad(out, home, identity, ENTITY_ACTION_PREVIEW, squad_facts(json!({
         "asset_ref": identity.asset_ref,
         "ok": true,
         "revision": peek_revision(home, &identity.asset_ref),
-    }))
+    }), Some(&summary), warnings))
 }
 
 fn with_reject_notify(mut out: Value, home: &Path, identity: &BuildingIdentity, error: &BuildingError, origin: &str) -> Value {
@@ -880,8 +881,44 @@ fn with_reject_notify(mut out: Value, home: &Path, identity: &BuildingIdentity, 
 }
 
 fn attach_squad(mut out: Value, home: &Path, identity: &BuildingIdentity, kind: &str, payload: Value) -> Value {
-    if let Some(squad) = city_im::fanout_building(home, identity, &ImActor::mcp_default(), kind, payload) {
+    if let Some(squad) = city_im::fanout_building(home, identity, &city_im::connection_actor(), kind, payload) {
         out["squad"] = squad;
+    }
+    out
+}
+
+/// Squad row facts the City feed can turn into a sentence. `warnings` are the
+/// soft design notes; hard failures already carry `error` on `base`.
+fn squad_facts(mut base: Value, summary: Option<&Value>, warnings: &[Value]) -> Value {
+    if let Some(summary) = summary {
+        if let Some(count) = summary.get("part_count").and_then(Value::as_u64) {
+            base["part_count"] = json!(count);
+        }
+        if let Some(height) = summary.get("height").and_then(Value::as_f64) {
+            base["height"] = json!(height);
+        }
+    }
+    if !warnings.is_empty() {
+        let brief: Vec<Value> = warnings.iter().take(3).filter_map(|warning| {
+            let message = warning.get("message").and_then(Value::as_str).unwrap_or("").trim();
+            if message.is_empty() { return None; }
+            Some(json!({
+                "rule": warning.get("rule").and_then(Value::as_str).unwrap_or(""),
+                "message": clip_chars(message, 120),
+            }))
+        }).collect();
+        if !brief.is_empty() {
+            base["warnings"] = json!(brief);
+        }
+    }
+    base
+}
+
+fn clip_chars(text: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    for (index, ch) in text.chars().enumerate() {
+        if index >= max_chars { break; }
+        out.push(ch);
     }
     out
 }
@@ -1172,7 +1209,7 @@ pub fn preview_building(home: &Path, conn: &Connection, session_id: &str, inheri
             "summary": summary,
             "observe": { "text": observe_text("preview-reset", &summary, 0), "summary": summary },
             "projection": projection_meta(&identity, &summary, "current"),
-        }), home, &identity, &clean), Vec::new()));
+        }), home, &identity, &clean, &[]), Vec::new()));
     }
     let merged = match resolve_inheritance(&identity, inheritance) {
         Ok(clean) => clean,
@@ -1207,7 +1244,7 @@ pub fn preview_building(home: &Path, conn: &Connection, session_id: &str, inheri
                 "summary": summary,
                 "observe": { "text": observe_text("preview", &summary, 0), "summary": summary },
                 "projection": projection_meta(&identity, &summary, "current"),
-            }), home, &identity, &clean), warnings))
+            }), home, &identity, &clean, &warnings), warnings))
         }
         Err(error) => Ok(with_reject_notify(json!({
             "ok": false,
@@ -1362,7 +1399,7 @@ fn apply_override(
     }));
     // Construction notify first so IM fanout cannot block or overwrite persist mailbox.
     let ui = notify_city_ui(home, &payload);
-    city_im::release_set_won(home, identity, &ImActor::mcp_default());
+    city_im::release_set_won(home, identity, &city_im::connection_actor());
     Ok(attach_design_warnings(attach_squad(json!({
         "ok": true,
         "error": Value::Null,
@@ -1377,12 +1414,12 @@ fn apply_override(
         "construction": construction_stub(kind, part_count as usize, &build_event_id, ui),
         "notify": { "channel": if ui == "pushed" { "host-socket" } else { "mailbox" }, "ui": ui },
         "projection": projection_meta(identity, &summary, "current"),
-    }), home, identity, kind, json!({
+    }), home, identity, kind, squad_facts(json!({
         "asset_ref": identity.asset_ref,
         "ok": true,
         "revision": next,
         "build_event_id": build_event_id,
-    })), warnings))
+    }), Some(&summary), &warnings)), warnings))
 }
 
 #[cfg(test)]
@@ -1821,6 +1858,32 @@ mod tests {
         let warnings = pass["warnings"].as_array().cloned().unwrap_or_default();
         assert!(warnings.iter().any(|w| w["rule"] == city_building_design::RULE_MASSING_SHIFT), "{pass}");
         assert!(pass["observe"]["text"].as_str().unwrap().contains("design warning"));
+        let squad = city_im::read_squad_mailbox(&home).expect("preview squad row");
+        assert_eq!(squad["agent_name"], "City MCP");
+        let warnings = squad["payload"]["warnings"].as_array().cloned().unwrap_or_default();
+        assert!(warnings.iter().any(|w| w["rule"] == city_building_design::RULE_MASSING_SHIFT));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn squad_row_uses_mcp_client_name() {
+        let (home, db, session_id) = seed();
+        city_im::set_connection_client(Some("codex"));
+        let inheritance = json!({
+            "kit_version": INHERITANCE_KIT_VERSION,
+            "base": { "kind": "projection" },
+            "overrides": {}
+        });
+        let set = set_building_model(&home, db.conn(), &session_id, &inheritance, 0).unwrap();
+        assert_eq!(set["ok"], true);
+        let squad = city_im::read_squad_mailbox(&home).expect("set squad row");
+        assert_eq!(squad["agent_id"], "codex");
+        assert_eq!(squad["agent_name"], "Codex");
+        assert_eq!(squad["kind"], "set");
+        assert!(squad["payload"]["part_count"].as_u64().unwrap() >= 1);
+        assert!(squad["payload"]["height"].as_f64().unwrap() > 0.0);
+        city_im::set_connection_client(None);
+        assert_eq!(city_im::connection_actor().agent_name, "City MCP");
         let _ = std::fs::remove_dir_all(&home);
     }
 }

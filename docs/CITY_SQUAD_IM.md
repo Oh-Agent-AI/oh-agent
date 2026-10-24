@@ -24,10 +24,12 @@ Flat `kind`. Server assigns `id` and `ts` (unix **seconds**). `agent_name` is re
 | `chat` | Agent `im_publish` | `{ text }` |
 | `claim` | Agent `im_publish` | `{ asset_ref, ttl_sec, expires_at }` |
 | `release` | Agent (manual) or server (`ttl` / `stolen` / `set_won`) | `{ asset_ref, reason }` |
-| `preview` / `reject` / `set` / `reset` | **City MCP fanout only** | `{ asset_ref, ok, revision?, error?, rule?, build_event_id? }` |
+| `preview` / `reject` / `set` / `reset` | **City MCP fanout only** | `{ asset_ref, ok, revision?, error?, rule?, build_event_id?, part_count?, height?, warnings? }` |
 | `observe` | gated off | — |
 
 `reset_building` fans out `kind: "reset"` (not merged into `set`).
+
+The fanout actor is the MCP `initialize` `clientInfo.name` for this stdio connection (`claude-code` → Claude Code, `codex` → Codex). A missing name stays `City MCP`. That name is what the squad panel shows; it is the client that opened the connection, not a signed identity. The row text is the outcome (preview / saved revision / restored default / not applied), plus part count, height, and any design warnings — not `set ok ca_…`.
 
 ## Transport
 
