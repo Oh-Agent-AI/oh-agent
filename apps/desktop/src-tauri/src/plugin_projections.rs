@@ -2,9 +2,10 @@
 use serde_json::Value;
 
 pub fn session_target(plugin_id: &str, payload: &Value) -> Result<(String, String), &'static str> {
-    if plugin_id != "city" { return Err("navigation_unavailable"); }
     let handle = payload["handle"].as_str().ok_or("invalid_session_handle")?;
-    agent_vitals_runtime::query::app_local::city_session_target(&crate::overview::data_home(), handle)
+    // Scope is the plugin that received the handle (`app:{plugin_id}:`), not a City special case.
+    // PluginHost already requires `navigationTargets` to include `session` before this runs.
+    agent_vitals_runtime::query::app_local::plugin_session_target(&crate::overview::data_home(), plugin_id, handle)
 }
 
 #[cfg(test)]
@@ -29,13 +30,11 @@ pub fn read_for_plugin(allowed: &[String], method: &str, payload: &Value, plugin
     let version = payload["version"].as_u64().ok_or("projection_unavailable")?;
     let key = format!("{name}:v{version}");
     if !allowed.contains(&key) { return Err("projection_denied"); }
+    // Key is the projection contract from `dataProjections`. The caller's id only scopes storage.
     match key.as_str() {
-        "city-settings:v1" => city_settings(payload),
-        "city:v3" => {
-            if plugin_id != "city" { return Err("projection_denied"); }
-            agent_vitals_runtime::query::city_v3::read(&crate::overview::data_home(), payload,
-                agent_vitals_runtime::core::clock::now_ms())
-        }
+        "city-settings:v1" => plugin_settings(&crate::overview::data_home(), plugin_id, payload),
+        "city:v3" => agent_vitals_runtime::query::city_v3::read(&crate::overview::data_home(), payload,
+            agent_vitals_runtime::core::clock::now_ms()),
         "city:v2" => {
             let days = payload["windowDays"].as_u64().ok_or("invalid_window")?;
             if !matches!(days, 7 | 30 | 90 | 366) { return Err("invalid_window"); }
@@ -46,12 +45,17 @@ pub fn read_for_plugin(allowed: &[String], method: &str, payload: &Value, plugin
     }
 }
 
-fn city_settings(payload: &Value) -> Result<Value, &'static str> {
-    city_settings_at(&crate::overview::data_home(), payload)
+fn plugin_id_ok(plugin_id: &str) -> bool {
+    let bytes = plugin_id.as_bytes();
+    !bytes.is_empty() && bytes.len() <= 64
+        && bytes.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
 }
 
-fn city_settings_at(data_home: &std::path::Path, payload: &Value) -> Result<Value, &'static str> {
-    let path = data_home.join("state/plugins/city.json");
+/// Seed document for whichever plugin declared `city-settings:v1`.
+/// `state/city-seed.json` is the pre-plugin default: read when this plugin has no file yet, never written.
+fn plugin_settings(data_home: &std::path::Path, plugin_id: &str, payload: &Value) -> Result<Value, &'static str> {
+    if !plugin_id_ok(plugin_id) { return Err("projection_denied"); }
+    let path = data_home.join(format!("state/plugins/{plugin_id}.json"));
     match payload["action"].as_str() {
         Some("read") => {
             let seed = match std::fs::read(&path) {
@@ -87,7 +91,9 @@ mod tests {
         assert_eq!(read(&[], "data.read", &json!({"projection":"city","version":1,"windowDays":30})), Err("projection_denied"));
         assert_eq!(read(&["city:v2".into()], "sql", &json!({})), Err("method_unavailable"));
         assert_eq!(read(&["city:v2".into()], "data.read", &json!({"projection":"city","version":2,"windowDays":65566})), Err("invalid_window"));
-        assert_eq!(read_for_plugin(&["city:v3".into()], "data.read", &json!({"projection":"city","version":3,"operation":"overview","windowDays":30}), "other-plugin"), Err("projection_denied"));
+        assert_eq!(read_for_plugin(&[], "data.read", &json!({"projection":"city","version":3,"operation":"overview","windowDays":30}), "other-plugin"), Err("projection_denied"));
+        // Declaring the projection is the grant. The plugin id is not a second gate.
+        assert_ne!(read_for_plugin(&["city:v3".into()], "data.read", &json!({"projection":"city","version":3,"operation":"overview","windowDays":30}), "other-plugin"), Err("projection_denied"));
         assert_eq!(read(&[], "harnesses.list", &json!({"version":1})), Err("projection_denied"));
         assert_eq!(read(&["harnesses:v1".into()], "harnesses.list", &json!({"version":2})), Err("unsupported_version"));
     }
@@ -98,11 +104,15 @@ mod tests {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir_all(dir.join("state")).unwrap();
         std::fs::write(dir.join("state/city-seed.json"), r#"{"seed":123}"#).unwrap();
-        assert_eq!(city_settings_at(&dir, &json!({"action":"read"})).unwrap()["seed"], 123);
-        assert_eq!(city_settings_at(&dir, &json!({"action":"write","seed":42})).unwrap()["seed"], 42);
-        assert_eq!(city_settings_at(&dir, &json!({"action":"write","seed":0})), Err("invalid_seed"));
-        assert_eq!(city_settings_at(&dir, &json!({"action":"read"})).unwrap()["seed"], 42);
+        assert_eq!(plugin_settings(&dir, "city", &json!({"action":"read"})).unwrap()["seed"], 123);
+        assert_eq!(plugin_settings(&dir, "city", &json!({"action":"write","seed":42})).unwrap()["seed"], 42);
+        assert_eq!(plugin_settings(&dir, "city", &json!({"action":"write","seed":0})), Err("invalid_seed"));
+        assert_eq!(plugin_settings(&dir, "city", &json!({"action":"read"})).unwrap()["seed"], 42);
         assert_eq!(std::fs::read_to_string(dir.join("state/city-seed.json")).unwrap(), r#"{"seed":123}"#);
+        assert_eq!(plugin_settings(&dir, "metrics", &json!({"action":"write","seed":8})).unwrap()["seed"], 8);
+        assert_eq!(plugin_settings(&dir, "metrics", &json!({"action":"read"})).unwrap()["seed"], 8);
+        assert_eq!(plugin_settings(&dir, "city", &json!({"action":"read"})).unwrap()["seed"], 42);
+        assert_eq!(plugin_settings(&dir, "../x", &json!({"action":"read"})), Err("projection_denied"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
