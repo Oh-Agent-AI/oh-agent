@@ -1,6 +1,7 @@
 /** City test surface for GDD v1.3. Rules live in `mecha/rules.ts`. */
 import { useMemo, useState } from "react";
 import { gameText, type GameLocale } from "./gameCopy";
+import { MechaLineup } from "./MechaLineup";
 import {
   BOARD, bossExecute, bossPrepare, COVERS, createMatch, legalActions, living, pathDistance, STATS_MOVE,
   validateAndApplyPlan, type Action, type BossScriptId, type Cell, type CoverPresetId, type MatchState, type MechId,
@@ -133,6 +134,7 @@ export function MechaBoard({ locale, onClose }: { locale: GameLocale; onClose: (
           <button type="button" onClick={onClose} aria-label={t("关闭机甲战棋")}>×</button>
         </header>
         <p className="mecha-help">{t("点击一台机甲，再点能走到的格子，然后选行动。")}</p>
+        <MechaLineup label={t("机甲与怪兽")} />
         <div className="mecha-toolbar">
           <label>{t("布局")}<select value={preset} onChange={(e) => restart(e.target.value as CoverPresetId, script)}>{PRESETS.map((p) => <option key={p.id} value={p.id}>{t(p.label)}</option>)}</select></label>
           <label>{t("脚本")}<select value={script} onChange={(e) => restart(preset, e.target.value as BossScriptId)}>{SCRIPTS.map((s) => <option key={s.id} value={s.id}>{t(s.label)}</option>)}</select></label>

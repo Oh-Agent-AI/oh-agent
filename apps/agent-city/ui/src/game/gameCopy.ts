@@ -185,6 +185,7 @@ const ENGLISH: Record<string, string> = {
   "脚本": "Script",
   "布局": "Layout",
   "点击一台机甲，再点能走到的格子，然后选行动。": "Select a mech, click a reachable cell, then choose an action.",
+  "机甲与怪兽": "Mechs and the alien",
   "突击": "Assault",
   "射手": "Gunner",
   "支援": "Support",
