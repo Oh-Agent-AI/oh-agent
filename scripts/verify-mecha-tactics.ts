@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  attackerCenter, bossExecute, bossPrepare, createMatch, footprintCenter, knockbackFromAttacker,
-  setScriptCounters, validateAndApplyPlan, type MatchState,
+  attackerCenter, bossExecute, bossPrepare, BUILDING_HP, createMatch, footprintCenter, knockbackFromAttacker,
+  setScriptCounters, spawnsAreOpenGround, validateAndApplyPlan, type MatchState,
 } from "../apps/agent-city/ui/src/game/mecha/rules.ts";
 
 function hold(state: MatchState) {
@@ -95,4 +95,31 @@ test("an illegal second order rolls the whole pack back", () => {
   assert.deepEqual(state.mechs.map((m) => m.pos), before.mechs.map((m) => m.pos));
   assert.equal(state.revision, before.revision);
   assert.equal("ok" in validateAndApplyPlan(state, hold(state)), true);
+});
+
+test("raid damages a building and does not lose until every building is gone", () => {
+  const state = createMatch({
+    preset: "covers_sparse_mid",
+    script: "raid_ssw",
+    covers: [],
+    boss: { x: 4, y: 0 },
+    buildings: [
+      { id: "front", cells: [{ x: 5, y: 2 }] },
+      { id: "rear", cells: [{ x: 8, y: 8 }] },
+    ],
+    mechs: [
+      { id: "Assault", pos: { x: 2, y: 9 } },
+      { id: "Gunner", pos: { x: 5, y: 9 } },
+      { id: "Support", pos: { x: 8, y: 9 } },
+    ],
+  });
+  assert.equal(spawnsAreOpenGround(state), true);
+  const intent = bossPrepare(state);
+  assert.equal(intent.skillId, "smash");
+  assert.deepEqual(intent.projected, [{ x: 5, y: 2 }]);
+  assert.equal("ok" in validateAndApplyPlan(state, hold(state)), true);
+  bossExecute(state);
+  assert.equal(state.buildings[0]?.hp, BUILDING_HP - 6);
+  assert.equal(state.buildings[1]?.hp, BUILDING_HP);
+  assert.equal(state.outcome, null);
 });

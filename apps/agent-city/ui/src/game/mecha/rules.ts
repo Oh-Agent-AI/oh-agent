@@ -2,6 +2,8 @@
  * GDD v1.3 mecha tactics, the City playable copy.
  * 2×2 footprint center is anchor + (1, 1). arena_plan is whole-pack.
  * cadence_ssw is smash, smash, sweep. smash_2 is not in v1.
+ * raid_ssw is that cadence plus a move toward a living building or mech.
+ * Buildings have one HP pool; every pool at 0 is defeat_buildings.
  */
 
 export const GDD_RULESET = "mecha-v1.3";
@@ -10,15 +12,20 @@ export const MAX_TURNS = 15;
 export const BOSS_HP = 40;
 export const BOSS_ATK = 6;
 export const BOSS_DEF = 3;
+export const BOSS_MOVE = 3;
+export const BUILDING_HP = 16;
+export const BUILDING_DEF = 0;
+/** Spawn samples are one plane when the spread is at most 1 world unit (2 m). */
+export const FLAT_SPAWN_MAX_DELTA = 1;
 
 export type Cell = { x: number; y: number };
 export type MechId = "Assault" | "Gunner" | "Support";
 export const MECH_IDS: MechId[] = ["Assault", "Gunner", "Support"];
 export type CoverPresetId = "covers_sparse_mid" | "covers_diag_corridor" | "covers_twin_clusters";
-export type BossScriptId = "stationary_smash" | "cadence_ssw";
+export type BossScriptId = "stationary_smash" | "cadence_ssw" | "raid_ssw";
 export type BossSkill = "smash" | "sweep" | "skip";
 export type Phase = "enemy_prepare" | "player_plan" | "resolving_boss" | "finished";
-export type Outcome = "victory" | "defeat_wipe" | "defeat_timeout";
+export type Outcome = "victory" | "defeat_wipe" | "defeat_timeout" | "defeat_buildings";
 
 export type Action =
   | { kind: "skip" }
@@ -57,11 +64,14 @@ export type Intent = {
 type Mech = { id: MechId; pos: Cell; hp: number; cd: number; skillUsed: boolean };
 type Boss = { anchor: Cell; hp: number; cdSweep: number; cadence: number; intent: Intent | null };
 
+export type Building = { id: string; cells: Cell[]; hp: number; maxHp: number };
+
 export type MatchState = {
   ruleset: typeof GDD_RULESET;
   preset: CoverPresetId;
   script: BossScriptId;
   covers: Cell[];
+  buildings: Building[];
   mechs: Mech[];
   boss: Boss;
   turn: number;
@@ -143,6 +153,21 @@ export function bossDamageTo(id: MechId): number {
   return strike(BOSS_ATK, STATS[id].def);
 }
 
+export function buildingDamage(): number {
+  return strike(BOSS_ATK, BUILDING_DEF);
+}
+
+export function flatSpawnSpread(heights: number[]): number {
+  if (heights.length === 0) return 0;
+  let lo = heights[0] ?? 0;
+  let hi = lo;
+  for (const h of heights) {
+    if (h < lo) lo = h;
+    if (h > hi) hi = h;
+  }
+  return hi - lo;
+}
+
 export function standardDeploy(): { mechs: Array<{ id: MechId; pos: Cell }>; boss: Cell } {
   return {
     mechs: [
@@ -158,6 +183,7 @@ export function createMatch(opts: {
   preset: CoverPresetId;
   script: BossScriptId;
   covers?: Cell[];
+  buildings?: Array<{ id: string; cells: Cell[]; hp?: number }>;
   mechs?: Array<{ id: MechId; pos: Cell }>;
   boss?: Cell;
 }): MatchState {
@@ -168,6 +194,12 @@ export function createMatch(opts: {
     preset: opts.preset,
     script: opts.script,
     covers: (opts.covers ?? COVERS[opts.preset]).map((c) => ({ ...c })),
+    buildings: (opts.buildings ?? []).map((b) => ({
+      id: b.id,
+      cells: b.cells.map((c) => ({ ...c })),
+      hp: b.hp ?? BUILDING_HP,
+      maxHp: b.hp ?? BUILDING_HP,
+    })),
     mechs: placed.map((m) => ({ id: m.id, pos: { ...m.pos }, hp: STATS[m.id].maxHp, cd: 0, skillUsed: false })),
     boss: { anchor: { ...(opts.boss ?? deploy.boss) }, hp: BOSS_HP, cdSweep: 0, cadence: 0, intent: null },
     turn: 1,
@@ -181,6 +213,29 @@ export function living(state: MatchState): Mech[] {
   return state.mechs.filter((m) => m.hp > 0);
 }
 
+export function livingBuildings(state: MatchState): Building[] {
+  return state.buildings.filter((b) => b.hp > 0);
+}
+
+/** Mech cells and the boss footprint sit on cells with no cover and no building. */
+export function spawnsAreOpenGround(state: MatchState): boolean {
+  const blocked = new Set<string>();
+  for (const c of state.covers) blocked.add(key(c));
+  for (const b of state.buildings) for (const c of b.cells) blocked.add(key(c));
+  const seen = new Set<string>();
+  for (const m of state.mechs) {
+    const id = key(m.pos);
+    if (!inb(m.pos) || blocked.has(id) || seen.has(id)) return false;
+    seen.add(id);
+  }
+  for (const c of footprint(state.boss.anchor)) {
+    const id = key(c);
+    if (!inb(c) || blocked.has(id) || seen.has(id)) return false;
+    seen.add(id);
+  }
+  return true;
+}
+
 function mech(state: MatchState, id: MechId): Mech | undefined {
   return state.mechs.find((m) => m.id === id && m.hp > 0);
 }
@@ -189,15 +244,30 @@ function isCover(state: MatchState, c: Cell): boolean {
   return state.covers.some((k) => eq(k, c));
 }
 
-type Occ = "empty" | "cover" | "boss" | MechId;
+type Occ = "empty" | "cover" | "building" | "rubble" | "boss" | MechId;
+
+function livingBuildingAt(state: MatchState, c: Cell): Building | undefined {
+  return state.buildings.find((b) => b.hp > 0 && b.cells.some((k) => eq(k, c)));
+}
+
+function isRubble(state: MatchState, c: Cell): boolean {
+  return state.buildings.some((b) => b.hp <= 0 && b.cells.some((k) => eq(k, c)));
+}
 
 function occupant(state: MatchState, c: Cell): Occ {
   if (!inb(c)) return "empty";
   if (state.boss.hp > 0 && onFootprint(state.boss.anchor, c)) return "boss";
   const who = living(state).find((m) => eq(m.pos, c));
   if (who) return who.id;
+  if (livingBuildingAt(state, c)) return "building";
+  if (isRubble(state, c)) return "rubble";
   if (isCover(state, c)) return "cover";
   return "empty";
+}
+
+function blocksTerrain(state: MatchState, c: Cell): boolean {
+  const occ = occupant(state, c);
+  return occ === "cover" || occ === "building" || occ === "rubble";
 }
 
 function hurtMech(state: MatchState, id: MechId, amount: number) {
@@ -219,6 +289,7 @@ function refresh(state: MatchState) {
   if (!state.outcome) {
     if (state.boss.hp <= 0) state.outcome = "victory";
     else if (living(state).length === 0) state.outcome = "defeat_wipe";
+    else if (state.buildings.length > 0 && livingBuildings(state).length === 0) state.outcome = "defeat_buildings";
   }
   // The pack applier stamps resolving_boss after a killing action already
   // stored the outcome. City does not execute a dead boss, so put the phase
@@ -240,7 +311,7 @@ function tryTranslateBoss(state: MatchState, dir: Cell): boolean {
   const dests = footprint(anchor).map((c) => ({ x: c.x + dir.x, y: c.y + dir.y }));
   let hit: MechId | null = null;
   for (const nc of dests) {
-    if (!inb(nc) || isCover(state, nc)) {
+    if (!inb(nc) || blocksTerrain(state, nc)) {
       hurtBoss(state, 2);
       refresh(state);
       return false;
@@ -267,7 +338,7 @@ function tryPushMech(state: MatchState, id: MechId, dir: Cell): boolean {
   const m = mech(state, id);
   if (!m) return false;
   const dest = { x: m.pos.x + dir.x, y: m.pos.y + dir.y };
-  if (!inb(dest) || isCover(state, dest)) {
+  if (!inb(dest) || blocksTerrain(state, dest)) {
     hurtMech(state, id, 2);
     refresh(state);
     return false;
@@ -281,7 +352,7 @@ function tryPushMech(state: MatchState, id: MechId, dir: Cell): boolean {
   const occ = occupant(state, dest);
   if (occ !== "empty") {
     hurtMech(state, id, 2);
-    if (occ !== "cover" && occ !== "boss") hurtMech(state, occ, 2);
+    if (occ === "Assault" || occ === "Gunner" || occ === "Support") hurtMech(state, occ, 2);
     if (occ === "boss") hurtBoss(state, 2);
     refresh(state);
     return false;
@@ -343,7 +414,7 @@ function los(state: MatchState, from: Cell, to: Cell, ignoreCovers: number): boo
   let covers = 0;
   for (const c of cells) {
     const occ = occupant(state, c);
-    if (occ === "cover") {
+    if (occ === "cover" || occ === "building" || occ === "rubble") {
       covers += 1;
       if (covers > ignoreCovers) return false;
     } else if (occ !== "empty" && !eq(c, to)) return false;
@@ -466,9 +537,62 @@ export function validateAndApplyPlan(state: MatchState, plan: ArenaPlan): { ok: 
 
 function threat(state: MatchState, c: Cell): number {
   const occ = occupant(state, c);
-  if (occ !== "empty" && occ !== "cover" && occ !== "boss") return 3;
-  if (occ === "cover") return 2;
+  if (occ === "Assault" || occ === "Gunner" || occ === "Support") return 3;
+  if (occ === "building" || occ === "cover") return 2;
   return 1;
+}
+
+const STEP_DIRS: Cell[] = [{ x: 0, y: -1 }, { x: 1, y: 0 }, { x: 0, y: 1 }, { x: -1, y: 0 }];
+
+function anchorClear(state: MatchState, anchor: Cell): boolean {
+  for (const c of footprint(anchor)) {
+    if (!inb(c)) return false;
+    if (onFootprint(state.boss.anchor, c)) continue;
+    if (occupant(state, c) !== "empty") return false;
+  }
+  return true;
+}
+
+function objectiveGap(state: MatchState, anchor: Cell): number {
+  const goals: Cell[] = [];
+  for (const b of state.buildings) if (b.hp > 0) goals.push(...b.cells);
+  for (const m of state.mechs) if (m.hp > 0) goals.push(m.pos);
+  if (goals.length === 0) return 0;
+  let best = 99;
+  for (const f of footprint(anchor)) {
+    for (const g of goals) {
+      const d = manh(f, g);
+      if (d < best) best = d;
+    }
+  }
+  return best;
+}
+
+/** Up to BOSS_MOVE orthogonal steps. Only a strictly closer gap is taken. */
+function stepBossTowardObjectives(state: MatchState) {
+  if (state.boss.hp <= 0) return;
+  const start = state.boss.anchor;
+  const queue: Array<{ x: number; y: number; steps: number }> = [{ x: start.x, y: start.y, steps: 0 }];
+  const seen = new Set<string>([key(start)]);
+  let best = { x: start.x, y: start.y, steps: 0, gap: objectiveGap(state, start) };
+  while (queue.length) {
+    const cur = queue.shift();
+    if (!cur) break;
+    const gap = objectiveGap(state, cur);
+    const closer = gap < best.gap
+      || (gap === best.gap && cur.steps < best.steps)
+      || (gap === best.gap && cur.steps === best.steps && (cur.x < best.x || (cur.x === best.x && cur.y < best.y)));
+    if (closer) best = { x: cur.x, y: cur.y, steps: cur.steps, gap };
+    if (cur.steps >= BOSS_MOVE) continue;
+    for (const dir of STEP_DIRS) {
+      const nxt = { x: cur.x + dir.x, y: cur.y + dir.y, steps: cur.steps + 1 };
+      const id = `${nxt.x},${nxt.y}`;
+      if (seen.has(id) || !anchorClear(state, nxt)) continue;
+      seen.add(id);
+      queue.push(nxt);
+    }
+  }
+  state.boss.anchor = { x: best.x, y: best.y };
 }
 
 /** Closest living mech. Equal threat used to prefer the low corner, which on
@@ -533,6 +657,7 @@ export function bossPrepare(state: MatchState): Intent {
     return { skillId: "skip", local: [], projected: [], cdSweep: state.boss.cdSweep, status: "void" };
   }
   let intent: Intent;
+  if (state.script === "raid_ssw") stepBossTowardObjectives(state);
   if (state.script === "stationary_smash") intent = smashIntent(state, pickSmash(state));
   else {
     const step = state.boss.cadence % 3;
@@ -562,10 +687,21 @@ export function bossExecute(state: MatchState) {
   reproject(state);
   const cells = state.boss.intent?.projected ?? [];
   let any = false;
+  const struckBuildings = new Set<string>();
   if (intent && skill !== "skip" && intent.status !== "void") {
     for (const c of cells) {
       const occ = occupant(state, c);
-      if (occ === "empty" || occ === "cover" || occ === "boss") continue;
+      if (occ === "building") {
+        const hit = livingBuildingAt(state, c);
+        if (hit && !struckBuildings.has(hit.id)) {
+          struckBuildings.add(hit.id);
+          hit.hp = Math.max(0, hit.hp - strike(BOSS_ATK, BUILDING_DEF));
+          any = true;
+          refresh(state);
+        }
+        continue;
+      }
+      if (occ === "empty" || occ === "cover" || occ === "boss" || occ === "rubble") continue;
       const target = mech(state, occ);
       if (!target) continue;
       hurtMech(state, occ, strike(BOSS_ATK, STATS[occ].def));

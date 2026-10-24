@@ -1,6 +1,7 @@
 /**
- * 机甲方脚本。Boss 仍走 rules.ts 的 cadence_ssw / stationary_smash。
+ * 机甲方脚本。Boss 仍走 rules.ts。
  * 搜索在提交前看完预告和敌方结算，所以会为输出走近，也会吃到挡路的预告格。
+ * 有楼时，楼全毁和机甲全灭一样是输。
  */
 import {
   BOARD, BOSS_HP, bossExecute, footprintCenter, legalActions, living, pathDistance, STATS_MOVE,
@@ -102,8 +103,9 @@ function scorePlan(state: MatchState, plan: ArenaPlan): number | null {
     score += m.hp * 3;
     if (m.hp > 0) score -= Math.abs(m.pos.x + 0.5 - center.x) + Math.abs(m.pos.y + 0.5 - center.y);
   }
+  for (const b of clone.buildings) score += b.hp * 4;
   if (clone.outcome === "victory") score += 5000;
-  if (clone.outcome === "defeat_wipe") score -= 3000;
+  if (clone.outcome === "defeat_wipe" || clone.outcome === "defeat_buildings") score -= 3000;
   if (clone.outcome === "defeat_timeout") score -= 100;
   return score;
 }

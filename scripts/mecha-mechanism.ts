@@ -5,15 +5,18 @@
  *
  * Exhausts knockback geometry, whole-pack rejection, cadence_ssw, sweep
  * threat, smash versus sweep displacement, and seeded random/search play.
+ * The defense block measures raid_ssw: flat open spawns, building HP,
+ * mech-over-building threat, and total building loss.
  * Win rates are scaffolding, not a balance result.
  */
 
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import {
-  BOARD, BOSS_HP, COVERS, MECH_IDS, STATS_MOVE, adjacentToFootprint, attackerCenter, bossExecute, bossPrepare,
-  createMatch, footprintCenter, knockbackFromAttacker, legalActions, living, pathDistance, primaryAxis,
-  setScriptCounters, validateAndApplyPlan,
+  BOARD, BOSS_HP, BUILDING_HP, COVERS, FLAT_SPAWN_MAX_DELTA, MECH_IDS, STATS_MOVE, adjacentToFootprint, attackerCenter,
+  bossExecute, bossPrepare, buildingDamage, createMatch, flatSpawnSpread, footprintCenter, knockbackFromAttacker,
+  legalActions, living, livingBuildings, pathDistance, primaryAxis, setScriptCounters, spawnsAreOpenGround,
+  validateAndApplyPlan,
   type Action, type ArenaPlan, type BossScriptId, type Cell, type CoverPresetId, type Intent, type MatchState,
   type MechId, type MechOrder,
 } from "../apps/agent-city/ui/src/game/mecha/rules.ts";
@@ -31,6 +34,7 @@ const report = {
   deterministicReplays: 0,
   outcomes: [] as Array<{ preset: string; strategy: string; outcome: string | null; bossHp: number; turn: number; living: number; bossDamage: number }>,
   spread: [] as Array<{ preset: string; strategy: string; n: number; wins: number; timeouts: number; wipes: number; minTurn: number; medianTurn: number; maxTurn: number; matchesHit: number; medianBossDamage: number }>,
+  defense: [] as Array<{ strategy: string; outcome: string | null; turn: number; bossHp: number; buildingHp: number; buildingsLeft: number; living: number; bossDamage: number }>,
 };
 
 after(() => {
@@ -330,8 +334,9 @@ function scorePlan(state: MatchState, plan: ArenaPlan): number | null {
     score += m.hp * 3;
     if (m.hp > 0) score -= Math.abs(m.pos.x + 0.5 - center.x) + Math.abs(m.pos.y + 0.5 - center.y);
   }
+  for (const b of clone.buildings) score += b.hp * 4;
   if (clone.outcome === "victory") score += 5000;
-  if (clone.outcome === "defeat_wipe") score -= 3000;
+  if (clone.outcome === "defeat_wipe" || clone.outcome === "defeat_buildings") score -= 3000;
   if (clone.outcome === "defeat_timeout") score -= 100;
   return score;
 }
@@ -852,3 +857,234 @@ test("eight seeds record turn spread and whether the telegraph lands", { timeout
     assert.equal(row.wins + row.timeouts + row.wipes, 8);
   }
 });
+
+const DEFENSE_BUILDINGS = [
+  { id: "west", cells: [{ x: 4, y: 4 }] },
+  { id: "mid", cells: [{ x: 5, y: 4 }] },
+  { id: "north", cells: [{ x: 4, y: 5 }] },
+];
+
+function defenseMatch(patch?: {
+  script?: BossScriptId;
+  buildings?: Array<{ id: string; cells: Cell[]; hp?: number }>;
+  boss?: Cell;
+  assault?: Cell;
+  gunner?: Cell;
+  support?: Cell;
+  covers?: Cell[];
+}): MatchState {
+  return createMatch({
+    preset: "covers_sparse_mid",
+    script: patch?.script ?? "raid_ssw",
+    covers: patch?.covers ?? [],
+    buildings: patch?.buildings ?? DEFENSE_BUILDINGS,
+    boss: patch?.boss ?? { x: 4, y: 0 },
+    mechs: [
+      { id: "Assault", pos: patch?.assault ?? { x: 2, y: 9 } },
+      { id: "Gunner", pos: patch?.gunner ?? { x: 5, y: 9 } },
+      { id: "Support", pos: patch?.support ?? { x: 8, y: 9 } },
+    ],
+  });
+}
+
+function buildingHp(state: MatchState): number {
+  return state.buildings.reduce((sum, b) => sum + b.hp, 0);
+}
+
+function playDefense(strategy: "hold" | "search"): { state: MatchState; bossDamage: number } {
+  const state = defenseMatch();
+  let guard = 0;
+  let bossDamage = 0;
+  while (state.outcome === null) {
+    guard += 1;
+    assert.ok(guard <= 15, "defense match did not finish");
+    bossPrepare(state);
+    const plan = strategy === "search" ? searchPlan(state) : hold(state);
+    applyOk(state, plan);
+    if (state.outcome) break;
+    const before = squadHp(state);
+    bossExecute(state);
+    bossDamage += before - squadHp(state);
+  }
+  return { state, bossDamage };
+}
+
+test("defense spawns sit on open flat ground, off the buildings", () => {
+  const state = defenseMatch();
+  assert.equal(spawnsAreOpenGround(state), true);
+  const spawnCells = [
+    ...state.mechs.map((m) => m.pos),
+    state.boss.anchor,
+    { x: state.boss.anchor.x + 1, y: state.boss.anchor.y },
+    { x: state.boss.anchor.x, y: state.boss.anchor.y + 1 },
+    { x: state.boss.anchor.x + 1, y: state.boss.anchor.y + 1 },
+  ];
+  assert.ok(flatSpawnSpread(spawnCells.map(() => 0)) <= FLAT_SPAWN_MAX_DELTA);
+  assert.ok(flatSpawnSpread([0, 0, FLAT_SPAWN_MAX_DELTA + 1]) > FLAT_SPAWN_MAX_DELTA);
+  const crowded = defenseMatch({ assault: { x: 4, y: 4 } });
+  assert.equal(spawnsAreOpenGround(crowded), false);
+});
+
+test("a building hit costs 6 HP, does not push, and one ruin is not a loss", () => {
+  const state = defenseMatch({
+    script: "stationary_smash",
+    buildings: [{ id: "near", cells: [{ x: 5, y: 2 }], hp: BUILDING_HP }, { id: "far", cells: [{ x: 8, y: 8 }] }],
+  });
+  const anchor = { ...state.boss.anchor };
+  for (let hit = 1; hit <= 3; hit += 1) {
+    const intent = bossPrepare(state);
+    assert.equal(intent.skillId, "smash");
+    assert.deepEqual(intent.projected, [{ x: 5, y: 2 }]);
+    applyOk(state, hold(state));
+    bossExecute(state);
+    assert.deepEqual(state.boss.anchor, anchor);
+  }
+  assert.equal(buildingDamage(), 6);
+  assert.equal(state.buildings[0]?.hp, 0);
+  assert.equal(state.buildings[1]?.hp, BUILDING_HP);
+  assert.equal(state.outcome, null);
+  assert.equal(livingBuildings(state).length, 1);
+  assert.equal(pathDistance(state, { x: 5, y: 3 }, { x: 5, y: 2 }, "Assault"), null);
+});
+
+test("smash prefers an adjacent mech over a building", () => {
+  const state = defenseMatch({
+    script: "stationary_smash",
+    buildings: [{ id: "block", cells: [{ x: 6, y: 1 }] }],
+    assault: { x: 3, y: 1 },
+    gunner: { x: 0, y: 9 },
+    support: { x: 9, y: 9 },
+  });
+  const intent = bossPrepare(state);
+  assert.deepEqual(intent.projected, [{ x: 3, y: 1 }]);
+  const before = mechOf(state, "Assault").hp;
+  applyOk(state, hold(state));
+  bossExecute(state);
+  assert.ok(mechOf(state, "Assault").hp < before);
+  assert.equal(state.buildings[0]?.hp, BUILDING_HP);
+  assert.equal(state.outcome, null);
+});
+
+test("raid steps toward the nearer building, at most 3 cells", () => {
+  const state = defenseMatch({
+    boss: { x: 1, y: 0 },
+    buildings: [{ id: "south", cells: [{ x: 2, y: 6 }] }],
+    assault: { x: 9, y: 9 },
+    gunner: { x: 8, y: 9 },
+    support: { x: 7, y: 9 },
+  });
+  const before = objectiveGapOf(state);
+  bossPrepare(state);
+  assert.deepEqual(state.boss.anchor, { x: 1, y: 3 });
+  assert.ok(objectiveGapOf(state) < before);
+  assert.equal(state.boss.intent?.skillId, "smash");
+});
+
+test("one sweep damages a two-cell building once", () => {
+  const state = defenseMatch({
+    script: "cadence_ssw",
+    boss: { x: 4, y: 4 },
+    buildings: [{ id: "wide", cells: [{ x: 3, y: 3 }, { x: 3, y: 5 }] }],
+    assault: { x: 0, y: 0 },
+    gunner: { x: 9, y: 0 },
+    support: { x: 9, y: 9 },
+  });
+  setScriptCounters(state, 2, 0);
+  const intent = bossPrepare(state);
+  assert.equal(intent.skillId, "sweep");
+  assert.deepEqual(intent.projected, [{ x: 3, y: 3 }, { x: 3, y: 5 }]);
+  applyOk(state, hold(state));
+  bossExecute(state);
+  assert.equal(state.buildings[0]?.hp, BUILDING_HP - buildingDamage());
+  assert.equal(state.outcome, null);
+});
+
+test("killing the boss is a win while a building still stands", () => {
+  const state = defenseMatch({
+    script: "stationary_smash",
+    boss: { x: 4, y: 4 },
+    gunner: { x: 5, y: 8 },
+    assault: { x: 0, y: 9 },
+    support: { x: 9, y: 9 },
+    buildings: [{ id: "side", cells: [{ x: 1, y: 1 }] }],
+  });
+  state.boss.hp = 1;
+  bossPrepare(state);
+  applyOk(state, orders(state, { Gunner: { action: { kind: "shoot" } } }));
+  assert.equal(state.outcome, "victory");
+  assert.equal(state.phase, "finished");
+  assert.equal(buildingHp(state), BUILDING_HP);
+});
+
+test("a building cell blocks a shot the way cover does", () => {
+  const state = defenseMatch({
+    script: "stationary_smash",
+    boss: { x: 4, y: 4 },
+    buildings: [{ id: "wall", cells: [{ x: 5, y: 6 }] }],
+    gunner: { x: 5, y: 8 },
+    assault: { x: 0, y: 9 },
+    support: { x: 9, y: 9 },
+  });
+  bossPrepare(state);
+  const kinds = legalActions(state, "Gunner").map((a) => a.kind);
+  assert.equal(kinds.includes("shoot"), false);
+  assert.ok(kinds.includes("pierce"));
+});
+
+test("hold stalls on the rear building; search records the same board", { timeout: 60_000 }, () => {
+  for (const strategy of ["hold", "search"] as const) {
+    const played = playDefense(strategy);
+    const left = livingBuildings(played.state);
+    report.defense.push({
+      strategy,
+      outcome: played.state.outcome,
+      turn: played.state.turn,
+      bossHp: played.state.boss.hp,
+      buildingHp: buildingHp(played.state),
+      buildingsLeft: left.length,
+      living: played.state.mechs.filter((m) => m.hp > 0).length,
+      bossDamage: played.bossDamage,
+    });
+    assert.ok(
+      played.state.outcome === "victory"
+      || played.state.outcome === "defeat_wipe"
+      || played.state.outcome === "defeat_timeout"
+      || played.state.outcome === "defeat_buildings",
+    );
+    if (played.state.outcome === "defeat_buildings") {
+      assert.equal(left.length, 0);
+      assert.ok(played.state.boss.hp > 0);
+    }
+    if (played.state.outcome === "victory") {
+      assert.equal(played.state.boss.hp, 0);
+      assert.ok(left.length > 0);
+    }
+    for (const b of played.state.buildings) {
+      for (const c of b.cells) {
+        const onBoss = played.state.boss.hp > 0
+          && c.x >= played.state.boss.anchor.x && c.x <= played.state.boss.anchor.x + 1
+          && c.y >= played.state.boss.anchor.y && c.y <= played.state.boss.anchor.y + 1;
+        assert.equal(onBoss, false);
+      }
+    }
+  }
+  const held = report.defense.find((row) => row.strategy === "hold");
+  assert.equal(held?.outcome, "defeat_timeout");
+  assert.equal(held?.buildingsLeft, 1);
+  assert.equal(held?.buildingHp, BUILDING_HP);
+  assert.equal(held?.bossHp, BOSS_HP);
+  assert.equal(held?.bossDamage, 0);
+});
+
+function objectiveGapOf(state: MatchState): number {
+  const goals = state.buildings.filter((b) => b.hp > 0).flatMap((b) => b.cells);
+  let best = 99;
+  const foot = [
+    state.boss.anchor,
+    { x: state.boss.anchor.x + 1, y: state.boss.anchor.y },
+    { x: state.boss.anchor.x, y: state.boss.anchor.y + 1 },
+    { x: state.boss.anchor.x + 1, y: state.boss.anchor.y + 1 },
+  ];
+  for (const f of foot) for (const g of goals) best = Math.min(best, Math.abs(f.x - g.x) + Math.abs(f.y - g.y));
+  return best;
+}
