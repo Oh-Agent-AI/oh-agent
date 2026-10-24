@@ -5,11 +5,11 @@ import { loadCity } from "./city-kit/index.mjs";
 
 const {
   parseSquadEnvelope, applySquadEnvelope, emptyFeed, visibleFeed, DEFAULT_KIND_FILTER,
-  envelopeAssetRef, envelopeSummary, claimsFromRows, expireClaims, SQUAD_EVENT, isWriteKind,
+  envelopeAssetRef, envelopeSummary, actorLabel, claimsFromRows, expireClaims, SQUAD_EVENT, isWriteKind,
 } = await loadCity({
   "engine/squadEvents.ts": [
     "parseSquadEnvelope", "applySquadEnvelope", "emptyFeed", "visibleFeed", "DEFAULT_KIND_FILTER",
-    "envelopeAssetRef", "envelopeSummary", "claimsFromRows", "expireClaims", "SQUAD_EVENT", "isWriteKind",
+    "envelopeAssetRef", "envelopeSummary", "actorLabel", "claimsFromRows", "expireClaims", "SQUAD_EVENT", "isWriteKind",
   ],
 });
 
@@ -62,6 +62,8 @@ feed = applySquadEnvelope(feed, set, 1_761_180_020);
 assert.equal(feed.claims[ASSET], undefined, "set_won / set envelope clears tint");
 assert.equal(isWriteKind("set"), true);
 assert.equal(isWriteKind("chat"), false);
+assert.equal(actorLabel(set), "别的");
+assert.equal(actorLabel(claim), "Nano");
 assert.match(envelopeSummary(set), /Saved revision 1/);
 assert.doesNotMatch(envelopeSummary(set), /set ok/);
 

@@ -167,6 +167,12 @@ export function visibleFeed(items: SquadEnvelope[], filter: KindFilter = DEFAULT
   return items.filter((item) => filter[item.kind]);
 }
 
+/** Unidentified MCP connection. The panel says 别的 / some agent, not City MCP. */
+export function actorLabel(event: SquadEnvelope): string {
+  if (event.agent_id === "city-mcp" || event.agent_id === "unknown" || event.agent_name === "City MCP") return "别的";
+  return event.agent_name;
+}
+
 export function envelopeAssetRef(event: SquadEnvelope): string | null {
   const asset = event.payload.asset_ref;
   return typeof asset === "string" && CA.test(asset) ? asset : null;

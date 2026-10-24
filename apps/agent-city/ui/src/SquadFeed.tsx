@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { cityText, useCityLanguage } from "./i18n";
 import {
-  DEFAULT_KIND_FILTER, envelopeAssetRef, feedDetail, isWriteKind, visibleFeed,
+  DEFAULT_KIND_FILTER, actorLabel, envelopeAssetRef, feedDetail, isWriteKind, visibleFeed,
   type SquadEnvelope, type SquadKind, KILL_FEED_MS,
 } from "./engine/squadEvents";
 
@@ -36,7 +36,7 @@ export function SquadFeed({ items, onFocus, nowMs, open, onOpen }: Props) {
       {kill.length > 0 && <ol className="city-squad-kill" aria-label={cityText("小队快讯", language)}>
         {kill.map((item) => (
           <li key={item.id} data-kind={item.kind}>
-            <strong>{item.agent_name}</strong>
+            <strong>{cityText(actorLabel(item), language)}</strong>
             <span>{cityText(KIND_LABEL[item.kind], language)}</span>
             {envelopeAssetRef(item) && <button type="button" onClick={() => onFocus(envelopeAssetRef(item)!)}>{cityText("定位", language)}</button>}
           </li>
@@ -47,12 +47,12 @@ export function SquadFeed({ items, onFocus, nowMs, open, onOpen }: Props) {
           {cityText(open ? "收起小队" : "小队频道", language)}
         </button>
         {open && <>
-          <p className="city-squad-hint">{cityText("施工记录标出这次 MCP 连接的客户端，例如 Claude Code 或 Codex。对方没报名字时显示 City MCP。", language)}</p>
+          <p className="city-squad-hint">{cityText("施工记录标出这次 MCP 连接的客户端，例如 Claude Code 或 Codex。对方没报名字时显示「别的」。", language)}</p>
           {visible.length === 0 ? <p>{cityText("还没有施工事件。", language)}</p> : <ol>
             {visible.map((item) => {
               const asset = envelopeAssetRef(item);
               return <li key={item.id} data-kind={item.kind}>
-                <span className="city-squad-meta">{item.agent_name} · {cityText(KIND_LABEL[item.kind], language)}</span>
+                <span className="city-squad-meta">{cityText(actorLabel(item), language)} · {cityText(KIND_LABEL[item.kind], language)}</span>
                 <span className="city-squad-body">{feedDetail(item, language)}</span>
                 {asset && <button type="button" onClick={() => onFocus(asset)}>{cityText("定位建筑", language)}</button>}
               </li>;

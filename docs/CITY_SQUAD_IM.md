@@ -29,7 +29,7 @@ Flat `kind`. Server assigns `id` and `ts` (unix **seconds**). `agent_name` is re
 
 `reset_building` fans out `kind: "reset"` (not merged into `set`).
 
-The fanout actor is the MCP `initialize` `clientInfo.name` for this stdio connection (`claude-code` → Claude Code, `codex` → Codex). A missing name stays `City MCP`. That name is what the squad panel shows; it is the client that opened the connection, not a signed identity. The row text is the outcome (preview / saved revision / restored default / not applied), plus part count, height, and any design warnings — not `set ok ca_…`.
+The fanout actor is the MCP `initialize` `clientInfo.name` for this stdio connection (`claude-code` → Claude Code, `codex` → Codex). A missing name stays `agent_id` `city-mcp` on the wire. The squad panel shows that as **别的** / **some agent**, not City MCP. It is the client that opened the connection, not a signed identity. The row text is the outcome (preview / saved revision / restored default / not applied), plus part count, height, and any design warnings — not `set ok ca_…`.
 
 ## Transport
 
