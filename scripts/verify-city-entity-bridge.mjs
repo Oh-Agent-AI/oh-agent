@@ -199,7 +199,10 @@ assert.equal(parseBuildingEdit({
   error: { rule: "overlap" },
 }), null, "overlap is not a City fail-flash rule");
 assert.equal(isFlashRule("detail_regression"), true);
+assert.equal(isFlashRule("disconnected_part"), true);
+assert.equal(isFlashRule("massing_drift"), true);
 assert.equal(isFlashRule("revision_conflict"), false);
+assert.equal(isFlashRule("massing_shift"), false, "warnings do not flash");
 
 const regression = parseBuildingEdit({
   type: ENTITY_CHANGED_TYPE, entity_kind: "building", entity_id: ASSET,

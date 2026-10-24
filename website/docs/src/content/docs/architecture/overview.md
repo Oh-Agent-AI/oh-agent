@@ -169,7 +169,7 @@ The landing page at ohagent.ai embeds a build of the real City frontend from `ap
 
 Not in the code at `dev` `bf7196a`. Listed so readers don't mistake plans for features.
 
-- **Partial:** MCP tools can get / preview / set / reset one session building model (`docs/CITY_BUILDING_MCP.md`). An open City window plays construction from a shared `CityEntityChanged` host event (`entity_kind=building`; road/vehicle handlers later). Successful `preview_building` shows a translucent ghost; compliance / detail-regression rejects flash the lot. The same write path fans out a squad IM envelope; agents publish `chat`/`claim`/`release` via `im_publish` (`docs/CITY_SQUAD_IM.md`).
+- **Partial:** MCP tools can get / preview / set / reset one session building model (`docs/CITY_BUILDING_MCP.md`). An open City window plays construction from a shared `CityEntityChanged` host event (`entity_kind=building`; road/vehicle handlers later). Successful `preview_building` shows a translucent ghost; compliance / detail-regression / design-coherence rejects flash the lot. Soft design issues return `data.warnings` without blocking. The same write path fans out a squad IM envelope; agents publish `chat`/`claim`/`release` via `im_publish` (`docs/CITY_SQUAD_IM.md`).
 - **TBD:** Incremental hot update. City refreshes on its own after each sync, but it reloads the full projection and rebuilds the scene; sending only changed sessions and patching single buildings isn't implemented. See [Data pipeline](/docs/architecture/data-pipeline#how-does-agent-city-update-when-new-sessions-arrive).
 - **TBD:** A community gallery of cities (UGC). No code for this exists in the repo.
 - **TBD:** Signed public installers. GitHub Releases is still empty.

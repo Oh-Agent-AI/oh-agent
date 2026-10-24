@@ -9,9 +9,10 @@
 //! `CityEntityChanged` envelope (`entity_kind=building` today). City dispatches
 //! on kind and plays construction. `build_events` remains the poll fallback.
 //!
-//! Preview success and compliance / detail-regression rejects use the same
-//! envelope (`action=preview|reject`) but never persist: they write `edit.json`
-//! (not `notify.json`) so a later persist mailbox poll cannot be overwritten.
+//! Preview success and compliance / detail-regression / design-coherence
+//! rejects use the same envelope (`action=preview|reject`) but never persist:
+//! they write `edit.json` (not `notify.json`) so a later persist mailbox poll
+//! cannot be overwritten. Soft design issues stay `ok: true` with `warnings[]`.
 //!
 //! The same write path also fans out a squad IM envelope (`docs/CITY_SQUAD_IM.md`)
 //! on `squad.json` + `host.sock`. That channel never overwrites persist notify.
@@ -24,6 +25,7 @@ use serde_json::{json, Map, Value};
 use super::city_assets;
 use super::city_im::{self, ImActor};
 use super::city_building_compliance::{self, compliant_catalog_ids, derive_slot, slot_to_json};
+use super::city_building_design;
 use super::city_building_inheritance::{
     is_inheritance_document, normalize_inheritance, resolve_inheritance, resolve_to_mesh,
     INHERITANCE_KIT_VERSION,
@@ -41,7 +43,12 @@ pub const ENTITY_KIND_BUILDING: &str = "building";
 /// Live edit actions. Not stored in `build_events`; City treats them as ephemeral.
 pub const ENTITY_ACTION_PREVIEW: &str = "preview";
 pub const ENTITY_ACTION_REJECT: &str = "reject";
-const FLASH_RULES: &[&str] = &["invalid_model", "detail_regression"];
+const FLASH_RULES: &[&str] = &[
+    "invalid_model",
+    "detail_regression",
+    city_building_design::RULE_DISCONNECTED,
+    city_building_design::RULE_MASSING_DRIFT,
+];
 
 const KINDS: &[&str] = &["box", "cylinder", "cone"];
 const ROLES: &[&str] = &["wall", "trim", "roof", "glass", "structure", "door", "window"];
@@ -521,13 +528,27 @@ fn validate_for_session(
     home: &Path,
     identity: &BuildingIdentity,
     model: &Value,
-) -> Result<Value, BuildingError> {
+    inheritance: Option<&Value>,
+) -> Result<(Value, Vec<Value>), BuildingError> {
     let clean = validate_model(model)?;
     let slot = derive_slot(&identity.session_key, identity.tokens_total());
     city_building_compliance::validate_model_compliance(&clean, &slot)?;
     let current = current_model(home, identity)?;
     city_building_compliance::validate_detail_regression(&current, &clean, &slot)?;
-    Ok(clean)
+    let warnings = city_building_design::validate_design_coherence(&current, &clean, inheritance)?;
+    Ok((clean, warnings))
+}
+
+fn attach_design_warnings(mut out: Value, warnings: Vec<Value>) -> Value {
+    let n = warnings.len();
+    out["warnings"] = json!(warnings);
+    if n > 0 {
+        if let Some(text) = out.pointer("/observe/text").and_then(Value::as_str) {
+            let suffix = if n == 1 { "warning" } else { "warnings" };
+            out["observe"]["text"] = json!(format!("{text}; {n} design {suffix} — show them before set"));
+        }
+    }
+    out
 }
 
 pub(crate) fn open_store(home: &Path) -> Result<Connection, BuildingError> {
@@ -1141,7 +1162,7 @@ pub fn preview_building(home: &Path, conn: &Connection, session_id: &str, inheri
     if inheritance.get("reset").and_then(Value::as_bool) == Some(true) {
         let clean = default_model(identity.tokens_total());
         let summary = geometric_summary(&clean);
-        return Ok(with_preview_notify(json!({
+        return Ok(attach_design_warnings(with_preview_notify(json!({
             "ok": true,
             "error": Value::Null,
             "persisted": false,
@@ -1151,7 +1172,7 @@ pub fn preview_building(home: &Path, conn: &Connection, session_id: &str, inheri
             "summary": summary,
             "observe": { "text": observe_text("preview-reset", &summary, 0), "summary": summary },
             "projection": projection_meta(&identity, &summary, "current"),
-        }), home, &identity, &clean));
+        }), home, &identity, &clean), Vec::new()));
     }
     let merged = match resolve_inheritance(&identity, inheritance) {
         Ok(clean) => clean,
@@ -1173,10 +1194,10 @@ pub fn preview_building(home: &Path, conn: &Connection, session_id: &str, inheri
             }), home, &identity, &error, ENTITY_ACTION_PREVIEW));
         }
     };
-    match validate_for_session(home, &identity, &merged) {
-        Ok(clean) => {
+    match validate_for_session(home, &identity, &merged, Some(inheritance)) {
+        Ok((clean, warnings)) => {
             let summary = geometric_summary(&clean);
-            Ok(with_preview_notify(json!({
+            Ok(attach_design_warnings(with_preview_notify(json!({
                 "ok": true,
                 "error": Value::Null,
                 "persisted": false,
@@ -1186,7 +1207,7 @@ pub fn preview_building(home: &Path, conn: &Connection, session_id: &str, inheri
                 "summary": summary,
                 "observe": { "text": observe_text("preview", &summary, 0), "summary": summary },
                 "projection": projection_meta(&identity, &summary, "current"),
-            }), home, &identity, &clean))
+            }), home, &identity, &clean), warnings))
         }
         Err(error) => Ok(with_reject_notify(json!({
             "ok": false,
@@ -1216,7 +1237,7 @@ pub fn set_building_model(
 ) -> Result<Value, BuildingError> {
     let identity = resolve_identity(home, conn, session_id)?;
     if inheritance.get("reset").and_then(Value::as_bool) == Some(true) {
-        return apply_override(home, &identity, None, expected_revision, "reset", None);
+        return apply_override(home, &identity, None, expected_revision, "reset", None, Vec::new());
     }
     let merged = match resolve_inheritance(&identity, inheritance) {
         Ok(clean) => clean,
@@ -1235,8 +1256,8 @@ pub fn set_building_model(
             })));
         }
     };
-    let clean = match validate_for_session(home, &identity, &merged) {
-        Ok(clean) => clean,
+    let (clean, warnings) = match validate_for_session(home, &identity, &merged, Some(inheritance)) {
+        Ok(pair) => pair,
         Err(error) => {
             return Ok(with_reject_notify(json!({
                 "ok": false,
@@ -1247,12 +1268,12 @@ pub fn set_building_model(
         }
     };
     let stored = normalize_inheritance(inheritance)?;
-    apply_override(home, &identity, Some(stored), expected_revision, "set", Some(clean))
+    apply_override(home, &identity, Some(stored), expected_revision, "set", Some(clean), warnings)
 }
 
 pub fn reset_building(home: &Path, conn: &Connection, session_id: &str, expected_revision: u64) -> Result<Value, BuildingError> {
     let identity = resolve_identity(home, conn, session_id)?;
-    apply_override(home, &identity, None, expected_revision, "reset", None)
+    apply_override(home, &identity, None, expected_revision, "reset", None, Vec::new())
 }
 
 fn current_revision(home: &Path, asset_ref: &str) -> Result<u64, BuildingError> {
@@ -1267,6 +1288,7 @@ fn apply_override(
     expected_revision: u64,
     kind: &str,
     resolved_applied: Option<Value>,
+    warnings: Vec<Value>,
 ) -> Result<Value, BuildingError> {
     let db = open_store(home)?;
     db.execute_batch("BEGIN IMMEDIATE").map_err(|_| store_unavailable())?;
@@ -1341,7 +1363,7 @@ fn apply_override(
     // Construction notify first so IM fanout cannot block or overwrite persist mailbox.
     let ui = notify_city_ui(home, &payload);
     city_im::release_set_won(home, identity, &ImActor::mcp_default());
-    Ok(attach_squad(json!({
+    Ok(attach_design_warnings(attach_squad(json!({
         "ok": true,
         "error": Value::Null,
         "persisted": true,
@@ -1360,7 +1382,7 @@ fn apply_override(
         "ok": true,
         "revision": next,
         "build_event_id": build_event_id,
-    })))
+    })), warnings))
 }
 
 #[cfg(test)]
@@ -1496,6 +1518,7 @@ mod tests {
         let pass = preview_building(&home, db.conn(), &session_id, &inheritance).unwrap();
         assert_eq!(pass["ok"], true);
         assert_eq!(pass["persisted"], false);
+        assert_eq!(pass["warnings"].as_array().map(|a| a.len()), Some(0));
         assert_eq!(pass["notify"]["action"], ENTITY_ACTION_PREVIEW);
         assert!(pass["notify"]["event_id"].as_str().unwrap().starts_with("ui_preview_"));
         let edit = read_edit_mailbox(&home).expect("edit mailbox after preview");
@@ -1744,5 +1767,60 @@ mod tests {
         let mut incomplete = payload.clone();
         incomplete["entity_kind"] = json!("");
         assert!(!is_entity_changed(&incomplete));
+    }
+
+    #[test]
+    fn preview_rejects_disconnected_deck_and_flashes() {
+        let (home, db, session_id) = seed();
+        let fail = preview_building(&home, db.conn(), &session_id, &json!({
+            "kit_version": INHERITANCE_KIT_VERSION,
+            "base": { "kind": "projection" },
+            "overrides": {
+                "parts_add": [{
+                    "id": "deck",
+                    "kind": "box",
+                    "role": "structure",
+                    "at": [0.0, 8.0, 4.8],
+                    "size": [2.0, 0.3, 1.0]
+                }]
+            }
+        })).unwrap();
+        assert_eq!(fail["ok"], false);
+        assert_eq!(fail["error"]["rule"], city_building_design::RULE_DISCONNECTED);
+        assert_eq!(fail["notify"]["action"], ENTITY_ACTION_REJECT);
+        let edit = read_edit_mailbox(&home).expect("edit mailbox after disconnected_part");
+        assert_eq!(edit["action"], ENTITY_ACTION_REJECT);
+        assert_eq!(edit["error"]["rule"], city_building_design::RULE_DISCONNECTED);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn preview_rejects_same_height_widened_bases() {
+        let (home, db, session_id) = seed();
+        let fail = preview_building(&home, db.conn(), &session_id, &json!({
+            "kit_version": INHERITANCE_KIT_VERSION,
+            "base": { "kind": "projection" },
+            "overrides": {
+                "parts_add": [
+                    {"id": "wing-l", "kind": "box", "role": "structure", "at": [-3.2, 0.0, 0.0], "size": [1.2, 1.2, 4.0]},
+                    {"id": "wing-r", "kind": "box", "role": "structure", "at": [3.2, 0.0, 0.0], "size": [1.2, 1.2, 4.0]}
+                ]
+            }
+        })).unwrap();
+        assert_eq!(fail["ok"], false);
+        assert_eq!(fail["error"]["rule"], city_building_design::RULE_MASSING_DRIFT);
+        assert_eq!(fail["notify"]["action"], ENTITY_ACTION_REJECT);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn preview_catalog_rebase_warns_but_allows() {
+        let (home, db, session_id) = seed();
+        let pass = preview_building(&home, db.conn(), &session_id, &inh_catalog("kit-fine-midrise", json!({}))).unwrap();
+        assert_eq!(pass["ok"], true);
+        let warnings = pass["warnings"].as_array().cloned().unwrap_or_default();
+        assert!(warnings.iter().any(|w| w["rule"] == city_building_design::RULE_MASSING_SHIFT), "{pass}");
+        assert!(pass["observe"]["text"].as_str().unwrap().contains("design warning"));
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

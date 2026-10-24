@@ -74,7 +74,7 @@ Oh Agent 构建在开源的 Agent Vitals 引擎之上，Agent City 是它的第�
 下面这些在 `dev` 分支 `bf7196a` 的代码里都还没有，上线前一律标为待确认。
 
 - **待确认：增量热更新**。现在数据一变，City 会重新读取完整投影并重建整个场景，布局保持稳定、带生长动画（见[数据管线](/docs/zh/architecture/data-pipeline#有新会话时-agen
-- **部分完成：让 Agent 帮你建城（MCP）。** `get_building` / `preview_building` / `set_building_model` / `reset_building` 按 `asset_ref` 持久化 `session-kit/v1` 覆盖。打开的 City 窗口用共享 `CityEntityChanged` 事件播放施工；预览显示幽灵楼，合规/细节回退拒绝会闪地块。写入还会扇出小队 IM 信封；Agent 用 `im_publish` 发 `chat` / `claim` / `release`。见 `docs/CITY_BUILDING_MCP.md` 与 `docs/CITY_SQUAD_IM.md`。
+- **部分完成：让 Agent 帮你建城（MCP）。** `get_building` / `preview_building` / `set_building_model` / `reset_building` 按 `asset_ref` 持久化 `session-kit/v1` 覆盖。打开的 City 窗口用共享 `CityEntityChanged` 事件播放施工；预览显示幽灵楼，合规/细节回退/设计连贯性拒绝会闪地块。偏软的设计问题走 `data.warnings`。写入还会扇出小队 IM 信封；Agent 用 `im_publish` 发 `chat` / `claim` / `release`。见 `docs/CITY_BUILDING_MCP.md` 与 `docs/CITY_SQUAD_IM.md`。
 - **待确认：增量热更新**。现在数据一变，City 会重新读取投影并重建场景，布局保持稳定、带生长动画（见[数据管线](/docs/zh/architecture/data-pipeline#有新会话时-agent-city-怎么更新)）。像 Vite 那样只传变化的会话、只更新单栋楼，还没有实现。默认的 `city:v3` 分页已经能在不重排岛屿的前提下追加后续页。
 - **待确认：城市作品廊（UGC）**，分享和浏览别人的城市。仓库里没有相关代码。
 - **待确认：人人可用的地图编辑器**。城市“修复”编辑器已经有了，P0 在 2026-10-12 完成；但做成正式功能（去掉开发开关、中英文、新手引导）和地图修改的导入导出，都排在后面的 P3。

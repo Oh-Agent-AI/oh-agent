@@ -164,7 +164,7 @@ ohagent.ai 内嵌的是 `apps/agent-city/ui` 的真实 City 前端，由 `tools/
 
 以下内容在 `dev` 分支 `bf7196a` 的代码里都还没有，列出来是为了不让读者把规划当成已有功能。
 
-- **部分完成**：MCP 可以 get / preview / set / reset 一栋会话楼的模型（`docs/CITY_BUILDING_MCP.md`）。城里的施工播放来自共享 `CityEntityChanged` 事件。成功的 `preview_building` 显示半透明幽灵楼；合规 / 细节回退拒绝会闪一下地块。同一条写入路径还会向小队 IM 频道扇出信封；Agent 用 `im_publish` 发 `chat`/`claim`/`release`（`docs/CITY_SQUAD_IM.md`）。
+- **部分完成**：MCP 可以 get / preview / set / reset 一栋会话楼的模型（`docs/CITY_BUILDING_MCP.md`）。城里的施工播放来自共享 `CityEntityChanged` 事件。成功的 `preview_building` 显示半透明幽灵楼；合规 / 细节回退 / 设计连贯性拒绝会闪一下地块。偏软的设计问题走 `data.warnings`，不拦写入。同一条写入路径还会向小队 IM 频道扇出信封；Agent 用 `im_publish` 发 `chat`/`claim`/`release`（`docs/CITY_SQUAD_IM.md`）。
 - **待确认**：增量热更新。每次同步后 City 会自动刷新，但会重新读取完整投影并重建场景；只传变化的会话、只更新单栋楼还没有实现。见[数据管线](/docs/zh/architecture/data-pipeline#有新会话时-agent-city-怎么更新)。
 - **待确认**：城市作品廊（UGC）。仓库里没有相关代码。
 - **待确认**：签名的公开安装包。GitHub Releases 目前还是空的。
