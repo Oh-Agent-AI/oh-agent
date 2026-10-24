@@ -10,7 +10,7 @@ import { constructionOrder, parseKitModel, type KitPart } from "./sessionKitCons
 
 export const GHOST_OPACITY = 0.38;
 export const REJECT_FLASH_MS = 900;
-export const FLASH_RULES = ["invalid_model", "detail_regression"] as const;
+export const FLASH_RULES = ["invalid_model", "detail_regression", "disconnected_part", "massing_drift"] as const;
 
 export type FlashRule = (typeof FLASH_RULES)[number];
 
@@ -44,7 +44,7 @@ export type RejectVisual = {
 export type EditVisual = GhostVisual | RejectVisual;
 
 export function isFlashRule(rule: string | undefined): rule is FlashRule {
-  return rule === "invalid_model" || rule === "detail_regression";
+  return FLASH_RULES.includes(rule as FlashRule);
 }
 
 export function parseBuildingEdit(raw: unknown): BuildingEditEvent | null {

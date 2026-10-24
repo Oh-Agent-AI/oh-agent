@@ -167,26 +167,86 @@ export function visibleFeed(items: SquadEnvelope[], filter: KindFilter = DEFAULT
   return items.filter((item) => filter[item.kind]);
 }
 
+/** Unidentified MCP connection. The panel says 别的 / some agent, not City MCP. */
+export function actorLabel(event: SquadEnvelope): string {
+  if (event.agent_id === "city-mcp" || event.agent_id === "unknown" || event.agent_name === "City MCP") return "别的";
+  return event.agent_name;
+}
+
 export function envelopeAssetRef(event: SquadEnvelope): string | null {
   const asset = event.payload.asset_ref;
   return typeof asset === "string" && CA.test(asset) ? asset : null;
 }
 
 export function envelopeSummary(event: SquadEnvelope): string {
+  return feedDetail(event, "en");
+}
+
+function clip(text: string, max = 140): string {
+  const trimmed = text.trim();
+  return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max - 1)}…`;
+}
+
+function countOf(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function warningLine(payload: Record<string, unknown>): string {
+  if (!Array.isArray(payload.warnings)) return "";
+  for (const item of payload.warnings) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const message = (item as Record<string, unknown>).message;
+    if (typeof message === "string" && message.trim()) return clip(message, 120);
+  }
+  return "";
+}
+
+/** One readable squad row. `en` is the City English locale; anything else is Chinese. */
+export function feedDetail(event: SquadEnvelope, locale: string): string {
+  const payload = event.payload;
+  const en = locale === "en";
   const asset = envelopeAssetRef(event);
   const chip = asset ? asset.slice(0, 10) : "";
   if (event.kind === "chat") {
-    const text = typeof event.payload.text === "string" ? event.payload.text : "";
-    return text.slice(0, 80);
+    const text = typeof payload.text === "string" ? payload.text : "";
+    return clip(text, 80);
   }
-  if (event.kind === "claim") return chip ? `claim ${chip}` : "claim";
+  if (event.kind === "claim") return en ? (chip ? `Claimed ${chip}` : "Claimed this lot") : (chip ? `占用 ${chip}` : "占用这块地");
   if (event.kind === "release") {
-    const reason = typeof event.payload.reason === "string" ? event.payload.reason : "manual";
-    return chip ? `release ${reason} ${chip}` : `release ${reason}`;
+    const reason = typeof payload.reason === "string" ? payload.reason : "manual";
+    if (en) return chip ? `Released (${reason}) ${chip}` : `Released (${reason})`;
+    const label = reason === "set_won" ? "写入后释放" : reason === "stolen" ? "被抢走" : reason === "ttl" ? "超时释放" : "释放";
+    return chip ? `${label} ${chip}` : label;
   }
-  const ok = event.payload.ok === false ? "fail" : "ok";
-  const rule = typeof event.payload.rule === "string" ? event.payload.rule : "";
-  return [event.kind, ok, rule, chip].filter(Boolean).join(" ");
+  const failed = payload.ok === false || event.kind === "reject";
+  const error = typeof payload.error === "string" ? payload.error.trim() : "";
+  const rule = typeof payload.rule === "string" ? payload.rule : "";
+  if (failed) {
+    const why = error || rule;
+    if (en) return why ? `Not applied: ${clip(why)}` : "Not applied";
+    return why ? `未写入：${clip(why)}` : "未写入";
+  }
+  const parts = countOf(payload.part_count);
+  const height = countOf(payload.height);
+  const revision = countOf(payload.revision);
+  const measure = [
+    parts != null ? (en ? `${parts} parts` : `${parts} 个构件`) : "",
+    height != null ? (en ? `height ${height}` : `高度 ${height}`) : "",
+  ].filter(Boolean).join(en ? " · " : " · ");
+  const warn = warningLine(payload);
+  let line = "";
+  if (event.kind === "preview") {
+    line = en ? "Preview only, not saved" : "只是预览，还没写入";
+  } else if (event.kind === "set") {
+    line = revision != null ? (en ? `Saved revision ${revision}` : `已写入，修订 ${revision}`) : (en ? "Saved" : "已写入");
+  } else if (event.kind === "reset") {
+    line = revision != null ? (en ? `Restored the default, revision ${revision}` : `已恢复默认楼，修订 ${revision}`) : (en ? "Restored the default" : "已恢复默认楼");
+  } else {
+    line = en ? event.kind : event.kind;
+  }
+  if (measure) line = `${line} · ${measure}`;
+  if (warn) line = `${line} · ${warn}`;
+  return line;
 }
 
 export function claimsFromRows(rows: unknown, nowSecs: number): Record<string, ClaimTint> {

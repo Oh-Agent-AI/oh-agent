@@ -18,7 +18,7 @@ Server: `agent-vitals data-mcp serve --allow-local-writes` (get/preview work wit
 | `set_building_model` | yes | Persist a subclass document. Optimistic concurrency on `expected_revision`. Success → new `revision` + `build_event_id` |
 | `reset_building` | yes | Clear override, restore default, bump `revision`, queue a build event |
 
-ReACT loop: **get → preview → set → get**. Confirm the set by matching `revision` and `build_event_id`. Observation is structured JSON (`data.observe`); screenshots are optional and **not** in this MVP.
+ReACT loop: **get → preview → (show `data.warnings`) → set → get**. Confirm the set by matching `revision` and `build_event_id`. `data.ok` is not design approval. Observation is structured JSON (`data.observe`); screenshots are optional and **not** in this MVP.
 
 **Agent tool surface:** `preview_building` and `set_building_model` accept **`inheritance` rewrites only** — not a full `{kit_version, params, parts}` mesh replace. Full mesh replace remains available to internal/debug callers only. Passing `model` on MCP returns `invalid_argument`.
 
@@ -71,7 +71,7 @@ Stored subclass (`kit_version: session-kit/inheritance/v1`). Also returned on `g
 
 **Reset subclass:** `{ "kit_version": "session-kit/inheritance/v1", "reset": true }` on preview/set clears the stored override (same effect as `reset_building` on set). `reset_building` remains the explicit tool.
 
-**Server path (preview + set):** resolve `base` → merge `overrides` → `validate_model` → **model compliance (#9)** → **detail regression (#10)** on the merged mesh. Persist the **inheritance document**, not the resolved mesh.
+**Server path (preview + set):** resolve `base` → merge `overrides` → `validate_model` → **model compliance (#9)** → **detail regression (#10)** → **design coherence** on the merged mesh. Persist the **inheritance document**, not the resolved mesh.
 
 **Fine catalog samples** (for re-base and `parts_add` tests): `kit-fine-midrise`, `kit-fine-storefront` — detailed tiers, door/window roles, richer part layouts. Legacy ids: `kit-low-block`, `kit-midrise`, `kit-tower`, `kit-wide-slab`.
 
@@ -82,6 +82,17 @@ Legacy SQLite rows may still store a full `session-kit/v1` mesh from before laye
 **Model compliance (preview + set, same path):** derived lot footprint (min coverage + max bounds), session height class + story height (`params.story_height` / `params.floors`, reject pillar-like single shafts), construction budget (`estimate` or `params.build_cost` vs session `budget_cap`; catalog `cost` when `catalog_id` set), and required `door` / `window` part roles for occupiable models (waived when `catalog_id` points at a kit that provides them). Failures use `rule: invalid_model` and may include `compliant_models` (catalog ids). `get_building.projection` returns `lot`, `compliant_catalog`, and `required_part_roles`.
 
 **Detail regression (layer 1, after compliance):** compare a cheap **detail score** for the session’s **current** model (override or default) vs the **merged** proposal. Inputs: part count, door/window presence (or catalog kit that provides them), and `params.detail_tier` (`coarse` | `standard` | `detailed` or `0`..`2`; otherwise derived from part count or catalog). **Hold-or-improve:** proposed score must be ≥ current. Failures use `rule: detail_regression` and may list `compliant_models` catalog ids that would not regress.
+
+**Design coherence (after #9/#10):** keep the current building’s mass and attach new parts to it. This is not an aesthetic model.
+
+| Result | `rule` | When |
+|---|---|---|
+| Reject (`ok: false`, City fail-flash) | `disconnected_part` | A structure part is not in the main connected mass, or a door/window/trim/glass does not touch that mass. |
+| Reject (`ok: false`, City fail-flash) | `massing_drift` | Height stays about the same (±12%) but footprint grows >22%, or a structural `parts_add` rebuilds the mass (≥4 structural adds or >35% extra volume). |
+| Warning (`ok: true`, `data.warnings[]`) | `massing_shift` | Height or footprint changes enough to notice, including an intentional catalog re-base. |
+| Warning (`ok: true`, `data.warnings[]`) | `additive_override` | Three or more added parts, or added volume >18% of the current mesh. |
+
+`data.ok` is **not** design approval. Agents must show every `data.warnings` entry before `set_building_model`. Reset (`reset: true` / `reset_building`) skips this layer. A catalog re-base with only params / facade adds is allowed (with `massing_shift`) so kit swaps stay possible; hanging new bases or decks on the current shaft is not.
 
 ## Errors
 
@@ -143,7 +154,7 @@ These are **UI-only** and never persist to `overrides` / `build_events`:
 | Trigger | Envelope `action` | City render |
 |---|---|---|
 | Successful `preview_building` (including `{reset:true}`) | `preview` | Translucent **ghost** of the proposed mesh on the session lot. The committed building stays. |
-| `preview_building` or `set_building_model` rejected by **model compliance** (`invalid_model`, #9) or **detail regression** (`detail_regression`, #10) | `reject` | Brief red **fail-flash** on the lot (~900 ms). |
+| `preview_building` or `set_building_model` rejected by **model compliance** (`invalid_model`, #9), **detail regression** (`detail_regression`, #10), or **design coherence** (`disconnected_part`, `massing_drift`) | `reject` | Brief red **fail-flash** on the lot (~900 ms). |
 
 Other structured errors (`overlap`, `invalid_inheritance`, `revision_conflict`) stay MCP-only — no City flash.
 
@@ -185,7 +196,7 @@ Copy `session_ref` from `sessions_search` into `session_id`. With City open, set
 ## Deferred (not in this PR)
 
 - Pin/snapshot revision (layer 3).
-- OT/CRDT, aesthetic judge.
+- OT/CRDT. Aesthetic *taste* is still out of scope; massing/attachment is the geometric stand-in shipped above.
 - Road / vehicle write-path animation (the envelope and channel are ready; no handlers yet).
 - Parcel/lot coordinates, screenshots, resident metrics, hard locks / OT (phase 1 has a stealable TTL claim on `(session_id, asset_ref)` plus IM fanout; see `docs/CITY_SQUAD_IM.md`).
 - `get_squad_feed`, verbose `observe`, agent labels, decal/graffiti.

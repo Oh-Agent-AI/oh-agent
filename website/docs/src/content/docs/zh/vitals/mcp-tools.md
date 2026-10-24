@@ -48,7 +48,7 @@ Oh Agent 的数据层 Agent Vitals 带一个本地 MCP 服务。运行 `agent-vi
 | `issues_summary` / `skills_summary` | 行为发现和 skill 使用摘要 |
 | `control_plane` | 数据源状态、其他目录、排除项、保留期、时区、暂停/运行同步、目录策略（写入要加参数） |
 | `trust_profile_*` | 信任审计配置的 schema、列表、校验、暂存和状态 |
-| `get_building` / `preview_building` / `set_building_model` / `reset_building` | 读取、校验、替换或重置一栋 Agent City 会话楼的模型（`session-kit/v1`，最多 64 个件）。写入需要 `--allow-local-writes`。城里的施工动画来自共享 `CityEntityChanged` 事件；preview 显示幽灵楼，合规/细节回退拒绝会闪一下地块。成功或失败的写入还会向小队 IM 频道扇出信封（`docs/CITY_SQUAD_IM.md`） |
+| `get_building` / `preview_building` / `set_building_model` / `reset_building` | 读取、校验、替换或重置一栋 Agent City 会话楼的模型（`session-kit/v1`，最多 64 个件）。写入需要 `--allow-local-writes`。城里的施工动画来自共享 `CityEntityChanged` 事件；preview 显示幽灵楼；合规 / 细节回退 / 构件脱离 / 体量漂移拒绝会闪一下地块。`data.ok` 不是设计合格——Agent 必须展示 `data.warnings`。成功或失败的写入还会向小队 IM 频道扇出信封（`docs/CITY_SQUAD_IM.md`） |
 | `im_publish` | 向小队 IM 频道发布信封（仅 `chat` / `claim` / `release`）。服务端分配 `id`/`ts`。写入需要 `--allow-local-writes`。建筑 preview/set/reset 不由 Agent 再报一遍 |
 
 另外三个工具（`query_sql_readonly`、`billing_workflow`、`authority_audit`）只有在启用内部 `mcp-internal` feature 时才会编译进去，正常构建里没有。

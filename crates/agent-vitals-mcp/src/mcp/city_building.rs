@@ -13,8 +13,9 @@
 //! After a successful persist the query layer notifies PluginHost
 //! (socket and mailbox) with a shared `CityEntityChanged` envelope.
 //! `construction.ui` is `pushed` or `queued`. Preview success and
-//! compliance / detail-regression rejects use the same channel
-//! (`action=preview|reject`) so City can show a ghost or fail-flash.
+//! compliance / detail-regression / design-coherence rejects use the
+//! same channel (`action=preview|reject`) so City can show a ghost or
+//! fail-flash. Soft design issues stay on `data.warnings`.
 
 use std::path::Path;
 
@@ -35,7 +36,7 @@ fn spec(name: &'static str, description: &'static str, properties: Value, requir
         }),
         output_schema: json!({
             "type": "object",
-            "description": "Standard MCP envelope. data.ok distinguishes success from structured validation/conflict errors; data.observe.text is the mandatory non-vision summary."
+            "description": "Standard MCP envelope. data.ok distinguishes success from structured validation/conflict/design errors. data.ok is not design approval: always read data.warnings (massing_shift / additive_override) and show them before set. data.observe.text is the mandatory non-vision summary."
         }),
     }
 }
@@ -50,7 +51,7 @@ fn session_id_prop() -> Value {
 fn inheritance_prop() -> Value {
     json!({
         "type": "object",
-        "description": "session-kit/inheritance/v1 rewrite: {kit_version, base: {kind: projection|catalog, catalog_id?}, overrides: {params, parts_replace, parts_add, parts_remove}} or {kit_version, reset: true}. Server resolves base → merges overrides → runs compliance + detail regression on the merged mesh. Full mesh replace is not accepted on this tool surface."
+        "description": "session-kit/inheritance/v1 rewrite: {kit_version, base: {kind: projection|catalog, catalog_id?}, overrides: {params, parts_replace, parts_add, parts_remove}} or {kit_version, reset: true}. Server resolves base → merges overrides → runs compliance, detail regression, and design coherence (attach to the current mass; do not widen a same-height shaft). Full mesh replace is not accepted on this tool surface."
     })
 }
 
@@ -74,7 +75,7 @@ pub fn get_spec() -> ToolSpec {
 pub fn preview_spec() -> ToolSpec {
     spec(
         "preview_building",
-        "Validate a proposed inheritance rewrite without writing. Resolves base → merges overrides → runs the same compliance and detail-regression gates as set_building_model.",
+        "Validate a proposed inheritance rewrite without writing. Resolves base → merges overrides → runs compliance, detail-regression, then design coherence (parts must attach to the current mass; same-height footprint blow-outs are rejected). data.ok is not design approval — if data.warnings is non-empty you must show every warning to the user before set_building_model.",
         json!({ "session_id": session_id_prop(), "inheritance": inheritance_prop() }),
         &["session_id", "inheritance"],
     )
@@ -83,7 +84,7 @@ pub fn preview_spec() -> ToolSpec {
 pub fn set_spec() -> ToolSpec {
     spec(
         "set_building_model",
-        "Apply an inheritance rewrite to one session building. Requires --allow-local-writes and expected_revision for optimistic concurrency. Persists the subclass document (not a full mesh dump). On success bumps revision, notifies the open City window, and returns build_event_id for block-by-block construction.",
+        "Apply an inheritance rewrite to one session building. Requires --allow-local-writes and expected_revision for optimistic concurrency. Persists the subclass document (not a full mesh dump). Same gates as preview_building, including design coherence. On success bumps revision, notifies the open City window, and returns build_event_id. If the matching preview had data.warnings, those warnings are also on this result — show them; do not treat ok as a silent pass.",
         json!({
             "session_id": session_id_prop(),
             "inheritance": inheritance_prop(),
@@ -308,6 +309,7 @@ mod tests {
         let pass = data(&dispatch("preview_building", &json!({"session_id": session_id, "inheritance": projection_inheritance}), &home).unwrap()).clone();
         assert_eq!(pass["ok"], true);
         assert_eq!(pass["persisted"], false);
+        assert_eq!(pass["warnings"].as_array().map(|a| a.len()), Some(0));
 
         let conflict = data(&dispatch_with_permissions(
             "set_building_model",

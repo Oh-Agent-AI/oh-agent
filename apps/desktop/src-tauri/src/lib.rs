@@ -4538,7 +4538,7 @@ Every response is an envelope with `data`, `coverage`, `freshness` and `warnings
 
 **Session drill-down** — `sessions_search` (window / harness / model) → `session_detail` / `session_trace` by `session_ref`. Never ask for or echo native session ids or paths.
 
-**Edit one Agent City session building** — `sessions_search` → `get_building` with that `session_ref` (or the `ca_…` `asset_ref`) → `preview_building` until `data.ok` → `set_building_model` with `expected_revision`. Confirm via returned `revision` + `build_event_id`. `reset_building` restores the default. Mutations need `--allow-local-writes`. On failure read structured `data.error` (`validation` vs `conflict`); do not depend on screenshots. An open City window plays the construction animation from the host event.
+**Edit one Agent City session building** — `sessions_search` → `get_building` with that `session_ref` (or the `ca_…` `asset_ref`) → `preview_building`. `data.ok` is not design approval: if `data.warnings` is non-empty, show every warning (massing/additive) and do not set until the user accepts or you redesign inside the current mass. Only then `set_building_model` with `expected_revision`. Confirm via returned `revision` + `build_event_id`. `reset_building` restores the default. Mutations need `--allow-local-writes`. On failure read structured `data.error` (`validation` vs `conflict`, including `disconnected_part` / `massing_drift`); do not depend on screenshots. An open City window plays the construction animation from the host event.
 
 **Hourly pattern** — `usage_hourly` for one day (tokens only; cost per hour lives in `cost_breakdown`).
 
