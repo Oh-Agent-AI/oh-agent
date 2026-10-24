@@ -419,4 +419,31 @@ function fakeEngine() {
   assert.equal(session.controller.snapshot.error, null); assert.ok(session.snapshot().telemetry);
   session.exit();
 }
+// 点机场飞机：出生在跑道正上方的练习巡航高度，追尾相机当场写上，而不是贴着 1.4 的跑道面。
+{
+  const engine = fakeEngine(); engine.currentLayout = layout; engine.currentModel = model;
+  engine.renderCamera.position.set(500, 120, 500);
+  engine.renderCamera.lookAt(0, 0, 0);
+  const session = new GameSession(engine, { onState() {}, onExited() {} });
+  const origin = { x: layout.islandRadius + 120, y: 1.4, z: layout.islandRadius + 40, heading: 0.6 };
+  assert.equal((await session.enter({ mode: "practice" }, { cityReady: true, cinemaActive: false, filmActive: false, busy: false }, origin)).ok, true);
+  const sim = session.sim;
+  const params = session.params;
+  const cruise = session.world.flightAltitude(params.planeRadius + 1.5);
+  assert.equal(sim.x, origin.x, "runway takeoff keeps the runway x");
+  assert.equal(sim.z, origin.z, "runway takeoff keeps the runway z");
+  assert.equal(sim.heading, origin.heading, "runway takeoff keeps the runway heading");
+  assert.ok(sim.y + 1e-6 >= cruise, `runway takeoff uses flight altitude (got ${sim.y}, cruise ${cruise})`);
+  assert.ok(sim.y > origin.y + params.planeRadius * 12, "runway takeoff is not the just-off-the-deck lift");
+  const speedRatio = (params.cruiseSpeed - params.minSpeed) / (params.maxSpeed - params.minSpeed);
+  const back = params.planeRadius * 5.2 * (1 + 0.35 * speedRatio);
+  const camX = sim.x - Math.cos(sim.heading) * back;
+  const camY = sim.y + params.planeRadius * 2.4;
+  const camZ = sim.z - Math.sin(sim.heading) * back;
+  assert.ok(engine.pose, "entry writes a chase camera");
+  const [px, py, pz] = engine.pose.position;
+  assert.ok(Math.hypot(px - camX, py - camY, pz - camZ) < 1.5, `chase camera follows the aircraft (got ${px.toFixed(1)},${py.toFixed(1)},${pz.toFixed(1)})`);
+  assert.ok(Math.hypot(px - 500, py - 120, pz - 500) > 50, "camera left the pre-click orbit pose");
+  session.exit();
+}
 console.log("verify-city-game-session: ok");

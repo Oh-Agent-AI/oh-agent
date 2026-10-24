@@ -8,8 +8,8 @@ import { dispatchEntityChanged, ENTITY_CHANGED_EVENT, parseEntityChanged } from 
 import { entityChangedFromBuilding } from "./engine/sessionKitConstruction";
 import { SquadFeed } from "./SquadFeed";
 import {
-  applySquadEnvelope, claimsFromRows, emptyFeed, expireClaims, loadKindFilter, parseSquadEnvelope, saveKindFilter, SQUAD_EVENT,
-  type KindFilter, type SquadFeedState,
+  applySquadEnvelope, claimsFromRows, emptyFeed, expireClaims, parseSquadEnvelope, SQUAD_EVENT,
+  type SquadFeedState,
 } from "./engine/squadEvents";
 import "./city.css";
 import { embedded, connect, observeHealth, noteBusy, publishToolbar, type Tool } from "./host";
@@ -120,7 +120,6 @@ export function CityApp() {
   const liveCity = useRef(false);
   const seenEntityEvents = useRef(new Set<string>());
   const [squad, setSquad] = useState<SquadFeedState>(emptyFeed);
-  const [squadFilter, setSquadFilter] = useState<KindFilter>(loadKindFilter);
   const [squadOpen, setSquadOpen] = useState(true);
   const [squadNow, setSquadNow] = useState(() => Date.now());
   useEffect(() => () => { geographyAbort.current?.abort(); }, []);
@@ -508,8 +507,7 @@ export function CityApp() {
           : <button key={tool.id} disabled={!tool.enabled} onClick={() => execute(tool.commandId)}>{tool.label}</button>)}</div>
       </header>}
       {!cinema && !game.active && !driving.active && sceneReady && <SquadFeed
-        items={squad.items} filter={squadFilter} nowMs={squadNow} open={squadOpen} onOpen={setSquadOpen}
-        onFilter={(next) => { setSquadFilter(next); saveKindFilter(next); }}
+        items={squad.items} nowMs={squadNow} open={squadOpen} onOpen={setSquadOpen}
         onFocus={(assetRef) => { engineRef.current?.focusBuilding(assetRef); }} />}
       <div hidden={driving.active}><CityExperience ui={experience} disabled={!sceneReady} cinema={cinema} status={status} quality={quality} game={game} planRepair={planRepair}
         windowDays={windowDays} windowOptions={windowOptions} onWindowDays={(days) => setWindowDays(days as WindowDays)} labels={labels} onLabels={(next) => { engineRef.current?.setLabelsVisible(next); setLabels(next); }}

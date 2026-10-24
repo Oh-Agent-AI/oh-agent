@@ -15,7 +15,8 @@ const k = await loadCity({
   "game/driving/vehicleFootprint.ts": ["GAMEPLAY_DRIVING_FOOTPRINT"],
   "game/driving/surfaceFootprint.ts": ["GAMEPLAY_FOOTPRINT_PARAMS", "footprintSupport", "mountableQueryOf"],
   "game/driving/CollisionIndex.ts": ["boxPoly", "buildCollisionIndex"],
-  "game/DrivingSimulation.ts": ["initialDrivingState"],
+  "game/driving/DrivingKernel.ts": ["DrivingKernel"],
+  "game/DrivingSimulation.ts": ["initialDrivingState", "DRIVING_PARAMS"],
 });
 
 const plan = cachedPlan(k.createCityPlan, 42, 2);
@@ -87,3 +88,49 @@ const deepOverlap = k.boxPoly({ x, y: deck.maxY - 0.4, z }, [{ x: 1.3, y: 0, z: 
 assert.equal(isolatedIndex.hit(deepOverlap, "gameplay").status, "hit",
   "deep overlap remains a physical obstruction");
 console.log(`Expressway driving: ${placed}/${checked} real elevated-road samples accepted parked + rolling cars (control without deck policy blocked ${blockedWithoutDeckPolicy}); bounded top-edge collision is gameplay-mountable, deep overlap remains physical; ${decks.length} real slabs checked.`);
+
+// A mountable deck used to subtract the whole vertical rise from the travel
+// budget, so speedFraction stayed near 1-sin(pitch) and full throttle equilibrated
+// at a few km/h. Real grade must stay in the 3D charge; only the unexplained step is free.
+{
+  const kernel = new k.DrivingKernel(env, {
+    baseSnapshotHash: revision, vehicleConfigHash: "expressway-climb", kernelBuildId: "expressway-climb",
+    physicsVersion: 3, collisionVersion: 4, queryVersion: 5,
+  });
+  const forward = { forward: true, backward: false, left: false, right: false };
+  let climbed = null;
+  for (const piece of k.expresswayPieces(plan).filter((part) => part.role === "expressway-deck")) {
+    const layerId = `expressway:${piece.highway}`;
+    const at = regions.classify(piece.x, piece.z, layerId);
+    if (at.status !== "drivable") continue;
+    const heading = -piece.ry;
+    const fitted = k.footprintSupport(regions, { x: piece.x, z: piece.z, heading, y: at.y }, at.regionId,
+      k.GAMEPLAY_DRIVING_FOOTPRINT, k.GAMEPLAY_FOOTPRINT_PARAMS, undefined, k.mountableQueryOf(solids));
+    if (!fitted.ok || Math.abs(fitted.pitch) < 0.1) continue;
+    const uphill = fitted.pitch >= 0 ? heading : heading + Math.PI;
+    const placement = env.place(piece.x, piece.z, uphill, at.regionId, fitted.y);
+    if (!placement || placement.pitch <= 0.1) continue;
+    const cruise = 8;
+    const dt = 1 / 60;
+    const horizontal = cruise * Math.cos(placement.pitch);
+    const held = env.move({ ...k.initialDrivingState(piece.x, piece.z, uphill, at.regionId), ...placement, speed: cruise }, {
+      x: piece.x + Math.cos(uphill) * horizontal * dt,
+      z: piece.z + Math.sin(uphill) * horizontal * dt,
+      heading: uphill, travelBudget: cruise * dt,
+    });
+    let state = { ...k.initialDrivingState(piece.x, piece.z, uphill, at.regionId), ...placement };
+    let peak = 0;
+    for (let tick = 0; tick < 90 && peak < 4; tick++) {
+      const next = kernel.step(state, forward);
+      if (next.motion.blocked || next.motion.contact) break;
+      state = next.state;
+      peak = Math.max(peak, state.speed);
+    }
+    climbed = { segment: `${piece.highway}/${piece.segment}`, pitch: placement.pitch, fraction: held.speedFraction, peak };
+    break;
+  }
+  assert.ok(climbed, "seed 42 has an uphill expressway deck steeper than 0.1 rad");
+  assert.ok(climbed.fraction > 0.98, `grade must be charged as road travel, not dropped as a curb step (fraction ${climbed.fraction})`);
+  assert.ok(climbed.peak > 3, `full throttle on pitch ${climbed.pitch.toFixed(3)} must keep accelerating (peak ${climbed.peak.toFixed(2)}; the curb exemption used to stall near 1)`);
+  console.log(`Expressway climb: pitch ${climbed.pitch.toFixed(3)} keeps fraction ${climbed.fraction.toFixed(3)} and reaches ${climbed.peak.toFixed(2)} u/s.`);
+}

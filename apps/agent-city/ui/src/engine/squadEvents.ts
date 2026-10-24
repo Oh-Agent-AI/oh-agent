@@ -12,7 +12,7 @@ export type SquadKind = (typeof SQUAD_KINDS)[number];
 
 export type KindFilter = Record<SquadKind, boolean>;
 
-/** Write-related on; chat/observe off. Reset follows set. */
+/** Fixed visibility. Not a user preference: write-related on, chat/observe off, reset on like set. */
 export const DEFAULT_KIND_FILTER: KindFilter = {
   chat: false,
   observe: false,
@@ -44,9 +44,13 @@ export type ClaimTint = {
   eventId: string;
 };
 
+/** Highest fanout `payload.revision` seen per lot. Soft claim/release do not write this. */
+export type RevisionWatermark = { revision: number; ts: number };
+
 export type SquadFeedState = {
   items: SquadEnvelope[];
   claims: Record<string, ClaimTint>;
+  revisions: Record<string, RevisionWatermark>;
 };
 
 const KIND_SET = new Set<string>(SQUAD_KINDS);
@@ -55,6 +59,28 @@ const CA = /^ca_[0-9a-f]{32}$/;
 
 export function isWriteKind(kind: SquadKind): boolean {
   return kind === "preview" || kind === "reject" || kind === "set" || kind === "reset" || kind === "claim" || kind === "release";
+}
+
+const FANOUT_KINDS = new Set<SquadKind>(["preview", "reject", "set", "reset"]);
+
+/** Numeric revision on MCP fanout kinds only. Claim/release never invent one. */
+export function envelopeRevision(event: SquadEnvelope): number | null {
+  if (!FANOUT_KINDS.has(event.kind)) return null;
+  const revision = event.payload.revision;
+  if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 0) return null;
+  return revision;
+}
+
+/** True when a fanout envelope is older than the highest revision already applied for that asset_ref. */
+export function isStaleFanout(state: SquadFeedState, event: SquadEnvelope): boolean {
+  const assetRef = envelopeAssetRef(event);
+  if (!assetRef) return false;
+  const revision = envelopeRevision(event);
+  if (revision == null) return false;
+  const seen = state.revisions?.[assetRef];
+  if (!seen) return false;
+  if (revision < seen.revision) return true;
+  return revision === seen.revision && event.ts < seen.ts;
 }
 
 export function parseSquadEnvelope(raw: unknown): SquadEnvelope | null {
@@ -81,13 +107,28 @@ export function parseSquadEnvelope(raw: unknown): SquadEnvelope | null {
 }
 
 export function emptyFeed(): SquadFeedState {
-  return { items: [], claims: {} };
+  return { items: [], claims: {}, revisions: {} };
 }
 
 export function applySquadEnvelope(state: SquadFeedState, event: SquadEnvelope, nowSecs: number): SquadFeedState {
   if (state.items.some((item) => item.id === event.id)) return state;
+  if (isStaleFanout(state, event)) return state;
   const items = [event, ...state.items].slice(0, MAX_FEED);
-  return { items, claims: applyClaim(state.claims, event, nowSecs) };
+  return {
+    items,
+    claims: applyClaim(state.claims, event, nowSecs),
+    revisions: applyRevisionWatermark(state.revisions, event),
+  };
+}
+
+function applyRevisionWatermark(
+  revisions: Record<string, RevisionWatermark>,
+  event: SquadEnvelope,
+): Record<string, RevisionWatermark> {
+  const assetRef = envelopeAssetRef(event);
+  const revision = envelopeRevision(event);
+  if (!assetRef || revision == null) return revisions;
+  return { ...revisions, [assetRef]: { revision, ts: event.ts } };
 }
 
 export function applyClaim(claims: Record<string, ClaimTint>, event: SquadEnvelope, nowSecs: number): Record<string, ClaimTint> {
@@ -122,25 +163,14 @@ export function expireClaims(claims: Record<string, ClaimTint>, nowSecs: number)
   return next;
 }
 
-export function visibleFeed(items: SquadEnvelope[], filter: KindFilter): SquadEnvelope[] {
+export function visibleFeed(items: SquadEnvelope[], filter: KindFilter = DEFAULT_KIND_FILTER): SquadEnvelope[] {
   return items.filter((item) => filter[item.kind]);
 }
 
-export function loadKindFilter(): KindFilter {
-  try {
-    const raw = localStorage.getItem("city.squad.kinds");
-    if (!raw) return { ...DEFAULT_KIND_FILTER };
-    const parsed = JSON.parse(raw) as Partial<KindFilter>;
-    const out = { ...DEFAULT_KIND_FILTER };
-    for (const kind of SQUAD_KINDS) if (typeof parsed[kind] === "boolean") out[kind] = parsed[kind]!;
-    return out;
-  } catch {
-    return { ...DEFAULT_KIND_FILTER };
-  }
-}
-
-export function saveKindFilter(filter: KindFilter): void {
-  try { localStorage.setItem("city.squad.kinds", JSON.stringify(filter)); } catch { /* private pref */ }
+/** Unidentified MCP connection. The panel says 别的 / some agent, not City MCP. */
+export function actorLabel(event: SquadEnvelope): string {
+  if (event.agent_id === "city-mcp" || event.agent_id === "unknown" || event.agent_name === "City MCP") return "别的";
+  return event.agent_name;
 }
 
 export function envelopeAssetRef(event: SquadEnvelope): string | null {
@@ -149,20 +179,74 @@ export function envelopeAssetRef(event: SquadEnvelope): string | null {
 }
 
 export function envelopeSummary(event: SquadEnvelope): string {
+  return feedDetail(event, "en");
+}
+
+function clip(text: string, max = 140): string {
+  const trimmed = text.trim();
+  return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max - 1)}…`;
+}
+
+function countOf(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function warningLine(payload: Record<string, unknown>): string {
+  if (!Array.isArray(payload.warnings)) return "";
+  for (const item of payload.warnings) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const message = (item as Record<string, unknown>).message;
+    if (typeof message === "string" && message.trim()) return clip(message, 120);
+  }
+  return "";
+}
+
+/** One readable squad row. `en` is the City English locale; anything else is Chinese. */
+export function feedDetail(event: SquadEnvelope, locale: string): string {
+  const payload = event.payload;
+  const en = locale === "en";
   const asset = envelopeAssetRef(event);
   const chip = asset ? asset.slice(0, 10) : "";
   if (event.kind === "chat") {
-    const text = typeof event.payload.text === "string" ? event.payload.text : "";
-    return text.slice(0, 80);
+    const text = typeof payload.text === "string" ? payload.text : "";
+    return clip(text, 80);
   }
-  if (event.kind === "claim") return chip ? `claim ${chip}` : "claim";
+  if (event.kind === "claim") return en ? (chip ? `Claimed ${chip}` : "Claimed this lot") : (chip ? `占用 ${chip}` : "占用这块地");
   if (event.kind === "release") {
-    const reason = typeof event.payload.reason === "string" ? event.payload.reason : "manual";
-    return chip ? `release ${reason} ${chip}` : `release ${reason}`;
+    const reason = typeof payload.reason === "string" ? payload.reason : "manual";
+    if (en) return chip ? `Released (${reason}) ${chip}` : `Released (${reason})`;
+    const label = reason === "set_won" ? "写入后释放" : reason === "stolen" ? "被抢走" : reason === "ttl" ? "超时释放" : "释放";
+    return chip ? `${label} ${chip}` : label;
   }
-  const ok = event.payload.ok === false ? "fail" : "ok";
-  const rule = typeof event.payload.rule === "string" ? event.payload.rule : "";
-  return [event.kind, ok, rule, chip].filter(Boolean).join(" ");
+  const failed = payload.ok === false || event.kind === "reject";
+  const error = typeof payload.error === "string" ? payload.error.trim() : "";
+  const rule = typeof payload.rule === "string" ? payload.rule : "";
+  if (failed) {
+    const why = error || rule;
+    if (en) return why ? `Not applied: ${clip(why)}` : "Not applied";
+    return why ? `未写入：${clip(why)}` : "未写入";
+  }
+  const parts = countOf(payload.part_count);
+  const height = countOf(payload.height);
+  const revision = countOf(payload.revision);
+  const measure = [
+    parts != null ? (en ? `${parts} parts` : `${parts} 个构件`) : "",
+    height != null ? (en ? `height ${height}` : `高度 ${height}`) : "",
+  ].filter(Boolean).join(en ? " · " : " · ");
+  const warn = warningLine(payload);
+  let line = "";
+  if (event.kind === "preview") {
+    line = en ? "Preview only, not saved" : "只是预览，还没写入";
+  } else if (event.kind === "set") {
+    line = revision != null ? (en ? `Saved revision ${revision}` : `已写入，修订 ${revision}`) : (en ? "Saved" : "已写入");
+  } else if (event.kind === "reset") {
+    line = revision != null ? (en ? `Restored the default, revision ${revision}` : `已恢复默认楼，修订 ${revision}`) : (en ? "Restored the default" : "已恢复默认楼");
+  } else {
+    line = en ? event.kind : event.kind;
+  }
+  if (measure) line = `${line} · ${measure}`;
+  if (warn) line = `${line} · ${warn}`;
+  return line;
 }
 
 export function claimsFromRows(rows: unknown, nowSecs: number): Record<string, ClaimTint> {

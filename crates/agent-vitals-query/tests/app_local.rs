@@ -99,6 +99,9 @@ fn local_projection_is_bounded_redacted_window_scoped_and_honest() {
     let (host_ref, harness) = agent_vitals_query::query::app_local::city_session_target(&dir, handle).unwrap();
     assert_eq!(harness, "codex");
     assert_ne!(host_ref, handle, "plugin and host handles must have separate scopes");
+    assert_eq!(agent_vitals_query::query::app_local::plugin_session_target(&dir, "city", handle).unwrap(), (host_ref.clone(), harness.clone()));
+    assert_eq!(agent_vitals_query::query::app_local::plugin_session_target(&dir, "metrics", handle), Err("session_unavailable"));
+    assert_eq!(agent_vitals_query::query::app_local::plugin_session_target(&dir, "City", handle), Err("navigation_unavailable"));
     assert_eq!(agent_vitals_query::query::app_local::city_session_target(&dir, "private-native-session"), Err("invalid_session_handle"));
     db.conn().execute("UPDATE usage_facts SET deleted_at_ms = ?1", [now]).unwrap();
     assert_eq!(city_projection(&dir, 30, now).unwrap()["status"], "empty");

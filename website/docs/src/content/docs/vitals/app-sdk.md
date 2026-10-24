@@ -71,8 +71,8 @@ Contract types are generated from JSON Schemas in `docs/schemas/` (`npm run gene
 | `harnesses:v1` | `harnesses.list` | Sources: opaque id, display name, capabilities | Any plugin that declares it |
 | `harnesses:v1` | `harnesses.sessions` | Per-source session stats for a 7/30/90/366-day window, at most 500 sessions per source, no excerpts or cost | Any plugin that declares it |
 | `city:v2` | `data.read` | City's view: up to 4,000 sessions with token split, model IDs, cost estimate and status, bounded titles and excerpts, plus window totals, models and daily activity | Plugins that declare it (only City today) |
-| `city:v3` | `data.read` with `operation` | Paged City view on one data snapshot (see below) | City only (`plugin_id` check) |
-| `city-settings:v1` | `data.read` | City's private seed setting | City only |
+| `city:v3` | `data.read` with `operation` | Paged City view on one data snapshot (see below) | Plugins that declare it |
+| `city-settings:v1` | `data.read` | Seed setting stored at `state/plugins/{pluginId}.json` | Plugins that declare it |
 
 `harnesses:v1` is the general Agent Vitals interface. `city:v2` and `city:v3` are shaped for City. **TBD:** whether to promote a general, documented "Vitals data interface" that new apps can rely on. Today a new plugin gets `harnesses:v1` only, unless a new Rust projection handler is added.
 

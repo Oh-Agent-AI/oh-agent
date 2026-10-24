@@ -301,14 +301,18 @@ export class GameSession {
         return { x, y, z, heading: Math.atan2(first.nz, first.nx) };
       }
     }
-    // 从机场起飞：飞行模型没有地面滑跑（只有空中体制），所以在跑道上空、顺跑道方向开始——像刚离地的爬升段。
-    // 高度从跑道面以上一个安全余量起往上试，机身与追尾相机都要净空；都不通再退回世界安全位，不硬塞进障碍里。
+    // 从机场起飞：没有地面滑跑。出生在跑道正上方的练习巡航高度、朝向顺着跑道。
+    // 贴着平台顶（1.4）只抬几个机身半径时，人和追尾相机都还在航站楼/塔台高度里，画面仍停在机坪。
+    // 这一档净空失败才退回世界安全位，不把人塞进障碍。
     const origin = this.origin;
     if (origin && !this.course) {
       const clearance = params.planeRadius + 1.5, back = params.planeRadius * 5.2, up = params.planeRadius * 2.4;
-      for (const lift of [params.planeRadius * 3, params.planeRadius * 5, params.planeRadius * 8, params.planeRadius * 12]) {
-        const y = origin.y + lift;
-        const camX = origin.x - Math.cos(origin.heading) * back, camZ = origin.z - Math.sin(origin.heading) * back;
+      const cruise = world.flightAltitude(clearance);
+      const deck = Math.max(origin.y, Math.max(0, world.terrainHeight(origin.x, origin.z)));
+      const ceiling = world.bounds.maxY - clearance;
+      const camX = origin.x - Math.cos(origin.heading) * back, camZ = origin.z - Math.sin(origin.heading) * back;
+      for (const y of [Math.max(cruise, deck + clearance * 2.5), cruise + 24, Math.min(ceiling, 120)]) {
+        if (!Number.isFinite(y) || y <= deck || y > ceiling) continue;
         if (world.isPointClear(origin.x, y, origin.z, clearance) && world.isPointClear(camX, y + up, camZ, clearance * 0.6)) return { x: origin.x, y, z: origin.z, heading: origin.heading };
       }
     }
@@ -672,6 +676,9 @@ export class GameSession {
     this.input?.clear();
     this.camera?.reset(this.sim, params);
     this.visuals?.update(this.sim, 0);
+    // reset 只动克隆相机。进场第一帧若净空查询未决，present 会在写回前返回，
+    // 轨道相机已经关掉，画面就停在点飞机之前的视角。出生时先把追尾位写上。
+    this.applyCameraPose();
   }
 
   private interrupt(reason: Extract<GamePauseReason, "focus-lost" | "host-hidden" | "lag">): void { this.runtime.pause(reason); }

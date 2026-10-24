@@ -43,6 +43,73 @@ impl ImActor {
     }
 }
 
+std::thread_local! {
+    /// One stdio MCP connection is one client. `initialize.clientInfo.name`
+    /// is remembered here so building fanout is not stuck on "City MCP".
+    /// Direct library calls (tests, city:v3) leave the default in place.
+    static CONNECTION_ACTOR: std::cell::RefCell<ImActor> = std::cell::RefCell::new(ImActor::mcp_default());
+}
+
+pub fn connection_actor() -> ImActor {
+    CONNECTION_ACTOR.with(|slot| slot.borrow().clone())
+}
+
+/// `None` or a blank name restores City MCP. Known client names get a stable
+/// display label; anything else is shown as sent, after a light sanitize.
+pub fn set_connection_client(name: Option<&str>) {
+    let actor = actor_from_client_name(name.unwrap_or(""));
+    CONNECTION_ACTOR.with(|slot| *slot.borrow_mut() = actor);
+}
+
+pub fn actor_from_client_name(name: &str) -> ImActor {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return ImActor::mcp_default();
+    }
+    let key = trimmed.to_ascii_lowercase();
+    let (id, display): (&str, &str) = match key.as_str() {
+        "claude-code" | "claude code" | "claude" => ("claude-code", "Claude Code"),
+        "codex" | "codex-cli" | "codex cli" | "openai-codex" => ("codex", "Codex"),
+        "cursor" | "cursor-agent" | "cursor-ide" => ("cursor", "Cursor"),
+        "gemini" | "gemini-cli" => ("gemini", "Gemini"),
+        "windsurf" => ("windsurf", "Windsurf"),
+        "zed" => ("zed", "Zed"),
+        "dsh" | "deepseek" => ("dsh", "DeepSeek"),
+        _ => {
+            let id = sanitize_client_id(trimmed);
+            let display = sanitize_client_display(trimmed);
+            if id.is_empty() || display.is_empty() {
+                return ImActor::mcp_default();
+            }
+            return ImActor { agent_id: id, agent_name: display };
+        }
+    };
+    ImActor { agent_id: id.to_string(), agent_name: display.to_string() }
+}
+
+fn sanitize_client_id(name: &str) -> String {
+    let mut out = String::new();
+    for ch in name.chars() {
+        if out.len() >= 64 { break; }
+        if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | ':' | '-') {
+            out.push(ch.to_ascii_lowercase());
+        } else if ch.is_whitespace() && !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    while out.ends_with('-') { out.pop(); }
+    out
+}
+
+fn sanitize_client_display(name: &str) -> String {
+    let mut out = String::new();
+    for ch in name.chars() {
+        if out.chars().count() >= 80 { break; }
+        if !ch.is_control() { out.push(ch); }
+    }
+    out.trim().to_string()
+}
+
 pub fn squad_mailbox_path(home: &Path) -> PathBuf {
     store_dir(home).join("squad.json")
 }
@@ -190,7 +257,9 @@ fn emit(home: &Path, identity: &BuildingIdentity, actor: &ImActor, kind: &str, p
 }
 
 /// Best-effort MCP write-path fanout. Never fails the building tool: construction
-/// notify already went out on its own mailbox.
+/// notify already went out on its own mailbox. Payloads include `revision` when
+/// known; City UI ignores a stale lower revision for that `asset_ref` (sibling
+/// lots stay isolated). Soft claim/release have no revision.
 pub fn fanout_building(
     home: &Path,
     identity: &BuildingIdentity,
@@ -474,6 +543,22 @@ mod tests {
         assert!(env.get("type").is_none());
         assert!(is_squad_envelope(&env));
         assert!(!is_squad_envelope(&json!({"type":"CityEntityChanged","kind":"set"})));
+    }
+
+    #[test]
+    fn client_info_name_becomes_the_squad_actor() {
+        assert_eq!(actor_from_client_name("").agent_name, "City MCP");
+        assert_eq!(actor_from_client_name("codex").agent_id, "codex");
+        assert_eq!(actor_from_client_name("Codex CLI").agent_name, "Codex");
+        assert_eq!(actor_from_client_name("claude-code").agent_name, "Claude Code");
+        assert_eq!(actor_from_client_name("cursor").agent_name, "Cursor");
+        let custom = actor_from_client_name("Workshop Bot");
+        assert_eq!(custom.agent_id, "workshop-bot");
+        assert_eq!(custom.agent_name, "Workshop Bot");
+        set_connection_client(Some("claude-code"));
+        assert_eq!(connection_actor().agent_name, "Claude Code");
+        set_connection_client(None);
+        assert_eq!(connection_actor().agent_id, "city-mcp");
     }
 
     #[test]

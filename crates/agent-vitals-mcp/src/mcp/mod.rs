@@ -178,6 +178,12 @@ pub fn source_status_report(conn: &Connection) -> Result<Value, String> {
 
 /// `tools/call` 分发。`name` 已由传输层对 [`tool_specs`] 校验过。参数在这里
 /// 过一遍极简 schema 校验（spec §6.4 / M08：未知字段 → `invalid_argument`）。
+/// Remember `initialize.params.clientInfo.name` for this stdio connection.
+/// Building fanout uses it as the squad actor. `None` clears back to City MCP.
+pub fn note_mcp_client(name: Option<&str>) {
+    crate::query::city_im::set_connection_client(name);
+}
+
 pub fn dispatch(name: &str, args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     dispatch_with_permissions(name, args, data_home, false)
 }
