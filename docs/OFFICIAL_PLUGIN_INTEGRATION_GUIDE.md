@@ -48,7 +48,7 @@ apps/desktop/src-tauri/src/
 | `source` | 当前构建脚本支持的源码位置：`apps/<lowercase-name>/ui`。 |
 | `dataProjections` | 允许读取的投影键，例如 `metrics:v1`；默认无数据权限。登记权限不等于实现处理器。 |
 | `allowLocalExports` | 可选，默认 false；允许活动插件 blob 下载，原生通过保存对话框确认，不允许网络下载。 |
-| `navigationTargets` | 可选，默认空；目前可声明 `["session"]` 以请求宿主打开会话详情。还须实现该插件 opaque handle 的 Rust 解析器。 |
+| `navigationTargets` | 可选，默认空。声明 `["session"]` 后，宿主用活动插件的 id 解析本插件自己的 opaque handle（`app:{pluginId}:{session_key}`）。不按插件名字再写一套解析器。 |
 
 `debugProbeMarker` 是可选的诊断构建检查标记，仅有故障注入需求时设置；普通插件不必复制 City 的标记。
 
@@ -154,7 +154,7 @@ PluginHost 校验活动 Webview/实例、请求协议和声明权限，查询在
 
 私有设置也必须有单独的版本化处理器和权限声明；例如 City 的 `city-settings:v1` 仅接受 seed，不接受任意路径或 JSON 文件。`data.read` 是当前请求分发名，不代表其所有投影一定只读，设置写入须在契约中明确。
 
-需要完整会话详情时，使用 `plugin_request` 信封中的 `method:"ui.open-session",payload:{handle:<插件会话句柄>}`。它要求 `navigationTargets:["session"]` 和 Rust 领域解析器；宿主负责导航，插件只收到 `{opened:true}`，不返回原始标识/日志。当前只有 City 注册了领域解析器，第二插件不能直接复用 City 句柄。
+需要完整会话详情时，使用 `plugin_request` 信封中的 `method:"ui.open-session",payload:{handle:<插件会话句柄>}`。它要求 `navigationTargets:["session"]`。宿主用活动插件 id 作作用域，解析 `harnesses.sessions` 签发的 `app:{pluginId}:{session_key}`，然后自己导航。插件只收到 `{opened:true}`，不返回原始标识或日志。另一个插件的句柄对不上这个作用域，解析结果是 `session_unavailable`。投影能不能读，只看 `dataProjections` 里有没有对应的键；分发不再写 `plugin_id == "city"`。
 
 按照 `AGENTS.md` 第 6 条：官方内置插件可读取受控本地统计及明确声明的清理/截断摘录；数据库、日志、完整提示词及凭据没有因此开放。真实读取失败必须显示不可用，不能静默换成 fixture。MCP、导出和无上传规则不变。
 

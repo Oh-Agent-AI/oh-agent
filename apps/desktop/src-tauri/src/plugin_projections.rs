@@ -2,9 +2,10 @@
 use serde_json::Value;
 
 pub fn session_target(plugin_id: &str, payload: &Value) -> Result<(String, String), &'static str> {
-    if plugin_id != "city" { return Err("navigation_unavailable"); }
     let handle = payload["handle"].as_str().ok_or("invalid_session_handle")?;
-    agent_vitals_runtime::query::app_local::city_session_target(&crate::overview::data_home(), handle)
+    // Scope is the plugin that received the handle (`app:{plugin_id}:`), not a City special case.
+    // PluginHost already requires `navigationTargets` to include `session` before this runs.
+    agent_vitals_runtime::query::app_local::plugin_session_target(&crate::overview::data_home(), plugin_id, handle)
 }
 
 #[cfg(test)]
@@ -31,11 +32,8 @@ pub fn read_for_plugin(allowed: &[String], method: &str, payload: &Value, plugin
     if !allowed.contains(&key) { return Err("projection_denied"); }
     match key.as_str() {
         "city-settings:v1" => city_settings(payload),
-        "city:v3" => {
-            if plugin_id != "city" { return Err("projection_denied"); }
-            agent_vitals_runtime::query::city_v3::read(&crate::overview::data_home(), payload,
-                agent_vitals_runtime::core::clock::now_ms())
-        }
+        "city:v3" => agent_vitals_runtime::query::city_v3::read(&crate::overview::data_home(), payload,
+            agent_vitals_runtime::core::clock::now_ms()),
         "city:v2" => {
             let days = payload["windowDays"].as_u64().ok_or("invalid_window")?;
             if !matches!(days, 7 | 30 | 90 | 366) { return Err("invalid_window"); }
@@ -87,7 +85,9 @@ mod tests {
         assert_eq!(read(&[], "data.read", &json!({"projection":"city","version":1,"windowDays":30})), Err("projection_denied"));
         assert_eq!(read(&["city:v2".into()], "sql", &json!({})), Err("method_unavailable"));
         assert_eq!(read(&["city:v2".into()], "data.read", &json!({"projection":"city","version":2,"windowDays":65566})), Err("invalid_window"));
-        assert_eq!(read_for_plugin(&["city:v3".into()], "data.read", &json!({"projection":"city","version":3,"operation":"overview","windowDays":30}), "other-plugin"), Err("projection_denied"));
+        assert_eq!(read_for_plugin(&[], "data.read", &json!({"projection":"city","version":3,"operation":"overview","windowDays":30}), "other-plugin"), Err("projection_denied"));
+        // Declaring the projection is the grant. The plugin id is not a second gate.
+        assert_ne!(read_for_plugin(&["city:v3".into()], "data.read", &json!({"projection":"city","version":3,"operation":"overview","windowDays":30}), "other-plugin"), Err("projection_denied"));
         assert_eq!(read(&[], "harnesses.list", &json!({"version":1})), Err("projection_denied"));
         assert_eq!(read(&["harnesses:v1".into()], "harnesses.list", &json!({"version":2})), Err("unsupported_version"));
     }

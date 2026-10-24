@@ -1,9 +1,11 @@
 # Oh Agent MCP 与 App Plugin 交互设计
 
-版本：v1.1 · 日期：2026-10-24  
+版本：v1.2 · 日期：2026-10-24  
 状态：架构设计稿；本文不代表其中所有接口均已实现。
 
 v1.1 修订：建筑写入只有一条 Rust 函数；MCP 写入会通知已经打开的 City，这不是静默写，也不是 MCP 去控 UI；第 7 节把「今天」和「目标」分开；City 只订阅它要画的宿主窄通道。
+
+v1.2 修订：插件请求按描述符分发。解析器和投影不再写 `plugin_id == "city"`。
 
 ## 1. 目标
 
@@ -104,6 +106,7 @@ MCP 已存在的 `get_building` / `preview_building` / `set_building_model` / `r
 ### 5.3 插件身份与响应交付
 
 - 只允许官方描述符注册的内置插件调用相应本地 projection/action handler。
+- 分发看描述符里的投影键、`navigationTargets`、`stateKeys`，不在解析器里比较插件 id 是不是 `"city"`。会话句柄的作用域就是签发它的插件 id：`app:{pluginId}:{session_key}`。声明了 `session` 的插件能打开自己的句柄，打不开别人的。
 - 每个请求绑定当前活动插件身份和 WebView instance；查询前校验，返回响应前再次校验。
 - 浏览器预览或未授权实例使用合成数据，不返回真实本机数据。
 - 插件停用、instance 失效或数据能力不可用时，返回显式错误/不可用状态，不以 fixture 冒充真实结果。
@@ -209,6 +212,7 @@ City Plugin 收到失效通知并重读模型 → 更新场景
 - MCP 握手显示 `Oh Agent MCP`；设置页配置样例连接键为 `oh-agent`，旧配置仍可独立工作。
 - MCP 只使用本地 stdio；写入在未授权启动时被拒绝。
 - City 插件只通过 SDK/PluginHost 调用注册的方法；没有 DB、任意 SQL、原始日志或路径访问，也不自己去开 MCP 连接。
+- 新官方插件的投影、会话跳转和已登记状态键由描述符授权。Rust 分发不硬编码 `plugin_id == "city"`。
 - 请求身份、活动 instance、方法 allowlist 与声明 scope 在 handler 查询前和响应交付前均校验。
 - 建筑写入只有一条 Rust 函数。MCP 的 `preview_building` / `set_building_model` / `reset_building` 与未来的 `city.building.preview` / `set` / `reset` 都调用它。CAS、设计门、施工通知、小队信封不存在第二份实现。
 - 该函数的扇出能到达已经打开的 City。窗口关闭时，末态留在 `notify.json` / `edit.json` / `squad.json`，下次打开再读。

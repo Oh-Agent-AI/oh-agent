@@ -9,18 +9,33 @@ use super::session_ref::{load_or_create_salt, session_ref};
 /// 曾是 500：一年的数据只载入最近 500 条，城市是被截断的半年历史。
 pub const SESSION_CAP: usize = 4_000;
 
-/// Host-only drilldown bridge: resolve a City handle without exposing raw keys to the plugin.
-pub fn city_session_target(data_home: &Path, handle: &str) -> Result<(String, String), &'static str> {
+/// Resolve `HMAC(app:{plugin_id}:{session_key})` for whichever plugin minted the handle.
+/// Authorization is the descriptor (`navigationTargets`), not a plugin-name branch.
+/// A handle issued to one plugin does not open under another plugin's id.
+pub fn plugin_session_target(data_home: &Path, plugin_id: &str, handle: &str) -> Result<(String, String), &'static str> {
+    if !plugin_scope_ok(plugin_id) { return Err("navigation_unavailable"); }
     if handle.len() != 35 || !handle.starts_with("sr_") || !handle[3..].bytes().all(|b| b.is_ascii_hexdigit()) { return Err("invalid_session_handle"); }
     let db = AuthorityDb::open_readonly(&default_authority_path(data_home)).map_err(|_| "data_unavailable")?;
     let salt = load_or_create_salt(data_home).map_err(|_| "data_unavailable")?;
     let mut stmt = db.conn().prepare("SELECT session_key, harness FROM sessions WHERE deleted_at_ms IS NULL").map_err(|_| "data_unavailable")?;
     let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(|_| "data_unavailable")?;
+    let prefix = format!("app:{plugin_id}:");
     for row in rows {
         let (key, harness) = row.map_err(|_| "data_unavailable")?;
-        if session_ref(&salt, &format!("app:city:{key}")) == handle { return Ok((session_ref(&salt, &key), harness)); }
+        if session_ref(&salt, &format!("{prefix}{key}")) == handle { return Ok((session_ref(&salt, &key), harness)); }
     }
     Err("session_unavailable")
+}
+
+fn plugin_scope_ok(plugin_id: &str) -> bool {
+    let bytes = plugin_id.as_bytes();
+    !bytes.is_empty() && bytes.len() <= 64
+        && bytes.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
+}
+
+/// City projections still mint `app:city:…`. Same resolver, scope `city`.
+pub fn city_session_target(data_home: &Path, handle: &str) -> Result<(String, String), &'static str> {
+    plugin_session_target(data_home, "city", handle)
 }
 fn timestamp(ms: i64) -> Result<String, &'static str> {
     jiff::Timestamp::from_millisecond(ms).map(|t| t.to_string()).map_err(|_| "invalid_window")

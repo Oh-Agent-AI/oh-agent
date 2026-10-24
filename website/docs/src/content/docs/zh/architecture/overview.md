@@ -61,7 +61,7 @@ City 只能经过宿主访问 Vitals：`City → SDK plugin_request → PluginHo
 边界干净吗？部分干净。
 
 - **干净的部分**：City 没有 Rust 代码，也不碰数据库，只能拿到 `plugins.json` 里声明的投影（`city:v2`、`city:v3`、`city-settings:v1`、`harnesses:v1`）。通用接口 `harnesses:v1`（`harnesses.list` / `harnesses.sessions`）不是专门给 City 的。
-- **还不干净（待确认）**：City 的主数据 `city:v2` 是 City 专用投影。它的查询（`app_local.rs`）和类型（`CityUiProjectionV2`）都以 City 命名，却放在共享的 Vitals 查询 crate 和 SDK 里，`plugin_projections.rs` 里也写死了 City（`if plugin_id != "city"`），用于会话跳转和新的分页投影 `city:v3`。也就是说在 dev 上，这类特殊处理变多了，而不是变少了。第二个应用没法直接复用 `city:v2`。要不要把它泛化成公开的“Vitals 数据接口 v1”，是一个待决定的设计问题。
+- **投影仍以 City 命名**：`city:v2` / `city:v3` 的查询和类型放在共享查询 crate 与 SDK 里，但是 City 场景投影，不会因为第二个插件存在就自动开放。能不能读，只看该插件的 `dataProjections` 有没有声明这个键。会话跳转用活动插件 id 作句柄作用域（`app:{pluginId}:`），解析器不再写 `plugin_id == "city"`。第二个插件要看城市数据，就在自己的描述符里声明对应投影；要打开会话，用自己的 `harnesses.sessions` 句柄。
 - **不是一个独立包**：“Agent Vitals”指整个 Rust workspace，加上命令行、Python 对等实现和桌面工作台。没有哪个 crate 就叫“Vitals”（`vitals-core` 只是诊断核心）。桌面工作台通过 `apps/desktop/src-tauri/src/lib.rs` 里自己的 Tauri IPC 命令读数据，不走插件接口。
 
 <!-- source: docs/CITY_LOCAL_DATA_PROJECTION.md; apps/desktop/src-tauri/src/plugin_projections.rs; crates/agent-vitals-query/src/query/app_local.rs ("Explicit local-presentation projection; never reused by MCP or export"); packages/agent-vitals-app-sdk/src/city-ui-projection.ts ("Official same-host City MVP contract"); docs/APP_PLUGIN_HARNESS_DATA_CONTRACT.md; apps/desktop/src-tauri/src/lib.rs (generate_handler!) -->

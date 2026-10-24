@@ -55,9 +55,11 @@ fn load(path: &std::path::Path) -> Result<Option<(u64, Value)>, &'static str> {
 /// 串行化保证 check-and-commit 原子（乐观并发的前提）。
 pub fn handle(allowed_keys: &[String], data_home: &std::path::Path, plugin_id: &str, method: &str, payload: &Value) -> Result<Value, &'static str> {
     let _serialized = state_lock();
+    // game-links:v1 是描述符授予的宿主处理器，不按插件 id 再拦一道。
+    // 这份存档在宿主侧只有一份；声明了该键的插件共用它。
     if payload["key"].as_str()==Some("game-links:v1") {
-        if plugin_id!="city" || !allowed_keys.iter().any(|key|key=="game-links:v1") { return Err("state_key_denied"); }
-        return agent_vitals_runtime::query::city_assets::game_links_state(data_home,method,payload);
+        if !allowed_keys.iter().any(|key| key=="game-links:v1") { return Err("state_key_denied"); }
+        return agent_vitals_runtime::query::city_assets::game_links_state(data_home, method, payload);
     }
     match method {
         "plugin.state.read" => read(allowed_keys, data_home, plugin_id, payload),
@@ -123,12 +125,12 @@ mod tests {
     fn keys() -> Vec<String> { KEYS.iter().map(|key| key.to_string()).collect() }
 
     #[test]
-    fn game_links_require_city_identity_and_declared_key() {
+    fn game_links_follow_the_declared_state_key() {
         let home=temp_home().join("game-links");
         let payload=json!({"key":"game-links:v1"});
         assert_eq!(handle(&keys(),&home,"city","plugin.state.read",&payload),Err("state_key_denied"));
         let allowed=vec!["game-links:v1".to_owned()];
-        assert_eq!(handle(&allowed,&home,"other","plugin.state.read",&payload),Err("state_key_denied"));
+        assert_eq!(handle(&allowed,&home,"other","plugin.state.read",&payload).unwrap()["revision"],0);
         assert_eq!(handle(&allowed,&home,"city","plugin.state.read",&payload).unwrap()["revision"],0);
         assert_eq!(handle(&allowed,&home,"city","plugin.state.write",&json!({"key":"game-links:v1","revision":0,"value":{"schemaVersion":1,"assetRefs":[]}})).unwrap()["revision"],1);
         std::fs::remove_dir_all(home).unwrap();
