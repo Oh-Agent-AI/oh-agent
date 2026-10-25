@@ -206,7 +206,9 @@ export function CityApp() {
       setDataLoaded(true);
       // Keep a city that already rendered; packaged v3 fallback happens inside the provider.
       setProjection((current) => current ?? null);
-      setStatus((current) => current && !current.startsWith("正在") ? current : "City 数据暂不可用");
+      setStatus((current) => current === "正在载入 City 插槽数据…" || current === "正在更新 City 插槽数据…"
+        || current === "正在读取全窗口统计…" || current === "正在读取会话建筑…" || !current
+        ? "City 数据暂不可用" : current);
     });
     return () => { active = false; loading.abort(); };
   }, [windowDays, refresh]);
