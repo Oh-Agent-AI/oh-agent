@@ -235,6 +235,8 @@ function cityOpening(site) {
     preset: "covers_sparse_mid",
     script: "siege",
     covers: [],
+    terrain: site.terrain,
+    heights: site.heights,
     buildings: site.buildings.map((b) => ({ id: b.id, cells: b.cells.map((c) => ({ x: c.x, y: c.y })) })),
     raiders: site.raiders.map((r) => ({ id: r.id, pos: { x: r.pos.x, y: r.pos.y } })),
     mechs: site.mechs.map((m) => ({ id: m.id, pos: { x: m.pos.x, y: m.pos.y } })),
@@ -471,6 +473,9 @@ function geometry(opening, site) {
     raiderSouth: raiderYs.some((y) => y >= 6),
     mechs: opening.mechs.map((m) => ({ id: m.id, x: m.pos.x, y: m.pos.y })),
     spawnSpread: site?.spawnSpread ?? 0,
+    roads: site?.terrain?.flat().filter((cell) => cell === "road").length ?? 0,
+    water: site?.terrain?.flat().filter((cell) => cell === "water").length ?? 0,
+    mountain: site?.terrain?.flat().filter((cell) => cell === "mountain").length ?? 0,
   };
 }
 
@@ -589,7 +594,7 @@ for (const count of counts) {
       const siteStarted = performance.now();
       let site = null;
       try {
-        site = siteMechaWindow(layout.terrain, anchorsFromCity(layout, model));
+        site = siteMechaWindow(layout.terrain, anchorsFromCity(layout, model), layout.roadEdges);
       } catch (error) {
         rejected.push({ count, seed, backdrop, reason: `site ${error.message}` });
         log(`site fail count=${count} seed=${seed} backdrop=${backdrop} ${error.message}`);
@@ -607,7 +612,7 @@ for (const count of counts) {
       const random = runRandom(opening, seed + count, randomTrials);
       const row = { count, seed, backdrop, geo, ...fought, random, layoutMs, siteMs };
       sites.push(row);
-      log(`city count=${count} seed=${seed} backdrop=${backdrop} buildings=${geo.buildings} gap=${geo.bossGap} raiders=${geo.raiderYs.join(",")} squad=${fought.squad.outcome} peel=${fought.peel.outcome} reweight=${fought.reweight.outcome} hold=${fought.hold.outcome} random=${random.wins}/${random.n} layout=${layoutMs}ms site=${siteMs}ms fight=${fought.squad.ms}+${fought.peel.ms}+${fought.reweight.ms}ms`);
+      log(`city count=${count} seed=${seed} backdrop=${backdrop} buildings=${geo.buildings} gap=${geo.bossGap} roads=${geo.roads} water=${geo.water} mountain=${geo.mountain} raiders=${geo.raiderYs.join(",")} squad=${fought.squad.outcome} peel=${fought.peel.outcome} reweight=${fought.reweight.outcome} hold=${fought.hold.outcome} random=${random.wins}/${random.n} layout=${layoutMs}ms site=${siteMs}ms fight=${fought.squad.ms}+${fought.peel.ms}+${fought.reweight.ms}ms`);
     }
   }
 }
