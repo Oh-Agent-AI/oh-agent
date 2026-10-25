@@ -2,7 +2,7 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import type { CityEngine } from "../engine/CityEngine";
-import { CITY_CELL, cellWorld, type CityMechaSite } from "./mecha/citySite";
+import { CITY_CELL, boardToWorld, cellWorld, type CityMechaSite } from "./mecha/citySite";
 import { createAssault, createBoss, createGunner, createSupport, disposeMechaModel } from "./mecha/models";
 import type { Cell, MechId } from "./mecha/rules";
 
@@ -129,6 +129,7 @@ export function CityMechaWorld({
     for (const building of site.buildings) {
       const anchor = new THREE.Group();
       anchor.position.set(building.x, building.ground + building.height + 1.6, building.z);
+      anchor.rotation.y = building.yaw;
       const back = new THREE.Mesh(barGeo, barBg);
       const fillMat = new THREE.MeshStandardMaterial({ color: "#e23d3d", emissive: "#7a1818", emissiveIntensity: 0.35, roughness: 0.45 });
       const fill = new THREE.Mesh(barGeo, fillMat);
@@ -148,9 +149,8 @@ export function CityMechaWorld({
         cellWorld(site, { x: Math.max(0, x - 1), y: Math.max(0, y - 1) }),
       ];
       return {
-        x: site.originX + x * CITY_CELL,
+        ...boardToWorld(site, x * CITY_CELL, y * CITY_CELL),
         y: Math.max(...neighbors.map((item) => item.y)) + 0.4,
-        z: site.originZ + y * CITY_CELL,
       };
     };
     for (let i = 0; i <= 10; i += 1) {
@@ -168,15 +168,15 @@ export function CityMechaWorld({
     root.add(grid);
 
     const camera = engine.renderCamera;
-    // The board is twice as wide as the first city window. Keep the same
-    // south-west aim and step the camera back by that same factor, or the
-    // squad sits under the panel and the boss leaves the top of the frame.
-    const aimCell = cellWorld(site, { x: 1, y: 8 });
-    const aim = new THREE.Vector3(aimCell.x, aimCell.y + 2, aimCell.z);
+    // Sit on the squad side of the rotated board. World +Z is not south once
+    // the grid follows the street.
+    const focus = cellWorld(site, { x: 4, y: 5 });
+    const eye = boardToWorld(site, 4.5 * CITY_CELL + 24, 5.5 * CITY_CELL + 48);
+    const aim = new THREE.Vector3(focus.x, focus.y + 2, focus.z);
     const frameCamera = () => {
-      camera.position.set(aimCell.x + 44, aimCell.y + 168, aimCell.z + 88);
+      camera.position.set(eye.x, focus.y + 210, eye.z);
       camera.up.set(0, 1, 0);
-      camera.fov = 36;
+      camera.fov = 40;
       camera.updateProjectionMatrix();
       camera.lookAt(aim);
     };
@@ -334,11 +334,8 @@ function footprintFeet(site: CityMechaSite, anchor: { x: number; y: number }): T
   ];
   let y = 0;
   for (const cell of cells) y += cellWorld(site, cell).y;
-  return new THREE.Vector3(
-    site.originX + (anchor.x + 1) * CITY_CELL,
-    y / cells.length,
-    site.originZ + (anchor.y + 1) * CITY_CELL,
-  );
+  const at = boardToWorld(site, (anchor.x + 1) * CITY_CELL, (anchor.y + 1) * CITY_CELL);
+  return new THREE.Vector3(at.x, y / cells.length, at.z);
 }
 
 function face(mesh: THREE.Object3D, from: THREE.Vector3, to: THREE.Vector3) {

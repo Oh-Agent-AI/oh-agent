@@ -86,3 +86,29 @@ test("water is not the battlefield", () => {
     assert.ok(world.z >= 0);
   }
 });
+
+test("the board follows the street the buildings face", () => {
+  const yaw = Math.PI / 5;
+  const place = (id: string, lx: number, lz: number, face = yaw): SiteAnchor => {
+    const c = Math.cos(yaw);
+    const s = Math.sin(yaw);
+    return { id, x: 80 + lx * c + lz * s, z: 80 - lx * s + lz * c, halfX: 3, halfZ: 3, yaw: face, ground: 4, height: 8 };
+  };
+  const site = siteMechaWindow({ height: () => 4 }, [
+    place("west", 0, 0),
+    place("mid", 32, 0),
+    place("north", 0, 32),
+    place("side", 32, 32, yaw + Math.PI / 2),
+  ]);
+  open(site);
+  const turned = site!.yaw - yaw;
+  const wrapped = ((turned + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+  assert.ok(Math.abs(wrapped) < 1e-9);
+  const a = cellWorld(site!, { x: 0, y: 0 });
+  const b = cellWorld(site!, { x: 1, y: 0 });
+  const len = Math.hypot(b.x - a.x, b.z - a.z);
+  const along = ((b.x - a.x) / len) * Math.cos(yaw) + ((b.z - a.z) / len) * (-Math.sin(yaw));
+  assert.ok(along > 0.99);
+  assert.equal(site!.buildings.length, 4);
+  assert.equal(site!.buildings.find((building) => building.id === "side")?.cells.length, 1);
+});
