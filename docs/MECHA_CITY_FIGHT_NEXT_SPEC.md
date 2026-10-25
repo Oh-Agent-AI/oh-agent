@@ -1,6 +1,10 @@
 # 机甲战棋下一轮：守楼、城市地形、道路可读
 
-版本：迭代 2 · 日期：2026-10-25 · 状态：玩法选择已落地；本文件第 3–6 节与代码对齐
+版本：迭代 3 · 日期：2026-10-25 · 状态：换场重填草稿、打法焦点可见、巷战只守临街楼；第 3–6 节仍是迭代 2 的搜索与选窗
+
+换战场、换脚本、新开一局都会按当前打法重填草稿。面板写明攻坚盯着大怪，或守楼盯着哪一只小怪、哪一栋楼，地面用绿色焦点格标出。巷战的楼注是临街楼：贴着路的楼拆光即 `defeat_buildings`，不临街的楼不决定胜负，敌方和大怪也朝临街楼走。没有临街楼时退回全部楼。平地、靠岸、翻山仍守全部楼。分布探针按四种场地各自打攻坚和守楼。
+
+English: switching field, script, or starting over refills the draft from the current doctrine. The panel names the boss, or the raider and the building Hold is aimed at, and those cells are marked on the ground. An alley stakes only buildings orthogonal to a road. Losing those is `defeat_buildings`. Buildings off the street do not decide the match, and the enemies walk toward the street buildings. A board with no street building falls back to every building. Flat, shore, and ridge still stake every building. The distribution probe fights boss-first and hold on each shape that exists.
 
 规则串保持 `mecha-v1.3`。不改 `strike`、生命、攻击、防御、楼血、回合上限、半步公式和 `TERRAIN_MOD`。玩家选打法和战场。默认仍是攻坚，平地仍是原来的内陆窗。有路、水、山或上坡时，候选的 3 格按半步接近花费排序。面板写出「这一步 N 半步，预算 M」。换打法会重填草稿。Boss 已经倒下之后如果楼先没了或回合用尽，结局写明这一点。巷战包含单侧临街。
 
@@ -15,7 +19,7 @@ English: v1.3 numbers stay. The player chooses doctrine and field shape. Boss-fi
 | 打法 | 攻坚 `tunnel`、守楼 `peel` | 同一局面，突击迈出的格子到「离楼最近的袭扰者」的距离，守楼更近。两套整包的 JSON 不相同 |
 | 战场 | 平地、靠岸、翻山、巷战 | 平地保持严格选窗。靠岸水格 8–30 且平地 ≥ 50。翻山山格 4–20 且平地 ≥ 50。巷战是贴着楼的空格（单侧临街也算）里至少 4 格被涂成路，取这样的路最多的一窗。这座城没有的形状是禁用项，不造格子 |
 
-攻坚仍是 `squadPlan` / `bossTunnelPlan`，自动对战的默认打法。守楼是 `peelPlan`，权重和焦点与第 3 节相同，但是玩家选了才用。面板上的「按打法填入」把当前打法写进草稿，玩家还可以改。切换战场会换一块地并重开这一局。
+攻坚仍是 `squadPlan` / `bossTunnelPlan`，自动对战的默认打法。守楼是 `peelPlan`，权重和焦点与第 3 节相同，但是玩家选了才用。面板上的「按打法填入」把当前打法写进草稿，玩家还可以改。切换战场会换一块地并重开这一局，草稿按当前打法重新填上。
 
 ## 1. 已测量的基线
 

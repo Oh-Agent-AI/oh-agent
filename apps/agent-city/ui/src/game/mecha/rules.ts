@@ -4,7 +4,8 @@
  * cadence_ssw is smash, smash, sweep. smash_2 is not in v1.
  * raid_ssw is that cadence plus a move toward a living building or mech.
  * siege adds two 1×1 raiders and ends at turn 15.
- * Buildings have one HP pool; every pool at 0 is defeat_buildings.
+ * Buildings have one HP pool. Every staked pool at 0 is defeat_buildings.
+ * Stake is every building, except an alley, which stakes only street frontage.
  * 花费以半步计，预算 = 移动力 × MOVE_QUANTUM。平地一步是 2，和旧的「移动力格数」对齐。
  * 水不可进入，射击照常穿过。山地可以爬，基础花费 4，并且挡住射击。
  * 上坡超过平地出生容差时，陆地基础花费 4。道路基础花费和平地一样，增益再减。
@@ -113,6 +114,9 @@ export const SIEGE_RAIDERS: Array<{ id: string; pos: Cell; hp?: number }> = [
 
 export type Building = { id: string; cells: Cell[]; hp: number; maxHp: number };
 
+/** 平地、靠岸、翻山守全部楼。巷战只守贴着路的楼；没有临街楼时退回全部，避免一场没有输赢条件的楼。 */
+export type BuildingStake = "all" | "frontage";
+
 export type MatchState = {
   ruleset: typeof GDD_RULESET;
   preset: CoverPresetId;
@@ -123,6 +127,8 @@ export type MatchState = {
   /** 格心的地面高度。上坡花费只看相邻两格的差。 */
   heights: number[][];
   buildings: Building[];
+  /** 缺省 all。frontage 只把正交贴着道路的楼算进楼毁和敌方目标。 */
+  stake: BuildingStake;
   raiders: Raider[];
   mechs: Mech[];
   boss: Boss;
@@ -324,6 +330,7 @@ export function createMatch(opts: {
   raiders?: Array<{ id: string; pos: Cell; hp?: number }>;
   mechs?: Array<{ id: MechId; pos: Cell }>;
   boss?: Cell;
+  stake?: BuildingStake;
 }): MatchState {
   const deploy = standardDeploy();
   const placed = opts.mechs ?? deploy.mechs;
@@ -341,6 +348,7 @@ export function createMatch(opts: {
       hp: b.hp ?? BUILDING_HP,
       maxHp: b.hp ?? BUILDING_HP,
     })),
+    stake: opts.stake ?? "all",
     raiders: (opts.raiders ?? (siege ? SIEGE_RAIDERS : [])).map((r) => ({
       id: r.id,
       pos: { ...r.pos },
@@ -362,6 +370,26 @@ export function living(state: MatchState): Mech[] {
 
 export function livingBuildings(state: MatchState): Building[] {
   return state.buildings.filter((b) => b.hp > 0);
+}
+
+function touchesRoad(state: MatchState, cell: Cell): boolean {
+  for (const dir of [{ x: 0, y: -1 }, { x: 1, y: 0 }, { x: 0, y: 1 }, { x: -1, y: 0 }]) {
+    const next = { x: cell.x + dir.x, y: cell.y + dir.y };
+    if (!inb(next)) continue;
+    if (state.terrain[next.y]?.[next.x] === "road") return true;
+  }
+  return false;
+}
+
+/** 这一局真正要守的楼。巷战是临街楼；临街一栋都没有时仍是全部楼。 */
+export function stakeBuildings(state: MatchState): Building[] {
+  if (state.stake !== "frontage") return state.buildings;
+  const front = state.buildings.filter((building) => building.cells.some((cell) => touchesRoad(state, cell)));
+  return front.length > 0 ? front : state.buildings;
+}
+
+export function livingStakeBuildings(state: MatchState): Building[] {
+  return stakeBuildings(state).filter((building) => building.hp > 0);
 }
 
 export function livingRaiders(state: MatchState): Raider[] {
@@ -457,7 +485,7 @@ function refresh(state: MatchState) {
   if (!state.outcome) {
     if (!enemiesRemain(state)) state.outcome = "victory";
     else if (living(state).length === 0) state.outcome = "defeat_wipe";
-    else if (state.buildings.length > 0 && livingBuildings(state).length === 0) state.outcome = "defeat_buildings";
+    else if (stakeBuildings(state).length > 0 && livingStakeBuildings(state).length === 0) state.outcome = "defeat_buildings";
   }
   // The pack applier stamps resolving_boss after a killing action already
   // stored the outcome. City does not execute a dead boss, so put the phase
@@ -809,7 +837,7 @@ function bossStepCost(state: MatchState, anchor: Cell, dir: Cell): number | null
 
 function objectiveGap(state: MatchState, anchor: Cell): number {
   const goals: Cell[] = [];
-  for (const b of state.buildings) if (b.hp > 0) goals.push(...b.cells);
+  for (const b of livingStakeBuildings(state)) goals.push(...b.cells);
   for (const m of state.mechs) if (m.hp > 0) goals.push(m.pos);
   if (goals.length === 0) return 0;
   let best = 99;
@@ -921,7 +949,7 @@ function smashIntent(state: MatchState, cell: Cell | null): Intent {
 function nearestBuilding(state: MatchState, from: Cell[]): Building | null {
   let best: Building | null = null;
   let bestD = 99;
-  for (const building of livingBuildings(state)) {
+  for (const building of livingStakeBuildings(state)) {
     const d = gapTo(from, building.cells);
     if (!best || d < bestD || (d === bestD && building.id < best.id)) {
       best = building;
@@ -945,8 +973,8 @@ function gapTo(from: Cell[], goals: Cell[]): number {
 
 function raiderGoals(state: MatchState): Map<string, Cell[]> {
   const bossGoal = state.boss.hp > 0 ? nearestBuilding(state, footprint(state.boss.anchor)) : null;
-  const pool = livingBuildings(state).filter((b) => b.id !== bossGoal?.id);
-  const left = [...(pool.length > 0 ? pool : livingBuildings(state))];
+  const pool = livingStakeBuildings(state).filter((b) => b.id !== bossGoal?.id);
+  const left = [...(pool.length > 0 ? pool : livingStakeBuildings(state))];
   const goals = new Map<string, Cell[]>();
   const raiders = [...livingRaiders(state)].sort((a, b) => (a.id < b.id ? -1 : 1));
   for (const raider of raiders) {

@@ -4,7 +4,7 @@
  * 有楼时，楼全毁和机甲全灭一样是输。
  */
 import {
-  BOARD, BOSS_HP, FLAT_SPAWN_MAX_DELTA, RAIDER_HP, bossExecute, footprintCenter, legalActions, living, moveBudget, pathDistance,
+  BOARD, BOSS_HP, FLAT_SPAWN_MAX_DELTA, RAIDER_HP, bossExecute, footprintCenter, legalActions, living, livingStakeBuildings, moveBudget, pathDistance,
   validateAndApplyPlan,
   type Action, type ArenaPlan, type Cell, type MatchState, type MechId, type MechOrder,
 } from "./rules";
@@ -217,9 +217,24 @@ function rankToward(state: MatchState, id: MechId, focus: Cell, bias: "cell" | "
 
 function nearestBuildingDist(state: MatchState, cell: Cell): number {
   let best = 99;
-  for (const building of state.buildings) {
-    if (building.hp <= 0) continue;
+  for (const building of livingStakeBuildings(state)) {
     for (const other of building.cells) best = Math.min(best, manh(cell, other));
+  }
+  return best;
+}
+
+function nearestStakeCell(state: MatchState, from: Cell): Cell | null {
+  let best: Cell | null = null;
+  let bestD = 99;
+  for (const building of livingStakeBuildings(state)) {
+    for (const cell of building.cells) {
+      const dist = manh(from, cell);
+      const closer = !best || dist < bestD || (dist === bestD && (cell.y < best.y || (cell.y === best.y && cell.x < best.x)));
+      if (closer) {
+        best = cell;
+        bestD = dist;
+      }
+    }
   }
   return best;
 }
@@ -326,4 +341,25 @@ export function peelPlan(state: MatchState): ArenaPlan {
 
 export function planForDoctrine(state: MatchState, doctrine: DoctrineId): ArenaPlan {
   return doctrine === "peel" ? peelPlan(state) : squadPlan(state);
+}
+
+export type DoctrineFocus = { kind: "boss" | "raider"; id: string; cell: Cell; building: Cell | null };
+
+/** 面板和地面标记用的焦点。攻坚是 Boss 脚印中心。守楼是离要守的楼最近的袭扰者，并带上那栋楼的一格。 */
+export function doctrineFocus(state: MatchState, doctrine: DoctrineId): DoctrineFocus {
+  if (doctrine !== "peel") return { kind: "boss", id: "boss", cell: footprintCenter(state.boss.anchor), building: null };
+  const threat = threatFocus(state);
+  if (threat.id === "boss") return { kind: "boss", id: "boss", cell: threat.cell, building: null };
+  return { kind: "raider", id: threat.id, cell: threat.cell, building: nearestStakeCell(state, threat.cell) };
+}
+
+export function doctrineFocusCells(state: MatchState, doctrine: DoctrineId): Cell[] {
+  const focus = doctrineFocus(state, doctrine);
+  if (focus.kind === "boss") {
+    const anchor = state.boss.anchor;
+    return [anchor, { x: anchor.x + 1, y: anchor.y }, { x: anchor.x, y: anchor.y + 1 }, { x: anchor.x + 1, y: anchor.y + 1 }];
+  }
+  const cells = [focus.cell];
+  if (focus.building && !same(focus.building, focus.cell)) cells.push(focus.building);
+  return cells;
 }

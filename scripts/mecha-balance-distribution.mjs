@@ -10,6 +10,7 @@
  *             板上有路、水、山或上坡时，候选 3 格和距离分改用半步接近花费。
  *   reweight  候选格仍朝 Boss，评分改成优先楼和袭扰者。只换目标，不换搜索宽度。
  *   peel      游戏里的守楼 peelPlan：同样的宽度，候选格和评分都朝「离楼最近的袭扰者」。
+ *             巷战的楼注是临街楼：不贴路的楼不决定楼毁，守楼也朝临街楼。
  *
  * 余量 0–100：楼还在 45%，敌人清掉 40%，机甲还在 15%。胜负只是余量越过结局线之后的标签。
  *
@@ -27,11 +28,11 @@ const SEED_LIST = [1927, 74031, 7, 42, 101, 256, 1024, 4096, 8192, 16384, 32768,
 const seeds = SEED_LIST.slice(0, seedCount);
 
 const {
-  createMatch, bossPrepare, bossExecute, validateAndApplyPlan, living, livingBuildings, livingRaiders,
+  createMatch, bossPrepare, bossExecute, validateAndApplyPlan, living, livingBuildings, livingRaiders, livingStakeBuildings,
   pathDistance, legalActions, bossTunnelPlan, peelPlan, siteMechaWindow, siteFightShapes, anchorsFromCity, buildCityModel, layoutCity, MIAMI_COASTAL,
   BOSS_HP, RAIDER_HP, BOARD, moveBudget,
 } = await loadCity({
-  "game/mecha/rules.ts": ["createMatch", "bossPrepare", "bossExecute", "validateAndApplyPlan", "living", "livingBuildings", "livingRaiders", "pathDistance", "legalActions", "BOSS_HP", "RAIDER_HP", "BOARD", "moveBudget"],
+  "game/mecha/rules.ts": ["createMatch", "bossPrepare", "bossExecute", "validateAndApplyPlan", "living", "livingBuildings", "livingRaiders", "livingStakeBuildings", "pathDistance", "legalActions", "BOSS_HP", "RAIDER_HP", "BOARD", "moveBudget"],
   "game/mecha/ai.ts": ["bossTunnelPlan", "peelPlan"],
   "game/mecha/citySite.ts": ["siteMechaWindow", "siteFightShapes", "anchorsFromCity"],
   "cityModel.ts": ["buildCityModel"],
@@ -231,7 +232,7 @@ function stockOpening() {
   return openingFrom({ preset: "covers_sparse_mid", script: "siege" });
 }
 
-function cityOpening(site) {
+function cityOpening(site, stake = "all") {
   return openingFrom({
     preset: "covers_sparse_mid",
     script: "siege",
@@ -242,6 +243,7 @@ function cityOpening(site) {
     raiders: site.raiders.map((r) => ({ id: r.id, pos: { x: r.pos.x, y: r.pos.y } })),
     mechs: site.mechs.map((m) => ({ id: m.id, pos: { x: m.pos.x, y: m.pos.y } })),
     boss: { x: site.boss.x, y: site.boss.y },
+    stake,
   });
 }
 
@@ -253,7 +255,7 @@ function play(opening, choose) {
   let guard = 0;
   const mark = () => {
     if (bossDeadTurn === null && state.boss.hp <= 0) bossDeadTurn = state.turn;
-    if (buildingsDeadTurn === null && livingBuildings(state).length === 0) buildingsDeadTurn = state.turn;
+    if (buildingsDeadTurn === null && livingStakeBuildings(state).length === 0) buildingsDeadTurn = state.turn;
   };
   while (state.outcome === null && guard < 16) {
     guard += 1;
@@ -579,6 +581,7 @@ for (const name of ["hold", "squad", "reweight", "peel"]) log(`  ${name} ${stock
 const sites = [];
 const rejected = [];
 const shapeHits = { flat: 0, shore: 0, ridge: 0, alley: 0, windows: 0 };
+const shapeScores = { flat: [], shore: [], ridge: [], alley: [] };
 for (const count of counts) {
   const model = modelFor(count);
   for (const seed of seeds) {
@@ -595,10 +598,11 @@ for (const count of counts) {
       const layoutMs = Math.round(performance.now() - started);
       const siteStarted = performance.now();
       let site = null;
+      let catalog = null;
       let shapeNote = "none";
       try {
         const anchors = anchorsFromCity(layout, model);
-        const catalog = siteFightShapes(layout.terrain, anchors, layout.roadEdges);
+        catalog = siteFightShapes(layout.terrain, anchors, layout.roadEdges);
         site = catalog.flat ?? siteMechaWindow(layout.terrain, anchors, layout.roadEdges);
         const present = ["flat", "shore", "ridge", "alley"].filter((id) => catalog[id]);
         const bits = present.map((id) => {
@@ -629,9 +633,14 @@ for (const count of counts) {
         log(`no window count=${count} seed=${seed} backdrop=${backdrop} layout=${layoutMs}ms site=${siteMs}ms`);
         continue;
       }
-      const opening = cityOpening(site);
+      const opening = cityOpening(site, "all");
       const geo = geometry(opening, site);
       const fought = runDeterministic(opening);
+      for (const id of ["flat", "shore", "ridge", "alley"]) {
+        if (!catalog?.[id]) continue;
+        const foughtShape = id === "flat" ? fought : runDeterministic(cityOpening(catalog[id], id === "alley" ? "frontage" : "all"));
+        shapeScores[id].push({ squad: foughtShape.squad.outcome, peel: foughtShape.peel.outcome });
+      }
       const random = runRandom(opening, seed + count, randomTrials);
       const row = { count, seed, backdrop, geo, ...fought, random, layoutMs, siteMs };
       sites.push(row);
@@ -641,6 +650,12 @@ for (const count of counts) {
 }
 
 log(`shapes present flat=${shapeHits.flat} shore=${shapeHits.shore} ridge=${shapeHits.ridge} alley=${shapeHits.alley} of ${shapeHits.windows}`);
+function shapeWinLine(id) {
+  const rows = shapeScores[id];
+  const count = (name, outcome) => rows.filter((row) => row[name] === outcome).length;
+  return `${id} n=${rows.length} squad=${count("squad", "victory")}/${rows.length} peel=${count("peel", "victory")}/${rows.length} squadLoss=${rows.length - count("squad", "victory")} peelLoss=${rows.length - count("peel", "victory")}`;
+}
+for (const id of ["flat", "shore", "ridge", "alley"]) log(`shape results ${shapeWinLine(id)}`);
 const summary = summarizeSites(sites);
 const report = {
   ruleset: "mecha-v1.3",

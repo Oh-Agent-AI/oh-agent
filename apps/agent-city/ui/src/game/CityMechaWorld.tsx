@@ -12,11 +12,12 @@ export type CityMechaView = {
   raiders: Array<{ id: string; x: number; y: number; alive: boolean }>;
   buildings: Array<{ id: string; cells: Cell[]; hp: number; maxHp: number }>;
   telegraph: Cell[];
+  focus: Cell[];
   reach: Cell[];
   move: Cell | null;
 };
 
-const ROLES = ["empty", "water", "mountain", "road", "reach", "move", "building", "rubble", "telegraph"] as const;
+const ROLES = ["empty", "water", "mountain", "road", "reach", "move", "building", "rubble", "focus", "telegraph"] as const;
 type Role = (typeof ROLES)[number];
 
 const ROLE_COLOR: Record<Role, string> = {
@@ -28,6 +29,7 @@ const ROLE_COLOR: Record<Role, string> = {
   move: "#ffe08a",
   building: "#e2b15a",
   rubble: "#2c2824",
+  focus: "#39d6a3",
   telegraph: "#ff3b3b",
 };
 
@@ -40,6 +42,7 @@ const ROLE_OPACITY: Record<Role, number> = {
   move: 0.78,
   building: 0.42,
   rubble: 0.55,
+  focus: 0.82,
   telegraph: 0.7,
 };
 
@@ -77,8 +80,8 @@ export function CityMechaWorld({
         polygonOffset: true,
         polygonOffsetFactor: -3,
         polygonOffsetUnits: -3,
-        emissive: role === "telegraph" ? "#8a1c1c" : "#000000",
-        emissiveIntensity: role === "telegraph" ? 0.4 : 0,
+        emissive: role === "telegraph" ? "#8a1c1c" : role === "focus" ? "#146b52" : "#000000",
+        emissiveIntensity: role === "telegraph" ? 0.4 : role === "focus" ? 0.45 : 0,
       }));
     }
     const pads: THREE.Mesh[] = [];
@@ -221,6 +224,7 @@ export function CityMechaWorld({
       if (owned) frameCamera();
       const current = viewRef.current;
       const telegraph = new Set(current.telegraph.map(cellKey));
+      const focus = new Set(current.focus.map(cellKey));
       const reach = new Set(current.reach.map(cellKey));
       const buildingCells = new Map<string, "building" | "rubble">();
       for (const building of current.buildings) {
@@ -234,6 +238,7 @@ export function CityMechaWorld({
         const id = `${x},${y}`;
         const ground = site.terrain[y]?.[x];
         const role: Role = telegraph.has(id) ? "telegraph"
+          : focus.has(id) ? "focus"
           : id === moveKey ? "move"
           : buildingCells.get(id) ?? (reach.has(id) ? "reach" : ground === "water" ? "water" : ground === "mountain" ? "mountain" : ground === "road" ? "road" : "empty");
         pad.material = padMat.get(role)!;

@@ -1,9 +1,9 @@
 /** 攻坚和守楼必须走出不同的一步。同一宽度，焦点不同。 */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { bossTunnelPlan, peelPlan } from "../apps/agent-city/ui/src/game/mecha/ai.ts";
-import { stepBudgetLine } from "../apps/agent-city/ui/src/game/gameCopy.ts";
-import { bossPrepare, createMatch, type Cell, type TerrainKind } from "../apps/agent-city/ui/src/game/mecha/rules.ts";
+import { bossTunnelPlan, doctrineFocus, peelPlan } from "../apps/agent-city/ui/src/game/mecha/ai.ts";
+import { doctrineFocusLine, stepBudgetLine } from "../apps/agent-city/ui/src/game/gameCopy.ts";
+import { bossPrepare, createMatch, living, validateAndApplyPlan, type Cell, type TerrainKind } from "../apps/agent-city/ui/src/game/mecha/rules.ts";
 
 function manh(a: Cell, b: Cell): number {
   return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
@@ -75,4 +75,62 @@ test("a road around a mountain wall is closer in half-steps than the manhattan c
   const assault = peel.items.find((item) => item.mechId === "Assault");
   assert.ok(assault?.moveTo);
   assert.equal(assault.moveTo.y, 1, `expected the road row, got ${assault.moveTo.x},${assault.moveTo.y}`);
+});
+
+test("the focus line names the boss or the raider and the building", () => {
+  assert.equal(doctrineFocusLine("tunnel", "Boss", null, "en"), "Boss first is aimed at the boss.");
+  assert.equal(doctrineFocusLine("tunnel", "大怪", null, "zh-Hans"), "攻坚盯着大怪。");
+  assert.equal(doctrineFocusLine("peel", "West raider", "1,1", "en"), "Hold the buildings is aimed at West raider, beside the building at 1,1.");
+  assert.equal(doctrineFocusLine("peel", "小怪西", "1,1", "zh-Hans"), "守楼盯着小怪西，楼在 1,1。");
+});
+
+test("an alley loss is the street building, and peel aims at the raider beside it", () => {
+  const terrain: TerrainKind[][] = Array.from({ length: 10 }, () => Array.from({ length: 10 }, () => "land" as TerrainKind));
+  terrain[1]![2] = "road";
+  const base = {
+    preset: "covers_sparse_mid" as const,
+    script: "siege" as const,
+    covers: [],
+    terrain,
+    buildings: [
+      { id: "street", cells: [{ x: 2, y: 2 }] },
+      { id: "yard", cells: [{ x: 8, y: 8 }] },
+    ],
+    raiders: [
+      { id: "raider-w", pos: { x: 5, y: 5 } },
+      { id: "raider-e", pos: { x: 8, y: 7 } },
+    ],
+    mechs: [
+      { id: "Assault" as const, pos: { x: 0, y: 9 } },
+      { id: "Gunner" as const, pos: { x: 1, y: 9 } },
+      { id: "Support" as const, pos: { x: 2, y: 9 } },
+    ],
+    boss: { x: 0, y: 6 },
+  };
+  const alley = createMatch({ ...base, stake: "frontage" });
+  const inland = createMatch({ ...base, stake: "all" });
+  assert.equal(doctrineFocus(alley, "peel").id, "raider-w");
+  assert.equal(doctrineFocus(inland, "peel").id, "raider-e");
+  assert.deepEqual(doctrineFocus(alley, "peel").building, { x: 2, y: 2 });
+  alley.phase = "player_plan";
+  const yard = alley.buildings.find((building) => building.id === "yard");
+  assert.ok(yard);
+  yard.hp = 0;
+  const skipped = validateAndApplyPlan(alley, {
+    revision: alley.revision,
+    items: living(alley).map((mech) => ({ mechId: mech.id, moveTo: null, action: { kind: "skip" as const } })),
+  });
+  assert.equal("ok" in skipped, true);
+  assert.equal(alley.outcome, null);
+  const street = alley.buildings.find((building) => building.id === "street");
+  assert.ok(street);
+  street.hp = 0;
+  alley.phase = "player_plan";
+  const lost = validateAndApplyPlan(alley, {
+    revision: alley.revision,
+    items: living(alley).map((mech) => ({ mechId: mech.id, moveTo: null, action: { kind: "skip" as const } })),
+  });
+  assert.equal("ok" in lost, true);
+  assert.equal(alley.outcome, "defeat_buildings");
+  assert.equal(alley.buildings.find((building) => building.id === "yard")?.hp, 0);
 });

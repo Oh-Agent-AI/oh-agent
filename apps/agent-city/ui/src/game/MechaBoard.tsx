@@ -1,9 +1,9 @@
 /** City test surface for GDD v1.3. Rules live in `mecha/rules.ts`. */
 import { useEffect, useMemo, useState } from "react";
 import type { CityEngine } from "../engine/CityEngine";
-import { gameText, stepBudgetLine, type GameLocale } from "./gameCopy";
+import { doctrineFocusLine, gameText, stepBudgetLine, type GameLocale } from "./gameCopy";
 import { CityMechaWorld, type CityMechaView } from "./CityMechaWorld";
-import { planForDoctrine, type DoctrineId } from "./mecha/ai";
+import { doctrineFocus, doctrineFocusCells, planForDoctrine, type DoctrineId } from "./mecha/ai";
 import { anchorsFromCity, siteFightShapes, type CityMechaSite, type FightShape } from "./mecha/citySite";
 import { MechaLineup, type MechaBoardView } from "./MechaLineup";
 import {
@@ -58,7 +58,7 @@ function actionLabel(action: Action): string {
   return "待机";
 }
 
-function fresh(preset: CoverPresetId, script: BossScriptId, site: CityMechaSite | null): MatchState {
+function fresh(preset: CoverPresetId, script: BossScriptId, site: CityMechaSite | null, stake: "all" | "frontage" = "all"): MatchState {
   const state = site
     ? createMatch({
       preset,
@@ -70,8 +70,9 @@ function fresh(preset: CoverPresetId, script: BossScriptId, site: CityMechaSite 
       raiders: script === "siege" ? site.raiders.map((raider) => ({ id: raider.id, pos: { ...raider.pos } })) : [],
       mechs: site.mechs.map((mech) => ({ id: mech.id, pos: { ...mech.pos } })),
       boss: { ...site.boss },
+      stake,
     })
-    : createMatch({ preset, script });
+    : createMatch({ preset, script, stake });
   bossPrepare(state);
   return state;
 }
@@ -101,6 +102,12 @@ function draftFromPlan(state: MatchState, plan: { items: Array<{ mechId: MechId;
   return next;
 }
 
+/** 新开一局时打法下拉还在，草稿按这个打法填上。结算后的下一回合仍是空白，等玩家自己填。 */
+function openingDraft(state: MatchState, doctrine: DoctrineId): Record<MechId, Draft> {
+  if (state.outcome || state.phase !== "player_plan") return blankDraft(state);
+  return draftFromPlan(state, planForDoctrine(state, doctrine));
+}
+
 export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; onClose: () => void; engine: CityEngine | null }) {
   const t = (text: string) => gameText(text, locale);
   const catalog = useMemo(() => {
@@ -120,19 +127,20 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
   const site = catalog?.[shapeId] ?? null;
   const [preset, setPreset] = useState<CoverPresetId>("covers_sparse_mid");
   const [script, setScript] = useState<BossScriptId>("siege");
-  const [state, setState] = useState<MatchState>(() => fresh("covers_sparse_mid", "siege", site));
-  const [draft, setDraft] = useState<Record<MechId, Draft>>(() => blankDraft(fresh("covers_sparse_mid", "siege", site)));
+  const openingStake = shapeId === "alley" ? "frontage" : "all";
+  const [state, setState] = useState<MatchState>(() => fresh("covers_sparse_mid", "siege", site, openingStake));
+  const [draft, setDraft] = useState<Record<MechId, Draft>>(() => openingDraft(fresh("covers_sparse_mid", "siege", site, openingStake), "tunnel"));
   const [selected, setSelected] = useState<MechId>("Assault");
   const [notice, setNotice] = useState<string | null>(null);
   const [auto, setAuto] = useState(false);
   const [beat, setBeat] = useState<"show" | "resolve">("show");
 
-  const restart = (nextPreset = preset, nextScript = script, nextSite: CityMechaSite | null = site) => {
-    const match = fresh(nextPreset, nextScript, nextSite);
+  const restart = (nextPreset = preset, nextScript = script, nextSite: CityMechaSite | null = site, nextStake: "all" | "frontage" = shapeId === "alley" ? "frontage" : "all") => {
+    const match = fresh(nextPreset, nextScript, nextSite, nextStake);
     setPreset(nextPreset);
     setScript(nextScript);
     setState(match);
-    setDraft(blankDraft(match));
+    setDraft(openingDraft(match, doctrine));
     setSelected(living(match)[0]?.id ?? "Assault");
     setNotice(null);
     setAuto(false);
@@ -176,6 +184,7 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
     if (telegraphs(state).some((k) => same(k, c))) classes.push("is-telegraph");
     const unit = living(state).find((m) => same(m.pos, c));
     if (unit) classes.push(`is-${unit.id.toLowerCase()}`, unit.id === selected ? "is-selected" : "");
+    if (doctrineFocusCells(state, doctrine).some((cell) => same(cell, c))) classes.push("is-focus");
     if (draft[selected]?.moveTo && same(draft[selected].moveTo!, c)) classes.push("is-move");
     if (reach.some((k) => same(k, c))) classes.push("is-reach");
     return classes.filter(Boolean).join(" ");
@@ -252,9 +261,10 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
     raiders: state.raiders.map((raider) => ({ id: raider.id, x: raider.pos.x, y: raider.pos.y, alive: raider.hp > 0 })),
     buildings: state.buildings.map((building) => ({ id: building.id, cells: building.cells, hp: building.hp, maxHp: building.maxHp })),
     telegraph: telegraphs(state),
+    focus: doctrineFocusCells(state, doctrine),
     reach,
     move: draft[selected]?.moveTo ?? null,
-  }), [state, draft, selected, reach]);
+  }), [state, draft, selected, reach, doctrine]);
   const view = useMemo<MechaBoardView>(() => ({
     figures: state.mechs.map((m) => {
       const planned = m.hp > 0 ? draft[m.id]?.moveTo : null;
@@ -299,6 +309,8 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
     : state.outcome === "defeat_buildings" ? t("楼被拆光")
     : null;
   const raiderHp = state.raiders.map((raider) => `${t(enemyName(raider.id))} ${raider.hp}`).join(" ");
+  const focus = doctrineFocus(state, doctrine);
+  const focusLine = doctrineFocusLine(doctrine, gameText(enemyName(focus.id), locale), focus.building ? `${focus.building.x},${focus.building.y}` : null, locale);
 
   const onCity = Boolean(site && engine);
   return (
@@ -313,6 +325,8 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
         <p className="mecha-help">{t("沿着道路能多走一倍。突击靠路，炮手爬山和平地一样，支援上坡不加价。水过不去，被推进水或山地会撞上。")}</p>
         <p className="mecha-help">{t("攻坚先打大怪。守楼先打离楼最近的小怪。两种打法走出来的结果不同。")}</p>
         {onCity ? <p className="mecha-help">{t("靠岸有水，翻山有山地，巷战是贴着楼的路，单侧临街也算。这座城没有的场地不会出现。")}</p> : null}
+        {onCity && shapeId === "alley" ? <p className="mecha-help">{t("巷战只守临街的楼。贴着路的楼拆光就输，不临街的楼还在，但不算这一局。")}</p> : null}
+        <p className="mecha-help">{focusLine}</p>
         {onCity ? <p className="mecha-help">{t("战场在这座城市的地面上。楼顶血槽只记这一局，城市里的楼还在。")}</p> : engine ? <p className="mecha-help">{t("这座城市没有一块够平的战场，仍用方格棋盘。")}</p> : null}
         {onCity ? null : <MechaLineup label={t("机甲与怪兽")} view={view} />}
         <ul className="mecha-pack">
@@ -339,7 +353,7 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
             const nextSite = catalog[next];
             if (!nextSite) return;
             setShape(next);
-            restart(preset, script, nextSite);
+            restart(preset, script, nextSite, next === "alley" ? "frontage" : "all");
           }}>{SHAPES.map((item) => <option key={item.id} value={item.id} disabled={!catalog[item.id]}>{t(item.label)}</option>)}</select></label> : onCity ? <span>{t("城市实地")}</span> : <label>{t("布局")}<select value={preset} onChange={(e) => restart(e.target.value as CoverPresetId, script)}>{PRESETS.map((p) => <option key={p.id} value={p.id}>{t(p.label)}</option>)}</select></label>}
           <label>{t("脚本")}<select value={script} onChange={(e) => restart(preset, e.target.value as BossScriptId)}>{SCRIPTS.map((s) => <option key={s.id} value={s.id}>{t(s.label)}</option>)}</select></label>
           <label>{t("打法")}<select value={doctrine} onChange={(e) => {
