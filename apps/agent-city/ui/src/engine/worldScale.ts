@@ -92,6 +92,11 @@ export const VISUAL_BOOST = {
   parkedCar: 0.9,
   /** 机坪上那架可开的飞机：游戏飞机 ×0.45（翼展约 4–9.5 单位 = 8–19 m）——原尺寸翼展比 22 宽的跑道还宽，停在机坪上会压住滑行道和航站楼。 */
   parkedPlane: 0.45,
+  /**
+   * 机坪上那三台可点的机甲（engine/render/playableVehicles.ts）。网格按 1 世界单位 = 2 米建，
+   * 战棋一格是两块地，CityMechaWorld 用同一 2× 来画。停着的和开打以后是同一批模型。
+   */
+  parkedMecha: 2,
 } as const;
 
 /**

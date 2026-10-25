@@ -3,7 +3,7 @@
  * 函数体与原方法逐字一致，仅 `this.` → `host.`；host 是 CityParts 本身，下面的接口只列出这里实际用到的成员。
  */
 import * as THREE from "three";
-import { PLAYABLE_CAR_PREFIX, PLAYABLE_PLANE_NAME } from "../render/playableVehicles";
+import { PLAYABLE_CAR_PREFIX, PLAYABLE_MECHA_NAME, PLAYABLE_PLANE_NAME } from "../render/playableVehicles";
 import { hashSeed, type CityBuilding, type CityModel } from "../../cityModel";
 import type { CityLayout } from "../cityLayout";
 import { decorKindForName } from "../cityDecor";
@@ -105,6 +105,7 @@ export function decorAt(host: UiOverlayHost, mesh: THREE.Object3D, instanceId: n
   // 可开的载具（停车场的车、机坪的飞机）挂在地标/机场组里：先认它们，点到的是「开这辆」而不是地标说明。
   for (let node: THREE.Object3D | null = mesh; node; node = node.parent) {
     if (node.name === PLAYABLE_PLANE_NAME) return "play:plane";
+    if (node.name === PLAYABLE_MECHA_NAME) return "play:mecha";
     if (node.name.startsWith(PLAYABLE_CAR_PREFIX)) return `play:car:${node.name.slice(PLAYABLE_CAR_PREFIX.length)}`;
   }
   for (let node: THREE.Object3D | null = mesh; node; node = node.parent) {

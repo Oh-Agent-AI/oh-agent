@@ -40,7 +40,7 @@ import { CityWildlife } from "./cityWildlife";
 import { LIGHT_BUDGET, nightFactor } from "./cityLightBudget";
 import { DRIVING_PARAMS } from "../game/DrivingSimulation";
 import { CAR_DIMENSIONS } from "../game/carDimensions";
-import { PLAYABLE_CAR_PREFIX, PLAYABLE_PLANE_NAME, playableKind, type PlayTarget } from "./render/playableVehicles";
+import { PLAYABLE_CAR_PREFIX, PLAYABLE_MECHA_NAME, PLAYABLE_PLANE_NAME, playableKind, type PlayTarget } from "./render/playableVehicles";
 import { paletteFor } from "./cityTextures";
 import { CarCamera } from "../game/CarCamera";
 import { FlightCameraControls } from "../game/FlightCameraControls";
@@ -1433,6 +1433,10 @@ export class CityEngine {
       if (!car) return null;
       const at = car.getWorldPosition(new THREE.Vector3());
       return { kind, districtId, color: paletteFor(districtId).accent, x: at.x, z: at.z, heading: heading(car, new THREE.Vector3(0, 0, 1)) };
+    }
+    if (kind === "mecha") {
+      const squad = this.parts.group.getObjectByName(PLAYABLE_MECHA_NAME);
+      return squad ? { kind } : null;
     }
     const runway = this.parts.group.getObjectByName(PLAYABLE_PLANE_NAME)?.userData.runway as THREE.Object3D | undefined;
     if (!runway) return null;

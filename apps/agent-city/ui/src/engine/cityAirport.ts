@@ -5,7 +5,7 @@
  */
 import * as THREE from "three";
 import type { Vec2 } from "./cityLayout";
-import { parkedPlane } from "./render/playableVehicles";
+import { parkedMechaSquad, parkedPlane } from "./render/playableVehicles";
 
 export { AIRPORT_PLATFORM, airportCausewayEnd, planAirport, roadSamples, type AirportPlan } from "./airportPlan";
 import { AIRPORT_PLATFORM, type AirportPlan } from "./airportPlan";
@@ -62,6 +62,11 @@ export function buildAirport(plan: AirportPlan, disposables: Array<{ dispose: ()
     runway.position.set(-L / 2 + 30, TOP, -18);
     island.add(runway);
     plane.userData.runway = runway;
+    // 三台机甲停在机坪东侧、滑行道和航站楼之间，面朝跑道。点任何一台进入机甲战棋。
+    // 机场岛是驾驶地标根，它们开车时也是障碍。避开跑道西端（飞机起飞点）和航站楼中轴。
+    const squad = parkedMechaSquad(disposables);
+    squad.position.set(40, TOP, 14);
+    island.add(squad);
   }
   // 跑道边灯（夜间与路灯同批次材质，白天不亮）。
   if (nightHead) for (let x = -L / 2 + 14; x <= L / 2 - 14; x += 14) for (const z of [-30, -6]) add(new THREE.BoxGeometry(0.6, 0.4, 0.6), nightHead, x, 1.6, z);

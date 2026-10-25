@@ -125,6 +125,7 @@ export function useCityExperience(engine: RefObject<CityEngine | null>, projecti
       if (play) {
         const en = pluginLocale() === "en";
         tooltip.textContent = play === "plane" ? (en ? "Plane · click to fly from the runway" : "飞机 · 点击从跑道起飞")
+          : play === "mecha" ? (en ? "Mechs · click to start the battle" : "机甲 · 点击进入战斗")
           : `${districtLabel(id!.slice("play:car:".length))} · ${en ? "click to drive from this landmark" : "点击从这座地标出发开车"}`;
         tooltip.style.opacity = "1";
         tooltip.style.transform = `translate(${Math.min(x + 14, Math.max(8, window.innerWidth - 270))}px, ${Math.min(y + 14, window.innerHeight - 60)}px)`;

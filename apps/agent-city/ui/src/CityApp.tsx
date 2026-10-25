@@ -75,6 +75,8 @@ export function CityApp() {
   const [cinema, setCinema] = useState(false);
   const [roadAuditOpen, setRoadAuditOpen] = useState(false);
   const [mechaOpen, setMechaOpen] = useState(false);
+  const mechaActive = useRef(false);
+  mechaActive.current = mechaOpen;
   const [refresh, setRefresh] = useState(0);
   const experience = useCityExperience(engineRef, projection);
   // 飞机与汽车共用宿主运行时；当前城市的自由驾驶从工具栏进入。
@@ -92,7 +94,7 @@ export function CityApp() {
   const game = useCityGame(engineRef, {
     cinemaActive: () => cinemaRef.current,
     filmActive: () => filmRef.current,
-    busy: () => busyRef.current || drivingActive.current,
+    busy: () => busyRef.current || drivingActive.current || mechaActive.current,
     labelsVisible: () => labelsRef.current,
     requestRefresh: () => setRefresh((value) => value + 1),
     locale: () => (language === "en" ? "en" : "zh-Hans"),
@@ -100,18 +102,19 @@ export function CityApp() {
   const driving = useCityDrivingPlay(engineRef, {
     cinemaActive: () => cinemaRef.current,
     gameActive: () => game.active,
-    busy: () => busyRef.current || filmRef.current || planRepairActive.current,
+    busy: () => busyRef.current || filmRef.current || planRepairActive.current || mechaActive.current,
   });
   drivingActive.current = driving.active;
   // 规划修复（开发开关 ?cityPlan / cityPlanDev=1；未开启时 hook 什么都不做）。与游戏/航拍/导出/忙碌互斥。
-  const planRepair = usePlanRepair(engineRef, { seed: experience.seed, model: experience.model, blocked: cinema || game.active || driving.active || experience.busy || !!experience.film });
-  // 点停车场里的车 / 机坪上的飞机直接开（2026-10-22）：与工具栏「驾车」「驾驶飞机」同一组互斥条件——
-  // 航拍、导出、忙碌、修复城市、已经在开车或飞行时不响应（引擎只在非驾驶世界里派发点击）。
+  const planRepair = usePlanRepair(engineRef, { seed: experience.seed, model: experience.model, blocked: cinema || game.active || driving.active || mechaOpen || experience.busy || !!experience.film });
+  // 点停车场里的车 / 机坪上的飞机 / 机坪上的机甲直接开：与工具栏同一组互斥条件——
+  // 航拍、导出、忙碌、修复城市、已经在开车、飞行或机甲战时不响应（引擎只在非驾驶世界里派发点击）。
   const playRef = useRef<(target: PlayTarget) => void>(() => {});
   playRef.current = (target) => {
-    if (cinema || game.active || driving.active || experience.busy || !!experience.film || planRepair.state.active) return;
+    if (cinema || game.active || driving.active || mechaOpen || experience.busy || !!experience.film || planRepair.state.active) return;
     experience.setOptions(false); experience.clearSelection();
     if (target.kind === "car") driving.enterAt(target);
+    else if (target.kind === "mecha") setMechaOpen(true);
     else game.enterPracticeFrom(target);
   };
   planRepairActive.current = planRepair.state.active;

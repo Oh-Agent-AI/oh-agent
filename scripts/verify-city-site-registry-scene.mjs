@@ -84,7 +84,11 @@ for (const count of [380, 1600]) {
       let planeMeshes = 0;
       parts.group.getObjectByName("city-playable-plane")?.traverse((node) => { if (node.isMesh && node.visible) { assert.equal(parts.decorAt(node), "play:plane"); planeMeshes++; } });
       if (parts.group.getObjectByName("city-landmark-airport")) assert(planeMeshes > 0, "the airport parks a flyable plane");
-      console.log(JSON.stringify({ count, night, classifiedInstances: identities.size, counts, pickableMeshes: currentMeshes.length, civicPieces, districtMeshes: districts, playableCars,
+      // 机坪上的三台机甲：点任何一块网格都是 play:mecha，不是「机场岛」说明。
+      let mechaMeshes = 0;
+      parts.group.getObjectByName("city-playable-mecha")?.traverse((node) => { if (node.isMesh && node.visible) { assert.equal(parts.decorAt(node), "play:mecha"); mechaMeshes++; } });
+      if (parts.group.getObjectByName("city-landmark-airport")) assert(mechaMeshes > 0, "the airport parks a mecha squad");
+      console.log(JSON.stringify({ count, night, classifiedInstances: identities.size, counts, pickableMeshes: currentMeshes.length, civicPieces, districtMeshes: districts, playableCars, mechaMeshes,
         scope: "actual scene classification/identity; model footprint/height and browser/editor validation pending" }));
     }
   } finally { parts.dispose(); }
