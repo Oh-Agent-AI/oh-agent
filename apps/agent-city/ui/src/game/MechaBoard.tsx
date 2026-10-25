@@ -54,6 +54,8 @@ function fresh(preset: CoverPresetId, script: BossScriptId, site: CityMechaSite 
       preset,
       script,
       covers: [],
+      terrain: site.terrain.map((row) => row.slice()),
+      heights: site.heights.map((row) => row.slice()),
       buildings: script === "siege" || script === "raid_ssw" ? site.buildings.map((building) => ({ id: building.id, cells: building.cells.map((cell) => ({ ...cell })) })) : [],
       raiders: script === "siege" ? site.raiders.map((raider) => ({ id: raider.id, pos: { ...raider.pos } })) : [],
       mechs: site.mechs.map((mech) => ({ id: mech.id, pos: { ...mech.pos } })),
@@ -148,6 +150,9 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
   const paint = (x: number, y: number) => {
     const c = { x, y };
     const classes = ["mecha-cell"];
+    const ground = state.terrain[y]?.[x];
+    if (ground === "water") classes.push("is-water");
+    if (ground === "mountain") classes.push("is-mountain");
     if (state.covers.some((k) => same(k, c))) classes.push("is-cover");
     const building = state.buildings.find((b) => b.cells.some((k) => same(k, c)));
     if (building) classes.push(building.hp > 0 ? "is-cover" : "is-rubble");

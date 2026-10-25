@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   attackerCenter, bossExecute, bossPrepare, BUILDING_HP, createMatch, footprintCenter, knockbackFromAttacker,
-  livingRaiders, MAX_TURNS, RAIDER_ATK, setScriptCounters, spawnsAreOpenGround, validateAndApplyPlan, type MatchState,
+  legalActions, livingRaiders, MAX_TURNS, pathDistance, RAIDER_ATK, setScriptCounters, spawnsAreOpenGround, validateAndApplyPlan,
+  type MatchState, type TerrainKind,
 } from "../apps/agent-city/ui/src/game/mecha/rules.ts";
 
 function hold(state: MatchState) {
@@ -203,4 +204,108 @@ test("siege fields a boss and two raiders, and turn 15 is the last turn", () => 
   assert.equal("ok" in shot, true);
   assert.equal(bossOnly.outcome, "victory");
   assert.equal(livingRaiders(bossOnly).length, 0);
+});
+
+function terrainGrid(fill: (x: number, y: number) => TerrainKind): TerrainKind[][] {
+  return Array.from({ length: 10 }, (_, y) => Array.from({ length: 10 }, (_, x) => fill(x, y)));
+}
+
+function heightGrid(fill: (x: number, y: number) => number): number[][] {
+  return Array.from({ length: 10 }, (_, y) => Array.from({ length: 10 }, (_, x) => fill(x, y)));
+}
+
+test("flat land still costs one per step", () => {
+  const state = createMatch({ preset: "covers_sparse_mid", script: "stationary_smash", covers: [] });
+  assert.equal(pathDistance(state, { x: 2, y: 9 }, { x: 2, y: 5 }, "Assault"), 4);
+  assert.equal(state.terrain.every((row) => row.every((cell) => cell === "land")), true);
+});
+
+test("water stops feet, mountains stop shots, uphill spends a second point", () => {
+  const across = (face: TerrainKind) => createMatch({
+    preset: "covers_sparse_mid",
+    script: "stationary_smash",
+    covers: [],
+    terrain: terrainGrid((x, y) => (x === 4 && y === 5 ? face : "land")),
+    boss: { x: 6, y: 4 },
+    mechs: [
+      { id: "Assault", pos: { x: 0, y: 9 } },
+      { id: "Gunner", pos: { x: 2, y: 5 } },
+      { id: "Support", pos: { x: 0, y: 8 } },
+    ],
+  });
+  const water = across("water");
+  assert.equal(pathDistance(water, { x: 2, y: 5 }, { x: 4, y: 5 }, "Assault"), null);
+  assert.equal(legalActions(water, "Gunner").some((action) => action.kind === "shoot"), true);
+  const cliff = across("mountain");
+  assert.equal(pathDistance(cliff, { x: 2, y: 5 }, { x: 4, y: 5 }, "Assault"), null);
+  assert.equal(legalActions(cliff, "Gunner").some((action) => action.kind === "shoot"), false);
+
+  const climb = createMatch({
+    preset: "covers_sparse_mid",
+    script: "stationary_smash",
+    covers: [],
+    heights: heightGrid((x) => x * 2),
+  });
+  assert.equal(pathDistance(climb, { x: 0, y: 5 }, { x: 3, y: 5 }, "Assault"), 6);
+
+  const wall = createMatch({
+    preset: "covers_sparse_mid",
+    script: "siege",
+    covers: [],
+    terrain: terrainGrid((_x, y) => (y === 2 ? "water" : "land")),
+    boss: { x: 4, y: 0 },
+    buildings: [{ id: "south", cells: [{ x: 4, y: 6 }] }],
+    raiders: [{ id: "raider-w", pos: { x: 0, y: 4 } }, { id: "raider-e", pos: { x: 9, y: 4 } }],
+    mechs: [
+      { id: "Assault", pos: { x: 0, y: 9 } },
+      { id: "Gunner", pos: { x: 2, y: 9 } },
+      { id: "Support", pos: { x: 8, y: 9 } },
+    ],
+  });
+  bossPrepare(wall);
+  assert.deepEqual(wall.boss.anchor, { x: 4, y: 0 });
+  assert.equal(wall.raiders.some((raider) => raider.pos.y === 2), false);
+
+  const pushed = createMatch({
+    preset: "covers_sparse_mid",
+    script: "stationary_smash",
+    covers: [],
+    terrain: terrainGrid((x, y) => (x === 5 && y === 2 ? "water" : "land")),
+    boss: { x: 4, y: 4 },
+    mechs: [
+      { id: "Assault", pos: { x: 5, y: 3 } },
+      { id: "Gunner", pos: { x: 0, y: 9 } },
+      { id: "Support", pos: { x: 9, y: 9 } },
+    ],
+  });
+  bossPrepare(pushed);
+  assert.equal("ok" in validateAndApplyPlan(pushed, hold(pushed)), true);
+  const before = pushed.mechs.find((mech) => mech.id === "Assault")!;
+  const hp = before.hp;
+  bossExecute(pushed);
+  const after = pushed.mechs.find((mech) => mech.id === "Assault")!;
+  assert.deepEqual(after.pos, { x: 5, y: 3 });
+  // 砸击 4，再加撞上水面的 2。人留在原地。
+  assert.equal(after.hp, hp - 6);
+});
+
+test("a raider walks around water toward the building", () => {
+  const state = createMatch({
+    preset: "covers_sparse_mid",
+    script: "stationary_smash",
+    covers: [],
+    terrain: terrainGrid((x, y) => (x === 1 && y === 4 ? "water" : "land")),
+    boss: { x: 7, y: 0 },
+    buildings: [{ id: "east", cells: [{ x: 3, y: 4 }] }],
+    raiders: [{ id: "raider-w", pos: { x: 0, y: 4 } }],
+    mechs: [
+      { id: "Assault", pos: { x: 0, y: 9 } },
+      { id: "Gunner", pos: { x: 2, y: 9 } },
+      { id: "Support", pos: { x: 8, y: 9 } },
+    ],
+  });
+  bossPrepare(state);
+  const raider = state.raiders[0]!;
+  assert.notDeepEqual(raider.pos, { x: 1, y: 4 });
+  assert.ok(Math.abs(raider.pos.x - 3) + Math.abs(raider.pos.y - 4) < 3);
 });

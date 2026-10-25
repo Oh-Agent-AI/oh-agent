@@ -16,11 +16,13 @@ export type CityMechaView = {
   move: Cell | null;
 };
 
-const ROLES = ["empty", "reach", "move", "building", "rubble", "telegraph"] as const;
+const ROLES = ["empty", "water", "mountain", "reach", "move", "building", "rubble", "telegraph"] as const;
 type Role = (typeof ROLES)[number];
 
 const ROLE_COLOR: Record<Role, string> = {
   empty: "#d5e4f2",
+  water: "#2f86b8",
+  mountain: "#a56b45",
   reach: "#8fd4ff",
   move: "#ffe08a",
   building: "#e2b15a",
@@ -30,6 +32,8 @@ const ROLE_COLOR: Record<Role, string> = {
 
 const ROLE_OPACITY: Record<Role, number> = {
   empty: 0.14,
+  water: 0.62,
+  mountain: 0.58,
   reach: 0.48,
   move: 0.78,
   building: 0.42,
@@ -226,9 +230,10 @@ export function CityMechaWorld({
         const x = index % 10;
         const y = Math.floor(index / 10);
         const id = `${x},${y}`;
+        const ground = site.terrain[y]?.[x];
         const role: Role = telegraph.has(id) ? "telegraph"
           : id === moveKey ? "move"
-          : buildingCells.get(id) ?? (reach.has(id) ? "reach" : "empty");
+          : buildingCells.get(id) ?? (reach.has(id) ? "reach" : ground === "water" ? "water" : ground === "mountain" ? "mountain" : "empty");
         pad.material = padMat.get(role)!;
       });
       const bossFeet = footprintFeet(site, current.boss);

@@ -5,6 +5,8 @@
  * raid_ssw is that cadence plus a move toward a living building or mech.
  * siege adds two 1×1 raiders and ends at turn 15.
  * Buildings have one HP pool; every pool at 0 is defeat_buildings.
+ * 水不可进入，射击照常穿过。山地不可进入，并且挡住射击。
+ * 陆地每步 1。上坡超过平地出生容差再加 1。机甲、Boss、袭扰者共用这套花费。
  */
 
 export const GDD_RULESET = "mecha-v1.3";
@@ -24,6 +26,8 @@ export const RAIDER_MOVE = 4;
 export const FLAT_SPAWN_MAX_DELTA = 1;
 
 export type Cell = { x: number; y: number };
+/** 水是挡住脚的空水面。山地是悬崖。陆地是唯一能走的面，上坡另计花费。 */
+export type TerrainKind = "land" | "water" | "mountain";
 export type MechId = "Assault" | "Gunner" | "Support";
 export const MECH_IDS: MechId[] = ["Assault", "Gunner", "Support"];
 export type CoverPresetId = "covers_sparse_mid" | "covers_diag_corridor" | "covers_twin_clusters";
@@ -88,6 +92,10 @@ export type MatchState = {
   preset: CoverPresetId;
   script: BossScriptId;
   covers: Cell[];
+  /** 每格一种面。缺省全是陆地，标准盘因此和没记地形时走法相同。 */
+  terrain: TerrainKind[][];
+  /** 格心的地面高度。上坡花费只看相邻两格的差。 */
+  heights: number[][];
   buildings: Building[];
   raiders: Raider[];
   mechs: Mech[];
@@ -211,10 +219,62 @@ export function standardDeploy(): { mechs: Array<{ id: MechId; pos: Cell }>; bos
   };
 }
 
+function copyTerrain(grid: TerrainKind[][] | undefined): TerrainKind[][] {
+  const out: TerrainKind[][] = [];
+  for (let y = 0; y < BOARD; y += 1) {
+    const row: TerrainKind[] = [];
+    for (let x = 0; x < BOARD; x += 1) {
+      const cell = grid?.[y]?.[x];
+      row.push(cell === "water" || cell === "mountain" ? cell : "land");
+    }
+    out.push(row);
+  }
+  return out;
+}
+
+function copyHeights(grid: number[][] | undefined): number[][] {
+  const out: number[][] = [];
+  for (let y = 0; y < BOARD; y += 1) {
+    const row: number[] = [];
+    for (let x = 0; x < BOARD; x += 1) {
+      const height = grid?.[y]?.[x];
+      row.push(typeof height === "number" && Number.isFinite(height) ? height : 0);
+    }
+    out.push(row);
+  }
+  return out;
+}
+
+function terrainAt(state: MatchState, cell: Cell): TerrainKind {
+  return state.terrain[cell.y]?.[cell.x] ?? "land";
+}
+
+function heightAt(state: MatchState, cell: Cell): number {
+  return state.heights[cell.y]?.[cell.x] ?? 0;
+}
+
+/** 水和悬崖都没有落脚点。山地另在射击里挡住视线。 */
+function impassable(state: MatchState, cell: Cell): boolean {
+  const terrain = terrainAt(state, cell);
+  return terrain === "water" || terrain === "mountain";
+}
+
+/**
+ * 一步的移动花费。平地和走高差不超过出生容差的陆地是 1。
+ * 再陡的上坡是 2，下坡不加。水和山地没有花费，调用方必须绕开。
+ */
+function stepCost(state: MatchState, from: Cell, to: Cell): number | null {
+  if (!inb(to) || impassable(state, to)) return null;
+  const rise = heightAt(state, to) - heightAt(state, from);
+  return rise > FLAT_SPAWN_MAX_DELTA ? 2 : 1;
+}
+
 export function createMatch(opts: {
   preset: CoverPresetId;
   script: BossScriptId;
   covers?: Cell[];
+  terrain?: TerrainKind[][];
+  heights?: number[][];
   buildings?: Array<{ id: string; cells: Cell[]; hp?: number }>;
   raiders?: Array<{ id: string; pos: Cell; hp?: number }>;
   mechs?: Array<{ id: MechId; pos: Cell }>;
@@ -228,6 +288,8 @@ export function createMatch(opts: {
     preset: opts.preset,
     script: opts.script,
     covers: (opts.covers ?? (siege ? [] : COVERS[opts.preset])).map((c) => ({ ...c })),
+    terrain: copyTerrain(opts.terrain),
+    heights: copyHeights(opts.heights),
     buildings: (opts.buildings ?? (siege ? SIEGE_BUILDINGS : [])).map((b) => ({
       id: b.id,
       cells: b.cells.map((c) => ({ ...c })),
@@ -265,27 +327,21 @@ function enemiesRemain(state: MatchState): boolean {
   return state.boss.hp > 0 || livingRaiders(state).length > 0;
 }
 
-/** Mech cells and the boss footprint sit on cells with no cover and no building. */
+/** Mech cells and the boss footprint sit on land, with no cover and no building. */
 export function spawnsAreOpenGround(state: MatchState): boolean {
   const blocked = new Set<string>();
   for (const c of state.covers) blocked.add(key(c));
   for (const b of state.buildings) for (const c of b.cells) blocked.add(key(c));
   const seen = new Set<string>();
-  for (const m of state.mechs) {
-    const id = key(m.pos);
-    if (!inb(m.pos) || blocked.has(id) || seen.has(id)) return false;
+  const open = (cell: Cell) => {
+    const id = key(cell);
+    if (!inb(cell) || impassable(state, cell) || blocked.has(id) || seen.has(id)) return false;
     seen.add(id);
-  }
-  for (const c of footprint(state.boss.anchor)) {
-    const id = key(c);
-    if (!inb(c) || blocked.has(id) || seen.has(id)) return false;
-    seen.add(id);
-  }
-  for (const raider of state.raiders) {
-    const id = key(raider.pos);
-    if (!inb(raider.pos) || blocked.has(id) || seen.has(id)) return false;
-    seen.add(id);
-  }
+    return true;
+  };
+  for (const m of state.mechs) if (!open(m.pos)) return false;
+  for (const c of footprint(state.boss.anchor)) if (!open(c)) return false;
+  for (const raider of state.raiders) if (!open(raider.pos)) return false;
   return true;
 }
 
@@ -378,7 +434,7 @@ function tryTranslateBoss(state: MatchState, dir: Cell): boolean {
   const dests = footprint(anchor).map((c) => ({ x: c.x + dir.x, y: c.y + dir.y }));
   let hit: MechId | null = null;
   for (const nc of dests) {
-    if (!inb(nc) || blocksTerrain(state, nc)) {
+    if (!inb(nc) || blocksTerrain(state, nc) || impassable(state, nc)) {
       hurtBoss(state, 2);
       refresh(state);
       return false;
@@ -412,7 +468,7 @@ function tryPushMech(state: MatchState, id: MechId, dir: Cell): boolean {
   const m = mech(state, id);
   if (!m) return false;
   const dest = { x: m.pos.x + dir.x, y: m.pos.y + dir.y };
-  if (!inb(dest) || blocksTerrain(state, dest)) {
+  if (!inb(dest) || blocksTerrain(state, dest) || impassable(state, dest)) {
     hurtMech(state, id, 2);
     refresh(state);
     return false;
@@ -474,24 +530,40 @@ function shootEnemy(state: MatchState, id: MechId, target: string) {
 
 export function pathDistance(state: MatchState, from: Cell, to: Cell, mover: MechId): number | null {
   if (eq(from, to)) return 0;
-  if (!inb(to)) return null;
+  if (!inb(to) || impassable(state, to)) return null;
   const destOcc = occupant(state, to);
   if (destOcc !== "empty" && destOcc !== mover) return null;
   const dist = new Map<string, number>([[key(from), 0]]);
-  const q = [from];
+  const heap: Cell[] = [from];
+  const settled = new Set<string>();
   const dirs = [{ x: 0, y: -1 }, { x: 1, y: 0 }, { x: 0, y: 1 }, { x: -1, y: 0 }];
-  while (q.length) {
-    const cur = q.shift()!;
-    const d = dist.get(key(cur))!;
+  while (heap.length) {
+    let best = 0;
+    for (let i = 1; i < heap.length; i += 1) {
+      const da = dist.get(key(heap[i]!))!;
+      const db = dist.get(key(heap[best]!))!;
+      const a = heap[i]!;
+      const b = heap[best]!;
+      if (da < db || (da === db && (a.x < b.x || (a.x === b.x && a.y < b.y)))) best = i;
+    }
+    const cur = heap.splice(best, 1)[0]!;
+    const id = key(cur);
+    if (settled.has(id)) continue;
+    settled.add(id);
+    const d = dist.get(id)!;
+    if (eq(cur, to)) return d;
     for (const dir of dirs) {
       const nxt = { x: cur.x + dir.x, y: cur.y + dir.y };
-      if (!inb(nxt) || dist.has(key(nxt))) continue;
+      if (!inb(nxt) || settled.has(key(nxt))) continue;
       const occ = occupant(state, nxt);
-      const pass = occ === "empty" || occ === mover;
-      if (!pass) continue;
-      dist.set(key(nxt), d + 1);
-      if (eq(nxt, to)) return d + 1;
-      q.push(nxt);
+      if (occ !== "empty" && occ !== mover) continue;
+      const step = stepCost(state, cur, nxt);
+      if (step === null) continue;
+      const next = d + step;
+      const prev = dist.get(key(nxt));
+      if (prev !== undefined && prev <= next) continue;
+      dist.set(key(nxt), next);
+      heap.push(nxt);
     }
   }
   return null;
@@ -509,6 +581,7 @@ function los(state: MatchState, from: Cell, to: Cell, ignoreCovers: number): boo
   }
   let covers = 0;
   for (const c of cells) {
+    if (terrainAt(state, c) === "mountain") return false;
     const occ = occupant(state, c);
     if (occ === "cover" || occ === "building" || occ === "rubble") {
       covers += 1;
@@ -669,11 +742,24 @@ const STEP_DIRS: Cell[] = [{ x: 0, y: -1 }, { x: 1, y: 0 }, { x: 0, y: 1 }, { x:
 
 function anchorClear(state: MatchState, anchor: Cell): boolean {
   for (const c of footprint(anchor)) {
-    if (!inb(c)) return false;
+    if (!inb(c) || impassable(state, c)) return false;
     if (onFootprint(state.boss.anchor, c)) continue;
     if (occupant(state, c) !== "empty") return false;
   }
   return true;
+}
+
+/** Boss 整座脚印平移一格。花费取四格里最陡的那一步，有一格是水或山地就走不了。 */
+function bossStepCost(state: MatchState, anchor: Cell, dir: Cell): number | null {
+  const nxt = { x: anchor.x + dir.x, y: anchor.y + dir.y };
+  if (!anchorClear(state, nxt)) return null;
+  let cost = 1;
+  for (const cell of footprint(anchor)) {
+    const step = stepCost(state, cell, { x: cell.x + dir.x, y: cell.y + dir.y });
+    if (step === null) return null;
+    if (step > cost) cost = step;
+  }
+  return cost;
 }
 
 function objectiveGap(state: MatchState, anchor: Cell): number {
@@ -691,28 +777,41 @@ function objectiveGap(state: MatchState, anchor: Cell): number {
   return best;
 }
 
-/** Up to BOSS_MOVE orthogonal steps. Only a strictly closer gap is taken. */
+/** Up to BOSS_MOVE move cost. Flat land spends 1 per step. Only a strictly closer gap is taken. */
 function stepBossTowardObjectives(state: MatchState) {
   if (state.boss.hp <= 0) return;
   const start = state.boss.anchor;
-  const queue: Array<{ x: number; y: number; steps: number }> = [{ x: start.x, y: start.y, steps: 0 }];
-  const seen = new Set<string>([key(start)]);
-  let best = { x: start.x, y: start.y, steps: 0, gap: objectiveGap(state, start) };
-  while (queue.length) {
-    const cur = queue.shift();
-    if (!cur) break;
+  const dist = new Map<string, number>([[key(start), 0]]);
+  const heap: Array<{ x: number; y: number; cost: number }> = [{ x: start.x, y: start.y, cost: 0 }];
+  const settled = new Set<string>();
+  let best = { x: start.x, y: start.y, cost: 0, gap: objectiveGap(state, start) };
+  while (heap.length) {
+    let index = 0;
+    for (let i = 1; i < heap.length; i += 1) {
+      const a = heap[i]!;
+      const b = heap[index]!;
+      if (a.cost < b.cost || (a.cost === b.cost && (a.x < b.x || (a.x === b.x && a.y < b.y)))) index = i;
+    }
+    const cur = heap.splice(index, 1)[0]!;
+    const id = key(cur);
+    if (settled.has(id)) continue;
+    settled.add(id);
     const gap = objectiveGap(state, cur);
     const closer = gap < best.gap
-      || (gap === best.gap && cur.steps < best.steps)
-      || (gap === best.gap && cur.steps === best.steps && (cur.x < best.x || (cur.x === best.x && cur.y < best.y)));
-    if (closer) best = { x: cur.x, y: cur.y, steps: cur.steps, gap };
-    if (cur.steps >= BOSS_MOVE) continue;
+      || (gap === best.gap && cur.cost < best.cost)
+      || (gap === best.gap && cur.cost === best.cost && (cur.x < best.x || (cur.x === best.x && cur.y < best.y)));
+    if (closer) best = { x: cur.x, y: cur.y, cost: cur.cost, gap };
+    if (cur.cost >= BOSS_MOVE) continue;
     for (const dir of STEP_DIRS) {
-      const nxt = { x: cur.x + dir.x, y: cur.y + dir.y, steps: cur.steps + 1 };
-      const id = `${nxt.x},${nxt.y}`;
-      if (seen.has(id) || !anchorClear(state, nxt)) continue;
-      seen.add(id);
-      queue.push(nxt);
+      const step = bossStepCost(state, cur, dir);
+      if (step === null) continue;
+      const nxt = { x: cur.x + dir.x, y: cur.y + dir.y, cost: cur.cost + step };
+      if (nxt.cost > BOSS_MOVE) continue;
+      const nid = key(nxt);
+      const prev = dist.get(nid);
+      if (prev !== undefined && prev <= nxt.cost) continue;
+      dist.set(nid, nxt.cost);
+      heap.push(nxt);
     }
   }
   state.boss.anchor = { x: best.x, y: best.y };
@@ -839,26 +938,41 @@ function adjacentToUnit(pos: Cell): Cell[] {
 
 function stepRaider(state: MatchState, raider: Raider, goals: Cell[]) {
   const start = raider.pos;
-  const queue: Array<{ x: number; y: number; steps: number }> = [{ x: start.x, y: start.y, steps: 0 }];
-  const seen = new Set<string>([key(start)]);
-  let best = { x: start.x, y: start.y, steps: 0, gap: gapTo([start], goals) };
-  while (queue.length) {
-    const cur = queue.shift();
-    if (!cur) break;
+  const dist = new Map<string, number>([[key(start), 0]]);
+  const heap: Array<{ x: number; y: number; cost: number }> = [{ x: start.x, y: start.y, cost: 0 }];
+  const settled = new Set<string>();
+  let best = { x: start.x, y: start.y, cost: 0, gap: gapTo([start], goals) };
+  while (heap.length) {
+    let index = 0;
+    for (let i = 1; i < heap.length; i += 1) {
+      const a = heap[i]!;
+      const b = heap[index]!;
+      if (a.cost < b.cost || (a.cost === b.cost && (a.x < b.x || (a.x === b.x && a.y < b.y)))) index = i;
+    }
+    const cur = heap.splice(index, 1)[0]!;
+    const id = key(cur);
+    if (settled.has(id)) continue;
+    settled.add(id);
     const gap = gapTo([cur], goals);
     const closer = gap < best.gap
-      || (gap === best.gap && cur.steps < best.steps)
-      || (gap === best.gap && cur.steps === best.steps && (cur.x < best.x || (cur.x === best.x && cur.y < best.y)));
-    if (closer) best = { x: cur.x, y: cur.y, steps: cur.steps, gap };
-    if (cur.steps >= RAIDER_MOVE) continue;
+      || (gap === best.gap && cur.cost < best.cost)
+      || (gap === best.gap && cur.cost === best.cost && (cur.x < best.x || (cur.x === best.x && cur.y < best.y)));
+    if (closer) best = { x: cur.x, y: cur.y, cost: cur.cost, gap };
+    if (cur.cost >= RAIDER_MOVE) continue;
     for (const dir of STEP_DIRS) {
-      const nxt = { x: cur.x + dir.x, y: cur.y + dir.y, steps: cur.steps + 1 };
-      const id = `${nxt.x},${nxt.y}`;
-      if (seen.has(id) || !inb(nxt)) continue;
-      const occ = occupant(state, nxt);
-      if (occ !== "empty" && !eq(nxt, raider.pos)) continue;
-      seen.add(id);
-      queue.push(nxt);
+      const nxtCell = { x: cur.x + dir.x, y: cur.y + dir.y };
+      if (!inb(nxtCell)) continue;
+      const occ = occupant(state, nxtCell);
+      if (occ !== "empty" && !eq(nxtCell, raider.pos)) continue;
+      const step = stepCost(state, cur, nxtCell);
+      if (step === null) continue;
+      const nxt = { x: nxtCell.x, y: nxtCell.y, cost: cur.cost + step };
+      if (nxt.cost > RAIDER_MOVE) continue;
+      const nid = key(nxt);
+      const prev = dist.get(nid);
+      if (prev !== undefined && prev <= nxt.cost) continue;
+      dist.set(nid, nxt.cost);
+      heap.push(nxt);
     }
   }
   raider.pos = { x: best.x, y: best.y };

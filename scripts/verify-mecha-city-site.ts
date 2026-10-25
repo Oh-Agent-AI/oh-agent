@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { LOT } from "../apps/agent-city/ui/src/engine/worldScale.ts";
-import { createMatch, spawnsAreOpenGround } from "../apps/agent-city/ui/src/game/mecha/rules.ts";
+import { createMatch, pathDistance, spawnsAreOpenGround } from "../apps/agent-city/ui/src/game/mecha/rules.ts";
 import { CELL_LOTS, cellWorld, siteMechaWindow, type SiteAnchor } from "../apps/agent-city/ui/src/game/mecha/citySite.ts";
 
 function anchor(id: string, x: number, z: number, height = 8): SiteAnchor {
@@ -14,6 +14,8 @@ function open(site: ReturnType<typeof siteMechaWindow>) {
     preset: "covers_sparse_mid",
     script: "siege",
     covers: [],
+    terrain: site.terrain,
+    heights: site.heights,
     buildings: site.buildings.map((building) => ({ id: building.id, cells: building.cells })),
     raiders: site.raiders,
     mechs: site.mechs,
@@ -58,6 +60,41 @@ test("a steep cluster loses to the flat one", () => {
   ]);
   open(site);
   assert.ok(site!.originX < 200);
+});
+
+test("the board stores the face sampled at each cell center", () => {
+  const slopeOf = (x: number, z: number) => (x < -40 && z >= -40 ? 1 : 0);
+  const site = siteMechaWindow({
+    height: (_x, z) => (z < -40 ? -1 : 4),
+    slope: slopeOf,
+  }, [
+    anchor("west", 40, 40),
+    anchor("mid", 52, 40),
+    anchor("north", 40, 52),
+  ]);
+  open(site);
+  const state = createMatch({
+    preset: "covers_sparse_mid",
+    script: "siege",
+    covers: [],
+    terrain: site!.terrain,
+    heights: site!.heights,
+    buildings: site!.buildings.map((building) => ({ id: building.id, cells: building.cells })),
+    raiders: site!.raiders,
+    mechs: site!.mechs,
+    boss: site!.boss,
+  });
+  for (let y = 0; y < 10; y += 1) {
+    for (let x = 0; x < 10; x += 1) {
+      const at = cellWorld(site!, { x, y });
+      const face = at.y < 0.05 ? "water" : slopeOf(at.x, at.z) > 0.9 ? "mountain" : "land";
+      assert.equal(site!.terrain[y]![x], face, `${x},${y}`);
+      if (face === "land") continue;
+      const from = { x: x === 0 ? 1 : x - 1, y };
+      if (site!.terrain[from.y]![from.x] !== "land") continue;
+      assert.equal(pathDistance(state, from, { x, y }, "Assault"), null);
+    }
+  }
 });
 
 test("water is not the battlefield", () => {

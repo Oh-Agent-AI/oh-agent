@@ -12,7 +12,7 @@
  * are the cells that cannot be spawned on. The city plan is not edited.
  */
 import { LOT } from "../../engine/worldScale";
-import { BOARD, FLAT_SPAWN_MAX_DELTA, type Cell, type MechId } from "./rules";
+import { BOARD, FLAT_SPAWN_MAX_DELTA, type Cell, type MechId, type TerrainKind } from "./rules";
 
 /** Lot module. A block's window may step a little wider; see pitchOf. */
 export const CELL_W = LOT.width;
@@ -67,6 +67,8 @@ export type CityMechaSite = {
   cellW: number;
   cellD: number;
   heights: number[][];
+  /** 和水、山地同一套词。选址用它挡出生，对局用它改移动和射击。 */
+  terrain: TerrainKind[][];
   buildings: CityMechaBuilding[];
   mechs: Array<{ id: MechId; pos: Cell }>;
   boss: Cell;
@@ -147,6 +149,7 @@ type Window = {
   yaw: number;
   step: Step;
   heights: number[][];
+  terrain: TerrainKind[][];
   kind: Occupant[][];
   building: Array<Array<string | null>>;
   score: number;
@@ -190,6 +193,7 @@ export function siteMechaWindow(terrain: CitySiteTerrain, anchors: readonly Site
     cellW: best.step.w,
     cellD: best.step.d,
     heights: best.heights,
+    terrain: best.terrain,
     buildings: best.rules,
     mechs: best.mechs,
     boss: best.boss,
@@ -278,6 +282,7 @@ function evaluateWindow(
   spawnLimit: number,
 ): Window | null {
   const heights: number[][] = [];
+  const ground: TerrainKind[][] = [];
   const kind: Occupant[][] = [];
   const building: Array<Array<string | null>> = [];
   let blocked = 0;
@@ -285,17 +290,20 @@ function evaluateWindow(
   let hi = -Infinity;
   for (let y = 0; y < BOARD; y += 1) {
     heights.push([]);
+    ground.push([]);
     kind.push([]);
     building.push([]);
     for (let x = 0; x < BOARD; x += 1) {
       const at = boardToWorld({ originX, originZ, yaw }, (x + 0.5) * step.w, (y + 0.5) * step.d);
       const h = terrain.height(at.x, at.z);
       const slope = terrain.slope?.(at.x, at.z) ?? 0;
-      const water = h < 0.05 || slope > 0.9;
+      // 水面先于悬崖。坡度只把还露在水上的陡壁算成山地。
+      const face: TerrainKind = h < 0.05 ? "water" : slope > 0.9 ? "mountain" : "land";
       heights[y]!.push(h);
-      kind[y]!.push(water ? "blocked" : "empty");
+      ground[y]!.push(face);
+      kind[y]!.push(face === "land" ? "empty" : "blocked");
       building[y]!.push(null);
-      if (water) blocked += 1;
+      if (face !== "land") blocked += 1;
       else {
         if (h < lo) lo = h;
         if (h > hi) hi = h;
@@ -359,7 +367,7 @@ function evaluateWindow(
   // A lot that straddles a line is the grid missing the block. Prefer the pitch that holds each lot in one cell.
   const extra = rules.reduce((sum, building) => sum + building.cells.length - 1, 0);
   const score = fullness - extra * 30 - spawnSpread * 20 - (hi - lo) * 5 - blocked * 3;
-  return { originX, originZ, yaw, step, heights, kind, building, score, spawnSpread, boss, mechs, raiders, rules };
+  return { originX, originZ, yaw, step, heights, terrain: ground, kind, building, score, spawnSpread, boss, mechs, raiders, rules };
 }
 
 function axesOf(anchor: SiteAnchor, boardYaw: number): { alongX: number; alongZ: number } | null {
