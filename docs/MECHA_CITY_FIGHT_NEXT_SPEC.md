@@ -1,10 +1,10 @@
 # 机甲战棋下一轮：守楼、城市地形、道路可读
 
-版本：迭代 2 · 日期：2026-10-25 · 状态：待实现
+版本：迭代 2 · 日期：2026-10-25 · 状态：玩法选择已落地；本文件第 3–6 节与代码对齐
 
-规则串保持 `mecha-v1.3`。本轮不改 `strike`、生命、攻击、防御、楼血、回合上限、半步公式和 `TERRAIN_MOD`。改的是自动对战看向谁、城市窗口是否肯留下水和山，以及道路格子是否和画面上的路面一致、步数是否写在面板上。
+规则串保持 `mecha-v1.3`。不改 `strike`、生命、攻击、防御、楼血、回合上限、半步公式和 `TERRAIN_MOD`。玩家选打法和战场。默认仍是攻坚，平地仍是原来的内陆窗。有路、水、山或上坡时，候选的 3 格按半步接近花费排序。面板写出「这一步 N 半步，预算 M」。换打法会重填草稿。Boss 已经倒下之后如果楼先没了或回合用尽，结局写明这一点。巷战包含单侧临街。
 
-English: the next iteration keeps the v1.3 numbers. The player chooses the doctrine (boss first or hold the buildings) and, on a real city, the field shape (flat, shore, ridge, alley). Those choices have to produce different plans and different ground. Road cells include junction fillets, and the panel shows the half-step cost. No HP or attack retune.
+English: v1.3 numbers stay. The player chooses doctrine and field shape. Boss-first remains the default, and the flat window stays inland. When the board has a road, water, a mountain, or an uphill step, the three candidate cells are the cheapest half-step approaches. The panel reads “N of M half-steps”. Switching doctrine refills the draft. A loss after the boss is already down says so. Alley includes a one-sided frontage.
 
 ## 0. 这一轮补上的两件事
 
@@ -13,7 +13,7 @@ English: the next iteration keeps the v1.3 numbers. The player chooses the doctr
 | 选择 | 选项 | 不同在哪里 |
 | --- | --- | --- |
 | 打法 | 攻坚 `tunnel`、守楼 `peel` | 同一局面，突击迈出的格子到「离楼最近的袭扰者」的距离，守楼更近。两套整包的 JSON 不相同 |
-| 战场 | 平地、靠岸、翻山、巷战 | 平地保持今天的选窗。靠岸水格 8–30 且平地 ≥ 50。翻山山格 4–20 且平地 ≥ 50。巷战是贴着楼的空格里至少 4 格被涂成路，取这样的路最多的一窗。这座城没有的形状是禁用项，不造格子 |
+| 战场 | 平地、靠岸、翻山、巷战 | 平地保持严格选窗。靠岸水格 8–30 且平地 ≥ 50。翻山山格 4–20 且平地 ≥ 50。巷战是贴着楼的空格（单侧临街也算）里至少 4 格被涂成路，取这样的路最多的一窗。这座城没有的形状是禁用项，不造格子 |
 
 攻坚仍是 `squadPlan` / `bossTunnelPlan`，自动对战的默认打法。守楼是 `peelPlan`，权重和焦点与第 3 节相同，但是玩家选了才用。面板上的「按打法填入」把当前打法写进草稿，玩家还可以改。切换战场会换一块地并重开这一局。
 
@@ -34,7 +34,7 @@ English: the next iteration keeps the v1.3 numbers. The player chooses the doctr
 
 教科书平地围城（无城市地形）：`squad` 第 8 回合胜，`peel` 第 9 回合胜，`hold` 楼被拆光，随机 0/24。
 
-只改权重不够。`reweight` 仍是 24/32。本轮把已经测过的 `peel` 搜法升成自动对战，不另发明一套未测的混合焦点。
+只改权重不够。`reweight` 仍是 24/32。守楼升成玩家可选的打法，不替换攻坚，也不另发明一套未测的混合焦点。上面这 32 扇是曼哈顿选格时的平地窗。
 
 ## 2. 冻结
 
@@ -68,9 +68,9 @@ English: the next iteration keeps the v1.3 numbers. The player chooses the doctr
 候选：
 
 - 可达格用 `pathDistance <= moveBudget`。
-- 除原地外，取得分最高以前，先按到焦点格的曼哈顿距离取最近 3 格。
+- 除原地外，取得分最高以前先留 3 格。平地按到焦点的曼哈顿距离。板上有路、水、山，或相邻高差超过 `FLAT_SPAWN_MAX_DELTA` 时，改按走到焦点的半步花费；焦点格被占就走到它四周还能落脚的格子。半步相同再用原来的曼哈顿打破平局。教科书平地没有这些格子，排序与改之前相同。
 - 本地分只给打中焦点 id 的攻击加价：冲锋 100、近战 80、穿刺 60、射击 50；修理 20；打向别人的攻击 8。再减去到焦点格的距离。站上预告格减 8。
-- 取本地分前 5，并保证「原地且跳过」在候选里。
+- 取本地分前 5，并保证「原地且跳过」在候选里。宽度不放大。
 
 整包分，模拟到本回合 Boss 结算之后：
 
@@ -88,24 +88,22 @@ English: the next iteration keeps the v1.3 numbers. The player chooses the doctr
 
 整包非法就丢掉。同分取 `JSON.stringify(items)` 字典序较小的一份。三台都待机的包仍然参与比较。
 
-现役的朝 Boss 搜法改名为 `bossTunnelPlan`，留在 `ai.ts`，自动对战不调用它。分布脚本用它做对照列 `tunnel`。它的候选格、本地分和整包权重保持今天的 `squadPlan`（Boss 掉血 ×20、袭扰者 ×12、楼剩余 ×4、楼毁或全灭 −3000、超时 −100）。
+`squadPlan` 另导出为 `bossTunnelPlan`。自动对战调用 `planForDoctrine`，默认攻坚。分布脚本的 `squad` 列调 `bossTunnelPlan`，`peel` 列调 `peelPlan`。攻坚的候选格、本地分和整包权重保持 `squadPlan`（Boss 掉血 ×20、袭扰者 ×12、楼剩余 ×4、楼毁或全灭 −3000、超时 −100）。半步选格的规则两套打法相同。
 
 ## 4. 城市窗口留下水和山
 
-选窗仍在 `siteMechaWindow`。出生规则不变：出生采样高差不超过 `FLAT_SPAWN_MAX_DELTA`（1 个世界单位），Boss、三台机甲、两只袭扰者、至少两栋楼都落在平地格子上，水与山不能出生。道路仍在窗口选定之后再涂，不参与打分。
+`siteMechaWindow` 仍是严格平地窗：水加山超过 18 格就整窗作废。打开战棋时的默认战场就是它。靠岸、翻山、巷战由 `siteFightShapes` 另选，缺的键是 `null`。出生规则不变：出生采样高差不超过 `FLAT_SPAWN_MAX_DELTA`（1 个世界单位），Boss、三台机甲、两只袭扰者、至少两栋楼都落在平地格子上，水与山不能出生。道路仍在窗口选定之后再涂，不参与打分。
 
-今天非平地超过 18 格就整窗作废，打分还惩罚非平地和高差，所以海岸城也会选出一块内陆平地。第二遍只在第一遍的最优窗水和山都是 0 时跑。
+靠岸和翻山接受的窗：
 
-第二遍接受的窗：
+- 出生规则与平地相同，包含高差上限 `hi - lo ≤ 12`。
+- 靠岸水格 8–30，翻山山格 4–20。少于下限只是噪点。
+- 涂路之前的平地格 ≥ 50。
+- 通过的窗之间仍用现有的 `better()`。
 
-- 出生规则与现在相同，包含高差上限 `hi - lo ≤ 12`。
-- 水格 ≥ 8，或山格 ≥ 4。少于这个只是噪点，不当作地形。
-- 水格 ≤ 30，山格 ≤ 20，涂路之前的平地格 ≥ 50。
-- 通过的窗之间仍用现有的 `better()`，不另加一项与出生平整度打架的分。
+巷战只在严格平地窗里找。贴着楼的空格（对望或单侧临街）至少 4 格，按这个数量先留 8 个窗；涂路之后其中至少 4 格是路，取路最多的一窗。
 
-有第二遍结果就用它，否则用第一遍，并记下 `terrainFeature: "shore" | "ridge" | "none"`（水优先于山，两者都够则 `"shore"`）。不生成假的水或山。城市计划本身不改。
-
-上坡格（相邻平地高差大于 `FLAT_SPAWN_MAX_DELTA`）只计数，不设最低配额。
+不生成假的水或山。城市计划本身不改。上坡格只进入半步花费，不设最低配额。
 
 ## 5. 道路格子与步数
 
@@ -117,7 +115,7 @@ English: the next iteration keeps the v1.3 numbers. The player chooses the doctr
 
 ### 5.2 面板写出半步
 
-选中一台活着的机甲并且草稿里有目的地时（含原地），这台的行内显示：
+每台活着的机甲一行，含原地。显示：
 
 - 中文：`这一步 {cost} 半步，预算 {budget}`
 - 英文：`{cost} of {budget} half-steps`
@@ -128,7 +126,9 @@ English: the next iteration keeps the v1.3 numbers. The player chooses the doctr
 
 > Roads halve a step. Assault likes roads, the Gunner climbs for the same cost as flat ground, and Support pays nothing extra uphill. Water is impassable. A push into water or a mountain stops on the wall.
 
-键就是 `MechaBoard` 里现有的那句中文。两条新句子也进 `gameCopy.ts`。
+键就是 `MechaBoard` 里现有的那句中文。两条新句子也进 `gameCopy.ts`。半步那一行由 `stepBudgetLine` 按语言整句生成，避免中英词序拼错。
+
+换「打法」时，若还在玩家回合且没有结局，草稿按新打法重填。结局若是楼被拆光或回合用尽，并且 Boss 生命已经是 0，面板写「大怪已倒，楼先没了」或「大怪已倒，回合用尽」。
 
 ### 5.3 路面颜色
 
@@ -146,33 +146,23 @@ English: the next iteration keeps the v1.3 numbers. The player chooses the doctr
 单元：
 
 - `node --experimental-strip-types --import ./scripts/mecha-ts-register.mjs --test scripts/verify-mecha-tactics.ts` 现有水、山、上坡、道路断言保持通过。
-- 同加载器跑 `scripts/verify-mecha-city-site.ts`，新增：
-  - 格子中心落在路口扇面、落在所有边带之外时，该格是 `road`；两格以外的平地仍是 `land`；水格不被涂成路；桥面不把下面的格子涂成路。
-  - 合成地形里同时有一块内陆平地窗和一块能出生的海岸窗（水 ≥ 8）时，`siteMechaWindow` 返回海岸窗。
-  - 海岸窗无法出生时退回内陆窗，`terrainFeature` 为 `"none"`。
-- 手摆平地：Boss 锚点 `(6,6)`，楼在 `(0,0)` 与 `(0,1)`，袭扰者在 `(1,1)`，三台机甲在 `(4,4)`、`(4,5)`、`(5,4)`。`squadPlan` 里突击的目的地到 `(1,1)` 的曼哈顿距离小于 `bossTunnelPlan` 的对应距离。
+- 同加载器跑 `scripts/verify-mecha-city-site.ts`：
+  - 格子中心落在路口扇面、落在所有边带之外时，该格是 `road`。
+  - 水格上有车行道时仍是 `water`。桥面（`bridge` 且 `structure === "deck"`）不把下面的平地涂成 `road`。
+  - 合成地形里同时有内陆平地、靠岸和翻山时，`siteMechaWindow` 与 `shapes.flat` 同原点，水格和山格是 0；`shapes.shore` 与 `shapes.ridge` 各自满足配额。
+  - 两排楼对望的路，以及单侧临街的路，都能选出巷战。
+- 同加载器跑 `scripts/verify-mecha-doctrine.ts`：
+  - 手摆平地：Boss 锚点 `(6,6)`，楼在 `(0,0)` 与 `(0,1)`，袭扰者在 `(1,1)` 与 `(8,8)`，三台机甲在 `(4,4)`、`(4,5)`、`(5,4)`。`peelPlan` 里突击的目的地到 `(1,1)` 的曼哈顿距离小于 `bossTunnelPlan`。两套整包的 JSON 不相同。
+  - 山墙挡住直线、路边能绕时，守楼的突击落在道路那一行。
+  - `stepBudgetLine` 的中文是「这一步 8 半步，预算 8」，英文是 “8 of 8 half-steps”。
 
-分布（手动，不进 CI），同一条命令：
+分布（手动，不进 CI）：
 
 ```
 node scripts/mecha-balance-distribution.mjs
 ```
 
-默认仍是 16 种子 × `{80,380}`、背景关、迈阿密、随机 5 次。在**同一批新窗口**上：
-
-| 检查 | 线 |
-| --- | --- |
-| `squad` 胜 | ≥ 30/32 |
-| `squad` 失败且 Boss 已经死于该场（`defeat_buildings` 或 `defeat_timeout`） | ≤ 2 |
-| `squad` 对 `tunnel` 的配对 | `squad` 胜而 `tunnel` 负 ≥ 8 |
-| `squad` 胜场余量 | 报告均值和标准差；标准差 > 0 |
-| `hold` | 0/32 |
-| `random` | 胜场 ≤ 2/160 |
-| 教科书平地 `tunnel` | 胜，第 8 回合（锁住旧搜法没被改写） |
-| 教科书平地 `squad` | 胜，回合落在 7–12 |
-| 水 ≥ 8 或山 ≥ 4 的窗口 | ≥ 8/32 |
-
-迈阿密若到不了 8/32：每个种子打印被拒海岸或山脊窗的失败谓词（出生、高差、楼数、水上限、山上限、平地下限）。谓词日志随 PR 贴出。不得为此涂假地形，也不得放宽出生高差。选择器和合成地形测试仍然要落地。上限是否过紧，等日志证明拒绝来自上限而不是出生规则，再单独立项。
+默认仍是 12 种子 × `{80,380}`、背景关、迈阿密。探针打印每个种子有哪些战场，并在结束时合计平地、靠岸、翻山、巷战各出现多少次。战斗仍打平地窗。教科书平地没有路、水、山，攻坚保持第 8 回合胜，守楼第 9 回合胜。不把「攻坚 ≥ 30/32」当成验收：那条线假设守楼替换了攻坚。
 
 界面：`?demo=1` 打开机甲战棋。面板规则串仍是 `mecha-v1.3`，英文没有 `Translation unavailable`。选中机甲并点一格后，该行出现半步和预算。未选中时机动格在街道上呈 `#f2c14b`。这一轮的截图取城市实地，不取 `engine={null}` 的方格回退。
 
@@ -185,6 +175,7 @@ node scripts/mecha-balance-distribution.mjs
 - `apps/agent-city/ui/src/game/game.css`
 - `apps/agent-city/ui/src/game/gameCopy.ts`
 - `scripts/verify-mecha-city-site.ts`
+- `scripts/verify-mecha-doctrine.ts`
 - `scripts/mecha-balance-distribution.mjs`
 - 仅当路面谓词拆模块时，动 `apps/agent-city/ui/src/engine/surface/roadClearance.ts` 与新模块
 

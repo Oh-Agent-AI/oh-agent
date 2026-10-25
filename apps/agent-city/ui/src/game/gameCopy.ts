@@ -194,9 +194,11 @@ const ENGLISH: Record<string, string> = {
   "城市实地": "City ground",
   "沿着道路能多走一倍。突击靠路，炮手爬山和平地一样，支援上坡不加价。水过不去，被推进水或山地会撞上。": "Roads halve a step. Assault likes roads, the Gunner climbs for the same cost as flat ground, and Support pays nothing extra uphill. Water is impassable. A push into water or a mountain stops on the wall.",
   "攻坚先打大怪。守楼先打离楼最近的小怪。两种打法走出来的结果不同。": "Boss first goes for the boss. Hold the buildings hits the raider nearest a building. The two doctrines do not play out the same.",
-  "靠岸有水，翻山有山地，巷战是楼之间的道路。这座城没有的场地不会出现。": "Shore has water, ridge has mountains, and alley is the road between buildings. A shape this city does not have stays unavailable.",
+  "靠岸有水，翻山有山地，巷战是贴着楼的路，单侧临街也算。这座城没有的场地不会出现。": "Shore has water, ridge has mountains, and alley is a road beside a building, including a one-sided frontage. A shape this city does not have stays unavailable.",
   "这一步": "Step",
   "半步": "half-steps",
+  "大怪已倒，楼先没了": "The boss is down, and the buildings fell first.",
+  "大怪已倒，回合用尽": "The boss is down, and the turn limit came first.",
   "打法": "Doctrine",
   "攻坚": "Boss first",
   "守楼": "Hold the buildings",
@@ -220,6 +222,13 @@ const ENGLISH: Record<string, string> = {
   "射手": "Gunner",
   "支援": "Support",
 };
+
+/** 面板上的半步行。中英词序不同，不把两个碎片拼成一句英文。 */
+export function stepBudgetLine(cost: number | null, budget: number, locale: GameLocale): string {
+  const shown = cost === null ? "—" : String(cost);
+  if (locale === "en") return `${shown} of ${budget} half-steps`;
+  return `这一步 ${shown} 半步，预算 ${budget}`;
+}
 
 export function gameText(text: string, locale: GameLocale): string {
   if (locale !== "en") return text;

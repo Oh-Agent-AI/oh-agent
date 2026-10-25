@@ -4,7 +4,7 @@
  * 有楼时，楼全毁和机甲全灭一样是输。
  */
 import {
-  BOARD, BOSS_HP, RAIDER_HP, bossExecute, footprintCenter, legalActions, living, moveBudget, pathDistance,
+  BOARD, BOSS_HP, FLAT_SPAWN_MAX_DELTA, RAIDER_HP, bossExecute, footprintCenter, legalActions, living, moveBudget, pathDistance,
   validateAndApplyPlan,
   type Action, type ArenaPlan, type Cell, type MatchState, type MechId, type MechOrder,
 } from "./rules";
@@ -56,8 +56,11 @@ function localScore(state: MatchState, id: MechId, dest: Cell, action: Action): 
   else if (action.kind === "shoot") score += 50;
   else if (action.kind === "repair") score += 40;
   const center = footprintCenter(state.boss.anchor);
-  score -= Math.abs(dest.x + 0.5 - center.x) + Math.abs(dest.y + 0.5 - center.y);
-  if (id === "Assault") score -= Math.abs(dest.x + 0.5 - center.x);
+  if (boardChargesTerrain(state)) score -= approachCost(state, dest, center, id);
+  else {
+    score -= Math.abs(dest.x + 0.5 - center.x) + Math.abs(dest.y + 0.5 - center.y);
+    if (id === "Assault") score -= Math.abs(dest.x + 0.5 - center.x);
+  }
   if (threatened(state, dest)) score -= 8;
   return score;
 }
@@ -69,11 +72,7 @@ function optionsFor(state: MatchState, id: MechId): Opt[] {
   const center = footprintCenter(state.boss.anchor);
   const ranked = reachable(state, id)
     .filter((c) => !same(c, origin))
-    .sort((a, b) => {
-      const da = Math.abs(a.x + 0.5 - center.x) + Math.abs(a.y + 0.5 - center.y);
-      const db = Math.abs(b.x + 0.5 - center.x) + Math.abs(b.y + 0.5 - center.y);
-      return da - db || a.x - b.x || a.y - b.y;
-    });
+    .sort(rankToward(state, id, center, "center"));
   const dests = [origin, ...ranked.slice(0, 3)];
   const opts: Opt[] = [];
   for (const dest of dests) {
@@ -107,7 +106,11 @@ function scorePlan(state: MatchState, plan: ArenaPlan): number | null {
   for (const raider of clone.raiders) score += (RAIDER_HP - raider.hp) * 12;
   for (const m of clone.mechs) {
     score += m.hp * 3;
-    if (m.hp > 0) score -= Math.abs(m.pos.x + 0.5 - center.x) + Math.abs(m.pos.y + 0.5 - center.y);
+    if (m.hp > 0) {
+      score -= boardChargesTerrain(clone)
+        ? approachCost(clone, m.pos, center, m.id)
+        : Math.abs(m.pos.x + 0.5 - center.x) + Math.abs(m.pos.y + 0.5 - center.y);
+    }
   }
   for (const b of clone.buildings) score += b.hp * 4;
   if (clone.outcome === "victory") score += 5000;
@@ -161,8 +164,55 @@ export type DoctrineId = "tunnel" | "peel";
 
 const PEEL_WEIGHTS = { boss: 8, raider: 24, building: 16, mech: 3, victory: 5000, wipe: -3000, buildings: -4000, timeout: -150 };
 
+const APPROACH_DIRS = [{ x: 0, y: -1 }, { x: 1, y: 0 }, { x: 0, y: 1 }, { x: -1, y: 0 }];
+
 function manh(a: Cell, b: Cell): number {
   return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+}
+
+/** 平地一步的花费处处相同，曼哈顿序就是半步序。有路、水、山或上坡时才改用半步。 */
+function boardChargesTerrain(state: MatchState): boolean {
+  if (state.terrain) {
+    for (const row of state.terrain) for (const cell of row) if (cell !== "land") return true;
+  }
+  if (!state.heights) return false;
+  for (let y = 0; y < BOARD; y += 1) {
+    for (let x = 0; x < BOARD; x += 1) {
+      const h = state.heights[y]?.[x];
+      if (h === undefined) continue;
+      for (const dir of APPROACH_DIRS) {
+        const next = state.heights[y + dir.y]?.[x + dir.x];
+        if (next !== undefined && next - h > FLAT_SPAWN_MAX_DELTA) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** 从这一格走到焦点的半步。焦点被占时改走到它四周还能落脚的格子。 */
+function approachCost(state: MatchState, from: Cell, focus: Cell, mover: MechId): number {
+  const direct = pathDistance(state, from, focus, mover);
+  if (direct !== null) return direct;
+  let best = Number.POSITIVE_INFINITY;
+  for (const dir of APPROACH_DIRS) {
+    const dist = pathDistance(state, from, { x: focus.x + dir.x, y: focus.y + dir.y }, mover);
+    if (dist !== null && dist < best) best = dist;
+  }
+  return best;
+}
+
+function rankToward(state: MatchState, id: MechId, focus: Cell, bias: "cell" | "center"): (a: Cell, b: Cell) => number {
+  const terrain = boardChargesTerrain(state);
+  const biasOf = (cell: Cell) => bias === "center"
+    ? Math.abs(cell.x + 0.5 - focus.x) + Math.abs(cell.y + 0.5 - focus.y)
+    : manh(cell, focus);
+  return (a, b) => {
+    if (terrain) {
+      const cost = approachCost(state, a, focus, id) - approachCost(state, b, focus, id);
+      if (cost !== 0) return cost;
+    }
+    return biasOf(a) - biasOf(b) || a.x - b.x || a.y - b.y;
+  };
 }
 
 function nearestBuildingDist(state: MatchState, cell: Cell): number {
@@ -194,7 +244,7 @@ function peelLocalScore(state: MatchState, id: MechId, dest: Cell, action: Actio
   else if (aimed && action.kind === "shoot") score += 50;
   else if (action.kind === "repair") score += 20;
   else if (action.kind !== "skip") score += 8;
-  score -= manh(dest, focus.cell);
+  score -= boardChargesTerrain(state) ? approachCost(state, dest, focus.cell, id) : manh(dest, focus.cell);
   if (threatened(state, dest)) score -= 8;
   return score;
 }
@@ -204,7 +254,7 @@ function peelOptions(state: MatchState, id: MechId): Opt[] {
   const focus = threatFocus(state).cell;
   const ranked = reachable(state, id)
     .filter((cell) => !same(cell, origin))
-    .sort((a, b) => manh(a, focus) - manh(b, focus) || a.x - b.x || a.y - b.y);
+    .sort(rankToward(state, id, focus, "cell"));
   const dests = [origin, ...ranked.slice(0, 3)];
   const opts: Opt[] = [];
   for (const dest of dests) {
@@ -229,7 +279,9 @@ function peelScore(state: MatchState, plan: ArenaPlan): number | null {
   for (const raider of clone.raiders) score += (RAIDER_HP - raider.hp) * PEEL_WEIGHTS.raider;
   for (const mech of clone.mechs) {
     score += mech.hp * PEEL_WEIGHTS.mech;
-    if (mech.hp > 0) score -= manh(mech.pos, focus);
+    if (mech.hp > 0) {
+      score -= boardChargesTerrain(clone) ? approachCost(clone, mech.pos, focus, mech.id) : manh(mech.pos, focus);
+    }
   }
   for (const building of clone.buildings) score += building.hp * PEEL_WEIGHTS.building;
   if (clone.outcome === "victory") score += PEEL_WEIGHTS.victory;

@@ -7,6 +7,7 @@
  *   hold      三机待机。数值和场地自己走完，不含脚本选择。
  *   random    合法移动和行动里均匀抽取。脚本智商的下沿。
  *   squad     游戏里的攻坚 bossTunnelPlan：候选格朝 Boss，评分偏 Boss 伤害。
+ *             板上有路、水、山或上坡时，候选 3 格和距离分改用半步接近花费。
  *   reweight  候选格仍朝 Boss，评分改成优先楼和袭扰者。只换目标，不换搜索宽度。
  *   peel      游戏里的守楼 peelPlan：同样的宽度，候选格和评分都朝「离楼最近的袭扰者」。
  *
@@ -577,6 +578,7 @@ for (const name of ["hold", "squad", "reweight", "peel"]) log(`  ${name} ${stock
 
 const sites = [];
 const rejected = [];
+const shapeHits = { flat: 0, shore: 0, ridge: 0, alley: 0, windows: 0 };
 for (const count of counts) {
   const model = modelFor(count);
   for (const seed of seeds) {
@@ -614,6 +616,8 @@ for (const count of counts) {
           return `${id}:w${water}/m${mountain}/r${road}`;
         });
         shapeNote = bits.join(",") || "none";
+        shapeHits.windows += 1;
+        for (const id of present) shapeHits[id] += 1;
       } catch (error) {
         rejected.push({ count, seed, backdrop, reason: `site ${error.message}` });
         log(`site fail count=${count} seed=${seed} backdrop=${backdrop} ${error.message}`);
@@ -636,6 +640,7 @@ for (const count of counts) {
   }
 }
 
+log(`shapes present flat=${shapeHits.flat} shore=${shapeHits.shore} ridge=${shapeHits.ridge} alley=${shapeHits.alley} of ${shapeHits.windows}`);
 const summary = summarizeSites(sites);
 const report = {
   ruleset: "mecha-v1.3",

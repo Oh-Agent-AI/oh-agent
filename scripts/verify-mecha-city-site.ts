@@ -330,3 +330,79 @@ test("an alley is the road between two rows of buildings", () => {
   assert.ok(shapes.alley);
   assert.ok(faces(shapes.alley).road >= 4);
 });
+
+test("a one-sided frontage road is still an alley", () => {
+  const w = CELL_LOTS * LOT.width;
+  const anchors = [0, 2, 4, 6].map((col) => anchor(`n${col}`, col * w, 0));
+  const bare = siteMechaWindow({ height: () => 4 }, anchors);
+  assert.ok(bare);
+  const frontage: Array<{ x: number; y: number }> = [];
+  for (let y = 0; y < 10; y += 1) {
+    for (let x = 0; x < 10; x += 1) {
+      if (bare.terrain[y]![x] !== "land") continue;
+      const beside = bare.buildings.some((building) => building.cells.some((cell) => Math.abs(cell.x - x) + Math.abs(cell.y - y) === 1));
+      if (beside) frontage.push({ x, y });
+    }
+  }
+  assert.ok(frontage.length >= 4);
+  const roads = frontage.slice(0, 4).map((cell, index) => {
+    const at = cellWorld(bare, cell);
+    return {
+      id: `front-${index}`,
+      from: `a${index}`,
+      to: `b${index}`,
+      width: 12,
+      kind: "arterial" as const,
+      points: [{ x: at.x - 40, z: at.z }, { x: at.x + 40, z: at.z }],
+    };
+  });
+  const shapes = siteFightShapes({ height: () => 4 }, anchors, roads);
+  assert.ok(shapes.alley);
+  assert.ok(faces(shapes.alley).road >= 4);
+});
+
+test("water stays water under a carriageway, and a deck does not paint the land beneath it", () => {
+  const anchors = [
+    anchor("in-a", 400, 400),
+    anchor("in-b", 412, 400),
+    anchor("in-c", 404, 412),
+    anchor("shore-a", 10, 24),
+    anchor("shore-b", 22, 24),
+    anchor("shore-c", 14, 36),
+  ];
+  const terrain = { height: (_x: number, z: number) => (z < 4 ? -1 : 4) };
+  const bare = siteFightShapes(terrain, anchors).shore;
+  assert.ok(bare);
+  let waterCell: { x: number; y: number } | null = null;
+  let landCell: { x: number; y: number } | null = null;
+  for (let y = 0; y < 10; y += 1) {
+    for (let x = 0; x < 10; x += 1) {
+      if (!waterCell && bare.terrain[y]![x] === "water") waterCell = { x, y };
+      if (!landCell && bare.terrain[y]![x] === "land") landCell = { x, y };
+    }
+  }
+  assert.ok(waterCell);
+  assert.ok(landCell);
+  const span = (at: { x: number; z: number }, extra: { bridge?: boolean; structure?: "deck" }) => [{
+    id: "span",
+    from: "a",
+    to: "b",
+    width: 12,
+    kind: "arterial" as const,
+    points: [{ x: at.x - 40, z: at.z }, { x: at.x + 40, z: at.z }],
+    ...extra,
+  }];
+  const waterAt = cellWorld(bare, waterCell);
+  const landAt = cellWorld(bare, landCell);
+  const wet = siteFightShapes(terrain, anchors, span(waterAt, {})).shore;
+  assert.ok(wet);
+  assert.equal(wet.terrain[waterCell.y]![waterCell.x], "water");
+  const deckRoads = span(landAt, { bridge: true, structure: "deck" });
+  assert.ok(groundRoadClearance(deckRoads, landAt.x, landAt.z) >= 0);
+  const deck = siteFightShapes(terrain, anchors, deckRoads).shore;
+  assert.ok(deck);
+  assert.equal(deck.terrain[landCell.y]![landCell.x], "land");
+  const paved = siteFightShapes(terrain, anchors, span(landAt, {})).shore;
+  assert.ok(paved);
+  assert.equal(paved.terrain[landCell.y]![landCell.x], "road");
+});

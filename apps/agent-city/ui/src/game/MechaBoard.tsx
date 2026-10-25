@@ -1,7 +1,7 @@
 /** City test surface for GDD v1.3. Rules live in `mecha/rules.ts`. */
 import { useEffect, useMemo, useState } from "react";
 import type { CityEngine } from "../engine/CityEngine";
-import { gameText, type GameLocale } from "./gameCopy";
+import { gameText, stepBudgetLine, type GameLocale } from "./gameCopy";
 import { CityMechaWorld, type CityMechaView } from "./CityMechaWorld";
 import { planForDoctrine, type DoctrineId } from "./mecha/ai";
 import { anchorsFromCity, siteFightShapes, type CityMechaSite, type FightShape } from "./mecha/citySite";
@@ -291,7 +291,13 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
 
   const skill = state.boss.intent?.skillId;
   const skillLabel = skill === "sweep" ? t("横扫") : skill === "smash" ? t("砸击") : t("跳过");
-  const outcome = state.outcome === "victory" ? t("歼灭") : state.outcome === "defeat_wipe" ? t("全灭") : state.outcome === "defeat_timeout" ? t("回合耗尽") : state.outcome === "defeat_buildings" ? t("楼被拆光") : null;
+  const outcome = state.boss.hp <= 0 && state.outcome === "defeat_buildings" ? t("大怪已倒，楼先没了")
+    : state.boss.hp <= 0 && state.outcome === "defeat_timeout" ? t("大怪已倒，回合用尽")
+    : state.outcome === "victory" ? t("歼灭")
+    : state.outcome === "defeat_wipe" ? t("全灭")
+    : state.outcome === "defeat_timeout" ? t("回合耗尽")
+    : state.outcome === "defeat_buildings" ? t("楼被拆光")
+    : null;
   const raiderHp = state.raiders.map((raider) => `${t(enemyName(raider.id))} ${raider.hp}`).join(" ");
 
   const onCity = Boolean(site && engine);
@@ -306,7 +312,7 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
         <p className="mecha-help">{t("点一台机甲，再点能走到的格子，然后给三台都选行动。站上红色预告格会吃下这一击。")}</p>
         <p className="mecha-help">{t("沿着道路能多走一倍。突击靠路，炮手爬山和平地一样，支援上坡不加价。水过不去，被推进水或山地会撞上。")}</p>
         <p className="mecha-help">{t("攻坚先打大怪。守楼先打离楼最近的小怪。两种打法走出来的结果不同。")}</p>
-        {onCity ? <p className="mecha-help">{t("靠岸有水，翻山有山地，巷战是楼之间的道路。这座城没有的场地不会出现。")}</p> : null}
+        {onCity ? <p className="mecha-help">{t("靠岸有水，翻山有山地，巷战是贴着楼的路，单侧临街也算。这座城没有的场地不会出现。")}</p> : null}
         {onCity ? <p className="mecha-help">{t("战场在这座城市的地面上。楼顶血槽只记这一局，城市里的楼还在。")}</p> : engine ? <p className="mecha-help">{t("这座城市没有一块够平的战场，仍用方格棋盘。")}</p> : null}
         {onCity ? null : <MechaLineup label={t("机甲与怪兽")} view={view} />}
         <ul className="mecha-pack">
@@ -320,7 +326,7 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
               <li key={m.id} className={!row?.explicit ? "is-open" : hit ? "is-hit" : ""}>
                 <button type="button" className={m.id === selected ? "is-selected" : ""} onClick={() => setSelected(m.id)}>{t(NAMES[m.id])} {m.hp}</button>
                 <span>{row?.moveTo ? `${row.moveTo.x},${row.moveTo.y}` : t("原位")}</span>
-                <span>{t("这一步")} {stepCost ?? "—"}/{moveBudget(m.id)} {t("半步")}</span>
+                <span>{stepBudgetLine(stepCost, moveBudget(m.id), locale)}</span>
                 <span>{chosen}{row?.explicit && row.action.kind === "repair" ? ` ${t(NAMES[row.action.target])}` : ""}</span>
                 {hit ? <span>{t("预告伤害")} {incomingDamage(state, m.id, dest)}</span> : null}
               </li>
@@ -336,7 +342,11 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
             restart(preset, script, nextSite);
           }}>{SHAPES.map((item) => <option key={item.id} value={item.id} disabled={!catalog[item.id]}>{t(item.label)}</option>)}</select></label> : onCity ? <span>{t("城市实地")}</span> : <label>{t("布局")}<select value={preset} onChange={(e) => restart(e.target.value as CoverPresetId, script)}>{PRESETS.map((p) => <option key={p.id} value={p.id}>{t(p.label)}</option>)}</select></label>}
           <label>{t("脚本")}<select value={script} onChange={(e) => restart(preset, e.target.value as BossScriptId)}>{SCRIPTS.map((s) => <option key={s.id} value={s.id}>{t(s.label)}</option>)}</select></label>
-          <label>{t("打法")}<select value={doctrine} onChange={(e) => setDoctrine(e.target.value as DoctrineId)}>{DOCTRINES.map((item) => <option key={item.id} value={item.id}>{t(item.label)}</option>)}</select></label>
+          <label>{t("打法")}<select value={doctrine} onChange={(e) => {
+            const next = e.target.value as DoctrineId;
+            setDoctrine(next);
+            if (!state.outcome && state.phase === "player_plan") setDraft(draftFromPlan(state, planForDoctrine(state, next)));
+          }}>{DOCTRINES.map((item) => <option key={item.id} value={item.id}>{t(item.label)}</option>)}</select></label>
           <button type="button" onClick={() => restart()}>{t("新开一局")}</button>
           <button type="button" disabled={Boolean(state.outcome) || state.phase !== "player_plan"} onClick={() => { setAuto(false); setDraft(draftFromPlan(state, planForDoctrine(state, doctrine))); }}>{t("按打法填入")}</button>
           <button type="button" disabled={Boolean(state.outcome)} onClick={() => { setBeat("show"); setAuto((on) => !on); }}>{auto ? t("停止自动") : t("自动对战")}</button>
