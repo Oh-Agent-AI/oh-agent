@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { LOT } from "../apps/agent-city/ui/src/engine/worldScale.ts";
 import { createMatch, pathDistance, spawnsAreOpenGround } from "../apps/agent-city/ui/src/game/mecha/rules.ts";
-import { CELL_LOTS, cellWorld, siteMechaWindow, type SiteAnchor } from "../apps/agent-city/ui/src/game/mecha/citySite.ts";
+import { groundRoadClearance } from "../apps/agent-city/ui/src/engine/surface/roadClearance.ts";
+import { CELL_LOTS, cellWorld, siteFightShapes, siteMechaWindow, type SiteAnchor } from "../apps/agent-city/ui/src/game/mecha/citySite.ts";
 
 function anchor(id: string, x: number, z: number, height = 8): SiteAnchor {
   return { id, x, z, halfX: 3, halfZ: 3, ground: 4, height };
@@ -222,4 +223,110 @@ test("a doubled cell holds a lot centered on it", () => {
   for (const building of site!.buildings) assert.equal(building.cells.length, 1);
   assert.ok(Math.abs(site!.cellW - CELL_LOTS * LOT.width) < 1e-9);
   assert.ok(Math.abs(site!.cellD - CELL_LOTS * LOT.depth) < 1e-9);
+});
+
+function faces(site: NonNullable<ReturnType<typeof siteMechaWindow>>) {
+  const counts = { land: 0, water: 0, mountain: 0, road: 0 };
+  for (const row of site.terrain) for (const cell of row) counts[cell] += 1;
+  return counts;
+}
+
+test("the flat window stays inland when a shore and a ridge also fit", () => {
+  const anchors = [
+    anchor("in-a", 400, 400),
+    anchor("in-b", 412, 400),
+    anchor("in-c", 404, 412),
+    anchor("shore-a", 10, 24),
+    anchor("shore-b", 22, 24),
+    anchor("shore-c", 14, 36),
+    anchor("ridge-a", 10, 240),
+    anchor("ridge-b", 22, 240),
+    anchor("ridge-c", 14, 252),
+  ];
+  const terrain = {
+    height: (_x: number, z: number) => (z < 4 ? -1 : 4),
+    slope: (x: number, z: number) => (x < 4 && z > 200 ? 1 : 0),
+  };
+  const shapes = siteFightShapes(terrain, anchors);
+  const flat = siteMechaWindow(terrain, anchors);
+  assert.ok(shapes.flat);
+  assert.ok(flat);
+  assert.equal(shapes.flat.originX, flat.originX);
+  assert.equal(shapes.flat.originZ, flat.originZ);
+  assert.equal(faces(shapes.flat).water, 0);
+  assert.equal(faces(shapes.flat).mountain, 0);
+  assert.ok(shapes.shore);
+  assert.ok(faces(shapes.shore).water >= 8);
+  assert.ok(faces(shapes.shore).water <= 30);
+  assert.ok(faces(shapes.shore).land >= 50);
+  open(shapes.shore);
+  assert.ok(shapes.ridge);
+  assert.ok(faces(shapes.ridge).mountain >= 4);
+  assert.ok(faces(shapes.ridge).mountain <= 20);
+  open(shapes.ridge);
+});
+
+test("a junction fillet outside every carriageway band is still road", () => {
+  const anchors = [anchor("a", 0, 8), anchor("b", 16, 8), anchor("c", 8, 24)];
+  const terrain = { height: () => 4 };
+  const bare = siteMechaWindow(terrain, anchors);
+  assert.ok(bare);
+  let hit: { x: number; y: number } | null = null;
+  for (let y = 0; y < 10 && !hit; y += 1) {
+    for (let x = 0; x < 10; x += 1) {
+      if (bare.terrain[y]![x] === "land") {
+        hit = { x, y };
+        break;
+      }
+    }
+  }
+  assert.ok(hit);
+  const at = cellWorld(bare, hit);
+  // (7, 7) sits outside both half-width 6 bands and inside the corner arc.
+  const node = { x: at.x - 7, z: at.z - 7 };
+  const roads = [
+    { id: "east", from: "n", to: "e", width: 12, kind: "arterial" as const, points: [node, { x: node.x + 80, z: node.z }] },
+    { id: "south", from: "n", to: "s", width: 12, kind: "arterial" as const, points: [node, { x: node.x, z: node.z + 80 }] },
+  ];
+  assert.ok(groundRoadClearance(roads, at.x, at.z) < 0);
+  const site = siteMechaWindow(terrain, anchors, roads);
+  assert.equal(site!.terrain[hit.y]![hit.x], "road");
+});
+
+test("an alley is the road between two rows of buildings", () => {
+  const w = CELL_LOTS * LOT.width;
+  const d = CELL_LOTS * LOT.depth;
+  const anchors: SiteAnchor[] = [];
+  for (const col of [0, 2, 4, 6]) {
+    anchors.push(anchor(`n${col}`, col * w, 0));
+    anchors.push(anchor(`s${col}`, col * w, 2 * d));
+  }
+  const bare = siteMechaWindow({ height: () => 4 }, anchors);
+  assert.ok(bare);
+  const idAt = (x: number, y: number) => bare.buildings.find((building) => building.cells.some((cell) => cell.x === x && cell.y === y))?.id ?? null;
+  const canyon: Array<{ x: number; y: number }> = [];
+  for (let y = 0; y < 10; y += 1) {
+    for (let x = 0; x < 10; x += 1) {
+      const north = y > 0 ? idAt(x, y - 1) : null;
+      const south = y + 1 < 10 ? idAt(x, y + 1) : null;
+      const west = x > 0 ? idAt(x - 1, y) : null;
+      const east = x + 1 < 10 ? idAt(x + 1, y) : null;
+      if ((north && south && north !== south) || (west && east && west !== east)) canyon.push({ x, y });
+    }
+  }
+  assert.ok(canyon.length >= 4);
+  const roads = canyon.slice(0, 4).map((cell, index) => {
+    const at = cellWorld(bare, cell);
+    return {
+      id: `lane-${index}`,
+      from: `a${index}`,
+      to: `b${index}`,
+      width: 12,
+      kind: "arterial" as const,
+      points: [{ x: at.x - 40, z: at.z }, { x: at.x + 40, z: at.z }],
+    };
+  });
+  const shapes = siteFightShapes({ height: () => 4 }, anchors, roads);
+  assert.ok(shapes.alley);
+  assert.ok(faces(shapes.alley).road >= 4);
 });

@@ -9,13 +9,16 @@
  * terrain.height. Meshes are drawn at the same 2× in CityMechaWorld.
  * Roads stay walkable: `buildable` means "a parcel can go here", and that
  * would erase the streets the fight is supposed to stand on. A land cell whose
- * center sits inside a ground carriageway band is marked road after the window
- * is chosen, so the choice of window does not depend on the paint. Junction
- * fillets are not included: that geometry lives in the road renderer, and a
- * cell center in the fillet but outside every band stays land. Water and
- * cliffs are the cells that cannot be spawned on. The city plan is not edited.
+ * center sits on the ground carriageway — band or junction fillet — is marked
+ * road after the window is chosen, so the paint does not choose the window.
+ * Bridges and decks stay off the board. Water and cliffs cannot be spawned on.
+ * The city plan is not edited.
+ * Flat, shore, ridge, and alley are four windows over the same city. The flat
+ * window is the one `siteMechaWindow` already returned. The other three exist
+ * only when that shape's cells are really there.
  */
 import type { RoadEdge } from "../../engine/cityLayout";
+import { groundRoadClearance } from "../../engine/surface/roadClearance";
 import { LOT } from "../../engine/worldScale";
 import { BOARD, FLAT_SPAWN_MAX_DELTA, type Cell, type MechId, type TerrainKind } from "./rules";
 
@@ -31,6 +34,19 @@ const BOARD_REACH = Math.hypot(CELL_W * PITCH_SLACK * CELL_LOTS * BOARD, CELL_D 
 const BUCKET = 8;
 /** A lot that lands on the line by a rounding hair does not claim the next cell. */
 const CELL_EDGE = 1e-3;
+/** 靠岸：水格够形成一条边，又没有把棋盘淹掉。 */
+export const SHORE_WATER_MIN = 8;
+export const SHORE_WATER_MAX = 30;
+/** 翻山：山地够形成一道坎，出生仍在平地上。 */
+export const RIDGE_MOUNTAIN_MIN = 4;
+export const RIDGE_MOUNTAIN_MAX = 20;
+/** 靠岸和翻山都要留下一半以上的平地。 */
+export const FEATURE_LAND_MIN = 50;
+/** 巷战：楼与楼对望的格子里，至少这么多格被涂成路。 */
+export const ALLEY_ROAD_MIN = 4;
+
+export type FightShape = "flat" | "shore" | "ridge" | "alley";
+export type FightCatalog = Record<FightShape, CityMechaSite | null>;
 
 type Step = { w: number; d: number };
 
@@ -163,31 +179,16 @@ type Window = {
   mechs: Array<{ id: MechId; pos: Cell }>;
   raiders: Array<{ id: string; pos: Cell }>;
   rules: CityMechaBuilding[];
+  water: number;
+  mountain: number;
+  land: number;
+  /** 贴着楼的空格。巷战要求其中至少 4 格被涂成路。 */
+  canyon: Cell[];
 };
 
-function segmentDistance(x: number, z: number, a: { x: number; z: number }, b: { x: number; z: number }): number {
-  const dx = b.x - a.x;
-  const dz = b.z - a.z;
-  const ll = dx * dx + dz * dz;
-  const t = ll === 0 ? 0 : Math.max(0, Math.min(1, ((x - a.x) * dx + (z - a.z) * dz) / ll));
-  return Math.hypot(x - a.x - dx * t, z - a.z - dz * t);
-}
+type TerrainGate = "strict" | "open";
 
-/** 格子中心落在地面车行道宽度内才算路。桥面和桥头不改格子。 */
-function onCarriageway(roads: readonly RoadEdge[], x: number, z: number): boolean {
-  for (const edge of roads) {
-    if (edge.bridge || edge.structure === "deck") continue;
-    const half = edge.width / 2;
-    for (let i = 1; i < edge.points.length; i += 1) {
-      const a = edge.points[i - 1];
-      const b = edge.points[i];
-      if (!a || !b) continue;
-      if (segmentDistance(x, z, a, b) < half) return true;
-    }
-  }
-  return false;
-}
-
+/** 格子中心在地面车行道或路口扇面里才算路。桥面和桥头不改格子。水与山不改涂。 */
 function paintRoads(win: Window, roads: readonly RoadEdge[]) {
   for (let y = 0; y < BOARD; y += 1) {
     const row = win.terrain[y];
@@ -195,17 +196,45 @@ function paintRoads(win: Window, roads: readonly RoadEdge[]) {
     for (let x = 0; x < BOARD; x += 1) {
       if (row[x] !== "land") continue;
       const at = boardToWorld(win, (x + 0.5) * win.step.w, (y + 0.5) * win.step.d);
-      if (onCarriageway(roads, at.x, at.z)) row[x] = "road";
+      if (groundRoadClearance(roads, at.x, at.z) < 0) row[x] = "road";
     }
   }
 }
 
-export function siteMechaWindow(terrain: CitySiteTerrain, anchors: readonly SiteAnchor[], roads?: readonly RoadEdge[]): CityMechaSite | null {
-  if (anchors.length === 0) return null;
+function toSite(win: Window): CityMechaSite {
+  return {
+    originX: win.originX,
+    originZ: win.originZ,
+    yaw: win.yaw,
+    cellW: win.step.w,
+    cellD: win.step.d,
+    heights: win.heights,
+    terrain: win.terrain,
+    buildings: win.rules,
+    mechs: win.mechs,
+    boss: win.boss,
+    raiders: win.raiders,
+    spawnSpread: win.spawnSpread,
+  };
+}
+
+function publish(win: Window, roads?: readonly RoadEdge[]): CityMechaSite {
+  const copy = structuredClone(win);
+  if (roads && roads.length > 0) paintRoads(copy, roads);
+  return toSite(copy);
+}
+
+function searchWindows(
+  terrain: CitySiteTerrain,
+  anchors: readonly SiteAnchor[],
+  open: boolean,
+  each: (win: Window, gate: TerrainGate) => void,
+): void {
+  if (anchors.length === 0) return;
   const index = bucketAnchors(anchors);
   const seeds = anchorSeeds(anchors);
-  const slot: { best: Window | null } = { best: null };
   for (const limit of [FLAT_SPAWN_MAX_DELTA, 2]) {
+    let flatEnough = false;
     for (const seed of seeds) {
       const step = pitchOf(seed, anchors);
       for (let by = 0; by < BOARD; by += 1) {
@@ -217,29 +246,74 @@ export function siteMechaWindow(terrain: CitySiteTerrain, anchors: readonly Site
           const s = Math.sin(yaw);
           const originX = seed.x - (lx * c + lz * s);
           const originZ = seed.z - (-lx * s + lz * c);
-          const found = evaluateWindow(terrain, index, originX, originZ, yaw, step, limit);
-          if (found && better(found, slot.best)) slot.best = found;
+          const strict = evaluateWindow(terrain, index, originX, originZ, yaw, step, limit, "strict");
+          if (strict) {
+            each(strict, "strict");
+            if (strict.spawnSpread <= FLAT_SPAWN_MAX_DELTA) flatEnough = true;
+          }
+          if (!open) continue;
+          const featured = evaluateWindow(terrain, index, originX, originZ, yaw, step, limit, "open");
+          if (featured) each(featured, "open");
         }
       }
     }
-    if (slot.best && slot.best.spawnSpread <= FLAT_SPAWN_MAX_DELTA) break;
+    if (flatEnough) break;
   }
-  const best = slot.best;
-  if (!best) return null;
-  if (roads && roads.length > 0) paintRoads(best, roads);
+}
+
+export function siteMechaWindow(terrain: CitySiteTerrain, anchors: readonly SiteAnchor[], roads?: readonly RoadEdge[]): CityMechaSite | null {
+  let best: Window | null = null;
+  searchWindows(terrain, anchors, false, (win, gate) => {
+    if (gate === "strict" && better(win, best)) best = win;
+  });
+  return best ? publish(best, roads) : null;
+}
+
+function rememberAlley(pool: Window[], win: Window) {
+  if (win.canyon.length < ALLEY_ROAD_MIN) return;
+  pool.push(win);
+  pool.sort((a, b) => b.canyon.length - a.canyon.length || (better(a, b) ? -1 : 1));
+  if (pool.length > 8) pool.length = 8;
+}
+
+function roadCanyon(site: CityMechaSite, canyon: readonly Cell[]): number {
+  let roads = 0;
+  for (const cell of canyon) {
+    if (site.terrain[cell.y]?.[cell.x] === "road") roads += 1;
+  }
+  return roads;
+}
+
+/** 同一座城里四种战场。没有那种格子时该键是 null，不造假地形。 */
+export function siteFightShapes(terrain: CitySiteTerrain, anchors: readonly SiteAnchor[], roads?: readonly RoadEdge[]): FightCatalog {
+  let flat: Window | null = null;
+  let shore: Window | null = null;
+  let ridge: Window | null = null;
+  const alleyPool: Window[] = [];
+  searchWindows(terrain, anchors, true, (win, gate) => {
+    if (gate === "strict") {
+      if (better(win, flat)) flat = win;
+      rememberAlley(alleyPool, win);
+      return;
+    }
+    if (win.water >= SHORE_WATER_MIN && better(win, shore)) shore = win;
+    if (win.mountain >= RIDGE_MOUNTAIN_MIN && better(win, ridge)) ridge = win;
+  });
+  let alley: CityMechaSite | null = null;
+  let alleyRoads = 0;
+  for (const win of alleyPool) {
+    const site = publish(win, roads);
+    const hits = roadCanyon(site, win.canyon);
+    if (hits >= ALLEY_ROAD_MIN && (hits > alleyRoads || (hits === alleyRoads && alley === null))) {
+      alley = site;
+      alleyRoads = hits;
+    }
+  }
   return {
-    originX: best.originX,
-    originZ: best.originZ,
-    yaw: best.yaw,
-    cellW: best.step.w,
-    cellD: best.step.d,
-    heights: best.heights,
-    terrain: best.terrain,
-    buildings: best.rules,
-    mechs: best.mechs,
-    boss: best.boss,
-    raiders: best.raiders,
-    spawnSpread: best.spawnSpread,
+    flat: flat ? publish(flat, roads) : null,
+    shore: shore ? publish(shore, roads) : null,
+    ridge: ridge ? publish(ridge, roads) : null,
+    alley,
   };
 }
 
@@ -313,6 +387,28 @@ function stablePitch(gaps: number[], module: number): number {
   return Math.max(module, pitch);
 }
 
+function terrainGateAllows(gate: TerrainGate, water: number, mountain: number, land: number, relief: number): boolean {
+  if (!(relief <= 12)) return false;
+  if (gate === "strict") return water + mountain <= 18;
+  return water <= SHORE_WATER_MAX && mountain <= RIDGE_MOUNTAIN_MAX && land >= FEATURE_LAND_MIN && (water >= SHORE_WATER_MIN || mountain >= RIDGE_MOUNTAIN_MIN);
+}
+
+function canyonCells(kind: Occupant[][], building: Array<Array<string | null>>): Cell[] {
+  const out: Cell[] = [];
+  for (let y = 0; y < BOARD; y += 1) {
+    for (let x = 0; x < BOARD; x += 1) {
+      if (kind[y]![x] !== "empty") continue;
+      const north = y > 0 ? building[y - 1]![x] : null;
+      const south = y + 1 < BOARD ? building[y + 1]![x] : null;
+      const west = x > 0 ? building[y]![x - 1] : null;
+      const east = x + 1 < BOARD ? building[y]![x + 1] : null;
+      // 楼贴着的空格。对望是巷，单侧贴楼的路也是巷：真城的楼距经常超过一格。
+      if (north || south || west || east) out.push({ x, y });
+    }
+  }
+  return out;
+}
+
 function evaluateWindow(
   terrain: CitySiteTerrain,
   index: Map<string, SiteAnchor[]>,
@@ -321,12 +417,15 @@ function evaluateWindow(
   yaw: number,
   step: Step,
   spawnLimit: number,
+  gate: TerrainGate,
 ): Window | null {
   const heights: number[][] = [];
   const ground: TerrainKind[][] = [];
   const kind: Occupant[][] = [];
   const building: Array<Array<string | null>> = [];
-  let blocked = 0;
+  let water = 0;
+  let mountain = 0;
+  let land = 0;
   let lo = Infinity;
   let hi = -Infinity;
   for (let y = 0; y < BOARD; y += 1) {
@@ -344,8 +443,10 @@ function evaluateWindow(
       ground[y]!.push(face);
       kind[y]!.push(face === "land" ? "empty" : "blocked");
       building[y]!.push(null);
-      if (face !== "land") blocked += 1;
+      if (face === "water") water += 1;
+      else if (face === "mountain") mountain += 1;
       else {
+        land += 1;
         if (h < lo) lo = h;
         if (h > hi) hi = h;
       }
@@ -353,7 +454,10 @@ function evaluateWindow(
   }
   // Two lots per cell makes the window about 144 × 160. Twelve units of relief
   // is the same slope the first 80-unit window allowed at 6.
-  if (blocked > 18 || hi - lo > 12) return null;
+  // 平地窗仍拒绝超过 18 格的水与山。靠岸/翻山用更宽的上限，并且要求这块地形真的在。
+  const relief = land === 0 ? Infinity : hi - lo;
+  if (!terrainGateAllows(gate, water, mountain, land, relief)) return null;
+  const blocked = water + mountain;
 
   const claimed = new Set<string>();
   const around = nearby(index, originX, originZ);
@@ -408,7 +512,10 @@ function evaluateWindow(
   // A lot that straddles a line is the grid missing the block. Prefer the pitch that holds each lot in one cell.
   const extra = rules.reduce((sum, building) => sum + building.cells.length - 1, 0);
   const score = fullness - extra * 30 - spawnSpread * 20 - (hi - lo) * 5 - blocked * 3;
-  return { originX, originZ, yaw, step, heights, terrain: ground, kind, building, score, spawnSpread, boss, mechs, raiders, rules };
+  return {
+    originX, originZ, yaw, step, heights, terrain: ground, kind, building, score, spawnSpread, boss, mechs, raiders, rules,
+    water, mountain, land, canyon: canyonCells(kind, building),
+  };
 }
 
 function axesOf(anchor: SiteAnchor, boardYaw: number): { alongX: number; alongZ: number } | null {

@@ -3,8 +3,8 @@ import { useEffect, useMemo, useState } from "react";
 import type { CityEngine } from "../engine/CityEngine";
 import { gameText, type GameLocale } from "./gameCopy";
 import { CityMechaWorld, type CityMechaView } from "./CityMechaWorld";
-import { squadPlan } from "./mecha/ai";
-import { anchorsFromCity, siteMechaWindow, type CityMechaSite } from "./mecha/citySite";
+import { planForDoctrine, type DoctrineId } from "./mecha/ai";
+import { anchorsFromCity, siteFightShapes, type CityMechaSite, type FightShape } from "./mecha/citySite";
 import { MechaLineup, type MechaBoardView } from "./MechaLineup";
 import {
   BOARD, MAX_TURNS, bossExecute, bossPrepare, createMatch, incomingDamage, legalActions, living, moveBudget, pathDistance,
@@ -21,6 +21,16 @@ const SCRIPTS: Array<{ id: BossScriptId; label: string }> = [
   { id: "cadence_ssw", label: "砸砸扫" },
   { id: "stationary_smash", label: "站桩砸击" },
   { id: "siege", label: "大怪与小怪" },
+];
+const DOCTRINES: Array<{ id: DoctrineId; label: string }> = [
+  { id: "tunnel", label: "攻坚" },
+  { id: "peel", label: "守楼" },
+];
+const SHAPES: Array<{ id: FightShape; label: string }> = [
+  { id: "flat", label: "平地" },
+  { id: "shore", label: "靠岸" },
+  { id: "ridge", label: "翻山" },
+  { id: "alley", label: "巷战" },
 ];
 const NAMES: Record<MechId, string> = { Assault: "突击", Gunner: "射手", Support: "支援" };
 
@@ -93,17 +103,21 @@ function draftFromPlan(state: MatchState, plan: { items: Array<{ mechId: MechId;
 
 export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; onClose: () => void; engine: CityEngine | null }) {
   const t = (text: string) => gameText(text, locale);
-  const site = useMemo(() => {
+  const catalog = useMemo(() => {
     const layout = engine?.currentLayout;
     const model = engine?.currentModel;
     if (!layout || !model) return null;
     try {
-      return siteMechaWindow(layout.terrain, anchorsFromCity(layout, model), layout.roadEdges);
+      return siteFightShapes(layout.terrain, anchorsFromCity(layout, model), layout.roadEdges);
     } catch (error) {
       console.warn("mecha city site failed", error);
       return null;
     }
   }, [engine, engine?.currentLayout, engine?.currentModel]);
+  const [shape, setShape] = useState<FightShape>("flat");
+  const [doctrine, setDoctrine] = useState<DoctrineId>("tunnel");
+  const shapeId: FightShape = catalog?.[shape] ? shape : (SHAPES.find((item) => catalog?.[item.id])?.id ?? "flat");
+  const site = catalog?.[shapeId] ?? null;
   const [preset, setPreset] = useState<CoverPresetId>("covers_sparse_mid");
   const [script, setScript] = useState<BossScriptId>("siege");
   const [state, setState] = useState<MatchState>(() => fresh("covers_sparse_mid", "siege", site));
@@ -113,8 +127,8 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
   const [auto, setAuto] = useState(false);
   const [beat, setBeat] = useState<"show" | "resolve">("show");
 
-  const restart = (nextPreset = preset, nextScript = script) => {
-    const match = fresh(nextPreset, nextScript, site);
+  const restart = (nextPreset = preset, nextScript = script, nextSite: CityMechaSite | null = site) => {
+    const match = fresh(nextPreset, nextScript, nextSite);
     setPreset(nextPreset);
     setScript(nextScript);
     setState(match);
@@ -184,12 +198,12 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
       }
       if (state.phase !== "player_plan") return;
       if (beat === "show") {
-        setDraft(draftFromPlan(state, squadPlan(state)));
+        setDraft(draftFromPlan(state, planForDoctrine(state, doctrine)));
         setBeat("resolve");
         return;
       }
       const next = structuredClone(state);
-      const result = validateAndApplyPlan(next, squadPlan(state));
+      const result = validateAndApplyPlan(next, planForDoctrine(state, doctrine));
       if (!("ok" in result)) {
         setAuto(false);
         setNotice(gameText("整包被拒，局面未变，可以重提。", locale));
@@ -204,7 +218,7 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
       if (!alive.some((m) => m.id === selected) && alive[0]) setSelected(alive[0].id);
     }, 700);
     return () => window.clearTimeout(timer);
-  }, [auto, beat, locale, selected, state]);
+  }, [auto, beat, doctrine, locale, selected, state]);
 
   const clickCell = (x: number, y: number) => {
     if (auto || state.phase !== "player_plan") return;
@@ -291,6 +305,8 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
         </header>
         <p className="mecha-help">{t("点一台机甲，再点能走到的格子，然后给三台都选行动。站上红色预告格会吃下这一击。")}</p>
         <p className="mecha-help">{t("沿着道路能多走一倍。突击靠路，炮手爬山和平地一样，支援上坡不加价。水过不去，被推进水或山地会撞上。")}</p>
+        <p className="mecha-help">{t("攻坚先打大怪。守楼先打离楼最近的小怪。两种打法走出来的结果不同。")}</p>
+        {onCity ? <p className="mecha-help">{t("靠岸有水，翻山有山地，巷战是楼之间的道路。这座城没有的场地不会出现。")}</p> : null}
         {onCity ? <p className="mecha-help">{t("战场在这座城市的地面上。楼顶血槽只记这一局，城市里的楼还在。")}</p> : engine ? <p className="mecha-help">{t("这座城市没有一块够平的战场，仍用方格棋盘。")}</p> : null}
         {onCity ? null : <MechaLineup label={t("机甲与怪兽")} view={view} />}
         <ul className="mecha-pack">
@@ -299,10 +315,12 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
             const dest = row?.moveTo ?? m.pos;
             const hit = incomingDamage(state, m.id, dest) > 0;
             const chosen = row?.explicit ? t(actionLabel(row.action)) : t("未选择");
+            const stepCost = pathDistance(state, m.pos, dest, m.id);
             return (
               <li key={m.id} className={!row?.explicit ? "is-open" : hit ? "is-hit" : ""}>
                 <button type="button" className={m.id === selected ? "is-selected" : ""} onClick={() => setSelected(m.id)}>{t(NAMES[m.id])} {m.hp}</button>
                 <span>{row?.moveTo ? `${row.moveTo.x},${row.moveTo.y}` : t("原位")}</span>
+                <span>{t("这一步")} {stepCost ?? "—"}/{moveBudget(m.id)} {t("半步")}</span>
                 <span>{chosen}{row?.explicit && row.action.kind === "repair" ? ` ${t(NAMES[row.action.target])}` : ""}</span>
                 {hit ? <span>{t("预告伤害")} {incomingDamage(state, m.id, dest)}</span> : null}
               </li>
@@ -310,9 +328,17 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
           })}
         </ul>
         <div className="mecha-toolbar">
-          {onCity ? <span>{t("城市实地")}</span> : <label>{t("布局")}<select value={preset} onChange={(e) => restart(e.target.value as CoverPresetId, script)}>{PRESETS.map((p) => <option key={p.id} value={p.id}>{t(p.label)}</option>)}</select></label>}
+          {onCity && catalog ? <label>{t("战场")}<select value={shapeId} onChange={(e) => {
+            const next = e.target.value as FightShape;
+            const nextSite = catalog[next];
+            if (!nextSite) return;
+            setShape(next);
+            restart(preset, script, nextSite);
+          }}>{SHAPES.map((item) => <option key={item.id} value={item.id} disabled={!catalog[item.id]}>{t(item.label)}</option>)}</select></label> : onCity ? <span>{t("城市实地")}</span> : <label>{t("布局")}<select value={preset} onChange={(e) => restart(e.target.value as CoverPresetId, script)}>{PRESETS.map((p) => <option key={p.id} value={p.id}>{t(p.label)}</option>)}</select></label>}
           <label>{t("脚本")}<select value={script} onChange={(e) => restart(preset, e.target.value as BossScriptId)}>{SCRIPTS.map((s) => <option key={s.id} value={s.id}>{t(s.label)}</option>)}</select></label>
+          <label>{t("打法")}<select value={doctrine} onChange={(e) => setDoctrine(e.target.value as DoctrineId)}>{DOCTRINES.map((item) => <option key={item.id} value={item.id}>{t(item.label)}</option>)}</select></label>
           <button type="button" onClick={() => restart()}>{t("新开一局")}</button>
+          <button type="button" disabled={Boolean(state.outcome) || state.phase !== "player_plan"} onClick={() => { setAuto(false); setDraft(draftFromPlan(state, planForDoctrine(state, doctrine))); }}>{t("按打法填入")}</button>
           <button type="button" disabled={Boolean(state.outcome)} onClick={() => { setBeat("show"); setAuto((on) => !on); }}>{auto ? t("停止自动") : t("自动对战")}</button>
         </div>
         <p>{t("回合")} {Math.min(state.turn, MAX_TURNS)}/{MAX_TURNS} · {t("预告")} {skillLabel} · {t("大怪")} {state.boss.hp}{raiderHp ? ` · ${raiderHp}` : ""}{outcome ? ` · ${outcome}` : ""}</p>

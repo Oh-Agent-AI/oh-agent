@@ -4,7 +4,18 @@
 
 规则串保持 `mecha-v1.3`。本轮不改 `strike`、生命、攻击、防御、楼血、回合上限、半步公式和 `TERRAIN_MOD`。改的是自动对战看向谁、城市窗口是否肯留下水和山，以及道路格子是否和画面上的路面一致、步数是否写在面板上。
 
-English: the next iteration keeps the v1.3 numbers. Auto-battle focuses the raider nearest a living building (the measured peel search). City windows prefer a real shoreline or ridge when spawns still fit. Road cells include junction fillets, and the panel shows the half-step cost. No HP or attack retune.
+English: the next iteration keeps the v1.3 numbers. The player chooses the doctrine (boss first or hold the buildings) and, on a real city, the field shape (flat, shore, ridge, alley). Those choices have to produce different plans and different ground. Road cells include junction fillets, and the panel shows the half-step cost. No HP or attack retune.
+
+## 0. 这一轮补上的两件事
+
+先前的验收只要求水格或山格出现、自动对战改成守楼、半步数看得见。那覆盖不了玩法种类，也把唯一测出的策略收进了脚本。本轮改成玩家能选：
+
+| 选择 | 选项 | 不同在哪里 |
+| --- | --- | --- |
+| 打法 | 攻坚 `tunnel`、守楼 `peel` | 同一局面，突击迈出的格子到「离楼最近的袭扰者」的距离，守楼更近。两套整包的 JSON 不相同 |
+| 战场 | 平地、靠岸、翻山、巷战 | 平地保持今天的选窗。靠岸水格 8–30 且平地 ≥ 50。翻山山格 4–20 且平地 ≥ 50。巷战是贴着楼的空格里至少 4 格被涂成路，取这样的路最多的一窗。这座城没有的形状是禁用项，不造格子 |
+
+攻坚仍是 `squadPlan` / `bossTunnelPlan`，自动对战的默认打法。守楼是 `peelPlan`，权重和焦点与第 3 节相同，但是玩家选了才用。面板上的「按打法填入」把当前打法写进草稿，玩家还可以改。切换战场会换一块地并重开这一局。
 
 ## 1. 已测量的基线
 
@@ -42,11 +53,11 @@ English: the next iteration keeps the v1.3 numbers. Auto-battle focuses the raid
 
 袭扰者继续吃道路增益，Boss 继续不吃。街上是突击和袭扰者一起变快。本轮把这件事显示出来，不靠改表制造单方面的路。
 
-## 3. 自动对战改为守楼焦点
+## 3. 守楼搜法
 
-`apps/agent-city/ui/src/game/mecha/ai.ts` 的 `squadPlan` 改为下面这套。`MechaBoard` 的自动对战继续只调 `squadPlan`。不新增脚本下拉。
+守楼是 `peelPlan`。攻坚保持今天的 `squadPlan`，并另导出为 `bossTunnelPlan`。自动对战调用 `planForDoctrine`：默认攻坚，玩家改成守楼后才走本节。分布脚本的 `squad` 列调 `bossTunnelPlan`，`peel` 列调 `peelPlan`，不再各写一份。
 
-参考实现就是分布脚本里的 `threatFocus`、`localScore`、`optionsFor(..., "threat")`、`searchPlan(..., "threat", PEEL_WEIGHTS)`。升入 `ai.ts` 之后，分布脚本改为调用 `squadPlan`，不再留第二份搜法。
+参考实现就是分布脚本里原来的 `threatFocus`、`localScore`、`optionsFor(..., "threat")`、`searchPlan(..., "threat", PEEL_WEIGHTS)`。
 
 焦点：
 
@@ -183,7 +194,7 @@ node scripts/mecha-balance-distribution.mjs
 
 - 不改生命、攻击、防御、楼血、回合上限。
 - 不给 Rust crate 加城市格子或半步。
-- 不加「攻坚 / 守楼」切换。手动操作仍然是玩家自己点格子。
+- 不把守楼写成自动对战的唯一打法。攻坚和守楼都留在「打法」里，默认仍是攻坚。
 - 不放宽搜索宽度。
 - 不把袭扰者的道路增益拿掉，也不给 Boss 加道路增益。
 - 不在三维格子上写伤害数字或步数。

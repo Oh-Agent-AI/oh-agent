@@ -6,9 +6,9 @@
  *
  *   hold      三机待机。数值和场地自己走完，不含脚本选择。
  *   random    合法移动和行动里均匀抽取。脚本智商的下沿。
- *   squad     游戏里的 squadPlan：候选格朝 Boss，评分偏 Boss 伤害。
+ *   squad     游戏里的攻坚 bossTunnelPlan：候选格朝 Boss，评分偏 Boss 伤害。
  *   reweight  候选格仍朝 Boss，评分改成优先楼和袭扰者。只换目标，不换搜索宽度。
- *   peel      同样的宽度，候选格和评分都朝「离楼最近的袭扰者」。
+ *   peel      游戏里的守楼 peelPlan：同样的宽度，候选格和评分都朝「离楼最近的袭扰者」。
  *
  * 余量 0–100：楼还在 45%，敌人清掉 40%，机甲还在 15%。胜负只是余量越过结局线之后的标签。
  *
@@ -27,12 +27,12 @@ const seeds = SEED_LIST.slice(0, seedCount);
 
 const {
   createMatch, bossPrepare, bossExecute, validateAndApplyPlan, living, livingBuildings, livingRaiders,
-  pathDistance, legalActions, squadPlan, siteMechaWindow, anchorsFromCity, buildCityModel, layoutCity, MIAMI_COASTAL,
+  pathDistance, legalActions, bossTunnelPlan, peelPlan, siteMechaWindow, siteFightShapes, anchorsFromCity, buildCityModel, layoutCity, MIAMI_COASTAL,
   BOSS_HP, RAIDER_HP, BOARD, moveBudget,
 } = await loadCity({
   "game/mecha/rules.ts": ["createMatch", "bossPrepare", "bossExecute", "validateAndApplyPlan", "living", "livingBuildings", "livingRaiders", "pathDistance", "legalActions", "BOSS_HP", "RAIDER_HP", "BOARD", "moveBudget"],
-  "game/mecha/ai.ts": ["squadPlan"],
-  "game/mecha/citySite.ts": ["siteMechaWindow", "anchorsFromCity"],
+  "game/mecha/ai.ts": ["bossTunnelPlan", "peelPlan"],
+  "game/mecha/citySite.ts": ["siteMechaWindow", "siteFightShapes", "anchorsFromCity"],
   "cityModel.ts": ["buildCityModel"],
   "engine/cityLayout.ts": ["layoutCity"],
   "engine/citySeaside.ts": ["MIAMI_COASTAL"],
@@ -301,9 +301,9 @@ function play(opening, choose) {
 
 const strategies = {
   hold: () => (state) => hold(state),
-  squad: () => (state) => squadPlan(state),
+  squad: () => (state) => bossTunnelPlan(state),
   reweight: () => (state) => searchPlan(state, "boss", PEEL_WEIGHTS),
-  peel: () => (state) => searchPlan(state, "threat", PEEL_WEIGHTS),
+  peel: () => (state) => peelPlan(state),
   random: (seed) => {
     const rng = mulberry32(seed);
     return (state) => randomPlan(state, rng);
@@ -593,8 +593,27 @@ for (const count of counts) {
       const layoutMs = Math.round(performance.now() - started);
       const siteStarted = performance.now();
       let site = null;
+      let shapeNote = "none";
       try {
-        site = siteMechaWindow(layout.terrain, anchorsFromCity(layout, model), layout.roadEdges);
+        const anchors = anchorsFromCity(layout, model);
+        const catalog = siteFightShapes(layout.terrain, anchors, layout.roadEdges);
+        site = catalog.flat ?? siteMechaWindow(layout.terrain, anchors, layout.roadEdges);
+        const present = ["flat", "shore", "ridge", "alley"].filter((id) => catalog[id]);
+        const bits = present.map((id) => {
+          const board = catalog[id];
+          let water = 0;
+          let mountain = 0;
+          let road = 0;
+          for (const row of board.terrain) {
+            for (const cell of row) {
+              if (cell === "water") water += 1;
+              else if (cell === "mountain") mountain += 1;
+              else if (cell === "road") road += 1;
+            }
+          }
+          return `${id}:w${water}/m${mountain}/r${road}`;
+        });
+        shapeNote = bits.join(",") || "none";
       } catch (error) {
         rejected.push({ count, seed, backdrop, reason: `site ${error.message}` });
         log(`site fail count=${count} seed=${seed} backdrop=${backdrop} ${error.message}`);
@@ -612,7 +631,7 @@ for (const count of counts) {
       const random = runRandom(opening, seed + count, randomTrials);
       const row = { count, seed, backdrop, geo, ...fought, random, layoutMs, siteMs };
       sites.push(row);
-      log(`city count=${count} seed=${seed} backdrop=${backdrop} buildings=${geo.buildings} gap=${geo.bossGap} roads=${geo.roads} water=${geo.water} mountain=${geo.mountain} raiders=${geo.raiderYs.join(",")} squad=${fought.squad.outcome} peel=${fought.peel.outcome} reweight=${fought.reweight.outcome} hold=${fought.hold.outcome} random=${random.wins}/${random.n} layout=${layoutMs}ms site=${siteMs}ms fight=${fought.squad.ms}+${fought.peel.ms}+${fought.reweight.ms}ms`);
+      log(`city count=${count} seed=${seed} backdrop=${backdrop} buildings=${geo.buildings} gap=${geo.bossGap} roads=${geo.roads} water=${geo.water} mountain=${geo.mountain} shapes=${shapeNote} raiders=${geo.raiderYs.join(",")} squad=${fought.squad.outcome} peel=${fought.peel.outcome} reweight=${fought.reweight.outcome} hold=${fought.hold.outcome} random=${random.wins}/${random.n} layout=${layoutMs}ms site=${siteMs}ms fight=${fought.squad.ms}+${fought.peel.ms}+${fought.reweight.ms}ms`);
     }
   }
 }
