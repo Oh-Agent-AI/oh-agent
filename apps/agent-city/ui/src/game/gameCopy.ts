@@ -192,6 +192,7 @@ const ENGLISH: Record<string, string> = {
   "楼被拆光": "Buildings lost",
   "建筑": "Buildings",
   "城市实地": "City ground",
+  "沿着道路能多走一倍。突击靠路，炮手爬山和平地一样，支援上坡不加价。水过不去，被推进水或山地会撞上。": "Roads halve a step. Assault likes roads, the Gunner climbs for the same cost as flat ground, and Support pays nothing extra uphill. Water is impassable. A push into water or a mountain stops on the wall.",
   "战场在这座城市的地面上。楼顶血槽只记这一局，城市里的楼还在。": "The fight is on this city's ground. Roof bars belong to this match; the buildings stay.",
   "这座城市没有一块够平的战场，仍用方格棋盘。": "This city has no flat enough field, so the grid board stays.",
   "脚本": "Script",
