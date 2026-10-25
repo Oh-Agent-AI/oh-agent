@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { LOT } from "../apps/agent-city/ui/src/engine/worldScale.ts";
-import { createMatch, pathDistance, spawnsAreOpenGround } from "../apps/agent-city/ui/src/game/mecha/rules.ts";
+import { createMatch, FLAT_SPAWN_MAX_DELTA, pathDistance, RELAXED_SPAWN_MAX_DELTA, spawnsAreOpenGround } from "../apps/agent-city/ui/src/game/mecha/rules.ts";
 import { groundRoadClearance } from "../apps/agent-city/ui/src/engine/surface/roadClearance.ts";
-import { CELL_LOTS, cellWorld, siteFightShapes, siteMechaWindow, type SiteAnchor } from "../apps/agent-city/ui/src/game/mecha/citySite.ts";
+import { CELL_LOTS, cellWorld, prepareFightTerrain, searchPrepared, searchPreparedAsync, siteFightShapes, siteFightShapesAsync, siteMechaWindow, type SiteAnchor } from "../apps/agent-city/ui/src/game/mecha/citySite.ts";
 
 function anchor(id: string, x: number, z: number, height = 8): SiteAnchor {
   return { id, x, z, halfX: 3, halfZ: 3, ground: 4, height };
@@ -405,4 +405,138 @@ test("water stays water under a carriageway, and a deck does not paint the land 
   const paved = siteFightShapes(terrain, anchors, span(landAt, {})).shore;
   assert.ok(paved);
   assert.equal(paved.terrain[landCell.y]![landCell.x], "road");
+});
+
+// A city large enough that the search spans several 1 ms slices. The same
+// anchors/terrain are used by the equality, determinism and cancellation tests.
+function variedCity(): SiteAnchor[] {
+  const anchors: SiteAnchor[] = [];
+  for (let r = 0; r < 12; r += 1) {
+    for (let c = 0; c < 14; c += 1) {
+      const t = (r * 31 + c * 17) % 7;
+      anchors.push({
+        id: `v${r}-${c}`,
+        x: c * 23 + (t % 3) * 1.5,
+        z: r * 25 + (t % 4),
+        halfX: 2.5 + (t % 3),
+        halfZ: 2.5 + ((t + 1) % 3),
+        yaw: (t % 4) * Math.PI / 2,
+        ground: 4,
+        height: 6 + (t % 5) * 3,
+      });
+    }
+  }
+  anchors.sort((a, b) => (a.id < b.id ? -1 : 1));
+  return anchors;
+}
+const variedTerrain = {
+  height: (x: number, z: number) => 4 + Math.sin(x / 90) * 3 + Math.cos(z / 70) * 2.5 + (z < 4 ? -5 : 0),
+};
+
+test("the async search yields to the host and matches the sync catalog", async () => {
+  const anchors = variedCity();
+  const expected = siteFightShapes(variedTerrain, anchors);
+  let hostTurn = false;
+  const turn = setTimeout(() => { hostTurn = true; }, 0);
+  const actual = await siteFightShapesAsync(variedTerrain, anchors, undefined, { sliceMs: 1 });
+  clearTimeout(turn);
+  assert.equal(hostTurn, true, "the search must give the host a turn between slices");
+  assert.deepEqual(actual, expected);
+});
+
+test("repeating the battlefield search is byte-identical", () => {
+  const anchors = variedCity();
+  assert.deepEqual(siteFightShapes(variedTerrain, anchors), siteFightShapes(variedTerrain, anchors));
+});
+
+test("the async search stops promptly when the request is cancelled", async () => {
+  const controller = new AbortController();
+  const started = performance.now();
+  const timer = setTimeout(() => controller.abort(), 10);
+  await assert.rejects(
+    siteFightShapesAsync(variedTerrain, variedCity(), undefined, { signal: controller.signal, sliceMs: 1 }),
+    (reason: unknown) => (reason as Error).name === "AbortError",
+  );
+  clearTimeout(timer);
+  assert.ok(performance.now() - started < 500, "cancellation should be acknowledged within 500 ms");
+});
+
+test("the worker snapshot is structured-cloneable and searches to the same catalog", () => {
+  const anchors = variedCity();
+  const snapshot = prepareFightTerrain(variedTerrain, anchors, 7);
+  assert.equal(snapshot.schemaVersion, 1);
+  assert.equal(snapshot.revision, 7);
+  assert.match(snapshot.fingerprint, /^[0-9a-f]{8}$/);
+  // structuredClone is the exact boundary a worker postMessage crosses: a closure,
+  // an engine reference or a live Map anywhere in the snapshot would throw here.
+  const cloned = structuredClone(snapshot);
+  assert.deepEqual(searchPrepared(cloned), siteFightShapes(variedTerrain, anchors));
+});
+
+test("the snapshot fingerprint follows the sampled terrain", () => {
+  const anchors = variedCity();
+  const dry = prepareFightTerrain(variedTerrain, anchors);
+  const wet = prepareFightTerrain({ height: (x, z) => variedTerrain.height(x, z) + (z < 4 ? 0 : 1) }, anchors);
+  assert.notEqual(dry.fingerprint, wet.fingerprint);
+});
+
+test("the worker message protocol runs the prepared search", async () => {
+  type Scope = { postMessage?: (message: unknown) => void; onmessage?: (event: unknown) => void };
+  const scope = globalThis as unknown as Scope;
+  const previousPost = scope.postMessage;
+  const messages: Array<{ type: string; requestId: string; catalog?: unknown }> = [];
+  scope.postMessage = (message: unknown) => { messages.push(message as never); };
+  try {
+    await import("../apps/agent-city/ui/src/game/mecha/fightWorker.ts");
+    const snapshot = prepareFightTerrain(variedTerrain, variedCity());
+    scope.onmessage?.({ data: { type: "search", requestId: "req-1", snapshot, roads: [] } });
+    const result = messages.find((message) => message.type === "result");
+    assert.ok(result, "the worker must post a result");
+    assert.equal(result!.requestId, "req-1");
+    assert.deepEqual(result!.catalog, searchPrepared(snapshot, []));
+  } finally {
+    scope.postMessage = previousPost;
+  }
+});
+
+test("a relaxed spawn window is bounded and observable", () => {
+  // Checkerboard 4 / 5.5 makes every 2×2 boss footprint span 1.5, so the strict
+  // limit of 1 cannot pass and the documented relaxed pass must be what returns.
+  const anchors: SiteAnchor[] = [];
+  for (let r = 0; r < 8; r += 1) {
+    for (let c = 0; c < 8; c += 1) anchors.push(anchor(`r${r}c${c}`, c * 14.4 + 7.2, r * 16 + 8));
+  }
+  anchors.sort((a, b) => (a.id < b.id ? -1 : 1));
+  const height = (x: number, z: number) => 4 + ((Math.floor(x / 14.4) + Math.floor(z / 16)) % 2) * 1.5;
+  const site = siteMechaWindow({ height }, anchors);
+  assert.ok(site);
+  assert.ok(site!.spawnSpread > FLAT_SPAWN_MAX_DELTA);
+  assert.ok(site!.spawnSpread <= RELAXED_SPAWN_MAX_DELTA);
+});
+
+test("the sliced fallback yields between invalid candidates", async () => {
+  // Every cell is a cliff: `evaluateWindow` returns null for every attempt. A
+  // generator that only yields valid windows would scan the whole search space
+  // inside one `next()` and never give the host a turn.
+  const snapshot = prepareFightTerrain({ height: () => 4, slope: () => 2 }, variedCity());
+  let hostTurn = false;
+  const timer = setTimeout(() => { hostTurn = true; }, 0);
+  const catalog = await searchPreparedAsync(snapshot, undefined, { sliceMs: 1 });
+  clearTimeout(timer);
+  assert.equal(catalog.flat, null);
+  assert.equal(hostTurn, true, "invalid candidates must still yield between attempts");
+});
+
+test("the fingerprint covers anchor identity, ground and height", () => {
+  const anchors = variedCity();
+  const base = prepareFightTerrain(variedTerrain, anchors).fingerprint;
+  const variants: Array<(a: SiteAnchor) => SiteAnchor> = [
+    (a) => ({ ...a, id: `${a.id}-renamed` }),
+    (a) => ({ ...a, ground: a.ground + 1 }),
+    (a) => ({ ...a, height: a.height + 1 }),
+  ];
+  for (const mutate of variants) {
+    const changed = anchors.map((a, index) => index === 0 ? mutate(a) : a);
+    assert.notEqual(prepareFightTerrain(variedTerrain, changed).fingerprint, base);
+  }
 });

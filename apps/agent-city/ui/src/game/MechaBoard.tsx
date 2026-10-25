@@ -1,13 +1,22 @@
-/** City test surface for GDD v1.3. Rules live in `mecha/rules.ts`. */
-import { useEffect, useMemo, useState } from "react";
+/** City test surface for GDD v1.3. Rules live in `mecha/rules.ts`.
+ *
+ *  The battlefield search is not a render side effect. The board shell paints
+ *  first, the city adapter samples every point the search can query into a
+ *  transferable snapshot, and the search itself runs in a worker (or a sliced
+ *  main-thread fallback). A successful catalog is cached per layout+model so
+ *  reopening is instant; a city revision that lands mid-search aborts the old
+ *  run instead of letting a stale catalog reach the board.
+ */
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { CityEngine } from "../engine/CityEngine";
 import { doctrineFocusLine, gameText, stepBudgetLine, type GameLocale } from "./gameCopy";
 import { CityMechaWorld, type CityMechaView } from "./CityMechaWorld";
 import { doctrineFocus, doctrineFocusCells, planForDoctrine, type DoctrineId } from "./mecha/ai";
-import { anchorsFromCity, siteFightShapes, type CityMechaSite, type FightShape } from "./mecha/citySite";
+import { anchorsFromCity, prepareFightTerrainAsync, type CityMechaSite, type FightCatalog, type FightShape } from "./mecha/citySite";
+import { startPreparedSearch } from "./mecha/fightSearchRunner";
 import { MechaLineup, type MechaBoardView } from "./MechaLineup";
 import {
-  BOARD, MAX_TURNS, bossExecute, bossPrepare, createMatch, incomingDamage, legalActions, living, moveBudget, pathDistance,
+  BOARD, FLAT_SPAWN_MAX_DELTA, MAX_TURNS, bossExecute, bossPrepare, createMatch, incomingDamage, legalActions, living, moveBudget, pathDistance,
   validateAndApplyPlan, type Action, type BossScriptId, type Cell, type CoverPresetId, type MatchState, type MechId,
 } from "./mecha/rules";
 import "./game.css";
@@ -33,6 +42,155 @@ const SHAPES: Array<{ id: FightShape; label: string }> = [
   { id: "alley", label: "巷战" },
 ];
 const NAMES: Record<MechId, string> = { Assault: "突击", Gunner: "射手", Support: "支援" };
+
+/** Successful catalogs are pure projections of the layout/model pair. Keying on
+ *  the layout object means a re-plan (`applyModel` replaces it) invalidates the
+ *  entry without any manual bookkeeping. */
+type CatalogCacheEntry = { model: object; catalog: FightCatalog };
+const CATALOG_CACHE = new WeakMap<object, CatalogCacheEntry>();
+
+function cachedCatalog(layout: object | null, model: object | null): FightCatalog | null {
+  if (!layout || !model) return null;
+  const entry = CATALOG_CACHE.get(layout);
+  return entry && entry.model === model ? entry.catalog : null;
+}
+
+function cacheCatalog(layout: object, model: object, catalog: FightCatalog): void {
+  CATALOG_CACHE.set(layout, { model, catalog });
+}
+
+type SearchPhase = "loading" | "ready" | "error";
+
+/** Loads (or reuses) the four-shape catalog, then mounts a match keyed by it. */
+export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; onClose: () => void; engine: CityEngine | null }) {
+  const t = (text: string) => gameText(text, locale);
+  const [catalog, setCatalog] = useState<FightCatalog | null>(() => cachedCatalog(engine?.currentLayout ?? null, engine?.currentModel ?? null));
+  const [phase, setPhase] = useState<SearchPhase>(() => {
+    if (!engine) return "ready";
+    const layout = engine.currentLayout;
+    const model = engine.currentModel;
+    if (!layout || !model) return "ready";
+    return cachedCatalog(layout, model) ? "ready" : "loading";
+  });
+  const [checked, setChecked] = useState(0);
+  const [sampled, setSampled] = useState<{ done: number; total: number }>({ done: 0, total: 0 });
+  const [retry, setRetry] = useState(0);
+  const [runId, setRunId] = useState(0);
+  const searchSeq = useRef(0);
+
+  useEffect(() => {
+    if (!engine) {
+      setCatalog(null);
+      setPhase("ready");
+      return undefined;
+    }
+    const layout = engine.currentLayout;
+    const model = engine.currentModel;
+    if (!layout || !model) {
+      // No modelled city: the component falls back to the grid board, which is an
+      // explicit state rather than a failed search.
+      setCatalog(null);
+      setPhase("ready");
+      return undefined;
+    }
+    const cached = cachedCatalog(layout, model);
+    if (cached) {
+      setCatalog(cached);
+      setPhase("ready");
+      return undefined;
+    }
+    const controller = new AbortController();
+    let alive = true;
+    let cancelSearch: (() => void) | null = null;
+    setPhase("loading");
+    setChecked(0);
+    setSampled({ done: 0, total: 0 });
+    void (async () => {
+      try {
+        const anchors = anchorsFromCity(layout, model);
+        const snapshot = await prepareFightTerrainAsync(layout.terrain, anchors, {
+          signal: controller.signal,
+          sliceMs: 8,
+          onProgress: (done, total) => { if (alive) setSampled({ done, total }); },
+        });
+        if (!alive) return;
+        snapshot.revision = ++searchSeq.current;
+        cancelSearch = startPreparedSearch(snapshot, layout.roadEdges, {
+          onProgress: (evaluated) => { if (alive) setChecked(evaluated); },
+          onResult: (next) => {
+            if (!alive) return;
+            cacheCatalog(layout, model, next);
+            setCatalog(next);
+            setRunId((value) => value + 1);
+            setPhase("ready");
+          },
+          onError: (reason) => {
+            if (!alive) return;
+            console.warn("mecha city site failed", reason);
+            setPhase("error");
+          },
+        }, controller.signal).cancel;
+      } catch (reason) {
+        if (!alive || (reason as { name?: string } | null)?.name === "AbortError") return;
+        console.warn("mecha city site failed", reason);
+        setPhase("error");
+      }
+    })();
+    return () => {
+      alive = false;
+      controller.abort();
+      cancelSearch?.();
+    };
+  }, [engine, engine?.currentLayout, engine?.currentModel, retry]);
+
+  // Escape closes the board before the settings/cinema handlers see it. A focused
+  // select keeps its own Escape (closing the menu, not the match).
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("select, input, textarea")) return;
+      event.preventDefault();
+      onClose();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [onClose]);
+
+  if (phase === "ready") {
+    return <MechaMatch key={runId} locale={locale} onClose={onClose} engine={engine} catalog={catalog} />;
+  }
+
+  return (
+    <section className="mecha-overlay is-city" role="dialog" aria-label={t("机甲战棋")} aria-busy={phase === "loading"}>
+      <div className="mecha-panel">
+        <header>
+          <h2>{t("机甲战棋")}</h2>
+          <button type="button" onClick={onClose} aria-label={t("关闭机甲战棋")}>×</button>
+        </header>
+        {phase === "error" ? (
+          <>
+            <p role="alert">{t("战场选择失败")}</p>
+            <p className="mecha-help">{t("城市地形暂时无法生成战场，可以重试或关掉战棋。")}</p>
+            <div className="mecha-actions">
+              <button type="button" onClick={() => setRetry((value) => value + 1)}>{t("重试")}</button>
+              <button type="button" onClick={onClose}>{t("关闭")}</button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p role="status">{t("正在选择战场…")}</p>
+            {sampled.total > 0 && sampled.done < sampled.total && <p className="mecha-help">{t("正在读取城市地形")} {sampled.done}/{sampled.total}</p>}
+            {checked > 0 && <p className="mecha-help">{t("正在检查")} {checked} {t("个候选")}</p>}
+            <div className="mecha-actions">
+              <button type="button" onClick={onClose}>{t("取消")}</button>
+            </div>
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
 
 type Draft = { moveTo: Cell | null; action: Action; explicit: boolean };
 
@@ -108,19 +266,13 @@ function openingDraft(state: MatchState, doctrine: DoctrineId): Record<MechId, D
   return draftFromPlan(state, planForDoctrine(state, doctrine));
 }
 
-export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; onClose: () => void; engine: CityEngine | null }) {
+function MechaMatch({ locale, onClose, engine, catalog }: {
+  locale: GameLocale;
+  onClose: () => void;
+  engine: CityEngine | null;
+  catalog: FightCatalog | null;
+}) {
   const t = (text: string) => gameText(text, locale);
-  const catalog = useMemo(() => {
-    const layout = engine?.currentLayout;
-    const model = engine?.currentModel;
-    if (!layout || !model) return null;
-    try {
-      return siteFightShapes(layout.terrain, anchorsFromCity(layout, model), layout.roadEdges);
-    } catch (error) {
-      console.warn("mecha city site failed", error);
-      return null;
-    }
-  }, [engine, engine?.currentLayout, engine?.currentModel]);
   const [shape, setShape] = useState<FightShape>("flat");
   const [doctrine, setDoctrine] = useState<DoctrineId>("tunnel");
   const shapeId: FightShape = catalog?.[shape] ? shape : (SHAPES.find((item) => catalog?.[item.id])?.id ?? "flat");
@@ -129,9 +281,10 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
   const [script, setScript] = useState<BossScriptId>("siege");
   const openingStake = shapeId === "alley" ? "frontage" : "all";
   const [state, setState] = useState<MatchState>(() => fresh("covers_sparse_mid", "siege", site, openingStake));
-  const [draft, setDraft] = useState<Record<MechId, Draft>>(() => openingDraft(fresh("covers_sparse_mid", "siege", site, openingStake), "tunnel"));
+  const [draft, setDraft] = useState<Record<MechId, Draft>>(() => openingDraft(state, "tunnel"));
   const [selected, setSelected] = useState<MechId>("Assault");
   const [notice, setNotice] = useState<string | null>(null);
+  const [viewFailed, setViewFailed] = useState(false);
   const [auto, setAuto] = useState(false);
   const [beat, setBeat] = useState<"show" | "resolve">("show");
 
@@ -312,10 +465,11 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
   const focus = doctrineFocus(state, doctrine);
   const focusLine = doctrineFocusLine(doctrine, gameText(enemyName(focus.id), locale), focus.building ? `${focus.building.x},${focus.building.y}` : null, locale);
 
-  const onCity = Boolean(site && engine);
+  const viewEngine = viewFailed ? null : engine;
+  const onCity = Boolean(site && viewEngine);
   return (
     <section className={onCity ? "mecha-overlay is-city" : "mecha-overlay"} role="dialog" aria-label={t("机甲战棋")}>
-      {onCity && engine && site ? <CityMechaWorld engine={engine} site={site} view={cityView} onCell={clickCell} /> : null}
+      {onCity && viewEngine && site ? <CityMechaWorld engine={viewEngine} site={site} view={cityView} onCell={clickCell} onUnavailable={() => setViewFailed(true)} /> : null}
       <div className="mecha-panel">
         <header>
           <h2>{t("机甲战棋")}</h2>
@@ -327,7 +481,10 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
         {onCity ? <p className="mecha-help">{t("靠岸有水，翻山有山地，巷战是贴着楼的路，单侧临街也算。这座城没有的场地不会出现。")}</p> : null}
         {onCity && shapeId === "alley" ? <p className="mecha-help">{t("巷战只守临街的楼。贴着路的楼拆光就输，不临街的楼还在，但不算这一局。")}</p> : null}
         <p className="mecha-help">{focusLine}</p>
-        {onCity ? <p className="mecha-help">{t("战场在这座城市的地面上。楼顶血槽只记这一局，城市里的楼还在。")}</p> : engine ? <p className="mecha-help">{t("这座城市没有一块够平的战场，仍用方格棋盘。")}</p> : null}
+        {onCity && site && site.spawnSpread > FLAT_SPAWN_MAX_DELTA ? <p className="mecha-help">{t("出生高差")} {site.spawnSpread.toFixed(2)} · {t("标准 1，已放宽")}</p> : null}
+        {onCity ? <p className="mecha-help">{t("战场在这座城市的地面上。楼顶血槽只记这一局，城市里的楼还在。")}</p>
+          : viewFailed ? <p className="mecha-help">{t("三维视角被其他模式占用，改用方格棋盘。")}</p>
+          : engine ? <p className="mecha-help">{t("这座城市没有一块够平的战场，仍用方格棋盘。")}</p> : null}
         {onCity ? null : <MechaLineup label={t("机甲与怪兽")} view={view} />}
         <ul className="mecha-pack">
           {living(state).map((m) => {

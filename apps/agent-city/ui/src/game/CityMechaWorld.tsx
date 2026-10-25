@@ -47,12 +47,15 @@ const ROLE_OPACITY: Record<Role, number> = {
 };
 
 export function CityMechaWorld({
-  engine, site, view, onCell,
+  engine, site, view, onCell, onUnavailable,
 }: {
   engine: CityEngine;
   site: CityMechaSite;
   view: CityMechaView;
   onCell: (x: number, y: number) => void;
+  /** Called when another mode owns the camera/frame hook; the board then falls
+   *  back to its grid view instead of fighting over the resource. */
+  onUnavailable?: () => void;
 }) {
   const viewRef = useRef(view);
   const onCellRef = useRef(onCell);
@@ -63,7 +66,14 @@ export function CityMechaWorld({
     const canvas = engine.domCanvas;
     if (!(canvas instanceof HTMLCanvasElement)) return undefined;
     const saved = engine.captureReturnView();
-    const owned = engine.setCameraOwner("game");
+    // One token owns camera + frame hook + scene objects. A conflicting mode makes
+    // this return null; the board then runs without the 3D layer instead of
+    // overwriting another owner's camera.
+    const lease = engine.acquireModeLease();
+    if (!lease) {
+      onUnavailable?.();
+      return undefined;
+    }
     const root = new THREE.Group();
     root.name = "mecha-city";
 
@@ -150,7 +160,7 @@ export function CityMechaWorld({
       root.add(anchor);
     }
 
-    engine.attachGameObjects(root);
+    lease.attach([root]);
     const gridPts: number[] = [];
     const corner = (x: number, y: number) => {
       const neighbors = [
@@ -192,7 +202,7 @@ export function CityMechaWorld({
       camera.updateProjectionMatrix();
       camera.lookAt(aim);
     };
-    if (owned) frameCamera();
+    frameCamera();
 
     const raycaster = new THREE.Raycaster();
     raycaster.layers.set(1);
@@ -220,8 +230,8 @@ export function CityMechaWorld({
 
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const spot = new THREE.Vector3();
-    engine.setGameFrameHook(() => {
-      if (owned) frameCamera();
+    lease.setFrameHook(() => {
+      frameCamera();
       const current = viewRef.current;
       const telegraph = new Set(current.telegraph.map(cellKey));
       const focus = new Set(current.focus.map(cellKey));
@@ -301,8 +311,7 @@ export function CityMechaWorld({
     return () => {
       canvas.removeEventListener("pointerdown", onDown);
       canvas.removeEventListener("pointerup", onUp);
-      try { engine.setGameFrameHook(null); } catch { /* host already released the frame */ }
-      try { engine.detachGameObjects(root); } catch { /* scene lease ended with the host */ }
+      try { lease.release(); } catch { /* host already disposed the scene */ }
       for (const figure of [assault, gunner, support, boss, raiderWest, raiderEast]) disposeMechaModel(figure);
       gridGeo.dispose();
       (grid.material as THREE.Material).dispose();
@@ -317,10 +326,7 @@ export function CityMechaWorld({
         ring.geo.dispose();
         ring.mat.dispose();
       }
-      if (owned) {
-        engine.setCameraOwner("orbit");
-        engine.restoreReturnView(saved);
-      }
+      if (engine.owner === "orbit") engine.restoreReturnView(saved);
     };
   }, [engine, site]);
 

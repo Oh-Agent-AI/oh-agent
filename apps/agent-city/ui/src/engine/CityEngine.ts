@@ -12,6 +12,7 @@
 
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { ModeLeaseBook } from "./modeLease";
 import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
@@ -67,6 +68,16 @@ export type CityDrivingWorldCapture = Exclude<CitySurfaceCapture, ReadyCitySurfa
 export type PhotoView = { position: number[]; target: number[]; fov: number; elapsed: number; cursorMs: number | null };
 /** 相机所有权（游戏模式 §4）：同一帧只允许一个所有者推进相机。 */
 export type CameraOwner = "orbit" | "cinematic" | "game";
+
+/** 轻量模式租约：相机、帧钩子、场景对象由一个 token 持有，release 幂等。
+ *  与 `gameScenePort` 的完整场景租约并存：后者冻结静态世界，这里只需要独占
+ *  控制权（机甲战棋这类在同一座城市上叠加一层对象的模式）。 */
+export type ModeLease = {
+  readonly id: number;
+  attach: (objects: THREE.Object3D[]) => void;
+  setFrameHook: (hook: ((dt: number) => void) | null) => void;
+  release: () => void;
+};
 
 /** 规划修复模式的点击钩子：引擎把一次选取手势翻成「点中的会话楼/非楼物体 id + 点到的地面坐标」交给它，自己不再选楼/飞镜头。 */
 /** 选取手势的射线（世界坐标）：设施拾取按占地盒求交，不能只靠射线与地形的交点（高楼会把交点推到楼后面）。 */
@@ -229,12 +240,14 @@ export class CityEngine {
   // tween/拾取，唯一的相机更新来自 gameFrame 回调（由 GameModeController 侧注册）。
   private cameraOwner: CameraOwner = "orbit";
   private gameFrame: ((dt: number) => void) | null = null;
+  /** 相机 / 帧钩子 / 叠加对象的独占租约。ID 单调递增，过期 token 不能操作新租约。 */
+  private readonly modeLeases = new ModeLeaseBook();
   readonly gameScenePort = new HostGameScenePort<GameSceneSnapshot, THREE.Object3D>({
     epoch: () => this.hostEpoch,
     isAlive: () => !this.disposed,
     canAcquire: () => {
       if (!this.parts || !this.layout || !this.model) return Object.freeze({ status: "unavailable", reason: "city-not-ready" });
-      if (this.cinematic || this.drivingWorldFrame || this.gameFrame || this.cameraOwner !== "orbit") return Object.freeze({ status: "busy", reason: "host-busy" });
+      if (this.cinematic || this.drivingWorldFrame || this.gameFrame || this.modeLeases.busy || this.cameraOwner !== "orbit") return Object.freeze({ status: "busy", reason: "host-busy" });
       return true;
     },
     capture: async (selection: GameSelection, signal) => {
@@ -272,6 +285,7 @@ export class CityEngine {
     captureReturnState: () => ({ view: this.captureReturnView(), cameraNear: this.camera.near, controlsEnabled: this.controls.enabled,
       autoRotate: this.controls.autoRotate, ambientCarsVisible: this.readAmbientCarsVisible() }),
     takeOwnership: (token) => {
+      if (this.modeLeases.busy) return false;
       if (!this.setCameraOwner("game")) return false;
       this.gameSceneToken = token;
       this.camera.near = 0.15;
@@ -693,11 +707,13 @@ export class CityEngine {
   /** 游戏对象挂载/摘除（飞机、圆环等）；渲染管线与既有场景不动。 */
   attachGameObjects(...objects: THREE.Object3D[]): void {
     if (this.gameSceneToken) throw new Error("scene-lease-required");
+    if (this.modeLeases.busy) throw new Error("mode-lease-active");
     this.scene.add(...objects);
   }
 
   detachGameObjects(...objects: THREE.Object3D[]): void {
     if (this.gameSceneToken) throw new Error("scene-lease-required");
+    if (this.modeLeases.busy) throw new Error("mode-lease-active");
     this.scene.remove(...objects);
   }
 
@@ -705,6 +721,7 @@ export class CityEngine {
    *  orbit 归还时恢复 controls；cinematic 所有权由 startCinematic/stopCinematic 自管。 */
   setCameraOwner(owner: CameraOwner): boolean {
     if (this.gameSceneToken && owner !== "game") return false;
+    if (this.modeLeases.busy && owner === "orbit") return false; // 租约未释放前不得改判
     if (owner === "game" && this.drivingWorldFrame) return false;
     if (owner === this.cameraOwner) return true;
     if (owner === "game") {
@@ -722,9 +739,49 @@ export class CityEngine {
     return true;
   }
 
+  /** 取一份独占租约：相机 + 帧钩子 + 叠加对象。冲突时返回 null（调用方应保持
+   *  原模式，不得静默覆盖别人的相机/钩子）。release 幂等；过期 token 的写操作
+   *  抛 `stale-mode-lease`。 */
+  acquireModeLease(): ModeLease | null {
+    if (this.disposed || this.gameSceneToken || this.cinematic || this.drivingWorldFrame || this.gameFrame || this.modeLeases.busy || this.cameraOwner !== "orbit") return null;
+    const token = this.modeLeases.acquire();
+    if (!token) return null;
+    if (!this.setCameraOwner("game")) {
+      this.modeLeases.release(token);
+      return null;
+    }
+    const attached = new Set<THREE.Object3D>();
+    const current = () => this.modeLeases.isCurrent(token);
+    const check = () => { if (!current()) throw new Error("stale-mode-lease"); };
+    return {
+      id: token.id,
+      attach: (objects) => {
+        check();
+        for (const object of objects) {
+          this.scene.add(object);
+          attached.add(object);
+        }
+      },
+      setFrameHook: (hook) => {
+        check();
+        this.gameFrame = hook;
+      },
+      release: () => {
+        // The book drops the token before the engine cleanup, so a second call
+        // (or a stale lease) cannot clear the next owner's frame hook/camera.
+        if (!this.modeLeases.release(token)) return;
+        this.gameFrame = null;
+        for (const object of attached) this.scene.remove(object);
+        attached.clear();
+        if (this.cameraOwner === "game") this.setCameraOwner("orbit");
+      },
+    };
+  }
+
   /** 游戏每帧回调：owner === "game" 时在 updateScene 中调用（dt 秒），不启动第二个绘制循环。 */
   setGameFrameHook(fn: ((dt: number) => void) | null): void {
     if (this.gameSceneToken) throw new Error("scene-lease-required");
+    if (this.modeLeases.busy) throw new Error("mode-lease-active");
     if (fn && this.drivingWorldFrame) throw new Error("driving-frame-already-owned");
     this.gameFrame = fn;
   }

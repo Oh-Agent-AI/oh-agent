@@ -28,6 +28,11 @@ export const RAIDER_DEF = 1;
 export const RAIDER_MOVE = 4;
 /** Spawn samples are one plane when the spread is at most 1 world unit (2 m). */
 export const FLAT_SPAWN_MAX_DELTA = 1;
+/** The search retries at this wider bound when no strict window exists. This is a
+ *  documented relaxation, not a hidden one: `CityMechaSite.spawnSpread` carries the
+ *  value and the panel shows it when it exceeds FLAT_SPAWN_MAX_DELTA. It must never
+ *  grow past this constant; Phase 0 still owns the enforce-1-vs-revise decision. */
+export const RELAXED_SPAWN_MAX_DELTA = 2;
 /** 一步平地是两个半步。pathDistance 返回半步，和移动力比较时乘这一档。 */
 export const MOVE_QUANTUM = 2;
 

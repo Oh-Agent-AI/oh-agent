@@ -573,7 +573,7 @@ export function CityExperience({ ui, disabled, cinema, status, quality, onQualit
         <div style={{ display: "flex", gap: 8 }}>
           <button disabled={cinema || ui.busy || gameActive || !ui.model} onClick={() => { ui.setOptions(false); game.enterPractice(); }}>{gameText("自由练习", language === "en" ? "en" : "zh-Hans")}</button>
           <button disabled={cinema || ui.busy || gameActive || !ui.model} onClick={() => { ui.setOptions(false); game.enterRace(); }}>{gameText("穿环挑战", language === "en" ? "en" : "zh-Hans")}</button>
-          <button disabled={cinema || ui.busy || gameActive || !ui.model || !onMecha} onClick={() => { ui.setOptions(false); onMecha?.(); }}>{gameText("机甲战棋", language === "en" ? "en" : "zh-Hans")}</button>
+          <button disabled={cinema || ui.busy || gameActive || disabled || !ui.model || !onMecha} onClick={() => { ui.setOptions(false); onMecha?.(); }}>{gameText("机甲战棋", language === "en" ? "en" : "zh-Hans")}</button>
           {typeof __CITY_GAME_UAT__ !== "undefined" && __CITY_GAME_UAT__ && <button disabled={cinema || ui.busy || gameActive || !ui.model} onClick={() => { ui.setOptions(false); void game.enterUatRace(); }}>UAT keyboard pilot</button>}
         </div>
         {game.entryError && <p role="alert">{game.entryError}</p>}

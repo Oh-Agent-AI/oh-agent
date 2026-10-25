@@ -20,7 +20,7 @@
 import type { RoadEdge } from "../../engine/cityLayout";
 import { groundRoadClearance } from "../../engine/surface/roadClearance";
 import { LOT } from "../../engine/worldScale";
-import { BOARD, FLAT_SPAWN_MAX_DELTA, type Cell, type MechId, type TerrainKind } from "./rules";
+import { BOARD, FLAT_SPAWN_MAX_DELTA, RELAXED_SPAWN_MAX_DELTA, type Cell, type MechId, type TerrainKind } from "./rules";
 
 /** Lot module. A block's window may step a little wider; see pitchOf. */
 export const CELL_W = LOT.width;
@@ -30,8 +30,13 @@ export const CELL_LOTS = 2;
 /** Frontage slack tops out just under 1.5 lots when a row holds two parcels. */
 const PITCH_SLACK = 1.55;
 const BOARD_REACH = Math.hypot(CELL_W * PITCH_SLACK * CELL_LOTS * BOARD, CELL_D * PITCH_SLACK * CELL_LOTS * BOARD) + 16;
-/** World-space anchor buckets. The fight grid itself is the lot, not this square. */
-const BUCKET = 8;
+/** World-space anchor buckets. The fight grid itself is the lot, not this square.
+ *  The bucket is a pure index parameter, so the catalog is byte-identical for any
+ *  value. 8 was too fine: `nearby()` walked a ~92×92 bucket grid for every one of
+ *  the ~16k candidate windows. 256 cuts that to ~4×4 without making the lists so
+ *  long that dedup dominates (measured on the city-site fixtures and a 2 000-anchor
+ *  synthetic city). */
+const BUCKET = 256;
 /** A lot that lands on the line by a rounding hair does not claim the next cell. */
 const CELL_EDGE = 1e-3;
 /** 靠岸：水格够形成一条边，又没有把棋盘淹掉。 */
@@ -67,6 +72,31 @@ export type CitySiteTerrain = {
   height: (x: number, z: number) => number;
   slope?: (x: number, z: number) => number;
 };
+
+/** One candidate window shifts its origin by whole cells, so the cell centers a
+ *  seed can ever sample are exactly `seed + R(k·w, m·d)` for k,m ∈ [-9, 9]. That
+ *  is 361 points per seed instead of 100 per candidate window (~16k windows).
+ *  Sampling those points up front makes the whole search data-driven, exact (the
+ *  patch is read by (k,m), so no interpolation and no trig in the hot loop), and
+ *  transferable to a worker. */
+export type FightTerrainPatch = {
+  /** 19×19, row-major: index = (m + 9) * 19 + (k + 9). */
+  heights: Float64Array;
+  slopes: Float64Array | null;
+};
+export type FightStep = { w: number; d: number };
+export type FightSeedSample = { seed: SiteAnchor; step: FightStep; patch: FightTerrainPatch };
+export type FightTerrainSnapshot = {
+  schemaVersion: 1;
+  /** Caller-supplied build counter; responses from older revisions are discarded. */
+  revision: number;
+  /** Content hash of anchors + sampled patches; the cache/worker key. */
+  fingerprint: string;
+  anchors: SiteAnchor[];
+  seeds: FightSeedSample[];
+};
+const PATCH_RADIUS = BOARD - 1;
+const PATCH_SIDE = PATCH_RADIUS * 2 + 1;
 
 export type CityMechaBuilding = {
   id: string;
@@ -224,36 +254,149 @@ function publish(win: Window, roads?: readonly RoadEdge[]): CityMechaSite {
   return toSite(copy);
 }
 
-function searchWindows(
+function patchIndex(k: number, m: number): number {
+  return (m + PATCH_RADIUS) * PATCH_SIDE + (k + PATCH_RADIUS);
+}
+
+function samplePatch(terrain: CitySiteTerrain, seed: SiteAnchor, step: FightStep): FightTerrainPatch {
+  const size = PATCH_SIDE * PATCH_SIDE;
+  const heights = new Float64Array(size);
+  const slopes = terrain.slope ? new Float64Array(size) : null;
+  const yaw = seed.yaw ?? 0;
+  const c = Math.cos(yaw);
+  const s = Math.sin(yaw);
+  for (let m = -PATCH_RADIUS; m <= PATCH_RADIUS; m += 1) {
+    for (let k = -PATCH_RADIUS; k <= PATCH_RADIUS; k += 1) {
+      const lx = k * step.w;
+      const lz = m * step.d;
+      const x = seed.x + lx * c + lz * s;
+      const z = seed.z - lx * s + lz * c;
+      const at = patchIndex(k, m);
+      heights[at] = terrain.height(x, z);
+      if (slopes && terrain.slope) slopes[at] = terrain.slope(x, z);
+    }
+  }
+  return { heights, slopes };
+}
+
+/** FNV-1a over the snapshot contents, quantized to 1e-3 world units. Cheap enough
+ *  to run once per preparation, and stable across processes (worker/cache key). */
+export function fingerprintSnapshot(snapshot: Omit<FightTerrainSnapshot, "schemaVersion" | "fingerprint" | "revision"> | FightTerrainSnapshot): string {
+  let hash = 0x811c9dc5;
+  const mix = (value: number) => {
+    hash ^= Math.round(value * 1000) | 0;
+    hash = Math.imul(hash, 0x01000193);
+  };
+  const mixText = (value: string) => {
+    for (let i = 0; i < value.length; i += 1) mix(value.charCodeAt(i));
+  };
+  for (const anchor of snapshot.anchors) {
+    // Every field here reaches the generated site (id → building identity, ground/
+    // height → roof bars), so a change must change the fingerprint too.
+    mixText(anchor.id);
+    mix(anchor.x); mix(anchor.z);
+    mix(anchor.ground); mix(anchor.height);
+    mix(anchor.halfX); mix(anchor.halfZ); mix(anchor.yaw ?? 0);
+  }
+  for (const sample of snapshot.seeds) {
+    mix(sample.seed.x); mix(sample.seed.z); mix(sample.step.w); mix(sample.step.d);
+    for (let i = 0; i < sample.patch.heights.length; i += 1) mix(sample.patch.heights[i]!);
+    const slopes = sample.patch.slopes;
+    if (slopes) for (let i = 0; i < slopes.length; i += 1) mix(slopes[i]!);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+/** Main-thread half of the split: read every point the search can query, once.
+ *  `revision` is carried into the snapshot so a late worker result can be dropped. */
+export function prepareFightTerrain(terrain: CitySiteTerrain, anchors: readonly SiteAnchor[], revision = 0): FightTerrainSnapshot {
+  const seeds = anchorSeeds(anchors).map((seed) => {
+    const step = pitchOf(seed, anchors);
+    return { seed, step, patch: samplePatch(terrain, seed, step) };
+  });
+  const snapshot: FightTerrainSnapshot = {
+    schemaVersion: 1,
+    revision,
+    fingerprint: "",
+    anchors: anchors.slice(),
+    seeds,
+  };
+  snapshot.fingerprint = fingerprintSnapshot(snapshot);
+  return snapshot;
+}
+
+export type PrepareFightTerrainOptions = {
+  signal?: AbortSignal;
+  sliceMs?: number;
+  onProgress?: (done: number, total: number) => void;
+};
+
+/** Same sampling, one seed at a time. 361 samples per seed is small enough that a
+ *  seed is always a safe slice; the async entry point exists so a 2 000-building
+ *  city cannot hold the main thread for a whole preparation. */
+export async function prepareFightTerrainAsync(
   terrain: CitySiteTerrain,
   anchors: readonly SiteAnchor[],
-  open: boolean,
-  each: (win: Window, gate: TerrainGate) => void,
-): void {
-  if (anchors.length === 0) return;
-  const index = bucketAnchors(anchors);
-  const seeds = anchorSeeds(anchors);
-  for (const limit of [FLAT_SPAWN_MAX_DELTA, 2]) {
+  options: PrepareFightTerrainOptions = {},
+): Promise<FightTerrainSnapshot> {
+  const signal = options.signal;
+  const sliceMs = Math.max(1, options.sliceMs ?? 8);
+  const chosen = anchorSeeds(anchors);
+  const seeds: FightSeedSample[] = [];
+  let last = nowMs();
+  for (const seed of chosen) {
+    if (signal?.aborted) throw abortError();
+    const step = pitchOf(seed, anchors);
+    seeds.push({ seed, step, patch: samplePatch(terrain, seed, step) });
+    options.onProgress?.(seeds.length, chosen.length);
+    if (nowMs() - last >= sliceMs) {
+      await yieldToHost();
+      last = nowMs();
+    }
+  }
+  const snapshot: FightTerrainSnapshot = {
+    schemaVersion: 1,
+    revision: 0,
+    fingerprint: "",
+    anchors: anchors.slice(),
+    seeds,
+  };
+  snapshot.fingerprint = fingerprintSnapshot(snapshot);
+  return snapshot;
+}
+
+type Candidate = { win: Window | null; gate: TerrainGate };
+
+/**
+ * Walking the search space as an iterator lets the sync, async and worker entry
+ * points share one implementation. It yields **every attempt**, including the
+ * ones whose `evaluateWindow` returned null: a slice boundary must fall between
+ * two attempts even when a long run of candidates is invalid, otherwise
+ * `iterator.next()` could scan thousands of windows without giving the host a
+ * turn. All terrain reads go through the snapshot's per-seed patch; the iterator
+ * never touches the engine or a closure.
+ */
+function* windowCandidates(snapshot: FightTerrainSnapshot, open: boolean): Generator<Candidate> {
+  if (snapshot.seeds.length === 0) return;
+  const index = bucketAnchors(snapshot.anchors);
+  for (const limit of [FLAT_SPAWN_MAX_DELTA, RELAXED_SPAWN_MAX_DELTA]) {
     let flatEnough = false;
-    for (const seed of seeds) {
-      const step = pitchOf(seed, anchors);
+    for (const { seed, step, patch } of snapshot.seeds) {
+      const yaw = seed.yaw ?? 0;
+      const c = Math.cos(yaw);
+      const s = Math.sin(yaw);
       for (let by = 0; by < BOARD; by += 1) {
         for (let bx = 0; bx < BOARD; bx += 1) {
-          const yaw = seed.yaw ?? 0;
           const lx = (bx + 0.5) * step.w;
           const lz = (by + 0.5) * step.d;
-          const c = Math.cos(yaw);
-          const s = Math.sin(yaw);
           const originX = seed.x - (lx * c + lz * s);
           const originZ = seed.z - (-lx * s + lz * c);
-          const strict = evaluateWindow(terrain, index, originX, originZ, yaw, step, limit, "strict");
-          if (strict) {
-            each(strict, "strict");
-            if (strict.spawnSpread <= FLAT_SPAWN_MAX_DELTA) flatEnough = true;
-          }
+          const strict = evaluateWindow(index, originX, originZ, yaw, step, patch, bx, by, limit, "strict");
+          if (strict && strict.spawnSpread <= FLAT_SPAWN_MAX_DELTA) flatEnough = true;
+          yield { win: strict, gate: "strict" };
           if (!open) continue;
-          const featured = evaluateWindow(terrain, index, originX, originZ, yaw, step, limit, "open");
-          if (featured) each(featured, "open");
+          const featured = evaluateWindow(index, originX, originZ, yaw, step, patch, bx, by, limit, "open");
+          yield { win: featured, gate: "open" };
         }
       }
     }
@@ -261,12 +404,18 @@ function searchWindows(
   }
 }
 
-export function siteMechaWindow(terrain: CitySiteTerrain, anchors: readonly SiteAnchor[], roads?: readonly RoadEdge[]): CityMechaSite | null {
+/** Flat-window search over an already-sampled city; the worker and the fixtures
+ *  both call this, so they cannot drift apart. */
+export function searchPreparedMechaWindow(snapshot: FightTerrainSnapshot, roads?: readonly RoadEdge[]): CityMechaSite | null {
   let best: Window | null = null;
-  searchWindows(terrain, anchors, false, (win, gate) => {
-    if (gate === "strict" && better(win, best)) best = win;
-  });
+  for (const { win, gate } of windowCandidates(snapshot, false)) {
+    if (win && gate === "strict" && better(win, best)) best = win;
+  }
   return best ? publish(best, roads) : null;
+}
+
+export function siteMechaWindow(terrain: CitySiteTerrain, anchors: readonly SiteAnchor[], roads?: readonly RoadEdge[]): CityMechaSite | null {
+  return searchPreparedMechaWindow(prepareFightTerrain(terrain, anchors), roads);
 }
 
 function rememberAlley(pool: Window[], win: Window) {
@@ -284,24 +433,27 @@ function roadCanyon(site: CityMechaSite, canyon: readonly Cell[]): number {
   return roads;
 }
 
-/** 同一座城里四种战场。没有那种格子时该键是 null，不造假地形。 */
-export function siteFightShapes(terrain: CitySiteTerrain, anchors: readonly SiteAnchor[], roads?: readonly RoadEdge[]): FightCatalog {
-  let flat: Window | null = null;
-  let shore: Window | null = null;
-  let ridge: Window | null = null;
-  const alleyPool: Window[] = [];
-  searchWindows(terrain, anchors, true, (win, gate) => {
-    if (gate === "strict") {
-      if (better(win, flat)) flat = win;
-      rememberAlley(alleyPool, win);
-      return;
-    }
-    if (win.water >= SHORE_WATER_MIN && better(win, shore)) shore = win;
-    if (win.mountain >= RIDGE_MOUNTAIN_MIN && better(win, ridge)) ridge = win;
-  });
+type ShapeAccumulator = { flat: Window | null; shore: Window | null; ridge: Window | null; alleyPool: Window[] };
+
+function emptyAccumulator(): ShapeAccumulator {
+  return { flat: null, shore: null, ridge: null, alleyPool: [] };
+}
+
+function observe(acc: ShapeAccumulator, win: Window | null, gate: TerrainGate): void {
+  if (!win) return;
+  if (gate === "strict") {
+    if (better(win, acc.flat)) acc.flat = win;
+    rememberAlley(acc.alleyPool, win);
+    return;
+  }
+  if (win.water >= SHORE_WATER_MIN && better(win, acc.shore)) acc.shore = win;
+  if (win.mountain >= RIDGE_MOUNTAIN_MIN && better(win, acc.ridge)) acc.ridge = win;
+}
+
+function finalizeShapes(acc: ShapeAccumulator, roads?: readonly RoadEdge[]): FightCatalog {
   let alley: CityMechaSite | null = null;
   let alleyRoads = 0;
-  for (const win of alleyPool) {
+  for (const win of acc.alleyPool) {
     const site = publish(win, roads);
     const hits = roadCanyon(site, win.canyon);
     if (hits >= ALLEY_ROAD_MIN && (hits > alleyRoads || (hits === alleyRoads && alley === null))) {
@@ -310,11 +462,95 @@ export function siteFightShapes(terrain: CitySiteTerrain, anchors: readonly Site
     }
   }
   return {
-    flat: flat ? publish(flat, roads) : null,
-    shore: shore ? publish(shore, roads) : null,
-    ridge: ridge ? publish(ridge, roads) : null,
+    flat: acc.flat ? publish(acc.flat, roads) : null,
+    shore: acc.shore ? publish(acc.shore, roads) : null,
+    ridge: acc.ridge ? publish(acc.ridge, roads) : null,
     alley,
   };
+}
+
+function nowMs(): number {
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
+
+function abortError(): Error {
+  const error = new Error("mecha battlefield search aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+/** Give the host a turn. `setTimeout(0)` is deliberate: it drains input, layout,
+ *  paint and the plugin heartbeat before the next slice, unlike a microtask. */
+function yieldToHost(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+export type FightShapeSearchOptions = {
+  signal?: AbortSignal;
+  /** Longest uninterrupted slice. 8 ms keeps every task well under the 50 ms budget. */
+  sliceMs?: number;
+  /** Candidate attempts so far (valid or not), bounded by seeds × 100 × gates. */
+  onProgress?: (evaluated: number) => void;
+};
+
+/** Search an already-sampled city. Pure data in, plain data out: the worker and
+ *  the fixtures run exactly this function, so there is no second implementation. */
+export function searchPrepared(
+  snapshot: FightTerrainSnapshot,
+  roads?: readonly RoadEdge[],
+  options: { onProgress?: (evaluated: number) => void } = {},
+): FightCatalog {
+  const acc = emptyAccumulator();
+  let evaluated = 0;
+  for (const { win, gate } of windowCandidates(snapshot, true)) {
+    observe(acc, win, gate);
+    evaluated += 1;
+    if (options.onProgress && evaluated % 256 === 0) options.onProgress(evaluated);
+  }
+  return finalizeShapes(acc, roads);
+}
+
+/** Same search, one slice at a time. Results are identical to the sync entry point:
+ *  candidates are observed in the same order, only the waiting between slices differs. */
+export async function searchPreparedAsync(
+  snapshot: FightTerrainSnapshot,
+  roads?: readonly RoadEdge[],
+  options: FightShapeSearchOptions = {},
+): Promise<FightCatalog> {
+  const acc = emptyAccumulator();
+  const signal = options.signal;
+  const sliceMs = Math.max(1, options.sliceMs ?? 8);
+  const iterator = windowCandidates(snapshot, true);
+  let last = nowMs();
+  let evaluated = 0;
+  for (;;) {
+    if (signal?.aborted) throw abortError();
+    const next = iterator.next();
+    if (next.done) break;
+    observe(acc, next.value.win, next.value.gate);
+    evaluated += 1;
+    if (options.onProgress && evaluated % 256 === 0) options.onProgress(evaluated);
+    if (nowMs() - last >= sliceMs) {
+      await yieldToHost();
+      last = nowMs();
+    }
+  }
+  return finalizeShapes(acc, roads);
+}
+
+/** 同一座城里四种战场。没有那种格子时该键是 null，不造假地形。 */
+export function siteFightShapes(terrain: CitySiteTerrain, anchors: readonly SiteAnchor[], roads?: readonly RoadEdge[]): FightCatalog {
+  return searchPrepared(prepareFightTerrain(terrain, anchors), roads);
+}
+
+export async function siteFightShapesAsync(
+  terrain: CitySiteTerrain,
+  anchors: readonly SiteAnchor[],
+  roads?: readonly RoadEdge[],
+  options: FightShapeSearchOptions = {},
+): Promise<FightCatalog> {
+  const snapshot = await prepareFightTerrainAsync(terrain, anchors, { signal: options.signal, sliceMs: options.sliceMs });
+  return searchPreparedAsync(snapshot, roads, options);
 }
 
 function anchorSeeds(anchors: readonly SiteAnchor[]): SiteAnchor[] {
@@ -346,7 +582,11 @@ function bucketAnchors(anchors: readonly SiteAnchor[]): Map<string, SiteAnchor[]
 function nearby(index: Map<string, SiteAnchor[]>, originX: number, originZ: number): SiteAnchor[] {
   const seen = new Set<string>();
   const list: SiteAnchor[] = [];
-  const reach = BOARD_REACH + BUCKET * 2;
+  // Only buckets that can hold an anchor intersecting the board are scanned.
+  // BOARD_REACH already covers the board diagonal plus slack; adding BUCKET
+  // margins here would make the query area grow with the index granularity and
+  // visit city blocks that cannot reach the board.
+  const reach = BOARD_REACH;
   const x0 = Math.floor((originX - reach) / BUCKET);
   const x1 = Math.floor((originX + reach) / BUCKET);
   const z0 = Math.floor((originZ - reach) / BUCKET);
@@ -410,12 +650,14 @@ function canyonCells(kind: Occupant[][], building: Array<Array<string | null>>):
 }
 
 function evaluateWindow(
-  terrain: CitySiteTerrain,
   index: Map<string, SiteAnchor[]>,
   originX: number,
   originZ: number,
   yaw: number,
   step: Step,
+  patch: FightTerrainPatch,
+  bx: number,
+  by: number,
   spawnLimit: number,
   gate: TerrainGate,
 ): Window | null {
@@ -434,9 +676,9 @@ function evaluateWindow(
     kind.push([]);
     building.push([]);
     for (let x = 0; x < BOARD; x += 1) {
-      const at = boardToWorld({ originX, originZ, yaw }, (x + 0.5) * step.w, (y + 0.5) * step.d);
-      const h = terrain.height(at.x, at.z);
-      const slope = terrain.slope?.(at.x, at.z) ?? 0;
+      const at = patchIndex(x - bx, y - by);
+      const h = patch.heights[at]!;
+      const slope = patch.slopes ? patch.slopes[at]! : 0;
       // 水面先于悬崖。坡度只把还露在水上的陡壁算成山地。
       const face: TerrainKind = h < 0.05 ? "water" : slope > 0.9 ? "mountain" : "land";
       heights[y]!.push(h);
@@ -533,15 +775,17 @@ function alignedCells(
   originX: number, originZ: number, yaw: number, anchor: SiteAnchor, alongX: number, alongZ: number, step: Step,
 ): Cell[] {
   const local = worldToLocal(originX, originZ, yaw, anchor.x, anchor.z);
+  // The overlap test is per cell, but only the cells under the anchor's local
+  // bounding box can pass it. Deriving the range keeps this O(covered cells)
+  // instead of O(BOARD²); both inequalities below are the same strict test as
+  // the loop form, just solved for x / y.
+  const xMin = Math.max(0, Math.floor((local.lx - alongX - step.w + CELL_EDGE) / step.w) + 1);
+  const xMax = Math.min(BOARD - 1, Math.ceil((local.lx + alongX - CELL_EDGE) / step.w) - 1);
+  const yMin = Math.max(0, Math.floor((local.lz - alongZ - step.d + CELL_EDGE) / step.d) + 1);
+  const yMax = Math.min(BOARD - 1, Math.ceil((local.lz + alongZ - CELL_EDGE) / step.d) - 1);
   const cells: Cell[] = [];
-  for (let y = 0; y < BOARD; y += 1) {
-    for (let x = 0; x < BOARD; x += 1) {
-      const x0 = x * step.w;
-      const z0 = y * step.d;
-      const overlaps = local.lx + alongX > x0 + CELL_EDGE && local.lx - alongX < x0 + step.w - CELL_EDGE
-        && local.lz + alongZ > z0 + CELL_EDGE && local.lz - alongZ < z0 + step.d - CELL_EDGE;
-      if (overlaps) cells.push({ x, y });
-    }
+  for (let y = yMin; y <= yMax; y += 1) {
+    for (let x = xMin; x <= xMax; x += 1) cells.push({ x, y });
   }
   return cells;
 }
