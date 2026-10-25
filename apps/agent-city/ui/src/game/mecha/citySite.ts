@@ -1,13 +1,16 @@
 /**
  * Places the 10×10 tactics board on a real city window.
- * One cell is 8 world units (16 m). Feet sit on terrain.height.
+ * One cell is 16 world units (32 m), twice the old 16 m cell. A normal session
+ * lot is 7.2 × 8 (about 16 m), so one cell now holds about two lots on a side.
+ * Feet sit on terrain.height. Combat meshes are drawn at the same 2× in
+ * CityMechaWorld; the lineup canvas keeps the 16 m model scale.
  * Roads stay walkable: `buildable` means "a parcel can go here", and that
  * would erase the streets the fight is supposed to stand on. Water and cliffs
  * are the cells that cannot be spawned on. The city plan is not edited.
  */
 import { BOARD, FLAT_SPAWN_MAX_DELTA, type Cell, type MechId } from "./rules";
 
-export const CITY_CELL = 8;
+export const CITY_CELL = 16;
 const SPAN = CITY_CELL * BOARD;
 
 export type SiteAnchor = {
@@ -228,7 +231,9 @@ function evaluateWindow(
       }
     }
   }
-  if (blocked > 18 || hi - lo > 6) return null;
+  // 12 units of relief across 160 is the same slope the old 80-unit window
+  // allowed at 6. The cell doubled; the hill did not get steeper.
+  if (blocked > 18 || hi - lo > 12) return null;
 
   const claimed = new Set<string>();
   for (const anchor of nearby(index, originX, originZ)) {

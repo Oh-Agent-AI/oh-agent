@@ -102,16 +102,23 @@ export function CityMechaWorld({
     const boss = createBoss();
     const raiderWest = createBoss();
     const raiderEast = createBoss();
-    raiderWest.scale.setScalar(0.38);
-    raiderEast.scale.setScalar(0.38);
+    // Models are built for a 16 m cell. The city cell is 32 m, so the same
+    // mesh fills the larger footprint. Support already carries 1.22.
+    const unitScale = 2;
+    assault.scale.multiplyScalar(unitScale);
+    gunner.scale.multiplyScalar(unitScale);
+    support.scale.multiplyScalar(unitScale);
+    boss.scale.multiplyScalar(unitScale);
+    raiderWest.scale.setScalar(0.38 * unitScale);
+    raiderEast.scale.setScalar(0.38 * unitScale);
     const figures: Record<MechId, THREE.Group> = { Assault: assault, Gunner: gunner, Support: support };
     const markers = {
-      Assault: marker("#e2b15a", 2.35, 3.15),
-      Gunner: marker("#7eb6ff", 2.15, 2.9),
-      Support: marker("#7dffa8", 2.15, 2.9),
-      boss: marker("#eaff7a", 5.1, 6.5),
-      raiderWest: marker("#d7a4ff", 1.45, 2.05),
-      raiderEast: marker("#d7a4ff", 1.45, 2.05),
+      Assault: marker("#e2b15a", 4.7, 6.3),
+      Gunner: marker("#7eb6ff", 4.3, 5.8),
+      Support: marker("#7dffa8", 4.3, 5.8),
+      boss: marker("#eaff7a", 10.2, 13),
+      raiderWest: marker("#d7a4ff", 2.9, 4.1),
+      raiderEast: marker("#d7a4ff", 2.9, 4.1),
     };
     for (const figure of [assault, gunner, support, boss, raiderWest, raiderEast]) root.add(figure);
     for (const ring of Object.values(markers)) root.add(ring.mesh);
@@ -161,16 +168,15 @@ export function CityMechaWorld({
     root.add(grid);
 
     const camera = engine.renderCamera;
-    // The tactics HUD sits on the lower left, and the squad deploys on the
-    // south edge. Aim west of that edge so the three mechs land in the open
-    // right half of the frame, above the panel, instead of under the next
-    // block of towers.
+    // The board is twice as wide as the first city window. Keep the same
+    // south-west aim and step the camera back by that same factor, or the
+    // squad sits under the panel and the boss leaves the top of the frame.
     const aimCell = cellWorld(site, { x: 1, y: 8 });
-    const aim = new THREE.Vector3(aimCell.x, aimCell.y + 1, aimCell.z);
+    const aim = new THREE.Vector3(aimCell.x, aimCell.y + 2, aimCell.z);
     const frameCamera = () => {
-      camera.position.set(aimCell.x + 22, aimCell.y + 92, aimCell.z + 46);
+      camera.position.set(aimCell.x + 44, aimCell.y + 168, aimCell.z + 88);
       camera.up.set(0, 1, 0);
-      camera.fov = 34;
+      camera.fov = 36;
       camera.updateProjectionMatrix();
       camera.lookAt(aim);
     };
@@ -340,6 +346,6 @@ function face(mesh: THREE.Object3D, from: THREE.Vector3, to: THREE.Vector3) {
 }
 
 function slide(mesh: THREE.Object3D, goal: THREE.Vector3, snap: boolean) {
-  if (snap || mesh.position.distanceTo(goal) > 24) mesh.position.copy(goal);
+  if (snap || mesh.position.distanceTo(goal) > 48) mesh.position.copy(goal);
   else mesh.position.lerp(goal, 0.22);
 }
