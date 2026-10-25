@@ -2,7 +2,7 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import type { CityEngine } from "../engine/CityEngine";
-import { CITY_CELL, boardToWorld, cellWorld, type CityMechaSite } from "./mecha/citySite";
+import { boardToWorld, cellWorld, type CityMechaSite } from "./mecha/citySite";
 import { createAssault, createBoss, createGunner, createSupport, disposeMechaModel } from "./mecha/models";
 import type { Cell, MechId } from "./mecha/rules";
 
@@ -58,7 +58,7 @@ export function CityMechaWorld({
     const root = new THREE.Group();
     root.name = "mecha-city";
 
-    const padGeo = new THREE.BoxGeometry(CITY_CELL - 0.7, 0.08, CITY_CELL - 0.7);
+    const padGeo = new THREE.BoxGeometry(site.cellW - 0.22, 0.08, site.cellD - 0.24);
     const padMat = new Map<Role, THREE.MeshStandardMaterial>();
     for (const role of ROLES) {
       padMat.set(role, new THREE.MeshStandardMaterial({
@@ -76,7 +76,7 @@ export function CityMechaWorld({
       }));
     }
     const pads: THREE.Mesh[] = [];
-    const pickGeo = new THREE.BoxGeometry(CITY_CELL - 0.2, 0.6, CITY_CELL - 0.2);
+    const pickGeo = new THREE.BoxGeometry(site.cellW - 0.08, 0.6, site.cellD - 0.08);
     const pickMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false });
     const picks: THREE.Mesh[] = [];
     for (let y = 0; y < 10; y += 1) {
@@ -84,11 +84,13 @@ export function CityMechaWorld({
         const world = cellWorld(site, { x, y });
         const pad = new THREE.Mesh(padGeo, padMat.get("empty")!);
         pad.position.set(world.x, world.y + 0.22, world.z);
+        pad.rotation.y = site.yaw;
         pad.name = `mecha-cell-${x}-${y}`;
         pads.push(pad);
         root.add(pad);
         const pick = new THREE.Mesh(pickGeo, pickMat);
         pick.position.set(world.x, world.y + 0.35, world.z);
+        pick.rotation.y = site.yaw;
         pick.layers.set(1);
         pick.userData.cell = { x, y };
         picks.push(pick);
@@ -102,23 +104,18 @@ export function CityMechaWorld({
     const boss = createBoss();
     const raiderWest = createBoss();
     const raiderEast = createBoss();
-    // Models are built for a 16 m cell. The city cell is 32 m, so the same
-    // mesh fills the larger footprint. Support already carries 1.22.
-    const unitScale = 2;
-    assault.scale.multiplyScalar(unitScale);
-    gunner.scale.multiplyScalar(unitScale);
-    support.scale.multiplyScalar(unitScale);
-    boss.scale.multiplyScalar(unitScale);
-    raiderWest.scale.setScalar(0.38 * unitScale);
-    raiderEast.scale.setScalar(0.38 * unitScale);
+    // Meshes are built for a cell about 8 world units across (16 m). A session
+    // lot is 7.2 × 8, so they stand at that scale. Support already carries 1.22.
+    raiderWest.scale.setScalar(0.38);
+    raiderEast.scale.setScalar(0.38);
     const figures: Record<MechId, THREE.Group> = { Assault: assault, Gunner: gunner, Support: support };
     const markers = {
-      Assault: marker("#e2b15a", 4.7, 6.3),
-      Gunner: marker("#7eb6ff", 4.3, 5.8),
-      Support: marker("#7dffa8", 4.3, 5.8),
-      boss: marker("#eaff7a", 10.2, 13),
-      raiderWest: marker("#d7a4ff", 2.9, 4.1),
-      raiderEast: marker("#d7a4ff", 2.9, 4.1),
+      Assault: marker("#e2b15a", 2.35, 3.15),
+      Gunner: marker("#7eb6ff", 2.15, 2.9),
+      Support: marker("#7dffa8", 2.15, 2.9),
+      boss: marker("#eaff7a", 5.1, 6.5),
+      raiderWest: marker("#d7a4ff", 1.45, 2.05),
+      raiderEast: marker("#d7a4ff", 1.45, 2.05),
     };
     for (const figure of [assault, gunner, support, boss, raiderWest, raiderEast]) root.add(figure);
     for (const ring of Object.values(markers)) root.add(ring.mesh);
@@ -149,7 +146,7 @@ export function CityMechaWorld({
         cellWorld(site, { x: Math.max(0, x - 1), y: Math.max(0, y - 1) }),
       ];
       return {
-        ...boardToWorld(site, x * CITY_CELL, y * CITY_CELL),
+        ...boardToWorld(site, x * site.cellW, y * site.cellD),
         y: Math.max(...neighbors.map((item) => item.y)) + 0.4,
       };
     };
@@ -168,13 +165,14 @@ export function CityMechaWorld({
     root.add(grid);
 
     const camera = engine.renderCamera;
-    // Sit on the squad side of the rotated board. World +Z is not south once
-    // the grid follows the street.
+    // Sit on the squad side of the rotated board. The window is one block of
+    // lots, about 72 × 80, so the eye stays in board-local space. World +Z is
+    // not south once the grid follows the street.
     const focus = cellWorld(site, { x: 4, y: 5 });
-    const eye = boardToWorld(site, 4.5 * CITY_CELL + 24, 5.5 * CITY_CELL + 48);
+    const eye = boardToWorld(site, 4.5 * site.cellW + 18, 5.5 * site.cellD + 28);
     const aim = new THREE.Vector3(focus.x, focus.y + 2, focus.z);
     const frameCamera = () => {
-      camera.position.set(eye.x, focus.y + 210, eye.z);
+      camera.position.set(eye.x, focus.y + 120, eye.z);
       camera.up.set(0, 1, 0);
       camera.fov = 40;
       camera.updateProjectionMatrix();
@@ -334,7 +332,7 @@ function footprintFeet(site: CityMechaSite, anchor: { x: number; y: number }): T
   ];
   let y = 0;
   for (const cell of cells) y += cellWorld(site, cell).y;
-  const at = boardToWorld(site, (anchor.x + 1) * CITY_CELL, (anchor.y + 1) * CITY_CELL);
+  const at = boardToWorld(site, (anchor.x + 1) * site.cellW, (anchor.y + 1) * site.cellD);
   return new THREE.Vector3(at.x, y / cells.length, at.z);
 }
 

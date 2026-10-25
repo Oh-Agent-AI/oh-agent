@@ -14,6 +14,12 @@
 /** 1 世界单位对应的米数。 */
 export const METERS_PER_UNIT = 2;
 
+/**
+ * 会话地块模数，规划层与机甲战棋共用。沿街面宽 7.2、进深 8（14.4 × 16 m）。
+ * 战棋的一格就是这一块，10×10 是从这套地块里开的一扇窗，不再另铺方格。
+ */
+export const LOT = { width: 7.2, depth: 8 } as const;
+
 /** 米 → 世界单位。 */
 export const m = (meters: number): number => meters / METERS_PER_UNIT;
 

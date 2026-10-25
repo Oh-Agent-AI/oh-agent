@@ -1,20 +1,31 @@
 /**
  * Places the 10×10 tactics board on a real city window.
- * One cell is 16 world units (32 m), twice the old 16 m cell. A normal session
- * lot is 7.2 × 8 (about 16 m), so one cell now holds about two lots on a side.
- * Feet sit on terrain.height. Combat meshes are drawn at the same 2× in
- * CityMechaWorld; the lineup canvas keeps the 16 m model scale.
- * The board uses the seed parcel's yaw, the same Y rotation as the building
- * mesh, so the grid runs with that street. A lot turned 90° still shares the
- * axes. A lot on a different angle blocks cells and is not a rules target.
+ * One cell is one session lot: LOT.width along the street, LOT.depth inward,
+ * the same yaw as the building mesh. A block may spread those centers a little
+ * farther apart than the rectangle, and the window uses that block's pitch so
+ * the line falls between lots. Streets are the empty cells between lots.
+ * A lot turned 90° still shares those axes. A lot on a different angle blocks
+ * cells and is not a rules target. Feet sit on terrain.height. Meshes stay at
+ * the scale built for this lot; there is no second board spacing.
  * Roads stay walkable: `buildable` means "a parcel can go here", and that
  * would erase the streets the fight is supposed to stand on. Water and cliffs
  * are the cells that cannot be spawned on. The city plan is not edited.
  */
+import { LOT } from "../../engine/worldScale";
 import { BOARD, FLAT_SPAWN_MAX_DELTA, type Cell, type MechId } from "./rules";
 
-export const CITY_CELL = 16;
-const SPAN = CITY_CELL * BOARD;
+/** Lot module. A block's window may step a little wider; see pitchOf. */
+export const CELL_W = LOT.width;
+export const CELL_D = LOT.depth;
+/** Frontage slack tops out just under 1.5 lots when a row holds two parcels. */
+const PITCH_SLACK = 1.55;
+const BOARD_REACH = Math.hypot(CELL_W * PITCH_SLACK * BOARD, CELL_D * PITCH_SLACK * BOARD) + 16;
+/** World-space anchor buckets. The fight grid itself is the lot, not this square. */
+const BUCKET = 8;
+/** A lot that lands on the line by a rounding hair does not claim the next cell. */
+const CELL_EDGE = 1e-3;
+
+type Step = { w: number; d: number };
 
 export type SiteAnchor = {
   id: string;
@@ -50,6 +61,9 @@ export type CityMechaSite = {
   originZ: number;
   /** Parcel yaw. Cell +x is the building's width axis. */
   yaw: number;
+  /** Board-local cell step. The lot module, or this block's frontage pitch. */
+  cellW: number;
+  cellD: number;
   heights: number[][];
   buildings: CityMechaBuilding[];
   mechs: Array<{ id: MechId; pos: Cell }>;
@@ -119,7 +133,7 @@ export function boardToWorld(site: { originX: number; originZ: number; yaw: numb
 }
 
 export function cellWorld(site: CityMechaSite, cell: Cell): { x: number; y: number; z: number } {
-  const at = boardToWorld(site, (cell.x + 0.5) * CITY_CELL, (cell.y + 0.5) * CITY_CELL);
+  const at = boardToWorld(site, (cell.x + 0.5) * site.cellW, (cell.y + 0.5) * site.cellD);
   return { x: at.x, y: site.heights[cell.y]?.[cell.x] ?? 0, z: at.z };
 }
 
@@ -129,6 +143,7 @@ type Window = {
   originX: number;
   originZ: number;
   yaw: number;
+  step: Step;
   heights: number[][];
   kind: Occupant[][];
   building: Array<Array<string | null>>;
@@ -147,16 +162,17 @@ export function siteMechaWindow(terrain: CitySiteTerrain, anchors: readonly Site
   const slot: { best: Window | null } = { best: null };
   for (const limit of [FLAT_SPAWN_MAX_DELTA, 2]) {
     for (const seed of seeds) {
+      const step = pitchOf(seed, anchors);
       for (let by = 0; by < BOARD; by += 1) {
         for (let bx = 0; bx < BOARD; bx += 1) {
           const yaw = seed.yaw ?? 0;
-          const lx = (bx + 0.5) * CITY_CELL;
-          const lz = (by + 0.5) * CITY_CELL;
+          const lx = (bx + 0.5) * step.w;
+          const lz = (by + 0.5) * step.d;
           const c = Math.cos(yaw);
           const s = Math.sin(yaw);
           const originX = seed.x - (lx * c + lz * s);
           const originZ = seed.z - (-lx * s + lz * c);
-          const found = evaluateWindow(terrain, index, originX, originZ, yaw, limit);
+          const found = evaluateWindow(terrain, index, originX, originZ, yaw, step, limit);
           if (found && better(found, slot.best)) slot.best = found;
         }
       }
@@ -169,6 +185,8 @@ export function siteMechaWindow(terrain: CitySiteTerrain, anchors: readonly Site
     originX: best.originX,
     originZ: best.originZ,
     yaw: best.yaw,
+    cellW: best.step.w,
+    cellD: best.step.d,
     heights: best.heights,
     buildings: best.rules,
     mechs: best.mechs,
@@ -188,10 +206,10 @@ function bucketAnchors(anchors: readonly SiteAnchor[]): Map<string, SiteAnchor[]
   const buckets = new Map<string, SiteAnchor[]>();
   for (const anchor of anchors) {
     const pad = anchor.halfX + anchor.halfZ;
-    const x0 = Math.floor((anchor.x - pad) / CITY_CELL);
-    const x1 = Math.floor((anchor.x + pad) / CITY_CELL);
-    const z0 = Math.floor((anchor.z - pad) / CITY_CELL);
-    const z1 = Math.floor((anchor.z + pad) / CITY_CELL);
+    const x0 = Math.floor((anchor.x - pad) / BUCKET);
+    const x1 = Math.floor((anchor.x + pad) / BUCKET);
+    const z0 = Math.floor((anchor.z - pad) / BUCKET);
+    const z1 = Math.floor((anchor.z + pad) / BUCKET);
     for (let x = x0; x <= x1; x += 1) {
       for (let z = z0; z <= z1; z += 1) {
         const key = `${x}:${z}`;
@@ -204,14 +222,14 @@ function bucketAnchors(anchors: readonly SiteAnchor[]): Map<string, SiteAnchor[]
   return buckets;
 }
 
-function nearby(index: Map<string, SiteAnchor[]>, originX: number, originZ: number, yaw: number): SiteAnchor[] {
+function nearby(index: Map<string, SiteAnchor[]>, originX: number, originZ: number): SiteAnchor[] {
   const seen = new Set<string>();
   const list: SiteAnchor[] = [];
-  const reach = SPAN * (Math.abs(Math.cos(yaw)) + Math.abs(Math.sin(yaw))) + CITY_CELL * 2;
-  const x0 = Math.floor((originX - reach) / CITY_CELL);
-  const x1 = Math.floor((originX + reach) / CITY_CELL);
-  const z0 = Math.floor((originZ - reach) / CITY_CELL);
-  const z1 = Math.floor((originZ + reach) / CITY_CELL);
+  const reach = BOARD_REACH + BUCKET * 2;
+  const x0 = Math.floor((originX - reach) / BUCKET);
+  const x1 = Math.floor((originX + reach) / BUCKET);
+  const z0 = Math.floor((originZ - reach) / BUCKET);
+  const z1 = Math.floor((originZ + reach) / BUCKET);
   for (let x = x0; x <= x1; x += 1) {
     for (let z = z0; z <= z1; z += 1) {
       for (const anchor of index.get(`${x}:${z}`) ?? []) {
@@ -225,12 +243,36 @@ function nearby(index: Map<string, SiteAnchor[]>, originX: number, originZ: numb
   return list;
 }
 
+function pitchOf(seed: SiteAnchor, anchors: readonly SiteAnchor[]): Step {
+  const yaw = seed.yaw ?? 0;
+  const along: number[] = [];
+  const inward: number[] = [];
+  for (const anchor of anchors) {
+    if (anchor.id === seed.id || !axesOf(anchor, yaw)) continue;
+    const local = worldToLocal(seed.x, seed.z, yaw, anchor.x, anchor.z);
+    if (Math.abs(local.lz) <= 1 && Math.abs(local.lx) > 1) along.push(Math.abs(local.lx));
+    if (Math.abs(local.lx) <= 1 && Math.abs(local.lz) > 1) inward.push(Math.abs(local.lz));
+  }
+  return { w: stablePitch(along, CELL_W), d: stablePitch(inward, CELL_D) };
+}
+
+function stablePitch(gaps: number[], module: number): number {
+  const near = gaps.filter((gap) => gap >= module * 0.98 && gap <= module * PITCH_SLACK).sort((a, b) => a - b);
+  if (near.length === 0) return module;
+  const mid = near[Math.floor((near.length - 1) / 2)]!;
+  const close = near.filter((gap) => Math.abs(gap - mid) <= 0.15);
+  if (close.length * 2 < near.length) return module;
+  const pitch = close.reduce((sum, gap) => sum + gap, 0) / close.length;
+  return Math.max(module, pitch);
+}
+
 function evaluateWindow(
   terrain: CitySiteTerrain,
   index: Map<string, SiteAnchor[]>,
   originX: number,
   originZ: number,
   yaw: number,
+  step: Step,
   spawnLimit: number,
 ): Window | null {
   const heights: number[][] = [];
@@ -244,7 +286,7 @@ function evaluateWindow(
     kind.push([]);
     building.push([]);
     for (let x = 0; x < BOARD; x += 1) {
-      const at = boardToWorld({ originX, originZ, yaw }, (x + 0.5) * CITY_CELL, (y + 0.5) * CITY_CELL);
+      const at = boardToWorld({ originX, originZ, yaw }, (x + 0.5) * step.w, (y + 0.5) * step.d);
       const h = terrain.height(at.x, at.z);
       const slope = terrain.slope?.(at.x, at.z) ?? 0;
       const water = h < 0.05 || slope > 0.9;
@@ -258,17 +300,17 @@ function evaluateWindow(
       }
     }
   }
-  // 12 units of relief across 160 is the same slope the old 80-unit window
-  // allowed at 6. The cell doubled; the hill did not get steeper.
-  if (blocked > 18 || hi - lo > 12) return null;
+  // The window is one block of lots, about 72 × 80. Six units of relief is
+  // the same slope the first 80-unit window allowed.
+  if (blocked > 18 || hi - lo > 6) return null;
 
   const claimed = new Set<string>();
-  const around = nearby(index, originX, originZ, yaw);
+  const around = nearby(index, originX, originZ);
   for (const anchor of around) {
     const aligned = axesOf(anchor, yaw);
     const covered = aligned
-      ? alignedCells(originX, originZ, yaw, anchor, aligned.alongX, aligned.alongZ)
-      : rotatedCells(originX, originZ, yaw, anchor);
+      ? alignedCells(originX, originZ, yaw, anchor, aligned.alongX, aligned.alongZ, step)
+      : rotatedCells(originX, originZ, yaw, anchor, step);
     if (covered.length === 0) continue;
     const scenery = !aligned || anchor.halfX > 16 || anchor.halfZ > 16 || covered.length > 4;
     if (scenery || claimed.has(anchor.id)) {
@@ -277,7 +319,7 @@ function evaluateWindow(
       }
       continue;
     }
-    const center = cellOf(originX, originZ, yaw, anchor.x, anchor.z);
+    const center = cellOf(originX, originZ, yaw, anchor.x, anchor.z, step);
     if (!center || covered.every((cell) => cell.x !== center.x || cell.y !== center.y)) {
       for (const cell of covered) {
         if (kind[cell.y]![cell.x] === "empty") kind[cell.y]![cell.x] = "blocked";
@@ -312,8 +354,10 @@ function evaluateWindow(
   // Three to five buildings is a readable siege. A packed window still works, it just scores lower.
   const count = rules.length;
   const fullness = count >= 3 && count <= 5 ? 80 : count === 2 || count === 6 ? 40 : 40 - (count - 6) * 12;
-  const score = fullness - spawnSpread * 20 - (hi - lo) * 5 - blocked * 3;
-  return { originX, originZ, yaw, heights, kind, building, score, spawnSpread, boss, mechs, raiders, rules };
+  // A lot that straddles a line is the grid missing the block. Prefer the pitch that holds each lot in one cell.
+  const extra = rules.reduce((sum, building) => sum + building.cells.length - 1, 0);
+  const score = fullness - extra * 30 - spawnSpread * 20 - (hi - lo) * 5 - blocked * 3;
+  return { originX, originZ, yaw, step, heights, kind, building, score, spawnSpread, boss, mechs, raiders, rules };
 }
 
 function axesOf(anchor: SiteAnchor, boardYaw: number): { alongX: number; alongZ: number } | null {
@@ -328,23 +372,23 @@ function axesOf(anchor: SiteAnchor, boardYaw: number): { alongX: number; alongZ:
 }
 
 function alignedCells(
-  originX: number, originZ: number, yaw: number, anchor: SiteAnchor, alongX: number, alongZ: number,
+  originX: number, originZ: number, yaw: number, anchor: SiteAnchor, alongX: number, alongZ: number, step: Step,
 ): Cell[] {
   const local = worldToLocal(originX, originZ, yaw, anchor.x, anchor.z);
   const cells: Cell[] = [];
   for (let y = 0; y < BOARD; y += 1) {
     for (let x = 0; x < BOARD; x += 1) {
-      const x0 = x * CITY_CELL;
-      const z0 = y * CITY_CELL;
-      const overlaps = local.lx + alongX > x0 && local.lx - alongX < x0 + CITY_CELL
-        && local.lz + alongZ > z0 && local.lz - alongZ < z0 + CITY_CELL;
+      const x0 = x * step.w;
+      const z0 = y * step.d;
+      const overlaps = local.lx + alongX > x0 + CELL_EDGE && local.lx - alongX < x0 + step.w - CELL_EDGE
+        && local.lz + alongZ > z0 + CELL_EDGE && local.lz - alongZ < z0 + step.d - CELL_EDGE;
       if (overlaps) cells.push({ x, y });
     }
   }
   return cells;
 }
 
-function rotatedCells(originX: number, originZ: number, boardYaw: number, anchor: SiteAnchor): Cell[] {
+function rotatedCells(originX: number, originZ: number, boardYaw: number, anchor: SiteAnchor, step: Step): Cell[] {
   const rel = (anchor.yaw ?? 0) - boardYaw;
   const c = Math.cos(rel);
   const s = Math.sin(rel);
@@ -364,20 +408,20 @@ function rotatedCells(originX: number, originZ: number, boardYaw: number, anchor
     if (z > maxZ) maxZ = z;
   }
   const cells: Cell[] = [];
-  const xStart = Math.max(0, Math.floor(minX / CITY_CELL));
-  const xEnd = Math.min(BOARD - 1, Math.floor(maxX / CITY_CELL));
-  const yStart = Math.max(0, Math.floor(minZ / CITY_CELL));
-  const yEnd = Math.min(BOARD - 1, Math.floor(maxZ / CITY_CELL));
+  const xStart = Math.max(0, Math.floor(minX / step.w));
+  const xEnd = Math.min(BOARD - 1, Math.floor(maxX / step.w));
+  const yStart = Math.max(0, Math.floor(minZ / step.d));
+  const yEnd = Math.min(BOARD - 1, Math.floor(maxZ / step.d));
   for (let y = yStart; y <= yEnd; y += 1) {
     for (let x = xStart; x <= xEnd; x += 1) {
-      if (quadHitsCell(x * CITY_CELL, y * CITY_CELL, corners)) cells.push({ x, y });
+      if (quadHitsCell(x * step.w, y * step.d, corners, step)) cells.push({ x, y });
     }
   }
   return cells;
 }
 
-function quadHitsCell(x0: number, z0: number, quad: Array<[number, number]>): boolean {
-  const rect: Array<[number, number]> = [[x0, z0], [x0 + CITY_CELL, z0], [x0 + CITY_CELL, z0 + CITY_CELL], [x0, z0 + CITY_CELL]];
+function quadHitsCell(x0: number, z0: number, quad: Array<[number, number]>, step: Step): boolean {
+  const rect: Array<[number, number]> = [[x0, z0], [x0 + step.w, z0], [x0 + step.w, z0 + step.d], [x0, z0 + step.d]];
   const edge = (a: [number, number], b: [number, number]) => [-(b[1] - a[1]), b[0] - a[0]] as [number, number];
   const axes: Array<[number, number]> = [[1, 0], [0, 1], edge(quad[0], quad[1]), edge(quad[0], quad[2])];
   for (const [ax, az] of axes) {
@@ -400,10 +444,10 @@ function quadHitsCell(x0: number, z0: number, quad: Array<[number, number]>): bo
   return true;
 }
 
-function cellOf(originX: number, originZ: number, yaw: number, x: number, z: number): Cell | null {
+function cellOf(originX: number, originZ: number, yaw: number, x: number, z: number, step: Step): Cell | null {
   const local = worldToLocal(originX, originZ, yaw, x, z);
-  const cx = Math.floor(local.lx / CITY_CELL);
-  const cy = Math.floor(local.lz / CITY_CELL);
+  const cx = Math.floor(local.lx / step.w);
+  const cy = Math.floor(local.lz / step.d);
   if (cx < 0 || cy < 0 || cx >= BOARD || cy >= BOARD) return null;
   return { x: cx, y: cy };
 }

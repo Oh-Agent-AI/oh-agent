@@ -101,7 +101,7 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
       console.warn("mecha city site failed", error);
       return null;
     }
-  }, [engine]);
+  }, [engine, engine?.currentLayout, engine?.currentModel]);
   const [preset, setPreset] = useState<CoverPresetId>("covers_sparse_mid");
   const [script, setScript] = useState<BossScriptId>("siege");
   const [state, setState] = useState<MatchState>(() => fresh("covers_sparse_mid", "siege", site));
