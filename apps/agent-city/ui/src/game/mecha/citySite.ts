@@ -1,12 +1,12 @@
 /**
  * Places the 10×10 tactics board on a real city window.
- * One cell is one session lot: LOT.width along the street, LOT.depth inward,
- * the same yaw as the building mesh. A block may spread those centers a little
- * farther apart than the rectangle, and the window uses that block's pitch so
- * the line falls between lots. Streets are the empty cells between lots.
- * A lot turned 90° still shares those axes. A lot on a different angle blocks
- * cells and is not a rules target. Feet sit on terrain.height. Meshes stay at
- * the scale built for this lot; there is no second board spacing.
+ * One cell covers two session lots: 2 × LOT.width along the street and
+ * 2 × LOT.depth inward, the same yaw as the building mesh. A block may spread
+ * those centers a little farther apart than the rectangle; the cell is twice
+ * that pitch, so the square and the units read twice as large. Streets stay
+ * the empty ground between lots. A lot turned 90° still shares the axes. A lot
+ * on a different angle blocks cells and is not a rules target. Feet sit on
+ * terrain.height. Meshes are drawn at the same 2× in CityMechaWorld.
  * Roads stay walkable: `buildable` means "a parcel can go here", and that
  * would erase the streets the fight is supposed to stand on. Water and cliffs
  * are the cells that cannot be spawned on. The city plan is not edited.
@@ -17,9 +17,11 @@ import { BOARD, FLAT_SPAWN_MAX_DELTA, type Cell, type MechId } from "./rules";
 /** Lot module. A block's window may step a little wider; see pitchOf. */
 export const CELL_W = LOT.width;
 export const CELL_D = LOT.depth;
+/** One tactics cell is this many lots on a side. */
+export const CELL_LOTS = 2;
 /** Frontage slack tops out just under 1.5 lots when a row holds two parcels. */
 const PITCH_SLACK = 1.55;
-const BOARD_REACH = Math.hypot(CELL_W * PITCH_SLACK * BOARD, CELL_D * PITCH_SLACK * BOARD) + 16;
+const BOARD_REACH = Math.hypot(CELL_W * PITCH_SLACK * CELL_LOTS * BOARD, CELL_D * PITCH_SLACK * CELL_LOTS * BOARD) + 16;
 /** World-space anchor buckets. The fight grid itself is the lot, not this square. */
 const BUCKET = 8;
 /** A lot that lands on the line by a rounding hair does not claim the next cell. */
@@ -61,7 +63,7 @@ export type CityMechaSite = {
   originZ: number;
   /** Parcel yaw. Cell +x is the building's width axis. */
   yaw: number;
-  /** Board-local cell step. The lot module, or this block's frontage pitch. */
+  /** Board-local cell step. Twice the lot pitch, along the street and inward. */
   cellW: number;
   cellD: number;
   heights: number[][];
@@ -253,7 +255,7 @@ function pitchOf(seed: SiteAnchor, anchors: readonly SiteAnchor[]): Step {
     if (Math.abs(local.lz) <= 1 && Math.abs(local.lx) > 1) along.push(Math.abs(local.lx));
     if (Math.abs(local.lx) <= 1 && Math.abs(local.lz) > 1) inward.push(Math.abs(local.lz));
   }
-  return { w: stablePitch(along, CELL_W), d: stablePitch(inward, CELL_D) };
+  return { w: stablePitch(along, CELL_W) * CELL_LOTS, d: stablePitch(inward, CELL_D) * CELL_LOTS };
 }
 
 function stablePitch(gaps: number[], module: number): number {
@@ -300,9 +302,9 @@ function evaluateWindow(
       }
     }
   }
-  // The window is one block of lots, about 72 × 80. Six units of relief is
-  // the same slope the first 80-unit window allowed.
-  if (blocked > 18 || hi - lo > 6) return null;
+  // Two lots per cell makes the window about 144 × 160. Twelve units of relief
+  // is the same slope the first 80-unit window allowed at 6.
+  if (blocked > 18 || hi - lo > 12) return null;
 
   const claimed = new Set<string>();
   const around = nearby(index, originX, originZ);

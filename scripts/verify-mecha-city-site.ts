@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { LOT } from "../apps/agent-city/ui/src/engine/worldScale.ts";
 import { createMatch, spawnsAreOpenGround } from "../apps/agent-city/ui/src/game/mecha/rules.ts";
-import { cellWorld, siteMechaWindow, type SiteAnchor } from "../apps/agent-city/ui/src/game/mecha/citySite.ts";
+import { CELL_LOTS, cellWorld, siteMechaWindow, type SiteAnchor } from "../apps/agent-city/ui/src/game/mecha/citySite.ts";
 
 function anchor(id: string, x: number, z: number, height = 8): SiteAnchor {
   return { id, x, z, halfX: 3, halfZ: 3, ground: 4, height };
@@ -108,7 +108,8 @@ test("the board follows the street the buildings face", () => {
   const a = cellWorld(site!, { x: 0, y: 0 });
   const b = cellWorld(site!, { x: 1, y: 0 });
   const len = Math.hypot(b.x - a.x, b.z - a.z);
-  assert.ok(Math.abs(len - LOT.width) < 1e-9);
+  assert.equal(CELL_LOTS, 2);
+  assert.ok(Math.abs(len - CELL_LOTS * LOT.width) < 1e-9);
   const along = ((b.x - a.x) / len) * Math.cos(yaw) + ((b.z - a.z) / len) * (-Math.sin(yaw));
   assert.ok(along > 0.99);
   assert.equal(LOT.width, 7.2);
@@ -117,7 +118,7 @@ test("the board follows the street the buildings face", () => {
   assert.equal(site!.buildings.find((building) => building.id === "side")?.cells.length, 1);
 });
 
-test("a stretched frontage still puts each lot in one cell", () => {
+test("a stretched frontage doubles with the cell", () => {
   const pitch = 7.6;
   const lot = (id: string, x: number, z: number): SiteAnchor => ({
     id, x, z, halfX: LOT.width / 2, halfZ: LOT.depth / 2, yaw: 0, ground: 4, height: 8,
@@ -128,25 +129,26 @@ test("a stretched frontage still puts each lot in one cell", () => {
     lot("c", pitch * 2, 0),
   ]);
   open(site);
-  assert.ok(site!.buildings.length >= 3);
-  for (const building of site!.buildings) assert.equal(building.cells.length, 1);
+  assert.ok(site!.buildings.length >= 2);
   const a = cellWorld(site!, { x: 0, y: 0 });
   const b = cellWorld(site!, { x: 1, y: 0 });
-  assert.ok(Math.abs(Math.hypot(b.x - a.x, b.z - a.z) - pitch) < 1e-6);
-  assert.ok(Math.abs(site!.cellW - pitch) < 1e-6);
-  assert.equal(site!.cellD, LOT.depth);
+  assert.ok(Math.abs(Math.hypot(b.x - a.x, b.z - a.z) - pitch * CELL_LOTS) < 1e-6);
+  assert.ok(Math.abs(site!.cellW - pitch * CELL_LOTS) < 1e-6);
+  assert.equal(site!.cellD, LOT.depth * CELL_LOTS);
 });
 
-test("one session lot is one cell", () => {
+test("a doubled cell holds a lot centered on it", () => {
   const lot = (id: string, x: number, z: number): SiteAnchor => ({
     id, x, z, halfX: LOT.width / 2, halfZ: LOT.depth / 2, yaw: 0, ground: 4, height: 8,
   });
   const site = siteMechaWindow({ height: () => 4 }, [
     lot("a", 0, 0),
-    lot("b", LOT.width, 0),
-    lot("c", 0, LOT.depth),
+    lot("b", CELL_LOTS * LOT.width, 0),
+    lot("c", 0, CELL_LOTS * LOT.depth),
   ]);
   open(site);
   assert.equal(site!.buildings.length, 3);
   for (const building of site!.buildings) assert.equal(building.cells.length, 1);
+  assert.ok(Math.abs(site!.cellW - CELL_LOTS * LOT.width) < 1e-9);
+  assert.ok(Math.abs(site!.cellD - CELL_LOTS * LOT.depth) < 1e-9);
 });

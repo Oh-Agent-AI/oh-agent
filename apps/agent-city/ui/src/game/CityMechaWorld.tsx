@@ -58,7 +58,7 @@ export function CityMechaWorld({
     const root = new THREE.Group();
     root.name = "mecha-city";
 
-    const padGeo = new THREE.BoxGeometry(site.cellW - 0.22, 0.08, site.cellD - 0.24);
+    const padGeo = new THREE.BoxGeometry(site.cellW - 0.44, 0.08, site.cellD - 0.48);
     const padMat = new Map<Role, THREE.MeshStandardMaterial>();
     for (const role of ROLES) {
       padMat.set(role, new THREE.MeshStandardMaterial({
@@ -76,7 +76,7 @@ export function CityMechaWorld({
       }));
     }
     const pads: THREE.Mesh[] = [];
-    const pickGeo = new THREE.BoxGeometry(site.cellW - 0.08, 0.6, site.cellD - 0.08);
+    const pickGeo = new THREE.BoxGeometry(site.cellW - 0.16, 0.6, site.cellD - 0.16);
     const pickMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false });
     const picks: THREE.Mesh[] = [];
     for (let y = 0; y < 10; y += 1) {
@@ -104,23 +104,28 @@ export function CityMechaWorld({
     const boss = createBoss();
     const raiderWest = createBoss();
     const raiderEast = createBoss();
-    // Meshes are built for a cell about 8 world units across (16 m). A session
-    // lot is 7.2 × 8, so they stand at that scale. Support already carries 1.22.
-    raiderWest.scale.setScalar(0.38);
-    raiderEast.scale.setScalar(0.38);
+    // Meshes are built for one lot (about 8 world units). The tactics cell is
+    // two lots on a side, so the same mesh is drawn at 2×. Support already carries 1.22.
+    const unitScale = 2;
+    assault.scale.multiplyScalar(unitScale);
+    gunner.scale.multiplyScalar(unitScale);
+    support.scale.multiplyScalar(unitScale);
+    boss.scale.multiplyScalar(unitScale);
+    raiderWest.scale.setScalar(0.38 * unitScale);
+    raiderEast.scale.setScalar(0.38 * unitScale);
     const figures: Record<MechId, THREE.Group> = { Assault: assault, Gunner: gunner, Support: support };
     const markers = {
-      Assault: marker("#e2b15a", 2.35, 3.15),
-      Gunner: marker("#7eb6ff", 2.15, 2.9),
-      Support: marker("#7dffa8", 2.15, 2.9),
-      boss: marker("#eaff7a", 5.1, 6.5),
-      raiderWest: marker("#d7a4ff", 1.45, 2.05),
-      raiderEast: marker("#d7a4ff", 1.45, 2.05),
+      Assault: marker("#e2b15a", 4.7, 6.3),
+      Gunner: marker("#7eb6ff", 4.3, 5.8),
+      Support: marker("#7dffa8", 4.3, 5.8),
+      boss: marker("#eaff7a", 10.2, 13),
+      raiderWest: marker("#d7a4ff", 2.9, 4.1),
+      raiderEast: marker("#d7a4ff", 2.9, 4.1),
     };
     for (const figure of [assault, gunner, support, boss, raiderWest, raiderEast]) root.add(figure);
     for (const ring of Object.values(markers)) root.add(ring.mesh);
 
-    const barGeo = new THREE.BoxGeometry(6, 0.5, 0.5);
+    const barGeo = new THREE.BoxGeometry(12, 0.5, 0.5);
     const barBg = new THREE.MeshStandardMaterial({ color: "#1b140f", roughness: 0.8 });
     const bars = new Map<string, { anchor: THREE.Group; fill: THREE.Mesh; fillMat: THREE.MeshStandardMaterial }>();
     for (const building of site.buildings) {
@@ -165,14 +170,14 @@ export function CityMechaWorld({
     root.add(grid);
 
     const camera = engine.renderCamera;
-    // Sit on the squad side of the rotated board. The window is one block of
-    // lots, about 72 × 80, so the eye stays in board-local space. World +Z is
-    // not south once the grid follows the street.
+    // Sit on the squad side of the rotated board. The window is two lots per
+    // cell, about 144 × 160, so the eye stays in board-local space. World +Z
+    // is not south once the grid follows the street.
     const focus = cellWorld(site, { x: 4, y: 5 });
-    const eye = boardToWorld(site, 4.5 * site.cellW + 18, 5.5 * site.cellD + 28);
+    const eye = boardToWorld(site, 4.5 * site.cellW + 36, 5.5 * site.cellD + 56);
     const aim = new THREE.Vector3(focus.x, focus.y + 2, focus.z);
     const frameCamera = () => {
-      camera.position.set(eye.x, focus.y + 120, eye.z);
+      camera.position.set(eye.x, focus.y + 240, eye.z);
       camera.up.set(0, 1, 0);
       camera.fov = 40;
       camera.updateProjectionMatrix();
@@ -276,7 +281,7 @@ export function CityMechaWorld({
         if (!live || live.maxHp <= 0) continue;
         const ratio = Math.max(0, Math.min(1, live.hp / live.maxHp));
         bar.fill.scale.x = Math.max(0.04, ratio);
-        bar.fill.position.x = (ratio - 1) * 3;
+        bar.fill.position.x = (ratio - 1) * 6;
         bar.fillMat.color.set(ratio > 0.5 ? "#d7b15a" : "#e23d3d");
       }
     });
@@ -341,6 +346,6 @@ function face(mesh: THREE.Object3D, from: THREE.Vector3, to: THREE.Vector3) {
 }
 
 function slide(mesh: THREE.Object3D, goal: THREE.Vector3, snap: boolean) {
-  if (snap || mesh.position.distanceTo(goal) > 48) mesh.position.copy(goal);
+  if (snap || mesh.position.distanceTo(goal) > 96) mesh.position.copy(goal);
   else mesh.position.lerp(goal, 0.22);
 }
