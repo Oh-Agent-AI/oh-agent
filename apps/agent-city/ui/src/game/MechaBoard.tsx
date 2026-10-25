@@ -1,7 +1,10 @@
 /** City test surface for GDD v1.3. Rules live in `mecha/rules.ts`. */
 import { useEffect, useMemo, useState } from "react";
+import type { CityEngine } from "../engine/CityEngine";
 import { gameText, type GameLocale } from "./gameCopy";
+import { CityMechaWorld, type CityMechaView } from "./CityMechaWorld";
 import { squadPlan } from "./mecha/ai";
+import { anchorsFromCity, siteMechaWindow, type CityMechaSite } from "./mecha/citySite";
 import { MechaLineup, type MechaBoardView } from "./MechaLineup";
 import {
   BOARD, MAX_TURNS, bossExecute, bossPrepare, createMatch, incomingDamage, legalActions, living, pathDistance, STATS_MOVE,
@@ -45,8 +48,18 @@ function actionLabel(action: Action): string {
   return "待机";
 }
 
-function fresh(preset: CoverPresetId, script: BossScriptId): MatchState {
-  const state = createMatch({ preset, script });
+function fresh(preset: CoverPresetId, script: BossScriptId, site: CityMechaSite | null): MatchState {
+  const state = site
+    ? createMatch({
+      preset,
+      script,
+      covers: [],
+      buildings: script === "siege" || script === "raid_ssw" ? site.buildings.map((building) => ({ id: building.id, cells: building.cells.map((cell) => ({ ...cell })) })) : [],
+      raiders: script === "siege" ? site.raiders.map((raider) => ({ id: raider.id, pos: { ...raider.pos } })) : [],
+      mechs: site.mechs.map((mech) => ({ id: mech.id, pos: { ...mech.pos } })),
+      boss: { ...site.boss },
+    })
+    : createMatch({ preset, script });
   bossPrepare(state);
   return state;
 }
@@ -76,19 +89,30 @@ function draftFromPlan(state: MatchState, plan: { items: Array<{ mechId: MechId;
   return next;
 }
 
-export function MechaBoard({ locale, onClose }: { locale: GameLocale; onClose: () => void }) {
+export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; onClose: () => void; engine: CityEngine | null }) {
   const t = (text: string) => gameText(text, locale);
+  const site = useMemo(() => {
+    const layout = engine?.currentLayout;
+    const model = engine?.currentModel;
+    if (!layout || !model) return null;
+    try {
+      return siteMechaWindow(layout.terrain, anchorsFromCity(layout, model));
+    } catch (error) {
+      console.warn("mecha city site failed", error);
+      return null;
+    }
+  }, [engine]);
   const [preset, setPreset] = useState<CoverPresetId>("covers_sparse_mid");
   const [script, setScript] = useState<BossScriptId>("siege");
-  const [state, setState] = useState<MatchState>(() => fresh("covers_sparse_mid", "siege"));
-  const [draft, setDraft] = useState<Record<MechId, Draft>>(() => blankDraft(fresh("covers_sparse_mid", "siege")));
+  const [state, setState] = useState<MatchState>(() => fresh("covers_sparse_mid", "siege", site));
+  const [draft, setDraft] = useState<Record<MechId, Draft>>(() => blankDraft(fresh("covers_sparse_mid", "siege", site)));
   const [selected, setSelected] = useState<MechId>("Assault");
   const [notice, setNotice] = useState<string | null>(null);
   const [auto, setAuto] = useState(false);
   const [beat, setBeat] = useState<"show" | "resolve">("show");
 
   const restart = (nextPreset = preset, nextScript = script) => {
-    const match = fresh(nextPreset, nextScript);
+    const match = fresh(nextPreset, nextScript, site);
     setPreset(nextPreset);
     setScript(nextScript);
     setState(match);
@@ -199,6 +223,18 @@ export function MechaBoard({ locale, onClose }: { locale: GameLocale; onClose: (
   };
 
   const packReady = living(state).every((m) => draft[m.id]?.explicit);
+  const cityView = useMemo<CityMechaView>(() => ({
+    figures: state.mechs.map((m) => {
+      const planned = m.hp > 0 ? draft[m.id]?.moveTo : null;
+      return { id: m.id, x: planned?.x ?? m.pos.x, y: planned?.y ?? m.pos.y, alive: m.hp > 0, selected: m.id === selected };
+    }),
+    boss: { x: state.boss.anchor.x, y: state.boss.anchor.y, alive: state.boss.hp > 0 },
+    raiders: state.raiders.map((raider) => ({ id: raider.id, x: raider.pos.x, y: raider.pos.y, alive: raider.hp > 0 })),
+    buildings: state.buildings.map((building) => ({ id: building.id, cells: building.cells, hp: building.hp, maxHp: building.maxHp })),
+    telegraph: telegraphs(state),
+    reach,
+    move: draft[selected]?.moveTo ?? null,
+  }), [state, draft, selected, reach]);
   const view = useMemo<MechaBoardView>(() => ({
     figures: state.mechs.map((m) => {
       const planned = m.hp > 0 ? draft[m.id]?.moveTo : null;
@@ -238,15 +274,18 @@ export function MechaBoard({ locale, onClose }: { locale: GameLocale; onClose: (
   const outcome = state.outcome === "victory" ? t("歼灭") : state.outcome === "defeat_wipe" ? t("全灭") : state.outcome === "defeat_timeout" ? t("回合耗尽") : state.outcome === "defeat_buildings" ? t("楼被拆光") : null;
   const raiderHp = state.raiders.map((raider) => `${t(enemyName(raider.id))} ${raider.hp}`).join(" ");
 
+  const onCity = Boolean(site && engine);
   return (
-    <section className="mecha-overlay" role="dialog" aria-label={t("机甲战棋")}>
+    <section className={onCity ? "mecha-overlay is-city" : "mecha-overlay"} role="dialog" aria-label={t("机甲战棋")}>
+      {onCity && engine && site ? <CityMechaWorld engine={engine} site={site} view={cityView} onCell={clickCell} /> : null}
       <div className="mecha-panel">
         <header>
           <h2>{t("机甲战棋")}</h2>
           <button type="button" onClick={onClose} aria-label={t("关闭机甲战棋")}>×</button>
         </header>
         <p className="mecha-help">{t("点一台机甲，再点能走到的格子，然后给三台都选行动。站上红色预告格会吃下这一击。")}</p>
-        <MechaLineup label={t("机甲与怪兽")} view={view} />
+        {onCity ? <p className="mecha-help">{t("战场在这座城市的地面上。楼顶血槽只记这一局，城市里的楼还在。")}</p> : engine ? <p className="mecha-help">{t("这座城市没有一块够平的战场，仍用方格棋盘。")}</p> : null}
+        {onCity ? null : <MechaLineup label={t("机甲与怪兽")} view={view} />}
         <ul className="mecha-pack">
           {living(state).map((m) => {
             const row = draft[m.id];
@@ -264,19 +303,19 @@ export function MechaBoard({ locale, onClose }: { locale: GameLocale; onClose: (
           })}
         </ul>
         <div className="mecha-toolbar">
-          <label>{t("布局")}<select value={preset} onChange={(e) => restart(e.target.value as CoverPresetId, script)}>{PRESETS.map((p) => <option key={p.id} value={p.id}>{t(p.label)}</option>)}</select></label>
+          {onCity ? <span>{t("城市实地")}</span> : <label>{t("布局")}<select value={preset} onChange={(e) => restart(e.target.value as CoverPresetId, script)}>{PRESETS.map((p) => <option key={p.id} value={p.id}>{t(p.label)}</option>)}</select></label>}
           <label>{t("脚本")}<select value={script} onChange={(e) => restart(preset, e.target.value as BossScriptId)}>{SCRIPTS.map((s) => <option key={s.id} value={s.id}>{t(s.label)}</option>)}</select></label>
           <button type="button" onClick={() => restart()}>{t("新开一局")}</button>
           <button type="button" disabled={Boolean(state.outcome)} onClick={() => { setBeat("show"); setAuto((on) => !on); }}>{auto ? t("停止自动") : t("自动对战")}</button>
         </div>
         <p>{t("回合")} {Math.min(state.turn, MAX_TURNS)}/{MAX_TURNS} · {t("预告")} {skillLabel} · {t("大怪")} {state.boss.hp}{raiderHp ? ` · ${raiderHp}` : ""}{outcome ? ` · ${outcome}` : ""}</p>
-        <div className="mecha-grid" style={{ gridTemplateColumns: `repeat(${BOARD}, 28px)` }}>
+        {onCity ? null : <div className="mecha-grid" style={{ gridTemplateColumns: `repeat(${BOARD}, 28px)` }}>
           {Array.from({ length: BOARD * BOARD }, (_, i) => {
             const x = i % BOARD;
             const y = Math.floor(i / BOARD);
             return <button key={`${x},${y}`} type="button" className={paint(x, y)} aria-label={`${x},${y}`} onClick={() => clickCell(x, y)} />;
           })}
-        </div>
+        </div>}
         <div className="mecha-actions">
           {actions.map((action) => {
             const label = actionLabel(action);

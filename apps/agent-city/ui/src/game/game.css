@@ -72,6 +72,8 @@
 @media (prefers-reduced-motion: reduce) { .city-game-chip { scroll-behavior: auto; } }
 
 .mecha-overlay { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; background: #020a14cc; }
+.mecha-overlay.is-city { background: transparent; place-items: stretch; pointer-events: none; }
+.mecha-overlay.is-city .mecha-panel { pointer-events: auto; width: min(380px, calc(100% - 24px)); max-height: calc(100% - 24px); margin: 12px; justify-self: start; align-self: end; }
 .mecha-panel { width: min(880px, calc(100% - 24px)); max-height: calc(100% - 24px); overflow: auto; padding: 16px; border-radius: 12px; background: #101d2f; color: var(--city-text, #e8eef6); border: 1px solid #ffffff22; }
 .mecha-stage { height: 300px; margin: 8px 0; border-radius: 8px; background: #0b1726; }
 .mecha-pack { list-style: none; display: grid; gap: 4px; margin: 8px 0; padding: 0; font-size: 13px; }

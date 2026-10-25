@@ -515,7 +515,7 @@ export function CityApp() {
         windowDays={windowDays} windowOptions={windowOptions} onWindowDays={(days) => setWindowDays(days as WindowDays)} labels={labels} onLabels={(next) => { engineRef.current?.setLabelsVisible(next); setLabels(next); }}
         onQuality={(value) => { if (["auto", "high", "eco"].includes(value)) { engineRef.current?.setQualityMode(value as EngineQualityMode); setQuality(value as EngineQualityMode); } }}
         onMecha={() => { if (!game.active && !driving.active && !cinema) setMechaOpen(true); }} /></div>
-      {mechaOpen && !game.active && !driving.active && <MechaBoard locale={language === "en" ? "en" : "zh-Hans"} onClose={() => setMechaOpen(false)} />}
+      {mechaOpen && !game.active && !driving.active && <MechaBoard locale={language === "en" ? "en" : "zh-Hans"} engine={engineRef.current} onClose={() => setMechaOpen(false)} />}
       <CityMinimap engine={engineRef} language={language} driving={{ active: driving.active, pose: driving.pose }}
         hidden={!sceneReady || cinema || game.active || !!experience.film || driving.hud.phase === "preparing" || driving.hud.phase === "error"} />
       <DrivingHud model={{ active: driving.active, choosingVehicle: driving.choosingVehicle, vtol: driving.vtol, entryError: driving.entryError,
