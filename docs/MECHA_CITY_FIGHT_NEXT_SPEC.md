@@ -44,7 +44,7 @@ English: v1.3 numbers stay. The player chooses doctrine and field shape. Boss-fi
 
 | 项 | 保持 |
 | --- | --- |
-| 规则串 | `mecha-v1.3`（TS `GDD_RULESET` 与 Rust `crates/mecha-tactics` 都保持） |
+| 规则串 | `mecha-v1.3`（唯一运行时是 TS `GDD_RULESET`；重复的 Rust 规则实现已删除） |
 | 生命 / 攻击 / 防御 | Assault 14/5/2，Gunner 11/4/1，Support 12/2/2；Boss 40/6/3；袭扰者 8/3/1；楼 16/0 |
 | 移动力 | Assault 4，Gunner 3，Support 3，Boss 3，袭扰者 4。预算 = 移动力 × `MOVE_QUANTUM`（2） |
 | `TERRAIN_MOD` | Assault 路 2；Gunner 路 2、山 2；Support 路 2、陆 2；袭扰者路 2；Boss 三栏 0 |
@@ -53,7 +53,6 @@ English: v1.3 numbers stay. The player chooses doctrine and field shape. Boss-fi
 | 搜索宽度 | 原地 + 朝焦点最近的 3 格；每台机甲最多 5 个行动，另保留原地跳过 |
 | 伤害式 | `strike(atk, def) = max(1, atk - def)` |
 | 结局 | 敌人清掉为胜；机甲全灭、楼全毁、满 15 回合为三种负 |
-| Rust | `path_distance` 仍是教科书整数步，没有城市格子。本轮不改这个 crate |
 
 袭扰者继续吃道路增益，Boss 继续不吃。街上是突击和袭扰者一起变快。本轮把这件事显示出来，不靠改表制造单方面的路。
 
@@ -96,7 +95,9 @@ English: v1.3 numbers stay. The player chooses doctrine and field shape. Boss-fi
 
 ## 4. 城市窗口留下水和山
 
-`siteMechaWindow` 仍是严格平地窗：水加山超过 18 格就整窗作废。打开战棋时的默认战场就是它。靠岸、翻山、巷战由 `siteFightShapes` 另选，缺的键是 `null`。出生规则不变：出生采样高差不超过 `FLAT_SPAWN_MAX_DELTA`（1 个世界单位），Boss、三台机甲、两只袭扰者、至少两栋楼都落在平地格子上，水与山不能出生。道路仍在窗口选定之后再涂，不参与打分。
+`siteMechaWindow` 仍是严格平地窗：水加山超过 18 格就整窗作废。打开战棋时的默认战场就是它。靠岸、翻山、巷战由 `siteFightShapes` 另选，缺的键是 `null`。出生规则：严格窗要求出生采样高差不超过 `FLAT_SPAWN_MAX_DELTA`（1 个世界单位）；Boss、三台机甲、两只袭扰者、至少两栋楼都落在平地格子上，水与山不能出生。整座城没有严格窗时，按 `RELAXED_SPAWN_MAX_DELTA`（2）再选一次——这是文档化的放宽，面板在 `spawnSpread > 1` 时写「出生高差 X · 标准 1，已放宽」，上限就是 2，不再扩大。道路仍在窗口选定之后再涂，不参与打分。
+
+English: the strict window requires spawn relief ≤ 1. When the whole city has no strict window, the search retries once at ≤ 2. That relaxation is documented, surfaced as “spawn relief X · standard 1, relaxed”, and never grows past 2.
 
 靠岸和翻山接受的窗：
 
@@ -183,12 +184,11 @@ node scripts/mecha-balance-distribution.mjs
 - `scripts/mecha-balance-distribution.mjs`
 - 仅当路面谓词拆模块时，动 `apps/agent-city/ui/src/engine/surface/roadClearance.ts` 与新模块
 
-`rules.ts` 的数值、`crates/mecha-tactics`、方格回退的存在条件都不在本轮。城市没有够平的窗时，仍显示方格棋盘。
+`rules.ts` 的数值与方格回退的存在条件都不在本轮。城市没有够平的窗时，仍显示方格棋盘。
 
 ## 8. 本轮不做
 
 - 不改生命、攻击、防御、楼血、回合上限。
-- 不给 Rust crate 加城市格子或半步。
 - 不把守楼写成自动对战的唯一打法。攻坚和守楼都留在「打法」里，默认仍是攻坚。
 - 不放宽搜索宽度。
 - 不把袭扰者的道路增益拿掉，也不给 Boss 加道路增益。
