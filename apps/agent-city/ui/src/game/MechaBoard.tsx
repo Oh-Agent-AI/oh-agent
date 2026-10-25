@@ -7,7 +7,7 @@ import { squadPlan } from "./mecha/ai";
 import { anchorsFromCity, siteMechaWindow, type CityMechaSite } from "./mecha/citySite";
 import { MechaLineup, type MechaBoardView } from "./MechaLineup";
 import {
-  BOARD, MAX_TURNS, bossExecute, bossPrepare, createMatch, incomingDamage, legalActions, living, pathDistance, STATS_MOVE,
+  BOARD, MAX_TURNS, bossExecute, bossPrepare, createMatch, incomingDamage, legalActions, living, moveBudget, pathDistance,
   validateAndApplyPlan, type Action, type BossScriptId, type Cell, type CoverPresetId, type MatchState, type MechId,
 } from "./mecha/rules";
 import "./game.css";
@@ -98,7 +98,7 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
     const model = engine?.currentModel;
     if (!layout || !model) return null;
     try {
-      return siteMechaWindow(layout.terrain, anchorsFromCity(layout, model));
+      return siteMechaWindow(layout.terrain, anchorsFromCity(layout, model), layout.roadEdges);
     } catch (error) {
       console.warn("mecha city site failed", error);
       return null;
@@ -132,7 +132,7 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
     for (let y = 0; y < BOARD; y += 1) {
       for (let x = 0; x < BOARD; x += 1) {
         const dist = pathDistance(state, selectedMech.pos, { x, y }, selected);
-        if (dist !== null && dist <= STATS_MOVE[selected]) cells.push({ x, y });
+        if (dist !== null && dist <= moveBudget(selected)) cells.push({ x, y });
       }
     }
     return cells;
@@ -153,6 +153,7 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
     const ground = state.terrain[y]?.[x];
     if (ground === "water") classes.push("is-water");
     if (ground === "mountain") classes.push("is-mountain");
+    if (ground === "road") classes.push("is-road");
     if (state.covers.some((k) => same(k, c))) classes.push("is-cover");
     const building = state.buildings.find((b) => b.cells.some((k) => same(k, c)));
     if (building) classes.push(building.hp > 0 ? "is-cover" : "is-rubble");
@@ -289,6 +290,7 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
           <button type="button" onClick={onClose} aria-label={t("关闭机甲战棋")}>×</button>
         </header>
         <p className="mecha-help">{t("点一台机甲，再点能走到的格子，然后给三台都选行动。站上红色预告格会吃下这一击。")}</p>
+        <p className="mecha-help">{t("沿着道路能多走一倍。突击靠路，炮手爬山和平地一样，支援上坡不加价。水过不去，被推进水或山地会撞上。")}</p>
         {onCity ? <p className="mecha-help">{t("战场在这座城市的地面上。楼顶血槽只记这一局，城市里的楼还在。")}</p> : engine ? <p className="mecha-help">{t("这座城市没有一块够平的战场，仍用方格棋盘。")}</p> : null}
         {onCity ? null : <MechaLineup label={t("机甲与怪兽")} view={view} />}
         <ul className="mecha-pack">

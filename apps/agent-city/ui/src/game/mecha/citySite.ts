@@ -8,9 +8,14 @@
  * on a different angle blocks cells and is not a rules target. Feet sit on
  * terrain.height. Meshes are drawn at the same 2× in CityMechaWorld.
  * Roads stay walkable: `buildable` means "a parcel can go here", and that
- * would erase the streets the fight is supposed to stand on. Water and cliffs
- * are the cells that cannot be spawned on. The city plan is not edited.
+ * would erase the streets the fight is supposed to stand on. A land cell whose
+ * center sits inside a ground carriageway band is marked road after the window
+ * is chosen, so the choice of window does not depend on the paint. Junction
+ * fillets are not included: that geometry lives in the road renderer, and a
+ * cell center in the fillet but outside every band stays land. Water and
+ * cliffs are the cells that cannot be spawned on. The city plan is not edited.
  */
+import type { RoadEdge } from "../../engine/cityLayout";
 import { LOT } from "../../engine/worldScale";
 import { BOARD, FLAT_SPAWN_MAX_DELTA, type Cell, type MechId, type TerrainKind } from "./rules";
 
@@ -160,7 +165,42 @@ type Window = {
   rules: CityMechaBuilding[];
 };
 
-export function siteMechaWindow(terrain: CitySiteTerrain, anchors: readonly SiteAnchor[]): CityMechaSite | null {
+function segmentDistance(x: number, z: number, a: { x: number; z: number }, b: { x: number; z: number }): number {
+  const dx = b.x - a.x;
+  const dz = b.z - a.z;
+  const ll = dx * dx + dz * dz;
+  const t = ll === 0 ? 0 : Math.max(0, Math.min(1, ((x - a.x) * dx + (z - a.z) * dz) / ll));
+  return Math.hypot(x - a.x - dx * t, z - a.z - dz * t);
+}
+
+/** 格子中心落在地面车行道宽度内才算路。桥面和桥头不改格子。 */
+function onCarriageway(roads: readonly RoadEdge[], x: number, z: number): boolean {
+  for (const edge of roads) {
+    if (edge.bridge || edge.structure === "deck") continue;
+    const half = edge.width / 2;
+    for (let i = 1; i < edge.points.length; i += 1) {
+      const a = edge.points[i - 1];
+      const b = edge.points[i];
+      if (!a || !b) continue;
+      if (segmentDistance(x, z, a, b) < half) return true;
+    }
+  }
+  return false;
+}
+
+function paintRoads(win: Window, roads: readonly RoadEdge[]) {
+  for (let y = 0; y < BOARD; y += 1) {
+    const row = win.terrain[y];
+    if (!row) continue;
+    for (let x = 0; x < BOARD; x += 1) {
+      if (row[x] !== "land") continue;
+      const at = boardToWorld(win, (x + 0.5) * win.step.w, (y + 0.5) * win.step.d);
+      if (onCarriageway(roads, at.x, at.z)) row[x] = "road";
+    }
+  }
+}
+
+export function siteMechaWindow(terrain: CitySiteTerrain, anchors: readonly SiteAnchor[], roads?: readonly RoadEdge[]): CityMechaSite | null {
   if (anchors.length === 0) return null;
   const index = bucketAnchors(anchors);
   const seeds = anchorSeeds(anchors);
@@ -186,6 +226,7 @@ export function siteMechaWindow(terrain: CitySiteTerrain, anchors: readonly Site
   }
   const best = slot.best;
   if (!best) return null;
+  if (roads && roads.length > 0) paintRoads(best, roads);
   return {
     originX: best.originX,
     originZ: best.originZ,

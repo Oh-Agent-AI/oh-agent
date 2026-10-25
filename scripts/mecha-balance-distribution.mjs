@@ -28,9 +28,9 @@ const seeds = SEED_LIST.slice(0, seedCount);
 const {
   createMatch, bossPrepare, bossExecute, validateAndApplyPlan, living, livingBuildings, livingRaiders,
   pathDistance, legalActions, squadPlan, siteMechaWindow, anchorsFromCity, buildCityModel, layoutCity, MIAMI_COASTAL,
-  BOSS_HP, RAIDER_HP, BOARD, STATS_MOVE,
+  BOSS_HP, RAIDER_HP, BOARD, moveBudget,
 } = await loadCity({
-  "game/mecha/rules.ts": ["createMatch", "bossPrepare", "bossExecute", "validateAndApplyPlan", "living", "livingBuildings", "livingRaiders", "pathDistance", "legalActions", "BOSS_HP", "RAIDER_HP", "BOARD", "STATS_MOVE"],
+  "game/mecha/rules.ts": ["createMatch", "bossPrepare", "bossExecute", "validateAndApplyPlan", "living", "livingBuildings", "livingRaiders", "pathDistance", "legalActions", "BOSS_HP", "RAIDER_HP", "BOARD", "moveBudget"],
   "game/mecha/ai.ts": ["squadPlan"],
   "game/mecha/citySite.ts": ["siteMechaWindow", "anchorsFromCity"],
   "cityModel.ts": ["buildCityModel"],
@@ -72,7 +72,7 @@ function hold(state) {
 
 function reachable(state, id) {
   const me = state.mechs.find((m) => m.id === id);
-  const cap = STATS_MOVE[id];
+  const cap = moveBudget(id);
   const out = [];
   for (let y = 0; y < BOARD; y += 1) {
     for (let x = 0; x < BOARD; x += 1) {

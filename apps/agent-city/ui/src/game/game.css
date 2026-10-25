@@ -90,6 +90,7 @@
 .mecha-cell { width: 28px; height: 28px; padding: 0; border: 1px solid #ffffff18; background: #163047; }
 .mecha-cell.is-water { background: #1a6f8a; }
 .mecha-cell.is-mountain { background: #6e5344; }
+.mecha-cell.is-road { background: #3c4654; }
 .mecha-cell.is-cover { background: #5c6b4a; }
 .mecha-cell.is-rubble { background: #2c3328; }
 .mecha-cell.is-boss { background: #c45c26; }

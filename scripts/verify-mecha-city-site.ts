@@ -89,7 +89,7 @@ test("the board stores the face sampled at each cell center", () => {
       const at = cellWorld(site!, { x, y });
       const face = at.y < 0.05 ? "water" : slopeOf(at.x, at.z) > 0.9 ? "mountain" : "land";
       assert.equal(site!.terrain[y]![x], face, `${x},${y}`);
-      if (face === "land") continue;
+      if (face !== "water") continue;
       const from = { x: x === 0 ? 1 : x - 1, y };
       if (site!.terrain[from.y]![from.x] !== "land") continue;
       assert.equal(pathDistance(state, from, { x, y }, "Assault"), null);
@@ -153,6 +153,40 @@ test("the board follows the street the buildings face", () => {
   assert.equal(LOT.depth, 8);
   assert.equal(site!.buildings.length, 4);
   assert.equal(site!.buildings.find((building) => building.id === "side")?.cells.length, 1);
+});
+
+test("a carriageway through a land cell is marked road", () => {
+  const anchors = [anchor("a", 0, 8), anchor("b", 16, 8), anchor("c", 8, 24)];
+  const terrain = { height: (_x: number, z: number) => (z < 0 ? -3 : 4) };
+  const bare = siteMechaWindow(terrain, anchors);
+  assert.ok(bare);
+  let hit: { x: number; y: number } | null = null;
+  for (let y = 0; y < 10 && !hit; y += 1) {
+    for (let x = 0; x < 10; x += 1) {
+      if (bare.terrain[y]![x] === "land") {
+        hit = { x, y };
+        break;
+      }
+    }
+  }
+  assert.ok(hit);
+  const at = cellWorld(bare, hit);
+  const site = siteMechaWindow(terrain, anchors, [{
+    id: "lane",
+    from: "a",
+    to: "b",
+    width: 12,
+    kind: "arterial",
+    points: [{ x: at.x - 30, z: at.z }, { x: at.x + 30, z: at.z }],
+  }]);
+  assert.equal(site!.terrain[hit.y]![hit.x], "road");
+  const farY = hit.y >= 2 ? hit.y - 2 : hit.y + 2;
+  if (bare.terrain[farY]![hit.x] === "land") assert.equal(site!.terrain[farY]![hit.x], "land");
+  for (let y = 0; y < 10; y += 1) {
+    for (let x = 0; x < 10; x += 1) {
+      if (cellWorld(site!, { x, y }).y < 0.05) assert.equal(site!.terrain[y]![x], "water");
+    }
+  }
 });
 
 test("a stretched frontage doubles with the cell", () => {

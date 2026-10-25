@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   attackerCenter, bossExecute, bossPrepare, BUILDING_HP, createMatch, footprintCenter, knockbackFromAttacker,
-  legalActions, livingRaiders, MAX_TURNS, pathDistance, RAIDER_ATK, setScriptCounters, spawnsAreOpenGround, validateAndApplyPlan,
+  legalActions, livingRaiders, MAX_TURNS, MOVE_QUANTUM, pathDistance, RAIDER_ATK, setScriptCounters, spawnsAreOpenGround, validateAndApplyPlan,
   type MatchState, type TerrainKind,
 } from "../apps/agent-city/ui/src/game/mecha/rules.ts";
 
@@ -214,9 +214,9 @@ function heightGrid(fill: (x: number, y: number) => number): number[][] {
   return Array.from({ length: 10 }, (_, y) => Array.from({ length: 10 }, (_, x) => fill(x, y)));
 }
 
-test("flat land still costs one per step", () => {
+test("flat land still costs one move point per step", () => {
   const state = createMatch({ preset: "covers_sparse_mid", script: "stationary_smash", covers: [] });
-  assert.equal(pathDistance(state, { x: 2, y: 9 }, { x: 2, y: 5 }, "Assault"), 4);
+  assert.equal(pathDistance(state, { x: 2, y: 9 }, { x: 2, y: 5 }, "Assault"), 4 * MOVE_QUANTUM);
   assert.equal(state.terrain.every((row) => row.every((cell) => cell === "land")), true);
 });
 
@@ -237,7 +237,9 @@ test("water stops feet, mountains stop shots, uphill spends a second point", () 
   assert.equal(pathDistance(water, { x: 2, y: 5 }, { x: 4, y: 5 }, "Assault"), null);
   assert.equal(legalActions(water, "Gunner").some((action) => action.kind === "shoot"), true);
   const cliff = across("mountain");
-  assert.equal(pathDistance(cliff, { x: 2, y: 5 }, { x: 4, y: 5 }, "Assault"), null);
+  // 终点那一格是山地。突击付两步，炮手的山地增益把它收成一步。视线仍被挡住。
+  assert.equal(pathDistance(cliff, { x: 2, y: 5 }, { x: 4, y: 5 }, "Assault"), MOVE_QUANTUM + MOVE_QUANTUM * 2);
+  assert.equal(pathDistance(cliff, { x: 2, y: 5 }, { x: 4, y: 5 }, "Gunner"), MOVE_QUANTUM + MOVE_QUANTUM);
   assert.equal(legalActions(cliff, "Gunner").some((action) => action.kind === "shoot"), false);
 
   const climb = createMatch({
@@ -246,7 +248,8 @@ test("water stops feet, mountains stop shots, uphill spends a second point", () 
     covers: [],
     heights: heightGrid((x) => x * 2),
   });
-  assert.equal(pathDistance(climb, { x: 0, y: 5 }, { x: 3, y: 5 }, "Assault"), 6);
+  assert.equal(pathDistance(climb, { x: 0, y: 5 }, { x: 3, y: 5 }, "Assault"), 6 * MOVE_QUANTUM);
+  assert.equal(pathDistance(climb, { x: 0, y: 5 }, { x: 3, y: 5 }, "Support"), 3 * MOVE_QUANTUM);
 
   const wall = createMatch({
     preset: "covers_sparse_mid",
@@ -287,6 +290,26 @@ test("water stops feet, mountains stop shots, uphill spends a second point", () 
   assert.deepEqual(after.pos, { x: 5, y: 3 });
   // 砸击 4，再加撞上水面的 2。人留在原地。
   assert.equal(after.hp, hp - 6);
+});
+
+test("roads cost half a step for mechs and raiders, and a full step for the boss", () => {
+  const state = createMatch({
+    preset: "covers_sparse_mid",
+    script: "stationary_smash",
+    covers: [],
+    terrain: terrainGrid((_x, y) => (y === 5 ? "road" : "land")),
+    boss: { x: 7, y: 0 },
+    mechs: [
+      { id: "Assault", pos: { x: 0, y: 9 } },
+      { id: "Gunner", pos: { x: 1, y: 9 } },
+      { id: "Support", pos: { x: 2, y: 9 } },
+    ],
+  });
+  assert.equal(pathDistance(state, { x: 0, y: 5 }, { x: 6, y: 5 }, "Assault"), 6);
+  assert.equal(pathDistance(state, { x: 0, y: 5 }, { x: 6, y: 5 }, "raider"), 6);
+  assert.equal(pathDistance(state, { x: 0, y: 5 }, { x: 6, y: 5 }, "boss"), 6 * MOVE_QUANTUM);
+  // 离路够远，抄路再回来比直走平地更贵。
+  assert.equal(pathDistance(state, { x: 0, y: 0 }, { x: 6, y: 0 }, "Assault"), 6 * MOVE_QUANTUM);
 });
 
 test("a raider walks around water toward the building", () => {

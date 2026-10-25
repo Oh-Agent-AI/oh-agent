@@ -13,9 +13,9 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import {
-  BOARD, BOSS_HP, BUILDING_HP, COVERS, FLAT_SPAWN_MAX_DELTA, MECH_IDS, STATS_MOVE, adjacentToFootprint, attackerCenter,
+  BOARD, BOSS_HP, BUILDING_HP, COVERS, FLAT_SPAWN_MAX_DELTA, MECH_IDS, adjacentToFootprint, attackerCenter,
   bossExecute, bossPrepare, buildingDamage, createMatch, flatSpawnSpread, footprintCenter, knockbackFromAttacker,
-  legalActions, living, livingBuildings, pathDistance, primaryAxis, setScriptCounters, spawnsAreOpenGround,
+  legalActions, living, livingBuildings, moveBudget, pathDistance, primaryAxis, setScriptCounters, spawnsAreOpenGround,
   validateAndApplyPlan,
   type Action, type ArenaPlan, type BossScriptId, type Cell, type CoverPresetId, type Intent, type MatchState,
   type MechId, type MechOrder,
@@ -255,7 +255,7 @@ function mulberry32(seed: number): () => number {
 
 function reachable(state: MatchState, id: MechId): Cell[] {
   const me = mechOf(state, id);
-  const cap = STATS_MOVE[id];
+  const cap = moveBudget(id);
   const out: Cell[] = [];
   for (let y = 0; y < BOARD; y += 1) {
     for (let x = 0; x < BOARD; x += 1) {

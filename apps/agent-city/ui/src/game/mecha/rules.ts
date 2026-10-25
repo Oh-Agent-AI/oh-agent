@@ -5,8 +5,11 @@
  * raid_ssw is that cadence plus a move toward a living building or mech.
  * siege adds two 1×1 raiders and ends at turn 15.
  * Buildings have one HP pool; every pool at 0 is defeat_buildings.
- * 水不可进入，射击照常穿过。山地不可进入，并且挡住射击。
- * 陆地每步 1。上坡超过平地出生容差再加 1。机甲、Boss、袭扰者共用这套花费。
+ * 花费以半步计，预算 = 移动力 × MOVE_QUANTUM。平地一步是 2，和旧的「移动力格数」对齐。
+ * 水不可进入，射击照常穿过。山地可以爬，基础花费 4，并且挡住射击。
+ * 上坡超过平地出生容差时，陆地基础花费 4。道路基础花费和平地一样，增益再减。
+ * 增益见 TERRAIN_MOD：沿路减到 1，所以同样的预算多走一倍。最低花费是 1，避免零花费绕圈。
+ * 推入水或山地算撞墙。主动爬山地不撞墙，只付步数。
  */
 
 export const GDD_RULESET = "mecha-v1.3";
@@ -24,11 +27,14 @@ export const RAIDER_DEF = 1;
 export const RAIDER_MOVE = 4;
 /** Spawn samples are one plane when the spread is at most 1 world unit (2 m). */
 export const FLAT_SPAWN_MAX_DELTA = 1;
+/** 一步平地是两个半步。pathDistance 返回半步，和移动力比较时乘这一档。 */
+export const MOVE_QUANTUM = 2;
 
 export type Cell = { x: number; y: number };
-/** 水是挡住脚的空水面。山地是悬崖。陆地是唯一能走的面，上坡另计花费。 */
-export type TerrainKind = "land" | "water" | "mountain";
+/** 水挡住脚。山地能爬、挡住射击。道路是陆地里铺过的那一格，增益后更便宜。 */
+export type TerrainKind = "land" | "water" | "mountain" | "road";
 export type MechId = "Assault" | "Gunner" | "Support";
+export type MoverId = MechId | "boss" | "raider";
 export const MECH_IDS: MechId[] = ["Assault", "Gunner", "Support"];
 export type CoverPresetId = "covers_sparse_mid" | "covers_diag_corridor" | "covers_twin_clusters";
 export type BossScriptId = "stationary_smash" | "cadence_ssw" | "raid_ssw" | "siege";
@@ -49,6 +55,26 @@ export type ArenaPlan = { revision: number; items: MechOrder[] };
 
 type Stats = { maxHp: number; move: number; atk: number; def: number; shoot: number; melee: boolean };
 export const STATS_MOVE: Record<MechId, number> = { Assault: 4, Gunner: 3, Support: 3 };
+
+/**
+ * 从该地形的基础半步里减去的量。
+ * 道路和平地基础都是 2；道路增益 2 把沿路一步收到 1。
+ * 山地和上坡基础都是 4；对应增益 2 把它们收到和平地一样。
+ * 陆地增益只抵消上坡，不把平地再打折。
+ * Boss 三栏是 0：脚印太宽，沿路不加价，坡和山照付。
+ * 袭扰者和机甲一样吃道路增益，所以街上两边都更快。
+ */
+export const TERRAIN_MOD: Record<MoverId, { road: number; land: number; mountain: number }> = {
+  Assault: { road: 2, land: 0, mountain: 0 },
+  Gunner: { road: 2, land: 0, mountain: 2 },
+  Support: { road: 2, land: 2, mountain: 0 },
+  raider: { road: 2, land: 0, mountain: 0 },
+  boss: { road: 0, land: 0, mountain: 0 },
+};
+
+export function moveBudget(id: MechId): number {
+  return STATS[id].move * MOVE_QUANTUM;
+}
 
 const STATS: Record<MechId, Stats> = {
   Assault: { maxHp: 14, move: 4, atk: 5, def: 2, shoot: 0, melee: true },
@@ -225,7 +251,7 @@ function copyTerrain(grid: TerrainKind[][] | undefined): TerrainKind[][] {
     const row: TerrainKind[] = [];
     for (let x = 0; x < BOARD; x += 1) {
       const cell = grid?.[y]?.[x];
-      row.push(cell === "water" || cell === "mountain" ? cell : "land");
+      row.push(cell === "water" || cell === "mountain" || cell === "road" ? cell : "land");
     }
     out.push(row);
   }
@@ -253,20 +279,39 @@ function heightAt(state: MatchState, cell: Cell): number {
   return state.heights[cell.y]?.[cell.x] ?? 0;
 }
 
-/** 水和悬崖都没有落脚点。山地另在射击里挡住视线。 */
-function impassable(state: MatchState, cell: Cell): boolean {
+/** 只有水没有落脚点。山地能爬，推上去才算撞墙。 */
+function water(state: MatchState, cell: Cell): boolean {
+  return terrainAt(state, cell) === "water";
+}
+
+/** 出生不放在水里，也不放在悬崖上。开打之后山地可以爬。 */
+function noSpawn(state: MatchState, cell: Cell): boolean {
+  const terrain = terrainAt(state, cell);
+  return terrain === "water" || terrain === "mountain";
+}
+
+/** 被推或被砸的位移撞上水、山地，人留在原地并吃碰撞伤害。 */
+function shoveWall(state: MatchState, cell: Cell): boolean {
   const terrain = terrainAt(state, cell);
   return terrain === "water" || terrain === "mountain";
 }
 
 /**
- * 一步的移动花费。平地和走高差不超过出生容差的陆地是 1。
- * 再陡的上坡是 2，下坡不加。水和山地没有花费，调用方必须绕开。
+ * 一步的半步花费。平地和缓坡是 MOVE_QUANTUM。
+ * 山地和更陡的上坡是两倍。道路增益、山地增益、陆地增益按 TERRAIN_MOD 减，最低 1。
+ * 陆地增益只减上坡。水没有花费。
  */
-function stepCost(state: MatchState, from: Cell, to: Cell): number | null {
-  if (!inb(to) || impassable(state, to)) return null;
+function stepCost(state: MatchState, from: Cell, to: Cell, mover: MoverId): number | null {
+  if (!inb(to) || water(state, to)) return null;
+  const face = terrainAt(state, to);
   const rise = heightAt(state, to) - heightAt(state, from);
-  return rise > FLAT_SPAWN_MAX_DELTA ? 2 : 1;
+  const uphill = rise > FLAT_SPAWN_MAX_DELTA;
+  let cost = face === "mountain" || uphill ? MOVE_QUANTUM * 2 : MOVE_QUANTUM;
+  const mod = TERRAIN_MOD[mover];
+  if (face === "road") cost -= mod.road;
+  else if (face === "mountain") cost -= mod.mountain;
+  else if (uphill) cost -= mod.land;
+  return Math.max(1, cost);
 }
 
 export function createMatch(opts: {
@@ -335,7 +380,7 @@ export function spawnsAreOpenGround(state: MatchState): boolean {
   const seen = new Set<string>();
   const open = (cell: Cell) => {
     const id = key(cell);
-    if (!inb(cell) || impassable(state, cell) || blocked.has(id) || seen.has(id)) return false;
+    if (!inb(cell) || noSpawn(state, cell) || blocked.has(id) || seen.has(id)) return false;
     seen.add(id);
     return true;
   };
@@ -434,7 +479,7 @@ function tryTranslateBoss(state: MatchState, dir: Cell): boolean {
   const dests = footprint(anchor).map((c) => ({ x: c.x + dir.x, y: c.y + dir.y }));
   let hit: MechId | null = null;
   for (const nc of dests) {
-    if (!inb(nc) || blocksTerrain(state, nc) || impassable(state, nc)) {
+    if (!inb(nc) || blocksTerrain(state, nc) || shoveWall(state, nc)) {
       hurtBoss(state, 2);
       refresh(state);
       return false;
@@ -468,7 +513,7 @@ function tryPushMech(state: MatchState, id: MechId, dir: Cell): boolean {
   const m = mech(state, id);
   if (!m) return false;
   const dest = { x: m.pos.x + dir.x, y: m.pos.y + dir.y };
-  if (!inb(dest) || blocksTerrain(state, dest) || impassable(state, dest)) {
+  if (!inb(dest) || blocksTerrain(state, dest) || shoveWall(state, dest)) {
     hurtMech(state, id, 2);
     refresh(state);
     return false;
@@ -528,9 +573,9 @@ function shootEnemy(state: MatchState, id: MechId, target: string) {
   refresh(state);
 }
 
-export function pathDistance(state: MatchState, from: Cell, to: Cell, mover: MechId): number | null {
+export function pathDistance(state: MatchState, from: Cell, to: Cell, mover: MoverId): number | null {
   if (eq(from, to)) return 0;
-  if (!inb(to) || impassable(state, to)) return null;
+  if (!inb(to) || water(state, to)) return null;
   const destOcc = occupant(state, to);
   if (destOcc !== "empty" && destOcc !== mover) return null;
   const dist = new Map<string, number>([[key(from), 0]]);
@@ -557,7 +602,7 @@ export function pathDistance(state: MatchState, from: Cell, to: Cell, mover: Mec
       if (!inb(nxt) || settled.has(key(nxt))) continue;
       const occ = occupant(state, nxt);
       if (occ !== "empty" && occ !== mover) continue;
-      const step = stepCost(state, cur, nxt);
+      const step = stepCost(state, cur, nxt, mover);
       if (step === null) continue;
       const next = d + step;
       const prev = dist.get(key(nxt));
@@ -714,7 +759,7 @@ export function validateAndApplyPlan(state: MatchState, plan: ArenaPlan): { ok: 
         const occ = occupant(trial, dest);
         return { code: "PLAN_PACK_REJECTED", reason: occ === "empty" ? "no path within move range" : "destination occupied" };
       }
-      if (dist > STATS[item.mechId].move) return { code: "PLAN_PACK_REJECTED", reason: "move exceeds move_range" };
+      if (dist > moveBudget(item.mechId)) return { code: "PLAN_PACK_REJECTED", reason: "move exceeds move_range" };
       who.pos = dest;
     }
     const err = applyAction(trial, item.mechId, item.action);
@@ -742,20 +787,20 @@ const STEP_DIRS: Cell[] = [{ x: 0, y: -1 }, { x: 1, y: 0 }, { x: 0, y: 1 }, { x:
 
 function anchorClear(state: MatchState, anchor: Cell): boolean {
   for (const c of footprint(anchor)) {
-    if (!inb(c) || impassable(state, c)) return false;
+    if (!inb(c) || water(state, c)) return false;
     if (onFootprint(state.boss.anchor, c)) continue;
     if (occupant(state, c) !== "empty") return false;
   }
   return true;
 }
 
-/** Boss 整座脚印平移一格。花费取四格里最陡的那一步，有一格是水或山地就走不了。 */
+/** Boss 整座脚印平移一格。花费取四格里最贵的那一步。有一格是水就走不了。 */
 function bossStepCost(state: MatchState, anchor: Cell, dir: Cell): number | null {
   const nxt = { x: anchor.x + dir.x, y: anchor.y + dir.y };
   if (!anchorClear(state, nxt)) return null;
-  let cost = 1;
+  let cost = 0;
   for (const cell of footprint(anchor)) {
-    const step = stepCost(state, cell, { x: cell.x + dir.x, y: cell.y + dir.y });
+    const step = stepCost(state, cell, { x: cell.x + dir.x, y: cell.y + dir.y }, "boss");
     if (step === null) return null;
     if (step > cost) cost = step;
   }
@@ -777,7 +822,7 @@ function objectiveGap(state: MatchState, anchor: Cell): number {
   return best;
 }
 
-/** Up to BOSS_MOVE move cost. Flat land spends 1 per step. Only a strictly closer gap is taken. */
+/** Up to BOSS_MOVE flat steps, counted in half-steps. Only a strictly closer gap is taken. */
 function stepBossTowardObjectives(state: MatchState) {
   if (state.boss.hp <= 0) return;
   const start = state.boss.anchor;
@@ -801,12 +846,12 @@ function stepBossTowardObjectives(state: MatchState) {
       || (gap === best.gap && cur.cost < best.cost)
       || (gap === best.gap && cur.cost === best.cost && (cur.x < best.x || (cur.x === best.x && cur.y < best.y)));
     if (closer) best = { x: cur.x, y: cur.y, cost: cur.cost, gap };
-    if (cur.cost >= BOSS_MOVE) continue;
+    if (cur.cost >= BOSS_MOVE * MOVE_QUANTUM) continue;
     for (const dir of STEP_DIRS) {
       const step = bossStepCost(state, cur, dir);
       if (step === null) continue;
       const nxt = { x: cur.x + dir.x, y: cur.y + dir.y, cost: cur.cost + step };
-      if (nxt.cost > BOSS_MOVE) continue;
+      if (nxt.cost > BOSS_MOVE * MOVE_QUANTUM) continue;
       const nid = key(nxt);
       const prev = dist.get(nid);
       if (prev !== undefined && prev <= nxt.cost) continue;
@@ -958,16 +1003,16 @@ function stepRaider(state: MatchState, raider: Raider, goals: Cell[]) {
       || (gap === best.gap && cur.cost < best.cost)
       || (gap === best.gap && cur.cost === best.cost && (cur.x < best.x || (cur.x === best.x && cur.y < best.y)));
     if (closer) best = { x: cur.x, y: cur.y, cost: cur.cost, gap };
-    if (cur.cost >= RAIDER_MOVE) continue;
+    if (cur.cost >= RAIDER_MOVE * MOVE_QUANTUM) continue;
     for (const dir of STEP_DIRS) {
       const nxtCell = { x: cur.x + dir.x, y: cur.y + dir.y };
       if (!inb(nxtCell)) continue;
       const occ = occupant(state, nxtCell);
       if (occ !== "empty" && !eq(nxtCell, raider.pos)) continue;
-      const step = stepCost(state, cur, nxtCell);
+      const step = stepCost(state, cur, nxtCell, "raider");
       if (step === null) continue;
       const nxt = { x: nxtCell.x, y: nxtCell.y, cost: cur.cost + step };
-      if (nxt.cost > RAIDER_MOVE) continue;
+      if (nxt.cost > RAIDER_MOVE * MOVE_QUANTUM) continue;
       const nid = key(nxt);
       const prev = dist.get(nid);
       if (prev !== undefined && prev <= nxt.cost) continue;

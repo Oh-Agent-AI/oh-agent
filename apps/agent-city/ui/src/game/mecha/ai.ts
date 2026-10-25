@@ -4,7 +4,7 @@
  * 有楼时，楼全毁和机甲全灭一样是输。
  */
 import {
-  BOARD, BOSS_HP, RAIDER_HP, bossExecute, footprintCenter, legalActions, living, pathDistance, STATS_MOVE,
+  BOARD, BOSS_HP, RAIDER_HP, bossExecute, footprintCenter, legalActions, living, moveBudget, pathDistance,
   validateAndApplyPlan,
   type Action, type ArenaPlan, type Cell, type MatchState, type MechId, type MechOrder,
 } from "./rules";
@@ -33,7 +33,7 @@ function holdPlan(state: MatchState): ArenaPlan {
 
 function reachable(state: MatchState, id: MechId): Cell[] {
   const me = mechAt(state, id);
-  const cap = STATS_MOVE[id];
+  const cap = moveBudget(id);
   const out: Cell[] = [];
   for (let y = 0; y < BOARD; y += 1) {
     for (let x = 0; x < BOARD; x += 1) {
