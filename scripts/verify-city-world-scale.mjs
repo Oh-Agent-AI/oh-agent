@@ -10,7 +10,7 @@ import { loadCity } from "./city-kit/index.mjs";
 import { installCanvasShim } from "./city-kit/scene-hash.mjs";
 
 installCanvasShim();
-const { THREE, LANDMARK_BUILDERS, buildAirport, createMaterialFactory, SIZE_POLICY, toMeters, m, REAL, VISUAL_BOOST, CAR_DIMENSIONS, CarVisuals, FlightVisuals, flightParamsFor, parkedCar, parkedPlane, roadWidthFor } = await loadCity({
+const { THREE, LANDMARK_BUILDERS, buildAirport, createMaterialFactory, SIZE_POLICY, toMeters, m, REAL, VISUAL_BOOST, CAR_DIMENSIONS, CarVisuals, FlightVisuals, flightParamsFor, parkedCar, parkedPlane, parkedMechaSquad, roadWidthFor } = await loadCity({
   "pkg:three": ["* as THREE"],
   "engine/render/landmarkMaterials.ts": ["createMaterialFactory"],
   "engine/render/landmarkBuilders.ts": ["LANDMARK_BUILDERS"],
@@ -21,7 +21,7 @@ const { THREE, LANDMARK_BUILDERS, buildAirport, createMaterialFactory, SIZE_POLI
   "game/CarVisuals.ts": ["CarVisuals"],
   "game/FlightVisuals.ts": ["FlightVisuals"],
   "game/FlightSimulation.ts": ["flightParamsFor"],
-  "engine/render/playableVehicles.ts": ["parkedCar", "parkedPlane"],
+  "engine/render/playableVehicles.ts": ["parkedCar", "parkedPlane", "parkedMechaSquad"],
 });
 const report = process.argv.includes("--report");
 
@@ -80,6 +80,9 @@ for (const diagonal of [100, 5000]) {
 // 停着的车 / 飞机：按登记的缩放摆放。
 near(sizeOf(parkedCar("d", "#ffffff", [])).z, car.x * VISUAL_BOOST.parkedCar, 0.01, "停车场的车长（车头朝 +z、朝街）");
 near(sizeOf(parkedPlane(5000, [])).z, 4.2 * flightParamsFor(5000).planeRadius * VISUAL_BOOST.parkedPlane, 0.01, "机坪飞机翼展");
+const squad = parkedMechaSquad([]);
+if (squad.children.length !== 3) failures.push(`机坪机甲应是三台，实际 ${squad.children.length}`);
+for (const mech of squad.children) near(mech.scale.x, VISUAL_BOOST.parkedMecha, 1e-9, `机坪机甲 ${mech.name} 缩放`);
 // ── 车辆 ↔ 路桥约束（规范 V3 表里已定值的两行）：支路 5 单位（= 10 m）放得下两车道；背景车道中线在路面内。──
 const LOCAL_ROAD = roadWidthFor("local"), LATERAL_MARGIN = 0.2, AMBIENT_LANE_OFFSET = 1.2; // ambientSystem：车道中线偏路中心 1.2
 if (!(LOCAL_ROAD >= 2 * (CAR_DIMENSIONS.width + 2 * LATERAL_MARGIN))) failures.push(`支路 ${LOCAL_ROAD} 放不下两条玩家车道（需 ${2 * (CAR_DIMENSIONS.width + 2 * LATERAL_MARGIN)}）`);

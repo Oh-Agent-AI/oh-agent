@@ -21,6 +21,7 @@ import { supportsBackgroundFilm } from "./export/filmJob";
 import { cityText, cityView, useCityLanguage } from "./i18n";
 import { replayStartMs } from "./replayRange";
 import { useCityGame } from "./game/useCityGame";
+import { MechaBoard } from "./game/MechaBoard";
 import { prewarmAudioContext } from "./game/GameSfx";
 import { useCityDrivingPlay } from "./game/useCityDrivingPlay";
 import { DrivingHud } from "./game/DrivingHud";
@@ -73,6 +74,9 @@ export function CityApp() {
   const [labels, setLabels] = useState(true);
   const [cinema, setCinema] = useState(false);
   const [roadAuditOpen, setRoadAuditOpen] = useState(false);
+  const [mechaOpen, setMechaOpen] = useState(false);
+  const mechaActive = useRef(false);
+  mechaActive.current = mechaOpen;
   const [refresh, setRefresh] = useState(0);
   const experience = useCityExperience(engineRef, projection);
   // 飞机与汽车共用宿主运行时；当前城市的自由驾驶从工具栏进入。
@@ -90,7 +94,7 @@ export function CityApp() {
   const game = useCityGame(engineRef, {
     cinemaActive: () => cinemaRef.current,
     filmActive: () => filmRef.current,
-    busy: () => busyRef.current || drivingActive.current,
+    busy: () => busyRef.current || drivingActive.current || mechaActive.current,
     labelsVisible: () => labelsRef.current,
     requestRefresh: () => setRefresh((value) => value + 1),
     locale: () => (language === "en" ? "en" : "zh-Hans"),
@@ -98,18 +102,30 @@ export function CityApp() {
   const driving = useCityDrivingPlay(engineRef, {
     cinemaActive: () => cinemaRef.current,
     gameActive: () => game.active,
-    busy: () => busyRef.current || filmRef.current || planRepairActive.current,
+    busy: () => busyRef.current || filmRef.current || planRepairActive.current || mechaActive.current,
   });
   drivingActive.current = driving.active;
   // 规划修复（开发开关 ?cityPlan / cityPlanDev=1；未开启时 hook 什么都不做）。与游戏/航拍/导出/忙碌互斥。
-  const planRepair = usePlanRepair(engineRef, { seed: experience.seed, model: experience.model, blocked: cinema || game.active || driving.active || experience.busy || !!experience.film });
-  // 点停车场里的车 / 机坪上的飞机直接开（2026-10-22）：与工具栏「驾车」「驾驶飞机」同一组互斥条件——
-  // 航拍、导出、忙碌、修复城市、已经在开车或飞行时不响应（引擎只在非驾驶世界里派发点击）。
+  const planRepair = usePlanRepair(engineRef, { seed: experience.seed, model: experience.model, blocked: cinema || game.active || driving.active || mechaOpen || experience.busy || !!experience.film });
+  // 点停车场里的车 / 机坪上的飞机 / 机坪上的机甲直接开：与工具栏同一组互斥条件——
+  // 航拍、导出、忙碌、修复城市、已经在开车、飞行或机甲战时不响应（引擎只在非驾驶世界里派发点击）。
+  // One guard list for every Mecha entry point. The toolbar, the world click and
+  // the settings button all ask this predicate, so a second path cannot start a
+  // mode that overwrites the camera or frame hook owned by another activity.
+  const mechaBlocked = cinema || game.active || driving.active || mechaOpen || experience.busy || !!experience.film || planRepair.state.active;
+  // Require a modelled city: the board is a view of the current layout, not a game
+  // that can start against a half-built scene.
+  const openMecha = () => {
+    const engine = engineRef.current;
+    if (mechaBlocked || !engine?.currentLayout || !engine.currentModel) return;
+    setMechaOpen(true);
+  };
   const playRef = useRef<(target: PlayTarget) => void>(() => {});
   playRef.current = (target) => {
-    if (cinema || game.active || driving.active || experience.busy || !!experience.film || planRepair.state.active) return;
+    if (mechaBlocked) return;
     experience.setOptions(false); experience.clearSelection();
     if (target.kind === "car") driving.enterAt(target);
+    else if (target.kind === "mecha") openMecha();
     else game.enterPracticeFrom(target);
   };
   planRepairActive.current = planRepair.state.active;
@@ -201,7 +217,9 @@ export function CityApp() {
       setDataLoaded(true);
       // Keep a city that already rendered; packaged v3 fallback happens inside the provider.
       setProjection((current) => current ?? null);
-      setStatus((current) => current && !current.startsWith("正在") ? current : "City 数据暂不可用");
+      setStatus((current) => current === "正在载入 City 插槽数据…" || current === "正在更新 City 插槽数据…"
+        || current === "正在读取全窗口统计…" || current === "正在读取会话建筑…" || !current
+        ? "City 数据暂不可用" : current);
     });
     return () => { active = false; loading.abort(); };
   }, [windowDays, refresh]);
@@ -227,7 +245,10 @@ export function CityApp() {
   }, []);
 
   useEffect(() => {
-    if (!projection || !engineRef.current || experience.busy || game.active || driving.active) return;
+    // A match reads the live layout for battlefield generation. Deferring City
+    // replans while the board is open keeps the snapshot the match was built from
+    // stable; the latest projection is applied when the board closes.
+    if (!projection || !engineRef.current || experience.busy || game.active || driving.active || mechaOpen) return;
     const engine = engineRef.current;
     const from = Date.parse(projection.window.from);
     const to = Date.parse(projection.window.to);
@@ -322,7 +343,7 @@ export function CityApp() {
     }).catch(() => {});
     experience.refreshSelection();
     return () => preparation.abort();
-  }, [projection, experience.busy, experience.seed, game.active, driving.active, firstModelFrame]);
+  }, [projection, experience.busy, experience.seed, game.active, driving.active, firstModelFrame, mechaOpen]);
 
   useEffect(() => {
     if (!projection?.v3_context || !embedded()) return;
@@ -415,7 +436,7 @@ export function CityApp() {
   // The host projection request precedes model/planning progress. Keep the same
   // loading shell visible from the first render, including a slow summary query.
   const cityLoading = !sceneUnavailable && (!dataLoaded || (dataAvailable && projection?.status !== "empty" && !firstModelFrame));
-  const roadAuditEnabled = sceneReady && !driving.active && !game.active && !cinema && !experience.busy && !experience.film && !planRepair.state.active;
+  const roadAuditEnabled = sceneReady && !driving.active && !game.active && !cinema && !mechaOpen && !experience.busy && !experience.film && !planRepair.state.active;
   const roadAudit = useRoadAudit(engineRef, roadAuditEnabled && roadAuditOpen);
   const toolbarReady = true; // UI/command channel ready; scene actions stay disabled until the first model frame.
   const tools: Tool[] = [
@@ -435,7 +456,7 @@ export function CityApp() {
     { id: "repair", commandId: "city.repair", label: planRepair.state.active ? "退出修复" : "修复城市", kind: "button" as const, enabled: planRepair.state.active || (sceneReady && !cinema && !game.active && !experience.busy && !experience.film) },
     { id: "car", commandId: "city.car", label: driving.active ? "退出驾驶" : "驾车", kind: "button" as const,
       enabled: driving.active || (sceneReady && !cinema && !game.active && !experience.busy && !experience.film && !planRepair.state.active) },
-  ].map((tool) => ({ ...tool, enabled: tool.id === "car" ? tool.enabled : tool.enabled && !driving.active })).map((tool: { id: string; label: string; options?: Array<{ value: string; label: string }> }) => ({ ...tool, placement: tool.id === "cinema" || tool.id === "game" || tool.id === "car" || tool.id === "film" && experience.film ? "primary" : "overflow", label: cityText(tool.label, language), options: tool.options?.map((option) => ({ ...option, label: cityText(option.label, language) })) })) as Tool[];
+  ].map((tool) => ({ ...tool, enabled: tool.enabled && !mechaOpen && (tool.id === "car" || !driving.active) })).map((tool: { id: string; label: string; options?: Array<{ value: string; label: string }> }) => ({ ...tool, placement: tool.id === "cinema" || tool.id === "game" || tool.id === "car" || tool.id === "film" && experience.film ? "primary" : "overflow", label: cityText(tool.label, language), options: tool.options?.map((option) => ({ ...option, label: cityText(option.label, language) })) })) as Tool[];
   const execute = (commandId: string, value?: string) => {
     const engine = engineRef.current;
     if (driving.active && commandId !== "city.car") throw new Error("driving_active");
@@ -511,7 +532,9 @@ export function CityApp() {
         onFocus={(assetRef) => { engineRef.current?.focusBuilding(assetRef); }} />}
       <div hidden={driving.active}><CityExperience ui={experience} disabled={!sceneReady} cinema={cinema} status={status} quality={quality} game={game} planRepair={planRepair}
         windowDays={windowDays} windowOptions={windowOptions} onWindowDays={(days) => setWindowDays(days as WindowDays)} labels={labels} onLabels={(next) => { engineRef.current?.setLabelsVisible(next); setLabels(next); }}
-        onQuality={(value) => { if (["auto", "high", "eco"].includes(value)) { engineRef.current?.setQualityMode(value as EngineQualityMode); setQuality(value as EngineQualityMode); } }} /></div>
+        onQuality={(value) => { if (["auto", "high", "eco"].includes(value)) { engineRef.current?.setQualityMode(value as EngineQualityMode); setQuality(value as EngineQualityMode); } }}
+        onMecha={() => openMecha()} /></div>
+      {mechaOpen && !game.active && !driving.active && !cinema && <MechaBoard locale={language === "en" ? "en" : "zh-Hans"} engine={engineRef.current} onClose={() => setMechaOpen(false)} />}
       <CityMinimap engine={engineRef} language={language} driving={{ active: driving.active, pose: driving.pose }}
         hidden={!sceneReady || cinema || game.active || !!experience.film || driving.hud.phase === "preparing" || driving.hud.phase === "error"} />
       <DrivingHud model={{ active: driving.active, choosingVehicle: driving.choosingVehicle, vtol: driving.vtol, entryError: driving.entryError,

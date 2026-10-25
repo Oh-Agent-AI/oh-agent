@@ -14,6 +14,12 @@
 /** 1 世界单位对应的米数。 */
 export const METERS_PER_UNIT = 2;
 
+/**
+ * 会话地块模数，规划层与机甲战棋共用。沿街面宽 7.2、进深 8（14.4 × 16 m）。
+ * 战棋的一格就是这一块，10×10 是从这套地块里开的一扇窗，不再另铺方格。
+ */
+export const LOT = { width: 7.2, depth: 8 } as const;
+
 /** 米 → 世界单位。 */
 export const m = (meters: number): number => meters / METERS_PER_UNIT;
 
@@ -86,6 +92,11 @@ export const VISUAL_BOOST = {
   parkedCar: 0.9,
   /** 机坪上那架可开的飞机：游戏飞机 ×0.45（翼展约 4–9.5 单位 = 8–19 m）——原尺寸翼展比 22 宽的跑道还宽，停在机坪上会压住滑行道和航站楼。 */
   parkedPlane: 0.45,
+  /**
+   * 机坪上那三台可点的机甲（engine/render/playableVehicles.ts）。网格按 1 世界单位 = 2 米建，
+   * 战棋一格是两块地，CityMechaWorld 用同一 2× 来画。停着的和开打以后是同一批模型。
+   */
+  parkedMecha: 2,
 } as const;
 
 /**

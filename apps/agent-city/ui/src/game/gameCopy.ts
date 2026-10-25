@@ -154,7 +154,104 @@ const ENGLISH: Record<string, string> = {
   "音效": "Sound FX",
   "开": "On",
   "关": "Off",
+  "机甲战棋": "Mecha tactics",
+  "在城市上打开 3 机对 Boss 的棋盘。整包提交，非法则整包退回。": "Open the 3-mech versus Boss board over the city. Submit the pack together; an illegal action rolls the whole pack back.",
+  "新开一局": "New match",
+  "自动对战": "Auto battle",
+  "停止自动": "Stop auto",
+  "正在选择战场…": "Choosing a battlefield…",
+  "正在读取城市地形": "Sampling the city terrain",
+  "正在检查": "Checked",
+  "个候选": "candidate attempts",
+  "战场选择失败": "Battlefield search failed",
+  "城市地形暂时无法生成战场，可以重试或关掉战棋。": "The city terrain could not produce a battlefield right now. Retry, or close the board.",
+  "关闭机甲战棋": "Close mecha tactics",
+  "三维视角被其他模式占用，改用方格棋盘。": "Another mode owns the 3D view, so the grid board is used.",
+  "出生高差": "Spawn relief",
+  "标准 1，已放宽": "standard 1, relaxed",
+  "提交三机行动": "Submit the three-mech pack",
+  "回合": "Turn",
+  "预告": "Telegraph",
+  "砸击": "Smash",
+  "横扫": "Sweep",
+  "跳过": "Skip",
+  "掩体": "Cover",
+  "选中": "Selected",
+  "近战": "Melee",
+  "射击": "Shoot",
+  "冲撞": "Charge",
+  "穿射": "Pierce",
+  "维修": "Repair",
+  "待机": "Hold",
+  "歼灭": "Boss down",
+  "全灭": "Squad wiped",
+  "回合耗尽": "Turn limit",
+  "整包被拒，局面未变，可以重提。": "Pack rejected. The board is unchanged and can be resubmitted.",
+  "Boss 生命": "Boss HP",
+  "稀疏中轴": "Sparse mid-axis",
+  "对角走廊": "Diagonal corridor",
+  "双掩体团": "Twin cover clumps",
+  "站桩砸击": "Stationary smash",
+  "砸砸扫": "Smash-smash-sweep",
+  "大怪与小怪": "Boss and raiders",
+  "大怪": "Boss",
+  "小怪": "Raider",
+  "小怪西": "West raider",
+  "小怪东": "East raider",
+  "楼被拆光": "Buildings lost",
+  "建筑": "Buildings",
+  "城市实地": "City ground",
+  "沿着道路能多走一倍。突击靠路，炮手爬山和平地一样，支援上坡不加价。水过不去，被推进水或山地会撞上。": "Roads halve a step. Assault likes roads, the Gunner climbs for the same cost as flat ground, and Support pays nothing extra uphill. Water is impassable. A push into water or a mountain stops on the wall.",
+  "攻坚先打大怪。守楼先打离楼最近的小怪。两种打法走出来的结果不同。": "Boss first goes for the boss. Hold the buildings hits the raider nearest a building. The two doctrines do not play out the same.",
+  "靠岸有水，翻山有山地，巷战是贴着楼的路，单侧临街也算。这座城没有的场地不会出现。": "Shore has water, ridge has mountains, and alley is a road beside a building, including a one-sided frontage. A shape this city does not have stays unavailable.",
+  "巷战只守临街的楼。贴着路的楼拆光就输，不临街的楼还在，但不算这一局。": "An alley keeps the buildings on the street. Losing those loses the match. Buildings off the street stay, and they do not decide it.",
+  "这一步": "Step",
+  "半步": "half-steps",
+  "大怪已倒，楼先没了": "The boss is down, and the buildings fell first.",
+  "大怪已倒，回合用尽": "The boss is down, and the turn limit came first.",
+  "打法": "Doctrine",
+  "攻坚": "Boss first",
+  "守楼": "Hold the buildings",
+  "按打法填入": "Fill from doctrine",
+  "战场": "Field",
+  "平地": "Flat",
+  "靠岸": "Shore",
+  "翻山": "Ridge",
+  "巷战": "Alley",
+  "战场在这座城市的地面上。楼顶血槽只记这一局，城市里的楼还在。": "The fight is on this city's ground. Roof bars belong to this match; the buildings stay.",
+  "这座城市没有一块够平的战场，仍用方格棋盘。": "This city has no flat enough field, so the grid board stays.",
+  "脚本": "Script",
+  "布局": "Layout",
+  "点击一台机甲，再点能走到的格子，然后选行动。": "Select a mech, click a reachable cell, then choose an action.",
+  "点一台机甲，再点能走到的格子，然后给三台都选行动。站上红色预告格会吃下这一击。": "Select a mech, click a reachable cell, then choose an action for all three. Standing on a red telegraph cell takes that hit.",
+  "未选择": "Not chosen",
+  "原位": "Stay",
+  "预告伤害": "Telegraph damage",
+  "机甲与怪兽": "Mechs and the alien",
+  "突击": "Assault",
+  "射手": "Gunner",
+  "支援": "Support",
 };
+
+/** 面板上的半步行。中英词序不同，不把两个碎片拼成一句英文。 */
+export function stepBudgetLine(cost: number | null, budget: number, locale: GameLocale): string {
+  const shown = cost === null ? "—" : String(cost);
+  if (locale === "en") return `${shown} of ${budget} half-steps`;
+  return `这一步 ${shown} 半步，预算 ${budget}`;
+}
+
+/** 打法焦点整句。name 已经是当前语言的单位名，building 是「x,y」或空。 */
+export function doctrineFocusLine(doctrine: "tunnel" | "peel", name: string, building: string | null, locale: GameLocale): string {
+  if (doctrine !== "peel") {
+    return locale === "en" ? "Boss first is aimed at the boss." : "攻坚盯着大怪。";
+  }
+  if (!building) {
+    return locale === "en" ? `Hold the buildings is aimed at ${name}.` : `守楼盯着${name}。`;
+  }
+  return locale === "en"
+    ? `Hold the buildings is aimed at ${name}, beside the building at ${building}.`
+    : `守楼盯着${name}，楼在 ${building}。`;
+}
 
 export function gameText(text: string, locale: GameLocale): string {
   if (locale !== "en") return text;

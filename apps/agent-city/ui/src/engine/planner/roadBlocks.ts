@@ -1,11 +1,12 @@
 /** Road-derived, fixed-size frontage parcels. No candidate edge becomes a road here. */
 import { EXPRESSWAY_DECK_WIDTH } from "../roadStandard";
+import { LOT } from "../worldScale";
 import { DetMath as Math } from "../detMath";
 import { spendPlanningWork, spendPlanningUnit } from "./operationBudget";
 import type { CityBlock, Parcel, RoadEdge, Vec2, Zone } from "../cityLayout";
 import type { RoadFace, RoadFaceResult } from "./roadFaces";
 
-export const ROAD_BLOCK_POLICY = { width: 7.2, depth: 8, endMargin: 7, centreInset: 12,
+export const ROAD_BLOCK_POLICY = { width: LOT.width, depth: LOT.depth, endMargin: 7, centreInset: 12,
   boundaryCentreClearance: 3.6 + 5, roadMargin: 0.5, siteMargin: 9, highwayHalfWidth: EXPRESSWAY_DECK_WIDTH / 2, highwayMargin: 1 } as const;
 export type RoadSurfaceExclusion =
   | { kind: "road-corridor" | "highway-corridor"; id: string; points: Vec2[]; width: number }
