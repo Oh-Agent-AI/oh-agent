@@ -119,19 +119,25 @@ function scorePlan(state: MatchState, plan: ArenaPlan): number | null {
   return score;
 }
 
+/** 一套打法 = 每台机甲的候选 (options) + 整包评分 (score)；搜索本身两套共用。 */
+type Doctrine = {
+  options: (state: MatchState, id: MechId) => Opt[];
+  score: (state: MatchState, plan: ArenaPlan) => number | null;
+};
+
 /**
- * 攻坚：候选格朝 Boss。自动对战的默认打法，也是分布脚本里的 tunnel 对照。
- * 守楼是另一套，见 peelPlan。两套都留给玩家选，不互相覆盖。
+ * 各台候选的笛卡尔积逐个整包评分，取最高分；同分取 JSON 串字典序小者，全无合法解时待机。
+ * 攻坚与守楼只在 options/score 上不同，搜索宽度与平局规则完全一致。
  */
-export function squadPlan(state: MatchState): ArenaPlan {
+function searchPlan(state: MatchState, doctrine: Doctrine): ArenaPlan {
   const ids = living(state).map((m) => m.id);
-  const groups = ids.map((id) => optionsFor(state, id));
+  const groups = ids.map((id) => doctrine.options(state, id));
   let bestScore = Number.NEGATIVE_INFINITY;
   let bestKey = "";
   let bestPlan: ArenaPlan | null = null;
   const consider = (items: MechOrder[]) => {
     const plan = { revision: state.revision, items };
-    const score = scorePlan(state, plan);
+    const score = doctrine.score(state, plan);
     if (score === null) return;
     const key = JSON.stringify(items);
     if (!bestPlan || score > bestScore || (score === bestScore && key < bestKey)) {
@@ -153,6 +159,17 @@ export function squadPlan(state: MatchState): ArenaPlan {
   walk(0, []);
   consider(holdPlan(state).items);
   return bestPlan ?? holdPlan(state);
+}
+
+const SQUAD_DOCTRINE: Doctrine = { options: optionsFor, score: scorePlan };
+const PEEL_DOCTRINE: Doctrine = { options: peelOptions, score: peelScore };
+
+/**
+ * 攻坚：候选格朝 Boss。自动对战的默认打法，也是分布脚本里的 tunnel 对照。
+ * 守楼是另一套，见 peelPlan。两套都留给玩家选，不互相覆盖。
+ */
+export function squadPlan(state: MatchState): ArenaPlan {
+  return searchPlan(state, SQUAD_DOCTRINE);
 }
 
 /** 和 squadPlan 同一份搜法。名字留给对照，避免和守楼混用。 */
@@ -308,35 +325,7 @@ function peelScore(state: MatchState, plan: ArenaPlan): number | null {
 
 /** 守楼：候选格和评分都朝离活楼最近的袭扰者。搜索宽度与攻坚相同。 */
 export function peelPlan(state: MatchState): ArenaPlan {
-  const ids = living(state).map((mech) => mech.id);
-  const groups = ids.map((id) => peelOptions(state, id));
-  let bestScore = Number.NEGATIVE_INFINITY;
-  let bestKey = "";
-  let bestPlan: ArenaPlan | null = null;
-  const consider = (items: MechOrder[]) => {
-    const plan = { revision: state.revision, items };
-    const score = peelScore(state, plan);
-    if (score === null) return;
-    const key = JSON.stringify(items);
-    if (!bestPlan || score > bestScore || (score === bestScore && key < bestKey)) {
-      bestScore = score;
-      bestKey = key;
-      bestPlan = plan;
-    }
-  };
-  const walk = (index: number, items: MechOrder[]) => {
-    if (index === ids.length) {
-      consider(items);
-      return;
-    }
-    const id = ids[index];
-    if (!id) return;
-    const from = mechAt(state, id).pos;
-    for (const opt of groups[index] ?? []) walk(index + 1, items.concat(orderOf(id, from, opt.dest, opt.action)));
-  };
-  walk(0, []);
-  consider(holdPlan(state).items);
-  return bestPlan ?? holdPlan(state);
+  return searchPlan(state, PEEL_DOCTRINE);
 }
 
 export function planForDoctrine(state: MatchState, doctrine: DoctrineId): ArenaPlan {
