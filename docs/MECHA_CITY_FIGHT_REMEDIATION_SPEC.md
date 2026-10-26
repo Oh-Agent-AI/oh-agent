@@ -1,6 +1,6 @@
 # 机甲战棋整改：整包结算语义、城市站点转换、控制器拆分
 
-版本：草稿 3 · 日期：2026-10-26 · 状态：D1 已决定升级 v1.4（契约见 3.2 阶段 B）；D2 待定
+版本：草稿 3 · 日期：2026-10-26 · 状态：D1 已决定升级 v1.4（契约见 3.2 阶段 B）；D2 已决定选 b（所有城市脚本都守楼）
 
 English: this spec fixes the defects found in the 2026-10-26 audit of the mecha tactics code. The pack-resolution rules are made explicit and the UI previews them, the city-site-to-match conversion is unified and stops dropping blocked cells, and the turn sequence plus the controller are pulled out of the React component. Ruleset `mecha-v1.3` stays unchanged until a reviewed decision in §4 says otherwise.
 
@@ -186,7 +186,7 @@ export function previewPlan(state: MatchState, plan: ArenaPlan): { ok: true; tel
 
 - `CityMechaSite` 增加 `blocked: Cell[]`（选址阶段 `kind === "blocked"` 且地形为 land 的格子，即场景楼、斜放楼）。`toSite()` 导出它；指纹与缓存键纳入该字段。
 - `blocked` **不能直接塞进 `covers`**。掩体在现规则里有三个副作用，都不适用于场景楼：穿射可以无视一格掩体（`los` 的 `ignoreCovers`）；`threat()` 给掩体 2 分，大怪和小怪会去砸它；方格棋盘把它画成掩体。因此新增占位类型 `obstacle`：挡路、挡大怪、挡射击且不能被穿射、不可被攻击、不参与 `threat`。`MatchState` 增加 `obstacles: Cell[]`，`spawnsAreOpenGround` 把它算作不可出生，`CityMechaWorld` 增加对应的地面颜色。
-- 所有脚本都带上站点里被认领的楼。注意现规则的 `refresh()` 只要存在楼就会启用 `defeat_buildings`（`rules.ts:493`），所以 D2 选 a 时必须新增 `stake: "none"`：楼只是可被砸的障碍，不进入胜负，不进入大怪与小怪的目标选择。
+- 所有脚本都带上站点里被认领的楼（D2 = b）。`refresh()` 只要存在楼就启用 `defeat_buildings`（`rules.ts:493`），正是 D2 要的行为，不需要新增 `stake` 取值。站桩砸击与砸砸扫的大怪不移动，楼只有在它的攻击范围内才会被打到；楼在 `threat()` 里是 2 分，所以大怪身边没有机甲时会去砸楼——玩家需要站位挡在楼前。
 - `MechaBoard.fresh()` 与测试的 `open()` 改为调用它。
 
 ### 3.5 控制器 `createMechaController`（ARCH-1）
@@ -223,7 +223,7 @@ type Controller = {
 **D1 整包语义是否升到 `mecha-v1.4`（落空而不是整包拒绝）。** **已决定：升（2026-10-26）。** 契约见 3.2 阶段 B。
 推荐：升。理由：玩家的直觉是"三台同时行动"，现状的拒绝既不可预期，也无法由界面提前提示干净；落空语义让 AI 与人用同一套规则，并且不再依赖数组顺序。代价：规则串变化，`golden`、`mecha-mechanism.ts` 与分布探针需要重跑并复核。若不升：只做阶段 A，把顺序契约写进文档与界面提示。
 
-**D2 非 siege 脚本下城里的楼的角色。**
+**D2 非 siege 脚本下城里的楼的角色。** **已决定：选 b（2026-10-26）**——城市战场上所有脚本都带楼，楼会被敌方攻击打坏，楼注（`stake`）全毁即 `defeat_buildings`，玩家必须守楼。巷战仍只守临街楼。没有城市的方格回退棋盘不变（只有 siege 带楼）。下文推荐 a 的理由作废，保留作记录。
 选项 a：只作障碍（挡路挡射击，可被砸但不参与胜负）；选项 b：与 siege 一致，参与胜负。推荐 a，改动面最小，也和"站桩砸击/砸砸扫"不带守楼目标的定位一致。
 
 ## 5. 阶段与交付
