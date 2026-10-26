@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as THREE from "three";
 import { METERS_PER_UNIT } from "../src/engine/worldScale.ts";
-import { MECHA_CELL_METERS, MECHA_METERS_PER_UNIT, createAssault, createBoss, createGunner, createSupport, disposeMechaModel } from "../src/game/mecha/models.ts";
+import { MECHA_CELL_METERS, MECHA_METERS_PER_UNIT, createAssault, createBoss, createGunner, createRaider, createSupport, disposeMechaModel } from "../src/game/mecha/models.ts";
 
 const CELL = 8;
 const BOSS_FOOT = 16;
@@ -45,4 +45,29 @@ test("mechs stand in one 16 m cell and the alien fills two", () => {
   face.getWorldPosition(eye);
   assert.ok(eye.z < -4, `boss head z ${eye.z}`);
   for (const [, root] of figures) disposeMechaModel(root);
+});
+
+test("raider has an independent low silhouette and fits a single cell", () => {
+  const raider = createRaider();
+  const boss = createBoss();
+  try {
+    const small = bounds(raider);
+    const large = bounds(boss);
+    assert.equal(raider.userData.role, "Raider");
+    assert.equal(raider.scale.x, 1);
+    assert.ok(Math.abs(small.min.y) < 0.05);
+    assert.ok(small.max.x - small.min.x < CELL);
+    assert.ok(small.max.z - small.min.z < CELL);
+    assert.ok(small.max.y < large.max.y * 0.4);
+    const face = new THREE.Vector3();
+    raider.getObjectByName("front")!.getWorldPosition(face);
+    assert.ok(face.z < -2);
+    let meshes = 0;
+    raider.traverse((node) => { if (node instanceof THREE.Mesh) meshes++; });
+    // Rigged legs batch independently so they can move without splitting every plate.
+    assert.ok(meshes < 24, `rigged raider should batch armor within joints: ${meshes} draws`);
+  } finally {
+    disposeMechaModel(raider);
+    disposeMechaModel(boss);
+  }
 });
