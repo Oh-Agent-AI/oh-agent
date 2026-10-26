@@ -15,6 +15,7 @@ import { CityMechaWorld, type CityMechaView, type CityMechaWorldHandle } from ".
 import { doctrineFocus, doctrineFocusCells, planForDoctrine, type DoctrineId } from "./mecha/ai";
 import { anchorsFromCity, prepareFightTerrainAsync, type CityMechaSite, type FightCatalog, type FightShape } from "./mecha/citySite";
 import { startPreparedSearch } from "./mecha/fightSearchRunner";
+import { matchFromSite } from "./mecha/matchFromSite";
 import { MechaLineup, type MechaBoardView } from "./MechaLineup";
 import {
   BOARD, FLAT_SPAWN_MAX_DELTA, MAX_TURNS, bossExecute, bossPrepare, createMatch, incomingDamage, legalActions, living, moveBudget, pathDistance,
@@ -235,18 +236,7 @@ function footprintCells(anchor: Cell): Cell[] {
 
 function fresh(preset: CoverPresetId, script: BossScriptId, site: CityMechaSite | null, stake: "all" | "frontage" = "all"): MatchState {
   const state = site
-    ? createMatch({
-      preset,
-      script,
-      covers: [],
-      terrain: site.terrain.map((row) => row.slice()),
-      heights: site.heights.map((row) => row.slice()),
-      buildings: script === "siege" || script === "raid_ssw" ? site.buildings.map((building) => ({ id: building.id, cells: building.cells.map((cell) => ({ ...cell })) })) : [],
-      raiders: script === "siege" ? site.raiders.map((raider) => ({ id: raider.id, pos: { ...raider.pos } })) : [],
-      mechs: site.mechs.map((mech) => ({ id: mech.id, pos: { ...mech.pos } })),
-      boss: { ...site.boss },
-      stake,
-    })
+    ? matchFromSite(site, { preset, script, stake })
     : createMatch({ preset, script, stake });
   bossPrepare(state);
   return state;
@@ -378,6 +368,7 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
     if (ground === "mountain") classes.push("is-mountain");
     if (ground === "road") classes.push("is-road");
     if (state.covers.some((k) => same(k, c))) classes.push("is-cover");
+    if (state.obstacles.some((k) => same(k, c))) classes.push("is-obstacle");
     const building = state.buildings.find((b) => b.cells.some((k) => same(k, c)));
     if (building) classes.push(building.hp > 0 ? "is-cover" : "is-rubble");
     if (state.boss.hp > 0 && x >= state.boss.anchor.x && x <= state.boss.anchor.x + 1 && y >= state.boss.anchor.y && y <= state.boss.anchor.y + 1) classes.push("is-boss");
@@ -491,6 +482,7 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
     move: draft[selected]?.moveTo ?? null,
     targets: targetOptions.flatMap((option) => option.cells),
     targetIds: targetOptions.map((option) => option.id),
+    obstacles: state.obstacles,
   }), [state, draft, selected, reach, doctrine, targetOptions, combat]);
   const view = useMemo<MechaBoardView>(() => ({
     figures: state.mechs.map((m) => {

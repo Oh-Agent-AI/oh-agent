@@ -121,6 +121,9 @@ export type CityMechaSite = {
   /** 和水、山地同一套词。选址用它挡出生，对局用它改移动和射击。 */
   terrain: TerrainKind[][];
   buildings: CityMechaBuilding[];
+  /** 选址阶段标成 blocked 的陆地格（场景楼、斜放楼、超大楼、没被认领的楼）。水与山已在 terrain 里，不重复。
+   *  按 y 再 x 排序；matchFromSite 把它变成规则里的 obstacles。 */
+  blocked: Cell[];
   mechs: Array<{ id: MechId; pos: Cell }>;
   boss: Cell;
   raiders: Array<{ id: string; pos: Cell }>;
@@ -231,6 +234,17 @@ function paintRoads(win: Window, roads: readonly RoadEdge[]) {
   }
 }
 
+/** kind 为 blocked 且地形仍是陆地的格子。以前 toSite 把 kind 整个丢掉，规则里这些格子就是平地。 */
+function blockedLand(win: Window): Cell[] {
+  const out: Cell[] = [];
+  for (let y = 0; y < BOARD; y += 1) {
+    for (let x = 0; x < BOARD; x += 1) {
+      if (win.kind[y]?.[x] === "blocked" && win.terrain[y]?.[x] === "land") out.push({ x, y });
+    }
+  }
+  return out;
+}
+
 function toSite(win: Window): CityMechaSite {
   return {
     originX: win.originX,
@@ -241,6 +255,7 @@ function toSite(win: Window): CityMechaSite {
     heights: win.heights,
     terrain: win.terrain,
     buildings: win.rules,
+    blocked: blockedLand(win),
     mechs: win.mechs,
     boss: win.boss,
     raiders: win.raiders,

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { LOT } from "../apps/agent-city/ui/src/engine/worldScale.ts";
-import { createMatch, FLAT_SPAWN_MAX_DELTA, pathDistance, RELAXED_SPAWN_MAX_DELTA, spawnsAreOpenGround } from "../apps/agent-city/ui/src/game/mecha/rules.ts";
+import { bossPrepare, createMatch, FLAT_SPAWN_MAX_DELTA, pathDistance, RELAXED_SPAWN_MAX_DELTA, spawnsAreOpenGround, validateAndApplyPlan } from "../apps/agent-city/ui/src/game/mecha/rules.ts";
+import { matchFromSite } from "../apps/agent-city/ui/src/game/mecha/matchFromSite.ts";
 import { groundRoadClearance } from "../apps/agent-city/ui/src/engine/surface/roadClearance.ts";
 import { CELL_LOTS, cellWorld, prepareFightTerrain, searchPrepared, searchPreparedAsync, siteFightShapes, siteFightShapesAsync, siteMechaWindow, type SiteAnchor } from "../apps/agent-city/ui/src/game/mecha/citySite.ts";
 
@@ -11,17 +12,7 @@ function anchor(id: string, x: number, z: number, height = 8): SiteAnchor {
 
 function open(site: ReturnType<typeof siteMechaWindow>) {
   assert.ok(site);
-  const state = createMatch({
-    preset: "covers_sparse_mid",
-    script: "siege",
-    covers: [],
-    terrain: site.terrain,
-    heights: site.heights,
-    buildings: site.buildings.map((building) => ({ id: building.id, cells: building.cells })),
-    raiders: site.raiders,
-    mechs: site.mechs,
-    boss: site.boss,
-  });
+  const state = matchFromSite(site, { preset: "covers_sparse_mid", script: "siege" });
   assert.equal(spawnsAreOpenGround(state), true);
   assert.equal(site.raiders.length, 2);
   assert.ok(site.buildings.length >= 2);
@@ -541,16 +532,63 @@ test("the fingerprint covers anchor identity, ground and height", () => {
   }
 });
 
-test("a tilted lot inside the window is not walkable ground in the match", { todo: "toSite() drops the blocked-cell grid, so fresh() sees plain land" }, () => {
+function tiltedSite() {
   const tilted: SiteAnchor = { id: "tilt", x: 52, z: 52, halfX: 3, halfZ: 3, yaw: 0.6, ground: 4, height: 8 };
   const site = siteMechaWindow({ height: () => 4 }, [anchor("west", 40, 40), anchor("mid", 52, 40), anchor("north", 40, 52), tilted]);
   assert.ok(site);
-  // 与 MechaBoard.fresh() 同一份输入：只有地形、高度、被认领的楼。
-  const state = createMatch({
-    preset: "covers_sparse_mid", script: "siege", covers: [], terrain: site.terrain, heights: site.heights,
-    buildings: site.buildings.map((building) => ({ id: building.id, cells: building.cells })),
-    raiders: site.raiders, mechs: site.mechs, boss: site.boss,
-  });
+  return site;
+}
+
+test("a tilted lot inside the window is not walkable ground in the match", () => {
+  const site = tiltedSite();
+  const state = matchFromSite(site, { preset: "covers_sparse_mid", script: "siege" });
   // 斜放的楼落在 (9,9)：城里画着楼的格子，规则里不该能走进去。
   assert.equal(pathDistance(state, site.mechs[2]!.pos, { x: 9, y: 9 }, "Support"), null);
+});
+
+test("blocked cells are exported: land only, sorted, covered by the tilted anchor", () => {
+  const site = tiltedSite();
+  assert.ok(site.blocked.length > 0);
+  assert.ok(site.blocked.some((c) => c.x === 9 && c.y === 9));
+  for (const c of site.blocked) assert.equal(site.terrain[c.y]![c.x], "land");
+  const owned = new Set(site.buildings.flatMap((b) => b.cells.map((c) => `${c.x},${c.y}`)));
+  for (const c of site.blocked) assert.equal(owned.has(`${c.x},${c.y}`), false);
+  const sorted = [...site.blocked].sort((a, b) => a.y - b.y || a.x - b.x);
+  assert.deepEqual(site.blocked, sorted);
+  const state = matchFromSite(site, { preset: "covers_sparse_mid", script: "siege" });
+  assert.deepEqual(state.obstacles, site.blocked);
+});
+
+test("matchFromSite reproduces the hand-built createMatch args, with buildings in every script (D2)", () => {
+  const site = tiltedSite();
+  for (const script of ["siege", "cadence_ssw"] as const) {
+    const old = createMatch({
+      preset: "covers_sparse_mid", script, covers: [],
+      terrain: site.terrain.map((row) => row.slice()),
+      heights: site.heights.map((row) => row.slice()),
+      // D2 = b：以前 cadence_ssw 在城里没有楼，机甲能穿楼而过；现在每个脚本都带楼、都守楼。
+      buildings: site.buildings.map((b) => ({ id: b.id, cells: b.cells.map((c) => ({ ...c })) })),
+      raiders: script === "siege" ? site.raiders.map((r) => ({ id: r.id, pos: { ...r.pos } })) : [],
+      mechs: site.mechs.map((m) => ({ id: m.id, pos: { ...m.pos } })),
+      boss: { ...site.boss },
+      stake: "all",
+    });
+    const now = matchFromSite(site, { preset: "covers_sparse_mid", script, stake: "all" });
+    const { obstacles, ...rest } = now;
+    const { obstacles: none, ...oldRest } = old;
+    assert.deepEqual(rest, oldRest);
+    assert.deepEqual(none, []);
+    assert.ok(obstacles.length > 0);
+    assert.ok(now.buildings.length > 0);
+  }
+});
+
+test("a city cadence_ssw match is lost when every staked building falls (D2)", () => {
+  const state = matchFromSite(tiltedSite(), { preset: "covers_sparse_mid", script: "cadence_ssw" });
+  assert.ok(state.buildings.length > 0);
+  bossPrepare(state);
+  for (const building of state.buildings) building.hp = 0;
+  const hold = { revision: state.revision, items: state.mechs.map((m) => ({ mechId: m.id, moveTo: null, action: { kind: "skip" as const } })) };
+  validateAndApplyPlan(state, hold);
+  assert.equal(state.outcome, "defeat_buildings");
 });

@@ -124,6 +124,7 @@
 .mecha-cell.is-mountain { background: #6e5344; }
 .mecha-cell.is-road { background: #c4a15a; }
 .mecha-cell.is-cover { background: #5c6b4a; }
+.mecha-cell.is-obstacle { background: #4a4f57; }
 .mecha-cell.is-rubble { background: #2c3328; }
 .mecha-cell.is-boss { background: #c45c26; }
 .mecha-cell.is-raider { background: #8d5cc4; }

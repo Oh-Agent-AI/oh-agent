@@ -19,9 +19,11 @@ export type CityMechaView = {
   move: Cell | null;
   targets: Cell[];
   targetIds: string[];
+  /** 规则里的障碍格（场景楼、斜放楼）。缺省当空。 */
+  obstacles?: Cell[];
 };
 
-const ROLES = ["empty", "water", "mountain", "road", "reach", "move", "building", "rubble", "focus", "telegraph", "target"] as const;
+const ROLES = ["empty", "water", "mountain", "road", "reach", "move", "building", "rubble", "obstacle", "focus", "telegraph", "target"] as const;
 type Role = (typeof ROLES)[number];
 
 const ROLE_COLOR: Record<Role, string> = {
@@ -33,6 +35,7 @@ const ROLE_COLOR: Record<Role, string> = {
   move: "#ffe08a",
   building: "#e2b15a",
   rubble: "#2c2824",
+  obstacle: "#4a4f57",
   focus: "#39d6a3",
   telegraph: "#ff3b3b",
   target: "#ffd166",
@@ -47,6 +50,7 @@ const ROLE_OPACITY: Record<Role, number> = {
   move: 0.82,
   building: 0.34,
   rubble: 0.4,
+  obstacle: 0.45,
   focus: 0.82,
   telegraph: 0.78,
   target: 0.88,
@@ -274,6 +278,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         const role = building.hp > 0 ? "building" : "rubble";
         for (const cell of building.cells) buildingCells.set(cellKey(cell), role);
       }
+      const obstacleCells = new Set((current.obstacles ?? []).map(cellKey));
       const moveKey = current.move ? cellKey(current.move) : "";
       pads.forEach((pad, index) => {
         const x = index % 10;
@@ -283,6 +288,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         const role: Role = targets.has(id) ? "target" : telegraph.has(id) ? "telegraph"
           : focus.has(id) ? "focus"
           : id === moveKey ? "move"
+          : obstacleCells.has(id) ? "obstacle"
           : buildingCells.get(id) ?? (reach.has(id) ? "reach" : ground === "water" ? "water" : ground === "mountain" ? "mountain" : ground === "road" ? "road" : "empty");
         pad.material = padMat.get(role)!;
       });

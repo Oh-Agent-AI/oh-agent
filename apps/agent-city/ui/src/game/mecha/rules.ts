@@ -127,6 +127,9 @@ export type MatchState = {
   preset: CoverPresetId;
   script: BossScriptId;
   covers: Cell[];
+  /** 站点里画着却不可用的陆地格（场景楼、斜放楼）。和 covers 不同：挡路、挡射击且不能被穿射、
+   *  不可被攻击、不参与 threat。缺省空，空时所有规则与加这个字段之前逐字节一致。 */
+  obstacles: Cell[];
   /** 每格一种面。缺省全是陆地，标准盘因此和没记地形时走法相同。 */
   terrain: TerrainKind[][];
   /** 格心的地面高度。上坡花费只看相邻两格的差。 */
@@ -363,6 +366,7 @@ export function createMatch(opts: {
   terrain?: TerrainKind[][];
   heights?: number[][];
   buildings?: Array<{ id: string; cells: Cell[]; hp?: number }>;
+  obstacles?: Cell[];
   raiders?: Array<{ id: string; pos: Cell; hp?: number }>;
   mechs?: Array<{ id: MechId; pos: Cell }>;
   boss?: Cell;
@@ -376,6 +380,7 @@ export function createMatch(opts: {
     preset: opts.preset,
     script: opts.script,
     covers: (opts.covers ?? (siege ? [] : COVERS[opts.preset])).map((c) => ({ ...c })),
+    obstacles: (opts.obstacles ?? []).map((c) => ({ ...c })),
     terrain: copyTerrain(opts.terrain),
     heights: copyHeights(opts.heights),
     buildings: (opts.buildings ?? (siege ? SIEGE_BUILDINGS : [])).map((b) => ({
@@ -440,6 +445,7 @@ function enemiesRemain(state: MatchState): boolean {
 export function spawnsAreOpenGround(state: MatchState): boolean {
   const blocked = new Set<string>();
   for (const c of state.covers) blocked.add(key(c));
+  for (const c of state.obstacles ?? []) blocked.add(key(c));
   for (const b of state.buildings) for (const c of b.cells) blocked.add(key(c));
   const seen = new Set<string>();
   const open = (cell: Cell) => {
@@ -458,11 +464,16 @@ function mech(state: MatchState, id: MechId): Mech | undefined {
   return state.mechs.find((m) => m.id === id && m.hp > 0);
 }
 
+function isObstacle(state: MatchState, c: Cell): boolean {
+  // 旧存档/手写状态可能没有这个字段，按空处理。
+  return (state.obstacles ?? []).some((k) => eq(k, c));
+}
+
 function isCover(state: MatchState, c: Cell): boolean {
   return state.covers.some((k) => eq(k, c));
 }
 
-type Occ = "empty" | "cover" | "building" | "rubble" | "boss" | "raider" | MechId;
+type Occ = "empty" | "obstacle" | "cover" | "building" | "rubble" | "boss" | "raider" | MechId;
 
 function raiderAt(state: MatchState, c: Cell): Raider | undefined {
   return state.raiders.find((r) => r.hp > 0 && eq(r.pos, c));
@@ -484,13 +495,14 @@ function occupant(state: MatchState, c: Cell): Occ {
   if (raiderAt(state, c)) return "raider";
   if (livingBuildingAt(state, c)) return "building";
   if (isRubble(state, c)) return "rubble";
+  if (isObstacle(state, c)) return "obstacle";
   if (isCover(state, c)) return "cover";
   return "empty";
 }
 
 function blocksTerrain(state: MatchState, c: Cell): boolean {
   const occ = occupant(state, c);
-  return occ === "cover" || occ === "building" || occ === "rubble";
+  return occ === "cover" || occ === "building" || occ === "rubble" || occ === "obstacle";
 }
 
 function hurtMech(state: MatchState, id: MechId, amount: number) {
@@ -714,6 +726,8 @@ function los(state: MatchState, from: Cell, to: Cell, ignoreCovers: number): boo
   for (const c of cells) {
     if (terrainAt(state, c) === "mountain") return false;
     const occ = occupant(state, c);
+    // 障碍不是掩体：穿射也穿不过。
+    if (occ === "obstacle") return false;
     if (occ === "cover" || occ === "building" || occ === "rubble") {
       covers += 1;
       if (covers > ignoreCovers) return false;
@@ -831,18 +845,27 @@ function applyAction(state: MatchState, id: MechId, action: Action): string | nu
  * 把 applyAction 的英文拒绝串归类成界面可翻译的 cause。
  * 串本身不变（旧测试断言它）；"目标没了"要对照回合初状态才分得出，所以带 start/trial。
  */
-function actionFaultCause(reason: string, action: Action, start: MatchState, trial: MatchState): NonNullable<PlanFault["cause"]> {
+function actionFaultCause(reason: string, action: Action, start: MatchState, trial: MatchState, shooter?: { id: MechId; pos: Cell }): NonNullable<PlanFault["cause"]> {
   if (reason === "mech is not alive") return "mech_dead";
   if (reason === "skill on cooldown") return "cooldown";
   const enemies = (s: MatchState) => new Set(["boss", ...s.raiders.map((r) => r.id)].filter((id) => enemyHp(s, id) > 0));
   const startAlive = enemies(start);
   const nowAlive = enemies(trial);
   // 有显式目标看它；没写目标（单目标省略）就看回合初活着的敌人有没有被前面的条目打死。
-  const intendedGone =
-    "target" in action && action.target !== undefined
-      ? startAlive.has(action.target) && !nowAlive.has(action.target)
-      : [...startAlive].some((id) => !nowAlive.has(id));
-  if (reason === "shot blocked or out of range") return intendedGone ? "target_gone" : "other";
+  if (reason === "shot blocked or out of range") {
+    if ("target" in action && action.target !== undefined) {
+      return startAlive.has(action.target) && !nowAlive.has(action.target) ? "target_gone" : "other";
+    }
+    // 没写目标：只有「回合初从射手移动后的位置本来打得到」的敌人现在死了才算目标没了。
+    // 以前任何一个敌人死了都算，别处死的敌人会把真正的射程/视线问题误报成目标消失。
+    if (!shooter) return "other";
+    const probe = structuredClone(start);
+    const who = probe.mechs.find((m) => m.id === shooter.id);
+    if (!who) return "other";
+    who.pos = { ...shooter.pos };
+    const pierce = action.kind === "pierce" ? 1 : 0;
+    return shotTargets(probe, who.pos, STATS[shooter.id].shoot, pierce).some((id) => !nowAlive.has(id)) ? "target_gone" : "other";
+  }
   if (reason === "not adjacent to an enemy") {
     return "target" in action && action.target !== undefined && startAlive.has(action.target) && !nowAlive.has(action.target) ? "target_gone" : "not_adjacent";
   }
@@ -882,7 +905,7 @@ export function validateAndApplyPlan(state: MatchState, plan: ArenaPlan): { ok: 
       who.pos = dest;
     }
     const err = applyAction(trial, item.mechId, item.action);
-    if (err) return fault(err, actionFaultCause(err, item.action, state, trial));
+    if (err) return fault(err, actionFaultCause(err, item.action, state, trial, { id: item.mechId, pos: { ...who.pos } }));
   }
   for (const m of trial.mechs) {
     if (m.skillUsed) m.skillUsed = false;
@@ -1000,6 +1023,7 @@ function cellBefore(a: Cell, b: Cell): boolean {
 function pickSmash(state: MatchState): Cell | null {
   let best: { t: number; d: number; c: Cell } | null = null;
   for (const c of adjacentCells(state.boss.anchor)) {
+    if (isObstacle(state, c)) continue; // 障碍不是目标，砸它没有意义
     const t = threat(state, c);
     const d = approachDistance(state, c);
     if (!best || t > best.t || (t === best.t && (d < best.d || (d === best.d && cellBefore(c, best.c))))) best = { t, d, c };
@@ -1008,7 +1032,7 @@ function pickSmash(state: MatchState): Cell | null {
 }
 
 function pickSweep(state: MatchState): [Cell, Cell] | null {
-  const cells = adjacentCells(state.boss.anchor);
+  const cells = adjacentCells(state.boss.anchor).filter((c) => !isObstacle(state, c));
   let best: { sum: number; mx: number; near: number; a: Cell; b: Cell } | null = null;
   for (let i = 0; i < cells.length; i += 1) {
     for (let j = i + 1; j < cells.length; j += 1) {
@@ -1156,6 +1180,7 @@ function planRaiders(state: MatchState) {
 function pickSmashCells(state: MatchState, cells: Cell[]): Cell | null {
   let best: { t: number; d: number; c: Cell } | null = null;
   for (const c of cells) {
+    if (isObstacle(state, c)) continue;
     const t = threat(state, c);
     const d = approachDistance(state, c);
     if (!best || t > best.t || (t === best.t && (d < best.d || (d === best.d && cellBefore(c, best.c))))) best = { t, d, c };
@@ -1271,7 +1296,7 @@ export function bossExecute(state: MatchState) {
         }
         continue;
       }
-      if (occ === "empty" || occ === "cover" || occ === "boss" || occ === "rubble" || occ === "raider") continue;
+      if (occ === "empty" || occ === "obstacle" || occ === "cover" || occ === "boss" || occ === "rubble" || occ === "raider") continue;
       const target = mech(state, occ);
       if (!target) continue;
       const before = target.hp;

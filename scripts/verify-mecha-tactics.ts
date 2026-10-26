@@ -539,3 +539,80 @@ test("previewPlan accepts a partial plan and lists the assumed mechs; hitsAfter 
   assert.equal(bad.ok, false);
   if (!bad.ok) assert.equal(bad.fault.mechId, "Gunner");
 });
+
+test("fault: a shot with no target is 'other' when the dead enemy was never in this shooter's line", () => {
+  // 回合初 Gunner 在 (8,8) 本来就谁也打不到；Assault 打死了别处的小怪不该让它变成 target_gone。
+  const state = createMatch({
+    preset: "covers_sparse_mid", script: "stationary_smash", covers: [], boss: { x: 4, y: 0 },
+    raiders: [{ id: "r1", pos: { x: 3, y: 6 }, hp: 1 }],
+    mechs: [{ id: "Assault", pos: { x: 3, y: 7 } }, { id: "Gunner", pos: { x: 8, y: 8 } }, { id: "Support", pos: { x: 9, y: 9 } }],
+  });
+  bossPrepare(state);
+  const f = faultOf(state, plan(state, [{ mechId: "Assault", action: { kind: "melee" } }, { mechId: "Gunner", action: { kind: "shoot" } }, { mechId: "Support" }]));
+  assert.deepEqual([f.mechId, f.cause, f.reason], ["Gunner", "other", "shot blocked or out of range"]);
+});
+
+// ---- 障碍（站点里的场景楼/斜放楼）：不是掩体，不是目标 ----
+
+function withObstacles(mechs: Array<{ id: "Assault" | "Gunner" | "Support"; pos: { x: number; y: number } }>, obstacles: Array<{ x: number; y: number }>) {
+  const state = createMatch({ preset: "covers_sparse_mid", script: "stationary_smash", covers: [], boss: { x: 4, y: 0 }, mechs, obstacles });
+  bossPrepare(state);
+  return state;
+}
+
+test("obstacle blocks movement: the cell is not enterable and paths go around it", () => {
+  const mechs = [{ id: "Assault" as const, pos: { x: 3, y: 9 } }, { id: "Gunner" as const, pos: { x: 5, y: 9 } }, { id: "Support" as const, pos: { x: 8, y: 9 } }];
+  const free = withObstacles(mechs, []);
+  const walled = withObstacles(mechs, [{ x: 5, y: 8 }]);
+  assert.equal(pathDistance(walled, { x: 5, y: 9 }, { x: 5, y: 8 }, "Gunner"), null);
+  assert.equal(pathDistance(free, { x: 5, y: 9 }, { x: 5, y: 7 }, "Gunner"), 2 * MOVE_QUANTUM);
+  assert.equal(pathDistance(walled, { x: 5, y: 9 }, { x: 5, y: 7 }, "Gunner"), 4 * MOVE_QUANTUM);
+});
+
+test("obstacle blocks a shot, and pierce cannot go through it (unlike a cover)", () => {
+  const mechs = [{ id: "Assault" as const, pos: { x: 0, y: 9 } }, { id: "Gunner" as const, pos: { x: 4, y: 4 } }, { id: "Support" as const, pos: { x: 8, y: 9 } }];
+  const kinds = (s: MatchState) => legalActions(s, "Gunner").map((a) => a.kind);
+  const cover = createMatch({ preset: "covers_sparse_mid", script: "stationary_smash", covers: [{ x: 4, y: 3 }], boss: { x: 4, y: 0 }, mechs });
+  bossPrepare(cover);
+  assert.ok(kinds(cover).includes("pierce"));
+  const wall = withObstacles(mechs, [{ x: 4, y: 3 }]);
+  assert.equal(kinds(wall).includes("shoot"), false);
+  assert.equal(kinds(wall).includes("pierce"), false);
+  const f = faultOf(wall, plan(wall, [{ mechId: "Assault" }, { mechId: "Gunner", action: { kind: "shoot" } }, { mechId: "Support" }]));
+  assert.equal(f.reason, "shot blocked or out of range");
+});
+
+test("shoving the boss into an obstacle is a wall collision", () => {
+  const mechs = [{ id: "Assault" as const, pos: { x: 3, y: 1 } }, { id: "Gunner" as const, pos: { x: 0, y: 9 } }, { id: "Support" as const, pos: { x: 8, y: 9 } }];
+  const state = withObstacles(mechs, [{ x: 6, y: 1 }]);
+  const r = playTurn(state, plan(state, [{ mechId: "Assault", action: { kind: "melee" } }, { mechId: "Gunner" }, { mechId: "Support" }]));
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.deepEqual(r.state.boss.anchor, { x: 4, y: 0 });
+  const shove = r.log.find((e) => e.type === "shove" && e.unit === "boss");
+  assert.ok(shove && shove.type === "shove" && shove.hit === "wall" && shove.damage === 2);
+  // 对照：没有障碍时同一手被推开。
+  const free = withObstacles(mechs, []);
+  validateAndApplyPlan(free, plan(free, [{ mechId: "Assault", action: { kind: "melee" } }, { mechId: "Gunner" }, { mechId: "Support" }]));
+  assert.deepEqual(free.boss.anchor, { x: 5, y: 0 });
+});
+
+test("boss and raiders never aim at an obstacle cell while open ground is next to them", () => {
+  const mechs = [{ id: "Assault" as const, pos: { x: 9, y: 9 } }, { id: "Gunner" as const, pos: { x: 8, y: 9 } }, { id: "Support" as const, pos: { x: 7, y: 9 } }];
+  const bare = createMatch({ preset: "covers_sparse_mid", script: "siege", covers: [], buildings: [], boss: { x: 4, y: 0 }, mechs, raiders: [{ id: "r1", pos: { x: 2, y: 5 } }] });
+  bossPrepare(bare);
+  // 把无障碍时它们本来会选的格子都改成障碍：threat 1 与空地同分，但不能再被选中。
+  const picks = [...bare.boss.intent!.projected, ...bare.raiders.flatMap((r) => r.intent?.projected ?? [])];
+  assert.ok(picks.length >= 2);
+  const state = createMatch({ preset: "covers_sparse_mid", script: "siege", covers: [], buildings: [], boss: { x: 4, y: 0 }, mechs, raiders: [{ id: "r1", pos: { x: 2, y: 5 } }], obstacles: picks });
+  bossPrepare(state);
+  const chosen = [...state.boss.intent!.projected, ...state.raiders.flatMap((r) => r.intent?.projected ?? [])];
+  assert.ok(chosen.length >= 2);
+  for (const c of chosen) assert.equal(picks.some((p) => p.x === c.x && p.y === c.y), false);
+});
+
+test("spawnsAreOpenGround is false when a mech spawns on an obstacle", () => {
+  const mechs = [{ id: "Assault" as const, pos: { x: 2, y: 9 } }, { id: "Gunner" as const, pos: { x: 5, y: 9 } }, { id: "Support" as const, pos: { x: 8, y: 9 } }];
+  assert.equal(spawnsAreOpenGround(withObstacles(mechs, [])), true);
+  assert.equal(spawnsAreOpenGround(withObstacles(mechs, [{ x: 5, y: 9 }])), false);
+});
