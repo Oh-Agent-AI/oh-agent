@@ -4,9 +4,9 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import {
   MECHA_CELL_METERS, MECHA_METERS_PER_UNIT,
   createAssault, createBoss, createGunner, createRaider, createSupport, disposeMechaModel,
-} from "../game/mecha/models";
+} from "../render/mecha/models";
 
-import { MechaAnimator, type MechaAction } from "../game/mecha/animation";
+import { MechaAnimator, type MechaAction } from "../render/mecha/animation";
 
 type ModelId = "assault" | "gunner" | "support" | "boss" | "raider";
 type ViewId = "hero" | "front" | "side" | "rear" | "top";

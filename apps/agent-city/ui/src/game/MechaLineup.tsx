@@ -1,10 +1,11 @@
 /** Rules board in world units. 1 unit = 2 m, one cell = 16 m. The grid underneath stays the input. */
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
-import { createAssault, createBoss, createGunner, createSupport, disposeMechaModel } from "./mecha/models";
+import { BOARD } from "./mecha/rules";
+import { createAssault, createBoss, createGunner, createRaider, createSupport, disposeMechaModel } from "../render/mecha/models";
 
 const CELL = 8;
-const BOARD_SPAN = CELL * 10;
+const BOARD_SPAN = CELL * BOARD;
 
 export type MechaBoardView = {
   figures: Array<{ id: "Assault" | "Gunner" | "Support"; x: number; y: number; alive: boolean; selected: boolean }>;
@@ -51,8 +52,8 @@ export function MechaLineup({ label, view }: { label: string; view: MechaBoardVi
     );
     const dummy = new THREE.Object3D();
     let n = 0;
-    for (let y = 0; y < 10; y += 1) {
-      for (let x = 0; x < 10; x += 1) {
+    for (let y = 0; y < BOARD; y += 1) {
+      for (let x = 0; x < BOARD; x += 1) {
         dummy.position.copy(cellTop(x, y, 0.02));
         dummy.updateMatrix();
         tile.setMatrixAt(n, dummy.matrix);
@@ -64,7 +65,7 @@ export function MechaLineup({ label, view }: { label: string; view: MechaBoardVi
 
     const gridGeo = new THREE.BufferGeometry();
     const pts: number[] = [];
-    for (let i = 0; i <= 10; i += 1) {
+    for (let i = 0; i <= BOARD; i += 1) {
       pts.push(i * CELL, 0.08, 0, i * CELL, 0.08, BOARD_SPAN);
       pts.push(0, 0.08, i * CELL, BOARD_SPAN, 0.08, i * CELL);
     }
@@ -84,10 +85,9 @@ export function MechaLineup({ label, view }: { label: string; view: MechaBoardVi
     const gunner = createGunner();
     const support = createSupport();
     const boss = createBoss();
-    const raiderWest = createBoss();
-    const raiderEast = createBoss();
-    raiderWest.scale.setScalar(0.38);
-    raiderEast.scale.setScalar(0.38);
+    // 小怪与城市视图同用 createRaider（原先是缩小的 createBoss，两处模型不一致）；城市视图也只对所有单位统一放大，不单独缩小
+    const raiderWest = createRaider();
+    const raiderEast = createRaider();
     const figures = { Assault: assault, Gunner: gunner, Support: support };
     for (const figure of [assault, gunner, support, boss, raiderWest, raiderEast]) scene.add(figure);
 

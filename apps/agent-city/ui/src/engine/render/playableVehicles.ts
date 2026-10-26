@@ -12,7 +12,7 @@ import * as THREE from "three";
 import { CarVisuals } from "../../game/CarVisuals";
 import { FlightVisuals } from "../../game/FlightVisuals";
 import { flightParamsFor } from "../../game/FlightSimulation";
-import { createAssault, createGunner, createSupport, disposeMechaModel } from "../../game/mecha/models";
+import { createAssault, createGunner, createSupport, disposeMechaModel } from "../../render/mecha/models";
 import { VISUAL_BOOST } from "../worldScale";
 
 export const PLAYABLE_CAR_PREFIX = "city-playable-car:";

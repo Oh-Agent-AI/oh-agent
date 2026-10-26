@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as THREE from "three";
-import { createAssault, createBoss, createGunner, createRaider, createSupport, disposeMechaModel } from "../src/game/mecha/models.ts";
-import { MechaAnimator, MechaBattleAnimator, faceMechaTarget, poseMechaModel, type MechaAction } from "../src/game/mecha/animation.ts";
+import { createAssault, createBoss, createGunner, createRaider, createSupport, disposeMechaModel } from "../src/render/mecha/models.ts";
+import { MechaAnimator, MechaBattleAnimator, faceMechaTarget, poseMechaModel, type MechaAction } from "../src/render/mecha/animation.ts";
 
 const factories = [createAssault, createGunner, createSupport, createBoss, createRaider];
 const actions: MechaAction[] = ["idle", "move", "attack", "repair", "hit", "defeat"];

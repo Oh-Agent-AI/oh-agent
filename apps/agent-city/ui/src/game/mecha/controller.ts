@@ -13,7 +13,7 @@
  * - 订阅者拿到的快照在两次变更之间引用稳定（useSyncExternalStore 的要求）。
  */
 import { PLAN_FAULT_CAUSES, gameText, planFaultText, type GameLocale } from "../gameCopy";
-import type { MechaCombatCue } from "./animation";
+import type { MechaCombatCue } from "../../render/mecha/animation";
 import { doctrineFocus, doctrineFocusCells, planForDoctrine, type DoctrineFocus, type DoctrineId } from "./ai";
 import type { CityMechaSite } from "./citySite";
 import { matchFromSite } from "./matchFromSite";

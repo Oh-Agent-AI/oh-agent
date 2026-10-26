@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as THREE from "three";
 import { METERS_PER_UNIT } from "../src/engine/worldScale.ts";
-import { MECHA_CELL_METERS, MECHA_METERS_PER_UNIT, createAssault, createBoss, createGunner, createRaider, createSupport, disposeMechaModel } from "../src/game/mecha/models.ts";
+import { MECHA_CELL_METERS, MECHA_METERS_PER_UNIT, createAssault, createBoss, createGunner, createRaider, createSupport, disposeMechaModel } from "../src/render/mecha/models.ts";
 
 const CELL = 8;
 const BOSS_FOOT = 16;

@@ -3,9 +3,9 @@ import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import * as THREE from "three";
 import type { CityEngine } from "../engine/CityEngine";
 import { boardToWorld, cellWorld, type CityMechaSite } from "./mecha/citySite";
-import { createAssault, createBoss, createGunner, createRaider, createSupport, disposeMechaModel } from "./mecha/models";
-import { MechaBattleAnimator, faceMechaTarget, type MechaCombatCue } from "./mecha/animation";
-import type { Cell, MechId } from "./mecha/rules";
+import { createAssault, createBoss, createGunner, createRaider, createSupport, disposeMechaModel } from "../render/mecha/models";
+import { MechaBattleAnimator, faceMechaTarget, type MechaCombatCue } from "../render/mecha/animation";
+import { BOARD, type Cell, type MechId } from "./mecha/rules";
 
 export type CityMechaView = {
   combat: { id: number; actions: MechaCombatCue[] };
@@ -114,8 +114,8 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
     const pickGeo = new THREE.BoxGeometry(site.cellW - 0.16, 0.6, site.cellD - 0.16);
     const pickMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false });
     const picks: THREE.Mesh[] = [];
-    for (let y = 0; y < 10; y += 1) {
-      for (let x = 0; x < 10; x += 1) {
+    for (let y = 0; y < BOARD; y += 1) {
+      for (let x = 0; x < BOARD; x += 1) {
         const world = cellWorld(site, { x, y });
         const pad = new THREE.Mesh(padGeo, padMat.get("empty")!);
         pad.position.set(world.x, world.y + 0.22, world.z);
@@ -190,8 +190,8 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         y: Math.max(...neighbors.map((item) => item.y)) + 0.4,
       };
     };
-    for (let i = 0; i <= 10; i += 1) {
-      for (let j = 0; j < 10; j += 1) {
+    for (let i = 0; i <= BOARD; i += 1) {
+      for (let j = 0; j < BOARD; j += 1) {
         const a = corner(i, j);
         const b = corner(i, j + 1);
         const c = corner(j, i);
@@ -281,8 +281,8 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       const obstacleCells = new Set((current.obstacles ?? []).map(cellKey));
       const moveKey = current.move ? cellKey(current.move) : "";
       pads.forEach((pad, index) => {
-        const x = index % 10;
-        const y = Math.floor(index / 10);
+        const x = index % BOARD;
+        const y = Math.floor(index / BOARD);
         const id = `${x},${y}`;
         const ground = site.terrain[y]?.[x];
         const role: Role = targets.has(id) ? "target" : telegraph.has(id) ? "telegraph"
