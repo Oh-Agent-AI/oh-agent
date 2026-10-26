@@ -3,13 +3,15 @@ import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import type { CityEngine } from "../engine/CityEngine";
 import { boardToWorld, cellWorld, type CityMechaSite } from "./mecha/citySite";
-import { createAssault, createBoss, createGunner, createSupport, disposeMechaModel } from "./mecha/models";
+import { createAssault, createBoss, createGunner, createRaider, createSupport, disposeMechaModel } from "./mecha/models";
+import { MechaBattleAnimator, faceMechaTarget, type MechaCombatCue } from "./mecha/animation";
 import type { Cell, MechId } from "./mecha/rules";
 
 export type CityMechaView = {
-  figures: Array<{ id: MechId; x: number; y: number; alive: boolean; selected: boolean }>;
-  boss: { x: number; y: number; alive: boolean };
-  raiders: Array<{ id: string; x: number; y: number; alive: boolean }>;
+  combat: { id: number; actions: MechaCombatCue[] };
+  figures: Array<{ id: MechId; x: number; y: number; alive: boolean; hp: number; selected: boolean }>;
+  boss: { x: number; y: number; alive: boolean; hp: number };
+  raiders: Array<{ id: string; x: number; y: number; alive: boolean; hp: number }>;
   buildings: Array<{ id: string; cells: Cell[]; hp: number; maxHp: number }>;
   telegraph: Cell[];
   focus: Cell[];
@@ -121,17 +123,17 @@ export function CityMechaWorld({
     const gunner = createGunner();
     const support = createSupport();
     const boss = createBoss();
-    const raiderWest = createBoss();
-    const raiderEast = createBoss();
+    const raiderWest = createRaider();
+    const raiderEast = createRaider();
     // Meshes are built for one lot (about 8 world units). The tactics cell is
-    // two lots on a side, so the same mesh is drawn at 2×. Support already carries 1.22.
+    // two lots on a side, so the same mesh is drawn at 2×.
     const unitScale = 2;
     assault.scale.multiplyScalar(unitScale);
     gunner.scale.multiplyScalar(unitScale);
     support.scale.multiplyScalar(unitScale);
     boss.scale.multiplyScalar(unitScale);
-    raiderWest.scale.setScalar(0.38 * unitScale);
-    raiderEast.scale.setScalar(0.38 * unitScale);
+    raiderWest.scale.multiplyScalar(unitScale);
+    raiderEast.scale.multiplyScalar(unitScale);
     const figures: Record<MechId, THREE.Group> = { Assault: assault, Gunner: gunner, Support: support };
     const markers = {
       Assault: marker("#e2b15a", 4.7, 6.3),
@@ -230,7 +232,18 @@ export function CityMechaWorld({
 
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const spot = new THREE.Vector3();
+    const animators = new Map<THREE.Object3D, MechaBattleAnimator>([assault, gunner, support, boss, raiderWest, raiderEast].map((mesh) => [mesh, new MechaBattleAnimator(mesh)]));
+    let previousFrame = performance.now();
+    const animate = (mesh: THREE.Object3D, id: string, hp: number, moving: boolean, dt: number) => {
+      const animator = animators.get(mesh)!;
+      const cue = viewRef.current.combat;
+      animator.sync(hp, cue.id, cue.actions.find((item) => item.actor === id)?.action);
+      animator.update(dt, moving, reduce);
+    };
     lease.setFrameHook(() => {
+      const now = performance.now();
+      const dt = Math.min(0.1, Math.max(0, (now - previousFrame) / 1000));
+      previousFrame = now;
       frameCamera();
       const current = viewRef.current;
       const telegraph = new Set(current.telegraph.map(cellKey));
@@ -254,44 +267,59 @@ export function CityMechaWorld({
         pad.material = padMat.get(role)!;
       });
       const bossFeet = footprintFeet(site, current.boss);
+      const facingTarget = (id: string): THREE.Vector3 => {
+        const action = animators.get(figures[id as MechId])?.animator.action;
+        if (action !== "attack" && action !== "repair") return bossFeet;
+        const target = current.combat.actions.find((cue) => cue.actor === id)?.target;
+        const actor = current.figures.find((figure) => figure.id === target) ?? current.raiders.find((raider) => raider.id === target);
+        if (!actor) return bossFeet;
+        const feet = cellWorld(site, actor);
+        return new THREE.Vector3(feet.x, feet.y, feet.z);
+      };
       for (const figure of current.figures) {
         const mesh = figures[figure.id];
         const feet = cellWorld(site, { x: figure.x, y: figure.y });
         spot.set(feet.x, feet.y, feet.z);
+        const moving = mesh.position.distanceToSquared(spot) > 0.01;
         slide(mesh, spot, reduce);
-        mesh.visible = figure.alive;
+        animate(mesh, figure.id, figure.hp, moving && figure.alive, dt);
+        mesh.visible = true;
         const ring = markers[figure.id];
         ring.mesh.visible = figure.alive;
         ring.mesh.position.set(mesh.position.x, mesh.position.y + 0.55, mesh.position.z);
         ring.mesh.scale.setScalar(figure.selected ? 1.28 : 1);
-        if (figure.alive) face(mesh, spot, bossFeet);
+        if (figure.alive) faceMechaTarget(mesh, spot, facingTarget(figure.id));
       }
+      const bossMoving = boss.position.distanceToSquared(bossFeet) > 0.01;
       slide(boss, bossFeet, reduce);
-      boss.visible = current.boss.alive;
+      animate(boss, "boss", current.boss.hp, bossMoving && current.boss.alive, dt);
+      boss.visible = true;
       markers.boss.mesh.visible = current.boss.alive;
       markers.boss.mesh.position.set(boss.position.x, boss.position.y + 0.55, boss.position.z);
       const nearest = current.figures.find((figure) => figure.alive);
       if (nearest && current.boss.alive) {
         const feet = cellWorld(site, { x: nearest.x, y: nearest.y });
-        face(boss, bossFeet, new THREE.Vector3(feet.x, feet.y, feet.z));
+        faceMechaTarget(boss, bossFeet, new THREE.Vector3(feet.x, feet.y, feet.z));
       }
       const small = [raiderWest, raiderEast];
       for (let i = 0; i < small.length; i += 1) {
         const mesh = small[i];
         const raider = current.raiders[i];
         if (!mesh) continue;
-        if (!raider?.alive) {
+        if (!raider) {
           mesh.visible = false;
           continue;
         }
         const feet = cellWorld(site, { x: raider.x, y: raider.y });
         spot.set(feet.x, feet.y, feet.z);
+        const moving = mesh.position.distanceToSquared(spot) > 0.01;
         slide(mesh, spot, reduce);
+        animate(mesh, raider.id, raider.hp, moving && raider.alive, dt);
         mesh.visible = true;
         const ring = i === 0 ? markers.raiderWest : markers.raiderEast;
-        ring.mesh.visible = true;
+        ring.mesh.visible = raider.alive;
         ring.mesh.position.set(mesh.position.x, mesh.position.y + 0.55, mesh.position.z);
-        face(mesh, spot, bossFeet);
+        if (raider.alive) faceMechaTarget(mesh, spot, bossFeet);
       }
       if (!current.raiders[0]?.alive) markers.raiderWest.mesh.visible = false;
       if (!current.raiders[1]?.alive) markers.raiderEast.mesh.visible = false;
@@ -357,10 +385,6 @@ function footprintFeet(site: CityMechaSite, anchor: { x: number; y: number }): T
   for (const cell of cells) y += cellWorld(site, cell).y;
   const at = boardToWorld(site, (anchor.x + 1) * site.cellW, (anchor.y + 1) * site.cellD);
   return new THREE.Vector3(at.x, y / cells.length, at.z);
-}
-
-function face(mesh: THREE.Object3D, from: THREE.Vector3, to: THREE.Vector3) {
-  mesh.rotation.y = Math.atan2(to.x - from.x, -(to.z - from.z));
 }
 
 function slide(mesh: THREE.Object3D, goal: THREE.Vector3, snap: boolean) {

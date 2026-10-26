@@ -10,6 +10,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CityEngine } from "../engine/CityEngine";
 import { doctrineFocusLine, gameText, stepBudgetLine, type GameLocale } from "./gameCopy";
+import type { MechaCombatCue } from "./mecha/animation";
 import { CityMechaWorld, type CityMechaView } from "./CityMechaWorld";
 import { doctrineFocus, doctrineFocusCells, planForDoctrine, type DoctrineId } from "./mecha/ai";
 import { anchorsFromCity, prepareFightTerrainAsync, type CityMechaSite, type FightCatalog, type FightShape } from "./mecha/citySite";
@@ -266,6 +267,18 @@ function openingDraft(state: MatchState, doctrine: DoctrineId): Record<MechId, D
   return draftFromPlan(state, planForDoctrine(state, doctrine));
 }
 
+function combatActions(afterOrders: MatchState, orders: Array<{ mechId: MechId; action: Action }>): MechaCombatCue[] {
+  const cues: MechaCombatCue[] = orders.filter((order) => order.action.kind !== "skip")
+    .map((order) => ({ actor: order.mechId, action: order.action.kind === "repair" ? "repair" : "attack", target: "target" in order.action ? order.action.target : undefined }));
+  if (afterOrders.phase === "resolving_boss") {
+    if (afterOrders.boss.hp > 0 && afterOrders.boss.intent && afterOrders.boss.intent.skillId !== "skip") cues.push({ actor: "boss", action: "attack" });
+    for (const raider of afterOrders.raiders) {
+      if (raider.hp > 0 && raider.intent && raider.intent.skillId !== "skip") cues.push({ actor: raider.id, action: "attack" });
+    }
+  }
+  return cues;
+}
+
 function MechaMatch({ locale, onClose, engine, catalog }: {
   locale: GameLocale;
   onClose: () => void;
@@ -286,6 +299,7 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
   const [notice, setNotice] = useState<string | null>(null);
   const [viewFailed, setViewFailed] = useState(false);
   const [auto, setAuto] = useState(false);
+  const [combat, setCombat] = useState<{ id: number; actions: MechaCombatCue[] }>({ id: 0, actions: [] });
   const [beat, setBeat] = useState<"show" | "resolve">("show");
 
   const restart = (nextPreset = preset, nextScript = script, nextSite: CityMechaSite | null = site, nextStake: "all" | "frontage" = shapeId === "alley" ? "frontage" : "all") => {
@@ -293,6 +307,7 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
     setPreset(nextPreset);
     setScript(nextScript);
     setState(match);
+    setCombat((current) => ({ id: current.id + 1, actions: [] }));
     setDraft(openingDraft(match, doctrine));
     setSelected(living(match)[0]?.id ?? "Assault");
     setNotice(null);
@@ -365,12 +380,15 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
         return;
       }
       const next = structuredClone(state);
-      const result = validateAndApplyPlan(next, planForDoctrine(state, doctrine));
+      const plan = planForDoctrine(state, doctrine);
+      const result = validateAndApplyPlan(next, plan);
       if (!("ok" in result)) {
         setAuto(false);
         setNotice(gameText("整包被拒，局面未变，可以重提。", locale));
         return;
       }
+      const cues = combatActions(next, plan.items);
+      setCombat((current) => ({ id: current.id + 1, actions: cues }));
       if (next.phase === "resolving_boss") bossExecute(next);
       if (next.phase === "enemy_prepare") bossPrepare(next);
       const alive = living(next);
@@ -406,18 +424,19 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
 
   const packReady = living(state).every((m) => draft[m.id]?.explicit);
   const cityView = useMemo<CityMechaView>(() => ({
+    combat,
     figures: state.mechs.map((m) => {
       const planned = m.hp > 0 ? draft[m.id]?.moveTo : null;
-      return { id: m.id, x: planned?.x ?? m.pos.x, y: planned?.y ?? m.pos.y, alive: m.hp > 0, selected: m.id === selected };
+      return { id: m.id, x: planned?.x ?? m.pos.x, y: planned?.y ?? m.pos.y, alive: m.hp > 0, hp: m.hp, selected: m.id === selected };
     }),
-    boss: { x: state.boss.anchor.x, y: state.boss.anchor.y, alive: state.boss.hp > 0 },
-    raiders: state.raiders.map((raider) => ({ id: raider.id, x: raider.pos.x, y: raider.pos.y, alive: raider.hp > 0 })),
+    boss: { x: state.boss.anchor.x, y: state.boss.anchor.y, alive: state.boss.hp > 0, hp: state.boss.hp },
+    raiders: state.raiders.map((raider) => ({ id: raider.id, x: raider.pos.x, y: raider.pos.y, alive: raider.hp > 0, hp: raider.hp })),
     buildings: state.buildings.map((building) => ({ id: building.id, cells: building.cells, hp: building.hp, maxHp: building.maxHp })),
     telegraph: telegraphs(state),
     focus: doctrineFocusCells(state, doctrine),
     reach,
     move: draft[selected]?.moveTo ?? null,
-  }), [state, draft, selected, reach, doctrine]);
+  }), [state, draft, selected, reach, doctrine, combat]);
   const view = useMemo<MechaBoardView>(() => ({
     figures: state.mechs.map((m) => {
       const planned = m.hp > 0 ? draft[m.id]?.moveTo : null;
@@ -435,14 +454,17 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
   const submit = () => {
     if (state.phase !== "player_plan" || !packReady) return;
     const next = structuredClone(state);
-    const result = validateAndApplyPlan(next, {
+    const plan = {
       revision: next.revision,
       items: living(next).map((m) => ({ mechId: m.id, moveTo: draft[m.id]?.moveTo ?? null, action: draft[m.id]?.action ?? { kind: "skip" } })),
-    });
+    };
+    const result = validateAndApplyPlan(next, plan);
     if (!("ok" in result)) {
       setNotice(t("整包被拒，局面未变，可以重提。"));
       return;
     }
+    const cues = combatActions(next, plan.items);
+    setCombat((current) => ({ id: current.id + 1, actions: cues }));
     if (next.phase === "resolving_boss") bossExecute(next);
     if (next.phase === "enemy_prepare") bossPrepare(next);
     const alive = living(next);
