@@ -30,7 +30,7 @@ The intended outcome is a responsive, deterministic, testable game mode whose pr
 
 ### 2.2 Non-goals
 
-- Change combat stats, enemy scripts, scoring, strategy weights, or the `mecha-v1.3` ruleset.
+- Change combat stats, enemy scripts, scoring, or strategy weights. (The ruleset itself moved to `mecha-v1.4` on 2026-10-26 through the reviewed decision D1 in `MECHA_CITY_FIGHT_REMEDIATION_SPEC.md`; no numbers changed.)
 - Change City planning, roads, buildings, or the City projection contract beyond reading the fields required for a battlefield snapshot.
 - Add cloud services, telemetry, remote gameplay, or MCP access to combat internals.
 - Introduce arbitrary plugins or unrestricted host IPC.
@@ -109,13 +109,15 @@ It must not:
 
 The controller should expose commands such as `selectShape`, `selectDoctrine`, `setDraft`, `submitPlan`, `restart`, and `close`. Commands must be validated against the current match revision.
 
+Implemented 2026-10-26 as `game/mecha/controller.ts` (`createMechaController`): `selectMech`, `setMove`, `setAction`, `clickCell`, `applyDoctrine`, `setDoctrine`, `submit`, `restart`, `startAuto`/`stopAuto`, `pause`/`resume`, `tick`. It is pure TypeScript (no React, Three, or engine imports, enforced by `scripts/verify-mecha-layers.ts`); `MechaBoard` subscribes with `useSyncExternalStore`. Turns advance only through `rules.playTurn`; previews use `rules.previewPlan`; combat cues come from the `TurnEvent` log. The full target layering is §3.0 of `MECHA_CITY_FIGHT_REMEDIATION_SPEC.md`.
+
 ### 4.4 Pure Combat Rules
 
-Combat rules remain deterministic and independent of UI. The current gameplay contract remains `mecha-v1.3` until a reviewed rules change explicitly increments it.
+Combat rules remain deterministic and independent of UI. The current gameplay contract is `mecha-v1.4` (2026-10-26); a further change needs another reviewed increment.
 
 Rules input and output must be plain serializable data. A rejected order must not partially mutate the committed match state. For a submitted pack, validation occurs against a cloned trial state; only a fully valid plan commits.
 
-The contract must explicitly define whether pack actions resolve sequentially or simultaneously. Under the current behavior, movement and actions are applied in item order against the trial state. This means an earlier action may remove a target needed by a later action and reject the pack. The UI and tests must communicate that behavior, or a future ruleset must deliberately change it. It must not be an accidental consequence of array ordering.
+The contract must explicitly define whether pack actions resolve sequentially or simultaneously. **Resolved in `mecha-v1.4`** (remediation spec §3.2 stage B): resolution order is the canonical `MECH_IDS` order regardless of `plan.items`; moves are validated together (allies do not block each other, final cells must be distinct); actions are validated together on the post-move board; at resolution an action whose actor or target died, or that an earlier knockback put out of reach, fizzles without consuming cooldown instead of rejecting the pack. Under `mecha-v1.3` the pack resolved in item order and such cases rejected the whole pack.
 
 ### 4.5 Mecha Presentation
 
@@ -248,7 +250,7 @@ If hardware variance makes wall-clock budgets unsuitable for CI, CI should enfor
 
 ### 9.1 Runtime authority
 
-The TypeScript rules in the Agent City plugin (`apps/agent-city/ui/src/game/mecha/rules.ts`) are the sole runtime authority because they directly drive the built-in UI. The ruleset string `mecha-v1.3` means that implementation; no second copy may claim it.
+The TypeScript rules in the Agent City plugin (`apps/agent-city/ui/src/game/mecha/rules.ts`) are the sole runtime authority because they directly drive the built-in UI. The ruleset string `mecha-v1.4` means that implementation; no second copy may claim it. The rules now live in `game/mecha/{board,combat,enemy}.ts` behind the unchanged `rules.ts` public surface.
 
 ### 9.2 Duplicate implementation removed (2026-10-25)
 
@@ -288,7 +290,7 @@ No fallback may fabricate roads, water, mountains, buildings, or a successful co
 - Cancellation and stale-result rejection work across repeated requests.
 - Every shape either satisfies all documented terrain/spawn constraints or returns `null`.
 - Spawn-height fallback behavior is tested and cannot exceed the published rule.
-- Combat pack rejection is atomic and sequential target-removal semantics are explicit.
+- Combat pack rejection is atomic, and the v1.4 simultaneous-validation / fizzle semantics are pinned (`scripts/verify-mecha-tactics.ts`, permutation invariance included).
 - Mode coordinator denies conflicting entries and releases each resource exactly once.
 - Worker and controller errors return the coordinator to `idle` without leaking resources.
 
@@ -319,7 +321,7 @@ The implementation PR must list:
 ### Phase 0 — Contract freeze
 
 - Confirm `MECHA_CITY_FIGHT_NEXT_SPEC.md` is the gameplay source of truth.
-- Resolve sequential versus simultaneous plan semantics.
+- Resolve sequential versus simultaneous plan semantics. (Done: `mecha-v1.4`.)
 - Resolve the spawn-height fallback discrepancy; do not implement a hidden relaxation.
 - Record runtime rule authority and confirm the duplicate Rust rules implementation is gone.
 
@@ -362,7 +364,7 @@ This SPEC is implemented when all conditions below hold:
 3. City geometry is passed through a versioned, immutable, worker-safe snapshot.
 4. All mode entry points use one coordinator and resource-lease lifecycle.
 5. Closing or failing Mecha restores camera, input, and frame ownership without leaks.
-6. Gameplay rules match the approved `mecha-v1.3` contract, including explicit plan resolution and spawn constraints.
+6. Gameplay rules match the approved `mecha-v1.4` contract, including explicit plan resolution and spawn constraints.
 7. TypeScript is the documented sole runtime authority, and no second combat implementation is kept.
 8. The normal City CI suite executes the deterministic Mecha checks.
 9. Desktop verification demonstrates no plugin heartbeat loss under the largest supported City fixture.
@@ -372,7 +374,7 @@ This SPEC is implemented when all conditions below hold:
 
 The following decisions must be closed during Phase 0 rather than silently chosen in implementation:
 
-1. **Plan resolution:** sequential order or simultaneous movement/action phases. Current code is sequential; preserving it is the compatibility option.
+1. **Plan resolution:** sequential order or simultaneous movement/action phases. **Decided 2026-10-26 (D1): simultaneous phases with fizzles, ruleset `mecha-v1.4`.**
 2. **Spawn height — resolved 2026-10-25:** the gameplay contract now documents a strict pass at 1 and a bounded relaxed pass at 2, surfaced in the panel (`出生高差 … · 标准 1，已放宽`) and covered by a test; the search never relaxes past 2. Removing the relaxed pass remains a product decision.
 3. **Worker terrain representation:** materialized sampled grid versus compact deterministic terrain parameters. Decide based on memory, transfer cost, and error bounds.
 4. **Rust crate lifecycle — resolved 2026-10-25:** the duplicate `mecha-tactics` reference crate was removed. TypeScript is the only rules implementation; reintroducing a second one requires a shared-core design, not a fixture gate over a divergent copy.

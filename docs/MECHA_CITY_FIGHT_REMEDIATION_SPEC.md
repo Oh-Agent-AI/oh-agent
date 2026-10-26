@@ -265,3 +265,24 @@ type Controller = {
 ## 8. 本轮不做
 
 平衡调整；新兵种或新脚本；渲染风格；把规则搬到 wasm 或 Rust；`models.ts` 的内部整理（本次未审计）。
+
+## 9. 实施记录（2026-10-26）
+
+| 阶段 | 内容 | 状态 |
+| --- | --- | --- |
+| 1a | `playTurn` / `previewPlan` / `PlanFault`（mechId、index、cause）/ `TurnEvent` | 完成 |
+| — | `scripts/verify-mecha-invariants.ts`（200 局随机 + 10 局 AI，约 30 秒），已接 CI | 完成 |
+| 1b | `CityMechaSite.blocked` → `MatchState.obstacles`；`matchFromSite` 单一入口；D2 = b | 完成 |
+| 3 | 规则串 `mecha-v1.4`（3.2 阶段 B 契约、RULE-4 一次碰撞、RULE-5 威胁 1/2/3） | 完成 |
+| 1c + 2 | `game/mecha/controller.ts`；`MechaBoard` 变薄视图；动画来自 `TurnEvent`；拒绝原因中英文 | 完成 |
+| 4a | `rules.ts` 拆为 `board.ts` / `combat.ts` / `enemy.ts`（`rules.ts` 保留全部旧导出）；一个堆式 Dijkstra；AI 一套搜索 | 完成，48 局对照快照前后逐字节一致 |
+| 4b | worker 失败回退主线程（不再 transfer，避免缓冲区分离）；`render/mecha/` 承载模型与动画；`verify-mecha-layers.ts` | 完成 |
+| 4c | AI 规划进 compute host（PERF-1） | 进行中 |
+
+与本文原设计的出入：
+
+- `playTurn` / `previewPlan` 放在 `rules.ts` 而不是 `combat.ts`：它们同时调用 combat 与 enemy，而 `bossExecute` 依赖 combat 的推撞，放进 combat 会形成环。运行时依赖为 `board ← combat ← enemy ← rules`，`ai` 只依赖 `rules`。
+- 二叉堆没有带来可测的提速（10×10 棋盘上堆最多约 100 项，耗时主要在 Map/字符串键与 `occupant` 查询）。PERF-1 的主线程预算靠 4c 的 worker 与分片解决，不靠寻路微调。
+- 依赖方向测试对 `engine/** → game/**` 只做到"机甲零容忍"：驾驶、飞行与场景接口还有 21 处既有引用，列在测试内的允许清单里，只许减少不许增加。
+- 平衡分布探针（`mecha-balance-distribution.mjs`）在无 `esbuild` 的环境里跑不了；v1.3 → v1.4 的对比改用 `mecha-mechanism.ts` 的报告：搜索策略三种布局仍 8/8 胜、随机策略仍全部超时；`covers_sparse_mid` 上搜索 AI 被大怪命中的局数 8 → 0，守楼对局提前一回合获胜且楼血 26 → 30。v1.4 对玩家方明显更宽松，城市窗口上的分布需要在有依赖的环境里补跑后再决定是否调数值。
+- 城市 3D 视图只经过类型检查与构建；方格回退棋盘做过浏览器冒烟（提交、手动规划、自动对战、暂停，无控制台错误）。
