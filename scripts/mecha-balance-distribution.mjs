@@ -658,7 +658,7 @@ function shapeWinLine(id) {
 for (const id of ["flat", "shore", "ridge", "alley"]) log(`shape results ${shapeWinLine(id)}`);
 const summary = summarizeSites(sites);
 const report = {
-  ruleset: "mecha-v1.3",
+  ruleset: "mecha-v1.4",
   backdropDefault: "off",
   seeds,
   counts,

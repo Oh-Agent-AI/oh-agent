@@ -1,6 +1,16 @@
 /**
- * GDD v1.3 mecha tactics, the City playable copy.
+ * GDD v1.4 mecha tactics, the City playable copy.
  * 2×2 footprint center is anchor + (1, 1). arena_plan is whole-pack.
+ *
+ * v1.4 整包契约（相对 v1.3：整包不再按提交顺序逐台结算，玩家排的顺序不影响结果）：
+ *   1. 结算顺序固定为 MECH_IDS（突击→射手→支援），与 plan.items 排列无关。
+ *   2. 移动同时：路径按出发局面算、队友互不阻挡，终点两两不同（允许跟随、互换），否则整包拒绝。
+ *   3. 行动同时校验：在「全部移动完成、尚无行动」的局面上，每台行动必须在 legalActions 里，否则整包拒绝。
+ *   4. 行动按规范顺序结算：执行者/目标已死，或被前面的击退弄得不再相邻/对齐，则落空——
+ *      无效果、不耗冷却、记 fizzled 事件，整包不因落空被拒。
+ *   5. 碰撞：大怪被推时脚印目标格上所有障碍一次结算（大怪只受一次 2，每个被撞单位各受 2）。
+ *   6. threat：机甲 3，活楼 2，其余（空地/掩体/障碍/废墟）1。
+ *   其余数值、地形、半步、敌方脚本与 v1.3 相同；推动大怪后预告随之平移（RULE-3）不变。
  * cadence_ssw is smash, smash, sweep. smash_2 is not in v1.
  * raid_ssw is that cadence plus a move toward a living building or mech.
  * siege adds two 1×1 raiders and ends at turn 15.
@@ -13,7 +23,7 @@
  * 推入水或山地算撞墙。主动爬山地不撞墙，只付步数。
  */
 
-export const GDD_RULESET = "mecha-v1.3";
+export const GDD_RULESET = "mecha-v1.4";
 export const BOARD = 10;
 export const MAX_TURNS = 15;
 export const BOSS_HP = 40;
@@ -161,10 +171,13 @@ export type PlanReject = PlanFault;
 /**
  * 一回合里按结算顺序发生的事。damage 都是实际扣掉的血（已被血量封顶）。
  * shove：damage 是被推单位自己受的碰撞伤；hit 缺省表示顺利位移，否则是挡路的东西（"wall"、单位 id）。
+ *   大怪的脚印可能同时撞上多样东西（RULE-4），此时 hit 是逗号连接的清单，顺序固定：
+ *   "wall"（有墙/水/山/掩体/楼/废墟/障碍/出界则在最前）、小怪 id（字典序）、机甲（MECH_IDS 序）。
+ * act.fizzled：v1.4 落空（无效果、不耗冷却），damage 恒 0，cause 说明为什么落空。
  */
 export type TurnEvent =
   | { type: "move"; mechId: MechId; from: Cell; to: Cell }
-  | { type: "act"; mechId: MechId; action: Action["kind"]; target?: string; damage: number }
+  | { type: "act"; mechId: MechId; action: Action["kind"]; target?: string; damage: number; fizzled?: boolean; cause?: PlanFault["cause"] }
   | { type: "shove"; unit: "boss" | MechId; dir: Cell; hit?: string; damage: number }
   | { type: "enemy"; actor: string; skill: BossSkill; cells: Cell[]; damage: number }
   | { type: "outcome"; outcome: Outcome };
@@ -549,40 +562,47 @@ function reproject(state: MatchState) {
   intent.status = projected.length === 0 ? "void" : "reprojected";
 }
 
+/**
+ * RULE-4：先收集脚印目标格上的全部障碍，再一次结算。
+ * 旧实现遇到第一个障碍就返回，机甲吃不吃友伤取决于脚印遍历顺序（墙在前则放过机甲）。
+ * 现在：任一障碍 → 大怪只受一次 2，每个被撞的小怪/机甲各受 2，大怪不动；只发一条 shove 事件。
+ */
 function tryTranslateBoss(state: MatchState, dir: Cell): boolean {
   if (state.boss.hp <= 0) return false;
   const anchor = state.boss.anchor;
   const dests = footprint(anchor).map((c) => ({ x: c.x + dir.x, y: c.y + dir.y }));
-  let hit: MechId | null = null;
+  let wall = false;
+  const raiders = new Map<string, Raider>();
+  const mechs = new Set<MechId>();
   for (const nc of dests) {
     if (!inb(nc) || blocksTerrain(state, nc) || shoveWall(state, nc)) {
-      const before = state.boss.hp;
-      hurtBoss(state, 2);
-      emit({ type: "shove", unit: "boss", dir, hit: "wall", damage: before - state.boss.hp });
-      refresh(state);
-      return false;
+      wall = true;
+      continue;
     }
     if (onFootprint(anchor, nc)) continue;
     const rider = raiderAt(state, nc);
     if (rider) {
-      const before = state.boss.hp;
-      hurtBoss(state, 2);
-      hurtRaider(rider, 2);
-      emit({ type: "shove", unit: "boss", dir, hit: rider.id, damage: before - state.boss.hp });
-      refresh(state);
-      return false;
+      raiders.set(rider.id, rider);
+      continue;
     }
     const occ = occupant(state, nc);
-    if (occ === "Assault" || occ === "Gunner" || occ === "Support") {
-      hit = occ;
-      break;
-    }
+    if (occ === "Assault" || occ === "Gunner" || occ === "Support") mechs.add(occ);
   }
-  if (hit) {
+  if (wall || raiders.size > 0 || mechs.size > 0) {
     const before = state.boss.hp;
     hurtBoss(state, 2);
-    hurtMech(state, hit, 2);
-    emit({ type: "shove", unit: "boss", dir, hit, damage: before - state.boss.hp });
+    const hitIds: string[] = [];
+    if (wall) hitIds.push("wall");
+    for (const id of [...raiders.keys()].sort()) {
+      hurtRaider(raiders.get(id)!, 2);
+      hitIds.push(id);
+    }
+    for (const id of MECH_IDS) {
+      if (!mechs.has(id)) continue;
+      hurtMech(state, id, 2);
+      hitIds.push(id);
+    }
+    emit({ type: "shove", unit: "boss", dir, hit: hitIds.join(","), damage: before - state.boss.hp });
     refresh(state);
     return false;
   }
@@ -671,11 +691,16 @@ function shootEnemy(state: MatchState, id: MechId, target: string, kind: Action[
   refresh(state);
 }
 
-export function pathDistance(state: MatchState, from: Cell, to: Cell, mover: MoverId): number | null {
+/**
+ * opts.alliesPass（v1.4 同时移动）：机甲格不挡路、也可作终点——三台同时动，
+ * 谁占着哪格要等所有终点出来才知道，终点是否撞车由整包校验另查。其余占位物照常阻挡。
+ */
+export function pathDistance(state: MatchState, from: Cell, to: Cell, mover: MoverId, opts?: { alliesPass?: boolean }): number | null {
   if (eq(from, to)) return 0;
   if (!inb(to) || water(state, to)) return null;
+  const passes = (occ: Occ) => occ === "empty" || occ === mover || (opts?.alliesPass === true && MECH_IDS.includes(occ as MechId));
   const destOcc = occupant(state, to);
-  if (destOcc !== "empty" && destOcc !== mover) return null;
+  if (!passes(destOcc)) return null;
   const dist = new Map<string, number>([[key(from), 0]]);
   const heap: Cell[] = [from];
   const settled = new Set<string>();
@@ -698,8 +723,7 @@ export function pathDistance(state: MatchState, from: Cell, to: Cell, mover: Mov
     for (const dir of dirs) {
       const nxt = { x: cur.x + dir.x, y: cur.y + dir.y };
       if (!inb(nxt) || settled.has(key(nxt))) continue;
-      const occ = occupant(state, nxt);
-      if (occ !== "empty" && occ !== mover) continue;
+      if (!passes(occupant(state, nxt))) continue;
       const step = stepCost(state, cur, nxt, mover);
       if (step === null) continue;
       const next = d + step;
@@ -873,10 +897,65 @@ function actionFaultCause(reason: string, action: Action, start: MatchState, tri
   return "other";
 }
 
+/** 跑 fn 期间关掉事件接收口：校验阶段的试探性 applyAction 不能往日志里写东西。 */
+function quiet<T>(fn: () => T): T {
+  const outer = eventSink;
+  eventSink = null;
+  try {
+    return fn();
+  } finally {
+    eventSink = outer;
+  }
+}
+
+/** 某台在该局面下某类行动的合法目标 id（与 legalActions 同源函数）。 */
+function kindTargets(state: MatchState, id: MechId, kind: "melee" | "charge" | "shoot" | "pierce"): string[] {
+  const m = mech(state, id);
+  if (!m) return [];
+  if (kind === "melee" || kind === "charge") return meleeTargets(state, m.pos);
+  return shotTargets(state, m.pos, STATS[id].shoot, kind === "pierce" ? 1 : 0);
+}
+
 /**
- * 契约（阶段 A）：条目按提交顺序在同一份试算状态上逐台结算——先移动再行动，
- * 前面的击退、击杀、占位都对后面的条目可见。任何一条不合法整包拒绝，state 不动。
- * 拒绝时附 mechId/index/cause 指出是哪一台、为什么。
+ * 行动是否在 legalActions 里（按 kind + target 匹配）。
+ * 没写目标：legalActions 给了无目标版本（唯一目标）或恰好一个带目标版本才算；
+ * 写了目标但 legalActions 给的是无目标版本（唯一目标被省略了）：用同源函数还原目标再比。
+ */
+function actionIsLegal(state: MatchState, id: MechId, action: Action): boolean {
+  if (action.kind === "skip") return true;
+  const legal = legalActions(state, id).filter((a) => a.kind === action.kind);
+  if (action.kind === "repair") return legal.some((a) => a.kind === "repair" && a.target === action.target);
+  const target = action.target;
+  if (target === undefined) return legal.some((a) => !("target" in a) || a.target === undefined) || legal.length === 1;
+  if (legal.some((a) => "target" in a && a.target === target)) return true;
+  if (legal.some((a) => !("target" in a) || a.target === undefined)) return kindTargets(state, id, action.kind).includes(target);
+  return false;
+}
+
+/** 未写目标的行动在校验时绑定到当时唯一的目标：结算时「目标死了」才有明确含义，不会悄悄改打别人。 */
+function bindTarget(state: MatchState, id: MechId, action: Action): Action {
+  if (action.kind === "skip" || action.kind === "repair" || action.target !== undefined) return action;
+  const only = kindTargets(state, id, action.kind);
+  return only.length === 1 ? { kind: action.kind, target: only[0] } : action;
+}
+
+/** 落空原因（结算时才出现的情形）：只在 applyAction 拒绝后调用，用于 fizzled 事件的 cause。 */
+function fizzleCause(state: MatchState, id: MechId, action: Action, reason: string): NonNullable<PlanFault["cause"]> {
+  if (reason === "mech is not alive") return "mech_dead";
+  if (reason === "skill on cooldown") return "cooldown";
+  if (action.kind === "repair") return mech(state, action.target) ? "not_adjacent" : "target_gone";
+  if (action.kind === "skip") return "other";
+  if (action.target !== undefined && enemyHp(state, action.target) <= 0) return "target_gone";
+  if (action.kind === "shoot" || action.kind === "pierce") return "out_of_reach";
+  return "not_adjacent";
+}
+
+/**
+ * v1.4 契约（见文件头）：与 plan.items 的排列无关，三步——
+ *   1) 移动同时校验并落位；2) 在移动后的局面上同时校验每台行动是否合法；
+ *   3) 按 MECH_IDS 顺序结算行动，落空不拒包。
+ * 任何一条在 1)/2) 不满足整包拒绝，state 不动。拒绝时附 mechId/index（plan.items 里的位置）/cause。
+ * 旧版（v1.3）按提交顺序逐台结算，同一组合法选择因排列不同被拒，是 RULE-1/2 的根因。
  */
 export function validateAndApplyPlan(state: MatchState, plan: ArenaPlan): { ok: true } | PlanReject {
   if (state.phase !== "player_plan") return { code: "PLAN_PACK_REJECTED", reason: "not player_plan", cause: "other" };
@@ -886,26 +965,75 @@ export function validateAndApplyPlan(state: MatchState, plan: ArenaPlan): { ok: 
   if (seen.size !== plan.items.length || seen.size !== alive.length || alive.some((id) => !seen.has(id))) {
     return { code: "NEED_ALL_OR_CONFIRM", reason: "pack must name every living mech once", cause: "other" };
   }
-  const trial = structuredClone(state);
-  for (const [index, item] of plan.items.entries()) {
-    const fault = (reason: string, cause: NonNullable<PlanFault["cause"]>): PlanReject => ({
-      code: "PLAN_PACK_REJECTED", reason, mechId: item.mechId, index, cause,
-    });
-    const who = mech(trial, item.mechId);
-    if (!who) return fault("mech is not alive", "mech_dead");
-    const dest = item.moveTo ?? who.pos;
+  const canonical = MECH_IDS.filter((id) => seen.has(id));
+  const itemOf = (id: MechId) => {
+    const index = plan.items.findIndex((i) => i.mechId === id);
+    return { item: plan.items[index]!, index };
+  };
+  const fault = (id: MechId, reason: string, cause: NonNullable<PlanFault["cause"]>): PlanReject => ({
+    code: "PLAN_PACK_REJECTED", reason, mechId: id, index: itemOf(id).index, cause,
+  });
+
+  // 1) 移动：全部按出发局面算（队友不挡），再查终点两两不同。
+  const finals = new Map<MechId, Cell>();
+  for (const id of canonical) {
+    const who = mech(state, id)!;
+    const dest = itemOf(id).item.moveTo ?? who.pos;
     if (!eq(dest, who.pos)) {
-      const dist = pathDistance(trial, who.pos, dest, item.mechId);
+      const dist = pathDistance(state, who.pos, dest, id, { alliesPass: true });
       if (dist === null) {
-        const occ = occupant(trial, dest);
-        return occ === "empty" ? fault("no path within move range", "out_of_reach") : fault("destination occupied", "occupied");
+        const occ = occupant(state, dest);
+        return occ === "empty" ? fault(id, "no path within move range", "out_of_reach") : fault(id, "destination occupied", "occupied");
       }
-      if (dist > moveBudget(item.mechId)) return fault("move exceeds move_range", "out_of_reach");
-      emit({ type: "move", mechId: item.mechId, from: { ...who.pos }, to: { ...dest } });
+      if (dist > moveBudget(id)) return fault(id, "move exceeds move_range", "out_of_reach");
+    }
+    finals.set(id, { ...dest });
+  }
+  const claimed: MechId[] = [];
+  for (const id of canonical) {
+    const mine = finals.get(id)!;
+    const clash = claimed.find((other) => eq(finals.get(other)!, mine));
+    if (clash) {
+      // 有一方没动时错在动的那台；都动则错在规范顺序靠后的。
+      const culprit = eq(mine, mech(state, id)!.pos) ? clash : id;
+      return fault(culprit, "destination occupied", "occupied");
+    }
+    claimed.push(id);
+  }
+
+  const trial = structuredClone(state);
+  for (const id of canonical) {
+    const who = mech(trial, id)!;
+    const dest = finals.get(id)!;
+    if (!eq(dest, who.pos)) {
+      emit({ type: "move", mechId: id, from: { ...who.pos }, to: { ...dest } });
       who.pos = dest;
     }
-    const err = applyAction(trial, item.mechId, item.action);
-    if (err) return fault(err, actionFaultCause(err, item.action, state, trial, { id: item.mechId, pos: { ...who.pos } }));
+  }
+
+  // 2) 行动：在「全部移动完成、尚无行动」的局面上同时校验，所以界面的单台预检与提交一致。
+  const actions = new Map<MechId, Action>();
+  for (const id of canonical) {
+    const action = itemOf(id).item.action;
+    if (!actionIsLegal(trial, id, action)) {
+      const probe = structuredClone(trial);
+      const err = quiet(() => applyAction(probe, id, action)) ?? "action not legal";
+      return fault(id, err, actionFaultCause(err, action, state, trial, { id, pos: { ...mech(trial, id)!.pos } }));
+    }
+    actions.set(id, bindTarget(trial, id, action));
+  }
+
+  // 3) 结算：规范顺序，轮到时重查。执行者/目标死了或被击退弄得不再成立 → 落空（不耗冷却、不拒包）。
+  for (const id of canonical) {
+    const action = actions.get(id)!;
+    if (action.kind === "skip") continue;
+    const err = applyAction(trial, id, action);
+    if (err) {
+      emit({
+        type: "act", mechId: id, action: action.kind, ...(action.target !== undefined ? { target: action.target } : {}),
+        damage: 0, fizzled: true, cause: fizzleCause(trial, id, action, err),
+      });
+    }
   }
   for (const m of trial.mechs) {
     if (m.skillUsed) m.skillUsed = false;
@@ -921,7 +1049,8 @@ export function validateAndApplyPlan(state: MatchState, plan: ArenaPlan): { ok: 
 function threat(state: MatchState, c: Cell): number {
   const occ = occupant(state, c);
   if (occ === "Assault" || occ === "Gunner" || occ === "Support") return 3;
-  if (occ === "building" || occ === "cover") return 2;
+  // RULE-5：掩体不再比空地招仇恨（以前没机甲可砸时大怪/小怪优先砸掩体）；只有活楼是目标。
+  if (occ === "building") return 2;
   return 1;
 }
 

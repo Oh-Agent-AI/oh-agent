@@ -493,10 +493,15 @@ test("illegal packs roll back, then the same revision can be resubmitted", () =>
     support: { x: 9, y: 9 },
   });
   kill.boss.hp = 2;
-  expectReject(kill, orders(kill, {
+  // v1.4 变更：补刀（Assault 先打死，Gunner 的目标已死）以前整包拒绝（rejectedPacks +1），
+  // 现在整包通过、Gunner 落空（见 verify-mecha-tactics 的 fizzle 测试）。落空包在副本上验证，kill 留给下面的单射用例。
+  const overkill = structuredClone(kill);
+  applyOk(overkill, orders(overkill, {
     Assault: { action: { kind: "melee" } },
     Gunner: { action: { kind: "shoot" } },
-  }), "PLAN_PACK_REJECTED");
+  }));
+  assert.equal(overkill.boss.hp, 0);
+  assert.equal(overkill.outcome, "victory");
   assert.equal(kill.boss.hp, 2);
   applyOk(kill, orders(kill, { Gunner: { action: { kind: "shoot" } } }));
   assert.equal(kill.boss.hp, 2 - strike(4, 3));
