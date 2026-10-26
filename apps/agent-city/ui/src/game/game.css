@@ -71,21 +71,53 @@
 }
 @media (prefers-reduced-motion: reduce) { .city-game-chip { scroll-behavior: auto; } }
 
-.mecha-overlay { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; background: #020a14cc; }
-.mecha-overlay.is-city { background: transparent; place-items: stretch; pointer-events: none; }
-.mecha-overlay.is-city .mecha-panel { pointer-events: auto; width: min(380px, calc(100% - 24px)); max-height: calc(100% - 24px); margin: 12px; justify-self: start; align-self: end; }
-.mecha-panel { width: min(880px, calc(100% - 24px)); max-height: calc(100% - 24px); overflow: auto; padding: 16px; border-radius: 12px; background: #101d2f; color: var(--city-text, #e8eef6); border: 1px solid #ffffff22; }
+.mecha-overlay { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; padding-top: 64px; box-sizing: border-box; background: #020a14cc; }
+.mecha-overlay.is-city { display: block; background: transparent; pointer-events: none; }
+.mecha-battle-bar { position: absolute; top: 12px; left: 12px; right: 12px; display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 48px; padding: 6px 8px 6px 14px; box-sizing: border-box; border: 1px solid #ffffff2e; border-radius: 12px; background: #0b1726ed; box-shadow: 0 6px 22px #0004; color: var(--city-text, #e8eef6); pointer-events: auto; }
+.mecha-battle-bar > div, .mecha-battle-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.mecha-battle-bar strong { font-size: 16px; }
+.mecha-battle-bar span { color: var(--city-muted, #a9b8c8); font-size: 13px; }
+.mecha-battle-bar .mecha-paused { padding: 3px 7px; border-radius: 5px; background: #8b5d194d; color: #ffd58c; }
+.mecha-battle-controls { justify-content: flex-end; gap: 6px !important; }
+.mecha-battle-controls button { min-height: 36px; }
+.mecha-panel { width: min(880px, calc(100% - 24px)); max-height: calc(100% - 76px); overflow: auto; overscroll-behavior: contain; box-sizing: border-box; padding: 14px; border-radius: 12px; background: #101d2ff2; color: var(--city-text, #e8eef6); border: 1px solid #ffffff2e; box-shadow: 0 8px 28px #0005; pointer-events: auto; }
 .mecha-stage { height: 300px; margin: 8px 0; border-radius: 8px; background: #0b1726; }
-.mecha-pack { list-style: none; display: grid; gap: 4px; margin: 8px 0; padding: 0; font-size: 13px; }
-.mecha-pack li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.mecha-pack .is-open { color: #ffb15a; }
-.mecha-pack .is-hit { color: #ff8d8d; }
 .mecha-stage canvas { width: 100%; height: 100%; display: block; }
-.mecha-panel header { display: flex; justify-content: space-between; align-items: center; }
-.mecha-panel h2 { margin: 0; font-size: 18px; }
-.mecha-help, .mecha-legend { color: var(--city-muted, #9aabbd); font-size: 12px; }
-.mecha-toolbar, .mecha-roster, .mecha-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; margin: 8px 0; }
+.mecha-turn-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 10px; border-bottom: 1px solid #ffffff1f; }
+.mecha-turn-summary > div { display: flex; align-items: baseline; gap: 8px; }
+.mecha-turn-summary span { color: var(--city-muted, #a9b8c8); font-size: 12px; }
+.mecha-turn-summary p { margin: 0; text-align: right; font-size: 13px; }
+.mecha-intent { color: #ff9b91; font-size: 18px; }
+.mecha-pack { list-style: none; display: grid; gap: 5px; margin: 10px 0; padding: 0; font-size: 12px; }
+.mecha-pack li { display: flex; flex-wrap: wrap; gap: 5px 9px; align-items: center; padding: 7px; border: 1px solid transparent; border-radius: 8px; }
+.mecha-pack li.is-current { border-color: #8fd4ff80; background: #8fd4ff0d; }
+.mecha-pack li > button { display: flex; gap: 7px; align-items: baseline; min-width: 92px; justify-content: space-between; }
+.mecha-pack li > button span { font-size: 11px; opacity: .8; }
+.mecha-pack .is-open { color: #ffc47c; }
+.mecha-pack .is-hit, .mecha-pack .mecha-hit { color: #ff9b91; }
+.mecha-plan-state { margin-left: auto; padding: 2px 6px; border-radius: 4px; background: #a96b2633; color: #ffc47c; font-size: 11px; }
+.mecha-plan-state.is-ready { background: #39d6a31c; color: #83e6c2; }
+.mecha-map-legend { display: flex; flex-wrap: wrap; gap: 6px 12px; padding: 8px 0 10px; color: var(--city-muted, #a9b8c8); font-size: 11px; }
+.mecha-map-legend > span { display: inline-flex; align-items: center; gap: 5px; }
+.mecha-map-legend i { width: 12px; height: 12px; box-sizing: border-box; border-radius: 3px; }
+.mecha-map-legend i.is-reach { background: #8fd4ff88; border: 1px solid #8fd4ff; }
+.mecha-map-legend i.is-move { background: #ffe08a99; border: 1px dashed #ffe08a; }
+.mecha-map-legend i.is-telegraph { background: #ff3b3b66; border: 1px solid #ff6b6b; }
+.mecha-map-legend i.is-focus { background: #39d6a366; border: 1px solid #39d6a3; }
+.mecha-map-legend small { flex-basis: 100%; font-size: 11px; line-height: 1.4; }
+.mecha-selected-actions h3 { margin: 4px 0; font-size: 13px; }
+.mecha-help, .mecha-ruleset { color: var(--city-muted, #a9b8c8); font-size: 12px; line-height: 1.55; }
+.mecha-toolbar, .mecha-roster, .mecha-actions { display: flex; flex-wrap: wrap; gap: 7px; align-items: end; margin: 6px 0; }
 .mecha-toolbar label { display: grid; gap: 4px; font-size: 12px; }
+.mecha-submit { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; padding: 10px; border-radius: 9px; background: #07111e80; border: 1px solid #ffffff1a; }
+.mecha-submit > div { display: grid; gap: 3px; }
+.mecha-submit strong { font-size: 14px; }
+.mecha-submit span { color: var(--city-muted, #a9b8c8); font-size: 11px; line-height: 1.4; }
+.mecha-submit-primary { flex: 0 0 auto; border-color: #8fd4ff99 !important; background: #26678b !important; font-weight: 650; }
+.mecha-submit-primary:disabled { border-color: #ffffff22 !important; background: #26384a !important; }
+.mecha-settings { margin-top: 10px; border-top: 1px solid #ffffff1f; color: var(--city-muted, #a9b8c8); }
+.mecha-settings summary { min-height: 38px; padding: 11px 2px 4px; box-sizing: border-box; cursor: pointer; color: var(--city-text, #e8eef6); font-size: 12px; }
+.mecha-overlay :is(button, summary, select):focus-visible { outline: 3px solid #ffe08a; outline-offset: 2px; }
 .mecha-grid { display: grid; gap: 2px; width: max-content; margin: 8px 0; }
 .mecha-cell { width: 28px; height: 28px; padding: 0; border: 1px solid #ffffff18; background: #163047; }
 .mecha-cell.is-water { background: #1a6f8a; }
@@ -96,6 +128,7 @@
 .mecha-cell.is-boss { background: #c45c26; }
 .mecha-cell.is-raider { background: #8d5cc4; }
 .mecha-cell.is-telegraph { background: #6a2430; box-shadow: inset 0 0 0 2px #ff5a5a; }
+.mecha-cell.is-target { background: #9a6b12; box-shadow: inset 0 0 0 3px #ffd166; }
 .mecha-cell.is-focus { box-shadow: inset 0 0 0 3px #39d6a3; }
 .mecha-cell.is-assault { background: #d4a017; }
 .mecha-cell.is-gunner { background: #3d8bfd; }
@@ -103,3 +136,72 @@
 .mecha-cell.is-reach { outline: 1px solid #ffffff55; }
 .mecha-cell.is-move { outline: 2px dashed #fff; }
 .mecha-cell.is-selected, .mecha-roster .is-selected, .mecha-actions .is-selected { box-shadow: inset 0 0 0 2px #fff; }
+@media (max-width: 600px) {
+  .mecha-battle-bar { gap: 6px; padding-left: 10px; }
+  .mecha-battle-bar > div { gap: 7px; }
+  .mecha-battle-bar strong { font-size: 14px; }
+  .mecha-battle-controls button { padding-inline: 9px; }
+  .mecha-turn-summary { align-items: flex-start; }
+  .mecha-turn-summary p { max-width: 58%; }
+  .mecha-submit { align-items: stretch; flex-direction: column; gap: 8px; }
+}
+@media (max-height: 640px) {
+  .mecha-panel { padding: 10px; }
+  .mecha-pack { margin: 6px 0; }
+  .mecha-pack li { padding-block: 4px; }
+  .mecha-map-legend { padding-block: 5px; }
+  .mecha-stage { height: 180px; }
+}
+.mecha-overlay.is-city .mecha-panel { position: absolute; inset: 0; width: 100%; height: 100%; max-height: none; overflow: visible; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; pointer-events: none; }
+.mecha-overlay.is-city .mecha-panel > * { pointer-events: auto; }
+.mecha-overlay.is-city .mecha-battle-bar { left: auto; width: auto; max-width: calc(100% - 24px); min-height: 44px; }
+.mecha-overlay.is-city .mecha-turn-summary { position: absolute; top: 12px; left: 12px; max-width: min(350px, calc(100% - 24px)); padding: 9px 12px; box-sizing: border-box; border: 1px solid #ffffff2e; border-radius: 10px; background: #0b1726e8; box-shadow: 0 5px 18px #0003; }
+.mecha-overlay.is-city .mecha-pack { position: absolute; left: 12px; bottom: 12px; display: flex; gap: 7px; max-width: calc(100% - 230px); margin: 0; }
+.mecha-overlay.is-city .mecha-pack li { display: grid; grid-template-columns: 1fr auto; gap: 6px; width: 154px; padding: 8px; border: 1px solid #ffffff24; border-radius: 10px; background: #0b1726e8; box-shadow: 0 5px 18px #0003; }
+.mecha-overlay.is-city .mecha-pack li.is-current { border-color: #8fd4ff; background: #102c40f2; }
+.mecha-overlay.is-city .mecha-pack li > button { grid-column: 1 / -1; min-width: 0; min-height: 32px; padding: 4px 7px; }
+.mecha-overlay.is-city .mecha-plan-state { margin-left: 0; align-self: center; }
+.mecha-overlay.is-city .mecha-card-action { overflow: hidden; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.mecha-overlay.is-city .mecha-hit { grid-column: 1 / -1; font-size: 11px; }
+.mecha-overlay.is-city .mecha-selected-actions { position: absolute; left: 12px; bottom: 116px; max-width: min(620px, calc(100% - 230px)); padding: 9px 11px; box-sizing: border-box; border: 1px solid #ffffff24; border-radius: 10px; background: #0b1726e8; box-shadow: 0 5px 18px #0003; }
+.mecha-overlay.is-city .mecha-selected-actions.is-targeting { border-color: #ffd166; }
+.mecha-overlay.is-city .mecha-selected-actions h3 { margin: 0 0 4px; }
+.mecha-overlay.is-city .mecha-actions { margin: 0; }
+.mecha-overlay.is-city .mecha-target-cancel { color: var(--city-muted, #a9b8c8); border-style: dashed; }
+.mecha-overlay.is-city .mecha-submit { position: absolute; right: 12px; bottom: 12px; display: grid; width: 196px; margin: 0; background: #0b1726ed; }
+.mecha-overlay.is-city .mecha-submit-primary { width: 100%; }
+.mecha-overlay.is-city .mecha-settings { position: absolute; top: 68px; right: 12px; width: min(380px, calc(100% - 24px)); max-height: calc(100% - 92px); margin: 0; border: 0; border-radius: 10px; pointer-events: none; }
+.mecha-overlay.is-city .mecha-settings summary { width: max-content; min-height: 34px; margin-left: auto; padding: 8px 11px; border: 1px solid #ffffff24; border-radius: 8px; background: #0b1726e8; pointer-events: auto; }
+.mecha-overlay.is-city .mecha-settings[open] { overflow: auto; padding: 0 12px 12px; border: 1px solid #ffffff24; background: #0b1726f5; box-shadow: 0 8px 24px #0005; pointer-events: auto; }
+.mecha-overlay.is-city .mecha-settings[open] summary { margin: 0 -12px 8px; width: calc(100% + 24px); border: 0; border-bottom: 1px solid #ffffff24; border-radius: 0; background: transparent; }
+.mecha-overlay.is-city .mecha-settings .mecha-help { margin-block: 10px; }
+.mecha-overlay.is-city .mecha-panel > p[role="alert"] { position: absolute; left: 50%; bottom: 126px; transform: translateX(-50%); margin: 0; padding: 9px 12px; border-radius: 8px; background: #541f28ed; }
+@media (max-width: 900px) {
+  .mecha-overlay.is-city .mecha-battle-bar > div:first-child strong { display: none; }
+  .mecha-overlay.is-city .mecha-pack li { width: 132px; }
+}
+@media (max-width: 600px) {
+  .mecha-overlay.is-city .mecha-turn-summary { top: 64px; max-width: calc(100% - 24px); flex-direction: column; gap: 3px; }
+  .mecha-overlay.is-city .mecha-turn-summary p { max-width: none; text-align: left; }
+  .mecha-overlay.is-city .mecha-battle-bar { left: 12px; }
+  .mecha-overlay.is-city .mecha-battle-controls { flex-wrap: nowrap; }
+  .mecha-overlay.is-city .mecha-battle-controls button { min-height: 32px; padding-inline: 7px; font-size: 11px; }
+  .mecha-overlay.is-city .mecha-battle-bar > div:first-child { display: none; }
+  .mecha-overlay.is-city .mecha-settings { top: 116px; }
+  .mecha-overlay.is-city .mecha-pack { right: 12px; max-width: none; }
+  .mecha-overlay.is-city .mecha-pack li { flex: 1; width: auto; min-width: 0; padding: 6px; }
+  .mecha-overlay.is-city .mecha-pack li > button { font-size: 11px; }
+  .mecha-overlay.is-city .mecha-card-action { font-size: 10px; }
+  .mecha-overlay.is-city .mecha-selected-actions { bottom: 108px; max-width: calc(100% - 152px); }
+  .mecha-overlay.is-city .mecha-submit { bottom: 108px; width: 128px; padding: 7px; }
+  .mecha-overlay.is-city .mecha-submit span { display: none; }
+}
+@media (max-height: 520px) {
+  .mecha-overlay.is-city .mecha-pack li { padding-block: 4px; gap: 3px; }
+  .mecha-overlay.is-city .mecha-pack li > button { min-height: 28px; }
+  .mecha-overlay.is-city .mecha-selected-actions { bottom: 94px; padding-block: 6px; }
+  .mecha-overlay.is-city .mecha-submit { bottom: 12px; }
+}
+@media (max-width: 600px) and (max-height: 520px) {
+  .mecha-overlay.is-city .mecha-submit { bottom: 94px; }
+}

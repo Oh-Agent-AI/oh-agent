@@ -1,5 +1,5 @@
 /** Mechs and monsters standing on the city scene. The rules board stays in cell space. */
-import { useEffect, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import * as THREE from "three";
 import type { CityEngine } from "../engine/CityEngine";
 import { boardToWorld, cellWorld, type CityMechaSite } from "./mecha/citySite";
@@ -15,9 +15,11 @@ export type CityMechaView = {
   focus: Cell[];
   reach: Cell[];
   move: Cell | null;
+  targets: Cell[];
+  targetIds: string[];
 };
 
-const ROLES = ["empty", "water", "mountain", "road", "reach", "move", "building", "rubble", "focus", "telegraph"] as const;
+const ROLES = ["empty", "water", "mountain", "road", "reach", "move", "building", "rubble", "focus", "telegraph", "target"] as const;
 type Role = (typeof ROLES)[number];
 
 const ROLE_COLOR: Record<Role, string> = {
@@ -31,36 +33,44 @@ const ROLE_COLOR: Record<Role, string> = {
   rubble: "#2c2824",
   focus: "#39d6a3",
   telegraph: "#ff3b3b",
+  target: "#ffd166",
 };
 
 const ROLE_OPACITY: Record<Role, number> = {
-  empty: 0.14,
-  water: 0.62,
-  mountain: 0.58,
-  road: 0.75,
-  reach: 0.48,
-  move: 0.78,
-  building: 0.42,
-  rubble: 0.55,
+  empty: 0.05,
+  water: 0.4,
+  mountain: 0.4,
+  road: 0.32,
+  reach: 0.56,
+  move: 0.82,
+  building: 0.34,
+  rubble: 0.4,
   focus: 0.82,
-  telegraph: 0.7,
+  telegraph: 0.78,
+  target: 0.88,
 };
 
-export function CityMechaWorld({
-  engine, site, view, onCell, onUnavailable,
-}: {
+export type CityMechaWorldHandle = {
+  resetCamera: () => void;
+  rotateCamera: () => void;
+};
+
+export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
   engine: CityEngine;
   site: CityMechaSite;
   view: CityMechaView;
   onCell: (x: number, y: number) => void;
-  /** Called when another mode owns the camera/frame hook; the board then falls
-   *  back to its grid view instead of fighting over the resource. */
   onUnavailable?: () => void;
-}) {
+}>(function CityMechaWorld({ engine, site, view, onCell, onUnavailable }, ref) {
   const viewRef = useRef(view);
   const onCellRef = useRef(onCell);
+  const cameraCommands = useRef<CityMechaWorldHandle | null>(null);
   viewRef.current = view;
   onCellRef.current = onCell;
+  useImperativeHandle(ref, () => ({
+    resetCamera: () => cameraCommands.current?.resetCamera(),
+    rotateCamera: () => cameraCommands.current?.rotateCamera(),
+  }), []);
 
   useEffect(() => {
     const canvas = engine.domCanvas;
@@ -69,7 +79,7 @@ export function CityMechaWorld({
     // One token owns camera + frame hook + scene objects. A conflicting mode makes
     // this return null; the board then runs without the 3D layer instead of
     // overwriting another owner's camera.
-    const lease = engine.acquireModeLease();
+    const lease = engine.acquireModeLease({ camera: "orbit" });
     if (!lease) {
       onUnavailable?.();
       return undefined;
@@ -90,8 +100,8 @@ export function CityMechaWorld({
         polygonOffset: true,
         polygonOffsetFactor: -3,
         polygonOffsetUnits: -3,
-        emissive: role === "telegraph" ? "#8a1c1c" : role === "focus" ? "#146b52" : "#000000",
-        emissiveIntensity: role === "telegraph" ? 0.4 : role === "focus" ? 0.45 : 0,
+        emissive: role === "telegraph" ? "#8a1c1c" : role === "focus" ? "#146b52" : role === "target" ? "#b97a12" : "#000000",
+        emissiveIntensity: role === "telegraph" ? 0.4 : role === "focus" ? 0.45 : role === "target" ? 0.55 : 0,
       }));
     }
     const pads: THREE.Mesh[] = [];
@@ -185,7 +195,7 @@ export function CityMechaWorld({
     }
     const gridGeo = new THREE.BufferGeometry();
     gridGeo.setAttribute("position", new THREE.Float32BufferAttribute(gridPts, 3));
-    const grid = new THREE.LineSegments(gridGeo, new THREE.LineBasicMaterial({ color: "#9ec9ef", transparent: true, opacity: 0.85 }));
+    const grid = new THREE.LineSegments(gridGeo, new THREE.LineBasicMaterial({ color: "#9ec9ef", transparent: true, opacity: 0.28 }));
     root.add(grid);
 
     const camera = engine.renderCamera;
@@ -194,15 +204,24 @@ export function CityMechaWorld({
     // is not south once the grid follows the street.
     const focus = cellWorld(site, { x: 4, y: 5 });
     const eye = boardToWorld(site, 4.5 * site.cellW + 36, 5.5 * site.cellD + 56);
-    const aim = new THREE.Vector3(focus.x, focus.y + 2, focus.z);
-    const frameCamera = () => {
-      camera.position.set(eye.x, focus.y + 240, eye.z);
-      camera.up.set(0, 1, 0);
-      camera.fov = 40;
-      camera.updateProjectionMatrix();
-      camera.lookAt(aim);
+    const home = {
+      position: { x: eye.x, y: focus.y + 240, z: eye.z },
+      target: { x: focus.x, y: focus.y + 2, z: focus.z },
+      fov: 40,
+      minDistance: 45,
+      maxDistance: 520,
     };
-    frameCamera();
+    const resetCamera = () => lease.setOrbitView(home);
+    cameraCommands.current = {
+      resetCamera,
+      rotateCamera: () => {
+        const current = engine.photoView();
+        const target = new THREE.Vector3().fromArray(current.target);
+        const position = new THREE.Vector3().fromArray(current.position).sub(target).applyAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2).add(target);
+        lease.setOrbitView({ position, target, fov: current.fov, minDistance: 45, maxDistance: 520 });
+      },
+    };
+    resetCamera();
 
     const raycaster = new THREE.Raycaster();
     raycaster.layers.set(1);
@@ -231,11 +250,12 @@ export function CityMechaWorld({
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const spot = new THREE.Vector3();
     lease.setFrameHook(() => {
-      frameCamera();
       const current = viewRef.current;
       const telegraph = new Set(current.telegraph.map(cellKey));
       const focus = new Set(current.focus.map(cellKey));
       const reach = new Set(current.reach.map(cellKey));
+      const targets = new Set(current.targets.map(cellKey));
+      const targetIds = new Set(current.targetIds);
       const buildingCells = new Map<string, "building" | "rubble">();
       for (const building of current.buildings) {
         const role = building.hp > 0 ? "building" : "rubble";
@@ -247,7 +267,7 @@ export function CityMechaWorld({
         const y = Math.floor(index / 10);
         const id = `${x},${y}`;
         const ground = site.terrain[y]?.[x];
-        const role: Role = telegraph.has(id) ? "telegraph"
+        const role: Role = targets.has(id) ? "target" : telegraph.has(id) ? "telegraph"
           : focus.has(id) ? "focus"
           : id === moveKey ? "move"
           : buildingCells.get(id) ?? (reach.has(id) ? "reach" : ground === "water" ? "water" : ground === "mountain" ? "mountain" : ground === "road" ? "road" : "empty");
@@ -261,15 +281,18 @@ export function CityMechaWorld({
         slide(mesh, spot, reduce);
         mesh.visible = figure.alive;
         const ring = markers[figure.id];
+        const targeted = targetIds.has(figure.id);
         ring.mesh.visible = figure.alive;
         ring.mesh.position.set(mesh.position.x, mesh.position.y + 0.55, mesh.position.z);
-        ring.mesh.scale.setScalar(figure.selected ? 1.28 : 1);
+        ring.mesh.scale.setScalar(figure.selected ? 1.34 : targeted ? 1.2 : 1);
+        ring.mat.opacity = figure.selected || targeted ? 1 : 0.48;
         if (figure.alive) face(mesh, spot, bossFeet);
       }
       slide(boss, bossFeet, reduce);
       boss.visible = current.boss.alive;
       markers.boss.mesh.visible = current.boss.alive;
       markers.boss.mesh.position.set(boss.position.x, boss.position.y + 0.55, boss.position.z);
+      markers.boss.mesh.scale.setScalar(targetIds.has("boss") ? 1.12 : 1);
       const nearest = current.figures.find((figure) => figure.alive);
       if (nearest && current.boss.alive) {
         const feet = cellWorld(site, { x: nearest.x, y: nearest.y });
@@ -291,6 +314,8 @@ export function CityMechaWorld({
         const ring = i === 0 ? markers.raiderWest : markers.raiderEast;
         ring.mesh.visible = true;
         ring.mesh.position.set(mesh.position.x, mesh.position.y + 0.55, mesh.position.z);
+        ring.mesh.scale.setScalar(targetIds.has(raider.id) ? 1.2 : 1);
+        ring.mat.opacity = targetIds.has(raider.id) ? 1 : 0.48;
         face(mesh, spot, bossFeet);
       }
       if (!current.raiders[0]?.alive) markers.raiderWest.mesh.visible = false;
@@ -311,6 +336,7 @@ export function CityMechaWorld({
     return () => {
       canvas.removeEventListener("pointerdown", onDown);
       canvas.removeEventListener("pointerup", onUp);
+      cameraCommands.current = null;
       try { lease.release(); } catch { /* host already disposed the scene */ }
       for (const figure of [assault, gunner, support, boss, raiderWest, raiderEast]) disposeMechaModel(figure);
       gridGeo.dispose();
@@ -331,9 +357,9 @@ export function CityMechaWorld({
   }, [engine, site]);
 
   return null;
-}
+});
 
-function marker(color: string, inner: number, outer: number): { mesh: THREE.Mesh; geo: THREE.BufferGeometry; mat: THREE.Material } {
+function marker(color: string, inner: number, outer: number): { mesh: THREE.Mesh; geo: THREE.BufferGeometry; mat: THREE.MeshBasicMaterial } {
   const geo = new THREE.RingGeometry(inner, outer, 28);
   geo.rotateX(-Math.PI / 2);
   const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.92, depthWrite: false, side: THREE.DoubleSide });

@@ -72,10 +72,18 @@ export type CameraOwner = "orbit" | "cinematic" | "game";
 /** 轻量模式租约：相机、帧钩子、场景对象由一个 token 持有，release 幂等。
  *  与 `gameScenePort` 的完整场景租约并存：后者冻结静态世界，这里只需要独占
  *  控制权（机甲战棋这类在同一座城市上叠加一层对象的模式）。 */
+export type ModeOrbitView = {
+  position: { x: number; y: number; z: number };
+  target: { x: number; y: number; z: number };
+  fov?: number;
+  minDistance?: number;
+  maxDistance?: number;
+};
 export type ModeLease = {
   readonly id: number;
   attach: (objects: THREE.Object3D[]) => void;
   setFrameHook: (hook: ((dt: number) => void) | null) => void;
+  setOrbitView: (view: ModeOrbitView) => void;
   release: () => void;
 };
 
@@ -428,9 +436,8 @@ export class CityEngine {
       this.pointerDown = null;
       this.noteActivity();
       if (!down || down.id !== event.pointerId) return;
-      // 游戏持有相机时画布手势归飞行相机（拖动环绕/双击复位）；短点击若仍当作选楼，
-      // 会 flyTo + 改写 OrbitControls 的距离/平移参数，退出游戏后污染返回视角。
-      if (this.cameraOwner === "game") return;
+      // 模式持有画布时，短点击由模式自己的拾取器处理；不能穿透为选楼或飞镜头。
+      if (this.cameraOwner === "game" || this.modeLeases.busy) return;
       const moved = Math.max(down.moved, Math.hypot(event.clientX - down.x, event.clientY - down.y));
       if (event.ctrlKey || event.metaKey || event.shiftKey) return;
       if (!isSelectionGesture(event.button, event.isPrimary, moved, performance.now() - down.at)) return;
@@ -742,11 +749,11 @@ export class CityEngine {
   /** 取一份独占租约：相机 + 帧钩子 + 叠加对象。冲突时返回 null（调用方应保持
    *  原模式，不得静默覆盖别人的相机/钩子）。release 幂等；过期 token 的写操作
    *  抛 `stale-mode-lease`。 */
-  acquireModeLease(): ModeLease | null {
+  acquireModeLease(options: { camera?: "fixed" | "orbit" } = {}): ModeLease | null {
     if (this.disposed || this.gameSceneToken || this.cinematic || this.drivingWorldFrame || this.gameFrame || this.modeLeases.busy || this.cameraOwner !== "orbit") return null;
     const token = this.modeLeases.acquire();
     if (!token) return null;
-    if (!this.setCameraOwner("game")) {
+    if (options.camera !== "orbit" && !this.setCameraOwner("game")) {
       this.modeLeases.release(token);
       return null;
     }
@@ -765,6 +772,26 @@ export class CityEngine {
       setFrameHook: (hook) => {
         check();
         this.gameFrame = hook;
+      },
+      setOrbitView: (view) => {
+        check();
+        if (options.camera !== "orbit") throw new Error("orbit-mode-required");
+        this.tween = null;
+        this.attracted = false;
+        this.orbitLockedId = null;
+        this.controls.autoRotate = false;
+        this.controls.enabled = true;
+        this.controls.enablePan = true;
+        this.controls.zoomToCursor = true;
+        this.controls.minDistance = view.minDistance ?? 36;
+        this.controls.maxDistance = view.maxDistance ?? 480;
+        this.camera.position.set(view.position.x, view.position.y, view.position.z);
+        this.controls.target.set(view.target.x, view.target.y, view.target.z);
+        this.camera.up.set(0, 1, 0);
+        this.camera.fov = view.fov ?? 40;
+        this.camera.updateProjectionMatrix();
+        this.clearCameraMomentum();
+        this.camera.lookAt(this.controls.target);
       },
       release: () => {
         // The book drops the token before the engine cleanup, so a second call
@@ -2210,10 +2237,9 @@ export class CityEngine {
     if (this.cinematic) this.rain?.setAmount(0);
     else this.rain?.update(dt, this.elapsed, this.camera);
     if (this.drivingWorldFrame) { this.parts?.update(dt, this.elapsed); return; }
-    // 游戏模式：环境装饰照常更新，但回放推进/tween/轨道相机/地形夹取/拾取全部让位——
-    // 相机与模拟只由 gameFrame 回调推进（单一所有权，§4）。渲染仍走本循环。
+    // 固定游戏相机由帧钩子独占；轨道模式在对象更新后继续走 City 的 OrbitControls。
+    this.gameFrame?.(dt);
     if (this.cameraOwner === "game" && this.gameFrame) {
-      this.gameFrame(dt);
       this.parts?.update(dt, this.elapsed);
       return;
     }
