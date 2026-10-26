@@ -267,6 +267,7 @@ jobs:
           node --experimental-strip-types --import ./scripts/mecha-ts-register.mjs --test scripts/verify-mecha-doctrine.ts
           node --experimental-strip-types --import ./scripts/mecha-ts-register.mjs --test scripts/verify-mecha-lease.ts
           node --experimental-strip-types --import ./scripts/mecha-ts-register.mjs --test scripts/verify-mecha-invariants.ts
+          node --experimental-strip-types --import ./scripts/mecha-ts-register.mjs --test scripts/verify-mecha-controller.ts
       - name: 安装 City 插件依赖
         working-directory: apps/agent-city/ui
         run: npm ci

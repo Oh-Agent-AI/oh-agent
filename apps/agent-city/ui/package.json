@@ -7,7 +7,7 @@
     "build": "vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "verify:mecha-models": "node --experimental-strip-types --import ../../../scripts/mecha-ts-register.mjs --test scripts/verify-mecha-models.ts scripts/verify-mecha-animation.ts",
-    "verify:mecha": "node --experimental-strip-types --import ../../../scripts/mecha-ts-register.mjs --test ../../../scripts/verify-mecha-tactics.ts ../../../scripts/verify-mecha-city-site.ts ../../../scripts/verify-mecha-doctrine.ts ../../../scripts/verify-mecha-lease.ts ../../../scripts/verify-mecha-invariants.ts"
+    "verify:mecha": "node --experimental-strip-types --import ../../../scripts/mecha-ts-register.mjs --test ../../../scripts/verify-mecha-tactics.ts ../../../scripts/verify-mecha-city-site.ts ../../../scripts/verify-mecha-doctrine.ts ../../../scripts/verify-mecha-lease.ts ../../../scripts/verify-mecha-invariants.ts ../../../scripts/verify-mecha-controller.ts"
   },
   "dependencies": {
     "@agent-vitals/app-sdk": "file:../../../packages/agent-vitals-app-sdk",

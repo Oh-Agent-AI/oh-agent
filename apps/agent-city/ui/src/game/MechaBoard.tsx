@@ -7,19 +7,18 @@
  *  reopening is instant; a city revision that lands mid-search aborts the old
  *  run instead of letting a stale catalog reach the board.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { CityEngine } from "../engine/CityEngine";
 import { doctrineFocusLine, gameText, stepBudgetLine, type GameLocale } from "./gameCopy";
-import type { MechaCombatCue } from "./mecha/animation";
 import { CityMechaWorld, type CityMechaView, type CityMechaWorldHandle } from "./CityMechaWorld";
-import { doctrineFocus, doctrineFocusCells, planForDoctrine, type DoctrineId } from "./mecha/ai";
-import { anchorsFromCity, prepareFightTerrainAsync, type CityMechaSite, type FightCatalog, type FightShape } from "./mecha/citySite";
+import type { DoctrineId } from "./mecha/ai";
+import { createMechaController, type MechaController } from "./mecha/controller";
+import { anchorsFromCity, prepareFightTerrainAsync, type FightCatalog, type FightShape } from "./mecha/citySite";
 import { startPreparedSearch } from "./mecha/fightSearchRunner";
-import { matchFromSite } from "./mecha/matchFromSite";
 import { MechaLineup, type MechaBoardView } from "./MechaLineup";
 import {
-  BOARD, FLAT_SPAWN_MAX_DELTA, MAX_TURNS, bossExecute, bossPrepare, createMatch, incomingDamage, legalActions, living, moveBudget, pathDistance,
-  validateAndApplyPlan, type Action, type BossScriptId, type Cell, type CoverPresetId, type MatchState, type MechId,
+  BOARD, FLAT_SPAWN_MAX_DELTA, MAX_TURNS, living, moveBudget,
+  type Action, type BossScriptId, type Cell, type CoverPresetId, type MechId,
 } from "./mecha/rules";
 import "./game.css";
 
@@ -194,16 +193,6 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
   );
 }
 
-type Draft = { moveTo: Cell | null; action: Action; explicit: boolean };
-type TargetKind = Exclude<Action["kind"], "skip">;
-type TargetOption = { id: string; cells: Cell[] };
-
-function actionKey(action: Action): string {
-  if (action.kind === "repair") return `repair:${action.target}`;
-  if ("target" in action && action.target) return `${action.kind}:${action.target}`;
-  return action.kind;
-}
-
 function enemyName(id: string): string {
   if (id === "boss") return "大怪";
   if (id === "raider-w") return "小怪西";
@@ -220,71 +209,11 @@ function actionLabel(kind: Action["kind"]): string {
   return "待机";
 }
 
-function validTarget(state: MatchState, id: MechId, moveTo: Cell | null, kind: TargetKind, target: string): boolean {
-  const scratch = structuredClone(state);
-  const action = { kind, target } as Action;
-  const result = validateAndApplyPlan(scratch, {
-    revision: scratch.revision,
-    items: living(scratch).map((mech) => ({ mechId: mech.id, moveTo: mech.id === id ? moveTo : null, action: mech.id === id ? action : { kind: "skip" } })),
-  });
-  return !("ok" in result);
-}
-
-function footprintCells(anchor: Cell): Cell[] {
-  return [anchor, { x: anchor.x + 1, y: anchor.y }, { x: anchor.x, y: anchor.y + 1 }, { x: anchor.x + 1, y: anchor.y + 1 }];
-}
-
-function fresh(preset: CoverPresetId, script: BossScriptId, site: CityMechaSite | null, stake: "all" | "frontage" = "all"): MatchState {
-  const state = site
-    ? matchFromSite(site, { preset, script, stake })
-    : createMatch({ preset, script, stake });
-  bossPrepare(state);
-  return state;
-}
-
-function blankDraft(state: MatchState): Record<MechId, Draft> {
-  return {
-    Assault: { moveTo: null, action: { kind: "skip" }, explicit: false },
-    Gunner: { moveTo: null, action: { kind: "skip" }, explicit: false },
-    Support: { moveTo: null, action: { kind: "skip" }, explicit: false },
-    ...Object.fromEntries(living(state).map((m) => [m.id, { moveTo: null, action: { kind: "skip" as const }, explicit: false }])),
-  } as Record<MechId, Draft>;
-}
-
 function same(a: Cell, b: Cell) {
   return a.x === b.x && a.y === b.y;
 }
 
-function telegraphs(state: MatchState): Cell[] {
-  const cells = [...(state.boss.intent?.projected ?? [])];
-  for (const raider of state.raiders) cells.push(...(raider.intent?.projected ?? []));
-  return cells;
-}
-
-function draftFromPlan(state: MatchState, plan: { items: Array<{ mechId: MechId; moveTo: Cell | null; action: Action }> }): Record<MechId, Draft> {
-  const next = blankDraft(state);
-  for (const item of plan.items) next[item.mechId] = { moveTo: item.moveTo, action: item.action, explicit: true };
-  return next;
-}
-
-/** 新开一局时打法下拉还在，草稿按这个打法填上。结算后的下一回合仍是空白，等玩家自己填。 */
-function openingDraft(state: MatchState, doctrine: DoctrineId): Record<MechId, Draft> {
-  if (state.outcome || state.phase !== "player_plan") return blankDraft(state);
-  return draftFromPlan(state, planForDoctrine(state, doctrine));
-}
-
-function combatActions(afterOrders: MatchState, orders: Array<{ mechId: MechId; action: Action }>): MechaCombatCue[] {
-  const cues: MechaCombatCue[] = orders.filter((order) => order.action.kind !== "skip")
-    .map((order) => ({ actor: order.mechId, action: order.action.kind === "repair" ? "repair" : "attack", target: "target" in order.action ? order.action.target : undefined }));
-  if (afterOrders.phase === "resolving_boss") {
-    if (afterOrders.boss.hp > 0 && afterOrders.boss.intent && afterOrders.boss.intent.skillId !== "skip") cues.push({ actor: "boss", action: "attack" });
-    for (const raider of afterOrders.raiders) {
-      if (raider.hp > 0 && raider.intent && raider.intent.skillId !== "skip") cues.push({ actor: raider.id, action: "attack" });
-    }
-  }
-  return cues;
-}
-
+/** 薄视图：状态、草稿、预检、结算、自动对战都在 controller 里，这里只订阅与渲染。 */
 function MechaMatch({ locale, onClose, engine, catalog }: {
   locale: GameLocale;
   onClose: () => void;
@@ -293,72 +222,31 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
 }) {
   const t = (text: string) => gameText(text, locale);
   const [shape, setShape] = useState<FightShape>("flat");
-  const [doctrine, setDoctrine] = useState<DoctrineId>("tunnel");
   const shapeId: FightShape = catalog?.[shape] ? shape : (SHAPES.find((item) => catalog?.[item.id])?.id ?? "flat");
   const site = catalog?.[shapeId] ?? null;
-  const [preset, setPreset] = useState<CoverPresetId>("covers_sparse_mid");
-  const [script, setScript] = useState<BossScriptId>("siege");
-  const openingStake = shapeId === "alley" ? "frontage" : "all";
-  const [state, setState] = useState<MatchState>(() => fresh("covers_sparse_mid", "siege", site, openingStake));
-  const [draft, setDraft] = useState<Record<MechId, Draft>>(() => openingDraft(state, "tunnel"));
-  const [selected, setSelected] = useState<MechId>("Assault");
-  const [targeting, setTargeting] = useState<TargetKind | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [viewFailed, setViewFailed] = useState(false);
-  const [auto, setAuto] = useState(false);
-  const [paused, setPaused] = useState(false);
-  const [combat, setCombat] = useState<{ id: number; actions: MechaCombatCue[] }>({ id: 0, actions: [] });
-  const [beat, setBeat] = useState<"show" | "resolve">("show");
   const worldRef = useRef<CityMechaWorldHandle>(null);
 
-  const restart = (nextPreset = preset, nextScript = script, nextSite: CityMechaSite | null = site, nextStake: "all" | "frontage" = shapeId === "alley" ? "frontage" : "all") => {
-    const match = fresh(nextPreset, nextScript, nextSite, nextStake);
-    setPreset(nextPreset);
-    setScript(nextScript);
-    setState(match);
-    setCombat((current) => ({ id: current.id + 1, actions: [] }));
-    setDraft(openingDraft(match, doctrine));
-    setSelected(living(match)[0]?.id ?? "Assault");
-    setTargeting(null);
-    setNotice(null);
-    setAuto(false);
-    setPaused(false);
-    setBeat("show");
-  };
+  const controllerRef = useRef<MechaController | null>(null);
+  if (!controllerRef.current) {
+    controllerRef.current = createMechaController({ locale, site, preset: "covers_sparse_mid", script: "siege", stake: shapeId === "alley" ? "frontage" : "all" });
+  }
+  const controller = controllerRef.current;
+  const s = useSyncExternalStore(controller.subscribe, controller.getState);
+  const { match: state, draft, selected, targeting, auto, paused, doctrine } = s;
+
+  useEffect(() => { controller.setLocale(locale); }, [controller, locale]);
+
+  // 自动对战的节拍：每拍一次 tick（展示 → 结算 → 下一回合）。状态一变就重排，暂停即停。
+  useEffect(() => {
+    if (!auto || paused) return undefined;
+    const timer = window.setTimeout(() => controller.tick(), 700);
+    return () => window.clearTimeout(timer);
+  }, [controller, auto, paused, s]);
 
   const selectedMech = living(state).find((m) => m.id === selected);
-  const reach = useMemo(() => {
-    if (!selectedMech || state.phase !== "player_plan") return [];
-    const cells: Cell[] = [];
-    for (let y = 0; y < BOARD; y += 1) {
-      for (let x = 0; x < BOARD; x += 1) {
-        const dist = pathDistance(state, selectedMech.pos, { x, y }, selected);
-        if (dist !== null && dist <= moveBudget(selected)) cells.push({ x, y });
-      }
-    }
-    return cells;
-  }, [state, selected, selectedMech]);
-
-  const actions = useMemo(() => {
-    if (!selectedMech) return [];
-    const scratch = structuredClone(state);
-    const who = scratch.mechs.find((m) => m.id === selected && m.hp > 0);
-    const dest = draft[selected]?.moveTo;
-    if (who && dest) who.pos = dest;
-    return legalActions(scratch, selected);
-  }, [state, selected, selectedMech, draft]);
-
-  const targetOptions = useMemo<TargetOption[]>(() => {
-    if (!targeting || !selectedMech) return [];
-    const options: TargetOption[] = targeting === "repair"
-      ? living(state).filter((mech) => mech.id !== selected).map((mech) => ({ id: mech.id, cells: [{ ...mech.pos }] }))
-      : [
-        ...(state.boss.hp > 0 ? [{ id: "boss", cells: footprintCells(state.boss.anchor) }] : []),
-        ...state.raiders.filter((raider) => raider.hp > 0).map((raider) => ({ id: raider.id, cells: [{ ...raider.pos }] })),
-      ];
-    const moveTo = draft[selected]?.moveTo ?? null;
-    return options.filter((option) => validTarget(state, selected, moveTo, targeting, option.id));
-  }, [state, selected, selectedMech, targeting, draft]);
+  const reach = s.reach;
+  const targetOptions = s.targetOptions;
 
   const paint = (x: number, y: number) => {
     const c = { x, y };
@@ -373,102 +261,24 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
     if (building) classes.push(building.hp > 0 ? "is-cover" : "is-rubble");
     if (state.boss.hp > 0 && x >= state.boss.anchor.x && x <= state.boss.anchor.x + 1 && y >= state.boss.anchor.y && y <= state.boss.anchor.y + 1) classes.push("is-boss");
     if (state.raiders.some((raider) => raider.hp > 0 && same(raider.pos, c))) classes.push("is-raider");
-    if (telegraphs(state).some((k) => same(k, c))) classes.push("is-telegraph");
+    if (s.telegraph.some((k) => same(k, c))) classes.push("is-telegraph");
     if (targetOptions.some((option) => option.cells.some((cell) => same(cell, c)))) classes.push("is-target");
     const unit = living(state).find((m) => same(m.pos, c));
     if (unit) classes.push(`is-${unit.id.toLowerCase()}`, unit.id === selected ? "is-selected" : "");
-    if (doctrineFocusCells(state, doctrine).some((cell) => same(cell, c))) classes.push("is-focus");
+    if (s.focusCells.some((cell) => same(cell, c))) classes.push("is-focus");
     if (draft[selected]?.moveTo && same(draft[selected].moveTo!, c)) classes.push("is-move");
     if (reach.some((k) => same(k, c))) classes.push("is-reach");
     return classes.filter(Boolean).join(" ");
   };
 
-  useEffect(() => {
-    setTargeting(null);
-  }, [selected, state.turn, auto, paused]);
-
-  useEffect(() => {
-    if (!auto || paused) return undefined;
-    if (state.outcome) {
-      setAuto(false);
-      return undefined;
-    }
-    const timer = window.setTimeout(() => {
-      if (state.phase === "enemy_prepare") {
-        const next = structuredClone(state);
-        bossPrepare(next);
-        setState(next);
-        setDraft(blankDraft(next));
-        setBeat("show");
-        return;
-      }
-      if (state.phase !== "player_plan") return;
-      if (beat === "show") {
-        setDraft(draftFromPlan(state, planForDoctrine(state, doctrine)));
-        setBeat("resolve");
-        return;
-      }
-      const next = structuredClone(state);
-      const plan = planForDoctrine(state, doctrine);
-      const result = validateAndApplyPlan(next, plan);
-      if (!("ok" in result)) {
-        setAuto(false);
-        setNotice(gameText("整包被拒，局面未变，可以重提。", locale));
-        return;
-      }
-      const cues = combatActions(next, plan.items);
-      setCombat((current) => ({ id: current.id + 1, actions: cues }));
-      if (next.phase === "resolving_boss") bossExecute(next);
-      if (next.phase === "enemy_prepare") bossPrepare(next);
-      const alive = living(next);
-      setState(next);
-      setDraft(blankDraft(next));
-      setBeat("show");
-      if (!alive.some((m) => m.id === selected) && alive[0]) setSelected(alive[0].id);
-    }, 700);
-    return () => window.clearTimeout(timer);
-  }, [auto, paused, beat, doctrine, locale, selected, state]);
-
-  const clickCell = (x: number, y: number) => {
-    if (auto || paused || state.phase !== "player_plan") return;
-    if (targeting) {
-      const option = targetOptions.find((item) => item.cells.some((cell) => cell.x === x && cell.y === y));
-      if (!option) {
-        setNotice(t("这里不是合法目标，请点击地图上的高亮单位。"));
-        return;
-      }
-      const action = { kind: targeting, target: option.id } as Action;
-      setDraft((prev) => ({ ...prev, [selected]: { ...prev[selected], action, explicit: true } }));
-      setTargeting(null);
-      setNotice(null);
-      return;
-    }
-    const occupant = living(state).find((m) => same(m.pos, { x, y }));
-    if (occupant && occupant.id !== selected) {
-      setSelected(occupant.id);
-      return;
-    }
-    if (!selectedMech) return;
-    if (!reach.some((k) => k.x === x && k.y === y)) return;
-    const moveTo = same(selectedMech.pos, { x, y }) ? null : { x, y };
-    const scratch = structuredClone(state);
-    const who = scratch.mechs.find((m) => m.id === selected && m.hp > 0);
-    if (who && moveTo) who.pos = moveTo;
-    const legal = new Set(legalActions(scratch, selected).map(actionKey));
-    setDraft((prev) => {
-      const current = prev[selected];
-      const keep = current?.explicit && legal.has(actionKey(current.action));
-      return { ...prev, [selected]: { moveTo, action: keep ? current.action : { kind: "skip" }, explicit: Boolean(keep) } };
-    });
-    setNotice(null);
-  };
+  const clickCell = (x: number, y: number) => controller.clickCell(x, y);
 
   const activeMechs = living(state);
-  const plannedCount = activeMechs.filter((m) => draft[m.id]?.explicit).length;
-  const pendingNames = activeMechs.filter((m) => !draft[m.id]?.explicit).map((m) => t(NAMES[m.id]));
-  const packReady = pendingNames.length === 0;
+  const plannedCount = s.plannedCount;
+  const pendingNames = s.pendingIds.map((id) => t(NAMES[id]));
+  const packReady = s.packReady;
   const cityView = useMemo<CityMechaView>(() => ({
-    combat,
+    combat: s.combat,
     figures: state.mechs.map((m) => {
       const planned = m.hp > 0 ? draft[m.id]?.moveTo : null;
       return { id: m.id, x: planned?.x ?? m.pos.x, y: planned?.y ?? m.pos.y, alive: m.hp > 0, hp: m.hp, selected: m.id === selected };
@@ -476,14 +286,14 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
     boss: { x: state.boss.anchor.x, y: state.boss.anchor.y, alive: state.boss.hp > 0, hp: state.boss.hp },
     raiders: state.raiders.map((raider) => ({ id: raider.id, x: raider.pos.x, y: raider.pos.y, alive: raider.hp > 0, hp: raider.hp })),
     buildings: state.buildings.map((building) => ({ id: building.id, cells: building.cells, hp: building.hp, maxHp: building.maxHp })),
-    telegraph: telegraphs(state),
-    focus: doctrineFocusCells(state, doctrine),
+    telegraph: s.telegraph,
+    focus: s.focusCells,
     reach,
     move: draft[selected]?.moveTo ?? null,
     targets: targetOptions.flatMap((option) => option.cells),
     targetIds: targetOptions.map((option) => option.id),
     obstacles: state.obstacles,
-  }), [state, draft, selected, reach, doctrine, targetOptions, combat]);
+  }), [s, state, draft, selected, reach, targetOptions]);
   const view = useMemo<MechaBoardView>(() => ({
     figures: state.mechs.map((m) => {
       const planned = m.hp > 0 ? draft[m.id]?.moveTo : null;
@@ -495,31 +305,8 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
       ...state.covers,
       ...state.buildings.filter((b) => b.hp > 0).flatMap((b) => b.cells),
     ],
-    telegraph: telegraphs(state),
-  }), [state, draft, selected]);
-
-  const submit = () => {
-    if (auto || paused || state.phase !== "player_plan" || !packReady) return;
-    const next = structuredClone(state);
-    const plan = {
-      revision: next.revision,
-      items: living(next).map((m) => ({ mechId: m.id, moveTo: draft[m.id]?.moveTo ?? null, action: draft[m.id]?.action ?? { kind: "skip" } })),
-    };
-    const result = validateAndApplyPlan(next, plan);
-    if (!("ok" in result)) {
-      setNotice(t("整包被拒，局面未变，可以重提。"));
-      return;
-    }
-    const cues = combatActions(next, plan.items);
-    setCombat((current) => ({ id: current.id + 1, actions: cues }));
-    if (next.phase === "resolving_boss") bossExecute(next);
-    if (next.phase === "enemy_prepare") bossPrepare(next);
-    const alive = living(next);
-    setState(next);
-    setDraft(blankDraft(next));
-    if (!alive.some((m) => m.id === selected) && alive[0]) setSelected(alive[0].id);
-    setNotice(null);
-  };
+    telegraph: s.telegraph,
+  }), [s, state, draft, selected]);
 
   const skill = state.boss.intent?.skillId;
   const skillLabel = skill === "sweep" ? t("横扫") : skill === "smash" ? t("砸击") : t("跳过");
@@ -531,8 +318,9 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
     : state.outcome === "defeat_buildings" ? t("楼被拆光")
     : null;
   const raiderHp = state.raiders.map((raider) => `${t(enemyName(raider.id))} ${raider.hp}`).join(" ");
-  const focus = doctrineFocus(state, doctrine);
+  const focus = s.focus;
   const focusLine = doctrineFocusLine(doctrine, gameText(enemyName(focus.id), locale), focus.building ? `${focus.building.x},${focus.building.y}` : null, locale);
+  const planning = s.interactive;
 
   const viewEngine = viewFailed ? null : engine;
   const onCity = Boolean(site && viewEngine);
@@ -546,7 +334,7 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
             <button type="button" title={t("围绕当前观察点旋转 90°")} onClick={() => worldRef.current?.rotateCamera()}>{t("旋转 90°")}</button>
             <button type="button" title={t("回到可看全棋盘的战术视角")} onClick={() => worldRef.current?.resetCamera()}>{t("战术视角")}</button>
           </> : null}
-          <button type="button" disabled={Boolean(state.outcome)} onClick={() => setPaused((value) => !value)}>{paused ? t("继续") : t("暂停")}</button>
+          <button type="button" disabled={Boolean(state.outcome)} onClick={() => controller.togglePause()}>{paused ? t("继续") : t("暂停")}</button>
           <button type="button" onClick={onClose}>{t("退出战斗")}</button>
         </div>
       </header>
@@ -559,18 +347,18 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
         <ul className="mecha-pack" aria-label={t("三机行动状态")}>
           {activeMechs.map((m) => {
             const row = draft[m.id];
-            const dest = row?.moveTo ?? m.pos;
-            const hit = incomingDamage(state, m.id, dest) > 0;
+            const hitDamage = s.hits[m.id] ?? 0;
+            const hit = hitDamage > 0;
             const chosen = row?.explicit ? t(actionLabel(row.action.kind)) : t("未选择");
-            const stepCost = pathDistance(state, m.pos, dest, m.id);
+            const stepCost = s.stepCost[m.id] ?? null;
             const current = m.id === selected;
             return (
               <li key={m.id} className={`${current ? "is-current" : ""} ${!row?.explicit ? "is-open" : hit ? "is-hit" : ""}`}>
-                <button type="button" className={current ? "is-selected" : ""} aria-pressed={current} disabled={auto || paused} onClick={() => setSelected(m.id)}>{t(NAMES[m.id])} <span>{m.hp} HP</span></button>
+                <button type="button" className={current ? "is-selected" : ""} aria-pressed={current} disabled={auto || paused} onClick={() => controller.selectMech(m.id)}>{t(NAMES[m.id])} <span>{m.hp} HP</span></button>
                 <span className={row?.explicit ? "mecha-plan-state is-ready" : "mecha-plan-state"}>{row?.explicit ? t("已规划") : t("待规划")}</span>
                 {onCity ? null : <><span>{row?.moveTo ? `${row.moveTo.x},${row.moveTo.y}` : t("原位")}</span><span>{stepBudgetLine(stepCost, moveBudget(m.id), locale)}</span></>}
                 <span className="mecha-card-action">{chosen}{row?.explicit && "target" in row.action && row.action.target ? ` ${t(row.action.kind === "repair" ? NAMES[row.action.target] : enemyName(row.action.target))}` : ""}</span>
-                {hit ? <span className="mecha-hit">{t("受击")} {incomingDamage(state, m.id, dest)}</span> : null}
+                {hit ? <span className="mecha-hit">{t("受击")} {hitDamage}</span> : null}
               </li>
             );
           })}
@@ -579,33 +367,32 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
           {Array.from({ length: BOARD * BOARD }, (_, i) => {
             const x = i % BOARD;
             const y = Math.floor(i / BOARD);
-            return <button key={`${x},${y}`} type="button" className={paint(x, y)} aria-label={`${x},${y}`} disabled={auto || paused || state.phase !== "player_plan"} onClick={() => clickCell(x, y)} />;
+            return <button key={`${x},${y}`} type="button" className={paint(x, y)} aria-label={`${x},${y}`} disabled={!planning} onClick={() => clickCell(x, y)} />;
           })}
         </div>}
         <section className={targeting ? "mecha-selected-actions is-targeting" : "mecha-selected-actions"} aria-label={t("当前机甲行动")}>
           <h3>{t("当前机甲")} · {selectedMech ? t(NAMES[selectedMech.id]) : "—"}{targeting ? ` · ${t(actionLabel(targeting))}：${t("点击高亮目标")}` : ""}</h3>
           <div className="mecha-actions">
-            {[...new Set(actions.map((action) => action.kind))].map((kind) => {
+            {[...new Set(s.actions.map((action) => action.kind))].map((kind) => {
               const chosen = draft[selected];
               const on = targeting === kind || (!targeting && Boolean(chosen?.explicit) && chosen.action.kind === kind);
-              return <button key={kind} type="button" className={on ? "is-selected" : ""} aria-pressed={on} disabled={auto || paused || state.phase !== "player_plan"} onClick={() => {
-                setNotice(null);
+              return <button key={kind} type="button" className={on ? "is-selected" : ""} aria-pressed={on} disabled={!planning} onClick={() => {
                 if (kind !== "skip") {
-                  setTargeting((current) => current === kind ? null : kind);
+                  controller.setTargeting(targeting === kind ? null : kind);
                   return;
                 }
-                setTargeting(null);
-                setDraft((prev) => ({ ...prev, [selected]: { ...prev[selected], action: { kind: "skip" }, explicit: true } }));
+                controller.setTargeting(null);
+                controller.setAction(selected, { kind: "skip" });
               }}>{t(actionLabel(kind))}</button>;
             })}
-            {targeting ? <button type="button" className="mecha-target-cancel" onClick={() => setTargeting(null)}>{t("取消选目标")}</button> : null}
+            {targeting ? <button type="button" className="mecha-target-cancel" onClick={() => controller.setTargeting(null)}>{t("取消选目标")}</button> : null}
           </div>
         </section>
         <div className="mecha-submit">
           <div><strong>{t("已规划")} {plannedCount}/{activeMechs.length}</strong><span>{paused ? t("继续战斗后可提交。") : pendingNames.length ? `${t("待规划")}：${pendingNames.join("、")}` : t("三机已就绪，可统一结算。")}</span></div>
-          <button type="button" className="mecha-submit-primary" disabled={auto || paused || state.phase !== "player_plan" || !packReady} onClick={submit}>{t("提交三机行动")}</button>
+          <button type="button" className="mecha-submit-primary" disabled={!planning || !packReady} onClick={() => controller.submit()}>{t("提交三机行动")}</button>
         </div>
-        {notice && <p role="alert">{notice}</p>}
+        {s.notice && <p role="alert">{s.notice}</p>}
         <details className="mecha-settings">
           <summary>{t("战场设置与规则")}</summary>
           {onCity ? <p className="mecha-help">{t("左拖旋转，右拖平移，滚轮缩放；短点击选择格子。暂停时仍可调整视角。")}</p> : null}
@@ -622,17 +409,13 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
               const nextSite = catalog[next];
               if (!nextSite) return;
               setShape(next);
-              restart(preset, script, nextSite, next === "alley" ? "frontage" : "all");
-            }}>{SHAPES.map((item) => <option key={item.id} value={item.id} disabled={!catalog[item.id]}>{t(item.label)}</option>)}</select></label> : onCity ? <span>{t("城市实地")}</span> : <label>{t("布局")}<select value={preset} onChange={(e) => restart(e.target.value as CoverPresetId, script)}>{PRESETS.map((p) => <option key={p.id} value={p.id}>{t(p.label)}</option>)}</select></label>}
-            <label>{t("脚本")}<select value={script} onChange={(e) => restart(preset, e.target.value as BossScriptId)}>{SCRIPTS.map((s) => <option key={s.id} value={s.id}>{t(s.label)}</option>)}</select></label>
-            <label>{t("打法")}<select value={doctrine} onChange={(e) => {
-              const next = e.target.value as DoctrineId;
-              setDoctrine(next);
-              if (!state.outcome && state.phase === "player_plan") setDraft(draftFromPlan(state, planForDoctrine(state, next)));
-            }}>{DOCTRINES.map((item) => <option key={item.id} value={item.id}>{t(item.label)}</option>)}</select></label>
-            <button type="button" onClick={() => restart()}>{t("新开一局")}</button>
-            <button type="button" disabled={auto || paused || Boolean(state.outcome) || state.phase !== "player_plan"} onClick={() => { setAuto(false); setDraft(draftFromPlan(state, planForDoctrine(state, doctrine))); }}>{t("按打法填入")}</button>
-            <button type="button" disabled={Boolean(state.outcome)} onClick={() => { setPaused(false); setBeat("show"); setAuto((on) => !on); }}>{auto ? t("停止自动") : t("自动对战")}</button>
+              controller.restart({ site: nextSite, stake: next === "alley" ? "frontage" : "all" });
+            }}>{SHAPES.map((item) => <option key={item.id} value={item.id} disabled={!catalog[item.id]}>{t(item.label)}</option>)}</select></label> : onCity ? <span>{t("城市实地")}</span> : <label>{t("布局")}<select value={s.preset} onChange={(e) => controller.restart({ preset: e.target.value as CoverPresetId })}>{PRESETS.map((p) => <option key={p.id} value={p.id}>{t(p.label)}</option>)}</select></label>}
+            <label>{t("脚本")}<select value={s.script} onChange={(e) => controller.restart({ script: e.target.value as BossScriptId })}>{SCRIPTS.map((sc) => <option key={sc.id} value={sc.id}>{t(sc.label)}</option>)}</select></label>
+            <label>{t("打法")}<select value={doctrine} onChange={(e) => controller.setDoctrine(e.target.value as DoctrineId)}>{DOCTRINES.map((item) => <option key={item.id} value={item.id}>{t(item.label)}</option>)}</select></label>
+            <button type="button" onClick={() => controller.restart()}>{t("新开一局")}</button>
+            <button type="button" disabled={!planning} onClick={() => controller.applyDoctrine()}>{t("按打法填入")}</button>
+            <button type="button" disabled={Boolean(state.outcome)} onClick={() => controller.toggleAuto()}>{auto ? t("停止自动") : t("自动对战")}</button>
           </div>
           <p className="mecha-help">{t("点一台机甲，再点能走到的格子，然后给三台都选行动。站上红色预告格会吃下这一击。")}</p>
           <p className="mecha-help">{t("沿着道路能多走一倍。突击靠路，炮手爬山和平地一样，支援上坡不加价。水过不去，被推进水或山地会撞上。")}</p>

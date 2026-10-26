@@ -277,6 +277,46 @@ export function doctrineFocusLine(doctrine: "tunnel" | "peel", name: string, bui
     : `守楼盯着${name}，楼在 ${building}。`;
 }
 
+/** 整包/草稿故障的原因键。与 rules.ts 的 PlanFault["cause"] 逐一对应，测试逐个确认中英都有文案。 */
+export const PLAN_FAULT_CAUSES = ["occupied", "target_gone", "out_of_reach", "not_adjacent", "mech_dead", "cooldown", "other"] as const;
+export type PlanFaultCause = (typeof PLAN_FAULT_CAUSES)[number];
+
+const FAULT_CORE: Record<PlanFaultCause, { zh: string; en: string }> = {
+  occupied: { zh: "落点已被占用", en: "its destination is taken" },
+  target_gone: { zh: "目标已经倒下", en: "its target is already down" },
+  out_of_reach: { zh: "走不到或射不到", en: "it cannot reach that cell or target" },
+  not_adjacent: { zh: "没有贴着目标", en: "it is not next to its target" },
+  mech_dead: { zh: "这台机甲已倒下", en: "this mech is down" },
+  cooldown: { zh: "技能还在冷却", en: "its skill is cooling down" },
+  other: { zh: "这一步不成立", en: "that order is not valid" },
+};
+
+const FAULT_NAME: Record<string, { zh: string; en: string }> = {
+  Assault: { zh: "突击", en: "Assault" },
+  Gunner: { zh: "射手", en: "Gunner" },
+  Support: { zh: "支援", en: "Support" },
+};
+
+/**
+ * 「哪一台、为什么」的整句。cause 是翻译的键，不直接显示规则层的英文 reason
+ * （那串留给旧测试断言）。rejected = 提交被拒；否则是草稿里的行动被改动作废。
+ * 没有 mechId（如 revision 过期）时退回通用句，不编造机甲名。
+ */
+export function planFaultText(
+  fault: { cause?: PlanFaultCause; mechId?: string },
+  locale: GameLocale,
+  scope: "rejected" | "draft" = "rejected",
+): string {
+  const en = locale === "en";
+  const tail = scope === "rejected"
+    ? (en ? "Pack rejected; the board is unchanged and can be resubmitted." : "整包被拒，局面未变，可以重提。")
+    : (en ? "That order was cleared; pick again." : "该行动已退回，请重选。");
+  const name = fault.mechId ? FAULT_NAME[fault.mechId] : undefined;
+  if (!name) return tail;
+  const core = FAULT_CORE[fault.cause ?? "other"] ?? FAULT_CORE.other;
+  return en ? `${name.en}: ${core.en}. ${tail}` : `${name.zh}：${core.zh}。${tail}`;
+}
+
 export function gameText(text: string, locale: GameLocale): string {
   if (locale !== "en") return text;
   const translated = ENGLISH[text];
