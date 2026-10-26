@@ -540,3 +540,17 @@ test("the fingerprint covers anchor identity, ground and height", () => {
     assert.notEqual(prepareFightTerrain(variedTerrain, changed).fingerprint, base);
   }
 });
+
+test("a tilted lot inside the window is not walkable ground in the match", { todo: "toSite() drops the blocked-cell grid, so fresh() sees plain land" }, () => {
+  const tilted: SiteAnchor = { id: "tilt", x: 52, z: 52, halfX: 3, halfZ: 3, yaw: 0.6, ground: 4, height: 8 };
+  const site = siteMechaWindow({ height: () => 4 }, [anchor("west", 40, 40), anchor("mid", 52, 40), anchor("north", 40, 52), tilted]);
+  assert.ok(site);
+  // 与 MechaBoard.fresh() 同一份输入：只有地形、高度、被认领的楼。
+  const state = createMatch({
+    preset: "covers_sparse_mid", script: "siege", covers: [], terrain: site.terrain, heights: site.heights,
+    buildings: site.buildings.map((building) => ({ id: building.id, cells: building.cells })),
+    raiders: site.raiders, mechs: site.mechs, boss: site.boss,
+  });
+  // 斜放的楼落在 (9,9)：城里画着楼的格子，规则里不该能走进去。
+  assert.equal(pathDistance(state, site.mechs[2]!.pos, { x: 9, y: 9 }, "Support"), null);
+});

@@ -382,3 +382,37 @@ test("an earlier knockback does not void a later mech's adjacent melee", { todo:
   const both = plan(state, [{ mechId: "Assault", action: { kind: "melee" } }, { mechId: "Gunner" }, { mechId: "Support", action: { kind: "melee" } }]);
   assert.equal("ok" in validateAndApplyPlan(structuredClone(state), both), true);
 });
+
+// ---- 2026-10-26 系统检查补充：友伤误拒 / 预告随推动位移 / 碰撞只处理第一个障碍 ----
+
+test("a knockback that kills a low-hp ally does not reject the rest of the pack", { todo: "later items hit 'mech is not alive'" }, () => {
+  const state = duel([{ id: "Assault", pos: { x: 3, y: 1 } }, { id: "Gunner", pos: { x: 6, y: 1 } }, { id: "Support", pos: { x: 8, y: 9 } }]);
+  state.mechs[1]!.hp = 2;
+  const pack = plan(state, [{ mechId: "Assault", action: { kind: "melee" } }, { mechId: "Gunner" }, { mechId: "Support" }]);
+  assert.equal("ok" in validateAndApplyPlan(structuredClone(state), pack), true);
+});
+
+test("shoving the boss moves its telegraph with it (pinned: the preview must show this)", () => {
+  const state = duel([{ id: "Assault", pos: { x: 3, y: 1 } }, { id: "Gunner", pos: { x: 0, y: 9 } }, { id: "Support", pos: { x: 8, y: 9 } }]);
+  assert.deepEqual(state.boss.intent!.projected, [{ x: 3, y: 1 }]);
+  validateAndApplyPlan(state, plan(state, [{ mechId: "Assault", action: { kind: "melee" } }, { mechId: "Gunner" }, { mechId: "Support" }]));
+  assert.deepEqual(state.boss.anchor, { x: 5, y: 0 });
+  assert.deepEqual(state.boss.intent!.projected, [{ x: 4, y: 1 }]);
+  assert.equal(state.boss.intent!.status, "reprojected");
+});
+
+test("a boss shove into a wall and an ally hurts the ally whichever cell comes first", { todo: "tryTranslateBoss stops at the first obstacle in footprint order" }, () => {
+  // 向东推：脚印目标格按 (5,0),(6,0),(5,1),(6,1) 的顺序检查。机甲与水各占 (6,0)/(6,1) 之一，两种摆法应得同样的友伤。
+  const lost = (ally: { x: number; y: number }, wall: { x: number; y: number }) => {
+    const terrain = Array.from({ length: 10 }, (_, y) => Array.from({ length: 10 }, (_, x): TerrainKind => (x === wall.x && y === wall.y ? "water" : "land")));
+    const state = createMatch({
+      preset: "covers_sparse_mid", script: "stationary_smash", covers: [], boss: { x: 4, y: 0 }, terrain,
+      mechs: [{ id: "Assault", pos: { x: 3, y: 1 } }, { id: "Gunner", pos: ally }, { id: "Support", pos: { x: 8, y: 9 } }],
+    });
+    bossPrepare(state);
+    const hp = state.mechs[1]!.hp;
+    validateAndApplyPlan(state, plan(state, [{ mechId: "Assault", action: { kind: "melee" } }, { mechId: "Gunner" }, { mechId: "Support" }]));
+    return hp - state.mechs[1]!.hp;
+  };
+  assert.equal(lost({ x: 6, y: 0 }, { x: 6, y: 1 }), lost({ x: 6, y: 1 }, { x: 6, y: 0 }));
+});
