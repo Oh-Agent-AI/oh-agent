@@ -332,3 +332,53 @@ test("a raider walks around water toward the building", () => {
   assert.notDeepEqual(raider.pos, { x: 1, y: 4 });
   assert.ok(Math.abs(raider.pos.x - 3) + Math.abs(raider.pos.y - 4) < 3);
 });
+
+// ---- 整包按顺序结算带来的顺序依赖（已知缺陷，见 2026-10-26 分析）----
+// validateAndApplyPlan 在同一份试算状态上逐台结算，而界面逐台单独预检，
+// 所以「每台都合法」的计划会在提交时整包被拒。下面三条写的是期望行为，
+// 修好之前标 todo：todo 失败不拦 CI，修好后去掉 todo 即成回归守卫。
+
+function plan(state: MatchState, items: Array<{ mechId: "Assault" | "Gunner" | "Support"; moveTo?: { x: number; y: number }; action?: { kind: "skip" | "melee" | "shoot" } }>) {
+  return {
+    revision: state.revision,
+    items: items.map((i) => ({ mechId: i.mechId, moveTo: i.moveTo ?? null, action: i.action ?? { kind: "skip" as const } })),
+  };
+}
+
+function duel(mechs: Array<{ id: "Assault" | "Gunner" | "Support"; pos: { x: number; y: number } }>) {
+  const state = createMatch({ preset: "covers_sparse_mid", script: "stationary_smash", covers: [], boss: { x: 4, y: 0 }, mechs });
+  bossPrepare(state);
+  return state;
+}
+
+test("a rejected pack leaves the state untouched", () => {
+  const state = duel([{ id: "Assault", pos: { x: 3, y: 1 } }, { id: "Gunner", pos: { x: 4, y: 4 } }, { id: "Support", pos: { x: 8, y: 9 } }]);
+  const before = structuredClone(state);
+  const result = validateAndApplyPlan(state, plan(state, [{ mechId: "Gunner", action: { kind: "melee" } }, { mechId: "Assault" }, { mechId: "Support" }]));
+  assert.equal("ok" in result, false);
+  assert.deepEqual(state, before);
+});
+
+test("move order inside a pack does not decide legality (follow-the-leader)", { todo: "validateAndApplyPlan is sequential" }, () => {
+  const state = duel([{ id: "Assault", pos: { x: 2, y: 9 } }, { id: "Gunner", pos: { x: 2, y: 8 } }, { id: "Support", pos: { x: 8, y: 9 } }]);
+  const assaultFirst = plan(state, [{ mechId: "Assault", moveTo: { x: 2, y: 8 } }, { mechId: "Gunner", moveTo: { x: 2, y: 7 } }, { mechId: "Support" }]);
+  const gunnerFirst = plan(state, [{ mechId: "Gunner", moveTo: { x: 2, y: 7 } }, { mechId: "Assault", moveTo: { x: 2, y: 8 } }, { mechId: "Support" }]);
+  assert.equal("ok" in validateAndApplyPlan(structuredClone(state), gunnerFirst), true);
+  assert.equal("ok" in validateAndApplyPlan(structuredClone(state), assaultFirst), true);
+});
+
+test("overkill on one target does not reject the pack", { todo: "later order hits a dead target" }, () => {
+  const state = duel([{ id: "Assault", pos: { x: 3, y: 1 } }, { id: "Gunner", pos: { x: 4, y: 4 } }, { id: "Support", pos: { x: 8, y: 9 } }]);
+  state.boss.hp = 1;
+  const single = plan(state, [{ mechId: "Assault" }, { mechId: "Gunner", action: { kind: "shoot" } }, { mechId: "Support" }]);
+  assert.equal("ok" in validateAndApplyPlan(structuredClone(state), single), true);
+  const both = plan(state, [{ mechId: "Assault", action: { kind: "melee" } }, { mechId: "Gunner", action: { kind: "shoot" } }, { mechId: "Support" }]);
+  assert.equal("ok" in validateAndApplyPlan(structuredClone(state), both), true);
+});
+
+test("an earlier knockback does not void a later mech's adjacent melee", { todo: "orders see the post-knockback boss" }, () => {
+  const state = duel([{ id: "Assault", pos: { x: 3, y: 1 } }, { id: "Gunner", pos: { x: 0, y: 9 } }, { id: "Support", pos: { x: 3, y: 2 } }]);
+  assert.ok(legalActions(state, "Support").some((a) => a.kind === "melee"));
+  const both = plan(state, [{ mechId: "Assault", action: { kind: "melee" } }, { mechId: "Gunner" }, { mechId: "Support", action: { kind: "melee" } }]);
+  assert.equal("ok" in validateAndApplyPlan(structuredClone(state), both), true);
+});
