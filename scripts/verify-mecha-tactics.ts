@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   attackerCenter, bossExecute, bossPrepare, BUILDING_HP, createMatch, footprintCenter, knockbackFromAttacker,
-  legalActions, livingRaiders, MAX_TURNS, MOVE_QUANTUM, pathDistance, RAIDER_ATK, setScriptCounters, spawnsAreOpenGround, validateAndApplyPlan,
-  type MatchState, type TerrainKind,
+  legalActions, livingRaiders, MAX_TURNS, MOVE_QUANTUM, pathDistance, playTurn, previewPlan, RAIDER_ATK, setScriptCounters, spawnsAreOpenGround, validateAndApplyPlan,
+  type MatchState, type PlanReject, type TerrainKind,
 } from "../apps/agent-city/ui/src/game/mecha/rules.ts";
 
 function hold(state: MatchState) {
@@ -415,4 +415,127 @@ test("a boss shove into a wall and an ally hurts the ally whichever cell comes f
     return hp - state.mechs[1]!.hp;
   };
   assert.equal(lost({ x: 6, y: 0 }, { x: 6, y: 1 }), lost({ x: 6, y: 1 }, { x: 6, y: 0 }));
+});
+
+// ---- PlanFault / playTurn / previewPlan（修复规格 step 1a）----
+
+function faultOf(state: MatchState, p: ReturnType<typeof plan>): PlanReject {
+  const r = validateAndApplyPlan(structuredClone(state), p);
+  assert.equal("ok" in r, false);
+  return r as PlanReject;
+}
+
+test("fault names the mech, index and cause: follow-the-leader move is 'occupied'", () => {
+  const state = duel([{ id: "Assault", pos: { x: 2, y: 9 } }, { id: "Gunner", pos: { x: 2, y: 8 } }, { id: "Support", pos: { x: 8, y: 9 } }]);
+  const f = faultOf(state, plan(state, [{ mechId: "Assault", moveTo: { x: 2, y: 8 } }, { mechId: "Gunner", moveTo: { x: 2, y: 7 } }, { mechId: "Support" }]));
+  assert.deepEqual([f.mechId, f.index, f.cause, f.reason], ["Assault", 0, "occupied", "destination occupied"]);
+});
+
+test("fault: overkill shot is 'target_gone' on the later shooter", () => {
+  const state = duel([{ id: "Assault", pos: { x: 3, y: 1 } }, { id: "Gunner", pos: { x: 4, y: 4 } }, { id: "Support", pos: { x: 8, y: 9 } }]);
+  state.boss.hp = 1;
+  const f = faultOf(state, plan(state, [{ mechId: "Assault", action: { kind: "melee" } }, { mechId: "Gunner", action: { kind: "shoot" } }, { mechId: "Support" }]));
+  assert.deepEqual([f.mechId, f.index, f.cause, f.reason], ["Gunner", 1, "target_gone", "shot blocked or out of range"]);
+});
+
+test("fault: melee after an earlier knockback is 'not_adjacent'", () => {
+  const state = duel([{ id: "Assault", pos: { x: 3, y: 1 } }, { id: "Gunner", pos: { x: 0, y: 9 } }, { id: "Support", pos: { x: 3, y: 2 } }]);
+  const f = faultOf(state, plan(state, [{ mechId: "Assault", action: { kind: "melee" } }, { mechId: "Gunner" }, { mechId: "Support", action: { kind: "melee" } }]));
+  assert.deepEqual([f.mechId, f.index, f.cause, f.reason], ["Support", 2, "not_adjacent", "not adjacent to an enemy"]);
+});
+
+test("fault: a mech killed by friendly knockback is 'mech_dead'; out of reach and cooldown are classified", () => {
+  const state = duel([{ id: "Assault", pos: { x: 3, y: 1 } }, { id: "Gunner", pos: { x: 6, y: 1 } }, { id: "Support", pos: { x: 8, y: 9 } }]);
+  state.mechs[1]!.hp = 2;
+  const dead = faultOf(state, plan(state, [{ mechId: "Assault", action: { kind: "melee" } }, { mechId: "Gunner" }, { mechId: "Support" }]));
+  assert.deepEqual([dead.mechId, dead.index, dead.cause, dead.reason], ["Gunner", 1, "mech_dead", "mech is not alive"]);
+
+  const far = faultOf(state, plan(state, [{ mechId: "Assault", moveTo: { x: 3, y: 9 } }, { mechId: "Gunner" }, { mechId: "Support" }]));
+  assert.deepEqual([far.mechId, far.index, far.cause], ["Assault", 0, "out_of_reach"]);
+
+  const cd = duel([{ id: "Assault", pos: { x: 3, y: 1 } }, { id: "Gunner", pos: { x: 0, y: 9 } }, { id: "Support", pos: { x: 8, y: 9 } }]);
+  cd.mechs[0]!.cd = 1;
+  const f = validateAndApplyPlan(cd, { revision: cd.revision, items: [{ mechId: "Assault", moveTo: null, action: { kind: "charge" } }, { mechId: "Gunner", moveTo: null, action: { kind: "skip" } }, { mechId: "Support", moveTo: null, action: { kind: "skip" } }] }) as PlanReject;
+  assert.deepEqual([f.mechId, f.index, f.cause], ["Assault", 0, "cooldown"]);
+});
+
+test("playTurn leaves the input state untouched on reject and on success", () => {
+  const state = duel([{ id: "Assault", pos: { x: 3, y: 1 } }, { id: "Gunner", pos: { x: 4, y: 4 } }, { id: "Support", pos: { x: 8, y: 9 } }]);
+  const before = structuredClone(state);
+  const bad = playTurn(state, plan(state, [{ mechId: "Gunner", action: { kind: "melee" } }, { mechId: "Assault" }, { mechId: "Support" }]));
+  assert.equal(bad.ok, false);
+  if (!bad.ok) assert.deepEqual([bad.fault.mechId, bad.fault.index], ["Gunner", 0]);
+  assert.deepEqual(state, before);
+  const good = playTurn(state, hold(state));
+  assert.equal(good.ok, true);
+  assert.deepEqual(state, before);
+});
+
+test("playTurn equals the manual validate -> execute -> prepare sequence", () => {
+  const scripts = ["stationary_smash", "cadence_ssw", "raid_ssw", "siege"] as const;
+  for (const script of scripts) {
+    const state = createMatch({ preset: "covers_sparse_mid", script });
+    bossPrepare(state);
+    for (let i = 0; i < 4 && state.phase === "player_plan"; i += 1) {
+      const p = hold(state);
+      const manual = structuredClone(state);
+      assert.equal("ok" in validateAndApplyPlan(manual, p), true);
+      if (manual.phase === "resolving_boss") bossExecute(manual);
+      if (manual.phase === "enemy_prepare") bossPrepare(manual);
+      const r = playTurn(state, p);
+      assert.equal(r.ok, true);
+      if (!r.ok) return;
+      assert.deepEqual(r.state, manual, script);
+      Object.assign(state, r.state);
+    }
+  }
+  // 一次击杀：玩家行动就分出胜负，不再进入敌方结算。
+  const kill = duel([{ id: "Assault", pos: { x: 3, y: 1 } }, { id: "Gunner", pos: { x: 4, y: 4 } }, { id: "Support", pos: { x: 8, y: 9 } }]);
+  kill.boss.hp = 1;
+  const manual = structuredClone(kill);
+  validateAndApplyPlan(manual, plan(kill, [{ mechId: "Assault", action: { kind: "melee" } }, { mechId: "Gunner" }, { mechId: "Support" }]));
+  const r = playTurn(kill, plan(kill, [{ mechId: "Assault", action: { kind: "melee" } }, { mechId: "Gunner" }, { mechId: "Support" }]));
+  assert.equal(r.ok, true);
+  if (r.ok) {
+    assert.deepEqual(r.state, manual);
+    assert.equal(r.state.outcome, "victory");
+    assert.deepEqual(r.log.at(-1), { type: "outcome", outcome: "victory" });
+  }
+});
+
+test("playTurn log is in resolution order: move, act, shove, enemy", () => {
+  const state = duel([{ id: "Assault", pos: { x: 2, y: 1 } }, { id: "Gunner", pos: { x: 0, y: 9 } }, { id: "Support", pos: { x: 8, y: 9 } }]);
+  const r = playTurn(state, plan(state, [{ mechId: "Assault", moveTo: { x: 3, y: 1 }, action: { kind: "melee" } }, { mechId: "Gunner" }, { mechId: "Support" }]));
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.deepEqual(r.log.map((e) => e.type), ["move", "act", "shove", "enemy"]);
+  assert.deepEqual(r.log[0], { type: "move", mechId: "Assault", from: { x: 2, y: 1 }, to: { x: 3, y: 1 } });
+});
+
+test("previewPlan shows the telegraph after the shove, not before", () => {
+  const state = duel([{ id: "Assault", pos: { x: 3, y: 1 } }, { id: "Gunner", pos: { x: 0, y: 9 } }, { id: "Support", pos: { x: 8, y: 9 } }]);
+  assert.deepEqual(state.boss.intent!.projected, [{ x: 3, y: 1 }]);
+  const before = structuredClone(state);
+  const p = previewPlan(state, plan(state, [{ mechId: "Assault", action: { kind: "melee" } }, { mechId: "Gunner" }, { mechId: "Support" }]));
+  assert.equal(p.ok, true);
+  if (!p.ok) return;
+  assert.deepEqual(p.telegraphAfter, [{ x: 4, y: 1 }]);
+  assert.deepEqual(p.assumed, []);
+  // Assault 离开了 (3,1)，新预告 (4,1) 上没人。
+  assert.deepEqual(p.hitsAfter, { Assault: 0, Gunner: 0, Support: 0 });
+  assert.deepEqual(state, before);
+});
+
+test("previewPlan accepts a partial plan and lists the assumed mechs; hitsAfter counts enemy damage", () => {
+  const state = duel([{ id: "Assault", pos: { x: 3, y: 1 } }, { id: "Gunner", pos: { x: 0, y: 9 } }, { id: "Support", pos: { x: 8, y: 9 } }]);
+  const p = previewPlan(state, plan(state, [{ mechId: "Gunner" }]));
+  assert.equal(p.ok, true);
+  if (!p.ok) return;
+  assert.deepEqual(p.assumed, ["Assault", "Support"]);
+  assert.deepEqual(p.telegraphAfter, [{ x: 3, y: 1 }]);
+  assert.ok(p.hitsAfter.Assault > 0);
+  assert.equal(p.hitsAfter.Gunner, 0);
+  const bad = previewPlan(state, plan(state, [{ mechId: "Gunner", action: { kind: "melee" } }]));
+  assert.equal(bad.ok, false);
+  if (!bad.ok) assert.equal(bad.fault.mechId, "Gunner");
 });

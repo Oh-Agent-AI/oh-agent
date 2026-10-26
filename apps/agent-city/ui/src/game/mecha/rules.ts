@@ -143,7 +143,38 @@ export type MatchState = {
   outcome: Outcome | null;
 };
 
-export type PlanReject = { code: "PLAN_PACK_REJECTED" | "NEED_ALL_OR_CONFIRM" | "STALE_REVISION"; reason: string };
+/** 整包被拒时的定位信息。reason 保持原英文串供旧断言；cause 是界面翻译的键。 */
+export type PlanFault = {
+  code: "PLAN_PACK_REJECTED" | "NEED_ALL_OR_CONFIRM" | "STALE_REVISION";
+  mechId?: MechId;
+  /** 在提交顺序（plan.items）里的位置。 */
+  index?: number;
+  reason: string;
+  cause?: "occupied" | "target_gone" | "out_of_reach" | "not_adjacent" | "mech_dead" | "cooldown" | "other";
+};
+/** 旧名。mechId/index/cause 都是可选附加字段，只读 code/reason 的调用方不受影响。 */
+export type PlanReject = PlanFault;
+
+/**
+ * 一回合里按结算顺序发生的事。damage 都是实际扣掉的血（已被血量封顶）。
+ * shove：damage 是被推单位自己受的碰撞伤；hit 缺省表示顺利位移，否则是挡路的东西（"wall"、单位 id）。
+ */
+export type TurnEvent =
+  | { type: "move"; mechId: MechId; from: Cell; to: Cell }
+  | { type: "act"; mechId: MechId; action: Action["kind"]; target?: string; damage: number }
+  | { type: "shove"; unit: "boss" | MechId; dir: Cell; hit?: string; damage: number }
+  | { type: "enemy"; actor: string; skill: BossSkill; cells: Cell[]; damage: number }
+  | { type: "outcome"; outcome: Outcome };
+
+/**
+ * 事件接收口。模块级而不是逐层传参：tryTranslateBoss/applyAction 等十几个内部函数
+ * 的签名和返回值都不用动，结算结果因此不可能被事件收集改变。
+ * 只有 playTurn/previewPlan 会装上它，且 finally 还原；未装时 emit 是空操作。
+ */
+let eventSink: TurnEvent[] | null = null;
+function emit(e: TurnEvent) {
+  eventSink?.push(e);
+}
 
 const key = (c: Cell) => `${c.x},${c.y}`;
 const eq = (a: Cell, b: Cell) => a.x === b.x && a.y === b.y;
@@ -513,15 +544,19 @@ function tryTranslateBoss(state: MatchState, dir: Cell): boolean {
   let hit: MechId | null = null;
   for (const nc of dests) {
     if (!inb(nc) || blocksTerrain(state, nc) || shoveWall(state, nc)) {
+      const before = state.boss.hp;
       hurtBoss(state, 2);
+      emit({ type: "shove", unit: "boss", dir, hit: "wall", damage: before - state.boss.hp });
       refresh(state);
       return false;
     }
     if (onFootprint(anchor, nc)) continue;
     const rider = raiderAt(state, nc);
     if (rider) {
+      const before = state.boss.hp;
       hurtBoss(state, 2);
       hurtRaider(rider, 2);
+      emit({ type: "shove", unit: "boss", dir, hit: rider.id, damage: before - state.boss.hp });
       refresh(state);
       return false;
     }
@@ -532,13 +567,16 @@ function tryTranslateBoss(state: MatchState, dir: Cell): boolean {
     }
   }
   if (hit) {
+    const before = state.boss.hp;
     hurtBoss(state, 2);
     hurtMech(state, hit, 2);
+    emit({ type: "shove", unit: "boss", dir, hit, damage: before - state.boss.hp });
     refresh(state);
     return false;
   }
   state.boss.anchor = { x: anchor.x + dir.x, y: anchor.y + dir.y };
   reproject(state);
+  emit({ type: "shove", unit: "boss", dir, damage: 0 });
   return true;
 }
 
@@ -546,14 +584,17 @@ function tryPushMech(state: MatchState, id: MechId, dir: Cell): boolean {
   const m = mech(state, id);
   if (!m) return false;
   const dest = { x: m.pos.x + dir.x, y: m.pos.y + dir.y };
+  const before = m.hp;
   if (!inb(dest) || blocksTerrain(state, dest) || shoveWall(state, dest)) {
     hurtMech(state, id, 2);
+    emit({ type: "shove", unit: id, dir, hit: "wall", damage: before - m.hp });
     refresh(state);
     return false;
   }
   if (state.boss.hp > 0 && onFootprint(state.boss.anchor, dest)) {
     hurtMech(state, id, 2);
     hurtBoss(state, 2);
+    emit({ type: "shove", unit: id, dir, hit: "boss", damage: before - m.hp });
     refresh(state);
     return false;
   }
@@ -561,6 +602,7 @@ function tryPushMech(state: MatchState, id: MechId, dir: Cell): boolean {
   if (rider) {
     hurtMech(state, id, 2);
     hurtRaider(rider, 2);
+    emit({ type: "shove", unit: id, dir, hit: rider.id, damage: before - m.hp });
     refresh(state);
     return false;
   }
@@ -569,10 +611,12 @@ function tryPushMech(state: MatchState, id: MechId, dir: Cell): boolean {
     hurtMech(state, id, 2);
     if (occ === "Assault" || occ === "Gunner" || occ === "Support") hurtMech(state, occ, 2);
     if (occ === "boss") hurtBoss(state, 2);
+    emit({ type: "shove", unit: id, dir, hit: occ, damage: before - m.hp });
     refresh(state);
     return false;
   }
   m.pos = dest;
+  emit({ type: "shove", unit: id, dir, damage: 0 });
   return true;
 }
 
@@ -591,18 +635,27 @@ function strikeEnemy(state: MatchState, target: string, atk: number) {
   }
 }
 
-function meleeEnemy(state: MatchState, id: MechId, target: string, bonus: number) {
+function enemyHp(state: MatchState, target: string): number {
+  return target === "boss" ? state.boss.hp : state.raiders.find((r) => r.id === target)?.hp ?? 0;
+}
+
+function meleeEnemy(state: MatchState, id: MechId, target: string, bonus: number, kind: Action["kind"]) {
   const m = mech(state, id);
   if (!m) return;
   const from = m.pos;
+  const before = enemyHp(state, target);
   strikeEnemy(state, target, STATS[id].atk + bonus);
+  // act 先于击退事件：回放顺序 = 出手、再被推。
+  emit({ type: "act", mechId: id, action: kind, target, damage: before - enemyHp(state, target) });
   refresh(state);
   if (target === "boss" && state.boss.hp > 0) tryTranslateBoss(state, knockbackFromAttacker(from, state.boss.anchor));
 }
 
-function shootEnemy(state: MatchState, id: MechId, target: string) {
+function shootEnemy(state: MatchState, id: MechId, target: string, kind: Action["kind"]) {
   if (!mech(state, id)) return;
+  const before = enemyHp(state, target);
   strikeEnemy(state, target, STATS[id].atk);
+  emit({ type: "act", mechId: id, action: kind, target, damage: before - enemyHp(state, target) });
   refresh(state);
 }
 
@@ -742,7 +795,7 @@ function applyAction(state: MatchState, id: MechId, action: Action): string | nu
     const meleeIds = meleeTargets(state, m.pos);
     const target = action.target ?? (meleeIds.length === 1 ? meleeIds[0] : undefined);
     if (!target || !meleeIds.includes(target)) return "not adjacent to an enemy";
-    meleeEnemy(state, id, target, action.kind === "charge" ? 2 : 0);
+    meleeEnemy(state, id, target, action.kind === "charge" ? 2 : 0, action.kind);
     if (action.kind === "charge") {
       m.cd = 1;
       m.skillUsed = true;
@@ -756,7 +809,7 @@ function applyAction(state: MatchState, id: MechId, action: Action): string | nu
     const shots = shotTargets(state, m.pos, stats.shoot, ignore);
     const target = action.target ?? (shots.length === 1 ? shots[0] : undefined);
     if (!target || !shots.includes(target)) return "shot blocked or out of range";
-    shootEnemy(state, id, target);
+    shootEnemy(state, id, target, action.kind);
     if (action.kind === "pierce") {
       m.cd = 1;
       m.skillUsed = true;
@@ -768,35 +821,68 @@ function applyAction(state: MatchState, id: MechId, action: Action): string | nu
   const ally = mech(state, action.target);
   if (!ally || cheb(m.pos, ally.pos) !== 1) return "repair target not adjacent";
   ally.hp = Math.min(STATS[action.target].maxHp, ally.hp + 4);
+  emit({ type: "act", mechId: id, action: "repair", target: action.target, damage: 0 });
   m.cd = 1;
   m.skillUsed = true;
   return null;
 }
 
+/**
+ * 把 applyAction 的英文拒绝串归类成界面可翻译的 cause。
+ * 串本身不变（旧测试断言它）；"目标没了"要对照回合初状态才分得出，所以带 start/trial。
+ */
+function actionFaultCause(reason: string, action: Action, start: MatchState, trial: MatchState): NonNullable<PlanFault["cause"]> {
+  if (reason === "mech is not alive") return "mech_dead";
+  if (reason === "skill on cooldown") return "cooldown";
+  const enemies = (s: MatchState) => new Set(["boss", ...s.raiders.map((r) => r.id)].filter((id) => enemyHp(s, id) > 0));
+  const startAlive = enemies(start);
+  const nowAlive = enemies(trial);
+  // 有显式目标看它；没写目标（单目标省略）就看回合初活着的敌人有没有被前面的条目打死。
+  const intendedGone =
+    "target" in action && action.target !== undefined
+      ? startAlive.has(action.target) && !nowAlive.has(action.target)
+      : [...startAlive].some((id) => !nowAlive.has(id));
+  if (reason === "shot blocked or out of range") return intendedGone ? "target_gone" : "other";
+  if (reason === "not adjacent to an enemy") {
+    return "target" in action && action.target !== undefined && startAlive.has(action.target) && !nowAlive.has(action.target) ? "target_gone" : "not_adjacent";
+  }
+  if (reason === "repair target not adjacent") return "not_adjacent";
+  return "other";
+}
+
+/**
+ * 契约（阶段 A）：条目按提交顺序在同一份试算状态上逐台结算——先移动再行动，
+ * 前面的击退、击杀、占位都对后面的条目可见。任何一条不合法整包拒绝，state 不动。
+ * 拒绝时附 mechId/index/cause 指出是哪一台、为什么。
+ */
 export function validateAndApplyPlan(state: MatchState, plan: ArenaPlan): { ok: true } | PlanReject {
-  if (state.phase !== "player_plan") return { code: "PLAN_PACK_REJECTED", reason: "not player_plan" };
-  if (plan.revision !== state.revision) return { code: "STALE_REVISION", reason: "revision mismatch" };
+  if (state.phase !== "player_plan") return { code: "PLAN_PACK_REJECTED", reason: "not player_plan", cause: "other" };
+  if (plan.revision !== state.revision) return { code: "STALE_REVISION", reason: "revision mismatch", cause: "other" };
   const alive = living(state).map((m) => m.id);
   const seen = new Set(plan.items.map((i) => i.mechId));
   if (seen.size !== plan.items.length || seen.size !== alive.length || alive.some((id) => !seen.has(id))) {
-    return { code: "NEED_ALL_OR_CONFIRM", reason: "pack must name every living mech once" };
+    return { code: "NEED_ALL_OR_CONFIRM", reason: "pack must name every living mech once", cause: "other" };
   }
   const trial = structuredClone(state);
-  for (const item of plan.items) {
+  for (const [index, item] of plan.items.entries()) {
+    const fault = (reason: string, cause: NonNullable<PlanFault["cause"]>): PlanReject => ({
+      code: "PLAN_PACK_REJECTED", reason, mechId: item.mechId, index, cause,
+    });
     const who = mech(trial, item.mechId);
-    if (!who) return { code: "PLAN_PACK_REJECTED", reason: "mech is not alive" };
+    if (!who) return fault("mech is not alive", "mech_dead");
     const dest = item.moveTo ?? who.pos;
     if (!eq(dest, who.pos)) {
       const dist = pathDistance(trial, who.pos, dest, item.mechId);
       if (dist === null) {
         const occ = occupant(trial, dest);
-        return { code: "PLAN_PACK_REJECTED", reason: occ === "empty" ? "no path within move range" : "destination occupied" };
+        return occ === "empty" ? fault("no path within move range", "out_of_reach") : fault("destination occupied", "occupied");
       }
-      if (dist > moveBudget(item.mechId)) return { code: "PLAN_PACK_REJECTED", reason: "move exceeds move_range" };
+      if (dist > moveBudget(item.mechId)) return fault("move exceeds move_range", "out_of_reach");
+      emit({ type: "move", mechId: item.mechId, from: { ...who.pos }, to: { ...dest } });
       who.pos = dest;
     }
     const err = applyAction(trial, item.mechId, item.action);
-    if (err) return { code: "PLAN_PACK_REJECTED", reason: err };
+    if (err) return fault(err, actionFaultCause(err, item.action, state, trial));
   }
   for (const m of trial.mechs) {
     if (m.skillUsed) m.skillUsed = false;
@@ -1116,19 +1202,26 @@ function resolveRaider(state: MatchState, raider: Raider) {
     return;
   }
   const struck = new Set<string>();
+  // 事件先入列、伤害收完再回填：保证 enemy 排在它引发的后续事件之前。
+  const ev: Extract<TurnEvent, { type: "enemy" }> = { type: "enemy", actor: raider.id, skill: intent.skillId, cells: intent.projected.map((c) => ({ ...c })), damage: 0 };
+  emit(ev);
   for (const cell of intent.projected) {
     const occ = occupant(state, cell);
     if (occ === "building") {
       const hit = livingBuildingAt(state, cell);
       if (hit && !struck.has(hit.id)) {
         struck.add(hit.id);
+        const before = hit.hp;
         hit.hp = Math.max(0, hit.hp - strike(RAIDER_ATK, BUILDING_DEF));
+        ev.damage += before - hit.hp;
         refresh(state);
       }
       continue;
     }
     if (occ === "Assault" || occ === "Gunner" || occ === "Support") {
+      const before = state.mechs.find((x) => x.id === occ)!.hp;
       hurtMech(state, occ, strike(RAIDER_ATK, STATS[occ].def));
+      ev.damage += before - state.mechs.find((x) => x.id === occ)!.hp;
       refresh(state);
     }
   }
@@ -1162,13 +1255,17 @@ export function bossExecute(state: MatchState) {
   let any = false;
   const struckBuildings = new Set<string>();
   if (intent && skill !== "skip" && intent.status !== "void") {
+    const ev: Extract<TurnEvent, { type: "enemy" }> = { type: "enemy", actor: "boss", skill, cells: cells.map((c) => ({ ...c })), damage: 0 };
+    emit(ev);
     for (const c of cells) {
       const occ = occupant(state, c);
       if (occ === "building") {
         const hit = livingBuildingAt(state, c);
         if (hit && !struckBuildings.has(hit.id)) {
           struckBuildings.add(hit.id);
+          const before = hit.hp;
           hit.hp = Math.max(0, hit.hp - strike(BOSS_ATK, BUILDING_DEF));
+          ev.damage += before - hit.hp;
           any = true;
           refresh(state);
         }
@@ -1177,7 +1274,9 @@ export function bossExecute(state: MatchState) {
       if (occ === "empty" || occ === "cover" || occ === "boss" || occ === "rubble" || occ === "raider") continue;
       const target = mech(state, occ);
       if (!target) continue;
+      const before = target.hp;
       hurtMech(state, occ, strike(BOSS_ATK, STATS[occ].def));
+      ev.damage += before - target.hp;
       refresh(state);
       if (skill === "smash" && mech(state, occ)) tryPushMech(state, occ, knockbackFromBoss(state.boss.anchor, target.pos));
       any = true;
@@ -1208,4 +1307,75 @@ export function bossExecute(state: MatchState) {
 export function setScriptCounters(state: MatchState, cadence: number, cdSweep: number) {
   state.boss.cadence = cadence % 3;
   state.boss.cdSweep = cdSweep;
+}
+
+// ---- 回合入口 ----
+
+export type TurnResult =
+  | { ok: true; state: MatchState; log: TurnEvent[] }
+  | { ok: false; fault: PlanFault };
+
+/** 内部：在克隆上跑 校验 → 大怪结算 → 下回合准备，并在玩家行动之后、敌方结算之前取一次预告。 */
+function runTurn(state: MatchState, plan: ArenaPlan) {
+  const next = structuredClone(state);
+  const log: TurnEvent[] = [];
+  const outer = eventSink;
+  eventSink = log;
+  try {
+    const applied = validateAndApplyPlan(next, plan);
+    if (!("ok" in applied)) return { ok: false as const, fault: applied };
+    let announced = false;
+    const noteOutcome = () => {
+      if (next.outcome && !announced) {
+        announced = true;
+        emit({ type: "outcome", outcome: next.outcome });
+      }
+    };
+    noteOutcome();
+    // 推动之后的预告：大怪被推会 reproject，小怪的预告不跟着动。
+    const seen = new Set<string>();
+    const telegraph: Cell[] = [];
+    for (const intent of [next.boss.intent, ...next.raiders.map((r) => r.intent)]) {
+      if (!intent || intent.skillId === "skip" || intent.status === "void") continue;
+      for (const c of intent.projected) if (!seen.has(key(c))) (seen.add(key(c)), telegraph.push({ ...c }));
+    }
+    const hpBefore = Object.fromEntries(next.mechs.map((m) => [m.id, m.hp])) as Record<MechId, number>;
+    if (next.phase === "resolving_boss") bossExecute(next);
+    const hits = Object.fromEntries(MECH_IDS.map((id) => [id, Math.max(0, (hpBefore[id] ?? 0) - (next.mechs.find((m) => m.id === id)?.hp ?? 0))])) as Record<MechId, number>;
+    noteOutcome();
+    if (next.phase === "enemy_prepare") bossPrepare(next);
+    noteOutcome();
+    return { ok: true as const, state: next, log, telegraph, hits };
+  } finally {
+    eventSink = outer;
+  }
+}
+
+/**
+ * 一回合的唯一入口：校验并结算玩家整包，再走完大怪结算与下回合准备，
+ * 调用方不用再看 phase。不修改传入的 state（内部克隆），拒绝时返回 fault、原 state 原样可用。
+ * 成功时 state 已进入下一回合的 player_plan（或 finished）。log 按结算顺序。
+ */
+export function playTurn(state: MatchState, plan: ArenaPlan): TurnResult {
+  const r = runTurn(state, plan);
+  return r.ok ? { ok: true, state: r.state, log: r.log } : r;
+}
+
+/**
+ * 预览：在克隆上做与提交完全相同的试算，plan 可以不完整——
+ * 没排的活机甲按「不动 + 待机」排在末尾，并列入 assumed，界面据此标「假设」。
+ * telegraphAfter 是玩家行动之后（推动已生效）的预告格；hitsAfter 是本回合敌方结算里每台掉的血。
+ */
+export function previewPlan(
+  state: MatchState,
+  plan: ArenaPlan,
+): { ok: true; telegraphAfter: Cell[]; hitsAfter: Record<MechId, number>; assumed: MechId[] } | { ok: false; fault: PlanFault } {
+  const named = new Set(plan.items.map((i) => i.mechId));
+  const assumed = living(state).map((m) => m.id).filter((id) => !named.has(id));
+  const full: ArenaPlan = {
+    revision: plan.revision,
+    items: [...plan.items, ...assumed.map((mechId) => ({ mechId, moveTo: null, action: { kind: "skip" as const } }))],
+  };
+  const r = runTurn(state, full);
+  return r.ok ? { ok: true, telegraphAfter: r.telegraph, hitsAfter: r.hits, assumed } : r;
 }
