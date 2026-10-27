@@ -195,10 +195,14 @@ def cyl(name, r, depth, loc, axis="Z", m=None, c=None, verts=24, bev=0.0, r2=Non
 
 def stepped_axle(name, radii_depths, loc, axis="X", mats=None, c=None, verts=24):
     """Concentric stepped rings (shoulder axles, hip joints): [(r, depth), ...] outer→inner, each
-    successive ring sticks out further. Returns the list of objects."""
+    successive ring sticks out further. Returns the list of objects.
+    A side suffix stays last ("elbow_r" → "elbow_0_r", "elbow_1_r"): mirror_pass only mirrors
+    names ending in _r, and "elbow_r_0" silently left the Assault without left elbows, knees,
+    ankles and shoulder axles (found by the per-part 3D comparison, not by any render)."""
     out = []
+    stem, side = (name[:-2], name[-2:]) if name.endswith(("_r", "_l")) else (name, "")
     for i, (r, d) in enumerate(radii_depths):
-        out.append(cyl("%s_%d" % (name, i), r, d, loc, axis, (mats or [None])[min(i, len(mats or [None]) - 1)], c, verts))
+        out.append(cyl("%s_%d%s" % (stem, i, side), r, d, loc, axis, (mats or [None])[min(i, len(mats or [None]) - 1)], c, verts))
     return out
 
 

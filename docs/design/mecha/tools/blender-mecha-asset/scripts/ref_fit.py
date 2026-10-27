@@ -170,6 +170,91 @@ def fit_profiles(ref, crop=None, frame=None, cell=0.05, tol=0.1, views=("XZ", "Y
     return {names[v]: outline(t, v, cell, tol) for v in views}
 
 
+def extra_view_outlines(ref, crop=None, sym_cx=None, views=(), cell=0.05, tol=0.12):
+    """Outlines of the reference part seen from extra directions (az, el), for carving.
+    Three axis views give a visual hull that fills every concavity those views cannot see (the
+    Assault pauldron came out 1.65x the reference volume, the head 2.2x). Each extra view adds one
+    more silhouette cut: [{"az", "el", "pts"}], pts in that view's XZ plane."""
+    t = ref_tris(ref, crop, sym_cx)
+    out = []
+    for az, el in views:
+        M = _view_rot(az, el)
+        out.append({"az": az, "el": el, "pts": outline(_rot(t, M), "XZ", cell, tol)})
+    return out
+
+
+def carve_views(o, extra, span=80.0):
+    """Intersect a world-space fitted object with the extruded silhouette of each extra view."""
+    cuts = []
+    for i, e in enumerate(extra):
+        if len(e["pts"]) < 3:
+            continue
+        c = prism("%s_view%d" % (o.name, i), [tuple(p) for p in e["pts"]], span, (0, 0, 0), None, coll("CUTTERS"), 0, plane="XZ")
+        c.data.transform(_view_rot(e["az"], e["el"]).inverted())
+        c.display_type = "WIRE"; c.hide_render = True
+        cuts.append(c)
+    if cuts:
+        _bake_booleans(o, [(c, "INTERSECT") for c in cuts])
+        for c in cuts:
+            me_ = c.data; D.objects.remove(c, do_unlink=True); D.meshes.remove(me_)
+    return o
+
+
+def ref_envelope(ref, crop=None, sym_cx=None, offset=0.15, voxel=0.12, name="ref_env"):
+    """Watertight envelope of the reference part, pushed out by `offset` m: triangle soup →
+    voxel remesh (fuses double sheets, small holes) → push along normals. Intersect a fitted part
+    with it to carve concavities silhouettes cannot see (carve_envelope)."""
+    t = ref_tris(ref, crop, sym_cx)
+    me = D.meshes.new(name + "_mesh")
+    me.from_pydata([tuple(p) for p in t.reshape(-1, 3)], [], [(3 * i, 3 * i + 1, 3 * i + 2) for i in range(len(t))])
+    o = D.objects.new(name, me); coll("CUTTERS").objects.link(o)
+    rm = o.modifiers.new("Remesh", "REMESH"); rm.mode = "VOXEL"; rm.voxel_size = voxel
+    bpy.context.view_layer.update()
+    m2 = D.meshes.new_from_object(o.evaluated_get(bpy.context.evaluated_depsgraph_get()))
+    o.modifiers.clear(); o.data = m2; D.meshes.remove(me)
+    bm = bmesh.new(); bm.from_mesh(m2); bm.normal_update()
+    for v in bm.verts:
+        v.co += v.normal * offset
+    bm.to_mesh(m2); bm.free()
+    o.display_type = "WIRE"; o.hide_render = True
+    return o
+
+
+def carve_envelope(o, env, dissolve_deg=4.0):
+    """o ∩ envelope, then dissolve the near-coplanar fragments the dense envelope leaves behind.
+    Uses the FAST solver: EXACT silently returned an EMPTY mesh against the dense voxel envelope
+    (Assault head shell, with and without hole_tolerant)."""
+    bpy.context.view_layer.update()
+    saved = [(md, md.show_viewport) for md in o.modifiers]
+    for md, _ in saved:
+        md.show_viewport = False
+    b = o.modifiers.new("env_isect", "BOOLEAN"); b.operation = "INTERSECT"; b.object = env
+    try:
+        b.solver = "FLOAT"
+    except TypeError:
+        b.solver = "FAST"
+    bpy.context.view_layer.update()
+    me = D.meshes.new_from_object(o.evaluated_get(bpy.context.evaluated_depsgraph_get()))
+    o.modifiers.remove(b)
+    for md, v in saved:
+        md.show_viewport = v
+    if not me.vertices:
+        D.meshes.remove(me)
+        raise ValueError("envelope carve of %s came out empty" % o.name)
+    old, mats = o.data, list(o.data.materials)
+    o.data = me; me.materials.clear()
+    for m in mats:
+        me.materials.append(m)
+    if old.users == 0:
+        D.meshes.remove(old)
+    me.name = o.name + "_mesh"
+    bm = bmesh.new(); bm.from_mesh(o.data)
+    bmesh.ops.dissolve_limit(bm, angle_limit=math.radians(dissolve_deg), verts=bm.verts, edges=bm.edges)
+    bmesh.ops.triangulate(bm, faces=[f for f in bm.faces if len(f.verts) > 4], quad_method="BEAUTY", ngon_method="EAR_CLIP")
+    bm.to_mesh(o.data); bm.free()
+    return o
+
+
 def build_fit(name, ref, m, c, bev, crop=None, frame=None, tol=0.1, use_top=True):
     """profile_intersect from the reference part's three outlines (visual hull, in `frame`)."""
     r = fit_profiles(ref, crop, frame, tol=tol)

@@ -76,6 +76,29 @@ fixed that where it applies:
     out empty. Place recesses on a curved plate from a ray-cast at the recess centre, not from the
     plate's outermost point (that cut only a thin strip).
 
+12. **Too fat? Measure where the extra volume sits before carving** (voxel solid of each part
+    minus the reference solid). On the Assault:
+    - Pauldrons (1.68×): an open cavity under a shell, filled by the hull and by an inner core.
+      No silhouette can carve an opening that faces away from every view; hollow the part
+      instead (subtract a shrunk, shifted copy; dark interior). Result 1.12×, score 61 → 80.
+    - Concavities that some direction does see (thigh, hood): add oblique views with
+      `extra_view_outlines` + `carve_views` (thigh armour 1.24 → 1.09).
+    - Parts that belong to a different group in the reference (knee axle, collar ring): fix the
+      grouping, not the geometry. Re-score the combined region (upper body 1.10 before and after
+      — the "fat head" was a grouping artifact).
+    - Do not intersect with an offset reference envelope: EXACT returned empty, FAST gave wrong
+      volumes, scores dropped and triangles exploded.
+
+13. **Check the reference's own symmetry before copying an asymmetry.** Mirror about the
+    reference's centre, not x = 0: the Assault proxy sat +0.55 m off-centre, which made its left
+    side look 1 m narrower. Compare whole limbs, not segments. The proxy's left thigh scored only
+    56 against its mirrored right thigh, yet the whole legs scored 80 (volume 1.06). Its left shin
+    simply started higher and took part of the thigh, so the difference was segmentation, not shape.
+14. **Seal voxel solids.** Hand-built parts with grooves and raised plates are rarely watertight;
+    an unsealed exterior flood leaks in depending on grid alignment (mirror-image shins measured
+    125 vs 16 m³). `ref_compare3d._solid` dilates the surface one voxel before flooding and erodes
+    back after. Re-score every version with the same metric before comparing.
+
 Limits: a visual hull cannot represent dips or openings: the barrel chest with faceted pecs, a
 collar ring open at the front, or a chest top that dips between raised collar bulges. A crop that
 includes a raised side bulge lifts the whole hull (the first chest fit buried the head). Crop below

@@ -9,6 +9,8 @@
 # config.json (all optional; defaults reproduce the Agent City Assault contract):
 # {
 #   "collection": "ASSAULT",                     # modeling collection
+#   "collections": ["ASSAULT", "ASSAULT_ASYM", "ASSAULT_SHIELD"],   # or several (mirror-first body,
+#                                                # asymmetric add-ons, carried item); overrides "collection"
 #   "drop_collections": ["REF_ai_lowpoly"],      # reference ghosts etc. removed before export
 #   "mesh_names": {"forearm_r": "gauntlet-right", "forearm_l": "gauntlet-left",
 #                  "body": "body_armor", "head": "head_armor"},
@@ -55,12 +57,15 @@ for n in ("SHOTCAM",):
     if o:
         D.objects.remove(o, do_unlink=True)
 C = D.collections[COL]
+COLS = [D.collections[n] for n in cfg.get("collections", [COL])]
 bpy.context.view_layer.update()
 dg = bpy.context.evaluated_depsgraph_get()
 
 # 1) apply modifiers, flat shade, vertices to world space (rest pose: matrix_world == modeling coords)
-meshes = [o for o in C.objects if o.type == "MESH" and not o.hide_render]
-for o in [o for o in C.objects if o.type == "MESH" and o.hide_render]:   # boolean cutters
+# Mirror-first models keep asymmetric add-ons and the carried item in their own collections; a
+# single-collection finalize silently drops them (no error, the fist and shield just vanish).
+meshes = [o for c in COLS for o in c.objects if o.type == "MESH" and not o.hide_render]
+for o in [o for c in COLS for o in c.objects if o.type == "MESH" and o.hide_render]:   # boolean cutters
     D.objects.remove(o, do_unlink=True)
 for o in meshes:
     me = D.meshes.new_from_object(o.evaluated_get(dg))

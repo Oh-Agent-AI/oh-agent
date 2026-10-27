@@ -62,6 +62,7 @@ fails three times.
 | `mk.py` | Modeling helpers: `profile_intersect`, `bent_plate`, `conform_plate` (raised plate following a hull), `engrave` (baked cuts, `fill=` material for groove floors), `core_of`, `stepped_axle`, `cut`, `box`, `cyl`, `mirror_center`, `mirror_pass`, `mirror_part`, `attach`, `empty` (joint with correct pivots), `parent_keep`, `shot` (incl. `silhouette=True`), `bounds`, `TIER` |
 | `ref_measure.py` | Concept view → height-profile table in meters + gridded zoom |
 | `silhouette_iou.py` | Concept silhouette vs render silhouette → IoU + red/cyan overlay |
+| `ref_compare3d.py` | Per-part 3D similarity to the AI reference (not images): solid voxel IoU, symmetric surface distance, d95, F-score@τ, raw vs centroid-aligned, volume ratio; vertex-colour deviation heat maps |
 | `ref_fit.py` | Per-part fitting to an AI reference mesh: per-view + oblique IoU, outline extraction for `profile_intersect`, symmetrize off-centre parts (see `references/ai-image-to-3d.md`) |
 | `finalize_rigid.py` | Apply modifiers, join per joint into contract names, palette + accent materials, markers, self-check |
 | `animate_rigid.py` + `motion_example_assault.py` | Key clips from a motion module, ground lift, ankle compensation, GLB + manifest export |
