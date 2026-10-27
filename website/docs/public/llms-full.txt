@@ -458,3 +458,36 @@ No. Credentials are never saved in anything Oh Agent owns. Some test features ca
 - [What each building in Agent City means](https://ohagent.ai/docs/city-guide)
 - [Claude Code data source](https://ohagent.ai/docs/data-sources/claude-code) · [Codex data source](https://ohagent.ai/docs/data-sources/codex)
 - [FAQ](https://ohagent.ai/#faq)
+
+---
+
+# Where does DeepSeek Harness (DSH) store sessions, and how does Oh Agent read them?
+URL: https://ohagent.ai/docs/data-sources/deepseek-harness/
+
+DeepSeek Harness (DSH) keeps each session as a `session.jsonl` file, sometimes compressed as `session.jsonl.zstd`, under the `sessions/` folder of its home directory. That directory is `$DSH_HOME`, or `~/.dsh` if the variable isn't set. Agent Vitals reads these files on your Mac and shows each session as a building in the DSH district of Agent City.
+
+## Key facts
+
+- **Location:** `$DSH_HOME/sessions/`, recursively. `DSH_HOME` defaults to `~/.dsh`.
+- **Files read:** `session.jsonl` and `session.jsonl.zstd`.
+- **`DSH_HOME` is followed**, even outside your home folder. This is the only built-in source that honours an environment variable for its location.
+- **Titles** come from DSH's workspace index, `storages/workspace.json`.
+- **Behaviour checks:** yes. DSH sessions get the same SV6xx findings as Claude Code and Codex.
+- **Extra folders:** supported in Settings.
+
+## What does Oh Agent take from DSH sessions?
+
+The same summary as for other sources: time range, event count, token counts and a bounded title. DSH logs record provider evidence, so cost estimates for DSH can tell routes apart better than for Claude Code.
+
+## Is there also a DSH plugin?
+
+Yes, but it's separate from session reading. The `dsh-agent-vitals` bundle in `integrations/dsh/` adds the older skill auditor as a skill inside DSH (`dsh plugin --profile web add dsh-agent-vitals`). You don't need it for Agent City.
+
+In Agent City the district label for this harness is **DSH** (fixture `id: "dsh"`, `display_name: "DSH"`).
+
+## Related
+
+- [Claude Code data source](https://ohagent.ai/docs/data-sources/claude-code)
+- [Codex data source](https://ohagent.ai/docs/data-sources/codex)
+- [What each building in Agent City means](https://ohagent.ai/docs/city-guide)
+- [Install](https://ohagent.ai/docs/install) · [FAQ](https://ohagent.ai/#faq)
