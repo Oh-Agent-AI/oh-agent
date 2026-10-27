@@ -7,6 +7,9 @@ import {
 } from "../render/mecha/models";
 
 import { MechaAnimator, type MechaAction } from "../render/mecha/animation";
+import { installMechaGlbs } from "../render/mecha/glbRegistry";
+
+installMechaGlbs();
 
 type ModelId = "assault" | "gunner" | "support" | "boss" | "raider";
 type ViewId = "hero" | "front" | "side" | "rear" | "top";

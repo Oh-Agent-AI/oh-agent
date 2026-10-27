@@ -4,7 +4,8 @@
  * 横竖尺寸收在各自脚印里：机甲 1×1，怪兽 2×2。击退仍由规则结算，这里只出网格。
  */
 import * as THREE from "three";
-import { createMechaRig, registerMechaRig, type MechaJoint } from "./animation";
+import { createMechaRig, registerMechaRig, setMechaRig, type MechaJoint } from "./animation";
+import { instantiateMechaGlb, type MechaGlbAsset } from "./glbModels";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 
 /** Same ratio as `engine/worldScale.ts`. The model test fails if the two diverge. */
@@ -98,18 +99,84 @@ function assemble(name: string, role: string, parts: (owned: THREE.Material[]) =
     }
   }
   registerMechaRig(root, rig);
+  root.userData.proceduralVisual = rig.visual;
   root.userData.dispose = () => {
     root.traverse((obj) => {
       if (obj instanceof THREE.Mesh) obj.geometry.dispose();
     });
     for (const mat of owned) mat.dispose();
   };
+  scheduleGlbUpgrade(root, role);
   return root;
 }
 
 export function disposeMechaModel(root: THREE.Object3D) {
+  // 先打标记：还没回来的 GLB 加载回来时看到它就不再升级一个已经销毁的模型
+  root.userData.disposed = true;
   const dispose = root.userData.dispose;
   if (typeof dispose === "function") dispose();
+}
+
+/**
+ * GLB 资产来源（glbRegistry.ts 在应用入口安装）。node 里的测试不安装它，所以 createXxx() 在那里恒为程序模型。
+ * 这个分层让 models.ts 不依赖 Vite 的 ?url 资产导入。
+ */
+export type MechaGlbProvider = {
+  has: (role: string) => boolean;
+  /** 已加载完就同步返回，让后建的实例一出生就是 GLB（不闪一下程序模型）。 */
+  peek: (role: string) => MechaGlbAsset | null;
+  load: (role: string) => Promise<MechaGlbAsset>;
+};
+let glbProvider: MechaGlbProvider | null = null;
+export function installMechaGlbProvider(provider: MechaGlbProvider | null): void {
+  glbProvider = provider;
+}
+
+/**
+ * 把程序模型原地换成 GLB：根节点（位置、缩放、朝向、动画器的键）全不动，只换里面的内容和登记的绑定。
+ * 实例化失败（资产坏了）返回 false 并保持程序模型不变。
+ */
+export function upgradeMechaModelToGlb(root: THREE.Group, asset: MechaGlbAsset): boolean {
+  if (root.userData.disposed || root.userData.glb) return false;
+  let instance;
+  try {
+    instance = instantiateMechaGlb(asset, MECHA_METERS_PER_UNIT);
+  } catch (error) {
+    console.warn("[mecha] GLB instance failed, keeping the procedural model:", error);
+    return false;
+  }
+  // 调用方（如停机坪上的小队）在创建后给网格打过阴影标记，新来的网格要继承
+  let cast = false, receive = false;
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (mesh.isMesh) { cast ||= mesh.castShadow; receive ||= mesh.receiveShadow; }
+  });
+  if (cast || receive) instance.wrapper.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (mesh.isMesh) { mesh.castShadow = cast; mesh.receiveShadow = receive; }
+  });
+  const oldVisual = root.userData.proceduralVisual as THREE.Object3D | undefined;
+  const oldDispose = root.userData.dispose;
+  if (oldVisual) root.remove(oldVisual);
+  if (typeof oldDispose === "function") oldDispose();
+  root.add(instance.wrapper);
+  setMechaRig(root, instance.rig);
+  root.userData.dispose = () => instance.dispose();
+  root.userData.proceduralVisual = undefined;
+  root.userData.glb = true;
+  return true;
+}
+
+function scheduleGlbUpgrade(root: THREE.Group, role: string): void {
+  const provider = glbProvider;
+  if (!provider?.has(role)) return;
+  const ready = provider.peek(role);
+  if (ready) {
+    upgradeMechaModelToGlb(root, ready);
+    return;
+  }
+  // 加载失败时 provider 已记录原因；这里什么都不做 = 继续用程序模型
+  provider.load(role).then((asset) => { upgradeMechaModelToGlb(root, asset); }, () => undefined);
 }
 
 /** Meter-based parts. Chamfers make armor readable without adding surface noise. */

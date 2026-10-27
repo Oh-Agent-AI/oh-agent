@@ -1,0 +1,46 @@
+{
+  "id": "assault",
+  "version": 1,
+  "role": "Assault",
+  "footprint": [
+    1,
+    1
+  ],
+  "forward": "-Z",
+  "heightMeters": 19.61,
+  "clips": {
+    "idle": {
+      "duration": 3.14,
+      "loop": true
+    },
+    "move": {
+      "duration": 0.79,
+      "loop": true
+    },
+    "attack": {
+      "duration": 0.95,
+      "loop": false
+    },
+    "hit": {
+      "duration": 0.48,
+      "loop": false
+    },
+    "defeat": {
+      "duration": 0.85,
+      "loop": false,
+      "holdLastFrame": true
+    }
+  },
+  "actionMap": {
+    "repair": "attack"
+  },
+  "materials": [
+    "armor_palette",
+    "faction_accent"
+  ],
+  "source": {
+    "kind": "hand-modelled in Blender 5.4 (reference: AI-generated low-poly, not shipped)",
+    "blend_sha256": "f799ef5caa491b8a1495f5d9e735222fa4eda545b8b41b13a43c9cd53ac0960c",
+    "glb_sha256": "4c18ff9714b230d5c130c63ef6cd9e47839680b046ac604d3da0c812f431aff0"
+  }
+}

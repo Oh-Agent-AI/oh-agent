@@ -13,3 +13,8 @@ declare module "*.m4a?url" {
   const url: string;
   export default url;
 }
+// 机甲 GLB 的清单（JSON）也走 ?url：运行时 fetch，资产随应用离线分发。
+declare module "*.json?url" {
+  const url: string;
+  export default url;
+}
