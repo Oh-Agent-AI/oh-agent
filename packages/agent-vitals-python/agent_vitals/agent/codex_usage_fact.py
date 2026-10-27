@@ -5,9 +5,10 @@ codex wire-shape 解释，而是驱动 `codex_usage.CodexFoldState`（Stage 2 co
 的共享 per-`token_count` 观察者）逐事件 `apply`，按返回的判别出口发射。emitter
 只负责 fold 不管的两件事：
 
-1. **byte_offset**（§3.3）：derived `source_event_id` 需要行首在原文件里的字节
-   位置——`codex_cost` 读法（`codex_session.read_codex_session_log`）在解析后丢
-   掉偏移，所以这里在原始字节上做一次带偏移的 `split_lines` 复刻，**不**引入第
+1. **byte_offset**（§3.3）：derived `source_event_id` 需要行首在逻辑 JSONL 字节
+   流里的位置——明文 rollout 下它也是原文件偏移；`.zst` 下它是完整解压后的
+   JSONL 偏移，不能直接当作压缩文件 seek 位置。`codex_cost` 读法在解析后丢掉偏移，
+   所以这里在解析字节上做一次带偏移的 `split_lines` 复刻，**不**引入第
    二套换行语义（只认 \\n / \\r\\n / \\r，末段无换行也消费）。
 2. **native_session_id 解析**（§3.4）：逻辑 session_id（`session_meta`）→
    `path.stem` 兜底。
@@ -62,7 +63,8 @@ def _iter_raw_lines(data: bytes):
     """在原始字节上复刻 `util.split_lines` 的换行语义（只认 \\n / \\r\\n / \\r，
     末段无换行也消费），产 `(行首字节偏移, 行字节)`。
 
-    偏移是**原文件**的字节位置——不做 UTF-8 解码替换（`errors="replace"` 会把坏
+    偏移是传入字节流的位置；`.zst` 调用方先完整解压，因此为解压后 JSONL 的逻辑
+    偏移。不做 UTF-8 解码替换（`errors="replace"` 会把坏
     字节变 U+FFFD 改变后续字节长度），逐字节与 Rust `codex_usage_fact.rs` 的
     同款扫描一致。正常 rollout JSONL 是合法 UTF-8，解码替换只在坏行上发生，而坏
     行整份降级、偏移不被任何 fact 消费。
@@ -133,6 +135,14 @@ def _resolve_native_session_id(path, items) -> str:
             session_id = sid
     if session_id is not None:
         return session_id
+    return _rollout_source_stem(path)
+
+
+def _rollout_source_stem(path) -> str:
+    name = Path(path).name
+    for suffix in (".jsonl.zst", ".jsonl"):
+        if name.endswith(suffix):
+            return name[:-len(suffix)]
     return Path(path).stem
 
 
@@ -403,6 +413,16 @@ def codex_rollouts_to_usage_facts(
     for p in paths:
         p = Path(p)
         data = p.read_bytes()  # OSError → 上抛（CLI exit 2，镜像 claude-usage-facts）
+        if str(p).endswith(".jsonl.zst"):
+            from ..adapters.dsh import _zstd, decode_zstd_multi_frame
+
+            if _zstd() is None:
+                malformed += 1
+                continue
+            data = decode_zstd_multi_frame(data)
+            if data is None:
+                malformed += 1
+                continue
         items, degraded = _parse_rollout_bytes(data)
         if degraded is not None:
             malformed += 1
@@ -431,7 +451,7 @@ def codex_rollouts_to_usage_facts(
                 skip_rows += 1
                 continue
             # Consumed：可折进 by_model = 可 emit（§2.3 发射集定义）。
-            source_event_id = _derived_event_id(p.stem, offset, item)
+            source_event_id = _derived_event_id(_rollout_source_stem(p), offset, item)
             if source_event_id in seen:
                 # §3.5.3 同物理 rollout（同 stem）重复来源 → duplicate、只留一条。
                 duplicate += 1

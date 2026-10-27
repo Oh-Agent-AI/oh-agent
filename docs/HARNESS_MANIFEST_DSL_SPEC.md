@@ -177,6 +177,19 @@ decision_matrix / UI 逐面审计，不从 `harness TEXT` 推导“下游零改�
 | `slug` | ✓ | §3.1 规则；与目录名一致 |
 | `display.name` | ✓ | UI 显示名（徽标由本体附加，不由 manifest 声明） |
 | `source.format` | ✓ | P0 仅 `jsonl`；坏 JSON 行计 invalid，不是 skip |
+| `source.compression` | ✓ | 可选，默认为 `none`；`zstd` 表示源文件按 Zstandard（支持拼接多帧）压缩，解压后须为 UTF-8 JSONL。`discovery.include` 与 `session.pattern` 应匹配完整压缩文件名（例如 `.jsonl.zst`）。Python 兼容运行时需要可选 `zstandard` 包；Rust 原生运行时内置解码器。 |
+
+例如热更新 harness 的日志若为 `session-abc.jsonl.zst`，声明仍保持逻辑格式为 JSONL，仅增加存储编码，并让发现和 session 提取匹配实际文件名：
+
+```json
+{
+  "discovery": { "roots": ["~/.zcode/rollouts"], "include": ["session-*.jsonl.zst"] },
+  "source": { "format": "jsonl", "compression": "zstd" },
+  "session": { "from": "filename", "pattern": "^session-(?P<id>.+)\\.jsonl\\.zst$" }
+}
+```
+
+这不会为 ZCode 或任何特定插件硬编码路径；插件版本变化后，只要日志结构与该 recipe 一致，维护其本地 manifest 即可接入。未声明 `compression: "zstd"` 的旧 manifest 行为不变。
 | `discovery.roots` | ✓ | 路径数组，支持 `~/`；P0 只读本地路径。发现由本体执行，
   统一增量、retention 与安全面 |
 | `discovery.include` | ✓ | glob 数组（`*`、`**`、`?`） |

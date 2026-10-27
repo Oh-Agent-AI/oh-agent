@@ -76,6 +76,16 @@ class GlobSemanticsTest(unittest.TestCase):
 
 
 class ManifestRulesTest(unittest.TestCase):
+    def test_zstd_is_an_optional_source_encoding(self):
+        v = zcode_manifest()
+        self.assertEqual(parse_manifest(v).compression, "none")
+        v["source"]["compression"] = "zstd"
+        self.assertEqual(parse_manifest(v).compression, "zstd")
+        v["source"]["compression"] = "gzip"
+        with self.assertRaises(ManifestError) as ctx:
+            parse_manifest(v)
+        self.assertEqual(ctx.exception.field, "source.compression")
+
     def test_schema_version_bounds_match_runtime_grammar(self):
         import re
         from agent_vitals.agent.generic_manifest import _release_version

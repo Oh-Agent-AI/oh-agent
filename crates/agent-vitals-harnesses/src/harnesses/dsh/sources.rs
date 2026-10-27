@@ -357,6 +357,32 @@ pub fn decode_zstd_multi_frame(bytes: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Bounded counterpart used by generic plugin previews; the limit applies to
+/// decompressed bytes so a small compressed fixture cannot bypass corpus limits.
+pub fn decode_zstd_multi_frame_limited(bytes: &[u8], limit: usize) -> Result<Vec<u8>, ()> {
+    if bytes.is_empty() { return Ok(Vec::new()); }
+    let mut out = Vec::new();
+    let mut pos = 0usize;
+    loop {
+        let consumed = {
+            let mut cursor = Cursor::new(&bytes[pos..]);
+            let mut decoder = StreamingDecoder::new(&mut cursor).map_err(|_| ())?;
+            let mut frame = [0u8; 8192];
+            loop {
+                let n = decoder.read(&mut frame).map_err(|_| ())?;
+                if n == 0 { break; }
+                if out.len().saturating_add(n) > limit { return Err(()); }
+                out.extend_from_slice(&frame[..n]);
+            }
+            cursor.position() as usize
+        };
+        if consumed == 0 { return Err(()); }
+        pos += consumed;
+        if pos >= bytes.len() { break; }
+    }
+    Ok(out)
+}
+
 /// 读会话日志文本：`.zstd` 后缀 → 多帧解压，其余原样。返回 `Ok(text)` 或降级码。
 ///
 /// - 文件缺失/不可读 → `file-missing`
@@ -638,6 +664,14 @@ garbage line
         append_frame(&mut frames, "hello zstd\n");
         let out = decode_zstd_multi_frame(&frames).unwrap();
         assert_eq!(out, b"hello zstd\n");
+    }
+
+    #[test]
+    fn decode_zstd_multi_frame_limited_caps_decompressed_size() {
+        let mut frames = Vec::new();
+        append_frame(&mut frames, "0123456789");
+        assert_eq!(decode_zstd_multi_frame_limited(&frames, 10).unwrap(), b"0123456789");
+        assert!(decode_zstd_multi_frame_limited(&frames, 9).is_err());
     }
 
     #[test]
