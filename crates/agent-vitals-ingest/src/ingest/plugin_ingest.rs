@@ -333,14 +333,16 @@ fn decode_source_bytes(manifest: &PluginManifest, bytes: &[u8], path: &Path, lim
             bytes.to_vec()
         }
         agent_vitals_harnesses::generic_manifest::SourceCompression::Zstd => {
-            let result = if let Some(max) = limit {
+            if let Some(max) = limit {
                 agent_vitals_harnesses::decode_zstd_multi_frame_limited(bytes, max)
-                    .map_err(|_| "frozen preview corpus exceeds 64 MiB or contains invalid zstd".to_string())?
+                    .map_err(|error| match error {
+                        agent_vitals_harnesses::ZstdDecodeError::LimitExceeded => "frozen preview corpus exceeds 64 MiB; use a bounded sample".to_string(),
+                        agent_vitals_harnesses::ZstdDecodeError::InvalidData => format!("文件 `{}` zstd 解压失败", path.display()),
+                    })?
             } else {
                 agent_vitals_harnesses::decode_zstd_multi_frame(bytes)
                     .ok_or_else(|| format!("文件 `{}` zstd 解压失败", path.display()))?
-            };
-            result
+            }
         }
     };
     String::from_utf8(decoded).map_err(|_| format!("文件 `{}` 不是 UTF-8", path.display()))

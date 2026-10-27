@@ -357,26 +357,30 @@ pub fn decode_zstd_multi_frame(bytes: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Failure to decode a bounded Zstandard source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZstdDecodeError { InvalidData, LimitExceeded }
+
 /// Bounded counterpart used by generic plugin previews; the limit applies to
 /// decompressed bytes so a small compressed fixture cannot bypass corpus limits.
-pub fn decode_zstd_multi_frame_limited(bytes: &[u8], limit: usize) -> Result<Vec<u8>, ()> {
+pub fn decode_zstd_multi_frame_limited(bytes: &[u8], limit: usize) -> Result<Vec<u8>, ZstdDecodeError> {
     if bytes.is_empty() { return Ok(Vec::new()); }
     let mut out = Vec::new();
     let mut pos = 0usize;
     loop {
         let consumed = {
             let mut cursor = Cursor::new(&bytes[pos..]);
-            let mut decoder = StreamingDecoder::new(&mut cursor).map_err(|_| ())?;
+            let mut decoder = StreamingDecoder::new(&mut cursor).map_err(|_| ZstdDecodeError::InvalidData)?;
             let mut frame = [0u8; 8192];
             loop {
-                let n = decoder.read(&mut frame).map_err(|_| ())?;
+                let n = decoder.read(&mut frame).map_err(|_| ZstdDecodeError::InvalidData)?;
                 if n == 0 { break; }
-                if out.len().saturating_add(n) > limit { return Err(()); }
+                if out.len().saturating_add(n) > limit { return Err(ZstdDecodeError::LimitExceeded); }
                 out.extend_from_slice(&frame[..n]);
             }
             cursor.position() as usize
         };
-        if consumed == 0 { return Err(()); }
+        if consumed == 0 { return Err(ZstdDecodeError::InvalidData); }
         pos += consumed;
         if pos >= bytes.len() { break; }
     }
@@ -671,7 +675,14 @@ garbage line
         let mut frames = Vec::new();
         append_frame(&mut frames, "0123456789");
         assert_eq!(decode_zstd_multi_frame_limited(&frames, 10).unwrap(), b"0123456789");
-        assert!(decode_zstd_multi_frame_limited(&frames, 9).is_err());
+        assert_eq!(decode_zstd_multi_frame_limited(&frames, 9), Err(ZstdDecodeError::LimitExceeded));
+        assert_eq!(decode_zstd_multi_frame_limited(b"invalid zstd", 10), Err(ZstdDecodeError::InvalidData));
+        let mut multi = frames.clone();
+        append_frame(&mut multi, "abc");
+        assert_eq!(decode_zstd_multi_frame_limited(&multi, 13).unwrap(), b"0123456789abc");
+        assert_eq!(decode_zstd_multi_frame_limited(&multi, 12), Err(ZstdDecodeError::LimitExceeded));
+        multi.pop();
+        assert_eq!(decode_zstd_multi_frame_limited(&multi, 13), Err(ZstdDecodeError::InvalidData));
     }
 
     #[test]
