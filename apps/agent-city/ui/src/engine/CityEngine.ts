@@ -146,6 +146,9 @@ export class CityEngine {
   private environmentSnapshot = this.environment.sample(Date.now());
   /** Shared facts for lighting, rain, audio and future world systems. */
   get environmentState(): CityEnvironmentSnapshot { return this.environmentSnapshot; }
+  /** 当前「夜」量 [0,1]（与天空 uNight 同值：黄昏及之前 0，入夜渐变到 1）。 */
+  private nightAmount = 0;
+  get skyNight(): number { return this.nightAmount; }
   private readonly surfacePort = new CitySurfacePort();
   private readonly staticWorldPort = new CityStaticWorldPort();
   private readonly drivingWorldPort = new CitySurfacePort();
@@ -2167,6 +2170,7 @@ export class CityEngine {
     // sunIntensity：日 1.55 / 黄昏 1.05 / 夜 0.32 → 黄昏及之前 0，入夜渐变到 1。
     const night = 1 - Math.min(1, Math.max(0, (sky.sunIntensity - 0.32) / (0.95 - 0.32)));
     skyUniforms.uNight.value = night * night * (3 - 2 * night);
+    this.nightAmount = skyUniforms.uNight.value;
     this.parts?.setNightWater(skyUniforms.uNight.value);
     skyUniforms.uOvercast.value = 0; // applyWeather 随后再按当天天气写入：每个 tick 先归零，不累积
     (this.scene.background as THREE.Color).set(sky.fog);

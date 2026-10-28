@@ -5,6 +5,7 @@ import type { CityEngine } from "../engine/CityEngine";
 import { boardToWorld, cellWorld, type CityMechaSite } from "./mecha/citySite";
 import { createAssault, createBoss, createGunner, createRaider, createSupport, disposeMechaModel } from "../render/mecha/models";
 import { MechaBattleAnimator, faceMechaTarget, type MechaCombatCue } from "../render/mecha/animation";
+import { applyMechaUnitLight, setMechaUnitLight } from "../render/mecha/unitLight";
 import { BOARD, type Cell, type MechId } from "./mecha/rules";
 
 export type CityMechaView = {
@@ -256,6 +257,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const spot = new THREE.Vector3();
     const animators = new Map<THREE.Object3D, MechaBattleAnimator>([assault, gunner, support, boss, raiderWest, raiderEast].map((mesh) => [mesh, new MechaBattleAnimator(mesh)]));
+    const litUnits = [assault, gunner, support, boss, raiderWest, raiderEast];
     let previousFrame = performance.now();
     const animate = (mesh: THREE.Object3D, id: string, hp: number, moving: boolean, dt: number) => {
       const animator = animators.get(mesh)!;
@@ -267,6 +269,14 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       const now = performance.now();
       const dt = Math.min(0.1, Math.max(0, (now - previousFrame) / 1000));
       previousFrame = now;
+      // 夜间补光（见 unitLight.ts）。GLB 是异步原地升级的，升级后材质整套换掉，所以按 userData.glb 的变化重装
+      setMechaUnitLight(engine.skyNight);
+      for (const unit of litUnits) {
+        const source = unit.userData.glb ?? "procedural";
+        if (unit.userData.unitLightFor === source) continue;
+        applyMechaUnitLight(unit);
+        unit.userData.unitLightFor = source;
+      }
       const current = viewRef.current;
       const telegraph = new Set(current.telegraph.map(cellKey));
       const focus = new Set(current.focus.map(cellKey));
@@ -373,6 +383,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       cameraCommands.current = null;
       try { lease.release(); } catch { /* host already disposed the scene */ }
       for (const figure of [assault, gunner, support, boss, raiderWest, raiderEast]) disposeMechaModel(figure);
+      setMechaUnitLight(0);
       gridGeo.dispose();
       (grid.material as THREE.Material).dispose();
       padGeo.dispose();

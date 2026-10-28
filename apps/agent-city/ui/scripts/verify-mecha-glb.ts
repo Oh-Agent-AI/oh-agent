@@ -15,6 +15,9 @@ import { MechaGlbError, instantiateMechaGlb, parseMechaGlb, parseMechaManifest, 
 import {
   MECHA_METERS_PER_UNIT, createAssault, createGunner, disposeMechaModel, installMechaGlbProvider, upgradeMechaModelToGlb,
 } from "../src/render/mecha/models.ts";
+import {
+  MECHA_NIGHT_FILL, MECHA_NIGHT_RIM, MECHA_UNIT_LIGHT, applyMechaUnitLight, setMechaUnitLight,
+} from "../src/render/mecha/unitLight.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ASSET = resolve(here, "../src/assets/mecha");
@@ -310,4 +313,22 @@ test("a Gunner upgrades in place, recoils its railgun on attack and stays ground
     }
   }
   disposeMechaModel(root);
+});
+
+test("night unit light is off by default, ramps with night and patches each shared material once", async () => {
+  const asset = await parseMechaGlb(gunnerGlb(), parseMechaManifest(gunnerManifestJson));
+  const a = createGunner(), b = createGunner();
+  upgradeMechaModelToGlb(a, asset); upgradeMechaModelToGlb(b, asset);
+  assert.equal(MECHA_UNIT_LIGHT.mechaFill.value, 0, "pages that never set it (model preview, tests) look unchanged");
+  applyMechaUnitLight(a); applyMechaUnitLight(b); applyMechaUnitLight(a);
+  const mats = new Set<THREE.Material>();
+  a.traverse((o: any) => { if (o.isMesh) mats.add(o.material); });
+  for (const m of mats) assert.match(m.customProgramCacheKey(), /^[^|]*\|mecha-unit-light$/, "patched exactly once (no repeated suffix)");
+  setMechaUnitLight(1);
+  assert.equal(MECHA_UNIT_LIGHT.mechaFill.value, MECHA_NIGHT_FILL);
+  setMechaUnitLight(3);
+  assert.equal(MECHA_UNIT_LIGHT.mechaRim.value, MECHA_NIGHT_RIM, "clamped to full night");
+  setMechaUnitLight(0);
+  assert.equal(MECHA_UNIT_LIGHT.mechaRim.value, 0, "daytime adds nothing");
+  disposeMechaModel(a); disposeMechaModel(b);
 });
