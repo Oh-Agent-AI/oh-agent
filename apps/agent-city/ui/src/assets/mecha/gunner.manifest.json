@@ -44,7 +44,7 @@
   ],
   "source": {
     "kind": "hand-modelled in Blender 5.4; limbs, pauldrons, hands and chest top view from cleaned per-part reference masks (Hunyuan 3D reference, not shipped) turned into designed outlines; head, feet and railgun designed from the concept; each detail tagged [concept] or [AI reference]",
-    "blend_sha256": "1d0ba361b06cc7a2a430b8ffbbd4c857ff924a504bebf63a3ca0f18913589c53",
-    "glb_sha256": "861a696e1b0762fa76730f0076da4af3a3eab605b633822176cf6b3bbf90ed9e"
+    "blend_sha256": "5b5d7ed07bbe19c68c3ca5b3cadbc6e4611b9cca8eb0ca57d75f1953e26d48c7",
+    "glb_sha256": "af03ded7798d89adbe283f02b31f47982eeada39a1f38045fe2c4a5a675384cb"
   }
 }
