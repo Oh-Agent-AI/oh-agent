@@ -96,7 +96,7 @@ test("a GLB that breaks the contract is refused, not half-used", async () => {
   await rejects(parseMechaGlb(glbWith(), parseMechaManifest(manifestWith((m) => { m.maxExtentMeters = [18, 9.8]; }))), /width .* declared extent/);
   await rejects(parseMechaGlb(glbWith(), parseMechaManifest(manifestWith((m) => { m.maxExtentMeters = [20.5, 8]; }))), /depth .* declared extent/);
   await rejects(parseMechaGlb(glbWith(), parseMechaManifest(manifestWith((m) => { delete m.maxExtentMeters; }))), /does not fit 1×1 cell/);
-  await rejects(parseMechaGlb(glbWith(), parseMechaManifest(manifestWith((m) => { m.footprint = [1, 1]; m.role = "Gunner"; }))), /no GLB contract for role Gunner/);
+  await rejects(parseMechaGlb(glbWith(), parseMechaManifest(manifestWith((m) => { m.footprint = [1, 1]; m.role = "Support"; }))), /no GLB contract for role Support/);
   await rejects(parseMechaGlb(new ArrayBuffer(32), manifest), /cannot parse GLB/);
 });
 
@@ -257,4 +257,57 @@ test("failure falls back to the procedural model: bad asset, failed load, no pro
   await new Promise((resolveTick) => setTimeout(resolveTick, 0));
   assert.ok(early.userData.glb !== true, "a model destroyed before the asset arrived is not upgraded");
   installMechaGlbProvider(null);
+});
+
+// ---- Gunner（规格 §8 的第一个角色；Assault 之后接入）
+const gunnerBytes = readFileSync(resolve(ASSET, "gunner.glb"));
+const gunnerManifestJson = JSON.parse(readFileSync(resolve(ASSET, "gunner.manifest.json"), "utf8"));
+const gunnerGlb = (mutate?: (json: any) => void) => {
+  const jsonLength = gunnerBytes.readUInt32LE(12);
+  const json = JSON.parse(gunnerBytes.subarray(20, 20 + jsonLength).toString("utf8"));
+  const rest = gunnerBytes.subarray(20 + jsonLength);
+  for (const material of json.materials ?? []) {
+    const pbr = material.pbrMetallicRoughness ?? {};
+    delete pbr.baseColorTexture; delete pbr.metallicRoughnessTexture; delete material.emissiveTexture;
+  }
+  delete json.textures; delete json.images; delete json.samplers;
+  mutate?.(json);
+  let text = Buffer.from(JSON.stringify(json), "utf8");
+  text = Buffer.concat([text, Buffer.alloc((4 - (text.length % 4)) % 4, 0x20)]);
+  const header = Buffer.alloc(20);
+  header.writeUInt32LE(0x46546c67, 0); header.writeUInt32LE(2, 4); header.writeUInt32LE(20 + text.length + rest.length, 8);
+  header.writeUInt32LE(text.length, 12); header.writeUInt32LE(0x4e4f534a, 16);
+  const out = Buffer.concat([header, text, rest]);
+  return out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength);
+};
+
+test("the Gunner GLB satisfies its contract: railgun under body, front marker, declared cannon overhang", async () => {
+  const manifest = parseMechaManifest(gunnerManifestJson);
+  assert.equal(manifest.role, "Gunner");
+  const asset = await parseMechaGlb(gunnerGlb(), manifest);
+  assert.equal(asset.scene.getObjectByName("railgun")?.parent?.name, "body");
+  const size = box(asset.scene).getSize(new THREE.Vector3());
+  const [maxX, maxZ] = gunnerManifestJson.maxExtentMeters as [number, number];
+  assert.ok(size.x <= maxX && size.z <= maxZ, `within the declared extent, got ${size.x.toFixed(2)}×${size.z.toFixed(2)}`);
+  assert.ok(size.z > 15, "the rail cannon reaches past the cell, as the concept silhouette has it");
+  const nodeIndex = (json: any, name: string) => json.nodes.findIndex((n: any) => n.name === name);
+  await rejects(parseMechaGlb(gunnerGlb((j) => { j.nodes[nodeIndex(j, "railgun")].name = "cannon_x"; }), manifest), /missing node railgun/);
+  await rejects(parseMechaGlb(gunnerGlb(), parseMechaManifest({ ...gunnerManifestJson, maxExtentMeters: undefined })), /does not fit 1×1 cell/);
+});
+
+test("a Gunner upgrades in place, recoils its railgun on attack and stays grounded", async () => {
+  const asset = await parseMechaGlb(gunnerGlb(), parseMechaManifest(gunnerManifestJson));
+  const root = createGunner();
+  assert.equal(upgradeMechaModelToGlb(root, asset), true);
+  const rail = root.getObjectByName("railgun")!;
+  const at = (action: MechaAction, s: number) => { poseMechaModel(root, action, s); root.updateMatrixWorld(true); return rail.getWorldPosition(new THREE.Vector3()); };
+  const rest = at("idle", 0), mid = at("attack", 0.6);
+  assert.ok(mid.z - rest.z > 0.2, `railgun slides back on attack (${(mid.z - rest.z).toFixed(2)} units)`);
+  for (const action of ["idle", "move", "attack", "hit"] as MechaAction[]) {
+    for (let i = 0; i <= 8; i++) {
+      poseMechaModel(root, action, (mechaActionSpan(root, action) * i) / 8);
+      assert.ok(box(root).min.y > -0.05, `${action} sinks below the ground at step ${i}`);
+    }
+  }
+  disposeMechaModel(root);
 });

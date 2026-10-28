@@ -7,6 +7,8 @@
  */
 import assaultGlbUrl from "../../assets/mecha/assault.glb?url";
 import assaultManifestUrl from "../../assets/mecha/assault.manifest.json?url";
+import gunnerGlbUrl from "../../assets/mecha/gunner.glb?url";
+import gunnerManifestUrl from "../../assets/mecha/gunner.manifest.json?url";
 import { MechaGlbError, parseMechaGlb, parseMechaManifest, disposeMechaGlbAsset, type MechaGlbAsset } from "./glbModels";
 import { installMechaGlbProvider } from "./models";
 
@@ -14,6 +16,7 @@ type Source = { glb: string; manifest: string };
 /** 角色 → 资产。要接新角色（规格 §7 的制作顺序）就在这里加一行，并在 glbModels.ts 补它的节点合同。 */
 const SOURCES: Record<string, Source> = {
   Assault: { glb: assaultGlbUrl, manifest: assaultManifestUrl },
+  Gunner: { glb: gunnerGlbUrl, manifest: gunnerManifestUrl },
 };
 
 const pending = new Map<string, Promise<MechaGlbAsset>>();

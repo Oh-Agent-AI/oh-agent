@@ -34,9 +34,16 @@ const NODE_TREE: Record<string, Record<string, string | null>> = {
     upper_arm_l: "body", upper_arm_r: "body", forearm_l: "upper_arm_l", forearm_r: "upper_arm_r",
     thigh_l: "visual", thigh_r: "visual", shin_l: "thigh_l", shin_r: "thigh_r", foot_l: "shin_l", foot_r: "shin_r",
   },
+  // 规格 §5.2：Gunner 多一个 railgun（MechaJoint 的 cannon），挂在 body 下，攻击片段沿它做后坐
+  Gunner: {
+    visual: null,
+    body: "visual", head: "body", railgun: "body",
+    upper_arm_l: "body", upper_arm_r: "body", forearm_l: "upper_arm_l", forearm_r: "upper_arm_r",
+    thigh_l: "visual", thigh_r: "visual", shin_l: "thigh_l", shin_r: "thigh_r", foot_l: "shin_l", foot_r: "shin_r",
+  },
 };
 /** 规格 §5.2 第 5 条：朝向与测试用的标记节点。 */
-const MARKERS: Record<string, string[]> = { Assault: ["front", "gauntlet-left", "gauntlet-right", "shield"] };
+const MARKERS: Record<string, string[]> = { Assault: ["front", "gauntlet-left", "gauntlet-right", "shield"], Gunner: ["front"] };
 const REQUIRED_CLIPS = ["idle", "move", "attack", "hit", "defeat"];
 const ACTIONS: MechaAction[] = ["idle", "move", "attack", "repair", "hit", "defeat"];
 const CELL_METERS = 16;

@@ -1,0 +1,50 @@
+{
+  "id": "gunner",
+  "version": 1,
+  "role": "Gunner",
+  "footprint": [
+    1,
+    1
+  ],
+  "forward": "-Z",
+  "heightMeters": 18.9,
+  "maxExtentMeters": [
+    14.3,
+    17.4
+  ],
+  "clips": {
+    "idle": {
+      "duration": 3.14,
+      "loop": true
+    },
+    "move": {
+      "duration": 0.79,
+      "loop": true
+    },
+    "attack": {
+      "duration": 0.95,
+      "loop": false
+    },
+    "hit": {
+      "duration": 0.48,
+      "loop": false
+    },
+    "defeat": {
+      "duration": 0.85,
+      "loop": false,
+      "holdLastFrame": true
+    }
+  },
+  "actionMap": {
+    "repair": "attack"
+  },
+  "materials": [
+    "armor_palette",
+    "faction_accent"
+  ],
+  "source": {
+    "kind": "hand-modelled in Blender 5.4 from designed outlines; proportions from the concept board and a Hunyuan 3D reference (not shipped); each detail tagged [concept] or [AI reference] in the build script",
+    "blend_sha256": "be2c5b8fe992a39c159a98f8457c3ec774e5196a38b2d3d9f303ff06f125fd6d",
+    "glb_sha256": "d67c2211d08bfcae5ff31f856fefebc5e70730fb1126caaafc5414fde6642d8b"
+  }
+}
