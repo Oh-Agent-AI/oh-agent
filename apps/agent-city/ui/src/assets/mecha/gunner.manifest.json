@@ -7,7 +7,7 @@
     1
   ],
   "forward": "-Z",
-  "heightMeters": 18.9,
+  "heightMeters": 18.63,
   "maxExtentMeters": [
     14.3,
     17.4
@@ -43,8 +43,8 @@
     "faction_accent"
   ],
   "source": {
-    "kind": "hand-modelled in Blender 5.4 from designed outlines; proportions from the concept board and a Hunyuan 3D reference (not shipped); each detail tagged [concept] or [AI reference] in the build script",
-    "blend_sha256": "be2c5b8fe992a39c159a98f8457c3ec774e5196a38b2d3d9f303ff06f125fd6d",
-    "glb_sha256": "d67c2211d08bfcae5ff31f856fefebc5e70730fb1126caaafc5414fde6642d8b"
+    "kind": "hand-modelled in Blender 5.4; limbs, pauldrons, hands and chest top view from cleaned per-part reference masks (Hunyuan 3D reference, not shipped) turned into designed outlines; head, feet and railgun designed from the concept; each detail tagged [concept] or [AI reference]",
+    "blend_sha256": "6e821a83c764d5cdf45d941b5ca7524c0e4a7cea7f8488a9c433a7a7df92ff90",
+    "glb_sha256": "161aebacc00d7e703c5828b12ed9d822214ce41e696d74ea66a483324bfa582a"
   }
 }
