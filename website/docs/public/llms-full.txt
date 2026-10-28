@@ -491,3 +491,33 @@ In Agent City the district label for this harness is **DSH** (fixture `id: "dsh"
 - [Codex data source](https://ohagent.ai/docs/data-sources/codex)
 - [What each building in Agent City means](https://ohagent.ai/docs/city-guide)
 - [Install](https://ohagent.ai/docs/install) · [FAQ](https://ohagent.ai/#faq)
+
+---
+
+# How does Oh Agent read WorkBuddy sessions?
+URL: https://ohagent.ai/docs/data-sources/workbuddy/
+
+For WorkBuddy, Agent Vitals reads usage from the `trace_*.json` files under `~/.workbuddy/traces/`, on your Mac. Each WorkBuddy session becomes a building in the WorkBuddy district of Agent City. WorkBuddy support is narrower than for the other built-in sources: you can't add extra folders, behaviour checks don't run during sync, and sessions don't get titles yet.
+
+## Key facts
+
+- **Location:** `~/.workbuddy/` (fixed; no environment variable).
+- **Usage files:** `trace_*.json` under `~/.workbuddy/traces/`.
+- **Session audit** (CLI `workbuddy-session`) also reads `workbuddy.db` (`sessions`, `session_usage`) and `audit-log/*.jsonl`.
+- **Extra folders:** not supported.
+- **Behaviour findings:** none during normal sync.
+- **Titles:** not yet. They live in `workbuddy.db`, which isn't wired up for titles.
+
+## How are WorkBuddy costs shown?
+
+WorkBuddy bills in its own credits. Oh Agent reports credits as credits, not money. A nominal yuan value (credits × 0.05, based on the public top-up price) appears only in the nominal column, never as money actually paid, and the cash-paid field stays empty because there's no payment evidence on your Mac.
+
+In Agent City the district label for this harness is **WorkBuddy** (fixture `id: "workbuddy"`, `display_name: "WorkBuddy"`).
+
+## Related
+
+- [Claude Code data source](https://ohagent.ai/docs/data-sources/claude-code)
+- [Codex data source](https://ohagent.ai/docs/data-sources/codex)
+- [DeepSeek Harness data source](https://ohagent.ai/docs/data-sources/deepseek-harness)
+- [What each building in Agent City means](https://ohagent.ai/docs/city-guide)
+- [Install](https://ohagent.ai/docs/install) · [FAQ](https://ohagent.ai/#faq)
