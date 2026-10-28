@@ -7,7 +7,11 @@
     1
   ],
   "forward": "-Z",
-  "heightMeters": 19.61,
+  "heightMeters": 19.98,
+  "maxExtentMeters": [
+    21.0,
+    10.8
+  ],
   "clips": {
     "idle": {
       "duration": 3.14,
@@ -39,8 +43,8 @@
     "faction_accent"
   ],
   "source": {
-    "kind": "hand-modelled in Blender 5.4 (reference: AI-generated low-poly, not shipped)",
-    "blend_sha256": "f799ef5caa491b8a1495f5d9e735222fa4eda545b8b41b13a43c9cd53ac0960c",
-    "glb_sha256": "4c18ff9714b230d5c130c63ef6cd9e47839680b046ac604d3da0c812f431aff0"
+    "kind": "hand-modelled in Blender 5.4; hulls from designed outlines positioned against AI-reference and Codex measurements; detail layer sourced from the concept board or the AI reference, each part tagged in the build script (reference meshes not shipped)",
+    "blend_sha256": "40f5c99dad51e71073b8d2bd1c3f9f29889666b04e718a2ca1ea496adefde650",
+    "glb_sha256": "89efe920fd964eb4ac77c72f06439295446e16b7763f570f90ec7a724bec13fb"
   }
 }

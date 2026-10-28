@@ -56,6 +56,16 @@ export function parseMechaManifest(json: unknown): MechaGlbManifest {
   if (!Array.isArray(footprint) || footprint.length !== 2 || !footprint.every((n) => Number.isInteger(n) && n >= 1)) problems.push("footprint must be [w, d] positive integers");
   if (json.forward !== "-Z") problems.push('forward must be "-Z"');
   if (typeof json.heightMeters !== "number" || !(json.heightMeters > 0)) problems.push("heightMeters must be positive");
+  let maxExtent: [number, number] | undefined;
+  if (json.maxExtentMeters !== undefined) {
+    const e = json.maxExtentMeters;
+    const ok = Array.isArray(e) && e.length === 2 && e.every((n) => typeof n === "number" && n > 0);
+    // 声明的外伸不能无限大：最多比占地多出一半（再多就该占两格了）
+    const fp = Array.isArray(footprint) && footprint.length === 2 ? footprint as number[] : [1, 1];
+    if (!ok) problems.push("maxExtentMeters must be [width, depth] in positive meters");
+    else if ((e as number[])[0] > fp[0]! * CELL_METERS * 1.5 || (e as number[])[1] > fp[1]! * CELL_METERS * 1.5) problems.push("maxExtentMeters exceeds 1.5 × the footprint");
+    else maxExtent = [(e as number[])[0]!, (e as number[])[1]!];
+  }
   const clips: Record<string, MechaClipSpec> = {};
   if (!isRecord(json.clips)) problems.push("clips must be an object");
   else {
@@ -84,7 +94,7 @@ export function parseMechaManifest(json: unknown): MechaGlbManifest {
   if (problems.length) throw new MechaGlbError(`invalid manifest: ${problems.join("; ")}`);
   return {
     id, role, version: json.version as number, footprint: footprint as [number, number], forward: "-Z",
-    heightMeters: json.heightMeters as number, clips, ...(Object.keys(actionMap).length ? { actionMap } : {}),
+    heightMeters: json.heightMeters as number, ...(maxExtent ? { maxExtentMeters: maxExtent } : {}), clips, ...(Object.keys(actionMap).length ? { actionMap } : {}),
     ...(Array.isArray(json.materials) ? { materials: json.materials.filter((m): m is string => typeof m === "string") } : {}),
   };
 }
@@ -135,8 +145,10 @@ export function validateMechaGlb(scene: THREE.Object3D, clips: THREE.AnimationCl
   const [fw, fd] = manifest.footprint;
   if (Math.abs(box.min.y) > 0.05) problems.push(`feet are at y=${box.min.y.toFixed(3)} m, expected 0`);
   if (Math.abs(size.y - manifest.heightMeters) > manifest.heightMeters * 0.1) problems.push(`height ${size.y.toFixed(2)} m is more than 10% from the manifest's ${manifest.heightMeters} m`);
-  if (size.x > fw * CELL_METERS - 1) problems.push(`width ${size.x.toFixed(2)} m does not fit ${fw} cell(s)`);
-  if (size.z > fd * CELL_METERS - 1) problems.push(`depth ${size.z.toFixed(2)} m does not fit ${fd} cell(s)`);
+  const [maxX, maxZ] = manifest.maxExtentMeters ?? [fw * CELL_METERS - 1, fd * CELL_METERS - 1];
+  const where = manifest.maxExtentMeters ? "its declared extent" : `${fw}×${fd} cell(s)`;
+  if (size.x > maxX) problems.push(`width ${size.x.toFixed(2)} m does not fit ${where} (${maxX.toFixed(2)} m)`);
+  if (size.z > maxZ) problems.push(`depth ${size.z.toFixed(2)} m does not fit ${where} (${maxZ.toFixed(2)} m)`);
 
   if (problems.length) throw new MechaGlbError(`GLB breaks the contract: ${problems.join("; ")}`);
   return { rearExtent: Math.max(0, box.max.z) };

@@ -14,6 +14,11 @@ export type MechaGlbManifest = {
   footprint: [number, number];
   forward: "-Z";
   heightMeters: number;
+  /**
+   * 静止姿态允许的最大宽×深（米）。没声明时就是「占格数 × 16 米 − 1」。
+   * 声明它 = 明确登记一处设计例外（规格 §5.4.1：Assault 的盾与重拳外伸出本格）；加载器只放行声明过的范围。
+   */
+  maxExtentMeters?: [number, number];
   clips: Record<string, MechaClipSpec>;
   /** 角色没有的动作映射到哪个片段（例如 repair → attack），不是静默套用。 */
   actionMap?: Partial<Record<MechaAction, string>>;

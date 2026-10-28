@@ -49,7 +49,11 @@ async function loadAsset(): Promise<MechaGlbAsset> {
 async function rejects(promise: Promise<unknown>, pattern: RegExp) {
   await assert.rejects(promise, (error: unknown) => error instanceof MechaGlbError && pattern.test(error.message), String(pattern));
 }
-const box = (root: THREE.Object3D) => { root.updateMatrixWorld(true); return new THREE.Box3().setFromObject(root); };
+/**
+ * 按顶点算的包围盒（precise）。默认的 setFromObject 是把每个网格的局部包围盒转到世界再合并，网格一转，
+ * 盒角会远低于真实顶点：Assault 加护膝后小腿的局部盒变大，move 被误报下沉 0.08 m，真实最低点在 1.6 m。
+ */
+const box = (root: THREE.Object3D) => { root.updateMatrixWorld(true); return new THREE.Box3().setFromObject(root, true); };
 
 test("the shipped manifest parses and an invalid one is refused with every problem named", () => {
   const manifest = parseMechaManifest(manifestJson);
@@ -61,6 +65,8 @@ test("the shipped manifest parses and an invalid one is refused with every probl
   assert.throws(() => parseMechaManifest(manifestWith((m) => { delete m.actionMap; })), /repair has neither a clip nor an actionMap/);
   assert.throws(() => parseMechaManifest(manifestWith((m) => { m.forward = "+Z"; })), /forward/);
   assert.throws(() => parseMechaManifest(manifestWith((m) => { m.clips.idle.duration = 0; })), /clip idle/);
+  assert.throws(() => parseMechaManifest(manifestWith((m) => { m.maxExtentMeters = [30, 9]; })), /exceeds 1.5/);
+  assert.throws(() => parseMechaManifest(manifestWith((m) => { m.maxExtentMeters = [20]; })), /maxExtentMeters/);
   assert.throws(() => parseMechaManifest(null), MechaGlbError);
 });
 
@@ -69,7 +75,10 @@ test("the shipped GLB satisfies the node, clip, size and facing contract", async
   const rest = box(asset.scene);
   assert.ok(Math.abs(rest.min.y) < 0.05, `feet ${rest.min.y}`);
   assert.ok(Math.abs(rest.getSize(new THREE.Vector3()).y - manifestJson.heightMeters) < 0.5);
-  assert.ok(rest.getSize(new THREE.Vector3()).x <= 15, "fits one 16 m cell with the spec's 0.5 m gaps");
+  const size = rest.getSize(new THREE.Vector3());
+  const [maxX, maxZ] = manifestJson.maxExtentMeters as [number, number];
+  assert.ok(size.x <= maxX && size.z <= maxZ, `within the declared overhang extent, got ${size.x.toFixed(2)}×${size.z.toFixed(2)}`);
+  assert.ok(size.x <= 16 * 1.5 && size.z <= 16 * 1.5, "overhang is at most half a cell");
   assert.deepEqual(asset.clips.map((c) => c.name).sort(), ["attack", "defeat", "hit", "idle", "move"]);
 });
 
@@ -83,6 +92,10 @@ test("a GLB that breaks the contract is refused, not half-used", async () => {
   await rejects(parseMechaGlb(glbWith((j) => { j.animations.splice(j.animations.findIndex((a: any) => a.name === "hit"), 1); }), manifest), /clip hit is in the manifest but not in the GLB/);
   await rejects(parseMechaGlb(glbWith(), parseMechaManifest(manifestWith((m) => { m.clips.attack.duration = 1.4; }))), /clip attack lasts/);
   await rejects(parseMechaGlb(glbWith(), parseMechaManifest(manifestWith((m) => { m.heightMeters = 30; }))), /height/);
+  // 声明了外伸范围就按声明放行；声明得比模型小、或没声明（回到「占格 − 1 m」），都必须被拒
+  await rejects(parseMechaGlb(glbWith(), parseMechaManifest(manifestWith((m) => { m.maxExtentMeters = [18, 9.8]; }))), /width .* declared extent/);
+  await rejects(parseMechaGlb(glbWith(), parseMechaManifest(manifestWith((m) => { m.maxExtentMeters = [20.5, 8]; }))), /depth .* declared extent/);
+  await rejects(parseMechaGlb(glbWith(), parseMechaManifest(manifestWith((m) => { delete m.maxExtentMeters; }))), /does not fit 1×1 cell/);
   await rejects(parseMechaGlb(glbWith(), parseMechaManifest(manifestWith((m) => { m.footprint = [1, 1]; m.role = "Gunner"; }))), /no GLB contract for role Gunner/);
   await rejects(parseMechaGlb(new ArrayBuffer(32), manifest), /cannot parse GLB/);
 });
@@ -101,7 +114,9 @@ test("upgrading keeps the root, scale and animator key; the model stays in its c
   root.position.set(0, 0, 0); root.rotation.y = 0; root.scale.setScalar(1);
   const b = box(root);
   assert.ok(b.min.y > -0.05 && b.min.y < 0.05, `feet ${b.min.y}`);
-  assert.ok(b.max.x - b.min.x < CELL && b.max.z - b.min.z < CELL, "fits one cell");
+  const [maxX, maxZ] = (manifestJson.maxExtentMeters as [number, number]).map((m) => m / MECHA_METERS_PER_UNIT);
+  assert.ok(b.max.x - b.min.x <= maxX && b.max.z - b.min.z <= maxZ, "stays within its declared extent");
+  assert.ok(b.max.x - b.min.x < CELL * 1.5 && b.max.z - b.min.z < CELL * 1.5, "overhang is at most half a cell");
   assert.ok(Math.abs(b.max.y - manifestJson.heightMeters / MECHA_METERS_PER_UNIT) < 0.3, `height ${b.max.y}`);
   const front = new THREE.Vector3(); root.getObjectByName("front")!.getWorldPosition(front);
   assert.ok(front.z < -0.5, "faces -Z like the procedural models");
