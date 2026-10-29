@@ -9,6 +9,8 @@ import assaultGlbUrl from "../../assets/mecha/assault.glb?url";
 import assaultManifestUrl from "../../assets/mecha/assault.manifest.json?url";
 import gunnerGlbUrl from "../../assets/mecha/gunner.glb?url";
 import gunnerManifestUrl from "../../assets/mecha/gunner.manifest.json?url";
+import supportGlbUrl from "../../assets/mecha/support.glb?url";
+import supportManifestUrl from "../../assets/mecha/support.manifest.json?url";
 import { MechaGlbError, parseMechaGlb, parseMechaManifest, disposeMechaGlbAsset, type MechaGlbAsset } from "./glbModels";
 import { installMechaGlbProvider } from "./models";
 
@@ -17,6 +19,7 @@ type Source = { glb: string; manifest: string };
 const SOURCES: Record<string, Source> = {
   Assault: { glb: assaultGlbUrl, manifest: assaultManifestUrl },
   Gunner: { glb: gunnerGlbUrl, manifest: gunnerManifestUrl },
+  Support: { glb: supportGlbUrl, manifest: supportManifestUrl },
 };
 
 const pending = new Map<string, Promise<MechaGlbAsset>>();

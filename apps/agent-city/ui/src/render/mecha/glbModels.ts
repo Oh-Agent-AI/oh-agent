@@ -8,6 +8,7 @@
  */
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
 import type { MechaAction, MechaClipSpec, MechaGlbManifest, MechaRig } from "./animation";
 
 export class MechaGlbError extends Error {
@@ -41,9 +42,16 @@ const NODE_TREE: Record<string, Record<string, string | null>> = {
     upper_arm_l: "body", upper_arm_r: "body", forearm_l: "upper_arm_l", forearm_r: "upper_arm_r",
     thigh_l: "visual", thigh_r: "visual", shin_l: "thigh_l", shin_r: "thigh_r", foot_l: "shin_l", foot_r: "shin_r",
   },
+  // 规格 §5.2：Support 多一个 drone（悬停无人机，挂 body）和右前臂下的 repair_tool（维修夹爪，由 repair 片段驱动）
+  Support: {
+    visual: null,
+    body: "visual", head: "body", drone: "body",
+    upper_arm_l: "body", upper_arm_r: "body", forearm_l: "upper_arm_l", forearm_r: "upper_arm_r", repair_tool: "forearm_r",
+    thigh_l: "visual", thigh_r: "visual", shin_l: "thigh_l", shin_r: "thigh_r", foot_l: "shin_l", foot_r: "shin_r",
+  },
 };
 /** 规格 §5.2 第 5 条：朝向与测试用的标记节点。 */
-const MARKERS: Record<string, string[]> = { Assault: ["front", "gauntlet-left", "gauntlet-right", "shield"], Gunner: ["front"] };
+const MARKERS: Record<string, string[]> = { Assault: ["front", "gauntlet-left", "gauntlet-right", "shield"], Gunner: ["front"], Support: ["front"] };
 const REQUIRED_CLIPS = ["idle", "move", "attack", "hit", "defeat"];
 const ACTIONS: MechaAction[] = ["idle", "move", "attack", "repair", "hit", "defeat"];
 const CELL_METERS = 16;
@@ -165,7 +173,9 @@ export function validateMechaGlb(scene: THREE.Object3D, clips: THREE.AnimationCl
 export async function parseMechaGlb(data: ArrayBuffer, manifest: MechaGlbManifest, path = ""): Promise<MechaGlbAsset> {
   let gltf;
   try {
-    gltf = await new GLTFLoader().parseAsync(data, path);
+    // EXT_meshopt_compression（gltfpack -cc）：解码器是 three 自带的 wasm，随应用离线分发，运行时不联网。
+    // 未配解码器时 meshopt 资产会被 GLTFLoader 拒绝（Codex 的压缩试样曾因此进不了这个加载器）
+    gltf = await new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).parseAsync(data, path);
   } catch (error) {
     throw new MechaGlbError(`cannot parse GLB: ${error instanceof Error ? error.message : String(error)}`);
   }

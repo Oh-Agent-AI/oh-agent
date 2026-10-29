@@ -13,7 +13,7 @@ import {
 } from "../src/render/mecha/animation.ts";
 import { MechaGlbError, instantiateMechaGlb, parseMechaGlb, parseMechaManifest, type MechaGlbAsset } from "../src/render/mecha/glbModels.ts";
 import {
-  MECHA_METERS_PER_UNIT, createAssault, createGunner, disposeMechaModel, installMechaGlbProvider, upgradeMechaModelToGlb,
+  MECHA_METERS_PER_UNIT, createAssault, createGunner, createSupport, disposeMechaModel, installMechaGlbProvider, upgradeMechaModelToGlb,
 } from "../src/render/mecha/models.ts";
 import {
   MECHA_NIGHT_FILL, MECHA_NIGHT_RIM, MECHA_UNIT_LIGHT, applyMechaUnitLight, setMechaUnitLight,
@@ -99,7 +99,7 @@ test("a GLB that breaks the contract is refused, not half-used", async () => {
   await rejects(parseMechaGlb(glbWith(), parseMechaManifest(manifestWith((m) => { m.maxExtentMeters = [18, 9.8]; }))), /width .* declared extent/);
   await rejects(parseMechaGlb(glbWith(), parseMechaManifest(manifestWith((m) => { m.maxExtentMeters = [20.5, 8]; }))), /depth .* declared extent/);
   await rejects(parseMechaGlb(glbWith(), parseMechaManifest(manifestWith((m) => { delete m.maxExtentMeters; }))), /does not fit 1×1 cell/);
-  await rejects(parseMechaGlb(glbWith(), parseMechaManifest(manifestWith((m) => { m.footprint = [1, 1]; m.role = "Support"; }))), /no GLB contract for role Support/);
+  await rejects(parseMechaGlb(glbWith(), parseMechaManifest(manifestWith((m) => { m.footprint = [1, 1]; m.role = "Raider"; }))), /no GLB contract for role Raider/);
   await rejects(parseMechaGlb(new ArrayBuffer(32), manifest), /cannot parse GLB/);
 });
 
@@ -331,4 +331,55 @@ test("night unit light is off by default, ramps with night and patches each shar
   setMechaUnitLight(0);
   assert.equal(MECHA_UNIT_LIGHT.mechaRim.value, 0, "daytime adds nothing");
   disposeMechaModel(a); disposeMechaModel(b);
+});
+
+// ---- Support（规格 §8 第三个角色：AI 生成 → 智能拓扑减面 → 部件标签 → 按关节切开的低模）
+const supportBytes = readFileSync(resolve(ASSET, "support.glb"));
+const supportManifestJson = JSON.parse(readFileSync(resolve(ASSET, "support.manifest.json"), "utf8"));
+const supportGlb = (mutate?: (json: any) => void) => {
+  const jsonLength = supportBytes.readUInt32LE(12);
+  const json = JSON.parse(supportBytes.subarray(20, 20 + jsonLength).toString("utf8"));
+  const rest = supportBytes.subarray(20 + jsonLength);
+  for (const material of json.materials ?? []) {
+    const pbr = material.pbrMetallicRoughness ?? {};
+    delete pbr.baseColorTexture; delete pbr.metallicRoughnessTexture; delete material.emissiveTexture;
+  }
+  delete json.textures; delete json.images; delete json.samplers;
+  mutate?.(json);
+  let text = Buffer.from(JSON.stringify(json), "utf8");
+  text = Buffer.concat([text, Buffer.alloc((4 - (text.length % 4)) % 4, 0x20)]);
+  const header = Buffer.alloc(20);
+  header.writeUInt32LE(0x46546c67, 0); header.writeUInt32LE(2, 4); header.writeUInt32LE(20 + text.length + rest.length, 8);
+  header.writeUInt32LE(text.length, 12); header.writeUInt32LE(0x4e4f534a, 16);
+  const out = Buffer.concat([header, text, rest]);
+  return out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength);
+};
+
+test("the Support GLB satisfies its contract: drone under body, repair tool under the right forearm, its own repair clip", async () => {
+  const manifest = parseMechaManifest(supportManifestJson);
+  assert.equal(manifest.role, "Support");
+  const asset = await parseMechaGlb(supportGlb(), manifest);
+  assert.equal(asset.scene.getObjectByName("drone")?.parent?.name, "body");
+  assert.equal(asset.scene.getObjectByName("repair_tool")?.parent?.name, "forearm_r");
+  assert.ok(asset.clips.some((clip) => clip.name === "repair"), "repair has its own clip, not the attack fallback");
+  const nodeIndex = (json: any, name: string) => json.nodes.findIndex((n: any) => n.name === name);
+  await rejects(parseMechaGlb(supportGlb((j) => { j.nodes[nodeIndex(j, "drone")].name = "drone_x"; }), manifest), /missing node drone/);
+  await rejects(parseMechaGlb(supportGlb(), parseMechaManifest({ ...supportManifestJson, maxExtentMeters: undefined })), /does not fit 1×1 cell/);
+});
+
+test("a Support upgrades in place, its drone moves out on repair, and every clip stays grounded", async () => {
+  const asset = await parseMechaGlb(supportGlb(), parseMechaManifest(supportManifestJson));
+  const root = createSupport();
+  assert.equal(upgradeMechaModelToGlb(root, asset), true);
+  const drone = root.getObjectByName("drone")!;
+  const at = (action: MechaAction, s: number) => { poseMechaModel(root, action, s); root.updateMatrixWorld(true); return drone.getWorldPosition(new THREE.Vector3()); };
+  const rest = at("idle", 0), mid = at("repair", mechaActionSpan(root, "repair") / 2);
+  assert.ok(rest.z - mid.z > 0.5, `drone moves forward (−Z) on repair (${(rest.z - mid.z).toFixed(2)} units)`);
+  for (const action of ["idle", "move", "attack", "repair", "hit"] as MechaAction[]) {
+    for (let i = 0; i <= 8; i++) {
+      poseMechaModel(root, action, (mechaActionSpan(root, action) * i) / 8);
+      assert.ok(box(root).min.y > -0.05, `${action} sinks below the ground at step ${i}`);
+    }
+  }
+  disposeMechaModel(root);
 });
