@@ -16,6 +16,9 @@ The web demo at https://ohagent.ai/ runs the real City frontend on synthetic ses
 - [Where does Claude Code store session history, and how does Oh Agent read it?](https://ohagent.ai/docs/data-sources/claude-code/): Claude Code saves each session as a JSONL file under ~/.claude/projects. Oh Agent reads those files locally and turns every session into a building.
 - [Where does Codex store session logs, and how does Oh Agent visualize them?](https://ohagent.ai/docs/data-sources/codex/): Codex CLI saves each session as a rollout-*.jsonl file under ~/.codex/sessions. Oh Agent reads them on your computer and builds a Codex district in Agent City.
 - [Does Oh Agent upload my sessions? Data and privacy explained](https://ohagent.ai/docs/privacy-and-data/): Oh Agent analyzes Claude Code and Codex history on your computer and never uploads sessions. What it reads, when it goes online, and what MCP changes.
+- [Where does DeepSeek Harness (DSH) store sessions, and how does Oh Agent read them?](https://ohagent.ai/docs/data-sources/deepseek-harness/): Oh Agent reads DeepSeek Harness session logs from $DSH_HOME/sessions (default ~/.dsh), including zstd-compressed files, and builds a DSH district in Agent City.
+- [How does Oh Agent read WorkBuddy sessions?](https://ohagent.ai/docs/data-sources/workbuddy/): Oh Agent reads WorkBuddy usage from trace files under ~/.workbuddy/traces and builds a WorkBuddy district in Agent City. Extra folders and behaviour checks are not supported.
+- ["What is the Agent Vitals engine? Local-first agent behavior data engine"](https://ohagent.ai/docs/vitals/overview/): "Oh Agent is built on Agent Vitals, an open-source, local-first engine for AI agent behavior data. It is an embedded library with an SQLite store, not a server: no network port, no daemon."
 
 ## Product
 - [Website and web demo](https://ohagent.ai/)

@@ -1,5 +1,5 @@
 ---
-draft: true
+lastUpdated: 2026-10-29
 title: "What is the Agent Vitals engine? Local-first agent behavior data engine"
 description: "Oh Agent is built on Agent Vitals, an open-source, local-first engine for AI agent behavior data. It is an embedded library with an SQLite store, not a server: no network port, no daemon."
 head:
@@ -25,8 +25,8 @@ Oh Agent is built on the open-source **Agent Vitals** engine, and Agent City is 
 - **Embedded, not a service:** the data layer is described in code as "an embedded local data layer, not a standalone service: no network port, no daemon."
 - **One store:** `agent-vitals.sqlite3` in `~/.agent-vitals/` (or `AGENT_VITALS_HOME`). It doesn't repair itself; a corrupted file is rebuilt with `data-migrate`.
 - **Who runs it:** the desktop app links the crates and syncs every 5 minutes in-process. The `agent-vitals` CLI runs the same code on demand.
-- **Interfaces out:** the [CLI](/docs/vitals/cli), the [Data MCP tools](/docs/vitals/mcp-tools) (stdio only), the [App SDK](/docs/vitals/app-sdk) projections, and JSONL exports.
-- **Two implementations:** Rust is the product; a [Python twin](/docs/vitals/python) is kept byte-identical through golden tests.
+- **Interfaces out:** the `agent-vitals` CLI, Data MCP tools (stdio only), App SDK projections, and JSONL exports.
+- **Two implementations:** Rust is the product; a Python twin is kept byte-identical through golden tests.
 - **Name:** "Agent Vitals" was the project's earlier name, so crates, the CLI and data folders are still called `agent-vitals`.
 
 <!-- source: crates/agent-vitals-data/src/lib.rs ("这是一个**嵌入式本地数据层**，不是独立服务：不开网络端口、不起 daemon"; authority "不自愈——损坏需 rm + data-migrate 重建") -->
@@ -63,7 +63,7 @@ flowchart TB
   DOM --> W
 ```
 
-<!-- TBD: mermaid rendering (see architecture overview). The arrows show data flow, simplified; Cargo dependencies follow the L0–L6 layer table below (each crate depends only on lower layers). -->
+<!-- Note: mermaid diagram shows simplified data flow; Cargo dependencies follow the L0–L6 layer table below (each crate depends only on lower layers). -->
 
 In words: agent logs → `agent-vitals-harnesses` parsers → `agent-vitals-ingest` sync → `agent-vitals-data` SQLite store → `agent-vitals-query` read layer → billing, trust and MCP on top → the `agent-vitals-runtime` facade → the desktop app and CLI. In the desktop app, the plugin host passes projections through the App SDK to Agent City. The pure rules in `agent-vitals-domain` and `vitals-core` are shared by everything, including the wasm build.
 
@@ -88,7 +88,7 @@ In words: agent logs → `agent-vitals-harnesses` parsers → `agent-vitals-inge
 
 Layering is enforced: crates may only depend on strictly lower layers (Cargo), and `tests/module_layering.rs` checks modules inside the runtime family.
 
-**TBD:** who ships the wasm build today. Its doc mentions a DSH audit tab, but no CI workflow or script in the repo builds it.
+The wasm crate is excluded from the default workspace build. Its docs mention a DSH audit tab, but no CI workflow or script in the repo currently builds it with wasm-pack.
 
 <!-- source: Cargo.toml ([workspace] members; agent-vitals-wasm excluded from default-members) -->
 <!-- source: crates/vitals-core/src/lib.rs ("harness-agnostic behavioral audit runtime … SV601–614 … 委托这里的 VitalsEngine"); crates/agent-vitals-domain/src/lib.rs; crates/agent-vitals-provider/src/lib.rs ("performs no I/O, SQL, network access") -->
@@ -106,6 +106,9 @@ Layering is enforced: crates may only depend on strictly lower layers (Cargo), a
 
 ## Related
 
-- [Architecture overview: Agent Vitals + Agent City](/docs/architecture/overview)
-- [Data pipeline](/docs/architecture/data-pipeline)
-- [CLI](/docs/vitals/cli) · [Data MCP tools](/docs/vitals/mcp-tools) · [App SDK](/docs/vitals/app-sdk) · [Python twin](/docs/vitals/python)
+- [Claude Code data source](/docs/data-sources/claude-code)
+- [Codex data source](/docs/data-sources/codex)
+- [DeepSeek Harness data source](/docs/data-sources/deepseek-harness)
+- [WorkBuddy data source](/docs/data-sources/workbuddy)
+- [What each building in Agent City means](/docs/city-guide)
+- [Privacy and data](/docs/privacy-and-data) · [Install](/docs/install) · [FAQ](https://ohagent.ai/#faq)

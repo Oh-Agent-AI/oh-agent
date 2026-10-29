@@ -1,5 +1,5 @@
 ---
-draft: true
+lastUpdated: 2026-10-29
 title: Agent Vitals 引擎是什么？本地优先的 Agent 行为数据引擎
 description: Oh Agent 构建在 Agent Vitals 之上：一个开源、本地优先的 AI Agent 行为数据引擎。它是带 SQLite 存储的嵌入式库，不是服务器：不开网络端口，也不跑后台进程。
 head:
@@ -25,8 +25,8 @@ Oh Agent 构建在开源的 **Agent Vitals** 引擎之上，Agent City 是它的
 - **嵌入式，不是服务**：代码里对数据层的描述是“嵌入式本地数据层，不是独立服务：不开网络端口、不起 daemon”。
 - **一个数据库**：`~/.agent-vitals/`（或 `AGENT_VITALS_HOME`）下的 `agent-vitals.sqlite3`。它不会自我修复，文件损坏要用 `data-migrate` 重建。
 - **谁来跑**：桌面应用链接这些 crate，在进程内每 5 分钟同步一次；`agent-vitals` 命令行按需运行同一套代码。
-- **对外接口**：[命令行](/docs/zh/vitals/cli)、[Data MCP 工具](/docs/zh/vitals/mcp-tools)（只有 stdio）、[App SDK](/docs/zh/vitals/app-sdk) 投影，以及 JSONL 导出。
-- **两套实现**：Rust 是正式产品；[Python 对等实现](/docs/zh/vitals/python)通过 golden 测试保持逐字节一致。
+- **对外接口**：`agent-vitals` 命令行、Data MCP 工具（只有 stdio）、App SDK 投影，以及 JSONL 导出。
+- **两套实现**：Rust 是正式产品；Python 对等实现通过 golden 测试保持逐字节一致。
 - **名字**：“Agent Vitals”是项目早期的名字，所以 crate、命令行和数据目录仍叫 `agent-vitals`。
 
 <!-- source: crates/agent-vitals-data/src/lib.rs ("这是一个**嵌入式本地数据层**，不是独立服务：不开网络端口、不起 daemon"; authority "不自愈——损坏需 rm + data-migrate 重建") -->
@@ -63,7 +63,7 @@ flowchart TB
   DOM --> W
 ```
 
-<!-- 待确认：mermaid 渲染（见架构总览）。箭头是简化的数据流；Cargo 依赖以下面的 L0–L6 分层表为准（每个 crate 只依赖更低层）。 -->
+<!-- 说明：mermaid 图是简化的数据流；Cargo 依赖以下面的 L0–L6 分层表为准（每个 crate 只依赖更低层）。 -->
 
 用文字说：Agent 日志 → `agent-vitals-harnesses` 解析器 → `agent-vitals-ingest` 同步 → `agent-vitals-data` SQLite 存储 → `agent-vitals-query` 读取层 → 上面是计费、信任和 MCP → `agent-vitals-runtime` 门面 → 桌面应用和命令行。在桌面应用里，插件宿主通过 App SDK 把投影交给 Agent City。`agent-vitals-domain` 和 `vitals-core` 的纯规则被所有部分共用，包括 wasm 构建。
 
@@ -88,7 +88,7 @@ flowchart TB
 
 分层是强制的：crate 只能依赖严格更低的层（由 Cargo 保证），`tests/module_layering.rs` 检查 runtime 系列内部的模块分层。
 
-**待确认**：现在由谁发布 wasm 构建。它的文档提到一个 DSH 审计页，但仓库里没有任何 CI 工作流或脚本构建它。
+wasm crate 不在默认 workspace 构建里。它的文档提到一个 DSH 审计页，但仓库里目前没有任何 CI 工作流或脚本用 wasm-pack 构建它。
 
 <!-- source: Cargo.toml ([workspace] members; agent-vitals-wasm excluded from default-members) -->
 <!-- source: crates/vitals-core/src/lib.rs; crates/agent-vitals-domain/src/lib.rs; crates/agent-vitals-provider/src/lib.rs ("performs no I/O, SQL, network access") -->
@@ -106,6 +106,9 @@ flowchart TB
 
 ## 相关
 
-- [架构总览：Agent Vitals + Agent City](/docs/zh/architecture/overview)
-- [数据管线](/docs/zh/architecture/data-pipeline)
-- [命令行](/docs/zh/vitals/cli) · [Data MCP 工具](/docs/zh/vitals/mcp-tools) · [App SDK](/docs/zh/vitals/app-sdk) · [Python 对等实现](/docs/zh/vitals/python)
+- [Claude Code 数据源](/docs/zh/data-sources/claude-code)
+- [Codex 数据源](/docs/zh/data-sources/codex)
+- [DeepSeek Harness 数据源](/docs/zh/data-sources/deepseek-harness)
+- [WorkBuddy 数据源](/docs/zh/data-sources/workbuddy)
+- [Agent City 里每栋楼代表什么](/docs/zh/city-guide)
+- [隐私与数据](/docs/zh/privacy-and-data) · [安装](/docs/zh/install) · [常见问题](https://ohagent.ai/zh/#faq)
