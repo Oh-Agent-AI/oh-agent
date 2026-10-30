@@ -263,7 +263,9 @@ export class MechaBattleAnimator {
     }
     if (hp <= 0 && previous <= 0) return;
     const damaged = hp < previous;
-    if (!changed && !damaged) return;
+    // A turn cue is shared by all actors. An unrelated turn must not cancel
+    // this actor's queued reaction or interrupt its current animation.
+    if (!damaged && (!changed || !action)) return;
     this.pending = [];
     let delay = 0;
     if (changed && action && previous > 0) {

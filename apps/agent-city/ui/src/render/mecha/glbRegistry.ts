@@ -7,15 +7,24 @@
  */
 import assaultGlbUrl from "../../assets/mecha/assault.glb?url";
 import assaultManifestUrl from "../../assets/mecha/assault.manifest.json?url";
+import trialGlbUrl from "../../assets/mecha/assault-trial.glb?url";
+import trialManifestUrl from "../../assets/mecha/assault-trial.manifest.json?url";
 import gunnerGlbUrl from "../../assets/mecha/gunner.glb?url";
 import gunnerManifestUrl from "../../assets/mecha/gunner.manifest.json?url";
 import { MechaGlbError, parseMechaGlb, parseMechaManifest, disposeMechaGlbAsset, type MechaGlbAsset } from "./glbModels";
 import { installMechaGlbProvider } from "./models";
+import { parseTrialAssault } from "./trialAssault";
 
-type Source = { glb: string; manifest: string };
+type Source = { glb: string; manifest: string; trial?: boolean };
+const trialEnabled = import.meta.env.DEV && typeof location !== "undefined" && new URLSearchParams(location.search).get("assaultTrial") === "1";
+// Separate local preview for comparing the shorter gait; never used in a match.
+const gaitPreview = import.meta.env.DEV && typeof location !== "undefined" && location.pathname.endsWith("/mecha-model.html") && new URLSearchParams(location.search).get("assaultGaitPreview") === "1";
+const liftPreview = import.meta.env.DEV && typeof location !== "undefined" && location.pathname.endsWith("/mecha-model.html") && new URLSearchParams(location.search).get("assaultLiftPreview") === "1";
 /** 角色 → 资产。要接新角色（规格 §7 的制作顺序）就在这里加一行，并在 glbModels.ts 补它的节点合同。 */
 const SOURCES: Record<string, Source> = {
-  Assault: { glb: assaultGlbUrl, manifest: assaultManifestUrl },
+  Assault: liftPreview ? { glb: "/src/assets/mecha/assault-lift-preview.glb", manifest: "/src/assets/mecha/assault-lift-preview.manifest.json", trial: true }
+    : gaitPreview ? { glb: "/src/assets/mecha/assault-gait-preview.glb", manifest: "/src/assets/mecha/assault-gait-preview.manifest.json", trial: true }
+    : trialEnabled ? { glb: trialGlbUrl, manifest: trialManifestUrl, trial: true } : { glb: assaultGlbUrl, manifest: assaultManifestUrl },
   Gunner: { glb: gunnerGlbUrl, manifest: gunnerManifestUrl },
 };
 
@@ -43,7 +52,8 @@ async function fetchAsset(role: string, source: Source): Promise<MechaGlbAsset> 
   }
   const manifest = parseMechaManifest(manifestJson);
   if (manifest.role !== role) throw new MechaGlbError(`manifest role ${manifest.role} does not match ${role}`);
-  return parseMechaGlb(await glb.arrayBuffer(), manifest);
+  const data = await glb.arrayBuffer();
+  return source.trial ? parseTrialAssault(data, manifest) : parseMechaGlb(data, manifest);
 }
 
 export function loadMechaGlb(role: string): Promise<MechaGlbAsset> {

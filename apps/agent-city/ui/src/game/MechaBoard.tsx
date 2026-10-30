@@ -11,6 +11,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import type { CityEngine } from "../engine/CityEngine";
 import { doctrineFocusLine, gameText, stepBudgetLine, type GameLocale } from "./gameCopy";
 import { CityMechaWorld, type CityMechaView, type CityMechaWorldHandle } from "./CityMechaWorld";
+import { assaultSequenceWaiting } from "./mecha/assaultTurnPlayer";
 import type { DoctrineId } from "./mecha/ai";
 import { createMechaController, type MechaController } from "./mecha/controller";
 import { anchorsFromCity, prepareFightTerrainAsync, type FightCatalog, type FightShape } from "./mecha/citySite";
@@ -226,6 +227,7 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
   const site = catalog?.[shapeId] ?? null;
   const [viewFailed, setViewFailed] = useState(false);
   const worldRef = useRef<CityMechaWorldHandle>(null);
+  const [sequenceStatus, setSequenceStatus] = useState<{ id: number; state: "done" | "fault" } | null>(null);
 
   const controllerRef = useRef<MechaController | null>(null);
   if (!controllerRef.current) {
@@ -235,14 +237,19 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
   const s = useSyncExternalStore(controller.subscribe, controller.getState);
   const { match: state, draft, selected, targeting, auto, paused, doctrine } = s;
 
+  const sequenceTrial = import.meta.env.DEV && new URLSearchParams(location.search).get("assaultTrial") === "1" && new URLSearchParams(location.search).get("assaultSequence") === "1";
+  const sequenceActive = sequenceTrial && Boolean(site && engine && !viewFailed) && !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const sequenceWaiting = assaultSequenceWaiting(sequenceActive, s.combat, sequenceStatus);
+  const sequenceFault = sequenceWaiting && sequenceStatus?.id === s.combat.id && sequenceStatus.state === "fault";
+
   useEffect(() => { controller.setLocale(locale); }, [controller, locale]);
 
   // 自动对战的节拍：每拍一次 tick（展示 → 结算 → 下一回合）。状态一变就重排，暂停即停。
   useEffect(() => {
-    if (!auto || paused) return undefined;
+    if (!auto || paused || sequenceWaiting) return undefined;
     const timer = window.setTimeout(() => controller.tick(), 700);
     return () => window.clearTimeout(timer);
-  }, [controller, auto, paused, s]);
+  }, [controller, auto, paused, s, sequenceWaiting]);
 
   const selectedMech = living(state).find((m) => m.id === selected);
   const reach = s.reach;
@@ -271,7 +278,7 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
     return classes.filter(Boolean).join(" ");
   };
 
-  const clickCell = (x: number, y: number) => controller.clickCell(x, y);
+  const clickCell = (x: number, y: number) => { if (!sequenceWaiting) controller.clickCell(x, y); };
 
   const activeMechs = living(state);
   const plannedCount = s.plannedCount;
@@ -279,8 +286,9 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
   const packReady = s.packReady;
   const cityView = useMemo<CityMechaView>(() => ({
     combat: s.combat,
+    paused,
     figures: state.mechs.map((m) => {
-      const planned = m.hp > 0 ? draft[m.id]?.moveTo : null;
+      const planned = m.hp > 0 && !(sequenceTrial && m.id === "Assault") ? draft[m.id]?.moveTo : null;
       return { id: m.id, x: planned?.x ?? m.pos.x, y: planned?.y ?? m.pos.y, alive: m.hp > 0, hp: m.hp, selected: m.id === selected };
     }),
     boss: { x: state.boss.anchor.x, y: state.boss.anchor.y, alive: state.boss.hp > 0, hp: state.boss.hp },
@@ -293,7 +301,7 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
     targets: targetOptions.flatMap((option) => option.cells),
     targetIds: targetOptions.map((option) => option.id),
     obstacles: state.obstacles,
-  }), [s, state, draft, selected, reach, targetOptions]);
+  }), [s, state, draft, selected, reach, targetOptions, paused, sequenceTrial]);
   const view = useMemo<MechaBoardView>(() => ({
     figures: state.mechs.map((m) => {
       const planned = m.hp > 0 ? draft[m.id]?.moveTo : null;
@@ -320,13 +328,13 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
   const raiderHp = state.raiders.map((raider) => `${t(enemyName(raider.id))} ${raider.hp}`).join(" ");
   const focus = s.focus;
   const focusLine = doctrineFocusLine(doctrine, gameText(enemyName(focus.id), locale), focus.building ? `${focus.building.x},${focus.building.y}` : null, locale);
-  const planning = s.interactive;
+  const planning = s.interactive && !sequenceWaiting;
 
   const viewEngine = viewFailed ? null : engine;
   const onCity = Boolean(site && viewEngine);
   return (
     <section className={onCity ? "mecha-overlay is-city" : "mecha-overlay"} role="dialog" aria-label={t("机甲战棋")}>
-      {onCity && viewEngine && site ? <CityMechaWorld ref={worldRef} engine={viewEngine} site={site} view={cityView} onCell={clickCell} onUnavailable={() => setViewFailed(true)} /> : null}
+      {onCity && viewEngine && site ? <CityMechaWorld ref={worldRef} engine={viewEngine} site={site} view={cityView} onCell={clickCell} onUnavailable={() => setViewFailed(true)} onSequenceStatus={setSequenceStatus} /> : null}
       <header className="mecha-battle-bar">
         <div><strong>{t("机甲战棋")}</strong><span>{t("回合")} {Math.min(state.turn, MAX_TURNS)}/{MAX_TURNS}</span>{paused && <span className="mecha-paused">{t("已暂停")}</span>}</div>
         <div className="mecha-battle-controls">
@@ -339,6 +347,7 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
         </div>
       </header>
       <div className="mecha-panel">
+        {sequenceFault ? <p role="alert">{locale === "zh-Hans" ? "Assault 演出数据不完整或不一致，自动对战已等待；可重新开始一局。" : "Assault playback stopped: missing or inconsistent turn data. Restart the match to continue."}</p> : null}
         <section className="mecha-turn-summary" aria-label={t("敌方预告")}>
           <div><span>{t("敌方预告")}</span><strong className="mecha-intent">{skillLabel}</strong></div>
           <p>{t("大怪")} <strong>{state.boss.hp}</strong>{raiderHp ? ` · ${raiderHp}` : ""}{outcome ? ` · ${outcome}` : ""}</p>

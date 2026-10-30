@@ -8,6 +8,7 @@
  */
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { clone as cloneSkeleton } from "three/addons/utils/SkeletonUtils.js";
 import type { MechaAction, MechaClipSpec, MechaGlbManifest, MechaRig } from "./animation";
 
 export class MechaGlbError extends Error {
@@ -184,7 +185,7 @@ export type MechaGlbInstance = {
 
 /** 克隆一份静止姿态并给它独立的 mixer。几何/材质/贴图与缓存共享，所以实例很便宜（两个袭扰者之类共用一份）。 */
 export function instantiateMechaGlb(asset: MechaGlbAsset, metersPerUnit: number): MechaGlbInstance {
-  const scene = asset.scene.clone(true);
+  const scene = cloneSkeleton(asset.scene) as THREE.Group;
   const visual = scene.getObjectByName("visual");
   if (!visual) throw new MechaGlbError("instance has no visual node");
   const wrapper = new THREE.Group();

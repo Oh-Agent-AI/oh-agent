@@ -32,12 +32,13 @@ import {
   type ArenaPlan, type BossScriptId, type BuildingStake, type Cell, type CoverPresetId, type MatchState, type MechId, type PlanFault, type TerrainKind, type TurnEvent,
 } from "./board";
 import { validateAndApplyPlan } from "./combat";
+import { movementSnapshot, presentationSnapshot, type PresentationStages } from "./board";
 import { bossExecute, bossPrepare } from "./enemy";
 
 export {
   BOARD, BOSS_ATK, BOSS_DEF, BOSS_HP, BOSS_MOVE, BUILDING_DEF, BUILDING_HP, COVERS, FLAT_SPAWN_MAX_DELTA, GDD_RULESET, MAX_TURNS, MECH_IDS, MOVE_QUANTUM,
   RAIDER_ATK, RAIDER_DEF, RAIDER_HP, RAIDER_MOVE, RELAXED_SPAWN_MAX_DELTA, SIEGE_BUILDINGS, SIEGE_RAIDERS, STATS_MOVE, TERRAIN_MOD,
-  adjacentToFootprint, attackerCenter, footprintCenter, knockbackFromAttacker, livingBuildings, livingRaiders, livingStakeBuildings, living, moveBudget, pathDistance,
+  adjacentToFootprint, attackerCenter, footprintCenter, knockbackFromAttacker, livingBuildings, livingRaiders, livingStakeBuildings, living, moveBudget, pathDistance, pathRoute,
   primaryAxis, stakeBuildings,
 } from "./board";
 export type {
@@ -164,17 +165,20 @@ export function spawnsAreOpenGround(state: MatchState): boolean {
 // ---- 回合入口 ----
 
 export type TurnResult =
-  | { ok: true; state: MatchState; log: TurnEvent[] }
+  | { ok: true; state: MatchState; log: TurnEvent[]; presentationStages: PresentationStages | null }
   | { ok: false; fault: PlanFault };
 
 /** 内部：在克隆上跑 校验 → 大怪结算 → 下回合准备，并在玩家行动之后、敌方结算之前取一次预告。 */
-function runTurn(state: MatchState, plan: ArenaPlan) {
+function runTurn(state: MatchState, plan: ArenaPlan, capturePresentation = false) {
   const next = structuredClone(state);
+  const before = capturePresentation ? presentationSnapshot(state) : null;
   const log: TurnEvent[] = [];
   const outer = swapEventSink(log);
   try {
     const applied = validateAndApplyPlan(next, plan);
     if (!("ok" in applied)) return { ok: false as const, fault: applied };
+    const afterMovement = before ? movementSnapshot(before, log) : null;
+    const afterPlayer = capturePresentation ? presentationSnapshot(next) : null;
     let announced = false;
     const noteOutcome = () => {
       if (next.outcome && !announced) {
@@ -192,11 +196,15 @@ function runTurn(state: MatchState, plan: ArenaPlan) {
     }
     const hpBefore = Object.fromEntries(next.mechs.map((m) => [m.id, m.hp])) as Record<MechId, number>;
     if (next.phase === "resolving_boss") bossExecute(next);
+    const afterEnemy = capturePresentation ? presentationSnapshot(next) : null;
     const hits = Object.fromEntries(MECH_IDS.map((id) => [id, Math.max(0, (hpBefore[id] ?? 0) - (next.mechs.find((m) => m.id === id)?.hp ?? 0))])) as Record<MechId, number>;
     noteOutcome();
     if (next.phase === "enemy_prepare") bossPrepare(next);
     noteOutcome();
-    return { ok: true as const, state: next, log, telegraph, hits };
+    const afterPrepare = capturePresentation ? presentationSnapshot(next) : null;
+    const presentationStages = before && afterMovement && afterPlayer && afterEnemy && afterPrepare
+      ? { before, afterMovement, afterPlayer, afterEnemy, afterPrepare } : null;
+    return { ok: true as const, state: next, log, telegraph, hits, presentationStages };
   } finally {
     swapEventSink(outer);
   }
@@ -208,8 +216,8 @@ function runTurn(state: MatchState, plan: ArenaPlan) {
  * 成功时 state 已进入下一回合的 player_plan（或 finished）。log 按结算顺序。
  */
 export function playTurn(state: MatchState, plan: ArenaPlan): TurnResult {
-  const r = runTurn(state, plan);
-  return r.ok ? { ok: true, state: r.state, log: r.log } : r;
+  const r = runTurn(state, plan, true);
+  return r.ok ? { ok: true, state: r.state, log: r.log, presentationStages: r.presentationStages } : r;
 }
 
 /**

@@ -156,21 +156,112 @@ export type PlanReject = PlanFault;
  *   "wall"（有墙/水/山/掩体/楼/废墟/障碍/出界则在最前）、小怪 id（字典序）、机甲（MECH_IDS 序）。
  * act.fizzled：v1.4 落空（无效果、不耗冷却），damage 恒 0，cause 说明为什么落空。
  */
+/** Actual health changes for presentation; never used to calculate the rules. */
+type HealthSnapshot = { kind: "boss" | "mech" | "raider" | "building"; id: string; before: number; after: number };
+export type HealthEffect = HealthSnapshot & { order: number; sequence?: number };
+let eventSink: TurnEvent[] | null = null;
+const effectOrders = new WeakMap<TurnEvent[], number>();
+// This separate clock interleaves health mutations with displacement and collision.
+// `order` remains the contiguous health-only order used by existing consumers.
+const presentationOrders = new WeakMap<TurnEvent[], number>();
+function nextPresentationOrder(): number | undefined {
+  if (!eventSink) return undefined;
+  const order = presentationOrders.get(eventSink) ?? 0;
+  presentationOrders.set(eventSink, order + 1);
+  return order;
+}
+
+/** Effects in one event can surround a nested shove, so event order alone is insufficient. */
+export function orderedHealthEffect(effect: HealthSnapshot): HealthEffect {
+  const order = eventSink ? effectOrders.get(eventSink) ?? 0 : 0;
+  if (eventSink) effectOrders.set(eventSink, order + 1);
+  const sequence = nextPresentationOrder();
+  return { ...effect, order, ...(sequence === undefined ? {} : { sequence }) };
+}
+
+export function healthSnapshot(state: MatchState): HealthSnapshot[] {
+  return [
+    { kind: "boss", id: "boss", before: state.boss.hp, after: state.boss.hp },
+    ...state.mechs.map((m): HealthSnapshot => ({ kind: "mech", id: m.id, before: m.hp, after: m.hp })),
+    ...state.raiders.map((r): HealthSnapshot => ({ kind: "raider", id: r.id, before: r.hp, after: r.hp })),
+    ...state.buildings.map((b): HealthSnapshot => ({ kind: "building", id: b.id, before: b.hp, after: b.hp })),
+  ];
+}
+
+/** Planning often simulates without an event sink; avoid collecting unused snapshots. */
+export function healthCapture(state: MatchState): HealthSnapshot[] {
+  return eventSink ? healthSnapshot(state) : [];
+}
+
+export function healthEffectFields(before: HealthSnapshot[], state: MatchState): { effects?: HealthEffect[] } {
+  if (!before.length) return {};
+  const after = new Map(healthSnapshot(state).map((v) => [`${v.kind}:${v.id}`, v.after]));
+  const effects = before.flatMap((v) => {
+    const hp = after.get(`${v.kind}:${v.id}`);
+    return hp !== undefined && hp !== v.before ? [orderedHealthEffect({ ...v, after: hp })] : [];
+  });
+  return effects.length ? { effects } : {};
+}
+
 export type TurnEvent =
   | { type: "move"; mechId: MechId; from: Cell; to: Cell }
-  | { type: "act"; mechId: MechId; action: Action["kind"]; target?: string; damage: number; fizzled?: boolean; cause?: PlanFault["cause"] }
-  | { type: "shove"; unit: "boss" | MechId; dir: Cell; hit?: string; damage: number }
-  | { type: "enemy"; actor: string; skill: BossSkill; cells: Cell[]; damage: number }
+  | { type: "act"; mechId: MechId; action: Action["kind"]; target?: string; damage: number; fizzled?: boolean; cause?: PlanFault["cause"]; effects?: HealthEffect[] }
+  | { type: "shove"; unit: "boss" | MechId; dir: Cell; hit?: string; damage: number; effects?: HealthEffect[]; sequence?: number }
+  | { type: "enemy"; actor: string; skill: BossSkill; cells: Cell[]; damage: number; effects?: HealthEffect[] }
   | { type: "outcome"; outcome: Outcome };
+
+/** Immutable combat snapshots used to place actors while presenting an accepted turn. */
+
+export type PresentationUnit = { id: string; pos: Cell; hp: number };
+export type PresentationSnapshot = {
+  boss: { anchor: Cell; hp: number };
+  mechs: Array<PresentationUnit & { id: MechId }>;
+  raiders: PresentationUnit[];
+  buildings: Array<{ id: string; hp: number }>;
+  outcome: Outcome | null;
+};
+export type PresentationStages = {
+  before: PresentationSnapshot;
+  afterMovement: PresentationSnapshot;
+  afterPlayer: PresentationSnapshot;
+  afterEnemy: PresentationSnapshot;
+  afterPrepare: PresentationSnapshot;
+};
+
+export function presentationSnapshot(state: MatchState): PresentationSnapshot {
+  return {
+    boss: { anchor: { ...state.boss.anchor }, hp: state.boss.hp },
+    mechs: state.mechs.map((m) => ({ id: m.id, pos: { ...m.pos }, hp: m.hp })),
+    raiders: state.raiders.map((r) => ({ id: r.id, pos: { ...r.pos }, hp: r.hp })),
+    buildings: state.buildings.map((b) => ({ id: b.id, hp: b.hp })),
+    outcome: state.outcome,
+  };
+}
+
+/** Player movement is simultaneous and precedes every action in an accepted pack. */
+export function movementSnapshot(before: PresentationSnapshot, log: TurnEvent[]): PresentationSnapshot | null {
+  const moved: PresentationSnapshot = structuredClone(before);
+  const seen = new Set<MechId>();
+  let actionStarted = false;
+  for (const event of log) {
+    if (event.type !== "move") { actionStarted = true; continue; }
+    if (actionStarted || seen.has(event.mechId)) return null;
+    const unit = moved.mechs.find((m) => m.id === event.mechId);
+    if (!unit || unit.pos.x !== event.from.x || unit.pos.y !== event.from.y) return null;
+    unit.pos = { ...event.to }; seen.add(event.mechId);
+  }
+  return moved;
+}
 
 /**
  * 事件接收口。模块级而不是逐层传参：tryTranslateBoss/applyAction 等十几个内部函数
  * 的签名和返回值都不用动，结算结果因此不可能被事件收集改变。
  * 只有 playTurn/previewPlan 会装上它，且 finally 还原；未装时 emit 是空操作。
  */
-let eventSink: TurnEvent[] | null = null;
 export function emit(e: TurnEvent) {
-  eventSink?.push(e);
+  if (!eventSink) return;
+  if (e.type === "shove") e.sequence = nextPresentationOrder();
+  eventSink.push(e);
 }
 /** 换上新的接收口并返回旧的，调用方在 finally 里换回去。接收口本体只在本模块一份。 */
 export function swapEventSink(next: TurnEvent[] | null): TurnEvent[] | null {
@@ -418,6 +509,7 @@ export function dijkstra(
   step: (from: Cell, to: Cell) => number | null,
   visit: (cell: Cell, cost: number) => boolean | void,
   maxCost = Number.POSITIVE_INFINITY,
+  onRelax?: (from: Cell, to: Cell, cost: number) => void,
 ): void {
   const dist = new Map<string, number>([[key(start), 0]]);
   const heap = new CellHeap();
@@ -440,9 +532,36 @@ export function dijkstra(
       const prev = dist.get(key(nxtCell));
       if (prev !== undefined && prev <= cost) continue;
       dist.set(key(nxtCell), cost);
+      onRelax?.(cur, nxtCell, cost);
       heap.push({ x: nxtCell.x, y: nxtCell.y, cost });
     }
   }
+}
+
+/** A deterministic least-cost cell route with the same occupancy rules as pathDistance. */
+export function pathRoute(state: MatchState, from: Cell, to: Cell, mover: MoverId, opts?: { alliesPass?: boolean }): { cost: number; cells: Cell[] } | null {
+  if (eq(from, to)) return { cost: 0, cells: [{ ...from }] };
+  if (!inb(to) || water(state, to)) return null;
+  const passes = (occ: Occ) => occ === "empty" || occ === mover || (opts?.alliesPass === true && MECH_IDS.includes(occ as MechId));
+  if (!passes(occupant(state, to))) return null;
+  const parents = new Map<string, Cell>();
+  let found: number | null = null;
+  dijkstra(from, (cur, nxt) => {
+    if (!inb(nxt) || !passes(occupant(state, nxt))) return null;
+    return stepCost(state, cur, nxt, mover);
+  }, (cell, cost) => {
+    if (!eq(cell, to)) return false;
+    found = cost;
+    return true;
+  }, Number.POSITIVE_INFINITY, (cur, nxt) => { parents.set(key(nxt), { x: cur.x, y: cur.y }); });
+  if (found === null) return null;
+  const cells: Cell[] = [{ ...to }];
+  while (!eq(cells[0]!, from)) {
+    const parent = parents.get(key(cells[0]!));
+    if (!parent || cells.length > BOARD * BOARD) return null;
+    cells.unshift(parent);
+  }
+  return { cost: found, cells };
 }
 
 /**

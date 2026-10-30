@@ -4,12 +4,19 @@ import * as THREE from "three";
 import type { CityEngine } from "../engine/CityEngine";
 import { boardToWorld, cellWorld, type CityMechaSite } from "./mecha/citySite";
 import { createAssault, createBoss, createGunner, createRaider, createSupport, disposeMechaModel } from "../render/mecha/models";
-import { MechaBattleAnimator, faceMechaTarget, type MechaCombatCue } from "../render/mecha/animation";
+import { MechaBattleAnimator, faceMechaTarget, mechaActionDuration, type MechaCombatCue } from "../render/mecha/animation";
+import { trialMoveAlpha, trialMovementAllowed } from "../render/mecha/trialMotion";
+import { AssaultTurnPlayer } from "./mecha/assaultTurnPlayer";
+import { movementWaypoints } from "./mecha/movementRoute";
+import type { PresentationStages } from "./mecha/presentationSnapshot";
+import type { PresentationRoutes } from "./mecha/presentationRoutes";
+import type { PresentationChanges } from "./mecha/presentationChanges";
 import { applyMechaUnitLight, setMechaUnitLight } from "../render/mecha/unitLight";
 import { BOARD, type Cell, type MechId } from "./mecha/rules";
 
 export type CityMechaView = {
-  combat: { id: number; actions: MechaCombatCue[] };
+  combat: { id: number; actions: MechaCombatCue[]; reset?: true; presentationChanges?: PresentationChanges; presentationStages?: PresentationStages | null; presentationRoutes?: PresentationRoutes };
+  paused?: boolean;
   figures: Array<{ id: MechId; x: number; y: number; alive: boolean; hp: number; selected: boolean }>;
   boss: { x: number; y: number; alive: boolean; hp: number };
   raiders: Array<{ id: string; x: number; y: number; alive: boolean; hp: number }>;
@@ -68,12 +75,15 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
   view: CityMechaView;
   onCell: (x: number, y: number) => void;
   onUnavailable?: () => void;
-}>(function CityMechaWorld({ engine, site, view, onCell, onUnavailable }, ref) {
+  onSequenceStatus?: (status: { id: number; state: "done" | "fault" }) => void;
+}>(function CityMechaWorld({ engine, site, view, onCell, onUnavailable, onSequenceStatus }, ref) {
   const viewRef = useRef(view);
   const onCellRef = useRef(onCell);
+  const onSequenceStatusRef = useRef(onSequenceStatus);
   const cameraCommands = useRef<CityMechaWorldHandle | null>(null);
   viewRef.current = view;
   onCellRef.current = onCell;
+  onSequenceStatusRef.current = onSequenceStatus;
   useImperativeHandle(ref, () => ({
     resetCamera: () => cameraCommands.current?.resetCamera(),
     rotateCamera: () => cameraCommands.current?.rotateCamera(),
@@ -258,8 +268,14 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
     const spot = new THREE.Vector3();
     const animators = new Map<THREE.Object3D, MechaBattleAnimator>([assault, gunner, support, boss, raiderWest, raiderEast].map((mesh) => [mesh, new MechaBattleAnimator(mesh)]));
     const litUnits = [assault, gunner, support, boss, raiderWest, raiderEast];
+    const sequenceTrial = import.meta.env.DEV && new URLSearchParams(location.search).get("assaultTrial") === "1" && new URLSearchParams(location.search).get("assaultSequence") === "1";
+    let sequence: AssaultTurnPlayer | null = null;
+    let sequenceObserved = -1;
+    let sequenceFault = false;
+    let sequenceTarget: string | undefined;
     let previousFrame = performance.now();
     const animate = (mesh: THREE.Object3D, id: string, hp: number, moving: boolean, dt: number) => {
+      if (viewRef.current.paused) return;
       const animator = animators.get(mesh)!;
       const cue = viewRef.current.combat;
       animator.sync(hp, cue.id, cue.actions.find((item) => item.actor === id)?.action);
@@ -278,6 +294,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         unit.userData.unitLightFor = source;
       }
       const current = viewRef.current;
+      const animationDt = current.paused ? 0 : dt;
       const telegraph = new Set(current.telegraph.map(cellKey));
       const focus = new Set(current.focus.map(cellKey));
       const reach = new Set(current.reach.map(cellKey));
@@ -307,6 +324,12 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         const action = animators.get(figures[id as MechId])?.animator.action;
         if (action !== "attack" && action !== "repair") return bossFeet;
         const target = current.combat.actions.find((cue) => cue.actor === id)?.target;
+        if (id === "Assault" && import.meta.env.DEV && new URLSearchParams(location.search).get("assaultTrial") === "1") {
+          if (target === "boss") return boss.position.clone();
+          const raiderIndex = current.raiders.findIndex((raider) => raider.id === target);
+          if (raiderIndex === 0) return raiderWest.position.clone();
+          if (raiderIndex === 1) return raiderEast.position.clone();
+        }
         const actor = current.figures.find((figure) => figure.id === target) ?? current.raiders.find((raider) => raider.id === target);
         if (!actor) return bossFeet;
         const feet = cellWorld(site, actor);
@@ -317,8 +340,77 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         const feet = cellWorld(site, { x: figure.x, y: figure.y });
         spot.set(feet.x, feet.y, feet.z);
         const moving = mesh.position.distanceToSquared(spot) > 0.01;
-        slide(mesh, spot, reduce);
-        animate(mesh, figure.id, figure.hp, moving && figure.alive, dt);
+        const trial = figure.id === "Assault" && import.meta.env.DEV && new URLSearchParams(location.search).get("assaultTrial") === "1";
+        const sequenced = trial && sequenceTrial && !reduce;
+        if (sequenced) {
+          if (!sequence) {
+            // A scene can mount after a turn was committed. Start from that turn's
+            // recorded position so it is played rather than silently skipped.
+            const initial = current.combat.reset ? null : current.combat.presentationStages?.before.mechs.find((m) => m.id === "Assault");
+            const start = initial ? cellWorld(site, initial.pos) : feet;
+            const baseId = current.combat.reset ? current.combat.id : Math.max(0, current.combat.id - 1);
+            mesh.position.set(start.x, start.y, start.z);
+            sequence = new AssaultTurnPlayer(start, 32, baseId);
+            sequenceObserved = baseId;
+            animators.get(mesh)!.sync(initial?.hp ?? figure.hp, baseId);
+          }
+          if (current.combat.id !== sequenceObserved && current.combat.reset) {
+            mesh.position.copy(spot);
+            sequence = new AssaultTurnPlayer(feet, 32, current.combat.id);
+            sequenceObserved = current.combat.id;
+            sequenceFault = false;
+            sequenceTarget = undefined;
+            const freshAnimator = new MechaBattleAnimator(mesh);
+            animators.set(mesh, freshAnimator);
+            freshAnimator.sync(figure.hp, current.combat.id);
+          }
+          if (current.combat.id !== sequenceObserved && !sequenceFault) {
+            const stages = current.combat.presentationStages;
+            const routes = current.combat.presentationRoutes;
+            if (!stages || !routes?.ok || !current.combat.presentationChanges?.ok) {
+              sequenceFault = true;
+              console.warn("[assault-sequence] missing or inconsistent turn data");
+            } else {
+              const before = stages.before.mechs.find((m) => m.id === "Assault");
+              const afterMove = stages.afterMovement.mechs.find((m) => m.id === "Assault");
+              const after = stages.afterPrepare.mechs.find((m) => m.id === "Assault");
+              const route = routes.routes.find((r) => r.actor === "Assault");
+              const cue = current.combat.actions.find((c) => c.actor === "Assault");
+              const cells = route?.cells ?? (before ? [before.pos] : []);
+              const points = movementWaypoints(site, cells);
+              if (!before || !afterMove || !after || !points || cells.at(-1)?.x !== afterMove.pos.x || cells.at(-1)?.y !== afterMove.pos.y || afterMove.pos.x !== after.pos.x || afterMove.pos.y !== after.pos.y) {
+                sequenceFault = true;
+                console.warn("[assault-sequence] incomplete route or forced movement requires explicit choreography");
+              } else {
+                const actionSeconds = cue ? mechaActionDuration(mesh, cue.action) ?? 0 : 0;
+                const reactionSeconds = after.hp < before.hp ? (mechaActionDuration(mesh, "hit") ?? .48) : 0;
+                const defeatSeconds = after.hp <= 0 && before.hp > 0 ? (mechaActionDuration(mesh, "defeat") ?? .85) : 0;
+                try { sequence.enqueue({ id: current.combat.id, points, action: cue?.action, actionDuration: actionSeconds + reactionSeconds + defeatSeconds, hp: after.hp, target: cue?.target }); }
+                catch (error) { sequenceFault = true; console.warn("[assault-sequence] rejected discontinuous or missing turn", error); }
+              }
+            }
+            sequenceObserved = current.combat.id;
+            if (sequenceFault) onSequenceStatusRef.current?.({ id: current.combat.id, state: "fault" });
+          }
+          sequence.setPaused(Boolean(current.paused));
+          if (!sequenceFault) {
+            const old = mesh.position.clone();
+            const frame = sequence.advance(dt);
+            mesh.position.set(frame.position.x, frame.position.y, frame.position.z);
+            if (frame.completed !== undefined) onSequenceStatusRef.current?.({ id: frame.completed, state: "done" });
+            const animator = animators.get(mesh)!;
+            if (frame.started) { sequenceTarget = frame.started.target; animator.sync(frame.started.hp, frame.started.id, frame.started.action); }
+            if (!current.paused) animator.update(frame.started ? frame.actionElapsed ?? 0 : dt, frame.phase === "moving", reduce);
+            if (!current.paused && frame.phase === "moving" && old.distanceToSquared(mesh.position) > 1e-10) faceMechaTarget(mesh, old, mesh.position);
+            else if (!current.paused && frame.phase === "acting" && sequenceTarget === "boss") faceMechaTarget(mesh, mesh.position, boss.position);
+          }
+        } else if (trial) {
+          animate(mesh, figure.id, figure.hp, moving && figure.alive, animationDt);
+          if (!current.paused && (reduce || trialMovementAllowed(animators.get(mesh)!.animator.action))) slide(mesh, spot, reduce, dt, true);
+        } else {
+          if (!current.paused) slide(mesh, spot, reduce, dt);
+          animate(mesh, figure.id, figure.hp, moving && figure.alive, animationDt);
+        }
         mesh.visible = true;
         const ring = markers[figure.id];
         const targeted = targetIds.has(figure.id);
@@ -326,17 +418,17 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         ring.mesh.position.set(mesh.position.x, mesh.position.y + 0.55, mesh.position.z);
         ring.mesh.scale.setScalar(figure.selected ? 1.34 : targeted ? 1.2 : 1);
         ring.mat.opacity = figure.selected || targeted ? 1 : 0.48;
-        if (figure.alive) faceMechaTarget(mesh, spot, facingTarget(figure.id));
+        if (!current.paused && figure.alive && !sequenced) faceMechaTarget(mesh, trial ? mesh.position : spot, facingTarget(figure.id));
       }
       const bossMoving = boss.position.distanceToSquared(bossFeet) > 0.01;
-      slide(boss, bossFeet, reduce);
-      animate(boss, "boss", current.boss.hp, bossMoving && current.boss.alive, dt);
+      if (!current.paused) slide(boss, bossFeet, reduce);
+      animate(boss, "boss", current.boss.hp, bossMoving && current.boss.alive, animationDt);
       boss.visible = true;
       markers.boss.mesh.visible = current.boss.alive;
       markers.boss.mesh.position.set(boss.position.x, boss.position.y + 0.55, boss.position.z);
       markers.boss.mesh.scale.setScalar(targetIds.has("boss") ? 1.12 : 1);
       const nearest = current.figures.find((figure) => figure.alive);
-      if (nearest && current.boss.alive) {
+      if (!current.paused && nearest && current.boss.alive) {
         const feet = cellWorld(site, { x: nearest.x, y: nearest.y });
         faceMechaTarget(boss, bossFeet, new THREE.Vector3(feet.x, feet.y, feet.z));
       }
@@ -352,15 +444,15 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         const feet = cellWorld(site, { x: raider.x, y: raider.y });
         spot.set(feet.x, feet.y, feet.z);
         const moving = mesh.position.distanceToSquared(spot) > 0.01;
-        slide(mesh, spot, reduce);
-        animate(mesh, raider.id, raider.hp, moving && raider.alive, dt);
+        if (!current.paused) slide(mesh, spot, reduce);
+        animate(mesh, raider.id, raider.hp, moving && raider.alive, animationDt);
         mesh.visible = true;
         const ring = i === 0 ? markers.raiderWest : markers.raiderEast;
         ring.mesh.visible = raider.alive;
         ring.mesh.position.set(mesh.position.x, mesh.position.y + 0.55, mesh.position.z);
         ring.mesh.scale.setScalar(targetIds.has(raider.id) ? 1.2 : 1);
         ring.mat.opacity = targetIds.has(raider.id) ? 1 : 0.48;
-        if (raider.alive) faceMechaTarget(mesh, spot, bossFeet);
+        if (!current.paused && raider.alive) faceMechaTarget(mesh, spot, bossFeet);
       }
       if (!current.raiders[0]?.alive) markers.raiderWest.mesh.visible = false;
       if (!current.raiders[1]?.alive) markers.raiderEast.mesh.visible = false;
@@ -430,7 +522,7 @@ function footprintFeet(site: CityMechaSite, anchor: { x: number; y: number }): T
   return new THREE.Vector3(at.x, y / cells.length, at.z);
 }
 
-function slide(mesh: THREE.Object3D, goal: THREE.Vector3, snap: boolean) {
+function slide(mesh: THREE.Object3D, goal: THREE.Vector3, snap: boolean, dt = 0, trial = false) {
   if (snap || mesh.position.distanceTo(goal) > 96) mesh.position.copy(goal);
-  else mesh.position.lerp(goal, 0.22);
+  else mesh.position.lerp(goal, trial ? trialMoveAlpha(dt) : 0.22);
 }

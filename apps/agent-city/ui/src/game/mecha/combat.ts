@@ -6,7 +6,7 @@
 import {
   BOSS_ATK, BOSS_DEF, BUILDING_DEF, MECH_IDS, RAIDER_ATK, RAIDER_DEF, STATS, adjacentToFootprint, cheb, emit, eq, footprint, footprintCenter,
   inb, knockbackFromAttacker, living, livingRaiders, enemiesRemain, mech, occupant, onFootprint, pathDistance, primaryAxis, raiderAt, moveBudget, blocksTerrain,
-  shoveWall, stakeBuildings, livingStakeBuildings, swapEventSink, terrainAt, attackerCenter,
+  shoveWall, stakeBuildings, livingStakeBuildings, swapEventSink, terrainAt, attackerCenter, healthCapture, healthEffectFields,
   type Action, type ArenaPlan, type Cell, type MatchState, type MechId, type PlanFault, type PlanReject, type Raider,
 } from "./board";
 
@@ -93,6 +93,7 @@ export function reproject(state: MatchState) {
  * 现在：任一障碍 → 大怪只受一次 2，每个被撞的小怪/机甲各受 2，大怪不动；只发一条 shove 事件。
  */
 export function tryTranslateBoss(state: MatchState, dir: Cell): boolean {
+  const healthBefore = healthCapture(state);
   if (state.boss.hp <= 0) return false;
   const anchor = state.boss.anchor;
   const dests = footprint(anchor).map((c) => ({ x: c.x + dir.x, y: c.y + dir.y }));
@@ -127,7 +128,7 @@ export function tryTranslateBoss(state: MatchState, dir: Cell): boolean {
       hurtMech(state, id, 2);
       hitIds.push(id);
     }
-    emit({ type: "shove", unit: "boss", dir, hit: hitIds.join(","), damage: before - state.boss.hp });
+    emit({ type: "shove", unit: "boss", dir, hit: hitIds.join(","), damage: before - state.boss.hp, ...healthEffectFields(healthBefore, state) });
     refresh(state);
     return false;
   }
@@ -138,20 +139,21 @@ export function tryTranslateBoss(state: MatchState, dir: Cell): boolean {
 }
 
 export function tryPushMech(state: MatchState, id: MechId, dir: Cell): boolean {
+  const healthBefore = healthCapture(state);
   const m = mech(state, id);
   if (!m) return false;
   const dest = { x: m.pos.x + dir.x, y: m.pos.y + dir.y };
   const before = m.hp;
   if (!inb(dest) || blocksTerrain(state, dest) || shoveWall(state, dest)) {
     hurtMech(state, id, 2);
-    emit({ type: "shove", unit: id, dir, hit: "wall", damage: before - m.hp });
+    emit({ type: "shove", unit: id, dir, hit: "wall", damage: before - m.hp, ...healthEffectFields(healthBefore, state) });
     refresh(state);
     return false;
   }
   if (state.boss.hp > 0 && onFootprint(state.boss.anchor, dest)) {
     hurtMech(state, id, 2);
     hurtBoss(state, 2);
-    emit({ type: "shove", unit: id, dir, hit: "boss", damage: before - m.hp });
+    emit({ type: "shove", unit: id, dir, hit: "boss", damage: before - m.hp, ...healthEffectFields(healthBefore, state) });
     refresh(state);
     return false;
   }
@@ -159,7 +161,7 @@ export function tryPushMech(state: MatchState, id: MechId, dir: Cell): boolean {
   if (rider) {
     hurtMech(state, id, 2);
     hurtRaider(rider, 2);
-    emit({ type: "shove", unit: id, dir, hit: rider.id, damage: before - m.hp });
+    emit({ type: "shove", unit: id, dir, hit: rider.id, damage: before - m.hp, ...healthEffectFields(healthBefore, state) });
     refresh(state);
     return false;
   }
@@ -168,7 +170,7 @@ export function tryPushMech(state: MatchState, id: MechId, dir: Cell): boolean {
     hurtMech(state, id, 2);
     if (occ === "Assault" || occ === "Gunner" || occ === "Support") hurtMech(state, occ, 2);
     if (occ === "boss") hurtBoss(state, 2);
-    emit({ type: "shove", unit: id, dir, hit: occ, damage: before - m.hp });
+    emit({ type: "shove", unit: id, dir, hit: occ, damage: before - m.hp, ...healthEffectFields(healthBefore, state) });
     refresh(state);
     return false;
   }
@@ -200,19 +202,21 @@ function meleeEnemy(state: MatchState, id: MechId, target: string, bonus: number
   const m = mech(state, id);
   if (!m) return;
   const from = m.pos;
+  const healthBefore = healthCapture(state);
   const before = enemyHp(state, target);
   strikeEnemy(state, target, STATS[id].atk + bonus);
   // act 先于击退事件：回放顺序 = 出手、再被推。
-  emit({ type: "act", mechId: id, action: kind, target, damage: before - enemyHp(state, target) });
+  emit({ type: "act", mechId: id, action: kind, target, damage: before - enemyHp(state, target), ...healthEffectFields(healthBefore, state) });
   refresh(state);
   if (target === "boss" && state.boss.hp > 0) tryTranslateBoss(state, knockbackFromAttacker(from, state.boss.anchor));
 }
 
 function shootEnemy(state: MatchState, id: MechId, target: string, kind: Action["kind"]) {
   if (!mech(state, id)) return;
+  const healthBefore = healthCapture(state);
   const before = enemyHp(state, target);
   strikeEnemy(state, target, STATS[id].atk);
-  emit({ type: "act", mechId: id, action: kind, target, damage: before - enemyHp(state, target) });
+  emit({ type: "act", mechId: id, action: kind, target, damage: before - enemyHp(state, target), ...healthEffectFields(healthBefore, state) });
   refresh(state);
 }
 
@@ -338,8 +342,9 @@ export function applyAction(state: MatchState, id: MechId, action: Action): stri
   if (m.cd !== 0) return "skill on cooldown";
   const ally = mech(state, action.target);
   if (!ally || cheb(m.pos, ally.pos) !== 1) return "repair target not adjacent";
+  const healthBefore = healthCapture(state);
   ally.hp = Math.min(STATS[action.target].maxHp, ally.hp + 4);
-  emit({ type: "act", mechId: id, action: "repair", target: action.target, damage: 0 });
+  emit({ type: "act", mechId: id, action: "repair", target: action.target, damage: 0, ...healthEffectFields(healthBefore, state) });
   m.cd = 1;
   m.skillUsed = true;
   return null;
