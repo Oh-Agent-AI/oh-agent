@@ -14,9 +14,10 @@ assert(manifest.some((s) => s.file === "verify-city-solve.mjs" && !s.shared));
 // Preserve the existing stages and register the new production causeway guard.
 // 63 + city-opt 的 5 个（villa-placement / model-envelope / site-registry / site-registry-scene / joint-site-road）+ 规划修复的 6 个守卫（verify-plan-patch / -road-rules / -sites / -repair-controller / -bulldozer / -remap）+ R2 的 verify-city-import-boundary。计数锁防的是悄悄增减，
 // 有意登记就同步改这里，并在下面断言它们确实挂进了 planning 组——否则登记了却不跑。
-// 88（驾驶线）+ 视觉风格线 3 个（junction-rings / highway-ramps / world-scale）。计数锁防的是悄悄增减，
+// 88（驾驶线）+ 视觉风格线 3 个（junction-rings / highway-ramps / world-scale）+ 机甲 UX 守卫（verify-city-mecha-ux，挂在 game 组）。计数锁防的是悄悄增减，
 // 有意登记就同步改这里，并在下面断言它们确实挂进了 planning 组——否则登记了却不跑。
-assert.equal(manifest.length, 117);
+assert.equal(manifest.length, 118);
+assert(selectStages("module", "game").some(stage => stage.id === "verify-city-mecha-ux"));
 assert(selectStages("module", "display").some(stage => stage.id === "verify-city-coastal-receivers"));
 for (const id of ["verify-city-road-audit-ui", "verify-city-road-audit-worker", "verify-city-road-audit-history"]) {
   assert(manifest.some((stage) => stage.id === id), `${id} must be registered`);
@@ -72,7 +73,8 @@ for (const id of ["verify-city-world", "verify-city-access-capabilities", "verif
 for (const mode of ["full", "fast", "module"]) assert(selectStages(mode, mode === "module" ? "planning" : undefined)
   .some((stage) => stage.id === "verify-city-radius"));
 assert(manifest.some((s) => s.id === "verify-city-road-report"));
-assert.equal(selectStages("module", "game").length, 32);
+assert.equal(selectStages("module", "game").length, 33);
+assert(selectStages("module", "game").some((stage) => stage.id === "verify-city-mecha-ux"), "verify-city-mecha-ux must run in the game group");
 for (const id of ["verify-city-continuous-driving", "verify-city-driving-collision-differential", "verify-city-rotation-budget"])
   assert(selectStages("module", "game").some(stage => stage.id === id));
 assert(selectStages("module", "game").some((stage) => stage.id === "verify-city-shared-runtime"));
