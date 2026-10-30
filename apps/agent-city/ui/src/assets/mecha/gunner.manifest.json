@@ -39,12 +39,11 @@
     "repair": "attack"
   },
   "materials": [
-    "armor_palette",
-    "faction_accent"
+    "armor_palette"
   ],
   "source": {
-    "kind": "hand-modelled in Blender 5.4; limbs, pauldrons, hands and chest top view from cleaned per-part reference masks (Hunyuan 3D reference, not shipped) turned into designed outlines; head, feet and railgun designed from the concept; each detail tagged [concept] or [AI reference]",
-    "blend_sha256": "9745237bf42e68f3c254abf8bbe625bfd8327b85b2cd08344d197eaae2095bfe",
-    "glb_sha256": "5e13c21dea0c4e0fa3faa657189146b0f89f827b78e9f4d46a896fd7b07289f4"
+    "kind": "existing Hunyuan 3D high model -> public Cloudflare R2 URL -> hunyuan-3d-reduce-face (low, 15,829 tris) -> legacy rigid-joint surface labels -> per-joint voxel rebuild, degenerate-shell removal and reduction to 10,558 tris -> 2048 diffuse atlas baked from the high model -> railgun barrel depth adjusted to 90% and four mechanical joint hubs added (10,878 tris total) -> grounded rigid animation with stance-foot locking -> gltfpack -cc -kn -km -ke -ac -vp 16 -vt 16 -vn 8 -af 100 -> WebP quality 90",
+    "blend_sha256": "8e353064a3d0a03bca77f3a65188f5c4b56dc83df963122d6fc242882cb42126",
+    "glb_sha256": "f85525ccfa9e164cca7615a49c4fda18313936e939f3b4b07202754c70833bb9"
   }
 }
