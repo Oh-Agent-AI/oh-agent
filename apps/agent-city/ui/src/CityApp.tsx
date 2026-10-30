@@ -120,21 +120,35 @@ export function CityApp() {
   // the settings button all ask this predicate, so a second path cannot start a
   // mode that overwrites the camera or frame hook owned by another activity.
   const mechaBlocked = cinema || game.active || driving.active || mechaOpen || experience.busy || !!experience.film || planRepair.state.active;
+  const mechaEntryRefusal = (): string | null => {
+    if (cinema) return "航拍进行中，没有进入机甲战，镜头没有锁到地标。";
+    if (game.active) return "飞行中，没有进入机甲战，镜头没有锁到地标。";
+    if (driving.active) return "驾驶中，没有进入机甲战，镜头没有锁到地标。";
+    if (experience.film) return "视频导出进行中，没有进入机甲战，镜头没有锁到地标。";
+    if (planRepair.state.active) return "正在修复城市，没有进入机甲战，镜头没有锁到地标。";
+    if (experience.busy) return "城市还在忙，没有进入机甲战，镜头没有锁到地标。";
+    if (mechaOpen) return null;
+    const engine = engineRef.current;
+    if (!engine?.currentLayout || !engine.currentModel) return "城市还没准备好，没有进入机甲战，镜头没有锁到地标。";
+    return null;
+  };
   // Require a modelled city: the board is a view of the current layout, not a game
   // that can start against a half-built scene.
   const openMecha = () => {
-    const engine = engineRef.current;
-    if (mechaBlocked || !engine?.currentLayout || !engine.currentModel) return;
+    const refusal = mechaEntryRefusal();
+    if (refusal) { experience.setError(cityText(refusal, language)); return; }
+    if (mechaBlocked) return;
+    experience.setError(null);
     experience.setOptions(false);
     experience.clearSelection();
     setMechaOpen(true);
   };
   const playRef = useRef<(target: PlayTarget) => void>(() => {});
   playRef.current = (target) => {
+    if (target.kind === "mecha") { openMecha(); return; }
     if (mechaBlocked) return;
     experience.setOptions(false); experience.clearSelection();
     if (target.kind === "car") driving.enterAt(target);
-    else if (target.kind === "mecha") openMecha();
     else game.enterPracticeFrom(target);
   };
   planRepairActive.current = planRepair.state.active;

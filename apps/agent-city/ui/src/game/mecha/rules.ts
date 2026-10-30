@@ -251,7 +251,7 @@ export function collectTelegraphs(state: MatchState): { cells: Cell[]; byActor: 
 export function previewPlan(
   state: MatchState,
   plan: ArenaPlan,
-): { ok: true; telegraphAfter: Cell[]; telegraphByActor: Record<string, Cell[]>; hitsAfter: Record<MechId, number>; assumed: MechId[] } | { ok: false; fault: PlanFault } {
+): { ok: true; telegraphAfter: Cell[]; telegraphByActor: Record<string, Cell[]>; hitsAfter: Record<MechId, number>; assumed: MechId[]; enemyOrder: Array<Extract<TurnEvent, { type: "enemy" }>> } | { ok: false; fault: PlanFault } {
   const named = new Set(plan.items.map((i) => i.mechId));
   const assumed = living(state).map((m) => m.id).filter((id) => !named.has(id));
   const full: ArenaPlan = {
@@ -259,6 +259,5 @@ export function previewPlan(
     items: [...plan.items, ...assumed.map((mechId) => ({ mechId, moveTo: null, action: { kind: "skip" as const } }))],
   };
   const r = runTurn(state, full);
-  return r.ok ? { ok: true, telegraphAfter: r.telegraph, telegraphByActor: r.telegraphByActor, hitsAfter: r.hits, assumed } : r;
+  return r.ok ? { ok: true, telegraphAfter: r.telegraph, telegraphByActor: r.telegraphByActor, hitsAfter: r.hits, assumed, enemyOrder: r.log.filter((event): event is Extract<TurnEvent, { type: "enemy" }> => event.type === "enemy") } : r;
 }
-

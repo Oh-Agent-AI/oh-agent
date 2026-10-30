@@ -5,6 +5,16 @@
 export type GameLocale = "zh-Hans" | "en";
 
 const ENGLISH: Record<string, string> = {
+  "守楼败北条": "Defended buildings (defeat meter)",
+  "本局无守楼目标": "No defended buildings this match",
+  "机甲单台损毁不败北；全灭、守楼全毁或超时则败北。": "One mech lost is not defeat; losing all mechs, all defended buildings, or running out of turns is.",
+  "结算顺序": "Attack order",
+  "先同时移动，再按突击、射手、支援行动；随后敌方依次攻击。": "Moves resolve together, then Assault, Gunner and Support act; enemies attack afterward.",
+  "演出期间不显示预测。": "Prediction is unavailable during playback.",
+  "未规划机甲按待机预测；改变计划会更新顺序。": "Unplanned mechs are assumed to wait; changing the plan updates the order.",
+  "按当前计划预测；改变计划会更新顺序。": "Predicted from the current plan; changing it updates the order.",
+  "本次预测没有敌方攻击。": "No enemy attacks in this prediction.",
+  "本规则没有独立电网或环境攻击。": "These rules have no separate power grid or environmental attacks.",
   "自由驾驶": "Free drive",
   "城市道路尚未完成全量认证": "City-wide road validation is still in progress",
   "道路认证中": "Road validation in progress",

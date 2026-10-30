@@ -40,7 +40,7 @@ export type Beat = "show" | "resolve";
 export type ControllerFault = { mechId?: MechId; cause: NonNullable<PlanFault["cause"]>; scope: "rejected" | "draft"; reason?: string };
 
 export type MechaPreview =
-  | { ok: true; telegraphAfter: Cell[]; telegraphByActor: Record<string, Cell[]>; hitsAfter: Record<MechId, number>; assumed: MechId[] }
+  | { ok: true; telegraphAfter: Cell[]; telegraphByActor: Record<string, Cell[]>; hitsAfter: Record<MechId, number>; assumed: MechId[]; enemyOrder: Array<Extract<TurnEvent, { type: "enemy" }>> }
   | { ok: false; fault: PlanFault };
 
 export type MechaControllerState = {

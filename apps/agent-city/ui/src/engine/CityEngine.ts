@@ -42,6 +42,7 @@ import { LIGHT_BUDGET, nightFactor } from "./cityLightBudget";
 import { DRIVING_PARAMS } from "../game/DrivingSimulation";
 import { CAR_DIMENSIONS } from "../game/carDimensions";
 import { PLAYABLE_CAR_PREFIX, PLAYABLE_MECHA_NAME, PLAYABLE_PLANE_NAME, playableKind, type PlayTarget } from "./render/playableVehicles";
+import { claimParkedMechaClick, parkedMechaPickBoxes } from "./render/mechaPick";
 import { paletteFor } from "./cityTextures";
 import { CarCamera } from "../game/CarCamera";
 import { FlightCameraControls } from "../game/FlightCameraControls";
@@ -1537,22 +1538,34 @@ export class CityEngine {
     this.raycaster.setFromCamera(this.pointer, this.camera);
     // 会话楼与非会话建筑一起测，取最近的命中：站在海滨酒店前点它，得到的是酒店说明而不是背后的会话楼。
     const hits = this.raycaster.intersectObjects([...this.parts.raycastTargets, ...this.parts.decorTargets], false);
+    let chosen: string | null = null;
+    let chosenHit: THREE.Intersection | null = null;
     for (const hit of hits) {
       // Hidden zero-scale/procedural instances may produce non-finite ray intersections.
       // They are not visible targets and must never poison the camera or hover selection.
       if (!Number.isFinite(hit.distance) || hit.distance < this.camera.near || !hit.point.toArray().every(Number.isFinite)) continue;
       if (hit.instanceId !== undefined) {
         const id = this.parts.idAt(hit.object, hit.instanceId);
-        if (id) return id;
+        if (id) { chosen = id; chosenHit = hit; break; }
       }
       const decor = this.parts.decorAt(hit.object, hit.instanceId, hit.point);
       if (decor) {
         // Merged/procedural decoration bounds can cover many objects; use the visible hit.
         this.pickedDecor = { id: decor, point: hit.point.clone() };
-        return decor;
+        chosen = decor;
+        chosenHit = hit;
+        break;
       }
     }
-    return null;
+    const squad = this.parts.group?.getObjectByName(PLAYABLE_MECHA_NAME);
+    if (chosen !== "play:mecha" && squad && claimParkedMechaClick({
+      boxes: parkedMechaPickBoxes(squad), ray: this.raycaster.ray,
+      hit: chosenHit ? { distance: chosenHit.distance, point: chosenHit.point, airportLandmark: chosen === "decor:landmark:airport", protectedAirportStructure: chosen === "decor:landmark:airport" && !chosenHit.object.userData.mechaApron } : null,
+    })) {
+      this.pickedDecor = null;
+      return "play:mecha";
+    }
+    return chosen;
   }
 
   /** 天穹：内翻大球，顶部到地平线的垂直渐变，1 次绘制的"天空感"。 */

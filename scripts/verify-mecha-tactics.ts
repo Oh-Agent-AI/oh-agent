@@ -529,6 +529,9 @@ test("playTurn equals the manual validate -> execute -> prepare sequence", () =>
     assert.equal(r.state.outcome, "victory");
     assert.deepEqual(r.log.at(-1), { type: "outcome", outcome: "victory" });
   }
+  const preview = previewPlan(kill, plan(kill, [{ mechId: "Assault", action: { kind: "melee" } }, { mechId: "Gunner" }, { mechId: "Support" }]));
+  assert.equal(preview.ok, true);
+  if (preview.ok) assert.deepEqual(preview.enemyOrder, [], "a lethal player action prevents the enemy attack");
 });
 
 test("playTurn log is in resolution order: move, act, shove, enemy", () => {
@@ -549,10 +552,27 @@ test("previewPlan shows the telegraph after the shove, not before", () => {
   if (!p.ok) return;
   assert.deepEqual(p.telegraphAfter, [{ x: 4, y: 1 }]);
   assert.deepEqual(p.telegraphByActor.boss, [{ x: 4, y: 1 }], "the shifted telegraph stays attributed to the boss");
+  const actual = playTurn(state, plan(state, [{ mechId: "Assault", action: { kind: "melee" } }, { mechId: "Gunner" }, { mechId: "Support" }]));
+  assert.equal(actual.ok, true);
+  if (actual.ok) assert.deepEqual(p.enemyOrder, actual.log.filter((event) => event.type === "enemy"));
   assert.deepEqual(p.assumed, []);
   // Assault 离开了 (3,1)，新预告 (4,1) 上没人。
   assert.deepEqual(p.hitsAfter, { Assault: 0, Gunner: 0, Support: 0 });
   assert.deepEqual(state, before);
+});
+
+test("enemy order prediction follows actual surviving attackers and their resolution order", () => {
+  const state = createMatch({ preset: "covers_sparse_mid", script: "siege", covers: [] });
+  bossPrepare(state);
+  const orders = plan(state, [{ mechId: "Assault" }, { mechId: "Gunner" }, { mechId: "Support" }]);
+  const preview = previewPlan(state, orders);
+  const actual = playTurn(state, orders);
+  assert.equal(preview.ok, true);
+  assert.equal(actual.ok, true);
+  if (!preview.ok || !actual.ok) return;
+  assert.deepEqual(preview.enemyOrder, actual.log.filter((event) => event.type === "enemy"));
+  assert.ok(preview.enemyOrder.length > 1);
+  assert.equal(preview.enemyOrder[0]?.actor, "boss");
 });
 
 test("previewPlan accepts a partial plan and lists the assumed mechs; hitsAfter counts enemy damage", () => {

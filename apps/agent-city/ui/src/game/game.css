@@ -120,6 +120,10 @@
 .mecha-overlay.is-city .mecha-city-gate { position: absolute; top: 72px; left: 50%; transform: translateX(-50%); width: min(440px, calc(100% - 24px)); display: grid; gap: 8px; padding: 14px; box-sizing: border-box; border: 1px solid #ffffff2e; border-radius: 12px; background: #101d2ff2; box-shadow: 0 8px 28px #0005; pointer-events: auto; }
 .mecha-overlay.is-city .mecha-city-gate p { margin: 0; }
 .mecha-preview-after { flex-basis: 100%; margin: 4px 0 0; color: #ffb4ac; font-size: 12px; line-height: 1.45; }
+.mecha-turn-summary .mecha-resource, .mecha-turn-summary .mecha-order { flex-basis: 100%; max-width: none; text-align: left; font-size: 12px; line-height: 1.4; }
+.mecha-order { max-height: 160px; overflow: auto; }
+.mecha-order p { max-width: none; text-align: left; margin: 4px 0; }
+.mecha-order ol { margin: 4px 0; padding-left: 22px; }
 @media (max-width: 600px) {
   .mecha-battle-bar { gap: 6px; padding-left: 10px; }
   .mecha-battle-bar > div { gap: 7px; }

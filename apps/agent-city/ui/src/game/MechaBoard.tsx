@@ -22,7 +22,7 @@ import { createMechaController, type MechaController } from "./mecha/controller"
 import { anchorsFromCity, prepareFightTerrainAsync, type FightCatalog, type FightShape } from "./mecha/citySite";
 import { startPreparedSearch } from "./mecha/fightSearchRunner";
 import {
-  FLAT_SPAWN_MAX_DELTA, MAX_TURNS, living,
+  FLAT_SPAWN_MAX_DELTA, MAX_TURNS, living, stakeBuildings,
   type Action, type BossScriptId, type MechId,
 } from "./mecha/rules";
 import "./game.css";
@@ -272,6 +272,7 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
   const shapeId: FightShape = catalog[shape] ? shape : (SHAPES.find((item) => catalog[item.id])?.id ?? "flat");
   const site = catalog[shapeId] ?? null;
   const [viewFailed, setViewFailed] = useState(false);
+  const [showOrder, setShowOrder] = useState(false);
   const worldRef = useRef<CityMechaWorldHandle>(null);
   const [sequenceStatus] = useState<{ id: number; state: "done" | "fault" } | null>(null);
 
@@ -368,6 +369,9 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
   const planning = s.interactive && !sequenceWaiting;
   const previewAfter = s.preview.ok ? s.preview.telegraphAfter : null;
   const hitLine = activeMechs.map((m) => `${t(NAMES[m.id])} ${s.hits[m.id] ?? 0}`).join(" · ");
+  const staked = stakeBuildings(state);
+  const stakedHp = staked.reduce((total, building) => total + building.hp, 0);
+  const stakedMax = staked.reduce((total, building) => total + building.maxHp, 0);
 
   return (
     <section className="mecha-overlay is-city" role="dialog" aria-label={t("机甲战棋")}>
@@ -387,6 +391,16 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
         <section className="mecha-turn-summary" aria-label={t("敌方预告")}>
           <div><span>{t("敌方预告")}</span><strong className="mecha-intent">{skillLabel}</strong></div>
           <p>{t("大怪")} <strong>{state.boss.hp}</strong>{raiderHp ? ` · ${raiderHp}` : ""}{outcome ? ` · ${outcome}` : ""}</p>
+          <p className="mecha-resource">{t("守楼败北条")} {staked.length ? `${stakedHp}/${stakedMax}` : t("本局无守楼目标")} · {t("机甲单台损毁不败北；全灭、守楼全毁或超时则败北。")}</p>
+          <button type="button" aria-expanded={showOrder} onClick={() => setShowOrder((value) => !value)}>{t("结算顺序")}</button>
+          {showOrder ? <div className="mecha-order" role="region" aria-label={t("结算顺序")}>
+            <p>{t("先同时移动，再按突击、射手、支援行动；随后敌方依次攻击。")}</p>
+            {performance ? <p>{t("演出期间不显示预测。")}</p> : s.preview.ok ? <>
+              <p>{s.preview.assumed.length ? t("未规划机甲按待机预测；改变计划会更新顺序。") : t("按当前计划预测；改变计划会更新顺序。")}</p>
+              {s.preview.enemyOrder.length ? <ol>{s.preview.enemyOrder.map((event, index) => <li key={`${event.actor}-${index}`}>{t(enemyName(event.actor))} · {t(event.skill === "sweep" ? "横扫" : "砸击")} · {event.cells.map((cell) => `${cell.x},${cell.y}`).join("、")}</li>)}</ol> : <p>{t("本次预测没有敌方攻击。")}</p>}
+            </> : <p>{t("预览还不可用")}</p>}
+            <p>{t("本规则没有独立电网或环境攻击。")}</p>
+          </div> : null}
           {previewAfter ? (
             <p className="mecha-preview-after">
               {t("推动后预告")} {previewAfter.length ? previewAfter.map((cell) => `${cell.x},${cell.y}`).join("、") : t("这一动之后没有预告格")}

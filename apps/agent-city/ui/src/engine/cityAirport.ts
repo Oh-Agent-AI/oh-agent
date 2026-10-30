@@ -29,9 +29,9 @@ export function buildAirport(plan: AirportPlan, disposables: Array<{ dispose: ()
   group.add(island);
   const L = AIRPORT_PLATFORM.length; const W = AIRPORT_PLATFORM.width; const TOP = AIRPORT_PLATFORM.top;
   // 平台顶面 = TOP（曾是 0.4，而跑道 / 航站楼 / 塔台底都在 1.4：整组悬空 1）。
-  add(new THREE.BoxGeometry(L, TOP + 2, W).translate(0, (TOP + 2) / 2, 0), mat("#cfc9b8"), 0, -2, 0);  // 填海平台（−2 … TOP）
-  add(new THREE.BoxGeometry(L + 6, 0.8, W + 6).translate(0, 0.4, 0), mat("#9c968a"), 0, -1.4, 0);        // 护岸石
-  const flat = (mesh: THREE.Mesh) => { mesh.userData.cityDrivingNonSolid = true; return mesh; }; // 贴面薄层：车从上面开过
+  add(new THREE.BoxGeometry(L, TOP + 2, W).translate(0, (TOP + 2) / 2, 0), mat("#cfc9b8"), 0, -2, 0).userData.mechaApron = true;  // 填海平台（−2 … TOP）
+  add(new THREE.BoxGeometry(L + 6, 0.8, W + 6).translate(0, 0.4, 0), mat("#9c968a"), 0, -1.4, 0).userData.mechaApron = true; // 护岸石
+  const flat = (mesh: THREE.Mesh) => { mesh.userData.cityDrivingNonSolid = true; mesh.userData.mechaApron = true; return mesh; }; // 贴面薄层：车从上面开过
   flat(add(new THREE.BoxGeometry(L - 20, 0.02, 22).translate(0, 0.01, 0), mat("#3e4448"), 0, TOP, -18));        // 跑道
   for (let x = -L / 2 + 22; x < L / 2 - 22; x += 12) flat(add(new THREE.BoxGeometry(6, 0.01, 0.6), mat("#f2f0e6"), x, TOP + 0.025, -18));  // 中线
   for (const side of [-1, 1]) for (let k = 0; k < 6; k += 1) flat(add(new THREE.BoxGeometry(0.6, 0.01, 14), mat("#f2f0e6"), side * (L / 2 - 16 - k * 1.6), TOP + 0.025, -18)); // 端头斑马线
