@@ -393,6 +393,63 @@ test("combat reset is distinguishable from a committed turn", () => {
   assert.equal(c.getState().combat.id, played.id + 1);
 });
 
+test("reset restores this turn's opening draft without moving the turn clock", () => {
+  const c = createMechaController({ match: duel(NEAR_BOSS), planner: hold });
+  const before = c.getState();
+  const opening = structuredClone(before.draft);
+  const clock = { turn: before.match.turn, revision: before.match.revision, combat: before.combat.id };
+  c.selectMech("Assault");
+  c.setMove("Assault", { x: 3, y: 2 });
+  c.setTargeting("melee");
+  c.setHoveredEnemy("boss");
+  assert.equal(c.getState().canResetTurn, true);
+  c.resetTurn();
+  const after = c.getState();
+  assert.equal(after.match, before.match, "reset is a draft rollback, not a rule-level turn");
+  assert.deepEqual([after.match.turn, after.match.revision, after.combat.id], [clock.turn, clock.revision, clock.combat]);
+  assert.deepEqual(after.draft, opening);
+  assert.equal(after.targeting, null);
+  assert.equal(after.hoveredEnemy, null);
+  assert.equal(after.canUndoMove, false);
+  assert.equal(after.canResetTurn, false, "the once-per-match reset is spent");
+  assert.equal(after.resetTurnUsed, true);
+  assert.match(after.notice ?? "", /重置/);
+  const spent = after;
+  c.resetTurn();
+  assert.equal(c.getState(), spent, "a second reset in the same turn changes nothing");
+});
+
+test("reset never rewinds a committed turn and stays spent until restart", () => {
+  const c = createMechaController({ match: duel(NEAR_BOSS), planner: hold });
+  c.resetTurn();
+  const used = c.getState();
+  assert.equal(used.resetTurnUsed, true);
+  c.submit();
+  const next = c.getState();
+  assert.equal(next.match.turn, used.match.turn + 1, "submit is the only thing that advances the turn");
+  assert.equal(next.resetTurnUsed, true);
+  assert.equal(next.canResetTurn, false, "fire does not refund the reset");
+  const committed = next;
+  c.resetTurn();
+  assert.equal(c.getState(), committed, "a post-submit reset cannot roll the resolved turn back");
+  c.restart();
+  assert.equal(c.getState().resetTurnUsed, false, "a new match gets its own reset");
+  assert.equal(c.getState().canResetTurn, true);
+});
+
+test("reset is unavailable after the match ends", () => {
+  const match = duel(NEAR_BOSS);
+  match.boss.hp = 1;
+  const c = createMechaController({ match, planner: hold });
+  c.setAction("Assault", { kind: "melee", target: "boss" });
+  c.submit();
+  const done = c.getState();
+  assert.equal(done.match.outcome, "victory");
+  assert.equal(done.canResetTurn, false);
+  c.resetTurn();
+  assert.equal(c.getState(), done);
+});
+
 const BOARD_URL = new URL("../apps/agent-city/ui/src/game/MechaBoard.tsx", import.meta.url);
 const CSS_URL = new URL("../apps/agent-city/ui/src/game/game.css", import.meta.url);
 const LINEUP_URL = new URL("../apps/agent-city/ui/src/game/MechaLineup.tsx", import.meta.url);
@@ -442,6 +499,18 @@ test("every gate title, body and literal label has an English copy key", () => {
   assert.ok(new Set(gateText).size >= 8, "the three refusal paths plus the search progress copy");
   assert.ok(new Set(labels).size >= 30, "the HUD's literal copy is part of this guard");
   for (const text of new Set([...gateText, ...labels])) {
+    const en = gameText(text, "en");
+    assert.equal(en.startsWith("Translation unavailable:"), false, text);
+    assert.equal(/\p{Script=Han}/u.test(en), false, text);
+  }
+});
+
+test("every action inspection description is localized", () => {
+  const table = /const ACTION_DESCRIPTIONS[^=]*=\s*\{([\s\S]*?)\n\};/.exec(boardSource)?.[1];
+  assert.ok(table, "the action inspection table must be readable from the board source");
+  const descriptions = [...table.matchAll(/:\s*"([^"]+)"/g)].map((match) => match[1]!);
+  assert.equal(new Set(descriptions).size, 6, "every action kind has its own explanation");
+  for (const text of descriptions) {
     const en = gameText(text, "en");
     assert.equal(en.startsWith("Translation unavailable:"), false, text);
     assert.equal(/\p{Script=Han}/u.test(en), false, text);
