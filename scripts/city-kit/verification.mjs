@@ -12,6 +12,7 @@ const groups = {
     "verify-city-driving", "verify-city-car-model", "verify-city-driving-architecture", "verify-city-audit-evidence", "verify-city-audit-planner", "verify-city-road-audit-ui", "verify-city-road-audit-history", "verify-city-road-audit-worker", "verify-city-driving-release-graph", "verify-city-driving-spawns", "verify-city-car-session", "verify-city-car-rendered-collision", "verify-city-driving-entry", "verify-city-shared-runtime"],
 };
 for (const id of ["verify-city-game-scene-lease", "verify-city-game-audio-service", "verify-city-runtime-diagnostics", "verify-city-shared-game-ux", "verify-city-camera-collision-query", "verify-city-preparation", "verify-city-driving-mountable", "verify-city-driving-bridge-crossing", "verify-city-static-world"]) groups.game.push(id);
+groups.game.push("verify-city-mecha-ux");
 groups.game.push("verify-city-continuous-driving", "verify-city-driving-collision-differential", "verify-city-rotation-budget");
 const newGeometryStages = ["verify-city-layout-envelopes", "verify-city-parcel-frontage", "verify-city-block-placement", "verify-city-block-lot-candidates", "verify-city-villa-physical", "verify-city-model-ground"];
 synthetic.push(...newGeometryStages);
