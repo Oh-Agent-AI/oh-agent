@@ -259,6 +259,15 @@ function actionLabel(kind: Action["kind"]): string {
   return "待机";
 }
 
+const ACTION_DESCRIPTIONS: Record<Action["kind"], string> = {
+  melee: "攻击相邻敌人，可推动大怪。",
+  shoot: "沿直线射击射程内的敌人，路径不能被阻挡。",
+  charge: "攻击相邻敌人，伤害更高，可推动大怪。",
+  pierce: "沿直线射击，可穿过一处掩体、建筑或废墟。",
+  repair: "为相邻友机恢复最多 4 点生命。",
+  skip: "本机本回合不行动。",
+};
+
 /** 薄视图：状态、草稿、预检、结算、自动对战都在 controller 里，这里只订阅与渲染。
  *  没有城市战场时父级不会挂这个组件。 */
 function MechaMatch({ locale, onClose, engine, catalog }: {
@@ -273,6 +282,9 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
   const site = catalog[shapeId] ?? null;
   const [viewFailed, setViewFailed] = useState(false);
   const [showOrder, setShowOrder] = useState(false);
+  const [inspectedAction, setInspectedAction] = useState<Action["kind"] | null>(null);
+  const inspectTimer = useRef<number | null>(null);
+  const longPressed = useRef(false);
   const worldRef = useRef<CityMechaWorldHandle>(null);
   const [sequenceStatus] = useState<{ id: number; state: "done" | "fault" } | null>(null);
 
@@ -303,6 +315,8 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
   const sequenceFault = sequenceWaiting && sequenceStatus?.id === s?.combat.id && sequenceStatus?.state === "fault";
 
   useEffect(() => { controller?.setLocale(locale); }, [controller, locale]);
+  useEffect(() => () => { if (inspectTimer.current !== null) window.clearTimeout(inspectTimer.current); }, []);
+  useEffect(() => { setInspectedAction(null); }, [selected]);
 
   useEffect(() => {
     if (viewFailed) controller?.stopAuto();
@@ -432,19 +446,36 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
             {[...new Set(s.actions.map((action) => action.kind))].map((kind) => {
               const chosen = selected ? draft?.[selected] : undefined;
               const on = targeting === kind || (!targeting && Boolean(chosen?.explicit) && chosen?.action.kind === kind);
-              return <button key={kind} type="button" className={on ? "is-selected" : ""} aria-pressed={on} disabled={!planning} onClick={() => {
-                if (!selected) return;
-                if (kind !== "skip") {
-                  controller.setTargeting(targeting === kind ? null : kind);
-                  return;
-                }
-                controller.setTargeting(null);
-                controller.setAction(selected, { kind: "skip" });
-              }}>{t(actionLabel(kind))}</button>;
+              return <button key={kind} type="button" className={on ? "is-selected" : ""} aria-pressed={on} aria-describedby={inspectedAction === kind ? "mecha-action-inspection" : undefined} disabled={!planning}
+                onPointerEnter={(event) => { if (event.pointerType === "mouse") setInspectedAction(kind); }}
+                onPointerLeave={(event) => { if (event.pointerType === "mouse") setInspectedAction(null); }}
+                onFocus={() => setInspectedAction(kind)} onBlur={() => setInspectedAction(null)}
+                onPointerDown={(event) => {
+                  if (event.pointerType !== "touch") return;
+                  longPressed.current = false;
+                  inspectTimer.current = window.setTimeout(() => { longPressed.current = true; setInspectedAction(kind); }, 450);
+                }}
+                onPointerUp={() => { if (inspectTimer.current !== null) window.clearTimeout(inspectTimer.current); inspectTimer.current = null; }}
+                onPointerCancel={() => { if (inspectTimer.current !== null) window.clearTimeout(inspectTimer.current); inspectTimer.current = null; longPressed.current = false; }}
+                onContextMenu={(event) => event.preventDefault()}
+                onClick={(event) => {
+                  if (longPressed.current) { event.preventDefault(); longPressed.current = false; return; }
+                  setInspectedAction(null);
+                  if (!selected) return;
+                  if (kind !== "skip") {
+                    controller.setTargeting(targeting === kind ? null : kind);
+                    return;
+                  }
+                  controller.setTargeting(null);
+                  controller.setAction(selected, { kind: "skip" });
+                }}>{t(actionLabel(kind))}</button>;
             })}
             <button type="button" disabled={!planning || !s.canUndoMove} title={t("撤回最近一次移动。提交行动之后不能撤。")} onClick={() => controller.undoMove()}>{t("撤回移动")}</button>
+            <button type="button" disabled={!planning || !s.canResetTurn} aria-describedby="mecha-reset-help" onClick={() => controller.resetTurn()}>{t("重置本回合")}</button>
             {targeting ? <button type="button" className="mecha-target-cancel" onClick={() => controller.setTargeting(null)}>{t("取消选目标")}</button> : null}
           </div>
+          <p id="mecha-reset-help" className="mecha-reset-help">{t(s.resetTurnUsed ? "本局的重置机会已用完。" : state.outcome ? "对局结束后不可重置。" : planning ? "每场可用一次：恢复本回合开始时的草稿，不会撤回已结算的回合。" : "暂停、自动对战或演出期间不可重置。")}</p>
+          {inspectedAction && s.actions.some((action) => action.kind === inspectedAction) ? <div id="mecha-action-inspection" className="mecha-action-inspection" role="tooltip"><strong>{t(actionLabel(inspectedAction))}</strong> · {t(ACTION_DESCRIPTIONS[inspectedAction])}</div> : null}
         </section>
         <div className="mecha-submit">
           <div><strong>{t("已规划")} {plannedCount}/{activeMechs.length}</strong><span>{paused ? t("继续战斗后可提交。") : pendingNames.length ? `${t("待规划")}：${pendingNames.join("、")}` : t("三机已就绪，可统一结算。")}</span></div>

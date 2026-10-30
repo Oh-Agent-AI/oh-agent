@@ -5,6 +5,18 @@
 export type GameLocale = "zh-Hans" | "en";
 
 const ENGLISH: Record<string, string> = {
+  "重置本回合": "Reset turn",
+  "每场可用一次：恢复本回合开始时的草稿，不会撤回已结算的回合。": "Once per match: restore the draft from the start of this turn. Resolved turns cannot be undone.",
+  "本局的重置机会已用完。": "The reset for this match has been used.",
+  "本回合草稿已重置；本局的重置机会已用完。": "This turn's draft was reset; the match's reset has been used.",
+  "暂停、自动对战或演出期间不可重置。": "Reset is unavailable while paused, in auto battle, or during playback.",
+  "对局结束后不可重置。": "Reset is unavailable after the match ends.",
+  "攻击相邻敌人，可推动大怪。": "Attack an adjacent enemy; the boss can be pushed.",
+  "沿直线射击射程内的敌人，路径不能被阻挡。": "Shoot an enemy in a clear straight line within range.",
+  "攻击相邻敌人，伤害更高，可推动大怪。": "Hit an adjacent enemy harder; the boss can be pushed.",
+  "沿直线射击，可穿过一处掩体、建筑或废墟。": "Shoot in a straight line through one cover, building, or rubble.",
+  "为相邻友机恢复最多 4 点生命。": "Restore up to 4 HP to an adjacent ally.",
+  "本机本回合不行动。": "This mech takes no action this turn.",
   "守楼败北条": "Defended buildings (defeat meter)",
   "本局无守楼目标": "No defended buildings this match",
   "机甲单台损毁不败北；全灭、守楼全毁或超时则败北。": "One mech lost is not defeat; losing all mechs, all defended buildings, or running out of turns is.",

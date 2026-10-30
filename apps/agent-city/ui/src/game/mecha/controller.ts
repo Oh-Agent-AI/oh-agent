@@ -81,6 +81,9 @@ export type MechaControllerState = {
   hoveredEnemy: string | null;
   /** 玩家还没提交本回合时，可以撤回最近一次移动。 */
   canUndoMove: boolean;
+  /** 一场对局一次，只在玩家可编辑草稿时使用。 */
+  resetTurnUsed: boolean;
+  canResetTurn: boolean;
   focus: DoctrineFocus;
   focusCells: Cell[];
   plannedCount: number;
@@ -114,6 +117,7 @@ export type MechaController = {
   setMove(id: MechId, cell: Cell | null): void;
   /** 撤回最近一次移动。提交（开火）之后、暂停、自动对战或演出中无效。 */
   undoMove(): void;
+  resetTurn(): void;
   /** 悬停一只敌人时地面只画它的预告；传 null 恢复全部。 */
   setHoveredEnemy(id: string | null): void;
   setAction(id: MechId, action: Action): void;
@@ -235,6 +239,8 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     state.outcome || state.phase !== "player_plan" ? blankDraft(state) : draftFromPlan(state, planFor(state, doctrine));
 
   let draft: DraftMap = openingDraft(match);
+  let turnStartDraft = structuredClone(draft);
+  let resetTurnUsed = false;
   /** 每次成功改移动之前的草稿。提交、换打法、新开一局都清空，开火之后撤不回来。 */
   let movePast: DraftMap[] = [];
   let hoveredEnemy: string | null = null;
@@ -337,6 +343,8 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       telegraph: shownTelegraph(preview),
       hoveredEnemy,
       canUndoMove: movePast.length > 0 && canEdit(),
+      resetTurnUsed,
+      canResetTurn: !resetTurnUsed && canEdit(),
       focus: doctrineFocus(match, doctrine),
       focusCells: doctrineFocusCells(match, doctrine),
       plannedCount: alive.length - pendingIds.length,
@@ -375,6 +383,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     lastLog = result.log;
     combat = { id: combat.id + 1, actions: cuesFromLog(result.log), healthTimeline, presentationChanges, presentationStages: result.presentationStages, presentationRoutes };
     draft = blankDraft(match);
+    turnStartDraft = structuredClone(draft);
     movePast = [];
     hoveredEnemy = null;
     targeting = null;
@@ -494,6 +503,16 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     },
     setMove,
     undoMove,
+    resetTurn() {
+      if (resetTurnUsed || !canEdit()) return;
+      draft = structuredClone(turnStartDraft);
+      movePast = [];
+      targeting = null;
+      hoveredEnemy = null;
+      resetTurnUsed = true;
+      say("本回合草稿已重置；本局的重置机会已用完。");
+      commit();
+    },
     setHoveredEnemy(id) {
       if (id === hoveredEnemy) return;
       hoveredEnemy = id;
@@ -555,6 +574,8 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       combat = { id: combat.id + 1, actions: [], reset: true };
       lastLog = [];
       draft = openingDraft(match);
+      turnStartDraft = structuredClone(draft);
+      resetTurnUsed = false;
       movePast = [];
       hoveredEnemy = null;
       selected = living(match)[0]?.id ?? "Assault";

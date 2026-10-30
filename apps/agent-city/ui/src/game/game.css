@@ -121,9 +121,13 @@
 .mecha-overlay.is-city .mecha-city-gate p { margin: 0; }
 .mecha-preview-after { flex-basis: 100%; margin: 4px 0 0; color: #ffb4ac; font-size: 12px; line-height: 1.45; }
 .mecha-turn-summary .mecha-resource, .mecha-turn-summary .mecha-order { flex-basis: 100%; max-width: none; text-align: left; font-size: 12px; line-height: 1.4; }
-.mecha-order { max-height: 160px; overflow: auto; }
+.mecha-turn-summary > .mecha-order { display: block; max-height: 160px; overflow: auto; overflow-wrap: anywhere; }
 .mecha-order p { max-width: none; text-align: left; margin: 4px 0; }
 .mecha-order ol { margin: 4px 0; padding-left: 22px; }
+.mecha-reset-help { margin: 5px 0 0; color: var(--city-muted, #a9b8c8); font-size: 11px; line-height: 1.4; }
+.mecha-action-inspection { margin-top: 5px; padding: 6px 8px; border-left: 2px solid #8fd4ff; color: #e8eef6; font-size: 12px; line-height: 1.4; animation: mecha-inspect-in 160ms ease-out; }
+@keyframes mecha-inspect-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { .mecha-action-inspection { animation: none; } }
 @media (max-width: 600px) {
   .mecha-battle-bar { gap: 6px; padding-left: 10px; }
   .mecha-battle-bar > div { gap: 7px; }
@@ -169,10 +173,12 @@
   .mecha-overlay.is-city .mecha-pack li { width: 132px; }
 }
 @media (max-width: 600px) {
-  .mecha-overlay.is-city .mecha-turn-summary { top: 64px; max-width: calc(100% - 24px); flex-direction: column; gap: 3px; }
+  .mecha-overlay.is-city .mecha-turn-summary { top: 64px; max-width: calc(100% - 24px); max-height: 30vh; overflow: auto; flex-direction: column; gap: 3px; }
   .mecha-overlay.is-city .mecha-turn-summary p { max-width: none; text-align: left; }
+  .mecha-overlay.is-city .mecha-turn-summary .mecha-resource, .mecha-overlay.is-city .mecha-turn-summary .mecha-order, .mecha-overlay.is-city .mecha-preview-after { flex-basis: auto; width: 100%; }
   .mecha-overlay.is-city .mecha-battle-bar { left: 12px; }
-  .mecha-overlay.is-city .mecha-battle-controls { flex-wrap: nowrap; }
+  .mecha-overlay.is-city .mecha-battle-controls { flex-wrap: nowrap; overflow-x: auto; justify-content: flex-start; }
+  .mecha-overlay.is-city .mecha-battle-controls button { flex: 0 0 auto; }
   .mecha-overlay.is-city .mecha-battle-controls button { min-height: 32px; padding-inline: 7px; font-size: 11px; }
   .mecha-overlay.is-city .mecha-battle-bar > div:first-child { display: none; }
   .mecha-overlay.is-city .mecha-settings { top: 116px; }
@@ -183,6 +189,8 @@
   .mecha-overlay.is-city .mecha-selected-actions { bottom: 108px; max-width: calc(100% - 152px); }
   .mecha-overlay.is-city .mecha-submit { bottom: 108px; width: 128px; padding: 7px; }
   .mecha-overlay.is-city .mecha-submit span { display: none; }
+  .mecha-overlay.is-city .mecha-selected-actions { max-height: 28vh; overflow: auto; }
+  .mecha-overlay.is-city .mecha-city-gate { max-height: calc(100% - 84px); overflow: auto; }
 }
 @media (max-height: 520px) {
   .mecha-overlay.is-city .mecha-pack li { padding-block: 4px; gap: 3px; }
