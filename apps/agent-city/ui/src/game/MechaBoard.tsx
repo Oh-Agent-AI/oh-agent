@@ -6,28 +6,27 @@
  *  main-thread fallback). A successful catalog is cached per layout+model so
  *  reopening is instant; a city revision that lands mid-search aborts the old
  *  run instead of letting a stale catalog reach the board.
+ *
+ *  The fight only exists on the city apron. An empty catalog, a failed search,
+ *  a missing city, or a 3D view owned by another mode stays on this overlay
+ *  and does not open a playable match. A missing apron used to fall through
+ *  into a separate modal board; sparse cities always took that path.
  */
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { CityEngine } from "../engine/CityEngine";
-import { doctrineFocusLine, gameText, stepBudgetLine, type GameLocale } from "./gameCopy";
+import { doctrineFocusLine, gameText, type GameLocale } from "./gameCopy";
 import { CityMechaWorld, type CityMechaView, type CityMechaWorldHandle } from "./CityMechaWorld";
 import { assaultSequenceWaiting } from "./mecha/assaultTurnPlayer";
 import type { DoctrineId } from "./mecha/ai";
 import { createMechaController, type MechaController } from "./mecha/controller";
 import { anchorsFromCity, prepareFightTerrainAsync, type FightCatalog, type FightShape } from "./mecha/citySite";
 import { startPreparedSearch } from "./mecha/fightSearchRunner";
-import { MechaLineup, type MechaBoardView } from "./MechaLineup";
 import {
-  BOARD, FLAT_SPAWN_MAX_DELTA, MAX_TURNS, living, moveBudget,
-  type Action, type BossScriptId, type Cell, type CoverPresetId, type MechId,
+  FLAT_SPAWN_MAX_DELTA, MAX_TURNS, living,
+  type Action, type BossScriptId, type MechId,
 } from "./mecha/rules";
 import "./game.css";
 
-const PRESETS: Array<{ id: CoverPresetId; label: string }> = [
-  { id: "covers_sparse_mid", label: "稀疏中轴" },
-  { id: "covers_diag_corridor", label: "对角走廊" },
-  { id: "covers_twin_clusters", label: "双掩体团" },
-];
 const SCRIPTS: Array<{ id: BossScriptId; label: string }> = [
   { id: "cadence_ssw", label: "砸砸扫" },
   { id: "stationary_smash", label: "站桩砸击" },
@@ -61,10 +60,56 @@ function cacheCatalog(layout: object, model: object, catalog: FightCatalog): voi
   CATALOG_CACHE.set(layout, { model, catalog });
 }
 
+function forgetCatalog(layout: object | null): void {
+  if (layout) CATALOG_CACHE.delete(layout);
+}
+
+function catalogPlayable(catalog: FightCatalog | null): catalog is FightCatalog {
+  return Boolean(catalog && SHAPES.some((item) => catalog[item.id]));
+}
+
+export type MechaAvailability = "searching" | "ready" | "empty" | "error";
+
 type SearchPhase = "loading" | "ready" | "error";
 
+function CityGate({ locale, onClose, title, body, busy, extra, onRetry }: {
+  locale: GameLocale;
+  onClose: () => void;
+  title: string;
+  body: string;
+  busy?: boolean;
+  extra?: string | null;
+  onRetry?: () => void;
+}) {
+  const t = (text: string) => gameText(text, locale);
+  return (
+    <section className="mecha-overlay is-city" role="dialog" aria-label={t("机甲战棋")} aria-busy={busy || undefined}>
+      <header className="mecha-battle-bar">
+        <div><strong>{t("机甲战棋")}</strong></div>
+        <div className="mecha-battle-controls"><button type="button" onClick={onClose}>{t("退出战斗")}</button></div>
+      </header>
+      <div className="mecha-panel">
+        <div className="mecha-city-gate">
+          <p role={busy ? "status" : "alert"}>{t(title)}</p>
+          <p className="mecha-help">{t(body)}</p>
+          {extra ? <p className="mecha-help">{extra}</p> : null}
+          <div className="mecha-actions">
+            {onRetry ? <button type="button" onClick={onRetry}>{t("重试")}</button> : null}
+            <button type="button" onClick={onClose}>{busy ? t("取消") : t("关闭")}</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 /** Loads (or reuses) the four-shape catalog, then mounts a match keyed by it. */
-export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; onClose: () => void; engine: CityEngine | null }) {
+export function MechaBoard({ locale, onClose, engine, onAvailability }: {
+  locale: GameLocale;
+  onClose: () => void;
+  engine: CityEngine | null;
+  onAvailability?: (next: MechaAvailability) => void;
+}) {
   const t = (text: string) => gameText(text, locale);
   const [catalog, setCatalog] = useState<FightCatalog | null>(() => cachedCatalog(engine?.currentLayout ?? null, engine?.currentModel ?? null));
   const [phase, setPhase] = useState<SearchPhase>(() => {
@@ -79,6 +124,14 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
   const [retry, setRetry] = useState(0);
   const [runId, setRunId] = useState(0);
   const searchSeq = useRef(0);
+  const playable = phase === "ready" && Boolean(engine) && catalogPlayable(catalog);
+
+  useEffect(() => {
+    if (!onAvailability) return;
+    if (phase === "loading") onAvailability("searching");
+    else if (phase === "error") onAvailability("error");
+    else onAvailability(playable ? "ready" : "empty");
+  }, [onAvailability, phase, playable]);
 
   useEffect(() => {
     if (!engine) {
@@ -89,8 +142,7 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
     const layout = engine.currentLayout;
     const model = engine.currentModel;
     if (!layout || !model) {
-      // No modelled city: the component falls back to the grid board, which is an
-      // explicit state rather than a failed search.
+      // 城市还没建模完：拒绝开战。以前这里会把 phase 设成 ready，然后用另一套棋盘把对局开起来。
       setCatalog(null);
       setPhase("ready");
       return undefined;
@@ -159,39 +211,36 @@ export function MechaBoard({ locale, onClose, engine }: { locale: GameLocale; on
     return () => window.removeEventListener("keydown", onKey, true);
   }, [onClose]);
 
-  if (phase === "ready") {
-    return <MechaMatch key={runId} locale={locale} onClose={onClose} engine={engine} catalog={catalog} />;
+  const retrySearch = () => {
+    forgetCatalog(engine?.currentLayout ?? null);
+    setCatalog(null);
+    setPhase("loading");
+    setRetry((value) => value + 1);
+  };
+
+  if (phase === "loading") {
+    const progress = sampled.total > 0 && sampled.done < sampled.total
+      ? `${t("正在读取城市地形")} ${sampled.done}/${sampled.total}`
+      : checked > 0 ? `${t("正在检查")} ${checked} ${t("个候选")}` : null;
+    return (
+      <CityGate locale={locale} onClose={onClose} busy title="正在选择战场…" body="正在这座城市的地面上找机坪。" extra={progress} />
+    );
   }
 
-  return (
-    <section className="mecha-overlay is-city" role="dialog" aria-label={t("机甲战棋")} aria-busy={phase === "loading"}>
-      <header className="mecha-battle-bar">
-        <div><strong>{t("机甲战棋")}</strong></div>
-        <div className="mecha-battle-controls"><button type="button" onClick={onClose}>{t("退出战斗")}</button></div>
-      </header>
-      <div className="mecha-panel">
-        {phase === "error" ? (
-          <>
-            <p role="alert">{t("战场选择失败")}</p>
-            <p className="mecha-help">{t("城市地形暂时无法生成战场，可以重试或关掉战棋。")}</p>
-            <div className="mecha-actions">
-              <button type="button" onClick={() => setRetry((value) => value + 1)}>{t("重试")}</button>
-              <button type="button" onClick={onClose}>{t("关闭")}</button>
-            </div>
-          </>
-        ) : (
-          <>
-            <p role="status">{t("正在选择战场…")}</p>
-            {sampled.total > 0 && sampled.done < sampled.total && <p className="mecha-help">{t("正在读取城市地形")} {sampled.done}/{sampled.total}</p>}
-            {checked > 0 && <p className="mecha-help">{t("正在检查")} {checked} {t("个候选")}</p>}
-            <div className="mecha-actions">
-              <button type="button" onClick={onClose}>{t("取消")}</button>
-            </div>
-          </>
-        )}
-      </div>
-    </section>
-  );
+  if (phase === "error") {
+    return (
+      <CityGate locale={locale} onClose={onClose} onRetry={retrySearch} title="战场选择失败" body="城市地形暂时无法生成战场，可以重试或关掉战棋。" />
+    );
+  }
+
+  if (!engine || !catalogPlayable(catalog)) {
+    const noCity = !engine || !engine.currentLayout || !engine.currentModel;
+    return noCity
+      ? <CityGate locale={locale} onClose={onClose} title="这座城还没准备好，不能开战。" body="等城市准备好再试，或关掉战棋。" />
+      : <CityGate locale={locale} onClose={onClose} onRetry={retrySearch} title="这座城暂时没有可用机坪。" body="楼太少时往往没有平地、靠岸或巷战。可以重试，或关掉战棋。" />;
+  }
+
+  return <MechaMatch key={runId} locale={locale} onClose={onClose} engine={engine} catalog={catalog} />;
 }
 
 function enemyName(id: string): string {
@@ -210,115 +259,100 @@ function actionLabel(kind: Action["kind"]): string {
   return "待机";
 }
 
-function same(a: Cell, b: Cell) {
-  return a.x === b.x && a.y === b.y;
-}
-
-/** 薄视图：状态、草稿、预检、结算、自动对战都在 controller 里，这里只订阅与渲染。 */
+/** 薄视图：状态、草稿、预检、结算、自动对战都在 controller 里，这里只订阅与渲染。
+ *  没有城市战场时父级不会挂这个组件。 */
 function MechaMatch({ locale, onClose, engine, catalog }: {
   locale: GameLocale;
   onClose: () => void;
-  engine: CityEngine | null;
-  catalog: FightCatalog | null;
+  engine: CityEngine;
+  catalog: FightCatalog;
 }) {
   const t = (text: string) => gameText(text, locale);
   const [shape, setShape] = useState<FightShape>("flat");
-  const shapeId: FightShape = catalog?.[shape] ? shape : (SHAPES.find((item) => catalog?.[item.id])?.id ?? "flat");
-  const site = catalog?.[shapeId] ?? null;
+  const shapeId: FightShape = catalog[shape] ? shape : (SHAPES.find((item) => catalog[item.id])?.id ?? "flat");
+  const site = catalog[shapeId] ?? null;
   const [viewFailed, setViewFailed] = useState(false);
   const worldRef = useRef<CityMechaWorldHandle>(null);
-  const [sequenceStatus, setSequenceStatus] = useState<{ id: number; state: "done" | "fault" } | null>(null);
+  const [sequenceStatus] = useState<{ id: number; state: "done" | "fault" } | null>(null);
 
   const controllerRef = useRef<MechaController | null>(null);
-  if (!controllerRef.current) {
+  if (!controllerRef.current && site) {
     controllerRef.current = createMechaController({ animate: true, locale, site, preset: "covers_sparse_mid", script: "siege", stake: shapeId === "alley" ? "frontage" : "all" });
   }
   const controller = controllerRef.current;
-  const s = useSyncExternalStore(controller.subscribe, controller.getState);
-  const { match: resolvedState, performance, draft, selected, targeting, auto, paused, doctrine } = s;
+  const s = useSyncExternalStore(
+    controller ? controller.subscribe : () => () => {},
+    controller ? controller.getState : () => null,
+  );
+  const resolvedState = s?.match ?? null;
+  const performance = s?.performance ?? null;
+  const draft = s?.draft;
+  const selected = s?.selected;
+  const targeting = s?.targeting ?? null;
+  const auto = s?.auto ?? false;
+  const paused = s?.paused ?? false;
+  const doctrine = s?.doctrine ?? "tunnel";
 
   const state = performance?.before ?? resolvedState;
-  const finishPerformance = () => controller.finishPerformance();
+  const finishPerformance = () => controller?.finishPerformance();
 
   const sequenceTrial = import.meta.env.DEV && new URLSearchParams(location.search).get("assaultTrial") === "1" && new URLSearchParams(location.search).get("assaultSequence") === "1";
-  const sequenceActive = sequenceTrial && Boolean(site && engine && !viewFailed) && !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const sequenceWaiting = assaultSequenceWaiting(sequenceActive, s.combat, sequenceStatus);
-  const sequenceFault = sequenceWaiting && sequenceStatus?.id === s.combat.id && sequenceStatus.state === "fault";
+  const sequenceActive = sequenceTrial && Boolean(site && !viewFailed) && !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const sequenceWaiting = assaultSequenceWaiting(sequenceActive, s?.combat ?? { id: 0, actions: [] }, sequenceStatus);
+  const sequenceFault = sequenceWaiting && sequenceStatus?.id === s?.combat.id && sequenceStatus?.state === "fault";
 
-  useEffect(() => { controller.setLocale(locale); }, [controller, locale]);
+  useEffect(() => { controller?.setLocale(locale); }, [controller, locale]);
+
+  useEffect(() => {
+    if (viewFailed) controller?.stopAuto();
+  }, [controller, viewFailed]);
 
   // 自动对战的节拍：每拍一次 tick（展示 → 结算 → 下一回合）。状态一变就重排，暂停即停。
   useEffect(() => {
-    if (!auto || paused || performance) return undefined;
+    if (viewFailed || !auto || paused || performance || !controller) return undefined;
     const timer = window.setTimeout(() => controller.tick(), 700);
     return () => window.clearTimeout(timer);
-  }, [controller, auto, paused, s, sequenceWaiting]);
+  }, [controller, auto, paused, s, sequenceWaiting, viewFailed, performance]);
 
-  const selectedMech = living(state).find((m) => m.id === selected);
-  const reach = s.reach;
-  const targetOptions = s.targetOptions;
+  const reach = s?.reach ?? [];
+  const targetOptions = s?.targetOptions ?? [];
+  const clickCell = (x: number, y: number) => { if (!sequenceWaiting) controller?.clickCell(x, y); };
 
-  const paint = (x: number, y: number) => {
-    const c = { x, y };
-    const classes = ["mecha-cell"];
-    const ground = state.terrain[y]?.[x];
-    if (ground === "water") classes.push("is-water");
-    if (ground === "mountain") classes.push("is-mountain");
-    if (ground === "road") classes.push("is-road");
-    if (state.covers.some((k) => same(k, c))) classes.push("is-cover");
-    if (state.obstacles.some((k) => same(k, c))) classes.push("is-obstacle");
-    const building = state.buildings.find((b) => b.cells.some((k) => same(k, c)));
-    if (building) classes.push(building.hp > 0 ? "is-cover" : "is-rubble");
-    if (state.boss.hp > 0 && x >= state.boss.anchor.x && x <= state.boss.anchor.x + 1 && y >= state.boss.anchor.y && y <= state.boss.anchor.y + 1) classes.push("is-boss");
-    if (state.raiders.some((raider) => raider.hp > 0 && same(raider.pos, c))) classes.push("is-raider");
-    if (s.telegraph.some((k) => same(k, c))) classes.push("is-telegraph");
-    if (targetOptions.some((option) => option.cells.some((cell) => same(cell, c)))) classes.push("is-target");
-    const unit = living(state).find((m) => same(m.pos, c));
-    if (unit) classes.push(`is-${unit.id.toLowerCase()}`, unit.id === selected ? "is-selected" : "");
-    if (s.focusCells.some((cell) => same(cell, c))) classes.push("is-focus");
-    if (draft[selected]?.moveTo && same(draft[selected].moveTo!, c)) classes.push("is-move");
-    if (reach.some((k) => same(k, c))) classes.push("is-reach");
-    return classes.filter(Boolean).join(" ");
-  };
-
-  const clickCell = (x: number, y: number) => { if (!sequenceWaiting) controller.clickCell(x, y); };
-
-  const activeMechs = living(state);
-  const plannedCount = s.plannedCount;
-  const pendingNames = s.pendingIds.map((id) => t(NAMES[id]));
-  const packReady = s.packReady;
+  const activeMechs = state ? living(state) : [];
+  const plannedCount = s?.plannedCount ?? 0;
+  const pendingNames = (s?.pendingIds ?? []).map((id) => t(NAMES[id]));
+  const packReady = s?.packReady ?? false;
   const cityView = useMemo<CityMechaView>(() => ({
-    combat: s.combat,
+    combat: s?.combat,
     paused,
-    figures: state.mechs.map((m) => {
-      const planned = m.hp > 0 && !performance ? draft[m.id]?.moveTo : null;
+    figures: (state?.mechs ?? []).map((m) => {
+      const planned = m.hp > 0 && !performance ? draft?.[m.id]?.moveTo : null;
       return { id: m.id, x: planned?.x ?? m.pos.x, y: planned?.y ?? m.pos.y, alive: m.hp > 0, hp: m.hp, selected: m.id === selected };
     }),
-    boss: { x: state.boss.anchor.x, y: state.boss.anchor.y, alive: state.boss.hp > 0, hp: state.boss.hp },
-    raiders: state.raiders.map((raider) => ({ id: raider.id, x: raider.pos.x, y: raider.pos.y, alive: raider.hp > 0, hp: raider.hp })),
-    buildings: state.buildings.map((building) => ({ id: building.id, cells: building.cells, hp: building.hp, maxHp: building.maxHp })),
-    telegraph: s.telegraph,
-    focus: performance ? [] : s.focusCells,
+    boss: { x: state?.boss.anchor.x ?? 0, y: state?.boss.anchor.y ?? 0, alive: (state?.boss.hp ?? 0) > 0, hp: state?.boss.hp ?? 0 },
+    raiders: (state?.raiders ?? []).map((raider) => ({ id: raider.id, x: raider.pos.x, y: raider.pos.y, alive: raider.hp > 0, hp: raider.hp })),
+    buildings: (state?.buildings ?? []).map((building) => ({ id: building.id, cells: building.cells, hp: building.hp, maxHp: building.maxHp })),
+    telegraph: s?.telegraph ?? [],
+    hoveredEnemy: s?.hoveredEnemy ?? null,
+    focus: performance ? [] : (s?.focusCells ?? []),
     reach: performance ? [] : reach,
-    move: performance ? null : draft[selected]?.moveTo ?? null,
+    move: performance || !selected ? null : draft?.[selected]?.moveTo ?? null,
     targets: performance ? [] : targetOptions.flatMap((option) => option.cells),
     targetIds: performance ? [] : targetOptions.map((option) => option.id),
-    obstacles: state.obstacles,
-  }), [s, state, draft, selected, reach, targetOptions, paused, sequenceTrial]);
-  const view = useMemo<MechaBoardView>(() => ({
-    figures: state.mechs.map((m) => {
-      const planned = m.hp > 0 && !performance ? draft[m.id]?.moveTo : null;
-      return { id: m.id, x: planned?.x ?? m.pos.x, y: planned?.y ?? m.pos.y, alive: m.hp > 0, selected: m.id === selected };
-    }),
-    boss: { x: state.boss.anchor.x, y: state.boss.anchor.y, alive: state.boss.hp > 0 },
-    raiders: state.raiders.map((raider) => ({ id: raider.id, x: raider.pos.x, y: raider.pos.y, alive: raider.hp > 0 })),
-    covers: [
-      ...state.covers,
-      ...state.buildings.filter((b) => b.hp > 0).flatMap((b) => b.cells),
-    ],
-    telegraph: s.telegraph,
-  }), [s, state, draft, selected]);
+    obstacles: state?.obstacles,
+  }), [s, state, draft, selected, reach, targetOptions, paused, performance]);
 
+  if (!controller || !s || !state || !site) {
+    return <CityGate locale={locale} onClose={onClose} title="这座城暂时没有可用机坪。" body="楼太少时往往没有平地、靠岸或巷战。可以重试，或关掉战棋。" />;
+  }
+
+  if (viewFailed) {
+    return (
+      <CityGate locale={locale} onClose={onClose} onRetry={() => setViewFailed(false)} title="三维视角被其他模式占用。" body="先退出影院、驾驶或飞行，再开战。" />
+    );
+  }
+
+  const selectedMech = activeMechs.find((m) => m.id === selected);
   const skill = state.boss.intent?.skillId;
   const skillLabel = skill === "sweep" ? t("横扫") : skill === "smash" ? t("砸击") : t("跳过");
   const outcome = state.boss.hp <= 0 && state.outcome === "defeat_buildings" ? t("大怪已倒，楼先没了")
@@ -332,64 +366,60 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
   const focus = s.focus;
   const focusLine = doctrineFocusLine(doctrine, gameText(enemyName(focus.id), locale), focus.building ? `${focus.building.x},${focus.building.y}` : null, locale);
   const planning = s.interactive && !sequenceWaiting;
+  const previewAfter = s.preview.ok ? s.preview.telegraphAfter : null;
+  const hitLine = activeMechs.map((m) => `${t(NAMES[m.id])} ${s.hits[m.id] ?? 0}`).join(" · ");
 
-  const viewEngine = viewFailed ? null : engine;
-  const onCity = Boolean(site && viewEngine);
   return (
-    <section className={onCity ? "mecha-overlay is-city" : "mecha-overlay"} role="dialog" aria-label={t("机甲战棋")}>
-      {onCity && viewEngine && site ? <CityMechaWorld ref={worldRef} engine={viewEngine} site={site} view={cityView} performance={performance} paused={paused} onPerformanceComplete={finishPerformance} onCell={clickCell} onUnavailable={() => setViewFailed(true)} /> : null}
+    <section className="mecha-overlay is-city" role="dialog" aria-label={t("机甲战棋")}>
+      <CityMechaWorld ref={worldRef} engine={engine} site={site} view={cityView} performance={performance} paused={paused} onPerformanceComplete={finishPerformance} onCell={clickCell} onHoverEnemy={(id) => controller.setHoveredEnemy(id)} onUnavailable={() => setViewFailed(true)} />
       <header className="mecha-battle-bar">
         <div><strong>{t("机甲战棋")}</strong><span>{t("回合")} {Math.min(state.turn, MAX_TURNS)}/{MAX_TURNS}</span>{paused && <span className="mecha-paused">{t("已暂停")}</span>}</div>
         <div className="mecha-battle-controls">
-          {onCity ? <>
-            <button type="button" title={t("围绕当前观察点旋转 90°")} onClick={() => worldRef.current?.rotateCamera()}>{t("旋转 90°")}</button>
-            <button type="button" title={t("回到可看全棋盘的战术视角")} onClick={() => worldRef.current?.resetCamera()}>{t("战术视角")}</button>
-          </> : null}
+          <button type="button" title={t("围绕当前观察点旋转 90°")} onClick={() => worldRef.current?.rotateCamera()}>{t("旋转 90°")}</button>
+          <button type="button" title={t("回到可看全棋盘的战术视角")} onClick={() => worldRef.current?.resetCamera()}>{t("战术视角")}</button>
           {performance ? <button type="button" onClick={finishPerformance}>{t("跳过演出")}</button> : null}
           <button type="button" disabled={Boolean(state.outcome)} onClick={() => controller.togglePause()}>{paused ? t("继续") : t("暂停")}</button>
           <button type="button" onClick={onClose}>{t("退出战斗")}</button>
         </div>
       </header>
       <div className="mecha-panel">
-        {sequenceFault ? <p role="alert">{locale === "zh-Hans" ? "Assault 演出数据不完整或不一致，自动对战已等待；可重新开始一局。" : "Assault playback stopped: missing or inconsistent turn data. Restart the match to continue."}</p> : null}
+        {sequenceFault ? <p role="alert">{t("Assault 演出数据不完整或不一致，自动对战已等待；可重新开始一局。")}</p> : null}
         <section className="mecha-turn-summary" aria-label={t("敌方预告")}>
           <div><span>{t("敌方预告")}</span><strong className="mecha-intent">{skillLabel}</strong></div>
           <p>{t("大怪")} <strong>{state.boss.hp}</strong>{raiderHp ? ` · ${raiderHp}` : ""}{outcome ? ` · ${outcome}` : ""}</p>
+          {previewAfter ? (
+            <p className="mecha-preview-after">
+              {t("推动后预告")} {previewAfter.length ? previewAfter.map((cell) => `${cell.x},${cell.y}`).join("、") : t("这一动之后没有预告格")}
+              {" · "}{t("推动后受击")} {hitLine}
+            </p>
+          ) : <p className="mecha-preview-after">{t("预览还不可用")}</p>}
+          {s.hoveredEnemy ? <p className="mecha-preview-after">{t("只显示这一只的预告")}</p> : null}
         </section>
-        {onCity ? null : <MechaLineup label={t("机甲与怪兽")} view={view} performance={performance} paused={paused} onPerformanceComplete={finishPerformance} />}
         <ul className="mecha-pack" aria-label={t("三机行动状态")}>
           {activeMechs.map((m) => {
-            const row = draft[m.id];
+            const row = draft?.[m.id];
             const hitDamage = s.hits[m.id] ?? 0;
             const hit = hitDamage > 0;
             const chosen = row?.explicit ? t(actionLabel(row.action.kind)) : t("未选择");
-            const stepCost = s.stepCost[m.id] ?? null;
             const current = m.id === selected;
             return (
               <li key={m.id} className={`${current ? "is-current" : ""} ${!row?.explicit ? "is-open" : hit ? "is-hit" : ""}`}>
                 <button type="button" className={current ? "is-selected" : ""} aria-pressed={current} disabled={auto || paused || Boolean(performance)} onClick={() => controller.selectMech(m.id)}>{t(NAMES[m.id])} <span>{m.hp} HP</span></button>
                 <span className={row?.explicit ? "mecha-plan-state is-ready" : "mecha-plan-state"}>{row?.explicit ? t("已规划") : t("待规划")}</span>
-                {onCity ? null : <><span>{row?.moveTo ? `${row.moveTo.x},${row.moveTo.y}` : t("原位")}</span><span>{stepBudgetLine(stepCost, moveBudget(m.id), locale)}</span></>}
                 <span className="mecha-card-action">{chosen}{row?.explicit && "target" in row.action && row.action.target ? ` ${t(row.action.kind === "repair" ? NAMES[row.action.target] : enemyName(row.action.target))}` : ""}</span>
                 {hit ? <span className="mecha-hit">{t("受击")} {hitDamage}</span> : null}
               </li>
             );
           })}
         </ul>
-        {onCity ? null : <div className="mecha-grid" style={{ gridTemplateColumns: `repeat(${BOARD}, 28px)` }}>
-          {Array.from({ length: BOARD * BOARD }, (_, i) => {
-            const x = i % BOARD;
-            const y = Math.floor(i / BOARD);
-            return <button key={`${x},${y}`} type="button" className={paint(x, y)} aria-label={`${x},${y}`} disabled={!planning} onClick={() => clickCell(x, y)} />;
-          })}
-        </div>}
         <section className={targeting ? "mecha-selected-actions is-targeting" : "mecha-selected-actions"} aria-label={t("当前机甲行动")}>
           <h3>{t("当前机甲")} · {selectedMech ? t(NAMES[selectedMech.id]) : "—"}{targeting ? ` · ${t(actionLabel(targeting))}：${t("点击高亮目标")}` : ""}</h3>
           <div className="mecha-actions">
             {[...new Set(s.actions.map((action) => action.kind))].map((kind) => {
-              const chosen = draft[selected];
-              const on = targeting === kind || (!targeting && Boolean(chosen?.explicit) && chosen.action.kind === kind);
+              const chosen = selected ? draft?.[selected] : undefined;
+              const on = targeting === kind || (!targeting && Boolean(chosen?.explicit) && chosen?.action.kind === kind);
               return <button key={kind} type="button" className={on ? "is-selected" : ""} aria-pressed={on} disabled={!planning} onClick={() => {
+                if (!selected) return;
                 if (kind !== "skip") {
                   controller.setTargeting(targeting === kind ? null : kind);
                   return;
@@ -398,6 +428,7 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
                 controller.setAction(selected, { kind: "skip" });
               }}>{t(actionLabel(kind))}</button>;
             })}
+            <button type="button" disabled={!planning || !s.canUndoMove} title={t("撤回最近一次移动。提交行动之后不能撤。")} onClick={() => controller.undoMove()}>{t("撤回移动")}</button>
             {targeting ? <button type="button" className="mecha-target-cancel" onClick={() => controller.setTargeting(null)}>{t("取消选目标")}</button> : null}
           </div>
         </section>
@@ -408,7 +439,7 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
         {s.notice && <p role="alert">{s.notice}</p>}
         <details className="mecha-settings">
           <summary>{t("战场设置与规则")}</summary>
-          {onCity ? <p className="mecha-help">{t("左拖旋转，右拖平移，滚轮缩放；短点击选择格子。暂停时仍可调整视角。")}</p> : null}
+          <p className="mecha-help">{t("左拖旋转，右拖平移，滚轮缩放；短点击选择格子。暂停时仍可调整视角。")}</p>
           <div className="mecha-map-legend" aria-label={t("战场图例")}>
             <span><i className="is-reach" />{t("可移动")}</span>
             <span><i className="is-move" />{t("计划落点")}</span>
@@ -417,13 +448,13 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
             <small>{t("圆环：黄/蓝/绿为我方，紫为小怪，黄绿为大怪；亮环是当前机甲。")}</small>
           </div>
           <div className="mecha-toolbar">
-            {onCity && catalog ? <label>{t("战场")}<select disabled={Boolean(performance)} value={shapeId} onChange={(e) => {
+            <label>{t("战场")}<select disabled={Boolean(performance)} value={shapeId} onChange={(e) => {
               const next = e.target.value as FightShape;
               const nextSite = catalog[next];
               if (!nextSite) return;
               setShape(next);
               controller.restart({ site: nextSite, stake: next === "alley" ? "frontage" : "all" });
-            }}>{SHAPES.map((item) => <option key={item.id} value={item.id} disabled={!catalog[item.id]}>{t(item.label)}</option>)}</select></label> : onCity ? <span>{t("城市实地")}</span> : <label>{t("布局")}<select disabled={Boolean(performance)} value={s.preset} onChange={(e) => controller.restart({ preset: e.target.value as CoverPresetId })}>{PRESETS.map((p) => <option key={p.id} value={p.id}>{t(p.label)}</option>)}</select></label>}
+            }}>{SHAPES.map((item) => <option key={item.id} value={item.id} disabled={!catalog[item.id]}>{t(item.label)}</option>)}</select></label>
             <label>{t("脚本")}<select disabled={Boolean(performance)} value={s.script} onChange={(e) => controller.restart({ script: e.target.value as BossScriptId })}>{SCRIPTS.map((sc) => <option key={sc.id} value={sc.id}>{t(sc.label)}</option>)}</select></label>
             <label>{t("打法")}<select disabled={Boolean(performance)} value={doctrine} onChange={(e) => controller.setDoctrine(e.target.value as DoctrineId)}>{DOCTRINES.map((item) => <option key={item.id} value={item.id}>{t(item.label)}</option>)}</select></label>
             <button type="button" onClick={() => controller.restart()}>{t("新开一局")}</button>
@@ -431,15 +462,14 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
             <button type="button" disabled={Boolean(state.outcome)} onClick={() => controller.toggleAuto()}>{auto ? t("停止自动") : t("自动对战")}</button>
           </div>
           <p className="mecha-help">{t("点一台机甲，再点能走到的格子，然后给三台都选行动。站上红色预告格会吃下这一击。")}</p>
+          <p className="mecha-help">{t("红色格子是这一动之后的预告，卡片上的受击是推动之后会掉的血。")}</p>
           <p className="mecha-help">{t("沿着道路能多走一倍。突击靠路，炮手爬山和平地一样，支援上坡不加价。水过不去，被推进水或山地会撞上。")}</p>
           <p className="mecha-help">{t("攻坚先打大怪。守楼先打离楼最近的小怪。两种打法走出来的结果不同。")}</p>
-          {onCity ? <p className="mecha-help">{t("靠岸有水，翻山有山地，巷战是贴着楼的路，单侧临街也算。这座城没有的场地不会出现。")}</p> : null}
-          {onCity && shapeId === "alley" ? <p className="mecha-help">{t("巷战只守临街的楼。贴着路的楼拆光就输，不临街的楼还在，但不算这一局。")}</p> : null}
+          <p className="mecha-help">{t("靠岸有水，翻山有山地，巷战是贴着楼的路，单侧临街也算。这座城没有的场地不会出现。")}</p>
+          {shapeId === "alley" ? <p className="mecha-help">{t("巷战只守临街的楼。贴着路的楼拆光就输，不临街的楼还在，但不算这一局。")}</p> : null}
           <p className="mecha-help">{focusLine}</p>
-          {onCity && site && site.spawnSpread > FLAT_SPAWN_MAX_DELTA ? <p className="mecha-help">{t("出生高差")} {site.spawnSpread.toFixed(2)} · {t("标准 1，已放宽")}</p> : null}
-          {onCity ? <p className="mecha-help">{t("战场在这座城市的地面上。楼顶血槽只记这一局，城市里的楼还在。")}</p>
-            : viewFailed ? <p className="mecha-help">{t("三维视角被其他模式占用，改用方格棋盘。")}</p>
-            : engine ? <p className="mecha-help">{t("这座城市没有一块够平的战场，仍用方格棋盘。")}</p> : null}
+          {site.spawnSpread > FLAT_SPAWN_MAX_DELTA ? <p className="mecha-help">{t("出生高差")} {site.spawnSpread.toFixed(2)} · {t("标准 1，已放宽")}</p> : null}
+          <p className="mecha-help">{t("战场在这座城市的地面上。楼顶血槽只记这一局，城市里的楼还在。")}</p>
           <p className="mecha-ruleset">{t("掩体")} {state.covers.length} · {t("建筑")} {state.buildings.filter((b) => b.hp > 0).length} · {state.ruleset}</p>
         </details>
       </div>

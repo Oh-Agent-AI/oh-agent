@@ -314,6 +314,49 @@ test("preview reports the telegraph after an Assault shove, and hitsAfter reflec
   assert.ok(idleState.hits.Assault > 0);
 });
 
+test("undo move restores the previous draft before submit and does nothing after fire", () => {
+  const c = createMechaController({ match: duel(NEAR_BOSS), planner: hold });
+  assert.equal(c.getState().canUndoMove, false, "a doctrine fill is not a player move");
+  c.selectMech("Assault");
+  c.setMove("Assault", { x: 3, y: 2 });
+  assert.deepEqual(c.getState().draft.Assault.moveTo, { x: 3, y: 2 });
+  assert.equal(c.getState().canUndoMove, true);
+  c.setMove("Assault", { x: 2, y: 2 });
+  assert.deepEqual(c.getState().draft.Assault.moveTo, { x: 2, y: 2 });
+  c.undoMove();
+  assert.deepEqual(c.getState().draft.Assault.moveTo, { x: 3, y: 2 });
+  c.undoMove();
+  assert.equal(c.getState().draft.Assault.moveTo, null);
+  assert.equal(c.getState().canUndoMove, false);
+  c.undoMove();
+  assert.equal(c.getState().draft.Assault.moveTo, null);
+  c.setMove("Assault", { x: 3, y: 2 });
+  c.submit();
+  const fired = c.getState();
+  assert.equal(fired.canUndoMove, false, "submitting the pack clears the move stack");
+  c.undoMove();
+  assert.equal(c.getState().match.revision, fired.match.revision);
+  assert.deepEqual(c.getState().draft.Assault.moveTo, fired.draft.Assault.moveTo);
+});
+
+test("hovering one enemy shows only that enemy's post-push telegraph", () => {
+  const c = createMechaController({ match: duel(NEAR_BOSS), planner: hold });
+  c.setAction("Assault", { kind: "melee", target: "boss" });
+  const preview = c.getState().preview;
+  assert.equal(preview.ok, true);
+  if (!preview.ok) return;
+  assert.deepEqual(preview.telegraphByActor.boss, [{ x: 4, y: 1 }]);
+  assert.deepEqual(c.getState().telegraph, preview.telegraphAfter);
+  c.setHoveredEnemy("boss");
+  assert.deepEqual(c.getState().telegraph, [{ x: 4, y: 1 }]);
+  assert.equal(c.getState().hoveredEnemy, "boss");
+  c.setHoveredEnemy("raider-w");
+  assert.deepEqual(c.getState().telegraph, [], "an enemy with no telegraph contributes no cells");
+  c.setHoveredEnemy(null);
+  assert.deepEqual(c.getState().telegraph, preview.telegraphAfter);
+  assert.equal(c.getState().preview.ok && c.getState().preview.hitsAfter.Assault, c.getState().hits.Assault);
+});
+
 test("every plan fault cause has Chinese and English text that names the mech", () => {
   const names: Record<MechId, [string, string]> = { Assault: ["突击", "Assault"], Gunner: ["射手", "Gunner"], Support: ["支援", "Support"] };
   const seen = new Set<string>();

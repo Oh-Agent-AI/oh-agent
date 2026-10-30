@@ -548,6 +548,7 @@ test("previewPlan shows the telegraph after the shove, not before", () => {
   assert.equal(p.ok, true);
   if (!p.ok) return;
   assert.deepEqual(p.telegraphAfter, [{ x: 4, y: 1 }]);
+  assert.deepEqual(p.telegraphByActor.boss, [{ x: 4, y: 1 }], "the shifted telegraph stays attributed to the boss");
   assert.deepEqual(p.assumed, []);
   // Assault 离开了 (3,1)，新预告 (4,1) 上没人。
   assert.deepEqual(p.hitsAfter, { Assault: 0, Gunner: 0, Support: 0 });
