@@ -45,7 +45,7 @@
   ],
   "source": {
     "kind": "Hunyuan 3D Pro generation (main view of the concept, drone masked out) -> hunyuan-3d-reduce-face (low, 13,514 tris) -> hunyuan-3d-part labels -> split per joint, capped, reduced locally to ~8k; legs, torso and head mirrored from the cleaner left side (arms are posed differently and stay as generated); texture baked from the generated model's 4K map into a 2048 atlas (own planar charts, mirrored faces share UVs, 16 colours, majority-filtered, lossless WebP; crosses come from the texture); every part repaired to 0 open / 0 non-manifold edges and vertices; joint hubs and drone scripted from the concept; gltfpack -cc -kn -km -ke -ac -vp 16 -vt 16 -vn 8 -af 100 (KHR_mesh_quantization + EXT_meshopt_compression)",
-    "blend_sha256": "df01d3593ad89916b38dc0d5599121ca5c67a99ecc4b19490d07f2cb950314dd",
-    "glb_sha256": "5a7dd6ec77ca6268ed91c0ed3f4dff33729da4d5262dc5dde8d62be03ac60972"
+    "blend_sha256": "927b9a4bc3869d8c489bb1f2551cadcb44f3c83deb5927410b1f59d6ae9cca1f",
+    "glb_sha256": "82304f258382c614b8ab97e4e490352ee1ffdb7ce946a347777a79fee3589fb0"
   }
 }
