@@ -352,6 +352,7 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
       </header>
       <div className="mecha-panel">
         {sequenceFault ? <p role="alert">{locale === "zh-Hans" ? "Assault 演出数据不完整或不一致，自动对战已等待；可重新开始一局。" : "Assault playback stopped: missing or inconsistent turn data. Restart the match to continue."}</p> : null}
+        {!onCity && engine && !viewFailed ? <p className="mecha-board-notice" role="status">{t("这不是机坪上的实地战斗，而是方格棋盘。")}</p> : null}
         <section className="mecha-turn-summary" aria-label={t("敌方预告")}>
           <div><span>{t("敌方预告")}</span><strong className="mecha-intent">{skillLabel}</strong></div>
           <p>{t("大怪")} <strong>{state.boss.hp}</strong>{raiderHp ? ` · ${raiderHp}` : ""}{outcome ? ` · ${outcome}` : ""}</p>

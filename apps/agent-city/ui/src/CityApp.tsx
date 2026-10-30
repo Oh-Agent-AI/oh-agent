@@ -107,27 +107,45 @@ export function CityApp() {
   drivingActive.current = driving.active;
   // 规划修复（开发开关 ?cityPlan / cityPlanDev=1；未开启时 hook 什么都不做）。与游戏/航拍/导出/忙碌互斥。
   const planRepair = usePlanRepair(engineRef, { seed: experience.seed, model: experience.model, blocked: cinema || game.active || driving.active || mechaOpen || experience.busy || !!experience.film });
-  // 点停车场里的车 / 机坪上的飞机 / 机坪上的机甲直接开：与工具栏同一组互斥条件——
-  // 航拍、导出、忙碌、修复城市、已经在开车、飞行或机甲战时不响应（引擎只在非驾驶世界里派发点击）。
+  // 点停车场里的车 / 机坪上的飞机 / 机坪上的机甲直接开。车和飞机在航拍、导出、忙碌、
+  // 修复、驾驶、飞行或已经开战时不响应。机甲点中后若开不了战，只出一句原因，
+  // 不把这次点击交给地标镜头（引擎只在非驾驶世界里派发点击）。
   // One guard list for every Mecha entry point. The toolbar, the world click and
   // the settings button all ask this predicate, so a second path cannot start a
   // mode that overwrites the camera or frame hook owned by another activity.
   const mechaBlocked = cinema || game.active || driving.active || mechaOpen || experience.busy || !!experience.film || planRepair.state.active;
+  // 点在机甲上（含旁边一小圈机坪）但开不了战：说清楚，并且不要落到地标镜头锁定。
+  // 每句都是完整的中文键，英文在 i18n 目录里。已经在战局里就不再报一句。
+  const mechaEntryRefusal = (): string | null => {
+    if (cinema) return "航拍进行中，没有进入机甲战，镜头没有锁到地标。";
+    if (game.active) return "飞行中，没有进入机甲战，镜头没有锁到地标。";
+    if (driving.active) return "驾驶中，没有进入机甲战，镜头没有锁到地标。";
+    if (experience.film) return "视频导出进行中，没有进入机甲战，镜头没有锁到地标。";
+    if (planRepair.state.active) return "正在修复城市，没有进入机甲战，镜头没有锁到地标。";
+    if (experience.busy) return "城市还在忙，没有进入机甲战，镜头没有锁到地标。";
+    if (mechaOpen) return null;
+    const engine = engineRef.current;
+    if (!engine?.currentLayout || !engine.currentModel) return "城市还没准备好，没有进入机甲战，镜头没有锁到地标。";
+    return null;
+  };
   // Require a modelled city: the board is a view of the current layout, not a game
   // that can start against a half-built scene.
   const openMecha = () => {
-    const engine = engineRef.current;
-    if (mechaBlocked || !engine?.currentLayout || !engine.currentModel) return;
+    const refusal = mechaEntryRefusal();
+    if (refusal) { experience.setError(refusal); return; }
+    if (mechaBlocked) return;
+    experience.setError(null);
     experience.setOptions(false);
     experience.clearSelection();
     setMechaOpen(true);
   };
   const playRef = useRef<(target: PlayTarget) => void>(() => {});
   playRef.current = (target) => {
+    // 机甲点击自己决定开不开战。被拦住时只出一句原因，不把这次点击交给地标锁定。
+    if (target.kind === "mecha") { openMecha(); return; }
     if (mechaBlocked) return;
     experience.setOptions(false); experience.clearSelection();
     if (target.kind === "car") driving.enterAt(target);
-    else if (target.kind === "mecha") openMecha();
     else game.enterPracticeFrom(target);
   };
   planRepairActive.current = planRepair.state.active;

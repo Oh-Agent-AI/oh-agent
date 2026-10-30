@@ -220,6 +220,8 @@ const ENGLISH: Record<string, string> = {
   "巷战": "Alley",
   "战场在这座城市的地面上。楼顶血槽只记这一局，城市里的楼还在。": "The fight is on this city's ground. Roof bars belong to this match; the buildings stay.",
   "这座城市没有一块够平的战场，仍用方格棋盘。": "This city has no flat enough field, so the grid board stays.",
+  "这不是机坪上的实地战斗，而是方格棋盘。": "This is not the apron fight on real terrain. It is the grid board.",
+  "Assault 演出数据不完整或不一致，自动对战已等待；可重新开始一局。": "Assault playback stopped: missing or inconsistent turn data. Restart the match to continue.",
   "脚本": "Script",
   "布局": "Layout",
   "点击一台机甲，再点能走到的格子，然后选行动。": "Select a mech, click a reachable cell, then choose an action.",
