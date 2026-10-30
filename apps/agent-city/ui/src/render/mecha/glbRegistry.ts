@@ -20,8 +20,8 @@ import { parseTrialAssault } from "./trialAssault";
 type Source = { glb: string; manifest: string; trial?: boolean };
 const trialEnabled = import.meta.env.DEV && typeof location !== "undefined" && new URLSearchParams(location.search).get("assaultTrial") === "1";
 // Separate local preview for comparing the shorter gait; never used in a match.
-const gaitPreview = import.meta.env.DEV && typeof location !== "undefined" && location.pathname.endsWith("/mecha-model.html") && new URLSearchParams(location.search).get("assaultGaitPreview") === "1";
-const liftPreview = import.meta.env.DEV && typeof location !== "undefined" && location.pathname.endsWith("/mecha-model.html") && new URLSearchParams(location.search).get("assaultLiftPreview") === "1";
+const gaitPreview = import.meta.env.DEV && typeof location !== "undefined" && new URLSearchParams(location.search).get("assaultGaitPreview") === "1";
+const liftPreview = import.meta.env.DEV && typeof location !== "undefined" && new URLSearchParams(location.search).get("assaultLiftPreview") === "1";
 /** 角色 → 资产。要接新角色（规格 §7 的制作顺序）就在这里加一行，并在 glbModels.ts 补它的节点合同。 */
 const SOURCES: Record<string, Source> = {
   Assault: liftPreview ? { glb: "/src/assets/mecha/assault-lift-preview.glb", manifest: "/src/assets/mecha/assault-lift-preview.manifest.json", trial: true }
