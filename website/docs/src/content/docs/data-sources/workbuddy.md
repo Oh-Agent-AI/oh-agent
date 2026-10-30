@@ -1,5 +1,5 @@
 ---
-draft: true
+lastUpdated: 2026-10-28
 title: How does Oh Agent read WorkBuddy sessions?
 description: Oh Agent reads WorkBuddy usage from trace files under ~/.workbuddy/traces and builds a WorkBuddy district in Agent City. Extra folders and behaviour checks are not supported.
 head:
@@ -39,10 +39,14 @@ WorkBuddy bills in its own credits. Oh Agent reports credits as credits, not mon
 
 <!-- source: workbuddy/sources/mod.rs module doc (credits; cash_cny 恒 null; nominal_cny = credits × 0.05 公开加量包兑换价折算; nominal_basis) -->
 
-**TBD:** link to WorkBuddy's official site and confirm which WorkBuddy versions write `traces/`.
+In Agent City the district label for this harness is **WorkBuddy** (fixture `id: "workbuddy"`, `display_name: "WorkBuddy"`).
+
+<!-- source: apps/agent-city/ui/src/data/provider.ts (fixture harnesses: { id: "workbuddy", display_name: "WorkBuddy" }) -->
 
 ## Related
 
-- [Data pipeline](/docs/architecture/data-pipeline)
+- [Claude Code data source](/docs/data-sources/claude-code)
+- [Codex data source](/docs/data-sources/codex)
 - [DeepSeek Harness data source](/docs/data-sources/deepseek-harness)
-- [Integrations overview](/docs/integrations)
+- [What each building in Agent City means](/docs/city-guide)
+- [Install](/docs/install) · [FAQ](https://ohagent.ai/#faq)

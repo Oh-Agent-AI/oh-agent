@@ -458,3 +458,234 @@ No. Credentials are never saved in anything Oh Agent owns. Some test features ca
 - [What each building in Agent City means](https://ohagent.ai/docs/city-guide)
 - [Claude Code data source](https://ohagent.ai/docs/data-sources/claude-code) · [Codex data source](https://ohagent.ai/docs/data-sources/codex)
 - [FAQ](https://ohagent.ai/#faq)
+
+---
+
+# Where does DeepSeek Harness (DSH) store sessions, and how does Oh Agent read them?
+URL: https://ohagent.ai/docs/data-sources/deepseek-harness/
+
+DeepSeek Harness (DSH) keeps each session as a `session.jsonl` file, sometimes compressed as `session.jsonl.zstd`, under the `sessions/` folder of its home directory. That directory is `$DSH_HOME`, or `~/.dsh` if the variable isn't set. Agent Vitals reads these files on your Mac and shows each session as a building in the DSH district of Agent City.
+
+## Key facts
+
+- **Location:** `$DSH_HOME/sessions/`, recursively. `DSH_HOME` defaults to `~/.dsh`.
+- **Files read:** `session.jsonl` and `session.jsonl.zstd`.
+- **`DSH_HOME` is followed**, even outside your home folder. This is the only built-in source that honours an environment variable for its location.
+- **Titles** come from DSH's workspace index, `storages/workspace.json`.
+- **Behaviour checks:** yes. DSH sessions get the same SV6xx findings as Claude Code and Codex.
+- **Extra folders:** supported in Settings.
+
+## What does Oh Agent take from DSH sessions?
+
+The same summary as for other sources: time range, event count, token counts and a bounded title. DSH logs record provider evidence, so cost estimates for DSH can tell routes apart better than for Claude Code.
+
+## Is there also a DSH plugin?
+
+Yes, but it's separate from session reading. The `dsh-agent-vitals` bundle in `integrations/dsh/` adds the older skill auditor as a skill inside DSH (`dsh plugin --profile web add dsh-agent-vitals`). You don't need it for Agent City.
+
+In Agent City the district label for this harness is **DSH** (fixture `id: "dsh"`, `display_name: "DSH"`).
+
+## Related
+
+- [Claude Code data source](https://ohagent.ai/docs/data-sources/claude-code)
+- [Codex data source](https://ohagent.ai/docs/data-sources/codex)
+- [What each building in Agent City means](https://ohagent.ai/docs/city-guide)
+- [Install](https://ohagent.ai/docs/install) · [FAQ](https://ohagent.ai/#faq)
+
+---
+
+# How does Oh Agent read WorkBuddy sessions?
+URL: https://ohagent.ai/docs/data-sources/workbuddy/
+
+For WorkBuddy, Agent Vitals reads usage from the `trace_*.json` files under `~/.workbuddy/traces/`, on your Mac. Each WorkBuddy session becomes a building in the WorkBuddy district of Agent City. WorkBuddy support is narrower than for the other built-in sources: you can't add extra folders, behaviour checks don't run during sync, and sessions don't get titles yet.
+
+## Key facts
+
+- **Location:** `~/.workbuddy/` (fixed; no environment variable).
+- **Usage files:** `trace_*.json` under `~/.workbuddy/traces/`.
+- **Session audit** (CLI `workbuddy-session`) also reads `workbuddy.db` (`sessions`, `session_usage`) and `audit-log/*.jsonl`.
+- **Extra folders:** not supported.
+- **Behaviour findings:** none during normal sync.
+- **Titles:** not yet. They live in `workbuddy.db`, which isn't wired up for titles.
+
+## How are WorkBuddy costs shown?
+
+WorkBuddy bills in its own credits. Oh Agent reports credits as credits, not money. A nominal yuan value (credits × 0.05, based on the public top-up price) appears only in the nominal column, never as money actually paid, and the cash-paid field stays empty because there's no payment evidence on your Mac.
+
+In Agent City the district label for this harness is **WorkBuddy** (fixture `id: "workbuddy"`, `display_name: "WorkBuddy"`).
+
+## Related
+
+- [Claude Code data source](https://ohagent.ai/docs/data-sources/claude-code)
+- [Codex data source](https://ohagent.ai/docs/data-sources/codex)
+- [DeepSeek Harness data source](https://ohagent.ai/docs/data-sources/deepseek-harness)
+- [What each building in Agent City means](https://ohagent.ai/docs/city-guide)
+- [Install](https://ohagent.ai/docs/install) · [FAQ](https://ohagent.ai/#faq)
+
+---
+
+# "Agent Vitals CLI (agent-vitals): commands for syncing, querying and exporting agent data"
+URL: https://ohagent.ai/docs/vitals/cli/
+
+`agent-vitals` is the command-line front end of the Agent Vitals engine. It runs the same Rust code as the desktop app: sync agent logs into the local database, check data status, export facts, manage manifest sources, audit single sessions, and start the Data MCP server (stdio). It also keeps the commands of the earlier skill auditor. Help text is in English, and most commands take `--json`.
+
+## Key facts
+
+- **Source:** `apps/cli/` (subcommands in `apps/cli/src/main.rs`, built with clap).
+- **Build:** `cargo build --release`, which gives `./target/release/agent-vitals`. Run `agent-vitals --help` for the full list.
+- **Bundled:** the desktop app includes the binary as `bin/agent-vitals`.
+- **Same data folder** as the app: `~/.agent-vitals/` or `AGENT_VITALS_HOME`.
+
+## Data commands (the engine)
+
+| Command | What it does |
+| --- | --- |
+| `sync-facts` | Routine sync: find logs, diff, parse, write to the SQL store. Safe to re-run |
+| `data-status` | Store status: schema version, recent sync runs, source counts, data-quality summary |
+| `data …` | Read-only summaries (for example `data coverage`, `data daily`) |
+| `data-export-private --out DIR` | Export facts with identities as stored, one `<harness>.jsonl` per source |
+| `data-export-redacted --out DIR` | Same export with identity fields replaced by stable pseudonyms |
+| `data-unresolved` | Drill into unpriced or unresolved usage per model for a month |
+| `billing-groups`, `data-harness-bill` | Billing confirmation groups; user-entered harness bills |
+| `budget`, `budget-sql` | Budget alert status and management |
+| `data-migrate` | One-time import of legacy facts JSONL into the SQL store |
+| `data-reimport-verify` | Re-import into two throwaway databases and compare (doesn't touch your store) |
+| `sessions …` | Versioned read-only session queries |
+| `routes-quality` | Passive report of recorded model identity by source and model family |
+| `data-mcp serve [--allow-local-writes]` | Start the stdio Data MCP server |
+
+The clap help string for `sync-facts` still says "across all three harnesses"; the command syncs every registered built-in source (`claude-code`, `codex`, `dsh`, `workbuddy`) unless you pass `--harnesses`.
+
+## Source commands
+
+| Command | What it does |
+| --- | --- |
+| `harness-inventory --window-days 30` | Which sources are registered, have data, or are only candidates. Never activates anything |
+| `harnesses` | Print the declared capabilities of the four built-in sources |
+| `manifest-validate`, `manifest-install`, `manifest-list`, `manifest-uninstall`, `manifest-rollback`, `manifest-recompute`, `manifest-catalog-status` | Manifest sources: dry-run, preview → confirm, list, remove, roll back |
+| `claude-usage-facts`, `codex-usage-facts`, `dsh-usage-facts`, `workbuddy-usage-facts` | Parse one source's files into usage-fact rows, for diagnosis |
+
+## Session audit and trace commands
+
+| Command | What it does |
+| --- | --- |
+| `claude-session`, `codex-session`, `workbuddy-session`, `codex-evidence` | Audit one session into a normalized session with coverage and SV601–SV614 findings |
+| `behavior`, `skill-audit`, `duration-audit` | Audit a DSH session log for risky behaviour, skill use or durations |
+| `trace-ref` | Build the trace graph for a session from `sessions list`, without exposing file paths |
+| `trace`, `trace-anchors` | Trace graph for one file; anchor report for local viewing only (never an MCP tool) |
+| `codex-cost` | Price Codex token usage per model and day |
+| `probe`, `trust …` | Desktop "Test" tab probes; local trust / egress history audit |
+
+## Older skill-auditor commands
+
+`list`, `doctor`, `plan`, `snapshot`, `diff`, `explain` and `overlap` come from the earlier skill auditor: they list installed Agent Skills, diagnose why one doesn't load, and plan cleanup. They are kept but aren't the main product story (the older skill auditor).
+
+## Examples
+
+```sh
+# Import new sessions now instead of waiting for the app's 5-minute sync
+agent-vitals sync-facts
+
+# Is the data fresh?
+agent-vitals data-status --json
+
+# Back up your facts, pseudonymized
+agent-vitals data-export-redacted --out ~/oh-agent-export
+```
+
+Flags above match the clap definitions in `apps/cli/src/main.rs`: `data-status --json` is a boolean flag; `data-export-redacted` requires `--out DIR`; `sync-facts` also accepts optional `--json` and `--harnesses`.
+
+## Related
+
+- [Agent Vitals engine overview](https://ohagent.ai/docs/vitals/overview)
+- [Claude Code data source](https://ohagent.ai/docs/data-sources/claude-code) · [Codex data source](https://ohagent.ai/docs/data-sources/codex)
+- [DeepSeek Harness data source](https://ohagent.ai/docs/data-sources/deepseek-harness) · [WorkBuddy data source](https://ohagent.ai/docs/data-sources/workbuddy)
+- [What each building in Agent City means](https://ohagent.ai/docs/city-guide)
+- [Privacy and data](https://ohagent.ai/docs/privacy-and-data) · [Install](https://ohagent.ai/docs/install) · [FAQ](https://ohagent.ai/#faq)
+
+---
+
+# "What is the Agent Vitals engine? Local-first agent behavior data engine"
+URL: https://ohagent.ai/docs/vitals/overview/
+
+Oh Agent is built on the open-source **Agent Vitals** engine, and Agent City is its first app. Agent Vitals is a local-first engine for AI agent behavior data. It reads the session logs that Claude Code, Codex, DeepSeek Harness and WorkBuddy already write, turns them into usage facts and behaviour findings, stores them in an embedded SQLite database, and serves them through read-only interfaces: a CLI, a stdio MCP server, and projections for apps. It's a set of Rust libraries linked into the desktop app and the CLI, not a server: it opens no network port and runs no daemon.
+
+## Key facts
+
+- **Embedded, not a service:** the data layer is described in code as "an embedded local data layer, not a standalone service: no network port, no daemon."
+- **One store:** `agent-vitals.sqlite3` in `~/.agent-vitals/` (or `AGENT_VITALS_HOME`). It doesn't repair itself; a corrupted file is rebuilt with `data-migrate`.
+- **Who runs it:** the desktop app links the crates and syncs every 5 minutes in-process. The `agent-vitals` CLI runs the same code on demand.
+- **Interfaces out:** the `agent-vitals` CLI, Data MCP tools (stdio only), App SDK projections, and JSONL exports.
+- **Two implementations:** Rust is the product; a Python twin is kept byte-identical through golden tests.
+- **Name:** "Agent Vitals" was the project's earlier name, so crates, the CLI and data folders are still called `agent-vitals`.
+
+## How do the crates fit together?
+
+```mermaid
+flowchart TB
+  SRC["Agent logs on disk<br/>~/.claude · ~/.codex · ~/.dsh · ~/.workbuddy · harnesses.d"]
+  H["agent-vitals-harnesses<br/>(claude_code, codex, dsh, workbuddy, openclaw, generic)"]
+  I["agent-vitals-ingest (L5)<br/>sync · tick · watcher · findings"]
+  D[("agent-vitals-data<br/>agent-vitals.sqlite3")]
+  Q["agent-vitals-query (L2–L3)<br/>sources · sessions · projections"]
+  B["agent-vitals-billing (L4)"]
+  T["agent-vitals-trust (L5)"]
+  M["agent-vitals-mcp (L6)"]
+  R["agent-vitals-runtime<br/>(facade, re-exports all)"]
+  DESK["Desktop app (Tauri 2)"]
+  CLI["agent-vitals CLI"]
+  PH["Plugin host"]
+  SDK["@agent-vitals/app-sdk"]
+  CITY["Agent City"]
+  DOM["agent-vitals-domain + vitals-core<br/>(pure rules)"]
+  W["agent-vitals-wasm"]
+  SRC --> H --> I --> D --> Q
+  Q --> B & T & M
+  B & T & M --> R
+  I --> R
+  R --> DESK & CLI
+  DESK --> PH --> SDK --> CITY
+  DOM --> H
+  DOM --> W
+```
+
+In words: agent logs → `agent-vitals-harnesses` parsers → `agent-vitals-ingest` sync → `agent-vitals-data` SQLite store → `agent-vitals-query` read layer → billing, trust and MCP on top → the `agent-vitals-runtime` facade → the desktop app and CLI. In the desktop app, the plugin host passes projections through the App SDK to Agent City. The pure rules in `agent-vitals-domain` and `vitals-core` are shared by everything, including the wasm build.
+
+## What does each crate do?
+
+| Layer | Crate | Role |
+| --- | --- | --- |
+| Pure | `vitals-core` | Harness-agnostic behavioural audit engine (events, signals, detectors, findings). The SV601–SV614 rules run here |
+| Pure | `agent-vitals-domain` | Shared vocabulary (usage fact, source identity, harness capability) and cross-agent calculations (behaviour, cost, usage) |
+| Pure | `agent-vitals-provider` | Provider identity and attribution. No I/O, SQL or network |
+| Adapters | `agent-vitals-harnesses` | Per-agent log parsing and the session source registry; file I/O sits behind the `sources` feature |
+| Store | `agent-vitals-data` | The SQLite authority store: schema, migrations, transactions, the single fact writer, typed repository |
+| L0–L1 | `agent-vitals-runtime-core` | Data folder, clock, leases, state, pricing, tool-response envelope, events outbox |
+| L2–L3 | `agent-vitals-query` | Source config, manifest registry, watch topology, summaries, traces, exports, app projections |
+| L4 | `agent-vitals-billing` | Budgets, billing preview and attribution, price discovery, quota reminders |
+| L5 | `agent-vitals-ingest` | Sync service, in-process engine, tick scheduler, watcher, findings evaluation, manifest install |
+| L5 | `agent-vitals-trust` | Local trust / egress history audit |
+| L6 | `agent-vitals-mcp` | Data MCP tool layer, the outbound face where redaction is reviewed |
+| Facade | `agent-vitals-runtime` | No code of its own; re-exports the layers so `agent_vitals_runtime::X` paths stay stable |
+| Tooling | `agent-vitals-probe` | Runner for the desktop "Test" tab (identity probes; credentials passed in memory only) |
+| Browser | `agent-vitals-wasm` | wasm-bindgen wrapper: pure behaviour audit and cost folding on events already in memory. Built with wasm-pack, not part of the default build |
+
+Layering is enforced: crates may only depend on strictly lower layers (Cargo), and `tests/module_layering.rs` checks modules inside the runtime family.
+
+The wasm crate is excluded from the default workspace build. Its docs mention a DSH audit tab, but no CI workflow or script in the repo currently builds it with wasm-pack.
+
+## What does Agent Vitals refuse to do?
+
+- **Upload user data.** No telemetry, crash reports with payloads, or cloud sync without an explicit, reviewed product decision.
+- **Store credentials.** API keys and tokens are never written to anything it owns.
+- **Copy transcripts.** It stores anchors and derived fields; full text stays in the agents' logs.
+- **Guess costs.** Unproven routes stay `metered_estimate` with `has_unresolved`.
+
+## Related
+
+- [Claude Code data source](https://ohagent.ai/docs/data-sources/claude-code)
+- [Codex data source](https://ohagent.ai/docs/data-sources/codex)
+- [DeepSeek Harness data source](https://ohagent.ai/docs/data-sources/deepseek-harness)
+- [WorkBuddy data source](https://ohagent.ai/docs/data-sources/workbuddy)
+- [What each building in Agent City means](https://ohagent.ai/docs/city-guide)
+- [Privacy and data](https://ohagent.ai/docs/privacy-and-data) · [Install](https://ohagent.ai/docs/install) · [FAQ](https://ohagent.ai/#faq)
