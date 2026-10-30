@@ -157,6 +157,8 @@ pub struct PluginManifest {
     pub roots: Vec<String>,
     pub include: Vec<String>,
     pub session_pattern: Regex,
+    /// On-disk encoding for the JSONL source. Defaults to plain JSONL.
+    pub compression: SourceCompression,
     pub recipe: String,
     pub overrides: BTreeMap<String, String>,
     pub event_key_paths: Vec<String>,
@@ -169,6 +171,9 @@ pub struct PluginManifest {
     /// capability; it does not authorize a scanner to read file contents.
     pub trust: Option<TrustArtifactProfile>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceCompression { None, Zstd }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginSessionTitleAdapter {
@@ -438,7 +443,7 @@ pub fn parse_manifest(value: serde_json::Value) -> Result<PluginManifest, Manife
         .and_then(|v| v.as_object())
         .ok_or_else(|| err("source", "必须是 object"))?;
     for key in source.keys() {
-        if key != "format" {
+        if key != "format" && key != "compression" {
             return Err(err(format!("source.{key}"), "未知字段"));
         }
     }
@@ -449,6 +454,15 @@ pub fn parse_manifest(value: serde_json::Value) -> Result<PluginManifest, Manife
     if format != "jsonl" {
         return Err(err("source.format", format!("P0 仅支持 jsonl（得到 {format}）")));
     }
+    let compression_value = match source.get("compression") {
+        None => "none",
+        Some(value) => value.as_str().ok_or_else(|| err("source.compression", "必须是字符串"))?,
+    };
+    let compression = match compression_value {
+        "none" => SourceCompression::None,
+        "zstd" => SourceCompression::Zstd,
+        value => return Err(err("source.compression", format!("仅支持 none 或 zstd（得到 {value}）"))),
+    };
 
     let session = obj
         .get("session")
@@ -646,6 +660,7 @@ pub fn parse_manifest(value: serde_json::Value) -> Result<PluginManifest, Manife
         roots,
         include,
         session_pattern,
+        compression,
         recipe: recipe.to_string(),
         overrides,
         event_key_paths,
@@ -805,6 +820,16 @@ mod tests {
         // 具名组提取走一次真实匹配。
         let caps = m.session_pattern.captures("model-io-sess_abc-123.jsonl").unwrap();
         assert_eq!(caps.name("id").unwrap().as_str(), "abc-123");
+    }
+
+    #[test]
+    fn source_compression_is_optional_and_restricted() {
+        let mut value = zcode_manifest();
+        assert_eq!(parse_manifest(value.clone()).unwrap().compression, SourceCompression::None);
+        value["source"]["compression"] = json!("zstd");
+        assert_eq!(parse_manifest(value.clone()).unwrap().compression, SourceCompression::Zstd);
+        value["source"]["compression"] = json!("gzip");
+        assert_eq!(parse_manifest(value).unwrap_err().field, "source.compression");
     }
 
     #[test]

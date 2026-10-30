@@ -3,8 +3,9 @@
 //! 见 `docs/RUNTIME_EVIDENCE_CONTRACT.md` §4.2）。"derive → coverage" 两段在
 //! core 的 `crates/agent-vitals-harnesses/src/harnesses/codex/sessions/evidence.rs`，I/O 不进去。
 //!
-//! Codex 的 rollout 落盘在 `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-*.jsonl`，
-//! 明文 append-only JSONL，每行一个 `{type, timestamp, payload}` 包络。**命名冲突
+//! Codex 的 rollout 落盘在 `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-*.jsonl`
+//! 或 Zstandard 压缩的 `rollout-*.jsonl.zst`，每行一个 `{type, timestamp, payload}`
+//! 包络。**命名冲突
 //! 警告**：`src/codex.rs`（和 `scripts/agent_vitals/adapters/codex.py`）是安装时
 //! 的运行时探针适配器，跟这里完全无关；本模块是会话日志审计，叫 `codex_session`，
 //! 不要互相复用。
@@ -161,7 +162,17 @@ pub fn read_codex_session_log(path: &Path) -> Value {
         Ok(b) => b,
         Err(_) => return degraded("file-missing"),
     };
-    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let decoded;
+    let bytes = if path.to_string_lossy().ends_with(".jsonl.zst") {
+        decoded = match crate::harnesses::dsh::sources::decode_zstd_multi_frame(&bytes) {
+            Some(out) => out,
+            None => return degraded("zstd-decode-error"),
+        };
+        decoded.as_slice()
+    } else {
+        bytes.as_slice()
+    };
+    let text = String::from_utf8_lossy(bytes).into_owned();
     parse_codex_session_log(&text)
 }
 
@@ -188,7 +199,7 @@ pub fn codex_session_roots_report(home: &Path) -> Value {
                 .into_iter()
                 .filter_map(Result::ok)
                 .filter(|e| e.file_type().is_file())
-                .filter(|e| e.path().extension().map(|x| x == "jsonl").unwrap_or(false))
+                .filter(|e| is_codex_session_log_name(&e.file_name().to_string_lossy()))
                 .map(|e| e.into_path())
                 .collect();
             files.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
@@ -210,7 +221,16 @@ pub fn codex_session_roots_report(home: &Path) -> Value {
     json!({ "harness": "codex", "roots": roots })
 }
 
-/// `codex-cost` 的输入枚举：两个会话根下所有 `rollout-*.jsonl`（live + archived）。
+fn is_codex_session_log_name(name: &str) -> bool {
+    name.ends_with(".jsonl") || name.ends_with(".jsonl.zst")
+}
+
+fn is_codex_rollout_name(name: &str) -> bool {
+    name.starts_with("rollout-") && (name.ends_with(".jsonl") || name.ends_with(".jsonl.zst"))
+}
+
+/// `codex-cost` 的输入枚举：两个会话根下所有未压缩及 Zstandard 压缩 rollout
+/// （live + archived）。
 ///
 /// 与 `codex_session_roots_report` 同一套根集合，但那是存在性报告（统计数量/
 /// 字节），这里给出**实际要折叠的文件**。**全局按路径字符串排序**（不是按根
@@ -230,8 +250,7 @@ pub fn codex_rollout_files(home: &Path) -> Vec<PathBuf> {
                     .filter_map(Result::ok)
                     .filter(|e| e.file_type().is_file())
                     .filter(|e| {
-                        let name = e.file_name().to_string_lossy();
-                        name.starts_with("rollout-") && name.ends_with(".jsonl")
+                        is_codex_rollout_name(&e.file_name().to_string_lossy())
                     })
                     .map(|e| e.into_path()),
             );
@@ -271,7 +290,7 @@ pub fn codex_rollout_walk_errors(home: &Path) -> Vec<String> {
 /// `codex_rollout_files` 与 `codex_rollout_walk_errors` 各自走一遍 `~/.codex`
 /// （真机 2.96 万文件 × 2 趟/轻 tick）；清单与错误来自同一次遍历时天然一致
 /// （不会出现「清单轮看到了、错误轮没看到」的中间态）。排序/过滤语义与
-/// `codex_rollout_files` 逐字节一致（全局路径字符串序、rollout-*.jsonl）；
+/// `codex_rollout_files` 逐字节一致（全局路径字符串序、rollout-*.jsonl[.zst]）；
 /// 缺失根不报错、根元数据不可读时报错——错误语义与
 /// `codex_rollout_walk_errors` 一致。
 pub fn codex_rollout_files_with_errors(home: &Path) -> (Vec<PathBuf>, Vec<String>) {
@@ -282,8 +301,7 @@ pub fn codex_rollout_files_with_errors(home: &Path) -> (Vec<PathBuf>, Vec<String
         let (mut part, part_errors) = crate::sources::walk_util::walk_files_with_errors(
             &home.join(".codex").join(rel),
             |e| {
-                let name = e.file_name().to_string_lossy();
-                name.starts_with("rollout-") && name.ends_with(".jsonl")
+                is_codex_rollout_name(&e.file_name().to_string_lossy())
             },
         );
         files.append(&mut part);
@@ -494,6 +512,44 @@ mod tests {
         let v = read_codex_session_log(Path::new("/nonexistent-xyz/rollout.jsonl"));
         assert_eq!(v["degraded"], json!("file-missing"));
         assert_eq!(v["items"], Value::Null);
+    }
+
+    #[test]
+    fn compressed_rollout_is_discovered_and_decoded() {
+        let home = temp_home("compressed");
+        let sessions = home.join(".codex").join("sessions").join("2026").join("10");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let path = sessions.join("rollout-compressed.jsonl.zst");
+        let text = format!("{}\n", meta_line("compressed-session", "legacy", "1.0"));
+        let mut compressed = Vec::new();
+        ruzstd::encoding::compress(
+            text.as_bytes(),
+            &mut compressed,
+            ruzstd::encoding::CompressionLevel::Fastest,
+        );
+        std::fs::write(&path, &compressed).unwrap();
+
+        assert_eq!(codex_rollout_files(&home), vec![path.clone()]);
+        let report = codex_session_roots_report(&home);
+        assert_eq!(report["roots"][0]["file_count"], json!(1));
+        assert_eq!(report["roots"][0]["total_bytes"], json!(compressed.len()));
+        let parsed = read_codex_session_log(&path);
+        assert_eq!(parsed["degraded"], json!(false));
+        assert_eq!(parsed["session_id"], json!("compressed-session"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn malformed_compressed_rollout_degrades_explicitly() {
+        let home = temp_home("bad-compressed");
+        let root = home.join(".codex").join("sessions");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("rollout-bad.jsonl.zst");
+        std::fs::write(&path, b"not zstandard").unwrap();
+        let parsed = read_codex_session_log(&path);
+        assert_eq!(parsed["degraded"], json!("zstd-decode-error"));
+        assert_eq!(parsed["items"], Value::Null);
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// 每个测试独占一个临时目录，互不污染；用进程 id + 用例名保证唯一。

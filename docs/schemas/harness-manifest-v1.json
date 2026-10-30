@@ -77,7 +77,8 @@
       "required": ["format"],
       "additionalProperties": false,
       "properties": {
-        "format": { "enum": ["jsonl"] }
+        "format": { "enum": ["jsonl"] },
+        "compression": { "enum": ["none", "zstd"], "default": "none", "description": "On-disk encoding; decoded bytes must be UTF-8 JSONL." }
       }
     },
     "session": {

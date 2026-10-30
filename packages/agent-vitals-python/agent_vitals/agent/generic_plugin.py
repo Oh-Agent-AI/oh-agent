@@ -36,6 +36,25 @@ def _expand_tilde_home(path, home):
     return path
 
 
+def _read_source_text(manifest, path):
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+    except OSError as exc:
+        raise OSError("文件 `%s` 不可读：%s" % (path, exc))
+    if manifest.compression == "zstd":
+        from ..adapters.dsh import _zstd, decode_zstd_multi_frame
+        if _zstd() is None:
+            raise Exception("文件 `%s` 需要可选 Python zstandard 包" % path)
+        data = decode_zstd_multi_frame(data)
+        if data is None:
+            raise Exception("文件 `%s` zstd 解压失败" % path)
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise Exception("文件 `%s` 不是 UTF-8" % path)
+
+
 def _discover_files(manifest, home):
     """discovery twin：walkdir 排序去重 + symlink 内外判 + session 提取。"""
     files = []
@@ -235,8 +254,7 @@ def run_plugin(manifest_path, files, machine_namespace, home):
     }
     facts_out = []
     for rel, abs_path, session_id, profile in units:
-        with open(abs_path, "r", encoding="utf-8") as fh:
-            content = fh.read()
+        content = _read_source_text(manifest, abs_path)
         file_report, file_facts = _extract_file(
             ctx, profile, rel, abs_path, session_id, content)
         report["emitted"] += file_report["emitted"]
@@ -280,8 +298,7 @@ def run_plugin(manifest_path, files, machine_namespace, home):
     ids_again = []
     for rel, abs_path, session_id, profile in units:
         try:
-            with open(abs_path, "r", encoding="utf-8") as fh:
-                content = fh.read()
+            content = _read_source_text(manifest, abs_path)
         except OSError:
             continue
         _, facts2 = _extract_file(ctx, profile, rel, abs_path, session_id, content)

@@ -20,7 +20,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 vitals-core = { path = "../vitals-core" }
 # v0.8 Phase D4/D5：宿主 I/O 读取器依赖——**只在 `sources` feature 下链入**
 # （`sessions/` / `skills/` 纯子树编不进它们，wasm `default-features = false` 也不拉）。
-# `ruzstd`：DSH `.zstd` 多帧解压（R2a §6.3-1，纯 Rust 零 C 依赖）。
+# `ruzstd`：DSH `.zstd` 与 Codex `.jsonl.zst` 多帧解压（纯 Rust 零 C 依赖）。
 # `walkdir`：Claude/Codex 会话文件递归枚举。
 # `rusqlite`（`bundled` 自带 sqlite3.c）：WorkBuddy `~/.workbuddy/workbuddy.db` 只读。
 ruzstd = { version = "0.8", optional = true }

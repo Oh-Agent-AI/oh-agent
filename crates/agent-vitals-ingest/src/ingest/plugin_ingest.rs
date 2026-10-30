@@ -326,16 +326,49 @@ struct CapturedUnit {
 
 const MAX_FROZEN_CORPUS_BYTES: usize = 64 * 1024 * 1024;
 
-fn read_frozen_file(path: &Path, remaining: usize) -> Result<String, String> {
+fn decode_source_bytes(manifest: &PluginManifest, bytes: &[u8], path: &Path, limit: Option<usize>) -> Result<String, String> {
+    let decoded = match manifest.compression {
+        agent_vitals_harnesses::generic_manifest::SourceCompression::None => {
+            if limit.is_some_and(|max| bytes.len() > max) { return Err("frozen preview corpus exceeds 64 MiB; use a bounded sample".into()); }
+            bytes.to_vec()
+        }
+        agent_vitals_harnesses::generic_manifest::SourceCompression::Zstd => {
+            if let Some(max) = limit {
+                agent_vitals_harnesses::decode_zstd_multi_frame_limited(bytes, max)
+                    .map_err(|error| match error {
+                        agent_vitals_harnesses::ZstdDecodeError::LimitExceeded => "frozen preview corpus exceeds 64 MiB; use a bounded sample".to_string(),
+                        agent_vitals_harnesses::ZstdDecodeError::InvalidData => format!("文件 `{}` zstd 解压失败", path.display()),
+                    })?
+            } else {
+                agent_vitals_harnesses::decode_zstd_multi_frame(bytes)
+                    .ok_or_else(|| format!("文件 `{}` zstd 解压失败", path.display()))?
+            }
+        }
+    };
+    String::from_utf8(decoded).map_err(|_| format!("文件 `{}` 不是 UTF-8", path.display()))
+}
+
+fn read_frozen_file(manifest: &PluginManifest, path: &Path, remaining: usize) -> Result<String, String> {
     let file = std::fs::File::open(path)
         .map_err(|e| format!("文件 `{}` 不可读：{e}", path.display()))?;
     let mut bytes = Vec::new();
-    file.take((remaining as u64) + 1).read_to_end(&mut bytes)
-        .map_err(|e| format!("文件 `{}` 不可读：{e}", path.display()))?;
-    if bytes.len() > remaining {
-        return Err("frozen preview corpus exceeds 64 MiB; use a bounded sample".into());
+    if manifest.compression == agent_vitals_harnesses::generic_manifest::SourceCompression::Zstd {
+        // Compressed size can be larger or smaller than the remaining decoded
+        // budget. Bound stored input independently, then enforce the real
+        // corpus limit during streaming decompression.
+        file.take((MAX_FROZEN_CORPUS_BYTES as u64) + 1).read_to_end(&mut bytes)
+            .map_err(|e| format!("文件 `{}` 不可读：{e}", path.display()))?;
+        if bytes.len() > MAX_FROZEN_CORPUS_BYTES {
+            return Err("frozen preview compressed input exceeds 64 MiB".into());
+        }
+    } else {
+        file.take((remaining as u64) + 1).read_to_end(&mut bytes)
+            .map_err(|e| format!("文件 `{}` 不可读：{e}", path.display()))?;
+        if bytes.len() > remaining {
+            return Err("frozen preview corpus exceeds 64 MiB; use a bounded sample".into());
+        }
     }
-    String::from_utf8(bytes).map_err(|_| format!("文件 `{}` 不是 UTF-8", path.display()))
+    decode_source_bytes(manifest, &bytes, path, Some(remaining))
 }
 
 fn capture_corpus(manifest: &PluginManifest, files: &[PathBuf], home: &Path, freeze: bool) -> Result<Vec<CapturedUnit>, String> {
@@ -385,7 +418,7 @@ fn capture_corpus(manifest: &PluginManifest, files: &[PathBuf], home: &Path, fre
     units.into_iter().map(|(rel, abs, session_id, profile)| {
         let content = if freeze {
             let remaining = MAX_FROZEN_CORPUS_BYTES.saturating_sub(total);
-            let value = read_frozen_file(&abs, remaining)?;
+            let value = read_frozen_file(manifest, &abs, remaining)?;
             total = total.checked_add(value.len()).ok_or("frozen preview corpus size overflow")?;
             if total > MAX_FROZEN_CORPUS_BYTES { return Err("frozen preview corpus exceeds 64 MiB; use a bounded sample".into()); }
             Some(value)
@@ -442,8 +475,8 @@ fn run_captured_manifest(
         let content = match content {
             Some(content) => content.as_str(),
             None => {
-                owned = std::fs::read_to_string(abs)
-                    .map_err(|e| format!("文件 `{}` 不可读：{e}", abs.display()))?;
+                let bytes = std::fs::read(abs).map_err(|e| format!("文件 `{}` 不可读：{e}", abs.display()))?;
+                owned = decode_source_bytes(&manifest, &bytes, abs, None)?;
                 &owned
             }
         };
@@ -1140,14 +1173,16 @@ mod tests {
     #[test]
     fn frozen_reader_honors_remaining_bytes_before_decoding() {
         let home = tmp_home("bounded-capture");
+        let (manifest_path, _) = setup_harness(&home);
+        let (manifest, _) = load_manifest(&manifest_path).unwrap();
         let path = home.join("source.jsonl");
         std::fs::write(&path, "abcd").unwrap();
-        assert_eq!(read_frozen_file(&path, 4).unwrap(), "abcd");
-        assert!(read_frozen_file(&path, 3).unwrap_err().contains("64 MiB"));
+        assert_eq!(read_frozen_file(&manifest, &path, 4).unwrap(), "abcd");
+        assert!(read_frozen_file(&manifest, &path, 3).unwrap_err().contains("64 MiB"));
         std::fs::write(&path, "").unwrap();
-        assert_eq!(read_frozen_file(&path, 0).unwrap(), "");
+        assert_eq!(read_frozen_file(&manifest, &path, 0).unwrap(), "");
         std::fs::write(&path, "x").unwrap();
-        assert!(read_frozen_file(&path, 0).unwrap_err().contains("64 MiB"));
+        assert!(read_frozen_file(&manifest, &path, 0).unwrap_err().contains("64 MiB"));
         let _ = std::fs::remove_dir_all(&home);
     }
 

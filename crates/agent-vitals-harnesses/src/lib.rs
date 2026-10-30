@@ -39,6 +39,8 @@ pub use harnesses::codex::sessions::{evidence as codex_evidence, usage as codex_
 pub use harnesses::dsh::sessions::{
     audit, compaction, evidence as dsh_evidence, waste, workflow as dsh_workflow,
 };
+#[cfg(feature = "sources")]
+pub use harnesses::dsh::sources::{decode_zstd_multi_frame, decode_zstd_multi_frame_limited, ZstdDecodeError};
 pub use harnesses::workbuddy::sessions::evidence as workbuddy_evidence;
 
 // 自描述插件执行环境（HARNESS_MANIFEST_DSL_SPEC）：manifest 校验/受限正则子集、
