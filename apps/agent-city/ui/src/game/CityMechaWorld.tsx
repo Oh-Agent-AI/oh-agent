@@ -5,6 +5,7 @@ import type { CityEngine } from "../engine/CityEngine";
 import { boardToWorld, cellWorld, type CityMechaSite } from "./mecha/citySite";
 import { MechaPerformancePlayer, faceMechaTarget } from "../render/mecha/animation";
 import { MECHA_FACTION_COLORS, createAssault, createBoss, createGunner, createRaider, createSupport, disposeMechaModel } from "../render/mecha/models";
+import { applyMechaUnitLight, setMechaUnitLight } from "../render/mecha/unitLight";
 import type { MechaPerformanceEvent } from "./mecha/performance";
 import { BOARD, type Cell, type MechId } from "./mecha/rules";
 
@@ -267,6 +268,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const spot = new THREE.Vector3();
     const actors = { Assault: assault, Gunner: gunner, Support: support, boss, "raider-w": raiderWest, "raider-e": raiderEast };
+    const litUnits = [assault, gunner, support, boss, raiderWest, raiderEast];
     const actorMarkers = { Assault: markers.Assault, Gunner: markers.Gunner, Support: markers.Support, boss: markers.boss, "raider-w": markers.raiderWest, "raider-e": markers.raiderEast };
     const resolveCell = (cell: Cell, actor: string) => {
       if (actor === "boss") return footprintFeet(site, cell);
@@ -280,6 +282,14 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       const now = globalThis.performance.now();
       const dt = Math.min(0.08, (now - lastFrame) / 1000);
       lastFrame = now;
+      // 夜间补光（见 unitLight.ts）。GLB 是异步原地升级的，升级后材质整套换掉，所以按 userData.glb 的变化重装
+      setMechaUnitLight(engine.skyNight);
+      for (const unit of litUnits) {
+        const source = unit.userData.glb ?? "procedural";
+        if (unit.userData.unitLightFor === source) continue;
+        applyMechaUnitLight(unit);
+        unit.userData.unitLightFor = source;
+      }
       const current = viewRef.current;
       const telegraph = new Set(current.telegraph.map(cellKey));
       const focus = new Set(current.focus.map(cellKey));
@@ -388,6 +398,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       player?.dispose();
       try { lease.release(); } catch { /* host already disposed the scene */ }
       for (const figure of [assault, gunner, support, boss, raiderWest, raiderEast]) disposeMechaModel(figure);
+      setMechaUnitLight(0);
       gridGeo.dispose();
       (grid.material as THREE.Material).dispose();
       padGeo.dispose();

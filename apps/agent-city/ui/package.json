@@ -6,7 +6,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "verify:mecha-models": "node --experimental-strip-types --import ../../../scripts/mecha-ts-register.mjs --test scripts/verify-mecha-models.ts scripts/verify-mecha-animation.ts scripts/verify-mecha-performance.ts",
+    "verify:mecha-models": "node --experimental-strip-types --import ../../../scripts/mecha-ts-register.mjs --test scripts/verify-mecha-models.ts scripts/verify-mecha-animation.ts scripts/verify-mecha-performance.ts scripts/verify-mecha-glb.ts",
     "verify:mecha": "node --experimental-strip-types --import ../../../scripts/mecha-ts-register.mjs --test ../../../scripts/verify-mecha-tactics.ts ../../../scripts/verify-mecha-city-site.ts ../../../scripts/verify-mecha-doctrine.ts ../../../scripts/verify-mecha-lease.ts ../../../scripts/verify-mecha-invariants.ts ../../../scripts/verify-mecha-controller.ts ../../../scripts/verify-mecha-search-runner.ts ../../../scripts/verify-mecha-layers.ts"
   },
   "dependencies": {

@@ -1,0 +1,50 @@
+{
+  "id": "gunner",
+  "version": 1,
+  "role": "Gunner",
+  "footprint": [
+    1,
+    1
+  ],
+  "forward": "-Z",
+  "heightMeters": 18.63,
+  "maxExtentMeters": [
+    14.3,
+    17.4
+  ],
+  "clips": {
+    "idle": {
+      "duration": 3.14,
+      "loop": true
+    },
+    "move": {
+      "duration": 0.79,
+      "loop": true
+    },
+    "attack": {
+      "duration": 0.95,
+      "loop": false
+    },
+    "hit": {
+      "duration": 0.48,
+      "loop": false
+    },
+    "defeat": {
+      "duration": 0.85,
+      "loop": false,
+      "holdLastFrame": true
+    }
+  },
+  "actionMap": {
+    "repair": "attack"
+  },
+  "materials": [
+    "armor_palette",
+    "faction_accent"
+  ],
+  "source": {
+    "kind": "hand-modelled in Blender 5.4; limbs, pauldrons, hands and chest top view from cleaned per-part reference masks (Hunyuan 3D reference, not shipped) turned into designed outlines; head, feet and railgun designed from the concept; each detail tagged [concept] or [AI reference]",
+    "blend_sha256": "9745237bf42e68f3c254abf8bbe625bfd8327b85b2cd08344d197eaae2095bfe",
+    "glb_sha256": "5e13c21dea0c4e0fa3faa657189146b0f89f827b78e9f4d46a896fd7b07289f4"
+  }
+}

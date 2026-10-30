@@ -51,3 +51,11 @@ licence as the repository.
 `catalog/hospital.jpg`, `catalog/school.jpg`, `catalog/mall.jpg`, `catalog/garden.jpg`,
 `catalog/hero-tower.jpg`,
 `catalog/airport.jpg`
+
+## Mecha character models (`mecha/`)
+
+`mecha/assault.glb` + `mecha/assault.manifest.json`: the Assault mecha, modelled by hand in Blender 5.4 as original
+Agent City artwork (project-owned; same licence as the repository). An AI-generated low-poly mesh (Tencent Hunyuan 3D
+Pro via the 胜算云 router, 2026-10-26) was used only as a proportion/detail reference inside Blender and is not part of
+the shipped file. Materials are an 8×1 colour palette plus one emissive accent material; no third-party textures.
+The `.blend` source is kept outside the repository; `source.blend_sha256` in the manifest identifies it.

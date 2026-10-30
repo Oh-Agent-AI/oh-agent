@@ -6,9 +6,92 @@ export type MechaAction = "idle" | "move" | "attack" | "repair" | "hit" | "defea
 export type MechaCombatCue = { actor: string; action: MechaAction; target?: string };
 export type MechaJoint = "body" | "head" | "arm-left" | "arm-right" | "forearm-left" | "forearm-right" | "leg-left" | "leg-right" | "shin-left" | "shin-right" | "rear-left" | "rear-right" | "cannon" | "drone";
 type JointSpec = { parent?: MechaJoint; origin: [number, number, number] };
-export type MechaRig = { visual: THREE.Group; joints: Map<MechaJoint, THREE.Group>; origins: Map<MechaJoint, THREE.Vector3>; role: string; rearExtent: number };
+/** GLB 资产随带的清单（规格 §5.3）：片段时长以它为准，不再写死在代码里。 */
+export type MechaClipSpec = { duration: number; loop: boolean; holdLastFrame?: boolean };
+export type MechaGlbManifest = {
+  id: string;
+  version: number;
+  role: string;
+  footprint: [number, number];
+  forward: "-Z";
+  heightMeters: number;
+  /**
+   * 静止姿态允许的最大宽×深（米）。没声明时就是「占格数 × 16 米 − 1」。
+   * 声明它 = 明确登记一处设计例外（规格 §5.4.1：Assault 的盾与重拳外伸出本格）；加载器只放行声明过的范围。
+   */
+  maxExtentMeters?: [number, number];
+  clips: Record<string, MechaClipSpec>;
+  /** 角色没有的动作映射到哪个片段（例如 repair → attack），不是静默套用。 */
+  actionMap?: Partial<Record<MechaAction, string>>;
+  materials?: string[];
+};
+/** GLB 实例的运行时状态：每个实例一个 mixer，所有片段常驻、只按权重切换（见 poseGlb）。 */
+export type MechaGlbState = {
+  manifest: MechaGlbManifest;
+  mixer: THREE.AnimationMixer;
+  actions: Map<string, THREE.AnimationAction>;
+  visual: THREE.Object3D;
+  /** mixer 不碰的外层节点（米制）：倒地抬高只能放在这里。mixer 只在轨道值变化时才写回节点，手工改动画驱动的节点会被它遗忘、残留到下一个片段。 */
+  lift: THREE.Object3D;
+};
+export type MechaRig = {
+  visual: THREE.Group;
+  joints: Map<MechaJoint, THREE.Group>;
+  origins: Map<MechaJoint, THREE.Vector3>;
+  role: string;
+  rearExtent: number;
+  /** 有它就走 GLB 片段采样；程序模型没有。 */
+  glb?: MechaGlbState;
+};
 const rigs = new WeakMap<THREE.Object3D, MechaRig>();
 const durations: Partial<Record<MechaAction, number>> = { attack: 0.95, repair: 1.2, hit: 0.48, defeat: 0.85 };
+
+/** 换掉某个模型根节点登记的绑定（程序模型 → GLB 的原地升级用）。 */
+export function setMechaRig(root: THREE.Object3D, rig: MechaRig): void {
+  rigs.set(root, rig);
+}
+
+function clipOf(g: MechaGlbState, action: MechaAction): { name: string; spec: MechaClipSpec } {
+  const mapped = g.manifest.actionMap?.[action] ?? action;
+  const spec = g.manifest.clips[mapped];
+  return spec ? { name: mapped, spec } : { name: "idle", spec: g.manifest.clips.idle! };
+}
+
+/** 动作在多少秒后结束并回到待机；循环动作（待机/移动）没有终点，返回 undefined。 */
+export function mechaActionDuration(root: THREE.Object3D, action: MechaAction): number | undefined {
+  const glb = rigs.get(root)?.glb;
+  if (!glb) return durations[action];
+  const { spec } = clipOf(glb, action);
+  return spec.loop ? undefined : spec.duration;
+}
+
+/** 整段片段的长度（拖进度条预览用，循环片段也有）；没有登记信息时是 1 秒。 */
+export function mechaActionSpan(root: THREE.Object3D, action: MechaAction): number {
+  const glb = rigs.get(root)?.glb;
+  return glb ? clipOf(glb, action).spec.duration : durations[action] ?? 1;
+}
+
+/**
+ * GLB 的确定性采样：同一 (动作, 秒) 永远得到同一姿态，和程序模型一样可以拖进度条、可以写测试。
+ * 注意三个坑：① LoopOnce 片段播完会被置为 paused，之后 setTime 永远停在 0，所以所有片段都用 LoopRepeat、
+ * 由这里自己夹/折时间；② 非循环片段的终点取 duration − 1e-4，否则 LoopRepeat 会折回 0、倒地终态变成站姿；
+ * ③ 每个片段都带全部通道，切换片段时不会留下上一个片段的姿态。
+ */
+function poseGlb(rig: MechaRig, g: MechaGlbState, action: MechaAction, seconds: number, reducedMotion: boolean): void {
+  const t = Math.max(0, Number.isFinite(seconds) ? seconds : 0);
+  let { name, spec } = clipOf(g, action);
+  let time: number;
+  if (reducedMotion) {
+    if (name === "defeat") time = spec.duration - 1e-4;
+    else { name = "idle"; spec = g.manifest.clips.idle!; time = 0; }
+  } else {
+    time = spec.loop ? t % spec.duration : Math.min(t, spec.duration - 1e-4);
+  }
+  for (const [id, act] of g.actions) act.setEffectiveWeight(id === name ? 1 : 0);
+  g.mixer.setTime(time);
+  // 倒地抬高由运行时负责（规格 §5.3：片段不能自带根位移），且只写在 lift 上、不碰 visual。
+  g.lift.position.y = name === "defeat" ? rig.rearExtent * Math.sin(g.visual.rotation.x) : 0;
+}
 
 export function createMechaRig(role: string, metersPerUnit: number): MechaRig {
   const heavy = role === "Assault", quad = role === "Boss" || role === "Raider";
@@ -63,6 +146,7 @@ export function registerMechaRig(root: THREE.Group, rig: MechaRig): void {
 export function poseMechaModel(root: THREE.Object3D, action: MechaAction, seconds: number, reducedMotion = false): void {
   const rig = rigs.get(root);
   if (!rig) return;
+  if (rig.glb) return poseGlb(rig, rig.glb, action, seconds, reducedMotion);
   const { visual, joints, role } = rig;
   visual.position.set(0, 0, 0); visual.rotation.set(0, 0, 0);
   for (const node of joints.values()) {
@@ -145,12 +229,12 @@ export class MechaAnimator {
     this.action = action; this.elapsed = 0;
   }
   seek(progress: number, reducedMotion = false): void {
-    this.elapsed = Math.min(1, Math.max(0, Number.isFinite(progress) ? progress : 0)) * (durations[this.action] ?? 1);
+    this.elapsed = Math.min(1, Math.max(0, Number.isFinite(progress) ? progress : 0)) * mechaActionSpan(this.root, this.action);
     poseMechaModel(this.root, this.action, this.elapsed, reducedMotion);
   }
   update(dt: number, reducedMotion = false, loop = false): void {
     this.elapsed += Math.min(0.1, Math.max(0, Number.isFinite(dt) ? dt : 0));
-    const duration = durations[this.action];
+    const duration = mechaActionDuration(this.root, this.action);
     if (duration && this.elapsed > duration && this.action !== "defeat") {
       if (loop) this.elapsed %= duration;
       else this.play("idle");
@@ -185,11 +269,11 @@ export class MechaBattleAnimator {
     let delay = 0;
     if (changed && action && previous > 0) {
       this.animator.play(action, true);
-      delay = durations[action] ?? 0;
+      delay = mechaActionDuration(this.animator.root, action) ?? 0;
     } else if (hp > 0) this.animator.play("idle");
     if (damaged) {
       this.pending.push({ after: delay, action: "hit" });
-      delay += durations.hit!;
+      delay += mechaActionDuration(this.animator.root, "hit") ?? durations.hit!;
     }
     if (hp <= 0 && previous > 0) this.pending.push({ after: delay, action: "defeat" });
   }
