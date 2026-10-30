@@ -1,0 +1,49 @@
+{
+  "id": "assault-trial",
+  "version": 1,
+  "role": "Assault",
+  "footprint": [
+    1,
+    1
+  ],
+  "forward": "-Z",
+  "heightMeters": 19.98,
+  "maxExtentMeters": [
+    21.0,
+    10.8
+  ],
+  "clips": {
+    "idle": {
+      "duration": 3.14,
+      "loop": true
+    },
+    "move": {
+      "duration": 0.79,
+      "loop": true
+    },
+    "attack": {
+      "duration": 0.95,
+      "loop": false
+    },
+    "hit": {
+      "duration": 0.48,
+      "loop": false
+    },
+    "defeat": {
+      "duration": 0.85,
+      "loop": false,
+      "holdLastFrame": true
+    }
+  },
+  "actionMap": {
+    "repair": "attack"
+  },
+  "materials": [
+    "armor_palette",
+    "faction_accent"
+  ],
+  "source": {
+    "kind": "experimental generated model with restored left lower leg and a forward-punch trial; not validated for battle",
+    "glb_sha256": "bf15a24a4bf8e72162a669300fa547372434ec1c449ae93e81265e88fa61562c"
+  }
+}

@@ -17,6 +17,10 @@ import { performanceFromLog } from "./performance";
 import type { MechaPerformanceEvent } from "../../render/mecha/performance";
 import type { MechaCombatCue } from "../../render/mecha/animation";
 import { doctrineFocus, doctrineFocusCells, planForDoctrine, type DoctrineFocus, type DoctrineId } from "./ai";
+import { buildHealthTimeline, type HealthTimeline } from "./healthTimeline";
+import { buildPresentationChanges, type PresentationChanges } from "./presentationChanges";
+import type { PresentationStages } from "./presentationSnapshot";
+import { buildPresentationRoutes, type PresentationRoutes } from "./presentationRoutes";
 import type { CityMechaSite } from "./citySite";
 import { matchFromSite } from "./matchFromSite";
 import {
@@ -58,7 +62,7 @@ export type MechaControllerState = {
   fault: ControllerFault | null;
   lastLog: TurnEvent[];
   performance: { events: MechaPerformanceEvent[]; before: MatchState } | null;
-  combat: { id: number; actions: MechaCombatCue[] };
+  combat: { id: number; actions: MechaCombatCue[]; reset?: true; healthTimeline?: HealthTimeline; presentationChanges?: PresentationChanges; presentationStages?: PresentationStages | null; presentationRoutes?: PresentationRoutes };
   preview: MechaPreview;
   // ---- 派生量（每次变更重算，视图只读）----
   /** 能下命令：没有自动/暂停、没有结局、在玩家计划阶段。 */
@@ -202,7 +206,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
   let fault: ControllerFault | null = null;
   let lastLog: TurnEvent[] = [];
   let performance: MechaControllerState["performance"] = null;
-  let combat = { id: 0, actions: [] as MechaCombatCue[] };
+  let combat: MechaControllerState["combat"] = { id: 0, actions: [], reset: true };
 
   // 规划缓存：同一局面（对象身份即 revision 的承载）同一打法只算一次。
   let planCache: { match: MatchState; revision: number; doctrine: DoctrineId; plan: ArenaPlan } | null = null;
@@ -340,9 +344,12 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       const events = performanceFromLog(match, result.state, result.log);
       performance = events.length ? { events, before: match } : null;
     }
+    const healthTimeline = buildHealthTimeline(match, result.state, result.log);
+    const presentationRoutes = buildPresentationRoutes(match, result.log);
+    const presentationChanges = result.presentationStages ? buildPresentationChanges(result.presentationStages, result.log) : undefined;
     match = result.state;
     lastLog = result.log;
-    combat = { id: combat.id + 1, actions: cuesFromLog(result.log) };
+    combat = { id: combat.id + 1, actions: cuesFromLog(result.log), healthTimeline, presentationChanges, presentationStages: result.presentationStages, presentationRoutes };
     draft = blankDraft(match);
     targeting = null;
     beat = "show";
@@ -499,7 +506,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       if (opts.site !== undefined) site = opts.site;
       stake = opts.stake ?? stake;
       match = freshMatch(preset, script, site, stake);
-      combat = { id: combat.id + 1, actions: [] };
+      combat = { id: combat.id + 1, actions: [], reset: true };
       lastLog = [];
       draft = openingDraft(match);
       selected = living(match)[0]?.id ?? "Assault";

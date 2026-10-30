@@ -3,7 +3,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import * as THREE from "three";
 import type { CityEngine } from "../engine/CityEngine";
 import { boardToWorld, cellWorld, type CityMechaSite } from "./mecha/citySite";
-import { MechaPerformancePlayer, faceMechaTarget } from "../render/mecha/animation";
+import { MechaBattleAnimator, MechaPerformancePlayer, faceMechaTarget, type MechaCombatCue } from "../render/mecha/animation";
 import { MECHA_FACTION_COLORS, createAssault, createBoss, createGunner, createRaider, createSupport, disposeMechaModel } from "../render/mecha/models";
 import { applyMechaUnitLight, setMechaUnitLight } from "../render/mecha/unitLight";
 import type { MechaPerformanceEvent } from "./mecha/performance";
@@ -20,6 +20,7 @@ export type CityMechaView = {
   move: Cell | null;
   targets: Cell[];
   targetIds: string[];
+  combat?: { id: number; actions: MechaCombatCue[]; reset?: true };
   /** 规则里的障碍格（场景楼、斜放楼）。缺省当空。 */
   obstacles?: Cell[];
 };
@@ -269,6 +270,13 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
     const spot = new THREE.Vector3();
     const actors = { Assault: assault, Gunner: gunner, Support: support, boss, "raider-w": raiderWest, "raider-e": raiderEast };
     const litUnits = [assault, gunner, support, boss, raiderWest, raiderEast];
+    const animators = new Map<THREE.Object3D, MechaBattleAnimator>([assault, gunner, support, boss, raiderWest, raiderEast].map((mesh) => [mesh, new MechaBattleAnimator(mesh)]));
+    const animate = (mesh: THREE.Object3D, id: string, hp: number, moving: boolean, dt: number) => {
+      const cue = viewRef.current.combat;
+      const animator = animators.get(mesh)!;
+      animator.sync(hp, cue?.id ?? 0, cue?.actions.find((item) => item.actor === id)?.action);
+      animator.update(dt, moving, reduce);
+    };
     const actorMarkers = { Assault: markers.Assault, Gunner: markers.Gunner, Support: markers.Support, boss: markers.boss, "raider-w": markers.raiderWest, "raider-e": markers.raiderEast };
     const resolveCell = (cell: Cell, actor: string) => {
       if (actor === "boss") return footprintFeet(site, cell);
@@ -316,11 +324,16 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         pad.material = padMat.get(role)!;
       });
       const bossFeet = footprintFeet(site, current.boss);
+      const performing = Boolean(performanceRef.current);
       for (const figure of current.figures) {
         const mesh = figures[figure.id];
         const feet = cellWorld(site, { x: figure.x, y: figure.y });
         spot.set(feet.x, feet.y, feet.z);
-        slide(mesh, spot, reduce);
+        const moving = mesh.position.distanceToSquared(spot) > 0.01;
+        if (!performing) {
+          if (!pausedRef.current) slide(mesh, spot, reduce);
+          animate(mesh, figure.id, figure.alive ? 1 : 0, moving && figure.alive, pausedRef.current ? 0 : dt);
+        }
         mesh.visible = true;
         const ring = markers[figure.id];
         const targeted = targetIds.has(figure.id);
@@ -329,16 +342,20 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         ring.mesh.scale.setScalar(figure.selected ? 1.34 : targeted ? 1.2 : 1);
         ring.mat.color.set(figure.selected ? "#f4f7fb" : MECHA_FACTION_COLORS.friendly);
         ring.mat.opacity = figure.selected || targeted ? 1 : 0.68;
-        if (figure.alive) faceMechaTarget(mesh, spot, bossFeet);
+        if (figure.alive && !performing) faceMechaTarget(mesh, spot, bossFeet);
       }
-      slide(boss, bossFeet, reduce);
+      const bossMoving = boss.position.distanceToSquared(bossFeet) > 0.01;
+      if (!performing) {
+        if (!pausedRef.current) slide(boss, bossFeet, reduce);
+        animate(boss, "boss", current.boss.alive ? 1 : 0, bossMoving && current.boss.alive, pausedRef.current ? 0 : dt);
+      }
       boss.visible = true;
       markers.boss.mesh.visible = current.boss.alive;
       markers.boss.mesh.position.set(boss.position.x, boss.position.y + 0.55, boss.position.z);
       markers.boss.mesh.scale.setScalar(targetIds.has("boss") ? 1.12 : 1);
       markers.boss.mat.opacity = targetIds.has("boss") ? 1 : 0.68;
       const nearest = current.figures.find((figure) => figure.alive);
-      if (nearest && current.boss.alive) {
+      if (!performing && nearest && current.boss.alive) {
         const feet = cellWorld(site, { x: nearest.x, y: nearest.y });
         faceMechaTarget(boss, bossFeet, new THREE.Vector3(feet.x, feet.y, feet.z));
       }
@@ -353,14 +370,18 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         }
         const feet = cellWorld(site, { x: raider.x, y: raider.y });
         spot.set(feet.x, feet.y, feet.z);
-        slide(mesh, spot, reduce);
+        const moving = mesh.position.distanceToSquared(spot) > 0.01;
+        if (!performing) {
+          if (!pausedRef.current) slide(mesh, spot, reduce);
+          animate(mesh, raider.id, raider.alive ? 1 : 0, moving && raider.alive, pausedRef.current ? 0 : dt);
+        }
         mesh.visible = true;
         const ring = i === 0 ? markers.raiderWest : markers.raiderEast;
         ring.mesh.visible = raider.alive;
         ring.mesh.position.set(mesh.position.x, mesh.position.y + 0.55, mesh.position.z);
         ring.mesh.scale.setScalar(targetIds.has(raider.id) ? 1.2 : 1);
         ring.mat.opacity = targetIds.has(raider.id) ? 1 : 0.68;
-        if (raider.alive) faceMechaTarget(mesh, spot, bossFeet);
+        if (raider.alive && !performing) faceMechaTarget(mesh, spot, bossFeet);
       }
       if (!current.raiders[0]?.alive) markers.raiderWest.mesh.visible = false;
       if (!current.raiders[1]?.alive) markers.raiderEast.mesh.visible = false;

@@ -6,7 +6,7 @@ import {
   createAssault, createBoss, createGunner, createRaider, createSupport, disposeMechaModel,
 } from "../render/mecha/models";
 
-import { MechaAnimator, type MechaAction } from "../render/mecha/animation";
+import { MechaAnimator, mechaActionDuration, mechaActionSpan, type MechaAction } from "../render/mecha/animation";
 import { installMechaGlbs } from "../render/mecha/glbRegistry";
 
 installMechaGlbs();
@@ -92,6 +92,7 @@ const modelSelect = element<HTMLSelectElement>("model");
 const viewSelect = element<HTMLSelectElement>("view");
 const actionSelect = element<HTMLSelectElement>("action");
 const progress = element<HTMLInputElement>("progress");
+const speed = element<HTMLSelectElement>("speed");
 const animate = element<HTMLInputElement>("animate");
 const loop = element<HTMLInputElement>("loop");
 const spin = element<HTMLInputElement>("spin");
@@ -105,6 +106,12 @@ for (const [id, model] of Object.entries(MODELS) as Array<[ModelId, (typeof MODE
   modelSelect.append(option);
 }
 const params = new URLSearchParams(location.search);
+if (import.meta.env.DEV && (params.get("assaultLiftPreview") === "1" || params.get("assaultGaitPreview") === "1")) {
+  const label = params.get("assaultLiftPreview") === "1" ? "Assault · 抬脚试验（已发现骨链断开）" : "Assault · 缩步幅试验";
+  document.title = label;
+  const heading = document.querySelector("h1");
+  if (heading) heading.textContent = label;
+}
 const requestedModel = params.get("model");
 const initialModel: ModelId = requestedModel && requestedModel in MODELS ? requestedModel as ModelId : "assault";
 modelSelect.value = initialModel;
@@ -184,7 +191,14 @@ function updateStats(): void {
   if (!modelRoot) return;
   const size = restSize;
   const m = (units: number) => (units * MECHA_METERS_PER_UNIT).toFixed(1);
-  const text = `${MODELS[modelId].label} · ${m(size.x)} × ${m(size.z)} × ${m(size.y)} m（宽 × 深 × 高） · ${renderer.info.render.triangles.toLocaleString()} 三角形 · ${renderer.info.render.calls} draws`;
+  let triangles = 0;
+  modelRoot.traverseVisible((object) => {
+    if (!(object instanceof THREE.Mesh)) return;
+    const geometry = object.geometry;
+    const count = geometry.index?.count ?? geometry.attributes.position?.count ?? 0;
+    triangles += Math.floor(count / 3);
+  });
+  const text = `${MODELS[modelId].label} · ${m(size.x)} × ${m(size.z)} × ${m(size.y)} m（宽 × 深 × 高） · 模型 ${triangles.toLocaleString()} 三角面 · ${renderer.info.render.calls} 场景绘制调用`;
   if (text !== lastStats) {
     lastStats = text;
     stats.value = text;
@@ -206,7 +220,13 @@ const tick = (now: number) => {
   controls.autoRotate = spin.checked && !reduceMotion.matches;
   controls.autoRotateSpeed = 0.9;
   controls.update(dt);
-  if (animate.checked) animator?.update(dt, reduceMotion.matches, loop.checked);
+  if (animate.checked && animator) {
+    animator.update(dt * Number(speed.value), reduceMotion.matches, loop.checked);
+    if (animator.action !== actionSelect.value) actionSelect.value = animator.action;
+    const span = mechaActionSpan(animator.root, animator.action);
+    const elapsed = mechaActionDuration(animator.root, animator.action) === undefined && span > 0 ? animator.elapsed % span : animator.elapsed;
+    progress.value = String(span > 0 ? Math.min(100, 100 * elapsed / span) : 0);
+  }
   renderer.render(scene, camera);
   updateStats();
   frame = requestAnimationFrame(tick);
@@ -218,6 +238,17 @@ actionSelect.addEventListener("change", () => {
   animator?.play(actionSelect.value as MechaAction, true);
   if (!animate.checked) animator?.seek(Number(progress.value) / 100, reduceMotion.matches);
 });
+const stepAction = (direction: number) => {
+  if (!animator) return;
+  animate.checked = false;
+  const span = mechaActionSpan(animator.root, animator.action);
+  if (!(span > 0)) return;
+  const elapsed = mechaActionDuration(animator.root, animator.action) === undefined ? animator.elapsed % span : animator.elapsed;
+  animator.seek((elapsed + direction / 60) / span, reduceMotion.matches);
+  progress.value = String(100 * animator.elapsed / span);
+};
+element<HTMLButtonElement>("step-back").addEventListener("click", () => stepAction(-1));
+element<HTMLButtonElement>("step-forward").addEventListener("click", () => stepAction(1));
 progress.addEventListener("input", () => {
   animate.checked = false;
   animator?.play(actionSelect.value as MechaAction);

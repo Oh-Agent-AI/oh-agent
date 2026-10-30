@@ -121,6 +121,8 @@ test("a normal turn advances turn and revision, and the enemy strike becomes a c
   assert.ok(after.match.revision > before.revision);
   assert.equal(after.match.phase, "player_plan", "playTurn hands back a fully prepared next turn");
   assert.ok(after.combat.actions.some((cue) => cue.actor === "boss" && cue.action === "attack"));
+  assert.equal(after.combat.healthTimeline?.ok, true, "accepted turns provide a reconciled presentation timeline");
+  assert.equal(after.combat.presentationRoutes?.ok, true, "accepted turns provide movement routes for presentation");
   assert.equal(after.notice, null);
 });
 
@@ -333,4 +335,16 @@ test("every plan fault cause has Chinese and English text that names the mech", 
   // 没有 mechId（如 revision 过期）：通用句，不编造机甲名。
   assert.equal(planFaultText({ cause: "other" }, "zh-Hans"), "整包被拒，局面未变，可以重提。");
   assert.equal(/\p{Script=Han}/u.test(planFaultText({ cause: "other" }, "en")), false);
+});
+
+test("combat reset is distinguishable from a committed turn", () => {
+  const c = createMechaController({ planner: counting().planner });
+  assert.equal(c.getState().combat.reset, true);
+  c.startAuto(); c.tick(); c.tick();
+  const played = c.getState().combat;
+  assert.equal(played.reset, undefined);
+  assert.ok(played.presentationStages);
+  c.restart();
+  assert.equal(c.getState().combat.reset, true);
+  assert.equal(c.getState().combat.id, played.id + 1);
 });

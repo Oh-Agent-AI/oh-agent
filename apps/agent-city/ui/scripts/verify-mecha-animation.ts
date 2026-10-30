@@ -75,6 +75,19 @@ test("accepted attack, hit and death queue survives the next turn; respawn clear
   disposeMechaModel(model);
 });
 
+test("an unrelated turn does not cancel a living actor's queued hit", () => {
+  const model = createAssault();
+  const battle = new MechaBattleAnimator(model);
+  battle.sync(14, 0);
+  battle.sync(12, 1, "attack");
+  for (let i = 0; i < 20; i++) battle.update(1 / 60, false);
+  battle.sync(12, 2);
+  assert.equal(battle.animator.action, "attack");
+  for (let i = 0; i < 45; i++) battle.update(1 / 60, false);
+  assert.equal(battle.animator.action, "hit");
+  disposeMechaModel(model);
+});
+
 
 test("local -Z faces targets in every horizontal quadrant", () => {
   const model = createGunner();

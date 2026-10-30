@@ -4,7 +4,7 @@
  */
 import {
   BOSS_ATK, BOSS_MOVE, BUILDING_DEF, MAX_TURNS, MOVE_QUANTUM, RAIDER_ATK, RAIDER_MOVE, STATS, adjacentCells, dijkstra, emit, enemiesRemain, eq, footprint,
-  inb, isObstacle, living, livingBuildingAt, livingRaiders, livingStakeBuildings, manh, mech, occupant, onFootprint, stepCost, water,
+  inb, isObstacle, living, livingBuildingAt, livingRaiders, livingStakeBuildings, manh, mech, occupant, onFootprint, stepCost, water, orderedHealthEffect,
   type Building, type Cell, type Intent, type MatchState, type Raider, type TurnEvent,
 } from "./board";
 import { hurtMech, knockbackFromBoss, refresh, reproject, strike, tryPushMech } from "./combat";
@@ -292,6 +292,7 @@ function resolveRaider(state: MatchState, raider: Raider) {
         const before = hit.hp;
         hit.hp = Math.max(0, hit.hp - strike(RAIDER_ATK, BUILDING_DEF));
         ev.damage += before - hit.hp;
+        if (hit.hp !== before) (ev.effects ??= []).push(orderedHealthEffect({ kind: "building", id: hit.id, before, after: hit.hp }));
         refresh(state);
       }
       continue;
@@ -299,7 +300,9 @@ function resolveRaider(state: MatchState, raider: Raider) {
     if (occ === "Assault" || occ === "Gunner" || occ === "Support") {
       const before = state.mechs.find((x) => x.id === occ)!.hp;
       hurtMech(state, occ, strike(RAIDER_ATK, STATS[occ].def));
-      ev.damage += before - state.mechs.find((x) => x.id === occ)!.hp;
+      const after = state.mechs.find((x) => x.id === occ)!.hp;
+      ev.damage += before - after;
+      if (after !== before) (ev.effects ??= []).push(orderedHealthEffect({ kind: "mech", id: occ, before, after }));
       refresh(state);
     }
   }
@@ -344,6 +347,7 @@ export function bossExecute(state: MatchState) {
           const before = hit.hp;
           hit.hp = Math.max(0, hit.hp - strike(BOSS_ATK, BUILDING_DEF));
           ev.damage += before - hit.hp;
+          if (hit.hp !== before) (ev.effects ??= []).push(orderedHealthEffect({ kind: "building", id: hit.id, before, after: hit.hp }));
           any = true;
           refresh(state);
         }
@@ -354,7 +358,9 @@ export function bossExecute(state: MatchState) {
       if (!target) continue;
       const before = target.hp;
       hurtMech(state, occ, strike(BOSS_ATK, STATS[occ].def));
-      ev.damage += before - target.hp;
+      const after = target.hp;
+      ev.damage += before - after;
+      if (after !== before) (ev.effects ??= []).push(orderedHealthEffect({ kind: "mech", id: occ, before, after }));
       refresh(state);
       if (skill === "smash" && mech(state, occ)) tryPushMech(state, occ, knockbackFromBoss(state.boss.anchor, target.pos));
       any = true;
