@@ -20,6 +20,8 @@ export type CityMechaView = {
   move: Cell | null;
   targets: Cell[];
   targetIds: string[];
+  /** 悬停中的敌人。地面预告已由控制器收成这一只；这里只加亮它的环。 */
+  hoveredEnemy?: string | null;
   combat?: { id: number; actions: MechaCombatCue[]; reset?: true };
   /** 规则里的障碍格（场景楼、斜放楼）。缺省当空。 */
   obstacles?: Cell[];
@@ -73,18 +75,21 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
   paused: boolean;
   onPerformanceComplete: () => void;
   onCell: (x: number, y: number) => void;
+  onHoverEnemy?: (id: string | null) => void;
   onUnavailable?: () => void;
-}>(function CityMechaWorld({ engine, site, view, performance, paused, onPerformanceComplete, onCell, onUnavailable }, ref) {
+}>(function CityMechaWorld({ engine, site, view, performance, paused, onPerformanceComplete, onCell, onHoverEnemy, onUnavailable }, ref) {
   const viewRef = useRef(view);
   const performanceRef = useRef(performance);
   const pausedRef = useRef(paused);
   const onCellRef = useRef(onCell);
+  const onHoverEnemyRef = useRef(onHoverEnemy);
   const onPerformanceCompleteRef = useRef(onPerformanceComplete);
   const cameraCommands = useRef<CityMechaWorldHandle | null>(null);
   viewRef.current = view;
   performanceRef.current = performance;
   pausedRef.current = paused;
   onCellRef.current = onCell;
+  onHoverEnemyRef.current = onHoverEnemy;
   onPerformanceCompleteRef.current = onPerformanceComplete;
   useImperativeHandle(ref, () => ({
     resetCamera: () => cameraCommands.current?.resetCamera(),
@@ -244,6 +249,8 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
 
     const raycaster = new THREE.Raycaster();
     raycaster.layers.set(1);
+    // 格子拾取在 layer 1。机甲网格在默认层，悬停归属用另一条射线，避免被格子层滤掉。
+    const hoverRay = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
     let down: { x: number; y: number } | null = null;
     const onDown = (event: PointerEvent) => {
@@ -263,8 +270,48 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       const cell = raycaster.intersectObjects(picks, false)[0]?.object.userData.cell as Cell | undefined;
       if (cell) onCellRef.current(cell.x, cell.y);
     };
+    let hoveredId: string | null = null;
+    const enemyUnderPointer = (event: PointerEvent): string | null => {
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return null;
+      pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      hoverRay.setFromCamera(pointer, camera);
+      root.updateMatrixWorld(true);
+      const current = viewRef.current;
+      const roots: Array<{ mesh: THREE.Object3D; id: string }> = [];
+      if (boss.visible && current.boss.alive) roots.push({ mesh: boss, id: "boss" });
+      const small = [raiderWest, raiderEast];
+      current.raiders.forEach((raider, index) => {
+        const mesh = small[index];
+        if (mesh && raider.alive && mesh.visible) roots.push({ mesh, id: raider.id });
+      });
+      if (!roots.length) return null;
+      const hit = hoverRay.intersectObjects(roots.map((item) => item.mesh), true)[0]?.object;
+      let obj: THREE.Object3D | null = hit ?? null;
+      while (obj) {
+        const match = roots.find((item) => item.mesh === obj);
+        if (match) return match.id;
+        obj = obj.parent;
+      }
+      return null;
+    };
+    const onMove = (event: PointerEvent) => {
+      if (event.buttons !== 0) return;
+      const next = enemyUnderPointer(event);
+      if (next === hoveredId) return;
+      hoveredId = next;
+      onHoverEnemyRef.current?.(next);
+    };
+    const onLeave = () => {
+      if (hoveredId === null) return;
+      hoveredId = null;
+      onHoverEnemyRef.current?.(null);
+    };
     canvas.addEventListener("pointerdown", onDown);
     canvas.addEventListener("pointerup", onUp);
+    canvas.addEventListener("pointermove", onMove);
+    canvas.addEventListener("pointerleave", onLeave);
 
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const spot = new THREE.Vector3();
@@ -352,8 +399,9 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       boss.visible = true;
       markers.boss.mesh.visible = current.boss.alive;
       markers.boss.mesh.position.set(boss.position.x, boss.position.y + 0.55, boss.position.z);
-      markers.boss.mesh.scale.setScalar(targetIds.has("boss") ? 1.12 : 1);
-      markers.boss.mat.opacity = targetIds.has("boss") ? 1 : 0.68;
+      const bossHovered = current.hoveredEnemy === "boss";
+      markers.boss.mesh.scale.setScalar(targetIds.has("boss") || bossHovered ? 1.18 : 1);
+      markers.boss.mat.opacity = targetIds.has("boss") || bossHovered ? 1 : 0.68;
       const nearest = current.figures.find((figure) => figure.alive);
       if (!performing && nearest && current.boss.alive) {
         const feet = cellWorld(site, { x: nearest.x, y: nearest.y });
@@ -379,8 +427,9 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         const ring = i === 0 ? markers.raiderWest : markers.raiderEast;
         ring.mesh.visible = raider.alive;
         ring.mesh.position.set(mesh.position.x, mesh.position.y + 0.55, mesh.position.z);
-        ring.mesh.scale.setScalar(targetIds.has(raider.id) ? 1.2 : 1);
-        ring.mat.opacity = targetIds.has(raider.id) ? 1 : 0.68;
+        const raiderHovered = current.hoveredEnemy === raider.id;
+        ring.mesh.scale.setScalar(targetIds.has(raider.id) || raiderHovered ? 1.28 : 1);
+        ring.mat.opacity = targetIds.has(raider.id) || raiderHovered ? 1 : 0.68;
         if (raider.alive && !performing) faceMechaTarget(mesh, spot, bossFeet);
       }
       if (!current.raiders[0]?.alive) markers.raiderWest.mesh.visible = false;
@@ -415,6 +464,8 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
     return () => {
       canvas.removeEventListener("pointerdown", onDown);
       canvas.removeEventListener("pointerup", onUp);
+      canvas.removeEventListener("pointermove", onMove);
+      canvas.removeEventListener("pointerleave", onLeave);
       cameraCommands.current = null;
       player?.dispose();
       try { lease.release(); } catch { /* host already disposed the scene */ }

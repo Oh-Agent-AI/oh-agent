@@ -2,8 +2,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { bossTunnelPlan, doctrineFocus, peelPlan } from "../apps/agent-city/ui/src/game/mecha/ai.ts";
-import { doctrineFocusLine, stepBudgetLine } from "../apps/agent-city/ui/src/game/gameCopy.ts";
-import { bossPrepare, createMatch, living, validateAndApplyPlan, type Cell, type TerrainKind } from "../apps/agent-city/ui/src/game/mecha/rules.ts";
+import { doctrineFocusLine, gameText, stepBudgetLine } from "../apps/agent-city/ui/src/game/gameCopy.ts";
+import { bossPrepare, createMatch, living, livingStakeBuildings, stakeBuildings, validateAndApplyPlan, type Cell, type TerrainKind } from "../apps/agent-city/ui/src/game/mecha/rules.ts";
 
 function manh(a: Cell, b: Cell): number {
   return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
@@ -133,4 +133,111 @@ test("an alley loss is the street building, and peel aims at the raider beside i
   assert.equal("ok" in lost, true);
   assert.equal(alley.outcome, "defeat_buildings");
   assert.equal(alley.buildings.find((building) => building.id === "yard")?.hp, 0);
+});
+
+function flatLand(): TerrainKind[][] {
+  return Array.from({ length: 10 }, () => Array.from({ length: 10 }, () => "land" as TerrainKind));
+}
+
+function stakeMatch(stake: "all" | "frontage", terrain: TerrainKind[][], buildings: Array<{ id: string; cells: Cell[] }>) {
+  return createMatch({
+    preset: "covers_sparse_mid",
+    script: "siege",
+    covers: [],
+    terrain,
+    buildings,
+    raiders: [],
+    mechs: [
+      { id: "Assault", pos: { x: 0, y: 9 } },
+      { id: "Gunner", pos: { x: 1, y: 9 } },
+      { id: "Support", pos: { x: 2, y: 9 } },
+    ],
+    boss: { x: 0, y: 6 },
+    stake,
+  });
+}
+
+function resolveHold(state: ReturnType<typeof stakeMatch>) {
+  state.phase = "player_plan";
+  const result = validateAndApplyPlan(state, {
+    revision: state.revision,
+    items: living(state).map((mech) => ({ mechId: mech.id, moveTo: null, action: { kind: "skip" as const } })),
+  });
+  assert.equal("ok" in result, true, "an all-skip hold must be a legal pack");
+  return state;
+}
+
+test("frontage stakes only orthogonally street-facing buildings; a diagonal road is not frontage", () => {
+  const terrain = flatLand();
+  terrain[1]![2] = "road"; // 街道楼 (2,2) 的正交临街面
+  terrain[8]![8] = "road"; // (7,7) 的斜角，不算临街
+  const buildings = [
+    { id: "street", cells: [{ x: 2, y: 2 }] },
+    { id: "yard", cells: [{ x: 7, y: 7 }] },
+  ];
+  const alley = stakeMatch("frontage", terrain, buildings);
+  assert.deepEqual(stakeBuildings(alley).map((building) => building.id), ["street"]);
+  assert.deepEqual(livingStakeBuildings(alley).map((building) => building.id), ["street"]);
+  const all = stakeMatch("all", terrain, buildings);
+  assert.deepEqual(stakeBuildings(all).map((building) => building.id).sort(), ["street", "yard"]);
+});
+
+test("frontage defeat follows the staked pool: a dead off-street yard does not lose", () => {
+  const terrain = flatLand();
+  terrain[1]![2] = "road";
+  const state = stakeMatch("frontage", terrain, [
+    { id: "street", cells: [{ x: 2, y: 2 }] },
+    { id: "yard", cells: [{ x: 7, y: 7 }] },
+  ]);
+  const yard = state.buildings.find((building) => building.id === "yard");
+  assert.ok(yard);
+  yard.hp = 0;
+  resolveHold(state);
+  assert.equal(state.outcome, null, "an off-street building is not a defeat condition");
+  const street = state.buildings.find((building) => building.id === "street");
+  assert.ok(street);
+  street.hp = 0;
+  resolveHold(state);
+  assert.equal(state.outcome, "defeat_buildings");
+  // HUD 读的是同一个 outcome 与同一组文案键；英文不能回落到 "Translation unavailable"。
+  assert.equal(gameText("楼被拆光", "en"), "Buildings lost");
+});
+
+test("with no street frontage, every building falls back into the staked pool", () => {
+  const terrain = flatLand();
+  const state = stakeMatch("frontage", terrain, [
+    { id: "a", cells: [{ x: 2, y: 2 }] },
+    { id: "b", cells: [{ x: 7, y: 7 }] },
+  ]);
+  assert.deepEqual(stakeBuildings(state).map((building) => building.id), ["a", "b"]);
+  const a = state.buildings.find((building) => building.id === "a");
+  const firstB = state.buildings.find((building) => building.id === "b");
+  assert.ok(a && firstB);
+  a.hp = 0;
+  resolveHold(state);
+  assert.equal(state.outcome, null, "one fallen building is not enough while the fallback pool still stands");
+  // validateAndApplyPlan 用 Object.assign 换掉 buildings 数组，旧引用会指向换装前的对象。
+  const b = state.buildings.find((building) => building.id === "b");
+  assert.ok(b);
+  b.hp = 0;
+  resolveHold(state);
+  assert.equal(state.outcome, "defeat_buildings");
+});
+
+test("a boss-down building loss keeps defeat_buildings and the HUD's boss-down sentence", () => {
+  const terrain = flatLand();
+  terrain[1]![2] = "road";
+  const state = stakeMatch("frontage", terrain, [
+    { id: "street", cells: [{ x: 2, y: 2 }] },
+    { id: "yard", cells: [{ x: 7, y: 7 }] },
+  ]);
+  state.boss.hp = 0;
+  state.raiders = [{ id: "raider-w", pos: { x: 8, y: 8 }, hp: 8, intent: null }];
+  const street = state.buildings.find((building) => building.id === "street");
+  assert.ok(street);
+  street.hp = 0;
+  resolveHold(state);
+  assert.equal(state.outcome, "defeat_buildings", "a surviving raider keeps victory from masking the building loss");
+  assert.equal(gameText("大怪已倒，楼先没了", "en"), "The boss is down, and the buildings fell first.");
+  assert.equal(gameText("大怪已倒，楼先没了", "zh-Hans"), "大怪已倒，楼先没了");
 });

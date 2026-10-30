@@ -258,7 +258,7 @@ export function useCityExperience(engine: RefObject<CityEngine | null>, projecti
     lockSelection: (id: string) => engine.current?.lockSelection(id) };
 }
 
-export function CityExperience({ ui, disabled, cinema, status, quality, onQuality, game, planRepair, windowDays, windowOptions, onWindowDays, labels, onLabels, onMecha }: { ui: ReturnType<typeof useCityExperience>; disabled: boolean; cinema: boolean; status?: string; quality: string; onQuality: (value: string) => void; game: ReturnType<typeof useCityGame>; planRepair: PlanRepairUi; windowDays: number; windowOptions: readonly number[]; onWindowDays: (days: number) => void; labels: boolean; onLabels: (next: boolean) => void; onMecha?: () => void }) {
+export function CityExperience({ ui, disabled, cinema, status, quality, onQuality, game, planRepair, windowDays, windowOptions, onWindowDays, labels, onLabels, onMecha, mechaAvailability = "unknown" }: { ui: ReturnType<typeof useCityExperience>; disabled: boolean; cinema: boolean; status?: string; quality: string; onQuality: (value: string) => void; game: ReturnType<typeof useCityGame>; planRepair: PlanRepairUi; windowDays: number; windowOptions: readonly number[]; onWindowDays: (days: number) => void; labels: boolean; onLabels: (next: boolean) => void; onMecha?: () => void; mechaAvailability?: "unknown" | "searching" | "ready" | "empty" | "error" }) {
   const language = useCityLanguage();
   // Presentation only: the landing host still enforces its own fixture/method boundary.
   const landingPreview = embedded() && new URLSearchParams(location.search).get("presentation") === "landing";
@@ -573,12 +573,12 @@ export function CityExperience({ ui, disabled, cinema, status, quality, onQualit
         <div style={{ display: "flex", gap: 8 }}>
           <button disabled={cinema || ui.busy || gameActive || !ui.model} onClick={() => { ui.setOptions(false); game.enterPractice(); }}>{gameText("自由练习", language === "en" ? "en" : "zh-Hans")}</button>
           <button disabled={cinema || ui.busy || gameActive || !ui.model} onClick={() => { ui.setOptions(false); game.enterRace(); }}>{gameText("穿环挑战", language === "en" ? "en" : "zh-Hans")}</button>
-          <button disabled={cinema || ui.busy || gameActive || disabled || !ui.model || !onMecha} onClick={() => { ui.setOptions(false); onMecha?.(); }}>{gameText("机甲战棋", language === "en" ? "en" : "zh-Hans")}</button>
+          <button disabled={cinema || ui.busy || gameActive || disabled || !ui.model || !onMecha || mechaAvailability === "empty"} onClick={() => { ui.setOptions(false); onMecha?.(); }}>{gameText("机甲战棋", language === "en" ? "en" : "zh-Hans")}</button>
           {typeof __CITY_GAME_UAT__ !== "undefined" && __CITY_GAME_UAT__ && <button disabled={cinema || ui.busy || gameActive || !ui.model} onClick={() => { ui.setOptions(false); void game.enterUatRace(); }}>UAT keyboard pilot</button>}
         </div>
         {game.entryError && <p role="alert">{game.entryError}</p>}
         <p>{gameText("进入后用 W/S/A/D 与方向键飞行，Esc 暂停。", language === "en" ? "en" : "zh-Hans")}</p>
-        <p>{gameText("在城市上打开 3 机对 Boss 的棋盘。整包提交，非法则整包退回。", language === "en" ? "en" : "zh-Hans")}</p>
+        <p>{gameText(mechaAvailability === "empty" ? "这座城暂时没有可用机坪，不能开战。" : "在这座城市的机坪上开战。整包提交，非法则整包退回。没有机坪时不会进入对局。", language === "en" ? "en" : "zh-Hans")}</p>
       </div>
       {ui.film && <p role="status" aria-atomic="true">航拍导出 {Math.round(ui.film.frame / ui.film.total * 100)}% · 关闭设置不取消导出</p>}
       {!supportsBackgroundFilm() && <p>当前环境不支持后台视频导出；可使用拍照。</p>}</>}

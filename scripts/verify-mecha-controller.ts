@@ -4,8 +4,9 @@
  * 规划器用注入的计数桩，确认「每个局面只规划一次」。
  */
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
-import { PLAN_FAULT_CAUSES, planFaultText } from "../apps/agent-city/ui/src/game/gameCopy.ts";
+import { PLAN_FAULT_CAUSES, gameText, planFaultText } from "../apps/agent-city/ui/src/game/gameCopy.ts";
 import { peelPlan, planForDoctrine, squadPlan, type DoctrineId } from "../apps/agent-city/ui/src/game/mecha/ai.ts";
 import { createMechaController, cuesFromLog, type Planner } from "../apps/agent-city/ui/src/game/mecha/controller.ts";
 import type { CityMechaSite } from "../apps/agent-city/ui/src/game/mecha/citySite.ts";
@@ -314,6 +315,49 @@ test("preview reports the telegraph after an Assault shove, and hitsAfter reflec
   assert.ok(idleState.hits.Assault > 0);
 });
 
+test("undo move restores the previous draft before submit and does nothing after fire", () => {
+  const c = createMechaController({ match: duel(NEAR_BOSS), planner: hold });
+  assert.equal(c.getState().canUndoMove, false, "a doctrine fill is not a player move");
+  c.selectMech("Assault");
+  c.setMove("Assault", { x: 3, y: 2 });
+  assert.deepEqual(c.getState().draft.Assault.moveTo, { x: 3, y: 2 });
+  assert.equal(c.getState().canUndoMove, true);
+  c.setMove("Assault", { x: 2, y: 2 });
+  assert.deepEqual(c.getState().draft.Assault.moveTo, { x: 2, y: 2 });
+  c.undoMove();
+  assert.deepEqual(c.getState().draft.Assault.moveTo, { x: 3, y: 2 });
+  c.undoMove();
+  assert.equal(c.getState().draft.Assault.moveTo, null);
+  assert.equal(c.getState().canUndoMove, false);
+  c.undoMove();
+  assert.equal(c.getState().draft.Assault.moveTo, null);
+  c.setMove("Assault", { x: 3, y: 2 });
+  c.submit();
+  const fired = c.getState();
+  assert.equal(fired.canUndoMove, false, "submitting the pack clears the move stack");
+  c.undoMove();
+  assert.equal(c.getState().match.revision, fired.match.revision);
+  assert.deepEqual(c.getState().draft.Assault.moveTo, fired.draft.Assault.moveTo);
+});
+
+test("hovering one enemy shows only that enemy's post-push telegraph", () => {
+  const c = createMechaController({ match: duel(NEAR_BOSS), planner: hold });
+  c.setAction("Assault", { kind: "melee", target: "boss" });
+  const preview = c.getState().preview;
+  assert.equal(preview.ok, true);
+  if (!preview.ok) return;
+  assert.deepEqual(preview.telegraphByActor.boss, [{ x: 4, y: 1 }]);
+  assert.deepEqual(c.getState().telegraph, preview.telegraphAfter);
+  c.setHoveredEnemy("boss");
+  assert.deepEqual(c.getState().telegraph, [{ x: 4, y: 1 }]);
+  assert.equal(c.getState().hoveredEnemy, "boss");
+  c.setHoveredEnemy("raider-w");
+  assert.deepEqual(c.getState().telegraph, [], "an enemy with no telegraph contributes no cells");
+  c.setHoveredEnemy(null);
+  assert.deepEqual(c.getState().telegraph, preview.telegraphAfter);
+  assert.equal(c.getState().preview.ok && c.getState().preview.hitsAfter.Assault, c.getState().hits.Assault);
+});
+
 test("every plan fault cause has Chinese and English text that names the mech", () => {
   const names: Record<MechId, [string, string]> = { Assault: ["突击", "Assault"], Gunner: ["射手", "Gunner"], Support: ["支援", "Support"] };
   const seen = new Set<string>();
@@ -347,4 +391,128 @@ test("combat reset is distinguishable from a committed turn", () => {
   c.restart();
   assert.equal(c.getState().combat.reset, true);
   assert.equal(c.getState().combat.id, played.id + 1);
+});
+
+test("reset restores this turn's opening draft without moving the turn clock", () => {
+  const c = createMechaController({ match: duel(NEAR_BOSS), planner: hold });
+  const before = c.getState();
+  const opening = structuredClone(before.draft);
+  const clock = { turn: before.match.turn, revision: before.match.revision, combat: before.combat.id };
+  c.selectMech("Assault");
+  c.setMove("Assault", { x: 3, y: 2 });
+  c.setTargeting("melee");
+  c.setHoveredEnemy("boss");
+  assert.equal(c.getState().canResetTurn, true);
+  c.resetTurn();
+  const after = c.getState();
+  assert.equal(after.match, before.match, "reset is a draft rollback, not a rule-level turn");
+  assert.deepEqual([after.match.turn, after.match.revision, after.combat.id], [clock.turn, clock.revision, clock.combat]);
+  assert.deepEqual(after.draft, opening);
+  assert.equal(after.targeting, null);
+  assert.equal(after.hoveredEnemy, null);
+  assert.equal(after.canUndoMove, false);
+  assert.equal(after.canResetTurn, false, "the once-per-match reset is spent");
+  assert.equal(after.resetTurnUsed, true);
+  assert.match(after.notice ?? "", /重置/);
+  const spent = after;
+  c.resetTurn();
+  assert.equal(c.getState(), spent, "a second reset in the same turn changes nothing");
+});
+
+test("reset never rewinds a committed turn and stays spent until restart", () => {
+  const c = createMechaController({ match: duel(NEAR_BOSS), planner: hold });
+  c.resetTurn();
+  const used = c.getState();
+  assert.equal(used.resetTurnUsed, true);
+  c.submit();
+  const next = c.getState();
+  assert.equal(next.match.turn, used.match.turn + 1, "submit is the only thing that advances the turn");
+  assert.equal(next.resetTurnUsed, true);
+  assert.equal(next.canResetTurn, false, "fire does not refund the reset");
+  const committed = next;
+  c.resetTurn();
+  assert.equal(c.getState(), committed, "a post-submit reset cannot roll the resolved turn back");
+  c.restart();
+  assert.equal(c.getState().resetTurnUsed, false, "a new match gets its own reset");
+  assert.equal(c.getState().canResetTurn, true);
+});
+
+test("reset is unavailable after the match ends", () => {
+  const match = duel(NEAR_BOSS);
+  match.boss.hp = 1;
+  const c = createMechaController({ match, planner: hold });
+  c.setAction("Assault", { kind: "melee", target: "boss" });
+  c.submit();
+  const done = c.getState();
+  assert.equal(done.match.outcome, "victory");
+  assert.equal(done.canResetTurn, false);
+  c.resetTurn();
+  assert.equal(c.getState(), done);
+});
+
+const BOARD_URL = new URL("../apps/agent-city/ui/src/game/MechaBoard.tsx", import.meta.url);
+const CSS_URL = new URL("../apps/agent-city/ui/src/game/game.css", import.meta.url);
+const LINEUP_URL = new URL("../apps/agent-city/ui/src/game/MechaLineup.tsx", import.meta.url);
+const boardSource = readFileSync(BOARD_URL, "utf8");
+const cssSource = readFileSync(CSS_URL, "utf8");
+
+/**
+ * 入口门禁是产品行为，不是样式：空目录、搜索失败、视角被占都必须留在 CityGate，
+ * 不能退回已经删掉的方格棋盘。组件没有可脱离 React 调用的导出，所以这里像
+ * verify-city-mecha-ux 一样钉源码结构，补上 verify:mecha 之前没有覆盖的三条失败路径。
+ */
+test("battle entry gates empty, failed and taken-view cities without a fallback board", () => {
+  assert.match(
+    boardSource,
+    /function catalogPlayable\(catalog: FightCatalog \| null\)[\s\S]{0,180}?SHAPES\.some/,
+    "an empty catalog must be unplayable: at least one shape has to carry a site",
+  );
+  for (const branch of [
+    'if (phase === "loading")',
+    'if (phase === "error")',
+    'if (!engine || !catalogPlayable(catalog))',
+    'if (!controller || !s || !state || !site)',
+    'if (viewFailed)',
+  ]) {
+    const start = boardSource.lastIndexOf(branch);
+    assert.ok(start >= 0, `missing gate branch: ${branch}`);
+    const body = boardSource.slice(start, start + 1000);
+    assert.match(body, /<CityGate/, `${branch} must stay on the city gate`);
+  }
+  // 只有一个对局挂载点；viewFailed 在 MechaMatch 内部也必须换成 CityGate，而不是退回棋盘。
+  assert.equal((boardSource.match(/<MechaMatch/g) ?? []).length, 1, "exactly one match mount");
+  assert.match(boardSource, /if \(viewFailed\) controller\?\.stopAuto\(\)/);
+  assert.doesNotMatch(boardSource, /MechaLineup|mecha-grid|mecha-cell|方格棋盘|t\("布局"\)/);
+  assert.doesNotMatch(cssSource, /\.mecha-grid|\.mecha-cell/);
+  assert.equal(existsSync(LINEUP_URL), false, "the modal lineup board is gone, not merely unused");
+});
+
+test("availability keeps empty catalog distinct from a failed search", () => {
+  assert.match(boardSource, /if \(phase === "loading"\) onAvailability\("searching"\)/);
+  assert.match(boardSource, /else if \(phase === "error"\) onAvailability\("error"\)/);
+  assert.match(boardSource, /else onAvailability\(playable \? "ready" : "empty"\)/);
+});
+
+test("every gate title, body and literal label has an English copy key", () => {
+  const gateText = [...boardSource.matchAll(/(?:title|body)="([^"]+)"/g)].map((match) => match[1]!);
+  const labels = [...boardSource.matchAll(/\bt\("([^"\n]+)"\)/g)].map((match) => match[1]!);
+  assert.ok(new Set(gateText).size >= 8, "the three refusal paths plus the search progress copy");
+  assert.ok(new Set(labels).size >= 30, "the HUD's literal copy is part of this guard");
+  for (const text of new Set([...gateText, ...labels])) {
+    const en = gameText(text, "en");
+    assert.equal(en.startsWith("Translation unavailable:"), false, text);
+    assert.equal(/\p{Script=Han}/u.test(en), false, text);
+  }
+});
+
+test("every action inspection description is localized", () => {
+  const table = /const ACTION_DESCRIPTIONS[^=]*=\s*\{([\s\S]*?)\n\};/.exec(boardSource)?.[1];
+  assert.ok(table, "the action inspection table must be readable from the board source");
+  const descriptions = [...table.matchAll(/:\s*"([^"]+)"/g)].map((match) => match[1]!);
+  assert.equal(new Set(descriptions).size, 6, "every action kind has its own explanation");
+  for (const text of descriptions) {
+    const en = gameText(text, "en");
+    assert.equal(en.startsWith("Translation unavailable:"), false, text);
+    assert.equal(/\p{Script=Han}/u.test(en), false, text);
+  }
 });

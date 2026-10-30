@@ -188,12 +188,8 @@ function runTurn(state: MatchState, plan: ArenaPlan, capturePresentation = false
     };
     noteOutcome();
     // 推动之后的预告：大怪被推会 reproject，小怪的预告不跟着动。
-    const seen = new Set<string>();
-    const telegraph: Cell[] = [];
-    for (const intent of [next.boss.intent, ...next.raiders.map((r) => r.intent)]) {
-      if (!intent || intent.skillId === "skip" || intent.status === "void") continue;
-      for (const c of intent.projected) if (!seen.has(key(c))) (seen.add(key(c)), telegraph.push({ ...c }));
-    }
+    // byActor 与合并列表同一时刻取样，悬停一只怪时不必再推演一遍。
+    const { cells: telegraph, byActor: telegraphByActor } = collectTelegraphs(next);
     const hpBefore = Object.fromEntries(next.mechs.map((m) => [m.id, m.hp])) as Record<MechId, number>;
     if (next.phase === "resolving_boss") bossExecute(next);
     const afterEnemy = capturePresentation ? presentationSnapshot(next) : null;
@@ -204,7 +200,7 @@ function runTurn(state: MatchState, plan: ArenaPlan, capturePresentation = false
     const afterPrepare = capturePresentation ? presentationSnapshot(next) : null;
     const presentationStages = before && afterMovement && afterPlayer && afterEnemy && afterPrepare
       ? { before, afterMovement, afterPlayer, afterEnemy, afterPrepare } : null;
-    return { ok: true as const, state: next, log, telegraph, hits, presentationStages };
+    return { ok: true as const, state: next, log, telegraph, telegraphByActor, hits, presentationStages };
   } finally {
     swapEventSink(outer);
   }
@@ -220,15 +216,42 @@ export function playTurn(state: MatchState, plan: ArenaPlan): TurnResult {
   return r.ok ? { ok: true, state: r.state, log: r.log, presentationStages: r.presentationStages } : r;
 }
 
+/** 每只活着的敌人自己的预告格（推动之后各算各的）。合并列表见 cells，重叠格只留一份。 */
+export function collectTelegraphs(state: MatchState): { cells: Cell[]; byActor: Record<string, Cell[]> } {
+  const seen = new Set<string>();
+  const cells: Cell[] = [];
+  const byActor: Record<string, Cell[]> = {};
+  const sources: Array<[string, MatchState["boss"]["intent"]]> = [
+    ["boss", state.boss.intent],
+    ...state.raiders.map((raider) => [raider.id, raider.intent] as [string, MatchState["boss"]["intent"]]),
+  ];
+  for (const [id, intent] of sources) {
+    if (!intent || intent.skillId === "skip" || intent.status === "void") continue;
+    const own: Cell[] = [];
+    for (const c of intent.projected) {
+      const copy = { x: c.x, y: c.y };
+      own.push(copy);
+      const idKey = key(copy);
+      if (!seen.has(idKey)) {
+        seen.add(idKey);
+        cells.push({ ...copy });
+      }
+    }
+    if (own.length) byActor[id] = own;
+  }
+  return { cells, byActor };
+}
+
 /**
  * 预览：在克隆上做与提交完全相同的试算，plan 可以不完整——
  * 没排的活机甲按「不动 + 待机」排在末尾，并列入 assumed，界面据此标「假设」。
  * telegraphAfter 是玩家行动之后（推动已生效）的预告格；hitsAfter 是本回合敌方结算里每台掉的血。
+ * telegraphByActor 是同一时刻按敌人拆开的预告，给悬停归属用。
  */
 export function previewPlan(
   state: MatchState,
   plan: ArenaPlan,
-): { ok: true; telegraphAfter: Cell[]; hitsAfter: Record<MechId, number>; assumed: MechId[] } | { ok: false; fault: PlanFault } {
+): { ok: true; telegraphAfter: Cell[]; telegraphByActor: Record<string, Cell[]>; hitsAfter: Record<MechId, number>; assumed: MechId[]; enemyOrder: Array<Extract<TurnEvent, { type: "enemy" }>> } | { ok: false; fault: PlanFault } {
   const named = new Set(plan.items.map((i) => i.mechId));
   const assumed = living(state).map((m) => m.id).filter((id) => !named.has(id));
   const full: ArenaPlan = {
@@ -236,6 +259,5 @@ export function previewPlan(
     items: [...plan.items, ...assumed.map((mechId) => ({ mechId, moveTo: null, action: { kind: "skip" as const } }))],
   };
   const r = runTurn(state, full);
-  return r.ok ? { ok: true, telegraphAfter: r.telegraph, hitsAfter: r.hits, assumed } : r;
+  return r.ok ? { ok: true, telegraphAfter: r.telegraph, telegraphByActor: r.telegraphByActor, hitsAfter: r.hits, assumed, enemyOrder: r.log.filter((event): event is Extract<TurnEvent, { type: "enemy" }> => event.type === "enemy") } : r;
 }
-

@@ -24,7 +24,7 @@ import { buildPresentationRoutes, type PresentationRoutes } from "./presentation
 import type { CityMechaSite } from "./citySite";
 import { matchFromSite } from "./matchFromSite";
 import {
-  BOARD, bossPrepare, createMatch, incomingDamage, legalActions, living, moveBudget, pathDistance, playTurn, previewPlan,
+  BOARD, bossPrepare, collectTelegraphs, createMatch, incomingDamage, legalActions, living, moveBudget, pathDistance, playTurn, previewPlan,
   type Action, type ArenaPlan, type BossScriptId, type BuildingStake, type Cell, type CoverPresetId, type MatchState, type MechId,
   type PlanFault, type TurnEvent,
 } from "./rules";
@@ -40,7 +40,7 @@ export type Beat = "show" | "resolve";
 export type ControllerFault = { mechId?: MechId; cause: NonNullable<PlanFault["cause"]>; scope: "rejected" | "draft"; reason?: string };
 
 export type MechaPreview =
-  | { ok: true; telegraphAfter: Cell[]; hitsAfter: Record<MechId, number>; assumed: MechId[] }
+  | { ok: true; telegraphAfter: Cell[]; telegraphByActor: Record<string, Cell[]>; hitsAfter: Record<MechId, number>; assumed: MechId[]; enemyOrder: Array<Extract<TurnEvent, { type: "enemy" }>> }
   | { ok: false; fault: PlanFault };
 
 export type MechaControllerState = {
@@ -75,8 +75,15 @@ export type MechaControllerState = {
   hits: Record<MechId, number>;
   /** 每台到草稿落点的半步花费（面板显示用；alliesPass，与提交校验同口径）。 */
   stepCost: Record<MechId, number | null>;
-  /** 预告格：预览成功用推动之后的，否则当前的。 */
+  /** 预告格：预览成功用推动之后的，否则当前的。悬停一只敌人时只留它的格。 */
   telegraph: Cell[];
+  /** 悬停中的敌人；空表示地面显示全部推动后预告。 */
+  hoveredEnemy: string | null;
+  /** 玩家还没提交本回合时，可以撤回最近一次移动。 */
+  canUndoMove: boolean;
+  /** 一场对局一次，只在玩家可编辑草稿时使用。 */
+  resetTurnUsed: boolean;
+  canResetTurn: boolean;
   focus: DoctrineFocus;
   focusCells: Cell[];
   plannedCount: number;
@@ -108,6 +115,11 @@ export type MechaController = {
   selectMech(id: MechId): void;
   setTargeting(kind: TargetKind | null): void;
   setMove(id: MechId, cell: Cell | null): void;
+  /** 撤回最近一次移动。提交（开火）之后、暂停、自动对战或演出中无效。 */
+  undoMove(): void;
+  resetTurn(): void;
+  /** 悬停一只敌人时地面只画它的预告；传 null 恢复全部。 */
+  setHoveredEnemy(id: string | null): void;
   setAction(id: MechId, action: Action): void;
   /** 格子点击的全部分支（选目标 / 换选机甲 / 移动）。 */
   clickCell(x: number, y: number): void;
@@ -134,14 +146,18 @@ function same(a: Cell, b: Cell) {
   return a.x === b.x && a.y === b.y;
 }
 
-function footprintCells(anchor: Cell): Cell[] {
-  return [anchor, { x: anchor.x + 1, y: anchor.y }, { x: anchor.x, y: anchor.y + 1 }, { x: anchor.x + 1, y: anchor.y + 1 }];
+function draftFingerprint(drafts: DraftMap): string {
+  return (["Assault", "Gunner", "Support"] as MechId[]).map((id) => {
+    const row = drafts[id];
+    const move = row?.moveTo ? `${row.moveTo.x},${row.moveTo.y}` : "";
+    const action = row?.action;
+    const target = action && "target" in action ? action.target : "";
+    return `${id}:${move}:${row?.explicit ? 1 : 0}:${action?.kind ?? ""}:${target ?? ""}`;
+  }).join("|");
 }
 
-function telegraphsOf(state: MatchState): Cell[] {
-  const cells = [...(state.boss.intent?.projected ?? [])];
-  for (const raider of state.raiders) cells.push(...(raider.intent?.projected ?? []));
-  return cells;
+function footprintCells(anchor: Cell): Cell[] {
+  return [anchor, { x: anchor.x + 1, y: anchor.y }, { x: anchor.x, y: anchor.y + 1 }, { x: anchor.x + 1, y: anchor.y + 1 }];
 }
 
 function blankDraft(state: MatchState): DraftMap {
@@ -181,6 +197,7 @@ export function cuesFromLog(log: TurnEvent[]): MechaCombatCue[] {
 }
 
 function freshMatch(preset: CoverPresetId, script: BossScriptId, site: CityMechaSite | null, stake: BuildingStake): MatchState {
+  // 产品界面必须带城市 site。site 为空只留给规则单测的 createMatch fixture，不能再开一局方格棋。
   const state = site ? matchFromSite(site, { preset, script, stake }) : createMatch({ preset, script, stake });
   bossPrepare(state);
   return state;
@@ -222,6 +239,11 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     state.outcome || state.phase !== "player_plan" ? blankDraft(state) : draftFromPlan(state, planFor(state, doctrine));
 
   let draft: DraftMap = openingDraft(match);
+  let turnStartDraft = structuredClone(draft);
+  let resetTurnUsed = false;
+  /** 每次成功改移动之前的草稿。提交、换打法、新开一局都清空，开火之后撤不回来。 */
+  let movePast: DraftMap[] = [];
+  let hoveredEnemy: string | null = null;
 
   const finished = () => Boolean(match.outcome) || match.phase !== "player_plan";
   const canEdit = () => !auto && !paused && !performance && !finished();
@@ -290,6 +312,12 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     return previewPlan(match, { revision: match.revision, items });
   };
 
+  const shownTelegraph = (preview: MechaPreview): Cell[] => {
+    const byActor = preview.ok ? preview.telegraphByActor : collectTelegraphs(match).byActor;
+    if (hoveredEnemy) return byActor[hoveredEnemy] ?? [];
+    return preview.ok ? preview.telegraphAfter : collectTelegraphs(match).cells;
+  };
+
   let snapshot: MechaControllerState;
   const rebuild = () => {
     const preview = derivePreview();
@@ -312,7 +340,11 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       targetOptions: deriveTargets(),
       hits,
       stepCost,
-      telegraph: preview.ok ? preview.telegraphAfter : telegraphsOf(match),
+      telegraph: shownTelegraph(preview),
+      hoveredEnemy,
+      canUndoMove: movePast.length > 0 && canEdit(),
+      resetTurnUsed,
+      canResetTurn: !resetTurnUsed && canEdit(),
       focus: doctrineFocus(match, doctrine),
       focusCells: doctrineFocusCells(match, doctrine),
       plannedCount: alive.length - pendingIds.length,
@@ -351,6 +383,9 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     lastLog = result.log;
     combat = { id: combat.id + 1, actions: cuesFromLog(result.log), healthTimeline, presentationChanges, presentationStages: result.presentationStages, presentationRoutes };
     draft = blankDraft(match);
+    turnStartDraft = structuredClone(draft);
+    movePast = [];
+    hoveredEnemy = null;
     targeting = null;
     beat = "show";
     say(null);
@@ -403,9 +438,20 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       next[m.id] = { moveTo: row.moveTo, action: { kind: "skip" }, explicit: false };
       if (m.id !== id) notes.push({ mechId: m.id, cause: causeOf(bad), scope: "draft", reason: bad.reason });
     }
+    const changed = draftFingerprint(draft) !== draftFingerprint(next);
+    if (changed) movePast.push(structuredClone(draft));
     draft = next;
     say(null);
     fault = notes[0] ?? null;
+    commit();
+  };
+
+  const undoMove = () => {
+    if (!canEdit() || movePast.length === 0) return;
+    draft = movePast.pop()!;
+    targeting = null;
+    say(null);
+    fault = null;
     commit();
   };
 
@@ -426,7 +472,10 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
 
   const fillFromDoctrine = (which: DoctrineId) => {
     doctrine = which;
-    if (!match.outcome && match.phase === "player_plan") draft = draftFromPlan(match, planFor(match, which));
+    if (!match.outcome && match.phase === "player_plan") {
+      draft = draftFromPlan(match, planFor(match, which));
+      movePast = [];
+    }
   };
 
   const controller: MechaController = {
@@ -453,6 +502,22 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       commit();
     },
     setMove,
+    undoMove,
+    resetTurn() {
+      if (resetTurnUsed || !canEdit()) return;
+      draft = structuredClone(turnStartDraft);
+      movePast = [];
+      targeting = null;
+      hoveredEnemy = null;
+      resetTurnUsed = true;
+      say("本回合草稿已重置；本局的重置机会已用完。");
+      commit();
+    },
+    setHoveredEnemy(id) {
+      if (id === hoveredEnemy) return;
+      hoveredEnemy = id;
+      commit();
+    },
     setAction,
     clickCell(x, y) {
       if (!canEdit()) return;
@@ -509,6 +574,10 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       combat = { id: combat.id + 1, actions: [], reset: true };
       lastLog = [];
       draft = openingDraft(match);
+      turnStartDraft = structuredClone(draft);
+      resetTurnUsed = false;
+      movePast = [];
+      hoveredEnemy = null;
       selected = living(match)[0]?.id ?? "Assault";
       targeting = null;
       say(null);
