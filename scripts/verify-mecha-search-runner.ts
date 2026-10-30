@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
-import { prepareFightTerrain, searchPrepared, type FightCatalog, type SiteAnchor } from "../apps/agent-city/ui/src/game/mecha/citySite.ts";
+import { prepareFightTerrain, searchPrepared, type FightCatalog, type FightTerrainSnapshot, type SiteAnchor } from "../apps/agent-city/ui/src/game/mecha/citySite.ts";
 import { startPreparedSearch } from "../apps/agent-city/ui/src/game/mecha/fightSearchRunner.ts";
 
 // 少量锚点即可：三栋平地楼 + 一小片起伏，搜索几十毫秒内完成，目录非空。
@@ -103,4 +103,34 @@ test("aborting before the worker fails prevents the fallback from starting", asy
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(called, 0);
   assert.equal(fakes[0]!.terminated, true);
+});
+
+test("an empty city produces four null shapes, not a synthetic fallback board", () => {
+  const snapshot = prepareFightTerrain(terrain, []);
+  assert.equal(snapshot.seeds.length, 0);
+  assert.deepEqual(searchPrepared(snapshot, []), { flat: null, shore: null, ridge: null, alley: null });
+});
+
+test("a search that fails in both the worker and the fallback reports one error and no catalog", async () => {
+  installFakeWorker("error-event");
+  const snapshot = prepareFightTerrain(terrain, anchors, 6);
+  // seeds=null 是真实的加载失败形状（CITY_SITE/search 读到损坏的 snapshot），
+  // 不是返回一个空目录——空目录必须走 empty gate，不能把失败伪装成"这座城没有机坪"。
+  const broken = { ...snapshot, seeds: null as unknown as FightTerrainSnapshot["seeds"] };
+  let results = 0;
+  const errors: unknown[] = [];
+  const settled = new Promise<void>((resolve) => {
+    startPreparedSearch(broken, [], {
+      onResult: () => { results += 1; resolve(); },
+      onError: (reason) => { errors.push(reason); resolve(); },
+    });
+  });
+  await Promise.race([
+    settled,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("search failure was never reported")), 2000)),
+  ]);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(results, 0, "a failed search must never surface a catalog");
+  assert.equal(errors.length, 1, "report the failure once, after the worker fallback also fails");
+  assert.equal(fakes[0]!.terminated, true, "the failed worker is terminated before the fallback");
 });

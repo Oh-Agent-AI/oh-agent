@@ -4,8 +4,9 @@
  * 规划器用注入的计数桩，确认「每个局面只规划一次」。
  */
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
-import { PLAN_FAULT_CAUSES, planFaultText } from "../apps/agent-city/ui/src/game/gameCopy.ts";
+import { PLAN_FAULT_CAUSES, gameText, planFaultText } from "../apps/agent-city/ui/src/game/gameCopy.ts";
 import { peelPlan, planForDoctrine, squadPlan, type DoctrineId } from "../apps/agent-city/ui/src/game/mecha/ai.ts";
 import { createMechaController, cuesFromLog, type Planner } from "../apps/agent-city/ui/src/game/mecha/controller.ts";
 import type { CityMechaSite } from "../apps/agent-city/ui/src/game/mecha/citySite.ts";
@@ -390,4 +391,59 @@ test("combat reset is distinguishable from a committed turn", () => {
   c.restart();
   assert.equal(c.getState().combat.reset, true);
   assert.equal(c.getState().combat.id, played.id + 1);
+});
+
+const BOARD_URL = new URL("../apps/agent-city/ui/src/game/MechaBoard.tsx", import.meta.url);
+const CSS_URL = new URL("../apps/agent-city/ui/src/game/game.css", import.meta.url);
+const LINEUP_URL = new URL("../apps/agent-city/ui/src/game/MechaLineup.tsx", import.meta.url);
+const boardSource = readFileSync(BOARD_URL, "utf8");
+const cssSource = readFileSync(CSS_URL, "utf8");
+
+/**
+ * 入口门禁是产品行为，不是样式：空目录、搜索失败、视角被占都必须留在 CityGate，
+ * 不能退回已经删掉的方格棋盘。组件没有可脱离 React 调用的导出，所以这里像
+ * verify-city-mecha-ux 一样钉源码结构，补上 verify:mecha 之前没有覆盖的三条失败路径。
+ */
+test("battle entry gates empty, failed and taken-view cities without a fallback board", () => {
+  assert.match(
+    boardSource,
+    /function catalogPlayable\(catalog: FightCatalog \| null\)[\s\S]{0,180}?SHAPES\.some/,
+    "an empty catalog must be unplayable: at least one shape has to carry a site",
+  );
+  for (const branch of [
+    'if (phase === "loading")',
+    'if (phase === "error")',
+    'if (!engine || !catalogPlayable(catalog))',
+    'if (!controller || !s || !state || !site)',
+    'if (viewFailed)',
+  ]) {
+    const start = boardSource.lastIndexOf(branch);
+    assert.ok(start >= 0, `missing gate branch: ${branch}`);
+    const body = boardSource.slice(start, start + 1000);
+    assert.match(body, /<CityGate/, `${branch} must stay on the city gate`);
+  }
+  // 只有一个对局挂载点；viewFailed 在 MechaMatch 内部也必须换成 CityGate，而不是退回棋盘。
+  assert.equal((boardSource.match(/<MechaMatch/g) ?? []).length, 1, "exactly one match mount");
+  assert.match(boardSource, /if \(viewFailed\) controller\?\.stopAuto\(\)/);
+  assert.doesNotMatch(boardSource, /MechaLineup|mecha-grid|mecha-cell|方格棋盘|t\("布局"\)/);
+  assert.doesNotMatch(cssSource, /\.mecha-grid|\.mecha-cell/);
+  assert.equal(existsSync(LINEUP_URL), false, "the modal lineup board is gone, not merely unused");
+});
+
+test("availability keeps empty catalog distinct from a failed search", () => {
+  assert.match(boardSource, /if \(phase === "loading"\) onAvailability\("searching"\)/);
+  assert.match(boardSource, /else if \(phase === "error"\) onAvailability\("error"\)/);
+  assert.match(boardSource, /else onAvailability\(playable \? "ready" : "empty"\)/);
+});
+
+test("every gate title, body and literal label has an English copy key", () => {
+  const gateText = [...boardSource.matchAll(/(?:title|body)="([^"]+)"/g)].map((match) => match[1]!);
+  const labels = [...boardSource.matchAll(/\bt\("([^"\n]+)"\)/g)].map((match) => match[1]!);
+  assert.ok(new Set(gateText).size >= 8, "the three refusal paths plus the search progress copy");
+  assert.ok(new Set(labels).size >= 30, "the HUD's literal copy is part of this guard");
+  for (const text of new Set([...gateText, ...labels])) {
+    const en = gameText(text, "en");
+    assert.equal(en.startsWith("Translation unavailable:"), false, text);
+    assert.equal(/\p{Script=Han}/u.test(en), false, text);
+  }
 });
