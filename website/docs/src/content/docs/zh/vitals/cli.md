@@ -1,5 +1,5 @@
 ---
-draft: true
+lastUpdated: 2026-10-30
 title: agent-vitals 命令行有哪些命令？
 description: Agent Vitals 引擎的 agent-vitals 命令行：同步、数据状态、导出、manifest 数据源、会话审计，以及 Data MCP 服务。
 head:
@@ -19,7 +19,7 @@ head:
       }
 ---
 
-`agent-vitals` 是 Agent Vitals 引擎的命令行入口，和桌面应用跑的是同一套 Rust 代码。它可以把 Agent 日志同步进本地数据库、查看数据状态、导出事实、管理 manifest 数据源、审计单个会话，以及启动 [Data MCP 服务](/docs/zh/vitals/mcp-tools)。早期 skill 体检工具的命令也保留着。帮助文字是英文的，大多数命令支持 `--json`。
+`agent-vitals` 是 Agent Vitals 引擎的命令行入口，和桌面应用跑的是同一套 Rust 代码。它可以把 Agent 日志同步进本地数据库、查看数据状态、导出事实、管理 manifest 数据源、审计单个会话，以及启动 Data MCP 服务（stdio）。早期 skill 体检工具的命令也保留着。帮助文字是英文的，大多数命令支持 `--json`。
 
 ## 关键事实
 
@@ -46,13 +46,13 @@ head:
 | `data-reimport-verify` | 重新导入到两个临时数据库并比较（不碰你的数据库） |
 | `sessions …` | 带版本的只读会话查询 |
 | `routes-quality` | 按数据源和模型系列被动报告记录到的模型身份 |
-| `data-mcp serve [--allow-local-writes]` | 启动 stdio [Data MCP 服务](/docs/zh/vitals/mcp-tools) |
+| `data-mcp serve [--allow-local-writes]` | 启动 stdio Data MCP 服务 |
 
 <!-- source: apps/cli/src/main.rs doc comments: SyncFacts, DataStatus, Data, DataExportPrivate/DataExportRedacted, DataUnresolved, BillingGroups, DataHarnessBill, Budget, BudgetSql, DataMigrate, DataReimportVerify, Sessions, RoutesQuality, DataMcp -->
 
-**待确认**：`sync-facts` 的帮助文字还写着“across all three harnesses”，但注册表里有四个数据源（后来加了 WorkBuddy）。需要改帮助文字或确认。
+`sync-facts` 的 clap 帮助文字仍写着 “across all three harnesses”；实际默认会同步全部已注册的内置数据源（`claude-code`、`codex`、`dsh`、`workbuddy`），除非你传入 `--harnesses`。
 
-<!-- source: main.rs SyncFacts doc; crates/agent-vitals-harnesses/src/sources/session_harnesses.rs (4 entries) -->
+<!-- source: apps/cli/src/main.rs SyncFacts doc + --harnesses; session_harnesses.rs (4 ids) -->
 
 ## 数据源命令
 
@@ -60,7 +60,7 @@ head:
 | --- | --- |
 | `harness-inventory --window-days 30` | 哪些数据源已登记、有数据，或只是候选。不会启用任何东西 |
 | `harnesses` | 打印四个内置数据源声明的能力 |
-| `manifest-validate`、`manifest-install`、`manifest-list`、`manifest-uninstall`、`manifest-rollback`、`manifest-recompute`、`manifest-catalog-status` | [manifest 数据源](/docs/zh/integrations/custom-sources-and-manifests)：试运行、预览 → 确认、列出、移除、回滚 |
+| `manifest-validate`、`manifest-install`、`manifest-list`、`manifest-uninstall`、`manifest-rollback`、`manifest-recompute`、`manifest-catalog-status` | manifest 数据源：试运行、预览 → 确认、列出、移除、回滚 |
 | `claude-usage-facts`、`codex-usage-facts`、`dsh-usage-facts`、`workbuddy-usage-facts` | 把某个数据源的文件解析成用量事实行，用于排查 |
 
 <!-- source: main.rs (HarnessInventory, Harnesses, Manifest*, ClaudeUsageFacts, CodexUsageFacts, DshUsageFacts, WorkbuddyUsageFacts) -->
@@ -80,7 +80,7 @@ head:
 
 ## 旧的 skill 体检命令
 
-`list`、`doctor`、`plan`、`snapshot`、`diff`、`explain` 和 `overlap` 来自早期的 skill 体检工具：列出已安装的 Agent Skills、诊断某个 skill 为什么没加载、规划清理。它们还在，但不是产品主线。见 [Skill 体检](/docs/zh/integrations/skill-auditor)。
+`list`、`doctor`、`plan`、`snapshot`、`diff`、`explain` 和 `overlap` 来自早期的 skill 体检工具：列出已安装的 Agent Skills、诊断某个 skill 为什么没加载、规划清理。它们还在，但不是产品主线（早期的 skill 体检工具）。
 
 <!-- source: main.rs (List, Doctor, Plan, Snapshot, Diff, Explain, Overlap); README.md -->
 
@@ -97,10 +97,14 @@ agent-vitals data-status --json
 agent-vitals data-export-redacted --out ~/oh-agent-export
 ```
 
-**待确认**：在真实安装上测试这几条命令。`--json` 这类参数每个命令不一样，请用 `agent-vitals <命令> --help` 查看。
+上面的参数与 `apps/cli/src/main.rs` 里的 clap 定义一致：`data-status --json` 是布尔开关；`data-export-redacted` 需要 `--out DIR`；`sync-facts` 也支持可选的 `--json` 和 `--harnesses`。
+
+<!-- source: apps/cli/src/main.rs DataStatus / DataExportRedacted / SyncFacts -->
 
 ## 相关
 
 - [Agent Vitals 引擎总览](/docs/zh/vitals/overview)
-- [Data MCP 工具](/docs/zh/vitals/mcp-tools)
-- [Python 对等实现](/docs/zh/vitals/python)
+- [Claude Code 数据来源](/docs/zh/data-sources/claude-code) · [Codex 数据来源](/docs/zh/data-sources/codex)
+- [DeepSeek Harness 数据来源](/docs/zh/data-sources/deepseek-harness) · [WorkBuddy 数据来源](/docs/zh/data-sources/workbuddy)
+- [Agent City 里每栋楼代表什么](/docs/zh/city-guide)
+- [数据与隐私](/docs/zh/privacy-and-data) · [安装](/docs/zh/install) · [常见问题](https://ohagent.ai/#faq)
