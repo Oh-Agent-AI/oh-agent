@@ -636,6 +636,12 @@
     "shared": false
   },
   {
+    "id": "verify-city-mecha-ux",
+    "file": "verify-city-mecha-ux.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
     "id": "verify-city-camera-collision-query",
     "file": "verify-city-camera-collision-query.mjs",
     "env": {},

@@ -13,6 +13,8 @@
  * - 订阅者拿到的快照在两次变更之间引用稳定（useSyncExternalStore 的要求）。
  */
 import { PLAN_FAULT_CAUSES, gameText, planFaultText, type GameLocale } from "../gameCopy";
+import { performanceFromLog } from "./performance";
+import type { MechaPerformanceEvent } from "../../render/mecha/performance";
 import type { MechaCombatCue } from "../../render/mecha/animation";
 import { doctrineFocus, doctrineFocusCells, planForDoctrine, type DoctrineFocus, type DoctrineId } from "./ai";
 import type { CityMechaSite } from "./citySite";
@@ -55,6 +57,7 @@ export type MechaControllerState = {
   notice: string | null;
   fault: ControllerFault | null;
   lastLog: TurnEvent[];
+  performance: { events: MechaPerformanceEvent[]; before: MatchState } | null;
   combat: { id: number; actions: MechaCombatCue[] };
   preview: MechaPreview;
   // ---- 派生量（每次变更重算，视图只读）----
@@ -86,6 +89,8 @@ export type MechaControllerInit = {
   doctrine?: DoctrineId;
   /** 注入规划器：测试数调用次数，将来换 worker 版本也从这里进。 */
   planner?: Planner;
+  /** Local views acknowledge completion before allowing another turn. */
+  animate?: boolean;
   /** 测试用：直接给一局（须已 bossPrepare），绕过 preset/script/site。 */
   match?: MatchState;
 };
@@ -107,6 +112,7 @@ export type MechaController = {
   /** 只换打法；有可填的草稿时顺带按它重填（下拉框的行为）。 */
   setDoctrine(doctrine: DoctrineId): void;
   submit(): void;
+  finishPerformance(): void;
   restart(opts?: MechaRestartOptions): void;
   startAuto(): void;
   stopAuto(): void;
@@ -195,6 +201,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
   let noticeSource: string | null = null;
   let fault: ControllerFault | null = null;
   let lastLog: TurnEvent[] = [];
+  let performance: MechaControllerState["performance"] = null;
   let combat = { id: 0, actions: [] as MechaCombatCue[] };
 
   // 规划缓存：同一局面（对象身份即 revision 的承载）同一打法只算一次。
@@ -213,7 +220,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
   let draft: DraftMap = openingDraft(match);
 
   const finished = () => Boolean(match.outcome) || match.phase !== "player_plan";
-  const canEdit = () => !auto && !paused && !finished();
+  const canEdit = () => !auto && !paused && !performance && !finished();
 
   // ---- 草稿推演 ----
 
@@ -294,7 +301,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     ])) as Record<MechId, number | null>;
     const notice = fault ? planFaultText(fault, locale, fault.scope) : noticeSource ? gameText(noticeSource, locale) : null;
     snapshot = {
-      locale, match, site, preset, script, stake, doctrine, draft, selected, targeting, auto, paused, beat, notice, fault, lastLog, combat, preview,
+      locale, match, site, preset, script, stake, doctrine, draft, selected, targeting, auto, paused, beat, notice, fault, lastLog, combat, performance, preview,
       interactive: canEdit(),
       reach: deriveReach(),
       actions: living(match).some((m) => m.id === selected) ? legalActions(settledBoard(match, draft), selected) : [],
@@ -328,6 +335,10 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       fault = { mechId: result.fault.mechId, cause: causeOf(result.fault), scope: "rejected", reason: result.fault.reason };
       noticeSource = null;
       return false;
+    }
+    if (init.animate) {
+      const events = performanceFromLog(match, result.state, result.log);
+      performance = events.length ? { events, before: match } : null;
     }
     match = result.state;
     lastLog = result.log;
@@ -423,7 +434,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       commit();
     },
     selectMech(id) {
-      if (auto || paused || !living(match).some((m) => m.id === id)) return;
+      if (auto || paused || performance || !living(match).some((m) => m.id === id)) return;
       selected = id;
       targeting = null;
       commit();
@@ -466,6 +477,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       commit();
     },
     setDoctrine(which) {
+      if (performance) return;
       // 下拉框：换打法总是生效；有可填的草稿才重填（与旧界面一致，自动对战中也重填）。
       fillFromDoctrine(which);
       commit();
@@ -475,7 +487,13 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       advance({ revision: match.revision, items: itemsOf(match, draft) });
       commit();
     },
+    finishPerformance() {
+      if (!performance) return;
+      performance = null;
+      commit();
+    },
     restart(opts = {}) {
+      performance = null;
       preset = opts.preset ?? preset;
       script = opts.script ?? script;
       if (opts.site !== undefined) site = opts.site;
@@ -509,7 +527,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       else controller.startAuto();
     },
     pause() {
-      if (match.outcome || paused) return;
+      if ((match.outcome && !performance) || paused) return;
       paused = true;
       targeting = null;
       commit();
@@ -524,7 +542,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       else controller.pause();
     },
     tick() {
-      if (!auto || paused) return;
+      if (!auto || paused || performance) return;
       if (match.outcome) {
         auto = false;
         commit();

@@ -7,7 +7,42 @@ import { stable } from "../../lib/stable";
 import { ToolbarActions } from "../../components/ui/ToolbarActions";
 import { formatMinorMoney, languagePreference, message, message as translate, setLanguagePreference, useLanguage, type AppLanguage, type LanguagePreference, type MessageKey } from "../../lib/i18n";
 import { isEditableCurrency, minorToEditableInput, suggestedInputCurrency, type EditableCurrency } from "../../lib/currencyPreference";
-import { FOLLOW_SYSTEM_TIMEZONE, fetchWatcherHealth, type WatcherHealthStatus, addCustomSourceRoot, amendBillingDeclaration, checkForUpdates, clearBudgetSnooze, deleteImportedSourceData, disableBudgetProfile, listenAppEvents, makeInvalidationGate, openTrustedReleasesPage, pickCustomSourceRoot, previewBillingDeclaration, readAboutDiagnostics, readBillingSettings, readBudgetSettings, readCustomSourceConfig, readMonthlyExportSummary, readQuotaReminderConfig, readSourceHealth, readSourceHarnessControls, readSyncRequestStatus, readStatisticsSettings, readStatisticsTimezone, removeCustomSourceRoot, resolveBillingImportCandidate, retryBillingRecalculation, revokeBillingDeclaration, safeUiError, saveBudgetProfile, saveBillingDeclaration, saveDiagnosticPackage, saveQuotaReminderConfig, saveRetentionMonths, saveStatisticsTimezone, setSourceHarnessExcluded, setSyncPaused, snoozeBudgetCurrentPeriod, triggerSync, type AboutDiagnosticsReport, type BillingSettingsReport, type BudgetSettingsReport, type CustomSourceReport, type MonthlyExportSummary, type QuotaReminderConfig, type SourceConnectionState, type SourceErrorKind, type SourceHealthReport, type SourceHarnessControls, type StatisticsSettingsReport, type UpdateCheckResult } from "../../lib/tauri";
+import { FOLLOW_SYSTEM_TIMEZONE, fetchWatcherHealth, type WatcherHealthStatus, addCustomSourceRoot, amendBillingDeclaration, checkForUpdates, clearBudgetSnooze, deleteImportedSourceData, disableBudgetProfile, invoke, listenAppEvents, makeInvalidationGate, openTrustedReleasesPage, pickCustomSourceRoot, previewBillingDeclaration, readAboutDiagnostics, readBillingSettings, readBudgetSettings, readCustomSourceConfig, readMonthlyExportSummary, readQuotaReminderConfig, readSourceHealth, readSourceHarnessControls, readSyncRequestStatus, readStatisticsSettings, readStatisticsTimezone, removeCustomSourceRoot, resolveBillingImportCandidate, retryBillingRecalculation, revokeBillingDeclaration, safeUiError, saveBudgetProfile, saveBillingDeclaration, saveDiagnosticPackage, saveQuotaReminderConfig, saveRetentionMonths, saveStatisticsTimezone, setSourceHarnessExcluded, setSyncPaused, snoozeBudgetCurrentPeriod, triggerSync, type AboutDiagnosticsReport, type BillingSettingsReport, type BudgetSettingsReport, type CustomSourceReport, type MonthlyExportSummary, type QuotaReminderConfig, type SourceConnectionState, type SourceErrorKind, type SourceHealthReport, type SourceHarnessControls, type StatisticsSettingsReport, type UpdateCheckResult } from "../../lib/tauri";
+
+type McpSetupInfo = { cli_path: string | null; cli_version: string | null; data_home: string; tools: Array<{ name: string; description: string }> };
+const SETTINGS_SECTION_IDS = ["settings-sources", "settings-billing", "settings-budget", "settings-notifications", "settings-data", "settings-about", "settings-mcp"] as const;
+type SettingsSectionId = typeof SETTINGS_SECTION_IDS[number];
+
+function mcpCodexConfig(cliPath: string): string {
+  return `[mcp_servers.agent-vitals]\ncommand = ${JSON.stringify(cliPath)}\nargs = ["data-mcp", "serve", "--allow-local-writes"]`;
+}
+
+function mcpClaudeCommand(cliPath: string): string {
+  const executable = cliPath.includes(" ") ? JSON.stringify(cliPath) : cliPath;
+  return `claude mcp add agent-vitals -- ${executable} data-mcp serve --allow-local-writes`;
+}
+
+function mcpJsonConfig(cliPath: string): string {
+  return JSON.stringify({ mcpServers: { "agent-vitals": { command: cliPath, args: ["data-mcp", "serve", "--allow-local-writes"] } } }, null, 2);
+}
+
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const field = document.createElement("textarea");
+    field.value = text;
+    field.setAttribute("readonly", "");
+    field.style.position = "fixed";
+    field.style.opacity = "0";
+    document.body.appendChild(field);
+    field.select();
+    const copied = document.execCommand("copy");
+    field.remove();
+    return copied;
+  }
+}
 
 function sourceStateLabel(state: SourceConnectionState, language: AppLanguage): string {
   return message(`source.state.${state}` as MessageKey, language);
@@ -822,7 +857,14 @@ export function SettingsPage({ focusSection = null, onSectionFocused }: { focusS
   const [quotaReminder, setQuotaReminder] = useState<QuotaReminderConfig | null>(null);
   const [quotaReminderError, setQuotaReminderError] = useState<string | null>(null);
   const [quotaReminderLoading, setQuotaReminderLoading] = useState(true);
-  const [activeSection, setActiveSection] = useState(() => window.location.hash.startsWith("#settings-") ? window.location.hash.slice(1) : "settings-sources");
+  const [mcpInfo, setMcpInfo] = useState<McpSetupInfo | null>(null);
+  const [mcpError, setMcpError] = useState<string | null>(null);
+  const [mcpCopyState, setMcpCopyState] = useState<string | null>(null);
+  const [mcpLoading, setMcpLoading] = useState(true);
+  const [activeSection, setActiveSection] = useState<SettingsSectionId>(() => {
+    const hashSection = window.location.hash.startsWith("#settings-") ? window.location.hash.slice(1) : "";
+    return SETTINGS_SECTION_IDS.includes(hashSection as SettingsSectionId) ? hashSection as SettingsSectionId : "settings-sources";
+  });
   const settingsMounted = useRef(true);
   const sourceRequest = useRef(0);
   const sourceControlsRequest = useRef(0);
@@ -845,7 +887,8 @@ export function SettingsPage({ focusSection = null, onSectionFocused }: { focusS
 
   useEffect(() => {
     const updateActiveSection = () => {
-      if (window.location.hash.startsWith("#settings-")) setActiveSection(window.location.hash.slice(1));
+      const hashSection = window.location.hash.startsWith("#settings-") ? window.location.hash.slice(1) : "";
+      if (SETTINGS_SECTION_IDS.includes(hashSection as SettingsSectionId)) setActiveSection(hashSection as SettingsSectionId);
     };
     window.addEventListener("hashchange", updateActiveSection);
     return () => window.removeEventListener("hashchange", updateActiveSection);
@@ -1034,6 +1077,13 @@ export function SettingsPage({ focusSection = null, onSectionFocused }: { focusS
 
   useEffect(() => {
     settingsMounted.current = true;
+    void invoke<McpSetupInfo>("mcp_setup_info").then((info) => {
+      if (settingsMounted.current) setMcpInfo(info);
+    }).catch((reason: unknown) => {
+      if (settingsMounted.current) setMcpError(safeUiError(reason, "MCP 信息读取失败"));
+    }).finally(() => {
+      if (settingsMounted.current) setMcpLoading(false);
+    });
     refresh();
     refreshCustom();
     refreshBudget();
@@ -1074,7 +1124,12 @@ export function SettingsPage({ focusSection = null, onSectionFocused }: { focusS
 
   const attentionCount = useMemo(() => report?.sources.filter((source) => source.connection_state === "needs_attention").length ?? 0, [report]);
   const reloadAll = () => { refresh(); refreshCustom(); refreshBudget(); refreshBilling(); refreshData(); refreshAbout(); refreshQuotaReminder(); };
-  const sections = [["settings-sources", message("sx.navSources", language)], ["settings-billing", message("sx.navBilling", language)], ["settings-budget", message("sx.navBudget", language)], ["settings-notifications", message("sx.navAlerts", language)], ["settings-data", message("sx.navData", language)], ["settings-about", message("sx.navAbout", language)]] as const;
+  const sections: ReadonlyArray<readonly [SettingsSectionId, string]> = [["settings-sources", message("sx.navSources", language)], ["settings-billing", message("sx.navBilling", language)], ["settings-budget", message("sx.navBudget", language)], ["settings-notifications", message("sx.navAlerts", language)], ["settings-data", message("sx.navData", language)], ["settings-about", message("sx.navAbout", language)], ["settings-mcp", message("sx.navMcp", language)]];
+  const selectSettingsSection = (id: SettingsSectionId) => {
+    setActiveSection(id);
+    window.history.replaceState(null, "", `#${id}`);
+    document.querySelector<HTMLElement>(".main-content")?.scrollTo({ top: 0, left: 0, behavior: "instant" });
+  };
 
   return <>
     <h2 id="settings-title" className="visually-hidden">{message("sx.pageTitle", language)}</h2>
@@ -1091,8 +1146,16 @@ export function SettingsPage({ focusSection = null, onSectionFocused }: { focusS
       <button className="button button-secondary" type="button" onClick={reloadAll} disabled={loading || customLoading || budgetLoading || billingLoading || dataLoading || aboutLoading || quotaReminderLoading}>{message("sx.reloadAll", language)}</button>
     </ToolbarActions>
 
-    <nav className="settings-section-nav" aria-label={message("sx.sectionsAria", language)}>{sections.map(([id, label]) => <a key={id} className={activeSection === id ? "settings-section-nav-active" : undefined} href={`#${id}`} aria-current={activeSection === id ? "location" : undefined} onClick={() => setActiveSection(id)}>{label}</a>)}</nav>
+    <nav className="settings-section-nav" role="tablist" aria-label={message("sx.sectionsAria", language)}>{sections.map(([id, label], index) => <button key={id} id={`settings-tab-${id}`} className={activeSection === id ? "settings-section-nav-active" : undefined} type="button" role="tab" aria-selected={activeSection === id} aria-controls={`settings-panel-${id}`} tabIndex={activeSection === id ? 0 : -1} onClick={() => selectSettingsSection(id)} onKeyDown={(event) => {
+      const nextIndex = event.key === "ArrowRight" ? (index + 1) % sections.length : event.key === "ArrowLeft" ? (index + sections.length - 1) % sections.length : event.key === "Home" ? 0 : event.key === "End" ? sections.length - 1 : -1;
+      if (nextIndex < 0) return;
+      event.preventDefault();
+      const nextId = sections[nextIndex][0];
+      selectSettingsSection(nextId);
+      document.getElementById(`settings-tab-${nextId}`)?.focus();
+    }}>{label}</button>)}</nav>
 
+    {activeSection === "settings-sources" && <div className="settings-tab-panel" id="settings-panel-settings-sources" role="tabpanel" aria-labelledby="settings-tab-settings-sources">
     <section className="settings-section" id="settings-sources" aria-labelledby="settings-sources-title">
       <div className="settings-section-heading"><div><p className="eyebrow">{message("sx.navSources", language)}</p><h3 id="settings-sources-title">{message("sx.srcTitle", language)}</h3><p>{message("sx.srcDesc", language)}</p></div>{report && <span className={`status-pill status-pill-${attentionCount ? "warning" : "success"}`}>{attentionCount ? message("sx.srcAttention", language, { count: attentionCount }) : message("sx.srcOk", language)}</span>}</div>
       {error && <div className="error-banner" role="alert">{message("sx.srcUnavailableErr", language, { error })}<button className="button button-secondary button-small" type="button" onClick={refresh}>{message("sx.retry", language)}</button></div>}
@@ -1107,13 +1170,15 @@ export function SettingsPage({ focusSection = null, onSectionFocused }: { focusS
     </section>
 
     <CustomSourceSection report={customReport} loading={customLoading} error={customError} onReload={refreshCustom} onSync={runSync} />
+    </div>}
 
-    <BillingSection report={billingReport} loading={billingLoading} error={billingError} onReload={refreshBilling} />
+    {activeSection === "settings-billing" && <div className="settings-tab-panel" id="settings-panel-settings-billing" role="tabpanel" aria-labelledby="settings-tab-settings-billing"><BillingSection report={billingReport} loading={billingLoading} error={billingError} onReload={refreshBilling} /></div>}
 
-    <BudgetSection report={budgetReport} loading={budgetLoading} error={budgetError} onReload={refreshBudget} />
+    {activeSection === "settings-budget" && <div className="settings-tab-panel" id="settings-panel-settings-budget" role="tabpanel" aria-labelledby="settings-tab-settings-budget"><BudgetSection report={budgetReport} loading={budgetLoading} error={budgetError} onReload={refreshBudget} /></div>}
 
-    <QuotaReminderSection config={quotaReminder} loading={quotaReminderLoading} error={quotaReminderError} onReload={refreshQuotaReminder} />
+    {activeSection === "settings-notifications" && <div className="settings-tab-panel" id="settings-panel-settings-notifications" role="tabpanel" aria-labelledby="settings-tab-settings-notifications"><QuotaReminderSection config={quotaReminder} loading={quotaReminderLoading} error={quotaReminderError} onReload={refreshQuotaReminder} /></div>}
 
+    {activeSection === "settings-data" && <div className="settings-tab-panel" id="settings-panel-settings-data" role="tabpanel" aria-labelledby="settings-tab-settings-data">
     <FxSection />
 
     <QuoteVariantsSection />
@@ -1121,8 +1186,28 @@ export function SettingsPage({ focusSection = null, onSectionFocused }: { focusS
     <PriceCardSection />
 
     <StatisticsDataSection report={dataReport} loading={dataLoading} error={dataError} onReload={refreshData} />
+    </div>}
 
-    <AboutSection report={aboutReport} loading={aboutLoading} error={aboutError} onReload={refreshAbout} />
+    {activeSection === "settings-about" && <div className="settings-tab-panel" id="settings-panel-settings-about" role="tabpanel" aria-labelledby="settings-tab-settings-about"><AboutSection report={aboutReport} loading={aboutLoading} error={aboutError} onReload={refreshAbout} /></div>}
+
+    {activeSection === "settings-mcp" && <div className="settings-tab-panel" id="settings-panel-settings-mcp" role="tabpanel" aria-labelledby="settings-tab-settings-mcp"><section className="settings-section" id="settings-mcp" aria-labelledby="settings-mcp-title">
+      <div className="settings-section-heading"><div><p className="eyebrow">{message("sx.navMcp", language)}</p><h3 id="settings-mcp-title">{message("sx.mcpTitle", language)}</h3><p>{message("sx.mcpDescription", language)}</p></div></div>
+      {mcpLoading && <p className="settings-data-help" role="status">{message("sx.mcpLoading", language)}</p>}
+      {mcpError && <div className="error-banner" role="alert">{message("sx.mcpUnavailable", language, { error: mcpError })}</div>}
+      {mcpInfo && <>
+        <div className="settings-data-card">
+          <p className="settings-data-help">{mcpInfo.cli_path ? message("sx.mcpCliFound", language, { path: mcpInfo.cli_path, version: mcpInfo.cli_version ? ` (${mcpInfo.cli_version})` : "" }) : message("sx.mcpCliMissing", language)}</p>
+          <p className="settings-data-help">{message("sx.mcpDataHome", language, { path: mcpInfo.data_home })}</p>
+          {mcpInfo.cli_path && <>
+            {([["codex", message("sx.mcpCodexLabel", language), mcpCodexConfig(mcpInfo.cli_path)], ["claude", message("sx.mcpClaudeLabel", language), mcpClaudeCommand(mcpInfo.cli_path)], ["json", message("sx.mcpJsonLabel", language), mcpJsonConfig(mcpInfo.cli_path)]] as const).map(([client, label, config]) => <label key={client}><span>{label}</span><textarea className="settings-mcp-config" readOnly value={config} rows={client === "json" ? 5 : 3} /><button className="button button-secondary button-small" type="button" onClick={() => { void copyToClipboard(config).then((ok) => setMcpCopyState(ok ? client : `${client}-failed`)); }}>{mcpCopyState === client ? message("sx.mcpCopied", language) : message("sx.mcpCopy", language)}</button>{mcpCopyState === `${client}-failed` && <span role="alert">{message("sx.mcpCopyFailed", language)}</span>}</label>)}
+          </>}
+          <p className="settings-data-help">{message("sx.mcpCopyAllHelp", language)}</p>
+        </div>
+        <div className="settings-data-card"><strong>{message("sx.mcpTools", language)}</strong>{mcpInfo.tools.length ? <ul>{mcpInfo.tools.map((tool) => <li key={tool.name}><code>{tool.name}</code> — {tool.description.split(". ")[0]}</li>)}</ul> : <p className="settings-data-help">{message("sx.mcpNoTools", language)}</p>}</div>
+        <p className="settings-data-help">{message("sx.mcpWriteNote", language)}</p>
+      </>}
+    </section>
+    </div>}
 
     <section className="settings-placeholder" aria-label={message("sx.legacyAria", language)}><strong>{message("sx.legacyTitle", language)}</strong><span>{message("sx.legacyBody", language)}</span></section>
   </>;

@@ -65,10 +65,6 @@ export function useCityDrivingPlay(engine: RefObject<CityEngine | null>, host: R
   const sfxEnabledRef = useRef(sfxEnabled); sfxEnabledRef.current = sfxEnabled;
   phaseRef.current = car.hud.phase;
   const active = choosingVehicle || car.hud.phase !== "idle";
-  const focusCanvas = useCallback(() => {
-    const canvas = engine.current?.domCanvas;
-    if (canvas instanceof HTMLElement) canvas.focus({ preventScroll: true });
-  }, [engine]);
   const captureRoadCheck = useCallback(() => {
     const layout = engine.current?.currentLayout;
     setRoadCheck(layout ? roadValidationReport(layout) : null);
@@ -78,12 +74,12 @@ export function useCityDrivingPlay(engine: RefObject<CityEngine | null>, host: R
   const enterAt = useCallback((origin: Readonly<{ x: number; z: number; color: string }>) => {
     car.clearEntryError(); carColorRef.current = origin.color;
     setChoosingVehicle(false); setVtol(false); setInitialPaused(false);
-    void car.enterFreeDrive({ vtol: false }, { x: origin.x, z: origin.z }).then((ready) => { if (ready) { captureRoadCheck(); setInitialPaused(true); focusCanvas(); } });
-  }, [car.clearEntryError, car.enterFreeDrive, captureRoadCheck, focusCanvas]);
+    void car.enterFreeDrive({ vtol: false }, { x: origin.x, z: origin.z }).then((ready) => { if (ready) { captureRoadCheck(); setInitialPaused(true); } });
+  }, [car.clearEntryError, car.enterFreeDrive, captureRoadCheck]);
   const selectVehicle = useCallback((fly: boolean) => {
     carColorRef.current = undefined; setChoosingVehicle(false); setVtol(fly); setInitialPaused(false);
-    void car.enterFreeDrive({ vtol: fly }).then((ready) => { if (ready) { captureRoadCheck(); setInitialPaused(true); focusCanvas(); } });
-  }, [car.enterFreeDrive, captureRoadCheck, focusCanvas]);
+    void car.enterFreeDrive({ vtol: fly }).then((ready) => { if (ready) { captureRoadCheck(); setInitialPaused(true); } });
+  }, [car.enterFreeDrive, captureRoadCheck]);
   const resume = useCallback(() => {
     inputSource.current?.clear();
     const start = () => {
@@ -91,12 +87,12 @@ export function useCityDrivingPlay(engine: RefObject<CityEngine | null>, host: R
       const sfx = sfxRef.current;
       sfx.setVolume(soundVolumeRef.current); sfx.setMuted(!sfxEnabledRef.current); sfx.resume();
       setSoundAvailable(sfx.available);
-      setInitialPaused(false); car.resume(); focusCanvas();
+      setInitialPaused(false); car.resume();
     };
     // First AudioContext on WKWebView can block the plugin thread for seconds.
     if (sfxRef.current) start();
     else void noteBusy(8_000).catch(() => {}).finally(start);
-  }, [car.resume, focusCanvas]);
+  }, [car.resume]);
   const pause = useCallback((reason?: string) => { inputSource.current?.clear(); car.pause(reason); sfxRef.current?.suspend(); }, [car.pause]);
   const exit = useCallback(() => { setChoosingVehicle(false); inputSource.current?.clear(); car.exit(); removeVisuals(); sfxRef.current?.dispose(); sfxRef.current = null; setSoundAvailable(false); setInitialPaused(false); setRoadCheck(null); }, [car.exit, removeVisuals]);
   const openUiContext = useCallback(() => { inputSource.current?.clear(); if (phaseRef.current === "running") car.pause(); sfxRef.current?.suspend(); }, [car.pause]);
@@ -106,20 +102,17 @@ export function useCityDrivingPlay(engine: RefObject<CityEngine | null>, host: R
   useEffect(() => {
     if (car.hud.phase === "idle" || car.hud.phase === "error") { removeVisuals(); poseRef.current = null; }
   }, [car.hud.phase, removeVisuals]);
-  useEffect(() => {
-    if (car.hud.phase === "running") focusCanvas();
-  }, [car.hud.phase, focusCanvas]);
   useEffect(() => removeVisuals, [removeVisuals]);
   useEffect(() => {
     if (!active || choosingVehicle) return;
     const source = new KeyboardInput<VtolInputState>({
       keys: { KeyW: "forward", ArrowUp: "forward", KeyS: "backward", ArrowDown: "backward", KeyA: "left", ArrowLeft: "left", KeyD: "right", ArrowRight: "right", ...(vtol ? { Space: "thruster" as const } : {}) },
       emptyInput: () => ({ ...EMPTY_DRIVING_INPUT, thruster: false }), capture: true,
-      focusTarget: () => {
+      blurFocusTarget: () => {
         const target = engine.current?.domCanvas;
         return target instanceof HTMLElement ? target : null;
       },
-      isFocused: () => document.activeElement === engine.current?.domCanvas,
+      isFocused: () => document.hasFocus() && document.visibilityState !== "hidden",
       onInput: car.setInput,
       onInterrupt: (reason: InputInterrupt) => {
         inputSource.current?.clear(); sfxRef.current?.suspend();

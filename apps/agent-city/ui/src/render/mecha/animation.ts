@@ -1,5 +1,6 @@
 /** Procedural joint poses. Only the visual rig moves; the board owns placement and health. */
 import * as THREE from "three";
+import type { MechaPerformanceEvent } from "./performance";
 
 export type MechaAction = "idle" | "move" | "attack" | "repair" | "hit" | "defeat";
 export type MechaCombatCue = { actor: string; action: MechaAction; target?: string };
@@ -205,4 +206,183 @@ export class MechaBattleAnimator {
 export function faceMechaTarget(root: THREE.Object3D, from: THREE.Vector3, to: THREE.Vector3): void {
   const dx = to.x - from.x, dz = to.z - from.z;
   if (Math.hypot(dx, dz) > 1e-6) root.rotation.y = Math.atan2(-dx, -dz);
+}
+
+type ActorMap = Record<string, THREE.Group>;
+const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
+const easeOut = (value: number) => 1 - Math.pow(1 - clamp01(value), 3);
+const pulse = (value: number) => Math.sin(clamp01(value) * Math.PI);
+
+/** Sequential, pausable presentation of an accepted round using the shared joint rigs. */
+export class MechaPerformancePlayer {
+  private readonly actors: ActorMap;
+  private readonly events: MechaPerformanceEvent[];
+  private readonly cellToWorld: (cell: { x: number; y: number }, actor: string) => THREE.Vector3;
+  private readonly onComplete: () => void;
+  private readonly positions = new Map<string, THREE.Vector3>();
+  private readonly fallen = new Set<string>();
+  private readonly tracer: THREE.Line;
+  private readonly impact: THREE.Mesh;
+  private elapsed = 0;
+  private completed = false;
+
+  constructor(
+    actors: ActorMap,
+    events: MechaPerformanceEvent[],
+    cellToWorld: (cell: { x: number; y: number }, actor: string) => THREE.Vector3,
+    effectRoot: THREE.Object3D,
+    onComplete: () => void,
+  ) {
+    this.actors = actors;
+    this.events = events;
+    this.cellToWorld = cellToWorld;
+    this.onComplete = onComplete;
+    for (const [id, actor] of Object.entries(actors)) this.positions.set(id, actor.position.clone());
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(new Float32Array(6), 3));
+    this.tracer = new THREE.Line(geometry, new THREE.LineBasicMaterial({ color: "#9eeaff", transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false }));
+    this.tracer.visible = false;
+    this.tracer.frustumCulled = false;
+    const impactGeometry = new THREE.RingGeometry(0.8, 1.15, 20);
+    impactGeometry.rotateX(-Math.PI / 2);
+    this.impact = new THREE.Mesh(impactGeometry, new THREE.MeshBasicMaterial({ color: "#fff1ba", transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false }));
+    this.impact.visible = false;
+    effectRoot.add(this.tracer, this.impact);
+  }
+
+  update(dt: number): void {
+    this.restore();
+    this.tracer.visible = false;
+    this.impact.visible = false;
+    if (this.completed) return;
+    const step = Number.isNaN(dt) ? 0 : Math.max(0, dt);
+    this.elapsed = Math.min(this.duration(), this.elapsed + step);
+    let start = 0;
+    for (const event of this.events) {
+      const end = start + event.duration;
+      if (this.elapsed < end) {
+        this.play(event, clamp01((this.elapsed - start) / event.duration));
+        return;
+      }
+      this.settle(event);
+      start = end;
+    }
+    this.completed = true;
+    this.onComplete();
+  }
+
+  reset(): void {
+    this.restore();
+    this.tracer.visible = false;
+    this.impact.visible = false;
+  }
+
+  dispose(): void {
+    this.reset();
+    this.tracer.removeFromParent();
+    this.impact.removeFromParent();
+    this.tracer.geometry.dispose();
+    (this.tracer.material as THREE.Material).dispose();
+    this.impact.geometry.dispose();
+    (this.impact.material as THREE.Material).dispose();
+  }
+
+  private duration(): number {
+    return this.events.reduce((sum, event) => sum + event.duration, 0);
+  }
+
+  private restore(): void {
+    for (const [id, actor] of Object.entries(this.actors)) {
+      actor.position.copy(this.positions.get(id)!);
+      actor.rotation.x = 0;
+      actor.rotation.z = 0;
+      poseMechaModel(actor, this.fallen.has(id) ? "defeat" : "idle", this.fallen.has(id) ? 1 : this.elapsed);
+    }
+  }
+
+  private settle(event: MechaPerformanceEvent): void {
+    if (event.kind === "move" || event.kind === "knockback") {
+      const at = this.cellToWorld(event.path[event.path.length - 1], event.actor);
+      this.positions.set(event.actor, at);
+      this.actors[event.actor]?.position.copy(at);
+    } else if (event.kind === "death") {
+      this.fallen.add(event.actor);
+      const at = this.cellToWorld(event.at, event.actor);
+      this.positions.set(event.actor, at);
+      this.actors[event.actor]?.position.copy(at);
+      poseMechaModel(this.actors[event.actor], "defeat", 1);
+    }
+  }
+
+  private play(event: MechaPerformanceEvent, progress: number): void {
+    const actor = this.actors[event.actor];
+    if (!actor) return;
+    if (event.kind === "death") {
+      poseMechaModel(actor, "defeat", progress * event.duration);
+      return;
+    }
+    if (event.kind === "move" || event.kind === "knockback") {
+      const scaled = progress * (event.path.length - 1);
+      const index = Math.min(event.path.length - 2, Math.floor(scaled));
+      const local = scaled - index;
+      const from = this.cellToWorld(event.path[index], event.actor);
+      const to = this.cellToWorld(event.path[index + 1], event.actor);
+      actor.position.lerpVectors(from, to, event.kind === "knockback" ? easeOut(progress) : local);
+      faceMechaTarget(actor, from, to);
+      if (event.kind === "move") poseMechaModel(actor, "move", this.elapsed);
+      else {
+        actor.rotation.x = -pulse(progress) * 0.18;
+        actor.position.y += pulse(progress) * 0.6;
+      }
+      return;
+    }
+    if (event.kind !== "attack") return;
+    const from = this.cellToWorld(event.from, event.actor);
+    const target = this.cellToWorld(event.target, event.targetIds[0] ?? event.actor);
+    const direction = target.clone().sub(from);
+    direction.y = 0;
+    faceMechaTarget(actor, from, target);
+    const action = event.attack === "repair" ? "repair" : "attack";
+    poseMechaModel(actor, action, progress * (action === "repair" ? 1.2 : 0.95));
+    const hit = pulse((progress - 0.36) / 0.42);
+    if (event.attack === "shoot" || event.attack === "pierce") {
+      if (progress > 0.3 && progress < 0.7) this.beam(from, target, event.attack === "pierce" ? "#fff0a6" : "#8eeaff", event.attack === "pierce" ? 0.75 : 0.48);
+    } else if (event.attack === "repair") {
+      if (progress > 0.18 && progress < 0.88) this.beam(from, target, "#68ffc5", 0.55);
+    } else {
+      const reach = event.actor === "boss" ? 3.4 : event.attack === "charge" ? 2.5 : 1.25;
+      if (direction.lengthSq() > 0) actor.position.add(direction.normalize().multiplyScalar(pulse(progress) * reach));
+      if (progress > 0.4 && progress < 0.72) this.flash(target, event.attack === "sweep" ? "#ff8a72" : "#ffe0a0", 1 + hit * 2);
+    }
+    for (const id of event.targetIds) {
+      const targetActor = this.actors[id];
+      if (!targetActor || this.fallen.has(id)) continue;
+      poseMechaModel(targetActor, "hit", hit * 0.48);
+      targetActor.position.add(direction.clone().normalize().multiplyScalar(hit * 0.35));
+    }
+  }
+
+  private beam(from: THREE.Vector3, to: THREE.Vector3, color: string, opacity: number): void {
+    from = from.clone();
+    to = to.clone();
+    from.y += 16;
+    to.y += 10;
+    const attribute = this.tracer.geometry.getAttribute("position") as THREE.BufferAttribute;
+    attribute.setXYZ(0, from.x, from.y, from.z);
+    attribute.setXYZ(1, to.x, to.y, to.z);
+    attribute.needsUpdate = true;
+    const material = this.tracer.material as THREE.LineBasicMaterial;
+    material.color.set(color);
+    material.opacity = opacity;
+    this.tracer.visible = true;
+    this.flash(to, color, 1.3);
+  }
+
+  private flash(at: THREE.Vector3, color: string, scale: number): void {
+    this.impact.position.copy(at);
+    this.impact.position.y += 0.8;
+    this.impact.scale.setScalar(scale);
+    (this.impact.material as THREE.MeshBasicMaterial).color.set(color);
+    this.impact.visible = true;
+  }
 }

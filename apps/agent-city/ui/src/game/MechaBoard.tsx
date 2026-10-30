@@ -229,17 +229,20 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
 
   const controllerRef = useRef<MechaController | null>(null);
   if (!controllerRef.current) {
-    controllerRef.current = createMechaController({ locale, site, preset: "covers_sparse_mid", script: "siege", stake: shapeId === "alley" ? "frontage" : "all" });
+    controllerRef.current = createMechaController({ animate: true, locale, site, preset: "covers_sparse_mid", script: "siege", stake: shapeId === "alley" ? "frontage" : "all" });
   }
   const controller = controllerRef.current;
   const s = useSyncExternalStore(controller.subscribe, controller.getState);
-  const { match: state, draft, selected, targeting, auto, paused, doctrine } = s;
+  const { match: resolvedState, performance, draft, selected, targeting, auto, paused, doctrine } = s;
+
+  const state = performance?.before ?? resolvedState;
+  const finishPerformance = () => controller.finishPerformance();
 
   useEffect(() => { controller.setLocale(locale); }, [controller, locale]);
 
   // 自动对战的节拍：每拍一次 tick（展示 → 结算 → 下一回合）。状态一变就重排，暂停即停。
   useEffect(() => {
-    if (!auto || paused) return undefined;
+    if (!auto || paused || performance) return undefined;
     const timer = window.setTimeout(() => controller.tick(), 700);
     return () => window.clearTimeout(timer);
   }, [controller, auto, paused, s]);
@@ -278,25 +281,24 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
   const pendingNames = s.pendingIds.map((id) => t(NAMES[id]));
   const packReady = s.packReady;
   const cityView = useMemo<CityMechaView>(() => ({
-    combat: s.combat,
     figures: state.mechs.map((m) => {
-      const planned = m.hp > 0 ? draft[m.id]?.moveTo : null;
+      const planned = m.hp > 0 && !performance ? draft[m.id]?.moveTo : null;
       return { id: m.id, x: planned?.x ?? m.pos.x, y: planned?.y ?? m.pos.y, alive: m.hp > 0, hp: m.hp, selected: m.id === selected };
     }),
     boss: { x: state.boss.anchor.x, y: state.boss.anchor.y, alive: state.boss.hp > 0, hp: state.boss.hp },
     raiders: state.raiders.map((raider) => ({ id: raider.id, x: raider.pos.x, y: raider.pos.y, alive: raider.hp > 0, hp: raider.hp })),
     buildings: state.buildings.map((building) => ({ id: building.id, cells: building.cells, hp: building.hp, maxHp: building.maxHp })),
     telegraph: s.telegraph,
-    focus: s.focusCells,
-    reach,
-    move: draft[selected]?.moveTo ?? null,
-    targets: targetOptions.flatMap((option) => option.cells),
-    targetIds: targetOptions.map((option) => option.id),
+    focus: performance ? [] : s.focusCells,
+    reach: performance ? [] : reach,
+    move: performance ? null : draft[selected]?.moveTo ?? null,
+    targets: performance ? [] : targetOptions.flatMap((option) => option.cells),
+    targetIds: performance ? [] : targetOptions.map((option) => option.id),
     obstacles: state.obstacles,
   }), [s, state, draft, selected, reach, targetOptions]);
   const view = useMemo<MechaBoardView>(() => ({
     figures: state.mechs.map((m) => {
-      const planned = m.hp > 0 ? draft[m.id]?.moveTo : null;
+      const planned = m.hp > 0 && !performance ? draft[m.id]?.moveTo : null;
       return { id: m.id, x: planned?.x ?? m.pos.x, y: planned?.y ?? m.pos.y, alive: m.hp > 0, selected: m.id === selected };
     }),
     boss: { x: state.boss.anchor.x, y: state.boss.anchor.y, alive: state.boss.hp > 0 },
@@ -326,7 +328,7 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
   const onCity = Boolean(site && viewEngine);
   return (
     <section className={onCity ? "mecha-overlay is-city" : "mecha-overlay"} role="dialog" aria-label={t("机甲战棋")}>
-      {onCity && viewEngine && site ? <CityMechaWorld ref={worldRef} engine={viewEngine} site={site} view={cityView} onCell={clickCell} onUnavailable={() => setViewFailed(true)} /> : null}
+      {onCity && viewEngine && site ? <CityMechaWorld ref={worldRef} engine={viewEngine} site={site} view={cityView} performance={performance} paused={paused} onPerformanceComplete={finishPerformance} onCell={clickCell} onUnavailable={() => setViewFailed(true)} /> : null}
       <header className="mecha-battle-bar">
         <div><strong>{t("机甲战棋")}</strong><span>{t("回合")} {Math.min(state.turn, MAX_TURNS)}/{MAX_TURNS}</span>{paused && <span className="mecha-paused">{t("已暂停")}</span>}</div>
         <div className="mecha-battle-controls">
@@ -334,6 +336,7 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
             <button type="button" title={t("围绕当前观察点旋转 90°")} onClick={() => worldRef.current?.rotateCamera()}>{t("旋转 90°")}</button>
             <button type="button" title={t("回到可看全棋盘的战术视角")} onClick={() => worldRef.current?.resetCamera()}>{t("战术视角")}</button>
           </> : null}
+          {performance ? <button type="button" onClick={finishPerformance}>{t("跳过演出")}</button> : null}
           <button type="button" disabled={Boolean(state.outcome)} onClick={() => controller.togglePause()}>{paused ? t("继续") : t("暂停")}</button>
           <button type="button" onClick={onClose}>{t("退出战斗")}</button>
         </div>
@@ -343,7 +346,7 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
           <div><span>{t("敌方预告")}</span><strong className="mecha-intent">{skillLabel}</strong></div>
           <p>{t("大怪")} <strong>{state.boss.hp}</strong>{raiderHp ? ` · ${raiderHp}` : ""}{outcome ? ` · ${outcome}` : ""}</p>
         </section>
-        {onCity ? null : <MechaLineup label={t("机甲与怪兽")} view={view} />}
+        {onCity ? null : <MechaLineup label={t("机甲与怪兽")} view={view} performance={performance} paused={paused} onPerformanceComplete={finishPerformance} />}
         <ul className="mecha-pack" aria-label={t("三机行动状态")}>
           {activeMechs.map((m) => {
             const row = draft[m.id];
@@ -354,7 +357,7 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
             const current = m.id === selected;
             return (
               <li key={m.id} className={`${current ? "is-current" : ""} ${!row?.explicit ? "is-open" : hit ? "is-hit" : ""}`}>
-                <button type="button" className={current ? "is-selected" : ""} aria-pressed={current} disabled={auto || paused} onClick={() => controller.selectMech(m.id)}>{t(NAMES[m.id])} <span>{m.hp} HP</span></button>
+                <button type="button" className={current ? "is-selected" : ""} aria-pressed={current} disabled={auto || paused || Boolean(performance)} onClick={() => controller.selectMech(m.id)}>{t(NAMES[m.id])} <span>{m.hp} HP</span></button>
                 <span className={row?.explicit ? "mecha-plan-state is-ready" : "mecha-plan-state"}>{row?.explicit ? t("已规划") : t("待规划")}</span>
                 {onCity ? null : <><span>{row?.moveTo ? `${row.moveTo.x},${row.moveTo.y}` : t("原位")}</span><span>{stepBudgetLine(stepCost, moveBudget(m.id), locale)}</span></>}
                 <span className="mecha-card-action">{chosen}{row?.explicit && "target" in row.action && row.action.target ? ` ${t(row.action.kind === "repair" ? NAMES[row.action.target] : enemyName(row.action.target))}` : ""}</span>
@@ -404,15 +407,15 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
             <small>{t("圆环：黄/蓝/绿为我方，紫为小怪，黄绿为大怪；亮环是当前机甲。")}</small>
           </div>
           <div className="mecha-toolbar">
-            {onCity && catalog ? <label>{t("战场")}<select value={shapeId} onChange={(e) => {
+            {onCity && catalog ? <label>{t("战场")}<select disabled={Boolean(performance)} value={shapeId} onChange={(e) => {
               const next = e.target.value as FightShape;
               const nextSite = catalog[next];
               if (!nextSite) return;
               setShape(next);
               controller.restart({ site: nextSite, stake: next === "alley" ? "frontage" : "all" });
-            }}>{SHAPES.map((item) => <option key={item.id} value={item.id} disabled={!catalog[item.id]}>{t(item.label)}</option>)}</select></label> : onCity ? <span>{t("城市实地")}</span> : <label>{t("布局")}<select value={s.preset} onChange={(e) => controller.restart({ preset: e.target.value as CoverPresetId })}>{PRESETS.map((p) => <option key={p.id} value={p.id}>{t(p.label)}</option>)}</select></label>}
-            <label>{t("脚本")}<select value={s.script} onChange={(e) => controller.restart({ script: e.target.value as BossScriptId })}>{SCRIPTS.map((sc) => <option key={sc.id} value={sc.id}>{t(sc.label)}</option>)}</select></label>
-            <label>{t("打法")}<select value={doctrine} onChange={(e) => controller.setDoctrine(e.target.value as DoctrineId)}>{DOCTRINES.map((item) => <option key={item.id} value={item.id}>{t(item.label)}</option>)}</select></label>
+            }}>{SHAPES.map((item) => <option key={item.id} value={item.id} disabled={!catalog[item.id]}>{t(item.label)}</option>)}</select></label> : onCity ? <span>{t("城市实地")}</span> : <label>{t("布局")}<select disabled={Boolean(performance)} value={s.preset} onChange={(e) => controller.restart({ preset: e.target.value as CoverPresetId })}>{PRESETS.map((p) => <option key={p.id} value={p.id}>{t(p.label)}</option>)}</select></label>}
+            <label>{t("脚本")}<select disabled={Boolean(performance)} value={s.script} onChange={(e) => controller.restart({ script: e.target.value as BossScriptId })}>{SCRIPTS.map((sc) => <option key={sc.id} value={sc.id}>{t(sc.label)}</option>)}</select></label>
+            <label>{t("打法")}<select disabled={Boolean(performance)} value={doctrine} onChange={(e) => controller.setDoctrine(e.target.value as DoctrineId)}>{DOCTRINES.map((item) => <option key={item.id} value={item.id}>{t(item.label)}</option>)}</select></label>
             <button type="button" onClick={() => controller.restart()}>{t("新开一局")}</button>
             <button type="button" disabled={!planning} onClick={() => controller.applyDoctrine()}>{t("按打法填入")}</button>
             <button type="button" disabled={Boolean(state.outcome)} onClick={() => controller.toggleAuto()}>{auto ? t("停止自动") : t("自动对战")}</button>

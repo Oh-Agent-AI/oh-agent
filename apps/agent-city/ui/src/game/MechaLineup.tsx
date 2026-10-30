@@ -1,8 +1,10 @@
+import { BOARD } from "./mecha/rules";
 /** Rules board in world units. 1 unit = 2 m, one cell = 16 m. The grid underneath stays the input. */
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
-import { BOARD } from "./mecha/rules";
-import { createAssault, createBoss, createGunner, createRaider, createSupport, disposeMechaModel } from "../render/mecha/models";
+import { MechaPerformancePlayer } from "../render/mecha/animation";
+import type { MechaPerformanceView } from "./CityMechaWorld";
+import { MECHA_FACTION_COLORS, createAssault, createBoss, createGunner, createRaider, createSupport, disposeMechaModel } from "../render/mecha/models";
 
 const CELL = 8;
 const BOARD_SPAN = CELL * BOARD;
@@ -19,10 +21,22 @@ function cellTop(x: number, y: number, lift = 0): THREE.Vector3 {
   return new THREE.Vector3((x + 0.5) * CELL, lift, (y + 0.5) * CELL);
 }
 
-export function MechaLineup({ label, view }: { label: string; view: MechaBoardView }) {
+export function MechaLineup({ label, view, performance, paused, onPerformanceComplete }: {
+  label: string;
+  view: MechaBoardView;
+  performance: MechaPerformanceView | null;
+  paused: boolean;
+  onPerformanceComplete: () => void;
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const viewRef = useRef(view);
+  const performanceRef = useRef(performance);
+  const pausedRef = useRef(paused);
+  const completeRef = useRef(onPerformanceComplete);
   viewRef.current = view;
+  performanceRef.current = performance;
+  pausedRef.current = paused;
+  completeRef.current = onPerformanceComplete;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -85,11 +99,19 @@ export function MechaLineup({ label, view }: { label: string; view: MechaBoardVi
     const gunner = createGunner();
     const support = createSupport();
     const boss = createBoss();
-    // 小怪与城市视图同用 createRaider（原先是缩小的 createBoss，两处模型不一致）；城市视图也只对所有单位统一放大，不单独缩小
     const raiderWest = createRaider();
     const raiderEast = createRaider();
     const figures = { Assault: assault, Gunner: gunner, Support: support };
+    const markers = {
+      Assault: factionMarker(MECHA_FACTION_COLORS.friendly, 3.4, 4.2),
+      Gunner: factionMarker(MECHA_FACTION_COLORS.friendly, 3.4, 4.2),
+      Support: factionMarker(MECHA_FACTION_COLORS.friendly, 3.4, 4.2),
+      boss: factionMarker(MECHA_FACTION_COLORS.enemy, 5.6, 6.6, 4),
+      raiderWest: factionMarker(MECHA_FACTION_COLORS.enemy, 2.7, 3.4, 4),
+      raiderEast: factionMarker(MECHA_FACTION_COLORS.enemy, 2.7, 3.4, 4),
+    };
     for (const figure of [assault, gunner, support, boss, raiderWest, raiderEast]) scene.add(figure);
+    for (const ring of Object.values(markers)) scene.add(ring);
 
     const camera = new THREE.PerspectiveCamera(36, 1, 0.5, 500);
     const center = new THREE.Vector3(BOARD_SPAN / 2, 2, 40);
@@ -97,8 +119,17 @@ export function MechaLineup({ label, view }: { label: string; view: MechaBoardVi
     camera.lookAt(center);
 
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const actors = { Assault: assault, Gunner: gunner, Support: support, boss, "raider-w": raiderWest, "raider-e": raiderEast };
+    const actorMarkers = { Assault: markers.Assault, Gunner: markers.Gunner, Support: markers.Support, boss: markers.boss, "raider-w": markers.raiderWest, "raider-e": markers.raiderEast };
+    const resolveCell = (cell: { x: number; y: number }, actor: string) => actor === "boss" ? new THREE.Vector3((cell.x + 1) * CELL, 0, (cell.y + 1) * CELL) : cellTop(cell.x, cell.y);
+    let player: MechaPerformancePlayer | null = null;
+    let playing: MechaPerformanceView | null = null;
+    let lastFrame = globalThis.performance.now();
     let frame = 0;
     const draw = () => {
+      const now = globalThis.performance.now();
+      const dt = Math.min(0.08, (now - lastFrame) / 1000);
+      lastFrame = now;
       const width = parent.clientWidth;
       const height = parent.clientHeight;
       if (width > 0 && height > 0) {
@@ -115,6 +146,11 @@ export function MechaLineup({ label, view }: { label: string; view: MechaBoardVi
         const spot = cellTop(figure.x, figure.y, 0);
         slide(mesh, spot, reduce);
         mesh.visible = figure.alive;
+        const ring = markers[figure.id];
+        ring.visible = figure.alive;
+        ring.position.set(spot.x, 0.12, spot.z);
+        ring.scale.setScalar(figure.selected ? 1.15 : 1);
+        ring.material.color.set(figure.selected ? "#f4f7fb" : MECHA_FACTION_COLORS.friendly);
         if (figure.selected && figure.alive) {
           selected.visible = true;
           selected.position.set(spot.x, 0.18, spot.z);
@@ -125,18 +161,40 @@ export function MechaLineup({ label, view }: { label: string; view: MechaBoardVi
       const bossSpot = new THREE.Vector3((current.boss.x + 1) * CELL, 0, (current.boss.y + 1) * CELL);
       slide(boss, bossSpot, reduce);
       boss.visible = current.boss.alive;
+      markers.boss.visible = current.boss.alive;
+      markers.boss.position.set(bossSpot.x, 0.12, bossSpot.z);
       const small = [raiderWest, raiderEast];
+      const smallMarkers = [markers.raiderWest, markers.raiderEast];
       const raiders = current.raiders ?? [];
       for (let i = 0; i < small.length; i += 1) {
         const mesh = small[i];
+        const ring = smallMarkers[i];
         const raider = raiders[i];
-        if (!mesh) continue;
+        if (!mesh || !ring) continue;
         if (!raider) {
           mesh.visible = false;
+          ring.visible = false;
           continue;
         }
-        slide(mesh, cellTop(raider.x, raider.y, 0), reduce);
+        const spot = cellTop(raider.x, raider.y, 0);
+        slide(mesh, spot, reduce);
         mesh.visible = raider.alive;
+        ring.visible = raider.alive;
+        ring.position.set(spot.x, 0.12, spot.z);
+      }
+      if (playing !== performanceRef.current) {
+        player?.dispose();
+        player = null;
+        playing = performanceRef.current;
+        if (playing) player = new MechaPerformancePlayer(actors, playing.events, resolveCell, scene, () => completeRef.current());
+      }
+      if (player) {
+        player.update(reduce ? Number.POSITIVE_INFINITY : pausedRef.current ? 0 : dt);
+        for (const [id, marker] of Object.entries(actorMarkers)) {
+          const actor = actors[id as keyof typeof actors];
+          marker.position.set(actor.position.x, 0.12, actor.position.z);
+          marker.visible = actor.visible;
+        }
       }
       renderer.render(scene, camera);
       frame = requestAnimationFrame(draw);
@@ -145,6 +203,7 @@ export function MechaLineup({ label, view }: { label: string; view: MechaBoardVi
 
     return () => {
       cancelAnimationFrame(frame);
+      player?.dispose();
       for (const figure of [assault, gunner, support, boss, raiderWest, raiderEast]) disposeMechaModel(figure);
       disposeMesh(deck);
       tile.geometry.dispose();
@@ -154,6 +213,7 @@ export function MechaLineup({ label, view }: { label: string; view: MechaBoardVi
       disposePool(covers, coverMat);
       disposePool(telegraphs, telegraphMat);
       disposeMesh(selected);
+      for (const ring of Object.values(markers)) disposeMesh(ring);
       renderer.dispose();
     };
   }, []);
@@ -163,6 +223,12 @@ export function MechaLineup({ label, view }: { label: string; view: MechaBoardVi
       <canvas ref={canvasRef} aria-label={label} />
     </div>
   );
+}
+
+function factionMarker(color: string, inner: number, outer: number, sides = 28): THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial> {
+  const geo = new THREE.RingGeometry(inner, outer, sides);
+  geo.rotateX(-Math.PI / 2);
+  return new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.82, depthWrite: false, side: THREE.DoubleSide }));
 }
 
 function pool(scene: THREE.Scene, count: number, material: THREE.Material, y: number): THREE.Mesh[] {

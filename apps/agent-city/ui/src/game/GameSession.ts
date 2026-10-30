@@ -240,8 +240,8 @@ export class GameSession {
     }
     if (!this.input) {
       this.input = new FlightInput({
-        isGameFocused: () => this.canvasFocused(),
-        focusTarget: () => {
+        isGameFocused: () => this.gameWindowFocused(),
+        blurFocusTarget: () => {
           const target = this.engine.domCanvas;
           return typeof HTMLElement !== "undefined" && target instanceof HTMLElement ? target : null;
         },
@@ -254,10 +254,6 @@ export class GameSession {
     this.sfx.start();
     this.lastCountdownSec = null;
     this.resetToSpawn();
-    // 进场即把焦点交给画布（与 resume 同规则）：不可编辑目标上输入法无组合通路，
-    // WASD 直接进飞行状态，不再打到入口按钮/设置控件上。
-    const entryCanvas = this.engine.domCanvas;
-    if (entryCanvas instanceof HTMLElement) entryCanvas.focus({ preventScroll: true });
     this.controller.prepareDone();
     if (this.runtime.snapshot.phase === "idle" || this.runtime.snapshot.phase === "error") {
       const lease = this.sceneLease;
@@ -333,8 +329,6 @@ export class GameSession {
     this.input?.clear();
     if (!this.runtime.resume()) return;
     this.audio.resume(); this.sfx.resume();
-    const canvas = this.engine.domCanvas;
-    if (canvas instanceof HTMLElement) canvas.focus({ preventScroll: true });
     this.controller.resume(); this.emit(true);
   }
 
@@ -689,8 +683,8 @@ export class GameSession {
     this.emit(true);
   }
 
-  private canvasFocused(): boolean {
-    return typeof document !== "undefined" && document.activeElement === this.engine.domCanvas;
+  private gameWindowFocused(): boolean {
+    return typeof document !== "undefined" && document.visibilityState !== "hidden" && document.hasFocus();
   }
 
   private emit(force = false): void {

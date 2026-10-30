@@ -418,6 +418,7 @@ export function dijkstra(
   step: (from: Cell, to: Cell) => number | null,
   visit: (cell: Cell, cost: number) => boolean | void,
   maxCost = Number.POSITIVE_INFINITY,
+  previous?: Map<string, Cell>,
 ): void {
   const dist = new Map<string, number>([[key(start), 0]]);
   const heap = new CellHeap();
@@ -440,6 +441,7 @@ export function dijkstra(
       const prev = dist.get(key(nxtCell));
       if (prev !== undefined && prev <= cost) continue;
       dist.set(key(nxtCell), cost);
+      previous?.set(key(nxtCell), { x: cur.x, y: cur.y });
       heap.push({ x: nxtCell.x, y: nxtCell.y, cost });
     }
   }
@@ -449,13 +451,14 @@ export function dijkstra(
  * opts.alliesPass（v1.4 同时移动）：机甲格不挡路、也可作终点——三台同时动，
  * 谁占着哪格要等所有终点出来才知道，终点是否撞车由整包校验另查。其余占位物照常阻挡。
  */
-export function pathDistance(state: MatchState, from: Cell, to: Cell, mover: MoverId, opts?: { alliesPass?: boolean }): number | null {
-  if (eq(from, to)) return 0;
+function route(state: MatchState, from: Cell, to: Cell, mover: MoverId, opts?: { alliesPass?: boolean }): { cost: number; cells: Cell[] } | null {
+  if (eq(from, to)) return { cost: 0, cells: [{ ...from }] };
   if (!inb(to) || water(state, to)) return null;
   const passes = (occ: Occ) => occ === "empty" || occ === mover || (opts?.alliesPass === true && MECH_IDS.includes(occ as MechId));
   const destOcc = occupant(state, to);
   if (!passes(destOcc)) return null;
   let found: number | null = null;
+  const previous = new Map<string, Cell>();
   dijkstra(
     from,
     (cur, nxt) => {
@@ -468,6 +471,19 @@ export function pathDistance(state: MatchState, from: Cell, to: Cell, mover: Mov
       found = cost;
       return true;
     },
+    Number.POSITIVE_INFINITY,
+    previous,
   );
-  return found;
+  if (found === null) return null;
+  const cells = [{ ...to }];
+  while (!eq(cells[cells.length - 1]!, from)) cells.push(previous.get(key(cells[cells.length - 1]!))!);
+  return { cost: found, cells: cells.reverse() };
+}
+
+export function pathDistance(state: MatchState, from: Cell, to: Cell, mover: MoverId, opts?: { alliesPass?: boolean }): number | null {
+  return route(state, from, to, mover, opts)?.cost ?? null;
+}
+
+export function movementPath(state: MatchState, from: Cell, to: Cell, mover: MoverId, opts?: { alliesPass?: boolean }): Cell[] | null {
+  return route(state, from, to, mover, opts)?.cells ?? null;
 }

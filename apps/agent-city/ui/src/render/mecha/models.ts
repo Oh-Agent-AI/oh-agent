@@ -1,21 +1,24 @@
 /**
  * 楼尺机甲与外星怪兽。1 世界单位 = 2 米，一格 16 米。
  * 脚底在 y = 0，面朝 -Z（规则 y 减小的方向，也就是 Boss 所在的一侧）。
- * 横竖尺寸收在各自脚印里：机甲 1×1，怪兽 2×2。击退仍由规则结算，这里只出网格。
+ * 横竖尺寸收在各自脚印里：机甲和小怪 1×1，大怪 2×2。击退仍由规则结算，这里只出网格。
  */
 import * as THREE from "three";
-import { createMechaRig, registerMechaRig, type MechaJoint } from "./animation";
+import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
+import { createMechaRig, registerMechaRig, type MechaJoint } from "./animation";
 
 /** Same ratio as `engine/worldScale.ts`. The model test fails if the two diverge. */
 export const MECHA_METERS_PER_UNIT = 2;
 export const MECHA_CELL_METERS = 16;
+export const MECHA_FACTION_COLORS = { friendly: "#4fd8ff", enemy: "#ff5c72" } as const;
 
 const m = (meters: number): number => meters / MECHA_METERS_PER_UNIT;
 
 type Paint = THREE.MeshStandardMaterial;
+type Faction = keyof typeof MECHA_FACTION_COLORS;
 type Part = {
-  kind?: "box" | "cylinder" | "sphere" | "cone";
+  kind?: "box" | "armor" | "cylinder" | "sphere" | "cone";
   mat: Paint;
   w: number;
   h: number;
@@ -29,7 +32,6 @@ type Part = {
   name?: string;
   segments?: number;
   bevel?: number;
-  joint?: MechaJoint;
 };
 
 function material(params: THREE.MeshStandardMaterialParameters, owned: THREE.Material[]): Paint {
@@ -38,21 +40,44 @@ function material(params: THREE.MeshStandardMaterialParameters, owned: THREE.Mat
   return mat;
 }
 
+function factionMaterial(faction: Faction, owned: THREE.Material[]): Paint {
+  const color = MECHA_FACTION_COLORS[faction];
+  return material({ color, emissive: color, emissiveIntensity: 0.48, roughness: 0.28, metalness: 0.3 }, owned);
+}
+
 function geometry(part: Part): THREE.BufferGeometry {
   const segments = part.segments ?? 8;
+  if (part.kind === "armor") return new RoundedBoxGeometry(m(part.w), m(part.h), m(part.d), 1, m(part.bevel ?? 0.16));
   if (part.kind === "cylinder") return new THREE.CylinderGeometry(m(part.w), m(part.d), m(part.h), segments);
   if (part.kind === "sphere") return new THREE.SphereGeometry(m(part.w), segments, Math.max(6, segments - 2));
   if (part.kind === "cone") return new THREE.ConeGeometry(m(part.w), m(part.h), segments);
-  if (part.bevel) {
-    const b = m(Math.min(part.bevel, part.w / 4, part.h / 4, part.d / 4));
-    const w = m(part.w) / 2 - b, h = m(part.h) / 2 - b;
-    const shape = new THREE.Shape();
-    shape.moveTo(-w, -h); shape.lineTo(w, -h); shape.lineTo(w, h); shape.lineTo(-w, h); shape.closePath();
-    const geo = new THREE.ExtrudeGeometry(shape, { depth: m(part.d) - 2 * b, bevelEnabled: true, bevelThickness: b, bevelSize: b, bevelSegments: 1, steps: 1, curveSegments: 1 });
-    geo.translate(0, 0, -m(part.d) / 2 + b);
-    return geo;
-  }
   return new THREE.BoxGeometry(m(part.w), m(part.h), m(part.d));
+}
+
+function jointFor(part: Part, role: string): MechaJoint {
+  const side = part.x < 0 ? "left" : "right";
+  if (role === "Boss") {
+    if (Math.abs(part.x) > 5.5 && part.y > 8) return `arm-${side}`;
+    if (Math.abs(part.x) > 3.5 && part.y < 6) return `${part.z < 0 ? "leg" : "rear"}-${side}`;
+    if (part.z < -6) return "head";
+    return "body";
+  }
+  if (role === "Raider") {
+    if (Math.abs(part.x) > 3 && part.y > 3.5) return `arm-${side}`;
+    if (Math.abs(part.x) > 2 && part.y < 3.5) return `${part.z < 0 ? "leg" : "rear"}-${side}`;
+    if (part.z < -3) return "head";
+    return "body";
+  }
+  if (part.name === "drone") return "drone";
+  if (part.name === "railgun" || (role === "Gunner" && part.x > 2 && part.y > 13 && part.z < -2.5)) return "cannon";
+  const headHeight = role === "Assault" ? 18 : role === "Gunner" ? 16 : 15.5;
+  if (part.y > headHeight && Math.abs(part.x) < 2.5) return "head";
+  if (part.y < 9 && Math.abs(part.x) < 3) return `${part.y < 6 ? "shin" : "leg"}-${side}`;
+  if (Math.abs(part.x) > 2.4 && part.y > 8) {
+    const elbow = role === "Assault" ? 12 : role === "Gunner" ? 11 : 11.5;
+    return `${part.y < elbow ? "forearm" : "arm"}-${side}`;
+  }
+  return "body";
 }
 
 function assemble(name: string, role: string, parts: (owned: THREE.Material[]) => Part[]): THREE.Group {
@@ -66,10 +91,12 @@ function assemble(name: string, role: string, parts: (owned: THREE.Material[]) =
   for (const part of parts(owned)) {
     const mesh = new THREE.Mesh(geometry(part), part.mat);
     mesh.name = part.name ?? "";
-    const id = part.joint ?? "body";
+    const id = jointFor(part, role);
     const target = rig.joints.get(id)!;
     mesh.position.set(m(part.x), m(part.y), m(part.z)).sub(rig.origins.get(id)!);
     mesh.rotation.set(part.rx ?? 0, part.ry ?? 0, part.rz ?? 0);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
     if (part.name) {
       target.add(mesh);
     } else {
@@ -87,7 +114,6 @@ function assemble(name: string, role: string, parts: (owned: THREE.Material[]) =
       batches.set(target, byMaterial);
     }
   }
-  // Batch within each joint so armor remains cheap to draw and follows its limb.
   for (const [target, byMaterial] of batches) for (const [mat, geometries] of byMaterial) {
     const merged = mergeGeometries(geometries);
     if (merged) {
@@ -112,202 +138,244 @@ export function disposeMechaModel(root: THREE.Object3D) {
   if (typeof dispose === "function") dispose();
 }
 
-/** Meter-based parts. Chamfers make armor readable without adding surface noise. */
-function box(mat: Paint, w: number, h: number, d: number, x: number, y: number, z: number, extra: Partial<Part> = {}): Part {
-  return { mat, w, h, d, x, y, z, ...extra };
-}
-
-function legs(armor: Paint, joint: Paint, trim: Paint, heavy = false): Part[] {
-  return [-1, 1].flatMap((side): Part[] => {
-    const x = side * (heavy ? 1.9 : 1.55);
-    return [
-      box(joint, 2.8, 1, 4.4, x, 0.5, -0.65, { bevel: 0.15 }),
-      box(armor, 2.3, 1, 3.6, x, 1.05, -0.75, { bevel: 0.2 }),
-      box(armor, 2.25, 3.6, 2.55, x, 3.1, 0, { bevel: 0.25 }),
-      box(joint, 1.8, 1.3, 1.8, x, 5.3, 0),
-      box(trim, 2.4, 1.5, 0.65, x, 5.35, -1.15, { bevel: 0.15 }),
-      box(armor, heavy ? 2.8 : 2.25, 3.35, 2.6, x, 7.6, 0.2, { bevel: 0.25, rz: side * 0.04 }),
-    ].map((part, index) => ({ ...part, joint: `${index === 5 ? "leg" : "shin"}-${side < 0 ? "left" : "right"}` as MechaJoint }));
-  });
-}
-
-/** Gold striker: massive illuminated ram fists and a broad armored silhouette. */
+/** 重装近战：独立肩轴、斜盾、内凹胸口和独立重拳。 */
 export function createAssault(): THREE.Group {
   return assemble("assault", "Assault", (owned) => {
-    const armor = material({ color: "#d4a017", roughness: 0.48, metalness: 0.34 }, owned);
-    const dark = material({ color: "#302a24", roughness: 0.7 }, owned);
-    const trim = material({ color: "#8b621e", metalness: 0.45 }, owned);
-    const glow = material({ color: "#ffe092", emissive: "#ff9c20", emissiveIntensity: 1.8 }, owned);
+    const armor = material({ color: "#d9a62b", roughness: 0.4, metalness: 0.48 }, owned);
+    const trim = material({ color: "#f2d58a", roughness: 0.36, metalness: 0.5 }, owned);
+    const dark = material({ color: "#343b40", roughness: 0.66, metalness: 0.58 }, owned);
+    const joint = material({ color: "#1f282e", roughness: 0.78, metalness: 0.22 }, owned);
+    const faction = factionMaterial("friendly", owned);
     return [
-      ...legs(armor, dark, trim, true),
-      box(dark, 5.5, 1.8, 3.3, 0, 9.8, 0),
-      box(armor, 6.6, 5.4, 4.1, 0, 13.4, 0, { bevel: 0.5 }),
-      box(trim, 4.3, 2.9, 0.45, 0, 13.8, -2.13, { bevel: 0.18 }),
-      box(dark, 2.4, 1.2, 2.5, 0, 16.7, 0),
-      box(armor, 2.8, 2.5, 2.7, 0, 18.35, -0.25, { joint: "head", bevel: 0.25 }),
-      box(dark, 2.3, 0.85, 0.25, 0, 18.45, -1.63, { joint: "head" }),
-      box(glow, 1.95, 0.4, 0.15, 0, 18.5, -1.81, { joint: "head", name: "front" }),
-      ...[-1, 1].flatMap((side): Part[] => [
-        box(dark, 2.4, 2.4, 2.8, side * 4, 15.1, 0),
-        box(armor, 3.8, 2.8, 4, side * 4.6, 15.8, 0, { bevel: 0.45, rz: side * 0.1 }),
-        box(trim, 2.7, 3.1, 2.7, side * 4.8, 13.1, -0.25, { bevel: 0.2, rx: -0.15 }),
-        box(dark, 2.1, 1.4, 2.1, side * 5.1, 11.4, -0.8),
-        box(armor, 3.9, 3.9, 4.5, side * 5.05, 9.75, -1.65, { bevel: 0.4, name: side < 0 ? "gauntlet-left" : "gauntlet-right" }),
-        box(dark, 3.3, 3.2, 0.4, side * 5.05, 9.75, -3.98, { bevel: 0.2 }),
-        box(glow, 2.6, 0.28, 0.12, side * 5.05, 10.75, -4.22),
-        box(glow, 0.28, 2.3, 0.12, side * 5.05 + side * 1.15, 9.75, -4.22),
-      ].map((part, index) => ({ ...part, joint: `${index >= 3 ? "forearm" : "arm"}-${side < 0 ? "left" : "right"}` as MechaJoint }))),
+      { mat: dark, kind: "armor", w: 3.5, h: 0.8, d: 4.7, x: -1.9, y: 0.4, z: -0.2, bevel: 0.18 },
+      { mat: dark, kind: "armor", w: 3.5, h: 0.8, d: 4.7, x: 1.9, y: 0.4, z: -0.2, bevel: 0.18 },
+      { mat: armor, kind: "armor", w: 2.5, h: 4.2, d: 2.7, x: -1.75, y: 3.1, z: 0.2, rz: -0.06 },
+      { mat: armor, kind: "armor", w: 2.5, h: 4.2, d: 2.7, x: 1.75, y: 3.1, z: 0.2, rz: 0.06 },
+      { mat: joint, kind: "cylinder", w: 1.05, h: 1.35, d: 1.05, x: -1.7, y: 5.6, z: 0 },
+      { mat: joint, kind: "cylinder", w: 1.05, h: 1.35, d: 1.05, x: 1.7, y: 5.6, z: 0 },
+      { mat: trim, kind: "armor", w: 2.1, h: 1.5, d: 0.6, x: -1.7, y: 5.8, z: -1.35, bevel: 0.1 },
+      { mat: trim, kind: "armor", w: 2.1, h: 1.5, d: 0.6, x: 1.7, y: 5.8, z: -1.35, bevel: 0.1 },
+      { mat: dark, kind: "cylinder", w: 0.42, h: 3.4, d: 0.42, x: -2.55, y: 7.8, z: 1.15, rz: -0.12, segments: 6 },
+      { mat: dark, kind: "cylinder", w: 0.42, h: 3.4, d: 0.42, x: 2.55, y: 7.8, z: 1.15, rz: 0.12, segments: 6 },
+      { mat: armor, kind: "armor", w: 2.9, h: 3.9, d: 3.1, x: -1.55, y: 8.1, z: 0.25, rz: 0.08 },
+      { mat: armor, kind: "armor", w: 2.9, h: 3.9, d: 3.1, x: 1.55, y: 8.1, z: 0.25, rz: -0.08 },
+      { mat: dark, kind: "armor", w: 5.5, h: 2, d: 3.7, x: 0, y: 10.6, z: 0.2 },
+      { mat: joint, w: 3.7, h: 2.4, d: 3.1, x: 0, y: 11.8, z: 0.1 },
+      { mat: armor, kind: "armor", w: 6.5, h: 5.5, d: 4.5, x: 0, y: 14.4, z: 0, rx: -0.06, bevel: 0.3 },
+      { mat: dark, kind: "armor", w: 4.2, h: 3.2, d: 0.65, x: 0, y: 14.5, z: -2.3, bevel: 0.12 },
+      { mat: faction, kind: "armor", w: 1.1, h: 2.5, d: 0.4, x: 0, y: 14.7, z: -2.68, name: "faction", bevel: 0.08 },
+      { mat: trim, w: 2.4, h: 0.45, d: 0.5, x: 0, y: 16.3, z: -2.25 },
+      { mat: dark, kind: "cylinder", w: 0.85, h: 2.2, d: 0.85, x: -3.7, y: 16.1, z: 0, rz: Math.PI / 2 },
+      { mat: dark, kind: "cylinder", w: 0.85, h: 2.2, d: 0.85, x: 3.7, y: 16.1, z: 0, rz: Math.PI / 2 },
+      { mat: armor, kind: "armor", w: 3.7, h: 2.5, d: 4.5, x: -4.7, y: 16.8, z: 0, rz: -0.16, bevel: 0.28 },
+      { mat: armor, kind: "armor", w: 3.7, h: 2.5, d: 4.5, x: 4.7, y: 16.8, z: 0, rz: 0.16, bevel: 0.28 },
+      { mat: faction, w: 2.2, h: 0.35, d: 0.45, x: -4.7, y: 17.2, z: -2.28, rz: -0.16, name: "faction" },
+      { mat: faction, w: 2.2, h: 0.35, d: 0.45, x: 4.7, y: 17.2, z: -2.28, rz: 0.16, name: "faction" },
+      { mat: dark, kind: "cylinder", w: 1.05, h: 1.2, d: 1.05, x: 0, y: 18.1, z: -0.2 },
+      { mat: armor, kind: "armor", w: 2.8, h: 2.6, d: 3, x: 0, y: 19.8, z: -0.5, bevel: 0.24 },
+      { mat: faction, kind: "armor", w: 2.2, h: 0.5, d: 0.35, x: 0, y: 20, z: -2, name: "front", bevel: 0.08 },
+      { mat: dark, kind: "armor", w: 1.7, h: 3.8, d: 2, x: -4.5, y: 13.5, z: -0.1, rz: -0.12 },
+      { mat: joint, kind: "cylinder", w: 0.85, h: 1.9, d: 0.85, x: -4.7, y: 11.5, z: -0.3, rz: Math.PI / 2 },
+      { mat: dark, w: 0.65, h: 3.6, d: 1.1, x: -5.15, y: 11.5, z: -0.8, rz: -0.12 },
+      { mat: armor, kind: "armor", w: 1.1, h: 6.8, d: 5.5, x: -5.8, y: 11.5, z: -1.8, ry: -0.18, rz: -0.1, bevel: 0.22 },
+      { mat: trim, kind: "armor", w: 0.4, h: 4.8, d: 4.1, x: -6.4, y: 11.5, z: -1.9, ry: -0.18, rz: -0.1, bevel: 0.08 },
+      { mat: faction, w: 0.35, h: 3.6, d: 0.5, x: -6.47, y: 11.5, z: -4.05, ry: -0.18, rz: -0.1, name: "faction" },
+      { mat: dark, kind: "armor", w: 1.9, h: 4.1, d: 2.2, x: 4.4, y: 13.3, z: -0.4, rz: 0.12 },
+      { mat: joint, kind: "cylinder", w: 0.9, h: 2, d: 0.9, x: 4.7, y: 11.2, z: -0.8, rz: Math.PI / 2 },
+      { mat: armor, kind: "armor", w: 3.5, h: 3.3, d: 4.1, x: 5, y: 9.8, z: -1.6, rx: -0.12, bevel: 0.34, name: "gauntlet-right" },
+      { mat: trim, kind: "armor", w: 2.6, h: 0.7, d: 0.7, x: 5, y: 10, z: -3.75, bevel: 0.12 },
     ];
   });
 }
 
-/** Blue artillery: narrow body and long shoulder cannon with a recessed muzzle. */
+/** 射手：稳定脚架、外露长轨道炮、供能滑轨和独立传感器。 */
 export function createGunner(): THREE.Group {
   return assemble("gunner", "Gunner", (owned) => {
-    const armor = material({ color: "#276bd1", roughness: 0.42, metalness: 0.4 }, owned);
-    const dark = material({ color: "#172334", roughness: 0.64 }, owned);
-    const trim = material({ color: "#459dff", metalness: 0.4 }, owned);
-    const glow = material({ color: "#b7f3ff", emissive: "#39d6ff", emissiveIntensity: 1.5 }, owned);
+    const armor = material({ color: "#427fce", roughness: 0.4, metalness: 0.5 }, owned);
+    const trim = material({ color: "#b8c9d9", roughness: 0.34, metalness: 0.62 }, owned);
+    const dark = material({ color: "#263746", roughness: 0.64, metalness: 0.62 }, owned);
+    const joint = material({ color: "#18262f", roughness: 0.8, metalness: 0.2 }, owned);
+    const faction = factionMaterial("friendly", owned);
     return [
-      ...legs(armor, dark, trim),
-      box(dark, 4.2, 1.6, 3, 0, 9.6, 0),
-      box(armor, 4.8, 4.7, 3.4, 0, 12.6, 0, { bevel: 0.35 }),
-      box(trim, 3.3, 1.5, 0.45, 0, 13.2, -1.8, { bevel: 0.16 }),
-      box(dark, 2.1, 0.8, 2, 0, 15.3, 0),
-      box(armor, 2.4, 2, 2.4, 0, 16.7, -0.3, { joint: "head", bevel: 0.18 }),
-      box(glow, 2.05, 0.38, 0.18, 0, 16.85, -1.6, { joint: "head", name: "front" }),
-      box(dark, 3.4, 3.8, 2, 0.4, 13.8, 2.1, { bevel: 0.2 }),
-      box(trim, 1.7, 2.5, 2.4, 2.8, 16, 0.1, { joint: "cannon", bevel: 0.2 }),
-      box(armor, 2.8, 2.6, 4.1, 2.8, 17.5, 0.7, { joint: "cannon", bevel: 0.3 }),
-      box(dark, 1.8, 1.8, 6.3, 2.8, 17.5, -3.8, { joint: "cannon", bevel: 0.15, name: "cannon" }),
-      box(trim, 2.2, 2.2, 1.2, 2.8, 17.5, -6.6, { joint: "cannon", bevel: 0.15 }),
-      box(dark, 1.4, 1.4, 0.15, 2.8, 17.5, -7.24, { joint: "cannon" }),
-      box(glow, 0.16, 1.4, 0.12, 1.96, 17.5, -7.27, { joint: "cannon" }),
-      box(glow, 0.16, 1.4, 0.12, 3.64, 17.5, -7.27, { joint: "cannon" }),
-      ...[-1, 1].flatMap((side): Part[] => [
-        box(armor, 2.6, 2, 2.7, side * 3.35, 14, 0, { bevel: 0.25 }),
-        box(dark, 1.4, 2.3, 1.4, side * 3.3, 12.3, -0.1),
-        box(armor, 2.1, 2.8, 2.4, side * 3.2, 10.7, -0.9, { bevel: 0.25, rx: -0.2 }),
-        box(dark, 1.7, 1.3, 1.7, side * 3.2, 9.2, -1.2, { bevel: 0.1 }),
-      ].map((part, index) => ({ ...part, joint: `${index >= 2 ? "forearm" : "arm"}-${side < 0 ? "left" : "right"}` as MechaJoint }))),
+      { mat: dark, kind: "armor", w: 2.7, h: 0.7, d: 4.2, x: -1.55, y: 0.35, z: 0.5, bevel: 0.16 },
+      { mat: dark, kind: "armor", w: 2.7, h: 0.7, d: 4.2, x: 1.55, y: 0.35, z: 0.5, bevel: 0.16 },
+      { mat: armor, kind: "armor", w: 1.8, h: 4.8, d: 2, x: -1.4, y: 3.1, z: 0.3, rz: -0.1 },
+      { mat: armor, kind: "armor", w: 1.8, h: 4.8, d: 2, x: 1.4, y: 3.1, z: 0.3, rz: 0.1 },
+      { mat: joint, kind: "cylinder", w: 0.85, h: 1.25, d: 0.85, x: -1.25, y: 5.8, z: 0 },
+      { mat: joint, kind: "cylinder", w: 0.85, h: 1.25, d: 0.85, x: 1.25, y: 5.8, z: 0 },
+      { mat: armor, kind: "armor", w: 1.9, h: 3.2, d: 2.2, x: -1.05, y: 7.7, z: 0.2, rz: 0.08 },
+      { mat: armor, kind: "armor", w: 1.9, h: 3.2, d: 2.2, x: 1.05, y: 7.7, z: 0.2, rz: -0.08 },
+      { mat: dark, kind: "armor", w: 3.8, h: 1.6, d: 2.8, x: 0, y: 9.5, z: 0.2 },
+      { mat: armor, kind: "armor", w: 4.4, h: 5.2, d: 3.2, x: 0, y: 12.5, z: 0, bevel: 0.26 },
+      { mat: dark, kind: "armor", w: 2.7, h: 3.4, d: 0.45, x: 0, y: 12.7, z: -1.7, bevel: 0.1 },
+      { mat: faction, w: 0.45, h: 2.5, d: 0.35, x: 0, y: 12.8, z: -1.95, name: "faction" },
+      { mat: dark, kind: "cylinder", w: 0.85, h: 0.8, d: 0.85, x: 0, y: 15.4, z: -0.3 },
+      { mat: armor, kind: "armor", w: 2.2, h: 2, d: 2.5, x: 0, y: 16.6, z: -0.5, bevel: 0.2 },
+      { mat: faction, kind: "armor", w: 2.5, h: 0.45, d: 0.35, x: 0, y: 16.8, z: -1.8, name: "front", bevel: 0.08 },
+      { mat: dark, kind: "cylinder", w: 0.18, h: 2.3, d: 0.18, x: -0.8, y: 18.4, z: 0, segments: 6 },
+      { mat: faction, kind: "sphere", w: 0.3, h: 1, d: 1, x: -0.8, y: 19.6, z: 0, name: "faction", segments: 8 },
+      { mat: dark, kind: "cylinder", w: 0.65, h: 1.6, d: 0.65, x: -2.4, y: 13.7, z: 0, rz: Math.PI / 2 },
+      { mat: armor, kind: "armor", w: 1.7, h: 3.8, d: 2, x: -2.8, y: 11.7, z: -0.2, rz: -0.12 },
+      { mat: joint, kind: "cylinder", w: 0.65, h: 1.6, d: 0.65, x: -2.9, y: 9.7, z: -0.3, rz: Math.PI / 2 },
+      { mat: dark, kind: "cylinder", w: 0.85, h: 2.2, d: 0.85, x: 2.7, y: 14.5, z: 0.4, rz: Math.PI / 2 },
+      { mat: armor, kind: "armor", w: 3.1, h: 2.7, d: 4.8, x: 3.2, y: 15.1, z: -1.8, bevel: 0.24, name: "railgun" },
+      { mat: dark, kind: "armor", w: 2.2, h: 1.4, d: 7.8, x: 3.2, y: 15.1, z: -6.4, bevel: 0.12, name: "railgun" },
+      { mat: trim, kind: "cylinder", w: 0.28, h: 8.4, d: 0.28, x: 2.5, y: 15.8, z: -6.8, rx: -Math.PI / 2, segments: 6, name: "railgun" },
+      { mat: trim, kind: "cylinder", w: 0.28, h: 8.4, d: 0.28, x: 3.9, y: 15.8, z: -6.8, rx: -Math.PI / 2, segments: 6, name: "railgun" },
+      { mat: faction, w: 0.35, h: 0.35, d: 7.6, x: 3.2, y: 16.2, z: -6.4, name: "faction" },
+      { mat: armor, kind: "cylinder", w: 1.15, h: 1.6, d: 0.85, x: 3.2, y: 15.1, z: -10.8, rx: -Math.PI / 2, name: "cannon" },
+      { mat: dark, kind: "armor", w: 2.8, h: 0.6, d: 1.2, x: 3.2, y: 15.1, z: -11.5, bevel: 0.1, name: "railgun" },
+      { mat: dark, w: 1.2, h: 3.8, d: 1.2, x: 2.6, y: 12.4, z: -2.3, rx: -0.35 },
+      { mat: armor, kind: "armor", w: 3, h: 2, d: 2.4, x: 0, y: 13.3, z: 2.2 },
+      { mat: faction, w: 1.8, h: 0.35, d: 0.4, x: 0, y: 13.5, z: 3.42, name: "faction" },
     ];
   });
 }
 
-/** Jade field engineer: repair claw, twin tanks, medical cross and service drone. */
+/** 支援：维修背包、明确关节和带推进器的侧向悬浮无人机。 */
 export function createSupport(): THREE.Group {
   return assemble("support", "Support", (owned) => {
-    const armor = material({ color: "#2fbc8c", roughness: 0.5, metalness: 0.22 }, owned);
-    const dark = material({ color: "#17352f", roughness: 0.75 }, owned);
-    const white = material({ color: "#d5ebe2", roughness: 0.38, metalness: 0.16 }, owned);
-    const glow = material({ color: "#dcfff1", emissive: "#64ffbc", emissiveIntensity: 1.35 }, owned);
+    const armor = material({ color: "#43b58d", roughness: 0.44, metalness: 0.38 }, owned);
+    const trim = material({ color: "#d0e5dc", roughness: 0.4, metalness: 0.36 }, owned);
+    const dark = material({ color: "#29423d", roughness: 0.68, metalness: 0.48 }, owned);
+    const joint = material({ color: "#1d302d", roughness: 0.8, metalness: 0.18 }, owned);
+    const faction = factionMaterial("friendly", owned);
     return [
-      ...legs(armor, dark, white),
-      box(dark, 4.8, 1.6, 3.4, 0, 9.6, 0),
-      box(armor, 5.7, 4.8, 3.8, 0, 12.6, 0, { bevel: 0.35 }),
-      box(white, 2, 2, 0.25, 0, 12.9, -2.04, { bevel: 0.15 }),
-      box(glow, 0.45, 0.45, 0.1, 0, 13.35, -2.24, { name: "front" }),
-      box(glow, 0.45, 0.45, 0.1, 0, 12.45, -2.24),
-      box(glow, 1.35, 0.45, 0.1, 0, 12.9, -2.24),
-      box(dark, 1.8, 0.7, 1.9, 0, 15.4, 0),
-      box(armor, 2.3, 2, 2.4, 0, 16.75, -0.15, { joint: "head", bevel: 0.2 }),
-      box(dark, 1.6, 0.38, 0.15, 0, 16.9, -1.42, { joint: "head" }),
-      box(dark, 4.3, 4, 2.3, 0, 12.7, 2.6, { bevel: 0.2, name: "repair-pack" }),
-      ...[-1, 1].flatMap((side): Part[] => [
-        box(white, 1.2, 3.4, 1.4, side * 1.3, 12.8, 3.55, { bevel: 0.3 }),
-        box(armor, 1.35, 0.55, 1.55, side * 1.3, 13.6, 3.55),
-        box(white, 2.2, 1.8, 2.7, side * 3.4, 14, 0, { bevel: 0.2 }),
-        box(armor, 1.6, 2.6, 1.7, side * 3.7, 12.3, -0.4, { bevel: 0.2 }),
-      ].map((part, index) => ({ ...part, joint: index >= 2 ? `arm-${side < 0 ? "left" : "right"}` as MechaJoint : "body" as MechaJoint }))),
-      box(dark, 1.6, 1.1, 1.6, -3.7, 10.8, -0.6, { joint: "forearm-left" }),
-      box(armor, 1.9, 2.3, 2.2, -3.7, 9.4, -1.1, { joint: "forearm-left", bevel: 0.2 }),
-      box(dark, 1.6, 1.3, 1.8, -3.7, 8.1, -1.4, { joint: "forearm-left" }),
-      box(dark, 1.4, 1.4, 1.4, 3.7, 10.5, -0.7, { joint: "forearm-right" }),
-      box(armor, 1.3, 2.9, 1.4, 3.8, 9.1, -1.1, { joint: "forearm-right", bevel: 0.15, rx: -0.3 }),
-      box(white, 2.5, 1.2, 2, 3.8, 7.5, -1.6, { joint: "forearm-right", bevel: 0.2, name: "repair-claw" }),
-      ...[-1, 1].map((side): Part => box(dark, 0.6, 1.3, 2.4, 3.8 + side, 7.2, -2.5, { joint: "forearm-right", rz: side * 0.2 })),
-      box(glow, 0.8, 0.5, 0.4, 3.8, 7.5, -2.65, { joint: "forearm-right" }),
-      box(white, 2, 1.5, 2, -5.1, 17.5, 0.3, { joint: "drone", bevel: 0.25, name: "service-drone" }),
-      box(armor, 1.55, 1.25, 0.2, -5.1, 17.5, -0.81, { joint: "drone" }),
-      box(glow, 0.3, 0.275, 0.1, -5.1, 17.7875, -0.98, { joint: "drone" }),
-      box(glow, 0.3, 0.275, 0.1, -5.1, 17.2125, -0.98, { joint: "drone" }),
-      box(glow, 0.85, 0.3, 0.1, -5.1, 17.5, -0.98, { joint: "drone" }),
-      box(dark, 3.3, 0.15, 0.5, -5.1, 18.36, 0.3, { joint: "drone" }),
-      box(glow, 0.9, 0.3, 0.9, -5.1, 16.56, 0.3, { joint: "drone", bevel: 0.1 }),
+      { mat: dark, kind: "armor", w: 2.8, h: 0.7, d: 4, x: -1.5, y: 0.35, z: 0.2, bevel: 0.16 },
+      { mat: dark, kind: "armor", w: 2.8, h: 0.7, d: 4, x: 1.5, y: 0.35, z: 0.2, bevel: 0.16 },
+      { mat: armor, kind: "armor", w: 2, h: 4.6, d: 2.2, x: -1.35, y: 3, z: 0.2 },
+      { mat: armor, kind: "armor", w: 2, h: 4.6, d: 2.2, x: 1.35, y: 3, z: 0.2 },
+      { mat: joint, kind: "cylinder", w: 0.85, h: 1.2, d: 0.85, x: -1.3, y: 5.6, z: 0 },
+      { mat: joint, kind: "cylinder", w: 0.85, h: 1.2, d: 0.85, x: 1.3, y: 5.6, z: 0 },
+      { mat: armor, kind: "armor", w: 2.2, h: 3.2, d: 2.5, x: -1.2, y: 7.5, z: 0.2 },
+      { mat: armor, kind: "armor", w: 2.2, h: 3.2, d: 2.5, x: 1.2, y: 7.5, z: 0.2 },
+      { mat: dark, kind: "armor", w: 4.4, h: 1.7, d: 3, x: 0, y: 9.2, z: 0.2 },
+      { mat: armor, kind: "armor", w: 5.2, h: 5.4, d: 3.6, x: 0, y: 12.3, z: 0, bevel: 0.28 },
+      { mat: dark, kind: "armor", w: 3.3, h: 3.3, d: 0.45, x: 0, y: 12.5, z: -1.9, bevel: 0.12 },
+      { mat: trim, w: 0.8, h: 2.6, d: 0.35, x: 0, y: 12.5, z: -2.2, name: "front" },
+      { mat: trim, w: 2.6, h: 0.8, d: 0.35, x: 0, y: 12.5, z: -2.2 },
+      { mat: faction, w: 2.4, h: 0.3, d: 0.35, x: 0, y: 14.4, z: -1.95, name: "faction" },
+      { mat: dark, kind: "cylinder", w: 0.8, h: 0.8, d: 0.8, x: 0, y: 15.2, z: -0.2 },
+      { mat: armor, kind: "armor", w: 2.5, h: 2.2, d: 2.5, x: 0, y: 16.4, z: -0.3, bevel: 0.22 },
+      { mat: faction, w: 1.6, h: 0.45, d: 0.3, x: 0, y: 16.6, z: -1.6, name: "faction" },
+      { mat: dark, kind: "cylinder", w: 0.65, h: 1.8, d: 0.65, x: -2.7, y: 14, z: 0.2, rz: Math.PI / 2 },
+      { mat: dark, kind: "cylinder", w: 0.65, h: 1.8, d: 0.65, x: 2.7, y: 14, z: 0.2, rz: Math.PI / 2 },
+      { mat: armor, kind: "armor", w: 2, h: 2.2, d: 3.4, x: -3.3, y: 14, z: 0.2 },
+      { mat: armor, kind: "armor", w: 2, h: 2.2, d: 3.4, x: 3.3, y: 14, z: 0.2 },
+      { mat: faction, w: 1.3, h: 0.3, d: 0.35, x: -3.3, y: 14.4, z: -1.52, name: "faction" },
+      { mat: faction, w: 1.3, h: 0.3, d: 0.35, x: 3.3, y: 14.4, z: -1.52, name: "faction" },
+      { mat: trim, kind: "cylinder", w: 0.85, h: 4.8, d: 0.85, x: -1.25, y: 11.7, z: 2.4 },
+      { mat: trim, kind: "cylinder", w: 0.85, h: 4.8, d: 0.85, x: 1.25, y: 11.7, z: 2.4 },
+      { mat: dark, kind: "cylinder", w: 0.95, h: 0.6, d: 0.95, x: -1.25, y: 14.4, z: 2.4 },
+      { mat: dark, kind: "cylinder", w: 0.95, h: 0.6, d: 0.95, x: 1.25, y: 14.4, z: 2.4 },
+      { mat: dark, kind: "armor", w: 1.2, h: 3.6, d: 1.4, x: -3.2, y: 10.8, z: -0.2, rz: -0.1 },
+      { mat: joint, kind: "cylinder", w: 0.65, h: 1.4, d: 0.65, x: -3.3, y: 8.8, z: -0.3, rz: Math.PI / 2 },
+      { mat: armor, kind: "armor", w: 1.5, h: 3.4, d: 1.8, x: 3.4, y: 11, z: -0.6, rx: -0.2 },
+      { mat: joint, kind: "cylinder", w: 0.65, h: 1.5, d: 0.65, x: 3.5, y: 9.2, z: -1, rz: Math.PI / 2 },
+      { mat: dark, kind: "cylinder", w: 0.65, h: 3.2, d: 0.85, x: 3.5, y: 8.8, z: -2.6, rx: -Math.PI / 2 },
+      { mat: faction, kind: "cylinder", w: 0.85, h: 0.5, d: 0.85, x: 3.5, y: 8.8, z: -4.2, rx: -Math.PI / 2, name: "faction" },
+      { mat: dark, w: 3.8, h: 0.45, d: 0.7, x: 2.4, y: 19.1, z: 1.2, name: "drone" },
+      { mat: trim, kind: "armor", w: 2.8, h: 1.2, d: 2.2, x: 2.4, y: 19.6, z: 1.2, bevel: 0.2, name: "drone" },
+      { mat: armor, kind: "armor", w: 1.2, h: 0.7, d: 2.8, x: 0.7, y: 19.5, z: 1.2, name: "drone" },
+      { mat: armor, kind: "armor", w: 1.2, h: 0.7, d: 2.8, x: 4.1, y: 19.5, z: 1.2, name: "drone" },
+      { mat: faction, w: 1.5, h: 0.4, d: 0.3, x: 2.4, y: 19.7, z: 0.08, name: "faction" },
+      { mat: dark, kind: "cylinder", w: 0.55, h: 0.6, d: 0.55, x: 0.7, y: 18.8, z: 1.2, name: "drone" },
+      { mat: dark, kind: "cylinder", w: 0.55, h: 0.6, d: 0.55, x: 4.1, y: 18.8, z: 1.2, name: "drone" },
+      { mat: faction, kind: "cone", w: 0.45, h: 0.8, d: 0.45, x: 0.7, y: 18.2, z: 1.2, rz: Math.PI, name: "drone" },
+      { mat: faction, kind: "cone", w: 0.45, h: 0.8, d: 0.45, x: 4.1, y: 18.2, z: 1.2, rz: Math.PI, name: "drone" },
     ];
   });
 }
 
-/** 外星怪兽：低重心四足，前肢是砸击镰，尾巴是横扫。脚印落在 32 米见方里。 */
+/** 大怪：前伸三眼头部、分节腹部、层叠背甲、四足和外张双镰。 */
 export function createBoss(): THREE.Group {
   return assemble("boss", "Boss", (owned) => {
-    const hide = material({ color: "#6e3d78", roughness: 0.74, metalness: 0.04 }, owned);
-    const plate = material({ color: "#241c30", roughness: 0.58, metalness: 0.16 }, owned);
-    const belly = material({ color: "#8d6a90", roughness: 0.8 }, owned);
-    const claw = material({ color: "#c8b48a", roughness: 0.4, metalness: 0.2 }, owned);
-    const eye = material({ color: "#eaff7a", emissive: "#c6ff2e", emissiveIntensity: 0.95, roughness: 0.2 }, owned);
+    const hide = material({ color: "#795083", roughness: 0.7, metalness: 0.06 }, owned);
+    const plate = material({ color: "#41354a", roughness: 0.56, metalness: 0.22 }, owned);
+    const ridge = material({ color: "#604c69", roughness: 0.62, metalness: 0.14 }, owned);
+    const belly = material({ color: "#977c99", roughness: 0.82 }, owned);
+    const claw = material({ color: "#c3b18e", roughness: 0.44, metalness: 0.2 }, owned);
+    const faction = factionMaterial("enemy", owned);
     const leg = (x: number, z: number, rz: number): Part[] => [
-      { mat: hide, w: 1.8, h: 4.6, d: 1.8, x, y: 4.6, z, rz },
-      { mat: plate, w: 1.5, h: 3.8, d: 1.6, x: x + Math.sign(x) * 0.8, y: 2.2, z: z + 0.4, rz: rz * 0.4 },
-      { mat: claw, w: 2.2, h: 0.5, d: 2.8, x: x + Math.sign(x) * 1.4, y: 0.25, z: z + 0.8 },
-    ].map((part) => ({ ...part, joint: `${z < 0 ? "leg" : "rear"}-${x < 0 ? "left" : "right"}` as MechaJoint }));
+      { mat: ridge, kind: "armor", w: 2.2, h: 4.8, d: 2.4, x, y: 4.8, z, rz, bevel: 0.2 },
+      { mat: plate, kind: "cylinder", w: 1.1, h: 1.8, d: 1.1, x: x + Math.sign(x) * 0.7, y: 3.2, z: z + 0.2, rz: Math.PI / 2 },
+      { mat: ridge, kind: "armor", w: 1.8, h: 3.8, d: 2, x: x + Math.sign(x) * 1.1, y: 2.1, z: z + 0.4, rz: rz * 0.45 },
+      { mat: claw, kind: "armor", w: 3, h: 0.6, d: 3.5, x: x + Math.sign(x) * 1.8, y: 0.3, z: z - 0.2, bevel: 0.14 },
+    ];
     return [
-      box(plate, 3.4, 3.4, 0.65, 0, 6.9, -5.95, { bevel: 0.4 }),
-      box(eye, 2.1, 2.1, 0.35, 0, 6.9, -6.5, { bevel: 0.3, name: "chest-core" }),
-      box(plate, 3, 4.8, 3.4, -4.2, 9.8, -3.5, { bevel: 0.3, rz: 0.3 }),
-      box(plate, 3, 4.8, 3.4, 4.2, 9.8, -3.5, { bevel: 0.3, rz: -0.3 }),
-      box(plate, 1.85, 0.45, 1.85, 0, 15.65, -3.2, { kind: "cylinder" }),
-      box(eye, 1.2, 0.3, 1.2, 0, 16.03, -3.2, { kind: "cylinder", name: "reactor" }),
-      ...leg(-4.2, -3.2, 0.35),
-      ...leg(4.2, -3.2, -0.35),
-      ...leg(-4.6, 4.4, 0.45),
-      ...leg(4.6, 4.4, -0.45),
-      { mat: belly, w: 8, h: 4.2, d: 14, x: 0, y: 6.6, z: 1.2 },
-      { mat: hide, w: 10, h: 7.4, d: 15, x: 0, y: 10.4, z: 0.6, bevel: 0.55 },
-      { mat: plate, w: 7, h: 1.6, d: 10, x: 0, y: 14.6, z: 0.2 },
-      { mat: plate, kind: "cone", w: 0.9, h: 4.2, d: 0.9, x: -1.6, y: 17.2, z: -1 },
-      { mat: plate, kind: "cone", w: 1.1, h: 6.4, d: 1.1, x: 0.2, y: 18.4, z: 1.4 },
-      { mat: plate, kind: "cone", w: 0.8, h: 3.6, d: 0.8, x: 1.8, y: 16.8, z: 3.6 },
-      { joint: "head", mat: hide, w: 5.2, h: 4.8, d: 5.4, x: 0, y: 10.2, z: -8.2, bevel: 0.35 },
-      { joint: "head", mat: plate, w: 4.2, h: 2.4, d: 3.2, x: 0, y: 12.8, z: -9.4 },
-      { joint: "head", mat: claw, w: 1.4, h: 1.6, d: 2.4, x: -1.4, y: 8.6, z: -11 },
-      { joint: "head", mat: claw, w: 1.4, h: 1.6, d: 2.4, x: 1.4, y: 8.6, z: -11 },
-      { joint: "head", mat: eye, kind: "sphere", w: 0.45, h: 1, d: 1, x: -1.3, y: 10.8, z: -10.8, name: "front", segments: 10 },
-      { joint: "head", mat: eye, kind: "sphere", w: 0.45, h: 1, d: 1, x: 1.3, y: 10.8, z: -10.8, segments: 10 },
-      { joint: "head", mat: eye, kind: "sphere", w: 0.28, h: 1, d: 1, x: 0, y: 12.2, z: -10.4, segments: 8 },
-      { joint: "arm-left", mat: hide, w: 1.6, h: 8, d: 1.6, x: -6.4, y: 16.2, z: -4.2, rz: 0.55 },
-      { joint: "arm-left", mat: claw, w: 1.3, h: 7.2, d: 2.4, x: -8.8, y: 20.4, z: -7.2, rz: 0.85, rx: 0.25 },
-      { joint: "arm-right", mat: hide, w: 1.6, h: 7, d: 1.6, x: 6.4, y: 15.2, z: -3.4, rz: -0.45 },
-      { joint: "arm-right", mat: claw, w: 1.2, h: 6, d: 2, x: 8.4, y: 18.2, z: -6, rz: -0.75 },
-      { mat: hide, w: 3.2, h: 2.6, d: 4.2, x: 0, y: 8.4, z: 8.4 },
-      { mat: hide, w: 2.4, h: 2, d: 4.4, x: 0, y: 7.2, z: 12.2, rx: 0.35 },
-      { mat: plate, w: 3.6, h: 2.2, d: 3.6, x: 0, y: 6.2, z: 15.2 },
+      ...leg(-4.7, -3.5, 0.5),
+      ...leg(4.7, -3.5, -0.5),
+      ...leg(-4.9, 4.3, 0.55),
+      ...leg(4.9, 4.3, -0.55),
+      { mat: belly, kind: "armor", w: 8.8, h: 3.4, d: 11.8, x: 0, y: 5.4, z: 1.2, bevel: 0.35 },
+      { mat: plate, w: 8.9, h: 0.7, d: 1, x: 0, y: 4.6, z: -4.4 },
+      { mat: plate, w: 8.9, h: 0.7, d: 1, x: 0, y: 4.6, z: -0.8 },
+      { mat: plate, w: 8.9, h: 0.7, d: 1, x: 0, y: 4.6, z: 2.8 },
+      { mat: hide, kind: "armor", w: 11.2, h: 5.6, d: 13, x: 0, y: 8.6, z: 0.8, bevel: 0.5 },
+      { mat: plate, kind: "armor", w: 10.5, h: 1.8, d: 5.2, x: 0, y: 11.8, z: -3.2, rx: -0.12, bevel: 0.28 },
+      { mat: ridge, kind: "armor", w: 11.2, h: 2.1, d: 5.4, x: 0, y: 12.2, z: 1.2, bevel: 0.3 },
+      { mat: plate, kind: "armor", w: 9.2, h: 1.8, d: 4.8, x: 0, y: 11.5, z: 5.3, rx: 0.14, bevel: 0.28 },
+      { mat: faction, w: 0.45, h: 0.45, d: 8.4, x: 0, y: 13.35, z: 0.8, name: "faction" },
+      { mat: claw, kind: "cone", w: 0.9, h: 4.6, d: 0.9, x: -2.2, y: 14.7, z: -1.8, rz: -0.12 },
+      { mat: claw, kind: "cone", w: 1.1, h: 8.8, d: 1.1, x: 0, y: 17.6, z: 1.2 },
+      { mat: claw, kind: "cone", w: 0.8, h: 4.2, d: 0.8, x: 2.2, y: 14.4, z: 4, rz: 0.12 },
+      { mat: hide, kind: "armor", w: 6.8, h: 4.2, d: 6.8, x: 0, y: 7.7, z: -8.8, rx: -0.18, bevel: 0.42 },
+      { mat: plate, kind: "armor", w: 6.3, h: 1.8, d: 4.2, x: 0, y: 10.1, z: -9.2, rx: -0.22, bevel: 0.24 },
+      { mat: belly, kind: "armor", w: 5.4, h: 1.4, d: 2.8, x: 0, y: 5.8, z: -11, bevel: 0.2 },
+      { mat: claw, kind: "cone", w: 0.65, h: 2.8, d: 0.65, x: -2, y: 5.3, z: -12.2, rx: -Math.PI / 2 },
+      { mat: claw, kind: "cone", w: 0.65, h: 2.8, d: 0.65, x: 2, y: 5.3, z: -12.2, rx: -Math.PI / 2 },
+      { mat: faction, kind: "sphere", w: 0.65, h: 1, d: 1, x: -1.8, y: 8, z: -12.2, name: "front", segments: 10 },
+      { mat: faction, kind: "sphere", w: 0.65, h: 1, d: 1, x: 1.8, y: 8, z: -12.2, segments: 10 },
+      { mat: faction, kind: "sphere", w: 0.45, h: 1, d: 1, x: 0, y: 9.6, z: -11.9, segments: 8 },
+      { mat: plate, kind: "cylinder", w: 1.2, h: 2.6, d: 1.2, x: -5.8, y: 9.7, z: -3.4, rz: Math.PI / 2 },
+      { mat: plate, kind: "cylinder", w: 1.2, h: 2.6, d: 1.2, x: 5.8, y: 9.7, z: -3.4, rz: Math.PI / 2 },
+      { mat: hide, kind: "armor", w: 2.2, h: 8.8, d: 2.4, x: -7.2, y: 12, z: -3.8, rz: 0.78, bevel: 0.22 },
+      { mat: claw, kind: "cone", w: 1.5, h: 10.5, d: 1.5, x: -10.2, y: 16.4, z: -6.2, rz: 0.8, rx: 0.35 },
+      { mat: hide, kind: "armor", w: 2.2, h: 8.4, d: 2.4, x: 7.2, y: 11.8, z: -3.6, rz: -0.76, bevel: 0.22 },
+      { mat: claw, kind: "cone", w: 1.5, h: 10, d: 1.5, x: 10, y: 16, z: -5.8, rz: -0.78, rx: 0.32 },
+      { mat: faction, kind: "sphere", w: 0.5, h: 1, d: 1, x: -6.2, y: 10.3, z: -4.7, name: "faction", segments: 8 },
+      { mat: faction, kind: "sphere", w: 0.5, h: 1, d: 1, x: 6.2, y: 10.3, z: -4.7, name: "faction", segments: 8 },
+      { mat: hide, kind: "armor", w: 4.2, h: 3.2, d: 5.2, x: 0, y: 7, z: 8.6, rx: 0.2 },
+      { mat: ridge, kind: "armor", w: 3.2, h: 2.5, d: 4.8, x: 0, y: 6.2, z: 12.4, rx: 0.35 },
+      { mat: claw, kind: "cone", w: 1.5, h: 5.5, d: 1.5, x: 0, y: 5.2, z: 15.4, rx: Math.PI / 2 },
     ];
   });
 }
 
-/** Independent light raider: low carapace, asymmetric shoulders and pouncing claws. */
+/** 小怪：前低后高的楔形躯干、后掠节肢和暗色利爪。 */
 export function createRaider(): THREE.Group {
   return assemble("raider", "Raider", (owned) => {
-    const armor = material({ color: "#84479a", roughness: 0.6, metalness: 0.2 }, owned);
-    const dark = material({ color: "#292239", roughness: 0.65, metalness: 0.3 }, owned);
-    const claw = material({ color: "#d4bd8c", roughness: 0.5 }, owned);
-    const glow = material({ color: "#fff2a1", emissive: "#ffbb2d", emissiveIntensity: 1.4 }, owned);
+    const hide = material({ color: "#825694", roughness: 0.7, metalness: 0.08 }, owned);
+    const plate = material({ color: "#3e324b", roughness: 0.58, metalness: 0.2 }, owned);
+    const claw = material({ color: "#514b55", roughness: 0.5, metalness: 0.36 }, owned);
+    const faction = factionMaterial("enemy", owned);
+    const leg = (x: number, z: number): Part[] => [
+      { mat: hide, kind: "armor", w: 1.2, h: 3.3, d: 1.4, x, y: 2.6, z, rz: -Math.sign(x) * 0.68, bevel: 0.14 },
+      { mat: plate, kind: "cylinder", w: 0.65, h: 1.3, d: 0.65, x: x + Math.sign(x) * 0.75, y: 1.7, z: z + 0.3, rz: Math.PI / 2, segments: 6 },
+      { mat: plate, kind: "armor", w: 0.9, h: 2.1, d: 1.1, x: x + Math.sign(x) * 1.05, y: 1.18, z: z + 0.5, rz: Math.sign(x) * 0.32, bevel: 0.1 },
+      { mat: claw, kind: "armor", w: 1.1, h: 0.35, d: 2.1, x: x + Math.sign(x) * 1.25, y: 0.32, z: z - 0.4, bevel: 0.08 },
+      { mat: claw, kind: "cone", w: 0.32, h: 1.4, d: 0.32, x: x + Math.sign(x) * 1.25, y: 0.32, z: z - 1.7, rx: -Math.PI / 2, segments: 6 },
+    ];
     return [
-      box(dark, 4.4, 1.8, 6.8, 0, 3.4, 0.7, { bevel: 0.3 }),
-      box(armor, 5.8, 3, 7, 0, 5, 0.5, { bevel: 0.5 }),
-      box(dark, 4.5, 0.7, 4.8, 0.2, 6.85, 1, { bevel: 0.2 }),
-      box(armor, 3.7, 2.5, 2.9, 0, 4.5, -3.7, { joint: "head", bevel: 0.3 }),
-      box(dark, 3, 0.9, 0.5, 0, 5.1, -5.3, { joint: "head", bevel: 0.1 }),
-      box(glow, 1.2, 0.55, 0.15, 0, 4.9, -5.6, { joint: "head", name: "front" }),
-      box(armor, 2.2, 2.2, 3.3, -2.8, 5.5, -0.8, { rz: -0.25, bevel: 0.3 }),
-      box(dark, 1.6, 1.6, 2.7, 2.6, 5.3, -0.6, { rz: 0.2, bevel: 0.2 }),
-      ...[-1, 1].flatMap((side) => [-2.3, 2.8].flatMap((z): Part[] => [
-        box(armor, 1.5, 2.8, 1.6, side * 3.2, 3.1, z, { rz: side * 0.55, bevel: 0.18 }),
-        box(dark, 1, 2.3, 1.1, side * 4, 1.65, z - 0.3, { rz: -side * 0.3 }),
-        box(claw, 1.5, 0.5, 2.1, side * 4.25, 0.25, z - 0.8, { bevel: 0.1 }),
-      ].map((part) => ({ ...part, joint: `${z < 0 ? "leg" : "rear"}-${side < 0 ? "left" : "right"}` as MechaJoint })))),
-      box(dark, 1.5, 1, 2.6, 0, 4.2, 4.7, { rx: 0.2, bevel: 0.15 }),
+      ...leg(-2.4, -1.8),
+      ...leg(2.4, -1.8),
+      ...leg(-2.7, 2.2),
+      ...leg(2.7, 2.2),
+      { mat: hide, kind: "armor", w: 5.8, h: 2.8, d: 7.4, x: 0, y: 3.7, z: 0.7, rx: -0.14, bevel: 0.36 },
+      { mat: plate, kind: "armor", w: 5.4, h: 1.2, d: 4.4, x: 0, y: 5.3, z: -0.7, rx: -0.2, bevel: 0.2 },
+      { mat: plate, kind: "armor", w: 4.4, h: 1.1, d: 3.4, x: 0, y: 5.4, z: 2.9, rx: 0.22, bevel: 0.18 },
+      { mat: faction, w: 0.35, h: 0.3, d: 5.8, x: 0, y: 6.05, z: 0.7, rx: -0.05, name: "faction" },
+      { mat: claw, kind: "cone", w: 0.55, h: 3.8, d: 0.55, x: 0, y: 5.7, z: 4.4, rx: Math.PI / 2 },
+      { mat: hide, kind: "armor", w: 4.2, h: 2.3, d: 4.2, x: 0, y: 3.1, z: -4.3, rx: -0.18, bevel: 0.3 },
+      { mat: plate, kind: "armor", w: 3.6, h: 0.8, d: 2.4, x: 0, y: 4.4, z: -4.6, rx: -0.2, bevel: 0.14 },
+      { mat: faction, kind: "armor", w: 2.8, h: 0.6, d: 0.35, x: 0, y: 3.5, z: -6.45, name: "front", bevel: 0.1 },
+      { mat: plate, kind: "cylinder", w: 0.65, h: 1.4, d: 0.65, x: -3.1, y: 4.3, z: -2.4, rz: Math.PI / 2, segments: 6 },
+      { mat: plate, kind: "cylinder", w: 0.65, h: 1.4, d: 0.65, x: 3.1, y: 4.3, z: -2.4, rz: Math.PI / 2, segments: 6 },
+      { mat: hide, kind: "armor", w: 1.1, h: 4, d: 1.3, x: -3.8, y: 4.7, z: -2.8, rz: 0.82, bevel: 0.12 },
+      { mat: hide, kind: "armor", w: 1.1, h: 4, d: 1.3, x: 3.8, y: 4.7, z: -2.8, rz: -0.82, bevel: 0.12 },
+      { mat: claw, kind: "cone", w: 0.7, h: 4.8, d: 0.7, x: -5, y: 6.1, z: -4.2, rz: 0.82, rx: 0.3 },
+      { mat: claw, kind: "cone", w: 0.7, h: 4.8, d: 0.7, x: 5, y: 6.1, z: -4.2, rz: -0.82, rx: 0.3 },
+      { mat: plate, kind: "armor", w: 2.2, h: 1.5, d: 4.2, x: 0, y: 3.4, z: 5.2, rx: 0.35 },
     ];
   });
 }

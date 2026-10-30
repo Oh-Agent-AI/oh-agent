@@ -307,7 +307,7 @@ const flatLayout = {
   }
 }
 
-// ── 4) FlightInput：映射/焦点门槛/输入框忽略/失焦清空（DOM shim）──
+// ── 4) FlightInput：窗口级按键/无画布焦点/输入框忽略/失焦清空（DOM shim）──
 {
   class HTMLElement {}
   const listeners = new Map();
@@ -316,35 +316,37 @@ const flatLayout = {
     removeEventListener: (type, fn) => { const list = (listeners.get(`${target}:${type}`) ?? []).filter((item) => item !== fn); listeners.set(`${target}:${type}`, list); },
   });
   const documentShim = { visibilityState: "visible", activeElement: null, addEventListener: emitter("document").addEventListener, removeEventListener: emitter("document").removeEventListener };
-  let canvasFocused = false;
+  let windowFocused = true;
   const { FlightInput } = load("game/FlightInput.ts", { window: emitter("window"), document: documentShim, HTMLElement });
   const interrupts = [];
-  const input = new FlightInput({ isGameFocused: () => canvasFocused, shouldConsumeArrows: () => canvasFocused, onInterrupt: (reason) => interrupts.push(reason) });
+  const canvas = Object.assign(new HTMLElement(), { blur() {} });
+  const input = new FlightInput({ isGameFocused: () => windowFocused, blurFocusTarget: () => canvas,
+    shouldConsumeArrows: () => windowFocused, onInterrupt: (reason) => interrupts.push(reason) });
   input.attach();
   const key = (code, target = null, extra = {}) => (listeners.get("window:keydown") ?? []).forEach((fn) => fn({ code, target, isComposing: false, repeat: false, preventDefault: () => {}, stopImmediatePropagation: () => {}, ...extra }));
   const keyUp = (code) => (listeners.get("window:keyup") ?? []).forEach((fn) => fn({ code, target: null }));
-  // 画布未聚焦：按键不进入飞行状态（HUD 按钮/宿主控件聚焦时不误控飞机）。
-  key("KeyW");
-  assert.equal(input.snapshot().throttleUp, false, "未聚焦时 WASD 不进入飞行状态");
-  canvasFocused = true;
+  // 页面窗口聚焦时即便 activeElement 是 body，也应该可以驾驶；不会抢焦点给 canvas。
   key("KeyW"); key("KeyA"); key("ArrowUp");
   const snapshotEqual = (value, expected, label) => {
     for (const field of Object.keys(expected)) assert.equal(value[field], expected[field], `${label}: ${field}`);
   };
   snapshotEqual(input.snapshot(), { throttleUp: true, throttleDown: false, turnLeft: true, turnRight: false, pitchUp: true, pitchDown: false }, "按键映射");
-  // 输入框/输入法期间不处理。
-  key("KeyS", Object.assign(Object.create(HTMLElement.prototype), { tagName: "INPUT", isContentEditable: false }));
+  // 真正聚焦的输入框仍可输入，游戏不会抢焦点或接管按键。
+  const textField = Object.assign(Object.create(HTMLElement.prototype), { tagName: "INPUT", type: "text", isContentEditable: false });
+  documentShim.activeElement = textField;
+  key("KeyS", textField);
   assert.equal(input.snapshot().throttleDown, false, "输入框内的按键不进入游戏");
+  documentShim.activeElement = null;
   key("KeyS", null, { isComposing: true });
   assert.equal(input.snapshot().throttleDown, true, "输入法组合期间仍按物理 KeyS 驱动飞机");
   keyUp("KeyS");
   assert.equal(input.snapshot().throttleDown, false, "组合期间的物理按键释放仍会清除飞行输入");
-  // 焦点离开画布后的 keyup 仍要清除（不粘键）。
-  canvasFocused = false;
+  // 焦点离开窗口后的 keyup 仍要清除（不粘键）。
+  windowFocused = false;
   keyUp("KeyW");
   assert.equal(input.snapshot().throttleUp, false, "未聚焦时 keyup 仍清除状态");
   // 失焦：清空按键 + focus-lost 回调。
-  canvasFocused = true;
+  windowFocused = true;
   key("KeyW");
   (listeners.get("window:blur") ?? []).forEach((fn) => fn());
   snapshotEqual(input.snapshot(), { throttleUp: false, throttleDown: false, turnLeft: false, turnRight: false, pitchUp: false, pitchDown: false }, "失焦清空按键");

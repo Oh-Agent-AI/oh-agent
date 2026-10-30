@@ -103,7 +103,13 @@ export function compileStaticStructureObstacles(layout: CitySurfaceLayout): read
     } else if (piece.role === "ramp-deck") {
       const corners = boxCorners(piece);
       const topYs = [corners[2].y, corners[3].y, corners[6].y, corners[7].y];
-      const mountableHeight = Math.min(0.9, Math.round((Math.max(...topYs) - Math.min(...topYs) + 0.3) * 100) / 100);
+      // At a ramp grade the car body is pitched along the top face. The
+      // conservative swept body bottom can sit slightly below the road plane,
+      // while the far end of this long slab is higher than the car center.
+      // 0.9 clipped that combined envelope (e.g. 0.985 on seed 42), so the
+      // ramp's own support slab became a wall and reset uphill speed to zero.
+      // Keep the exemption bounded; deep overlap and the underside still collide.
+      const mountableHeight = Math.min(1.1, Math.round((Math.max(...topYs) - Math.min(...topYs) + 0.3) * 100) / 100);
       obstacles.push(Object.freeze({ id: `ramp:${piece.ramp}:${String(piece.segment).padStart(4, "0")}:slab`, role: "ramp-deck", shape: "box", corners: Object.freeze(corners), mountableHeight }));
     }
   }

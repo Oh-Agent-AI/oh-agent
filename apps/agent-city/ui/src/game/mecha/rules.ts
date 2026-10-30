@@ -37,7 +37,7 @@ import { bossExecute, bossPrepare } from "./enemy";
 export {
   BOARD, BOSS_ATK, BOSS_DEF, BOSS_HP, BOSS_MOVE, BUILDING_DEF, BUILDING_HP, COVERS, FLAT_SPAWN_MAX_DELTA, GDD_RULESET, MAX_TURNS, MECH_IDS, MOVE_QUANTUM,
   RAIDER_ATK, RAIDER_DEF, RAIDER_HP, RAIDER_MOVE, RELAXED_SPAWN_MAX_DELTA, SIEGE_BUILDINGS, SIEGE_RAIDERS, STATS_MOVE, TERRAIN_MOD,
-  adjacentToFootprint, attackerCenter, footprintCenter, knockbackFromAttacker, livingBuildings, livingRaiders, livingStakeBuildings, living, moveBudget, pathDistance,
+  adjacentToFootprint, attackerCenter, footprintCenter, knockbackFromAttacker, livingBuildings, livingRaiders, livingStakeBuildings, living, moveBudget, pathDistance, movementPath,
   primaryAxis, stakeBuildings,
 } from "./board";
 export type {

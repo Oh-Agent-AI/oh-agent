@@ -1,6 +1,6 @@
 import { stable, isBackground } from "../lib/stable";
 import { hydrateHarnessNames, useHarnessNames } from "../lib/harnessNames";
-import { Component, useCallback, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
+import { Component, useCallback, useEffect, useLayoutEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import { invoke, listen, listenAppEvents, makeInvalidationGate, readOverviewDetails, readOverviewSnapshot, readSourceDataRevision, safeUiError, type OverviewDetails, type OverviewSnapshot } from "../lib/tauri";
 import { FindingsPage } from "../features/findings/FindingsPage";
 import { TrustPage } from "../features/trust/TrustPage";
@@ -92,6 +92,8 @@ export function App() {
   }, []);
   useEffect(() => { void hydrateLanguagePreference().catch(() => { /* Keep the existing local preference visible; Settings can retry. */ }); }, []);
   const [page, setPage] = useState<Page>(pageFromHash);
+  const mainContent = useRef<HTMLElement | null>(null);
+  const previousPage = useRef(page);
   const selectedPlugin = plugins.find((plugin) => plugin.id === page);
   const pluginSlot = usePlugin(!!selectedPlugin, selectedPlugin ?? { id: "", name: "" });
   const pageName = (item: (typeof navigation)[number] | undefined) => item?.name ?? message(item?.label ?? "nav.overview", language);
@@ -107,6 +109,16 @@ export function App() {
   const [sessionTarget, setSessionTarget] = useState<SessionNavigationTarget | null>(null);
   const [focusSettingSection, setFocusSettingSection] = useState<SettingSection | null>(null);
   const refreshSeq = useRef(0);
+
+  useLayoutEffect(() => {
+    if (previousPage.current === page) return;
+    previousPage.current = page;
+    // The main element survives page switches, so its scroll offset otherwise
+    // carries over (for example, opening Settings at the budget panel's tail).
+    // Deep links to a settings subsection manage their own target scroll.
+    if (page === "settings" && focusSettingSection) return;
+    mainContent.current?.scrollTo({ top: 0, left: 0, behavior: "instant" });
+  }, [page, focusSettingSection]);
 
   const applyMenuTarget = useCallback(async () => {
     try {
@@ -264,7 +276,7 @@ export function App() {
       </nav>
       <div className="sidebar-footer"><StatusPill>{message("sidebar.offline", language)}</StatusPill><span>{message("sidebar.local", language)}</span></div>
     </aside>
-    <main className={`main-content ${selectedPlugin ? "plugin-main-content" : ""}`}>
+    <main ref={mainContent} className={`main-content ${selectedPlugin ? "plugin-main-content" : ""}`}>
       <h1 className="visually-hidden">{pageName(navigation.find((item) => item.id === page))}</h1>
       {page === "overview" && error && <div className="error-banner" role="alert">{error} · {message("error.overviewStale", language)}</div>}
       {selectedPlugin ? pluginSlot.content : page === "overview" ? <OverviewPage overview={overview} details={overviewDetails} /> : page === "usage" ? <UsagePage /> : page === "sessions" ? <SessionsPage navigationTarget={sessionTarget} onNavigationTargetApplied={clearSessionTarget} /> : page === "trust" ? <TrustPage /> : page === "test" ? <TestPage /> : page === "skills" ? <SkillsPage /> : page === "settings" ? <SettingsPage focusSection={focusSettingSection} onSectionFocused={clearSettingSectionTarget} /> : <FindingsPage onNavigateToAction={navigateToFindingAction} />}

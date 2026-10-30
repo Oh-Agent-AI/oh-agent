@@ -255,6 +255,8 @@ const ENGLISH: Record<string, string> = {
   "点击高亮目标": "Click a highlighted target",
   "取消选目标": "Cancel targeting",
   "这里不是合法目标，请点击地图上的高亮单位。": "That is not a legal target. Click a highlighted unit on the map.",
+  "行动演出": "Resolving actions",
+  "跳过演出": "Skip animation",
 };
 
 /** 面板上的半步行。中英词序不同，不把两个碎片拼成一句英文。 */

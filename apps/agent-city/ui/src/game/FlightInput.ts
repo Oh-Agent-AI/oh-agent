@@ -5,15 +5,16 @@ const KEY_MAP: Readonly<Record<string, keyof FlightInputState>> = {
   KeyW: "throttleUp", KeyS: "throttleDown", KeyA: "turnLeft", KeyD: "turnRight", ArrowUp: "pitchUp", ArrowDown: "pitchDown",
 };
 export type FlightInputOptions = {
+  /** True while the game window is active; keyboard capture no longer needs canvas focus. */
   isGameFocused: () => boolean;
-  focusTarget: () => HTMLElement | null;
+  blurFocusTarget: () => HTMLElement | null;
   onInterrupt: (reason: Extract<GamePauseReason, "focus-lost" | "host-hidden">) => void;
 };
 export class FlightInput {
   private readonly source: KeyboardInput<FlightInputState>;
   constructor(options: FlightInputOptions) {
     this.source = new KeyboardInput({ keys: KEY_MAP, emptyInput: () => ({ ...EMPTY_INPUT }), isFocused: options.isGameFocused,
-      focusTarget: options.focusTarget,
+      blurFocusTarget: options.blurFocusTarget,
       onInterrupt: (reason) => options.onInterrupt(reason === "host-suspended" ? "host-hidden" : reason) });
   }
   attach(): void { this.source.attach(); }

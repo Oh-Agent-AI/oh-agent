@@ -123,12 +123,15 @@ function fixture(kind, overrides = {}) {
   };
   globalThis.HTMLElement = class {};
   globalThis.window = emitter(); globalThis.document = { ...emitter(), visibilityState: "visible" };
-  let focused = true; const interruptions = [];
+  let focused = true; const interruptions = []; let canvasBlurred = false; let canvasFocusCalls = 0;
+  const canvasTarget = Object.assign(new HTMLElement(), { focus() { canvasFocusCalls += 1; }, blur() { canvasBlurred = true; } });
+  document.activeElement = null;
   const source = new KeyboardInput({ keys: { KeyW: "forward", ArrowUp: "forward" }, emptyInput: () => ({ forward: false }),
-    isFocused: () => focused, onInterrupt: (reason) => interruptions.push(reason) });
+    isFocused: () => focused, blurFocusTarget: () => canvasTarget, onInterrupt: (reason) => interruptions.push(reason) });
   const key = (code, extra = {}) => ({ code, target: null, prevented: false, stopped: false,
     preventDefault() { this.prevented = true; }, stopImmediatePropagation() { this.stopped = true; }, ...extra });
   source.attach(); source.attach();
+  assert.equal(canvasFocusCalls, 0, "attaching gameplay input never focuses the canvas");
   const composing = key("KeyW", { isComposing: true }); window.fire("keydown", composing);
   assert.equal(composing.prevented, true, "canvas focus consumes a mapped composing gameplay keydown");
   assert.equal(source.snapshot().forward, true, "a physical game key still works during IME composition");
@@ -145,14 +148,14 @@ function fixture(kind, overrides = {}) {
   assert.equal(unidentified.prevented, true, "unidentified composing keys are consumed rather than treated as controls");
   assert.equal(source.snapshot().forward, false, "an unidentified IME key clears any stale held control");
   window.fire("keydown", key("KeyW", { metaKey: true })); assert.equal(source.snapshot().forward, false);
-  focused = false; window.fire("keydown", key("KeyW")); assert.equal(source.snapshot().forward, false);
-  focused = true; window.fire("keydown", key("KeyW")); window.fire("keydown", key("ArrowUp"));
+  window.fire("keydown", key("KeyW")); window.fire("keydown", key("ArrowUp"));
   window.fire("keyup", key("KeyW")); assert.equal(source.snapshot().forward, true, "other alias still held");
-  focused = false; document.fire("focusin", { target: new HTMLElement() });
+  document.fire("focusin", { target: new HTMLElement() });
   assert.equal(source.snapshot().forward, false, "moving focus to a HUD control clears held vehicle input");
   const textTarget = Object.assign(new HTMLElement(), { tagName: "INPUT", type: "text", isContentEditable: false });
+  document.activeElement = textTarget;
   const textKey = key("KeyW", { target: textTarget }); window.fire("keydown", textKey);
-  assert.equal(textKey.prevented, false, "text input keydown is not cancelled while the game is unfocused");
+  assert.equal(textKey.prevented, false, "a genuinely focused text field keeps normal typing");
   const textImeKey = key("KeyW", { target: textTarget, isComposing: true, keyCode: 229 }); window.fire("keydown", textImeKey);
   assert.equal(textImeKey.prevented, false, "IME keydown in an ordinary text field remains available");
   const composition = { target: textTarget, inputType: "insertText", prevented: false, stopped: false,
@@ -160,26 +163,41 @@ function fixture(kind, overrides = {}) {
   document.fire("compositionstart", composition); document.fire("beforeinput", composition);
   assert.equal(composition.prevented, false, "composition and beforeinput remain available to ordinary text fields");
   const inputSwitch = key("Space", { ctrlKey: true }); window.fire("keydown", inputSwitch, true);
-  assert.equal(inputSwitch.prevented, false, "unfocused game does not consume the input-source shortcut");
+  assert.equal(inputSwitch.prevented, false, "a text field keeps the input-source shortcut");
   window.fire("keyup", key("ArrowUp")); assert.equal(source.snapshot().forward, false);
-  focused = true;
+  document.activeElement = null;
   const focusedComposition = key("KeyW", { isComposing: true }); window.fire("keydown", focusedComposition);
-  assert.equal(focusedComposition.prevented, true, "canvas focus suppresses composing gameplay keydown");
+  assert.equal(focusedComposition.prevented, true, "window-focused gameplay consumes composing physical keydown without canvas focus");
+  const focusedTextTarget = Object.assign(new HTMLElement(), { tagName: "TEXTAREA", isContentEditable: false });
+  document.fire("focusin", { target: canvasTarget });
+  assert.equal(canvasBlurred, true, "the game canvas is blurred if a click gives it focus");
+  assert.equal(canvasFocusCalls, 0, "the input layer never restores canvas focus");
+  document.activeElement = null;
+  const focusedTextKey = key("KeyW", { target: focusedTextTarget }); window.fire("keydown", focusedTextKey);
+  assert.equal(focusedTextKey.prevented, true, "a transient WebKit IME target is suppressed during gameplay");
+  assert.equal(source.snapshot().forward, true, "physical WASD works without focusing the canvas");
+  window.fire("keyup", key("KeyW", { target: focusedTextTarget }));
+  const focusedUnmappedTextKey = key("KeyQ", { key: "q", target: focusedTextTarget }); window.fire("keydown", focusedUnmappedTextKey);
+  assert.equal(focusedUnmappedTextKey.prevented, true, "unmapped printable keys are suppressed during gameplay");
+  const focusedCompositionEvent = { target: focusedTextTarget, prevented: false, stopped: false,
+    preventDefault() { this.prevented = true; }, stopImmediatePropagation() { this.stopped = true; } };
+  document.fire("compositionstart", focusedCompositionEvent);
+  assert.equal(focusedCompositionEvent.prevented && focusedCompositionEvent.stopped, true, "composition events are suppressed during gameplay without canvas focus");
   focused = true; window.fire("keydown", key("KeyW")); window.fire("blur", {});
   assert.equal(source.snapshot().forward, false); assert.equal(interruptions.at(-1), "focus-lost");
   document.visibilityState = "hidden"; document.fire("visibilitychange", {}); assert.equal(interruptions.at(-1), "host-hidden");
   window.fire("__AV_PLUGIN_SUSPENDED__", {}); assert.equal(interruptions.at(-1), "host-suspended");
   source.detach(); source.detach(); assert.equal(window.count() + document.count(), 0, "detach releases every window/document listener");
   focused = false;
-  const canvas = Object.assign(new HTMLElement(), { focus() { focused = true; } });
+  const canvas = Object.assign(new HTMLElement(), { blur() {} });
   const steal = new KeyboardInput({ keys: { KeyW: "forward" }, emptyInput: () => ({ forward: false }),
-    isFocused: () => focused, focusTarget: () => canvas, onInterrupt: () => {} });
+    isFocused: () => focused, blurFocusTarget: () => canvas, onInterrupt: () => {} });
   steal.attach();
   focused = false;
   const firstDrive = key("KeyW");
   window.fire("keydown", firstDrive);
-  assert.equal(focused, true, "an unfocused mapped key focuses the canvas");
-  assert.equal(steal.snapshot().forward, true, "that first key still applies after the focus steal");
+  assert.equal(focused, false, "an inactive host window cannot control the vehicle");
+  assert.equal(steal.snapshot().forward, false, "no key is accepted after the host loses focus");
   steal.detach();
   delete globalThis.window; delete globalThis.document; delete globalThis.HTMLElement;
 }
