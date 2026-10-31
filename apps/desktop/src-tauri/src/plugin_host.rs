@@ -679,7 +679,8 @@ pub fn plugin_snapshot(webview: Webview, state: tauri::State<'_, PluginHost>) ->
 
 #[tauri::command]
 pub fn plugin_message(app: tauri::AppHandle, webview: Webview, state: tauri::State<'_, PluginHost>, message: Value) -> Result<(), String> {
-    let changed = message["type"] != "heartbeat" && message["type"] != "performance.city";
+    let changed = message["type"] != "heartbeat" && message["type"] != "performance.city"
+        && message["type"] != "performance.city_scene";
     let mut host = state.0.lock().unwrap();
     let i = host.current.as_mut().ok_or("plugin_instance_unavailable")?;
     let result = apply_message(i, webview.label(), message);
@@ -722,6 +723,11 @@ fn apply_message(i: &mut Instance, sender: &str, message: Value) -> Result<(), S
             if message["ok"] != true { i.failed = Some("plugin_command_rejected"); }
             note(i, if message["ok"] == true { "command_succeeded" } else { "command_rejected" });
             i.pending = None;
+        }
+        Some("performance.city_scene") if i.plugin_id == "city" => {
+            let fields = city_scene_fields(&message)?;
+            i.pulse = Instant::now();
+            agent_vitals_runtime::logging::log_info("city_perf", &format!("city_scene_stage {fields}"));
         }
         Some("performance.city") if i.plugin_id == "city" => {
             let fields = city_load_fields(&message)?;
@@ -783,6 +789,20 @@ fn city_load_fields(message: &Value) -> Result<String, &'static str> {
         Some(value) => value.as_u64().filter(|n| *n <= 4000).ok_or("plugin_performance_value_invalid")?.to_string(),
     };
     Ok(format!("outcome={outcome} elapsed_ms={elapsed} attempt_count={attempts} revision_retry_count={retries} fallback={fallback} window_days={days} page_returned={page}"))
+}
+
+fn city_scene_fields(message: &Value) -> Result<String, &'static str> {
+    let stage = match message["stage"].as_str() {
+        Some("model" | "planning" | "mounting" | "rendering" | "first_frame") => message["stage"].as_str().unwrap(),
+        _ => return Err("plugin_performance_stage_invalid"),
+    };
+    let outcome = match message["outcome"].as_str() {
+        Some("success" | "failed" | "cancelled") => message["outcome"].as_str().unwrap(),
+        _ => return Err("plugin_performance_outcome_invalid"),
+    };
+    let elapsed = message["elapsedMs"].as_u64().filter(|ms| *ms <= 86_400_000).ok_or("plugin_performance_value_invalid")?;
+    let days = message["windowDays"].as_u64().filter(|days| matches!(days, 7 | 30 | 90 | 366)).ok_or("plugin_performance_window_invalid")?;
+    Ok(format!("stage={stage} outcome={outcome} elapsed_ms={elapsed} window_days={days}"))
 }
 
 fn log_city_ipc_outcome(payload: &Value, started: Instant, outcome: &str) {
@@ -1003,6 +1023,38 @@ mod tests {
         let mut omitted = message.clone();
         omitted.as_object_mut().unwrap().remove("pageReturned");
         assert!(city_load_fields(&omitted).unwrap().contains("page_returned=none"));
+    }
+
+    #[test]
+    fn city_scene_performance_message_is_allowlisted() {
+        let message = json!({
+            "version":1,"instanceId":"plugin-city-2","type":"performance.city_scene",
+            "stage":"first_frame","outcome":"success","elapsedMs":5678,"windowDays":366
+        });
+        let fields = city_scene_fields(&message).unwrap();
+        assert!(fields.contains("stage=first_frame"));
+        assert!(fields.contains("elapsed_ms=5678"));
+        assert!(fields.contains("window_days=366"));
+        for key in ["stage", "outcome", "elapsedMs", "windowDays"] {
+            let mut bad = message.clone();
+            bad[key] = if key == "stage" { json!("secret") } else if key == "windowDays" { json!(14) } else { json!("secret") };
+            assert!(city_scene_fields(&bad).is_err(), "{key} must be allowlisted");
+        }
+    }
+
+    #[test]
+    fn city_scene_performance_message_updates_pulse_and_requires_city_plugin() {
+        let message = json!({
+            "version":1,"instanceId":"plugin-city-2","type":"performance.city_scene",
+            "stage":"first_frame","outcome":"success","elapsedMs":5678,"windowDays":366
+        });
+        let mut i = instance();
+        i.pulse = Instant::now() - Duration::from_secs(6);
+        assert!(apply_message(&mut i, "plugin-city-2", message.clone()).is_ok());
+        assert!(i.pulse > Instant::now() - Duration::from_secs(1));
+        let mut metrics = instance();
+        metrics.plugin_id = "metrics".into();
+        assert!(apply_message(&mut metrics, "plugin-city-2", message).is_err());
     }
 
     #[test]

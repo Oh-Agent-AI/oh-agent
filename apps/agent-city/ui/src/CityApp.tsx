@@ -3,7 +3,7 @@ import { buildCityModel, type CitySessionRow } from "./cityModel";
 import { prepareCityLayout } from "./engine/cityLayout";
 import { MIAMI_COASTAL } from "./engine/citySeaside";
 import { CityEngine } from "./engine/CityEngine";
-import { tauriCityDataProvider, cityDataProtocol, readBuildingOverrides, type CityProjectionV1 } from "./data/provider";
+import { tauriCityDataProvider, cityDataProtocol, readBuildingOverrides, reportCityScene, type CityProjectionV1 } from "./data/provider";
 import { dispatchEntityChanged, ENTITY_CHANGED_EVENT, parseEntityChanged } from "./engine/entityEvents";
 import { entityChangedFromBuilding } from "./engine/sessionKitConstruction";
 import { SquadFeed } from "./SquadFeed";
@@ -78,6 +78,12 @@ export function CityApp() {
   const [mechaAvailability, setMechaAvailability] = useState<"unknown" | MechaAvailability>("unknown");
   const reportMechaAvailability = useCallback((next: MechaAvailability) => {
     setMechaAvailability((prev) => prev === next ? prev : next);
+  }, []);
+  const sceneStageReported = useRef(new Set<string>());
+  const reportSceneStage = useCallback((stage: "model" | "planning" | "mounting" | "rendering" | "first_frame", windowDays: WindowDays) => {
+    if (sceneStageReported.current.has(stage)) return;
+    sceneStageReported.current.add(stage);
+    reportCityScene(stage, performance.now(), windowDays);
   }, []);
   const mechaActive = useRef(false);
   mechaActive.current = mechaOpen;
@@ -227,6 +233,7 @@ export function CityApp() {
       setProjection(data);
       setDataLoaded(true);
       setCityLoad({ stage: "model", work: null });
+      reportSceneStage("model", data.window.days);
       setStatus(paging && data.coverage.truncated
         ? `${projectionStatusLabel(data)} · 继续载入会话建筑`
         : projectionStatusLabel(data));
@@ -266,6 +273,11 @@ export function CityApp() {
       engineRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    if (!firstModelFrame || !projection || !embedded()) return;
+    reportSceneStage("first_frame", projection.window.days);
+  }, [firstModelFrame, projection, reportSceneStage]);
 
   useEffect(() => {
     // A match reads the live layout for battlefield generation. Deferring City
@@ -331,6 +343,7 @@ export function CityApp() {
       fingerprint.current = "";
       setFirstModelFrame(false);
       setCityLoad({ stage: "planning", work: null });
+      reportSceneStage("planning", projection.window.days);
       void prepareCityLayout(model, experience.seed, MIAMI_COASTAL, { signal: preparation.signal,
         onPlanningProgress: (snapshot: PlanningWorkSnapshot) => {
           const work = Object.values(snapshot.consumed).reduce((sum, value) => sum + value, 0);
@@ -338,11 +351,13 @@ export function CityApp() {
         } }).then(async () => {
         if (preparation.signal.aborted || engineRef.current !== engine) return;
         setCityLoad({ stage: "mounting", work: null });
+        reportSceneStage("mounting", projection.window.days);
         await noteBusy(15_000).catch(() => {});
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
         if (preparation.signal.aborted || engineRef.current !== engine) return;
         engine.applyModel(model, false);
         setCityLoad({ stage: "rendering", work: null });
+        reportSceneStage("rendering", projection.window.days);
         // applyModel synchronously renders the first frame for this model before returning.
         setFirstModelFrame(true);
         appliedWindow.current = projection.window.days;

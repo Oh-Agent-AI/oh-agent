@@ -352,6 +352,15 @@ async function readV2(windowDays: 7 | 30 | 90 | 366, signal?: AbortSignal, onSta
   onStage?.("ready");
   return validateCityProjectionV2(response.result);
 }
+export function reportCityScene(stage: "model" | "planning" | "mounting" | "rendering" | "first_frame",
+  elapsedMs: number, windowDays: WindowDays): void {
+  if (!embedded() || !window.__AV_PLUGIN_INSTANCE__) return;
+  void invokeHost("plugin_message", { message: {
+    version: 1, instanceId: window.__AV_PLUGIN_INSTANCE__, type: "performance.city_scene",
+    stage, outcome: "success", elapsedMs: Math.max(0, Math.round(elapsedMs)), windowDays,
+  } }).catch(() => {});
+}
+
 function reportCityLoad(outcome: "success" | "partial" | "cancelled" | "fallback_v2" | "failed",
   started: number, windowDays: WindowDays, attempts: number, revisionRetries: number,
   fallback: "none" | "v2", pageReturned?: number): void {

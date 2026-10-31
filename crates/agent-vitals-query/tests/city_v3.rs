@@ -36,7 +36,9 @@ impl Fixture {
         req.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone()); req
     }
 }
-impl Drop for Fixture { fn drop(&mut self) { let _=std::fs::remove_dir_all(&self.home); } }
+impl Drop for Fixture { fn drop(&mut self) {
+    if std::env::var("CITY_KEEP_DB").ok().as_deref()!=Some("1") { let _=std::fs::remove_dir_all(&self.home); }
+} }
 
 fn local_activity(conn:&rusqlite::Connection,from:i64,to_exclusive:i64,timezone:&str) -> Vec<Value> {
     let tz=jiff::tz::TimeZone::get(timezone).unwrap();
@@ -232,6 +234,97 @@ fn event_time_index_preserves_local_activity_results() {
     assert_eq!(days.iter().map(|d|d["event_count"].as_i64().unwrap()).sum::<i64>(),2);
     assert!(days.iter().any(|d|d["event_count"]==2));
 }
+fn percentile_nearest(mut values:Vec<f64>, percentile:f64) -> f64 {
+    values.sort_by(f64::total_cmp);
+    let rank=((percentile*(values.len() as f64)).ceil() as usize).clamp(1,values.len());
+    values[rank-1]
+}
+
+#[test]
+#[ignore = "explicit 100k synthetic SQL acceptance, not a CI latency threshold"]
+fn synthetic_city_activity_sql_acceptance_100k() {
+    const SESSIONS:usize=300; const FACTS:usize=100_090; const WRITES:usize=1_000;
+    let seed=std::env::var("CITY_PERF_SEED").ok().and_then(|v|v.parse::<u64>().ok()).unwrap_or(20_261_031);
+    let f=Fixture::new(); let from=f.now-366*86_400_000; let timezone="Asia/Shanghai";
+    f.db.conn().execute_batch("BEGIN").unwrap();
+    let mut insert_session=f.db.conn().prepare("INSERT INTO sessions(session_key,harness,native_session_id,machine_namespace,last_observed_at_ms) VALUES(?1,'codex',?1,'fixture-machine',?2)").unwrap();
+    let mut insert_fact=f.db.conn().prepare("INSERT INTO usage_facts(fact_id,harness,machine_namespace,native_session_id,session_key,source_event_id,observation_kind,event_ts_ms,model_id,uncached_input_tokens,cache_read_tokens,cache_write_tokens,output_tokens,ingested_run_id,created_at_ms,updated_at_ms) VALUES(?1,'codex','fixture-machine',?2,?2,?1,'delta',?3,'gpt-5.6-luna',10,20,30,40,'fixture',?4,?4)").unwrap();
+    for session in 0..SESSIONS {
+        let key=format!("perf-accept-{session:03}");
+        insert_session.execute(rusqlite::params![key,f.now]).unwrap();
+        let facts=FACTS/SESSIONS + usize::from(session<FACTS%SESSIONS);
+        for fact in 0..facts {
+            let day=((session*97+fact*31+seed as usize%7)%366) as i64;
+            let at=f.now-day*86_400_000-(fact%1000) as i64;
+            insert_fact.execute(rusqlite::params![format!("perf-accept-fact-{session:03}-{fact:05}"),key,at,f.now]).unwrap();
+        }
+    }
+    drop(insert_session); drop(insert_fact);
+    f.db.conn().execute_batch("COMMIT").unwrap();
+    f.db.conn().execute("UPDATE usage_facts SET event_ts_ms=NULL WHERE fact_id LIKE 'perf-accept-fact-000-0000_'",[]).unwrap();
+    f.db.conn().execute("UPDATE usage_facts SET deleted_at_ms=?1 WHERE fact_id LIKE 'perf-accept-fact-001-0000_'",rusqlite::params![f.now]).unwrap();
+    f.db.conn().execute("UPDATE sessions SET deleted_at_ms=?1 WHERE session_key='perf-accept-002'",rusqlite::params![f.now]).unwrap();
+    let active:i64=f.db.conn().query_row("SELECT COUNT(*) FROM usage_facts WHERE deleted_at_ms IS NULL AND event_ts_ms IS NOT NULL",[],|r|r.get(0)).unwrap();
+    assert!(active>=100_000);
+    let conn=rusqlite::Connection::open_with_flags(default_authority_path(&f.home),rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let sqlite_version:String=conn.query_row("SELECT sqlite_version()",[],|r|r.get(0)).unwrap();
+
+    // Warm and sample the shipped pre-v33 access path, measure writes, then build and sample the index.
+    f.db.conn().execute_batch("DROP INDEX IF EXISTS usage_facts_event_time").unwrap();
+    let unindexed_plan=local_activity(&conn,from,f.now,timezone);
+    let _=local_activity(&conn,from,f.now,timezone);
+    let mut unindexed=Vec::new();
+    for _ in 0..20 { let begin=std::time::Instant::now(); let rows=local_activity(&conn,from,f.now,timezone); unindexed.push(begin.elapsed().as_secs_f64()*1000.0); assert_eq!(rows,unindexed_plan); }
+    let write_cost=|prefix:&str| {
+        f.db.conn().execute_batch("BEGIN IMMEDIATE").unwrap();
+        let begin=std::time::Instant::now();
+        {
+            let mut stmt=f.db.conn().prepare("INSERT INTO usage_facts(fact_id,harness,machine_namespace,native_session_id,session_key,source_event_id,observation_kind,event_ts_ms,model_id,uncached_input_tokens,cache_read_tokens,cache_write_tokens,output_tokens,ingested_run_id,created_at_ms,updated_at_ms) VALUES(?1,'codex','fixture-machine','perf-accept-000','perf-accept-000',?1,'delta',?2,'gpt-5.6-luna',1,2,3,4,'fixture',?3,?3)").unwrap();
+            for i in 0..WRITES { let at=f.now-(i as i64); stmt.execute(rusqlite::params![format!("{prefix}-{i:05}"),at,f.now]).unwrap(); }
+        }
+        let elapsed=begin.elapsed().as_secs_f64()*1000.0;
+        f.db.conn().execute_batch("COMMIT").unwrap();
+        f.db.conn().execute("DELETE FROM usage_facts WHERE fact_id LIKE ?1",rusqlite::params![format!("{prefix}-%")]).unwrap();
+        elapsed
+    };
+    let unindexed_write_ms=write_cost("perf-accept-write-unindexed");
+
+    let build_begin=std::time::Instant::now();
+    f.db.conn().execute_batch("CREATE INDEX usage_facts_event_time ON usage_facts(event_ts_ms) WHERE deleted_at_ms IS NULL").unwrap();
+    let _=local_activity(&conn,from,f.now,timezone);
+    let mut indexed=Vec::new();
+    for _ in 0..20 { let begin=std::time::Instant::now(); let rows=local_activity(&conn,from,f.now,timezone); indexed.push(begin.elapsed().as_secs_f64()*1000.0); assert_eq!(rows,unindexed_plan); }
+    let build_ms=build_begin.elapsed().as_secs_f64()*1000.0;
+    let indexed_write_ms=write_cost("perf-accept-write-indexed");
+
+    let mut plan_stmt=conn.prepare("EXPLAIN QUERY PLAN SELECT f.fact_id FROM usage_facts f WHERE f.deleted_at_ms IS NULL AND f.event_ts_ms>=?1 AND f.event_ts_ms<?2").unwrap();
+    let plan=plan_stmt.query_map(rusqlite::params![from,f.now],|r|r.get::<_,String>(3)).unwrap().collect::<Result<Vec<_>,_>>().unwrap();
+    drop(plan_stmt);
+    let unindexed_p50=percentile_nearest(unindexed.clone(),0.50);
+    let unindexed_p95=percentile_nearest(unindexed.clone(),0.95);
+    let unindexed_max=unindexed.iter().cloned().fold(0.0,f64::max);
+    let indexed_p50=percentile_nearest(indexed.clone(),0.50);
+    let indexed_p95=percentile_nearest(indexed.clone(),0.95);
+    let indexed_max=indexed.iter().cloned().fold(0.0,f64::max);
+    let index_bytes:i64=conn.query_row("SELECT COALESCE(SUM(pgsize),0) FROM dbstat WHERE name='usage_facts_event_time'",[],|r|r.get(0)).unwrap_or(0);
+    let db_bytes=std::fs::metadata(default_authority_path(&f.home)).map(|m|m.len() as i64).unwrap_or(0);
+    println!("CITY_PERF_SQL {}",json!({
+        "seed":seed,"facts":FACTS,"active_facts":active,"sessions":SESSIONS,"samples":20,
+        "sqlite_version":sqlite_version,"timezone":timezone,
+        "unindexed_p50_ms":unindexed_p50,"unindexed_p95_ms":unindexed_p95,"unindexed_max_ms":unindexed_max,
+        "indexed_p50_ms":indexed_p50,"indexed_p95_ms":indexed_p95,"indexed_max_ms":indexed_max,
+        "speedup_p50":unindexed_p50/indexed_p50,
+        "unindexed_samples_ms":unindexed,"indexed_samples_ms":indexed,
+        "index_build_ms":build_ms,"index_bytes":index_bytes,"db_bytes":db_bytes,
+        "write_1000_unindexed_ms":unindexed_write_ms,"write_1000_indexed_ms":indexed_write_ms,
+        "query_plan":plan,"result_rows":unindexed_plan.len()
+    }));
+    assert!(plan.iter().any(|line|line.contains("USING INDEX usage_facts_event_time")),"plan: {plan:?}");
+    assert!(indexed_p95<=1_000.0,"indexed p95: {:?}",indexed);
+    assert!(unindexed_p50>=5.0*indexed_p50,"p50 speedup below 5x");
+    println!("CITY_DB_PATH {}",f.home.display());
+}
+
 #[test]
 #[ignore = "explicit 366-day synthetic performance audit, not a CI latency threshold"]
 fn synthetic_city_overview_366_day_activity_performance() {
