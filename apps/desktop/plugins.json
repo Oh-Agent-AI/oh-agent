@@ -11,6 +11,11 @@
       "allowLocalExports": true,
       "navigationTargets": ["session"],
       "hostEvents": ["building", "squad"],
+      "remoteCapabilities": [{
+        "id": "mecha:v1",
+        "methods": ["match.snapshot", "plan.submit", "match.concede", "match.close"],
+        "events": ["match.closed", "match.replaced", "turn.resolved"]
+      }],
       "source": "apps/agent-city/ui",
       "debugProbeMarker": "__CITY_PROBE_SPIN__"
     }

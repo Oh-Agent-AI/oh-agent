@@ -35,3 +35,7 @@ City 建筑详情展示这些摘录，并明确标记“非完整提示词”。
 - `allowLocalExports:true` 只允许活动插件的 blob 下载，通过原生保存对话框由用户选择目的地；不开放 HTTP 下载或任意文件写入。照片/影片只叠加统计，不把用户摘录写入成片。
 
 浏览器回归仍为合成数据，不能证明原生真实数据端到端。功能迁移与验收状态见 [City 插件功能迁移](CITY_PLUGIN_FEATURE_MIGRATION.md)。
+
+## 远程机甲战的独立网络边界
+
+上述 `city:v2` 本地投影和 MCP/export 权限不因远程机甲战而扩大。仅在桌面用户主动开启远程或批准好友时，`mecha.remote.*` 可以通过 Cloudflare 传输当前比赛的 `RemoteArenaV1`、命令、快照与战斗事件；不包含本文件中的会话摘录、统计、opaque handle、设置或其他 City 数据。中继只持久化短期授权元数据，不持久化比赛正文。详细设计与验收限制见 [远程机甲战与好友对战设计计划](MECHA_REMOTE_MULTIPLAYER_DESIGN_PLAN.md)。

@@ -14,5 +14,11 @@ export default defineConfig(({ mode }) => ({
     sourcemap: mode === "debug",
     outDir: path.join(here, "dist"),
     emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        index: path.join(here, "index.html"),
+        remote: path.join(here, "remote.html"),
+      },
+    },
   },
 }));
