@@ -1,7 +1,7 @@
 {
   "schema": "agent-vitals-pricing-sync/v1",
   "_doc": "由 scripts/pricing_sync.py 每日生成，勿手改。只含相对底表（pricing.json / codex_pricing.json）新增或改价的条目；app 拉取后与内置底表合并成完整快照。每张卡的 _sync 记录采纳它的源。",
-  "updated_at": "2026-10-30",
+  "updated_at": "2026-10-31",
   "sources": {
     "models.dev": "https://models.dev/api.json",
     "litellm": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
@@ -395,8 +395,7 @@
             "kind": "new",
             "agreed_by": [
               "litellm",
-              "models.dev",
-              "openrouter"
+              "models.dev"
             ]
           }
         },
