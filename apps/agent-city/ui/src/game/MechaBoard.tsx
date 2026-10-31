@@ -21,6 +21,7 @@ import type { DoctrineId } from "./mecha/ai";
 import { createMechaController, type MechaController } from "./mecha/controller";
 import { anchorsFromCity, prepareFightTerrainAsync, type FightCatalog, type FightShape } from "./mecha/citySite";
 import { startPreparedSearch } from "./mecha/fightSearchRunner";
+import { RemoteMechaControls } from "./mecha/RemoteMechaControls";
 import {
   FLAT_SPAWN_MAX_DELTA, MAX_TURNS, living, stakeBuildings,
   type Action, type BossScriptId, type MechId,
@@ -281,6 +282,7 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
   const shapeId: FightShape = catalog[shape] ? shape : (SHAPES.find((item) => catalog[item.id])?.id ?? "flat");
   const site = catalog[shapeId] ?? null;
   const [viewFailed, setViewFailed] = useState(false);
+  const [remoteActive, setRemoteActive] = useState(false);
   const [showOrder, setShowOrder] = useState(false);
   const [focusedBuilding, setFocusedBuilding] = useState<string | null>(null);
   const [inspectedAction, setInspectedAction] = useState<Action["kind"] | null>(null);
@@ -383,7 +385,7 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
   const raiderHp = state.raiders.map((raider) => `${t(enemyName(raider.id))} ${raider.hp}`).join(" ");
   const focus = s.focus;
   const focusLine = doctrineFocusLine(doctrine, gameText(enemyName(focus.id), locale), focus.building ? `${focus.building.x},${focus.building.y}` : null, locale);
-  const planning = s.interactive && !sequenceWaiting;
+  const planning = s.interactive && !sequenceWaiting && !remoteActive;
   // The visible board during playback is the pre-turn state; never mix it with
   // the already-advanced controller's next-turn prediction.
   const preview = !performance && s.preview.ok ? s.preview : null;
@@ -548,6 +550,7 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
           <p className="mecha-help">{t("战场在这座城市的地面上。楼顶血槽只记这一局，城市里的楼还在。")}</p>
           <p className="mecha-ruleset">{t("掩体")} {state.covers.length} · {t("建筑")} {state.buildings.filter((b) => b.hp > 0).length} · {state.ruleset}</p>
         </details>
+        <RemoteMechaControls locale={locale} site={site} shape={shapeId} state={state} onActiveChange={setRemoteActive} onStopped={() => controller.restart()} />
       </div>
     </section>
   );

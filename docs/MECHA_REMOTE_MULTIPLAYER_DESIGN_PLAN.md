@@ -1,8 +1,30 @@
 # Agent City 远程机甲战与好友对战设计计划
 
-日期：2026-10-31  
-状态：提案，待产品、隐私与技术评审  
+日期：2026-10-31
+
+状态：首版代码已实现，待部署和真实设备验收
+
 范围：手机远程游玩本机机甲战棋；邀请好友进入本机 Agent City 战场进行 1v1 对战
+
+## 0. 首版实施状态
+
+### 通用远程通道改造进度
+
+网络信封现使用 `app-remote:v1`，按应用、会话和能力限制方法及事件；Worker 从已认证连接注入身份，机甲适配器再核对业务身份。Rust 的 HTTPS/WSS 连接、重试和消息收发已抽到 `remote_transport.rs`，请求校验提供 `RemoteAdapter` 入口。桌面有显式受信任适配器注册表，并按应用和能力存放活动会话；合成岛屿能力覆盖通用路由和会话键隔离测试，未注册为生产适配器。机甲业务内部仍使用 `mecha-net:v1`。
+
+**尚未完成通用插件接入：**当前受信任注册表只有机甲；会话值、启动与停止流程、窗口回调和配对逻辑仍由机甲网关实现，通用会话存储不是完整的跨插件生命周期服务，也不支持仅通过描述符自动接入。中继席位目前固定为宿主、房主和一位好友，不能视为通用多人房间。其他插件需要实现受信任的适配器并获得单独的产品和数据出口授权，不能因注册自动开放。真实手机与公网中继的完整链路仍须验收。
+
+**上线前安全缺口：**Rust 启动时仅检查战场和状态的少数字段及大小，并未对嵌套对象执行完整字段白名单投影；当前依赖 City 前端生成受限数据。必须在可信宿主侧实施严格的版本化结构校验与投影，并验证返回消息不包含额外字段，才能把这一数据出口视为可安全部署的边界。
+
+远程功能代码已合入 `feature/mecha`，尚未部署。已实现 `MatchSession`、版本化消息协议、Cloudflare Worker + Durable Object 中继、Rust 出站桥接、独立远程 React/Three.js 页面，以及对称 1v1 规则。
+
+- 权威 TypeScript 运行在桌面创建的独立隐藏 WebView `MatchSession` 中，不是独立 Worker 线程；生命周期不依赖当前 City 标签页。
+- 房主链接生成后即可由持链接设备配对，链接秘密放在 URL fragment；首版没有二维码和系统安全存储中的长期设备密钥。
+- 好友邀请在 10 分钟内只能绑定一个浏览器会话生成的随机设备秘密；只有同时持有邀请秘密与同一设备秘密才能安全重试，重连只使用设备秘密，不再使用邀请秘密。秘密存于 `sessionStorage`，不是硬件身份认证。登记后仍需桌面批准，且同一时间仅允许一名获批好友。批准前先创建双方满编的新对称 PvP 战局，不延续 PvE 血量、回合或进度。
+- 房主、好友通过同一 `app-remote:v1` 网络信封获取完整快照，桌面业务内部使用 `mecha-net:v1`。PvP 使用 `mecha-pvp:v1`，30 个双方回合后按剩余总 HP 裁定，支持全歼、认输和平局。
+- 重连通过设备凭证换取一次性 WebSocket ticket；浏览器凭证只存于 `sessionStorage`。撤销、停止远程和房主离线会使远程服务不可用。
+- 当前没有云端比赛持久化、房主离线恢复、端到端加密、自动回合计时或生产服务 SLA。TLS 不意味着 Cloudflare 无法读取中继正文。
+- 自动化检查覆盖规则、协议、鉴权和中继路由；Cloudflare dry-run 不等于部署，单元测试不等于 iOS Safari/Android Chrome 或完整桌面到真实中继的验收。实际结果在第 14 节持续记录。
 
 ## 1. 决策摘要
 
@@ -126,7 +148,7 @@ CityEngine → CityMechaSite → MatchState ↔ ArenaPlan
        - 不解释战斗规则
                   │
                   ▼
-桌面持久 MatchSession Worker（TypeScript）
+桌面持久 MatchSession 隐藏 WebView（TypeScript）
        - 玩家、阵营和回合权限
        - commandId 去重与 revision 检查
        - playTurn 唯一权威结算
@@ -138,7 +160,7 @@ CityEngine → CityMechaSite → MatchState ↔ ArenaPlan
        - 不直接修改权威 MatchState
 ```
 
-远程开启时，桌面确保后台 MatchSession Worker 可用；其生命周期不能只依赖用户正在查看 City 标签页。Worker 不可用时远程端明确显示不可用，Rust 不接管规则结算。
+远程开启时，桌面创建独立隐藏 WebView 承载 MatchSession；其生命周期不依赖用户正在查看 City 标签页。首版没有独立 Worker 线程；WebView 不可用时远程端明确显示不可用，Rust 不接管规则结算。
 
 ## 6. 客户端与权威端职责
 
@@ -168,7 +190,8 @@ CityEngine → CityMechaSite → MatchState ↔ ArenaPlan
 
 ### 7.1 版本
 
-- 网络信封：`mecha-net:v1`。
+- 网络信封：`app-remote:v1`，包含 `appId`、`sessionId`、`capability`，以及请求 ID、方法和业务 payload。
+- 机甲会话内部协议：`mecha-net:v1`。
 - 现有 PvE 规则：保持当前 `mecha-v1.4`。
 - 好友 PvP：新规则集单独命名和评审，不复用 `mecha-v1.4` 名义改变规则。
 - 客户端与权威端版本不兼容时拒绝加入并提示更新，不尝试静默兼容。
@@ -356,6 +379,14 @@ P2/P3 可有部分并行，但远程渲染不能通过虚构战场数据绕过�
 - 重复进入和退出比赛不累积连接、Worker、渲染资源或模式 lease。
 
 实施阶段按改动范围运行 City typecheck、`verify:mecha`、桌面 Rust 测试及相关构建；不能用纯单元测试替代上述真实链路。
+
+### 14.4 首版本地验收记录（2026-10-31）
+
+- `verify:mecha` 的 165 项检查通过，包含 PvP、网络协议和原有机甲回归；远程 UI typecheck/build、relay typecheck/7 项测试、Rust `remote_gateway` 3 项测试与 desktop clippy 均单独运行。
+- 本地 Wrangler 运行真实 Worker 和 Durable Object，测试权威 `MatchSession` 通过实际 WebSocket 完成邀请批准、双方相同 PvP 快照、回合鉴权、命令去重、重连、认输及撤销。
+- 两个独立 iPhone 14 Pro 模拟浏览器页面使用真实本地中继和同一测试权威会话，完成双方整队 skip 的交替提交；双方同步到相同 revision。好友认输后双方均显示 A 获胜及结束状态；房主刷新后使用 `sessionStorage` 凭证恢复到该结束状态。
+- 上述结果不是 Cloudflare 生产部署、物理 iOS/Android 真机或完整桌面 `.app` 验收。Wi-Fi/蜂窝切换、锁屏、真实网络中断、完整桌面控制面板链路和生产环境仍待验收。
+- 通用协议改造后的本地检查：桌面 Rust 202 项测试和 clippy 通过；City typecheck、170 项机甲测试和 UI 构建通过，包含会话握手 token 测试。真实本地 Worker 的跨应用路由和 WebSocket 验证通过，但尚未用 Rust 桌面客户端贯通此链路。
 
 ## 15. 后续演进
 

@@ -13,6 +13,12 @@ mod quota_alerts;
 mod plugin_host;
 mod plugin_projections;
 mod plugin_state;
+mod mecha_remote_adapter;
+mod remote_gateway;
+mod remote_protocol;
+mod remote_registry;
+mod remote_sessions;
+mod remote_transport;
 mod update_check;
 // 「测试」板 Claude IP 风险自检：全部出站探测收敛在此模块（离线包契约：React
 // 源码不得含远端 URL / 网络客户端），并按 scutil --proxy 对齐系统代理路由。
@@ -5804,6 +5810,7 @@ pub fn run() {
             }
         })
         .manage(plugin_host::PluginHost::default())
+        .manage(remote_gateway::RemoteGateway::default())
         .invoke_handler({
             let handler: Box<dyn Fn(tauri::ipc::Invoke) -> bool + Send + Sync> = Box::new(tauri::generate_handler![
             plugin_host::plugin_open,
@@ -5814,6 +5821,7 @@ pub fn run() {
             plugin_host::plugin_message,
             plugin_host::plugin_request,
             plugin_host::plugin_invalidate,
+            remote_gateway::remote_mecha_message,
             read_overview,
             data_status,
             billing_import_candidates,

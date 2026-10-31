@@ -94,7 +94,8 @@ struct PluginDefinition { id: String, name: String, entry: String, command_names
     /// 允许的 plugin.state.* 键（如 flight-profile:v1）；描述表声明即边界（游戏模式 §9）。
     #[serde(default)] state_keys: Vec<String>,
     /// 活动插件要接收的宿主推送（building / squad）。未声明则不投递，不按插件 id 判断。
-    #[serde(default)] host_events: Vec<String> }
+    #[serde(default)] host_events: Vec<String>,
+    #[serde(default)] remote_capabilities: Vec<crate::remote_protocol::RemoteCapability> }
 
 #[derive(Deserialize)]
 struct PluginRegistry { version: u16, plugins: Vec<PluginDefinition> }
@@ -109,6 +110,10 @@ fn definitions() -> &'static [PluginDefinition] {
             assert!(!plugin.id.is_empty() && plugin.id.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-') && ids.insert(&plugin.id));
             assert!(!plugin.name.is_empty() && !plugin.command_namespace.is_empty());
             assert!(plugin.entry.starts_with("plugins/") && plugin.entry.ends_with("/ui/index.html") && !plugin.entry.contains(".."));
+            let mut capabilities = std::collections::BTreeSet::new();
+            for capability in &plugin.remote_capabilities {
+                assert!(capability.is_valid() && capabilities.insert(&capability.id));
+            }
         }
         registry
     }).plugins
@@ -847,6 +852,22 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
     let payload = request.payload.clone();
     let payload_for_log = payload.clone();
     let request_started = Instant::now();
+    if let Some(adapter) = crate::remote_registry::registered(&plugin_id, &method) {
+        let capability = definitions().iter().find(|p| p.id == plugin_id)
+            .and_then(|p| p.remote_capabilities.iter().find(|cap| cap.id == adapter.capability_id));
+        let result = match capability {
+            Some(capability) => adapter.dispatch(&app, capability, &method, &payload).await,
+            None => Err("remote_forbidden"),
+        };
+        let host = state.0.lock().unwrap();
+        if !host.current.as_ref().is_some_and(|i| i.id == request.instance_id && i.failed.is_none() && !i.suspended) {
+            return Err("plugin_instance_mismatch".into());
+        }
+        return Ok(match result {
+            Ok(value) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(value), error: None },
+            Err(code) => plugin_request_error(request.request_id, code, matches!(code, "remote_unavailable" | "remote_session_unavailable")),
+        });
+    }
     // 通用本地状态端口（游戏模式 §9）：文件操作在阻塞线程执行，响应送达前复验实例。
     if matches!(method.as_str(), "plugin.state.read" | "plugin.state.write") {
         let keys = state_keys;
