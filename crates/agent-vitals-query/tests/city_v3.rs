@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use serde_json::{Value,json};
 use agent_vitals_data::authority::{AuthorityDb,default_authority_path};
+use agent_vitals_data::session_statistics as stats;
 use agent_vitals_query::query::{app_local,city_assets,city_building,city_v3};
 
 struct Fixture { home:PathBuf, db:AuthorityDb, now:i64 }
@@ -36,6 +37,21 @@ impl Fixture {
     }
 }
 impl Drop for Fixture { fn drop(&mut self) { let _=std::fs::remove_dir_all(&self.home); } }
+
+fn local_activity(conn:&rusqlite::Connection,from:i64,to_exclusive:i64,timezone:&str) -> Vec<Value> {
+    let tz=jiff::tz::TimeZone::get(timezone).unwrap();
+    let mut date=jiff::Timestamp::from_millisecond(from).unwrap().to_zoned(tz.clone()).date();
+    let mut boundaries=Vec::new();
+    loop {
+        let start=date.to_zoned(tz.clone()).unwrap().timestamp().as_millisecond();
+        if start>=to_exclusive { break; }
+        let next=date.tomorrow().unwrap();
+        let end=next.to_zoned(tz.clone()).unwrap().timestamp().as_millisecond();
+        boundaries.push(json!({"date":date.to_string(),"from_ms":start.max(from),"to_ms":end.min(to_exclusive)}));
+        date=next;
+    }
+    stats::daily_activity(conn,&json!(boundaries)).unwrap()
+}
 
 #[test]
 fn boundaries_lifetime_models_and_disjoint_time_coverage() {
@@ -198,6 +214,63 @@ fn integers_outside_javascript_precision_fail_explicitly() {
     assert_eq!(app_local::city_projection(&f.home,30,f.now),Err("numeric_out_of_range"));
 }
 
+#[test]
+fn event_time_index_preserves_local_activity_results() {
+    let mut f=Fixture::new();
+    f.now="2026-03-10T12:00:00Z".parse::<jiff::Timestamp>().unwrap().as_millisecond();
+    for (session,at) in [("a",f.now-86_400_000),("b",f.now-86_400_000-1),("c",f.now-367*86_400_000),("deleted",f.now-2*86_400_000)] {
+        f.session(session);
+        f.fact(session,&format!("{session}-fact"),Some(at),None,"delta");
+    }
+    f.db.conn().execute("UPDATE sessions SET deleted_at_ms=?1 WHERE session_key='deleted'",rusqlite::params![f.now]).unwrap();
+    let from=f.now-366*86_400_000;
+    let indexed=local_activity(f.db.conn(),from,f.now,"America/New_York");
+    f.db.conn().execute_batch("DROP INDEX usage_facts_event_time").unwrap();
+    let unindexed=local_activity(f.db.conn(),from,f.now,"America/New_York");
+    assert_eq!(indexed,unindexed);
+    let days=indexed.as_slice();
+    assert_eq!(days.iter().map(|d|d["event_count"].as_i64().unwrap()).sum::<i64>(),2);
+    assert!(days.iter().any(|d|d["event_count"]==2));
+}
+#[test]
+#[ignore = "explicit 366-day synthetic performance audit, not a CI latency threshold"]
+fn synthetic_city_overview_366_day_activity_performance() {
+    const SESSIONS: usize = 300;
+    const FACTS: usize = 100_010;
+    let f=Fixture::new(); let from=f.now-366*86_400_000; let timezone="Asia/Shanghai";
+    f.db.conn().execute_batch("BEGIN").unwrap();
+    let mut insert_session=f.db.conn().prepare("INSERT INTO sessions(session_key,harness,native_session_id,machine_namespace,last_observed_at_ms) VALUES(?1,'codex',?1,'fixture-machine',?2)").unwrap();
+    let mut insert_fact=f.db.conn().prepare("INSERT INTO usage_facts(fact_id,harness,machine_namespace,native_session_id,session_key,source_event_id,observation_kind,event_ts_ms,model_id,uncached_input_tokens,cache_read_tokens,cache_write_tokens,output_tokens,ingested_run_id,created_at_ms,updated_at_ms) VALUES(?1,'codex','fixture-machine',?2,?2,?1,'delta',?3,'gpt-5.6-luna',10,20,30,40,'fixture',?4,?4)").unwrap();
+    for session in 0..SESSIONS {
+        let key=format!("perf-366-{session:03}");
+        insert_session.execute(rusqlite::params![key,f.now]).unwrap();
+        let facts=FACTS/SESSIONS + usize::from(session < FACTS%SESSIONS);
+        for fact in 0..facts {
+            let day=((session*97+fact*31)%366) as i64;
+            let at=f.now-day*86_400_000-(fact%1000) as i64;
+            insert_fact.execute(rusqlite::params![format!("perf-366-fact-{session:03}-{fact:05}"),key,at,f.now]).unwrap();
+        }
+    }
+    drop(insert_session); drop(insert_fact);
+    f.db.conn().execute_batch("COMMIT").unwrap();
+    // Keep honest unknown/deleted/deleted-session samples without changing the active count.
+    f.db.conn().execute("UPDATE usage_facts SET event_ts_ms=NULL WHERE fact_id IN ('perf-366-fact-000-00000','perf-366-fact-000-00001','perf-366-fact-000-00002','perf-366-fact-000-00003','perf-366-fact-000-00004')",[]).unwrap();
+    f.db.conn().execute("UPDATE usage_facts SET deleted_at_ms=?1 WHERE fact_id IN ('perf-366-fact-001-00000','perf-366-fact-001-00001','perf-366-fact-001-00002','perf-366-fact-001-00003','perf-366-fact-001-00004')",rusqlite::params![f.now]).unwrap();
+    f.db.conn().execute("UPDATE sessions SET deleted_at_ms=?1 WHERE session_key='perf-366-002'",rusqlite::params![f.now]).unwrap();
+    let active: i64=f.db.conn().query_row("SELECT COUNT(*) FROM usage_facts WHERE deleted_at_ms IS NULL AND event_ts_ms IS NOT NULL",[],|r|r.get(0)).unwrap();
+    assert!(active>=100_000);
+    let conn=rusqlite::Connection::open_with_flags(default_authority_path(&f.home),rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let mut times=Vec::new();
+    for _ in 0..5 {
+        let begin=std::time::Instant::now(); let activity=json!({"days":local_activity(&conn,from,f.now,timezone),"timezone":timezone}); times.push(begin.elapsed().as_secs_f64()*1000.0);
+        assert_eq!(activity["timezone"],timezone); assert_eq!(activity["days"].as_array().unwrap().len(),366);
+    }
+    times.sort_by(f64::total_cmp);
+    let mut plan=conn.prepare("EXPLAIN QUERY PLAN SELECT f.fact_id FROM usage_facts f WHERE f.deleted_at_ms IS NULL AND f.event_ts_ms>=?1 AND f.event_ts_ms<?2").unwrap();
+    let plan=plan.query_map(rusqlite::params![from,f.now],|r|r.get::<_,String>(3)).unwrap().collect::<Result<Vec<_>,_>>().unwrap();
+    println!("CITY_PERF_366 {}",json!({"facts":FACTS,"sessions":SESSIONS,"samples":times.len(),"p50_ms":times[times.len()/2],"max_ms":times[times.len()-1],"query_plan":plan}));
+    assert!(plan.iter().any(|line|line.contains("USING INDEX usage_facts_event_time")),"plan: {plan:?}");
+}
 #[test]
 #[ignore = "explicit synthetic performance audit, not a CI latency threshold"]
 fn synthetic_projection_performance() {
