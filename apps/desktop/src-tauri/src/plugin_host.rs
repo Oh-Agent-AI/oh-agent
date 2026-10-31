@@ -679,7 +679,8 @@ pub fn plugin_snapshot(webview: Webview, state: tauri::State<'_, PluginHost>) ->
 
 #[tauri::command]
 pub fn plugin_message(app: tauri::AppHandle, webview: Webview, state: tauri::State<'_, PluginHost>, message: Value) -> Result<(), String> {
-    let changed = message["type"] != "heartbeat";
+    let changed = message["type"] != "heartbeat" && message["type"] != "performance.city"
+        && message["type"] != "performance.city_scene";
     let mut host = state.0.lock().unwrap();
     let i = host.current.as_mut().ok_or("plugin_instance_unavailable")?;
     let result = apply_message(i, webview.label(), message);
@@ -723,6 +724,16 @@ fn apply_message(i: &mut Instance, sender: &str, message: Value) -> Result<(), S
             note(i, if message["ok"] == true { "command_succeeded" } else { "command_rejected" });
             i.pending = None;
         }
+        Some("performance.city_scene") if i.plugin_id == "city" => {
+            let fields = city_scene_fields(&message)?;
+            i.pulse = Instant::now();
+            agent_vitals_runtime::logging::log_info("city_perf", &format!("city_scene_stage {fields}"));
+        }
+        Some("performance.city") if i.plugin_id == "city" => {
+            let fields = city_load_fields(&message)?;
+            i.pulse = Instant::now();
+            agent_vitals_runtime::logging::log_info("city_perf", &format!("city_load_finished {fields}"));
+        }
         Some("runtime.error") => { i.failed = Some("plugin_runtime_error"); note(i, "plugin_runtime_error"); }
         _ => return Err("plugin_message_unavailable".into()),
     }
@@ -760,6 +771,50 @@ pub fn plugin_invalidate(app: tauri::AppHandle, webview: Webview, state: tauri::
         .map_err(|_| "plugin_delivery_failed".into())
 }
 
+fn city_load_fields(message: &Value) -> Result<String, &'static str> {
+    let outcome = match message["outcome"].as_str() {
+        Some("success" | "partial" | "cancelled" | "fallback_v2" | "failed") => message["outcome"].as_str().unwrap(),
+        _ => return Err("plugin_performance_outcome_invalid"),
+    };
+    let elapsed = message["elapsedMs"].as_u64().filter(|ms| *ms <= 86_400_000).ok_or("plugin_performance_value_invalid")?;
+    let attempts = message["attemptCount"].as_u64().filter(|n| (1..=10).contains(n)).ok_or("plugin_performance_value_invalid")?;
+    let retries = message["revisionRetryCount"].as_u64().filter(|n| *n <= 10).ok_or("plugin_performance_value_invalid")?;
+    let fallback = match message["fallbackKind"].as_str() {
+        Some("none" | "v2") => message["fallbackKind"].as_str().unwrap(),
+        _ => return Err("plugin_performance_fallback_invalid"),
+    };
+    let days = message["windowDays"].as_u64().filter(|days| matches!(days, 7 | 30 | 90 | 366)).ok_or("plugin_performance_window_invalid")?;
+    let page = match message.get("pageReturned") {
+        None => "none".to_string(),
+        Some(value) => value.as_u64().filter(|n| *n <= 4000).ok_or("plugin_performance_value_invalid")?.to_string(),
+    };
+    Ok(format!("outcome={outcome} elapsed_ms={elapsed} attempt_count={attempts} revision_retry_count={retries} fallback={fallback} window_days={days} page_returned={page}"))
+}
+
+fn city_scene_fields(message: &Value) -> Result<String, &'static str> {
+    let stage = match message["stage"].as_str() {
+        Some("model" | "planning" | "mounting" | "rendering" | "first_frame") => message["stage"].as_str().unwrap(),
+        _ => return Err("plugin_performance_stage_invalid"),
+    };
+    let outcome = match message["outcome"].as_str() {
+        Some("success" | "failed" | "cancelled") => message["outcome"].as_str().unwrap(),
+        _ => return Err("plugin_performance_outcome_invalid"),
+    };
+    let elapsed = message["elapsedMs"].as_u64().filter(|ms| *ms <= 86_400_000).ok_or("plugin_performance_value_invalid")?;
+    let days = message["windowDays"].as_u64().filter(|days| matches!(days, 7 | 30 | 90 | 366)).ok_or("plugin_performance_window_invalid")?;
+    Ok(format!("stage={stage} outcome={outcome} elapsed_ms={elapsed} window_days={days}"))
+}
+
+fn log_city_ipc_outcome(payload: &Value, started: Instant, outcome: &str) {
+    if payload["projection"] != "city" || payload["version"] != 3 || payload["operation"] != "overview" { return; }
+    let window_days = payload["windowDays"].as_u64().filter(|days| matches!(days, 7 | 30 | 90 | 366));
+    agent_vitals_runtime::logging::log_info("city_perf", &format!(
+        "city_ipc_finished operation=overview window_days={} outcome={outcome} elapsed_ms={}",
+        window_days.map(|days| days.to_string()).unwrap_or_else(|| "unknown".into()),
+        started.elapsed().as_millis(),
+    ));
+}
+
 #[tauri::command]
 pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: tauri::State<'_, PluginHost>, request: PluginRequestV1) -> Result<PluginResponseV1, String> {
     let (allowed, navigation, state_keys, plugin_id) = {
@@ -790,6 +845,8 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
     }
     let method = request.method.clone();
     let payload = request.payload.clone();
+    let payload_for_log = payload.clone();
+    let request_started = Instant::now();
     // 通用本地状态端口（游戏模式 §9）：文件操作在阻塞线程执行，响应送达前复验实例。
     if matches!(method.as_str(), "plugin.state.read" | "plugin.state.write") {
         let keys = state_keys;
@@ -812,10 +869,15 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
     if !host.current.as_ref().is_some_and(|i| i.id == request.instance_id && i.failed.is_none() && !i.suspended) {
         return Err("plugin_instance_mismatch".into());
     }
-    Ok(match result {
+    let response = match result {
         Ok(value) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(value), error: None },
-        Err(code) => plugin_request_error(request.request_id, code, matches!(code, "data_unavailable" | "revision_changed")),
-    })
+        Err(code) => {
+            log_city_ipc_outcome(&payload_for_log, request_started, &format!("error:{code}"));
+            plugin_request_error(request.request_id, code, matches!(code, "data_unavailable" | "revision_changed"))
+        }
+    };
+    if response.ok { log_city_ipc_outcome(&payload_for_log, request_started, "success"); }
+    Ok(response)
 }
 
 #[cfg(test)]
@@ -936,6 +998,81 @@ mod tests {
         i.pulse = Instant::now() - Duration::from_secs(6);
         assert!(!refresh_fault(&mut i));
     }
+    #[test]
+    fn city_load_performance_message_is_allowlisted() {
+        let message = json!({
+            "version":1,"instanceId":"plugin-city-2","type":"performance.city",
+            "outcome":"success","elapsedMs":1234,"attemptCount":1,"revisionRetryCount":0,
+            "fallbackKind":"none","windowDays":366,"pageReturned":500
+        });
+        let fields = city_load_fields(&message).unwrap();
+        assert!(fields.contains("outcome=success"));
+        assert!(fields.contains("elapsed_ms=1234"));
+        assert!(fields.contains("fallback=none"));
+        assert!(fields.contains("window_days=366"));
+        assert!(fields.contains("page_returned=500"));
+        for key in ["outcome", "fallbackKind", "windowDays", "elapsedMs", "attemptCount", "revisionRetryCount", "pageReturned"] {
+            let mut bad = message.clone();
+            bad[key] = match key {
+                "windowDays" => json!(14),
+                "pageReturned" => json!("secret"),
+                _ => json!("secret"),
+            };
+            assert!(city_load_fields(&bad).is_err(), "{key} must be allowlisted");
+        }
+        let mut omitted = message.clone();
+        omitted.as_object_mut().unwrap().remove("pageReturned");
+        assert!(city_load_fields(&omitted).unwrap().contains("page_returned=none"));
+    }
+
+    #[test]
+    fn city_scene_performance_message_is_allowlisted() {
+        let message = json!({
+            "version":1,"instanceId":"plugin-city-2","type":"performance.city_scene",
+            "stage":"first_frame","outcome":"success","elapsedMs":5678,"windowDays":366
+        });
+        let fields = city_scene_fields(&message).unwrap();
+        assert!(fields.contains("stage=first_frame"));
+        assert!(fields.contains("elapsed_ms=5678"));
+        assert!(fields.contains("window_days=366"));
+        for key in ["stage", "outcome", "elapsedMs", "windowDays"] {
+            let mut bad = message.clone();
+            bad[key] = if key == "stage" { json!("secret") } else if key == "windowDays" { json!(14) } else { json!("secret") };
+            assert!(city_scene_fields(&bad).is_err(), "{key} must be allowlisted");
+        }
+    }
+
+    #[test]
+    fn city_scene_performance_message_updates_pulse_and_requires_city_plugin() {
+        let message = json!({
+            "version":1,"instanceId":"plugin-city-2","type":"performance.city_scene",
+            "stage":"first_frame","outcome":"success","elapsedMs":5678,"windowDays":366
+        });
+        let mut i = instance();
+        i.pulse = Instant::now() - Duration::from_secs(6);
+        assert!(apply_message(&mut i, "plugin-city-2", message.clone()).is_ok());
+        assert!(i.pulse > Instant::now() - Duration::from_secs(1));
+        let mut metrics = instance();
+        metrics.plugin_id = "metrics".into();
+        assert!(apply_message(&mut metrics, "plugin-city-2", message).is_err());
+    }
+
+    #[test]
+    fn city_load_performance_message_updates_pulse_and_requires_city_plugin() {
+        let message = json!({
+            "version":1,"instanceId":"plugin-city-2","type":"performance.city",
+            "outcome":"success","elapsedMs":1234,"attemptCount":1,"revisionRetryCount":0,
+            "fallbackKind":"none","windowDays":366
+        });
+        let mut i = instance();
+        i.pulse = Instant::now() - Duration::from_secs(6);
+        assert!(apply_message(&mut i, "plugin-city-2", message.clone()).is_ok());
+        assert!(i.pulse > Instant::now() - Duration::from_secs(1));
+        let mut metrics = instance();
+        metrics.plugin_id = "metrics".into();
+        assert!(apply_message(&mut metrics, "plugin-city-2", message).is_err());
+    }
+
     #[test]
     fn rejects_old_instances_revisions_and_request_results() {
         let mut i = instance();

@@ -4,7 +4,7 @@ import { message, useLanguage } from "../../lib/i18n";
 import { pluginCreationCode, pluginCreationHelp } from "./pluginDiagnostics";
 
 type Tool = { id: string; commandId: string; label: string; kind: "button" | "select"; enabled: boolean; placement?: "primary" | "overflow"; value: string | null; options: Array<{ value: string; label: string }> };
-type Snapshot = { instanceId: string; status: "loading" | "ready" | "failed"; error: string | null; items: Tool[]; pending: string | null; events: Array<{ atMs: number; code: string }> };
+type Snapshot = { pluginId: string; instanceId: string; status: "loading" | "ready" | "failed"; error: string | null; items: Tool[]; pending: string | null; events: Array<{ atMs: number; code: string }> };
 
 export type PluginPresentation = { id: string; name: string };
 
@@ -35,7 +35,9 @@ export function usePlugin(active: boolean, { id: pluginId, name }: PluginPresent
     }
   }, [locale]);
   useEffect(() => {
-    if (!active) { setSnapshot(null); setError(null); return; }
+    // Retaining a ready snapshot prevents a suspended-then-resumed plugin from
+    // flashing the host loading shell while plugin_open/plugin_snapshot return.
+    if (!active) return;
     let cancelled = false;
     let id: string | null = null;
     let ticking = false;
@@ -44,7 +46,8 @@ export function usePlugin(active: boolean, { id: pluginId, name }: PluginPresent
     let layoutPending = false;
     let lastBounds = "";
     let unsubscribe = () => {};
-    setSnapshot(null); setError(null); setBusy(false);
+    setSnapshot((current) => current?.pluginId === pluginId && current.status === "ready" ? current : null);
+    setError(null); setBusy(false);
     const bounds = () => {
       const rect = slot.current?.getBoundingClientRect();
       if (!rect || rect.width < 1 || rect.height < 1) throw new Error("slot_unavailable");

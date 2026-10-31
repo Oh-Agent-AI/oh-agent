@@ -1,5 +1,6 @@
 //! Registered City-only read model: logical snapshots, bounded pages and lazy details.
 use std::{collections::BTreeMap, path::{Path,PathBuf}, sync::{Mutex,OnceLock}};
+use std::time::Instant;
 use rusqlite::Connection;
 use serde_json::{Value,json};
 use agent_vitals_data::{authority::{AuthorityDb,default_authority_path},session_statistics as stats,authority_query as billing};
@@ -106,6 +107,13 @@ pub(crate) fn cost_breakdown(buckets: &[Value], total_tokens: i64) -> Result<Val
     Ok(view)
 }
 
+fn log_overview_stage(stage: &str, started: Instant) {
+    agent_vitals_runtime_core::core::logging::log_info(
+        "city_v3",
+        &format!("city_overview_stage stage={stage} elapsed_ms={}", started.elapsed().as_millis()),
+    );
+}
+
 /// Only called by the explicitly registered city:v3 handler. No arbitrary query dispatch.
 pub fn read(home: &Path, request: &Value, now: i64) -> Result<Value,&'static str> {
     let operation = request["operation"].as_str().ok_or("invalid_operation")?;
@@ -128,6 +136,7 @@ pub fn read(home: &Path, request: &Value, now: i64) -> Result<Value,&'static str
     let db = AuthorityDb::open_readonly(&default_authority_path(home)).map_err(|_| "data_unavailable")?;
     db.conn().execute_batch("BEGIN DEFERRED").map_err(|_| "data_unavailable")?;
     let revision = db.revision().map_err(|_| "data_unavailable")?;
+    let read_started=Instant::now();
     let salt = load_or_create_salt(home).map_err(|_| "data_unavailable")?;
     let identities=super::app_harnesses::identities(db.conn(),home)?;
     let identity_version=json!(super::app_harnesses::public_identities(&identities));
@@ -169,7 +178,9 @@ pub fn read(home: &Path, request: &Value, now: i64) -> Result<Value,&'static str
                 if signature!=cursor_tag(number) { return Err("invalid_cursor"); }
                 number
             };
+            let stage_started=Instant::now();
             let index=snapshot_index(home,&context_tag,db.conn(),from,end)?;
+            if initial { log_overview_stage("snapshot_index",stage_started); }
             let matched=index.keys.len() as u64;
             if offset as u64>matched { return Err("invalid_cursor"); }
             let end_index=(offset+(limit as usize)).min(index.keys.len());
@@ -177,10 +188,17 @@ pub fn read(home: &Path, request: &Value, now: i64) -> Result<Value,&'static str
             // Page rows are fetched by keyset membership, not SQL OFFSET, so deep pages
             // do not re-group the whole window. Overview stats stay off this path.
             let rows=if page_keys.is_empty() { Vec::new() } else {
-                stats::session_page_for_keys(db.conn(),from,end,page_keys.len(),0,Some(&page_keys)).map_err(|_| "data_unavailable")?
+                let started=Instant::now();
+                let rows=stats::session_page_for_keys(db.conn(),from,end,page_keys.len(),0,Some(&page_keys)).map_err(|_| "data_unavailable")?;
+                if initial { log_overview_stage("session_page",started); }
+                rows
             };
+            let started=Instant::now();
             let models=stats::model_distribution(db.conn(),from,end,if initial {None} else {Some(&page_keys)}).map_err(|_| "data_unavailable")?;
+            if initial { log_overview_stage("model_distribution",started); }
+            let started=Instant::now();
             let assets=super::city_assets::publish(home,db.conn(),&page_keys)?;
+            if initial { log_overview_stage("assets",started); }
             let mut model_groups:BTreeMap<&str,Vec<Value>>=BTreeMap::new();
             for model in &models { if let Some(key)=model["session_key"].as_str() { model_groups.entry(key).or_default().push(model.clone()); } }
             let mut by_key:BTreeMap<&str,&Value>=BTreeMap::new();
@@ -201,14 +219,22 @@ pub fn read(home: &Path, request: &Value, now: i64) -> Result<Value,&'static str
                 "coverage":{"matched":matched,"returned":sessions.len(),"offset":offset,"has_more":(next as u64)<matched,
                     "render_budget":4000,"selection":"window_last_event_desc_session_key_asc","order":"window_last_event_desc_session_key_asc"}});
             if initial {
+                let started=Instant::now();
                 let mut overview=stats::window_summary(db.conn(),from,end).map_err(|_| "data_unavailable")?;
                 overview["models"]=app_local::model_summary(&models)?;
                 overview["time_classification"]=stats::time_coverage(db.conn()).map_err(|_| "data_unavailable")?;
+                log_overview_stage("overview",started);
                 let mut overview_module=state(overview,&generated);
                 if matched==0 { overview_module["state"]=json!("empty"); }
+                let started=Instant::now();
+                let activity=match app_local::activity(db.conn(),from,to,&timezone) {Ok(v)=>state(v,&generated),Err(reason)=>json!({"state":"unavailable","supported":true,"reason":reason})};
+                log_overview_stage("activity",started);
+                let started=Instant::now();
+                let findings=findings_module(db.conn(),from,end,&identities,None,&generated)?;
+                log_overview_stage("findings",started);
                 result["modules"]=json!({"overview":overview_module,
-                    "activity":match app_local::activity(db.conn(),from,to,&timezone) {Ok(v)=>state(v,&generated),Err(reason)=>json!({"state":"unavailable","supported":true,"reason":reason})},
-                    "findings":findings_module(db.conn(),from,end,&identities,None,&generated)?,
+                    "activity":activity,
+                    "findings":findings,
                     "skills":{"state":"ready","supported":true,"load":"on_demand"},
                     "workflow":{"state":"ready","supported":true,"load":"on_demand"}});
                 result["harnesses"]=json!(super::app_harnesses::public_identities(&identities));
@@ -303,6 +329,11 @@ pub fn read(home: &Path, request: &Value, now: i64) -> Result<Value,&'static str
         _=>unreachable!(),
     }
     if watch(home)?!=before { return Err("revision_changed"); }
+    if operation=="overview" {
+        agent_vitals_runtime_core::core::logging::log_info("city_v3", &format!(
+            "city_overview_finished operation=overview window_days={days} outcome=success elapsed_ms={}",
+            read_started.elapsed().as_millis()));
+    }
     app_local::safe_numbers(&result)?;
     if result.to_string().len()>if operation=="session.detail" {65_536} else {2_000_000} { return Err("projection_budget_exceeded"); }
     Ok(result)

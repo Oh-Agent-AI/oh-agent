@@ -34,7 +34,7 @@ use crate::safe_query::authority_callback;
 /// 在每次 open 用 `CREATE VIEW IF NOT EXISTS` 幂等重建，不占版本号。
 // v31 is an internal-development breaking rename: host columns become harness.
 // Existing host-column databases must be rebuilt, never silently reinterpreted.
-pub const SCHEMA_VERSION: i64 = 32;
+pub const SCHEMA_VERSION: i64 = 33;
 
 /// 权威库默认路径：`<data_home>/agent-vitals.sqlite3`（spec §3）。
 /// 旧 `index.sqlite3` 是独立的遗留投影；本函数不导入、解释或删除它。
@@ -549,6 +549,8 @@ CREATE INDEX usage_facts_session_time
   ON usage_facts(session_key, event_ts_ms) WHERE deleted_at_ms IS NULL;
 CREATE INDEX usage_facts_provider_model_time
   ON usage_facts(provider_id, model_id, event_ts_ms) WHERE deleted_at_ms IS NULL;
+CREATE INDEX usage_facts_event_time
+  ON usage_facts(event_ts_ms) WHERE deleted_at_ms IS NULL;
 
 CREATE TABLE harness_bills (
   bill_id TEXT PRIMARY KEY,
@@ -1465,6 +1467,15 @@ fn ensure_schema_v30(conn: &Connection) -> Result<(), AuthorityError> {
             rusqlite::params![new_id, new_profile, old_id])?;
         if changed != 1 { return Err(AuthorityError::Sqlite(rusqlite::Error::QueryReturnedNoRows)); }
     }
+    Ok(())
+}
+
+/// v33（City 概览性能）：`usage_facts` 增加按事件时间查询的部分索引——纯加性，
+/// 幂等重跑安全。索引只改变访问路径，不改变范围、分桶、去重或 token 求和语义。
+fn ensure_schema_v33(conn: &Connection) -> Result<(), AuthorityError> {
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS usage_facts_event_time\n             ON usage_facts(event_ts_ms) WHERE deleted_at_ms IS NULL;",
+    )?;
     Ok(())
 }
 
@@ -2397,6 +2408,7 @@ impl AuthorityDb {
         )?;
         ensure_schema_v30(conn)?;
         ensure_schema_v32(conn)?;
+        ensure_schema_v33(conn)?;
         conn.execute("UPDATE schema_meta SET value = ?1 WHERE key = 'schema_version'",
             rusqlite::params![super::authority::SCHEMA_VERSION.to_string()])?;
         Ok(())
@@ -5388,6 +5400,54 @@ mod tests {
             )
             .unwrap();
         assert_eq!(index, 1);
+        let _ = std::fs::remove_file(&db);
+    }
+
+    #[test]
+    fn v33_database_adds_event_time_index_and_plan_uses_it() {
+        let db = tmp_db("v33-event-index");
+        let authority = AuthorityDb::open(&db, 1).unwrap();
+        let version: String = authority.conn().query_row(
+            "SELECT value FROM schema_meta WHERE key = 'schema_version'", [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(version, SCHEMA_VERSION.to_string());
+        let mut statement = authority.conn().prepare(
+            "EXPLAIN QUERY PLAN SELECT f.fact_id FROM usage_facts f
+             WHERE f.deleted_at_ms IS NULL AND f.event_ts_ms >= ?1 AND f.event_ts_ms < ?2",
+        ).unwrap();
+        let plan: Vec<String> = statement.query_map(rusqlite::params![1, 2], |row| row.get::<_, String>(3))
+            .unwrap().collect::<Result<_, _>>().unwrap();
+        drop(statement);
+        assert!(plan.iter().any(|line| line.contains("USING INDEX usage_facts_event_time")), "plan: {plan:?}");
+        let _ = std::fs::remove_file(&db);
+    }
+
+    #[test]
+    fn v32_database_migrates_to_event_time_index_idempotently() {
+        let db = tmp_db("v32-to-v33");
+        {
+            let current = AuthorityDb::open(&db, 1).unwrap();
+            current.conn().execute_batch(
+                "DROP INDEX IF EXISTS usage_facts_event_time;
+                 UPDATE schema_meta SET value = '32' WHERE key = 'schema_version';",
+            ).unwrap();
+        }
+        let upgraded = AuthorityDb::open(&db, 2).unwrap();
+        let version: String = upgraded.conn().query_row(
+            "SELECT value FROM schema_meta WHERE key = 'schema_version'", [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(version, SCHEMA_VERSION.to_string());
+        let index: i64 = upgraded.conn().query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'usage_facts_event_time'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(index, 1);
+        drop(upgraded);
+        let reopened = AuthorityDb::open(&db, 3).unwrap();
+        let version: String = reopened.conn().query_row(
+            "SELECT value FROM schema_meta WHERE key = 'schema_version'", [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(version, SCHEMA_VERSION.to_string());
         let _ = std::fs::remove_file(&db);
     }
 

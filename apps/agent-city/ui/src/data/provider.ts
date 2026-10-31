@@ -1,8 +1,10 @@
-import { invokeHost } from "../host";
+import { embedded, invokeHost } from "../host";
 import { validateCityProjectionV2, validateCityProjectionV3, type CitySnapshotV3, type CityProjectionV3, type CityModuleV3, type CitySessionV3, type PluginRequestV1, type PluginResponseV1, type CityUiProjectionV2 } from "@agent-vitals/app-sdk";
 import { entityChangedFromBuilding, parseKitModel, type BuildingChangedEvent, type KitModel } from "../engine/sessionKitConstruction";
 
 export type CityProjectionV1 = CityUiProjectionV2;
+
+type WindowDays = 7 | 30 | 90 | 366;
 
 export interface CityDataProvider {
   getProjection(input: {
@@ -350,6 +352,27 @@ async function readV2(windowDays: 7 | 30 | 90 | 366, signal?: AbortSignal, onSta
   onStage?.("ready");
   return validateCityProjectionV2(response.result);
 }
+export function reportCityScene(stage: "model" | "planning" | "mounting" | "rendering" | "first_frame",
+  elapsedMs: number, windowDays: WindowDays): void {
+  if (!embedded() || !window.__AV_PLUGIN_INSTANCE__) return;
+  void invokeHost("plugin_message", { message: {
+    version: 1, instanceId: window.__AV_PLUGIN_INSTANCE__, type: "performance.city_scene",
+    stage, outcome: "success", elapsedMs: Math.max(0, Math.round(elapsedMs)), windowDays,
+  } }).catch(() => {});
+}
+
+function reportCityLoad(outcome: "success" | "partial" | "cancelled" | "fallback_v2" | "failed",
+  started: number, windowDays: WindowDays, attempts: number, revisionRetries: number,
+  fallback: "none" | "v2", pageReturned?: number): void {
+  if (!embedded() || !window.__AV_PLUGIN_INSTANCE__) return;
+  void invokeHost("plugin_message", { message: {
+    version: 1, instanceId: window.__AV_PLUGIN_INSTANCE__, type: "performance.city",
+    outcome, elapsedMs: Math.max(0, Math.round(performance.now() - started)),
+    attemptCount: attempts, revisionRetryCount: revisionRetries, fallbackKind: fallback,
+    windowDays, ...(typeof pageReturned === "number" ? { pageReturned } : {}),
+  } }).catch(() => {});
+}
+
 export const tauriCityDataProvider: CityDataProvider = {
   async getProjection({ windowDays, signal, onStage, onPartial }) {
     const standalone = !window.__AV_PLUGIN_INSTANCE__;
@@ -359,7 +382,11 @@ export const tauriCityDataProvider: CityDataProvider = {
     // First page is enough to render. Later pages append; a revision change after the
     // city is visible restarts quietly instead of blanking.
     let visible: CityProjectionV1 | undefined;
+    const started = performance.now();
+    let revisionRetries = 0;
+    let attempts = 0;
     for (let attempt = 0; attempt < 3; attempt += 1) {
+      attempts = attempt + 1;
       try {
         onStage?.("reading_summary");
         const first = await readV3({ operation: "overview", windowDays, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -387,14 +414,32 @@ export const tauriCityDataProvider: CityDataProvider = {
           onPartial?.(visible);
         }
         onStage?.("ready");
+        reportCityLoad("success", started, windowDays, attempts, revisionRetries, "none", visible?.coverage.returned);
         return visible;
       } catch (error) {
-        if (signal?.aborted) throw error;
-        if (error instanceof Error && error.message === "revision_changed" && attempt < 2) continue;
-        if (visible) return visible;
+        if (signal?.aborted) {
+          reportCityLoad("cancelled", started, windowDays, attempts, revisionRetries, "none", visible?.coverage.returned);
+          throw error;
+        }
+        if (error instanceof Error && error.message === "revision_changed" && attempt < 2) {
+          revisionRetries += 1;
+          continue;
+        }
+        if (visible) {
+          reportCityLoad("partial", started, windowDays, attempts, revisionRetries, "none", visible.coverage.returned);
+          return visible;
+        }
         break;
       }
     }
-    return readV2(windowDays, signal, onStage);
+    try {
+      const projection = await readV2(windowDays, signal, onStage);
+      reportCityLoad("fallback_v2", started, windowDays, attempts, revisionRetries, "v2", projection.coverage.returned);
+      return projection;
+    } catch (error) {
+      if (signal?.aborted) reportCityLoad("cancelled", started, windowDays, attempts, revisionRetries, "v2");
+      else reportCityLoad("failed", started, windowDays, attempts, revisionRetries, "v2");
+      throw error;
+    }
   },
 };
