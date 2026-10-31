@@ -24,7 +24,7 @@ import { buildPresentationRoutes, type PresentationRoutes } from "./presentation
 import type { CityMechaSite } from "./citySite";
 import { matchFromSite } from "./matchFromSite";
 import {
-  BOARD, bossPrepare, collectTelegraphs, createMatch, incomingDamage, legalActions, living, moveBudget, pathDistance, playTurn, previewPlan,
+  BOARD, bossPrepare, collectTelegraphs, createMatch, legalActions, living, moveBudget, pathDistance, playTurn, previewPlan,
   type Action, type ArenaPlan, type BossScriptId, type BuildingStake, type Cell, type CoverPresetId, type MatchState, type MechId,
   type PlanFault, type TurnEvent,
 } from "./rules";
@@ -39,9 +39,11 @@ export type Beat = "show" | "resolve";
 /** 界面能看到的故障：scope 区分「整包被拒」与「草稿里的行动被作废」，决定文案收尾。 */
 export type ControllerFault = { mechId?: MechId; cause: NonNullable<PlanFault["cause"]>; scope: "rejected" | "draft"; reason?: string };
 
-export type MechaPreview =
-  | { ok: true; telegraphAfter: Cell[]; telegraphByActor: Record<string, Cell[]>; hitsAfter: Record<MechId, number>; assumed: MechId[]; enemyOrder: Array<Extract<TurnEvent, { type: "enemy" }>> }
-  | { ok: false; fault: PlanFault };
+export type MechaPreview = (
+  | (Extract<ReturnType<typeof previewPlan>, { ok: true }> & { status: "ready" })
+  | (Extract<ReturnType<typeof previewPlan>, { ok: false }> & { status: "invalid" })
+  | { ok: false; status: "unavailable" }
+) & { revision: number; draftVersion: number };
 
 export type MechaControllerState = {
   locale: GameLocale;
@@ -64,6 +66,7 @@ export type MechaControllerState = {
   performance: { events: MechaPerformanceEvent[]; before: MatchState } | null;
   combat: { id: number; actions: MechaCombatCue[]; reset?: true; healthTimeline?: HealthTimeline; presentationChanges?: PresentationChanges; presentationStages?: PresentationStages | null; presentationRoutes?: PresentationRoutes };
   preview: MechaPreview;
+  holdConfirmation: { buildingLoss: number; outcome: MatchState["outcome"] } | null;
   // ---- 派生量（每次变更重算，视图只读）----
   /** 能下命令：没有自动/暂停、没有结局、在玩家计划阶段。 */
   interactive: boolean;
@@ -71,14 +74,16 @@ export type MechaControllerState = {
   /** 选中机甲在「所有已排移动落定后」局面上的合法行动。 */
   actions: Action[];
   targetOptions: TargetOption[];
-  /** 每台的受击预测：预览成功用 hitsAfter（含推动后预告），否则退回推动前的 incomingDamage。 */
-  hits: Record<MechId, number>;
+  /** 敌方阶段受击预测；预览失败时为 null，不能当成零伤害。 */
+  hits: Record<MechId, number> | null;
   /** 每台到草稿落点的半步花费（面板显示用；alliesPass，与提交校验同口径）。 */
   stepCost: Record<MechId, number | null>;
-  /** 预告格：预览成功用推动之后的，否则当前的。悬停一只敌人时只留它的格。 */
+  /** 所有实际会发生的威胁；失败时为当前局面而非草稿预测。 */
   telegraph: Cell[];
-  /** 悬停中的敌人；空表示地面显示全部推动后预告。 */
+  /** 当前聚焦敌人的威胁；其他敌人仍显示。 */
+  focusedTelegraph: Cell[];
   hoveredEnemy: string | null;
+  selectedEnemy: string | null;
   /** 玩家还没提交本回合时，可以撤回最近一次移动。 */
   canUndoMove: boolean;
   /** 一场对局一次，只在玩家可编辑草稿时使用。 */
@@ -100,6 +105,8 @@ export type MechaControllerInit = {
   doctrine?: DoctrineId;
   /** 注入规划器：测试数调用次数，将来换 worker 版本也从这里进。 */
   planner?: Planner;
+  /** Tests may inject a failing display preview without changing authoritative playTurn. */
+  preview?: typeof previewPlan;
   /** Local views acknowledge completion before allowing another turn. */
   animate?: boolean;
   /** 测试用：直接给一局（须已 bossPrepare），绕过 preset/script/site。 */
@@ -118,8 +125,9 @@ export type MechaController = {
   /** 撤回最近一次移动。提交（开火）之后、暂停、自动对战或演出中无效。 */
   undoMove(): void;
   resetTurn(): void;
-  /** 悬停一只敌人时地面只画它的预告；传 null 恢复全部。 */
+  /** 临时鼠标焦点不覆盖通过列表固定的焦点。 */
   setHoveredEnemy(id: string | null): void;
+  setSelectedEnemy(id: string | null): void;
   setAction(id: MechId, action: Action): void;
   /** 格子点击的全部分支（选目标 / 换选机甲 / 移动）。 */
   clickCell(x: number, y: number): void;
@@ -128,6 +136,8 @@ export type MechaController = {
   /** 只换打法；有可填的草稿时顺带按它重填（下拉框的行为）。 */
   setDoctrine(doctrine: DoctrineId): void;
   submit(): void;
+  confirmHold(): void;
+  cancelHold(): void;
   finishPerformance(): void;
   restart(opts?: MechaRestartOptions): void;
   startAuto(): void;
@@ -205,6 +215,7 @@ function freshMatch(preset: CoverPresetId, script: BossScriptId, site: CityMecha
 
 export function createMechaController(init: MechaControllerInit = {}): MechaController {
   const planner: Planner = init.planner ?? planForDoctrine;
+  const previewTurn = init.preview ?? previewPlan;
   const listeners = new Set<() => void>();
 
   let locale: GameLocale = init.locale ?? "zh-Hans";
@@ -223,6 +234,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
   let fault: ControllerFault | null = null;
   let lastLog: TurnEvent[] = [];
   let performance: MechaControllerState["performance"] = null;
+  let holdConfirmation: { match: MatchState; revision: number; draftVersion: number; fingerprint: string; doctrine: DoctrineId; buildingLoss: number; outcome: MatchState["outcome"] } | null = null;
   let combat: MechaControllerState["combat"] = { id: 0, actions: [], reset: true };
 
   // 规划缓存：同一局面（对象身份即 revision 的承载）同一打法只算一次。
@@ -244,6 +256,10 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
   /** 每次成功改移动之前的草稿。提交、换打法、新开一局都清空，开火之后撤不回来。 */
   let movePast: DraftMap[] = [];
   let hoveredEnemy: string | null = null;
+  let selectedEnemy: string | null = null;
+  let draftVersion = 0;
+  let versionedInput: { match: MatchState; revision: number; fingerprint: string; doctrine: DoctrineId } | null = null;
+  let forceDraftVersion = false;
 
   const finished = () => Boolean(match.outcome) || match.phase !== "player_plan";
   const canEdit = () => !auto && !paused && !performance && !finished();
@@ -306,27 +322,36 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
   };
 
   const derivePreview = (): MechaPreview => {
-    if (match.phase !== "player_plan") return { ok: false, fault: { code: "PLAN_PACK_REJECTED", reason: "not player_plan", cause: "other" } };
-    // 只带「有排」的机甲：已选行动或已排移动；其余由 previewPlan 当假设待机。
-    const items = itemsOf(match, draft).filter((item) => draft[item.mechId]?.explicit || draft[item.mechId]?.moveTo);
-    return previewPlan(match, { revision: match.revision, items });
-  };
-
-  const shownTelegraph = (preview: MechaPreview): Cell[] => {
-    const byActor = preview.ok ? preview.telegraphByActor : collectTelegraphs(match).byActor;
-    if (hoveredEnemy) return byActor[hoveredEnemy] ?? [];
-    return preview.ok ? preview.telegraphAfter : collectTelegraphs(match).cells;
+    const version = { revision: match.revision, draftVersion };
+    if (match.phase !== "player_plan") return { ok: false, status: "invalid", fault: { code: "PLAN_PACK_REJECTED", reason: "not player_plan", cause: "other" }, ...version };
+    // Display prediction failures are not rule rejections and must never become zero damage.
+    try {
+      const items = itemsOf(match, draft).filter((item) => draft[item.mechId]?.explicit || draft[item.mechId]?.moveTo);
+      const result = previewTurn(match, { revision: match.revision, items });
+      return result.ok
+        ? { ...result, status: "ready", ...version, assumed: living(match).filter((m) => !draft[m.id]?.explicit).map((m) => m.id) }
+        : { ...result, status: "invalid", ...version };
+    } catch {
+      return { ok: false, status: "unavailable", ...version };
+    }
   };
 
   let snapshot: MechaControllerState;
   const rebuild = () => {
+    const fingerprint = draftFingerprint(draft);
+    if (forceDraftVersion || !versionedInput || versionedInput.match !== match || versionedInput.revision !== match.revision || versionedInput.fingerprint !== fingerprint || versionedInput.doctrine !== doctrine) {
+      draftVersion += 1;
+      versionedInput = { match, revision: match.revision, fingerprint, doctrine };
+      forceDraftVersion = false;
+    }
+    if (holdConfirmation && (!canEdit() || holdConfirmation.match !== match || holdConfirmation.revision !== match.revision || holdConfirmation.draftVersion !== draftVersion || holdConfirmation.fingerprint !== draftFingerprint(draft) || holdConfirmation.doctrine !== doctrine)) holdConfirmation = null;
     const preview = derivePreview();
     const alive = living(match);
+    const currentThreats = preview.ok ? { cells: preview.telegraphAfter, byActor: preview.telegraphByActor } : collectTelegraphs(match);
+    if (selectedEnemy && !currentThreats.byActor[selectedEnemy]) selectedEnemy = null;
+    const focusEnemy = hoveredEnemy ?? selectedEnemy;
     const pendingIds = alive.filter((m) => !draft[m.id]?.explicit).map((m) => m.id);
-    const hits = Object.fromEntries(alive.map((m) => [
-      m.id,
-      preview.ok ? preview.hitsAfter[m.id] ?? 0 : incomingDamage(match, m.id, draft[m.id]?.moveTo ?? m.pos),
-    ])) as Record<MechId, number>;
+    const hits = preview.ok ? preview.hitsAfter : null;
     const stepCost = Object.fromEntries(alive.map((m) => [
       m.id,
       pathDistance(match, m.pos, draft[m.id]?.moveTo ?? m.pos, m.id, { alliesPass: true }),
@@ -335,13 +360,16 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     snapshot = {
       locale, match, site, preset, script, stake, doctrine, draft, selected, targeting, auto, paused, beat, notice, fault, lastLog, combat, performance, preview,
       interactive: canEdit(),
+      holdConfirmation: holdConfirmation ? { buildingLoss: holdConfirmation.buildingLoss, outcome: holdConfirmation.outcome } : null,
       reach: deriveReach(),
       actions: living(match).some((m) => m.id === selected) ? legalActions(settledBoard(match, draft), selected) : [],
       targetOptions: deriveTargets(),
       hits,
       stepCost,
-      telegraph: shownTelegraph(preview),
-      hoveredEnemy,
+      telegraph: currentThreats.cells,
+      focusedTelegraph: focusEnemy ? (currentThreats.byActor[focusEnemy] ?? []) : [],
+      hoveredEnemy: focusEnemy,
+      selectedEnemy,
       canUndoMove: movePast.length > 0 && canEdit(),
       resetTurnUsed,
       canResetTurn: !resetTurnUsed && canEdit(),
@@ -386,6 +414,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     turnStartDraft = structuredClone(draft);
     movePast = [];
     hoveredEnemy = null;
+    selectedEnemy = null;
     targeting = null;
     beat = "show";
     say(null);
@@ -471,6 +500,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
   };
 
   const fillFromDoctrine = (which: DoctrineId) => {
+    forceDraftVersion = true;
     doctrine = which;
     if (!match.outcome && match.phase === "player_plan") {
       draft = draftFromPlan(match, planFor(match, which));
@@ -506,9 +536,11 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     resetTurn() {
       if (resetTurnUsed || !canEdit()) return;
       draft = structuredClone(turnStartDraft);
+      forceDraftVersion = true;
       movePast = [];
       targeting = null;
       hoveredEnemy = null;
+      selectedEnemy = null;
       resetTurnUsed = true;
       say("本回合草稿已重置；本局的重置机会已用完。");
       commit();
@@ -516,6 +548,11 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     setHoveredEnemy(id) {
       if (id === hoveredEnemy) return;
       hoveredEnemy = id;
+      commit();
+    },
+    setSelectedEnemy(id) {
+      if (id === selectedEnemy) return;
+      selectedEnemy = id;
       commit();
     },
     setAction,
@@ -556,7 +593,30 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     },
     submit() {
       if (!canEdit() || pendingIdsNow().length > 0) return;
+      const allWait = living(match).every((m) => draft[m.id]?.explicit && draft[m.id]?.action.kind === "skip");
+      const preview = derivePreview();
+      if (allWait && preview.ok) {
+        const loss = preview.buildings.filter((building) => building.staked).reduce((sum, building) => sum + building.startHp - building.endHp, 0);
+        if (loss > 0 || (preview.outcome !== null && preview.outcome !== "victory")) {
+          holdConfirmation = { match, revision: match.revision, draftVersion, fingerprint: draftFingerprint(draft), doctrine, buildingLoss: loss, outcome: preview.outcome };
+          commit();
+          return;
+        }
+      }
       advance({ revision: match.revision, items: itemsOf(match, draft) });
+      commit();
+    },
+    confirmHold() {
+      const pending = holdConfirmation;
+      holdConfirmation = null;
+      if (!pending || !canEdit() || pending.match !== match || pending.revision !== match.revision || pending.draftVersion !== draftVersion || pending.fingerprint !== draftFingerprint(draft) || pending.doctrine !== doctrine || pendingIdsNow().length > 0) { commit(); return; }
+      // Always validate again through playTurn; confirmation does not authorize a stale plan.
+      advance({ revision: match.revision, items: itemsOf(match, draft) });
+      commit();
+    },
+    cancelHold() {
+      if (!holdConfirmation) return;
+      holdConfirmation = null;
       commit();
     },
     finishPerformance() {
@@ -578,6 +638,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       resetTurnUsed = false;
       movePast = [];
       hoveredEnemy = null;
+      selectedEnemy = null;
       selected = living(match)[0]?.id ?? "Assault";
       targeting = null;
       say(null);

@@ -14,7 +14,7 @@
  */
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { CityEngine } from "../engine/CityEngine";
-import { doctrineFocusLine, gameText, type GameLocale } from "./gameCopy";
+import { doctrineFocusLine, gameText, previewFaultText, type GameLocale } from "./gameCopy";
 import { CityMechaWorld, type CityMechaView, type CityMechaWorldHandle } from "./CityMechaWorld";
 import { assaultSequenceWaiting } from "./mecha/assaultTurnPlayer";
 import type { DoctrineId } from "./mecha/ai";
@@ -282,6 +282,7 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
   const site = catalog[shapeId] ?? null;
   const [viewFailed, setViewFailed] = useState(false);
   const [showOrder, setShowOrder] = useState(false);
+  const [focusedBuilding, setFocusedBuilding] = useState<string | null>(null);
   const [inspectedAction, setInspectedAction] = useState<Action["kind"] | null>(null);
   const inspectTimer = useRef<number | null>(null);
   const longPressed = useRef(false);
@@ -347,7 +348,9 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
     boss: { x: state?.boss.anchor.x ?? 0, y: state?.boss.anchor.y ?? 0, alive: (state?.boss.hp ?? 0) > 0, hp: state?.boss.hp ?? 0 },
     raiders: (state?.raiders ?? []).map((raider) => ({ id: raider.id, x: raider.pos.x, y: raider.pos.y, alive: raider.hp > 0, hp: raider.hp })),
     buildings: (state?.buildings ?? []).map((building) => ({ id: building.id, cells: building.cells, hp: building.hp, maxHp: building.maxHp })),
-    telegraph: s?.telegraph ?? [],
+    focusedBuilding: performance || !s?.preview.ok ? null : focusedBuilding,
+    telegraph: performance ? [] : (s?.telegraph ?? []),
+    focusedTelegraph: performance ? [] : (s?.focusedTelegraph ?? []),
     hoveredEnemy: s?.hoveredEnemy ?? null,
     focus: performance ? [] : (s?.focusCells ?? []),
     reach: performance ? [] : reach,
@@ -355,7 +358,7 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
     targets: performance ? [] : targetOptions.flatMap((option) => option.cells),
     targetIds: performance ? [] : targetOptions.map((option) => option.id),
     obstacles: state?.obstacles,
-  }), [s, state, draft, selected, reach, targetOptions, paused, performance]);
+  }), [s, state, draft, selected, reach, targetOptions, paused, performance, focusedBuilding]);
 
   if (!controller || !s || !state || !site) {
     return <CityGate locale={locale} onClose={onClose} title="这座城暂时没有可用机坪。" body="楼太少时往往没有平地、靠岸或巷战。可以重试，或关掉战棋。" />;
@@ -381,11 +384,21 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
   const focus = s.focus;
   const focusLine = doctrineFocusLine(doctrine, gameText(enemyName(focus.id), locale), focus.building ? `${focus.building.x},${focus.building.y}` : null, locale);
   const planning = s.interactive && !sequenceWaiting;
-  const previewAfter = s.preview.ok ? s.preview.telegraphAfter : null;
-  const hitLine = activeMechs.map((m) => `${t(NAMES[m.id])} ${s.hits[m.id] ?? 0}`).join(" · ");
+  // The visible board during playback is the pre-turn state; never mix it with
+  // the already-advanced controller's next-turn prediction.
+  const preview = !performance && s.preview.ok ? s.preview : null;
+  const previewAfter = preview?.telegraphAfter ?? null;
+  const hitLine = preview ? activeMechs.map((m) => `${t(NAMES[m.id])} ${preview.hitsAfter[m.id]}`).join(" · ") : "";
   const staked = stakeBuildings(state);
   const stakedHp = staked.reduce((total, building) => total + building.hp, 0);
   const stakedMax = staked.reduce((total, building) => total + building.maxHp, 0);
+  const predictedBuildings = preview?.buildings.filter((building) => building.staked) ?? [];
+  const predictedHp = predictedBuildings.reduce((total, building) => total + building.endHp, 0);
+  const buildingDelta = predictedHp - stakedHp;
+  const predictedOutcome = preview?.outcome === "victory" ? t("预计胜利")
+    : preview?.outcome === "defeat_buildings" ? t("预计防守建筑全毁")
+    : preview?.outcome === "defeat_wipe" ? t("预计机甲全灭")
+    : preview?.outcome === "defeat_timeout" ? t("预计回合耗尽") : null;
 
   return (
     <section className="mecha-overlay is-city" role="dialog" aria-label={t("机甲战棋")}>
@@ -405,13 +418,22 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
         <section className="mecha-turn-summary" aria-label={t("敌方预告")}>
           <div><span>{t("敌方预告")}</span><strong className="mecha-intent">{skillLabel}</strong></div>
           <p>{t("大怪")} <strong>{state.boss.hp}</strong>{raiderHp ? ` · ${raiderHp}` : ""}{outcome ? ` · ${outcome}` : ""}</p>
-          <p className="mecha-resource">{t("守楼败北条")} {staked.length ? `${stakedHp}/${stakedMax}` : t("本局无守楼目标")} · {t("机甲单台损毁不败北；全灭、守楼全毁或超时则败北。")}</p>
+          {preview && staked.length ? <details className="mecha-resource" onToggle={(event) => { if (!event.currentTarget.open) setFocusedBuilding(null); }}>
+            <summary>{t("守楼败北条")} {stakedHp}/{stakedMax} → {t("预计")} {predictedHp}/{stakedMax} ({buildingDelta > 0 ? "+" : ""}{buildingDelta}) · {buildingDelta <= 0 ? `${t("预计建筑损失")} ${-buildingDelta}` : `${t("预计建筑净恢复")} ${buildingDelta}`}{predictedOutcome ? ` · ${predictedOutcome}` : ""} · {t("防守建筑明细")}</summary>
+            <p>{t("选择建筑，高亮对应楼顶标记。")}</p><ul>{predictedBuildings.map((building) => <li key={building.id}><button type="button" aria-pressed={focusedBuilding === building.id} onClick={() => setFocusedBuilding((id) => id === building.id ? null : building.id)}>{building.id} ({building.cells.map((cell) => `${cell.x},${cell.y}`).join("、")}) · {t("防守建筑")} · {building.startHp} → {building.endHp}/{building.maxHp}{building.endHp <= 0 ? ` · ${t("预计毁灭")}` : ""}</button></li>)}</ul>
+          </details> : <p className="mecha-resource">{t("守楼败北条")} {staked.length ? `${stakedHp}/${stakedMax}` : t("本局无守楼目标")}{predictedOutcome ? <> · <strong>{predictedOutcome}</strong></> : null}</p>}
+          {preview?.assumed.length ? <p className="mecha-resource">{t("假设待机")}：{preview.assumed.map((id) => t(NAMES[id])).join("、")} · {t("已规划移动会保留；提交前须明确选择行动。")}</p> : null}
+          <p className="mecha-resource">{t("机甲单台损毁不败北；全灭、守楼全毁或超时则败北。")}</p>
+          {preview ? <div className="mecha-threat-sources" aria-label={t("按当前方案预测的敌方威胁")}>
+            <span>{t("按当前方案预测的敌方威胁")}</span>
+            {preview.enemyOrder.length ? preview.enemyOrder.map((event, index) => <button key={`${event.actor}-${index}`} type="button" aria-pressed={s.selectedEnemy === event.actor} onClick={() => controller.setSelectedEnemy(s.selectedEnemy === event.actor ? null : event.actor)}>{t(enemyName(event.actor))} · {t(event.skill === "sweep" ? "横扫" : "砸击")} · {event.cells.map((cell) => `${cell.x},${cell.y}`).join("、")}</button>) : <span>{t("本次预测没有敌方攻击。")}</span>}
+          </div> : null}
           <button type="button" aria-expanded={showOrder} onClick={() => setShowOrder((value) => !value)}>{t("结算顺序")}</button>
           {showOrder ? <div className="mecha-order" role="region" aria-label={t("结算顺序")}>
             <p>{t("先同时移动，再按突击、射手、支援行动；随后敌方依次攻击。")}</p>
             {performance ? <p>{t("演出期间不显示预测。")}</p> : s.preview.ok ? <>
               <p>{s.preview.assumed.length ? t("未规划机甲按待机预测；改变计划会更新顺序。") : t("按当前计划预测；改变计划会更新顺序。")}</p>
-              {s.preview.enemyOrder.length ? <ol>{s.preview.enemyOrder.map((event, index) => <li key={`${event.actor}-${index}`}>{t(enemyName(event.actor))} · {t(event.skill === "sweep" ? "横扫" : "砸击")} · {event.cells.map((cell) => `${cell.x},${cell.y}`).join("、")}</li>)}</ol> : <p>{t("本次预测没有敌方攻击。")}</p>}
+              {s.preview.enemyOrder.length ? <ol>{s.preview.enemyOrder.map((event, index) => <li key={`${event.actor}-${index}`}><button type="button" aria-pressed={s.selectedEnemy === event.actor} onClick={() => controller.setSelectedEnemy(s.selectedEnemy === event.actor ? null : event.actor)}>{t(enemyName(event.actor))} · {t(event.skill === "sweep" ? "横扫" : "砸击")} · {event.cells.map((cell) => `${cell.x},${cell.y}`).join("、")}</button></li>)}</ol> : <p>{t("本次预测没有敌方攻击。")}</p>}
             </> : <p>{t("预览还不可用")}</p>}
             <p>{t("本规则没有独立电网或环境攻击。")}</p>
           </div> : null}
@@ -421,12 +443,13 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
               {" · "}{t("推动后受击")} {hitLine}
             </p>
           ) : <p className="mecha-preview-after">{t("预览还不可用")}</p>}
-          {s.hoveredEnemy ? <p className="mecha-preview-after">{t("只显示这一只的预告")}</p> : null}
+          {!performance && !preview && !state.outcome ? <p className="mecha-preview-after" role="status">{s.preview.status === "unavailable" ? t("预览暂不可用，风险未知；提交仍会重新校验。") : s.preview.status === "invalid" ? previewFaultText(s.preview.fault, locale) : null} {t("当前敌意不是草稿预测。")}</p> : null}
+          {s.hoveredEnemy ? <p className="mecha-preview-after">{t("高亮所选敌人的预告；其他威胁仍可见。")}</p> : null}
         </section>
         <ul className="mecha-pack" aria-label={t("三机行动状态")}>
           {activeMechs.map((m) => {
             const row = draft?.[m.id];
-            const hitDamage = s.hits[m.id] ?? 0;
+            const hitDamage = preview?.hitsAfter[m.id] ?? 0;
             const hit = hitDamage > 0;
             const chosen = row?.explicit ? t(actionLabel(row.action.kind)) : t("未选择");
             const current = m.id === selected;
@@ -479,7 +502,13 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
         </section>
         <div className="mecha-submit">
           <div><strong>{t("已规划")} {plannedCount}/{activeMechs.length}</strong><span>{paused ? t("继续战斗后可提交。") : pendingNames.length ? `${t("待规划")}：${pendingNames.join("、")}` : t("三机已就绪，可统一结算。")}</span></div>
-          <button type="button" className="mecha-submit-primary" disabled={!planning || !packReady} onClick={() => controller.submit()}>{t("提交三机行动")}</button>
+          {!s.holdConfirmation ? <button type="button" className="mecha-submit-primary" disabled={!planning || !packReady} onClick={() => controller.submit()}>{t("提交三机行动")}</button> : <div className="mecha-hold-confirm" role="group" aria-label={t("确认全员待机")}>
+            <strong>{t("全员待机的预计风险")}</strong>
+            {s.holdConfirmation.buildingLoss > 0 ? <span>{t("预计建筑损失")} {s.holdConfirmation.buildingLoss}</span> : null}
+            {predictedOutcome ? <span>{predictedOutcome}</span> : null}
+            <button type="button" onClick={() => controller.cancelHold()}>{t("返回修改")}</button>
+            <button type="button" className="mecha-submit-primary" disabled={!planning} onClick={() => controller.confirmHold()}>{t("继续提交")}</button>
+          </div>}
         </div>
         {s.notice && <p role="alert">{s.notice}</p>}
         <details className="mecha-settings">
@@ -490,6 +519,7 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
             <span><i className="is-move" />{t("计划落点")}</span>
             <span><i className="is-telegraph" />{t("敌方预告")}</span>
             <span><i className="is-focus" />{t("打法目标")}</span>
+            <span><i className="is-target" />{t("可选目标")}</span>
             <small>{t("圆环：黄/蓝/绿为我方，紫为小怪，黄绿为大怪；亮环是当前机甲。")}</small>
           </div>
           <div className="mecha-toolbar">
@@ -498,16 +528,17 @@ function MechaMatch({ locale, onClose, engine, catalog }: {
               const nextSite = catalog[next];
               if (!nextSite) return;
               setShape(next);
+              setFocusedBuilding(null);
               controller.restart({ site: nextSite, stake: next === "alley" ? "frontage" : "all" });
             }}>{SHAPES.map((item) => <option key={item.id} value={item.id} disabled={!catalog[item.id]}>{t(item.label)}</option>)}</select></label>
-            <label>{t("脚本")}<select disabled={Boolean(performance)} value={s.script} onChange={(e) => controller.restart({ script: e.target.value as BossScriptId })}>{SCRIPTS.map((sc) => <option key={sc.id} value={sc.id}>{t(sc.label)}</option>)}</select></label>
+            <label>{t("脚本")}<select disabled={Boolean(performance)} value={s.script} onChange={(e) => { setFocusedBuilding(null); controller.restart({ script: e.target.value as BossScriptId }); }}>{SCRIPTS.map((sc) => <option key={sc.id} value={sc.id}>{t(sc.label)}</option>)}</select></label>
             <label>{t("打法")}<select disabled={Boolean(performance)} value={doctrine} onChange={(e) => controller.setDoctrine(e.target.value as DoctrineId)}>{DOCTRINES.map((item) => <option key={item.id} value={item.id}>{t(item.label)}</option>)}</select></label>
-            <button type="button" onClick={() => controller.restart()}>{t("新开一局")}</button>
+            <button type="button" onClick={() => { setFocusedBuilding(null); controller.restart(); }}>{t("新开一局")}</button>
             <button type="button" disabled={!planning} onClick={() => controller.applyDoctrine()}>{t("按打法填入")}</button>
             <button type="button" disabled={Boolean(state.outcome)} onClick={() => controller.toggleAuto()}>{auto ? t("停止自动") : t("自动对战")}</button>
           </div>
           <p className="mecha-help">{t("点一台机甲，再点能走到的格子，然后给三台都选行动。站上红色预告格会吃下这一击。")}</p>
-          <p className="mecha-help">{t("红色格子是这一动之后的预告，卡片上的受击是推动之后会掉的血。")}</p>
+          <p className="mecha-help">{t("斜纹表示敌方威胁，边框表示可选目标；卡片上的受击是敌方阶段预计损失。")}</p>
           <p className="mecha-help">{t("沿着道路能多走一倍。突击靠路，炮手爬山和平地一样，支援上坡不加价。水过不去，被推进水或山地会撞上。")}</p>
           <p className="mecha-help">{t("攻坚先打大怪。守楼先打离楼最近的小怪。两种打法走出来的结果不同。")}</p>
           <p className="mecha-help">{t("靠岸有水，翻山有山地，巷战是贴着楼的路，单侧临街也算。这座城没有的场地不会出现。")}</p>

@@ -17,6 +17,29 @@ const ENGLISH: Record<string, string> = {
   "沿直线射击，可穿过一处掩体、建筑或废墟。": "Shoot in a straight line through one cover, building, or rubble.",
   "为相邻友机恢复最多 4 点生命。": "Restore up to 4 HP to an adjacent ally.",
   "本机本回合不行动。": "This mech takes no action this turn.",
+  "可选目标": "Selectable target",
+  "斜纹表示敌方威胁，边框表示可选目标；卡片上的受击是敌方阶段预计损失。": "Stripes mark enemy threats and outlines mark selectable targets; card hits are predicted enemy-phase HP loss.",
+  "高亮所选敌人的预告；其他威胁仍可见。": "The focused enemy is highlighted; other threats remain visible.",
+  "确认全员待机": "Confirm all mechs waiting",
+  "全员待机的预计风险": "Predicted risk if all mechs wait",
+  "返回修改": "Return to editing",
+  "继续提交": "Submit anyway",
+  "预计": "Predicted",
+  "预计建筑损失": "Predicted building loss",
+  "预计建筑净恢复": "Predicted building net gain",
+  "预计胜利": "Predicted victory",
+  "预计防守建筑全毁": "Predicted loss of all defended buildings",
+  "预计机甲全灭": "Predicted loss of all mechs",
+  "预计回合耗尽": "Predicted time limit defeat",
+  "假设待机": "Assumed to wait",
+  "已规划移动会保留；提交前须明确选择行动。": "Planned moves are kept; choose an action explicitly before submitting.",
+  "防守建筑明细": "Defended building details",
+  "按当前方案预测的敌方威胁": "Enemy threats predicted for this plan",
+  "防守建筑": "Defended building",
+  "选择建筑，高亮对应楼顶标记。": "Select a building to highlight its rooftop marker.",
+  "预计毁灭": "Predicted destroyed",
+  "当前敌意不是草稿预测。": "Current threats are not a prediction of this draft.",
+  "预览暂不可用，风险未知；提交仍会重新校验。": "Prediction is temporarily unavailable; risk is unknown. The plan will still be validated on submission.",
   "守楼败北条": "Defended buildings (defeat meter)",
   "本局无守楼目标": "No defended buildings this match",
   "机甲单台损毁不败北；全灭、守楼全毁或超时则败北。": "One mech lost is not defeat; losing all mechs, all defended buildings, or running out of turns is.",
@@ -341,6 +364,14 @@ const FAULT_NAME: Record<string, { zh: string; en: string }> = {
  * （那串留给旧测试断言）。rejected = 提交被拒；否则是草稿里的行动被改动作废。
  * 没有 mechId（如 revision 过期）时退回通用句，不编造机甲名。
  */
+export function previewFaultText(fault: { cause?: PlanFaultCause; mechId?: string }, locale: GameLocale): string {
+  const en = locale === "en";
+  const name = fault.mechId ? FAULT_NAME[fault.mechId] : undefined;
+  const core = FAULT_CORE[fault.cause ?? "other"] ?? FAULT_CORE.other;
+  if (!name) return en ? "Plan prediction is invalid; check the draft." : "草稿预览无效，请检查规划。";
+  return en ? `Plan prediction invalid: ${name.en}, ${core.en}.` : `草稿预览无效：${name.zh}，${core.zh}。`;
+}
+
 export function planFaultText(
   fault: { cause?: PlanFaultCause; mechId?: string },
   locale: GameLocale,

@@ -833,3 +833,93 @@ test("v1.4 RULE-5: cover and empty ground weigh the same; mechs and living build
   const withBuilding = createMatch({ preset: "covers_sparse_mid", script: "stationary_smash", covers: [], boss: { x: 0, y: 0 }, buildings: [{ id: "b", cells: [far] }], mechs });
   assert.deepEqual(bossPrepare(withBuilding).projected[0], far);
 });
+
+function buildingRiskFixture(): MatchState {
+  const state = createMatch({
+    preset: "covers_sparse_mid", script: "cadence_ssw", covers: [], boss: { x: 4, y: 4 },
+    buildings: [
+      { id: "west-1", cells: [{ x: 3, y: 4 }] }, { id: "west-2", cells: [{ x: 3, y: 5 }] },
+      { id: "far-1", cells: [{ x: 0, y: 0 }] }, { id: "far-2", cells: [{ x: 1, y: 0 }] },
+      { id: "far-3", cells: [{ x: 2, y: 0 }] },
+    ],
+    mechs: [{ id: "Assault", pos: { x: 1, y: 9 } }, { id: "Gunner", pos: { x: 5, y: 9 } }, { id: "Support", pos: { x: 8, y: 9 } }],
+  });
+  setScriptCounters(state, 2, 0);
+  bossPrepare(state);
+  return state;
+}
+
+test("preview exposes actual building losses even when every mech is safe", () => {
+  const state = buildingRiskFixture();
+  const orders = hold(state);
+  const before = structuredClone(state);
+  const beforePlan = structuredClone(orders);
+  const preview = previewPlan(state, orders);
+  const actual = playTurn(state, orders);
+  assert.ok(preview.ok && actual.ok);
+  if (!preview.ok || !actual.ok) return;
+  assert.deepEqual(preview.hitsAfter, { Assault: 0, Gunner: 0, Support: 0 });
+  assert.equal(preview.buildings.reduce((sum, b) => sum + b.startHp, 0), 80);
+  assert.equal(preview.buildings.reduce((sum, b) => sum + b.endHp, 0), 68);
+  assert.deepEqual(preview.buildings.map((b) => b.endHp), actual.state.buildings.map((b) => b.hp));
+  assert.deepEqual(preview.stages, actual.presentationStages);
+  assert.deepEqual(preview.log, actual.log);
+  assert.deepEqual(state, before);
+  assert.deepEqual(orders, beforePlan);
+});
+
+test("preview tracks stake, destroyed buildings and real outcome without phantom enemy actions", () => {
+  const state = buildingRiskFixture();
+  state.stake = "frontage";
+  state.terrain[4]![2] = "road"; // only west-1 is a defended building
+  state.buildings[0]!.hp = 6;
+  const preview = previewPlan(state, hold(state));
+  const actual = playTurn(state, hold(state));
+  assert.ok(preview.ok && actual.ok);
+  if (!preview.ok || !actual.ok) return;
+  assert.deepEqual(preview.buildings.filter((b) => b.staked).map((b) => b.id), ["west-1"]);
+  assert.equal(preview.buildings[0]!.afterPlayerHp, 6);
+  assert.equal(preview.buildings[0]!.endHp, 0);
+  assert.equal(preview.buildings[1]!.staked, false);
+  assert.equal(preview.outcome, "defeat_buildings");
+  assert.equal(preview.outcome, actual.state.outcome);
+  assert.deepEqual(preview.enemyOrder, actual.log.filter((event) => event.type === "enemy"));
+});
+
+test("preview has no threat cells when a lethal player action ends the battle", () => {
+  const state = duel([{ id: "Assault", pos: { x: 3, y: 1 } }, { id: "Gunner", pos: { x: 0, y: 9 } }, { id: "Support", pos: { x: 8, y: 9 } }]);
+  state.boss.hp = 1;
+  const preview = previewPlan(state, plan(state, [{ mechId: "Assault", action: { kind: "melee" } }]));
+  assert.ok(preview.ok);
+  if (!preview.ok) return;
+  assert.equal(preview.outcome, "victory");
+  assert.deepEqual(preview.enemyOrder, []);
+  assert.deepEqual(preview.telegraphAfter, []);
+  assert.deepEqual(preview.telegraphByActor, {});
+  assert.deepEqual(preview.assumed, ["Gunner", "Support"]);
+});
+
+test("preview and committed snapshots agree across deterministic positions and partial plans", () => {
+  for (let x = 0; x <= 3; x += 1) {
+    for (let y = 6; y <= 8; y += 1) {
+      const state = buildingRiskFixture();
+      const partial = plan(state, [{ mechId: "Assault", moveTo: { x, y } }]);
+      const completed = { revision: state.revision, items: [...partial.items,
+        { mechId: "Gunner" as const, moveTo: null, action: { kind: "skip" as const } },
+        { mechId: "Support" as const, moveTo: null, action: { kind: "skip" as const } }] };
+      const before = structuredClone(state);
+      const beforePlan = structuredClone(partial);
+      const preview = previewPlan(state, partial);
+      const actual = playTurn(state, completed);
+      assert.equal(preview.ok, actual.ok, `plan ${x},${y}`);
+      if (preview.ok && actual.ok) {
+        assert.deepEqual(preview.stages, actual.presentationStages);
+        assert.deepEqual(preview.log, actual.log);
+        assert.equal(preview.outcome, actual.state.outcome);
+        assert.deepEqual(preview.buildings.map((b) => b.endHp), actual.state.buildings.map((b) => b.hp));
+      }
+      assert.deepEqual(state, before);
+      assert.deepEqual(partial, beforePlan);
+    }
+  }
+});

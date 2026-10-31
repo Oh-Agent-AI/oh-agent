@@ -14,13 +14,15 @@ export type CityMechaView = {
   boss: { x: number; y: number; alive: boolean };
   raiders: Array<{ id: string; x: number; y: number; alive: boolean }>;
   buildings: Array<{ id: string; cells: Cell[]; hp: number; maxHp: number }>;
+  focusedBuilding?: string | null;
   telegraph: Cell[];
+  focusedTelegraph: Cell[];
   focus: Cell[];
   reach: Cell[];
   move: Cell | null;
   targets: Cell[];
   targetIds: string[];
-  /** 悬停中的敌人。地面预告已由控制器收成这一只；这里只加亮它的环。 */
+  /** Mouse or list focus; other enemies' threats remain visible. */
   hoveredEnemy?: string | null;
   combat?: { id: number; actions: MechaCombatCue[]; reset?: true };
   /** 规则里的障碍格（场景楼、斜放楼）。缺省当空。 */
@@ -129,6 +131,39 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       }));
     }
     const pads: THREE.Mesh[] = [];
+    // Independent line layers keep danger, movement and legal targets legible on
+    // the same tile. All cells share geometry/materials and are disposed below.
+    const w = (site.cellW - 0.44) / 2;
+    const d = (site.cellD - 0.48) / 2;
+    const lines = (points: Array<[number, number]>) => new THREE.BufferGeometry().setFromPoints(points.map(([x, z]) => new THREE.Vector3(x, 0, z)));
+    const threatGeo = new THREE.BufferGeometry();
+    const stripe = (a: number, b: number) => [
+      a - w * .08, 0, -d * .8, b - w * .08, 0, d * .8, a + w * .08, 0, -d * .8,
+      a + w * .08, 0, -d * .8, b - w * .08, 0, d * .8, b + w * .08, 0, d * .8,
+    ];
+    threatGeo.setAttribute("position", new THREE.Float32BufferAttribute([...stripe(-w * .72, -w * .12), ...stripe(w * .12, w * .72)], 3));
+    const targetGeo = lines([[-w, -d], [w, -d], [w, -d], [w, d], [w, d], [-w, d], [-w, d], [-w, -d]]);
+    const focusGeo = lines([[-w * .75, -d * .75], [w * .75, -d * .75], [w * .75, -d * .75], [w * .75, d * .75], [w * .75, d * .75], [-w * .75, d * .75], [-w * .75, d * .75], [-w * .75, -d * .75]]);
+    const moveGeo = lines([[0, -d * .42], [w * .42, 0], [w * .42, 0], [0, d * .42], [0, d * .42], [-w * .42, 0], [-w * .42, 0], [0, -d * .42]]);
+    const threatMat = new THREE.MeshBasicMaterial({ color: "#ff5656", transparent: true, opacity: .9, depthWrite: false, side: THREE.DoubleSide });
+    const subduedThreatMat = new THREE.MeshBasicMaterial({ color: "#ff9292", transparent: true, opacity: .55, depthWrite: false, side: THREE.DoubleSide });
+    const focusThreatMat = new THREE.MeshBasicMaterial({ color: "#fff0e0", transparent: true, opacity: 1, depthWrite: false, side: THREE.DoubleSide });
+    const targetMat = new THREE.LineBasicMaterial({ color: "#ffd166", depthWrite: false });
+    const focusMat = new THREE.LineBasicMaterial({ color: "#39d6a3", depthWrite: false });
+    const moveMat = new THREE.LineBasicMaterial({ color: "#ffe08a", depthWrite: false });
+    const threatLines: THREE.Mesh[] = [];
+    const targetLines: THREE.LineSegments[] = [];
+    const focusLines: THREE.LineSegments[] = [];
+    const moveLines: THREE.LineSegments[] = [];
+    const addLines = (geo: THREE.BufferGeometry, mat: THREE.LineBasicMaterial, world: { x: number; y: number; z: number }, height: number) => {
+      const line = new THREE.LineSegments(geo, mat);
+      line.position.set(world.x, world.y + height, world.z);
+      line.rotation.y = site.yaw;
+      line.renderOrder = 3;
+      line.visible = false;
+      root.add(line);
+      return line;
+    };
     const pickGeo = new THREE.BoxGeometry(site.cellW - 0.16, 0.6, site.cellD - 0.16);
     const pickMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false });
     const picks: THREE.Mesh[] = [];
@@ -141,6 +176,16 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         pad.name = `mecha-cell-${x}-${y}`;
         pads.push(pad);
         root.add(pad);
+        const threat = new THREE.Mesh(threatGeo, threatMat);
+        threat.position.set(world.x, world.y + 0.30, world.z);
+        threat.rotation.y = site.yaw;
+        threat.renderOrder = 3;
+        threat.visible = false;
+        threatLines.push(threat);
+        root.add(threat);
+        targetLines.push(addLines(targetGeo, targetMat, world, 0.31));
+        focusLines.push(addLines(focusGeo, focusMat, world, 0.32));
+        moveLines.push(addLines(moveGeo, moveMat, world, 0.33));
         const pick = new THREE.Mesh(pickGeo, pickMat);
         pick.position.set(world.x, world.y + 0.35, world.z);
         pick.rotation.y = site.yaw;
@@ -180,7 +225,9 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
 
     const barGeo = new THREE.BoxGeometry(12, 0.5, 0.5);
     const barBg = new THREE.MeshStandardMaterial({ color: "#1b140f", roughness: 0.8 });
-    const bars = new Map<string, { anchor: THREE.Group; fill: THREE.Mesh; fillMat: THREE.MeshStandardMaterial }>();
+    const buildingMarkerGeo = new THREE.RingGeometry(4.5, 6, 4);
+    const buildingMarkerMat = new THREE.MeshBasicMaterial({ color: "#fff3a3", side: THREE.DoubleSide, depthTest: false });
+    const bars = new Map<string, { anchor: THREE.Group; fill: THREE.Mesh; fillMat: THREE.MeshStandardMaterial; marker: THREE.Mesh }>();
     for (const building of site.buildings) {
       const anchor = new THREE.Group();
       anchor.position.set(building.x, building.ground + building.height + 1.6, building.z);
@@ -189,8 +236,13 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       const fillMat = new THREE.MeshStandardMaterial({ color: "#e23d3d", emissive: "#7a1818", emissiveIntensity: 0.35, roughness: 0.45 });
       const fill = new THREE.Mesh(barGeo, fillMat);
       fill.scale.x = 1;
-      anchor.add(back, fill);
-      bars.set(building.id, { anchor, fill, fillMat });
+      const marker = new THREE.Mesh(buildingMarkerGeo, buildingMarkerMat);
+      marker.rotation.x = -Math.PI / 2;
+      marker.position.y = 2;
+      marker.renderOrder = 10;
+      marker.visible = false;
+      anchor.add(back, fill, marker);
+      bars.set(building.id, { anchor, fill, fillMat, marker });
       root.add(anchor);
     }
 
@@ -347,6 +399,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       }
       const current = viewRef.current;
       const telegraph = new Set(current.telegraph.map(cellKey));
+      const focusedTelegraph = new Set(current.focusedTelegraph.map(cellKey));
       const focus = new Set(current.focus.map(cellKey));
       const reach = new Set(current.reach.map(cellKey));
       const targets = new Set(current.targets.map(cellKey));
@@ -363,12 +416,15 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         const y = Math.floor(index / BOARD);
         const id = `${x},${y}`;
         const ground = site.terrain[y]?.[x];
-        const role: Role = targets.has(id) ? "target" : telegraph.has(id) ? "telegraph"
-          : focus.has(id) ? "focus"
-          : id === moveKey ? "move"
-          : obstacleCells.has(id) ? "obstacle"
+        const role: Role = obstacleCells.has(id) ? "obstacle"
           : buildingCells.get(id) ?? (reach.has(id) ? "reach" : ground === "water" ? "water" : ground === "mountain" ? "mountain" : ground === "road" ? "road" : "empty");
         pad.material = padMat.get(role)!;
+        const threat = threatLines[index]!;
+        threat.visible = telegraph.has(id);
+        threat.material = focusedTelegraph.has(id) ? focusThreatMat : current.hoveredEnemy ? subduedThreatMat : threatMat;
+        targetLines[index]!.visible = targets.has(id);
+        focusLines[index]!.visible = focus.has(id);
+        moveLines[index]!.visible = id === moveKey;
       });
       const bossFeet = footprintFeet(site, current.boss);
       const performing = Boolean(performanceRef.current);
@@ -453,6 +509,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         const live = current.buildings.find((item) => item.id === building.id);
         if (!bar) continue;
         bar.anchor.visible = Boolean(live);
+        bar.marker.visible = Boolean(live) && current.focusedBuilding === building.id;
         if (!live || live.maxHp <= 0) continue;
         const ratio = Math.max(0, Math.min(1, live.hp / live.maxHp));
         bar.fill.scale.x = Math.max(0.04, ratio);
@@ -474,10 +531,14 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       gridGeo.dispose();
       (grid.material as THREE.Material).dispose();
       padGeo.dispose();
+      for (const geo of [threatGeo, targetGeo, focusGeo, moveGeo]) geo.dispose();
+      for (const mat of [threatMat, subduedThreatMat, focusThreatMat, targetMat, focusMat, moveMat]) mat.dispose();
       pickGeo.dispose();
       pickMat.dispose();
       barGeo.dispose();
       barBg.dispose();
+      buildingMarkerGeo.dispose();
+      buildingMarkerMat.dispose();
       for (const mat of padMat.values()) mat.dispose();
       for (const bar of bars.values()) bar.fillMat.dispose();
       for (const ring of Object.values(markers)) {

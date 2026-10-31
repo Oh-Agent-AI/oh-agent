@@ -10,7 +10,7 @@ import { PLAN_FAULT_CAUSES, gameText, planFaultText } from "../apps/agent-city/u
 import { peelPlan, planForDoctrine, squadPlan, type DoctrineId } from "../apps/agent-city/ui/src/game/mecha/ai.ts";
 import { createMechaController, cuesFromLog, type Planner } from "../apps/agent-city/ui/src/game/mecha/controller.ts";
 import type { CityMechaSite } from "../apps/agent-city/ui/src/game/mecha/citySite.ts";
-import { bossPrepare, createMatch, living, type ArenaPlan, type MatchState, type MechId, type TurnEvent } from "../apps/agent-city/ui/src/game/mecha/rules.ts";
+import { bossPrepare, createMatch, living, previewPlan, type ArenaPlan, type MatchState, type MechId, type TurnEvent } from "../apps/agent-city/ui/src/game/mecha/rules.ts";
 
 type Pos = { x: number; y: number };
 
@@ -340,7 +340,7 @@ test("undo move restores the previous draft before submit and does nothing after
   assert.deepEqual(c.getState().draft.Assault.moveTo, fired.draft.Assault.moveTo);
 });
 
-test("hovering one enemy shows only that enemy's post-push telegraph", () => {
+test("hovering highlights an enemy without hiding other threats", () => {
   const c = createMechaController({ match: duel(NEAR_BOSS), planner: hold });
   c.setAction("Assault", { kind: "melee", target: "boss" });
   const preview = c.getState().preview;
@@ -352,7 +352,8 @@ test("hovering one enemy shows only that enemy's post-push telegraph", () => {
   assert.deepEqual(c.getState().telegraph, [{ x: 4, y: 1 }]);
   assert.equal(c.getState().hoveredEnemy, "boss");
   c.setHoveredEnemy("raider-w");
-  assert.deepEqual(c.getState().telegraph, [], "an enemy with no telegraph contributes no cells");
+  assert.deepEqual(c.getState().telegraph, preview.telegraphAfter, "other threats remain visible");
+  assert.deepEqual(c.getState().focusedTelegraph, [], "an enemy with no telegraph has no focused cells");
   c.setHoveredEnemy(null);
   assert.deepEqual(c.getState().telegraph, preview.telegraphAfter);
   assert.equal(c.getState().preview.ok && c.getState().preview.hitsAfter.Assault, c.getState().hits.Assault);
@@ -515,4 +516,149 @@ test("every action inspection description is localized", () => {
     assert.equal(en.startsWith("Translation unavailable:"), false, text);
     assert.equal(/\p{Script=Han}/u.test(en), false, text);
   }
+});
+
+test("preview preserves a planned move while assuming an unplanned action", () => {
+  const match = duel(NEAR_BOSS);
+  const c = createMechaController({ match, planner: (state) => ({ revision: state.revision, items: [] }) });
+  c.setMove("Assault", { x: 3, y: 2 });
+  const s = c.getState();
+  assert.equal(s.packReady, false);
+  assert.deepEqual(s.pendingIds, ["Assault", "Gunner", "Support"]);
+  assert.ok(s.preview.ok);
+  if (!s.preview.ok) return;
+  assert.deepEqual(s.preview.assumed, ["Assault", "Gunner", "Support"]);
+  assert.deepEqual(s.preview.stages?.afterMovement.mechs.find((m) => m.id === "Assault")?.pos, { x: 3, y: 2 });
+  c.setAction("Assault", { kind: "skip" });
+  const updated = c.getState();
+  assert.ok(updated.preview.ok);
+  if (updated.preview.ok) assert.deepEqual(updated.preview.assumed, ["Gunner", "Support"]);
+});
+
+test("a failed preview does not expose fallback damage as a prediction", () => {
+  const match = duel(NEAR_BOSS);
+  match.phase = "finished";
+  match.outcome = "defeat_timeout";
+  const c = createMechaController({ match, planner: hold });
+  assert.equal(c.getState().preview.ok, false);
+  assert.equal(c.getState().hits, null);
+});
+
+function holdRiskMatch(): MatchState {
+  const state = createMatch({
+    preset: "covers_sparse_mid", script: "stationary_smash", covers: [], boss: { x: 4, y: 4 },
+    buildings: [{ id: "b1", cells: [{ x: 3, y: 4 }] }, { id: "b2", cells: [{ x: 3, y: 5 }] },
+      { id: "b3", cells: [{ x: 0, y: 0 }] }, { id: "b4", cells: [{ x: 1, y: 0 }] }, { id: "b5", cells: [{ x: 2, y: 0 }] }],
+    mechs: [{ id: "Assault", pos: { x: 1, y: 9 } }, { id: "Gunner", pos: { x: 5, y: 9 } }, { id: "Support", pos: { x: 8, y: 9 } }],
+  });
+  bossPrepare(state);
+  state.boss.intent = { skillId: "sweep", local: [{ x: -1, y: 0 }, { x: -1, y: 1 }], projected: [{ x: 3, y: 4 }, { x: 3, y: 5 }], cdSweep: 0, status: "planned" };
+  return state;
+}
+
+test("all-wait building risk requires an explicit confirmation that can be cancelled", () => {
+  const c = createMechaController({ match: holdRiskMatch(), planner: hold });
+  const turn = c.getState().match.turn;
+  c.submit();
+  assert.deepEqual(c.getState().holdConfirmation, { buildingLoss: 12, outcome: null });
+  assert.equal(c.getState().match.turn, turn);
+  c.cancelHold();
+  assert.equal(c.getState().holdConfirmation, null);
+  assert.equal(c.getState().match.turn, turn);
+  c.submit();
+  c.confirmHold();
+  assert.equal(c.getState().holdConfirmation, null);
+  assert.equal(c.getState().match.turn, turn + 1);
+  assert.equal(c.getState().match.buildings.reduce((sum, building) => sum + building.hp, 0), 68);
+});
+
+test("hold confirmation expires on draft change, pause, doctrine change and restart", () => {
+  const c = createMechaController({ match: holdRiskMatch(), planner: hold });
+  const turn = c.getState().match.turn;
+  c.submit();
+  c.setMove("Assault", { x: 1, y: 8 });
+  assert.equal(c.getState().holdConfirmation, null);
+  c.confirmHold();
+  assert.equal(c.getState().match.turn, turn);
+  c.submit();
+  assert.ok(c.getState().holdConfirmation);
+  c.pause();
+  assert.equal(c.getState().holdConfirmation, null);
+  c.resume();
+  c.submit();
+  assert.ok(c.getState().holdConfirmation);
+  c.setDoctrine("peel");
+  assert.equal(c.getState().holdConfirmation, null);
+  c.submit();
+  assert.ok(c.getState().holdConfirmation);
+  c.restart();
+  assert.equal(c.getState().holdConfirmation, null);
+});
+
+test("safe all-wait submits without confirmation; timeout still requires it", () => {
+  const state = holdRiskMatch();
+  state.boss.intent = { skillId: "skip", local: [], projected: [], cdSweep: 0, status: "void" };
+  const c = createMechaController({ match: state, planner: hold });
+  c.submit();
+  assert.equal(c.getState().holdConfirmation, null);
+  assert.equal(c.getState().match.turn, 2);
+  const timed = holdRiskMatch();
+  timed.boss.intent = { skillId: "skip", local: [], projected: [], cdSweep: 0, status: "void" };
+  timed.turn = 15;
+  const d = createMechaController({ match: timed, planner: hold });
+  d.submit();
+  assert.deepEqual(d.getState().holdConfirmation, { buildingLoss: 0, outcome: "defeat_timeout" });
+  d.confirmHold();
+  assert.equal(d.getState().match.outcome, "defeat_timeout");
+});
+
+
+test("preview exceptions are unavailable, do not invent damage, and recover on the next update", () => {
+  let failed = true;
+  const c = createMechaController({ match: holdRiskMatch(), planner: hold, preview: (state, plan) => {
+    if (failed) throw new Error("synthetic preview failure");
+    return previewPlan(state, plan);
+  } });
+  const first = c.getState();
+  assert.equal(first.preview.status, "unavailable");
+  assert.equal(first.hits, null);
+  assert.ok(first.telegraph.length > 0, "current threats remain available as a labeled fallback");
+  assert.equal("buildings" in first.preview, false);
+  assert.equal("enemyOrder" in first.preview, false);
+  failed = false;
+  c.setHoveredEnemy("boss");
+  const recovered = c.getState();
+  assert.equal(recovered.preview.status, "ready");
+  assert.equal(recovered.preview.revision, recovered.match.revision);
+  assert.equal(recovered.preview.draftVersion, first.preview.draftVersion, "focus is not a draft change");
+  assert.ok(recovered.preview.ok && recovered.preview.buildings.some((b) => b.endHp < b.startHp));
+});
+
+test("preview versions follow draft, doctrine, reset and match changes rather than focus", () => {
+  const c = createMechaController({ match: holdRiskMatch(), planner: hold });
+  let version = c.getState().preview.draftVersion;
+  c.setHoveredEnemy("boss");
+  assert.equal(c.getState().preview.draftVersion, version);
+  c.setMove("Assault", { x: 1, y: 8 });
+  assert.ok(c.getState().preview.draftVersion > version);
+  version = c.getState().preview.draftVersion;
+  c.resetTurn();
+  assert.ok(c.getState().preview.draftVersion > version);
+  version = c.getState().preview.draftVersion;
+  c.setDoctrine("tunnel");
+  assert.ok(c.getState().preview.draftVersion > version, "refilling the same doctrine invalidates the prior request");
+  version = c.getState().preview.draftVersion;
+  c.restart();
+  assert.ok(c.getState().preview.draftVersion > version);
+  assert.equal(c.getState().preview.revision, c.getState().match.revision);
+});
+
+test("reset invalidates a hold confirmation even when the restored draft is identical", () => {
+  const c = createMechaController({ match: holdRiskMatch(), planner: hold });
+  c.submit();
+  assert.ok(c.getState().holdConfirmation);
+  c.resetTurn();
+  assert.equal(c.getState().holdConfirmation, null);
+  c.confirmHold();
+  assert.equal(c.getState().match.turn, 1);
 });

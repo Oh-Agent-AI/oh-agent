@@ -29,10 +29,10 @@
 
 import {
   BOARD, BOSS_HP, BUILDING_HP, COVERS, GDD_RULESET, MECH_IDS, RAIDER_HP, SIEGE_BUILDINGS, SIEGE_RAIDERS, STATS, footprint, inb, key, living, emit, noSpawn, swapEventSink,
-  type ArenaPlan, type BossScriptId, type BuildingStake, type Cell, type CoverPresetId, type MatchState, type MechId, type PlanFault, type TerrainKind, type TurnEvent,
+  type ArenaPlan, type BossScriptId, type BuildingStake, type Cell, type CoverPresetId, type MatchState, type MechId, type Outcome, type PlanFault, type TerrainKind, type TurnEvent,
 } from "./board";
 import { validateAndApplyPlan } from "./combat";
-import { movementSnapshot, presentationSnapshot, type PresentationStages } from "./board";
+import { movementSnapshot, presentationSnapshot, stakeBuildings, type PresentationStages } from "./board";
 import { bossExecute, bossPrepare } from "./enemy";
 
 export {
@@ -187,9 +187,6 @@ function runTurn(state: MatchState, plan: ArenaPlan, capturePresentation = false
       }
     };
     noteOutcome();
-    // 推动之后的预告：大怪被推会 reproject，小怪的预告不跟着动。
-    // byActor 与合并列表同一时刻取样，悬停一只怪时不必再推演一遍。
-    const { cells: telegraph, byActor: telegraphByActor } = collectTelegraphs(next);
     const hpBefore = Object.fromEntries(next.mechs.map((m) => [m.id, m.hp])) as Record<MechId, number>;
     if (next.phase === "resolving_boss") bossExecute(next);
     const afterEnemy = capturePresentation ? presentationSnapshot(next) : null;
@@ -200,7 +197,7 @@ function runTurn(state: MatchState, plan: ArenaPlan, capturePresentation = false
     const afterPrepare = capturePresentation ? presentationSnapshot(next) : null;
     const presentationStages = before && afterMovement && afterPlayer && afterEnemy && afterPrepare
       ? { before, afterMovement, afterPlayer, afterEnemy, afterPrepare } : null;
-    return { ok: true as const, state: next, log, telegraph, telegraphByActor, hits, presentationStages };
+    return { ok: true as const, state: next, log, hits, afterPlayer, presentationStages };
   } finally {
     swapEventSink(outer);
   }
@@ -242,22 +239,54 @@ export function collectTelegraphs(state: MatchState): { cells: Cell[]; byActor: 
   return { cells, byActor };
 }
 
+/** An object-level prediction; staked buildings alone count toward defeat. */
+export type PreviewBuilding = {
+  id: string; cells: Cell[]; staked: boolean;
+  startHp: number; afterPlayerHp: number; endHp: number; maxHp: number;
+};
+export type PlanPreview =
+  | { ok: true; telegraphAfter: Cell[]; telegraphByActor: Record<string, Cell[]>; hitsAfter: Record<MechId, number>; assumed: MechId[];
+      enemyOrder: Array<Extract<TurnEvent, { type: "enemy" }>>; buildings: PreviewBuilding[]; outcome: Outcome | null;
+      stages: PresentationStages | null; log: TurnEvent[] }
+  | { ok: false; fault: PlanFault };
+
 /**
- * 预览：在克隆上做与提交完全相同的试算，plan 可以不完整——
- * 没排的活机甲按「不动 + 待机」排在末尾，并列入 assumed，界面据此标「假设」。
- * telegraphAfter 是玩家行动之后（推动已生效）的预告格；hitsAfter 是本回合敌方结算里每台掉的血。
- * telegraphByActor 是同一时刻按敌人拆开的预告，给悬停归属用。
+ * Preview the same turn as playTurn on a clone. Missing living mechs wait in place.
+ * Threat cells come from enemy events that actually execute, not next-turn intents
+ * or an attack prevented by an earlier outcome.
  */
-export function previewPlan(
-  state: MatchState,
-  plan: ArenaPlan,
-): { ok: true; telegraphAfter: Cell[]; telegraphByActor: Record<string, Cell[]>; hitsAfter: Record<MechId, number>; assumed: MechId[]; enemyOrder: Array<Extract<TurnEvent, { type: "enemy" }>> } | { ok: false; fault: PlanFault } {
+export function previewPlan(state: MatchState, plan: ArenaPlan): PlanPreview {
   const named = new Set(plan.items.map((i) => i.mechId));
   const assumed = living(state).map((m) => m.id).filter((id) => !named.has(id));
   const full: ArenaPlan = {
     revision: plan.revision,
     items: [...plan.items, ...assumed.map((mechId) => ({ mechId, moveTo: null, action: { kind: "skip" as const } }))],
   };
-  const r = runTurn(state, full);
-  return r.ok ? { ok: true, telegraphAfter: r.telegraph, telegraphByActor: r.telegraphByActor, hitsAfter: r.hits, assumed, enemyOrder: r.log.filter((event): event is Extract<TurnEvent, { type: "enemy" }> => event.type === "enemy") } : r;
+  const r = runTurn(state, full, true);
+  if (!r.ok) return r;
+  // capturePresentation=true always captures afterPlayer, even if the optional
+  // movement presentation cannot be reconstructed from an unexpected log.
+  const afterPlayer = r.afterPlayer!;
+  const staked = new Set(stakeBuildings(state).map((building) => building.id));
+  const buildings = state.buildings.map((building) => ({
+    id: building.id, cells: building.cells.map((cell) => ({ ...cell })), staked: staked.has(building.id),
+    startHp: building.hp,
+    afterPlayerHp: afterPlayer.buildings.find((item) => item.id === building.id)!.hp,
+    endHp: r.state.buildings.find((item) => item.id === building.id)!.hp,
+    maxHp: building.maxHp,
+  }));
+  const enemyOrder = r.log.filter((event): event is Extract<TurnEvent, { type: "enemy" }> => event.type === "enemy");
+  const telegraphByActor: Record<string, Cell[]> = {};
+  const telegraphAfter: Cell[] = [];
+  const seen = new Set<string>();
+  for (const event of enemyOrder) {
+    const cells = event.cells.map((cell) => ({ ...cell }));
+    telegraphByActor[event.actor] = cells;
+    for (const cell of cells) {
+      const cellKey = key(cell);
+      if (!seen.has(cellKey)) { seen.add(cellKey); telegraphAfter.push({ ...cell }); }
+    }
+  }
+  return { ok: true, telegraphAfter, telegraphByActor, hitsAfter: r.hits, assumed, enemyOrder, buildings,
+    outcome: r.state.outcome, stages: r.presentationStages, log: r.log };
 }
