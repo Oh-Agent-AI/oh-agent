@@ -1,15 +1,15 @@
 # City 首屏统计加载性能验收 — 2026-10-31
 
-状态：**P0 SQL 门槛通过；完整端到端验收未完成**。本报告记录可复现的合成 SQL 验收和一次打包应用诊断链路冒烟，不宣称完整端到端预算已经通过。
+状态：**P0 SQL 门槛和点击 City 到首次有效数据投影的冷/暖门槛通过；后台写入行为受控。场景首帧是独立未闭环瓶颈，本报告不据此宣称整体视觉首屏达标。**
 
 ## 1. 结论
 
 - `usage_facts_event_time` 索引后，366 天每日 activity 在 Rust bundled SQLite 上 p95 **195.152 ms**，低于 SPEC 预算 1 s；p50 相对无索引快 **51.92×**，高于 5× 门槛。
 - 索引前后 20 组样本的 366 行结果逐行相同；查询计划命中 `SEARCH ... USING INDEX usage_facts_event_time`。
-- 1000 条 fact 顺序写入从 20.850 ms 增至 32.168 ms（约 54% 额外开销），索引一次性构建 3.965 s，索引占用 1,486,848 bytes。
-- 打包应用诊断链路可区分 host SQL、IPC、UI 数据完成、场景阶段；10 个启动后的成功样本中 IPC p95 为 1,441 ms。样本数仍低于 SPEC 要求的 20，因此该项只作为冒烟证据。
-- 场景 `first_frame` 一次有效样本为 9,302 ms，明显慢于数据阶段，应作为独立 P1/场景性能问题处理；不得用数据阶段达标掩盖。
-- 未发现性能日志输出路径、session、标题、token 或错误原文；日志只包含受控枚举、档位和计数/耗时。
+- 受控打包端到端样本为 5 次冷启动和 20 次暖态 City 加载，全部成功。点击 City 到首次有效数据投影：冷启动 p95 **1,022 ms**；暖态 p95 **1,313 ms**，低于 2 秒门槛。host IPC 暖态 p95 为 **1,222 ms**。
+- 场景首帧仍需独立优化：本轮冷启动观察到一次 `first_frame` 为 **5,078 ms**；更早冒烟为 **9,302 ms**。数据阶段达标不表示“首次可见城市”达标。
+- 后台写入受控场景中，6 次 City 加载全部成功；其中 2 次遇到 `revision_changed` 并各重试一次（最多 `attempt_count=2`），没有 v2 降级、无限等待或跨快照展示的证据。
+- 未发现性能日志输出路径、session、标题、令牌或错误原文；日志只包含受控枚举、档位和计数/耗时。
 
 ## 2. 环境与构建
 
@@ -82,41 +82,89 @@ indexed_ms = [
 ]
 ```
 
-## 4. 打包应用冒烟与诊断
+## 4. 受控打包端到端验收
 
-使用隔离合成库启动 `.app`。本轮收集到 12 个 `city_load_finished outcome=success` 样本，其中前两个靠近启动/首次打开，后 10 个用于启动后的观察性子集：
+使用隔离 `AGENT_VITALS_HOME`、合成 100k 权威库和 `.app` bundle。应用通过 `open` 启动，未裸运行 `agent-vitals-menubar`；未触碰用户生产库。
 
-- `city_ipc_finished`（host IPC 返回）：n=10，p50 1,229 ms，p95 1,441 ms，max 1,441 ms。
-- `city_load_finished`（UI 收到有效投影）：n=10，p50 1,551 ms，p95 2,016 ms，max 2,016 ms。
-- 原始 IPC 后 10 样本：`1375, 1229, 1441, 1395, 1196, 1349, 1164, 1153, 1192, 1242` ms。
-- 原始 UI load 后 10 样本：`2016, 1551, 1804, 1760, 1495, 1670, 1471, 1476, 1499, 1552` ms。
+### 4.1 冷/暖样本
 
-场景样本：
+按 SPEC 采集 5 次重新打开应用的冷启动和 20 次已启动后的暖态 City 加载。所有 25 个基线样本均为 `city_load_finished outcome=success`。以下百分位使用 nearest-rank。
 
-```text
-city_scene_stage stage=model       outcome=success elapsed_ms=1787 window_days=366
-city_scene_stage stage=planning    outcome=success elapsed_ms=1808 window_days=366
-city_scene_stage stage=mounting    outcome=success elapsed_ms=6596 window_days=366
-city_scene_stage stage=rendering   outcome=success elapsed_ms=9117 window_days=366
-city_scene_stage stage=first_frame outcome=success elapsed_ms=9302 window_days=366
-```
+| 指标 | 冷启动 p50/p95/max | 暖态 p50/p95/max |
+| --- | ---: | ---: |
+| `city_ipc_finished` | 894 / 1,009 / 1,009 ms | 890 / 1,222 / 1,309 ms |
+| `city_load_finished` | 907 / 1,022 / 1,022 ms | 894 / 1,313 / 2,252 ms |
 
-`elapsed_ms` 是该 WebView 页面内的单调时钟绝对值；`first_frame` 到达时间约 9.3 s。该项证明首帧瓶颈已从 SQL 转到场景挂载/渲染，必须单独优化，不纳入本 P0 SQL 结论。
-
-样本数与口径限制：
-
-- SPEC 要求 5 次冷启动和 20 次暖态端到端；本节只有打包诊断冒烟，未按受控冷/暖流程补足，因此不判定端到端门槛通过。
-- 本轮观测到少量自动化操作引起的 `cancelled` 或 `fallback_v2` 日志；这些不是性能基线样本。没有发现 revision retry。
-
-## 5. 隐私检查
-
-检查隔离 `logs/app.log` 中的 `city_v3` 与 `city_perf` 行，匹配以下敏感模式无命中：
+原始样本：
 
 ```text
-/Users/|/var/folders|title|session_key|token|api|password|secret
+city_ipc_finished cold = [1009, 910, 894, 877, 817]
+city_ipc_finished warm = [
+  793, 875, 1309, 884, 853, 865, 873, 830, 1222, 985,
+  1097, 855, 1009, 890, 846, 917, 1069, 1169, 997, 1037
+]
+city_load_finished cold = [1022, 923, 907, 889, 830]
+city_load_finished warm = [
+  798, 880, 1313, 888, 857, 869, 877, 833, 2252, 989,
+  1101, 858, 1012, 894, 849, 922, 1077, 1172, 1002, 1041
+]
 ```
 
-实际日志仅包含：
+样本解释：
+
+- 自动化流程另外产生 1 次 `fallback_v2` 失败和 1 次 `cancelled` 事件；两者不是基线成功样本，已排除。
+- 一个暖态成功样本包含 `attempt_count=2, revision_retry_count=1`（2,252 ms）；它是有效数据投影成功，因此保留在基线内。
+- 没有缺失统计或静默降级；基线样本的 `fallback=none` 且 `page_returned=299`。
+
+### 4.2 场景观察
+
+冷启动样本中一次有效场景链路为：
+
+```text
+city_scene_stage stage=model       outcome=success elapsed_ms=1115 window_days=366
+city_scene_stage stage=planning    outcome=success elapsed_ms=1127 window_days=366
+city_scene_stage stage=mounting    outcome=success elapsed_ms=3904 window_days=366
+city_scene_stage stage=rendering   outcome=success elapsed_ms=5030 window_days=366
+city_scene_stage stage=first_frame outcome=success elapsed_ms=5078 window_days=366
+```
+
+`elapsed_ms` 是该 WebView 页面内的单调时钟绝对值。更早打包冒烟的 `first_frame` 为 9,302 ms。两项都说明场景挂载/渲染是数据完成后的主要瓶颈，应作为独立 P1/场景性能问题处理；本 P0 数据门槛不掩盖该问题。
+
+## 5. 后台写入场景
+
+在另一个隔离 `AGENT_VITALS_HOME` 中复用同一合成 100k 库，并在 `state/source-controls.json` 排除全部四个内置执行环境，避免自动化数据目录继续扫描本机日志。应用只通过 `.app` + `open` 启动一次；同一应用内完成 1 次基线 City 加载和 5 次暖态重载。
+
+写入器向 `usage_facts` 插入合成 fact 并推进 authority revision：8 次事务提交，约 40 秒；最终 `authority_revision=9`，库内 facts 为 100,098（新增 8 条）。所有 City 查询期间应用只读打开隔离库，不修改用户生产库。
+
+结果：
+
+- 6 次 City 加载全部成功，`page_returned=299`。
+- 2 次 host IPC 返回 `revision_changed`；前端各执行一次 revision retry，最终 `attempt_count=2, revision_retry_count=1, fallback=none`。
+- 最大 UI 数据完成时间为 1,706 ms；没有无限等待、v2 降级或把 pending 当成空结果的日志证据。
+- 场景首个 `first_frame` 为 3,006 ms，仍单独归入场景渲染瓶颈，不用于数据投影预算。
+
+背景写入样本：
+
+```text
+city_ipc_finished = [
+  787, 867, 841(error:revision_changed), 829,
+  841, 860(error:revision_changed), 841, 844
+]
+city_load_finished = [
+  799/attempt=1, 873/attempt=1, 1676/attempt=2, 844/attempt=1,
+  1706/attempt=2, 848/attempt=1
+]
+```
+
+## 6. 隐私检查
+
+对受控冷/暖、后台写入和早期冒烟的隔离 `logs/app.log` 中的 `city_v3` 与 `city_perf` 行执行敏感模式检查：
+
+```text
+/Users/|/var/folders|title|session_key|token|api|password|secret|Admin|machine_namespace|fact_id|native_session|working_dir|cwd
+```
+
+三轮均无命中。`error:revision_changed` 是受控稳定错误码，允许保留。实际日志仅包含：
 
 - `city_overview_stage`：stage、elapsed_ms。
 - `city_overview_finished`：operation、window_days、outcome、elapsed_ms。
@@ -126,7 +174,7 @@ city_scene_stage stage=first_frame outcome=success elapsed_ms=9302 window_days=3
 
 host 单测覆盖 `performance.city_scene` 只接受有限 stage/outcome/数值档位，且要求活动 City 插件身份。
 
-## 6. 回归与构建
+## 7. 回归与构建
 
 已执行：
 
@@ -150,9 +198,8 @@ cd apps/desktop/src-tauri && cargo tauri build --bundles app
 
 已知 desktop 测试失败在 base 与分支一致，属于预先存在问题：`read_calendar_month_is_cross_harness_not_dsh_only`、`read_hourly_distribution_matches_authority_facts_day`、`manifest_catalog_http_enforces_stream_limits_and_refuses_redirects`。
 
-## 7. 发布与回滚风险
+## 8. 发布与回滚风险
 
 - schema v32 → v33 为加性 partial index 迁移；中断后可重试。旧二进制可能声明不认识 v33 或忽略新索引，不建议直接删除索引作为应用回滚方案；应按既有 schema 兼容矩阵评估。
 - 索引增加约 1.42 MiB 和约 54% 的 1000 条顺序写入耗时；对写入密集场景需保留观察。
-- 首帧耗时 9.3 s 说明后续应评估场景资产/构建流程或 P1 渐进展示；不能通过缩短 366 天窗口或静默缺失统计来解决。
-- 本轮端到端样本不足；发布前必须补足 SPEC 第 8 节要求的冷/暖样本和一次后台写入场景。
+- 数据投影 P0 已达标，但场景首帧仍显著高于数据阶段；后续应单独评估场景资产/构建流程或 P1 渐进展示，不能通过缩短 366 天窗口或静默缺失统计解决。
