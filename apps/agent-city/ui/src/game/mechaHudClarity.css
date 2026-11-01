@@ -1,0 +1,103 @@
+/* Component-local styles; positioning and HUD safe areas belong to the host. */
+.mecha-overlay.is-city .mecha-pack li.mecha-plan-card,
+.mecha-pack li.mecha-plan-card {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  color: #e8eef6;
+  overflow-wrap: anywhere;
+}
+.mecha-overlay.is-city.has-match .mecha-pack li.mecha-plan-card { row-gap: 2px; }
+.mecha-overlay.is-city .mecha-pack li.mecha-plan-card > .mecha-plan-card__select,
+.mecha-pack li.mecha-plan-card > .mecha-plan-card__select {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+}
+.mecha-plan-card__select:focus-visible { outline: 3px solid #fff5b4; outline-offset: 2px; }
+.mecha-plan-card__avatar { display: inline-flex; flex: 0 0 26px; align-items: center; justify-content: center; width: 26px; height: 26px; box-sizing: border-box; border: 1px solid #d5e8fa; border-radius: 4px; font-weight: 700; }
+.mecha-plan-card__avatar > svg, .mecha-plan-card__avatar > img { max-width: 100%; max-height: 100%; }
+.mecha-plan-card__identity { display: flex; flex: 1 1 auto; flex-wrap: wrap; gap: 2px 6px; justify-content: space-between; min-width: 0; }
+.mecha-pack li.mecha-plan-card > .mecha-plan-card__select > span,
+.mecha-pack li.mecha-plan-card > .mecha-plan-card__select .mecha-plan-card__identity > span { font-size: inherit; opacity: 1; }
+.mecha-plan-card__identity strong { overflow-wrap: anywhere; }
+.mecha-plan-card__meta, .mecha-plan-card__suggestion, .mecha-plan-card__detail {
+  display: block;
+  grid-column: 1 / -1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.mecha-plan-card__meta { display: flex; flex-wrap: wrap; gap: 0 8px; align-items: baseline; }
+.mecha-plan-card__status { color: #a8f3d4; font-weight: 700; }
+.mecha-plan-card.is-open .mecha-plan-card__status { color: #ffd19a; }
+.mecha-plan-card__suggestion { color: #c5d7f0; }
+.mecha-plan-card__risk { color: #e8eef6; }
+.mecha-plan-card.is-hit .mecha-plan-card__risk { color: #ffb5ad; font-weight: 700; }
+
+.mecha-battle-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  color: #e8eef6;
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.mecha-battle-legend__item { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
+.mecha-battle-legend__symbol { display: inline-flex; flex: 0 0 20px; align-items: center; justify-content: center; width: 20px; height: 20px; box-sizing: border-box; font-size: 15px; font-weight: 800; line-height: 1; }
+.mecha-battle-legend .mecha-battle-legend__reach { color: #8fd4ff; }
+.mecha-battle-legend .mecha-battle-legend__move { color: #ffe08a; font-size: 20px; }
+.mecha-battle-legend .mecha-battle-legend__declared { color: #fff; background: #d7192d; clip-path: polygon(50% 0, 100% 100%, 0 100%); font-size: 12px; padding-top: 4px; }
+.mecha-battle-legend .mecha-battle-legend__projected { border: 2px solid #e3fbff; background: #07526d; color: white; }
+.mecha-battle-legend .mecha-battle-legend__combined { color: #fff4d2; background: #493347; clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%); font-size: 11px; }
+.mecha-battle-legend .mecha-battle-legend__target { color: #ffd166; font-size: 18px; }
+.mecha-battle-legend .mecha-battle-legend__selected-target { color: #fff5b4; font-size: 21px; }
+.mecha-battle-legend .mecha-battle-legend__shove { color: #fff5b4; }
+
+@media (max-height: 600px) {
+  .mecha-overlay.is-city.has-match .mecha-pack li.mecha-plan-card > .mecha-plan-card__select { min-height: 28px; }
+  .mecha-plan-card__avatar { flex-basis: 22px; width: 22px; height: 22px; }
+  .mecha-plan-card__meta, .mecha-plan-card__detail { line-height: 1.25; }
+}
+
+/* Host-owned safe area: the persistent legend follows the real toolbar height. */
+.mecha-overlay.is-city.has-match .mecha-tactical-legend {
+  position: absolute; top: var(--mecha-legend-top, 64px); left: 12px; right: 12px;
+  box-sizing: border-box; padding: 6px 8px; border: 1px solid #ffffff38;
+  border-radius: 6px; background: #0b1726ed; pointer-events: auto;
+}
+.mecha-overlay.is-city.has-match .mecha-pack:focus-visible { outline: 3px solid #ffe08a; outline-offset: 2px; }
+@media (min-width: 601px) and (min-height: 420px) {
+  .mecha-overlay.is-city.has-match .mecha-pack {
+    max-height: var(--mecha-roster-fit-height, min(43vh, 320px)); overflow: auto; overscroll-behavior: contain;
+    scrollbar-width: thin; scrollbar-color: #a3b9c7 #10212d;
+  }
+}
+.mecha-world-unit-labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.mecha-world-healthbar { position: absolute; top: 0; left: 0; width: 34px; height: 7px; padding: 1px; box-sizing: border-box; border: 1px solid #d9e3db; background: #15201f; pointer-events: none; }
+.mecha-world-healthbar[hidden] { display: none; }
+.mecha-world-healthbar.is-boss { width: 42px; }
+.mecha-world-healthbar__fill { display: block; height: 100%; background: #59d55b; }
+.mecha-world-healthbar[data-side="enemy"] .mecha-world-healthbar__fill { background: #e96557; }
+.mecha-world-healthbar[data-health-state="unknown"] { background: repeating-linear-gradient(135deg, #63727a 0 2px, #15201f 2px 4px); }
+.mecha-world-healthbar.is-selected::before { content: ""; position: absolute; bottom: 11px; left: calc(50% - 4px); border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid #ffe08a; }
+.mecha-inline-portrait { margin-right: 5px; border-radius: 2px; pointer-events: none; }
+/* Leave a complete three-card roster at large sizes; short windows expose a scroll rail. */
+@media (min-width: 601px) and (min-height: 601px) {
+  .mecha-overlay.is-city.has-match .mecha-pack { max-height: var(--mecha-roster-fit-height, min(50vh, 360px)); }
+}
+
+.mecha-overlay.is-city.has-match .mecha-pack li.mecha-roster-scroll-help { display: none; }
+@media (min-width: 601px) and (max-height: 600px) {
+  .mecha-overlay.is-city.has-match .mecha-pack li.mecha-roster-scroll-help { display: block; position: sticky; top: 0; z-index: 1; padding: 4px 6px; color: #d2e3ef; background: #0b1726; border: 1px solid #7699ad; font: 12px/1.25 sans-serif; }
+}

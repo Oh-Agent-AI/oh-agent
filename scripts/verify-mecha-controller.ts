@@ -562,7 +562,14 @@ test("battle entry gates empty, failed and taken-view cities without a fallback 
   // 只有一个对局挂载点；viewFailed 在 MechaMatch 内部也必须换成 CityGate，而不是退回棋盘。
   assert.equal((boardSource.match(/<MechaMatch/g) ?? []).length, 1, "exactly one match mount");
   assert.match(boardSource, /if \(viewFailed\) controller\?\.stopAuto\(\)/);
-  assert.doesNotMatch(boardSource, /MechaLineup|mecha-grid|mecha-cell|方格棋盘|t\("布局"\)/);
+  // The tile-information card is not the removed playable 2D grid. Keep
+  // banning every legacy cell token except this exact new inspector class.
+  const fallbackBoard = /MechaLineup|mecha-grid|mecha-cell(?!-inspector(?![\w-]))|方格棋盘|t\("布局"\)/;
+  for (const legacy of ["MechaLineup", "mecha-grid", "mecha-cell", "mecha-cell-water", "mecha-cell-inspector-grid"]) {
+    assert.match(legacy, fallbackBoard, "legacy fallback tokens must remain forbidden");
+  }
+  assert.doesNotMatch(".mecha-cell-inspector", fallbackBoard);
+  assert.doesNotMatch(boardSource, fallbackBoard);
   assert.doesNotMatch(cssSource, /\.mecha-grid|\.mecha-cell/);
   assert.equal(existsSync(LINEUP_URL), false, "the modal lineup board is gone, not merely unused");
 });

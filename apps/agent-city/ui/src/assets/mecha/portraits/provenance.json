@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 1,
+  "sourceContext": "Existing concept sheets generated with imagegen on 2026-10-26, as documented in the source README; no generation or network was used for these derivatives. Engineering annotations in the sheets are not verified gameplay data.",
+  "sourceReadme": "docs/design/mecha/2026-10-26/README.md",
+  "coordinateConvention": "Original pixel coordinates: origin top-left, x horizontal, y vertical; rectangle [x, x+width) × [y, y+height).",
+  "processing": {
+    "tool": "sips-316",
+    "cropIntermediate": "JPEG formatOptions=100 in the destination path",
+    "resize": "256 × 256, separate sips invocation after cropping",
+    "format": "jpeg",
+    "formatOptions": 82,
+    "generation": false,
+    "network": false
+  },
+  "portraits": [
+    {
+      "key": "assault",
+      "sourcePath": "docs/design/mecha/2026-10-26/assault.png",
+      "sourceAbsolutePath": "/Users/Admin/.codex/worktrees/mecha-battle-clarity-p0/skill-vitals/docs/design/mecha/2026-10-26/assault.png",
+      "sourceSha256": "08f28671a0287a292ed0992b1e942cc7f6bba7d9c804d6b29639f74064f283d9",
+      "sourceDimensions": [
+        1536,
+        1024
+      ],
+      "crop": {
+        "x": 130,
+        "y": 82,
+        "width": 720,
+        "height": 720
+      },
+      "cropNote": "Main 3/4 mech, face/shoulders, fist and shield; lower legs and outer shield edge intentionally clipped.",
+      "output": {
+        "file": "assault.jpg",
+        "dimensions": [
+          256,
+          256
+        ],
+        "bytes": 38439,
+        "sha256": "8bf492d1274abc5929c87624a737c58553d6af69c93d38d7a086812172f7e21f"
+      }
+    },
+    {
+      "key": "gunner",
+      "sourcePath": "docs/design/mecha/2026-10-26/gunner.png",
+      "sourceAbsolutePath": "/Users/Admin/.codex/worktrees/mecha-battle-clarity-p0/skill-vitals/docs/design/mecha/2026-10-26/gunner.png",
+      "sourceSha256": "21a965ec7feb19783df61674642196e16a5b4806cbca41d7e13501cee86fa5dc",
+      "sourceDimensions": [
+        1536,
+        1024
+      ],
+      "crop": {
+        "x": 400,
+        "y": 0,
+        "width": 470,
+        "height": 470
+      },
+      "cropNote": "Main 3/4 upper body and complete double-rail barrel tips; left arm/mount and legs intentionally clipped to exclude the sheet title/stat column.",
+      "output": {
+        "file": "gunner.jpg",
+        "dimensions": [
+          256,
+          256
+        ],
+        "bytes": 23913,
+        "sha256": "b80a4bd0a9e304ae35452462da16954db18b871d8e8ab79bc8d71868b57e5657"
+      }
+    },
+    {
+      "key": "support",
+      "sourcePath": "docs/design/mecha/2026-10-26/support.png",
+      "sourceAbsolutePath": "/Users/Admin/.codex/worktrees/mecha-battle-clarity-p0/skill-vitals/docs/design/mecha/2026-10-26/support.png",
+      "sourceSha256": "33c55f0165acbca4dcc2a470b1be30cd8097afd099f9577d0f3328a059336da0",
+      "sourceDimensions": [
+        1536,
+        1024
+      ],
+      "crop": {
+        "x": 190,
+        "y": 80,
+        "width": 560,
+        "height": 560
+      },
+      "cropNote": "Main 3/4 head, chest cross and repair backpack; peripheral drone, tool arm and lower legs intentionally clipped.",
+      "output": {
+        "file": "support.jpg",
+        "dimensions": [
+          256,
+          256
+        ],
+        "bytes": 31524,
+        "sha256": "688ec5d834e34ff35a0e4d9d83a439c5d71f187d0ec43714534a5beb8f823bdb"
+      }
+    },
+    {
+      "key": "boss",
+      "sourcePath": "docs/design/mecha/2026-10-26/boss.png",
+      "sourceAbsolutePath": "/Users/Admin/.codex/worktrees/mecha-battle-clarity-p0/skill-vitals/docs/design/mecha/2026-10-26/boss.png",
+      "sourceSha256": "bea0b1ed00ee98dd4ec350179c378ee20a50a2297c1d935c90b06db5af940a97",
+      "sourceDimensions": [
+        1774,
+        887
+      ],
+      "crop": {
+        "x": 240,
+        "y": 80,
+        "width": 670,
+        "height": 670
+      },
+      "cropNote": "Main 3/4 three-eye head, carapace, scythe roots and legs; outer scythe tips intentionally clipped.",
+      "output": {
+        "file": "boss.jpg",
+        "dimensions": [
+          256,
+          256
+        ],
+        "bytes": 30486,
+        "sha256": "6597565157a54a11401113cf06bf6d49eb284229648a00626beb4ddd3fd6bfe7"
+      }
+    },
+    {
+      "key": "raider",
+      "sourcePath": "docs/design/mecha/2026-10-26/raider.png",
+      "sourceAbsolutePath": "/Users/Admin/.codex/worktrees/mecha-battle-clarity-p0/skill-vitals/docs/design/mecha/2026-10-26/raider.png",
+      "sourceSha256": "3a400625bee60518723f2488ad32ae264624bd5220f058c2da251707b65e37b9",
+      "sourceDimensions": [
+        1536,
+        1024
+      ],
+      "crop": {
+        "x": 60,
+        "y": 145,
+        "width": 760,
+        "height": 760
+      },
+      "cropNote": "Main 3/4 wedge head, body and reverse-joint claws; highest dorsal tips intentionally clipped to exclude the title.",
+      "output": {
+        "file": "raider.jpg",
+        "dimensions": [
+          256,
+          256
+        ],
+        "bytes": 23290,
+        "sha256": "1bae4e82ca1e736e55dd830188122ed8bcee2cd646e9655c6a9a3668c9ce18b5"
+      }
+    }
+  ],
+  "totalImageBytes": 147652
+}

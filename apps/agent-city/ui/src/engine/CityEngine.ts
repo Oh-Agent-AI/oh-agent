@@ -84,6 +84,8 @@ export type ModeLease = {
   readonly id: number;
   attach: (objects: THREE.Object3D[]) => void;
   setFrameHook: (hook: ((dt: number) => void) | null) => void;
+  /** Reversible city decoration masking owned by this lease. */
+  setBattleClarity: (active: boolean) => void;
   setOrbitView: (view: ModeOrbitView) => void;
   release: () => void;
 };
@@ -254,6 +256,8 @@ export class CityEngine {
   private gameFrame: ((dt: number) => void) | null = null;
   /** 相机 / 帧钩子 / 叠加对象的独占租约。ID 单调递增，过期 token 不能操作新租约。 */
   private readonly modeLeases = new ModeLeaseBook();
+  private modeBattleClarity = false;
+  private labelsVisible = true;
   readonly gameScenePort = new HostGameScenePort<GameSceneSnapshot, THREE.Object3D>({
     epoch: () => this.hostEpoch,
     isAlive: () => !this.disposed,
@@ -773,6 +777,11 @@ export class CityEngine {
           attached.add(object);
         }
       },
+      setBattleClarity: (active) => {
+        check();
+        this.modeBattleClarity = active;
+        this.parts?.setBattleClarity(active);
+      },
       setFrameHook: (hook) => {
         check();
         this.gameFrame = hook;
@@ -802,6 +811,8 @@ export class CityEngine {
         // (or a stale lease) cannot clear the next owner's frame hook/camera.
         if (!this.modeLeases.release(token)) return;
         this.gameFrame = null;
+        this.modeBattleClarity = false;
+        this.parts?.setBattleClarity(false);
         for (const object of attached) this.scene.remove(object);
         attached.clear();
         if (this.cameraOwner === "game") this.setCameraOwner("orbit");
@@ -893,7 +904,7 @@ export class CityEngine {
       this.lastApplyMode = "append";
       this.parts.appendOccupants(model, layout);
       this.drivingWorldPort.invalidate();
-      this.parts.setLabelsVisible(true);
+      this.parts.setLabelsVisible(this.labelsVisible);
       this.parts.setQualityLevel(this.quality);
       if (this.cursorMs !== null) this.parts.applyCursor(this.cursorMs, false, this.playbackSpeed * 1000);
       this.parts.snapToTargets();
@@ -927,6 +938,8 @@ export class CityEngine {
     this.planResult = planResult;
     this.layout = layout;
     this.parts = new CityParts(model, layout, previousDisplays);
+    this.parts.setLabelsVisible(this.labelsVisible);
+    this.parts.setBattleClarity(this.modeBattleClarity);
     if (this.assets) this.parts.applyAssets(this.assets);
     this.parts.setSkyMix(this.dayMix);
     this.lastSkyHour = -1; // 新建的 parts 还是白天默认状态：强制下一帧按当前时刻重新应用昼夜（灯光/亮窗/天空）
@@ -991,7 +1004,7 @@ export class CityEngine {
       const home = this.homeView();
       this.flyTo(home, { ...this.cityCenter, y: 6 }, 900);
     }
-    this.parts.setLabelsVisible(true);
+    this.parts.setLabelsVisible(this.labelsVisible);
     this.parts.setQualityLevel(this.quality);
     if (this.cursorMs !== null) this.parts.applyCursor(this.cursorMs, false, this.playbackSpeed * 1000);
     // 重建后 display 是「已完工」初值：先对齐到当前时间轴进度，否则回放中
@@ -1343,6 +1356,7 @@ export class CityEngine {
   }
 
   setLabelsVisible(visible: boolean): void {
+    this.labelsVisible = visible;
     this.parts?.setLabelsVisible(visible);
   }
 

@@ -1,6 +1,10 @@
 /** Mechs and monsters standing on the city scene. The rules board stays in cell space. */
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import * as THREE from "three";
+import type { InspectionSegment } from "./mecha/cellInspection";
+import { unitHealth } from "./mecha/unitHealth";
+import { describeUnitIdentity } from "./mecha/unitIdentity";
+import type { GameLocale } from "./gameCopy";
 import type { CityEngine } from "../engine/CityEngine";
 import { boardToWorld, cellWorld, type CityMechaSite } from "./mecha/citySite";
 import { MechaBattleAnimator, MechaPerformancePlayer, faceMechaTarget, type MechaCombatCue } from "../render/mecha/animation";
@@ -10,9 +14,9 @@ import type { MechaPerformanceEvent } from "./mecha/performance";
 import { BOARD, type Cell, type MechId } from "./mecha/rules";
 
 export type CityMechaView = {
-  figures: Array<{ id: MechId; x: number; y: number; alive: boolean; selected: boolean; hp?: number }>;
-  boss: { x: number; y: number; alive: boolean; hp?: number };
-  raiders: Array<{ id: string; x: number; y: number; alive: boolean; hp?: number }>;
+  figures: Array<{ id: MechId; x: number; y: number; alive: boolean; selected: boolean; hp?: number; maxHp?: number }>;
+  boss: { x: number; y: number; alive: boolean; hp?: number; maxHp?: number };
+  raiders: Array<{ id: string; x: number; y: number; alive: boolean; hp?: number; maxHp?: number }>;
   buildings: Array<{ id: string; cells: Cell[]; hp: number; maxHp: number }>;
   focusedBuilding?: string | null;
   /** Current enemy declarations, independent of the draft simulation. */
@@ -22,6 +26,9 @@ export type CityMechaView = {
   /** Existing interaction/focus projection, retained for compatibility. */
   telegraph: Cell[];
   focusedTelegraph: Cell[];
+  inspectedCell?: Cell | null;
+  inspectionSegments?: InspectionSegment[];
+  inspectedThreats?: Cell[];
   focus: Cell[];
   reach: Cell[];
   move: Cell | null;
@@ -57,10 +64,10 @@ const ROLE_COLOR: Record<Role, string> = {
 };
 
 const ROLE_OPACITY: Record<Role, number> = {
-  empty: 0.12,
+  empty: 0.24,
   water: 0.4,
   mountain: 0.4,
-  road: 0.32,
+  road: 0.38,
   reach: 0.56,
   move: 0.82,
   building: 0.34,
@@ -81,6 +88,7 @@ export type MechaPerformanceView = { events: MechaPerformanceEvent[] };
 export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
   engine: CityEngine;
   site: CityMechaSite;
+  locale?: GameLocale;
   view: CityMechaView;
   performance: MechaPerformanceView | null;
   paused: boolean;
@@ -89,7 +97,10 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
   onHoverCell?: (cell: Cell | null) => void;
   onHoverEnemy?: (id: string | null) => void;
   onUnavailable?: () => void;
-}>(function CityMechaWorld({ engine, site, view, performance, paused, onPerformanceComplete, onCell, onHoverCell, onHoverEnemy, onUnavailable }, ref) {
+}>(function CityMechaWorld({ engine, site, locale = "zh-Hans", view, performance, paused, onPerformanceComplete, onCell, onHoverCell, onHoverEnemy, onUnavailable }, ref) {
+  const badgeLayerRef = useRef<HTMLDivElement>(null);
+  const localeRef = useRef(locale);
+  localeRef.current = locale;
   const viewRef = useRef(view);
   const performanceRef = useRef(performance);
   const pausedRef = useRef(paused);
@@ -124,6 +135,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
     }
     const root = new THREE.Group();
     root.name = "mecha-city";
+    lease.setBattleClarity(true);
 
     const padGeo = new THREE.BoxGeometry(site.cellW - 0.44, 0.08, site.cellD - 0.48);
     const padMat = new Map<Role, THREE.MeshStandardMaterial>();
@@ -311,6 +323,12 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
     const shoveOutline = new THREE.Mesh(shoveGeo, shoveOutlineMat), shoveArrow = new THREE.Mesh(shoveGeo, shoveMat);
     shoveOutline.renderOrder = 12; shoveArrow.renderOrder = 13;
     shoveOutline.visible = shoveArrow.visible = false; root.add(shoveOutline, shoveArrow);
+    const attackRouteMat = new THREE.MeshBasicMaterial({ color: "#ff7668", depthTest: false, depthWrite: false, side: THREE.DoubleSide, toneMapped: false });
+    const moveRouteMat = new THREE.MeshBasicMaterial({ color: "#82e5af", depthTest: false, depthWrite: false, side: THREE.DoubleSide, toneMapped: false });
+    const inspectionArrows: Array<{ outline: THREE.Mesh; arrow: THREE.Mesh }> = [];
+    const inspectionFrameMat = new THREE.LineBasicMaterial({ color: "#f1f5e8", depthTest: false, depthWrite: false, toneMapped: false });
+    const inspectionFrame = new THREE.LineSegments(focusGeo, inspectionFrameMat);
+    inspectionFrame.renderOrder = 14; inspectionFrame.visible = false; root.add(inspectionFrame);
     const pickGeo = new THREE.BoxGeometry(site.cellW - 0.16, 0.6, site.cellD - 0.16);
     const pickMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false });
     const picks: THREE.Mesh[] = [];
@@ -409,43 +427,53 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
     };
     for (const figure of [assault, gunner, support, boss, raiderWest, raiderEast]) root.add(figure);
     for (const ring of Object.values(markers)) root.add(ring.mesh);
-    // Screen-sized faction badges carry only supplied current HP, not a guessed maximum.
+    // Screen-space life bars stay crisp outside the city's pixel/bloom pass.
+    // It follows the actual model, not the projected destination, and cannot intercept picks.
+    const badgeLayer = badgeLayerRef.current!;
+    const badgePoint = new THREE.Vector3();
+    let badgeViewport = { width: 1, height: 1 };
     const unitBadges = Array.from({ length: 6 }, () => {
-      const canvas = document.createElement("canvas"); canvas.width = 240; canvas.height = 64;
-      const texture = new THREE.CanvasTexture(canvas);
-      const mat = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false, depthWrite: false, sizeAttenuation: false, fog: false, toneMapped: false });
-      const sprite = new THREE.Sprite(mat); sprite.center.x = .4; sprite.visible = false; sprite.renderOrder = 10; root.add(sprite);
-      return { canvas, texture, mat, sprite, signature: "" };
+      const label = document.createElement("div"); label.className = "mecha-world-healthbar";
+      label.setAttribute("role", "meter");
+      const fill = document.createElement("span"); fill.className = "mecha-world-healthbar__fill";
+      label.append(fill); badgeLayer.append(label);
+      return { label, fill, signature: "" };
     });
-    const showUnitBadge = (index: number, unit: THREE.Object3D, alive: boolean, enemy: boolean, hp: number | undefined, pixelScale: number, selected = false, plannedMove = false) => {
+    const showUnitBadge = (index: number, id: string, unit: THREE.Object3D, alive: boolean, hp: number | undefined, maxHp: number | undefined, selected = false) => {
       const badge = unitBadges[index]!;
-      badge.sprite.visible = alive && !performanceRef.current;
-      if (!badge.sprite.visible) return;
-      const value = typeof hp === "number" && Number.isFinite(hp) && hp >= 0 ? String(hp) : "";
-      const signature = `${enemy}:${value}:${selected}:${plannedMove}`;
+      const identity = describeUnitIdentity(id, localeRef.current);
+      badge.label.hidden = !alive || Boolean(performanceRef.current);
+      if (badge.label.hidden) return;
+      const health = unitHealth(hp, maxHp);
+      const signature = `${id}:${localeRef.current}:${health.text}:${selected}`;
       if (signature !== badge.signature) {
-        const ctx = badge.canvas.getContext("2d");
-        if (ctx) {
-          ctx.clearRect(0, 0, 240, 64); ctx.fillStyle = "#10232c"; ctx.fillRect(3, 6, 186, 52);
-          ctx.lineWidth = selected ? 6 : 4; ctx.strokeStyle = selected ? "#ffe08a" : "#f5f3df"; ctx.strokeRect(3, 6, 186, 52);
-          ctx.fillStyle = enemy ? "#ff6373" : "#62dcff"; ctx.beginPath();
-          if (enemy) { ctx.moveTo(32, 12); ctx.lineTo(51, 32); ctx.lineTo(32, 52); ctx.lineTo(13, 32); }
-          else ctx.rect(15, 15, 34, 34);
-          ctx.closePath(); ctx.fill(); ctx.font = "bold 30px sans-serif"; ctx.fillStyle = "#fff";
-          ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(value ? `HP ${value}` : "—", 120, 33);
-          // A selected unit can cover its own ground diamond. The small M
-          // denotes an existing draft move, not a prediction or a second cell.
-          if (plannedMove) {
-            ctx.beginPath(); ctx.moveTo(215, 8); ctx.lineTo(237, 32); ctx.lineTo(215, 56); ctx.lineTo(193, 32); ctx.closePath();
-            ctx.fillStyle = "#ffe08a"; ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = "#172936"; ctx.stroke();
-            ctx.font = "bold 25px sans-serif"; ctx.fillStyle = "#172936"; ctx.fillText("M", 215, 33);
-          }
-          badge.texture.needsUpdate = true;
+        badge.label.dataset.unitId = id; badge.label.dataset.side = identity.side;
+        badge.label.dataset.healthState = health.known ? "known" : "unknown";
+        badge.label.classList.toggle("is-selected", selected);
+        badge.label.classList.toggle("is-boss", id === "boss");
+        badge.label.setAttribute("aria-label", `${identity.label} · HP ${health.text}`);
+        badge.label.setAttribute("aria-valuetext", health.text);
+        if (health.known) {
+          badge.label.setAttribute("aria-valuemin", "0");
+          badge.label.setAttribute("aria-valuemax", String(maxHp));
+          badge.label.setAttribute("aria-valuenow", String(Math.min(hp!, maxHp!)));
+          badge.fill.style.width = `${health.ratio * 100}%`;
+        } else {
+          for (const attribute of ["aria-valuemin", "aria-valuemax", "aria-valuenow"]) badge.label.removeAttribute(attribute);
+          badge.fill.style.width = "0%";
         }
         badge.signature = signature;
       }
-      badge.sprite.position.copy(unit.position); badge.sprite.position.y += enemy && index === 3 ? 25 : 14;
-      badge.sprite.scale.set(pixelScale * 67.5, pixelScale * 18, 1);
+      // Stay attached to the actual model's head. Never displace a health bar
+      // into a remote identity card or use leader lines to map it back.
+      badgePoint.copy(unit.position); badgePoint.y += id === "boss" ? 25 : 14;
+      badgePoint.project(engine.renderCamera);
+      if (badgePoint.z < -1 || badgePoint.z > 1 || Math.abs(badgePoint.x) > 1 || Math.abs(badgePoint.y) > 1) {
+        badge.label.hidden = true; return;
+      }
+      const x = (badgePoint.x + 1) / 2 * badgeViewport.width;
+      const y = (1 - badgePoint.y) / 2 * badgeViewport.height;
+      badge.label.style.transform = `translate(${x}px, ${y}px) translate(-50%, -100%)`;
     };
 
     const barGeo = new THREE.BoxGeometry(12, 0.5, 0.5);
@@ -496,7 +524,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
     }
     const gridGeo = new THREE.BufferGeometry();
     gridGeo.setAttribute("position", new THREE.Float32BufferAttribute(gridPts, 3));
-    const grid = new THREE.LineSegments(gridGeo, new THREE.LineBasicMaterial({ color: "#9ec9ef", transparent: true, opacity: 0.48 }));
+    const grid = new THREE.LineSegments(gridGeo, new THREE.LineBasicMaterial({ color: "#9ec9ef", transparent: true, opacity: 0.72, toneMapped: false }));
     root.add(grid);
     // One physical-width perimeter separates the real site from city streets.
     const perimeterPoints: number[] = [];
@@ -573,34 +601,44 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.setFromCamera(pointer, camera);
       root.updateMatrixWorld(true);
-      const cell = raycaster.intersectObjects(picks, false)[0]?.object.userData.cell as Cell | undefined;
+      const tileHit = raycaster.intersectObjects(picks, false)[0];
+      const unitHit = unitUnderPointer();
+      const cell = unitHit && (!tileHit || unitHit.distance <= tileHit.distance) ? unitHit.cell : tileHit?.object.userData.cell as Cell | undefined;
       if (cell) onCellRef.current(cell.x, cell.y, event.pointerType === "touch" ? "touch" : "mouse");
     };
     let hoveredId: string | null = null;
+    const unitUnderPointer = (): { id: string; cell: Cell; distance: number } | null => {
+      hoverRay.setFromCamera(pointer, camera);
+      root.updateMatrixWorld(true);
+      const current = viewRef.current;
+      const roots: Array<{ mesh: THREE.Object3D; id: string; cell: Cell }> = [];
+      current.figures.forEach(unit => { if (unit.alive) roots.push({ mesh: figures[unit.id], id: unit.id, cell: { x: unit.x, y: unit.y } }); });
+      if (current.boss.alive) roots.push({ mesh: boss, id: "boss", cell: { x: current.boss.x, y: current.boss.y } });
+      const small = [raiderWest, raiderEast];
+      current.raiders.forEach((raider, index) => {
+        const mesh = small[index];
+        if (mesh && raider.alive) roots.push({ mesh, id: raider.id, cell: { x: raider.x, y: raider.y } });
+      });
+      for (const hit of hoverRay.intersectObjects(roots.map(item => item.mesh), true)) {
+        let obj: THREE.Object3D | null = hit.object;
+        let match: (typeof roots)[number] | undefined;
+        let visible = true;
+        while (obj) {
+          if (!obj.visible) visible = false;
+          match ??= roots.find(item => item.mesh === obj);
+          obj = obj.parent;
+        }
+        if (visible && match) return { id: match.id, cell: match.cell, distance: hit.distance };
+      }
+      return null;
+    };
     const enemyUnderPointer = (event: PointerEvent): string | null => {
       const rect = canvas.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return null;
       pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
       pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-      hoverRay.setFromCamera(pointer, camera);
-      root.updateMatrixWorld(true);
-      const current = viewRef.current;
-      const roots: Array<{ mesh: THREE.Object3D; id: string }> = [];
-      if (boss.visible && current.boss.alive) roots.push({ mesh: boss, id: "boss" });
-      const small = [raiderWest, raiderEast];
-      current.raiders.forEach((raider, index) => {
-        const mesh = small[index];
-        if (mesh && raider.alive && mesh.visible) roots.push({ mesh, id: raider.id });
-      });
-      if (!roots.length) return null;
-      const hit = hoverRay.intersectObjects(roots.map((item) => item.mesh), true)[0]?.object;
-      let obj: THREE.Object3D | null = hit ?? null;
-      while (obj) {
-        const match = roots.find((item) => item.mesh === obj);
-        if (match) return match.id;
-        obj = obj.parent;
-      }
-      return null;
+      const hit = unitUnderPointer();
+      return hit && (hit.id === "boss" || viewRef.current.raiders.some(r => r.id === hit.id)) ? hit.id : null;
     };
     let hoveredCellKey = "";
     let hoverFrame = 0;
@@ -735,6 +773,8 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       // Keep labels readable when a narrow view fits the board from farther
       // away. Non-attenuated sprite size is view-space; convert CSS pixels
       // using the vertical field of view and canvas height.
+      const badgeBounds = canvas.getBoundingClientRect();
+      badgeViewport = { width: badgeBounds.width, height: badgeBounds.height };
       const pixelScale = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / Math.max(1, canvas.getBoundingClientRect().height);
       const warningSize = pixelScale * 16;
       const orderSize = pixelScale * 24;
@@ -755,7 +795,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       // explicit empty declaration must not fall back to the interaction layer.
       const telegraph = new Set((performanceRef.current ? [] : (current.declaredTelegraph ?? current.telegraph)).map(cellKey));
       const projectedTelegraph = new Set((performanceRef.current ? [] : (current.projectedTelegraph ?? [])).map(cellKey));
-      const focusedTelegraph = new Set(current.focusedTelegraph.map(cellKey));
+      const focusedTelegraph = new Set([...current.focusedTelegraph, ...(current.inspectedThreats ?? [])].map(cellKey));
       const focus = new Set(current.focus.map(cellKey));
       const reach = new Set(current.reach.map(cellKey));
       const nextReachSignature = [...reach].sort().join(";");
@@ -852,6 +892,37 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
           }
         }
       }
+      inspectionFrame.visible = Boolean(!performing && current.inspectedCell);
+      if (inspectionFrame.visible && current.inspectedCell) {
+        const at = cellWorld(site, current.inspectedCell);
+        inspectionFrame.position.set(at.x, at.y + .8, at.z); inspectionFrame.rotation.y = site.yaw;
+      }
+      const segments = performing ? [] : current.inspectionSegments ?? [];
+      while (inspectionArrows.length < segments.length) {
+        const outline = new THREE.Mesh(shoveGeo, shoveOutlineMat), arrow = new THREE.Mesh(shoveGeo, attackRouteMat);
+        outline.renderOrder = 15; arrow.renderOrder = 16; root.add(outline, arrow);
+        inspectionArrows.push({ outline, arrow });
+      }
+      let drawnRoutes = 0;
+      inspectionArrows.forEach(({ outline, arrow }, index) => {
+        const segment = segments[index];
+        outline.visible = arrow.visible = false;
+        if (!segment) return;
+        const from = cellWorld(site, segment.from), to = cellWorld(site, segment.to);
+        // Fractional origins are footprint centers, so sample the underlying
+        // integer tile for height rather than pretending a fractional row exists.
+        from.y = cellWorld(site, { x: Math.floor(segment.from.x), y: Math.floor(segment.from.y) }).y;
+        const dx = to.x - from.x, dz = to.z - from.z, length = Math.hypot(dx, dz);
+        if (length < .01) return;
+        arrow.material = segment.kind === "attack" ? attackRouteMat : moveRouteMat;
+        for (const [mesh, width] of [[outline, 5.8], [arrow, 3.7]] as const) {
+          mesh.visible = true; mesh.position.set(from.x, Math.max(from.y, to.y) + 1.2, from.z);
+          mesh.rotation.y = -Math.atan2(dz, dx); mesh.scale.set(length, 1, width);
+        }
+        drawnRoutes++;
+      });
+      badgeLayer.dataset.inspectionRoutes = String(drawnRoutes);
+      badgeLayer.dataset.inspectionRouteKind = segments[0]?.kind ?? "none";
       for (const figure of current.figures) {
         const mesh = figures[figure.id];
         const feet = cellWorld(site, { x: figure.x, y: figure.y });
@@ -867,7 +938,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         ring.mesh.visible = figure.alive;
         ring.mesh.position.set(mesh.position.x, mesh.position.y + 0.55, mesh.position.z);
         ring.mesh.scale.setScalar(figure.selected ? 1.34 : targeted ? 1.2 : 1);
-        ring.mat.color.set(figure.selected ? "#f4f7fb" : MECHA_FACTION_COLORS.friendly);
+        ring.mat.color.set(figure.selected ? "#ffe08a" : MECHA_FACTION_COLORS.friendly);
         ring.mat.opacity = figure.selected || targeted ? 1 : 0.68;
         if (figure.alive && !performing) faceMechaTarget(mesh, spot, bossFeet);
       }
@@ -931,17 +1002,10 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       for (let i = 0; i < 3; i++) {
         const id = (["Assault", "Gunner", "Support"] as const)[i]!;
         const figure = current.figures.find(item => item.id === id);
-        // Do not attach a destination label to an actor still sliding from
-        // its previous cell; the ground diamond already marks the destination.
-        const destination = figure ? cellWorld(site, figure) : null;
-        if (destination) spot.set(destination.x, destination.y, destination.z);
-        const plannedMove = Boolean(figure?.alive && figure.selected && current.move && destination
-          && figure.x === current.move.x && figure.y === current.move.y
-          && figures[id].position.distanceToSquared(spot) <= 0.01);
-        showUnitBadge(i, figures[id], Boolean(figure?.alive), false, figure?.hp, pixelScale, Boolean(figure?.selected), plannedMove);
+        showUnitBadge(i, id, figures[id], Boolean(figure?.alive), figure?.hp, figure?.maxHp, Boolean(figure?.selected));
       }
-      showUnitBadge(3, boss, current.boss.alive, true, current.boss.hp, pixelScale);
-      for (let i = 0; i < 2; i++) showUnitBadge(4 + i, small[i]!, Boolean(current.raiders[i]?.alive), true, current.raiders[i]?.hp, pixelScale);
+      showUnitBadge(3, "boss", boss, current.boss.alive, current.boss.hp, current.boss.maxHp);
+      for (let i = 0; i < 2; i++) showUnitBadge(4 + i, current.raiders[i]?.id ?? "unknown-raider", small[i]!, Boolean(current.raiders[i]?.alive), current.raiders[i]?.hp, current.raiders[i]?.maxHp);
       for (const building of site.buildings) {
         const bar = bars.get(building.id);
         const live = current.buildings.find((item) => item.id === building.id);
@@ -970,8 +1034,9 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       setMechaUnitLight(0);
       gridGeo.dispose();
       perimeterGeo.dispose(); perimeterMat.dispose();
+      attackRouteMat.dispose(); moveRouteMat.dispose(); inspectionFrameMat.dispose();
       previewGeo.dispose(); previewMat.dispose(); shoveGeo.dispose(); shoveOutlineMat.dispose(); shoveMat.dispose();
-      for (const badge of unitBadges) { badge.texture.dispose(); badge.mat.dispose(); }
+      for (const badge of unitBadges) { badge.label.remove(); }
       (grid.material as THREE.Material).dispose();
       padGeo.dispose();
       reachMarks.dispose();
@@ -996,7 +1061,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
     };
   }, [engine, site]);
 
-  return null;
+  return <div ref={badgeLayerRef} className="mecha-world-unit-labels" aria-hidden="true" />;
 });
 
 /** Fit all four reset-view quarter turns, not an assumed square/flat city lot. */

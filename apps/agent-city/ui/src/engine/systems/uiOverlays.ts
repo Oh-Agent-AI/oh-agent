@@ -15,6 +15,7 @@ export interface UiOverlayHost {
   disposables: Array<{ dispose: () => void }>;
   labels: THREE.Sprite[];
   labelsVisible: boolean;
+  battleClarity?: boolean;
   hoverRing: THREE.Mesh;
   selectRing: THREE.Mesh;
   hoveredId: string | null;
@@ -61,6 +62,7 @@ export function buildLabels(host: UiOverlayHost): void {
       sprite.position.set(district.center.x, district.plaza.y + 45 + crowd * 34, district.center.z);
     }
     host.group.add(sprite);
+    sprite.visible = host.labelsVisible && !host.battleClarity;
     host.labels.push(sprite);
     host.disposables.push(material, texture);
   }
@@ -68,6 +70,8 @@ export function buildLabels(host: UiOverlayHost): void {
 
 export function hideOverlaysForPhoto(host: UiOverlayHost): () => void {
   const labels = host.labels.map((label) => label.visible);
+  const preference = host.labelsVisible, clarity = Boolean(host.battleClarity);
+  const hovered = host.hoveredId, selected = host.selectedId;
   const rings = [host.hoverRing.visible, host.selectRing.visible];
   const scaffold = host.scaffoldMesh.visible;
   // 「计划高度」脚手架壳在照片里读作悬空的半透明方块（航拍/导出也藏它）。
@@ -76,16 +80,19 @@ export function hideOverlaysForPhoto(host: UiOverlayHost): () => void {
   host.hoverRing.visible = false;
   host.selectRing.visible = false;
   return () => {
-    host.labels.forEach((label, index) => { label.visible = labels[index]; });
-    host.hoverRing.visible = rings[0];
-    host.selectRing.visible = rings[1];
+    const policyChanged = preference !== host.labelsVisible || clarity !== Boolean(host.battleClarity);
+    host.labels.forEach((label, index) => { label.visible = !host.battleClarity && (policyChanged ? host.labelsVisible : (labels[index] ?? host.labelsVisible)); });
+    if (policyChanged || hovered !== host.hoveredId) setHovered(host, host.hoveredId);
+    else host.hoverRing.visible = !host.battleClarity && rings[0];
+    if (policyChanged || selected !== host.selectedId) setSelected(host, host.selectedId);
+    else host.selectRing.visible = !host.battleClarity && rings[1];
     host.scaffoldMesh.visible = scaffold;
   };
 }
 
 export function setLabelsVisible(host: UiOverlayHost, visible: boolean): void {
   host.labelsVisible = visible;
-  for (const label of host.labels) label.visible = visible;
+  for (const label of host.labels) label.visible = visible && !host.battleClarity;
 }
 
 export function decorTargets(host: UiOverlayHost): THREE.Object3D[] {
@@ -162,7 +169,7 @@ export function setHovered(host: UiOverlayHost, id: string | null): void {
   const ringRadius = runtime ? runtime.building.footprint * 1.5 : 3;
   host.hoverRing.scale.set(ringRadius, 1, ringRadius);
   host.hoverRing.position.set(anchor.x, anchor.ground + 0.18, anchor.z);
-  host.hoverRing.visible = true;
+  host.hoverRing.visible = !host.battleClarity;
 }
 
 export function setSelected(host: UiOverlayHost, id: string | null): void {
@@ -176,5 +183,5 @@ export function setSelected(host: UiOverlayHost, id: string | null): void {
   const ringRadius = runtime ? runtime.building.footprint * 1.7 : 3.4;
   host.selectRing.scale.set(ringRadius, 1, ringRadius);
   host.selectRing.position.set(anchor.x, anchor.ground + 0.2, anchor.z);
-  host.selectRing.visible = true;
+  host.selectRing.visible = !host.battleClarity;
 }

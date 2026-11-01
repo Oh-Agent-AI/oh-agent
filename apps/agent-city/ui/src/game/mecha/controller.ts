@@ -383,7 +383,9 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     const declaredThreats = collectTelegraphs(match);
     const projectedThreats = preview.ok ? { cells: preview.telegraphAfter, byActor: preview.telegraphByActor } : null;
     const currentThreats = projectedThreats ?? declaredThreats;
-    if (selectedEnemy && !currentThreats.byActor[selectedEnemy]) selectedEnemy = null;
+    // Inspect the living declaration, even if the draft predicts a kill or
+    // the actor is idle. Forecast absence does not remove the real actor.
+    if (selectedEnemy && !(selectedEnemy === "boss" ? match.boss.hp > 0 : match.raiders.some(r => r.id === selectedEnemy && r.hp > 0))) selectedEnemy = null;
     const focusEnemy = hoveredEnemy ?? selectedEnemy;
     const pendingIds = alive.filter((m) => !draft[m.id]?.explicit).map((m) => m.id);
     const hits = preview.ok ? preview.hitsAfter : null;

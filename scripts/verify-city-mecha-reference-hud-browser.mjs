@@ -38,7 +38,7 @@ if (langs.some((lang) => !["zh", "en"].includes(lang)) || !sizes.length) {
 console.log(`Matrix: ${langs.join(",")} / ${sizes.map(([w, h]) => `${w}x${h}`).join(",")} (serial; a subset is not a full pass)`);
 let browser;
 try {
-  browser = await chromium.launch({ headless: true, args: ["--enable-unsafe-swiftshader"] });
+  browser = await chromium.launch({ headless: true, args: process.env.MECHA_BROWSER_ANGLE === "metal" ? ["--use-angle=metal"] : ["--enable-unsafe-swiftshader"] });
 } catch (error) {
   console.error(`HARNESS: Chromium launch failed: ${error.message}`);
   process.exit(2);
@@ -154,7 +154,7 @@ async function auditAfterScrollAndResize(page, locator, selector) {
 try {
   for (const lang of langs) for (const [width, height] of sizes) {
     const zh = lang === "zh", label = `${lang} ${width}x${height}`;
-    const context = await browser.newContext({ viewport: { width: 1100, height: 700 }, deviceScaleFactor: 1, locale: zh ? "zh-CN" : "en-US" });
+    const context = await browser.newContext({ viewport: { width: 640, height: 480 }, deviceScaleFactor: 1, locale: zh ? "zh-CN" : "en-US" });
     const page = await context.newPage();
     page.setDefaultTimeout(30_000);
     console.log(`START ${label}: loading synthetic City fixture`);
@@ -210,6 +210,50 @@ try {
     };
     const text = (z, e) => zh ? z : e;
     const button = (z, e) => page.getByRole("button", { name: text(z, e), exact: true });
+    // Use the actual toolbar controls; this does not exercise 3D board picking.
+    const auditMapFocus = async () => {
+      const root = page.locator(".mecha-overlay.is-reference-hud");
+      const pack = page.locator(".mecha-pack"), candidate = page.locator(".mecha-candidate-panel");
+      const draft = await pack.innerText();
+      const candidateText = await candidate.count() ? await candidate.innerText() : null;
+      const bars = page.locator(".mecha-world-healthbar:not([hidden])");
+      const visibleIds = await bars.evaluateAll((els) => els.map((el) => el.dataset.unitId).sort());
+      assert.equal(visibleIds.length, 6, "fixture starts with six visible head bars");
+      await button("查看战场", "View field").click();
+      try {
+        assert.equal(await root.getAttribute("data-map-focus"), "true");
+        const visiblePanels = await page.locator(".mecha-panel > *").evaluateAll((els) => els
+          .filter((el) => getComputedStyle(el).display !== "none").map((el) => el.className));
+        assert.deepEqual(visiblePanels, [], "field focus must hide every local HUD panel, including candidate results");
+        assert.deepEqual(await bars.evaluateAll((els) => els.map((el) => el.dataset.unitId).sort()), visibleIds);
+        for (const bar of await bars.all()) {
+          const g = await geometry(bar);
+          assert.ok(g.displayed && g.inViewport && !g.clippedBy, "field focus must retain the projected head bars");
+        }
+        await usable(button("恢复面板", "Show HUD"));
+        // CSS-only probe of the stop-session exception, not a remote match.
+        await root.evaluate((el) => el.setAttribute("data-remote-active", "true"));
+        try {
+          assert.deepEqual(await page.locator(".mecha-panel > *").evaluateAll((els) => els
+            .filter((el) => getComputedStyle(el).display !== "none").map((el) => el.className)), ["mecha-submit"],
+          "remote styling must retain only the submit/stop rail in field focus");
+        } finally {
+          await root.evaluate((el) => el.removeAttribute("data-remote-active"));
+        }
+      } finally {
+        // A regression must not leave the remaining cases in map-focus mode.
+        await button("恢复面板", "Show HUD").click();
+      }
+      assert.equal(await root.getAttribute("data-map-focus"), null);
+      assert.equal(await pack.innerText(), draft, "field focus must not change the draft");
+      await usable(page.locator(".mecha-submit-primary"));
+      await usable(page.locator(".mecha-selected-portrait"));
+      for (const card of await page.locator(".mecha-action-cards button").all()) await usable(card);
+      if (candidateText !== null) {
+        assert.equal(await candidate.innerText(), candidateText, "field focus must not change the selected target or prediction");
+        for (const control of await candidate.locator(".mecha-candidate-actions button").all()) await usable(control);
+      }
+    };
     try {
       // A wrong server, missing dependency, or changed injection is a harness failure,
       // not a verdict on the redesign. Preflight is deliberately outside app checks.
@@ -227,7 +271,8 @@ try {
       });
       if (!entered) continue;
       await page.setViewportSize({ width, height });
-      await page.waitForTimeout(250);
+      await page.waitForTimeout(500);
+      if (screenshots) await page.screenshot({ path: join(screenshots, `planning-${lang}-${width}x${height}.png`) });
       const summary = page.locator(".mecha-turn-summary"), pack = page.locator(".mecha-pack");
       const actions = page.locator(".mecha-selected-actions"), submit = page.locator(".mecha-submit-primary");
       const forecast = page.locator("details.mecha-resource > summary");
@@ -244,14 +289,20 @@ try {
       });
       await check("three mech status controls and submit are reachable", async () => {
         assert.equal(await pack.locator("li > button").count(), 3);
-        for (const item of await pack.locator("li > button").all()) { assert.match(await item.innerText(), /\d+\s*HP/); await usable(item); }
+        for (const card of await pack.locator("li.mecha-plan-card").all()) await usable(card);
+        for (const item of await pack.locator("li > button").all()) { assert.match(await item.innerText(), /\d+\s*HP/); await item.scrollIntoViewIfNeeded(); await usable(item); }
         assert.equal(await submit.isEnabled(), true); await usable(submit);
       });
       await check("battle bar controls are fully visible and hit-testable", async () => {
-        const controls = page.locator(".mecha-battle-controls button");
-        assert.equal(await controls.count(), 5, "planning fixture must show map, rotate, reset camera, pause and exit");
+        const controls = page.locator(".mecha-battle-controls > button");
+        assert.equal(await controls.count(), 3, "planning fixture has field, reset-view and order controls");
         for (const control of await controls.all()) { assert.equal(await control.isEnabled(), true); await usable(control); }
+        const menu = page.locator(".mecha-battle-menu > summary");
+        await usable(menu); await menu.click();
+        await usable(button("退出战斗", "Exit battle"));
+        await menu.click();
       });
+      await check("planning: field focus hides HUD and restores unchanged draft", auditMapFocus);
       await check("critical planning panels do not overlap", async () => {
         for (const [a, b, name] of [[summary, actions, "summary/actions"], [summary, pack, "summary/roster"], [actions, pack, "actions/roster"], [actions, page.locator(".mecha-submit"), "actions/submit"]]) {
           assert.equal(await overlap(a, b), false, `${name} overlap`);
@@ -302,7 +353,7 @@ try {
         assert.equal(await button("撤回移动", "Undo move").isEnabled(), true);
       });
       if (!moved) { console.log(`SKIP ${label}: target/failure depend on movement`); continue; }
-      const melee = actions.locator(":scope > .mecha-actions > button").filter({ hasText: zh ? /^近战$/ : /^Melee$/ });
+      const melee = actions.getByRole("button", { name: zh ? "近战" : "Melee", exact: true });
       const boss = page.locator(".mecha-target-preview .mecha-actions button").filter({ hasText: zh ? "大怪" : "Boss" }).first();
       const candidate = page.locator(".mecha-candidate-result");
       const selectTarget = async () => { await melee.click(); await boss.click(); await candidate.waitFor(); };
@@ -313,14 +364,23 @@ try {
         assert.match(await candidate.innerText(), zh ? /整包结束目标 HP 36/ : /Target HP after the whole turn 36/);
         assert.equal(await pack.innerText(), draft);
         await check("target details: no half-lines and all text reachable", async () => {
-          await auditDetailLines(candidate, ".mecha-selected-actions");
+          await auditDetailLines(candidate, ".mecha-candidate-panel");
         });
+        if (screenshots) await page.screenshot({ path: join(screenshots, `target-${lang}-${width}x${height}.png`) });
         await check("reference: target confirm/cancel immediately visible and unobscured", async () => {
           for (const control of await candidate.locator(".mecha-candidate-actions button").all()) await usable(control);
           assert.equal(await candidate.locator(".mecha-candidate-actions button").count(), 2);
+          await usable(page.locator(".mecha-selected-portrait"));
+          for (const card of await page.locator(".mecha-action-cards button").all()) await usable(card);
+          assert.equal(await overlap(candidate, actions), false, "target result must not cover the portrait/deck");
+          assert.equal(await overlap(candidate, summary), false, "target result must not cover objective");
+          for (const bar of await page.locator(".mecha-world-healthbar:not([hidden])").all()) {
+            assert.equal(await overlap(candidate, bar), false, `target result covers ${await bar.getAttribute("data-unit-id")} head bar`);
+          }
         });
+        await check("targeting: field focus hides independent results and restores target/deck", auditMapFocus);
         if (width === 640 && height === 480) await check("target details after scroll and resize", async () => {
-          await auditAfterScrollAndResize(page, candidate, ".mecha-selected-actions");
+          await auditAfterScrollAndResize(page, candidate, ".mecha-candidate-panel");
         });
         const cancel = candidate.getByRole("button", { name: text("取消选目标", "Cancel targeting"), exact: true });
         await cancel.scrollIntoViewIfNeeded(); await usable(cancel); await cancel.focus(); await page.keyboard.press("Enter");
@@ -338,13 +398,18 @@ try {
         const confirm = candidate.getByRole("button", { name: text("确认选择", "Confirm target"), exact: true });
         await confirm.scrollIntoViewIfNeeded(); await usable(confirm); await confirm.focus(); await page.keyboard.press("Enter");
         assert.equal(await candidate.count(), 0);
-        assert.match(await pack.locator("li").first().innerText(), zh ? /近战.*大怪/ : /Melee.*Boss/);
         await check("keyboard confirm restores a visible actionable focus", async () => {
           const focused = page.locator(":focus");
           assert.equal(await focused.count(), 1);
           assert.ok(await focused.evaluate((el) => el instanceof HTMLButtonElement && el.isConnected && !!el.closest(".mecha-overlay") && !el.disabled), "focus must return to an enabled battle action, not body or detached result");
           await usable(focused);
         });
+      });
+      await check("compact roster discloses committed action and target", async () => {
+        const plan = pack.locator(".mecha-plan-card__plan").first();
+        await plan.locator("summary").click();
+        assert.match(await plan.locator(".mecha-plan-card__detail").innerText(), zh ? /近战.*大怪/ : /Melee.*Boss/);
+        await plan.locator("summary").click();
       });
       await check("prediction failure clears stale numbers, then recovers", async () => {
         await page.evaluate(() => { globalThis.__referenceHudPreviewFailure = true; });
@@ -370,8 +435,8 @@ try {
         assert.doesNotMatch(await candidate.innerText(), zh ? /直接伤害|整包结束目标 HP|\d+\s*→\s*\d+/ : /Direct damage|Target HP after the whole turn|\d+\s*→\s*\d+/);
         assert.equal(await pack.innerText(), draft);
         await check("unavailable target details: no half-lines and all text reachable", async () => {
-          await auditDetailLines(candidate, ".mecha-selected-actions");
-          if (width === 640 && height === 480) await auditAfterScrollAndResize(page, candidate, ".mecha-selected-actions");
+          await auditDetailLines(candidate, ".mecha-candidate-panel");
+          if (width === 640 && height === 480) await auditAfterScrollAndResize(page, candidate, ".mecha-candidate-panel");
         });
         await candidate.getByRole("button", { name: text("取消选目标", "Cancel targeting"), exact: true }).click();
         assert.equal(await candidate.count(), 0, "cancel must clear the failed result");

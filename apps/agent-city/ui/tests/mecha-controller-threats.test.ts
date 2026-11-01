@@ -84,7 +84,7 @@ test("prediction removes a defeated raider while retaining the boss threat", () 
   assert.equal(state.draft.Assault.action.kind, "melee");
   assert.ok(state.declaredThreats.byActor.r1?.length);
   assert.equal(state.projectedThreats?.byActor.r1, undefined);
-  assert.equal(state.selectedEnemy, null, "legacy selection is cleared when the projected actor disappears");
+  assert.equal(state.selectedEnemy, "r1", "the living declaration remains inspectable when the draft predicts a kill");
   assert.ok(state.projectedThreats?.byActor.boss?.length);
   assert.ok(state.preview.ok && !state.preview.enemyOrder.some((event) => event.actor === "r1"));
 });
@@ -176,4 +176,16 @@ test("restarting invalidates the projection even when the new match has the same
   assert.ok(after.preview.draftVersion > before.preview.draftVersion);
   assert.notDeepEqual(after.declaredThreats, before.declaredThreats);
   assert.notDeepEqual(after.projectedThreats, before.projectedThreats);
+});
+
+test("idle living enemies remain inspectable; dead and unknown selections clear", () => {
+  const match = duel(); match.boss.intent = null;
+  const c = createMechaController({ match, planner: hold });
+  c.setSelectedEnemy("boss");
+  assert.equal(c.getState().selectedEnemy, "boss");
+  c.setSelectedEnemy("missing");
+  assert.equal(c.getState().selectedEnemy, null);
+  match.boss.hp = 0;
+  c.setSelectedEnemy("boss");
+  assert.equal(c.getState().selectedEnemy, null);
 });
