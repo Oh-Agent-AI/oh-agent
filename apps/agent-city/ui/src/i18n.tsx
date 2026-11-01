@@ -86,7 +86,7 @@ const english: Record<string, string> = {
   "这里不会发放游戏收入、关闭真实问题或执行技能。": "This view does not award game income, close real findings or execute skills.",
   "返回城市": "Back to city",
   "返回建筑说明": "Back to building guide", "返回城市摘要": "Back to city summary", "返回市政厅": "Back to city hall", "返回 ": "Back to ",
-  "驾车": "Drive",
+  "驾车": "Drive", "机甲战棋": "Mecha tactics",
   "整理城市数据": "Organizing city data",
   "规划道路与街区": "Planning roads and blocks",
   "装配城市": "Assembling the city",

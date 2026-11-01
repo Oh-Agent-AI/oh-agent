@@ -276,7 +276,7 @@ export function useCityExperience(engine: RefObject<CityEngine | null>, projecti
     lockSelection: (id: string) => engine.current?.lockSelection(id) };
 }
 
-export function CityExperience({ ui, disabled, cinema, status, quality, onQuality, game, planRepair, windowDays, windowOptions, onWindowDays, labels, onLabels, onMecha, mechaAvailability = "unknown" }: { ui: ReturnType<typeof useCityExperience>; disabled: boolean; cinema: boolean; status?: string; quality: string; onQuality: (value: string) => void; game: ReturnType<typeof useCityGame>; planRepair: PlanRepairUi; windowDays: number; windowOptions: readonly number[]; onWindowDays: (days: number) => void; labels: boolean; onLabels: (next: boolean) => void; onMecha?: () => void; mechaAvailability?: "unknown" | "searching" | "ready" | "empty" | "error" }) {
+export function CityExperience({ ui, disabled, cinema, status, quality, onQuality, game, planRepair, windowDays, windowOptions, onWindowDays, labels, onLabels, onMecha, mechaEnabled, mechaAvailability = "unknown" }: { ui: ReturnType<typeof useCityExperience>; disabled: boolean; cinema: boolean; status?: string; quality: string; onQuality: (value: string) => void; game: ReturnType<typeof useCityGame>; planRepair: PlanRepairUi; windowDays: number; windowOptions: readonly number[]; onWindowDays: (days: number) => void; labels: boolean; onLabels: (next: boolean) => void; onMecha?: () => void; mechaEnabled: boolean; mechaAvailability?: "unknown" | "searching" | "ready" | "empty" | "error" }) {
   const language = useCityLanguage();
   // Presentation only: the landing host still enforces its own fixture/method boundary.
   const landingPreview = embedded() && new URLSearchParams(location.search).get("presentation") === "landing";
@@ -592,7 +592,7 @@ export function CityExperience({ ui, disabled, cinema, status, quality, onQualit
         <div style={{ display: "flex", gap: 8 }}>
           <button disabled={cinema || ui.busy || gameActive || !ui.model} onClick={() => { ui.setOptions(false); game.enterPractice(); }}>{gameText("自由练习", language === "en" ? "en" : "zh-Hans")}</button>
           <button disabled={cinema || ui.busy || gameActive || !ui.model} onClick={() => { ui.setOptions(false); game.enterRace(); }}>{gameText("穿环挑战", language === "en" ? "en" : "zh-Hans")}</button>
-          <button disabled={cinema || ui.busy || gameActive || disabled || !ui.model || !onMecha || mechaAvailability === "empty"} onClick={() => { ui.setOptions(false); onMecha?.(); }}>{gameText("机甲战棋", language === "en" ? "en" : "zh-Hans")}</button>
+          <button disabled={!mechaEnabled || !onMecha} onClick={() => { ui.setOptions(false); onMecha?.(); }}>{gameText("机甲战棋", language === "en" ? "en" : "zh-Hans")}</button>
           {typeof __CITY_GAME_UAT__ !== "undefined" && __CITY_GAME_UAT__ && <button disabled={cinema || ui.busy || gameActive || !ui.model} onClick={() => { ui.setOptions(false); void game.enterUatRace(); }}>UAT keyboard pilot</button>}
         </div>
         {game.entryError && <p role="alert">{game.entryError}</p>}

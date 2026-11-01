@@ -274,8 +274,9 @@ fn persist_diagnostics(instance: &Instance) {
 
 fn valid_tools(namespace: &str, items: &[Tool]) -> bool {
     let mut ids = std::collections::BTreeSet::new();
-    // 10 = 8 常规工具 + 游戏模式宿主级退出按钮 + 修复规划入口（均已默认开放；其余插件仍 ≤8）。
-    items.len() <= 10 && items.iter().all(|item| {
+    // City also publishes the mecha entry; keep the previous bound for other namespaces.
+    let limit = if namespace == "city" { 11 } else { 10 };
+    items.len() <= limit && items.iter().all(|item| {
         !item.id.is_empty() && item.id.len() <= 64 && ids.insert(&item.id)
             && item.command_id.starts_with(&format!("{namespace}.")) && item.command_id.len() <= 64
             && !item.label.is_empty() && item.label.len() <= 100
@@ -1126,6 +1127,23 @@ mod tests {
         assert!(valid_tools("city", &tools));
         tools.push(tools[0].clone()); assert!(!valid_tools("city", &tools));
         tools.pop(); tools[0].value = Some("14".into()); assert!(!valid_tools("city", &tools));
+    }
+    #[test]
+    fn city_toolbar_allows_mecha_entry_without_removing_other_tools() {
+        let tools: Vec<Tool> = (0..11).map(|n| serde_json::from_value(json!({
+            "id": format!("tool-{n}"), "commandId": format!("city.tool-{n}"),
+            "label": "Tool", "kind": "button", "enabled": true
+        })).unwrap()).collect();
+        assert!(valid_tools("city", &tools));
+        let mut too_many = tools.clone();
+        too_many.push(serde_json::from_value(json!({"id":"extra","commandId":"city.extra","label":"Extra","kind":"button","enabled":true})).unwrap());
+        assert!(!valid_tools("city", &too_many));
+        let other: Vec<Tool> = (0..11).map(|n| serde_json::from_value(json!({
+            "id": format!("tool-{n}"), "commandId": format!("metrics.tool-{n}"),
+            "label": "Tool", "kind": "button", "enabled": true
+        })).unwrap()).collect();
+        assert!(valid_tools("metrics", &other[..10]));
+        assert!(!valid_tools("metrics", &other));
     }
     #[test]
     fn namespace_validation_is_not_specific_to_the_first_plugin() {
