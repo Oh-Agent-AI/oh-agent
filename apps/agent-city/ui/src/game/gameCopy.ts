@@ -5,6 +5,8 @@
 export type GameLocale = "zh-Hans" | "en";
 
 const ENGLISH: Record<string, string> = {
+  "遭遇点已失效": "Encounter is no longer available",
+  "城市布局已变化，请返回小地图重新选择怪兽。": "The city layout changed. Return to the minimap and choose another encounter.",
   "点一台机甲，再点能走到的格子，然后给三台都选行动。红色是当前宣告，草稿试算可能改变敌方攻击。": "Select a mech, choose a reachable cell, then give all three an action. Red marks current declarations; the draft projection may change enemy attacks.",
   "战场设置与远程": "Settings & remote",
   "当前宣告": "Declared",

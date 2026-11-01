@@ -23,6 +23,7 @@ import type { DoctrineId } from "./mecha/ai";
 import { createMechaController, type MechaController } from "./mecha/controller";
 import { anchorsFromCity, prepareFightTerrainAsync, type FightCatalog, type FightShape } from "./mecha/citySite";
 import { startPreparedSearch } from "./mecha/fightSearchRunner";
+import { cacheCatalog, cachedCatalog, encounterIsCurrent, forgetCatalog, type MonsterEncounter } from "./mecha/monsterEncounters";
 import { RemoteMechaControls, type RemoteMechaStatus } from "./mecha/RemoteMechaControls";
 import {
   FLAT_SPAWN_MAX_DELTA, MAX_TURNS, living, stakeBuildings,
@@ -86,26 +87,6 @@ function wholeLineHeight(panel: HTMLElement, limit: number): number {
   return Math.min(limit, Math.floor(cut + bottomBorder));
 }
 
-/** Successful catalogs are pure projections of the layout/model pair. Keying on
- *  the layout object means a re-plan (`applyModel` replaces it) invalidates the
- *  entry without any manual bookkeeping. */
-type CatalogCacheEntry = { model: object; catalog: FightCatalog };
-const CATALOG_CACHE = new WeakMap<object, CatalogCacheEntry>();
-
-function cachedCatalog(layout: object | null, model: object | null): FightCatalog | null {
-  if (!layout || !model) return null;
-  const entry = CATALOG_CACHE.get(layout);
-  return entry && entry.model === model ? entry.catalog : null;
-}
-
-function cacheCatalog(layout: object, model: object, catalog: FightCatalog): void {
-  CATALOG_CACHE.set(layout, { model, catalog });
-}
-
-function forgetCatalog(layout: object | null): void {
-  if (layout) CATALOG_CACHE.delete(layout);
-}
-
 function catalogPlayable(catalog: FightCatalog | null): catalog is FightCatalog {
   return Boolean(catalog && SHAPES.some((item) => catalog[item.id]));
 }
@@ -149,11 +130,12 @@ function CityGate({ locale, onClose, title, body, busy, extra, onRetry, closeDis
 }
 
 /** Loads (or reuses) the four-shape catalog, then mounts a match keyed by it. */
-export function MechaBoard({ locale, onClose, engine, onAvailability }: {
+export function MechaBoard({ locale, onClose, engine, onAvailability, encounter }: {
   locale: GameLocale;
   onClose: () => void;
   engine: CityEngine | null;
   onAvailability?: (next: MechaAvailability) => void;
+  encounter?: MonsterEncounter | null;
 }) {
   const t = (text: string) => gameText(text, locale);
   const [catalog, setCatalog] = useState<FightCatalog | null>(() => cachedCatalog(engine?.currentLayout ?? null, engine?.currentModel ?? null));
@@ -270,6 +252,10 @@ export function MechaBoard({ locale, onClose, engine, onAvailability }: {
     setRetry((value) => value + 1);
   };
 
+  if (encounter && !encounterIsCurrent(encounter, engine?.currentLayout ?? null, engine?.currentModel ?? null)) {
+    return <CityGate locale={locale} onClose={onClose} title="遭遇点已失效" body="城市布局已变化，请返回小地图重新选择怪兽。" />;
+  }
+
   if (phase === "loading") {
     const progress = sampled.total > 0 && sampled.done < sampled.total
       ? `${t("正在读取城市地形")} ${sampled.done}/${sampled.total}`
@@ -292,7 +278,7 @@ export function MechaBoard({ locale, onClose, engine, onAvailability }: {
       : <CityGate locale={locale} onClose={onClose} onRetry={retrySearch} title="这座城暂时没有可用机坪。" body="楼太少时往往没有平地、靠岸或巷战。可以重试，或关掉战棋。" />;
   }
 
-  return <MechaMatch key={runId} locale={locale} onClose={onClose} engine={engine} catalog={catalog} remoteStatus={remoteStatus} remoteLocked={remoteLocked} onRemoteStatusChange={changeRemoteStatus} />;
+  return <MechaMatch key={runId} locale={locale} onClose={onClose} engine={engine} catalog={encounter?.catalog ?? catalog} initialShape={encounter?.shape} remoteStatus={remoteStatus} remoteLocked={remoteLocked} onRemoteStatusChange={changeRemoteStatus} />;
 }
 
 function enemyName(id: string): string {
@@ -322,17 +308,18 @@ const ACTION_DESCRIPTIONS: Record<Action["kind"], string> = {
 
 /** 薄视图：状态、草稿、预检、结算、自动对战都在 controller 里，这里只订阅与渲染。
  *  没有城市战场时父级不会挂这个组件。 */
-function MechaMatch({ locale, onClose, engine, catalog, remoteStatus, remoteLocked, onRemoteStatusChange }: {
+function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStatus, remoteLocked, onRemoteStatusChange }: {
   locale: GameLocale;
   onClose: () => void;
   engine: CityEngine;
   catalog: FightCatalog;
+  initialShape?: FightShape;
   remoteStatus: RemoteMechaStatus;
   remoteLocked: React.RefObject<boolean>;
   onRemoteStatusChange: (status: RemoteMechaStatus) => void;
 }) {
   const t = (text: string) => gameText(text, locale);
-  const [shape, setShape] = useState<FightShape>("flat");
+  const [shape, setShape] = useState<FightShape>(initialShape ?? "flat");
   const shapeId: FightShape = catalog[shape] ? shape : (SHAPES.find((item) => catalog[item.id])?.id ?? "flat");
   const site = catalog[shapeId] ?? null;
   const [viewFailed, setViewFailed] = useState(false);

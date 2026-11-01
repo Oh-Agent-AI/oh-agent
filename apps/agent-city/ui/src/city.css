@@ -280,6 +280,13 @@
 /* 小地图（2026-10-21）：路网与路况，左下角，在时间回放条之上。 */
 /* 小地图：正方形，贴着窗口左缘。静止时半透明、无边框文字（不挡视线）；悬停或键盘聚焦时变实，标签/摘要/图例浮在图内。
    收起时整块缩进左缘，只留一个窄把手。 */
+.city-monster-markers { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
+.city-monster-marker { position: absolute; visibility: hidden; transform: translate(-50%, -50%); pointer-events: auto; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 2px solid #fff; border-radius: 50%; background: #b6223c; color: #fff; box-shadow: 0 2px 12px #000a; cursor: pointer; }
+.city-monster-marker:focus-visible { outline: 3px solid #ffe47b; outline-offset: 2px; }
+.city-minimap-map { position: relative; width: var(--mm-size); height: var(--mm-size); }
+.city-minimap-spot { position: absolute; width: 20px; height: 20px; padding: 0; transform: translate(-50%, -50%); border: 0; border-radius: 50%; background: transparent; cursor: pointer; }
+.city-minimap-spot:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
+.city-minimap-tooltip { position: absolute; z-index: 1; max-width: 170px; padding: 4px 7px; border: 1px solid #ff9aa8; border-radius: 4px; background: #17222d; color: #fff; white-space: nowrap; transform: translate(-50%, -100%); pointer-events: none; box-shadow: 0 2px 8px #0008; }
 .city-minimap { --mm-size: 184px; position: absolute; left: 0; bottom: calc(var(--city-timeline-height, 48px) + 30px); z-index: 4; display: flex; align-items: center; font-size: 11px; transition: transform 0.22s ease; }
 .city-minimap.is-driving { bottom: 76px; }
 .city-minimap.is-collapsed { transform: translateX(calc(-1 * var(--mm-size) - 8px)); }

@@ -22,6 +22,9 @@ import { cityText, cityView, useCityLanguage } from "./i18n";
 import { replayStartMs } from "./replayRange";
 import { useCityGame } from "./game/useCityGame";
 import { MechaBoard, type MechaAvailability } from "./game/MechaBoard";
+import { MonsterWorldMarkers } from "./game/MonsterWorldMarkers";
+import { encounterIsCurrent, type MonsterEncounter } from "./game/mecha/monsterEncounters";
+import { useMonsterEncounters } from "./game/mecha/useMonsterEncounters";
 import { prewarmAudioContext } from "./game/GameSfx";
 import { useCityDrivingPlay } from "./game/useCityDrivingPlay";
 import { DrivingHud } from "./game/DrivingHud";
@@ -75,6 +78,7 @@ export function CityApp() {
   const [cinema, setCinema] = useState(false);
   const [roadAuditOpen, setRoadAuditOpen] = useState(false);
   const [mechaOpen, setMechaOpen] = useState(false);
+  const [selectedEncounter, setSelectedEncounter] = useState<MonsterEncounter | null>(null);
   const [mechaAvailability, setMechaAvailability] = useState<"unknown" | MechaAvailability>("unknown");
   const reportMechaAvailability = useCallback((next: MechaAvailability) => {
     setMechaAvailability((prev) => prev === next ? prev : next);
@@ -140,10 +144,15 @@ export function CityApp() {
   };
   // Require a modelled city: the board is a view of the current layout, not a game
   // that can start against a half-built scene.
-  const openMecha = () => {
+  const openMecha = (encounter: MonsterEncounter | null = null) => {
     const refusal = mechaEntryRefusal();
     if (refusal) { experience.setError(cityText(refusal, language)); return; }
     if (mechaBlocked) return;
+    if (encounter && !encounterIsCurrent(encounter, engineRef.current?.currentLayout ?? null, engineRef.current?.currentModel ?? null)) {
+      experience.setError(language === "en" ? "The city changed. Select an encounter again." : "城市布局已变化，请重新选择遭遇点。");
+      return;
+    }
+    setSelectedEncounter(encounter);
     experience.setError(null);
     experience.setOptions(false);
     experience.clearSelection();
@@ -478,6 +487,7 @@ export function CityApp() {
 
   const dataAvailable = projection !== null && projection.status !== "unavailable";
   const sceneReady = dataAvailable && projection.status !== "empty" && !sceneUnavailable && firstModelFrame;
+  const encounterState = useMonsterEncounters(engineRef, sceneReady);
   // The host projection request precedes model/planning progress. Keep the same
   // loading shell visible from the first render, including a slow summary query.
   const cityLoading = !sceneUnavailable && (!dataLoaded || (dataAvailable && projection?.status !== "empty" && !firstModelFrame));
@@ -579,8 +589,9 @@ export function CityApp() {
         windowDays={windowDays} windowOptions={windowOptions} onWindowDays={(days) => setWindowDays(days as WindowDays)} labels={labels} onLabels={(next) => { engineRef.current?.setLabelsVisible(next); setLabels(next); }}
         onQuality={(value) => { if (["auto", "high", "eco"].includes(value)) { engineRef.current?.setQualityMode(value as EngineQualityMode); setQuality(value as EngineQualityMode); } }}
         onMecha={() => openMecha()} mechaAvailability={mechaAvailability} /></div>
-      {mechaOpen && !game.active && !driving.active && !cinema && <MechaBoard locale={language === "en" ? "en" : "zh-Hans"} engine={engineRef.current} onClose={() => setMechaOpen(false)} onAvailability={reportMechaAvailability} />}
-      <CityMinimap engine={engineRef} language={language} driving={{ active: driving.active, pose: driving.pose }}
+      {mechaOpen && !game.active && !driving.active && !cinema && <MechaBoard locale={language === "en" ? "en" : "zh-Hans"} engine={engineRef.current} encounter={selectedEncounter} onClose={() => setMechaOpen(false)} onAvailability={reportMechaAvailability} />}
+      {!mechaBlocked && sceneReady && <MonsterWorldMarkers engine={engineRef.current} encounters={encounterState.encounters} language={language} onEnter={openMecha} />}
+      <CityMinimap engine={engineRef} language={language} driving={{ active: driving.active, pose: driving.pose }} encounters={encounterState}
         hidden={!sceneReady || cinema || game.active || mechaOpen || !!experience.film || driving.hud.phase === "preparing" || driving.hud.phase === "error"} />
       <DrivingHud model={{ active: driving.active, choosingVehicle: driving.choosingVehicle, vtol: driving.vtol, entryError: driving.entryError,
         initialPaused: driving.initialPaused, hud: driving.hud, preparationProgress: driving.preparationProgress, events: driving.events, diagnostics: driving.diagnostics(),
