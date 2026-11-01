@@ -66,3 +66,12 @@ the shipped GLB (and the source blend where applicable). None of these files con
 | `mecha/assault-trial.glb` + `mecha/assault-trial.manifest.json` | Experimental Assault trial candidate (restored left lower leg, forward punch); not validated for battle. |
 | `mecha/assault-gait-preview.glb` + `mecha/assault-gait-preview.manifest.json` | Experimental shorter-step Assault preview; not approved for battle. Embedded textures were downscaled to 512 px WebP in 2026-10-30 to bring the preview under the city asset cap. |
 | `mecha/assault-lift-preview.glb` + `mecha/assault-lift-preview.manifest.json` | Experimental high-detail alternating-foot-lift Assault preview; not approved for battle. |
+
+## Mecha unit portraits (`mecha/portraits/`)
+
+The five 256×256 JPEG portraits (`assault`, `gunner`, `support`, `boss`, `raider`) are cropped from
+the existing project-generated character concept sheets in `docs/design/mecha/2026-10-26/`,
+not new artwork or third-party stock. They retain the repository's artwork licence.
+`mecha/portraits/README.md` records the source hashes and crop/export recipe; the full sheets
+remain design documentation and are not shipped as runtime thumbnails. West/east raiders share
+the same approved Raider art, while their distinct names and non-colour cues are preserved.

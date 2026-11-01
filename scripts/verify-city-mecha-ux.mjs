@@ -44,7 +44,7 @@ assert.match(board, /s\.preview\.enemyOrder/);
 assert.match(board, /aria-expanded=\{showOrder\}/);
 assert.match(board, /className="mecha-map-legend"/);
 for (const label of ["可移动", "计划落点", "战斗目标与威胁", "打法目标"]) assert.match(board, new RegExp(`t\\("${label}"\\)`));
-assert.match(board, /worldRef\.current\?\.rotateCamera\(\)/);
+assert.doesNotMatch(board, /worldRef\.current\?\.rotateCamera\(\)/);
 assert.match(board, /worldRef\.current\?\.resetCamera\(\)/);
 assert.match(css, /\.mecha-overlay\.is-city \{ display: block; background: transparent; pointer-events: none; \}/);
 assert.match(css, /\.mecha-overlay\.is-city \.mecha-turn-summary \{[^\n]*max-height: min\(40vh, 380px\)/);
@@ -55,11 +55,11 @@ assert.match(css, /@media \(max-height: 640px\)/);
 assert.match(css, /@media \(max-width: 600px\) and \(max-height: 520px\)/);
 assert.match(world, /acquireModeLease\(\{ camera: "orbit" \}\)/);
 assert.doesNotMatch(world, /frameCamera/);
-// The tactical pass deliberately raises board and grid contrast over the old baseline.
-assert.match(world, /empty: 0\.12/);
-assert.match(world, /grid[^\n]*opacity: 0\.48/);
+// Intentional clarity-P0 contrast values; functional lifecycle checks live in tests.
+assert.match(world, /empty: 0\.24/);
+assert.match(world, /grid[^\n]*opacity: 0\.72/);
 assert.match(world, /ring\.mat\.opacity = figure\.selected \|\| targeted \? 1 : 0\.68/);
-assert.match(world, /ring\.mat\.color\.set\(figure\.selected \? "#f4f7fb" : MECHA_FACTION_COLORS\.friendly\)/);
+assert.match(world, /ring\.mat\.color\.set\(figure\.selected \? "#ffe08a" : MECHA_FACTION_COLORS\.friendly\)/);
 assert.match(world, /Assault: marker\(MECHA_FACTION_COLORS\.friendly/);
 assert.match(world, /Gunner: marker\(MECHA_FACTION_COLORS\.friendly/);
 assert.match(world, /Support: marker\(MECHA_FACTION_COLORS\.friendly/);

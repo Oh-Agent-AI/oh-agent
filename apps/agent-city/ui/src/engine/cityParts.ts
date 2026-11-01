@@ -28,6 +28,7 @@ import { captureRenderedSolids, type RenderedSolidRoot, type RenderedSolidRole }
 import type { LandmarkHost } from "./models/landmarkContext";
 import { buildGardens, buildCivics, buildFlags, buildPublicSites, updateCivics, writeCivic, type CivicSystemHost } from "./systems/civicSystem";
 import { applyDistrictLandmarkGrowth, buildDistrictLandmarks, buildLandmarks, type LandmarkSystemHost } from "./systems/landmarkSystem";
+import { battleClarityPresentation } from "./battleClarity";
 import { LIGHT_BUDGET, activeBoost, lampTier, nightFactor, useOfZone, windowRate } from "./cityLightBudget";
 import { roadPaintPlan } from "./cityRoadPaint";
 import { buildGroundSpill, buildSeaMountains, buildTerrain, buildWater, type TerrainHost } from "./systems/terrainSystem";
@@ -197,6 +198,7 @@ export class CityParts {
   private cursor = Number.NaN;
   private live = true;
   private labelsVisible = true;
+  private battleClarity = false;
   /** 重建前各楼的显示进度（null = 首个模型，全城直接成像）。 */
   private previousDisplays: Map<string, number> | null = null;
   hoveredId: string | null = null;
@@ -1059,6 +1061,16 @@ export class CityParts {
   hideOverlaysForPhoto(): () => void { return hideOverlaysForPhoto(this as unknown as UiOverlayHost); }
 
   setLabelsVisible(visible: boolean): void { setLabelsVisible(this as unknown as UiOverlayHost, visible); }
+
+  /** Keep preferences/geometry intact; current daylight is reapplied on release. */
+  setBattleClarity(active: boolean): void {
+    this.battleClarity = active;
+    const presentation = battleClarityPresentation(active);
+    for (const label of this.labels) label.visible = this.labelsVisible && presentation.showLabels;
+    this.setHovered(this.hoveredId);
+    this.setSelected(this.selectedId);
+    this.setNightGlow(this.nightGlow);
+  }
 
   private decorTargetsCache: THREE.Object3D[] | null = null;
 
