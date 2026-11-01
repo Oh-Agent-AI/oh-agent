@@ -1,4 +1,5 @@
-import { bossPrepare, playTurn, type MatchState } from "../rules";
+import { bossPrepare, type MatchState } from "../rules";
+export { pveRules } from "../rules/pve";
 import {
   MECHA_NET_PROTOCOL, canonicalJson,
   type MatchEvent, type MatchMode, type MatchPlayer, type MatchResult, type MatchRuleAdapter,
@@ -6,13 +7,6 @@ import {
 } from "../contracts/match";
 import type { RemoteArenaV1 } from "../contracts/arena";
 import type { PlanFault } from "../rules";
-
-export const pveRules: MatchRuleAdapter<MatchState> = {
-  ruleset: "mecha-v1.4",
-  activeSide: (state) => state.phase === "player_plan" && !state.outcome ? "A" : null,
-  playTurn,
-  isFinished: (state) => Boolean(state.outcome) || state.phase === "finished",
-};
 
 type Options<S extends RevisionState> = {
   matchId: string;

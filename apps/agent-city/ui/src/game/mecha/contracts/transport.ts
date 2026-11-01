@@ -45,7 +45,7 @@ function validSnapshot(value: unknown): value is MatchSnapshot {
     || !Array.isArray(snapshot.players)) return false;
   const arena = record(snapshot.arena);
   const state = record(snapshot.state);
-  return arena?.schema === "mecha-arena:v1" && state !== null && revision(state.revision) && state.revision === snapshot.revision;
+  return arena?.schema === "mecha-arena:v1" && state !== null && state.ruleset === snapshot.ruleset && revision(state.revision) && state.revision === snapshot.revision;
 }
 
 function validTurn(value: unknown): value is TurnResolved {
@@ -53,7 +53,7 @@ function validTurn(value: unknown): value is TurnResolved {
   if (!turn || turn.type !== "turn.resolved" || turn.protocol !== MECHA_NET_PROTOCOL || typeof turn.matchId !== "string"
     || typeof turn.playerId !== "string" || typeof turn.commandId !== "string" || !revision(turn.revision) || !Array.isArray(turn.log)) return false;
   const state = record(turn.state);
-  return state !== null && revision(state.revision) && state.revision === turn.revision
+  return state !== null && typeof state.ruleset === "string" && revision(state.revision) && state.revision === turn.revision
     && (turn.presentationStages === null || record(turn.presentationStages) !== null);
 }
 
@@ -61,7 +61,13 @@ export function parseRemoteMessage(value: unknown): RemoteMessage<RevisionState>
   const message = record(value);
   if (!message || message.protocol !== MECHA_NET_PROTOCOL) return null;
   if (message.type === "response" && typeof message.requestId === "string" && record(message.result)) return message as RemoteResponse;
-  if (message.type === "event" && record(message.event)) return message as RemoteNotification<RevisionState>;
+  if (message.type === "event") {
+    const event = record(message.event);
+    if (!event) return null;
+    if (event.type === "turn.resolved" && validTurn(event.result)) return message as RemoteNotification<RevisionState>;
+    if (event.type === "match.replaced" && validSnapshot(event.snapshot)) return message as RemoteNotification<RevisionState>;
+    if (event.type === "match.closed" && typeof event.matchId === "string" && revision(event.revision)) return message as RemoteNotification<RevisionState>;
+  }
   return null;
 }
 

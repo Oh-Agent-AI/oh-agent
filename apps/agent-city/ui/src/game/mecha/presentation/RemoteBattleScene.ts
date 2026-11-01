@@ -7,6 +7,7 @@ import type { Cell, MatchState } from "../rules";
 import type { PvpState } from "../rules/pvp";
 import type { PresentationSnapshot, PresentationStages } from "../presentationSnapshot";
 import type { BattleScenePort } from "./BattleScenePort";
+import { ActiveTimeClock } from "./ActiveTimeClock";
 
 const terrainColors = { land: "#426b4d", water: "#276e92", mountain: "#73543b", road: "#77786f" } as const;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -30,6 +31,7 @@ export class RemoteBattleScene implements BattleScenePort {
   private arena: RemoteArenaV1 | null = null;
   private frame = 0;
   private paused = false;
+  private readonly clock = new ActiveTimeClock();
   private disposed = false;
   private playSequence = 0;
 
@@ -85,8 +87,7 @@ export class RemoteBattleScene implements BattleScenePort {
     const stages = turn.presentationStages;
     if (stages) {
       for (const stage of this.stages(stages)) {
-        await sleep(320);
-        if (this.disposed || sequence !== this.playSequence) return;
+        if (!await this.waitForStage(320, sequence)) return;
         this.applyPresentation(stage);
       }
     }
@@ -94,7 +95,18 @@ export class RemoteBattleScene implements BattleScenePort {
   }
 
   setPaused(paused: boolean) {
+    this.clock.setPaused(paused);
     this.paused = paused;
+  }
+
+  private async waitForStage(ms: number, sequence: number) {
+    const deadline = this.clock.time() + ms;
+    while (!this.disposed && sequence === this.playSequence) {
+      const remaining = deadline - this.clock.time();
+      if (!this.paused && remaining <= 0) return true;
+      await sleep(Math.max(1, Math.min(40, remaining > 0 ? remaining : 40)));
+    }
+    return false;
   }
 
   dispose() {

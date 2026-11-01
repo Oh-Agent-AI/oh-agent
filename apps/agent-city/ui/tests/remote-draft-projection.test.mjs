@@ -279,3 +279,34 @@ test("3D snapshot picks and 2D draft picks use their displayed positions in PvE 
     }
   } finally { await browser.close(); }
 });
+
+test("remote UI keeps input locked until the visible 3D turn finishes", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage({ locale: "en-US" }), errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const state = pve();
+    const { playTurn } = await server.ssrLoadModule("/src/game/mecha/rules.ts");
+    const plan = { revision: state.revision, items: state.mechs.map((mech) => ({ mechId: mech.id, moveTo: null, action: { kind: "skip" } })) };
+    const result = playTurn(state, plan);
+    assert.equal(result.ok, true);
+    const snapshot = { state, mode: "pve", matchId: "m1", revision: state.revision, status: "active", ruleset: state.ruleset, players: [{ playerId: "owner", side: "A", role: "host" }] };
+    const turn = { type: "turn.resolved", protocol: "mecha-net:v1", matchId: "m1", playerId: "owner", commandId: "t1", revision: result.state.revision, state: result.state, log: result.log, presentationStages: result.presentationStages };
+    await page.addInitScript(({ snapshot, turn }) => { globalThis.testSnapshot = snapshot; globalThis.testTurn = turn; globalThis.appliedRevisions = []; }, { snapshot, turn });
+    await page.route("**/src/remote/remoteAccess.ts*", (route) => route.fulfill({ contentType: "text/javascript", body: `const client = { snapshot: async () => ({ok:true,value:globalThis.testSnapshot}), onStatus: fn => { fn("online"); return () => {}; }, subscribe: fn => {globalThis.emitMatchEvent=fn;return () => {};}, dispose: () => {} }; export function useRemoteAccess() { return { client, playerId:"owner", status:"ready", error:"" }; }` }));
+    await page.route("**/src/game/mecha/presentation/RemoteBattleScene.ts*", (route) => route.fulfill({ contentType: "text/javascript", body: `export class RemoteBattleScene { applySnapshot(s) {globalThis.appliedRevisions.push(s.revision)} setPaused() {} dispose() {} playTurn() {return new Promise(resolve => {globalThis.finishTurn=resolve})} }` }));
+    await page.goto(`${base}/remote.html?match=m1`);
+    const mech = page.locator(".remote-mechs button").first();
+    await mech.waitFor(); await page.waitForFunction(() => !document.querySelector(".remote-mechs button").disabled);
+    await page.evaluate(() => { globalThis.testSnapshot = { ...globalThis.testSnapshot, revision: globalThis.testTurn.revision, state: globalThis.testTurn.state }; globalThis.emitMatchEvent({ type: "turn.resolved", result: globalThis.testTurn }); });
+    await page.getByText("Playing turn; input paused").waitFor();
+    assert.equal(await mech.isDisabled(), true);
+    await page.getByText("Online", { exact: true }).click();
+    assert.deepEqual(await page.evaluate(() => globalThis.appliedRevisions), [state.revision]);
+    assert.equal(await mech.isDisabled(), true);
+    await page.evaluate(() => globalThis.finishTurn());
+    await page.waitForFunction(() => !document.querySelector(".remote-mechs button").disabled);
+    assert.deepEqual(errors, []);
+    await page.close();
+  } finally { await browser.close(); }
+});

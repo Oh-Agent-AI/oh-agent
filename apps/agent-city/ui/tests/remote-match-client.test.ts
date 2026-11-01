@@ -181,7 +181,39 @@ test("session host authenticates handshake and only accepts the matching token",
 
 test("transport parsers reject invalid errors and revision mismatches", () => {
   assert.equal(parseRemoteMessage({ protocol: "other", type: "response", requestId: "1", result: {} }), null);
+  assert.equal(parseRemoteMessage({ protocol: MECHA_NET_PROTOCOL, type: "event", event: { type: "turn.resolved", result: {} } }), null);
+  assert.equal(parseRemoteMessage({ protocol: MECHA_NET_PROTOCOL, type: "event", event: { type: "match.replaced", snapshot: {} } }), null);
+  assert.equal(parseRemoteMessage({ protocol: MECHA_NET_PROTOCOL, type: "event", event: { type: "match.closed", matchId: "match-1", revision: -1 } }), null);
+  assert.equal(parseRemoteMessage({ protocol: MECHA_NET_PROTOCOL, type: "event", event: { type: "unknown" } }), null);
+  assert.ok(parseRemoteMessage({ protocol: MECHA_NET_PROTOCOL, type: "event", event: { type: "match.replaced", snapshot } }));
   assert.equal(snapshotResult({ ok: false, error: { code: "not_a_code" } }), null);
   assert.equal(snapshotResult({ ok: true, value: { ...snapshot, revision: 99 } }), null);
   assert.deepEqual(snapshotResult({ ok: false, error: { code: "host_offline" } }), { ok: false, error: { code: "host_offline" } });
+});
+
+test("late events from a disconnected socket are ignored after reconnect", async () => {
+  const sockets: FakeSocket[] = [];
+  const client = new RemoteMatchClient({ url: "wss://example.test/room", playerId: "owner", socketFactory: () => {
+    const socket = new FakeSocket(); sockets.push(socket); queueMicrotask(() => socket.emit("open", {} as never)); return socket;
+  } });
+  const events: unknown[] = [];
+  client.subscribe((event) => events.push(event));
+  const first = client.snapshot("match-1"); await new Promise((resolve) => setTimeout(resolve, 0)); await waitForRequest(sockets[0]); sockets[0].respond({ ok: true, value: snapshot }); await first;
+  sockets[0].close();
+  const second = client.snapshot("match-1"); await new Promise((resolve) => setTimeout(resolve, 0)); await waitForRequest(sockets[1]); sockets[1].respond({ ok: true, value: snapshot }); await second;
+  sockets[0].emit("message", { data: JSON.stringify({ protocol: "app-remote:v1", appId: "city", sessionId: "match-1", capability: "mecha:v1", type: "event", event: { type: "match.replaced", snapshot } }) } as never);
+  assert.deepEqual(events, []); client.dispose();
+});
+
+test("socket that failed before opening cannot become online later", async () => {
+  const socket = new FakeSocket(), statuses: string[] = [];
+  const client = new RemoteMatchClient({ url: "wss://example.test/room", playerId: "owner", socketFactory: () => socket });
+  client.onStatus((state) => statuses.push(state));
+  const pending = client.snapshot("match-1");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  socket.emit("error", {} as never);
+  await assert.rejects(pending, /host_offline/);
+  socket.emit("open", {} as never);
+  assert.equal(statuses.at(-1), "offline"); assert.equal(statuses.includes("online"), false);
+  client.dispose();
 });

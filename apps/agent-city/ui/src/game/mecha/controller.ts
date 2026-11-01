@@ -24,10 +24,11 @@ import type { PresentationStages } from "./presentationSnapshot";
 import { buildPresentationRoutes, type PresentationRoutes } from "./presentationRoutes";
 import type { CityMechaSite } from "./citySite";
 import { matchFromSite } from "./matchFromSite";
+import { pveRules } from "./rules/pve";
 import { blankDraft, checkDraftAction, draftFromPlan, draftPlan, settledDraftBoard, type Draft, type DraftMap } from "./planning";
 export type { Draft, DraftMap } from "./planning";
 import {
-  BOARD, bossPrepare, collectTelegraphs, createMatch, legalActions, living, moveBudget, pathDistance, playTurn, previewPlan,
+  BOARD, bossPrepare, collectTelegraphs, createMatch, legalActions, living, moveBudget, pathDistance, previewPlan,
   type Action, type ArenaPlan, type BossScriptId, type BuildingStake, type Cell, type CoverPresetId, type MatchState, type MechId,
   type PlanFault, type TurnEvent,
 } from "./rules";
@@ -432,7 +433,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
   // ---- 回合推进 ----
 
   const advance = (plan: ArenaPlan): boolean => {
-    const result = playTurn(match, plan);
+    const result = pveRules.playTurn(match, plan);
     if (!result.ok) {
       // 被拒：局面、草稿、动画提示都不动（ARCH-9），只报是哪一台、为什么。
       fault = { mechId: result.fault.mechId, cause: causeOf(result.fault), scope: "rejected", reason: result.fault.reason };

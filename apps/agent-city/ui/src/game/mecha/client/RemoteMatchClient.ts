@@ -144,13 +144,14 @@ export class RemoteMatchClient<S extends RevisionState = RevisionState> implemen
         let opened = false;
         let disconnectedOnce = false;
         socket.addEventListener("open", () => {
-          if (this.disposed) { socket.close(1000, "client_disposed"); return; }
+          if (this.disposed || disconnectedOnce) { socket.close(1000, "client_disposed"); return; }
           opened = true;
           this.socket = socket;
           this.setState("online");
           resolve();
         });
         socket.addEventListener("message", (event) => {
+          if (this.disposed || this.socket !== socket) return;
           const data = (event as unknown as { data?: unknown }).data;
           if (typeof data !== "string" || data.length > 1_000_000) return;
           try {
