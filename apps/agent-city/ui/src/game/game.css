@@ -185,6 +185,7 @@
 .mecha-move-controls button { flex-shrink: 0; }
 .mecha-target-preview p { margin: 4px 0; }
 .mecha-candidate-result { margin-top: 6px; padding: 6px; border-left: 3px solid #ffd166; background: #14263be8; font-size: 12px; }
+.mecha-target-rejections { margin: 6px 0; padding-left: 18px; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
 .mecha-candidate-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
 .mecha-overlay.is-city .mecha-selected-actions.is-targeting { border-color: #ffd166; }
 .mecha-overlay.is-city .mecha-panel > .mecha-action-inspection { position: absolute; left: 12px; bottom: 44%; max-width: min(400px, calc(100% - 24px)); margin: 0; box-sizing: border-box; border-radius: 6px; background: #0b1726f2; pointer-events: none; }
@@ -388,6 +389,8 @@
 .mecha-overlay.is-city.has-match .mecha-turn-summary.is-compact { max-height: var(--mecha-summary-fit-height, min(29vh, 190px)); }
 .mecha-forecast-status { color: #ffd28d; font-weight: 600; overflow-wrap: anywhere; }
 .mecha-risk-details, .mecha-threat-details, .mecha-extra-summary { flex-basis: 100%; min-width: 0; font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
+/* Context paragraphs must stack at full rail width, not shrink into flex columns. */
+.mecha-turn-summary > .mecha-extra-summary { display: block; }
 .mecha-risk-details > summary, .mecha-threat-details > summary { min-height: 32px; display: flex; align-items: center; cursor: pointer; color: #f2e4bd; }
 .mecha-risk-details > summary::before, .mecha-threat-details > summary::before { content: "▸"; margin-right: 6px; }
 .mecha-risk-details[open] > summary::before, .mecha-threat-details[open] > summary::before { content: "▾"; }

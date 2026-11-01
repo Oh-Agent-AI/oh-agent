@@ -486,7 +486,9 @@ function MechaMatch({ locale, onClose, engine, catalog, remoteStatus, remoteLock
         : parseFloat(root.style.getPropertyValue("--mecha-actions-available")) || window.innerHeight * 0.3;
       const limit = panel === summary ? Math.min(window.innerHeight * 0.29, 190)
         : isCandidate && narrow() ? Math.min(window.innerHeight * 0.48, root.clientHeight - 76) : available;
-      let height = wholeLineHeight(panel, limit);
+      // A result may be taller than the scrollport. Keep its height stable so
+      // fitting individual lines cannot undo a user's scroll into its details.
+      let height = isCandidate ? limit : wholeLineHeight(panel, limit);
       const active = document.activeElement;
       if (keyboardMode && active instanceof HTMLElement && active !== panel && panel.contains(active)) {
         const rect = active.getBoundingClientRect();
@@ -498,7 +500,8 @@ function MechaMatch({ locale, onClose, engine, catalog, remoteStatus, remoteLock
       if (root.style.getPropertyValue(name) !== value) root.style.setProperty(name, value);
     };
     const settle = (panel: HTMLElement) => {
-      if (!sideLayout()) return;
+      // Do not snap the scroll position of a long selected result.
+      if (!sideLayout() || (panel === actions && panel.querySelector(".mecha-candidate-actions"))) return;
       // Do not snap a keyboard user's scroll or move their focused control out
       // of view. Snap again after focus leaves the scrollport.
       if (keyboardMode && panel.contains(document.activeElement)) return;
