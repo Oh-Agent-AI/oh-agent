@@ -53,6 +53,9 @@ try {
       await page.waitForTimeout(100); // Let the selection effect and layout complete; no scrolling the result.
       assert.equal(await page.locator(".mecha-pack").innerText(), before, "candidate must not change draft");
       assert.match(await result.innerText(), chinese ? /直接伤害 2/ : /Direct damage 2/);
+      const context = await result.locator("strong").first().innerText();
+      assert.match(context, chinese ? /突击\s*\/\s*近战\s*→\s*大怪/ : /Assault\s*\/\s*Melee\s*→\s*Boss/,
+        `candidate heading must preserve unit, action and target when the action panel scrolls (${lang} ${width}x${height})`);
       const assertVisibleActions = async (label) => {
         const geometry = await page.evaluate(() => {
           const panel = document.querySelector(".mecha-selected-actions");

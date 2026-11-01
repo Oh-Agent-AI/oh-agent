@@ -49,6 +49,7 @@ try {
 } catch (error) {
   throw new Error("[PREFLIGHT] synthetic Chromium could not launch; no interaction assertions ran", { cause: error });
 }
+const layoutFailures = [];
 try {
   for (const lang of process.env.MECHA_LANG ? [process.env.MECHA_LANG] : ["zh", "en"]) {
     const zh = lang === "zh";
@@ -73,12 +74,14 @@ try {
       const statusNeedle = 'const [remoteStatus, setRemoteStatus] = useState("idle");';
       assert.ok(body.includes(statusNeedle), "[FIXTURE] remote-status instrumentation point changed");
       body = body.replace(statusNeedle, statusNeedle + " window.__setFixtureRemoteStatus = setRemoteStatus;");
-      body = body.replace(needle, `const fixture = fixtureMatch({ preset: "covers_sparse_mid", script: "stationary_smash", covers: [], boss: { x: 4, y: 0 },
+      body = body.replace(needle, `const fixture = fixtureMatch({ preset: "covers_sparse_mid", script: "cadence_ssw", covers: [], buildings: [{ id: "fixture-building", cells: [{ x: 4, y: 2 }] }], boss: { x: 4, y: 0 },
         raiders: [{ id: "raider-w", pos: { x: 4, y: 4 } }, { id: "raider-e", pos: { x: 6, y: 4 } }],
-        mechs: [{ id: "Assault", pos: { x: 5, y: 2 } }, { id: "Gunner", pos: { x: 2, y: 8 } }, { id: "Support", pos: { x: 6, y: 2 } }] });
+        mechs: [{ id: "Assault", pos: { x: 5, y: 2 } }, { id: "Gunner", pos: { x: 2, y: 8 } }, { id: "Support", pos: { x: 7, y: 2 } }] });
+        // A real sweep hits the building and the shared threatened cell.
+        fixture.boss.cadence = 2;
         prepareFixture(fixture);
         // Keep the three fixed intents but vacate their shared cell; it is reachable by Assault.
-        fixture.mechs.find((m) => m.id === "Assault").pos = { x: 5, y: 3 };
+        fixture.mechs.find((m) => m.id === "Assault").pos = { x: 6, y: 3 };
         controllerRef.current = createMechaController({ animate: true, locale, site, match: fixture,
           planner: (state) => ({ revision: state.revision, items: fixtureLiving(state).map((m) => ({ mechId: m.id, moveTo: null, action: { kind: "skip" } })) }) });
         window.__orderController = controllerRef.current;`);
@@ -107,24 +110,66 @@ try {
       await page.locator(".mecha-pack li > button").first().click();
       await page.waitForFunction(() => {
         const s = window.__orderController?.getState();
-        return s?.selected === "Assault" && s.reach.some((c) => c.x === 5 && c.y === 2) && s.preview.ok && s.preview.enemyOrder.filter((e) => e.cells.some((c) => c.x === 5 && c.y === 2)).length === 3;
+        return s?.selected === "Assault" && s.match.raiders.every((r) => !s.match.mechs.some((m) => m.pos.x === r.pos.x && m.pos.y === r.pos.y)) && s.reach.some((c) => c.x === 5 && c.y === 2) && s.preview.ok && s.preview.enemyOrder.filter((e) => e.cells.some((c) => c.x === 5 && c.y === 2)).length === 3;
       });
     } catch (error) {
       throw new Error(`[PREFLIGHT/FIXTURE] ${lang}: synthetic city or three-threat setup unavailable; interaction assertions did not run`, { cause: error });
     }
+    // Only the later board-picking path needs continuous canvas rendering.
+    await page.evaluate(() => { window.__pauseFixtureDraw = true; });
     await page.setViewportSize({ width: 640, height: 480 });
     const summary = page.locator(".mecha-turn-summary");
-    const expandedHeight = await summary.evaluate((el) => el.getBoundingClientRect().height);
-    await page.getByRole("button", { name: zh ? "精简面板" : "Compact panel" }).click();
-    await page.waitForFunction((height) => { const el = document.querySelector(".mecha-turn-summary"); return el?.classList.contains("is-compact") && el.getBoundingClientRect().height <= height - 20; }, expandedHeight);
-    const compact = await summary.evaluate((el) => ({ height: el.getBoundingClientRect().height, scroll: el.scrollHeight, client: el.clientHeight }));
-    assert.ok(expandedHeight - compact.height >= 20 && compact.height <= 130 && compact.scroll > compact.client,
-      `${lang}: compact summary must free space while retaining scroll content: ${JSON.stringify({ expandedHeight, compact })}`);
-    console.log(`${lang}: 640x480 summary height ${expandedHeight} → ${compact.height}px`);
-    const healthGeometry = await summary.evaluate((el) => { const box = el.getBoundingClientRect(), line = el.querySelector(":scope > .mecha-compact-risk").getBoundingClientRect(), heading = el.querySelector(".mecha-summary-heading").getBoundingClientRect(); return { box: box.toJSON(), line: line.toJSON(), heading: heading.toJSON() }; });
+    const expand = page.getByRole("button", { name: zh ? "展开面板" : "Expand panel", exact: true });
+    const compactButton = page.getByRole("button", { name: zh ? "精简面板" : "Compact panel", exact: true });
+    const resource = page.locator(".mecha-panel > .mecha-quick-resource");
+    const risk = summary.locator("details.mecha-risk-details");
+    // At this landscape size the default compact rail and separate resource
+    // card are both bounded. Expanding adds content to the same scrollport;
+    // it need not increase its outer height when the rail is already full.
+    assert.equal(await summary.evaluate((el) => el.classList.contains("is-compact")), true, `${lang}: summary starts compact`);
+    assert.equal(await expand.getAttribute("aria-expanded"), "false");
+    assert.equal(await summary.locator(".mecha-extra-summary").count(), 0);
+    assert.equal(await risk.evaluate((el) => el.open), false, `${lang}: risk details start closed`);
+    const expectedResource = await page.evaluate(() => {
+      const state = window.__orderController.getState();
+      const buildings = state.preview.buildings.filter((b) => b.staked);
+      const actual = state.match.buildings.filter((b) => buildings.some((preview) => preview.id === b.id));
+      return { count: buildings.length, current: actual.reduce((n, b) => n + b.hp, 0),
+        max: actual.reduce((n, b) => n + b.maxHp, 0), predicted: buildings.reduce((n, b) => n + b.endHp, 0) };
+    });
+    assert.ok(expectedResource.count > 0 && expectedResource.max > 0 && expectedResource.predicted < expectedResource.current,
+      `${lang}: fixture must predict real staked-building damage: ${JSON.stringify(expectedResource)}`);
+    const resourceText = await resource.innerText();
+    assert.equal((await resource.locator("strong").innerText()).trim(), `${expectedResource.current}/${expectedResource.max}`, `${lang}: current resource must match fixture`);
+    const prediction = resource.locator("span").filter({ hasText: zh ? "预计" : "Predicted" });
+    assert.equal(await prediction.count(), 1);
+    assert.ok((await prediction.innerText()).includes(`${expectedResource.predicted}/${expectedResource.max}`), `${lang}: predicted resource must match fixture: ${resourceText}`);
+    assert.match(resourceText, zh ? /防守建筑.*预计/s : /Defended building.*Predicted/is);
+    await assertUnclipped(resource, `${lang}: current/predicted resources must be visible without scrolling`);
+    await assertUnclipped(expand, `${lang}: compact expand control must be visible`);
+    const layout = async () => summary.evaluate((el) => {
+      const rect = el.getBoundingClientRect(), resource = document.querySelector(".mecha-panel > .mecha-quick-resource").getBoundingClientRect();
+      const pack = document.querySelector(".mecha-pack").getBoundingClientRect(), submit = document.querySelector(".mecha-submit").getBoundingClientRect();
+      const overlap = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+      return { height: rect.height, width: rect.width, scroll: el.scrollHeight, client: el.clientHeight,
+        resourceOverlapsPack: overlap(resource, pack), resourceOverlapsSummary: overlap(resource, rect), summaryOverlapsSubmit: overlap(rect, submit) };
+    });
+    const assertRail = (metrics, mode) => {
+      assert.ok(metrics.height >= 44 && metrics.height <= 480 * 0.29 + 1 && metrics.width <= 640 * 0.33,
+        `${lang}: ${mode} rail must remain bounded at 640x480: ${JSON.stringify(metrics)}`);
+      assert.ok(!metrics.resourceOverlapsPack && !metrics.resourceOverlapsSummary && !metrics.summaryOverlapsSubmit,
+        `${lang}: ${mode} resource, roster, summary and submit must not overlap: ${JSON.stringify(metrics)}`);
+    };
+    const compact = await layout();
+    assertRail(compact, "compact");
+    await assertUnclipped(summary, `${lang}: compact rail must fit inside the viewport`);
+    assert.ok(compact.scroll > compact.client, `${lang}: compact rail must retain scrollable controls: ${JSON.stringify(compact)}`);
     if (screenshots) await page.screenshot({ path: join(screenshots, `compact-${lang}-640x480.png`) });
-    assert.ok(healthGeometry.line.top >= healthGeometry.box.top && healthGeometry.line.bottom <= healthGeometry.box.bottom, `${lang}: initial compact health line must not be cut off: ${JSON.stringify(healthGeometry)}`);
-    console.log(`${lang}: compact scroll / remote lock`);
+    await risk.locator("summary").click();
+    const riskText = await risk.locator(":scope > p").first().innerText();
+    assert.ok(riskText.includes(`${expectedResource.current}/${expectedResource.max} → ${zh ? "预计" : "Predicted"} ${expectedResource.predicted}/${expectedResource.max}`),
+      `${lang}: expanded risk details must agree with the resource card: ${riskText}`);
+    await risk.locator("summary").click();
     await summary.focus(); await page.keyboard.press("End");
     assert.ok(await summary.evaluate((el) => el.scrollTop > 0), `${lang}: compact panel must remain keyboard-scrollable`);
     // A simulated host status transition must not leave the remote-lock warning
@@ -132,15 +177,149 @@ try {
     await page.evaluate(() => window.__setFixtureRemoteStatus("starting"));
     await page.waitForFunction(() => document.querySelector(".mecha-turn-summary [role=status]") && document.querySelector(".mecha-turn-summary").scrollTop === 0);
     assert.equal(await summary.evaluate((el) => el.classList.contains("is-compact")), false);
-    assert.equal(await page.getByRole("button", { name: zh ? "展开面板" : "Expand panel" }).count(), 0);
-    const warningVisible = await summary.evaluate((el) => { const box = el.getBoundingClientRect(), line = el.querySelector("[role=status]").getBoundingClientRect(); return line.top >= box.top && line.bottom <= box.bottom; });
-    assert.ok(warningVisible, `${lang}: remote-lock warning must be visible on status transition`);
+    assert.equal(await expand.count(), 0);
+    const warning = summary.locator("[role=status]");
+    await assertUnclipped(warning, `${lang}: remote-lock warning must be visible on status transition`);
     await page.evaluate(() => window.__setFixtureRemoteStatus("idle"));
     await page.waitForFunction(() => !document.querySelector(".mecha-turn-summary [role=status]"));
-    await summary.focus(); await page.keyboard.press("Home");
-    await page.getByRole("button", { name: zh ? "展开面板" : "Expand panel" }).click();
-    assert.ok(await summary.evaluate((el) => el.getBoundingClientRect().height) > compact.height);
+    assert.equal(await summary.evaluate((el) => el.classList.contains("is-compact")), true, `${lang}: idle restores compact preference`);
+    await expand.click();
+    assert.equal(await summary.evaluate((el) => el.classList.contains("is-compact")), false);
+    assert.equal(await compactButton.getAttribute("aria-expanded"), "true");
+    assert.equal(await summary.locator(".mecha-extra-summary").count(), 1, `${lang}: expanded mode adds tactical context`);
+    const expanded = await layout();
+    assertRail(expanded, "expanded");
+    await assertUnclipped(summary, `${lang}: expanded rail must fit inside the viewport`);
+    await assertUnclipped(compactButton, `${lang}: expanded collapse control must be visible`);
+    assert.ok(expanded.scroll > compact.scroll && expanded.scroll > expanded.client,
+      `${lang}: expanded rail must retain its extra content in the scrollport: ${JSON.stringify({ compact, expanded })}`);
+    await assertUnclipped(resource, `${lang}: resources remain visible in expanded mode`);
+    await summary.focus(); await page.keyboard.press("End");
+    assert.ok(await summary.evaluate((el) => el.scrollTop > 0), `${lang}: expanded panel must remain keyboard-scrollable`);
+    if (screenshots) {
+      await summary.evaluate((el) => { el.scrollTop = 0; });
+      await page.screenshot({ path: join(screenshots, `expanded-${lang}-640x480.png`) });
+    }
+    // A paragraph may itself exceed the scrollport; check both ends rather
+    // than requiring all of it to fit onscreen simultaneously.
+    const extraParagraphs = summary.locator(".mecha-extra-summary > p");
+    assert.ok(await extraParagraphs.count() >= 3, `${lang}: expanded tactical context must not be empty`);
+    // Each paragraph needs the full rail, not a flex column narrow enough to
+    // break ordinary words. Long unbreakable strings may still wrap anywhere.
+    const textLayout = await summary.locator(".mecha-extra-summary").evaluate((el) => {
+      const box = el.getBoundingClientRect();
+      const paragraphs = Array.from(el.querySelectorAll(":scope > p"));
+      const rects = paragraphs.map((p) => p.getBoundingClientRect());
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      let word = null;
+      while (walker.nextNode() && !word) {
+        const text = walker.currentNode.textContent, match = /\bBoss\b/.exec(text);
+        if (!match) continue;
+        const lines = [];
+        for (let i = 0; i < match[0].length; i++) {
+          const r = document.createRange(); r.setStart(walker.currentNode, match.index + i); r.setEnd(walker.currentNode, match.index + i + 1);
+          lines.push(r.getBoundingClientRect().top);
+        }
+        word = lines;
+      }
+      return { display: getComputedStyle(el).display, width: box.width, scrollWidth: el.scrollWidth, clientWidth: el.clientWidth,
+        paragraphs: paragraphs.map((p, i) => ({ width: rects[i].width, top: rects[i].top, bottom: rects[i].bottom,
+          fontSize: parseFloat(getComputedStyle(p).fontSize), scrollWidth: p.scrollWidth, clientWidth: p.clientWidth })), word };
+    });
+    assert.equal(textLayout.display, "block", `${lang}: tactical context paragraphs must stack: ${JSON.stringify(textLayout)}`);
+    assert.ok(textLayout.scrollWidth <= textLayout.clientWidth + 1, `${lang}: context must not overflow horizontally: ${JSON.stringify(textLayout)}`);
+    for (let i = 0; i < textLayout.paragraphs.length; i++) {
+      const p = textLayout.paragraphs[i];
+      assert.ok(p.width >= textLayout.width - 1 && p.fontSize >= 12 && p.scrollWidth <= p.clientWidth + 1 &&
+        (!i || p.top >= textLayout.paragraphs[i - 1].bottom - 1), `${lang}: readable full-width context paragraph ${i + 1}: ${JSON.stringify(textLayout)}`);
+    }
+    if (!zh) {
+      assert.ok(textLayout.word?.length === 4, `${lang}: fixture must contain the short word Boss`);
+      assert.ok(Math.max(...textLayout.word) - Math.min(...textLayout.word) < 1,
+        `${lang}: ordinary word Boss must not split across lines: ${JSON.stringify(textLayout)}`);
+    }
+    for (let i = 0; i < await extraParagraphs.count(); i++) {
+      const paragraph = extraParagraphs.nth(i);
+      assert.ok((await paragraph.innerText()).trim().length > 0, `${lang}: expanded context paragraph ${i + 1} must contain text`);
+      for (const edge of ["start", "end"]) {
+        await paragraph.evaluate((el, block) => el.scrollIntoView({ block, inline: "nearest" }), edge);
+        await page.waitForTimeout(350); // Allow the rail's scroll-settle alignment to run.
+        if (screenshots && i === 0 && edge === "start") await page.screenshot({ path: join(screenshots, `expanded-context-${lang}-640x480.png`) });
+        const bounds = await paragraph.evaluate((el, end) => {
+          const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+          const nodes = []; while (walker.nextNode()) if (walker.currentNode.textContent.trim()) nodes.push(walker.currentNode);
+          const node = end ? nodes.at(-1) : nodes[0];
+          const text = node.textContent, index = end ? text.trimEnd().length - 1 : text.search(/\S/);
+          const range = document.createRange(); range.setStart(node, index); range.setEnd(node, index + 1);
+          const rect = range.getBoundingClientRect(), paragraph = el.getBoundingClientRect(), rail = el.closest(".mecha-turn-summary");
+          const box = rail.getBoundingClientRect();
+          return { text: rect.toJSON(), paragraphWidth: paragraph.width, paragraphHeight: paragraph.height,
+            clipLeft: box.left + rail.clientLeft, clipRight: box.left + rail.clientLeft + rail.clientWidth,
+            clipTop: box.top + rail.clientTop, clipBottom: box.top + rail.clientTop + rail.clientHeight };
+        }, edge === "end");
+        if (!(bounds.text.left >= bounds.clipLeft - 1 && bounds.text.right <= bounds.clipRight + 1 &&
+          bounds.text.top >= bounds.clipTop - 1 && bounds.text.bottom <= bounds.clipBottom + 1)) {
+          const failure = `${lang}: expanded paragraph ${i + 1} ${edge} text must be reachable: ${JSON.stringify(bounds)}`;
+          console.error(failure);
+          layoutFailures.push(failure);
+        }
+      }
+    }
+    // The order explanation must also reflow in the narrow rail. Its long
+    // English text can exceed the scrollport, so verify both ends are reachable.
+    const smallOrder = page.getByRole("button", { name: zh ? "结算顺序" : "Attack order", exact: true });
+    await smallOrder.click();
+    assert.equal(await smallOrder.getAttribute("aria-expanded"), "true");
+    assert.equal(await smallOrder.getAttribute("aria-describedby"), "mecha-order-help");
+    const smallHelp = summary.locator("#mecha-order-help");
+    assert.ok((await smallHelp.innerText()).includes(zh ? "棋盘" : "board remains available"), `${lang}: planning explanation must be present`);
+    const helpLayout = await smallHelp.evaluate((el) => ({ width: el.getBoundingClientRect().width,
+      parentWidth: el.parentElement.getBoundingClientRect().width, scroll: el.scrollWidth, client: el.clientWidth,
+      display: getComputedStyle(el.parentElement).display }));
+    assert.ok(helpLayout.display === "block" && helpLayout.width >= helpLayout.parentWidth - 1 && helpLayout.scroll <= helpLayout.client + 1,
+      `${lang}: order explanation must reflow across its rail: ${JSON.stringify(helpLayout)}`);
+    let orderRailBox;
+    for (const edge of ["start", "end"]) {
+      await smallHelp.evaluate((el, block) => el.scrollIntoView({ block, inline: "nearest" }), edge);
+      await page.waitForTimeout(350);
+      const visible = await smallHelp.evaluate((el, end) => {
+        const text = el.firstChild, range = document.createRange(), i = end ? text.length - 1 : 0;
+        range.setStart(text, i); range.setEnd(text, i + 1);
+        const r = range.getBoundingClientRect(), rail = el.closest(".mecha-turn-summary"), box = rail.getBoundingClientRect();
+        return { rect: r.toJSON(), left: box.left + rail.clientLeft, right: box.left + rail.clientLeft + rail.clientWidth,
+          top: box.top + rail.clientTop, bottom: box.top + rail.clientTop + rail.clientHeight };
+      }, edge === "end");
+      const railBox = { top: visible.top, bottom: visible.bottom };
+      if (orderRailBox) {
+        assert.ok(Math.abs(railBox.top - orderRailBox.top) <= 1 && Math.abs(railBox.bottom - orderRailBox.bottom) <= 1,
+          `${lang}: scrolling the order explanation must not resize or move the rail: ${JSON.stringify({ orderRailBox, railBox })}`);
+      } else orderRailBox = railBox;
+      if (!(visible.rect.left >= visible.left - 1 && visible.rect.right <= visible.right + 1 &&
+        visible.rect.top >= visible.top - 1 && visible.rect.bottom <= visible.bottom + 1)) {
+        const movement = await smallHelp.evaluate((el, delta) => { const panel = el.closest(".mecha-turn-summary"), before = panel.scrollTop;
+          panel.scrollTop += delta; return { before, requested: delta, after: panel.scrollTop, max: panel.scrollHeight - panel.clientHeight }; }, (visible.rect.top < visible.top - 1 ? -Math.max(24, visible.top - visible.rect.top + 12) : Math.max(24, visible.rect.bottom - visible.bottom + 12)));
+        await page.waitForTimeout(350);
+        const retry = await smallHelp.evaluate((el, end) => {
+          const text = el.firstChild, range = document.createRange(), i = end ? text.length - 1 : 0;
+          range.setStart(text, i); range.setEnd(text, i + 1);
+          const r = range.getBoundingClientRect(), panel = el.closest(".mecha-turn-summary"), p = panel.getBoundingClientRect();
+          return { rect: r.toJSON(), left: p.left + panel.clientLeft, right: p.left + panel.clientLeft + panel.clientWidth,
+            top: p.top + panel.clientTop, bottom: p.top + panel.clientTop + panel.clientHeight, scrollTop: panel.scrollTop };
+        }, edge === "end");
+        const complete = retry.rect.left >= retry.left - 1 && retry.rect.right <= retry.right + 1 && retry.rect.top >= retry.top - 1 && retry.rect.bottom <= retry.bottom + 1;
+        const failure = `${lang}: order explanation ${edge} clipped after scrollIntoView settles; further scroll ${complete ? "reveals" : "does not reveal"} it: ${JSON.stringify({ visible, movement, retry })}`;
+        console.error(failure); layoutFailures.push(failure);
+      }
+    }
+    await smallOrder.click();
+    assert.equal(await summary.locator("#mecha-order-help").count(), 0, `${lang}: closed order explanation must leave the accessibility tree`);
+    await compactButton.click();
+    assert.equal(await summary.evaluate((el) => el.classList.contains("is-compact")), true, `${lang}: collapse restores compact mode`);
+    assert.equal(await summary.locator(".mecha-extra-summary").count(), 0);
+    await expand.click();
+    console.log(`${lang}: 640x480 compact ${compact.height}px (content ${compact.scroll}px), expanded ${expanded.height}px (content ${expanded.scroll}px); resource ${resourceText.replace(/\s+/g, " ")}`);
     console.log(`${lang}: remote lock checked; test board clicks`);
+    await page.evaluate(() => { window.__pauseFixtureDraw = false; });
     await page.setViewportSize({ width: 1100, height: 700 });
     await page.getByRole("button", { name: zh ? "战术视角" : "Tactical view" }).click();
     const order = page.getByRole("button", { name: zh ? "结算顺序" : "Attack order", exact: true });
@@ -202,7 +381,7 @@ try {
     await page.waitForFunction(() => window.__orderController.getState().performance !== null);
     assert.equal(await page.locator(".mecha-last-result").count(), 0, "never reveal resolved result during playback");
     await page.getByRole("button", { name: zh ? "跳过演出" : "Skip animation" }).click();
-    // Contract for the forthcoming compact recap: a named region, distinct
+    // The compact recap is a named region, distinct
     // from the current forecast, visible without scrolling the old threat
     // panel after playback, and containing an actual short summary.
     const recap = page.getByRole("region", { name: zh ? "上一回合摘要" : "Previous turn summary", exact: true });
@@ -294,4 +473,5 @@ try {
     await context.close();
   }
 } finally { await browser.close(); }
+assert.deepEqual(layoutFailures, [], "expanded context and order explanation must remain readable after scrolling");
 console.log("Synthetic Chromium fixture; no native or physical-input acceptance implied.");

@@ -43,7 +43,7 @@ assert.match(board, /stakeBuildings\(state\)/);
 assert.match(board, /s\.preview\.enemyOrder/);
 assert.match(board, /aria-expanded=\{showOrder\}/);
 assert.match(board, /className="mecha-map-legend"/);
-for (const label of ["可移动", "计划落点", "敌方预告", "打法目标"]) assert.match(board, new RegExp(`t\\("${label}"\\)`));
+for (const label of ["可移动", "计划落点", "战斗目标与威胁", "打法目标"]) assert.match(board, new RegExp(`t\\("${label}"\\)`));
 assert.match(board, /worldRef\.current\?\.rotateCamera\(\)/);
 assert.match(board, /worldRef\.current\?\.resetCamera\(\)/);
 assert.match(css, /\.mecha-overlay\.is-city \{ display: block; background: transparent; pointer-events: none; \}/);

@@ -29,6 +29,11 @@ try {
     await page.getByRole("button", { name: zh ? "机甲战棋" : "Mecha tactics" }).click();
     const summary = page.locator(".mecha-turn-summary");
     await summary.waitFor();
+    // The battle now starts in compact mode, whose visual scroll hint is
+    // intentionally hidden. Exercise the expanded rail here; the compact
+    // rail's keyboard scrolling is covered by verify-city-mecha-order-click.
+    const expand = page.getByRole("button", { name: zh ? "展开面板" : "Expand panel", exact: true });
+    if (await summary.evaluate(el => el.classList.contains("is-compact"))) await expand.click();
     for (const [width, height] of [[1100, 700], [1440, 900], [390, 844]]) {
       await page.setViewportSize({ width, height });
       await page.waitForTimeout(300);
