@@ -24,14 +24,14 @@ import type { PresentationStages } from "./presentationSnapshot";
 import { buildPresentationRoutes, type PresentationRoutes } from "./presentationRoutes";
 import type { CityMechaSite } from "./citySite";
 import { matchFromSite } from "./matchFromSite";
+import { blankDraft, checkDraftAction, draftFromPlan, draftPlan, settledDraftBoard, type Draft, type DraftMap } from "./planning";
+export type { Draft, DraftMap } from "./planning";
 import {
   BOARD, bossPrepare, collectTelegraphs, createMatch, legalActions, living, moveBudget, pathDistance, playTurn, previewPlan,
   type Action, type ArenaPlan, type BossScriptId, type BuildingStake, type Cell, type CoverPresetId, type MatchState, type MechId,
   type PlanFault, type TurnEvent,
 } from "./rules";
 
-export type Draft = { moveTo: Cell | null; action: Action; explicit: boolean };
-export type DraftMap = Record<MechId, Draft>;
 export type TargetKind = Exclude<Action["kind"], "skip">;
 export type UnavailableAction = { kind: TargetKind; reason: "cooldown" | "no_target" };
 export type TargetOption = { id: string; cells: Cell[] };
@@ -86,7 +86,11 @@ export type MechaControllerState = {
   hits: Record<MechId, number> | null;
   /** 每台到草稿落点的半步花费（面板显示用；alliesPass，与提交校验同口径）。 */
   stepCost: Record<MechId, number | null>;
-  /** 所有实际会发生的威胁；失败时为当前局面而非草稿预测。 */
+  /** 当前局面中敌方已宣告的威胁，不受草稿预览影响。 */
+  declaredThreats: { cells: Cell[]; byActor: Record<string, Cell[]> };
+  /** 当前草稿的推演威胁；null 表示预测未知，空列表表示成功预测无威胁。 */
+  projectedThreats: { cells: Cell[]; byActor: Record<string, Cell[]> } | null;
+  /** 兼容字段：预览成功时为草稿预测，失败时回退到当前宣告。 */
   telegraph: Cell[];
   /** 当前聚焦敌人的威胁；其他敌人仍显示。 */
   focusedTelegraph: Cell[];
@@ -182,21 +186,6 @@ function footprintCells(anchor: Cell): Cell[] {
   return [anchor, { x: anchor.x + 1, y: anchor.y }, { x: anchor.x, y: anchor.y + 1 }, { x: anchor.x + 1, y: anchor.y + 1 }];
 }
 
-function blankDraft(state: MatchState): DraftMap {
-  return {
-    Assault: { moveTo: null, action: { kind: "skip" }, explicit: false },
-    Gunner: { moveTo: null, action: { kind: "skip" }, explicit: false },
-    Support: { moveTo: null, action: { kind: "skip" }, explicit: false },
-    ...Object.fromEntries(living(state).map((m) => [m.id, { moveTo: null, action: { kind: "skip" as const }, explicit: false }])),
-  } as DraftMap;
-}
-
-function draftFromPlan(state: MatchState, plan: ArenaPlan): DraftMap {
-  const next = blankDraft(state);
-  for (const item of plan.items) next[item.mechId] = { moveTo: item.moveTo, action: item.action, explicit: true };
-  return next;
-}
-
 /** 规则层的 cause 可选；翻译表只认已登记的键，未知值落到 other，不让界面出现空句。 */
 function causeOf(fault: Pick<PlanFault, "cause">): NonNullable<PlanFault["cause"]> {
   return fault.cause && FAULT_CAUSES.has(fault.cause) ? fault.cause : "other";
@@ -284,31 +273,11 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
 
   // ---- 草稿推演 ----
 
-  const itemsOf = (state: MatchState, drafts: DraftMap, only?: { id: MechId; action: Action }): ArenaPlan["items"] =>
-    living(state).map((m) => ({
-      mechId: m.id,
-      moveTo: drafts[m.id]?.moveTo ?? null,
-      action: only ? (m.id === only.id ? only.action : { kind: "skip" as const }) : (drafts[m.id]?.explicit ? drafts[m.id]!.action : { kind: "skip" as const }),
-    }));
-
   /** 这台机甲的这个行动，在「所有已排移动落定」的局面上是否成立。成立返回 null，否则是故障。 */
   const actionFault = (state: MatchState, drafts: DraftMap, id: MechId, action: Action): PlanFault | null | "unavailable" => {
     if (action.kind === "skip") return null;
-    try {
-      const result = validationPreview(state, { revision: state.revision, items: itemsOf(state, drafts, { id, action }) });
-      return result.ok ? null : result.fault;
-    } catch {
-      return "unavailable";
-    }
-  };
-
-  const settledBoard = (state: MatchState, drafts: DraftMap): MatchState => {
-    const scratch = structuredClone(state);
-    for (const m of scratch.mechs) {
-      const dest = m.hp > 0 ? drafts[m.id]?.moveTo : null;
-      if (dest) m.pos = { ...dest };
-    }
-    return scratch;
+    const result = checkDraftAction(state, drafts, id, action, (plan) => validationPreview(state, plan));
+    return result.status === "ok" ? null : result.status === "unknown" ? "unavailable" : result.fault;
   };
 
   const finalCell = (state: MatchState, drafts: DraftMap, id: MechId): Cell =>
@@ -340,7 +309,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     const cached = targetCache.get(key);
     if (cached) return cached;
     const options: TargetOption[] = targeting === "repair"
-      ? living(settledBoard(match, draft)).filter((mech) => mech.id !== selected).map((mech) => ({ id: mech.id, cells: [{ ...mech.pos }] }))
+      ? living(settledDraftBoard(match, draft)).filter((mech) => mech.id !== selected).map((mech) => ({ id: mech.id, cells: [{ ...mech.pos }] }))
       : [
         ...(match.boss.hp > 0 ? [{ id: "boss", cells: footprintCells(match.boss.anchor) }] : []),
         ...match.raiders.filter((raider) => raider.hp > 0).map((raider) => ({ id: raider.id, cells: [{ ...raider.pos }] })),
@@ -366,7 +335,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     const cached = previewCache.get(key);
     if (cached) return cached;
     try {
-      const items = itemsOf(match, draft).filter((item) => draft[item.mechId]?.explicit || draft[item.mechId]?.moveTo || (candidateTarget && item.mechId === selected));
+      const items = draftPlan(match, draft).items.filter((item) => draft[item.mechId]?.explicit || draft[item.mechId]?.moveTo || (candidateTarget && item.mechId === selected));
       if (candidateTarget && targeting) {
         const item = items.find((entry) => entry.mechId === selected);
         if (item) item.action = { kind: targeting, target: candidateTarget } as Action;
@@ -400,7 +369,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     const candidateView = candidate ? { ...candidate, preview: derivePreview(candidate.target) } : null;
     const alive = living(match);
     const selectedUnit = alive.find((m) => m.id === selected);
-    const actions = selectedUnit ? legalActions(settledBoard(match, draft), selected) : [];
+    const actions = selectedUnit ? legalActions(settledDraftBoard(match, draft), selected) : [];
     const kinds: TargetKind[] = [];
     if (selectedUnit) {
       if (STATS[selected].melee) kinds.push("melee");
@@ -410,7 +379,9 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     const unavailableActions: UnavailableAction[] = kinds
       .filter((kind) => !actions.some((action) => action.kind === kind))
       .map((kind) => ({ kind, reason: (kind === "charge" || kind === "pierce" || kind === "repair") && selectedUnit!.cd !== 0 ? "cooldown" : "no_target" }));
-    const currentThreats = preview.ok ? { cells: preview.telegraphAfter, byActor: preview.telegraphByActor } : collectTelegraphs(match);
+    const declaredThreats = collectTelegraphs(match);
+    const projectedThreats = preview.ok ? { cells: preview.telegraphAfter, byActor: preview.telegraphByActor } : null;
+    const currentThreats = projectedThreats ?? declaredThreats;
     if (selectedEnemy && !currentThreats.byActor[selectedEnemy]) selectedEnemy = null;
     const focusEnemy = hoveredEnemy ?? selectedEnemy;
     const pendingIds = alive.filter((m) => !draft[m.id]?.explicit).map((m) => m.id);
@@ -432,6 +403,8 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       targetRejections: targets.rejections,
       hits,
       stepCost,
+      declaredThreats,
+      projectedThreats,
       telegraph: currentThreats.cells,
       focusedTelegraph: focusEnemy ? (currentThreats.byActor[focusEnemy] ?? []) : [],
       hoveredEnemy: focusEnemy,
@@ -704,7 +677,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
           return;
         }
       }
-      advance({ revision: match.revision, items: itemsOf(match, draft) });
+      advance({ revision: match.revision, items: draftPlan(match, draft).items });
       commit();
     },
     confirmHold() {
@@ -712,7 +685,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       holdConfirmation = null;
       if (!pending || !canEdit() || pending.match !== match || pending.revision !== match.revision || pending.draftVersion !== draftVersion || pending.fingerprint !== draftFingerprint(draft) || pending.doctrine !== doctrine || pendingIdsNow().length > 0) { commit(); return; }
       // Always validate again through playTurn; confirmation does not authorize a stale plan.
-      advance({ revision: match.revision, items: itemsOf(match, draft) });
+      advance({ revision: match.revision, items: draftPlan(match, draft).items });
       commit();
     },
     cancelHold() {

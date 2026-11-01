@@ -16,7 +16,7 @@ const dpr = Number(process.env.MECHA_DPR ?? 1);
 assert.ok(Number.isFinite(dpr) && dpr > 0, "MECHA_DPR must be a positive number");
 const viewports = process.env.MECHA_VIEWPORT?.split(",").map((value) => value.match(/^(\d+)x(\d+)$/));
 assert.ok(!viewports || viewports.every(Boolean), "MECHA_VIEWPORT must be WIDTHxHEIGHT[,WIDTHxHEIGHT...]");
-const sizes = viewports ? viewports.map((viewport) => [Number(viewport[1]), Number(viewport[2])]) : [[1100, 700], [1440, 900], [390, 844]];
+const sizes = viewports ? viewports.map((viewport) => [Number(viewport[1]), Number(viewport[2])]) : [[1100, 700], [1440, 900], [640, 480], [390, 844]];
 assert.ok(sizes.every(([width, height]) => width > 0 && height > 0), "viewport dimensions must be positive");
 if (screenshots) await mkdir(screenshots, { recursive: true });
 const browser = await chromium.launch({ headless: true, args: ["--enable-unsafe-swiftshader"] });
@@ -87,21 +87,35 @@ try {
       await page.setViewportSize({ width, height });
       await assertCards(width, height, "opening draft");
       console.log(`${locale} ${width}x${height}: checking battlefield settings`);
-      const field = page.getByText(zh ? "战场设置与规则" : "Battlefield settings and rules", { exact: true });
-      const remote = page.getByText(zh ? "手机远程战棋" : "Remote mecha tactics", { exact: true });
+      const menu = page.locator(".mecha-options-menu");
+      const menuEntry = menu.locator(":scope > summary");
+      const fieldDetails = menu.locator("details.mecha-settings:not(.mecha-remote-settings)");
+      const remoteDetails = menu.locator("details.mecha-remote-settings");
+      const field = fieldDetails.locator(":scope > summary");
+      const remote = remoteDetails.locator(":scope > summary");
       const submit = page.locator(".mecha-submit-primary").first();
       const inspect = async (label, locator) => {
         const result = await locator.evaluate((el) => {
           const rect = el.getBoundingClientRect();
           const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
           const hit = document.elementFromPoint(x, y);
-          return { rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }, hit: hit?.outerHTML.slice(0, 180), reachable: !!hit && (hit === el || el.contains(hit)) };
+          return { rect: rect.toJSON(), hit: hit?.outerHTML.slice(0, 180), reachable: !!hit && (hit === el || el.contains(hit)) };
         });
         assert.ok(result.reachable, `${locale} ${width}x${height} ${label} blocked: ${JSON.stringify(result)}`);
       };
+      // Scroll the menu itself rather than moving the page or its independent
+      // submit/turn regions. Leave room for the sticky menu heading.
+      const reveal = async (locator) => {
+        await locator.evaluate((el) => {
+          const scroller = el.closest(".mecha-options-menu");
+          const top = scroller.getBoundingClientRect().top;
+          scroller.scrollTop += el.getBoundingClientRect().top - top - scroller.clientHeight / 2;
+        });
+        await page.waitForTimeout(100);
+      };
       const assertBattleControlsClear = async (label) => {
         const overlaps = await page.evaluate(() => {
-          const blockers = [document.querySelector(".mecha-turn-summary"), document.querySelector(".mecha-panel > .mecha-settings[open]")].filter(Boolean);
+          const blockers = [document.querySelector(".mecha-turn-summary"), document.querySelector(".mecha-panel > .mecha-options-menu[open]")].filter(Boolean);
           const intersects = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
           return Array.from(document.querySelectorAll(".mecha-battle-controls button"), (button) => ({
             text: button.textContent, rect: button.getBoundingClientRect().toJSON(),
@@ -110,53 +124,78 @@ try {
         });
         assert.deepEqual(overlaps, [], `${locale} ${width}x${height} ${label}: battle controls covered`);
       };
+      const assertMenuClear = async (label) => {
+        const overlaps = await menu.evaluate((el) => {
+          const a = el.getBoundingClientRect();
+          return [".mecha-turn-summary", ".mecha-submit"].map((selector) => {
+            const b = document.querySelector(selector).getBoundingClientRect();
+            return { selector, overlaps: a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top, menu: a.toJSON(), other: b.toJSON() };
+          }).filter((item) => item.overlaps);
+        });
+        assert.deepEqual(overlaps, [], `${locale} ${width}x${height} ${label}: menu overlaps turn or submit`);
+      };
+      assert.equal(await menu.count(), 1);
+      assert.equal(await menu.evaluate((el) => el.open), false);
+      await inspect("closed settings entry", menuEntry);
       await assertBattleControlsClear("settings closed");
       for (const entry of [field, remote]) {
-        const overlap = await entry.evaluate((el) => {
-          const a = el.getBoundingClientRect(), b = document.querySelector(".mecha-turn-summary").getBoundingClientRect();
-          return { overlaps: a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top, entry: a.toJSON(), turn: b.toJSON() };
-        });
-        assert.equal(overlap.overlaps, false, `${locale} ${width}x${height} collapsed settings entry covers turn summary: ${JSON.stringify(overlap)}`);
+        assert.equal(await entry.isVisible(), false, "nested settings must be hidden when the menu is closed");
+        assert.equal(await entry.evaluate((el) => { el.focus(); return document.activeElement === el; }), false, "hidden settings entry must not accept focus");
       }
-      await field.click();
+      // Exercise real keyboard navigation, including the mutually exclusive
+      // same-name details, instead of treating either nested summary as a tab.
+      await menuEntry.focus();
+      assert.equal(await menuEntry.evaluate((el) => document.activeElement === el), true);
+      await page.keyboard.press("Enter");
+      assert.equal(await menu.evaluate((el) => el.open), true);
+      await page.keyboard.press("Tab");
+      assert.equal(await field.evaluate((el) => document.activeElement === el), true, `${locale} ${width}x${height}: battlefield entry not next in keyboard order`);
+      await inspect("battlefield entry", field);
+      await page.keyboard.press("Enter");
+      assert.equal(await fieldDetails.evaluate((el) => el.open), true);
       await assertBattleControlsClear("battlefield settings open");
-      assert.equal(await remote.isVisible(), false, "collapsed remote entry must not remain visually or keyboard focusable behind open settings");
-      assert.equal(await remote.evaluate((el) => { el.focus(); return document.activeElement === el; }), false, "hidden remote entry must not accept focus");
-      const assertSummaryClear = async (entry, label) => {
-        const overlap = await entry.evaluate((summary) => {
-          const sheet = summary.closest("details").getBoundingClientRect();
-          const turn = document.querySelector(".mecha-turn-summary").getBoundingClientRect();
-          return { overlaps: sheet.left < turn.right && sheet.right > turn.left && sheet.top < turn.bottom && sheet.bottom > turn.top, sheet: sheet.toJSON(), turn: turn.toJSON() };
-        });
-        assert.equal(overlap.overlaps, false, `${locale} ${width}x${height} ${label} covers turn summary: ${JSON.stringify(overlap)}`);
-      };
-      await assertSummaryClear(field, "battlefield settings");
-      const siblingOverlap = await field.evaluate((summary) => {
-        const sheet = summary.closest("details"), other = document.querySelector(".mecha-remote-settings > summary");
-        const a = sheet.getBoundingClientRect(), b = other.getBoundingClientRect();
-        const left = Math.max(a.left, b.left), right = Math.min(a.right, b.right), top = Math.max(a.top, b.top), bottom = Math.min(a.bottom, b.bottom);
-        if (left >= right || top >= bottom) return { overlaps: false, reachable: true };
-        const hit = document.elementFromPoint((left + right) / 2, (top + bottom) / 2);
-        return { overlaps: true, reachable: !!hit && (hit === sheet || sheet.contains(hit)), hit: hit?.outerHTML.slice(0, 180) };
-      });
-      assert.ok(siblingOverlap.reachable, `${locale} ${width}x${height} remote tab covers open battlefield settings: ${JSON.stringify(siblingOverlap)}`);
+      await assertMenuClear("battlefield settings open");
+      const newMatch = page.getByRole("button", { name: zh ? "新开一局" : "New match", exact: true });
+      // Exercise wheel scrolling in the menu when its content overflows. The
+      // sticky heading remains available to close it after scrolling.
+      const scrollState = await menu.evaluate((el) => ({ top: el.scrollTop, height: el.clientHeight, content: el.scrollHeight, rect: el.getBoundingClientRect().toJSON() }));
+      if (scrollState.content > scrollState.height + 1) {
+        await page.mouse.move(scrollState.rect.left + scrollState.rect.width / 2, scrollState.rect.bottom - 5);
+        await page.mouse.wheel(0, 600);
+        await page.waitForTimeout(200);
+        const after = await menu.evaluate((el) => el.scrollTop);
+        assert.ok(after > scrollState.top, `${locale} ${width}x${height}: overflowing menu did not respond to wheel`);
+      }
+      await reveal(newMatch);
+      await inspect("battlefield settings control", newMatch);
+      await newMatch.focus();
+      assert.equal(await newMatch.evaluate((el) => document.activeElement === el), true, "battlefield control must accept keyboard focus");
+      await inspect("close menu after internal scroll", menuEntry);
+      await submit.scrollIntoViewIfNeeded();
       await inspect("submit while battlefield settings expanded", submit);
+      const draft = await page.locator(".mecha-pack").innerText();
       await submit.click({ timeout: 10_000 });
       const cancel = page.getByRole("button", { name: zh ? "返回修改" : "Return to editing", exact: true });
+      const confirm = page.getByRole("button", { name: zh ? "继续提交" : "Submit anyway", exact: true });
       await cancel.waitFor();
-      await inspect("return while confirmation and settings expanded", cancel);
+      await page.waitForTimeout(350);
+      await assertMenuClear("hold confirmation and settings open");
+      await assertBattleControlsClear("hold confirmation and settings open");
+      for (const [label, button] of [["return to editing", cancel], ["submit confirmation", confirm]]) {
+        await button.scrollIntoViewIfNeeded();
+        await inspect(`${label} while settings expanded`, button);
+        await button.focus();
+        assert.equal(await button.evaluate((el) => document.activeElement === el), true, `${label} must accept focus`);
+      }
+      await cancel.scrollIntoViewIfNeeded();
       await cancel.click({ timeout: 10_000 });
-      const newMatch = page.getByRole("button", { name: zh ? "新开一局" : "New match", exact: true });
-      await newMatch.scrollIntoViewIfNeeded();
-      await inspect("settings controls", newMatch);
+      assert.equal(await page.locator(".mecha-pack").innerText(), draft, "return to editing must preserve the draft");
       // The settings scroll container, action container and turn summary may
       // scroll independently; never scroll the whole page to avoid an overlap.
-      console.log(`${locale} ${width}x${height}: checking unit selection`);
+      console.log(`${locale} ${width}x${height}: checking unit selection, resources and order`);
       const packButton = page.locator(".mecha-pack li > button").first();
       await inspect("unit selection with settings expanded", packButton);
       await packButton.click();
-      console.log(`${locale} ${width}x${height}: unit selected`);
-      console.log(`${locale} ${width}x${height}: checking resources and order`);
       const resource = page.locator("details.mecha-resource > summary");
       await resource.scrollIntoViewIfNeeded();
       await inspect("resource details with settings expanded", resource);
@@ -177,22 +216,40 @@ try {
       await inspect("attack order entry with settings expanded", orderButton);
       await order.scrollIntoViewIfNeeded();
       await order.click();
-      await field.scrollIntoViewIfNeeded();
-      await inspect("close battlefield settings after scrolling", field);
-      if (screenshots) await page.screenshot({ path: join(screenshots, `settings-${locale}-${width}x${height}-dpr${dpr}.png`) });
-      await field.click();
       console.log(`${locale} ${width}x${height}: checking remote settings`);
-      await remote.click();
+      await reveal(remote);
+      await inspect("remote entry while battlefield open", remote);
+      await remote.focus();
+      assert.equal(await remote.evaluate((el) => document.activeElement === el), true, "remote entry must accept focus");
+      await page.keyboard.press("Enter");
+      assert.equal(await remoteDetails.evaluate((el) => el.open), true);
+      assert.equal(await fieldDetails.evaluate((el) => el.open), false, "opening remote must close battlefield details");
       await assertBattleControlsClear("remote settings open");
-      assert.equal(await field.isVisible(), false, "collapsed battlefield entry must not remain visually or keyboard focusable behind open settings");
-      assert.equal(await field.evaluate((el) => { el.focus(); return document.activeElement === el; }), false, "hidden battlefield entry must not accept focus");
-      await assertSummaryClear(remote, "remote settings");
+      await assertMenuClear("remote settings open");
+      await submit.scrollIntoViewIfNeeded();
       await inspect("submit while remote settings expanded", submit);
       const relay = page.getByLabel(zh ? "中继 HTTPS 地址" : "Relay HTTPS URL");
-      await relay.scrollIntoViewIfNeeded();
+      await reveal(relay);
       await inspect("remote input", relay);
-      await remote.scrollIntoViewIfNeeded();
-      await remote.click();
+      await relay.focus();
+      assert.equal(await relay.evaluate((el) => document.activeElement === el), true, "remote input must accept focus");
+      await reveal(field);
+      await inspect("battlefield entry while remote open", field);
+      await field.click();
+      assert.equal(await fieldDetails.evaluate((el) => el.open), true);
+      assert.equal(await remoteDetails.evaluate((el) => el.open), false, "opening battlefield must close remote details");
+      await reveal(field);
+      await inspect("close battlefield details", field);
+      await field.click();
+      assert.equal(await fieldDetails.evaluate((el) => el.open), false);
+      await inspect("close menu after switching sections", menuEntry);
+      if (screenshots) await page.screenshot({ path: join(screenshots, `settings-${locale}-${width}x${height}-dpr${dpr}.png`) });
+      await menuEntry.focus();
+      await page.keyboard.press("Enter");
+      assert.equal(await menu.evaluate((el) => el.open), false);
+      assert.equal(await field.isVisible(), false);
+      assert.equal(await remote.isVisible(), false);
+      await inspect("reopen settings entry", menuEntry);
       console.log(`${locale} ${width}x${height}: settings, submit, confirmation, unit selection, resources, order and remote controls reachable`);
     }
     // The initial Assault has no legal melee target. Resolve the documented
@@ -237,8 +294,12 @@ try {
     await page.getByRole("button", { name: zh ? "应用移动" : "Apply move", exact: true }).click();
     for (const [width, height] of sizes) {
       await page.setViewportSize({ width, height });
-      const field = page.getByText(zh ? "战场设置与规则" : "Battlefield settings and rules", { exact: true });
-      await field.click();
+      const menu = page.locator(".mecha-options-menu");
+      const menuEntry = menu.locator(":scope > summary");
+      await menuEntry.click();
+      const fieldDetails = menu.locator("details.mecha-settings:not(.mecha-remote-settings)");
+      const field = fieldDetails.locator(":scope > summary");
+      if (!await fieldDetails.evaluate((el) => el.open)) await field.click();
       const melee = page.locator(".mecha-selected-actions > .mecha-actions > button").filter({ hasText: zh ? /^近战$/ : /^Melee$/ });
       await melee.scrollIntoViewIfNeeded();
       await melee.click({ timeout: 10_000 });
@@ -291,7 +352,7 @@ try {
       await result.getByRole("button", { name: zh ? "取消选目标" : "Cancel targeting", exact: true }).click({ timeout: 10_000 });
       assert.equal(await result.count(), 0);
       assert.equal(await page.locator(".mecha-pack").innerText(), before, "candidate cancellation must preserve the draft");
-      await field.click();
+      await menuEntry.click();
       console.log(`${locale} ${width}x${height}: targeting, result confirmation and cancellation reachable with settings open`);
     }
     const melee = page.locator(".mecha-selected-actions > .mecha-actions > button").filter({ hasText: zh ? /^近战$/ : /^Melee$/ });

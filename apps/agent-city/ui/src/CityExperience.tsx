@@ -6,9 +6,11 @@ import { readCitySessionDetail, type CityProjectionV1 } from "./data/provider";
 import { citySeed, randomSeed } from "./data/seed";
 import type { CityEngine, EngineStats } from "./engine/CityEngine";
 import type { CinematicCard, CinematicCut, CinematicPlan } from "./engine/cityCinematic";
-import type { BackdropMode } from "./engine/cityLayout";
+import { prepareCityLayout, type BackdropMode } from "./engine/cityLayout";
+import { MIAMI_COASTAL } from "./engine/citySeaside";
+import { prepareSeedChange, SeedChangeError } from "./engine/prepareSeedChange";
 import { paletteFor } from "./engine/cityTextures";
-import { invokeHost, embedded, pluginLocale } from "./host";
+import { invokeHost, embedded, pluginLocale, noteBusy } from "./host";
 import type { PluginResponseV1 } from "@agent-vitals/app-sdk";
 import { runFilmJob, supportsBackgroundFilm } from "./export/filmJob";
 import { cinematicCopy } from "./engine/cinematicCopy";
@@ -60,6 +62,7 @@ export function useCityExperience(engine: RefObject<CityEngine | null>, projecti
   const [seedBusy, setSeedBusy] = useState(true);
   const [confirmSeed, setConfirmSeed] = useState(false);
   const seedTimer = useRef<number | undefined>(undefined);
+  const seedPreparation = useRef<AbortController | null>(null);
   const [cursor, setCursor] = useState<number | null>(null);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(3600);
@@ -108,7 +111,7 @@ export function useCityExperience(engine: RefObject<CityEngine | null>, projecti
         if (active) { engine.current?.setSeed(74031); setError("岛屿种子无法保存，本次使用临时种子。"); }
       } finally { if (active) setSeedBusy(false); }
     })();
-    return () => { active = false; mounted.current = false; abort.current?.abort(); window.clearTimeout(seedTimer.current); };
+    return () => { active = false; mounted.current = false; abort.current?.abort(); seedPreparation.current?.abort(); window.clearTimeout(seedTimer.current); };
   }, []);
 
   const clearSelection = () => { setSelected(null); setDetails(false); engine.current?.setSelected(null); };
@@ -169,14 +172,29 @@ export function useCityExperience(engine: RefObject<CityEngine | null>, projecti
   }, [options, details, film]);
 
   const applySeed = async (value: number) => {
-    if (busy || !Number.isInteger(value) || value < 1 || value > 4294967295) { setError("种子须为 1–4294967295 的整数。"); return; }
+    if (busy || seedPreparation.current) return;
+    if (!Number.isInteger(value) || value < 1 || value > 4294967295) { setError("种子须为 1–4294967295 的整数。"); return; }
+    const preparation = new AbortController();
+    seedPreparation.current = preparation;
     setSeedBusy(true); setError(null);
     try {
-      await citySeed("write", value);
-      if (!mounted.current) return;
-      engine.current?.setSeed(value); setSeed(value); setSeedDraft(String(value)); clearSelection();
-    } catch { if (mounted.current) setError("无法保存岛屿种子，原岛屿保持不变。"); }
-    finally { if (mounted.current) setSeedBusy(false); }
+      const result = await prepareSeedChange({ seed: value, signal: preparation.signal, currentEngine: () => engine.current,
+        prepare: (model, nextSeed, signal) => prepareCityLayout(model, nextSeed, MIAMI_COASTAL, { signal }),
+        persist: async (nextSeed) => {
+          if (await citySeed("write", nextSeed) !== nextSeed) throw new Error("seed-not-saved");
+        }, beforeWork: () => noteBusy(15_000).catch(() => {}) });
+      if (!mounted.current || result === "cancelled") return;
+      setSeed(value); setSeedDraft(String(value)); clearSelection();
+    } catch (error) {
+      if (mounted.current) setError(error instanceof SeedChangeError && error.saved
+        ? "新种子已写入本地状态，但城市未能更新；请重启城市。"
+        : error instanceof SeedChangeError && error.persistAttempted
+          ? "无法确认种子是否保存，城市未主动切换；请重启城市以确认。"
+          : "无法准备岛屿种子，城市未主动切换。");
+    } finally {
+      if (seedPreparation.current === preparation) seedPreparation.current = null;
+      if (mounted.current) setSeedBusy(false);
+    }
   };
   const reseed = () => {
     if (!confirmSeed) { setConfirmSeed(true); seedTimer.current = window.setTimeout(() => setConfirmSeed(false), 4000); return; }
@@ -558,6 +576,7 @@ export function CityExperience({ ui, disabled, cinema, status, quality, onQualit
         <label htmlFor="city-seed">岛屿种子</label><div className="city-seed-controls"><input id="city-seed" inputMode="numeric" value={ui.seedDraft} disabled={locked} onChange={(e) => ui.setSeedDraft(e.target.value)} />
         <button disabled={locked}>应用种子</button></div>
       </form>
+      {ui.seedBusy && <p role="status">正在准备岛屿，请稍候。</p>}
       <button onClick={ui.reseed} disabled={locked}>{ui.confirmSeed ? "确认重新生成（4 秒内）" : "重新生成岛屿"}</button>
       <p>只改变地形与布局，不删除会话数据。种子保存于插件私有本地状态。</p></>}
       <label htmlFor="city-backdrop">城市背景楼</label><select id="city-backdrop" value={ui.backdrop} disabled={locked} onChange={(e) => ui.setBackdrop(e.target.value as BackdropMode)}><option value="auto">自动（随会话数，不挤占城区）</option><option value="off">关闭（纯数据城市）</option><option value="full">繁华（铺满城区周边）</option></select>

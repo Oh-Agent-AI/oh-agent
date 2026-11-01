@@ -31,6 +31,49 @@ const phase = "let phase=0, resumeAt=0;";
 assert.ok(original?.includes(target) && original.includes(phase) && replacement, "probe instrumentation points changed");
 const entry = original.replace(phase, "let phase=3, resumeAt=0, frameStart=null, frameDeadline=0;").replace(target, replacement);
 
+// The automatic registered-plugin fixture must really start at a different
+// seed, not merely reapply the desired value already present in storage.
+const pluginHostSource = readFileSync(new URL("../apps/desktop/src-tauri/src/plugin_host.rs", import.meta.url), "utf8");
+assert.match(pluginHostSource, /feature = "plugin-isolation-probe"[\s\S]*?--plugin-formal-mecha-probe[\s\S]*?localStorage\.setItem\('city\.seed', '74031'\)/);
+for (const scenario of ["baseline", "wrong-input", "wrong-storage", "missing-fixture"]) {
+  let tick, now = 0, entered = false, applied = false;
+  let stored = scenario === "wrong-storage" ? "4196523069" : "74031";
+  const events = [];
+  class HTMLInputElement {
+    constructor() { this._value = scenario === "wrong-input" ? "4196523069" : "74031"; this.disabled = false; }
+    get value() { return this._value; }
+    set value(value) { this._value = value; }
+    dispatchEvent() {}
+  }
+  const input = new HTMLInputElement();
+  const dialog = {
+    querySelector(selector) { return selector === "#city-seed" ? input : null; },
+    querySelectorAll(selector) { return selector === "button" ? [{ textContent: "Apply seed", disabled: false, click() { applied = true; } }] : [{ textContent: "Mecha tactics", disabled: false, click() { entered = true; } }]; },
+  };
+  const document = { querySelector(selector) {
+    if (selector === 'dialog[open][aria-label="City settings"]') return dialog;
+    if (selector === ".city-coverage-badge") return { textContent: "Demo" };
+    if (selector === ".mecha-turn-summary") return entered ? {} : null;
+    return null;
+  } };
+  const window = { __CITY_ISOLATION_FIXTURE__: scenario !== "missing-fixture", __TAURI__: { core: { invoke(_method, { code }) { events.push(code); } } } };
+  runInNewContext(original, { window, document, localStorage: { getItem() { return stored; } }, HTMLInputElement,
+    Event: class {}, Date: { now: () => now }, setInterval(callback) { tick = callback; return 1; }, clearInterval() {}, setTimeout() {} });
+  tick();
+  if (scenario !== "baseline") {
+    assert.equal(input.value, scenario === "wrong-input" ? "4196523069" : "74031", scenario);
+    assert.ok(!events.includes("mecha_seed_initial_74031") && !events.includes("mecha_seed_input"), scenario);
+    continue;
+  }
+  assert.equal(input.value, "4196523069");
+  assert.deepEqual(events.slice(0, 2), ["mecha_seed_initial_74031", "mecha_seed_input"]);
+  tick(); assert.equal(applied, true);
+  stored = "4196523069"; now = 1600; tick(); tick(); tick();
+  assert.ok(events.includes("mecha_seed_stored") && events.includes("mecha_seed_applied") && events.includes("mecha_board_ready"));
+  assert.equal(entered, true);
+}
+console.log("Probe automatic seed gate synthetic JS: initial 74031, change to 4196523069, and fail-closed baseline checks passed.");
+
 for (const locale of ["zh-Hans", "en"]) for (const scenario of ["advancing", "stalled", "zero-canvas", "missing-clock"]) {
   let now = 0;
   let elapsed = 0;

@@ -7,6 +7,9 @@ use crate::mecha_remote_adapter::{validate_request, validate_host_message};
 use crate::remote_transport::{self, RelayConnection};
 use crate::remote_sessions::{SessionKey, SessionStore};
 
+#[path = "remote_gateway_projection.rs"]
+mod projection;
+
 const SESSION_VIEW: &str = "mecha-remote-session";
 const PROTOCOL: &str = "mecha-net:v1";
 #[cfg(test)]
@@ -103,6 +106,7 @@ fn outbound(active: &Active, mut value: Value) -> Value {
 }
 
 fn respond_to_session(_app: &tauri::AppHandle, active: &Active, request: &Value, code: &str) {
+    if !request["requestId"].as_str().is_some_and(valid_id) { return; }
     let value = outbound(active, json!({"type":"response","requestId":request["requestId"],"result":{"ok":false,"error":{"code":code}}}));
     if let Ok(text) = serde_json::to_string(&value) { let _ = active.outbox.try_send(text); }
 }
@@ -127,6 +131,10 @@ async fn run_connection(app: tauri::AppHandle, mut active: Active, ready: watch:
             respond_to_session(&app, &active, &value, code);
             return;
         }
+        if value["method"] == "plan.submit" && !projection::valid_submit_plan(&value["payload"]) {
+            respond_to_session(&app, &active, &value, "invalid_message");
+            return;
+        }
         let request = json!({"protocol":PROTOCOL,"type":"request","requestId":value["requestId"],"method":value["method"],"payload":value["payload"]});
         if eval_session(&app, &active, &request).is_err() {
             respond_to_session(&app, &active, &value, "remote_session_unavailable");
@@ -144,10 +152,8 @@ async fn start(app: &tauri::AppHandle, capability: &crate::remote_protocol::Remo
     let relay = payload["relay"].as_str().filter(|url| valid_relay(url)).ok_or("remote_url_invalid")?.trim_end_matches('/').to_owned();
     let arena = &payload["arena"];
     let state = &payload["state"];
-    if arena["schema"] != "mecha-arena:v1" || arena["ruleset"] != "mecha-v1.4" || state["ruleset"] != "mecha-v1.4" || !state["revision"].is_u64() {
-        return Err("remote_match_invalid");
-    }
     if serde_json::to_vec(&json!({"arena":arena,"state":state})).map_err(|_| "remote_match_invalid")?.len() > 256 * 1024 { return Err("remote_match_too_large"); }
+    if !projection::valid_start(arena, state) { return Err("remote_match_invalid"); }
     let room_id = secret()?;
     let match_id = secret()?;
     let active = Active {
@@ -287,6 +293,7 @@ pub fn remote_mecha_message(app: tauri::AppHandle, webview: tauri::WebviewWindow
     if !validate_host_message(message, &active.match_id, &active.capability) { return Err("invalid_message".into()); }
     let text = serde_json::to_string(&outbound(active, message.clone())).map_err(|_| "invalid_message")?;
     if text.len() > 256 * 1024 { return Err("message_too_large".into()); }
+    if !projection::valid_outbound(message, &active.match_id) { return Err("invalid_message".into()); }
     active.outbox.try_send(text).map_err(|_| "remote_backpressure")?;
     Ok(())
 }

@@ -5,8 +5,8 @@ import { loadCity } from "./city-kit/index.mjs";
 
 const root = new URL("../apps/agent-city/ui/src/", import.meta.url);
 const read = (path) => readFile(new URL(path, root), "utf8");
-const [city, engine, board, world, css, copy, animation, controller] = await Promise.all([
-  read("CityApp.tsx"), read("engine/CityEngine.ts"), read("game/MechaBoard.tsx"), read("game/CityMechaWorld.tsx"), read("game/game.css"), read("game/gameCopy.ts"), read("render/mecha/animation.ts"), read("game/mecha/controller.ts"),
+const [city, engine, board, world, css, copy, animation, controller, remote] = await Promise.all([
+  read("CityApp.tsx"), read("engine/CityEngine.ts"), read("game/MechaBoard.tsx"), read("game/CityMechaWorld.tsx"), read("game/game.css"), read("game/gameCopy.ts"), read("render/mecha/animation.ts"), read("game/mecha/controller.ts"), read("game/mecha/RemoteMechaControls.tsx"),
 ]);
 
 assert.match(city, /!embedded\(\) && !mechaOpen && <header className="city-header"/);
@@ -31,7 +31,12 @@ assert.match(board, /pendingNames = \(s\?\.pendingIds/);
 assert.match(board, /\{t\("已规划"\)\} \{plannedCount\}\/\{activeMechs\.length\}/);
 assert.match(board, /pendingNames\.join\("、"\)/);
 assert.match(board, /<details className="mecha-settings" name="mecha-battle-options">/);
-assert.match(css, /\.mecha-remote-settings \{ top: 110px; \}/);
+// Both disclosures live in one bounded menu. Their actual non-overlap with
+// submit is checked geometrically by verify-city-mecha-order-click.mjs.
+assert.match(board, /<details className="mecha-options-menu">[\s\S]*?<details className="mecha-settings" name="mecha-battle-options">/);
+assert.match(remote, /<details className="mecha-settings mecha-remote-settings" name="mecha-battle-options">/);
+assert.match(board, /<RemoteMechaControls[\s\S]*?stopTarget=\{submitTarget\}/);
+assert.match(css, /\.mecha-panel > \.mecha-options-menu \{ grid-row: 3;[^\n]*overflow: auto/);
 assert.match(engine, /claimParkedMechaClick/);
 assert.match(city, /mechaEntryRefusal/);
 assert.match(board, /stakeBuildings\(state\)/);
@@ -50,8 +55,9 @@ assert.match(css, /@media \(max-height: 640px\)/);
 assert.match(css, /@media \(max-width: 600px\) and \(max-height: 520px\)/);
 assert.match(world, /acquireModeLease\(\{ camera: "orbit" \}\)/);
 assert.doesNotMatch(world, /frameCamera/);
-assert.match(world, /empty: 0\.05/);
-assert.match(world, /grid[^\n]*opacity: 0\.28/);
+// The tactical pass deliberately raises board and grid contrast over the old baseline.
+assert.match(world, /empty: 0\.12/);
+assert.match(world, /grid[^\n]*opacity: 0\.48/);
 assert.match(world, /ring\.mat\.opacity = figure\.selected \|\| targeted \? 1 : 0\.68/);
 assert.match(world, /ring\.mat\.color\.set\(figure\.selected \? "#f4f7fb" : MECHA_FACTION_COLORS\.friendly\)/);
 assert.match(world, /Assault: marker\(MECHA_FACTION_COLORS\.friendly/);
@@ -69,16 +75,20 @@ assert.match(world, /threat\.visible = telegraph\.has\(id\)/);
 assert.match(world, /warning\.visible = threat\.visible/);
 assert.match(world, /focusedTelegraph\.has\(id\) \? focusWarningMat/);
 assert.match(world, /warningTexture\.dispose\(\)/);
-assert.match(board, /斜纹和警告三角表示敌方威胁/);
+assert.match(board, /红色三角为当前宣告；蓝色 P 为草稿试算；!P 表示两者重叠/);
 assert.doesNotMatch(board, /MechaLineup|mecha-grid|方格棋盘|t\("布局"\)/);
 assert.doesNotMatch(css, /\.mecha-grid|\.mecha-cell/);
 assert.match(board, /className="mecha-overlay is-city"/);
 assert.doesNotMatch(board, /mecha-overlay(?! is-city)/);
 assert.match(board, /\{t\("战场"\)\}/);
-assert.match(controller, /preview\.ok \? \{ cells: preview\.telegraphAfter, byActor: preview\.telegraphByActor \} : collectTelegraphs\(match\)/);
+assert.match(controller, /const declaredThreats = collectTelegraphs\(match\)/);
+assert.match(controller, /const projectedThreats = preview\.ok \? \{ cells: preview\.telegraphAfter, byActor: preview\.telegraphByActor \} : null/);
+assert.match(controller, /const currentThreats = projectedThreats \?\? declaredThreats/);
 assert.match(board, /telegraph: performance \? \[\] : \(s\?\.telegraph \?\? \[\]\)/);
-assert.match(board, /\{t\("整包预计敌方威胁"\)\}/);
-assert.match(board, /\{t\("整包预计机甲受击"\)\}/);
+assert.match(board, /declaredTelegraph: performance \? \[\] : \(s\?\.declaredThreats\.cells \?\? \[\]\)/);
+assert.match(board, /projectedTelegraph: performance \? null : \(s\?\.projectedThreats\?\.cells \?\? null\)/);
+assert.match(board, /草稿试算威胁/);
+assert.match(board, /整包预计机甲受击/);
 assert.match(board, /\{t\("撤回移动"\)\}/);
 assert.match(board, /controller\.undoMove\(\)/);
 assert.match(board, /onHoverEnemy/);

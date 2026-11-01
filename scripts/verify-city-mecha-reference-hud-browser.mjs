@@ -1,0 +1,398 @@
+#!/usr/bin/env node
+// Reference-inspired regression, not a pixel comparison. Start THIS worktree's
+// apps/agent-city/ui Vite server first, then run:
+//   node scripts/verify-city-mecha-reference-hud-browser.mjs http://127.0.0.1:5178
+// Optional MECHA_HUD_LANG=zh|en and MECHA_HUD_SIZE=640x480|800x600|1100x700
+// select a subset for diagnosis (the default runs the full matrix). Optional
+// MECHA_SCREENSHOTS_DIR saves screenshots. Playwright is resolved from
+// apps/desktop/ui-dev. All sessions/data are synthetic; interception injects a
+// display-prediction failure only, not the authoritative submit validation.
+// Movement and targeting use the list controls; 3D board picking/visibility is
+// not verified. This is headless Chromium, not native/Tauri, physical input, accessibility,
+// art-direction, real-data, performance, networking or user acceptance testing.
+import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
+
+let chromium;
+try {
+  ({ chromium } = createRequire(new URL("../apps/desktop/ui-dev/package.json", import.meta.url))("playwright"));
+} catch (error) {
+  console.error(`HARNESS: cannot load Playwright from apps/desktop/ui-dev: ${error.message}`);
+  process.exit(2);
+}
+const base = process.argv[2] ?? "http://127.0.0.1:5178";
+const screenshots = process.env.MECHA_SCREENSHOTS_DIR;
+if (screenshots) await mkdir(screenshots, { recursive: true });
+const failures = [];
+const harnessFailures = [];
+const inconclusive = [];
+const allSizes = [[640, 480], [800, 600], [1100, 700]];
+const langs = process.env.MECHA_HUD_LANG ? [process.env.MECHA_HUD_LANG] : ["zh", "en"];
+const sizes = process.env.MECHA_HUD_SIZE ? allSizes.filter(([w, h]) => `${w}x${h}` === process.env.MECHA_HUD_SIZE) : allSizes;
+if (langs.some((lang) => !["zh", "en"].includes(lang)) || !sizes.length) {
+  console.error("HARNESS: invalid MECHA_HUD_LANG or MECHA_HUD_SIZE");
+  process.exit(2);
+}
+console.log(`Matrix: ${langs.join(",")} / ${sizes.map(([w, h]) => `${w}x${h}`).join(",")} (serial; a subset is not a full pass)`);
+let browser;
+try {
+  browser = await chromium.launch({ headless: true, args: ["--enable-unsafe-swiftshader"] });
+} catch (error) {
+  console.error(`HARNESS: Chromium launch failed: ${error.message}`);
+  process.exit(2);
+}
+
+// Check full bounding box, overflow clipping and center hit-test. For data text,
+// another descendant is acceptable; this is a geometric proxy, not visual OCR.
+async function geometry(locator) {
+  assert.equal(await locator.count(), 1, "expected exactly one element");
+  return locator.evaluate((el) => {
+    const rect = el.getBoundingClientRect();
+    const box = { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height };
+    let clippedBy = null;
+    for (let p = el.parentElement; p; p = p.parentElement) {
+      const style = getComputedStyle(p), r = p.getBoundingClientRect();
+      if ((/(auto|scroll|hidden|clip)/.test(style.overflowX) && (rect.left < r.left - 1 || rect.right > r.right + 1)) ||
+          (/(auto|scroll|hidden|clip)/.test(style.overflowY) && (rect.top < r.top - 1 || rect.bottom > r.bottom + 1))) {
+        clippedBy = p.className || p.tagName; break;
+      }
+    }
+    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    return { box, clippedBy, hit: Boolean(hit && (hit === el || el.contains(hit))), hitTag: hit?.outerHTML.slice(0, 140),
+      inViewport: rect.width > 0 && rect.height > 0 && rect.left >= -1 && rect.top >= -1 && rect.right <= innerWidth + 1 && rect.bottom <= innerHeight + 1,
+      displayed: getComputedStyle(el).visibility === "visible" && getComputedStyle(el).display !== "none" };
+  });
+}
+async function usable(locator) {
+  const g = await geometry(locator);
+  assert.ok(g.displayed && g.inViewport && !g.clippedBy && g.hit, JSON.stringify(g));
+}
+async function overlap(a, b) {
+  const x = (await geometry(a)).box, y = (await geometry(b)).box;
+  return x.left < y.right - 1 && x.right > y.left + 1 && x.top < y.bottom - 1 && x.bottom > y.top + 1;
+}
+
+// Text geometry, not OCR: at the current resting scroll position no *visible*
+// line fragment may be cut by an overflow edge. Fully hidden lines are OK only
+// if every fragment can be revealed in the existing scroller. We restore the
+// original scroll position; we never alter CSS or hide text to make it pass.
+async function auditDetailLines(locator, scrollerSelector) {
+  assert.equal(await locator.count(), 1, "expected one open detail region");
+  const audit = await locator.evaluate((root, selector) => {
+    const scroller = root.closest(selector);
+    if (!scroller) return { error: `missing scroll ancestor ${selector}` };
+    const saved = scroller.scrollTop;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const nodes = [], hidden = [];
+    while (walker.nextNode()) {
+      const node = walker.currentNode, parent = node.parentElement;
+      if (!node.textContent.trim() || parent.closest('[aria-hidden="true"], .mecha-sr-only')) continue;
+      const range = document.createRange(); range.selectNodeContents(node);
+      if (getComputedStyle(parent).visibility !== "visible" || getComputedStyle(parent).display === "none" || !range.getClientRects().length) {
+        hidden.push(node.textContent.trim().slice(0, 100));
+      } else nodes.push({ node, range });
+    }
+    const fragments = [];
+    for (const { node, range } of nodes) for (let i = 0; i < range.getClientRects().length; i++) fragments.push({ node, range, i });
+    const clip = (node, rect) => {
+      let left = 0, top = 0, right = innerWidth, bottom = innerHeight;
+      for (let el = node.parentElement; el; el = el.parentElement) {
+        const style = getComputedStyle(el), r = el.getBoundingClientRect();
+        // The padding box, not the border box, is the overflow clip edge.
+        const l = r.left + el.clientLeft, t = r.top + el.clientTop;
+        if (/(auto|scroll|hidden|clip)/.test(style.overflowX)) { left = Math.max(left, l); right = Math.min(right, l + el.clientWidth); }
+        if (/(auto|scroll|hidden|clip)/.test(style.overflowY)) { top = Math.max(top, t); bottom = Math.min(bottom, t + el.clientHeight); }
+      }
+      const visible = rect.right > left + 1 && rect.left < right - 1 && rect.bottom > top + 1 && rect.top < bottom - 1;
+      const whole = rect.left >= left - 1 && rect.right <= right + 1 && rect.top >= top - 1 && rect.bottom <= bottom + 1;
+      return { visible, whole, rect: [rect.left, rect.top, rect.right, rect.bottom].map((n) => Math.round(n * 10) / 10), clip: [left, top, right, bottom].map((n) => Math.round(n * 10) / 10) };
+    };
+    const partial = [], unreachable = [];
+    for (const f of fragments) {
+      const r = f.range.getClientRects()[f.i]; if (!r || r.width <= 0 || r.height <= 0) continue;
+      const c = clip(f.node, r);
+      if (c.visible && !c.whole) partial.push({ text: f.node.textContent.trim().slice(0, 100), ...c });
+    }
+    for (const f of fragments) {
+      let r = f.range.getClientRects()[f.i]; if (!r || r.width <= 0 || r.height <= 0) continue;
+      const viewport = scroller.getBoundingClientRect();
+      scroller.scrollTop += r.top - (viewport.top + scroller.clientTop + 2);
+      r = f.range.getClientRects()[f.i];
+      const c = clip(f.node, r);
+      if (!c.whole) unreachable.push({ text: f.node.textContent.trim().slice(0, 100), ...c });
+    }
+    scroller.scrollTop = saved;
+    return { count: fragments.length, hidden: hidden.slice(0, 8), partial: partial.slice(0, 8), unreachable: unreachable.slice(0, 8) };
+  }, scrollerSelector);
+  assert.ok(!audit.error, audit.error);
+  assert.ok(audit.count > 0, "no rendered detail text was measured");
+  assert.ok(!audit.hidden.length && !audit.partial.length && !audit.unreachable.length,
+    `detail text hidden, partially clipped at rest, or not fully revealable: ${JSON.stringify(audit)}`);
+}
+
+
+// Exercise the settled state, not only the initial render. Restore the scroll
+// position so the normal control-reachability checks can continue afterwards.
+async function auditAfterScrollAndResize(page, locator, selector) {
+  const scroller = page.locator(selector);
+  const initialScrollTop = await scroller.evaluate((el) => el.scrollTop);
+  await scroller.evaluate((el) => { el.scrollTop = Math.min(45, el.scrollHeight - el.clientHeight); });
+  await page.waitForTimeout(400);
+  await auditDetailLines(locator, selector);
+  await page.setViewportSize({width: 700, height: 500});
+  await page.waitForTimeout(400);
+  await auditDetailLines(locator, selector);
+  await page.setViewportSize({width: 640, height: 480});
+  await page.waitForTimeout(400);
+  await auditDetailLines(locator, selector);
+  await scroller.evaluate((el, initial) => { el.scrollTop = initial; }, initialScrollTop);
+  await page.waitForTimeout(400);
+}
+
+try {
+  for (const lang of langs) for (const [width, height] of sizes) {
+    const zh = lang === "zh", label = `${lang} ${width}x${height}`;
+    const context = await browser.newContext({ viewport: { width: 1100, height: 700 }, deviceScaleFactor: 1, locale: zh ? "zh-CN" : "en-US" });
+    const page = await context.newPage();
+    page.setDefaultTimeout(30_000);
+    console.log(`START ${label}: loading synthetic City fixture`);
+    const pageErrors = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    let injectionCount = 0, injectionError = null;
+    await page.route("**/src/game/mecha/controller.ts*", async (route) => {
+      try {
+        const response = await route.fetch();
+        const source = await response.text();
+        const needle = "const previewTurn = init.preview ?? previewPlan;";
+        if (source.split(needle).length !== 2) throw new Error("preview injection point must match exactly once (Vite source or harness changed)");
+        injectionCount++;
+        await route.fulfill({ response, body: source.replace(needle, `const previewTurn = (...args) => {
+          if (globalThis.__referenceHudPreviewFailure) throw new Error("synthetic display preview failure");
+          return (init.preview ?? previewPlan)(...args);
+        };`) });
+      } catch (error) { injectionError = error.message; await route.abort(); }
+    });
+    await page.addInitScript((locale) => {
+      localStorage.setItem("city.seed", "4196523069");
+      window.__AV_PLUGIN_LOCALE__ = locale;
+      // Bound software rendering work on shared/headless hosts, as in the other tests.
+      const frame = window.requestAnimationFrame.bind(window), cancel = window.cancelAnimationFrame.bind(window);
+      const pending = new Map(); let sequence = 0;
+      window.requestAnimationFrame = (callback) => {
+        const id = ++sequence;
+        const timer = setTimeout(() => { const handle = frame((time) => { pending.delete(id); callback(time); }); pending.set(id, { handle }); }, 100);
+        pending.set(id, { timer }); return id;
+      };
+      window.cancelAnimationFrame = (id) => { const entry = pending.get(id); if (entry?.timer !== undefined) clearTimeout(entry.timer); if (entry?.handle !== undefined) cancel(entry.handle); pending.delete(id); };
+    }, zh ? "zh-Hans" : "en");
+    const check = async (name, fn) => {
+      console.log(`START ${label}: ${name}`);
+      const before = failures.length + inconclusive.length;
+      try {
+        await fn();
+        // A nested check reports its own result; don't print a misleading PASS
+        // for the enclosing stage, but continue if its behavioral flow completed.
+        const nestedFailure = failures.length + inconclusive.length > before;
+        console.log(`${nestedFailure ? "DONE (nested checks failed or inconclusive)" : "PASS"} ${label}: ${name}`);
+        return true;
+      } catch (error) {
+        if (error.name === "AssertionError") {
+          const msg = `APP ${label}: ${name}: ${error.message}`; failures.push(msg); console.error(`FAIL ${msg}`);
+        } else {
+          // A timeout or a detached locator can be load/HMR contention, a test
+          // problem, or an app defect; do not claim a diagnosis without evidence.
+          const msg = `${label}: ${name}: ${error.message}`; inconclusive.push(msg); console.error(`INCONCLUSIVE ${msg}`);
+        }
+        return false;
+      }
+    };
+    const text = (z, e) => zh ? z : e;
+    const button = (z, e) => page.getByRole("button", { name: text(z, e), exact: true });
+    try {
+      // A wrong server, missing dependency, or changed injection is a harness failure,
+      // not a verdict on the redesign. Preflight is deliberately outside app checks.
+      let response;
+      try {
+        response = await page.goto(new URL("/?fixtureSessions=30", base).href, { waitUntil: "domcontentloaded", timeout: 90_000 });
+        assert.ok(response?.ok(), `server returned ${response?.status()}`);
+        await page.locator(".city-loading").waitFor({ state: "hidden", timeout: 90_000 });
+        if (injectionError || injectionCount !== 1) throw new Error(injectionError ?? `preview interception count ${injectionCount}, expected 1; use the City Vite server`);
+      } catch (error) { throw new Error(`HARNESS preflight: ${injectionError ?? error.message}`); }
+      const entered = await check("enter synthetic battle", async () => {
+        await button("城市设置", "City settings").click();
+        await button("机甲战棋", "Mecha tactics").click();
+        await page.locator(".mecha-turn-summary").waitFor();
+      });
+      if (!entered) continue;
+      await page.setViewportSize({ width, height });
+      await page.waitForTimeout(250);
+      const summary = page.locator(".mecha-turn-summary"), pack = page.locator(".mecha-pack");
+      const actions = page.locator(".mecha-selected-actions"), submit = page.locator(".mecha-submit-primary");
+      const forecast = page.locator("details.mecha-resource > summary");
+      const turn = page.locator(".mecha-battle-bar > div:first-child span").first();
+      await check("reference: turn and building forecast immediately readable", async () => {
+        assert.match(await turn.innerText(), zh ? /回合\s*1\s*\/\s*15/ : /Turn\s*1\s*\/\s*15/);
+        await usable(turn);
+        // The standalone quick resource is the current immediately visible
+        // summary; the longer <details> lives in the scrollable threat rail.
+        const quick = page.locator(".mecha-panel > .mecha-quick-resource");
+        assert.match(await quick.innerText(), zh ? /80\s*\/\s*80.*预计.*68\s*\/\s*80/s : /80\s*\/\s*80.*Predicted.*68\s*\/\s*80/s);
+        await usable(quick);
+        assert.match(await forecast.innerText(), zh ? /风险详情/ : /Risk details/);
+      });
+      await check("three mech status controls and submit are reachable", async () => {
+        assert.equal(await pack.locator("li > button").count(), 3);
+        for (const item of await pack.locator("li > button").all()) { assert.match(await item.innerText(), /\d+\s*HP/); await usable(item); }
+        assert.equal(await submit.isEnabled(), true); await usable(submit);
+      });
+      await check("battle bar controls are fully visible and hit-testable", async () => {
+        const controls = page.locator(".mecha-battle-controls button");
+        assert.equal(await controls.count(), 5, "planning fixture must show map, rotate, reset camera, pause and exit");
+        for (const control of await controls.all()) { assert.equal(await control.isEnabled(), true); await usable(control); }
+      });
+      await check("critical planning panels do not overlap", async () => {
+        for (const [a, b, name] of [[summary, actions, "summary/actions"], [summary, pack, "summary/roster"], [actions, pack, "actions/roster"], [actions, page.locator(".mecha-submit"), "actions/submit"]]) {
+          assert.equal(await overlap(a, b), false, `${name} overlap`);
+        }
+      });
+      await check("forecast, threats and order can be reached", async () => {
+        await forecast.scrollIntoViewIfNeeded(); await usable(forecast);
+        await forecast.click();
+        assert.equal(await page.locator("details.mecha-resource").evaluate((el) => el.open), true);
+        await check("building details: no half-lines and all text reachable", async () => {
+          await auditDetailLines(page.locator("details.mecha-resource"), ".mecha-turn-summary");
+          if (width === 640 && height === 480) await auditAfterScrollAndResize(page, page.locator("details.mecha-resource"), ".mecha-turn-summary");
+        });
+        const building = page.locator("details.mecha-resource li > button").first();
+        await building.scrollIntoViewIfNeeded(); await usable(building);
+        await forecast.scrollIntoViewIfNeeded(); await forecast.click();
+        const order = button("结算顺序", "Attack order");
+        await order.scrollIntoViewIfNeeded(); await usable(order); await order.click();
+        await check("attack order: no half-lines and all text reachable", async () => {
+          await auditDetailLines(page.locator(".mecha-order"), ".mecha-turn-summary");
+        });
+        const orderItems = page.locator(".mecha-order ol button"), threats = page.locator(".mecha-threat-sources button");
+        assert.ok(await orderItems.count() > 0); assert.deepEqual(await orderItems.allTextContents(), await threats.allTextContents());
+        await orderItems.first().scrollIntoViewIfNeeded(); await usable(orderItems.first()); await orderItems.first().click();
+        assert.equal(await orderItems.first().getAttribute("aria-pressed"), "true");
+        await order.scrollIntoViewIfNeeded(); await order.click();
+      });
+      // Advance the stock deterministic fixture to a turn where move (3,2) and
+      // melee Boss are legal, using real UI actions, not direct controller calls.
+      const advanced = await check("submit-risk cancel and confirm, advance fixture", async () => {
+        await submit.click();
+        await button("返回修改", "Return to editing").click();
+        assert.equal(await page.locator(".mecha-hold-confirm").count(), 0);
+        await submit.click(); await button("继续提交", "Submit anyway").click();
+        const skip = button("跳过演出", "Skip animation");
+        if (await skip.isVisible().catch(() => false)) await skip.click();
+        await page.waitForFunction(() => document.querySelector(".mecha-resource")?.textContent?.includes("68/80"), null, { timeout: 90_000 });
+      });
+      if (!advanced) { console.log(`SKIP ${label}: move/target/failure depend on fixture advancement`); continue; }
+      const moved = await check("plan a move via reachable controls", async () => {
+        await pack.locator("li > button").first().click();
+        await page.locator(".mecha-move-list summary").click();
+        const select = page.locator(".mecha-move-list select");
+        await select.scrollIntoViewIfNeeded(); await usable(select);
+        await select.selectOption("3,2");
+        const apply = button("应用移动", "Apply move");
+        await apply.scrollIntoViewIfNeeded(); await usable(apply); await apply.click();
+        assert.equal(await button("撤回移动", "Undo move").isEnabled(), true);
+      });
+      if (!moved) { console.log(`SKIP ${label}: target/failure depend on movement`); continue; }
+      const melee = actions.locator(":scope > .mecha-actions > button").filter({ hasText: zh ? /^近战$/ : /^Melee$/ });
+      const boss = page.locator(".mecha-target-preview .mecha-actions button").filter({ hasText: zh ? "大怪" : "Boss" }).first();
+      const candidate = page.locator(".mecha-candidate-result");
+      const selectTarget = async () => { await melee.click(); await boss.click(); await candidate.waitFor(); };
+      const candidateReady = await check("target prediction and cancel preserve draft", async () => {
+        const draft = await pack.innerText();
+        await selectTarget();
+        assert.match(await candidate.innerText(), zh ? /直接伤害 2/ : /Direct damage 2/);
+        assert.match(await candidate.innerText(), zh ? /整包结束目标 HP 36/ : /Target HP after the whole turn 36/);
+        assert.equal(await pack.innerText(), draft);
+        await check("target details: no half-lines and all text reachable", async () => {
+          await auditDetailLines(candidate, ".mecha-selected-actions");
+        });
+        await check("reference: target confirm/cancel immediately visible and unobscured", async () => {
+          for (const control of await candidate.locator(".mecha-candidate-actions button").all()) await usable(control);
+          assert.equal(await candidate.locator(".mecha-candidate-actions button").count(), 2);
+        });
+        if (width === 640 && height === 480) await check("target details after scroll and resize", async () => {
+          await auditAfterScrollAndResize(page, candidate, ".mecha-selected-actions");
+        });
+        const cancel = candidate.getByRole("button", { name: text("取消选目标", "Cancel targeting"), exact: true });
+        await cancel.scrollIntoViewIfNeeded(); await usable(cancel); await cancel.focus(); await page.keyboard.press("Enter");
+        assert.equal(await candidate.count(), 0); assert.equal(await pack.innerText(), draft);
+        await check("keyboard cancel restores a visible actionable focus", async () => {
+          const focused = page.locator(":focus");
+          assert.equal(await focused.count(), 1);
+          assert.ok(await focused.evaluate((el) => el instanceof HTMLButtonElement && el.isConnected && !!el.closest(".mecha-overlay") && !el.disabled), "focus must return to an enabled battle action, not body or detached result");
+          await usable(focused);
+        });
+      });
+      if (!candidateReady) { console.log(`SKIP ${label}: confirmation/failure depend on target prediction`); continue; }
+      await check("confirm target commits only the selected draft", async () => {
+        await selectTarget();
+        const confirm = candidate.getByRole("button", { name: text("确认选择", "Confirm target"), exact: true });
+        await confirm.scrollIntoViewIfNeeded(); await usable(confirm); await confirm.focus(); await page.keyboard.press("Enter");
+        assert.equal(await candidate.count(), 0);
+        assert.match(await pack.locator("li").first().innerText(), zh ? /近战.*大怪/ : /Melee.*Boss/);
+        await check("keyboard confirm restores a visible actionable focus", async () => {
+          const focused = page.locator(":focus");
+          assert.equal(await focused.count(), 1);
+          assert.ok(await focused.evaluate((el) => el instanceof HTMLButtonElement && el.isConnected && !!el.closest(".mecha-overlay") && !el.disabled), "focus must return to an enabled battle action, not body or detached result");
+          await usable(focused);
+        });
+      });
+      await check("prediction failure clears stale numbers, then recovers", async () => {
+        await page.evaluate(() => { globalThis.__referenceHudPreviewFailure = true; });
+        await button("撤回移动", "Undo move").click(); // invalidates successful preview
+        const failureStatus = page.locator(".mecha-preview-after[role=status]");
+        await failureStatus.waitFor();
+        assert.match(await failureStatus.innerText(), zh ? /预览暂不可用，风险未知.*当前敌意不是草稿预测/s : /Prediction is temporarily unavailable.*Current threats are not a prediction of this draft/s);
+        const quick = page.locator(".mecha-panel > .mecha-quick-resource");
+        assert.match(await quick.innerText(), zh ? /风险未知/ : /Risk unknown/);
+        assert.doesNotMatch(await quick.innerText(), zh ? /→|预计/ : /→|Predicted/);
+        await usable(quick);
+        assert.equal(await page.locator("details.mecha-resource").count(), 0, "old building prediction must be removed");
+        assert.equal(await page.locator(".mecha-threat-sources").getAttribute("aria-label"), zh ? "当前宣告威胁来源" : "Declared threat sources", "failure list must be labeled as declarations, not stale predictions");
+        assert.equal(await page.locator(".mecha-order ol li").count(), 0, "old predicted order must be removed");
+        assert.equal(await page.locator(".mecha-hit").count(), 0, "old predicted hit badges must be removed");
+        await page.locator(".mecha-move-list select").selectOption("3,2");
+        await button("应用移动", "Apply move").click();
+        const draft = await pack.innerText();
+        await selectTarget();
+        assert.match(await candidate.innerText(), zh ? /预览暂不可用，风险未知/ : /Prediction is temporarily unavailable; risk is unknown/);
+        assert.doesNotMatch(await candidate.innerText(), zh ? /直接伤害|整包结束目标 HP|→/ : /Direct damage|Target HP after the whole turn|→/);
+        assert.equal(await pack.innerText(), draft);
+        await check("unavailable target details: no half-lines and all text reachable", async () => {
+          await auditDetailLines(candidate, ".mecha-selected-actions");
+          if (width === 640 && height === 480) await auditAfterScrollAndResize(page, candidate, ".mecha-selected-actions");
+        });
+        await candidate.getByRole("button", { name: text("取消选目标", "Cancel targeting"), exact: true }).click();
+        assert.equal(await candidate.count(), 0, "cancel must clear the failed result");
+        assert.equal(await pack.innerText(), draft, "failed preview/cancel must not change draft");
+        await page.evaluate(() => { globalThis.__referenceHudPreviewFailure = false; });
+        await button("撤回移动", "Undo move").click();
+        await page.locator(".mecha-move-list select").selectOption("3,2");
+        await button("应用移动", "Apply move").click();
+        await selectTarget();
+        assert.match(await candidate.innerText(), zh ? /直接伤害 2/ : /Direct damage 2/);
+        assert.equal(await failureStatus.count(), 0, "failure status must disappear after recovery");
+        assert.equal(await page.locator("details.mecha-resource").count(), 1, "building prediction must recover");
+      });
+      if (screenshots) await page.screenshot({ path: join(screenshots, `reference-hud-${lang}-${width}x${height}.png`) });
+    } catch (error) {
+      const message = `${label}: ${error.message}`; harnessFailures.push(message); console.error(`HARNESS ${message}`);
+    } finally {
+      if (pageErrors.length) { const message = `APP ${label}: uncaught page errors: ${pageErrors.join("; ")}`; failures.push(message); console.error(`FAIL ${message}`); }
+      await context.close();
+    }
+  }
+} finally { await browser.close(); }
+console.log(`\nResults: ${failures.length} app assertion(s), ${inconclusive.length} inconclusive check(s), ${harnessFailures.length} harness failure(s). Skipped dependent checks are not passes.`);
+console.log("Limitations: synthetic fixture and headless browser only; list controls only, no 3D board picking/visibility check; line-range and hit-test geometry do not establish font legibility or pixel-perfect appearance; no native/device/accessibility/network acceptance. Update selectors and injection deliberately if the redesign changes its DOM or preview seam.");
+if (harnessFailures.length || inconclusive.length) process.exitCode = 2;
+else if (failures.length) process.exitCode = 1;

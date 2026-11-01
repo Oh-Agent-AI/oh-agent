@@ -37,7 +37,9 @@ try {
       const source = await response.text();
       const needle = "bar.marker.visible = Boolean(live) && current.focusedBuilding === building.id;";
       assert.equal(source.split(needle).length, 2, "marker observation must match exactly once");
-      const body = source.replace(needle, `${needle}
+      const viewNeedle = "viewRef.current = view;";
+      assert.equal(source.split(viewNeedle).length, 2, "view observation must match exactly once");
+      const body = source.replace(viewNeedle, `${viewNeedle} globalThis.__testMechaView = view;`).replace(needle, `${needle}
         globalThis.__testBuildingMarkers ??= {};
         globalThis.__testBuildingMarkerUpdates ??= {};
         globalThis.__testBuildingMarkers[building.id] = bar.marker.visible;
@@ -69,6 +71,8 @@ try {
     await page.getByRole("button", { name: zh ? "机甲战棋" : "Mecha tactics" }).click();
     await page.locator(".mecha-turn-summary").waitFor();
     assert.equal(interceptions, 1);
+    await page.waitForFunction(() => Array.isArray(globalThis.__testMechaView?.declaredTelegraph) && Array.isArray(globalThis.__testMechaView?.projectedTelegraph));
+    assert.ok(await page.evaluate(() => globalThis.__testMechaView.declaredTelegraph.length > 0), "fixture must contain current declared threats");
 
     const summary = page.locator(".mecha-turn-summary");
     const order = page.locator(".mecha-order");
@@ -76,6 +80,20 @@ try {
     const status = page.locator(".mecha-preview-after[role=status]");
     const unavailable = zh ? /预览暂不可用，风险未知/ : /Prediction is temporarily unavailable/;
     const fallback = zh ? /当前敌意不是草稿预测/ : /Current threats are not a prediction of this draft/;
+    const compactButton = () => page.getByRole("button", { name: zh ? "精简面板" : "Compact panel", exact: true });
+    const expandButton = () => page.getByRole("button", { name: zh ? "展开面板" : "Expand panel", exact: true });
+    const compactRisk = summary.locator(".mecha-compact-risk");
+    const visibleInSummary = async (locator) => locator.evaluate((el) => {
+      const line = el.getBoundingClientRect(), box = el.closest(".mecha-turn-summary").getBoundingClientRect();
+      return line.top >= box.top && line.bottom <= box.bottom && line.width > 0 && line.height > 0;
+    });
+    await page.setViewportSize({ width: 640, height: 480 });
+    await compactButton().click();
+    assert.equal(await compactRisk.count(), 1, `${locale}: compact risk summary must exist`);
+    assert.match(await compactRisk.innerText(), zh ? /80\s*\/\s*80.*预计.*68\s*\/\s*80/ : /80\s*\/\s*80.*Predicted.*68\s*\/\s*80/);
+    assert.ok(await visibleInSummary(compactRisk), `${locale}: compact forecast must be visible without scrolling`);
+    await expandButton().click();
+    await page.setViewportSize({ width: 1100, height: 700 });
     await page.getByRole("button", { name: zh ? "结算顺序" : "Attack order", exact: true }).click();
     assert.equal(await forecast.count(), 1, "fixture must initially expose a building prediction");
     assert.ok(await page.locator(".mecha-threat-sources button").count() > 0, "fixture must initially have predicted threats");
@@ -98,8 +116,17 @@ try {
     await page.evaluate(() => { globalThis.__testMechaPreviewFailure = true; });
     await doctrine.selectOption(initialDoctrine); // invalidate the successful draft's preview cache
     await status.waitFor();
+    await page.waitForFunction(() => globalThis.__testMechaView?.projectedTelegraph === null);
+    assert.ok(await page.evaluate(() => globalThis.__testMechaView.declaredTelegraph.length > 0), "prediction failure must preserve current declarations");
     assert.match(await status.innerText(), unavailable);
     assert.match(await status.innerText(), fallback);
+    await page.setViewportSize({ width: 640, height: 480 });
+    await compactButton().click();
+    assert.match(await compactRisk.innerText(), zh ? /风险未知/ : /Risk unknown/);
+    assert.doesNotMatch(await compactRisk.innerText(), /68\s*\/\s*80|→/);
+    assert.ok(await visibleInSummary(compactRisk), `${locale}: failed compact forecast must remain visible: ${JSON.stringify(await compactRisk.evaluate((el) => { const p = el.closest(".mecha-turn-summary"); return { text: el.innerText, risk: el.getBoundingClientRect().toJSON(), summary: p.getBoundingClientRect().toJSON(), scrollTop: p.scrollTop, scrollHeight: p.scrollHeight }; }))}`);
+    await expandButton().click();
+    await page.setViewportSize({ width: 1100, height: 700 });
     assert.equal(await forecast.count(), 0, "failed prediction must remove old building details and values");
     await page.waitForFunction((id) => globalThis.__testBuildingMarkers?.[id] === false, buildingId);
     assert.equal(await page.locator(".mecha-threat-sources").count(), 0, "failed prediction must remove predicted threats");
@@ -110,6 +137,7 @@ try {
     await page.evaluate(() => { globalThis.__testMechaPreviewFailure = false; });
     await doctrine.selectOption(otherDoctrine);
     await forecast.waitFor();
+    await page.waitForFunction(() => Array.isArray(globalThis.__testMechaView?.projectedTelegraph));
     assert.equal(await status.count(), 0, "failure status must disappear when prediction recovers");
     assert.equal(await forecast.evaluate((node) => node.open), false, "recovered forecast must start closed");
     const updates = await page.evaluate((id) => globalThis.__testBuildingMarkerUpdates[id], buildingId);
@@ -134,6 +162,7 @@ try {
     await page.getByRole("button", { name: zh ? "继续提交" : "Submit anyway", exact: true }).click();
     const skip = page.getByRole("button", { name: zh ? "跳过演出" : "Skip animation", exact: true });
     await skip.waitFor();
+    await page.waitForFunction(() => globalThis.__testMechaView?.projectedTelegraph === null && globalThis.__testMechaView?.declaredTelegraph.length === 0);
     assert.equal(await forecast.count(), 0, "playback hides the forecast details");
     await page.waitForFunction((id) => globalThis.__testBuildingMarkers?.[id] === false, buildingId);
     await skip.click();

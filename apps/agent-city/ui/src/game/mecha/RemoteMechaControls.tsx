@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { PluginRequestV1, PluginResponseV1 } from "@agent-vitals/app-sdk";
 import { invokeHost } from "../../host";
 import type { CityMechaSite, FightShape } from "./citySite";
@@ -22,7 +23,7 @@ async function remoteRequest(method: string, payload: Record<string, unknown>): 
 
 export type RemoteMechaStatus = "idle" | "starting" | "active" | "stopping" | "unknown";
 
-export function RemoteMechaControls({ locale, site, shape, state, status, canStart, onStatusChange, onStopped }: {
+export function RemoteMechaControls({ locale, site, shape, state, status, canStart, onStatusChange, onStopped, stopTarget }: {
   locale: "zh-Hans" | "en";
   site: CityMechaSite;
   shape: FightShape;
@@ -31,11 +32,13 @@ export function RemoteMechaControls({ locale, site, shape, state, status, canSta
   canStart: boolean;
   onStatusChange: (status: RemoteMechaStatus) => void;
   onStopped: () => void;
+  stopTarget?: HTMLElement | null;
 }) {
   const [relay, setRelay] = useState(() => sessionStorage.getItem("agent-city-relay") ?? "");
   const [link, setLink] = useState("");
   const [busy, setBusy] = useState(false);
   const operation = useRef(false);
+  const stopButton = useRef<HTMLButtonElement | null>(null);
   const [inviteLink, setInviteLink] = useState("");
   const [pending, setPending] = useState<Array<{ deviceId: string; playerId: string }>>([]);
   const [message, setMessage] = useState("");
@@ -106,20 +109,35 @@ export function RemoteMechaControls({ locale, site, shape, state, status, canSta
       const result = await remoteRequest("mecha.remote.stop", {});
       if (result.ok !== true) throw new Error("plugin_response_invalid");
       setLink(""); setInviteLink(""); setPending([]); setMessage("");
+      // The persistent stop button disappears on success; return keyboard focus
+      // to a visible battle control rather than dropping it onto the document.
+      if (document.activeElement === stopButton.current) {
+        const overlay = stopButton.current?.closest(".mecha-overlay");
+        const fallback = stopTarget
+          ? overlay?.querySelector<HTMLElement>(".mecha-battle-controls button:not(:disabled)")
+          : overlay?.querySelector<HTMLElement>(".mecha-city-gate .mecha-actions button:not(:disabled)");
+        fallback?.focus();
+      }
       onStopped(); onStatusChange("idle");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "remote_unavailable");
       onStatusChange("unknown");
     } finally { operation.current = false; setBusy(false); }
   };
-  return <details className="mecha-settings mecha-remote-settings" name="mecha-battle-options">
+  const persistentStop = status !== "idle" && status !== "starting" ? (
+    <>
+      <button ref={stopButton} type="button" className="mecha-remote-stop" aria-label={busy || status === "stopping" ? (zh ? "远程操作进行中" : "Remote operation in progress") : undefined} aria-disabled={busy || status === "stopping"} onClick={() => { if (!busy && status !== "stopping") void stop(); }}>{busy || status === "stopping" ? "…" : status === "unknown" || !link ? (zh ? "停止远程并恢复本地" : "Stop remote and restore local play") : (zh ? "停止远程" : "Stop remote")}</button>
+      {error && status === "unknown" && <span role="alert">{error}</span>}
+    </>
+  ) : null;
+  return <>
+  <details className="mecha-settings mecha-remote-settings" name="mecha-battle-options">
     <summary>{zh ? "手机远程战棋" : "Remote mecha tactics"}</summary>
     <p className="mecha-help">{zh ? "只分享当前战场的比赛快照。电脑必须保持运行、联网且不休眠；开启后桌面本地回合暂时锁定。" : "Shares only this battle snapshot. Keep the desktop running and awake. Local turns are locked while remote play is active."}</p>
     {status === "unknown" && <p role="status">{zh ? "远程状态无法确认。本地保持锁定；请停止远程并重试，确认成功后才能继续。" : "Remote state is unknown. Local play remains locked; stop remote and retry until confirmed."}</p>}
     {link && status === "active" ? <div className="mecha-toolbar">
       <textarea aria-label={zh ? "手机远程链接" : "Remote link"} readOnly rows={3} value={link} onFocus={(event) => event.currentTarget.select()} />
       <button type="button" onClick={() => { void navigator.clipboard?.writeText(link).catch(() => setError("clipboard_unavailable")); }}>{zh ? "复制手机链接" : "Copy phone link"}</button>
-      <button type="button" disabled={busy} onClick={stop}>{busy ? "…" : zh ? "停止远程" : "Stop remote"}</button>
       <button type="button" disabled={busy} onClick={invite}>{zh ? "邀请好友对战" : "Invite a friend"}</button>
       {message && <p className="mecha-help">{message}</p>}
       {inviteLink && <textarea aria-label={zh ? "好友邀请链接" : "Friend invitation link"} readOnly rows={3} value={inviteLink} onFocus={(event) => event.currentTarget.select()} />}
@@ -130,13 +148,13 @@ export function RemoteMechaControls({ locale, site, shape, state, status, canSta
         <button type="button" disabled={busy} onClick={() => revoke(device.deviceId)}>{zh ? "拒绝" : "Decline"}</button>
       </div>)}
       <p className="mecha-help">{zh ? "批准后 PvE 快照会切换为双方满编的新 PvP 战局；停止远程后桌面也会重开本地局。" : "Approval replaces the PvE snapshot with a fresh full-squad PvP match. Stopping remote play also restarts the local match."}</p>
-    </div> : status === "unknown" || status === "stopping" || status === "active" ? <div className="mecha-toolbar">
-      <button type="button" disabled={busy || status === "stopping"} onClick={stop}>{busy || status === "stopping" ? "…" : zh ? "停止远程并恢复本地" : "Stop remote and restore local play"}</button>
-    </div> : <div className="mecha-toolbar">
+    </div> : status === "unknown" || status === "stopping" || status === "active" ? null : <div className="mecha-toolbar">
       <label>{zh ? "中继 HTTPS 地址" : "Relay HTTPS URL"}<input type="url" required value={relay} placeholder="https://your-worker.workers.dev" onChange={(event) => setRelay(event.target.value)} /></label>
       <button type="button" disabled={busy || status !== "idle" || !canStart || !relay.startsWith("https://")} onClick={start}>{busy ? "…" : zh ? "开启并生成链接" : "Start and create link"}</button>
     </div>}
     {status === "idle" && !canStart && <p className="mecha-help">{zh ? "请先停止自动对战、结束演出并回到可规划的回合。" : "Stop auto play, finish animations, and return to a planning turn first."}</p>}
-    {error && <p role="alert">{error}</p>}
-  </details>;
+    {error && status !== "unknown" && <p role="alert">{error}</p>}
+  </details>
+  {stopTarget && persistentStop ? createPortal(persistentStop, stopTarget) : persistentStop}
+  </>;
 }

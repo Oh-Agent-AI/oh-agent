@@ -194,3 +194,76 @@ test("friend invitation is claimed by one device and revocation invalidates issu
   const afterRevoke = await object.fetch(new Request(`https://relay/v1/rooms/r1/ws?ticket=${ticket.ticket}`, { headers: { Upgrade: "websocket" } }));
   assert.equal(afterRevoke.status, 401);
 });
+
+test("host events cannot consume the rate budget for correlated responses", async () => {
+  const { object } = await room();
+  const owner = await connect(object, "owner");
+  const host = await connect(object, "host");
+  for (let i = 0; i < 16; i++) {
+    await object.webSocketMessage(owner as never, request(`request-${i}`));
+    const routedId = JSON.parse(host.sent.at(-1)!).requestId;
+    await object.webSocketMessage(host as never, JSON.stringify({ protocol: PROTOCOL, ...scope, type: "event", event: { type: "turn.resolved" } }));
+    await object.webSocketMessage(host as never, JSON.stringify({ protocol: PROTOCOL, ...scope, type: "response", requestId: routedId, result: { ok: true } }));
+  }
+  const replies = owner.sent.map((message) => JSON.parse(message)).filter((message) => message.type === "response");
+  assert.deepEqual(replies.map((reply) => reply.requestId), Array.from({ length: 16 }, (_, i) => `request-${i}`));
+  assert.ok(replies.every((reply) => reply.result.ok));
+});
+
+test("rate limited client requests receive an error for their own request id", async () => {
+  const { object } = await room();
+  const owner = await connect(object, "owner");
+  await connect(object, "host");
+  for (let i = 0; i < 31; i++) await object.webSocketMessage(owner as never, request(`request-${i}`));
+  const reply = JSON.parse(owner.sent.at(-1)!);
+  assert.equal(reply.requestId, "request-30");
+  assert.equal(reply.result.error.code, "rate_limited");
+});
+
+test("expired routing entries are released and late responses are not misdelivered", async () => {
+  const originalNow = Date.now;
+  let now = 1_000_000;
+  Date.now = () => now;
+  try {
+    const { object } = await room();
+    const owner = await connect(object, "owner");
+    const host = await connect(object, "host");
+    for (let i = 0; i < 64; i++) {
+      if (i === 30 || i === 60) now += 10_000;
+      await object.webSocketMessage(owner as never, request(`request-${i}`));
+    }
+    const firstRoutedId = JSON.parse(host.sent[1]!).requestId;
+    assert.equal(host.sent.length, 65);
+    now += 10_001;
+    await object.webSocketMessage(owner as never, request("new-request"));
+    assert.equal(host.sent.length, 66);
+    assert.equal(JSON.parse(host.sent.at(-1)!).method, "match.snapshot");
+    assert.ok(owner.sent.some((message) => {
+      const reply = JSON.parse(message);
+      return reply.requestId === "request-0" && reply.result?.error?.code === "unavailable";
+    }));
+    const count = owner.sent.length;
+    await object.webSocketMessage(host as never, JSON.stringify({ protocol: PROTOCOL, ...scope, type: "response", requestId: firstRoutedId, result: { ok: true } }));
+    assert.equal(owner.sent.length, count);
+  } finally { Date.now = originalNow; }
+});
+
+test("host event floods disconnect peers instead of silently dropping events", async () => {
+  const { object } = await room();
+  const owner = await connect(object, "owner");
+  const host = await connect(object, "host");
+  for (let i = 0; i < 31; i++) {
+    await object.webSocketMessage(host as never, JSON.stringify({ protocol: PROTOCOL, ...scope, type: "event", event: { type: "turn.resolved" } }));
+  }
+  assert.notEqual(host.closed, null);
+  assert.notEqual(owner.closed, null);
+});
+
+test("malformed host messages still count against the event budget", async () => {
+  const { object } = await room();
+  const owner = await connect(object, "owner");
+  const host = await connect(object, "host");
+  for (let i = 0; i < 31; i++) await object.webSocketMessage(host as never, "{");
+  assert.notEqual(host.closed, null);
+  assert.notEqual(owner.closed, null);
+});

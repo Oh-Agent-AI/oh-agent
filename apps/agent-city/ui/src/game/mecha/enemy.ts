@@ -315,7 +315,10 @@ export function bossExecute(state: MatchState) {
     return;
   }
   if (state.boss.hp <= 0) {
-    for (const raider of state.raiders) resolveRaider(state, raider);
+    for (const raider of state.raiders) {
+      if (state.outcome) break;
+      resolveRaider(state, raider);
+    }
     refresh(state);
     if (!state.outcome) {
       state.turn += 1;

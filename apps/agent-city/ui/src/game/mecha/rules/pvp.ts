@@ -3,7 +3,7 @@ import {
   type Action, type ArenaPlan, type Cell, type MatchState, type MechId, type PlanFault, type TerrainKind, type TurnEvent,
 } from "../rules";
 import { STATS, cheb, presentationSnapshot, swapEventSink } from "../board";
-import { legalActions, shotTargets } from "../combat";
+import { legalActions, meleeTargets, shotTargets } from "../combat";
 import type { MatchRuleAdapter, MatchSide, RuleTurn } from "../contracts/match";
 import type { RemoteArenaV1 } from "../contracts/arena";
 
@@ -79,25 +79,28 @@ function fault(mechId: MechId, reason: string, cause: PlanFault["cause"] = "othe
   return { ok: false, fault: { code: "PLAN_PACK_REJECTED", mechId, reason, cause } };
 }
 
-function bindTarget(state: MatchState, id: MechId, action: Exclude<Action, { kind: "skip" }>): Exclude<Action, { kind: "skip" }> {
-  if (action.kind === "repair" || action.target !== undefined) return action;
-  const legal = legalActions(state, id).filter((item) => item.kind === action.kind);
-  return legal.length === 1 && "target" in legal[0] ? { ...action, target: legal[0].target } : action;
-}
-
-function actionLegal(state: MatchState, id: MechId, action: ArenaPlan["items"][number]["action"]): boolean {
+// legalActions omits the target when there is exactly one; recover it from the
+// same target functions before matching an explicit target or binding an implicit one.
+function validatedAction(state: MatchState, id: MechId, action: Action): Action | null {
   const legal = legalActions(state, id).filter((candidate) => candidate.kind === action.kind);
-  if (action.kind === "skip") return legal.some((candidate) => candidate.kind === "skip");
-  if (action.kind === "repair") return legal.some((candidate) => candidate.kind === "repair" && candidate.target === action.target);
-  if (action.target === undefined) return legal.some((candidate) => !("target" in candidate) || candidate.target === undefined) || legal.length === 1;
-  return legal.some((candidate) => !("target" in candidate) || candidate.target === action.target);
+  if (action.kind === "skip") return legal.length ? action : null;
+  if (action.kind === "repair") return legal.some((candidate) => candidate.kind === "repair" && candidate.target === action.target) ? action : null;
+  if (!legal.length) return null;
+  const actor = state.mechs.find((item) => item.id === id && item.hp > 0);
+  if (!actor) return null;
+  const targets = action.kind === "melee" || action.kind === "charge"
+    ? meleeTargets(state, actor.pos)
+    : shotTargets(state, actor.pos, STATS[id].shoot, action.kind === "pierce" ? 1 : 0);
+  const target = action.target === undefined && targets.length === 1 ? targets[0] : action.target;
+  return target !== undefined && targets.includes(target) ? { ...action, target } : null;
 }
 
 export function playPvpTurn(state: PvpState, plan: ArenaPlan): RuleTurn<PvpState> {
   if (state.winner || plan.revision !== state.revision) return { ok: false, fault: { code: "STALE_REVISION", reason: "revision mismatch", cause: "other" } };
   const side = state.activeSide;
   const alive = livingSide(state, side);
-  if (alive.length === 0 || new Set(plan.items.map((item) => item.mechId)).size !== alive.length
+  const named = new Set(plan.items.map((item) => item.mechId));
+  if (alive.length === 0 || named.size !== plan.items.length || named.size !== alive.length
     || alive.some((item) => !plan.items.some((order) => order.mechId === item.kind))) {
     return { ok: false, fault: { code: "NEED_ALL_OR_CONFIRM", reason: "pack must name every living mech once", cause: "other" } };
   }
@@ -127,14 +130,18 @@ export function playPvpTurn(state: PvpState, plan: ArenaPlan): RuleTurn<PvpState
         actor.pos = { ...dest };
       }
     }
-    const afterMovement = presentationSnapshot(pvpProjection(next, side));
+    const moved = pvpProjection(next, side);
+    const afterMovement = presentationSnapshot(moved);
+    const actions = new Map<MechId, Action>();
     for (const { id, item } of orders) {
-      if (!actionLegal(pvpProjection(next, side), id, item.action)) return fault(id, "action not legal");
+      const action = validatedAction(moved, id, item.action);
+      if (!action) return fault(id, "action not legal");
+      actions.set(id, action);
     }
-    for (const { id, item } of orders) {
+    for (const { id } of orders) {
       const actor = unit(next, `${side}:${id}`);
-      if (!actor || item.action.kind === "skip") continue;
-      const action = bindTarget(pvpProjection(next, side), id, item.action);
+      const action = actions.get(id)!;
+      if (!actor || action.kind === "skip") continue;
       let reason = "";
       let damage = 0;
       if (action.kind === "repair") {

@@ -15,7 +15,7 @@ const base = process.argv[2] ?? "http://127.0.0.1:5178";
 const screenshots = process.env.MECHA_SCREENSHOTS_DIR;
 if (screenshots) await mkdir(screenshots, { recursive: true });
 const browser = await chromium.launch({ headless: true, args: ["--enable-unsafe-swiftshader"] });
-const sizes = [[1100, 700], [390, 844], [1440, 900]];
+const sizes = [[1100, 700], [800, 600], [640, 480], [390, 844], [1440, 900]];
 try {
   for (const lang of ["zh", "en"]) {
     const chinese = lang === "zh";

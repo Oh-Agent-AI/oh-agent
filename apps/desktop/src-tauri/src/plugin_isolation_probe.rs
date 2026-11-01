@@ -50,7 +50,7 @@ fn isolation_probe_event(webview: Webview, state: tauri::State<'_, ProbeState>, 
         else { data.city_pulses.insert(label.to_owned(), Instant::now()); }
         return Ok(());
     }
-    if !["ui_ready", "runtime_error", "unhandled_rejection", "host_navigation_alive", "host_exit_navigation_alive", "window_seven_ready", "cinema_started", "cinema_stopped", "stale_rejected", "formal_unresponsive", "formal_reload", "formal_disposed", "formal_settings_clicked", "formal_window_changed", "formal_settings_closed", "formal_reset_clicked", "mecha_fixture_ready", "mecha_board_ready", "mecha_render_stalled", "mecha_hold_risk", "mecha_hold_cancelled", "mecha_hold_confirmed", "mecha_turn_resolved", "mecha_seed_input", "mecha_seed_apply_clicked", "mecha_seed_stored", "mecha_seed_applied", "mecha_exited", "mecha_all_hold"].contains(&code.as_str()) {
+    if !["ui_ready", "runtime_error", "unhandled_rejection", "host_navigation_alive", "host_exit_navigation_alive", "window_seven_ready", "cinema_started", "cinema_stopped", "stale_rejected", "formal_unresponsive", "formal_reload", "formal_disposed", "formal_settings_clicked", "formal_window_changed", "formal_settings_closed", "formal_reset_clicked", "mecha_fixture_ready", "mecha_board_ready", "mecha_render_stalled", "mecha_hold_risk", "mecha_hold_cancelled", "mecha_hold_confirmed", "mecha_turn_resolved", "mecha_seed_initial_74031", "mecha_seed_input", "mecha_seed_apply_clicked", "mecha_seed_stored", "mecha_seed_applied", "mecha_exited", "mecha_all_hold"].contains(&code.as_str()) {
         return Err("probe_code_unavailable".into());
     }
     if code == "ui_ready" { state.0.lock().unwrap().ready.insert(label.to_owned()); }
@@ -454,7 +454,8 @@ fn formal_mecha_exercise(app: &tauri::AppHandle, state: &ProbeState, interactive
             if(Date.now()<resumeAt) return;
             const dialog=document.querySelector('dialog[open][aria-label="城市设置"]') ?? document.querySelector('dialog[open][aria-label="City settings"]');
             const input=dialog?.querySelector('#city-seed');
-            if(phase===0 && input && !input.disabled && window.__CITY_ISOLATION_FIXTURE__ && ['演示','Demo'].includes(document.querySelector('.city-coverage-badge')?.textContent)) {
+            if(phase===0 && input && !input.disabled && input.value==='74031' && localStorage.getItem('city.seed')==='74031' && window.__CITY_ISOLATION_FIXTURE__ && ['演示','Demo'].includes(document.querySelector('.city-coverage-badge')?.textContent)) {
+                send('mecha_seed_initial_74031');
                 Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'4196523069');
                 input.dispatchEvent(new Event('input',{bubbles:true})); phase=1; send('mecha_seed_input');
             } else if(phase===1 && input?.value==='4196523069') {
@@ -495,6 +496,7 @@ fn formal_mecha_exercise(app: &tauri::AppHandle, state: &ProbeState, interactive
         Err(code.to_owned())
     };
     wait("formal_mecha_seed_timeout", "mecha_seed_applied")?;
+    if !interactive { wait("formal_mecha_initial_seed_timeout", "mecha_seed_initial_74031")?; }
     if interactive {
         let deadline = Instant::now() + Duration::from_secs(180);
         loop {

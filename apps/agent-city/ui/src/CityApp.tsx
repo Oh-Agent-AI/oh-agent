@@ -283,6 +283,13 @@ export function CityApp() {
     // A match reads the live layout for battlefield generation. Deferring City
     // replans while the board is open keeps the snapshot the match was built from
     // stable; the latest projection is applied when the board closes.
+    // A pending geography job must not mount an old model while a seed change
+    // is being prepared. Clearing the key makes the latest model retry afterwards.
+    if (experience.seedBusy && geographyAbort.current) {
+      geographyAbort.current.abort();
+      geographyAbort.current = null;
+      geographyKey.current = "";
+    }
     if (!projection || !engineRef.current || experience.busy || game.active || driving.active || mechaOpen) return;
     const engine = engineRef.current;
     const from = Date.parse(projection.window.from);

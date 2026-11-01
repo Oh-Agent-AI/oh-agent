@@ -591,6 +591,10 @@ pub async fn plugin_open(app: tauri::AppHandle, webview: Webview, state: tauri::
     #[cfg(all(feature = "plugin-isolation-probe", target_os = "macos"))]
     let builder = if std::env::args().any(|arg| arg == "--plugin-formal-mecha-interactive") {
         builder.initialization_script("localStorage.setItem('city.seed', '4196523069');")
+    } else if std::env::args().any(|arg| arg == "--plugin-formal-mecha-probe") {
+        // Distinct, synthetic initial seed: the automatic probe must exercise a
+        // real change rather than merely applying the value already in storage.
+        builder.initialization_script("localStorage.setItem('city.seed', '74031');")
     } else { builder };
     agent_vitals_runtime::logging::log_info("plugin_host", &format!("add_child id={id} entry={}", definition.entry));
     let result = app.get_window("workbench").ok_or("plugin_window_unavailable")?.add_child(

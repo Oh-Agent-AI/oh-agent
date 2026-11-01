@@ -8,9 +8,10 @@ type Env = { MATCH_ROOM: DurableObjectNamespace; ASSETS: Fetcher; APP_ORIGIN?: s
 const roomKey = "room:v1";
 const accessKey = (id: string) => `access:${id}`;
 const ticketKey = (hash: string) => `ticket:${hash}`;
+const requestLifetimeMs = 30_000;
 
 export class MatchRoom implements DurableObject {
-  private readonly requests = new Map<string, { peerId: string; requestId: string }>();
+  private readonly requests = new Map<string, { peerId: string; requestId: string; expiresAt: number }>();
   private readonly rates = new Map<string, { at: number; count: number }>();
   private readonly ctx: DurableObjectState;
 
@@ -137,6 +138,8 @@ export class MatchRoom implements DurableObject {
     const token = bearer(request);
     if (!token || await secretHash(token) !== room.ownerHash) return error("forbidden", 403);
     for (const socket of this.ctx.getWebSockets()) socket.close(1000, "room_closed");
+    this.requests.clear();
+    this.rates.clear();
     await this.ctx.storage.deleteAll();
     return Response.json({ ok: true }, { headers: { "Cache-Control": "no-store" } });
   }
@@ -182,24 +185,52 @@ export class MatchRoom implements DurableObject {
     const room = await this.ctx.storage.get<RoomRecord>(roomKey);
     if (!room) { socket.close(1000, "room_closed"); return; }
     const now = Date.now();
+    // Correlation metadata stays in memory only. Expire it on activity so an
+    // unresponsive host cannot permanently exhaust the bounded routing table.
+    for (const [routedId, target] of this.requests) {
+      if (target.expiresAt > now) continue;
+      this.requests.delete(routedId);
+      this.ctx.getWebSockets().find((item) => (item.deserializeAttachment() as Peer)?.id === target.peerId)
+        ?.send(response(room, target.requestId, failure("unavailable")));
+    }
+    let value: unknown;
+    let parsed = true;
+    try { value = JSON.parse(message); } catch { parsed = false; }
+    // A response to an admitted request must never be silently discarded by a
+    // shared event budget. Only a valid, outstanding host response bypasses it.
+    if (peer.role === "host" && hostMessage(value, room)) {
+      const envelope = value as { type: string; requestId?: string };
+      if (envelope.type === "response") {
+        const target = this.requests.get(envelope.requestId!);
+        if (target) {
+          this.requests.delete(envelope.requestId!);
+          const restored = JSON.stringify({ ...value as Record<string, unknown>, requestId: target.requestId });
+          this.ctx.getWebSockets().find((item) => (item.deserializeAttachment() as Peer)?.id === target.peerId)?.send(restored);
+          return;
+        }
+      }
+    }
     const rate = this.rates.get(peer.id);
     const current = !rate || now - rate.at >= 10_000 ? { at: now, count: 0 } : rate;
     current.count += 1;
     this.rates.set(peer.id, current);
-    if (current.count > 30) { socket.send(response(room, "rate", failure("rate_limited"))); return; }
-    let value: unknown;
-    try { value = JSON.parse(message); } catch { socket.send(response(room, "invalid", failure("invalid_message"))); return; }
+    if (current.count > 30) {
+      if (peer.role === "host") {
+        // Losing an event can leave clients on an old revision. Force a
+        // reconnect/snapshot rather than silently dropping the event.
+        this.requests.clear();
+        for (const client of this.ctx.getWebSockets()) client.close(1013, "rate_limited");
+      } else {
+        const requestId = (value as { requestId?: unknown })?.requestId;
+        socket.send(response(room, id(requestId) ? requestId : "invalid", failure("rate_limited")));
+      }
+      return;
+    }
+    if (!parsed) { socket.send(response(room, "invalid", failure("invalid_message"))); return; }
     if (peer.role === "host") {
       if (!hostMessage(value, room)) { socket.send(response(room, "invalid", failure("invalid_message"))); return; }
-      const envelope = value as { type: string; requestId?: string };
-      if (envelope.type === "response") {
-        const target = this.requests.get(envelope.requestId!);
-        this.requests.delete(envelope.requestId!);
-        if (target) {
-          const restored = JSON.stringify({ ...value as Record<string, unknown>, requestId: target.requestId });
-          this.ctx.getWebSockets().find((item) => (item.deserializeAttachment() as Peer)?.id === target.peerId)?.send(restored);
-        }
-      } else {
+      const envelope = value as { type: string };
+      if (envelope.type === "event") {
         for (const client of this.ctx.getWebSockets()) if ((client.deserializeAttachment() as Peer)?.role !== "host") client.send(message);
       }
       return;
@@ -211,7 +242,7 @@ export class MatchRoom implements DurableObject {
     if (!host) { socket.send(response(room, requestId, failure("host_offline"))); return; }
     if (this.requests.size >= 64) { socket.send(response(room, requestId, failure("rate_limited"))); return; }
     const routedId = randomSecret();
-    this.requests.set(routedId, { peerId: peer.id, requestId: requestId! });
+    this.requests.set(routedId, { peerId: peer.id, requestId: requestId!, expiresAt: now + requestLifetimeMs });
     host.send(JSON.stringify({ ...value as Record<string, unknown>, requestId: routedId, peer: { role: peer.role, playerId: peer.playerId } }));
   }
 

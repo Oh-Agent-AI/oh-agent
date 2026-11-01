@@ -1,17 +1,53 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { RemoteMatchClient, type RemoteConnectionState } from "../game/mecha/client/RemoteMatchClient";
 import { MECHA_NET_PROTOCOL, type MatchSnapshot, type SubmitPlanCommand, type TurnResolved } from "../game/mecha/contracts/match";
-import { legalActions, living, moveBudget, pathDistance, previewPlan, type Action, type Cell, type MatchState, type MechId } from "../game/mecha/rules";
+import { legalActions, living, moveBudget, pathDistance, validateAndApplyPlan, type Action, type Cell, type MatchState, type MechId } from "../game/mecha/rules";
+import { blankDraft, checkDraftAction, checkDraftPlan, draftPlan, settledDraftBoard, type DraftAuthority, type DraftCheck, type DraftMap } from "../game/mecha/planning";
 import { RemoteBattleScene } from "../game/mecha/presentation/RemoteBattleScene";
 import type { BattleScenePort, RemoteBattleState } from "../game/mecha/presentation/BattleScenePort";
-import { PVP_RULESET, pvpProjection } from "../game/mecha/rules/pvp";
+import { PVP_RULESET, playPvpTurn, pvpProjection } from "../game/mecha/rules/pvp";
+import { swapEventSink } from "../game/mecha/board";
+import type { MatchSide } from "../game/mecha/contracts/match";
 import { useRemoteAccess } from "./remoteAccess";
 import "./remote.css";
 
-type Draft = { moveTo: Cell | null; action: Action; explicit: boolean };
-type DraftMap = Record<MechId, Draft>;
-const blank = (): DraftMap => ({ Assault: { moveTo: null, action: { kind: "skip" }, explicit: false }, Gunner: { moveTo: null, action: { kind: "skip" }, explicit: false }, Support: { moveTo: null, action: { kind: "skip" }, explicit: false } });
 const names: Record<MechId, string> = { Assault: "突击", Gunner: "射手", Support: "支援" };
+
+// Transport/mode adapter: legality remains with the same authoritative rules
+// used by the host. Planning mechanics themselves are shared with City.
+function remoteAuthority(remote: RemoteBattleState): DraftAuthority {
+  return (plan) => {
+    if (remote.ruleset === PVP_RULESET) return playPvpTurn(remote, plan);
+    // PvE validation emits into a shared sink, even on rejection. A preflight
+    // must not contaminate an enclosing turn log and must restore on exceptions.
+    const outer = swapEventSink(null);
+    try {
+      const result = validateAndApplyPlan(structuredClone(remote), plan);
+      return "ok" in result ? { ok: true } : { ok: false, fault: result };
+    } finally {
+      swapEventSink(outer);
+    }
+  };
+}
+
+export function remoteDraftProjection(remote: RemoteBattleState, side: MatchSide, draft: DraftMap) {
+  try {
+    const state = remote.ruleset === PVP_RULESET ? pvpProjection(remote, side) : remote;
+    const authority = remoteAuthority(remote);
+    const movement = checkDraftPlan(draftPlan(state, draft, "movement"), authority);
+    if (movement.status !== "ok") return { movement, state: null, invalid: [] as MechId[], actionUnknown: false, plan: movement };
+    const projected = settledDraftBoard(state, draft);
+    const checks = living(state).filter((mech) => draft[mech.id].explicit)
+      .map((mech) => ({ id: mech.id, result: checkDraftAction(state, draft, mech.id, draft[mech.id].action, authority) }));
+    const invalid = checks.filter(({ result }) => result.status === "rejected").map(({ id }) => id);
+    const actionUnknown = checks.some(({ result }) => result.status === "unknown");
+    const plan = checkDraftPlan(draftPlan(state, draft), authority);
+    return { movement, state: projected, invalid, actionUnknown, plan };
+  } catch {
+    const unknown: DraftCheck = { status: "unknown" };
+    return { movement: unknown, state: null, invalid: [] as MechId[], actionUnknown: false, plan: unknown };
+  }
+}
 
 export function RemoteApp() {
   const params = useMemo(() => new URLSearchParams(location.search), []);
@@ -20,7 +56,7 @@ export function RemoteApp() {
   const matchId = params.get("match") ?? "";
   const { client, playerId, status: accessStatus, error: accessError } = useRemoteAccess(params);
   const [snapshot, setSnapshot] = useState<MatchSnapshot<RemoteBattleState> | null>(null);
-  const [draft, setDraft] = useState<DraftMap>(blank);
+  const [draft, setDraft] = useState<DraftMap>(blankDraft);
   const [selected, setSelected] = useState<MechId>("Assault");
   const [targeting, setTargeting] = useState<Action["kind"] | null>(null);
   const [connection, setConnection] = useState<RemoteConnectionState>("offline");
@@ -36,7 +72,7 @@ export function RemoteApp() {
     if (current && ((current.mode === "pvp" && next.mode === "pve") || (current.mode === next.mode && next.revision < current.revision))) return;
     snapshotRef.current = next;
     setSnapshot(next);
-    setDraft(blank());
+    setDraft(blankDraft());
     setTargeting(null);
     setError("");
   };
@@ -47,7 +83,7 @@ export function RemoteApp() {
     const next: MatchSnapshot<RemoteBattleState> = { ...current, revision: turn.revision, state: turn.state, status: ("outcome" in turn.state ? turn.state.outcome : turn.state.winner) ? "finished" : "active" };
     snapshotRef.current = next;
     setSnapshot(next);
-    setDraft(blank());
+    setDraft(blankDraft());
     setTargeting(null);
     void sceneRef.current?.playTurn(turn);
   };
@@ -101,33 +137,45 @@ export function RemoteApp() {
     && (!pvp || (remoteState.activeSide === side && !remoteState.winner && snapshot.players.some((player) => player.side === "B" && player.role === "guest"))));
   const ids = state ? living(state).map((mech) => mech.id) : [];
   const selectedMech = state?.mechs.find((mech) => mech.id === selected && mech.hp > 0) ?? null;
-  const actions = state && selectedMech && myTurn ? legalActions(state, selected) : [];
-  const planned = ids.filter((id) => draft[id].explicit).length;
-  const preview = state && !pvp ? previewPlan(state as MatchState, { revision: state.revision, items: ids.map((id) => ({ mechId: id, ...draft[id] })) }) : null;
+  const projection = useMemo(() => remoteState && myTurn ? remoteDraftProjection(remoteState, side, draft) : null, [remoteState, side, draft, myTurn]);
+  const draftState = projection?.state ?? null;
+  const actions = draftState && selectedMech && myTurn ? legalActions(draftState, selected) : [];
+  const planned = ids.filter((id) => draft[id].explicit && !projection?.invalid.includes(id)).length;
+  const canSubmit = projection?.movement.status === "ok" && projection.plan.status === "ok" && projection.invalid.length === 0 && !projection.actionUnknown;
 
   useEffect(() => {
     if (!selectedMech && ids.length > 0) setSelected(ids[0]!);
   }, [selectedMech, state]);
 
-  const clickCell = (cell: Cell) => {
+  const clickCell = (cell: Cell, source: "scene" | "board") => {
     if (!state || !myTurn || busy || state.phase !== "player_plan") return;
-    const mech = state.mechs.find((item) => item.hp > 0 && item.pos.x === cell.x && item.pos.y === cell.y);
+    // The 3D scene shows the authoritative snapshot; the 2D board shows the
+    // validated draft projection when available. Pick what each face displays.
+    const pickState = source === "scene" ? state : draftState ?? state;
+    const mech = pickState.mechs.find((item) => item.hp > 0 && item.pos.x === cell.x && item.pos.y === cell.y);
     const enemy = state.boss.hp > 0 && cell.x >= state.boss.anchor.x && cell.x <= state.boss.anchor.x + 1 && cell.y >= state.boss.anchor.y && cell.y <= state.boss.anchor.y + 1
       ? "boss" : state.raiders.find((item) => item.hp > 0 && item.pos.x === cell.x && item.pos.y === cell.y)?.id;
     if (targeting) {
       const target = targeting === "repair" ? mech?.id : enemy;
-      if (!target) { setError(t("请选择高亮的合法目标。", "Select a highlighted legal target.")); return; }
-      setAction({ kind: targeting, target } as Action);
+      const action = target ? { kind: targeting, target } as Action : null;
+      if (!action || !draftState || !remoteState) { setError(t("请选择当前草稿下的合法目标。", "Select a legal target for the current draft.")); return; }
+      const check = checkDraftAction(state, draft, selected, action, remoteAuthority(remoteState));
+      if (check.status !== "ok") {
+        setError(check.status === "unknown" ? t("行动预检未知，请稍后重试。", "Action check unavailable; try again.") : t("请选择当前草稿下的合法目标。", "Select a legal target for the current draft."));
+        return;
+      }
+      setAction(action);
       return;
     }
-    if (mech) { setSelected(mech.id); return; }
+    if (mech) { setSelected(mech.id); setTargeting(null); return; }
     if (!selectedMech) return;
     const distance = pathDistance(state, selectedMech.pos, cell, selected, { alliesPass: true });
     if (distance === null || distance > moveBudget(selected)) { setError(t("这格不在移动范围内。", "This cell is out of reach.")); return; }
     setDraft((current) => ({ ...current, [selected]: { ...current[selected], moveTo: cell } }));
+    setTargeting(null);
     setError("");
   };
-  cellRef.current = clickCell;
+  cellRef.current = (cell) => clickCell(cell, "scene");
 
   const setAction = (action: Action) => {
     setDraft((current) => ({ ...current, [selected]: { ...current[selected], action, explicit: true } }));
@@ -136,12 +184,12 @@ export function RemoteApp() {
   };
 
   const submit = async () => {
-    if (!client || !state || !snapshot || !myTurn || planned !== ids.length || busy) return;
+    if (!client || !state || !snapshot || !myTurn || planned !== ids.length || !canSubmit || busy) return;
     setBusy(true);
     setError("");
     const command: SubmitPlanCommand = {
       type: "plan.submit", protocol: MECHA_NET_PROTOCOL, matchId, playerId, commandId: crypto.randomUUID(), baseRevision: state.revision,
-      plan: { revision: state.revision, items: ids.map((id) => ({ mechId: id, moveTo: draft[id].moveTo, action: draft[id].action })) },
+      plan: draftPlan(state, draft),
     };
     try {
       const result = await client.submitPlan(command);
@@ -183,18 +231,21 @@ export function RemoteApp() {
     {state?.outcome && <p className="remote-outcome">{t("比赛结束", "Match finished")}: {state.outcome}</p>}
     {pvp && remoteState.winner && <p className="remote-outcome">{t("比赛结束，胜方", "Match finished; winner")}: {remoteState.winner}</p>}
     <section className="remote-controls">
-      <div className="remote-mechs">{state?.mechs.map((mech) => <button key={mech.id} disabled={mech.hp <= 0} className={selected === mech.id ? "selected" : ""} onClick={() => setSelected(mech.id)}>{names[mech.id]}<small> HP {mech.hp}</small></button>)}</div>
+      <div className="remote-mechs">{state?.mechs.map((mech) => <button key={mech.id} disabled={mech.hp <= 0} className={selected === mech.id ? "selected" : ""} onClick={() => { setSelected(mech.id); setTargeting(null); }}>{names[mech.id]}<small> HP {mech.hp}</small></button>)}</div>
       <div className="remote-actions">
-        {actions.map((action) => <button key={`${action.kind}:${"target" in action ? action.target : ""}`} disabled={!myTurn} className={targeting === action.kind ? "selected" : ""} onClick={() => action.kind === "skip" ? setAction(action) : setTargeting(action.kind)}>{action.kind}{"target" in action ? ` · ${action.target}` : ""}</button>)}
+        {actions.map((action) => <button key={`${action.kind}:${"target" in action ? action.target : ""}`} disabled={!myTurn || busy} className={targeting === action.kind ? "selected" : ""} onClick={() => action.kind === "skip" || ("target" in action && action.target !== undefined) ? setAction(action) : setTargeting(action.kind)}>{action.kind}{"target" in action ? ` · ${action.target}` : ""}</button>)}
       </div>
-      <button className="remote-submit" disabled={!state || !myTurn || planned !== ids.length || busy || state.phase !== "player_plan" || Boolean(state.outcome)} onClick={submit}>{busy ? t("等待电脑结算…", "Resolving on host…") : t("提交整包并结束回合", "Submit squad plan")}</button>
+      <button disabled={!myTurn || busy || !draft[selected].moveTo} onClick={() => { setDraft((current) => ({ ...current, [selected]: { ...current[selected], moveTo: null } })); setTargeting(null); setError(""); }}>{t("取消所选机甲移动", "Clear selected move")}</button>
+      {projection && myTurn && <small role="status">{projection.movement.status === "unknown" ? t("移动预检未知，无法预判行动。", "Movement check unavailable; actions cannot be predicted.") : projection.movement.status === "rejected" ? `${t("移动草稿被拒绝，请调整", "Movement draft rejected; adjust it")}: ${projection.movement.fault.reason}` : projection.invalid.length > 0 ? `${t("移动后行动失效，请重新选择", "Actions invalid after movement; choose again")}: ${projection.invalid.map((id) => names[id]).join(", ")}` : projection.actionUnknown ? t("行动预检未知，无法提交。", "Action check unavailable; cannot submit.") : projection.plan.status === "unknown" ? t("整包预检未知，无法提交。", "Plan check unavailable; cannot submit.") : projection.plan.status === "rejected" ? `${t("整包预检被拒绝", "Plan check rejected")}: ${projection.plan.fault.reason}` : t("行动基于草稿移动后局面；实际结算仍可能落空。三维场景显示当前局面。", "Actions use projected positions; resolution may still fizzle. The 3D scene shows current positions.")}</small>}
+      <button className="remote-submit" disabled={!state || !myTurn || planned !== ids.length || !canSubmit || busy || state.phase !== "player_plan" || Boolean(state.outcome)} onClick={submit}>{busy ? t("等待电脑结算…", "Resolving on host…") : t("提交整包并结束回合", "Submit squad plan")}</button>
       {pvp && snapshot?.status === "active" && <button disabled={busy} onClick={concede}>{t("认输", "Concede")}</button>}
-      {preview && !preview.ok && <small>{preview.fault.cause ?? preview.fault.code}</small>}
     </section>
-    <details className="remote-board"><summary>{t("二维棋盘与可访问控制", "2D accessible board")}</summary><div>{state && Array.from({ length: 10 }, (_, y) => <div className="remote-row" key={y}>{Array.from({ length: 10 }, (_, x) => {
-      const mech = state.mechs.find((item) => item.hp > 0 && item.pos.x === x && item.pos.y === y);
-      const boss = state.boss.hp > 0 && x >= state.boss.anchor.x && x <= state.boss.anchor.x + 1 && y >= state.boss.anchor.y && y <= state.boss.anchor.y + 1;
-      return <button key={x} onClick={() => clickCell({ x, y })} aria-label={`${x},${y}`}>{mech ? names[mech.id][0] : boss ? "B" : state.terrain[y]?.[x] === "water" ? "~" : "·"}</button>;
+    <details className="remote-board"><summary>{t("二维棋盘与可访问控制", "2D accessible board")}</summary><div>{(draftState ?? state) && Array.from({ length: 10 }, (_, y) => <div className="remote-row" key={y}>{Array.from({ length: 10 }, (_, x) => {
+      const board = draftState ?? state!;
+      const mech = board.mechs.find((item) => item.hp > 0 && item.pos.x === x && item.pos.y === y);
+      const raider = board.raiders.find((item) => item.hp > 0 && item.pos.x === x && item.pos.y === y);
+      const boss = board.boss.hp > 0 && x >= board.boss.anchor.x && x <= board.boss.anchor.x + 1 && y >= board.boss.anchor.y && y <= board.boss.anchor.y + 1;
+      return <button key={x} onClick={() => clickCell({ x, y }, "board")} aria-label={`${x},${y}`}>{mech ? names[mech.id][0] : boss ? "B" : raider ? "E" : board.terrain[y]?.[x] === "water" ? "~" : "·"}</button>;
     })}</div>)}</div></details>
   </main>;
 }
