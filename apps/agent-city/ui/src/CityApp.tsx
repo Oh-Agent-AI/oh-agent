@@ -572,7 +572,7 @@ export function CityApp() {
         </div>
       </div>}
       {sceneMessage && !cityLoading && !game.active && <p className="city-scene-message" role="status">{sceneMessage}</p>}
-      {!embedded() && !mechaOpen && <header className="city-header">
+      {!embedded() && !mechaOpen && <header className="city-header" aria-hidden={experience.options || undefined}>
         <div className="city-local-toolbar">{tools.map((tool) => tool.kind === "select"
           ? <select key={tool.id} aria-label={tool.label} value={tool.value} disabled={!tool.enabled} onChange={(event) => execute(tool.commandId, event.target.value)}>{tool.options?.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
           : <button key={tool.id} disabled={!tool.enabled} onClick={() => execute(tool.commandId)}>{tool.label}</button>)}</div>

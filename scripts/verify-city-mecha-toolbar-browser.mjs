@@ -45,6 +45,7 @@ try {
       const settings = page.getByRole("dialog", { name: zh ? "城市设置" : "City settings" });
       const settingsEntry = settings.getByRole("button", { name: zh ? "机甲战棋" : "Mecha tactics", exact: true });
       assert.equal(await settingsEntry.isEnabled(), true);
+      assert.equal(await page.getByRole("button", { name: zh ? "机甲战棋" : "Mecha tactics", exact: true }).count(), 1, "modal hides the background entry from accessibility queries");
       await page.keyboard.press("Escape");
       await settings.waitFor({ state: "hidden" });
       // Normal keyboard navigation reaches the direct entry and starts a battle.
