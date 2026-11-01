@@ -42,12 +42,12 @@ try {
     await page.getByRole("button", { name: zh ? "城市设置" : "City settings", exact: true }).click();
     await page.getByRole("button", { name: zh ? "机甲战棋" : "Mecha tactics", exact: true }).click();
     const summary = page.locator(".mecha-turn-summary");
-    const heading = summary.locator(".mecha-summary-heading");
+    const heading = summary.locator(".mecha-objective-card");
     const expand = page.getByRole("button", { name: zh ? "展开面板" : "Expand panel", exact: true });
     await summary.waitFor();
     assert.equal(await summary.evaluate((e) => e.classList.contains("is-compact")), true);
-    assert.equal((await heading.locator(":scope > span").first().innerText()).trim(), zh ? "当前宣告" : "Declared");
-    assert.equal((await heading.locator(".mecha-intent").innerText()).trim(), zh ? "砸击" : "Smash");
+    assert.equal((await heading.locator(".mecha-objective-heading").innerText()).trim(), zh ? "本局目标" : "Objective");
+    assert.match((await heading.locator(".mecha-objective-goal").innerText()).trim(), zh ? /消灭所有敌人/ : /Defeat all enemies/);
 
     // Character ranges detect intra-word breaks even when element boxes overlap
     // or split text appears visually plausible. Full-word wrapping is allowed.
@@ -68,7 +68,7 @@ try {
         }
         return { text: text.textContent, rect: box(node), words };
       };
-      return { label: textInfo(el.querySelector(":scope > span")), intent: textInfo(el.querySelector(".mecha-intent")),
+      return { label: textInfo(el.querySelector(".mecha-objective-heading")), intent: textInfo(el.querySelector(".mecha-objective-goal")),
         heading: box(el), button: box(button), summary: box(summary), scrollWidth: summary.scrollWidth, clientWidth: summary.clientWidth,
         scrollHeight: summary.scrollHeight, clientHeight: summary.clientHeight };
     });
@@ -119,7 +119,7 @@ try {
       // One long word that fits the available text column must not split; a
       // longer unbreakable token must wrap instead of escaping the rail.
       for (const [text, expectWhole] of [["Predicted Powerful Smash", true], ["SupercalifragilisticexpialidociousSupercalifragilisticexpialidocious", false]]) {
-        await heading.locator(".mecha-intent").evaluate((el, value) => { el.textContent = value; }, text);
+        await heading.locator(".mecha-objective-goal").evaluate((el, value) => { el.textContent = value; }, text);
         const m = await inspect();
         assert.ok(m.scrollWidth <= m.clientWidth + 1, `long label horizontal overflow: ${JSON.stringify(m)}`);
         assert.ok(m.intent.rect.left >= m.summary.left - 1 && m.intent.rect.right <= m.summary.right + 1, `long label outside rail: ${JSON.stringify(m)}`);
@@ -128,7 +128,7 @@ try {
         if (!expectWhole) {
           if (screenshots) await page.screenshot({ path: join(screenshots, "compact-heading-en-long-640x480.png") });
           await summary.focus();
-          const lastCharacterVisible = () => heading.locator(".mecha-intent").evaluate((el) => {
+          const lastCharacterVisible = () => heading.locator(".mecha-objective-goal").evaluate((el) => {
             const node = el.firstChild, range = document.createRange(), rail = el.closest(".mecha-turn-summary");
             range.setStart(node, node.length - 1); range.setEnd(node, node.length);
             const r = range.getBoundingClientRect(), clip = rail.getBoundingClientRect();

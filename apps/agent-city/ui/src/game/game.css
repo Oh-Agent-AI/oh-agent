@@ -400,3 +400,34 @@
 .mecha-turn-summary :is(summary, button):focus-visible { outline: 3px solid #ffe08a; outline-offset: 2px; }
 
 .mecha-map-legend i.is-projected { background: #7fe5ff; }
+
+/* The match objective is primary; the preview is explicitly a draft, not a
+   guaranteed outcome. Keep the disclosure target generous without narrowing
+   the objective text on small screens. */
+.mecha-turn-summary > .mecha-objective-card { width: 100%; min-width: 0; display: grid; align-items: stretch; gap: 2px; }
+.mecha-objective-card .mecha-summary-heading { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 4px; }
+.mecha-objective-heading { color: #afc4d3; font-size: 12px; font-weight: 700; }
+.mecha-objective-card .mecha-summary-heading button { flex: 0 0 auto; min-width: 44px; min-height: 44px; }
+.mecha-objective-goal, .mecha-objective-forecast { min-width: 0; font-size: 12px; line-height: 1.35; overflow-wrap: anywhere; }
+.mecha-objective-forecast { color: #ffd28d; font-weight: 600; }
+.mecha-turn-summary .mecha-objective-outcome { display: block; color: #ffb2a1; }
+.mecha-overlay.is-city .mecha-turn-summary.is-compact .mecha-objective-card .mecha-summary-heading { display: flex; }
+@media (min-width: 601px) and (max-width: 760px) and (min-height: 420px) and (max-height: 600px) {
+  .mecha-overlay.is-city.has-match .mecha-turn-summary.is-compact { max-height: var(--mecha-summary-fit-height, min(29vh, 190px)); }
+}
+
+/* Keep match controls compact; camera rotation and exit remain keyboard/touch
+   accessible in the menu, including while the map-only view is active. */
+.mecha-overlay.is-city.has-match .mecha-battle-bar { left: auto; right: 12px; width: max-content; max-width: calc(100% - 24px); gap: 8px; }
+.mecha-overlay.is-city.has-match .mecha-battle-controls { width: auto; flex-wrap: wrap; }
+.mecha-battle-menu { position: relative; }
+.mecha-battle-menu > summary { display: grid; place-items: center; box-sizing: border-box; min-width: 40px; min-height: 36px; padding: 2px 8px; border: 1px solid #ffffff40; border-radius: 6px; cursor: pointer; list-style: none; background: #102237; }
+.mecha-battle-menu > summary::-webkit-details-marker { display: none; }
+.mecha-battle-menu > summary:focus-visible { outline: 3px solid #ffe08a; outline-offset: 2px; }
+.mecha-battle-menu-items { position: absolute; top: calc(100% + 4px); right: 0; z-index: 30; display: grid; min-width: 150px; gap: 4px; padding: 6px; border: 1px solid #ffffff40; border-radius: 6px; background: #0b1726f5; }
+.mecha-battle-menu-items button { width: 100%; text-align: left; white-space: normal; }
+@media (max-width: 600px) {
+  .mecha-overlay.is-city.has-match .mecha-battle-bar { left: auto; }
+  .mecha-overlay.is-city.has-match .mecha-battle-bar > div:first-child { display: flex; order: 1; }
+  .mecha-overlay.is-city.has-match .mecha-battle-controls button { flex: 0 1 auto; padding: 3px 6px; }
+}
