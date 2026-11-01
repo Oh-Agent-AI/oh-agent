@@ -365,7 +365,9 @@ try {
         const draft = await pack.innerText();
         await selectTarget();
         assert.match(await candidate.innerText(), zh ? /预览暂不可用，风险未知/ : /Prediction is temporarily unavailable; risk is unknown/);
-        assert.doesNotMatch(await candidate.innerText(), zh ? /直接伤害|整包结束目标 HP|→/ : /Direct damage|Target HP after the whole turn|→/);
+        // The heading uses an arrow for actor → target identity; only a
+        // numeric transition would be a stale predicted result here.
+        assert.doesNotMatch(await candidate.innerText(), zh ? /直接伤害|整包结束目标 HP|\d+\s*→\s*\d+/ : /Direct damage|Target HP after the whole turn|\d+\s*→\s*\d+/);
         assert.equal(await pack.innerText(), draft);
         await check("unavailable target details: no half-lines and all text reachable", async () => {
           await auditDetailLines(candidate, ".mecha-selected-actions");

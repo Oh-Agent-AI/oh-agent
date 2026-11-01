@@ -350,9 +350,10 @@
   .mecha-overlay.is-city.has-match .mecha-panel > .mecha-last-result { width: min(240px, 44%); }
 }
 
-/* Keep the expand control touch-sized without forcing the compact heading to wrap. */
-.mecha-overlay.is-city .mecha-turn-summary.is-compact .mecha-summary-heading { flex-wrap: nowrap; align-items: center; gap: 4px; }
-.mecha-overlay.is-city .mecha-turn-summary.is-compact .mecha-summary-heading button { flex: 0 0 44px; min-height: 44px; padding: 0; margin-left: auto; }
+/* Stack the labels beside the touch-sized control so words get the full text column. */
+.mecha-overlay.is-city .mecha-turn-summary.is-compact .mecha-summary-heading { display: grid; grid-template-columns: minmax(0, 1fr) 44px; align-items: center; gap: 0 4px; }
+.mecha-overlay.is-city .mecha-turn-summary.is-compact .mecha-summary-heading > span:first-child, .mecha-overlay.is-city .mecha-turn-summary.is-compact .mecha-summary-heading .mecha-intent { min-width: 0; overflow-wrap: anywhere; }
+.mecha-overlay.is-city .mecha-turn-summary.is-compact .mecha-summary-heading button { grid-column: 2; grid-row: 1 / 3; align-self: start; width: 44px; min-height: 44px; padding: 0; }
 .mecha-overlay.is-city .mecha-turn-summary.is-compact .mecha-summary-heading button span { font-size: 18px; color: inherit; }
 
 /* The current decision owns the bottom of the small landscape rail. The

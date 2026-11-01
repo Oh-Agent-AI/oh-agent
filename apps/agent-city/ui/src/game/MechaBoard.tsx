@@ -484,11 +484,16 @@ function MechaMatch({ locale, onClose, engine, catalog, remoteStatus, remoteLock
       const available = sideLayout() && pack?.getBoundingClientRect().height
         ? Math.max(40, Math.floor(root.getBoundingClientRect().bottom - pack.getBoundingClientRect().bottom - 20))
         : parseFloat(root.style.getPropertyValue("--mecha-actions-available")) || window.innerHeight * 0.3;
-      const limit = panel === summary ? Math.min(window.innerHeight * 0.29, 190)
+      const limit = panel === summary
+        ? narrow() && panel.classList.contains("is-compact")
+          ? Math.min(window.innerHeight * 0.22, 110, Math.max(105, window.innerHeight * 0.6 - 200))
+          : Math.min(window.innerHeight * 0.29, 190)
         : isCandidate && narrow() ? Math.min(window.innerHeight * 0.48, root.clientHeight - 76) : available;
-      // A result may be taller than the scrollport. Keep its height stable so
-      // fitting individual lines cannot undo a user's scroll into its details.
-      let height = isCandidate ? limit : wholeLineHeight(panel, limit);
+      // The summary and candidate details can be longer than their rail.
+      // Changing the rail height as they scroll moves the grid and can undo
+      // scrollIntoView or keep controls in perpetual layout motion. Use a
+      // stable ceiling; normal scrolling can still reveal every line.
+      let height = panel === summary || isCandidate ? limit : wholeLineHeight(panel, limit);
       const active = document.activeElement;
       if (keyboardMode && active instanceof HTMLElement && active !== panel && panel.contains(active)) {
         const rect = active.getBoundingClientRect();
@@ -500,8 +505,9 @@ function MechaMatch({ locale, onClose, engine, catalog, remoteStatus, remoteLock
       if (root.style.getPropertyValue(name) !== value) root.style.setProperty(name, value);
     };
     const settle = (panel: HTMLElement) => {
-      // Do not snap the scroll position of a long selected result.
-      if (!sideLayout() || (panel === actions && panel.querySelector(".mecha-candidate-actions"))) return;
+      // Do not change the height of long summary/result rails while scrolling.
+      if (!sideLayout()) return;
+      if (panel === summary || (panel === actions && panel.querySelector(".mecha-candidate-actions"))) return;
       // Do not snap a keyboard user's scroll or move their focused control out
       // of view. Snap again after focus leaves the scrollport.
       if (keyboardMode && panel.contains(document.activeElement)) return;
