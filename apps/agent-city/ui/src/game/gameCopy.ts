@@ -5,6 +5,16 @@
 export type GameLocale = "zh-Hans" | "en";
 
 const ENGLISH: Record<string, string> = {
+  "正在启动远程战棋，本地规划已锁定。": "Starting remote play. Local planning is locked.",
+  "正在停止远程战棋，本地规划仍锁定。": "Stopping remote play. Local planning remains locked.",
+  "远程状态无法确认：请在远程战棋设置中停止并重试，本地规划保持锁定。": "Remote state is unknown. Stop and retry in remote settings; local planning remains locked.",
+  "远程战棋已启动：桌面显示本地局面，不会同步远程战况。本地规划已锁定；停止远程将重开本地局。": "Remote play has started. The desktop shows the local state; it does not sync the remote battle. Local planning is locked; stopping remote play restarts the local match.",
+  "远程战棋期间本地规划已锁定。": "Local planning is locked during remote play.",
+  "远程战棋期间不可重置。": "Reset is unavailable during remote play.",
+  "通过列表移动": "Move using a list",
+  "选择可到达格；终点冲突会提示。": "Choose a reachable cell; destination conflicts are reported.",
+  "选择坐标": "Choose coordinates",
+  "应用移动": "Apply move",
   "重置本回合": "Reset turn",
   "每场可用一次：恢复本回合开始时的草稿，不会撤回已结算的回合。": "Once per match: restore the draft from the start of this turn. Resolved turns cannot be undone.",
   "本局的重置机会已用完。": "The reset for this match has been used.",
@@ -17,8 +27,13 @@ const ENGLISH: Record<string, string> = {
   "沿直线射击，可穿过一处掩体、建筑或废墟。": "Shoot in a straight line through one cover, building, or rubble.",
   "为相邻友机恢复最多 4 点生命。": "Restore up to 4 HP to an adjacent ally.",
   "本机本回合不行动。": "This mech takes no action this turn.",
+  "当前不可用行动": "Actions unavailable now",
+  "技能冷却中，本回合不可使用。": "The skill is on cooldown and cannot be used this turn.",
+  "当前落点没有相邻友机；调整移动可能改变结果。": "No ally is adjacent at the planned position; changing the move may change this.",
+  "当前落点没有相邻敌人；调整移动可能改变结果。": "No enemy is adjacent at the planned position; changing the move may change this.",
+  "当前落点没有可射击目标（可能超出射程或被阻挡）；调整移动可能改变结果。": "No target can be shot from the planned position (possibly out of range or blocked); changing the move may change this.",
   "可选目标": "Selectable target",
-  "斜纹表示敌方威胁，边框表示可选目标；卡片上的受击是敌方阶段预计损失。": "Stripes mark enemy threats and outlines mark selectable targets; card hits are predicted enemy-phase HP loss.",
+  "斜纹和警告三角表示敌方威胁，边框表示可选目标；卡片上的受击是敌方阶段预计损失。": "Stripes and warning triangles mark enemy threats; outlines mark selectable targets. Card hits are predicted enemy-phase HP loss.",
   "高亮所选敌人的预告；其他威胁仍可见。": "The focused enemy is highlighted; other threats remain visible.",
   "确认全员待机": "Confirm all mechs waiting",
   "全员待机的预计风险": "Predicted risk if all mechs wait",
@@ -33,13 +48,37 @@ const ENGLISH: Record<string, string> = {
   "预计回合耗尽": "Predicted time limit defeat",
   "假设待机": "Assumed to wait",
   "已规划移动会保留；提交前须明确选择行动。": "Planned moves are kept; choose an action explicitly before submitting.",
-  "防守建筑明细": "Defended building details",
+  "建筑预测明细": "Building forecast details",
   "按当前方案预测的敌方威胁": "Enemy threats predicted for this plan",
   "防守建筑": "Defended building",
+  "非防守建筑，不计入败北条": "Non-defended building; does not count toward defeat",
   "选择建筑，高亮对应楼顶标记。": "Select a building to highlight its rooftop marker.",
   "预计毁灭": "Predicted destroyed",
   "当前敌意不是草稿预测。": "Current threats are not a prediction of this draft.",
   "预览暂不可用，风险未知；提交仍会重新校验。": "Prediction is temporarily unavailable; risk is unknown. The plan will still be validated on submission.",
+  "目标试算": "Target prediction",
+  "选择目标后确认，不会提交整包。": "Choose a target, then confirm. This does not submit the plan.",
+  "确认选择": "Confirm target",
+  "无合法目标": "No legal targets",
+  "不可选": "Unavailable",
+  "目标校验暂不可用；草稿未改变。": "Target validation is unavailable; the draft is unchanged.",
+  "行动造成的变化": "Changes caused by this action",
+  "直接伤害": "Direct damage",
+  "没有生命变化": "No HP change",
+  "未发生推挤": "No shove",
+  "推挤": "Shove",
+  "整包结束目标 HP": "Target HP after the whole turn",
+  "行动未执行，结果未知。": "Action did not execute; result is unknown.",
+  "行动落空，不消耗冷却": "Action fizzled; no cooldown consumed",
+  "系统建议，可修改": "System suggestion; editable",
+  "这里包含威胁和结算顺序；如有隐藏内容，使用上下方向键滚动查看。": "Contains threats and attack order; use the up and down arrow keys to scroll to any hidden content.",
+  "内容较多时可滚动": "Scroll when needed",
+  "我方固定行动顺序": "Fixed player action order",
+  "编号表示敌方次序；点攻击格可切换来源，关闭次序后可正常规划移动。": "Numbers show enemy order. Select an attack cell to cycle sources; close order view to plan movement normally.",
+  "整包预计敌方威胁": "Enemy threats predicted for the whole plan",
+  "整包预计机甲受击": "Mech damage predicted for the whole plan",
+  "墙或障碍": "Wall or obstacle",
+  "恢复最近一次移动前的草稿，可能一并恢复其他机甲规划。": "Restore the draft from before the most recent move, possibly restoring other mechs' plans too.",
   "守楼败北条": "Defended buildings (defeat meter)",
   "本局无守楼目标": "No defended buildings this match",
   "机甲单台损毁不败北；全灭、守楼全毁或超时则败北。": "One mech lost is not defeat; losing all mechs, all defended buildings, or running out of turns is.",
@@ -306,6 +345,9 @@ const ENGLISH: Record<string, string> = {
   "三机已就绪，可统一结算。": "All mechs are ready to resolve together.",
   "战场设置与规则": "Battlefield settings and rules",
   "受击": "Hit",
+  "查看战场": "View field",
+  "恢复面板": "Show HUD",
+  "收起面板以查看战场；选择棋盘格后恢复面板。": "Hide the panels to see the field; picking a board cell restores them.",
   "旋转 90°": "Rotate 90°",
   "战术视角": "Tactical view",
   "围绕当前观察点旋转 90°": "Rotate 90° around the current focus",
@@ -364,6 +406,11 @@ const FAULT_NAME: Record<string, { zh: string; en: string }> = {
  * （那串留给旧测试断言）。rejected = 提交被拒；否则是草稿里的行动被改动作废。
  * 没有 mechId（如 revision 过期）时退回通用句，不编造机甲名。
  */
+export function fizzleText(cause: PlanFaultCause | undefined, locale: GameLocale): string {
+  const core = FAULT_CORE[cause ?? "other"] ?? FAULT_CORE.other;
+  return locale === "en" ? core.en : core.zh;
+}
+
 export function previewFaultText(fault: { cause?: PlanFaultCause; mechId?: string }, locale: GameLocale): string {
   const en = locale === "en";
   const name = fault.mechId ? FAULT_NAME[fault.mechId] : undefined;

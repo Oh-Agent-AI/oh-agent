@@ -586,6 +586,12 @@ pub async fn plugin_open(app: tauri::AppHandle, webview: Webview, state: tauri::
         });
     #[cfg(all(feature = "plugin-isolation-probe", target_os = "macos"))]
     let builder = builder.initialization_script(crate::plugin_isolation_probe::OBSERVER);
+    // The interactive fixture starts with a fixed seed instead of rebuilding the
+    // synthetic city after the WebView has already loaded.
+    #[cfg(all(feature = "plugin-isolation-probe", target_os = "macos"))]
+    let builder = if std::env::args().any(|arg| arg == "--plugin-formal-mecha-interactive") {
+        builder.initialization_script("localStorage.setItem('city.seed', '4196523069');")
+    } else { builder };
     agent_vitals_runtime::logging::log_info("plugin_host", &format!("add_child id={id} entry={}", definition.entry));
     let result = app.get_window("workbench").ok_or("plugin_window_unavailable")?.add_child(
         builder,

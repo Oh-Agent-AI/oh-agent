@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { candidateResult } from "../apps/agent-city/ui/src/game/mecha/candidateResult.ts";
+import { stepCost } from "../apps/agent-city/ui/src/game/mecha/board.ts";
+import { tryPushMech } from "../apps/agent-city/ui/src/game/mecha/combat.ts";
+import { remoteArenaFromSite, remoteStateFromSite } from "../apps/agent-city/ui/src/game/mecha/contracts/arena.ts";
+import type { CityMechaSite } from "../apps/agent-city/ui/src/game/mecha/citySite.ts";
 import {
   attackerCenter, bossExecute, bossPrepare, BUILDING_HP, createMatch, footprintCenter, knockbackFromAttacker,
   legalActions, livingRaiders, MAX_TURNS, MOVE_QUANTUM, pathDistance, playTurn, previewPlan, RAIDER_ATK, setScriptCounters, spawnsAreOpenGround, validateAndApplyPlan,
@@ -12,6 +17,44 @@ function hold(state: MatchState) {
     items: state.mechs.filter((m) => m.hp > 0).map((m) => ({ mechId: m.id, moveTo: null, action: { kind: "skip" as const } })),
   };
 }
+
+// The UX iteration must not change v1.4's movement or collision rules. In
+// particular, experimental rendering/terrain annotations cannot silently
+// alter the same advertised ruleset or diverge from the remote projection.
+test("v1.4 ignores experimental Assault terrain annotations in movement and knockback", () => {
+  const from = { x: 1, y: 1 }, to = { x: 2, y: 1 };
+  const state = createMatch({
+    preset: "covers_sparse_mid", script: "stationary_smash", covers: [], obstacles: [], buildings: [], raiders: [],
+    mechs: [{ id: "Assault", pos: from }, { id: "Gunner", pos: { x: 1, y: 4 } }, { id: "Support", pos: { x: 1, y: 6 } }],
+    boss: { x: 7, y: 7 },
+  });
+  const cases = [
+    { unsafeCells: [to], unsafeEdges: [] },
+    { unsafeCells: [], unsafeEdges: [{ from, to }] },
+  ];
+  assert.equal(state.ruleset, "mecha-v1.4");
+  for (const safety of cases) {
+    const annotated = Object.assign(structuredClone(state), { assaultTerrainSafety: safety });
+    const site = {
+      originX: 0, originZ: 0, yaw: 0, cellW: 1, cellD: 1, terrain: state.terrain, heights: state.heights,
+      buildings: [], blocked: [], mechs: state.mechs.map(({ id, pos }) => ({ id, pos })), boss: state.boss.anchor,
+      raiders: [], spawnSpread: 0, assaultTerrainSafety: safety,
+    } as unknown as CityMechaSite;
+    const remote = remoteStateFromSite(site, annotated);
+    const arena = remoteArenaFromSite(site, { arenaId: "synthetic", sourceRevision: "synthetic" });
+    assert.equal(remote.ruleset, state.ruleset);
+    assert.equal(arena.ruleset, state.ruleset);
+    for (const input of [state, annotated, remote]) {
+      const copy = structuredClone(input);
+      const mech = copy.mechs.find((m) => m.id === "Assault")!;
+      const hp = mech.hp;
+      assert.equal(stepCost(copy, from, to, "Assault"), 2);
+      assert.equal(tryPushMech(copy, "Assault", { x: 1, y: 0 }), true);
+      assert.deepEqual(mech.pos, to);
+      assert.equal(mech.hp, hp);
+    }
+  }
+});
 
 test("2x2 center is anchor plus one, attacker stays plus half", () => {
   assert.deepEqual(footprintCenter({ x: 4, y: 4 }), { x: 5, y: 5 });
@@ -922,4 +965,107 @@ test("preview and committed snapshots agree across deterministic positions and p
       assert.deepEqual(partial, beforePlan);
     }
   }
+});
+
+
+test("candidate result uses the action and collision events, not whole-turn damage attribution", () => {
+  const state = createMatch({ preset: "covers_sparse_mid", script: "stationary_smash", covers: [], boss: { x: 4, y: 0 },
+    mechs: [{ id: "Assault", pos: { x: 3, y: 1 } }, { id: "Gunner", pos: { x: 6, y: 0 } }, { id: "Support", pos: { x: 6, y: 1 } }] });
+  bossPrepare(state);
+  const preview = previewPlan(state, { revision: state.revision, items: [
+    { mechId: "Assault", moveTo: null, action: { kind: "melee", target: "boss" } },
+    { mechId: "Gunner", moveTo: null, action: { kind: "skip" } },
+    { mechId: "Support", moveTo: null, action: { kind: "skip" } },
+  ] });
+  assert.ok(preview.ok);
+  if (!preview.ok) return;
+  const result = candidateResult(preview, "Assault", "boss");
+  assert.equal(result.action?.damage, 2);
+  assert.equal(result.shoves.length, 1);
+  assert.equal(result.shoves[0]!.event.hit, "Gunner,Support");
+  assert.deepEqual(result.shoves[0]!.from, { x: 4, y: 0 });
+  assert.deepEqual(result.shoves[0]!.to, { x: 4, y: 0 });
+  assert.deepEqual(result.shoves[0]!.event.effects?.map((effect) => effect.id).sort(), ["Gunner", "Support", "boss"].sort());
+  assert.equal(result.endHp, preview.stages?.afterPrepare.boss.hp);
+});
+
+test("candidate result reports a fizzle without attributing the prior mech's hit or shove", () => {
+  const state = duel([{ id: "Assault", pos: { x: 3, y: 1 } }, { id: "Gunner", pos: { x: 4, y: 4 } }, { id: "Support", pos: { x: 8, y: 9 } }]);
+  state.boss.hp = 1;
+  const result = previewPlan(state, { revision: state.revision, items: [
+    { mechId: "Assault", moveTo: null, action: { kind: "melee", target: "boss" } },
+    { mechId: "Gunner", moveTo: null, action: { kind: "pierce", target: "boss" } },
+    { mechId: "Support", moveTo: null, action: { kind: "skip" } },
+  ] });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const candidate = candidateResult(result, "Gunner", "boss");
+  assert.equal(candidate.action?.fizzled, true);
+  assert.equal(candidate.action?.cause, "target_gone");
+  assert.equal(candidate.action?.damage, 0);
+  assert.deepEqual(candidate.shoves, []);
+  assert.equal(candidate.endHp, 0);
+});
+
+test("candidate distinguishes successful shove and final target HP", () => {
+  const state = duel([{ id: "Assault", pos: { x: 3, y: 1 } }, { id: "Gunner", pos: { x: 0, y: 9 } }, { id: "Support", pos: { x: 8, y: 9 } }]);
+  const result = previewPlan(state, { revision: state.revision, items: [{ mechId: "Assault", moveTo: null, action: { kind: "melee", target: "boss" } }] });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const candidate = candidateResult(result, "Assault", "boss");
+  assert.deepEqual(candidate.shoves.map(({ from, to }) => ({ from, to })), [{ from: { x: 4, y: 0 }, to: { x: 5, y: 0 } }]);
+  assert.equal(candidate.shoves[0]!.event.hit, undefined);
+  assert.equal(candidate.endHp, result.stages?.afterPrepare.boss.hp);
+});
+
+test("repair preview reports healing through effects rather than damage", () => {
+  const state = duel([{ id: "Assault", pos: { x: 0, y: 9 } }, { id: "Gunner", pos: { x: 6, y: 1 } }, { id: "Support", pos: { x: 6, y: 2 } }]);
+  state.mechs[1]!.hp = 2;
+  const result = previewPlan(state, { revision: state.revision, items: [{ mechId: "Support", moveTo: null, action: { kind: "repair", target: "Gunner" } }] });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const candidate = candidateResult(result, "Support", "Gunner");
+  assert.equal(candidate.action?.damage, 0);
+  assert.equal(candidate.action?.effects?.find((effect) => effect.id === "Gunner")?.before, 2);
+  assert.equal(candidate.action?.effects?.find((effect) => effect.id === "Gunner")?.after, 6);
+  assert.deepEqual(candidate.shoves, []);
+  assert.equal(candidate.endHp, result.stages?.afterPrepare.mechs.find((unit) => unit.id === "Gunner")?.hp);
+});
+
+test("prediction preserves absent stakes and timeout outcome", () => {
+  const state = buildingRiskFixture();
+  state.buildings = [];
+  state.turn = MAX_TURNS;
+  const orders = hold(state);
+  const before = structuredClone(state);
+  const preview = previewPlan(state, orders);
+  const actual = playTurn(state, orders);
+  assert.ok(preview.ok && actual.ok);
+  if (!preview.ok || !actual.ok) return;
+  assert.deepEqual(preview.buildings, []);
+  assert.equal(preview.outcome, "defeat_timeout");
+  assert.equal(preview.outcome, actual.state.outcome);
+  assert.deepEqual(preview.enemyOrder, actual.log.filter((event) => event.type === "enemy"));
+  assert.deepEqual(state, before);
+});
+
+test("prediction reports a mech wipe and suppresses later enemy attacks", () => {
+  const state = createMatch({
+    preset: "covers_sparse_mid", script: "stationary_smash", covers: [], boss: { x: 4, y: 4 },
+    mechs: [{ id: "Assault", pos: { x: 3, y: 4 } }, { id: "Gunner", pos: { x: 0, y: 9 } }, { id: "Support", pos: { x: 8, y: 9 } }],
+    raiders: [{ id: "raider-w", pos: { x: 0, y: 0 } }],
+  });
+  state.mechs[0]!.hp = 1;
+  state.mechs[1]!.hp = 0;
+  state.mechs[2]!.hp = 0;
+  bossPrepare(state);
+  const orders = hold(state);
+  const preview = previewPlan(state, orders);
+  const actual = playTurn(state, orders);
+  assert.ok(preview.ok && actual.ok);
+  if (!preview.ok || !actual.ok) return;
+  assert.equal(preview.outcome, "defeat_wipe");
+  assert.equal(preview.outcome, actual.state.outcome);
+  assert.deepEqual(preview.enemyOrder.map((event) => event.actor), ["boss"]);
+  assert.deepEqual(preview.log, actual.log);
 });

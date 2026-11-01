@@ -116,6 +116,9 @@ test("animated controller blocks editing and auto ticks until completion; restar
   controller.submit();
   assert.ok(controller.getState().performance);
   assert.equal(controller.getState().interactive, false);
+  const performing = controller.getState();
+  controller.setDoctrine("peel");
+  assert.equal(controller.getState(), performing, "doctrine changes are ignored during performance");
   const match = controller.getState().match;
   controller.submit();
   controller.startAuto();

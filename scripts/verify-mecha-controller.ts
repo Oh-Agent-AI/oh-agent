@@ -9,6 +9,7 @@ import test from "node:test";
 import { PLAN_FAULT_CAUSES, gameText, planFaultText } from "../apps/agent-city/ui/src/game/gameCopy.ts";
 import { peelPlan, planForDoctrine, squadPlan, type DoctrineId } from "../apps/agent-city/ui/src/game/mecha/ai.ts";
 import { createMechaController, cuesFromLog, type Planner } from "../apps/agent-city/ui/src/game/mecha/controller.ts";
+import { candidateResult } from "../apps/agent-city/ui/src/game/mecha/candidateResult.ts";
 import type { CityMechaSite } from "../apps/agent-city/ui/src/game/mecha/citySite.ts";
 import { bossPrepare, createMatch, living, previewPlan, type ArenaPlan, type MatchState, type MechId, type TurnEvent } from "../apps/agent-city/ui/src/game/mecha/rules.ts";
 
@@ -189,6 +190,46 @@ test("auto mode plans once per revision: the show beat and the resolve beat shar
   assert.notEqual(calls[0]!.revision, calls[1]!.revision);
 });
 
+test("doctrine changes are frozen during pause and resume in manual or auto play", () => {
+  for (const auto of [false, true]) {
+    const { planner, calls } = counting((state, doctrine) => ({
+      revision: state.revision,
+      items: living(state).map((m) => ({
+        mechId: m.id, moveTo: null,
+        action: doctrine === "peel" && m.id === "Assault" ? { kind: "melee" as const, target: "boss" as const } : { kind: "skip" as const },
+      })),
+    }));
+    const c = createMechaController({ match: duel(NEAR_BOSS), planner });
+    if (auto) c.startAuto();
+    c.pause();
+    const frozen = c.getState();
+    const draft = structuredClone(frozen.draft);
+    const callCount = calls.length;
+    c.setDoctrine("peel");
+    assert.equal(c.getState(), frozen, `paused ${auto ? "auto" : "manual"} snapshot must not change`);
+    assert.deepEqual(c.getState().draft, draft);
+    assert.equal(calls.length, callCount, "a paused doctrine change must not invoke the planner");
+    c.resume();
+    c.setDoctrine("peel");
+    assert.equal(c.getState().doctrine, "peel");
+    assert.deepEqual(c.getState().draft.Assault.action, { kind: "melee", target: "boss" }, "the resumed doctrine refills the draft");
+    assert.equal(calls.length, callCount + 1, "after resume the new doctrine is planned even in auto mode");
+    assert.deepEqual(calls.at(-1), { revision: c.getState().match.revision, doctrine: "peel" });
+  }
+});
+
+test("doctrine changes are ignored outside the player planning phase", () => {
+  const match = duel(NEAR_BOSS);
+  match.phase = "enemy_prepare";
+  const { planner, calls } = counting();
+  const c = createMechaController({ match, planner });
+  const frozen = c.getState();
+  const callCount = calls.length;
+  c.setDoctrine("peel");
+  assert.equal(c.getState(), frozen);
+  assert.equal(calls.length, callCount);
+});
+
 test("pause stops ticks and resume continues; an outcome stops auto", () => {
   const paused = createMechaController({ match: duel(NEAR_BOSS), planner: hold });
   paused.startAuto();
@@ -235,6 +276,7 @@ test("commands after the match is finished are ignored", () => {
   c.setTargeting("melee");
   c.clickCell(3, 2);
   c.applyDoctrine("peel");
+  c.setDoctrine("peel");
   c.submit();
   c.startAuto();
   c.pause();
@@ -357,6 +399,43 @@ test("hovering highlights an enemy without hiding other threats", () => {
   c.setHoveredEnemy(null);
   assert.deepEqual(c.getState().telegraph, preview.telegraphAfter);
   assert.equal(c.getState().preview.ok && c.getState().preview.hitsAfter.Assault, c.getState().hits.Assault);
+});
+
+test("three threats remain attributable on one reachable repair target", () => {
+  const shared = { x: 5, y: 2 };
+  const state = createMatch({
+    preset: "covers_sparse_mid", script: "stationary_smash", covers: [], boss: { x: 4, y: 0 },
+    raiders: [{ id: "raider-w", pos: { x: 4, y: 4 } }, { id: "raider-e", pos: { x: 6, y: 4 } }],
+    mechs: [{ id: "Assault", pos: shared }, { id: "Gunner", pos: { x: 2, y: 8 } }, { id: "Support", pos: { x: 6, y: 2 } }],
+  });
+  bossPrepare(state);
+  const c = createMechaController({ match: state, planner: hold });
+  c.selectMech("Support");
+  c.setTargeting("repair");
+  const base = c.getState();
+  assert.ok(base.preview.ok);
+  if (!base.preview.ok) return;
+  assert.ok(base.reach.some((cell) => cell.x === shared.x && cell.y === shared.y));
+  assert.ok(base.targetOptions.some((target) => target.id === "Assault" && target.cells.some((cell) => cell.x === shared.x && cell.y === shared.y)));
+  assert.deepEqual(base.telegraph, [shared], "shared threats are one graphical cell, not three duplicated cells");
+  for (const actor of ["boss", "raider-w", "raider-e"]) {
+    assert.deepEqual(base.preview.telegraphByActor[actor], [shared]);
+    c.setSelectedEnemy(actor);
+    assert.equal(c.getState().selectedEnemy, actor);
+    assert.deepEqual(c.getState().focusedTelegraph, [shared]);
+    assert.deepEqual(c.getState().telegraph, [shared]);
+    c.setHoveredEnemy(actor);
+    assert.deepEqual(c.getState().focusedTelegraph, [shared]);
+    c.setHoveredEnemy(null);
+  }
+  const before = structuredClone(c.getState().draft);
+  c.clickCell(shared.x, shared.y, "touch");
+  assert.equal(c.getState().candidate?.target, "Assault");
+  assert.equal(c.getState().candidate?.source, "selection");
+  assert.deepEqual(c.getState().draft, before, "touch preview must not commit the repair");
+  c.setTargeting(null);
+  assert.equal(c.getState().candidate, null);
+  assert.deepEqual(c.getState().draft, before, "cancelling the preview must not alter the plan");
 });
 
 test("every plan fault cause has Chinese and English text that names the mech", () => {
@@ -661,4 +740,196 @@ test("reset invalidates a hold confirmation even when the restored draft is iden
   assert.equal(c.getState().holdConfirmation, null);
   c.confirmHold();
   assert.equal(c.getState().match.turn, 1);
+});
+
+test("target previews are temporary, pinned touch selection survives hover, and confirmation only edits the draft", () => {
+  const c = createMechaController({ match: duel(NEAR_BOSS), planner: hold });
+  const before = structuredClone(c.getState().draft);
+  const version = c.getState().draftVersion;
+  c.setTargeting("melee");
+  assert.ok(c.getState().targetOptions.some((option) => option.id === "boss"));
+  c.previewTarget("boss", "hover");
+  assert.equal(c.getState().candidate?.source, "hover");
+  assert.deepEqual(c.getState().draft, before);
+  assert.equal(c.getState().draftVersion, version);
+  c.previewTarget(null, "hover");
+  assert.equal(c.getState().candidate, null);
+  c.clickCell(4, 0, "touch");
+  assert.equal(c.getState().candidate?.source, "selection");
+  c.previewTarget(null, "hover");
+  assert.equal(c.getState().candidate?.target, "boss");
+  assert.deepEqual(c.getState().draft, before);
+  c.confirmTarget();
+  assert.deepEqual(c.getState().draft.Assault.action, { kind: "melee", target: "boss" });
+  assert.equal(c.getState().match.turn, 1);
+  assert.equal(c.getState().candidate, null);
+  assert.equal(c.getState().targeting, null);
+});
+
+test("a later candidate attributes only its own shove while replaying the earlier boss movement", () => {
+  const match = createMatch({ preset: "covers_sparse_mid", script: "stationary_smash",
+    covers: [], obstacles: [], buildings: [], raiders: [], boss: { x: 4, y: 4 },
+    mechs: [{ id: "Assault", pos: { x: 3, y: 4 } }, { id: "Gunner", pos: { x: 0, y: 9 } }, { id: "Support", pos: { x: 4, y: 3 } }] });
+  bossPrepare(match);
+  const c = createMechaController({ match, planner: hold });
+  c.setAction("Assault", { kind: "melee", target: "boss" });
+  c.selectMech("Support");
+  c.setTargeting("melee");
+  const beforeDraft = structuredClone(c.getState().draft);
+  const beforeMatch = structuredClone(c.getState().match);
+  const beforeVersion = c.getState().draftVersion;
+  c.previewTarget("boss", "selection");
+  const preview = c.getState().candidate?.preview;
+  assert.ok(preview && preview.ok, "the temporary candidate has a valid whole-turn preview");
+  assert.deepEqual(c.getState().draft, beforeDraft);
+  assert.deepEqual(c.getState().match, beforeMatch);
+  assert.equal(c.getState().draftVersion, beforeVersion);
+
+  const first = candidateResult(preview, "Assault", "boss");
+  const second = candidateResult(preview, "Support", "boss");
+  assert.equal(first.action?.damage, 2);
+  assert.deepEqual(first.action?.effects?.map(({ id, before, after }) => ({ id, before, after })), [{ id: "boss", before: 40, after: 38 }]);
+  assert.equal(first.shoves.length, 1);
+  assert.deepEqual(first.shoves[0]!.from, { x: 4, y: 4 });
+  assert.deepEqual(first.shoves[0]!.to, { x: 5, y: 4 });
+  assert.equal(second.action?.damage, 1, "the second action excludes Assault's damage");
+  assert.deepEqual(second.action?.effects?.map(({ id, before, after }) => ({ id, before, after })), [{ id: "boss", before: 38, after: 37 }]);
+  assert.equal(second.shoves.length, 1, "the second action excludes Assault's shove");
+  assert.deepEqual(second.shoves[0]!.from, { x: 5, y: 4 });
+  assert.deepEqual(second.shoves[0]!.to, { x: 6, y: 4 });
+  assert.equal(first.endHp, 37);
+  assert.equal(second.endHp, 37, "end HP describes the whole plan, not only this action");
+  assert.equal(preview.stages?.afterPlayer.boss.hp, 37);
+  assert.deepEqual(preview.stages?.afterPlayer.boss.anchor, { x: 6, y: 4 });
+
+  c.confirmTarget();
+  assert.deepEqual(c.getState().draft.Support.action, { kind: "melee", target: "boss" });
+  assert.deepEqual(c.getState().draft.Assault, beforeDraft.Assault);
+  assert.deepEqual(c.getState().draft.Gunner, beforeDraft.Gunner);
+  assert.deepEqual(c.getState().match, beforeMatch, "confirming the target only changes the draft");
+  c.submit();
+  const after = c.getState();
+  assert.equal(after.match.turn, beforeMatch.turn + 1);
+  assert.deepEqual(after.lastLog, preview.log);
+  assert.deepEqual(after.combat.presentationStages?.afterPlayer, preview.stages?.afterPlayer);
+  assert.equal(after.match.boss.hp, second.endHp);
+});
+
+test("a candidate reports a prior shove that makes its target nonadjacent as a fizzle", () => {
+  const match = duel([{ id: "Assault", pos: { x: 3, y: 1 } }, { id: "Gunner", pos: { x: 0, y: 9 } }, { id: "Support", pos: { x: 3, y: 2 } }]);
+  const c = createMechaController({ match, planner: hold });
+  c.setAction("Assault", { kind: "melee", target: "boss" });
+  c.selectMech("Support");
+  c.setTargeting("melee");
+  const beforeDraft = structuredClone(c.getState().draft);
+  c.previewTarget("boss", "selection");
+  const preview = c.getState().candidate?.preview;
+  assert.ok(preview && preview.ok, "the initially legal target can fizzle during resolution");
+  const effect = candidateResult(preview, "Support", "boss");
+  assert.deepEqual(effect.action, { type: "act", mechId: "Support", action: "melee", target: "boss", damage: 0, fizzled: true, cause: "not_adjacent" });
+  assert.deepEqual(effect.shoves, [], "the previous mech's shove is not the candidate's effect");
+  assert.equal(effect.endHp, 38);
+  assert.deepEqual(c.getState().draft, beforeDraft);
+  c.confirmTarget();
+  c.submit();
+  assert.deepEqual(c.getState().lastLog, preview.log);
+  assert.equal(c.getState().match.boss.hp, effect.endHp);
+  assert.ok(!c.getState().combat.actions.some((cue) => cue.actor === "Support"), "a fizzled candidate produces no attack cue");
+});
+
+test("candidate is invalidated by cancel, selection change, reset, pause, doctrine, and restart", () => {
+  for (const change of [
+    (c: ReturnType<typeof createMechaController>) => c.setTargeting(null),
+    (c: ReturnType<typeof createMechaController>) => c.selectMech("Gunner"),
+    (c: ReturnType<typeof createMechaController>) => c.resetTurn(),
+    (c: ReturnType<typeof createMechaController>) => c.togglePause(),
+    (c: ReturnType<typeof createMechaController>) => c.setDoctrine("peel"),
+    (c: ReturnType<typeof createMechaController>) => c.restart(),
+  ]) {
+    const c = createMechaController({ match: duel(NEAR_BOSS), planner: hold });
+    c.setTargeting("melee");
+    c.previewTarget("boss", "selection");
+    assert.ok(c.getState().candidate);
+    change(c);
+    assert.equal(c.getState().candidate, null);
+  }
+});
+
+test("candidate prediction failure stays unavailable rather than becoming a zero damage result", () => {
+  const c = createMechaController({ match: duel(NEAR_BOSS), planner: hold, preview: () => { throw new Error("prediction unavailable"); } });
+  c.setTargeting("melee");
+  c.previewTarget("boss", "selection");
+  assert.equal(c.getState().candidate?.preview.status, "unavailable");
+  assert.deepEqual(c.getState().draft.Assault.action, { kind: "skip" });
+});
+
+test("repair targets reflect every mech's planned movement", () => {
+  const c = createMechaController({ match: duel([{ id: "Assault", pos: { x: 2, y: 8 } }, { id: "Gunner", pos: { x: 4, y: 8 } }, { id: "Support", pos: { x: 6, y: 9 } }]), planner: hold });
+  c.setMove("Gunner", { x: 5, y: 8 });
+  c.selectMech("Support");
+  c.setTargeting("repair");
+  const target = c.getState().targetOptions.find((option) => option.id === "Gunner");
+  assert.deepEqual(target?.cells, [{ x: 5, y: 8 }]);
+});
+
+test("failed target legality validation is not reported as an illegal target or allowed to corrupt the draft", () => {
+  const c = createMechaController({ match: duel(NEAR_BOSS), planner: hold, validatePreview: () => { throw new Error("failure"); } });
+  const before = structuredClone(c.getState().draft);
+  c.setTargeting("melee");
+  assert.equal(c.getState().targetValidationUnavailable, true);
+  assert.deepEqual(c.getState().targetOptions, []);
+  c.clickCell(4, 0);
+  assert.match(c.getState().notice ?? "", /暂不可用/);
+  c.setAction("Assault", { kind: "melee", target: "boss" });
+  assert.deepEqual(c.getState().draft, before);
+});
+
+test("hover predictions are cached for one draft and invalidated after a real edit", () => {
+  let calls = 0;
+  const c = createMechaController({ match: duel(NEAR_BOSS), planner: hold, preview: (state, plan) => { calls += 1; return previewPlan(state, plan); } });
+  c.setTargeting("melee");
+  c.previewTarget("boss", "hover");
+  const initial = calls;
+  c.previewTarget(null, "hover");
+  c.previewTarget("boss", "hover");
+  assert.equal(calls, initial);
+  c.setTargeting(null);
+  c.setMove("Support", { x: 8, y: 8 });
+  c.setTargeting("melee");
+  c.previewTarget("boss", "hover");
+  assert.ok(calls > initial);
+});
+
+test("unavailable actions explain cooldown or the settled draft's missing targets without changing legality", () => {
+  const match = duel([
+    { id: "Assault", pos: { x: 1, y: 1 } },
+    { id: "Gunner", pos: { x: 4, y: 4 } },
+    { id: "Support", pos: { x: 8, y: 9 } },
+  ]);
+  match.mechs.find((m) => m.id === "Gunner")!.cd = 1;
+  const c = createMechaController({ match, planner: hold });
+  const missing = () => c.getState().unavailableActions;
+  assert.deepEqual(missing(), [{ kind: "melee", reason: "no_target" }, { kind: "charge", reason: "no_target" }]);
+  c.setMove("Assault", { x: 3, y: 1 });
+  assert.ok(c.getState().actions.some((action) => action.kind === "melee"));
+  assert.ok(c.getState().actions.some((action) => action.kind === "charge"));
+  assert.deepEqual(missing(), [], "moving into reach must remove the now-available reasons");
+  c.selectMech("Gunner");
+  assert.ok(c.getState().actions.some((action) => action.kind === "shoot"));
+  assert.deepEqual(missing(), [{ kind: "pierce", reason: "cooldown" }], "cooldown must not imply the normal shot is unavailable");
+  c.selectMech("Support");
+  assert.deepEqual(missing(), [{ kind: "melee", reason: "no_target" }, { kind: "shoot", reason: "no_target" }, { kind: "repair", reason: "no_target" }]);
+  assert.ok(!missing().some((entry) => c.getState().actions.some((action) => action.kind === entry.kind)), "an available action must never also be listed as unavailable");
+  assert.equal(match.mechs.find((m) => m.id === "Gunner")!.cd, 1, "the explanatory projection must not change rules state");
+});
+
+test("all three mech skills report cooldown rather than inventing a target-based reason", () => {
+  const match = duel(NEAR_BOSS);
+  for (const mech of match.mechs) mech.cd = 1;
+  const c = createMechaController({ match, planner: hold });
+  for (const [mech, skill] of [["Assault", "charge"], ["Gunner", "pierce"], ["Support", "repair"]] as const) {
+    c.selectMech(mech);
+    assert.deepEqual(c.getState().unavailableActions.find((entry) => entry.kind === skill), { kind: skill, reason: "cooldown" });
+    assert.ok(!c.getState().actions.some((action) => action.kind === skill));
+  }
 });

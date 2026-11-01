@@ -24,6 +24,7 @@ export type CityMechaView = {
   targetIds: string[];
   /** Mouse or list focus; other enemies' threats remain visible. */
   hoveredEnemy?: string | null;
+  enemyOrder?: Array<{ actor: string; cells: Cell[] }>;
   combat?: { id: number; actions: MechaCombatCue[]; reset?: true };
   /** 规则里的障碍格（场景楼、斜放楼）。缺省当空。 */
   obstacles?: Cell[];
@@ -76,15 +77,17 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
   performance: MechaPerformanceView | null;
   paused: boolean;
   onPerformanceComplete: () => void;
-  onCell: (x: number, y: number) => void;
+  onCell: (x: number, y: number, input: "mouse" | "touch") => void;
+  onHoverCell?: (cell: Cell | null) => void;
   onHoverEnemy?: (id: string | null) => void;
   onUnavailable?: () => void;
-}>(function CityMechaWorld({ engine, site, view, performance, paused, onPerformanceComplete, onCell, onHoverEnemy, onUnavailable }, ref) {
+}>(function CityMechaWorld({ engine, site, view, performance, paused, onPerformanceComplete, onCell, onHoverCell, onHoverEnemy, onUnavailable }, ref) {
   const viewRef = useRef(view);
   const performanceRef = useRef(performance);
   const pausedRef = useRef(paused);
   const onCellRef = useRef(onCell);
   const onHoverEnemyRef = useRef(onHoverEnemy);
+  const onHoverCellRef = useRef(onHoverCell);
   const onPerformanceCompleteRef = useRef(onPerformanceComplete);
   const cameraCommands = useRef<CityMechaWorldHandle | null>(null);
   viewRef.current = view;
@@ -92,6 +95,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
   pausedRef.current = paused;
   onCellRef.current = onCell;
   onHoverEnemyRef.current = onHoverEnemy;
+  onHoverCellRef.current = onHoverCell;
   onPerformanceCompleteRef.current = onPerformanceComplete;
   useImperativeHandle(ref, () => ({
     resetCamera: () => cameraCommands.current?.resetCamera(),
@@ -151,7 +155,25 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
     const targetMat = new THREE.LineBasicMaterial({ color: "#ffd166", depthWrite: false });
     const focusMat = new THREE.LineBasicMaterial({ color: "#39d6a3", depthWrite: false });
     const moveMat = new THREE.LineBasicMaterial({ color: "#ffe08a", depthWrite: false });
+    // Ground stripes respect scene depth. A small screen-facing warning at the
+    // cell corner remains visible when a mech or building covers those stripes.
+    const warningCanvas = document.createElement("canvas");
+    warningCanvas.width = warningCanvas.height = 96;
+    const warningContext = warningCanvas.getContext("2d");
+    if (warningContext) {
+      warningContext.beginPath();
+      warningContext.moveTo(48, 7); warningContext.lineTo(91, 84); warningContext.lineTo(5, 84); warningContext.closePath();
+      warningContext.fillStyle = "#d7192d"; warningContext.fill();
+      warningContext.lineWidth = 4; warningContext.strokeStyle = "#fff4d2"; warningContext.stroke();
+      warningContext.font = "bold 42px sans-serif"; warningContext.textAlign = "center"; warningContext.textBaseline = "middle";
+      warningContext.fillStyle = "#fff"; warningContext.fillText("!", 48, 54);
+    }
+    const warningTexture = new THREE.CanvasTexture(warningCanvas);
+    const warningMat = new THREE.SpriteMaterial({ map: warningTexture, transparent: true, depthTest: false, depthWrite: false, sizeAttenuation: false, fog: false, toneMapped: false });
+    const subduedWarningMat = new THREE.SpriteMaterial({ map: warningTexture, color: "#b8b8b8", transparent: true, depthTest: false, depthWrite: false, sizeAttenuation: false, fog: false, toneMapped: false });
+    const focusWarningMat = new THREE.SpriteMaterial({ map: warningTexture, color: "#fff2a5", transparent: true, depthTest: false, depthWrite: false, sizeAttenuation: false, fog: false, toneMapped: false });
     const threatLines: THREE.Mesh[] = [];
+    const threatWarnings: THREE.Sprite[] = [];
     const targetLines: THREE.LineSegments[] = [];
     const focusLines: THREE.LineSegments[] = [];
     const moveLines: THREE.LineSegments[] = [];
@@ -183,6 +205,14 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         threat.visible = false;
         threatLines.push(threat);
         root.add(threat);
+        const warning = new THREE.Sprite(warningMat);
+        const warningAt = boardToWorld(site, (x + 0.18) * site.cellW, (y + 0.18) * site.cellD);
+        warning.position.set(warningAt.x, world.y + 0.7, warningAt.z);
+        warning.scale.set(4.5, 4.5, 1);
+        warning.renderOrder = 9;
+        warning.visible = false;
+        threatWarnings.push(warning);
+        root.add(warning);
         targetLines.push(addLines(targetGeo, targetMat, world, 0.31));
         focusLines.push(addLines(focusGeo, focusMat, world, 0.32));
         moveLines.push(addLines(moveGeo, moveMat, world, 0.33));
@@ -287,14 +317,44 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       minDistance: 45,
       maxDistance: 520,
     };
-    const resetCamera = () => lease.setOrbitView(home);
+    const resetCamera = () => {
+      // Fit the projected grid, not just its world-space bounding box. A fixed
+      // distance clips the sides on portrait displays. Leave symmetric room for
+      // the top controls; the HUD can be hidden separately to inspect the map.
+      const rect = canvas.getBoundingClientRect();
+      const width = Math.max(1, rect.width);
+      const height = Math.max(1, rect.height);
+      const horizontalFraction = Math.max(0.1, 1 - 28 / width);
+      const verticalMargin = Math.min(72, height * 0.2);
+      const verticalFraction = Math.max(0.1, 1 - 2 * verticalMargin / height);
+      const verticalTan = Math.tan(THREE.MathUtils.degToRad(home.fov / 2));
+      const horizontalTan = verticalTan * width / height;
+      const target = new THREE.Vector3(home.target.x, home.target.y, home.target.z);
+      const direction = new THREE.Vector3(home.position.x, home.position.y, home.position.z).sub(target);
+      let distance = direction.length();
+      direction.normalize();
+      const right = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), direction).normalize();
+      const up = new THREE.Vector3().crossVectors(direction, right).normalize();
+      const point = new THREE.Vector3();
+      for (let i = 0; i < gridPts.length; i += 3) {
+        point.set(gridPts[i], gridPts[i + 1], gridPts[i + 2]).sub(target);
+        const depthOffset = point.dot(direction);
+        distance = Math.max(distance,
+          depthOffset + Math.abs(point.dot(right)) / (horizontalTan * horizontalFraction),
+          depthOffset + Math.abs(point.dot(up)) / (verticalTan * verticalFraction));
+      }
+      const position = direction.multiplyScalar(distance).add(target);
+      lease.setOrbitView({ ...home, position, maxDistance: Math.max(home.maxDistance, distance * 1.2) });
+    };
     cameraCommands.current = {
       resetCamera,
       rotateCamera: () => {
         const current = engine.photoView();
         const target = new THREE.Vector3().fromArray(current.target);
-        const position = new THREE.Vector3().fromArray(current.position).sub(target).applyAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2).add(target);
-        lease.setOrbitView({ position, target, fov: current.fov, minDistance: 45, maxDistance: 520 });
+        const offset = new THREE.Vector3().fromArray(current.position).sub(target);
+        const maxDistance = Math.max(520, offset.length() * 1.2);
+        const position = offset.applyAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2).add(target);
+        lease.setOrbitView({ position, target, fov: current.fov, minDistance: 45, maxDistance });
       },
     };
     resetCamera();
@@ -320,7 +380,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       raycaster.setFromCamera(pointer, camera);
       root.updateMatrixWorld(true);
       const cell = raycaster.intersectObjects(picks, false)[0]?.object.userData.cell as Cell | undefined;
-      if (cell) onCellRef.current(cell.x, cell.y);
+      if (cell) onCellRef.current(cell.x, cell.y, event.pointerType === "touch" ? "touch" : "mouse");
     };
     let hoveredId: string | null = null;
     const enemyUnderPointer = (event: PointerEvent): string | null => {
@@ -348,17 +408,42 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       }
       return null;
     };
+    let hoveredCellKey = "";
+    let hoverFrame = 0;
+    let pendingMove: PointerEvent | null = null;
     const onMove = (event: PointerEvent) => {
-      if (event.buttons !== 0) return;
-      const next = enemyUnderPointer(event);
-      if (next === hoveredId) return;
-      hoveredId = next;
-      onHoverEnemyRef.current?.(next);
+      if (event.buttons !== 0 || event.pointerType !== "mouse") return;
+      pendingMove = event;
+      if (hoverFrame) return;
+      hoverFrame = requestAnimationFrame(() => {
+        hoverFrame = 0;
+        const current = pendingMove;
+        pendingMove = null;
+        if (!current) return;
+        const next = enemyUnderPointer(current);
+        if (next !== hoveredId) {
+          hoveredId = next;
+          onHoverEnemyRef.current?.(next);
+        }
+        raycaster.setFromCamera(pointer, camera);
+        const cell = raycaster.intersectObjects(picks, false)[0]?.object.userData.cell as Cell | undefined;
+        const key = cell ? `${cell.x},${cell.y}` : "";
+        if (key !== hoveredCellKey) {
+          hoveredCellKey = key;
+          onHoverCellRef.current?.(cell ?? null);
+        }
+      });
     };
     const onLeave = () => {
-      if (hoveredId === null) return;
-      hoveredId = null;
-      onHoverEnemyRef.current?.(null);
+      if (hoverFrame) cancelAnimationFrame(hoverFrame);
+      hoverFrame = 0;
+      pendingMove = null;
+      hoveredCellKey = "";
+      onHoverCellRef.current?.(null);
+      if (hoveredId !== null) {
+        hoveredId = null;
+        onHoverEnemyRef.current?.(null);
+      }
     };
     canvas.addEventListener("pointerdown", onDown);
     canvas.addEventListener("pointerup", onUp);
@@ -382,9 +467,56 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       const feet = cellWorld(site, cell);
       return new THREE.Vector3(feet.x, feet.y, feet.z);
     };
+    // Numbers are derived only from events that the whole-turn prediction actually emitted.
+    const orderMarkers: Array<{ sprite: THREE.Sprite; texture: THREE.CanvasTexture; material: THREE.SpriteMaterial; actor: string; origin: THREE.Vector3; slot: number; slots: number }> = [];
+    let orderKey = "";
+    const clearOrderMarkers = () => {
+      for (const marker of orderMarkers) {
+        root.remove(marker.sprite);
+        marker.material.dispose();
+        marker.texture.dispose();
+      }
+      orderMarkers.length = 0;
+    };
+    const syncOrderMarkers = (order: NonNullable<CityMechaView["enemyOrder"]>) => {
+      const key = JSON.stringify(order);
+      if (key === orderKey) return;
+      orderKey = key;
+      clearOrderMarkers();
+      const occupied = new Map<string, number>();
+      const totals = new Map<string, number>();
+      order.forEach((event) => event.cells.forEach((cell) => totals.set(cellKey(cell), (totals.get(cellKey(cell)) ?? 0) + 1)));
+      order.forEach((event, index) => event.cells.forEach((cell) => {
+        const canvas = document.createElement("canvas");
+        canvas.width = canvas.height = 96;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        ctx.fillStyle = "#641b25";
+        ctx.strokeStyle = "#fff3ce";
+        ctx.lineWidth = 5;
+        ctx.beginPath(); ctx.arc(48, 48, 39, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+        ctx.font = "bold 54px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillStyle = "#fff"; ctx.fillText(String(index + 1), 48, 50);
+        const texture = new THREE.CanvasTexture(canvas);
+        const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false, depthWrite: false, sizeAttenuation: false, fog: false, toneMapped: false });
+        const sprite = new THREE.Sprite(material);
+        const world = cellWorld(site, cell);
+        const count = occupied.get(cellKey(cell)) ?? 0;
+        occupied.set(cellKey(cell), count + 1);
+        const origin = new THREE.Vector3(world.x, world.y + 5, world.z);
+        sprite.position.copy(origin);
+        sprite.scale.set(5, 5, 1);
+        sprite.renderOrder = 10;
+        root.add(sprite);
+        orderMarkers.push({ sprite, texture, material, actor: event.actor, origin, slot: count, slots: totals.get(cellKey(cell))! });
+      }));
+    };
     let player: MechaPerformancePlayer | null = null;
     let playing: MechaPerformanceView | null = null;
     let lastFrame = globalThis.performance.now();
+    const cameraRight = new THREE.Vector3();
+    const cameraUp = new THREE.Vector3();
+    const cameraPosition = new THREE.Vector3();
     lease.setFrameHook(() => {
       const now = globalThis.performance.now();
       const dt = Math.min(0.08, (now - lastFrame) / 1000);
@@ -398,6 +530,26 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         unit.userData.unitLightFor = source;
       }
       const current = viewRef.current;
+      syncOrderMarkers(current.enemyOrder ?? []);
+      // Keep labels readable when a narrow view fits the board from farther
+      // away. Non-attenuated sprite size is view-space; convert CSS pixels
+      // using the vertical field of view and canvas height.
+      const pixelScale = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / Math.max(1, canvas.getBoundingClientRect().height);
+      const warningSize = pixelScale * 16;
+      const orderSize = pixelScale * 24;
+      camera.updateMatrixWorld();
+      cameraRight.setFromMatrixColumn(camera.matrixWorld, 0);
+      cameraUp.setFromMatrixColumn(camera.matrixWorld, 1);
+      for (const marker of orderMarkers) {
+        // Separate same-cell numbers in screen space, including at portrait
+        // zoom levels and after rotation. Their order still comes from events.
+        cameraPosition.copy(marker.origin).applyMatrix4(camera.matrixWorldInverse);
+        const worldPerPixel = pixelScale * -cameraPosition.z;
+        const offset = (marker.slot - (marker.slots - 1) / 2) * 27 * worldPerPixel;
+        marker.sprite.position.copy(marker.origin).addScaledVector(cameraRight, offset).addScaledVector(cameraUp, 22 * worldPerPixel);
+        marker.sprite.scale.set(orderSize, orderSize, 1);
+        marker.material.opacity = !current.hoveredEnemy || current.hoveredEnemy === marker.actor ? 1 : 0.8;
+      }
       const telegraph = new Set(current.telegraph.map(cellKey));
       const focusedTelegraph = new Set(current.focusedTelegraph.map(cellKey));
       const focus = new Set(current.focus.map(cellKey));
@@ -422,6 +574,10 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         const threat = threatLines[index]!;
         threat.visible = telegraph.has(id);
         threat.material = focusedTelegraph.has(id) ? focusThreatMat : current.hoveredEnemy ? subduedThreatMat : threatMat;
+        const warning = threatWarnings[index]!;
+        warning.visible = threat.visible;
+        if (warning.visible) warning.scale.set(warningSize, warningSize, 1);
+        warning.material = focusedTelegraph.has(id) ? focusWarningMat : current.hoveredEnemy ? subduedWarningMat : warningMat;
         targetLines[index]!.visible = targets.has(id);
         focusLines[index]!.visible = focus.has(id);
         moveLines[index]!.visible = id === moveKey;
@@ -519,12 +675,14 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
     });
 
     return () => {
+      if (hoverFrame) cancelAnimationFrame(hoverFrame);
       canvas.removeEventListener("pointerdown", onDown);
       canvas.removeEventListener("pointerup", onUp);
       canvas.removeEventListener("pointermove", onMove);
       canvas.removeEventListener("pointerleave", onLeave);
       cameraCommands.current = null;
       player?.dispose();
+      clearOrderMarkers();
       try { lease.release(); } catch { /* host already disposed the scene */ }
       for (const figure of [assault, gunner, support, boss, raiderWest, raiderEast]) disposeMechaModel(figure);
       setMechaUnitLight(0);
@@ -532,7 +690,8 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       (grid.material as THREE.Material).dispose();
       padGeo.dispose();
       for (const geo of [threatGeo, targetGeo, focusGeo, moveGeo]) geo.dispose();
-      for (const mat of [threatMat, subduedThreatMat, focusThreatMat, targetMat, focusMat, moveMat]) mat.dispose();
+      for (const mat of [threatMat, subduedThreatMat, focusThreatMat, targetMat, focusMat, moveMat, warningMat, subduedWarningMat, focusWarningMat]) mat.dispose();
+      warningTexture.dispose();
       pickGeo.dispose();
       pickMat.dispose();
       barGeo.dispose();

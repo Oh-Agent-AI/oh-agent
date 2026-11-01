@@ -14,7 +14,7 @@ import { isDeepStrictEqual } from "node:util";
 import test from "node:test";
 import {
   BOARD, BOSS_HP, MAX_TURNS, bossExecute, bossPrepare, createMatch, legalActions, living, livingRaiders,
-  livingStakeBuildings, moveBudget, pathDistance, spawnsAreOpenGround, validateAndApplyPlan,
+  livingStakeBuildings, moveBudget, pathDistance, playTurn, previewPlan, spawnsAreOpenGround, stakeBuildings, validateAndApplyPlan,
   type Action, type ArenaPlan, type BossScriptId, type BuildingStake, type Cell, type CoverPresetId,
   type MatchState, type MechId, type MechOrder, type TerrainKind,
 } from "../apps/agent-city/ui/src/game/mecha/rules.ts";
@@ -301,4 +301,256 @@ test("AI packs are never rejected and keep every invariant", (t) => {
   }
   t.diagnostic(`played ${played} AI matches (squad/peel alternating); outcomes ${JSON.stringify(outcomes)}`);
   assert.equal(violations.length, 0, report(violations));
+});
+
+// Sample multi-turn generated states in addition to the directed UX fixtures. The
+// seed and counts are fixed so a failure can be reproduced by label and turn.
+// This is not an exhaustive enumeration of all legal packs or input devices.
+test("generated complete and partial packs preserve preview/commit parity", (t) => {
+  const rng = lcg(20261101);
+  let states = 0, ready = 0, rejected = 0, partials = 0, moved = 0, acted = 0;
+  const scripts = new Set<BossScriptId>();
+  const stakes = new Set<BuildingStake>();
+
+  for (let index = 0, matches = 0; matches < 24; index += 1) {
+    assert.ok(index < 120, "generator could not find enough open-ground matches");
+    const made = makeMatch(rng, index);
+    if (!made) continue;
+    matches += 1;
+    let state = made.state;
+    scripts.add(state.script);
+    stakes.add(state.stake);
+    bossPrepare(state);
+
+    for (let turn = 0; turn < 6 && !state.outcome; turn += 1) {
+      states += 1;
+      const generated = randomPlan(state, rng);
+      const candidates = [generated, holdPlan(state)];
+      if (generated.items.length > 0) {
+        candidates.push({ revision: generated.revision, items: generated.items.slice(1) });
+        partials += 1;
+      }
+      let next: MatchState | null = null;
+      for (const partial of candidates) {
+        const named = new Set(partial.items.map((item) => item.mechId));
+        const missing = living(state).map((mech) => mech.id).filter((id) => !named.has(id));
+        const full: ArenaPlan = { revision: partial.revision, items: [...partial.items,
+          ...missing.map((mechId) => ({ mechId, moveTo: null, action: { kind: "skip" as const } }))] };
+        const context = `${made.label}, turn ${turn + 1}, plan ${JSON.stringify(partial)}`;
+        const stateBefore = structuredClone(state);
+        const planBefore = structuredClone(partial);
+        const fullBefore = structuredClone(full);
+        const preview = previewPlan(state, partial);
+        assert.deepEqual(state, stateBefore, `${context}: preview state mutated`);
+        assert.deepEqual(partial, planBefore, `${context}: preview plan mutated`);
+        const actual = playTurn(state, full);
+        assert.deepEqual(state, stateBefore, `${context}: commit state mutated`);
+        assert.deepEqual(full, fullBefore, `${context}: commit plan mutated`);
+        assert.equal(preview.ok, actual.ok, `${context}: validity differs`);
+        if (!preview.ok && !actual.ok) {
+          rejected += 1;
+          assert.deepEqual(preview.fault, actual.fault, `${context}: fault differs`);
+          continue;
+        }
+        if (!preview.ok || !actual.ok) throw new Error(`${context}: inconsistent result`);
+        ready += 1;
+        if (full.items.some((item) => item.moveTo !== null)) moved += 1;
+        if (full.items.some((item) => item.action.kind !== "skip")) acted += 1;
+        assert.deepEqual(preview.assumed, missing, `${context}: assumed mechs`);
+        assert.deepEqual(preview.stages, actual.presentationStages, `${context}: stages`);
+        assert.deepEqual(preview.log, actual.log, `${context}: event log`);
+        assert.equal(preview.outcome, actual.state.outcome, `${context}: outcome`);
+        const stages = actual.presentationStages;
+        assert.ok(stages, `${context}: missing presentation stages`);
+        const staked = new Set(stakeBuildings(state).map((building) => building.id));
+        assert.deepEqual(preview.buildings, state.buildings.map((building) => ({
+          id: building.id, cells: building.cells, staked: staked.has(building.id),
+          startHp: building.hp,
+          afterPlayerHp: stages.afterPlayer.buildings.find((item) => item.id === building.id)!.hp,
+          endHp: actual.state.buildings.find((item) => item.id === building.id)!.hp,
+          maxHp: building.maxHp,
+        })), `${context}: building projections`);
+        for (const mech of state.mechs) {
+          const before = stages.afterPlayer.mechs.find((unit) => unit.id === mech.id)!.hp;
+          const after = stages.afterEnemy.mechs.find((unit) => unit.id === mech.id)!.hp;
+          assert.equal(preview.hitsAfter[mech.id], Math.max(0, before - after), `${context}: enemy-phase hits ${mech.id}`);
+        }
+        const enemyEvents = actual.log.filter((event) => event.type === "enemy");
+        assert.deepEqual(preview.enemyOrder, enemyEvents, `${context}: enemy order`);
+        const byActor: Record<string, Cell[]> = {};
+        const cellKeys = new Set<string>();
+        const cells: Cell[] = [];
+        for (const event of enemyEvents) {
+          if (event.type !== "enemy") continue;
+          byActor[event.actor] = event.cells;
+          for (const cell of event.cells) {
+            if (!cellKeys.has(key(cell))) { cellKeys.add(key(cell)); cells.push(cell); }
+          }
+        }
+        assert.deepEqual(preview.telegraphByActor, byActor, `${context}: threat by actor`);
+        assert.deepEqual(preview.telegraphAfter, cells, `${context}: combined threat`);
+        if (!next) next = actual.state;
+      }
+      assert.ok(next, `${made.label}: hold should always produce a valid plan`);
+      state = next;
+    }
+  }
+  t.diagnostic(`seed 20261101: ${states} states, ${ready} ready, ${rejected} rejected, ${partials} partial, ${moved} moved, ${acted} acted; scripts ${[...scripts].sort()}, stakes ${[...stakes].sort()}`);
+  assert.ok(states >= 60 && ready >= 100 && partials >= 60, "insufficient generated coverage");
+  assert.ok(moved > 0 && acted > 0, "generated plans must include moves and actions");
+  assert.equal(scripts.size, SCRIPTS.length, "all enemy scripts should be sampled");
+  assert.equal(stakes.size, 2, "both stake modes should be sampled");
+});
+
+// Exhaustive over semantic movement/action choices on deliberately bounded maps.
+// Equivalent representations (item order and explicit move to the current cell)
+// are not counted as separate plans. This does not enumerate unrestricted maps.
+test("all canonical legal packs on bounded deterministic boards match preview", (t) => {
+  const free = [
+    { x: 2, y: 3 }, { x: 2, y: 4 }, { x: 3, y: 3 }, { x: 3, y: 4 },
+    { x: 4, y: 2 }, { x: 4, y: 3 }, { x: 5, y: 2 }, { x: 5, y: 3 },
+    { x: 4, y: 4 }, { x: 5, y: 4 }, { x: 4, y: 5 }, { x: 5, y: 5 },
+    { x: 1, y: 4 }, { x: 6, y: 4 }, { x: 7, y: 5 },
+  ];
+  const open = new Set(free.map(key));
+  const scripts: BossScriptId[] = ["stationary_smash", "raid_ssw", "siege", ...SCRIPTS];
+  const rng = lcg(20261102);
+  const required = new Set(["3,4", "4,2", "3,3", "4,4", "5,4", "4,5", "5,5", "6,4", "7,5", "1,4"]);
+  const generatedMaps = new Set<string>();
+  const generatedStakes = new Set<BuildingStake>();
+  let generatedPlans = 0, generatedAttacks = 0, generatedRepairs = 0;
+  let totalPlans = 0, movementBundles = 0, attacks = 0, repairs = 0, fizzles = 0;
+  for (let scenario = 0; scenario < scripts.length; scenario += 1) {
+    const generated = scenario >= 3;
+    const terrain: TerrainKind[][] = Array.from({ length: BOARD }, (_, y) =>
+      Array.from({ length: BOARD }, (_, x) => {
+        const cell = key({ x, y });
+        if (!open.has(cell)) return "water";
+        if (!generated) return "land";
+        const roll = rng();
+        return !required.has(cell) && roll < 0.18 ? "water" : roll < 0.42 ? "road" : "land";
+      }));
+    const heights = generated ? Array.from({ length: BOARD }, (_, y) =>
+      Array.from({ length: BOARD }, (_, x) => open.has(key({ x, y })) ? Math.floor(rng() * 3) : 0)) : undefined;
+    if (scenario === 1) terrain[4]![5] = "road"; // Adjacent to street, but not back.
+    const script = scripts[scenario]!;
+    const state = createMatch({ preset: "covers_sparse_mid", script, terrain, heights, covers: [],
+      boss: { x: 4, y: 4 },
+      mechs: [{ id: "Assault", pos: { x: 3, y: 4 } }, { id: "Gunner", pos: { x: 4, y: 2 } }, { id: "Support", pos: { x: 3, y: 3 } }],
+      buildings: [{ id: "street", cells: [{ x: 6, y: 4 }] }, { id: "back", cells: [{ x: 7, y: 5 }] }],
+      raiders: script === "stationary_smash" ? [] : [{ id: "raider-w", pos: { x: 1, y: 4 } }],
+      stake: scenario === 1 || (generated && rng() < 0.5) ? "frontage" : "all",
+    });
+    state.mechs[0]!.hp -= 2;
+    state.mechs[1]!.hp -= 1;
+    if (generated) {
+      for (const mech of state.mechs) {
+        mech.hp -= Math.floor(rng() * 3);
+        mech.cd = rng() < 0.3 ? 1 : 0;
+      }
+      for (const building of state.buildings) building.hp = Math.max(1, building.hp - Math.floor(rng() * 5));
+      state.boss.hp -= Math.floor(rng() * 6);
+      generatedMaps.add(JSON.stringify({ terrain, heights }));
+      generatedStakes.add(state.stake);
+      t.diagnostic(`generated ${scenario}: stake ${state.stake}, mech HP/cd ${state.mechs.map((mech) => `${mech.hp}/${mech.cd}`).join(",")}, building HP ${state.buildings.map((building) => building.hp).join(",")}, boss HP ${state.boss.hp}`);
+    }
+    if (scenario === 1) {
+      assert.deepEqual(stakeBuildings(state).map((building) => building.id), ["street"],
+        "frontage scenario must include one staked and one non-staked building");
+      assert.deepEqual(state.buildings.map((building) => building.id), ["street", "back"]);
+    }
+    assert.ok(spawnsAreOpenGround(state), `scenario ${scenario} spawn`);
+    bossPrepare(state);
+    const ids = living(state).map((mech) => mech.id);
+    const options = living(state).map((mech) => [null, ...free.filter((cell) => {
+      if (key(cell) === key(mech.pos)) return false;
+      const cost = pathDistance(state, mech.pos, cell, mech.id, { alliesPass: true });
+      return cost !== null && cost <= moveBudget(mech.id);
+    })]);
+    const before = structuredClone(state);
+    let scenarioPlans = 0;
+    for (const assaultMove of options[0]!) for (const gunnerMove of options[1]!) for (const supportMove of options[2]!) {
+      const destinations = [assaultMove, gunnerMove, supportMove];
+      const positions = destinations.map((cell, index) => cell ?? state.mechs[index]!.pos);
+      if (new Set(positions.map(key)).size !== ids.length) continue;
+      const base: ArenaPlan = { revision: state.revision, items: ids.map((mechId, index) => ({
+        mechId, moveTo: destinations[index] ?? null, action: { kind: "skip" },
+      })) };
+      const moved = structuredClone(state);
+      for (let index = 0; index < ids.length; index += 1) moved.mechs.find((mech) => mech.id === ids[index])!.pos = { ...positions[index]! };
+      const actionOptions = ids.map((id, index) => {
+        const listed = legalActions(moved, id);
+        const expanded: Action[] = [...listed];
+        for (const action of listed) {
+          if (action.kind === "skip" || action.kind === "repair" || action.target !== undefined) continue;
+          // With a unique legal target, both omitted and explicit target are valid.
+          for (const target of ["boss", ...livingRaiders(moved).map((raider) => raider.id)]) {
+            expanded.push({ kind: action.kind, target });
+          }
+        }
+        return expanded.filter((action) => {
+          const trial = structuredClone(base);
+          trial.items[index]!.action = action;
+          const accepted = playTurn(state, trial).ok;
+          if (listed.includes(action)) assert.ok(accepted, `legalActions rejected for ${id}: ${JSON.stringify(trial)}`);
+          return accepted;
+        });
+      });
+      movementBundles += 1;
+      for (const assault of actionOptions[0]!) for (const gunner of actionOptions[1]!) for (const support of actionOptions[2]!) {
+        const plan: ArenaPlan = { revision: state.revision, items: base.items.map((item, index) => ({
+          ...item, action: [assault, gunner, support][index]!,
+        })) };
+        const originalPlan = structuredClone(plan);
+        const expected = playTurn(state, plan);
+        assert.deepEqual(plan, originalPlan, `scenario ${scenario}: playTurn changed input plan`);
+        assert.deepEqual(state, before, `scenario ${scenario}: playTurn changed input state`);
+        assert.ok(expected.ok, `enumerated pack rejected in scenario ${scenario}: ${JSON.stringify(plan)}`);
+        if (!expected.ok) continue;
+        const preview = previewPlan(state, plan);
+        assert.ok(preview.ok, `preview rejected in scenario ${scenario}: ${JSON.stringify(plan)}`);
+        if (!preview.ok) continue;
+        const message = `scenario ${scenario}, plan ${JSON.stringify(plan)}`;
+        assert.deepEqual(plan, originalPlan, `${message}: input plan changed`);
+        assert.deepEqual(state, before, `${message}: input state changed`);
+        assert.deepEqual(preview.stages, expected.presentationStages, `${message}: stages`);
+        assert.deepEqual(preview.log, expected.log, `${message}: events`);
+        assert.equal(preview.outcome, expected.state.outcome, `${message}: outcome`);
+        assert.deepEqual(preview.enemyOrder, expected.log.filter((event) => event.type === "enemy"), `${message}: enemy order`);
+        const stages = expected.presentationStages;
+        assert.ok(stages, `${message}: no stages`);
+        const staked = new Set(stakeBuildings(state).map((building) => building.id));
+        assert.deepEqual(preview.buildings, state.buildings.map((building) => ({
+          id: building.id, cells: building.cells, staked: staked.has(building.id), startHp: building.hp,
+          afterPlayerHp: stages.afterPlayer.buildings.find((item) => item.id === building.id)!.hp,
+          endHp: expected.state.buildings.find((item) => item.id === building.id)!.hp, maxHp: building.maxHp,
+        })), `${message}: building projections`);
+        assert.deepEqual(preview.assumed, [], `${message}: full pack assumed a mech`);
+        for (const mech of state.mechs) {
+          const playerHp = stages.afterPlayer.mechs.find((unit) => unit.id === mech.id)!.hp;
+          const enemyHp = stages.afterEnemy.mechs.find((unit) => unit.id === mech.id)!.hp;
+          assert.equal(preview.hitsAfter[mech.id], Math.max(0, playerHp - enemyHp), `${message}: enemy damage`);
+        }
+        if (plan.items.some((item) => !["skip", "repair"].includes(item.action.kind))) {
+          attacks += 1;
+          if (generated) generatedAttacks += 1;
+        }
+        if (plan.items.some((item) => item.action.kind === "repair")) {
+          repairs += 1;
+          if (generated) generatedRepairs += 1;
+        }
+        if (expected.log.some((event) => event.type === "act" && event.fizzled)) fizzles += 1;
+        scenarioPlans += 1;
+        totalPlans += 1;
+        if (generated) generatedPlans += 1;
+      }
+    }
+    assert.ok(scenarioPlans > 100, `scenario ${scenario} insufficient complete plans`);
+    t.diagnostic(`scenario ${scenario} ${generated ? "seed 20261102 " : "fixed "}${script}: ${scenarioPlans} complete plans`);
+  }
+  assert.equal(generatedMaps.size, SCRIPTS.length, "generated terrain and height maps must be distinct");
+  assert.ok(generatedPlans > 400 && generatedAttacks > 0 && generatedRepairs > 0, "generated cases must include complete plans, attacks and repairs");
+  t.diagnostic(`seed 20261102: ${generatedPlans} plans, ${generatedAttacks} attack, ${generatedRepairs} repair; stakes ${[...generatedStakes].sort()}`);
+  assert.ok(movementBundles > 10 && attacks > 0 && repairs > 0 && fizzles > 0, "coverage must include movement, attack, repair and fizzle");
+  t.diagnostic(`${movementBundles} movement bundles, ${totalPlans} plans, ${attacks} attack, ${repairs} repair, ${fizzles} fizzle`);
 });

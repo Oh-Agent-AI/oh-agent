@@ -50,7 +50,7 @@ fn isolation_probe_event(webview: Webview, state: tauri::State<'_, ProbeState>, 
         else { data.city_pulses.insert(label.to_owned(), Instant::now()); }
         return Ok(());
     }
-    if !["ui_ready", "runtime_error", "unhandled_rejection", "host_navigation_alive", "host_exit_navigation_alive", "window_seven_ready", "cinema_started", "cinema_stopped", "stale_rejected", "formal_unresponsive", "formal_reload", "formal_disposed"].contains(&code.as_str()) {
+    if !["ui_ready", "runtime_error", "unhandled_rejection", "host_navigation_alive", "host_exit_navigation_alive", "window_seven_ready", "cinema_started", "cinema_stopped", "stale_rejected", "formal_unresponsive", "formal_reload", "formal_disposed", "formal_settings_clicked", "formal_window_changed", "formal_settings_closed", "formal_reset_clicked", "mecha_fixture_ready", "mecha_board_ready", "mecha_render_stalled", "mecha_hold_risk", "mecha_hold_cancelled", "mecha_hold_confirmed", "mecha_turn_resolved", "mecha_seed_input", "mecha_seed_apply_clicked", "mecha_seed_stored", "mecha_seed_applied", "mecha_exited", "mecha_all_hold"].contains(&code.as_str()) {
         return Err("probe_code_unavailable".into());
     }
     if code == "ui_ready" { state.0.lock().unwrap().ready.insert(label.to_owned()); }
@@ -99,10 +99,10 @@ pub(crate) const OBSERVER: &str = r#"
     const host = document.querySelector('.sidebar .nav-item');
     const city = document.querySelector('.city-summary-trigger');
     const summary = city?.textContent?.trim() ?? '';
-    if (!ready && (host || (summary.startsWith('3 会话') && window.__CITY_ISOLATION_FAULTS__))) {
+    if (!ready && (host || ((summary.startsWith('3 会话') || summary.startsWith('3 sessions')) && window.__CITY_ISOLATION_FAULTS__))) {
       ready = true; send('ui_ready');
     }
-    if (!seven && summary.startsWith('2 会话')) { seven = true; send('window_seven_ready'); }
+    if (!seven && (summary.startsWith('2 会话') || summary.startsWith('2 sessions'))) { seven = true; send('window_seven_ready'); }
     const playing = [...document.querySelectorAll('.plugin-toolbar button')].some(b=>b.textContent==='停止航拍');
     if (playing && !cinema) { cinema = true; send('cinema_started'); }
     if (!playing && cinema) { cinema = false; send('cinema_stopped'); }
@@ -234,12 +234,29 @@ fn formal_exercise(app: &tauri::AppHandle, state: &ProbeState) -> Result<(), Str
     let city = app.get_webview("plugin-city-1").ok_or("formal_city_missing")?;
     if renderer_pid(&host)? == renderer_pid(&city)? { return Err("formal_renderer_shared".into()); }
     std::thread::sleep(Duration::from_millis(600));
-    host.eval("const picker = document.querySelector('.plugin-toolbar select'); picker.value='7'; picker.dispatchEvent(new Event('change', {bubbles:true}));")
-        .map_err(|_| "formal_window_command_failed")?;
+    // Window selection moved out of the host toolbar and into City settings.
+    // Open the overflow through the host UI, then operate the settings in the child view.
+    host.eval(r#"(() => { const timer=setInterval(()=>{
+        const toolbar=document.querySelector('.plugin-toolbar');
+        const settings=[...(toolbar?.querySelectorAll('button') ?? [])].find(b=>b.textContent==='城市设置');
+        if(settings && !settings.disabled) { clearInterval(timer); settings.click(); void window.__TAURI__.core.invoke('isolation_probe_event',{code:'formal_settings_clicked'}); return; }
+        const more=toolbar?.querySelector('button[aria-expanded="false"]'); if(more) more.click();
+    },50); setTimeout(()=>clearInterval(timer),10000); })()"#).map_err(|_| "formal_settings_failed")?;
+    wait_until(state, "formal_settings_click_timeout", |data| data.codes.contains("formal_settings_clicked"))?;
+    city.eval(r#"(() => { const timer=setInterval(()=>{
+        const picker=document.querySelector('dialog[open] #city-window');
+        if(picker && !picker.disabled) { clearInterval(timer); picker.value='7'; picker.dispatchEvent(new Event('change',{bubbles:true})); void window.__TAURI__.core.invoke('isolation_probe_event',{code:'formal_window_changed'}); }
+    },50); setTimeout(()=>clearInterval(timer),10000); })()"#).map_err(|_| "formal_window_command_failed")?;
+    wait_until(state, "formal_window_control_timeout", |data| data.codes.contains("formal_window_changed"))?;
     wait_until(state, "formal_projection_window_timeout", |data| data.codes.contains("window_seven_ready"))?;
-    std::thread::sleep(Duration::from_millis(600));
-    host.eval("(() => { const timer=setInterval(()=>{const b=[...document.querySelectorAll('.plugin-toolbar button')].find(b=>b.textContent==='重置视角');if(b&&!b.disabled){clearInterval(timer);b.click();}},50);setTimeout(()=>clearInterval(timer),10000);})()")
+    city.eval(r#"(() => { const dialog=document.querySelector('dialog[open][aria-label="城市设置"]');
+        const close=dialog?.querySelector('button[aria-label="关闭城市设置"]');
+        if(close) { close.click(); void window.__TAURI__.core.invoke('isolation_probe_event',{code:'formal_settings_closed'}); }
+    })()"#).map_err(|_| "formal_settings_close_failed")?;
+    wait_until(state, "formal_settings_close_timeout", |data| data.codes.contains("formal_settings_closed"))?;
+    host.eval("(() => { const timer=setInterval(()=>{const b=[...document.querySelectorAll('.plugin-toolbar button')].find(b=>b.textContent==='重置视角');if(b&&!b.disabled){clearInterval(timer);b.click();void window.__TAURI__.core.invoke('isolation_probe_event',{code:'formal_reset_clicked'});}},50);setTimeout(()=>clearInterval(timer),10000);})()")
         .map_err(|_| "formal_reset_failed")?;
+    wait_until(state, "formal_reset_timeout", |data| data.codes.contains("formal_reset_clicked"))?;
     std::thread::sleep(Duration::from_millis(600));
     host.eval("(() => { const timer=setInterval(()=>{const b=[...document.querySelectorAll('.plugin-toolbar button')].find(b=>b.textContent==='航拍');if(b&&!b.disabled){clearInterval(timer);b.click();}},50);setTimeout(()=>clearInterval(timer),10000);})()")
         .map_err(|_| "formal_cinema_failed")?;
@@ -292,12 +309,234 @@ fn formal_exercise(app: &tauri::AppHandle, state: &ProbeState) -> Result<(), Str
     Ok(())
 }
 
+// Separate opt-in probe: a standalone City child WebView with synthetic fixtures.
+// This does not exercise the formally registered plugin or access the authority DB.
+fn mecha_exercise(app: &tauri::AppHandle, state: &ProbeState) -> Result<Value, String> {
+    wait_until(state, "host_boot_timeout", |data| data.ready.contains(HOST))?;
+    let script = format!(r#"{OBSERVER}
+        window.__AV_PLUGIN_LOCALE__='zh-Hans';
+        localStorage.setItem('city.seed','4196523069');
+        (() => {{
+            const send=(code)=>void window.__TAURI__.core.invoke('isolation_probe_event',{{code}});
+            let phase=0;
+            const timer=setInterval(()=>{{
+                if(phase===0) {{
+                    const settings=[...document.querySelectorAll('.city-local-toolbar button')].find(b=>b.textContent==='城市设置');
+                    if(settings && !settings.disabled) {{ phase=1; send('mecha_fixture_ready'); settings.click(); }}
+                }} else if(phase===1) {{
+                    const entry=[...document.querySelectorAll('dialog[open] .city-game-entry button')].find(b=>b.textContent==='机甲战棋');
+                    if(entry && !entry.disabled) {{ phase=2; entry.click(); }}
+                }} else if(phase===2 && document.querySelector('.mecha-turn-summary')) {{
+                    phase=3; clearInterval(timer); send('mecha_board_ready');
+                }}
+            }},100);
+            setTimeout(()=>clearInterval(timer),160000);
+        }})();
+    "#);
+    let city = app.get_window(HOST).ok_or("probe_host_missing")?.add_child(
+        crate::plugin_host::apply_plugin_webview_platform(app,
+            WebviewBuilder::new(CITY, WebviewUrl::App("plugins/AgentCity.plugin/ui/index.html?fixtureSessions=30".into())))
+            .initialization_script(&script),
+        tauri::LogicalPosition::new(0.0, 0.0), tauri::LogicalSize::new(1100.0, 700.0),
+    ).map_err(|_| "mecha_view_create_failed")?;
+    let wait = |code: &str, event: &str| -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(180);
+        while Instant::now() < deadline {
+            if state.0.lock().unwrap().codes.contains(event) { return Ok(()); }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Err(code.to_owned())
+    };
+    wait("mecha_fixture_timeout", "mecha_fixture_ready")?;
+    wait("mecha_board_timeout", "mecha_board_ready")?;
+    verify_mecha_actions(&city, state, false)?;
+    city.close().map_err(|_| "mecha_view_close_failed")?;
+    Ok(json!({ "standalone_city_webview": true, "fixture_sessions_requested": 30, "seed_configured": 4196523069u64,
+        "hold_risk": 12, "hold_cancelled": true, "hold_confirmed": true, "building_hp_after": "68/80" }))
+}
+
+// The same deterministic turn assertions are used in the standalone and registered plugin views.
+fn verify_mecha_actions(city: &Webview, state: &ProbeState, formal: bool) -> Result<(), String> {
+    let wait = |code: &str, event: &str| -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(180);
+        while Instant::now() < deadline {
+            if state.0.lock().unwrap().codes.contains(event) { return Ok(()); }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Err(code.to_owned())
+    };
+    // The registered plugin's default three-session fixture has a mixed opening
+    // suggestion. Explicitly change all three actions to wait before checking risk.
+    if formal {
+        city.eval(r#"(() => {
+            let index=0, selected=false;
+            const timer=setInterval(()=>{
+                const cards=[...document.querySelectorAll('.mecha-pack li')];
+                if(cards.length!==3) return;
+                if(index===3) {
+                    if(cards.every(card=>card.querySelector('.mecha-card-action')?.textContent==='待机')) {
+                        clearInterval(timer); void window.__TAURI__.core.invoke('isolation_probe_event',{code:'mecha_all_hold'});
+                    }
+                    return;
+                }
+                if(!selected) { const button=cards[index].querySelector('button'); if(button && !button.disabled) { button.click(); selected=true; } }
+                else {
+                    const hold=[...document.querySelectorAll('.mecha-selected-actions > .mecha-actions > button')].find(b=>b.textContent==='待机');
+                    if(hold && !hold.disabled) { hold.click(); index++; selected=false; }
+                }
+            },150); setTimeout(()=>clearInterval(timer),160000);
+        })()"#).map_err(|_| "formal_mecha_hold_command_failed")?;
+        wait("formal_mecha_all_hold_timeout", "mecha_all_hold")?;
+    }
+    // Leave the synthetic board visible briefly for optional window-only evidence.
+    std::thread::sleep(Duration::from_secs(3));
+    let action_script = r#"(() => {
+        const send=(code)=>void window.__TAURI__.core.invoke('isolation_probe_event',{code});
+        let phase=0;
+        let resumeAt=0;
+        const timer=setInterval(()=>{
+            if(Date.now()<resumeAt) return;
+            const confirm=document.querySelector('.mecha-hold-confirm');
+            if(phase===0) {
+                const submit=document.querySelector('.mecha-submit-primary');
+                if(submit && !submit.disabled) { phase=1; submit.click(); resumeAt=Date.now()+3000; }
+            } else if(phase===1 && confirm?.textContent.includes('预计建筑损失 EXPECTED_RISK')) {
+                send('mecha_hold_risk');
+                const cancel=[...confirm.querySelectorAll('button')].find(b=>b.textContent==='返回修改');
+                if(cancel) { phase=2; cancel.click(); }
+            } else if(phase===2 && !confirm) {
+                send('mecha_hold_cancelled'); phase=3;
+                document.querySelector('.mecha-submit-primary')?.click();
+            } else if(phase===3 && confirm?.textContent.includes('预计建筑损失 EXPECTED_RISK')) {
+                const proceed=[...confirm.querySelectorAll('button')].find(b=>b.textContent==='继续提交');
+                if(proceed && !proceed.disabled) { phase=4; proceed.click(); send('mecha_hold_confirmed'); }
+            } else if(phase===4) {
+                const skip=[...document.querySelectorAll('.mecha-battle-controls button')].find(b=>b.textContent==='跳过演出');
+                if(skip) skip.click();
+                if(document.querySelector('.mecha-resource')?.textContent.includes('EXPECTED_HP')) {
+                    clearInterval(timer); send('mecha_turn_resolved');
+                }
+            }
+        },100);
+        setTimeout(()=>clearInterval(timer),160000);
+    })()"#.replace("EXPECTED_RISK", if formal { "3" } else { "12" })
+        .replace("EXPECTED_HP", if formal { "29/32" } else { "68/80" });
+    city.eval(&action_script).map_err(|_| "mecha_action_failed")?;
+    wait("mecha_hold_risk_timeout", "mecha_hold_risk")?;
+    wait("mecha_hold_cancel_timeout", "mecha_hold_cancelled")?;
+    wait("mecha_hold_confirm_timeout", "mecha_hold_confirmed")?;
+    wait("mecha_turn_resolution_timeout", "mecha_turn_resolved")?;
+    std::thread::sleep(Duration::from_secs(3));
+    Ok(())
+}
+
+// Uses the registered host/plugin lifecycle, with the probe-only observer forcing
+// fixture projections. No real authority requests are permitted by this probe's
+// plugin_request handler for registered instances.
+fn formal_mecha_exercise(app: &tauri::AppHandle, state: &ProbeState, interactive: bool) -> Result<Value, String> {
+    wait_until(state, "host_boot_timeout", |data| data.ready.contains(HOST))?;
+    let host = app.get_webview(HOST).ok_or("probe_host_missing")?;
+    host.eval("document.querySelectorAll('.sidebar .nav-item')[1].click()")
+        .map_err(|_| "formal_navigation_failed")?;
+    wait_until(state, "formal_city_boot_timeout", |data| data.ready.contains("plugin-city-1"))?;
+    let city = app.get_webview("plugin-city-1").ok_or("formal_city_missing")?;
+    host.eval(r#"(() => { const timer=setInterval(()=>{
+        const toolbar=document.querySelector('.plugin-toolbar');
+        const settings=[...(toolbar?.querySelectorAll('button') ?? [])].find(b=>['城市设置','City settings'].includes(b.textContent));
+        if(settings && !settings.disabled) { clearInterval(timer); settings.click(); void window.__TAURI__.core.invoke('isolation_probe_event',{code:'formal_settings_clicked'}); return; }
+        const more=toolbar?.querySelector('button[aria-expanded="false"]'); if(more) more.click();
+    },50); setTimeout(()=>clearInterval(timer),10000); })()"#).map_err(|_| "formal_settings_failed")?;
+    wait_until(state, "formal_settings_click_timeout", |data| data.codes.contains("formal_settings_clicked"))?;
+    let entry_script = r#"(() => {
+        const send=(code)=>void window.__TAURI__.core.invoke('isolation_probe_event',{code});
+        let phase=0, resumeAt=0;
+        const timer=setInterval(()=>{
+            if(Date.now()<resumeAt) return;
+            const dialog=document.querySelector('dialog[open][aria-label="城市设置"]') ?? document.querySelector('dialog[open][aria-label="City settings"]');
+            const input=dialog?.querySelector('#city-seed');
+            if(phase===0 && input && !input.disabled && window.__CITY_ISOLATION_FIXTURE__ && ['演示','Demo'].includes(document.querySelector('.city-coverage-badge')?.textContent)) {
+                Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'4196523069');
+                input.dispatchEvent(new Event('input',{bubbles:true})); phase=1; send('mecha_seed_input');
+            } else if(phase===1 && input?.value==='4196523069') {
+                const apply=[...dialog.querySelectorAll('button')].find(b=>['应用种子','Apply seed'].includes(b.textContent));
+                if(apply && !apply.disabled) { send('mecha_seed_apply_clicked'); apply.click(); phase=2; resumeAt=Date.now()+1500; }
+            } else if(phase===2 && localStorage.getItem('city.seed')==='4196523069') {
+                send('mecha_seed_stored'); phase=3;
+            } else if(phase===3 && window.__CITY_ISOLATION_FIXTURE__ && localStorage.getItem('city.seed')==='4196523069' && ['演示','Demo'].includes(document.querySelector('.city-coverage-badge')?.textContent)) {
+                const entry=[...(dialog?.querySelectorAll('.city-game-entry button') ?? [])].find(b=>['机甲战棋','Mecha tactics'].includes(b.textContent));
+                if(entry && !entry.disabled) { send('mecha_seed_applied'); phase=4; entry.click(); }
+            } else if(phase===4 && document.querySelector('.mecha-turn-summary')) {
+                clearInterval(timer); send('mecha_board_ready');
+            }
+        },100); setTimeout(()=>clearInterval(timer),160000);
+    })()"#;
+    let entry_script = if interactive {
+        entry_script.replace("let phase=0, resumeAt=0;", "let phase=3, resumeAt=0, frameStart=null, frameDeadline=0;")
+            .replace("clearInterval(timer); send('mecha_board_ready');\n            }\n        },100); setTimeout(()=>clearInterval(timer),160000);", r#"phase=5; frameDeadline=Date.now()+15000;
+            } else if(phase===5) {
+                const elapsed=window.__AV_CITY_PROBE__?.()?.scene?.camera?.elapsed;
+                const canvas=document.querySelector('canvas');
+                if(Number.isFinite(elapsed) && frameStart===null) frameStart=elapsed;
+                if(frameStart!==null && elapsed-frameStart>=0.2 && canvas?.width>0 && canvas?.height>0) {
+                    clearInterval(timer); send('mecha_board_ready');
+                } else if(Date.now()>=frameDeadline) {
+                    clearInterval(timer); send('mecha_render_stalled');
+                }
+            }
+        },100); setTimeout(()=>clearInterval(timer),160000);"#)
+    } else { entry_script.to_owned() };
+    city.eval(&entry_script).map_err(|_| "formal_mecha_entry_failed")?;
+    let wait = |code: &str, event: &str| -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(180);
+        while Instant::now() < deadline {
+            if state.0.lock().unwrap().codes.contains(event) { return Ok(()); }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Err(code.to_owned())
+    };
+    wait("formal_mecha_seed_timeout", "mecha_seed_applied")?;
+    if interactive {
+        let deadline = Instant::now() + Duration::from_secs(180);
+        loop {
+            let data = state.0.lock().unwrap();
+            if data.codes.contains("mecha_render_stalled") { return Err("formal_mecha_render_stalled".into()); }
+            if data.codes.contains("mecha_board_ready") { break; }
+            drop(data);
+            if Instant::now() >= deadline { return Err("formal_mecha_board_timeout".into()); }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        return Ok(json!({ "registered_plugin": true, "fixture_source_badge": true, "seed_saved": 4196523069u64,
+            "render_clock_advanced": true, "visual_verification_required": true, "automated_acceptance": false }));
+    }
+    wait("formal_mecha_board_timeout", "mecha_board_ready")?;
+    verify_mecha_actions(&city, state, true)?;
+    city.eval(r#"(() => {
+        const exit=[...document.querySelectorAll('.mecha-battle-controls button')].find(b=>b.textContent==='退出战斗');
+        if(exit) exit.click();
+        const timer=setInterval(()=>{if(!document.querySelector('.mecha-overlay')) {
+            clearInterval(timer); void window.__TAURI__.core.invoke('isolation_probe_event',{code:'mecha_exited'});
+        }},100); setTimeout(()=>clearInterval(timer),10000);
+    })()"#).map_err(|_| "formal_mecha_exit_failed")?;
+    wait("formal_mecha_exit_timeout", "mecha_exited")?;
+    host.eval("window.__TAURI__.core.invoke('plugin_close',{instanceId:'plugin-city-1'}).then(()=>window.__TAURI__.core.invoke('isolation_probe_event',{code:'formal_disposed'}))")
+        .map_err(|_| "formal_dispose_failed")?;
+    wait_until(state, "formal_dispose_timeout", |data| data.codes.contains("formal_disposed"))?;
+    if app.get_webview("plugin-city-1").is_some() { return Err("formal_instance_not_disposed".into()); }
+    Ok(json!({ "registered_plugin": true, "fixture_source_badge": true, "seed_saved": 4196523069u64,
+        "hold_risk": 3, "hold_cancelled": true, "hold_confirmed": true, "building_hp_after": "29/32",
+        "battle_exit": true, "plugin_disposed": true }))
+}
+
 pub fn report_argument() -> Option<PathBuf> {
     let args: Vec<String> = std::env::args().collect();
-    args.windows(2).find(|pair| pair[0] == "--plugin-isolation-probe").map(|pair| PathBuf::from(&pair[1]))
+    args.windows(2).find(|pair| ["--plugin-isolation-probe", "--plugin-mecha-probe", "--plugin-formal-mecha-probe", "--plugin-formal-mecha-interactive"].contains(&pair[0].as_str())).map(|pair| PathBuf::from(&pair[1]))
 }
 
 pub fn run(report: PathBuf, mut context: tauri::Context<tauri::Wry>) {
+    let mecha = std::env::args().any(|arg| arg == "--plugin-mecha-probe");
+    let interactive = std::env::args().any(|arg| arg == "--plugin-formal-mecha-interactive");
+    let interactive_en = interactive && std::env::args().any(|arg| arg == "--mecha-fixture-en");
+    let formal_mecha = interactive || std::env::args().any(|arg| arg == "--plugin-formal-mecha-probe");
     let state = ProbeState(Arc::new(Mutex::new(ProbeData { started: Instant::now(), host_pulse: None, city_pulses: BTreeMap::new(),
         ready: BTreeSet::new(), codes: BTreeSet::new(), request_count: 0, events: Vec::new() })));
     let setup_state = state.clone();
@@ -310,9 +549,13 @@ pub fn run(report: PathBuf, mut context: tauri::Context<tauri::Wry>) {
         .setup(move |app| {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             let page_state = setup_state.clone();
+            // Incognito probe host only: force an English fixture when requested.
+            let host_initialization = if interactive_en {
+                format!("localStorage.setItem('agent-vitals.language', 'en');\n{}", host_script())
+            } else { host_script() };
             WebviewWindowBuilder::new(app, HOST, WebviewUrl::App("index.html".into()))
                 .title("Oh Agent · plugin isolation probe").inner_size(1100.0, 760.0)
-                .incognito(true).initialization_script(host_script())
+                .incognito(true).initialization_script(host_initialization)
                 .on_page_load(move |view, payload| {
                     let code = match payload.event() { tauri::webview::PageLoadEvent::Started => "load_started", tauri::webview::PageLoadEvent::Finished => "load_finished" };
                     record(&page_state, view.label(), code, Vec::new());
@@ -320,8 +563,9 @@ pub fn run(report: PathBuf, mut context: tauri::Context<tauri::Wry>) {
             let app = app.handle().clone();
             let state = setup_state.clone();
             std::thread::spawn(move || {
-                let result = exercise(&app, &state);
+                let result = if formal_mecha { formal_mecha_exercise(&app, &state, interactive) } else if mecha { mecha_exercise(&app, &state) } else { exercise(&app, &state) };
                 let (status, code, checks) = match result {
+                    Ok(checks) if interactive => ("needs_visual_check", "manual_fixture_needs_visual_check".to_owned(), checks),
                     Ok(checks) => ("passed", "probe_complete".to_owned(), checks),
                     Err(code) => ("failed", code, Value::Null),
                 };
@@ -329,12 +573,15 @@ pub fn run(report: PathBuf, mut context: tauri::Context<tauri::Wry>) {
                 let plugin_diagnostics = app.get_webview(HOST).and_then(|view|
                     crate::plugin_host::plugin_snapshot(view, app.state()).ok());
                 let report_data = json!({ "schema": "plugin-isolation-probe/v1", "status": status, "code": code,
-                    "native_process_pid": std::process::id(), "host_data": "synthetic_preview", "city_data": "native_rust_fixture",
+                    "native_process_pid": std::process::id(), "requested_fixture_locale": if interactive_en { "en" } else { "host_preference" },
+                    "host_data": "synthetic_preview", "city_data": if formal_mecha { "registered_plugin_synthetic_fixture" } else if mecha { "synthetic_fixture_requested_30_sessions" } else { "native_rust_fixture" },
                     "checks": checks, "plugin_diagnostics": plugin_diagnostics, "events": state.0.lock().unwrap().events });
                 let saved = std::fs::OpenOptions::new().write(true).create_new(true).open(&report)
                     .and_then(|mut file| file.write_all(serde_json::to_string_pretty(&report_data).unwrap().as_bytes()));
                 if saved.is_err() { eprintln!("plugin isolation report write failed"); }
-                app.exit(if status == "passed" && saved.is_ok() { 0 } else { 1 });
+                if !interactive || status != "needs_visual_check" || saved.is_err() {
+                    app.exit(if status == "passed" && saved.is_ok() { 0 } else { 1 });
+                }
             });
             Ok(())
         }).run(context).expect("plugin isolation probe setup failed");

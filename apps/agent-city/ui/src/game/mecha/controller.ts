@@ -13,6 +13,7 @@
  * - 订阅者拿到的快照在两次变更之间引用稳定（useSyncExternalStore 的要求）。
  */
 import { PLAN_FAULT_CAUSES, gameText, planFaultText, type GameLocale } from "../gameCopy";
+import { STATS } from "./board";
 import { performanceFromLog } from "./performance";
 import type { MechaPerformanceEvent } from "../../render/mecha/performance";
 import type { MechaCombatCue } from "../../render/mecha/animation";
@@ -32,6 +33,7 @@ import {
 export type Draft = { moveTo: Cell | null; action: Action; explicit: boolean };
 export type DraftMap = Record<MechId, Draft>;
 export type TargetKind = Exclude<Action["kind"], "skip">;
+export type UnavailableAction = { kind: TargetKind; reason: "cooldown" | "no_target" };
 export type TargetOption = { id: string; cells: Cell[] };
 export type Planner = (state: MatchState, doctrine: DoctrineId) => ArenaPlan;
 export type Beat = "show" | "resolve";
@@ -54,6 +56,7 @@ export type MechaControllerState = {
   stake: BuildingStake;
   doctrine: DoctrineId;
   draft: DraftMap;
+  openingSuggestion: boolean;
   selected: MechId;
   targeting: TargetKind | null;
   auto: boolean;
@@ -66,6 +69,7 @@ export type MechaControllerState = {
   performance: { events: MechaPerformanceEvent[]; before: MatchState } | null;
   combat: { id: number; actions: MechaCombatCue[]; reset?: true; healthTimeline?: HealthTimeline; presentationChanges?: PresentationChanges; presentationStages?: PresentationStages | null; presentationRoutes?: PresentationRoutes };
   preview: MechaPreview;
+  candidate: { target: string; source: "hover" | "selection"; preview: MechaPreview } | null;
   holdConfirmation: { buildingLoss: number; outcome: MatchState["outcome"] } | null;
   // ---- 派生量（每次变更重算，视图只读）----
   /** 能下命令：没有自动/暂停、没有结局、在玩家计划阶段。 */
@@ -73,7 +77,11 @@ export type MechaControllerState = {
   reach: Cell[];
   /** 选中机甲在「所有已排移动落定后」局面上的合法行动。 */
   actions: Action[];
+  /** Capabilities absent from legalActions; explanations describe the settled draft, not future turns. */
+  unavailableActions: UnavailableAction[];
   targetOptions: TargetOption[];
+  targetValidationUnavailable: boolean;
+  targetRejections: Array<{ option: TargetOption; fault: PlanFault }>;
   /** 敌方阶段受击预测；预览失败时为 null，不能当成零伤害。 */
   hits: Record<MechId, number> | null;
   /** 每台到草稿落点的半步花费（面板显示用；alliesPass，与提交校验同口径）。 */
@@ -107,6 +115,8 @@ export type MechaControllerInit = {
   planner?: Planner;
   /** Tests may inject a failing display preview without changing authoritative playTurn. */
   preview?: typeof previewPlan;
+  /** Test-only injection for the independent action legality preflight. */
+  validatePreview?: typeof previewPlan;
   /** Local views acknowledge completion before allowing another turn. */
   animate?: boolean;
   /** 测试用：直接给一局（须已 bossPrepare），绕过 preset/script/site。 */
@@ -121,6 +131,8 @@ export type MechaController = {
   setLocale(locale: GameLocale): void;
   selectMech(id: MechId): void;
   setTargeting(kind: TargetKind | null): void;
+  previewTarget(id: string | null, source: "hover" | "selection"): void;
+  confirmTarget(): void;
   setMove(id: MechId, cell: Cell | null): void;
   /** 撤回最近一次移动。提交（开火）之后、暂停、自动对战或演出中无效。 */
   undoMove(): void;
@@ -130,7 +142,7 @@ export type MechaController = {
   setSelectedEnemy(id: string | null): void;
   setAction(id: MechId, action: Action): void;
   /** 格子点击的全部分支（选目标 / 换选机甲 / 移动）。 */
-  clickCell(x: number, y: number): void;
+  clickCell(x: number, y: number, input?: "mouse" | "touch"): void;
   /** 按打法填入草稿（并把它设为当前打法）。 */
   applyDoctrine(doctrine?: DoctrineId): void;
   /** 只换打法；有可填的草稿时顺带按它重填（下拉框的行为）。 */
@@ -216,6 +228,7 @@ function freshMatch(preset: CoverPresetId, script: BossScriptId, site: CityMecha
 export function createMechaController(init: MechaControllerInit = {}): MechaController {
   const planner: Planner = init.planner ?? planForDoctrine;
   const previewTurn = init.preview ?? previewPlan;
+  const validationPreview = init.validatePreview ?? previewPlan;
   const listeners = new Set<() => void>();
 
   let locale: GameLocale = init.locale ?? "zh-Hans";
@@ -252,14 +265,19 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
 
   let draft: DraftMap = openingDraft(match);
   let turnStartDraft = structuredClone(draft);
+  let turnStartSuggested = match.phase === "player_plan" && !match.outcome;
   let resetTurnUsed = false;
   /** 每次成功改移动之前的草稿。提交、换打法、新开一局都清空，开火之后撤不回来。 */
   let movePast: DraftMap[] = [];
   let hoveredEnemy: string | null = null;
   let selectedEnemy: string | null = null;
+  let candidate: { target: string; source: "hover" | "selection" } | null = null;
   let draftVersion = 0;
   let versionedInput: { match: MatchState; revision: number; fingerprint: string; doctrine: DoctrineId } | null = null;
   let forceDraftVersion = false;
+  const previewCache = new Map<string, MechaPreview>();
+  const targetCache = new Map<string, ReturnType<typeof deriveTargets>>();
+  let reachCache: { match: MatchState; selected: MechId; cells: Cell[] } | null = null;
 
   const finished = () => Boolean(match.outcome) || match.phase !== "player_plan";
   const canEdit = () => !auto && !paused && !performance && !finished();
@@ -274,10 +292,14 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     }));
 
   /** 这台机甲的这个行动，在「所有已排移动落定」的局面上是否成立。成立返回 null，否则是故障。 */
-  const actionFault = (state: MatchState, drafts: DraftMap, id: MechId, action: Action): PlanFault | null => {
+  const actionFault = (state: MatchState, drafts: DraftMap, id: MechId, action: Action): PlanFault | null | "unavailable" => {
     if (action.kind === "skip") return null;
-    const result = previewPlan(state, { revision: state.revision, items: itemsOf(state, drafts, { id, action }) });
-    return result.ok ? null : result.fault;
+    try {
+      const result = validationPreview(state, { revision: state.revision, items: itemsOf(state, drafts, { id, action }) });
+      return result.ok ? null : result.fault;
+    } catch {
+      return "unavailable";
+    }
   };
 
   const settledBoard = (state: MatchState, drafts: DraftMap): MatchState => {
@@ -297,6 +319,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
   // ---- 派生 ----
 
   const deriveReach = (): Cell[] => {
+    if (reachCache?.match === match && reachCache.selected === selected) return reachCache.cells;
     const who = living(match).find((m) => m.id === selected);
     if (!who || match.phase !== "player_plan") return [];
     const cells: Cell[] = [];
@@ -307,30 +330,53 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
         if (dist !== null && dist <= moveBudget(selected)) cells.push({ x, y });
       }
     }
+    reachCache = { match, selected, cells };
     return cells;
   };
 
-  const deriveTargets = (): TargetOption[] => {
-    if (!targeting || !living(match).some((m) => m.id === selected)) return [];
+  const deriveTargets = (): { options: TargetOption[]; unavailable: boolean; rejections: Array<{ option: TargetOption; fault: PlanFault }> } => {
+    if (!targeting || !living(match).some((m) => m.id === selected)) return { options: [], unavailable: false, rejections: [] };
+    const key = `${draftVersion}:${selected}:${targeting}`;
+    const cached = targetCache.get(key);
+    if (cached) return cached;
     const options: TargetOption[] = targeting === "repair"
-      ? living(match).filter((mech) => mech.id !== selected).map((mech) => ({ id: mech.id, cells: [{ ...mech.pos }] }))
+      ? living(settledBoard(match, draft)).filter((mech) => mech.id !== selected).map((mech) => ({ id: mech.id, cells: [{ ...mech.pos }] }))
       : [
         ...(match.boss.hp > 0 ? [{ id: "boss", cells: footprintCells(match.boss.anchor) }] : []),
         ...match.raiders.filter((raider) => raider.hp > 0).map((raider) => ({ id: raider.id, cells: [{ ...raider.pos }] })),
       ];
-    return options.filter((option) => !actionFault(match, draft, selected, { kind: targeting, target: option.id } as Action));
+    let unavailable = false;
+    const rejections: Array<{ option: TargetOption; fault: PlanFault }> = [];
+    const legal = options.filter((option) => {
+      const result = actionFault(match, draft, selected, { kind: targeting, target: option.id } as Action);
+      if (result === "unavailable") unavailable = true;
+      else if (result) rejections.push({ option, fault: result });
+      return result === null;
+    });
+    const result = { options: legal, unavailable, rejections };
+    if (!unavailable) targetCache.set(key, result);
+    return result;
   };
 
-  const derivePreview = (): MechaPreview => {
+  const derivePreview = (candidateTarget?: string): MechaPreview => {
     const version = { revision: match.revision, draftVersion };
     if (match.phase !== "player_plan") return { ok: false, status: "invalid", fault: { code: "PLAN_PACK_REJECTED", reason: "not player_plan", cause: "other" }, ...version };
     // Display prediction failures are not rule rejections and must never become zero damage.
+    const key = `${draftVersion}:${candidateTarget ? `${selected}:${targeting}:${candidateTarget}` : "draft"}`;
+    const cached = previewCache.get(key);
+    if (cached) return cached;
     try {
-      const items = itemsOf(match, draft).filter((item) => draft[item.mechId]?.explicit || draft[item.mechId]?.moveTo);
+      const items = itemsOf(match, draft).filter((item) => draft[item.mechId]?.explicit || draft[item.mechId]?.moveTo || (candidateTarget && item.mechId === selected));
+      if (candidateTarget && targeting) {
+        const item = items.find((entry) => entry.mechId === selected);
+        if (item) item.action = { kind: targeting, target: candidateTarget } as Action;
+      }
       const result = previewTurn(match, { revision: match.revision, items });
-      return result.ok
-        ? { ...result, status: "ready", ...version, assumed: living(match).filter((m) => !draft[m.id]?.explicit).map((m) => m.id) }
+      const value: MechaPreview = result.ok
+        ? { ...result, status: "ready", ...version, assumed: living(match).filter((m) => !draft[m.id]?.explicit && !(candidateTarget && m.id === selected)).map((m) => m.id) }
         : { ...result, status: "invalid", ...version };
+      previewCache.set(key, value);
+      return value;
     } catch {
       return { ok: false, status: "unavailable", ...version };
     }
@@ -341,12 +387,29 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     const fingerprint = draftFingerprint(draft);
     if (forceDraftVersion || !versionedInput || versionedInput.match !== match || versionedInput.revision !== match.revision || versionedInput.fingerprint !== fingerprint || versionedInput.doctrine !== doctrine) {
       draftVersion += 1;
+      previewCache.clear();
+      targetCache.clear();
+      candidate = null;
       versionedInput = { match, revision: match.revision, fingerprint, doctrine };
       forceDraftVersion = false;
     }
     if (holdConfirmation && (!canEdit() || holdConfirmation.match !== match || holdConfirmation.revision !== match.revision || holdConfirmation.draftVersion !== draftVersion || holdConfirmation.fingerprint !== draftFingerprint(draft) || holdConfirmation.doctrine !== doctrine)) holdConfirmation = null;
+    if (!canEdit() || !targeting) candidate = null;
+    const targets = deriveTargets();
     const preview = derivePreview();
+    const candidateView = candidate ? { ...candidate, preview: derivePreview(candidate.target) } : null;
     const alive = living(match);
+    const selectedUnit = alive.find((m) => m.id === selected);
+    const actions = selectedUnit ? legalActions(settledBoard(match, draft), selected) : [];
+    const kinds: TargetKind[] = [];
+    if (selectedUnit) {
+      if (STATS[selected].melee) kinds.push("melee");
+      if (STATS[selected].shoot > 0) kinds.push("shoot");
+      kinds.push(selected === "Assault" ? "charge" : selected === "Gunner" ? "pierce" : "repair");
+    }
+    const unavailableActions: UnavailableAction[] = kinds
+      .filter((kind) => !actions.some((action) => action.kind === kind))
+      .map((kind) => ({ kind, reason: (kind === "charge" || kind === "pierce" || kind === "repair") && selectedUnit!.cd !== 0 ? "cooldown" : "no_target" }));
     const currentThreats = preview.ok ? { cells: preview.telegraphAfter, byActor: preview.telegraphByActor } : collectTelegraphs(match);
     if (selectedEnemy && !currentThreats.byActor[selectedEnemy]) selectedEnemy = null;
     const focusEnemy = hoveredEnemy ?? selectedEnemy;
@@ -358,12 +421,15 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     ])) as Record<MechId, number | null>;
     const notice = fault ? planFaultText(fault, locale, fault.scope) : noticeSource ? gameText(noticeSource, locale) : null;
     snapshot = {
-      locale, match, site, preset, script, stake, doctrine, draft, selected, targeting, auto, paused, beat, notice, fault, lastLog, combat, performance, preview,
+      locale, match, site, preset, script, stake, doctrine, draft, openingSuggestion: turnStartSuggested && draftFingerprint(draft) === draftFingerprint(turnStartDraft), selected, targeting, auto, paused, beat, notice, fault, lastLog, combat, performance, preview, candidate: candidateView,
       interactive: canEdit(),
       holdConfirmation: holdConfirmation ? { buildingLoss: holdConfirmation.buildingLoss, outcome: holdConfirmation.outcome } : null,
       reach: deriveReach(),
-      actions: living(match).some((m) => m.id === selected) ? legalActions(settledBoard(match, draft), selected) : [],
-      targetOptions: deriveTargets(),
+      actions,
+      unavailableActions,
+      targetOptions: targets.options,
+      targetValidationUnavailable: targets.unavailable,
+      targetRejections: targets.rejections,
       hits,
       stepCost,
       telegraph: currentThreats.cells,
@@ -412,6 +478,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     combat = { id: combat.id + 1, actions: cuesFromLog(result.log), healthTimeline, presentationChanges, presentationStages: result.presentationStages, presentationRoutes };
     draft = blankDraft(match);
     turnStartDraft = structuredClone(draft);
+    turnStartSuggested = false;
     movePast = [];
     hoveredEnemy = null;
     selectedEnemy = null;
@@ -463,6 +530,11 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       const row = next[m.id];
       if (!row?.explicit || row.action.kind === "skip") continue;
       const bad = actionFault(match, next, m.id, row.action);
+      if (bad === "unavailable") {
+        say("目标校验暂不可用；草稿未改变。");
+        commit();
+        return;
+      }
       if (!bad) continue;
       next[m.id] = { moveTo: row.moveTo, action: { kind: "skip" }, explicit: false };
       if (m.id !== id) notes.push({ mechId: m.id, cause: causeOf(bad), scope: "draft", reason: bad.reason });
@@ -487,6 +559,11 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
   const setAction = (id: MechId, action: Action) => {
     if (!canEdit() || !living(match).some((m) => m.id === id)) return;
     const bad = actionFault(match, draft, id, action);
+    if (bad === "unavailable") {
+      say("目标校验暂不可用；草稿未改变。");
+      commit();
+      return;
+    }
     if (bad) {
       fault = { mechId: id, cause: causeOf(bad), scope: "draft", reason: bad.reason };
       noticeSource = null;
@@ -523,13 +600,36 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       if (auto || paused || performance || !living(match).some((m) => m.id === id)) return;
       selected = id;
       targeting = null;
+      candidate = null;
       commit();
     },
     setTargeting(kind) {
       if (kind !== null && !canEdit()) return;
       targeting = kind;
+      candidate = null;
       say(null);
       commit();
+    },
+    previewTarget(id, source) {
+      if (!canEdit() || !targeting) return;
+      // A pinned touch/keyboard choice is not replaced or cleared by incidental mouse movement.
+      if (source === "hover" && candidate?.source === "selection") return;
+      if (id === null) {
+        if (!candidate || candidate.source !== "hover" || source !== "hover") return;
+        candidate = null;
+      } else {
+        if (!snapshot.targetOptions.some((option) => option.id === id)) return;
+        if (candidate?.target === id && candidate.source === source) return;
+        candidate = { target: id, source };
+      }
+      commit();
+    },
+    confirmTarget() {
+      if (!canEdit() || !targeting || !candidate || candidate.source !== "selection") return;
+      if (!snapshot.targetOptions.some((option) => option.id === candidate!.target)) return;
+      const action = { kind: targeting, target: candidate.target } as Action;
+      candidate = null;
+      setAction(selected, action);
     },
     setMove,
     undoMove,
@@ -556,17 +656,18 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       commit();
     },
     setAction,
-    clickCell(x, y) {
+    clickCell(x, y, input = "mouse") {
       if (!canEdit()) return;
       const cell = { x, y };
       if (targeting) {
-        const option = deriveTargets().find((item) => item.cells.some((c) => same(c, cell)));
+        const option = snapshot.targetOptions.find((item) => item.cells.some((c) => same(c, cell)));
         if (!option) {
-          say("这里不是合法目标，请点击地图上的高亮单位。");
+          say(snapshot.targetValidationUnavailable ? "目标校验暂不可用；草稿未改变。" : "这里不是合法目标，请点击地图上的高亮单位。");
           commit();
           return;
         }
-        setAction(selected, { kind: targeting, target: option.id } as Action);
+        if (input === "touch") controller.previewTarget(option.id, "selection");
+        else setAction(selected, { kind: targeting, target: option.id } as Action);
         return;
       }
       const occupant = living(match).find((m) => same(m.pos, cell));
@@ -586,8 +687,8 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       commit();
     },
     setDoctrine(which) {
-      if (performance) return;
-      // 下拉框：换打法总是生效；有可填的草稿才重填（与旧界面一致，自动对战中也重填）。
+      if (paused || performance || finished()) return;
+      // 自动对战未暂停时仍允许换打法并重填草稿；暂停、演出及终局冻结当前方案。
       fillFromDoctrine(which);
       commit();
     },
@@ -635,6 +736,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       lastLog = [];
       draft = openingDraft(match);
       turnStartDraft = structuredClone(draft);
+      turnStartSuggested = match.phase === "player_plan" && !match.outcome;
       resetTurnUsed = false;
       movePast = [];
       hoveredEnemy = null;
