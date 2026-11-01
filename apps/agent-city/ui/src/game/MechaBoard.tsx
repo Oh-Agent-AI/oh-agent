@@ -898,7 +898,7 @@ function MechaMatch({ locale, onClose, engine, catalog, remoteStatus, remoteLock
               controller.previewTarget(option.id, "selection");
             }}>{unitName(option.id)} · {option.cells.map((cell) => `${cell.x},${cell.y}`).join("、")}</button>) : <span>{t(s.targetValidationUnavailable ? "目标校验暂不可用；草稿未改变。" : "无合法目标")}</span>}{s.targetValidationUnavailable && targetOptions.length ? <span>{t("目标校验暂不可用；草稿未改变。")}</span> : null}</div>
             {candidate ? <div ref={candidateRef} className="mecha-candidate-result">
-              <strong>{t("目标试算")} · {unitName(candidate.target)}</strong>
+              <strong>{t("目标试算")} · {selected ? t(NAMES[selected]) : "—"} / {t(actionLabel(targeting))} → {unitName(candidate.target)}</strong>
               {candidate.source === "selection" ? <div className="mecha-candidate-actions">
                 <button type="button" disabled={!planning} onClick={(event) => finishTarget(event, true)}>{t("确认选择")}</button>
                 <button type="button" disabled={!planning} onClick={(event) => finishTarget(event, false)}>{t("取消选目标")}</button>
@@ -954,6 +954,7 @@ function MechaMatch({ locale, onClose, engine, catalog, remoteStatus, remoteLock
           <div className="mecha-map-legend" aria-label={t("战场图例")}>
             <span><i className="is-reach" />{t("可移动")}</span>
             <span><i className="is-move" />{t("计划落点")}</span>
+            <small>{t("生命牌旁的黄色 M 标记计划落点，尚未结算。")}</small>
             <span><i className="is-telegraph" />{t("当前宣告威胁")}</span>
             <span><i className="is-projected" />{t("草稿试算威胁")}</span>
             <small>{t("红色三角为当前宣告；蓝色 P 为草稿试算；!P 表示两者重叠。")}</small>

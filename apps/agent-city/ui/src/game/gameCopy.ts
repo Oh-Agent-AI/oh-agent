@@ -379,6 +379,7 @@ const ENGLISH: Record<string, string> = {
   "战场图例": "Battlefield legend",
   "可移动": "Reachable",
   "计划落点": "Planned cell",
+  "生命牌旁的黄色 M 标记计划落点，尚未结算。": "A yellow M by the HP badge marks the planned cell, not a resolved move.",
   "打法目标": "Doctrine target",
   "圆环：黄/蓝/绿为我方，紫为小怪，黄绿为大怪；亮环是当前机甲。": "Rings: yellow/blue/green are your mechs, purple are raiders, and yellow-green is the boss. The bright ring marks the current mech.",
   "当前机甲行动": "Current mech actions",

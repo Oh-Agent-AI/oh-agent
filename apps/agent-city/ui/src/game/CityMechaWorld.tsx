@@ -196,7 +196,18 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       w * .96, 0, -d * .24, w * .96, 0, d * .24, w * .70, 0, 0,
     ], 3));
     const focusGeo = lines([[-w * .75, -d * .75], [w * .75, -d * .75], [w * .75, -d * .75], [w * .75, d * .75], [w * .75, d * .75], [-w * .75, d * .75], [-w * .75, d * .75], [-w * .75, -d * .75]]);
-    const moveGeo = lines([[0, -d * .42], [w * .42, 0], [w * .42, 0], [0, d * .42], [0, d * .42], [-w * .42, 0], [-w * .42, 0], [0, -d * .42]]);
+    // A filled diamond ring survives at small board sizes; WebGL line width is
+    // otherwise one physical pixel. Keep the center open for other layers.
+    const moveGeo = new THREE.BufferGeometry();
+    const moveDiamond = (radius: number): Array<[number, number]> => [[0, -d * radius], [w * radius, 0], [0, d * radius], [-w * radius, 0]];
+    const outerMove = moveDiamond(.50), innerMove = moveDiamond(.34), moveVertices: number[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      const next = (i + 1) % 4;
+      const [ax, az] = outerMove[i]!, [bx, bz] = outerMove[next]!;
+      const [cx, cz] = innerMove[i]!, [dx, dz] = innerMove[next]!;
+      moveVertices.push(ax, 0, az, bx, 0, bz, cx, 0, cz, bx, 0, bz, dx, 0, dz, cx, 0, cz);
+    }
+    moveGeo.setAttribute("position", new THREE.Float32BufferAttribute(moveVertices, 3));
     const threatMat = new THREE.MeshBasicMaterial({ color: "#ff5656", transparent: true, opacity: .9, depthWrite: false, side: THREE.DoubleSide });
     const subduedThreatMat = new THREE.MeshBasicMaterial({ color: "#ff9292", transparent: true, opacity: .55, depthWrite: false, side: THREE.DoubleSide });
     const focusThreatMat = new THREE.MeshBasicMaterial({ color: "#fff0e0", transparent: true, opacity: 1, depthWrite: false, side: THREE.DoubleSide });
@@ -206,7 +217,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
     const targetMat = new THREE.MeshBasicMaterial({ color: "#ffd166", transparent: true, depthWrite: false, side: THREE.DoubleSide, forceSinglePass: true, toneMapped: false });
     const reachMat = new THREE.MeshBasicMaterial({ color: "#155b82", transparent: true, depthWrite: false, side: THREE.DoubleSide, forceSinglePass: true, toneMapped: false });
     const focusMat = new THREE.LineBasicMaterial({ color: "#39d6a3", depthWrite: false });
-    const moveMat = new THREE.LineBasicMaterial({ color: "#ffe08a", depthWrite: false });
+    const moveMat = new THREE.MeshBasicMaterial({ color: "#ffe08a", transparent: true, depthWrite: false, side: THREE.DoubleSide, forceSinglePass: true, toneMapped: false });
     // Ground stripes respect scene depth. A small screen-facing warning at the
     // cell corner remains visible when a mech or building covers those stripes.
     const warningCanvas = document.createElement("canvas");
@@ -270,7 +281,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
     const reachMatrices: THREE.Matrix4[] = [];
     let reachSignature = "";
     const focusLines: THREE.LineSegments[] = [];
-    const moveLines: THREE.LineSegments[] = [];
+    const moveLines: THREE.Mesh[] = [];
     const addLines = (geo: THREE.BufferGeometry, mat: THREE.LineBasicMaterial, world: { x: number; y: number; z: number }, height: number) => {
       const line = new THREE.LineSegments(geo, mat);
       line.position.set(world.x, world.y + height, world.z);
@@ -355,7 +366,13 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         targetLines.push(target);
         root.add(target);
         focusLines.push(addLines(focusGeo, focusMat, world, 0.32));
-        moveLines.push(addLines(moveGeo, moveMat, world, 0.33));
+        const move = new THREE.Mesh(moveGeo, moveMat);
+        move.position.set(world.x, world.y + 0.33, world.z);
+        move.rotation.y = site.yaw;
+        move.renderOrder = 6;
+        move.visible = false;
+        moveLines.push(move);
+        root.add(move);
         const pick = new THREE.Mesh(pickGeo, pickMat);
         pick.position.set(world.x, world.y + 0.35, world.z);
         pick.rotation.y = site.yaw;
@@ -394,34 +411,41 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
     for (const ring of Object.values(markers)) root.add(ring.mesh);
     // Screen-sized faction badges carry only supplied current HP, not a guessed maximum.
     const unitBadges = Array.from({ length: 6 }, () => {
-      const canvas = document.createElement("canvas"); canvas.width = 192; canvas.height = 64;
+      const canvas = document.createElement("canvas"); canvas.width = 240; canvas.height = 64;
       const texture = new THREE.CanvasTexture(canvas);
       const mat = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false, depthWrite: false, sizeAttenuation: false, fog: false, toneMapped: false });
-      const sprite = new THREE.Sprite(mat); sprite.visible = false; sprite.renderOrder = 10; root.add(sprite);
+      const sprite = new THREE.Sprite(mat); sprite.center.x = .4; sprite.visible = false; sprite.renderOrder = 10; root.add(sprite);
       return { canvas, texture, mat, sprite, signature: "" };
     });
-    const showUnitBadge = (index: number, unit: THREE.Object3D, alive: boolean, enemy: boolean, hp: number | undefined, pixelScale: number) => {
+    const showUnitBadge = (index: number, unit: THREE.Object3D, alive: boolean, enemy: boolean, hp: number | undefined, pixelScale: number, selected = false, plannedMove = false) => {
       const badge = unitBadges[index]!;
       badge.sprite.visible = alive && !performanceRef.current;
       if (!badge.sprite.visible) return;
       const value = typeof hp === "number" && Number.isFinite(hp) && hp >= 0 ? String(hp) : "";
-      const signature = `${enemy}:${value}`;
+      const signature = `${enemy}:${value}:${selected}:${plannedMove}`;
       if (signature !== badge.signature) {
         const ctx = badge.canvas.getContext("2d");
         if (ctx) {
-          ctx.clearRect(0, 0, 192, 64); ctx.fillStyle = "#10232c"; ctx.fillRect(3, 6, 186, 52);
-          ctx.lineWidth = 4; ctx.strokeStyle = "#f5f3df"; ctx.strokeRect(3, 6, 186, 52);
+          ctx.clearRect(0, 0, 240, 64); ctx.fillStyle = "#10232c"; ctx.fillRect(3, 6, 186, 52);
+          ctx.lineWidth = selected ? 6 : 4; ctx.strokeStyle = selected ? "#ffe08a" : "#f5f3df"; ctx.strokeRect(3, 6, 186, 52);
           ctx.fillStyle = enemy ? "#ff6373" : "#62dcff"; ctx.beginPath();
           if (enemy) { ctx.moveTo(32, 12); ctx.lineTo(51, 32); ctx.lineTo(32, 52); ctx.lineTo(13, 32); }
           else ctx.rect(15, 15, 34, 34);
           ctx.closePath(); ctx.fill(); ctx.font = "bold 30px sans-serif"; ctx.fillStyle = "#fff";
           ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(value ? `HP ${value}` : "—", 120, 33);
+          // A selected unit can cover its own ground diamond. The small M
+          // denotes an existing draft move, not a prediction or a second cell.
+          if (plannedMove) {
+            ctx.beginPath(); ctx.moveTo(215, 8); ctx.lineTo(237, 32); ctx.lineTo(215, 56); ctx.lineTo(193, 32); ctx.closePath();
+            ctx.fillStyle = "#ffe08a"; ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = "#172936"; ctx.stroke();
+            ctx.font = "bold 25px sans-serif"; ctx.fillStyle = "#172936"; ctx.fillText("M", 215, 33);
+          }
           badge.texture.needsUpdate = true;
         }
         badge.signature = signature;
       }
       badge.sprite.position.copy(unit.position); badge.sprite.position.y += enemy && index === 3 ? 25 : 14;
-      badge.sprite.scale.set(pixelScale * 54, pixelScale * 18, 1);
+      badge.sprite.scale.set(pixelScale * 67.5, pixelScale * 18, 1);
     };
 
     const barGeo = new THREE.BoxGeometry(12, 0.5, 0.5);
@@ -764,7 +788,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       if (current.boss.alive) for (let dy = 0; dy < 2; dy += 1) for (let dx = 0; dx < 2; dx += 1) {
         occupiedCells.add(cellKey({ x: current.boss.x + dx, y: current.boss.y + dy }));
       }
-      const moveKey = current.move ? cellKey(current.move) : "";
+      const moveKey = !performanceRef.current && current.move ? cellKey(current.move) : "";
       pads.forEach((pad, index) => {
         const x = index % BOARD;
         const y = Math.floor(index / BOARD);
@@ -907,7 +931,14 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       for (let i = 0; i < 3; i++) {
         const id = (["Assault", "Gunner", "Support"] as const)[i]!;
         const figure = current.figures.find(item => item.id === id);
-        showUnitBadge(i, figures[id], Boolean(figure?.alive), false, figure?.hp, pixelScale);
+        // Do not attach a destination label to an actor still sliding from
+        // its previous cell; the ground diamond already marks the destination.
+        const destination = figure ? cellWorld(site, figure) : null;
+        if (destination) spot.set(destination.x, destination.y, destination.z);
+        const plannedMove = Boolean(figure?.alive && figure.selected && current.move && destination
+          && figure.x === current.move.x && figure.y === current.move.y
+          && figures[id].position.distanceToSquared(spot) <= 0.01);
+        showUnitBadge(i, figures[id], Boolean(figure?.alive), false, figure?.hp, pixelScale, Boolean(figure?.selected), plannedMove);
       }
       showUnitBadge(3, boss, current.boss.alive, true, current.boss.hp, pixelScale);
       for (let i = 0; i < 2; i++) showUnitBadge(4 + i, small[i]!, Boolean(current.raiders[i]?.alive), true, current.raiders[i]?.hp, pixelScale);
