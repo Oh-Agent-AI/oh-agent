@@ -43,9 +43,13 @@ export function SquadFeed({ items, onFocus, nowMs, open, onOpen }: Props) {
         ))}
       </ol>}
       <aside className={open ? "city-squad-feed is-open" : "city-squad-feed"} aria-label={cityText("小队频道", language)}>
-        <button type="button" className="city-squad-toggle" aria-expanded={open} onClick={() => onOpen(!open)}>
-          {cityText(open ? "收起小队" : "小队频道", language)}
-        </button>
+        <div className="city-squad-header">
+          {open && <strong>{cityText("小队频道", language)}</strong>}
+          <button type="button" className="city-squad-toggle" aria-label={cityText(open ? "收起小队" : "小队频道", language)} title={cityText(open ? "收起小队" : "小队频道", language)} aria-expanded={open} onClick={() => onOpen(!open)}>
+            <span aria-hidden="true">{open ? "×" : "‹"}</span>
+            {!open && <span>{cityText("小队频道", language)}</span>}
+          </button>
+        </div>
         {open && <>
           <p className="city-squad-hint">{cityText("施工记录标出这次 MCP 连接的客户端，例如 Claude Code 或 Codex。对方没报名字时显示「别的」。", language)}</p>
           {visible.length === 0 ? <p>{cityText("还没有施工事件。", language)}</p> : <ol>

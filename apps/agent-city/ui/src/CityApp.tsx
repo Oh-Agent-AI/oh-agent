@@ -174,7 +174,7 @@ export function CityApp() {
   const liveCity = useRef(false);
   const seenEntityEvents = useRef(new Set<string>());
   const [squad, setSquad] = useState<SquadFeedState>(emptyFeed);
-  const [squadOpen, setSquadOpen] = useState(true);
+  const [squadOpen, setSquadOpen] = useState(false);
   const [squadNow, setSquadNow] = useState(() => Date.now());
   useEffect(() => () => { geographyAbort.current?.abort(); }, []);
   useEffect(() => observeHealth(() => engineRef.current?.diagnosticState() ?? { engineMissing: true }), []);
