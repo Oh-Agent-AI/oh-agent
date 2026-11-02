@@ -33,6 +33,7 @@ export type MechaGlbState = {
   visual: THREE.Object3D;
   /** mixer 不碰的外层节点（米制）：倒地抬高只能放在这里。mixer 只在轨道值变化时才写回节点，手工改动画驱动的节点会被它遗忘、残留到下一个片段。 */
   lift: THREE.Object3D;
+  poseBase?: { bone: THREE.Bone; position: THREE.Vector3; quaternion: THREE.Quaternion; scale: THREE.Vector3 }[];
 };
 export type MechaRig = {
   visual: THREE.Group;
@@ -87,8 +88,15 @@ function poseGlb(rig: MechaRig, g: MechaGlbState, action: MechaAction, seconds: 
   } else {
     time = spec.loop ? t % spec.duration : Math.min(t, spec.duration - 1e-4);
   }
+  for (const value of g.poseBase ?? []) {
+    value.bone.position.copy(value.position); value.bone.quaternion.copy(value.quaternion); value.bone.scale.copy(value.scale);
+  }
   for (const [id, act] of g.actions) act.setEffectiveWeight(id === name ? 1 : 0);
   g.mixer.setTime(time);
+  for (const value of g.poseBase ?? []) {
+    value.bone.quaternion.normalize();
+    value.position.copy(value.bone.position); value.quaternion.copy(value.bone.quaternion); value.scale.copy(value.bone.scale);
+  }
   // 倒地抬高由运行时负责（规格 §5.3：片段不能自带根位移），且只写在 lift 上、不碰 visual。
   g.lift.position.y = name === "defeat" ? rig.rearExtent * Math.sin(g.visual.rotation.x) : 0;
 }
@@ -299,17 +307,27 @@ const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
 const easeOut = (value: number) => 1 - Math.pow(1 - clamp01(value), 3);
 const pulse = (value: number) => Math.sin(clamp01(value) * Math.PI);
 
+export type MechaPerformanceOverride = {
+  durations: readonly number[];
+  play: (index: number, elapsed: number) => number | null;
+  settle: (index: number) => void;
+  afterPose?: (index: number | null, elapsed: number) => void;
+};
+
 /** Sequential, pausable presentation of an accepted round using the shared joint rigs. */
 export class MechaPerformancePlayer {
   private readonly actors: ActorMap;
   private readonly events: MechaPerformanceEvent[];
   private readonly cellToWorld: (cell: { x: number; y: number }, actor: string) => THREE.Vector3;
   private readonly onComplete: () => void;
+  private readonly override?: MechaPerformanceOverride;
+  private readonly eventDurations: number[];
   private readonly positions = new Map<string, THREE.Vector3>();
   private readonly fallen = new Set<string>();
   private readonly tracer: THREE.Line;
   private readonly impact: THREE.Mesh;
   private elapsed = 0;
+  private settledCount = 0;
   private completed = false;
 
   constructor(
@@ -318,11 +336,17 @@ export class MechaPerformancePlayer {
     cellToWorld: (cell: { x: number; y: number }, actor: string) => THREE.Vector3,
     effectRoot: THREE.Object3D,
     onComplete: () => void,
+    override?: MechaPerformanceOverride,
+    initiallyFallen: readonly string[] = [],
   ) {
+    if (override && (override.durations.length !== events.length || override.durations.some((value) => !Number.isFinite(value) || value <= 0))) throw new Error("invalid performance override durations");
     this.actors = actors;
     this.events = events;
     this.cellToWorld = cellToWorld;
     this.onComplete = onComplete;
+    this.override = override;
+    this.eventDurations = override ? [...override.durations] : events.map((event) => event.duration);
+    for (const id of initiallyFallen) if (actors[id]) this.fallen.add(id);
     for (const [id, actor] of Object.entries(actors)) this.positions.set(id, actor.position.clone());
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.Float32BufferAttribute(new Float32Array(6), 3));
@@ -340,19 +364,29 @@ export class MechaPerformancePlayer {
     this.restore();
     this.tracer.visible = false;
     this.impact.visible = false;
-    if (this.completed) return;
+    if (this.completed) { this.override?.afterPose?.(null, this.elapsed); return; }
     const step = Number.isNaN(dt) ? 0 : Math.max(0, dt);
     this.elapsed = Math.min(this.duration(), this.elapsed + step);
     let start = 0;
-    for (const event of this.events) {
-      const end = start + event.duration;
+    for (let index = 0; index < this.events.length; index++) {
+      const event = this.events[index]!;
+      const duration = this.eventDurations[index]!;
+      const end = start + duration;
       if (this.elapsed < end) {
-        this.play(event, clamp01((this.elapsed - start) / event.duration));
+        const local = this.elapsed - start;
+        const progress = this.override ? this.override.play(index, local) : local / duration;
+        if (progress !== null) this.play(event, clamp01(progress));
+        this.override?.afterPose?.(index, local);
         return;
       }
-      this.settle(event);
+      if (index >= this.settledCount) {
+        this.settle(event);
+        this.override?.settle(index);
+        this.settledCount = index + 1;
+      }
       start = end;
     }
+    this.override?.afterPose?.(null, this.elapsed);
     this.completed = true;
     this.onComplete();
   }
@@ -374,7 +408,7 @@ export class MechaPerformancePlayer {
   }
 
   private duration(): number {
-    return this.events.reduce((sum, event) => sum + event.duration, 0);
+    return this.eventDurations.reduce((sum, duration) => sum + duration, 0);
   }
 
   private restore(): void {

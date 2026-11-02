@@ -51,7 +51,7 @@ import { CityEnvironment, type CityEnvironmentSnapshot } from "./environment/Cit
 import { createRenderCanvas, renderContext2D, type RenderCanvas } from "./renderCanvas";
 import { buildingFrame, isSelectionGesture } from "./cityCameraInteraction";
 import type { ReturnCameraView } from "../game/types";
-import { CitySurfacePort, type CitySurfaceCapture, type ReadyCitySurfaceCapture } from "./surface/citySurfacePort";
+import { CitySurfacePort, type CitySurfaceCapture, type ReadyCitySurfaceCapture, type CitySurfaceSource } from "./surface/citySurfacePort";
 import { CityStaticWorldPort, type ReadyCityStaticWorldCapture } from "./surface/cityStaticWorldPort";
 import { HostGameScenePort } from "../game/runtime/HostGameScenePort";
 import type { CameraPose, GameSelection } from "../game/runtime/GameScenePort";
@@ -135,6 +135,7 @@ export class CityEngine {
   private readonly sun: THREE.DirectionalLight;
   private readonly raycaster = new THREE.Raycaster();
   private readonly pointer = new THREE.Vector2();
+  private readonly encounterTargets = new Map<THREE.Object3D, () => void>();
   private parts: CityParts | null = null;
   /** Last applyModel path: mount rebuilds CityParts; append keeps the scene and adds occupants. */
   lastApplyMode: "mount" | "append" = "mount";
@@ -1414,6 +1415,16 @@ export class CityEngine {
     this.noteActivity();
   }
 
+  addEncounterTarget(object: THREE.Object3D, onClick: () => void): void {
+    this.encounterTargets.set(object, onClick);
+    this.addOverlay(object);
+  }
+
+  removeEncounterTarget(object: THREE.Object3D): void {
+    this.encounterTargets.delete(object);
+    this.removeOverlay(object);
+  }
+
   /** Car presentation shares the leased frame loop; no independent camera timer.
    * 与演练场同一套 VehicleChaseCamera 内核（阻尼 15/20）：手动 lerp(5/10) 版本存在
    * ~2.7 单位稳态滞后，驾驶中的转动与变向会持续糊。环绕/缩放由挂在该帧上的
@@ -1506,6 +1517,19 @@ export class CityEngine {
       const ground = this.groundPointAtPointer();
       this.repairHook.onClick({ pickedId: picked, ground, ray: this.currentRay() });
       return;
+    }
+    this.raycaster.setFromCamera(this.pointer, this.camera);
+    const hit = this.raycaster.intersectObjects([...this.encounterTargets.keys()].filter((object) => object.visible), true).find((entry) => Number.isFinite(entry.distance) && entry.distance >= this.camera.near && entry.point.toArray().every(Number.isFinite));
+    if (hit) {
+      const obstacle = this.raycaster.intersectObjects([...this.parts.raycastTargets, ...this.parts.decorTargets], false).find((entry) => Number.isFinite(entry.distance) && entry.distance >= this.camera.near && entry.point.toArray().every(Number.isFinite));
+      const ground = this.groundPointAtPointer();
+      const groundDistance = ground && this.layout ? this.raycaster.ray.origin.distanceTo(new THREE.Vector3(ground.x, this.layout.terrain.height(ground.x, ground.z), ground.z)) : Infinity;
+      if ((!obstacle || hit.distance < obstacle.distance) && hit.distance <= groundDistance + 0.1) {
+        let object: THREE.Object3D | null = hit.object;
+        while (object && !this.encounterTargets.has(object)) object = object.parent;
+        const onClick = object && this.encounterTargets.get(object);
+        if (onClick) { onClick(); return; }
+      }
     }
     const id = this.pick();
     const play = playableKind(id) ? this.playableAt(id!) : null;
@@ -2381,6 +2405,12 @@ export class CityEngine {
    *  Building/landmark solids are not yet in this structural snapshot (coverage is explicit). */
   captureDrivingSurface(signal?: AbortSignal): Promise<CitySurfaceCapture> {
     return this.surfacePort.capture(this.parts?.drivingSurfaceSource() ?? null, signal);
+  }
+
+  captureMechaGroundSource(): { source: CitySurfaceSource; isCurrent: () => boolean } | null {
+    const parts = this.parts, source = parts?.drivingSurfaceSource();
+    if (!parts || !source || this.disposed) return null;
+    return { source, isCurrent: () => !this.disposed && this.parts === parts && parts.drivingSurfaceSource() === source };
   }
 
   /** Explicit display-freeze lease. The caller MUST release it, including on refused entry.

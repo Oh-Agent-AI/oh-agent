@@ -98,6 +98,55 @@ test("the player freezes at zero dt, completes once and restores joints", () => 
   assert.equal(effectRoot.children.length, 0);
 });
 
+test("performance overrides settle each event once, pause, and skip safely to completion", () => {
+  const actor = createGunner(), effectRoot = new THREE.Group();
+  const events: MechaPerformanceEvent[] = [
+    { kind: "move", actor: "Gunner", path: [{ x: 0, y: 0 }, { x: 1, y: 0 }], duration: .5 },
+    { kind: "attack", actor: "Gunner", attack: "shoot", from: { x: 1, y: 0 }, target: { x: 1, y: 2 }, targetIds: [], duration: .7 },
+    { kind: "death", actor: "Gunner", at: { x: 1, y: 0 }, duration: .85 },
+  ];
+  const settled: number[] = [], played: Array<[number, number]> = [];
+  let complete = 0;
+  const override = { durations: [1, 2, 1], play: (index: number, elapsed: number) => { played.push([index, elapsed]); return elapsed / [1, 2, 1][index]!; }, settle: (index: number) => { settled.push(index); } };
+  assert.throws(() => new MechaPerformancePlayer({ Gunner: actor }, events, () => new THREE.Vector3(), effectRoot, () => {}, { ...override, durations: [1] }), /durations/);
+  const player = new MechaPerformancePlayer({ Gunner: actor }, events, (cell) => new THREE.Vector3(cell.x * 8, 0, cell.y * 8), effectRoot, () => { complete++; }, override);
+  player.update(1.1); player.update(0); player.update(.1);
+  assert.deepEqual(settled, [0]); assert.deepEqual(played.map((value) => value[0]), [1, 1, 1]);
+  assert.equal(played[0]![1], played[1]![1]);
+  player.update(Infinity); player.update(Infinity);
+  assert.deepEqual(settled, [0, 1, 2]); assert.equal(complete, 1);
+  assert.deepEqual(actor.position.toArray(), [8, 0, 0]);
+  player.dispose(); assert.equal(effectRoot.children.length, 0);
+});
+
+test("performance post-pose hook sees override, standard reactions and the final settled pose", () => {
+  const actor = createGunner(), effectRoot = new THREE.Group();
+  const events: MechaPerformanceEvent[] = [
+    { kind: "move", actor: "Gunner", path: [{ x: 0, y: 0 }, { x: 1, y: 0 }], duration: .5 },
+    { kind: "attack", actor: "Gunner", attack: "shoot", from: { x: 1, y: 0 }, target: { x: 1, y: 2 }, targetIds: [], duration: .7 },
+  ];
+  const seen: Array<{ index: number | null; elapsed: number; x: number; cannonZ: number }> = [];
+  const cannon = actor.getObjectByName("joint:cannon")!;
+  const player = new MechaPerformancePlayer({ Gunner: actor }, events, (cell) => new THREE.Vector3(cell.x * 8, 0, cell.y * 8), effectRoot, () => {}, {
+    durations: [1, 1],
+    play: (index) => { if (index === 0) { actor.position.x = 3; return null; } return .5; },
+    settle: () => {},
+    afterPose: (index, elapsed) => { seen.push({ index, elapsed, x: actor.position.x, cannonZ: cannon.position.z }); },
+  });
+  try {
+    player.update(.2);
+    assert.equal(seen[0]!.index, 0); assert.equal(seen[0]!.x, 3);
+    player.update(1.3);
+    assert.equal(seen[1]!.index, 1); assert.equal(seen[1]!.x, 8);
+    assert.notEqual(seen[1]!.cannonZ, seen[0]!.cannonZ);
+    player.update(Infinity);
+    assert.equal(seen[2]!.index, null); assert.equal(seen[2]!.x, 8);
+    player.update(0);
+    assert.equal(seen[3]!.index, null); assert.equal(seen[3]!.x, 8);
+    player.reset(); assert.equal(seen.length, 4);
+  } finally { player.dispose(); }
+});
+
 test("committed logs suppress fizzled attacks and retain simultaneous ally paths", async () => {
   const { performanceFromLog } = await import("../src/game/mecha/performance.ts");
   const before = createMatch({ preset: "covers_sparse_mid", script: "siege" });

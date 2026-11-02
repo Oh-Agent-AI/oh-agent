@@ -18,6 +18,7 @@ export function matchFromSite(
     covers: [],
     terrain: site.terrain.map((row) => row.slice()),
     heights: site.heights.map((row) => row.slice()),
+    assaultTerrainSafety: site.assaultTerrainSafety,
     // D2 = b（整改规格 §4，2026-10-26）：城市战场上每个脚本都带楼、都守楼。
     // 以前只有 siege/raid_ssw 带楼，砸砸扫和站桩砸击里城里画着的楼对规则不存在，机甲能穿楼而过。
     buildings: site.buildings.map((building) => ({ id: building.id, cells: building.cells.map((cell) => ({ ...cell })) })),

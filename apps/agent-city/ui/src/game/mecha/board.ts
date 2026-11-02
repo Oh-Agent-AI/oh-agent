@@ -28,6 +28,7 @@ export const RELAXED_SPAWN_MAX_DELTA = 2;
 export const MOVE_QUANTUM = 2;
 
 export type Cell = { x: number; y: number };
+export type AssaultTerrainSafety = { unsafeCells: Cell[]; unsafeEdges: Array<{ from: Cell; to: Cell }> };
 /** 水挡住脚。山地能爬、挡住射击。道路是陆地里铺过的那一格，增益后更便宜。 */
 export type TerrainKind = "land" | "water" | "mountain" | "road";
 export type MechId = "Assault" | "Gunner" | "Support";
@@ -125,6 +126,7 @@ export type MatchState = {
   terrain: TerrainKind[][];
   /** 格心的地面高度。上坡花费只看相邻两格的差。 */
   heights: number[][];
+  assaultTerrainSafety?: AssaultTerrainSafety;
   buildings: Building[];
   /** 缺省 all。frontage 只把正交贴着道路的楼算进楼毁和敌方目标。 */
   stake: BuildingStake;
@@ -349,6 +351,13 @@ export function noSpawn(state: MatchState, cell: Cell): boolean {
 export function shoveWall(state: MatchState, cell: Cell): boolean {
   const terrain = terrainAt(state, cell);
   return terrain === "water" || terrain === "mountain";
+}
+
+export function assaultTerrainBlocked(state: MatchState, from: Cell, to: Cell): boolean {
+  const safety = state.assaultTerrainSafety;
+  if (!safety) return false;
+  return safety.unsafeCells.some((cell) => eq(cell, to)) || safety.unsafeEdges.some((edge) =>
+    (eq(edge.from, from) && eq(edge.to, to)) || (eq(edge.from, to) && eq(edge.to, from)));
 }
 
 /**

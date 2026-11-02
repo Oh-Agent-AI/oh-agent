@@ -535,6 +535,7 @@ const CSS_URL = new URL("../apps/agent-city/ui/src/game/game.css", import.meta.u
 const LINEUP_URL = new URL("../apps/agent-city/ui/src/game/MechaLineup.tsx", import.meta.url);
 const boardSource = readFileSync(BOARD_URL, "utf8");
 const cssSource = readFileSync(CSS_URL, "utf8");
+const worldSource = readFileSync(new URL("../apps/agent-city/ui/src/game/CityMechaWorld.tsx", import.meta.url), "utf8");
 
 /**
  * 入口门禁是产品行为，不是样式：空目录、搜索失败、视角被占都必须留在 CityGate，
@@ -572,6 +573,29 @@ test("battle entry gates empty, failed and taken-view cities without a fallback 
   assert.doesNotMatch(boardSource, fallbackBoard);
   assert.doesNotMatch(cssSource, /\.mecha-grid|\.mecha-cell/);
   assert.equal(existsSync(LINEUP_URL), false, "the modal lineup board is gone, not merely unused");
+});
+
+test("candidate loading gates board input, auto tick and submit across site changes", () => {
+  const clickCell = boardSource.slice(boardSource.indexOf("  const clickCell ="), boardSource.indexOf("  const hoverCell ="));
+  assert.match(clickCell, /if \(!state \|\| performance \|\| previewLoading\) return;[\s\S]*controller\?\.clickCell\(x, y, input\)/);
+  assert.match(boardSource, /if \(remoteActive \|\| previewLoading\) return;[\s\S]*controller\?\.previewTarget/);
+  assert.match(boardSource, /if \(viewFailed \|\| previewLoading \|\| remoteActive \|\| !auto \|\| paused \|\| performance \|\| !controller\) return undefined/);
+  assert.match(boardSource, /const planning = s\.interactive && !sequenceWaiting && !remoteActive && !previewLoading/);
+  assert.match(boardSource, /if \(!nextSite \|\| next === shapeId\) return;\s*if \(useConnectedAssault\(import\.meta\.env\.DEV, location\.search\)\) setPreviewLoading\(true\);\s*setShape\(next\)/);
+});
+
+test("battle actors start at their current cells before the first ground sample", () => {
+  assert.match(worldSource, /for \(const figure of viewRef\.current\.figures\) \{\s*const feet = cellWorld\(site, \{ x: figure\.x, y: figure\.y \}\);\s*figures\[figure\.id\]\.position\.set\(feet\.x, feet\.y, feet\.z\);/);
+  assert.match(worldSource, /boss\.position\.copy\(footprintFeet\(site, viewRef\.current\.boss\)\)/);
+  assert.match(worldSource, /for \(const \[index, raider\] of viewRef\.current\.raiders\.entries\(\)\)/);
+  assert.ok(worldSource.indexOf("figures[figure.id].position.set") < worldSource.indexOf("lease.setFrameHook"));
+});
+
+test("connected Assault previews a planned destination without ungrounded walking", () => {
+  assert.match(worldSource, /const connected = candidate\?\.manifest\.id === "assault-connected-candidate"/);
+  assert.match(worldSource, /const moving = !connected && mesh\.position\.distanceToSquared\(spot\) > 0\.01/);
+  assert.match(worldSource, /if \(!pausedRef\.current\) slide\(mesh, spot, reduce \|\| connected\)/);
+  assert.match(worldSource, /createConnectedAssaultPreviewPlayer\(actors, playing\.events, resolveCell/);
 });
 
 test("availability keeps empty catalog distinct from a failed search", () => {

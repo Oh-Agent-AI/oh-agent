@@ -13,7 +13,7 @@ import {
 } from "../src/render/mecha/animation.ts";
 import { MechaGlbError, instantiateMechaGlb, parseMechaGlb, parseMechaManifest, type MechaGlbAsset } from "../src/render/mecha/glbModels.ts";
 import {
-  MECHA_METERS_PER_UNIT, createAssault, createGunner, createSupport, disposeMechaModel, installMechaGlbProvider, upgradeMechaModelToGlb,
+  MECHA_METERS_PER_UNIT, createAssault, createGunner, createSupport, disposeMechaModel, holdMechaGlbUpgrade, installMechaGlbProvider, upgradeMechaModelToGlb,
 } from "../src/render/mecha/models.ts";
 import {
   MECHA_NIGHT_FILL, MECHA_NIGHT_RIM, MECHA_UNIT_LIGHT, applyMechaUnitLight, setMechaUnitLight,
@@ -260,6 +260,43 @@ test("failure falls back to the procedural model: bad asset, failed load, no pro
   await new Promise((resolveTick) => setTimeout(resolveTick, 0));
   assert.ok(early.userData.glb !== true, "a model destroyed before the asset arrived is not upgraded");
   installMechaGlbProvider(null);
+});
+
+test("pending model upgrades wait for all performance holds and never revive a disposed actor", async () => {
+  const asset = await loadAsset();
+  let resolveLate!: (a: MechaGlbAsset) => void;
+  installMechaGlbProvider({ has: (role) => role === "Assault", peek: () => null, load: () => new Promise((resolve) => { resolveLate = resolve; }) });
+  const root = createAssault();
+  const releaseFirst = holdMechaGlbUpgrade(root);
+  const releaseLast = holdMechaGlbUpgrade(root);
+  const procedural = root.userData.proceduralVisual;
+  try {
+    resolveLate(asset);
+    await new Promise((resolveTick) => setTimeout(resolveTick, 0));
+    assert.equal(root.userData.proceduralVisual, procedural);
+    assert.equal(root.userData.glb, undefined);
+    poseMechaModel(root, "move", 0.25);
+    releaseFirst();
+    releaseFirst();
+    assert.equal(root.userData.glb, undefined);
+    releaseLast();
+    assert.equal(root.userData.glb, true);
+    assert.equal(root.userData.mechaGlbId, asset.manifest.id);
+    releaseLast();
+  } finally {
+    disposeMechaModel(root);
+    installMechaGlbProvider(null);
+  }
+
+  installMechaGlbProvider({ has: () => true, peek: () => null, load: () => Promise.resolve(asset) });
+  const disposed = createAssault();
+  const release = holdMechaGlbUpgrade(disposed);
+  try {
+    await new Promise((resolveTick) => setTimeout(resolveTick, 0));
+    disposeMechaModel(disposed);
+    release();
+    assert.equal(disposed.userData.glb, undefined);
+  } finally { installMechaGlbProvider(null); }
 });
 
 // ---- Gunner（规格 §8 的第一个角色；Assault 之后接入）

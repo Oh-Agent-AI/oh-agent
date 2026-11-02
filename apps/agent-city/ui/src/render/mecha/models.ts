@@ -136,9 +136,35 @@ function assemble(name: string, role: string, parts: (owned: THREE.Material[]) =
   return root;
 }
 
+const glbUpgradeHolds = new WeakMap<THREE.Group, { count: number; pending?: MechaGlbAsset }>();
+const glbAssets = new WeakMap<THREE.Object3D, MechaGlbAsset>();
+
+export function getMechaGlbAsset(root: THREE.Object3D): MechaGlbAsset | undefined {
+  return glbAssets.get(root);
+}
+
+export function holdMechaGlbUpgrade(root: THREE.Group): () => void {
+  let state = glbUpgradeHolds.get(root);
+  if (!state) {
+    state = { count: 0 };
+    glbUpgradeHolds.set(root, state);
+  }
+  state.count++;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    if (--state.count !== 0) return;
+    glbUpgradeHolds.delete(root);
+    if (state.pending && !root.userData.disposed) upgradeMechaModelToGlb(root, state.pending);
+  };
+}
+
 export function disposeMechaModel(root: THREE.Object3D) {
   // 先打标记：还没回来的 GLB 加载回来时看到它就不再升级一个已经销毁的模型
   root.userData.disposed = true;
+  if (root instanceof THREE.Group) glbUpgradeHolds.delete(root);
+  glbAssets.delete(root);
   const dispose = root.userData.dispose;
   if (typeof dispose === "function") dispose();
 }
@@ -158,12 +184,26 @@ export function installMechaGlbProvider(provider: MechaGlbProvider | null): void
   glbProvider = provider;
 }
 
+export async function ensureMechaGlbAsset(root: THREE.Group, role: string, expectedId: string): Promise<void> {
+  const provider = glbProvider;
+  if (!provider?.has(role)) throw new Error(`no GLB provider for ${role}`);
+  const asset = provider.peek(role) ?? await provider.load(role);
+  if (root.userData.disposed) throw new Error(`${role} model was disposed while loading`);
+  if (asset.manifest.id !== expectedId) throw new Error(`unexpected ${role} GLB asset`);
+  if (getMechaGlbAsset(root) !== asset && !upgradeMechaModelToGlb(root, asset)) throw new Error(`${role} GLB instance is not ready`);
+}
+
 /**
  * 把程序模型原地换成 GLB：根节点（位置、缩放、朝向、动画器的键）全不动，只换里面的内容和登记的绑定。
  * 实例化失败（资产坏了）返回 false 并保持程序模型不变。
  */
 export function upgradeMechaModelToGlb(root: THREE.Group, asset: MechaGlbAsset): boolean {
   if (root.userData.disposed || root.userData.glb) return false;
+  const hold = glbUpgradeHolds.get(root);
+  if (hold) {
+    hold.pending = asset;
+    return false;
+  }
   let instance;
   try {
     instance = instantiateMechaGlb(asset, MECHA_METERS_PER_UNIT);
@@ -187,9 +227,11 @@ export function upgradeMechaModelToGlb(root: THREE.Group, asset: MechaGlbAsset):
   if (typeof oldDispose === "function") oldDispose();
   root.add(instance.wrapper);
   setMechaRig(root, instance.rig);
+  glbAssets.set(root, asset);
   root.userData.dispose = () => instance.dispose();
   root.userData.proceduralVisual = undefined;
   root.userData.glb = true;
+  root.userData.mechaGlbId = asset.manifest.id;
   return true;
 }
 

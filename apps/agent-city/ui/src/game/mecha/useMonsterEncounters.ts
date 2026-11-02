@@ -25,7 +25,7 @@ export function useMonsterEncounters(engine: RefObject<CityEngine | null>, enabl
     if (!revision || !enabled) { setState({ status: "loading", encounters: [] }); return; }
     const { layout, model } = revision;
     const cached = cachedCatalog(layout, model);
-    if (cached) { setState({ status: "ready", encounters: encountersFromCatalog(layout, model, cached) }); return; }
+    if (cached) { setState({ status: "ready", encounters: encountersFromCatalog(layout, model, cached, layout) }); return; }
     const controller = new AbortController();
     let alive = true;
     let cancel: (() => void) | undefined;
@@ -39,7 +39,7 @@ export function useMonsterEncounters(engine: RefObject<CityEngine | null>, enabl
           onResult: (catalog) => {
             if (!current()) return;
             cacheCatalog(layout, model, catalog);
-            setState({ status: "ready", encounters: encountersFromCatalog(layout, model, catalog) });
+            setState({ status: "ready", encounters: encountersFromCatalog(layout, model, catalog, layout) });
           },
           onError: (error) => { if (current()) { console.warn("monster encounter search failed", error); setState({ status: "error", encounters: [] }); } },
         }, controller.signal).cancel;

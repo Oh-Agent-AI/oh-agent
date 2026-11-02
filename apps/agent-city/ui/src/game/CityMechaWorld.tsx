@@ -8,7 +8,14 @@ import type { GameLocale } from "./gameCopy";
 import type { CityEngine } from "../engine/CityEngine";
 import { boardToWorld, cellWorld, type CityMechaSite } from "./mecha/citySite";
 import { MechaBattleAnimator, MechaPerformancePlayer, faceMechaTarget, type MechaCombatCue } from "../render/mecha/animation";
-import { MECHA_FACTION_COLORS, createAssault, createBoss, createGunner, createRaider, createSupport, disposeMechaModel } from "../render/mecha/models";
+import { MECHA_FACTION_COLORS, createAssault, createBoss, createGunner, createRaider, createSupport, disposeMechaModel, ensureMechaGlbAsset, getMechaGlbAsset } from "../render/mecha/models";
+import { AssaultGroundController } from "../render/mecha/assaultGroundController";
+import type { MechaGlbAsset } from "../render/mecha/glbModels";
+import { createConnectedAssaultPreviewPlayer } from "../render/mecha/connectedAssaultPreview";
+import { useConnectedAssault } from "../render/mecha/connectedAssaultMode";
+import { createAssaultCityGround } from "./assaultCityGround";
+import { positionPerformanceActors } from "./mecha/positionPerformanceActors";
+import { terrainSurfaceHeight } from "../engine/surface/terrainSampling";
 import { applyMechaUnitLight, setMechaUnitLight } from "../render/mecha/unitLight";
 import type { MechaPerformanceEvent } from "./mecha/performance";
 import { BOARD, type Cell, type MechId } from "./mecha/rules";
@@ -96,8 +103,9 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
   onCell: (x: number, y: number, input: "mouse" | "touch") => void;
   onHoverCell?: (cell: Cell | null) => void;
   onHoverEnemy?: (id: string | null) => void;
-  onUnavailable?: () => void;
-}>(function CityMechaWorld({ engine, site, locale = "zh-Hans", view, performance, paused, onPerformanceComplete, onCell, onHoverCell, onHoverEnemy, onUnavailable }, ref) {
+  onUnavailable?: (reason?: "preview" | "asset") => void;
+  onPreviewLoading?: (loading: boolean) => void;
+}>(function CityMechaWorld({ engine, site, locale = "zh-Hans", view, performance, paused, onPerformanceComplete, onCell, onHoverCell, onHoverEnemy, onUnavailable, onPreviewLoading }, ref) {
   const badgeLayerRef = useRef<HTMLDivElement>(null);
   const localeRef = useRef(locale);
   localeRef.current = locale;
@@ -426,6 +434,17 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       raiderEast: marker(MECHA_FACTION_COLORS.enemy, 2.9, 4.1, 4),
     };
     for (const figure of [assault, gunner, support, boss, raiderWest, raiderEast]) root.add(figure);
+    for (const figure of viewRef.current.figures) {
+      const feet = cellWorld(site, { x: figure.x, y: figure.y });
+      figures[figure.id].position.set(feet.x, feet.y, feet.z);
+    }
+    boss.position.copy(footprintFeet(site, viewRef.current.boss));
+    for (const [index, raider] of viewRef.current.raiders.entries()) {
+      const mesh = [raiderWest, raiderEast][index];
+      if (!mesh) break;
+      const feet = cellWorld(site, { x: raider.x, y: raider.y });
+      mesh.position.set(feet.x, feet.y, feet.z);
+    }
     for (const ring of Object.values(markers)) root.add(ring.mesh);
     // Screen-space life bars stay crisp outside the city's pixel/bloom pass.
     // It follows the actual model, not the projected destination, and cannot intercept picks.
@@ -751,15 +770,62 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       });
     };
     let player: MechaPerformancePlayer | null = null;
+    let releasePreview: (() => void) | null = null;
+    const connectedPreview = useConnectedAssault(import.meta.env.DEV, location.search);
+    const source = connectedPreview ? engine.captureMechaGroundSource() : null;
+    let previewGround: Parameters<typeof createConnectedAssaultPreviewPlayer>[5] | undefined;
+    let previewGroundError: unknown = null;
+    if (connectedPreview) {
+      try {
+        if (!source) throw new Error("rendered city ground unavailable");
+        const { layout, ground } = source.source;
+        previewGround = {
+          height: createAssaultCityGround(layout, ground, source.isCurrent),
+          terrain: (x, z) => { if (!source.isCurrent()) throw new Error("Assault ground source is stale"); return terrainSurfaceHeight(layout, x, z); },
+          radius: 2, maxGrade: .5, maxDrop: .3,
+        };
+      } catch (error) { previewGroundError = error; }
+    }
     let playing: MechaPerformanceView | null = null;
+    let idleGroundAsset: MechaGlbAsset | undefined;
+    let idleGround: AssaultGroundController | undefined;
+    let idleHeading: number | undefined;
+    let previewFailed = false;
+    let active = true;
+    let candidateReady = !connectedPreview;
+    if (connectedPreview) {
+      onPreviewLoading?.(true);
+      assault.visible = false;
+      ensureMechaGlbAsset(assault, "Assault", "assault-connected-candidate").then(() => {
+        if (!active) return;
+        candidateReady = true;
+        onPreviewLoading?.(false);
+      }, (error) => {
+        if (!active) return;
+        previewFailed = true;
+        console.error("[mecha] connected Assault candidate unavailable:", error);
+        onPreviewLoading?.(false);
+        onUnavailable?.("asset");
+      });
+    }
+    const failPreview = (error: unknown) => {
+      if (previewFailed) return;
+      previewFailed = true;
+      console.error("[mecha] connected Assault preview failed:", error);
+      player?.dispose(); player = null;
+      releasePreview?.(); releasePreview = null;
+      onUnavailable?.("preview");
+    };
     let lastFrame = globalThis.performance.now();
     const cameraRight = new THREE.Vector3();
     const cameraUp = new THREE.Vector3();
     const cameraPosition = new THREE.Vector3();
     lease.setFrameHook(() => {
+      if (previewFailed) return;
       const now = globalThis.performance.now();
       const dt = Math.min(0.08, (now - lastFrame) / 1000);
       lastFrame = now;
+      if (!candidateReady) return;
       // 夜间补光（见 unitLight.ts）。GLB 是异步原地升级的，升级后材质整套换掉，所以按 userData.glb 的变化重装
       setMechaUnitLight(engine.skyNight);
       for (const unit of litUnits) {
@@ -867,6 +933,22 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       });
       const bossFeet = footprintFeet(site, current.boss);
       const performing = Boolean(performanceRef.current);
+      if (!performing && playing) {
+        try {
+          const asset = connectedPreview ? getMechaGlbAsset(assault) : undefined;
+          if (asset?.manifest.id === "assault-connected-candidate") {
+            if (!previewGround) throw previewGroundError ?? new Error("Assault preview ground unavailable");
+            if (idleGroundAsset !== asset || !idleGround) {
+              idleGround = new AssaultGroundController(assault, { ...previewGround, asset });
+              idleGroundAsset = asset;
+            }
+            idleHeading = idleGround.heading();
+          }
+          player?.dispose(); player = null;
+          releasePreview?.(); releasePreview = null;
+          playing = null;
+        } catch (error) { failPreview(error); return; }
+      }
       const validCell = (cell: Cell, span = 1) => Number.isInteger(cell.x) && Number.isInteger(cell.y)
         && cell.x >= 0 && cell.y >= 0 && cell.x + span <= BOARD && cell.y + span <= BOARD;
       const preview = performing ? undefined : current.targetPreview;
@@ -927,10 +1009,26 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         const mesh = figures[figure.id];
         const feet = cellWorld(site, { x: figure.x, y: figure.y });
         spot.set(feet.x, feet.y, feet.z);
-        const moving = mesh.position.distanceToSquared(spot) > 0.01;
+        const candidate = connectedPreview && figure.id === "Assault" ? getMechaGlbAsset(mesh) : undefined;
+        const connected = candidate?.manifest.id === "assault-connected-candidate";
+        const moving = !connected && mesh.position.distanceToSquared(spot) > 0.01;
         if (!performing) {
-          if (!pausedRef.current) slide(mesh, spot, reduce);
+          if (!pausedRef.current) slide(mesh, spot, reduce || connected);
           animate(mesh, figure.id, figure.alive ? 1 : 0, moving && figure.alive, pausedRef.current ? 0 : dt);
+          if (connected) {
+            try {
+              if (!previewGround) throw previewGroundError ?? new Error("Assault preview ground unavailable");
+              if (idleGroundAsset !== candidate || !idleGround) {
+                idleGround = new AssaultGroundController(mesh, { ...previewGround, asset: candidate });
+                idleGroundAsset = candidate;
+                idleHeading = mesh.rotation.y;
+              }
+              const dx = bossFeet.x - spot.x, dz = bossFeet.z - spot.z;
+              if (figure.alive && Math.hypot(dx, dz) > 1e-6) idleHeading = Math.atan2(-dx, -dz);
+              idleGround.align(idleHeading ?? 0);
+              if (figure.alive) idleGround.stand();
+            } catch (error) { failPreview(error); return; }
+          } else if (figure.alive) faceMechaTarget(mesh, spot, bossFeet);
         }
         mesh.visible = true;
         const ring = markers[figure.id];
@@ -940,7 +1038,6 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         ring.mesh.scale.setScalar(figure.selected ? 1.34 : targeted ? 1.2 : 1);
         ring.mat.color.set(figure.selected ? "#ffe08a" : MECHA_FACTION_COLORS.friendly);
         ring.mat.opacity = figure.selected || targeted ? 1 : 0.68;
-        if (figure.alive && !performing) faceMechaTarget(mesh, spot, bossFeet);
       }
       const bossMoving = boss.position.distanceToSquared(bossFeet) > 0.01;
       if (!performing) {
@@ -988,11 +1085,33 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       if (playing !== performanceRef.current) {
         player?.dispose();
         player = null;
+        releasePreview?.();
+        releasePreview = null;
         playing = performanceRef.current;
-        if (playing) player = new MechaPerformancePlayer(actors, playing.events, resolveCell, root, () => onPerformanceCompleteRef.current());
+        if (playing) {
+          positionPerformanceActors(actors, current, resolveCell);
+          const onComplete = () => onPerformanceCompleteRef.current();
+          const initiallyFallen = [
+            ...current.figures.filter((figure) => !figure.alive).map((figure) => figure.id),
+            ...current.raiders.filter((raider) => !raider.alive).map((raider) => raider.id),
+            ...(current.boss.alive ? [] : ["boss"]),
+          ];
+          if (connectedPreview) {
+            try {
+              if (!previewGround) throw previewGroundError ?? new Error("Assault preview ground unavailable");
+              if (idleHeading !== undefined) assault.rotation.set(0, idleHeading, 0);
+              const preview = createConnectedAssaultPreviewPlayer(actors, playing.events, resolveCell, root, onComplete, previewGround, initiallyFallen);
+              player = preview.player;
+              releasePreview = preview.release;
+            } catch (error) { failPreview(error); return; }
+          } else player = new MechaPerformancePlayer(actors, playing.events, resolveCell, root, onComplete, undefined, initiallyFallen);
+        }
       }
       if (player) {
-        player.update(reduce ? Number.POSITIVE_INFINITY : pausedRef.current ? 0 : dt);
+        if (connectedPreview) {
+          try { player.update(reduce ? Number.POSITIVE_INFINITY : pausedRef.current ? 0 : dt); }
+          catch (error) { failPreview(error); return; }
+        } else player.update(reduce ? Number.POSITIVE_INFINITY : pausedRef.current ? 0 : dt);
         for (const [id, marker] of Object.entries(actorMarkers)) {
           const actor = actors[id as keyof typeof actors];
           marker.mesh.position.set(actor.position.x, actor.position.y + 0.55, actor.position.z);
@@ -1021,6 +1140,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
     });
 
     return () => {
+      active = false;
       if (hoverFrame) cancelAnimationFrame(hoverFrame);
       canvas.removeEventListener("pointerdown", onDown);
       canvas.removeEventListener("pointerup", onUp);
@@ -1031,6 +1151,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       clearOrderMarkers();
       try { lease.release(); } catch { /* host already disposed the scene */ }
       for (const figure of [assault, gunner, support, boss, raiderWest, raiderEast]) disposeMechaModel(figure);
+      releasePreview?.();
       setMechaUnitLight(0);
       gridGeo.dispose();
       perimeterGeo.dispose(); perimeterMat.dispose();

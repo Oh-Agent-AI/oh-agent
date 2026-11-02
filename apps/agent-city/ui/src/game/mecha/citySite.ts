@@ -21,6 +21,7 @@ import type { RoadEdge } from "../../engine/cityLayout";
 import { groundRoadClearance } from "../../engine/surface/roadClearance";
 import { LOT } from "../../engine/worldScale";
 import { BOARD, FLAT_SPAWN_MAX_DELTA, RELAXED_SPAWN_MAX_DELTA, type Cell, type MechId, type TerrainKind } from "./rules";
+import type { AssaultTerrainSafety } from "./board";
 
 /** Lot module. A block's window may step a little wider; see pitchOf. */
 export const CELL_W = LOT.width;
@@ -128,6 +129,7 @@ export type CityMechaSite = {
   boss: Cell;
   raiders: Array<{ id: string; pos: Cell }>;
   spawnSpread: number;
+  assaultTerrainSafety?: AssaultTerrainSafety;
 };
 
 type CityAnchorLayout = {

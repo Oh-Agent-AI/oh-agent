@@ -216,9 +216,14 @@ export function instantiateMechaGlb(asset: MechaGlbAsset, metersPerUnit: number)
     action.setEffectiveWeight(0);
     actions.set(clip.name, action);
   }
+  const poseBase: NonNullable<MechaRig["glb"]>["poseBase"] = [];
+  if (asset.manifest.id === "assault-connected-candidate") scene.traverse((object) => {
+    const bone = object as THREE.Bone;
+    if (bone.isBone) poseBase.push({ bone, position: bone.position.clone(), quaternion: bone.quaternion.clone(), scale: bone.scale.clone() });
+  });
   const rig: MechaRig = {
     visual: scene, joints: new Map(), origins: new Map(), role: asset.manifest.role, rearExtent: asset.rearExtent,
-    glb: { manifest: asset.manifest, mixer, actions, visual, lift },
+    glb: { manifest: asset.manifest, mixer, actions, visual, lift, ...(poseBase.length ? { poseBase } : {}) },
   };
   return {
     wrapper, rig,

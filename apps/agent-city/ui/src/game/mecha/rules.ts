@@ -29,7 +29,7 @@
 
 import {
   BOARD, BOSS_HP, BUILDING_HP, COVERS, GDD_RULESET, MECH_IDS, RAIDER_HP, SIEGE_BUILDINGS, SIEGE_RAIDERS, STATS, footprint, inb, key, living, emit, noSpawn, swapEventSink,
-  type ArenaPlan, type BossScriptId, type BuildingStake, type Cell, type CoverPresetId, type MatchState, type MechId, type Outcome, type PlanFault, type TerrainKind, type TurnEvent,
+  type ArenaPlan, type AssaultTerrainSafety, type BossScriptId, type BuildingStake, type Cell, type CoverPresetId, type MatchState, type MechId, type Outcome, type PlanFault, type TerrainKind, type TurnEvent,
 } from "./board";
 import { validateAndApplyPlan } from "./combat";
 import { movementSnapshot, presentationSnapshot, stakeBuildings, type PresentationStages } from "./board";
@@ -103,6 +103,7 @@ export function createMatch(opts: {
   covers?: Cell[];
   terrain?: TerrainKind[][];
   heights?: number[][];
+  assaultTerrainSafety?: AssaultTerrainSafety;
   buildings?: Array<{ id: string; cells: Cell[]; hp?: number }>;
   obstacles?: Cell[];
   raiders?: Array<{ id: string; pos: Cell; hp?: number }>;
@@ -121,6 +122,7 @@ export function createMatch(opts: {
     obstacles: (opts.obstacles ?? []).map((c) => ({ ...c })),
     terrain: copyTerrain(opts.terrain),
     heights: copyHeights(opts.heights),
+    ...(opts.assaultTerrainSafety ? { assaultTerrainSafety: structuredClone(opts.assaultTerrainSafety) } : {}),
     buildings: (opts.buildings ?? (siege ? SIEGE_BUILDINGS : [])).map((b) => ({
       id: b.id,
       cells: b.cells.map((c) => ({ ...c })),
