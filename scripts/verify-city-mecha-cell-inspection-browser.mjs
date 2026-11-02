@@ -96,6 +96,7 @@ try {
         await pick({ cell });
         assert.equal(await inspector.getAttribute("data-cell"), `${cell.x},${cell.y}`);
         const t = await inspector.innerText();
+        assert.match(await inspector.locator("header strong").innerText(), ["land", "water", "mountain", "road"].includes(expected) ? (lang === "zh" ? /查看地形/ : /Inspect terrain/) : (lang === "zh" ? /查看对象/ : /Inspect object/));
         if (expected === "water") {
           await inspector.locator("summary").click();
           assert.match(await inspector.innerText(), lang === "zh" ? /射击可穿过.*并非落水死亡/s : /shots pass through.*not drowning/s);
@@ -109,6 +110,13 @@ try {
         await pick({ unitId, raise:8 });
         assert.equal(await inspector.getAttribute("data-inspected-unit"), unitId, "elevated model pick maps to its rules unit");
         assert.match(await inspector.innerText(), /HP/); await geometry();
+        assert.match(await inspector.locator("header strong").innerText(), lang === "zh" ? /查看对象/ : /Inspect object/);
+        assert.match(await page.locator(".mecha-selected-actions h3").innerText(), lang === "zh" ? /操作机甲/ : /Operating mech/);
+        if (["boss", "raider-w"].includes(unitId)) {
+          assert.equal(await inspector.locator(".mecha-inspection-stats").count(), 1);
+          assert.equal(await inspector.locator(".mecha-inspection-intent[data-attack-source='declared']").count(), 1, "unit properties and declaration share inspector");
+          assert.match(await inspector.locator(".mecha-inspection-intent").innerText(), lang === "zh" ? /红色箭头.*攻击落点/ : /Red arrows.*attack cells/);
+        }
         if (unitId === "boss") {
           assert.ok(Number(await routeLayer.getAttribute("data-inspection-routes")) > 0);
           assert.equal(await routeLayer.getAttribute("data-inspection-route-kind"), "attack");

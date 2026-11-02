@@ -73,7 +73,7 @@ try {
         await card.locator("summary").click();
       }
       const occlusions = await page.evaluate(() => {
-        const selectors = [".mecha-battle-bar", ".mecha-tactical-legend", ".mecha-pack", ".mecha-quick-resource", ".mecha-turn-summary", ".mecha-selected-actions", ".mecha-submit"];
+        const selectors = [".mecha-battle-bar", ".mecha-tactical-legend", ".mecha-team-planning", ".mecha-turn-summary", ".mecha-selected-actions"];
         const blockers = selectors.flatMap((selector) => [...document.querySelectorAll(selector)]).filter((el) => el.getBoundingClientRect().width && el.getBoundingClientRect().height);
         return [...document.querySelectorAll(".mecha-world-healthbar")].filter((el) => !el.hidden).flatMap((el) => {
           const a = el.getBoundingClientRect();
@@ -117,5 +117,5 @@ try {
     } finally { await context.close(); }
   }
 } finally { await browser.close(); }
-if (output) await writeFile(join(output, "portraits-browser-results.json"), JSON.stringify({ date: "2026-11-01", syntheticSeed: "4196523069", browser: "headless Chromium", deviceScaleFactor: 1, results, limitations: "Head-bar structure, real rule maxima, lower-left concept-art portrait, compact disclosures and lifecycle; no native/Tauri/real-session/network/performance tests. Occlusions are measured separately." }, null, 2));
+if (output) await writeFile(join(output, "portraits-browser-results.json"), JSON.stringify({ date: new Date().toLocaleDateString("en-CA"), executedAt: new Date().toISOString(), syntheticSeed: "4196523069", browser: "headless Chromium", deviceScaleFactor: 1, results, limitations: "Head-bar structure, real rule maxima, lower-left concept-art portrait, compact disclosures and lifecycle; no native/Tauri/real-session/network/performance tests. Occlusions are measured separately." }, null, 2));
 if (results.some((r) => r.status !== "passed")) process.exitCode = 1;

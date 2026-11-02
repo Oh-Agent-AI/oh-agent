@@ -92,7 +92,7 @@ try {
     await page.getByRole("button", { name: zh ? "继续提交" : "Submit anyway", exact: true }).click();
     const skip = page.getByRole("button", { name: zh ? "跳过演出" : "Skip animation", exact: true });
     if (await skip.isVisible().catch(() => false)) await skip.click();
-    await page.waitForFunction(() => document.querySelector(".mecha-resource")?.textContent?.includes("68/80"), null, { timeout: 240_000 });
+    await page.waitForFunction(() => document.querySelector(".mecha-building-current")?.textContent?.includes("68/80"), null, { timeout: 240_000 });
     await page.locator(".mecha-pack li > button").first().click();
     await page.locator(".mecha-move-list summary").click();
     await page.locator(".mecha-move-list select").selectOption("3,2");

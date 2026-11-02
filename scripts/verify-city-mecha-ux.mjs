@@ -16,6 +16,17 @@ assert.match(city, /game\.active \|\| mechaOpen \|\| !!experience\.film/);
 assert.match(city, /labels, cinema, mechaOpen, roadAuditOpen/);
 
 assert.match(board, /className="mecha-battle-bar"/);
+assert.match(board, /className="mecha-team-planning" aria-label=\{t\("回合与队伍规划"\)\}/);
+assert.match(board, /className="mecha-planning-round"/);
+assert.match(board, /className="mecha-objective-card"[\s\S]*className="mecha-quick-resource"/);
+assert.doesNotMatch(board, /className="mecha-mobile-round"|className="mecha-quick-resource-inline"/);
+assert.equal(board.match(/className="mecha-quick-resource"/g).length, 1);
+const planningBlock = board.slice(board.indexOf('<section className="mecha-team-planning"'), board.indexOf('<section className={targeting'));
+assert.match(planningBlock, /controller\.resetTurn\(\)/);
+assert.match(planningBlock, /className="mecha-pack"/);
+assert.match(planningBlock, /controller\.submit\(\)/);
+assert.doesNotMatch(board.slice(board.indexOf('<section className={targeting')), /controller\.resetTurn\(\)/);
+
 assert.match(board, /controller\.togglePause\(\)/);
 assert.match(board, /if \(viewFailed \|\| remoteActive \|\| !auto \|\| paused \|\| performance \|\| !controller\) return undefined/);
 assert.match(controller, /!auto && !paused && !performance && !finished\(\)/);

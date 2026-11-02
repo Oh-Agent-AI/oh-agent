@@ -400,19 +400,19 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
     const panel = panelRef.current;
     if (!panel) return undefined;
     const sheets = Array.from(panel.querySelectorAll<HTMLElement>(":scope > .mecha-options-menu"));
-    const blockers = Array.from(panel.querySelectorAll<HTMLElement>(":scope > .mecha-turn-summary, :scope > .mecha-last-result, :scope > .mecha-pack, :scope > .mecha-selected-actions, :scope > .mecha-submit"));
+    const blockers = Array.from(panel.querySelectorAll<HTMLElement>(":scope > .mecha-turn-summary, :scope > .mecha-last-result, :scope > .mecha-team-planning, :scope > .mecha-team-planning .mecha-pack, :scope > .mecha-selected-actions, :scope > .mecha-team-planning .mecha-submit"));
     const update = () => {
       const panelRect = panel.getBoundingClientRect();
       if (!panelRect.width || !panelRect.height) return;
-      const pack = panel.querySelector<HTMLElement>(":scope > .mecha-pack");
+      const pack = panel.querySelector<HTMLElement>(":scope > .mecha-team-planning .mecha-pack");
       const summary = panel.querySelector<HTMLElement>(":scope > .mecha-turn-summary");
-      const resource = panel.querySelector<HTMLElement>(":scope > .mecha-quick-resource");
+      const team = panel.querySelector<HTMLElement>(":scope > .mecha-team-planning");
       const recap = panel.querySelector<HTMLElement>(":scope > .mecha-last-result");
-      const submit = panel.querySelector<HTMLElement>(":scope > .mecha-submit");
+      const submit = panel.querySelector<HTMLElement>(":scope > .mecha-team-planning .mecha-submit");
       const bar = panel.parentElement?.querySelector<HTMLElement>(":scope > .mecha-battle-bar");
       const packRect = pack?.getBoundingClientRect();
       const summaryRect = summary?.getBoundingClientRect();
-      const resourceRect = resource?.getBoundingClientRect();
+      const teamRect = team?.getBoundingClientRect();
       const barRect = bar?.getBoundingClientRect();
       const set = (name: string, value: string) => {
         if (panel.style.getPropertyValue(name) !== value) panel.style.setProperty(name, value);
@@ -422,12 +422,9 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
       set("--mecha-legend-top", `${legendTop}px`);
       const hudTop = legendTop;
       const submitRect = submit?.getBoundingClientRect();
-      const submitTop = (resourceRect?.height ?? 40) + 14;
-      const rosterTop = submitTop + (submitRect?.height ?? 64) + 8;
-      set("--mecha-submit-top", `${submitTop}px`);
+      const rosterTop = 8 + (submitRect?.height ?? 80);
       set("--mecha-hud-top", `${hudTop}px`);
       if (submit) set("--mecha-submit-height", `${Math.ceil(submit.getBoundingClientRect().height)}px`);
-      if (resourceRect?.height) set("--mecha-roster-top", `${Math.ceil(rosterTop)}px`);
       if (summaryRect?.height) {
         const recapTop = Math.ceil(summaryRect.bottom - panelRect.top + 8);
         set("--mecha-recap-top", `${recapTop}px`);
@@ -438,7 +435,7 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
         // Derive the side rail's position as well as its height: moving an
         // element does not itself cause ResizeObserver to fire.
         const bottom = sideLayout ? 12 : Math.ceil(panelRect.bottom - packRect.top + 8);
-        const clearance = sideLayout ? panelRect.top + rosterTop + packRect.height : summaryRect.bottom;
+        const clearance = sideLayout ? teamRect?.bottom ?? panelRect.top + rosterTop + packRect.height : summaryRect.bottom;
         const available = Math.max(40, Math.floor(panelRect.bottom - clearance - bottom - 8));
         set("--mecha-pack-bottom", `${bottom}px`);
         set("--mecha-actions-available", `${available}px`);
@@ -459,9 +456,9 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
     observer?.observe(panel);
     for (const blocker of blockers) observer?.observe(blocker);
     for (const sheet of sheets) observer?.observe(sheet);
-    const resource = panel.querySelector<HTMLElement>(":scope > .mecha-quick-resource");
+    const team = panel.querySelector<HTMLElement>(":scope > .mecha-team-planning");
     const bar = panel.parentElement?.querySelector<HTMLElement>(":scope > .mecha-battle-bar");
-    if (resource) observer?.observe(resource);
+    if (team) observer?.observe(team);
     if (bar) observer?.observe(bar);
     const legend = panel.querySelector<HTMLElement>(":scope > .mecha-tactical-legend");
     if (legend) observer?.observe(legend);
@@ -477,7 +474,7 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
     if (!root) return undefined;
     const summary = root.querySelector<HTMLElement>(":scope > .mecha-turn-summary");
     const actions = root.querySelector<HTMLElement>(":scope > .mecha-selected-actions");
-    const pack = root.querySelector<HTMLElement>(":scope > .mecha-pack");
+    const pack = root.querySelector<HTMLElement>(":scope > .mecha-team-planning .mecha-pack");
     const result = root.querySelector<HTMLElement>(":scope > .mecha-candidate-panel");
     const inspection = root.querySelector<HTMLElement>(":scope > .mecha-cell-inspector");
     const panels = [summary, actions, pack, result, inspection].filter((panel): panel is HTMLElement => Boolean(panel));
@@ -510,7 +507,7 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
       })() : Infinity;
       const rosterRoom = pack ? root.getBoundingClientRect().bottom - pack.getBoundingClientRect().top - 20 - 160 : Infinity;
       const limit = panel === inspection ? Math.min(window.innerHeight * 0.32, 260) : panel === result ? Math.min(window.innerHeight * 0.36, 280) : panel === pack ? Math.max(80, Math.min(rosterRoom, window.innerHeight * (window.innerHeight > 600 ? 0.5 : 0.43), window.innerHeight > 600 ? 360 : 320)) : panel === summary
-        ? Math.min(result ? window.innerHeight * 0.3 : panel.querySelector("details[open], #mecha-order-panel") ? window.innerHeight * 0.64 : window.innerHeight * 0.38, 380, objectiveHeight)
+        ? Math.min(result ? window.innerHeight * 0.38 : panel.querySelector("details[open], #mecha-order-panel") ? window.innerHeight * 0.64 : window.innerHeight * 0.38, 380, objectiveHeight)
         : available;
       // Keep every settled scrollport edge between whole lines/controls,
       // including long candidate results. The ceiling remains independent of
@@ -804,13 +801,9 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
     : preview?.outcome === "defeat_wipe" ? t("预计机甲全灭")
     : preview?.outcome === "defeat_timeout" ? t("预计回合耗尽") : null;
   const quickResource = <>
-    {outcome ? <span>{outcome}</span> : null}
-    <span>{t("防守建筑")}</span>
-    <strong>{staked.length ? `${stakedHp}/${stakedMax}` : t("本局无守楼目标")}</strong>
-    {performance ? <span>{t("演出中，不显示预测")}</span> : !state.outcome && preview && staked.length ? <span>→ {t("预计")} {predictedHp}/{stakedMax} ({buildingDelta > 0 ? "+" : ""}{buildingDelta})</span> : !state.outcome && !preview ? <span>{t("风险未知")}</span> : null}
+    <div className="mecha-building-current"><span>{t("防守建筑")}</span><strong>{staked.length ? `${stakedHp}/${stakedMax}` : t("本局无守楼目标")}</strong></div>
+    {!performance && !state.outcome && preview && staked.length ? <span>→ {t("预计")} {predictedHp}/{stakedMax}</span> : null}
     {preview && !s.projectedThreats ? <span>{t("草稿威胁未知")}</span> : null}
-    {predictedOutcome ? <span>{predictedOutcome}</span> : null}
-    {preview?.assumed.length ? <span>{t("假设待机")}：<abbr title={preview.assumed.map((id) => t(NAMES[id])).join("、")}>{preview.assumed.length}</abbr></span> : null}
     {remoteActive ? <span>{t("远程战棋期间本地规划已锁定。")}</span> : null}
   </>;
 
@@ -818,7 +811,6 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
     <section className="mecha-overlay is-city has-match is-reference-hud" data-map-focus={mapFocused ? "true" : undefined} data-remote-active={remoteActive ? "true" : undefined} role="dialog" aria-label={t("机甲战棋")}>
       <CityMechaWorld ref={worldRef} engine={engine} site={site} locale={locale} view={cityView} performance={performance} paused={paused} onPerformanceComplete={finishPerformance} onCell={clickCell} onHoverCell={hoverCell} onHoverEnemy={(id) => controller.setHoveredEnemy(id)} onUnavailable={() => setViewFailed(true)} />
       <header className="mecha-battle-bar">
-        <div><span>{t("回合")} {Math.min(state.turn, MAX_TURNS)}/{MAX_TURNS}</span>{paused && <span className="mecha-paused">{t("已暂停")}</span>}</div>
         <div className="mecha-battle-controls">
           <button type="button" aria-pressed={mapFocused} aria-describedby="mecha-map-focus-help" onClick={() => setMapFocused((value) => !value)}>{mapFocused ? t("恢复面板") : t("查看战场")}</button>
           <span id="mecha-map-focus-help" className="mecha-sr-only">{t("收起面板以查看战场；选择棋盘格后恢复面板。")}</span>
@@ -838,7 +830,6 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
       <div className="mecha-panel" ref={panelRef}>
         {sequenceFault ? <p role="alert">{t("Assault 演出数据不完整或不一致，自动对战已等待；可重新开始一局。")}</p> : null}
         <details className="mecha-tactical-legend"><summary><span aria-hidden="true">✣ ◇ ! P</span> {t("战场图例")}{cityView.projectedTelegraph === null ? ` · ${t("风险未知")}` : ""}</summary><MechaBattleLegend locale={locale} projectedThreats={cityView.projectedTelegraph} verifiedShove={Boolean(cityView.targetPreview?.shove)} /></details>
-        <div className="mecha-quick-resource">{quickResource}</div>
         <section className={`mecha-turn-summary${compactSummary && !remoteActive ? " is-compact" : ""}`} aria-label={t("战斗目标与威胁")} aria-describedby="mecha-summary-scroll-help" tabIndex={0} onKeyDown={(event) => {
           const element = event.currentTarget;
           if (event.target !== element || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || element.scrollHeight <= element.clientHeight) return;
@@ -853,26 +844,24 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
           event.preventDefault();
         }}>
           <span id="mecha-summary-scroll-help" className="mecha-sr-only">{t("这里包含战斗目标、威胁和结算顺序；如有隐藏内容，使用上下方向键滚动查看。")}</span>
-          <div className="mecha-quick-resource-inline">{quickResource}</div>
-          <p className="mecha-mobile-round">{t("回合")} {Math.min(state.turn, MAX_TURNS)}/{MAX_TURNS}{paused ? ` · ${t("已暂停")}` : ""}</p>
           {remoteActive ? <p className="mecha-resource" role="status">{t(remoteStatus === "starting" ? "正在启动远程战棋，本地规划已锁定。" : remoteStatus === "stopping" ? "正在停止远程战棋，本地规划仍锁定。" : remoteStatus === "unknown" ? "远程状态无法确认：请在远程战棋设置中停止并重试，本地规划保持锁定。" : "远程战棋已启动：桌面显示本地局面，不会同步远程战况。本地规划已锁定；停止远程将重开本地局。")}</p> : null}
-          {!remoteActive ? <div className="mecha-objective-card">
+          <div className="mecha-objective-card">
             <div className="mecha-summary-heading">
               <span className="mecha-objective-heading">{t("本局目标")}</span>
               <button type="button" aria-expanded={!compactSummary} aria-label={t(compactSummary ? "展开面板" : "精简面板")} title={t(compactSummary ? "展开面板" : "精简面板")} onClick={(event) => { event.currentTarget.closest<HTMLElement>(".mecha-turn-summary")?.scrollTo({ top: 0 }); setCompactSummary((value) => !value); }}>{compactSummary ? <span aria-hidden="true">＋</span> : t("精简面板")}</button>
             </div>
-            <strong className="mecha-objective-goal">{t(staked.length ? "消灭所有敌人 · 至少保住一栋防守建筑" : "消灭所有敌人")}</strong>
+            {!remoteActive ? <strong className="mecha-objective-goal">{t(staked.length ? "消灭所有敌人 · 至少保住一栋防守建筑" : "消灭所有敌人")}</strong> : null}
+            <div className="mecha-quick-resource">{quickResource}</div>
             <div className="mecha-objective-forecast" role="status">
               {state.outcome ? outcome : performance ? t("演出中，不显示预测") : !preview ? t("本回合预测未知") : !staked.length ? t("本局无守楼目标") : buildingDelta > 0 ? `${t("本回合预计建筑净恢复")} +${buildingDelta}` : `${t("本回合预计建筑净损失")} ${-buildingDelta}`}
               {!state.outcome && preview?.assumed.length ? <span> · {t("假设待机")}</span> : null}
               {!state.outcome && predictedOutcome ? <span className="mecha-objective-outcome">{predictedOutcome}</span> : null}
             </div>
             <span className="mecha-scroll-hint" aria-hidden="true">↕ {t("内容较多时可滚动")}</span>
-          </div> : null}
+          </div>
           {!performance && !preview && !state.outcome ? <p className="mecha-preview-after mecha-forecast-status" role="status">{s.preview.status === "invalid" ? `${t("风险未知")} · ${previewFaultText(s.preview.fault, locale)}` : t("预览暂不可用，风险未知；提交仍会重新校验。")} {t("当前敌意不是草稿预测。")}</p> : null}
           {preview ? <details className="mecha-resource mecha-risk-details" onToggle={(event) => { if (!event.currentTarget.open) setFocusedBuilding(null); }}>
             <summary>{t("风险详情")}</summary>
-            <p>{t("守楼败北条")} {staked.length ? <>{stakedHp}/{stakedMax} → {t("预计")} {predictedHp}/{stakedMax} ({buildingDelta > 0 ? "+" : ""}{buildingDelta}) · {buildingDelta <= 0 ? `${t("预计建筑损失")} ${-buildingDelta}` : `${t("预计建筑净恢复")} ${buildingDelta}`}</> : t("本局无守楼目标")}{predictedOutcome ? ` · ${predictedOutcome}` : ""}</p>
             <p>{t("整包预计机甲受击")} {hitLine}</p>
             {preview.assumed.length ? <p>{t("假设待机")}：{preview.assumed.map((id) => t(NAMES[id])).join("、")} · {t("已规划移动会保留；提交前须明确选择行动。")}</p> : null}
             <p>{t("选择建筑，高亮对应楼顶标记。")}</p><ul>{preview.buildings.map((building) => <li key={building.id}><button type="button" aria-pressed={focusedBuilding === building.id} onClick={() => setFocusedBuilding((id) => id === building.id ? null : building.id)}>{building.id} ({building.cells.map((cell) => `${cell.x},${cell.y}`).join("、")}) · {t(building.staked ? "防守建筑" : "非防守建筑，不计入败北条")} · {building.startHp} → {building.endHp}/{building.maxHp}{building.endHp <= 0 ? ` · ${t("预计毁灭")}` : ""}</button></li>)}</ul>
@@ -909,15 +898,32 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
           </div> : null}
         </section>
         {!remoteActive && !performance && s.lastLog.length > 0 ? <MechaLastResult lastLog={s.lastLog} healthTimeline={s.combat.healthTimeline} t={t} locale={locale} /> : null}
-        <ul className="mecha-pack" tabIndex={0} aria-label={t("三机行动状态")} aria-describedby="mecha-roster-scroll-help">
-          <li className="mecha-roster-scroll-help" id="mecha-roster-scroll-help">{t("三机计划 · 滚动查看")}</li>
-          {activeMechs.map((m) => <MechaPlanCard key={m.id} id={m.id} name={t(NAMES[m.id])} hp={m.hp}
-            selected={m.id === selected} disabled={remoteActive || auto || paused || Boolean(performance)} onSelect={(id) => controller.selectMech(id)}
-            draft={draft?.[m.id]} openingSuggestion={s.openingSuggestion} hitDamage={preview ? preview.hitsAfter[m.id] ?? 0 : null}
-            locale={locale} avatar={<MechaUnitAvatar mechId={m.id} locale={locale} />} />)}
-        </ul>
+        <section className="mecha-team-planning" aria-label={t("回合与队伍规划")}>
+          <div className="mecha-submit" ref={setSubmitTarget}>
+            <div className="mecha-planning-heading"><h3>{t("队伍规划")}</h3><span className="mecha-planning-round">{t("回合")} {Math.min(state.turn, MAX_TURNS)}/{MAX_TURNS}{paused ? ` · ${t("已暂停")}` : ""}</span></div>
+            <div className="mecha-planning-status"><strong>{t("已规划")} {plannedCount}/{activeMechs.length}</strong>{s.openingSuggestion && !remoteActive ? <span className="mecha-sr-only">{t("系统建议，可修改")}</span> : null}<span id="mecha-submit-status" className={planning && (packReady || pendingNames.length > 0) ? "mecha-sr-only" : undefined}>{remoteActive ? t("远程战棋期间本地规划已锁定。") : paused ? t("演出暂停中，无法结束回合。") : performance || sequenceWaiting ? t("等待战斗演出，暂不可结束回合。") : state.outcome ? t("对局已结束。") : auto ? t("自动对战中，无法手动结束回合。") : pendingNames.length ? `${t("待规划")}：${pendingNames.join("、")}` : t("已就绪，可结束回合。")}</span></div>
+            <p id="mecha-reset-help" className="mecha-reset-help mecha-sr-only">{t(s.resetTurnUsed ? "本局的重置机会已用完。" : state.outcome ? "对局结束后不可重置。" : remoteActive ? "远程战棋期间不可重置。" : planning ? "每场可用一次：恢复本回合开始时的草稿，不会撤回已结算的回合。" : "暂停、自动对战或演出期间不可重置。")}</p>
+            <div className="mecha-planning-controls">
+              {!s.holdConfirmation ? <button type="button" className="mecha-submit-primary" aria-describedby="mecha-submit-status" disabled={!planning || !packReady} onClick={() => controller.submit()}>{t("结束回合")}</button> : <div className="mecha-hold-confirm" role="group" aria-label={t("确认全员待机")}>
+                <strong>{t("全员待机的预计风险")}</strong>
+                {s.holdConfirmation.buildingLoss > 0 ? <span>{t("预计建筑损失")} {s.holdConfirmation.buildingLoss}</span> : null}
+                {predictedOutcome ? <span>{predictedOutcome}</span> : null}
+                <button type="button" disabled={remoteActive} onClick={() => controller.cancelHold()}>{t("返回修改")}</button>
+                <button type="button" className="mecha-submit-primary" disabled={!planning} onClick={() => controller.confirmHold()}>{t("继续提交")}</button>
+              </div>}
+              <button type="button" disabled={!planning || !s.canResetTurn} aria-describedby="mecha-reset-help" onClick={() => controller.resetTurn()}>{t("重置本回合")}</button>
+            </div>
+          </div>
+          <ul className="mecha-pack" tabIndex={0} aria-label={t("三机行动状态")} aria-describedby="mecha-roster-scroll-help">
+            <li className="mecha-roster-scroll-help" id="mecha-roster-scroll-help">{t("三机计划 · 滚动查看")}</li>
+            {activeMechs.map((m) => <MechaPlanCard key={m.id} id={m.id} name={t(NAMES[m.id])} hp={m.hp}
+              selected={m.id === selected} disabled={remoteActive || auto || paused || Boolean(performance)} onSelect={(id) => controller.selectMech(id)}
+              draft={draft?.[m.id]} openingSuggestion={s.openingSuggestion} hitDamage={preview ? preview.hitsAfter[m.id] ?? 0 : null}
+              locale={locale} avatar={<MechaUnitAvatar mechId={m.id} locale={locale} />} />)}
+          </ul>
+        </section>
         <section className={targeting ? "mecha-selected-actions is-targeting" : "mecha-selected-actions"} aria-label={t("当前机甲行动")}>
-          <h3 tabIndex={-1}><span>{selectedMech ? t(NAMES[selectedMech.id]) : t("当前机甲")}</span>{selectedMech ? <span className="mecha-selected-hp">{selectedMech.hp} / {unitMaxHp(selectedMech.id) ?? "?"} HP</span> : null}</h3>
+          <h3 tabIndex={-1}><span>{t("操作机甲")} · {selectedMech ? t(NAMES[selectedMech.id]) : t("当前机甲")}</span>{selectedMech ? <span className="mecha-selected-hp">{selectedMech.hp} / {unitMaxHp(selectedMech.id) ?? "?"} HP</span> : null}</h3>
           {targeting ? <p className="mecha-target-instruction">{t(actionLabel(targeting))} · {t("点击高亮目标")}</p> : null}
           <div className="mecha-command-deck">
             {selectedMech ? <MechaUnitPortrait unitId={selectedMech.id} locale={locale} size={84} className="mecha-selected-portrait" decorative={false} /> : null}
@@ -954,7 +960,6 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
           </div>
           <div className="mecha-actions mecha-action-utilities">
             <button type="button" disabled={!planning || !s.canUndoMove} title={t("恢复最近一次移动前的草稿，可能一并恢复其他机甲规划。")} onClick={() => controller.undoMove()}>{t("撤回移动")}</button>
-            <button type="button" disabled={!planning || !s.canResetTurn} aria-describedby="mecha-reset-help" onClick={() => controller.resetTurn()}>{t("重置本回合")}</button>
             {targeting ? <button type="button" className="mecha-target-cancel" disabled={!planning} onClick={(event) => finishTarget(event, false)}>{t("取消选目标")}</button> : null}
           </div>
           {targeting ? <div className="mecha-target-preview" aria-label={t("目标试算")}>
@@ -989,7 +994,6 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
               }}>{t("应用移动")}</button>
             </div>
           </details>
-          <p id="mecha-reset-help" className="mecha-reset-help mecha-sr-only">{t(s.resetTurnUsed ? "本局的重置机会已用完。" : state.outcome ? "对局结束后不可重置。" : remoteActive ? "远程战棋期间不可重置。" : planning ? "每场可用一次：恢复本回合开始时的草稿，不会撤回已结算的回合。" : "暂停、自动对战或演出期间不可重置。")}</p>
         </section>
             {targeting && candidate ? <div ref={candidateRef} className="mecha-candidate-result mecha-candidate-panel" tabIndex={0} role="region" aria-label={t("目标试算")}>
               {cellInfo ? <MechaCellInspector key={`${cellInfo.cell.x},${cellInfo.cell.y}:${cellInfo.unit?.id ?? "tile"}`} info={cellInfo} locale={locale} onClose={closeInspection} compact /> : null}
@@ -1009,16 +1013,6 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
             </div> : null}
         {cellInfo && !(targeting && candidate) ? <MechaCellInspector key={`${cellInfo.cell.x},${cellInfo.cell.y}:${cellInfo.unit?.id ?? "tile"}`} info={cellInfo} locale={locale} onClose={closeInspection} /> : null}
         {inspectedAction && s.actions.some((action) => action.kind === inspectedAction) ? <div id="mecha-action-inspection" className="mecha-action-inspection" role="tooltip"><strong>{t(actionLabel(inspectedAction))}</strong> · {t(ACTION_DESCRIPTIONS[inspectedAction])}</div> : null}
-        <div className="mecha-submit" ref={setSubmitTarget}>
-          <div><strong>{t("已规划")} {plannedCount}/{activeMechs.length}</strong>{s.openingSuggestion && !remoteActive ? <span className="mecha-sr-only">{t("系统建议，可修改")}</span> : null}<span id="mecha-submit-status" className={planning && (packReady || pendingNames.length > 0) ? "mecha-sr-only" : undefined}>{remoteActive ? t("远程战棋期间本地规划已锁定。") : paused ? t("演出暂停中，无法结束回合。") : performance || sequenceWaiting ? t("等待战斗演出，暂不可结束回合。") : state.outcome ? t("对局已结束。") : auto ? t("自动对战中，无法手动结束回合。") : pendingNames.length ? `${t("待规划")}：${pendingNames.join("、")}` : t("已就绪，可结束回合。")}</span></div>
-          {!s.holdConfirmation ? <button type="button" className="mecha-submit-primary" aria-describedby="mecha-submit-status" disabled={!planning || !packReady} onClick={() => controller.submit()}>{t("结束回合")}</button> : <div className="mecha-hold-confirm" role="group" aria-label={t("确认全员待机")}>
-            <strong>{t("全员待机的预计风险")}</strong>
-            {s.holdConfirmation.buildingLoss > 0 ? <span>{t("预计建筑损失")} {s.holdConfirmation.buildingLoss}</span> : null}
-            {predictedOutcome ? <span>{predictedOutcome}</span> : null}
-            <button type="button" disabled={remoteActive} onClick={() => controller.cancelHold()}>{t("返回修改")}</button>
-            <button type="button" className="mecha-submit-primary" disabled={!planning} onClick={() => controller.confirmHold()}>{t("继续提交")}</button>
-          </div>}
-        </div>
         {s.notice && <p role="alert">{s.notice}</p>}
         <details className="mecha-options-menu">
           <summary>{t("战场设置与远程")}</summary>

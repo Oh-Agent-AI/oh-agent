@@ -1,4 +1,16 @@
 /* Board: life/position. Roster: identity. Lower left: portrait and commands. */
+.mecha-overlay.is-city.has-match.is-reference-hud {
+  --mecha-type-heading: 13px;
+  --mecha-type-body: 12px;
+  --mecha-type-meta: 11px;
+  --mecha-line: #364e60;
+  --mecha-line-selected: #78bfd6;
+  --mecha-ink: #e1eaf0;
+  --mecha-ink-muted: #acbdca;
+  --mecha-ink-ready: #a6cebd;
+  --mecha-ink-risk: #f1b2a6;
+  --mecha-radius: 4px;
+}
 .mecha-overlay.is-city.has-match.is-reference-hud .mecha-panel { display: block; }
 .mecha-plan-card__plan { grid-column: 1 / -1; min-width: 0; }
 .mecha-plan-card__plan > summary { display: flex; align-items: baseline; justify-content: space-between; gap: 4px; cursor: pointer; font-size: 11px; line-height: 1.35; }
@@ -10,7 +22,7 @@
 .mecha-selected-portrait { border: 1px solid #68899b; background: #15212a; align-self: flex-start; }
 .mecha-action-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); flex: 1; gap: 4px; min-width: 0; }
 .mecha-overlay.is-city.has-match.is-reference-hud .mecha-action-card { display: flex; flex-direction: column; align-items: center; justify-content: space-between; gap: 3px; min-width: 0; min-height: 84px; padding: 5px 3px; border: 1px solid #68899b; border-radius: 2px; color: #dbe9e5; background: #15212a; font-size: 12px; line-height: 1.25; white-space: normal; overflow-wrap: anywhere; }
-.mecha-overlay.is-city.has-match.is-reference-hud .mecha-action-card.is-selected { border: 2px solid #ffe08a; padding: 4px 2px; background: #233326; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-action-card.is-selected { border: 1px solid #ffe08a; padding: 5px 3px; background: #233326; }
 .mecha-action-icon { width: 30px; height: 30px; flex-shrink: 0; }
 .mecha-action-card small { color: #a8d3a5; font-size: 10px; }
 .mecha-overlay.is-city.has-match.is-reference-hud .mecha-action-card.is-unavailable { opacity: 1; color: #8c9ba6; border-color: #435562; background: #111b24; }
@@ -25,16 +37,36 @@
 .mecha-tactical-legend > summary > span { color: #bfe0e5; word-spacing: 3px; }
 .mecha-tactical-legend > .mecha-battle-legend { position: absolute; right: 0; bottom: calc(100% + 5px); width: 245px; max-width: calc(100vw - 16px); padding: 8px; border: 1px solid #68899b; background: #0b1726fa; border-radius: 2px; }
 .mecha-overlay.is-city.has-match.is-reference-hud .mecha-panel > .mecha-action-inspection { bottom: 180px; z-index: 5; }
+/* Information ownership: objective/buildings right, whole-team plan left.
+   The planning controls and roster share one region; only the roster scrolls. */
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-team-planning { box-sizing: border-box; border: 1px solid #57748d; border-radius: 2px; background: #0b1726ed; color: #e5eef4; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-team-planning > .mecha-submit { position: static; display: flex; flex-direction: column; align-items: stretch; width: 100%; max-height: none; margin: 0; padding: 6px; border: 0; border-bottom: 1px solid #57748d; border-radius: 0; background: none; box-shadow: none; overflow: visible; gap: 5px; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-submit > .mecha-planning-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 6px; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-planning-heading h3 { margin: 0; font-size: 12px; line-height: 1.4; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-planning-status > strong { font-size: 12px; }
+.mecha-planning-round { color: #b7c9d1; font-size: 11px; line-height: 1.4; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-submit > .mecha-planning-status { display: flex; flex-direction: column; gap: 3px; font-size: 11px; line-height: 1.4; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-submit > .mecha-planning-controls { display: flex; flex-wrap: wrap; align-items: stretch; gap: 4px; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-planning-controls > button { flex: 1; width: auto; min-height: 32px; padding: 4px; font-size: 11px; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-planning-controls > .mecha-submit-primary { font-size: 12px; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-team-planning > .mecha-pack { position: static; display: grid; box-sizing: border-box; width: 100%; max-width: none; margin: 0; padding: 6px; gap: 4px; max-height: var(--mecha-roster-fit-height, 44vh); overflow: auto; overscroll-behavior: contain; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-team-planning .mecha-pack li { width: auto; min-width: 0; flex: none; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-objective-card > .mecha-quick-resource { position: static; display: flex; flex-direction: column; align-items: stretch; width: 100%; margin: 5px 0 0; padding: 5px 0 0; border: 0; border-top: 1px solid #57748d; border-radius: 0; background: none; font-size: 11px; line-height: 1.4; gap: 2px; }
+.mecha-building-current { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 6px; }
+@media (min-width: 601px) and (min-height: 420px) {
+  .mecha-overlay.is-city.has-match.is-reference-hud .mecha-panel > .mecha-team-planning { position: absolute; left: 8px; top: 8px; width: min(192px, 30%); }
+}
+@media (max-width: 600px), (max-height: 419px) {
+  .mecha-overlay.is-city.has-match.is-reference-hud .mecha-panel > .mecha-team-planning { position: absolute; top: var(--mecha-hud-top, 64px); left: 8px; width: 38%; }
+  .mecha-overlay.is-city.has-match.is-reference-hud .mecha-planning-controls > button { min-height: 44px; }
+}
+
 @media (min-width: 601px) and (min-height: 420px) {
   .mecha-overlay.is-city.has-match.is-reference-hud .mecha-battle-bar { top: 8px; right: 8px; left: auto; max-width: calc(100% - 208px); min-height: 34px; gap: 5px; padding: 3px 5px; border-radius: 2px; }
   .mecha-overlay.is-city.has-match.is-reference-hud .mecha-battle-controls { gap: 4px; }
   .mecha-overlay.is-city.has-match.is-reference-hud .mecha-battle-controls > button { min-height: 30px; font-size: 11px; padding: 4px 6px; }
-  .mecha-overlay.is-city.has-match.is-reference-hud .mecha-panel > .mecha-quick-resource { top: 8px; left: 8px; width: min(192px, 30%); padding: 5px 7px; border-radius: 2px; font-size: 11px; line-height: 1.35; }
-  .mecha-overlay.is-city.has-match.is-reference-hud .mecha-panel > .mecha-submit { display: flex; flex-wrap: wrap; left: 8px; right: auto; top: var(--mecha-submit-top, 57px); bottom: auto; width: min(192px, 30%); padding: 5px 7px; max-height: none; overflow: visible; border-radius: 2px; gap: 4px; }
-  .mecha-overlay.is-city.has-match.is-reference-hud .mecha-submit > div:first-child { flex: 1 1 70px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 4px; font-size: 11px; line-height: 1.3; }
   .mecha-overlay.is-city.has-match.is-reference-hud .mecha-submit-primary { width: auto; min-height: 32px; font-size: 12px; padding: 4px 6px; }
   .mecha-overlay.is-city.has-match.is-reference-hud .mecha-hold-confirm { flex-basis: 100%; }
-  .mecha-overlay.is-city.has-match.is-reference-hud .mecha-panel > .mecha-pack { left: 8px; top: var(--mecha-roster-top, 118px); bottom: auto; width: min(158px, 24%); gap: 4px; max-height: var(--mecha-roster-fit-height, 44vh); overflow: auto; }
   .mecha-overlay.is-city.has-match.is-reference-hud .mecha-pack li.mecha-plan-card { padding: 3px 5px; gap: 2px; border-radius: 2px; }
   .mecha-overlay.is-city.has-match.is-reference-hud .mecha-pack li.mecha-plan-card > .mecha-plan-card__select { min-height: 26px; padding: 0; font-size: 12px; }
   .mecha-overlay.is-city.has-match.is-reference-hud .mecha-plan-card__identity { flex-direction: row; align-items: baseline; gap: 2px 4px; }
@@ -76,8 +108,6 @@
 /* Match the reference HUD selectors' specificity. The legacy map-focus rule
    otherwise loses to explicit flex/grid on the resource, roster and submit. */
 .mecha-overlay.is-city.has-match.is-reference-hud[data-map-focus="true"] .mecha-panel > * { display: none; }
-/* Preserve the only stop-session entry point; no remote data is exposed here. */
-.mecha-overlay.is-city.has-match.is-reference-hud[data-map-focus="true"][data-remote-active="true"] .mecha-panel > .mecha-submit { display: flex; }
 
 /* Cell inspection is an extension of the lower-right result rail. No identity
    cards are added above units. Target trial and inspection share one scroller. */
@@ -106,3 +136,52 @@
   .mecha-overlay.is-city.has-match.is-reference-hud .mecha-panel > .mecha-cell-inspector { grid-column: 1 / -1; max-height: var(--mecha-inspector-fit-height, 32vh); }
 }
 .mecha-overlay.is-city.has-match.is-reference-hud[data-map-focus="true"] .mecha-panel > .mecha-cell-inspector { display: none; }
+
+/* Keep the stop-session portal available in field focus without the roster. */
+.mecha-overlay.is-city.has-match.is-reference-hud[data-map-focus="true"][data-remote-active="true"] .mecha-panel > .mecha-team-planning { display: block; }
+.mecha-overlay.is-city.has-match.is-reference-hud[data-map-focus="true"][data-remote-active="true"] .mecha-team-planning > .mecha-pack { display: none; }
+
+/* Shared visual hierarchy. Keep tactical selection distinct from keyboard focus. */
+.mecha-overlay.is-city.has-match.is-reference-hud :is(.mecha-battle-bar, .mecha-team-planning, .mecha-selected-actions, .mecha-turn-summary, .mecha-last-result, .mecha-cell-inspector) { border-color: var(--mecha-line); border-radius: var(--mecha-radius); }
+.mecha-overlay.is-city.has-match.is-reference-hud :is(.mecha-panel, .mecha-battle-bar) button { border-color: var(--mecha-line); border-radius: var(--mecha-radius); font-weight: 500; line-height: 1.35; }
+.mecha-overlay.is-city.has-match.is-reference-hud :is(.mecha-panel, .mecha-battle-bar) button:not(.mecha-action-card):not(.mecha-plan-card__select):not(.mecha-submit-primary) { background: #142536; color: var(--mecha-ink); }
+.mecha-overlay.is-city.has-match.is-reference-hud :is(.mecha-panel, .mecha-battle-bar) button:not(.mecha-action-card):not(.mecha-plan-card__select):not(:disabled):hover { border-color: var(--mecha-line-selected); background: #1b3447; }
+.mecha-overlay.is-city.has-match.is-reference-hud :is(.mecha-panel, .mecha-battle-bar) button:disabled { color: #8fa1ad; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-submit-primary { font-weight: 600; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-submit > .mecha-planning-heading h3,
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-selected-actions h3 { font-size: var(--mecha-type-heading); font-weight: 600; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-planning-status > strong { font-size: var(--mecha-type-body); font-weight: 500; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-selected-hp { font-size: var(--mecha-type-meta); font-weight: 400; font-variant-numeric: tabular-nums; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-action-card { border-radius: var(--mecha-radius); border-color: var(--mecha-line); font-size: var(--mecha-type-body); font-weight: 500; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-action-card.is-selected { border-color: #ffe08a; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-action-card small { color: var(--mecha-ink-ready); font-weight: 400; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-action-card.is-unavailable { border-color: #293e4d; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-action-card.is-unavailable small { color: #98a9b5; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-selected-portrait { border-color: var(--mecha-line); border-radius: var(--mecha-radius); }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-selected-actions h3,
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-team-planning > .mecha-submit,
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-objective-card > .mecha-quick-resource { border-bottom-color: var(--mecha-line); border-top-color: var(--mecha-line); }
+
+/* One card frame, not a button nested in another button-like frame. */
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-pack li.mecha-plan-card { padding: 4px 6px; gap: 3px; border: 1px solid var(--mecha-line); border-radius: var(--mecha-radius); background: #101e2bd9; box-shadow: none; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-pack li.mecha-plan-card.is-current { border-color: var(--mecha-line-selected); background: #183244; box-shadow: inset 2px 0 0 var(--mecha-line-selected); }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-pack li.mecha-plan-card > .mecha-plan-card__select { min-height: 28px; padding: 0; gap: 6px; border: 0; border-radius: 2px; background: transparent; color: var(--mecha-ink); box-shadow: none; font-size: var(--mecha-type-body); line-height: 1.4; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-pack li.mecha-plan-card > .mecha-plan-card__select:not(:disabled):hover { background: #ffffff08; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-plan-card__identity { align-items: center; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-plan-card__identity strong { font-size: var(--mecha-type-body); font-weight: 600; line-height: 1.4; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-pack li.mecha-plan-card .mecha-plan-card__identity > span { color: var(--mecha-ink-muted); font-size: var(--mecha-type-meta); font-weight: 400; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-plan-card__avatar { flex-basis: 26px; width: 26px; height: 26px; border: 0; border-radius: 2px; background: #243849; overflow: hidden; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-plan-card__avatar > [data-unit-id] { width: 100% !important; height: 100% !important; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-plan-card__plan > summary { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 6px; font-size: var(--mecha-type-meta); line-height: 1.4; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-plan-card__plan > summary::after { grid-column: 3; color: var(--mecha-ink-muted); font-size: 10px; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-plan-card__status { color: var(--mecha-ink-ready); font-weight: 500; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-plan-card.is-open .mecha-plan-card__status { color: #e6c093; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-plan-card__risk { color: var(--mecha-ink-muted); font-weight: 400; font-variant-numeric: tabular-nums; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-plan-card.is-hit .mecha-plan-card__risk { color: var(--mecha-ink-risk); font-weight: 500; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-plan-card__meta,
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-plan-card__detail { color: var(--mecha-ink-muted); font-size: var(--mecha-type-meta); line-height: 1.4; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-plan-card__select:focus-visible,
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-plan-card__plan > summary:focus-visible { outline: 2px solid #ffe08a; outline-offset: 1px; }
+@media (max-height: 600px) {
+  .mecha-overlay.is-city.has-match.is-reference-hud .mecha-plan-card__avatar { flex-basis: 24px; width: 24px; height: 24px; }
+}

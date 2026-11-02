@@ -217,3 +217,84 @@
 **验收范围仍有限。** 专项经过真实 canvas pointer handler/raycaster，但状态边界的部分前置准备使用合成控制器命令；没有验收 native bundle、物理设备输入、所有地形/模型遮挡、正式无障碍、真实远程匹配或公网双端权限。这里的通过不等于整个 SPEC/PvP 开发完成，也不等于参考稿的像素级复刻。
 
 截图均为合成浏览器场景，不是主分支的运行截图。未提交、未合并到 `feature/mecha`；用户原 5175 开发服务未停止/替换。新版 worktree Vite 5178 保留供查看。
+
+
+## UI 信息分区调整（2026-11-02）
+
+### 调整范围与设计记录
+
+- 模式：**Redesign · Preserve / Extension**。保留已有蓝灰 HUD 配色、紧凑边框、真实 3D 城市/棋盘、设定稿头像、头顶小血槽及行动规则；不按 SVG 示意数值重写游戏。
+- Design Read：工具型战术界面；信息密度保持，层级先于装饰。Dials：结构变化 3、视觉表现 2、色彩强度 2、内容密度 8、品牌/既有参考保真 10。只移动相关信息，不新增动效或图片。
+- 改善：左上回合/提交/三机列表组成同一 `mecha-team-planning` 区；右上目标卡内唯一显示当前建筑 HP、预计 HP、净损失/恢复；左下标题为“操作机甲”；右下区分“查看对象”和“查看地形”。
+- 删除：左上独立建筑条、目标区重复回合、顶部回合计数、单机操作区的整队重置；汇总建筑数据从风险详情移至目标卡，分建筑明细仍保留。
+- 保护：草稿合法性、结束回合/全员待机确认、每局一次重置、撤回移动、宣告/草稿语义、键盘焦点恢复、远程锁定/停止 portal、地图聚焦、设定图实体映射及退化状态。
+- 最高风险：左上两块改为嵌套容器后，旧绝对定位/滚动适配及小窗口可见性。通过更新布局查询、观察容器实际高度、仅三机列表独立滚动，并保留远程停止栏的地图聚焦例外控制风险。
+- 回退：本轮是 HUD 组件/CSS 与对应断言的局部未提交调整；基础为 `424e58b8`，不修改主 checkout，也不改规则版本或远程协议。
+
+### 验收证据
+
+证据目录：`artifacts/mecha-clarity-p0/ui-information-groups/`。本轮使用该 worktree 的 Vite 5178、headless Chromium/Metal、合成 City 数据；不读取或上传真实日志。下列证据均来自本轮最终应用源码，不混用上一轮截图。
+
+| 检查 | 命令（仓库根目录，除注明外） | 最终结果与日志 |
+| --- | --- | --- |
+| 静态 UI 归属 | `node scripts/verify-city-mecha-ux.mjs` | PASS；`checks.log`，交付前再次运行 PASS |
+| 类型与生产构建 | 在 `apps/agent-city/ui` 执行 `npm run typecheck && npm run build` | PASS；冻结应用源码后再次执行，`final-build.log`；仍有既有的 >500 kB chunk 警告 |
+| 展示/身份/属性单测 | 在 `apps/agent-city/ui` 执行 `npm run verify:mecha-clarity` | 29/29 PASS，无失败/跳过；`checks.log` |
+| 战斗/控制器回归 | 在 `apps/agent-city/ui` 执行 `npm run verify:mecha` | 268/268 PASS，无失败/跳过；`checks.log` |
+| HUD 与确认/取消 | `MECHA_BROWSER_ANGLE=metal node scripts/verify-city-mecha-reference-hud-browser.mjs http://127.0.0.1:5178` | 中英文 × 640×480、800×600、1100×700，6/6；0 app assertion / 0 inconclusive / 0 harness failure；`final-hud.log`、`final-hud/` |
+| 点格/单位检查 | `MECHA_BROWSER_ANGLE=metal node scripts/verify-city-mecha-cell-inspection-browser.mjs http://127.0.0.1:5178` | 同上 6/6；地形、建筑/单位、宣告路线、选目标共用检查区；`accepted-inspection.log`、`accepted-inspection/` |
+| 设定稿与头顶血槽 | `MECHA_BROWSER_ANGLE=metal node scripts/verify-city-mecha-portraits-browser.mjs http://127.0.0.1:5178` | 同上 6/6；各场景 visual occlusions=0；`accepted-portraits.log`、`accepted-portraits/` |
+| 战斗目标/预测 | `MECHA_BROWSER_ANGLE=metal node scripts/verify-city-mecha-objective-browser.mjs http://127.0.0.1:5178` | 中英文 × 640×480、1100×700，4/4；精简/展开、假设待机、建筑明细、键盘顺序、未知与恢复、演出和回合推进；`final-objective-metal.log`、`final-objective-metal/` |
+
+浏览器命令采集截图时另设置 `MECHA_SCREENSHOTS_DIR="$PWD/artifacts/mecha-clarity-p0/ui-information-groups/<对应目录>"`。四组矩阵合计 22 个场景组合，不代表 22 种不同设备。
+
+人工查看的最终截图：
+
+- `final-hud/planning-zh-640x480.png`：左上三机简卡完整；回合、提交、重置同区；右上当前 HP、预计 HP、净损失无需展开即可读取。
+- `accepted-inspection/boss-zh-640x480.png`：左下操作机甲与右下查看对象身份清楚；单位属性、当前宣告和红色攻击落点说明同卡；两侧面板未相互覆盖。
+- `accepted-inspection/touch-target-en-640x480.png`：英文选目标时，确认/取消、大头像和动作卡可见；右上资源净损失未被默认滚动裁掉。
+- `accepted-inspection/boss-zh-1100x700.png`、`accepted-inspection/touch-target-en-1100x700.png`：大窗口信息归属一致；目标预测与查看对象共用右下区域，保留中央棋盘空间。
+
+修复与证据完整性：
+
+- 修复旧 `.mecha-submit > div` 样式令新控件纵向堆叠、压缩第三机卡的问题；提交区改为 stretch，分组按钮保持横排。
+- 修复选目标时右上高度上限过低而裁掉净损失的问题；与默认摘要使用一致的 38% 上限，并增加预测状态默认可见断言。
+- 目标区测试原来要求“风险详情”重复包含总损失，已迁移为目标卡校验总损失、每栋建筑明细校验起始/预计/最大 HP 与可读性；没有删掉数据正确性校验。该脚本增加与其他矩阵一致的可选 Metal 渲染器，默认 SwiftShader 保留。
+- `accepted-source.json` 记录应用与测试冻结版本；`final-source.json` 记录最终测试脚本哈希。五个应用源码与其余测试脚本保持不变，只有目标区测试按上述信息归属迁移。
+- `probe-*`、`accepted-hud.log`、`accepted-objective.log`、`final-objective.log` 属于失败诊断、旧断言或中止运行，不作为最终通过证据。最终四份日志检查无 NUL、无失败或 Target closed 输出。
+
+验收边界：本轮完成上述 **UI 信息分区调整及合成浏览器验收**；不是整个 SPEC/PvP 开发完成或 SVG 像素级复刻。未验证 390 px 手机布局、真实设备/原生 Tauri、完整无障碍或真实联网对局；点格证据限 headless 合成场景。`git diff --check` 与最终源码哈希核对通过。仍未提交/合并到 `feature/mecha`，不修改主 checkout 的并行 WIP；Vite 5178 保留供查看。
+
+## HUD 字体、按钮与边框协调（2026-11-02）
+
+- 模式：Redesign · Preserve / Extension；沿用蓝灰战术 HUD、五区布局、角色设定图、血槽和密度，不新增图片或动效。
+- 原问题：三机卡与内部选择按钮形成重复框线；名称/HP/状态/受击均偏重；普通按钮与选中动作边线、圆角、字重不一致。
+- 设计：标题 13px、正文/名称 12px、HP/状态/辅助信息 11px；名称 600、普通控件/状态 500、数值 400；HP 使用等宽数字。普通框线收敛为暗蓝灰 1px，选中卡以整卡边线与左侧内嵌标记强调；统一 4px 圆角。保留蓝色主提交按钮、金色动作选中和风险色，但降低重复强调。
+- 删除：机甲身份按钮内部的边框和实体背景，不删除按钮本身；保留其 aria-pressed、禁用和键盘焦点。状态摘要/展开、设定稿映射、风险未知、选择/确认/取消、远程停止入口全部保留。
+- Dials：结构 1、视觉 3、色彩 2、密度 8、既有参考保真 10。最高风险是字号/内边距变化影响小窗口可见性及继承样式；仅改 reference HUD 样式，保留独立 worktree，不改规则。回退可恢复本轮编辑前样式，不撤销上一轮信息分区。
+
+### 本轮验收结果
+
+应用修改只涉及 `apps/agent-city/ui/src/game/mechaReferenceHud.css`，不修改战斗规则、设定图映射或信息归属。测试脚本增加 computed-style 回归契约及三机区截图；普通卡、身份按钮、名称/HP/状态、主次按钮和动作选中几何均有独立断言。摘要展开箭头固定第三列，避免有无受击信息时横向错位。
+
+环境：本独立 worktree 的 Vite 开发服务器 `http://127.0.0.1:5178`；headless Chromium / Metal，合成数据。应用样式冻结后执行以下检查，均退出码 0。证据目录为 `artifacts/mecha-clarity-p0/hud-visual-harmony/`。
+
+| 检查 | 命令 | 真实结果 / 证据 |
+| --- | --- | --- |
+| 类型、展示单测、生产构建 | `cd apps/agent-city/ui && npm run typecheck && npm run verify:mecha-clarity && npm run build` | PASS；29/29；`final-checks.log`。既有大于 500 kB 的 chunk 警告仍存在，不是新增错误 |
+| HUD 与视觉样式契约 | `MECHA_BROWSER_ANGLE=metal node scripts/verify-city-mecha-reference-hud-browser.mjs http://127.0.0.1:5178` | 中英文 × 640×480、800×600、1100×700，6/6；0 app assertion、0 inconclusive、0 harness failure；`final-hud.log`、`final-hud/` |
+| 查看对象、点格与目标确认 | `MECHA_BROWSER_ANGLE=metal node scripts/verify-city-mecha-cell-inspection-browser.mjs http://127.0.0.1:5178` | 同上 6/6；地形/单位、宣告/预测、友方路线、触控选目标、关闭/重启与拖拽隔离通过；`final-inspection.log`、`final-inspection/browser-results.json` |
+| 设定稿头像与头顶血槽 | `MECHA_BROWSER_ANGLE=metal node scripts/verify-city-mecha-portraits-browser.mjs http://127.0.0.1:5178` | 同上 6/6、各场景 visual occlusions=0；`accepted-portraits.log`、`accepted-portraits/portraits-browser-results.json` |
+
+截图命令另设置 `MECHA_SCREENSHOTS_DIR="$PWD/artifacts/mecha-clarity-p0/hud-visual-harmony/<对应目录>"`。上述浏览器矩阵合计 18 个场景组合，并非 18 种设备；没有将上一轮的规则全套测试或 22 个场景算成本轮结果。
+
+人工查看并与用户局部截图对比：
+
+- `final-hud/team-planning-zh-800x600.png`：三机卡保留单层边框；名称、HP、状态有清楚字重差；主提交与重置层级明确。
+- `final-inspection/boss-zh-640x480.png`、`final-inspection/boss-en-640x480.png`：明确待机、受击 1 / Hit 1 与整卡选中同屏；风险色仍保留，文字不裁切；角色大头像、动作按钮和关闭按钮可见。四动作密集区的长辅助词仍可能换行，此轮没有通过缩小字体或删除文字来强行压成一行。
+- `final-hud/planning-en-640x480.png`、`final-hud/target-en-640x480.png`：英文名称/状态、确认/取消、禁用按钮、目标结果可读；右下结果与左下操作区不重叠。
+- `final-hud/planning-zh-1100x700.png`：大窗口沿用相同字体与边框体系，中央棋盘空间保留。
+
+`probe/` 和 `checks.log` 是初版诊断，不作为最终冻结版本证据。头像脚本的结果日期此前写死为 2026-11-01，已改为执行时本地日期及 ISO 时间戳，并重新运行 `accepted-portraits/` 六组矩阵；旧 `final-portraits/` 不作为最终脚本版本证据。`final-source.json` 记录最终应用、测试和验收文档的 SHA-256；所有最终日志检查无 NUL、无失败/Target closed 输出。`node --check scripts/verify-city-mecha-reference-hud-browser.mjs`、`git diff --check` 均通过，已审查本轮相对 `.before` 的差异。
+
+边界：本轮是字体、按钮、边框协调及上述浏览器回归，不是全 SPEC 完成、SVG 像素级复刻或正式无障碍认证。未覆盖 390 px 手机、原生 Tauri、真实设备或真实联网对局。保留上一轮信息分区 WIP；未提交/合并到 `feature/mecha`，不覆盖主 checkout 的并行改动；Vite 5178 保留。

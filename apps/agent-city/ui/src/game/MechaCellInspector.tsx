@@ -25,7 +25,7 @@ export function MechaCellInspector({ info, locale, onClose, compact = false }: {
   return <section className="mecha-cell-inspector" data-cell={`${info.cell.x},${info.cell.y}`} data-inspected-unit={info.unit?.id} aria-label={text("方格属性", "Tile information")} tabIndex={0}>
     <header>
       {info.unit ? <MechaUnitPortrait unitId={info.unit.id} locale={locale} size={compact ? 28 : 38} /> : <span className={`mecha-tile-icon is-${info.terrain}`} aria-hidden="true">{info.terrain === "water" ? "≈" : info.terrain === "mountain" ? "▲" : info.terrain === "road" ? "═" : "◇"}</span>}
-      <div><strong>{object}{compact && info.unit ? ` · HP ${info.unit.hp}/${info.unit.maxHp ?? "?"}` : ""}</strong><small>({info.cell.x},{info.cell.y}) · {terrain} · {text("高度", "Height")} {Number(info.height.toFixed(1))}</small></div>
+      <div><strong>{info.object === "empty" ? text("查看地形", "Inspect terrain") : text("查看对象", "Inspect object")} · {object}{compact && info.unit ? ` · HP ${info.unit.hp}/${info.unit.maxHp ?? "?"}` : ""}</strong><small>({info.cell.x},{info.cell.y}) · {terrain} · {text("高度", "Height")} {Number(info.height.toFixed(1))}</small></div>
       <button type="button" onClick={onClose} aria-label={text("关闭属性", "Close information")}>×</button>
     </header>
     {compact ? <details className="mecha-compact-inspection"><summary>{attack ? `${text("当前宣告", "Declared attack")} · ${attack.skill === "sweep" ? text("横扫", "Sweep") : attack.skill === "smash" ? text("砸击", "Smash") : text("无攻击", "No attack")}` : text("单位与地形属性", "Unit & terrain information")}</summary>{content}</details> : content}

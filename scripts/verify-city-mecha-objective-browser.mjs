@@ -6,7 +6,8 @@
 // Requires the existing Playwright dependency in apps/desktop/ui-dev and its
 // Chromium (install with npx playwright install chromium in that directory).
 // Optional: MECHA_OBJECTIVE_LANG=zh|en, MECHA_OBJECTIVE_SIZE=640x480|1100x700,
-// MECHA_SCREENSHOTS_DIR=/absolute/path. A filtered run is not a matrix pass.
+// MECHA_SCREENSHOTS_DIR=/absolute/path, MECHA_BROWSER_ANGLE=metal on macOS.
+// A filtered run is not a matrix pass.
 // The fixture intercepts Vite source in memory; it never writes product code.
 // It suppresses automatic animation completion so assertions cannot miss the
 // playback window; the real Skip animation control still ends presentation.
@@ -93,7 +94,7 @@ async function tabTo(page, start, target, label) {
   assert.fail(`${label}: not reachable within 100 Tab presses`);
 }
 
-const browser = await chromium.launch({ headless: true, args: ["--enable-unsafe-swiftshader"] });
+const browser = await chromium.launch({ headless: true, args: process.env.MECHA_BROWSER_ANGLE === "metal" ? ["--use-angle=metal"] : ["--enable-unsafe-swiftshader"] });
 const failures = [];
 try {
   for (const lang of langs) for (const [width, height] of sizes) {
@@ -172,7 +173,7 @@ try {
       const card = page.locator(".mecha-objective-card"), heading = card.locator(".mecha-objective-heading"), goal = card.locator(".mecha-objective-goal"), forecast = card.locator(".mecha-objective-forecast");
       assert.equal(await summary.evaluate((el) => el.classList.contains("is-compact")), true, "battle must start in compact mode");
       for (const [loc, name] of [[heading, "heading"], [goal, "goal"], [forecast, "forecast"]]) await auditText(loc, `${label} compact ${name}`);
-      const round = page.locator(".mecha-battle-bar > div:first-child span:visible, .mecha-mobile-round:visible").first();
+      const round = page.locator(".mecha-team-planning .mecha-planning-round:visible").first();
       assert.match(await round.innerText(), zh ? /回合\s*1\s*\/\s*15/ : /Turn\s*1\s*\/\s*15/i);
       await auditText(round, `${label} initial round`);
       assert.match(await heading.innerText(), zh ? /本局目标/ : /objective/i);
@@ -224,7 +225,17 @@ try {
       await page.keyboard.press("Enter");
       assert.equal(await risk.evaluate((el) => el.open), true);
       assert.match(await risk.innerText(), zh ? /守楼|建筑/ : /building/i);
-      assert.match(await risk.innerText(), new RegExp(`(?:^|[^\\d])${loss}(?:[^\\d]|$)`));
+      // The aggregate belongs only to the objective card; the disclosure
+      // retains each building's before/after values, not a duplicate total.
+      assert.match(await forecast.innerText(), new RegExp(`(?:^|[^\\d])${loss}(?:[^\\d]|$)`), "expanded objective must retain net loss");
+      for (const building of state.preview.buildings) {
+        const detail = risk.locator("li button").filter({ hasText: building.id });
+        assert.equal(await detail.count(), 1, `one detail per building: ${building.id}`);
+        const detailText = await detail.innerText();
+        assert.ok(detailText.includes(`${building.startHp} → ${building.endHp}/${building.maxHp}`), `building detail must preserve prediction: ${building.id}`);
+        await detail.scrollIntoViewIfNeeded();
+        await auditText(detail, `${label} building ${building.id} prediction`);
+      }
       const riskLine = risk.locator("p").first();
       await riskLine.scrollIntoViewIfNeeded(); await auditText(riskLine, `${label} detailed risk`);
       // Close before keyboard traversal to avoid forcing an unrelated scroll position.
@@ -285,7 +296,7 @@ try {
       const after = await page.evaluate(() => ({ turn: globalThis.__objectiveController.getState().match.turn, outcome: globalThis.__objectiveController.getState().match.outcome }));
       assert.equal(after.outcome, null, "fixture unexpectedly ended the match");
       assert.equal(after.turn, 2, "submitting a turn must advance the round");
-      await page.waitForFunction(() => Array.from(document.querySelectorAll(".mecha-battle-bar > div:first-child span, .mecha-mobile-round")).some((el) => /(?:回合|Turn)\s*2\s*\/\s*15/i.test(el.textContent ?? "")));
+      await page.waitForFunction(() => Array.from(document.querySelectorAll(".mecha-team-planning .mecha-planning-round")).some((el) => /(?:回合|Turn)\s*2\s*\/\s*15/i.test(el.textContent ?? "")));
       await round.scrollIntoViewIfNeeded();
       assert.match(await round.innerText(), zh ? /回合\s*2\s*\/\s*15/ : /Turn\s*2\s*\/\s*15/i);
       await auditText(round, `${label} next round`);

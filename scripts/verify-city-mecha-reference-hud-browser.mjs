@@ -235,7 +235,7 @@ try {
         await root.evaluate((el) => el.setAttribute("data-remote-active", "true"));
         try {
           assert.deepEqual(await page.locator(".mecha-panel > *").evaluateAll((els) => els
-            .filter((el) => getComputedStyle(el).display !== "none").map((el) => el.className)), ["mecha-submit"],
+            .filter((el) => getComputedStyle(el).display !== "none").map((el) => el.className)), ["mecha-team-planning"],
           "remote styling must retain only the submit/stop rail in field focus");
         } finally {
           await root.evaluate((el) => el.removeAttribute("data-remote-active"));
@@ -272,20 +272,83 @@ try {
       if (!entered) continue;
       await page.setViewportSize({ width, height });
       await page.waitForTimeout(500);
-      if (screenshots) await page.screenshot({ path: join(screenshots, `planning-${lang}-${width}x${height}.png`) });
+      if (screenshots) {
+        await page.screenshot({ path: join(screenshots, `planning-${lang}-${width}x${height}.png`) });
+        await page.locator(".mecha-team-planning").screenshot({ path: join(screenshots, `team-planning-${lang}-${width}x${height}.png`) });
+      }
       const summary = page.locator(".mecha-turn-summary"), pack = page.locator(".mecha-pack");
       const actions = page.locator(".mecha-selected-actions"), submit = page.locator(".mecha-submit-primary");
       const forecast = page.locator("details.mecha-resource > summary");
-      const turn = page.locator(".mecha-battle-bar > div:first-child span").first();
+      const turn = page.locator(".mecha-team-planning .mecha-planning-round").first();
       await check("reference: turn and building forecast immediately readable", async () => {
         assert.match(await turn.innerText(), zh ? /回合\s*1\s*\/\s*15/ : /Turn\s*1\s*\/\s*15/);
         await usable(turn);
-        // The standalone quick resource is the current immediately visible
-        // summary; the longer <details> lives in the scrollable threat rail.
-        const quick = page.locator(".mecha-panel > .mecha-quick-resource");
+        // Building status belongs to the objective card and is readable
+        // without opening the detailed per-building forecast.
+        const quick = page.locator(".mecha-objective-card > .mecha-quick-resource");
         assert.match(await quick.innerText(), zh ? /80\s*\/\s*80.*预计.*68\s*\/\s*80/s : /80\s*\/\s*80.*Predicted.*68\s*\/\s*80/s);
         await usable(quick);
         assert.match(await forecast.innerText(), zh ? /风险详情/ : /Risk details/);
+      });
+      await check("information ownership: team, objective, command and inspection", async () => {
+        const team = page.locator(".mecha-team-planning");
+        assert.equal(await team.locator(".mecha-submit").count(), 1);
+        assert.equal(await team.locator(".mecha-planning-round").count(), 1);
+        assert.equal(await team.locator(".mecha-pack").count(), 1);
+        assert.equal(await team.getByRole("button", { name: zh ? "重置本回合" : "Reset turn", exact: true }).count(), 1);
+        assert.equal(await actions.getByRole("button", { name: zh ? "重置本回合" : "Reset turn", exact: true }).count(), 0);
+        assert.equal(await actions.getByRole("button", { name: zh ? "撤回移动" : "Undo move", exact: true }).count(), 1);
+        assert.equal(await page.locator(".mecha-quick-resource").count(), 1, "no duplicate building strip");
+        assert.equal(await summary.locator(".mecha-objective-card > .mecha-quick-resource").count(), 1);
+        assert.equal(await page.locator(".mecha-battle-bar .mecha-planning-round, .mecha-mobile-round").count(), 0);
+        assert.doesNotMatch(await page.locator(".mecha-battle-bar").innerText(), zh ? /回合\s*\d+\// : /Turn\s*\d+\//i);
+        assert.match(await actions.locator("h3").innerText(), zh ? /操作机甲/ : /Operating mech/);
+        await usable(team.locator("h3"));
+        await usable(team.locator(".mecha-planning-controls"));
+        const outer = (await geometry(team)).box, roster = (await geometry(pack)).box;
+        assert.ok(roster.left >= outer.left && roster.right <= outer.right && roster.bottom <= outer.bottom, "roster stays in team region");
+      });
+      await check("visual hierarchy: single roster frame and consistent control geometry", async () => {
+        // Computed-style contracts catch cascade regressions; they are not a
+        // substitute for screenshot review or an accessibility audit.
+        const styles = await pack.evaluate((el) => {
+          const read = (node) => {
+            const s = getComputedStyle(node);
+            return { border: [s.borderTopWidth, s.borderRightWidth, s.borderBottomWidth, s.borderLeftWidth], radius: s.borderRadius,
+              background: s.backgroundColor, shadow: s.boxShadow, size: s.fontSize, weight: s.fontWeight, numeric: s.fontVariantNumeric };
+          };
+          return [...el.querySelectorAll("li.mecha-plan-card")].map((card) => ({
+            frame: read(card), button: read(card.querySelector(".mecha-plan-card__select")),
+            name: read(card.querySelector(".mecha-plan-card__identity strong")), hp: read(card.querySelector(".mecha-plan-card__identity > span")),
+            status: read(card.querySelector(".mecha-plan-card__status")),
+            chevronColumn: getComputedStyle(card.querySelector("summary"), "::after").gridColumnStart,
+          }));
+        });
+        assert.equal(styles.length, 3);
+        for (const [index, style] of styles.entries()) {
+          assert.deepEqual(style.frame.border, ["1px", "1px", "1px", "1px"], `card ${index} uses one frame`);
+          assert.equal(style.frame.radius, "4px");
+          assert.deepEqual(style.button.border, ["0px", "0px", "0px", "0px"], "identity button has no nested frame");
+          assert.equal(style.button.background, "rgba(0, 0, 0, 0)"); assert.equal(style.button.shadow, "none");
+          assert.equal(style.name.size, "12px"); assert.equal(style.name.weight, "600");
+          assert.equal(style.hp.size, "11px"); assert.equal(style.hp.weight, "400"); assert.match(style.hp.numeric, /tabular-nums/);
+          assert.equal(style.status.size, "11px"); assert.equal(style.status.weight, "500");
+          assert.equal(style.chevronColumn, "3", "chevron stays in its own column with or without risk");
+        }
+        const buttons = await page.locator(".mecha-planning-controls > button").evaluateAll((nodes) => nodes.map((node) => {
+          const s = getComputedStyle(node); return { radius: s.borderRadius, background: s.backgroundColor };
+        }));
+        assert.equal(buttons.length, 2); assert.ok(buttons.every((s) => s.radius === "4px"));
+        assert.notEqual(buttons[0].background, buttons[1].background, "primary submit remains distinct from reset");
+        const deck = await actions.locator(".mecha-action-card").evaluateAll((nodes) => nodes.map((node) => {
+          const s = getComputedStyle(node); return { selected: node.classList.contains("is-selected"), radius: s.borderRadius,
+            border: [s.borderTopWidth, s.borderRightWidth, s.borderBottomWidth, s.borderLeftWidth], padding: s.padding };
+        }));
+        assert.equal(deck.length, 3); assert.equal(deck.filter((s) => s.selected).length, 1);
+        for (const style of deck) {
+          assert.equal(style.radius, "4px"); assert.deepEqual(style.border, ["1px", "1px", "1px", "1px"]);
+          assert.equal(style.padding, deck[0].padding, "selection changes emphasis, not button geometry");
+        }
       });
       await check("three mech status controls and submit are reachable", async () => {
         assert.equal(await pack.locator("li > button").count(), 3);
@@ -339,7 +402,7 @@ try {
         await submit.click(); await button("继续提交", "Submit anyway").click();
         const skip = button("跳过演出", "Skip animation");
         if (await skip.isVisible().catch(() => false)) await skip.click();
-        await page.waitForFunction(() => document.querySelector(".mecha-resource")?.textContent?.includes("68/80"), null, { timeout: 90_000 });
+        await page.waitForFunction(() => document.querySelector(".mecha-building-current")?.textContent?.includes("68/80"), null, { timeout: 90_000 });
       });
       if (!advanced) { console.log(`SKIP ${label}: move/target/failure depend on fixture advancement`); continue; }
       const moved = await check("plan a move via reachable controls", async () => {
@@ -374,6 +437,7 @@ try {
           for (const card of await page.locator(".mecha-action-cards button").all()) await usable(card);
           assert.equal(await overlap(candidate, actions), false, "target result must not cover the portrait/deck");
           assert.equal(await overlap(candidate, summary), false, "target result must not cover objective");
+          await usable(page.locator(".mecha-objective-forecast"));
           for (const bar of await page.locator(".mecha-world-healthbar:not([hidden])").all()) {
             assert.equal(await overlap(candidate, bar), false, `target result covers ${await bar.getAttribute("data-unit-id")} head bar`);
           }
@@ -417,8 +481,9 @@ try {
         const failureStatus = page.locator(".mecha-preview-after[role=status]");
         await failureStatus.waitFor();
         assert.match(await failureStatus.innerText(), zh ? /预览暂不可用，风险未知.*当前敌意不是草稿预测/s : /Prediction is temporarily unavailable.*Current threats are not a prediction of this draft/s);
-        const quick = page.locator(".mecha-panel > .mecha-quick-resource");
-        assert.match(await quick.innerText(), zh ? /风险未知/ : /Risk unknown/);
+        const quick = page.locator(".mecha-objective-card > .mecha-quick-resource");
+        assert.match(await page.locator(".mecha-objective-forecast").innerText(), zh ? /预测未知/ : /(?:forecast|prediction) unknown/i);
+        await usable(page.locator(".mecha-objective-forecast"));
         assert.doesNotMatch(await quick.innerText(), zh ? /→|预计/ : /→|Predicted/);
         await usable(quick);
         assert.equal(await page.locator("details.mecha-resource").count(), 0, "old building prediction must be removed");
