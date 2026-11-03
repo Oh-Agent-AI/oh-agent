@@ -2,8 +2,8 @@
   "schema_version": 1,
   "kind": "fx_reference_rates",
   "base": "USD",
-  "rate_date": "2026-10-30",
-  "captured_at": "2026-10-31T09:41:42Z",
+  "rate_date": "2026-11-02",
+  "captured_at": "2026-11-03T10:55:41Z",
   "meaning": "1 USD = rate × 目标币种。公开参考汇率（欧央行参考价），不是银行结算汇率，也不是用户实际支付汇率。",
   "policy": "两个独立公开 JSON 源一致（相对差 ≤0.5%）才采用；不一致或仅单源的币种不发布；相对上一份已发布快照偏差 >25% 或日期倒退时整份不发布。",
   "sources": [
@@ -20,111 +20,111 @@
   ],
   "rates": {
     "AUD": {
-      "rate": "1.4236",
+      "rate": "1.4269",
+      "cross_check": 0
+    },
+    "BRL": {
+      "rate": "5.4378",
       "cross_check": 0
     },
     "CAD": {
-      "rate": "1.3969",
+      "rate": "1.3974",
       "cross_check": 0
     },
     "CHF": {
-      "rate": "0.82295",
+      "rate": "0.81963",
       "cross_check": 0
     },
     "CNY": {
-      "rate": "6.6529",
+      "rate": "6.6483",
       "cross_check": 0
     },
     "CZK": {
-      "rate": "21.798",
+      "rate": "21.711",
       "cross_check": 0
     },
     "DKK": {
-      "rate": "6.6895",
+      "rate": "6.6634",
       "cross_check": 0
     },
     "EUR": {
-      "rate": "0.89509",
+      "rate": "0.89158",
       "cross_check": 0
     },
     "GBP": {
-      "rate": "0.74633",
+      "rate": "0.74519",
       "cross_check": 0
     },
     "HKD": {
-      "rate": "7.8457",
-      "cross_check": 0
-    },
-    "HUF": {
-      "rate": "327.9",
+      "rate": "7.8461",
       "cross_check": 0
     },
     "IDR": {
-      "rate": "18148.0",
+      "rate": "18136.0",
       "cross_check": 0
     },
     "ILS": {
-      "rate": "3.1284",
+      "rate": "3.1393",
       "cross_check": 0
     },
     "INR": {
-      "rate": "94.95",
+      "rate": "94.91",
       "cross_check": 0
     },
     "ISK": {
-      "rate": "121.73",
+      "rate": "121.43",
       "cross_check": 0
     },
     "JPY": {
-      "rate": "157.25",
+      "rate": "157.9",
       "cross_check": 0
     },
     "KRW": {
-      "rate": "1335.27",
+      "rate": "1342.9",
       "cross_check": 0
     },
     "MXN": {
-      "rate": "18.908",
+      "rate": "18.7197",
       "cross_check": 0
     },
     "MYR": {
-      "rate": "4.057",
+      "rate": "4.0705",
       "cross_check": 0
     },
     "NOK": {
-      "rate": "9.2302",
+      "rate": "9.2524",
       "cross_check": 0
     },
     "NZD": {
-      "rate": "1.7743",
+      "rate": "1.7773",
       "cross_check": 0
     },
     "PHP": {
-      "rate": "63.68",
+      "rate": "63.547",
       "cross_check": 0
     },
     "PLN": {
-      "rate": "3.9418",
+      "rate": "3.9395",
       "cross_check": 0
     },
     "RON": {
-      "rate": "4.784",
+      "rate": "4.7615",
       "cross_check": 0
     },
     "SEK": {
-      "rate": "9.8264",
+      "rate": "9.7606",
       "cross_check": 0
     },
     "SGD": {
-      "rate": "1.2784",
+      "rate": "1.2789",
       "cross_check": 0
     },
     "THB": {
-      "rate": "33.73",
+      "rate": "33.76",
       "cross_check": 0
     },
     "TRY": {
-      "rate": "49.948",
+      "rate": "49.968",
       "cross_check": 0
     },
     "USD": {
@@ -132,15 +132,15 @@
       "cross_check": 0
     },
     "ZAR": {
-      "rate": "16.6895",
+      "rate": "16.6386",
       "cross_check": 0
     }
   },
   "rejected": {
-    "BRL": {
-      "ecb": 5.4325,
-      "fawaz": 5.38655708,
-      "relative_diff": 0.0085
+    "HUF": {
+      "ecb": 324.98,
+      "fawaz": 327.02685914,
+      "relative_diff": 0.0063
     }
   }
 }
