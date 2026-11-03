@@ -23,7 +23,7 @@ async function remoteRequest(method: string, payload: Record<string, unknown>): 
 
 export type RemoteMechaStatus = "idle" | "starting" | "active" | "stopping" | "unknown";
 
-export function RemoteMechaControls({ locale, site, shape, state, status, canStart, onStatusChange, onStopped, stopTarget }: {
+export function RemoteMechaControls({ locale, site, shape, state, status, canStart, onStatusChange, onStopped, stopTarget, presentation = "disclosure" }: {
   locale: "zh-Hans" | "en";
   site: CityMechaSite;
   shape: FightShape;
@@ -33,6 +33,7 @@ export function RemoteMechaControls({ locale, site, shape, state, status, canSta
   onStatusChange: (status: RemoteMechaStatus) => void;
   onStopped: () => void;
   stopTarget?: HTMLElement | null;
+  presentation?: "disclosure" | "panel";
 }) {
   const [relay, setRelay] = useState(() => sessionStorage.getItem("agent-city-relay") ?? "");
   const [link, setLink] = useState("");
@@ -51,7 +52,8 @@ export function RemoteMechaControls({ locale, site, shape, state, status, canSta
     setBusy(true); setError("");
     try {
       const arena = remoteArenaFromSite(site, { arenaId: `city-${shape}`, sourceRevision: `${shape}-${state.revision}` });
-      const result = await remoteRequest("mecha.remote.start", { relay, arena, state: remoteStateFromSite(site, state) });
+      const method = "mecha.remote.start-v3";
+      const result = await remoteRequest(method, { relay, arena, state: remoteStateFromSite(site, state) });
       if (typeof result.remoteUrl !== "string" || typeof result.matchId !== "string") throw new Error("plugin_response_invalid");
       sessionStorage.setItem("agent-city-relay", relay);
       setLink(result.remoteUrl); onStatusChange("active");
@@ -89,7 +91,11 @@ export function RemoteMechaControls({ locale, site, shape, state, status, canSta
       await remoteRequest("mecha.remote.approve", { deviceId });
       setPending((items) => items.filter((item) => item.deviceId !== deviceId));
       setMessage(zh ? "好友已加入 B 阵营，双方从新的对称战局开始。" : "Your friend joined side B. A new symmetric match has started.");
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "remote_unavailable"); }
+    } catch (cause) {
+      setError(cause instanceof Error && cause.message === "remote_match_invalid" && state.phase === "deployment"
+        ? (zh ? "好友未能加入：如果手机端仍在部署，请先确认部署后重试；否则请检查远程连接。" : "Could not add your friend. If remote deployment is still pending, confirm it before retrying; otherwise check the remote connection.")
+        : cause instanceof Error ? cause.message : "remote_unavailable");
+    }
     finally { setBusy(false); }
   };
   const revoke = async (deviceId: string) => {
@@ -130,10 +136,9 @@ export function RemoteMechaControls({ locale, site, shape, state, status, canSta
       {error && status === "unknown" && <span role="alert">{error}</span>}
     </>
   ) : null;
-  return <>
-  <details className="mecha-settings mecha-remote-settings" name="mecha-battle-options">
-    <summary>{zh ? "手机远程战棋" : "Remote mecha tactics"}</summary>
+  const controls = <>
     <p className="mecha-help">{zh ? "只分享当前战场的比赛快照。电脑必须保持运行、联网且不休眠；开启后桌面本地回合暂时锁定。" : "Shares only this battle snapshot. Keep the desktop running and awake. Local turns are locked while remote play is active."}</p>
+    {state.phase === "deployment" && <p className="mecha-help">{zh ? "远程将从未部署状态开始，本地未确认的部署草稿不会同步。请在手机上重新部署并确认，确认前无法批准好友加入；停止远程会重开本地局。" : "Remote play starts without deployments; the unconfirmed local draft is not transferred. Place and confirm on the remote device before approving a friend. Stopping remote play restarts the local match."}</p>}
     {status === "unknown" && <p role="status">{zh ? "远程状态无法确认。本地保持锁定；请停止远程并重试，确认成功后才能继续。" : "Remote state is unknown. Local play remains locked; stop remote and retry until confirmed."}</p>}
     {link && status === "active" ? <div className="mecha-toolbar">
       <textarea aria-label={zh ? "手机远程链接" : "Remote link"} readOnly rows={3} value={link} onFocus={(event) => event.currentTarget.select()} />
@@ -154,7 +159,12 @@ export function RemoteMechaControls({ locale, site, shape, state, status, canSta
     </div>}
     {status === "idle" && !canStart && <p className="mecha-help">{zh ? "请先停止自动对战、结束演出并回到可规划的回合。" : "Stop auto play, finish animations, and return to a planning turn first."}</p>}
     {error && status !== "unknown" && <p role="alert">{error}</p>}
-  </details>
-  {stopTarget && persistentStop ? createPortal(persistentStop, stopTarget) : persistentStop}
+  </>;
+  return <>
+    {presentation === "panel" ? <div className="mecha-remote-settings">{controls}</div> : <details className="mecha-settings mecha-remote-settings" name="mecha-battle-options">
+      <summary>{zh ? "手机远程战棋" : "Remote mecha tactics"}</summary>
+      {controls}
+    </details>}
+    {stopTarget && persistentStop ? createPortal(persistentStop, stopTarget) : persistentStop}
   </>;
 }

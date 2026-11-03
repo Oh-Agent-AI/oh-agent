@@ -1,4 +1,4 @@
-import type { MatchEvent, MatchResult, MatchSnapshot, RevisionState, SubmitPlanCommand, TurnResolved } from "../contracts/match";
+import type { DeploymentResult, MatchEvent, MatchResult, MatchSnapshot, RevisionState, SubmitDeploymentCommand, SubmitPlanCommand, TurnResolved } from "../contracts/match";
 import type { MatchSession } from "../session/MatchSession";
 import type { MatchClient } from "./MatchClient";
 
@@ -15,6 +15,10 @@ export class LocalMatchClient<S extends RevisionState> implements MatchClient<S>
     const snapshot = this.session.snapshot(this.playerId);
     if (!snapshot.ok) return snapshot;
     return snapshot.value.matchId === matchId ? snapshot : { ok: false, error: { code: "match_not_found" } };
+  }
+
+  async submitDeployment(command: SubmitDeploymentCommand): Promise<DeploymentResult<S>> {
+    return this.session.submitDeployment(this.playerId, command);
   }
 
   async submitPlan(command: SubmitPlanCommand): Promise<MatchResult<TurnResolved<S>>> {

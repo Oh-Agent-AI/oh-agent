@@ -8,6 +8,7 @@ import {
   validateAndApplyPlan,
   type Action, type ArenaPlan, type Cell, type MatchState, type MechId, type MechOrder,
 } from "./rules";
+import { swapEventSink } from "./board";
 
 function same(a: Cell, b: Cell): boolean {
   return a.x === b.x && a.y === b.y;
@@ -96,26 +97,45 @@ function optionsFor(state: MatchState, id: MechId): Opt[] {
   return top;
 }
 
-function scorePlan(state: MatchState, plan: ArenaPlan): number | null {
+/** Each bucket records the very terms used by search, not causal explanations. */
+export type PlanScoreFactors = { boss: number; raiders: number; mechs: number; position: number; buildings: number; outcome: number };
+export type PlanEvaluation =
+  | { ok: true; score: number; factors: PlanScoreFactors }
+  | { ok: false; reason: "rejected" | "nonfinite" | "unavailable" };
+
+function scorePlan(state: MatchState, plan: ArenaPlan, factors?: PlanScoreFactors): number | null {
   const clone = structuredClone(state);
   const result = validateAndApplyPlan(clone, plan);
   if (!("ok" in result)) return null;
   if (clone.phase === "resolving_boss") bossExecute(clone);
   const center = footprintCenter(clone.boss.anchor);
   let score = (BOSS_HP - clone.boss.hp) * 20;
-  for (const raider of clone.raiders) score += (RAIDER_HP - raider.hp) * 12;
+  if (factors) factors.boss = score;
+  for (const raider of clone.raiders) {
+    const term = (RAIDER_HP - raider.hp) * 12;
+    score += term;
+    if (factors) factors.raiders += term;
+  }
   for (const m of clone.mechs) {
-    score += m.hp * 3;
+    const hp = m.hp * 3;
+    score += hp;
+    if (factors) factors.mechs += hp;
     if (m.hp > 0) {
-      score -= boardChargesTerrain(clone)
+      const cost = boardChargesTerrain(clone)
         ? approachCost(clone, m.pos, center, m.id)
         : Math.abs(m.pos.x + 0.5 - center.x) + Math.abs(m.pos.y + 0.5 - center.y);
+      score -= cost;
+      if (factors) factors.position -= cost;
     }
   }
-  for (const b of clone.buildings) score += b.hp * 4;
-  if (clone.outcome === "victory") score += 5000;
-  if (clone.outcome === "defeat_wipe" || clone.outcome === "defeat_buildings") score -= 3000;
-  if (clone.outcome === "defeat_timeout") score -= 100;
+  for (const b of clone.buildings) {
+    const term = b.hp * 4;
+    score += term;
+    if (factors) factors.buildings += term;
+  }
+  if (clone.outcome === "victory") { score += 5000; if (factors) factors.outcome += 5000; }
+  if (clone.outcome === "defeat_wipe" || clone.outcome === "defeat_buildings") { score -= 3000; if (factors) factors.outcome -= 3000; }
+  if (clone.outcome === "defeat_timeout") { score -= 100; if (factors) factors.outcome -= 100; }
   return score;
 }
 
@@ -301,26 +321,56 @@ function peelOptions(state: MatchState, id: MechId): Opt[] {
   return top;
 }
 
-function peelScore(state: MatchState, plan: ArenaPlan): number | null {
+function peelScore(state: MatchState, plan: ArenaPlan, factors?: PlanScoreFactors): number | null {
   const clone = structuredClone(state);
   const result = validateAndApplyPlan(clone, plan);
   if (!("ok" in result)) return null;
   if (clone.phase === "resolving_boss") bossExecute(clone);
   const focus = threatFocus(clone).cell;
   let score = (BOSS_HP - clone.boss.hp) * PEEL_WEIGHTS.boss;
-  for (const raider of clone.raiders) score += (RAIDER_HP - raider.hp) * PEEL_WEIGHTS.raider;
+  if (factors) factors.boss = score;
+  for (const raider of clone.raiders) {
+    const term = (RAIDER_HP - raider.hp) * PEEL_WEIGHTS.raider;
+    score += term;
+    if (factors) factors.raiders += term;
+  }
   for (const mech of clone.mechs) {
-    score += mech.hp * PEEL_WEIGHTS.mech;
+    const hp = mech.hp * PEEL_WEIGHTS.mech;
+    score += hp;
+    if (factors) factors.mechs += hp;
     if (mech.hp > 0) {
-      score -= boardChargesTerrain(clone) ? approachCost(clone, mech.pos, focus, mech.id) : manh(mech.pos, focus);
+      const cost = boardChargesTerrain(clone) ? approachCost(clone, mech.pos, focus, mech.id) : manh(mech.pos, focus);
+      score -= cost;
+      if (factors) factors.position -= cost;
     }
   }
-  for (const building of clone.buildings) score += building.hp * PEEL_WEIGHTS.building;
-  if (clone.outcome === "victory") score += PEEL_WEIGHTS.victory;
-  if (clone.outcome === "defeat_wipe") score += PEEL_WEIGHTS.wipe;
-  if (clone.outcome === "defeat_buildings") score += PEEL_WEIGHTS.buildings;
-  if (clone.outcome === "defeat_timeout") score += PEEL_WEIGHTS.timeout;
+  for (const building of clone.buildings) {
+    const term = building.hp * PEEL_WEIGHTS.building;
+    score += term;
+    if (factors) factors.buildings += term;
+  }
+  if (clone.outcome === "victory") { score += PEEL_WEIGHTS.victory; if (factors) factors.outcome += PEEL_WEIGHTS.victory; }
+  if (clone.outcome === "defeat_wipe") { score += PEEL_WEIGHTS.wipe; if (factors) factors.outcome += PEEL_WEIGHTS.wipe; }
+  if (clone.outcome === "defeat_buildings") { score += PEEL_WEIGHTS.buildings; if (factors) factors.outcome += PEEL_WEIGHTS.buildings; }
+  if (clone.outcome === "defeat_timeout") { score += PEEL_WEIGHTS.timeout; if (factors) factors.outcome += PEEL_WEIGHTS.timeout; }
   return score;
+}
+
+/** Score a complete plan with the same rules and weights as search, in isolation.
+ * This does not assert the plan was selected by the built-in search. */
+export function evaluatePlan(state: MatchState, plan: ArenaPlan, doctrine: DoctrineId): PlanEvaluation {
+  const factors: PlanScoreFactors = { boss: 0, raiders: 0, mechs: 0, position: 0, buildings: 0, outcome: 0 };
+  const outer = swapEventSink(null);
+  try {
+    const score = doctrine === "peel" ? peelScore(state, plan, factors) : scorePlan(state, plan, factors);
+    if (score === null) return { ok: false, reason: "rejected" };
+    if (!Number.isFinite(score) || Object.values(factors).some(value => !Number.isFinite(value))) return { ok: false, reason: "nonfinite" };
+    return { ok: true, score, factors };
+  } catch {
+    return { ok: false, reason: "unavailable" };
+  } finally {
+    swapEventSink(outer);
+  }
 }
 
 /** 守楼：候选格和评分都朝离活楼最近的袭扰者。搜索宽度与攻坚相同。 */

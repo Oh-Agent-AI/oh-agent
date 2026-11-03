@@ -2,11 +2,12 @@
 // Real RemoteMechaControls with an injected in-page host. No host IPC or relay.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { completeLocalDeployment } from "./mecha-deployment-browser-helpers.mjs";
 const { chromium } = createRequire(new URL("../apps/desktop/ui-dev/package.json", import.meta.url))("playwright");
 const base = process.argv[2] ?? "http://127.0.0.1:52971";
 const zh = process.argv.includes("--zh");
 const viewFail = process.argv.includes("--view-fail");
-const browser = await chromium.launch({ headless: true, args: ["--enable-unsafe-swiftshader"] });
+const browser = await chromium.launch({ headless: true, args: [process.env.MECHA_BROWSER_ANGLE === "metal" ? "--use-angle=metal" : "--enable-unsafe-swiftshader"] });
 try {
   const page = await browser.newPage({ viewport: { width: 1100, height: 700 }, locale: zh ? "zh-CN" : "en-US" });
   page.setDefaultTimeout(120_000);
@@ -40,68 +41,116 @@ try {
     const body = await response.text();
     const needle = "const controller = controllerRef.current;";
     assert.ok(body.includes(needle));
-    const failNeedle = "const [viewFailed, setViewFailed] = useState(false);";
+    const failNeedle = 'const [viewFailed, setViewFailed] = useState(null);';
     assert.ok(body.includes(failNeedle));
     await route.fulfill({ response, body: body.replace(needle, `${needle}\n window.__lifecycleController = controller;`).replace(failNeedle, `${failNeedle}\n window.__failMechaView = setViewFailed;`) });
   });
-  await page.goto(new URL("/", base).href, { waitUntil: "domcontentloaded", timeout: 240_000 });
+  await page.goto(new URL("/?fixtureSessions=30", base).href, { waitUntil: "domcontentloaded", timeout: 240_000 });
   await page.locator(".city-loading").waitFor({ state: "hidden" });
   console.log("city loaded");
   await page.getByRole("button", { name: zh ? "城市设置" : "City settings" }).click();
-  await page.getByRole("button", { name: zh ? "机甲战棋" : "Mecha tactics" }).click();
+  await page.getByRole("button", { name: zh ? "机甲战棋" : "Mecha tactics", exact: true }).click();
   console.log("battle opened");
-  const settings = page.locator("details.mecha-settings").filter({ hasText: zh ? "手机远程战棋" : "Remote mecha tactics" });
-  await settings.locator("summary").click();
+  const settings = page.locator("#mecha-remote-settings");
+  const remoteEntry = page.locator('[data-mecha-settings-trigger="remote"]');
+  await remoteEntry.click();
   const relay = settings.locator('input[type="url"]');
   await relay.fill("https://fake.invalid");
   const start = settings.locator("button").filter({ hasText: zh ? "开启并生成链接" : "Start and create link" });
-  // Only one settings sheet is visible at a time; close it before switching.
-  await settings.locator("summary").click();
-  const battlefield = page.locator("details.mecha-settings > summary").filter({ hasText: zh ? "战场设置与规则" : "Battlefield settings and rules" });
+  // The local, unconfirmed deployment draft is not sent to the remote authority.
+  assert.equal(await page.locator(".mecha-overlay").getAttribute("data-phase"), "deployment");
+  assert.equal(await start.isDisabled(), false);
+  assert.match(await settings.innerText(), zh ? /本地未确认的部署草稿不会同步/ : /unconfirmed local draft is not transferred/);
+  await remoteEntry.click();
+  const list = page.locator(".mecha-deploy-list");
+  if (await list.getAttribute("open") === null) await list.locator("summary").click();
+  const cell = await page.locator("#mecha-deploy-choice option").evaluateAll(rows => rows.map(row => row.value).find(Boolean));
+  assert.ok(cell);
+  await page.locator("#mecha-deploy-choice").selectOption(cell);
+  await page.getByRole("button", { name: /^(放置机甲|Place mech)$/ }).click();
+  assert.equal(await page.evaluate(() => window.__lifecycleController.getState().deployment.placements.length), 1);
+  await remoteEntry.click();
+  await start.click();
+  await page.waitForFunction(() => window.__remoteCalls.some(call => call.request.method === "mecha.remote.start-v3"));
+  const deploymentStart = await page.evaluate(() => structuredClone(window.__remoteCalls.find(call => call.request.method === "mecha.remote.start-v3").request.payload.state));
+  assert.equal(deploymentStart.phase, "deployment");
+  assert.ok(deploymentStart.deployment);
+  assert.equal("placements" in deploymentStart.deployment, false);
+  assert.equal("draft" in deploymentStart, false);
+  assert.equal(await page.locator(".mecha-deploy-roster .mecha-plan-card__select").first().isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: zh ? "退出战斗" : "Exit battle", includeHidden: true }).isDisabled(), true);
+  await page.evaluate(() => window.__resolveRemote("mecha.remote.start-v3", "ok", { remoteUrl: "https://fake.invalid/match", matchId: "fake" }));
+  await page.getByRole("button", { name: zh ? "停止远程" : "Stop remote", exact: true }).click();
+  await page.evaluate(() => window.__resolveRemote("mecha.remote.stop", "ok", { ok: true }));
+  await page.locator('.mecha-overlay[data-phase="deployment"]').waitFor();
+  await page.waitForFunction(() => window.__lifecycleController.getState().deployment.placements.length === 0);
+  if (await settings.isVisible()) await remoteEntry.click();
+  console.log("v3 deployment start, local draft isolation and restart verified");
+  await completeLocalDeployment(page);
+  // Direct top-bar switches close the other panel without remounting it.
+  const battlefield = page.locator('[data-mecha-settings-trigger="battlefield"]');
   await battlefield.click();
-  const auto = page.getByRole("button", { name: zh ? "自动对战" : "Auto battle", exact: true });
+  const fieldSettings = page.locator("#mecha-battlefield-settings");
+  const auto = fieldSettings.getByRole("button", { name: zh ? "自动对战" : "Auto battle", exact: true });
   await auto.click();
   assert.equal(await start.isDisabled(), true, "must not start while auto play is running");
-  await page.getByRole("button", { name: zh ? "停止自动" : "Stop auto", exact: true }).click();
-  await battlefield.click();
-  await settings.locator("summary").click();
+  await fieldSettings.getByRole("button", { name: zh ? "停止自动" : "Stop auto", exact: true }).click();
+  await remoteEntry.click();
   console.log("starting remote");
   await start.click();
-  await page.waitForFunction(() => window.__remoteCalls.some((call) => call.request.method === "mecha.remote.start"));
+  await page.waitForFunction(() => window.__remoteCalls.some((call) => call.request.method === "mecha.remote.start-v3"));
   console.log("host request pending");
+  const projected = await page.evaluate(() => ({
+    sent: structuredClone(window.__remoteCalls.find(call => call.request.method === "mecha.remote.start-v3").request.payload.state),
+    authority: structuredClone(window.__lifecycleController.getState().match),
+  }));
+  assert.equal(projected.sent.phase, "player_plan");
+  console.log(`terrain safety in synthetic start: ${projected.sent.assaultTerrainSafety ? "present" : "absent"}`);
+  assert.deepEqual(projected.sent.assaultTerrainSafety, projected.authority.assaultTerrainSafety, "remote snapshot must preserve authoritative terrain safety");
+  assert.equal("deployment" in projected.sent, false, "completed deployment data must not leak into a combat snapshot");
+  assert.equal("draft" in projected.sent, false, "local draft must not be sent with remote start");
+  if (projected.sent.assaultTerrainSafety) {
+    assert.deepEqual(Object.keys(projected.sent.assaultTerrainSafety).sort(), ["unsafeCells", "unsafeEdges"]);
+    for (const cell of projected.sent.assaultTerrainSafety.unsafeCells) assert.deepEqual(Object.keys(cell).sort(), ["x", "y"]);
+    for (const edge of projected.sent.assaultTerrainSafety.unsafeEdges) {
+      assert.deepEqual(Object.keys(edge).sort(), ["from", "to"]);
+      for (const cell of [edge.from, edge.to]) assert.deepEqual(Object.keys(cell).sort(), ["x", "y"]);
+    }
+  }
   const state = () => page.evaluate(() => ({ turn: window.__lifecycleController.getState().match.turn, draft: structuredClone(window.__lifecycleController.getState().draft) }));
   const before = await state();
-  const status = page.locator(".mecha-turn-summary [role=status]");
+  const status = page.locator(".mecha-turn-summary > .mecha-resource[role=status]");
   assert.match(await status.innerText(), zh ? /正在启动/ : /Starting remote/);
-  assert.equal(await page.getByRole("button", { name: zh ? "退出战斗" : "Exit battle" }).isDisabled(), true);
-  assert.equal(await page.locator(".mecha-pack li > button").first().isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: zh ? "退出战斗" : "Exit battle", includeHidden: true }).isDisabled(), true);
+  assert.equal(await page.locator(".mecha-plan-card__select").first().isDisabled(), true);
   await relay.blur();
   await page.keyboard.press("Escape");
   await page.waitForTimeout(1000);
   assert.deepEqual(await state(), before, "pending start must not advance or change draft");
-  assert.equal(await status.count(), 1, "Escape must not close during start");
+  assert.equal(await status.count(), 1, "Escape must not close battle during start");
+  assert.equal(await settings.isVisible(), false, "Escape closes only the settings panel");
   console.log("start lock verified");
-  await page.evaluate(() => window.__resolveRemote("mecha.remote.start", "ok", { remoteUrl: "https://fake.invalid/match", matchId: "fake" }));
+  await page.evaluate(() => window.__resolveRemote("mecha.remote.start-v3", "ok", { remoteUrl: "https://fake.invalid/match", matchId: "fake" }));
   if (viewFail) {
-    await page.evaluate(() => window.__failMechaView(true));
+    await page.evaluate(() => window.__failMechaView("mode"));
     await page.getByRole("alert").filter({ hasText: zh ? "三维视角被其他模式占用" : "3D view" }).waitFor();
-    assert.equal(await page.getByRole("button", { name: zh ? "退出战斗" : "Exit battle" }).isDisabled(), true);
-    await settings.locator("summary").click();
-    const recover = settings.getByRole("button", { name: zh ? "停止远程并恢复本地" : "Stop remote and restore local play" });
+    assert.equal(await page.getByRole("button", { name: zh ? "退出战斗" : "Exit battle", includeHidden: true }).isDisabled(), true);
+    await page.locator(".mecha-city-gate .mecha-remote-settings > summary").click();
+    const recover = page.getByRole("button", { name: zh ? "停止远程并恢复本地" : "Stop remote and restore local play" });
     await recover.click();
     await page.evaluate(() => window.__resolveRemote("mecha.remote.stop", "ok", { ok: true }));
     await page.waitForFunction(() => !document.querySelector('.mecha-city-gate button:disabled'));
-    assert.equal(await page.getByRole("button", { name: zh ? "退出战斗" : "Exit battle" }).isDisabled(), false);
+    assert.equal(await page.getByRole("button", { name: zh ? "退出战斗" : "Exit battle", includeHidden: true }).isDisabled(), false);
     assert.deepEqual(errors, []);
     console.log("View loss recovery with synthetic host passed.");
   } else {
-  await settings.getByRole("button", { name: zh ? "停止远程" : "Stop remote", exact: true }).click();
+  await page.getByRole("button", { name: zh ? "停止远程" : "Stop remote", exact: true }).click();
   assert.match(await status.innerText(), zh ? /正在停止/ : /Stopping remote/);
   await page.evaluate(() => window.__resolveRemote("mecha.remote.stop", "reject"));
-  await settings.getByRole("button", { name: zh ? "停止远程并恢复本地" : "Stop remote and restore local play" }).waitFor();
+  await page.getByRole("button", { name: zh ? "停止远程并恢复本地" : "Stop remote and restore local play" }).waitFor();
   assert.match(await status.innerText(), zh ? /无法确认/ : /unknown/i);
-  assert.equal(await page.getByRole("button", { name: zh ? "退出战斗" : "Exit battle" }).isDisabled(), true);
-  const retry = settings.getByRole("button", { name: zh ? "停止远程并恢复本地" : "Stop remote and restore local play" });
+  assert.equal(await page.getByRole("button", { name: zh ? "退出战斗" : "Exit battle", includeHidden: true }).isDisabled(), true);
+  const retry = page.getByRole("button", { name: zh ? "停止远程并恢复本地" : "Stop remote and restore local play" });
   console.log("stop failure verified");
   await retry.click();
   await page.evaluate(() => window.__resolveRemote("mecha.remote.stop", "ok", {}));
@@ -109,17 +158,24 @@ try {
   assert.match(await status.innerText(), zh ? /无法确认/ : /unknown/i, "malformed stop must remain locked");
   await retry.click();
   await page.evaluate(() => window.__resolveRemote("mecha.remote.stop", "ok", { ok: true }));
+  await page.locator('.mecha-overlay[data-phase="deployment"]').waitFor();
+  if (!await settings.isVisible()) await remoteEntry.click();
   await start.waitFor();
-  assert.equal(await page.getByRole("button", { name: zh ? "退出战斗" : "Exit battle" }).isDisabled(), false);
+  assert.equal(await page.getByRole("button", { name: zh ? "退出战斗" : "Exit battle", includeHidden: true }).isDisabled(), false);
+  assert.equal(await start.isDisabled(), false, "stopping remote restarts local deployment and permits a new remote deployment");
+  await remoteEntry.click();
+  await completeLocalDeployment(page);
+  await remoteEntry.click();
   await start.click();
-  await page.waitForFunction(() => window.__remoteCalls.some((call) => call.request.method === "mecha.remote.start"));
-  await page.evaluate(() => window.__resolveRemote("mecha.remote.start", "reject"));
+  await page.waitForFunction(() => window.__remoteCalls.some((call) => call.request.method === "mecha.remote.start-v3"));
+  await page.evaluate(() => window.__resolveRemote("mecha.remote.start-v3", "reject"));
   await retry.waitFor();
   assert.match(await status.innerText(), zh ? /无法确认/ : /unknown/i, "lost start reply must not unlock");
   await retry.click();
   await page.evaluate(() => window.__resolveRemote("mecha.remote.stop", "ok", { ok: true }));
+  if (!await settings.isVisible()) await remoteEntry.click();
   await start.waitFor();
-  assert.equal(await page.getByRole("button", { name: zh ? "退出战斗" : "Exit battle" }).isDisabled(), false);
+  assert.equal(await page.getByRole("button", { name: zh ? "退出战斗" : "Exit battle", includeHidden: true }).isDisabled(), false);
   assert.deepEqual(errors, []);
   console.log(`${zh ? "zh" : "en"}: real controls with synthetic host: pending, exit lock, success, stop failure/malformed reply, lost start reply and confirmed recovery passed. No relay.`);
   }

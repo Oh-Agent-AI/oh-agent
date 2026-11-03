@@ -49,7 +49,7 @@ try {
   await page.getByRole("button", { name: "Submit anyway" }).click();
   const skip = page.getByRole("button", { name: "Skip animation" });
   if (await skip.isVisible().catch(() => false)) await skip.click();
-  await page.waitForFunction(() => document.querySelector(".mecha-resource")?.textContent?.includes("68/80"), null, { timeout: 240_000 });
+  await page.waitForFunction(() => document.querySelector(".mecha-building-current")?.textContent?.includes("68/80"), null, { timeout: 240_000 });
 
   await page.locator(".mecha-move-list summary").click();
   await page.locator(".mecha-pack li > button").first().click();

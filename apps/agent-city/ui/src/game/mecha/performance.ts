@@ -1,5 +1,8 @@
 import type { Action, ArenaPlan, Cell, MatchState, MechId } from "./rules";
 import { living, movementPath } from "./rules";
+import type { HealthTimeline } from "./healthTimeline";
+import type { PresentationChanges } from "./presentationChanges";
+import { performanceHealthSchedule } from "./performanceHealth";
 
 import type { MechaPerformanceEvent, PerformanceAttack } from "../../render/mecha/performance";
 export type { MechaPerformanceEvent } from "../../render/mecha/performance";
@@ -136,11 +139,39 @@ export function createPreparePerformance(before: MatchState, after: MatchState):
   return events;
 }
 
+/** Place verified defeats at the cause cue, rather than at the end of the turn. */
+function insertVerifiedDeaths(events: MechaPerformanceEvent[], before: MatchState, after: MatchState, evidence?: { healthTimeline?: HealthTimeline; presentationChanges?: PresentationChanges }): boolean {
+  const schedule = performanceHealthSchedule(events, evidence?.healthTimeline, evidence?.presentationChanges);
+  if (!schedule) return false;
+  const at = positions(before);
+  const expected = new Set([...at.keys()].filter(id => hp(before, id) > 0 && hp(after, id) <= 0));
+  const seen = new Set<string>();
+  const result: MechaPerformanceEvent[] = [];
+  for (const [index, event] of events.entries()) {
+    result.push(event);
+    if (event.kind === "move" || event.kind === "knockback") at.set(event.actor, copy(event.path[event.path.length - 1]!));
+    for (const effect of schedule[index]!) {
+      if (effect.kind === "building" || effect.before <= 0 || effect.after > 0) continue;
+      const id = effect.id;
+      const matchesKind = effect.kind === "boss" ? id === "boss" : effect.kind === "mech" ? before.mechs.some(m => m.id === id) : before.raiders.some(r => r.id === id);
+      const position = at.get(id);
+      // An unknown actor, a revival, or duplicate death needs a safe end-of-turn fallback.
+      if (!matchesKind || !position || !expected.has(id) || seen.has(id)) return false;
+      seen.add(id);
+      result.push({ kind: "death", actor: id, at: copy(position), duration: 0.85 });
+    }
+  }
+  if (seen.size !== expected.size) return false;
+  events.splice(0, events.length, ...result);
+  return true;
+}
+
 /** Attacks come exclusively from committed events, never from planned actions. */
-export function performanceFromLog(before: MatchState, after: MatchState, log: import("./rules").TurnEvent[]): MechaPerformanceEvent[] {
+export function performanceFromLog(before: MatchState, after: MatchState, log: import("./rules").TurnEvent[], evidence?: { healthTimeline?: HealthTimeline; presentationChanges?: PresentationChanges }): MechaPerformanceEvent[] {
   const events: MechaPerformanceEvent[] = [];
   const at = positions(before);
-  for (const event of log) {
+  for (const [sourceLogIndex, event] of log.entries()) {
+    const start = events.length;
     if (event.type === "move") {
       move(events, event.mechId, movementPath(before, event.from, event.to, event.mechId, { alliesPass: true }) ?? [event.from, event.to]);
       at.set(event.mechId, copy(event.to));
@@ -157,8 +188,9 @@ export function performanceFromLog(before: MatchState, after: MatchState, log: i
       const targets = [...at].filter(([id, cell]) => id !== event.actor && event.cells.some((c) => same(c, cell))).map(([id]) => id);
       attack(events, event.actor, event.skill === "sweep" ? "sweep" : "smash", from, event.cells[0] ?? from, targets);
     }
+    for (let i = start; i < events.length; i++) events[i]!.sourceLogIndex = sourceLogIndex;
   }
-  deaths(events, before, after, at);
+  if (!insertVerifiedDeaths(events, before, after, evidence)) deaths(events, before, after, at);
   for (const [id, to] of positions(after)) {
     const from = at.get(id)!;
     if (hp(after, id) > 0 && !same(from, to)) move(events, id, [from, to]);

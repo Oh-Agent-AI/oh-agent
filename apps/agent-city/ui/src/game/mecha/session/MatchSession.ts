@@ -1,9 +1,10 @@
 import { bossPrepare, type MatchState } from "../rules";
 export { pveRules } from "../rules/pve";
 import {
-  MECHA_NET_PROTOCOL, canonicalJson,
+  MECHA_NET_PROTOCOL, canonicalJson, parseSubmitConcede, parseSubmitDeployment,
   type MatchEvent, type MatchMode, type MatchPlayer, type MatchResult, type MatchRuleAdapter,
   type MatchSnapshot, type MatchStatus, type RevisionState, type SubmitPlanCommand, type TurnResolved,
+  type SubmitDeploymentCommand, type SubmitConcedeCommand, type DeploymentResult,
 } from "../contracts/match";
 import type { RemoteArenaV1 } from "../contracts/arena";
 import type { PlanFault } from "../rules";
@@ -17,7 +18,10 @@ type Options<S extends RevisionState> = {
   rules: MatchRuleAdapter<S>;
 };
 
-type JournalEntry<S extends RevisionState> = { fingerprint: string; result: TurnResolved<S> };
+type JournalEntry<S extends RevisionState> =
+  | { kind: "turn"; fingerprint: string; result: TurnResolved<S> }
+  | { kind: "deployment"; fingerprint: string; result: MatchSnapshot<S> }
+  | { kind: "concede"; fingerprint: string; result: TurnResolved<S> };
 const clone = <T>(value: T): T => structuredClone(value);
 const failure = <T>(code: "forbidden" | "not_your_turn" | "stale_revision" | "duplicate_command" | "invalid_plan" | "match_finished" | "room_closed" | "unavailable", fault?: PlanFault): MatchResult<T> => ({
   ok: false,
@@ -64,10 +68,10 @@ export class MatchSession<S extends RevisionState = MatchState> {
   submitPlan(playerId: string, command: SubmitPlanCommand): MatchResult<TurnResolved<S>> {
     const player = this.player(playerId);
     if (!player || command.matchId !== this.options.matchId || command.playerId !== playerId) return failure("forbidden");
-    const journalKey = `${playerId}:${command.commandId}`;
+    const journalKey = JSON.stringify([playerId, command.commandId]);
     const fingerprint = canonicalJson({ baseRevision: command.baseRevision, plan: command.plan });
     const previous = this.journal.get(journalKey);
-    if (previous) return previous.fingerprint === fingerprint ? { ok: true, value: clone(previous.result) } : failure("duplicate_command");
+    if (previous) return previous.kind === "turn" && previous.fingerprint === fingerprint ? { ok: true, value: clone(previous.result) } : failure("duplicate_command");
     if (this.status === "closed") return failure("room_closed");
     if (this.status === "finished") return failure("match_finished");
     if (this.options.mode === "pvp" && !this.options.players.some((item) => item.side === "B" && item.role === "guest")) return failure("unavailable");
@@ -89,7 +93,65 @@ export class MatchSession<S extends RevisionState = MatchState> {
       log: clone(result.log),
       presentationStages: clone(result.presentationStages),
     };
-    this.remember(journalKey, { fingerprint, result: resolved });
+    this.remember(journalKey, { kind: "turn", fingerprint, result: resolved });
+    this.publish({ type: "turn.resolved", result: resolved });
+    return { ok: true, value: clone(resolved) };
+  }
+
+  /** Internal PvE authority only. No transport method exposes this yet. */
+  submitDeployment(playerId: string, input: SubmitDeploymentCommand): DeploymentResult<S> {
+    const parsed = parseSubmitDeployment(input);
+    if (!parsed.ok) return parsed;
+    const command = parsed.value;
+    const player = this.player(playerId);
+    if (!player || player.role !== "host" || player.side !== "A" || command.matchId !== this.options.matchId || command.playerId !== playerId) return { ok: false, error: { code: "forbidden" } };
+    if (this.options.mode !== "pve" || !this.options.rules.deploy) return { ok: false, error: { code: "unavailable" } };
+    const journalKey = JSON.stringify([playerId, command.commandId]);
+    const fingerprint = canonicalJson({ baseRevision: command.baseRevision, plan: command.plan });
+    const previous = this.journal.get(journalKey);
+    if (previous) return previous.kind === "deployment" && previous.fingerprint === fingerprint
+      ? { ok: true, value: clone(previous.result) } : { ok: false, error: { code: "duplicate_command" } };
+    if (this.status === "closed") return { ok: false, error: { code: "room_closed" } };
+    if (this.status === "finished") return { ok: false, error: { code: "match_finished" } };
+    if (command.baseRevision !== this.state.revision) return { ok: false, error: { code: "stale_revision" } };
+    // A buggy adapter must not partially mutate the authority on rejection.
+    const result = this.options.rules.deploy(clone(this.state), command.plan);
+    if (!result.ok) return { ok: false, error: { code: "invalid_deployment", fault: clone(result.fault) } };
+    if (result.state.revision !== this.state.revision + 1 || !Number.isSafeInteger(result.state.revision)) return { ok: false, error: { code: "unavailable" } };
+    this.state = clone(result.state);
+    this.status = this.options.rules.isFinished(this.state) ? "finished" : "active";
+    const snapshot = this.snapshot(playerId);
+    if (!snapshot.ok) throw new Error("deployment_owner_missing");
+    this.remember(journalKey, { kind: "deployment", fingerprint, result: snapshot.value });
+    this.publish({ type: "match.replaced", snapshot: snapshot.value });
+    return { ok: true, value: clone(snapshot.value) };
+  }
+
+  /** Network concession is bound to one revision and journaled before publication. */
+  submitConcede(playerId: string, input: SubmitConcedeCommand): MatchResult<TurnResolved<S>> {
+    const parsed = parseSubmitConcede(input);
+    if (!parsed.ok) return parsed;
+    const command = parsed.value;
+    const player = this.player(playerId);
+    if (!player || command.matchId !== this.options.matchId || command.playerId !== playerId) return failure("forbidden");
+    const journalKey = JSON.stringify([playerId, command.commandId]);
+    const fingerprint = canonicalJson({ baseRevision: command.baseRevision });
+    const previous = this.journal.get(journalKey);
+    if (previous) return previous.kind === "concede" && previous.fingerprint === fingerprint
+      ? { ok: true, value: clone(previous.result) } : failure("duplicate_command");
+    if (this.status === "closed") return failure("room_closed");
+    if (this.status === "finished") return failure("match_finished");
+    if (command.baseRevision !== this.state.revision) return failure("stale_revision");
+    if (this.options.mode !== "pvp" || !this.options.rules.concede || !Number.isSafeInteger(this.state.revision + 1)) return failure("unavailable");
+    const next = this.options.rules.concede(clone(this.state), player.side);
+    if (next.revision !== this.state.revision + 1 || !this.options.rules.isFinished(next)) return failure("unavailable");
+    this.state = clone(next);
+    this.status = "finished";
+    const resolved: TurnResolved<S> = {
+      type: "turn.resolved", protocol: MECHA_NET_PROTOCOL, matchId: this.options.matchId, playerId,
+      commandId: command.commandId, revision: this.state.revision, state: clone(this.state), log: [], presentationStages: null,
+    };
+    this.remember(journalKey, { kind: "concede", fingerprint, result: resolved });
     this.publish({ type: "turn.resolved", result: resolved });
     return { ok: true, value: clone(resolved) };
   }

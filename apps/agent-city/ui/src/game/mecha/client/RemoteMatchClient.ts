@@ -1,6 +1,6 @@
-import { MECHA_NET_PROTOCOL, type MatchEvent, type MatchResult, type MatchSnapshot, type SubmitPlanCommand, type TurnResolved } from "../contracts/match";
+import { MECHA_NET_PROTOCOL, type DeploymentResult, type MatchEvent, type MatchResult, type MatchSnapshot, type SubmitConcedeCommand, type SubmitDeploymentCommand, type SubmitPlanCommand, type TurnResolved } from "../contracts/match";
 import type { RevisionState } from "../contracts/match";
-import { parseRemoteMessage, snapshotResult, turnResult, type RemoteMethod } from "../contracts/transport";
+import { deploymentResult, parseRemoteMessage, snapshotResult, turnResult, type RemoteMethod } from "../contracts/transport";
 import type { MatchClient } from "./MatchClient";
 
 export interface WebSocketLike {
@@ -10,6 +10,8 @@ export interface WebSocketLike {
 }
 export type WebSocketFactory = (url: string) => WebSocketLike;
 export type RemoteConnectionState = "connecting" | "online" | "offline";
+// Deployment-capable links explicitly select v2; links without a capability remain v1.
+export type MechaRemoteCapability = "mecha:v1" | "mecha:v2" | "mecha:v3";
 
 type Pending = { resolve: (value: unknown) => void; reject: (reason: Error) => void; timer: ReturnType<typeof setTimeout> };
 const browserSocket: WebSocketFactory = (url) => new WebSocket(url) as WebSocketLike;
@@ -17,6 +19,7 @@ const browserSocket: WebSocketFactory = (url) => new WebSocket(url) as WebSocket
 export class RemoteMatchClient<S extends RevisionState = RevisionState> implements MatchClient<S> {
   private url: string;
   private readonly playerId: string;
+  private readonly capability: MechaRemoteCapability;
   private readonly factory: WebSocketFactory;
   private readonly timeoutMs: number;
   private readonly reconnect?: { url: string; deviceId: string; token: string };
@@ -32,9 +35,11 @@ export class RemoteMatchClient<S extends RevisionState = RevisionState> implemen
   private readonly listeners = new Set<(event: MatchEvent<S>) => void>();
   private readonly statusListeners = new Set<(state: RemoteConnectionState) => void>();
 
-  constructor(input: { url: string; playerId: string; socketFactory?: WebSocketFactory; timeoutMs?: number; reconnect?: { url: string; deviceId: string; token: string } }) {
+  constructor(input: { url: string; playerId: string; capability?: MechaRemoteCapability; socketFactory?: WebSocketFactory; timeoutMs?: number; reconnect?: { url: string; deviceId: string; token: string } }) {
     this.url = input.url;
     this.playerId = input.playerId;
+    if (input.capability !== undefined && input.capability !== "mecha:v1" && input.capability !== "mecha:v2" && input.capability !== "mecha:v3") throw new Error("invalid_capability");
+    this.capability = input.capability ?? "mecha:v1";
     this.factory = input.socketFactory ?? browserSocket;
     this.timeoutMs = input.timeoutMs ?? 10_000;
     this.reconnect = input.reconnect;
@@ -47,14 +52,37 @@ export class RemoteMatchClient<S extends RevisionState = RevisionState> implemen
     return result ?? { ok: false, error: { code: "invalid_message" } };
   }
 
+  async submitDeployment(command: SubmitDeploymentCommand): Promise<DeploymentResult<S>> {
+    if (this.capability !== "mecha:v2" && this.capability !== "mecha:v3") return { ok: false, error: { code: "invalid_message" } };
+    const result = deploymentResult<S>(await this.request("deployment.submit", command));
+    if (result?.ok) {
+      const phase = (result.value.state as RevisionState & { phase?: unknown }).phase;
+      if (result.value.matchId !== command.matchId || result.value.revision !== command.baseRevision + 1
+        || result.value.ruleset !== "mecha-v1.4" || result.value.status === "closed"
+        || (phase !== "player_plan" && phase !== "finished")) return { ok: false, error: { code: "invalid_message" } };
+    }
+    return result ?? { ok: false, error: { code: "invalid_message" } };
+  }
+
   async submitPlan(command: SubmitPlanCommand): Promise<MatchResult<TurnResolved<S>>> {
     const result = turnResult<S>(await this.request("plan.submit", command));
     return result ?? { ok: false, error: { code: "invalid_message" } };
   }
 
-  async concede(matchId: string): Promise<MatchResult<TurnResolved<S>>> {
-    const result = turnResult<S>(await this.request("match.concede", { matchId, playerId: this.playerId }));
+  supportsSafeConcede(): boolean { return this.capability === "mecha:v3"; }
+
+  async submitConcede(command: SubmitConcedeCommand, ruleset: string): Promise<MatchResult<TurnResolved<S>>> {
+    if (!this.supportsSafeConcede() || command.playerId !== this.playerId) return { ok: false, error: { code: "unavailable" } };
+    const result = turnResult<S>(await this.request("match.concede-v2", command));
+    if (result?.ok && (result.value.matchId !== command.matchId || result.value.playerId !== command.playerId
+      || result.value.commandId !== command.commandId || result.value.revision !== command.baseRevision + 1
+      || (result.value.state as RevisionState & { ruleset?: unknown }).ruleset !== ruleset)) return { ok: false, error: { code: "invalid_message" } };
     return result ?? { ok: false, error: { code: "invalid_message" } };
+  }
+
+  async concede(_matchId: string): Promise<MatchResult<TurnResolved<S>>> {
+    // Never send the unversioned legacy command, including to older hosts.
+    return { ok: false, error: { code: "unavailable" } };
   }
 
   async close(matchId: string): Promise<MatchResult<MatchSnapshot<S>>> {
@@ -99,7 +127,7 @@ export class RemoteMatchClient<S extends RevisionState = RevisionState> implemen
     if (!this.matchId || payload.matchId !== this.matchId) throw new Error("match_not_found");
     try { await this.connect(); } catch (error) { this.scheduleReconnect(); throw error; }
     const requestId = `remote-${++this.sequence}`;
-    const request = { protocol: "app-remote:v1", appId: "city", sessionId: this.matchId, capability: "mecha:v1", type: "request", requestId, method, payload };
+    const request = { protocol: "app-remote:v1", appId: "city", sessionId: this.matchId, capability: this.capability, type: "request", requestId, method, payload };
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(requestId);
@@ -156,7 +184,7 @@ export class RemoteMatchClient<S extends RevisionState = RevisionState> implemen
           if (typeof data !== "string" || data.length > 1_000_000) return;
           try {
             const envelope = JSON.parse(data) as Record<string, unknown> | null;
-            if (!envelope || envelope.protocol !== "app-remote:v1" || envelope.appId !== "city" || envelope.sessionId !== this.matchId || envelope.capability !== "mecha:v1") return;
+            if (!envelope || envelope.protocol !== "app-remote:v1" || envelope.appId !== "city" || envelope.sessionId !== this.matchId || envelope.capability !== this.capability) return;
             const message = parseRemoteMessage({ ...envelope, protocol: MECHA_NET_PROTOCOL });
             if (!message) return;
             if (message.type === "response") {

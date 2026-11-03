@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { candidateResult } from "../apps/agent-city/ui/src/game/mecha/candidateResult.ts";
+import { forecastFizzles } from "../apps/agent-city/ui/src/game/mecha/fizzleForecast.ts";
 import { stepCost } from "../apps/agent-city/ui/src/game/mecha/board.ts";
 import { tryPushMech } from "../apps/agent-city/ui/src/game/mecha/combat.ts";
 import { remoteArenaFromSite, remoteStateFromSite } from "../apps/agent-city/ui/src/game/mecha/contracts/arena.ts";
@@ -1068,4 +1069,89 @@ test("prediction reports a mech wipe and suppresses later enemy attacks", () => 
   assert.equal(preview.outcome, actual.state.outcome);
   assert.deepEqual(preview.enemyOrder.map((event) => event.actor), ["boss"]);
   assert.deepEqual(preview.log, actual.log);
+});
+
+test("candidate consequence isolates selected attack from later fatal hit", () => {
+  const state = duel([{ id: "Assault", pos: { x: 3, y: 1 } }, { id: "Gunner", pos: { x: 5, y: 4 } }, { id: "Support", pos: { x: 8, y: 9 } }]);
+  state.boss.hp = 3;
+  const before = structuredClone(state);
+  const preview = previewPlan(state, { revision: state.revision, items: [
+    { mechId: "Assault", moveTo: null, action: { kind: "melee", target: "boss" } },
+    { mechId: "Gunner", moveTo: null, action: { kind: "pierce", target: "boss" } },
+  ] });
+  assert.ok(preview.ok);
+  const assault = candidateResult(preview, "Assault", "boss"), gunner = candidateResult(preview, "Gunner", "boss");
+  assert.equal(assault.actionHp, 1); assert.equal(assault.endHp, 0); assert.deepEqual(assault.kills, []);
+  assert.equal(gunner.actionHp, 0); assert.deepEqual(gunner.kills, [{ kind: "boss", id: "boss", source: "direct" }]);
+  assert.equal(assault.enemyAttacks, 0); assert.deepEqual(state, before);
+});
+
+test("candidate collision identifies actual victim damage and collision kills", () => {
+  const state = duel([{ id: "Assault", pos: { x: 3, y: 1 } }, { id: "Gunner", pos: { x: 6, y: 0 } }, { id: "Support", pos: { x: 8, y: 9 } }]);
+  state.mechs.find(mech => mech.id === "Gunner")!.hp = 1;
+  const preview = previewPlan(state, { revision: state.revision, items: [{ mechId: "Assault", moveTo: null, action: { kind: "melee", target: "boss" } }] });
+  assert.ok(preview.ok);
+  const result = candidateResult(preview, "Assault", "boss");
+  assert.equal(result.shoves[0]?.event.hit, "Gunner");
+  assert.deepEqual(result.shoves[0]?.from, result.shoves[0]?.to);
+  assert.deepEqual(result.shoves[0]?.event.effects?.find(effect => effect.id === "Gunner")?.after, 0);
+  assert.deepEqual(result.kills, [{ kind: "mech", id: "Gunner", source: "collision" }]);
+  assert.equal(result.actionHp, state.boss.hp - result.action!.damage - result.shoves[0]!.event.damage);
+});
+
+test("candidate reports capped and zero healing, and degrades absent stages", () => {
+  for (const hp of [2, 10, 11]) {
+    const state = duel([{ id: "Assault", pos: { x: 0, y: 9 } }, { id: "Gunner", pos: { x: 6, y: 1 } }, { id: "Support", pos: { x: 6, y: 2 } }]);
+    state.mechs.find(mech => mech.id === "Gunner")!.hp = hp;
+    const preview = previewPlan(state, { revision: state.revision, items: [{ mechId: "Support", moveTo: null, action: { kind: "repair", target: "Gunner" } }] });
+    assert.ok(preview.ok);
+    const result = candidateResult(preview, "Support", "Gunner");
+    assert.equal(result.healing, Math.min(4, 11 - hp));
+    assert.equal(result.actionHp, Math.min(hp + 4, 11));
+    const unknown = candidateResult({ ...preview, stages: null }, "Support", "Gunner");
+    assert.equal(unknown.actionHp, null); assert.equal(unknown.endHp, null);
+    assert.equal(unknown.healing, result.healing);
+  }
+});
+
+test("candidate whole-turn building changes and enemy count come from the preview", () => {
+  const state = buildingRiskFixture(), preview = previewPlan(state, hold(state));
+  assert.ok(preview.ok);
+  const result = candidateResult(preview, "Assault", "boss");
+  assert.equal(result.enemyAttacks, preview.enemyOrder.length);
+  assert.deepEqual(result.buildings, preview.buildings.filter(building => building.startHp !== building.endHp));
+  assert.ok(result.buildings.length > 0);
+});
+
+test("candidate fizzle does not claim the earlier action's kill", () => {
+  const state = duel([{ id: "Assault", pos: { x: 3, y: 1 } }, { id: "Gunner", pos: { x: 4, y: 4 } }, { id: "Support", pos: { x: 8, y: 9 } }]);
+  state.boss.hp = 1;
+  const preview = previewPlan(state, { revision: state.revision, items: [
+    { mechId: "Assault", moveTo: null, action: { kind: "melee", target: "boss" } },
+    { mechId: "Gunner", moveTo: null, action: { kind: "pierce", target: "boss" } },
+  ] });
+  assert.ok(preview.ok);
+  const result = candidateResult(preview, "Gunner", "boss");
+  assert.equal(result.action?.fizzled, true); assert.deepEqual(result.kills, []); assert.equal(result.actionHp, 0);
+});
+
+
+test("fizzle forecast follows real resolution events after an earlier kill or push", () => {
+  for (const hp of [1, 20]) {
+    const state = duel([{ id: "Assault", pos: { x: 3, y: 1 } }, { id: "Gunner", pos: { x: 4, y: 4 } }, { id: "Support", pos: { x: 8, y: 9 } }]);
+    state.boss.hp = hp;
+    const plan = { revision: state.revision, items: [
+      { mechId: "Assault" as const, moveTo: null, action: { kind: "melee" as const, target: "boss" } },
+      { mechId: "Gunner" as const, moveTo: null, action: { kind: "pierce" as const, target: "boss" } },
+      { mechId: "Support" as const, moveTo: null, action: { kind: "skip" as const } },
+    ] };
+    const before = structuredClone(state);
+    const predicted = previewPlan(state, plan), actual = playTurn(state, plan);
+    assert.ok(predicted.ok && actual.ok);
+    if (!predicted.ok || !actual.ok) continue;
+    assert.deepEqual(forecastFizzles(predicted.log), forecastFizzles(actual.log));
+    assert.deepEqual(forecastFizzles(predicted.log).map(e => [e.mechId, e.cause]), [["Gunner", hp === 1 ? "target_gone" : "out_of_reach"]]);
+    assert.equal(actual.state.mechs.find(m => m.id === "Gunner")?.cd, before.mechs.find(m => m.id === "Gunner")?.cd);
+    assert.deepEqual(state, before);
+  }
 });

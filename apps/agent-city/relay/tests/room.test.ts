@@ -47,10 +47,10 @@ class State {
 const ownerToken = "o".repeat(64);
 const capability = { id: "mecha:v1", methods: ["match.snapshot", "plan.submit", "match.concede", "match.close"], events: ["match.closed", "match.replaced", "turn.resolved"] };
 const scope = { appId: "city", sessionId: "m1", capability: capability.id };
-async function room() {
+async function room(registeredCapability = capability) {
   const state = new State();
   const object = new MatchRoom(state as never);
-  const registered = await object.fetch(new Request("https://relay/v1/rooms/r1/register", { method: "POST", body: JSON.stringify({ protocol: PROTOCOL, ...scope, capability, ownerToken }) }));
+  const registered = await object.fetch(new Request("https://relay/v1/rooms/r1/register", { method: "POST", body: JSON.stringify({ protocol: PROTOCOL, ...scope, capability: registeredCapability, ownerToken }) }));
   assert.equal(registered.status, 200);
   return { state, object };
 }
@@ -266,4 +266,39 @@ test("malformed host messages still count against the event budget", async () =>
   for (let i = 0; i < 31; i++) await object.webSocketMessage(host as never, "{");
   assert.notEqual(host.closed, null);
   assert.notEqual(owner.closed, null);
+});
+
+
+test("prepared deployment capability stays versioned, correlated and peer-bound at the relay", async () => {
+  const old = await room();
+  const oldOwner = await connect(old.object, "owner");
+  const oldHost = await connect(old.object, "host");
+  const deployment = { protocol: PROTOCOL, ...scope, type: "request", requestId: "deploy-1", method: "deployment.submit", payload: { matchId: "m1", playerId: "owner", commandId: "d1" } };
+  await old.object.webSocketMessage(oldOwner as never, JSON.stringify(deployment));
+  assert.equal(JSON.parse(oldOwner.sent.at(-1)!).result.error.code, "invalid_message");
+  assert.equal(oldHost.sent.length, 1, "v1 must not forward a deployment method");
+
+  // This registers a synthetic v2 room only; it does not change the live City capability.
+  const v2 = { ...capability, id: "mecha:v2", methods: [...capability.methods, "deployment.submit"] };
+  const v2scope = { ...scope, capability: v2.id };
+  const { object, state } = await room(v2);
+  const owner = await connect(object, "owner");
+  const host = await connect(object, "host");
+  await object.webSocketMessage(owner as never, JSON.stringify({ ...deployment, ...v2scope, peer: { role: "guest", playerId: "guest" } }));
+  const routed = JSON.parse(host.sent.at(-1)!);
+  assert.deepEqual(routed.peer, { role: "owner", playerId: "owner" });
+  assert.notEqual(routed.requestId, deployment.requestId);
+  await object.webSocketMessage(host as never, JSON.stringify({ protocol: PROTOCOL, ...v2scope, type: "response", requestId: routed.requestId, result: { ok: true } }));
+  assert.equal(JSON.parse(owner.sent.at(-1)!).requestId, deployment.requestId);
+
+  const invite = await (await post(object, "access", { action: "invite" })).json() as { inviteId: string; inviteSecret: string };
+  const deviceSecret = "a".repeat(64);
+  const joined = await (await post(object, "join", { protocol: PROTOCOL, ...v2scope, matchId: "m1", inviteId: invite.inviteId, deviceSecret }, invite.inviteSecret)).json() as { deviceId: string };
+  assert.equal((await post(object, "access", { action: "approve", deviceId: joined.deviceId })).status, 200);
+  const guest = await connect(object, "guest", deviceSecret, joined.deviceId);
+  await object.webSocketMessage(guest as never, JSON.stringify({ ...deployment, ...v2scope, peer: { role: "owner", playerId: "owner" } }));
+  const forged = JSON.parse(host.sent.at(-1)!);
+  assert.deepEqual(forged.peer, { role: "guest", playerId: "guest" }, "gateway must reject this guest despite its forged owner payload");
+  assert.equal(forged.payload.playerId, "owner", "the relay is a generic router, not the match authority");
+  assert.equal(JSON.stringify([...state.values.values()]).includes('"commandId":"d1"'), false, "match command bodies must not be persisted");
 });

@@ -3,7 +3,7 @@ import test from "node:test";
 import { remoteArenaFromSite } from "../src/game/mecha/contracts/arena.ts";
 import { MatchSession } from "../src/game/mecha/session/MatchSession.ts";
 import { PVP_MAX_TURNS, createPvpMatch, playPvpTurn, pvpProjection, pvpRules } from "../src/game/mecha/rules/pvp.ts";
-import { MECHA_NET_PROTOCOL, type SubmitPlanCommand } from "../src/game/mecha/contracts/match.ts";
+import { MECHA_NET_PROTOCOL, parseSubmitConcede, type SubmitConcedeCommand, type SubmitPlanCommand } from "../src/game/mecha/contracts/match.ts";
 import type { CityMechaSite } from "../src/game/mecha/citySite.ts";
 
 const arena = remoteArenaFromSite({
@@ -115,4 +115,84 @@ test("lethal damage reports actual HP loss and ambiguous targets are rejected be
   ] });
   assert.equal(invalid.ok, false);
   assert.deepEqual(ambiguous, before);
+});
+
+
+function concession(playerId = "guest", commandId = "concede-1", baseRevision = 0): SubmitConcedeCommand {
+  return { type: "match.concede-v2", protocol: MECHA_NET_PROTOCOL, matchId: "m1", playerId, commandId, baseRevision };
+}
+
+test("concession parser rejects malformed, extra or unsafe fields", () => {
+  const command = concession();
+  assert.deepEqual(parseSubmitConcede(command), { ok: true, value: command });
+  for (const patch of [
+    { extra: "private" }, { type: "match.concede" }, { commandId: "bad id" }, { playerId: "" },
+    { baseRevision: -1 }, { baseRevision: 0.5 }, { baseRevision: Number.MAX_SAFE_INTEGER + 1 },
+  ]) assert.equal(parseSubmitConcede({ ...command, ...patch }).ok, false);
+  assert.equal(parseSubmitConcede({ ...command, protocol: "wrong" }).error!.code, "ruleset_mismatch");
+  assert.equal(parseSubmitConcede(null).error!.code, "invalid_message");
+});
+
+test("revision-bound concession is atomic, idempotent and published only once", () => {
+  const match = session(); match.addPlayer({ playerId: "guest", side: "B", role: "guest" });
+  const events: unknown[] = []; match.subscribe(event => events.push(event));
+  const before = match.snapshot("guest");
+  assert.equal(match.submitConcede("owner", concession()).error!.code, "forbidden");
+  assert.equal(match.submitConcede("intruder", concession("intruder")).error!.code, "forbidden");
+  assert.deepEqual(match.snapshot("guest"), before);
+  const command = concession();
+  const result = match.submitConcede("guest", command);
+  assert.ok(result.ok); assert.equal(result.value.state.winner, "A"); assert.equal(result.value.revision, 1);
+  assert.equal(events.length, 1);
+  assert.deepEqual(match.submitConcede("guest", structuredClone(command)), result);
+  assert.equal(events.length, 1);
+  assert.equal(match.submitConcede("guest", { ...command, baseRevision: 1 }).error!.code, "duplicate_command");
+  const conflictingPlan = skip(match, "guest"); conflictingPlan.commandId = command.commandId;
+  assert.equal(match.submitPlan("guest", conflictingPlan).error!.code, "duplicate_command");
+  assert.equal(match.submitConcede("guest", concession("guest", "other", 1)).error!.code, "match_finished");
+});
+
+test("delayed concession cannot end a later revision or replacement match", () => {
+  const match = session(); match.addPlayer({ playerId: "guest", side: "B", role: "guest" });
+  const delayed = concession();
+  assert.ok(match.submitPlan("owner", skip(match, "owner")).ok);
+  const before = match.snapshot("guest");
+  assert.equal(match.submitConcede("guest", delayed).error!.code, "stale_revision");
+  assert.deepEqual(match.snapshot("guest"), before);
+  const state = createPvpMatch(arena); state.revision = 5;
+  const replacement = new MatchSession({ matchId: "m1", mode: "pvp", arena: { ...arena, ruleset: pvpRules.ruleset }, state, rules: pvpRules,
+    players: [{ playerId: "owner", side: "A", role: "host" }, { playerId: "guest", side: "B", role: "guest" }] });
+  const replacementBefore = replacement.snapshot("guest");
+  assert.equal(replacement.submitConcede("guest", { ...delayed, baseRevision: 4 }).error!.code, "stale_revision");
+  assert.deepEqual(replacement.snapshot("guest"), replacementBefore);
+});
+
+test("concession rejects closed, PvE, invalid adapter outputs and revision overflow without mutation", () => {
+  const closed = session(); closed.addPlayer({ playerId: "guest", side: "B", role: "guest" }); closed.close("owner");
+  assert.equal(closed.submitConcede("guest", concession()).error!.code, "room_closed");
+  const players = [{ playerId: "owner", side: "A" as const, role: "host" as const }, { playerId: "guest", side: "B" as const, role: "guest" as const }];
+  for (const scenario of ["pve", "bad-revision", "not-finished", "overflow"] as const) {
+    const state = createPvpMatch(arena);
+    if (scenario === "overflow") state.revision = Number.MAX_SAFE_INTEGER;
+    const rules = { ...pvpRules, concede: (next: typeof state) => {
+      next.units[0]!.hp = -999;
+      if (scenario !== "bad-revision") next.revision += 1;
+      if (scenario !== "not-finished") next.winner = "A";
+      return next;
+    } };
+    const match = new MatchSession({ matchId: "m1", mode: scenario === "pve" ? "pve" : "pvp", arena: { ...arena, ruleset: rules.ruleset }, state, rules, players });
+    const before = match.snapshot("guest");
+    assert.equal(match.submitConcede("guest", concession("guest", "test", state.revision)).error!.code, "unavailable", scenario);
+    assert.deepEqual(match.snapshot("guest"), before, scenario);
+  }
+});
+
+test("command journal separates player and command IDs even when they contain colons", () => {
+  const match = new MatchSession({ matchId: "m1", mode: "pvp", arena: { ...arena, ruleset: pvpRules.ruleset }, state: createPvpMatch(arena), rules: pvpRules,
+    players: [{ playerId: "a", side: "A", role: "host" }, { playerId: "a:b", side: "B", role: "guest" }] });
+  const first = skip(match, "a"); first.commandId = "b:c";
+  assert.ok(match.submitPlan("a", first).ok);
+  const second = skip(match, "a:b"); second.commandId = "c";
+  assert.ok(match.submitPlan("a:b", second).ok);
+  assert.equal(match.snapshot("a").value!.revision, 2);
 });

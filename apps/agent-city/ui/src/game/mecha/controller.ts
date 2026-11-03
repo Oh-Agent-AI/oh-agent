@@ -13,7 +13,9 @@
  * - 订阅者拿到的快照在两次变更之间引用稳定（useSyncExternalStore 的要求）。
  */
 import { PLAN_FAULT_CAUSES, gameText, planFaultText, type GameLocale } from "../gameCopy";
+import { deployableCells, deploymentCellFault, validateDeployPlan, deployFaultText, type DeployPlacement, type DeployFault } from "./deployment";
 import { STATS } from "./board";
+import { shotTargetDiagnostics, type ShotTargetDiagnostic } from "./combat";
 import { performanceFromLog } from "./performance";
 import type { MechaPerformanceEvent } from "../../render/mecha/performance";
 import type { MechaCombatCue } from "../../render/mecha/animation";
@@ -25,6 +27,7 @@ import { buildPresentationRoutes, type PresentationRoutes } from "./presentation
 import type { CityMechaSite } from "./citySite";
 import { matchFromSite } from "./matchFromSite";
 import { pveRules } from "./rules/pve";
+import type { ReplayArchiveSource, ReplaySourceRound } from "./replayArchive";
 import { blankDraft, checkDraftAction, draftFromPlan, draftPlan, settledDraftBoard, type Draft, type DraftMap } from "./planning";
 export type { Draft, DraftMap } from "./planning";
 import {
@@ -34,7 +37,7 @@ import {
 } from "./rules";
 
 export type TargetKind = Exclude<Action["kind"], "skip">;
-export type UnavailableAction = { kind: TargetKind; reason: "cooldown" | "no_target" };
+export type UnavailableAction = { kind: TargetKind; reason: "cooldown" | "no_target"; shotTargets?: ShotTargetDiagnostic[] };
 export type TargetOption = { id: string; cells: Cell[] };
 export type Planner = (state: MatchState, doctrine: DoctrineId) => ArenaPlan;
 export type Beat = "show" | "resolve";
@@ -68,13 +71,19 @@ export type MechaControllerState = {
   fault: ControllerFault | null;
   lastLog: TurnEvent[];
   performance: { events: MechaPerformanceEvent[]; before: MatchState } | null;
+  /** Current-session, local-only recording; playback never changes the authoritative match. */
+  replayAvailable: number;
+  replay: { source: "current" | "saved"; index: number; total: number; turn: number; turns: number[]; log: TurnEvent[]; after: MatchState; combat: MechaControllerState["combat"] } | null;
   combat: { id: number; actions: MechaCombatCue[]; reset?: true; healthTimeline?: HealthTimeline; presentationChanges?: PresentationChanges; presentationStages?: PresentationStages | null; presentationRoutes?: PresentationRoutes };
   preview: MechaPreview;
   candidate: { target: string; source: "hover" | "selection"; preview: MechaPreview } | null;
   holdConfirmation: { buildingLoss: number; outcome: MatchState["outcome"] } | null;
+  doctrineConfirmation: boolean;
+  canUndoDoctrine: boolean;
   // ---- 派生量（每次变更重算，视图只读）----
   /** 能下命令：没有自动/暂停、没有结局、在玩家计划阶段。 */
   interactive: boolean;
+  deployment: { placements: DeployPlacement[]; cells: Cell[]; interactive: boolean; canUndo: boolean; canReset: boolean; canConfirm: boolean; error: string | null } | null;
   reach: Cell[];
   /** 选中机甲在「所有已排移动落定后」局面上的合法行动。 */
   actions: Action[];
@@ -124,6 +133,8 @@ export type MechaControllerInit = {
   validatePreview?: typeof previewPlan;
   /** Local views acknowledge completion before allowing another turn. */
   animate?: boolean;
+  /** Defaults on for city/product matches; off only for legacy rule-only fixtures. */
+  deployment?: boolean;
   /** 测试用：直接给一局（须已 bossPrepare），绕过 preset/script/site。 */
   match?: MatchState;
 };
@@ -138,6 +149,10 @@ export type MechaController = {
   setTargeting(kind: TargetKind | null): void;
   previewTarget(id: string | null, source: "hover" | "selection"): void;
   confirmTarget(): void;
+  placeMech(id: MechId, cell: Cell): void;
+  undoDeployment(): void;
+  resetDeployment(): void;
+  confirmDeployment(): void;
   setMove(id: MechId, cell: Cell | null): void;
   /** 撤回最近一次移动。提交（开火）之后、暂停、自动对战或演出中无效。 */
   undoMove(): void;
@@ -150,12 +165,23 @@ export type MechaController = {
   clickCell(x: number, y: number, input?: "mouse" | "touch"): void;
   /** 按打法填入草稿（并把它设为当前打法）。 */
   applyDoctrine(doctrine?: DoctrineId): void;
-  /** 只换打法；有可填的草稿时顺带按它重填（下拉框的行为）。 */
+  /** 手动模式只切换打法，不更改草稿。 */
   setDoctrine(doctrine: DoctrineId): void;
+  requestDoctrineSuggestion(): void;
+  confirmDoctrineSuggestion(): void;
+  cancelDoctrineSuggestion(): void;
+  undoDoctrineSuggestion(): void;
   submit(): void;
   confirmHold(): void;
   cancelHold(): void;
   finishPerformance(): void;
+  /** Isolated input for an explicit local save; unavailable for unfinished and non-city fixtures. */
+  replayArchiveSource(): ReplayArchiveSource | null;
+  startReplay(): void;
+  /** Only pass rounds returned by the local archive verifier. Does not change the match or draft. */
+  startSavedReplay(rounds: ReplaySourceRound[]): boolean;
+  stopReplay(): void;
+  selectReplayTurn(index: number): void;
   restart(opts?: MechaRestartOptions): void;
   startAuto(): void;
   stopAuto(): void;
@@ -208,10 +234,10 @@ export function cuesFromLog(log: TurnEvent[]): MechaCombatCue[] {
   return cues;
 }
 
-function freshMatch(preset: CoverPresetId, script: BossScriptId, site: CityMechaSite | null, stake: BuildingStake): MatchState {
+function freshMatch(preset: CoverPresetId, script: BossScriptId, site: CityMechaSite | null, stake: BuildingStake, deployment: boolean): MatchState {
   // 产品界面必须带城市 site。site 为空只留给规则单测的 createMatch fixture，不能再开一局方格棋。
-  const state = site ? matchFromSite(site, { preset, script, stake }) : createMatch({ preset, script, stake });
-  bossPrepare(state);
+  const state = site ? matchFromSite(site, { preset, script, stake, deployment }) : createMatch({ preset, script, stake, deployment });
+  if (state.phase === "enemy_prepare") bossPrepare(state);
   return state;
 }
 
@@ -227,7 +253,12 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
   let script: BossScriptId = init.script ?? "siege";
   let stake: BuildingStake = init.stake ?? "all";
   let doctrine: DoctrineId = init.doctrine ?? "tunnel";
-  let match: MatchState = init.match ?? freshMatch(preset, script, site, stake);
+  const useDeployment = init.deployment ?? Boolean(site);
+  let match: MatchState = init.match ?? freshMatch(preset, script, site, stake, useDeployment);
+  let placements: DeployPlacement[] = [];
+  let deployPast: DeployPlacement[][] = [];
+  let deployError: DeployFault | null = null;
+  const canDeploy = () => match.phase === "deployment" && !match.outcome && !auto && !paused && !performance;
   let selected: MechId = living(match)[0]?.id ?? "Assault";
   let targeting: TargetKind | null = null;
   let auto = false;
@@ -237,7 +268,15 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
   let fault: ControllerFault | null = null;
   let lastLog: TurnEvent[] = [];
   let performance: MechaControllerState["performance"] = null;
+  type RecordedRound = ReplaySourceRound & { events: MechaPerformanceEvent[]; combat: MechaControllerState["combat"] };
+  let recordedRounds: RecordedRound[] = [];
+  let playbackRounds: RecordedRound[] = [];
+  let playbackSource: "current" | "saved" = "current";
+  let replay: MechaControllerState["replay"] = null;
+  let replayCueId = 0;
   let holdConfirmation: { match: MatchState; revision: number; draftVersion: number; fingerprint: string; doctrine: DoctrineId; buildingLoss: number; outcome: MatchState["outcome"] } | null = null;
+  let doctrineConfirmation: { match: MatchState; revision: number; draftVersion: number; fingerprint: string; doctrine: DoctrineId } | null = null;
+  let doctrineUndo: { match: MatchState; fingerprint: string; draft: DraftMap; movePast: DraftMap[] } | null = null;
   let combat: MechaControllerState["combat"] = { id: 0, actions: [], reset: true };
 
   // 规划缓存：同一局面（对象身份即 revision 的承载）同一打法只算一次。
@@ -363,14 +402,21 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       versionedInput = { match, revision: match.revision, fingerprint, doctrine };
       forceDraftVersion = false;
     }
-    if (holdConfirmation && (!canEdit() || holdConfirmation.match !== match || holdConfirmation.revision !== match.revision || holdConfirmation.draftVersion !== draftVersion || holdConfirmation.fingerprint !== draftFingerprint(draft) || holdConfirmation.doctrine !== doctrine)) holdConfirmation = null;
-    if (!canEdit() || !targeting) candidate = null;
+    // A saved replay temporarily suspends planning; it must not discard a
+    // candidate, confirmation or undo history belonging to the live match.
+    if (replay?.source !== "saved") {
+      if (holdConfirmation && (!canEdit() || holdConfirmation.match !== match || holdConfirmation.revision !== match.revision || holdConfirmation.draftVersion !== draftVersion || holdConfirmation.fingerprint !== draftFingerprint(draft) || holdConfirmation.doctrine !== doctrine)) holdConfirmation = null;
+      if (doctrineConfirmation && (!canEdit() || doctrineConfirmation.match !== match || doctrineConfirmation.revision !== match.revision || doctrineConfirmation.draftVersion !== draftVersion || doctrineConfirmation.fingerprint !== fingerprint || doctrineConfirmation.doctrine !== doctrine)) doctrineConfirmation = null;
+      if (doctrineUndo && (!canEdit() || doctrineUndo.match !== match || doctrineUndo.fingerprint !== fingerprint)) doctrineUndo = null;
+      if (!canEdit() || !targeting) candidate = null;
+    }
     const targets = deriveTargets();
     const preview = derivePreview();
     const candidateView = candidate ? { ...candidate, preview: derivePreview(candidate.target) } : null;
     const alive = living(match);
     const selectedUnit = alive.find((m) => m.id === selected);
-    const actions = selectedUnit ? legalActions(settledDraftBoard(match, draft), selected) : [];
+    const settled = selectedUnit && match.phase === "player_plan" ? settledDraftBoard(match, draft) : null;
+    const actions = settled ? legalActions(settled, selected) : [];
     const kinds: TargetKind[] = [];
     if (selectedUnit) {
       if (STATS[selected].melee) kinds.push("melee");
@@ -379,7 +425,12 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     }
     const unavailableActions: UnavailableAction[] = kinds
       .filter((kind) => !actions.some((action) => action.kind === kind))
-      .map((kind) => ({ kind, reason: (kind === "charge" || kind === "pierce" || kind === "repair") && selectedUnit!.cd !== 0 ? "cooldown" : "no_target" }));
+      .map((kind) => {
+        const reason = (kind === "charge" || kind === "pierce" || kind === "repair") && selectedUnit!.cd !== 0 ? "cooldown" : "no_target";
+        const shooter = settled?.mechs.find((mech) => mech.id === selected && mech.hp > 0);
+        return { kind, reason, ...((kind === "shoot" || kind === "pierce") && reason === "no_target" && settled && shooter
+          ? { shotTargets: shotTargetDiagnostics(settled, shooter.pos, STATS[selected].shoot, kind === "pierce" ? 1 : 0) } : {}) };
+      });
     const declaredThreats = collectTelegraphs(match);
     const projectedThreats = preview.ok ? { cells: preview.telegraphAfter, byActor: preview.telegraphByActor } : null;
     const currentThreats = projectedThreats ?? declaredThreats;
@@ -391,13 +442,16 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     const hits = preview.ok ? preview.hitsAfter : null;
     const stepCost = Object.fromEntries(alive.map((m) => [
       m.id,
-      pathDistance(match, m.pos, draft[m.id]?.moveTo ?? m.pos, m.id, { alliesPass: true }),
+      match.phase === "player_plan" ? pathDistance(match, m.pos, draft[m.id]?.moveTo ?? m.pos, m.id, { alliesPass: true }) : null,
     ])) as Record<MechId, number | null>;
     const notice = fault ? planFaultText(fault, locale, fault.scope) : noticeSource ? gameText(noticeSource, locale) : null;
     snapshot = {
-      locale, match, site, preset, script, stake, doctrine, draft, openingSuggestion: turnStartSuggested && draftFingerprint(draft) === draftFingerprint(turnStartDraft), selected, targeting, auto, paused, beat, notice, fault, lastLog, combat, performance, preview, candidate: candidateView,
+      locale, match, site, preset, script, stake, doctrine, draft, openingSuggestion: turnStartSuggested && draftFingerprint(draft) === draftFingerprint(turnStartDraft), selected, targeting, auto, paused, beat, notice, fault, lastLog, combat, performance, replayAvailable: recordedRounds.length, replay, preview, candidate: candidateView,
       interactive: canEdit(),
+      deployment: match.phase === "deployment" ? { placements: structuredClone(placements), cells: deployableCells(match), interactive: canDeploy(), canUndo: canDeploy() && deployPast.length > 0, canReset: canDeploy() && placements.length > 0, canConfirm: canDeploy() && validateDeployPlan(match, { revision: match.revision, placements }).ok, error: deployError ? deployFaultText(deployError, locale === "en") : (deployableCells(match).length < 3 ? deployFaultText({ code: "insufficient_space" }, locale === "en") : null) } : null,
       holdConfirmation: holdConfirmation ? { buildingLoss: holdConfirmation.buildingLoss, outcome: holdConfirmation.outcome } : null,
+      doctrineConfirmation: Boolean(doctrineConfirmation),
+      canUndoDoctrine: Boolean(doctrineUndo) && canEdit(),
       reach: deriveReach(),
       actions,
       unavailableActions,
@@ -416,7 +470,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       resetTurnUsed,
       canResetTurn: !resetTurnUsed && canEdit(),
       focus: doctrineFocus(match, doctrine),
-      focusCells: doctrineFocusCells(match, doctrine),
+      focusCells: match.phase === "player_plan" ? doctrineFocusCells(match, doctrine) : [],
       plannedCount: alive.length - pendingIds.length,
       pendingIds,
       packReady: pendingIds.length === 0,
@@ -442,16 +496,17 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       noticeSource = null;
       return false;
     }
-    if (init.animate) {
-      const events = performanceFromLog(match, result.state, result.log);
-      performance = events.length ? { events, before: match } : null;
-    }
-    const healthTimeline = buildHealthTimeline(match, result.state, result.log);
-    const presentationRoutes = buildPresentationRoutes(match, result.log);
+    const before = match;
+    const healthTimeline = buildHealthTimeline(before, result.state, result.log);
+    const presentationRoutes = buildPresentationRoutes(before, result.log);
     const presentationChanges = result.presentationStages ? buildPresentationChanges(result.presentationStages, result.log) : undefined;
+    const events = performanceFromLog(before, result.state, result.log, { healthTimeline, presentationChanges });
+    if (init.animate) performance = events.length ? { events, before } : null;
     match = result.state;
     lastLog = result.log;
     combat = { id: combat.id + 1, actions: cuesFromLog(result.log), healthTimeline, presentationChanges, presentationStages: result.presentationStages, presentationRoutes };
+    // Only accepted turns are recorded. Isolated snapshots avoid re-running game rules.
+    recordedRounds.push(structuredClone({ before, after: match, plan, log: result.log, presentationStages: result.presentationStages, events, combat }));
     draft = blankDraft(match);
     turnStartDraft = structuredClone(draft);
     turnStartSuggested = false;
@@ -465,6 +520,17 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     const alive = living(match);
     if (!alive.some((m) => m.id === selected) && alive[0]) selected = alive[0].id;
     return true;
+  };
+
+  const loadReplayRound = (index: number) => {
+    const round = playbackRounds[index]!;
+    // New identity and cue id restart the scene when revisiting a round.
+    replayCueId = Math.max(replayCueId, combat.id) + 1;
+    // Clone together: timeline steps refer to the same event objects as the log.
+    // Exposing isolated data prevents the recap from mutating the recording.
+    const snapshot = structuredClone({ log: round.log, after: round.after, combat: round.combat });
+    replay = { source: playbackSource, index, total: playbackRounds.length, turn: round.before.turn, turns: playbackRounds.map((entry) => entry.before.turn), ...snapshot, combat: { ...snapshot.combat, id: replayCueId } };
+    performance = { before: structuredClone(round.before), events: structuredClone(round.events) };
   };
 
   // ---- 命令 ----
@@ -553,15 +619,53 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
   };
 
   const fillFromDoctrine = (which: DoctrineId) => {
+    // Compute first: a failing planner must never partially replace the draft.
+    const next = draftFromPlan(match, planFor(match, which));
     forceDraftVersion = true;
     doctrine = which;
-    if (!match.outcome && match.phase === "player_plan") {
-      draft = draftFromPlan(match, planFor(match, which));
-      movePast = [];
-    }
+    draft = next;
+    movePast = [];
+  };
+
+  const placeMech = (id: MechId, cell: Cell) => {
+    if (!canDeploy() || !living(match).some(m => m.id === id)) return;
+    const bad = deploymentCellFault(match, cell);
+    if (bad) { deployError = bad; commit(); return; }
+    const next = structuredClone(placements);
+    const current = next.find(p => p.mechId === id);
+    const occupant = next.find(p => p.mechId !== id && same(p.pos, cell));
+    if (current && same(current.pos, cell)) { deployError = null; commit(); return; }
+    if (occupant && !current) { deployError = { code: "duplicate_cell" }; commit(); return; }
+    if (occupant && current) occupant.pos = { ...current.pos };
+    if (current) current.pos = { ...cell }; else next.push({ mechId: id, pos: { ...cell } });
+    deployPast.push(structuredClone(placements));
+    placements = next; selected = id; deployError = null;
+    commit();
   };
 
   const controller: MechaController = {
+    placeMech,
+    undoDeployment() {
+      if (!canDeploy() || !deployPast.length) return;
+      placements = deployPast.pop()!; deployError = null; commit();
+    },
+    resetDeployment() {
+      if (!canDeploy()) return;
+      if (placements.length) deployPast.push(structuredClone(placements));
+      placements = []; deployError = null; commit();
+    },
+    confirmDeployment() {
+      if (!canDeploy()) return;
+      const result = pveRules.deploy!(match, { revision: match.revision, placements });
+      if (!result.ok) { deployError = result.fault; commit(); return; }
+      match = result.state; placements = []; deployPast = []; deployError = null;
+      // A fresh editable turn starts only after the authority has prepared enemy intents.
+      let suggestionUnavailable = false;
+      try { draft = openingDraft(match); } catch { draft = blankDraft(match); suggestionUnavailable = true; }
+      turnStartDraft = structuredClone(draft); turnStartSuggested = !suggestionUnavailable && match.phase === "player_plan" && !match.outcome;
+      forceDraftVersion = true; movePast = []; targeting = null; hoveredEnemy = null; selectedEnemy = null;
+      say(suggestionUnavailable ? "部署已确认；行动建议暂不可用，请手动规划。" : null); commit();
+    },
     getState: () => snapshot,
     subscribe(fn) {
       listeners.add(fn);
@@ -580,7 +684,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       commit();
     },
     setTargeting(kind) {
-      if (kind !== null && !canEdit()) return;
+      if (replay || (kind !== null && !canEdit())) return;
       targeting = kind;
       candidate = null;
       say(null);
@@ -612,6 +716,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     resetTurn() {
       if (resetTurnUsed || !canEdit()) return;
       draft = structuredClone(turnStartDraft);
+      doctrineUndo = null;
       forceDraftVersion = true;
       movePast = [];
       targeting = null;
@@ -622,17 +727,18 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       commit();
     },
     setHoveredEnemy(id) {
-      if (id === hoveredEnemy) return;
+      if (replay || id === hoveredEnemy) return;
       hoveredEnemy = id;
       commit();
     },
     setSelectedEnemy(id) {
-      if (id === selectedEnemy) return;
+      if (replay || id === selectedEnemy) return;
       selectedEnemy = id;
       commit();
     },
     setAction,
     clickCell(x, y, input = "mouse") {
+      if (match.phase === "deployment") { placeMech(selected, { x, y }); return; }
       if (!canEdit()) return;
       const cell = { x, y };
       if (targeting) {
@@ -657,15 +763,56 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     },
     applyDoctrine(which = doctrine) {
       if (!canEdit()) return;
-      fillFromDoctrine(which);
+      const previous = structuredClone(draft);
+      const previousMoves = structuredClone(movePast);
+      try { fillFromDoctrine(which); } catch {
+        doctrineConfirmation = null;
+        say("行动建议暂不可用；草稿未改变。");
+        commit();
+        return;
+      }
+      doctrineConfirmation = null;
+      doctrineUndo = { match, fingerprint: draftFingerprint(draft), draft: previous, movePast: previousMoves };
       targeting = null;
       say(null);
       commit();
     },
     setDoctrine(which) {
-      if (paused || performance || finished()) return;
-      // 自动对战未暂停时仍允许换打法并重填草稿；暂停、演出及终局冻结当前方案。
-      fillFromDoctrine(which);
+      if (paused || performance || finished() || which === doctrine) return;
+      if (auto) {
+        // Re-show the new plan before the next resolve beat.
+        try { fillFromDoctrine(which); } catch { say("行动建议暂不可用；草稿未改变。"); commit(); return; }
+        beat = "resolve";
+      } else {
+        doctrine = which;
+      }
+      commit();
+    },
+    requestDoctrineSuggestion() {
+      if (!canEdit()) return;
+      doctrineConfirmation = { match, revision: match.revision, draftVersion, fingerprint: draftFingerprint(draft), doctrine };
+      commit();
+    },
+    confirmDoctrineSuggestion() {
+      const pending = doctrineConfirmation;
+      doctrineConfirmation = null;
+      if (!pending || !canEdit() || pending.match !== match || pending.revision !== match.revision || pending.draftVersion !== draftVersion || pending.fingerprint !== draftFingerprint(draft) || pending.doctrine !== doctrine) { commit(); return; }
+      controller.applyDoctrine(pending.doctrine);
+    },
+    cancelDoctrineSuggestion() {
+      if (replay || !doctrineConfirmation) return;
+      doctrineConfirmation = null;
+      commit();
+    },
+    undoDoctrineSuggestion() {
+      if (!canEdit() || !doctrineUndo || doctrineUndo.match !== match || doctrineUndo.fingerprint !== draftFingerprint(draft)) return;
+      draft = doctrineUndo.draft;
+      movePast = doctrineUndo.movePast;
+      doctrineUndo = null;
+      doctrineConfirmation = null;
+      forceDraftVersion = true;
+      targeting = null;
+      say(null);
       commit();
     },
     submit() {
@@ -692,22 +839,72 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       commit();
     },
     cancelHold() {
-      if (!holdConfirmation) return;
+      if (replay || !holdConfirmation) return;
       holdConfirmation = null;
       commit();
     },
     finishPerformance() {
       if (!performance) return;
+      if (replay && replay.index + 1 < playbackRounds.length) {
+        loadReplayRound(replay.index + 1);
+      } else {
+        performance = null;
+        if (replay) { replay = null; playbackRounds = []; paused = false; }
+      }
+      commit();
+    },
+    replayArchiveSource() {
+      if (!site || !match.outcome || !recordedRounds.length) return null;
+      return structuredClone({ site, preset, script, stake, deployment: useDeployment, rounds: recordedRounds.map(({ before, after, plan, log, presentationStages }) => ({ before, after, plan, log, presentationStages })) });
+    },
+    startReplay() {
+      if (!match.outcome || performance || replay || !recordedRounds.length) return;
+      auto = false;
+      paused = false;
+      targeting = null;
+      playbackSource = "current";
+      playbackRounds = recordedRounds;
+      loadReplayRound(0);
+      commit();
+    },
+    startSavedReplay(rounds) {
+      if (performance || replay || auto || paused || !rounds.length) return false;
+      playbackRounds = structuredClone(rounds).map(round => {
+        const healthTimeline = buildHealthTimeline(round.before, round.after, round.log);
+        const presentationChanges = round.presentationStages ? buildPresentationChanges(round.presentationStages, round.log) : undefined;
+        const presentationRoutes = buildPresentationRoutes(round.before, round.log);
+        return { ...round, events: performanceFromLog(round.before, round.after, round.log, { healthTimeline, presentationChanges }),
+          combat: { id: 0, actions: cuesFromLog(round.log), healthTimeline, presentationChanges, presentationStages: round.presentationStages, presentationRoutes } };
+      });
+      playbackSource = "saved";
+      loadReplayRound(0);
+      commit();
+      return true;
+    },
+    stopReplay() {
+      if (!replay) return;
+      replay = null;
       performance = null;
+      playbackRounds = [];
+      paused = false;
+      commit();
+    },
+    selectReplayTurn(index) {
+      if (!replay || !Number.isInteger(index) || index < 0 || index >= playbackRounds.length) return;
+      loadReplayRound(index);
       commit();
     },
     restart(opts = {}) {
       performance = null;
+      replay = null;
+      playbackRounds = [];
+      recordedRounds = [];
       preset = opts.preset ?? preset;
       script = opts.script ?? script;
       if (opts.site !== undefined) site = opts.site;
       stake = opts.stake ?? stake;
-      match = freshMatch(preset, script, site, stake);
+      match = freshMatch(preset, script, site, stake, useDeployment);
+      placements = []; deployPast = []; deployError = null;
       combat = { id: combat.id + 1, actions: [], reset: true };
       lastLog = [];
       draft = openingDraft(match);
@@ -726,7 +923,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       commit();
     },
     startAuto() {
-      if (match.outcome) return;
+      if (match.outcome || match.phase === "deployment") return;
       paused = false;
       beat = "show";
       auto = true;
@@ -744,7 +941,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     pause() {
       if ((match.outcome && !performance) || paused) return;
       paused = true;
-      targeting = null;
+      if (!replay) targeting = null;
       commit();
     },
     resume() {

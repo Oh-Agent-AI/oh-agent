@@ -1,7 +1,9 @@
 /** Mechs and monsters standing on the city scene. The rules board stays in cell space. */
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import * as THREE from "three";
-import type { InspectionSegment } from "./mecha/cellInspection";
+import type { DeclaredAttack, InspectionSegment } from "./mecha/cellInspection";
+import { declaredIntentSegments } from "./mecha/enemyIntentPresentation";
+import { tacticalAttackTrims, tacticalAttackWidths, tacticalMarkerMaterial, TACTICAL_COLORS } from "../render/mecha/tacticalMarkers";
 import { unitHealth } from "./mecha/unitHealth";
 import { describeUnitIdentity } from "./mecha/unitIdentity";
 import type { GameLocale } from "./gameCopy";
@@ -9,15 +11,17 @@ import type { CityEngine } from "../engine/CityEngine";
 import { boardToWorld, cellWorld, type CityMechaSite } from "./mecha/citySite";
 import { MechaBattleAnimator, MechaPerformancePlayer, faceMechaTarget, type MechaCombatCue } from "../render/mecha/animation";
 import { MECHA_FACTION_COLORS, createAssault, createBoss, createGunner, createRaider, createSupport, disposeMechaModel, ensureMechaGlbAsset, getMechaGlbAsset } from "../render/mecha/models";
-import { AssaultGroundController } from "../render/mecha/assaultGroundController";
-import type { MechaGlbAsset } from "../render/mecha/glbModels";
-import { createConnectedAssaultPreviewPlayer } from "../render/mecha/connectedAssaultPreview";
+import { createAssaultBattleHeight, createAssaultBattlePlayer } from "../render/mecha/assaultBattlePlayer";
 import { useConnectedAssault } from "../render/mecha/connectedAssaultMode";
 import { createAssaultCityGround } from "./assaultCityGround";
 import { positionPerformanceActors } from "./mecha/positionPerformanceActors";
 import { terrainSurfaceHeight } from "../engine/surface/terrainSampling";
 import { applyMechaUnitLight, setMechaUnitLight } from "../render/mecha/unitLight";
 import type { MechaPerformanceEvent } from "./mecha/performance";
+import { performanceDelta, type ReplaySpeed } from "./mecha/replayPlayback";
+import type { HealthTimeline } from "./mecha/healthTimeline";
+import type { PresentationChanges } from "./mecha/presentationChanges";
+import { healthKey, performanceHealthSchedule } from "./mecha/performanceHealth";
 import { BOARD, type Cell, type MechId } from "./mecha/rules";
 
 export type CityMechaView = {
@@ -28,6 +32,8 @@ export type CityMechaView = {
   focusedBuilding?: string | null;
   /** Current enemy declarations, independent of the draft simulation. */
   declaredTelegraph: Cell[];
+  /** Attributed current intentions; never derived from projected enemyOrder. */
+  declaredIntents?: DeclaredAttack[];
   /** null means unknown; an empty array means a successful prediction with no threats. */
   projectedTelegraph: Cell[] | null;
   /** Existing interaction/focus projection, retained for compatibility. */
@@ -36,23 +42,24 @@ export type CityMechaView = {
   inspectedCell?: Cell | null;
   inspectionSegments?: InspectionSegment[];
   inspectedThreats?: Cell[];
+  deployment?: boolean;
   focus: Cell[];
   reach: Cell[];
   move: Cell | null;
   targets: Cell[];
   targetIds: string[];
   /** Actual selected target anchor; shove is supplied only for a verified displacement. */
-  targetPreview?: { target: Cell; shove?: { from: Cell; to: Cell } };
+  targetPreview?: { target: Cell; shove?: { from: Cell; to: Cell; blocked?: boolean } };
   /** Mouse or list focus; other enemies' threats remain visible. */
   hoveredEnemy?: string | null;
   /** Position is the event's verified attack-time origin, not the current actor position. */
   enemyOrder?: Array<{ actor: string; cells: Cell[]; position?: Cell }>;
-  combat?: { id: number; actions: MechaCombatCue[]; reset?: true };
+  combat?: { id: number; actions: MechaCombatCue[]; reset?: true; healthTimeline?: HealthTimeline; presentationChanges?: PresentationChanges };
   /** 规则里的障碍格（场景楼、斜放楼）。缺省当空。 */
   obstacles?: Cell[];
 };
 
-const ROLES = ["empty", "water", "mountain", "road", "reach", "move", "building", "rubble", "obstacle", "focus", "telegraph", "target"] as const;
+const ROLES = ["empty", "water", "mountain", "road", "move", "building", "rubble", "obstacle", "focus", "telegraph", "target"] as const;
 type Role = (typeof ROLES)[number];
 
 const ROLE_COLOR: Record<Role, string> = {
@@ -60,7 +67,6 @@ const ROLE_COLOR: Record<Role, string> = {
   water: "#2f86b8",
   mountain: "#a56b45",
   road: "#f2c14b",
-  reach: "#8fd4ff",
   move: "#ffe08a",
   building: "#e2b15a",
   rubble: "#2c2824",
@@ -75,7 +81,6 @@ const ROLE_OPACITY: Record<Role, number> = {
   water: 0.4,
   mountain: 0.4,
   road: 0.38,
-  reach: 0.56,
   move: 0.82,
   building: 0.34,
   rubble: 0.4,
@@ -99,19 +104,21 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
   view: CityMechaView;
   performance: MechaPerformanceView | null;
   paused: boolean;
+  performanceSpeed?: ReplaySpeed;
   onPerformanceComplete: () => void;
   onCell: (x: number, y: number, input: "mouse" | "touch") => void;
   onHoverCell?: (cell: Cell | null) => void;
   onHoverEnemy?: (id: string | null) => void;
   onUnavailable?: (reason?: "preview" | "asset") => void;
   onPreviewLoading?: (loading: boolean) => void;
-}>(function CityMechaWorld({ engine, site, locale = "zh-Hans", view, performance, paused, onPerformanceComplete, onCell, onHoverCell, onHoverEnemy, onUnavailable, onPreviewLoading }, ref) {
+}>(function CityMechaWorld({ engine, site, locale = "zh-Hans", view, performance, paused, performanceSpeed = 1, onPerformanceComplete, onCell, onHoverCell, onHoverEnemy, onUnavailable, onPreviewLoading }, ref) {
   const badgeLayerRef = useRef<HTMLDivElement>(null);
   const localeRef = useRef(locale);
   localeRef.current = locale;
   const viewRef = useRef(view);
   const performanceRef = useRef(performance);
   const pausedRef = useRef(paused);
+  const performanceSpeedRef = useRef(performanceSpeed);
   const onCellRef = useRef(onCell);
   const onHoverEnemyRef = useRef(onHoverEnemy);
   const onHoverCellRef = useRef(onHoverCell);
@@ -120,6 +127,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
   viewRef.current = view;
   performanceRef.current = performance;
   pausedRef.current = paused;
+  performanceSpeedRef.current = performanceSpeed;
   onCellRef.current = onCell;
   onHoverEnemyRef.current = onHoverEnemy;
   onHoverCellRef.current = onHoverCell;
@@ -146,7 +154,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
     lease.setBattleClarity(true);
 
     const padGeo = new THREE.BoxGeometry(site.cellW - 0.44, 0.08, site.cellD - 0.48);
-    const padMat = new Map<Role, THREE.MeshStandardMaterial>();
+    const padMat = new Map<Role, THREE.MeshStandardMaterial | THREE.MeshBasicMaterial>();
     for (const role of ROLES) {
       padMat.set(role, new THREE.MeshStandardMaterial({
         color: ROLE_COLOR[role],
@@ -169,25 +177,26 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
     const d = (site.cellD - 0.48) / 2;
     const lines = (points: Array<[number, number]>) => new THREE.BufferGeometry().setFromPoints(points.map(([x, z]) => new THREE.Vector3(x, 0, z)));
     const threatGeo = new THREE.BufferGeometry();
-    const stripe = (a: number, b: number) => [
-      a - w * .08, 0, -d * .8, b - w * .08, 0, d * .8, a + w * .08, 0, -d * .8,
-      a + w * .08, 0, -d * .8, b - w * .08, 0, d * .8, b + w * .08, 0, d * .8,
-    ];
-    threatGeo.setAttribute("position", new THREE.Float32BufferAttribute([...stripe(-w * .72, -w * .12), ...stripe(w * .12, w * .72)], 3));
-    // A segmented inner diamond encodes the draft projection without relying
-    // on colour. It can coexist with the declaration stripes on the same tile.
+    // Many narrow red hatches read as an attacked area, not two route arrows.
+    const threatVertices: number[] = [];
+    for (const offset of [-1.2, -.8, -.4, 0, .4, .8, 1.2]) {
+      const az = Math.max(-.8, -.8 - offset), bz = Math.min(.8, .8 - offset);
+      const ax = az + offset, bx = bz + offset, n = .025;
+      threatVertices.push((ax - n) * w, 0, (az + n) * d, (ax + n) * w, 0, (az - n) * d, (bx - n) * w, 0, (bz + n) * d,
+        (bx - n) * w, 0, (bz + n) * d, (ax + n) * w, 0, (az - n) * d, (bx + n) * w, 0, (bz - n) * d);
+    }
+    threatGeo.setAttribute("position", new THREE.Float32BufferAttribute(threatVertices, 3));
+    // Forecasts stay near the tile rim, leaving the attack hatches unobstructed.
+    // Their thin dashed outline is secondary to the solid current-danger frame.
     const projectedGeo = new THREE.BufferGeometry();
     const projectedSegments: number[] = [];
-    const diamond: Array<[number, number]> = [[0, -d * .64], [w * .64, 0], [0, d * .64], [-w * .64, 0], [0, -d * .64]];
+    const predictionBox: Array<[number, number]> = [[-w * .83, -d * .83], [w * .83, -d * .83], [w * .83, d * .83], [-w * .83, d * .83], [-w * .83, -d * .83]];
     for (let edge = 0; edge < 4; edge += 1) {
-      const [x1, z1] = diamond[edge]!;
-      const [x2, z2] = diamond[edge + 1]!;
-      for (const start of [0, .5]) {
-        const end = start + .3;
-        const dx = x2 - x1, dz = z2 - z1;
-        const nx = -dz * .055, nz = dx * .055;
-        const ax = x1 + dx * start, az = z1 + dz * start;
-        const bx = x1 + dx * end, bz = z1 + dz * end;
+      const [x1, z1] = predictionBox[edge]!, [x2, z2] = predictionBox[edge + 1]!;
+      for (const start of [0, .36, .72]) {
+        const end = start + .24, dx = x2 - x1, dz = z2 - z1;
+        const nx = -dz * .022, nz = dx * .022;
+        const ax = x1 + dx * start, az = z1 + dz * start, bx = x1 + dx * end, bz = z1 + dz * end;
         projectedSegments.push(ax + nx, 0, az + nz, ax - nx, 0, az - nz, bx + nx, 0, bz + nz,
           bx + nx, 0, bz + nz, ax - nx, 0, az - nz, bx - nx, 0, bz - nz);
       }
@@ -206,15 +215,52 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       corners.push(...rect(sx * w * .98, sz * d * .88, sx * w * .88, sz * d * .68));
     }
     targetGeo.setAttribute("position", new THREE.Float32BufferAttribute(corners, 3));
-    // Four inward-pointing arrowheads mark reach independently of the pad's
-    // terrain/building colour, including when another tactical layer is present.
-    const reachGeo = new THREE.BufferGeometry();
-    reachGeo.setAttribute("position", new THREE.Float32BufferAttribute([
-      -w * .24, 0, -d * .96, w * .24, 0, -d * .96, 0, 0, -d * .70,
-      -w * .24, 0, d * .96, w * .24, 0, d * .96, 0, 0, d * .70,
-      -w * .96, 0, -d * .24, -w * .96, 0, d * .24, -w * .70, 0, 0,
-      w * .96, 0, -d * .24, w * .96, 0, d * .24, w * .70, 0, 0,
+    const dangerFrameGeo = new THREE.BufferGeometry();
+    dangerFrameGeo.setAttribute("position", new THREE.Float32BufferAttribute([
+      ...rect(-w, -d, w, -d * .925), ...rect(-w, d * .925, w, d),
+      ...rect(-w, -d * .925, -w * .925, d * .925), ...rect(w * .925, -d * .925, w, d * .925),
     ], 3));
+    // An open-corner footprint identifies the attacker; a closed striped tile
+    // identifies the victim. Do not outline both with the same danger square.
+    const sourceGeo = new THREE.BufferGeometry();
+    const sourceCorners: number[] = [];
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+      sourceCorners.push(...rect(sx * w, sz * d, sx * w * .70, sz * d * .925));
+      sourceCorners.push(...rect(sx * w, sz * d * .925, sx * w * .925, sz * d * .70));
+    }
+    sourceGeo.setAttribute("position", new THREE.Float32BufferAttribute(sourceCorners, 3));
+    const dangerFillGeo = new THREE.BufferGeometry();
+    dangerFillGeo.setAttribute("position", new THREE.Float32BufferAttribute(rect(-w, -d, w, d), 3));
+    const dangerFrameMat = tacticalMarkerMaterial(TACTICAL_COLORS.declared, 1, false);
+    const subduedDangerFrameMat = tacticalMarkerMaterial(TACTICAL_COLORS.declared, .65, false);
+    const dangerFillMat = tacticalMarkerMaterial(TACTICAL_COLORS.declared, .24);
+    const focusedDangerFillMat = tacticalMarkerMaterial(TACTICAL_COLORS.declared, .38);
+    const subduedDangerFillMat = tacticalMarkerMaterial(TACTICAL_COLORS.declared, .15);
+    const sourceMat = tacticalMarkerMaterial(TACTICAL_COLORS.declared, 1, false);
+    const subduedSourceMat = tacticalMarkerMaterial(TACTICAL_COLORS.declared, .65, false);
+    const subduedAttackRouteMat = tacticalMarkerMaterial(TACTICAL_COLORS.attack, .60, false);
+    const subduedRouteOutlineMat = tacticalMarkerMaterial(TACTICAL_COLORS.outline, .60, false);
+
+    // Reach is a quiet, continuous tile wash, not four movement arrows per cell.
+    // Independent of terrain pads, so legal road/building cells retain their base
+    // identity. Actual direction appears only on the inspected/planned route.
+    const reachGeo = new THREE.BufferGeometry();
+    reachGeo.setAttribute("position", new THREE.Float32BufferAttribute(rect(-w, -d, w, d), 3));
+    // Two solid diamonds mark a reachable danger cell without tinting away
+    // the hatching. They are not route arrows or the hollow destination.
+    const overlapReachDiamonds = (scale: number) => {
+      const vertices: number[] = [];
+      for (const x of [-w * .55, w * .55]) {
+        const rx = w * .25 * scale, rz = d * .25 * scale;
+        vertices.push(x, 0, -rz, x + rx, 0, 0, x, 0, rz,
+          x, 0, -rz, x, 0, rz, x - rx, 0, 0);
+      }
+      return new THREE.Float32BufferAttribute(vertices, 3);
+    };
+    const overlapReachRimGeo = new THREE.BufferGeometry();
+    overlapReachRimGeo.setAttribute("position", overlapReachDiamonds(1));
+    const overlapReachGeo = new THREE.BufferGeometry();
+    overlapReachGeo.setAttribute("position", overlapReachDiamonds(.68));
     const focusGeo = lines([[-w * .75, -d * .75], [w * .75, -d * .75], [w * .75, -d * .75], [w * .75, d * .75], [w * .75, d * .75], [-w * .75, d * .75], [-w * .75, d * .75], [-w * .75, -d * .75]]);
     // A filled diamond ring survives at small board sizes; WebGL line width is
     // otherwise one physical pixel. Keep the center open for other layers.
@@ -228,16 +274,19 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       moveVertices.push(ax, 0, az, bx, 0, bz, cx, 0, cz, bx, 0, bz, dx, 0, dz, cx, 0, cz);
     }
     moveGeo.setAttribute("position", new THREE.Float32BufferAttribute(moveVertices, 3));
-    const threatMat = new THREE.MeshBasicMaterial({ color: "#ff5656", transparent: true, opacity: .9, depthWrite: false, side: THREE.DoubleSide });
-    const subduedThreatMat = new THREE.MeshBasicMaterial({ color: "#ff9292", transparent: true, opacity: .55, depthWrite: false, side: THREE.DoubleSide });
-    const focusThreatMat = new THREE.MeshBasicMaterial({ color: "#fff0e0", transparent: true, opacity: 1, depthWrite: false, side: THREE.DoubleSide });
-    const projectedMat = new THREE.MeshBasicMaterial({ color: "#7fe5ff", transparent: true, opacity: 1, depthWrite: false, side: THREE.DoubleSide, forceSinglePass: true, toneMapped: false });
-    const focusedProjectedMat = new THREE.MeshBasicMaterial({ color: "#ffffff", transparent: true, opacity: 1, depthWrite: false, side: THREE.DoubleSide, forceSinglePass: true, toneMapped: false });
-    const subduedProjectedMat = new THREE.MeshBasicMaterial({ color: "#5597a9", transparent: true, opacity: .72, depthWrite: false, side: THREE.DoubleSide, forceSinglePass: true, toneMapped: false });
-    const targetMat = new THREE.MeshBasicMaterial({ color: "#ffd166", transparent: true, depthWrite: false, side: THREE.DoubleSide, forceSinglePass: true, toneMapped: false });
-    const reachMat = new THREE.MeshBasicMaterial({ color: "#155b82", transparent: true, depthWrite: false, side: THREE.DoubleSide, forceSinglePass: true, toneMapped: false });
-    const focusMat = new THREE.LineBasicMaterial({ color: "#39d6a3", depthWrite: false });
-    const moveMat = new THREE.MeshBasicMaterial({ color: "#ffe08a", transparent: true, depthWrite: false, side: THREE.DoubleSide, forceSinglePass: true, toneMapped: false });
+    const threatMat = tacticalMarkerMaterial(TACTICAL_COLORS.declared, .9);
+    const subduedThreatMat = tacticalMarkerMaterial(TACTICAL_COLORS.declared, .6);
+    const focusThreatMat = tacticalMarkerMaterial(TACTICAL_COLORS.declared);
+    const projectedMat = tacticalMarkerMaterial(TACTICAL_COLORS.projected, .85);
+    const overlapProjectedMat = tacticalMarkerMaterial(TACTICAL_COLORS.projected, .58);
+    const focusedProjectedMat = tacticalMarkerMaterial("#e3fbff");
+    const subduedProjectedMat = tacticalMarkerMaterial(TACTICAL_COLORS.projected, .65);
+    const targetMat = tacticalMarkerMaterial("#ffd166");
+    const reachMat = tacticalMarkerMaterial(TACTICAL_COLORS.reach, .32);
+    const overlapReachRimMat = tacticalMarkerMaterial("#102b23");
+    const overlapReachMat = tacticalMarkerMaterial("#a4ffd0");
+    const focusMat = new THREE.LineBasicMaterial({ color: "#39d6a3", depthWrite: false, fog: false, toneMapped: false });
+    const moveMat = tacticalMarkerMaterial("#ffe08a");
     // Ground stripes respect scene depth. A small screen-facing warning at the
     // cell corner remains visible when a mech or building covers those stripes.
     const warningCanvas = document.createElement("canvas");
@@ -255,38 +304,45 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
     const warningMat = new THREE.SpriteMaterial({ map: warningTexture, transparent: true, depthTest: false, depthWrite: false, sizeAttenuation: false, fog: false, toneMapped: false });
     const subduedWarningMat = new THREE.SpriteMaterial({ map: warningTexture, color: "#b8b8b8", transparent: true, depthTest: false, depthWrite: false, sizeAttenuation: false, fog: false, toneMapped: false });
     const focusWarningMat = new THREE.SpriteMaterial({ map: warningTexture, color: "#fff2a5", transparent: true, depthTest: false, depthWrite: false, sizeAttenuation: false, fog: false, toneMapped: false });
-    // The square P badge stays visible even when terrain or units occlude the
+    // The square warning stays visible even when terrain or units occlude the
     // ground marker; its silhouette differs from the declaration triangle.
     const projectedCanvas = document.createElement("canvas");
     projectedCanvas.width = projectedCanvas.height = 96;
     const projectedContext = projectedCanvas.getContext("2d");
     if (projectedContext) {
       projectedContext.fillStyle = "#07526d"; projectedContext.fillRect(9, 9, 78, 78);
-      projectedContext.lineWidth = 5; projectedContext.strokeStyle = "#e3fbff"; projectedContext.strokeRect(9, 9, 78, 78);
+      projectedContext.lineWidth = 5; projectedContext.strokeStyle = "#e3fbff"; projectedContext.setLineDash([14, 7]); projectedContext.strokeRect(9, 9, 78, 78);
       projectedContext.font = "bold 54px sans-serif"; projectedContext.textAlign = "center"; projectedContext.textBaseline = "middle";
-      projectedContext.fillStyle = "#fff"; projectedContext.fillText("P", 48, 51);
+      projectedContext.fillStyle = "#fff"; projectedContext.fillText("!", 48, 51);
     }
     const projectedTexture = new THREE.CanvasTexture(projectedCanvas);
     const projectedWarningMat = new THREE.SpriteMaterial({ map: projectedTexture, transparent: true, depthTest: false, depthWrite: false, sizeAttenuation: false, fog: false, toneMapped: false });
     const focusedProjectedWarningMat = new THREE.SpriteMaterial({ map: projectedTexture, color: "#ffffff", transparent: true, depthTest: false, depthWrite: false, sizeAttenuation: false, fog: false, toneMapped: false });
     const subduedProjectedWarningMat = new THREE.SpriteMaterial({ map: projectedTexture, color: "#999999", transparent: true, depthTest: false, depthWrite: false, sizeAttenuation: false, fog: false, toneMapped: false });
-    // A single combined badge avoids two overlapping icons on shared cells.
-    // The hexagonal !P is distinct from both the triangle and the square.
+    // On overlap, one red warning with a cyan dashed rim replaces two badges.
+    // No unexplained P/!P initials; the two ground layers remain independent.
     const combinedCanvas = document.createElement("canvas");
     combinedCanvas.width = combinedCanvas.height = 96;
     const combinedContext = combinedCanvas.getContext("2d");
     if (combinedContext) {
-      combinedContext.beginPath();
-      combinedContext.moveTo(21, 8); combinedContext.lineTo(75, 8); combinedContext.lineTo(91, 48);
-      combinedContext.lineTo(75, 88); combinedContext.lineTo(21, 88); combinedContext.lineTo(5, 48); combinedContext.closePath();
-      combinedContext.fillStyle = "#493347"; combinedContext.fill();
-      combinedContext.lineWidth = 5; combinedContext.strokeStyle = "#fff4d2"; combinedContext.stroke();
-      combinedContext.font = "bold 42px sans-serif"; combinedContext.textAlign = "center"; combinedContext.textBaseline = "middle";
-      combinedContext.fillStyle = "#fff"; combinedContext.fillText("!P", 48, 50);
+      combinedContext.fillStyle = "#d7192d"; combinedContext.fillRect(9, 9, 78, 78);
+      combinedContext.lineWidth = 5; combinedContext.strokeStyle = "#92e6ff";
+      combinedContext.setLineDash([14, 7]); combinedContext.strokeRect(9, 9, 78, 78);
+      combinedContext.font = "bold 54px sans-serif"; combinedContext.textAlign = "center"; combinedContext.textBaseline = "middle";
+      combinedContext.fillStyle = "#fff"; combinedContext.fillText("!", 48, 51);
     }
     const combinedTexture = new THREE.CanvasTexture(combinedCanvas);
     const combinedWarningMat = new THREE.SpriteMaterial({ map: combinedTexture, transparent: true, depthTest: false, depthWrite: false, sizeAttenuation: false, fog: false, toneMapped: false });
     const threatLines: THREE.Mesh[] = [];
+    const dangerFrames: THREE.Mesh[] = [];
+    const dangerFills: THREE.Mesh[] = [];
+    const intentSources: Array<{ frame: THREE.Mesh; outline: THREE.Mesh }> = [];
+    const intentArrows: Array<{ outline: THREE.Mesh; arrow: THREE.Mesh }> = [];
+    const emptyIntents: DeclaredAttack[] = [];
+    let lastIntents: DeclaredAttack[] | undefined;
+    let lastIntentFocus: string | null | undefined;
+    let lastInspectingAttack = false;
+    let overviewRays: Array<InspectionSegment & { actor: string; footprint: number }> = [];
     const projectedLines: THREE.Mesh[] = [];
     const projectedWarnings: THREE.Sprite[] = [];
     const projectedWarningPositions: THREE.Vector3[] = [];
@@ -298,6 +354,11 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
     reachMarks.renderOrder = 4;
     reachMarks.frustumCulled = false;
     root.add(reachMarks);
+    const overlapReachRims = new THREE.InstancedMesh(overlapReachRimGeo, overlapReachRimMat, BOARD * BOARD);
+    const overlapReachMarks = new THREE.InstancedMesh(overlapReachGeo, overlapReachMat, BOARD * BOARD);
+    for (const [mesh, order] of [[overlapReachRims, 9], [overlapReachMarks, 10]] as const) {
+      mesh.count = 0; mesh.renderOrder = order; mesh.frustumCulled = false; root.add(mesh);
+    }
     const reachMatrices: THREE.Matrix4[] = [];
     let reachSignature = "";
     const focusLines: THREE.LineSegments[] = [];
@@ -326,13 +387,28 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       0, 0, -.18, .62, 0, -.18, .62, 0, .18, 0, 0, -.18, .62, 0, .18, 0, 0, .18,
       .55, 0, -.42, 1, 0, 0, .55, 0, .42,
     ], 3));
-    const shoveOutlineMat = new THREE.MeshBasicMaterial({ color: "#172936", transparent: true, forceSinglePass: true, depthTest: false, depthWrite: false, side: THREE.DoubleSide, toneMapped: false });
-    const shoveMat = new THREE.MeshBasicMaterial({ color: "#fff5b4", transparent: true, forceSinglePass: true, depthTest: false, depthWrite: false, side: THREE.DoubleSide, toneMapped: false });
+    const shoveOutlineMat = tacticalMarkerMaterial(TACTICAL_COLORS.outline, 1, false);
+    const shoveMat = tacticalMarkerMaterial(TACTICAL_COLORS.shove, 1, false);
     const shoveOutline = new THREE.Mesh(shoveGeo, shoveOutlineMat), shoveArrow = new THREE.Mesh(shoveGeo, shoveMat);
     shoveOutline.renderOrder = 12; shoveArrow.renderOrder = 13;
     shoveOutline.visible = shoveArrow.visible = false; root.add(shoveOutline, shoveArrow);
-    const attackRouteMat = new THREE.MeshBasicMaterial({ color: "#ff7668", depthTest: false, depthWrite: false, side: THREE.DoubleSide, toneMapped: false });
-    const moveRouteMat = new THREE.MeshBasicMaterial({ color: "#82e5af", depthTest: false, depthWrite: false, side: THREE.DoubleSide, toneMapped: false });
+    // Corner brackets mark the ACTUAL final footprint, not the attempted cell.
+    const shoveLandingGeo = new THREE.BufferGeometry();
+    shoveLandingGeo.setAttribute("position", new THREE.Float32BufferAttribute([
+      ...rect(-w, -d, -w * .48, -d * .88), ...rect(w * .48, -d, w, -d * .88),
+      ...rect(-w, d * .88, -w * .48, d), ...rect(w * .48, d * .88, w, d),
+      ...rect(-w, -d * .88, -w * .88, -d * .48), ...rect(w * .88, -d * .88, w, -d * .48),
+      ...rect(-w, d * .48, -w * .88, d * .88), ...rect(w * .88, d * .48, w, d * .88),
+    ], 3));
+    const collisionMat = tacticalMarkerMaterial(TACTICAL_COLORS.attack, 1, false);
+    const shoveLanding = new THREE.Mesh(shoveLandingGeo, shoveMat);
+    shoveLanding.renderOrder = 14; shoveLanding.visible = false; root.add(shoveLanding);
+    const collisionGeo = new THREE.BufferGeometry();
+    collisionGeo.setAttribute("position", new THREE.Float32BufferAttribute(rect(-1, -.1, 1, .1), 3));
+    const collisionCross = [new THREE.Mesh(collisionGeo, collisionMat), new THREE.Mesh(collisionGeo, collisionMat)];
+    for (const mesh of collisionCross) { mesh.renderOrder = 15; mesh.visible = false; root.add(mesh); }
+    const attackRouteMat = tacticalMarkerMaterial(TACTICAL_COLORS.attack, 1, false);
+    const moveRouteMat = tacticalMarkerMaterial(TACTICAL_COLORS.move, 1, false);
     const inspectionArrows: Array<{ outline: THREE.Mesh; arrow: THREE.Mesh }> = [];
     const inspectionFrameMat = new THREE.LineBasicMaterial({ color: "#f1f5e8", depthTest: false, depthWrite: false, toneMapped: false });
     const inspectionFrame = new THREE.LineSegments(focusGeo, inspectionFrameMat);
@@ -352,14 +428,20 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         const threat = new THREE.Mesh(threatGeo, threatMat);
         threat.position.set(world.x, world.y + 0.30, world.z);
         threat.rotation.y = site.yaw;
-        threat.renderOrder = 3;
+        threat.renderOrder = 6;
         threat.visible = false;
         threatLines.push(threat);
         root.add(threat);
+        const dangerFill = new THREE.Mesh(dangerFillGeo, dangerFillMat);
+        dangerFill.position.set(world.x, world.y + .29, world.z); dangerFill.rotation.y = site.yaw;
+        dangerFill.renderOrder = 5; dangerFill.visible = false; dangerFills.push(dangerFill); root.add(dangerFill);
+        const dangerFrame = new THREE.Mesh(dangerFrameGeo, dangerFrameMat);
+        dangerFrame.position.set(world.x, world.y + .33, world.z); dangerFrame.rotation.y = site.yaw;
+        dangerFrame.renderOrder = 7; dangerFrame.visible = false; dangerFrames.push(dangerFrame); root.add(dangerFrame);
         const projected = new THREE.Mesh(projectedGeo, projectedMat);
         projected.position.set(world.x, world.y + 0.305, world.z);
         projected.rotation.y = site.yaw;
-        projected.renderOrder = 4;
+        projected.renderOrder = 8;
         projected.visible = false;
         projectedLines.push(projected);
         root.add(projected);
@@ -461,7 +543,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
     const showUnitBadge = (index: number, id: string, unit: THREE.Object3D, alive: boolean, hp: number | undefined, maxHp: number | undefined, selected = false) => {
       const badge = unitBadges[index]!;
       const identity = describeUnitIdentity(id, localeRef.current);
-      badge.label.hidden = !alive || Boolean(performanceRef.current);
+      badge.label.hidden = !alive || (Boolean(performanceRef.current) && !performanceHealth);
       if (badge.label.hidden) return;
       const health = unitHealth(hp, maxHp);
       const signature = `${id}:${localeRef.current}:${health.text}:${selected}`;
@@ -564,12 +646,14 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
     const perimeter = new THREE.Mesh(perimeterGeo, perimeterMat); perimeter.renderOrder = 2; root.add(perimeter);
 
     const camera = engine.renderCamera;
-    // Keep the eye on the squad side of the street-aligned site. The slight
-    // pitch reduction makes units less top-down without a fixed close-up.
+    // Keep the eye on the squad side of the street-aligned site. Equal rise
+    // and horizontal reach give a 45-degree view instead of a near-overhead one.
+    // Distance is still fitted to the terrain and viewport, not a fixed close-up.
     const center = boardToWorld(site, BOARD * site.cellW / 2, BOARD * site.cellD / 2);
     const offset = boardToWorld(site, 36, 56);
     const origin = boardToWorld(site, 0, 0);
-    const direction = new THREE.Vector3(offset.x - origin.x, 175, offset.z - origin.z).normalize();
+    const dx = offset.x - origin.x, dz = offset.z - origin.z;
+    const direction = new THREE.Vector3(dx, Math.hypot(dx, dz), dz).normalize();
     const fitPoints = [...gridPts];
     let low = Infinity, high = -Infinity;
     for (let y = 0; y < BOARD; y += 1) for (let x = 0; x < BOARD; x += 1) {
@@ -770,26 +854,24 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       });
     };
     let player: MechaPerformancePlayer | null = null;
+    // Presentation-only health, advanced on settled animation cues. Never edits match state.
+    let performanceHealth: Map<string, number> | null = null;
     let releasePreview: (() => void) | null = null;
     const connectedPreview = useConnectedAssault(import.meta.env.DEV, location.search);
-    const source = connectedPreview ? engine.captureMechaGroundSource() : null;
-    let previewGround: Parameters<typeof createConnectedAssaultPreviewPlayer>[5] | undefined;
-    let previewGroundError: unknown = null;
+    let roadHeight: ((x: number, z: number) => number) | undefined;
+    let terrainHeight: ((x: number, z: number) => number) | undefined;
     if (connectedPreview) {
       try {
-        if (!source) throw new Error("rendered city ground unavailable");
-        const { layout, ground } = source.source;
-        previewGround = {
-          height: createAssaultCityGround(layout, ground, source.isCurrent),
-          terrain: (x, z) => { if (!source.isCurrent()) throw new Error("Assault ground source is stale"); return terrainSurfaceHeight(layout, x, z); },
-          radius: 2, maxGrade: .5, maxDrop: .3,
-        };
-      } catch (error) { previewGroundError = error; }
+        const source = engine.captureMechaGroundSource();
+        if (source) {
+          const { layout, ground } = source.source;
+          terrainHeight = (x, z) => { if (!source.isCurrent()) throw new Error("stale city terrain"); return terrainSurfaceHeight(layout, x, z); };
+          roadHeight = createAssaultCityGround(layout, ground, source.isCurrent);
+        }
+      } catch { /* Detailed ground is optional for board-driven battle playback. */ }
     }
+    const battleHeight = createAssaultBattleHeight(roadHeight, terrainHeight);
     let playing: MechaPerformanceView | null = null;
-    let idleGroundAsset: MechaGlbAsset | undefined;
-    let idleGround: AssaultGroundController | undefined;
-    let idleHeading: number | undefined;
     let previewFailed = false;
     let active = true;
     let candidateReady = !connectedPreview;
@@ -864,16 +946,26 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       const focusedTelegraph = new Set([...current.focusedTelegraph, ...(current.inspectedThreats ?? [])].map(cellKey));
       const focus = new Set(current.focus.map(cellKey));
       const reach = new Set(current.reach.map(cellKey));
-      const nextReachSignature = [...reach].sort().join(";");
+      // Keep danger prominent, but don't hide reachability on danger cells.
+      const plainReach = [...reach].filter(id => !telegraph.has(id)).sort();
+      const dangerReach = [...reach].filter(id => telegraph.has(id)).sort();
+      const nextReachSignature = `${plainReach.join(";")}|${dangerReach.join(";")}`;
       if (nextReachSignature !== reachSignature) {
-        let count = 0;
+        let count = 0, overlapCount = 0;
         for (let index = 0; index < reachMatrices.length; index += 1) {
-          if (reach.has(`${index % BOARD},${Math.floor(index / BOARD)}`)) {
+          const id = `${index % BOARD},${Math.floor(index / BOARD)}`;
+          if (!reach.has(id)) continue;
+          if (telegraph.has(id)) {
+            overlapReachRims.setMatrixAt(overlapCount, reachMatrices[index]!);
+            overlapReachMarks.setMatrixAt(overlapCount++, reachMatrices[index]!);
+          } else {
             reachMarks.setMatrixAt(count++, reachMatrices[index]!);
           }
         }
         reachMarks.count = count;
+        overlapReachRims.count = overlapReachMarks.count = overlapCount;
         reachMarks.instanceMatrix.needsUpdate = true;
+        overlapReachRims.instanceMatrix.needsUpdate = overlapReachMarks.instanceMatrix.needsUpdate = true;
         reachSignature = nextReachSignature;
       }
       const targets = new Set(current.targets.map(cellKey));
@@ -884,10 +976,9 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         for (const cell of building.cells) buildingCells.set(cellKey(cell), role);
       }
       const obstacleCells = new Set((current.obstacles ?? []).map(cellKey));
-      // Dense threat fields remain a readable board rather than a blanket of
-      // floating badges. Ground patterns still show every cell; retain badges
-      // where models/buildings can obscure them.
-      const denseThreats = new Set([...telegraph, ...projectedTelegraph]).size > 24;
+      // Empty terrain is already explained by its ground pattern. Screen-facing
+      // warnings are an occlusion fallback on units/buildings, not a second
+      // blanket of symbols across every threatened tile.
       const occupiedCells = new Set<string>();
       for (const figure of current.figures) if (figure.alive) occupiedCells.add(cellKey(figure));
       for (const raider of current.raiders) if (raider.alive) occupiedCells.add(cellKey(raider));
@@ -895,36 +986,40 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         occupiedCells.add(cellKey({ x: current.boss.x + dx, y: current.boss.y + dy }));
       }
       const moveKey = !performanceRef.current && current.move ? cellKey(current.move) : "";
+      const declaredFocus = new Set((current.inspectedThreats ?? []).map(cellKey));
       pads.forEach((pad, index) => {
         const x = index % BOARD;
         const y = Math.floor(index / BOARD);
         const id = `${x},${y}`;
         const ground = site.terrain[y]?.[x];
         const role: Role = obstacleCells.has(id) ? "obstacle"
-          : buildingCells.get(id) ?? (reach.has(id) ? "reach" : ground === "water" ? "water" : ground === "mountain" ? "mountain" : ground === "road" ? "road" : "empty");
+          : buildingCells.get(id) ?? (ground === "water" ? "water" : ground === "mountain" ? "mountain" : ground === "road" ? "road" : "empty");
         pad.material = padMat.get(role)!;
         const threat = threatLines[index]!;
         threat.visible = telegraph.has(id);
-        // focusedTelegraph follows the compatibility layer: projection after a
-        // successful preview, declaration only when the projection is unknown.
-        // Do not imply attribution to the same enemy in both layers on overlap.
+        // Red focus uses the inspected current declaration. Blue focus follows
+        // the compatibility forecast layer. Overlap is not shared attribution.
         const focusedDeclaration = current.projectedTelegraph == null;
-        threat.material = focusedDeclaration && focusedTelegraph.has(id) ? focusThreatMat : focusedDeclaration && current.hoveredEnemy ? subduedThreatMat : threatMat;
+        const focused = declaredFocus.has(id), subdued = Boolean(current.hoveredEnemy && !focused);
+        threat.material = focused ? focusThreatMat : subdued ? subduedThreatMat : threatMat;
+        dangerFrames[index]!.visible = dangerFills[index]!.visible = threat.visible;
+        dangerFrames[index]!.material = subdued ? subduedDangerFrameMat : dangerFrameMat;
+        dangerFills[index]!.material = focused ? focusedDangerFillMat : subdued ? subduedDangerFillMat : dangerFillMat;
         const warning = threatWarnings[index]!;
         const projected = projectedLines[index]!;
         projected.visible = projectedTelegraph.has(id);
-        projected.material = !focusedDeclaration && focusedTelegraph.has(id) ? focusedProjectedMat : !focusedDeclaration && current.hoveredEnemy ? subduedProjectedMat : projectedMat;
         const overlap = threat.visible && projected.visible;
-        const showBadge = !denseThreats || occupiedCells.has(id) || buildingCells.has(id) || obstacleCells.has(id);
+        projected.material = overlap ? overlapProjectedMat : !focusedDeclaration && focusedTelegraph.has(id) ? focusedProjectedMat : !focusedDeclaration && current.hoveredEnemy ? subduedProjectedMat : projectedMat;
+        const showBadge = occupiedCells.has(id) || buildingCells.has(id) || obstacleCells.has(id);
         warning.visible = threat.visible && !overlap && showBadge;
         if (warning.visible) warning.scale.set(warningSize, warningSize, 1);
-        warning.material = focusedDeclaration && focusedTelegraph.has(id) ? focusWarningMat : focusedDeclaration && current.hoveredEnemy ? subduedWarningMat : warningMat;
+        warning.material = focused ? focusWarningMat : subdued ? subduedWarningMat : warningMat;
         const projectedWarning = projectedWarnings[index]!;
         projectedWarning.visible = projected.visible && showBadge;
         projectedWarning.material = overlap ? combinedWarningMat : focusedTelegraph.has(id) ? focusedProjectedWarningMat : current.hoveredEnemy ? subduedProjectedWarningMat : projectedWarningMat;
         projectedWarning.position.copy(overlap ? warning.position : projectedWarningPositions[index]!);
         if (projectedWarning.visible) {
-          const size = warningSize * (overlap ? 1.125 : .875);
+          const size = warningSize * (overlap ? 1 : .875);
           projectedWarning.scale.set(size, size, 1);
         }
         targetLines[index]!.visible = targets.has(id);
@@ -935,18 +1030,10 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       const performing = Boolean(performanceRef.current);
       if (!performing && playing) {
         try {
-          const asset = connectedPreview ? getMechaGlbAsset(assault) : undefined;
-          if (asset?.manifest.id === "assault-connected-candidate") {
-            if (!previewGround) throw previewGroundError ?? new Error("Assault preview ground unavailable");
-            if (idleGroundAsset !== asset || !idleGround) {
-              idleGround = new AssaultGroundController(assault, { ...previewGround, asset });
-              idleGroundAsset = asset;
-            }
-            idleHeading = idleGround.heading();
-          }
           player?.dispose(); player = null;
           releasePreview?.(); releasePreview = null;
           playing = null;
+          performanceHealth = null;
         } catch (error) { failPreview(error); return; }
       }
       const validCell = (cell: Cell, span = 1) => Number.isInteger(cell.x) && Number.isInteger(cell.y)
@@ -958,13 +1045,28 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       const span = isBoss ? 2 : 1;
       previewFrame.visible = Boolean(preview && matchesUnit && validCell(preview.target, span));
       shoveOutline.visible = shoveArrow.visible = false;
+      shoveLanding.visible = false;
+      for (const mesh of collisionCross) mesh.visible = false;
       if (preview && previewFrame.visible) {
         const at = isBoss ? footprintFeet(site, preview.target) : cellWorld(site, preview.target);
         let top = at.y;
         for (let dy = 0; dy < span; dy++) for (let dx = 0; dx < span; dx++) top = Math.max(top, cellWorld(site, { x: preview.target.x + dx, y: preview.target.y + dy }).y);
         previewFrame.position.set(at.x, top + .6, at.z); previewFrame.rotation.y = site.yaw; previewFrame.scale.set(span, 1, span);
         const shove = preview.shove;
-        if (shove && validCell(shove.from, span) && validCell(shove.to, span) && (shove.from.x !== shove.to.x || shove.from.y !== shove.to.y)) {
+        if (shove && validCell(shove.from, span) && validCell(shove.to, span)) {
+          const landed = isBoss ? footprintFeet(site, shove.to) : cellWorld(site, shove.to);
+          let landingTop = landed.y;
+          for (let dy = 0; dy < span; dy++) for (let dx = 0; dx < span; dx++) landingTop = Math.max(landingTop, cellWorld(site, { x: shove.to.x + dx, y: shove.to.y + dy }).y);
+          shoveLanding.visible = true; shoveLanding.material = shove.blocked ? collisionMat : shoveMat;
+          shoveLanding.position.set(landed.x, landingTop + 1.2, landed.z);
+          shoveLanding.rotation.y = site.yaw; shoveLanding.scale.set(span, 1, span);
+          if (shove.blocked) for (const [i, mesh] of collisionCross.entries()) {
+            mesh.visible = true; mesh.position.set(landed.x, landingTop + 1.4, landed.z);
+            mesh.rotation.y = site.yaw + (i === 0 ? Math.PI / 4 : -Math.PI / 4);
+            mesh.scale.set(Math.min(w, d) * span * .62, 1, Math.min(w, d) * span * .62);
+          }
+        }
+        if (shove && !shove.blocked && validCell(shove.from, span) && validCell(shove.to, span) && (shove.from.x !== shove.to.x || shove.from.y !== shove.to.y)) {
           const from = isBoss ? footprintFeet(site, shove.from) : cellWorld(site, shove.from);
           const to = isBoss ? footprintFeet(site, shove.to) : cellWorld(site, shove.to);
           const dx = to.x - from.x, dz = to.z - from.z, length = Math.hypot(dx, dz);
@@ -996,39 +1098,98 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         from.y = cellWorld(site, { x: Math.floor(segment.from.x), y: Math.floor(segment.from.y) }).y;
         const dx = to.x - from.x, dz = to.z - from.z, length = Math.hypot(dx, dz);
         if (length < .01) return;
+        const intent = (current.declaredIntents ?? emptyIntents).find(i =>
+          i.origin.x + (i.footprint - 1) / 2 === segment.from.x && i.origin.y + (i.footprint - 1) / 2 === segment.from.y);
+        const [startTrim, endTrim] = segment.kind === "attack"
+          ? tacticalAttackTrims(length, segment.to.x - segment.from.x, segment.to.y - segment.from.y, site.cellW, site.cellD, intent?.footprint ?? 1) : [0, 0];
         arrow.material = segment.kind === "attack" ? attackRouteMat : moveRouteMat;
-        for (const [mesh, width] of [[outline, 5.8], [arrow, 3.7]] as const) {
-          mesh.visible = true; mesh.position.set(from.x, Math.max(from.y, to.y) + 1.2, from.z);
-          mesh.rotation.y = -Math.atan2(dz, dx); mesh.scale.set(length, 1, width);
+        spot.set(from.x, Math.max(from.y, to.y), from.z).applyMatrix4(camera.matrixWorldInverse);
+        const [outlineWidth, arrowWidth] = segment.kind === "attack"
+          ? tacticalAttackWidths(pixelScale * Math.abs(spot.z), Math.min(site.cellW, site.cellD)) : [4.8, 3.7];
+        for (const [mesh, width] of [[outline, outlineWidth], [arrow, arrowWidth]] as const) {
+          mesh.visible = true; mesh.position.set(from.x + dx * startTrim / length, Math.max(from.y, to.y) + 1.2, from.z + dz * startTrim / length);
+          mesh.rotation.y = -Math.atan2(dz, dx); mesh.scale.set(length - startTrim - endTrim, 1, width);
         }
         drawnRoutes++;
       });
       badgeLayer.dataset.inspectionRoutes = String(drawnRoutes);
       badgeLayer.dataset.inspectionRouteKind = segments[0]?.kind ?? "none";
+      // Default overview is attributed to the current living enemy, even when
+      // the friendly draft predicts its death. Area targets remain a set; only
+      // boundary/central aim rays are drawn, never a fictitious traversal.
+      const intents = performing ? emptyIntents : current.declaredIntents ?? emptyIntents;
+      while (intentSources.length < intents.length) {
+        const outline = new THREE.Mesh(sourceGeo, shoveOutlineMat), frame = new THREE.Mesh(sourceGeo, sourceMat);
+        outline.renderOrder = 17; frame.renderOrder = 18; root.add(outline, frame); intentSources.push({ outline, frame });
+      }
+      intentSources.forEach(({ outline, frame }, index) => {
+        const intent = intents[index]; outline.visible = frame.visible = Boolean(intent);
+        if (!intent) return;
+        const at = cellWorld(site, { x: intent.origin.x + (intent.footprint - 1) / 2, y: intent.origin.y + (intent.footprint - 1) / 2 });
+        let height = cellWorld(site, intent.origin).y;
+        for (let y = 0; y < intent.footprint; y++) for (let x = 0; x < intent.footprint; x++) {
+          height = Math.max(height, cellWorld(site, { x: intent.origin.x + x, y: intent.origin.y + y }).y);
+        }
+        const subdued = Boolean(current.hoveredEnemy && current.hoveredEnemy !== intent.actor);
+        frame.material = subdued ? subduedSourceMat : sourceMat; outline.material = subdued ? subduedRouteOutlineMat : shoveOutlineMat;
+        for (const [mesh, size] of [[outline, 1.035], [frame, 1]] as const) {
+          mesh.position.set(at.x, height + .8, at.z); mesh.rotation.y = site.yaw; mesh.scale.set(intent.footprint * size, 1, intent.footprint * size);
+        }
+      });
+      const inspectingAttack = segments.some(s => s.kind === "attack");
+      if (intents !== lastIntents || current.hoveredEnemy !== lastIntentFocus || inspectingAttack !== lastInspectingAttack) {
+        overviewRays = intents.flatMap(intent => {
+          // The existing inspection renderer already draws this actor's rays.
+          if (current.hoveredEnemy === intent.actor && inspectingAttack) return [];
+          return declaredIntentSegments(intent).map(segment => ({ ...segment, actor: intent.actor, footprint: intent.footprint }));
+        });
+        lastIntents = intents; lastIntentFocus = current.hoveredEnemy; lastInspectingAttack = inspectingAttack;
+      }
+      while (intentArrows.length < overviewRays.length) {
+        const outline = new THREE.Mesh(shoveGeo, shoveOutlineMat), arrow = new THREE.Mesh(shoveGeo, attackRouteMat);
+        outline.renderOrder = 15; arrow.renderOrder = 16; root.add(outline, arrow); intentArrows.push({ outline, arrow });
+      }
+      intentArrows.forEach(({ outline, arrow }, index) => {
+        const ray = overviewRays[index]; outline.visible = arrow.visible = false;
+        if (!ray) return;
+        const from = cellWorld(site, ray.from), to = cellWorld(site, ray.to);
+        from.y = cellWorld(site, { x: Math.floor(ray.from.x), y: Math.floor(ray.from.y) }).y;
+        const dx = to.x - from.x, dz = to.z - from.z, length = Math.hypot(dx, dz);
+        if (length < .01) return;
+        // Same footprint/landing insets as selected attacks, so selection does
+        // not jump the route back through the model or the landing's hatch.
+        const [startTrim, endTrim] = tacticalAttackTrims(length, ray.to.x - ray.from.x, ray.to.y - ray.from.y, site.cellW, site.cellD, ray.footprint);
+        const subdued = Boolean(current.hoveredEnemy && current.hoveredEnemy !== ray.actor);
+        arrow.material = subdued ? subduedAttackRouteMat : attackRouteMat; outline.material = subdued ? subduedRouteOutlineMat : shoveOutlineMat;
+        spot.set(from.x, Math.max(from.y, to.y), from.z).applyMatrix4(camera.matrixWorldInverse);
+        const [outlineWidth, arrowWidth] = tacticalAttackWidths(pixelScale * Math.abs(spot.z), Math.min(site.cellW, site.cellD));
+        for (const [mesh, width] of [[outline, outlineWidth], [arrow, arrowWidth]] as const) {
+          mesh.visible = true; mesh.position.set(from.x + dx * startTrim / length, Math.max(from.y, to.y) + 1.2, from.z + dz * startTrim / length);
+          mesh.rotation.y = -Math.atan2(dz, dx); mesh.scale.set(length - startTrim - endTrim, 1, width);
+        }
+      });
+      badgeLayer.dataset.declaredIntentActors = intents.map(i => i.actor).join(",");
+      badgeLayer.dataset.declaredIntentRoutes = String(intentArrows.filter(r => r.arrow.visible).length);
+      badgeLayer.dataset.declaredDangerCells = String(dangerFrames.filter(m => m.visible).length);
+
+      for (const id of ["Assault", "Gunner", "Support"] as const) {
+        if (!current.figures.some(f => f.id === id)) { figures[id].visible = false; markers[id].mesh.visible = false; }
+      }
       for (const figure of current.figures) {
         const mesh = figures[figure.id];
         const feet = cellWorld(site, { x: figure.x, y: figure.y });
         spot.set(feet.x, feet.y, feet.z);
+        if (!mesh.visible && current.deployment) mesh.position.copy(spot);
         const candidate = connectedPreview && figure.id === "Assault" ? getMechaGlbAsset(mesh) : undefined;
         const connected = candidate?.manifest.id === "assault-connected-candidate";
-        const moving = !connected && mesh.position.distanceToSquared(spot) > 0.01;
+        // Draft movement uses the same slide + walk for every mech. Ground
+        // height sampling must not force Assault to snap or keep it walking at rest.
+        const moving = (mesh.position.x - spot.x) ** 2 + (mesh.position.z - spot.z) ** 2 > 0.01;
         if (!performing) {
-          if (!pausedRef.current) slide(mesh, spot, reduce || connected);
+          if (!pausedRef.current) slide(mesh, spot, reduce);
           animate(mesh, figure.id, figure.alive ? 1 : 0, moving && figure.alive, pausedRef.current ? 0 : dt);
-          if (connected) {
-            try {
-              if (!previewGround) throw previewGroundError ?? new Error("Assault preview ground unavailable");
-              if (idleGroundAsset !== candidate || !idleGround) {
-                idleGround = new AssaultGroundController(mesh, { ...previewGround, asset: candidate });
-                idleGroundAsset = candidate;
-                idleHeading = mesh.rotation.y;
-              }
-              const dx = bossFeet.x - spot.x, dz = bossFeet.z - spot.z;
-              if (figure.alive && Math.hypot(dx, dz) > 1e-6) idleHeading = Math.atan2(-dx, -dz);
-              idleGround.align(idleHeading ?? 0);
-              if (figure.alive) idleGround.stand();
-            } catch (error) { failPreview(error); return; }
-          } else if (figure.alive) faceMechaTarget(mesh, spot, bossFeet);
+          if (connected) mesh.position.y = battleHeight(mesh.position.x, mesh.position.z, spot.y);
+          if (figure.alive) faceMechaTarget(mesh, spot, bossFeet);
         }
         mesh.visible = true;
         const ring = markers[figure.id];
@@ -1088,8 +1249,28 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         releasePreview?.();
         releasePreview = null;
         playing = performanceRef.current;
+        performanceHealth = null;
         if (playing) {
           positionPerformanceActors(actors, current, resolveCell);
+          const schedule = performanceHealthSchedule(playing.events, current.combat?.healthTimeline, current.combat?.presentationChanges);
+          const initial = new Map<string, number>();
+          for (const unit of current.figures) if (unit.hp !== undefined) initial.set(healthKey("mech", unit.id), unit.hp);
+          if (current.boss.hp !== undefined) initial.set(healthKey("boss", "boss"), current.boss.hp);
+          for (const unit of current.raiders) if (unit.hp !== undefined) initial.set(healthKey("raider", unit.id), unit.hp);
+          for (const building of current.buildings) initial.set(healthKey("building", building.id), building.hp);
+          // A missing or mismatched snapshot is not safe to display as current health.
+          const verified = new Map(initial);
+          const valid = schedule?.every((effects) => effects.every((effect) => {
+            const key = healthKey(effect.kind, effect.id);
+            if (verified.get(key) !== effect.before) return false;
+            verified.set(key, effect.after);
+            return true;
+          }));
+          if (valid) performanceHealth = initial;
+          const onEventSettled = (index: number) => {
+            if (!performanceHealth || !schedule) return;
+            for (const effect of schedule[index] ?? []) performanceHealth.set(healthKey(effect.kind, effect.id), effect.after);
+          };
           const onComplete = () => onPerformanceCompleteRef.current();
           const initiallyFallen = [
             ...current.figures.filter((figure) => !figure.alive).map((figure) => figure.id),
@@ -1098,20 +1279,19 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
           ];
           if (connectedPreview) {
             try {
-              if (!previewGround) throw previewGroundError ?? new Error("Assault preview ground unavailable");
-              if (idleHeading !== undefined) assault.rotation.set(0, idleHeading, 0);
-              const preview = createConnectedAssaultPreviewPlayer(actors, playing.events, resolveCell, root, onComplete, previewGround, initiallyFallen);
+              const preview = createAssaultBattlePlayer(actors, playing.events, resolveCell, root, onComplete, battleHeight, initiallyFallen, onEventSettled);
               player = preview.player;
               releasePreview = preview.release;
             } catch (error) { failPreview(error); return; }
-          } else player = new MechaPerformancePlayer(actors, playing.events, resolveCell, root, onComplete, undefined, initiallyFallen);
+          } else player = new MechaPerformancePlayer(actors, playing.events, resolveCell, root, onComplete, undefined, initiallyFallen, onEventSettled);
         }
       }
       if (player) {
+        const performanceDt = performanceDelta(dt, pausedRef.current, reduce, performanceSpeedRef.current);
         if (connectedPreview) {
-          try { player.update(reduce ? Number.POSITIVE_INFINITY : pausedRef.current ? 0 : dt); }
+          try { player.update(performanceDt); }
           catch (error) { failPreview(error); return; }
-        } else player.update(reduce ? Number.POSITIVE_INFINITY : pausedRef.current ? 0 : dt);
+        } else player.update(performanceDt);
         for (const [id, marker] of Object.entries(actorMarkers)) {
           const actor = actors[id as keyof typeof actors];
           marker.mesh.position.set(actor.position.x, actor.position.y + 0.55, actor.position.z);
@@ -1121,18 +1301,23 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       for (let i = 0; i < 3; i++) {
         const id = (["Assault", "Gunner", "Support"] as const)[i]!;
         const figure = current.figures.find(item => item.id === id);
-        showUnitBadge(i, id, figures[id], Boolean(figure?.alive), figure?.hp, figure?.maxHp, Boolean(figure?.selected));
+        const hp = performanceHealth?.get(healthKey("mech", id)) ?? figure?.hp;
+        showUnitBadge(i, id, figures[id], Boolean(figure?.alive), hp, figure?.maxHp, Boolean(figure?.selected));
       }
-      showUnitBadge(3, "boss", boss, current.boss.alive, current.boss.hp, current.boss.maxHp);
-      for (let i = 0; i < 2; i++) showUnitBadge(4 + i, current.raiders[i]?.id ?? "unknown-raider", small[i]!, Boolean(current.raiders[i]?.alive), current.raiders[i]?.hp, current.raiders[i]?.maxHp);
+      showUnitBadge(3, "boss", boss, current.boss.alive, performanceHealth?.get(healthKey("boss", "boss")) ?? current.boss.hp, current.boss.maxHp);
+      for (let i = 0; i < 2; i++) {
+        const raider = current.raiders[i];
+        showUnitBadge(4 + i, raider?.id ?? "unknown-raider", small[i]!, Boolean(raider?.alive), raider ? performanceHealth?.get(healthKey("raider", raider.id)) ?? raider.hp : undefined, raider?.maxHp);
+      }
       for (const building of site.buildings) {
         const bar = bars.get(building.id);
         const live = current.buildings.find((item) => item.id === building.id);
         if (!bar) continue;
-        bar.anchor.visible = Boolean(live);
+        bar.anchor.visible = Boolean(live) && (!playing || Boolean(performanceHealth));
         bar.marker.visible = Boolean(live) && current.focusedBuilding === building.id;
         if (!live || live.maxHp <= 0) continue;
-        const ratio = Math.max(0, Math.min(1, live.hp / live.maxHp));
+        const hp = performanceHealth?.get(healthKey("building", building.id)) ?? live.hp;
+        const ratio = Math.max(0, Math.min(1, hp / live.maxHp));
         bar.fill.scale.x = Math.max(0.04, ratio);
         bar.fill.position.x = (ratio - 1) * 6;
         bar.fillMat.color.set(ratio > 0.5 ? "#d7b15a" : "#e23d3d");
@@ -1157,12 +1342,13 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       perimeterGeo.dispose(); perimeterMat.dispose();
       attackRouteMat.dispose(); moveRouteMat.dispose(); inspectionFrameMat.dispose();
       previewGeo.dispose(); previewMat.dispose(); shoveGeo.dispose(); shoveOutlineMat.dispose(); shoveMat.dispose();
+      shoveLandingGeo.dispose(); collisionGeo.dispose(); collisionMat.dispose();
       for (const badge of unitBadges) { badge.label.remove(); }
       (grid.material as THREE.Material).dispose();
       padGeo.dispose();
-      reachMarks.dispose();
-      for (const geo of [threatGeo, projectedGeo, targetGeo, reachGeo, focusGeo, moveGeo]) geo.dispose();
-      for (const mat of [threatMat, subduedThreatMat, focusThreatMat, projectedMat, focusedProjectedMat, subduedProjectedMat, targetMat, reachMat, focusMat, moveMat, warningMat, subduedWarningMat, focusWarningMat, projectedWarningMat, focusedProjectedWarningMat, subduedProjectedWarningMat, combinedWarningMat]) mat.dispose();
+      reachMarks.dispose(); overlapReachRims.dispose(); overlapReachMarks.dispose();
+      for (const geo of [threatGeo, projectedGeo, targetGeo, reachGeo, overlapReachRimGeo, overlapReachGeo, focusGeo, moveGeo, sourceGeo, dangerFrameGeo, dangerFillGeo]) geo.dispose();
+      for (const mat of [dangerFrameMat, subduedDangerFrameMat, dangerFillMat, focusedDangerFillMat, subduedDangerFillMat, sourceMat, subduedSourceMat, subduedAttackRouteMat, subduedRouteOutlineMat, threatMat, subduedThreatMat, focusThreatMat, projectedMat, overlapProjectedMat, focusedProjectedMat, subduedProjectedMat, targetMat, reachMat, overlapReachRimMat, overlapReachMat, focusMat, moveMat, warningMat, subduedWarningMat, focusWarningMat, projectedWarningMat, focusedProjectedWarningMat, subduedProjectedWarningMat, combinedWarningMat]) mat.dispose();
       warningTexture.dispose();
       projectedTexture.dispose();
       combinedTexture.dispose();

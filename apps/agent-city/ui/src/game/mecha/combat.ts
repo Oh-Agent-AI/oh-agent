@@ -220,8 +220,19 @@ function shootEnemy(state: MatchState, id: MechId, target: string, kind: Action[
   refresh(state);
 }
 
-function los(state: MatchState, from: Cell, to: Cell, ignoreCovers: number): boolean {
-  if (from.x !== to.x && from.y !== to.y) return false;
+/** The same checks drive target legality and the explanation shown to players. */
+export type ShotCheck =
+  | { status: "available" }
+  | { status: "not_aligned" | "out_of_range" | "same_cell" }
+  | { status: "blocked_terrain" | "blocked_obstacle" | "blocked_cover" | "blocked_unit"; cell: Cell };
+export type ShotTargetDiagnostic = { id: string; targetCell: Cell; check: ShotCheck };
+
+function shotCellCheck(state: MatchState, from: Cell, to: Cell, range: number, ignoreCovers: number): ShotCheck {
+  // Check distance before line of sight, just as the existing target rules did.
+  const distance = cheb(from, to);
+  if (distance < 1) return { status: "same_cell" };
+  if (distance > range) return { status: "out_of_range" };
+  if (from.x !== to.x && from.y !== to.y) return { status: "not_aligned" };
   const cells: Cell[] = [];
   if (from.x === to.x) {
     const [a, b] = from.y < to.y ? [from.y + 1, to.y] : [to.y + 1, from.y];
@@ -230,18 +241,21 @@ function los(state: MatchState, from: Cell, to: Cell, ignoreCovers: number): boo
     const [a, b] = from.x < to.x ? [from.x + 1, to.x] : [to.x + 1, from.x];
     for (let x = a; x < b; x += 1) cells.push({ x, y: from.y });
   }
+  // Legality only depends on the count, but explanations must follow the
+  // shooter's ray: with pierce, it is the later cover that blocks the shot.
+  if (from.x > to.x || from.y > to.y) cells.reverse();
   let covers = 0;
-  for (const c of cells) {
-    if (terrainAt(state, c) === "mountain") return false;
-    const occ = occupant(state, c);
+  for (const cell of cells) {
+    if (terrainAt(state, cell) === "mountain") return { status: "blocked_terrain", cell };
+    const occ = occupant(state, cell);
     // 障碍不是掩体：穿射也穿不过。
-    if (occ === "obstacle") return false;
+    if (occ === "obstacle") return { status: "blocked_obstacle", cell };
     if (occ === "cover" || occ === "building" || occ === "rubble") {
       covers += 1;
-      if (covers > ignoreCovers) return false;
-    } else if (occ !== "empty" && !eq(c, to)) return false;
+      if (covers > ignoreCovers) return { status: "blocked_cover", cell };
+    } else if (occ !== "empty" && !eq(cell, to)) return { status: "blocked_unit", cell };
   }
-  return true;
+  return { status: "available" };
 }
 
 function aimCell(from: Cell, cells: Cell[]): Cell | null {
@@ -254,22 +268,21 @@ function aimCell(from: Cell, cells: Cell[]): Cell | null {
   return best?.c ?? null;
 }
 
-function canShotCell(state: MatchState, from: Cell, aim: Cell, range: number, ignore: number): boolean {
-  const d = cheb(from, aim);
-  if (d < 1 || d > range) return false;
-  return los(state, from, aim, ignore);
+/** Diagnose each living target against the actual post-movement board. */
+export function shotTargetDiagnostics(state: MatchState, from: Cell, range: number, ignore: number): ShotTargetDiagnostic[] {
+  const targets: ShotTargetDiagnostic[] = [];
+  if (state.boss.hp > 0) {
+    const aim = aimCell(from, footprint(state.boss.anchor));
+    targets.push({ id: "boss", targetCell: { ...state.boss.anchor }, check: aim ? shotCellCheck(state, from, aim, range, ignore) : { status: "not_aligned" } });
+  }
+  for (const raider of livingRaiders(state)) {
+    targets.push({ id: raider.id, targetCell: { ...raider.pos }, check: shotCellCheck(state, from, raider.pos, range, ignore) });
+  }
+  return targets;
 }
 
 export function shotTargets(state: MatchState, from: Cell, range: number, ignore: number): string[] {
-  const ids: string[] = [];
-  if (state.boss.hp > 0) {
-    const aim = aimCell(from, footprint(state.boss.anchor));
-    if (aim && canShotCell(state, from, aim, range, ignore)) ids.push("boss");
-  }
-  for (const raider of livingRaiders(state)) {
-    if (canShotCell(state, from, raider.pos, range, ignore)) ids.push(raider.id);
-  }
-  return ids;
+  return shotTargetDiagnostics(state, from, range, ignore).filter(({ check }) => check.status === "available").map(({ id }) => id);
 }
 
 function tagged(kind: "melee" | "shoot" | "charge" | "pierce", ids: string[]): Action[] {

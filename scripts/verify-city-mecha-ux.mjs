@@ -5,8 +5,8 @@ import { loadCity } from "./city-kit/index.mjs";
 
 const root = new URL("../apps/agent-city/ui/src/", import.meta.url);
 const read = (path) => readFile(new URL(path, root), "utf8");
-const [city, engine, board, world, css, copy, animation, controller, remote] = await Promise.all([
-  read("CityApp.tsx"), read("engine/CityEngine.ts"), read("game/MechaBoard.tsx"), read("game/CityMechaWorld.tsx"), read("game/game.css"), read("game/gameCopy.ts"), read("render/mecha/animation.ts"), read("game/mecha/controller.ts"), read("game/mecha/RemoteMechaControls.tsx"),
+const [city, engine, board, world, css, copy, animation, controller, remote, referenceCss, legend, legendPresentation] = await Promise.all([
+  read("CityApp.tsx"), read("engine/CityEngine.ts"), read("game/MechaBoard.tsx"), read("game/CityMechaWorld.tsx"), read("game/game.css"), read("game/gameCopy.ts"), read("render/mecha/animation.ts"), read("game/mecha/controller.ts"), read("game/mecha/RemoteMechaControls.tsx"), read("game/mechaReferenceHud.css"), read("game/MechaBattleLegend.tsx"), read("game/mecha/legendPresentation.ts"),
 ]);
 
 assert.match(city, /!embedded\(\) && !mechaOpen && <header className="city-header"/);
@@ -16,8 +16,23 @@ assert.match(city, /game\.active \|\| mechaOpen \|\| !!experience\.film/);
 assert.match(city, /labels, cinema, mechaOpen, roadAuditOpen/);
 
 assert.match(board, /className="mecha-battle-bar"/);
+assert.match(board, /previewLoading && <span role="status">/);
+assert.match(board, /onPreviewLoading=\{setPreviewLoading\}/);
+assert.match(board, /className="mecha-team-planning" aria-label=\{t\("回合与队伍规划"\)\}/);
+assert.match(board, /className="mecha-summary-heading"[\s\S]*<h3 className="mecha-objective-round"[\s\S]*className="mecha-summary-toggle"/);
+assert.equal(board.match(/className="mecha-objective-round"/g).length, 1);
+assert.doesNotMatch(board, /className="mecha-planning-round"|aria-hidden="true">＋/);
+assert.match(board, /className="mecha-objective-card"[\s\S]*className="mecha-quick-resource"/);
+assert.doesNotMatch(board, /className="mecha-mobile-round"|className="mecha-quick-resource-inline"/);
+assert.equal(board.match(/className="mecha-quick-resource"/g).length, 1);
+const planningBlock = board.slice(board.indexOf('<section className="mecha-team-planning"'), board.indexOf('<section className={targeting'));
+assert.match(planningBlock, /controller\.resetTurn\(\)/);
+assert.match(planningBlock, /className="mecha-pack"/);
+assert.match(planningBlock, /controller\.submit\(\)/);
+assert.doesNotMatch(board.slice(board.indexOf('<section className={targeting')), /controller\.resetTurn\(\)/);
+
 assert.match(board, /controller\.togglePause\(\)/);
-assert.match(board, /if \(viewFailed \|\| remoteActive \|\| !auto \|\| paused \|\| performance \|\| !controller\) return undefined/);
+assert.match(board, /if \(viewFailed \|\| previewLoading \|\| remoteActive \|\| !auto \|\| paused \|\| performance \|\| !controller\) return undefined/);
 assert.match(controller, /!auto && !paused && !performance && !finished\(\)/);
 assert.match(controller, /performanceFromLog\(match, result\.state, result\.log\)/);
 assert.match(controller, /playTurn\(match, plan\)/);
@@ -30,20 +45,29 @@ assert.match(board, /plannedCount = s\?\.plannedCount/);
 assert.match(board, /pendingNames = \(s\?\.pendingIds/);
 assert.match(board, /\{t\("已规划"\)\} \{plannedCount\}\/\{activeMechs\.length\}/);
 assert.match(board, /pendingNames\.join\("、"\)/);
-assert.match(board, /<details className="mecha-settings" name="mecha-battle-options">/);
-// Both disclosures live in one bounded menu. Their actual non-overlap with
-// submit is checked geometrically by verify-city-mecha-order-click.mjs.
-assert.match(board, /<details className="mecha-options-menu">[\s\S]*?<details className="mecha-settings" name="mecha-battle-options">/);
+// The two top-bar entry points own mutually exclusive panels. Remote controls
+// stay mounted when hidden so pending work, links and persistent stop survive.
+const topBar = board.slice(board.lastIndexOf('<header className="mecha-battle-bar">'), board.lastIndexOf('<div className="mecha-panel"'));
+assert.match(topBar, /data-mecha-settings-trigger="battlefield"[\s\S]*aria-controls="mecha-battlefield-settings"/);
+assert.match(topBar, /data-mecha-settings-trigger="remote"[\s\S]*aria-controls="mecha-remote-settings"/);
+assert.doesNotMatch(board, /className="mecha-options-menu"/);
+assert.match(board, /hidden=\{settingsPanel !== "battlefield"\}/);
+assert.match(board, /hidden=\{settingsPanel !== "remote"\}/);
+assert.match(board, /<RemoteMechaControls presentation="panel"[\s\S]*?stopTarget=\{submitTarget\}/);
+assert.match(board, /settingsClose\.click\(\); return/);
+assert.match(remote, /presentation === "panel" \? <div className="mecha-remote-settings">/);
 assert.match(remote, /<details className="mecha-settings mecha-remote-settings" name="mecha-battle-options">/);
-assert.match(board, /<RemoteMechaControls[\s\S]*?stopTarget=\{submitTarget\}/);
-assert.match(css, /\.mecha-panel > \.mecha-options-menu \{ grid-row: 3;[^\n]*overflow: auto/);
+assert.match(referenceCss, /\.mecha-settings-popover\[hidden\] \{ display: none; \}/);
+assert.match(referenceCss, /\.mecha-settings-body \{[^\n]*overflow: auto/);
 assert.match(engine, /claimParkedMechaClick/);
 assert.match(city, /mechaEntryRefusal/);
 assert.match(board, /stakeBuildings\(state\)/);
 assert.match(board, /s\.preview\.enemyOrder/);
 assert.match(board, /aria-expanded=\{showOrder\}/);
-assert.match(board, /className="mecha-map-legend"/);
-for (const label of ["可移动", "计划落点", "战斗目标与威胁", "打法目标"]) assert.match(board, new RegExp(`t\\("${label}"\\)`));
+assert.equal(board.match(/<MechaBattleLegend locale=\{locale\} view=\{cityView\}/g).length, 2, "board and settings share one contextual key");
+assert.doesNotMatch(board, /className="mecha-map-legend"/);
+assert.doesNotMatch(legend, /✣|!P|可选目标|已选目标/);
+assert.match(board, /t\("战斗目标与威胁"\)/);
 assert.doesNotMatch(board, /worldRef\.current\?\.rotateCamera\(\)/);
 assert.match(board, /worldRef\.current\?\.resetCamera\(\)/);
 assert.match(css, /\.mecha-overlay\.is-city \{ display: block; background: transparent; pointer-events: none; \}/);
@@ -55,6 +79,7 @@ assert.match(css, /@media \(max-height: 640px\)/);
 assert.match(css, /@media \(max-width: 600px\) and \(max-height: 520px\)/);
 assert.match(world, /acquireModeLease\(\{ camera: "orbit" \}\)/);
 assert.doesNotMatch(world, /frameCamera/);
+assert.match(world, /new THREE\.Vector3\(dx, Math\.hypot\(dx, dz\), dz\)\.normalize\(\)/);
 // Intentional clarity-P0 contrast values; functional lifecycle checks live in tests.
 assert.match(world, /empty: 0\.24/);
 assert.match(world, /grid[^\n]*opacity: 0\.72/);
@@ -73,9 +98,15 @@ assert.match(controller, /actionFault\(match, draft, selected/);
 assert.match(board, /targets: performance \? \[\] : targetOptions\.flatMap/);
 assert.match(world, /threat\.visible = telegraph\.has\(id\)/);
 assert.match(world, /warning\.visible = threat\.visible/);
-assert.match(world, /focusedTelegraph\.has\(id\) \? focusWarningMat/);
+assert.match(world, /const declaredFocus = new Set\(\(current\.inspectedThreats \?\? \[\]\)\.map\(cellKey\)\)/);
+assert.match(world, /warning\.material = focused \? focusWarningMat : subdued \? subduedWarningMat : warningMat/);
+assert.match(world, /dangerFrames\[index\]!\.visible = dangerFills\[index\]!\.visible = threat\.visible/);
+assert.match(world, /declaredIntentSegments\(intent\)/);
+assert.match(board, /declaredIntents: performance \|\| !state \? \[\] : declaredEnemyIntents\(state\)/);
 assert.match(world, /warningTexture\.dispose\(\)/);
-assert.match(board, /红色三角为当前宣告；蓝色 P 为草稿试算；!P 表示两者重叠/);
+assert.match(legendPresentation, /红框攻击者 → 斜纹危险格/);
+assert.match(legendPresentation, /蓝色虚线：执行草稿后的攻击格/);
+assert.match(legendPresentation, /view\.targetPreview\?\.shove/);
 assert.doesNotMatch(board, /MechaLineup|mecha-grid|方格棋盘|t\("布局"\)/);
 assert.doesNotMatch(css, /\.mecha-grid|\.mecha-cell/);
 assert.match(board, /className="mecha-overlay is-city"/);
@@ -84,9 +115,9 @@ assert.match(board, /\{t\("战场"\)\}/);
 assert.match(controller, /const declaredThreats = collectTelegraphs\(match\)/);
 assert.match(controller, /const projectedThreats = preview\.ok \? \{ cells: preview\.telegraphAfter, byActor: preview\.telegraphByActor \} : null/);
 assert.match(controller, /const currentThreats = projectedThreats \?\? declaredThreats/);
-assert.match(board, /telegraph: performance \? \[\] : \(s\?\.telegraph \?\? \[\]\)/);
+assert.match(board, /telegraph: performance \? \[\] : \(projected \?\? s\?\.declaredThreats\)\?\.cells \?\? \[\]/);
 assert.match(board, /declaredTelegraph: performance \? \[\] : \(s\?\.declaredThreats\.cells \?\? \[\]\)/);
-assert.match(board, /projectedTelegraph: performance \? null : \(s\?\.projectedThreats\?\.cells \?\? null\)/);
+assert.match(board, /projectedTelegraph: performance \? null : \(projected\?\.cells \?\? null\)/);
 assert.match(board, /草稿试算威胁/);
 assert.match(board, /整包预计机甲受击/);
 assert.match(board, /\{t\("撤回移动"\)\}/);

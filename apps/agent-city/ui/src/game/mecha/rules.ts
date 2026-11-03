@@ -1,3 +1,6 @@
+import { rearDeployZone } from "./deployment";
+export { applyDeployPlan, validateDeployPlan, deployableCells, deploymentCellFault } from "./deployment";
+export type { DeployPlacement, DeployPlan, DeployFault, DeployTurn } from "./deployment";
 /**
  * GDD v1.4 mecha tactics, the City playable copy.
  * 2×2 footprint center is anchor + (1, 1). arena_plan is whole-pack.
@@ -110,6 +113,10 @@ export function createMatch(opts: {
   mechs?: Array<{ id: MechId; pos: Cell }>;
   boss?: Cell;
   stake?: BuildingStake;
+  /** Explicit product entry, legacy deterministic rule fixtures remain enemy_prepare. */
+  deployment?: boolean;
+  deployZone?: Cell[];
+  reservedDeployCells?: Cell[];
 }): MatchState {
   const deploy = standardDeploy();
   const placed = opts.mechs ?? deploy.mechs;
@@ -139,7 +146,8 @@ export function createMatch(opts: {
     mechs: placed.map((m) => ({ id: m.id, pos: { ...m.pos }, hp: STATS[m.id].maxHp, cd: 0, skillUsed: false })),
     boss: { anchor: { ...(opts.boss ?? deploy.boss) }, hp: BOSS_HP, cdSweep: 0, cadence: 0, intent: null },
     turn: 1,
-    phase: "enemy_prepare",
+    phase: opts.deployment ? "deployment" : "enemy_prepare",
+    ...(opts.deployment ? { deployment: { zone: (opts.deployZone ?? rearDeployZone()).map(c => ({ ...c })), reservedCells: (opts.reservedDeployCells ?? []).map(c => ({ ...c })) } } : {}),
     revision: 0,
     outcome: null,
   };

@@ -2,6 +2,7 @@
 // Browser tests use a synthetic client and real rule implementations.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { mkdir } from "node:fs/promises";
 import test from "node:test";
 import { createServer } from "vite";
 const require = createRequire(new URL("../../../desktop/ui-dev/package.json", import.meta.url));
@@ -200,6 +201,7 @@ test("remote UI permits post-move melee and blocks stale actions in PvE and PvP"
       assert.equal(await submit.isDisabled(), true);
       await cell(4, 4).click(); assert.equal(await submit.isEnabled(), true); await submit.click();
       const plans = await page.evaluate(() => globalThis.submittedPlans);
+      await page.waitForFunction(() => Object.keys(sessionStorage).filter(k => k.startsWith("mecha-pending:v1:")).length === 0);
       assert.equal(plans.length, 1); assert.deepEqual(plans[0].plan.items.find((i) => i.mechId === "Assault").action, { kind: "melee", target });
       assert.equal(mode === "pvp" ? playPvpTurn(state, plans[0].plan).ok : validateAndApplyPlan(structuredClone(state), plans[0].plan).ok, true);
       // Force a simultaneous destination conflict by cancelling an ally's move
@@ -308,5 +310,320 @@ test("remote UI keeps input locked until the visible 3D turn finishes", async ()
     await page.waitForFunction(() => !document.querySelector(".remote-mechs button").disabled);
     assert.deepEqual(errors, []);
     await page.close();
+  } finally { await browser.close(); }
+});
+
+test("uncertain submission stays locked on same-revision snapshots and retries the identical command", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    for (const locale of ["en-US", "zh-CN"]) {
+      const state = pvp();
+      const snapshot = { state, mode: "pvp", matchId: "m1", revision: 0, status: "active", ruleset: state.ruleset, players: [{ playerId: "owner", side: "A", role: "host" }, { playerId: "guest", side: "B", role: "guest" }] };
+      const page = await browser.newPage({ locale, viewport: { width: 390, height: 844 } });
+      const errors = []; page.on("pageerror", (error) => errors.push(error.message));
+      await page.addInitScript((value) => { globalThis.testSnapshot = value; globalThis.submittedPlans = []; globalThis.responses = []; }, snapshot);
+      await page.route("**/src/remote/remoteAccess.ts*", (route) => route.fulfill({ contentType: "text/javascript", body: `const client = { snapshot: async () => ({ok:true,value:structuredClone(globalThis.testSnapshot)}), submitPlan: command => { globalThis.submittedPlans.push(structuredClone(command)); return new Promise((resolve,reject) => globalThis.responses.push({resolve,reject})); }, onStatus: fn => { fn("online"); return () => {}; }, subscribe: fn => { globalThis.emitMatchEvent = fn; return () => {}; }, dispose: () => {} }; export function useRemoteAccess() { return { client, playerId:"owner", status:"ready", error:"" }; }` }));
+      await page.route("**/src/game/mecha/presentation/RemoteBattleScene.ts*", (route) => route.fulfill({ contentType: "text/javascript", body: `export class RemoteBattleScene { applySnapshot() {} setPaused() {} dispose() {} async playTurn() {} }` }));
+      await page.goto(`${base}/remote.html?match=m1`);
+      for (let i = 0; i < 3; i++) {
+        await page.locator(".remote-mechs button").nth(i).click();
+        await page.locator(".remote-actions button").getByText("skip", { exact: true }).click();
+      }
+      await page.locator(".remote-submit").click();
+      await page.evaluate(() => globalThis.responses[0].reject(new Error("host_offline")));
+      await page.locator(".remote-pending").waitFor();
+      assert.equal(await page.evaluate(() => { const e = new Event("beforeunload", {cancelable:true}); window.dispatchEvent(e); return e.defaultPrevented; }), true);
+      await page.getByText(locale === "zh-CN" ? "同一标签页刷新后" : "This tab attempts to retain the pending lock", { exact: false }).waitFor();
+      const retry = page.locator(".remote-pending button");
+      await page.waitForFunction(() => !document.querySelector(".remote-pending button").disabled);
+      assert.equal(await page.locator(".remote-submit").isDisabled(), true);
+      assert.equal(await page.locator(".remote-mechs button").first().isDisabled(), true);
+      if (process.env.MECHA_PENDING_SCREENSHOTS) await page.screenshot({ path: `${process.env.MECHA_PENDING_SCREENSHOTS}/pending-${locale}.png`, fullPage: true });
+      await page.locator("header button").click();
+      await page.waitForFunction(() => !document.querySelector(".remote-pending button").disabled);
+      assert.equal(await page.locator(".remote-pending").count(), 1);
+      await retry.click();
+      await page.evaluate(() => globalThis.responses[1].resolve({ok:false,error:{code:"not_your_turn"}}));
+      await page.waitForFunction(() => !document.querySelector(".remote-pending button").disabled);
+      assert.equal(await page.locator(".remote-pending").count(), 1);
+      assert.equal(await page.evaluate(() => Object.keys(sessionStorage).filter(k => k.startsWith("mecha-pending:v1:")).length), 1);
+      await retry.click();
+      const commands = await page.evaluate(() => globalThis.submittedPlans);
+      assert.equal(commands.length, 3); assert.deepEqual(commands[0], commands[1]); assert.deepEqual(commands[0], commands[2]);
+      const played = playPvpTurn(state, commands[0].plan); assert.equal(played.ok, true);
+      const turn = { type: "turn.resolved", protocol: "mecha-net:v1", matchId: "m1", playerId: "owner", commandId: commands[0].commandId, revision: played.state.revision, state: played.state, log: played.log, presentationStages: played.presentationStages };
+      // The event may arrive before the retry response, which must not undo it.
+      await page.evaluate((value) => { globalThis.emitMatchEvent({type:"turn.resolved",result:value}); globalThis.responses[2].resolve({ok:false,error:{code:"unavailable"}}); }, turn);
+      await page.waitForFunction(() => !document.querySelector(".remote-pending"));
+      assert.equal(await page.evaluate(() => { const e = new Event("beforeunload", {cancelable:true}); window.dispatchEvent(e); return e.defaultPrevented; }), false);
+      assert.match(await page.locator(".remote-status").innerText(), /rev 1/);
+      assert.deepEqual(errors, []); await page.close();
+    }
+  } finally { await browser.close(); }
+});
+
+test("same-revision mode replacement cannot retry an old plan into an older host", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const state = pve();
+    const snapshot = { state, mode: "pve", matchId: "m1", revision: 0, status: "active", ruleset: state.ruleset, players: [{ playerId: "owner", side: "A", role: "host" }] };
+    const page = await browser.newPage({ locale: "en-US" });
+    await page.addInitScript((value) => { globalThis.testSnapshot = value; globalThis.submittedPlans = []; }, snapshot);
+    await page.route("**/src/remote/remoteAccess.ts*", (route) => route.fulfill({ contentType: "text/javascript", body: `const client = { snapshot: async () => ({ok:true,value:structuredClone(globalThis.testSnapshot)}), submitPlan: async command => { globalThis.submittedPlans.push(command); throw new Error("host_offline"); }, onStatus: fn => { fn("online"); return () => {}; }, subscribe: fn => { globalThis.emitMatchEvent = fn; return () => {}; }, dispose: () => {} }; export function useRemoteAccess() { return { client, playerId:"owner", status:"ready", error:"" }; }` }));
+    await page.route("**/src/game/mecha/presentation/RemoteBattleScene.ts*", (route) => route.fulfill({ contentType: "text/javascript", body: `export class RemoteBattleScene { applySnapshot() {} setPaused() {} dispose() {} async playTurn() {} }` }));
+    await page.goto(`${base}/remote.html?match=m1`);
+    for (let i = 0; i < 3; i++) { await page.locator(".remote-mechs button").nth(i).click(); await page.locator(".remote-actions button").getByText("skip", { exact: true }).click(); }
+    await page.locator(".remote-submit").click(); await page.locator(".remote-pending").waitFor();
+    const replacementState = pvp();
+    const replacement = { ...snapshot, mode: "pvp", ruleset: replacementState.ruleset, state: replacementState, players: [...snapshot.players, { playerId: "guest", side: "B", role: "guest" }] };
+    await page.evaluate((value) => globalThis.emitMatchEvent({type:"match.replaced",snapshot:value}), replacement);
+    await page.getByText(/battlefield changed without a new revision/).waitFor();
+    assert.equal(await page.locator(".remote-pending button").isDisabled(), true);
+    assert.equal((await page.evaluate(() => globalThis.submittedPlans)).length, 1);
+    // A newer authority snapshot makes the old base revision safe to retire.
+    const newer = structuredClone(replacement); newer.revision = 1; newer.state.revision = 1;
+    await page.evaluate((value) => globalThis.emitMatchEvent({type:"match.replaced",snapshot:value}), newer);
+    await page.waitForFunction(() => !document.querySelector(".remote-pending"));
+    await page.close();
+  } finally { await browser.close(); }
+});
+
+
+test("remote PvP explains disabled legacy concession on mobile in both languages", async () => {
+  const browser = await chromium.launch({ headless: true });
+  const output = "../../../artifacts/mecha-clarity-p0/remote-concede-synthetic-2026-11-03";
+  await mkdir(output, { recursive: true });
+  try {
+    const state = pvp();
+    const snapshot = { state, mode: "pvp", matchId: "m1", revision: 0, status: "active", ruleset: state.ruleset, players: [{ playerId: "owner", side: "A", role: "host" }, { playerId: "guest", side: "B", role: "guest" }] };
+    for (const [locale, label, note] of [["zh-CN", "认输暂不可用", "停止远程对局"], ["en-US", "Concede unavailable", "stop remote play"]]) {
+      const page = await browser.newPage({ locale, viewport: { width: 390, height: 844 } });
+      const errors = []; page.on("pageerror", error => errors.push(error.message));
+      await page.addInitScript(value => { globalThis.testSnapshot = value; }, snapshot);
+      await page.route("**/src/remote/remoteAccess.ts*", route => route.fulfill({ contentType: "text/javascript", body: `const client = { snapshot: async () => ({ok:true,value:structuredClone(globalThis.testSnapshot)}), onStatus: fn => { fn("online"); return () => {}; }, subscribe: () => () => {}, dispose: () => {} }; export function useRemoteAccess() { return { client, playerId:"owner", status:"ready", error:"" }; }` }));
+      await page.route("**/src/game/mecha/presentation/RemoteBattleScene.ts*", route => route.fulfill({ contentType: "text/javascript", body: `export class RemoteBattleScene { applySnapshot() {} setPaused() {} dispose() {} async playTurn() {} }` }));
+      await page.goto(`${base}/remote.html?match=m1`);
+      const button = page.getByRole("button", { name: label, exact: true });
+      await button.waitFor(); assert.equal(await button.isDisabled(), true);
+      assert.match(await page.locator("#remote-concede-note").innerText(), new RegExp(note));
+      assert.equal(await button.getAttribute("aria-describedby"), "remote-concede-note");
+      const geometry = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, document: document.documentElement.scrollWidth }));
+      assert.ok(geometry.document <= geometry.viewport, `horizontal overflow: ${JSON.stringify(geometry)}`);
+      await page.screenshot({ path: `${output}/${locale}.png`, fullPage: true });
+      assert.deepEqual(errors, []); await page.close();
+    }
+  } finally { await browser.close(); }
+});
+
+test("v3 concession keeps an uncertain command locked and ignores a late response after the terminal event", async () => {
+  const browser = await chromium.launch({ headless: true });
+  const { pvpRules } = await server.ssrLoadModule("/src/game/mecha/rules/pvp.ts");
+  try {
+    for (const locale of ["zh-CN", "en-US"]) {
+      const state = pvp();
+      const snapshot = { state, mode: "pvp", matchId: "m1", revision: 0, status: "active", ruleset: state.ruleset, players: [{ playerId: "owner", side: "A", role: "host" }, { playerId: "guest", side: "B", role: "guest" }] };
+      const page = await browser.newPage({ locale, viewport: { width: 390, height: 844 } });
+      const errors = []; page.on("pageerror", error => errors.push(error.message)); page.on("dialog", dialog => dialog.accept());
+      await page.addInitScript(value => { globalThis.testSnapshot = value; globalThis.commands = []; globalThis.responses = []; }, snapshot);
+      await page.route("**/src/remote/remoteAccess.ts*", route => route.fulfill({ contentType: "text/javascript", body: `const client = { snapshot: async () => ({ok:true,value:structuredClone(globalThis.testSnapshot)}), supportsSafeConcede: () => true, submitConcede: command => {globalThis.commands.push(structuredClone(command)); return new Promise((resolve,reject) => globalThis.responses.push({resolve,reject}));}, onStatus: fn => { fn("online"); return () => {}; }, subscribe: fn => { globalThis.emitMatchEvent = fn; return () => {}; }, dispose: () => {} }; export function useRemoteAccess() { return { client, playerId:"owner", status:"ready", error:"" }; }` }));
+      await page.route("**/src/game/mecha/presentation/RemoteBattleScene.ts*", route => route.fulfill({ contentType: "text/javascript", body: `export class RemoteBattleScene { applySnapshot() {} setPaused() {} dispose() {} async playTurn() {} }` }));
+      await page.goto(`${base}/remote.html?match=m1`);
+      const concede = page.getByRole("button", { name: locale === "zh-CN" ? "认输" : "Concede", exact: true });
+      await concede.waitFor(); await page.waitForFunction(() => !document.querySelector('.remote-submit').disabled || !document.querySelector('.remote-mechs button').disabled);
+      await concede.click();
+      await page.evaluate(() => globalThis.responses[0].reject(new Error("host_offline")));
+      await page.locator(".remote-pending").waitFor();
+      assert.equal(await page.locator(".remote-submit").isDisabled(), true);
+      await page.locator("header button").click();
+      await page.waitForFunction(() => !document.querySelector(".remote-pending button").disabled);
+      await page.locator(".remote-pending button").click();
+      const commands = await page.evaluate(() => globalThis.commands);
+      assert.equal(commands.length, 2); assert.deepEqual(commands[0], commands[1]);
+      const finished = pvpRules.concede(state, "A");
+      const turn = { type: "turn.resolved", protocol: "mecha-net:v1", matchId: "m1", playerId: "owner", commandId: commands[0].commandId, revision: finished.revision, state: finished, log: [], presentationStages: null };
+      await page.evaluate(value => globalThis.emitMatchEvent({ type: "turn.resolved", result: value }), turn);
+      await page.waitForFunction(() => !document.querySelector(".remote-pending"));
+      await page.evaluate(() => globalThis.responses[1].resolve({ok:false,error:{code:"not_your_turn"}}));
+      await page.waitForTimeout(50);
+      assert.equal(await page.locator(".remote-pending").count(), 0);
+      assert.equal(await page.getByRole("button", { name: locale === "zh-CN" ? "认输" : "Concede", exact: true }).count(), 0);
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  } finally { await browser.close(); }
+});
+
+
+test("same-revision corrections permanently disable plan and concession retries without losing late success", async () => {
+  const browser = await chromium.launch({ headless: true });
+  const { pvpRules } = await server.ssrLoadModule("/src/game/mecha/rules/pvp.ts");
+  try {
+    for (const kind of ["plan", "concede"]) for (const outcome of ["unknown", "success"]) {
+      const state = pvp();
+      const snapshot = { state, mode: "pvp", matchId: "m1", revision: 0, status: "active", ruleset: state.ruleset, players: [{ playerId: "owner", side: "A", role: "host" }, { playerId: "guest", side: "B", role: "guest" }] };
+      const page = await browser.newPage({ locale: "en-US", viewport: { width: 390, height: 844 } });
+      const errors = []; page.on("pageerror", error => errors.push(error.message)); page.on("dialog", dialog => dialog.accept());
+      await page.addInitScript(value => { globalThis.testSnapshot = value; globalThis.commands = []; globalThis.responses = []; }, snapshot);
+      await page.route("**/src/remote/remoteAccess.ts*", route => route.fulfill({ contentType: "text/javascript", body: `const send = command => { globalThis.commands.push(structuredClone(command)); return new Promise((resolve,reject) => globalThis.responses.push({resolve,reject})); }; const client = { snapshot: async () => ({ok:true,value:structuredClone(globalThis.testSnapshot)}), supportsSafeConcede: () => true, submitPlan: send, submitConcede: send, onStatus: fn => { fn("online"); return () => {}; }, subscribe: fn => { globalThis.emitMatchEvent = fn; return () => {}; }, dispose: () => {} }; export function useRemoteAccess() { return { client, playerId:"owner", status:"ready", error:"" }; }` }));
+      await page.route("**/src/game/mecha/presentation/RemoteBattleScene.ts*", route => route.fulfill({ contentType: "text/javascript", body: `export class RemoteBattleScene { applySnapshot() {} setPaused() {} dispose() {} async playTurn() {} }` }));
+      await page.goto(`${base}/remote.html?match=m1`);
+      await page.waitForFunction(() => !document.querySelector(".remote-mechs button")?.disabled);
+      if (kind === "plan") {
+        for (let i = 0; i < 3; i++) { await page.locator(".remote-mechs button").nth(i).click(); await page.locator(".remote-actions button").getByText("skip", { exact: true }).click(); }
+        await page.locator(".remote-submit").click();
+      } else await page.getByRole("button", { name: "Concede", exact: true }).click();
+      const command = (await page.evaluate(() => globalThis.commands))[0];
+      const changed = structuredClone(snapshot); changed.state.units[0].hp -= 1;
+      await page.evaluate(value => { globalThis.testSnapshot = value; globalThis.emitMatchEvent({type:"match.replaced", snapshot:value}); }, changed);
+      await page.getByText(/battlefield changed without a new revision/).waitFor();
+      assert.equal(await page.locator(".remote-pending button").isDisabled(), true);
+      if (outcome === "unknown") {
+        await page.evaluate(() => globalThis.responses[0].reject(new Error("host_offline")));
+        await page.waitForFunction(() => !document.querySelector(".remote-submit") || !document.querySelector(".remote-submit").textContent.includes("Resolving"));
+        await page.evaluate(value => { globalThis.testSnapshot = value; globalThis.emitMatchEvent({type:"match.replaced", snapshot:value}); }, snapshot);
+        await page.waitForTimeout(100);
+        assert.equal(await page.locator(".remote-pending button").isDisabled(), true);
+        assert.equal(await page.locator(".remote-mechs button").first().isDisabled(), true);
+        const newer = structuredClone(snapshot); newer.revision = 1; newer.state.revision = 1;
+        await page.evaluate(value => globalThis.emitMatchEvent({type:"match.replaced", snapshot:value}), newer);
+      } else {
+        const played = kind === "plan" ? playPvpTurn(state, command.plan) : {ok:true, state:pvpRules.concede(state, "A"), log:[], presentationStages:null};
+        assert.equal(played.ok, true);
+        const turn = { type:"turn.resolved", protocol:"mecha-net:v1", matchId:"m1", playerId:"owner", commandId:command.commandId, revision:played.state.revision, state:played.state, log:played.log, presentationStages:played.presentationStages };
+        await page.evaluate(value => globalThis.responses[0].resolve({ok:true,value}), turn);
+      }
+      await page.waitForFunction(() => !document.querySelector(".remote-pending"));
+      assert.equal((await page.evaluate(() => globalThis.commands)).length, 1);
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  } finally { await browser.close(); }
+});
+
+test("pending deployment remains locked across same-revision phase replacement and remount", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    for (const outcome of ["unknown", "forbidden"]) {
+      const state = createMatch({ preset: "covers_sparse_mid", script: "stationary_smash", deployment: true });
+      const snapshot = { state, mode: "pve", matchId: "m1", revision: state.revision, status: "active", ruleset: state.ruleset, players: [{ playerId: "owner", side: "A", role: "host" }] };
+      const page = await browser.newPage({ locale: "en-US" });
+      const errors = []; page.on("pageerror", error => errors.push(error.message));
+      await page.addInitScript(value => { globalThis.testSnapshot = value; globalThis.commands = []; globalThis.responses = []; }, snapshot);
+      await page.route("**/src/remote/remoteAccess.ts*", route => route.fulfill({ contentType: "text/javascript", body: `const client = { snapshot: async () => ({ok:true,value:structuredClone(globalThis.testSnapshot)}), submitDeployment: command => { globalThis.commands.push(structuredClone(command)); return new Promise((resolve,reject) => globalThis.responses.push({resolve,reject})); }, onStatus: fn => { fn("online"); return () => {}; }, subscribe: fn => { globalThis.emitMatchEvent = fn; return () => {}; }, dispose: () => {} }; export function useRemoteAccess() { return { client, playerId:"owner", status:"ready", error:"" }; }` }));
+      await page.route("**/src/game/mecha/presentation/RemoteBattleScene.ts*", route => route.fulfill({ contentType: "text/javascript", body: `export class RemoteBattleScene { applySnapshot() {} setPaused() {} dispose() {} async playTurn() {} setDeploymentPreview() {} }` }));
+      await page.goto(`${base}/remote.html?match=m1`);
+      const legal = page.locator(".remote-row button.deployable");
+      await page.waitForFunction(() => !document.querySelector(".remote-row button.deployable")?.disabled);
+      await legal.nth(0).click();
+      await page.getByRole("button", { name: /Gunner/ }).click(); await legal.nth(1).click();
+      await page.getByRole("button", { name: /Support/ }).click(); await legal.nth(2).click();
+      await page.getByRole("button", { name: "Confirm deployment" }).click();
+      await page.waitForFunction(() => globalThis.commands.length === 1);
+      assert.equal(await page.evaluate(() => { const e = new Event("beforeunload", {cancelable:true}); window.dispatchEvent(e); return e.defaultPrevented; }), true);
+      const corrected = structuredClone(snapshot); corrected.state.phase = "player_plan";
+      await page.evaluate(value => { globalThis.testSnapshot = value; globalThis.emitMatchEvent({type:"match.replaced",snapshot:value}); }, corrected);
+      await page.getByText("A previous deployment is unconfirmed.", { exact: false }).waitFor();
+      assert.equal(await page.locator(".remote-mechs button").first().isDisabled(), true);
+      await page.evaluate(value => { globalThis.testSnapshot = value; globalThis.emitMatchEvent({type:"match.replaced",snapshot:value}); }, snapshot);
+      await page.getByText("A previous deployment is unconfirmed.", { exact: false }).waitFor();
+      assert.equal(await legal.first().isDisabled(), true);
+      assert.equal(await page.getByRole("button", { name: "Confirm deployment" }).isDisabled(), true);
+      if (outcome === "unknown") {
+        await page.evaluate(() => globalThis.responses[0].reject(new Error("host_offline")));
+        await page.waitForTimeout(100);
+        assert.equal(await legal.first().isDisabled(), true);
+        const newer = structuredClone(snapshot); newer.revision++; newer.state.revision++;
+        await page.evaluate(value => globalThis.emitMatchEvent({type:"match.replaced",snapshot:value}), newer);
+      } else {
+        await page.evaluate(() => globalThis.responses[0].resolve({ok:false,error:{code:"forbidden"}}));
+      }
+      await page.waitForFunction(() => !document.querySelector(".remote-row button.deployable")?.disabled);
+      assert.equal(await page.evaluate(() => { const e = new Event("beforeunload", {cancelable:true}); window.dispatchEvent(e); return e.defaultPrevented; }), false);
+      assert.equal((await page.evaluate(() => globalThis.commands)).length, 1);
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  } finally { await browser.close(); }
+});
+
+// Synthetic client and authority; not a production relay or real-device test.
+test("reload restores deployment, plan and concession locks until authority advances", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    for (const kind of ["deployment", "plan", "concede", "guest-concede"]) {
+      const player = kind === "guest-concede" ? "guest" : "owner";
+      const state = kind === "deployment" ? createMatch({ preset: "covers_sparse_mid", script: "stationary_smash", deployment: true }) : pvp();
+      const snapshot = { state, mode: kind === "deployment" ? "pve" : "pvp", matchId: "m1", revision: state.revision, status: "active", ruleset: state.ruleset, players: [{ playerId: "owner", side: "A", role: "host" }, { playerId: "guest", side: "B", role: "guest" }] };
+      const page = await browser.newPage({ locale: "en-US" });
+      const errors = []; page.on("pageerror", e => errors.push(e.message)); page.on("dialog", dialog => dialog.accept());
+      await page.addInitScript(value => { globalThis.testSnapshot = value; globalThis.commands = []; }, snapshot);
+      await page.route("**/src/remote/remoteAccess.ts*", route => route.fulfill({ contentType: "text/javascript", body: `const send = command => { globalThis.commands.push(structuredClone(command)); return new Promise(() => {}); }; const client = { snapshot: async () => ({ok:true,value:structuredClone(globalThis.testSnapshot)}), submitPlan: send, submitDeployment: send, submitConcede: send, supportsSafeConcede: () => true, onStatus: fn => { fn("online"); return () => {}; }, subscribe: fn => { globalThis.emitMatchEvent = fn; return () => {}; }, dispose: () => {} }; export function useRemoteAccess() { return { client, playerId:${JSON.stringify(player)}, status:"ready", error:"" }; }` }));
+      await page.route("**/src/game/mecha/presentation/RemoteBattleScene.ts*", route => route.fulfill({ contentType: "text/javascript", body: `export class RemoteBattleScene { applySnapshot() {} setPaused() {} dispose() {} async playTurn() {} setDeploymentPreview() {} }` }));
+      await page.goto(`${base}/remote.html?match=m1&capability=mecha:v3`);
+      await page.waitForFunction(() => document.querySelector(".remote-mechs button") && !document.querySelector(".remote-mechs button").disabled);
+      if (kind === "deployment") {
+        const legal = page.locator(".remote-row button.deployable");
+        await legal.nth(0).click(); await page.getByRole("button", { name: /Gunner/ }).click(); await legal.nth(1).click();
+        await page.getByRole("button", { name: /Support/ }).click(); await legal.nth(2).click();
+        await page.getByRole("button", { name: "Confirm deployment" }).click();
+      } else if (kind === "plan") {
+        for (let i = 0; i < 3; i++) { await page.locator(".remote-mechs button").nth(i).click(); await page.locator(".remote-actions button").getByText("skip", { exact: true }).click(); }
+        await page.locator(".remote-submit").click();
+      } else await page.getByRole("button", { name: "Concede", exact: true }).click();
+      await page.waitForFunction(() => globalThis.commands.length === 1);
+      const marker = await page.evaluate(() => JSON.parse(sessionStorage.getItem(Object.keys(sessionStorage).find(key => key.startsWith("mecha-pending:v1:")))));
+      assert.equal(marker.kind, kind === "guest-concede" ? "concede" : kind); assert.equal(marker.playerId, player); assert.deepEqual(Object.keys(marker).sort(), ["baseRevision", "commandId", "kind", "matchId", "playerId", "version"].sort());
+      await page.reload();
+      await page.getByText("A request from before reload is unconfirmed", { exact: false }).waitFor();
+      assert.equal(await page.locator(".remote-mechs button").first().isDisabled(), true, kind);
+      assert.equal(await page.locator(".remote-pending button").count(), 0, kind);
+      assert.equal(await page.evaluate(() => globalThis.commands.length), 0, kind);
+      await page.locator("header button").click();
+      await page.waitForFunction(() => document.querySelector(".remote-status")?.textContent.includes("rev 0"));
+      assert.equal(await page.locator(".remote-mechs button").first().isDisabled(), true, kind);
+      const newer = structuredClone(snapshot); newer.revision++; newer.state.revision++;
+      await page.evaluate(value => { globalThis.testSnapshot = value; globalThis.emitMatchEvent({type:"match.replaced",snapshot:value}); }, newer);
+      await page.waitForFunction(() => !document.querySelector(".remote-mechs button")?.disabled);
+      assert.equal(await page.getByText("A request from before reload is unconfirmed", { exact: false }).count(), 0);
+      assert.equal(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith("mecha-pending:v1:")).length), 0);
+      assert.deepEqual(errors, []); await page.close();
+    }
+  } finally { await browser.close(); }
+});
+
+test("journal write, corruption and cleanup failures block new remote commands", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    for (const failure of ["read", "write", "corrupt", "cleanup"]) {
+      const state = pvp();
+      const snapshot = { state, mode: "pvp", matchId: "m1", revision: 0, status: "active", ruleset: state.ruleset, players: [{ playerId: "owner", side: "A", role: "host" }, { playerId: "guest", side: "B", role: "guest" }] };
+      const page = await browser.newPage({ locale: "en-US" }); page.on("dialog", dialog => dialog.accept());
+      await page.addInitScript(({ value, failure }) => {
+        globalThis.testSnapshot = value; globalThis.commands = [];
+        const key = `mecha-pending:v1:${JSON.stringify(["mecha:v3", "m1", "owner", "", "", ""])}`;
+        if (failure === "corrupt") sessionStorage.setItem(key, "{broken");
+        const get = Storage.prototype.getItem, set = Storage.prototype.setItem, remove = Storage.prototype.removeItem;
+        Storage.prototype.getItem = function(k) { if (failure === "read" && k.startsWith("mecha-pending:v1:")) throw Error("storage unavailable"); return get.call(this, k); };
+        Storage.prototype.setItem = function(k, v) { if (failure === "write" && k.startsWith("mecha-pending:v1:")) throw Error("storage unavailable"); return set.call(this, k, v); };
+        Storage.prototype.removeItem = function(k) { if (failure === "cleanup" && k.startsWith("mecha-pending:v1:")) throw Error("storage unavailable"); return remove.call(this, k); };
+      }, { value: snapshot, failure });
+      await page.route("**/src/remote/remoteAccess.ts*", route => route.fulfill({ contentType: "text/javascript", body: `const client = { snapshot: async () => ({ok:true,value:structuredClone(globalThis.testSnapshot)}), submitConcede: command => { globalThis.commands.push(command); return new Promise(() => {}); }, supportsSafeConcede: () => true, onStatus: fn => { fn("online"); return () => {}; }, subscribe: fn => { globalThis.emitMatchEvent = fn; return () => {}; }, dispose: () => {} }; export function useRemoteAccess() { return { client, playerId:"owner", status:"ready", error:"" }; }` }));
+      await page.route("**/src/game/mecha/presentation/RemoteBattleScene.ts*", route => route.fulfill({ contentType: "text/javascript", body: `export class RemoteBattleScene { applySnapshot() {} setPaused() {} dispose() {} async playTurn() {} }` }));
+      await page.goto(`${base}/remote.html?match=m1&capability=mecha:v3`);
+      const concede = page.getByRole("button", { name: "Concede", exact: true }); await concede.waitFor();
+      if (failure !== "corrupt" && failure !== "read") {
+        await page.waitForFunction(() => ![...document.querySelectorAll("button")].find(b => b.textContent === "Concede")?.disabled);
+        await concede.click();
+      }
+      if (failure === "cleanup") {
+        await page.waitForFunction(() => globalThis.commands.length === 1);
+        const newer = structuredClone(snapshot); newer.revision++; newer.state.revision++;
+        await page.evaluate(value => globalThis.emitMatchEvent({type:"match.replaced",snapshot:value}), newer);
+      }
+      await page.getByText("Pending-request storage is unavailable or identity changed", { exact: false }).waitFor();
+      assert.equal(await concede.isDisabled(), true, failure);
+      assert.equal(await page.evaluate(() => globalThis.commands.length), failure === "cleanup" ? 1 : 0);
+      await page.close();
+    }
   } finally { await browser.close(); }
 });

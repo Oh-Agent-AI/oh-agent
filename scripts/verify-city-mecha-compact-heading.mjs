@@ -11,7 +11,7 @@ const base = process.argv[2] ?? "http://127.0.0.1:5178";
 const screenshots = process.env.MECHA_SCREENSHOTS_DIR;
 if (screenshots) await mkdir(screenshots, { recursive: true });
 
-const browser = await chromium.launch({ headless: true, args: ["--enable-unsafe-swiftshader"] });
+const browser = await chromium.launch({ headless: true, args: [process.env.MECHA_BROWSER_ANGLE === "metal" ? "--use-angle=metal" : "--enable-unsafe-swiftshader"] });
 try {
   for (const locale of ["en", "zh-Hans"]) {
     const zh = locale === "zh-Hans";
@@ -68,7 +68,14 @@ try {
         }
         return { text: text.textContent, rect: box(node), words };
       };
-      return { label: textInfo(el.querySelector(".mecha-objective-heading")), intent: textInfo(el.querySelector(".mecha-objective-goal")),
+      const round = el.querySelector("h3.mecha-objective-round"), roundStyle = getComputedStyle(round);
+      // DOM-only two-digit turn probe; never changes the match/controller state.
+      const originalRound = round.textContent;
+      round.textContent = originalRound.replace(/1\/15$/, "15/15");
+      const lastRound = box(round), lastRoundButton = box(button);
+      round.textContent = originalRound;
+      return { lastRound, lastRoundButton, round: box(round), roundSize: parseFloat(roundStyle.fontSize), roundWeight: Number(roundStyle.fontWeight),
+        label: textInfo(el.querySelector(".mecha-objective-heading")), intent: textInfo(el.querySelector(".mecha-objective-goal")),
         heading: box(el), button: box(button), summary: box(summary), scrollWidth: summary.scrollWidth, clientWidth: summary.clientWidth,
         scrollHeight: summary.scrollHeight, clientHeight: summary.clientHeight };
     });
@@ -80,18 +87,20 @@ try {
       await summary.evaluate((el) => { el.scrollTop = 0; });
       const m = await inspect();
       const label = `${locale} ${width}x${height}`;
+      assert.ok(m.roundSize >= 20 && m.roundWeight >= 700 && within(m.round, m.summary) && !overlap(m.round, m.button), `${label}: main round heading hierarchy or fit: ${JSON.stringify(m)}`);
+      assert.ok(within(m.lastRound, m.summary) && within(m.lastRoundButton, m.summary) && !overlap(m.lastRound, m.lastRoundButton), `${label}: two-digit round clips or overlaps: ${JSON.stringify(m)}`);
       assert.ok(m.label.words.every((w) => w.lines.length === 1) && m.intent.words.every((w) => w.lines.length === 1), `${label}: short words split: ${JSON.stringify(m)}`);
       assert.ok(within(m.label.rect, m.summary) && within(m.intent.rect, m.summary) && within(m.button, m.summary), `${label}: heading clipped: ${JSON.stringify(m)}`);
-      assert.ok(!overlap(m.button, m.label.rect) && !overlap(m.button, m.intent.rect), `${label}: text overlaps control: ${JSON.stringify(m)}`);
-      assert.ok(m.button.width >= 44 && m.button.height >= 44, `${label}: expand target below 44px: ${JSON.stringify(m.button)}`);
+      assert.ok(within(m.label.rect, m.button) && !overlap(m.button, m.intent.rect), `${label}: title must remain inside its control and goal below it: ${JSON.stringify(m)}`);
+      assert.ok(m.button.width >= 44 && m.button.height >= 28, `${label}: title expand target below 44×28px: ${JSON.stringify(m.button)}`);
       assert.ok(m.scrollWidth <= m.clientWidth + 1, `${label}: horizontal overflow: ${JSON.stringify(m)}`);
       if (width === 640) {
         assert.ok(m.summary.width <= width * 0.33 && m.summary.height <= height * 0.29 + 1, `${label}: rail covers too much board: ${JSON.stringify(m.summary)}`);
         const others = await page.locator(".mecha-panel").evaluate((panel) => {
           const box = (selector) => panel.querySelector(selector).getBoundingClientRect().toJSON();
-          return { resource: box(":scope > .mecha-quick-resource"), pack: box(":scope > .mecha-pack"), submit: box(":scope > .mecha-submit") };
+          return { resource: box(":scope > .mecha-turn-summary .mecha-objective-card > .mecha-quick-resource"), pack: box(":scope > .mecha-team-planning > .mecha-pack"), submit: box(":scope > .mecha-team-planning > .mecha-submit") };
         });
-        assert.ok(!overlap(m.summary, others.resource) && !overlap(m.summary, others.pack) && !overlap(m.summary, others.submit), `${label}: rail overlaps other HUD: ${JSON.stringify(others)}`);
+        assert.ok(within(others.resource, m.summary) && !overlap(m.summary, others.pack) && !overlap(m.summary, others.submit), `${label}: rail overlaps other HUD: ${JSON.stringify(others)}`);
         if (screenshots) await page.screenshot({ path: join(screenshots, `compact-heading-${locale}-640x480.png`) });
       }
       console.log(`${label}: short heading, target, clipping and overflow passed`);

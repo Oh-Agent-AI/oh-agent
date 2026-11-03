@@ -54,7 +54,7 @@ function fakeSite(opts: { blocked?: Pos[]; buildings?: Array<{ id: string; cells
   } as unknown as CityMechaSite;
 }
 
-test("restart, script, shape and doctrine changes refill the draft from the planner", () => {
+test("restart, script and shape refill; selecting doctrine preserves the draft", () => {
   const { planner, calls } = counting();
   const c = createMechaController({ planner });
   assert.equal(calls.length, 1, "the opening draft asks the planner once");
@@ -77,23 +77,116 @@ test("restart, script, shape and doctrine changes refill the draft from the plan
   assert.equal(afterShape.match.buildings.length, 1, "D2=b: a non-siege script still carries the site's building");
   assert.equal(calls.length, 3);
 
-  // 换打法：按新打法重填，规划器收到的是新打法。
+  const oldDraft = structuredClone(c.getState().draft);
   c.setDoctrine("peel");
   assert.equal(c.getState().doctrine, "peel");
+  assert.deepEqual(c.getState().draft, oldDraft);
+  assert.equal(calls.length, 3, "selecting a doctrine does not run the planner");
+  c.requestDoctrineSuggestion();
+  c.confirmDoctrineSuggestion();
   assert.deepEqual(calls.at(-1), { revision: afterShape.match.revision, doctrine: "peel" });
   assert.equal(calls.length, 4);
 });
 
-test("with the real planner, a doctrine change refills the draft with that doctrine's plan", () => {
+test("with the real planner, confirmation fills the selected doctrine plan", () => {
   const c = createMechaController({ match: duel(NEAR_BOSS) });
   c.setDoctrine("peel");
+  c.requestDoctrineSuggestion();
+  c.confirmDoctrineSuggestion();
   const want = peelPlan(c.getState().match).items;
   for (const item of want) assert.deepEqual(c.getState().draft[item.mechId], { moveTo: item.moveTo, action: item.action, explicit: true });
   c.setDoctrine("tunnel");
+  c.requestDoctrineSuggestion();
+  c.confirmDoctrineSuggestion();
   for (const item of squadPlan(c.getState().match).items) assert.deepEqual(c.getState().draft[item.mechId].action, item.action);
   c.applyDoctrine("peel");
   assert.equal(c.getState().doctrine, "peel");
   assert.deepEqual(planForDoctrine(c.getState().match, "peel").items.map((i) => i.mechId), want.map((i) => i.mechId));
+});
+
+test("suggestion replacement is confirmed, cancellable, and undo preserves manual move history", () => {
+  const c = createMechaController({ match: duel(NEAR_BOSS), planner: hold });
+  c.setMove("Assault", { x: 3, y: 2 });
+  const manual = structuredClone(c.getState().draft);
+  assert.equal(c.getState().canUndoMove, true);
+  c.setDoctrine("peel");
+  assert.deepEqual(c.getState().draft, manual);
+  c.requestDoctrineSuggestion();
+  assert.equal(c.getState().doctrineConfirmation, true);
+  c.cancelDoctrineSuggestion();
+  assert.deepEqual(c.getState().draft, manual);
+  c.confirmDoctrineSuggestion();
+  assert.deepEqual(c.getState().draft, manual, "a cancelled confirmation cannot be replayed");
+  c.requestDoctrineSuggestion();
+  c.confirmDoctrineSuggestion();
+  assert.notDeepEqual(c.getState().draft, manual);
+  assert.equal(c.getState().canUndoDoctrine, true);
+  c.undoDoctrineSuggestion();
+  assert.deepEqual(c.getState().draft, manual);
+  assert.equal(c.getState().canUndoMove, true);
+  c.undoMove();
+  assert.equal(c.getState().draft.Assault.moveTo, null);
+  assert.equal(c.getState().canUndoDoctrine, false);
+});
+
+test("stale suggestion confirmation and undo cannot discard newer edits or cross state changes", () => {
+  for (const change of [
+    (c: ReturnType<typeof createMechaController>) => c.setMove("Assault", { x: 3, y: 2 }),
+    (c: ReturnType<typeof createMechaController>) => c.setDoctrine("peel"),
+    (c: ReturnType<typeof createMechaController>) => c.pause(),
+    (c: ReturnType<typeof createMechaController>) => c.startAuto(),
+    (c: ReturnType<typeof createMechaController>) => c.restart(),
+  ]) {
+    const c = createMechaController({ match: duel(NEAR_BOSS), planner: hold });
+    c.requestDoctrineSuggestion();
+    change(c);
+    const current = structuredClone(c.getState().draft);
+    assert.equal(c.getState().doctrineConfirmation, false);
+    c.confirmDoctrineSuggestion();
+    assert.deepEqual(c.getState().draft, current);
+  }
+  const c = createMechaController({ match: duel(NEAR_BOSS), planner: hold });
+  c.requestDoctrineSuggestion(); c.confirmDoctrineSuggestion();
+  c.setMove("Assault", { x: 3, y: 2 });
+  const edited = structuredClone(c.getState().draft);
+  assert.equal(c.getState().canUndoDoctrine, false);
+  c.undoDoctrineSuggestion();
+  assert.deepEqual(c.getState().draft, edited);
+});
+
+test("auto doctrine change displays the new plan before resolving it", () => {
+  const { planner, calls } = counting((state, doctrine) => ({
+    revision: state.revision,
+    items: living(state).map(m => ({ mechId: m.id, moveTo: null, action: doctrine === "peel" && m.id === "Assault" ? { kind: "melee" as const, target: "boss" as const } : { kind: "skip" as const } })),
+  }));
+  const c = createMechaController({ match: duel(NEAR_BOSS), planner });
+  c.startAuto(); c.tick();
+  assert.equal(c.getState().beat, "resolve");
+  const turn = c.getState().match.turn;
+  c.setDoctrine("peel");
+  assert.equal(c.getState().match.turn, turn, "switching itself never resolves the old plan");
+  assert.equal(c.getState().draft.Assault.action.kind, "melee", "new plan is displayed first");
+  assert.equal(c.getState().beat, "resolve");
+  const count = calls.length;
+  c.tick();
+  assert.equal(c.getState().match.turn, turn + 1);
+  assert.ok(c.getState().lastLog.some(e => e.type === "act" && e.mechId === "Assault" && e.action === "melee"));
+  assert.equal(calls.length, count, "resolve uses the displayed cached plan");
+});
+
+test("planner failures leave the selected doctrine and manual draft intact", () => {
+  const c = createMechaController({ match: duel(NEAR_BOSS), planner: (state, doctrine) => {
+    if (doctrine === "peel") throw new Error("synthetic planner failure");
+    return hold(state);
+  } });
+  c.setMove("Assault", { x: 3, y: 2 });
+  c.setDoctrine("peel");
+  const draft = structuredClone(c.getState().draft);
+  c.requestDoctrineSuggestion(); c.confirmDoctrineSuggestion();
+  assert.deepEqual(c.getState().draft, draft);
+  assert.equal(c.getState().doctrine, "peel");
+  assert.equal(c.getState().doctrineConfirmation, false);
+  assert.match(c.getState().notice ?? "", /草稿未改变/);
 });
 
 test("manual draft then submit advances one turn; cues come only from acts that took effect", () => {
@@ -212,9 +305,15 @@ test("doctrine changes are frozen during pause and resume in manual or auto play
     c.resume();
     c.setDoctrine("peel");
     assert.equal(c.getState().doctrine, "peel");
-    assert.deepEqual(c.getState().draft.Assault.action, { kind: "melee", target: "boss" }, "the resumed doctrine refills the draft");
-    assert.equal(calls.length, callCount + 1, "after resume the new doctrine is planned even in auto mode");
-    assert.deepEqual(calls.at(-1), { revision: c.getState().match.revision, doctrine: "peel" });
+    if (auto) {
+      assert.deepEqual(c.getState().draft.Assault.action, { kind: "melee", target: "boss" }, "auto shows the new plan");
+      assert.equal(c.getState().beat, "resolve");
+      assert.equal(calls.length, callCount + 1);
+      assert.deepEqual(calls.at(-1), { revision: c.getState().match.revision, doctrine: "peel" });
+    } else {
+      assert.deepEqual(c.getState().draft, draft, "manual selection keeps the player's draft");
+      assert.equal(calls.length, callCount);
+    }
   }
 });
 
@@ -581,7 +680,7 @@ test("candidate loading gates board input, auto tick and submit across site chan
   assert.match(boardSource, /if \(remoteActive \|\| previewLoading\) return;[\s\S]*controller\?\.previewTarget/);
   assert.match(boardSource, /if \(viewFailed \|\| previewLoading \|\| remoteActive \|\| !auto \|\| paused \|\| performance \|\| !controller\) return undefined/);
   assert.match(boardSource, /const planning = s\.interactive && !sequenceWaiting && !remoteActive && !previewLoading/);
-  assert.match(boardSource, /if \(!nextSite \|\| next === shapeId\) return;\s*if \(useConnectedAssault\(import\.meta\.env\.DEV, location\.search\)\) setPreviewLoading\(true\);\s*setShape\(next\)/);
+  assert.match(boardSource, /if \(!nextSite \|\| next === shapeId\) return;\s*requestDestructiveAction\(\(\) => \{\s*if \(useConnectedAssault\(import\.meta\.env\.DEV, location\.search\)\) setPreviewLoading\(true\);\s*setShape\(next\)/);
 });
 
 test("battle actors start at their current cells before the first ground sample", () => {
@@ -591,11 +690,15 @@ test("battle actors start at their current cells before the first ground sample"
   assert.ok(worldSource.indexOf("figures[figure.id].position.set") < worldSource.indexOf("lease.setFrameHook"));
 });
 
-test("connected Assault previews a planned destination without ungrounded walking", () => {
+test("all mechs slide and walk in draft preview; connected Assault retains board-driven playback without foot IK", () => {
   assert.match(worldSource, /const connected = candidate\?\.manifest\.id === "assault-connected-candidate"/);
-  assert.match(worldSource, /const moving = !connected && mesh\.position\.distanceToSquared\(spot\) > 0\.01/);
-  assert.match(worldSource, /if \(!pausedRef\.current\) slide\(mesh, spot, reduce \|\| connected\)/);
-  assert.match(worldSource, /createConnectedAssaultPreviewPlayer\(actors, playing\.events, resolveCell/);
+  assert.match(worldSource, /const moving = \(mesh\.position\.x - spot\.x\) \*\* 2 \+ \(mesh\.position\.z - spot\.z\) \*\* 2 > 0\.01/);
+  assert.match(worldSource, /if \(!pausedRef\.current\) slide\(mesh, spot, reduce\)/);
+  assert.match(worldSource, /animate\(mesh, figure\.id, figure\.alive \? 1 : 0, moving && figure\.alive, pausedRef\.current \? 0 : dt\)/);
+  assert.doesNotMatch(worldSource, /const moving = !connected|slide\(mesh, spot, reduce \|\| connected\)/);
+  assert.match(worldSource, /createAssaultBattlePlayer\(actors, playing\.events, resolveCell, root, onComplete, battleHeight/);
+  assert.match(worldSource, /if \(connected\) mesh\.position\.y = battleHeight\(mesh\.position\.x, mesh\.position\.z, spot\.y\)/);
+  assert.doesNotMatch(worldSource, /AssaultGroundController|createConnectedAssaultPreviewPlayer|previewGround|idleGround/);
 });
 
 test("availability keeps empty catalog distinct from a failed search", () => {
@@ -755,7 +858,7 @@ test("preview versions follow draft, doctrine, reset and match changes rather th
   c.resetTurn();
   assert.ok(c.getState().preview.draftVersion > version);
   version = c.getState().preview.draftVersion;
-  c.setDoctrine("tunnel");
+  c.applyDoctrine("tunnel");
   assert.ok(c.getState().preview.draftVersion > version, "refilling the same doctrine invalidates the prior request");
   version = c.getState().preview.draftVersion;
   c.restart();
@@ -949,7 +1052,7 @@ test("unavailable actions explain cooldown or the settled draft's missing target
   assert.ok(c.getState().actions.some((action) => action.kind === "shoot"));
   assert.deepEqual(missing(), [{ kind: "pierce", reason: "cooldown" }], "cooldown must not imply the normal shot is unavailable");
   c.selectMech("Support");
-  assert.deepEqual(missing(), [{ kind: "melee", reason: "no_target" }, { kind: "shoot", reason: "no_target" }, { kind: "repair", reason: "no_target" }]);
+  assert.deepEqual(missing(), [{ kind: "melee", reason: "no_target" }, { kind: "shoot", reason: "no_target", shotTargets: [{ id: "boss", targetCell: { x: 4, y: 0 }, check: { status: "not_aligned" } }] }, { kind: "repair", reason: "no_target" }]);
   assert.ok(!missing().some((entry) => c.getState().actions.some((action) => action.kind === entry.kind)), "an available action must never also be listed as unavailable");
   assert.equal(match.mechs.find((m) => m.id === "Gunner")!.cd, 1, "the explanatory projection must not change rules state");
 });

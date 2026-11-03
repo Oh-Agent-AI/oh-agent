@@ -74,9 +74,9 @@ test("engine/** never imports game/mecha/** or any new game/** module", () => {
   expectNone(imports.filter((i) => inside(i.resolved, join(SRC, "game/mecha")) || !LEGACY_ENGINE_GAME_IMPORTS.has(legacyKey(i))).map(where));
 });
 
-test("rules core (rules/board/combat/enemy) imports only itself", () => {
+test("rules core (rules/board/combat/enemy/deployment) imports only itself", () => {
   const dir = join(SRC, "game/mecha");
-  const core = new Set(["rules", "board", "combat", "enemy"].map((n) => join(dir, n)));
+  const core = new Set(["rules", "board", "combat", "enemy", "deployment"].map((n) => join(dir, n)));
   // board/combat/enemy 可能尚未拆出：存在才检查
   const files = [...core].map((p) => `${p}.ts`).filter(existsSync);
   assert.ok(files.some((f) => f.endsWith("rules.ts")), "rules.ts must exist");

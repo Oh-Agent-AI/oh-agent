@@ -7,6 +7,7 @@ import type { Cell, MatchState } from "../rules";
 import type { PvpState } from "../rules/pvp";
 import type { PresentationSnapshot, PresentationStages } from "../presentationSnapshot";
 import type { BattleScenePort } from "./BattleScenePort";
+import { deployableCells, type DeployPlacement } from "../deployment";
 import { ActiveTimeClock } from "./ActiveTimeClock";
 
 const terrainColors = { land: "#426b4d", water: "#276e92", mountain: "#73543b", road: "#77786f" } as const;
@@ -24,6 +25,7 @@ export class RemoteBattleScene implements BattleScenePort {
   private readonly raycaster = new THREE.Raycaster();
   private readonly pointer = new THREE.Vector2();
   private readonly picks: THREE.Mesh[] = [];
+  private readonly deploymentMarkers = new THREE.Group();
   private readonly resize: ResizeObserver;
   private readonly onPointerUp: (event: PointerEvent) => void;
   private readonly canvas: HTMLCanvasElement;
@@ -42,18 +44,19 @@ export class RemoteBattleScene implements BattleScenePort {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.scene.background = new THREE.Color("#152333");
-    this.scene.fog = new THREE.Fog("#152333", 100, 260);
+    this.scene.fog = new THREE.Fog("#152333", 180, 450);
     this.camera = new THREE.PerspectiveCamera(42, 1, 0.1, 600);
     this.controls = new OrbitControls(this.camera, canvas);
     this.controls.enableDamping = true;
     this.controls.maxPolarAngle = Math.PI * 0.47;
     this.controls.minDistance = 30;
-    this.controls.maxDistance = 220;
+    this.controls.maxDistance = 340;
     this.scene.add(new THREE.HemisphereLight("#d9edff", "#263226", 2.2));
     const sun = new THREE.DirectionalLight("#fff1d4", 2.4);
     sun.position.set(50, 90, 30);
     this.scene.add(sun);
     this.scene.add(this.root);
+    this.root.add(this.deploymentMarkers);
     this.mechs = {
       Assault: createAssault(), Gunner: createGunner(), Support: createSupport(),
       "A:Assault": createAssault(), "A:Gunner": createGunner(), "A:Support": createSupport(),
@@ -94,6 +97,27 @@ export class RemoteBattleScene implements BattleScenePort {
     if (!this.disposed && sequence === this.playSequence) this.applyState(turn.state);
   }
 
+  /** Draft preview is presentation-only and never changes the authority snapshot. */
+  setDeploymentPreview(state: MatchState | null, placements: DeployPlacement[] = []) {
+    for (const marker of [...this.deploymentMarkers.children]) {
+      this.deploymentMarkers.remove(marker);
+      if (marker instanceof THREE.Mesh) { marker.geometry.dispose(); (marker.material as THREE.Material).dispose(); }
+    }
+    if (!state || state.phase !== "deployment" || !this.arena) return;
+    for (const group of Object.values(this.mechs)) group.visible = false;
+    for (const placement of placements) this.place(this.mechs[placement.mechId], placement.pos, true);
+    for (const cell of deployableCells(state)) {
+      const at = this.cellWorld(cell);
+      const marker = new THREE.Mesh(
+        new THREE.BoxGeometry(this.arena.cellW - 0.4, 0.08, this.arena.cellD - 0.4),
+        new THREE.MeshBasicMaterial({ color: "#5ded9d", transparent: true, opacity: 0.46, depthWrite: false }),
+      );
+      marker.position.set(at.x, at.y + 0.04, at.z);
+      marker.rotation.y = this.arena.yaw;
+      this.deploymentMarkers.add(marker);
+    }
+  }
+
   setPaused(paused: boolean) {
     this.clock.setPaused(paused);
     this.paused = paused;
@@ -116,6 +140,7 @@ export class RemoteBattleScene implements BattleScenePort {
     this.resize.disconnect();
     this.canvas.removeEventListener("pointerup", this.onPointerUp);
     this.controls.dispose();
+    this.setDeploymentPreview(null);
     for (const group of [...Object.values(this.mechs), this.boss, ...this.raiders]) disposeMechaModel(group);
     this.root.traverse((object) => {
       if (object instanceof THREE.Mesh) {
@@ -138,7 +163,8 @@ export class RemoteBattleScene implements BattleScenePort {
       for (const mech of state.units) this.place(this.mechs[mech.id], mech.pos, mech.hp > 0);
       return;
     }
-    for (const mech of state.mechs) this.place(this.mechs[mech.id], mech.pos, mech.hp > 0);
+    // Deployment snapshots contain placeholder positions, not completed placements.
+    if (state.phase !== "deployment") for (const mech of state.mechs) this.place(this.mechs[mech.id], mech.pos, mech.hp > 0);
     this.place(this.boss, state.boss.anchor, state.boss.hp > 0);
     this.raiders.forEach((group, index) => {
       const raider = state.raiders[index];
@@ -217,7 +243,10 @@ export class RemoteBattleScene implements BattleScenePort {
       this.root.add(mesh);
     }
     const center = this.cellWorld({ x: 4, y: 4 });
-    this.camera.position.set(center.x + 75, center.y + 95, center.z + 95);
+    // Fit the board on narrow screens while leaving user-controlled orbit intact after setup.
+    const aspect = Math.max(0.25, this.canvas.clientWidth / Math.max(1, this.canvas.clientHeight));
+    const fit = Math.max(1, 1.1 / aspect);
+    this.camera.position.set(center.x + 75 * fit, center.y + 95 * fit, center.z + 95 * fit);
     this.controls.target.set(center.x, center.y, center.z);
     this.controls.update();
   }

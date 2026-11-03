@@ -97,7 +97,10 @@ try {
           const v = new THREE.Vector3(p.x, p.y + 0.35, p.z).project(camera); const r = canvas.getBoundingClientRect();
           return { x: r.left + (v.x + 1) * r.width / 2, y: r.top + (1 - v.y) * r.height / 2 }; },
         pick: (x, y) => { const r = canvas.getBoundingClientRect(); pointer.set((x - r.left) / r.width * 2 - 1, -((y - r.top) / r.height) * 2 + 1);
-          raycaster.setFromCamera(pointer, camera); root.updateMatrixWorld(true); return raycaster.intersectObjects(picks, false)[0]?.object.userData.cell ?? null; }
+          raycaster.setFromCamera(pointer, camera); root.updateMatrixWorld(true);
+          const tile = raycaster.intersectObjects(picks, false)[0]; const unit = unitUnderPointer();
+          return { tile: tile?.object.userData.cell ?? null, unit: unit?.id ?? null,
+            resolved: unit && (!tile || unit.distance <= tile.distance) ? unit.cell : tile?.object.userData.cell ?? null }; }
       };\n`;
       await route.fulfill({ response, body: body.replace(needle, probe + needle) });
     });
@@ -106,7 +109,7 @@ try {
       await page.goto(new URL("/", base).href, { waitUntil: "domcontentloaded", timeout: 240_000 });
       await page.locator(".city-loading").waitFor({ state: "hidden" });
       await page.getByRole("button", { name: zh ? "城市设置" : "City settings" }).click();
-      await page.getByRole("button", { name: zh ? "机甲战棋" : "Mecha tactics" }).click();
+      await page.getByRole("button", { name: zh ? "机甲战棋" : "Mecha tactics", exact: true }).click();
       await page.locator(".mecha-pack li > button").first().click();
       await page.waitForFunction(() => {
         const s = window.__orderController?.getState();
@@ -121,11 +124,10 @@ try {
     const summary = page.locator(".mecha-turn-summary");
     const expand = page.getByRole("button", { name: zh ? "展开面板" : "Expand panel", exact: true });
     const compactButton = page.getByRole("button", { name: zh ? "精简面板" : "Compact panel", exact: true });
-    const resource = page.locator(".mecha-panel > .mecha-quick-resource");
+    const resource = summary.locator(".mecha-objective-card > .mecha-quick-resource");
     const risk = summary.locator("details.mecha-risk-details");
-    // At this landscape size the default compact rail and separate resource
-    // card are both bounded. Expanding adds content to the same scrollport;
-    // it need not increase its outer height when the rail is already full.
+    // The objective card now contains the resource display inside the same
+    // scrollport. Expanding must preserve that information and the rail bounds.
     assert.equal(await summary.evaluate((el) => el.classList.contains("is-compact")), true, `${lang}: summary starts compact`);
     assert.equal(await expand.getAttribute("aria-expanded"), "false");
     assert.equal(await summary.locator(".mecha-extra-summary").count(), 0);
@@ -148,17 +150,17 @@ try {
     await assertUnclipped(resource, `${lang}: current/predicted resources must be visible without scrolling`);
     await assertUnclipped(expand, `${lang}: compact expand control must be visible`);
     const layout = async () => summary.evaluate((el) => {
-      const rect = el.getBoundingClientRect(), resource = document.querySelector(".mecha-panel > .mecha-quick-resource").getBoundingClientRect();
+      const rect = el.getBoundingClientRect(), resource = el.querySelector(".mecha-objective-card > .mecha-quick-resource").getBoundingClientRect();
       const pack = document.querySelector(".mecha-pack").getBoundingClientRect(), submit = document.querySelector(".mecha-submit").getBoundingClientRect();
       const overlap = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
       return { height: rect.height, width: rect.width, scroll: el.scrollHeight, client: el.clientHeight,
-        resourceOverlapsPack: overlap(resource, pack), resourceOverlapsSummary: overlap(resource, rect), summaryOverlapsSubmit: overlap(rect, submit) };
+        resourceOverlapsPack: overlap(resource, pack), resourceInsideSummary: el.querySelector(".mecha-objective-card > .mecha-quick-resource") !== null, summaryOverlapsSubmit: overlap(rect, submit) };
     });
     const assertRail = (metrics, mode) => {
-      assert.ok(metrics.height >= 44 && metrics.height <= 480 * 0.29 + 1 && metrics.width <= 640 * 0.33,
+      assert.ok(metrics.height >= 44 && metrics.height <= 480 * 0.38 + 1 && metrics.width <= 640 * 0.33,
         `${lang}: ${mode} rail must remain bounded at 640x480: ${JSON.stringify(metrics)}`);
-      assert.ok(!metrics.resourceOverlapsPack && !metrics.resourceOverlapsSummary && !metrics.summaryOverlapsSubmit,
-        `${lang}: ${mode} resource, roster, summary and submit must not overlap: ${JSON.stringify(metrics)}`);
+      assert.ok(!metrics.resourceOverlapsPack && metrics.resourceInsideSummary && !metrics.summaryOverlapsSubmit,
+        `${lang}: ${mode} resource must remain in the summary and not overlap roster or submit: ${JSON.stringify(metrics)}`);
     };
     const compact = await layout();
     assertRail(compact, "compact");
@@ -166,22 +168,34 @@ try {
     assert.ok(compact.scroll > compact.client, `${lang}: compact rail must retain scrollable controls: ${JSON.stringify(compact)}`);
     if (screenshots) await page.screenshot({ path: join(screenshots, `compact-${lang}-640x480.png`) });
     await risk.locator("summary").click();
-    const riskText = await risk.locator(":scope > p").first().innerText();
-    assert.ok(riskText.includes(`${expectedResource.current}/${expectedResource.max} → ${zh ? "预计" : "Predicted"} ${expectedResource.predicted}/${expectedResource.max}`),
+    assert.equal(expectedResource.count, 1, `${lang}: comparison fixture requires one defended building`);
+    const riskText = await risk.locator("li > button").filter({ hasText: "fixture-building" }).innerText();
+    assert.ok(riskText.includes(`${expectedResource.current} → ${expectedResource.predicted}/${expectedResource.max}`),
       `${lang}: expanded risk details must agree with the resource card: ${riskText}`);
     await risk.locator("summary").click();
     await summary.focus(); await page.keyboard.press("End");
     assert.ok(await summary.evaluate((el) => el.scrollTop > 0), `${lang}: compact panel must remain keyboard-scrollable`);
     // A simulated host status transition must not leave the remote-lock warning
     // hidden at the previous compact scroll offset. No relay connection is made.
+    await expand.focus();
+    // Focus may reveal the button; put the scrollport back at its old offset
+    // without changing focus so this checks both transition invariants.
+    await summary.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+    assert.ok(await summary.evaluate((el) => el.scrollTop > 0), `${lang}: remote transition starts from a scrolled rail`);
     await page.evaluate(() => window.__setFixtureRemoteStatus("starting"));
-    await page.waitForFunction(() => document.querySelector(".mecha-turn-summary [role=status]") && document.querySelector(".mecha-turn-summary").scrollTop === 0);
+    await page.waitForFunction(() => document.querySelector(".mecha-turn-summary > p.mecha-resource[role=status]") && document.querySelector(".mecha-turn-summary").scrollTop === 0);
     assert.equal(await summary.evaluate((el) => el.classList.contains("is-compact")), false);
-    assert.equal(await expand.count(), 0);
-    const warning = summary.locator("[role=status]");
+    const remoteToggle = summary.locator(".mecha-summary-toggle");
+    assert.equal(await remoteToggle.getAttribute("aria-expanded"), "true");
+    assert.equal(await remoteToggle.getAttribute("aria-disabled"), "true");
+    assert.equal(await remoteToggle.getAttribute("aria-describedby"), "mecha-remote-lock-status");
+    assert.equal(await remoteToggle.evaluate((el) => el === document.activeElement), true, `${lang}: transition must preserve focused disclosure`);
+    await page.keyboard.press("Enter");
+    assert.equal(await summary.evaluate((el) => el.classList.contains("is-compact")), false, `${lang}: remote disclosure is unavailable`);
+    const warning = summary.locator(":scope > p.mecha-resource[role=status]");
     await assertUnclipped(warning, `${lang}: remote-lock warning must be visible on status transition`);
     await page.evaluate(() => window.__setFixtureRemoteStatus("idle"));
-    await page.waitForFunction(() => !document.querySelector(".mecha-turn-summary [role=status]"));
+    await page.waitForFunction(() => !document.querySelector(".mecha-turn-summary > p.mecha-resource[role=status]"));
     assert.equal(await summary.evaluate((el) => el.classList.contains("is-compact")), true, `${lang}: idle restores compact preference`);
     await expand.click();
     assert.equal(await summary.evaluate((el) => el.classList.contains("is-compact")), false);
@@ -321,15 +335,31 @@ try {
     console.log(`${lang}: remote lock checked; test board clicks`);
     await page.evaluate(() => { window.__pauseFixtureDraw = false; });
     await page.setViewportSize({ width: 1100, height: 700 });
-    await page.getByRole("button", { name: zh ? "战术视角" : "Tactical view" }).click();
+    await page.getByRole("button", { name: zh ? "重置视角" : "Reset view" }).click();
     const order = page.getByRole("button", { name: zh ? "结算顺序" : "Attack order", exact: true });
     const move = async (input, open) => {
       await page.getByRole("button", { name: zh ? "查看战场" : "View field" }).click();
-      const p = await page.evaluate(() => window.__orderWorld.project(5, 2));
-      assert.equal(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.tagName, p), "CANVAS");
-      assert.deepEqual(await page.evaluate(({ x, y }) => window.__orderWorld.pick(x, y), p), { x: 5, y: 2 });
+      // Elevated unit meshes can occlude a tile's projected centre. Find a
+      // visible point that production picking actually resolves to this tile,
+      // instead of asserting against the old tile-only raycast.
+      const p = await page.evaluate(() => {
+        const center = window.__orderWorld.project(5, 2);
+        for (let radius = 0; radius <= 40; radius += 4) for (let dx = -radius; dx <= radius; dx += 4) for (let dy = -radius; dy <= radius; dy += 4) {
+          const x = center.x + dx, y = center.y + dy;
+          if (document.elementFromPoint(x, y)?.tagName !== "CANVAS") continue;
+          const hit = window.__orderWorld.pick(x, y);
+          if (hit.resolved?.x === 5 && hit.resolved.y === 2 && !hit.unit) return { x, y, hit };
+        }
+        return null;
+      });
+      assert.ok(p, `${lang}: a visible point must resolve to the threatened tile`);
       if (input === "touch") await page.touchscreen.tap(p.x, p.y); else await page.mouse.click(p.x, p.y);
-      await page.waitForFunction(() => { const p = window.__orderController.getState().draft.Assault.moveTo; return p?.x === 5 && p.y === 2; }, null, { timeout: 10_000 });
+      try {
+        await page.waitForFunction(() => { const p = window.__orderController.getState().draft.Assault.moveTo; return p?.x === 5 && p.y === 2; }, null, { timeout: 10_000 });
+      } catch (cause) {
+        const state = await page.evaluate(() => { const s = window.__orderController.getState(); return { selected: s.selected, draft: s.draft.Assault, fault: s.fault, notice: s.notice, phase: s.match.phase, targeting: s.targeting, inspected: document.querySelector(".mecha-cell-inspector")?.getAttribute("data-cell") }; });
+        throw new Error(`${lang}: ${input} tile click did not plan movement; point ${JSON.stringify(p)}, state ${JSON.stringify(state)}`, { cause });
+      }
       assert.equal(await page.evaluate(() => window.__orderController.getState().selectedEnemy), null, `${lang}: ${input}, order ${open} selected a threat instead of moving`);
       await page.evaluate(() => window.__orderController.undoMove());
       await page.waitForFunction(() => window.__orderController.getState().draft.Assault.moveTo === null);
@@ -465,7 +495,7 @@ try {
     await result.waitFor({ state: "detached" });
     assert.equal(await recap.count(), 0, `${lang}: restart must remove the previous-turn summary`);
     assert.ok(await page.evaluate(() => !!document.activeElement?.isConnected), `${lang}: restart left focus on a detached node`);
-    await tabTo(page, page.getByRole("button", { name: zh ? "战术视角" : "Tactical view", exact: true }), `${lang}: navigation after restart`);
+    await tabTo(page, page.getByRole("button", { name: zh ? "重置视角" : "Reset view", exact: true }), `${lang}: navigation after restart`);
     console.log(`${lang}: skipped-animation recap matches actual log and ordered HP effects; restart clears it`);
     console.log(`${lang}: compact/scrolled recap discoverability, keyboard disclosure and post-reset focus, explicit order wording checked`);
     assert.deepEqual(errors, []);

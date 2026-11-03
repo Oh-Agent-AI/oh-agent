@@ -1,3 +1,8 @@
+import { MechaPlanEvaluation } from "./MechaPlanEvaluation";
+import { MechaCandidateConsequences } from "./MechaCandidateConsequences";
+import { forecastFizzles } from "./mecha/fizzleForecast";
+import type { ShotCheck } from "./mecha/combat";
+import { MechaDeploymentPanel, MechaDeploymentActions } from "./MechaDeploymentPanel";
 /** City test surface for GDD v1.3. Rules live in `mecha/rules.ts`.
  *
  *  The battlefield search is not a render side effect. The board shell paints
@@ -18,6 +23,7 @@ import { doctrineFocusLine, fizzleText, gameText, previewFaultText, type GameLoc
 import { CityMechaWorld, type CityMechaView, type CityMechaWorldHandle } from "./CityMechaWorld";
 import { MechaCellInspector } from "./MechaCellInspector";
 import { inspectCell, declaredAttack, inspectionSegments } from "./mecha/cellInspection";
+import { declaredEnemyIntents } from "./mecha/enemyIntentPresentation";
 import { MechaActionIcon } from "./MechaActionIcon";
 import { unitMaxHp } from "./mecha/unitHealth";
 import { MechaBattleLegend } from "./MechaBattleLegend";
@@ -28,10 +34,17 @@ import { useConnectedAssault } from "../render/mecha/connectedAssaultMode";
 import { terrainSurfaceHeight } from "../engine/surface/terrainSampling";
 import { sampleAssaultTerrainSafety } from "./mecha/assaultTerrainSafety";
 import { MechaLastResult } from "./MechaLastResult";
+import { MechaBattleResult } from "./MechaMatchResult";
+import { MechaUnsavedReplayGuard } from "./MechaUnsavedReplayGuard";
+import { hasVerifiedReplaySave, type VerifiedReplaySave } from "./mecha/replayPersistenceGuard";
+import { REPLAY_AUTO_SAVE_KEY, readReplayAutoSave, readReplayAutoSaveStrict, writeReplayAutoSave } from "./mecha/replayAutoSave";
+import { ReplayHoldClock, type ReplaySpeed } from "./mecha/replayPlayback";
 import { candidateResult } from "./mecha/candidateResult";
 import { assaultSequenceWaiting } from "./mecha/assaultTurnPlayer";
 import type { DoctrineId } from "./mecha/ai";
 import { createMechaController, type MechaController } from "./mecha/controller";
+import { createLocalReplayArchive, listLocalReplays, saveLocalReplayEntry, loadLocalReplayEntryForSites, readLocalReplayEntryArchive, restoreLocalReplayArchiveForSites, saveImportedLocalReplay, LOCAL_REPLAY_MAX_FILE_BYTES, ReplayArchiveError, type ReplayLibraryEntry } from "./mecha/replayArchive";
+import { commitReplay, migrateLegacyReplays, readReplaySnapshot, replayBackend, ReplaySnapshot } from "./mecha/replayRepository";
 import { anchorsFromCity, prepareFightTerrainAsync, type FightCatalog, type FightShape } from "./mecha/citySite";
 import { startPreparedSearch } from "./mecha/fightSearchRunner";
 import { cacheCatalog, cachedCatalog, encounterIsCurrent, forgetCatalog, type MonsterEncounter } from "./mecha/monsterEncounters";
@@ -169,6 +182,7 @@ export function MechaBoard({ locale, onClose, engine, onAvailability, encounter 
     remoteLocked.current = next !== "idle";
     setRemoteStatus(next);
   };
+  const requestMatchClose = useRef<(() => void) | null>(null);
   const searchSeq = useRef(0);
   const playable = phase === "ready" && Boolean(engine) && catalogPlayable(catalog);
 
@@ -248,11 +262,19 @@ export function MechaBoard({ locale, onClose, engine, onAvailability, encounter 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
+      // Let the topmost guard dialog handle Escape before the underlying result.
+      if (document.querySelector("[data-replay-unsaved-guard][open]")) return;
+      // The native result dialog handles Escape via onCancel; it has no view button.
+      if (document.querySelector("[data-mecha-result-dialog][open]")) return;
       const target = event.target as HTMLElement | null;
       if (target?.closest("select, input, textarea")) return;
+      const replayExit = document.querySelector<HTMLButtonElement>("[data-mecha-replay-exit]");
+      if (replayExit) { event.preventDefault(); event.stopPropagation(); replayExit.click(); return; }
+      const settingsClose = document.querySelector<HTMLButtonElement>(".mecha-settings-popover:not([hidden]) .mecha-settings-close");
+      if (settingsClose) { event.preventDefault(); event.stopPropagation(); settingsClose.click(); return; }
       if (remoteLocked.current) { event.preventDefault(); event.stopPropagation(); return; }
       event.preventDefault();
-      onClose();
+      if (requestMatchClose.current) requestMatchClose.current(); else onClose();
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
@@ -291,7 +313,7 @@ export function MechaBoard({ locale, onClose, engine, onAvailability, encounter 
       : <CityGate locale={locale} onClose={onClose} onRetry={retrySearch} title="这座城暂时没有可用机坪。" body="楼太少时往往没有平地、靠岸或巷战。可以重试，或关掉战棋。" />;
   }
 
-  return <MechaMatch key={runId} locale={locale} onClose={onClose} engine={engine} catalog={encounter?.catalog ?? catalog} initialShape={encounter?.shape} remoteStatus={remoteStatus} remoteLocked={remoteLocked} onRemoteStatusChange={changeRemoteStatus} />;
+  return <MechaMatch key={runId} locale={locale} onClose={onClose} requestCloseRef={requestMatchClose} engine={engine} catalog={encounter?.catalog ?? catalog} initialShape={encounter?.shape} remoteStatus={remoteStatus} remoteLocked={remoteLocked} onRemoteStatusChange={changeRemoteStatus} />;
 }
 
 function enemyName(id: string): string {
@@ -299,6 +321,19 @@ function enemyName(id: string): string {
   if (id === "raider-w") return "小怪西";
   if (id === "raider-e") return "小怪东";
   return "小怪";
+}
+
+function shotCheckLabel(check: ShotCheck): string {
+  switch (check.status) {
+    case "available": return "可射击";
+    case "not_aligned": return "不在同一行或列";
+    case "out_of_range": return "超出射程";
+    case "same_cell": return "目标与射手位于同一格";
+    case "blocked_terrain": return "山地阻挡射线";
+    case "blocked_obstacle": return "障碍阻挡射线";
+    case "blocked_cover": return "掩体、建筑或废墟阻挡射线";
+    case "blocked_unit": return "单位阻挡射线";
+  }
 }
 
 function actionLabel(kind: Action["kind"]): string {
@@ -321,9 +356,10 @@ const ACTION_DESCRIPTIONS: Record<Action["kind"], string> = {
 
 /** 薄视图：状态、草稿、预检、结算、自动对战都在 controller 里，这里只订阅与渲染。
  *  没有城市战场时父级不会挂这个组件。 */
-function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStatus, remoteLocked, onRemoteStatusChange }: {
+function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initialShape, remoteStatus, remoteLocked, onRemoteStatusChange }: {
   locale: GameLocale;
   onClose: () => void;
+  requestCloseRef: React.RefObject<(() => void) | null>;
   engine: CityEngine;
   catalog: FightCatalog;
   initialShape?: FightShape;
@@ -360,6 +396,31 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
   const [showOrder, setShowOrder] = useState(false);
   const [compactSummary, setCompactSummary] = useState(true);
   const [mapFocused, setMapFocused] = useState(false);
+  const [settingsPanel, setSettingsPanel] = useState<"battlefield" | "remote" | null>(null);
+  const [showPlanEvaluation, setShowPlanEvaluation] = useState(false);
+  const settingsTrigger = useRef<HTMLButtonElement | null>(null);
+  const closeSettings = () => { setSettingsPanel(null); settingsTrigger.current?.focus(); };
+  const toggleSettings = (next: "battlefield" | "remote", trigger: HTMLButtonElement) => {
+    // Keep the battle menu from covering the settings popover on narrow screens.
+    trigger.closest(".mecha-battle-bar")?.querySelector<HTMLDetailsElement>(".mecha-battle-menu")?.removeAttribute("open");
+    settingsTrigger.current = trigger;
+    setMapFocused(false);
+    setSettingsPanel((current) => current === next ? null : next);
+  };
+  useLayoutEffect(() => {
+    if (!settingsPanel) return;
+    document.getElementById(`mecha-${settingsPanel}-settings`)?.querySelector<HTMLButtonElement>(".mecha-settings-close")?.focus();
+  }, [settingsPanel]);
+  useEffect(() => {
+    if (!settingsPanel) return;
+    const dismiss = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element) || target.closest(".mecha-settings-popover, [data-mecha-settings-trigger], [data-replay-unsaved-guard]")) return;
+      setSettingsPanel(null);
+    };
+    document.addEventListener("pointerdown", dismiss, true);
+    return () => document.removeEventListener("pointerdown", dismiss, true);
+  }, [settingsPanel]);
   const [focusedBuilding, setFocusedBuilding] = useState<string | null>(null);
   const [inspectedAction, setInspectedAction] = useState<Action["kind"] | null>(null);
   const [moveChoice, setMoveChoice] = useState("");
@@ -398,9 +459,11 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
     controller ? controller.subscribe : () => () => {},
     controller ? controller.getState : () => null,
   );
+  useEffect(() => { if (settingsPanel !== "battlefield") controller?.cancelDoctrineSuggestion(); }, [controller, settingsPanel]);
   const resolvedState = s?.match ?? null;
   const performance = s?.performance ?? null;
   const draft = s?.draft;
+  const deployment = s?.replay ? null : s?.deployment ?? null;
   const selected = s?.selected;
   const targeting = s?.targeting ?? null;
   const auto = s?.auto ?? false;
@@ -408,7 +471,337 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
   const doctrine = s?.doctrine ?? "tunnel";
 
   const state = performance?.before ?? resolvedState;
-  const finishPerformance = () => controller?.finishPerformance();
+  const [replaySpeed, setReplaySpeed] = useState<ReplaySpeed>(1);
+  const [showReplayRecap, setShowReplayRecap] = useState(false);
+  useEffect(() => { if (!s?.replay) setShowReplayRecap(false); }, [s?.replay]);
+  const emptyReplayHold = useRef<{ performance: NonNullable<typeof performance>; clock: ReplayHoldClock } | null>(null);
+  const [showMatchResult, setShowMatchResult] = useState(false);
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  // Auto-save defaults on for new installations; an existing opt-out is preserved.
+  const [autoSaveReplay, setAutoSaveReplay] = useState(() => readReplayAutoSave(() => window.localStorage));
+  const autoSaveConsent = useRef(autoSaveReplay);
+  const autoSaveAttempts = useRef(new WeakSet<object>());
+  useEffect(() => {
+    const changed = (event: StorageEvent) => {
+      if (event.key !== REPLAY_AUTO_SAVE_KEY && event.key !== null) return;
+      const enabled = readReplayAutoSave(() => window.localStorage);
+      autoSaveConsent.current = enabled;
+      setAutoSaveReplay(enabled);
+    };
+    window.addEventListener("storage", changed);
+    return () => window.removeEventListener("storage", changed);
+  }, []);
+  const changeAutoSave = (enabled: boolean) => {
+    // Disabling takes effect in this tab immediately, even if persistence fails.
+    if (!enabled) { autoSaveConsent.current = false; setAutoSaveReplay(false); }
+    try {
+      writeReplayAutoSave(() => window.localStorage, enabled);
+      autoSaveConsent.current = enabled;
+      setAutoSaveReplay(enabled);
+      setArchiveMessage(null);
+    } catch {
+      autoSaveConsent.current = false;
+      setAutoSaveReplay(false);
+      setArchiveMessage("无法保存自动保存设置；当前页面已关闭，请重新打开后检查设置。");
+    }
+  };
+  const archiveLock = useRef(false);
+  const replayDb = useRef(replayBackend());
+  const replaySnapshot = useRef(new ReplaySnapshot());
+  const verifiedSaves = useRef<VerifiedReplaySave<NonNullable<typeof resolvedState>>[]>([]);
+  const [pendingReplayLoss, setPendingReplayLoss] = useState<{ match: NonNullable<typeof resolvedState>; site: typeof site; catalog: FightCatalog; run: () => void } | null>(null);
+  const [archiveMessage, setArchiveMessage] = useState<string | null>(null);
+  const [archiveEntries, setArchiveEntries] = useState<ReplayLibraryEntry[]>([]);
+  const [selectedArchive, setSelectedArchive] = useState("");
+  const [confirmArchiveDelete, setConfirmArchiveDelete] = useState(false);
+  const replayFileInput = useRef<HTMLInputElement | null>(null);
+  const archiveMounted = useRef(false);
+  const migration = useRef<Promise<void> | null>(null);
+  const readyReplayDb = () => {
+    if (!migration.current) migration.current = (async () => {
+      let remaining = 0;
+      try { remaining = await migrateLegacyReplays(replayDb.current, window.localStorage); } catch { /* Keep inaccessible legacy data untouched. */ }
+      if (remaining && archiveMounted.current) setArchiveMessage("部分旧回放未能迁移，原记录已保留在浏览器存储中。");
+    })();
+    return migration.current;
+  };
+  useEffect(() => { archiveMounted.current = true; void readyReplayDb(); return () => { archiveMounted.current = false; }; }, []);
+  const archiveRuntime = useRef({ site, safeCatalog, viewFailed, previewLoading });
+  archiveRuntime.current = { site, safeCatalog, viewFailed, previewLoading };
+  const replaySite = useRef<{ id: FightShape; site: NonNullable<typeof site> } | null>(null);
+  const replayNeedsProtection = () => {
+    if (!controller || remoteLocked.current) return false;
+    const current = controller.getState();
+    if (!current.match.outcome || !current.replayAvailable) return false;
+    try { return !hasVerifiedReplaySave(current.match, verifiedSaves.current, replaySnapshot.current); }
+    catch { return true; } // localStorage itself can be inaccessible.
+  };
+  const requestDestructiveAction = (run: () => void) => {
+    if (remoteLocked.current || archiveLock.current || pendingReplayLoss) return;
+    if (!controller || !controller.getState().match.outcome || !controller.getState().replayAvailable) { run(); return; }
+    const match = controller.getState().match;
+    if (replayNeedsProtection()) { setPendingReplayLoss({ match, site, catalog: safeCatalog, run }); return; }
+    // Verify durable storage again; a stale cache must not suppress the warning.
+    archiveLock.current = true; setArchiveBusy(true);
+    void (async () => {
+      try { replaySnapshot.current = await readReplaySnapshot(replayDb.current); }
+      catch { replaySnapshot.current = new ReplaySnapshot(); }
+      finally { archiveLock.current = false; if (archiveMounted.current) setArchiveBusy(false); }
+      if (!archiveMounted.current || remoteLocked.current || controller.getState().match !== match) return;
+      if (replayNeedsProtection()) setPendingReplayLoss({ match, site, catalog: safeCatalog, run });
+      else run();
+    })();
+  };
+  const requestClose = () => requestDestructiveAction(onClose);
+  useLayoutEffect(() => {
+    requestCloseRef.current = requestClose;
+    return () => { requestCloseRef.current = null; };
+  });
+  useEffect(() => {
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      if (replayNeedsProtection()) { event.preventDefault(); event.returnValue = ""; }
+    };
+    window.addEventListener("beforeunload", beforeUnload);
+    return () => window.removeEventListener("beforeunload", beforeUnload);
+  });
+  useEffect(() => {
+    if (pendingReplayLoss && (remoteActive || controller?.getState().match !== pendingReplayLoss.match || site !== pendingReplayLoss.site || safeCatalog !== pendingReplayLoss.catalog)) setPendingReplayLoss(null);
+  }, [pendingReplayLoss, remoteActive, controller, resolvedState, site, safeCatalog]);
+  const replayLossGuard = pendingReplayLoss ? <MechaUnsavedReplayGuard locale={locale}
+    onCancel={() => setPendingReplayLoss(null)}
+    onConfirm={() => {
+      const pending = pendingReplayLoss;
+      setPendingReplayLoss(null);
+      if (!remoteLocked.current && !archiveLock.current && controller?.getState().match === pending.match
+        && archiveRuntime.current.site === pending.site && archiveRuntime.current.safeCatalog === pending.catalog) pending.run();
+    }} /> : null;
+  const resultShown = useRef(false);
+  const resultTrigger = useRef<HTMLButtonElement | null>(null);
+  const resultReady = Boolean(state?.outcome && !performance && !remoteActive && !viewFailed);
+  useEffect(() => {
+    if (!resolvedState?.outcome) { resultShown.current = false; setShowMatchResult(false); return; }
+    if (resultReady && !resultShown.current) {
+      resultShown.current = true;
+      setShowMatchResult(true);
+      setSettingsPanel(null);
+      setMapFocused(false);
+    }
+  }, [resolvedState?.outcome, resultReady]);
+  const viewResultField = () => {
+    setShowMatchResult(false);
+    requestAnimationFrame(() => resultTrigger.current?.focus());
+  };
+  const advancePerformance = () => {
+    if (!controller) return;
+    const wasReplay = controller.getState().replay;
+    controller.finishPerformance();
+    if (wasReplay && !controller.getState().replay) {
+      if (wasReplay.source === "saved") replaySite.current = null;
+      else setShowMatchResult(true);
+    }
+  };
+  // Empty turns stay visible briefly, rather than disappearing between frames.
+  const finishPerformance = () => {
+    if (s?.replay && performance?.events.length === 0) return;
+    advancePerformance();
+  };
+  useEffect(() => {
+    if (!s?.replay || !performance || performance.events.length) {
+      emptyReplayHold.current = null;
+      return;
+    }
+    if (emptyReplayHold.current?.performance !== performance) {
+      emptyReplayHold.current = { performance, clock: new ReplayHoldClock() };
+    }
+    const clock = emptyReplayHold.current.clock;
+    let timer: number | null = null;
+    const stop = () => {
+      if (timer === null) return;
+      window.clearTimeout(timer);
+      timer = null;
+      clock.stop(window.performance.now());
+    };
+    const start = () => {
+      if (timer !== null || paused || previewLoading || viewFailed || document.hidden) return;
+      const wait = clock.start(window.performance.now(), replaySpeed);
+      timer = window.setTimeout(() => {
+        timer = null;
+        if (clock.stop(window.performance.now()) <= 0) advancePerformance();
+        else start(); // A timer may fire early on some hosts.
+      }, wait);
+    };
+    const visibilityChanged = () => { if (document.hidden) stop(); else start(); };
+    document.addEventListener("visibilitychange", visibilityChanged);
+    start();
+    return () => { stop(); document.removeEventListener("visibilitychange", visibilityChanged); };
+  }, [controller, s?.replay, performance, paused, previewLoading, viewFailed, replaySpeed]);
+  useEffect(() => {
+    if (remoteActive && controller?.getState().replay) { controller.stopReplay(); replaySite.current = null; }
+  }, [remoteActive, controller]);
+  const replayActive = Boolean(s?.replay);
+  useLayoutEffect(() => {
+    if (replayActive) document.querySelector<HTMLButtonElement>("[data-replay-pause]")?.focus();
+  }, [replayActive]);
+  const stopReplay = () => {
+    const source = controller?.getState().replay?.source;
+    controller?.stopReplay();
+    replaySite.current = null;
+    if (source === "current") setShowMatchResult(true);
+  };
+  const startReplay = () => {
+    if (!controller || remoteActive) return;
+    controller.startReplay();
+    if (controller.getState().replay) { setShowMatchResult(false); setSettingsPanel(null); setMapFocused(false); }
+  };
+  const archiveError = (error: unknown): string => {
+    if (error instanceof ReplayArchiveError) {
+      if (error.code === "incompatible") return "回放与当前城市的可用战场或规则不兼容，无法播放。";
+      if (error.code === "invalid") return "回放记录已损坏或格式不支持。";
+      if (error.code === "unavailable") return "当前环境无法校验回放。";
+      if (error.code === "full") return "本机回放已满，请先删除一条记录。";
+      if (error.code === "changed") return "回放记录已变化，请重新选择。";
+    }
+    return "本地存储不可用或空间不足，操作未完成。";
+  };
+  const publishReplaySnapshot = (snapshot: ReplaySnapshot) => {
+    replaySnapshot.current = snapshot;
+    const entries = listLocalReplays(snapshot);
+    setArchiveEntries(entries);
+    setSelectedArchive(previous => entries.some(entry => entry.key === previous) ? previous : entries[0]?.key ?? "");
+  };
+  const refreshArchives = async () => {
+    try { await readyReplayDb(); const snapshot = await readReplaySnapshot(replayDb.current); if (archiveMounted.current) publishReplaySnapshot(snapshot); }
+    catch (error) { if (archiveMounted.current) setArchiveMessage(archiveError(error)); }
+  };
+  useEffect(() => {
+    if (settingsPanel !== "battlefield") { setConfirmArchiveDelete(false); return; }
+    void refreshArchives();
+  }, [settingsPanel]);
+  const saveReplay = async (automatic = false) => {
+    if (!controller || archiveLock.current || remoteLocked.current) return;
+    const before = controller.getState();
+    const source = controller.replayArchiveSource();
+    if (!source) { setArchiveMessage("当前没有可保存的完整本地对局。"); return; }
+    archiveLock.current = true; setArchiveBusy(true); setArchiveMessage(null);
+    try {
+      const archive = await createLocalReplayArchive(source);
+      if (!archiveMounted.current) return;
+      if (remoteLocked.current || controller.getState() !== before || archiveRuntime.current.site !== site || archiveRuntime.current.viewFailed || archiveRuntime.current.previewLoading) { setArchiveMessage("战局已变化，本次操作已取消。"); return; }
+      // Re-read consent immediately before writing: another tab may have opted out.
+      if (automatic && (!autoSaveConsent.current || !readReplayAutoSaveStrict(() => window.localStorage))) return;
+      // Build a detached record, then commit it to the database and read it back.
+      await readyReplayDb();
+      const snapshot = await readReplaySnapshot(replayDb.current);
+      const savedKey = saveLocalReplayEntry(snapshot, archive, source.rounds.length);
+      const raw = snapshot.getItem(savedKey);
+      if (!raw) throw new ReplayArchiveError("storage");
+      const committed = await commitReplay(replayDb.current, savedKey, raw);
+      if (!archiveMounted.current) return;
+      publishReplaySnapshot(committed);
+      verifiedSaves.current = [...verifiedSaves.current.filter(entry => entry.match === before.match), { match: before.match, key: savedKey, raw }];
+      setSelectedArchive(savedKey);
+      setArchiveMessage(automatic ? "本局回放已自动保存到本机。" : "回放已保存到本机，可在战场设置中打开。");
+    } catch (error) {
+      if (archiveMounted.current) setArchiveMessage(automatic
+        ? error instanceof ReplayArchiveError && error.code === "full" ? "自动保存失败：本机回放已满，请先删除一条记录。" : "自动保存失败，请手动保存或检查本机存储空间。"
+        : archiveError(error));
+    }
+    finally { archiveLock.current = false; if (archiveMounted.current) setArchiveBusy(false); }
+  };
+  useEffect(() => {
+    if (!autoSaveReplay || !controller || !resolvedState?.outcome || !resultReady || !s?.replayAvailable
+      || s.replay || archiveBusy || archiveLock.current || remoteLocked.current || !site || previewLoading) return;
+    if (autoSaveAttempts.current.has(resolvedState)) return;
+    try { if (hasVerifiedReplaySave(resolvedState, verifiedSaves.current, replaySnapshot.current)) return; }
+    catch { /* Saving reports the failure; retain the unsaved warning. */ }
+    autoSaveAttempts.current.add(resolvedState);
+    void saveReplay(true);
+  }, [autoSaveReplay, controller, resolvedState, resultReady, s?.replayAvailable, s?.replay, archiveBusy, site, previewLoading]);
+  const playSavedReplay = async () => {
+    if (!controller || archiveLock.current || remoteLocked.current || !site || viewFailed || previewLoading || !selectedArchive) return;
+    const before = controller.getState();
+    if (before.auto || before.paused || before.performance || before.replay) return;
+    archiveLock.current = true; setArchiveBusy(true); setArchiveMessage(null);
+    try {
+      const candidates = [shapeId, ...SHAPES.map(item => item.id).filter(id => id !== shapeId)]
+        .flatMap(id => { const candidate = safeCatalog[id]; return candidate ? [{ id, site: candidate }] : []; });
+      await readyReplayDb();
+      const snapshot = await readReplaySnapshot(replayDb.current);
+      const original = snapshot.getItem(selectedArchive);
+      const replay = await loadLocalReplayEntryForSites(snapshot, selectedArchive, candidates);
+      const latest = await readReplaySnapshot(replayDb.current);
+      if (latest.getItem(selectedArchive) !== original) throw new ReplayArchiveError("changed");
+      if (!archiveMounted.current) return;
+      publishReplaySnapshot(latest);
+      if (remoteLocked.current || controller.getState() !== before || archiveRuntime.current.site !== site || archiveRuntime.current.safeCatalog !== safeCatalog || archiveRuntime.current.viewFailed || archiveRuntime.current.previewLoading) {
+        setArchiveMessage("战局已变化，本次操作已取消。"); return;
+      }
+      if (!replay) { setArchiveMessage("本机还没有保存的回放。"); return; }
+      const matchedSite = safeCatalog[replay.id];
+      if (!matchedSite) { setArchiveMessage("战局已变化，本次操作已取消。"); return; }
+      // Set before publishing the replay snapshot; never restart the live match.
+      replaySite.current = { id: replay.id, site: replay.id === shapeId ? site : replay.site };
+      if (!controller.startSavedReplay(replay.rounds)) { replaySite.current = null; setArchiveMessage("当前状态不能开始回放。"); return; }
+      setShowMatchResult(false); setSettingsPanel(null); setMapFocused(false);
+    } catch (error) { if (archiveMounted.current) setArchiveMessage(archiveError(error)); }
+    finally { archiveLock.current = false; if (archiveMounted.current) setArchiveBusy(false); }
+  };
+  const exportSavedReplay = async () => {
+    if (archiveLock.current || remoteLocked.current || !selectedArchive) return;
+    archiveLock.current = true; setArchiveBusy(true);
+    try {
+      await readyReplayDb();
+      const snapshot = await readReplaySnapshot(replayDb.current);
+      const archive = readLocalReplayEntryArchive(snapshot, selectedArchive);
+      if (!archive) { publishReplaySnapshot(snapshot); setArchiveMessage("回放记录已变化，请重新选择。"); return; }
+      const url = URL.createObjectURL(new Blob([archive], { type: "application/json" }));
+      try {
+        const link = document.createElement("a");
+        link.href = url; link.download = "mecha-battle-replay.json";
+        link.click();
+      } finally { window.setTimeout(() => URL.revokeObjectURL(url), 60_000); }
+      setArchiveMessage("已请求下载回放文件，请检查浏览器下载记录。此文件不是视频。");
+    } catch (error) { setArchiveMessage(error instanceof ReplayArchiveError ? archiveError(error) : "无法导出回放文件。请检查当前环境的下载权限。"); }
+    finally { archiveLock.current = false; if (archiveMounted.current) setArchiveBusy(false); }
+  };
+  const importReplayFile = async (file: File | undefined) => {
+    if (!file || !controller || archiveLock.current || remoteLocked.current || !site || viewFailed || previewLoading) return;
+    const before = controller.getState();
+    archiveLock.current = true; setArchiveBusy(true); setArchiveMessage(null);
+    try {
+      if (file.size < 1 || file.size > LOCAL_REPLAY_MAX_FILE_BYTES) throw new ReplayArchiveError("invalid");
+      const archive = await file.text();
+      const candidates = [shapeId, ...SHAPES.map(item => item.id).filter(id => id !== shapeId)]
+        .flatMap(id => { const candidate = safeCatalog[id]; return candidate ? [{ id, site: candidate }] : []; });
+      const verified = await restoreLocalReplayArchiveForSites(archive, candidates);
+      if (!archiveMounted.current) return;
+      if (remoteLocked.current || controller.getState() !== before || archiveRuntime.current.site !== site || archiveRuntime.current.safeCatalog !== safeCatalog || archiveRuntime.current.viewFailed || archiveRuntime.current.previewLoading) {
+        setArchiveMessage("战局已变化，本次操作已取消。"); return;
+      }
+      await readyReplayDb();
+      const snapshot = await readReplaySnapshot(replayDb.current);
+      const saved = saveImportedLocalReplay(snapshot, archive, verified.rounds.length);
+      const raw = snapshot.getItem(saved.key);
+      if (!raw) throw new ReplayArchiveError("storage");
+      const committed = saved.existing ? await readReplaySnapshot(replayDb.current) : await commitReplay(replayDb.current, saved.key, raw);
+      if (readLocalReplayEntryArchive(committed, saved.key) !== archive) throw new ReplayArchiveError("storage");
+      publishReplaySnapshot(committed); setSelectedArchive(saved.key);
+      setArchiveMessage(saved.existing ? "这条回放已在本机列表中。" : "回放已导入本机，可从列表中播放。");
+    } catch (error) { if (archiveMounted.current) setArchiveMessage(archiveError(error)); }
+    finally { archiveLock.current = false; if (archiveMounted.current) setArchiveBusy(false); }
+  };
+  const deleteSavedReplay = async () => {
+    if (archiveLock.current || remoteLocked.current || !selectedArchive) return;
+    archiveLock.current = true; setArchiveBusy(true);
+    try {
+      await readyReplayDb();
+      await replayDb.current.delete(selectedArchive);
+      const snapshot = await readReplaySnapshot(replayDb.current);
+      if (snapshot.getItem(selectedArchive) !== null) throw new ReplayArchiveError("storage");
+      publishReplaySnapshot(snapshot); setConfirmArchiveDelete(false); setArchiveMessage("本机回放已删除。");
+    } catch (error) { setArchiveMessage(archiveError(error)); }
+    finally { archiveLock.current = false; if (archiveMounted.current) setArchiveBusy(false); }
+  };
   useEffect(() => { setInspectedCell(null); setInspectedUnitId(null); }, [controller, site, state?.turn, performance, resolvedState]);
 
   const sequenceTrial = import.meta.env.DEV && new URLSearchParams(location.search).get("assaultTrial") === "1" && new URLSearchParams(location.search).get("assaultSequence") === "1";
@@ -422,20 +815,15 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
   useLayoutEffect(() => {
     const panel = panelRef.current;
     if (!panel) return undefined;
-    const sheets = Array.from(panel.querySelectorAll<HTMLElement>(":scope > .mecha-options-menu"));
-    const blockers = Array.from(panel.querySelectorAll<HTMLElement>(":scope > .mecha-turn-summary, :scope > .mecha-last-result, :scope > .mecha-pack, :scope > .mecha-selected-actions, :scope > .mecha-submit"));
     const update = () => {
       const panelRect = panel.getBoundingClientRect();
       if (!panelRect.width || !panelRect.height) return;
-      const pack = panel.querySelector<HTMLElement>(":scope > .mecha-pack");
+      const pack = panel.querySelector<HTMLElement>(":scope > .mecha-team-planning .mecha-pack");
       const summary = panel.querySelector<HTMLElement>(":scope > .mecha-turn-summary");
-      const resource = panel.querySelector<HTMLElement>(":scope > .mecha-quick-resource");
+      const team = panel.querySelector<HTMLElement>(":scope > .mecha-team-planning");
       const recap = panel.querySelector<HTMLElement>(":scope > .mecha-last-result");
-      const submit = panel.querySelector<HTMLElement>(":scope > .mecha-submit");
+      const submit = panel.querySelector<HTMLElement>(":scope > .mecha-team-planning .mecha-submit");
       const bar = panel.parentElement?.querySelector<HTMLElement>(":scope > .mecha-battle-bar");
-      const packRect = pack?.getBoundingClientRect();
-      const summaryRect = summary?.getBoundingClientRect();
-      const resourceRect = resource?.getBoundingClientRect();
       const barRect = bar?.getBoundingClientRect();
       const set = (name: string, value: string) => {
         if (panel.style.getPropertyValue(name) !== value) panel.style.setProperty(name, value);
@@ -443,14 +831,15 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
       const sideLayout = window.matchMedia("(min-width: 601px) and (min-height: 420px)").matches;
       const legendTop = barRect?.height ? Math.ceil(barRect.bottom - panelRect.top + 8) : 64;
       set("--mecha-legend-top", `${legendTop}px`);
-      const hudTop = legendTop;
+      // Apply the bar height before measuring the rails: their top can move
+      // without a resize event when the controls wrap during a performance.
+      set("--mecha-hud-top", `${legendTop}px`);
+      const packRect = pack?.getBoundingClientRect();
+      const summaryRect = summary?.getBoundingClientRect();
+      const teamRect = team?.getBoundingClientRect();
       const submitRect = submit?.getBoundingClientRect();
-      const submitTop = (resourceRect?.height ?? 40) + 14;
-      const rosterTop = submitTop + (submitRect?.height ?? 64) + 8;
-      set("--mecha-submit-top", `${submitTop}px`);
-      set("--mecha-hud-top", `${hudTop}px`);
+      const rosterTop = 8 + (submitRect?.height ?? 80);
       if (submit) set("--mecha-submit-height", `${Math.ceil(submit.getBoundingClientRect().height)}px`);
-      if (resourceRect?.height) set("--mecha-roster-top", `${Math.ceil(rosterTop)}px`);
       if (summaryRect?.height) {
         const recapTop = Math.ceil(summaryRect.bottom - panelRect.top + 8);
         set("--mecha-recap-top", `${recapTop}px`);
@@ -461,30 +850,20 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
         // Derive the side rail's position as well as its height: moving an
         // element does not itself cause ResizeObserver to fire.
         const bottom = sideLayout ? 12 : Math.ceil(panelRect.bottom - packRect.top + 8);
-        const clearance = sideLayout ? panelRect.top + rosterTop + packRect.height : summaryRect.bottom;
+        const clearance = sideLayout ? teamRect?.bottom ?? panelRect.top + rosterTop + packRect.height : summaryRect.bottom;
         const available = Math.max(40, Math.floor(panelRect.bottom - clearance - bottom - 8));
         set("--mecha-pack-bottom", `${bottom}px`);
         set("--mecha-actions-available", `${available}px`);
       }
-      for (const sheet of sheets) {
-        const rect = sheet.getBoundingClientRect();
-        let bottom = panelRect.bottom - 12;
-        for (const blocker of blockers) {
-          const other = blocker.getBoundingClientRect();
-          if (other.width && other.height && other.left < rect.right && other.right > rect.left && other.top > rect.top && other.top < bottom) bottom = other.top - 8;
-        }
-        const height = `${Math.max(34, Math.floor(bottom - rect.top))}px`;
-        if (sheet.style.getPropertyValue("--mecha-settings-max-height") !== height) sheet.style.setProperty("--mecha-settings-max-height", height);
-      }
+
     };
     update();
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
     observer?.observe(panel);
-    for (const blocker of blockers) observer?.observe(blocker);
-    for (const sheet of sheets) observer?.observe(sheet);
-    const resource = panel.querySelector<HTMLElement>(":scope > .mecha-quick-resource");
+    const team = panel.querySelector<HTMLElement>(":scope > .mecha-team-planning");
     const bar = panel.parentElement?.querySelector<HTMLElement>(":scope > .mecha-battle-bar");
-    if (resource) observer?.observe(resource);
+    if (team) observer?.observe(team);
+    for (const card of panel.querySelectorAll<HTMLElement>(":scope > .mecha-turn-summary, :scope > .mecha-last-result, :scope > .mecha-selected-actions")) observer?.observe(card);
     if (bar) observer?.observe(bar);
     const legend = panel.querySelector<HTMLElement>(":scope > .mecha-tactical-legend");
     if (legend) observer?.observe(legend);
@@ -500,11 +879,12 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
     if (!root) return undefined;
     const summary = root.querySelector<HTMLElement>(":scope > .mecha-turn-summary");
     const actions = root.querySelector<HTMLElement>(":scope > .mecha-selected-actions");
-    const pack = root.querySelector<HTMLElement>(":scope > .mecha-pack");
+    const pack = root.querySelector<HTMLElement>(":scope > .mecha-team-planning .mecha-pack");
     const result = root.querySelector<HTMLElement>(":scope > .mecha-candidate-panel");
     const inspection = root.querySelector<HTMLElement>(":scope > .mecha-cell-inspector");
     const panels = [summary, actions, pack, result, inspection].filter((panel): panel is HTMLElement => Boolean(panel));
     const sideLayout = () => window.matchMedia("(min-width: 601px) and (min-height: 420px)").matches;
+    const phoneCandidate = (panel: HTMLElement) => panel === result && panel.dataset.candidateSource === "selection" && window.matchMedia("(max-width: 600px) and (min-height: 420px)").matches;
     const narrow = () => window.matchMedia("(min-width: 601px) and (max-width: 760px) and (min-height: 420px) and (max-height: 600px)").matches;
     const timers = new Map<HTMLElement, number>();
     let keyboardMode = false;
@@ -513,7 +893,17 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
     const fit = (panel: HTMLElement) => {
       const name = panel === inspection ? "--mecha-inspector-fit-height" : panel === result ? "--mecha-candidate-fit-height" : panel === pack ? "--mecha-roster-fit-height" : panel === summary ? "--mecha-summary-fit-height" : "--mecha-actions-fit-height";
       if (!sideLayout()) {
-        root.style.removeProperty(name);
+        if (phoneCandidate(panel)) {
+          const limit = Math.min(240, window.innerHeight * 0.3);
+          let height = wholeLineHeight(panel, limit);
+          const active = document.activeElement;
+          if (keyboardMode && active instanceof HTMLElement && active !== panel && panel.contains(active)) {
+            const rect = active.getBoundingClientRect(), edge = panel.getBoundingClientRect().top + height;
+            if (rect.top < edge && rect.bottom > edge) height = limit;
+          }
+          const value = `${height}px`;
+          if (root.style.getPropertyValue(name) !== value) root.style.setProperty(name, value);
+        } else root.style.removeProperty(name);
         return;
       }
       // The roster may grow without resizing the action panel (for example,
@@ -533,16 +923,20 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
       })() : Infinity;
       const rosterRoom = pack ? root.getBoundingClientRect().bottom - pack.getBoundingClientRect().top - 20 - 160 : Infinity;
       const limit = panel === inspection ? Math.min(window.innerHeight * 0.32, 260) : panel === result ? Math.min(window.innerHeight * 0.36, 280) : panel === pack ? Math.max(80, Math.min(rosterRoom, window.innerHeight * (window.innerHeight > 600 ? 0.5 : 0.43), window.innerHeight > 600 ? 360 : 320)) : panel === summary
-        ? Math.min(result ? window.innerHeight * 0.3 : panel.querySelector("details[open], #mecha-order-panel") ? window.innerHeight * 0.64 : window.innerHeight * 0.38, 380, objectiveHeight)
+        ? Math.min(result ? window.innerHeight * 0.38 : panel.querySelector("details[open], #mecha-order-panel") ? window.innerHeight * 0.64 : window.innerHeight * 0.38, 380, objectiveHeight)
         : available;
       // Keep every settled scrollport edge between whole lines/controls,
       // including long candidate results. The ceiling remains independent of
       // scroll position; the fit trims only a partially painted bottom row.
-      // A bottom-anchored movement form must keep a stable scrollport while
-      // native scrollIntoView brings its controls into view. Resizing on each
-      // scroll moves its top and can clip the very button being revealed.
-      const moving = panel === actions && Boolean(panel.querySelector(".mecha-move-list[open]"));
-      let height = moving ? limit : wholeLineHeight(panel, limit);
+      // Bottom-anchored movement, deployment, and reason lists must keep a stable
+      // scrollport while native scrollIntoView brings controls into view.
+      // Resizing on each scroll can clip the button being revealed.
+      const editingPosition = panel === actions && Boolean(panel.querySelector(".mecha-move-list[open], .mecha-deploy-list[open], .mecha-unavailable-actions[open]"));
+      // The order explanation is longer than the rail. Keep its scrollport
+      // fixed while the user reads it; fitting against the currently visible
+      // lines on every scroll otherwise changes the height and clips content.
+      const readingOrder = panel === summary && Boolean(panel.querySelector("#mecha-order-panel"));
+      let height = editingPosition || readingOrder ? limit : wholeLineHeight(panel, limit);
       const active = document.activeElement;
       if (keyboardMode && active instanceof HTMLElement && active !== panel && panel.contains(active)) {
         const rect = active.getBoundingClientRect();
@@ -554,13 +948,22 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
       if (root.style.getPropertyValue(name) !== value) root.style.setProperty(name, value);
     };
     const settle = (panel: HTMLElement) => {
-      if (!sideLayout()) return;
+      if (!sideLayout() && !phoneCandidate(panel)) return;
+      // Native pointer and keyboard scrolling must remain authoritative while
+      // a position form or the unavailable-action list is open. Snapping a partially visible line at
+      // the top can scroll a just-revealed select or button offscreen.
+      if (panel === actions && panel.querySelector(".mecha-move-list[open], .mecha-deploy-list[open], .mecha-unavailable-actions[open]")) return;
+      // Native scrolling must also be authoritative while reading the order.
+      if (panel === summary && panel.querySelector("#mecha-order-panel")) return;
       // Do not snap a keyboard user's scroll or move their focused control out
       // of view. Snap again after focus leaves the scrollport.
       if (keyboardMode && panel.contains(document.activeElement)) return;
       // Align a partially visible top line/control to the nearest edge. Large
       // controls remain scrollable rather than trapping the viewport.
-      for (let i = 0; i < 8; i += 1) {
+      for (let i = 0; i < 12; i += 1) {
+        // Fitting a bottom-anchored panel moves its top; measure and snap
+        // after each fit rather than fitting once more after the final snap.
+        fit(panel);
         const top = panel.getBoundingClientRect().top + panel.clientTop;
         const boxes: DOMRect[] = [];
         const walker = document.createTreeWalker(panel, NodeFilter.SHOW_TEXT);
@@ -582,10 +985,13 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
         const active = document.activeElement?.getBoundingClientRect();
         const focused = panel.contains(document.activeElement) && active && active.top < top && active.bottom > top;
         const previous = panel.scrollTop;
-        panel.scrollTop += focused || Math.abs(before) <= after ? before : after;
+        const preferBefore = focused || Math.abs(before) <= after;
+        panel.scrollTop += preferBefore ? before : after;
+        // At the scroll limit the nearer edge may be unreachable. Try the
+        // other side instead of leaving the topmost line partly clipped.
+        if (Math.abs(panel.scrollTop - previous) < 0.5) panel.scrollTop += preferBefore ? after : before;
         if (Math.abs(panel.scrollTop - previous) < 0.5) break;
       }
-      fit(panel);
     };
     const scheduleSettle = (panel: HTMLElement) => {
       window.clearTimeout(timers.get(panel));
@@ -686,18 +1092,28 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
     return () => window.clearTimeout(timer);
   }, [controller, auto, paused, s, sequenceWaiting, viewFailed, performance, remoteActive, previewLoading]);
 
-  const reach = s?.reach ?? [];
+  const reach = deployment?.cells ?? s?.reach ?? [];
+  // Presentation-only placements: unplaced mechs have no board occupancy.
+  const inspectionState = useMemo(() => state && deployment ? { ...state, mechs: state.mechs.flatMap(m => { const p = deployment.placements.find(p => p.mechId === m.id); return p ? [{ ...m, pos: p.pos }] : []; }) } : state, [state, deployment]);
   const targetOptions = s?.targetOptions ?? [];
   const clickCell = (x: number, y: number, input: "mouse" | "touch") => {
     // The map-only view exposes cells otherwise hidden behind the HUD. Restore
     // the controls after a board pick, including an invalid pick or touch preview.
     if (mapFocused) setMapFocused(false);
     if (!state || performance || previewLoading) return;
-    const info = inspectCell(state, { x, y }, performance ? {} : draft);
+    const info = inspectCell(inspectionState!, { x, y }, performance || deployment ? {} : draft);
     setInspectedCell(info?.cell ?? null);
     setInspectedUnitId(info?.unit?.id ?? null);
     controller?.setSelectedEnemy(info?.unit?.side === "enemy" ? info.unit.id : null);
     if (sequenceWaiting || performance || remoteLocked.current) return;
+    if (deployment) {
+      controller?.clickCell(x, y, input);
+      // A successful placement changes an empty inspected tile into a unit.
+      // Read the new presentation draft, not the authority's placeholder position.
+      const placed = controller?.getState().deployment?.placements.find(p => p.pos.x === x && p.pos.y === y);
+      if (placed) setInspectedUnitId(placed.mechId);
+      return;
+    }
     // The friendly models are already drawn at their draft endpoints. Pick the
     // displayed unit, not a different tile under its elevated mesh.
     if (!targeting && info?.unit?.side === "mech" && (info.unit.id !== selected || draft?.[info.unit.id as MechId]?.moveTo)) controller?.selectMech(info.unit.id as MechId);
@@ -709,9 +1125,9 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
     setInspectedUnitId(actor);
     controller?.setSelectedEnemy(actor);
   };
-  const inspectedMech = state?.mechs.find(m => m.id === inspectedUnitId && m.hp > 0);
+  const inspectedMech = inspectionState?.mechs.find(m => m.id === inspectedUnitId && m.hp > 0);
   const inspectionPosition = inspectedMech ? draft?.[inspectedMech.id]?.moveTo ?? inspectedMech.pos : inspectedCell;
-  const cellInfo = state && inspectionPosition ? inspectCell(state, inspectionPosition, performance ? {} : draft, inspectedUnitId) : null;
+  const cellInfo = inspectionState && inspectionPosition ? inspectCell(inspectionState, inspectionPosition, performance || deployment ? {} : draft, inspectedUnitId) : null;
   const closeInspection = () => { setInspectedCell(null); setInspectedUnitId(null); controller?.setSelectedEnemy(null); };
 
   const hoverCell = (cell: { x: number; y: number } | null) => {
@@ -724,40 +1140,48 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
   const plannedCount = s?.plannedCount ?? 0;
   const pendingNames = (s?.pendingIds ?? []).map((id) => t(NAMES[id]));
   const packReady = s?.packReady ?? false;
-  const cityView = useMemo<CityMechaView & { declaredTelegraph: Cell[]; projectedTelegraph: Cell[] | null }>(() => {
+  const cityView = useMemo<CityMechaView & { declaredTelegraph: Cell[]; projectedTelegraph: Cell[] | null; predictionSource: "draft" | "candidate" }>(() => {
     // A candidate identifies a unit, not the particular cell clicked. For the
     // multi-cell boss the first option cell is its rules anchor, not a claim
     // that only one of its four cells was selected.
     const candidate = s?.candidate;
-    let targetPreview: { target: Cell; shove?: { from: Cell; to: Cell } } | undefined;
-    if (!performance && !sequenceWaiting && !remoteActive && s?.interactive && s.preview.ok && s.targeting && selected && candidate?.source === "selection" && candidate.preview.ok) {
+    const selectedCandidate = !performance && !sequenceWaiting && !remoteActive && s?.targeting && candidate?.source === "selection" ? candidate : null;
+    const candidateCurrent = selectedCandidate && s && selectedCandidate.preview.revision === s.preview.revision && selectedCandidate.preview.draftVersion === s.preview.draftVersion;
+    const projected = selectedCandidate ? (candidateCurrent && selectedCandidate.preview.ok ? { cells: selectedCandidate.preview.telegraphAfter, byActor: selectedCandidate.preview.telegraphByActor } : null) : s?.projectedThreats ?? null;
+    const focusActor = s?.selectedEnemy ?? s?.hoveredEnemy;
+    let targetPreview: { target: Cell; shove?: { from: Cell; to: Cell; blocked?: boolean } } | undefined;
+    if (!performance && !sequenceWaiting && !remoteActive && s?.interactive && candidateCurrent && s.targeting && selected && candidate?.source === "selection" && candidate.preview.ok) {
       const target = s.targetOptions.find((option) => option.id === candidate.target)?.cells[0];
       const result = candidateResult(candidate.preview, selected, candidate.target);
       if (target && result.action?.target === candidate.target && result.action.action === s.targeting && !result.action.fizzled) {
         // A prior action may have moved the target before this shove. Until
         // the scene labels turn stages, draw an arrow only from the selected
         // target's displayed position; the full result remains in the text.
-        const shove = result.shoves.find(({ event, from, to }) => event.unit === candidate.target && from && to && from.x === target.x && from.y === target.y && (from.x !== to.x || from.y !== to.y));
-        targetPreview = { target: { ...target }, ...(shove?.from && shove.to ? { shove: { from: { ...shove.from }, to: { ...shove.to } } } : {}) };
+        const shove = result.shoves.find(({ event, from, to }) => event.unit === candidate.target && from && to && from.x === target.x && from.y === target.y);
+        targetPreview = { target: { ...target }, ...(shove?.from && shove.to ? { shove: { from: { ...shove.from }, to: { ...shove.to }, blocked: Boolean(shove.event.hit) } } : {}) };
       }
     }
     return {
-      combat: s?.combat,
+      // Returning from replay must not trigger the final turn's combat cues a second time.
+      combat: s?.replay?.combat ?? (s?.match.outcome && !performance ? { ...s.combat, actions: [] } : s?.combat),
       paused,
-      figures: (state?.mechs ?? []).map((m) => {
+      deployment: Boolean(deployment),
+      figures: (inspectionState?.mechs ?? []).map((m) => {
         const planned = m.hp > 0 && !performance ? draft?.[m.id]?.moveTo : null;
-        return { id: m.id, x: planned?.x ?? m.pos.x, y: planned?.y ?? m.pos.y, alive: m.hp > 0, hp: m.hp, maxHp: unitMaxHp(m.id) ?? undefined, selected: m.id === selected };
+        return { id: m.id, x: planned?.x ?? m.pos.x, y: planned?.y ?? m.pos.y, alive: m.hp > 0, hp: m.hp, maxHp: unitMaxHp(m.id) ?? undefined, selected: !s?.replay && m.id === selected };
       }),
       boss: { x: state?.boss.anchor.x ?? 0, y: state?.boss.anchor.y ?? 0, alive: (state?.boss.hp ?? 0) > 0, hp: state?.boss.hp ?? 0, maxHp: unitMaxHp("boss") ?? undefined },
       raiders: (state?.raiders ?? []).map((raider) => ({ id: raider.id, x: raider.pos.x, y: raider.pos.y, alive: raider.hp > 0, hp: raider.hp, maxHp: unitMaxHp(raider.id) ?? undefined })),
       buildings: (state?.buildings ?? []).map((building) => ({ id: building.id, cells: building.cells, hp: building.hp, maxHp: building.maxHp })),
       focusedBuilding: performance || !s?.preview.ok ? null : focusedBuilding,
-      telegraph: performance ? [] : (s?.telegraph ?? []),
+      telegraph: performance ? [] : (projected ?? s?.declaredThreats)?.cells ?? [],
       declaredTelegraph: performance ? [] : (s?.declaredThreats.cells ?? []),
-      projectedTelegraph: performance ? null : (s?.projectedThreats?.cells ?? null),
-      focusedTelegraph: performance ? [] : (s?.selectedEnemy ? (s.projectedThreats ?? s.declaredThreats).byActor[s.selectedEnemy] ?? [] : s?.focusedTelegraph ?? []),
-      hoveredEnemy: s?.selectedEnemy ?? s?.hoveredEnemy ?? null,
-      enemyOrder: showOrder && !performance && s?.preview.ok ? s.preview.enemyOrder : [],
+      declaredIntents: performance || !state ? [] : declaredEnemyIntents(state),
+      projectedTelegraph: performance ? null : (projected?.cells ?? null),
+      predictionSource: selectedCandidate ? "candidate" : "draft",
+      focusedTelegraph: performance || !focusActor ? [] : (projected ?? s?.declaredThreats)?.byActor[focusActor] ?? [],
+      hoveredEnemy: s?.replay ? null : s?.selectedEnemy ?? s?.hoveredEnemy ?? null,
+      enemyOrder: showOrder && !performance && !selectedCandidate && s?.preview.ok ? s.preview.enemyOrder : [],
       focus: performance ? [] : (s?.focusCells ?? []),
       reach: performance ? [] : reach,
       move: performance || !selected ? null : draft?.[selected]?.moveTo ?? null,
@@ -772,18 +1196,19 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
         declaredAttack(state, s?.selectedEnemy ?? (cellInfo?.unit?.side === "mech" ? null : s?.hoveredEnemy ?? null)), cellInfo?.movePath ?? null),
       inspectedThreats: performance || !state ? [] : declaredAttack(state, s?.selectedEnemy ?? s?.hoveredEnemy ?? null)?.targets ?? [],
     };
-  }, [s, state, draft, selected, reach, targetOptions, paused, performance, sequenceWaiting, focusedBuilding, showOrder, remoteActive, cellInfo]);
+  }, [s, state, inspectionState, deployment, draft, selected, reach, targetOptions, paused, performance, sequenceWaiting, focusedBuilding, showOrder, remoteActive, cellInfo]);
 
   if (!controller || !s || !state || !site) {
-    return <CityGate locale={locale} onClose={onClose} title={locale === "en" ? "No safe Assault deployment." : "没有安全的 Assault 出生点。"} body={locale === "en" ? "Terrain sampling failed or the available spawn is too steep. Close the battle and try another city." : "地形采样失败或可用出生点过陡，请退出战斗并尝试其他城市。"} />;
+    return <><CityGate locale={locale} onClose={requestClose} closeDisabled={archiveBusy} title={t("没有安全的 Assault 出生点。")} body={t("地形采样失败或可用出生点过陡，请退出战斗并尝试其他城市。")} />{replayLossGuard}</>;
   }
 
   if (viewFailed) {
-    return (
-      <CityGate locale={locale} onClose={onClose} closeDisabled={remoteActive} onRetry={viewFailed === "asset" ? undefined : () => setViewFailed(null)}
-        title={viewFailed === "asset" ? "Assault 模型加载失败。" : viewFailed === "preview" ? "Assault 地面演出不可用。" : "三维视角被其他模式占用。"}
-        body={viewFailed === "asset" ? "Assault 模型未能加载或实例化；退出战斗后检查资源。" : viewFailed === "preview" ? "路面数据失效或动作接地求解失败；可以重试，或退出战斗。" : "先退出影院、驾驶或飞行，再开战。"} recovery={remoteActive ? <RemoteMechaControls locale={locale} site={site} shape={shapeId} state={state} status={remoteStatus} canStart={false} onStatusChange={onRemoteStatusChange} onStopped={() => controller.restart()} /> : null} />
-    );
+    return <>
+      <CityGate locale={locale} onClose={requestClose} closeDisabled={remoteActive || archiveBusy} onRetry={viewFailed === "asset" ? undefined : () => setViewFailed(null)}
+        title={viewFailed === "asset" ? "Assault 模型加载失败。" : viewFailed === "preview" ? "Assault 战斗演出不可用。" : "三维视角被其他模式占用。"}
+        body={viewFailed === "asset" ? "Assault 模型未能加载或实例化；退出战斗后检查资源。" : viewFailed === "preview" ? "战斗动画播放失败；可以重试，或退出战斗。" : "先退出影院、驾驶或飞行，再开战。"} recovery={remoteActive ? <RemoteMechaControls locale={locale} site={site} shape={shapeId} state={state} status={remoteStatus} canStart={false} onStatusChange={onRemoteStatusChange} onStopped={() => controller.restart()} /> : s.replay?.source === "saved" ? <button type="button" onClick={() => { controller.stopReplay(); replaySite.current = null; setViewFailed(null); }}>{t("结束回放并返回当前对局")}</button> : null} />
+      {replayLossGuard}
+    </>;
   }
 
   const selectedMech = activeMechs.find((m) => m.id === selected);
@@ -804,6 +1229,7 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
   // the already-advanced controller's next-turn prediction.
   const preview = !performance && s.preview.ok ? s.preview : null;
   const hitLine = preview ? activeMechs.map((m) => `${t(NAMES[m.id])} ${preview.hitsAfter[m.id]}`).join(" · ") : "";
+  const predictedFizzles = preview && !state.outcome && !remoteActive ? forecastFizzles(preview.log) : [];
   const hasProjectedThreats = Boolean(preview && s.projectedThreats);
   const currentThreats = hasProjectedThreats ? s.projectedThreats : s.declaredThreats;
   const staked = stakeBuildings(state);
@@ -813,7 +1239,8 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
   const predictedHp = predictedBuildings.reduce((total, building) => total + building.endHp, 0);
   const buildingDelta = predictedHp - stakedHp;
   const candidate = s.candidate;
-  const candidateEffects = candidate?.preview.ok ? candidateResult(candidate.preview, selected!, candidate.target) : null;
+  const candidateIsCurrent = !!candidate && candidate.preview.revision === s.preview.revision && candidate.preview.draftVersion === s.preview.draftVersion;
+  const candidateEffects = candidateIsCurrent && candidate?.preview.ok && selected ? candidateResult(candidate.preview, selected, candidate.target) : null;
   const unitName = (id: string) => id === "wall" ? t("墙或障碍") : id in NAMES ? t(NAMES[id as MechId]) : t(enemyName(id));
   const finishTarget = (event: React.MouseEvent<HTMLButtonElement>, confirm: boolean) => {
     if (event.detail === 0 && document.activeElement === event.currentTarget && targeting) {
@@ -829,41 +1256,63 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
     : preview?.outcome === "defeat_wipe" ? t("预计机甲全灭")
     : preview?.outcome === "defeat_timeout" ? t("预计回合耗尽") : null;
   const quickResource = <>
-    {outcome ? <span>{outcome}</span> : null}
-    <span>{t("防守建筑")}</span>
-    <strong>{staked.length ? `${stakedHp}/${stakedMax}` : t("本局无守楼目标")}</strong>
-    {performance ? <span>{t("演出中，不显示预测")}</span> : !state.outcome && preview && staked.length ? <span>→ {t("预计")} {predictedHp}/{stakedMax} ({buildingDelta > 0 ? "+" : ""}{buildingDelta})</span> : !state.outcome && !preview ? <span>{t("风险未知")}</span> : null}
+    <div className="mecha-building-current"><span>{t("防守建筑")}</span><strong>{staked.length ? `${stakedHp}/${stakedMax}` : t("本局无守楼目标")}</strong></div>
+    {!performance && !state.outcome && preview && staked.length ? <span>→ {t("预计")} {predictedHp}/{stakedMax}</span> : null}
     {preview && !s.projectedThreats ? <span>{t("草稿威胁未知")}</span> : null}
-    {predictedOutcome ? <span>{predictedOutcome}</span> : null}
-    {preview?.assumed.length ? <span>{t("假设待机")}：<abbr title={preview.assumed.map((id) => t(NAMES[id])).join("、")}>{preview.assumed.length}</abbr></span> : null}
     {remoteActive ? <span>{t("远程战棋期间本地规划已锁定。")}</span> : null}
   </>;
 
   return (
-    <section className="mecha-overlay is-city has-match is-reference-hud" data-map-focus={mapFocused ? "true" : undefined} data-remote-active={remoteActive ? "true" : undefined} role="dialog" aria-label={t("机甲战棋")}>
-      <CityMechaWorld ref={worldRef} engine={engine} site={site} locale={locale} view={cityView} performance={performance} paused={paused} onPerformanceComplete={finishPerformance} onCell={clickCell} onHoverCell={hoverCell} onHoverEnemy={(id) => controller.setHoveredEnemy(id)} onUnavailable={(reason) => setViewFailed(reason ?? "mode")} onPreviewLoading={setPreviewLoading} />
+    <section className="mecha-overlay is-city has-match is-reference-hud" data-phase={state.phase} data-map-focus={mapFocused ? "true" : undefined} data-remote-active={remoteActive ? "true" : undefined} role="dialog" aria-label={t("机甲战棋")}>
+      <CityMechaWorld ref={worldRef} engine={engine} site={s.replay?.source === "saved" ? replaySite.current?.site ?? site : site} locale={locale} view={cityView} performance={performance} paused={paused} performanceSpeed={s.replay ? replaySpeed : 1} onPerformanceComplete={finishPerformance} onCell={clickCell} onHoverCell={hoverCell} onHoverEnemy={(id) => controller.setHoveredEnemy(id)} onUnavailable={(reason) => setViewFailed(reason ?? "mode")} onPreviewLoading={setPreviewLoading} />
+      {s.replay ? <section className="mecha-replay-bar" aria-label={t("战斗回放")} data-mecha-replay>
+        {showReplayRecap ? <div className="mecha-replay-recap" id="mecha-replay-recap" data-replay-recap>
+          <MechaLastResult mode="replay" lastLog={s.replay.log} healthTimeline={s.replay.combat.healthTimeline} finalState={s.replay.after} t={t} locale={locale} />
+        </div> : null}
+        <strong role="status" aria-live="polite">{t("战斗回放")} · {t("回合")} {s.replay.turn} <span>({s.replay.index + 1}/{s.replay.total})</span></strong>
+        {s.replay.source === "saved" && replaySite.current?.id !== shapeId ? <span>{t("历史战场回放 · 结束后返回当前对局")}</span> : null}
+        <label>{t("回放回合")} <select data-replay-turn value={s.replay.index} onChange={(event) => controller.selectReplayTurn(Number(event.target.value))}>
+          {s.replay.turns.map((turn, index) => <option key={index} value={index}>{t("回合")} {turn}</option>)}
+        </select></label>
+        <div className="mecha-replay-navigation" role="group" aria-label={t("回合导航")}>
+          <button type="button" data-replay-previous aria-label={t("上一回合")} title={t("上一回合")} disabled={s.replay.index === 0} onClick={() => controller.selectReplayTurn(s.replay!.index - 1)}><span aria-hidden="true">◀</span></button>
+          <button type="button" data-replay-restart aria-label={t("重播本回合")} title={t("重播本回合")} onClick={() => controller.selectReplayTurn(s.replay!.index)}><span aria-hidden="true">↺</span></button>
+          <button type="button" data-replay-next aria-label={t("下一回合")} title={t("下一回合")} disabled={s.replay.index + 1 >= s.replay.total} onClick={() => controller.selectReplayTurn(s.replay!.index + 1)}><span aria-hidden="true">▶</span></button>
+        </div>
+        <label>{t("播放速度")} <select data-replay-speed value={replaySpeed} onChange={(event) => {
+          const speed = Number(event.target.value);
+          if (speed === 0.5 || speed === 1 || speed === 2) setReplaySpeed(speed);
+        }}><option value="0.5">0.5×</option><option value="1">1×</option><option value="2">2×</option></select></label>
+        {performance?.events.length === 0 ? <span role="status">{t("无演出事件")}</span> : null}
+        <button type="button" data-replay-recap-toggle aria-expanded={showReplayRecap} aria-controls={showReplayRecap ? "mecha-replay-recap" : undefined} onClick={() => setShowReplayRecap((value) => !value)}>{t("本回合记录")}</button>
+        <button type="button" data-replay-pause onClick={() => controller.togglePause()}>{paused ? t("继续演出") : t("暂停演出")}</button>
+        <button type="button" onClick={() => worldRef.current?.resetCamera()}>{t("重置视角")}</button>
+        <button type="button" data-mecha-replay-exit onClick={stopReplay}>{t("结束回放")}</button>
+      </section> : null}
+      {!s.replay ? <>
       <header className="mecha-battle-bar">
-        <div><span>{t("回合")} {Math.min(state.turn, MAX_TURNS)}/{MAX_TURNS}</span>{paused && <span className="mecha-paused">{t("已暂停")}</span>}{previewLoading && <span role="status">{locale === "en" ? "Loading Assault model…" : "正在加载 Assault 模型…"}</span>}</div>
+        {previewLoading && <span role="status">{t("正在加载 Assault 模型…")}</span>}
         <div className="mecha-battle-controls">
           <button type="button" aria-pressed={mapFocused} aria-describedby="mecha-map-focus-help" onClick={() => setMapFocused((value) => !value)}>{mapFocused ? t("恢复面板") : t("查看战场")}</button>
           <span id="mecha-map-focus-help" className="mecha-sr-only">{t("收起面板以查看战场；选择棋盘格后恢复面板。")}</span>
           <button type="button" title={t("回到可看全棋盘的战术视角")} onClick={() => worldRef.current?.resetCamera()}>{t("重置视角")}</button>
-          <button type="button" aria-label={t("结算顺序")} aria-expanded={showOrder} aria-controls={showOrder ? "mecha-order-panel" : undefined} aria-describedby={showOrder && planning && preview ? "mecha-order-help" : undefined} onClick={() => { if (!showOrder) { setMapFocused(false); setCompactSummary(false); } else { panelRef.current?.querySelector<HTMLElement>(".mecha-turn-summary")?.scrollTo({ top: 0 }); } setShowOrder((value) => !value); }}>{t("顺序")}</button>
+          <button type="button" disabled={Boolean(deployment)} aria-label={t("结算顺序")} aria-expanded={showOrder} aria-controls={showOrder ? "mecha-order-panel" : undefined} aria-describedby={showOrder && planning && preview ? "mecha-order-help" : undefined} onClick={() => { if (!showOrder) { setMapFocused(false); setCompactSummary(false); } else { panelRef.current?.querySelector<HTMLElement>(".mecha-turn-summary")?.scrollTo({ top: 0 }); } setShowOrder((value) => !value); }}>{t("顺序")}</button>
+          <button type="button" data-mecha-settings-trigger="battlefield" aria-expanded={settingsPanel === "battlefield"} aria-controls="mecha-battlefield-settings" onClick={(event) => toggleSettings("battlefield", event.currentTarget)}>{t("战场设置")}</button>
+          <button type="button" data-mecha-settings-trigger="remote" aria-expanded={settingsPanel === "remote"} aria-controls="mecha-remote-settings" onClick={(event) => toggleSettings("remote", event.currentTarget)}>{t("远程战棋")}</button>
           {auto ? <button type="button" disabled={remoteActive} onClick={() => controller.stopAuto()}>{t("停止自动")}</button> : null}
-          {performance || paused ? <button type="button" disabled={remoteActive || Boolean(state.outcome && !performance)} onClick={() => controller.togglePause()}>{paused ? t("继续演出") : t("暂停演出")}</button> : null}
+          {performance || (paused && !state.outcome) ? <button type="button" disabled={remoteActive} onClick={() => controller.togglePause()}>{paused ? t("继续演出") : t("暂停演出")}</button> : null}
           {performance ? <button type="button" onClick={finishPerformance}>{t("跳过演出")}</button> : null}
           <details className="mecha-battle-menu">
             <summary aria-label={t("战斗菜单")} title={t("战斗菜单")}>⋯</summary>
             <div className="mecha-battle-menu-items">
-              <button type="button" disabled={remoteActive} onClick={onClose}>{t("退出战斗")}</button>
+              <button type="button" disabled={remoteActive || archiveBusy} onClick={requestClose}>{t("退出战斗")}</button>
             </div>
           </details>
         </div>
       </header>
       <div className="mecha-panel" ref={panelRef}>
         {sequenceFault ? <p role="alert">{t("Assault 演出数据不完整或不一致，自动对战已等待；可重新开始一局。")}</p> : null}
-        <details className="mecha-tactical-legend"><summary><span aria-hidden="true">✣ ◇ ! P</span> {t("战场图例")}{cityView.projectedTelegraph === null ? ` · ${t("风险未知")}` : ""}</summary><MechaBattleLegend locale={locale} projectedThreats={cityView.projectedTelegraph} verifiedShove={Boolean(cityView.targetPreview?.shove)} /></details>
-        <div className="mecha-quick-resource">{quickResource}</div>
+        {!(state.outcome && !performance && !remoteActive) ? <details className="mecha-tactical-legend"><summary><span aria-hidden="true">↗</span> {t("战场图例")}{!deployment && cityView.projectedTelegraph === null ? ` · ${t("风险未知")}` : ""}</summary><MechaBattleLegend locale={locale} view={cityView} /></details> : null}
         <section className={`mecha-turn-summary${compactSummary && !remoteActive ? " is-compact" : ""}`} aria-label={t("战斗目标与威胁")} aria-describedby="mecha-summary-scroll-help" tabIndex={0} onKeyDown={(event) => {
           const element = event.currentTarget;
           if (event.target !== element || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || element.scrollHeight <= element.clientHeight) return;
@@ -878,35 +1327,35 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
           event.preventDefault();
         }}>
           <span id="mecha-summary-scroll-help" className="mecha-sr-only">{t("这里包含战斗目标、威胁和结算顺序；如有隐藏内容，使用上下方向键滚动查看。")}</span>
-          <div className="mecha-quick-resource-inline">{quickResource}</div>
-          <p className="mecha-mobile-round">{t("回合")} {Math.min(state.turn, MAX_TURNS)}/{MAX_TURNS}{paused ? ` · ${t("已暂停")}` : ""}</p>
-          {remoteActive ? <p className="mecha-resource" role="status">{t(remoteStatus === "starting" ? "正在启动远程战棋，本地规划已锁定。" : remoteStatus === "stopping" ? "正在停止远程战棋，本地规划仍锁定。" : remoteStatus === "unknown" ? "远程状态无法确认：请在远程战棋设置中停止并重试，本地规划保持锁定。" : "远程战棋已启动：桌面显示本地局面，不会同步远程战况。本地规划已锁定；停止远程将重开本地局。")}</p> : null}
-          {!remoteActive ? <div className="mecha-objective-card">
+          {remoteActive ? <p id="mecha-remote-lock-status" className="mecha-resource" role="status">{t(remoteStatus === "starting" ? "正在启动远程战棋，本地规划已锁定。" : remoteStatus === "stopping" ? "正在停止远程战棋，本地规划仍锁定。" : remoteStatus === "unknown" ? "远程状态无法确认：请在远程战棋设置中停止并重试，本地规划保持锁定。" : "远程战棋已启动：桌面显示本地局面，不会同步远程战况。本地规划已锁定；停止远程将重开本地局。")}</p> : null}
+          <div className="mecha-objective-card">
             <div className="mecha-summary-heading">
-              <span className="mecha-objective-heading">{t("本局目标")}</span>
-              <button type="button" aria-expanded={!compactSummary} aria-label={t(compactSummary ? "展开面板" : "精简面板")} title={t(compactSummary ? "展开面板" : "精简面板")} onClick={(event) => { event.currentTarget.closest<HTMLElement>(".mecha-turn-summary")?.scrollTo({ top: 0 }); setCompactSummary((value) => !value); }}>{compactSummary ? <span aria-hidden="true">＋</span> : t("精简面板")}</button>
+              <h3 className="mecha-objective-round">{deployment ? t("开局部署") : <>{t("回合")} {Math.min(state.turn, MAX_TURNS)}/{MAX_TURNS}</>}</h3>
+              <button type="button" className="mecha-summary-toggle" aria-expanded={remoteActive || !compactSummary} aria-disabled={remoteActive || undefined} aria-describedby={remoteActive ? "mecha-remote-lock-status" : undefined} aria-label={t(remoteActive ? "远程期间面板保持展开" : compactSummary ? "展开面板" : "精简面板")} title={t(remoteActive ? "远程期间面板保持展开" : compactSummary ? "展开面板" : "精简面板")} onClick={(event) => { if (remoteActive) return; event.currentTarget.closest<HTMLElement>(".mecha-turn-summary")?.scrollTo({ top: 0 }); setCompactSummary((value) => !value); }}><span className="mecha-objective-heading">{t("本局目标")}</span><span className="mecha-summary-chevron" aria-hidden="true">{remoteActive || !compactSummary ? "▴" : "▾"}</span></button>
             </div>
-            <strong className="mecha-objective-goal">{t(staked.length ? "消灭所有敌人 · 至少保住一栋防守建筑" : "消灭所有敌人")}</strong>
+            {paused && !state.outcome ? <span className="mecha-objective-paused" role="status">{t("已暂停")}</span> : null}
+            {!remoteActive ? <strong className="mecha-objective-goal">{t(staked.length ? "消灭所有敌人 · 至少保住一栋防守建筑" : "消灭所有敌人")}</strong> : null}
+            <div className="mecha-quick-resource">{quickResource}</div>
             <div className="mecha-objective-forecast" role="status">
-              {state.outcome ? outcome : performance ? t("演出中，不显示预测") : !preview ? t("本回合预测未知") : !staked.length ? t("本局无守楼目标") : buildingDelta > 0 ? `${t("本回合预计建筑净恢复")} +${buildingDelta}` : `${t("本回合预计建筑净损失")} ${-buildingDelta}`}
+              {deployment ? t("部署确认后才生成首回合敌意。") : state.outcome ? outcome : performance ? t("演出中，不显示预测") : !preview ? t("本回合预测未知") : !staked.length ? t("本局无守楼目标") : buildingDelta > 0 ? `${t("本回合预计建筑净恢复")} +${buildingDelta}` : `${t("本回合预计建筑净损失")} ${-buildingDelta}`}
               {!state.outcome && preview?.assumed.length ? <span> · {t("假设待机")}</span> : null}
               {!state.outcome && predictedOutcome ? <span className="mecha-objective-outcome">{predictedOutcome}</span> : null}
             </div>
+            {resultReady ? <button type="button" ref={resultTrigger} className="mecha-result-reopen" onClick={() => setShowMatchResult(true)}>{t("查看结算")}</button> : null}
             <span className="mecha-scroll-hint" aria-hidden="true">↕ {t("内容较多时可滚动")}</span>
-          </div> : null}
-          {!performance && !preview && !state.outcome ? <p className="mecha-preview-after mecha-forecast-status" role="status">{s.preview.status === "invalid" ? `${t("风险未知")} · ${previewFaultText(s.preview.fault, locale)}` : t("预览暂不可用，风险未知；提交仍会重新校验。")} {t("当前敌意不是草稿预测。")}</p> : null}
+          </div>
+          {!deployment && !performance && !preview && !state.outcome ? <p className="mecha-preview-after mecha-forecast-status" role="status">{s.preview.status === "invalid" ? `${t("风险未知")} · ${previewFaultText(s.preview.fault, locale)}` : t("预览暂不可用，风险未知；提交仍会重新校验。")} {t("当前敌意不是草稿预测。")}</p> : null}
           {preview ? <details className="mecha-resource mecha-risk-details" onToggle={(event) => { if (!event.currentTarget.open) setFocusedBuilding(null); }}>
             <summary>{t("风险详情")}</summary>
-            <p>{t("守楼败北条")} {staked.length ? <>{stakedHp}/{stakedMax} → {t("预计")} {predictedHp}/{stakedMax} ({buildingDelta > 0 ? "+" : ""}{buildingDelta}) · {buildingDelta <= 0 ? `${t("预计建筑损失")} ${-buildingDelta}` : `${t("预计建筑净恢复")} ${buildingDelta}`}</> : t("本局无守楼目标")}{predictedOutcome ? ` · ${predictedOutcome}` : ""}</p>
             <p>{t("整包预计机甲受击")} {hitLine}</p>
             {preview.assumed.length ? <p>{t("假设待机")}：{preview.assumed.map((id) => t(NAMES[id])).join("、")} · {t("已规划移动会保留；提交前须明确选择行动。")}</p> : null}
             <p>{t("选择建筑，高亮对应楼顶标记。")}</p><ul>{preview.buildings.map((building) => <li key={building.id}><button type="button" aria-pressed={focusedBuilding === building.id} onClick={() => setFocusedBuilding((id) => id === building.id ? null : building.id)}>{building.id} ({building.cells.map((cell) => `${cell.x},${cell.y}`).join("、")}) · {t(building.staked ? "防守建筑" : "非防守建筑，不计入败北条")} · {building.startHp} → {building.endHp}/{building.maxHp}{building.endHp <= 0 ? ` · ${t("预计毁灭")}` : ""}</button></li>)}</ul>
             {preview.log.filter((event) => event.type === "act" && event.fizzled).map((event) => event.type === "act" ? <p key={event.mechId}>{t(NAMES[event.mechId])} · {t("行动落空，不消耗冷却")} · {fizzleText(event.cause, locale)}</p> : null)}
           </details> : null}
-          {!performance ? <details className="mecha-threat-details">
+          {!deployment && !performance ? <details className="mecha-threat-details">
             <summary>{t("威胁来源与格子")}</summary>
             <p>{t("大怪当前宣告")}：{skillLabel}</p>
-            <p>{t("红色三角为当前宣告；蓝色 P 为草稿试算；!P 表示两者重叠。")}</p>
+            <p>{t("红框与斜纹：敌方当前攻击格；敌人脚下红框与箭头连接攻击方向（不是移动路线）。蓝色虚线框：执行草稿后的攻击格。叠加表示同一格仍有危险。")}</p>
             <p>{t("当前宣告威胁")}: {s.declaredThreats.cells.length ? s.declaredThreats.cells.map((cell) => `${cell.x},${cell.y}`).join("、") : t("当前没有宣告威胁格。")}</p>
             {preview && s.projectedThreats ? <>
               <p>{t("草稿试算威胁")}: {s.projectedThreats.cells.length ? s.projectedThreats.cells.map((cell) => `${cell.x},${cell.y}`).join("、") : t("本次试算没有威胁格。")}</p>
@@ -917,7 +1366,15 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
             </div>
           </details> : null}
           {showOrder ? <div id="mecha-order-panel" className="mecha-order" role="region" aria-label={t("结算顺序")}>
-            <p>{t("先同时移动，再按突击、射手、支援行动；随后敌方依次攻击。")}</p>
+            <ol className="mecha-order-stages" role="list" aria-label={t("回合阶段")}>
+              {["全队移动", "我方行动", "敌方行动", "下一回合"].map((stage) => <li key={stage}>{t(stage)}</li>)}
+            </ol>
+            <p>{t("移动完成后，突击、射手、支援按顺序行动。")}</p>
+            <details className="mecha-order-rules">
+              <summary>{t("落空与即时结算")}</summary>
+              <p>{t("伤害、击退及损毁在行动中即时结算；目标位移或消失可能导致落空，落空不消耗冷却。")}</p>
+              <p>{t("战斗结束则跳过后续阶段；否则准备下一回合敌意。")}</p>
+            </details>
             {performance ? <p>{t("演出期间不显示预测。")}</p> : preview ? <>
               <p>{t("以下敌方顺序是草稿试算，不是当前宣告；敌人可能被消灭。")}</p>
               <p>{preview.assumed.length ? t("未规划机甲按待机预测；改变计划会更新顺序。") : t("按当前计划预测；改变计划会更新顺序。")}</p>
@@ -933,16 +1390,39 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
             {s.hoveredEnemy ? <p>{t("高亮所选敌人的预告；其他威胁仍可见。")}</p> : null}
           </div> : null}
         </section>
-        {!remoteActive && !performance && s.lastLog.length > 0 ? <MechaLastResult lastLog={s.lastLog} healthTimeline={s.combat.healthTimeline} t={t} locale={locale} /> : null}
-        <ul className="mecha-pack" tabIndex={0} aria-label={t("三机行动状态")} aria-describedby="mecha-roster-scroll-help">
-          <li className="mecha-roster-scroll-help" id="mecha-roster-scroll-help">{t("三机计划 · 滚动查看")}</li>
-          {activeMechs.map((m) => <MechaPlanCard key={m.id} id={m.id} name={t(NAMES[m.id])} hp={m.hp}
-            selected={m.id === selected} disabled={remoteActive || auto || paused || Boolean(performance)} onSelect={(id) => controller.selectMech(id)}
-            draft={draft?.[m.id]} openingSuggestion={s.openingSuggestion} hitDamage={preview ? preview.hitsAfter[m.id] ?? 0 : null}
-            locale={locale} avatar={<MechaUnitAvatar mechId={m.id} locale={locale} />} />)}
-        </ul>
-        <section className={targeting ? "mecha-selected-actions is-targeting" : "mecha-selected-actions"} aria-label={t("当前机甲行动")}>
-          <h3 tabIndex={-1}><span>{selectedMech ? t(NAMES[selectedMech.id]) : t("当前机甲")}</span>{selectedMech ? <span className="mecha-selected-hp">{selectedMech.hp} / {unitMaxHp(selectedMech.id) ?? "?"} HP</span> : null}</h3>
+        {!remoteActive && !performance && s.lastLog.length > 0 ? <MechaLastResult lastLog={s.lastLog} healthTimeline={s.combat.healthTimeline} finalState={state} t={t} locale={locale} /> : null}
+        <section className="mecha-team-planning" aria-label={t("回合与队伍规划")}>
+          {deployment ? <MechaDeploymentPanel controller={controller} state={s} disabled={remoteActive || previewLoading || !deployment.interactive} submitRef={setSubmitTarget} /> : <>
+          <div className="mecha-submit" ref={setSubmitTarget}>
+            <div className="mecha-planning-heading"><h3>{t(state.outcome && !remoteActive ? "队伍状态" : "队伍规划")}</h3></div>
+            <div className="mecha-planning-status"><strong>{state.outcome && !remoteActive ? t("对局已结束。") : <>{t("已规划")} {plannedCount}/{activeMechs.length}</>}</strong>{predictedFizzles.length ? <span id="mecha-draft-fizzle" className="mecha-planning-fizzle" role="status" data-draft-fizzle>{t("草稿预计落空：")}{predictedFizzles.map(event => t(NAMES[event.mechId])).join(locale === "en" ? ", " : "、")}</span> : null}{s.openingSuggestion && !remoteActive ? <span className="mecha-sr-only">{t("系统建议，可修改")}</span> : null}<span id="mecha-submit-status" className={planning && (packReady || pendingNames.length > 0) ? "mecha-sr-only" : undefined}>{remoteActive ? t("远程战棋期间本地规划已锁定。") : state.outcome ? t("对局已结束。") : paused ? t("演出暂停中，无法结束回合。") : performance || sequenceWaiting ? t("等待战斗演出，暂不可结束回合。") : auto ? t("自动对战中，无法手动结束回合。") : pendingNames.length ? `${t("待规划")}：${pendingNames.join("、")}` : t("已就绪，可结束回合。")}</span></div>
+            <p id="mecha-reset-help" className="mecha-reset-help mecha-sr-only">{t(s.resetTurnUsed ? "本局的重置机会已用完。" : state.outcome ? "对局结束后不可重置。" : remoteActive ? "远程战棋期间不可重置。" : planning ? "每场可用一次：恢复本回合开始时的草稿，不会撤回已结算的回合。" : "暂停、自动对战或演出期间不可重置。")}</p>
+            {!(state.outcome && !remoteActive) ? <div className={`mecha-planning-controls${s.holdConfirmation ? " is-confirming" : ""}`}>
+              {!s.holdConfirmation ? <button type="button" className="mecha-submit-primary" aria-describedby={predictedFizzles.length ? "mecha-submit-status mecha-draft-fizzle" : "mecha-submit-status"} disabled={!planning || !packReady} onClick={() => controller.submit()}>{t("结束回合")}</button> : <div className="mecha-hold-confirm" role="group" aria-label={t("确认全员待机")}>
+                <div className="mecha-hold-confirm__risk" id="mecha-hold-risk" role="status">
+                  <strong>{t("全员待机的预计风险")}</strong>
+                  {s.holdConfirmation.buildingLoss > 0 ? <span>{t("预计建筑损失")} {s.holdConfirmation.buildingLoss}</span> : null}
+                  {predictedOutcome ? <span>{predictedOutcome}</span> : null}
+                </div>
+                <div className="mecha-hold-confirm__actions">
+                  <button type="button" disabled={remoteActive} onClick={() => controller.cancelHold()}>{t("返回修改")}</button>
+                  <button type="button" className="mecha-submit-primary" aria-describedby="mecha-hold-risk" disabled={!planning} onClick={() => controller.confirmHold()}>{t("继续提交")}</button>
+                </div>
+              </div>}
+              <button type="button" className="mecha-reset-turn" disabled={!planning || !s.canResetTurn} aria-describedby="mecha-reset-help" onClick={() => controller.resetTurn()}>{t("重置本回合")}</button>
+            </div> : null}
+          </div>
+          <ul className="mecha-pack" tabIndex={0} aria-label={t("三机行动状态")} aria-describedby="mecha-roster-scroll-help">
+            <li className="mecha-roster-scroll-help" id="mecha-roster-scroll-help">{t(state.outcome && !remoteActive ? "队伍状态" : "三机计划 · 滚动查看")}</li>
+            {(state.outcome && !remoteActive ? state.mechs : activeMechs).map((m) => <MechaPlanCard key={m.id} id={m.id} name={t(NAMES[m.id])} hp={m.hp}
+              selected={m.id === selected} disabled={remoteActive || auto || paused || Boolean(performance) || m.hp <= 0} onSelect={(id) => controller.selectMech(id)}
+              finished={Boolean(state.outcome && !remoteActive)} draft={draft?.[m.id]} openingSuggestion={s.openingSuggestion} hitDamage={preview ? preview.hitsAfter[m.id] ?? 0 : null}
+              fizzle={predictedFizzles.find((event) => event.mechId === m.id) ?? null}
+              locale={locale} avatar={<MechaUnitAvatar mechId={m.id} locale={locale} />} />)}
+          </ul></>}
+        </section>
+        {deployment ? <MechaDeploymentActions controller={controller} state={s} disabled={remoteActive || previewLoading || !deployment.interactive} /> : <section className={targeting ? "mecha-selected-actions is-targeting" : "mecha-selected-actions"} aria-label={t("当前机甲行动")}>
+          <h3 tabIndex={-1}><span>{t("操作机甲")} · {selectedMech ? t(NAMES[selectedMech.id]) : t("当前机甲")}</span>{selectedMech ? <span className="mecha-selected-hp">{selectedMech.hp} / {unitMaxHp(selectedMech.id) ?? "?"} HP</span> : null}</h3>
           {targeting ? <p className="mecha-target-instruction">{t(actionLabel(targeting))} · {t("点击高亮目标")}</p> : null}
           <div className="mecha-command-deck">
             {selectedMech ? <MechaUnitPortrait unitId={selectedMech.id} locale={locale} size={84} className="mecha-selected-portrait" decorative={false} /> : null}
@@ -974,12 +1454,11 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
                   controller.setAction(selected, { kind: "skip" });
                 }}><span>{t(actionLabel(kind))}</span><MechaActionIcon kind={kind} /><small>{t("准备就绪")}</small></button>;
             })}
-            {planning ? s.unavailableActions.map(({ kind, reason }) => <button type="button" className="mecha-action-card is-unavailable" key={`unavailable-${kind}`} disabled title={t(reason === "cooldown" ? "技能冷却中，本回合不可使用。" : kind === "repair" ? "当前落点没有相邻友机；调整移动可能改变结果。" : kind === "melee" || kind === "charge" ? "当前落点没有相邻敌人；调整移动可能改变结果。" : "当前落点没有可射击目标（可能超出射程或被阻挡）；调整移动可能改变结果。")}><span>{t(actionLabel(kind))}</span><MechaActionIcon kind={kind} /><small>{t("不可用")}</small></button>) : null}
+            {planning ? s.unavailableActions.map(({ kind, reason }) => <button type="button" className="mecha-action-card is-unavailable" key={`unavailable-${kind}`} disabled title={t(reason === "cooldown" ? "技能冷却中，本回合不可使用。" : kind === "repair" ? "当前落点没有相邻友机；调整移动可能改变结果。" : kind === "melee" || kind === "charge" ? "当前落点没有相邻敌人；调整移动可能改变结果。" : "当前草稿落点没有可射击的敌人；展开下方查看原因。")}><span>{t(actionLabel(kind))}</span><MechaActionIcon kind={kind} /><small>{t("不可用")}</small></button>) : null}
           </div>
           </div>
           <div className="mecha-actions mecha-action-utilities">
             <button type="button" disabled={!planning || !s.canUndoMove} title={t("恢复最近一次移动前的草稿，可能一并恢复其他机甲规划。")} onClick={() => controller.undoMove()}>{t("撤回移动")}</button>
-            <button type="button" disabled={!planning || !s.canResetTurn} aria-describedby="mecha-reset-help" onClick={() => controller.resetTurn()}>{t("重置本回合")}</button>
             {targeting ? <button type="button" className="mecha-target-cancel" disabled={!planning} onClick={(event) => finishTarget(event, false)}>{t("取消选目标")}</button> : null}
           </div>
           {targeting ? <div className="mecha-target-preview" aria-label={t("目标试算")}>
@@ -998,7 +1477,9 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
           </div> : null}
           {planning && s.unavailableActions.length ? <details className="mecha-unavailable-actions">
             <summary>{t("当前不可用行动")} ({s.unavailableActions.length})</summary>
-            <ul>{s.unavailableActions.map(({ kind, reason }) => <li key={kind}><strong>{t(actionLabel(kind))}</strong> · {t(reason === "cooldown" ? "技能冷却中，本回合不可使用。" : kind === "repair" ? "当前落点没有相邻友机；调整移动可能改变结果。" : kind === "melee" || kind === "charge" ? "当前落点没有相邻敌人；调整移动可能改变结果。" : "当前落点没有可射击目标（可能超出射程或被阻挡）；调整移动可能改变结果。")}</li>)}</ul>
+            <ul>{s.unavailableActions.map(({ kind, reason, shotTargets }) => <li key={kind}><strong>{t(actionLabel(kind))}</strong> · {t(reason === "cooldown" ? "技能冷却中，本回合不可使用。" : kind === "repair" ? "当前落点没有相邻友机；调整移动可能改变结果。" : kind === "melee" || kind === "charge" ? "当前落点没有相邻敌人；调整移动可能改变结果。" : "当前草稿落点没有可射击的敌人；展开下方查看原因。")}
+              {shotTargets ? <div className="mecha-shot-diagnostics"><p>{t("按全队移动落定后的局面，逐目标显示首个不满足条件。")}</p>{shotTargets.length ? <ul>{shotTargets.map(({ id, targetCell, check }) => <li key={id}>{unitName(id)} ({targetCell.x},{targetCell.y}) · {t(shotCheckLabel(check))}{"cell" in check ? ` · ${t("阻挡格")} (${check.cell.x},${check.cell.y})` : null}</li>)}</ul> : <p>{t("场上没有存活敌人。")}</p>}</div> : null}
+            </li>)}</ul>
           </details> : null}
           <details className="mecha-move-list">
             <summary>{t("通过列表移动")}</summary>
@@ -1014,83 +1495,110 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
               }}>{t("应用移动")}</button>
             </div>
           </details>
-          <p id="mecha-reset-help" className="mecha-reset-help mecha-sr-only">{t(s.resetTurnUsed ? "本局的重置机会已用完。" : state.outcome ? "对局结束后不可重置。" : remoteActive ? "远程战棋期间不可重置。" : planning ? "每场可用一次：恢复本回合开始时的草稿，不会撤回已结算的回合。" : "暂停、自动对战或演出期间不可重置。")}</p>
-        </section>
-            {targeting && candidate ? <div ref={candidateRef} className="mecha-candidate-result mecha-candidate-panel" tabIndex={0} role="region" aria-label={t("目标试算")}>
+        </section>}
+            {targeting && candidate ? <div ref={candidateRef} className="mecha-candidate-result mecha-candidate-panel" data-candidate-source={candidate.source} tabIndex={0} role="region" aria-label={t("目标试算")}>
               {cellInfo ? <MechaCellInspector key={`${cellInfo.cell.x},${cellInfo.cell.y}:${cellInfo.unit?.id ?? "tile"}`} info={cellInfo} locale={locale} onClose={closeInspection} compact /> : null}
               <strong>{t("目标试算")} · {selected ? t(NAMES[selected]) : "—"} / {t(actionLabel(targeting))} → {unitName(candidate.target)}</strong>
+              <p className="mecha-candidate-source">{candidate.source === "selection" ? (candidate.preview.ok && candidate.preview.revision === s.preview.revision && candidate.preview.draftVersion === s.preview.draftVersion ? t("棋盘蓝色预测：目标试算 · 尚未确认") : t("目标试算不可用，棋盘预测未知。")) : t("棋盘仍显示当前草稿，点选后更新。")}</p>
               {candidate.source === "selection" ? <div className="mecha-candidate-actions">
                 <button type="button" disabled={!planning} onClick={(event) => finishTarget(event, true)}>{t("确认选择")}</button>
                 <button type="button" disabled={!planning} onClick={(event) => finishTarget(event, false)}>{t("取消选目标")}</button>
               </div> : null}
-              {!candidate.preview.ok ? <p>{candidate.preview.status === "invalid" ? previewFaultText(candidate.preview.fault, locale) : t("预览暂不可用，风险未知；提交仍会重新校验。")}</p> : candidateEffects?.action ? <>
-                {candidateEffects.action.fizzled ? <p>{t("行动落空，不消耗冷却")} · {fizzleText(candidateEffects.action.cause, locale)}</p> : <>
-                  <p>{t("行动造成的变化")} · {t("直接伤害")} {candidateEffects.action.damage}</p>
-                  {candidateEffects.action.effects?.length ? candidateEffects.action.effects.map((effect) => <p key={`${effect.kind}-${effect.id}-${effect.order}`}>{unitName(effect.id)} HP {effect.before} → {effect.after}</p>) : <p>{t("没有生命变化")}</p>}
-                  {candidateEffects.shoves.length ? candidateEffects.shoves.map(({ event, from, to }, index) => <div key={index}><p>{t("推挤")} {unitName(event.unit)} ({event.dir.x},{event.dir.y}) · {from ? `${from.x},${from.y}` : "?"} → {to ? `${to.x},${to.y}` : "?"}{event.hit ? ` · ${t("碰撞")} ${event.hit.split(",").map(unitName).join("、")}` : ""}</p>{event.effects?.map((effect) => <p key={`${effect.kind}-${effect.id}-${effect.order}`}>{unitName(effect.id)} HP {effect.before} → {effect.after}</p>)}</div>) : <p>{t("未发生推挤")}</p>}
-                </>}
-                <p>{t("整包结束目标 HP")} {candidateEffects.endHp ?? "?"}</p>
-              </> : <p>{t("行动未执行，结果未知。")}</p>}
+              {!candidateIsCurrent ? <p>{t("目标试算不可用，棋盘预测未知。")}</p> : !candidate.preview.ok ? <p>{candidate.preview.status === "invalid" ? previewFaultText(candidate.preview.fault, locale) : t("预览暂不可用，风险未知；提交仍会重新校验。")}</p> : candidateEffects ? <MechaCandidateConsequences result={candidateEffects} baseline={s.preview} candidate={candidate.preview} locale={locale} unitName={unitName} /> : <p>{t("行动未执行，结果未知。")}</p>}
             </div> : null}
         {cellInfo && !(targeting && candidate) ? <MechaCellInspector key={`${cellInfo.cell.x},${cellInfo.cell.y}:${cellInfo.unit?.id ?? "tile"}`} info={cellInfo} locale={locale} onClose={closeInspection} /> : null}
         {inspectedAction && s.actions.some((action) => action.kind === inspectedAction) ? <div id="mecha-action-inspection" className="mecha-action-inspection" role="tooltip"><strong>{t(actionLabel(inspectedAction))}</strong> · {t(ACTION_DESCRIPTIONS[inspectedAction])}</div> : null}
-        <div className="mecha-submit" ref={setSubmitTarget}>
-          <div><strong>{t("已规划")} {plannedCount}/{activeMechs.length}</strong>{s.openingSuggestion && !remoteActive ? <span className="mecha-sr-only">{t("系统建议，可修改")}</span> : null}<span id="mecha-submit-status" className={planning && (packReady || pendingNames.length > 0) ? "mecha-sr-only" : undefined}>{remoteActive ? t("远程战棋期间本地规划已锁定。") : paused ? t("演出暂停中，无法结束回合。") : performance || sequenceWaiting ? t("等待战斗演出，暂不可结束回合。") : state.outcome ? t("对局已结束。") : auto ? t("自动对战中，无法手动结束回合。") : pendingNames.length ? `${t("待规划")}：${pendingNames.join("、")}` : t("已就绪，可结束回合。")}</span></div>
-          {!s.holdConfirmation ? <button type="button" className="mecha-submit-primary" aria-describedby="mecha-submit-status" disabled={!planning || !packReady} onClick={() => controller.submit()}>{t("结束回合")}</button> : <div className="mecha-hold-confirm" role="group" aria-label={t("确认全员待机")}>
-            <strong>{t("全员待机的预计风险")}</strong>
-            {s.holdConfirmation.buildingLoss > 0 ? <span>{t("预计建筑损失")} {s.holdConfirmation.buildingLoss}</span> : null}
-            {predictedOutcome ? <span>{predictedOutcome}</span> : null}
-            <button type="button" disabled={remoteActive} onClick={() => controller.cancelHold()}>{t("返回修改")}</button>
-            <button type="button" className="mecha-submit-primary" disabled={!planning} onClick={() => controller.confirmHold()}>{t("继续提交")}</button>
-          </div>}
-        </div>
-        {s.notice && <p role="alert">{s.notice}</p>}
-        <details className="mecha-options-menu">
-          <summary>{t("战场设置与远程")}</summary>
-        <details className="mecha-settings" name="mecha-battle-options">
-          <summary>{t("战场设置与规则")}</summary>
+        {s.notice && !(settingsPanel === "battlefield" && s.notice === t("行动建议暂不可用；草稿未改变。")) && <p role="alert">{s.notice}</p>}
+        <section id="mecha-battlefield-settings" className="mecha-settings-popover" role="region" aria-labelledby="mecha-battlefield-settings-title" hidden={settingsPanel !== "battlefield"}>
+          <header className="mecha-settings-heading"><h3 id="mecha-battlefield-settings-title">{t("战场设置与规则")}</h3><button type="button" className="mecha-settings-close" aria-label={t("关闭设置")} onClick={closeSettings}>×</button></header>
+          <div className="mecha-settings-body mecha-settings">
           <p className="mecha-help">{t("左拖旋转，右拖平移，滚轮缩放；短点击选择格子。暂停时仍可调整视角。")}</p>
-          <div className="mecha-map-legend" aria-label={t("战场图例")}>
-            <span><i className="is-reach" />{t("可移动")}</span>
-            <span><i className="is-move" />{t("计划落点")}</span>
-            <small>{t("黄色菱形标记计划落点，尚未结算。")}</small>
-            <span><i className="is-telegraph" />{t("当前宣告威胁")}</span>
-            <span><i className="is-projected" />{t("草稿试算威胁")}</span>
-            <small>{t("红色三角为当前宣告；蓝色 P 为草稿试算；!P 表示两者重叠。")}</small>
-            <span><i className="is-focus" />{t("打法目标")}</span>
-            <span><i className="is-target" />{t("可选目标")}</span>
-            <small>{t("圆环为我方，菱形轮廓为敌方；黄色选中环与箭头是当前机甲。")}</small>
-          </div>
+          <MechaBattleLegend locale={locale} view={cityView} />
+          <section className="mecha-archive-controls" aria-label={t("本机战斗回放")}>
+            <strong>{t("本机战斗回放")}</strong>
+            <p>{t("最多保存 20 场；自动匹配当前城市战场，规则需兼容。清除站点数据可能删除记录。")}</p>
+            <label className="mecha-replay-auto-save"><input type="checkbox" data-replay-auto-save checked={autoSaveReplay} onChange={event => changeAutoSave(event.target.checked)} /><span>{t("自动保存已结束的本地 PvE 对局")}</span></label>
+            <p>{t("仅保存在本机，不自动覆盖；可随时关闭。远程对局不支持。")}</p>
+            {archiveEntries.length ? <label>{t("选择回放")}
+              <select data-archive-select value={selectedArchive} disabled={archiveBusy || remoteActive} onChange={event => { setSelectedArchive(event.target.value); setConfirmArchiveDelete(false); setArchiveMessage(null); }}>
+                {archiveEntries.map(entry => <option key={entry.key} value={entry.key}>{entry.legacy ? t("旧版回放") : entry.damaged ? t("损坏的回放记录") : `${new Date(entry.savedAt!).toLocaleString(locale === "en" ? "en-US" : "zh-CN")} · ${entry.turns} ${locale === "en" ? (entry.turns === 1 ? "round" : "rounds") : "回合"}`}</option>)}
+              </select>
+            </label> : <p>{t("本机还没有保存的回放。")}</p>}
+            <div>
+              <button type="button" data-archive-save-current disabled={!s.replayAvailable || archiveBusy || remoteActive || Boolean(performance) || Boolean(s.replay)} onClick={() => void saveReplay()}>{t(archiveBusy ? "正在保存…" : "保存本局回放")}</button>
+              <button type="button" data-archive-play disabled={!selectedArchive || archiveBusy || remoteActive || previewLoading || auto || paused || Boolean(performance)} onClick={() => void playSavedReplay()}>{t(archiveBusy ? "正在读取…" : "回放已保存的战斗")}</button>
+              {!confirmArchiveDelete ? <button type="button" data-archive-delete disabled={!selectedArchive || archiveBusy || remoteActive} onClick={() => setConfirmArchiveDelete(true)}>{t("删除本机回放")}</button> : <>
+                <button type="button" data-archive-delete-confirm disabled={archiveBusy || remoteActive} onClick={deleteSavedReplay}>{t("确认删除这条回放")}</button>
+                <button type="button" onClick={() => setConfirmArchiveDelete(false)}>{t("取消删除")}</button>
+              </>}
+            </div>
+            <details className="mecha-replay-file-tools">
+              <summary>{t("备份或导入回放")}</summary>
+              <p>{t("回放文件不是视频；导入需要相同城市战场和兼容规则。")}</p>
+              <div>
+              <button type="button" data-archive-export disabled={!selectedArchive || archiveBusy || remoteActive} onClick={exportSavedReplay}>{t("导出回放文件")}</button>
+              <button type="button" data-archive-import disabled={archiveBusy || remoteActive || !site || Boolean(viewFailed) || previewLoading} onClick={() => replayFileInput.current?.click()}>{t("导入回放文件")}</button>
+              <input ref={replayFileInput} type="file" accept=".json,application/json" hidden onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; void importReplayFile(file); }} />
+              </div>
+            </details>
+            {archiveMessage ? <p role="status" aria-live="polite">{t(archiveMessage)}</p> : null}
+          </section>
           <div className="mecha-toolbar">
-            <label>{t("战场")}<select disabled={remoteActive || Boolean(performance)} value={shapeId} onChange={(e) => {
+            <label>{t("战场")}<select disabled={remoteActive || archiveBusy || Boolean(performance)} value={shapeId} onChange={(e) => {
               const next = e.target.value as FightShape;
               const nextSite = safeCatalog[next];
               if (!nextSite || next === shapeId) return;
-              if (useConnectedAssault(import.meta.env.DEV, location.search)) setPreviewLoading(true);
-              setShape(next);
-              setFocusedBuilding(null);
-              controller.restart({ site: nextSite, stake: next === "alley" ? "frontage" : "all" });
-            }}>{SHAPES.map((item) => <option key={item.id} value={item.id} disabled={!safeCatalog[item.id]}>{t(item.label)}{catalog[item.id] && !safeCatalog[item.id] ? (locale === "en" ? " · unsafe spawn" : " · 出生点不安全") : ""}</option>)}</select></label>
-            <label>{t("脚本")}<select disabled={remoteActive || Boolean(performance)} value={s.script} onChange={(e) => { setFocusedBuilding(null); controller.restart({ script: e.target.value as BossScriptId }); }}>{SCRIPTS.map((sc) => <option key={sc.id} value={sc.id}>{t(sc.label)}</option>)}</select></label>
+              requestDestructiveAction(() => {
+                if (useConnectedAssault(import.meta.env.DEV, location.search)) setPreviewLoading(true);
+                setShape(next);
+                setFocusedBuilding(null);
+                controller.restart({ site: nextSite, stake: next === "alley" ? "frontage" : "all" });
+              });
+            }}>{SHAPES.map((item) => <option key={item.id} value={item.id} disabled={!safeCatalog[item.id]}>{t(item.label)}{catalog[item.id] && !safeCatalog[item.id] ? t(" · 出生点不安全") : ""}</option>)}</select></label>
+            <label>{t("脚本")}<select disabled={remoteActive || archiveBusy || Boolean(performance)} value={s.script} onChange={(e) => {
+              const next = e.target.value as BossScriptId;
+              if (next !== s.script) requestDestructiveAction(() => { setFocusedBuilding(null); controller.restart({ script: next }); });
+            }}>{SCRIPTS.map((sc) => <option key={sc.id} value={sc.id}>{t(sc.label)}</option>)}</select></label>
             <label>{t("打法")}<select disabled={remoteActive || paused || Boolean(performance) || Boolean(s.match.outcome) || s.match.phase !== "player_plan"} value={doctrine} onChange={(e) => controller.setDoctrine(e.target.value as DoctrineId)}>{DOCTRINES.map((item) => <option key={item.id} value={item.id}>{t(item.label)}</option>)}</select></label>
-            <button type="button" disabled={remoteActive} onClick={() => { setFocusedBuilding(null); controller.restart(); }}>{t("新开一局")}</button>
-            <button type="button" disabled={!planning} onClick={() => controller.applyDoctrine()}>{t("按打法填入")}</button>
-            <button type="button" disabled={remoteActive || Boolean(state.outcome)} onClick={() => controller.toggleAuto()}>{auto ? t("停止自动") : t("自动对战")}</button>
+            <button type="button" disabled={remoteActive || archiveBusy} onClick={() => requestDestructiveAction(() => { setFocusedBuilding(null); controller.restart(); })}>{t("新开一局")}</button>
+            <button type="button" disabled={!planning || s.doctrineConfirmation} onClick={() => controller.requestDoctrineSuggestion()}>{t("生成行动建议")}</button>
+            <button type="button" disabled={!planning || !s.canUndoDoctrine} onClick={() => controller.undoDoctrineSuggestion()}>{t("撤回建议")}</button>
+            <button type="button" disabled={remoteActive || Boolean(deployment) || Boolean(state.outcome)} onClick={() => controller.toggleAuto()}>{auto ? t("停止自动") : t("自动对战")}</button>
           </div>
-          <p className="mecha-help">{t("点一台机甲，再点能走到的格子，然后给三台都选行动。红色是当前宣告，草稿试算可能改变敌方攻击。")}</p>
+          {s.notice === t("行动建议暂不可用；草稿未改变。") ? <p className="mecha-help" role="alert">{s.notice}</p> : null}
+          {s.doctrineConfirmation ? <div className="mecha-doctrine-confirm" role="group" aria-labelledby="mecha-doctrine-confirm-title">
+            <p id="mecha-doctrine-confirm-title" role="status">{t("生成建议会替换当前队伍的草稿。确认后可撤回；继续手动编辑后不能撤回建议。")}</p>
+            <div><button type="button" disabled={!planning} onClick={() => controller.confirmDoctrineSuggestion()}>{t("确认替换草稿")}</button><button type="button" onClick={() => controller.cancelDoctrineSuggestion()}>{t("保留当前草稿")}</button></div>
+          </div> : null}
+          <details className="mecha-evaluation-details" onToggle={(event) => setShowPlanEvaluation(event.currentTarget.open)}>
+            <summary>{t("查看当前草稿评分")}</summary>
+            {showPlanEvaluation && settingsPanel === "battlefield" ? (planning && s.packReady
+              ? <MechaPlanEvaluation match={s.match} draft={s.draft} doctrine={doctrine} locale={locale} />
+              : <p role="status">{t("请在本地手动规划阶段，为每台存活机甲选择行动后查看评分。")}</p>) : null}
+          </details>
+          <p className="mecha-help">{t("手动模式切换打法不会改变草稿。生成的建议可手动调整；搜索只比较有限候选，并非最优保证。")}</p>
+          <p className="mecha-help">{t(doctrine === "tunnel" ? "攻坚更侧重伤害大怪和接近它，也会考虑机甲、建筑与胜负。" : "守楼更侧重建筑与小怪威胁，也会考虑大怪、机甲与胜负；没有小怪时转向大怪。")}</p>
+          <p className="mecha-help">{t(deployment ? "选择机甲，再点击绿色格子。已放置的机甲可交换位置。" : "点一台机甲，再点能走到的格子，然后给三台都选行动。红色是当前宣告，草稿试算可能改变敌方攻击。")}</p>
           <p className="mecha-help">{t("声明与草稿试算的威胁可能不同；边框表示可选目标，卡片上的受击是敌方阶段预计损失。")}</p>
           <p className="mecha-help">{t("沿着道路能多走一倍。突击靠路，炮手爬山和平地一样，支援上坡不加价。水过不去，被推进水或山地会撞上。")}</p>
-          <p className="mecha-help">{t("攻坚先打大怪。守楼先打离楼最近的小怪。两种打法走出来的结果不同。")}</p>
           <p className="mecha-help">{t("靠岸有水，翻山有山地，巷战是贴着楼的路，单侧临街也算。这座城没有的场地不会出现。")}</p>
           {shapeId === "alley" ? <p className="mecha-help">{t("巷战只守临街的楼。贴着路的楼拆光就输，不临街的楼还在，但不算这一局。")}</p> : null}
           <p className="mecha-help">{focusLine}</p>
           {site.spawnSpread > FLAT_SPAWN_MAX_DELTA ? <p className="mecha-help">{t("出生高差")} {site.spawnSpread.toFixed(2)} · {t("标准 1，已放宽")}</p> : null}
           <p className="mecha-help">{t("战场在这座城市的地面上。楼顶血槽只记这一局，城市里的楼还在。")}</p>
           <p className="mecha-ruleset">{t("掩体")} {state.covers.length} · {t("建筑")} {state.buildings.filter((b) => b.hp > 0).length} · {state.ruleset}</p>
-        </details>
-        <RemoteMechaControls locale={locale} site={site} shape={shapeId} state={state} status={remoteStatus} canStart={s.interactive && !sequenceWaiting && !performance} onStatusChange={onRemoteStatusChange} onStopped={() => controller.restart()} stopTarget={submitTarget} />
-        </details>
+          </div>
+        </section>
+        <section id="mecha-remote-settings" className="mecha-settings-popover" role="region" aria-labelledby="mecha-remote-settings-title" hidden={settingsPanel !== "remote"}>
+          <header className="mecha-settings-heading"><h3 id="mecha-remote-settings-title">{t("远程战棋")}</h3><button type="button" className="mecha-settings-close" aria-label={t("关闭设置")} onClick={closeSettings}>×</button></header>
+          <div className="mecha-settings-body">
+            <RemoteMechaControls presentation="panel" locale={locale} site={site} shape={shapeId} state={state} status={remoteStatus} canStart={(s.interactive || Boolean(s.deployment?.interactive)) && !sequenceWaiting && !performance} onStatusChange={onRemoteStatusChange} onStopped={() => controller.restart()} stopTarget={submitTarget} />
+          </div>
+        </section>
       </div>
+      </> : null}
+      {resultReady && showMatchResult ? <MechaBattleResult state={state} locale={locale} onView={viewResultField} onReplay={s.replayAvailable ? startReplay : undefined} archiveBusy={archiveBusy} archiveMessage={archiveMessage} onRestart={() => requestDestructiveAction(() => { setShowMatchResult(false); setFocusedBuilding(null); controller.restart(); })} onExit={requestClose} /> : null}
+      {replayLossGuard}
     </section>
   );
 }

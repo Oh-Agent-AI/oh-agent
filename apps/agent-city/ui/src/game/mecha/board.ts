@@ -37,7 +37,7 @@ export const MECH_IDS: MechId[] = ["Assault", "Gunner", "Support"];
 export type CoverPresetId = "covers_sparse_mid" | "covers_diag_corridor" | "covers_twin_clusters";
 export type BossScriptId = "stationary_smash" | "cadence_ssw" | "raid_ssw" | "siege";
 export type BossSkill = "smash" | "sweep" | "skip";
-export type Phase = "enemy_prepare" | "player_plan" | "resolving_boss" | "finished";
+export type Phase = "deployment" | "enemy_prepare" | "player_plan" | "resolving_boss" | "finished";
 export type Outcome = "victory" | "defeat_wipe" | "defeat_timeout" | "defeat_buildings";
 
 export type Action =
@@ -135,6 +135,8 @@ export type MatchState = {
   boss: Boss;
   turn: number;
   phase: Phase;
+  /** Serializable map-declared deployment area; draft placements belong to the controller. */
+  deployment?: { zone: Cell[]; reservedCells: Cell[] };
   revision: number;
   outcome: Outcome | null;
 };

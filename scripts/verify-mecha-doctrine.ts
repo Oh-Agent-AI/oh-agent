@@ -1,7 +1,7 @@
 /** 攻坚和守楼必须走出不同的一步。同一宽度，焦点不同。 */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { bossTunnelPlan, doctrineFocus, peelPlan } from "../apps/agent-city/ui/src/game/mecha/ai.ts";
+import { bossTunnelPlan, doctrineFocus, evaluatePlan, peelPlan } from "../apps/agent-city/ui/src/game/mecha/ai.ts";
 import { doctrineFocusLine, gameText, stepBudgetLine } from "../apps/agent-city/ui/src/game/gameCopy.ts";
 import { bossPrepare, createMatch, living, livingStakeBuildings, stakeBuildings, validateAndApplyPlan, type Cell, type TerrainKind } from "../apps/agent-city/ui/src/game/mecha/rules.ts";
 
@@ -75,6 +75,23 @@ test("a road around a mountain wall is closer in half-steps than the manhattan c
   const assault = peel.items.find((item) => item.mechId === "Assault");
   assert.ok(assault?.moveTo);
   assert.equal(assault.moveTo.y, 1, `expected the road row, got ${assault.moveTo.x},${assault.moveTo.y}`);
+  // Frozen before the explanation change, including terrain-aware path costs.
+  assert.deepEqual(peel.items, [
+    { mechId: "Assault", moveTo: { x: 4, y: 1 }, action: { kind: "skip" } },
+    { mechId: "Gunner", moveTo: { x: 1, y: 8 }, action: { kind: "pierce" } },
+    { mechId: "Support", moveTo: { x: 2, y: 7 }, action: { kind: "melee" } },
+  ]);
+  const score = evaluatePlan(state, peel, "peel");
+  assert.ok(score.ok); assert.equal(score.score, 344);
+  const tunnel = bossTunnelPlan(state);
+  assert.deepEqual(tunnel.items, [
+    { mechId: "Assault", moveTo: { x: 2, y: 6 }, action: { kind: "charge" } },
+    { mechId: "Gunner", moveTo: { x: 0, y: 8 }, action: { kind: "pierce" } },
+    { mechId: "Support", moveTo: { x: 2, y: 7 }, action: { kind: "melee" } },
+  ]);
+  const tunnelScore = evaluatePlan(state, tunnel, "tunnel");
+  assert.ok(tunnelScore.ok); assert.equal(tunnelScore.score, 363);
+
 });
 
 test("the focus line names the boss or the raider and the building", () => {
@@ -240,4 +257,85 @@ test("a boss-down building loss keeps defeat_buildings and the HUD's boss-down s
   assert.equal(state.outcome, "defeat_buildings", "a surviving raider keeps victory from masking the building loss");
   assert.equal(gameText("大怪已倒，楼先没了", "en"), "The boss is down, and the buildings fell first.");
   assert.equal(gameText("大怪已倒，楼先没了", "zh-Hans"), "大怪已倒，楼先没了");
+});
+
+// Search results captured before adding the score breakdown: changing the
+// explanation must not change candidate pruning, arithmetic order or ties.
+test("score explanations preserve real search results and weighted terms", async () => {
+  const { evaluatePlan, squadPlan } = await import("../apps/agent-city/ui/src/game/mecha/ai.ts");
+  const state = createMatch({
+    preset: "covers_sparse_mid", script: "siege", covers: [],
+    buildings: [{ id: "block", cells: [{ x: 0, y: 0 }, { x: 0, y: 1 }] }],
+    raiders: [{ id: "raider-w", pos: { x: 1, y: 1 } }, { id: "raider-e", pos: { x: 8, y: 8 } }],
+    mechs: [{ id: "Assault", pos: { x: 4, y: 4 } }, { id: "Gunner", pos: { x: 4, y: 5 } }, { id: "Support", pos: { x: 5, y: 4 } }],
+    boss: { x: 6, y: 6 },
+  });
+  bossPrepare(state);
+  const before = structuredClone(state);
+  const expectations = [
+    { id: "tunnel" as const, plan: squadPlan(state), items: [
+      { mechId: "Assault", moveTo: { x: 3, y: 6 }, action: { kind: "charge" } },
+      { mechId: "Gunner", moveTo: { x: 5, y: 5 }, action: { kind: "pierce" } },
+      { mechId: "Support", moveTo: { x: 6, y: 6 }, action: { kind: "melee" } },
+    ], score: 357, factors: { boss: 200, raiders: 0, mechs: 99, position: -6, buildings: 64, outcome: 0 } },
+    { id: "peel" as const, plan: peelPlan(state), items: [
+      { mechId: "Assault", moveTo: { x: 2, y: 5 }, action: { kind: "charge" } },
+      { mechId: "Gunner", moveTo: { x: 3, y: 4 }, action: { kind: "pierce" } },
+      { mechId: "Support", moveTo: null, action: { kind: "shoot" } },
+    ], score: 552, factors: { boss: 8, raiders: 192, mechs: 111, position: -15, buildings: 256, outcome: 0 } },
+  ];
+  for (const expected of expectations) {
+    const originalPlan = structuredClone(expected.plan);
+    assert.deepEqual(expected.plan.items, expected.items);
+    assert.deepEqual(evaluatePlan(state, expected.plan, expected.id), { ok: true, score: expected.score, factors: expected.factors });
+    assert.deepEqual(evaluatePlan(state, expected.plan, expected.id), evaluatePlan(state, expected.plan, expected.id));
+    assert.equal(Object.values(expected.factors).reduce((sum, n) => sum + n, 0), expected.score);
+    assert.deepEqual(expected.plan, originalPlan, "evaluation does not mutate its input plan");
+  }
+  assert.deepEqual(state, before, "search and evaluation do not mutate the source match");
+});
+
+test("evaluation rejects invalid packs, distinguishes nonfinite values, and restores the event sink", async () => {
+  const { evaluatePlan } = await import("../apps/agent-city/ui/src/game/mecha/ai.ts");
+  const { emit, swapEventSink } = await import("../apps/agent-city/ui/src/game/mecha/board.ts");
+  const state = createMatch({ preset: "covers_sparse_mid", script: "stationary_smash", covers: [], buildings: [], raiders: [], boss: { x: 4, y: 3 }, mechs: [
+    { id: "Assault", pos: { x: 3, y: 4 } }, { id: "Gunner", pos: { x: 4, y: 7 } }, { id: "Support", pos: { x: 8, y: 9 } },
+  ] });
+  bossPrepare(state);
+  const plan = bossTunnelPlan(state);
+  assert.deepEqual(plan.items, [
+    { mechId: "Assault", moveTo: { x: 4, y: 2 }, action: { kind: "charge" } },
+    { mechId: "Gunner", moveTo: { x: 4, y: 5 }, action: { kind: "pierce" } },
+    { mechId: "Support", moveTo: { x: 5, y: 9 }, action: { kind: "skip" } },
+  ]);
+  const { items: _, ...missing } = plan;
+  void _;
+  const outer: import("../apps/agent-city/ui/src/game/mecha/rules.ts").TurnEvent[] = [];
+  const old = swapEventSink(outer);
+  try {
+    assert.deepEqual(evaluatePlan(state, plan, "tunnel"), { ok: true, score: 235, factors: { boss: 140, raiders: 0, mechs: 105, position: -10, buildings: 0, outcome: 0 } });
+    assert.deepEqual(evaluatePlan(state, { ...plan, revision: plan.revision + 1 }, "tunnel"), { ok: false, reason: "rejected" });
+    assert.deepEqual(evaluatePlan(state, { ...plan, items: [] }, "peel"), { ok: false, reason: "rejected" });
+    assert.deepEqual(evaluatePlan(state, missing as typeof plan, "tunnel"), { ok: false, reason: "unavailable" });
+    const nonfinite = structuredClone(state);
+    const brokenBuilding = createMatch({ preset: "covers_sparse_mid", script: "stationary_smash", buildings: [{ id: "broken", cells: [{ x: 0, y: 0 }] }] }).buildings[0]!;
+    brokenBuilding.hp = Number.NaN; nonfinite.buildings.push(brokenBuilding);
+    assert.deepEqual(evaluatePlan(nonfinite, plan, "tunnel"), { ok: false, reason: "nonfinite" });
+    assert.deepEqual(outer, [], "simulation never leaks events into an outer turn");
+    const marker = { type: "outcome" as const, outcome: "victory" as const };
+    emit(marker);
+    assert.deepEqual(outer, [marker], "the previous sink remains active even after errors");
+  } finally { swapEventSink(old); }
+});
+
+
+test("a terminal victory exposes the actual outcome adjustment, not a fabricated enemy phase", () => {
+  const state = createMatch({ preset: "covers_sparse_mid", script: "stationary_smash", covers: [], buildings: [], raiders: [], boss: { x: 4, y: 3 }, mechs: [
+    { id: "Assault", pos: { x: 3, y: 4 } }, { id: "Gunner", pos: { x: 4, y: 7 } }, { id: "Support", pos: { x: 8, y: 9 } },
+  ] });
+  state.boss.hp = 1; bossPrepare(state);
+  const tunnel = evaluatePlan(state, bossTunnelPlan(state), "tunnel");
+  const peel = evaluatePlan(state, peelPlan(state), "peel");
+  assert.deepEqual(tunnel, { ok: true, score: 5901, factors: { boss: 800, raiders: 0, mechs: 111, position: -10, buildings: 0, outcome: 5000 } });
+  assert.deepEqual(peel, { ok: true, score: 5423, factors: { boss: 320, raiders: 0, mechs: 111, position: -8, buildings: 0, outcome: 5000 } });
 });
