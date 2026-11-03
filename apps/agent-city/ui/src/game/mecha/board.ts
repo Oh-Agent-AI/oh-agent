@@ -21,8 +21,8 @@ export const RAIDER_MOVE = 4;
 export type DifficultyId = "easy" | "normal" | "hard";
 export type EnemyStats = { bossHp: number; bossAtk: number; raiderHp: number; raiderAtk: number; raiderCount: number };
 export const ENEMY_STATS: Record<DifficultyId, EnemyStats> = {
-  easy: { bossHp: 36, bossAtk: 6, raiderHp: RAIDER_HP, raiderAtk: 2, raiderCount: 1 },
-  normal: { bossHp: BOSS_HP, bossAtk: 5, raiderHp: RAIDER_HP, raiderAtk: RAIDER_ATK, raiderCount: 2 },
+  easy: { bossHp: 36, bossAtk: 5, raiderHp: RAIDER_HP, raiderAtk: 2, raiderCount: 1 },
+  normal: { bossHp: BOSS_HP, bossAtk: BOSS_ATK, raiderHp: RAIDER_HP, raiderAtk: RAIDER_ATK, raiderCount: 2 },
   hard: { bossHp: 48, bossAtk: 7, raiderHp: RAIDER_HP, raiderAtk: 4, raiderCount: 4 },
 };
 
@@ -50,7 +50,7 @@ export const MECH_IDS: MechId[] = ["Assault", "Gunner", "Support"];
 export type CoverPresetId = "covers_sparse_mid" | "covers_diag_corridor" | "covers_twin_clusters";
 export type BossScriptId = "stationary_smash" | "cadence_ssw" | "raid_ssw" | "siege";
 export type BossSkill = "smash" | "sweep" | "skip";
-export type Phase = "enemy_prepare" | "player_plan" | "resolving_boss" | "finished";
+export type Phase = "deployment" | "enemy_prepare" | "player_plan" | "resolving_boss" | "finished";
 export type Outcome = "victory" | "defeat_wipe" | "defeat_timeout" | "defeat_buildings";
 
 export type Action =
@@ -149,6 +149,8 @@ export type MatchState = {
   boss: Boss;
   turn: number;
   phase: Phase;
+  /** Serializable map-declared deployment area; draft placements belong to the controller. */
+  deployment?: { zone: Cell[]; reservedCells: Cell[] };
   revision: number;
   outcome: Outcome | null;
 };

@@ -71,6 +71,14 @@ export function remoteStateFromSite(site: CityMechaSite, state: MatchState): Mat
     ruleset: state.ruleset, preset: state.preset, script: state.script,
     ...(state.difficulty ? { difficulty: state.difficulty } : {}),
     covers: state.covers.map(cell), obstacles: state.obstacles.map(cell), terrain: state.terrain.map((row) => row.slice()), heights: state.heights.map((row) => row.slice()),
+    ...(state.assaultTerrainSafety ? { assaultTerrainSafety: {
+      unsafeCells: state.assaultTerrainSafety.unsafeCells.map(cell),
+      unsafeEdges: state.assaultTerrainSafety.unsafeEdges.map((edge) => ({ from: cell(edge.from), to: cell(edge.to) })),
+    } } : {}),
+    // Deployment is authority state, not the controller's unconfirmed draft.
+    ...(state.phase === "deployment" && state.deployment ? { deployment: {
+      zone: state.deployment.zone.map(cell), reservedCells: state.deployment.reservedCells.map(cell),
+    } } : {}),
     buildings: state.buildings.map((building, index) => ({ id: buildings.get(building.id) ?? `other-building-${String(index).padStart(4, "0")}`, cells: building.cells.map(cell), hp: building.hp, maxHp: building.maxHp })),
     stake: state.stake,
     raiders: state.raiders.map((raider, index) => ({ id: `raider-${String(index).padStart(4, "0")}`, pos: cell(raider.pos), hp: raider.hp, intent: intent(raider.intent) })),

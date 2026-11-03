@@ -24,6 +24,7 @@ test("default matches use normal stats while difficulties persist their raider c
   assert.equal(baseline.difficulty, undefined);
   assert.deepEqual(enemyStatsOf(baseline), ENEMY_STATS.normal);
   assert.equal(baseline.boss.hp, 40);
+  assert.equal(enemyStatsOf(baseline).bossAtk, 6, "default remains compatible with pre-difficulty battles");
   assert.deepEqual(baseline.raiders.map((raider) => raider.hp), [8, 8]);
 
   const easy = match("easy");

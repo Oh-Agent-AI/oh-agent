@@ -4,12 +4,13 @@
  * blocked 格（SITE-1）进不了规则，非 siege 脚本看不到城里的楼（SITE-2）。
  * 这里只做转换，不调 bossPrepare——何时开第一回合是调用方的事。
  */
+import { rearDeployZone } from "./deployment";
 import type { CityMechaSite } from "./citySite";
 import { createMatch, type BossScriptId, type BuildingStake, type CoverPresetId, type DifficultyId, type MatchState } from "./rules";
 
 export function matchFromSite(
   site: CityMechaSite,
-  opts: { preset: CoverPresetId; script: BossScriptId; difficulty?: DifficultyId; stake?: BuildingStake },
+  opts: { preset: CoverPresetId; script: BossScriptId; difficulty?: DifficultyId; stake?: BuildingStake; deployment?: boolean },
 ): MatchState {
   const { preset, script, difficulty, stake } = opts;
   return createMatch({
@@ -29,5 +30,9 @@ export function matchFromSite(
     // 场景楼/斜放楼不是掩体：走 obstacles，不走 covers（掩体可穿射、会被当目标）。
     obstacles: site.blocked.map((cell) => ({ ...cell })),
     stake,
+    deployment: opts.deployment,
+    // City generation already declares its rear spawn band (rows 6–9).
+    // Include its furthest-forward spawn row; do not search/expand after validation.
+    deployZone: rearDeployZone(Math.min(8, ...site.mechs.map(m => m.pos.y))),
   });
 }

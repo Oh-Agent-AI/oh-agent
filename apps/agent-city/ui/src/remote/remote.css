@@ -25,3 +25,15 @@ button.selected { border-color: #75d7ff; background: #20445e; }
 .remote-row { display: flex; }
 .remote-row button { min-width: 40px; min-height: 40px; width: 40px; height: 40px; padding: 0; border-radius: 2px; }
 @media (min-width: 700px) { .remote-stage { border-radius: 16px; } }
+.remote-deployment h2, .remote-deployment p { margin: 0; }
+.remote-deployment-note { color: #adc3ce; font-size: 13px; line-height: 1.5; }
+.remote-deployment-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.remote-deployment-actions .remote-submit { flex: 1; }
+.remote-deployment .remote-board { margin: 0; min-width: 0; max-width: 100%; }
+.remote-deployment .remote-mechs, .remote-deployment-actions { min-width: 0; }
+.remote-row button.deployable { background: #225f45; border-color: #73e6a0; color: #e9fff0; }
+.remote-pending { margin: 8px 14px; padding: 12px; border: 1px solid #bd8c43; border-radius: 10px; background: #312b20; }
+.remote-pending p { margin: 0 0 8px; line-height: 1.45; }
+.remote-pending p:last-child { margin: 8px 0 0; }
+.remote-concede-unavailable { display: grid; gap: 6px; }
+.remote-concede-unavailable small { color: #adc3ce; font-size: 13px; line-height: 1.5; }

@@ -34,6 +34,9 @@ export class RemoteMatchSynchronizer {
   private closed = false;
   private disposed = false;
   private overflow = false;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryDelay = 1000;
+  private retryNeeded = false;
 
   private readonly matchId: string;
   private readonly fetchSnapshot: () => Promise<MatchResult<Snapshot>>;
@@ -49,17 +52,19 @@ export class RemoteMatchSynchronizer {
     const wasOnline = this.online;
     this.online = online;
     if (!online) {
+      this.cancelRetry();
       if (wasOnline) {
         this.epoch += 1;
         this.inFlight = false;
       }
       this.ready = false;
       this.cb.syncing(true);
-    }
+    } else if (!wasOnline && this.retryNeeded) this.scheduleRetry();
   }
 
   async resync() {
     if (this.disposed || this.closed) return;
+    this.cancelRetry();
     const epoch = ++this.epoch;
     this.inFlight = true;
     this.ready = false;
@@ -68,13 +73,13 @@ export class RemoteMatchSynchronizer {
       const result = await this.fetchSnapshot();
       if (this.disposed || this.closed || epoch !== this.epoch) return;
       this.inFlight = false;
-      if (!result.ok) { this.cb.error(result.error.code); return; }
-      if (result.value.matchId !== this.matchId) { this.cb.error("invalid_message"); return; }
+      if (!result.ok) { this.failed(result.error.code); return; }
+      if (result.value.matchId !== this.matchId) { this.failed("invalid_message"); return; }
       this.acceptSnapshot(result.value);
     } catch {
       if (this.disposed || this.closed || epoch !== this.epoch) return;
       this.inFlight = false;
-      this.cb.error("host_offline");
+      this.failed("host_offline");
     }
   }
 
@@ -83,6 +88,8 @@ export class RemoteMatchSynchronizer {
     if (event.type === "match.closed") {
       if (event.matchId !== this.matchId || (this.current && event.revision < this.current.revision)) return;
       this.closed = true;
+      this.cancelRetry();
+      this.retryNeeded = false;
       this.epoch += 1;
       this.ready = false;
       this.cb.syncing(true);
@@ -114,7 +121,29 @@ export class RemoteMatchSynchronizer {
 
   canInteract() { return this.ready && this.online && !this.closed && !this.disposed; }
 
-  dispose() { this.disposed = true; this.epoch += 1; this.buffered = []; }
+  dispose() { this.disposed = true; this.epoch += 1; this.cancelRetry(); this.buffered = []; }
+
+  private failed(code: string) {
+    this.retryNeeded = code === "host_offline" || code === "unavailable";
+    if (!this.retryNeeded) this.retryDelay = 1000;
+    this.cb.error(code);
+    this.scheduleRetry();
+  }
+
+  private scheduleRetry() {
+    if (!this.retryNeeded || !this.online || this.disposed || this.closed || this.inFlight || this.retryTimer) return;
+    const delay = this.retryDelay;
+    this.retryDelay = Math.min(delay * 2, 15000);
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      void this.resync();
+    }, delay);
+  }
+
+  private cancelRetry() {
+    if (this.retryTimer !== null) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+  }
 
   private buffer(turn: Turn) {
     if (this.buffered.some((item) => item.revision === turn.revision && item.state.ruleset === turn.state.ruleset)) return;
@@ -124,6 +153,9 @@ export class RemoteMatchSynchronizer {
 
   private acceptSnapshot(next: Snapshot) {
     if (next.matchId !== this.matchId || this.disposed || this.closed) return;
+    this.cancelRetry();
+    this.retryNeeded = false;
+    this.retryDelay = 1000;
     const old = this.current;
     // The host currently transitions from PvE to PvP, never the reverse.
     if (old && ((old.mode === "pvp" && next.mode === "pve") || (old.mode === next.mode && next.revision < old.revision))) {

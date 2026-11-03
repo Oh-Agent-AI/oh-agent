@@ -78,11 +78,52 @@ struct Raider { id: String, pos: Cell, hp: f64, intent: Option<Intent> }
 struct Boss { anchor: Cell, hp: f64, cd_sweep: f64, cadence: f64, intent: Option<Intent> }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct TerrainEdge { from: Cell, to: Cell }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TerrainSafety { unsafe_cells: Vec<Cell>, unsafe_edges: Vec<TerrainEdge> }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Deployment { zone: Vec<Cell>, reserved_cells: Vec<Cell> }
+fn deserialize_deployment<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<Deployment>, D::Error> {
+    Deployment::deserialize(deserializer).map(Some)
+}
+impl Cell {
+    fn board_cell(&self) -> bool {
+        self.x >= 0.0 && self.x < 10.0 && self.x.fract() == 0.0
+            && self.y >= 0.0 && self.y < 10.0 && self.y.fract() == 0.0
+    }
+}
+impl Deployment {
+    fn valid(&self) -> bool {
+        fn unique(cells: &[Cell]) -> bool {
+            cells.iter().enumerate().all(|(index, cell)| cell.board_cell()
+                && !cells[..index].iter().any(|other| cell.x == other.x && cell.y == other.y))
+        }
+        self.zone.len() <= 100 && self.reserved_cells.len() <= 100
+            && unique(&self.zone) && unique(&self.reserved_cells)
+    }
+}
+impl TerrainSafety {
+    fn valid(&self) -> bool {
+        self.unsafe_cells.len() <= 100 && self.unsafe_cells.iter().all(Cell::board_cell)
+            && self.unsafe_edges.len() <= 342 && self.unsafe_edges.iter().all(|edge| {
+                edge.from.board_cell() && edge.to.board_cell()
+                    && (edge.from.x - edge.to.x).abs() <= 1.0 && (edge.from.y - edge.to.y).abs() <= 1.0
+                    && (edge.from.x != edge.to.x || edge.from.y != edge.to.y)
+            })
+    }
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PveState {
     ruleset: String, preset: String, script: String, covers: Vec<Cell>, obstacles: Vec<Cell>,
     terrain: Vec<Vec<String>>, heights: Vec<Vec<f64>>, buildings: Vec<Building>, stake: String,
     raiders: Vec<Raider>, mechs: Vec<Mech>, boss: Boss, turn: f64, phase: String,
     revision: u64, outcome: Option<String>,
+    assault_terrain_safety: Option<TerrainSafety>,
+    #[serde(default, deserialize_with = "deserialize_deployment")]
+    deployment: Option<Deployment>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -98,15 +139,27 @@ impl Intent {
     fn valid(&self) -> bool { skill(&self.skill_id) && matches!(self.status.as_str(), "planned" | "reprojected" | "void") }
 }
 impl PveState {
-    fn valid(&self) -> bool {
+    fn common_valid(&self) -> bool {
         matches!(self.preset.as_str(), "covers_sparse_mid" | "covers_diag_corridor" | "covers_twin_clusters")
             && matches!(self.script.as_str(), "stationary_smash" | "cadence_ssw" | "raid_ssw" | "siege")
             && matches!(self.stake.as_str(), "all" | "frontage")
-            && matches!(self.phase.as_str(), "enemy_prepare" | "player_plan" | "resolving_boss" | "finished")
             && outcome(&self.outcome) && terrain(&self.terrain)
+            && self.assault_terrain_safety.as_ref().is_none_or(TerrainSafety::valid)
             && self.buildings.iter().all(|v| building(&v.id)) && self.mechs.iter().all(|v| mech(&v.id))
             && self.raiders.iter().all(|v| raider(&v.id) && v.intent.as_ref().is_none_or(Intent::valid))
             && self.boss.intent.as_ref().is_none_or(Intent::valid)
+    }
+    fn valid(&self) -> bool {
+        self.common_valid() && self.deployment.is_none()
+            && matches!(self.phase.as_str(), "enemy_prepare" | "player_plan" | "resolving_boss" | "finished")
+    }
+    // Deployment is a distinct v2 state and cannot carry enemy intents.
+    fn valid_deployment(&self) -> bool {
+        self.common_valid() && self.phase == "deployment" && self.outcome.is_none()
+            && self.deployment.as_ref().is_some_and(Deployment::valid)
+            && self.boss.intent.is_none() && self.raiders.iter().all(|v| v.intent.is_none())
+            && self.mechs.len() == 3 && ["Assault", "Gunner", "Support"].iter()
+                .all(|id| self.mechs.iter().filter(|mech| &mech.id == id).count() == 1)
     }
 }
 impl PvpState {
@@ -144,6 +197,13 @@ impl Snapshot {
             && self.players.iter().all(|p| matches!((p.player_id.as_str(), p.side.as_str(), p.role.as_str()), ("owner", "A", "host") | ("guest", "B", "guest")))
             && self.arena.ruleset == self.ruleset && self.state.matches(&self.ruleset, self.revision)
             && matches!((self.mode.as_str(), self.ruleset.as_str()), ("pve", PVE) | ("pvp", PVP))
+    }
+    // Only a single owner may view an active or closed PvE deployment.
+    fn valid_deployment(&self, match_id: &str) -> bool {
+        self.protocol == NET && self.match_id == match_id && self.mode == "pve" && self.ruleset == PVE
+            && matches!(self.status.as_str(), "active" | "closed") && self.arena.valid() && self.arena.ruleset == PVE
+            && self.players.len() == 1 && matches!((self.players[0].player_id.as_str(), self.players[0].side.as_str(), self.players[0].role.as_str()), ("owner", "A", "host"))
+            && matches!(&self.state, State::Pve(state) if state.ruleset == PVE && state.revision == self.revision && state.valid_deployment())
     }
 }
 #[derive(Deserialize)]
@@ -290,10 +350,91 @@ pub(super) fn valid_submit_plan(payload: &Value) -> bool {
     serde_json::from_value::<SubmitPlan>(payload.clone()).is_ok()
 }
 
+// The v3 concession carries no opaque extensions, and must use JS-safe revisions.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SubmitConcede {
+    #[serde(rename = "type")]
+    kind: String, protocol: String, match_id: String, player_id: String,
+    command_id: String, base_revision: u64,
+}
+pub(super) fn valid_submit_concede(payload: &Value) -> bool {
+    serde_json::from_value::<SubmitConcede>(payload.clone()).is_ok_and(|command|
+        command.kind == "match.concede-v2" && command.protocol == NET
+            && identifier(&command.match_id) && matches!(command.player_id.as_str(), "owner" | "guest")
+            && identifier(&command.command_id) && command.base_revision <= 9_007_199_254_740_991)
+}
+
+// Validate every nested deployment command before authority state can change.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DeployPlacement { mech_id: String, pos: Cell }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeployPlan { revision: u64, placements: Vec<DeployPlacement> }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SubmitDeployment {
+    #[serde(rename = "type")]
+    kind: String, protocol: String, match_id: String, player_id: String,
+    command_id: String, base_revision: u64, plan: DeployPlan,
+}
+pub(super) fn valid_submit_deployment(payload: &Value) -> bool {
+    serde_json::from_value::<SubmitDeployment>(payload.clone()).is_ok_and(|command|
+        command.kind == "deployment.submit" && command.protocol == NET
+            && identifier(&command.match_id) && command.player_id == "owner" && identifier(&command.command_id)
+            && command.plan.revision == command.base_revision && command.plan.placements.len() <= 3
+            && command.plan.placements.iter().all(|p| mech(&p.mech_id) && p.pos.board_cell()))
+}
+pub(super) fn valid_start_deployment(arena: &Value, state: &Value) -> bool {
+    let Ok(arena) = serde_json::from_value::<Arena>(arena.clone()) else { return false; };
+    let Ok(state) = serde_json::from_value::<PveState>(state.clone()) else { return false; };
+    arena.valid() && arena.ruleset == PVE && state.ruleset == PVE && state.valid_deployment()
+}
+
 pub(super) fn valid_start(arena: &Value, state: &Value) -> bool {
     let Ok(arena) = serde_json::from_value::<Arena>(arena.clone()) else { return false; };
     let Ok(state) = serde_json::from_value::<PveState>(state.clone()) else { return false; };
     arena.valid() && arena.ruleset == PVE && state.ruleset == PVE && state.valid()
+}
+
+// v2 also permits explicitly validated deployment snapshots and faults.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeploymentFault {
+    code: String,
+    #[serde(rename = "mechId", default, deserialize_with = "deserialize_optional_mech")]
+    mech_id: Option<String>,
+}
+fn deserialize_optional_mech<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeploymentError { code: String, fault: DeploymentFault }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeploymentFailure { ok: bool, error: DeploymentError }
+
+pub(super) fn valid_outbound_with_deployment(message: &Value, match_id: &str) -> bool {
+    if valid_outbound(message, match_id) { return true; }
+    match message["type"].as_str() {
+        Some("event") => serde_json::from_value::<Notification>(message.clone()).is_ok_and(|message|
+            message.protocol == NET && message.kind == "event" && matches!(message.event,
+                Event::Replaced { snapshot } if snapshot.valid_deployment(match_id))),
+        Some("response") if message["result"]["ok"] == true =>
+            serde_json::from_value::<Response<Success<Snapshot>>>(message.clone()).is_ok_and(|response|
+                response.protocol == NET && response.kind == "response" && response.result.ok
+                    && response.result.value.valid_deployment(match_id)),
+        Some("response") if message["result"]["ok"] == false =>
+            serde_json::from_value::<Response<DeploymentFailure>>(message.clone()).is_ok_and(|response|
+                response.protocol == NET && response.kind == "response" && !response.result.ok
+                    && response.result.error.code == "invalid_deployment"
+                    && matches!(response.result.error.fault.code.as_str(), "phase" | "revision" | "incomplete" | "duplicate_mech"
+                        | "invalid_cell" | "outside_zone" | "terrain" | "unsafe" | "occupied" | "reserved" | "duplicate_cell" | "insufficient_space")
+                    && response.result.error.fault.mech_id.as_deref().is_none_or(mech)),
+        _ => false,
+    }
 }
 
 // Validate the actual bytes about to leave the trusted host, not just the input

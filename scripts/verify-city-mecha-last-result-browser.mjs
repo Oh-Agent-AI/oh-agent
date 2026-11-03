@@ -31,14 +31,21 @@ try {
         { eventIndex: 3, event: log[3], effect: { kind: "building", id: "b-1", before: 3, after: 2, order: 2 } },
       ] };
       const root = createRoot(document.getElementById("recap-fixture"));
-      window.__renderRecap = (timeline) => root.render(React.createElement(MechaLastResult, { lastLog: log, healthTimeline: timeline, t: (s) => gameText(s, locale), locale }));
+      window.__renderRecap = (timeline, finalState = null) => root.render(React.createElement(MechaLastResult, { lastLog: log, healthTimeline: timeline, finalState, t: (s) => gameText(s, locale), locale }));
+      const { createMatch, MAX_TURNS } = await import("/src/game/mecha/rules.ts");
+      const state = createMatch({ preset: "covers_sparse_mid", script: "stationary_smash", covers: [] });
+      state.phase = "finished"; state.outcome = "defeat_wipe"; state.mechs.forEach(m => m.hp = 0);
+      window.__defeatState = state;
+      window.__timeoutState = { ...state, outcome: "defeat_timeout", turn: MAX_TURNS + 1 };
       window.__renderRecap(healthTimeline);
     }, locale);
     const region = page.getByRole("region", { name: locale === "zh" ? "上一回合摘要" : "Previous turn summary" });
     await region.waitFor();
-    assert.equal(await region.locator(".mecha-last-result-highlights li").count(), 2);
-    assert.match(await region.locator(".mecha-last-result-highlights").innerText(), /5 → 3/);
+    assert.equal(await region.locator(".mecha-last-result-highlights li").count(), 0, "fizzle has priority in compact recap; ordered HP remains in details");
+    assert.match(await region.locator(".mecha-last-result-highlights").innerText(), locale === "zh" ? /射手.*落空.*目标已经倒下/ : /Gunner.*fizzled.*target is already down/, "actual fizzle is not hidden by victory");
+    assert.deepEqual(await region.locator("[data-turn-recap] dd").allTextContents(), ["0", "1", "4", "1"]);
     await region.locator("summary").click();
+    assert.match(await region.locator(".mecha-recap-help").innerText(), locale === "zh" ? /不抵消治疗/ : /without subtracting healing/);
     const text = await region.innerText();
     assert.equal(await region.locator("details ol").nth(0).locator("li").count(), 5);
     assert.equal(await region.locator("details ol").nth(1).locator("li").count(), 3);
@@ -46,8 +53,17 @@ try {
     assert.ok(!text.includes("Translation unavailable"), `${locale}: missing translation`);
     await page.evaluate(() => window.__renderRecap({ ok: false, reason: "fixture" }));
     await page.getByText(locale === "zh" ? "生命值变化明细不可用。" : "Health change details are unavailable.").first().waitFor();
+    assert.deepEqual(await region.locator("[data-turn-recap] dd").allTextContents(), ["—", "1", "—", "—"], "unknown health is not reported as zero");
+    await page.evaluate(() => window.__renderRecap({ ok: false, reason: "fixture" }, window.__defeatState));
+    const failure = region.locator("[data-failure-recap]");
+    await failure.waitFor();
+    assert.match(await failure.innerText(), locale === "zh" ? /机甲全部失守.*无法从最后一回合的记录确认最后失守对象/s : /All mechs were lost.*last loss cannot be confirmed/s);
+    assert.ok(!(await failure.innerText()).includes("raider-w"), "unknown timeline must not invent a source");
+    await page.evaluate(() => window.__renderRecap(null, window.__timeoutState));
+    assert.match(await failure.innerText(), locale === "zh" ? /最终回合 15.*回合耗尽/s : /Final turn 15.*turn limit was reached/s);
+    assert.equal(await failure.locator("[data-failure-decisive]").count(), 0, "timeout must not invent a final hit");
     assert.deepEqual(errors, []);
-    console.log(`${locale}: summary, full log, collision/total-damage wording, ordered HP and unavailable-data state passed`);
+    console.log(`${locale}: summary, ordered HP, unknown failure source and timeout passed`);
     await page.close();
   }
 } finally { await browser.close(); }

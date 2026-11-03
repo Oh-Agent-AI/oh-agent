@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { completeLocalDeployment } from "./mecha-deployment-browser-helpers.mjs";
 // Synthetic fixture only. Checks existing concept-art bytes render and degrade
 // honestly; head bars and lower-left portrait placement are checked separately from gameplay.
 import assert from "node:assert/strict";
@@ -36,7 +37,7 @@ try {
       const response = await page.goto(new URL("/?fixtureSessions=30", base).href, { waitUntil: "domcontentloaded", timeout: 90_000 });
       assert.ok(response?.ok());
       await page.locator(".city-loading").waitFor({ state: "hidden", timeout: 90_000 });
-      const enter = async () => { await button("城市设置", "City settings").click(); await button("机甲战棋", "Mecha tactics").click(); await page.locator(".mecha-turn-summary").waitFor({ timeout: 90_000 }); };
+      const enter = async () => { await button("城市设置", "City settings").click(); await button("机甲战棋", "Mecha tactics").click(); await page.locator(".mecha-turn-summary").waitFor({ timeout: 90_000 }); await completeLocalDeployment(page); };
       await enter();
       await page.setViewportSize({ width, height });
       await page.waitForFunction(() => {
@@ -73,7 +74,7 @@ try {
         await card.locator("summary").click();
       }
       const occlusions = await page.evaluate(() => {
-        const selectors = [".mecha-battle-bar", ".mecha-tactical-legend", ".mecha-pack", ".mecha-quick-resource", ".mecha-turn-summary", ".mecha-selected-actions", ".mecha-submit"];
+        const selectors = [".mecha-battle-bar", ".mecha-tactical-legend", ".mecha-team-planning", ".mecha-turn-summary", ".mecha-selected-actions"];
         const blockers = selectors.flatMap((selector) => [...document.querySelectorAll(selector)]).filter((el) => el.getBoundingClientRect().width && el.getBoundingClientRect().height);
         return [...document.querySelectorAll(".mecha-world-healthbar")].filter((el) => !el.hidden).flatMap((el) => {
           const a = el.getBoundingClientRect();
@@ -117,5 +118,5 @@ try {
     } finally { await context.close(); }
   }
 } finally { await browser.close(); }
-if (output) await writeFile(join(output, "portraits-browser-results.json"), JSON.stringify({ date: "2026-11-01", syntheticSeed: "4196523069", browser: "headless Chromium", deviceScaleFactor: 1, results, limitations: "Head-bar structure, real rule maxima, lower-left concept-art portrait, compact disclosures and lifecycle; no native/Tauri/real-session/network/performance tests. Occlusions are measured separately." }, null, 2));
+if (output) await writeFile(join(output, "portraits-browser-results.json"), JSON.stringify({ date: new Date().toLocaleDateString("en-CA"), executedAt: new Date().toISOString(), syntheticSeed: "4196523069", browser: "headless Chromium", deviceScaleFactor: 1, results, limitations: "Head-bar structure, real rule maxima, lower-left concept-art portrait, compact disclosures and lifecycle; no native/Tauri/real-session/network/performance tests. Occlusions are measured separately." }, null, 2));
 if (results.some((r) => r.status !== "passed")) process.exitCode = 1;

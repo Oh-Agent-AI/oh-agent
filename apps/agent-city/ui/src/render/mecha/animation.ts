@@ -320,6 +320,7 @@ export class MechaPerformancePlayer {
   private readonly events: MechaPerformanceEvent[];
   private readonly cellToWorld: (cell: { x: number; y: number }, actor: string) => THREE.Vector3;
   private readonly onComplete: () => void;
+  private readonly onEventSettled?: (index: number) => void;
   private readonly override?: MechaPerformanceOverride;
   private readonly eventDurations: number[];
   private readonly positions = new Map<string, THREE.Vector3>();
@@ -338,12 +339,14 @@ export class MechaPerformancePlayer {
     onComplete: () => void,
     override?: MechaPerformanceOverride,
     initiallyFallen: readonly string[] = [],
+    onEventSettled?: (index: number) => void,
   ) {
     if (override && (override.durations.length !== events.length || override.durations.some((value) => !Number.isFinite(value) || value <= 0))) throw new Error("invalid performance override durations");
     this.actors = actors;
     this.events = events;
     this.cellToWorld = cellToWorld;
     this.onComplete = onComplete;
+    this.onEventSettled = onEventSettled;
     this.override = override;
     this.eventDurations = override ? [...override.durations] : events.map((event) => event.duration);
     for (const id of initiallyFallen) if (actors[id]) this.fallen.add(id);
@@ -383,6 +386,7 @@ export class MechaPerformancePlayer {
         this.settle(event);
         this.override?.settle(index);
         this.settledCount = index + 1;
+        this.onEventSettled?.(index);
       }
       start = end;
     }

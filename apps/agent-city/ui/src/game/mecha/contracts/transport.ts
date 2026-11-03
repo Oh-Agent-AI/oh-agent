@@ -1,6 +1,6 @@
-import { MECHA_NET_PROTOCOL, type MatchErrorCode, type MatchEvent, type MatchResult, type MatchSnapshot, type RevisionState, type TurnResolved } from "./match";
+import { MECHA_NET_PROTOCOL, type DeploymentResult, type MatchErrorCode, type MatchEvent, type MatchResult, type MatchSnapshot, type RevisionState, type TurnResolved } from "./match";
 
-export type RemoteMethod = "match.snapshot" | "plan.submit" | "match.concede" | "match.close";
+export type RemoteMethod = "match.snapshot" | "deployment.submit" | "plan.submit" | "match.concede" | "match.concede-v2" | "match.close";
 export type RemoteRequest = {
   protocol: typeof MECHA_NET_PROTOCOL;
   type: "request";
@@ -83,4 +83,29 @@ export function turnResult<S extends RevisionState = RevisionState>(value: unkno
   if (failure) return failure;
   const result = record(value);
   return result?.ok === true && validTurn(result.value) ? value as MatchResult<TurnResolved<S>> : null;
+}
+
+// Deployment failures use their own bounded fault vocabulary. Do not accept
+// arbitrary error fields that could be rendered or forwarded to another device.
+export function deploymentResult<S extends RevisionState = RevisionState>(value: unknown): DeploymentResult<S> | null {
+  const result = record(value);
+  if (!result || Object.keys(result).some(key => key !== "ok" && key !== "value" && key !== "error")) return null;
+  if (result.ok === true) {
+    if (Object.hasOwn(result, "error") || !validSnapshot(result.value)) return null;
+    const snapshot = result.value as unknown as MatchSnapshot<S>;
+    return snapshot.mode === "pve" ? { ok: true, value: snapshot } : null;
+  }
+  if (result.ok !== false || Object.hasOwn(result, "value")) return null;
+  const error = record(result.error);
+  if (!error || typeof error.code !== "string" || Object.keys(error).some(key => key !== "code" && key !== "fault")) return null;
+  if (error.code !== "invalid_deployment") {
+    return errorCodes.has(error.code as MatchErrorCode) && !Object.hasOwn(error, "fault")
+      ? { ok: false, error: { code: error.code as MatchErrorCode } } : null;
+  }
+  const fault = record(error.fault);
+  const faults = new Set(["phase", "revision", "incomplete", "duplicate_mech", "invalid_cell", "outside_zone", "terrain", "unsafe", "occupied", "reserved", "duplicate_cell", "insufficient_space"]);
+  if (!fault || typeof fault.code !== "string" || !faults.has(fault.code)
+    || Object.keys(fault).some(key => key !== "code" && key !== "mechId")
+    || (Object.hasOwn(fault, "mechId") && !["Assault", "Gunner", "Support"].includes(fault.mechId as string))) return null;
+  return value as DeploymentResult<S>;
 }

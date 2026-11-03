@@ -166,7 +166,7 @@ try {
     assert.equal(await forecast.count(), 0, "playback hides the forecast details");
     await page.waitForFunction((id) => globalThis.__testBuildingMarkers?.[id] === false, buildingId);
     await skip.click();
-    await page.waitForFunction(() => document.querySelector(".mecha-resource")?.textContent?.includes("68/80"), null, { timeout: 240_000 });
+    await page.waitForFunction(() => document.querySelector(".mecha-building-current")?.textContent?.includes("68/80"), null, { timeout: 240_000 });
     await forecast.waitFor();
     assert.equal(await forecast.evaluate((node) => node.open), false, "forecast should be closed after playback");
     const playbackUpdates = await page.evaluate((id) => globalThis.__testBuildingMarkerUpdates[id], buildingId);

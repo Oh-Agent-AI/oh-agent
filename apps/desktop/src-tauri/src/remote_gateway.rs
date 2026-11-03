@@ -29,6 +29,7 @@ struct Active {
 #[derive(Default)]
 struct State { active: SessionStore<Active>, starting_token: Option<String> }
 
+// A single shared slot prevents v1, v2 and v3 sessions from being started concurrently.
 fn session_key() -> SessionKey { SessionKey::new("city", "mecha:v1") }
 
 pub struct RemoteGateway {
@@ -76,6 +77,15 @@ fn remote_link(active: &Active, ticket: &str, player: &str) -> Result<String, &'
     let mut url = reqwest::Url::parse(&format!("{}/remote", active.relay.trim_end_matches('/'))).map_err(|_| "remote_url_invalid")?;
     url.query_pairs_mut().append_pair("match", &active.match_id).append_pair("player", player)
         .append_pair("ws", &relay_connection(active).ws_endpoint(ticket)?);
+    if matches!(active.capability.id.as_str(), "mecha:v2" | "mecha:v3") { url.query_pairs_mut().append_pair("capability", &active.capability.id); }
+    Ok(url.into())
+}
+
+fn invitation_link(active: &Active, invite_id: &str, invite_secret: &str) -> Result<String, &'static str> {
+    let mut url = reqwest::Url::parse(&format!("{}/remote", active.relay.trim_end_matches('/'))).map_err(|_| "remote_url_invalid")?;
+    url.query_pairs_mut().append_pair("match", &active.match_id).append_pair("room", &active.room_id).append_pair("invite", invite_id);
+    if matches!(active.capability.id.as_str(), "mecha:v2" | "mecha:v3") { url.query_pairs_mut().append_pair("capability", &active.capability.id); }
+    url.set_fragment(Some(invite_secret));
     Ok(url.into())
 }
 
@@ -95,6 +105,30 @@ fn eval_session(app: &tauri::AppHandle, active: &Active, request: &Value) -> Res
     app.get_webview_window(SESSION_VIEW).ok_or("remote_session_unavailable")?
         .eval(format!("window.dispatchEvent(new CustomEvent('__AV_MECHA_REMOTE_REQUEST__',{{detail:{detail}}}));"))
         .map_err(|_| "remote_session_unavailable")
+}
+
+// Deployment needs authenticated session binding and a strict payload projection.
+fn validate_staged_deployment_request(value: &Value, match_id: &str, capability: &crate::remote_protocol::RemoteCapability) -> Result<(), &'static str> {
+    crate::mecha_remote_adapter::validate_deployment_request(value, match_id, capability)?;
+    if value["method"] != "deployment.submit" || !projection::valid_submit_deployment(&value["payload"]) { return Err("invalid_message"); }
+    Ok(())
+}
+
+fn validate_routed_request(value: &Value, match_id: &str, capability: &crate::remote_protocol::RemoteCapability) -> Result<(), &'static str> {
+    if crate::mecha_remote_adapter::supports(capability) {
+        validate_request(value, match_id, capability)?;
+    } else if crate::mecha_remote_adapter::supports_deployment(capability) {
+        if value["method"] == "deployment.submit" {
+            return validate_staged_deployment_request(value, match_id, capability);
+        }
+        crate::mecha_remote_adapter::validate_deployment_request(value, match_id, capability)?;
+    } else if crate::mecha_remote_adapter::supports_safe_concede(capability) {
+        crate::mecha_remote_adapter::validate_safe_request(value, match_id, capability)?;
+        if value["method"] == "deployment.submit" && !projection::valid_submit_deployment(&value["payload"]) { return Err("invalid_message"); }
+        if value["method"] == "match.concede-v2" && !projection::valid_submit_concede(&value["payload"]) { return Err("invalid_message"); }
+    } else { return Err("forbidden"); }
+    if value["method"] == "plan.submit" && !projection::valid_submit_plan(&value["payload"]) { return Err("invalid_message"); }
+    Ok(())
 }
 
 fn outbound(active: &Active, mut value: Value) -> Value {
@@ -127,12 +161,8 @@ async fn run_connection(app: tauri::AppHandle, mut active: Active, ready: watch:
     let status_match = active.match_id.clone();
     remote_transport::run(relay, outgoing, cancel, move |value| {
         if value["type"] != "request" { return; }
-        if let Err(code) = validate_request(&value, &active.match_id, &active.capability) {
+        if let Err(code) = validate_routed_request(&value, &active.match_id, &active.capability) {
             respond_to_session(&app, &active, &value, code);
-            return;
-        }
-        if value["method"] == "plan.submit" && !projection::valid_submit_plan(&value["payload"]) {
-            respond_to_session(&app, &active, &value, "invalid_message");
             return;
         }
         let request = json!({"protocol":PROTOCOL,"type":"request","requestId":value["requestId"],"method":value["method"],"payload":value["payload"]});
@@ -153,7 +183,14 @@ async fn start(app: &tauri::AppHandle, capability: &crate::remote_protocol::Remo
     let arena = &payload["arena"];
     let state = &payload["state"];
     if serde_json::to_vec(&json!({"arena":arena,"state":state})).map_err(|_| "remote_match_invalid")?.len() > 256 * 1024 { return Err("remote_match_too_large"); }
-    if !projection::valid_start(arena, state) { return Err("remote_match_invalid"); }
+    let valid = if crate::mecha_remote_adapter::supports_safe_concede(capability) {
+        projection::valid_start_deployment(arena, state) || projection::valid_start(arena, state)
+    } else if crate::mecha_remote_adapter::supports_deployment(capability) {
+        projection::valid_start_deployment(arena, state)
+    } else if crate::mecha_remote_adapter::supports(capability) {
+        projection::valid_start(arena, state)
+    } else { false };
+    if !valid { return Err("remote_match_invalid"); }
     let room_id = secret()?;
     let match_id = secret()?;
     let active = Active {
@@ -223,10 +260,8 @@ async fn control(app: &tauri::AppHandle, payload: &Value, action: &str) -> Resul
             let result = post(&active, "access", json!({"action":"invite"})).await?;
             let invite_id = result["inviteId"].as_str().ok_or("remote_unavailable")?;
             let invite_secret = result["inviteSecret"].as_str().ok_or("remote_unavailable")?;
-            let mut url = reqwest::Url::parse(&format!("{}/remote", active.relay.trim_end_matches('/'))).map_err(|_| "remote_url_invalid")?;
-            url.query_pairs_mut().append_pair("match", &active.match_id).append_pair("room", &active.room_id).append_pair("invite", invite_id);
-            url.set_fragment(Some(invite_secret));
-            Ok(json!({"ok":true,"inviteUrl":url.to_string(),"expiresIn":600}))
+            let url = invitation_link(&active, invite_id, invite_secret)?;
+            Ok(json!({"ok":true,"inviteUrl":url,"expiresIn":600}))
         }
         "approve" | "revoke" => {
             let device_id = payload["deviceId"].as_str().filter(|id| valid_id(id)).ok_or("invalid_request")?;
@@ -249,9 +284,15 @@ async fn control(app: &tauri::AppHandle, payload: &Value, action: &str) -> Resul
 }
 
 pub async fn control_for_city(app: &tauri::AppHandle, plugin_id: &str, capability: &crate::remote_protocol::RemoteCapability, method: &str, payload: &Value) -> Result<Value, &'static str> {
-    if plugin_id != "city" || !crate::mecha_remote_adapter::supports(capability) { return Err("remote_forbidden"); }
+    if plugin_id != "city" { return Err("remote_forbidden"); }
+    let authorized = match method {
+        "mecha.remote.start-deployment" => crate::mecha_remote_adapter::supports_deployment(capability),
+        "mecha.remote.start-v3" => crate::mecha_remote_adapter::supports_safe_concede(capability),
+        _ => crate::mecha_remote_adapter::supports(capability),
+    };
+    if !authorized { return Err("remote_forbidden"); }
     match method {
-        "mecha.remote.start" => start(app, capability, payload).await,
+        "mecha.remote.start" | "mecha.remote.start-deployment" | "mecha.remote.start-v3" => start(app, capability, payload).await,
         "mecha.remote.invite" => control(app, payload, "invite").await,
         "mecha.remote.approve" => control(app, payload, "approve").await,
         "mecha.remote.revoke" => control(app, payload, "revoke").await,
@@ -293,7 +334,10 @@ pub fn remote_mecha_message(app: tauri::AppHandle, webview: tauri::WebviewWindow
     if !validate_host_message(message, &active.match_id, &active.capability) { return Err("invalid_message".into()); }
     let text = serde_json::to_string(&outbound(active, message.clone())).map_err(|_| "invalid_message")?;
     if text.len() > 256 * 1024 { return Err("message_too_large".into()); }
-    if !projection::valid_outbound(message, &active.match_id) { return Err("invalid_message".into()); }
+    let valid = if crate::mecha_remote_adapter::supports_deployment(&active.capability) || crate::mecha_remote_adapter::supports_safe_concede(&active.capability) {
+        projection::valid_outbound_with_deployment(message, &active.match_id)
+    } else { projection::valid_outbound(message, &active.match_id) };
+    if !valid { return Err("invalid_message".into()); }
     active.outbox.try_send(text).map_err(|_| "remote_backpressure")?;
     Ok(())
 }
@@ -328,4 +372,84 @@ mod tests {
         assert!(!valid_relay("https://user:secret@example.com"));
         assert!(!valid_relay("file:///tmp/city"));
     }
+    #[test]
+    fn staged_deployment_requires_both_peer_binding_and_strict_projection() {
+        let capability = crate::remote_protocol::RemoteCapability {
+            id: "mecha:v2".into(),
+            methods: ["match.snapshot", "deployment.submit", "plan.submit", "match.concede", "match.close"].iter().map(|item| (*item).into()).collect(),
+            events: ["match.closed", "match.replaced", "turn.resolved"].iter().map(|item| (*item).into()).collect(),
+        };
+        let request = json!({"protocol":crate::remote_protocol::PROTOCOL,"appId":"city","sessionId":"m1","capability":"mecha:v2","type":"request","requestId":"r1","method":"deployment.submit","peer":{"role":"owner","playerId":"owner"},"payload":{"type":"deployment.submit","protocol":PROTOCOL,"matchId":"m1","playerId":"owner","commandId":"d1","baseRevision":0,"plan":{"revision":0,"placements":[{"mechId":"Assault","pos":{"x":1,"y":8}},{"mechId":"Gunner","pos":{"x":2,"y":8}},{"mechId":"Support","pos":{"x":3,"y":8}}]}}});
+        assert_eq!(validate_staged_deployment_request(&request, "m1", &capability), Ok(()));
+        assert_eq!(validate_request(&request, "m1", &capability), Err("invalid_message"), "the v1 adapter stays closed");
+        assert_eq!(validate_routed_request(&request, "m1", &capability), Ok(()));
+        let mut forged = request.clone(); forged["peer"] = json!({"role":"guest","playerId":"guest"});
+        assert_eq!(validate_staged_deployment_request(&forged, "m1", &capability), Err("forbidden"));
+        assert_eq!(validate_routed_request(&forged, "m1", &capability), Err("forbidden"));
+        let mut foreign = request.clone(); foreign["payload"]["matchId"] = json!("m2");
+        assert_eq!(validate_staged_deployment_request(&foreign, "m1", &capability), Err("forbidden"));
+        let mut private = request.clone(); private["payload"]["plan"]["placements"][0]["pos"]["secret"] = json!("private");
+        assert_eq!(validate_staged_deployment_request(&private, "m1", &capability), Err("invalid_message"));
+        assert_eq!(validate_routed_request(&private, "m1", &capability), Err("invalid_message"));
+        let mut wrong_method = request.clone(); wrong_method["method"] = json!("match.snapshot");
+        assert_eq!(validate_staged_deployment_request(&wrong_method, "m1", &capability), Err("invalid_message"));
+        assert_eq!(validate_routed_request(&wrong_method, "m1", &capability), Ok(()));
+        let mut legacy = capability.clone(); legacy.id = "mecha:v1".into(); legacy.methods.retain(|m| m != "deployment.submit");
+        let mut legacy_request = request.clone(); legacy_request["capability"] = json!("mecha:v1");
+        assert_eq!(validate_routed_request(&legacy_request, "m1", &legacy), Err("forbidden"));
+        let mut widened = capability.clone(); widened.methods.push("plugin_request".into());
+        assert_eq!(validate_routed_request(&request, "m1", &widened), Err("forbidden"));
+        let mut bad_plan = wrong_method; bad_plan["method"] = json!("plan.submit");
+        assert_eq!(validate_routed_request(&bad_plan, "m1", &capability), Err("invalid_message"));
+    }
+
+    #[test]
+    fn links_preserve_legacy_v1_and_explicitly_identify_v2() {
+        for (id, expected) in [("mecha:v1", None), ("mecha:v2", Some("mecha:v2")), ("mecha:v3", Some("mecha:v3"))] {
+            let active = Active {
+                relay: "https://relay.example.com".into(), room_id: "room1".into(), match_id: "match1".into(),
+                capability: crate::remote_protocol::RemoteCapability { id: id.into(), methods: vec![], events: vec![] },
+                owner_token: "owner-secret".into(), session_token: "host-secret".into(),
+                outbox: mpsc::channel(1).0, cancel: watch::channel(false).0,
+            };
+            let owner = reqwest::Url::parse(&remote_link(&active, "ticket1", "owner").unwrap()).unwrap();
+            let invite = reqwest::Url::parse(&invitation_link(&active, "invite1", "invite-secret").unwrap()).unwrap();
+            for url in [&owner, &invite] {
+                let pairs: Vec<_> = url.query_pairs().collect();
+                assert_eq!(pairs.iter().find(|(key, _)| key == "capability").map(|(_, value)| value.as_ref()), expected);
+                assert!(pairs.iter().any(|(key, value)| key == "match" && value == "match1"));
+                assert!(!url.as_str().contains("owner-secret") && !url.as_str().contains("host-secret"));
+            }
+            assert_eq!(invite.fragment(), Some("invite-secret"));
+            assert!(owner.fragment().is_none());
+        }
+    }
+
+    #[test]
+    fn safe_concede_requires_exact_projection_peer_and_capability() {
+        let capability = crate::remote_protocol::RemoteCapability {
+            id: "mecha:v3".into(),
+            methods: ["match.snapshot", "deployment.submit", "plan.submit", "match.concede-v2", "match.close"].iter().map(|s| (*s).into()).collect(),
+            events: ["match.closed", "match.replaced", "turn.resolved"].iter().map(|s| (*s).into()).collect(),
+        };
+        let request = json!({"protocol":crate::remote_protocol::PROTOCOL,"appId":"city","sessionId":"m1","capability":"mecha:v3","type":"request","requestId":"r1","method":"match.concede-v2","peer":{"role":"guest","playerId":"guest"},"payload":{"type":"match.concede-v2","protocol":PROTOCOL,"matchId":"m1","playerId":"guest","commandId":"c1","baseRevision":3}});
+        assert_eq!(validate_routed_request(&request, "m1", &capability), Ok(()));
+        for (path, value, expected) in [
+            ("/payload/playerId", json!("owner"), "forbidden"),
+            ("/payload/matchId", json!("m2"), "forbidden"),
+            ("/method", json!("match.concede"), "forbidden"),
+            ("/payload/baseRevision", json!(9007199254740992_u64), "invalid_message"),
+            ("/payload/type", json!("match.concede"), "invalid_message"),
+        ] {
+            let mut invalid = request.clone(); *invalid.pointer_mut(path).unwrap() = value;
+            assert_eq!(validate_routed_request(&invalid, "m1", &capability), Err(expected), "{path}");
+        }
+        let mut extra = request.clone(); extra["payload"]["private"] = json!("do not forward");
+        assert_eq!(validate_routed_request(&extra, "m1", &capability), Err("invalid_message"));
+        let mut legacy = capability.clone(); legacy.id = "mecha:v2".into();
+        legacy.methods.retain(|s| s != "match.concede-v2"); legacy.methods.push("match.concede".into());
+        let mut old = request.clone(); old["capability"] = json!("mecha:v2");
+        assert_eq!(validate_routed_request(&old, "m1", &legacy), Err("forbidden"));
+    }
+
 }

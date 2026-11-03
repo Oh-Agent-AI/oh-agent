@@ -225,7 +225,6 @@
   .mecha-overlay.is-city .mecha-battle-bar { left: 12px; }
   .mecha-overlay.is-city .mecha-battle-controls { width: 100%; flex-wrap: nowrap; justify-content: flex-start; gap: 3px !important; }
   .mecha-overlay.is-city .mecha-battle-controls button { flex: 1 1 0; min-width: 0; min-height: 36px; padding: 3px 2px; font-size: 10px; line-height: 1.1; }
-  .mecha-overlay.is-city .mecha-battle-bar > div:first-child { display: none; }
   .mecha-overlay.is-city .mecha-panel > .mecha-options-menu { top: calc(72px + 30vh); }
   .mecha-overlay.is-city .mecha-pack { right: 12px; max-width: none; }
   .mecha-overlay.is-city .mecha-pack li { flex: 1; width: auto; min-width: 0; padding: 6px; }

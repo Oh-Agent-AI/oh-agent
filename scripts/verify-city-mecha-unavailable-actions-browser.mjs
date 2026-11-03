@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
+import { completeLocalDeployment } from "./mecha-deployment-browser-helpers.mjs";
 const { chromium } = createRequire(new URL("../apps/desktop/ui-dev/package.json", import.meta.url))("playwright");
 const base = process.argv[2] ?? "http://127.0.0.1:5178";
 const screenshots = process.env.MECHA_SCREENSHOTS_DIR;
@@ -23,10 +24,10 @@ try {
     await page.route("**/src/game/mecha/controller.ts*", async (route) => {
       const response = await route.fetch();
       const source = await response.text();
-      const needle = "let match = init.match ?? freshMatch(preset, script, site, stake);";
+      const needle = "let match = init.match ?? freshMatch(preset, script, site, stake, useDeployment);";
       assert.equal(source.split(needle).length, 2);
       injected++;
-      await route.fulfill({ response, body: source.replace(needle, `${needle}\n  match.mechs.find((m) => m.id === "Assault").cd = 1;`) });
+      await route.fulfill({ response, body: source.replace(needle, `${needle}\n  globalThis.__unavailableDeployCells = init.site?.mechs.map(m => ({ ...m.pos }));\n  match.mechs.find((m) => m.id === "Assault").cd = 1;`) });
     });
     await page.addInitScript((lang) => {
       localStorage.setItem("city.seed", "4196523069");
@@ -47,16 +48,25 @@ try {
     }, zh ? "zh-Hans" : "en");
     await page.goto(new URL("/?fixtureSessions=30", base).href, { waitUntil: "domcontentloaded", timeout: 240_000 });
     await page.locator(".city-loading").waitFor({ state: "hidden", timeout: 240_000 });
-    await page.getByRole("button", { name: zh ? "城市设置" : "City settings" }).click();
-    await page.getByRole("button", { name: zh ? "机甲战棋" : "Mecha tactics" }).click();
+    await page.getByRole("button", { name: zh ? "城市设置" : "City settings", exact: true }).click();
+    await page.getByRole("button", { name: zh ? "机甲战棋" : "Mecha tactics", exact: true }).click();
     await page.locator(".mecha-turn-summary").waitFor();
+    // Keep the stock fixture positions while deploying through the real UI.
+    const preferred = await page.evaluate(() => globalThis.__unavailableDeployCells);
+    assert.equal(preferred?.length, 3);
+    const deployed = await completeLocalDeployment(page, preferred);
+    assert.deepEqual(deployed, preferred.map(({ x, y }) => `${x},${y}`));
+    // Deployment ends with Support selected; this regression exercises Assault.
+    await page.locator(".mecha-pack .mecha-plan-card__select").first().click();
     assert.equal(injected, 1);
     const details = page.locator(".mecha-unavailable-actions");
     const toggle = details.locator("summary");
-    const melee = page.locator(".mecha-selected-actions > .mecha-actions > button").filter({ hasText: zh ? /^近战$/ : /^Melee$/ });
-    const charge = page.locator(".mecha-selected-actions > .mecha-actions > button").filter({ hasText: zh ? /^冲撞$/ : /^Charge$/ });
-    assert.equal(await melee.count(), 0, "out-of-range action must not be clickable");
-    assert.equal(await charge.count(), 0, "cooling-down action must not be clickable");
+    const melee = page.locator(".mecha-selected-actions .mecha-action-card").filter({ hasText: zh ? /^近战/ : /^Melee/ });
+    const charge = page.locator(".mecha-selected-actions .mecha-action-card").filter({ hasText: zh ? /^冲撞/ : /^Charge/ });
+    assert.equal(await melee.count(), 1);
+    assert.equal(await charge.count(), 1);
+    assert.equal(await melee.isDisabled(), true, "out-of-range action must not be clickable");
+    assert.equal(await charge.isDisabled(), true, "cooling-down action must not be clickable");
     for (const [width, height] of [[1100, 700], [1440, 900], [390, 844]]) {
       await page.setViewportSize({ width, height });
       await toggle.scrollIntoViewIfNeeded();
@@ -92,13 +102,13 @@ try {
     await page.getByRole("button", { name: zh ? "继续提交" : "Submit anyway", exact: true }).click();
     const skip = page.getByRole("button", { name: zh ? "跳过演出" : "Skip animation", exact: true });
     if (await skip.isVisible().catch(() => false)) await skip.click();
-    await page.waitForFunction(() => document.querySelector(".mecha-resource")?.textContent?.includes("68/80"), null, { timeout: 240_000 });
+    await page.waitForFunction(() => document.querySelector(".mecha-building-current")?.textContent?.includes("68/80"), null, { timeout: 240_000 });
     await page.locator(".mecha-pack li > button").first().click();
     await page.locator(".mecha-move-list summary").click();
     await page.locator(".mecha-move-list select").selectOption("3,2");
     await page.getByRole("button", { name: zh ? "应用移动" : "Apply move", exact: true }).click();
-    assert.equal(await melee.count(), 1, "moving into reach exposes melee");
-    assert.equal(await charge.count(), 1, "cooldown expires and moving into reach exposes charge");
+    assert.equal(await melee.isEnabled(), true, "moving into reach exposes melee");
+    assert.equal(await charge.isEnabled(), true, "cooldown expires and moving into reach exposes charge");
     assert.equal(await details.count(), 0, "no stale reason remains for available actions");
     assert.deepEqual(errors, []);
     console.log(`${locale}: three synthetic viewports; keyboard-accessible no-target/cooldown explanations, panel separation, and expiry after turn+move passed`);

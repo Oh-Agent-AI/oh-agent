@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { completeLocalDeployment } from "./mecha-deployment-browser-helpers.mjs";
 // Synthetic fixture only. Vite interception supplies test terrain and read-only
 // projections; all picks go through the real canvas pointer handlers/raycasters.
 // No production test hooks, native data, relay or host IPC are used.
@@ -88,14 +89,17 @@ try {
       console.log(`START ${lang} ${width}x${height}`);
       await page.goto(new URL("/?fixtureSessions=30", base).href, { waitUntil:"domcontentloaded", timeout:90000 });
       await page.locator(".city-loading").waitFor({ state:"hidden", timeout:90000 });
-      await button("城市设置", "City settings").click(); await button("机甲战棋", "Mecha tactics").click();
-      await page.locator(".mecha-turn-summary").waitFor(); await page.waitForFunction(() => Boolean(globalThis.__inspectionProject));
+      // City loading can hide before terrain readiness enables battle entry, especially
+      // on a cold build with other WebGL matrices running. Keep the enabled check.
+      await button("城市设置", "City settings").click(); await button("机甲战棋", "Mecha tactics").click({ timeout:90000 });
+      await page.locator(".mecha-turn-summary").waitFor(); await completeLocalDeployment(page); await page.waitForFunction(() => Boolean(globalThis.__inspectionProject));
       assert.equal(seams, 2, "test injection seam count");
       await page.setViewportSize({ width, height }); await page.waitForTimeout(400);
       for (const [cell, expected] of [[{x:1,y:4}, "land"], [{x:1,y:5}, "water"], [{x:1,y:6}, "mountain"], [{x:1,y:7}, "road"], [{x:6,y:6}, "building"], [{x:2,y:2}, "cover"], [{x:2,y:3}, "obstacle"]]) {
         await pick({ cell });
         assert.equal(await inspector.getAttribute("data-cell"), `${cell.x},${cell.y}`);
         const t = await inspector.innerText();
+        assert.match(await inspector.locator("header strong").innerText(), ["land", "water", "mountain", "road"].includes(expected) ? (lang === "zh" ? /查看地形/ : /Inspect terrain/) : (lang === "zh" ? /查看对象/ : /Inspect object/));
         if (expected === "water") {
           await inspector.locator("summary").click();
           assert.match(await inspector.innerText(), lang === "zh" ? /射击可穿过.*并非落水死亡/s : /shots pass through.*not drowning/s);
@@ -109,6 +113,13 @@ try {
         await pick({ unitId, raise:8 });
         assert.equal(await inspector.getAttribute("data-inspected-unit"), unitId, "elevated model pick maps to its rules unit");
         assert.match(await inspector.innerText(), /HP/); await geometry();
+        assert.match(await inspector.locator("header strong").innerText(), lang === "zh" ? /查看对象/ : /Inspect object/);
+        assert.match(await page.locator(".mecha-selected-actions h3").innerText(), lang === "zh" ? /操作机甲/ : /Operating mech/);
+        if (["boss", "raider-w"].includes(unitId)) {
+          assert.equal(await inspector.locator(".mecha-inspection-stats").count(), 1);
+          assert.equal(await inspector.locator(".mecha-inspection-intent[data-attack-source='declared']").count(), 1, "unit properties and declaration share inspector");
+          assert.match(await inspector.locator(".mecha-inspection-intent").innerText(), lang === "zh" ? /红色箭头.*攻击落点/ : /Red arrows.*attack cells/);
+        }
         if (unitId === "boss") {
           assert.ok(Number(await routeLayer.getAttribute("data-inspection-routes")) > 0);
           assert.equal(await routeLayer.getAttribute("data-inspection-route-kind"), "attack");

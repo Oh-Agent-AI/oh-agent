@@ -188,3 +188,29 @@ test("animated controller blocks editing and auto ticks until completion; restar
   assert.equal(controller.getState().performance, null);
   assert.equal(controller.getState().interactive, true);
 });
+
+test("a defeated unit stays fallen when a later attack targets its former cell", () => {
+  const fallen = createGunner(), attacker = new THREE.Group(), effectRoot = new THREE.Group();
+  const visual = fallen.getObjectByName("mecha-visual")!;
+  const events: MechaPerformanceEvent[] = [
+    { kind: "death", actor: "Gunner", at: { x: 1, y: 0 }, duration: .85 },
+    { kind: "attack", actor: "boss", attack: "smash", from: { x: 0, y: 0 }, target: { x: 1, y: 0 }, targetIds: ["Gunner"], duration: 1 },
+  ];
+  const settled: number[] = [];
+  let completed = 0;
+  const player = new MechaPerformancePlayer({ Gunner: fallen, boss: attacker }, events, cell => new THREE.Vector3(cell.x * 8, 0, cell.y * 8), effectRoot, () => completed++, undefined, [], index => settled.push(index));
+  try {
+    player.update(1.42); // Death completed; the later attack is in its hit window.
+    assert.deepEqual(settled, [0]);
+    assert.ok(Math.abs(visual.rotation.x - Math.PI / 2) < 1e-9);
+    assert.deepEqual(fallen.position.toArray(), [8, 0, 0], "a fallen target is not displaced by hit reaction");
+    player.update(0);
+    assert.ok(Math.abs(visual.rotation.x - Math.PI / 2) < 1e-9);
+    assert.deepEqual(fallen.position.toArray(), [8, 0, 0]);
+    assert.deepEqual(settled, [0]);
+    player.update(Infinity);
+    player.update(Infinity);
+    assert.deepEqual(settled, [0, 1]);
+    assert.equal(completed, 1);
+  } finally { player.dispose(); }
+});

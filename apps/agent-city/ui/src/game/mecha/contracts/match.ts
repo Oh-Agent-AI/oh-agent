@@ -1,3 +1,4 @@
+import type { DeployFault, DeployPlan, DeployTurn } from "../deployment";
 import type { ArenaPlan, MatchState, PlanFault, TurnEvent } from "../rules";
 import type { PresentationStages } from "../presentationSnapshot";
 import type { RemoteArenaV1 } from "./arena";
@@ -39,6 +40,30 @@ export type SubmitPlanCommand = {
   plan: ArenaPlan;
 };
 
+/** Revision-bound remote concession; unlike legacy match.concede this is safe to retry. */
+export type SubmitConcedeCommand = {
+  type: "match.concede-v2";
+  protocol: typeof MECHA_NET_PROTOCOL;
+  matchId: string;
+  playerId: string;
+  commandId: string;
+  baseRevision: number;
+};
+
+/** Atomic deployment command supported by the v2 and v3 remote capabilities. */
+export type SubmitDeploymentCommand = {
+  type: "deployment.submit";
+  protocol: typeof MECHA_NET_PROTOCOL;
+  matchId: string;
+  playerId: string;
+  commandId: string;
+  baseRevision: number;
+  plan: DeployPlan;
+};
+export type DeploymentResult<S extends RevisionState = MatchState> =
+  | { ok: true; value: MatchSnapshot<S> }
+  | { ok: false; error: { code: MatchErrorCode | "invalid_deployment"; fault?: DeployFault } };
+
 export type TurnResolved<S extends RevisionState = MatchState> = {
   type: "turn.resolved";
   protocol: typeof MECHA_NET_PROTOCOL;
@@ -64,6 +89,8 @@ export interface MatchRuleAdapter<S extends RevisionState> {
   readonly ruleset: string;
   activeSide(state: S): MatchSide | null;
   playTurn(state: S, plan: ArenaPlan): RuleTurn<S>;
+  /** PvE rule boundary; remote submission remains disabled until the end-to-end transport is ready. */
+  deploy?(state: S, plan: DeployPlan): DeployTurn<S>;
   concede?(state: S, side: MatchSide): S;
   isFinished(state: S): boolean;
 }
@@ -114,4 +141,33 @@ export function parseSubmitPlan(value: unknown): MatchResult<SubmitPlanCommand> 
     return { ok: false, error: { code: "invalid_message" } };
   }
   return { ok: true, value: structuredClone(command) as SubmitPlanCommand };
+}
+
+export function parseSubmitConcede(value: unknown): MatchResult<SubmitConcedeCommand> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: { code: "invalid_message" } };
+  const command = value as Record<string, unknown>;
+  const keys = ["type", "protocol", "matchId", "playerId", "commandId", "baseRevision"];
+  if (command.protocol !== MECHA_NET_PROTOCOL) return { ok: false, error: { code: "ruleset_mismatch" } };
+  if (Object.keys(command).length !== keys.length || !keys.every((key) => Object.hasOwn(command, key))
+    || command.type !== "match.concede-v2" || !id(command.matchId) || !id(command.playerId)
+    || !id(command.commandId) || !revision(command.baseRevision)) return { ok: false, error: { code: "invalid_message" } };
+  return { ok: true, value: structuredClone(command) as SubmitConcedeCommand };
+}
+
+/** Strictly validate the future deployment authority packet, including nested fields. */
+export function parseSubmitDeployment(value: unknown): { ok: false; error: { code: "invalid_message" | "ruleset_mismatch" } } | { ok: true; value: SubmitDeploymentCommand } {
+  const bad = (code: "invalid_message" | "ruleset_mismatch") => ({ ok: false as const, error: { code } });
+  const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+  const keys = (v: Record<string, unknown>, expected: string[]) => Object.keys(v).length === expected.length && expected.every(k => Object.hasOwn(v, k));
+  if (!object(value)) return bad("invalid_message");
+  if (value.protocol !== MECHA_NET_PROTOCOL) return bad("ruleset_mismatch");
+  if (!keys(value, ["type", "protocol", "matchId", "playerId", "commandId", "baseRevision", "plan"])
+    || value.type !== "deployment.submit" || !id(value.matchId) || !id(value.playerId) || !id(value.commandId)
+    || !revision(value.baseRevision) || !object(value.plan) || !keys(value.plan, ["revision", "placements"])
+    || value.plan.revision !== value.baseRevision || !Array.isArray(value.plan.placements) || value.plan.placements.length > 3) return bad("invalid_message");
+  for (const placement of value.plan.placements) {
+    if (!object(placement) || !keys(placement, ["mechId", "pos"]) || typeof placement.mechId !== "string" || !mechIds.has(placement.mechId)
+      || !object(placement.pos) || !keys(placement.pos, ["x", "y"]) || !cell(placement.pos)) return bad("invalid_message");
+  }
+  return { ok: true, value: structuredClone(value) as SubmitDeploymentCommand };
 }

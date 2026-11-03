@@ -24,6 +24,18 @@ static ADAPTERS: &[AdapterRegistration] = &[AdapterRegistration {
     control_methods: &["mecha.remote.start", "mecha.remote.invite", "mecha.remote.approve", "mecha.remote.revoke", "mecha.remote.pending", "mecha.remote.stop"],
     supports: crate::mecha_remote_adapter::supports,
     control: city_control,
+}, AdapterRegistration {
+    app_id: "city",
+    capability_id: "mecha:v2",
+    control_methods: &["mecha.remote.start-deployment"],
+    supports: crate::mecha_remote_adapter::supports_deployment,
+    control: city_control,
+}, AdapterRegistration {
+    app_id: "city",
+    capability_id: "mecha:v3",
+    control_methods: &["mecha.remote.start-v3"],
+    supports: crate::mecha_remote_adapter::supports_safe_concede,
+    control: city_control,
 }];
 
 pub fn lookup<'a>(registrations: &'a [AdapterRegistration], app_id: &str, method: &str) -> Option<&'a AdapterRegistration> {
@@ -59,6 +71,9 @@ mod tests {
         assert!(lookup(&registrations, "city", "island.remote.start").is_none());
         assert!(lookup(&registrations, "island", "plugin_request").is_none());
         assert!(registered("island", "island.remote.start").is_none());
-        assert!(registered("city", "mecha.remote.start").is_some());
+        assert_eq!(registered("city", "mecha.remote.start").unwrap().capability_id, "mecha:v1");
+        assert_eq!(registered("city", "mecha.remote.start-deployment").unwrap().capability_id, "mecha:v2");
+        assert_eq!(registered("city", "mecha.remote.start-v3").unwrap().capability_id, "mecha:v3");
+        assert!(registered("other", "mecha.remote.start-deployment").is_none());
     }
 }

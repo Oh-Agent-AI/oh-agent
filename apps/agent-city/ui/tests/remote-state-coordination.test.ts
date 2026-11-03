@@ -120,6 +120,78 @@ test("disposed synchronizer ignores a pending response", async () => {
   assert.equal(h.snapshots.length, 0);
 });
 
+test("host unavailable retries with bounded exponential backoff and unlocks on recovery", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const h = harness();
+  const start = h.sync.resync();
+  h.requests[0].resolve({ ok: false, error: { code: "host_offline" } }); await start;
+  assert.equal(h.sync.canInteract(), false);
+  t.mock.timers.tick(999); assert.equal(h.requests.length, 1);
+  t.mock.timers.tick(1); assert.equal(h.requests.length, 2);
+  h.requests[1].resolve({ ok: false, error: { code: "unavailable" } }); await Promise.resolve();
+  t.mock.timers.tick(1999); assert.equal(h.requests.length, 2);
+  t.mock.timers.tick(1); assert.equal(h.requests.length, 3);
+  h.requests[2].resolve({ ok: false, error: { code: "host_offline" } }); await Promise.resolve();
+  t.mock.timers.tick(3999); assert.equal(h.requests.length, 3);
+  t.mock.timers.tick(1); assert.equal(h.requests.length, 4);
+  h.requests[3].resolve({ ok: true, value: snap(first) }); await Promise.resolve();
+  assert.equal(h.sync.canInteract(), true);
+  t.mock.timers.tick(30000); assert.equal(h.requests.length, 4);
+  h.sync.dispose();
+});
+
+test("retry delay is capped at 15 seconds and thrown fetch errors retry after reconnection", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let attempts = 0;
+  const sync = new RemoteMatchSynchronizer("match", async () => { attempts++; throw new Error("network"); }, {
+    snapshot: () => {}, turn: () => {}, syncing: () => {}, error: () => {},
+  });
+  sync.connection(true);
+  await sync.resync();
+  for (const delay of [1000, 2000, 4000, 8000, 15000, 15000]) {
+    t.mock.timers.tick(delay - 1); const before = attempts;
+    t.mock.timers.tick(1); assert.equal(attempts, before + 1); await Promise.resolve();
+  }
+  sync.connection(false);
+  t.mock.timers.tick(30000); assert.equal(attempts, 7);
+  sync.connection(true);
+  t.mock.timers.tick(14999); assert.equal(attempts, 7);
+  t.mock.timers.tick(1); assert.equal(attempts, 8); await Promise.resolve();
+  sync.dispose();
+});
+
+test("offline suspends retries; replacement, close and dispose cancel them", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  for (const ending of ["replacement", "close", "dispose"] as const) {
+    const h = harness(); const start = h.sync.resync();
+    h.requests[0].resolve({ ok: false, error: { code: "host_offline" } }); await start;
+    h.sync.connection(false); t.mock.timers.tick(30000); assert.equal(h.requests.length, 1);
+    h.sync.connection(true);
+    if (ending === "replacement") h.sync.event({ type: "match.replaced", snapshot: snap(first) });
+    if (ending === "close") h.sync.event({ type: "match.closed", matchId: "match", revision: first.revision });
+    if (ending === "dispose") h.sync.dispose();
+    t.mock.timers.tick(30000); assert.equal(h.requests.length, 1);
+    assert.equal(h.sync.canInteract(), ending === "replacement");
+    h.sync.dispose();
+  }
+});
+
+test("manual retry supersedes timer and stale result; permanent error does not retry", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const h = harness(); const start = h.sync.resync();
+  h.requests[0].resolve({ ok: false, error: { code: "host_offline" } }); await start;
+  const manual = h.sync.resync(); t.mock.timers.tick(30000); assert.equal(h.requests.length, 2);
+  h.sync.event({ type: "match.replaced", snapshot: snap(t1.state) });
+  h.requests[1].resolve({ ok: false, error: { code: "host_offline" } }); await manual;
+  t.mock.timers.tick(30000); assert.equal(h.requests.length, 2);
+  assert.equal(h.sync.canInteract(), true);
+  const permanent = h.sync.resync();
+  h.requests[2].resolve({ ok: false, error: { code: "invalid_message" } }); await permanent;
+  t.mock.timers.tick(30000); assert.equal(h.requests.length, 3);
+  assert.equal(h.sync.canInteract(), false); assert.equal(h.errors.at(-1), "invalid_message");
+  h.sync.dispose();
+});
+
 function sceneHarness() {
   const applied: number[] = [], played: number[] = [], waits: ReturnType<typeof deferred<void>>[] = [], locks: boolean[] = [];
   const scene: BattleScenePort = {
