@@ -5,16 +5,17 @@
  * 这里只做转换，不调 bossPrepare——何时开第一回合是调用方的事。
  */
 import type { CityMechaSite } from "./citySite";
-import { createMatch, type BossScriptId, type BuildingStake, type CoverPresetId, type MatchState } from "./rules";
+import { createMatch, type BossScriptId, type BuildingStake, type CoverPresetId, type DifficultyId, type MatchState } from "./rules";
 
 export function matchFromSite(
   site: CityMechaSite,
-  opts: { preset: CoverPresetId; script: BossScriptId; stake?: BuildingStake },
+  opts: { preset: CoverPresetId; script: BossScriptId; difficulty?: DifficultyId; stake?: BuildingStake },
 ): MatchState {
-  const { preset, script, stake } = opts;
+  const { preset, script, difficulty, stake } = opts;
   return createMatch({
     preset,
     script,
+    difficulty,
     covers: [],
     terrain: site.terrain.map((row) => row.slice()),
     heights: site.heights.map((row) => row.slice()),

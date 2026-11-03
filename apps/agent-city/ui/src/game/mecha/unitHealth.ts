@@ -1,9 +1,9 @@
-import { BOSS_HP, RAIDER_HP, STATS } from "./board";
+import { enemyStatsOf, STATS, type MatchState } from "./board";
 
-export function unitMaxHp(id: string): number | null {
+export function unitMaxHp(id: string, state?: MatchState | null): number | null {
   if (id === "Assault" || id === "Gunner" || id === "Support") return STATS[id].maxHp;
-  if (id === "boss") return BOSS_HP;
-  if (["raider-w", "raider-e", "raider-west", "raider-east"].includes(id)) return RAIDER_HP;
+  if (id === "boss") return enemyStatsOf(state ?? {}).bossHp;
+  if (["raider-w", "raider-e", "raider-west", "raider-east"].includes(id) || state?.raiders.some((raider) => raider.id === id)) return enemyStatsOf(state ?? {}).raiderHp;
   return null;
 }
 

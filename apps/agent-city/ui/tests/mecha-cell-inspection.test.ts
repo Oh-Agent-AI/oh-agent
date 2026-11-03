@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createMatch, bossPrepare, type MatchState } from "../src/game/mecha/rules";
+import { createMatch, bossPrepare, RAIDER_HP, type MatchState } from "../src/game/mecha/rules";
 import { declaredAttack, inspectCell, inspectionSegments } from "../src/game/mecha/cellInspection";
 
 function fixture(): MatchState {
@@ -42,7 +42,7 @@ test("all friendly units and every boss footprint cell expose rule stats", () =>
     assert.equal(info.unit?.id, "boss"); assert.equal(info.unit?.maxHp, 40);
     assert.deepEqual(info.attack?.origin, { x: 4, y: 0 });
   }
-  assert.equal(inspectCell(state, state.raiders[0]!.pos)!.unit?.maxHp, 8);
+  assert.equal(inspectCell(state, state.raiders[0]!.pos)!.unit?.maxHp, RAIDER_HP);
 });
 
 test("displayed friendly draft endpoints use a real path, not a straight shortcut", () => {

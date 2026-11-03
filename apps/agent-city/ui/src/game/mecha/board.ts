@@ -17,6 +17,19 @@ export const RAIDER_HP = 8;
 export const RAIDER_ATK = 3;
 export const RAIDER_DEF = 1;
 export const RAIDER_MOVE = 4;
+
+export type DifficultyId = "easy" | "normal" | "hard";
+export type EnemyStats = { bossHp: number; bossAtk: number; raiderHp: number; raiderAtk: number; raiderCount: number };
+export const ENEMY_STATS: Record<DifficultyId, EnemyStats> = {
+  easy: { bossHp: 36, bossAtk: 6, raiderHp: RAIDER_HP, raiderAtk: 2, raiderCount: 1 },
+  normal: { bossHp: BOSS_HP, bossAtk: 5, raiderHp: RAIDER_HP, raiderAtk: RAIDER_ATK, raiderCount: 2 },
+  hard: { bossHp: 48, bossAtk: 7, raiderHp: RAIDER_HP, raiderAtk: 4, raiderCount: 4 },
+};
+
+export function enemyStatsOf(state: Pick<MatchState, "difficulty">): EnemyStats {
+  return ENEMY_STATS[state.difficulty ?? "normal"];
+}
+
 /** Spawn samples are one plane when the spread is at most 1 world unit (2 m). */
 export const FLAT_SPAWN_MAX_DELTA = 1;
 /** The search retries at this wider bound when no strict window exists. This is a
@@ -118,6 +131,7 @@ export type MatchState = {
   ruleset: typeof GDD_RULESET;
   preset: CoverPresetId;
   script: BossScriptId;
+  difficulty?: DifficultyId;
   covers: Cell[];
   /** 站点里画着却不可用的陆地格（场景楼、斜放楼）。和 covers 不同：挡路、挡射击且不能被穿射、
    *  不可被攻击、不参与 threat。缺省空，空时所有规则与加这个字段之前逐字节一致。 */

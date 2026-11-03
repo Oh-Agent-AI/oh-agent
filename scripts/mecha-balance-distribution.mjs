@@ -24,15 +24,17 @@ const counts = (process.env.MECHA_COUNTS ?? "80,380").split(",").map((s) => Numb
 const backdrops = (process.env.MECHA_BACKDROPS ?? "off").split(",").map((s) => s.trim()).filter(Boolean);
 const randomTrials = Number(process.env.MECHA_RANDOM ?? 5);
 const stockRandomTrials = Number(process.env.MECHA_STOCK_RANDOM ?? 24);
+const difficulty = process.env.MECHA_DIFFICULTY ?? "normal";
+if (!["easy", "normal", "hard"].includes(difficulty)) throw new Error(`Unknown MECHA_DIFFICULTY: ${difficulty}`);
 const SEED_LIST = [1927, 74031, 7, 42, 101, 256, 1024, 4096, 8192, 16384, 32768, 55555, 99991, 27182, 31415, 62831];
 const seeds = SEED_LIST.slice(0, seedCount);
 
 const {
   createMatch, bossPrepare, bossExecute, validateAndApplyPlan, living, livingBuildings, livingRaiders, livingStakeBuildings,
   pathDistance, legalActions, bossTunnelPlan, peelPlan, siteMechaWindow, siteFightShapes, anchorsFromCity, buildCityModel, layoutCity, MIAMI_COASTAL,
-  BOSS_HP, RAIDER_HP, BOARD, moveBudget,
+  BOARD, moveBudget, enemyStatsOf,
 } = await loadCity({
-  "game/mecha/rules.ts": ["createMatch", "bossPrepare", "bossExecute", "validateAndApplyPlan", "living", "livingBuildings", "livingRaiders", "livingStakeBuildings", "pathDistance", "legalActions", "BOSS_HP", "RAIDER_HP", "BOARD", "moveBudget"],
+  "game/mecha/rules.ts": ["createMatch", "bossPrepare", "bossExecute", "validateAndApplyPlan", "living", "livingBuildings", "livingRaiders", "livingStakeBuildings", "pathDistance", "legalActions", "BOSS_HP", "RAIDER_HP", "BOARD", "moveBudget", "enemyStatsOf"],
   "game/mecha/ai.ts": ["bossTunnelPlan", "peelPlan"],
   "game/mecha/citySite.ts": ["siteMechaWindow", "siteFightShapes", "anchorsFromCity"],
   "cityModel.ts": ["buildCityModel"],
@@ -166,8 +168,9 @@ function searchPlan(state, bias, weights) {
     if (!("ok" in result)) return;
     if (clone.phase === "resolving_boss") bossExecute(clone);
     const focus = bias === "threat" ? threatFocus(clone).cell : bossCenter(clone);
-    let score = (BOSS_HP - clone.boss.hp) * weights.boss;
-    for (const raider of clone.raiders) score += (RAIDER_HP - raider.hp) * weights.raider;
+    const enemy = enemyStatsOf(clone);
+    let score = (enemy.bossHp - clone.boss.hp) * weights.boss;
+    for (const raider of clone.raiders) score += (enemy.raiderHp - raider.hp) * weights.raider;
     for (const mech of clone.mechs) {
       score += mech.hp * weights.mech;
       if (mech.hp > 0) score -= manh(mech.pos, focus);
@@ -229,13 +232,14 @@ function openingFrom(opts) {
 }
 
 function stockOpening() {
-  return openingFrom({ preset: "covers_sparse_mid", script: "siege" });
+  return openingFrom({ preset: "covers_sparse_mid", script: "siege", difficulty });
 }
 
 function cityOpening(site, stake = "all") {
   return openingFrom({
     preset: "covers_sparse_mid",
     script: "siege",
+    difficulty,
     covers: [],
     terrain: site.terrain,
     heights: site.heights,
@@ -276,14 +280,15 @@ function play(opening, choose) {
     if (state.phase === "enemy_prepare") bossPrepare(state);
     mark();
   }
+  const enemy = enemyStatsOf(state);
   const buildingHp = state.buildings.reduce((sum, b) => sum + Math.max(0, b.hp), 0);
   const buildingMax = state.buildings.reduce((sum, b) => sum + b.maxHp, 0);
   const raiderHp = state.raiders.reduce((sum, r) => sum + Math.max(0, r.hp), 0);
-  const raiderMax = state.raiders.length * RAIDER_HP;
+  const raiderMax = state.raiders.length * enemy.raiderHp;
   const mechHp = state.mechs.reduce((sum, m) => sum + Math.max(0, m.hp), 0);
   const mechMax = state.mechs.reduce((sum, m) => sum + MECH_MAX[m.id], 0);
   const buildings = buildingMax === 0 ? 0 : buildingHp / buildingMax;
-  const enemies = 1 - ((raiderMax === 0 ? 0 : raiderHp / raiderMax) * 0.45 + (state.boss.hp / BOSS_HP) * 0.55);
+  const enemies = 1 - ((raiderMax === 0 ? 0 : raiderHp / raiderMax) * 0.45 + (state.boss.hp / enemy.bossHp) * 0.55);
   const mechs = mechMax === 0 ? 0 : mechHp / mechMax;
   const margin = Math.round(100 * (0.45 * buildings + 0.40 * enemies + 0.15 * mechs));
   return {
@@ -659,6 +664,7 @@ for (const id of ["flat", "shore", "ridge", "alley"]) log(`shape results ${shape
 const summary = summarizeSites(sites);
 const report = {
   ruleset: "mecha-v1.4",
+  difficulty,
   backdropDefault: "off",
   seeds,
   counts,

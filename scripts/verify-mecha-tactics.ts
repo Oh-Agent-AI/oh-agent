@@ -166,7 +166,7 @@ test("raid damages a building and does not lose until every building is gone", (
   assert.deepEqual(intent.projected, [{ x: 5, y: 2 }]);
   assert.equal("ok" in validateAndApplyPlan(state, hold(state)), true);
   bossExecute(state);
-  assert.equal(state.buildings[0]?.hp, BUILDING_HP - 6);
+  assert.equal(state.buildings[0]?.hp, BUILDING_HP - 5);
   assert.equal(state.buildings[1]?.hp, BUILDING_HP);
   assert.equal(state.outcome, null);
 });
@@ -334,8 +334,8 @@ test("water stops feet, mountains stop shots, uphill spends a second point", () 
   bossExecute(pushed);
   const after = pushed.mechs.find((mech) => mech.id === "Assault")!;
   assert.deepEqual(after.pos, { x: 5, y: 3 });
-  // 砸击 4，再加撞上水面的 2。人留在原地。
-  assert.equal(after.hp, hp - 6);
+  // 砸击 3，再加撞上水面的 2。人留在原地。
+  assert.equal(after.hp, hp - 5);
 });
 
 test("roads cost half a step for mechs and raiders, and a full step for the boss", () => {
@@ -854,11 +854,12 @@ test("v1.4 RULE-4: a raider on the footprint takes the collision too", () => {
   });
   bossPrepare(state);
   state.raiders[0]!.pos = { x: 6, y: 0 }; // 备战时小怪已向目标挪动，摆回脚印目标格
+  const raiderHp = state.raiders[0]!.hp;
   const r = playTurn(state, plan(state, [{ mechId: "Assault", action: { kind: "melee" } }, { mechId: "Gunner" }, { mechId: "Support" }]));
   assert.equal(r.ok, true);
   if (!r.ok) return;
   assert.equal(r.log.find((e) => e.type === "shove" && e.unit === "boss" && e.hit === "r1") !== undefined, true);
-  assert.equal(r.state.raiders[0]!.hp, 8 - 2);
+  assert.equal(r.state.raiders[0]!.hp, raiderHp - 2);
 });
 
 test("v1.4 RULE-5: cover and empty ground weigh the same; mechs and living buildings still outrank them", () => {
@@ -903,7 +904,7 @@ test("preview exposes actual building losses even when every mech is safe", () =
   if (!preview.ok || !actual.ok) return;
   assert.deepEqual(preview.hitsAfter, { Assault: 0, Gunner: 0, Support: 0 });
   assert.equal(preview.buildings.reduce((sum, b) => sum + b.startHp, 0), 80);
-  assert.equal(preview.buildings.reduce((sum, b) => sum + b.endHp, 0), 68);
+  assert.equal(preview.buildings.reduce((sum, b) => sum + b.endHp, 0), 70);
   assert.deepEqual(preview.buildings.map((b) => b.endHp), actual.state.buildings.map((b) => b.hp));
   assert.deepEqual(preview.stages, actual.presentationStages);
   assert.deepEqual(preview.log, actual.log);
@@ -915,13 +916,13 @@ test("preview tracks stake, destroyed buildings and real outcome without phantom
   const state = buildingRiskFixture();
   state.stake = "frontage";
   state.terrain[4]![2] = "road"; // only west-1 is a defended building
-  state.buildings[0]!.hp = 6;
+  state.buildings[0]!.hp = 5;
   const preview = previewPlan(state, hold(state));
   const actual = playTurn(state, hold(state));
   assert.ok(preview.ok && actual.ok);
   if (!preview.ok || !actual.ok) return;
   assert.deepEqual(preview.buildings.filter((b) => b.staked).map((b) => b.id), ["west-1"]);
-  assert.equal(preview.buildings[0]!.afterPlayerHp, 6);
+  assert.equal(preview.buildings[0]!.afterPlayerHp, 5);
   assert.equal(preview.buildings[0]!.endHp, 0);
   assert.equal(preview.buildings[1]!.staked, false);
   assert.equal(preview.outcome, "defeat_buildings");

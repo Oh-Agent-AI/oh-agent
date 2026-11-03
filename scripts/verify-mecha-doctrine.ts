@@ -70,6 +70,7 @@ test("a road around a mountain wall is closer in half-steps than the manhattan c
     ],
     boss: { x: 0, y: 6 },
   });
+  state.raiders = state.raiders.slice(0, 1);
   state.phase = "player_plan";
   const peel = peelPlan(state);
   const assault = peel.items.find((item) => item.mechId === "Assault");

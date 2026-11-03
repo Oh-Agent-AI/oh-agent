@@ -1,9 +1,9 @@
 /**
- * 敌方脚本：大怪与小怪的准备（bossPrepare）和结算（bossExecute）、威胁度、目标选择、寻路步进。
+ * 敌方脚本：大怪与小怪的准备（scriptedEnemyPrepare）和结算（bossExecute）、威胁度、目标选择、寻路步进。
  * 依赖 board.ts（棋盘与寻路）和 combat.ts（伤害、击退）；不依赖 rules.ts。
  */
 import {
-  BOSS_ATK, BOSS_MOVE, BUILDING_DEF, MAX_TURNS, MOVE_QUANTUM, RAIDER_ATK, RAIDER_MOVE, STATS, adjacentCells, dijkstra, emit, enemiesRemain, eq, footprint,
+  BOSS_MOVE, BUILDING_DEF, MAX_TURNS, MOVE_QUANTUM, RAIDER_MOVE, STATS, enemyStatsOf, adjacentCells, dijkstra, emit, enemiesRemain, eq, footprint,
   inb, isObstacle, living, livingBuildingAt, livingRaiders, livingStakeBuildings, manh, mech, occupant, onFootprint, stepCost, water, orderedHealthEffect,
   type Building, type Cell, type Intent, type MatchState, type Raider, type TurnEvent,
 } from "./board";
@@ -241,7 +241,7 @@ function pickSmashCells(state: MatchState, cells: Cell[]): Cell | null {
   return best?.c ?? null;
 }
 
-export function bossPrepare(state: MatchState): Intent {
+export function scriptedEnemyPrepare(state: MatchState): Intent {
   const skip: Intent = { skillId: "skip", local: [], projected: [], cdSweep: state.boss.cdSweep, status: "void" };
   if (state.phase !== "enemy_prepare") return skip;
   if (!enemiesRemain(state)) {
@@ -290,7 +290,7 @@ function resolveRaider(state: MatchState, raider: Raider) {
       if (hit && !struck.has(hit.id)) {
         struck.add(hit.id);
         const before = hit.hp;
-        hit.hp = Math.max(0, hit.hp - strike(RAIDER_ATK, BUILDING_DEF));
+        hit.hp = Math.max(0, hit.hp - strike(enemyStatsOf(state).raiderAtk, BUILDING_DEF));
         ev.damage += before - hit.hp;
         if (hit.hp !== before) (ev.effects ??= []).push(orderedHealthEffect({ kind: "building", id: hit.id, before, after: hit.hp }));
         refresh(state);
@@ -299,7 +299,7 @@ function resolveRaider(state: MatchState, raider: Raider) {
     }
     if (occ === "Assault" || occ === "Gunner" || occ === "Support") {
       const before = state.mechs.find((x) => x.id === occ)!.hp;
-      hurtMech(state, occ, strike(RAIDER_ATK, STATS[occ].def));
+      hurtMech(state, occ, strike(enemyStatsOf(state).raiderAtk, STATS[occ].def));
       const after = state.mechs.find((x) => x.id === occ)!.hp;
       ev.damage += before - after;
       if (after !== before) (ev.effects ??= []).push(orderedHealthEffect({ kind: "mech", id: occ, before, after }));
@@ -348,7 +348,7 @@ export function bossExecute(state: MatchState) {
         if (hit && !struckBuildings.has(hit.id)) {
           struckBuildings.add(hit.id);
           const before = hit.hp;
-          hit.hp = Math.max(0, hit.hp - strike(BOSS_ATK, BUILDING_DEF));
+          hit.hp = Math.max(0, hit.hp - strike(enemyStatsOf(state).bossAtk, BUILDING_DEF));
           ev.damage += before - hit.hp;
           if (hit.hp !== before) (ev.effects ??= []).push(orderedHealthEffect({ kind: "building", id: hit.id, before, after: hit.hp }));
           any = true;
@@ -360,7 +360,7 @@ export function bossExecute(state: MatchState) {
       const target = mech(state, occ);
       if (!target) continue;
       const before = target.hp;
-      hurtMech(state, occ, strike(BOSS_ATK, STATS[occ].def));
+      hurtMech(state, occ, strike(enemyStatsOf(state).bossAtk, STATS[occ].def));
       const after = target.hp;
       ev.damage += before - after;
       if (after !== before) (ev.effects ??= []).push(orderedHealthEffect({ kind: "mech", id: occ, before, after }));

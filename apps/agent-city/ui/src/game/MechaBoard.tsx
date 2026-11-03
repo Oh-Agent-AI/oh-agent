@@ -746,10 +746,10 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
       paused,
       figures: (state?.mechs ?? []).map((m) => {
         const planned = m.hp > 0 && !performance ? draft?.[m.id]?.moveTo : null;
-        return { id: m.id, x: planned?.x ?? m.pos.x, y: planned?.y ?? m.pos.y, alive: m.hp > 0, hp: m.hp, maxHp: unitMaxHp(m.id) ?? undefined, selected: m.id === selected };
+        return { id: m.id, x: planned?.x ?? m.pos.x, y: planned?.y ?? m.pos.y, alive: m.hp > 0, hp: m.hp, maxHp: unitMaxHp(m.id, state) ?? undefined, selected: m.id === selected };
       }),
-      boss: { x: state?.boss.anchor.x ?? 0, y: state?.boss.anchor.y ?? 0, alive: (state?.boss.hp ?? 0) > 0, hp: state?.boss.hp ?? 0, maxHp: unitMaxHp("boss") ?? undefined },
-      raiders: (state?.raiders ?? []).map((raider) => ({ id: raider.id, x: raider.pos.x, y: raider.pos.y, alive: raider.hp > 0, hp: raider.hp, maxHp: unitMaxHp(raider.id) ?? undefined })),
+      boss: { x: state?.boss.anchor.x ?? 0, y: state?.boss.anchor.y ?? 0, alive: (state?.boss.hp ?? 0) > 0, hp: state?.boss.hp ?? 0, maxHp: unitMaxHp("boss", state) ?? undefined },
+      raiders: (state?.raiders ?? []).map((raider) => ({ id: raider.id, x: raider.pos.x, y: raider.pos.y, alive: raider.hp > 0, hp: raider.hp, maxHp: unitMaxHp(raider.id, state) ?? undefined })),
       buildings: (state?.buildings ?? []).map((building) => ({ id: building.id, cells: building.cells, hp: building.hp, maxHp: building.maxHp })),
       focusedBuilding: performance || !s?.preview.ok ? null : focusedBuilding,
       telegraph: performance ? [] : (s?.telegraph ?? []),
@@ -942,7 +942,7 @@ function MechaMatch({ locale, onClose, engine, catalog, initialShape, remoteStat
             locale={locale} avatar={<MechaUnitAvatar mechId={m.id} locale={locale} />} />)}
         </ul>
         <section className={targeting ? "mecha-selected-actions is-targeting" : "mecha-selected-actions"} aria-label={t("当前机甲行动")}>
-          <h3 tabIndex={-1}><span>{selectedMech ? t(NAMES[selectedMech.id]) : t("当前机甲")}</span>{selectedMech ? <span className="mecha-selected-hp">{selectedMech.hp} / {unitMaxHp(selectedMech.id) ?? "?"} HP</span> : null}</h3>
+          <h3 tabIndex={-1}><span>{selectedMech ? t(NAMES[selectedMech.id]) : t("当前机甲")}</span>{selectedMech ? <span className="mecha-selected-hp">{selectedMech.hp} / {unitMaxHp(selectedMech.id, state) ?? "?"} HP</span> : null}</h3>
           {targeting ? <p className="mecha-target-instruction">{t(actionLabel(targeting))} · {t("点击高亮目标")}</p> : null}
           <div className="mecha-command-deck">
             {selectedMech ? <MechaUnitPortrait unitId={selectedMech.id} locale={locale} size={84} className="mecha-selected-portrait" decorative={false} /> : null}

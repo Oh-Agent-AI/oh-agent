@@ -4,7 +4,7 @@
  * （它要同时调 validateAndApplyPlan 与 bossExecute，放在这里就会让 combat ↔ enemy 成环）。
  */
 import {
-  BOSS_ATK, BOSS_DEF, BUILDING_DEF, MECH_IDS, RAIDER_ATK, RAIDER_DEF, STATS, adjacentToFootprint, cheb, emit, eq, footprint, footprintCenter,
+  BOSS_DEF, BUILDING_DEF, MECH_IDS, RAIDER_DEF, STATS, enemyStatsOf, adjacentToFootprint, cheb, emit, eq, footprint, footprintCenter,
   inb, knockbackFromAttacker, living, livingRaiders, enemiesRemain, mech, occupant, onFootprint, pathDistance, primaryAxis, raiderAt, moveBudget, blocksTerrain,
   shoveWall, stakeBuildings, livingStakeBuildings, swapEventSink, terrainAt, attackerCenter, healthCapture, healthEffectFields,
   type Action, type ArenaPlan, type Cell, type MatchState, type MechId, type PlanFault, type PlanReject, type Raider,
@@ -20,27 +20,27 @@ export function strike(atk: number, def: number): number {
   return Math.max(1, atk - def);
 }
 
-/** Boss smash/sweep damage against a mech. Same formula as `strike(BOSS_ATK, def)`. */
-export function bossDamageTo(id: MechId): number {
-  return strike(BOSS_ATK, STATS[id].def);
+/** Boss smash/sweep damage against a mech. Omitting state preserves the normal ruleset. */
+export function bossDamageTo(id: MechId, state?: MatchState): number {
+  return strike(enemyStatsOf(state ?? {}).bossAtk, STATS[id].def);
 }
 
-export function raiderDamageTo(id: MechId): number {
-  return strike(RAIDER_ATK, STATS[id].def);
+export function raiderDamageTo(id: MechId, state?: MatchState): number {
+  return strike(enemyStatsOf(state ?? {}).raiderAtk, STATS[id].def);
 }
 
 /** Damage a mech would take from every telegraph currently on this cell. */
 export function incomingDamage(state: MatchState, id: MechId, cell: Cell): number {
   let total = 0;
-  if (state.boss.hp > 0 && state.boss.intent?.projected.some((c) => eq(c, cell))) total += bossDamageTo(id);
+  if (state.boss.hp > 0 && state.boss.intent?.projected.some((c) => eq(c, cell))) total += bossDamageTo(id, state);
   for (const raider of state.raiders) {
-    if (raider.hp > 0 && raider.intent?.projected.some((c) => eq(c, cell))) total += raiderDamageTo(id);
+    if (raider.hp > 0 && raider.intent?.projected.some((c) => eq(c, cell))) total += raiderDamageTo(id, state);
   }
   return total;
 }
 
-export function buildingDamage(): number {
-  return strike(BOSS_ATK, BUILDING_DEF);
+export function buildingDamage(state?: MatchState): number {
+  return strike(enemyStatsOf(state ?? {}).bossAtk, BUILDING_DEF);
 }
 
 export function hurtMech(state: MatchState, id: MechId, amount: number) {

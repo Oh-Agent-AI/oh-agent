@@ -10,10 +10,11 @@
  *      无效果、不耗冷却、记 fizzled 事件，整包不因落空被拒。
  *   5. 碰撞：大怪被推时脚印目标格上所有障碍一次结算（大怪只受一次 2，每个被撞单位各受 2）。
  *   6. threat：机甲 3，活楼 2，其余（空地/掩体/障碍/废墟）1。
- *   其余数值、地形、半步、敌方脚本与 v1.3 相同；推动大怪后预告随之平移（RULE-3）不变。
+ *   地形、半步、敌方脚本与 v1.3 相同；敌人生命、攻击和小怪数量按难度配置。
+ *   推动大怪后预告随之平移（RULE-3）不变。
  * cadence_ssw is smash, smash, sweep. smash_2 is not in v1.
  * raid_ssw is that cadence plus a move toward a living building or mech.
- * siege adds two 1×1 raiders and ends at turn 15.
+ * siege fields the difficulty's 1×1 raiders and ends at turn 15.
  * Buildings have one HP pool. Every staked pool at 0 is defeat_buildings.
  * Stake is every building, except an alley, which stakes only street frontage.
  * 花费以半步计，预算 = 移动力 × MOVE_QUANTUM。平地一步是 2，和旧的「移动力格数」对齐。
@@ -23,30 +24,34 @@
  * 推入水或山地算撞墙。主动爬山地不撞墙，只付步数。
  *
  * 模块划分：board.ts（棋盘、地形、占位、寻路、事件接收口）→ combat.ts（行动、伤害、整包结算）→
- * enemy.ts（大怪/小怪脚本）→ 本文件（建局、回合入口，并原样再导出对外 API，导入路径不变）。
+ * enemy.ts（大怪/小怪脚本）→ enemy/planner.ts（EnemyPlan 与意图锁定）→ 本文件（建局、回合入口，并原样再导出对外 API）。
  * playTurn/previewPlan 同时要 validateAndApplyPlan 与 bossExecute，所以放这一层，避免 combat ↔ enemy 成环。
  */
 
 import {
-  BOARD, BOSS_HP, BUILDING_HP, COVERS, GDD_RULESET, MECH_IDS, RAIDER_HP, SIEGE_BUILDINGS, SIEGE_RAIDERS, STATS, footprint, inb, key, living, emit, noSpawn, swapEventSink,
-  type ArenaPlan, type AssaultTerrainSafety, type BossScriptId, type BuildingStake, type Cell, type CoverPresetId, type MatchState, type MechId, type Outcome, type PlanFault, type TerrainKind, type TurnEvent,
+  BOARD, BOSS_HP, BUILDING_HP, COVERS, ENEMY_STATS, GDD_RULESET, MECH_IDS, RAIDER_HP, SIEGE_BUILDINGS, SIEGE_RAIDERS, STATS, footprint, inb, key, living, emit, noSpawn, swapEventSink,
+  type ArenaPlan, type AssaultTerrainSafety, type BossScriptId, type BuildingStake, type Cell, type CoverPresetId, type DifficultyId, type MatchState, type MechId, type Outcome, type PlanFault, type TerrainKind, type TurnEvent,
 } from "./board";
 import { validateAndApplyPlan } from "./combat";
 import { movementSnapshot, presentationSnapshot, stakeBuildings, type PresentationStages } from "./board";
-import { bossExecute, bossPrepare } from "./enemy";
+import { bossExecute } from "./enemy";
+import { prepareEnemy, scriptedEnemyPlanner } from "./enemy/planner";
+import type { EnemyPlanner } from "./enemy/contracts";
 
 export {
-  BOARD, BOSS_ATK, BOSS_DEF, BOSS_HP, BOSS_MOVE, BUILDING_DEF, BUILDING_HP, COVERS, FLAT_SPAWN_MAX_DELTA, GDD_RULESET, MAX_TURNS, MECH_IDS, MOVE_QUANTUM,
-  RAIDER_ATK, RAIDER_DEF, RAIDER_HP, RAIDER_MOVE, RELAXED_SPAWN_MAX_DELTA, SIEGE_BUILDINGS, SIEGE_RAIDERS, STATS_MOVE, TERRAIN_MOD,
+  BOARD, BOSS_ATK, BOSS_DEF, BOSS_HP, BOSS_MOVE, BUILDING_DEF, BUILDING_HP, COVERS, ENEMY_STATS, FLAT_SPAWN_MAX_DELTA, GDD_RULESET, MAX_TURNS, MECH_IDS, MOVE_QUANTUM,
+  RAIDER_ATK, RAIDER_DEF, RAIDER_HP, RAIDER_MOVE, RELAXED_SPAWN_MAX_DELTA, SIEGE_BUILDINGS, SIEGE_RAIDERS, STATS_MOVE, TERRAIN_MOD, enemyStatsOf,
   adjacentToFootprint, attackerCenter, footprintCenter, knockbackFromAttacker, livingBuildings, livingRaiders, livingStakeBuildings, living, moveBudget, pathDistance, pathRoute, movementPath,
   primaryAxis, stakeBuildings,
 } from "./board";
 export type {
-  Action, ArenaPlan, Building, BuildingStake, BossScriptId, BossSkill, Cell, CoverPresetId, Intent, MatchState, MechId, MechOrder, MoverId, Outcome, Phase,
+  Action, ArenaPlan, Building, BuildingStake, BossScriptId, BossSkill, Cell, CoverPresetId, DifficultyId, EnemyStats, Intent, MatchState, MechId, MechOrder, MoverId, Outcome, Phase,
   PlanFault, PlanReject, Raider, TerrainKind, TurnEvent,
 } from "./board";
+export type { EnemyPlan, EnemyPlanner } from "./enemy/contracts";
 export { bossDamageTo, buildingDamage, incomingDamage, legalActions, raiderDamageTo, validateAndApplyPlan } from "./combat";
-export { bossExecute, bossPrepare, setScriptCounters } from "./enemy";
+export { bossExecute, setScriptCounters } from "./enemy";
+export { applyEnemyPlan, bossPrepare, prepareEnemy, scriptedEnemyPlanner } from "./enemy/planner";
 
 
 export function flatSpawnSpread(heights: number[]): number {
@@ -100,6 +105,7 @@ function copyHeights(grid: number[][] | undefined): number[][] {
 export function createMatch(opts: {
   preset: CoverPresetId;
   script: BossScriptId;
+  difficulty?: DifficultyId;
   covers?: Cell[];
   terrain?: TerrainKind[][];
   heights?: number[][];
@@ -114,10 +120,12 @@ export function createMatch(opts: {
   const deploy = standardDeploy();
   const placed = opts.mechs ?? deploy.mechs;
   const siege = opts.script === "siege";
-  return {
+  const enemy = ENEMY_STATS[opts.difficulty ?? "normal"];
+  const state: MatchState = {
     ruleset: GDD_RULESET,
     preset: opts.preset,
     script: opts.script,
+    ...(opts.difficulty ? { difficulty: opts.difficulty } : {}),
     covers: (opts.covers ?? (siege ? [] : COVERS[opts.preset])).map((c) => ({ ...c })),
     obstacles: (opts.obstacles ?? []).map((c) => ({ ...c })),
     terrain: copyTerrain(opts.terrain),
@@ -133,16 +141,37 @@ export function createMatch(opts: {
     raiders: (opts.raiders ?? (siege ? SIEGE_RAIDERS : [])).map((r) => ({
       id: r.id,
       pos: { ...r.pos },
-      hp: r.hp ?? RAIDER_HP,
+      hp: r.hp ?? enemy.raiderHp,
       intent: null,
     })),
     mechs: placed.map((m) => ({ id: m.id, pos: { ...m.pos }, hp: STATS[m.id].maxHp, cd: 0, skillUsed: false })),
-    boss: { anchor: { ...(opts.boss ?? deploy.boss) }, hp: BOSS_HP, cdSweep: 0, cadence: 0, intent: null },
+    boss: { anchor: { ...(opts.boss ?? deploy.boss) }, hp: enemy.bossHp, cdSweep: 0, cadence: 0, intent: null },
     turn: 1,
     phase: "enemy_prepare",
     revision: 0,
     outcome: null,
   };
+  if (siege && state.raiders.length > 0) {
+    state.raiders = state.raiders.slice(0, enemy.raiderCount);
+    const sources = state.raiders.map((raider) => raider.pos);
+    const occupied = new Set<string>();
+    for (const cell of [...state.covers, ...(state.obstacles ?? []), ...footprint(state.boss.anchor)]) occupied.add(key(cell));
+    for (const building of state.buildings) for (const cell of building.cells) occupied.add(key(cell));
+    for (const unit of [...state.mechs, ...state.raiders]) occupied.add(key(unit.pos));
+    const cells: Cell[] = [];
+    for (let y = 0; y < BOARD; y += 1) for (let x = 0; x < BOARD; x += 1) cells.push({ x, y });
+    cells.sort((a, b) => {
+      const distance = (cell: Cell) => Math.min(...sources.map((source) => Math.abs(source.x - cell.x) + Math.abs(source.y - cell.y)));
+      return distance(a) - distance(b) || a.y - b.y || a.x - b.x;
+    });
+    for (const cell of cells) {
+      if (state.raiders.length >= enemy.raiderCount) break;
+      if (occupied.has(key(cell)) || noSpawn(state, cell)) continue;
+      state.raiders.push({ id: `raider-extra-${state.raiders.length}`, pos: cell, hp: enemy.raiderHp, intent: null });
+      occupied.add(key(cell));
+    }
+  }
+  return state;
 }
 
 /** Mech cells and the boss footprint sit on land, with no cover and no building. */
@@ -171,7 +200,7 @@ export type TurnResult =
   | { ok: false; fault: PlanFault };
 
 /** 内部：在克隆上跑 校验 → 大怪结算 → 下回合准备，并在玩家行动之后、敌方结算之前取一次预告。 */
-function runTurn(state: MatchState, plan: ArenaPlan, capturePresentation = false) {
+function runTurn(state: MatchState, plan: ArenaPlan, capturePresentation = false, enemyPlanner: EnemyPlanner = scriptedEnemyPlanner) {
   const next = structuredClone(state);
   const before = capturePresentation ? presentationSnapshot(state) : null;
   const log: TurnEvent[] = [];
@@ -194,7 +223,7 @@ function runTurn(state: MatchState, plan: ArenaPlan, capturePresentation = false
     const afterEnemy = capturePresentation ? presentationSnapshot(next) : null;
     const hits = Object.fromEntries(MECH_IDS.map((id) => [id, Math.max(0, (hpBefore[id] ?? 0) - (next.mechs.find((m) => m.id === id)?.hp ?? 0))])) as Record<MechId, number>;
     noteOutcome();
-    if (next.phase === "enemy_prepare") bossPrepare(next);
+    if (next.phase === "enemy_prepare") prepareEnemy(next, enemyPlanner);
     noteOutcome();
     const afterPrepare = capturePresentation ? presentationSnapshot(next) : null;
     const presentationStages = before && afterMovement && afterPlayer && afterEnemy && afterPrepare
@@ -210,8 +239,8 @@ function runTurn(state: MatchState, plan: ArenaPlan, capturePresentation = false
  * 调用方不用再看 phase。不修改传入的 state（内部克隆），拒绝时返回 fault、原 state 原样可用。
  * 成功时 state 已进入下一回合的 player_plan（或 finished）。log 按结算顺序。
  */
-export function playTurn(state: MatchState, plan: ArenaPlan): TurnResult {
-  const r = runTurn(state, plan, true);
+export function playTurn(state: MatchState, plan: ArenaPlan, enemyPlanner: EnemyPlanner = scriptedEnemyPlanner): TurnResult {
+  const r = runTurn(state, plan, true, enemyPlanner);
   return r.ok ? { ok: true, state: r.state, log: r.log, presentationStages: r.presentationStages } : r;
 }
 

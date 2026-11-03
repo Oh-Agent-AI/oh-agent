@@ -670,7 +670,7 @@ test("all-wait building risk requires an explicit confirmation that can be cance
   const c = createMechaController({ match: holdRiskMatch(), planner: hold });
   const turn = c.getState().match.turn;
   c.submit();
-  assert.deepEqual(c.getState().holdConfirmation, { buildingLoss: 12, outcome: null });
+  assert.deepEqual(c.getState().holdConfirmation, { buildingLoss: 10, outcome: null });
   assert.equal(c.getState().match.turn, turn);
   c.cancelHold();
   assert.equal(c.getState().holdConfirmation, null);
@@ -679,7 +679,7 @@ test("all-wait building risk requires an explicit confirmation that can be cance
   c.confirmHold();
   assert.equal(c.getState().holdConfirmation, null);
   assert.equal(c.getState().match.turn, turn + 1);
-  assert.equal(c.getState().match.buildings.reduce((sum, building) => sum + building.hp, 0), 68);
+  assert.equal(c.getState().match.buildings.reduce((sum, building) => sum + building.hp, 0), 70);
 });
 
 test("hold confirmation expires on draft change, pause, doctrine change and restart", () => {

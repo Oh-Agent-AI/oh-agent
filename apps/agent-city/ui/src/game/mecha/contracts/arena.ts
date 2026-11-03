@@ -1,4 +1,4 @@
-import { bossPrepare, createMatch, GDD_RULESET, type BossScriptId, type BuildingStake, type Cell, type MatchState, type MechId, type TerrainKind } from "../rules";
+import { bossPrepare, createMatch, GDD_RULESET, type BossScriptId, type BuildingStake, type Cell, type DifficultyId, type MatchState, type MechId, type TerrainKind } from "../rules";
 import type { CityMechaSite } from "../citySite";
 
 export type RemoteArenaBuilding = {
@@ -69,6 +69,7 @@ export function remoteStateFromSite(site: CityMechaSite, state: MatchState): Mat
   const buildings = new Map(site.buildings.map((building, index) => [building.id, `building-${String(index).padStart(4, "0")}`]));
   return {
     ruleset: state.ruleset, preset: state.preset, script: state.script,
+    ...(state.difficulty ? { difficulty: state.difficulty } : {}),
     covers: state.covers.map(cell), obstacles: state.obstacles.map(cell), terrain: state.terrain.map((row) => row.slice()), heights: state.heights.map((row) => row.slice()),
     buildings: state.buildings.map((building, index) => ({ id: buildings.get(building.id) ?? `other-building-${String(index).padStart(4, "0")}`, cells: building.cells.map(cell), hp: building.hp, maxHp: building.maxHp })),
     stake: state.stake,
@@ -79,10 +80,11 @@ export function remoteStateFromSite(site: CityMechaSite, state: MatchState): Mat
   };
 }
 
-export function pveMatchFromArena(arena: RemoteArenaV1, options: { script: BossScriptId; stake?: BuildingStake }): MatchState {
+export function pveMatchFromArena(arena: RemoteArenaV1, options: { script: BossScriptId; difficulty?: DifficultyId; stake?: BuildingStake }): MatchState {
   const state = createMatch({
     preset: "covers_sparse_mid",
     script: options.script,
+    difficulty: options.difficulty,
     covers: [],
     terrain: arena.terrain,
     heights: arena.heights,

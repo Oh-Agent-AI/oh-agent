@@ -1,7 +1,7 @@
 /** Local presentation only. Targets are a set of attack cells, never a walk path. */
 import {
-  BOSS_ATK, BOSS_DEF, BOSS_MOVE, RAIDER_ATK, RAIDER_DEF, RAIDER_MOVE,
-  STATS, heightAt, inb, terrainAt, occupant, onFootprint, movementPath,
+  BOSS_DEF, BOSS_MOVE, RAIDER_DEF, RAIDER_MOVE,
+  STATS, enemyStatsOf, heightAt, inb, terrainAt, occupant, onFootprint, movementPath,
   type Cell, type MatchState, type MechId, type TerrainKind, type Intent,
 } from "./board";
 import { unitMaxHp } from "./unitHealth";
@@ -51,8 +51,9 @@ export function inspectCell(state: MatchState, cell: Cell, draft: InspectionDraf
     if (destination && (destination.x !== friendly.pos.x || destination.y !== friendly.pos.y)) info.movePath = movementPath(state, friendly.pos, destination, friendly.id, { alliesPass: true });
   } else if (enemy) {
     const boss = enemy === "boss";
+    const enemyStats = enemyStatsOf(state);
     info.object = "unit";
-    info.unit = { id: enemy, side: "enemy", hp: boss ? state.boss.hp : state.raiders.find(r => r.id === enemy)!.hp, maxHp: unitMaxHp(enemy), atk: boss ? BOSS_ATK : RAIDER_ATK, def: boss ? BOSS_DEF : RAIDER_DEF, move: boss ? BOSS_MOVE : RAIDER_MOVE, cd: boss ? state.boss.cdSweep : null };
+    info.unit = { id: enemy, side: "enemy", hp: boss ? state.boss.hp : state.raiders.find(r => r.id === enemy)!.hp, maxHp: unitMaxHp(enemy, state), atk: boss ? enemyStats.bossAtk : enemyStats.raiderAtk, def: boss ? BOSS_DEF : RAIDER_DEF, move: boss ? BOSS_MOVE : RAIDER_MOVE, cd: boss ? state.boss.cdSweep : null };
     info.attack = declaredAttack(state, enemy) ?? undefined;
   } else {
     const occ = occupant(state, cell);
