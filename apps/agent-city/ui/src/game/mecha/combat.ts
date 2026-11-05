@@ -146,14 +146,6 @@ export function reproject(state: MatchState) {
   assertMonsterState(state);
   const intent = state.boss.intent;
   if (!intent || intent.skillId === "skip") return;
-  if (intent.skillId === "neural_link") {
-    if (!state.neural?.pending) return;
-    const projection = projectNeural(state, intent);
-    intent.swarmProjection = projection;
-    intent.projected = [];
-    intent.status = projection.status;
-    return;
-  }
   if (intent.skillId === "corrode_cell") { unitForSkill(intent.skillId)!.project(state, intent); return; }
   const unit = unitForSkill(intent.skillId);
   if (unit) { unit.project(state, intent); return; }

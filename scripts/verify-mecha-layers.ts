@@ -76,7 +76,7 @@ test("engine/** never imports game/mecha/** or any new game/** module", () => {
 
 test("rules core (including pure skill primitives) imports only itself", () => {
   const dir = join(SRC, "game/mecha");
-  const core = new Set(["rules", "board", "combat", "enemy", "enemy/contracts", "enemy/planner", "decision", "deployment", "skillSwarmLink", "sporeUnitProjection", "ringUnit", "corrodeUnit", "prismUnit", "swarmUnit", "displacementUnit", "unitRegistry"].map((n) => join(dir, n)));
+  const core = new Set(["rules", "board", "combat", "enemy", "enemy/contracts", "enemy/planner", "decision", "deployment", "skillSwarmLink", "sporeUnitProjection", "ringUnit", "corrodeUnit", "prismUnit", "swarmUnit", "neuralUnit", "displacementUnit", "unitRegistry"].map((n) => join(dir, n)));
   // board/combat/enemy 可能尚未拆出：存在才检查
   const files = [...core].map((p) => `${p}.ts`).filter(existsSync);
   assert.ok(files.some((f) => f.endsWith("rules.ts")), "rules.ts must exist");

@@ -3,6 +3,7 @@ import type { hurtMech, hurtRaider, strike, refresh } from "./combat";
 import { sporeUnit } from "./sporeUnitProjection";
 import { corrodeUnit } from "./corrodeUnit";
 import { prismUnit } from "./prismUnit";
+import { neuralUnit } from "./neuralUnit";
 import { swarmUnit } from "./swarmUnit";
 import { phaseUnit, gravityUnit } from "./displacementUnit";
 import { ringUnit } from "./ringUnit";
@@ -18,9 +19,9 @@ const units: Record<string, UnitHandler> = {
   flux_lancer: ringUnit,
   porous_shaper: corrodeUnit,
   prism_warden: prismUnit,
-  swarm_mantle: swarmUnit,
+  swarm_mantle: swarmUnit, neural_weaver: neuralUnit,
   phase_stalker: phaseUnit, gravity_core: gravityUnit,
 };
-const skills: Record<string, UnitHandler> = { spore_leap: sporeUnit, ring_pierce: ringUnit, corrode_cell: corrodeUnit, prism_guard: prismUnit, split_swarm: swarmUnit, phase_swap: phaseUnit, gravity_well: gravityUnit };
+const skills: Record<string, UnitHandler> = { spore_leap: sporeUnit, ring_pierce: ringUnit, corrode_cell: corrodeUnit, prism_guard: prismUnit, split_swarm: swarmUnit, neural_link: neuralUnit, phase_swap: phaseUnit, gravity_well: gravityUnit };
 export function unitForSpecies(id: string | undefined): UnitHandler | undefined { return id && Object.hasOwn(units, id) ? units[id] : undefined; }
 export function unitForSkill(id: string): UnitHandler | undefined { return Object.hasOwn(skills, id) ? skills[id] : undefined; }

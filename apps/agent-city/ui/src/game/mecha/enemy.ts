@@ -271,7 +271,7 @@ export function scriptedEnemyPrepare(state: MatchState): Intent {
   }
   let intent = skip;
   if (state.boss.hp > 0) {
-    if (state.monsterContent?.speciesId !== "swarm_mantle" && unitForSpecies(state.monsterContent?.speciesId)) intent = unitForSpecies(state.monsterContent?.speciesId)!.declare(state, objectiveGap);
+    if (state.monsterContent?.speciesId !== "swarm_mantle" && state.monsterContent?.speciesId !== "neural_weaver" && unitForSpecies(state.monsterContent?.speciesId)) intent = unitForSpecies(state.monsterContent?.speciesId)!.declare(state, objectiveGap);
     else if (state.monsterContent?.speciesId === "swarm_mantle" || state.monsterContent?.speciesId === "neural_weaver") intent = skip;
     else if (state.monsterContent) throw new Error("unsupported_monster_content");
     else {
@@ -298,7 +298,7 @@ export function scriptedEnemyPrepare(state: MatchState): Intent {
     state.boss.intent = intent;
   }
   if (state.boss.hp > 0 && state.monsterContent?.speciesId === "neural_weaver") {
-    intent = prepareNeuralIntent(state);
+    intent = unitForSpecies("neural_weaver")!.declare(state, objectiveGap);
     state.boss.intent = intent;
   }
   state.phase = "player_plan";
@@ -392,9 +392,6 @@ export function bossExecute(state: MatchState) {
   let any = false;
   const struckBuildings = new Set<string>();
   if (intent && unitForSkill(skill)) unitForSkill(skill)!.resolve(state, intent, { hurtMech, hurtRaider, strike, refresh });
-  else if (intent && skill === "neural_link") {
-    resolveNeuralIntent(state, intent);
-  }
   else if (intent && skill !== "skip" && intent.status !== "void") {
     const ev: Extract<TurnEvent, { type: "enemy" }> = { type: "enemy", actor: "boss", skill, cells: cells.map((c) => ({ ...c })), damage: 0 };
     emit(ev);
