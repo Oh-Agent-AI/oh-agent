@@ -1,4 +1,4 @@
-import { unitForSkill } from "./unitRegistry";
+import { projectUnitPure, unitForSkill } from "./unitRegistry";
 /**
  * 战斗层：机甲行动、伤害、击退/碰撞、整包校验与结算（validateAndApplyPlan）。
  * 只依赖 board.ts。大怪/小怪脚本在 enemy.ts，回合入口 playTurn/previewPlan 在 rules.ts
@@ -146,9 +146,8 @@ export function reproject(state: MatchState) {
   assertMonsterState(state);
   const intent = state.boss.intent;
   if (!intent || intent.skillId === "skip") return;
-  if (intent.skillId === "corrode_cell") { unitForSkill(intent.skillId)!.project(state, intent); return; }
   const unit = unitForSkill(intent.skillId);
-  if (unit) { unit.project(state, intent); return; }
+  if (unit) { Object.assign(intent, projectUnitPure(unit, state, intent)); return; }
   const projected = intent.local.map((off) => ({ x: state.boss.anchor.x + off.x, y: state.boss.anchor.y + off.y })).filter(inb);
   intent.projected = projected;
   intent.status = projected.length === 0 ? "void" : "reprojected";

@@ -25,3 +25,10 @@ const units: Record<string, UnitHandler> = {
 const skills: Record<string, UnitHandler> = { spore_leap: sporeUnit, ring_pierce: ringUnit, corrode_cell: corrodeUnit, prism_guard: prismUnit, split_swarm: swarmUnit, neural_link: neuralUnit, phase_swap: phaseUnit, gravity_well: gravityUnit };
 export function unitForSpecies(id: string | undefined): UnitHandler | undefined { return id && Object.hasOwn(units, id) ? units[id] : undefined; }
 export function unitForSkill(id: string): UnitHandler | undefined { return Object.hasOwn(skills, id) ? skills[id] : undefined; }
+
+/** Project against an isolated snapshot; the caller decides whether to apply the result. */
+export function projectUnitPure(unit: UnitHandler, state: MatchState, intent: Intent): Intent {
+  const copy = structuredClone({ state, intent });
+  unit.project(copy.state, copy.intent);
+  return copy.intent;
+}
