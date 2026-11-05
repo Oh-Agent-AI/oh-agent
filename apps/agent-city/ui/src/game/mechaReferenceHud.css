@@ -33,6 +33,7 @@
 .mecha-action-utilities button { font-size: 11px; }
 .mecha-target-instruction { margin: 2px 0 5px; font-size: 12px; color: #ffe08a; }
 .mecha-overlay.is-city.has-match.is-reference-hud .mecha-tactical-legend { top: auto; left: auto; right: 8px; bottom: 8px; width: min(230px, 35%); border-radius: 2px; padding: 5px 7px; font-size: 11px; }
+.mecha-overlay.is-city.has-match.is-reference-hud .mecha-tactical-legend[open] { z-index: 10; }
 .mecha-tactical-legend > summary { cursor: pointer; line-height: 1.4; }
 .mecha-tactical-legend > summary > span { color: #bfe0e5; word-spacing: 3px; }
 .mecha-tactical-legend > .mecha-battle-legend { position: absolute; right: 0; bottom: calc(100% + 5px); width: 272px; max-width: calc(100vw - 16px); max-height: min(330px, calc(100vh - 100px)); overflow: auto; overscroll-behavior: contain; padding: 10px; border: 1px solid #68899b; background: #0b1726fa; border-radius: 2px; }

@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 const { chromium } = createRequire(new URL("../apps/desktop/ui-dev/package.json", import.meta.url))("playwright");
-const browser = await chromium.launch({ headless: true, args: ["--enable-unsafe-swiftshader"] });
+const browser = await chromium.launch({ headless: true, args: [process.env.MECHA_BROWSER_ANGLE === "metal" ? "--use-angle=metal" : "--enable-unsafe-swiftshader"] });
 const base = process.argv[2] ?? "http://127.0.0.1:5190/?fixtureSessions=30";
 const prefix = "agent-city:mecha-local-replay-entry:v1:";
 const preference = "agent-city:mecha-replay-auto-save:v1";

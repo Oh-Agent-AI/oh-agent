@@ -327,3 +327,25 @@ fn safe_concession_rejects_unknown_fields_and_unsafe_revisions() {
     let mut bad = command.clone(); bad["private"] = json!("secret");
     assert!(!valid_submit_concede(&bad));
 }
+
+#[test]
+fn local_rescue_marker_is_rejected_at_every_pve_start_gateway() {
+    let data = fixture();
+    assert!(valid_start(&data["arena"], &data["state"]));
+    let mut deployment = data.clone();
+    deployment["state"]["phase"] = json!("deployment");
+    deployment["state"]["turn"] = json!(1);
+    deployment["state"]["revision"] = json!(0);
+    deployment["state"]["boss"]["intent"] = Value::Null;
+    for raider in deployment["state"]["raiders"].as_array_mut().unwrap() { raider["intent"] = Value::Null; }
+    deployment["state"]["deployment"] = json!({"zone":[{"x":0,"y":8},{"x":1,"y":8},{"x":2,"y":8}],"reservedCells":[]});
+    assert!(valid_start_deployment(&deployment["arena"], &deployment["state"]));
+    for marker in [Value::Null, json!({"kind":"rescue:v1","target":{"x":1,"y":1}}), json!("unexpected")] {
+        let mut ready = data.clone();
+        ready["state"]["mission"] = marker.clone();
+        assert!(!valid_start(&ready["arena"], &ready["state"]));
+        let mut setup = deployment.clone();
+        setup["state"]["mission"] = marker;
+        assert!(!valid_start_deployment(&setup["arena"], &setup["state"]));
+    }
+}

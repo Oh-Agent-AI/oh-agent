@@ -21,11 +21,13 @@ import type { MechaPerformanceEvent } from "../../render/mecha/performance";
 import type { MechaCombatCue } from "../../render/mecha/animation";
 import { doctrineFocus, doctrineFocusCells, planForDoctrine, type DoctrineFocus, type DoctrineId } from "./ai";
 import { buildHealthTimeline, type HealthTimeline } from "./healthTimeline";
+import { buildMatchRecap, type MatchRecap } from "./matchRecap";
 import { buildPresentationChanges, type PresentationChanges } from "./presentationChanges";
 import type { PresentationStages } from "./presentationSnapshot";
 import { buildPresentationRoutes, type PresentationRoutes } from "./presentationRoutes";
 import type { CityMechaSite } from "./citySite";
-import { matchFromSite } from "./matchFromSite";
+import type { LocalMissionId, MonsterContent } from "./board";
+import { matchFromSite, type MonsterPracticeContent } from "./matchFromSite";
 import { pveRules } from "./rules/pve";
 import type { ReplayArchiveSource, ReplaySourceRound } from "./replayArchive";
 import { blankDraft, checkDraftAction, draftFromPlan, draftPlan, settledDraftBoard, type Draft, type DraftMap } from "./planning";
@@ -61,6 +63,8 @@ export type MechaControllerState = {
   doctrine: DoctrineId;
   draft: DraftMap;
   openingSuggestion: boolean;
+  /** False when the built-in scorer cannot safely evaluate this encounter. */
+  aiAvailable: boolean;
   selected: MechId;
   targeting: TargetKind | null;
   auto: boolean;
@@ -70,6 +74,8 @@ export type MechaControllerState = {
   notice: string | null;
   fault: ControllerFault | null;
   lastLog: TurnEvent[];
+  /** Reconciled facts from the accepted local recording; available only after defeat. */
+  matchRecap: MatchRecap | null;
   performance: { events: MechaPerformanceEvent[]; before: MatchState } | null;
   /** Current-session, local-only recording; playback never changes the authoritative match. */
   replayAvailable: number;
@@ -125,6 +131,9 @@ export type MechaControllerInit = {
   script?: BossScriptId;
   stake?: BuildingStake;
   doctrine?: DoctrineId;
+  mission?: LocalMissionId;
+  /** Explicit local-only monster encounter; omitted for ordinary matches. */
+  monsterContent?: MonsterPracticeContent;
   /** 注入规划器：测试数调用次数，将来换 worker 版本也从这里进。 */
   planner?: Planner;
   /** Tests may inject a failing display preview without changing authoritative playTurn. */
@@ -139,7 +148,7 @@ export type MechaControllerInit = {
   match?: MatchState;
 };
 
-export type MechaRestartOptions = { preset?: CoverPresetId; script?: BossScriptId; site?: CityMechaSite | null; stake?: BuildingStake };
+export type MechaRestartOptions = { preset?: CoverPresetId; script?: BossScriptId; site?: CityMechaSite | null; stake?: BuildingStake; mission?: LocalMissionId | null; monsterContent?: MonsterPracticeContent | null };
 
 export type MechaController = {
   getState(): MechaControllerState;
@@ -182,7 +191,7 @@ export type MechaController = {
   startSavedReplay(rounds: ReplaySourceRound[]): boolean;
   stopReplay(): void;
   selectReplayTurn(index: number): void;
-  restart(opts?: MechaRestartOptions): void;
+  restart(opts?: MechaRestartOptions): boolean;
   startAuto(): void;
   stopAuto(): void;
   toggleAuto(): void;
@@ -234,9 +243,11 @@ export function cuesFromLog(log: TurnEvent[]): MechaCombatCue[] {
   return cues;
 }
 
-function freshMatch(preset: CoverPresetId, script: BossScriptId, site: CityMechaSite | null, stake: BuildingStake, deployment: boolean): MatchState {
+function freshMatch(preset: CoverPresetId, script: BossScriptId, site: CityMechaSite | null, stake: BuildingStake, deployment: boolean, mission?: LocalMissionId, monsterContent?: MonsterPracticeContent): MatchState {
   // 产品界面必须带城市 site。site 为空只留给规则单测的 createMatch fixture，不能再开一局方格棋。
-  const state = site ? matchFromSite(site, { preset, script, stake, deployment }) : createMatch({ preset, script, stake, deployment });
+  const options = { preset, script, stake, deployment, mission };
+  const state = site ? matchFromSite(site, { ...options, ...(monsterContent === undefined ? {} : { monsterContent }) })
+    : createMatch({ ...options, ...(monsterContent === undefined ? {} : { monsterContent: monsterContent as MonsterContent }) });
   if (state.phase === "enemy_prepare") bossPrepare(state);
   return state;
 }
@@ -254,7 +265,10 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
   let stake: BuildingStake = init.stake ?? "all";
   let doctrine: DoctrineId = init.doctrine ?? "tunnel";
   const useDeployment = init.deployment ?? Boolean(site);
-  let match: MatchState = init.match ?? freshMatch(preset, script, site, stake, useDeployment);
+  let mission = init.match?.mission?.kind ?? init.mission;
+  const initialContent = init.match ? init.match.monsterContent : init.monsterContent;
+  let match: MatchState = init.match ?? freshMatch(preset, script, site, stake, useDeployment, mission, initialContent);
+  let monsterContent: MonsterPracticeContent | undefined = match.monsterContent ? { ...match.monsterContent } : undefined;
   let placements: DeployPlacement[] = [];
   let deployPast: DeployPlacement[][] = [];
   let deployError: DeployFault | null = null;
@@ -270,6 +284,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
   let performance: MechaControllerState["performance"] = null;
   type RecordedRound = ReplaySourceRound & { events: MechaPerformanceEvent[]; combat: MechaControllerState["combat"] };
   let recordedRounds: RecordedRound[] = [];
+  let matchRecap: MatchRecap | null = null;
   let playbackRounds: RecordedRound[] = [];
   let playbackSource: "current" | "saved" = "current";
   let replay: MechaControllerState["replay"] = null;
@@ -288,13 +303,22 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     return plan;
   };
 
+  // The built-in scorer cannot yet account for changing summon rosters or
+  // neural links. Do not turn its no-evaluation fallback into an apparent
+  // recommendation. An explicitly injected planner owns its own support.
+  const aiAvailable = (state: MatchState) => !state.mission && (Boolean(init.planner) || (
+    state.monsterContent?.speciesId !== "swarm_mantle" &&
+    state.monsterContent?.speciesId !== "neural_weaver" &&
+    !state.swarm && !state.neural && !state.raiders.some(r => r.summon !== undefined)
+  ));
+
   /** 新开一局时按打法填草稿；结算后的下一回合仍是空白，等玩家自己填。 */
   const openingDraft = (state: MatchState): DraftMap =>
-    state.outcome || state.phase !== "player_plan" ? blankDraft(state) : draftFromPlan(state, planFor(state, doctrine));
+    !aiAvailable(state) || state.outcome || state.phase !== "player_plan" ? blankDraft(state) : draftFromPlan(state, planFor(state, doctrine));
 
   let draft: DraftMap = openingDraft(match);
   let turnStartDraft = structuredClone(draft);
-  let turnStartSuggested = match.phase === "player_plan" && !match.outcome;
+  let turnStartSuggested = aiAvailable(match) && match.phase === "player_plan" && !match.outcome;
   let resetTurnUsed = false;
   /** 每次成功改移动之前的草稿。提交、换打法、新开一局都清空，开火之后撤不回来。 */
   let movePast: DraftMap[] = [];
@@ -446,7 +470,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     ])) as Record<MechId, number | null>;
     const notice = fault ? planFaultText(fault, locale, fault.scope) : noticeSource ? gameText(noticeSource, locale) : null;
     snapshot = {
-      locale, match, site, preset, script, stake, doctrine, draft, openingSuggestion: turnStartSuggested && draftFingerprint(draft) === draftFingerprint(turnStartDraft), selected, targeting, auto, paused, beat, notice, fault, lastLog, combat, performance, replayAvailable: recordedRounds.length, replay, preview, candidate: candidateView,
+      locale, match, site, preset, script, stake, doctrine, draft, aiAvailable: aiAvailable(match), openingSuggestion: turnStartSuggested && draftFingerprint(draft) === draftFingerprint(turnStartDraft), selected, targeting, auto, paused, beat, notice, fault, lastLog, matchRecap, combat, performance, replayAvailable: recordedRounds.length, replay, preview, candidate: candidateView,
       interactive: canEdit(),
       deployment: match.phase === "deployment" ? { placements: structuredClone(placements), cells: deployableCells(match), interactive: canDeploy(), canUndo: canDeploy() && deployPast.length > 0, canReset: canDeploy() && placements.length > 0, canConfirm: canDeploy() && validateDeployPlan(match, { revision: match.revision, placements }).ok, error: deployError ? deployFaultText(deployError, locale === "en") : (deployableCells(match).length < 3 ? deployFaultText({ code: "insufficient_space" }, locale === "en") : null) } : null,
       holdConfirmation: holdConfirmation ? { buildingLoss: holdConfirmation.buildingLoss, outcome: holdConfirmation.outcome } : null,
@@ -497,7 +521,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       return false;
     }
     const before = match;
-    const healthTimeline = buildHealthTimeline(before, result.state, result.log);
+    const healthTimeline = buildHealthTimeline(before, result.state, result.log, result.presentationStages);
     const presentationRoutes = buildPresentationRoutes(before, result.log);
     const presentationChanges = result.presentationStages ? buildPresentationChanges(result.presentationStages, result.log) : undefined;
     const events = performanceFromLog(before, result.state, result.log, { healthTimeline, presentationChanges });
@@ -507,6 +531,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     combat = { id: combat.id + 1, actions: cuesFromLog(result.log), healthTimeline, presentationChanges, presentationStages: result.presentationStages, presentationRoutes };
     // Only accepted turns are recorded. Isolated snapshots avoid re-running game rules.
     recordedRounds.push(structuredClone({ before, after: match, plan, log: result.log, presentationStages: result.presentationStages, events, combat }));
+    if (match.outcome) matchRecap = buildMatchRecap(match, recordedRounds);
     draft = blankDraft(match);
     turnStartDraft = structuredClone(draft);
     turnStartSuggested = false;
@@ -662,7 +687,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       // A fresh editable turn starts only after the authority has prepared enemy intents.
       let suggestionUnavailable = false;
       try { draft = openingDraft(match); } catch { draft = blankDraft(match); suggestionUnavailable = true; }
-      turnStartDraft = structuredClone(draft); turnStartSuggested = !suggestionUnavailable && match.phase === "player_plan" && !match.outcome;
+      turnStartDraft = structuredClone(draft); turnStartSuggested = aiAvailable(match) && !suggestionUnavailable && match.phase === "player_plan" && !match.outcome;
       forceDraftVersion = true; movePast = []; targeting = null; hoveredEnemy = null; selectedEnemy = null;
       say(suggestionUnavailable ? "部署已确认；行动建议暂不可用，请手动规划。" : null); commit();
     },
@@ -762,7 +787,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       setMove(selected, same(who.pos, cell) ? null : cell);
     },
     applyDoctrine(which = doctrine) {
-      if (!canEdit()) return;
+      if (!aiAvailable(match) || !canEdit()) return;
       const previous = structuredClone(draft);
       const previousMoves = structuredClone(movePast);
       try { fillFromDoctrine(which); } catch {
@@ -789,7 +814,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       commit();
     },
     requestDoctrineSuggestion() {
-      if (!canEdit()) return;
+      if (!aiAvailable(match) || !canEdit()) return;
       doctrineConfirmation = { match, revision: match.revision, draftVersion, fingerprint: draftFingerprint(draft), doctrine };
       commit();
     },
@@ -870,7 +895,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     startSavedReplay(rounds) {
       if (performance || replay || auto || paused || !rounds.length) return false;
       playbackRounds = structuredClone(rounds).map(round => {
-        const healthTimeline = buildHealthTimeline(round.before, round.after, round.log);
+        const healthTimeline = buildHealthTimeline(round.before, round.after, round.log, round.presentationStages);
         const presentationChanges = round.presentationStages ? buildPresentationChanges(round.presentationStages, round.log) : undefined;
         const presentationRoutes = buildPresentationRoutes(round.before, round.log);
         return { ...round, events: performanceFromLog(round.before, round.after, round.log, { healthTimeline, presentationChanges }),
@@ -895,21 +920,38 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       commit();
     },
     restart(opts = {}) {
+      const nextPreset = opts.preset ?? preset, nextScript = opts.script ?? script;
+      const nextSite = opts.site === undefined ? site : opts.site, nextStake = opts.stake ?? stake;
+      const nextMission = opts.mission === undefined ? mission : opts.mission ?? undefined;
+      const nextMonster = opts.monsterContent === undefined ? monsterContent : opts.monsterContent ?? undefined;
+      let nextMatch: MatchState;
+      try { nextMatch = freshMatch(nextPreset, nextScript, nextSite, nextStake, useDeployment, nextMission, nextMonster); }
+      catch (error) {
+        if (!(error instanceof Error)) throw error;
+        if (error.message === "rescue_unavailable") say("此战场没有可达的救援点，请更换战场或任务。");
+        else if (error.message === "unsupported_monster_content" || error.message === "monster_content_rescue_unsupported") say("该怪物演练暂不可用，当前对局未改变。");
+        else throw error;
+        commit();
+        return false;
+      }
       performance = null;
       replay = null;
       playbackRounds = [];
       recordedRounds = [];
-      preset = opts.preset ?? preset;
-      script = opts.script ?? script;
-      if (opts.site !== undefined) site = opts.site;
-      stake = opts.stake ?? stake;
-      match = freshMatch(preset, script, site, stake, useDeployment);
+      matchRecap = null;
+      preset = nextPreset;
+      script = nextScript;
+      site = nextSite;
+      stake = nextStake;
+      mission = nextMission;
+      monsterContent = nextMatch.monsterContent ? { ...nextMatch.monsterContent } : undefined;
+      match = nextMatch;
       placements = []; deployPast = []; deployError = null;
       combat = { id: combat.id + 1, actions: [], reset: true };
       lastLog = [];
       draft = openingDraft(match);
       turnStartDraft = structuredClone(draft);
-      turnStartSuggested = match.phase === "player_plan" && !match.outcome;
+      turnStartSuggested = aiAvailable(match) && match.phase === "player_plan" && !match.outcome;
       resetTurnUsed = false;
       movePast = [];
       hoveredEnemy = null;
@@ -921,9 +963,10 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       paused = false;
       beat = "show";
       commit();
+      return true;
     },
     startAuto() {
-      if (match.outcome || match.phase === "deployment") return;
+      if (!aiAvailable(match) || match.outcome || match.phase === "deployment") return;
       paused = false;
       beat = "show";
       auto = true;
@@ -955,6 +998,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     },
     tick() {
       if (!auto || paused || performance) return;
+      if (!aiAvailable(match)) { auto = false; beat = "show"; commit(); return; }
       if (match.outcome) {
         auto = false;
         commit();

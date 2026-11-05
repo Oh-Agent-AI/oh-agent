@@ -1,3 +1,4 @@
+import { unitForSkill } from "./unitRegistry";
 /**
  * 战斗层：机甲行动、伤害、击退/碰撞、整包校验与结算（validateAndApplyPlan）。
  * 只依赖 board.ts。大怪/小怪脚本在 enemy.ts，回合入口 playTurn/previewPlan 在 rules.ts
@@ -6,7 +7,7 @@
 import {
   BOSS_DEF, BUILDING_DEF, MECH_IDS, RAIDER_DEF, STATS, enemyStatsOf, adjacentToFootprint, cheb, emit, eq, footprint, footprintCenter,
   inb, knockbackFromAttacker, living, livingRaiders, enemiesRemain, mech, occupant, onFootprint, pathDistance, primaryAxis, raiderAt, moveBudget, blocksTerrain,
-  shoveWall, stakeBuildings, livingStakeBuildings, swapEventSink, terrainAt, attackerCenter, healthCapture, healthEffectFields,
+  shoveWall, stakeBuildings, livingStakeBuildings, swapEventSink, terrainAt, attackerCenter, healthCapture, healthEffectFields, sporeLeapCells, sporeLeapReachable, ringPierceCells, assertMonsterState, corrodeWorld, reprojectCorrode, endCorrodeTurn, orderedHealthEffect, MONSTER_SKILLS, displacementWorld, reprojectDisplacement, reconcileSwarm, projectSwarm, visibleSwarmProjection, reconcileNeural, projectNeural, neuralBonus,
   type Action, type ArenaPlan, type Cell, type MatchState, type MechId, type PlanFault, type PlanReject, type Raider,
 } from "./board";
 
@@ -25,16 +26,19 @@ export function bossDamageTo(id: MechId, state?: MatchState): number {
   return strike(enemyStatsOf(state ?? {}).bossAtk, STATS[id].def);
 }
 
-export function raiderDamageTo(id: MechId, state?: MatchState): number {
-  return strike(enemyStatsOf(state ?? {}).raiderAtk, STATS[id].def);
+export function raiderDamageTo(id: MechId, state?: MatchState, raiderId?: string): number {
+  return strike(enemyStatsOf(state ?? {}).raiderAtk + (state && raiderId ? neuralBonus(state, raiderId, true) : 0), STATS[id].def);
 }
 
 /** Damage a mech would take from every telegraph currently on this cell. */
 export function incomingDamage(state: MatchState, id: MechId, cell: Cell): number {
   let total = 0;
-  if (state.boss.hp > 0 && state.boss.intent?.projected.some((c) => eq(c, cell))) total += bossDamageTo(id, state);
+  if (state.boss.hp > 0 && state.boss.intent?.skillId !== "split_swarm" && state.boss.intent?.skillId !== "neural_link" && state.boss.intent?.projected.some((c) => eq(c, cell))) {
+    total += state.boss.intent.skillId === "corrode_cell" ? 1 : bossDamageTo(id, state);
+  }
+  if (state.corrode?.fields.some(field => eq(field.cell, cell))) total += 1;
   for (const raider of state.raiders) {
-    if (raider.hp > 0 && raider.intent?.projected.some((c) => eq(c, cell))) total += raiderDamageTo(id, state);
+    if (raider.hp > 0 && raider.intent?.projected.some((c) => eq(c, cell))) total += raiderDamageTo(id, state, raider.id);
   }
   return total;
 }
@@ -51,6 +55,11 @@ export function hurtMech(state: MatchState, id: MechId, amount: number) {
 
 export function hurtBoss(state: MatchState, amount: number) {
   if (state.boss.hp <= 0) return;
+  if (amount > 0 && state.boss.shield?.kind === "prism_guard" && state.boss.shield.hits === 1) {
+    delete state.boss.shield;
+    emit({ type: "monster_status", actor: "boss", status: "prism_guard", change: "absorbed", remaining: 0 });
+    return;
+  }
   state.boss.hp = Math.max(0, state.boss.hp - amount);
   if (state.boss.hp === 0 && state.boss.intent) {
     state.boss.intent.status = "void";
@@ -68,20 +77,122 @@ export function hurtRaider(raider: Raider, amount: number) {
 }
 
 export function refresh(state: MatchState) {
+  reconcileSwarm(state);
+  reconcileNeural(state);
   if (!state.outcome) {
-    if (!enemiesRemain(state)) state.outcome = "victory";
+    if (state.mission?.kind === "rescue:v1") {
+      if (living(state).length === 0) state.outcome = "defeat_wipe";
+    } else if (!enemiesRemain(state)) state.outcome = "victory";
     else if (living(state).length === 0) state.outcome = "defeat_wipe";
     else if (stakeBuildings(state).length > 0 && livingStakeBuildings(state).length === 0) state.outcome = "defeat_buildings";
+  }
+  if (state.outcome) reconcileNeural(state);
+  if (state.boss.shield && (state.outcome || state.boss.hp <= 0)) {
+    delete state.boss.shield;
+    emit({ type: "monster_status", actor: "boss", status: "prism_guard", change: "expired", remaining: 0 });
+  }
+  if (state.outcome && state.corrode?.fields.length) {
+    const fields = new Map(state.corrode.fields.map(f => [f.id, f]));
+    const result = endCorrodeTurn(state.corrode, corrodeWorld(state, true), []);
+    state.corrode = result.state;
+    for (const effect of result.events) if (effect.type === "corrode_expired") {
+      const field = fields.get(effect.fieldId)!;
+      emit({ type: "corrode_field", change: "expired", field, reason: effect.reason });
+    }
   }
   // The pack applier stamps resolving_boss after a killing action already
   // stored the outcome. City does not execute a dead boss, so put the phase
   // back to finished or the match stays mid-resolution under a victory banner.
-  if (state.outcome) state.phase = "finished";
+  if (state.outcome) {
+    if (state.boss.intent && (Object.values(MONSTER_SKILLS).some(skill => skill === state.boss.intent!.skillId))) {
+      state.boss.intent.status = "void";
+      state.boss.intent.projected = [];
+    }
+    state.phase = "finished";
+  }
+}
+
+/** Apply the bounded hazard requests once per live round, after enemy actions. */
+export function tickCorrode(state: MatchState): void {
+  if (!state.corrode || state.outcome) return;
+  const units: Array<{ id: string; cell: Cell; hp: number }> = [];
+  const actors = new Map<string, { kind: "boss" | "mech" | "raider"; id: string }>();
+  for (const [i, m] of state.mechs.entries()) { const id = `m${i}`; units.push({ id, cell: m.pos, hp: m.hp }); actors.set(id, { kind: "mech", id: m.id }); }
+  for (const [i, r] of state.raiders.entries()) { const id = `r${i}`; units.push({ id, cell: r.pos, hp: r.hp }); actors.set(id, { kind: "raider", id: r.id }); }
+  for (const [i, cell] of footprint(state.boss.anchor).entries()) { const id = `b${i}`; units.push({ id, cell, hp: state.boss.hp }); actors.set(id, { kind: "boss", id: "boss" }); }
+  const fields = new Map(state.corrode.fields.map(f => [f.id, f]));
+  const result = endCorrodeTurn(state.corrode, corrodeWorld(state), units);
+  state.corrode = result.state;
+  for (const effect of result.events) {
+    if (effect.type === "corrode_expired") {
+      emit({ type: "corrode_field", change: "expired", field: fields.get(effect.fieldId)!, reason: effect.reason });
+    } else if (effect.type === "corrode_trigger" && !state.outcome) {
+      const actor = actors.get(effect.unitId)!;
+      const target = actor.kind === "boss" ? state.boss : actor.kind === "mech" ? state.mechs.find(m => m.id === actor.id)! : state.raiders.find(r => r.id === actor.id)!;
+      if (target.hp <= 0) continue;
+      const before = target.hp;
+      // Hazard is true damage and does not consume an attack shield.
+      if (actor.kind === "mech") hurtMech(state, actor.id as MechId, 1);
+      else if (actor.kind === "raider") hurtRaider(target as Raider, 1);
+      else { state.boss.hp = Math.max(0, state.boss.hp - 1); if (!state.boss.hp && state.boss.intent) { state.boss.intent.status = "void"; state.boss.intent.projected = []; } }
+      emit({ type: "corrode_tick", fieldId: effect.fieldId, unit: actor.id, damage: before - target.hp,
+        effects: [orderedHealthEffect({ kind: actor.kind, id: actor.id, before, after: target.hp })] });
+      refresh(state);
+    }
+  }
 }
 
 export function reproject(state: MatchState) {
+  assertMonsterState(state);
   const intent = state.boss.intent;
   if (!intent || intent.skillId === "skip") return;
+  if (intent.skillId === "neural_link") {
+    if (!state.neural?.pending) return;
+    const projection = projectNeural(state, intent);
+    intent.swarmProjection = projection;
+    intent.projected = [];
+    intent.status = projection.status;
+    return;
+  }
+  if (intent.skillId === "split_swarm") {
+    if (intent.status === "void") return;
+    const result = projectSwarm(state, intent);
+    intent.swarmProjection = visibleSwarmProjection(result);
+    intent.projected = intent.swarmProjection.status === "reprojected" && intent.swarmProjection.skillId === "split_swarm"
+      ? intent.swarmProjection.slots.filter(s => !!s.unit).map(s => ({ ...s.cell })) : [];
+    intent.status = intent.swarmProjection.status;
+    return;
+  }
+  if (intent.skillId === "phase_swap" || intent.skillId === "gravity_well") {
+    if (intent.status === "void") return;
+    const binding = intent.displacement;
+    const request = binding?.request;
+    const perimeter = new Set(["-1,0", "-1,1", "0,-1", "1,-1", "2,0", "2,1", "0,2", "1,2"]);
+    if (!request || request.skillId !== intent.skillId || request.actorId !== "boss" ||
+        request.radius !== (intent.skillId === "phase_swap" ? 5 : 3) || request.steps !== 1 ||
+        !Array.isArray(request.targetIds) || request.targetIds.length > 3 ||
+        request.targetIds.some(id => !MECH_IDS.some(m => id === `mech:${m}`)) ||
+        !Array.isArray(request.attackOffsets) || !request.attackOffsets.length || request.attackOffsets.length > 8 ||
+        request.attackOffsets.some(c => !c || !perimeter.has(`${c.x},${c.y}`)) ||
+        new Set(request.attackOffsets.map(c => `${c.x},${c.y}`)).size !== request.attackOffsets.length) {
+      intent.status = "void"; intent.projected = []; return;
+    }
+    const projection = reprojectDisplacement(displacementWorld(state), binding!);
+    intent.displacementProjection = projection;
+    intent.projected = projection.attackCells.map(c => ({ ...c }));
+    intent.status = projection.status;
+    return;
+  }
+  if (intent.skillId === "corrode_cell") { unitForSkill(intent.skillId)!.project(state, intent); return; }
+  if (intent.skillId === "prism_guard") {
+    if (intent.status === "void") return;
+    if (state.boss.hp <= 0 || intent.targetId !== "boss" || intent.shieldHits !== 1) {
+      intent.status = "void"; intent.projected = [];
+    } else { intent.status = "reprojected"; intent.projected = []; }
+    return;
+  }
+  const unit = unitForSkill(intent.skillId);
+  if (unit) { unit.project(state, intent); return; }
   const projected = intent.local.map((off) => ({ x: state.boss.anchor.x + off.x, y: state.boss.anchor.y + off.y })).filter(inb);
   intent.projected = projected;
   intent.status = projected.length === 0 ? "void" : "reprojected";
@@ -93,6 +204,7 @@ export function reproject(state: MatchState) {
  * 现在：任一障碍 → 大怪只受一次 2，每个被撞的小怪/机甲各受 2，大怪不动；只发一条 shove 事件。
  */
 export function tryTranslateBoss(state: MatchState, dir: Cell): boolean {
+  assertMonsterState(state);
   const healthBefore = healthCapture(state);
   if (state.boss.hp <= 0) return false;
   const anchor = state.boss.anchor;
@@ -133,6 +245,7 @@ export function tryTranslateBoss(state: MatchState, dir: Cell): boolean {
     return false;
   }
   state.boss.anchor = { x: anchor.x + dir.x, y: anchor.y + dir.y };
+  reconcileNeural(state);
   reproject(state);
   emit({ type: "shove", unit: "boss", dir, damage: 0 });
   return true;
@@ -455,6 +568,7 @@ function fizzleCause(state: MatchState, id: MechId, action: Action, reason: stri
  * 旧版（v1.3）按提交顺序逐台结算，同一组合法选择因排列不同被拒，是 RULE-1/2 的根因。
  */
 export function validateAndApplyPlan(state: MatchState, plan: ArenaPlan): { ok: true } | PlanReject {
+  assertMonsterState(state);
   if (state.phase !== "player_plan") return { code: "PLAN_PACK_REJECTED", reason: "not player_plan", cause: "other" };
   if (plan.revision !== state.revision) return { code: "STALE_REVISION", reason: "revision mismatch", cause: "other" };
   const alive = living(state).map((m) => m.id);
@@ -518,6 +632,16 @@ export function validateAndApplyPlan(state: MatchState, plan: ArenaPlan): { ok: 
       return fault(id, err, actionFaultCause(err, action, state, trial, { id, pos: { ...mech(trial, id)!.pos } }));
     }
     actions.set(id, bindTarget(trial, id, action));
+  }
+
+  // Rescue completes only after the entire pack is valid and movement settles;
+  // actions, cooldowns and enemy resolution do not run after this terminal point.
+  if (trial.mission?.kind === "rescue:v1" && living(trial).some(m => eq(m.pos, trial.mission!.target))) {
+    trial.revision += 1;
+    trial.outcome = "victory";
+    trial.phase = "finished";
+    Object.assign(state, trial);
+    return { ok: true };
   }
 
   // 3) 结算：规范顺序，轮到时重查。执行者/目标死了或被击退弄得不再成立 → 落空（不耗冷却、不拒包）。

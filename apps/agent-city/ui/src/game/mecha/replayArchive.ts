@@ -1,10 +1,13 @@
 /** Local PvE replay: inputs and hashes only, never a City site or battle snapshot.
  * Rebuild through authoritative rules and compare the complete result before playback. */
+import { isSafeNeuralReplayLedger } from "./neuralReplayValidation";
 import { BOARD, GDD_RULESET, MAX_TURNS, MECH_IDS, type Action, type ArenaPlan, type BossScriptId, type BuildingStake, type Cell, type CoverPresetId, type DifficultyId, type MatchState, type MechId, type TurnEvent } from "./board";
 import { canonicalJson } from "./contracts/match";
 import type { CityMechaSite } from "./citySite";
 import type { DeployPlacement } from "./deployment";
 import { matchFromSite } from "./matchFromSite";
+import type { PlannedMonsterSpeciesId } from "./monsters/contracts";
+import { lookupMonsterDefinition } from "./monsters/registry";
 import type { PresentationStages } from "./presentationSnapshot";
 import { bossPrepare } from "./rules";
 import { pveRules } from "./rules/pve";
@@ -21,8 +24,10 @@ export class ReplayArchiveError extends Error {
 }
 type SavedAction = { kind: Action["kind"]; target?: string };
 type SavedPlan = { revision: number; items: Array<{ mechId: MechId; moveTo: Cell | null; action: SavedAction }> };
+type MonsterContent = { speciesId: PlannedMonsterSpeciesId; contentVersion: 1 };
 type Archive = {
-  schema: "mecha-local-replay:v1"; ruleset: string; siteDigest: string; resultDigest: string;
+  schema: "mecha-local-replay:v1" | "mecha-local-replay:v2" | "mecha-local-replay:v3";
+  mission?: "rescue:v1"; monsterContent?: MonsterContent; ruleset: string; siteDigest: string; resultDigest: string;
   preset: CoverPresetId; script: BossScriptId; stake: BuildingStake; difficulty?: DifficultyId; deployment: boolean;
   placements: DeployPlacement[]; plans: SavedPlan[];
 };
@@ -35,6 +40,76 @@ const mech = (v: unknown): v is MechId => typeof v === "string" && (MECH_IDS as 
 const integer = (v: unknown) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 const cell = (v: unknown): v is Cell => object(v) && keys(v, ["x", "y"]) && integer(v.x) && integer(v.y) && (v.x as number) < BOARD && (v.y as number) < BOARD;
 const digestValid = (v: unknown) => typeof v === "string" && /^[0-9a-f]{64}$/.test(v);
+
+/** Validate descriptors before cloning: clone/JSON can erase hidden properties or invoke getters. */
+function monsterContent(value: unknown): MonsterContent {
+  if (!object(value)) return fail("incompatible");
+  const proto = Object.getPrototypeOf(value);
+  const names = Reflect.ownKeys(value);
+  const species = Object.getOwnPropertyDescriptor(value, "speciesId");
+  const version = Object.getOwnPropertyDescriptor(value, "contentVersion");
+  if ((proto !== Object.prototype && proto !== null) || names.length !== 2
+    || !species?.enumerable || !("value" in species) || !version?.enumerable || !("value" in version)) return fail("incompatible");
+  const found = lookupMonsterDefinition(GDD_RULESET, version.value, species.value);
+  if (!found.ok || found.definition.kind !== "planned_species") return fail("incompatible");
+  return { speciesId: found.definition.id, contentVersion: 1 };
+}
+function plainFields(value: unknown, names: string[]): value is Record<string, unknown> {
+  if (!object(value) || (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null)) return false;
+  const own = Reflect.ownKeys(value);
+  return own.length === names.length && names.every(name => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, name);
+    return !!descriptor?.enumerable && "value" in descriptor;
+  });
+}
+// Arrays used by the summon guard must be dense plain data. Checking property
+// descriptors first prevents a hostile getter from running during validation.
+function plainDataArray(value: unknown, limit: number): value is unknown[] {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length > limit) return false;
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== value.length + 1 || !keys.includes("length")) return false;
+  for (let i = 0; i < value.length; i++) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(i));
+    if (!descriptor?.enumerable || !("value" in descriptor)) return false;
+  }
+  return true;
+}
+function stateMonsterContent(state: unknown): MonsterContent | undefined {
+  if (!object(state)) return fail("invalid");
+  const property = Object.getOwnPropertyDescriptor(state, "monsterContent");
+  if (!property && "monsterContent" in state) return fail("incompatible");
+  if (property && (!property.enumerable || !("value" in property))) return fail("incompatible");
+  const content = property ? monsterContent(property.value) : undefined;
+  const neural = Object.getOwnPropertyDescriptor(state, "neural");
+  if (!neural && "neural" in state) return fail("incompatible");
+  if (content?.speciesId === "neural_weaver") {
+    if (!neural?.enumerable || !("value" in neural) || !isSafeNeuralReplayLedger(neural.value)) return fail("incompatible");
+  } else if (neural) return fail("incompatible");
+  // Validate summon metadata before clone/JSON: otherwise accessors can execute
+  // or hidden/inherited identity can silently disappear. Replay then reruns the
+  // authoritative match and compares the complete state, events and stages.
+  const raiders = Object.getOwnPropertyDescriptor(state, "raiders");
+  if (!raiders?.enumerable || !("value" in raiders) || !plainDataArray(raiders.value, 1024)) return fail("incompatible");
+  const swarm = Object.getOwnPropertyDescriptor(state, "swarm");
+  if (!swarm && "swarm" in state) return fail("incompatible");
+  if (content?.speciesId === "swarm_mantle") {
+    if (!swarm?.enumerable || !("value" in swarm) || !plainFields(swarm.value, ["version", "nextSpawnId", "resolvedActions"]) ||
+        swarm.value.version !== 1 || !Number.isSafeInteger(swarm.value.nextSpawnId) || (swarm.value.nextSpawnId as number) < 0 ||
+        !plainDataArray(swarm.value.resolvedActions, 256) || !swarm.value.resolvedActions.every((id: unknown) => typeof id === "string")) return fail("incompatible");
+  } else if (swarm) return fail("incompatible");
+  for (const raider of raiders.value) {
+    if (!object(raider)) return fail("incompatible");
+    if (!("summon" in raider)) continue;
+    const marker = Object.getOwnPropertyDescriptor(raider, "summon");
+    if (content?.speciesId !== "swarm_mantle" || !marker?.enumerable || !("value" in marker) ||
+        !plainFields(marker.value, ["parentId", "speciesId", "expiresAtRound"]) || marker.value.parentId !== "boss" ||
+        marker.value.speciesId !== "swarm_child" || !Number.isSafeInteger(marker.value.expiresAtRound)) return fail("incompatible");
+  }
+  return content;
+}
+function sameMonsterContent(a: MonsterContent | undefined, b: MonsterContent | undefined): boolean {
+  return a === undefined ? b === undefined : b !== undefined && a.speciesId === b.speciesId && a.contentVersion === b.contentVersion;
+}
 
 async function digest(value: unknown): Promise<string> {
   if (!globalThis.crypto?.subtle) return fail("unavailable");
@@ -50,8 +125,12 @@ function parse(raw: string): Archive {
   try { value = JSON.parse(raw); } catch { return fail("invalid"); }
   if (!object(value)) return fail("invalid");
   const fields = ["schema", "ruleset", "siteDigest", "resultDigest", "preset", "script", "stake", "deployment", "placements", "plans"];
+  if (value.schema !== "mecha-local-replay:v1" && value.schema !== "mecha-local-replay:v2" && value.schema !== "mecha-local-replay:v3") return fail("incompatible");
+  if (value.schema === "mecha-local-replay:v2" || (value.schema === "mecha-local-replay:v3" && Object.hasOwn(value, "mission"))) fields.push("mission");
+  if (value.schema === "mecha-local-replay:v3") fields.push("monsterContent");
   if (!keys(value, Object.hasOwn(value, "difficulty") ? [...fields, "difficulty"] : fields)) return fail("invalid");
-  if (value.schema !== "mecha-local-replay:v1" || value.ruleset !== GDD_RULESET) return fail("incompatible");
+  if (value.ruleset !== GDD_RULESET || (Object.hasOwn(value, "mission") && value.mission !== "rescue:v1")) return fail("incompatible");
+  if (value.schema === "mecha-local-replay:v3") monsterContent(value.monsterContent);
   if (!digestValid(value.siteDigest) || !digestValid(value.resultDigest)
     || typeof value.preset !== "string" || !["covers_sparse_mid", "covers_diag_corridor", "covers_twin_clusters"].includes(value.preset)
     || typeof value.script !== "string" || !["stationary_smash", "cadence_ssw", "raid_ssw", "siege"].includes(value.script)
@@ -102,18 +181,29 @@ function decodePlan(plan: SavedPlan, state: MatchState): ArenaPlan {
   }) };
 }
 function reconstruct(site: CityMechaSite, archive: Archive): ReplaySourceRound[] {
-  let state = matchFromSite(site, archive);
+  try { return reconstructVerified(site, archive); }
+  catch (error) {
+    if (error instanceof ReplayArchiveError) throw error;
+    return fail("incompatible");
+  }
+}
+function reconstructVerified(site: CityMechaSite, archive: Archive): ReplaySourceRound[] {
+  let state: MatchState;
+  try { state = matchFromSite(site, archive); } catch { return fail("incompatible"); }
+  // Never let an older adapter silently ignore the versioned content.
+  if (!sameMonsterContent(stateMonsterContent(state), archive.monsterContent)) return fail("incompatible");
   if (archive.deployment) {
     const deployed = pveRules.deploy!(state, { revision: state.revision, placements: archive.placements });
     if (!deployed.ok) return fail("incompatible");
     state = deployed.state;
   } else if (state.phase === "enemy_prepare") bossPrepare(state);
+  if (!sameMonsterContent(stateMonsterContent(state), archive.monsterContent)) return fail("incompatible");
   const rounds: ReplaySourceRound[] = [];
   for (const saved of archive.plans) {
     if (state.outcome) return fail("incompatible");
     const plan = decodePlan(saved, state);
     const result = pveRules.playTurn(state, plan);
-    if (!result.ok) return fail("incompatible");
+    if (!result.ok || !sameMonsterContent(stateMonsterContent(result.state), archive.monsterContent)) return fail("incompatible");
     rounds.push({ before: state, after: result.state, plan, log: result.log, presentationStages: result.presentationStages });
     state = result.state;
   }
@@ -124,12 +214,23 @@ const evidence = (rounds: ReplaySourceRound[]) => rounds.map(({ before, after, l
 
 /** Create a strict archive only after checking the source against a fresh rule run. */
 export async function createLocalReplayArchive(source: ReplayArchiveSource): Promise<string> {
+  // Check all states before cloning: structuredClone drops non-enumerable fields.
+  // A content identity must be present and identical throughout the entire match.
+  let content: MonsterContent | undefined;
+  if (Array.isArray(source.rounds) && source.rounds.length) {
+    content = stateMonsterContent(source.rounds[0]?.before);
+    for (const round of source.rounds) {
+      if (!sameMonsterContent(content, stateMonsterContent(round?.before))
+        || !sameMonsterContent(content, stateMonsterContent(round?.after))) return fail("incompatible");
+    }
+  }
   source = structuredClone(source);
   if (!source.site || source.rounds.length < 1 || source.rounds.length > MAX_TURNS || !source.rounds.at(-1)?.after.outcome) return fail("invalid");
   const first = source.rounds[0]!;
   const placements = source.deployment ? first.before.mechs.map(m => ({ mechId: m.id, pos: { ...m.pos } })) : [];
+  const rescue = first.before.mission?.kind === "rescue:v1";
   const archive = parse(JSON.stringify({
-    schema: "mecha-local-replay:v1", ruleset: GDD_RULESET, siteDigest: await digest(source.site), resultDigest: "0".repeat(64),
+    schema: content ? "mecha-local-replay:v3" : rescue ? "mecha-local-replay:v2" : "mecha-local-replay:v1", ...(rescue ? { mission: "rescue:v1" } : {}), ...(content ? { monsterContent: content } : {}), ruleset: GDD_RULESET, siteDigest: await digest(source.site), resultDigest: "0".repeat(64),
     preset: source.preset, script: source.script, stake: source.stake, ...(source.difficulty ? { difficulty: source.difficulty } : {}), deployment: source.deployment,
     placements, plans: source.rounds.map(r => encodePlan(r.plan, r.before)),
   }));

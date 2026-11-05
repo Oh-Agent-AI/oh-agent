@@ -144,3 +144,34 @@ test("planner tie-break uses the stable deterministic key", () => {
   assert.equal(plan.items[0]?.action.kind, "repair");
   assert.equal(planner.evaluate(standardState()).length, 3);
 });
+
+test("v1 score refuses unverified dynamic raider lifecycles instead of inventing damage", () => {
+  const state = standardState();
+  const original = structuredClone(state);
+  const plan: ArenaPlan = { revision: state.revision, items: [] };
+  const score = (result: MatchState) => createPlanScorer("tunnel", { apply: () => result }).score(state, plan);
+  const unchanged = structuredClone(state);
+  assert.ok(score(unchanged));
+  const spawned = structuredClone(state);
+  spawned.raiders.push({ id: "swarm:0", pos: { x: 0, y: 0 }, hp: 2, intent: null });
+  assert.equal(score(spawned), null, "a new unit's lower HP is not damage");
+  const removed = structuredClone(state);
+  removed.raiders.pop();
+  assert.equal(score(removed), null, "removal is not necessarily death");
+  const replaced = structuredClone(state);
+  replaced.raiders[0]!.id = "replacement";
+  assert.equal(score(replaced), null);
+  const duplicate = structuredClone(state);
+  duplicate.raiders[0]!.id = duplicate.raiders[1]!.id;
+  assert.equal(score(duplicate), null);
+  const marked = structuredClone(state);
+  marked.raiders[0]!.summon = { parentId: "boss", speciesId: "swarm_child", expiresAtRound: 3 };
+  assert.equal(score(marked), null, "same-roster summons still need their own HP baseline");
+  const markedInput = structuredClone(state);
+  markedInput.raiders[0]!.summon = { parentId: "boss", speciesId: "swarm_child", expiresAtRound: 3 };
+  let calls = 0;
+  assert.equal(createPlanScorer("tunnel", { apply: () => { calls++; return unchanged; } }).score(markedInput, plan), null);
+  assert.equal(calls, 0, "unsupported input must not enter the simulator");
+  assert.equal(createPlanScorer("tunnel").score(markedInput, plan), null);
+  assert.deepEqual(state, original);
+});

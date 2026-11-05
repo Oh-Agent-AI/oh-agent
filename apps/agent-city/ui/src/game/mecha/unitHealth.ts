@@ -1,9 +1,14 @@
-import { enemyStatsOf, STATS, type MatchState } from "./board";
+import { enemyStatsOf, MAX_TURNS, STATS, SWARM_CHILD_HP, type MatchState } from "./board";
 
 export function unitMaxHp(id: string, state?: MatchState | null): number | null {
   if (id === "Assault" || id === "Gunner" || id === "Support") return STATS[id].maxHp;
   if (id === "boss") return enemyStatsOf(state ?? {}).bossHp;
-  if (["raider-w", "raider-e", "raider-west", "raider-east"].includes(id) || state?.raiders.some((raider) => raider.id === id)) return enemyStatsOf(state ?? {}).raiderHp;
+  // The ID alone cannot distinguish a summoned child from an ordinary raider.
+  const raider = state?.raiders.find((candidate) => candidate.id === id);
+  const summon = raider?.summon;
+  if (summon?.parentId === "boss" && summon.speciesId === "swarm_child" &&
+      Number.isSafeInteger(summon.expiresAtRound) && summon.expiresAtRound >= 3 && summon.expiresAtRound <= MAX_TURNS + 2) return SWARM_CHILD_HP;
+  if (["raider-w", "raider-e", "raider-west", "raider-east"].includes(id) || raider) return enemyStatsOf(state ?? {}).raiderHp;
   return null;
 }
 

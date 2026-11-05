@@ -680,13 +680,19 @@ test("candidate loading gates board input, auto tick and submit across site chan
   assert.match(boardSource, /if \(remoteActive \|\| previewLoading\) return;[\s\S]*controller\?\.previewTarget/);
   assert.match(boardSource, /if \(viewFailed \|\| previewLoading \|\| remoteActive \|\| !auto \|\| paused \|\| performance \|\| !controller\) return undefined/);
   assert.match(boardSource, /const planning = s\.interactive && !sequenceWaiting && !remoteActive && !previewLoading/);
-  assert.match(boardSource, /if \(!nextSite \|\| next === shapeId\) return;\s*requestDestructiveAction\(\(\) => \{\s*if \(useConnectedAssault\(import\.meta\.env\.DEV, location\.search\)\) setPreviewLoading\(true\);\s*setShape\(next\)/);
+  assert.match(boardSource, /if \(!nextSite \|\| next === shapeId\) return;\s*requestDestructiveAction\(\(\) => \{\s*if \(!controller\.restart\(\{ site: nextSite, stake: next === "alley" \? "frontage" : "all" \}\)\) return;\s*if \(useConnectedAssault\(import\.meta\.env\.DEV, location\.search\)\) setPreviewLoading\(true\);\s*setShape\(next\)/);
 });
 
 test("battle actors start at their current cells before the first ground sample", () => {
   assert.match(worldSource, /for \(const figure of viewRef\.current\.figures\) \{\s*const feet = cellWorld\(site, \{ x: figure\.x, y: figure\.y \}\);\s*figures\[figure\.id\]\.position\.set\(feet\.x, feet\.y, feet\.z\);/);
   assert.match(worldSource, /boss\.position\.copy\(footprintFeet\(site, viewRef\.current\.boss\)\)/);
-  assert.match(worldSource, /for \(const \[index, raider\] of viewRef\.current\.raiders\.entries\(\)\)/);
+  // Dynamic raiders are created during the frame, but positioned before any
+  // performance player can take its first ground sample.
+  assert.match(worldSource, /for \(const raider of raiders\) \{[\s\S]*?const feet = cellWorld\(site, raider\);\s*mesh\.position\.set\(feet\.x, feet\.y, feet\.z\)/);
+  const syncRaiders = worldSource.indexOf("syncRaiders(playbackRaiders");
+  const positionActors = worldSource.indexOf("positionPerformanceActors(performanceActors");
+  const createPlayer = worldSource.indexOf("createAssaultBattlePlayer(performanceActors");
+  assert.ok(syncRaiders >= 0 && syncRaiders < positionActors && positionActors < createPlayer);
   assert.ok(worldSource.indexOf("figures[figure.id].position.set") < worldSource.indexOf("lease.setFrameHook"));
 });
 
@@ -696,7 +702,8 @@ test("all mechs slide and walk in draft preview; connected Assault retains board
   assert.match(worldSource, /if \(!pausedRef\.current\) slide\(mesh, spot, reduce\)/);
   assert.match(worldSource, /animate\(mesh, figure\.id, figure\.alive \? 1 : 0, moving && figure\.alive, pausedRef\.current \? 0 : dt\)/);
   assert.doesNotMatch(worldSource, /const moving = !connected|slide\(mesh, spot, reduce \|\| connected\)/);
-  assert.match(worldSource, /createAssaultBattlePlayer\(actors, playing\.events, resolveCell, root, onComplete, battleHeight/);
+  assert.match(worldSource, /const performanceActors = Object\.assign\(Object\.create\(null\), actors\)/);
+  assert.match(worldSource, /createAssaultBattlePlayer\(performanceActors, playing\.events, resolveCell, root, onComplete, battleHeight/);
   assert.match(worldSource, /if \(connected\) mesh\.position\.y = battleHeight\(mesh\.position\.x, mesh\.position\.z, spot\.y\)/);
   assert.doesNotMatch(worldSource, /AssaultGroundController|createConnectedAssaultPreviewPlayer|previewGround|idleGround/);
 });

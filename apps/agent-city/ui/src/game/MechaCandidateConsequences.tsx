@@ -1,10 +1,11 @@
-import { fizzleText, gameText, type GameLocale } from "./gameCopy";
+import { fizzleText, gameText, previewFaultText, type GameLocale } from "./gameCopy";
 import { compareEnemyForecasts } from "./mecha/enemyForecastComparison";
+import { monsterSkillName } from "./mecha/skillNames";
 import { forecastFizzles } from "./mecha/fizzleForecast";
 import { repairEnemyStage, repairEnemyStageComparison, type RepairEnemyStage } from "./mecha/repairForecast";
 import type { MechaPreview } from "./mecha/controller";
 import type { CandidateResult } from "./mecha/candidateResult";
-import type { Cell } from "./mecha/rules";
+import type { BossSkill, Cell } from "./mecha/rules";
 import "./mechaCandidateConsequences.css";
 
 /** The compact primary result is action-local; the separate footer is whole-turn. */
@@ -13,7 +14,7 @@ export function MechaCandidateConsequences({ result, baseline, candidate, locale
 }) {
   const en = locale === "en", t = (text: string) => gameText(text, locale);
   const at = (cell: Cell | null) => cell ? `${cell.x},${cell.y}` : "?";
-  const skillName = (skill: "smash" | "sweep" | "skip") => skill === "sweep" ? t("横扫") : skill === "smash" ? t("砸击") : t("跳过");
+  const skillName = (skill: BossSkill) => monsterSkillName(skill, locale);
   const comparison = compareEnemyForecasts(baseline, candidate);
   const action = result.action;
   const repairStage = action?.action === "repair" && !action.fizzled && action.target ? repairEnemyStage(candidate, action.target) : null;
@@ -29,6 +30,7 @@ export function MechaCandidateConsequences({ result, baseline, candidate, locale
     return `${label} · HP ${stage.before} → ${stage.after}`;
   };
   const otherFizzles = candidate.ok && action ? forecastFizzles(candidate.log).filter(event => event.mechId !== action.mechId) : [];
+  if (!candidate.ok) return <p>{candidate.status === "invalid" ? previewFaultText(candidate.fault, locale) : (en ? "Preview unavailable; consequences are unknown." : "预览暂不可用，行动后果未知。")}</p>;
   if (!action) return <p>{t("行动未执行，结果未知。")}</p>;
   const hpChanges = (changes: NonNullable<typeof action.effects>, collision = false) => changes.map(effect => {
     const delta = effect.after - effect.before;
@@ -47,9 +49,11 @@ export function MechaCandidateConsequences({ result, baseline, candidate, locale
       {action.fizzled ? <p className="is-collision">{t("行动落空，不消耗冷却")} · {fizzleText(action.cause, locale)}</p> : <>
         <p className="mecha-consequences__primary">{t("行动造成的变化")} · <strong>{action.action === "repair" ? `${en ? "Actual repair" : "实际修理"} +${result.healing}` : `${t("直接伤害")} ${action.damage}`}</strong></p>
         {action.effects?.length ? hpChanges(action.effects) : <p>{action.action === "repair" ? (en ? "HP is already full; no healing applied." : "生命已满，本次未恢复生命。") : t("没有生命变化")}</p>}
+        {result.shoves.length === 0 && (action.action === "melee" || action.action === "charge") ? <p>{en ? "No push occurred." : "未发生推挤。"}</p> : null}
         {result.shoves.map(({ event, from, to }, index) => <div key={index} className="mecha-consequences__push" data-push-result={event.hit ? "blocked" : "moved"}>
-          <p><strong>{event.hit ? (en ? "Push blocked · stays in place" : "推挤受阻 · 留在原位") : (en ? "Push landing" : "推挤落点")}</strong> · {unitName(event.unit)} {at(from)} → {at(to)}</p>
-          {event.hit ? <p className="is-collision">{t("碰撞")} · {event.hit.split(",").map(unitName).join(en ? ", " : "、")}</p> : null}
+          <p><strong>{event.hit ? (en ? "Push blocked · stays in place" : "推挤受阻 · 留在原位") : (en ? "Push landing" : "推挤落点")}</strong> · {unitName(event.unit)}{event.unit === "boss" ? (en ? " (2×2 anchor)" : "（2×2 锚点）") : ""} {at(from)} → {at(to)}</p>
+          <p>{en ? "Push direction (Δx, Δy)" : "推挤方向（Δx, Δy）"} · ({event.dir.x > 0 ? "+" : ""}{event.dir.x}, {event.dir.y > 0 ? "+" : ""}{event.dir.y})</p>
+          {event.hit ? <p className="is-collision">{t("碰撞")} · {event.hit.split(",").map(id => id === "wall" ? (en ? "terrain, obstacle or boundary (exact type unknown)" : "地形、障碍或边界（具体类型未知）") : unitName(id)).join(en ? ", " : "、")}</p> : <p>{en ? "No collision." : "未发生碰撞。"}</p>}
           {event.effects?.length ? hpChanges(event.effects, true) : null}
         </div>)}
         {result.kills.map(kill => <p key={`${kill.kind}-${kill.id}`} className="is-collision" data-candidate-kill={kill.id}>

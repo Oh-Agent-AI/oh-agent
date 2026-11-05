@@ -1,7 +1,8 @@
 import { fizzleText, type GameLocale } from "./gameCopy";
-import type { Action, BossSkill, Cell, HealthEffect, MatchState, MechId, Outcome, TurnEvent } from "./mecha/board";
+import type { Action, Cell, HealthEffect, MatchState, MechId, Outcome, TurnEvent } from "./mecha/board";
 import type { HealthTimeline } from "./mecha/healthTimeline";
 import { buildTurnRecap } from "./mecha/turnRecap";
+import { monsterSkillName } from "./mecha/skillNames";
 import { buildFailureRecap } from "./mecha/failureRecap";
 import "./MechaLastResult.css";
 
@@ -22,7 +23,6 @@ const MECH_NAMES: Record<MechId, string> = { Assault: "突击", Gunner: "射手"
 const ACTION_NAMES: Record<Action["kind"], string> = {
   skip: "待机", melee: "近战", shoot: "射击", charge: "冲撞", pierce: "穿射", repair: "维修",
 };
-const SKILL_NAMES: Record<BossSkill, string> = { smash: "砸击", sweep: "横扫", skip: "跳过" };
 const OUTCOME_NAMES: Record<Outcome, string> = {
   victory: "胜利", defeat_wipe: "全灭", defeat_timeout: "回合耗尽", defeat_buildings: "楼被拆光",
 };
@@ -42,10 +42,21 @@ function cellText(cell: Cell): string {
   return `${cell.x},${cell.y}`;
 }
 
+function neuralReason(reason: string, locale: GameLocale): string {
+  const labels: Record<string, [string, string]> = {
+    actor_dead: ["施放者已损毁", "caster destroyed"], source_dead: ["来源已损毁", "source destroyed"],
+    target_dead: ["目标已损毁", "target destroyed"], side_changed: ["阵营已变化", "side changed"],
+    out_of_range: ["超出范围", "out of range"], expired: ["已到期", "expired"], finished: ["对局已结束", "match ended"],
+  };
+  return labels[reason]?.[locale === "en" ? 1 : 0] ?? reason;
+}
+
 function eventText(event: TurnEvent, t: Translate, locale: GameLocale): string {
   switch (event.type) {
     case "move":
       return `${unitName(event.mechId, t)} · ${t("移动")} ${cellText(event.from)} → ${cellText(event.to)}`;
+    case "boss_move":
+      return `${unitName("boss", t)} · ${t("移动")} ${cellText(event.from)} → ${cellText(event.to)}`;
     case "act": {
       const fields = [unitName(event.mechId, t), t(ACTION_NAMES[event.action] ?? event.action)];
       if (event.target !== undefined) fields.push(`${t("目标")} ${unitName(event.target, t)}`);
@@ -59,10 +70,32 @@ function eventText(event: TurnEvent, t: Translate, locale: GameLocale): string {
       return fields.join(" · ");
     }
     case "enemy": {
-      const fields = [unitName(event.actor, t), t(SKILL_NAMES[event.skill] ?? event.skill)];
+      const fields = [unitName(event.actor, t), monsterSkillName(event.skill, locale)];
       if (event.cells.length) fields.push(`${t("作用格")} ${event.cells.map(cellText).join("、")}`);
       fields.push(`${t("直接伤害合计")} ${event.damage}`);
       return fields.join(" · ");
+    }
+    case "neural_event": {
+      const e = event.event, en = locale === "en";
+      if (e.type === "link_created") return `${en ? "Neural link created" : "神经链接已建立"} · ${e.link.targetId.replace(/^raider:/, "")} · +${e.link.attackBonus} · ${en ? "expires at round" : "到期回合"} ${e.link.expiresAtRound}`;
+      if (e.type === "link_void") return `${en ? "Neural link void" : "神经链接落空"} · ${e.targetId.replace(/^raider:/, "")} · ${neuralReason(e.reason, locale)}`;
+      return `${en ? "Neural link broken" : "神经链接已断开"} · ${e.linkId} · ${neuralReason(e.reason, locale)}`;
+    }
+    case "raider_spawn":
+      return `${unitName(event.unit.id, t)} · ${locale === "en" ? "Summoned" : "子体生成"} · ${cellText(event.unit.pos)}`;
+    case "raider_remove":
+      return `${unitName(event.unit.id, t)} · ${locale === "en" ? (event.reason === "death" ? "Defeated" : "Expired") : (event.reason === "death" ? "子体被击败" : "子体到期消失")} · ${cellText(event.unit.pos)}`;
+    case "monster_displacement":
+      return `${monsterSkillName(event.skill, locale)} · ${event.moves.map(move => `${unitName(move.unit, t)} ${cellText(move.from)} → ${cellText(move.to)}`).join("、")}`;
+    case "corrode_field":
+      return `${locale === "en" ? (event.change === "created" ? "Corrosion field created" : "Corrosion field expired") : (event.change === "created" ? "蚀格已生成" : "蚀格已消失")} · ${cellText(event.field.cell)}`;
+    case "corrode_tick":
+      return `${locale === "en" ? "Corrosion damage" : "蚀格伤害"} · ${unitName(event.unit, t)} · ${event.damage}`;
+    case "monster_status": {
+      const description = locale === "zh-Hans"
+        ? { applied: "棱镜守护已施加", absorbed: "棱镜守护吸收了伤害", expired: "棱镜守护已消失" }[event.change]
+        : { applied: "Prism Guard applied", absorbed: "Prism Guard absorbed damage", expired: "Prism Guard expired" }[event.change];
+      return `${unitName(event.actor, t)} · ${description} · ${locale === "zh-Hans" ? "剩余次数" : "Charges remaining"} ${event.remaining}`;
     }
     case "outcome": return `${t("结局")} · ${t(OUTCOME_NAMES[event.outcome] ?? event.outcome)}`;
     default: {
@@ -96,7 +129,7 @@ export function MechaLastResult({ lastLog, healthTimeline, finalState, mode = "p
   const failure = buildFailureRecap(finalState, lastLog, healthTimeline);
   const decisive = failure?.decisive;
   const source = decisive?.event.type === "enemy"
-    ? `${unitName(decisive.event.actor, t)} · ${t(SKILL_NAMES[decisive.event.skill] ?? decisive.event.skill)}`
+    ? `${unitName(decisive.event.actor, t)} · ${monsterSkillName(decisive.event.skill, locale)}`
     : decisive?.event.type === "act" ? `${unitName(decisive.event.mechId, t)} · ${t(ACTION_NAMES[decisive.event.action])}`
     : decisive?.event.type === "shove" ? t("推挤碰撞") : null;
   return <section className="mecha-last-result" aria-label={t(mode === "replay" ? "本回合摘要" : "上一回合摘要")} aria-describedby="mecha-last-result-scroll-help" tabIndex={0}>

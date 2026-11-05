@@ -101,3 +101,14 @@
 
 .mecha-unsaved-replay-guard h2 { margin-top: 0; font-size: clamp(22px, 5vw, 28px); color: #ffe0ab; }
 .mecha-unsaved-replay-guard .mecha-match-result__actions { margin-top: 22px; }
+
+.mecha-match-result__review { margin: 0 0 16px; padding: 10px 12px; border-left: 2px solid #f3a16b; background: #192b34; font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+.mecha-match-result__review strong { color: #ffd0ab; }
+.mecha-match-result__review p, .mecha-match-result__review ul { margin: 4px 0; }
+.mecha-match-result__review ul { padding-left: 20px; max-height: 100px; overflow-y: auto; }
+.mecha-match-result__review-note { color: #b2c4cc; }
+.mecha-match-result__review ul:focus-visible { outline: 3px solid #ffe08a; outline-offset: 2px; }
+
+.mecha-match-result__details { margin-top: 18px; }
+.mecha-match-result__details > summary { padding: 10px 0; color: #d9e8e9; cursor: pointer; font-weight: 600; }
+.mecha-match-result__details > summary:focus-visible { outline: 3px solid #ffe08a; outline-offset: 2px; }

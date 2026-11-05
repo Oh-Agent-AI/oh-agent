@@ -157,7 +157,7 @@ export function RemoteMechaControls({ locale, site, shape, state, status, canSta
       <label>{zh ? "中继 HTTPS 地址" : "Relay HTTPS URL"}<input type="url" required value={relay} placeholder="https://your-worker.workers.dev" onChange={(event) => setRelay(event.target.value)} /></label>
       <button type="button" disabled={busy || status !== "idle" || !canStart || !relay.startsWith("https://")} onClick={start}>{busy ? "…" : zh ? "开启并生成链接" : "Start and create link"}</button>
     </div>}
-    {status === "idle" && !canStart && <p className="mecha-help">{zh ? "请先停止自动对战、结束演出并回到可规划的回合。" : "Stop auto play, finish animations, and return to a planning turn first."}</p>}
+    {status === "idle" && !canStart && <p className="mecha-help">{state.mission ? (zh ? "救援任务仅支持本地对局；请切换任务后再开启远程。" : "Rescue is local-only. Switch missions before starting remote play.") : (zh ? "请先停止自动对战、结束演出并回到可规划的回合。" : "Stop auto play, finish animations, and return to a planning turn first.")}</p>}
     {error && status !== "unknown" && <p role="alert">{error}</p>}
   </>;
   return <>

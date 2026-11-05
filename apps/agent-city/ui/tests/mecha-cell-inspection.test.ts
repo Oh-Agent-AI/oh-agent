@@ -90,3 +90,40 @@ test("a click on empty ground stays a terrain inspection even if it also queues 
   assert.equal(inspectCell(state, cell, draft)!.unit?.id, "Assault", "a later model click resolves its draft destination");
   assert.equal(inspectCell(state, cell, draft, null)!.object, "empty", "the original ground click isn't replaced by the moving model");
 });
+
+
+test("rescue raider inspection exposes its actual role without inventing legacy roles", () => {
+  const state = fixture();
+  const raider = state.raiders[0]!;
+  assert.equal(inspectCell(state, raider.pos)?.unit?.role, undefined);
+  state.mission = { kind: "rescue:v1", target: { x: 1, y: 1 } };
+  raider.role = "interceptor";
+  assert.equal(inspectCell(state, raider.pos)?.unit?.role, "interceptor");
+  raider.role = "siege";
+  assert.equal(inspectCell(state, raider.pos)?.unit?.role, "siege");
+  assert.equal(inspectCell(state, state.boss.anchor)?.unit?.role, undefined);
+});
+
+test("raider role text is localized in full and compact inspections", async () => {
+  const { createRequire } = await import("node:module");
+  const { fileURLToPath, pathToFileURL } = await import("node:url");
+  const require = createRequire(import.meta.url);
+  const bundle = await require("esbuild").build({
+    entryPoints: [fileURLToPath(new URL("../src/game/MechaCellInspector.tsx", import.meta.url))],
+    bundle: true, write: false, format: "esm", platform: "node", jsx: "automatic",
+    plugins: [{ name: "inspection-test-imports", setup(builder: any) {
+      builder.onResolve({ filter: /^react(?:\/.*)?$/ }, (args: any) => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
+      builder.onLoad({ filter: /\.(css|jpg|png|svg)$/ }, () => ({ contents: 'export default "fixture"', loader: "js" }));
+    } }],
+  });
+  const component = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString("base64")}`);
+  const state = fixture(), raider = state.raiders[0]!;
+  state.mission = { kind: "rescue:v1", target: { x: 1, y: 1 } }; raider.role = "interceptor";
+  const info = inspectCell(state, raider.pos)!;
+  for (const [locale, expected] of [["zh-Hans", "拦截型 · 优先接近存活机甲"], ["en", "Interceptor · closes on surviving mechs"]] as const) {
+    for (const compact of [false, true]) {
+      const html = require("react-dom/server").renderToStaticMarkup(require("react").createElement(component.MechaCellInspector, { info, locale, compact, onClose() {} }));
+      assert.match(html, /data-raider-role="interceptor"/); assert.ok(html.includes(expected));
+    }
+  }
+});

@@ -2,7 +2,7 @@ import { MECHA_NET_PROTOCOL, parseSubmitConcede, parseSubmitDeployment, parseSub
 import { deploymentResult, snapshotResult, turnResult, type RemoteNotification, type RemoteRequest } from "../game/mecha/contracts/transport";
 import { MatchSession, pveRules } from "../game/mecha/session/MatchSession";
 import type { MatchState } from "../game/mecha/rules";
-import type { RemoteArenaV1 } from "../game/mecha/contracts/arena";
+import { hasUnsupportedRemoteSummons, type RemoteArenaV1 } from "../game/mecha/contracts/arena";
 import { PVP_RULESET, createPvpMatch, pvpRules, type PvpState } from "../game/mecha/rules/pvp";
 
 type HostConfig = {
@@ -55,7 +55,7 @@ export function startRemoteSessionHost() {
     if (request.method === "match.create") {
       if (session || !payload.config) { resultError(request, "unavailable"); return; }
       const config = payload.config as HostConfig;
-      if (config.mode !== "pve" || config.arena?.ruleset !== "mecha-v1.4" || config.state?.ruleset !== "mecha-v1.4") {
+      if (config.mode !== "pve" || config.arena?.ruleset !== "mecha-v1.4" || config.state?.ruleset !== "mecha-v1.4" || "mission" in config.state || Object.hasOwn(config.state, "monsterContent") || hasUnsupportedRemoteSummons(config.state)) {
         resultError(request, "invalid_plan"); return;
       }
       try {

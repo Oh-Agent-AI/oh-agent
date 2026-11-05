@@ -1,5 +1,6 @@
 import type { GameLocale } from "../gameCopy";
 import type { MechId } from "./rules";
+import { MAX_TURNS, type Raider } from "./board";
 
 export type UnitIdentitySide = "mech" | "enemy" | "unknown";
 
@@ -42,24 +43,32 @@ const UNIT_IDENTITIES: Record<string, UnitIdentityDefinition> = {
 };
 
 /**
- * Describe only identities backed by the battle model's known IDs. Unknown IDs
- * stay visible verbatim and are explicitly marked unknown rather than guessed
- * from a prefix such as "raider-".
+ * Describe known IDs or an explicitly matched raider. An unknown identity stays
+ * visible verbatim; its side is only known when raider evidence is supplied,
+ * never inferred from a prefix such as "raider-".
  */
-export function describeUnitIdentity(id: string, locale: GameLocale): UnitIdentityDescriptor {
+export function describeUnitIdentity(id: string, locale: GameLocale, raider?: Pick<Raider, "id" | "summon">): UnitIdentityDescriptor {
+  const en = locale === "en";
+  // A matched raider is explicit enemy evidence; the child label additionally
+  // requires the actual L5 summon marker, never an ID or health heuristic.
+  const matched = raider?.id === id;
+  const summon = matched ? raider.summon : undefined;
+  if (summon?.parentId === "boss" && summon.speciesId === "swarm_child" &&
+      Number.isSafeInteger(summon.expiresAtRound) && summon.expiresAtRound >= 3 && summon.expiresAtRound <= MAX_TURNS + 2) {
+    return { id, label: en ? "Swarm child" : "群构子体", symbol: "✣", side: "enemy", sideLabel: en ? "Enemy" : "敌方", known: true };
+  }
   const definition = Object.hasOwn(UNIT_IDENTITIES, id) ? UNIT_IDENTITIES[id] : undefined;
   if (!definition) {
     return {
       id,
       label: id || (locale === "en" ? "Unknown unit" : "未知单位"),
       symbol: "?",
-      side: "unknown",
-      sideLabel: locale === "en" ? "Side unknown" : "阵营未知",
+      side: matched ? "enemy" : "unknown",
+      sideLabel: matched ? (en ? "Enemy" : "敌方") : (en ? "Side unknown" : "阵营未知"),
       known: false,
     };
   }
 
-  const en = locale === "en";
   return {
     id,
     label: en ? definition.en : definition.zh,

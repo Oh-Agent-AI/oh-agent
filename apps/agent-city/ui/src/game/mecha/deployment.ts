@@ -1,10 +1,10 @@
 /** Local PvE deployment: the complete placement packet is the authority boundary. */
-import { BOARD, MECH_IDS, footprint, inb, key, noSpawn, type Cell, type MatchState, type MechId, type TurnEvent } from "./board";
+import { BOARD, MECH_IDS, footprint, inb, key, noSpawn, rescueReachable, type Cell, type MatchState, type MechId, type TurnEvent } from "./board";
 import { bossPrepare } from "./enemy/planner";
 
 export type DeployPlacement = { mechId: MechId; pos: Cell };
 export type DeployPlan = { revision: number; placements: DeployPlacement[] };
-export type DeployFault = { code: "phase" | "revision" | "incomplete" | "duplicate_mech" | "invalid_cell" | "outside_zone" | "terrain" | "unsafe" | "occupied" | "reserved" | "duplicate_cell" | "insufficient_space"; mechId?: MechId };
+export type DeployFault = { code: "phase" | "revision" | "incomplete" | "duplicate_mech" | "invalid_cell" | "outside_zone" | "terrain" | "unsafe" | "occupied" | "reserved" | "duplicate_cell" | "insufficient_space" | "rescue_unreachable"; mechId?: MechId };
 export type DeployTurn<S = MatchState> = { ok: true; state: S; log: TurnEvent[] } | { ok: false; fault: DeployFault };
 const cellIsValid = (c: Cell) => Boolean(c && Number.isInteger(c.x) && Number.isInteger(c.y) && inb(c));
 
@@ -49,6 +49,13 @@ export function validateDeployPlan(state: MatchState, plan: DeployPlan): { ok: t
     if (cells.has(key(p.pos))) return fail("duplicate_cell", p.mechId);
     cells.add(key(p.pos));
   }
+  if (state.mission?.kind === "rescue:v1") {
+    const opening = structuredClone(state);
+    for (const placement of plan.placements) opening.mechs.find(m => m.id === placement.mechId)!.pos = { ...placement.pos };
+    opening.phase = "enemy_prepare";
+    bossPrepare(opening);
+    if (opening.outcome || String(opening.phase) !== "player_plan" || !rescueReachable(opening, state.mission.target)) return fail("rescue_unreachable");
+  }
   return { ok: true };
 }
 
@@ -74,6 +81,7 @@ export function deployFaultText(fault: DeployFault, en: boolean): string {
     invalid_cell: ["请选择棋盘内的整数坐标。", "Choose an integer cell inside the board."], outside_zone: ["这里不在部署区内，请选择绿色格子。", "Outside the deployment zone. Choose a green cell."],
     terrain: ["水面或山地不能部署。", "Cannot deploy on water or mountains."], unsafe: ["这里地形过陡，不能安全部署。", "This cell is too steep for safe deployment."],
     occupied: ["这里被建筑、障碍或敌人占用。", "A building, obstacle or enemy occupies this cell."], reserved: ["这里是预留增援格，不能部署。", "This cell is reserved for reinforcements."],
+    rescue_unreachable: ["部署后救援点不可达，请调整部署。", "The rescue point is unreachable after deployment. Adjust placements."],
     duplicate_cell: ["两台机甲不能部署在同一格。", "Two mechs cannot share a deployment cell."], insufficient_space: ["部署区没有足够的安全格，请更换战场或退出。", "Not enough safe deployment cells. Change battlefield or exit."],
   };
   return messages[fault.code][en ? 1 : 0];

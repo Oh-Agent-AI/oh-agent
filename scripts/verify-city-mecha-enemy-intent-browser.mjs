@@ -14,7 +14,7 @@ const browser = await chromium.launch({ headless: true, args: [process.env.MECHA
 const results = [];
 const replaceOnce = (source, needle, value) => { assert.equal(source.split(needle).length, 2, `seam: ${needle}`); return source.replace(needle, value); };
 try {
-  for (const lang of ["zh", "en"]) {
+  for (const lang of process.env.MECHA_LANG ? [process.env.MECHA_LANG] : ["zh", "en"]) {
     const context = await browser.newContext({ viewport: { width:1100, height:700 }, deviceScaleFactor:1 });
     const page = await context.newPage(); page.setDefaultTimeout(20000);
     const errors = []; page.on("pageerror", e => errors.push(e.message));
@@ -56,11 +56,11 @@ try {
       await button("查看战场", "View field").click();
       if (output) await page.screenshot({ path:join(output, `field-${lang}-1100x700.png`) });
       await page.setViewportSize({width:800,height:600});
-      await button("重置视角", "Reset view").click(); await page.waitForTimeout(300);
+      await page.locator(".mecha-battle-controls button").filter({ hasText: lang === "zh" ? /^重置视角$/ : /^Reset view$/ }).click(); await page.waitForTimeout(300);
       assert.equal(await page.evaluate(() => globalThis.__tacticalProbe.intentSources.filter(s => s.frame.visible).length),overview.sources);
       if (output) await page.screenshot({path:join(output, `field-${lang}-800x600.png`)});
       await page.setViewportSize({width:1100,height:700});
-      await button("重置视角", "Reset view").click(); await page.waitForTimeout(300);
+      await page.locator(".mecha-battle-controls button").filter({ hasText: lang === "zh" ? /^重置视角$/ : /^Reset view$/ }).click(); await page.waitForTimeout(300);
       await button("恢复面板", "Show HUD").click();
       // A real UI enemy selection strengthens its current chain, not the
       // projection attribution; other declarations are not removed.

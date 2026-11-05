@@ -78,6 +78,8 @@ export function createAssaultBattlePlayer(
       },
       afterPose(index) {
         const event = index === null ? undefined : events[index];
+        // Preserve the shared phase-swap arc instead of grounding one half of the pair.
+        if (event?.kind === "monster_displacement" && event.skill === "phase_swap" && event.moves.some(move => move.actor === "Assault")) return;
         // Movement already samples its root; keep knockback's intentional airborne hop.
         if (event?.actor === "Assault" && (event.kind === "move" || event.kind === "knockback")) return;
         assault.position.y = height(assault.position.x, assault.position.z, assault.position.y);

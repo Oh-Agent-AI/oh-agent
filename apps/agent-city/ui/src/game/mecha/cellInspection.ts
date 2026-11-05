@@ -2,7 +2,7 @@
 import {
   BOSS_DEF, BOSS_MOVE, RAIDER_DEF, RAIDER_MOVE,
   STATS, enemyStatsOf, heightAt, inb, terrainAt, occupant, onFootprint, movementPath,
-  type Cell, type MatchState, type MechId, type TerrainKind, type Intent,
+  type Cell, type MatchState, type MechId, type Raider, type RaiderRole, type TerrainKind, type Intent,
 } from "./board";
 import { unitMaxHp } from "./unitHealth";
 
@@ -15,7 +15,7 @@ export type DeclaredAttack = {
 export type CellInspection = {
   cell: Cell; terrain: TerrainKind; height: number;
   object: "empty" | "cover" | "obstacle" | "building" | "rubble" | "unit";
-  unit?: { id: string; side: "mech" | "enemy"; hp: number; maxHp: number | null; atk: number; def: number; move: number; cd: number | null };
+  unit?: { id: string; side: "mech" | "enemy"; hp: number; maxHp: number | null; atk: number; def: number; move: number; cd: number | null; role?: RaiderRole; summon?: Raider["summon"] };
   building?: { id: string; hp: number; maxHp: number };
   attack?: DeclaredAttack;
   /** Authoritative pathfinder applied to an uncommitted friendly move. */
@@ -54,6 +54,10 @@ export function inspectCell(state: MatchState, cell: Cell, draft: InspectionDraf
     const enemyStats = enemyStatsOf(state);
     info.object = "unit";
     info.unit = { id: enemy, side: "enemy", hp: boss ? state.boss.hp : state.raiders.find(r => r.id === enemy)!.hp, maxHp: unitMaxHp(enemy, state), atk: boss ? enemyStats.bossAtk : enemyStats.raiderAtk, def: boss ? BOSS_DEF : RAIDER_DEF, move: boss ? BOSS_MOVE : RAIDER_MOVE, cd: boss ? state.boss.cdSweep : null };
+    const raider = !boss ? state.raiders.find(r => r.id === enemy) : undefined;
+    if (raider?.summon) info.unit.summon = { parentId: raider.summon.parentId, speciesId: raider.summon.speciesId, expiresAtRound: raider.summon.expiresAtRound };
+    const role = state.mission?.kind === "rescue:v1" ? raider?.role : undefined;
+    if (role) info.unit.role = role;
     info.attack = declaredAttack(state, enemy) ?? undefined;
   } else {
     const occ = occupant(state, cell);

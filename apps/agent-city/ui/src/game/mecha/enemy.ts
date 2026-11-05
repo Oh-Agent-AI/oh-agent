@@ -1,13 +1,15 @@
+import { ringUnit } from "./ringUnit";
+import { unitForSpecies, unitForSkill } from "./unitRegistry";
 /**
  * 敌方脚本：大怪与小怪的准备（scriptedEnemyPrepare）和结算（bossExecute）、威胁度、目标选择、寻路步进。
  * 依赖 board.ts（棋盘与寻路）和 combat.ts（伤害、击退）；不依赖 rules.ts。
  */
 import {
-  BOSS_MOVE, BUILDING_DEF, MAX_TURNS, MOVE_QUANTUM, RAIDER_MOVE, STATS, enemyStatsOf, adjacentCells, dijkstra, emit, enemiesRemain, eq, footprint,
-  inb, isObstacle, living, livingBuildingAt, livingRaiders, livingStakeBuildings, manh, mech, occupant, onFootprint, stepCost, water, orderedHealthEffect,
-  type Building, type Cell, type Intent, type MatchState, type Raider, type TurnEvent,
+  BOSS_MOVE, BUILDING_DEF, MAX_TURNS, MOVE_QUANTUM, RAIDER_DEF, RAIDER_MOVE, STATS, enemyStatsOf, adjacentCells, dijkstra, emit, enemiesRemain, eq, footprint,
+  inb, isObstacle, living, livingBuildingAt, livingRaiders, livingStakeBuildings, manh, mech, occupant, onFootprint, raiderAt, stepCost, water, orderedHealthEffect, sporeLeapCells, sporeLeapReachable, ringPierceCells, STEP_DIRS, assertMonsterState, corrodeWorld, prepareCorrode, resolveCorrode, MONSTER_SKILLS, BOARD, displacementWorld, prepareDisplacement, resolveDisplacement, prepareSwarmIntent, resolveSwarmIntent, prepareNeuralIntent, resolveNeuralIntent, reconcileNeural, neuralBonus,
+  type Building, type Cell, type Intent, type MatchState, type MechId, type Raider, type TurnEvent,
 } from "./board";
-import { hurtMech, knockbackFromBoss, refresh, reproject, strike, tryPushMech } from "./combat";
+import { hurtMech, hurtRaider, knockbackFromBoss, refresh, reproject, strike, tryPushMech, tickCorrode } from "./combat";
 
 function threat(state: MatchState, c: Cell): number {
   const occ = occupant(state, c);
@@ -136,6 +138,34 @@ function smashIntent(state: MatchState, cell: Cell | null): Intent {
   return { skillId: "smash", local, projected: inb(cell) ? [cell] : [], cdSweep: state.boss.cdSweep, status: inb(cell) ? "planned" : "void" };
 }
 
+/** Fixed direction and lane; deterministic tie-break follows STEP_DIRS and lane order. */
+
+
+/** Bind target IDs and attack offsets once; subsequent projections never select anew. */
+function displacementIntent(state: MatchState, skillId: "phase_swap" | "gravity_well"): Intent {
+  const origin = state.boss.anchor;
+  const candidates = living(state).slice().sort((a, b) =>
+    Math.min(...footprint(origin).map(c => manh(c, a.pos))) - Math.min(...footprint(origin).map(c => manh(c, b.pos))) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const world = displacementWorld(state);
+  const groups = skillId === "phase_swap" ? candidates.map(m => [m]) : [candidates];
+  for (const targets of groups) {
+    if (!targets.length) continue;
+    const anchor = skillId === "phase_swap" ? targets[0]!.pos : origin;
+    const attackOffsets = sporeLeapCells(anchor).map(c => ({ x: c.x - anchor.x, y: c.y - anchor.y }));
+    const result = prepareDisplacement(world, { skillId, actorId: "boss", targetIds: targets.map(m => `mech:${m.id}`),
+      radius: skillId === "phase_swap" ? 5 : 3, steps: 1, attackOffsets });
+    if (result.status === "planned") return { skillId, displacement: result.intent, displacementProjection: result.intent.declared,
+      local: [], projected: result.intent.declared.attackCells.map(c => ({ ...c })), cdSweep: state.boss.cdSweep, status: "planned" };
+  }
+  return { skillId, local: [], projected: [], cdSweep: state.boss.cdSweep, status: "void" };
+}
+
+
+function prismGuardIntent(state: MatchState): Intent {
+  return { skillId: "prism_guard", targetId: "boss", shieldHits: 1, local: [], projected: [],
+    cdSweep: state.boss.cdSweep, status: "planned" };
+}
+
 function nearestBuilding(state: MatchState, from: Cell[]): Building | null {
   let best: Building | null = null;
   let bestD = 99;
@@ -166,7 +196,10 @@ function raiderGoals(state: MatchState): Map<string, Cell[]> {
   const pool = livingStakeBuildings(state).filter((b) => b.id !== bossGoal?.id);
   const left = [...(pool.length > 0 ? pool : livingStakeBuildings(state))];
   const goals = new Map<string, Cell[]>();
-  const raiders = [...livingRaiders(state)].sort((a, b) => (a.id < b.id ? -1 : 1));
+  const rescueInterceptors = state.mission?.kind === "rescue:v1" && living(state).length > 0;
+  const raiders = [...livingRaiders(state)]
+    .filter((raider) => !rescueInterceptors || raider.role !== "interceptor")
+    .sort((a, b) => (a.id < b.id ? -1 : 1));
   for (const raider of raiders) {
     let best: Building | null = null;
     let bestD = 99;
@@ -222,7 +255,11 @@ function stepRaider(state: MatchState, raider: Raider, goals: Cell[]) {
 function planRaiders(state: MatchState) {
   const goals = raiderGoals(state);
   for (const raider of livingRaiders(state)) {
-    stepRaider(state, raider, goals.get(raider.id) ?? []);
+    // The goal influences movement only: the existing threat scorer still
+    // declares an actual smash cell after moving, not a tracking attack.
+    const pursuit = state.mission?.kind === "rescue:v1" && raider.role === "interceptor" ? living(state).map((m) => ({ ...m.pos })) : [];
+    stepRaider(state, raider, pursuit.length ? pursuit : goals.get(raider.id) ?? []);
+    reconcileNeural(state);
     const cell = pickSmashCells(state, adjacentToUnit(raider.pos));
     raider.intent = cell
       ? { skillId: "smash", local: [{ x: cell.x - raider.pos.x, y: cell.y - raider.pos.y }], projected: [cell], cdSweep: 0, status: "planned" }
@@ -242,31 +279,53 @@ function pickSmashCells(state: MatchState, cells: Cell[]): Cell | null {
 }
 
 export function scriptedEnemyPrepare(state: MatchState): Intent {
+  assertMonsterState(state);
   const skip: Intent = { skillId: "skip", local: [], projected: [], cdSweep: state.boss.cdSweep, status: "void" };
   if (state.phase !== "enemy_prepare") return skip;
   if (!enemiesRemain(state)) {
     refresh(state);
+    // Rescue continues even when there are no enemies left to prepare.
+    if (!state.outcome && state.mission?.kind === "rescue:v1") {
+      state.phase = "player_plan";
+      state.revision += 1;
+    }
     return skip;
   }
   let intent = skip;
   if (state.boss.hp > 0) {
-    if (state.script === "raid_ssw" || state.script === "siege") stepBossTowardObjectives(state);
-    if (state.script === "stationary_smash") intent = smashIntent(state, pickSmash(state));
+    if (unitForSpecies(state.monsterContent?.speciesId)) intent = unitForSpecies(state.monsterContent?.speciesId)!.declare(state, objectiveGap);
+    else if (state.monsterContent?.speciesId === "phase_stalker") intent = displacementIntent(state, "phase_swap");
+    else if (state.monsterContent?.speciesId === "gravity_core") intent = displacementIntent(state, "gravity_well");
+    else if (state.monsterContent?.speciesId === "prism_warden") intent = prismGuardIntent(state);
+    else if (state.monsterContent?.speciesId === "swarm_mantle" || state.monsterContent?.speciesId === "neural_weaver") intent = skip;
+    else if (state.monsterContent) throw new Error("unsupported_monster_content");
     else {
-      const step = state.boss.cadence % 3;
-      const wantSweep = step === 2;
-      if (wantSweep && state.boss.cdSweep === 0) {
-        const pair = pickSweep(state);
-        if (pair) {
-          const local = pair.map((c) => ({ x: c.x - state.boss.anchor.x, y: c.y - state.boss.anchor.y }));
-          intent = { skillId: "sweep", local, projected: pair.filter(inb), cdSweep: state.boss.cdSweep, status: "planned" };
+      if (state.script === "raid_ssw" || state.script === "siege") stepBossTowardObjectives(state);
+      if (state.script === "stationary_smash") intent = smashIntent(state, pickSmash(state));
+      else {
+        const step = state.boss.cadence % 3;
+        const wantSweep = step === 2;
+        if (wantSweep && state.boss.cdSweep === 0) {
+          const pair = pickSweep(state);
+          if (pair) {
+            const local = pair.map((c) => ({ x: c.x - state.boss.anchor.x, y: c.y - state.boss.anchor.y }));
+            intent = { skillId: "sweep", local, projected: pair.filter(inb), cdSweep: state.boss.cdSweep, status: "planned" };
+          } else intent = smashIntent(state, pickSmash(state));
         } else intent = smashIntent(state, pickSmash(state));
-      } else intent = smashIntent(state, pickSmash(state));
-      state.boss.cadence = (step + 1) % 3;
+        state.boss.cadence = (step + 1) % 3;
+      }
     }
   }
   state.boss.intent = intent;
   planRaiders(state);
+  if (state.boss.hp > 0 && state.monsterContent?.speciesId === "swarm_mantle") {
+    intent = prepareSwarmIntent(state);
+    state.boss.intent = intent;
+  }
+  if (state.boss.hp > 0 && state.monsterContent?.speciesId === "neural_weaver") {
+    intent = prepareNeuralIntent(state);
+    state.boss.intent = intent;
+  }
   state.phase = "player_plan";
   state.revision += 1;
   return intent;
@@ -290,7 +349,7 @@ function resolveRaider(state: MatchState, raider: Raider) {
       if (hit && !struck.has(hit.id)) {
         struck.add(hit.id);
         const before = hit.hp;
-        hit.hp = Math.max(0, hit.hp - strike(enemyStatsOf(state).raiderAtk, BUILDING_DEF));
+        hit.hp = Math.max(0, hit.hp - strike(enemyStatsOf(state).raiderAtk + neuralBonus(state, raider.id), BUILDING_DEF));
         ev.damage += before - hit.hp;
         if (hit.hp !== before) (ev.effects ??= []).push(orderedHealthEffect({ kind: "building", id: hit.id, before, after: hit.hp }));
         refresh(state);
@@ -299,7 +358,7 @@ function resolveRaider(state: MatchState, raider: Raider) {
     }
     if (occ === "Assault" || occ === "Gunner" || occ === "Support") {
       const before = state.mechs.find((x) => x.id === occ)!.hp;
-      hurtMech(state, occ, strike(enemyStatsOf(state).raiderAtk, STATS[occ].def));
+      hurtMech(state, occ, strike(enemyStatsOf(state).raiderAtk + neuralBonus(state, raider.id), STATS[occ].def));
       const after = state.mechs.find((x) => x.id === occ)!.hp;
       ev.damage += before - after;
       if (after !== before) (ev.effects ??= []).push(orderedHealthEffect({ kind: "mech", id: occ, before, after }));
@@ -309,22 +368,56 @@ function resolveRaider(state: MatchState, raider: Raider) {
   raider.intent = null;
 }
 
+// Internal, bounded, serializable rule effects. TurnEvent remains presentation output, not a queue.
+type SporeEffect =
+  | { kind: "move"; from: Cell; to: Cell }
+  | { kind: "damage"; target: "mech" | "building" | "raider"; id: string };
+
+/** Piercing visits the already bound ray nearest-first, striking each entity once. */
+
+
+function executeDisplacement(state: MatchState, intent: Intent): void {
+  if (intent.status === "void" || !intent.displacement || !intent.displacementProjection) return;
+  const result = resolveDisplacement(displacementWorld(state), intent.displacement, intent.displacementProjection);
+  if (result.status !== "resolved") { intent.status = "void"; intent.projected = []; return; }
+  const skill = intent.skillId as "phase_swap" | "gravity_well";
+  const moves = result.effects.filter(e => e.status === "move" && e.from && e.to)
+    .map(e => ({ unit: e.entityId, from: { ...e.from! }, to: { ...e.to! } }));
+  // The phase pair is applied together after validating the complete projection.
+  for (const move of moves) {
+    if (move.unit === "boss") state.boss.anchor = { ...move.to };
+    else { const unit = state.mechs.find(m => `mech:${m.id}` === move.unit); if (unit) unit.pos = { ...move.to }; }
+    if (skill === "gravity_well") emit({ type: "monster_displacement", skill, moves: [move] });
+  }
+  if (skill === "phase_swap") emit({ type: "monster_displacement", skill, moves });
+  ringUnit.resolve(state, intent, { hurtMech, hurtRaider, strike, refresh });
+}
+
 export function bossExecute(state: MatchState) {
+  assertMonsterState(state);
   if (state.outcome) {
     refresh(state);
     return;
   }
   if (state.boss.hp <= 0) {
-    for (const raider of state.raiders) {
+    reconcileNeural(state);
+    if (state.boss.intent && (Object.values(MONSTER_SKILLS).some(skill => skill === state.boss.intent!.skillId))) {
+      state.boss.intent.status = "void"; state.boss.intent.projected = []; state.boss.intent = null;
+    }
+    for (const raider of [...state.raiders]) {
       if (state.outcome) break;
       resolveRaider(state, raider);
     }
     refresh(state);
+    tickCorrode(state);
     if (!state.outcome) {
       state.turn += 1;
+      if (state.swarm || state.neural) refresh(state);
+      if (state.outcome) return;
       if (state.turn > MAX_TURNS) {
         state.outcome = "defeat_timeout";
         state.phase = "finished";
+        if (state.boss.shield || state.corrode || state.neural) refresh(state);
       } else {
         state.phase = "enemy_prepare";
         state.revision += 1;
@@ -334,11 +427,26 @@ export function bossExecute(state: MatchState) {
   }
   const intent = state.boss.intent;
   const skill = intent?.skillId ?? "skip";
+  if (skill === "spore_leap" && !state.monsterContent) throw new Error("unsupported_monster_content");
   reproject(state);
   const cells = state.boss.intent?.projected ?? [];
   let any = false;
   const struckBuildings = new Set<string>();
-  if (intent && skill !== "skip" && intent.status !== "void") {
+  if (intent && unitForSkill(skill)) unitForSkill(skill)!.resolve(state, intent, { hurtMech, hurtRaider, strike, refresh });
+  else if (intent && (skill === "phase_swap" || skill === "gravity_well")) executeDisplacement(state, intent);
+  else if (intent && skill === "split_swarm") {
+    if (intent.status !== "void") resolveSwarmIntent(state, intent);
+  }
+  else if (intent && skill === "neural_link") {
+    resolveNeuralIntent(state, intent);
+  }
+  else if (intent && skill === "prism_guard") {
+    if (intent.status !== "void") {
+      state.boss.shield = { kind: "prism_guard", hits: 1 };
+      emit({ type: "monster_status", actor: "boss", status: "prism_guard", change: "applied", remaining: 1 });
+    }
+  }
+  else if (intent && skill !== "skip" && intent.status !== "void") {
     const ev: Extract<TurnEvent, { type: "enemy" }> = { type: "enemy", actor: "boss", skill, cells: cells.map((c) => ({ ...c })), damage: 0 };
     emit(ev);
     for (const c of cells) {
@@ -371,18 +479,22 @@ export function bossExecute(state: MatchState) {
   }
   if (skill === "sweep") state.boss.cdSweep = 1;
   else if (state.boss.cdSweep > 0) state.boss.cdSweep -= 1;
-  if (!any && state.boss.intent) state.boss.intent.status = "void";
+  if (skill !== "spore_leap" && skill !== "ring_pierce" && skill !== "prism_guard" && skill !== "corrode_cell" && skill !== "phase_swap" && skill !== "gravity_well" && skill !== "split_swarm" && skill !== "neural_link" && !any && state.boss.intent) state.boss.intent.status = "void";
   state.boss.intent = null;
-  for (const raider of state.raiders) {
+  for (const raider of [...state.raiders]) {
     if (state.outcome) break;
     resolveRaider(state, raider);
   }
   refresh(state);
+  tickCorrode(state);
   if (!state.outcome) {
     state.turn += 1;
+    if (state.swarm || state.neural) refresh(state);
+    if (state.outcome) return;
     if (state.turn > MAX_TURNS) {
       state.outcome = "defeat_timeout";
       state.phase = "finished";
+      if (state.boss.shield || state.corrode || state.neural) refresh(state);
     } else {
       state.phase = "enemy_prepare";
       state.revision += 1;

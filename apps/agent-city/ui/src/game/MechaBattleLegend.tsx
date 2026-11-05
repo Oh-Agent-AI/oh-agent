@@ -37,5 +37,13 @@ export function MechaBattleLegend({ locale, view }: MechaBattleLegendProps) {
     {legend.actions.length ? <div className="mecha-battle-legend__group" role="group" aria-label={locale === "en" ? "Current operation" : "当前操作"}>
       <h4>{locale === "en" ? "Current operation" : "当前操作"}</h4>{rows(legend.actions)}
     </div> : null}
+    {!view.deployment ? <details className="mecha-battle-legend__guide" data-tactical-guide>
+      <summary>{t("战术提示")}</summary>
+      <ol>
+        <li>{t("先查看敌方意图：点击敌人，高亮其攻击路线与目标格。")}</li>
+        <li>{t("选择机甲，规划移动与行动，再检查目标试算和其他敌人的威胁。")}</li>
+        <li>{t("草稿预测未知不等于安全；确认计划后结束回合。")}</li>
+      </ol>
+    </details> : null}
   </div>;
 }

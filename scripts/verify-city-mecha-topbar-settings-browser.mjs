@@ -96,7 +96,8 @@ try {
         await fieldEntry.click(); await boxCheck(field);
         assert.equal(await fieldEntry.getAttribute("aria-expanded"), "true");
         assert.equal(await remote.isVisible(), false);
-        assert.equal(await field.locator("select").count(), 3, "battlefield, script and doctrine controls retained");
+        assert.equal(await field.locator("select").count(), 4, "mission, battlefield, script and doctrine controls retained");
+        assert.equal(await field.locator("[data-mission-mode]").count(), 1, "local mission selector is reachable");
         const body = field.locator(".mecha-settings-body");
         await body.evaluate(el => { el.scrollTop = el.scrollHeight; });
         await boxCheck(field.locator(".mecha-ruleset"));

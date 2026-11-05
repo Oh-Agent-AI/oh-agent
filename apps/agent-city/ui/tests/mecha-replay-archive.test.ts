@@ -33,6 +33,8 @@ const isError = (code: string) => (e: unknown) => e instanceof ReplayArchiveErro
 
 for (const deployment of [true, false]) test(`completed city replay reconstructs every authoritative round (deployment ${deployment})`, async () => {
   const { c, source } = complete(deployment);
+  assert.notEqual(c.getState().match.outcome, "victory", "skip-only match should end in defeat");
+  assert.equal(c.getState().matchRecap?.status, "verified", "a complete authoritative match yields a verified review");
   const current = structuredClone(c.getState().match);
   const raw = await createLocalReplayArchive(source);
   assert.ok(!raw.includes("private-building-identity"));
@@ -45,6 +47,8 @@ for (const deployment of [true, false]) test(`completed city replay reconstructs
   assert.deepEqual(c.getState().match, current);
   source.rounds[0]!.before.turn = 888;
   assert.notEqual(c.replayArchiveSource()!.rounds[0]!.before.turn, 888);
+  c.restart();
+  assert.equal(c.getState().matchRecap, null, "a new match must not inherit the old review");
 });
 
 test("rejects corrupt, extra, incompatible, altered and incomplete archives", async () => {

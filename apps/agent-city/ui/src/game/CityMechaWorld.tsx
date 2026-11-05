@@ -15,6 +15,7 @@ import { createAssaultBattleHeight, createAssaultBattlePlayer } from "../render/
 import { useConnectedAssault } from "../render/mecha/connectedAssaultMode";
 import { createAssaultCityGround } from "./assaultCityGround";
 import { positionPerformanceActors } from "./mecha/positionPerformanceActors";
+import { createMonsterSpeciesPresentation } from "./mecha/presentation/monsters/MonsterSpeciesPresentation";
 import { terrainSurfaceHeight } from "../engine/surface/terrainSampling";
 import { applyMechaUnitLight, setMechaUnitLight } from "../render/mecha/unitLight";
 import type { MechaPerformanceEvent } from "./mecha/performance";
@@ -27,6 +28,8 @@ import { BOARD, type Cell, type MechId } from "./mecha/rules";
 export type CityMechaView = {
   figures: Array<{ id: MechId; x: number; y: number; alive: boolean; selected: boolean; hp?: number; maxHp?: number }>;
   boss: { x: number; y: number; alive: boolean; hp?: number; maxHp?: number };
+  /** Optional presentation-only identity, projected from the displayed match. */
+  bossSpeciesId?: string;
   raiders: Array<{ id: string; x: number; y: number; alive: boolean; hp?: number; maxHp?: number }>;
   buildings: Array<{ id: string; cells: Cell[]; hp: number; maxHp: number }>;
   focusedBuilding?: string | null;
@@ -48,6 +51,10 @@ export type CityMechaView = {
   move: Cell | null;
   targets: Cell[];
   targetIds: string[];
+  /** Committed fields in the displayed snapshot, never the boss intent or forecast. */
+  corrodeFields?: Array<{ id: string; cell: Cell }>;
+  /** Rescue objective supplied by the caller; null/absent means no objective marker. */
+  missionTarget?: Cell | null;
   /** Actual selected target anchor; shove is supplied only for a verified displacement. */
   targetPreview?: { target: Cell; shove?: { from: Cell; to: Cell; blocked?: boolean } };
   /** Mouse or list focus; other enemies' threats remain visible. */
@@ -274,6 +281,84 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       moveVertices.push(ax, 0, az, bx, 0, bz, cx, 0, cz, bx, 0, bz, dx, 0, dz, cx, 0, cz);
     }
     moveGeo.setAttribute("position", new THREE.Float32BufferAttribute(moveVertices, 3));
+    // Rescue is a separate layer, not a movement, attack or threat tile. The
+    // octagonal rim leaves the center available for overlapping tactical marks.
+    const missionGeo = new THREE.BufferGeometry();
+    const missionVertices: number[] = [];
+    const octagon = (radius: number): Array<[number, number]> => Array.from({ length: 8 }, (_, i) => {
+      const angle = Math.PI / 8 + i * Math.PI / 4;
+      return [Math.cos(angle) * w * radius, Math.sin(angle) * d * radius];
+    });
+    const missionOuter = octagon(.78), missionInner = octagon(.65);
+    for (let i = 0; i < 8; i += 1) {
+      const [ax, az] = missionOuter[i]!, [bx, bz] = missionOuter[(i + 1) % 8]!;
+      const [cx, cz] = missionInner[i]!, [dx, dz] = missionInner[(i + 1) % 8]!;
+      missionVertices.push(ax, 0, az, bx, 0, bz, cx, 0, cz, bx, 0, bz, dx, 0, dz, cx, 0, cz);
+    }
+    missionGeo.setAttribute("position", new THREE.Float32BufferAttribute(missionVertices, 3));
+    const missionMat = tacticalMarkerMaterial("#c98cff");
+    const missionRim = new THREE.Mesh(missionGeo, missionMat);
+    missionRim.name = "mecha-mission-target-rim";
+    missionRim.renderOrder = 9; missionRim.visible = false; root.add(missionRim);
+    // A purple rescue cross remains legible over units/terrain without relying
+    // only on color. Like the existing danger badges it faces the camera.
+    const missionCanvas = document.createElement("canvas");
+    missionCanvas.width = missionCanvas.height = 96;
+    const missionContext = missionCanvas.getContext("2d");
+    if (missionContext) {
+      missionContext.beginPath();
+      missionContext.moveTo(48, 4); missionContext.lineTo(88, 21); missionContext.lineTo(88, 65);
+      missionContext.lineTo(48, 92); missionContext.lineTo(8, 65); missionContext.lineTo(8, 21); missionContext.closePath();
+      missionContext.fillStyle = "#632a9c"; missionContext.fill();
+      missionContext.lineWidth = 5; missionContext.strokeStyle = "#f5e4ff"; missionContext.stroke();
+      missionContext.fillStyle = "#ffffff";
+      missionContext.fillRect(39, 21, 18, 50); missionContext.fillRect(23, 37, 50, 18);
+    }
+    const missionTexture = new THREE.CanvasTexture(missionCanvas);
+    const missionBadgeMat = new THREE.SpriteMaterial({ map: missionTexture, transparent: true, depthTest: false, depthWrite: false, sizeAttenuation: false, fog: false, toneMapped: false });
+    const missionBadge = new THREE.Sprite(missionBadgeMat);
+    missionBadge.name = "mecha-mission-target-badge";
+    missionBadge.renderOrder = 10; missionBadge.visible = false; root.add(missionBadge);
+    // Persistent corroded ground is independent of targeting and danger layers.
+    // Sparse broken strokes leave the tile center readable; the fixed-size badge
+    // identifies the field even when terrain or a unit obscures the ground.
+    const corrodeGeo = new THREE.BufferGeometry();
+    const corrodeVertices: number[] = [];
+    const stroke = (x1: number, z1: number, x2: number, z2: number) => {
+      const dx = x2 - x1, dz = z2 - z1, length = Math.hypot(dx, dz);
+      const nx = -dz / length * .035, nz = dx / length * .035;
+      corrodeVertices.push((x1 + nx) * w, 0, (z1 + nz) * d, (x1 - nx) * w, 0, (z1 - nz) * d, (x2 + nx) * w, 0, (z2 + nz) * d,
+        (x2 + nx) * w, 0, (z2 + nz) * d, (x1 - nx) * w, 0, (z1 - nz) * d, (x2 - nx) * w, 0, (z2 - nz) * d);
+    };
+    stroke(-.72, -.45, -.45, -.22); stroke(-.45, -.22, -.55, .08); stroke(-.55, .08, -.3, .34);
+    stroke(.68, .48, .4, .24); stroke(.4, .24, .5, -.04); stroke(.5, -.04, .25, -.32);
+    corrodeGeo.setAttribute("position", new THREE.Float32BufferAttribute(corrodeVertices, 3));
+    const corrodeMat = tacticalMarkerMaterial("#b7ef65", .9);
+    const corrodeCanvas = document.createElement("canvas");
+    corrodeCanvas.width = corrodeCanvas.height = 96;
+    const corrodeContext = corrodeCanvas.getContext("2d");
+    if (corrodeContext) {
+      corrodeContext.beginPath(); corrodeContext.moveTo(48, 4); corrodeContext.lineTo(89, 26);
+      corrodeContext.lineTo(89, 70); corrodeContext.lineTo(48, 92); corrodeContext.lineTo(7, 70); corrodeContext.lineTo(7, 26); corrodeContext.closePath();
+      corrodeContext.fillStyle = "#315728"; corrodeContext.fill();
+      corrodeContext.lineWidth = 5; corrodeContext.strokeStyle = "#dcff9c"; corrodeContext.stroke();
+      corrodeContext.beginPath(); corrodeContext.moveTo(57, 18); corrodeContext.lineTo(39, 42); corrodeContext.lineTo(54, 49); corrodeContext.lineTo(37, 77);
+      corrodeContext.lineWidth = 8; corrodeContext.lineJoin = "round"; corrodeContext.strokeStyle = "#ffffff"; corrodeContext.stroke();
+    }
+    const corrodeTexture = new THREE.CanvasTexture(corrodeCanvas);
+    const corrodeBadgeMat = new THREE.SpriteMaterial({ map: corrodeTexture, transparent: true, depthTest: false, depthWrite: false, sizeAttenuation: false, fog: false, toneMapped: false });
+    const corrodeMarks: Array<{ ground: THREE.Mesh; badge: THREE.Sprite; cell: Cell }> = [];
+    for (let y = 0; y < BOARD; y++) for (let x = 0; x < BOARD; x++) {
+      const cell = { x, y }, at = cellWorld(site, cell);
+      const ground = new THREE.Mesh(corrodeGeo, corrodeMat);
+      ground.name = `mecha-corrode-ground-${x}-${y}`;
+      ground.position.set(at.x, at.y + .34, at.z); ground.rotation.y = site.yaw;
+      ground.renderOrder = 8; ground.visible = false;
+      const badge = new THREE.Sprite(corrodeBadgeMat);
+      badge.name = `mecha-corrode-badge-${x}-${y}`;
+      badge.renderOrder = 10; badge.visible = false;
+      root.add(ground, badge); corrodeMarks.push({ ground, badge, cell });
+    }
     const threatMat = tacticalMarkerMaterial(TACTICAL_COLORS.declared, .9);
     const subduedThreatMat = tacticalMarkerMaterial(TACTICAL_COLORS.declared, .6);
     const focusThreatMat = tacticalMarkerMaterial(TACTICAL_COLORS.declared);
@@ -495,8 +580,6 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
     const gunner = createGunner();
     const support = createSupport();
     const boss = createBoss();
-    const raiderWest = createRaider();
-    const raiderEast = createRaider();
     // Meshes are built for one lot (about 8 world units). The tactics cell is
     // two lots on a side, so the same mesh is drawn at 2×.
     const unitScale = 2;
@@ -504,55 +587,50 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
     gunner.scale.multiplyScalar(unitScale);
     support.scale.multiplyScalar(unitScale);
     boss.scale.multiplyScalar(unitScale);
-    raiderWest.scale.multiplyScalar(unitScale);
-    raiderEast.scale.multiplyScalar(unitScale);
     const figures: Record<MechId, THREE.Group> = { Assault: assault, Gunner: gunner, Support: support };
     const markers = {
       Assault: marker(MECHA_FACTION_COLORS.friendly, 4.7, 6.3),
       Gunner: marker(MECHA_FACTION_COLORS.friendly, 4.3, 5.8),
       Support: marker(MECHA_FACTION_COLORS.friendly, 4.3, 5.8),
       boss: marker(MECHA_FACTION_COLORS.enemy, 10.2, 13, 4),
-      raiderWest: marker(MECHA_FACTION_COLORS.enemy, 2.9, 4.1, 4),
-      raiderEast: marker(MECHA_FACTION_COLORS.enemy, 2.9, 4.1, 4),
     };
-    for (const figure of [assault, gunner, support, boss, raiderWest, raiderEast]) root.add(figure);
+    // Align the square marker to the board and size it to the 2×2 footprint.
+    markers.boss.geo.rotateY(Math.PI / 4);
+    markers.boss.mesh.rotation.y = site.yaw;
+    for (const figure of [assault, gunner, support, boss]) root.add(figure);
+    let displayedBossSpecies = viewRef.current.bossSpeciesId;
+    let bossSpeciesVisual = createMonsterSpeciesPresentation(boss, displayedBossSpecies, { visualScale: Math.min(site.cellW, site.cellD) / 8 });
     for (const figure of viewRef.current.figures) {
       const feet = cellWorld(site, { x: figure.x, y: figure.y });
       figures[figure.id].position.set(feet.x, feet.y, feet.z);
     }
     boss.position.copy(footprintFeet(site, viewRef.current.boss));
-    for (const [index, raider] of viewRef.current.raiders.entries()) {
-      const mesh = [raiderWest, raiderEast][index];
-      if (!mesh) break;
-      const feet = cellWorld(site, { x: raider.x, y: raider.y });
-      mesh.position.set(feet.x, feet.y, feet.z);
-    }
     for (const ring of Object.values(markers)) root.add(ring.mesh);
     // Screen-space life bars stay crisp outside the city's pixel/bloom pass.
     // It follows the actual model, not the projected destination, and cannot intercept picks.
     const badgeLayer = badgeLayerRef.current!;
     const badgePoint = new THREE.Vector3();
     let badgeViewport = { width: 1, height: 1 };
-    const unitBadges = Array.from({ length: 6 }, () => {
+    const createUnitBadge = () => {
       const label = document.createElement("div"); label.className = "mecha-world-healthbar";
       label.setAttribute("role", "meter");
       const fill = document.createElement("span"); fill.className = "mecha-world-healthbar__fill";
       label.append(fill); badgeLayer.append(label);
       return { label, fill, signature: "" };
-    });
-    const showUnitBadge = (index: number, id: string, unit: THREE.Object3D, alive: boolean, hp: number | undefined, maxHp: number | undefined, selected = false) => {
-      const badge = unitBadges[index]!;
-      const identity = describeUnitIdentity(id, localeRef.current);
+    };
+    const unitBadges = Array.from({ length: 4 }, createUnitBadge);
+    const showUnitBadge = (badge: ReturnType<typeof createUnitBadge>, id: string, unit: THREE.Object3D, alive: boolean, hp: number | undefined, maxHp: number | undefined, selected = false, raider?: { id: string }) => {
+      const identity = describeUnitIdentity(id, localeRef.current, raider);
       badge.label.hidden = !alive || (Boolean(performanceRef.current) && !performanceHealth);
       if (badge.label.hidden) return;
       const health = unitHealth(hp, maxHp);
-      const signature = `${id}:${localeRef.current}:${health.text}:${selected}`;
+      const signature = `${id}:${localeRef.current}:${identity.side}:${identity.label}:${health.text}:${selected}`;
       if (signature !== badge.signature) {
         badge.label.dataset.unitId = id; badge.label.dataset.side = identity.side;
         badge.label.dataset.healthState = health.known ? "known" : "unknown";
         badge.label.classList.toggle("is-selected", selected);
         badge.label.classList.toggle("is-boss", id === "boss");
-        badge.label.setAttribute("aria-label", `${identity.label} · HP ${health.text}`);
+        badge.label.setAttribute("aria-label", `${identity.label} · ${identity.sideLabel} · HP ${health.text}`);
         badge.label.setAttribute("aria-valuetext", health.text);
         if (health.known) {
           badge.label.setAttribute("aria-valuemin", "0");
@@ -716,10 +794,15 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       const current = viewRef.current;
       const roots: Array<{ mesh: THREE.Object3D; id: string; cell: Cell }> = [];
       current.figures.forEach(unit => { if (unit.alive) roots.push({ mesh: figures[unit.id], id: unit.id, cell: { x: unit.x, y: unit.y } }); });
-      if (current.boss.alive) roots.push({ mesh: boss, id: "boss", cell: { x: current.boss.x, y: current.boss.y } });
-      const small = [raiderWest, raiderEast];
-      current.raiders.forEach((raider, index) => {
-        const mesh = small[index];
+      if (current.boss.alive) {
+        const cell = { x: current.boss.x, y: current.boss.y };
+        roots.push({ mesh: boss, id: "boss", cell });
+        // The geometric body is a sibling of the animation rig, but is the
+        // same rule entity. Include its actual silhouette in pointer picking.
+        if (bossSpeciesVisual.pickRoot) roots.push({ mesh: bossSpeciesVisual.pickRoot, id: "boss", cell });
+      }
+      current.raiders.forEach(raider => {
+        const mesh = raiderModels.get(raider.id)?.mesh;
         if (mesh && raider.alive) roots.push({ mesh, id: raider.id, cell: { x: raider.x, y: raider.y } });
       });
       for (const hit of hoverRay.intersectObjects(roots.map(item => item.mesh), true)) {
@@ -787,16 +870,48 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
 
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const spot = new THREE.Vector3();
-    const actors = { Assault: assault, Gunner: gunner, Support: support, boss, "raider-w": raiderWest, "raider-e": raiderEast };
-    const litUnits = [assault, gunner, support, boss, raiderWest, raiderEast];
-    const animators = new Map<THREE.Object3D, MechaBattleAnimator>([assault, gunner, support, boss, raiderWest, raiderEast].map((mesh) => [mesh, new MechaBattleAnimator(mesh)]));
+    // IDs, not array slots, own a model for the lifetime of a displayed actor.
+    // A null prototype also permits arbitrary IDs without object-prototype collisions.
+    const actors: Record<string, THREE.Group> = Object.assign(Object.create(null), { Assault: assault, Gunner: gunner, Support: support, boss });
+    const litUnits = [assault, gunner, support, boss];
+    const animators = new Map<THREE.Object3D, MechaBattleAnimator>(litUnits.map((mesh) => [mesh, new MechaBattleAnimator(mesh)]));
+    const raiderModels = new Map<string, { mesh: THREE.Group; ring: ReturnType<typeof marker>; badge: ReturnType<typeof createUnitBadge> }>();
+    const removeRaider = (id: string) => {
+      const model = raiderModels.get(id);
+      if (!model) return;
+      model.mesh.removeFromParent(); model.ring.mesh.removeFromParent();
+      disposeMechaModel(model.mesh);
+      model.ring.geo.dispose(); model.ring.mat.dispose(); model.badge.label.remove();
+      animators.delete(model.mesh); delete actors[id]; raiderModels.delete(id);
+    };
+    const syncRaiders = (raiders: CityMechaView["raiders"], retainPlaybackActors: boolean) => {
+      const ids = new Set(raiders.map(raider => raider.id));
+      for (const [id, model] of raiderModels) if (!ids.has(id)) {
+        model.mesh.visible = false; model.ring.mesh.visible = false; model.badge.label.hidden = true;
+        // The player owns a fixed set of actor references until disposed.
+        if (!retainPlaybackActors) removeRaider(id);
+      }
+      for (const raider of raiders) {
+        if (raiderModels.has(raider.id) || Object.hasOwn(actors, raider.id)) continue;
+        const mesh = createRaider();
+        mesh.scale.multiplyScalar(unitScale);
+        const feet = cellWorld(site, raider);
+        mesh.position.set(feet.x, feet.y, feet.z);
+        const ring = marker(MECHA_FACTION_COLORS.enemy, 2.9, 4.1, 4);
+        const badge = createUnitBadge();
+        root.add(mesh, ring.mesh);
+        raiderModels.set(raider.id, { mesh, ring, badge });
+        actors[raider.id] = mesh;
+        animators.set(mesh, new MechaBattleAnimator(mesh));
+      }
+    };
     const animate = (mesh: THREE.Object3D, id: string, hp: number, moving: boolean, dt: number) => {
       const cue = viewRef.current.combat;
       const animator = animators.get(mesh)!;
       animator.sync(hp, cue?.id ?? 0, cue?.actions.find((item) => item.actor === id)?.action);
       animator.update(dt, moving, reduce);
     };
-    const actorMarkers = { Assault: markers.Assault, Gunner: markers.Gunner, Support: markers.Support, boss: markers.boss, "raider-w": markers.raiderWest, "raider-e": markers.raiderEast };
+    const actorMarkers = { Assault: markers.Assault, Gunner: markers.Gunner, Support: markers.Support, boss: markers.boss };
     const resolveCell = (cell: Cell, actor: string) => {
       if (actor === "boss") return footprintFeet(site, cell);
       const feet = cellWorld(site, cell);
@@ -856,6 +971,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
     let player: MechaPerformancePlayer | null = null;
     // Presentation-only health, advanced on settled animation cues. Never edits match state.
     let performanceHealth: Map<string, number> | null = null;
+    let performanceFields: Map<string, Cell> | null = null;
     let releasePreview: (() => void) | null = null;
     const connectedPreview = useConnectedAssault(import.meta.env.DEV, location.search);
     let roadHeight: ((x: number, z: number) => number) | undefined;
@@ -908,15 +1024,27 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       const dt = Math.min(0.08, (now - lastFrame) / 1000);
       lastFrame = now;
       if (!candidateReady) return;
+      const current = viewRef.current;
+      if (playing !== performanceRef.current) {
+        player?.dispose(); player = null;
+        releasePreview?.(); releasePreview = null;
+      }
+      // Pre-create only actors justified by verified spawn cues. They remain
+      // hidden until the player reaches that cue and are not added to picking.
+      const births = (performanceRef.current?.events ?? []).filter(event => event.kind === "raider_spawn");
+      const currentRaiderIds = new Set(current.raiders.map(raider => raider.id));
+      const playbackRaiders: CityMechaView["raiders"] = [...current.raiders, ...births
+        .filter(event => !currentRaiderIds.has(event.actor))
+        .map(event => ({ id: event.actor, x: event.at.x, y: event.at.y, alive: true, hp: event.hp, maxHp: event.hp }))];
+      syncRaiders(playbackRaiders, Boolean(player));
       // 夜间补光（见 unitLight.ts）。GLB 是异步原地升级的，升级后材质整套换掉，所以按 userData.glb 的变化重装
       setMechaUnitLight(engine.skyNight);
-      for (const unit of litUnits) {
+      for (const unit of [...litUnits, ...Array.from(raiderModels.values(), model => model.mesh)]) {
         const source = unit.userData.glb ?? "procedural";
         if (unit.userData.unitLightFor === source) continue;
         applyMechaUnitLight(unit);
         unit.userData.unitLightFor = source;
       }
-      const current = viewRef.current;
       syncOrderMarkers(!performanceRef.current && current.projectedTelegraph != null ? (current.enemyOrder ?? []) : []);
       // Keep labels readable when a narrow view fits the board from farther
       // away. Non-attenuated sprite size is view-space; convert CSS pixels
@@ -1026,6 +1154,23 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         focusLines[index]!.visible = focus.has(id);
         moveLines[index]!.visible = id === moveKey;
       });
+      const mission = current.missionTarget;
+      const hasMission = mission != null && Number.isInteger(mission.x) && Number.isInteger(mission.y)
+        && mission.x >= 0 && mission.y >= 0 && mission.x < BOARD && mission.y < BOARD;
+      missionRim.visible = missionBadge.visible = hasMission;
+      if (hasMission) {
+        const world = cellWorld(site, mission);
+        missionRim.position.set(world.x, world.y + .36, world.z);
+        missionRim.rotation.y = site.yaw;
+        // Board-local top edge keeps this badge apart from corner warnings.
+        const badgeAt = boardToWorld(site, (mission.x + .5) * site.cellW, (mission.y + .18) * site.cellD);
+        missionBadge.position.set(badgeAt.x, world.y + .8, badgeAt.z);
+        // Lift the screen-facing symbol above the cell so its 20px silhouette
+        // does not blanket the move and danger marks on small boards.
+        cameraPosition.copy(missionBadge.position).applyMatrix4(camera.matrixWorldInverse);
+        missionBadge.position.addScaledVector(cameraUp, pixelScale * -cameraPosition.z * 14);
+        missionBadge.scale.set(pixelScale * 20, pixelScale * 20, 1);
+      }
       const bossFeet = footprintFeet(site, current.boss);
       const performing = Boolean(performanceRef.current);
       if (!performing && playing) {
@@ -1034,6 +1179,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
           releasePreview?.(); releasePreview = null;
           playing = null;
           performanceHealth = null;
+          performanceFields = null;
         } catch (error) { failPreview(error); return; }
       }
       const validCell = (cell: Cell, span = 1) => Number.isInteger(cell.x) && Number.isInteger(cell.y)
@@ -1209,22 +1355,18 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       markers.boss.mesh.visible = current.boss.alive;
       markers.boss.mesh.position.set(boss.position.x, boss.position.y + 0.55, boss.position.z);
       const bossHovered = current.hoveredEnemy === "boss";
-      markers.boss.mesh.scale.setScalar(targetIds.has("boss") || bossHovered ? 1.18 : 1);
+      const bossMarkerEmphasis = targetIds.has("boss") || bossHovered ? 1.18 : 1;
+      markers.boss.mesh.scale.set(site.cellW * Math.SQRT2 / 13 * bossMarkerEmphasis, 1, site.cellD * Math.SQRT2 / 13 * bossMarkerEmphasis);
       markers.boss.mat.opacity = targetIds.has("boss") || bossHovered ? 1 : 0.68;
       const nearest = current.figures.find((figure) => figure.alive);
       if (!performing && nearest && current.boss.alive) {
         const feet = cellWorld(site, { x: nearest.x, y: nearest.y });
         faceMechaTarget(boss, bossFeet, new THREE.Vector3(feet.x, feet.y, feet.z));
       }
-      const small = [raiderWest, raiderEast];
-      for (let i = 0; i < small.length; i += 1) {
-        const mesh = small[i];
-        const raider = current.raiders[i];
-        if (!mesh) continue;
-        if (!raider) {
-          mesh.visible = false;
-          continue;
-        }
+      for (const raider of current.raiders) {
+        const model = raiderModels.get(raider.id);
+        if (!model) continue;
+        const { mesh, ring } = model;
         const feet = cellWorld(site, { x: raider.x, y: raider.y });
         spot.set(feet.x, feet.y, feet.z);
         const moving = mesh.position.distanceToSquared(spot) > 0.01;
@@ -1232,26 +1374,23 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
           if (!pausedRef.current) slide(mesh, spot, reduce);
           animate(mesh, raider.id, raider.alive ? 1 : 0, moving && raider.alive, pausedRef.current ? 0 : dt);
         }
-        mesh.visible = true;
-        const ring = i === 0 ? markers.raiderWest : markers.raiderEast;
-        ring.mesh.visible = raider.alive;
+        if (!performing) mesh.visible = true;
+        ring.mesh.visible = raider.alive && mesh.visible;
         ring.mesh.position.set(mesh.position.x, mesh.position.y + 0.55, mesh.position.z);
         const raiderHovered = current.hoveredEnemy === raider.id;
         ring.mesh.scale.setScalar(targetIds.has(raider.id) || raiderHovered ? 1.28 : 1);
         ring.mat.opacity = targetIds.has(raider.id) || raiderHovered ? 1 : 0.68;
         if (raider.alive && !performing) faceMechaTarget(mesh, spot, bossFeet);
       }
-      if (!current.raiders[0]?.alive) markers.raiderWest.mesh.visible = false;
-      if (!current.raiders[1]?.alive) markers.raiderEast.mesh.visible = false;
       if (playing !== performanceRef.current) {
-        player?.dispose();
-        player = null;
-        releasePreview?.();
-        releasePreview = null;
         playing = performanceRef.current;
         performanceHealth = null;
+        performanceFields = playing ? new Map((current.corrodeFields ?? []).map(field => [field.id, field.cell])) : null;
         if (playing) {
-          positionPerformanceActors(actors, current, resolveCell);
+          // Playback snapshots the actor dictionary: roster changes during an
+          // existing performance must not mutate the player's position table.
+          const performanceActors = Object.assign(Object.create(null), actors) as Record<string, THREE.Group>;
+          positionPerformanceActors(performanceActors, current, resolveCell);
           const schedule = performanceHealthSchedule(playing.events, current.combat?.healthTimeline, current.combat?.presentationChanges);
           const initial = new Map<string, number>();
           for (const unit of current.figures) if (unit.hp !== undefined) initial.set(healthKey("mech", unit.id), unit.hp);
@@ -1260,16 +1399,40 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
           for (const building of current.buildings) initial.set(healthKey("building", building.id), building.hp);
           // A missing or mismatched snapshot is not safe to display as current health.
           const verified = new Map(initial);
-          const valid = schedule?.every((effects) => effects.every((effect) => {
-            const key = healthKey(effect.kind, effect.id);
-            if (verified.get(key) !== effect.before) return false;
-            verified.set(key, effect.after);
+          const valid = schedule?.every((effects, index) => {
+            const cue = playing?.events[index];
+            const id = cue && (cue.kind === "raider_spawn" || cue.kind === "raider_remove") ? healthKey("raider", cue.actor) : null;
+            if (cue?.kind === "raider_spawn" && id) {
+              if (verified.has(id)) return false;
+              verified.set(id, cue.hp);
+            }
+            if (!effects.every((effect) => {
+              const key = healthKey(effect.kind, effect.id);
+              if (verified.get(key) !== effect.before) return false;
+              verified.set(key, effect.after);
+              return true;
+            })) return false;
+            if (cue?.kind === "raider_remove" && id) {
+              if (verified.get(id) !== cue.hp) return false;
+              verified.delete(id);
+            }
             return true;
-          }));
+          });
           if (valid) performanceHealth = initial;
           const onEventSettled = (index: number) => {
-            if (!performanceHealth || !schedule) return;
-            for (const effect of schedule[index] ?? []) performanceHealth.set(healthKey(effect.kind, effect.id), effect.after);
+            const event = playing?.events[index];
+            if (performanceHealth && schedule) {
+              if (event?.kind === "raider_spawn") performanceHealth.set(healthKey("raider", event.actor), event.hp);
+              for (const effect of schedule[index] ?? []) performanceHealth.set(healthKey(effect.kind, effect.id), effect.after);
+              if (event?.kind === "raider_remove") performanceHealth.delete(healthKey("raider", event.actor));
+            }
+            if (event?.kind === "corrode_field" && performanceFields) {
+              if (event.change === "created") performanceFields.set(event.fieldId, event.cell);
+              else {
+                const previous = performanceFields.get(event.fieldId);
+                if (previous && previous.x === event.cell.x && previous.y === event.cell.y) performanceFields.delete(event.fieldId);
+              }
+            }
           };
           const onComplete = () => onPerformanceCompleteRef.current();
           const initiallyFallen = [
@@ -1279,11 +1442,11 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
           ];
           if (connectedPreview) {
             try {
-              const preview = createAssaultBattlePlayer(actors, playing.events, resolveCell, root, onComplete, battleHeight, initiallyFallen, onEventSettled);
+              const preview = createAssaultBattlePlayer(performanceActors, playing.events, resolveCell, root, onComplete, battleHeight, initiallyFallen, onEventSettled);
               player = preview.player;
               releasePreview = preview.release;
             } catch (error) { failPreview(error); return; }
-          } else player = new MechaPerformancePlayer(actors, playing.events, resolveCell, root, onComplete, undefined, initiallyFallen, onEventSettled);
+          } else player = new MechaPerformancePlayer(performanceActors, playing.events, resolveCell, root, onComplete, undefined, initiallyFallen, onEventSettled);
         }
       }
       if (player) {
@@ -1293,21 +1456,51 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
           catch (error) { failPreview(error); return; }
         } else player.update(performanceDt);
         for (const [id, marker] of Object.entries(actorMarkers)) {
-          const actor = actors[id as keyof typeof actors];
+          const actor = actors[id]!;
           marker.mesh.position.set(actor.position.x, actor.position.y + 0.55, actor.position.z);
           marker.mesh.visible = actor.visible;
         }
+        for (const { mesh, ring } of raiderModels.values()) {
+          ring.mesh.position.set(mesh.position.x, mesh.position.y + 0.55, mesh.position.z);
+          ring.mesh.visible = mesh.visible;
+        }
       }
+      // Apply settled cues in this same frame. An interrupted or completed
+      // playback instead takes its fields directly from the displayed snapshot.
+      const visibleFields = new Set((performanceFields ? Array.from(performanceFields.values()) : (current.corrodeFields ?? []).map(field => field.cell))
+        .filter(cell => validCell(cell)).map(cellKey));
+      for (const mark of corrodeMarks) {
+        mark.ground.visible = mark.badge.visible = visibleFields.has(cellKey(mark.cell));
+        if (!mark.badge.visible) continue;
+        const at = cellWorld(site, mark.cell);
+        const corner = boardToWorld(site, (mark.cell.x + .2) * site.cellW, (mark.cell.y + .8) * site.cellD);
+        mark.badge.position.set(corner.x, at.y + .8, corner.z);
+        cameraPosition.copy(mark.badge.position).applyMatrix4(camera.matrixWorldInverse);
+        mark.badge.position.addScaledVector(cameraUp, pixelScale * -cameraPosition.z * 8);
+        mark.badge.scale.set(pixelScale * 14, pixelScale * 14, 1);
+      }
+      // The player may move or rotate the rig; sync its visual sibling last.
+      if (current.bossSpeciesId !== displayedBossSpecies) {
+        bossSpeciesVisual.dispose();
+        displayedBossSpecies = current.bossSpeciesId;
+        bossSpeciesVisual = createMonsterSpeciesPresentation(boss, displayedBossSpecies, { visualScale: Math.min(site.cellW, site.cellD) / 8 });
+      }
+      const bossDisplayHp = performanceHealth?.get(healthKey("boss", "boss")) ?? current.boss.hp;
+      const bossHealth = bossDisplayHp !== undefined && current.boss.maxHp !== undefined
+        ? { hp: bossDisplayHp, maxHp: current.boss.maxHp } : undefined;
+      bossSpeciesVisual.update(pausedRef.current ? 0 : dt, reduce, bossHealth);
       for (let i = 0; i < 3; i++) {
         const id = (["Assault", "Gunner", "Support"] as const)[i]!;
         const figure = current.figures.find(item => item.id === id);
         const hp = performanceHealth?.get(healthKey("mech", id)) ?? figure?.hp;
-        showUnitBadge(i, id, figures[id], Boolean(figure?.alive), hp, figure?.maxHp, Boolean(figure?.selected));
+        showUnitBadge(unitBadges[i]!, id, figures[id], Boolean(figure?.alive), hp, figure?.maxHp, Boolean(figure?.selected));
       }
-      showUnitBadge(3, "boss", boss, current.boss.alive, performanceHealth?.get(healthKey("boss", "boss")) ?? current.boss.hp, current.boss.maxHp);
-      for (let i = 0; i < 2; i++) {
-        const raider = current.raiders[i];
-        showUnitBadge(4 + i, raider?.id ?? "unknown-raider", small[i]!, Boolean(raider?.alive), raider ? performanceHealth?.get(healthKey("raider", raider.id)) ?? raider.hp : undefined, raider?.maxHp);
+      showUnitBadge(unitBadges[3]!, "boss", boss, current.boss.alive, performanceHealth?.get(healthKey("boss", "boss")) ?? current.boss.hp, current.boss.maxHp);
+      // The raider list proves enemy side, but this view does not carry summon metadata.
+      for (const raider of playbackRaiders) {
+        const model = raiderModels.get(raider.id);
+        if (model) showUnitBadge(model.badge, raider.id, model.mesh, raider.alive && model.mesh.visible,
+          performanceHealth?.get(healthKey("raider", raider.id)) ?? raider.hp, raider.maxHp, false, raider);
       }
       for (const building of site.buildings) {
         const bar = bars.get(building.id);
@@ -1333,9 +1526,11 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       canvas.removeEventListener("pointerleave", onLeave);
       cameraCommands.current = null;
       player?.dispose();
+      bossSpeciesVisual.dispose();
       clearOrderMarkers();
       try { lease.release(); } catch { /* host already disposed the scene */ }
-      for (const figure of [assault, gunner, support, boss, raiderWest, raiderEast]) disposeMechaModel(figure);
+      for (const id of raiderModels.keys()) removeRaider(id);
+      for (const figure of [assault, gunner, support, boss]) disposeMechaModel(figure);
       releasePreview?.();
       setMechaUnitLight(0);
       gridGeo.dispose();
@@ -1349,6 +1544,8 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       reachMarks.dispose(); overlapReachRims.dispose(); overlapReachMarks.dispose();
       for (const geo of [threatGeo, projectedGeo, targetGeo, reachGeo, overlapReachRimGeo, overlapReachGeo, focusGeo, moveGeo, sourceGeo, dangerFrameGeo, dangerFillGeo]) geo.dispose();
       for (const mat of [dangerFrameMat, subduedDangerFrameMat, dangerFillMat, focusedDangerFillMat, subduedDangerFillMat, sourceMat, subduedSourceMat, subduedAttackRouteMat, subduedRouteOutlineMat, threatMat, subduedThreatMat, focusThreatMat, projectedMat, overlapProjectedMat, focusedProjectedMat, subduedProjectedMat, targetMat, reachMat, overlapReachRimMat, overlapReachMat, focusMat, moveMat, warningMat, subduedWarningMat, focusWarningMat, projectedWarningMat, focusedProjectedWarningMat, subduedProjectedWarningMat, combinedWarningMat]) mat.dispose();
+      missionGeo.dispose(); missionMat.dispose(); missionBadgeMat.dispose(); missionTexture.dispose();
+      corrodeGeo.dispose(); corrodeMat.dispose(); corrodeBadgeMat.dispose(); corrodeTexture.dispose();
       warningTexture.dispose();
       projectedTexture.dispose();
       combinedTexture.dispose();

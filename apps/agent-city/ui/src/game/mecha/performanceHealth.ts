@@ -21,6 +21,9 @@ export function performanceHealthSchedule(events: readonly MechaPerformanceEvent
   let lastCue = -1;
   let healthIndex = 0;
   for (const change of changes.changes) {
+    // Status transitions have no animation cue yet. They still participate in
+    // reconciliation, but must not prevent unrelated health scheduling.
+    if (change.kind === "monster_status") continue;
     // Collision may have no cue. Both displacements and health changes advance
     // the cursor: later effects in the same enemy event must not appear before
     // an intervening shove, even though the parent event was logged first.

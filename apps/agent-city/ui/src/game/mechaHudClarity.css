@@ -101,3 +101,9 @@
 .mecha-plan-card__detail.mecha-plan-card__fizzle { color: #ffb8a9; font-weight: 700; }
 .mecha-overlay.is-city.has-match.is-reference-hud .mecha-planning-status > .mecha-planning-fizzle,
 .mecha-planning-fizzle { color: #ffb8a9; font-weight: 700; overflow-wrap: anywhere; }
+
+.mecha-battle-legend__guide { grid-column: 1 / -1; font-size: 12px; line-height: 1.45; }
+.mecha-battle-legend__guide summary { cursor: pointer; min-height: 28px; padding: 4px 0; }
+.mecha-battle-legend__guide summary:focus-visible { outline: 3px solid #ffe08a; outline-offset: 2px; }
+.mecha-battle-legend__guide ol { margin: 4px 0; padding-left: 20px; }
+.mecha-battle-legend__guide li + li { margin-top: 4px; }

@@ -1,4 +1,4 @@
-import { rearDeployZone } from "./deployment";
+import { deployableCells, rearDeployZone } from "./deployment";
 export { applyDeployPlan, validateDeployPlan, deployableCells, deploymentCellFault } from "./deployment";
 export type { DeployPlacement, DeployPlan, DeployFault, DeployTurn } from "./deployment";
 /**
@@ -32,10 +32,10 @@ export type { DeployPlacement, DeployPlan, DeployFault, DeployTurn } from "./dep
  */
 
 import {
-  BOARD, BOSS_HP, BUILDING_HP, COVERS, ENEMY_STATS, GDD_RULESET, MECH_IDS, RAIDER_HP, SIEGE_BUILDINGS, SIEGE_RAIDERS, STATS, footprint, inb, key, living, emit, noSpawn, swapEventSink,
-  type ArenaPlan, type AssaultTerrainSafety, type BossScriptId, type BuildingStake, type Cell, type CoverPresetId, type DifficultyId, type MatchState, type MechId, type Outcome, type PlanFault, type TerrainKind, type TurnEvent,
+  BOARD, BOSS_HP, BUILDING_HP, COVERS, ENEMY_STATS, GDD_RULESET, MECH_IDS, RAIDER_HP, SIEGE_BUILDINGS, SIEGE_RAIDERS, STATS, footprint, inb, key, living, emit, noSpawn, selectRescueTarget, swapEventSink, assertMonsterContent, assertMonsterState, createCorrodeState, reconcileNeural,
+  type LocalMissionId, type MonsterContent, type Intent, type ArenaPlan, type AssaultTerrainSafety, type BossScriptId, type BuildingStake, type Cell, type CoverPresetId, type DifficultyId, type MatchState, type MechId, type Outcome, type PlanFault, type TerrainKind, type TurnEvent,
 } from "./board";
-import { validateAndApplyPlan } from "./combat";
+import { reproject, validateAndApplyPlan } from "./combat";
 import { movementSnapshot, presentationSnapshot, stakeBuildings, type PresentationStages } from "./board";
 import { bossExecute } from "./enemy";
 import { prepareEnemy, scriptedEnemyPlanner } from "./enemy/planner";
@@ -48,7 +48,7 @@ export {
   primaryAxis, stakeBuildings,
 } from "./board";
 export type {
-  Action, ArenaPlan, Building, BuildingStake, BossScriptId, BossSkill, Cell, CoverPresetId, DifficultyId, EnemyStats, Intent, MatchState, MechId, MechOrder, MoverId, Outcome, Phase,
+  Action, ArenaPlan, Building, BuildingStake, BossScriptId, BossSkill, MonsterContent, MonsterSpeciesId, Cell, CoverPresetId, DifficultyId, EnemyStats, Intent, MatchState, MechId, MechOrder, MoverId, Outcome, Phase,
   PlanFault, PlanReject, Raider, TerrainKind, TurnEvent,
 } from "./board";
 export type { EnemyPlan, EnemyPlanner } from "./enemy/contracts";
@@ -123,7 +123,16 @@ export function createMatch(opts: {
   deployment?: boolean;
   deployZone?: Cell[];
   reservedDeployCells?: Cell[];
+  /** Opt-in local rescue; no property is added for legacy games. */
+  mission?: LocalMissionId;
+  /** Explicit experimental local rules; no city, replay or remote integration. */
+  monsterContent?: MonsterContent;
 }): MatchState {
+  assertMonsterContent(opts);
+  // Inspect input before mapping raiders to their legacy fields; otherwise a
+  // caller could silently turn an unsupported summon into an ordinary unit.
+  if (opts.raiders?.some((raider) => "summon" in raider)) throw new Error("unsupported_swarm_state");
+  if (opts.monsterContent?.speciesId === "swarm_mantle" && opts.raiders?.some(r => r.id.startsWith("swarm:") || r.id === "boss" || MECH_IDS.some(id => r.id === `mech:${id}`))) throw new Error("unsupported_swarm_state");
   const deploy = standardDeploy();
   const placed = opts.mechs ?? deploy.mechs;
   const siege = opts.script === "siege";
@@ -133,6 +142,10 @@ export function createMatch(opts: {
     preset: opts.preset,
     script: opts.script,
     ...(opts.difficulty ? { difficulty: opts.difficulty } : {}),
+    ...(opts.monsterContent ? { monsterContent: { speciesId: opts.monsterContent.speciesId, contentVersion: 1 as const } } : {}),
+    ...(opts.monsterContent?.speciesId === "neural_weaver" ? { neural: { version: 1 as const, nextLinkId: 0, links: [], resolvedActions: [], pending: null, journal: [] } } : {}),
+    ...(opts.monsterContent?.speciesId === "swarm_mantle" ? { swarm: { version: 1 as const, nextSpawnId: 0, resolvedActions: [] as string[] } } : {}),
+    ...(opts.monsterContent?.speciesId === "porous_shaper" ? { corrode: createCorrodeState(BOARD, BOARD, 1) } : {}),
     covers: (opts.covers ?? (siege ? [] : COVERS[opts.preset])).map((c) => ({ ...c })),
     obstacles: (opts.obstacles ?? []).map((c) => ({ ...c })),
     terrain: copyTerrain(opts.terrain),
@@ -180,6 +193,28 @@ export function createMatch(opts: {
       occupied.add(key(cell));
     }
   }
+  if (opts.mission !== undefined) {
+    if (opts.mission !== "rescue:v1") throw new Error("rescue_unavailable");
+    // Simulate the authoritative opening before selecting a target. The tentative
+    // marker prevents legacy kill-all/building outcomes during that simulation.
+    state.mission = { kind: "rescue:v1", target: { x: 0, y: 0 } };
+    // Stable roster assignment, independent of input order. With a single raider
+    // there is no mixed composition; the first remains the legacy siege role.
+    const roster = [...state.raiders].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    roster.forEach((raider, index) => { raider.role = index % 2 === 0 ? "siege" : "interceptor"; });
+    const opening = structuredClone(state);
+    const zone = opening.deployment?.zone ?? [];
+    if (opening.deployment) {
+      const cells = deployableCells(opening).filter((cell, i, all) => all.findIndex(other => key(other) === key(cell)) === i);
+      if (opening.mechs.length !== MECH_IDS.length || new Set(opening.mechs.map(m => m.id)).size !== MECH_IDS.length || cells.length < MECH_IDS.length) throw new Error("rescue_unavailable");
+      opening.mechs.forEach((m, i) => { m.pos = { ...cells[i]! }; });
+      opening.phase = "enemy_prepare";
+    }
+    prepareEnemy(opening);
+    if (opening.outcome || opening.phase !== "player_plan") throw new Error("rescue_unavailable");
+    state.mission.target = selectRescueTarget(opening, zone);
+  }
+  if (state.neural) { assertMonsterState(state); reconcileNeural(state); }
   return state;
 }
 
@@ -210,6 +245,7 @@ export type TurnResult =
 
 /** 内部：在克隆上跑 校验 → 大怪结算 → 下回合准备，并在玩家行动之后、敌方结算之前取一次预告。 */
 function runTurn(state: MatchState, plan: ArenaPlan, capturePresentation = false, enemyPlanner: EnemyPlanner = scriptedEnemyPlanner) {
+  assertMonsterState(state);
   const next = structuredClone(state);
   const before = capturePresentation ? presentationSnapshot(state) : null;
   const log: TurnEvent[] = [];
@@ -219,6 +255,15 @@ function runTurn(state: MatchState, plan: ArenaPlan, capturePresentation = false
     if (!("ok" in applied)) return { ok: false as const, fault: applied };
     const afterMovement = before ? movementSnapshot(before, log) : null;
     const afterPlayer = capturePresentation ? presentationSnapshot(next) : null;
+    // Capture the same bound intent against the post-player world used by
+    // bossExecute. Never reselect a target or infer a projection from snapshots.
+    let monsterProjection: Intent | null = null;
+    if (capturePresentation && !next.outcome && next.phase === "resolving_boss" &&
+        next.boss.intent && ["corrode_cell", "phase_swap", "gravity_well", "split_swarm", "neural_link"].includes(next.boss.intent.skillId)) {
+      const projectionState = structuredClone(next);
+      reproject(projectionState);
+      monsterProjection = projectionState.boss.intent;
+    }
     let announced = false;
     const noteOutcome = () => {
       if (next.outcome && !announced) {
@@ -236,8 +281,9 @@ function runTurn(state: MatchState, plan: ArenaPlan, capturePresentation = false
     noteOutcome();
     const afterPrepare = capturePresentation ? presentationSnapshot(next) : null;
     const presentationStages = before && afterMovement && afterPlayer && afterEnemy && afterPrepare
-      ? { before, afterMovement, afterPlayer, afterEnemy, afterPrepare } : null;
-    return { ok: true as const, state: next, log, hits, afterPlayer, presentationStages };
+      ? { before, afterMovement, afterPlayer, afterEnemy, afterPrepare,
+          ...(next.neural ? { neuralLogIndices: log.flatMap((event, index) => event.type === "neural_event" ? [index] : []) } : {}) } : null;
+    return { ok: true as const, state: next, log, hits, afterPlayer, presentationStages, monsterProjection };
   } finally {
     swapEventSink(outer);
   }
@@ -286,8 +332,9 @@ export type PreviewBuilding = {
 };
 export type PlanPreview =
   | { ok: true; telegraphAfter: Cell[]; telegraphByActor: Record<string, Cell[]>; hitsAfter: Record<MechId, number>; assumed: MechId[];
+      /** Attacks only. Non-attack monster status transitions are in log and stages. */
       enemyOrder: Array<Extract<TurnEvent, { type: "enemy" }>>; buildings: PreviewBuilding[]; outcome: Outcome | null;
-      stages: PresentationStages | null; log: TurnEvent[] }
+      stages: PresentationStages | null; log: TurnEvent[]; monsterProjection: Intent | null }
   | { ok: false; fault: PlanFault };
 
 /**
@@ -328,5 +375,5 @@ export function previewPlan(state: MatchState, plan: ArenaPlan): PlanPreview {
     }
   }
   return { ok: true, telegraphAfter, telegraphByActor, hitsAfter: r.hits, assumed, enemyOrder, buildings,
-    outcome: r.state.outcome, stages: r.presentationStages, log: r.log };
+    outcome: r.state.outcome, stages: r.presentationStages, log: r.log, monsterProjection: r.monsterProjection };
 }

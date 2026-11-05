@@ -61,7 +61,15 @@ export function remoteArenaFromSite(site: CityMechaSite, input: { arenaId: strin
   };
 }
 
+/** Local summon lifecycles have no RemoteArenaV1 contract. Do not silently
+ * project their units as ordinary raiders, even if a marker is malformed. */
+export function hasUnsupportedRemoteSummons(state: Pick<MatchState, "raiders">): boolean {
+  return !Array.isArray(state.raiders) || state.raiders.some(raider =>
+    !raider || typeof raider !== "object" || "summon" in raider);
+}
+
 export function remoteStateFromSite(site: CityMechaSite, state: MatchState): MatchState {
+  if ("mission" in state || Object.hasOwn(state, "monsterContent") || hasUnsupportedRemoteSummons(state)) throw new Error("remote_match_unsupported");
   const cell = ({ x, y }: Cell): Cell => ({ x, y });
   const intent = (value: MatchState["boss"]["intent"]) => value && ({
     skillId: value.skillId, local: value.local.map(cell), projected: value.projected.map(cell), cdSweep: value.cdSweep, status: value.status,

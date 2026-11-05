@@ -8,7 +8,7 @@ const { chromium } = createRequire(new URL("../apps/desktop/ui-dev/package.json"
 const base = process.argv[2] ?? "http://127.0.0.1:5190";
 const screenshots = process.env.MECHA_SCREENSHOTS_DIR;
 if (screenshots) await mkdir(screenshots, { recursive: true });
-const browser = await chromium.launch({ headless: true, args: ["--enable-unsafe-swiftshader"] });
+const browser = await chromium.launch({ headless: true, args: [process.env.MECHA_BROWSER_ANGLE === "metal" ? "--use-angle=metal" : "--enable-unsafe-swiftshader"] });
 try {
   for (const lang of process.env.MECHA_LANG ? [process.env.MECHA_LANG] : ["zh", "en"]) {
     const zh = lang === "zh";
@@ -44,6 +44,34 @@ try {
     await page.getByRole("button", { name: zh ? "城市设置" : "City settings" }).click();
     await page.getByRole("button", { name: zh ? "机甲战棋" : "Mecha tactics", exact: true }).click();
     await page.waitForFunction(() => window.__failureController?.getState().match.phase === "player_plan");
+    // The compact guide is optional, localized and keyboard-operable at each viewport.
+    const legendSummary = page.locator(".mecha-tactical-legend > summary");
+    const guide = page.locator(".mecha-tactical-legend [data-tactical-guide]");
+    const guideSummary = guide.locator("summary");
+    for (const viewport of [{ width: 1100, height: 700 }, { width: 640, height: 480 }, { width: 390, height: 844 }]) {
+      await page.setViewportSize(viewport);
+      await legendSummary.click();
+      await guideSummary.scrollIntoViewIfNeeded(); await guideSummary.focus(); await page.keyboard.press("Enter");
+      assert.equal(await guide.evaluate(el => el.open), true);
+      assert.ok((await guide.innerText()).includes(zh ? "预测未知不等于安全" : "unknown draft forecast does not mean safety"));
+      for (const tip of await guide.locator("li").all()) {
+        await tip.scrollIntoViewIfNeeded();
+        assert.ok(await tip.isVisible(), `${lang} ${viewport.width}: guide content reachable`);
+        const hit = await tip.evaluate(el => {
+          const r = el.getBoundingClientRect();
+          const x = (r.left + r.right) / 2, y = (r.top + r.bottom) / 2;
+          const top = document.elementFromPoint(x, y);
+          return !!top && (top === el || el.contains(top));
+        });
+        assert.ok(hit, `${lang} ${viewport.width}: guide text is not obscured`);
+      }
+      await guide.locator("li").last().scrollIntoViewIfNeeded();
+      if (screenshots) await page.screenshot({ path: join(screenshots, `guide-${lang}-${viewport.width}.png`) });
+      await guideSummary.scrollIntoViewIfNeeded(); await guideSummary.focus(); await page.keyboard.press("Enter");
+      assert.equal(await guide.evaluate(el => el.open), false);
+      await legendSummary.click();
+    }
+    await page.setViewportSize({ width: 1100, height: 700 });
     await page.evaluate(() => { for (const id of ["Assault", "Gunner", "Support"]) window.__failureController.setAction(id, { kind: "skip" }); });
     await page.locator(".mecha-submit-primary").click();
     await page.getByRole("button", { name: zh ? "继续提交" : "Submit anyway" }).click();
@@ -55,7 +83,20 @@ try {
     const result = page.locator("[data-mecha-result-dialog]");
     await result.waitFor({ state: "visible" });
     assert.ok((await result.innerText()).includes(zh ? "战斗失败" : "Defeat"));
-    await result.locator("[data-result-view]").click();
+    const history = result.locator("[data-match-recap]");
+    assert.ok((await history.innerText()).includes(zh ? "回合 1 · 首次失守 · 建筑 defended" : "Turn 1 · First lost · Building defended"));
+    assert.ok((await history.innerText()).includes(zh ? "不代表失败原因" : "not necessarily the cause"));
+    assert.deepEqual((await result.locator("button").allTextContents()).map(text => text.trim()), zh ? ["重播", "再开一局", "退出战斗"] : ["Replay Match", "New Match", "Exit Battle"]);
+    for (const viewport of [{ width: 1100, height: 700 }, { width: 640, height: 480 }, { width: 390, height: 844 }]) {
+      await page.setViewportSize(viewport);
+      const bounds = await result.evaluate(el => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, right: r.right, bottom: r.bottom }; });
+      assert.ok(bounds.x >= -1 && bounds.y >= -1 && bounds.right <= viewport.width + 1 && bounds.bottom <= viewport.height + 1, `${lang}: result outside viewport`);
+      await history.scrollIntoViewIfNeeded();
+      if (screenshots) await page.screenshot({ path: join(screenshots, `match-recap-${lang}-${viewport.width}.png`) });
+      for (const button of await result.locator("button").all()) { await button.scrollIntoViewIfNeeded(); assert.ok(await button.isVisible()); }
+    }
+    // The result dialog deliberately has only three buttons; Escape returns to the field.
+    await page.keyboard.press("Escape");
     await result.waitFor({ state: "hidden" });
     const recap = page.getByRole("region", { name: zh ? "上一回合摘要" : "Previous turn summary", exact: true });
     const failure = recap.locator("[data-failure-recap]");

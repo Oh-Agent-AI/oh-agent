@@ -351,6 +351,8 @@ export class MechaPerformancePlayer {
     this.eventDurations = override ? [...override.durations] : events.map((event) => event.duration);
     for (const id of initiallyFallen) if (actors[id]) this.fallen.add(id);
     for (const [id, actor] of Object.entries(actors)) this.positions.set(id, actor.position.clone());
+    // Actors created for verified future births must not appear before their cue.
+    for (const event of events) if (event.kind === "raider_spawn" && actors[event.actor]) actors[event.actor]!.visible = false;
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.Float32BufferAttribute(new Float32Array(6), 3));
     this.tracer = new THREE.Line(geometry, new THREE.LineBasicMaterial({ color: "#9eeaff", transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false }));
@@ -429,6 +431,20 @@ export class MechaPerformancePlayer {
       const at = this.cellToWorld(event.path[event.path.length - 1], event.actor);
       this.positions.set(event.actor, at);
       this.actors[event.actor]?.position.copy(at);
+    } else if (event.kind === "monster_displacement") {
+      for (const move of event.moves) {
+        const at = this.cellToWorld(move.to, move.actor);
+        this.positions.set(move.actor, at);
+        this.actors[move.actor]?.position.copy(at);
+      }
+    } else if (event.kind === "raider_spawn" || event.kind === "raider_remove") {
+      const actor = this.actors[event.actor];
+      if (!actor) return;
+      const at = this.cellToWorld(event.at, event.actor);
+      this.positions.set(event.actor, at);
+      actor.position.copy(at);
+      actor.visible = event.kind === "raider_spawn";
+      if (event.kind === "raider_remove" && event.reason === "death") this.fallen.add(event.actor);
     } else if (event.kind === "death") {
       this.fallen.add(event.actor);
       const at = this.cellToWorld(event.at, event.actor);
@@ -439,8 +455,44 @@ export class MechaPerformancePlayer {
   }
 
   private play(event: MechaPerformanceEvent, progress: number): void {
+    if (event.kind === "monster_displacement") {
+      for (const move of event.moves) {
+        const actor = this.actors[move.actor];
+        if (!actor) continue;
+        const from = this.cellToWorld(move.from, move.actor), to = this.cellToWorld(move.to, move.actor);
+        actor.position.lerpVectors(from, to, progress);
+        if (event.skill === "phase_swap") actor.position.y += pulse(progress) * 2;
+      }
+      return;
+    }
+    if (event.kind === "neural_link") {
+      const from = this.cellToWorld(event.from, "boss"), target = this.cellToWorld(event.target, "Assault");
+      const color = event.change === "created" ? "#76f7cf" : "#ffca7a";
+      this.beam(from, target, color, pulse(progress));
+      this.flash(target, color, 1 + pulse(progress));
+      return;
+    }
+    if (event.kind === "corrode_field" || event.kind === "corrode_tick") {
+      const at = this.cellToWorld(event.cell, "Assault");
+      const color = event.kind === "corrode_tick" ? "#d3ff64" : event.change === "created" ? "#87c948" : "#69806b";
+      const scale = event.kind === "corrode_field" && event.change === "expired" ? 2.5 - progress : 1.5 + pulse(progress);
+      this.flash(at, color, scale);
+      if (event.kind === "corrode_tick") {
+        const target = this.actors[event.actor];
+        if (target && !this.fallen.has(event.actor)) poseMechaModel(target, "hit", pulse(progress) * 0.48);
+      }
+      return;
+    }
     const actor = this.actors[event.actor];
     if (!actor) return;
+    if (event.kind === "raider_spawn" || event.kind === "raider_remove") {
+      const at = this.cellToWorld(event.at, event.actor);
+      actor.position.copy(at);
+      actor.visible = true;
+      this.flash(at, event.kind === "raider_spawn" ? "#a5ffe5" : "#ffc879", 1.2 + pulse(progress));
+      if (event.kind === "raider_remove" && event.reason === "death") poseMechaModel(actor, "defeat", progress * event.duration);
+      return;
+    }
     if (event.kind === "death") {
       poseMechaModel(actor, "defeat", progress * event.duration);
       return;
@@ -462,7 +514,7 @@ export class MechaPerformancePlayer {
     }
     if (event.kind !== "attack") return;
     const from = this.cellToWorld(event.from, event.actor);
-    const target = this.cellToWorld(event.target, event.targetIds[0] ?? event.actor);
+    const target = this.cellToWorld(event.target, event.actor === "boss" && event.attack === "pierce" ? "Assault" : event.targetIds[0] ?? event.actor);
     const direction = target.clone().sub(from);
     direction.y = 0;
     faceMechaTarget(actor, from, target);
