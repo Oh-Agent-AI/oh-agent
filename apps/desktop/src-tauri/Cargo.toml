@@ -1,6 +1,6 @@
 [package]
 name = "agent-vitals-menubar"
-version = "1.0.0-beta.3"
+version = "1.0.0-beta.4"
 edition = "2021"
 description = "agent-vitals 菜单栏：当日/本月成本与预算（Tauri 2）"
 
