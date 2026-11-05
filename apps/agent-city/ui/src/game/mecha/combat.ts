@@ -154,15 +154,6 @@ export function reproject(state: MatchState) {
     intent.status = projection.status;
     return;
   }
-  if (intent.skillId === "split_swarm") {
-    if (intent.status === "void") return;
-    const result = projectSwarm(state, intent);
-    intent.swarmProjection = visibleSwarmProjection(result);
-    intent.projected = intent.swarmProjection.status === "reprojected" && intent.swarmProjection.skillId === "split_swarm"
-      ? intent.swarmProjection.slots.filter(s => !!s.unit).map(s => ({ ...s.cell })) : [];
-    intent.status = intent.swarmProjection.status;
-    return;
-  }
   if (intent.skillId === "phase_swap" || intent.skillId === "gravity_well") {
     if (intent.status === "void") return;
     const binding = intent.displacement;

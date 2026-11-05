@@ -288,7 +288,7 @@ export function scriptedEnemyPrepare(state: MatchState): Intent {
   }
   let intent = skip;
   if (state.boss.hp > 0) {
-    if (unitForSpecies(state.monsterContent?.speciesId)) intent = unitForSpecies(state.monsterContent?.speciesId)!.declare(state, objectiveGap);
+    if (state.monsterContent?.speciesId !== "swarm_mantle" && unitForSpecies(state.monsterContent?.speciesId)) intent = unitForSpecies(state.monsterContent?.speciesId)!.declare(state, objectiveGap);
     else if (state.monsterContent?.speciesId === "phase_stalker") intent = displacementIntent(state, "phase_swap");
     else if (state.monsterContent?.speciesId === "gravity_core") intent = displacementIntent(state, "gravity_well");
     else if (state.monsterContent?.speciesId === "swarm_mantle" || state.monsterContent?.speciesId === "neural_weaver") intent = skip;
@@ -313,7 +313,7 @@ export function scriptedEnemyPrepare(state: MatchState): Intent {
   state.boss.intent = intent;
   planRaiders(state);
   if (state.boss.hp > 0 && state.monsterContent?.speciesId === "swarm_mantle") {
-    intent = prepareSwarmIntent(state);
+    intent = unitForSpecies("swarm_mantle")!.declare(state, objectiveGap);
     state.boss.intent = intent;
   }
   if (state.boss.hp > 0 && state.monsterContent?.speciesId === "neural_weaver") {
@@ -428,9 +428,6 @@ export function bossExecute(state: MatchState) {
   const struckBuildings = new Set<string>();
   if (intent && unitForSkill(skill)) unitForSkill(skill)!.resolve(state, intent, { hurtMech, hurtRaider, strike, refresh });
   else if (intent && (skill === "phase_swap" || skill === "gravity_well")) executeDisplacement(state, intent);
-  else if (intent && skill === "split_swarm") {
-    if (intent.status !== "void") resolveSwarmIntent(state, intent);
-  }
   else if (intent && skill === "neural_link") {
     resolveNeuralIntent(state, intent);
   }
