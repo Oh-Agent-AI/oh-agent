@@ -4,6 +4,7 @@
 // 素材随应用离线分发，这个目录的每个字节都进安装包；没有登记来源的文件不允许进库。
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -19,6 +20,18 @@ const MECHA_BUDGET = 6 * 1024 * 1024;
 const MECHA_FILE_CAP = 1536 * 1024;
 const files = fs.readdirSync(dir, { recursive: true }).map(String).filter((name) => !path.basename(name).startsWith(".") && fs.statSync(path.join(dir, name)).isFile());
 const licenses = fs.readFileSync(path.join(dir, "LICENSES.md"), "utf8");
+const portraitDir = "mecha/portraits/";
+const portraitManifest = JSON.parse(fs.readFileSync(path.join(dir, portraitDir, "provenance.json"), "utf8"));
+assert.equal(portraitManifest.schemaVersion, 1);
+const portraitNames = ["assault.jpg", "gunner.jpg", "support.jpg", "boss.jpg", "raider.jpg"];
+assert.equal(portraitManifest.portraits.length, portraitNames.length);
+for (const name of portraitNames) {
+  const entries = portraitManifest.portraits.filter(item => item.output?.file === name);
+  assert.equal(entries.length, 1, `${name}: expected one provenance entry`);
+  const actual = createHash("sha256").update(fs.readFileSync(path.join(dir, portraitDir, name))).digest("hex");
+  assert.equal(actual, entries[0].output.sha256, `${name}: provenance hash mismatch`);
+}
+assert(licenses.includes("`mecha/portraits/`"), "portrait license missing");
 let total = 0;
 let mechaTotal = 0;
 for (const name of files) {
@@ -27,6 +40,11 @@ for (const name of files) {
   if (mecha) mechaTotal += size;
   else total += size;
   if (name === "LICENSES.md" || name.endsWith(".d.ts")) continue;
+  if (name === `${portraitDir}README.md` || name === `${portraitDir}provenance.json`) continue;
+  if (portraitNames.some(file => name === `${portraitDir}${file}`)) {
+    assert(size <= 400 * 1024, `${name}: portrait exceeds 400 KB`);
+    continue;
+  }
   assert(mecha ? /\.(glb|manifest\.json)$/.test(name) : /\.(jpg|png|webp|glb)$/.test(name), `${name}: only compressed images, .glb models and (under mecha/) manifests belong here (no .hdr/.exr/.zip/.fbx)`);
   const cap = mecha ? MECHA_FILE_CAP : 400 * 1024;
   assert(size <= cap, `${name}: ${(size / 1024).toFixed(0)} KB exceeds the ${(cap / 1024).toFixed(0)} KB per-file cap`);
