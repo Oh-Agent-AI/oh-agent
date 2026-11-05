@@ -161,11 +161,6 @@ function displacementIntent(state: MatchState, skillId: "phase_swap" | "gravity_
 }
 
 
-function prismGuardIntent(state: MatchState): Intent {
-  return { skillId: "prism_guard", targetId: "boss", shieldHits: 1, local: [], projected: [],
-    cdSweep: state.boss.cdSweep, status: "planned" };
-}
-
 function nearestBuilding(state: MatchState, from: Cell[]): Building | null {
   let best: Building | null = null;
   let bestD = 99;
@@ -296,7 +291,6 @@ export function scriptedEnemyPrepare(state: MatchState): Intent {
     if (unitForSpecies(state.monsterContent?.speciesId)) intent = unitForSpecies(state.monsterContent?.speciesId)!.declare(state, objectiveGap);
     else if (state.monsterContent?.speciesId === "phase_stalker") intent = displacementIntent(state, "phase_swap");
     else if (state.monsterContent?.speciesId === "gravity_core") intent = displacementIntent(state, "gravity_well");
-    else if (state.monsterContent?.speciesId === "prism_warden") intent = prismGuardIntent(state);
     else if (state.monsterContent?.speciesId === "swarm_mantle" || state.monsterContent?.speciesId === "neural_weaver") intent = skip;
     else if (state.monsterContent) throw new Error("unsupported_monster_content");
     else {
@@ -439,12 +433,6 @@ export function bossExecute(state: MatchState) {
   }
   else if (intent && skill === "neural_link") {
     resolveNeuralIntent(state, intent);
-  }
-  else if (intent && skill === "prism_guard") {
-    if (intent.status !== "void") {
-      state.boss.shield = { kind: "prism_guard", hits: 1 };
-      emit({ type: "monster_status", actor: "boss", status: "prism_guard", change: "applied", remaining: 1 });
-    }
   }
   else if (intent && skill !== "skip" && intent.status !== "void") {
     const ev: Extract<TurnEvent, { type: "enemy" }> = { type: "enemy", actor: "boss", skill, cells: cells.map((c) => ({ ...c })), damage: 0 };

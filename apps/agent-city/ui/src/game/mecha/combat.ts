@@ -184,13 +184,6 @@ export function reproject(state: MatchState) {
     return;
   }
   if (intent.skillId === "corrode_cell") { unitForSkill(intent.skillId)!.project(state, intent); return; }
-  if (intent.skillId === "prism_guard") {
-    if (intent.status === "void") return;
-    if (state.boss.hp <= 0 || intent.targetId !== "boss" || intent.shieldHits !== 1) {
-      intent.status = "void"; intent.projected = [];
-    } else { intent.status = "reprojected"; intent.projected = []; }
-    return;
-  }
   const unit = unitForSkill(intent.skillId);
   if (unit) { unit.project(state, intent); return; }
   const projected = intent.local.map((off) => ({ x: state.boss.anchor.x + off.x, y: state.boss.anchor.y + off.y })).filter(inb);
