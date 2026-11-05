@@ -309,3 +309,15 @@ test("enemy plan cannot inject a leap into a legacy match before state mutation"
   assert.throws(() => prepareEnemy(state, { policy: "injected", plan: () => plan }), /unsupported_monster_content/);
   assert.deepEqual(state, before);
 });
+
+test("spore projection leaves authority and declaration unchanged", async () => {
+  const { projectSporeUnitPure } = await import("../src/game/mecha/sporeUnitProjection.ts");
+  const state = fixture();
+  const intent = state.boss.intent!;
+  const before = structuredClone(state);
+  const projected = projectSporeUnitPure(state, intent);
+  assert.deepEqual(state, before);
+  const expected = structuredClone(state);
+  reproject(expected);
+  assert.deepEqual(projected, expected.boss.intent);
+});

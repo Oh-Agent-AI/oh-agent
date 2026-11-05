@@ -4,18 +4,22 @@ type SporeCombatOps = { hurtMech: typeof hurtMech; hurtRaider: typeof hurtRaider
 type SporeEffect = { kind: "move"; from: Cell; to: Cell } | { kind: "damage"; target: "mech" | "building" | "raider"; id: string };
 
 /** Reproject a declared landing against current authority state. */
+export function projectSporeUnitPure(state: MatchState, source: Intent): Intent {
+  const intent = structuredClone(source);
+  if (intent.status === "void") return intent;
+  const offset = intent.landingOffset;
+  const target = offset && { x: state.boss.anchor.x + offset.x, y: state.boss.anchor.y + offset.y };
+  if (!target || state.boss.hp <= 0 || !sporeLeapReachable(state, target)) {
+    intent.status = "void"; intent.projected = [];
+  } else {
+    intent.projected = sporeLeapCells(target); intent.status = "reprojected";
+  }
+  return intent;
+}
 export function projectSporeUnit(state: MatchState, intent: Intent): void {
-    if (intent.status === "void") return;
-    const offset = intent.landingOffset;
-    const target = offset && { x: state.boss.anchor.x + offset.x, y: state.boss.anchor.y + offset.y };
-    if (!target || state.boss.hp <= 0 || !sporeLeapReachable(state, target)) {
-      intent.status = "void";
-      intent.projected = [];
-    } else {
-      intent.projected = sporeLeapCells(target);
-      intent.status = "reprojected";
-    }
-    return;
+  const projected = projectSporeUnitPure(state, intent);
+  intent.status = projected.status;
+  intent.projected = projected.projected;
 }
 
 /** Choose once from the bounded radius; the relative offset is the binding. */
