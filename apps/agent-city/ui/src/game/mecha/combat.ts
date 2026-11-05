@@ -154,26 +154,6 @@ export function reproject(state: MatchState) {
     intent.status = projection.status;
     return;
   }
-  if (intent.skillId === "phase_swap" || intent.skillId === "gravity_well") {
-    if (intent.status === "void") return;
-    const binding = intent.displacement;
-    const request = binding?.request;
-    const perimeter = new Set(["-1,0", "-1,1", "0,-1", "1,-1", "2,0", "2,1", "0,2", "1,2"]);
-    if (!request || request.skillId !== intent.skillId || request.actorId !== "boss" ||
-        request.radius !== (intent.skillId === "phase_swap" ? 5 : 3) || request.steps !== 1 ||
-        !Array.isArray(request.targetIds) || request.targetIds.length > 3 ||
-        request.targetIds.some(id => !MECH_IDS.some(m => id === `mech:${m}`)) ||
-        !Array.isArray(request.attackOffsets) || !request.attackOffsets.length || request.attackOffsets.length > 8 ||
-        request.attackOffsets.some(c => !c || !perimeter.has(`${c.x},${c.y}`)) ||
-        new Set(request.attackOffsets.map(c => `${c.x},${c.y}`)).size !== request.attackOffsets.length) {
-      intent.status = "void"; intent.projected = []; return;
-    }
-    const projection = reprojectDisplacement(displacementWorld(state), binding!);
-    intent.displacementProjection = projection;
-    intent.projected = projection.attackCells.map(c => ({ ...c }));
-    intent.status = projection.status;
-    return;
-  }
   if (intent.skillId === "corrode_cell") { unitForSkill(intent.skillId)!.project(state, intent); return; }
   const unit = unitForSkill(intent.skillId);
   if (unit) { unit.project(state, intent); return; }

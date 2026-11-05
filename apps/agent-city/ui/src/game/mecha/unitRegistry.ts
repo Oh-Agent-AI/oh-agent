@@ -4,6 +4,7 @@ import { sporeUnit } from "./sporeUnitProjection";
 import { corrodeUnit } from "./corrodeUnit";
 import { prismUnit } from "./prismUnit";
 import { swarmUnit } from "./swarmUnit";
+import { phaseUnit, gravityUnit } from "./displacementUnit";
 import { ringUnit } from "./ringUnit";
 
 type CombatOps = { hurtMech: typeof hurtMech; hurtRaider: typeof hurtRaider; strike: typeof strike; refresh: typeof refresh };
@@ -18,7 +19,8 @@ const units: Record<string, UnitHandler> = {
   porous_shaper: corrodeUnit,
   prism_warden: prismUnit,
   swarm_mantle: swarmUnit,
+  phase_stalker: phaseUnit, gravity_core: gravityUnit,
 };
-const skills: Record<string, UnitHandler> = { spore_leap: sporeUnit, ring_pierce: ringUnit, corrode_cell: corrodeUnit, prism_guard: prismUnit, split_swarm: swarmUnit };
+const skills: Record<string, UnitHandler> = { spore_leap: sporeUnit, ring_pierce: ringUnit, corrode_cell: corrodeUnit, prism_guard: prismUnit, split_swarm: swarmUnit, phase_swap: phaseUnit, gravity_well: gravityUnit };
 export function unitForSpecies(id: string | undefined): UnitHandler | undefined { return id && Object.hasOwn(units, id) ? units[id] : undefined; }
 export function unitForSkill(id: string): UnitHandler | undefined { return Object.hasOwn(skills, id) ? skills[id] : undefined; }

@@ -142,23 +142,6 @@ function smashIntent(state: MatchState, cell: Cell | null): Intent {
 
 
 /** Bind target IDs and attack offsets once; subsequent projections never select anew. */
-function displacementIntent(state: MatchState, skillId: "phase_swap" | "gravity_well"): Intent {
-  const origin = state.boss.anchor;
-  const candidates = living(state).slice().sort((a, b) =>
-    Math.min(...footprint(origin).map(c => manh(c, a.pos))) - Math.min(...footprint(origin).map(c => manh(c, b.pos))) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  const world = displacementWorld(state);
-  const groups = skillId === "phase_swap" ? candidates.map(m => [m]) : [candidates];
-  for (const targets of groups) {
-    if (!targets.length) continue;
-    const anchor = skillId === "phase_swap" ? targets[0]!.pos : origin;
-    const attackOffsets = sporeLeapCells(anchor).map(c => ({ x: c.x - anchor.x, y: c.y - anchor.y }));
-    const result = prepareDisplacement(world, { skillId, actorId: "boss", targetIds: targets.map(m => `mech:${m.id}`),
-      radius: skillId === "phase_swap" ? 5 : 3, steps: 1, attackOffsets });
-    if (result.status === "planned") return { skillId, displacement: result.intent, displacementProjection: result.intent.declared,
-      local: [], projected: result.intent.declared.attackCells.map(c => ({ ...c })), cdSweep: state.boss.cdSweep, status: "planned" };
-  }
-  return { skillId, local: [], projected: [], cdSweep: state.boss.cdSweep, status: "void" };
-}
 
 
 function nearestBuilding(state: MatchState, from: Cell[]): Building | null {
@@ -289,8 +272,6 @@ export function scriptedEnemyPrepare(state: MatchState): Intent {
   let intent = skip;
   if (state.boss.hp > 0) {
     if (state.monsterContent?.speciesId !== "swarm_mantle" && unitForSpecies(state.monsterContent?.speciesId)) intent = unitForSpecies(state.monsterContent?.speciesId)!.declare(state, objectiveGap);
-    else if (state.monsterContent?.speciesId === "phase_stalker") intent = displacementIntent(state, "phase_swap");
-    else if (state.monsterContent?.speciesId === "gravity_core") intent = displacementIntent(state, "gravity_well");
     else if (state.monsterContent?.speciesId === "swarm_mantle" || state.monsterContent?.speciesId === "neural_weaver") intent = skip;
     else if (state.monsterContent) throw new Error("unsupported_monster_content");
     else {
@@ -370,22 +351,6 @@ type SporeEffect =
 /** Piercing visits the already bound ray nearest-first, striking each entity once. */
 
 
-function executeDisplacement(state: MatchState, intent: Intent): void {
-  if (intent.status === "void" || !intent.displacement || !intent.displacementProjection) return;
-  const result = resolveDisplacement(displacementWorld(state), intent.displacement, intent.displacementProjection);
-  if (result.status !== "resolved") { intent.status = "void"; intent.projected = []; return; }
-  const skill = intent.skillId as "phase_swap" | "gravity_well";
-  const moves = result.effects.filter(e => e.status === "move" && e.from && e.to)
-    .map(e => ({ unit: e.entityId, from: { ...e.from! }, to: { ...e.to! } }));
-  // The phase pair is applied together after validating the complete projection.
-  for (const move of moves) {
-    if (move.unit === "boss") state.boss.anchor = { ...move.to };
-    else { const unit = state.mechs.find(m => `mech:${m.id}` === move.unit); if (unit) unit.pos = { ...move.to }; }
-    if (skill === "gravity_well") emit({ type: "monster_displacement", skill, moves: [move] });
-  }
-  if (skill === "phase_swap") emit({ type: "monster_displacement", skill, moves });
-  ringUnit.resolve(state, intent, { hurtMech, hurtRaider, strike, refresh });
-}
 
 export function bossExecute(state: MatchState) {
   assertMonsterState(state);
@@ -427,7 +392,6 @@ export function bossExecute(state: MatchState) {
   let any = false;
   const struckBuildings = new Set<string>();
   if (intent && unitForSkill(skill)) unitForSkill(skill)!.resolve(state, intent, { hurtMech, hurtRaider, strike, refresh });
-  else if (intent && (skill === "phase_swap" || skill === "gravity_well")) executeDisplacement(state, intent);
   else if (intent && skill === "neural_link") {
     resolveNeuralIntent(state, intent);
   }
