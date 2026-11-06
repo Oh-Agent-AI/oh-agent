@@ -36,7 +36,7 @@ cp ../docs/dist/llms.txt ../docs/dist/llms-full.txt "$STAGE"/
 echo "== staged =="
 test -f "$STAGE/docs/index.html" && test -f "$STAGE/docs/zh/index.html" && test -f "$STAGE/docs/sitemap-index.xml"
 test -f "$STAGE/zh/index.html" && test -f "$STAGE/llms.txt"
-test -f "$STAGE/blog/index.html" && test -f "$STAGE/blog/multi-agent-shared-notes/index.html" && test -f "$STAGE/blog/fleet-auditor-before-hire/index.html"
+test -f "$STAGE/blog/index.html" && test -f "$STAGE/blog/multi-agent-shared-notes/index.html" && test -f "$STAGE/blog/fleet-auditor-before-hire/index.html" && test -f "$STAGE/blog/mecha-3d-asset-pipeline/index.html" && test -f "$STAGE/blog/chaos-emergence-habitat/index.html" && test -f "$STAGE/blog/trust-before-fleet/index.html"
 find "$STAGE" -maxdepth 2 -name index.html | sort
 
 echo "== deploy =="

@@ -1,7 +1,0 @@
-# Cargo 构建产物（独立 workspace）
-target/
-
-# tauri-build 生成的 ACL schema 与中间产物
-gen/
-# React shadow bundle; production still uses `ui/` until Phase 4.
-ui-react-dist/
