@@ -1,5 +1,5 @@
 ---
-draft: true
+lastUpdated: 2026-10-27
 title: Where does DeepSeek Harness (DSH) store sessions, and how does Oh Agent read them?
 description: Oh Agent reads DeepSeek Harness session logs from $DSH_HOME/sessions (default ~/.dsh), including zstd-compressed files, and builds a DSH district in Agent City.
 head:
@@ -45,12 +45,13 @@ Yes, but it's separate from session reading. The `dsh-agent-vitals` bundle in `i
 
 <!-- source: integrations/dsh/README.md -->
 
-**TBD:** link to DeepSeek Harness's official docs, and confirm the display name City uses for this district ("DSH" in the fixtures).
+In Agent City the district label for this harness is **DSH** (fixture `id: "dsh"`, `display_name: "DSH"`).
 
 <!-- source: apps/agent-city/ui/src/data/provider.ts (fixture harnesses: { id: "dsh", display_name: "DSH" }) -->
 
 ## Related
 
-- [Data pipeline](/docs/architecture/data-pipeline)
-- [Claude Code data source](/docs/data-sources/claude-code) · [Codex data source](/docs/data-sources/codex) · [WorkBuddy data source](/docs/data-sources/workbuddy)
-- [Integrations overview](/docs/integrations)
+- [Claude Code data source](/docs/data-sources/claude-code)
+- [Codex data source](/docs/data-sources/codex)
+- [What each building in Agent City means](/docs/city-guide)
+- [Install](/docs/install) · [FAQ](https://ohagent.ai/#faq)

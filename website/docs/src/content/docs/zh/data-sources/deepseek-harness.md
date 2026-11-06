@@ -1,5 +1,5 @@
 ---
-draft: true
+lastUpdated: 2026-10-27
 title: DeepSeek Harness（DSH）的会话存在哪？Oh Agent 怎么读取
 description: Oh Agent 从 $DSH_HOME/sessions（默认 ~/.dsh）读取 DeepSeek Harness 的会话日志，支持 zstd 压缩文件，并在 Agent City 里建成 DSH 城区。
 head:
@@ -43,12 +43,13 @@ DeepSeek Harness（DSH）把每次会话存成一个 `session.jsonl` 文件（�
 
 <!-- source: integrations/dsh/README.md -->
 
-**待确认**：补上 DeepSeek Harness 官方文档链接，并确认 City 里这个城区的显示名（fixture 里是“DSH”）。
+在 Agent City 里，这个执行环境对应的城区显示名是 **DSH**（fixture：`id: "dsh"`，`display_name: "DSH"`）。
 
 <!-- source: apps/agent-city/ui/src/data/provider.ts -->
 
-## 相关
+## 相关页面
 
-- [数据管线](/docs/zh/architecture/data-pipeline)
-- [Claude Code 数据来源](/docs/zh/data-sources/claude-code) · [Codex 数据来源](/docs/zh/data-sources/codex) · [WorkBuddy 数据来源](/docs/zh/data-sources/workbuddy)
-- [集成总览](/docs/zh/integrations)
+- [Claude Code 数据来源](/docs/zh/data-sources/claude-code)
+- [Codex 数据来源](/docs/zh/data-sources/codex)
+- [Agent City 里的楼代表什么](/docs/zh/city-guide)
+- [安装](/docs/zh/install) · [常见问题](https://ohagent.ai/#faq)
