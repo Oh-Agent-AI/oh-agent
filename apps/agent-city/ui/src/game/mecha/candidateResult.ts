@@ -1,6 +1,7 @@
 /** Read a candidate's effects from the authoritative whole-turn simulation. */
 import type { PlanPreview, Cell, MechId, TurnEvent } from "./rules";
 import type { HealthEffect } from "./board";
+import { projectMovementEffect } from "./skillEffects";
 
 type ReadyPreview = Extract<PlanPreview, { ok: true }>;
 type Act = Extract<TurnEvent, { type: "act" }>;
@@ -39,8 +40,7 @@ export function candidateResult(preview: ReadyPreview, mech: MechId, target: str
       withinAction = i === index;
     }
     if (event.type !== "shove") continue;
-    const from = positions.get(event.unit) ?? null;
-    const to = from ? (event.hit ? { ...from } : { x: from.x + event.dir.x, y: from.y + event.dir.y }) : null;
+    const { from, to } = projectMovementEffect(event, positions.get(event.unit)).moves[0]!;
     if (to) positions.set(event.unit, to);
     if (withinAction) shoves.push({ event, from, to });
   }

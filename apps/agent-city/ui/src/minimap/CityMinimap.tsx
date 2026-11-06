@@ -281,6 +281,10 @@ export function CityMinimap({ engine, hidden, language = "zh", driving, encounte
       </div>
       <div className="city-minimap-bottom">
         <p className={`city-minimap-summary ${hover && mode !== "monsters" ? "is-detail" : bad ? "is-bad" : "is-ok"}`} title={copy.hint[mode]}>{hover && mode !== "monsters" ? (language === "en" ? hover.text.en : hover.text.zh) : summary}</p>
+        {mode === "monsters" && spots.length > 0 && <div className="city-minimap-encounters" role="group" aria-label={language === "en" ? "Focus encounters" : "定位遭遇点"}>
+          {spots.map((spot, index) => <button key={index} type="button" onClick={() => engine.current?.focusPoint(spot.at.x, spot.at.z)}
+            onFocus={() => setHover(spot)} onBlur={() => setHover(null)}>{language === "en" ? spot.text.en : spot.text.zh}</button>)}
+        </div>}
         <details className="city-minimap-key"><summary>{language === "en" ? "Legend" : "图例"}</summary>
         <ul className="city-minimap-legend">
           {swatches.map((color, i) => <li key={labels[i]}><i style={{ background: color }} className={mode === "audit" && i === 4 ? "is-dashed" : undefined} />{labels[i]}</li>)}

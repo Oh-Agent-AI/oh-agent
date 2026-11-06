@@ -43,6 +43,8 @@ export class MatchSession<S extends RevisionState = MatchState> {
     if (!options.players.some((player) => player.role === "host" && player.side === "A")) throw new Error("match_host_required");
     if (new Set(options.players.map((player) => player.playerId)).size !== options.players.length) throw new Error("match_players_not_unique");
     if (options.arena.ruleset !== options.rules.ruleset) throw new Error("ruleset_mismatch");
+    // A versioned state must never be admitted under another adapter's identity.
+    if ("ruleset" in options.state && options.state.ruleset !== options.rules.ruleset) throw new Error("ruleset_mismatch");
     this.state = clone(options.state);
     this.status = options.rules.isFinished(this.state) ? "finished" : "active";
   }

@@ -50,7 +50,7 @@ fn isolation_probe_event(webview: Webview, state: tauri::State<'_, ProbeState>, 
         else { data.city_pulses.insert(label.to_owned(), Instant::now()); }
         return Ok(());
     }
-    if !["ui_ready", "runtime_error", "unhandled_rejection", "host_navigation_alive", "host_exit_navigation_alive", "window_seven_ready", "cinema_started", "cinema_stopped", "stale_rejected", "formal_unresponsive", "formal_reload", "formal_disposed", "formal_settings_clicked", "formal_window_changed", "formal_settings_closed", "formal_reset_clicked", "mecha_fixture_ready", "mecha_board_ready", "mecha_render_stalled", "mecha_hold_risk", "mecha_hold_cancelled", "mecha_hold_confirmed", "mecha_turn_resolved", "mecha_seed_initial_74031", "mecha_seed_input", "mecha_seed_apply_clicked", "mecha_seed_stored", "mecha_seed_applied", "mecha_exited", "mecha_all_hold"].contains(&code.as_str()) {
+    if !["ui_ready", "runtime_error", "unhandled_rejection", "host_navigation_alive", "host_exit_navigation_alive", "window_seven_ready", "cinema_started", "cinema_stopped", "stale_rejected", "formal_unresponsive", "formal_reload", "formal_disposed", "formal_settings_clicked", "formal_window_changed", "formal_settings_closed", "formal_reset_clicked", "mecha_fixture_ready", "mecha_board_ready", "mecha_render_stalled", "mecha_hold_risk", "mecha_hold_cancelled", "mecha_hold_confirmed", "mecha_turn_resolved", "mecha_seed_initial_74031", "mecha_seed_input", "mecha_seed_apply_clicked", "mecha_seed_stored", "mecha_seed_applied", "mecha_exited", "mecha_all_hold", "v15_board_ready", "v15_deployed", "v15_moved", "v15_undo", "v15_recovered"].contains(&code.as_str()) {
         return Err("probe_code_unavailable".into());
     }
     if code == "ui_ready" { state.0.lock().unwrap().ready.insert(label.to_owned()); }
@@ -66,7 +66,9 @@ fn isolation_probe_event(webview: Webview, state: tauri::State<'_, ProbeState>, 
 #[tauri::command]
 async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: tauri::State<'_, ProbeState>, plugin_host: tauri::State<'_, crate::plugin_host::PluginHost>, request: crate::plugin_host::PluginRequestV1) -> Result<crate::plugin_host::PluginResponseV1, String> {
     let sender = webview.label().to_owned();
-    if ![CITY, RESTART].contains(&sender.as_str()) { return Err("probe_sender_unavailable".into()); }
+    let formal_v15 = std::env::args().any(|arg| arg == "--plugin-formal-v15-probe" || arg == "--plugin-formal-v15-resume" || arg == "--plugin-formal-v15-status-probe" || arg == "--plugin-formal-v15-status-resume") && sender.starts_with("plugin-city-")
+        && matches!(request.method.as_str(), "plugin.state.read" | "plugin.state.write") && request.payload["key"] == "mecha-replays:v1";
+    if ![CITY, RESTART].contains(&sender.as_str()) && !formal_v15 { return Err("probe_sender_unavailable".into()); }
     let request_id = {
         let mut data = state.0.lock().unwrap();
         data.request_count += 1;
@@ -97,9 +99,10 @@ pub(crate) const OBSERVER: &str = r#"
   setInterval(() => {
     send('heartbeat');
     const host = document.querySelector('.sidebar .nav-item');
+    const cityApp = document.querySelector('.city-app');
     const city = document.querySelector('.city-summary-trigger');
     const summary = city?.textContent?.trim() ?? '';
-    if (!ready && (host || ((summary.startsWith('3 会话') || summary.startsWith('3 sessions')) && window.__CITY_ISOLATION_FAULTS__))) {
+    if (!ready && (host || cityApp || ((summary.startsWith('3 会话') || summary.startsWith('3 sessions')) && window.__CITY_ISOLATION_FAULTS__))) {
       ready = true; send('ui_ready');
     }
     if (!seven && (summary.startsWith('2 会话') || summary.startsWith('2 sessions'))) { seven = true; send('window_seven_ready'); }
@@ -355,6 +358,116 @@ fn mecha_exercise(app: &tauri::AppHandle, state: &ProbeState) -> Result<Value, S
         "hold_risk": 12, "hold_cancelled": true, "hold_confirmed": true, "building_hp_after": "68/80" }))
 }
 
+// Isolated, opt-in v1.5 smoke test: a packaged WKWebView with synthetic City data.
+// This deliberately uses the preview checkpoint store, not real plugin data.
+fn v15_script(status: bool) -> String {
+    format!(r#"{OBSERVER}
+        window.__AV_PLUGIN_LOCALE__='zh-Hans';
+        localStorage.setItem('city.seed','4196523069');
+        window.confirm=()=>true;
+        (()=>{{
+          const send=code=>void window.__TAURI__.core.invoke('isolation_probe_event',{{code}});
+          const find=text=>[...document.querySelectorAll('[data-mecha-v15] button')].find(b=>b.textContent.trim()===text);
+          const choose=(select,value)=>{{Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(select,value);select.dispatchEvent(new Event('change',{{bubbles:true}}));}};
+          let phase=0, unit=0, cells=[];
+          const statusMode={status};
+          const resumed=sessionStorage.getItem('v15-probe-reload')==='1';
+          const timer=setInterval(()=>{{
+            if(phase===0) {{const b=[...document.querySelectorAll('.city-local-toolbar button')].find(x=>x.textContent==='城市设置');if(b&&!b.disabled){{phase=1;b.click();}}}}
+            else if(phase===1) {{const b=[...document.querySelectorAll('dialog[open] .city-game-entry button')].find(x=>x.textContent==='机甲战棋');if(b&&!b.disabled){{phase=2;b.click();}}}}
+            else if(phase===2 && document.querySelector('[data-mecha-v15]')) {{send('v15_board_ready');phase=resumed?20:3;}}
+            else if(phase===3) {{
+              const discard=find('删除并新开'); if(discard&&!discard.disabled){{discard.click();return;}}
+              const select=document.querySelector('#v15-cell');
+              if(select&&!select.disabled&&select.options.length>3){{cells=[...select.options].map(o=>o.value).filter(Boolean).slice(0,3);phase=4;}}
+            }}
+            else if(phase===4) {{const card=document.querySelectorAll('.mecha-v15-roster button')[unit];if(card&&!card.disabled){{card.click();phase=5;}}}}
+            else if(phase===5) {{const select=document.querySelector('#v15-cell');if(select&&!select.disabled){{choose(select,cells[unit]);phase=6;}}}}
+            else if(phase===6) {{const b=find('放置');if(b&&!b.disabled){{b.click();unit++;phase=unit<3?4:7;}}}}
+            else if(phase===7) {{const b=find('确认部署');if(b&&!b.disabled){{b.click();phase=8;}}}}
+            else if(phase===8) {{const action=document.querySelector('#v15-action'),select=document.querySelector('#v15-cell');if(action&&!action.disabled&&select&&!select.disabled&&select.options.length>1){{send('v15_deployed');if(statusMode){{clearInterval(timer);}}else{{choose(select,select.options[1].value);phase=9;}}}}}}
+            else if(phase===9) {{const b=find('移动');if(b&&!b.disabled){{b.click();phase=10;}}}}
+            else if(phase===10) {{const b=find('撤销移动');if(b&&!b.disabled){{send('v15_moved');b.click();phase=11;}}}}
+            else if(phase===11) {{const action=document.querySelector('#v15-action'),undo=find('撤销移动');if(action&&!action.disabled&&undo&&undo.disabled){{send('v15_undo');sessionStorage.setItem('v15-probe-reload','1');phase=12;location.reload();}}}}
+            else if(phase===20) {{const b=find('恢复对局');if(b&&!b.disabled){{b.click();phase=21;}}}}
+            else if(phase===21) {{const action=document.querySelector('#v15-action');if(action&&!action.disabled){{send('v15_recovered');sessionStorage.removeItem('v15-probe-reload');clearInterval(timer);}}}}
+          }},100);
+          setTimeout(()=>clearInterval(timer),180000);
+        }})();
+    "#)
+}
+
+fn v15_exercise(app: &tauri::AppHandle, state: &ProbeState) -> Result<Value, String> {
+    wait_until(state, "host_boot_timeout", |data| data.ready.contains(HOST))?;
+    let script = v15_script(false);
+    let city = app.get_window(HOST).ok_or("probe_host_missing")?.add_child(
+        crate::plugin_host::apply_plugin_webview_platform(app,
+            WebviewBuilder::new(CITY, WebviewUrl::App("plugins/AgentCity.plugin/ui/index.html?fixtureSessions=30&mechaV15=1".into())))
+            .initialization_script(&script),
+        tauri::LogicalPosition::new(0.0, 0.0), tauri::LogicalSize::new(1100.0, 700.0),
+    ).map_err(|_| "v15_view_create_failed")?;
+    for (event, timeout) in [("v15_board_ready", "v15_board_timeout"), ("v15_deployed", "v15_deploy_timeout"),
+        ("v15_moved", "v15_move_timeout"), ("v15_undo", "v15_undo_timeout"), ("v15_recovered", "v15_recovery_timeout")] {
+        let deadline = Instant::now() + Duration::from_secs(180);
+        while Instant::now() < deadline && !state.0.lock().unwrap().codes.contains(event) { std::thread::sleep(Duration::from_millis(100)); }
+        if !state.0.lock().unwrap().codes.contains(event) { return Err(timeout.into()); }
+    }
+    city.close().map_err(|_| "v15_view_close_failed")?;
+    Ok(json!({"standalone_city_webview":true,"fixture_sessions":30,"deployment":true,"move":true,"undo":true,"reload_recovery":true,"checkpoint_backend":"indexeddb"}))
+}
+
+// Registered-plugin probe: only the mecha state key is permitted, and its data
+// root must be an explicitly configured, isolated temporary directory.
+fn formal_v15_exercise(app: &tauri::AppHandle, state: &ProbeState, resume: bool, status: bool) -> Result<Value, String> {
+    let root = std::env::var_os("AGENT_VITALS_HOME").ok_or("v15_isolated_home_required")?;
+    let root = std::fs::canonicalize(root).map_err(|_| "v15_isolated_home_required")?;
+    let temp = std::fs::canonicalize(std::env::temp_dir()).map_err(|_| "v15_isolated_home_required")?;
+    if !root.starts_with(&temp) || root == temp { return Err("v15_isolated_home_required".into()); }
+    wait_until(state, "host_boot_timeout", |data| data.ready.contains(HOST))?;
+    let host = app.get_webview(HOST).ok_or("probe_host_missing")?;
+    host.eval("[...document.querySelectorAll('.sidebar .nav-item')].find(b=>b.textContent.trim()==='City')?.click()").map_err(|_| "formal_navigation_failed")?;
+    wait_until(state, "formal_city_boot_timeout", |data| data.ready.contains("plugin-city-1"))?;
+    let city = app.get_webview("plugin-city-1").ok_or("formal_city_missing")?;
+    if status {
+        city.eval("const u=new URL(location.href);u.searchParams.set('mechaStatus','prism_warden');history.replaceState(null,'',u.toString())")
+            .map_err(|_| "v15_status_query_failed")?;
+    }
+    host.eval(r#"(() => { const timer=setInterval(()=>{
+      const toolbar=document.querySelector('.plugin-toolbar');
+      const b=[...(toolbar?.querySelectorAll('button') ?? [])].find(x=>['城市设置','City settings'].includes(x.textContent));
+      if(b&&!b.disabled){clearInterval(timer);b.click();void window.__TAURI__.core.invoke('isolation_probe_event',{code:'formal_settings_clicked'});}
+      else toolbar?.querySelector('button[aria-expanded="false"]')?.click();
+    },50);setTimeout(()=>clearInterval(timer),10000);})()"#).map_err(|_| "formal_settings_failed")?;
+    wait_until(state, "formal_settings_click_timeout", |data| data.codes.contains("formal_settings_clicked"))?;
+    let mut script = v15_script(status).replace("let phase=0, unit=0, cells=[];", "let phase=1, unit=0, cells=[];")
+        .replace("sessionStorage.setItem('v15-probe-reload','1');phase=12;location.reload();", "phase=12;clearInterval(timer);");
+    if resume { script = script.replace("phase=resumed?20:3;", "phase=20;"); }
+    city.eval(format!("sessionStorage.removeItem('v15-probe-reload'); {script}")).map_err(|_| "v15_entry_failed")?;
+    let events: &[&str] = if resume { &["v15_board_ready", "v15_recovered"] } else if status { &["v15_board_ready", "v15_deployed"] } else { &["v15_board_ready", "v15_deployed", "v15_moved", "v15_undo"] };
+    for event in events {
+        let deadline = Instant::now() + Duration::from_secs(180);
+        while Instant::now() < deadline && !state.0.lock().unwrap().codes.contains(*event) { std::thread::sleep(Duration::from_millis(100)); }
+        if !state.0.lock().unwrap().codes.contains(*event) { return Err(format!("{event}_timeout")); }
+    }
+    let allowed = vec!["mecha-replays:v1".to_owned()];
+    let payload = json!({"key":"mecha-replays:v1", "format":"sequential-checkpoint-v1", "op":"read"});
+    let checkpoint = crate::plugin_state::handle(&allowed, &root, "city", "plugin.state.read", &payload).map_err(str::to_owned)?;
+    let raw = checkpoint["raw"].as_str().ok_or("v15_checkpoint_missing")?;
+    let record: Value = serde_json::from_str(raw).map_err(|_| "v15_checkpoint_invalid")?;
+    let archive: Value = serde_json::from_str(record["archive"].as_str().ok_or("v15_checkpoint_invalid")?).map_err(|_| "v15_checkpoint_invalid")?;
+    let commands = archive["replay"]["entries"].as_array().ok_or("v15_checkpoint_invalid")?;
+    if status {
+        if archive["schema"] != "mecha-sequential-bundle:v2" || archive["opening"]["encounter"]["speciesId"] != "prism_warden" || archive["opening"]["encounter"]["statusRules"] != "mecha-status-encounter:v1" || checkpoint["revision"].as_u64().unwrap_or(0) < 1 || !commands.is_empty() {
+            return Err("v15_status_checkpoint_mismatch".into());
+        }
+    } else if checkpoint["revision"].as_u64().unwrap_or(0) < 3 || commands.len() != 2 || commands[0]["command"]["kind"] != "move" || commands[1]["command"]["kind"] != "undo" {
+        return Err("v15_checkpoint_mismatch".into());
+    }
+    host.eval("window.__TAURI__.core.invoke('plugin_close',{instanceId:'plugin-city-1'}).then(()=>window.__TAURI__.core.invoke('isolation_probe_event',{code:'formal_disposed'}))").map_err(|_| "formal_dispose_failed")?;
+    wait_until(state, "formal_dispose_timeout", |data| data.codes.contains("formal_disposed"))?;
+    Ok(json!({"registered_plugin":true,"synthetic_fixture":true,"deployment":!resume,"move":!resume && !status,"undo":!resume && !status,"restart_recovery":resume,"checkpoint_backend":"host_sqlite","checkpoint_schema":archive["schema"],"status_species":if status { Some("prism_warden") } else { None },"checkpoint_commands":commands.len()}))
+}
+
 // The same deterministic turn assertions are used in the standalone and registered plugin views.
 fn verify_mecha_actions(city: &Webview, state: &ProbeState, formal: bool) -> Result<(), String> {
     let wait = |code: &str, event: &str| -> Result<(), String> {
@@ -530,12 +643,20 @@ fn formal_mecha_exercise(app: &tauri::AppHandle, state: &ProbeState, interactive
 }
 
 pub fn report_argument() -> Option<PathBuf> {
+    if let Some(report) = std::env::var_os("AGENT_VITALS_ISOLATION_REPORT") {
+        return Some(PathBuf::from(report));
+    }
     let args: Vec<String> = std::env::args().collect();
-    args.windows(2).find(|pair| ["--plugin-isolation-probe", "--plugin-mecha-probe", "--plugin-formal-mecha-probe", "--plugin-formal-mecha-interactive"].contains(&pair[0].as_str())).map(|pair| PathBuf::from(&pair[1]))
+    args.windows(2).find(|pair| ["--plugin-isolation-probe", "--plugin-mecha-probe", "--plugin-v15-probe", "--plugin-formal-v15-probe", "--plugin-formal-v15-resume", "--plugin-formal-v15-status-probe", "--plugin-formal-v15-status-resume", "--plugin-formal-mecha-probe", "--plugin-formal-mecha-interactive"].contains(&pair[0].as_str())).map(|pair| PathBuf::from(&pair[1]))
 }
 
 pub fn run(report: PathBuf, mut context: tauri::Context<tauri::Wry>) {
     let mecha = std::env::args().any(|arg| arg == "--plugin-mecha-probe");
+    let v15 = std::env::args().any(|arg| arg == "--plugin-v15-probe");
+    let formal_v15 = std::env::args().any(|arg| arg == "--plugin-formal-v15-probe" || arg == "--plugin-formal-v15-resume");
+    let resume_v15 = std::env::args().any(|arg| arg == "--plugin-formal-v15-resume");
+    let formal_v15_status = std::env::args().any(|arg| arg == "--plugin-formal-v15-status-probe" || arg == "--plugin-formal-v15-status-resume");
+    let resume_v15_status = std::env::args().any(|arg| arg == "--plugin-formal-v15-status-resume");
     let interactive = std::env::args().any(|arg| arg == "--plugin-formal-mecha-interactive");
     let interactive_en = interactive && std::env::args().any(|arg| arg == "--mecha-fixture-en");
     let formal_mecha = interactive || std::env::args().any(|arg| arg == "--plugin-formal-mecha-probe");
@@ -565,7 +686,7 @@ pub fn run(report: PathBuf, mut context: tauri::Context<tauri::Wry>) {
             let app = app.handle().clone();
             let state = setup_state.clone();
             std::thread::spawn(move || {
-                let result = if formal_mecha { formal_mecha_exercise(&app, &state, interactive) } else if mecha { mecha_exercise(&app, &state) } else { exercise(&app, &state) };
+                let result = if formal_mecha { formal_mecha_exercise(&app, &state, interactive) } else if formal_v15_status { formal_v15_exercise(&app, &state, resume_v15_status, true) } else if formal_v15 { formal_v15_exercise(&app, &state, resume_v15, false) } else if v15 { v15_exercise(&app, &state) } else if mecha { mecha_exercise(&app, &state) } else { exercise(&app, &state) };
                 let (status, code, checks) = match result {
                     Ok(checks) if interactive => ("needs_visual_check", "manual_fixture_needs_visual_check".to_owned(), checks),
                     Ok(checks) => ("passed", "probe_complete".to_owned(), checks),
@@ -576,7 +697,7 @@ pub fn run(report: PathBuf, mut context: tauri::Context<tauri::Wry>) {
                     crate::plugin_host::plugin_snapshot(view, app.state()).ok());
                 let report_data = json!({ "schema": "plugin-isolation-probe/v1", "status": status, "code": code,
                     "native_process_pid": std::process::id(), "requested_fixture_locale": if interactive_en { "en" } else { "host_preference" },
-                    "host_data": "synthetic_preview", "city_data": if formal_mecha { "registered_plugin_synthetic_fixture" } else if mecha { "synthetic_fixture_requested_30_sessions" } else { "native_rust_fixture" },
+                    "host_data": "synthetic_preview", "city_data": if formal_mecha || formal_v15 || formal_v15_status { "registered_plugin_synthetic_fixture" } else if mecha || v15 { "synthetic_fixture_requested_30_sessions" } else { "native_rust_fixture" },
                     "checks": checks, "plugin_diagnostics": plugin_diagnostics, "events": state.0.lock().unwrap().events });
                 let saved = std::fs::OpenOptions::new().write(true).create_new(true).open(&report)
                     .and_then(|mut file| file.write_all(serde_json::to_string_pretty(&report_data).unwrap().as_bytes()));

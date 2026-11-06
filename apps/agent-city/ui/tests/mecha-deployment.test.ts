@@ -211,3 +211,54 @@ test("session initialization preserves a serialized deployment phase and revisio
   assert.equal(initialized.phase, "deployment"); assert.equal(initialized.revision, 0);
   assert.equal(initialized.boss.intent, null);
 });
+
+
+test("deployment and planning project actual positions separately from movement markers", async () => {
+  const { projectMechPositions, projectPlannedMoves } = await import("../src/game/mecha/presentation/mechPositions.ts");
+  const c = createMechaController({ match: fresh() });
+  const packet = plan(c.getState().match);
+  assert.deepEqual(projectMechPositions(c.getState().match), [], "deployment placeholders are never actual actors");
+  assert.deepEqual(projectMechPositions(c.getState().match, []), []);
+  for (const p of packet.placements) c.placeMech(p.mechId, p.pos);
+  const placed = projectMechPositions(c.getState().match, c.getState().deployment!.placements);
+  c.confirmDeployment();
+  const s = c.getState(), before = structuredClone(s.match);
+  assert.equal(s.openingSuggestion, true, "suggestions remain available without moving actual actors");
+  assert.deepEqual(projectMechPositions(s.match).map(m => m.pos), placed.map(m => m.pos));
+  const moves = projectPlannedMoves(s.match, s.draft);
+  assert.ok(moves.length > 0, "exercise a real suggested move, not an all-hold fixture");
+  for (const move of moves) {
+    assert.deepEqual(move.from, s.match.mechs.find(m => m.id === move.id)!.pos);
+    assert.deepEqual(move.to, s.draft[move.id].moveTo);
+    assert.notDeepEqual(move.from, move.to);
+  }
+  const selected = s.selected;
+  c.setMove(selected, null);
+  assert.deepEqual(projectMechPositions(c.getState().match).map(m => m.pos), placed.map(m => m.pos));
+  assert.deepEqual(s.match, before, "projection and draft edits cannot mutate the authoritative board");
+  assert.deepEqual(projectPlannedMoves(s.match, {}), []);
+  assert.deepEqual(projectPlannedMoves({ ...s.match, phase: "deployment" }, s.draft), []);
+  const projected = projectMechPositions(s.match);
+  projected[0].pos.x = -1;
+  assert.deepEqual(s.match, before, "projected positions do not alias authoritative coordinates");
+});
+
+
+test("submitted deployment opening plays from committed cells and settles to the authority result", async () => {
+  const { projectMechPositions, projectPlannedMoves } = await import("../src/game/mecha/presentation/mechPositions.ts");
+  const c = createMechaController({ match: fresh(), animate: true });
+  for (const p of plan(c.getState().match).placements) c.placeMech(p.mechId, p.pos);
+  c.confirmDeployment();
+  const deployed = c.getState().match.mechs.map(m => ({ ...m.pos }));
+  assert.ok(projectPlannedMoves(c.getState().match, c.getState().draft).length);
+  c.submit();
+  const playing = c.getState();
+  assert.ok(playing.performance, "a submitted move has an actual playback");
+  assert.deepEqual(projectMechPositions(playing.performance!.before).map(m => m.pos), deployed);
+  assert.notDeepEqual(playing.match.mechs.map(m => m.pos), deployed, "the authority executes the submitted plan");
+  const settled = structuredClone(playing.match);
+  c.finishPerformance();
+  assert.equal(c.getState().performance, null);
+  assert.deepEqual(c.getState().match, settled);
+  assert.deepEqual(projectPlannedMoves(c.getState().match, c.getState().draft), []);
+});

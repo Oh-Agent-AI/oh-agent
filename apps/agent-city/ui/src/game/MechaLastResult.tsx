@@ -87,10 +87,26 @@ function eventText(event: TurnEvent, t: Translate, locale: GameLocale): string {
       return `${unitName(event.unit.id, t)} · ${locale === "en" ? (event.reason === "death" ? "Defeated" : "Expired") : (event.reason === "death" ? "子体被击败" : "子体到期消失")} · ${cellText(event.unit.pos)}`;
     case "monster_displacement":
       return `${monsterSkillName(event.skill, locale)} · ${event.moves.map(move => `${unitName(move.unit, t)} ${cellText(move.from)} → ${cellText(move.to)}`).join("、")}`;
+    case "gravity_collision":
+      return `${unitName(event.target, t)} · ${locale === "en" ? "Gravity collision" : "引力撞击"} · ${cellText(event.cell)} · ${event.blocker.id}`;
+    case "status_hit":
+      return `${unitName(event.target, t)} · ${locale === "en" ? "Skill hit" : "技能命中"} · ${cellText(event.cell)}`;
+    case "status_boundary":
+      return locale === "en" ? "Player status phase complete" : "己方状态结算完成";
     case "corrode_field":
       return `${locale === "en" ? (event.change === "created" ? "Corrosion field created" : "Corrosion field expired") : (event.change === "created" ? "蚀格已生成" : "蚀格已消失")} · ${cellText(event.field.cell)}`;
     case "corrode_tick":
       return `${locale === "en" ? "Corrosion damage" : "蚀格伤害"} · ${unitName(event.unit, t)} · ${event.damage}`;
+    case "status_effect": {
+      const e = event.event, en = locale === "en";
+      const kind = e.type === "status_damage" ? e.kind : e.status.kind;
+      const name = (en ? { poison: "Poison", burn: "Burn", freeze: "Freeze", stun: "Stun" } : { poison: "中毒", burn: "燃烧", freeze: "冻结", stun: "眩晕" })[kind];
+      const target = e.type === "status_damage" ? e.target : e.status.target;
+      const change = e.type === "status_damage" ? `${en ? "damage" : "伤害"} ${e.amount}` :
+        (en ? { status_applied: "applied", status_refreshed: "refreshed", status_advanced: "duration advanced", status_expired: "expired", status_removed: "removed" } :
+          { status_applied: "已施加", status_refreshed: "已刷新", status_advanced: "持续时间更新", status_expired: "已到期", status_removed: "已移除" })[e.type];
+      return `${unitName(target, t)} · ${name} · ${change}`;
+    }
     case "monster_status": {
       const description = locale === "zh-Hans"
         ? { applied: "棱镜守护已施加", absorbed: "棱镜守护吸收了伤害", expired: "棱镜守护已消失" }[event.change]

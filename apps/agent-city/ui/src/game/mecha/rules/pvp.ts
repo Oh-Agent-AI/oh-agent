@@ -1,3 +1,4 @@
+import { applyDamage, applyHealing, executeMeleeEffects } from "../skillEffects";
 import {
   BOARD, MECH_IDS, createMatch, moveBudget, pathDistance,
   type Action, type ArenaPlan, type Cell, type MatchState, type MechId, type PlanFault, type TerrainKind, type TurnEvent,
@@ -147,16 +148,22 @@ export function playPvpTurn(state: PvpState, plan: ArenaPlan): RuleTurn<PvpState
       if (action.kind === "repair") {
         const target = id === "Support" ? unit(next, `${side}:${action.target}`) : undefined;
         if (actor.cd !== 0 || !target || cheb(actor.pos, target.pos) !== 1) reason = "repair target not adjacent";
-        else { target.hp = Math.min(STATS[target.kind].maxHp, target.hp + 4); actor.cd = 1; actor.skillUsed = true; }
+        else { target.hp = applyHealing(target.hp, 4, STATS[target.kind].maxHp); actor.cd = 1; actor.skillUsed = true; }
       } else {
         const target = typeof action.target === "string" ? unit(next, action.target) : undefined;
         if (!target || target.side === side) reason = "target gone";
         else if (action.kind === "melee" || action.kind === "charge") {
           if (cheb(actor.pos, target.pos) !== 1 || (id !== "Assault" && id !== "Support") || (action.kind === "charge" && (id !== "Assault" || actor.cd !== 0))) reason = "not adjacent to an enemy";
           else {
-            damage = Math.max(1, STATS[id].atk + (action.kind === "charge" ? 2 : 0) - STATS[target.kind].def);
-            damage = Math.min(target.hp, damage);
-            target.hp -= damage;
+            executeMeleeEffects(action.kind, target.id, {
+              strike(bonus) {
+                damage = Math.max(1, STATS[id].atk + bonus - STATS[target.kind].def);
+                damage = Math.min(target.hp, damage);
+                target.hp = applyDamage(target.hp, damage);
+              },
+              bossAlive: () => false,
+              pushBoss: () => {},
+            });
             if (action.kind === "charge") { actor.cd = 1; actor.skillUsed = true; }
           }
         } else {
@@ -165,7 +172,7 @@ export function playPvpTurn(state: PvpState, plan: ArenaPlan): RuleTurn<PvpState
           else {
             damage = Math.max(1, STATS[id].atk - STATS[target.kind].def);
             damage = Math.min(target.hp, damage);
-            target.hp -= damage;
+            target.hp = applyDamage(target.hp, damage);
             if (action.kind === "pierce") { actor.cd = 1; actor.skillUsed = true; }
           }
         }

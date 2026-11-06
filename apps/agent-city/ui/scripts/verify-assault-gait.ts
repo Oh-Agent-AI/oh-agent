@@ -126,7 +126,7 @@ test("Assault timeline includes requested movement transition time without chang
   assert.throws(() => createAssaultPerformancePlan(events, "Assault", 0, cellToWorld, 2, .25, turn, -1));
 });
 
-test("Assault timeline tracks knockback direction and leaves zero-distance attack unchanged", () => {
+test("Assault knockback preserves heading and a later voluntary move turns toward its path", () => {
   const events: MechaPerformanceEvent[] = [
     { kind: "knockback", actor: "Assault", path: [{ x: 0, y: 0 }, { x: 0, y: 1 }], duration: .32 },
     { kind: "attack", actor: "Assault", attack: "repair", from: { x: 0, y: 1 }, target: { x: 0, y: 1 }, targetIds: [], duration: .9 },
@@ -134,8 +134,9 @@ test("Assault timeline tracks knockback direction and leaves zero-distance attac
   ];
   const plan = createAssaultPerformancePlan(events, "Assault", 0, cellToWorld, 2, .25, turn);
   assert.equal(plan.entries[0]!.duration, .32);
+  assert.equal(plan.entries[0]!.endYaw, 0);
   assert.equal(plan.entries[1]!.attackTurn, undefined);
-  assert.equal(plan.entries[2]!.gait!.stages[0]!.kind, "walk");
+  assert.equal(plan.entries[2]!.gait!.stages[0]!.kind, "turn");
 });
 
 test("Assault timeline rejects malformed paths, event durations, coordinates and turns", () => {

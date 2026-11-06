@@ -82,6 +82,8 @@
 .mecha-world-healthbar[hidden] { display: none; }
 .mecha-world-healthbar.is-boss { width: 42px; }
 .mecha-world-healthbar__fill { display: block; height: 100%; background: #59d55b; }
+.mecha-world-healthbar__status { position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); white-space: nowrap; padding: 1px 3px; border: 1px solid #e8f6f0; border-radius: 3px; background: #162523; color: #fff; font: 700 10px/1.2 system-ui, sans-serif; }
+.mecha-world-healthbar__status[hidden] { display: none; }
 .mecha-world-healthbar[data-side="enemy"] .mecha-world-healthbar__fill { background: #e96557; }
 .mecha-world-healthbar[data-health-state="unknown"] { background: repeating-linear-gradient(135deg, #63727a 0 2px, #15201f 2px 4px); }
 .mecha-world-healthbar.is-selected::before { content: ""; position: absolute; bottom: 11px; left: calc(50% - 4px); border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid #ffe08a; }

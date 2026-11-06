@@ -9,6 +9,7 @@ import { SessionsPage } from "../features/sessions/SessionsPage";
 import { TestPage } from "../features/test/TestPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
 import { SkillsPage } from "../features/skills/SkillsPage";
+import { CommunityPage } from "../features/community/CommunityPage";
 import { OverviewPage } from "../features/overview/OverviewPage";
 import { usePlugin } from "./plugins/usePlugin";
 import { plugins } from "./plugins/registry";
@@ -21,6 +22,7 @@ type SessionNavigationTarget = { type: "sessionDetail"; session_ref: string; har
 
 const navigation: Array<{ id: Page; label?: MessageKey; name?: string }> = [
   { id: "overview", label: "nav.overview" },
+  { id: "community", label: "nav.community" },
   ...plugins.map(({ id, name }) => ({ id, name })),
   { id: "usage", label: "nav.usage" },
   { id: "sessions", label: "nav.sessions" },
@@ -279,7 +281,7 @@ export function App() {
     <main ref={mainContent} className={`main-content ${selectedPlugin ? "plugin-main-content" : ""}`}>
       <h1 className="visually-hidden">{pageName(navigation.find((item) => item.id === page))}</h1>
       {page === "overview" && error && <div className="error-banner" role="alert">{error} · {message("error.overviewStale", language)}</div>}
-      {selectedPlugin ? pluginSlot.content : page === "overview" ? <OverviewPage overview={overview} details={overviewDetails} /> : page === "usage" ? <UsagePage /> : page === "sessions" ? <SessionsPage navigationTarget={sessionTarget} onNavigationTargetApplied={clearSessionTarget} /> : page === "trust" ? <TrustPage /> : page === "test" ? <TestPage /> : page === "skills" ? <SkillsPage /> : page === "settings" ? <SettingsPage focusSection={focusSettingSection} onSectionFocused={clearSettingSectionTarget} /> : <FindingsPage onNavigateToAction={navigateToFindingAction} />}
+      {selectedPlugin ? pluginSlot.content : page === "community" ? <CommunityPage onOpenCity={() => navigate("city")} cityAvailable={plugins.some((plugin) => plugin.id === "city")} /> : page === "overview" ? <OverviewPage overview={overview} details={overviewDetails} /> : page === "usage" ? <UsagePage /> : page === "sessions" ? <SessionsPage navigationTarget={sessionTarget} onNavigationTargetApplied={clearSessionTarget} /> : page === "trust" ? <TrustPage /> : page === "test" ? <TestPage /> : page === "skills" ? <SkillsPage /> : page === "settings" ? <SettingsPage focusSection={focusSettingSection} onSectionFocused={clearSettingSectionTarget} /> : <FindingsPage onNavigateToAction={navigateToFindingAction} />}
     </main>
   </div></AppErrorBoundary>;
 }

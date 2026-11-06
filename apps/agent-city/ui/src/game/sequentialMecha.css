@@ -1,0 +1,27 @@
+.mecha-v15-test .mecha-v15-bar,
+.mecha-v15-test .mecha-v15-panel {
+  position: absolute;
+  box-sizing: border-box;
+  color: #e8eef6;
+  background: #0b1726f2;
+  border: 1px solid #68899b;
+  border-radius: 8px;
+  box-shadow: 0 5px 18px #0006;
+  pointer-events: auto;
+}
+.mecha-v15-test .mecha-v15-bar { top: 12px; left: 12px; right: 12px; min-height: 44px; padding: 8px 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.mecha-v15-test .mecha-v15-panel { top: 68px; left: 12px; width: min(330px, calc(100% - 24px)); max-height: calc(100% - 80px); overflow: auto; overscroll-behavior: contain; padding: 12px; display: grid; gap: 8px; }
+.mecha-v15-test p { margin: 0; }
+.mecha-v15-test .mecha-v15-note { color: #b4c7d6; font-size: 12px; line-height: 1.45; }
+.mecha-v15-test .mecha-v15-roster { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+.mecha-v15-test button, .mecha-v15-test select { min-width: 0; min-height: 36px; border: 1px solid #68899b; border-radius: 4px; background: #142536; color: #e8eef6; padding: 5px 7px; font: inherit; }
+.mecha-v15-test button:focus-visible, .mecha-v15-test select:focus-visible { outline: 3px solid #ffe08a; outline-offset: 2px; }
+.mecha-v15-test button:disabled, .mecha-v15-test select:disabled { opacity: .55; }
+.mecha-v15-test .mecha-v15-roster button { display: grid; gap: 3px; text-align: left; font-size: 12px; overflow-wrap: anywhere; }
+.mecha-v15-test .mecha-v15-roster button[aria-pressed="true"] { border-color: #ffe08a; background: #304036; }
+.mecha-v15-test .mecha-v15-row { display: flex; gap: 5px; }
+.mecha-v15-test .mecha-v15-row > * { flex: 1; }
+.mecha-v15-test .mecha-v15-confirm { display: grid; gap: 8px; padding: 8px; border-left: 3px solid #ffb76b; background: #59341c80; }
+.mecha-v15-test .mecha-v15-replays[open] { display: grid; gap: 8px; }
+.mecha-v15-test .mecha-v15-replays summary { cursor: pointer; }
+@media (max-width: 600px) { .mecha-v15-test .mecha-v15-panel { top: auto; bottom: 12px; max-height: min(52%, 420px); } }

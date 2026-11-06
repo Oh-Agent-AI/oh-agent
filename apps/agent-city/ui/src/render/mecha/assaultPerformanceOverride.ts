@@ -97,7 +97,7 @@ export function createAssaultPerformanceOverride(
       if (!turning) {
         const knockback = entry?.event.actor === "Assault" && entry.event.kind === "knockback";
         const pulse = knockback ? Math.sin(Math.PI * Math.max(0, Math.min(1, elapsed / entry.duration))) : 0;
-        if (knockback) heading = root.rotation.y;
+        // Ground alignment changes Euler angles; keep the planned heading while sliding.
         grounding.align(gait?.yaw ?? heading, pulse * .6, -pulse * .18);
       }
       if (fallen || (entry?.event.actor === "Assault" && entry.event.kind === "death")) return;

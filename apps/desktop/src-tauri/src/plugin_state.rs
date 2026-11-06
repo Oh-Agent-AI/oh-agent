@@ -77,6 +77,14 @@ pub fn handle(allowed_keys: &[String], data_home: &std::path::Path, plugin_id: &
 /// Only validated, bounded local PvE replay inputs can be stored here.
 fn mecha_replays(home: &std::path::Path, method: &str, payload: &Value) -> Result<Value, &'static str> {
     use rusqlite::{params, Connection, OptionalExtension};
+    if payload["format"].as_str() == Some("sequential-checkpoint-v1") {
+        return mecha_checkpoint(home, method, payload);
+    }
+    let sequential = match payload.get("format") {
+        None => false,
+        Some(Value::String(format)) if format == "sequential-v1" => true,
+        _ => return Err("invalid_state_value"),
+    };
     let op = payload["op"].as_str().ok_or("invalid_state_value")?;
     if !matches!((method, op), ("plugin.state.read", "list") | ("plugin.state.write", "insert" | "delete")) {
         return Err("method_unavailable");
@@ -87,7 +95,7 @@ fn mecha_replays(home: &std::path::Path, method: &str, payload: &Value) -> Resul
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(|_| "state_unavailable")?;
     }
-    let path = dir.join("mecha-replays.sqlite");
+    let path = dir.join(if sequential { "mecha-sequential-replays.sqlite" } else { "mecha-replays.sqlite" });
     let mut db = Connection::open(&path).map_err(|_| "state_unavailable")?;
     db.busy_timeout(std::time::Duration::from_secs(2)).map_err(|_| "state_unavailable")?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS replay_entries (id TEXT PRIMARY KEY, record TEXT NOT NULL)")
@@ -104,13 +112,13 @@ fn mecha_replays(home: &std::path::Path, method: &str, payload: &Value) -> Resul
         return Ok(serde_json::json!({"entries": entries}));
     }
     let id = payload["id"].as_str().ok_or("invalid_state_value")?;
-    let prefix = "agent-city:mecha-local-replay-entry:v1:";
+    let prefix = if sequential { "agent-city:mecha-sequential-replay-entry:v1:" } else { "agent-city:mecha-local-replay-entry:v1:" };
     let suffix = id.strip_prefix(prefix).ok_or("invalid_state_value")?;
     if suffix.len() != 36 || !suffix.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-') { return Err("invalid_state_value"); }
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|_| "state_unavailable")?;
     if op == "insert" {
         let raw = payload["raw"].as_str().ok_or("invalid_state_value")?;
-        if !valid_replay_record(raw) { return Err("invalid_state_value"); }
+        if !(if sequential { valid_sequential_replay_record(raw) } else { valid_replay_record(raw) }) { return Err("invalid_state_value"); }
         let existing: Option<String> = tx.query_row("SELECT record FROM replay_entries WHERE id=?1", [id], |row| row.get(0))
             .optional().map_err(|_| "state_unavailable")?;
         if let Some(existing) = existing {
@@ -125,6 +133,125 @@ fn mecha_replays(home: &std::path::Path, method: &str, payload: &Value) -> Resul
     }
     tx.commit().map_err(|_| "state_unavailable")?;
     Ok(serde_json::json!({"ok": true}))
+}
+
+/// A separate single-slot, compare-and-swap checkpoint. The version persists
+/// even after clearing, so an old window cannot overwrite a later match.
+fn mecha_checkpoint(home: &std::path::Path, method: &str, payload: &Value) -> Result<Value, &'static str> {
+    use rusqlite::{params, Connection, OptionalExtension};
+    let op = payload["op"].as_str().ok_or("invalid_state_value")?;
+    let keys: &[&str] = match (method, op) {
+        ("plugin.state.read", "read") => &["key", "format", "op"],
+        ("plugin.state.write", "write") => &["key", "format", "op", "revision", "raw"],
+        _ => return Err("method_unavailable"),
+    };
+    if !payload.as_object().is_some_and(|m| m.len() == keys.len() && keys.iter().all(|k| m.contains_key(*k))) { return Err("invalid_state_value"); }
+    let dir = home.join("state/plugins/city-assets");
+    std::fs::create_dir_all(&dir).map_err(|_| "state_unavailable")?;
+    #[cfg(unix)] {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(|_| "state_unavailable")?;
+    }
+    let path = dir.join("mecha-sequential-checkpoint.sqlite");
+    let mut db = Connection::open(&path).map_err(|_| "state_unavailable")?;
+    db.busy_timeout(std::time::Duration::from_secs(2)).map_err(|_| "state_unavailable")?;
+    db.execute_batch("CREATE TABLE IF NOT EXISTS checkpoint (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL, record TEXT)")
+        .map_err(|_| "state_unavailable")?;
+    #[cfg(unix)] {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(|_| "state_unavailable")?;
+    }
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|_| "state_unavailable")?;
+    let current: Option<(u64, Option<String>)> = tx.query_row("SELECT revision, record FROM checkpoint WHERE id=1", [], |row| Ok((row.get(0)?, row.get(1)?)))
+        .optional().map_err(|_| "state_unavailable")?;
+    let (revision, record) = current.unwrap_or((0, None));
+    if op == "read" { return Ok(serde_json::json!({"revision":revision,"raw":record})); }
+    let expected = payload["revision"].as_u64().filter(|n| *n < 9_007_199_254_740_991).ok_or("invalid_state_value")?;
+    if expected != revision { return Err("revision_conflict"); }
+    let raw = match &payload["raw"] {
+        Value::Null => None,
+        Value::String(raw) if valid_sequential_replay_record(raw) => Some(raw.as_str()),
+        _ => return Err("invalid_state_value"),
+    };
+    tx.execute("INSERT INTO checkpoint(id,revision,record) VALUES (1,?1,?2) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision, record=excluded.record", params![revision + 1, raw])
+        .map_err(|_| "state_unavailable")?;
+    tx.commit().map_err(|_| "state_unavailable")?;
+    Ok(serde_json::json!({"revision":revision + 1}))
+}
+
+/// Validate only the bounded, anonymized v1.5 archive schema. Rule execution and
+/// digest verification remain in the versioned game interpreter at restore time.
+fn valid_sequential_replay_record(raw: &str) -> bool {
+    fn exact(v: &Value, keys: &[&str]) -> bool {
+        v.as_object().is_some_and(|m| m.len() == keys.len() && keys.iter().all(|k| m.contains_key(*k)))
+    }
+    fn hash(v: &Value) -> bool {
+        v.as_str().is_some_and(|s| s.len() == 64 && s.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)))
+    }
+    fn unit(v: &Value) -> bool { v.as_str().is_some_and(|s| ["Assault", "Gunner", "Support"].contains(&s)) }
+    fn cell(v: &Value) -> bool {
+        exact(v, &["x", "y"]) && v["x"].as_u64().is_some_and(|x| x < 10) && v["y"].as_u64().is_some_and(|y| y < 10)
+    }
+    if raw.len() > 41_024 { return false; }
+    let Ok(record) = serde_json::from_str::<Value>(raw) else { return false; };
+    if !exact(&record, &["schema", "savedAt", "archive"]) || record["schema"] != "mecha-sequential-replay-entry:v1"
+        || !record["savedAt"].as_str().is_some_and(|s| s.len() == 24 && s.bytes().all(|c| c.is_ascii_digit() || b"-:.TZ".contains(&c))) { return false; }
+    let Some(raw_archive) = record["archive"].as_str().filter(|s| s.len() <= 40_000) else { return false; };
+    let Ok(a) = serde_json::from_str::<Value>(raw_archive) else { return false; };
+    let status = match a["schema"].as_str() {
+        Some("mecha-sequential-bundle:v1") => false,
+        Some("mecha-sequential-bundle:v2") => true,
+        _ => return false,
+    };
+    if !exact(&a, &["schema", "ruleset", "siteDigest", "opening", "replay"])
+        || a["ruleset"] != "mecha-v1.5" || !hash(&a["siteDigest"]) { return false; }
+    let opening = &a["opening"];
+    if !exact(opening, if status { &["preset", "script", "placements", "encounter"] } else { &["preset", "script", "placements"] })
+        || opening["preset"] != "covers_sparse_mid" || opening["script"] != "siege" { return false; }
+    if status {
+        let encounter = &opening["encounter"];
+        if !exact(encounter, &["speciesId", "contentVersion", "statusRules"]) || encounter["contentVersion"] != 1
+            || encounter["statusRules"] != "mecha-status-encounter:v1"
+            || !encounter["speciesId"].as_str().is_some_and(|s| ["spore_leaper", "flux_lancer", "prism_warden", "gravity_core"].contains(&s)) { return false; }
+    }
+    let Some(placements) = opening["placements"].as_array().filter(|p| p.len() == 3) else { return false; };
+    let mut seen_units = std::collections::HashSet::new();
+    let mut seen_cells = std::collections::HashSet::new();
+    for p in placements {
+        if !exact(p, &["mechId", "pos"]) || !unit(&p["mechId"]) || !cell(&p["pos"]) { return false; }
+        if !seen_units.insert(p["mechId"].as_str().unwrap()) || !seen_cells.insert((p["pos"]["x"].as_u64().unwrap(), p["pos"]["y"].as_u64().unwrap())) { return false; }
+    }
+    let replay = &a["replay"];
+    if !exact(replay, if status { &["schema", "ruleset", "initialDigest", "finalDigest", "entries", "statusRules"] } else { &["schema", "ruleset", "initialDigest", "finalDigest", "entries"] })
+        || replay["schema"] != if status { "mecha-sequential-replay:v2" } else { "mecha-sequential-replay:v1" }
+        || (status && replay["statusRules"] != "mecha-status-encounter:v1")
+        || replay["ruleset"] != "mecha-v1.5" || !hash(&replay["initialDigest"]) || !hash(&replay["finalDigest"]) { return false; }
+    let Some(entries) = replay["entries"].as_array().filter(|entries| entries.len() <= 512) else { return false; };
+    for (index, entry) in entries.iter().enumerate() {
+        if !exact(entry, &["command", "eventDigest"]) || !hash(&entry["eventDigest"]) { return false; }
+        let command = &entry["command"];
+        if command["id"].as_str() != Some(format!("c{index}").as_str()) || command["revision"].as_u64() != Some(index as u64 + 1) { return false; }
+        match command["kind"].as_str() {
+            Some("move") if exact(command, &["kind", "id", "revision", "mech", "to"]) && unit(&command["mech"]) && cell(&command["to"]) => (),
+            Some("undo" | "reset") if exact(command, &["kind", "id", "revision"]) => (),
+            Some("end") if exact(command, &["kind", "id", "revision", "confirmUnused"]) && command["confirmUnused"].is_boolean() => (),
+            Some("act") if exact(command, &["kind", "id", "revision", "mech", "action"]) && unit(&command["mech"]) => {
+                let action = &command["action"];
+                let target = action.get("target");
+                match action["kind"].as_str() {
+                    Some("skip") if exact(action, &["kind"]) => (),
+                    Some("repair") if exact(action, &["kind", "target"]) && target.is_some_and(unit) => (),
+                    Some("melee" | "charge" | "shoot" | "pierce") if exact(action, if target.is_some() { &["kind", "target"] } else { &["kind"] })
+                        && target.is_none_or(|value| value.as_str().is_some_and(|s| s == "boss" || s.strip_prefix('r').is_some_and(|n|
+                            !n.is_empty() && n.len() <= 4 && (n == "0" || !n.starts_with('0')) && n.bytes().all(|b| b.is_ascii_digit())
+                            && n.parse::<u16>().is_ok_and(|i| i <= 1023)))) => (),
+                    _ => return false,
+                }
+            },
+            _ => return false,
+        }
+    }
+    true
 }
 
 fn valid_replay_record(raw: &str) -> bool {
@@ -224,6 +351,145 @@ mod tests {
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn sequential_replays_are_bounded_and_isolated_from_legacy_storage() {
+        let home = temp_home();
+        let allowed = vec!["mecha-replays:v1".to_string()];
+        let digest = "a".repeat(64);
+        let commands = [
+            json!({"kind":"move","id":"c0","revision":1,"mech":"Assault","to":{"x":0,"y":7}}),
+            json!({"kind":"undo","id":"c1","revision":2}),
+            json!({"kind":"act","id":"c2","revision":3,"mech":"Gunner","action":{"kind":"shoot","target":"r0"}}),
+            json!({"kind":"reset","id":"c3","revision":4}),
+            json!({"kind":"end","id":"c4","revision":5,"confirmUnused":true}),
+        ];
+        let archive = json!({"schema":"mecha-sequential-bundle:v1", "ruleset":"mecha-v1.5", "siteDigest":digest,
+            "opening":{"preset":"covers_sparse_mid", "script":"siege", "placements":[
+                {"mechId":"Assault","pos":{"x":0,"y":8}}, {"mechId":"Gunner","pos":{"x":3,"y":8}}, {"mechId":"Support","pos":{"x":6,"y":8}}]},
+            "replay":{"schema":"mecha-sequential-replay:v1", "ruleset":"mecha-v1.5", "initialDigest":digest, "finalDigest":digest,
+                "entries":commands.iter().map(|c| json!({"command":c,"eventDigest":digest})).collect::<Vec<_>>()}});
+        let record = |archive: &Value| json!({"schema":"mecha-sequential-replay-entry:v1", "savedAt":"2026-11-06T12:00:00.000Z", "archive":archive.to_string()}).to_string();
+        assert!(valid_sequential_replay_record(&record(&archive)));
+        let id = "agent-city:mecha-sequential-replay-entry:v1:12345678-1234-1234-1234-123456789abc";
+        let payload = json!({"key":"mecha-replays:v1", "format":"sequential-v1", "op":"insert", "id":id, "raw":record(&archive)});
+        assert_eq!(handle(&[], &home, "city", "plugin.state.write", &payload), Err("state_key_denied"));
+        handle(&allowed, &home, "city", "plugin.state.write", &payload).unwrap();
+        let list = handle(&allowed, &home, "city", "plugin.state.read", &json!({"key":"mecha-replays:v1", "format":"sequential-v1", "op":"list"})).unwrap();
+        assert_eq!(list["entries"].as_array().unwrap().len(), 1);
+        let legacy = handle(&allowed, &home, "city", "plugin.state.read", &json!({"key":"mecha-replays:v1", "op":"list"})).unwrap();
+        assert!(legacy["entries"].as_array().unwrap().is_empty());
+        for edit in 0..6 {
+            let mut changed = archive.clone();
+            match edit {
+                0 => changed["ruleset"] = json!("mecha-v1.4"),
+                1 => changed["opening"]["placements"][0]["pos"]["x"] = json!(10),
+                2 => changed["replay"]["entries"][2]["command"]["action"]["target"] = json!("private-city-id"),
+                3 => changed["replay"]["entries"][0]["command"]["revision"] = json!(2),
+                4 => changed["replay"]["entries"][0]["private"] = json!("data"),
+                _ => changed["replay"]["entries"] = Value::Array(vec![Value::Null; 513]),
+            }
+            assert!(!valid_sequential_replay_record(&record(&changed)), "accepted mutation {edit}");
+        }
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn sequential_database_accepts_browser_generated_record() {
+        let raw = include_str!("../tests/fixtures/mecha-sequential-replay-browser-synthetic.json");
+        assert!(valid_sequential_replay_record(raw));
+        assert!(!valid_replay_record(raw));
+        let home = temp_home();
+        let allowed = vec!["mecha-replays:v1".to_string()];
+        let id = "agent-city:mecha-sequential-replay-entry:v1:12345678-1234-1234-1234-123456789abc";
+        let insert = json!({"key":"mecha-replays:v1", "format":"sequential-v1", "op":"insert", "id":id, "raw":raw});
+        handle(&allowed, &home, "city", "plugin.state.write", &insert).unwrap();
+        let list = handle(&allowed, &home, "city", "plugin.state.read", &json!({"key":"mecha-replays:v1", "format":"sequential-v1", "op":"list"})).unwrap();
+        assert_eq!(list["entries"][0]["raw"], raw);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn sequential_status_v2_requires_exact_versioned_encounter() {
+        let digest = "a".repeat(64);
+        let archive = json!({"schema":"mecha-sequential-bundle:v2", "ruleset":"mecha-v1.5", "siteDigest":digest,
+            "opening":{"preset":"covers_sparse_mid", "script":"siege", "placements":[
+                {"mechId":"Assault","pos":{"x":0,"y":8}}, {"mechId":"Gunner","pos":{"x":3,"y":8}}, {"mechId":"Support","pos":{"x":6,"y":8}}],
+                "encounter":{"speciesId":"prism_warden","contentVersion":1,"statusRules":"mecha-status-encounter:v1"}},
+            "replay":{"schema":"mecha-sequential-replay:v2", "ruleset":"mecha-v1.5", "statusRules":"mecha-status-encounter:v1",
+                "initialDigest":digest, "finalDigest":digest, "entries":[{"command":{"kind":"end","id":"c0","revision":1,"confirmUnused":true},"eventDigest":digest}]}});
+        let record = |a: &Value| json!({"schema":"mecha-sequential-replay-entry:v1", "savedAt":"2026-11-06T12:00:00.000Z", "archive":a.to_string()}).to_string();
+        assert!(valid_sequential_replay_record(&record(&archive)));
+        for edit in 0..7 {
+            let mut bad = archive.clone();
+            match edit {
+                0 => bad["opening"]["encounter"]["speciesId"] = json!("neural_weaver"),
+                1 => bad["opening"]["encounter"]["contentVersion"] = json!(2),
+                2 => bad["opening"]["encounter"]["statusRules"] = json!("unknown"),
+                3 => bad["opening"]["encounter"]["private"] = json!("data"),
+                4 => bad["replay"]["schema"] = json!("mecha-sequential-replay:v1"),
+                5 => bad["replay"]["statusRules"] = json!("unknown"),
+                _ => bad["schema"] = json!("mecha-sequential-bundle:v1"),
+            }
+            assert!(!valid_sequential_replay_record(&record(&bad)), "accepted mutation {edit}");
+        }
+    }
+
+    #[test]
+    fn sequential_status_v2_accepts_frontend_checkpoint_and_preserves_cas() {
+        let raw = include_str!("../tests/fixtures/mecha-sequential-status-v2-synthetic.json");
+        assert!(valid_sequential_replay_record(raw));
+        assert!(!valid_replay_record(raw));
+        let home = temp_home();
+        let allowed = vec!["mecha-replays:v1".to_string()];
+        let read = json!({"key":"mecha-replays:v1", "format":"sequential-checkpoint-v1", "op":"read"});
+        let write = json!({"key":"mecha-replays:v1", "format":"sequential-checkpoint-v1", "op":"write", "revision":0, "raw":raw});
+        assert_eq!(handle(&allowed, &home, "city", "plugin.state.write", &write).unwrap(), json!({"revision":1}));
+        assert_eq!(handle(&allowed, &home, "city", "plugin.state.read", &read).unwrap(), json!({"revision":1,"raw":raw}));
+        assert_eq!(handle(&allowed, &home, "city", "plugin.state.write", &write), Err("revision_conflict"));
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn sequential_checkpoint_uses_cas_and_keeps_generation_after_clear() {
+        let raw = include_str!("../tests/fixtures/mecha-sequential-replay-browser-synthetic.json");
+        let home = temp_home();
+        let allowed = vec!["mecha-replays:v1".to_string()];
+        let read = json!({"key":"mecha-replays:v1", "format":"sequential-checkpoint-v1", "op":"read"});
+        let write = |revision, value: Value| json!({"key":"mecha-replays:v1", "format":"sequential-checkpoint-v1", "op":"write", "revision":revision, "raw":value});
+        assert_eq!(handle(&[], &home, "city", "plugin.state.read", &read), Err("state_key_denied"));
+        assert_eq!(handle(&allowed, &home, "city", "plugin.state.read", &read).unwrap(), json!({"revision":0,"raw":null}));
+        assert_eq!(handle(&allowed, &home, "city", "plugin.state.write", &write(0, json!("bad"))), Err("invalid_state_value"));
+        assert_eq!(handle(&allowed, &home, "city", "plugin.state.write", &write(0, json!(raw))).unwrap(), json!({"revision":1}));
+        assert_eq!(handle(&allowed, &home, "city", "plugin.state.write", &write(0, json!(raw))), Err("revision_conflict"));
+        assert_eq!(handle(&allowed, &home, "city", "plugin.state.read", &read).unwrap(), json!({"revision":1,"raw":raw}));
+        assert_eq!(handle(&allowed, &home, "city", "plugin.state.write", &write(1, Value::Null)).unwrap(), json!({"revision":2}));
+        assert_eq!(handle(&allowed, &home, "city", "plugin.state.write", &write(0, json!(raw))), Err("revision_conflict"));
+        assert_eq!(handle(&allowed, &home, "city", "plugin.state.read", &read).unwrap(), json!({"revision":2,"raw":null}));
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn sequential_checkpoint_concurrent_connections_commit_only_once() {
+        use std::sync::{Arc, Barrier};
+        let raw = include_str!("../tests/fixtures/mecha-sequential-replay-browser-synthetic.json");
+        let home = temp_home();
+        let read = json!({"key":"mecha-replays:v1", "format":"sequential-checkpoint-v1", "op":"read"});
+        mecha_checkpoint(&home, "plugin.state.read", &read).unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        let workers: Vec<_> = (0..2).map(|_| {
+            let barrier = barrier.clone(); let home = home.clone();
+            std::thread::spawn(move || {
+                let payload = json!({"key":"mecha-replays:v1", "format":"sequential-checkpoint-v1", "op":"write", "revision":0, "raw":raw});
+                barrier.wait(); mecha_checkpoint(&home, "plugin.state.write", &payload)
+            })
+        }).collect();
+        let results: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1, "{results:?}");
+        assert_eq!(results.iter().filter(|result| **result == Err("revision_conflict")).count(), 1, "{results:?}");
+        assert_eq!(mecha_checkpoint(&home, "plugin.state.read", &read).unwrap(), json!({"revision":1,"raw":raw}));
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     const KEYS: &[&str] = &["flight-profile:v1"];

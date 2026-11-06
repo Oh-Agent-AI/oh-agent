@@ -1,3 +1,5 @@
+import { applyDamage } from "./skillEffects";
+import { applyConfirmedStatusHit } from "./statusBattle";
 import { sporeLeapCells, sporeLeapReachable, occupant, livingBuildingAt, raiderAt, mech, emit, enemyStatsOf, STATS, RAIDER_DEF, BUILDING_DEF, orderedHealthEffect, type MatchState, type Intent, type Cell, type MechId, type Raider, type TurnEvent } from "./board";
 import type { hurtMech, hurtRaider, strike, refresh } from "./combat";
 type SporeCombatOps = { hurtMech: typeof hurtMech; hurtRaider: typeof hurtRaider; strike: typeof strike; refresh: typeof refresh };
@@ -72,10 +74,11 @@ export function resolveSporeUnit(state: MatchState, intent: Intent, ops: SporeCo
     const before = target.hp;
     if (effect.target === "mech") hurtMech(state, effect.id as MechId, strike(enemyStatsOf(state).bossAtk, STATS[effect.id as MechId].def));
     else if (effect.target === "raider") hurtRaider(target as Raider, strike(enemyStatsOf(state).bossAtk, RAIDER_DEF));
-    else target.hp = Math.max(0, target.hp - strike(enemyStatsOf(state).bossAtk, BUILDING_DEF));
+    else target.hp = applyDamage(target.hp, strike(enemyStatsOf(state).bossAtk, BUILDING_DEF));
     event.damage += before - target.hp;
     if (target.hp !== before) (event.effects ??= []).push(orderedHealthEffect({ kind: effect.target, id: effect.id, before, after: target.hp }));
     refresh(state);
+    if (effect.target === "mech") applyConfirmedStatusHit(state, "spore_leap", effect.id as MechId);
   }
 }
 

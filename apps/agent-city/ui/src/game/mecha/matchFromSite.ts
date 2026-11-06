@@ -5,7 +5,7 @@
  * 这里只做转换，不调 bossPrepare——何时开第一回合是调用方的事。
  */
 import { rearDeployZone } from "./deployment";
-import type { LocalMissionId, MonsterContent } from "./board";
+import type { LocalMissionId, MonsterContent, PveRuleset } from "./board";
 import type { CityMechaSite } from "./citySite";
 import type { PlannedMonsterSpeciesId } from "./monsters/contracts";
 import { createMatch, type BossScriptId, type BuildingStake, type CoverPresetId, type DifficultyId, type MatchState } from "./rules";
@@ -15,12 +15,13 @@ export type MonsterPracticeContent = { speciesId: PlannedMonsterSpeciesId; conte
 
 export function matchFromSite(
   site: CityMechaSite,
-  opts: { preset: CoverPresetId; script: BossScriptId; difficulty?: DifficultyId; stake?: BuildingStake; deployment?: boolean; mission?: LocalMissionId; monsterContent?: MonsterPracticeContent },
+  opts: { preset: CoverPresetId; script: BossScriptId; difficulty?: DifficultyId; stake?: BuildingStake; deployment?: boolean; mission?: LocalMissionId; monsterContent?: MonsterPracticeContent; ruleset?: PveRuleset },
 ): MatchState {
   const { preset, script, difficulty, stake } = opts;
   return createMatch({
     preset,
     script,
+    ruleset: opts.ruleset,
     difficulty,
     covers: [],
     terrain: site.terrain.map((row) => row.slice()),

@@ -189,7 +189,7 @@ function reconstruct(site: CityMechaSite, archive: Archive): ReplaySourceRound[]
 }
 function reconstructVerified(site: CityMechaSite, archive: Archive): ReplaySourceRound[] {
   let state: MatchState;
-  try { state = matchFromSite(site, archive); } catch { return fail("incompatible"); }
+  try { state = matchFromSite(site, { ...archive, ruleset: GDD_RULESET }); } catch { return fail("incompatible"); }
   // Never let an older adapter silently ignore the versioned content.
   if (!sameMonsterContent(stateMonsterContent(state), archive.monsterContent)) return fail("incompatible");
   if (archive.deployment) {

@@ -38,7 +38,7 @@ export function inspectCell(state: MatchState, cell: Cell, draft: InspectionDraf
   if (!Number.isInteger(cell.x) || !Number.isInteger(cell.y) || !inb(cell)) return null;
   const info: CellInspection = { cell: { ...cell }, terrain: terrainAt(state, cell), height: heightAt(state, cell), object: "empty", movePath: null };
   const friendly = state.mechs.find(m => {
-    const position = draft[m.id]?.moveTo ?? m.pos;
+    const position = m.pos;
     return inspectedUnit !== null && (inspectedUnit === undefined || inspectedUnit === m.id) && m.hp > 0 && position.x === cell.x && position.y === cell.y;
   });
   const enemyAtCell = state.boss.hp > 0 && onFootprint(state.boss.anchor, cell) ? "boss" : state.raiders.find(r => r.hp > 0 && r.pos.x === cell.x && r.pos.y === cell.y)?.id;
@@ -61,7 +61,7 @@ export function inspectCell(state: MatchState, cell: Cell, draft: InspectionDraf
     info.attack = declaredAttack(state, enemy) ?? undefined;
   } else {
     const occ = occupant(state, cell);
-    // A friendly model may already be displayed at its draft destination.
+    // Draft destinations do not occupy cells until the turn is resolved.
     if (["cover", "obstacle", "building", "rubble"].includes(occ)) info.object = occ as CellInspection["object"];
     const building = state.buildings.find(b => b.cells.some(c => c.x === cell.x && c.y === cell.y));
     if (building) info.building = { id: building.id, hp: building.hp, maxHp: building.maxHp };

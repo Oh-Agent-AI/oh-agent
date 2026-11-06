@@ -157,6 +157,9 @@ test("explicit normal preserves this city's legacy default setup apart from diff
   const site = fixedCity();
   const legacy = matchFromSite(site, { preset: "covers_sparse_mid", script: "siege" });
   const explicit = matchFromSite(site, { preset: "covers_sparse_mid", script: "siege", difficulty: "normal" });
+  const sequential = matchFromSite(site, { preset: "covers_sparse_mid", script: "siege", ruleset: "mecha-v1.5" });
+  assert.equal(legacy.ruleset, "mecha-v1.4");
+  assert.equal(sequential.ruleset, "mecha-v1.5");
   assert.equal(explicit.difficulty, "normal");
   const { difficulty: _difficulty, ...withoutDifficulty } = explicit;
   assert.deepEqual(withoutDifficulty, legacy);

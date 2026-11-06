@@ -1,3 +1,4 @@
+import { applyDamage, applyHealing, executeMeleeEffects, projectBuildingCollision, type MeleeSkill } from "./skillEffects";
 import { projectUnitPure, unitForSkill } from "./unitRegistry";
 /**
  * 战斗层：机甲行动、伤害、击退/碰撞、整包校验与结算（validateAndApplyPlan）。
@@ -5,7 +6,7 @@ import { projectUnitPure, unitForSkill } from "./unitRegistry";
  * （它要同时调 validateAndApplyPlan 与 bossExecute，放在这里就会让 combat ↔ enemy 成环）。
  */
 import {
-  BOSS_DEF, BUILDING_DEF, MECH_IDS, RAIDER_DEF, STATS, enemyStatsOf, adjacentToFootprint, cheb, emit, eq, footprint, footprintCenter,
+  BOSS_DEF, BUILDING_DEF, BUILDING_COLLISION_RULESET, MECH_IDS, RAIDER_DEF, STATS, enemyStatsOf, adjacentToFootprint, cheb, emit, eq, footprint, footprintCenter,
   inb, knockbackFromAttacker, living, livingRaiders, enemiesRemain, mech, occupant, onFootprint, pathDistance, primaryAxis, raiderAt, moveBudget, blocksTerrain,
   shoveWall, stakeBuildings, livingStakeBuildings, swapEventSink, terrainAt, attackerCenter, healthCapture, healthEffectFields, sporeLeapCells, sporeLeapReachable, ringPierceCells, assertMonsterState, corrodeWorld, reprojectCorrode, endCorrodeTurn, orderedHealthEffect, MONSTER_SKILLS, displacementWorld, reprojectDisplacement, reconcileSwarm, projectSwarm, visibleSwarmProjection, reconcileNeural, projectNeural, neuralBonus,
   type Action, type ArenaPlan, type Cell, type MatchState, type MechId, type PlanFault, type PlanReject, type Raider,
@@ -50,7 +51,7 @@ export function buildingDamage(state?: MatchState): number {
 export function hurtMech(state: MatchState, id: MechId, amount: number) {
   const m = state.mechs.find((x) => x.id === id);
   if (!m || m.hp <= 0) return;
-  m.hp = Math.max(0, m.hp - amount);
+  m.hp = applyDamage(m.hp, amount);
 }
 
 export function hurtBoss(state: MatchState, amount: number) {
@@ -60,7 +61,7 @@ export function hurtBoss(state: MatchState, amount: number) {
     emit({ type: "monster_status", actor: "boss", status: "prism_guard", change: "absorbed", remaining: 0 });
     return;
   }
-  state.boss.hp = Math.max(0, state.boss.hp - amount);
+  state.boss.hp = applyDamage(state.boss.hp, amount);
   if (state.boss.hp === 0 && state.boss.intent) {
     state.boss.intent.status = "void";
     state.boss.intent.projected = [];
@@ -69,7 +70,7 @@ export function hurtBoss(state: MatchState, amount: number) {
 
 export function hurtRaider(raider: Raider, amount: number) {
   if (raider.hp <= 0) return;
-  raider.hp = Math.max(0, raider.hp - amount);
+  raider.hp = applyDamage(raider.hp, amount);
   if (raider.hp === 0 && raider.intent) {
     raider.intent.status = "void";
     raider.intent.projected = [];
@@ -104,7 +105,7 @@ export function refresh(state: MatchState) {
   // stored the outcome. City does not execute a dead boss, so put the phase
   // back to finished or the match stays mid-resolution under a victory banner.
   if (state.outcome) {
-    if (state.boss.intent && (Object.values(MONSTER_SKILLS).some(skill => skill === state.boss.intent!.skillId))) {
+    if (state.boss.intent && (state.boss.intent.skillId === "prism_frost" || Object.values(MONSTER_SKILLS).some(skill => skill === state.boss.intent!.skillId))) {
       state.boss.intent.status = "void";
       state.boss.intent.projected = [];
     }
@@ -134,7 +135,7 @@ export function tickCorrode(state: MatchState): void {
       // Hazard is true damage and does not consume an attack shield.
       if (actor.kind === "mech") hurtMech(state, actor.id as MechId, 1);
       else if (actor.kind === "raider") hurtRaider(target as Raider, 1);
-      else { state.boss.hp = Math.max(0, state.boss.hp - 1); if (!state.boss.hp && state.boss.intent) { state.boss.intent.status = "void"; state.boss.intent.projected = []; } }
+      else { state.boss.hp = applyDamage(state.boss.hp, 1); if (!state.boss.hp && state.boss.intent) { state.boss.intent.status = "void"; state.boss.intent.projected = []; } }
       emit({ type: "corrode_tick", fieldId: effect.fieldId, unit: actor.id, damage: before - target.hp,
         effects: [orderedHealthEffect({ kind: actor.kind, id: actor.id, before, after: target.hp })] });
       refresh(state);
@@ -195,6 +196,13 @@ export function tryTranslateBoss(state: MatchState, dir: Cell): boolean {
       hurtMech(state, id, 2);
       hitIds.push(id);
     }
+    if (state.ruleset === BUILDING_COLLISION_RULESET) {
+      const entered = dests.filter(cell => !onFootprint(anchor, cell));
+      for (const effect of projectBuildingCollision(entered, state.buildings, 2)) {
+        const building = state.buildings.find(item => item.id === effect.id)!;
+        building.hp = effect.after;
+      }
+    }
     emit({ type: "shove", unit: "boss", dir, hit: hitIds.join(","), damage: before - state.boss.hp, ...healthEffectFields(healthBefore, state) });
     refresh(state);
     return false;
@@ -214,6 +222,12 @@ export function tryPushMech(state: MatchState, id: MechId, dir: Cell): boolean {
   const before = m.hp;
   if (!inb(dest) || blocksTerrain(state, dest) || shoveWall(state, dest)) {
     hurtMech(state, id, 2);
+    if (state.ruleset === BUILDING_COLLISION_RULESET) {
+      for (const effect of projectBuildingCollision([dest], state.buildings, 2)) {
+        const building = state.buildings.find(item => item.id === effect.id)!;
+        building.hp = effect.after;
+      }
+    }
     emit({ type: "shove", unit: id, dir, hit: "wall", damage: before - m.hp, ...healthEffectFields(healthBefore, state) });
     refresh(state);
     return false;
@@ -266,17 +280,22 @@ export function enemyHp(state: MatchState, target: string): number {
   return target === "boss" ? state.boss.hp : state.raiders.find((r) => r.id === target)?.hp ?? 0;
 }
 
-function meleeEnemy(state: MatchState, id: MechId, target: string, bonus: number, kind: Action["kind"]) {
+function meleeEnemy(state: MatchState, id: MechId, target: string, kind: MeleeSkill) {
   const m = mech(state, id);
   if (!m) return;
   const from = m.pos;
-  const healthBefore = healthCapture(state);
-  const before = enemyHp(state, target);
-  strikeEnemy(state, target, STATS[id].atk + bonus);
-  // act 先于击退事件：回放顺序 = 出手、再被推。
-  emit({ type: "act", mechId: id, action: kind, target, damage: before - enemyHp(state, target), ...healthEffectFields(healthBefore, state) });
-  refresh(state);
-  if (target === "boss" && state.boss.hp > 0) tryTranslateBoss(state, knockbackFromAttacker(from, state.boss.anchor));
+  executeMeleeEffects(kind, target, {
+    strike(bonus) {
+      const healthBefore = healthCapture(state);
+      const before = enemyHp(state, target);
+      strikeEnemy(state, target, STATS[id].atk + bonus);
+      // Preserve the committed act before any knockback event.
+      emit({ type: "act", mechId: id, action: kind, target, damage: before - enemyHp(state, target), ...healthEffectFields(healthBefore, state) });
+      refresh(state);
+    },
+    bossAlive: () => state.boss.hp > 0,
+    pushBoss: () => { tryTranslateBoss(state, knockbackFromAttacker(from, state.boss.anchor)); },
+  });
 }
 
 function shootEnemy(state: MatchState, id: MechId, target: string, kind: Action["kind"]) {
@@ -398,7 +417,7 @@ export function applyAction(state: MatchState, id: MechId, action: Action): stri
     const meleeIds = meleeTargets(state, m.pos);
     const target = action.target ?? (meleeIds.length === 1 ? meleeIds[0] : undefined);
     if (!target || !meleeIds.includes(target)) return "not adjacent to an enemy";
-    meleeEnemy(state, id, target, action.kind === "charge" ? 2 : 0, action.kind);
+    meleeEnemy(state, id, target, action.kind);
     if (action.kind === "charge") {
       m.cd = 1;
       m.skillUsed = true;
@@ -424,7 +443,7 @@ export function applyAction(state: MatchState, id: MechId, action: Action): stri
   const ally = mech(state, action.target);
   if (!ally || cheb(m.pos, ally.pos) !== 1) return "repair target not adjacent";
   const healthBefore = healthCapture(state);
-  ally.hp = Math.min(STATS[action.target].maxHp, ally.hp + 4);
+  ally.hp = applyHealing(ally.hp, 4, STATS[action.target].maxHp);
   emit({ type: "act", mechId: id, action: "repair", target: action.target, damage: 0, ...healthEffectFields(healthBefore, state) });
   m.cd = 1;
   m.skillUsed = true;

@@ -380,7 +380,27 @@ export class MechaPerformancePlayer {
       if (this.elapsed < end) {
         const local = this.elapsed - start;
         const progress = this.override ? this.override.play(index, local) : local / duration;
-        if (progress !== null) this.play(event, clamp01(progress));
+        if (progress !== null) {
+          const normalized = clamp01(progress);
+          // Adjacent knockbacks of distinct attacked units share the impact.
+          let attackIndex = index - 1;
+          while (attackIndex >= 0 && this.events[attackIndex]?.kind === "knockback") attackIndex--;
+          const previousAttack = this.events[attackIndex];
+          const alreadyMoved = event.kind === "knockback" && this.events.slice(attackIndex + 1, index)
+            .some(cue => cue.kind === "knockback" && cue.actor === event.actor);
+          const overlapsPrevious = event.kind === "knockback" && !alreadyMoved && previousAttack?.kind === "attack" && previousAttack.targetIds.includes(event.actor);
+          this.play(event, overlapsPrevious ? 1 : normalized);
+          if (event.kind === "attack" && normalized >= 0.4) {
+            const moved = new Set<string>();
+            for (let nextIndex = index + 1; nextIndex < this.events.length; nextIndex++) {
+              const next = this.events[nextIndex]!;
+              if (next.kind !== "knockback") break;
+              if (!event.targetIds.includes(next.actor) || moved.has(next.actor)) continue;
+              moved.add(next.actor);
+              this.play(next, clamp01((normalized - 0.4) / 0.6));
+            }
+          }
+        }
         this.override?.afterPose?.(index, local);
         return;
       }
@@ -483,6 +503,15 @@ export class MechaPerformancePlayer {
       }
       return;
     }
+    if (event.kind === "status_cue") {
+      if (event.change === "advanced") return;
+      const at = this.cellToWorld(event.cell, event.actor);
+      const color = { poison: "#8bd865", burn: "#ff804d", freeze: "#9ceaff", stun: "#f5d967" }[event.status];
+      this.flash(at, color, event.change === "expired" || event.change === "removed" ? 1.8 - progress * 0.6 : 1.1 + pulse(progress));
+      const target = this.actors[event.actor];
+      if (event.change === "damage" && target && !this.fallen.has(event.actor)) poseMechaModel(target, "hit", pulse(progress) * 0.48);
+      return;
+    }
     const actor = this.actors[event.actor];
     if (!actor) return;
     if (event.kind === "raider_spawn" || event.kind === "raider_remove") {
@@ -504,9 +533,11 @@ export class MechaPerformancePlayer {
       const from = this.cellToWorld(event.path[index], event.actor);
       const to = this.cellToWorld(event.path[index + 1], event.actor);
       actor.position.lerpVectors(from, to, event.kind === "knockback" ? easeOut(progress) : local);
-      faceMechaTarget(actor, from, to);
-      if (event.kind === "move") poseMechaModel(actor, "move", this.elapsed);
-      else {
+      if (event.kind === "move") {
+        faceMechaTarget(actor, from, to);
+        poseMechaModel(actor, "move", this.elapsed);
+      } else {
+        poseMechaModel(actor, "hit", progress * 0.48);
         actor.rotation.x = -pulse(progress) * 0.18;
         actor.position.y += pulse(progress) * 0.6;
       }

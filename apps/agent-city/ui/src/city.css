@@ -299,6 +299,9 @@
 .city-minimap-bottom { width: var(--mm-size); padding: 6px 4px 2px; box-sizing: border-box; color: #e8eaec; }
 .city-minimap-tabs { display: flex; gap: 4px; padding: 2px; border-radius: 6px; background: rgba(8, 12, 16, 0.72); }
 .city-minimap-tabs button { flex: 1; min-height: 28px; border: 0; border-radius: 4px; padding: 3px 6px; background: none; color: rgba(255, 255, 255, 0.85); font: inherit; font-size: 11px; line-height: 1.5; cursor: pointer; white-space: nowrap; }
+.city-minimap-encounters { display: flex; flex-wrap: wrap; gap: 3px; margin: 4px 0; max-width: var(--mm-size); }
+.city-minimap-encounters button { border: 1px solid #afc7db; border-radius: 4px; padding: 3px 5px; background: #16283a; color: #fff; font: inherit; cursor: pointer; }
+.city-minimap-encounters button:focus-visible { outline: 2px solid #ffe47b; outline-offset: 2px; }
 .city-minimap-key { margin-top: 4px; }
 .city-minimap-key > summary { width: fit-content; padding: 3px 0; color: #b9c7d5; cursor: pointer; font-size: 11px; }
 .city-minimap-key[open] .city-minimap-legend { padding-top: 4px; }

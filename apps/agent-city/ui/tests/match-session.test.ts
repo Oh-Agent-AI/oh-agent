@@ -129,3 +129,10 @@ test("local client exposes the same asynchronous boundary as a remote client", a
   assert.equal((await client.snapshot("match-1")).value!.revision, result.value!.revision);
   assert.equal((await client.close("match-1")).value!.status, "closed");
 });
+
+test("a staged v1.5 state cannot be served by the v1.4 adapter and arena", () => {
+  const { arena, state } = setup();
+  const staged = { ...state, ruleset: "mecha-v1.5" as const };
+  assert.throws(() => new MatchSession({ matchId: "mixed", mode: "pve", state: staged, arena, rules: pveRules,
+    players: [{ playerId: "owner", side: "A", role: "host" }] }), /ruleset_mismatch/);
+});

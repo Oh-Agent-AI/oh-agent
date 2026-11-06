@@ -573,6 +573,9 @@ test("candidate stride sampling uses an isolated skeleton and follows the stance
   const knockedActor = createAssault(), knockedEffects = new THREE.Group();
   assert.equal(upgradeMechaModelToGlb(knockedActor, asset), true);
   knockedActor.scale.setScalar(2);
+  // Knockback preserves the unit's existing heading; it is a passive slide.
+  const initialKnockbackYaw = .61;
+  knockedActor.rotation.y = initialKnockbackYaw;
   const knockback = [{ kind: "knockback" as const, actor: "Assault", path: [{ x: 0, y: 0 }, { x: 1, y: 0 }], duration: .32 }];
   let knockedDone = 0;
   const knockedPreview = createConnectedAssaultPreviewPlayer({ Assault: knockedActor }, knockback, slopeCell, knockedEffects, () => knockedDone++, { height, terrain: height, radius: 2, maxGrade: .5, maxDrop: .3 });
@@ -586,13 +589,16 @@ test("candidate stride sampling uses an isolated skeleton and follows the stance
       for (const side of [0, 1] as const) assert.ok(knockedContact.clearance(side, height) >= -1e-4);
       if (i === 10) {
         const expected = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(-.015, 1, .01).normalize())
-          .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -Math.PI / 2))
+          .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), initialKnockbackYaw))
           .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -.18));
         assert.ok(Math.abs(expected.dot(knockedActor.quaternion)) > 1 - 1e-9);
       }
     }
     knockedPreview.player.update(.016);
     assert.equal(knockedDone, 1);
+    const settledOrientation = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(-.015, 1, .01).normalize())
+      .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), initialKnockbackYaw));
+    assert.ok(Math.abs(settledOrientation.dot(knockedActor.quaternion)) > 1 - 1e-9, "knockback must preserve heading after it settles");
     const destination = slopeCell({ x: 1, y: 0 });
     assert.ok(Math.hypot(knockedActor.position.x - destination.x, knockedActor.position.z - destination.z) < 1e-8);
     for (const side of [0, 1] as const) assert.ok(Math.abs(knockedContact.clearance(side, height)) < 1e-4);

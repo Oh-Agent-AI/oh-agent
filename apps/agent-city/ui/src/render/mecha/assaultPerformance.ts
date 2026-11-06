@@ -52,7 +52,7 @@ export function createAssaultPerformancePlan(
       const from = cellToWorld(event.path[event.path.length - 2]!, actor), to = cellToWorld(event.path[event.path.length - 1]!, actor);
       const dx = to.x - from.x, dz = to.z - from.z;
       if (![dx, dz].every(Number.isFinite)) throw new Error("invalid knockback position");
-      if (Math.hypot(dx, dz) > 1e-8) yaw = Math.atan2(-dx, -dz);
+      // Passive displacement never turns the mech toward the destination.
     }
     entry.endYaw = yaw;
     elapsed += entry.duration;

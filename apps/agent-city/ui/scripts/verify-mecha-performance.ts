@@ -8,6 +8,23 @@ import { createGunner } from "../src/render/mecha/models.ts";
 
 const plan = (state: MatchState, items: ArenaPlan["items"]): ArenaPlan => ({ revision: state.revision, items });
 
+test("status cues use bounded shared effects and clean them up on interruption", () => {
+  const actor = createGunner(), root = new THREE.Group();
+  const colors = { poison: "#8bd865", burn: "#ff804d", freeze: "#9ceaff", stun: "#f5d967" } as const;
+  const statuses = ["poison", "burn", "freeze", "stun"] as const;
+  const events: MechaPerformanceEvent[] = statuses.map(status => ({ kind: "status_cue", actor: "Gunner", source: "boss", status, change: "applied", remainingTurns: 1, cell: { x: 2, y: 3 }, duration: .4 }));
+  const player = new MechaPerformancePlayer({ Gunner: actor }, events, cell => new THREE.Vector3(cell.x, 0, cell.y), root, () => {});
+  for (const [index, status] of statuses.entries()) {
+    player.update(index === 0 ? .2 : .4);
+    const impact = root.children.find(child => child instanceof THREE.Mesh) as THREE.Mesh;
+    assert.ok(impact.visible);
+    assert.ok((impact.material as THREE.MeshBasicMaterial).color.equals(new THREE.Color(colors[status])));
+    assert.deepEqual([impact.position.x, impact.position.z], [2, 3]);
+  }
+  player.dispose();
+  assert.equal(root.children.length, 0);
+});
+
 function resolve(state: MatchState, orders: ArenaPlan) {
   const playerDone = structuredClone(state);
   const result = validateAndApplyPlan(playerDone, orders);
@@ -213,4 +230,22 @@ test("a defeated unit stays fallen when a later attack targets its former cell",
     assert.deepEqual(settled, [0, 1]);
     assert.equal(completed, 1);
   } finally { player.dispose(); }
+});
+
+
+test("a hit pushes its target during impact without turning it into a walk", () => {
+  const boss = createGunner(), victim = createGunner(), root = new THREE.Group();
+  victim.position.set(0, 0, 0); victim.rotation.y = 0.7;
+  const events: MechaPerformanceEvent[] = [
+    { kind: "attack", actor: "boss", attack: "smash", from: { x: 0, y: -1 }, target: { x: 0, y: 0 }, targetIds: ["Gunner"], duration: 1 },
+    { kind: "knockback", actor: "Gunner", path: [{ x: 0, y: 0 }, { x: 1, y: 0 }], duration: .32 },
+  ];
+  const settled: number[] = [];
+  const player = new MechaPerformancePlayer({ boss, Gunner: victim }, events, c => new THREE.Vector3(c.x * 8, 0, c.y * 8), root, () => {}, undefined, [], i => settled.push(i));
+  player.update(.25); assert.equal(victim.position.x, 0);
+  player.update(.45); assert.ok(victim.position.x > 0 && victim.position.x < 8, "impact moves the victim before the attack finishes");
+  assert.equal(victim.rotation.y, 0.7, "knockback does not turn the victim to walk toward the destination");
+  player.update(.3); assert.equal(victim.position.x, 8, "no snap back between attack and knockback events");
+  player.update(.32); assert.equal(victim.position.x, 8); assert.deepEqual(settled, [0, 1]);
+  player.dispose();
 });

@@ -3,6 +3,7 @@ import { MechaCandidateConsequences } from "./MechaCandidateConsequences";
 import { forecastFizzles } from "./mecha/fizzleForecast";
 import type { ShotCheck } from "./mecha/combat";
 import { MechaDeploymentPanel, MechaDeploymentActions } from "./MechaDeploymentPanel";
+import { SequentialMechaMatch } from "./SequentialMechaMatch";
 /** City test surface for GDD v1.3. Rules live in `mecha/rules.ts`.
  *
  *  The battlefield search is not a render side effect. The board shell paints
@@ -26,6 +27,7 @@ import { inspectCell, declaredAttack, inspectionSegments } from "./mecha/cellIns
 import { declaredEnemyIntents } from "./mecha/enemyIntentPresentation";
 import { MechaActionIcon } from "./MechaActionIcon";
 import { unitMaxHp } from "./mecha/unitHealth";
+import { projectMechPositions, projectPlannedMoves } from "./mecha/presentation/mechPositions";
 import { MechaBattleLegend } from "./MechaBattleLegend";
 import { MechaPlanCard } from "./MechaPlanCard";
 import { MechaUnitAvatar, MechaUnitPortrait } from "./MechaUnitAvatar";
@@ -318,9 +320,21 @@ export function MechaBoard({ locale, onClose, engine, onAvailability, encounter 
     const noCity = !engine || !engine.currentLayout || !engine.currentModel;
     return noCity
       ? <CityGate locale={locale} onClose={onClose} title="这座城还没准备好，不能开战。" body="等城市准备好再试，或关掉战棋。" />
-      : <CityGate locale={locale} onClose={onClose} onRetry={retrySearch} title="这座城暂时没有可用机坪。" body="楼太少时往往没有平地、靠岸或巷战。可以重试，或关掉战棋。" />;
+      : <CityGate locale={locale} onClose={onClose} onRetry={retrySearch} title="这座城暂时没有可用机坪。" body="当前城市中未找到符合地形和占位条件的战场。可以重试，或关掉战棋。" />;
   }
 
+  const query = new URLSearchParams(location.search);
+  // Release builds remain on v1.4. The packaged native probe uses an explicit
+  // debug build, a standalone view and synthetic fixtures only.
+  const nativeProbe = import.meta.env.MODE === "debug" && window.__CITY_ISOLATION_FIXTURE__ && (window as Window & { __AV_V15_PROBE__?: boolean }).__AV_V15_PROBE__ === true;
+  const localTest = import.meta.env.MODE === "debug" && Boolean(window.__AV_PLUGIN_INSTANCE__) && (window as Window & { __AV_V15_LOCAL_TEST__?: boolean }).__AV_V15_LOCAL_TEST__ === true;
+  const v15TestAllowed = import.meta.env.DEV || nativeProbe || localTest || (import.meta.env.MODE === "debug" && !window.__AV_PLUGIN_INSTANCE__ && query.get("fixtureSessions") === "30");
+  const v15Requested = v15TestAllowed && (nativeProbe || localTest || query.get("mechaV15") === "1");
+  const statusRequest = v15Requested ? query.get("mechaStatus") : null;
+  if (statusRequest !== null && !["spore_leaper", "flux_lancer", "prism_warden", "gravity_core"].includes(statusRequest)) return <CityGate locale={locale} onClose={onClose} title="状态测试参数无效" body="请选择受支持的本地怪物测试。" />;
+  if (encounter && statusRequest !== null) return <CityGate locale={locale} onClose={onClose} title="状态怪物测试不能使用城市遭遇点" body="请从城市设置打开状态怪物测试。" />;
+  const v15Site = v15Requested ? encounter?.site ?? SHAPES.map(shape => catalog[shape.id]).find(Boolean) : null;
+  if (v15Site) return <SequentialMechaMatch key={runId} engine={engine} site={v15Site} locale={locale} onClose={onClose} requestCloseRef={requestMatchClose} statusSpecies={statusRequest as import("./mecha/sequentialReplayBundle").StatusMonsterId | null} />;
   return <MechaMatch key={runId} locale={locale} onClose={onClose} requestCloseRef={requestMatchClose} engine={engine} catalog={encounter?.catalog ?? catalog} initialShape={encounter?.shape} remoteStatus={remoteStatus} remoteLocked={remoteLocked} onRemoteStatusChange={changeRemoteStatus} />;
 }
 
@@ -1109,7 +1123,7 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
 
   const reach = deployment?.cells ?? s?.reach ?? [];
   // Presentation-only placements: unplaced mechs have no board occupancy.
-  const inspectionState = useMemo(() => state && deployment ? { ...state, mechs: state.mechs.flatMap(m => { const p = deployment.placements.find(p => p.mechId === m.id); return p ? [{ ...m, pos: p.pos }] : []; }) } : state, [state, deployment]);
+  const inspectionState = useMemo(() => state ? { ...state, mechs: projectMechPositions(state, deployment?.placements ?? null) } : state, [state, deployment]);
   const targetOptions = s?.targetOptions ?? [];
   const clickCell = (x: number, y: number, input: "mouse" | "touch") => {
     // The map-only view exposes cells otherwise hidden behind the HUD. Restore
@@ -1129,9 +1143,8 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
       if (placed) setInspectedUnitId(placed.mechId);
       return;
     }
-    // The friendly models are already drawn at their draft endpoints. Pick the
-    // displayed unit, not a different tile under its elevated mesh.
-    if (!targeting && info?.unit?.side === "mech" && (info.unit.id !== selected || draft?.[info.unit.id as MechId]?.moveTo)) controller?.selectMech(info.unit.id as MechId);
+    // Actual models stay on committed cells; destination markers are not units.
+    if (!targeting && info?.unit?.side === "mech") controller?.selectMech(info.unit.id as MechId);
     else controller?.clickCell(x, y, input);
   };
   const inspectEnemy = (actor: string | null) => {
@@ -1141,7 +1154,7 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
     controller?.setSelectedEnemy(actor);
   };
   const inspectedMech = inspectionState?.mechs.find(m => m.id === inspectedUnitId && m.hp > 0);
-  const inspectionPosition = inspectedMech ? draft?.[inspectedMech.id]?.moveTo ?? inspectedMech.pos : inspectedCell;
+  const inspectionPosition = inspectedMech ? inspectedMech.pos : inspectedCell;
   const cellInfo = inspectionState && inspectionPosition ? inspectCell(inspectionState, inspectionPosition, performance || deployment ? {} : draft, inspectedUnitId) : null;
   const closeInspection = () => { setInspectedCell(null); setInspectedUnitId(null); controller?.setSelectedEnemy(null); };
 
@@ -1176,15 +1189,18 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
         targetPreview = { target: { ...target }, ...(shove?.from && shove.to ? { shove: { from: { ...shove.from }, to: { ...shove.to }, blocked: Boolean(shove.event.hit) } } : {}) };
       }
     }
+    const selectedMech = inspectionState?.mechs.find(m => m.id === selected);
+    const selectedRoute = !deployment && selectedMech && inspectionState
+      ? inspectCell(inspectionState, selectedMech.pos, draft, selected)?.movePath : null;
     return {
       // Returning from replay must not trigger the final turn's combat cues a second time.
       combat: s?.replay?.combat ?? (s?.match.outcome && !performance ? { ...s.combat, actions: [] } : s?.combat),
       paused,
       deployment: Boolean(deployment),
       figures: (inspectionState?.mechs ?? []).map((m) => {
-        const planned = m.hp > 0 && !performance ? draft?.[m.id]?.moveTo : null;
-        return { id: m.id, x: planned?.x ?? m.pos.x, y: planned?.y ?? m.pos.y, alive: m.hp > 0, hp: m.hp, maxHp: unitMaxHp(m.id, state) ?? undefined, selected: !s?.replay && m.id === selected };
+        return { id: m.id, x: m.pos.x, y: m.pos.y, alive: m.hp > 0, hp: m.hp, maxHp: unitMaxHp(m.id, state) ?? undefined, selected: !s?.replay && m.id === selected };
       }),
+      plannedMoves: !performance && !deployment && state ? projectPlannedMoves(state, draft) : [],
       boss: { x: state?.boss.anchor.x ?? 0, y: state?.boss.anchor.y ?? 0, alive: (state?.boss.hp ?? 0) > 0, hp: state?.boss.hp ?? 0, maxHp: unitMaxHp("boss", state) ?? undefined },
       bossSpeciesId: state?.monsterContent?.contentVersion === 1 ? state.monsterContent.speciesId : undefined,
       raiders: (state?.raiders ?? []).map((raider) => ({ id: raider.id, x: raider.pos.x, y: raider.pos.y, alive: raider.hp > 0, hp: raider.hp, maxHp: unitMaxHp(raider.id, state) ?? undefined })),
@@ -1211,7 +1227,7 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
       // A clicked actor wins over transient hover; current declarations are
       // independent of whether the friendly draft predicts this actor's death.
       inspectionSegments: performance || !state ? [] : inspectionSegments(
-        declaredAttack(state, s?.selectedEnemy ?? (cellInfo?.unit?.side === "mech" ? null : s?.hoveredEnemy ?? null)), cellInfo?.movePath ?? null),
+        declaredAttack(state, s?.selectedEnemy ?? (cellInfo?.unit?.side === "mech" ? null : s?.hoveredEnemy ?? null)), cellInfo?.movePath ?? selectedRoute ?? null),
       inspectedThreats: performance || !state ? [] : declaredAttack(state, s?.selectedEnemy ?? s?.hoveredEnemy ?? null)?.targets ?? [],
     };
   }, [s, state, inspectionState, deployment, draft, selected, reach, targetOptions, paused, performance, sequenceWaiting, focusedBuilding, showOrder, remoteActive, cellInfo]);

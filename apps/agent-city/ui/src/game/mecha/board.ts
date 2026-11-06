@@ -7,6 +7,9 @@
 import { prepareSwarmLink, reprojectSwarmLink, resolveSwarmLink, reconcileSwarmLink, linkedAttackBonus, NEURAL_LINK_BREAK_CONDITIONS, type NeuralLink, type SwarmIntent, type SwarmLinkState, type SwarmProjection } from "./skillSwarmLink";
 
 export const GDD_RULESET = "mecha-v1.4";
+/** Staged ruleset, not enabled by product, replay or remote transports. */
+export const BUILDING_COLLISION_RULESET = "mecha-v1.5";
+export type PveRuleset = typeof GDD_RULESET | typeof BUILDING_COLLISION_RULESET;
 export const BOARD = 10;
 export const MAX_TURNS = 15;
 /** Shared health contract for L5 summoned swarm children. */
@@ -56,7 +59,7 @@ export type BossScriptId = "stationary_smash" | "cadence_ssw" | "raid_ssw" | "si
 export type MonsterSpeciesId = "spore_leaper" | "flux_lancer" | "porous_shaper" | "prism_warden" | "phase_stalker" | "gravity_core" | "swarm_mantle" | "neural_weaver";
 export type MonsterContent = { speciesId: MonsterSpeciesId; contentVersion: 1 };
 export const MONSTER_SKILLS = { spore_leaper: "spore_leap", flux_lancer: "ring_pierce", porous_shaper: "corrode_cell", prism_warden: "prism_guard", phase_stalker: "phase_swap", gravity_core: "gravity_well", swarm_mantle: "split_swarm", neural_weaver: "neural_link" } as const;
-export type BossSkill = "smash" | "sweep" | "skip" | typeof MONSTER_SKILLS[MonsterSpeciesId];
+export type BossSkill = "smash" | "sweep" | "skip" | "prism_frost" | typeof MONSTER_SKILLS[MonsterSpeciesId];
 export type Phase = "deployment" | "enemy_prepare" | "player_plan" | "resolving_boss" | "finished";
 export type Outcome = "victory" | "defeat_wipe" | "defeat_timeout" | "defeat_buildings";
 
@@ -163,7 +166,9 @@ export type NeuralJournalEvent =
 export type NeuralLedger = { version: 1; nextLinkId: number; links: NeuralLink[]; resolvedActions: string[]; pending: SwarmIntent | null; journal: NeuralJournalEvent[] };
 
 export type MatchState = {
-  ruleset: typeof GDD_RULESET;
+  ruleset: PveRuleset;
+  /** Explicit experimental local status ledger; absent from legacy matches. */
+  statusEncounter?: { schema: "mecha-status-encounter:v1"; statuses: import("./statusEffects").Status[] };
   preset: CoverPresetId;
   script: BossScriptId;
   difficulty?: DifficultyId;
@@ -227,6 +232,7 @@ export function assertMonsterContent(state: { monsterContent?: MatchState["monst
 /** Do not allow a legacy match or a supplied enemy plan to inject an experimental skill. */
 export function assertMonsterState(state: MatchState, intent: Intent | null = state.boss.intent): void {
   assertMonsterContent(state);
+  if (state.statusEncounter !== undefined && (state.ruleset !== BUILDING_COLLISION_RULESET || state.statusEncounter?.schema !== "mecha-status-encounter:v1")) throw new Error("unsupported_status_encounter");
   // Only the local swarm rules may admit summoned Raiders. Reject markers in
   // legacy matches before cloning instead of treating them as ordinary units.
   // Presence (including inherited/undefined markers) is intentional.
@@ -268,8 +274,10 @@ export function assertMonsterState(state: MatchState, intent: Intent | null = st
   if (isSwarm && intent?.skillId === "split_swarm" && intent.status !== "void" && !validSwarmBinding(state, intent)) {
     throw new Error("unsupported_swarm_state");
   }
+  const frostAllowed = state.ruleset === BUILDING_COLLISION_RULESET && state.statusEncounter?.schema === "mecha-status-encounter:v1" &&
+    state.monsterContent?.speciesId === "prism_warden" && intent?.skillId === "prism_frost";
   if (intent && intent.skillId !== "skip" && (state.monsterContent
-      ? MONSTER_SKILLS[state.monsterContent.speciesId] !== intent.skillId
+      ? MONSTER_SKILLS[state.monsterContent.speciesId] !== intent.skillId && !frostAllowed
       : intent.skillId !== "smash" && intent.skillId !== "sweep")) {
     throw new Error("unsupported_monster_content");
   }
@@ -342,6 +350,10 @@ export function healthEffectFields(before: HealthSnapshot[], state: MatchState):
 }
 
 export type TurnEvent =
+  | { type: "status_effect"; schema: "mecha-status-event:v1"; event: import("./statusEffects").StatusEvent; effects?: HealthEffect[] }
+  | { type: "status_hit"; schema: "mecha-status-hit:v1"; skill: "spore_leap" | "ring_pierce" | "prism_frost"; source: "boss"; target: MechId; cell: Cell }
+  | { type: "gravity_collision"; schema: "mecha-gravity-collision:v1"; target: MechId; cell: Cell; blocker: { kind: "boss" | "mech" | "raider" | "building" | "obstacle"; id: string } }
+  | { type: "status_boundary"; schema: "mecha-status-event:v1"; phase: "player_end" }
   | { type: "neural_event"; event: NeuralJournalEvent }
   | { type: "raider_spawn"; sequence: number; unit: PresentationUnit }
   | { type: "raider_remove"; sequence: number; unit: PresentationUnit; reason: "death" | "expired" }
@@ -360,6 +372,7 @@ export type TurnEvent =
 
 export type PresentationUnit = { id: string; pos: Cell; hp: number };
 export type PresentationSnapshot = {
+  statusEncounter?: MatchState["statusEncounter"];
   boss: { anchor: Cell; hp: number; shield?: { kind: "prism_guard"; hits: 1 } };
   mechs: Array<PresentationUnit & { id: MechId }>;
   raiders: PresentationUnit[];
@@ -380,6 +393,7 @@ export type PresentationStages = {
 
 export function presentationSnapshot(state: MatchState): PresentationSnapshot {
   return {
+    ...(state.statusEncounter ? { statusEncounter: structuredClone(state.statusEncounter) } : {}),
     boss: { anchor: { ...state.boss.anchor }, hp: state.boss.hp,
       ...(state.boss.shield ? { shield: { ...state.boss.shield } } : {}) },
     mechs: state.mechs.map((m) => ({ id: m.id, pos: { ...m.pos }, hp: m.hp })),
@@ -1081,6 +1095,8 @@ export type DisplacementState = Readonly<{
   width: number; height: number; terminal: boolean;
   water: readonly DisplacementCell[]; obstacles: readonly DisplacementCell[];
   entities: readonly DisplacementEntity[];
+  /** Present only for experimental status rules; eligible fixed collision cells. */
+  collisionTerrain?: readonly Readonly<{ cell: DisplacementCell; kind: "building" | "obstacle"; id: string }>[];
 }>;
 export type DisplacementRequest = Readonly<{
   skillId: "phase_swap" | "gravity_well"; actorId: string;
@@ -1097,6 +1113,8 @@ export type DisplacementEffect = Readonly<{
   from: DisplacementCell | null; to: DisplacementCell | null;
   /** Includes the attempted blocked cell, if any; excludes the starting cell. */
   path: readonly DisplacementCell[];
+  /** Explicit blocker evidence exists only in versioned status encounters. */
+  collision?: Readonly<{ cell: DisplacementCell; blocker: { kind: "boss" | "mech" | "raider" | "building" | "obstacle"; id: string } }>;
 }>;
 export type DisplacementProjection = Readonly<{
   status: "reprojected" | "void"; reason: string | null;
@@ -1141,6 +1159,15 @@ function validateState(state: DisplacementState): string | null {
       state.water.length > 16384 || state.obstacles.length > 16384 || state.entities.length > 128) return "invalid_state";
   if (state.terminal) return "terminal";
   if ([...state.water, ...state.obstacles].some((p) => !validCell(p) || !inside(state, p))) return "invalid_state";
+  if (state.collisionTerrain !== undefined) {
+    if (!Array.isArray(state.collisionTerrain) || state.collisionTerrain.length > 16384) return "invalid_state";
+    const obstacleKeys = new Set(state.obstacles.map(key)), collisionKeys = new Set<string>();
+    for (const item of state.collisionTerrain) {
+      if (!item || (item.kind !== "building" && item.kind !== "obstacle") || !validId(item.id) ||
+          !validCell(item.cell) || !inside(state, item.cell) || !obstacleKeys.has(key(item.cell)) || collisionKeys.has(key(item.cell))) return "invalid_state";
+      collisionKeys.add(key(item.cell));
+    }
+  }
   const ids = new Set<string>(), occupied = new Set<string>();
   for (const entity of state.entities) {
     if (!entity || !validId(entity.id) || ids.has(entity.id) || !validCell(entity.position) ||
@@ -1173,8 +1200,9 @@ function failure(reason: string, effects: readonly DisplacementEffect[] = []): D
   return { status: "void", reason, effects, attackCells: [] };
 }
 function voidEffect(id: string, reason: string, from: DisplacementCell | null = null,
-  to: DisplacementCell | null = null, path: readonly DisplacementCell[] = []): DisplacementEffect {
-  return { entityId: id, status: "void", reason, from: from && cell(from), to: to && cell(to), path: path.map(cell) };
+  to: DisplacementCell | null = null, path: readonly DisplacementCell[] = [], collision?: DisplacementEffect["collision"]): DisplacementEffect {
+  return { entityId: id, status: "void", reason, from: from && cell(from), to: to && cell(to), path: path.map(cell),
+    ...(collision ? { collision: { cell: cell(collision.cell), blocker: { ...collision.blocker } } } : {}) };
 }
 function moveEffect(id: string, from: DisplacementCell, to: DisplacementCell, path: readonly DisplacementCell[]): DisplacementEffect {
   return { entityId: id, status: "move", reason: null, from: cell(from), to: cell(to), path: path.map(cell) };
@@ -1239,7 +1267,7 @@ function calculate(state: DisplacementState, request: DisplacementRequest): Disp
       if (distance(actor, actor.position, target, from) > request.radius) {
         effects.push(voidEffect(id, "out_of_range", from, from)); continue;
       }
-      let current = cell(from), reason: string | null = null;
+      let current = cell(from), reason: string | null = null, collision: DisplacementEffect["collision"];
       const path: DisplacementCell[] = [];
       for (let i = 0; i < request.steps; i++) {
         // Reduce footprint separation; X wins ties. If already touching, movement is blocked.
@@ -1251,17 +1279,29 @@ function calculate(state: DisplacementState, request: DisplacementRequest): Disp
         const next = { x: current.x + (gapX >= gapY ? dx : 0), y: current.y + (gapY > gapX ? dy : 0) };
         path.push(next);
         reason = blocked(state, positions, target, next, new Set([id]));
-        if (reason) break;
+        if (reason) {
+          if (state.collisionTerrain && reason === "obstacle") {
+            const hit = state.collisionTerrain.find(item => same(item.cell, next));
+            if (hit) collision = { cell: next, blocker: { kind: hit.kind, id: hit.id } };
+          } else if (state.collisionTerrain && reason === "occupied") {
+            const hit = state.entities.find(other => other.alive && other.id !== id && footprint(positions.get(other.id)!, other.size).some(p => same(p, next)));
+            if (hit?.id === "boss") collision = { cell: next, blocker: { kind: "boss", id: "boss" } };
+            else if (hit?.id.startsWith("mech:")) collision = { cell: next, blocker: { kind: "mech", id: hit.id.slice(5) } };
+            else if (hit?.id.startsWith("raider:")) collision = { cell: next, blocker: { kind: "raider", id: hit.id.slice(7) } };
+          }
+          break;
+        }
         current = next;
       }
       if (reason || same(from, current)) {
-        effects.push(voidEffect(id, reason || "no_displacement", from, path.length ? path[path.length - 1]! : from, path));
+        effects.push(voidEffect(id, reason || "no_displacement", from, path.length ? path[path.length - 1]! : from, path, collision));
       } else {
         positions.set(id, current);
         effects.push(moveEffect(id, from, current, path));
       }
     }
-    if (!effects.some((effect) => effect.status === "move")) return failure("no_legal_displacement", effects);
+    const hasCollision = state.collisionTerrain !== undefined && effects.some(effect => !!effect.collision);
+    if (!effects.some((effect) => effect.status === "move") && !hasCollision) return failure("no_legal_displacement", effects);
   }
   const attackCells = request.attackOffsets.map((offset) => ({ x: actorDestination.x + offset.x, y: actorDestination.y + offset.y }));
   if (attackCells.some((p) => !inside(state, p))) return failure("attack_out_of_bounds", effects.map((e) =>
@@ -1290,6 +1330,8 @@ function equalProjection(a: DisplacementProjection, b: DisplacementProjection): 
     a.effects.every((e, i) => {
       const other = b.effects[i];
       return !!other && e.entityId === other.entityId && e.status === other.status && e.reason === other.reason &&
+        (e.collision ? !!other.collision && equalCell(e.collision.cell, other.collision.cell) &&
+          e.collision.blocker.kind === other.collision.blocker?.kind && e.collision.blocker.id === other.collision.blocker?.id : other.collision === undefined) &&
         equalCell(e.from, other.from) && equalCell(e.to, other.to) && Array.isArray(other.path) &&
         e.path.length === other.path.length && e.path.every((p, n) => validCell(other.path[n]) && same(p, other.path[n]!));
     });
@@ -1323,14 +1365,23 @@ export function corrodeWorld(state: MatchState, finished = !!state.outcome): Cor
 }
 
 export function displacementWorld(state: MatchState): DisplacementState {
-  const waterCells: Cell[] = [], obstacles: Cell[] = [];
+  const waterCells: Cell[] = [], obstacles: Cell[] = [], collisionTerrain: Array<{ cell: Cell; kind: "building" | "obstacle"; id: string }> = [];
+  const statusEnabled = state.statusEncounter?.schema === "mecha-status-encounter:v1";
   for (let y = 0; y < BOARD; y++) for (let x = 0; x < BOARD; x++) {
     const c = { x, y };
     if (water(state, c)) waterCells.push(c);
     else if (terrainAt(state, c) === "mountain" || state.obstacles.some(v => eq(v, c)) ||
-      state.covers.some(v => eq(v, c)) || state.buildings.some(b => b.cells.some(v => eq(v, c)))) obstacles.push(c);
+      state.covers.some(v => eq(v, c)) || state.buildings.some(b => b.cells.some(v => eq(v, c)))) {
+      obstacles.push(c);
+      if (statusEnabled) {
+        const building = livingBuildingAt(state, c);
+        if (building) collisionTerrain.push({ cell: c, kind: "building", id: building.id });
+        else if (state.obstacles.some(v => eq(v, c)) || state.covers.some(v => eq(v, c))) collisionTerrain.push({ cell: c, kind: "obstacle", id: `${c.x},${c.y}` });
+      }
+    }
   }
   return { width: BOARD, height: BOARD, terminal: !!state.outcome, water: waterCells, obstacles,
+    ...(statusEnabled ? { collisionTerrain } : {}),
     entities: [
       { id: "boss", position: { ...state.boss.anchor }, size: 2, alive: state.boss.hp > 0 },
       ...state.mechs.map(m => ({ id: `mech:${m.id}`, position: { ...m.pos }, size: 1 as const, alive: m.hp > 0 })),

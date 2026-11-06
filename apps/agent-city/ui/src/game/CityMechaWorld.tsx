@@ -15,6 +15,7 @@ import { createAssaultBattleHeight, createAssaultBattlePlayer } from "../render/
 import { useConnectedAssault } from "../render/mecha/connectedAssaultMode";
 import { createAssaultCityGround } from "./assaultCityGround";
 import { positionPerformanceActors } from "./mecha/positionPerformanceActors";
+import type { PlannedMechMove } from "./mecha/presentation/mechPositions";
 import { createMonsterSpeciesPresentation } from "./mecha/presentation/monsters/MonsterSpeciesPresentation";
 import { terrainSurfaceHeight } from "../engine/surface/terrainSampling";
 import { applyMechaUnitLight, setMechaUnitLight } from "../render/mecha/unitLight";
@@ -23,10 +24,16 @@ import { performanceDelta, type ReplaySpeed } from "./mecha/replayPlayback";
 import type { HealthTimeline } from "./mecha/healthTimeline";
 import type { PresentationChanges } from "./mecha/presentationChanges";
 import { healthKey, performanceHealthSchedule } from "./mecha/performanceHealth";
+import { applyStatusDisplayCue, describeStatusBadges, type DisplayStatus } from "./mecha/statusDisplay";
+import { StatusAuraLayer } from "../render/mecha/statusAura";
 import { BOARD, type Cell, type MechId } from "./mecha/rules";
 
 export type CityMechaView = {
   figures: Array<{ id: MechId; x: number; y: number; alive: boolean; selected: boolean; hp?: number; maxHp?: number }>;
+  /** The displayed snapshot's bounded, local status projection. */
+  statuses?: DisplayStatus[];
+  /** Destination markers only; never used to position or pick actual actors. */
+  plannedMoves?: PlannedMechMove[];
   boss: { x: number; y: number; alive: boolean; hp?: number; maxHp?: number };
   /** Optional presentation-only identity, projected from the displayed match. */
   bossSpeciesId?: string;
@@ -615,23 +622,27 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       const label = document.createElement("div"); label.className = "mecha-world-healthbar";
       label.setAttribute("role", "meter");
       const fill = document.createElement("span"); fill.className = "mecha-world-healthbar__fill";
-      label.append(fill); badgeLayer.append(label);
-      return { label, fill, signature: "" };
+      const status = document.createElement("span"); status.className = "mecha-world-healthbar__status"; status.setAttribute("aria-hidden", "true");
+      label.append(fill, status); badgeLayer.append(label);
+      return { label, fill, status, signature: "" };
     };
     const unitBadges = Array.from({ length: 4 }, createUnitBadge);
+    const statusAuraLayer = new StatusAuraLayer();
     const showUnitBadge = (badge: ReturnType<typeof createUnitBadge>, id: string, unit: THREE.Object3D, alive: boolean, hp: number | undefined, maxHp: number | undefined, selected = false, raider?: { id: string }) => {
       const identity = describeUnitIdentity(id, localeRef.current, raider);
       badge.label.hidden = !alive || (Boolean(performanceRef.current) && !performanceHealth);
       if (badge.label.hidden) return;
       const health = unitHealth(hp, maxHp);
-      const signature = `${id}:${localeRef.current}:${identity.side}:${identity.label}:${health.text}:${selected}`;
+      const status = describeStatusBadges(performanceRef.current ? performanceStatuses ?? [] : viewRef.current.statuses ?? [], id, localeRef.current);
+      const signature = `${id}:${localeRef.current}:${identity.side}:${identity.label}:${health.text}:${selected}:${status.text}:${status.accessible}`;
       if (signature !== badge.signature) {
         badge.label.dataset.unitId = id; badge.label.dataset.side = identity.side;
         badge.label.dataset.healthState = health.known ? "known" : "unknown";
         badge.label.classList.toggle("is-selected", selected);
         badge.label.classList.toggle("is-boss", id === "boss");
-        badge.label.setAttribute("aria-label", `${identity.label} · ${identity.sideLabel} · HP ${health.text}`);
+        badge.label.setAttribute("aria-label", `${identity.label} · ${identity.sideLabel} · HP ${health.text}${status.accessible ? ` · ${status.accessible}` : ""}`);
         badge.label.setAttribute("aria-valuetext", health.text);
+        badge.status.textContent = status.text; badge.status.hidden = !status.text;
         if (health.known) {
           badge.label.setAttribute("aria-valuemin", "0");
           badge.label.setAttribute("aria-valuemax", String(maxHp));
@@ -971,6 +982,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
     let player: MechaPerformancePlayer | null = null;
     // Presentation-only health, advanced on settled animation cues. Never edits match state.
     let performanceHealth: Map<string, number> | null = null;
+    let performanceStatuses: DisplayStatus[] | null = null;
     let performanceFields: Map<string, Cell> | null = null;
     let releasePreview: (() => void) | null = null;
     const connectedPreview = useConnectedAssault(import.meta.env.DEV, location.search);
@@ -1113,7 +1125,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       if (current.boss.alive) for (let dy = 0; dy < 2; dy += 1) for (let dx = 0; dx < 2; dx += 1) {
         occupiedCells.add(cellKey({ x: current.boss.x + dx, y: current.boss.y + dy }));
       }
-      const moveKey = !performanceRef.current && current.move ? cellKey(current.move) : "";
+      const moveKeys = new Set(!performanceRef.current ? (current.plannedMoves?.map(move => cellKey(move.to)) ?? (current.move ? [cellKey(current.move)] : [])) : []);
       const declaredFocus = new Set((current.inspectedThreats ?? []).map(cellKey));
       pads.forEach((pad, index) => {
         const x = index % BOARD;
@@ -1152,7 +1164,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         }
         targetLines[index]!.visible = targets.has(id);
         focusLines[index]!.visible = focus.has(id);
-        moveLines[index]!.visible = id === moveKey;
+        moveLines[index]!.visible = moveKeys.has(id);
       });
       const mission = current.missionTarget;
       const hasMission = mission != null && Number.isInteger(mission.x) && Number.isInteger(mission.y)
@@ -1179,6 +1191,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
           releasePreview?.(); releasePreview = null;
           playing = null;
           performanceHealth = null;
+          performanceStatuses = null;
           performanceFields = null;
         } catch (error) { failPreview(error); return; }
       }
@@ -1328,7 +1341,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         if (!mesh.visible && current.deployment) mesh.position.copy(spot);
         const candidate = connectedPreview && figure.id === "Assault" ? getMechaGlbAsset(mesh) : undefined;
         const connected = candidate?.manifest.id === "assault-connected-candidate";
-        // Draft movement uses the same slide + walk for every mech. Ground
+        // Only committed scene positions drive actual actors. Ground
         // height sampling must not force Assault to snap or keep it walking at rest.
         const moving = (mesh.position.x - spot.x) ** 2 + (mesh.position.z - spot.z) ** 2 > 0.01;
         if (!performing) {
@@ -1382,9 +1395,18 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         ring.mat.opacity = targetIds.has(raider.id) || raiderHovered ? 1 : 0.68;
         if (raider.alive && !performing) faceMechaTarget(mesh, spot, bossFeet);
       }
+      const statusActors = new Map<string, THREE.Object3D>([
+        ...current.figures.map(figure => [figure.id, figures[figure.id]] as const),
+        ["boss", boss],
+        ...current.raiders.flatMap(raider => { const actor = raiderModels.get(raider.id)?.mesh; return actor ? [[raider.id, actor] as const] : []; }),
+      ]);
+      const aliveStatusActors = new Map([...statusActors].filter(([id]) => id === "boss" ? current.boss.alive : current.figures.some(figure => figure.id === id && figure.alive) || current.raiders.some(raider => raider.id === id && raider.alive)));
+      statusAuraLayer.sync(aliveStatusActors, performing ? performanceStatuses ?? [] : current.statuses ?? [], dt, reduce);
+      badgeLayer.dataset.statusAuraCount = String(statusAuraLayer.size);
       if (playing !== performanceRef.current) {
         playing = performanceRef.current;
         performanceHealth = null;
+        performanceStatuses = null;
         performanceFields = playing ? new Map((current.corrodeFields ?? []).map(field => [field.id, field.cell])) : null;
         if (playing) {
           // Playback snapshots the actor dictionary: roster changes during an
@@ -1419,6 +1441,9 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
             return true;
           });
           if (valid) performanceHealth = initial;
+          let statusTrial: DisplayStatus[] | null = (current.statuses ?? []).map(status => ({ ...status }));
+          for (const cue of playing.events) if (cue.kind === "status_cue" && statusTrial) statusTrial = applyStatusDisplayCue(statusTrial, cue);
+          if (statusTrial) performanceStatuses = (current.statuses ?? []).map(status => ({ ...status }));
           const onEventSettled = (index: number) => {
             const event = playing?.events[index];
             if (performanceHealth && schedule) {
@@ -1433,6 +1458,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
                 if (previous && previous.x === event.cell.x && previous.y === event.cell.y) performanceFields.delete(event.fieldId);
               }
             }
+            if (event?.kind === "status_cue" && performanceStatuses) performanceStatuses = applyStatusDisplayCue(performanceStatuses, event);
           };
           const onComplete = () => onPerformanceCompleteRef.current();
           const initiallyFallen = [
@@ -1526,6 +1552,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       canvas.removeEventListener("pointerleave", onLeave);
       cameraCommands.current = null;
       player?.dispose();
+      statusAuraLayer.dispose();
       bossSpeciesVisual.dispose();
       clearOrderMarkers();
       try { lease.release(); } catch { /* host already disposed the scene */ }

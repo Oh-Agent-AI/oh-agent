@@ -1,3 +1,4 @@
+import { projectMovementEffect } from "./skillEffects";
 import type { Action, ArenaPlan, Cell, MatchState, MechId } from "./rules";
 import { living, movementPath } from "./rules";
 import type { HealthTimeline } from "./healthTimeline";
@@ -177,7 +178,7 @@ function insertVerifiedDeaths(events: MechaPerformanceEvent[], before: MatchStat
 }
 
 /** Attacks come exclusively from committed events, never from planned actions. */
-export function performanceFromLog(before: MatchState, after: MatchState, log: import("./rules").TurnEvent[], evidence?: { healthTimeline?: HealthTimeline; presentationChanges?: PresentationChanges }): MechaPerformanceEvent[] {
+export function performanceFromLog(before: MatchState, after: MatchState, log: import("./rules").TurnEvent[], evidence?: { healthTimeline?: HealthTimeline; presentationChanges?: PresentationChanges; statusVerified?: boolean }): MechaPerformanceEvent[] {
   const events: MechaPerformanceEvent[] = [];
   const at = positions(before);
   const fields = new Map((before.corrode?.fields ?? []).map(field => [field.id, field]));
@@ -199,12 +200,11 @@ export function performanceFromLog(before: MatchState, after: MatchState, log: i
     } else if (event.type === "boss_move") {
       move(events, "boss", [event.from, event.to]);
       at.set("boss", copy(event.to));
-    } else if (event.type === "shove" && !event.hit) {
-      const from = at.get(event.unit);
-      if (from) {
-        const to = { x: from.x + event.dir.x, y: from.y + event.dir.y };
-        move(events, event.unit, [from, to], true);
-        at.set(event.unit, to);
+    } else if (event.type === "shove") {
+      const result = projectMovementEffect(event, at.get(event.unit)).moves[0]!;
+      if (result.status === "moved" && result.from && result.to) {
+        move(events, event.unit, [result.from, result.to], true);
+        at.set(event.unit, result.to);
       }
     } else if ((event.type === "raider_spawn" || event.type === "raider_remove") && verified) {
       // A roster difference alone is never sufficient proof of a lifecycle.
@@ -228,7 +228,10 @@ export function performanceFromLog(before: MatchState, after: MatchState, log: i
       if (evidenceCue && target && from) events.push({ kind: "neural_link", actor: "boss", change: evidenceCue.change,
         from: copy(from), target: copy(target), duration: 0.5 });
     } else if (event.type === "monster_displacement" && verified) {
-      const moves = event.moves.map(movement => ({ actor: movement.unit.startsWith("mech:") ? movement.unit.slice(5) : movement.unit, from: copy(movement.from), to: copy(movement.to) }));
+      const projected = projectMovementEffect(event);
+      // Only validated special events reach this branch; their cells are explicit.
+      const moves = projected.moves.flatMap(movement => movement.from && movement.to
+        ? [{ actor: movement.actor, from: movement.from, to: movement.to }] : []);
       events.push({ kind: "monster_displacement", actor: "boss", skill: event.skill, moves, duration: event.skill === "phase_swap" ? 0.55 : 0.4 });
       for (const movement of moves) at.set(movement.actor, copy(movement.to));
     } else if (event.type === "corrode_field" && verified) {
@@ -237,6 +240,17 @@ export function performanceFromLog(before: MatchState, after: MatchState, log: i
     } else if (event.type === "corrode_tick" && verified) {
       const field = fields.get(event.fieldId);
       if (field) events.push({ kind: "corrode_tick", actor: event.unit, fieldId: event.fieldId, cell: copy(field.cell), damage: event.damage, duration: 0.4 });
+    } else if (event.type === "status_effect" && verified && evidence?.statusVerified === true) {
+      const status = event.event, target = status.type === "status_damage" ? status.target : status.status.target;
+      const cell = at.get(target);
+      if (cell) {
+        const kind = status.type === "status_damage" ? status.kind : status.status.kind;
+        const change = status.type === "status_damage" ? "damage" : status.type === "status_applied" ? "applied" :
+          status.type === "status_refreshed" ? "refreshed" : status.type === "status_advanced" ? "advanced" : status.type === "status_expired" ? "expired" : "removed";
+        const source = status.type === "status_damage" ? status.source : status.status.source;
+        const remainingTurns = status.type !== "status_damage" && (change === "applied" || change === "refreshed" || change === "advanced") ? status.status.remainingTurns : undefined;
+        events.push({ kind: "status_cue", actor: target, source, status: kind, change, ...(remainingTurns === undefined ? {} : { remainingTurns }), cell: copy(cell), duration: change === "advanced" ? 0.001 : 0.4 });
+      }
     } else if (event.type === "enemy") {
       // Linking and summoning are not direct attacks; do not invent a smash.
       if (event.skill === "neural_link" || event.skill === "split_swarm") continue;
@@ -244,7 +258,7 @@ export function performanceFromLog(before: MatchState, after: MatchState, log: i
       if (!verified && (event.skill === "phase_swap" || event.skill === "gravity_well")) continue;
       const from = at.get(event.actor);
       if (!from) continue;
-      const piercing = ["phase_swap", "gravity_well", "ring_pierce"].includes(event.skill);
+      const piercing = ["phase_swap", "gravity_well", "ring_pierce", "prism_frost"].includes(event.skill);
       const targets = piercing
         ? (event.effects ?? []).filter(effect => effect.kind !== "building" && effect.after < effect.before).map(effect => effect.id)
         : [...at].filter(([id, cell]) => id !== event.actor && event.cells.some((c) => same(c, cell))).map(([id]) => id);

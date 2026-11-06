@@ -1,5 +1,6 @@
+import { applyDamage } from "./skillEffects";
 import { ringUnit } from "./ringUnit";
-import { unitForSpecies, unitForSkill } from "./unitRegistry";
+import { resolveRegisteredUnitEffect, unitForSpecies } from "./unitRegistry";
 /**
  * 敌方脚本：大怪与小怪的准备（scriptedEnemyPrepare）和结算（bossExecute）、威胁度、目标选择、寻路步进。
  * 依赖 board.ts（棋盘与寻路）和 combat.ts（伤害、击退）；不依赖 rules.ts。
@@ -324,7 +325,7 @@ function resolveRaider(state: MatchState, raider: Raider) {
       if (hit && !struck.has(hit.id)) {
         struck.add(hit.id);
         const before = hit.hp;
-        hit.hp = Math.max(0, hit.hp - strike(enemyStatsOf(state).raiderAtk + neuralBonus(state, raider.id), BUILDING_DEF));
+        hit.hp = applyDamage(hit.hp, strike(enemyStatsOf(state).raiderAtk + neuralBonus(state, raider.id), BUILDING_DEF));
         ev.damage += before - hit.hp;
         if (hit.hp !== before) (ev.effects ??= []).push(orderedHealthEffect({ kind: "building", id: hit.id, before, after: hit.hp }));
         refresh(state);
@@ -360,7 +361,7 @@ export function bossExecute(state: MatchState) {
   }
   if (state.boss.hp <= 0) {
     reconcileNeural(state);
-    if (state.boss.intent && (Object.values(MONSTER_SKILLS).some(skill => skill === state.boss.intent!.skillId))) {
+    if (state.boss.intent && (state.boss.intent.skillId === "prism_frost" || Object.values(MONSTER_SKILLS).some(skill => skill === state.boss.intent!.skillId))) {
       state.boss.intent.status = "void"; state.boss.intent.projected = []; state.boss.intent = null;
     }
     for (const raider of [...state.raiders]) {
@@ -391,8 +392,8 @@ export function bossExecute(state: MatchState) {
   const cells = state.boss.intent?.projected ?? [];
   let any = false;
   const struckBuildings = new Set<string>();
-  if (intent && unitForSkill(skill)) unitForSkill(skill)!.resolve(state, intent, { hurtMech, hurtRaider, strike, refresh });
-  else if (intent && skill !== "skip" && intent.status !== "void") {
+  const handled = intent && resolveRegisteredUnitEffect(state, intent, { hurtMech, hurtRaider, strike, refresh }) === "handled";
+  if (!handled && intent && skill !== "skip" && intent.status !== "void") {
     const ev: Extract<TurnEvent, { type: "enemy" }> = { type: "enemy", actor: "boss", skill, cells: cells.map((c) => ({ ...c })), damage: 0 };
     emit(ev);
     for (const c of cells) {
@@ -402,7 +403,7 @@ export function bossExecute(state: MatchState) {
         if (hit && !struckBuildings.has(hit.id)) {
           struckBuildings.add(hit.id);
           const before = hit.hp;
-          hit.hp = Math.max(0, hit.hp - strike(enemyStatsOf(state).bossAtk, BUILDING_DEF));
+          hit.hp = applyDamage(hit.hp, strike(enemyStatsOf(state).bossAtk, BUILDING_DEF));
           ev.damage += before - hit.hp;
           if (hit.hp !== before) (ev.effects ??= []).push(orderedHealthEffect({ kind: "building", id: hit.id, before, after: hit.hp }));
           any = true;
@@ -425,7 +426,7 @@ export function bossExecute(state: MatchState) {
   }
   if (skill === "sweep") state.boss.cdSweep = 1;
   else if (state.boss.cdSweep > 0) state.boss.cdSweep -= 1;
-  if (skill !== "spore_leap" && skill !== "ring_pierce" && skill !== "prism_guard" && skill !== "corrode_cell" && skill !== "phase_swap" && skill !== "gravity_well" && skill !== "split_swarm" && skill !== "neural_link" && !any && state.boss.intent) state.boss.intent.status = "void";
+  if (skill !== "spore_leap" && skill !== "ring_pierce" && skill !== "prism_guard" && skill !== "prism_frost" && skill !== "corrode_cell" && skill !== "phase_swap" && skill !== "gravity_well" && skill !== "split_swarm" && skill !== "neural_link" && !any && state.boss.intent) state.boss.intent.status = "void";
   state.boss.intent = null;
   for (const raider of [...state.raiders]) {
     if (state.outcome) break;

@@ -132,3 +132,19 @@ test("catalog and compatibility maps cannot be mutated through their public refe
   assert.ok(Object.isFrozen(legacy.definition.skillIds));
   assert.ok(Object.isFrozen(legacy.definition.scriptIds));
 });
+
+
+test("registered effect resolution uses the bound skill and rejects unknown skills without mutation", async () => {
+  const { createMatch } = await import("../src/game/mecha/rules.ts");
+  const { resolveRegisteredUnitEffect } = await import("../src/game/mecha/unitRegistry.ts");
+  const { hurtMech, hurtRaider, strike, refresh } = await import("../src/game/mecha/combat.ts");
+  const state = createMatch({ preset: "covers_sparse_mid", script: "stationary_smash" });
+  const ops = { hurtMech, hurtRaider, strike, refresh };
+  const before = structuredClone(state);
+  const unknown = { skillId: "__proto__", local: [], projected: [], cdSweep: 0, status: "planned" } as any;
+  assert.equal(resolveRegisteredUnitEffect(state, unknown, ops), "unregistered");
+  assert.deepEqual(state, before);
+  const prism = { skillId: "prism_guard", targetId: "boss", shieldHits: 1, local: [], projected: [], cdSweep: 0, status: "planned" } as const;
+  assert.equal(resolveRegisteredUnitEffect(state, structuredClone(prism) as any, ops), "handled");
+  assert.deepEqual(state.boss.shield, { kind: "prism_guard", hits: 1 });
+});

@@ -586,11 +586,23 @@ pub async fn plugin_open(app: tauri::AppHandle, webview: Webview, state: tauri::
             }
         });
     #[cfg(all(feature = "plugin-isolation-probe", target_os = "macos"))]
-    let builder = builder.initialization_script(crate::plugin_isolation_probe::OBSERVER);
+    let builder = if std::env::args().any(|arg| arg == "--mecha-v15-local-test") {
+        builder.initialization_script("window.__AV_V15_LOCAL_TEST__ = true;")
+    } else {
+        builder.initialization_script(crate::plugin_isolation_probe::OBSERVER)
+    };
     // The interactive fixture starts with a fixed seed instead of rebuilding the
     // synthetic city after the WebView has already loaded.
     #[cfg(all(feature = "plugin-isolation-probe", target_os = "macos"))]
-    let builder = if std::env::args().any(|arg| arg == "--plugin-formal-mecha-interactive") {
+    let builder = if std::env::args().any(|arg| arg == "--plugin-formal-v15-probe" || arg == "--plugin-formal-v15-resume" || arg == "--plugin-formal-v15-status-probe" || arg == "--plugin-formal-v15-status-resume") {
+        let status_setup = std::env::args().any(|arg| arg == "--plugin-formal-v15-status-probe" || arg == "--plugin-formal-v15-status-resume");
+        let script = if status_setup {
+            "localStorage.setItem('city.seed', '4196523069'); window.__AV_PLUGIN_LOCALE__ = 'zh-Hans'; window.__AV_V15_PROBE__ = true; const statusUrl = new URL(location.href); statusUrl.searchParams.set('mechaStatus', 'prism_warden'); history.replaceState(null, '', statusUrl.toString());"
+        } else {
+            "localStorage.setItem('city.seed', '4196523069'); window.__AV_PLUGIN_LOCALE__ = 'zh-Hans'; window.__AV_V15_PROBE__ = true;"
+        };
+        builder.initialization_script(script)
+    } else if std::env::args().any(|arg| arg == "--plugin-formal-mecha-interactive") {
         builder.initialization_script("localStorage.setItem('city.seed', '4196523069');")
     } else if std::env::args().any(|arg| arg == "--plugin-formal-mecha-probe") {
         // Distinct, synthetic initial seed: the automatic probe must exercise a

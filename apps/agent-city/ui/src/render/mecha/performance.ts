@@ -7,6 +7,7 @@ export type MechaPerformanceEvent = (
   | { kind: "neural_link"; actor: "boss"; change: "created" | "broken"; from: Cell; target: Cell; duration: number }
   | { kind: "corrode_field"; actor: "boss"; change: "created" | "expired"; fieldId: string; cell: Cell; duration: number }
   | { kind: "corrode_tick"; actor: string; fieldId: string; cell: Cell; damage: number; duration: number }
+  | { kind: "status_cue"; actor: string; source: string; status: "poison" | "burn" | "freeze" | "stun"; change: "applied" | "refreshed" | "advanced" | "damage" | "expired" | "removed"; remainingTurns?: number; cell: Cell; duration: number }
   | { kind: "raider_spawn"; actor: string; at: Cell; hp: number; duration: number }
   | { kind: "raider_remove"; actor: string; at: Cell; hp: number; reason: "death" | "expired"; duration: number }
   | { kind: "death"; actor: string; at: Cell; duration: number }

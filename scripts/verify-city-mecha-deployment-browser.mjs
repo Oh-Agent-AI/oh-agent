@@ -152,7 +152,15 @@ try {
       const ready = await read(); assert.equal(ready.canConfirm, true); assert.equal(ready.intents, null); assert.equal(ready.revision, 0);
       await shot("ready"); await button("确认部署", "Confirm deployment").click();
       await page.locator('[data-phase="player_plan"]').waitFor();
-      const active = await read(); assert.equal(active.revision, 1); assert.ok(active.intents); assert.equal(active.resetUsed, false);
+      const active = await read();
+      assert.deepEqual(active.figures.map(f => [f.id, f.x, f.y]), ready.figures.map(f => [f.id, f.x, f.y]), "confirmation preserves actual deployed cells even with opening suggestions");
+      await page.waitForTimeout(500);
+      const stable = await page.evaluate(() => {
+        const p = globalThis.__deploymentWorld;
+        return p.view().figures.map(f => { const at = p.cellWorld(p.site, f), model = p.figures[f.id]; return Math.hypot(at.x - model.position.x, at.z - model.position.z); });
+      });
+      assert.ok(stable.every(distance => distance < .02), "actual models remain at their deployment cells");
+      assert.equal(active.revision, 1); assert.ok(active.intents); assert.equal(active.resetUsed, false);
       assert.equal(await page.locator(".mecha-deploy-roster").count(), 0); assert.ok(await button("结束回合", "End turn").isVisible());
       await shot("first-turn");
       // Verify normal turn authority and animation are still reachable after deployment.

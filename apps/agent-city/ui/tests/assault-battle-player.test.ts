@@ -4,6 +4,7 @@ import * as THREE from "three";
 import { createAssaultBattleHeight, createAssaultBattlePlayer } from "../src/render/mecha/assaultBattlePlayer.ts";
 import { setMechaRig, type MechaAction } from "../src/render/mecha/animation.ts";
 import type { MechaPerformanceEvent } from "../src/render/mecha/performance.ts";
+import { createAssaultPerformancePlan } from "../src/render/mecha/assaultPerformance.ts";
 
 const near = (actual: number, expected: number) => assert.ok(Math.abs(actual - expected) < 1e-6, `${actual} != ${expected}`);
 function fixture(events: MechaPerformanceEvent[], height = createAssaultBattleHeight(), fallen: string[] = [], onEventSettled?: (index: number) => void) {
@@ -26,6 +27,12 @@ function fixture(events: MechaPerformanceEvent[], height = createAssaultBattleHe
   return { ...playback, actor, other, leg, actions, root, completions: () => completions };
 }
 const move = (path: { x: number; y: number }[]): MechaPerformanceEvent => ({ kind: "move", actor: "Assault", path, duration: 9 });
+
+test("passive knockback preserves the planned heading after settling", () => {
+  const event: MechaPerformanceEvent = { kind: "knockback", actor: "Assault", path: [{ x: 0, y: 0 }, { x: 1, y: 0 }], duration: .32 };
+  const plan = createAssaultPerformancePlan([event], "Assault", .61, cell => ({ x: cell.x, y: 0, z: cell.y }), 1, 1, () => .2);
+  near(plan.entries[0]!.endYaw, .61); near(plan.endYaw, .61);
+});
 
 test("quick route travel starts immediately and reaches all corners without diagonal shortcuts", () => {
   const events = [move([{ x:0,y:0 },{ x:1,y:0 },{ x:1,y:1 },{ x:2,y:1 }])];

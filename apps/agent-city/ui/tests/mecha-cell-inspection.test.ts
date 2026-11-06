@@ -45,13 +45,13 @@ test("all friendly units and every boss footprint cell expose rule stats", () =>
   assert.equal(inspectCell(state, state.raiders[0]!.pos)!.unit?.maxHp, RAIDER_HP);
 });
 
-test("displayed friendly draft endpoints use a real path, not a straight shortcut", () => {
+test("actual friendly cells retain occupancy and expose the planned route", () => {
   const state = fixture(); const mech = state.mechs[0]!;
   const destination = { x: 1, y: 1 }; const draft = { Assault: { moveTo: destination } };
-  const info = inspectCell(state, destination, draft)!;
+  const info = inspectCell(state, mech.pos, draft)!;
   assert.equal(info.unit?.id, "Assault"); assert.deepEqual(info.movePath?.[0], mech.pos);
   assert.deepEqual(info.movePath?.at(-1), destination);
-  assert.equal(inspectCell(state, mech.pos, draft)!.object, "empty");
+  assert.equal(inspectCell(state, destination, draft)!.object, "empty");
   const segments = inspectionSegments(null, info.movePath);
   assert.equal(segments.length, info.movePath!.length - 1);
   for (const segment of segments) assert.equal(Math.abs(segment.from.x - segment.to.x) + Math.abs(segment.from.y - segment.to.y), 1);
@@ -87,7 +87,7 @@ test("missing, skip, void, dead and unknown declarations don't fabricate routes"
 test("a click on empty ground stays a terrain inspection even if it also queues a move", () => {
   const state = fixture(); const cell = { x: 1, y: 1 };
   const draft = { Assault: { moveTo: cell } };
-  assert.equal(inspectCell(state, cell, draft)!.unit?.id, "Assault", "a later model click resolves its draft destination");
+  assert.equal(inspectCell(state, cell, draft)!.unit, undefined, "a planned destination does not contain an actual unit");
   assert.equal(inspectCell(state, cell, draft, null)!.object, "empty", "the original ground click isn't replaced by the moving model");
 });
 

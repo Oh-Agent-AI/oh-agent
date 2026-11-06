@@ -5,6 +5,12 @@
 export type GameLocale = "zh-Hans" | "en";
 
 const ENGLISH: Record<string, string> = {
+  "状态测试参数无效": "Invalid status encounter parameter",
+  "请选择受支持的本地怪物测试。": "Choose a supported local monster encounter.",
+  "状态怪物测试不能使用城市遭遇点": "Status monster tests cannot use city encounters",
+  "请从城市设置打开状态怪物测试。": "Open the status monster test from city settings.",
+  "1.5 测试暂不支持怪兽遭遇点": "Monster encounters are not available in the 1.5 test",
+  "请从城市设置打开普通本地战棋。": "Open a regular local battle from city settings.",
   "任务模式": "Mission",
   "消灭敌人": "Eliminate enemies",
   "救援": "Rescue",
@@ -465,7 +471,7 @@ const ENGLISH: Record<string, string> = {
   "这座城还没准备好，不能开战。": "This city is not ready, so the fight cannot start.",
   "等城市准备好再试，或关掉战棋。": "Wait until the city is ready and retry, or close the tactics.",
   "这座城暂时没有可用机坪。": "This city has no apron to fight on right now.",
-  "楼太少时往往没有平地、靠岸或巷战。可以重试，或关掉战棋。": "A sparse city often has no flat ground, shore, or alley. Retry, or close the tactics.",
+  "当前城市中未找到符合地形和占位条件的战场。可以重试，或关掉战棋。": "No battlefield matching the terrain and occupancy requirements was found in this city. Retry, or close the tactics.",
   "出生高差": "Spawn relief",
   "标准 1，已放宽": "standard 1, relaxed",
   "结束回合": "End turn",

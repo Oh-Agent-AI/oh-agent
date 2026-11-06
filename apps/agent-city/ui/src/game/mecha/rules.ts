@@ -108,6 +108,8 @@ function copyHeights(grid: number[][] | undefined): number[][] {
 export function createMatch(opts: {
   preset: CoverPresetId;
   script: BossScriptId;
+  /** Explicit staged ruleset; existing callers stay on v1.4. */
+  ruleset?: import("./board").PveRuleset;
   difficulty?: DifficultyId;
   covers?: Cell[];
   terrain?: TerrainKind[][];
@@ -128,6 +130,7 @@ export function createMatch(opts: {
   /** Explicit experimental local rules; no city, replay or remote integration. */
   monsterContent?: MonsterContent;
 }): MatchState {
+  if (opts.ruleset !== undefined && opts.ruleset !== "mecha-v1.4" && opts.ruleset !== "mecha-v1.5") throw new Error("unsupported_ruleset");
   assertMonsterContent(opts);
   // Inspect input before mapping raiders to their legacy fields; otherwise a
   // caller could silently turn an unsupported summon into an ordinary unit.
@@ -138,7 +141,7 @@ export function createMatch(opts: {
   const siege = opts.script === "siege";
   const enemy = ENEMY_STATS[opts.difficulty ?? "normal"];
   const state: MatchState = {
-    ruleset: GDD_RULESET,
+    ruleset: opts.ruleset ?? GDD_RULESET,
     preset: opts.preset,
     script: opts.script,
     ...(opts.difficulty ? { difficulty: opts.difficulty } : {}),
