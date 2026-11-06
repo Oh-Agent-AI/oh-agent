@@ -7,7 +7,7 @@ an explorable city — and helps you understand the activity and token usage beh
 
 **Your agents built it. Now explore it.**
 
-[Explore the demo](https://ohagent.ai/) · [Source repository](https://github.com/Oh-Agent-AI/oh-agent) · [中文](#中文) ·
+[Explore the demo](https://ohagent.ai/) · [Download 1.0.0-beta.3](https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.3) · [Docs](https://ohagent.ai/docs/) · [Source repository](https://github.com/Oh-Agent-AI/oh-agent) · [中文](#中文) ·
 [Desktop development](apps/desktop/src-tauri/README.md) · [MIT license](LICENSE)
 
 ## What is Oh Agent?
@@ -20,8 +20,8 @@ Oh Agent analyzes supported records on your own machine:
 - **Activity replay:** revisit activity within the loaded time range.
 - **Usage and cost analysis:** explore usage by source and time, inspect available
   session traces, and distinguish subscription fees, nominal estimates and evidenced spend.
-- **Playful exploration:** the City frontend includes free-flight practice and
-  ring challenges. Driving is under development; availability is version-specific.
+- **Playful exploration:** desktop City includes free-flight practice, ring
+  challenges and free drive (beta).
 
 The city is a visual interpretation of recorded activity, not a productivity
 score. Building growth does not establish task success, and repetition alone
@@ -32,16 +32,14 @@ does not prove wasted work.
 | Surface | Current scope |
 | --- | --- |
 | [Web demo](https://ohagent.ai/) | Real City frontend with 2000 synthetic sessions in the default 30-day window. Explore buildings and replay activity; it does not read your computer's logs. |
-| Desktop app | Tauri workbench and built-in City plugin. Local builds are available to developers; a local build is not a signed public release. |
+| Desktop app | 1.0.0-beta.3 pre-release: Apple Silicon Mac (signed + notarized), Windows x64 and Linux x64 (unsigned). [Download](https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.3) |
 | Flying | Free practice and ring-challenge entry points exist in City settings outside the landing presentation. Version and scene readiness affect availability. |
-| Driving | Implementation and validation in progress; not promised as a generally available desktop or website feature. |
-| Website gameplay | The landing presentation hides game, export and seed controls. The public mock demo does **not** offer flying or driving entry points. Desktop City includes flying and free-drive modes; public installers are still being prepared. |
+| Driving | Free drive available in desktop City (beta). |
+| Website gameplay | The landing presentation hides game, export and seed controls. The public mock demo does **not** offer flying or driving entry points. Desktop City includes flying and free-drive modes. |
 
-As of 2026-10-16, the landing page shows a release-preparation state, not an
-available public download. Only describe a package as signed, notarized or
-platform-tested after the corresponding release checks pass. macOS is the current
-public product focus; [Windows/Linux build notes](docs/DESKTOP_PLATFORM_BUILDS.md)
-describe build support, not complete UI acceptance.
+Only describe a package as signed, notarized or platform-tested after the
+corresponding release checks pass. [Windows/Linux build notes](docs/DESKTOP_PLATFORM_BUILDS.md)
+describe build support, not complete UI acceptance. Intel Mac packages are coming later.
 
 Oh Agent is the public brand: the desktop app is `Oh Agent.app` with bundle identifier
 `ai.ohagent.desktop`. Repository names, CLI commands, crates, data directories and some
@@ -102,7 +100,7 @@ Preview the landing page:
 python3 -m http.server 5180 --bind 127.0.0.1 --directory website/landing
 ```
 
-Open `http://127.0.0.1:5180/?lang=en` or `?lang=zh`.
+Open `http://127.0.0.1:5180/` (English) or `http://127.0.0.1:5180/zh/` (prerendered Chinese; regenerate with `node website/landing/tools/build-zh.mjs`).
 See [landing build and verification](website/landing/README.md) for rebuilding City.
 
 ## Repository map
@@ -115,6 +113,7 @@ See [landing build and verification](website/landing/README.md) for rebuilding C
 | `crates/` | Data, domain, harness, runtime and core logic |
 | `packages/agent-vitals-python/` | Python compatibility implementation |
 | `website/landing/` | Oh Agent website and synthetic City host |
+| `website/docs/` | Documentation site (Astro Starlight), served at ohagent.ai/docs |
 | `tests/`, `golden/`, `fixtures/` | Regression tests and compatibility contracts |
 | `docs/` | Specifications, evidence and implementation status |
 
@@ -147,7 +146,9 @@ preserves earlier explanations; its old matrices are not current support guarant
 - **探索你的 Agent 城市：** 会话变成数据建筑，工具组成街区，Token 规模影响楼高。
 - **回放工作节奏：** 查看已加载时间范围内的活动，点选建筑了解对应会话。
 - **看懂用量与费用：** 订阅费、名义估算与真实支出分开呈现，未知金额不当作零。
-- **让历史更好玩：** 桌面 City 已提供自由飞行、穿环挑战和自由驾驶；公开安装包仍在发布准备中。
+- **让历史更好玩：** 桌面 City 已提供自由飞行、穿环挑战和自由驾驶（测试版）。
+
+**下载：** 1.0.0-beta.3 预发布版，支持 Apple Silicon Mac（已签名并公证）、Windows x64 和 Linux x64（暂未签名），Intel Mac 版本随后提供。[前往下载](https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.3) · [文档](https://ohagent.ai/docs/zh/)
 
 源代码与开发历史见 [GitHub 仓库](https://github.com/Oh-Agent-AI/oh-agent)。
 
@@ -159,8 +160,7 @@ preserves earlier explanations; its old matrices are not current support guarant
 会话在本机分析，不上传云端；公开价卡更新、版本检查和你明确选择的官方资源下载可能联网，
 但不携带会话数据。
 
-截至 2026-10-16，官网仍显示“公开下载准备中”。本地可构建应用不等于已完成签名、公证和
-正式发布。对外品牌为 **Oh Agent**，内部 CLI、路径和应用标识暂时保留 `agent-vitals`，
+本地可构建应用不等于已完成签名、公证和正式发布。对外品牌为 **Oh Agent**，内部 CLI、路径和应用标识暂时保留 `agent-vitals`，
 无需手工迁移或改名数据目录。
 
 开发与检查命令见上方；旧版 Skill 审计介绍已归档到 [历史说明](README.legacy.md)。
