@@ -1,5 +1,5 @@
 ---
-draft: true
+lastUpdated: 2026-10-30
 title: "Agent Vitals CLI (agent-vitals): commands for syncing, querying and exporting agent data"
 description: The agent-vitals command-line tool runs the Agent Vitals engine without the desktop app. Sync agent logs, check data status, export facts, manage manifest sources and start the Data MCP server.
 head:
@@ -19,7 +19,7 @@ head:
       }
 ---
 
-`agent-vitals` is the command-line front end of the Agent Vitals engine. It runs the same Rust code as the desktop app: sync agent logs into the local database, check data status, export facts, manage manifest sources, audit single sessions, and start the [Data MCP server](/docs/vitals/mcp-tools). It also keeps the commands of the earlier skill auditor. Help text is in English, and most commands take `--json`.
+`agent-vitals` is the command-line front end of the Agent Vitals engine. It runs the same Rust code as the desktop app: sync agent logs into the local database, check data status, export facts, manage manifest sources, audit single sessions, and start the Data MCP server (stdio). It also keeps the commands of the earlier skill auditor. Help text is in English, and most commands take `--json`.
 
 ## Key facts
 
@@ -46,13 +46,13 @@ head:
 | `data-reimport-verify` | Re-import into two throwaway databases and compare (doesn't touch your store) |
 | `sessions …` | Versioned read-only session queries |
 | `routes-quality` | Passive report of recorded model identity by source and model family |
-| `data-mcp serve [--allow-local-writes]` | Start the stdio [Data MCP server](/docs/vitals/mcp-tools) |
+| `data-mcp serve [--allow-local-writes]` | Start the stdio Data MCP server |
 
 <!-- source: apps/cli/src/main.rs doc comments: SyncFacts ("Routine facts sync … Idempotent"), DataStatus, Data ("Read-only Data Query API surface … data coverage"), DataExportPrivate/DataExportRedacted, DataUnresolved, BillingGroups, DataHarnessBill, Budget, BudgetSql, DataMigrate, DataReimportVerify, Sessions, RoutesQuality, DataMcp -->
 
-**TBD:** the `sync-facts` help text still says "across all three harnesses", but the registry has four sources (WorkBuddy was added). Fix the help text or confirm.
+The clap help string for `sync-facts` still says "across all three harnesses"; the command syncs every registered built-in source (`claude-code`, `codex`, `dsh`, `workbuddy`) unless you pass `--harnesses`.
 
-<!-- source: main.rs SyncFacts doc ("Routine facts sync across all three harnesses"); crates/agent-vitals-harnesses/src/sources/session_harnesses.rs (4 entries) -->
+<!-- source: apps/cli/src/main.rs SyncFacts doc ("across all three harnesses") + --harnesses "Absent = all harnesses"; crates/agent-vitals-harnesses/src/sources/session_harnesses.rs (ids: claude-code, codex, dsh, workbuddy) -->
 
 ## Source commands
 
@@ -60,7 +60,7 @@ head:
 | --- | --- |
 | `harness-inventory --window-days 30` | Which sources are registered, have data, or are only candidates. Never activates anything |
 | `harnesses` | Print the declared capabilities of the four built-in sources |
-| `manifest-validate`, `manifest-install`, `manifest-list`, `manifest-uninstall`, `manifest-rollback`, `manifest-recompute`, `manifest-catalog-status` | [Manifest sources](/docs/integrations/custom-sources-and-manifests): dry-run, preview → confirm, list, remove, roll back |
+| `manifest-validate`, `manifest-install`, `manifest-list`, `manifest-uninstall`, `manifest-rollback`, `manifest-recompute`, `manifest-catalog-status` | Manifest sources: dry-run, preview → confirm, list, remove, roll back |
 | `claude-usage-facts`, `codex-usage-facts`, `dsh-usage-facts`, `workbuddy-usage-facts` | Parse one source's files into usage-fact rows, for diagnosis |
 
 <!-- source: main.rs (HarnessInventory, Harnesses "Print the HarnessProfile registry … the four runtime harnesses", Manifest*, ClaudeUsageFacts, CodexUsageFacts, DshUsageFacts, WorkbuddyUsageFacts) -->
@@ -80,7 +80,7 @@ head:
 
 ## Older skill-auditor commands
 
-`list`, `doctor`, `plan`, `snapshot`, `diff`, `explain` and `overlap` come from the earlier skill auditor: they list installed Agent Skills, diagnose why one doesn't load, and plan cleanup. They are kept but aren't the main product story. See [Skill auditor](/docs/integrations/skill-auditor).
+`list`, `doctor`, `plan`, `snapshot`, `diff`, `explain` and `overlap` come from the earlier skill auditor: they list installed Agent Skills, diagnose why one doesn't load, and plan cleanup. They are kept but aren't the main product story (the older skill auditor).
 
 <!-- source: main.rs (List "List discovered skills and their effective state", Doctor, Plan, Snapshot, Diff, Explain, Overlap); README.md ("The earlier Skill scanner, integrations and CLI remain in the repository") -->
 
@@ -97,10 +97,14 @@ agent-vitals data-status --json
 agent-vitals data-export-redacted --out ~/oh-agent-export
 ```
 
-**TBD:** test these exact invocations on a real install. Flags like `--json` vary per command; check `agent-vitals <command> --help`.
+Flags above match the clap definitions in `apps/cli/src/main.rs`: `data-status --json` is a boolean flag; `data-export-redacted` requires `--out DIR`; `sync-facts` also accepts optional `--json` and `--harnesses`.
+
+<!-- source: apps/cli/src/main.rs DataStatus.rows_json bool; DataExportRedacted.out PathBuf; SyncFacts.rows_json bool + harnesses Option -->
 
 ## Related
 
 - [Agent Vitals engine overview](/docs/vitals/overview)
-- [Data MCP tools](/docs/vitals/mcp-tools)
-- [Python twin](/docs/vitals/python)
+- [Claude Code data source](/docs/data-sources/claude-code) · [Codex data source](/docs/data-sources/codex)
+- [DeepSeek Harness data source](/docs/data-sources/deepseek-harness) · [WorkBuddy data source](/docs/data-sources/workbuddy)
+- [What each building in Agent City means](/docs/city-guide)
+- [Privacy and data](/docs/privacy-and-data) · [Install](/docs/install) · [FAQ](https://ohagent.ai/#faq)
