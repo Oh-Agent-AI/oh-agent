@@ -1,5 +1,5 @@
 ---
-draft: true
+lastUpdated: 2026-11-06
 title: "Agent Vitals Data MCP tools: let your AI agent read your agent data locally"
 description: Oh Agent's CLI includes a local stdio MCP server, agent-vitals data-mcp serve, that lets Claude Code, Codex or another MCP client query your agent usage data. Read-only by default.
 head:
@@ -71,9 +71,9 @@ Point your MCP client at the `agent-vitals` binary with the arguments `data-mcp 
 }
 ```
 
-**TBD:** the binary's exact path inside the installed app. The bundle places it as a resource at `bin/agent-vitals`, which on macOS is likely `/Applications/Oh Agent.app/Contents/Resources/bin/agent-vitals` (note the space in the app name; quote the path). Verify on a real install. A developer build is at `target/release/agent-vitals`.
+The installed app bundles the binary as `bin/agent-vitals`. On macOS that is typically `/Applications/Oh Agent.app/Contents/Resources/bin/agent-vitals` (note the space in the app name; quote the path). A developer build is at `target/release/agent-vitals`.
 
-**TBD:** tested, copy-paste setup steps for Claude Code (`claude mcp add …`) and Codex (`~/.codex/config.toml`). The repo doesn't document client setup.
+Client registration differs by MCP host. Use the generic `mcpServers` JSON above, or each client's own config format (for example Codex often uses `~/.codex/config.toml`). Exact `claude mcp add …` flags vary by Claude Code version — prefer the client's current docs over a hard-coded flag set.
 
 <!-- source: apps/desktop/src-tauri/tauri.conf.json (bundle.resources "../../../target/release/agent-vitals": "bin/agent-vitals"); README.md (cargo build --release → ./target/release/agent-vitals) -->
 <!-- source: docs/v1.0.0/UAT_SMALL_LOOPS.md (manual check: printf … | agent-vitals data-mcp serve) -->
@@ -94,11 +94,9 @@ The repo treats this as an egress boundary. `crates/agent-vitals-mcp` is the out
 
 ## Does the MCP server let my agent edit the city?
 
-No. No current tool edits Agent City or its map. Letting agents help build the city is a planned idea; see the [Roadmap](/docs/integrations#roadmap--规划中).
+Partly, and only for one session building at a time. The tools table above includes `get_building`, `preview_building`, `set_building_model`, and `reset_building`: they read, validate, replace, or reset a single Agent City session building model (`session-kit/v1`). Writes need `--allow-local-writes`. Preview/set/reset are not full city or map editing — there is no tool that redesigns the whole city layout.
 
 ## Related
 
 - [Agent Vitals engine overview](/docs/vitals/overview) · [CLI](/docs/vitals/cli)
-- [Integrations overview](/docs/integrations)
 - [Does Oh Agent upload my sessions?](/docs/privacy-and-data)
-- [Architecture overview](/docs/architecture/overview)

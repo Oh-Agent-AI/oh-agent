@@ -1,5 +1,5 @@
 ---
-draft: true
+lastUpdated: 2026-11-06
 title: Oh Agent 的 Data MCP 服务：让你的 AI Agent 查询自己的用量
 description: 运行 agent-vitals data-mcp serve，让 Claude Code、Codex 等 MCP 客户端通过类型化工具查询本机的用量、会话和费用数据。只走 stdio，默认只读，返回内容经过脱敏。
 head:
@@ -71,9 +71,9 @@ Oh Agent 的数据层 Agent Vitals 带一个本地 MCP 服务。运行 `agent-vi
 }
 ```
 
-**待确认**：二进制在已安装应用里的确切路径。打包配置把它作为资源放在 `bin/agent-vitals`，在 macOS 上大概是 `/Applications/Oh Agent.app/Contents/Resources/bin/agent-vitals`（应用名里有空格，路径要加引号），需要在真机上核实。开发构建在 `target/release/agent-vitals`。
+已安装应用把二进制作为资源打包在 `bin/agent-vitals`。在 macOS 上通常是 `/Applications/Oh Agent.app/Contents/Resources/bin/agent-vitals`（应用名里有空格，路径要加引号）。开发构建在 `target/release/agent-vitals`。
 
-**待确认**：Claude Code（`claude mcp add …`）和 Codex（`~/.codex/config.toml`）经过测试、可以直接复制的配置步骤。仓库里没有客户端配置文档。
+不同 MCP 客户端的注册方式不一样。可以用上面的通用 `mcpServers` JSON，或各客户端自己的配置格式（例如 Codex 常用 `~/.codex/config.toml`）。`claude mcp add …` 的具体参数随 Claude Code 版本变化——以客户端当前文档为准，不要硬编码一套未核实的 flag。
 
 <!-- source: apps/desktop/src-tauri/tauri.conf.json (bundle.resources → "bin/agent-vitals"); README.md (cargo build --release) -->
 <!-- source: docs/v1.0.0/UAT_SMALL_LOOPS.md (manual check: printf … | agent-vitals data-mcp serve) -->
@@ -94,11 +94,9 @@ Oh Agent 的数据层 Agent Vitals 带一个本地 MCP 服务。运行 `agent-vi
 
 ## MCP 服务能让我的 Agent 编辑城市吗？
 
-不能。目前没有任何工具能编辑 Agent City 或它的地图。让 Agent 帮忙建城是规划中的想法，见 [Roadmap](/docs/zh/integrations#roadmap--规划中)。
+可以部分编辑，而且一次只动一栋会话楼。上表里的 `get_building`、`preview_building`、`set_building_model`、`reset_building` 可以读取、校验、替换或重置一栋 Agent City 会话楼的模型（`session-kit/v1`）。写入需要 `--allow-local-writes`。preview/set/reset 不是整座城或地图编辑——没有工具能改整座城的布局。
 
 ## 相关
 
 - [Agent Vitals 引擎总览](/docs/zh/vitals/overview) · [命令行](/docs/zh/vitals/cli)
-- [集成总览](/docs/zh/integrations)
 - [Oh Agent 会上传我的会话吗？](/docs/zh/privacy-and-data)
-- [架构总览](/docs/zh/architecture/overview)
