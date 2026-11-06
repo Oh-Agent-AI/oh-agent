@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
+  <title id="title">Agent Vitals v1.0.0 计费方式确认线框原型</title>
+  <desc id="desc">总览页保留名义成本估算，并通过待确认提示打开右侧计费确认面板。用户选择付费方式、作用范围，预览重算影响后保存。</desc>
+  <defs>
+    <style>
+      .bg{fill:#f5f6f8}.window{fill:#fff;stroke:#c9cdd4;stroke-width:2}.top{fill:#eceff3}.panel{fill:#fff;stroke:#b8bec8;stroke-width:2}.card{fill:#fff;stroke:#aeb5c0;stroke-width:2}.soft{fill:#f6f7f9;stroke:#c7ccd4;stroke-width:1.5}.amber{fill:#fff8e7;stroke:#a66b00;stroke-width:2}.blue{fill:#eef4ff;stroke:#4976c9;stroke-width:2}.selected{fill:#f3f7ff;stroke:#356dcc;stroke-width:2.5}.button{fill:#222b38}.button2{fill:#fff;stroke:#7b8491;stroke-width:1.5}.line{stroke:#9ba3af;stroke-width:2}.dash{stroke:#aeb5c0;stroke-width:2;stroke-dasharray:7 7;fill:none}.txt{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;fill:#202733}.muted{fill:#667080}.tiny{font-size:13px}.small{font-size:15px}.body{font-size:17px}.label{font-size:18px;font-weight:600}.h2{font-size:22px;font-weight:700}.h1{font-size:28px;font-weight:700}.num{font-size:30px;font-weight:700}.white{fill:#fff}.ambertxt{fill:#8a5a00}.bluetxt{fill:#285cae}.mono{font-variant-numeric:tabular-nums}.call{fill:#202733}.calltxt{fill:#fff;font-size:14px;font-weight:700;text-anchor:middle;dominant-baseline:middle}.note{font-size:14px;fill:#4e5867}
+    </style>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="6" stdDeviation="10" flood-opacity="0.15"/></filter>
+  </defs>
+
+  <rect class="bg" width="1600" height="1000"/>
+  <text class="txt h1" x="54" y="52">Agent Vitals v1.0.0 · 计费方式渐进确认</text>
+  <text class="txt muted body" x="54" y="80">低保真线框 · 状态：用户已选择“官方订阅”，正在预览作用范围与重算影响</text>
+
+  <!-- App window -->
+  <rect class="window" x="40" y="105" width="1520" height="785" rx="18" filter="url(#shadow)"/>
+  <rect class="top" x="40" y="105" width="1520" height="62" rx="18"/>
+  <rect class="top" x="40" y="145" width="1520" height="22"/>
+  <circle cx="70" cy="136" r="7" fill="#8c939d"/><circle cx="94" cy="136" r="7" fill="#8c939d"/><circle cx="118" cy="136" r="7" fill="#8c939d"/>
+  <text class="txt label" x="150" y="143">agent-vitals 工作台</text>
+  <text class="txt small" x="390" y="143">总览</text><text class="txt muted small" x="455" y="143">Token 日历</text><text class="txt muted small" x="565" y="143">会话</text><text class="txt muted small" x="630" y="143">待处理</text>
+  <rect x="1382" y="121" width="72" height="31" rx="8" class="button2"/><text class="txt small" x="1400" y="142">刷新</text>
+  <rect x="1465" y="121" width="70" height="31" rx="8" class="button2"/><text class="txt small" x="1481" y="142">设置</text>
+
+  <!-- Main overview, dimmed only slightly -->
+  <g>
+    <text class="txt h2" x="72" y="205">本月总览</text>
+    <text class="txt muted small" x="965" y="204" text-anchor="end">更新于 16:07 · 3 个来源</text>
+    <rect class="blue" x="72" y="225" width="893" height="54" rx="9"/>
+    <text class="txt label bluetxt" x="91" y="248">本月已确认支出（原币分列）</text>
+    <text class="txt small bluetxt" x="91" y="269">CNY ¥232.00　｜　USD $20.00</text>
+    <text class="txt muted small" x="480" y="258">订阅与付款证据；不含下方名义估算</text>
+
+    <!-- Contextual prompt -->
+    <rect class="amber" x="72" y="298" width="893" height="90" rx="10"/>
+    <circle cx="98" cy="327" r="13" fill="#a66b00"/><text class="white label" x="94" y="333">!</text>
+    <text class="txt label ambertxt" x="123" y="328">1.53B tokens 的付费方式待确认</text>
+    <text class="txt small ambertxt" x="123" y="355">当前已按原厂 API 价格估算；确认后可区分订阅覆盖和额外费用。</text>
+    <rect class="button" x="742" y="316" width="176" height="48" rx="9"/><text class="txt white small" x="768" y="346">确认计费方式</text>
+    <text class="txt muted small" x="684" y="346">稍后</text>
+
+    <!-- Main cards -->
+    <rect class="card" x="72" y="410" width="280" height="138" rx="12"/>
+    <text class="txt muted small" x="94" y="442">本月名义成本</text><text class="txt num mono" x="94" y="488">≈ ¥4,716.26</text><text class="txt muted tiny" x="94" y="518">按原厂公开 API 价格 · 部分待确认</text>
+    <rect class="card" x="370" y="410" width="280" height="138" rx="12"/>
+    <text class="txt muted small" x="392" y="442">本月已观测用量</text><text class="txt num mono" x="392" y="488">2.46B</text><text class="txt muted tiny" x="392" y="518">含缓存读写 · 49 个会话</text>
+    <rect class="card" x="668" y="410" width="297" height="138" rx="12"/>
+    <text class="txt muted small" x="690" y="442">价格覆盖</text><text class="txt num mono" x="690" y="488">94.0%</text><text class="txt muted tiny" x="690" y="518">147.4M tokens 尚未计价</text>
+
+    <rect class="soft" x="72" y="572" width="893" height="270" rx="12"/>
+    <text class="txt label" x="94" y="608">用量与名义成本趋势</text>
+    <line class="line" x1="104" y1="791" x2="934" y2="791"/>
+    <polyline points="104,764 165,730 225,748 287,670 348,714 410,642 472,702 533,610 595,690 657,628 718,676 780,595 842,650 934,620" fill="none" stroke="#727b88" stroke-width="4"/>
+    <text class="txt muted tiny" x="104" y="818">09/01</text><text class="txt muted tiny" x="885" y="818">09/30</text>
+  </g>
+
+  <!-- scrim divider and sheet -->
+  <rect x="995" y="167" width="565" height="723" fill="#fff" opacity="0.97"/>
+  <line x1="995" y1="167" x2="995" y2="890" stroke="#8d96a3" stroke-width="2"/>
+  <text class="txt h2" x="1028" y="207">确认计费方式</text>
+  <text class="txt muted small" x="1028" y="234">先确认影响最大的一组 · 1 / 4</text>
+  <rect class="button2" x="1495" y="183" width="34" height="34" rx="8"/><text class="txt h2 muted" x="1506" y="207">×</text>
+
+  <!-- Group summary -->
+  <rect class="soft" x="1028" y="258" width="500" height="113" rx="10"/>
+  <text class="txt label" x="1048" y="289">Codex · GPT-5.x · 路由待确认</text>
+  <text class="txt small mono" x="1048" y="318">1.12B tokens · 18 个会话 · 09/01—09/10</text>
+  <text class="txt small ambertxt" x="1048" y="347">当前处理：按原厂 API 价格估算 ≈ ¥X,XXX</text>
+
+  <text class="txt label" x="1028" y="411">这批用量如何付费？</text>
+  <text class="txt muted tiny" x="1028" y="434">只选择你确定的答案；不确定也可以继续保留当前估算。</text>
+
+  <!-- Payment cards -->
+  <rect class="selected" x="1028" y="452" width="242" height="68" rx="10"/>
+  <circle cx="1052" cy="486" r="10" fill="#fff" stroke="#356dcc" stroke-width="2"/><circle cx="1052" cy="486" r="5" fill="#356dcc"/>
+  <text class="txt label" x="1073" y="483">官方订阅</text><text class="txt muted tiny" x="1073" y="505">例如个人或团队套餐</text>
+  <rect class="card" x="1286" y="452" width="242" height="68" rx="10"/>
+  <circle cx="1310" cy="486" r="10" fill="#fff" stroke="#7f8895" stroke-width="2"/>
+  <text class="txt label" x="1331" y="483">官方 API</text><text class="txt muted tiny" x="1331" y="505">按原厂账单付费</text>
+  <rect class="card" x="1028" y="532" width="242" height="68" rx="10"/>
+  <circle cx="1052" cy="566" r="10" fill="#fff" stroke="#7f8895" stroke-width="2"/>
+  <text class="txt label" x="1073" y="563">第三方服务</text><text class="txt muted tiny" x="1073" y="585">网关、代理或聚合商</text>
+  <rect class="card" x="1286" y="532" width="242" height="68" rx="10"/>
+  <circle cx="1310" cy="566" r="10" fill="#fff" stroke="#7f8895" stroke-width="2"/>
+  <text class="txt label" x="1331" y="563">组织承担</text><text class="txt muted tiny" x="1331" y="585">公司或团队支付</text>
+  <rect class="card" x="1028" y="612" width="500" height="54" rx="10"/>
+  <circle cx="1052" cy="639" r="10" fill="#fff" stroke="#7f8895" stroke-width="2"/>
+  <text class="txt label" x="1073" y="645">仍不确定 — 保持当前按量估算</text>
+
+  <!-- Progressive follow-up and scope -->
+  <text class="txt label" x="1028" y="704">套餐与作用范围</text>
+  <rect class="soft" x="1028" y="720" width="242" height="48" rx="8"/><text class="txt small" x="1046" y="750">套餐：ChatGPT Plus  ▾</text>
+  <rect class="soft" x="1286" y="720" width="242" height="48" rx="8"/><text class="txt small" x="1304" y="750">范围：仅这批会话  ▾</text>
+
+  <rect class="blue" x="1028" y="784" width="500" height="62" rx="9"/>
+  <text class="txt label bluetxt" x="1048" y="811">保存后预计变化</text>
+  <text class="txt small bluetxt" x="1048" y="834">按量估算移出 ¥X,XXX · 18 个会话转为“订阅覆盖”</text>
+
+  <rect class="button2" x="1280" y="858" width="104" height="46" rx="9"/><text class="txt small" x="1317" y="887">取消</text>
+  <rect class="button" x="1396" y="858" width="132" height="46" rx="9"/><text class="txt white small" x="1420" y="887">保存并重算</text>
+
+  <!-- Callouts -->
+  <circle class="call" cx="946" cy="308" r="15"/><text class="calltxt" x="946" y="308">1</text>
+  <circle class="call" cx="1010" cy="278" r="15"/><text class="calltxt" x="1010" y="278">2</text>
+  <circle class="call" cx="1512" cy="437" r="15"/><text class="calltxt" x="1512" y="437">3</text>
+  <circle class="call" cx="1512" cy="770" r="15"/><text class="calltxt" x="1512" y="770">4</text>
+  <circle class="call" cx="1512" cy="846" r="15"/><text class="calltxt" x="1512" y="846">5</text>
+
+  <!-- Bottom flow annotations -->
+  <text class="txt h2" x="54" y="934">交互闭环</text>
+  <rect class="soft" x="180" y="908" width="210" height="52" rx="9"/><text class="txt small" x="202" y="939">① 解释默认估算</text>
+  <text class="txt h2 muted" x="405" y="942">→</text>
+  <rect class="soft" x="444" y="908" width="210" height="52" rx="9"/><text class="txt small" x="466" y="939">② 聚合影响范围</text>
+  <text class="txt h2 muted" x="669" y="942">→</text>
+  <rect class="soft" x="708" y="908" width="210" height="52" rx="9"/><text class="txt small" x="730" y="939">③ 单问题确认</text>
+  <text class="txt h2 muted" x="933" y="942">→</text>
+  <rect class="soft" x="972" y="908" width="210" height="52" rx="9"/><text class="txt small" x="994" y="939">④ 选择作用范围</text>
+  <text class="txt h2 muted" x="1197" y="942">→</text>
+  <rect class="soft" x="1236" y="908" width="310" height="52" rx="9"/><text class="txt small" x="1258" y="939">⑤ 预览、重算、回执与撤销</text>
+</svg>

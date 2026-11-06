@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="1200" viewBox="0 0 2000 1200" role="img" aria-labelledby="t d">
+<title id="t">Agent Vitals v1.0.0 用量探索与会话下钻线框</title><desc id="d">展示Token日历、小时详情、会话列表和会话详情四个页面。</desc>
+<defs><style>
+.bg{fill:#f4f6f8}.board{fill:#fff;stroke:#b7bec8;stroke-width:2}.bar{fill:#e9edf2}.card{fill:#fff;stroke:#aeb6c2;stroke-width:2}.soft{fill:#f5f7f9;stroke:#c5cbd3;stroke-width:1.5}.blue{fill:#eef4ff;stroke:#386fca;stroke-width:2}.amber{fill:#fff7e3;stroke:#a96d00;stroke-width:2}.btn{fill:#222b38}.btn2{fill:#fff;stroke:#7f8996;stroke-width:1.5}.txt{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;fill:#202733}.muted{fill:#687384}.h1{font-size:30px;font-weight:700}.h2{font-size:22px;font-weight:700}.body{font-size:17px}.small{font-size:14px}.tiny{font-size:12px}.label{font-size:18px;font-weight:600}.num{font-size:26px;font-weight:700}.white{fill:#fff}.blueT{fill:#285daf}.amberT{fill:#8b5a00}.line{stroke:#87919f;stroke-width:3;fill:none}.grid{stroke:#ccd1d8;stroke-width:1}.dash{stroke:#a8b0bb;stroke-width:1.5;stroke-dasharray:6 5;fill:none}
+</style></defs>
+<rect class="bg" width="2000" height="1200"/><text class="txt h1" x="48" y="55">02 · 用量探索与会话下钻</text><text class="txt muted body" x="48" y="85">筛选条件跨页面保留；从月到日、小时、会话逐级解释，不伪造缺失的小时数据。</text>
+
+<!-- Calendar -->
+<g transform="translate(48 120)"><rect class="board" width="930" height="470" rx="16"/><rect class="bar" width="930" height="54" rx="16"/><rect class="bar" y="35" width="930" height="19"/><text class="txt label" x="32" y="34">Token 日历</text><text class="txt muted small" x="740" y="34">总览　日历　会话　待处理</text>
+<rect class="btn2" x="38" y="76" width="210" height="42" rx="8"/><text class="txt small" x="58" y="102">2026-09　‹　　›</text><rect class="btn2" x="690" y="76" width="202" height="42" rx="8"/><text class="txt small" x="708" y="102">显示：Tokens ▾</text>
+<text class="txt blueT label" x="892" y="146" text-anchor="end">2.46B tokens · 部分覆盖</text>
+<g transform="translate(38 160)"><text class="txt muted tiny" x="42" y="0">日</text><text class="txt muted tiny" x="166" y="0">一</text><text class="txt muted tiny" x="290" y="0">二</text><text class="txt muted tiny" x="414" y="0">三</text><text class="txt muted tiny" x="538" y="0">四</text><text class="txt muted tiny" x="662" y="0">五</text><text class="txt muted tiny" x="786" y="0">六</text>
+<rect class="soft" x="0" y="18" width="116" height="70" rx="7"/><text class="txt tiny" x="10" y="38">1</text><text class="txt blueT label" x="10" y="67">5.0M</text>
+<rect class="soft" x="124" y="18" width="116" height="70" rx="7"/><text class="txt tiny" x="134" y="38">2</text><text class="txt blueT label" x="134" y="67">84.2M</text>
+<rect class="soft" x="248" y="18" width="116" height="70" rx="7"/><text class="txt tiny" x="258" y="38">3</text><text class="txt blueT label" x="258" y="67">51.0M</text>
+<rect class="soft" x="372" y="18" width="116" height="70" rx="7"/><text class="txt tiny" x="382" y="38">4</text><text class="txt blueT label" x="382" y="67">181.4M</text>
+<rect class="soft" x="496" y="18" width="116" height="70" rx="7"/><text class="txt tiny" x="506" y="38">5</text><text class="txt blueT label" x="506" y="67">5.4M</text>
+<rect class="soft" x="620" y="18" width="116" height="70" rx="7"/><text class="txt tiny" x="630" y="38">6</text><text class="txt blueT label" x="630" y="67">109.3M</text>
+<rect class="soft" x="744" y="18" width="116" height="70" rx="7"/><text class="txt tiny" x="754" y="38">7</text><text class="txt blueT label" x="754" y="67">277.5M</text>
+<rect class="soft" x="0" y="96" width="116" height="70" rx="7"/><text class="txt tiny" x="10" y="116">8</text><text class="txt blueT label" x="10" y="145">916.7M</text>
+<rect class="amber" x="124" y="96" width="116" height="70" rx="7"/><text class="txt tiny" x="134" y="116">9</text><text class="txt amberT label" x="134" y="145">529.0M</text>
+<rect class="blue" x="248" y="96" width="116" height="70" rx="7"/><text class="txt tiny" x="258" y="116">10 · 今天</text><text class="txt blueT label" x="258" y="145">289.8M</text>
+<rect class="soft" x="372" y="96" width="116" height="70" rx="7"/><text class="txt muted tiny" x="382" y="116">11 · 未来</text>
+<rect class="soft" x="496" y="96" width="116" height="70" rx="7"/><text class="txt muted tiny" x="506" y="116">12 · 未来</text>
+<rect class="soft" x="620" y="96" width="116" height="70" rx="7"/><text class="txt muted tiny" x="630" y="116">13</text>
+<rect class="soft" x="744" y="96" width="116" height="70" rx="7"/><text class="txt muted tiny" x="754" y="116">14</text></g>
+<rect class="soft" x="38" y="350" width="854" height="82" rx="9"/><text class="txt small" x="58" y="380">图例：有记录　0 tokens　无记录　未计价　导入未完成　未来日期</text><text class="txt muted small" x="58" y="409">键盘可聚焦每一天；Enter 打开小时详情；提供同数据表格替代。</text></g>
+
+<!-- Hour drilldown -->
+<g transform="translate(1022 120)"><rect class="board" width="930" height="470" rx="16"/><rect class="bar" width="930" height="54" rx="16"/><rect class="bar" y="35" width="930" height="19"/><text class="txt label" x="32" y="34">09月10日 · 按小时</text><text class="txt muted small" x="690" y="34">时区：Asia/Shanghai</text><text class="txt blueT small" x="850" y="34">返回日历</text>
+<rect class="blue" x="38" y="76" width="854" height="55" rx="9"/><text class="txt blueT body" x="58" y="109">289.8M tokens · 名义成本 ≈ ¥165.25 · 12 个会话</text>
+<text class="txt muted small" x="38" y="160">小时图 · 空格表示该小时没有已测量数据，不是 0</text>
+<line class="grid" x1="52" y1="330" x2="880" y2="330"/><g fill="#7b8592"><rect x="58" y="290" width="24" height="40"/><rect x="92" y="330" width="24" height="0"/><rect x="126" y="315" width="24" height="15"/><rect x="160" y="278" width="24" height="52"/><rect x="194" y="210" width="24" height="120"/><rect x="228" y="330" width="24" height="0"/><rect x="262" y="317" width="24" height="13"/><rect x="296" y="310" width="24" height="20"/><rect x="330" y="318" width="24" height="12"/><rect x="364" y="288" width="24" height="42"/><rect x="398" y="314" width="24" height="16"/><rect x="432" y="310" width="24" height="20"/><rect x="466" y="326" width="24" height="4"/><rect x="500" y="324" width="24" height="6"/><rect x="534" y="240" width="24" height="90"/></g>
+<text class="txt tiny muted" x="58" y="350">00</text><text class="txt tiny muted" x="194" y="350">04</text><text class="txt tiny muted" x="330" y="350">08</text><text class="txt tiny muted" x="466" y="350">12</text><text class="txt tiny muted" x="534" y="350">14</text>
+<rect class="amber" x="38" y="375" width="854" height="58" rx="9"/><text class="txt amberT small" x="58" y="409">01:00、05:00 无小时证据；系统不会把日总量平均分摊。　查看 14:00 的 3 个会话 →</text></g>
+
+<!-- Session list -->
+<g transform="translate(48 630)"><rect class="board" width="930" height="470" rx="16"/><rect class="bar" width="930" height="54" rx="16"/><rect class="bar" y="35" width="930" height="19"/><text class="txt label" x="32" y="34">会话</text><text class="txt muted small" x="716" y="34">2026-09 · 49 个会话</text>
+<rect class="btn2" x="38" y="78" width="230" height="42" rx="8"/><text class="txt muted small" x="56" y="104">搜索标题或项目…</text><rect class="btn2" x="284" y="78" width="130" height="42" rx="8"/><text class="txt small" x="304" y="104">宿主：全部 ▾</text><rect class="btn2" x="430" y="78" width="160" height="42" rx="8"/><text class="txt small" x="450" y="104">计费：待确认 ▾</text>
+<text class="txt tiny muted" x="38" y="154">标题 / 项目</text><text class="txt tiny muted" x="360" y="154">宿主 · 模型</text><text class="txt tiny muted" x="620" y="154">Tokens</text><text class="txt tiny muted" x="740" y="154">费用状态</text>
+<line class="grid" x1="38" y1="166" x2="892" y2="166"/>
+<text class="txt body" x="38" y="198">修复 provider 归因</text><text class="txt small muted" x="360" y="198">Codex · GPT-5.x</text><text class="txt body" x="620" y="198">156.3M</text><text class="txt amberT small" x="740" y="198">≈ ¥X · 待确认</text>
+<line class="grid" x1="38" y1="216" x2="892" y2="216"/><text class="txt body" x="38" y="248">agent-vitals v1 PRD</text><text class="txt small muted" x="360" y="248">Claude Code · Sonnet</text><text class="txt body" x="620" y="248">141.7M</text><text class="txt amberT small" x="740" y="248">缺历史价</text>
+<line class="grid" x1="38" y1="266" x2="892" y2="266"/><text class="txt body" x="38" y="298">Codex 会话 · 09/10 14:22</text><text class="txt small muted" x="360" y="298">Codex · GPT-5.x</text><text class="txt body" x="620" y="298">114.4M</text><text class="txt blueT small" x="740" y="298">订阅覆盖</text>
+<line class="grid" x1="38" y1="316" x2="892" y2="316"/><text class="txt body" x="38" y="348">数据层测试</text><text class="txt small muted" x="360" y="348">DSH · MiniMax</text><text class="txt body" x="620" y="348">86.4M</text><text class="txt small" x="740" y="348">按量估算</text>
+<text class="txt muted small" x="38" y="420">排序：用量从高到低　·　返回时保留筛选和滚动位置　·　ID 仅作辅助</text></g>
+
+<!-- Session detail -->
+<g transform="translate(1022 630)"><rect class="board" width="930" height="470" rx="16"/><rect class="bar" width="930" height="54" rx="16"/><rect class="bar" y="35" width="930" height="19"/><text class="txt label" x="32" y="34">会话详情</text><text class="txt blueT small" x="825" y="34">返回列表</text>
+<text class="txt h2" x="38" y="95">修复 provider 归因</text><text class="txt muted small" x="38" y="120">Codex · 09/09 10:37—18:22 · 本地标题已隐藏路径</text>
+<rect class="card" x="38" y="142" width="260" height="102" rx="10"/><text class="txt muted small" x="58" y="170">Tokens</text><text class="txt num" x="58" y="210">156.3M</text><text class="txt muted tiny" x="58" y="231">输入 / 缓存 / 输出可展开</text>
+<rect class="card" x="316" y="142" width="260" height="102" rx="10"/><text class="txt muted small" x="336" y="170">名义成本</text><text class="txt num" x="336" y="210">≈ ¥X</text><text class="txt amberT tiny" x="336" y="231">路由待确认</text>
+<rect class="card" x="594" y="142" width="298" height="102" rx="10"/><text class="txt muted small" x="614" y="170">价格依据</text><text class="txt body" x="614" y="206">原厂公开价卡</text><text class="txt muted tiny" x="614" y="231">价格日期与假设可查看</text>
+<rect class="amber" x="38" y="267" width="854" height="68" rx="9"/><text class="txt amberT body" x="58" y="297">此会话使用 custom route；当前按量估算，不自动归入官方订阅。</text><text class="txt blueT small" x="760" y="319">确认此会话 →</text>
+<text class="txt label" x="38" y="372">会话轨迹概览</text><line class="line" x1="62" y1="414" x2="840" y2="414"/><circle cx="120" cy="414" r="9" fill="#7e8794"/><circle cx="310" cy="414" r="9" fill="#7e8794"/><circle cx="515" cy="414" r="9" fill="#a96d00"/><circle cx="735" cy="414" r="9" fill="#7e8794"/><text class="txt muted tiny" x="92" y="442">Turn 0</text><text class="txt muted tiny" x="488" y="442">异常节点</text><text class="txt muted tiny" x="710" y="442">Turn 68</text></g>
+</svg>

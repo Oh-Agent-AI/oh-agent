@@ -1,0 +1,12 @@
+.session-trace-scroll { overflow-x: auto; }
+.session-trace-metric { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.session-trace-chart { display: block; width: 100%; min-width: 480px; height: auto; }
+.session-trace-line { fill: none; stroke: #07856e; stroke-width: 2; }
+.session-trace-area { fill: #07856e; opacity: .08; }
+.session-trace-bar { fill: #07856e; }
+.session-trace-grid { stroke: #dce3e8; stroke-width: 1; }
+.session-trace-axis { fill: #627083; font: 12px -apple-system, sans-serif; }
+.session-trace-event-tick { stroke: #8394a4; opacity: .3; }
+.session-trace-event-dot { fill: #6d8298; }
+.session-trace-event[data-severity="critical"] .session-trace-event-dot { fill: #c44040; }
+.session-trace-empty { padding: 24px 0; color: #627083; }

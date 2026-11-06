@@ -1,0 +1,46 @@
+name: Build docs
+
+on:
+  pull_request:
+    paths:
+      - 'website/docs/**'
+      - '.github/workflows/docs.yml'
+  push:
+    branches: [main, dev]
+    paths:
+      - 'website/docs/**'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # Starlight lastUpdated / sitemap lastmod fall back to git history
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'   # Astro 7 requires Node >= 22.22
+          cache: 'npm'
+          cache-dependency-path: website/docs/package-lock.json
+
+      - name: Install dependencies
+        working-directory: website/docs
+        run: npm ci
+
+      - name: Build documentation site (production: drafts excluded)
+        working-directory: website/docs
+        run: npm run build
+
+      - name: Check build output
+        working-directory: website/docs
+        run: |
+          echo "Pages:"; find dist/ -name "index.html" | sort
+          ls -la dist/sitemap*
+          # No placeholder text may ship on a published page.
+          if grep -rIl -E 'TBD|待确认|PLACEHOLDER|/releases/latest' dist --include='*.html' --include='*.txt' | grep -v pagefind; then
+            echo "Placeholder or /releases/latest found in published docs" >&2; exit 1
+          fi

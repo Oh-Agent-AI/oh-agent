@@ -1,0 +1,118 @@
+{
+  "sourceCommit": "744f926a",
+  "sourceFile": "apps/agent-city/ui/src/engine/systems/roadSurfaceSystem.ts",
+  "precision": "Float32 attributes / Uint32 indices",
+  "fixtures": {
+    "empty": "f63626a3d18b001b1994e47287dd39790f43e3dd896e1aec20865e766060417c",
+    "straight": "713dda6d8d877f3e0381ae50c2456a452dd1612f97540051f095f76a78ca7095",
+    "bend": "29917d6a974a152b79a53c2fea178afdb33845db283239afe5f7ee907499936f",
+    "tee": "43d8f92c08f0f75e9187bdab5691a34219110039aba1e5395942565f23713a36",
+    "skew": "d72e2ed4bef71932a8e807e0834c6d79a3d7d3b3f75c205a4f4194fc3fca469c",
+    "width-transition": "1b4b1f9dbbbc652c092f893e9816df23a9c60aa3c21656bb8f57743adad61b3d",
+    "bridge-boundary": "e72e8365acd04f5abcf382c5681009db5ac91192886207adc848442d54fd87da",
+    "closed-loop": "49cf6de194efd444075a82fe092d155d51ea9bf37f7b5e4d76af1e2b90bce34b",
+    "wavy-tee": "41e23ed57d99890ffa7b703a8c54b3dc55c931a522b3400ded6ec71e84525c9a"
+  },
+  "generatedPlans": {
+    "1/1": "94285d5c39a9256aa34fa8fb75c4996c0f21adbe23fcb300f0d8b474e436f7a9",
+    "1/2": "aa13abde43a06eb13f789755681adaaba6af4f6057d37858795eb5ffaa61740f",
+    "1/3": "9b5a1960003c60824ae64876c260857f48bf2f5a97984c98c12d78dd89178d55",
+    "7/1": "0793611eb9d0a86d4ddf6541ad7ee4857ec222560ff52d02d9b986ab5113d3fb",
+    "7/2": "ccf0e3eb7a4b473b5132d778c52c3b76edc7170c6f9f45aebbabe53c8000db29",
+    "7/3": "dfff63c89667998aa0a813d3ac489ae432a146305e66515e3557b44523e674b3",
+    "42/1": "271a8e9074d092ab3e239e9b9bea6eaabf822ee2032105363b6af695c7b2f710",
+    "42/2": "953531f5b4ab40ed5319ada1177b6e97e0e5e1051abd5627ffcd86f2de97117a",
+    "42/3": "aecc3001d71afdb8f77926317895dc0ddc048dc797830964a6f4613eea7be903",
+    "2026/1": "677e5541a3121856589e13e1597f66e9d93541badad1dd89bbdb31b1c68c29d4",
+    "2026/2": "052a821884cd965e9de5d883c6b2c6435874237756e635d4315399a8dc133ccb",
+    "2026/3": "4ef4053d4ffc98205181ae49d0ab0256a0ee895a21300625f7dcdee38b0a6d6b",
+    "65537/1": "0259942eaffb8b673d5ad0864dbf295024d65c30b7fb73051a86a88185b4ac43",
+    "65537/2": "9d4b8d832b1566ab6cf04c5f294b31f9bf9f95720d1c7b85c09dd53c8aec04b0",
+    "65537/3": "de1174fe4738de034eae38475f52cd5aa06f1327d2d40f0597b6b54565570bd2"
+  },
+  "corrected": {
+    "revision": "terrain-conforming-v1",
+    "reason": "Exact terrain fit: strips/sectors deviating > ROAD_SURFACE_LIFT/2 from the rendered terrain are split along the terrain triangulation (pre-refactor ribbons sank up to 0.25 below terrain; fans overlapped ribbons with 0.30 height gaps). Closed loops weld at a mitred seam; narrowed miters at stubs and reflex-corner diagonals stop strip folds. Flat fixtures not listed here still equal the pre-refactor digests above. Fans that are not star-shaped from their hub (offset sidewalk arcs) are ear-clipped; a self-intersecting closed taper outline uses its convex hull.",
+    "fixtures": {
+      "closed-loop": "a399ae1cead2aa69050b9dbc6971a14a6f06307ef62d52e36df1b73323fb7046",
+      "wavy-tee": "36cc302e6567366ceb98610dc9bba846bc7d20b2dab97a846405f3418bd70da8"
+    },
+    "generatedPlans": {
+      "1/1": "12e716665d0af5a4834da13d38575cb959e3c12480cb79ce157791369c0725c6",
+      "1/2": "e46b7bdc78a1d2c86522a7ea5d77ca69a067b23e1bb2fcf12153cb9ea86898f5",
+      "1/3": "a87026be526b1c817b535157329ecc0e237313cc0a9928db12f8c828c6de8312",
+      "7/1": "b2c68882087241b5836735bdbaee23a7789e477f5c6e46ed070aa05ad2316d67",
+      "7/2": "25b5b6de88575e1149401563a771440195067869cdfceb4fcfc5854d56de9ab5",
+      "7/3": "dd0d24740d4c515807dff9956779e4a894dd19d627948e12d150a2822ba092ff",
+      "42/1": "9b3fc8399d5ab3f3b7939e43606861903815d8da66182fdf2f50f9354bbc0d9d",
+      "42/2": "0a2e90dff9477c6bf0e4fe71290ceba7eddd8fb07b0535a89cac04b4e9354732",
+      "42/3": "6c03fd86c5d29256a5e61d251d766393dd9279dc656877aa8802361d1725c5a0",
+      "2026/1": "9ff9788ba09b5a5389fc285d0d2a3ff23c7023cfe7385808bd10634438ff75b0",
+      "2026/2": "038707a62fb09cdd72d21cbc35cf5e81d9b49f068f3dbab49eb088e43b16814f",
+      "2026/3": "2f770f936f2bacb31acd4397be774c81c4f50aba632116ca15d804efe1cd084d",
+      "65537/1": "7c6b0d7550e067c0e9b867a47af95374aa3c23ed814d74df79d55755f32262b9",
+      "65537/2": "8effc1347b80562dae21c541551b6beed8b315d8d87881f526513a81d88d935a",
+      "65537/3": "100832b88ac1ea5e91fb842730624bc8e3cffa86fb8d84229859a23983e71ffc"
+    }
+  },
+  "terrainResolution": {
+    "geometryVersion": 8,
+    "segments": 384,
+    "reason": "Actual terrain resolution increases from 192 to 384 segments; original analytic height field and road topology unchanged. Road compiler and terrain-dependent structures use the same refined rendered triangulation. Historical baselines retained; flat fixture hashes, curbs and cul-de-sac geometry unchanged.",
+    "fixtures": {
+      "wavy-tee": "fc1688881b64d23766d7c6b8cfbc38e8f2c305b00c0abedd05419a7464451cfd"
+    },
+    "generatedPlans": {
+      "1/1": "4a752e043ee0dc579cb470868fe440f56ddefbdd768f23b5381914f0eb04123b",
+      "1/2": "23525c855230be6be9a1187f00360f502d904d2ba3bb72537a358c6e19e39396",
+      "1/3": "e44d15d919438428723c8c3eb0e9156337bed4a1f58f48f269b85abed49a4454",
+      "7/1": "191f6682dc8b5d6d4851801e2e0772dd0441617365ea7d24b34b18d2d8a87c4c",
+      "7/2": "be22ca82d74e1ed58d541f6739a768ebf9d4db03c134a0f6fe832747e7a6bc37",
+      "7/3": "9a2d9ccf977faa2dbae9f7c1b60821b6e035e0c39c69fb0075ddd3289951ce8c",
+      "42/1": "56250458854c48d61c6a6a9df1233bc439479abe8239b2ad7a8c9162f0ce9a3a",
+      "42/2": "20ecc4116c8d8ce28e730c40378efc1c868f67a7a27d3aa7491cd6101d3c1a79",
+      "42/3": "11298e55d042ef832f362b2fb6cdde82ebf001e8dab2f352bd4222c78428b3b0",
+      "2026/1": "134be680c437e622a9c91358f88abd53cef6c776004485c6830c977d9d70a3f7",
+      "2026/2": "3645cdffb117f8cbf744e41a82be59e19f01c6cf67b970a93563b7a61567aa09",
+      "2026/3": "3029df0238f911ec47094aae4976327e2b29c96c636bccfbfc1b05bc88a628df",
+      "65537/1": "7c551793e2d48ecb0bde763ecf777bbcaf58e1e466b0f58c1edbd877d423f672",
+      "65537/2": "854bb0a3f0447fae6fce5b643eb7da2365b02b2189de70b73c7d3f1c1e279b0f",
+      "65537/3": "003dd9952db385c39a263e86f652c8b0a3c7951cc1016abf22a94170f82216b5"
+    }
+  },
+  "sidewalkStandard": {
+    "sourceCommit": "48381b955d9625d59d0d0fb02240ea5fef927f42",
+    "sidewalk": 1.8,
+    "terrainSegments": 384,
+    "generatorVersion": 6,
+    "reason": "The intentional sidewalk widening in 48381b95 (merged via 8c647cf2) changed only layer 0 of the nine synthetic fixtures. Recompiling with 1.2 reproduces every historical fixture digest exactly. Road carriageway/junction layers remain byte-identical. Generated plans are pinned separately to generator v6; historical v1 plan digests above remain unchanged.",
+    "fixtures": {
+      "empty": "f63626a3d18b001b1994e47287dd39790f43e3dd896e1aec20865e766060417c",
+      "straight": "5df8cb02b6d49c75aa32e331f09d9ebff5741213d6f89bca993540071e70714f",
+      "bend": "4d95644dddf7cb96dd201f8b8432e2f8539e224c9667ca96020cbd1117b5cc83",
+      "tee": "f53e9fcab2fd9a301a6c1b6738333b5347cf062cab98777c35be3682a66d38d6",
+      "skew": "4cba26d03b402aad3d20fd2fff5ff4d5a28433a1e450fd4f5567b0880f1747ef",
+      "width-transition": "08b096f3c7ec4f46270f892c3a84e8f19cdfe77ea8685e926870f94178f9a67b",
+      "bridge-boundary": "4101678909885477b6c828bd08676cfb8c0d0745936facc7a84580e90f397104",
+      "closed-loop": "338c339d6c4f784b64615510c761157870423e5f321f9c67aa2db50305ba06c7",
+      "wavy-tee": "0a7d17e120f311c341cc68348f00d718ab2e01c93b0309795b303a40bdce99cd"
+    },
+    "generatedPlans": {
+      "1/1": "a4b1aac1bfbbbcaebd81940cdf7342fc7d0ee995d1e683e1210e87e37c0a6259",
+      "1/2": "a4b1aac1bfbbbcaebd81940cdf7342fc7d0ee995d1e683e1210e87e37c0a6259",
+      "1/3": "c3edf85c32d8370fec6231d2f8603fdcda1de4f1aaf2327e7c1504731c3ded8b",
+      "7/1": "8f22b53eed6e34a5ab56f1ce2d0026ca0327422c10a2e973a3bf93cc820f1460",
+      "7/2": "9c609e5614508ed3e8b2e4dac2b3e75de836687c1df702991d739c9577ceac99",
+      "7/3": "794baff953d2f1b99e45ffe512018ffd504c54ac54bd7480e8dfee00ff8a45c8",
+      "42/1": "0cc0f89770b51a3920adf969229ec74c9c4bacbccf4a7fd5abcef7e4ebebf60f",
+      "42/2": "be7af3b5f8fc7d6d4edbb9cefc4719e8a7e33756531d63334d6fcc275d5156df",
+      "42/3": "bfd7138eec948d4a643bb4998f39615b4627e46e462fce1b315fa9d06b3695ca",
+      "2026/1": "85192bee56315d10088c1cea5c2a4cc3ab85a780ab3c26bb99c7f6a627166976",
+      "2026/2": "a030c1a75ee885740955ef430439ba0d548a0b8709f18e606e6427932da1c13b",
+      "2026/3": "af31024d6efcb8711a1c97ff3f30eddab9afbbb2b85e8701ea10a57f33eea370",
+      "65537/1": "ca7165fdd534acdc87f2e705beb69912850f4f7609e1ecb1e36ddc72a33809f6",
+      "65537/2": "6f04e68faa3931744dc8e38b53b846e672d2b40d199bd700386df1b81c84805f",
+      "65537/3": "d59bf6a9f8fef3a33b2fa73bdbc6453717ba2b285dc38c5233e7fd54fb19f414"
+    }
+  }
+}

@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Vitals — Swept Crest Final Identity</title>
+  <style>
+    :root { --navy:#10182b; --slate:#223047; --paper:#f4f0e8; --ink:#172033; --muted:#697386; --coral:#ff6b6f; --mint:#73e0c1; }
+    * { box-sizing:border-box; }
+    body { margin:0; color:var(--ink); background:var(--paper); font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; -webkit-font-smoothing:antialiased; }
+    header, main, footer { width:min(1180px,calc(100% - 40px)); margin:0 auto; }
+    .hero-wrap { color:white; background:var(--navy); }
+    header { min-height:600px; display:grid; grid-template-columns:1.1fr .9fr; gap:70px; align-items:center; padding:72px 0; }
+    .eyebrow { color:var(--mint); font-size:12px; font-weight:800; letter-spacing:.14em; text-transform:uppercase; }
+    h1 { margin:16px 0 18px; font-size:clamp(52px,8vw,92px); line-height:.92; letter-spacing:-.065em; }
+    header p { max-width:650px; margin:0; color:#b7c0d1; font-size:18px; line-height:1.72; }
+    .hero-icon { display:grid; place-items:center; }
+    .hero-icon img { width:min(100%,440px); filter:drop-shadow(0 28px 50px rgba(0,0,0,.32)); }
+    main { padding:62px 0 78px; }
+    .section-head { display:flex; align-items:end; justify-content:space-between; gap:30px; margin-bottom:24px; }
+    h2 { margin:0; font-size:32px; letter-spacing:-.04em; }
+    .section-head p { max-width:590px; margin:0; color:var(--muted); line-height:1.65; }
+    .scenes { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; }
+    .scene { position:relative; min-height:390px; overflow:hidden; display:grid; place-items:center; border-radius:24px; }
+    .scene img { position:relative; z-index:2; width:180px; filter:drop-shadow(0 20px 32px rgba(16,24,43,.18)); }
+    .scene span { position:absolute; left:22px; bottom:20px; z-index:3; font-size:11px; font-weight:800; letter-spacing:.13em; text-transform:uppercase; }
+    .ui { background:linear-gradient(145deg,#e9eef5,#cfd7e4); }
+    .ui:before { content:""; position:absolute; inset:48px; border:1px solid rgba(255,255,255,.75); border-radius:30px; background:rgba(255,255,255,.3); box-shadow:inset 0 1px 0 white; backdrop-filter:blur(20px); }
+    .frosted { color:#dce5f2; background:radial-gradient(circle at 72% 24%,#40506a 0,transparent 31%),linear-gradient(145deg,#1c2638,#080d17); }
+    .frosted:after { content:""; position:absolute; inset:0; opacity:.16; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='90' height='90'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.2'/%3E%3C/svg%3E"); }
+    .clinical { background:linear-gradient(#fff,#edf1f6); }
+    .clinical:before { content:""; position:absolute; inset:0; opacity:.55; background-image:linear-gradient(rgba(23,32,51,.06) 1px,transparent 1px),linear-gradient(90deg,rgba(23,32,51,.06) 1px,transparent 1px); background-size:32px 32px; }
+    .swiss { color:white; background:var(--coral); }
+    .swiss img { filter:none; }
+    .assets { display:grid; grid-template-columns:1fr 1fr; gap:18px; margin-top:52px; }
+    .asset { padding:26px; border:1px solid rgba(23,32,51,.13); border-radius:20px; background:white; }
+    .asset h3 { margin:0 0 9px; font-size:19px; }
+    .asset p { min-height:44px; margin:0; color:var(--muted); font-size:14px; line-height:1.6; }
+    .links { display:flex; flex-wrap:wrap; gap:8px; margin-top:18px; }
+    .links a { padding:8px 11px; color:var(--ink); background:#f1f3f6; border-radius:8px; font-size:12px; font-weight:800; text-decoration:none; }
+    .links a:hover { color:white; background:var(--ink); }
+    .palette { display:flex; gap:10px; margin-top:28px; }
+    .swatch { width:64px; height:64px; padding:8px; display:flex; align-items:end; color:white; border-radius:13px; font:700 8px ui-monospace,SFMono-Regular,Menlo,monospace; }
+    footer { padding:26px 0 48px; color:var(--muted); border-top:1px solid rgba(23,32,51,.13); font-size:13px; }
+    @media (max-width:780px) { header{grid-template-columns:1fr;min-height:0}.hero-icon{order:-1}.hero-icon img{width:240px}.scenes,.assets{grid-template-columns:1fr}.section-head{display:block}.section-head p{margin-top:12px} }
+  </style>
+</head>
+<body>
+  <div class="hero-wrap"><header>
+    <div><div class="eyebrow">Agent Vitals · Final identity</div><h1>Swept<br>Crest.</h1><p>一只持续检查 Agent 运行状态的啄木鸟。后掠冠羽形成记忆点，凿形鸟喙强调精确诊断，贯穿轮廓的负空间表达持续扫描：发现问题，但不制造噪音。</p><div class="palette"><div class="swatch" style="background:#10182b">#10182B</div><div class="swatch" style="background:#73e0c1;color:#17342d">#73E0C1</div><div class="swatch" style="background:#ff6b6f">#FF6B6F</div></div></div>
+    <div class="hero-icon"><img src="png/agent-vitals-appicon-1024.png" alt="Agent Vitals Swept Crest App Icon"></div>
+  </header></div>
+
+  <main>
+    <div class="section-head"><h2>四种品牌场景</h2><p>选择 UI Container、Frosted Horizon、Clinical Studio 与 Swiss Flat：分别验证产品原生感、macOS 质感、几何精度与纯色条件下的识别能力。</p></div>
+    <section class="scenes">
+      <div class="scene ui"><img src="png/agent-vitals-appicon-1024.png" alt="UI Container preview"><span>01 · UI Container</span></div>
+      <div class="scene frosted"><img src="png/agent-vitals-appicon-1024.png" alt="Frosted Horizon preview"><span>02 · Frosted Horizon</span></div>
+      <div class="scene clinical"><img src="png/agent-vitals-appicon-1024.png" alt="Clinical Studio preview"><span>03 · Clinical Studio</span></div>
+      <div class="scene swiss"><img src="png/agent-vitals-appicon-1024.png" alt="Swiss Flat preview"><span>04 · Swiss Flat</span></div>
+    </section>
+
+    <section class="assets">
+      <div class="asset"><h3>App Icon</h3><p>用于 Dock、Finder、安装包和应用设置；包含完整 macOS iconset 与 ICNS。</p><div class="links"><a href="agent-vitals-appicon.svg" download>SVG</a><a href="png/agent-vitals-appicon-1024.png" download>PNG 1024</a><a href="agent-vitals-appicon.icns" download>ICNS</a></div></div>
+      <div class="asset"><h3>Menu Bar Template</h3><p>单色透明模板，由 macOS 自动适配明暗、选中和辅助功能状态。</p><div class="links"><a href="agent-vitals-menubar-template.svg" download>SVG</a><a href="menubar/agent-vitals-menubarTemplate.png" download>18px</a><a href="menubar/agent-vitals-menubarTemplate@2x.png" download>36px</a></div></div>
+    </section>
+  </main>
+  <footer>Agent Vitals · Swept Crest identity system · 2026</footer>
+</body>
+</html>

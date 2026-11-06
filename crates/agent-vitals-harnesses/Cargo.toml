@@ -1,0 +1,37 @@
+[package]
+name = "agent-vitals-harnesses"
+version = "1.4.0"
+edition = "2021"
+rust-version = "1.74"
+description = "Per-harness wire adapters and I/O sources for Agent Vitals"
+repository = "https://github.com/Oh-Agent-AI/oh-agent"
+license = "MIT"
+
+[lib]
+name = "agent_vitals_harnesses"
+path = "src/lib.rs"
+
+[dependencies]
+agent-vitals-domain = { path = "../agent-vitals-domain" }
+agent-vitals-provider = { path = "../agent-vitals-provider" }
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+vitals-core = { path = "../vitals-core" }
+# v0.8 Phase D4/D5：宿主 I/O 读取器依赖——**只在 `sources` feature 下链入**
+# （`sessions/` / `skills/` 纯子树编不进它们，wasm `default-features = false` 也不拉）。
+# `ruzstd`：DSH `.zstd` 与 Codex `.jsonl.zst` 多帧解压（纯 Rust 零 C 依赖）。
+# `walkdir`：Claude/Codex 会话文件递归枚举。
+# `rusqlite`（`bundled` 自带 sqlite3.c）：WorkBuddy `~/.workbuddy/workbuddy.db` 只读。
+ruzstd = { version = "0.8", optional = true }
+walkdir = { version = "2", optional = true }
+rusqlite = { version = "0.31", features = ["bundled"], optional = true }
+# W3：Codex 额度重置时间的人读文本（`codex/sources/cost.rs`）要做时区换算；时区由
+# 调用方传入，本 crate 不读系统时区。只在 `sources` 下链入，wasm 不拉。
+jiff = { version = "0.2", optional = true }
+
+[features]
+# 宿主 I/O 面（`harnesses/<h>/sources/`）：文件定位、读取、解压、sqlite。二进制 /
+# runtime 开它；wasm 与纯构建关它。误把需要 gated dep 的 I/O 写进 `sessions/` →
+# 纯构建编译失败（§4.3 第 1 条）。
+sources = ["dep:ruzstd", "dep:walkdir", "dep:rusqlite", "dep:jiff"]

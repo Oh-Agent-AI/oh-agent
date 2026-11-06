@@ -1,0 +1,4 @@
+{"type":"user","uuid":"m1","timestamp":"2026-08-20T14:27:00Z","cwd":"/repo","message":{"id":"m1","model":"claude-sonnet-4-5","content":"清理临时目录"}}
+{"type":"assistant","uuid":"m2","timestamp":"2026-08-20T14:27:05Z","cwd":"/repo","message":{"id":"m2","model":"claude-sonnet-4-5","content":[{"type":"tool_use","id":"call1","name":"Bash","input":{"command":"rm -rf /tmp/x"}}],"usage":{"input_tokens":1,"output_tokens":1}}}
+{"type":"user","uuid":"m3","timestamp":"2026-08-20T14:27:08Z","cwd":"/repo","message":{"id":"m3","content":[{"type":"tool_result","tool_use_id":"call1","content":"done","is_error":false}]}}
+{"type":"ai-title","uuid":"t1","timestamp":"2026-08-20T14:30:00Z","cwd":"/repo","aiTitle":"危险命令会话"}

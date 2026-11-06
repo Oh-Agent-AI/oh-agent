@@ -1,0 +1,19 @@
+{
+  "_doc": "v0.9 Stage 0.7 Claude Code 最小接入 fixture：state/claude-ledger.json 的 days 里一个账日的真实形状——flat 直图 {模型: 4 型 snake tokens}（input_tokens/cache_read_input_tokens/cache_creation_input_tokens/output_tokens），claude_sync 折叠产出、domain::cost::claude_day_cost 计价（CNY 卡 → MeteredEstimate、USD 目录卡 → ApiEquivalent）。'deepseek-v4-flash' 命中 pricing.json 顶层官方 CNY 卡；'<synthetic>' 是 cost-state 的 unknown 占位，token 全零：计价必须无视它，既不报错也不进 unpriced。键 '1970-01-01' 是占位日，测试写入时替换。",
+  "days": {
+    "1970-01-01": {
+      "deepseek-v4-flash": {
+        "input_tokens": 1000000,
+        "cache_read_input_tokens": 250000,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 100000
+      },
+      "<synthetic>": {
+        "input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 0
+      }
+    }
+  }
+}

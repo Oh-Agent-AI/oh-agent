@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0a1111">
+  <title>Audit the bots you already have before you hire another — Oh Agent</title>
+  <meta name="description" content="A report-only fleet audit: name, job, and never-verb for every bot. Flag overlaps, leftover logins, and ownerless send plugins before you hire another specialist.">
+  <link rel="canonical" href="https://ohagent.ai/blog/fleet-auditor-before-hire/">
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="https://ohagent.ai/blog/fleet-auditor-before-hire/">
+  <meta property="og:title" content="Audit the bots you already have before you hire another — Oh Agent">
+  <meta property="og:description" content="A report-only fleet audit: name, job, and never-verb for every bot. Flag overlaps before you hire another specialist.">
+  <meta property="og:image" content="https://ohagent.ai/assets/oh-agent-preview-beta3.jpg">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Agent City: a 3D city built from synthetic agent sessions, with the headline Your agents work. Your world grows.">
+  <meta property="article:published_time" content="2026-10-23">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Audit the bots you already have before you hire another — Oh Agent">
+  <meta name="twitter:description" content="A report-only fleet audit: name, job, and never-verb for every bot. Flag overlaps before you hire another specialist.">
+  <meta name="twitter:image" content="https://ohagent.ai/assets/oh-agent-preview-beta3.jpg">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    "headline": "Audit the bots you already have before you hire another",
+    "datePublished": "2026-10-23",
+    "dateModified": "2026-10-23",
+    "inLanguage": "en",
+    "author": { "@type": "Organization", "name": "Oh Agent", "url": "https://ohagent.ai/" },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Oh Agent",
+      "url": "https://ohagent.ai/",
+      "logo": { "@type": "ImageObject", "url": "https://ohagent.ai/assets/app-icon.png" }
+    },
+    "image": "https://ohagent.ai/assets/oh-agent-preview-beta3.jpg",
+    "mainEntityOfPage": "https://ohagent.ai/blog/fleet-auditor-before-hire/",
+    "description": "A report-only fleet audit: name, job, and never-verb for every bot. Flag overlaps, leftover logins, and ownerless send plugins before you hire another specialist."
+  }
+  </script>
+  <link rel="icon" href="/assets/app-icon.png">
+  <link rel="stylesheet" href="/styles.css?v=20261023-blog">
+</head>
+<body class="blog-page">
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header"><div class="shell nav">
+    <a class="brand" href="/"><img src="/assets/app-icon.png" width="30" height="30" alt=""><span>Oh Agent<small>Your agents, visualized</small></span></a>
+    <nav aria-label="Main navigation"><a href="/#city">Agent City</a><a href="/#play">Explore &amp; play</a><a href="/#insights">Insights</a><a href="/#privacy">Privacy</a><a href="/#faq">FAQ</a><a href="/blog/" aria-current="page">Blog</a><a href="/docs/">Docs</a><a href="https://github.com/Oh-Agent-AI/oh-agent" target="_blank" rel="noopener">GitHub ↗</a></nav>
+    <div class="nav-end"><a class="language" href="/zh/" lang="zh-CN" hreflang="zh-CN">中文</a><a class="button small" href="/#download">Download</a></div>
+  </div></header>
+  <main id="main" class="blog-main shell">
+    <article class="blog-article">
+      <p class="blog-crumbs"><a href="/blog/">Blog</a> · 23 October 2026</p>
+      <h1 class="page-title">Audit the bots you already have before you hire another</h1>
+      <p class="blog-meta"><time datetime="2026-10-23">Published 23 October 2026</time><span>Oh Agent</span></p>
+      <div class="blog-tags"><span>fleet</span><span>ops</span><span>Agent City</span><span>multi-agent</span></div>
+      <p>Nobody plans a nine-bot fleet. You ship one that works, add a second for the job the first kept drifting into, then three more after a Sunday thread. Six weeks later the roster is oral history, two bots write the same artifact, and a login left by a deleted bot still sits in the shared cookie jar.</p>
+      <p>We run Oh Agent with a small crew (research + City implementation). The pattern that paid this week was not another specialist—it was a <strong>report-only Fleet Auditor</strong>.</p>
+
+      <h2>The trick</h2>
+      <p>Before you hire, write three columns for every bot: <strong>name</strong>, <strong>job in one sentence</strong>, and the <strong>verb it must never do</strong>. “Be careful” is not a boundary. “Never send” is.</p>
+      <div class="blog-table-wrap">
+        <table>
+          <thead>
+            <tr><th>Column</th><th>What goes there</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><strong>Name</strong></td><td>The bot as it actually appears on the roster</td></tr>
+            <tr><td><strong>Job in one sentence</strong></td><td>The one job it is hired for—not a vibe, not a wishlist</td></tr>
+            <tr><td><strong>Never-verb</strong></td><td>The action it must not take. “Be careful” is not a verb.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Then flag only:</p>
+      <ol>
+        <li>Missing or attitude-shaped never-verbs</li>
+        <li>Two bots reading or writing the same source</li>
+        <li>Signed-in sessions on the shared computer that no current bot needs (deletion does <strong>not</strong> clear them)</li>
+        <li>Idle or duplicate routines; remember <strong>hidden ≠ paused</strong></li>
+        <li>Send / publish / pay plugins with no current owner</li>
+      </ol>
+      <p>The auditor files a keep / narrow / collapse / retire table. It never edits, pauses, deletes, or disconnects. You act by hand.</p>
+
+      <h2>Why it fits multi-agent products</h2>
+      <p>Shared-world products (Agent City style) already teach soft claims and versioned envelopes so agents do not thrash the same lot. The same discipline belongs at the <strong>ops</strong> layer: your human-facing bots need isolation too—especially on one shared machine with one cookie jar.</p>
+
+      <h2>What we did</h2>
+      <p>We ran a read-only pass on our own roster, wrote the findings down, and left every control untouched. Hiring is frozen until empty seats on a coverage map are real jobs with never-verbs—not vibes.</p>
+
+      <h2>Sources</h2>
+      <ul>
+        <li><a href="https://botskills.sh/blog/grok-bot-fleet-audit" target="_blank" rel="noopener">Audit the Grok Bots You Already Built Before You Hire More</a></li>
+        <li><a href="https://thedailybot.vercel.app/changelog/guide-fleet-cost-hygiene" target="_blank" rel="noopener">Keep a fleet of Grok Bots from leaking usage</a></li>
+        <li>Field reports on X: auditor bots catching duplicate replies, stale logs, and overlapping routines</li>
+      </ul>
+      <p>If your agents can already claim a building in a shared city, they can also claim a <strong>job</strong> on your roster. Write the never-verb first. Hire second.</p>
+      <p class="blog-signoff">Oh Agent turns your agent session history into a 3D city you can explore locally. Try the demo at <a href="/">ohagent.ai</a> · follow <a href="https://x.com/ohagentai" target="_blank" rel="noopener">@ohagentai</a>.</p>
+    </article>
+  </main>
+  <footer class="shell footer"><a class="brand" href="/"><img src="/assets/app-icon.png" width="26" height="26" alt=""><span>Oh Agent<small>Your agents, visualized</small></span></a><p>Your agents. Your stories. Your world.</p><nav class="footer-links" aria-label="Footer"><a href="/blog/">Blog</a><a href="/docs/">Docs</a><a href="https://github.com/Oh-Agent-AI/oh-agent" target="_blank" rel="noopener">GitHub ↗</a><a href="https://x.com/ohagentai" target="_blank" rel="noopener">X ↗</a></nav><span>© 2026 Oh Agent</span></footer>
+</body>
+</html>

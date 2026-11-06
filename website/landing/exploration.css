@@ -1,0 +1,74 @@
+/* A cinematic editorial preview, not a simulated gameplay interface. */
+.play-section { padding-block: 100px; }
+.play-heading { max-width: 850px; margin: 0 auto 42px; text-align: center; }
+.play-heading .eyebrow { justify-content: center; }
+.play-heading h2 { font-size: clamp(38px, 5.3vw, 72px); line-height: 1.12; letter-spacing: -.045em; margin: 18px 0 24px; }
+.play-heading h2 em { font-family: Georgia, serif; font-weight: 400; color: var(--mint); }
+.play-heading > p:last-child { max-width: 580px; margin-inline: auto; color: #aebdb4; font-size: 17px; line-height: 1.8; }
+.play-world { position: relative; height: 560px; overflow: hidden; border: 1px solid #b5e8c433; border-radius: 18px; background: #11221d; isolation: isolate; }
+.play-scene { position: absolute; inset: 0; overflow: hidden; }
+.play-scene img { width: 100%; height: 100%; object-fit: cover; filter: brightness(.55) saturate(.65); transform: scale(1.07); transition: transform 1.4s ease, filter 1.4s ease; }
+.play-world[data-exploration="drive"] .play-scene img { transform: scale(1.32) translate(-3%, -3%); filter: brightness(.46) saturate(.55); }
+.play-world[data-exploration="vtol"] .play-scene img { transform: scale(1.14) translateY(2%); }
+.play-scene::after { content: ""; position: absolute; inset: 0; background: linear-gradient(#08110c55, transparent 42%, #07110ded); pointer-events: none; }
+.play-grid { position: absolute; inset: 0; background-image: linear-gradient(#d4ffe60a 1px, transparent 1px), linear-gradient(90deg, #d4ffe60a 1px, transparent 1px); background-size: 52px 52px; }
+.play-routes { position: absolute; inset: 0; width: 100%; height: 100%; }
+.play-routes g { transition: opacity .5s ease; }
+.flight-route { color: #d4ffe6; }
+.drive-route { color: #f2d397; opacity: 0; }
+.vtol-route { color: var(--mint); opacity: 0; }
+.play-world[data-exploration="vtol"] .flight-route { opacity: 0; }
+.play-world[data-exploration="vtol"] .drive-route { opacity: .3; }
+.play-world[data-exploration="vtol"] .vtol-route { opacity: 1; }
+.vtol-route circle { stroke: currentColor; stroke-width: 2; fill: var(--surface); }
+.play-world[data-exploration="drive"] .flight-route { opacity: 0; }
+.play-world[data-exploration="drive"] .drive-route { opacity: 1; }
+.route-shadow { stroke: #091b15; stroke-width: 7; opacity: .5; }
+.route-line { stroke: currentColor; stroke-width: 1.6; stroke-dasharray: 7 8; animation: exploration-route 24s linear infinite; }
+.flight-route circle,.drive-route circle { stroke: currentColor; stroke-width: 2; fill: #153126; }
+.route-plane { fill: #d4ffe6; stroke: #133a2b; stroke-width: 1; }
+.route-car rect { fill: #f2d397; stroke: #392e18; stroke-width: 2; }
+.route-car path { fill: #203a34; }
+.play-scene-top { position: absolute; inset: 24px 28px auto; display: flex; justify-content: space-between; gap: 20px; }
+.play-coordinate { font: 10px/1.5 ui-monospace, monospace; color: #e5f4e9; letter-spacing: .12em; }
+.play-crosshair { position: absolute; color: #c4e2d088; font: 20px ui-monospace, monospace; }
+.crosshair-a { top: 20%; left: 8%; }.crosshair-b { top: 62%; right: 7%; }
+.play-selector { position: absolute; inset: auto 24px 24px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.play-selector button { min-width: 0; text-align: left; padding: 20px 18px; border: 1px solid #e0f6e52e; border-radius: 10px; color: #e1eae5; background: #0b1715d9; cursor: pointer; transition: border-color .2s, background .2s; }
+.play-selector button[aria-pressed="true"] { border-color: #c9f4d9; background: #17372de8; }
+.play-selector button:hover { border-color: #c9f4d9; }
+.play-selector button:focus-visible { outline: 2px solid #c9f4d9; outline-offset: 4px; }
+.play-mode-number { display: flex; flex-wrap: wrap; gap: 4px 12px; color: #a3b9ae; font: 11px/1.5 ui-monospace, monospace; letter-spacing: .1em; margin-bottom: 10px; }
+.play-mode-state { color: #d6e4da; font-size: 10px; letter-spacing: .02em; }
+.play-selector strong { display: block; font-size: clamp(18px, 2vw, 23px); line-height: 1.3; font-weight: 500; letter-spacing: -.03em; text-wrap: balance; }
+.play-selector button > span:last-child { display: block; margin-top: 7px; font-size: 13px; line-height: 1.6; color: #a9c0b4; }
+.play-description { display: flex; justify-content: space-between; align-items: center; gap: 38px; min-height: 188px; padding: 28px 4px 20px; }
+.play-description > div { max-width: 730px; }
+.play-description [hidden] { display: none; }
+.play-availability { font: 10px/1.6 ui-monospace, monospace; color: #b8dfca; letter-spacing: .09em; }
+.play-availability.development { color: #e5cc99; }
+.play-description h3 { font-size: 24px; font-weight: 500; margin: 10px 0 12px; letter-spacing: -.025em; }
+.play-description p { color: #aebdb4; font-size: 14px; line-height: 1.8; }
+.play-description a { flex-shrink: 0; }
+.play-disclosure { padding-top: 18px; border-top: 1px solid #b5e8c423; color: #9bafa3; font-size: 12px; line-height: 1.8; max-width: none; }
+@keyframes exploration-route { to { stroke-dashoffset: -300; } }
+@media(max-width:700px) {
+  .play-section { padding-block: 64px; }
+  .play-heading { margin-bottom: 28px; }
+  .play-heading h2 { font-size: 38px; }
+  html[data-av-lang="zh"] .play-heading h2 { font-size: 34px; line-height: 1.35; }
+  .play-heading > p:last-child { font-size: 15px; }
+  .play-world { height: 650px; border-radius: 12px; }
+  .play-scene-top { inset: 18px 16px auto; }
+  .play-coordinate { font-size: 8px; letter-spacing: .03em; }
+  .play-selector { inset: auto 12px 14px; gap: 8px; grid-template-columns: 1fr; }
+  .play-selector button { padding: 12px 16px; }
+  .play-mode-number { margin-bottom: 4px; }
+  .play-selector strong { font-size: 18px; line-height: 1.5; }
+  .play-selector button > span:last-child { font-size: 12px; margin-top: 3px; }
+  .play-description { align-items: flex-start; flex-direction: column; gap: 18px; min-height: 250px; padding-block: 24px; }
+  .play-description h3 { font-size: 22px; }
+}
+@media(prefers-reduced-motion:reduce) {
+  .play-world *, .play-world *::after { animation: none !important; transition: none !important; }
+}

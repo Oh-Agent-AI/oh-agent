@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "harness-manifest-v1.json",
+  "title": "Agent Vitals plugin harness manifest (v1, P0)",
+  "description": "Self-describing plugin harness manifest. P0 accepts recipe+overrides only; records (DSL, P2) and adapter (sandboxed script, P1.5) are rejected at load time by version/capability negotiation, not by this schema.",
+  "type": "object",
+  "required": [
+    "manifest_version",
+    "slug",
+    "display",
+    "discovery",
+    "source",
+    "session",
+    "recipe",
+    "event_key"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "manifest_version": { "const": 1 },
+    "min_app_version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,9})\\.(0|[1-9][0-9]{0,9})\\.(0|[1-9][0-9]{0,9})(?![\\s\\S])",
+      "not": { "pattern": "(^|\\.)([5-9][0-9]{9}|4[3-9][0-9]{8}|429[5-9][0-9]{6}|42949[7-9][0-9]{4}|429496[8-9][0-9]{3}|4294967[3-9][0-9]{2}|429496729[6-9])(\\.|$)" },
+      "description": "Release MAJOR.MINOR.PATCH only. Each segment must be <= 4294967295, enforced at runtime; prerelease/build suffixes are rejected."
+    },
+    "requires": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "recipes": {
+          "type": "array", "maxItems": 64, "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "features": {
+          "type": "array", "maxItems": 64, "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      },
+      "description": "Runtime negotiates every requirement before loading. Unknown capabilities fail closed; no features are currently advertised by both runtimes."
+    },
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,31}$",
+      "not": { "anyOf": [
+        { "enum": [
+          "claude-code", "codex", "dsh", "workbuddy", "openclaw", "hermes"
+        ] },
+        { "pattern": "^(harness-|plugin-)" }
+      ] }
+    },
+    "display": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 24 }
+      }
+    },
+    "discovery": {
+      "type": "object",
+      "required": ["roots", "include"],
+      "additionalProperties": false,
+      "properties": {
+        "roots": {
+          "type": "array", "minItems": 1, "maxItems": 16,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "include": {
+          "type": "array", "minItems": 1, "maxItems": 16,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "required": ["format"],
+      "additionalProperties": false,
+      "properties": {
+        "format": { "enum": ["jsonl"] },
+        "compression": { "enum": ["none", "zstd"], "default": "none", "description": "On-disk encoding; decoded bytes must be UTF-8 JSONL." }
+      }
+    },
+    "session": {
+      "type": "object",
+      "required": ["from", "pattern"],
+      "additionalProperties": false,
+      "properties": {
+        "from": { "const": "filename" },
+        "pattern": {
+          "type": "string",
+          "description": "Regex restricted to the portable common subset: literals, char classes, anchors, groups; exactly one named group (?P<id>...). Look-around and backreferences are rejected at install time."
+        }
+      }
+    },
+    "recipe": {
+      "enum": [
+        "request-usage-anthropic-v1",
+        "request-usage-openai-total-input-v1",
+        "request-usage-four-bucket-v1"
+      ]
+    },
+    "overrides": {
+      "type": "object",
+      "propertyNames": {
+        "enum": [
+          "event_ts", "model_raw", "provider_raw",
+          "uncached_input_tokens", "total_input_tokens",
+          "cache_read_tokens", "cache_write_tokens",
+          "output_tokens", "provider_request_id"
+        ]
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$",
+        "description": "Pure dotted path into the source record. No expressions, functions, array indices, wildcards, or fallbacks."
+      }
+    },
+    "event_key": {
+      "type": "object",
+      "required": ["paths"],
+      "additionalProperties": false,
+      "properties": {
+        "paths": {
+          "type": "array", "minItems": 1, "maxItems": 8,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$"
+          }
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_rows_per_file": {
+          "type": "integer", "minimum": 1, "maximum": 500000
+        }
+      }
+    },
+    "billing": {
+      "type": "object",
+      "required": ["policy"],
+      "additionalProperties": false,
+      "properties": {
+        "policy": { "const": "lock:metered_estimate" }
+      }
+    },
+    "session_title_adapter": {
+      "type": "string",
+      "enum": ["zcode_sqlite_session_v1"],
+      "description": "Optional reviewed, read-only local title index adapter. The manifest selects an allowlisted adapter id; it cannot provide a path, SQL, or executable code."
+    },
+    "trust": {
+      "type": "object",
+      "description": "Optional read-only Trust artifact profile. It never permits content or network-payload access.",
+      "required": ["roots", "artifact_terms", "extensions"],
+      "additionalProperties": false,
+      "properties": {
+        "roots": {
+          "type": "array", "minItems": 1, "maxItems": 8,
+          "items": { "type": "string", "pattern": "^~/.+" }
+        },
+        "artifact_terms": {
+          "type": "array", "minItems": 1, "maxItems": 8,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,39}$" }
+        },
+        "extensions": {
+          "type": "array", "minItems": 1, "maxItems": 8,
+          "items": { "type": "string", "pattern": "^\\.[a-z][a-z0-9_.-]{0,15}$" }
+        }
+      }
+    }
+  }
+}

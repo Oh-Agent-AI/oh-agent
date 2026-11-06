@@ -1,0 +1,95 @@
+{
+  "manifest_version": 1,
+  "kind": "plugin_app",
+  "id": "agent-city",
+  "version": "1.0.0",
+  "publisher": "fixture-publisher",
+  "signing_key_id": "fixture-release",
+  "platform": "macos",
+  "architecture": "aarch64",
+  "entry": "AgentCity.app",
+  "platform_identity": {
+    "bundle_id": "com.mixlabpro.agent-city",
+    "team_id": "FIXTURE001",
+    "sandbox_required": true,
+    "notarization_required": true
+  },
+  "harness_compatibility": {
+    "min_version": "1.4.0",
+    "max_version_exclusive": "2.0.0",
+    "broker_versions": [
+      1
+    ]
+  },
+  "requires": [
+    {
+      "id": "city",
+      "versions": [
+        1
+      ],
+      "face": "app-local",
+      "required": true
+    }
+  ],
+  "permissions": {
+    "projections": [
+      {
+        "id": "city",
+        "versions": [
+          1
+        ],
+        "face": "app-local"
+      }
+    ],
+    "controls": [
+      "app.open_session"
+    ],
+    "events": [
+      "data.invalidated"
+    ],
+    "exports": [
+      "screenshot",
+      "movie"
+    ]
+  },
+  "state": {
+    "schema_version": 1,
+    "rollback_strategy": "snapshot",
+    "retain_previous": true
+  },
+  "resources": [
+    {
+      "path": "AgentCity.app/Contents/MacOS/agent-city",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "size_bytes": 3,
+      "mode": "executable",
+      "license_id": "mit"
+    },
+    {
+      "path": "AgentCity.app/Contents/Resources/LICENSE.txt",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "size_bytes": 3,
+      "mode": "file",
+      "license_id": "mit"
+    },
+    {
+      "path": "AgentCity.app/Contents/Resources/icon.png",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "size_bytes": 3,
+      "mode": "file",
+      "license_id": "mit"
+    }
+  ],
+  "licenses": [
+    {
+      "id": "mit",
+      "spdx": "MIT",
+      "notice_path": "AgentCity.app/Contents/Resources/LICENSE.txt"
+    }
+  ],
+  "display": {
+    "name": "Agent City fixture",
+    "description": "Synthetic contract fixture; not runnable or platform signed.",
+    "icon_path": "AgentCity.app/Contents/Resources/icon.png"
+  }
+}

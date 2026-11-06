@@ -1,0 +1,17 @@
+:root {
+  --ui-canvas: #fafafa;
+  --ui-sidebar: #efeff0;
+  --ui-toolbar: #f0f0f1;
+  --ui-surface: #ffffff;
+  --ui-border: #dedfe2;
+  --ui-control-border: #cfd7df;
+  --ui-text: #292d34;
+  --ui-muted: #63748a;
+  --ui-accent: #087f62;
+  --ui-control-height: 32px;
+  --ui-control-radius: 6px;
+  --ui-space-1: 4px;
+  --ui-space-2: 8px;
+  --ui-space-3: 12px;
+  --ui-space-4: 16px;
+}

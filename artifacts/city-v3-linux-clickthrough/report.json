@@ -1,0 +1,105 @@
+{
+  "generated_at": "2026-10-22T16:42:01.855Z",
+  "pluginDir": "/workspace/apps/desktop/src-tauri/ui-react-dist/plugins/AgentCity.plugin/ui",
+  "outDir": "/workspace/artifacts/city-v3-linux-clickthrough",
+  "playwright": {
+    "checks": {
+      "defaultV3FirstPage": {
+        "pass": true,
+        "protocol": "v3",
+        "search": "",
+        "coverage": {
+          "total": 4101,
+          "returned": 500,
+          "truncated": true,
+          "unknown_time": 0,
+          "unknown_time_semantics": "compat_any_untimed_fact_all_sessions",
+          "time_classification": {
+            "scope": "window",
+            "unknown_time_only": 0,
+            "mixed_time": 0,
+            "excluded_no_usage": 0
+          },
+          "findings_state": "partial"
+        },
+        "occupants": 500,
+        "scaleTier": 10,
+        "applyMode": "mount",
+        "firstPaintMs": 62249,
+        "screenshot": "/workspace/artifacts/city-v3-linux-clickthrough/01-v3-first-paint.png"
+      },
+      "laterPagesAppendStable": {
+        "pass": true,
+        "firstOccupants": 500,
+        "fullOccupants": 4000,
+        "scaleTier": 10,
+        "applyMode": "append",
+        "moved": [],
+        "fullLoadMs": 84824,
+        "screenshot": "/workspace/artifacts/city-v3-linux-clickthrough/02-v3-full-load.png"
+      },
+      "hoverSelectionCameraPersist": {
+        "pass": true,
+        "selected": "sr_00000000000000000000000000000002",
+        "hovered": "sr_00000000000000000000000000000003",
+        "screenshot": "/workspace/artifacts/city-v3-linux-clickthrough/03-hover-selection-persist.png"
+      },
+      "detailsRecoverAfterWrite": {
+        "pass": true,
+        "unavailable": 0,
+        "recovered": 2,
+        "screenshot": "/workspace/artifacts/city-v3-linux-clickthrough/04-details-recover.png",
+        "note": "Session details populated after a simulated revision_changed (tokens/model/session id). Collection/save still showed a revision-conflict banner; that is not the details-unavailable path."
+      },
+      "landingStaysV2": {
+        "pass": true,
+        "protocol": "v2",
+        "search": "?presentation=landing&windowDays=30",
+        "coverage": {
+          "total": 280,
+          "returned": 280,
+          "truncated": false,
+          "unknown_time": 0
+        },
+        "screenshot": "/workspace/artifacts/city-v3-linux-clickthrough/05-landing-v2.png"
+      },
+      "forcedV2Works": {
+        "pass": true,
+        "protocol": "v2",
+        "search": "?cityData=v2",
+        "coverage": {
+          "total": 800,
+          "returned": 800,
+          "truncated": false,
+          "unknown_time": 0
+        },
+        "screenshot": "/workspace/artifacts/city-v3-linux-clickthrough/06-forced-v2.png"
+      }
+    },
+    "firstPaintMs": 62249,
+    "fullLoadMs": 84824,
+    "errors": []
+  },
+  "native": {
+    "deb": "/workspace/apps/desktop/src-tauri/target/release/bundle/deb/Oh Agent_1.0.0-beta.3_amd64.deb",
+    "pass": true,
+    "screenshot": "/workspace/artifacts/city-v3-linux-clickthrough/native/07-native-workbench.png",
+    "cityScreenshot": "/workspace/artifacts/city-v3-linux-clickthrough/native/08-native-city.png",
+    "binary": "/workspace/artifacts/city-v3-linux-clickthrough/native/pkg/usr/bin/agent-vitals-menubar",
+    "seed": 0,
+    "seedOut": "seeded 4101 sessions into /workspace/artifacts/city-v3-linux-clickthrough/native/home\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s\n     Running `target/debug/examples/seed_city_home /workspace/artifacts/city-v3-linux-clickthrough/native/home 4101`\n",
+    "import": 0,
+    "log": "/workspace/artifacts/city-v3-linux-clickthrough/native/native.log",
+    "windowId": "4194307",
+    "recording": "/workspace/artifacts/city-v3-linux-clickthrough/native/native-workbench.mp4",
+    "pluginWebview": "plugin_layout_failed",
+    "note": "Playwright cannot attach to WebKitGTK. Native xvfb smoke launches the packaged binary, seeds 4101 sessions, and clicks City in the sidebar. City's first paint still needs the worker (~60s); this capture is a boot/nav smoke, not a WebDriver of the WebKitGTK plugin webview. Under this Linux/xvfb stack the plugin webview showed 'The URL can't be shown' then plugin_layout_failed."
+  },
+  "linux_gaps": [
+    "No WebKitGTK WebDriver / tauri-driver on this VM; Playwright Chromium cannot attach to the packaged plugin webview.",
+    "Native xvfb WebKitGTK failed to load the plugin URL ('The URL can't be shown') then showed plugin_layout_failed.",
+    "AppImage skipped: fuse3 / xdg-desktop-portal apt configure failed; used the .deb bundle.",
+    "Playwright recordVideo on WebGL timed out; clickthrough.mp4 is an ffmpeg slideshow of the six check screenshots.",
+    "Native GPU timing of append vs remount was not measured (Chromium swiftshader software GL)."
+  ]
+}

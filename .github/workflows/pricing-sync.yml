@@ -1,0 +1,95 @@
+name: Pricing Sync
+
+# 每日价卡同步：公开价格源 → catalog/pricing 叠加层及 assets 兼容镜像。
+#
+# 为什么需要它（2026-09-29）：模型发布太快，手工维护的底表总会缺卡或过期——
+# 同一天实测到 gpt-6 三个模型、Opus 5.5 没有价卡，Sonnet 5 按过期公告写成了
+# $3/$15。app 每天从本仓库拉这份叠加层，与内置底表合并后计价。
+#
+# 发布策略是用户定的「全部自动发布」：有变化就直接提交到 main，不开 PR。
+# 脚本里的数据校验（≥2 源一致、归零或 >5 倍变动不发布）拦的是坏数据，不是
+# 审批；被拦的条目列在运行摘要里。
+#
+# 提交前用 app 端同一套 Rust 校验器检查生成的文件：CI 能发布的东西，app 一定
+# 收得下——否则用户每天拉到的都是被拒收的目录，等于没同步。
+
+on:
+  schedule:
+    - cron: "17 3 * * *" # 每日 03:17 UTC（避开整点的 Actions 排队高峰）
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pricing-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: 同步价卡
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 同步规则单测
+        run: python3 -m unittest tests.test_pricing_sync
+
+      - name: 发布前检查价卡兼容镜像
+        run: python3 scripts/catalog_mirror.py
+
+      - name: 拉取三源并生成叠加层
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 scripts/pricing_sync.py --write | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: 汇率同步规则单测
+        run: python3 -m unittest tests.test_fx_sync
+
+      # 汇率与价卡同一个作业、同一个提交：两源一致才采用、与上一份相差 >25% 或日期倒退整份不发布。
+      # 汇率源挂了不应拦住价卡发布，所以这一步失败只告警（continue-on-error）。
+      - name: 同步汇率
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 scripts/fx_sync.py --write | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: 有无变化
+        id: diff
+        run: |
+          if git diff --quiet -- catalog/pricing/pricing-sync.json assets/pricing-sync.json assets/fx-sync.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.diff.outputs.changed == 'true'
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.diff.outputs.changed == 'true'
+
+      - name: 用 app 端校验器检查叠加层
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          cargo test --release -p agent-vitals-runtime-core --lib pricing_catalog
+          cargo test --release -p agent-vitals-runtime-core --lib fx_settings
+
+      - name: 确认权威与兼容镜像一致
+        run: python3 scripts/catalog_mirror.py
+
+      - name: 提交到 main
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          git config user.name "agent-vitals-pricing-sync[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add catalog/pricing/pricing-sync.json assets/pricing-sync.json assets/fx-sync.json
+          git commit -m "chore(pricing): daily price-card sync $(date -u +%Y-%m-%d)"
+          git push

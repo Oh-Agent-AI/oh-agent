@@ -1,0 +1,126 @@
+/* Shared desktop controls. Feature CSS may set widths and layout, not frame size. */
+.desktop-shell :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]):not([type="hidden"]), select),
+.desktop-shell .av-control {
+  box-sizing: border-box;
+  height: var(--ui-control-height);
+  min-height: var(--ui-control-height);
+  padding: 5px 9px;
+  border: 1px solid var(--ui-control-border);
+  border-radius: var(--ui-control-radius);
+  color: var(--ui-text);
+  background: var(--ui-surface);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 20px;
+}
+.desktop-shell .av-control { width: 100%; }
+/* WKWebView (WebKit) draws <select> as a native menulist and ignores height, border and
+   padding until appearance is reset, so the unified frame above only reached <input>:
+   selects rendered as small native popup buttons beside 32px inputs. Reset it and draw
+   our own chevron (the native one goes away with the appearance). */
+.desktop-shell select,
+.desktop-shell select.av-control {
+  -webkit-appearance: none;
+  appearance: none;
+  padding-right: 28px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath d='M2.5 3.75 5 6.25l2.5-2.5' fill='none' stroke='%2363748a' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 10px 10px;
+  text-overflow: ellipsis;
+}
+.desktop-shell :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]):not([type="hidden"]), select):focus-visible,
+.desktop-shell .av-control:focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 1px;
+}
+.desktop-shell :is(input, select):disabled,
+.desktop-shell .av-control:disabled { opacity: .55; cursor: not-allowed; }
+.desktop-shell .av-control[aria-invalid="true"] { border-color: #b14e4e; }
+.desktop-shell textarea {
+  border: 1px solid var(--ui-control-border);
+  border-radius: var(--ui-control-radius);
+  padding: 7px 9px;
+  color: var(--ui-text);
+  background: var(--ui-surface);
+  font-family: inherit;
+  font-size: 12px;
+}
+.desktop-shell .sessions-page-header { margin-bottom: 10px; }
+
+.av-field { display: grid; align-content: start; gap: var(--ui-space-1); min-width: 0; }
+.av-field-short { width: 120px; }
+.av-field-medium { width: 176px; }
+.av-field-wide { width: 240px; }
+.av-field-fill { width: 100%; }
+.av-field-label { color: var(--ui-muted); font-size: 11px; font-weight: 600; line-height: 14px; }
+.av-field-hint, .av-field-error { font-size: 11px; line-height: 1.35; }
+.av-field-hint { color: var(--ui-muted); }
+.av-field-error { color: #a33b3b; }
+
+.av-filter-bar {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  align-items: start;
+  gap: var(--ui-space-2);
+  margin-bottom: var(--ui-space-3);
+  padding: var(--ui-space-3);
+  border: 1px solid var(--ui-border);
+  border-radius: 8px;
+  background: var(--ui-surface);
+}
+.av-filter-bar[data-window="custom"] { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.av-filter-bar .av-field { width: 100%; }
+@container (max-width: 1100px) {
+  .av-filter-bar, .av-filter-bar[data-window="custom"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@container (max-width: 620px) {
+  .av-filter-bar, .av-filter-bar[data-window="custom"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container (max-width: 380px) {
+  .av-filter-bar, .av-filter-bar[data-window="custom"] { grid-template-columns: minmax(0, 1fr); }
+}
+
+.av-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--ui-control-height);
+  padding: 5px 10px;
+  border: 1px solid var(--ui-control-border);
+  border-radius: var(--ui-control-radius);
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 20px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.av-button-compact { min-height: 28px; padding: 3px 8px; }
+.av-button-primary { border-color: var(--ui-accent); background: var(--ui-accent); color: #fff; }
+.av-button-ghost { border-color: transparent; background: transparent; }
+.av-button-danger { border-color: #e7b7b7; color: #a33b3b; background: #fff8f8; }
+.av-button:hover:not(:disabled) { filter: brightness(.96); }
+.av-button:disabled { opacity: .55; cursor: not-allowed; }
+.av-button:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 2px; }
+
+/* The macOS titlebar and sidebar already name the current page. Keep body
+   headers as a compact action row, with an accessible heading off-screen. */
+.page-action-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-height: var(--ui-control-height);
+  margin-bottom: 12px;
+}
+.page-action-bar .button { width: auto; }
+.page-action-bar .usage-toolbar,
+.page-action-bar .skills-toolbar,
+.page-action-bar .test-header-actions { justify-content: flex-end; }
+.page-action-bar .usage-toolbar,
+.page-action-bar .skills-toolbar { width: auto; }
+.page-action-bar .skills-toolbar { flex-direction: row; align-items: center; }
+.skills-result-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 7px; margin-bottom: 10px; }

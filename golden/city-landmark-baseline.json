@@ -1,0 +1,150 @@
+{
+ "tv-tower": {
+  "hash": "942f089216fe984d",
+  "meshes": 12,
+  "spinners": 0,
+  "windows": 0
+ },
+ "tv-tower+neon": {
+  "hash": "17616a67a03973bf",
+  "meshes": 12,
+  "spinners": 0,
+  "windows": 0
+ },
+ "twin-towers": {
+  "hash": "dedc0ca95003a192",
+  "meshes": 29,
+  "spinners": 0,
+  "windows": 1
+ },
+ "twin-towers+neon": {
+  "hash": "efb30ed418ac27e9",
+  "meshes": 29,
+  "spinners": 0,
+  "windows": 1
+ },
+ "twist-tower": {
+  "hash": "aad29240898e4ff1",
+  "meshes": 1,
+  "spinners": 0,
+  "windows": 1
+ },
+ "twist-tower+neon": {
+  "hash": "aad29240898e4ff1",
+  "meshes": 1,
+  "spinners": 0,
+  "windows": 1
+ },
+ "arch": {
+  "hash": "1579230f6f2a2961",
+  "meshes": 31,
+  "spinners": 0,
+  "windows": 0
+ },
+ "arch+neon": {
+  "hash": "1579230f6f2a2961",
+  "meshes": 31,
+  "spinners": 0,
+  "windows": 0
+ },
+ "sail-opera": {
+  "hash": "d5cc5360b7f01cd0",
+  "meshes": 24,
+  "spinners": 0,
+  "windows": 0
+ },
+ "sail-opera+neon": {
+  "hash": "d5cc5360b7f01cd0",
+  "meshes": 24,
+  "spinners": 0,
+  "windows": 0
+ },
+ "lighthouse": {
+  "hash": "ec53b7c05f1da973",
+  "meshes": 38,
+  "spinners": 0,
+  "windows": 0
+ },
+ "lighthouse+neon": {
+  "hash": "ea923c8d0180357b",
+  "meshes": 40,
+  "spinners": 1,
+  "windows": 0
+ },
+ "ferris-wheel": {
+  "hash": "bccf5359c4e9ad58",
+  "meshes": 91,
+  "spinners": 1,
+  "windows": 0
+ },
+ "ferris-wheel+neon": {
+  "hash": "e0b7536de7132677",
+  "meshes": 91,
+  "spinners": 1,
+  "windows": 0
+ },
+ "pagoda": {
+  "hash": "502501db9a696691",
+  "meshes": 79,
+  "spinners": 0,
+  "windows": 0
+ },
+ "pagoda+neon": {
+  "hash": "502501db9a696691",
+  "meshes": 79,
+  "spinners": 0,
+  "windows": 0
+ },
+ "villa-complex": {
+  "hash": "10bf7afba1ce8887",
+  "meshes": 61,
+  "spinners": 0,
+  "windows": 0
+ },
+ "villa-complex+neon": {
+  "hash": "8115e5e55a90d0cb",
+  "meshes": 61,
+  "spinners": 0,
+  "windows": 0
+ },
+ "islet-mansion": {
+  "hash": "c9f9483581b3bd12",
+  "meshes": 76,
+  "spinners": 0,
+  "windows": 0
+ },
+ "islet-mansion+neon": {
+  "hash": "60a91c541cff4a33",
+  "meshes": 76,
+  "spinners": 0,
+  "windows": 0
+ },
+ "islet-grounds": {
+  "hash": "f6d988d6804a41d0",
+  "meshes": 4,
+  "spinners": 0,
+  "windows": 0
+ },
+ "islet-grounds+neon": {
+  "hash": "f6d988d6804a41d0",
+  "meshes": 4,
+  "spinners": 0,
+  "windows": 0
+ },
+ "suspension-bridge": {
+  "hash": "2b9a7f8f14e2b57f",
+  "meshes": 52,
+  "spinners": 0,
+  "windows": 0
+ },
+ "suspension-bridge+neon": {
+  "hash": "2b9a7f8f14e2b57f",
+  "meshes": 52,
+  "spinners": 0,
+  "windows": 0
+ },
+ "airport": {
+  "hash": "65e2c25b75406dd4",
+  "meshes": 80
+ }
+}

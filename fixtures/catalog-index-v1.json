@@ -1,0 +1,10 @@
+{
+  "index_schema_version": 1,
+  "catalog_sequence": 7,
+  "published_at": "2026-10-01T00:00:00Z",
+  "entries": [{
+    "slot_type": "harness_manifest", "slot_id": "example", "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "payload_path": "catalog/harnesses/example.json", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "schema_version": 1, "requires": {"recipes": ["message"], "features": []}, "min_app_version": "1.4.0", "display": "Example", "dependencies": []
+  }]
+}

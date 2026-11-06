@@ -1,0 +1,19 @@
+[
+  {"field":"payload_path","value":"../escape.json","error":"payload_path"},
+  {"field":"payload_path","value":"https://evil.example/a","error":"payload_path"},
+  {"field":"payload_path","value":"a/%2e%2e/b","error":"payload_path"},
+  {"field":"payload_path","value":"/root/a","error":"payload_path"},
+  {"field":"payload_path","value":"a\\b","error":"payload_path"},
+  {"field":"revision","value":"v1.4.0","error":"digest"},
+  {"field":"sha256","value":"abc","error":"digest"},
+  {"field":"slot_type","value":"redaction","error":"slot_unsupported"},
+  {"field":"slot_type","value":"error_taxonomy","error":"slot_unsupported"},
+  {"field":"slot_id","value":"../a","error":"identity"},
+  {"field":"schema_version","value":2,"error":"entry_schema"},
+  {"field":"requires","value":{"recipes":[],"features":["execute:script"]},"error":"capability"},
+  {"field":"requires","value":{"recipes":["message","message"],"features":[]},"error":"capability"},
+  {"field":"min_app_version","value":"01.0.0","error":"version"},
+  {"field":"min_app_version","value":"2.0.0","error":"app_version"},
+  {"field":"min_app_version","value":"4294967296.0.0","error":"version"},
+  {"field":"display","value":"","error":"display"}
+]

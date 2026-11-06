@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="512" height="512" role="img" aria-labelledby="title desc">
+  <title id="title">Agent Vitals Audit Contour</title>
+  <desc id="desc">Layered contour lines form a woodpecker continuously inspecting a runtime node.</desc>
+  <g fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M22 77V63C22 39 37 24 57 24C69 24 77 31 80 41L91 48L80 56C76 69 65 77 49 77C39 77 31 72 26 68"/>
+    <path d="M31 69V59C31 43 41 33 56 33C66 33 71 39 73 47"/>
+    <path d="M40 68V58C40 48 46 42 55 42"/>
+    <circle cx="63" cy="42" r="2.5" fill="currentColor" stroke="none"/>
+    <circle cx="96" cy="48" r="3" fill="currentColor" stroke="none"/>
+  </g>
+</svg>

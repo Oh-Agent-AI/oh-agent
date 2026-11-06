@@ -1,0 +1,49 @@
+{
+  "id": "gunner",
+  "version": 1,
+  "role": "Gunner",
+  "footprint": [
+    1,
+    1
+  ],
+  "forward": "-Z",
+  "heightMeters": 18.63,
+  "maxExtentMeters": [
+    14.3,
+    17.4
+  ],
+  "clips": {
+    "idle": {
+      "duration": 3.14,
+      "loop": true
+    },
+    "move": {
+      "duration": 0.79,
+      "loop": true
+    },
+    "attack": {
+      "duration": 0.95,
+      "loop": false
+    },
+    "hit": {
+      "duration": 0.48,
+      "loop": false
+    },
+    "defeat": {
+      "duration": 0.85,
+      "loop": false,
+      "holdLastFrame": true
+    }
+  },
+  "actionMap": {
+    "repair": "attack"
+  },
+  "materials": [
+    "armor_palette"
+  ],
+  "source": {
+    "kind": "existing Hunyuan 3D high model -> public Cloudflare R2 URL -> hunyuan-3d-reduce-face (low, 15,829 tris) -> legacy rigid-joint surface labels -> per-joint voxel rebuild, degenerate-shell removal and reduction to 10,558 tris -> 2048 diffuse atlas baked from the high model -> railgun barrel depth adjusted to 90% and four mechanical joint hubs added (10,878 tris total) -> grounded rigid animation with stance-foot locking -> gltfpack -cc -kn -km -ke -ac -vp 16 -vt 16 -vn 8 -af 100 -> WebP quality 90",
+    "blend_sha256": "8e353064a3d0a03bca77f3a65188f5c4b56dc83df963122d6fc242882cb42126",
+    "glb_sha256": "f85525ccfa9e164cca7615a49c4fda18313936e939f3b4b07202754c70833bb9"
+  }
+}

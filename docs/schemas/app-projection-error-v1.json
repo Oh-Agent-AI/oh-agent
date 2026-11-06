@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "app-projection-error-v1.json",
+  "title": "AppProjectionErrorV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol_version",
+    "request_id",
+    "code",
+    "retryable",
+    "retry_after_ms"
+  ],
+  "properties": {
+    "protocol_version": {
+      "const": 1
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^apr1_[A-Za-z0-9_-]{16,64}$",
+      "maxLength": 69
+    },
+    "code": {
+      "enum": [
+        "invalid_request",
+        "unsupported_projection",
+        "unsupported_version",
+        "unsupported_face",
+        "permission_denied",
+        "grant_revoked",
+        "unauthenticated",
+        "busy",
+        "timeout",
+        "cancelled",
+        "snapshot_expired",
+        "invalid_cursor",
+        "harness_offline",
+        "data_unavailable",
+        "internal_error"
+      ]
+    },
+    "retryable": {
+      "type": "boolean"
+    },
+    "retry_after_ms": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 60000
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  }
+}

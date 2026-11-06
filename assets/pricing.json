@@ -1,0 +1,131 @@
+{
+  "_doc": "价目表按供应商分层。解析顺序：providers[该请求的 provider].models[模型] → 找不到则回落 fallback_provider 的同名模型（并在输出里标 pricing_basis=fallback，展示层必须说明「按原厂报价估算」）→ 再找不到才算未计价。单位：元/百万 token。off_peak 是常规价，peak 是高峰价（北京时间周一至周五 9-12、14-18，周末全天按 off_peak）。",
+  "fallback_provider": "deepseek-official",
+  "providers": {
+    "deepseek-official": {
+      "label": "DeepSeek 原厂",
+      "currency": "CNY",
+      "_note": "deepseek-v4.1-flash 是网关/转售带命名空间的写法（真机语料 2026-09-14 实测 deepseek/deepseek-v4.1-flash），norm_model_in 会砍掉 `deepseek/` 前缀但不会把 `4.1` 折成 `4`，所以必须显式登记，否则该 id 落 no-price-card、这些用量的名义成本整栏为空。它按官方中文定价页（2026-09-14 核实）的 Flash 价填：缓存命中 0.02/0.04、缓存未命中 1/2、输出 4/8（元/百万 token）。\n\n⚠️ 已知未同步项：同页脚注（1）说明旧名 deepseek-v4-flash 对应的模型已下线、请求由 DeepSeek-V4.1-Flash 提供服务并按 Flash 价格计费——也就是说 deepseek-v4-flash 本应与上面同价，但本表的 deepseek-v4-flash 仍是 2026-08-30 采集的旧值（1.5/3.0、4.5/9.0），与 v4.1-flash 不一致。这次只补了缺失的 id，**没有**动已存在的键：改它会重算所有 deepseek-v4-flash 用量的估算，并让 37 个钉死金额的测试（Rust domain::cost 17 个 + Python 20 个）需要同步更新，应作为单独一次价格同步来做。",
+      "models": {
+        "deepseek-v4-flash": {
+          "input_uncached": { "off_peak": 1.5, "peak": 3.0 },
+          "input_cached": { "off_peak": 0.05, "peak": 0.10 },
+          "output": { "off_peak": 4.5, "peak": 9.0 }
+        },
+        "deepseek-v4.1-flash": {
+          "input_uncached": { "off_peak": 1.0, "peak": 2.0 },
+          "input_cached": { "off_peak": 0.02, "peak": 0.04 },
+          "output": { "off_peak": 4.0, "peak": 8.0 }
+        },
+        "deepseek-v4-pro": {
+          "input_uncached": { "off_peak": 4.5, "peak": 9.0 },
+          "input_cached": { "off_peak": 0.15, "peak": 0.30 },
+          "output": { "off_peak": 13.5, "peak": 27.0 }
+        }
+      },
+      "quote_variants": {
+        "_doc": "同一服务商的并列报价（官方给了不同币种的两套价）。基础卡（上面的 currency/models）是一套，这里的每个键是另一套的币种。两套是**各自的官方报价，不是互相换算**：计价时整套替换（币种与价格一起换），绝不拿汇率合成。用哪一套由 price_overrides::quote_variants 决定：用户明确选择 > 默认假设（跟随报告币种，界面标「默认假设」）。模型集合必须与基础卡一致（测试钉住），否则切换币种会让一部分用量凭空变成无价卡。",
+        "USD": {
+          "source_url": "https://api-docs.deepseek.com/quick_start/pricing/",
+          "as_of": "2026-10-01",
+          "_note": "官方英文页（2026-10-01 核实）：新名 deepseek-flash，旧名 deepseek-v4-flash 现由 DeepSeek-V4.1-Flash 提供服务并按此价计费，所以两个 flash 键同价（与 CNY 基础卡里 deepseek-v4-flash 仍是旧价不同——那是基础卡已知未同步项，见上方 _note）。峰谷规则同 CNY：非高峰为高峰的一半，高峰 01:00-04:00 与 06:00-10:00 UTC、周一至周五、不含中国法定假日。",
+          "models": {
+            "deepseek-v4-flash": {
+              "input_uncached": { "off_peak": 0.15, "peak": 0.30 },
+              "input_cached": { "off_peak": 0.003, "peak": 0.006 },
+              "output": { "off_peak": 0.60, "peak": 1.20 }
+            },
+            "deepseek-v4.1-flash": {
+              "input_uncached": { "off_peak": 0.15, "peak": 0.30 },
+              "input_cached": { "off_peak": 0.003, "peak": 0.006 },
+              "output": { "off_peak": 0.60, "peak": 1.20 }
+            },
+            "deepseek-v4-pro": {
+              "input_uncached": { "off_peak": 0.66, "peak": 1.32 },
+              "input_cached": { "off_peak": 0.022, "peak": 0.044 },
+              "output": { "off_peak": 1.98, "peak": 3.96 }
+            }
+          }
+        }
+      }
+    },
+    "shengsuanyun": {
+      "label": "胜算云",
+      "currency": "CNY",
+      "_note": "取自胜算云 DeepSeek-V4-Pro-0813 供应商页。该页列了两条上游线路，输入/输出价完全相同，只有缓存读取价差 3 倍：DeepSeek 线路 0.15/0.30，Ali 线路 0.45/0.90。日志里只记录到 provider=shengsuanyun，看不出实际走了哪条，这里按 DeepSeek 线路配置——若确认常走 Ali，把 input_cached 改成 0.45/0.90 即可，其余不用动。",
+      "models": {
+        "deepseek-v4-pro": {
+          "input_uncached": { "off_peak": 4.5, "peak": 9.0 },
+          "input_cached": { "off_peak": 0.15, "peak": 0.30 },
+          "output": { "off_peak": 13.5, "peak": 27.0 }
+        }
+      }
+    }
+  },
+  "cache_write_per_million": 0,
+  "fx_estimate": {
+    "_doc": "展示层货币折算估算(basis=user-set)。**仅供速览层**把混币金额并成一个「≈」数给用户一个感觉——绝不进预算 ratio / 实际支出 / 导出 / 对账,那些永远分币不相加(ATTRIBUTABLE_WASTE §6.7 分币纪律)。实际结算汇率取决于用户的支付方式(卡 FX 手续费/中转/促销),与此值可差 3~8%;凡用到此值的展示必须带 `≈` 前缀且 hover 可见原始分币。随 release 更新,as_of 过期时展示层应弱化或提示。",
+    "USD_CNY": 7.15,
+    "as_of": "2026-09"
+  },
+  "catalog_2026_09": {
+    "_doc": "四族价目表(Claude Code 语料计价用,2026-09-02 采集)。basis=catalog-provider——原厂/官方文档价,不是用户账单;与 providers 的用途不同:providers 是 DSH 运行时计价,本节是跨执行环境语料计价。单位:每百万 token,currency 按提供商。平峰同价的模型不设 peak/off_peak。注意:Sonnet 5 于 2026-09-01 起从促销价 $2/$10 涨到 $3/$15;MiniMax M3 整请求按输入长度分档(cliff 非梯度);Kimi 缓存写入价(¥25/M)仅见转售页,官方未确认。DeepSeek 两模型已在 providers 段(2026-08-30 核实,与官方 USD 换算一致),不重复。",
+    "providers": {
+      "anthropic": {
+        "currency": "USD",
+        "note": "cache write 按 5min=1.25×输入、1h=2×输入;US-only 推理在 Opus5/Sonnet5 上另加 10% 附加费(未计入价目)。",
+        "models": {
+          "claude-opus-5": {
+            "input_uncached": 5.0, "input_cached": 0.5, "output": 25.0,
+            "cache_write_5min": 6.25, "cache_write_1hr": 10.0
+          },
+          "claude-sonnet-5": {
+            "input_uncached": 3.0, "input_cached": 0.3, "output": 15.0,
+            "cache_write_5min": 3.75, "cache_write_1hr": 6.0,
+            "note": "9-01 起标准价;$2/$10 促销截至 2026-08-31"
+          },
+          "claude-haiku-4-5-20251001": {
+            "input_uncached": 1.0, "input_cached": 0.1, "output": 5.0,
+            "cache_write_5min": 1.25, "cache_write_1hr": 2.0
+          }
+        }
+      },
+      "minimax": {
+        "currency": "CNY",
+        "note": "M3 为永久五折后价;参考原价 4.20/16.80/0.84。",
+        "models": {
+          "MiniMax-M3": {
+            "tiers": [
+              { "label": "≤512K input", "max_input_tokens": 524288, "input_uncached": 2.10, "input_cached": 0.42, "output": 8.40 },
+              { "label": ">512K input", "max_input_tokens": null, "input_uncached": 4.20, "input_cached": 0.84, "output": 16.80 }
+            ]
+          },
+          "MiniMax-M2.7": {
+            "input_uncached": 2.10, "input_cached": 0.42, "output": 8.40, "cache_write": 2.625
+          }
+        }
+      },
+      "moonshot": {
+        "currency": "USD",
+        "note": "缓存写入价 ¥25/M 仅见 ai.360 转售页,官方未确认,不入价目。",
+        "models": {
+          "kimi-k3": {
+            "input_uncached": 3.0, "input_cached": 0.3, "output": 15.0
+          }
+        }
+      }
+    },
+    "billing_modes": {
+      "_doc": "公共目录只声明官方按量路由的模型匹配，不包含任何用户套餐、付款、账户或路由身份。订阅与实际付款必须来自本地用户声明/harness_bills；缺少明确订阅证据时按量估算并标记待确认。",
+      "shengsuanyun": { "mode": "metered", "models": ["deepseek-v4-pro-0813"] },
+      "deepseek-official": { "mode": "metered", "models": ["deepseek-v4"] }
+    },
+    "sources": {
+      "anthropic": "https://benchlm.ai/anthropic/api-pricing (2026-09-01 sync, 对照 platform.claude.com)",
+      "minimax": "https://platform.minimaxi.com/docs/guides/pricing-paygo (官方,CNY)",
+      "moonshot": "https://benchlm.ai/moonshot/api-pricing (2026-09-01 sync, 官方 platform 文档);https://ai.360.com 转售页:输入 ¥20/输出 ¥100/缓存写 ¥25",
+      "deepseek": "https://api-docs.deepseek.com/zh-cn/quick_start/pricing (2026-09-14 核实：官方中文页直接给 CNY 原价。providers 段 deepseek-v4-pro 与该页逐值一致，故该段确为官方 CNY 列表。同页 Flash 现价 0.02/0.04、1/2、4/8，低于本表 deepseek-v4-flash 的旧值——见同段 _note 的未同步项说明)"
+    },
+    "harness_costusd_note": "Claude Code 本地 lastModelUsage.costUSD 交叉核验(2026-09-02):claude 系模型与 catalog 逐分吻合(含 cc 按 1h 价),可当差分 oracle;第三方模型(deepseek/minimax)一律按 $5/$0.5/$25 默认卡计价,与真实价目不符,不可当账单证据。"
+  }
+}

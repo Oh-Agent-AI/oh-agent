@@ -1,0 +1,88 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 扫描输出 —— 含绝对路径、用户名、skill 名称，绝不要提交
+# 需要分享时用 scan.py --redact --redact-names
+skill-scan*.json
+scan-*.json
+*.scan.json
+skillopt-prep/
+
+# reports/ 下的原始扫描输出。openclaw-latest.json 曾经被提交进**公开**仓库，
+# 里面有 491 处绝对路径（含用户名）与全部 description 原文。
+# 上面三条是按文件名匹配的，接不住任意命名的输出 —— 这里按目录兜底。
+# 需要留档时先跑 scan.py --redact --redact-names，脱敏后的才允许进仓库。
+reports/*.json
+
+# hypothesis 的反例数据库（本机缓存，跨机器无意义）
+.hypothesis/
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Rust —— main 上不留源码，但开发者可能在同一工作区切到 rust 分支构建。
+# 不带锚点：不仅根 target/，任何嵌套位置的 target/（如单独构建某个
+# crates/* 子包时的 target 目录）都兜住，不因构建方式不同而漏入库。
+target/
+
+# ClawHub 打包产物。package-clawhub.yml 往 dist/ 写，本地复现打包时同样。
+# 它是仓库内容的副本，提交进来只会和源文件不同步。
+/dist/
+
+# npm 包（dsh/）的本地依赖。dsh-client/ 2026-09-22 拆到独立仓库
+# dsh-agent-vitals-audit，这条 ignore 规则随目录一起搬走了。
+integrations/dsh/node_modules/
+node_modules
+lib/
+# The React Workbench bridge is source, not a generated native library.
+!apps/desktop/ui-dev/react/src/lib/
+!apps/desktop/ui-dev/react/src/lib/**
+
+# Claude Code 会话 scratch（RESUME.md + worktrees 是嵌套 .git 的工作区副本）
+.claude/
+
+# 本机 Agent 工具/skill 管理器的缓存与产物，与本仓库内容无关：
+# .agents/ 是另一套 skill 生态自己的本地缓存目录，skills-lock.json 是它的
+# lockfile，docs/WORKBENCH_TAB_EMPTY_KPI_REPORT.md 是本地分析产物而非设计文档
+# —— 三者曾在 D4（commit 6e1e130）被误提交，此后一律排除。
+.agents/
+/skills-lock.json
+/docs/WORKBENCH_TAB_EMPTY_KPI_REPORT.md
+docs/ATTRIBUTABLE_WASTE_副本.md
+/.workbuddy/
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+bower_components/
+jspm_packages/
+site-packages/
+coverage/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）

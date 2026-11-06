@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Vitals — Swept Crest v2</title>
+  <style>
+    :root { --navy:#10182b; --paper:#f4f0e8; --ink:#172033; --muted:#697386; --coral:#ff6b6f; --mint:#73e0c1; --size:128px; --canvas:#fff; --mark:#10182b; }
+    * { box-sizing:border-box; }
+    body { margin:0; color:var(--ink); background:var(--paper); font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; -webkit-font-smoothing:antialiased; }
+    .hero { color:white; background:var(--navy); }
+    header, main { width:min(1180px,calc(100% - 40px)); margin:0 auto; }
+    header { padding:70px 0 74px; }
+    .eyebrow { color:var(--mint); font-size:12px; font-weight:800; letter-spacing:.14em; text-transform:uppercase; }
+    h1 { margin:16px 0 18px; font-size:clamp(50px,8vw,88px); line-height:.94; letter-spacing:-.06em; }
+    header p { max-width:760px; margin:0; color:#b7c0d1; font-size:18px; line-height:1.7; }
+    main { padding:34px 0 68px; }
+    .toolbar { display:flex; flex-wrap:wrap; gap:14px 28px; align-items:center; justify-content:space-between; margin-bottom:36px; padding:14px 16px; border:1px solid rgba(23,32,51,.13); border-radius:16px; background:rgba(255,255,255,.7); }
+    .group { display:flex; align-items:center; gap:7px; }
+    .label { margin-right:4px; color:var(--muted); font-size:11px; font-weight:800; letter-spacing:.09em; text-transform:uppercase; }
+    button { padding:8px 13px; color:var(--ink); background:white; border:1px solid rgba(23,32,51,.14); border-radius:999px; cursor:pointer; }
+    button.active { color:white; background:var(--ink); border-color:var(--ink); }
+    .section-head { display:flex; align-items:end; justify-content:space-between; gap:28px; margin-bottom:22px; }
+    h2 { margin:0; font-size:30px; letter-spacing:-.04em; }
+    .section-head p { max-width:600px; margin:0; color:var(--muted); line-height:1.65; }
+    .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; }
+    .card { overflow:hidden; border:1px solid rgba(23,32,51,.13); border-radius:22px; background:white; }
+    .card.recommended { border-color:var(--coral); box-shadow:0 0 0 2px var(--coral); }
+    .preview { min-height:300px; display:grid; place-items:center; background:var(--canvas); }
+    .tile { width:190px; height:190px; display:grid; place-items:center; color:var(--mark); transition:.2s ease; }
+    .tile svg { width:var(--size); height:var(--size); overflow:visible; }
+    .node { fill:currentColor; }
+    body[data-context="dark"] { --canvas:var(--navy); --mark:var(--mint); }
+    body[data-context="tile"] { --canvas:#e7e3db; --mark:var(--mint); }
+    body[data-context="tile"] .tile { color:var(--mint); background:var(--navy); border-radius:42px; box-shadow:0 18px 40px rgba(16,24,43,.22); }
+    body[data-context="tile"] .node { fill:var(--coral); }
+    .copy { padding:22px; border-top:1px solid rgba(23,32,51,.13); }
+    .top { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    .code { color:var(--coral); font:800 11px ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.09em; text-transform:uppercase; }
+    .badge { padding:5px 8px; color:#8e3438; background:#ffe4e5; border-radius:999px; font-size:11px; font-weight:800; }
+    h3 { margin:9px 0 8px; font-size:21px; }
+    .copy p { min-height:46px; margin:0; color:var(--muted); font-size:14px; line-height:1.65; }
+    .download { display:inline-block; margin-top:17px; color:var(--ink); font-size:13px; font-weight:800; text-decoration:none; }
+    .download:hover { color:var(--coral); }
+    .decision { margin-top:26px; padding:24px 28px; color:white; background:#223047; border-radius:20px; }
+    .decision b { color:var(--mint); }
+    .decision p { margin:8px 0 0; color:#c8d1df; line-height:1.65; }
+    @media (max-width:760px) { .grid{grid-template-columns:1fr}.section-head{display:block}.section-head p{margin-top:12px}.preview{min-height:260px} }
+  </style>
+</head>
+<body data-context="light">
+  <div class="hero"><header><div class="eyebrow">Agent Vitals · Targeted refinement</div><h1>Swept Crest<br>v2.</h1><p>从参考形象中只吸收负空间逻辑：不添加树干、脚或表情，让一条 S 形羽翼同时表达啄木鸟身体和 Agent 运行轨迹。</p></header></div>
+  <main>
+    <div class="toolbar">
+      <div class="group" data-group="size"><span class="label">尺寸</span><button class="active" data-size="128">128px</button><button data-size="32">32px</button><button data-size="18">18px</button></div>
+      <div class="group" data-group="context"><span class="label">场景</span><button class="active" data-context="light">浅色</button><button data-context="dark">深色</button><button data-context="tile">App Tile</button></div>
+    </div>
+    <div class="section-head"><h2>负空间强度对比</h2><p>外轮廓、冠羽、凿形鸟喙和检测节点完全不变，只比较内部 S 曲线。推荐 v2A：大尺寸有品牌记忆，小尺寸仍能简化为清晰羽翼。</p></div>
+    <section class="grid">
+      <article class="card">
+        <div class="preview"><div class="tile"><svg viewBox="0 0 100 100" aria-label="Swept Crest v1"><path fill="currentColor" fill-rule="evenodd" d="M20 81C21 68 25 58 33 51C30 45 30 38 33 31L27 24L47 34C53 32 59 32 65 35C72 38 76 43 78 49L84 51L78 55C74 66 64 72 52 72C42 72 34 68 28 62C25 68 24 74 24 81H20ZM68.2 45A3.2 3.2 0 1 1 61.8 45A3.2 3.2 0 1 1 68.2 45Z"/><path fill="currentColor" d="M76 47L88 50V53L76 57Z"/><circle class="node" cx="94" cy="51.5" r="2.8"/></svg></div></div>
+        <div class="copy"><div class="top"><span class="code">v1 · Current</span></div><h3>Solid Body</h3><p>最纯粹、最稳定，但身体像单一色块，啄木鸟与运行轨迹的故事较弱。</p></div>
+      </article>
+      <article class="card recommended">
+        <div class="preview"><div class="tile"><svg viewBox="0 0 100 100" aria-label="Swept Crest v2A"><path fill="currentColor" fill-rule="evenodd" d="M20 81C21 68 25 58 33 51C30 45 30 38 33 31L27 24L47 34C53 32 59 32 65 35C72 38 76 43 78 49L84 51L78 55C74 66 64 72 52 72C42 72 34 68 28 62C25 68 24 74 24 81H20ZM68.2 45A3.2 3.2 0 1 1 61.8 45A3.2 3.2 0 1 1 68.2 45ZM43 39C51 41 56 47 56 54C56 61 51 66 43 68C47 63 48 59 48 54C48 48 44 43 38 41C40 40 41 39 43 39Z"/><path fill="currentColor" d="M76 47L88 50V53L76 57Z"/><circle class="node" cx="94" cy="51.5" r="2.8"/></svg></div></div>
+        <div class="copy"><div class="top"><span class="code">v2A · Wing Cut</span><span class="badge">推荐</span></div><h3>Balanced S</h3><p>中等负空间形成翼形与 S 形轨迹，不抢眼孔和鸟喙，18px 仍可辨。</p><a class="download" href="swept-crest-v2a-wing-cut.svg" download>下载 v2A SVG</a></div>
+      </article>
+      <article class="card">
+        <div class="preview"><div class="tile"><svg viewBox="0 0 100 100" aria-label="Swept Crest v2B"><path fill="currentColor" fill-rule="evenodd" d="M20 81C21 68 25 58 33 51C30 45 30 38 33 31L27 24L47 34C53 32 59 32 65 35C72 38 76 43 78 49L84 51L78 55C74 66 64 72 52 72C42 72 34 68 28 62C25 68 24 74 24 81H20ZM68.2 45A3.2 3.2 0 1 1 61.8 45A3.2 3.2 0 1 1 68.2 45ZM40 37C52 39 59 47 58 56C57 65 49 70 39 68C46 62 48 57 47 52C47 46 42 42 35 40C36 39 38 38 40 37Z"/><path fill="currentColor" d="M76 47L88 50V53L76 57Z"/><circle class="node" cx="94" cy="51.5" r="2.8"/></svg></div></div>
+        <div class="copy"><div class="top"><span class="code">v2B · Runtime S</span></div><h3>Strong S</h3><p>轨迹感最强，但留白过大，开始出现阴阳图形联想，削弱工具属性。</p><a class="download" href="swept-crest-v2b-runtime-s.svg" download>下载 v2B SVG</a></div>
+      </article>
+      <article class="card">
+        <div class="preview"><div class="tile"><svg viewBox="0 0 100 100" aria-label="Swept Crest v2C"><path fill="currentColor" fill-rule="evenodd" d="M20 81C21 68 25 58 33 51C30 45 30 38 33 31L27 24L47 34C53 32 59 32 65 35C72 38 76 43 78 49L84 51L78 55C74 66 64 72 52 72C42 72 34 68 28 62C25 68 24 74 24 81H20ZM68.2 45A3.2 3.2 0 1 1 61.8 45A3.2 3.2 0 1 1 68.2 45ZM41 43C48 44 52 48 52 53C52 58 48 62 42 64C45 60 46 57 45 53C45 49 42 46 38 45C39 44 40 43 41 43Z"/><path fill="currentColor" d="M76 47L88 50V53L76 57Z"/><circle class="node" cx="94" cy="51.5" r="2.8"/></svg></div></div>
+        <div class="copy"><div class="top"><span class="code">v2C · Feather Slit</span></div><h3>Subtle Cut</h3><p>最克制，适合菜单栏；但在 App Icon 大尺寸下缺少 v2A 的视觉记忆点。</p><a class="download" href="swept-crest-v2c-feather-slit.svg" download>下载 v2C SVG</a></div>
+      </article>
+    </section>
+    <div class="decision"><b>建议升级到 v2A Wing Cut。</b><p>它吸收了参考图的负空间优势，却没有复制树干、闭眼或具体轮廓。确认后可将 v2A 替换进最终 App Icon、ICNS 和菜单栏资源。</p></div>
+  </main>
+  <script>
+    function activate(group,button){group.querySelectorAll('button').forEach((item)=>item.classList.toggle('active',item===button));}
+    document.querySelector('[data-group="size"]').addEventListener('click',(event)=>{const button=event.target.closest('[data-size]');if(!button)return;activate(event.currentTarget,button);document.documentElement.style.setProperty('--size',`${button.dataset.size}px`);});
+    document.querySelector('[data-group="context"]').addEventListener('click',(event)=>{const button=event.target.closest('[data-context]');if(!button)return;activate(event.currentTarget,button);document.body.dataset.context=button.dataset.context;});
+  </script>
+</body>
+</html>

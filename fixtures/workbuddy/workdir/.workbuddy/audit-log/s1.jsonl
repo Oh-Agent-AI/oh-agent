@@ -1,0 +1,3 @@
+{"sessionId":"s1","eventType":"command-safety.sandbox-executed","sequence":1,"prevHash":"","hash":"h1","timestamp":1788166860000,"requestId":"r1","toolCallId":"call-a","category":"command-safety","decision":"allowed","commandPreview":"ls -la"}
+{"sessionId":"s1","eventType":"command-safety.sandbox-executed","sequence":2,"prevHash":"h1","hash":"h2","timestamp":1788166920000,"requestId":"r1","toolCallId":"call-b","category":"command-safety","decision":"allowed","commandPreview":"cat README.md"}
+{"sessionId":"s1","eventType":"WebFetch","sequence":3,"prevHash":"h2","hash":"h3","timestamp":1788166980000,"requestId":"r2","toolCallId":"call-c","category":"network","decision":"allowed","messageParams":{"target":"https://example.com"}}

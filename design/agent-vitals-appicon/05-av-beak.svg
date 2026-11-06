@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="512" height="512" role="img" aria-labelledby="title desc">
+  <title id="title">Agent Vitals AV Beak</title>
+  <desc id="desc">An angular AV monogram becomes a woodpecker profile and diagnostic beak.</desc>
+  <g fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M20 76L39 27L62 36L86 47L63 54L51 75"/>
+    <path d="M29 58H58"/>
+  </g>
+  <circle cx="62" cy="42" r="3" fill="currentColor"/>
+  <circle cx="95" cy="47" r="3" fill="currentColor"/>
+</svg>

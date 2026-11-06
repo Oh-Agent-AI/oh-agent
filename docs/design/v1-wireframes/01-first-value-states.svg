@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="1200" viewBox="0 0 2000 1200" role="img" aria-labelledby="t d">
+<title id="t">Agent Vitals v1.0.0 首次价值与状态线框</title><desc id="d">展示首次自动解析、首份名义成本总览、无数据和部分来源失败四个场景。</desc>
+<defs><style>
+.bg{fill:#f4f6f8}.board{fill:#fff;stroke:#b7bec8;stroke-width:2}.bar{fill:#e9edf2}.card{fill:#fff;stroke:#aeb6c2;stroke-width:2}.soft{fill:#f5f7f9;stroke:#c5cbd3;stroke-width:1.5}.blue{fill:#eef4ff;stroke:#386fca;stroke-width:2}.amber{fill:#fff7e3;stroke:#a96d00;stroke-width:2}.red{fill:#fff1f1;stroke:#b43c3c;stroke-width:2}.btn{fill:#222b38}.btn2{fill:#fff;stroke:#7f8996;stroke-width:1.5}.txt{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;fill:#202733}.muted{fill:#687384}.h1{font-size:30px;font-weight:700}.h2{font-size:22px;font-weight:700}.body{font-size:17px}.small{font-size:14px}.label{font-size:18px;font-weight:600}.num{font-size:28px;font-weight:700}.white{fill:#fff}.blueT{fill:#285daf}.amberT{fill:#8b5a00}.redT{fill:#a22b2b}.line{stroke:#87919f;stroke-width:3;fill:none}.dash{stroke:#a8b0bb;stroke-width:2;stroke-dasharray:7 6;fill:none}
+</style></defs>
+<rect class="bg" width="2000" height="1200"/><text class="txt h1" x="48" y="55">01 · 首次获得价值与关键状态</text><text class="txt muted body" x="48" y="85">零输入自动解析；任何单一来源成功即可先给结果，失败项局部恢复。</text>
+
+<!-- A -->
+<g transform="translate(48 120)"><rect class="board" width="930" height="470" rx="16"/><rect class="bar" width="930" height="54" rx="16"/><rect class="bar" y="35" width="930" height="19"/><circle cx="26" cy="27" r="6" fill="#8e97a3"/><circle cx="48" cy="27" r="6" fill="#8e97a3"/><circle cx="70" cy="27" r="6" fill="#8e97a3"/><text class="txt label" x="94" y="34">agent-vitals 工作台</text><text class="txt small" x="375" y="34">首次启动</text>
+<text class="txt h2" x="38" y="100">正在本机整理 AI 使用记录</text><text class="txt muted body" x="38" y="130">无需填写套餐或预算；不会上传会话内容。</text>
+<rect class="soft" x="38" y="157" width="854" height="172" rx="12"/><text class="txt label" x="62" y="192">自动发现数据源</text>
+<text class="txt body" x="62" y="232">Codex</text><text class="txt blueT body" x="775" y="232">解析中 · 286 个文件</text><line class="line" x1="62" y1="247" x2="830" y2="247"/>
+<text class="txt body" x="62" y="278">Claude Code</text><text class="txt muted body" x="756" y="278">正在检测标准位置</text><line class="dash" x1="62" y1="293" x2="830" y2="293"/>
+<text class="txt body" x="62" y="320">DeepSeek Harness</text><text class="txt muted body" x="770" y="320">未安装 · 不影响结果</text>
+<rect class="btn2" x="38" y="360" width="120" height="44" rx="8"/><text class="txt small" x="70" y="388">暂停解析</text><text class="txt blueT small" x="178" y="388">查看读取范围</text>
+<text class="txt muted small" x="38" y="440">近 30 天优先 · 历史将在后台继续 · 可随时关闭窗口</text></g>
+
+<!-- B -->
+<g transform="translate(1022 120)"><rect class="board" width="930" height="470" rx="16"/><rect class="bar" width="930" height="54" rx="16"/><rect class="bar" y="35" width="930" height="19"/><text class="txt label" x="32" y="34">总览</text><text class="txt muted small" x="735" y="34">更新于 16:07 · 2 个来源</text>
+<text class="txt h2" x="38" y="96">第一份结果已准备好</text><rect class="blue" x="38" y="116" width="854" height="56" rx="9"/><text class="txt blueT label" x="60" y="151">已解析 49 个会话 · 无需先完成设置</text>
+<rect class="card" x="38" y="195" width="260" height="125" rx="11"/><text class="txt muted small" x="58" y="226">本月名义成本</text><text class="txt num" x="58" y="269">≈ ¥4,716.26</text><text class="txt muted small" x="58" y="297">按原厂公开价格</text>
+<rect class="card" x="316" y="195" width="260" height="125" rx="11"/><text class="txt muted small" x="336" y="226">已观测用量</text><text class="txt num" x="336" y="269">2.46B</text><text class="txt muted small" x="336" y="297">tokens · 含缓存</text>
+<rect class="card" x="594" y="195" width="298" height="125" rx="11"/><text class="txt muted small" x="614" y="226">价格覆盖</text><text class="txt num" x="614" y="269">94.0%</text><text class="txt muted small" x="614" y="297">147.4M 尚未计价</text>
+<rect class="amber" x="38" y="342" width="854" height="80" rx="10"/><text class="txt amberT label" x="60" y="375">1.53B tokens 的付费方式待确认</text><text class="txt amberT small" x="60" y="401">当前按原厂 API 价估算；确认后可区分订阅覆盖与额外费用。</text><rect class="btn" x="704" y="358" width="166" height="48" rx="8"/><text class="txt white small" x="731" y="388">确认计费方式</text>
+<text class="txt muted small" x="38" y="452">继续浏览 · 稍后完善套餐 · 结果不会因未设置而消失</text></g>
+
+<!-- C -->
+<g transform="translate(48 630)"><rect class="board" width="930" height="470" rx="16"/><rect class="bar" width="930" height="54" rx="16"/><rect class="bar" y="35" width="930" height="19"/><text class="txt label" x="32" y="34">总览 · 无数据</text>
+<rect class="soft" x="180" y="100" width="570" height="286" rx="14"/><circle cx="465" cy="161" r="30" fill="#e2e6eb"/><path d="M450 161h30M465 146v30" stroke="#6e7784" stroke-width="3"/>
+<text class="txt h2" x="465" y="222" text-anchor="middle">尚未发现 AI 会话</text><text class="txt muted body" x="465" y="253" text-anchor="middle">标准位置中没有可读取的记录，这不代表连接失败。</text>
+<rect class="btn" x="285" y="286" width="180" height="48" rx="8"/><text class="txt white small" x="324" y="316">选择其他位置</text><rect class="btn2" x="482" y="286" width="162" height="48" rx="8"/><text class="txt small" x="521" y="316">查看演示数据</text>
+<text class="txt muted small" x="465" y="365" text-anchor="middle">演示数据独立存放，不进入真实统计、预算、通知或导出。</text><text class="txt blueT small" x="465" y="426" text-anchor="middle">开始一次 Codex / Claude Code / DSH 会话后将自动发现</text></g>
+
+<!-- D -->
+<g transform="translate(1022 630)"><rect class="board" width="930" height="470" rx="16"/><rect class="bar" width="930" height="54" rx="16"/><rect class="bar" y="35" width="930" height="19"/><text class="txt label" x="32" y="34">总览 · 部分失败</text><text class="txt muted small" x="736" y="34">已有结果可用</text>
+<rect class="amber" x="38" y="82" width="854" height="73" rx="10"/><text class="txt amberT label" x="60" y="113">Claude Code 有 17 个文件尚未读取</text><text class="txt amberT small" x="60" y="137">Codex 数据已正常展示；失败来源不会阻塞其他结果。</text><rect class="btn2" x="752" y="96" width="116" height="44" rx="8"/><text class="txt small" x="780" y="124">查看恢复</text>
+<rect class="card" x="38" y="179" width="260" height="116" rx="11"/><text class="txt muted small" x="58" y="210">可用名义成本</text><text class="txt num" x="58" y="253">≈ ¥3,102</text><text class="txt muted small" x="58" y="279">部分覆盖</text>
+<rect class="card" x="316" y="179" width="260" height="116" rx="11"/><text class="txt muted small" x="336" y="210">已导入</text><text class="txt num" x="336" y="253">1.72B</text><text class="txt muted small" x="336" y="279">tokens</text>
+<rect class="card" x="594" y="179" width="298" height="116" rx="11"/><text class="txt muted small" x="614" y="210">受影响范围</text><text class="txt num" x="614" y="253">17 文件</text><text class="txt muted small" x="614" y="279">金额不能确定</text>
+<text class="txt label" x="38" y="335">恢复操作</text><rect class="red" x="38" y="352" width="854" height="70" rx="10"/><text class="txt redT body" x="60" y="382">原因：目录权限已被撤回</text><text class="txt muted small" x="60" y="405">重新授权后从断点继续，不重复导入。</text><rect class="btn" x="748" y="364" width="120" height="44" rx="8"/><text class="txt white small" x="774" y="392">重新授权</text>
+<text class="txt muted small" x="38" y="452">“正常无新增”与“读取失败”使用不同状态，不以一个绿点代替。</text></g>
+</svg>

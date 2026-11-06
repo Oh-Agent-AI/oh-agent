@@ -1,0 +1,10 @@
+# Agent Vitals bundle patch. Exactly one insert row: it mounts this package's
+# glue plugin (index.js), which registers a skill provider on ctx.skills and
+# serves dsh/SKILL.md. The base profile already provides the skill registry
+# (@deepseek-ai/dsh-skill) and the model-facing loader (@deepseek-ai/dsh-tool-skill),
+# so this bundle needs no other rows. The scanner is intentionally NOT bundled —
+# see dsh/README.md for the three hard constraints.
+
+- insert:
+    - id: agent-vitals
+      name: dsh-agent-vitals

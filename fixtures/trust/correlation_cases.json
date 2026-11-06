@@ -1,0 +1,21 @@
+{
+  "schema_version": "trust-correlation-v1",
+  "cases": [
+    {
+      "id": "zcode_complete_chain",
+      "observations": [
+        {"stage":"package_observed","evidence_level":"E1","scope_classes":["git_history"],"destination_class":null,"consent_state":"unavailable","consent_kind":null},
+        {"stage":"credential_observed","evidence_level":"E2","scope_classes":[],"destination_class":"vendor_api","consent_state":"disabled","consent_kind":"indexing"},
+        {"stage":"egress_attempted","evidence_level":"E3","scope_classes":[],"destination_class":"object_storage","consent_state":"unavailable","consent_kind":null}
+      ],
+      "expected": {"finding_types":["SV702","SV705","SV709"],"evidence_links":9}
+    },
+    {
+      "id": "object_storage_without_upload_prep",
+      "observations": [
+        {"stage":"egress_attempted","evidence_level":"E3","scope_classes":[],"destination_class":"object_storage","consent_state":"unavailable","consent_kind":null}
+      ],
+      "expected": {"finding_types":[],"evidence_links":0}
+    }
+  ]
+}

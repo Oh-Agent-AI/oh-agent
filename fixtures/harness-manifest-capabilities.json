@@ -1,0 +1,13 @@
+[
+  {"extension": {"requires": {}}, "error_field": null},
+  {"extension": {"requires": {"recipes": [], "features": []}}, "error_field": null},
+  {"extension": {"min_app_version": "0.0.0"}, "error_field": null},
+  {"extension": {"requires": {"features": [""]}}, "error_field": "requires.features[0]", "problem": "不能为空"},
+  {"extension": {"requires": {"features": [true]}}, "error_field": "requires.features[0]", "problem": "必须是字符串"},
+  {"extension": {"requires": {"features": ["future"]}}, "error_field": "requires.features[0]", "problem": "缺失能力 `future`（支持：[]；最低版本未知）——请升级 app 或换 manifest"},
+  {"extension": {"requires": {"z": [], "a": []}}, "error_field": "requires.z", "problem": "未知字段"},
+  {"extension": {"min_app_version": true}, "error_field": "min_app_version", "problem": "必须是 MAJOR.MINOR.PATCH（无前导零、预发布或构建后缀，各段 <= 4294967295）"},
+  {"extension": {"min_app_version": "1.4.0\n"}, "error_field": "min_app_version", "problem": "必须是 MAJOR.MINOR.PATCH（无前导零、预发布或构建后缀，各段 <= 4294967295）"},
+  {"extension": {"min_app_version": "1.4294967296.0"}, "error_field": "min_app_version", "problem": "必须是 MAJOR.MINOR.PATCH（无前导零、预发布或构建后缀，各段 <= 4294967295）"},
+  {"repeat_features": 65, "extension": {}, "error_field": "requires.features", "problem": "长度必须 0..=64"}
+]

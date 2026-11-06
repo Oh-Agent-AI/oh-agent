@@ -1,0 +1,11 @@
+{
+  "schema_version": "trust-egress-fixture-v1",
+  "harness": "zcode",
+  "observations": [
+    {"stage":"package_observed","evidence_level":"E1","scope_classes":["workspace","git_history"],"destination_class":null},
+    {"stage":"credential_observed","evidence_level":"E2","scope_classes":[],"destination_class":"vendor_api"},
+    {"stage":"egress_attempted","evidence_level":"E3","scope_classes":[],"destination_class":"object_storage"},
+    {"stage":"egress_transmitted","evidence_level":"E4","scope_classes":[],"destination_class":"object_storage"}
+  ],
+  "expected": {"finding_types":["SV702","SV709"],"max_stage":"egress_transmitted","remote_accepted":false}
+}

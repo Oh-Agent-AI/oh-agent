@@ -1,0 +1,696 @@
+[
+  {
+    "id": "verify-city-planning-job",
+    "file": "verify-city-planning-job.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-plan-disk-cache",
+    "file": "verify-city-plan-disk-cache.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-operation-budget",
+    "file": "verify-city-operation-budget.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-joint-site-road",
+    "file": "verify-city-joint-site-road.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-site-registry-scene",
+    "file": "verify-city-site-registry-scene.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-site-registry",
+    "file": "verify-city-site-registry.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-villa-placement",
+    "file": "verify-city-villa-placement.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-model-envelope",
+    "file": "verify-city-model-envelope.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-layout-capacity",
+    "file": "verify-city-layout-capacity.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-layout-envelopes",
+    "file": "verify-city-layout-envelopes.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-layout-placement",
+    "file": "verify-city-layout-placement.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-parcel-frontage",
+    "file": "verify-city-parcel-frontage.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-block-placement",
+    "file": "verify-city-block-placement.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-block-lot-candidates",
+    "file": "verify-city-block-lot-candidates.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-villa-physical",
+    "file": "verify-city-villa-physical.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-model-ground",
+    "file": "verify-city-model-ground.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-road-derived-plan",
+    "file": "verify-city-road-derived-plan.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-block-surface",
+    "file": "verify-city-block-surface.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-shore-plot-access",
+    "file": "verify-city-shore-plot-access.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-shore-plot-access-named",
+    "file": "verify-city-shore-plot-access.mjs",
+    "env": {
+      "CITY_SHORE_NAMED": "1"
+    },
+    "shared": false
+  },
+  {
+    "id": "verify-city-joint-frontage",
+    "file": "verify-city-joint-frontage.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-road-blocks",
+    "file": "verify-city-road-blocks.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-required-placement",
+    "file": "verify-city-required-placement.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-road-admission",
+    "file": "verify-city-road-admission.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-causeway-primary",
+    "file": "verify-city-causeway-primary.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-world",
+    "file": "verify-city-world.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-access-capabilities",
+    "file": "verify-city-access-capabilities.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-endpoint-routing",
+    "file": "verify-city-endpoint-routing.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-road-faces",
+    "file": "verify-city-road-faces.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-radius",
+    "file": "verify-city-radius.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-road-report",
+    "file": "verify-city-road-report.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-react-city-landmarks",
+    "file": "verify-react-city-landmarks.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-react-city-assets",
+    "file": "verify-react-city-assets.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-react-city-geography",
+    "file": "verify-react-city-geography.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-react-city-seaside",
+    "file": "verify-react-city-seaside.mjs",
+    "env": {},
+    "shared": true
+  },
+  {
+    "id": "seaside-tier10",
+    "file": "verify-react-city-seaside.mjs",
+    "env": {
+      "CITY_SEASIDE_TIER": "10"
+    },
+    "shared": true
+  },
+  {
+    "id": "verify-react-city-layout",
+    "file": "verify-react-city-layout.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-react-city-data",
+    "file": "verify-react-city-data.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-react-city-append",
+    "file": "verify-react-city-append.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-react-city-cinematic",
+    "file": "verify-react-city-cinematic.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-react-city-infrastructure",
+    "file": "verify-react-city-infrastructure.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-react-city-road-paint",
+    "file": "verify-react-city-road-paint.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-planning",
+    "file": "verify-city-planning.mjs",
+    "env": {},
+    "shared": true
+  },
+  {
+    "id": "verify-city-cross-engine",
+    "file": "verify-city-cross-engine.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-active",
+    "file": "verify-city-active.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-i18n-catalog",
+    "file": "verify-city-i18n-catalog.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-catalog",
+    "file": "verify-city-catalog.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-context",
+    "file": "verify-city-context.mjs",
+    "env": {},
+    "shared": true
+  },
+  {
+    "id": "verify-city-night",
+    "file": "verify-city-night.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-baseline",
+    "file": "verify-city-baseline.mjs",
+    "env": {},
+    "shared": true
+  },
+  {
+    "id": "verify-city-landmark-baseline",
+    "file": "verify-city-landmark-baseline.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-scene-baseline",
+    "file": "verify-city-scene-baseline.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-culdesac-bulbs",
+    "file": "verify-city-culdesac-bulbs.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-replay-snap",
+    "file": "verify-city-replay-snap.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-constraints",
+    "file": "verify-city-constraints.mjs",
+    "env": {},
+    "shared": true
+  },
+  {
+    "id": "verify-city-models",
+    "file": "verify-city-models.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-physical",
+    "file": "verify-city-physical.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-solve",
+    "file": "verify-city-solve.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-survey",
+    "file": "verify-city-survey.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-intent",
+    "file": "verify-city-intent.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-sitespec",
+    "file": "verify-city-sitespec.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-footprint-geoms",
+    "file": "verify-city-footprint-geoms.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-network-patch",
+    "file": "verify-city-network-patch.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-connect",
+    "file": "verify-city-connect.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-loop",
+    "file": "verify-city-loop.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-landing",
+    "file": "verify-city-landing.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-terrain-height",
+    "file": "verify-city-terrain-height.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-game-scene-lease",
+    "file": "verify-city-game-scene-lease.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-game-session",
+    "file": "verify-city-game-session.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-game-controller",
+    "file": "verify-city-game-controller.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-game-world",
+    "file": "verify-city-game-world.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-game-flight",
+    "file": "verify-city-game-flight.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-game-race",
+    "file": "verify-city-game-race.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-game-profile",
+    "file": "verify-city-game-profile.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-plan-patch",
+    "file": "verify-plan-patch.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-plan-repair-controller",
+    "file": "verify-plan-repair-controller.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-plan-road-rules",
+    "file": "verify-plan-road-rules.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-plan-sites",
+    "file": "verify-plan-sites.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-plan-bulldozer",
+    "file": "verify-plan-bulldozer.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-plan-remap",
+    "file": "verify-plan-remap.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-plan-repair-copy",
+    "file": "verify-plan-repair-copy.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-plan-repair-drivability",
+    "file": "verify-plan-repair-drivability.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-road-standard",
+    "file": "verify-city-road-standard.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-minimap",
+    "file": "verify-city-minimap.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-plan-repair-bridgehead",
+    "file": "verify-plan-repair-bridgehead.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-plan-terrain",
+    "file": "verify-plan-terrain.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-landmark-platforms",
+    "file": "verify-city-landmark-platforms.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-import-boundary",
+    "file": "verify-city-import-boundary.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-driving",
+    "file": "verify-city-driving.mjs"
+  },
+  {
+    "id": "verify-city-car-model",
+    "file": "verify-city-car-model.mjs"
+  },
+  {
+    "id": "verify-city-driving-architecture",
+    "file": "verify-city-driving-architecture.mjs"
+  },
+  {
+    "id": "verify-city-audit-evidence",
+    "file": "verify-city-audit-evidence.mjs"
+  },
+  {
+    "id": "verify-city-audit-planner",
+    "file": "verify-city-audit-planner.mjs"
+  },
+  {
+    "id": "verify-city-road-audit-history",
+    "file": "verify-city-road-audit-history.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-road-audit-ui",
+    "file": "verify-city-road-audit-ui.mjs"
+  },
+  {
+    "id": "verify-city-road-audit-worker",
+    "file": "verify-city-road-audit-worker.mjs"
+  },
+  {
+    "id": "verify-city-driving-release-graph",
+    "file": "verify-city-driving-release-graph.mjs"
+  },
+  {
+    "id": "verify-city-driving-spawns",
+    "file": "verify-city-driving-spawns.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-car-session",
+    "file": "verify-city-car-session.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-car-rendered-collision",
+    "file": "verify-city-car-rendered-collision.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-driving-entry",
+    "file": "verify-city-driving-entry.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-shared-runtime",
+    "file": "verify-city-shared-runtime.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-junction-rings",
+    "file": "verify-city-junction-rings.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-highway-ramps",
+    "file": "verify-city-highway-ramps.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-world-scale",
+    "file": "verify-city-world-scale.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-game-audio-service",
+    "file": "verify-city-game-audio-service.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-runtime-diagnostics",
+    "file": "verify-city-runtime-diagnostics.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-shared-game-ux",
+    "file": "verify-city-shared-game-ux.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-mecha-ux",
+    "file": "verify-city-mecha-ux.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-camera-collision-query",
+    "file": "verify-city-camera-collision-query.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-preparation",
+    "file": "verify-city-preparation.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-driving-mountable",
+    "file": "verify-city-driving-mountable.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-driving-bridge-crossing",
+    "file": "verify-city-driving-bridge-crossing.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-static-world",
+    "file": "verify-city-static-world.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-continuous-driving",
+    "file": "verify-city-continuous-driving.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-driving-collision-differential",
+    "file": "verify-city-driving-collision-differential.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-rotation-budget",
+    "file": "repro-city-tick181-rotation-budget.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-coastal-receivers",
+    "file": "verify-city-coastal-receivers.mjs"
+  }
+]

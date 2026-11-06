@@ -1,0 +1,39 @@
+name: App contracts
+
+on:
+  push:
+    branches: [main, codex/app-layer-city]
+    paths:
+      - 'docs/schemas/*app*'
+      - 'fixtures/app-contracts/**'
+      - 'packages/agent-vitals-app-sdk/**'
+      - 'scripts/*app-contract*.mjs'
+      - 'scripts/app-package-contracts.mjs'
+      - '.github/workflows/app-contracts.yml'
+  pull_request:
+    paths:
+      - 'docs/schemas/*app*'
+      - 'fixtures/app-contracts/**'
+      - 'packages/agent-vitals-app-sdk/**'
+      - 'scripts/*app-contract*.mjs'
+      - 'scripts/app-package-contracts.mjs'
+      - '.github/workflows/app-contracts.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: packages/agent-vitals-app-sdk/package-lock.json
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: packages/agent-vitals-app-sdk
+      - run: npm run verify:contracts
+        working-directory: packages/agent-vitals-app-sdk

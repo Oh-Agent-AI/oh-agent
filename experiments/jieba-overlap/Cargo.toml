@@ -1,0 +1,21 @@
+# 独立 crate，**不属于主构建**。
+#
+# 根 Cargo.toml 没有 `[workspace]`，而 cargo 会自动排除带自己 Cargo.toml 的
+# 嵌套包 —— 实测 `cargo package --list` 里没有 experiments/ 的任何文件，所以
+# 主包不需要为此加 `exclude`。
+#
+# 于是 jieba-rs 只在你主动跑这个实验时才被拉取与编译，扫描器本身仍然是
+# clap / regex / serde / sha2 / walkdir 那五个依赖 —— ADR-002 的结论正是
+# 「先别加」，它不能悄悄进主二进制。
+[package]
+name = "jieba-overlap-experiment"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+jieba-rs = "0.7"
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[profile.release]
+opt-level = 3

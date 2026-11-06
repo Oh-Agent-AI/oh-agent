@@ -1,0 +1,41 @@
+{
+  "name": "agent-vitals-workbench-dev",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "verify:desktop-shell": "node ../../../scripts/verify-react-desktop-shell.mjs",
+    "dev:react": "node ../../../scripts/official-plugins.mjs && vite --config vite.react.config.js --host 127.0.0.1",
+    "dev:browser": "npm run dev:react",
+    "build:browser": "node ../../../scripts/prepare-browser-plugin-preview.mjs",
+    "build": "vite build",
+    "build:react": "vite build --config vite.react.config.js",
+    "verify:city": "node ../../../scripts/verify-city-suite.mjs full",
+    "verify:browser-plugin": "node ../../../scripts/verify-browser-plugin-host.mjs",
+    "verify:city-runtime": "node ../../../scripts/verify-city-migration.mjs && node ../../../scripts/verify-city-frame-surface.mjs && node ../../../scripts/verify-city-film-jobs.mjs && node ../../../scripts/verify-city-locale.mjs && npm run build:browser && npm run verify:browser-plugin && node ../../../scripts/verify-react-city-runtime.mjs",
+    "verify:plugin-architecture": "node ../../../scripts/verify-plugin-diagnostics.mjs && node ../../../scripts/verify-app-harness-data.mjs && node ../../../scripts/verify-plugin-architecture.mjs",
+    "verify:plugin-isolation": "node ../../../scripts/verify-native-plugin-isolation.mjs",
+    "verify:react": "npm run build:react && npx tsc -p react/tsconfig.json --noEmit && node ../../../scripts/verify-react-workbench.mjs && node ../../../scripts/verify-react-i18n-billing.mjs && node ../../../scripts/verify-react-overview-contract.mjs && node ../../../scripts/verify-react-price-card-contract.mjs && node ../../../scripts/verify-react-trend-buckets.mjs &&node ../../../scripts/verify-react-findings-contract.mjs && node ../../../scripts/verify-react-trust-controls-contract.mjs && node ../../../scripts/verify-react-usage-window-contract.mjs && node ../../../scripts/verify-react-sessions-contract.mjs && node ../../../scripts/verify-react-session-insights-contract.mjs && node ../../../scripts/verify-react-events-contract.mjs && node ../../../scripts/verify-react-settings-contract.mjs && node ../../../scripts/verify-react-macos-build-script.mjs && node ../../../scripts/verify-react-tauri-bundle.mjs",
+    "verify": "npm run build && node ../../../scripts/verify-workbench-overview-contract.mjs && node ../../../scripts/verify-workbench-v010-closeout.mjs && node ../../../scripts/verify-workbench-visibility.mjs",
+    "verify:city:full": "node ../../../scripts/verify-city-suite.mjs full",
+    "verify:city:fast": "node ../../../scripts/verify-city-suite.mjs fast",
+    "verify:city:module": "node ../../../scripts/verify-city-suite.mjs module"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "esbuild": "^0.25.12",
+    "playwright": "1.62.1",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
+    "vite": "^6.1.0"
+  },
+  "dependencies": {
+    "@types/three": "^0.186.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "three": "^0.186.1"
+  }
+}

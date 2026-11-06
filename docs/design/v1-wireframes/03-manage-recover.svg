@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="1200" viewBox="0 0 2000 1200" role="img" aria-labelledby="t d">
+<title id="t">Agent Vitals v1.0.0 管理、提醒与恢复线框</title><desc id="d">展示待处理中心、数据源管理、设置中心，以及菜单栏和重算回执场景。</desc>
+<defs><style>
+.bg{fill:#f4f6f8}.board{fill:#fff;stroke:#b7bec8;stroke-width:2}.bar{fill:#e9edf2}.card{fill:#fff;stroke:#aeb6c2;stroke-width:2}.soft{fill:#f5f7f9;stroke:#c5cbd3;stroke-width:1.5}.blue{fill:#eef4ff;stroke:#386fca;stroke-width:2}.green{fill:#eff9f3;stroke:#3b8b59;stroke-width:2}.amber{fill:#fff7e3;stroke:#a96d00;stroke-width:2}.red{fill:#fff1f1;stroke:#b43c3c;stroke-width:2}.btn{fill:#222b38}.btn2{fill:#fff;stroke:#7f8996;stroke-width:1.5}.txt{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;fill:#202733}.muted{fill:#687384}.h1{font-size:30px;font-weight:700}.h2{font-size:22px;font-weight:700}.body{font-size:17px}.small{font-size:14px}.tiny{font-size:12px}.label{font-size:18px;font-weight:600}.num{font-size:26px;font-weight:700}.white{fill:#fff}.blueT{fill:#285daf}.greenT{fill:#2f7249}.amberT{fill:#8b5a00}.redT{fill:#a22b2b}.line{stroke:#87919f;stroke-width:2.5;fill:none}.grid{stroke:#ccd1d8;stroke-width:1}.dash{stroke:#a8b0bb;stroke-width:1.5;stroke-dasharray:6 5;fill:none}
+</style></defs>
+<rect class="bg" width="2000" height="1200"/><text class="txt h1" x="48" y="55">03 · 校准管理、安静提醒与失败恢复</text><text class="txt muted body" x="48" y="85">事项按价值排序；设置不阻塞首用；每个失败状态都给出范围、原因和下一步。</text>
+
+<!-- Action center -->
+<g transform="translate(48 120)"><rect class="board" width="930" height="470" rx="16"/><rect class="bar" width="930" height="54" rx="16"/><rect class="bar" y="35" width="930" height="19"/><text class="txt label" x="32" y="34">待处理</text><text class="txt muted small" x="742" y="34">3 项 · 已归并重复问题</text>
+<text class="txt h2" x="38" y="96">现在最值得处理</text>
+<rect class="amber" x="38" y="118" width="854" height="96" rx="10"/><text class="txt amberT label" x="60" y="150">确认 1.53B tokens 的计费方式</text><text class="txt amberT small" x="60" y="176">影响名义估算 ¥X,XXX · 4 组路由 · 当前继续按量估算</text><rect class="btn" x="733" y="142" width="138" height="46" rx="8"/><text class="txt white small" x="762" y="171">开始确认</text>
+<rect class="card" x="38" y="232" width="854" height="76" rx="10"/><text class="txt label" x="60" y="263">Claude Code 有 17 个文件权限不足</text><text class="txt muted small" x="60" y="288">影响 09/08—09/10 的覆盖</text><text class="txt blueT small" x="790" y="273">恢复 →</text>
+<rect class="card" x="38" y="324" width="854" height="76" rx="10"/><text class="txt label" x="60" y="355">147.4M tokens 暂无可用价卡</text><text class="txt muted small" x="60" y="380">可检查价格更新，或保持未计价</text><text class="txt blueT small" x="754" y="365">查看价格 →</text>
+<text class="txt muted small" x="38" y="438">没有可行动事项时显示平静摘要；“稍后”事项不会重复抢占首屏。</text></g>
+
+<!-- Sources -->
+<g transform="translate(1022 120)"><rect class="board" width="930" height="470" rx="16"/><rect class="bar" width="930" height="54" rx="16"/><rect class="bar" y="35" width="930" height="19"/><text class="txt label" x="32" y="34">数据源</text><text class="txt muted small" x="710" y="34">最近扫描 16:07</text><rect class="btn2" x="820" y="12" width="78" height="32" rx="7"/><text class="txt small" x="842" y="33">重扫</text>
+<rect class="green" x="38" y="78" width="854" height="86" rx="10"/><text class="txt label" x="60" y="109">Codex</text><text class="txt greenT small" x="742" y="109">正常 · 49 个会话</text><text class="txt muted small" x="60" y="139">标准位置 · 最近记录 16:02 · 导入至 16:07</text><text class="txt blueT small" x="815" y="139">管理</text>
+<rect class="red" x="38" y="180" width="854" height="104" rx="10"/><text class="txt label" x="60" y="211">Claude Code</text><text class="txt redT small" x="734" y="211">权限不足 · 部分失败</text><text class="txt muted small" x="60" y="240">17 个文件未读取；已导入结果仍可使用，不会重复记账。</text><rect class="btn" x="742" y="225" width="128" height="44" rx="8"/><text class="txt white small" x="770" y="253">重新授权</text>
+<rect class="soft" x="38" y="300" width="854" height="78" rx="10"/><text class="txt label" x="60" y="331">DeepSeek Harness</text><text class="txt muted small" x="766" y="331">未发现安装</text><text class="txt muted small" x="60" y="359">不会计入覆盖缺失，也不会制造警告。</text>
+<rect class="btn2" x="38" y="399" width="150" height="44" rx="8"/><text class="txt small" x="69" y="427">添加自定义位置</text><text class="txt blueT small" x="210" y="427">读取范围与隐私说明</text></g>
+
+<!-- Settings -->
+<g transform="translate(48 630)"><rect class="board" width="930" height="470" rx="16"/><rect class="bar" width="930" height="54" rx="16"/><rect class="bar" y="35" width="930" height="19"/><text class="txt label" x="32" y="34">设置</text><text class="txt muted small" x="770" y="34">可随时修改</text>
+<rect class="soft" x="38" y="80" width="205" height="350" rx="10"/><text class="txt label blueT" x="60" y="116">计费与套餐</text><text class="txt body" x="60" y="158">账单记录</text><text class="txt body" x="60" y="200">预算与提醒</text><text class="txt body" x="60" y="242">价格与显示</text><text class="txt body" x="60" y="284">隐私与数据</text><text class="txt body" x="60" y="326">关于与诊断</text>
+<text class="txt h2" x="275" y="100">计费与套餐</text><text class="txt muted small" x="275" y="127">套餐只改变归因，不修改原始 tokens。</text>
+<rect class="card" x="275" y="150" width="617" height="86" rx="10"/><text class="txt label" x="297" y="181">OpenAI · ChatGPT Plus</text><text class="txt muted small" x="297" y="207">月付 · $20 · 09/01 起 · 官方路由范围</text><text class="txt blueT small" x="824" y="195">编辑</text>
+<rect class="amber" x="275" y="251" width="617" height="86" rx="10"/><text class="txt amberT label" x="297" y="282">Custom route · 计费方式待确认</text><text class="txt amberT small" x="297" y="308">1.12B tokens · 当前按原厂 API 价估算</text><text class="txt blueT small" x="789" y="296">确认计费方式</text>
+<rect class="btn" x="275" y="357" width="150" height="46" rx="8"/><text class="txt white small" x="305" y="386">添加计费关系</text><text class="txt muted small" x="446" y="386">历史声明可查看、修订和撤销</text></g>
+
+<!-- Menubar + recalculation -->
+<g transform="translate(1022 630)"><rect class="board" width="930" height="470" rx="16"/><rect class="bar" width="930" height="54" rx="16"/><rect class="bar" y="35" width="930" height="19"/><text class="txt label" x="32" y="34">菜单栏与结果回执</text>
+<rect class="soft" x="38" y="82" width="396" height="327" rx="14"/><text class="txt h2" x="62" y="119">今日 289.8M tokens</text><text class="txt muted small" x="62" y="145">更新于 16:07 · 自动同步正常</text><line class="grid" x1="62" y1="162" x2="410" y2="162"/>
+<text class="txt body" x="62" y="196">今日名义成本</text><text class="txt label" x="410" y="196" text-anchor="end">≈ ¥165.25</text><text class="txt body" x="62" y="228">本月名义成本</text><text class="txt label" x="410" y="228" text-anchor="end">≈ ¥4,716.26</text>
+<rect class="amber" x="62" y="251" width="348" height="62" rx="9"/><text class="txt amberT small" x="78" y="277">1 项计费方式待确认</text><text class="txt blueT small" x="78" y="299">打开对应范围 →</text>
+<text class="txt body" x="62" y="348">打开工作台…</text><text class="txt body" x="62" y="380">立即同步</text>
+<rect class="green" x="466" y="82" width="426" height="146" rx="12"/><text class="txt greenT h2" x="490" y="118">计费方式已更新</text><text class="txt body" x="490" y="150">18 个会话已归为“订阅覆盖”</text><text class="txt muted small" x="490" y="178">按量估算移出 ¥X,XXX · 结果版本 #42</text><text class="txt blueT small" x="490" y="207">查看变化　　撤销</text>
+<rect class="red" x="466" y="249" width="426" height="160" rx="12"/><text class="txt redT h2" x="490" y="285">重算尚未完成</text><text class="txt body" x="490" y="318">配置已保存，旧结果仍可查看。</text><text class="txt muted small" x="490" y="346">原因：磁盘空间不足；不会展示半新半旧金额。</text><rect class="btn" x="490" y="362" width="104" height="36" rx="7"/><text class="txt white small" x="516" y="386">释放后重试</text><text class="txt blueT small" x="614" y="386">导出诊断</text>
+<text class="txt muted small" x="38" y="447">通知默认不暴露项目标题、路径和金额；无事项时不重复打扰。</text></g>
+</svg>

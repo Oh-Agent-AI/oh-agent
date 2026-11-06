@@ -1,0 +1,13 @@
+{"timestamp":"2026-07-25T11:19:35.404Z","type":"session_meta","payload":{"session_id":"codex-legacy-0001","id":"codex-legacy-0001","history_mode":"legacy","cli_version":"0.146.0-alpha.3.1","cwd":"/Users/alice/repo"}}
+{"timestamp":"2026-07-25T11:19:36.000Z","type":"turn_context","payload":{"turn_id":"t1","cwd":"/Users/alice/repo","workspace_roots":["/Users/alice/repo"],"model":"gpt-5.6-sol","approval_policy":"on-request","sandbox_policy":"workspace-write"}}
+{"timestamp":"2026-07-25T11:19:37.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}
+{"timestamp":"2026-07-25T11:19:38.000Z","type":"event_msg","payload":{"type":"mcp_tool_call_end","turn_id":"t1"}}
+{"timestamp":"2026-07-25T11:19:39.000Z","type":"event_msg","payload":{"type":"web_search_end","turn_id":"t1"}}
+{"timestamp":"2026-07-25T11:19:40.000Z","type":"response_item","payload":{"type":"custom_tool_call"}}
+{"timestamp":"2026-07-25T11:19:41.000Z","type":"response_item","payload":{"type":"custom_tool_call_output"}}
+{"timestamp":"2026-07-25T11:19:42.000Z","type":"event_msg","payload":{"type":"patch_apply_end","turn_id":"t1"}}
+{"timestamp":"2026-07-25T11:19:43.000Z","type":"event_msg","payload":{"type":"context_compacted","turn_id":"t1"}}
+{"timestamp":"2026-07-25T11:19:44.000Z","type":"event_msg","payload":{"type":"sub_agent_activity","turn_id":"t1"}}
+{"timestamp":"2026-07-25T11:19:45.000Z","type":"event_msg","payload":{"type":"thread_settings_applied","turn_id":"t1","thread_settings":{"approval_policy":"Never"}}}
+{"timestamp":"2026-07-25T11:19:46.000Z","type":"event_msg","payload":{"type":"token_count","turn_id":"t1","info":{"total_token_usage":120000,"last_token_usage":60000,"model_context_window":128000},"rate_limits":{"plan_type":"plus"}}}
+{"timestamp":"2026-07-25T11:19:47.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1"}}

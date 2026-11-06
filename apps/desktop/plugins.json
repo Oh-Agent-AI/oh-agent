@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "plugins": [
+    {
+      "id": "city",
+      "name": "City",
+      "entry": "plugins/AgentCity.plugin/ui/index.html",
+      "commandNamespace": "city",
+      "dataProjections": ["city:v2", "city:v3", "city-settings:v1", "harnesses:v1"],
+      "stateKeys": ["flight-profile:v1", "game-links:v1", "mecha-replays:v1"],
+      "allowLocalExports": true,
+      "navigationTargets": ["session"],
+      "hostEvents": ["building", "squad"],
+      "remoteCapabilities": [{
+        "id": "mecha:v1",
+        "methods": ["match.snapshot", "plan.submit", "match.concede", "match.close"],
+        "events": ["match.closed", "match.replaced", "turn.resolved"]
+      }, {
+        "id": "mecha:v2",
+        "methods": ["match.snapshot", "deployment.submit", "plan.submit", "match.concede", "match.close"],
+        "events": ["match.closed", "match.replaced", "turn.resolved"]
+      }, {
+        "id": "mecha:v3",
+        "methods": ["match.snapshot", "deployment.submit", "plan.submit", "match.concede-v2", "match.close"],
+        "events": ["match.closed", "match.replaced", "turn.resolved"]
+      }],
+      "source": "apps/agent-city/ui",
+      "debugProbeMarker": "__CITY_PROBE_SPIN__"
+    }
+  ]
+}

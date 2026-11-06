@@ -1,0 +1,16 @@
+[package]
+name = "agent-vitals-probe"
+version = "1.4.0"
+edition = "2021"
+rust-version = "1.74"
+
+# 「测试」tab 的 runner 面（WORKBENCH_TEST_TAB_SPEC §6）：L0/L1 探针执行、
+# consent/预算守卫、job 生命周期。判定纯逻辑在 agent-vitals-domain::probe，
+# 存储在 agent-vitals-data::probe——本 crate 只做进程编排与凭据的**发起期**
+# 读取（内存直传子进程 env，永不落盘，见 credentials.rs）。
+
+[dependencies]
+agent-vitals-domain = { path = "../agent-vitals-domain" }
+agent-vitals-data = { path = "../agent-vitals-data" }
+serde_json = { version = "1", features = ["preserve_order"] }
+rusqlite = { version = "0.31", features = ["bundled"] }

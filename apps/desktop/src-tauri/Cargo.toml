@@ -1,0 +1,61 @@
+[package]
+name = "agent-vitals-menubar"
+version = "1.0.0-beta.4"
+edition = "2021"
+description = "agent-vitals 菜单栏：当日/本月成本与预算（Tauri 2）"
+
+# 独立 workspace：不混进根 workspace 的 default-members —— tauri 依赖树庞大，
+# 根 cargo build/test/clippy 的 144 测试与 CI 门禁不碰它。见 docs/PET_PREFLIGHT.md
+# §阶段 F（"独立 src-tauri 工程，不入 workspace default-members"）。它从根 workspace
+# 里 opt-out，用 [workspace] 空表声明自己是独立工作区。
+[workspace]
+
+# 发布包不应携带桌面开发机的源码路径或调试信息；桌面工程是独立
+# workspace，根仓库的 release profile 不会自动作用到这里。
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+debug = false
+
+[lib]
+name = "agent_vitals_menubar_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[features]
+plugin-isolation-probe = ["tauri/unstable"]
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png", "unstable"] }
+tauri-plugin-notification = "2.3.0"
+# 计价/聚合本体在 domain —— 菜单栏不许长第四份拷贝（CLAUDE.md 的 cost 锁步）。本
+# crate 只调 domain::cost 的纯函数，不放任何定价/覆盖率判断。
+agent-vitals-domain = { path = "../../../crates/agent-vitals-domain" }
+# v0.9 Stage 0.6：工作台 Data Query API 面（spec §3.1 依赖表：apps 只消费
+# Runtime 的版本化 DTO）。`data_monthly_summary`/`data_daily_summary` 经
+# `SummaryRepository` trait 调 runtime 的 `JsonSummaryRepository`——托盘不
+# new 具体类型、不直读 state JSON（overview.rs 的既有直读是 v1.3 遗留，
+# spec §7 的目标态是"Tauri 只调 daily_summary/monthly_summary 等 API"）。
+agent-vitals-data = { path = "../../../crates/agent-vitals-data" }
+rusqlite = { version = "0.31", features = ["bundled"] }
+# P2 watcher（spec §9-P2，2026-09-22 方案 A）：桌面显式启用 notify 依赖——
+# CLI / wasm 的默认构建零该依赖（NoopWatcher，tick 周期兜底）。
+agent-vitals-harnesses = { path = "../../../crates/agent-vitals-harnesses" }
+agent-vitals-runtime = { path = "../../../crates/agent-vitals-runtime", features = ["watcher"] }
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+rfd = "0.15"
+reqwest = { version = "0.13.4", default-features = true, features = ["json"] }
+tokio = { version = "1", features = ["time", "sync", "macros"] }
+tokio-websockets = { version = "0.13.3", features = ["client", "rustls-platform-verifier", "fastrand", "sha1_smol"] }
+futures-util = { version = "0.3", features = ["sink"] }
+getrandom = "0.3"
+# 应用内版本检查按 semver 优先级比较 app-v 标签（beta.10 > beta.9 > …，1.0.0 > 1.0.0-beta.N）。
+semver = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"

@@ -1,0 +1,15 @@
+{
+  "metadata_version": 1,
+  "protocol_version": 1,
+  "projections": [
+    {
+      "id": "city",
+      "version": 1,
+      "face": "app-local",
+      "request_schema": "city-v1-app-local-request.json",
+      "response_schema": "city-v1-app-local-response.json",
+      "error_schema": "app-projection-error-v1.json",
+      "max_page_size": 500
+    }
+  ]
+}

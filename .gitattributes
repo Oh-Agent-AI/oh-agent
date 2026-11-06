@@ -1,0 +1,5 @@
+# 跨平台一致的换行，避免 Windows 上提交出 CRLF 噪声
+* text=auto eol=lf
+
+# Vite bundles preserve GLSL literal whitespace; inspect their source modules.
+website/landing/city3d/assets/*.js linguist-generated=true whitespace=-blank-at-eol,-space-before-tab

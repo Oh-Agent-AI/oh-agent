@@ -1,0 +1,171 @@
+{
+  "data": {
+    "schema_version": 1,
+    "axis": {
+      "unit": "assistant_call",
+      "turn_starts": 0,
+      "leading_step": false,
+      "fallback": "few_turn_starts",
+      "steps": [
+        {
+          "index": 1,
+          "started_at_ms": 1790000001000,
+          "input": {
+            "cache_read": 49000,
+            "cache_write": 500,
+            "uncached_input": 500
+          },
+          "output": 800,
+          "input_peak": 50000,
+          "calls": 1,
+          "model_ids": [
+            "claude-sonnet-5"
+          ],
+          "tools": {
+            "succeeded": 0,
+            "failed": 0,
+            "cancelled": 0,
+            "unknown": 0
+          },
+          "notes": [],
+          "ended_at_ms": 1790000001000,
+          "hit_rate": 0.98
+        },
+        {
+          "index": 2,
+          "started_at_ms": 1790000002000,
+          "input": {
+            "cache_read": 49000,
+            "cache_write": 500,
+            "uncached_input": 500
+          },
+          "output": 800,
+          "input_peak": 50000,
+          "calls": 1,
+          "model_ids": [
+            "claude-sonnet-5"
+          ],
+          "tools": {
+            "succeeded": 0,
+            "failed": 0,
+            "cancelled": 0,
+            "unknown": 0
+          },
+          "notes": [],
+          "ended_at_ms": 1790000002000,
+          "idle_before_ms": 1000,
+          "hit_rate": 0.98
+        },
+        {
+          "index": 3,
+          "started_at_ms": 1790000003000,
+          "input": {
+            "cache_read": 49000,
+            "cache_write": 500,
+            "uncached_input": 500
+          },
+          "output": 800,
+          "input_peak": 50000,
+          "calls": 1,
+          "model_ids": [
+            "claude-sonnet-5"
+          ],
+          "tools": {
+            "succeeded": 0,
+            "failed": 0,
+            "cancelled": 0,
+            "unknown": 0
+          },
+          "notes": [],
+          "ended_at_ms": 1790000003000,
+          "idle_before_ms": 1000,
+          "hit_rate": 0.98
+        },
+        {
+          "index": 4,
+          "started_at_ms": 1790000121000,
+          "input": {
+            "cache_read": 49000,
+            "cache_write": 500,
+            "uncached_input": 500
+          },
+          "output": 800,
+          "input_peak": 50000,
+          "calls": 1,
+          "model_ids": [
+            "claude-sonnet-5"
+          ],
+          "tools": {
+            "succeeded": 0,
+            "failed": 0,
+            "cancelled": 0,
+            "unknown": 0
+          },
+          "notes": [],
+          "ended_at_ms": 1790000121000,
+          "idle_before_ms": 118000,
+          "hit_rate": 0.98
+        },
+        {
+          "index": 5,
+          "started_at_ms": 1790000122000,
+          "input": {
+            "cache_read": 49000,
+            "cache_write": 500,
+            "uncached_input": 500
+          },
+          "output": 800,
+          "input_peak": 50000,
+          "calls": 1,
+          "model_ids": [
+            "claude-sonnet-5"
+          ],
+          "tools": {
+            "succeeded": 0,
+            "failed": 0,
+            "cancelled": 0,
+            "unknown": 0
+          },
+          "notes": [],
+          "ended_at_ms": 1790000122000,
+          "idle_before_ms": 1000,
+          "hit_rate": 0.98
+        }
+      ],
+      "unplaced": {
+        "usage_facts": 0,
+        "workflow_events": 0
+      }
+    },
+    "session": {
+      "calls": 5,
+      "input": {
+        "cache_read": 245000,
+        "cache_write": 2500,
+        "uncached_input": 2500
+      },
+      "output": 4000,
+      "nominal_cost_reason": "no_pricing_snapshot"
+    },
+    "diagnostics": [],
+    "safety": {
+      "count": 0,
+      "critical": 0,
+      "rules": []
+    },
+    "quality": {
+      "legacy_fingerprints": 0
+    },
+    "lanes": {
+      "consumption": {
+        "state": "available",
+        "coverage": 1.0
+      },
+      "tools": {
+        "state": "unavailable",
+        "reason": "no_data_in_session"
+      }
+    },
+    "harness": "claude-code"
+  }
+}

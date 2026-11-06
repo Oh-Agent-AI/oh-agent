@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="512" height="512" role="img" aria-labelledby="title desc">
+  <title id="title">Swept Crest v2C — Feather Slit</title>
+  <desc id="desc">The Swept Crest mark with a compact curved feather slit for minimal small-size detail.</desc>
+  <path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M20 81C21 68 25 58 33 51C30 45 30 38 33 31L27 24L47 34C53 32 59 32 65 35C72 38 76 43 78 49L84 51L78 55C74 66 64 72 52 72C42 72 34 68 28 62C25 68 24 74 24 81H20ZM68.2 45A3.2 3.2 0 1 1 61.8 45A3.2 3.2 0 1 1 68.2 45ZM41 43C48 44 52 48 52 53C52 58 48 62 42 64C45 60 46 57 45 53C45 49 42 46 38 45C39 44 40 43 41 43Z"/>
+  <path fill="currentColor" d="M76 47L88 50V53L76 57Z"/>
+  <circle cx="94" cy="51.5" r="2.8" fill="currentColor"/>
+</svg>

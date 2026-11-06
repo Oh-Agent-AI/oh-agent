@@ -1,0 +1,6 @@
+{"type":"user","uuid":"m1","timestamp":"2026-08-20T14:27:00Z","cwd":"/repo","message":{"id":"m1","model":"claude-sonnet-4-5","content":"修复这个 bug"}}
+{"type":"assistant","uuid":"m2","timestamp":"2026-08-20T14:27:05Z","cwd":"/repo","message":{"id":"m2","model":"claude-sonnet-4-5","content":[{"type":"tool_use","id":"call1","name":"Bash","input":{"command":"ls -la"}}],"usage":{"input_tokens":1,"output_tokens":1}}}
+{"type":"user","uuid":"m3","timestamp":"2026-08-20T14:27:08Z","cwd":"/repo","message":{"id":"m3","content":[{"type":"tool_result","tool_use_id":"call1","content":"done","is_error":true}]}}
+{"type":"assistant","uuid":"m4","timestamp":"2026-08-20T14:27:12Z","cwd":"/repo","message":{"id":"m4","model":"claude-sonnet-4-5","content":[{"type":"tool_use","id":"call2","name":"Write","input":{"file_path":"/repo/x.rs","content":"fn main() {}"}}],"usage":{"input_tokens":1,"output_tokens":1}}}
+{"type":"user","uuid":"m5","timestamp":"2026-08-20T14:27:15Z","cwd":"/repo","message":{"id":"m5","content":[{"type":"tool_result","tool_use_id":"call2","content":"done"}]}}
+{"type":"ai-title","uuid":"t1","timestamp":"2026-08-20T14:30:00Z","cwd":"/repo","aiTitle":"我的会话"}

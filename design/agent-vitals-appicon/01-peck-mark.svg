@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="512" height="512" role="img" aria-labelledby="title desc">
+  <title id="title">Agent Vitals Peck Mark</title>
+  <desc id="desc">A compact geometric woodpecker profile reaching toward a diagnostic node.</desc>
+  <defs>
+    <mask id="eye-cutout">
+      <rect width="100" height="100" fill="white"/>
+      <circle cx="67" cy="45" r="3.5" fill="black"/>
+    </mask>
+  </defs>
+  <path fill="currentColor" mask="url(#eye-cutout)" d="M20 80C21 67 25 57 34 51C31 45 30 38 32 30L44 36L48 22L57 35C68 35 77 41 80 48L91 52L80 56C76 67 66 73 54 73C43 73 34 68 28 61C25 66 24 72 24 80H20Z"/>
+  <path fill="currentColor" d="M78 44L93 52L78 59Z"/>
+  <circle cx="97" cy="52" r="2.5" fill="currentColor"/>
+</svg>

@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude IP 风险自检</title>
+<meta name="description" content="检测访问 Claude 时的出口 IP、信任分、代理/机房标记、DNS 与 WebRTC 泄漏及设备指纹。全部检测在浏览器本地完成，无任何数据上报。">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <span class="brand-dot"></span>
+      <h1>Claude IP 风险自检</h1>
+      <span class="brand-sub">自托管复刻版</span>
+    </div>
+    <button id="themeToggle" class="btn ghost" type="button" title="切换主题">🌓 主题</button>
+  </div>
+</header>
+
+<main class="container">
+
+  <!-- IPv6 警告横幅（条件显示） -->
+  <div id="ipv6Banner" class="banner warn hidden">
+    <strong>⚠ 当前 Claude 出口为 IPv6 环境</strong>
+    <span>不建议采用 IPv6 访问 Claude / Claude Code：IPv6 段更容易触发风控与封号，且部分代理不覆盖 v6。建议在代理客户端强制 IPv4 出口。</span>
+  </div>
+
+  <!-- 三个出口 IP -->
+  <section class="card">
+    <div class="card-head">
+      <h2>出口 IP</h2>
+      <button id="rerunAll" class="btn primary" type="button">↻ 重新检测</button>
+    </div>
+    <div class="ip-grid">
+      <div class="ip-box" id="boxChina">
+        <div class="ip-label">国内服务视角出口 <span class="hint" title="经由 myip.ipip.net 观测，近似『国内直连出口』；分流用户此处通常显示本地宽带 IP">?</span></div>
+        <div class="ip-value" data-slot="chinaIp">检测中…</div>
+        <div class="ip-meta" data-slot="chinaMeta">—</div>
+      </div>
+      <div class="ip-box" id="boxCf">
+        <div class="ip-label">Cloudflare 出口 <span class="hint" title="Cloudflare 边缘观测到的来源 IP 与接入点">?</span></div>
+        <div class="ip-value" data-slot="cfIp">检测中…</div>
+        <div class="ip-meta" data-slot="cfMeta">—</div>
+      </div>
+      <div class="ip-box primary" id="boxClaude">
+        <div class="ip-label">Claude AI 出口 <span class="hint" title="claude.ai 的 Cloudflare 边缘（/cdn-cgi/trace）观测到的来源 IP，即 Claude 实际看到的你">?</span></div>
+        <div class="ip-value big" data-slot="claudeIp">检测中…</div>
+        <div class="ip-meta" data-slot="claudeMeta">—</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 信任分 -->
+  <section class="card">
+    <div class="card-head"><h2>信任分</h2><span class="tag muted">规则透明 · 本地计算</span></div>
+    <div class="gauge-wrap">
+      <div class="gauge">
+        <div class="gauge-track">
+          <div class="gauge-marker" id="gaugeMarker" style="left:0%"></div>
+        </div>
+        <div class="gauge-scale">
+          <span>0 高危</span><span>50</span><span>75</span><span>100 可信</span>
+        </div>
+      </div>
+      <div class="gauge-score">
+        <div class="score-num" id="scoreNum">—</div>
+        <div class="score-zone" id="scoreZone">评分中…</div>
+      </div>
+    </div>
+    <ul class="reasons" id="scoreReasons"></ul>
+    <p class="footnote">评分由下方各项信号在本地按固定规则计算：代理/VPN/Tor 标记 −45，机房 IP −25，浏览器地区与出口国家不一致 −10，IPv6 出口 −10，DNS 出口与代理出口不一致 −5。满分 100，仅代表经验风险，不构成任何保证。</p>
+  </section>
+
+  <!-- IP 属性 -->
+  <section class="card">
+    <div class="card-head"><h2>IP 属性（Claude 出口）</h2></div>
+    <div class="kv-grid" id="ipAttrs">
+      <div class="kv"><div class="k">地区 / 城市</div><div class="v" data-slot="region">检测中…</div></div>
+      <div class="kv"><div class="k">IP 类型</div><div class="v" data-slot="ipType">检测中…</div></div>
+      <div class="kv"><div class="k">ASN</div><div class="v" data-slot="asn">检测中…</div></div>
+      <div class="kv"><div class="k">ISP / 组织</div><div class="v" data-slot="isp">检测中…</div></div>
+    </div>
+    <p class="footnote">「住宅 / 机房 / 移动」依据情报库标记判定；「原生」为近似判定：Cloudflare 地理库（trace 的 loc）与 geo 库国家一致视为原生，不一致可能为广播段。均以 Claude 出口 IP 为准。</p>
+  </section>
+
+  <!-- 安全检测 -->
+  <section class="card">
+    <div class="card-head"><h2>安全检测</h2><span class="tag muted" id="intelSource">数据源：—</span></div>
+    <div class="badge-row" id="secBadges">
+      <div class="sec-badge" data-sec="proxy"><span class="sec-name">VPN / 代理 / Tor</span><span class="sec-state" data-slot="state">检测中</span></div>
+      <div class="sec-badge" data-sec="hosting"><span class="sec-name">机房 IP</span><span class="sec-state" data-slot="state">检测中</span></div>
+      <div class="sec-badge" data-sec="warp"><span class="sec-name">Cloudflare WARP</span><span class="sec-state" data-slot="state">检测中</span></div>
+      <div class="sec-badge" data-sec="crawler"><span class="sec-name">爬虫标记</span><span class="sec-state" data-slot="state">不支持</span></div>
+      <div class="sec-badge" data-sec="abuse"><span class="sec-name">滥用记录</span><span class="sec-state" data-slot="state">不支持</span></div>
+    </div>
+    <p class="footnote">免费数据源（ip-api）仅区分 proxy/hosting/mobile，不单独提供 Tor、爬虫与滥用记录——如实标注「不支持」而不是猜测。接入 IPQS / ipinfo 等商业源后可补全。</p>
+  </section>
+
+  <!-- Claude 可用性 -->
+  <section class="card">
+    <div class="card-head">
+      <h2>Claude 可用性</h2>
+      <button id="rerunLatency" class="btn ghost" type="button">↻ 刷新延迟</button>
+    </div>
+    <div class="lat-row" id="latClaude">
+      <span class="lat-host">claude.ai</span>
+      <span class="lat-val" data-slot="val">检测中…</span>
+      <span class="lat-note" data-slot="note"></span>
+    </div>
+    <div class="lat-row" id="latAnthropic">
+      <span class="lat-host">www.anthropic.com</span>
+      <span class="lat-val" data-slot="val">检测中…</span>
+      <span class="lat-note" data-slot="note"></span>
+    </div>
+    <p class="footnote">对站点 favicon 发起 3 次图片探测取中位数。亚洲访问美国机房 &gt;100ms 属正常；显示「不可达」通常意味着当前网络未走代理或代理节点故障。</p>
+  </section>
+
+  <!-- DNS 泄漏 -->
+  <section class="card">
+    <div class="card-head"><h2>DNS 泄漏检测</h2><span class="tag muted">edns.ip-api.com</span></div>
+    <div class="leak-grid">
+      <div class="kv"><div class="k">状态</div><div class="v" data-slot="dnsState">检测中…</div></div>
+      <div class="kv"><div class="k">DNS 解析器出口</div><div class="v mono" data-slot="dnsIp">—</div></div>
+      <div class="kv"><div class="k">解析器归属</div><div class="v" data-slot="dnsGeo">—</div></div>
+    </div>
+    <p class="footnote" id="dnsExplain" data-slot="dnsExplain">原理：访问 edns.ip-api.com 会 302 到随机子域，强制你的 DNS 解析器向权威 NS 发起查询，从而暴露解析器出口。若浏览器已走代理而解析器出口仍是本地 ISP，即存在 DNS 泄漏（真实归属暴露给每个被解析的域名）。</p>
+  </section>
+
+  <!-- WebRTC / UDP 泄漏 -->
+  <section class="card">
+    <div class="card-head"><h2>WebRTC / UDP 泄漏检测</h2></div>
+    <div class="leak-grid">
+      <div class="kv"><div class="k">状态</div><div class="v" data-slot="rtcState">检测中…</div></div>
+      <div class="kv"><div class="k">UDP 出口 IP</div><div class="v mono" data-slot="rtcIp">—</div></div>
+      <div class="kv"><div class="k">本机候选</div><div class="v" data-slot="rtcLocal">—</div></div>
+    </div>
+    <p class="footnote" id="rtcExplain" data-slot="rtcExplain">通过 WebRTC 收集 ICE 候选获得 UDP 出口（STUN 反射地址）。若 UDP 出口 ≠ Claude 出口，说明代理未覆盖 UDP 流量。现代浏览器会用 mDNS 域名混淆 host 候选，属正常隐私保护，非故障。</p>
+  </section>
+
+  <!-- 设备指纹 -->
+  <section class="card">
+    <div class="card-head"><h2>设备指纹</h2><span class="tag muted">本地计算 · 不上报</span></div>
+    <div class="kv-grid" id="fpGrid">
+      <div class="kv"><div class="k">时区</div><div class="v" data-slot="tz">—</div></div>
+      <div class="kv"><div class="k">语言 / 地区</div><div class="v" data-slot="lang">—</div></div>
+      <div class="kv"><div class="k">系统 / 浏览器</div><div class="v" data-slot="os">—</div></div>
+      <div class="kv"><div class="k">触摸 / 指针</div><div class="v" data-slot="touch">—</div></div>
+      <div class="kv"><div class="k">网络类型</div><div class="v" data-slot="net">—</div></div>
+      <div class="kv"><div class="k">DNT</div><div class="v" data-slot="dnt">—</div></div>
+      <div class="kv"><div class="k">WebGL 渲染器</div><div class="v mono small" data-slot="webgl">—</div></div>
+      <div class="kv"><div class="k">Canvas 指纹</div><div class="v mono small" data-slot="canvas">—</div></div>
+      <div class="kv"><div class="k">屏幕</div><div class="v" data-slot="screen">—</div></div>
+    </div>
+    <p class="footnote">风控常交叉比对时区 / 语言与出口 IP 地区：出口在海外而时区、语言仍是本地，是常见的一致性风险来源。</p>
+  </section>
+
+  <!-- 历史 -->
+  <section class="card">
+    <div class="card-head">
+      <h2>检测历史</h2>
+      <button id="clearHistory" class="btn danger ghost" type="button">清除历史</button>
+    </div>
+    <div class="table-wrap">
+      <table class="history" id="historyTable">
+        <thead><tr><th>时间</th><th>Claude 出口</th><th>信任分</th><th>标记</th></tr></thead>
+        <tbody data-slot="rows"></tbody>
+      </table>
+    </div>
+    <p class="footnote">仅保存在本浏览器 localStorage（键 <code>cic_history</code>），不上传、不跨设备。100% 本地。</p>
+  </section>
+
+  <!-- 说明 -->
+  <section class="card" id="aboutCard">
+    <div class="card-head"><h2>关于本工具</h2></div>
+    <ul class="about">
+      <li><strong>复刻自</strong> ip.net.coffee/claude 的能力，独立实现：所有检测由浏览器直接向下方公共接口发起，本页面没有任何自建后端，也没有任何数据上报。</li>
+      <li><strong>数据源</strong>：claude.ai 与 www.cloudflare.com 的 <code>/cdn-cgi/trace</code>、myip.ipip.net（国内视角）、ip-api.com（geo + proxy/hosting 标记，免费版仅 HTTP）、ipwho.is（回退 geo）、edns.ip-api.com（DNS 解析器出口）。</li>
+      <li><strong>与原站的差异</strong>：信任分不用黑盒评分服务，而是把扣分规则写明在本页（见信任分卡片）；Tor / 爬虫 / 滥用记录没有可靠免费源，如实标注「不支持」。</li>
+      <li><strong>部署提示</strong>：请通过 HTTP（如 <code>python3 -m http.server</code> 后访问 <code>http://localhost:8787</code>）打开。若部署到 HTTPS，ip-api（HTTP-only）一项会自动降级并提示。</li>
+    </ul>
+  </section>
+
+  <footer class="footer">Claude IP 风险自检 · 自托管复刻版 · <span id="year"></span></footer>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

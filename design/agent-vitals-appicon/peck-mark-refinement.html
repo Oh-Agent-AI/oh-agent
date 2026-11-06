@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Vitals — Peck Mark Refinement</title>
+  <style>
+    :root { --navy:#10182b; --paper:#f3efe6; --ink:#172033; --muted:#70798b; --coral:#ff6b6f; --mint:#73e0c1; --size:128px; --mark:#10182b; --canvas:#fff; }
+    * { box-sizing:border-box; }
+    body { margin:0; color:var(--ink); background:var(--paper); font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; -webkit-font-smoothing:antialiased; }
+    header { padding:64px max(24px,calc((100vw - 1180px)/2)); color:white; background:var(--navy); }
+    .kicker { color:var(--mint); font-size:12px; font-weight:800; letter-spacing:.13em; text-transform:uppercase; }
+    h1 { margin:16px 0 12px; font-size:clamp(44px,7vw,76px); line-height:.95; letter-spacing:-.055em; }
+    header p { max-width:720px; margin:0; color:#b7c0d1; font-size:17px; line-height:1.7; }
+    main { width:min(1180px,calc(100% - 40px)); margin:0 auto; padding:34px 0 64px; }
+    .toolbar { display:flex; flex-wrap:wrap; gap:14px 28px; align-items:center; justify-content:space-between; margin-bottom:24px; padding:14px 16px; border:1px solid rgba(23,32,51,.13); border-radius:16px; background:rgba(255,255,255,.65); }
+    .group { display:flex; align-items:center; gap:7px; }
+    .label { margin-right:4px; color:var(--muted); font-size:12px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
+    button { padding:8px 13px; color:var(--ink); background:white; border:1px solid rgba(23,32,51,.14); border-radius:999px; cursor:pointer; }
+    button.active { color:white; background:var(--ink); border-color:var(--ink); }
+    .intro { display:flex; gap:30px; align-items:end; justify-content:space-between; margin:34px 0 20px; }
+    h2 { margin:0; font-size:30px; letter-spacing:-.035em; }
+    .intro p { max-width:600px; margin:0; color:var(--muted); line-height:1.65; }
+    .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; }
+    .card { overflow:hidden; border:1px solid rgba(23,32,51,.13); border-radius:22px; background:white; }
+    .card.recommended { border-color:var(--coral); box-shadow:0 0 0 2px var(--coral); }
+    .preview { min-height:310px; display:grid; place-items:center; background:var(--canvas); transition:.2s ease; }
+    .tile { width:190px; height:190px; display:grid; place-items:center; color:var(--mark); transition:.2s ease; }
+    .tile svg { width:var(--size); height:var(--size); overflow:visible; }
+    body[data-context="dark"] { --canvas:var(--navy); --mark:var(--mint); }
+    body[data-context="tile"] { --canvas:#e7e3db; --mark:var(--mint); }
+    body[data-context="tile"] .tile { border-radius:42px; background:var(--navy); box-shadow:0 18px 40px rgba(16,24,43,.22); }
+    .copy { padding:22px; border-top:1px solid rgba(23,32,51,.13); }
+    .topline { display:flex; gap:12px; align-items:center; justify-content:space-between; }
+    .code { color:var(--coral); font:800 11px ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.09em; text-transform:uppercase; }
+    .badge { padding:5px 8px; color:#8f383d; background:#ffe6e6; border-radius:999px; font-size:11px; font-weight:800; }
+    h3 { margin:9px 0 8px; font-size:21px; }
+    .copy p { min-height:46px; margin:0; color:var(--muted); font-size:14px; line-height:1.65; }
+    .metrics { display:flex; flex-wrap:wrap; gap:8px; margin-top:17px; }
+    .metric { padding:6px 9px; color:#536075; background:#f3f5f8; border-radius:7px; font-size:11px; font-weight:700; }
+    .download { display:inline-block; margin-top:18px; color:var(--ink); font-size:13px; font-weight:800; text-decoration:none; }
+    .download:hover { color:var(--coral); }
+    .decision { margin-top:26px; padding:24px 28px; color:white; background:#223047; border-radius:20px; }
+    .decision b { color:var(--mint); }
+    .decision p { margin:8px 0 0; color:#c8d1df; line-height:1.65; }
+    @media (max-width:760px) { .grid{grid-template-columns:1fr}.intro{display:block}.intro p{margin-top:12px}.toolbar{align-items:flex-start}.preview{min-height:260px} }
+  </style>
+</head>
+<body data-context="light">
+  <header>
+    <div class="kicker">Agent Vitals · Selected direction 01</div>
+    <h1>Peck Mark,<br>refined.</h1>
+    <p>只修轮廓，不改概念。比较冠羽方向、头颈比例与凿形鸟喙，让“持续检查”在 App Icon 与 18px 菜单栏里都成立。</p>
+  </header>
+
+  <main>
+    <div class="toolbar">
+      <div class="group" data-group="size"><span class="label">尺寸</span><button class="active" data-size="128">128px</button><button data-size="32">32px</button><button data-size="18">18px</button></div>
+      <div class="group" data-group="context"><span class="label">场景</span><button class="active" data-context="light">浅色</button><button data-context="dark">深色</button><button data-context="tile">App Tile</button></div>
+    </div>
+
+    <div class="intro"><h2>原稿与三个微调方向</h2><p>01A 不是“新方案”，而是对原稿的收敛：更短的后掠冠羽、更小的眼孔、更平直的凿形鸟喙，以及更安全的右侧留白。</p></div>
+
+    <section class="grid">
+      <article class="card">
+        <div class="preview"><div class="tile"><svg viewBox="0 0 100 100" aria-label="Original Peck Mark"><defs><mask id="original-eye"><rect width="100" height="100" fill="white"/><circle cx="67" cy="45" r="3.5" fill="black"/></mask></defs><path fill="currentColor" mask="url(#original-eye)" d="M20 80C21 67 25 57 34 51C31 45 30 38 32 30L44 36L48 22L57 35C68 35 77 41 80 48L91 52L80 56C76 67 66 73 54 73C43 73 34 68 28 61C25 66 24 72 24 80H20Z"/><path fill="currentColor" d="M78 44L93 52L78 59Z"/><circle cx="97" cy="52" r="2.5" fill="currentColor"/></svg></div></div>
+        <div class="copy"><div class="topline"><span class="code">Before</span></div><h3>Original Peck Mark</h3><p>识别明确，但双尖冠羽偏卡通，鸟喙为大三角，节点离画布右缘过近。</p><div class="metrics"><span class="metric">冠羽偏尖</span><span class="metric">右侧余量 0.5</span></div><a class="download" href="01-peck-mark.svg" download>下载原稿 SVG</a></div>
+      </article>
+
+      <article class="card recommended">
+        <div class="preview"><div class="tile"><svg viewBox="0 0 100 100" aria-label="Balanced Peck Mark"><defs><mask id="balanced-eye-page"><rect width="100" height="100" fill="white"/><circle cx="65" cy="45" r="3.2" fill="black"/></mask></defs><path fill="currentColor" mask="url(#balanced-eye-page)" d="M20 81C21 68 25 58 33 51C30 45 30 38 33 31L27 24L47 34C53 32 59 32 65 35C72 38 76 43 78 49L84 51L78 55C74 66 64 72 52 72C42 72 34 68 28 62C25 68 24 74 24 81H20Z"/><path fill="currentColor" d="M76 47L88 50V53L76 57Z"/><circle cx="94" cy="51.5" r="2.8" fill="currentColor"/></svg></div></div>
+        <div class="copy"><div class="topline"><span class="code">01A · Balanced</span><span class="badge">推荐</span></div><h3>Swept Crest</h3><p>冠羽向后收拢，鸟喙改成凿形，节点内移；最平衡地兼顾啄木鸟语义和系统图标感。</p><div class="metrics"><span class="metric">18px 稳定</span><span class="metric">右侧余量 3.2</span><span class="metric">低卡通感</span></div><a class="download" href="01a-peck-mark-balanced.svg" download>下载 01A SVG</a></div>
+      </article>
+
+      <article class="card">
+        <div class="preview"><div class="tile"><svg viewBox="0 0 100 100" aria-label="Compact Peck Mark"><defs><mask id="compact-eye-page"><rect width="100" height="100" fill="white"/><circle cx="64" cy="44" r="3.4" fill="black"/></mask></defs><path fill="currentColor" mask="url(#compact-eye-page)" d="M20 78V64C20 48 30 37 45 34L50 25L57 36C69 38 76 45 78 54C76 66 66 74 53 74C42 74 34 70 28 64V78H20Z"/><path fill="currentColor" d="M75 46L89 52L75 59Z"/><circle cx="95" cy="52" r="2.8" fill="currentColor"/></svg></div></div>
+        <div class="copy"><div class="topline"><span class="code">01B · Compact</span></div><h3>App Tile</h3><p>压缩颈部并强化圆形质量，放在彩色 App Tile 上最饱满，但物种辨识更接近泛化小鸟。</p><div class="metrics"><span class="metric">大尺寸饱满</span><span class="metric">物种较弱</span></div><a class="download" href="01b-peck-mark-compact.svg" download>下载 01B SVG</a></div>
+      </article>
+
+      <article class="card">
+        <div class="preview"><div class="tile"><svg viewBox="0 0 100 100" aria-label="Chisel Peck Mark"><defs><mask id="chisel-eye-page"><rect width="100" height="100" fill="white"/><circle cx="64" cy="44" r="3" fill="black"/></mask></defs><path fill="currentColor" mask="url(#chisel-eye-page)" d="M19 82C20 67 25 55 35 48C32 43 31 37 34 31L25 29L44 35L37 25L57 37C67 38 74 43 77 49L81 51L77 54C73 64 64 70 53 70C42 70 34 65 28 59C24 66 23 74 23 82H19Z"/><path fill="currentColor" d="M75 48L90 50V54L75 56Z"/><circle cx="96" cy="52" r="2.6" fill="currentColor"/></svg></div></div>
+        <div class="copy"><div class="topline"><span class="code">01C · Chisel</span></div><h3>Long Beak</h3><p>双后掠冠羽与最长凿形鸟喙，啄木动作最强；轮廓也更锐利，适合偏技术工具的表达。</p><div class="metrics"><span class="metric">动作感最强</span><span class="metric">轮廓偏锐</span></div><a class="download" href="01c-peck-mark-chisel.svg" download>下载 01C SVG</a></div>
+      </article>
+    </section>
+
+    <div class="decision"><b>设计建议：以 01A 为定稿基础。</b><p>它保留原 Peck Mark 的记忆点，又去掉最容易误读的双尖“猫耳”。若品牌希望更硬核，可以把 01C 的长凿形鸟喙合并到 01A，但不建议保留双冠羽。</p></div>
+  </main>
+
+  <script>
+    function activate(group, button) { group.querySelectorAll('button').forEach((item) => item.classList.toggle('active', item === button)); }
+    document.querySelector('[data-group="size"]').addEventListener('click', (event) => { const button=event.target.closest('[data-size]'); if(!button)return; activate(event.currentTarget,button); document.documentElement.style.setProperty('--size',`${button.dataset.size}px`); });
+    document.querySelector('[data-group="context"]').addEventListener('click', (event) => { const button=event.target.closest('[data-context]'); if(!button)return; activate(event.currentTarget,button); document.body.dataset.context=button.dataset.context; });
+  </script>
+</body>
+</html>

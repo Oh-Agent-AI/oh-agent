@@ -1,0 +1,89 @@
+{
+  "_doc": "厂商签名目录（BETA_1_AUTO_ATTRIBUTION_SPEC §10.3 的第④层）：模型名族 → 厂商、网关式 `vendor/model` 命名、请求/响应 ID 形状、官方端点主机名。它只回答『这个模型是谁家的』和『这条记录像是打到了谁的端点』，从不回答『谁收的钱』——计费方（provider_id）仍由 resolve_billing_attribution 按证据强度决定。ID 形状是文档级稳定的格式，不是密钥；本文件是数据，随版本发布，不联网更新。",
+  "version": "2026-09-16",
+  "gateway_naming": {
+    "_doc": "OpenRouter / 胜算云 / Vercel AI Gateway / Cline 的通用约定：`<vendor>/<model>`。名字本身就说明请求经过了网关（中转），前缀 = 模型厂商。",
+    "separator": "/",
+    "aliases": {
+      "anthropic": "anthropic",
+      "openai": "openai",
+      "deepseek": "deepseek",
+      "bigmodel": "zhipu-glm",
+      "zhipu": "zhipu-glm",
+      "z-ai": "zhipu-glm",
+      "minimax": "minimax",
+      "moonshot": "moonshot",
+      "moonshotai": "moonshot",
+      "google": "google",
+      "meta-llama": "meta",
+      "qwen": "alibaba",
+      "x-ai": "xai",
+      "mistralai": "mistral",
+      "tencent": "hunyuan"
+    }
+  },
+  "vendors": {
+    "anthropic": {
+      "model_prefixes": ["claude-"],
+      "official_endpoints": ["api.anthropic.com"],
+      "request_id_pattern": "^req_01[0-9A-Za-z]{20,}$",
+      "message_id_pattern": "^msg_01[0-9A-Za-z]{20,}$",
+      "_doc": "Anthropic Messages API：响应 id `msg_01…`，响应头 request-id `req_01…`。两者同时命中 = 官方端点（session-native）。"
+    },
+    "openai": {
+      "model_prefixes": ["gpt-", "o1", "o3", "o4", "chatgpt-", "codex-", "text-embedding-"],
+      "official_endpoints": ["api.openai.com", "chatgpt.com"],
+      "message_id_pattern": "^(chatcmpl-|resp_|msg_)[0-9A-Za-z]+",
+      "_doc": "`chatcmpl-` 是 OpenAI Chat Completions 的格式，也被绝大多数 OpenAI 兼容网关沿用——单独出现只能说明『OpenAI 兼容端点』，不能说明官方。"
+    },
+    "deepseek": {
+      "model_prefixes": ["deepseek"],
+      "official_endpoints": ["api.deepseek.com"],
+      "message_id_pattern": "^[0-9a-f]{32}$"
+    },
+    "minimax": {
+      "model_prefixes": ["minimax", "abab"],
+      "official_endpoints": ["api.minimax.chat", "api.minimaxi.com", "api.minimax.io"],
+      "message_id_pattern": "^[0-9a-f]{32}$"
+    },
+    "zhipu-glm": {
+      "model_prefixes": ["glm-", "codegeex", "chatglm"],
+      "official_endpoints": ["open.bigmodel.cn", "api.z.ai"],
+      "message_id_pattern": "^(msg_)?20[0-9]{12,}",
+      "_doc": "智谱 Anthropic 兼容端点的响应 id 是 `msg_` + 时间戳序列（`msg_2026091…`），OpenAI 兼容端点是纯时间戳序列。"
+    },
+    "moonshot": {
+      "model_prefixes": ["kimi", "moonshot"],
+      "official_endpoints": ["api.moonshot.cn", "api.moonshot.ai"],
+      "message_id_pattern": "^(chatcmpl-|msg_)[0-9A-Za-z]+"
+    },
+    "hunyuan": {
+      "model_prefixes": ["hy3", "hy4", "hunyuan"],
+      "official_endpoints": ["api.hunyuan.cloud.tencent.com"]
+    },
+    "google": {
+      "model_prefixes": ["gemini", "gemma"],
+      "official_endpoints": ["generativelanguage.googleapis.com"]
+    },
+    "alibaba": {
+      "model_prefixes": ["qwen", "qwq"],
+      "official_endpoints": ["dashscope.aliyuncs.com"]
+    },
+    "cogfoundry.ai": {
+      "model_prefixes": [],
+      "official_endpoints": ["cogfoundry.ai", "router.cogfoundry.ai"],
+      "_doc": "既有 provider 常量（agent-vitals-provider::is_cogfoundry_host）的目录化；它是网关不是模型厂商，所以没有模型前缀。"
+    }
+  },
+  "harness_native_vendor": {
+    "_doc": "执行环境读自家模型时，模型名不带服务商前缀（claude-code → claude-*、codex → gpt-*、ZCode → glm-*）；第三方云厂商 / 中转才会加路径前缀（bigmodel/glm-5.3-flash、deepseek/deepseek-v4.1-flash）。无前缀且厂商 = 执行环境原生厂商的模型，默认按执行环境自家官方路由对待：官方订阅声明默认覆盖它（服务商字段为空时也一样）。带前缀或非原生系列的模型不适用，仍需用户声明走哪个中转。厂商命名规则很少变，这张表比『逐个模型的清单』稳定得多。",
+    "claude-code": "anthropic",
+    "codex": "openai",
+    "harness:zcode": "zhipu-glm",
+    "dsh": "deepseek"
+  },
+  "sentinels": {
+    "_doc": "不是模型的模型名：合成/占位记录，永远不参与归因。",
+    "models": ["<synthetic>", "fast-model"]
+  }
+}

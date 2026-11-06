@@ -1,0 +1,49 @@
+{
+  "id": "assault-gait-preview",
+  "version": 1,
+  "role": "Assault",
+  "footprint": [
+    1,
+    1
+  ],
+  "forward": "-Z",
+  "heightMeters": 19.98,
+  "maxExtentMeters": [
+    21.0,
+    10.8
+  ],
+  "clips": {
+    "idle": {
+      "duration": 3.14,
+      "loop": true
+    },
+    "move": {
+      "duration": 0.79,
+      "loop": true
+    },
+    "attack": {
+      "duration": 0.95,
+      "loop": false
+    },
+    "hit": {
+      "duration": 0.48,
+      "loop": false
+    },
+    "defeat": {
+      "duration": 0.85,
+      "loop": false,
+      "holdLastFrame": true
+    }
+  },
+  "actionMap": {
+    "repair": "attack"
+  },
+  "materials": [
+    "armor_palette",
+    "faction_accent"
+  ],
+  "source": {
+    "kind": "experimental shorter-step candidate with forward punch; not approved for battle",
+    "glb_sha256": "a5db03e0508d472848f82ae5a8484b49ea5640d933951cd91a9cf34e0e83d6ef"
+  }
+}

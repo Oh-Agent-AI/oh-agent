@@ -1,0 +1,61 @@
+{
+  "inventory_version": 1,
+  "spec_version": "0.2",
+  "recorded_on": "2026-10-03",
+  "scope": "M0-M2 independent Agent City",
+  "runtime_implemented": false,
+  "current_sources": [
+    {"id": "city_loader", "path": "apps/desktop/ui-dev/react/src/features/city/cityData.ts", "target_owner": "City SDK/projection client"},
+    {"id": "city_model", "path": "apps/desktop/ui-dev/react/src/features/city/cityModel.ts", "target_owner": "City TS runtime model"},
+    {"id": "city_seed", "path": "apps/desktop/ui-dev/react/src/features/city/citySeed.ts", "target_owner": "City private state"},
+    {"id": "city_ui", "path": "apps/desktop/ui-dev/react/src/features/city/CityPage.tsx", "target_owner": "City UI"},
+    {"id": "city_engine", "path": "apps/desktop/ui-dev/react/src/features/city/engine/CityEngine.ts", "target_owner": "City rendering/export"},
+    {"id": "harness_bridge", "path": "apps/desktop/ui-dev/react/src/lib/tauri.ts", "target_owner": "Harness internal bridge; restricted app SDK replaces City dependency"},
+    {"id": "harness_commands", "path": "apps/desktop/src-tauri/src/lib.rs", "target_owner": "Harness platform/broker wiring"},
+    {"id": "read_gate", "path": "crates/agent-vitals-query/src/query/read_gate.rs", "target_owner": "Shared harness query scheduling"},
+    {"id": "extension_store", "path": "crates/agent-vitals-runtime-core/src/core/extension_objects.rs", "target_owner": "Data extensions only; app store must be separate"}
+  ],
+  "current_bridge_dependencies": [
+    {"caller": "CityLoader", "command": "sessions_list", "kind": "read", "replacement": "city:v1 snapshot sessions"},
+    {"caller": "CityLoader", "command": "findings_groups_safe", "kind": "read", "replacement": "city:v1 harness anomaly summaries", "current_limit": "first 50 groups, no City window filter"},
+    {"caller": "CityLoader", "command": "statistics_timezone_config", "kind": "read", "replacement": "city:v1 window.timezone"},
+    {"caller": "CityPage/SessionDetail", "command": "sessions_read", "kind": "read", "replacement": "app.open_session scoped handle; harness presentation"},
+    {"caller": "citySeed", "command": "city_seed_config", "kind": "read_with_initialization_write", "replacement": "City private state; explicit old-seed migration"},
+    {"caller": "citySeed", "command": "set_city_seed", "kind": "write", "replacement": "City private state"},
+    {"caller": "citySeed", "command": "reset_city_seed", "kind": "write", "replacement": "City private state"},
+    {"caller": "CityLoader", "event": "app-event", "kind": "subscribe", "replacement": "broker sequenced invalidation only"},
+    {"caller": "CityLoader", "event": "agent-vitals-source-data-deleted", "kind": "window_subscribe", "replacement": "broker sequenced invalidation only"}
+  ],
+  "target_paths": {
+    "status": "logical paths frozen in C1 contract; OS container/IPC and production configuration pending C2",
+    "city": "apps/agent-city",
+    "sdk": "packages/agent-vitals-app-sdk",
+    "projections": "crates/agent-vitals-query/src/projections",
+    "app_index": "catalog/apps/index-v1.json",
+    "schemas": "docs/schemas",
+    "app_runtime": "crates/agent-vitals-runtime/src/app_management",
+    "harness_root_relative": {
+      "staging": "apps/staging/{operation_id}",
+      "objects": "apps/objects/{archive_sha256}",
+      "recovery_snapshots": "apps/state/{app_id}/{installation_id}",
+      "trust": "apps/trust",
+      "catalog_cache": "apps/catalog"
+    },
+    "city_state": "OS-resolved Agent City sandbox container; not harness authority or harness recovery snapshot root",
+    "broker_ipc": {
+      "transport": "unix",
+      "placement": "OS-resolved dedicated App Group container",
+      "contents": "socket and non-secret locator only; no authority/log/grant/token",
+      "directory_mode": "0700",
+      "socket_mode": "0600",
+      "network_client": false,
+      "production_group_id": "pending production profile/authorization freeze; synthetic spike is not production configuration"
+    }
+  },
+  "baseline_commands": [
+    {"cwd": "apps/desktop/ui-dev", "command": "npm run verify:city"},
+    {"cwd": "apps/desktop/ui-dev", "command": "npx tsc -p react/tsconfig.json --noEmit"},
+    {"cwd": "apps/desktop/ui-dev", "command": "npm run build:react"}
+  ],
+  "production_gates": ["platform process identity", "package and platform signatures", "OS sandbox and local IPC", "explicit data grants", "face transformer", "per-request and response authorization"]
+}

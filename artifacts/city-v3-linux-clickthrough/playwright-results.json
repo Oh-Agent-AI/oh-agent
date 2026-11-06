@@ -1,0 +1,78 @@
+{
+  "checks": {
+    "defaultV3FirstPage": {
+      "pass": true,
+      "protocol": "v3",
+      "search": "",
+      "coverage": {
+        "total": 4101,
+        "returned": 500,
+        "truncated": true,
+        "unknown_time": 0,
+        "unknown_time_semantics": "compat_any_untimed_fact_all_sessions",
+        "time_classification": {
+          "scope": "window",
+          "unknown_time_only": 0,
+          "mixed_time": 0,
+          "excluded_no_usage": 0
+        },
+        "findings_state": "partial"
+      },
+      "occupants": 500,
+      "scaleTier": 10,
+      "applyMode": "mount",
+      "firstPaintMs": 62249,
+      "screenshot": "/workspace/artifacts/city-v3-linux-clickthrough/01-v3-first-paint.png"
+    },
+    "laterPagesAppendStable": {
+      "pass": true,
+      "firstOccupants": 500,
+      "fullOccupants": 4000,
+      "scaleTier": 10,
+      "applyMode": "append",
+      "moved": [],
+      "fullLoadMs": 84824,
+      "screenshot": "/workspace/artifacts/city-v3-linux-clickthrough/02-v3-full-load.png"
+    },
+    "hoverSelectionCameraPersist": {
+      "pass": true,
+      "selected": "sr_00000000000000000000000000000002",
+      "hovered": "sr_00000000000000000000000000000003",
+      "screenshot": "/workspace/artifacts/city-v3-linux-clickthrough/03-hover-selection-persist.png"
+    },
+    "detailsRecoverAfterWrite": {
+      "pass": true,
+      "unavailable": 0,
+      "recovered": 2,
+      "screenshot": "/workspace/artifacts/city-v3-linux-clickthrough/04-details-recover.png",
+      "note": "Session details populated after a simulated revision_changed (tokens/model/session id). Collection/save still showed a revision-conflict banner; that is not the details-unavailable path."
+    },
+    "landingStaysV2": {
+      "pass": true,
+      "protocol": "v2",
+      "search": "?presentation=landing&windowDays=30",
+      "coverage": {
+        "total": 280,
+        "returned": 280,
+        "truncated": false,
+        "unknown_time": 0
+      },
+      "screenshot": "/workspace/artifacts/city-v3-linux-clickthrough/05-landing-v2.png"
+    },
+    "forcedV2Works": {
+      "pass": true,
+      "protocol": "v2",
+      "search": "?cityData=v2",
+      "coverage": {
+        "total": 800,
+        "returned": 800,
+        "truncated": false,
+        "unknown_time": 0
+      },
+      "screenshot": "/workspace/artifacts/city-v3-linux-clickthrough/06-forced-v2.png"
+    }
+  },
+  "firstPaintMs": 62249,
+  "fullLoadMs": 84824,
+  "errors": []
+}

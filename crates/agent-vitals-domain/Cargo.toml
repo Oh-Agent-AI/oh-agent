@@ -1,0 +1,31 @@
+[package]
+name = "agent-vitals-domain"
+version = "1.4.0"
+edition = "2021"
+rust-version = "1.74"
+description = "Cross-harness vocabulary + business computation for agent-vitals (contracts/behavior/trajectory/cost/usage/detectors/…)"
+repository = "https://github.com/Oh-Agent-AI/oh-agent"
+license = "MIT"
+
+[lib]
+name = "agent_vitals_domain"
+path = "src/lib.rs"
+
+[dependencies]
+regex = "1"
+# preserve_order 不是可选项：findings 的键序必须与 Python/CLI 逐字节一致，
+# 默认 BTreeMap 排序键会破坏差分护栏。
+serde_json = { version = "1", features = ["preserve_order"] }
+# M2 兼容桥（docs/VITALS_CORE_V0_5_IMPLEMENTATION_SPEC.md §14）：单向依赖，
+# 只允许这个方向——vitals-core 不知道、也不能依赖 agent-vitals-*（§5.2）。
+# `compatibility/` 与 `domain/detectors/sv614.rs` 是调用点。
+vitals-core = { path = "../vitals-core" }
+
+# Phase C（B2）：`domain/usage.rs` 的 `#[cfg(test)]` 经 `agent-vitals-harnesses`
+# 调 `canonical_tokens`（只换 `serde_json::Value`，不跨 crate 传 domain 类型，
+# dev-dep 成环也安全）。dev-dep 不进 lib 构建图 / 二进制 / wasm。**成环限制**：
+# 跨 crate 传 `CanonicalSession` 等 domain 类型的 inline lib test 会撞
+# 「multiple versions of crate」——那类测试（`build_dsh_evidence` 造 fixture）
+# 正因如此保留在 `domain/dsh/`（本 crate 内），见 lib.rs 注释。
+[dev-dependencies]
+agent-vitals-harnesses = { path = "../agent-vitals-harnesses" }

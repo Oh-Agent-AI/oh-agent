@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "city-v1-app-local-request.json",
+  "title": "CityProjectionRequestV1",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "projection",
+        "version",
+        "face",
+        "operation",
+        "window_kind",
+        "page_size"
+      ],
+      "properties": {
+        "projection": {
+          "const": "city"
+        },
+        "version": {
+          "const": 1
+        },
+        "face": {
+          "const": "app-local"
+        },
+        "operation": {
+          "const": "open"
+        },
+        "window_kind": {
+          "enum": [
+            "7d",
+            "30d",
+            "90d",
+            "366d"
+          ]
+        },
+        "page_size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "projection",
+        "version",
+        "face",
+        "operation",
+        "snapshot_id",
+        "cursor"
+      ],
+      "properties": {
+        "projection": {
+          "const": "city"
+        },
+        "version": {
+          "const": 1
+        },
+        "face": {
+          "const": "app-local"
+        },
+        "operation": {
+          "const": "next"
+        },
+        "snapshot_id": {
+          "type": "string",
+          "pattern": "^css1_[A-Za-z0-9_-]{43}$",
+          "maxLength": 48
+        },
+        "cursor": {
+          "type": "string",
+          "pattern": "^csc1_[A-Za-z0-9_-]{43}$",
+          "maxLength": 48
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "projection",
+        "version",
+        "face",
+        "operation",
+        "snapshot_id"
+      ],
+      "properties": {
+        "projection": {
+          "const": "city"
+        },
+        "version": {
+          "const": 1
+        },
+        "face": {
+          "const": "app-local"
+        },
+        "operation": {
+          "const": "recent"
+        },
+        "snapshot_id": {
+          "type": "string",
+          "pattern": "^css1_[A-Za-z0-9_-]{43}$",
+          "maxLength": 48
+        }
+      }
+    }
+  ]
+}

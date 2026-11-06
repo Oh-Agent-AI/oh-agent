@@ -1,0 +1,12 @@
+{"type":"user","uuid":"m1","timestamp":"2026-08-20T15:00:00Z","cwd":"/repo","message":{"id":"m1","model":"claude-sonnet-4-5","content":"第一个请求"}}
+{"type":"assistant","uuid":"m2","timestamp":"2026-08-20T15:00:05Z","cwd":"/repo","message":{"id":"m2","model":"claude-sonnet-4-5","content":[{"type":"tool_use","id":"call1","name":"Bash","input":{"command":"ls -la"}}],"usage":{"input_tokens":1,"output_tokens":1}}}
+{"type":"user","uuid":"m3","timestamp":"2026-08-20T15:00:08Z","cwd":"/repo","message":{"id":"m3","content":[{"type":"tool_result","tool_use_id":"call1","content":"done","is_error":true}]}}
+{"type":"assistant","uuid":"m4","timestamp":"2026-08-20T15:00:12Z","cwd":"/repo","message":{"id":"m4","model":"claude-sonnet-4-5","content":[{"type":"tool_use","id":"call2","name":"Write","input":{"file_path":"/repo/a.rs","content":"fn a() {}"}}],"usage":{"input_tokens":1,"output_tokens":1}}}
+{"type":"user","uuid":"m5","timestamp":"2026-08-20T15:00:15Z","cwd":"/repo","message":{"id":"m5","content":[{"type":"tool_result","tool_use_id":"call2","content":"done"}]}}
+{"type":"user","uuid":"m6","timestamp":"2026-08-20T15:01:00Z","cwd":"/repo","message":{"id":"m6","model":"claude-sonnet-4-5","content":"第二个请求"}}
+{"type":"assistant","uuid":"m7","timestamp":"2026-08-20T15:01:05Z","cwd":"/repo","message":{"id":"m7","model":"claude-sonnet-4-5","content":[{"type":"tool_use","id":"call3","name":"Task","input":{"description":"子代理任务"}}],"usage":{"input_tokens":1,"output_tokens":1}}}
+{"type":"user","uuid":"m8","timestamp":"2026-08-20T15:01:10Z","cwd":"/repo","message":{"id":"m8","content":[{"type":"tool_result","tool_use_id":"call3","content":"done"}]}}
+{"type":"assistant","uuid":"m9","timestamp":"2026-08-20T15:02:00Z","cwd":"/repo","isSidechain":true,"message":{"id":"m9","model":"claude-sonnet-4-5","content":[{"type":"tool_use","id":"call9","name":"Task","input":{"description":"侧链分支"}}],"usage":{"input_tokens":1,"output_tokens":1}}}
+{"uuid":"z1","timestamp":"2026-08-20T15:03:00Z","cwd":"/repo"}
+{"type":"bogus-type","uuid":"z2","timestamp":"2026-08-20T15:03:01Z","cwd":"/repo"}
+{"type":"ai-title","uuid":"t1","timestamp":"2026-08-20T15:04:00Z","cwd":"/repo","aiTitle":"全覆盖会话"}

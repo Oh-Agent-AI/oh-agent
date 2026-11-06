@@ -1,0 +1,338 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-vitals.local/schemas/app-manifest-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifest_version",
+    "kind",
+    "id",
+    "version",
+    "publisher",
+    "signing_key_id",
+    "platform",
+    "architecture",
+    "entry",
+    "platform_identity",
+    "harness_compatibility",
+    "requires",
+    "permissions",
+    "state",
+    "resources",
+    "licenses",
+    "display"
+  ],
+  "properties": {
+    "manifest_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "plugin_app"
+    },
+    "id": {
+      "const": "agent-city"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})(?![\\s\\S])"
+    },
+    "publisher": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,63}(?![\\s\\S])"
+    },
+    "signing_key_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,63}(?![\\s\\S])"
+    },
+    "platform": {
+      "const": "macos"
+    },
+    "architecture": {
+      "enum": [
+        "aarch64",
+        "x86_64"
+      ]
+    },
+    "entry": {
+      "const": "AgentCity.app"
+    },
+    "platform_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bundle_id",
+        "team_id",
+        "sandbox_required",
+        "notarization_required"
+      ],
+      "properties": {
+        "bundle_id": {
+          "const": "com.mixlabpro.agent-city"
+        },
+        "team_id": {
+          "type": "string",
+          "pattern": "^[A-Z0-9]{10}(?![\\s\\S])"
+        },
+        "sandbox_required": {
+          "const": true
+        },
+        "notarization_required": {
+          "const": true
+        }
+      }
+    },
+    "harness_compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "min_version",
+        "max_version_exclusive",
+        "broker_versions"
+      ],
+      "properties": {
+        "min_version": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})(?![\\s\\S])"
+        },
+        "max_version_exclusive": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})(?![\\s\\S])"
+        },
+        "broker_versions": {
+          "type": "array",
+          "maxItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "const": 1
+          }
+        }
+      }
+    },
+    "requires": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "versions",
+          "face",
+          "required"
+        ],
+        "properties": {
+          "id": {
+            "const": "city"
+          },
+          "versions": {
+            "type": "array",
+            "maxItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "const": 1
+            }
+          },
+          "face": {
+            "const": "app-local"
+          },
+          "required": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "projections",
+        "controls",
+        "events",
+        "exports"
+      ],
+      "properties": {
+        "projections": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "versions",
+              "face"
+            ],
+            "properties": {
+              "id": {
+                "const": "city"
+              },
+              "versions": {
+                "type": "array",
+                "maxItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "const": 1
+                }
+              },
+              "face": {
+                "const": "app-local"
+              }
+            }
+          }
+        },
+        "controls": {
+          "type": "array",
+          "maxItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "const": "app.open_session"
+          }
+        },
+        "events": {
+          "type": "array",
+          "maxItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "const": "data.invalidated"
+          }
+        },
+        "exports": {
+          "type": "array",
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "screenshot",
+              "movie"
+            ]
+          }
+        }
+      }
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "rollback_strategy",
+        "retain_previous"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "rollback_strategy": {
+          "const": "snapshot"
+        },
+        "retain_previous": {
+          "const": true
+        }
+      }
+    },
+    "resources": {
+      "type": "array",
+      "maxItems": 20000,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "sha256",
+          "size_bytes",
+          "mode",
+          "license_id"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "pattern": "^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*(?![\\s\\S])"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1073741824
+          },
+          "mode": {
+            "enum": [
+              "file",
+              "executable"
+            ]
+          },
+          "license_id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,63}(?![\\s\\S])"
+          }
+        }
+      }
+    },
+    "licenses": {
+      "type": "array",
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "spdx",
+          "notice_path"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,63}(?![\\s\\S])"
+          },
+          "spdx": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "notice_path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "pattern": "^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*(?![\\s\\S])"
+          }
+        }
+      }
+    },
+    "display": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "description",
+        "icon_path"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "icon_path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*(?![\\s\\S])"
+        }
+      }
+    }
+  }
+}

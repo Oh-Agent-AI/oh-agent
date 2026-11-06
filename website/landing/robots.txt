@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://ohagent.ai/sitemap.xml
+Sitemap: https://ohagent.ai/docs/sitemap-index.xml

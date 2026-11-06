@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="512" height="512" role="img" aria-labelledby="title desc">
+  <title id="title">Agent Vitals Pixel Peck</title>
+  <desc id="desc">A woodpecker assembled from a compact field of diagnostic data points.</desc>
+  <g fill="currentColor">
+    <circle cx="42" cy="28" r="7"/>
+    <circle cx="56" cy="29" r="7"/>
+    <circle cx="67" cy="37" r="7"/>
+    <circle cx="34" cy="41" r="8"/>
+    <circle cx="49" cy="43" r="8"/>
+    <circle cx="63" cy="51" r="7"/>
+    <circle cx="30" cy="57" r="8"/>
+    <circle cx="45" cy="59" r="8"/>
+    <circle cx="28" cy="73" r="7"/>
+    <circle cx="42" cy="73" r="7"/>
+    <path d="M68 38L90 47L68 53Z"/>
+    <circle cx="96" cy="47" r="3"/>
+  </g>
+</svg>

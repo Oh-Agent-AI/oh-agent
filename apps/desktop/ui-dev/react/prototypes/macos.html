@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agent Vitals · macOS 原型</title><link rel="stylesheet" href="./macos.css"></head>
+<body>
+<div class="window" id="window">
+  <header class="titlebar">
+    <div class="window-controls" aria-label="窗口按钮外观示意，不控制系统窗口"><i></i><i></i><i></i></div>
+    <button class="icon-button" id="sidebar-toggle" aria-label="切换侧栏" title="切换侧栏">◧</button>
+    <span class="toolbar-divider"></span><strong id="page-title">总览</strong>
+    <span class="prototype-label">交互原型 · 模拟数据</span>
+    <div class="toolbar-spacer"></div>
+    <label class="search"><span aria-hidden="true">⌕</span><input id="search" placeholder="搜索执行环境或会话" aria-label="搜索执行环境或会话"><kbd>⌘ F</kbd></label>
+    <button class="icon-button" id="refresh" title="模拟同步" aria-label="模拟同步">↻</button>
+    <button class="icon-button" id="inspector-toggle" title="显示或隐藏检查器" aria-label="显示或隐藏检查器">◨</button>
+  </header>
+  <aside class="sidebar">
+    <div class="app-name">Agent Vitals <span>本机</span></div>
+    <div class="nav-caption">工作区</div>
+    <nav aria-label="工作区导航">
+      <button data-page="overview" class="selected"><span class="nav-icon">▦</span>总览</button>
+      <button data-page="sessions"><span class="nav-icon">▤</span>会话<span class="nav-count">128</span></button>
+      <button data-page="trust"><span class="nav-icon">◇</span>外传审计<span class="nav-count attention">2</span></button>
+    </nav>
+    <div class="nav-caption sources-caption">数据来源</div>
+    <div class="source"><span class="dot"></span>Claude Code<span>正常</span></div>
+    <div class="source"><span class="dot"></span>Codex<span>正常</span></div>
+    <div class="source"><span class="dot amber"></span>ZCode<span>需检查</span></div>
+    <div class="source"><span class="dot"></span>MiniMax Code<span>正常</span></div>
+    <div class="sidebar-bottom"><span class="dot"></span>所有数据留在本机<button id="appearance" aria-label="切换深浅外观" title="切换深浅外观">◐</button></div>
+  </aside>
+  <main id="content" tabindex="-1"></main>
+  <aside class="inspector" id="inspector" aria-label="详情检查器"></aside>
+  <footer class="statusbar"><span id="status" role="status">同步完成 · 刚刚</span><span>4 个来源 · Mock 数据，不代表本机实际状态</span></footer>
+</div>
+<script type="module" src="./macos.js"></script>
+</body></html>

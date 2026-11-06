@@ -1,0 +1,56 @@
+[package]
+name = "agent-vitals-runtime"
+version = "1.4.0"
+edition = "2021"
+rust-version = "1.74"
+description = "Non-harness local machinery for Agent Vitals: HomeResolver, state store, ledger, session/skill services"
+repository = "https://github.com/Oh-Agent-AI/oh-agent"
+license = "MIT"
+
+[lib]
+name = "agent_vitals_runtime"
+path = "src/lib.rs"
+
+# v0.8 Phase D6/D7：`agent-vitals-runtime` 装**非宿主**的本机机器——唯一
+# `HomeResolver`、state/ledger 存储、Skill/Session service 编排。依赖
+# `agent-vitals-harnesses`（`features = ["sources"]`）+ `agent-vitals-domain`（正向）。
+# v0.9 Stage 0.4 起也依赖 `agent-vitals-data`——spec §3.1 依赖表把
+# `agent-vitals-data` 的允许依赖限定在 domain，够不到 harnesses/runtime，
+# `SummaryRepository` trait（`agent-vitals-data::repository`）的具体实现
+# 因此住在这里（唯一同时看得到 harnesses 与 data 的 crate），不是 data 自己实现
+# （docs/AGENT_VITALS_V0_9_STAGE0_RESEARCH.md §8.1）。
+# `notify` / `libc`：W3 起只在 `agent-vitals-ingest` 里（watcher / self_monitor 的家），
+# 本门面的 `watcher` feature 只做转发。
+# `tokio`/`chrono` 仍是纪律禁项（async 化与双时间口径的入口，未评审不得放开）。
+
+# 内部 MCP 工具门控（增量 7.5 `query_sql_readonly` / 增量 6 `authority_audit`）。
+# 公开构建（默认 feature = []）不含这些工具——spec §8.2 / M0 D4 的承诺。
+# 调试 Agent 用 `cargo run --features mcp-internal -- data-mcp serve`。
+[features]
+mcp-internal = ["agent-vitals-mcp/mcp-internal"]
+# P2 watcher（SourceGraph spec §9-P2）：notify 6.x（macOS FSEvents / Linux
+# inotify）文件事件 → 去抖 → 唤醒 tick 对账 + watch-only 消费者。不开 =
+# NoopWatcher（tick 5min 兜底照常，Vite createNoopWatcher 同款）。
+watcher = ["agent-vitals-ingest/watcher"]
+
+[dependencies]
+agent-vitals-runtime-core = { path = "../agent-vitals-runtime-core" }
+agent-vitals-mcp = { path = "../agent-vitals-mcp" }
+agent-vitals-trust = { path = "../agent-vitals-trust" }
+agent-vitals-ingest = { path = "../agent-vitals-ingest" }
+agent-vitals-billing = { path = "../agent-vitals-billing" }
+agent-vitals-query = { path = "../agent-vitals-query" }
+agent-vitals-data = { path = "../agent-vitals-data" }
+# data 质量表的参数化写入（sql_sync 的 missing_sid issue）——同版本 0.31
+rusqlite = { version = "0.31", features = ["bundled"] }
+agent-vitals-domain = { path = "../agent-vitals-domain" }
+agent-vitals-harnesses = { path = "../agent-vitals-harnesses", features = ["sources"] }
+agent-vitals-provider = { path = "../agent-vitals-provider" }
+jiff = "0.2"
+serde = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
+# v0.8 Phase E7.5：discovery.rs/security.rs 从 apps/cli 迁来的目录遍历/正则/
+# 内容哈希——skills::scanner 与 skills::security 需要，其余 runtime 模块不碰。
+regex = "1"
+sha2 = "0.10"
+walkdir = "2"

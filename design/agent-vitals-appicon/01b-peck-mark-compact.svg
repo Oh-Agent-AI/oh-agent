@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="512" height="512" role="img" aria-labelledby="title desc">
+  <title id="title">Agent Vitals Peck Mark — Compact</title>
+  <desc id="desc">A compact app-icon woodpecker with a single crown cut, rounded body, and diagnostic node.</desc>
+  <defs>
+    <mask id="compact-eye">
+      <rect width="100" height="100" fill="white"/>
+      <circle cx="64" cy="44" r="3.4" fill="black"/>
+    </mask>
+  </defs>
+  <path fill="currentColor" mask="url(#compact-eye)" d="M20 78V64C20 48 30 37 45 34L50 25L57 36C69 38 76 45 78 54C76 66 66 74 53 74C42 74 34 70 28 64V78H20Z"/>
+  <path fill="currentColor" d="M75 46L89 52L75 59Z"/>
+  <circle cx="95" cy="52" r="2.8" fill="currentColor"/>
+</svg>

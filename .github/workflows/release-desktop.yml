@@ -1,0 +1,281 @@
+name: Release desktop apps
+
+on:
+  push:
+    tags: ["app-v*"]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing app-v* tag to publish"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-desktop-${{ inputs.release_tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: require verified release commit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+      - name: Require successful Verify run for release commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -eu
+          sha="$(git rev-parse HEAD)"
+          result="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow verify.yml --commit "$sha" --limit 1 --json status,conclusion --jq '.[0] | select(.status == "completed" and .conclusion == "success") | .conclusion')"
+          [ "$result" = success ] || {
+            echo "Release commit $sha needs a completed, successful Verify run" >&2
+            exit 1
+          }
+
+  platform_packages:
+    needs: preflight
+    uses: ./.github/workflows/desktop-platforms.yml
+    with:
+      ref: ${{ inputs.release_tag || github.ref }}
+
+  build:
+    name: build and notarize macOS app
+    needs: preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            arch: x86_64
+          - runner: macos-14
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+      EXPECTED_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.release_tag || github.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: 检查官方目录与兼容镜像
+        run: python3 scripts/verify_catalog.py
+
+      - name: Set up Node 20 for React shadow bundle
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            apps/desktop/ui-dev/package-lock.json
+            apps/agent-city/ui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify React shadow bundle
+        working-directory: apps/desktop/ui-dev
+        run: npm ci && npm run verify:react
+
+      - name: Validate release tag
+        shell: bash
+        run: |
+          set -eu
+          case "$RELEASE_TAG" in
+            app-v*) ;;
+            *) echo "release tag must start with app-v*: $RELEASE_TAG" >&2; exit 1 ;;
+          esac
+
+      - name: Require release signing credentials
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        shell: bash
+        run: |
+          set -eu
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            value="${!name-}"
+            if [ -z "$value" ]; then
+              echo "missing required release secret: $name" >&2
+              exit 1
+            fi
+          done
+
+      - name: Build bundled CLI
+        run: cargo build --release
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version 2.11.4 --locked
+
+      - name: Compile React Tauri shadow candidate
+        working-directory: apps/desktop/src-tauri
+        run: cargo tauri build --config tauri.react.conf.json --no-bundle --debug
+
+      - name: Build signed app and DMG
+        working-directory: apps/desktop/src-tauri
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          cargo tauri build --ci --bundles app --no-sign
+          bash ../../../scripts/sign-notarize-macos.sh
+
+      - name: Verify signed app and bundled CLI
+        env:
+          RUNNER_ARCH: ${{ runner.arch }}
+        shell: bash
+        run: |
+          set -eu
+          case "$RUNNER_ARCH" in
+            ARM64) expected=arm64 ;;
+            X64) expected=x86_64 ;;
+            *) echo "unsupported macOS runner architecture: $RUNNER_ARCH" >&2; exit 1 ;;
+          esac
+          [ "$expected" = "$EXPECTED_ARCH" ] || {
+            echo "runner architecture $expected does not match matrix $EXPECTED_ARCH" >&2
+            exit 1
+          }
+          node scripts/verify-macos-app-bundle.mjs \
+            --require-developer-id \
+            "--require-architecture=$EXPECTED_ARCH"
+
+      - name: Verify notarization ticket
+        run: xcrun stapler validate "apps/desktop/src-tauri/target/release/bundle/macos/Oh Agent.app"
+
+      - name: Stage architecture-specific artifacts
+        shell: bash
+        run: |
+          set -eu
+          mkdir -p "dist/$EXPECTED_ARCH"
+          node scripts/test-macos-app-artifact.mjs
+          node scripts/macos-app-artifact.mjs pack "apps/desktop/src-tauri/target/release/bundle/macos/Oh Agent.app" \
+            "dist/$EXPECTED_ARCH/Oh Agent.app.zip"
+          node scripts/desktop-release-artifacts.mjs stage macos "$EXPECTED_ARCH" apps/desktop/src-tauri/target/release/bundle/dmg "dist/$EXPECTED_ARCH"
+          dmg="$(find "dist/$EXPECTED_ARCH" -type f -name '*.dmg' -print -quit)"
+          [ -n "$dmg" ] || { echo "missing DMG for $EXPECTED_ARCH" >&2; exit 1; }
+          version="${RELEASE_TAG#app-v}"
+          test "$(basename "$dmg")" = "oh-agent-${version}-${EXPECTED_ARCH}.dmg"
+
+      - name: Upload desktop artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-vitals-macos-${{ inputs.release_tag || github.ref_name }}-${{ matrix.arch }}
+          path: dist/${{ matrix.arch }}
+          if-no-files-found: error
+
+  publish:
+    name: publish desktop release
+    needs: [build, platform_packages]
+    runs-on: macos-latest
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: agent-vitals-macos-${{ inputs.release_tag || github.ref_name }}-*
+          path: dist
+          merge-multiple: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*-x86_64
+          path: platform-dist
+          merge-multiple: true
+
+      - name: Restore app bundles with original permissions
+        shell: bash
+        run: |
+          set -eu
+          for arch in x86_64 arm64; do
+            count="$(find dist -type f -path "*-${arch}/Oh Agent.app.zip" | wc -l | tr -d ' ')"
+            [ "$count" = 1 ] || { echo "expected one $arch app archive" >&2; exit 1; }
+            archive="$(find dist -type f -path "*-${arch}/Oh Agent.app.zip" -print -quit)"
+            node scripts/macos-app-artifact.mjs unpack "$archive" "$(dirname "$archive")"
+          done
+
+      - name: Re-verify downloaded app
+        shell: bash
+        run: |
+          set -eu
+          for arch in x86_64 arm64; do
+            app_count="$(find dist -type d -path "*-${arch}/Oh Agent.app" | wc -l | tr -d ' ')"
+            [ "$app_count" = 1 ] || { echo "expected one $arch app bundle" >&2; exit 1; }
+            app="$(find dist -type d -path "*-${arch}/Oh Agent.app" -print -quit)"
+            [ -n "$app" ] || { echo "missing $arch app artifact" >&2; exit 1; }
+            node scripts/verify-macos-app-bundle.mjs "$app" \
+              --require-developer-id \
+              "--require-architecture=$arch"
+          done
+
+      - name: Re-verify downloaded notarization ticket
+        shell: bash
+        run: |
+          set -eu
+          for arch in x86_64 arm64; do
+            app_count="$(find dist -type d -path "*-${arch}/Oh Agent.app" | wc -l | tr -d ' ')"
+            [ "$app_count" = 1 ] || { echo "expected one $arch app bundle" >&2; exit 1; }
+            app="$(find dist -type d -path "*-${arch}/Oh Agent.app" -print -quit)"
+            [ -n "$app" ] || { echo "missing $arch app artifact" >&2; exit 1; }
+            xcrun stapler validate "$app"
+          done
+
+      - name: Publish app and DMG
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          mkdir -p release
+          for arch in x86_64 arm64; do
+            app_count="$(find dist -type d -path "*-${arch}/Oh Agent.app" | wc -l | tr -d ' ')"
+            [ "$app_count" = 1 ] || { echo "expected one $arch app bundle" >&2; exit 1; }
+            app="$(find dist -type d -path "*-${arch}/Oh Agent.app" -print -quit)"
+            dmg_count="$(find dist -type f -path "*-${arch}/*.dmg" | wc -l | tr -d ' ')"
+            [ "$dmg_count" = 1 ] || { echo "expected one $arch DMG" >&2; exit 1; }
+            dmg="$(find dist -type f -path "*-${arch}/*.dmg" -print -quit)"
+            [ -n "$app" ] || { echo "missing $arch app artifact" >&2; exit 1; }
+            [ -n "$dmg" ] || { echo "missing $arch dmg artifact" >&2; exit 1; }
+            ditto -c -k --sequesterRsrc --keepParent "$app" \
+              "release/oh-agent-${RELEASE_TAG}-${arch}.app.zip"
+            version="${RELEASE_TAG#app-v}"
+            cp "$dmg" "release/oh-agent-${version}-${arch}.dmg"
+          done
+          for extension in exe deb AppImage; do
+            count="$(find platform-dist -type f -name "*.$extension" | wc -l | tr -d ' ')"
+            [ "$count" = 1 ] || { echo "expected one $extension installer, found $count" >&2; exit 1; }
+            file="$(find platform-dist -type f -name "*.$extension" -print -quit)"
+            [ -n "$file" ] || { echo "missing $extension installer" >&2; exit 1; }
+            cp "$file" release/
+          done
+          (cd release && shasum -a 256 *.zip *.dmg *.exe *.deb *.AppImage > SHA256SUMS)
+          version="${RELEASE_TAG#app-v}"
+          if [[ "$version" == *-* ]]; then
+            gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" --generate-notes --prerelease
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" --generate-notes
+          fi
+          gh release upload "$RELEASE_TAG" release/*

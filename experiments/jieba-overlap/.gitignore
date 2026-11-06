@@ -1,0 +1,2 @@
+# 根 .gitignore 的 /target/ 是仓库根锚定的，管不到这里
+/target/

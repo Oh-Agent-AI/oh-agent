@@ -1,0 +1,17 @@
+{"type":"session","version":0,"id":"sess-resume-0001","createdAt":1750000000000,"cwd":"/tmp/dshfx/workdir","delegationDepth":0}
+{"type":"turn/start","seq":1,"time":1750000001000,"data":{"turn":1}}
+{"type":"request/header","seq":2,"time":1750000002000,"data":{"header":{"config":{"model":"deepseek/deepseek-v4-pro-0813","provider":"shengsuanyun"}}}}
+{"type":"assistant/chunk","seq":3,"time":1750000003000,"data":{"turn":1,"step":1,"chunk":{"type":"usage","usage":{"inputTokens":1000,"outputTokens":200,"cacheReadTokens":300}}}}
+{"type":"assistant/message","seq":4,"time":1750000004000,"data":{"turn":1,"step":1,"usage":{"inputTokens":1200,"outputTokens":250,"cacheReadTokens":300}}}
+{"type":"turn/end","seq":5,"time":1750000005000,"data":{"turn":1}}
+{"type":"turn/start","seq":6,"time":1750000006000,"data":{"turn":2}}
+{"type":"request/header","seq":7,"time":1750000007000,"data":{"header":{"config":{"model":"deepseek/deepseek-v4-flash","provider":"deepseek-official"}}}}
+{"type":"assistant/chunk","seq":8,"time":1750000008000,"data":{"turn":2,"step":1,"chunk":{"type":"usage","usage":{"inputTokens":2000,"outputTokens":500,"cacheReadTokens":100}}}}
+{"type":"compaction/summary","seq":9,"time":1750000009000,"data":{"compactionId":"cmp-1","model":"deepseek-v4-flash","provider":"deepseek-official","usage":{"inputTokens":462,"outputTokens":3520,"cacheReadTokens":245760}}}
+{"type":"turn/end","seq":10,"time":1750000010000,"data":{"turn":2}}
+{"type":"turn/start","seq":11,"time":1750000011000,"data":{"turn":3}}
+{"type":"request/header","seq":12,"time":1750000012000,"data":{"header":{"config":{"model":"deepseek/deepseek-v4-pro-0813","provider":"shengsuanyun"}}}}
+{"type":"assistant/chunk","seq":13,"time":1750000013000,"data":{"turn":3,"step":1,"chunk":{"type":"usage","usage":{"inputTokens":3000,"cacheReadTokens":1000}}}}
+{"type":"assistant/chunk","seq":14,"time":1750000014000,"data":{"turn":3,"step":1,"chunk":{"type":"usage","usage":{"inputTokens":3100,"cacheReadTokens":1000}}}}
+{"type":"assistant/message","seq":15,"time":1750000015000,"data":{"usage":{"inputTokens":77,"outputTokens":9}}}
+{"type":"turn/end","seq":16,"time":1750000016000,"data":{"turn":3}}

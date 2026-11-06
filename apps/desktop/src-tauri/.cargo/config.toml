@@ -1,0 +1,5 @@
+# Release artifacts must not expose the local checkout path through Rust panic
+# locations or embedded source metadata. The desktop crate is a standalone
+# workspace, so this applies only to its app and bundled desktop dependencies.
+[build]
+rustflags = ["--remap-path-prefix=/Users/Admin/projects/project/skill-vitals=/agent-vitals"]

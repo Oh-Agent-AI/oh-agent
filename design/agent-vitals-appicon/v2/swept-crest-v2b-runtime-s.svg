@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="512" height="512" role="img" aria-labelledby="title desc">
+  <title id="title">Swept Crest v2B — Runtime S</title>
+  <desc id="desc">The Swept Crest mark with a pronounced S-shaped runtime path cut through the body.</desc>
+  <path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M20 81C21 68 25 58 33 51C30 45 30 38 33 31L27 24L47 34C53 32 59 32 65 35C72 38 76 43 78 49L84 51L78 55C74 66 64 72 52 72C42 72 34 68 28 62C25 68 24 74 24 81H20ZM68.2 45A3.2 3.2 0 1 1 61.8 45A3.2 3.2 0 1 1 68.2 45ZM40 37C52 39 59 47 58 56C57 65 49 70 39 68C46 62 48 57 47 52C47 46 42 42 35 40C36 39 38 38 40 37Z"/>
+  <path fill="currentColor" d="M76 47L88 50V53L76 57Z"/>
+  <circle cx="94" cy="51.5" r="2.8" fill="currentColor"/>
+</svg>

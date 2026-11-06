@@ -1,0 +1,41 @@
+[
+  {
+    "schema_version": 1,
+    "id": "evt-0",
+    "actor_id": "actor-1",
+    "goal_id": null,
+    "kind": "generic.action",
+    "ordinal": 0,
+    "occurred_at_ms": 1000,
+    "attributes": {"action": "edit"},
+    "outcome": null,
+    "source": {"source_type": "fixture", "source_id": "duplicate_event", "raw_reference": null, "raw_ordinal": 0},
+    "provenance": "Measured"
+  },
+  {
+    "schema_version": 1,
+    "id": "evt-1",
+    "actor_id": "actor-1",
+    "goal_id": null,
+    "kind": "generic.action",
+    "ordinal": 1,
+    "occurred_at_ms": 1001,
+    "attributes": {"action": "test"},
+    "outcome": null,
+    "source": {"source_type": "fixture", "source_id": "duplicate_event", "raw_reference": null, "raw_ordinal": 1},
+    "provenance": "Measured"
+  },
+  {
+    "schema_version": 1,
+    "id": "evt-0",
+    "actor_id": "actor-1",
+    "goal_id": null,
+    "kind": "generic.action",
+    "ordinal": 0,
+    "occurred_at_ms": 1000,
+    "attributes": {"action": "edit"},
+    "outcome": null,
+    "source": {"source_type": "fixture", "source_id": "duplicate_event", "raw_reference": null, "raw_ordinal": 0},
+    "provenance": "Measured"
+  }
+]

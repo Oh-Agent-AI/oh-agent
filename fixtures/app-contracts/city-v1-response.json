@@ -1,0 +1,81 @@
+{
+  "projection": "city",
+  "version": 1,
+  "face": "app-local",
+  "operation": "open",
+  "window": {
+    "date_from": "2026-09-04",
+    "date_to": "2026-10-03",
+    "timezone": "UTC",
+    "start_ms": 1788480000000,
+    "end_ms_exclusive": 1791072000000,
+    "as_of_ms": 1791028800000
+  },
+  "snapshot": {
+    "id": "css1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "data_revision": 42,
+    "expires_at_ms": 1791028860000
+  },
+  "sessions": [
+    {
+      "opaque_id": "csh1_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      "harness": "codex",
+      "first_event_ms": 1791028200000,
+      "last_event_ms": 1791028500000,
+      "event_count": 3,
+      "model_ids": [
+        "gpt-5.6-sol"
+      ],
+      "tokens": {
+        "uncached_input_tokens": 100,
+        "cache_read_tokens": 20,
+        "cache_write_tokens": 0,
+        "output_tokens": 5,
+        "total": 125
+      },
+      "peak_tokens": 125,
+      "cost_minor": {
+        "amount_minor": 1,
+        "currency": "USD",
+        "basis": "metered_estimate"
+      },
+      "cost_status": {
+        "state": "estimated",
+        "reason_code": "missing_billing_evidence",
+        "has_unresolved": true
+      },
+      "reliability": {
+        "time": "known",
+        "usage": "complete",
+        "models": "known"
+      }
+    }
+  ],
+  "harness_summaries": [
+    {
+      "harness": "codex",
+      "session_count": 1,
+      "tokens_total": 125,
+      "active_count": 1,
+      "anomaly_count": 0,
+      "highest_severity": "none",
+      "anomaly_categories": []
+    }
+  ],
+  "coverage": {
+    "window_session_count": 1,
+    "window_tokens_total": 125,
+    "returned_count": 1,
+    "unknown_time_session_count": 0,
+    "sessions_state": "complete",
+    "anomalies_state": "complete"
+  },
+  "pagination": {
+    "next_cursor": null,
+    "has_more": false
+  },
+  "freshness": {
+    "state": "available",
+    "reason_code": "none"
+  }
+}

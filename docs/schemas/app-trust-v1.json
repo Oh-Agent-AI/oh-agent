@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-vitals.local/schemas/app-trust-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "payload",
+    "signature"
+  ],
+  "properties": {
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trust_schema_version",
+        "source_id",
+        "trust_sequence",
+        "download_prefix",
+        "revoked_archive_sha256",
+        "keys"
+      ],
+      "properties": {
+        "trust_schema_version": {
+          "const": 1
+        },
+        "source_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}(?![\\s\\S])"
+        },
+        "trust_sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "download_prefix": {
+          "type": "string",
+          "pattern": "^https://",
+          "maxLength": 512
+        },
+        "keys": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key_id",
+              "publisher",
+              "platform_team_id",
+              "public_key",
+              "purposes",
+              "valid_from_sequence",
+              "valid_until_sequence",
+              "revoked"
+            ],
+            "properties": {
+              "key_id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]{0,63}(?![\\s\\S])"
+              },
+              "publisher": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]{0,63}(?![\\s\\S])"
+              },
+              "platform_team_id": {
+                "type": "string",
+                "pattern": "^[A-Z0-9]{10}(?![\\s\\S])"
+              },
+              "public_key": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kty",
+                  "crv",
+                  "x"
+                ],
+                "properties": {
+                  "kty": {
+                    "const": "OKP"
+                  },
+                  "crv": {
+                    "const": "Ed25519"
+                  },
+                  "x": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{43}(?![\\s\\S])"
+                  }
+                }
+              },
+              "purposes": {
+                "type": "array",
+                "maxItems": 2,
+                "uniqueItems": true,
+                "items": {
+                  "enum": [
+                    "index",
+                    "release"
+                  ]
+                }
+              },
+              "valid_from_sequence": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "valid_until_sequence": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "revoked": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "revoked_archive_sha256": {
+          "type": "array",
+          "maxItems": 4096,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+          }
+        }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "key_id",
+        "value"
+      ],
+      "properties": {
+        "algorithm": {
+          "const": "Ed25519"
+        },
+        "key_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}(?![\\s\\S])"
+        },
+        "value": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{86}(?![\\s\\S])"
+        }
+      }
+    }
+  }
+}

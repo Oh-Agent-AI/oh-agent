@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Overview (merged) — prototype</title>
+<style>
+/* 原型：总览 + 用量 合并（B 方案）。全部为虚构示例数据，不连接任何真实产品数据。
+   配色沿用 landing / 产品：薄荷=正常/本地，琥珀=需要看/估算，两者不混用语义。 */
+:root{color-scheme:dark;--bg:#0a0f12;--raise:#0f161a;--surface:#131c21;--surface2:#1a252b;--line:#243238;--line2:#34464d;--ink:#eef4f2;--ink2:#c3d0d0;--muted:#93a4a6;--mint:#7ee8bf;--mint2:#4fb893;--mint3:#2c6b56;--amber:#f2b45e;--red:#f08a6c;--r:14px;--font:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Segoe UI",sans-serif;--mono:ui-monospace,"SF Mono",Menlo,monospace}
+*{box-sizing:border-box}body{margin:0;background:#06090b;color:var(--ink);font:14px/1.55 var(--font);-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;cursor:pointer}
+.proto{max-width:1180px;margin:0 auto;padding:16px}
+.ctl{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;padding:10px 14px;border:1px dashed var(--line2);border-radius:12px;color:var(--muted);font-size:12.5px;margin-bottom:14px}
+.ctl b{color:var(--ink2);font-weight:600}
+.ctl select,.ctl button{background:var(--surface);border:1px solid var(--line2);border-radius:8px;padding:4px 10px;color:var(--ink)}
+.ctl button[aria-pressed=true]{background:var(--mint3);border-color:var(--mint2)}
+.win{background:var(--bg);border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:0 30px 80px #0008}
+.bar{display:flex;align-items:center;gap:14px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--raise)}
+.bar{flex-wrap:wrap}.bar b,.sync{white-space:nowrap}.lights{white-space:nowrap;flex:none}
+.lights i{display:inline-block;width:11px;height:11px;border-radius:50%;margin-right:6px;background:#ff5f57}.lights i:nth-child(2){background:#febc2e}.lights i:nth-child(3){background:#28c840}
+.tabs{display:flex;gap:4px;margin-left:8px;flex-wrap:wrap}
+.tab{padding:6px 12px;border-radius:8px;color:var(--muted);border:0;background:none}
+.tab[aria-current=page]{background:var(--surface2);color:var(--ink)}
+.tab.gone{text-decoration:line-through;opacity:.45}
+.sync{margin-left:auto;display:flex;align-items:center;gap:8px;border:1px solid var(--line2);background:var(--surface);border-radius:999px;padding:4px 12px;color:var(--ink2);font-size:12.5px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--mint)}.dot.amber{background:var(--amber)}.dot.gray{background:#5d6f72}
+main{padding:22px 24px 30px;display:grid;gap:18px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:18px 20px;position:relative}
+.eyebrow{margin:0 0 4px;font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--mint2)}
+h2{margin:0;font-size:18px;font-weight:620}
+h3{margin:0;font-size:15px}
+.sub{color:var(--muted);font-size:12.5px}
+.status-head{display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.badge{display:inline-flex;gap:8px;align-items:center;border-radius:999px;padding:5px 14px;font-weight:620;font-size:15px}
+.badge.look{background:#f2b45e22;color:var(--amber);border:1px solid #f2b45e66}
+.badge.ok{background:#4fb89322;color:var(--mint);border:1px solid #4fb89366}
+.badge.none{background:var(--surface2);color:var(--ink2);border:1px solid var(--line2)}
+.finds{list-style:none;margin:14px 0 0;padding:0;display:grid;gap:8px}
+.find{display:flex;gap:12px;align-items:center;padding:11px 14px;border:1px solid var(--line);border-radius:12px;background:var(--raise);text-align:left;width:100%}
+.find:hover{border-color:var(--amber)}
+.find .mk{width:22px;height:22px;border-radius:7px;background:#f2b45e22;color:var(--amber);display:grid;place-items:center;font-weight:700;flex:none}
+.find .meta{margin-left:auto;color:var(--muted);font-size:12.5px;white-space:nowrap}
+.find .go{color:var(--mint);white-space:nowrap}
+.fine{margin:12px 0 0;color:var(--muted);font-size:12px}
+.cols3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:12px}
+.col{border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:var(--raise)}
+.col .lbl{color:var(--muted);font-size:12.5px}.col .val{font:600 24px var(--mono);margin:2px 0}
+.tag{display:inline-block;font-size:11px;border-radius:6px;padding:1px 7px;border:1px solid var(--line2);color:var(--ink2)}
+.tag.est{border-color:#f2b45e66;color:var(--amber)}
+.kpis{display:flex;gap:26px;flex-wrap:wrap;margin-top:14px;color:var(--ink2)}
+.kpis b{font-family:var(--mono);color:var(--ink)}
+.budget{margin-top:14px}.track{height:8px;border-radius:99px;background:var(--surface2);overflow:hidden}.track i{display:block;height:100%;background:var(--mint2)}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.sp{margin-left:auto}
+.seg{display:inline-flex;border:1px solid var(--line2);border-radius:9px;overflow:hidden}.seg button{border:0;background:none;padding:4px 12px;color:var(--muted)}.seg button[aria-pressed=true]{background:var(--surface2);color:var(--ink)}
+.nav{background:var(--surface);border:1px solid var(--line2);border-radius:8px;padding:3px 10px}
+.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin-top:12px}
+.dow{color:var(--muted);font-size:11.5px;text-align:center}
+.day{aspect-ratio:2.3/1;min-height:46px;border-radius:9px;border:1px solid var(--line);background:var(--raise);display:flex;flex-direction:column;justify-content:space-between;padding:5px 7px;text-align:left;position:relative}
+.day small{color:var(--muted);font-size:11px}.day span{font:12px var(--mono);color:var(--ink2)}
+.day[disabled]{opacity:.35;cursor:default}.day.blank{border:0;background:none}
+.day[aria-pressed=true]{outline:2px solid var(--mint);outline-offset:1px}
+.day.flag::after{content:"";position:absolute;top:6px;right:6px;width:8px;height:8px;border-radius:50%;background:var(--amber)}
+.legend{display:flex;gap:14px;color:var(--muted);font-size:12px;margin-top:10px;flex-wrap:wrap}.legend i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;background:var(--amber)}
+.dayp{margin-top:16px;border-top:1px solid var(--line);padding-top:14px}
+.hours{display:flex;align-items:flex-end;gap:3px;height:96px;margin:12px 0 4px}
+.hours i{flex:1;background:linear-gradient(var(--mint),var(--mint3));border-radius:3px 3px 0 0;min-height:2px}
+.hours i.f{background:linear-gradient(var(--amber),#8a5a1c)}
+.axis{display:flex;justify-content:space-between;color:var(--muted);font:11px var(--mono)}
+.btn{background:var(--mint);color:#06231a;border:0;border-radius:9px;padding:7px 14px;font-weight:620}
+.btn.ghost{background:none;color:var(--ink);border:1px solid var(--line2)}
+.hosts{width:100%;border-collapse:collapse;margin-top:10px}
+.hosts td{padding:10px 8px;border-top:1px solid var(--line);vertical-align:middle}
+.hosts tr:first-child td{border-top:0}
+.hosts .num{font-family:var(--mono);text-align:right;white-space:nowrap}
+.hosts .nm{font-weight:600}
+.st{white-space:nowrap}
+.st.ok{color:var(--mint)}.st.warn{color:var(--amber)}.st.dim{color:var(--muted)}
+details.card summary{cursor:pointer;font-weight:600;list-style:none}details.card summary::-webkit-details-marker{display:none}
+details.card summary::before{content:"▸ ";color:var(--muted)}details.card[open] summary::before{content:"▾ "}
+.empty{padding:20px;text-align:center;color:var(--ink2)}
+.empty b{display:block;font-size:16px;margin-bottom:4px}
+.note{display:none;position:absolute;top:-10px;right:14px;z-index:2;max-width:70%;background:#1b2f27;border:1px solid var(--mint2);color:var(--mint);font-size:11.5px;line-height:1.4;padding:5px 9px;border-radius:8px}
+.show-notes .note{display:block}
+.note em{font-style:normal;color:var(--ink2)}
+.toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:var(--surface2);border:1px solid var(--line2);border-radius:10px;padding:9px 16px;font-size:13px;opacity:0;transition:.2s;pointer-events:none}
+.toast.on{opacity:1}
+@media(max-width:720px){main{padding:14px}.cols3{grid-template-columns:1fr}.find{flex-wrap:wrap}.find .meta{margin-left:34px}.note{position:static;display:none;max-width:none;margin-bottom:8px}.show-notes .note{display:block}}
+</style>
+</head>
+<body>
+<div class="proto" id="app"></div>
+<div class="toast" id="toast" role="status"></div>
+<script>
+// ── 原型数据：全部虚构；以「今天 = 2026-10-02」为锚点生成，保证每次打开一致 ──
+const TODAY = "2026-10-20";
+let lang = (new URLSearchParams(location.search).get("lang")) === "zh" ? "zh" : "en";
+const S = { state: "normal", month: "2026-10", metric: "tokens", day: TODAY, notes: false };
+
+const T = {
+  en: {
+    ctl: "Prototype controls", state: "Demo state", st_normal: "Normal", st_none: "No logs found", st_never: "Never synced", st_partial: "Partial sync failure", notes: "Review notes", lang: "中文",
+    tabs: ["Overview", "Sessions", "Findings", "Sources & trust", "Settings"], gone: "Usage (merged into Overview)",
+    synced: "Synced 5 min ago", never: "Not synced yet", partialS: "1 source failed",
+    q1: "Is anything wrong?", look: "Worth a look", clear: "Nothing found", nodata: "No data yet",
+    lookN: n => `${n} sessions worth checking`, clearN: "No issues found by the checks available",
+    clearFine: "That doesn’t mean the output was right — only that none of the checks we can run fired.",
+    f1: "The same command failed 3 times in a row", f1m: "Claude Code · today", f2: "Input grew 4.2× within one run", f2m: "Codex · yesterday", f3: "Sessions with the cache mostly missed", f3m: "Claude Code · Sep 28",
+    view: "View →", all: "All 7 findings →", fineLook: "Findings are clues, not verdicts. Token counts touched are not wasted money.",
+    q2: "What did it cost — and how solid is that number?", sub: "Subscription", pay: "Pay-per-use estimate", unp: "Unpriced usage", unk: "Unknown", fixed: "fixed", est: "estimate", notsum: "never summed",
+    unpWhy: "2.1M tokens have no price card — shown as unknown, not as 0.", mTok: "tokens this month", tToday: "today", cache: "reused from cache", budget: "Monthly budget", used: p => `${p}% used`,
+    q3: "When did it happen?", cal: "Usage timeline", tokens: "Tokens", cost: "Cost", dayview: d => `${d} · by hour`, today: "today", sessions: n => `View the ${n} sessions from this day →`,
+    flagLegend: "Day with something worth checking", hrsNote: "Beijing time. Failure hours are marked amber.",
+    q4: "Who is in use — and can I trust the data?", host: "Source", month: "This month", todayS: "Today", status: "Status",
+    synced2: "Synced", nologs: "No logs found", noperm: "Needs read permission", failed: "Last sync failed", pend: "Waiting for first sync", sessionsN: n => `${n} sessions`,
+    quota: "Quota & subscription payback", quotaBody: "Collapsed by default — for people on a plan with limits. Shows how much of the window is left and whether the plan pays back.",
+    emptyT: "No agent logs found on this Mac yet", emptyB: "Run Claude Code, Codex, DeepSeek Harness or WorkBuddy once, then come back. If they have run before, check that Agent Vitals may read their folders.",
+    neverT: "Waiting for the first sync", neverB: "This usually takes under a minute. Nothing is shown until real data arrives — no placeholders.",
+    toastSess: "→ would open Sessions filtered to this day", toastFind: "→ would open the session diagnosis", toastAll: "→ would open Findings", toastTrust: "→ would open Sources & trust",
+    n1: "Answers: “Is anything wrong?”  Replaces: findings strip + 3 freshness pills", n2: "Answers: “What did it cost?”  Replaces: 4 stat cards + monthly/daily summary + budget panel", n3: "Answers: “When?”  Replaces: trend chart + recent days + the whole Usage tab", n4: "Answers: “Who / can I trust it?”  Replaces: 2 host lists + freshness panel + Usage source panel", n5: "Replaces: Decision area (kept, collapsed)"
+  },
+  zh: {
+    ctl: "原型控制", state: "演示状态", st_normal: "正常", st_none: "没有日志", st_never: "尚未同步", st_partial: "部分同步失败", notes: "评审标注", lang: "English",
+    tabs: ["总览", "会话", "发现", "来源与可信", "设置"], gone: "用量（已并入总览）",
+    synced: "5 分钟前已同步", never: "尚未同步", partialS: "1 个来源失败",
+    q1: "有没有问题？", look: "建议看看", clear: "未发现问题", nodata: "暂无数据",
+    lookN: n => `${n} 个会话值得检查`, clearN: "按现有检测项，未发现问题",
+    clearFine: "这不代表输出是对的——只表示我们能运行的检查没有命中。",
+    f1: "同一个命令连续失败 3 次", f1m: "Claude Code · 今天", f2: "一次运行内输入量增长 4.2 倍", f2m: "Codex · 昨天", f3: "缓存大多未命中的会话", f3m: "Claude Code · 9 月 28 日",
+    view: "查看 →", all: "全部 7 项 →", fineLook: "发现只是线索，不是结论；涉及的 Token 不等于浪费的钱。",
+    q2: "花了多少，这个数准不准？", sub: "订阅月费", pay: "按量估算", unp: "未计价用量", unk: "未知", fixed: "固定", est: "估算", notsum: "分栏不相加",
+    unpWhy: "有 2.1M Token 没有价卡——显示为「未知」，不记为 0。", mTok: "本月 Token", tToday: "今日", cache: "缓存复用", budget: "月度预算", used: p => `已用 ${p}%`,
+    q3: "是什么时候发生的？", cal: "用量时间线", tokens: "Token", cost: "金额", dayview: d => `${d} · 按小时`, today: "今天", sessions: n => `查看这一天的 ${n} 个会话 →`,
+    flagLegend: "当天有值得检查的事项", hrsNote: "北京时间；失败的小时标为琥珀色。",
+    q4: "谁在用，数据靠不靠谱？", host: "来源", month: "本月", todayS: "今日", status: "状态",
+    synced2: "已同步", nologs: "没有找到日志", noperm: "需要读取权限", failed: "上次同步失败", pend: "等待首次同步", sessionsN: n => `${n} 个会话`,
+    quota: "额度与订阅值回", quotaBody: "默认折叠——给有额度限制的套餐用户：窗口还剩多少、套餐值不值。",
+    emptyT: "这台 Mac 上还没找到 Agent 日志", emptyB: "先运行一次 Claude Code、Codex、DeepSeek Harness 或 WorkBuddy 再回来；如果以前运行过，请检查 Agent Vitals 是否被允许读取它们的目录。",
+    neverT: "正在等待首次同步", neverB: "通常不到一分钟。真实数据到达前不显示任何占位内容。",
+    toastSess: "→ 将打开「会话」，并按当天过滤", toastFind: "→ 将打开该会话的诊断", toastAll: "→ 将打开「发现」", toastTrust: "→ 将打开「来源与可信」",
+    n1: "回答：「有没有问题？」 取代：发现条 + 3 个新鲜度标签", n2: "回答：「花了多少？」 取代：4 张统计卡 + 本月/今日摘要 + 预算面板", n3: "回答：「什么时候？」 取代：趋势图 + 最近 5 天 + 整个用量页", n4: "回答：「谁在用／可信吗？」 取代：2 个宿主列表 + 新鲜度面板 + 用量页来源面板", n5: "取代：决策区（保留，默认折叠）"
+  }
+};
+const t = k => T[lang][k];
+
+// 种子随机：同一天永远生成同一组数据
+const rnd = (seed) => { let x = seed * 9301 + 49297; x = (x * 233280) % 233280 / 233280; return Math.abs(x) % 1; };
+const hash = s => [...s].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7);
+const FLAG_DAYS = new Set(["2026-10-20", "2026-10-19", "2026-10-14", "2026-10-07", "2026-09-28"]);
+const pad = n => String(n).padStart(2, "0");
+const daysIn = m => new Date(+m.slice(0, 4), +m.slice(5), 0).getDate();
+const dow1 = m => (new Date(+m.slice(0, 4), +m.slice(5) - 1, 1).getDay() + 6) % 7; // 周一开头
+function dayData(date) {
+  const r = rnd(hash(date)); const wk = new Date(date).getDay(); const quiet = wk === 0 || wk === 6;
+  const tokens = Math.round((quiet ? 0.6 : 3.2) * (0.4 + r * 1.6) * 10) / 10;
+  return { tokens, cost: Math.round(tokens * 0.31 * 100) / 100, sessions: Math.max(1, Math.round(tokens * 1.7)), flag: FLAG_DAYS.has(date) };
+}
+const hourData = (date) => Array.from({ length: 24 }, (_, h) => {
+  const peak = Math.exp(-Math.pow((h - 15) / 4.5, 2)) + 0.5 * Math.exp(-Math.pow((h - 10) / 2.5, 2));
+  return { v: Math.max(0.02, peak * (0.5 + rnd(hash(date + h)) * 0.8)), f: dayData(date).flag && (h === 14 || h === 15) };
+});
+
+function hosts() {
+  const base = [
+    { n: "Claude Code", m: "80.2M", s: 5, ok: "ok" },
+    { n: "Codex", m: "41.6M", s: 2, ok: "ok" },
+    { n: "DeepSeek Harness", m: "5.6M", s: 1, ok: "ok" },
+    { n: "WorkBuddy", m: "—", s: 0, ok: "nologs" },
+  ];
+  if (S.state === "partial") base[1] = { n: "Codex", m: "41.6M", s: 2, ok: "failed" };
+  return base;
+}
+const hostStatus = h => ({ ok: ["ok", "dot", t("synced2")], nologs: ["dim", "gray", t("nologs")], noperm: ["warn", "amber", t("noperm")], failed: ["warn", "amber", t("failed")] }[h]);
+
+// ── 渲染 ──
+const note = k => `<div class="note">${t(k)}</div>`;
+function statusBlock() {
+  if (S.state === "none") return `<div class="empty"><b>${t("emptyT")}</b>${t("emptyB")}</div>`;
+  if (S.state === "never") return `<div class="empty"><b>${t("neverT")}</b>${t("neverB")}</div>`;
+  const look = `<div class="status-head"><span class="badge look"><i class="dot amber"></i>${t("look")}</span><span class="sub">${t("lookN")(3)}</span></div>
+    <ul class="finds">
+      ${[["f1", "f1m"], ["f2", "f2m"], ["f3", "f3m"]].map(([a, b]) => `<li><button class="find" data-act="find"><span class="mk">!</span><span>${t(a)}</span><span class="meta">${t(b)}</span><span class="go">${t("view")}</span></button></li>`).join("")}
+    </ul>
+    <p class="fine"><button class="btn ghost" data-act="all">${t("all")}</button></p>
+    <p class="fine">${t("fineLook")}</p>`;
+  return look;
+}
+function spendBlock() {
+  if (S.state === "none" || S.state === "never") return `<div class="empty sub">—</div>`;
+  return `<div class="cols3">
+      <div class="col"><div class="lbl">${t("sub")}</div><div class="val">$20.00</div><span class="tag">${t("fixed")}</span></div>
+      <div class="col"><div class="lbl">${t("pay")}</div><div class="val">$5.40</div><span class="tag est">${t("est")}</span></div>
+      <div class="col"><div class="lbl">${t("unp")}</div><div class="val" style="color:var(--amber)">${t("unk")}</div><span class="tag est">${t("notsum")}</span></div>
+    </div>
+    <p class="fine">${t("unpWhy")}</p>
+    <div class="kpis"><span><b>127.4M</b> ${t("mTok")}</span><span><b>${dayData(TODAY).tokens}M</b> ${t("tToday")}</span><span><b>96.8%</b> ${t("cache")}</span></div>
+    <div class="budget"><div class="row"><span class="sub">${t("budget")}</span><span class="sub sp">${t("used")(62)}</span></div><div class="track"><i style="width:62%"></i></div></div>`;
+}
+function timelineBlock() {
+  if (S.state === "none" || S.state === "never") return `<div class="empty sub">—</div>`;
+  const m = S.month, n = daysIn(m), lead = dow1(m);
+  const dow = (lang === "zh" ? ["一", "二", "三", "四", "五", "六", "日"] : ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]).map(d => `<span class="dow">${d}</span>`).join("");
+  const cells = [...Array(lead)].map(() => `<span class="day blank"></span>`).join("") + [...Array(n)].map((_, i) => {
+    const date = `${m}-${pad(i + 1)}`, fut = date > TODAY, d = dayData(date);
+    return `<button class="day ${d.flag && !fut ? "flag" : ""}" data-day="${date}" ${fut ? "disabled" : ""} aria-pressed="${S.day === date}"><small>${i + 1}</small><span>${fut ? "" : S.metric === "tokens" ? d.tokens + "M" : "$" + d.cost.toFixed(2)}</span></button>`;
+  }).join("");
+  const sel = S.day && S.day.startsWith(m) ? S.day : null;
+  let panel = "";
+  if (sel) {
+    const hd = hourData(sel), mx = Math.max(...hd.map(h => h.v));
+    panel = `<div class="dayp"><div class="row"><h3>${t("dayview")(sel)}${sel === TODAY ? " · " + t("today") : ""}</h3><span class="sub sp">${dayData(sel).tokens}M tokens</span></div>
+      <div class="hours" aria-hidden="true">${hd.map(h => `<i class="${h.f ? "f" : ""}" style="height:${Math.round(h.v / mx * 100)}%"></i>`).join("")}</div>
+      <div class="axis"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>
+      <p class="fine">${t("hrsNote")}</p>
+      <p class="fine"><button class="btn" data-act="sessions">${t("sessions")(dayData(sel).sessions)}</button></p></div>`;
+  }
+  return `<div class="row"><div class="row"><button class="nav" data-m="-1" aria-label="previous month">‹</button><b>${m}</b><button class="nav" data-m="1" aria-label="next month" ${m >= TODAY.slice(0, 7) ? "disabled" : ""}>›</button></div>
+      <div class="seg sp" role="group"><button data-metric="tokens" aria-pressed="${S.metric === "tokens"}">${t("tokens")}</button><button data-metric="cost" aria-pressed="${S.metric === "cost"}">${t("cost")}</button></div></div>
+    <div class="cal">${dow}${cells}</div>
+    <div class="legend"><span><i></i>${t("flagLegend")}</span></div>${panel}`;
+}
+function hostsBlock() {
+  let rows = hosts();
+  if (S.state === "none") rows = rows.map(h => ({ ...h, m: "—", s: 0, ok: "nologs" }));
+  if (S.state === "never") rows = rows.map(h => ({ ...h, m: "—", s: 0, ok: "pend" }));
+  const stat = h => h === "pend" ? ["dim", "gray", t("pend")] : hostStatus(h);
+  return `<table class="hosts"><tbody>${rows.map(h => { const [c, d, l] = stat(h.ok); return `<tr><td class="nm">${h.n}</td><td class="num">${h.m}</td><td class="num">${h.s ? t("sessionsN")(h.s) : "—"}</td><td class="st ${c}"><i class="dot ${d === "dot" ? "" : d}"></i> ${l}</td></tr>`; }).join("")}</tbody></table>`;
+}
+function render() {
+  const syncChip = S.state === "never" ? [t("never"), "gray"] : S.state === "partial" ? [t("partialS"), "amber"] : S.state === "none" ? [t("synced"), ""] : [t("synced"), ""];
+  document.getElementById("app").className = "proto" + (S.notes ? " show-notes" : "");
+  document.getElementById("app").innerHTML = `
+  <div class="ctl"><b>${t("ctl")}</b>
+    <label>${t("state")} <select id="st">${["normal", "none", "never", "partial"].map(k => `<option value="${k}" ${S.state === k ? "selected" : ""}>${t("st_" + k)}</option>`).join("")}</select></label>
+    <button id="nt" aria-pressed="${S.notes}">${t("notes")}</button><button id="lg">${t("lang")}</button>
+    <span>${lang === "zh" ? "示例数据，均为虚构。" : "Sample data, entirely fictional."}</span></div>
+  <div class="win">
+    <div class="bar"><span class="lights"><i></i><i></i><i></i></span><b>Agent Vitals</b>
+      <nav class="tabs">${t("tabs").map((x, i) => `<button class="tab" ${i === 0 ? 'aria-current="page"' : ""}>${x}</button>`).join("")}<button class="tab gone" title="">${t("gone")}</button></nav>
+      <button class="sync" data-act="trust"><i class="dot ${syncChip[1]}"></i>${syncChip[0]}</button></div>
+    <main>
+      <section class="card">${note("n1")}<p class="eyebrow">${t("q1")}</p>${S.state === "normal" || S.state === "partial" ? "" : ""}${statusBlock()}</section>
+      <section class="card">${note("n2")}<p class="eyebrow">${t("q2")}</p><h2>${lang === "zh" ? "本月" : "This month"}</h2>${spendBlock()}</section>
+      <section class="card">${note("n3")}<p class="eyebrow">${t("q3")}</p><h2>${t("cal")}</h2>${timelineBlock()}</section>
+      <section class="card">${note("n4")}<p class="eyebrow">${t("q4")}</p>${hostsBlock()}</section>
+      <details class="card">${note("n5")}<summary>${t("quota")}</summary><p class="sub" style="margin-top:10px">${t("quotaBody")}</p></details>
+    </main>
+  </div>`;
+  bind();
+}
+function toast(k) { const el = document.getElementById("toast"); el.textContent = t(k); el.classList.add("on"); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove("on"), 1800); }
+function bind() {
+  const q = (s, f) => document.querySelectorAll(s).forEach(f);
+  document.getElementById("st").onchange = e => { S.state = e.target.value; render(); };
+  document.getElementById("nt").onclick = () => { S.notes = !S.notes; render(); };
+  document.getElementById("lg").onclick = () => { lang = lang === "en" ? "zh" : "en"; document.documentElement.lang = lang; render(); };
+  q("[data-m]", b => b.onclick = () => { const [y, m] = S.month.split("-").map(Number); const d = new Date(y, m - 1 + +b.dataset.m, 1); S.month = `${d.getFullYear()}-${pad(d.getMonth() + 1)}`; S.day = S.month === TODAY.slice(0, 7) ? TODAY : `${S.month}-15`; render(); });
+  q("[data-metric]", b => b.onclick = () => { S.metric = b.dataset.metric; render(); });
+  q("[data-day]", b => b.onclick = () => { S.day = b.dataset.day; render(); });
+  q("[data-act=sessions]", b => b.onclick = () => toast("toastSess"));
+  q("[data-act=find]", b => b.onclick = () => toast("toastFind"));
+  q("[data-act=all]", b => b.onclick = () => toast("toastAll"));
+  q("[data-act=trust]", b => b.onclick = () => toast("toastTrust"));
+}
+render();
+</script>
+</body>
+</html>

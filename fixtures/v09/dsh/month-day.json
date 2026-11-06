@@ -1,0 +1,19 @@
+{
+  "_doc": "v0.9 Stage 0.7 DSH 最小接入 fixture：state/month.json 里一个账日的真实形状。字段名是 DSH 自己的四桶词表（uncached_input_tokens/cache_read_tokens/cache_write_tokens/output_tokens + 各自 peak_* 变体，见 agent_vitals_domain::cost::bucket_price）——不是 Claude Code 的 input_tokens/cache_read_input_tokens 那一套，两者不通用，混用会让 priced_day 静默算 0。键 '1970-01-01' 是占位日；测试写入时替换成查询月里的真实日键（fixture 本身不带时钟）。",
+  "days": {
+    "1970-01-01": {
+      "by_model": {
+        "deepseek-v4-flash": {
+          "uncached_input_tokens": 1000000,
+          "output_tokens": 100000,
+          "cache_read_tokens": 250000,
+          "cache_write_tokens": 0,
+          "peak_uncached_input_tokens": 0,
+          "peak_output_tokens": 0,
+          "peak_cache_read_tokens": 0,
+          "peak_cache_write_tokens": 0
+        }
+      }
+    }
+  }
+}
