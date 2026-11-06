@@ -23,6 +23,8 @@ mod update_check;
 // 「测试」板 Claude IP 风险自检：全部出站探测收敛在此模块（离线包契约：React
 // 源码不得含远端 URL / 网络客户端），并按 scutil --proxy 对齐系统代理路由。
 mod ip_check;
+// Windows：GUI 父进程拉起控制台子系统 agent-vitals 必须 CREATE_NO_WINDOW。
+mod cli_process;
 #[cfg(all(feature = "plugin-isolation-probe", target_os = "macos"))]
 mod plugin_isolation_probe;
 
@@ -30,7 +32,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri_plugin_notification::NotificationExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Mutex, atomic::{AtomicU64, Ordering}};
 use tauri::menu::{Menu, MenuBuilder, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
@@ -1119,11 +1120,14 @@ const NAVIGATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2
 ///
 /// stderr 与 discover 同款 G4 盲区：之前是 `piped()` 了却从未读过，子进程真正
 /// 报的错（比如时区非法、执行环境目录不可读）在这三条 `None` 路径里全部消失。
+///
+/// 这是托盘常驻时重 tick（约 5 分钟）会拉起的子进程。Windows 上走
+/// `cli_command`：管道接得住 JSON，但挡不住控制台子系统 exe 的闪窗。
 fn run_navigation(bin: &Path, day: &str) -> Option<Value> {
     let timezone = agent_vitals_runtime::statistics_timezone::timezone_name(&overview::data_home())
         .ok()
         .unwrap_or_else(agent_vitals_runtime::clock::system_timezone_name);
-    let mut child = match std::process::Command::new(bin)
+    let mut child = match cli_process::cli_command(bin)
         .args([
             "sessions".to_string(),
             "navigation".to_string(),
@@ -1257,7 +1261,7 @@ fn resolve_binary() -> Option<PathBuf> {
 /// 启动失败或输出无法识别时返回 `None`，不把 App 版本冒充 CLI 版本。
 fn resolved_cli_version() -> Option<String> {
     let binary = resolve_binary()?;
-    let output = Command::new(binary).arg("--version").output().ok()?;
+    let output = cli_process::cli_command(&binary).arg("--version").output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -2273,7 +2277,8 @@ fn warm_authority_db(app: &AppHandle) {
         let lock = app.state::<store::StoreBuildLock>().inner().clone();
         let _guard = lock.acquire();
         let Some(bin) = resolve_binary() else { return };
-        let mut cmd = std::process::Command::new(&bin);
+        // 启动预热是安装后第一发可见闪窗。与 tick / IPC 共用 cli_command。
+        let mut cmd = cli_process::cli_command(&bin);
         cmd.args(["data-status", "--json"]);
         cmd.env("AGENT_VITALS_HOME", overview::data_home());
         let _ = cmd.output();
