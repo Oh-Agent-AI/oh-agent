@@ -33,6 +33,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 
+use crate::cli_process::cli_command;
 use crate::overview::data_home;
 use crate::resolve_binary;
 
@@ -208,7 +209,7 @@ static PROBE_RESULTS: std::sync::Mutex<std::collections::VecDeque<(u64, Value)>>
 const PROBE_RESULT_KEEP: usize = 8;
 
 fn probe_command(args: &[String]) -> Option<Command> {
-    let mut command = Command::new(crate::resolve_binary()?);
+    let mut command = cli_command(crate::resolve_binary()?);
     command.args(args);
     command.env("AGENT_VITALS_HOME", crate::overview::data_home());
     Some(command)
@@ -428,7 +429,7 @@ pub async fn sessions_list(
             return Err(no_binary());
         };
         let args = list_args(&day, &month, &date_from, &date_to, &harness_kind, &model, &provider, page_size, &cursor, &order);
-        let mut cmd = Command::new(&bin);
+        let mut cmd = cli_command(&bin);
         cmd.args(&args);
         // 与 tick 同款：显式钉死 AGENT_VITALS_HOME，权威库 / salt / 状态文件都
         // 落在 app 自己的数据根，不依赖子进程继承的环境。
@@ -470,7 +471,7 @@ pub async fn sessions_read(
             return Err(no_binary());
         };
         let args = read_args(&session_ref, page_size, cursor.as_deref());
-        let mut cmd = Command::new(&bin);
+        let mut cmd = cli_command(&bin);
         cmd.args(&args);
         cmd.env("AGENT_VITALS_HOME", data_home());
         run_json(cmd)
@@ -492,7 +493,7 @@ pub async fn sessions_findings(
         let Some(bin) = resolve_binary() else {
             return Err(no_binary());
         };
-        let mut cmd = Command::new(&bin);
+        let mut cmd = cli_command(&bin);
         cmd.args(findings_args());
         cmd.env("AGENT_VITALS_HOME", data_home());
         run_json(cmd)
@@ -515,7 +516,7 @@ pub async fn trust_audit(
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = lock.acquire();
         let Some(bin) = resolve_binary() else { return Err(no_binary()); };
-        let mut cmd = Command::new(&bin);
+        let mut cmd = cli_command(&bin);
         cmd.args(["trust", "audit", "--harness", &harness, "--json"]);
         cmd.env("AGENT_VITALS_HOME", data_home());
         run_json(cmd)
@@ -548,7 +549,7 @@ pub async fn trust_evidence_read(
         let _guard = lock.acquire();
         let Some(bin) = resolve_binary() else { return Err(no_binary()); };
         let limit_text = limit.to_string();
-        let mut cmd = Command::new(&bin);
+        let mut cmd = cli_command(&bin);
         cmd.args(["trust", "evidence", "--limit", &limit_text, "--json"]);
         if let Some(harness) = harness.as_deref() { cmd.args(["--harness", harness]); }
         if let Some(cursor) = cursor.as_deref() { cmd.args(["--cursor", cursor]); }
@@ -567,7 +568,7 @@ pub async fn trust_discover(
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = lock.acquire();
         let Some(bin) = resolve_binary() else { return Err(no_binary()); };
-        let mut cmd = Command::new(&bin);
+        let mut cmd = cli_command(&bin);
         cmd.args(["trust", "discover", "--json"]);
         cmd.env("AGENT_VITALS_HOME", data_home());
         run_json(cmd)
@@ -587,7 +588,7 @@ pub async fn trust_runtime_snapshot(
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = lock.acquire();
         let Some(bin) = resolve_binary() else { return Err(no_binary()); };
-        let mut cmd = Command::new(&bin);
+        let mut cmd = cli_command(&bin);
         cmd.args(["trust", "monitor", "snapshot", "--json"]);
         cmd.env("AGENT_VITALS_HOME", data_home());
         let raw = run_json(cmd)?;
@@ -750,7 +751,7 @@ pub async fn sessions_issues(
         let bootstrap_needed = cursor.is_none() && issues_projection_empty(&db);
         if should_refresh_evaluator(refresh.unwrap_or(false), bootstrap_needed) {
             if let Some(bin) = resolve_binary() {
-                let mut cmd = Command::new(bin);
+                let mut cmd = cli_command(bin);
                 cmd.args(findings_args());
                 cmd.env("AGENT_VITALS_HOME", data_home());
                 if run_json(cmd).is_ok() {
@@ -1552,8 +1553,10 @@ fn now_ms() -> i64 {
 /// 收到 0 字节（exit Some(0)、stderr 空）。`run_json` 用 `.output()`（默认
 /// 管道）从未踩过；本路径必须 spawn（取消要拿 pid），所以管道要自己声明。
 /// stdin 钉死 null：doctor 不读输入，别让它有机会挂在父进程的终端上。
+/// Windows 上 `cli_command` 另加 `CREATE_NO_WINDOW`：管道只解决
+/// `wait_with_output` 收得到字节，解决不了控制台窗口闪一下。
 fn doctor_command(bin: &Path, args: &[String], home: &Path) -> Command {
-    let mut cmd = Command::new(bin);
+    let mut cmd = cli_command(bin);
     cmd.args(args)
         .env("AGENT_VITALS_HOME", home)
         .stdin(Stdio::null())
@@ -1715,7 +1718,7 @@ pub async fn skills_snapshot_save(
         let Some(bin) = resolve_binary() else {
             return Err(no_binary());
         };
-        let mut cmd = Command::new(&bin);
+        let mut cmd = cli_command(&bin);
         cmd.args(snapshot_args());
         cmd.env("AGENT_VITALS_HOME", data_home());
         let out = cmd
@@ -1906,7 +1909,7 @@ pub async fn skills_diff_latest(
         let Some(bin) = resolve_binary() else {
             return Err(no_binary());
         };
-        let mut cmd = Command::new(&bin);
+        let mut cmd = cli_command(&bin);
         cmd.args(vec!["diff", "--json", "-"]);
         cmd.env("AGENT_VITALS_HOME", data_home())
             .stdin(Stdio::null())
@@ -1977,7 +1980,7 @@ pub async fn skills_export_redacted(
         let mut args = doctor_args("all", &sr, &None);
         args.push("--redact".into());
         args.push("--redact-names".into());
-        let mut cmd = Command::new(&bin);
+        let mut cmd = cli_command(&bin);
         cmd.args(&args);
         cmd.env("AGENT_VITALS_HOME", data_home());
         let out = cmd
