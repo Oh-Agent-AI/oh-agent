@@ -1,5 +1,5 @@
 ---
-draft: true
+lastUpdated: 2026-10-28
 title: Oh Agent 怎么读取 WorkBuddy 的会话？
 description: Oh Agent 从 ~/.workbuddy/traces 下的 trace 文件读取 WorkBuddy 用量，在 Agent City 里建成 WorkBuddy 城区。不支持添加其他目录，同步时也不做行为检查。
 head:
@@ -37,10 +37,14 @@ WorkBuddy 用自己的积分计费。Oh Agent 把积分就记为积分，不当�
 
 <!-- source: workbuddy/sources/mod.rs module doc (credits; cash_cny 恒 null; nominal_cny = credits × 0.05) -->
 
-**待确认**：补上 WorkBuddy 官网链接，并确认哪些 WorkBuddy 版本会写 `traces/`。
+在 Agent City 里，这个数据源对应的城区名叫 **WorkBuddy**（fixture `id: "workbuddy"`，`display_name: "WorkBuddy"`）。
+
+<!-- source: apps/agent-city/ui/src/data/provider.ts (fixture harnesses: { id: "workbuddy", display_name: "WorkBuddy" }) -->
 
 ## 相关
 
-- [数据管线](/docs/zh/architecture/data-pipeline)
+- [Claude Code 数据来源](/docs/zh/data-sources/claude-code)
+- [Codex 数据来源](/docs/zh/data-sources/codex)
 - [DeepSeek Harness 数据来源](/docs/zh/data-sources/deepseek-harness)
-- [集成总览](/docs/zh/integrations)
+- [Agent City 每栋楼代表什么](/docs/zh/city-guide)
+- [安装](/docs/zh/install) · [常见问题](https://ohagent.ai/#faq)
