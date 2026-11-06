@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0a1111">
+  <title>Trust before fleet — Oh Agent</title>
+  <meta name="description" content="A Trust Curve lecture, not a Day-0 hiring plan: verification, markdown skills, evals, and hard CI let you stop micromanaging—after agents prove their own work. Steal the mechanism, not the fleet size.">
+  <link rel="canonical" href="https://ohagent.ai/blog/trust-before-fleet/">
+  <meta property="og:type" content="article">
+  <meta property="og:url" content="https://ohagent.ai/blog/trust-before-fleet/">
+  <meta property="og:title" content="Trust before fleet — Oh Agent">
+  <meta property="og:description" content="A Trust Curve lecture, not a Day-0 hiring plan: verification, markdown skills, evals, and hard CI let you stop micromanaging—after agents prove their own work. Steal the mechanism, not the fleet size.">
+  <meta property="og:image" content="https://ohagent.ai/assets/oh-agent-preview-beta3.jpg">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Agent City: a 3D city built from synthetic agent sessions, with the headline Your agents work. Your world grows.">
+  <meta property="article:published_time" content="2026-10-27">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Trust before fleet — Oh Agent">
+  <meta name="twitter:description" content="A Trust Curve lecture, not a Day-0 hiring plan: verification, markdown skills, evals, and hard CI let you stop micromanaging—after agents prove their own work. Steal the mechanism, not the fleet size.">
+  <meta name="twitter:image" content="https://ohagent.ai/assets/oh-agent-preview-beta3.jpg">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    "headline": "Trust before fleet",
+    "datePublished": "2026-10-27",
+    "dateModified": "2026-10-27",
+    "inLanguage": "en",
+    "author": { "@type": "Organization", "name": "Oh Agent", "url": "https://ohagent.ai/" },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Oh Agent",
+      "url": "https://ohagent.ai/",
+      "logo": { "@type": "ImageObject", "url": "https://ohagent.ai/assets/app-icon.png" }
+    },
+    "image": "https://ohagent.ai/assets/oh-agent-preview-beta3.jpg",
+    "mainEntityOfPage": "https://ohagent.ai/blog/trust-before-fleet/",
+    "description": "A Trust Curve lecture, not a Day-0 hiring plan: verification, markdown skills, evals, and hard CI let you stop micromanaging—after agents prove their own work. Steal the mechanism, not the fleet size.",
+    "keywords": "agents, verification, skills, multi-agent, habitat"
+  }
+  </script>
+  <link rel="icon" href="/assets/app-icon.png">
+  <link rel="stylesheet" href="/styles.css?v=20261027-blog">
+</head>
+<body class="blog-page">
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header"><div class="shell nav">
+    <a class="brand" href="/"><img src="/assets/app-icon.png" width="30" height="30" alt=""><span>Oh Agent<small>Your agents, visualized</small></span></a>
+    <nav aria-label="Main navigation"><a href="/#city">Agent City</a><a href="/#play">Explore &amp; play</a><a href="/#insights">Insights</a><a href="/#privacy">Privacy</a><a href="/#faq">FAQ</a><a href="/blog/" aria-current="page">Blog</a><a href="/docs/">Docs</a><a href="https://github.com/Oh-Agent-AI/oh-agent" target="_blank" rel="noopener">GitHub ↗</a><a href="https://discord.gg/Evmpm8W56g" target="_blank" rel="noopener">Discord ↗</a></nav>
+    <div class="nav-end"><a class="language" href="/zh/" lang="zh-CN" hreflang="zh-CN">中文</a><a class="button small" href="/#download">Download</a></div>
+  </div></header>
+  <main id="main" class="blog-main shell">
+    <article class="blog-article">
+      <p class="blog-crumbs"><a href="/blog/">Blog</a> · 27 October 2026</p>
+      <h1 class="page-title">Trust before fleet</h1>
+      <p class="blog-meta"><time datetime="2026-10-27">Published 27 October 2026</time><span>Oh Agent</span></p>
+      <div class="blog-tags"><span>agents</span><span>verification</span><span>skills</span><span>multi-agent</span><span>habitat</span></div>
+      <p class="blog-lede-note"><em>Provocation:</em> <a href="https://x.com/huxlab/status/2114770287216771293" target="_blank" rel="noopener">Hux — Chinese promo of the talk</a><br><em>Source video:</em> <a href="https://x.com/tsukiema_/status/2114360674432303569" target="_blank" rel="noopener">tsukiema_ — ~54min recording</a><br><em>Speaker (as credited in the recording):</em> Lauren Tan — tenure ~5 months in a Cursor context (joined ~five months ago on the talk). On-screen “SpaceXAI / SpaceX / SpaxeXAI” overlays are joke branding in the circulated recording; we do not treat them as employment claims.<br><em>Sibling framing:</em> <a href="/blog/chaos-emergence-habitat/">Chaos becomes emergence—if the habitat selects for it</a></p>
+      <p>Hux’s promo is sharp marketing: skip Netflix; 99% of people use 1% of the stack; stand up a Chief of Staff + PM + twenty workers; learn verification and agent-friendly architecture. The ~54-minute talk underneath is quieter and more useful. Lauren Tan’s internal Cursor session (the recording Hux and others are circulating) is not a Day-0 hiring plan. It is a Trust Curve lecture with demos: how verification, markdown skills, evals, and hard CI let you stop micromanaging—<em>after</em> agents can prove their own work.</p>
+      <p>Steal the mechanism. Do not steal the fleet size.</p>
+      <h2>The Trust Curve in plain words</h2>
+      <p>On the whiteboard she draws trust on the Y-axis and agent count on the X: <strong>1 → 1–5 → 5–10 → 10–20 → hundreds → thousands</strong>. The curve rises slowly at first. One agent is a chat window you can babysit. A handful still fits in a human’s head if you review every diff. Cross into tens and you hit the wall she names out loud: <strong>you</strong> are the verifier, so <strong>you</strong> are the bottleneck. Hundreds only make sense once verification is automated and skills are explicit enough that agents behave like engineers with a checklist—not like interns waiting for your next comment.</p>
+      <p>Micromanagement is the low-trust zone. “Head chef” orchestration—planning the kitchen, not cooking every plate—only works after the line cooks can plate correctly without you tasting every spoonful. The marketing clip about waking up to merged PRs sits at the far right of that curve. It is a destination, not a Day-0 default.</p>
+      <h2>Five steals for a small multi-bot crew</h2>
+      <p>You do not need fifty seats to practice what the talk actually teaches. For a crew of a few bots—and one human who still owns publish, merge, and external send—these five transfers are enough.</p>
+      <h3>1. Feature Map / SOP index (markdown skills, colocated)</h3>
+      <p>Tan shows skills as real files next to the code: <code>SKILL.md</code> folders that teach an agent how to drive a surface the way a senior would—launch, doctor, reproduce, evidence, cleanup. The “Feature Map” idea is an index of user paths, selectors, commands, and gotchas per feature so the agent is not guessing from vibes. High-quality skills beat long style guides because they are procedural: what to open, what to refuse, what evidence to leave.</p>
+      <p>For a small crew: one SOP index per seat or domain. Link every recurring job to a short markdown map. Prefer colocated context (skill lives next to the code it governs) over a distant wiki nobody reloads.</p>
+      <h3>2. Hard never-verbs and CI, not soft tone advice</h3>
+      <p>She is blunt about review comments that repeat: encode them so the repo rejects the mistake. Architecture and types for valid states. Lint / build / CI for recurring violations. Soft guidance (“write cleanly,” “be careful”) does not scale past one micromanager. Hard guardrails do.</p>
+      <p>For a small crew: a never-verb list per seat (<code>never send</code>, <code>never merge</code>, <code>never pay</code>, <code>never rewrite Drafts baselines</code>). Fail the pipeline on the mistakes you already paid to discover. Style prose is optional; CI is not.</p>
+      <h3>3. Coordinator evals (blind where gaming is possible)</h3>
+      <p>Trust rises when a coordinator can check work without relying on the author’s self-praise. The talk’s eval / swarm layer is the same idea at scale: agents that score or re-run work, including setups where folder names or labels are blinded so agents cannot game their own tests. You do not need a swarm on Day-0. You need <em>someone</em>—another bot or a script—that evaluates the artifact against a checklist the author did not invent mid-flight.</p>
+      <p>For a small crew: a coordinator (or auditor) seat that only files tables and pass/fail against fixed criteria. No auto-authority. Human still flips Status.</p>
+      <h3>4. Pre-handoff self-check</h3>
+      <p>Before a handoff, the agent should run its own doctor: restate the goal, list what was verified, name what remains unverified, refuse silent wrong-port or wrong-checkout moves. In the demos, commands without the right worktree / CDP flags are <strong>refused</strong>—not warned. That refusal is the product.</p>
+      <p>For a small crew: every handoff ends with a self-check block—goal restated, hashes or paths of artifacts, keys dropped, open risks. No “done” without the receipt.</p>
+      <h3>5. Colocated context over telephone FYI</h3>
+      <p>The orchestration demo she labels <strong>Grokbot</strong> in the talk (described there as a newly launched, iMessage-like app for non-technical users) works because skills, doctor commands, and feature maps sit where the agent already works. We are stealing that <em>mechanism</em>—not inventing product ownership or equating brands. Telephone wakes that only restate a shared note are low-trust thrash. Put the map next to the code; wake the bot with a job, not a FYI.</p>
+      <h2>What to defer on Day-0</h2>
+      <p><strong>Do not</strong> rush a 50-agent fleet because a promo said CoS + PM + workers. Without verification and skills, more seats only multiply micromanagement—or fluent fiction nobody can audit.</p>
+      <p><strong>Do not</strong> treat overnight auto-merge as a starter myth. On the slide she claims <strong>3000+ PRs in five months</strong>; treat that as <em>her</em> outcome after months of constrained architecture, bulk refactors, and hard CI—not as your Week-1 KPI. Auto-merge is the far end of the Trust Curve. It is not a switch you flip after watching a video.</p>
+      <p><strong>Do not</strong> schedule a full <strong>Dune</strong>-style agent-friendly rewrite on Day-0. In the talk, Dune is an architecture contract for brownfield/greenfield: assume contributors arrive with a narrow prompt and local files; make the conventional path the safe path; make forbidden dependencies fail with an error that names the owner. That rewrite is valuable <em>later</em>, when you already know which local shortcuts agents keep taking. Premature Dune is a second product while your first crew still lacks never-verbs and a Feature Map.</p>
+      <p>Sequence matters: verify → skills → hard CI → then more seats → then architecture that assumes agents. Skip steps and you buy chaos without selection.</p>
+      <h2>Map to habitat language</h2>
+      <p>Our sibling post, <a href="/blog/chaos-emergence-habitat/">Chaos becomes emergence—if the habitat selects for it</a>, uses the same cut with different nouns. <strong>Verification is selection</strong>: feedback that prefers inspectable artifacts over confident chat. <strong>Skills and CI are the harness</strong>: reins that keep initiative without a cage—immutable baselines, human gates on consequential side effects, receipts on hops. Adding seats without those is window-count vanity. Habitat richness is claims closed, For-Review diffs, rejected publishes, and reconstructable handoffs—not “agents online.”</p>
+      <p>Tan’s Trust Curve is the ops dialect of that habitat claim: you cannot scale agents without trust, and trust does not come from headcount.</p>
+      <h2>What we are not claiming</h2>
+      <ul>
+        <li>We are <strong>not</strong> claiming Lauren Tan works at SpaceX, SpaceXAI, or “SpaxeXAI.” Those strings appear as on-screen overlays / joke branding in the circulated recording. The talk places her tenure (~5 months) in a Cursor context; employment claims beyond that are out of scope for this essay.</li>
+        <li>We are <strong>not</strong> inventing who owns the <strong>Grokbot</strong> orchestration surface shown in the talk, and we are <strong>not</strong> equating that demo with the public <strong>Grok Bot</strong> product. Steal verification and skills patterns; do not invent product identity or brand conflation.</li>
+        <li>We are <strong>not</strong> claiming 3000+ PRs, auto-merge fleets, or “20 PRs by morning” as Oh Agent targets or Day-0 promises. Those are talk / promo numbers that sat on long architecture and verification work.</li>
+        <li>Soft Day-0 claim locks only: if a version is named, it is <strong>beta.3</strong>—nothing more polished. No “MCP-ready seats.” No walk / drive / fly demos. No fake traction.</li>
+        <li>We are <strong>not</strong> claiming you should unleash agents unchecked. Chaos without an alignment seed, shared artifact, feedback, and a try-window is noise amplification—same failure mode as the habitat essay.</li>
+      </ul>
+      <h2>Takeaway</h2>
+      <p>You cannot scale agents without trust. Trust comes from automated verification and explicit skills (markdown maps), not from adding seats. Stay in the 1–5 zone until agents can prove their own work; hard guardrails beat soft style guides; defer the fifty-bot fantasy and the full agent-friendly rewrite until the harness already selects signal. Head chef later. Feature Map, never-verbs, evals, and pre-handoff self-checks now.</p>
+      <p>Watch the talk for the demos. Steal the Trust Curve. Leave the fleet size on the whiteboard.</p>
+      <p class="blog-signoff">Oh Agent turns your agent session history into a 3D city you can explore locally. Try the demo at <a href="/">ohagent.ai</a> · follow <a href="https://x.com/ohagentai" target="_blank" rel="noopener">@ohagentai</a>.</p>
+    </article>
+  </main>
+  <footer class="shell footer"><a class="brand" href="/"><img src="/assets/app-icon.png" width="26" height="26" alt=""><span>Oh Agent<small>Your agents, visualized</small></span></a><p>Your agents. Your stories. Your world.</p><nav class="footer-links" aria-label="Footer"><a href="/blog/">Blog</a><a href="/docs/">Docs</a><a href="https://github.com/Oh-Agent-AI/oh-agent" target="_blank" rel="noopener">GitHub ↗</a><a href="https://x.com/ohagentai" target="_blank" rel="noopener">X ↗</a><a href="https://discord.gg/Evmpm8W56g" target="_blank" rel="noopener">Discord ↗</a></nav><span>© 2026 Oh Agent</span></footer>
+</body>
+</html>

@@ -1,9 +1,0 @@
-.mecha-mission-achievements { min-width: 0; margin: 0 0 16px; padding: 12px; border: 1px solid #496773; border-radius: 6px; background: #162b36; color: #eef6f6; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
-.mecha-mission-achievements h3 { margin: 0 0 4px; font-size: 15px; }
-.mecha-mission-achievements p { margin: 4px 0; }
-.mecha-mission-achievements > p { color: #bdcdd1; }
-.mecha-mission-achievements ul { list-style: none; padding: 0; margin: 8px 0 0; }
-.mecha-mission-achievements li + li { border-top: 1px solid #354c59; margin-top: 8px; padding-top: 8px; }
-.mecha-mission-achievements li > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; }
-.mecha-mission-achievements li span { color: #b8e6d8; font-weight: 700; }
-.mecha-mission-achievements li[data-status="unverifiable"] span, .mecha-mission-achievements li[data-status="not-applicable"] span { color: #ffe0ab; }
