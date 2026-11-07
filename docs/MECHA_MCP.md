@@ -88,7 +88,6 @@ node --experimental-strip-types --import ./scripts/mecha-ts-register.mjs scripts
 It runs greedy (`nextCommand`), coordinated actions (`nextCoordinatedCommand`) and the
 movement-aware beam (`nextBeamCommand`) across `smash`, `siege` and `cadence` openings and
 prints per-scenario plus aggregate outcome, steps, mech HP, boss HP and building HP.
-The beam policy is the default for the v1.5 auto button and the EvE harness; switch
-`greedy` / `coordinated` / `beam` with the AI difficulty selector or `difficulty` in
-`runSequentialAutoBattle` / MCP `mecha_auto_battle`. Tune `beamWidth`, `maxDepth` and
+The beam policy is the default for the v1.5 auto button and the EvE harness; The v1.5 UI always uses `beam`; `greedy` / `coordinated` remain available to tests,
+the benchmark and MCP `mecha_auto_battle` via `difficulty`. Tune `beamWidth`, `maxDepth` and
 `moveCandidates` in `beamPolicy.ts`.

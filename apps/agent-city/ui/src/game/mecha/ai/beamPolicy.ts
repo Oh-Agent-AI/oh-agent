@@ -31,6 +31,12 @@ function positional(state: MatchState): number {
 
 function heuristic(state: MatchState): number { return stateValue(state) + positional(state); }
 
+function terminal(turn: SequentialTurn): boolean {
+  const snapshot = turn.snapshot();
+  if (snapshot.match.outcome) return true;
+  return !MECH_IDS.some(id => snapshot.rights[id]?.move || snapshot.rights[id]?.action);
+}
+
 function candidates(state: MatchState, moveCandidates: number): Candidate[] {
   const out: Candidate[] = [];
   for (const id of MECH_IDS) {
@@ -79,7 +85,8 @@ function lookahead(turn: SequentialTurn): number {
 /** Beam search over real commands, including moves; leaves resolve one enemy phase. */
 export function nextBeamCommand(authority: SequentialTurn, options: BeamOptions = {}): CommandIntent {
   const beamWidth = Math.max(1, Math.min(8, options.beamWidth ?? 4));
-  const maxDepth = Math.max(1, Math.min(8, options.maxDepth ?? 4));
+  // A full turn is at most move+act for each of three mechs; cap the search, not the plan.
+  const maxDepth = Math.max(1, Math.min(10, options.maxDepth ?? 8));
   const moveCandidates = Math.max(0, Math.min(6, options.moveCandidates ?? 3));
   const root = authority.snapshot();
   if (root.match.outcome || root.match.phase !== "player_plan") return { kind: "end" };
@@ -101,6 +108,7 @@ export function nextBeamCommand(authority: SequentialTurn, options: BeamOptions 
     expanded.sort((a, b) => b.score - a.score || a.intents.length - b.intents.length);
     beam = expanded.slice(0, beamWidth);
     for (const node of beam) {
+      if (!terminal(node.turn) && depth < maxDepth - 1) continue;
       const score = lookahead(node.turn);
       if (score > baseline && (!best || score > best.score)) best = { intents: node.intents, score };
     }

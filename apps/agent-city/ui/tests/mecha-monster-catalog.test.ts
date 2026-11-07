@@ -4,6 +4,8 @@ import {
   MONSTER_CATALOG, STATUS_SPECIES, catalogSupports, isStatusSpecies, monsterCatalogEntry, practiceSpecies, statusKindOf, statusSpecies,
 } from "../src/game/mecha/monsters/catalog.ts";
 import { PLANNED_MONSTER_SPECIES_IDS, PLANNED_SIGNATURE_SKILLS } from "../src/game/mecha/monsters/contracts.ts";
+import { MONSTER_SKILLS, MONSTER_SPECIES_IDS } from "../src/game/mecha/board.ts";
+import { isMonsterSpeciesDesign } from "../src/render/mecha/monsterSpeciesOrnaments.ts";
 import { lookupMonsterDefinition } from "../src/game/mecha/monsters/registry.ts";
 
 test("the catalog covers every planned species exactly once", () => {
@@ -12,9 +14,16 @@ test("the catalog covers every planned species exactly once", () => {
   for (const id of PLANNED_MONSTER_SPECIES_IDS) assert.ok(monsterCatalogEntry(id), id);
   for (const entry of MONSTER_CATALOG) {
     assert.equal(entry.skillId, PLANNED_SIGNATURE_SKILLS[entry.id]);
-    assert.equal(entry.visualKey, entry.id);
+    assert.equal(isMonsterSpeciesDesign(entry.visualKey), true, `${entry.id} visualKey`);
     assert.ok(entry.supportedRulesets.length > 0);
   }
+});
+
+test("runtime monster skill map is derived from the canonical skill table", () => {
+  assert.deepEqual(Object.keys(MONSTER_SKILLS), [...MONSTER_SPECIES_IDS]);
+  for (const id of MONSTER_SPECIES_IDS) assert.equal(MONSTER_SKILLS[id], PLANNED_SIGNATURE_SKILLS[id]);
+  assert.equal(Object.hasOwn(MONSTER_SKILLS, "many_core"), false);
+  assert.equal(Object.hasOwn(MONSTER_SKILLS, "field_sovereign"), false);
 });
 
 test("status species are the only v1.5-capable species and keep their status kind", () => {

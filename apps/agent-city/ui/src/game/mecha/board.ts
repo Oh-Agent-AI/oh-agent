@@ -5,6 +5,7 @@
  */
 
 import { prepareSwarmLink, reprojectSwarmLink, resolveSwarmLink, reconcileSwarmLink, linkedAttackBonus, NEURAL_LINK_BREAK_CONDITIONS, type NeuralLink, type SwarmIntent, type SwarmLinkState, type SwarmProjection } from "./skillSwarmLink";
+import { PLANNED_SIGNATURE_SKILLS } from "./monsters/contracts";
 
 export const GDD_RULESET = "mecha-v1.4";
 /** Staged ruleset, not enabled by product, replay or remote transports. */
@@ -56,9 +57,13 @@ export type MoverId = MechId | "boss" | "raider";
 export const MECH_IDS: MechId[] = ["Assault", "Gunner", "Support"];
 export type CoverPresetId = "covers_sparse_mid" | "covers_diag_corridor" | "covers_twin_clusters";
 export type BossScriptId = "stationary_smash" | "cadence_ssw" | "raid_ssw" | "siege";
-export type MonsterSpeciesId = "spore_leaper" | "flux_lancer" | "porous_shaper" | "prism_warden" | "phase_stalker" | "gravity_core" | "swarm_mantle" | "neural_weaver";
+export const MONSTER_SPECIES_IDS = ["spore_leaper", "flux_lancer", "porous_shaper", "prism_warden", "phase_stalker", "gravity_core", "swarm_mantle", "neural_weaver"] as const;
+export type MonsterSpeciesId = (typeof MONSTER_SPECIES_IDS)[number];
 export type MonsterContent = { speciesId: MonsterSpeciesId; contentVersion: 1 };
-export const MONSTER_SKILLS = { spore_leaper: "spore_leap", flux_lancer: "ring_pierce", porous_shaper: "corrode_cell", prism_warden: "prism_guard", phase_stalker: "phase_swap", gravity_core: "gravity_well", swarm_mantle: "split_swarm", neural_weaver: "neural_link" } as const;
+/** Implemented species view derived from the canonical planned skill table. */
+export const MONSTER_SKILLS = Object.freeze(Object.fromEntries(
+  MONSTER_SPECIES_IDS.map((speciesId) => [speciesId, PLANNED_SIGNATURE_SKILLS[speciesId]]),
+) as Pick<typeof PLANNED_SIGNATURE_SKILLS, MonsterSpeciesId>);
 export type BossSkill = "smash" | "sweep" | "skip" | "prism_frost" | typeof MONSTER_SKILLS[MonsterSpeciesId];
 export type Phase = "deployment" | "enemy_prepare" | "player_plan" | "resolving_boss" | "finished";
 export type Outcome = "victory" | "defeat_wipe" | "defeat_timeout" | "defeat_buildings";

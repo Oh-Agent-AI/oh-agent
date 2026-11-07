@@ -52,7 +52,6 @@ import type { MechaHudActions, MechaHudModel, MechaHudProjection } from "./mecha
 import type { PlannedMonsterSpeciesId } from "./mecha/monsters/contracts";
 import { monsterCatalogEntry } from "./mecha/monsters/catalog";
 import { SequentialRemoteControls } from "./mecha/SequentialRemoteControls";
-import { AI_DIFFICULTIES, type AiDifficulty } from "./mecha/ai/difficulty";
 
 const NAMES: Record<MechId, string> = { Assault: "突击", Gunner: "射手", Support: "支援" };
 const STATUS_SPECIES: Record<StatusMonsterId, [string, string]> = { spore_leaper: ["孢群体", "Spore leaper"], flux_lancer: ["流环体", "Flux lancer"], prism_warden: ["晶簇体", "Prism warden"], gravity_core: ["引力核", "Gravity core"] };
@@ -80,7 +79,6 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
   const [showGuide, setShowGuide] = useState(false);
   const [showResult, setShowResult] = useState(false);
   const [auto, setAuto] = useState(false);
-  const [autoDifficulty, setAutoDifficulty] = useState<AiDifficulty>("beam");
   const [handedOff, setHandedOff] = useState(false);
   const [showRemote, setShowRemote] = useState(false);
   const resultSeen = useRef(false);
@@ -141,11 +139,11 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
   const locked = Boolean(presentation || state.match.outcome || viewError || archiveBusy || replay || !recovery || recovery.pending || recoveryError || state.persistence === "saving" || state.persistence === "unconfirmed");
   useEffect(() => {
     if (!auto || locked || presentation || state.match.outcome || state.placements || state.error) return;
-    const command = controller.suggest(autoDifficulty);
+    const command = controller.suggest();
     if (!command) { setAuto(false); return; }
     if (practice) controller.execute(command);
     else void controller.executeDurable(command);
-  }, [auto, autoDifficulty, locked, presentation, state, controller, practice]);
+  }, [auto, locked, presentation, state, controller, practice]);
   const attackOrderPreview = useMemo(() => {
     if (!showOrder || locked || state.placements) return null;
     try { return previewEnemyPhase(state.match); }
@@ -570,7 +568,6 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
           <button type="button" className="mecha-submit-primary" disabled={!action || !selectedPreview?.ok || locked || Boolean(state.placements) || Boolean(replay)} onClick={hudActions.confirmAction}>{t("确认行动", "Confirm action")}</button>
           <button type="button" title={undoHint} disabled={!state.canUndo || locked || Boolean(state.placements) || Boolean(replay)} onClick={hudActions.undoMove}>{t("撤销移动", "Undo move")}</button>
           <button type="button" data-mecha-auto disabled={locked || Boolean(state.placements) || Boolean(replay)} aria-pressed={auto} onClick={() => setAuto(value => !value)}>{auto ? t("停止自动", "Stop auto") : t("自动对战", "Auto play")}</button>
-          <select aria-label={t("AI 难度", "AI difficulty")} value={autoDifficulty} onChange={event => setAutoDifficulty(event.currentTarget.value as AiDifficulty)} disabled={auto}>{AI_DIFFICULTIES.map(level => <option key={level} value={level}>{level}</option>)}</select>
         </div>}
         target={<>
           {!state.placements && !replay && <details className="mecha-unavailable-actions"><summary>{t("技能说明与射击诊断", "Action guide and shot diagnostics")}</summary>
