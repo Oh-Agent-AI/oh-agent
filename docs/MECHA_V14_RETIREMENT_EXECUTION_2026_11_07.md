@@ -8,7 +8,7 @@
 
 - 分支 `mecha/itb-alignment`；A 阶段已收口并打 tag `itb-alignment-checkpoint-2`，包含后续撤销、目标绑定、地块检查和机甲状态显示修复。
 - 已完成：M0（`trial`）、M2（`mode.ts` + `MechaModeRuntime`）、M3（`execution/enemyPhase`）、M4（`enemyPhasePreview` + 顺序叠层）、M1 大部分（`MechaHud` 契约、删除 `SequentialMechaHud` 与 `sequentialMecha.css`）。
-- **执行进度（2026-11-07）：A、B 已完成；C1 已完成（8 个 practice 物种均运行 v1.5 回合，技能映射统一从 canonical 表派生）；C2、C3 的实现已存在于后续提交，阶段验收与解耦仍待收口；D 未完成。当前工作区修改未 push。**
+- **执行进度（2026-11-07）：A、B、C1、C2 已完成阶段验收；C1 的 8 个 practice 物种均运行 v1.5 回合，技能映射从 canonical 表派生。C2 已验证共享 cues/HUD 类型边界、基于 `SequentialTurn.trial()` 的确定性 AI 命令建议，以及 v1.5 自动行动浏览器流程。C3 代码虽已存在于后续提交，但尚未做本阶段验收；D 未完成。当前工作区无未提交改动，未 push。**
 
 三个必须先处理的隐性耦合：
 
