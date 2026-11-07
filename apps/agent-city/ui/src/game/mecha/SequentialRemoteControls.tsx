@@ -6,10 +6,11 @@ import { buildSequentialOpening } from "./sequentialOpening";
 import { remoteRequest } from "./RemoteMechaControls";
 
 /** Desktop handoff for the v1.5 command stream; it never routes the host back to classic. */
-export function SequentialRemoteControls({ locale, evidence, disabled }: {
+export function SequentialRemoteControls({ locale, evidence, disabled, onActive }: {
   locale: "zh-Hans" | "en";
   evidence: { initial: MatchState; placements: DeployPlacement[]; records: SequentialRecord[] } | null;
   disabled: boolean;
+  onActive?: (active: boolean) => void;
 }) {
   const zh = locale !== "en";
   const [relay] = useState(() => sessionStorage.getItem("agent-city-relay") ?? "");
@@ -24,7 +25,7 @@ export function SequentialRemoteControls({ locale, evidence, disabled }: {
       const result = await remoteRequest("mecha.remote.start-sequential", { relay, opening });
       if (typeof result.remoteUrl !== "string" || typeof result.matchId !== "string") throw new Error("plugin_response_invalid");
       sessionStorage.setItem("agent-city-relay", relay);
-      setLink(result.remoteUrl); setStatus("active");
+      setLink(result.remoteUrl); setStatus("active"); onActive?.(true);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "remote_unavailable");
       setStatus("idle");
@@ -33,7 +34,7 @@ export function SequentialRemoteControls({ locale, evidence, disabled }: {
   const stop = async () => {
     if (status !== "active") return;
     setStatus("stopping");
-    try { await remoteRequest("mecha.remote.stop", {}); setLink(""); setStatus("idle"); }
+    try { await remoteRequest("mecha.remote.stop", {}); setLink(""); setStatus("idle"); onActive?.(false); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "remote_unavailable"); setStatus("active"); }
   };
   return <details className="mecha-settings mecha-remote-settings">

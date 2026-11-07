@@ -8,7 +8,7 @@ import { useRemoteAccess } from "./remoteAccess";
 import "./remote.css";
 
 const MECHS: MechId[] = ["Assault", "Gunner", "Support"];
-type PhoneCommand = { kind: "move"; mech: MechId; to: Cell } | { kind: "act"; mech: MechId; action: Action } | { kind: "end"; confirmUnused: true };
+type PhoneCommand = { kind: "move"; mech: MechId; to: Cell } | { kind: "act"; mech: MechId; action: Action } | { kind: "end"; confirmUnused: true } | { kind: "undo" };
 const NAME: Record<MechId, string> = { Assault: "突击", Gunner: "射手", Support: "支援" };
 
 /** Minimal v1.5 phone surface: command stream, no plan staging, no local authority. */
@@ -61,7 +61,8 @@ export function RemoteSequentialApp({ params }: { params: URLSearchParams }) {
     {accessError && <p role="alert">{accessError}</p>}
     {message && <p role="alert">{message}</p>}
     {!state ? <p>{status === "failed" ? "连接失败" : "正在读取对局…"}</p> : <>
-      <p>回合 {state.turn} · revision {state.revision}{state.outcome ? ` · 结束：${state.outcome}` : ""}</p>
+      <p>回合 {state.turn} · revision {state.revision}</p>
+      {state.outcome && <p role="status"><strong>对局结束：{state.outcome === "victory" ? "胜利" : "失败"}</strong></p>}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(10, 1fr)", gap: 2, margin: "8px 0" }}>
         {Array.from({ length: 100 }, (_, index) => {
           const x = index % 10, y = Math.floor(index / 10);
@@ -75,6 +76,7 @@ export function RemoteSequentialApp({ params }: { params: URLSearchParams }) {
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
         {MECHS.map(id => <button key={id} type="button" aria-pressed={selected === id} onClick={() => setSelected(id)}>{NAME[id]}</button>)}
+        <button type="button" disabled={Boolean(state.outcome) || !turn?.canUndo()} onClick={() => void submit({ kind: "undo" })}>撤销移动</button>
         <button type="button" disabled={Boolean(state.outcome)} onClick={() => void submit({ kind: "end", confirmUnused: true })}>结束回合</button>
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>

@@ -78,6 +78,7 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
   const [showGuide, setShowGuide] = useState(false);
   const [showResult, setShowResult] = useState(false);
   const [auto, setAuto] = useState(false);
+  const [handedOff, setHandedOff] = useState(false);
   const resultSeen = useRef(false);
   const guideTrigger = useRef<HTMLElement | null>(null);
   const [hoveredEnemy, setHoveredEnemy] = useState<string | null>(null);
@@ -250,7 +251,7 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
     else hudActions.moveTo(cell);
     setChoice(""); setTargetingKind(null); setActionIndex(""); setConfirmEnd(false);
   };
-  const select = (id: MechId) => { setAuto(false); controller.select(id); setInspectedCell(null); setHoveredCell(null); setChoice(""); setTargetingKind(null); setActionIndex(""); setConfirmEnd(false); };
+  const select = (id: MechId) => { if (handedOff) return; setAuto(false); controller.select(id); setInspectedCell(null); setHoveredCell(null); setChoice(""); setTargetingKind(null); setActionIndex(""); setConfirmEnd(false); };
   const rosterRows = (replay ? display.mechs : state.match.mechs).map(unit => {
     const badges = describeStatusBadges(display.statusEncounter?.statuses ?? [], unit.id, locale);
     const placement = (replay ? replay.placements : state.openingPlacements)?.find(item => item.mechId === unit.id);
@@ -317,6 +318,7 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
     : record.causalEvent?.kind === "reset_turn" ? t("重置回合", "Reset turn")
     : record.command.kind === "move" ? t("移动", "Move") : record.command.kind === "act" ? t("行动", "Action") : t("结束回合", "End turn");
   const issue = (command: CommandInput) => {
+    if (handedOff) return;
     setAuto(false);
     const current = controller.getState();
     if ("mech" in command && (command.mech !== current.selected || state.match.revision !== current.match.revision)) return;
@@ -530,6 +532,7 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
       </MechaObjectivePanel>
       {lastTurn && !replay && !presentation && !showResult && <MechaLastResult lastLog={lastTurn.events} healthTimeline={lastTurn.health} finalState={lastTurn.after} t={text => gameText(text, locale)} locale={locale} />}
       {(viewError || state.error || recoveryError || state.persistence === "unconfirmed" || (currentPresentation && !verified?.ok)) && <div className="mecha-v15-alert" role="alert"><p>{viewError ? t("三维战场不可用，请退出后重试。", "The 3D battlefield is unavailable. Exit and try again.") : state.error ? t("操作未执行", "Command rejected") + ": " + state.error : recoveryError || state.persistence === "unconfirmed" ? t("自动检查点状态未确认，行动已锁定。", "Checkpoint status is unconfirmed; actions are locked.") : t("演出证据不足；可跳过演出并查看权威结果。", "Animation evidence is incomplete; skip to the authoritative result.")}</p>{recoveryError || state.persistence === "unconfirmed" ? <button type="button" disabled={archiveBusy} onClick={() => { setReplay(null); void readRecovery(); }}>{t("重新读取恢复", "Reload recovery")}</button> : null}{currentPresentation && !verified?.ok ? <button type="button" onClick={finishPresentation}>{t("查看结果", "Show result")}</button> : null}</div>}
+      {handedOff && <p className="mecha-v15-note" role="status">{t("已交给手机，桌面操作已暂停；停止远程后解除。", "Handed off to phone; desktop input is paused until remote stops.")}</p>}
       {recovery?.pending && !recoveryError && !replay && <div className="mecha-v15-recovery"><p>{recovery.restored ? recovery.restored.session.snapshot().match.outcome ? t("自动检查点已结束，可以查看结果。", "The automatic checkpoint is finished; you can review it.") : t("发现未完成的自动检查点。", "An unfinished automatic checkpoint was found.") : t("自动检查点损坏或与当前战场不兼容。", "The checkpoint is damaged or incompatible with this battlefield.")}</p><div className="mecha-v15-row">{recovery.restored?.session.snapshot().match.outcome ? <button type="button" disabled={archiveBusy} onClick={() => { const restored = recovery.restored!; const records = restored.session.records(); setReplay({ initial: restored.initial, placements: restored.placements, records, index: records.length }); }}>{t("查看已结束对局", "Review finished match")}</button> : <button type="button" disabled={archiveBusy || !recovery.restored} onClick={recover}>{t("恢复对局", "Recover match")}</button>}<button type="button" disabled={archiveBusy} onClick={() => void discardRecovery()}>{t("删除并新开", "Discard and start")}</button></div></div>}
       {!recovery && !recoveryError && <p className="mecha-v15-alert" role="status">{t("正在读取自动检查点…", "Reading automatic checkpoint…")}</p>}
       <MechaTeamPanel label={t("回合与队伍规划", "Turn and squad planning")}>
@@ -600,7 +603,7 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
         <button type="button" onClick={() => { setPaused(false); finishPresentation(); }}>{t("跳过演出", "Skip animation")}</button>
       </div>}
     </div>
-    {!replay && state.match.phase === "player_plan" && <SequentialRemoteControls locale={locale} evidence={controller.replayEvidence()} disabled={locked || Boolean(state.placements) || Boolean(state.match.outcome)} />}
+    {!replay && state.match.phase === "player_plan" && <SequentialRemoteControls locale={locale} evidence={controller.replayEvidence()} disabled={locked || Boolean(state.placements) || Boolean(state.match.outcome)} onActive={setHandedOff} />}
     {replay && <div className="mecha-replay-bar" role="region" aria-label={t("回放控制", "Replay controls")}>
       <strong>{t("回放步骤", "Replay step")} {replay.index}/{replay.records.length} · {replay.index ? replayLabel(replay.records[replay.index - 1]!) : t("部署完成", "Deployment complete")}</strong>
       <button type="button" disabled={Boolean(replayAnimation) || replay.index === 0} onClick={() => setReplay({ ...replay, index: replay.index - 1 })}>{t("上一步", "Previous")}</button>
