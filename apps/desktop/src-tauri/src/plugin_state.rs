@@ -9,7 +9,8 @@
 use serde_json::Value;
 use std::sync::MutexGuard;
 
-const MAX_DOCUMENT_BYTES: usize = 32 * 1024;
+// v1.5 replay bundles cap at 40_000 bytes; leave room for the state envelope.
+const MAX_DOCUMENT_BYTES: usize = 48 * 1024;
 
 /// 全部状态操作的串行化锁（设置/档案写入低频，粗粒度互斥即可保证提交原子性）。
 fn state_lock() -> MutexGuard<'static, ()> {
@@ -525,13 +526,13 @@ mod tests {
     #[test]
     fn oversize_document_rejected_and_corrupt_preserved() {
         let home = temp_home();
-        let big = "x".repeat(33 * 1024);
+        let big = "x".repeat(49 * 1024);
         assert_eq!(handle(&keys(), &home, "city", "plugin.state.write",
             &json!({"key":"flight-profile:v1","revision":0,"value":{"blob":big}})), Err("state_too_large"));
         // 读路径同限：直接落盘的超限文件按损坏处理，不整读进内存解析。
         let path = state_path(&home, "city", "flight-profile:v1");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, format!("{{\"revision\":1,\"value\":\"{}\"}}", "x".repeat(40 * 1024))).unwrap();
+        std::fs::write(&path, format!("{{\"revision\":1,\"value\":\"{}\"}}", "x".repeat(50 * 1024))).unwrap();
         assert_eq!(handle(&keys(), &home, "city", "plugin.state.read", &json!({"key":"flight-profile:v1"})), Err("state_unavailable"));
         std::fs::remove_file(&path).unwrap();
         // 损坏文件：读取报错；写入先备份再成功。
