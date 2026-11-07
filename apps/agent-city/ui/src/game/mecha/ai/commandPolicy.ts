@@ -21,7 +21,26 @@ const buildingHp = (state: MatchState): number => state.buildings.reduce((total,
 export function stateValue(state: MatchState): number {
   if (state.outcome === "victory") return 1_000_000;
   if (state.outcome) return -1_000_000;
-  return -enemyHp(state) * 10 + mechHp(state) * 8 + buildingHp(state) * 6;
+  const threat = new Set<string>();
+  for (const intent of [state.boss.hp > 0 ? state.boss.intent : null, ...state.raiders.filter(raider => raider.hp > 0).map(raider => raider.intent)]) {
+    if (!intent) continue;
+    for (const cell of [...intent.local, ...intent.projected]) threat.add(`${cell.x},${cell.y}`);
+  }
+  const cover = new Set(state.covers.map(cell => `${cell.x},${cell.y}`));
+  let score = -enemyHp(state) * 10 + mechHp(state) * 8 + buildingHp(state) * 6;
+  for (const unit of state.mechs) {
+    if (unit.hp <= 0) continue;
+    if (threat.has(`${unit.pos.x},${unit.pos.y}`)) score -= 4;
+    if (cover.has(`${unit.pos.x},${unit.pos.y}`)) score += 2;
+  }
+  for (const status of state.statusEncounter?.statuses ?? []) {
+    if (status.remainingTurns > 0 && (status.kind === "freeze" || status.kind === "stun")) score -= 3;
+  }
+  if (state.mission) {
+    const alive = state.mechs.filter(unit => unit.hp > 0);
+    if (alive.length) score += Math.max(0, 12 - Math.min(...alive.map(unit => manh(unit.pos, state.mission!.target)))) * 2;
+  }
+  return score;
 }
 
 function restrictions(state: MatchState, id: MechId): { move: boolean; action: boolean } {

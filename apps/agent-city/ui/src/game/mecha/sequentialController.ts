@@ -4,7 +4,7 @@ import { applyDeployPlan, deployableCells, deploymentCellFault, validateDeployPl
 import { SequentialTurn, type SequentialRecord } from "./sequentialTurn";
 import { canonicalJson } from "./contracts/match";
 import { catalogSupports } from "./monsters/catalog";
-import { nextBeamCommand } from "./ai/beamPolicy";
+import { policyFor, type AiDifficulty } from "./ai/difficulty";
 import { restoreSequentialSnapshot } from "./session/SequentialMatchSession";
 import type { SequentialSnapshot } from "./contracts/sequentialTransport";
 import { SequentialDurableAuthority, type SequentialDurableStore } from "./sequentialDurable";
@@ -76,9 +76,9 @@ export class SequentialController {
     this.publish();
   }
   /** Deterministic one-step suggestion; never mutates the live authority. */
-  suggest(): CommandInput | null {
+  suggest(difficulty: AiDifficulty = "beam"): CommandInput | null {
     if (!this.authority || this.presentation || this.saving || this.durable?.needsReload() || this.state.outcome || this.state.phase !== "player_plan") return null;
-    const intent = nextBeamCommand(this.authority);
+    const intent = policyFor(difficulty)(this.authority);
     return intent.kind === "end" ? { kind: "end", confirmUnused: true } : intent;
   }
 

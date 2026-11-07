@@ -63,7 +63,7 @@ const tools = [
   { name: "mecha_act", description: "Resolve one action (melee/shoot/charge/pierce/repair/skip).", inputSchema: { type: "object", required: ["matchId", "mech", "action"], properties: { matchId: { type: "string" }, mech: { type: "string" }, action: { type: "object" } } } },
   { name: "mecha_undo", description: "Undo the last move if available.", inputSchema: { type: "object", required: ["matchId"], properties: { matchId: { type: "string" } } } },
   { name: "mecha_end_turn", description: "End the player turn and resolve the enemy phase.", inputSchema: { type: "object", required: ["matchId"], properties: { matchId: { type: "string" } } } },
-  { name: "mecha_auto_battle", description: "Run the v1.5 EvE harness (squad policy vs enemy planner) until outcome or step limit.", inputSchema: { type: "object", required: ["matchId"], properties: { matchId: { type: "string" }, maxSteps: { type: "number" } } } },
+  { name: "mecha_auto_battle", description: "Run the v1.5 EvE harness (squad policy vs enemy planner) until outcome or step limit.", inputSchema: { type: "object", required: ["matchId"], properties: { matchId: { type: "string" }, maxSteps: { type: "number" }, difficulty: { type: "string", enum: ["greedy", "coordinated", "beam"] } } } },
 ];
 
 function callTool(name, args) {
@@ -118,7 +118,8 @@ function callTool(name, args) {
   if (name === "mecha_auto_battle") {
     const session = sessionOf(args);
     const maxSteps = Math.min(500, Math.max(1, args.maxSteps ?? 100));
-    const result = runSequentialAutoBattle(session.state, { maxSteps, maxTurns: 15 });
+    const difficulty = args.difficulty === "greedy" || args.difficulty === "coordinated" ? args.difficulty : "beam";
+    const result = runSequentialAutoBattle(session.state, { maxSteps, maxTurns: 15, difficulty });
     session.state = result.state;
     session.turn = result.state.phase === "player_plan" ? new SequentialTurn(result.state) : null;
     return ok({ steps: result.steps, outcome: result.outcome, reason: result.reason, fault: result.fault, state: summary(session) });

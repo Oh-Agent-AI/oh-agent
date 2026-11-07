@@ -1,12 +1,10 @@
 import type { MatchState } from "../board";
 import type { EnemyPlanner } from "../enemy/contracts";
 import { SequentialTurn, type SequentialRecord } from "../sequentialTurn";
-import { nextCommand, type CommandIntent } from "./commandPolicy";
-import { nextBeamCommand } from "./beamPolicy";
+import { policyFor, type AiDifficulty } from "./difficulty";
+import type { SequentialPolicy } from "./policy";
 
 /** A squad policy only observes the authoritative command engine. */
-export type SequentialPolicy = (authority: SequentialTurn) => CommandIntent;
-
 export type SequentialAutoBattleResult = {
   state: MatchState;
   outcome: MatchState["outcome"];
@@ -22,12 +20,13 @@ export type SequentialAutoBattleResult = {
  */
 export function runSequentialAutoBattle(initial: MatchState, options: {
   squad?: SequentialPolicy;
+  difficulty?: AiDifficulty;
   enemy?: EnemyPlanner;
   maxSteps?: number;
   maxTurns?: number;
 } = {}): SequentialAutoBattleResult {
   const turn = new SequentialTurn(structuredClone(initial), options.enemy ? { enemyPlanner: options.enemy } : {});
-  const squad = options.squad ?? nextBeamCommand;
+  const squad = options.squad ?? policyFor(options.difficulty ?? "beam");
   const maxSteps = Math.min(2000, Math.max(1, options.maxSteps ?? 400));
   const maxTurns = Math.max(1, options.maxTurns ?? 15);
   let steps = 0;
@@ -49,6 +48,7 @@ export function compareSequentialPolicies(initial: MatchState, policies: Record<
   enemy?: EnemyPlanner;
   maxSteps?: number;
   maxTurns?: number;
+  difficulty?: AiDifficulty;
 } = {}): Array<{ name: string; result: SequentialAutoBattleResult }> {
   return Object.entries(policies).map(([name, squad]) => ({ name, result: runSequentialAutoBattle(initial, { ...options, squad }) }));
 }
