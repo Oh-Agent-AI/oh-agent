@@ -141,7 +141,7 @@ export class SequentialTurn {
   /** Re-run only committed commands; refuse unverified, duplicate or altered evidence. */
   static replay(initial: MatchState, records: readonly SequentialRecord[], options: { enemyPlanner?: EnemyPlanner } = {}): SequentialTurn {
     if (!Array.isArray(records) || records.length > 4096) throw new Error("invalid_sequential_replay");
-    const session = new SequentialTurn(initial);
+    const session = new SequentialTurn(initial, options);
     const seen = new Set<string>();
     for (const record of records) {
       if (!record || !record.command || seen.has(record.command.id)) throw new Error("invalid_sequential_replay");

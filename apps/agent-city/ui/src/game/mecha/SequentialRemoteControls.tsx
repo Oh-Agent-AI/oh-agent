@@ -7,14 +7,15 @@ import { remoteRequest } from "./remoteRequest";
 import { RemoteMatchClient } from "./client/RemoteMatchClient";
 import type { SequentialSnapshot } from "./contracts/sequentialTransport";
 import { parseSequentialLink } from "../../remote/sequentialLink";
+import { stopRemoteAfterRecovery } from "./sequentialRemoteStop";
 
 /** Desktop handoff for the v1.5 command stream; it never routes the host back to classic. */
 export function SequentialRemoteControls({ locale, evidence, disabled, onActive, onRecovered, onClose }: {
   locale: "zh-Hans" | "en";
   evidence: { initial: MatchState; placements: DeployPlacement[]; records: SequentialRecord[] } | null;
   disabled: boolean;
-  onActive?: (active: boolean) => void;
-  onRecovered?: (snapshot: SequentialSnapshot) => void;
+  onActive: (active: boolean) => void;
+  onRecovered: (snapshot: SequentialSnapshot) => void;
   onClose: () => void;
 }) {
   const zh = locale !== "en";
@@ -51,9 +52,7 @@ export function SequentialRemoteControls({ locale, evidence, disabled, onActive,
     if (status !== "active") return;
     setStatus("stopping");
     try {
-      const snapshot = await recover();
-      if (snapshot) onRecovered?.(snapshot);
-      await remoteRequest("mecha.remote.stop", {});
+      await stopRemoteAfterRecovery(recover, () => remoteRequest("mecha.remote.stop", {}), onRecovered);
       setLink(""); setStatus("idle"); onActive?.(false);
     }
     catch (cause) { setError(cause instanceof Error ? cause.message : "remote_unavailable"); setStatus("active"); }

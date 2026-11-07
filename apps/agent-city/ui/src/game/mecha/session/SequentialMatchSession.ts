@@ -1,5 +1,7 @@
 import type { MatchState } from "../board";
 import type { DeployPlacement } from "../deployment";
+import { enemyPlannerFor } from "../enemy/policy";
+import type { EnemyPolicy } from "../enemy/contracts";
 import { SequentialTurn, type SequentialCommand } from "../sequentialTurn";
 import { SEQUENTIAL_NET_PROTOCOL, type SequentialCommandResult, type SequentialSnapshot, type SequentialSnapshotResult } from "../contracts/sequentialTransport";
 
@@ -9,11 +11,13 @@ export class SequentialMatchSession {
   private readonly placements: DeployPlacement[];
   private readonly turn: SequentialTurn;
   readonly matchId: string;
-  constructor(matchId: string, initial: MatchState, placements: readonly DeployPlacement[], commands: readonly SequentialCommand[] = []) {
+  readonly enemyPolicy: EnemyPolicy;
+  constructor(matchId: string, initial: MatchState, placements: readonly DeployPlacement[], commands: readonly SequentialCommand[] = [], enemyPolicy: EnemyPolicy = "baup") {
+    this.enemyPolicy = enemyPolicy;
     this.matchId = matchId;
     this.initial = structuredClone(initial);
     this.placements = structuredClone([...placements]);
-    this.turn = new SequentialTurn(this.initial);
+    this.turn = new SequentialTurn(this.initial, { enemyPlanner: enemyPlannerFor(this.enemyPolicy) });
     for (const command of commands) {
       const result = this.turn.execute(command);
       if (!result.ok) throw new Error(`invalid_sequential_session_seed:${result.reason}`);
@@ -23,7 +27,7 @@ export class SequentialMatchSession {
   snapshot(): SequentialSnapshotResult {
     return { ok: true, snapshot: {
       protocol: SEQUENTIAL_NET_PROTOCOL, matchId: this.matchId, ruleset: "mecha-v1.5",
-      revision: this.revision, initial: structuredClone(this.initial), placements: structuredClone(this.placements),
+      revision: this.revision, enemyPolicy: this.enemyPolicy, initial: structuredClone(this.initial), placements: structuredClone(this.placements),
       commands: this.turn.records().map(record => record.command),
     } };
   }
@@ -45,7 +49,7 @@ export class SequentialMatchSession {
 export function restoreSequentialSnapshot(snapshot: SequentialSnapshot): SequentialTurn {
   if (snapshot.protocol !== SEQUENTIAL_NET_PROTOCOL || snapshot.ruleset !== "mecha-v1.5" ||
       !Number.isSafeInteger(snapshot.revision) || snapshot.revision < 0) throw new Error("invalid_sequential_snapshot");
-  const turn = new SequentialTurn(structuredClone(snapshot.initial));
+  const turn = new SequentialTurn(structuredClone(snapshot.initial), { enemyPlanner: enemyPlannerFor(snapshot.enemyPolicy ?? "scripted") });
   for (const command of snapshot.commands) {
     const result = turn.execute(command);
     if (!result.ok) throw new Error(`invalid_sequential_snapshot:${result.reason}`);

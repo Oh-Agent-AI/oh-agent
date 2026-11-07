@@ -2,6 +2,8 @@ import { MAX_TURNS, STATS, stakeBuildings, type MatchState, type TurnEvent } fro
 import { canonicalJson } from "./contracts/match";
 import { buildHealthTimeline, type HealthTimeline } from "./healthTimeline";
 import { buildTurnRecap } from "./turnRecap";
+import { enemyPlannerFor } from "./enemy/policy";
+import type { EnemyPolicy } from "./enemy/contracts";
 import { SequentialTurn, type SequentialRecord } from "./sequentialTurn";
 import type { RoundReview, RoundReviewEntry } from "./roundReview";
 import type { MissionAchievements } from "./missionAchievements";
@@ -22,11 +24,11 @@ export function buildSequentialInterval(initial: MatchState, records: readonly S
 }
 
 /** Rebuild accepted command evidence before deriving round facts. */
-export function buildSequentialReview(initial: MatchState, records: readonly SequentialRecord[], final: MatchState): { review: RoundReview; achievements: MissionAchievements | null; matchRecap: MatchRecap | null } {
+export function buildSequentialReview(initial: MatchState, records: readonly SequentialRecord[], final: MatchState, enemyPolicy: EnemyPolicy = "scripted"): { review: RoundReview; achievements: MissionAchievements | null; matchRecap: MatchRecap | null } {
   const unavailable = { review: { status: "unavailable", rounds: [] } as RoundReview, achievements: null, matchRecap: final.outcome === "victory" ? null : { status: "unavailable" } as MatchRecap };
   try {
     if (!final.outcome || final.phase !== "finished" || initial.turn !== 1 ||
-        canonicalJson(SequentialTurn.replay(initial, records).snapshot().match) !== canonicalJson(final)) return unavailable;
+        canonicalJson(SequentialTurn.replay(initial, records, { enemyPlanner: enemyPlannerFor(enemyPolicy) }).snapshot().match) !== canonicalJson(final)) return unavailable;
     const protectedBuildings = stakeBuildings(initial);
     if (initial.mechs.some(unit => unit.hp !== STATS[unit.id].maxHp) ||
         protectedBuildings.some(building => building.hp !== building.maxHp)) return unavailable;

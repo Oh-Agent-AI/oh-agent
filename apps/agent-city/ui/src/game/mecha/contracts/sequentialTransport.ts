@@ -1,6 +1,7 @@
 import type { MatchState, PresentationStages, TurnEvent } from "../board";
 import type { DeployPlacement } from "../deployment";
 import type { SequentialCommand } from "../sequentialTurn";
+import type { EnemyPolicy } from "../enemy/contracts";
 
 /** v2 carries command-stream snapshots; it does not reinterpret v1 plan messages. */
 export const SEQUENTIAL_NET_PROTOCOL = "mecha-net:v2" as const;
@@ -11,6 +12,7 @@ export type SequentialSnapshot = {
   matchId: string;
   ruleset: "mecha-v1.5";
   revision: number;
+  enemyPolicy?: EnemyPolicy;
   initial: MatchState;
   placements: DeployPlacement[];
   commands: SequentialCommand[];

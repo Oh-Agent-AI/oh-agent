@@ -7,6 +7,8 @@ import { catalogSupports } from "./monsters/catalog";
 import { policyFor, type AiDifficulty } from "./ai/difficulty";
 import { restoreSequentialSnapshot } from "./session/SequentialMatchSession";
 import type { SequentialSnapshot } from "./contracts/sequentialTransport";
+import { enemyPlannerFor } from "./enemy/policy";
+import type { EnemyPolicy } from "./enemy/contracts";
 import { SequentialDurableAuthority, type SequentialDurableStore } from "./sequentialDurable";
 
 export type CommandInput =
@@ -50,7 +52,9 @@ export class SequentialController {
   private readonly listeners = new Set<() => void>();
   private deploymentStart: MatchState | null;
   private view!: SequentialControllerView;
-  constructor(initial: MatchState) {
+  private enemyPolicy: EnemyPolicy;
+  constructor(initial: MatchState, options: { enemyPolicy?: EnemyPolicy } = {}) {
+    this.enemyPolicy = options.enemyPolicy ?? "baup";
     if (initial.ruleset !== BUILDING_COLLISION_RULESET || initial.outcome || !["deployment", "player_plan"].includes(initial.phase)) throw new Error("invalid_sequential_controller_start");
     if (initial.statusEncounter !== undefined && (initial.statusEncounter?.schema !== "mecha-status-encounter:v1" ||
         !Array.isArray(initial.statusEncounter.statuses) || initial.statusEncounter.statuses.length !== 0 ||
@@ -58,7 +62,7 @@ export class SequentialController {
         initial.monsterContent?.contentVersion !== 1 || initial.mission !== undefined)) throw new Error("status_encounter_not_available");
     this.state = copy(initial);
     this.deploymentStart = initial.phase === "deployment" ? copy(initial) : null;
-    this.authority = initial.phase === "player_plan" ? new SequentialTurn(initial) : null;
+    this.authority = initial.phase === "player_plan" ? new SequentialTurn(initial, { enemyPlanner: enemyPlannerFor(this.enemyPolicy) }) : null;
     this.initial = this.authority ? copy(initial) : null;
     this.rebuild();
   }
@@ -66,6 +70,7 @@ export class SequentialController {
   /** Replace the live authority with a verified handoff snapshot; used when remote stops. */
   replaceFromSnapshot(snapshot: SequentialSnapshot): void {
     const turn = restoreSequentialSnapshot(snapshot);
+    this.enemyPolicy = snapshot.enemyPolicy ?? this.enemyPolicy;
     this.state = copy(turn.snapshot().match);
     this.authority = turn;
     this.initial = copy(snapshot.initial);
@@ -135,7 +140,7 @@ export class SequentialController {
     if (!result.ok) { this.error = result.fault.code; this.publish(); return; }
     this.openingPlacements = copy(this.placements);
     this.state = result.state;
-    this.authority = result.state.outcome ? null : new SequentialTurn(result.state);
+    this.authority = result.state.outcome ? null : new SequentialTurn(result.state, { enemyPlanner: enemyPlannerFor(this.enemyPolicy) });
     this.initial = this.authority ? copy(result.state) : null;
     this.placements = []; this.deploymentHistory = []; this.error = null; this.publish();
   }
@@ -175,7 +180,7 @@ export class SequentialController {
       // Persisted v1.5 IDs are deterministic, so replay preserves the IDs
       // that were actually committed rather than rewriting live identifiers.
       if (records.some((record, index) => record.command.id !== `c${index}`)) return false;
-      this.durable = new SequentialDurableAuthority(this.initial, records, store); this.publish(); return true;
+      this.durable = new SequentialDurableAuthority(this.initial, records, store, this.enemyPolicy); this.publish(); return true;
     }
     catch { return false; }
   }
@@ -188,7 +193,7 @@ export class SequentialController {
     try {
       const result = await this.durable.execute({ ...command, id: `c${this.durable.recordCount()}`, revision });
       if (!result.ok) { this.error = result.reason; return; }
-      this.authority = SequentialTurn.replay(this.authorityInitial(), this.durable.records());
+      this.authority = SequentialTurn.replay(this.authorityInitial(), this.durable.records(), { enemyPlanner: enemyPlannerFor(this.enemyPolicy) });
       this.state = result.snapshot.match;
       this.presentation = result.events.length ? { before, events: result.events, stages: result.presentationStages } : null;
     } catch {
@@ -209,7 +214,7 @@ export class SequentialController {
     try {
       const deployed = applyDeployPlan(this.deploymentStart, { revision: this.deploymentStart.revision, placements: evidence.placements });
       if (!deployed.ok || canonicalJson(deployed.state) !== canonicalJson(evidence.initial)) return false;
-      const snapshot = SequentialTurn.replay(evidence.initial, evidence.records).snapshot();
+      const snapshot = SequentialTurn.replay(evidence.initial, evidence.records, { enemyPlanner: enemyPlannerFor(this.enemyPolicy) }).snapshot();
       return !snapshot.match.outcome && snapshot.match.phase === "player_plan" && evidence.records.every(record => {
         const match = /^local-(\d+)$/.exec(record.command.id);
         return !match || (Number.isSafeInteger(Number(match[1])) && Number(match[1]) < Number.MAX_SAFE_INTEGER);
@@ -221,7 +226,7 @@ export class SequentialController {
     try {
       const deployed = applyDeployPlan(this.deploymentStart, { revision: this.deploymentStart.revision, placements: evidence.placements });
       if (!deployed.ok || canonicalJson(deployed.state) !== canonicalJson(evidence.initial)) return false;
-      const session = SequentialTurn.replay(evidence.initial, evidence.records);
+      const session = SequentialTurn.replay(evidence.initial, evidence.records, { enemyPlanner: enemyPlannerFor(this.enemyPolicy) });
       const snapshot = session.snapshot();
       if (snapshot.match.outcome || snapshot.match.phase !== "player_plan") return false;
       let serial = 0;
@@ -240,8 +245,8 @@ export class SequentialController {
     } catch { return false; }
   }
   /** Return a detached opening and committed commands, never a mutable authority reference. */
-  replayEvidence(): { placements: DeployPlacement[]; initial: MatchState; records: SequentialRecord[] } | null {
+  replayEvidence(): { placements: DeployPlacement[]; initial: MatchState; records: SequentialRecord[]; enemyPolicy: EnemyPolicy } | null {
     if (!this.initial || !this.openingPlacements || !this.authority) return null;
-    return { placements: copy(this.openingPlacements), initial: copy(this.initial), records: this.authority.records() };
+    return { placements: copy(this.openingPlacements), initial: copy(this.initial), records: this.authority.records(), enemyPolicy: this.enemyPolicy };
   }
 }

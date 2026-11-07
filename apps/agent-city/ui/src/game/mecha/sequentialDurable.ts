@@ -4,6 +4,8 @@
  * this instance until it is reconstructed from the store. */
 import type { MatchState } from "./board";
 import { SequentialTurn, type SequentialCommand, type SequentialRecord, type SequentialResult } from "./sequentialTurn";
+import { enemyPlannerFor } from "./enemy/policy";
+import type { EnemyPolicy } from "./enemy/contracts";
 
 export type SequentialDurableStore = {
   commit(expectedRevision: number, records: readonly SequentialRecord[]): Promise<void>;
@@ -14,12 +16,14 @@ export class SequentialDurableAuthority {
   private readonly initial: MatchState;
   private session: SequentialTurn;
   private readonly store: SequentialDurableStore;
+  private readonly enemyPolicy: EnemyPolicy;
   private busy = false;
   private uncertain = false;
-  constructor(initial: MatchState, records: readonly SequentialRecord[], store: SequentialDurableStore) {
+  constructor(initial: MatchState, records: readonly SequentialRecord[], store: SequentialDurableStore, enemyPolicy: EnemyPolicy = "baup") {
     this.initial = structuredClone(initial);
-    this.session = SequentialTurn.replay(this.initial, records);
+    this.session = SequentialTurn.replay(this.initial, records, { enemyPlanner: enemyPlannerFor(enemyPolicy) });
     this.store = store;
+    this.enemyPolicy = enemyPolicy;
   }
   snapshot() { return this.session.snapshot(); }
   records() { return this.session.records(); }
@@ -32,7 +36,7 @@ export class SequentialDurableAuthority {
     this.busy = true;
     try {
       const old = this.session.snapshot(), records = this.session.records();
-      const candidate = SequentialTurn.replay(this.initial, records);
+      const candidate = SequentialTurn.replay(this.initial, records, { enemyPlanner: enemyPlannerFor(this.enemyPolicy) });
       const result = candidate.execute(command);
       if (!result.ok) return result;
       const next = candidate.records();

@@ -199,7 +199,7 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
   }, [display.outcome, resultReady]);
   const liveEvidence = useMemo(() => controller.replayEvidence(), [state.match.revision]);
   const evidence = replay ? { initial: replay.initial, records: replay.records.slice(0, replay.index) } : liveEvidence;
-  const resultReview = useMemo(() => showResult && evidence && display.outcome ? buildSequentialReview(evidence.initial, evidence.records, display) : null,
+  const resultReview = useMemo(() => showResult && evidence && display.outcome ? buildSequentialReview(evidence.initial, evidence.records, display, "enemyPolicy" in evidence ? evidence.enemyPolicy : "scripted") : null,
     [showResult, state.match.revision, replay?.index, Boolean(replay)]);
   const records = evidence?.records ?? [];
   let lastCompleted = records.length - 1;

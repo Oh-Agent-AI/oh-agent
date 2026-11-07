@@ -4,6 +4,7 @@ import type { DeployPlacement } from "./deployment";
 import type { MatchState } from "./board";
 import type { SequentialDurableStore } from "./sequentialDurable";
 import type { SequentialRecord } from "./sequentialTurn";
+import type { EnemyPolicy } from "./enemy/contracts";
 import { createSequentialReplayBundle, restoreSequentialReplayBundle } from "./sequentialReplayBundle";
 
 export type Checkpoint = { revision: number; raw: string | null };
@@ -90,7 +91,7 @@ export async function readSequentialCheckpoint(site: CityMechaSite, backend: Che
   const restored = await restoreSequentialReplayBundle(site, entry.archive);
   return { checkpoint, restored };
 }
-export async function writeSequentialCheckpoint(site: CityMechaSite, evidence: { initial: MatchState; placements: DeployPlacement[]; records: SequentialRecord[] }, backend: CheckpointBackend, version: number): Promise<number> {
+export async function writeSequentialCheckpoint(site: CityMechaSite, evidence: { initial: MatchState; placements: DeployPlacement[]; records: SequentialRecord[]; enemyPolicy?: EnemyPolicy }, backend: CheckpointBackend, version: number): Promise<number> {
   const archive = await createSequentialReplayBundle(site, evidence);
   const raw = JSON.stringify({ schema: "mecha-sequential-replay-entry:v1", savedAt: new Date().toISOString(), archive });
   if (!validRaw(raw)) return fail();
@@ -104,7 +105,7 @@ export async function clearSequentialCheckpoint(backend: CheckpointBackend, vers
   return next;
 }
 /** All writes are verified and CAS-protected. On any failure the durable authority freezes. */
-export function checkpointStore(site: CityMechaSite, opening: { initial: MatchState; placements: DeployPlacement[] }, backend: CheckpointBackend, initialVersion: number, initialMatchRevision: number): SequentialDurableStore {
+export function checkpointStore(site: CityMechaSite, opening: { initial: MatchState; placements: DeployPlacement[] }, backend: CheckpointBackend, initialVersion: number, initialMatchRevision: number, enemyPolicy: EnemyPolicy = "baup"): SequentialDurableStore {
   let version = initialVersion, matchRevision = initialMatchRevision;
   const savedSite = structuredClone(site), savedOpening = structuredClone(opening);
   if (!validRevision(version) || !validRevision(matchRevision)) throw new Error("checkpoint_unavailable");
@@ -112,7 +113,7 @@ export function checkpointStore(site: CityMechaSite, opening: { initial: MatchSt
     const last = records.at(-1);
     if (expectedRevision !== matchRevision || !last || last.command.revision !== expectedRevision || last.revision !== expectedRevision + 1 ||
         records.some((record, index) => record.command.id !== `c${index}`)) return fail();
-    const next = await writeSequentialCheckpoint(savedSite, { ...savedOpening, records: [...records] }, backend, version);
+    const next = await writeSequentialCheckpoint(savedSite, { ...savedOpening, records: [...records], enemyPolicy }, backend, version);
     version = next; matchRevision = expectedRevision + 1;
   } };
 }

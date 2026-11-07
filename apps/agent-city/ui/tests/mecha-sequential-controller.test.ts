@@ -1,3 +1,4 @@
+import { enemyPlannerFor } from "../src/game/mecha/enemy/policy.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createMatch } from "../src/game/mecha/rules.ts";
@@ -103,7 +104,7 @@ test("end requires explicit confirmation when actions remain and replay preserve
   c.execute({ kind: "end", confirmUnused: true });
   assert.equal(c.getState().match.turn, initial.turn + 1); assert.ok(c.getState().presentation);
   assert.deepEqual(c.getState().match, forecast.snapshot.match, "ending without another command matches the forecast");
-  assert.deepEqual(SequentialTurn.replay(initial, c.records()).snapshot().match, c.getState().match);
+  assert.deepEqual(SequentialTurn.replay(initial, c.records(), { enemyPlanner: enemyPlannerFor("baup") }).snapshot().match, c.getState().match);
   c.finishPresentation(); assert.equal(c.getState().presentation, null);
 });
 

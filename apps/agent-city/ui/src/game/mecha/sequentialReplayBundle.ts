@@ -53,14 +53,14 @@ function openingState(site: CityMechaSite, opening: Opening): MatchState {
 }
 
 /** Create only from a verified opening and a detached committed command history. */
-export async function createSequentialReplayBundle(site: CityMechaSite, evidence: { placements: DeployPlacement[]; initial: MatchState; records: SequentialRecord[] }): Promise<string> {
+export async function createSequentialReplayBundle(site: CityMechaSite, evidence: { placements: DeployPlacement[]; initial: MatchState; records: SequentialRecord[]; enemyPolicy?: "scripted" | "baup" }): Promise<string> {
   const savedSite = structuredClone(site), status = evidence.initial.statusEncounter !== undefined;
   const opening: Opening = { preset: "covers_sparse_mid", script: "siege", placements: structuredClone(evidence.placements),
     ...(status ? { encounter: { speciesId: evidence.initial.monsterContent?.speciesId as StatusMonsterId, contentVersion: 1 as const, statusRules: "mecha-status-encounter:v1" as const } } : {}) };
   if (!validOpening(opening, status) || !Array.isArray(evidence.records)) return fail();
   const initial = openingState(savedSite, opening);
   if (canonicalJson(initial) !== canonicalJson(evidence.initial)) return fail();
-  const replay = JSON.parse(await createSequentialArchive(initial, evidence.records));
+  const replay = JSON.parse(await createSequentialArchive(initial, evidence.records, evidence.enemyPolicy ?? "scripted"));
   const bundle: Bundle = { schema: status ? STATUS_SCHEMA : SCHEMA, ruleset: "mecha-v1.5", siteDigest: await digest(savedSite), opening, replay };
   const raw = JSON.stringify(bundle);
   if (new TextEncoder().encode(raw).length > MAX_BYTES) return fail();

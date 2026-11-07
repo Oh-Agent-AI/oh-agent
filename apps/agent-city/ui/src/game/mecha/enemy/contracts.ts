@@ -22,6 +22,8 @@ export type EnemyPlan = {
   };
 };
 
+export type EnemyPolicy = "scripted" | "baup";
+
 export interface EnemyPlanner extends DecisionPlanner<MatchState, EnemyPlan> {
   readonly policy: string;
 }

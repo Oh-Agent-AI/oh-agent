@@ -2,13 +2,15 @@
 import type { MatchState } from "./board";
 import { canonicalJson } from "./contracts/match";
 import { SequentialTurn, validSequentialCommand, type SequentialCommand, type SequentialRecord } from "./sequentialTurn";
+import { enemyPlannerFor } from "./enemy/policy";
+import type { EnemyPolicy } from "./enemy/contracts";
 
 const SCHEMA = "mecha-sequential-replay:v1";
 const STATUS_SCHEMA = "mecha-sequential-replay:v2";
 const MAX_BYTES = 40_000;
 const MAX_COMMANDS = 512;
 type SavedEntry = { command: SequentialCommand; eventDigest: string };
-type Archive = { schema: typeof SCHEMA | typeof STATUS_SCHEMA; ruleset: "mecha-v1.5"; initialDigest: string; finalDigest: string; entries: SavedEntry[]; statusRules?: "mecha-status-encounter:v1" };
+type Archive = { schema: typeof SCHEMA | typeof STATUS_SCHEMA; ruleset: "mecha-v1.5"; enemyPolicy: EnemyPolicy; initialDigest: string; finalDigest: string; entries: SavedEntry[]; statusRules?: "mecha-status-encounter:v1" };
 const fail = (): never => { throw new Error("invalid_sequential_archive"); };
 const obj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const fields = (v: Record<string, unknown>, keys: readonly string[]) => Object.keys(v).length === keys.length && keys.every(k => Object.hasOwn(v, k));
@@ -47,10 +49,10 @@ function mapTarget(command: SequentialCommand, state: MatchState, direction: "en
 }
 
 /** The initial state must be independently reconstructed from the same local site and deployment. */
-export async function createSequentialArchive(initial: MatchState, records: readonly SequentialRecord[]): Promise<string> {
+export async function createSequentialArchive(initial: MatchState, records: readonly SequentialRecord[], enemyPolicy: EnemyPolicy = "scripted"): Promise<string> {
   if (!Array.isArray(records) || records.length > MAX_COMMANDS) return fail();
   const version = archiveVersion(initial);
-  const session = new SequentialTurn(initial), entries: SavedEntry[] = [], seen = new Set<string>();
+  const session = new SequentialTurn(initial, { enemyPlanner: enemyPlannerFor(enemyPolicy) }), entries: SavedEntry[] = [], seen = new Set<string>();
   for (const [index, record] of records.entries()) {
     if (!record || !validSequentialCommand(record.command) || seen.has(record.command.id)) return fail();
     seen.add(record.command.id);
@@ -63,7 +65,7 @@ export async function createSequentialArchive(initial: MatchState, records: read
         canonicalJson(result.presentationStages) !== canonicalJson(record.presentationStages)) return fail();
     entries.push({ command: saved, eventDigest: await digest(result.events) });
   }
-  const archive: Archive = { schema: version === "v2" ? STATUS_SCHEMA : SCHEMA, ruleset: "mecha-v1.5", initialDigest: await digest(initial), finalDigest: await digest(session.snapshot()), entries,
+  const archive: Archive = { schema: version === "v2" ? STATUS_SCHEMA : SCHEMA, ruleset: "mecha-v1.5", enemyPolicy, initialDigest: await digest(initial), finalDigest: await digest(session.snapshot()), entries,
     ...(version === "v2" ? { statusRules: "mecha-status-encounter:v1" as const } : {}) };
   const raw = JSON.stringify(archive);
   if (new TextEncoder().encode(raw).length > MAX_BYTES) return fail();
@@ -76,11 +78,11 @@ export async function replaySequentialArchive(initial: MatchState, raw: string):
   const version = archiveVersion(initial);
   let value: unknown;
   try { value = JSON.parse(raw); } catch { return fail(); }
-  if (!obj(value) || !fields(value, version === "v2" ? ["schema", "ruleset", "initialDigest", "finalDigest", "entries", "statusRules"] : ["schema", "ruleset", "initialDigest", "finalDigest", "entries"]) ||
+  if (!obj(value) || !fields(value, version === "v2" ? ["schema", "ruleset", "enemyPolicy", "initialDigest", "finalDigest", "entries", "statusRules"] : ["schema", "ruleset", "enemyPolicy", "initialDigest", "finalDigest", "entries"]) ||
       value.schema !== (version === "v2" ? STATUS_SCHEMA : SCHEMA) || (version === "v2" && value.statusRules !== "mecha-status-encounter:v1") ||
-      value.ruleset !== "mecha-v1.5" || !hash(value.initialDigest) || !hash(value.finalDigest) ||
+      value.ruleset !== "mecha-v1.5" || (value.enemyPolicy !== "scripted" && value.enemyPolicy !== "baup") || !hash(value.initialDigest) || !hash(value.finalDigest) ||
       !Array.isArray(value.entries) || value.entries.length > MAX_COMMANDS || await digest(initial) !== value.initialDigest) return fail();
-  const session = new SequentialTurn(initial);
+  const session = new SequentialTurn(initial, { enemyPlanner: enemyPlannerFor(value.enemyPolicy as EnemyPolicy) });
   for (const [index, entry] of value.entries.entries()) {
     if (!obj(entry) || !fields(entry, ["command", "eventDigest"]) || !validSequentialCommand(entry.command) ||
         entry.command.id !== `c${index}` || !hash(entry.eventDigest)) return fail();
