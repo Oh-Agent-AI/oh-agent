@@ -6,6 +6,7 @@ export type GameLocale = "zh-Hans" | "en";
 
 const ENGLISH: Record<string, string> = {
   "选择战斗规则": "Choose battle rules",
+  "机甲战棋 1.5 使用逐台行动与即时结算。": "Mecha tactics 1.5 resolves each mech action immediately.",
   "机甲战棋 1.5 使用逐台行动与即时结算；经典模式仍可用于兼容的远程对局。": "Mecha tactics 1.5 resolves each mech's move and action immediately. Classic mode remains available for compatible remote matches.",
   "机甲战棋 1.5 · 本地 PvE": "Mecha tactics 1.5 · local PvE",
   "状态效果挑战": "Status effect challenge",
