@@ -2,12 +2,15 @@ use serde_json::Value;
 use crate::remote_protocol::{self, RemoteCapability};
 
 const PROTOCOL: &str = "mecha-net:v1";
+const SEQUENTIAL_PROTOCOL: &str = "mecha-net:v2";
 const METHODS: [&str; 4] = ["match.snapshot", "plan.submit", "match.concede", "match.close"];
 const EVENTS: [&str; 3] = ["match.closed", "match.replaced", "turn.resolved"];
 // Deployment is a distinct capability; never broaden the v1 contract.
 const DEPLOYMENT_METHODS: [&str; 5] = ["match.snapshot", "deployment.submit", "plan.submit", "match.concede", "match.close"];
 // v3 replaces the unsafe, unversioned concession rather than widening v1/v2.
 const SAFE_METHODS: [&str; 5] = ["match.snapshot", "deployment.submit", "plan.submit", "match.concede-v2", "match.close"];
+// v4 is the command-stream handoff; it deliberately has no plan or concede methods.
+const SEQUENTIAL_METHODS: [&str; 2] = ["sequential.snapshot", "sequential.command.submit"];
 
 pub fn supports(capability: &RemoteCapability) -> bool {
     capability.id == "mecha:v1" && capability.is_valid()
@@ -69,6 +72,25 @@ pub(crate) fn validate_safe_request(value: &Value, match_id: &str, capability: &
     remote_protocol::route_request(&DeploymentAdapter(capability), value, match_id)
 }
 
+pub(crate) fn supports_sequential(capability: &RemoteCapability) -> bool {
+    capability.id == "mecha:v4" && capability.is_valid()
+        && capability.methods.len() == SEQUENTIAL_METHODS.len() && SEQUENTIAL_METHODS.iter().all(|method| capability.allows_method(method))
+        && capability.events.is_empty()
+}
+
+pub(crate) fn validate_sequential_request(value: &Value, match_id: &str, capability: &RemoteCapability) -> Result<(), &'static str> {
+    if !supports_sequential(capability) { return Err("forbidden"); }
+    if value["payload"]["matchId"] != match_id { return Err("forbidden"); }
+    if !value["method"].as_str().is_some_and(|method| SEQUENTIAL_METHODS.contains(&method)) { return Err("invalid_message"); }
+    Ok(())
+}
+
+pub(crate) fn validate_sequential_host_message(value: &Value, match_id: &str) -> bool {
+    value["protocol"] == SEQUENTIAL_PROTOCOL && value["type"] == "response"
+        && value["requestId"].as_str().is_some_and(valid_id)
+        && value["result"]["snapshot"]["matchId"].as_str().is_none_or(|id| id == match_id)
+}
+
 fn valid_id(value: &str) -> bool {
     !value.is_empty() && value.len() <= 80 && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'_' | b'-'))
 }
@@ -98,6 +120,20 @@ mod tests {
 
     fn capability() -> RemoteCapability {
         RemoteCapability { id: "mecha:v1".into(), methods: METHODS.iter().map(|item| (*item).into()).collect(), events: EVENTS.iter().map(|item| (*item).into()).collect() }
+    }
+
+    #[test]
+    fn sequential_capability_requires_exact_methods_and_v2_protocol() {
+        let cap = RemoteCapability { id: "mecha:v4".into(), methods: SEQUENTIAL_METHODS.iter().map(|item| (*item).into()).collect(), events: vec![] };
+        assert!(supports_sequential(&cap));
+        let request = json!({"payload":{"matchId":"m1"},"method":"sequential.snapshot"});
+        assert_eq!(validate_sequential_request(&request, "m1", &cap), Ok(()));
+        assert_eq!(validate_sequential_request(&request, "other", &cap), Err("forbidden"));
+        let mut widened = cap.clone();
+        widened.methods.push("plan.submit".into());
+        assert!(!supports_sequential(&widened));
+        assert!(validate_sequential_host_message(&json!({"protocol":"mecha-net:v2","type":"response","requestId":"r1","result":{"snapshot":{"matchId":"m1"}}}), "m1"));
+        assert!(!validate_sequential_host_message(&json!({"protocol":"mecha-net:v1","type":"response","requestId":"r1"}), "m1"));
     }
 
     #[test]
