@@ -4,7 +4,7 @@ import { forecastFizzles } from "./mecha/fizzleForecast";
 import type { ShotCheck } from "./mecha/combat";
 import { MechaDeploymentPanel, MechaDeploymentActions } from "./MechaDeploymentPanel";
 import { SequentialMechaMatch } from "./SequentialMechaMatch";
-import { MechaHudLayout } from "./MechaHudLayout";
+import { MechaHud } from "./MechaHudLayout";
 import { useMechaSettings } from "./useMechaSettings";
 import { MechaMoveList } from "./MechaMoveList";
 import { MechaBattlefieldControls, MechaBattleMenu, MechaCommandDeck, MechaCommandPanel, MechaObjectiveCard, MechaObjectivePanel, MechaObjectiveToggle, MechaSelectedActionsPanel, MechaSettingsPopover, MechaTargetOptions, MechaTeamPanel, MechaTeamTurnControls, MechaThreatSourceList, MechaTurnOrder } from "./MechaHudPanels";
@@ -30,6 +30,8 @@ import { CityMechaWorld, type CityMechaView, type CityMechaWorldHandle } from ".
 import { MechaCellInspector } from "./MechaCellInspector";
 import { inspectCell, declaredAttack, inspectionSegments } from "./mecha/cellInspection";
 import { declaredEnemyIntents } from "./mecha/enemyIntentPresentation";
+import { previewEnemyPhase } from "./mecha/enemyPhasePreview";
+import { draftPlan } from "./mecha/planning";
 import { MechaActionIcon } from "./MechaActionIcon";
 import { MechaActionCard } from "./MechaActionCard";
 import { unitMaxHp } from "./mecha/unitHealth";
@@ -38,7 +40,6 @@ import { MechaBattleLegend } from "./MechaBattleLegend";
 import { MechaRoster } from "./MechaPlanCard";
 import { MechaUnitAvatar, MechaUnitPortrait } from "./MechaUnitAvatar";
 import { getUnitPortrait } from "./mecha/unitPortraits";
-import { useConnectedAssault } from "../render/mecha/connectedAssaultMode";
 import { terrainSurfaceHeight } from "../engine/surface/terrainSampling";
 import { sampleAssaultTerrainSafety } from "./mecha/assaultTerrainSafety";
 import { MechaLastResult } from "./MechaLastResult";
@@ -57,6 +58,10 @@ import { candidateResult } from "./mecha/candidateResult";
 import { assaultSequenceWaiting } from "./mecha/assaultTurnPlayer";
 import type { DoctrineId } from "./mecha/ai";
 import { createMechaController, type MechaController } from "./mecha/controller";
+import { buildClassicHud } from "./mecha/hud/adapters";
+import type { MechaHudActions, MechaHudModel, MechaHudProjection } from "./mecha/hud/model";
+import { readMechaRuntime } from "./MechaModeRuntime";
+import type { ReleaseChoice } from "./mecha/mode";
 import { createLocalReplayArchive, listLocalReplays, saveLocalReplayEntry, loadLocalReplayEntryForSites, readLocalReplayEntryArchive, restoreLocalReplayArchiveForSites, saveImportedLocalReplay, LOCAL_REPLAY_MAX_FILE_BYTES, ReplayArchiveError, type ReplayLibraryEntry } from "./mecha/replayArchive";
 import { commitReplay, migrateLegacyReplays, readReplaySnapshot, replayBackend, ReplaySnapshot } from "./mecha/replayRepository";
 import { anchorsFromCity, prepareFightTerrainAsync, type FightCatalog, type FightShape } from "./mecha/citySite";
@@ -191,7 +196,7 @@ export function MechaBoard({ locale, onClose, engine, onAvailability, encounter 
   const [retry, setRetry] = useState(0);
   const [runId, setRunId] = useState(0);
   const [remoteStatus, setRemoteStatus] = useState<RemoteMechaStatus>("idle");
-  const [releaseMode, setReleaseMode] = useState<"" | "classic" | "sequential" | "status">("");
+  const [releaseMode, setReleaseMode] = useState<ReleaseChoice>("");
   const [releaseStatus, setReleaseStatus] = useState<StatusMonsterId | null>(null);
   const remoteLocked = useRef(false);
   const changeRemoteStatus = (next: RemoteMechaStatus) => {
@@ -201,6 +206,7 @@ export function MechaBoard({ locale, onClose, engine, onAvailability, encounter 
   const requestMatchClose = useRef<(() => void) | null>(null);
   const searchSeq = useRef(0);
   const playable = phase === "ready" && Boolean(engine) && catalogPlayable(catalog);
+  const runtime = readMechaRuntime({ remoteStatus, releaseChoice: releaseMode, releaseStatus, encounterActive: Boolean(encounter) });
 
   useEffect(() => {
     if (!onAvailability) return;
@@ -331,29 +337,36 @@ export function MechaBoard({ locale, onClose, engine, onAvailability, encounter 
       : <CityGate locale={locale} onClose={onClose} onRetry={retrySearch} title="这座城暂时没有可用机坪。" body="当前城市中未找到符合地形和占位条件的战场。可以重试，或关掉战棋。" />;
   }
 
-  const query = new URLSearchParams(location.search);
-  // The release entry offers local v1.5 while retaining the v1.4 route for
-  // remote play and replay compatibility. Probe overrides remain debug-only.
-  const nativeProbe = import.meta.env.MODE === "debug" && window.__CITY_ISOLATION_FIXTURE__ && (window as Window & { __AV_V15_PROBE__?: boolean }).__AV_V15_PROBE__ === true;
-  const localTest = import.meta.env.MODE === "debug" && Boolean(window.__AV_PLUGIN_INSTANCE__) && (window as Window & { __AV_V15_LOCAL_TEST__?: boolean }).__AV_V15_LOCAL_TEST__ === true;
-  const v15TestAllowed = import.meta.env.DEV || nativeProbe || localTest || (import.meta.env.MODE === "debug" && !window.__AV_PLUGIN_INSTANCE__ && query.get("fixtureSessions") === "30");
-  const releasePicker = import.meta.env.PROD && remoteStatus === "idle" && !nativeProbe && !localTest;
-  if (releasePicker && !releaseMode) return <CityGate locale={locale} onClose={onClose} title={t("选择战斗规则")} body={t("机甲战棋 1.5 使用逐台行动与即时结算；经典模式保留旧回放并支持远程对战。")} recovery={<div className="mecha-actions">
-      <button type="button" onClick={() => setReleaseMode("sequential")}>{t("机甲战棋 1.5 · 本地 PvE")}</button>
-      <button type="button" onClick={() => setReleaseMode("status")}>{t("状态效果挑战")}</button>
-      <button type="button" onClick={() => setReleaseMode("classic")}>{t("经典模式 · 1.4")}</button>
-    </div>} />;
-  if (releasePicker && releaseMode === "status" && !releaseStatus) return <CityGate locale={locale} onClose={onClose} title={t("选择状态效果挑战")} body={t("使用当前城市战场，挑战带有一种特殊状态技能的怪物。")} recovery={<div className="mecha-actions">
-      {([["spore_leaper", "孢群体 · 中毒"], ["flux_lancer", "流环体 · 燃烧"], ["prism_warden", "晶簇体 · 冻结"], ["gravity_core", "引力核 · 眩晕"]] as const).map(([id, label]) => <button key={id} type="button" onClick={() => setReleaseStatus(id)}>{t(label)}</button>)}
-      <button type="button" onClick={() => { setReleaseMode(""); setReleaseStatus(null); }}>{t("返回")}</button>
-    </div>} />;
-  const v15Requested = v15TestAllowed && (nativeProbe || localTest || query.get("mechaV15") === "1") || releasePicker && (releaseMode === "sequential" || releaseStatus !== null);
-  const statusRequest = v15TestAllowed && v15Requested ? query.get("mechaStatus") : null;
-  if (statusRequest !== null && !["spore_leaper", "flux_lancer", "prism_warden", "gravity_core"].includes(statusRequest)) return <CityGate locale={locale} onClose={onClose} title={t("状态挑战参数无效")} body={t("请选择受支持的本地状态挑战。")} />;
-  if (encounter && statusRequest !== null) return <CityGate locale={locale} onClose={onClose} title={t("状态挑战不能使用城市遭遇点")} body={t("请返回并单独选择状态效果挑战。")} />;
-  const v15Site = v15Requested ? encounter?.site ?? SHAPES.map(shape => catalog[shape.id]).find(Boolean) : null;
-  if (v15Site) return <SequentialMechaMatch key={runId} engine={engine} site={v15Site} locale={locale} onClose={onClose} requestCloseRef={requestMatchClose} statusSpecies={(statusRequest as StatusMonsterId | null) ?? releaseStatus} />;
-  return <MechaMatch key={runId} locale={locale} onClose={onClose} requestCloseRef={requestMatchClose} engine={engine} catalog={encounter?.catalog ?? catalog} initialShape={encounter?.shape} remoteStatus={remoteStatus} remoteLocked={remoteLocked} onRemoteStatusChange={changeRemoteStatus} />;
+  const sequentialSite = encounter?.site ?? SHAPES.map(shape => catalog[shape.id]).find(Boolean) ?? null;
+  switch (runtime.mode.kind) {
+    case "picker":
+      return <CityGate locale={locale} onClose={onClose} title={t("选择战斗规则")} body={t("机甲战棋 1.5 使用逐台行动与即时结算；经典模式保留旧回放并支持远程对战。")} recovery={<div className="mecha-actions">
+        <button type="button" onClick={() => setReleaseMode("sequential")}>{t("机甲战棋 1.5 · 本地 PvE")}</button>
+        <button type="button" onClick={() => { setReleaseStatus(null); setReleaseMode("status"); }}>{t("状态效果挑战")}</button>
+        <button type="button" onClick={() => setReleaseMode("classic")}>{t("经典模式 · 1.4")}</button>
+      </div>} />;
+    case "closed": {
+      const title = runtime.mode.reason === "invalid_status_species" ? t("状态挑战参数无效")
+        : runtime.mode.reason === "status_challenge_encounter" ? t("状态挑战不能使用城市遭遇点")
+          : t("战斗模式暂不可用");
+      const body = runtime.mode.reason === "status_challenge_encounter" ? t("请返回并单独选择状态效果挑战。")
+        : runtime.mode.reason === "invalid_status_species" ? t("请选择受支持的本地状态挑战。")
+          : t("当前构建或模式参数无效，请返回后重试。");
+      return <CityGate locale={locale} onClose={onClose} title={title} body={body} />;
+    }
+    case "status":
+      if (!runtime.mode.species) return <CityGate locale={locale} onClose={onClose} title={t("选择状态效果挑战")} body={t("使用当前城市战场，挑战带有一种特殊状态技能的怪物。")} recovery={<div className="mecha-actions">
+        {([["spore_leaper", "孢群体 · 中毒"], ["flux_lancer", "流环体 · 燃烧"], ["prism_warden", "晶簇体 · 冻结"], ["gravity_core", "引力核 · 眩晕"]] as const).map(([id, label]) => <button key={id} type="button" onClick={() => setReleaseStatus(id)}>{t(label)}</button>)}
+        <button type="button" onClick={() => { setReleaseMode(""); setReleaseStatus(null); }}>{t("返回")}</button>
+      </div>} />;
+      if (!sequentialSite) return <CityGate locale={locale} onClose={onClose} title={t("这座城暂时没有可用机坪。")} body={t("当前城市中未找到符合地形和占位条件的战场。可以重试，或关掉战棋。")} />;
+      return <SequentialMechaMatch key={runId} engine={engine} site={sequentialSite} locale={locale} onClose={onClose} requestCloseRef={requestMatchClose} statusSpecies={runtime.mode.species} connectedAssault={runtime.connectedAssault} />;
+    case "sequential":
+      if (!sequentialSite) return <CityGate locale={locale} onClose={onClose} title={t("这座城暂时没有可用机坪。")} body={t("当前城市中未找到符合地形和占位条件的战场。可以重试，或关掉战棋。")} />;
+      return <SequentialMechaMatch key={runId} engine={engine} site={sequentialSite} locale={locale} onClose={onClose} requestCloseRef={requestMatchClose} connectedAssault={runtime.connectedAssault} />;
+    case "classic":
+      return <MechaMatch key={runId} locale={locale} onClose={onClose} requestCloseRef={requestMatchClose} engine={engine} catalog={encounter?.catalog ?? catalog} initialShape={encounter?.shape} remoteStatus={remoteStatus} remoteLocked={remoteLocked} onRemoteStatusChange={changeRemoteStatus} connectedAssault={runtime.connectedAssault} assaultSequenceTrial={runtime.assaultSequenceTrial} />;
+  }
 }
 
 function enemyName(id: string): string {
@@ -396,7 +409,7 @@ const ACTION_DESCRIPTIONS: Record<Action["kind"], string> = {
 
 /** 薄视图：状态、草稿、预检、结算、自动对战都在 controller 里，这里只订阅与渲染。
  *  没有城市战场时父级不会挂这个组件。 */
-function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initialShape, remoteStatus, remoteLocked, onRemoteStatusChange }: {
+function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initialShape, remoteStatus, remoteLocked, onRemoteStatusChange, connectedAssault, assaultSequenceTrial }: {
   locale: GameLocale;
   onClose: () => void;
   requestCloseRef: React.RefObject<(() => void) | null>;
@@ -406,10 +419,12 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
   remoteStatus: RemoteMechaStatus;
   remoteLocked: React.RefObject<boolean>;
   onRemoteStatusChange: (status: RemoteMechaStatus) => void;
+  connectedAssault: boolean;
+  assaultSequenceTrial: boolean;
 }) {
   const t = (text: string) => gameText(text, locale);
   const safeCatalog = useMemo<FightCatalog>(() => {
-    if (!useConnectedAssault(import.meta.env.DEV, location.search)) return catalog;
+    if (!connectedAssault) return catalog;
     const layout = engine.currentLayout;
     const result: FightCatalog = { flat: null, shore: null, ridge: null, alley: null };
     if (!layout) return result;
@@ -426,12 +441,12 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
       }
     }
     return result;
-  }, [catalog, engine, engine.currentLayout]);
+  }, [catalog, connectedAssault, engine, engine.currentLayout]);
   const [shape, setShape] = useState<FightShape>(initialShape ?? "flat");
   const shapeId: FightShape = safeCatalog[shape] || initialShape && shape === initialShape ? shape : (SHAPES.find((item) => safeCatalog[item.id])?.id ?? "flat");
   const site = safeCatalog[shapeId] ?? null;
   const [viewFailed, setViewFailed] = useState<"mode" | "preview" | "asset" | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(() => useConnectedAssault(import.meta.env.DEV, location.search));
+  const [previewLoading, setPreviewLoading] = useState(() => connectedAssault);
   const remoteActive = remoteStatus !== "idle";
   const [showOrder, setShowOrder] = useState(false);
   const [showQuickGuide, setShowQuickGuide] = useState(false);
@@ -828,7 +843,7 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
   };
   useEffect(() => { setInspectedCell(null); setInspectedUnitId(null); }, [controller, site, state?.turn, performance, resolvedState]);
 
-  const sequenceTrial = import.meta.env.DEV && new URLSearchParams(location.search).get("assaultTrial") === "1" && new URLSearchParams(location.search).get("assaultSequence") === "1";
+  const sequenceTrial = assaultSequenceTrial;
   const sequenceActive = sequenceTrial && Boolean(site && !viewFailed) && !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const sequenceWaiting = assaultSequenceWaiting(sequenceActive, s?.combat ?? { id: 0, actions: [] }, sequenceStatus);
   const sequenceFault = sequenceWaiting && sequenceStatus?.id === s?.combat.id && sequenceStatus?.state === "fault";
@@ -947,7 +962,7 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
       })() : Infinity;
       const rosterRoom = pack ? root.getBoundingClientRect().bottom - pack.getBoundingClientRect().top - 20 - 160 : Infinity;
       const limit = panel === inspection ? Math.min(window.innerHeight * 0.32, 260) : panel === result ? Math.min(window.innerHeight * 0.36, 280) : panel === pack ? Math.max(80, Math.min(rosterRoom, window.innerHeight * (window.innerHeight > 600 ? 0.5 : 0.43), window.innerHeight > 600 ? 360 : 320)) : panel === summary
-        ? Math.min(result ? window.innerHeight * 0.38 : panel.querySelector("details[open], #mecha-order-panel") ? window.innerHeight * 0.64 : window.innerHeight * 0.38, 380, objectiveHeight)
+        ? Math.min(result ? window.innerHeight * 0.38 : panel.querySelector("details[open], #mecha-order-panel") ? window.innerHeight * 0.64 : window.innerHeight * 0.38, 384, objectiveHeight)
         : available;
       // Keep every settled scrollport edge between whole lines/controls,
       // including long candidate results. The ceiling remains independent of
@@ -1120,6 +1135,21 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
   // Presentation-only placements: unplaced mechs have no board occupancy.
   const inspectionState = useMemo(() => state ? { ...state, mechs: projectMechPositions(state, deployment?.placements ?? null) } : state, [state, deployment]);
   const targetOptions = s?.targetOptions ?? [];
+  const hudActions: MechaHudActions = {
+    select: id => controller?.selectMech(id),
+    moveTo: cell => { if (selected) controller?.setMove(selected, cell); },
+    chooseAction: kind => {
+      if (!selected) return;
+      if (kind === "skip") { controller?.setTargeting(null); controller?.setAction(selected, { kind }); }
+      else controller?.setTargeting(controller?.getState().targeting === kind ? null : kind);
+    },
+    pickTarget: index => { const target = targetOptions[index]; if (target) controller?.previewTarget(target.id, "selection"); },
+    confirmAction: () => controller?.confirmTarget(),
+    undoMove: () => controller?.undoMove(),
+    resetTurn: () => controller?.resetTurn(),
+    endTurn: () => controller?.submit(),
+    confirmEndTurn: unused => { if (unused) controller?.confirmHold(); else controller?.submit(); },
+  };
   const clickCell = (x: number, y: number, input: "mouse" | "touch") => {
     // The map-only view exposes cells otherwise hidden behind the HUD. Restore
     // the controls after a board pick, including an invalid pick or touch preview.
@@ -1139,7 +1169,7 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
       return;
     }
     // Actual models stay on committed cells; destination markers are not units.
-    if (!targeting && info?.unit?.side === "mech") controller?.selectMech(info.unit.id as MechId);
+    if (!targeting && info?.unit?.side === "mech") hudActions.select(info.unit.id as MechId);
     else controller?.clickCell(x, y, input);
   };
   const inspectEnemy = (actor: string | null) => {
@@ -1163,6 +1193,11 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
   const plannedCount = s?.plannedCount ?? 0;
   const pendingNames = (s?.pendingIds ?? []).map((id) => t(NAMES[id]));
   const packReady = s?.packReady ?? false;
+  const attackOrderPreview = useMemo(() => {
+    if (!showOrder || performance || deployment || remoteActive || !state || !draft || state.outcome) return null;
+    try { return previewEnemyPhase(state, draftPlan(state, draft)); }
+    catch { return { ok: false as const, reason: "enemy_phase_preview_failed" }; }
+  }, [showOrder, performance, deployment, remoteActive, state, draft]);
   const cityView = useMemo<CityMechaView & { declaredTelegraph: Cell[]; projectedTelegraph: Cell[] | null; predictionSource: "draft" | "candidate" }>(() => {
     // A candidate identifies a unit, not the particular cell clicked. For the
     // multi-cell boss the first option cell is its rules anchor, not a claim
@@ -1208,7 +1243,7 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
       predictionSource: selectedCandidate ? "candidate" : "draft",
       focusedTelegraph: performance || !focusActor ? [] : (projected ?? s?.declaredThreats)?.byActor[focusActor] ?? [],
       hoveredEnemy: s?.replay ? null : s?.selectedEnemy ?? s?.hoveredEnemy ?? null,
-      enemyOrder: showOrder && !performance && !selectedCandidate && s?.preview.ok ? s.preview.enemyOrder : [],
+      enemyOrder: showOrder && !performance && attackOrderPreview?.ok ? attackOrderPreview.steps.map(step => ({ actor: step.actor, cells: step.cells, position: step.position ?? undefined, order: step.order, cancel: step.cancel })) : [],
       focus: performance ? [] : (s?.focusCells ?? []),
       reach: performance ? [] : reach,
       move: performance || !selected ? null : draft?.[selected]?.moveTo ?? null,
@@ -1225,7 +1260,7 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
         declaredAttack(state, s?.selectedEnemy ?? (cellInfo?.unit?.side === "mech" ? null : s?.hoveredEnemy ?? null)), cellInfo?.movePath ?? selectedRoute ?? null),
       inspectedThreats: performance || !state ? [] : declaredAttack(state, s?.selectedEnemy ?? s?.hoveredEnemy ?? null)?.targets ?? [],
     };
-  }, [s, state, inspectionState, deployment, draft, selected, reach, targetOptions, paused, performance, sequenceWaiting, focusedBuilding, showOrder, remoteActive, cellInfo]);
+  }, [s, state, inspectionState, deployment, draft, selected, reach, targetOptions, paused, performance, sequenceWaiting, focusedBuilding, showOrder, remoteActive, cellInfo, attackOrderPreview]);
 
   if (!controller || !s || !state || !site) {
     return <><CityGate locale={locale} onClose={requestClose} closeDisabled={archiveBusy} title={t("没有安全的 Assault 出生点。")} body={t("地形采样失败或可用出生点过陡，请退出战斗并尝试其他城市。")} />{replayLossGuard}</>;
@@ -1294,7 +1329,7 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
     if (event.detail === 0 && document.activeElement === event.currentTarget && targeting) {
       targetFocusReturn.current = { trigger: event.currentTarget, kind: targeting };
     }
-    if (confirm) controller.confirmTarget();
+    if (confirm) hudActions.confirmAction();
     else controller.setTargeting(null);
     // Validation or a concurrent lock may keep targeting active.
     if (controller.getState().targeting) targetFocusReturn.current = null;
@@ -1311,10 +1346,46 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
     {preview && !s.projectedThreats ? <span>{t("草稿威胁未知")}</span> : null}
     {remoteActive ? <span>{t("远程战棋期间本地规划已锁定。")}</span> : null}
   </>;
+  const statusIcons = { poison: "☠️", burn: "🔥", freeze: "🧊", stun: "💫" } as const;
+  const statusNames = { poison: "中毒", burn: "燃烧", freeze: "冻结", stun: "眩晕" } as const;
+  const hudProjection: MechaHudProjection = {
+    label: t("机甲战棋"),
+    displayMatch: state,
+    selected: selected ?? s.selected,
+    round: state.turn,
+    deployment: Boolean(deployment),
+    sourcePhase: state.phase,
+    objective: {
+      goal: state.mission ? t("任一存活机甲抵达救援点 · 全灭或回合耗尽则失败")
+        : staked.length ? t("消灭所有敌人 · 至少保住一栋防守建筑") : t("消灭所有敌人"),
+      buildings: state.buildings.map(building => ({ id: building.id, hp: building.hp, maxHp: building.maxHp })),
+      forecast: preview ? predictedOutcome ?? `${predictedHp}/${stakedMax}` : null,
+    },
+    threats: Object.entries(currentThreats?.byActor ?? {}).map(([actor, cells]) => ({ actor, cells })),
+    roster: state.mechs.map(unit => ({
+      id: unit.id,
+      maxHp: unitMaxHp(unit.id, state),
+      statuses: (state.statusEncounter?.statuses ?? []).filter(status => status.target === unit.id).map(status => ({
+        icon: statusIcons[status.kind], label: `${t(statusNames[status.kind])} · ${status.remainingTurns}`,
+      })),
+      rights: { move: unit.hp > 0 && planning, action: unit.hp > 0 && planning },
+    })),
+    actions: [...s.actions.map(entry => ({ kind: entry.kind, enabled: true })), ...s.unavailableActions.map(entry => ({ kind: entry.kind, enabled: false }))]
+      .map(entry => ({ ...entry, label: t(actionLabel(entry.kind)) })),
+    targets: s.targetOptions.map(option => ({ id: option.id, label: unitName(option.id), cells: option.cells })),
+    preview: { status: s.preview.status, damage: [] },
+    replay: s.replay ? { step: s.replay.index + 1, total: s.replay.total } : null,
+    notices: [
+      ...(s.notice ? [{ kind: s.fault ? "error" as const : "status" as const, text: s.notice }] : []),
+      ...(practiceNotice ? [{ kind: "status" as const, text: practiceNotice }] : []),
+      ...(scenarioNotice ? [{ kind: "status" as const, text: scenarioNotice }] : []),
+    ],
+  };
+  const hudModel: MechaHudModel = buildClassicHud(s, hudProjection);
 
   return (
-    <MechaHudLayout className="mecha-overlay is-city has-match is-reference-hud" phase={state.phase} mapFocus={mapFocused} remoteActive={remoteActive} ariaLabel={t("机甲战棋")}>
-      <CityMechaWorld ref={worldRef} engine={engine} site={s.replay?.source === "saved" ? replaySite.current?.site ?? site : site} locale={locale} view={cityView} performance={performance} paused={paused} performanceSpeed={s.replay ? replaySpeed : 1} onPerformanceComplete={finishPerformance} onCell={clickCell} onHoverCell={hoverCell} onHoverEnemy={(id) => controller.setHoveredEnemy(id)} onUnavailable={(reason) => setViewFailed(reason ?? "mode")} onPreviewLoading={setPreviewLoading} />
+    <MechaHud className="mecha-overlay is-city has-match is-reference-hud" model={hudModel} actions={hudActions} mapFocus={mapFocused} remoteActive={remoteActive}>
+      <CityMechaWorld ref={worldRef} engine={engine} site={s.replay?.source === "saved" ? replaySite.current?.site ?? site : site} locale={locale} view={cityView} performance={performance} paused={paused} connectedAssault={connectedAssault} performanceSpeed={s.replay ? replaySpeed : 1} onPerformanceComplete={finishPerformance} onCell={clickCell} onHoverCell={hoverCell} onHoverEnemy={(id) => controller.setHoveredEnemy(id)} onUnavailable={(reason) => setViewFailed(reason ?? "mode")} onPreviewLoading={setPreviewLoading} />
       {s.replay ? <section className="mecha-replay-bar" aria-label={t("战斗回放")} data-mecha-replay>
         {showReplayRecap ? <div className="mecha-replay-recap" id="mecha-replay-recap" data-replay-recap>
           <MechaLastResult mode="replay" lastLog={s.replay.log} healthTimeline={s.replay.combat.healthTimeline} finalState={s.replay.after} t={t} locale={locale} />
@@ -1416,12 +1487,22 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
               <p>{t("伤害、击退及损毁在行动中即时结算；目标位移或消失可能导致落空，落空不消耗冷却。")}</p>
               <p>{t("战斗结束则跳过后续阶段；否则准备下一回合敌意。")}</p>
             </details>
-            {performance ? <p>{t("演出期间不显示预测。")}</p> : preview ? <>
-              <p>{t("以下敌方顺序是草稿试算，不是当前宣告；敌人可能被消灭。")}</p>
-              <p>{preview.assumed.length ? t("未规划机甲按待机预测；改变计划会更新顺序。") : t("按当前计划预测；改变计划会更新顺序。")}</p>
-              {planning ? <p id="mecha-order-help" className="mecha-order-help">{t("列表编号表示预测的敌方顺序；棋盘不保证显示编号。选择敌人可查看威胁，仍可在棋盘规划移动或选目标。")}</p> : null}
-              {preview.enemyOrder.length ? <ol>{preview.enemyOrder.map((event, index) => <li key={`${event.actor}-${index}`}><button type="button" aria-pressed={s.selectedEnemy === event.actor} onClick={() => inspectEnemy(s.selectedEnemy === event.actor ? null : event.actor)}>{getUnitPortrait(event.actor) ? <MechaUnitPortrait unitId={event.actor} locale={locale} size={22} className="mecha-inline-portrait" /> : null}{t(enemyName(event.actor))} · {monsterSkillName(event.skill, locale)} · {event.cells.map((cell) => `${cell.x},${cell.y}`).join("、")}</button></li>)}</ol> : <p>{t("本次预测没有敌方攻击。")}</p>}
-            </> : <p>{t("草稿试算未知；不能判断敌方顺序。")}</p>}
+            {performance ? <p>{t("演出期间不显示预测。")}</p> : attackOrderPreview?.ok ? <>
+              <p>{t("以下序号来自当前草稿的只读逐步模拟；每一步都基于前一步结算后的棋盘。")}</p>
+              {preview?.assumed.length ? <p>{t("未规划机甲按待机预测；改变计划会更新顺序。")}</p> : null}
+              {planning ? <p id="mecha-order-help" className="mecha-order-help">{t("棋盘上的编号标出敌人的结算顺序；斜线表示本次不会行动。")}</p> : null}
+              {attackOrderPreview.steps.length ? <ol className="mecha-attack-order">{attackOrderPreview.steps.map(step => {
+                const actorLabel = step.actor === "status" ? t("环境与状态") : t(enemyName(step.actor));
+                const cancelLabel = step.cancel === "dead" ? t("已消灭，跳过") : step.cancel === "frozen" ? t("冻结，无法行动") : step.cancel === "stunned" ? t("眩晕，无法行动") : step.cancel === "battle_over" ? t("对局结束，后续跳过") : step.cancel === "no_target" ? t("没有可结算目标") : "";
+                const deltas = [...Object.entries(step.outcome.hp).map(([id, delta]) => `${t(NAMES[id as MechId])} ${delta > 0 ? "+" : ""}${delta} HP`), ...Object.entries(step.outcome.buildings).map(([id, delta]) => `${t("建筑")} ${id} ${delta > 0 ? "+" : ""}${delta} HP`)];
+                const skillLabel = step.skill === "status_tick" ? t("毒/燃烧结算") : step.skill === "environment_tick" ? t("环境结算") : monsterSkillName(step.skill, locale);
+                const summary = <>{step.order}. {actorLabel} · {skillLabel}{step.cells.length ? ` · ${step.cells.map(cell => `${cell.x},${cell.y}`).join("、")}` : ""}{cancelLabel ? ` · ${cancelLabel}` : ""}</>;
+                return <li key={`${step.order}-${step.actor}`} data-attack-order-step data-order={step.order} data-cancel={step.cancel || undefined}>
+                  {step.actor === "status" ? <span>{summary}</span> : <button type="button" aria-pressed={s.selectedEnemy === step.actor} onClick={() => inspectEnemy(s.selectedEnemy === step.actor ? null : step.actor)}>{getUnitPortrait(step.actor) ? <MechaUnitPortrait unitId={step.actor} locale={locale} size={22} className="mecha-inline-portrait" /> : null}{summary}</button>}
+                  <small>{deltas.length ? deltas.join(" · ") : cancelLabel || t("未造成生命值变化")}</small>
+                </li>;
+              })}</ol> : <p>{t("本次预测没有敌方阶段。")}</p>}
+            </> : <p>{t("敌方顺序预测暂不可用；不能据此判断安全。")}</p>}
             <p>{t("本规则没有独立电网或环境攻击。")}</p>
           </MechaTurnOrder> : null}
           {(!compactSummary || remoteActive) ? <div className="mecha-extra-summary">
@@ -1437,7 +1518,7 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
           <MechaTeamTurnControls submitRef={setSubmitTarget} heading={t(state.outcome && !remoteActive ? "队伍状态" : "队伍规划")}
             status={<><strong>{state.outcome && !remoteActive ? t("对局已结束。") : <>{t("已规划")} {plannedCount}/{activeMechs.length}</>}</strong>{predictedFizzles.length ? <span id="mecha-draft-fizzle" className="mecha-planning-fizzle" role="status" data-draft-fizzle>{t("草稿预计落空：")}{predictedFizzles.map(event => t(NAMES[event.mechId])).join(locale === "en" ? ", " : "、")}</span> : null}{s.openingSuggestion && !remoteActive ? <span className="mecha-sr-only">{t("系统建议，可修改")}</span> : null}<span id="mecha-submit-status" className={planning && (packReady || pendingNames.length > 0) ? "mecha-sr-only" : undefined}>{remoteActive ? t("远程战棋期间本地规划已锁定。") : state.outcome ? t("对局已结束。") : paused ? t("演出暂停中，无法结束回合。") : performance || sequenceWaiting ? t("等待战斗演出，暂不可结束回合。") : auto ? t("自动对战中，无法手动结束回合。") : pendingNames.length ? `${t("待规划")}：${pendingNames.join("、")}` : t("已就绪，可结束回合。")}</span></>} help={<p id="mecha-reset-help" className="mecha-reset-help mecha-sr-only">{t(s.resetTurnUsed ? "本局的重置机会已用完。" : state.outcome ? "对局结束后不可重置。" : remoteActive ? "远程战棋期间不可重置。" : planning ? "每场可用一次：恢复本回合开始时的草稿，不会撤回已结算的回合。" : "暂停、自动对战或演出期间不可重置。")}</p>}>
             {!(state.outcome && !remoteActive) ? <div className={`mecha-planning-controls${s.holdConfirmation ? " is-confirming" : ""}`}>
-              {!s.holdConfirmation ? <button type="button" className="mecha-submit-primary" aria-describedby={predictedFizzles.length ? "mecha-submit-status mecha-draft-fizzle" : "mecha-submit-status"} disabled={!planning || !packReady} onClick={() => controller.submit()}>{t("结束回合")}</button> : <div className="mecha-hold-confirm" role="group" aria-label={t("确认全员待机")}>
+              {!s.holdConfirmation ? <button type="button" className="mecha-submit-primary" aria-describedby={predictedFizzles.length ? "mecha-submit-status mecha-draft-fizzle" : "mecha-submit-status"} disabled={!planning || !packReady} onClick={hudActions.endTurn}>{t("结束回合")}</button> : <div className="mecha-hold-confirm" role="group" aria-label={t("确认全员待机")}>
                 <div className="mecha-hold-confirm__risk" id="mecha-hold-risk" role="status">
                   <strong>{t("全员待机的预计风险")}</strong>
                   {s.holdConfirmation.buildingLoss > 0 ? <span>{t("预计建筑损失")} {s.holdConfirmation.buildingLoss}</span> : null}
@@ -1445,10 +1526,10 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
                 </div>
                 <div className="mecha-hold-confirm__actions">
                   <button type="button" disabled={remoteActive} onClick={() => controller.cancelHold()}>{t("返回修改")}</button>
-                  <button type="button" className="mecha-submit-primary" aria-describedby="mecha-hold-risk" disabled={!planning} onClick={() => controller.confirmHold()}>{t("继续提交")}</button>
+                  <button type="button" className="mecha-submit-primary" aria-describedby="mecha-hold-risk" disabled={!planning} onClick={() => hudActions.confirmEndTurn(true)}>{t("继续提交")}</button>
                 </div>
               </div>}
-              <button type="button" className="mecha-reset-turn" disabled={!planning || !s.canResetTurn} aria-describedby="mecha-reset-help" onClick={() => controller.resetTurn()}>{t("重置本回合")}</button>
+              <button type="button" className="mecha-reset-turn" disabled={!planning || !s.canResetTurn} aria-describedby="mecha-reset-help" onClick={hudActions.resetTurn}>{t("重置本回合")}</button>
             </div> : null}
           </MechaTeamTurnControls>
           <MechaRoster label={t("三机行动状态")} helpId="mecha-roster-scroll-help" help={t(state.outcome && !remoteActive ? "队伍状态" : "三机计划 · 滚动查看")}
@@ -1484,17 +1565,16 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
                   setInspectedAction(null);
                   if (!selected) return;
                   if (kind !== "skip") {
-                    controller.setTargeting(targeting === kind ? null : kind);
+                    hudActions.chooseAction(kind);
                     return;
                   }
-                  controller.setTargeting(null);
-                  controller.setAction(selected, { kind: "skip" });
+                  hudActions.chooseAction(kind);
                 }} />;
             })}
             {planning ? s.unavailableActions.map(({ kind, reason }) => <MechaActionCard type="button" className="is-unavailable" label={t(actionLabel(kind))} icon={<MechaActionIcon kind={kind} />} status={t("不可用")} key={`unavailable-${kind}`} disabled title={t(reason === "cooldown" ? "技能冷却中，本回合不可使用。" : kind === "repair" ? "当前落点没有相邻友机；调整移动可能改变结果。" : kind === "melee" || kind === "charge" ? "当前落点没有相邻敌人；调整移动可能改变结果。" : "当前草稿落点没有可射击的敌人；展开下方查看原因。")} />) : null}
           </MechaCommandDeck>}
           utilities={<div className="mecha-actions mecha-action-utilities">
-            <button type="button" disabled={!planning || !s.canUndoMove} title={t("恢复最近一次移动前的草稿，可能一并恢复其他机甲规划。")} onClick={() => controller.undoMove()}>{t("撤回移动")}</button>
+            <button type="button" disabled={!planning || !s.canUndoMove} title={t("恢复最近一次移动前的草稿，可能一并恢复其他机甲规划。")} onClick={hudActions.undoMove}>{t("撤回移动")}</button>
             {targeting ? <button type="button" className="mecha-target-cancel" disabled={!planning} onClick={(event) => finishTarget(event, false)}>{t("取消选目标")}</button> : null}
           </div>}
           target={targeting ? <div className="mecha-target-preview" aria-label={t("目标试算")}>
@@ -1509,7 +1589,7 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
                 }
                 candidateKeyboardTrigger.current = event.currentTarget;
               }
-              controller.previewTarget(id, "selection");
+              hudActions.pickTarget(s.targetOptions.findIndex(option => option.id === id));
             }} />
             {s.targetRejections.length ? <ul className="mecha-target-rejections">{s.targetRejections.map(({ option, fault }) => <li key={option.id}>{unitName(option.id)} · {t("不可选")} · {previewFaultText(fault, locale)}</li>)}</ul> : null}
           </div> : null}
@@ -1523,7 +1603,7 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
             label={t("选择可到达格；终点冲突会提示。")} placeholder={t("选择坐标")} applyText={t("应用移动")}
             options={reach.map(cell => ({ value: `${cell.x},${cell.y}`, label: `${cell.x}, ${cell.y}` }))}
             value={moveChoice} disabled={!planning || !selected} onChange={setMoveChoice}
-            onApply={() => { const [x, y] = moveChoice.split(",").map(Number); if (selected && Number.isInteger(x) && Number.isInteger(y)) controller.setMove(selected, { x, y }); }} />} />}
+            onApply={() => { const [x, y] = moveChoice.split(",").map(Number); if (selected && Number.isInteger(x) && Number.isInteger(y)) hudActions.moveTo({ x, y }); }} />} />}
             {targeting && candidate ? <div ref={candidateRef} className="mecha-candidate-result mecha-candidate-panel" data-candidate-source={candidate.source} tabIndex={0} role="region" aria-label={t("目标试算")}>
               {cellInfo ? <MechaCellInspector key={`${cellInfo.cell.x},${cellInfo.cell.y}:${cellInfo.unit?.id ?? "tile"}`} info={cellInfo} locale={locale} onClose={closeInspection} compact /> : null}
               <strong>{t("目标试算")} · {selected ? t(NAMES[selected]) : "—"} / {t(actionLabel(targeting))} → {unitName(candidate.target)}</strong>
@@ -1581,7 +1661,7 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
               if (!nextSite || next === shapeId) return;
               requestDestructiveAction(() => {
                 if (!controller.restart({ site: nextSite, stake: next === "alley" ? "frontage" : "all" })) return;
-                if (useConnectedAssault(import.meta.env.DEV, location.search)) setPreviewLoading(true);
+                if (connectedAssault) setPreviewLoading(true);
                 setShape(next);
                 setFocusedBuilding(null);
               });
@@ -1624,7 +1704,7 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
                     if (!controller.restart({ site: nextSite, preset: scenario.preset, script: scenario.script, stake: scenario.stake, mission: null, monsterContent: null })) return;
                     // A same-site restart does not remount CityMechaWorld, so it cannot
                     // issue a second loading-complete callback for the existing asset.
-                    if (nextSite !== archiveRuntime.current.site && useConnectedAssault(import.meta.env.DEV, location.search)) setPreviewLoading(true);
+                    if (nextSite !== archiveRuntime.current.site && connectedAssault) setPreviewLoading(true);
                     setShape(scenario.shape); setFocusedBuilding(null); setConfirmScenario(false); setScenarioNotice(null);
                   });
                 }}>{locale === "en" ? "Replace match and deploy" : "替换对局并部署"}</button>
@@ -1668,6 +1748,6 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
       {showQuickGuide && !(resultReady && showMatchResult) ? <MechaQuickGuide locale={locale} returnFocusRef={guideTrigger} onClose={() => setShowQuickGuide(false)} /> : null}
       {resultReady && showMatchResult ? <MechaBattleResult state={state} locale={locale} matchRecap={s.matchRecap} getReviewRounds={() => controller.replayArchiveSource()?.rounds} onView={viewResultField} onReplay={s.replayAvailable ? startReplay : undefined} archiveBusy={archiveBusy} archiveMessage={archiveMessage} onRestart={() => requestDestructiveAction(() => { setShowMatchResult(false); setFocusedBuilding(null); controller.restart(); })} onExit={requestClose} /> : null}
       {replayLossGuard}
-    </MechaHudLayout>
+    </MechaHud>
   );
 }

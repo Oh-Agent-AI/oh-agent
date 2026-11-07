@@ -379,10 +379,10 @@ fn v15_script(status: bool) -> String {
             else if(phase===3) {{
               const discard=find('删除并新开'); if(discard&&!discard.disabled){{discard.click();return;}}
               const select=document.querySelector('#v15-cell');
-              if(select&&!select.disabled&&select.options.length>3){{cells=[...select.options].map(o=>o.value).filter(Boolean).slice(0,3);phase=4;}}
+              if(select&&!select.disabled&&select.options.length>3){{phase=4;}}
             }}
             else if(phase===4) {{const card=document.querySelectorAll('.mecha-v15-roster button')[unit];if(card&&!card.disabled){{card.click();phase=5;}}}}
-            else if(phase===5) {{const select=document.querySelector('#v15-cell');if(select&&!select.disabled){{choose(select,cells[unit]);phase=6;}}}}
+            else if(phase===5) {{const select=document.querySelector('#v15-cell');if(select&&!select.disabled){{const cell=[...select.options].map(o=>o.value).find(value=>value&&!cells.includes(value));if(cell){{cells[unit]=cell;choose(select,cell);phase=6;}}}}}}
             else if(phase===6) {{const b=find('放置');if(b&&!b.disabled){{b.click();unit++;phase=unit<3?4:7;}}}}
             else if(phase===7) {{const b=find('确认部署');if(b&&!b.disabled){{b.click();phase=8;}}}}
             else if(phase===8) {{const action=document.querySelector('#v15-action'),select=document.querySelector('#v15-cell');if(action&&!action.disabled&&select&&!select.disabled&&select.options.length>1){{send('v15_deployed');if(statusMode){{clearInterval(timer);}}else{{choose(select,select.options[1].value);phase=9;}}}}}}
