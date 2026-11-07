@@ -13,6 +13,7 @@ type Props = {
   locale: GameLocale;
   matchRecap?: MatchRecap | null;
   getReviewRounds?: () => readonly RoundReviewRecord[] | null | undefined;
+  getVerifiedReview?: () => { review: RoundReview; achievements: MissionAchievements | null };
   onView: () => void;
   onReplay?: () => void;
   archiveBusy?: boolean;
@@ -22,7 +23,7 @@ type Props = {
 };
 
 /** Mount only after the accepted local result's presentation has completed. */
-export function MechaBattleResult({ state, locale, matchRecap, getReviewRounds, onView, onReplay, archiveBusy, archiveMessage, onRestart, onExit }: Props) {
+export function MechaBattleResult({ state, locale, matchRecap, getReviewRounds, getVerifiedReview, onView, onReplay, archiveBusy, archiveMessage, onRestart, onExit }: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [reviewData, setReviewData] = useState<{ review: RoundReview; achievements: MissionAchievements | null } | null>(null);
   const t = (text: string) => gameText(text, locale);
@@ -58,14 +59,16 @@ export function MechaBattleResult({ state, locale, matchRecap, getReviewRounds, 
       </section> : null}
       {archiveMessage ? <p className={`mecha-match-result__archive-status ${/失败|无法|不可用|已满|损坏|未能/.test(archiveMessage) ? "is-error" : ""}`} role="status" aria-live="polite">{t(archiveMessage)}</p> : null}
       <div className="mecha-match-result__actions">
+        <button type="button" data-result-view disabled={archiveBusy} onClick={onView}>{locale === "en" ? "View battlefield" : "查看战场"}</button>
         <button type="button" className="mecha-match-result__primary" data-result-replay disabled={!onReplay || archiveBusy} autoFocus={Boolean(onReplay)} onClick={onReplay}>{t("重播")}</button>
         <button type="button" data-result-restart disabled={archiveBusy} autoFocus={!onReplay} onClick={onRestart}>{t("再开一局")}</button>
         <button type="button" data-result-exit disabled={archiveBusy} onClick={onExit}>{locale === "en" ? "Exit Battle" : t("退出战斗")}</button>
       </div>
-      {getReviewRounds ? <details className="mecha-match-result__details" data-result-review onToggle={event => {
+      {getReviewRounds || getVerifiedReview ? <details className="mecha-match-result__details" data-result-review onToggle={event => {
         if (!event.currentTarget.open || reviewData) return;
+        if (getVerifiedReview) { setReviewData(getVerifiedReview()); return; }
         let rounds: readonly RoundReviewRecord[] | null | undefined;
-        try { rounds = getReviewRounds(); } catch { rounds = null; }
+        try { rounds = getReviewRounds?.(); } catch { rounds = null; }
         const review = buildRoundReview(state, rounds);
         // Achievement claims require the stronger full rules-and-log verification too.
         const achievements = buildMissionAchievements({ scope: "local-pve", final: state, rounds: review.status === "verified" ? rounds : null });

@@ -272,6 +272,11 @@ try {
     await next.click();
     if (!reduced) {
       await page.waitForFunction(() => globalThis.__v15World.performance()?.events.some(event => event.kind === "move"));
+      await button("暂停演出", "Pause animation").click();
+      assert.equal(await button("继续演出", "Resume animation").isVisible(), true);
+      await page.locator(".mecha-replay-bar select").selectOption("2");
+      await page.screenshot({ path: `/tmp/mecha-v15-replay-controls-${locale}.png` });
+      await button("继续演出", "Resume animation").click();
       await button("跳过演出", "Skip animation").click();
     }
     await page.waitForFunction(() => !globalThis.__v15World.performance());
@@ -320,12 +325,30 @@ try {
         controller.finishPresentation(); return controller.getState().match.outcome;
       });
       assert.ok(terminal, "fixture must reach a terminal checkpoint");
+      const resultDialog = page.locator("[data-mecha-result-dialog]");
+      await resultDialog.waitFor({ state: "visible" });
+      assert.match(await resultDialog.innerText(), terminal === "victory" ? /战斗胜利/ : /战斗失败/);
+      await resultDialog.locator("[data-result-review] summary").click();
+      await resultDialog.locator("[data-mecha-round-review]").waitFor();
+      assert.match(await resultDialog.locator("[data-mecha-round-review]").innerText(), /已核对的结算事件/);
+      await page.screenshot({ path: "/tmp/mecha-v15-terminal-result-zh.png" });
+      await page.keyboard.press("Escape");
+      await resultDialog.waitFor({ state: "hidden" });
+      await button("查看结算", "View results").click();
+      await resultDialog.waitFor({ state: "visible" });
+      await resultDialog.locator("[data-result-replay]").click();
+      await page.locator(".mecha-replay-bar").waitFor();
+      assert.match(await page.locator(".mecha-replay-bar").innerText(), /回放步骤 0\//);
+      await button("返回对局", "Return to match").click();
+      await resultDialog.waitFor({ state: "visible" });
       await page.reload({ waitUntil: "domcontentloaded" });
       await page.locator(".city-loading").waitFor({ state: "hidden" });
       await button("城市设置", "City settings").click(); await button("机甲战棋", "Mecha tactics").click();
       await root.waitFor(); await button("查看已结束对局", "Review finished match").click();
-      await page.getByText(/回放步骤/).waitFor();
-      await button("返回对局", "Return to match").click();
+      await page.locator("[data-mecha-result-dialog]").waitFor({ state: "visible" });
+      page.once("dialog", dialog => dialog.accept());
+      await page.locator("[data-result-restart]").click();
+      await root.locator(".mecha-deploy-roster").waitFor();
     }
     const cas = await page.evaluate(async () => {
       const { checkpointBackend } = await import("/src/game/mecha/sequentialCheckpoint.ts");

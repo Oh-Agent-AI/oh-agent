@@ -187,6 +187,45 @@ test("rescue victory occurs on the committed move without an enemy phase", () =>
   assert.equal(session.execute({ kind: "end", id: "end", revision: moved.snapshot.match.revision, confirmUnused: true }).ok, false);
 });
 
+test("sequential review verifies committed commands and ignores events undone by reset", async () => {
+  const { buildSequentialReview } = await import("../src/game/mecha/sequentialReview.ts");
+  const initial = fixture();
+  const session = new SequentialTurn(initial);
+  const move = session.execute({ kind: "move", id: "m", revision: initial.revision, mech: "Assault", to: { x: 3, y: 2 } });
+  assert.ok(move.ok);
+  const reset = session.execute({ kind: "reset", id: "r", revision: move.snapshot.match.revision });
+  assert.ok(reset.ok);
+  const movedAgain = session.execute({ kind: "move", id: "m2", revision: reset.snapshot.match.revision, mech: "Assault", to: { x: 3, y: 1 } });
+  assert.ok(movedAgain.ok);
+  const attack = session.execute({ kind: "act", id: "a", revision: movedAgain.snapshot.match.revision, mech: "Assault", action: { kind: "charge", target: "boss" } });
+  assert.ok(attack.ok);
+  for (let index = 0; index < 20 && !session.snapshot().match.outcome; index++) {
+    const result = session.execute({ kind: "end", id: `e${index}`, revision: session.snapshot().match.revision, confirmUnused: true });
+    assert.ok(result.ok);
+  }
+  const final = session.snapshot().match;
+  assert.ok(final.outcome);
+  const records = session.records();
+  const review = buildSequentialReview(initial, records, final);
+  assert.equal(review.review.status, "verified");
+  if (review.review.status === "verified") assert.ok(review.review.rounds[0]!.enemyDamage > 0);
+  const altered = structuredClone(records);
+  altered[0]!.events = [];
+  assert.equal(buildSequentialReview(initial, altered, final).review.status, "unavailable");
+});
+
+test("sequential victory review verifies the rescue command and objectives", async () => {
+  const { buildSequentialReview } = await import("../src/game/mecha/sequentialReview.ts");
+  const initial = fixture();
+  initial.mission = { kind: "rescue:v1", target: { x: 3, y: 2 } };
+  const session = new SequentialTurn(initial);
+  const result = session.execute({ kind: "move", id: "rescue", revision: initial.revision, mech: "Assault", to: { x: 3, y: 2 } });
+  assert.ok(result.ok);
+  const review = buildSequentialReview(initial, session.records(), result.snapshot.match);
+  assert.equal(review.review.status, "verified");
+  assert.deepEqual(review.achievements?.items.map(item => item.status), ["achieved", "not-applicable"]);
+});
+
 test("malformed commands fail before invoking accessors, serialization or rules", () => {
   const state = fixture(), session = new SequentialTurn(state), before = session.snapshot();
   let invoked = false;

@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { PLAN_FAULT_CAUSES, gameText, planFaultText } from "../apps/agent-city/ui/src/game/gameCopy.ts";
+import { ACTION_DESCRIPTIONS } from "../apps/agent-city/ui/src/game/mecha/actionDescriptions.ts";
 import { peelPlan, planForDoctrine, squadPlan, type DoctrineId } from "../apps/agent-city/ui/src/game/mecha/ai.ts";
 import { createMechaController, cuesFromLog, type Planner } from "../apps/agent-city/ui/src/game/mecha/controller.ts";
 import { candidateResult } from "../apps/agent-city/ui/src/game/mecha/candidateResult.ts";
@@ -727,9 +728,7 @@ test("every gate title, body and literal label has an English copy key", () => {
 });
 
 test("every action inspection description is localized", () => {
-  const table = /const ACTION_DESCRIPTIONS[^=]*=\s*\{([\s\S]*?)\n\};/.exec(boardSource)?.[1];
-  assert.ok(table, "the action inspection table must be readable from the board source");
-  const descriptions = [...table.matchAll(/:\s*"([^"]+)"/g)].map((match) => match[1]!);
+  const descriptions = Object.values(ACTION_DESCRIPTIONS);
   assert.equal(new Set(descriptions).size, 6, "every action kind has its own explanation");
   for (const text of descriptions) {
     const en = gameText(text, "en");
