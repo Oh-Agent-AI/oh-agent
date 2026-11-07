@@ -4,6 +4,7 @@ import readline from "node:readline";
 import { createMatch, bossPrepare } from "../ui/src/game/mecha/rules.ts";
 import { SequentialTurn } from "../ui/src/game/mecha/sequentialTurn.ts";
 import { runSequentialAutoBattle } from "../ui/src/game/mecha/ai/sequentialAutoBattle.ts";
+import { baupEnemyPlanner } from "../ui/src/game/mecha/enemy/plannerV2.ts";
 import { legalActions } from "../ui/src/game/mecha/combat.ts";
 import { applyDeployPlan, deployableCells } from "../ui/src/game/mecha/deployment.ts";
 import { MECH_IDS, occupant, pathDistance, moveBudget } from "../ui/src/game/mecha/board.ts";
@@ -63,7 +64,7 @@ const tools = [
   { name: "mecha_act", description: "Resolve one action (melee/shoot/charge/pierce/repair/skip).", inputSchema: { type: "object", required: ["matchId", "mech", "action"], properties: { matchId: { type: "string" }, mech: { type: "string" }, action: { type: "object" } } } },
   { name: "mecha_undo", description: "Undo the last move if available.", inputSchema: { type: "object", required: ["matchId"], properties: { matchId: { type: "string" } } } },
   { name: "mecha_end_turn", description: "End the player turn and resolve the enemy phase.", inputSchema: { type: "object", required: ["matchId"], properties: { matchId: { type: "string" } } } },
-  { name: "mecha_auto_battle", description: "Run the v1.5 EvE harness (squad policy vs enemy planner) until outcome or step limit.", inputSchema: { type: "object", required: ["matchId"], properties: { matchId: { type: "string" }, maxSteps: { type: "number" }, difficulty: { type: "string", enum: ["greedy", "coordinated", "beam"] } } } },
+  { name: "mecha_auto_battle", description: "Run the v1.5 EvE harness (squad policy vs enemy planner) until outcome or step limit.", inputSchema: { type: "object", required: ["matchId"], properties: { matchId: { type: "string" }, maxSteps: { type: "number" }, difficulty: { type: "string", enum: ["greedy", "coordinated", "beam"] }, enemyPolicy: { type: "string", enum: ["scripted", "baup"] } } } },
 ];
 
 function callTool(name, args) {
@@ -119,7 +120,8 @@ function callTool(name, args) {
     const session = sessionOf(args);
     const maxSteps = Math.min(500, Math.max(1, args.maxSteps ?? 100));
     const difficulty = args.difficulty === "greedy" || args.difficulty === "coordinated" ? args.difficulty : "beam";
-    const result = runSequentialAutoBattle(session.state, { maxSteps, maxTurns: 15, difficulty });
+    const enemy = args.enemyPolicy === "baup" ? baupEnemyPlanner : undefined;
+    const result = runSequentialAutoBattle(session.state, { maxSteps, maxTurns: 15, difficulty, ...(enemy ? { enemy } : {}) });
     session.state = result.state;
     session.turn = result.state.phase === "player_plan" ? new SequentialTurn(result.state) : null;
     return ok({ steps: result.steps, outcome: result.outcome, reason: result.reason, fault: result.fault, state: summary(session) });

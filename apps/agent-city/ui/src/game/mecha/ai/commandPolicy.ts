@@ -54,8 +54,8 @@ function nearestEnemy(state: MatchState, from: Cell): number {
   return cells.length ? Math.min(...cells.map(cell => manh(from, cell))) : 0;
 }
 
-function execute(branch: SequentialTurn, input: SearchCommand) {
-  return branch.execute({ ...input, id: `search-${input.kind}`, revision: branch.snapshot().match.revision });
+function trial(turn: SequentialTurn, input: SearchCommand) {
+  return turn.trial({ ...input, id: `policy-${input.kind}`, revision: turn.snapshot().match.revision });
 }
 
 /** One deterministic command; the search branch never mutates the live authority. */
@@ -69,7 +69,7 @@ export function nextCommand(authority: SequentialTurn): CommandIntent {
     if (!mech(state, id) || !snapshot.rights[id]?.action || restrictions(state, id).action) continue;
     for (const action of legalActions(state, id)) {
       if (action.kind === "skip") continue;
-      const result = execute(authority.branch(), { kind: "act", mech: id, action });
+      const result = trial(authority, { kind: "act", mech: id, action });
       if (!result.ok) continue;
       const score = stateValue(result.snapshot.match);
       if (score > baseline && (!bestAct || score > bestAct.score)) bestAct = { intent: { kind: "act", mech: id, action }, score };
@@ -88,7 +88,7 @@ export function nextCommand(authority: SequentialTurn): CommandIntent {
       if (occupant(state, to) !== "empty") continue;
       const distance = pathDistance(state, unit.pos, to, id, { alliesPass: true });
       if (distance === null || distance > moveBudget(id)) continue;
-      const result = execute(authority.branch(), { kind: "move", mech: id, to });
+      const result = trial(authority, { kind: "move", mech: id, to });
       if (!result.ok) continue;
       const gain = approach - nearestEnemy(result.snapshot.match, to);
       const score = stateValue(result.snapshot.match);

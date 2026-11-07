@@ -1,4 +1,4 @@
-import type { Action, Cell, MechId, Phase } from "../board";
+import type { Action, Cell, MatchState, MechId, Phase } from "../board";
 
 export type MechaHudPhase = "deployment" | "planning" | "resolving" | "finished";
 export type MechaHudStatus = { icon: string; label: string };
@@ -14,6 +14,9 @@ export type MechaHudActionRow = { kind: Action["kind"]; label: string; enabled: 
 export type MechaHudTarget = { id: string; label: string; cells: Cell[] };
 export type MechaHudPreview = { status: "ready" | "invalid" | "unavailable"; damage: Array<{ target: string; before: number; after: number }> };
 export type MechaHudReplay = { step: number; total: number };
+
+/** Minimal classic-controller projection consumed by the shared HUD adapter. */
+export type ClassicHudSource = { match: MatchState; selected: MechId; deployment: unknown | null };
 
 /** Serializable presentation contract. All legality and combat facts are projected by the active rules adapter. */
 export type MechaHudModel = {

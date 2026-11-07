@@ -24,6 +24,8 @@ import { doctrineFocus, doctrineFocusCells, planForDoctrine, type DoctrineFocus,
 import { buildHealthTimeline, type HealthTimeline } from "./healthTimeline";
 import { buildMatchRecap, type MatchRecap } from "./matchRecap";
 import { buildPresentationChanges, type PresentationChanges } from "./presentationChanges";
+import { cuesFromLog } from "./presentation/cues";
+export { cuesFromLog } from "./presentation/cues";
 import type { PresentationStages } from "./presentationSnapshot";
 import { buildPresentationRoutes, type PresentationRoutes } from "./presentationRoutes";
 import type { CityMechaSite } from "./citySite";
@@ -222,22 +224,6 @@ function draftFingerprint(drafts: DraftMap): string {
 /** 规则层的 cause 可选；翻译表只认已登记的键，未知值落到 other，不让界面出现空句。 */
 function causeOf(fault: Pick<PlanFault, "cause">): NonNullable<PlanFault["cause"]> {
   return fault.cause && FAULT_CAUSES.has(fault.cause) ? fault.cause : "other";
-}
-
-/**
- * 动画提示只来自结算事件（ARCH-9）：生效的 act → 该机甲的攻击/维修；enemy → 大怪/小怪的攻击。
- * 落空的 act（fizzled）和被拒的整包（没有 log）都不产生提示。
- */
-export function cuesFromLog(log: TurnEvent[]): MechaCombatCue[] {
-  const cues: MechaCombatCue[] = [];
-  for (const event of log) {
-    if (event.type === "act" && !event.fizzled && event.action !== "skip") {
-      cues.push({ actor: event.mechId, action: event.action === "repair" ? "repair" : "attack", target: event.target });
-    } else if (event.type === "enemy") {
-      cues.push({ actor: event.actor, action: "attack" });
-    }
-  }
-  return cues;
 }
 
 function freshMatch(preset: CoverPresetId, script: BossScriptId, site: CityMechaSite | null, stake: BuildingStake, deployment: boolean, mission?: LocalMissionId, monsterContent?: MonsterPracticeContent): MatchState {

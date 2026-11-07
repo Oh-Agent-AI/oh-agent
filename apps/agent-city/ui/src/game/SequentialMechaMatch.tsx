@@ -23,7 +23,7 @@ import { gameText, type GameLocale } from "./gameCopy";
 import { BOARD, MAX_TURNS, STATS, eq, mech, moveBudget, occupant, pathDistance, stakeBuildings, type Action, type Cell, type MechId } from "./mecha/board";
 import { legalActions, shotTargetDiagnostics } from "./mecha/combat";
 import { ACTION_DESCRIPTIONS, shotCheckLabel } from "./mecha/actionDescriptions";
-import { cuesFromLog } from "./mecha/controller";
+import { cuesFromLog } from "./mecha/presentation/cues";
 import { declaredEnemyIntents } from "./mecha/enemyIntentPresentation";
 import { previewEnemyPhase } from "./mecha/enemyPhasePreview";
 import { matchFromSite } from "./mecha/matchFromSite";
@@ -138,12 +138,11 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
   const canAct = (id: MechId) => Boolean(state.rights?.[id].action && !restrictions(id).action);
   const locked = Boolean(presentation || state.match.outcome || viewError || archiveBusy || replay || !recovery || recovery.pending || recoveryError || state.persistence === "saving" || state.persistence === "unconfirmed");
   useEffect(() => {
-    if (!auto || locked || presentation || state.match.outcome || state.placements || state.error) return;
-    const command = controller.suggest();
-    if (!command) { setAuto(false); return; }
-    if (practice) controller.execute(command);
-    else void controller.executeDurable(command);
-  }, [auto, locked, presentation, state, controller, practice]);
+    if (!auto) return;
+    if (state.match.outcome || state.error || viewError) { setAuto(false); return; }
+    if (locked || presentation || state.placements) return;
+    if (!controller.autoStep()) setAuto(false);
+  }, [auto, locked, presentation, state, controller, viewError]);
   const attackOrderPreview = useMemo(() => {
     if (!showOrder || locked || state.placements) return null;
     try { return previewEnemyPhase(state.match); }

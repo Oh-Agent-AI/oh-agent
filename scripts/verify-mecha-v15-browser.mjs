@@ -362,6 +362,25 @@ try {
       await page.locator("[data-result-restart]").click();
       await root.locator(".mecha-deploy-roster").waitFor();
     }
+    if (locale === "en") {
+      await page.waitForFunction(() => {
+        const state = globalThis.__v15Controller.getState();
+        return !state.presentation && state.persistence === "ready" && !state.match.outcome;
+      });
+      const beforeAuto = await page.evaluate(() => globalThis.__v15Controller.records().length);
+      const auto = root.locator("[data-mecha-auto]");
+      await auto.click();
+      await page.waitForFunction(count => globalThis.__v15Controller.records().length > count, beforeAuto);
+      await page.waitForFunction(() => {
+        const button = document.querySelector("[data-mecha-auto]");
+        const state = globalThis.__v15Controller.getState();
+        return state.match.outcome ? button?.getAttribute("aria-pressed") === "false" : Boolean(button && !button.disabled);
+      });
+      if (await auto.getAttribute("aria-pressed") === "true") await auto.click();
+      assert.equal(await auto.getAttribute("aria-pressed"), "false", "auto mode stops from the v1.5 control");
+      assert.ok(await page.evaluate(() => globalThis.__v15Controller.records().length > 0), "auto play commits a v1.5 command");
+      await page.screenshot({ path: "/tmp/mecha-v15-auto-play-en.png" });
+    }
     const cas = await page.evaluate(async () => {
       const { checkpointBackend } = await import("/src/game/mecha/sequentialCheckpoint.ts");
       const one = await checkpointBackend(), two = await checkpointBackend(), start = await one.read();

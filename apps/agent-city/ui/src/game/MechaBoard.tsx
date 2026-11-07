@@ -52,9 +52,6 @@ import { monsterCatalogEntry, practiceSpecies } from "./mecha/monsters/catalog";
 import { P2_SCENARIOS, resolveP2Scenario } from "./mecha/p2Scenarios";
 import { candidateResult } from "./mecha/candidateResult";
 import { assaultSequenceWaiting } from "./mecha/assaultTurnPlayer";
-import type { DoctrineId } from "./mecha/ai";
-import { createMechaController, type MechaController } from "./mecha/controller";
-import { buildClassicHud } from "./mecha/hud/adapters";
 import type { MechaHudActions, MechaHudModel, MechaHudProjection } from "./mecha/hud/model";
 import { readMechaRuntime } from "./MechaModeRuntime";
 import type { ReleaseChoice } from "./mecha/mode";
@@ -73,10 +70,6 @@ const SCRIPTS: Array<{ id: BossScriptId; label: string }> = [
   { id: "cadence_ssw", label: "砸砸扫" },
   { id: "stationary_smash", label: "站桩砸击" },
   { id: "siege", label: "大怪与小怪" },
-];
-const DOCTRINES: Array<{ id: DoctrineId; label: string }> = [
-  { id: "tunnel", label: "攻坚" },
-  { id: "peel", label: "守楼" },
 ];
 const SHAPES: Array<{ id: FightShape; label: string }> = [
   { id: "flat", label: "平地" },

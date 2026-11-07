@@ -81,6 +81,14 @@ export class SequentialController {
     const intent = policyFor(difficulty)(this.authority);
     return intent.kind === "end" ? { kind: "end", confirmUnused: true } : intent;
   }
+  /** Execute one suggested v1.5 command through the same local or durable authority as manual play. */
+  autoStep(difficulty: AiDifficulty = "beam"): boolean {
+    const command = this.suggest(difficulty);
+    if (!command) return false;
+    if (this.durable) void this.executeDurable(command);
+    else this.execute(command);
+    return true;
+  }
 
   subscribe = (fn: () => void): (() => void) => { this.listeners.add(fn); return () => { this.listeners.delete(fn); }; };
   private rebuild(): void {

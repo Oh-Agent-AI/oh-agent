@@ -26,6 +26,20 @@ test("deployment is explicit and remains at the committed cells without an autom
   assert.ok(Object.values(c.getState().rights!).every(right => right.move && right.action));
 });
 
+test("suggest is reproducible and autoStep commits exactly one v1.5 command", () => {
+  const c = setup(); deploy(c);
+  const before = c.getState().match;
+  const first = c.suggest("greedy"), second = c.suggest("greedy");
+  assert.deepEqual(first, second);
+  assert.deepEqual(c.getState().match, before, "suggestion search never mutates the live match");
+  assert.equal(c.autoStep("greedy"), true);
+  assert.equal(c.records().length, 1);
+  assert.equal(c.records()[0]!.command.kind, first?.kind);
+  assert.ok(c.getState().presentation);
+  assert.equal(c.autoStep("greedy"), false, "autoStep waits for presentation acknowledgement");
+  c.finishPresentation();
+});
+
 test("deployment reset is undoable and cannot alter a confirmed match", () => {
   const c = setup();
   c.place("Assault", { x: 0, y: 8 });

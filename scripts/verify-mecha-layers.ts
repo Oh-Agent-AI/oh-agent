@@ -114,6 +114,12 @@ test("sequential HUD composes shared classic panels without a parallel wrapper",
   assert.doesNotMatch(source, /SequentialMechaCommandPanel/);
 });
 
+test("v1.5 view and HUD adapters do not import the v1.4 controller", () => {
+  const files = [join(SRC, "game/MechaBoard.tsx"), join(SRC, "game/SequentialMechaMatch.tsx"), join(SRC, "game/mecha/hud/adapters.ts")];
+  expectNone(check(files, (i) => i.resolved === join(SRC, "game/mecha/controller.ts")));
+  assert.match(readFileSync(join(SRC, "game/SequentialMechaMatch.tsx"), "utf8"), /presentation\/cues/);
+});
+
 test("mode routing stays in the pure resolver instead of the page component", () => {
   const pages = [join(SRC, "game/MechaBoard.tsx"), join(SRC, "game/SequentialMechaMatch.tsx")].map((path) => readFileSync(path, "utf8"));
   const mode = join(SRC, "game/mecha/mode.ts");

@@ -1,7 +1,6 @@
 import type { MatchState, MechId } from "../board";
-import type { MechaControllerState } from "../controller";
 import type { SequentialControllerView } from "../sequentialController";
-import type { MechaHudModel, MechaHudPhase, MechaHudProjection } from "./model";
+import type { ClassicHudSource, MechaHudModel, MechaHudPhase, MechaHudProjection } from "./model";
 
 const hudPhase = (match: MatchState, deployment: boolean): MechaHudPhase => {
   if (match.outcome || match.phase === "finished") return "finished";
@@ -41,7 +40,7 @@ function project(mode: MechaHudModel["mode"], match: MatchState, selected: MechI
 }
 
 /** Converts the classic controller snapshot plus its already-computed view facts into the HUD contract. */
-export function buildClassicHud(state: MechaControllerState, projection: MechaHudProjection): MechaHudModel {
+export function buildClassicHud(state: ClassicHudSource, projection: MechaHudProjection): MechaHudModel {
   return project("classic", state.match, state.selected, Boolean(state.deployment), projection);
 }
 

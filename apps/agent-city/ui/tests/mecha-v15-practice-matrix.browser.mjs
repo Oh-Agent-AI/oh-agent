@@ -12,21 +12,28 @@ const species = [
 ];
 const browser = await chromium.launch({ headless: true, args: ["--enable-unsafe-swiftshader"] });
 try {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const page = await context.newPage(); page.setDefaultTimeout(90000);
+  const errors = [];
+  page.on("pageerror", error => errors.push(error.message));
+  await page.route("**/*", route => route.request().url().startsWith(base) ? route.continue() : route.abort());
+  await page.routeWebSocket("**/*", ws => ws.close());
+  await page.addInitScript(() => { localStorage.setItem("city.seed", "4196523069"); window.__AV_PLUGIN_LOCALE__ = "en"; });
+  await page.route("**/src/game/SequentialMechaMatch.tsx*", async route => {
+    const response = await route.fetch(); const source = await response.text();
+    const seam = "const state = useSyncExternalStore(controller.subscribe, controller.getState);";
+    assert.equal(source.split(seam).length, 2, "controller test seam");
+    await route.fulfill({ response, body: source.replace(seam, `${seam} globalThis.__v15PracticeController = controller;`) });
+  });
   for (const [id, skill] of species) {
-    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-    const page = await context.newPage(); page.setDefaultTimeout(90000);
-    const errors = [];
-    page.on("pageerror", error => errors.push(error.message));
-    await page.route("**/*", route => route.request().url().startsWith(base) ? route.continue() : route.abort());
-    await page.routeWebSocket("**/*", ws => ws.close());
-    await page.addInitScript(() => { localStorage.setItem("city.seed", "4196523069"); window.__AV_PLUGIN_LOCALE__ = "en"; });
-    await page.route("**/src/game/SequentialMechaMatch.tsx*", async route => {
-      const response = await route.fetch(); const source = await response.text();
-      const seam = "const state = useSyncExternalStore(controller.subscribe, controller.getState);";
-      assert.equal(source.split(seam).length, 2, "controller test seam");
-      await route.fulfill({ response, body: source.replace(seam, `${seam} globalThis.__v15PracticeController = controller;`) });
-    });
-
+    if (page.url().startsWith(base)) {
+      await page.goto(`${base}/`, { waitUntil: "domcontentloaded" });
+      await page.evaluate(() => new Promise(resolve => {
+        const request = indexedDB.deleteDatabase("agent-city-mecha-sequential-checkpoint");
+        request.onsuccess = request.onerror = request.onblocked = () => resolve();
+      }));
+    }
+    errors.length = 0;
     await page.goto(`${base}/?fixtureSessions=30&mechaV15=1&mechaMonster=${id}`, { waitUntil: "domcontentloaded", timeout: 120000 });
     await page.locator(".city-loading").waitFor({ state: "hidden" });
     await page.getByRole("button", { name: "City settings", exact: true }).click();
@@ -50,8 +57,8 @@ try {
     await page.screenshot({ path: `/tmp/mecha-v15-practice-${id}.png` });
     assert.deepEqual(errors, [], `${id}: browser errors`);
     console.log(`${id}: v1.5 practice launched, deployed and declared ${skill}`);
-    await context.close();
   }
+  await context.close();
 } finally {
   await browser.close();
 }
