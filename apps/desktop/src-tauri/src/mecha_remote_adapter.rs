@@ -78,6 +78,17 @@ pub(crate) fn supports_sequential(capability: &RemoteCapability) -> bool {
         && capability.events.is_empty()
 }
 
+/// The desktop session bridge carries the negotiated game protocol separately
+/// from the relay envelope. v1.5 uses its own command-stream protocol inside
+/// the trusted host WebView; the outer relay protocol remains app-remote:v1.
+pub(crate) fn session_protocol(capability: &RemoteCapability) -> &'static str {
+    if supports_sequential(capability) { SEQUENTIAL_PROTOCOL } else { PROTOCOL }
+}
+
+pub(crate) fn supports_stop(capability: &RemoteCapability) -> bool {
+    supports(capability) || supports_deployment(capability) || supports_safe_concede(capability) || supports_sequential(capability)
+}
+
 pub(crate) fn validate_sequential_request(value: &Value, match_id: &str, capability: &RemoteCapability) -> Result<(), &'static str> {
     if !supports_sequential(capability) { return Err("forbidden"); }
     if value["payload"]["matchId"] != match_id { return Err("forbidden"); }
@@ -126,12 +137,16 @@ mod tests {
     fn sequential_capability_requires_exact_methods_and_v2_protocol() {
         let cap = RemoteCapability { id: "mecha:v4".into(), methods: SEQUENTIAL_METHODS.iter().map(|item| (*item).into()).collect(), events: vec![] };
         assert!(supports_sequential(&cap));
+        assert_eq!(session_protocol(&cap), SEQUENTIAL_PROTOCOL);
+        assert!(supports_stop(&cap), "v1.5 handoff must be stoppable by its own capability");
         let request = json!({"payload":{"matchId":"m1"},"method":"sequential.snapshot"});
         assert_eq!(validate_sequential_request(&request, "m1", &cap), Ok(()));
         assert_eq!(validate_sequential_request(&request, "other", &cap), Err("forbidden"));
         let mut widened = cap.clone();
         widened.methods.push("plan.submit".into());
         assert!(!supports_sequential(&widened));
+        assert!(!supports_stop(&widened));
+        assert_eq!(session_protocol(&capability()), PROTOCOL);
         assert!(validate_sequential_host_message(&json!({"protocol":"mecha-net:v2","type":"response","requestId":"r1","result":{"snapshot":{"matchId":"m1"}}}), "m1"));
         assert!(!validate_sequential_host_message(&json!({"protocol":"mecha-net:v1","type":"response","requestId":"r1"}), "m1"));
     }

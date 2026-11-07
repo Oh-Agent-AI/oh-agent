@@ -167,7 +167,7 @@ async fn run_connection(app: tauri::AppHandle, mut active: Active, ready: watch:
             respond_to_session(&app, &active, &value, code);
             return;
         }
-        let request = json!({"protocol":PROTOCOL,"type":"request","requestId":value["requestId"],"method":value["method"],"payload":value["payload"]});
+        let request = json!({"protocol":crate::mecha_remote_adapter::session_protocol(&active.capability),"type":"request","requestId":value["requestId"],"method":value["method"],"payload":value["payload"]});
         if eval_session(&app, &active, &request).is_err() {
             respond_to_session(&app, &active, &value, "remote_session_unavailable");
         }
@@ -253,8 +253,8 @@ async fn start_sequential(app: &tauri::AppHandle, capability: &crate::remote_pro
     if gateway.state.lock().unwrap().active.get(&session_key()).is_some() { return Err("remote_already_active"); }
     let relay = payload["relay"].as_str().filter(|url| valid_relay(url)).ok_or("remote_url_invalid")?.trim_end_matches('/').to_owned();
     let opening = &payload["opening"];
-    if !opening.is_object() || serde_json::to_vec(opening).map_err(|_| "remote_match_invalid")?.len() > 256 * 1024 { return Err("remote_match_invalid"); }
-    if !opening["initial"].is_object() || !opening["placements"].is_array() { return Err("remote_match_invalid"); }
+    if !opening.is_object() || serde_json::to_vec(opening).map_err(|_| "remote_match_invalid")?.len() > 256 * 1024
+        || !projection::valid_start_sequential(opening) { return Err("remote_match_invalid"); }
     let room_id = secret()?;
     let match_id = secret()?;
     let active = Active {
@@ -274,7 +274,7 @@ async fn start_sequential(app: &tauri::AppHandle, capability: &crate::remote_pro
         {
             let view = app.get_webview_window(SESSION_VIEW).ok_or("remote_session_unavailable")?;
             let detail = serde_json::to_string(&json!({"token":active.session_token,"request":{
-                "protocol":PROTOCOL,"type":"request","requestId":"create-session","method":"match.create",
+                "protocol":crate::mecha_remote_adapter::session_protocol(capability),"type":"request","requestId":"create-session","method":"match.create",
                 "payload":{"config":{"matchId":match_id,"ruleset":"mecha-v1.5","initial":opening["initial"],"placements":opening["placements"],"commands":opening["commands"].clone()}}
             }})).map_err(|_| "remote_unavailable")?;
             view.eval(format!("window.dispatchEvent(new CustomEvent('__AV_MECHA_REMOTE_REQUEST__',{{detail:{detail}}}));")).map_err(|_| "remote_session_unavailable")?;
@@ -353,6 +353,7 @@ pub async fn control_for_city(app: &tauri::AppHandle, plugin_id: &str, capabilit
         "mecha.remote.start-deployment" => crate::mecha_remote_adapter::supports_deployment(capability),
         "mecha.remote.start-v3" => crate::mecha_remote_adapter::supports_safe_concede(capability),
         "mecha.remote.start-sequential" => crate::mecha_remote_adapter::supports_sequential(capability),
+        "mecha.remote.stop" => crate::mecha_remote_adapter::supports_stop(capability),
         _ => crate::mecha_remote_adapter::supports(capability),
     };
     if !authorized { return Err("remote_forbidden"); }

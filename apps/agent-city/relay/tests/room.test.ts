@@ -47,10 +47,10 @@ class State {
 const ownerToken = "o".repeat(64);
 const capability = { id: "mecha:v1", methods: ["match.snapshot", "plan.submit", "match.concede", "match.close"], events: ["match.closed", "match.replaced", "turn.resolved"] };
 const scope = { appId: "city", sessionId: "m1", capability: capability.id };
-async function room(registeredCapability = capability) {
+async function room(registeredCapability = capability, roomScope = scope) {
   const state = new State();
   const object = new MatchRoom(state as never);
-  const registered = await object.fetch(new Request("https://relay/v1/rooms/r1/register", { method: "POST", body: JSON.stringify({ protocol: PROTOCOL, ...scope, capability: registeredCapability, ownerToken }) }));
+  const registered = await object.fetch(new Request("https://relay/v1/rooms/r1/register", { method: "POST", body: JSON.stringify({ protocol: PROTOCOL, ...roomScope, capability: registeredCapability, ownerToken }) }));
   assert.equal(registered.status, 200);
   return { state, object };
 }
@@ -104,6 +104,35 @@ test("host responses are correlated and events broadcast to clients", async () =
   assert.equal(JSON.parse(owner.sent.at(-1)!).requestId, "correlated");
   await object.webSocketMessage(host as never, JSON.stringify({ protocol: PROTOCOL, ...scope, type: "event", event: { type: "match.closed", matchId: "m1", revision: 1 } }));
   assert.equal(JSON.parse(owner.sent.at(-1)!).type, "event");
+});
+
+test("v1.5 command handoff is capability-scoped, correlated, and never persisted", async () => {
+  const sequentialCapability = { id: "mecha:v4", methods: ["sequential.snapshot", "sequential.command.submit"], events: [] };
+  const sequentialScope = { appId: "city", sessionId: "m-sequential", capability: sequentialCapability.id };
+  const { object, state } = await room(sequentialCapability, sequentialScope);
+  const owner = await connect(object, "owner");
+  const host = await connect(object, "host");
+  const command = { kind: "move", id: "phone-test-1", revision: 4, mech: "Assault", to: { x: 3, y: 2 } };
+  const requestId = "v15-command";
+  await object.webSocketMessage(owner as never, JSON.stringify({
+    protocol: PROTOCOL, ...sequentialScope, type: "request", requestId, method: "sequential.command.submit",
+    payload: { matchId: sequentialScope.sessionId, baseRevision: 4, command },
+  }));
+  const routed = JSON.parse(host.sent.at(-1)!);
+  assert.equal(routed.method, "sequential.command.submit");
+  assert.deepEqual(routed.peer, { role: "owner", playerId: "owner" });
+  assert.notEqual(routed.requestId, requestId);
+  await object.webSocketMessage(host as never, JSON.stringify({
+    protocol: PROTOCOL, ...sequentialScope, type: "response", requestId: routed.requestId,
+    result: { ok: false, error: { code: "stale_revision" } },
+  }));
+  assert.equal(JSON.parse(owner.sent.at(-1)!).requestId, requestId);
+  assert.equal(JSON.stringify([...state.values.values()]).includes("phone-test-1"), false);
+  await object.webSocketMessage(owner as never, JSON.stringify({
+    protocol: PROTOCOL, ...sequentialScope, type: "request", requestId: "not-allowed", method: "plan.submit",
+    payload: { matchId: sequentialScope.sessionId },
+  }));
+  assert.deepEqual(JSON.parse(owner.sent.at(-1)!).result, { ok: false, error: { code: "invalid_message" } });
 });
 
 test("identical client request ids are routed independently", async () => {

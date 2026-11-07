@@ -19,6 +19,9 @@ export function RemoteSequentialApp({ params }: { params: URLSearchParams }) {
   const [selected, setSelected] = useState<MechId>("Assault");
   const [message, setMessage] = useState("");
   const sequence = useRef(0);
+  const commandSession = useRef("");
+  if (!commandSession.current) commandSession.current = globalThis.crypto?.randomUUID?.()
+    ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   const load = useCallback(async () => {
     if (!client) return;
     setMessage("");
@@ -33,7 +36,7 @@ export function RemoteSequentialApp({ params }: { params: URLSearchParams }) {
   const submit = async (command: PhoneCommand) => {
     if (!client || !turn || !state) return;
     const base = state.revision;
-    const result = await client.submitSequentialCommand(matchId, base, { ...command, id: `phone-${++sequence.current}`, revision: base } as SequentialCommand);
+    const result = await client.submitSequentialCommand(matchId, base, { ...command, id: `phone-${commandSession.current}-${++sequence.current}`, revision: base } as SequentialCommand);
     if (!result.ok) { setMessage(`命令失败：${result.error.code}`); return; }
     setMessage("");
     try { setTurn(restoreSequentialSnapshot(result.snapshot)); }

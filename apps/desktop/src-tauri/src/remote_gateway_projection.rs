@@ -7,6 +7,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 const PVE: &str = "mecha-v1.4";
+const SEQUENTIAL_PVE: &str = "mecha-v1.5";
 const NET: &str = "mecha-net:v1";
 
 fn numeric_id(value: &str, prefix: &str, min_digits: usize) -> bool {
@@ -123,6 +124,72 @@ struct PveState {
     assault_terrain_safety: Option<TerrainSafety>,
     #[serde(default, deserialize_with = "deserialize_deployment")]
     deployment: Option<Deployment>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SequentialPlacement { #[serde(rename = "mechId")] mech_id: String, pos: Cell }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SequentialAction { kind: String, target: Option<String> }
+#[derive(Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+enum SequentialCommand {
+    #[serde(rename = "move")]
+    Move { id: String, revision: u64, mech: String, to: Cell },
+    #[serde(rename = "undo")]
+    Undo { id: String, revision: u64 },
+    #[serde(rename = "act")]
+    Act { id: String, revision: u64, mech: String, action: SequentialAction },
+    #[serde(rename = "reset")]
+    Reset { id: String, revision: u64 },
+    #[serde(rename = "end")]
+    End { id: String, revision: u64, #[serde(rename = "confirmUnused")] confirm_unused: bool },
+}
+impl SequentialCommand {
+    fn valid(&self) -> bool {
+        let valid_command_id = |value: &str| !value.is_empty() && value.len() <= 128
+            && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'_' | b'-'));
+        match self {
+            Self::Move { id, revision, mech: id_mech, to } => valid_command_id(id) && *revision <= 9_007_199_254_740_991 && mech(id_mech) && to.board_cell(),
+            Self::Undo { id, revision } | Self::Reset { id, revision } => valid_command_id(id) && *revision <= 9_007_199_254_740_991,
+            Self::Act { id, revision, mech: id_mech, action: value } => valid_command_id(id) && *revision <= 9_007_199_254_740_991
+                && mech(id_mech) && matches!(value.kind.as_str(), "skip" | "melee" | "shoot" | "charge" | "pierce" | "repair")
+                && value.target.as_deref().is_none_or(|target| !target.is_empty() && target.len() <= 128
+                    && target.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'_' | b'-')))
+                && (value.kind != "skip" || value.target.is_none())
+                && (value.kind != "repair" || value.target.as_deref().is_some_and(mech)),
+            Self::End { id, revision, .. } => valid_command_id(id) && *revision <= 9_007_199_254_740_991,
+        }
+    }
+    fn identity(&self) -> (&str, u64) {
+        match self {
+            Self::Move { id, revision, .. } | Self::Undo { id, revision } | Self::Act { id, revision, .. }
+            | Self::Reset { id, revision } | Self::End { id, revision, .. } => (id, *revision),
+        }
+    }
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SequentialOpening { initial: PveState, placements: Vec<SequentialPlacement>, commands: Vec<SequentialCommand> }
+impl SequentialOpening {
+    fn valid(&self) -> bool {
+        if self.initial.ruleset != SEQUENTIAL_PVE || !self.initial.common_valid() || self.initial.phase != "player_plan"
+            || self.initial.outcome.is_some() || self.initial.deployment.is_some() || self.initial.mechs.len() != 3
+            || self.initial.revision > 9_007_199_254_740_991 || self.placements.len() != 3 || self.commands.len() > 4096 { return false; }
+        let mut placement_ids = std::collections::BTreeSet::new();
+        for placement in &self.placements {
+            if !mech(&placement.mech_id) || !placement.pos.board_cell() || !placement_ids.insert(placement.mech_id.as_str())
+                || self.initial.mechs.iter().filter(|unit| unit.id == placement.mech_id && unit.pos.x == placement.pos.x && unit.pos.y == placement.pos.y).count() != 1 { return false; }
+        }
+        if ["Assault", "Gunner", "Support"].iter().any(|id| self.initial.mechs.iter().filter(|unit| &unit.id == id).count() != 1) { return false; }
+        let mut command_ids = std::collections::BTreeSet::new();
+        for (index, command) in self.commands.iter().enumerate() {
+            let (id, revision) = command.identity();
+            if !command.valid() || !command_ids.insert(id) || revision != self.initial.revision + index as u64 { return false; }
+        }
+        self.initial.revision.checked_add(self.commands.len() as u64).is_some()
+    }
 }
 impl Intent {
     fn valid(&self) -> bool { skill(&self.skill_id) && matches!(self.status.as_str(), "planned" | "reprojected" | "void") }
@@ -376,6 +443,10 @@ pub(super) fn valid_start(arena: &Value, state: &Value) -> bool {
     let Ok(arena) = serde_json::from_value::<Arena>(arena.clone()) else { return false; };
     let Ok(state) = serde_json::from_value::<PveState>(state.clone()) else { return false; };
     arena.valid() && arena.ruleset == PVE && state.ruleset == PVE && state.valid()
+}
+
+pub(super) fn valid_start_sequential(opening: &Value) -> bool {
+    serde_json::from_value::<SequentialOpening>(opening.clone()).is_ok_and(|opening| opening.valid())
 }
 
 // v2 also permits explicitly validated deployment snapshots and faults.

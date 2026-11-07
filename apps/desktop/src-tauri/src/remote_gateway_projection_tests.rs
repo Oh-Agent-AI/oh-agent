@@ -32,6 +32,26 @@ fn actual_city_pve_and_outbound_messages_are_valid() {
 }
 
 #[test]
+fn sequential_v15_opening_is_versioned_bounded_and_closed_to_extra_fields() {
+    let mut initial = fixture()["state"].clone();
+    initial["ruleset"] = json!(SEQUENTIAL_PVE);
+    let placements = initial["mechs"].as_array().unwrap().iter().map(|unit| json!({"mechId":unit["id"],"pos":unit["pos"]})).collect::<Vec<_>>();
+    let mut opening = json!({"initial":initial,"placements":placements,"commands":[]});
+    assert!(valid_start_sequential(&opening));
+
+    opening["commands"] = json!([{"kind":"move","id":"phone-session-1","revision":1,"mech":"Assault","to":{"x":2,"y":8}}]);
+    assert!(valid_start_sequential(&opening));
+    opening["commands"][0]["revision"] = json!(0);
+    assert!(!valid_start_sequential(&opening), "command stream revisions must be contiguous");
+    opening["commands"][0]["revision"] = json!(1);
+    opening["initial"]["extra"] = json!({"localPath":"/private"});
+    assert!(!valid_start_sequential(&opening), "unknown initial fields must not reach the relay");
+    opening["initial"].as_object_mut().unwrap().remove("extra");
+    opening["initial"]["ruleset"] = json!(PVE);
+    assert!(!valid_start_sequential(&opening), "the command-stream route only accepts v1.5");
+}
+
+#[test]
 fn every_object_in_start_projection_rejects_nested_extra_fields() {
     let data = fixture();
     for root in ["arena", "state"] {
