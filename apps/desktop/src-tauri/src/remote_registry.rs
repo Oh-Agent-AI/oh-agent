@@ -36,6 +36,12 @@ static ADAPTERS: &[AdapterRegistration] = &[AdapterRegistration {
     control_methods: &["mecha.remote.start-v3"],
     supports: crate::mecha_remote_adapter::supports_safe_concede,
     control: city_control,
+}, AdapterRegistration {
+    app_id: "city",
+    capability_id: "mecha:v4",
+    control_methods: &["mecha.remote.start-sequential"],
+    supports: crate::mecha_remote_adapter::supports_sequential,
+    control: city_control,
 }];
 
 pub fn lookup<'a>(registrations: &'a [AdapterRegistration], app_id: &str, method: &str) -> Option<&'a AdapterRegistration> {
@@ -74,6 +80,7 @@ mod tests {
         assert_eq!(registered("city", "mecha.remote.start").unwrap().capability_id, "mecha:v1");
         assert_eq!(registered("city", "mecha.remote.start-deployment").unwrap().capability_id, "mecha:v2");
         assert_eq!(registered("city", "mecha.remote.start-v3").unwrap().capability_id, "mecha:v3");
+        assert_eq!(registered("city", "mecha.remote.start-sequential").unwrap().capability_id, "mecha:v4");
         assert!(registered("other", "mecha.remote.start-deployment").is_none());
     }
 }

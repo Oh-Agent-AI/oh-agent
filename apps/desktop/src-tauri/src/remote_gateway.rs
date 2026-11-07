@@ -3,7 +3,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{Emitter, Manager};
 use tokio::sync::{mpsc, watch};
-use crate::mecha_remote_adapter::{validate_request, validate_host_message};
+use crate::mecha_remote_adapter::{validate_request, validate_host_message, supports_sequential, validate_sequential_request, validate_sequential_host_message};
 use crate::remote_transport::{self, RelayConnection};
 use crate::remote_sessions::{SessionKey, SessionStore};
 
@@ -126,6 +126,8 @@ fn validate_routed_request(value: &Value, match_id: &str, capability: &crate::re
         crate::mecha_remote_adapter::validate_safe_request(value, match_id, capability)?;
         if value["method"] == "deployment.submit" && !projection::valid_submit_deployment(&value["payload"]) { return Err("invalid_message"); }
         if value["method"] == "match.concede-v2" && !projection::valid_submit_concede(&value["payload"]) { return Err("invalid_message"); }
+    } else if supports_sequential(capability) {
+        validate_sequential_request(value, match_id, capability)?;
     } else { return Err("forbidden"); }
     if value["method"] == "plan.submit" && !projection::valid_submit_plan(&value["payload"]) { return Err("invalid_message"); }
     Ok(())
@@ -245,6 +247,68 @@ async fn start(app: &tauri::AppHandle, capability: &crate::remote_protocol::Remo
     Ok(json!({"ok":true,"matchId":match_id,"remoteUrl":remote_url,"connection":"connecting"}))
 }
 
+async fn start_sequential(app: &tauri::AppHandle, capability: &crate::remote_protocol::RemoteCapability, payload: &Value) -> Result<Value, &'static str> {
+    let gateway = app.state::<RemoteGateway>();
+    let _operation = gateway.operation.lock().await;
+    if gateway.state.lock().unwrap().active.get(&session_key()).is_some() { return Err("remote_already_active"); }
+    let relay = payload["relay"].as_str().filter(|url| valid_relay(url)).ok_or("remote_url_invalid")?.trim_end_matches('/').to_owned();
+    let opening = &payload["opening"];
+    if !opening.is_object() || serde_json::to_vec(opening).map_err(|_| "remote_match_invalid")?.len() > 256 * 1024 { return Err("remote_match_invalid"); }
+    if !opening["initial"].is_object() || !opening["placements"].is_array() { return Err("remote_match_invalid"); }
+    let room_id = secret()?;
+    let match_id = secret()?;
+    let active = Active {
+        relay: relay.clone(), room_id, match_id: match_id.clone(), capability: capability.clone(), owner_token: secret()?, session_token: secret()?,
+        outbox: mpsc::channel(1).0, cancel: watch::channel(false).0,
+    };
+    gateway.ready.send_replace(false);
+    gateway.created.send_replace(false);
+    gateway.state.lock().unwrap().starting_token = Some(active.session_token.clone());
+    let setup: Result<String, &'static str> = async {
+        post(&active, "register", json!({"protocol":crate::remote_protocol::PROTOCOL,"appId":"city","sessionId":match_id,"capability":active.capability,"ownerToken":active.owner_token})).await?;
+        let mut ready = gateway.ready.subscribe();
+        create_session(app, &active.session_token).await?;
+        tokio::time::timeout(Duration::from_secs(20), ready.wait_for(|value| *value)).await.map_err(|_| "remote_session_unavailable")?
+            .map_err(|_| "remote_session_unavailable")?;
+        let mut created = gateway.created.subscribe();
+        {
+            let view = app.get_webview_window(SESSION_VIEW).ok_or("remote_session_unavailable")?;
+            let detail = serde_json::to_string(&json!({"token":active.session_token,"request":{
+                "protocol":PROTOCOL,"type":"request","requestId":"create-session","method":"match.create",
+                "payload":{"config":{"matchId":match_id,"ruleset":"mecha-v1.5","initial":opening["initial"],"placements":opening["placements"],"commands":opening["commands"].clone()}}
+            }})).map_err(|_| "remote_unavailable")?;
+            view.eval(format!("window.dispatchEvent(new CustomEvent('__AV_MECHA_REMOTE_REQUEST__',{{detail:{detail}}}));")).map_err(|_| "remote_session_unavailable")?;
+        }
+        tokio::time::timeout(Duration::from_secs(10), created.wait_for(|value| *value)).await.map_err(|_| "remote_session_unavailable")?
+            .map_err(|_| "remote_session_unavailable")?;
+        let pair = post(&active, "access", json!({"action":"pair","role":"owner"})).await?;
+        let ticket = pair["ticket"].as_str().ok_or("remote_unavailable")?;
+        let mut remote_url = reqwest::Url::parse(&remote_link(&active, ticket, "owner")?).map_err(|_| "remote_url_invalid")?;
+        let access = endpoint(&active, "access");
+        remote_url.query_pairs_mut().append_pair("access", &access)
+            .append_pair("device", pair["deviceId"].as_str().ok_or("remote_unavailable")?);
+        remote_url.set_fragment(Some(pair["reconnectToken"].as_str().ok_or("remote_unavailable")?));
+        Ok(remote_url.into())
+    }.await;
+    gateway.state.lock().unwrap().starting_token = None;
+    let remote_url = match setup {
+        Ok(url) => url,
+        Err(error) => {
+            if let Some(view) = app.get_webview_window(SESSION_VIEW) { let _ = view.close(); }
+            let _ = post(&active, "close", json!({})).await;
+            return Err(error);
+        }
+    };
+    let ready_sender = gateway.ready.clone();
+    let running = Active {
+        relay: active.relay.clone(), room_id: active.room_id.clone(), match_id: active.match_id.clone(), capability: active.capability.clone(),
+        owner_token: active.owner_token.clone(), session_token: active.session_token.clone(), outbox: active.outbox.clone(), cancel: active.cancel.clone(),
+    };
+    gateway.state.lock().unwrap().active.insert(session_key(), active)?;
+    tauri::async_runtime::spawn(run_connection(app.clone(), running, ready_sender));
+    Ok(json!({"ok":true,"matchId":match_id,"remoteUrl":remote_url,"connection":"connecting"}))
+}
+
 async fn control(app: &tauri::AppHandle, payload: &Value, action: &str) -> Result<Value, &'static str> {
     let gateway = app.state::<RemoteGateway>();
     let _operation = gateway.operation.lock().await;
@@ -288,11 +352,13 @@ pub async fn control_for_city(app: &tauri::AppHandle, plugin_id: &str, capabilit
     let authorized = match method {
         "mecha.remote.start-deployment" => crate::mecha_remote_adapter::supports_deployment(capability),
         "mecha.remote.start-v3" => crate::mecha_remote_adapter::supports_safe_concede(capability),
+        "mecha.remote.start-sequential" => crate::mecha_remote_adapter::supports_sequential(capability),
         _ => crate::mecha_remote_adapter::supports(capability),
     };
     if !authorized { return Err("remote_forbidden"); }
     match method {
         "mecha.remote.start" | "mecha.remote.start-deployment" | "mecha.remote.start-v3" => start(app, capability, payload).await,
+        "mecha.remote.start-sequential" => start_sequential(app, capability, payload).await,
         "mecha.remote.invite" => control(app, payload, "invite").await,
         "mecha.remote.approve" => control(app, payload, "approve").await,
         "mecha.remote.revoke" => control(app, payload, "revoke").await,
@@ -331,10 +397,12 @@ pub fn remote_mecha_message(app: tauri::AppHandle, webview: tauri::WebviewWindow
     }
     if reply["type"] != "message" { return Err("invalid_message".into()); }
     let message = &reply["message"];
-    if !validate_host_message(message, &active.match_id, &active.capability) { return Err("invalid_message".into()); }
+    if supports_sequential(&active.capability) {
+        if !validate_sequential_host_message(message, &active.match_id) { return Err("invalid_message".into()); }
+    } else if !validate_host_message(message, &active.match_id, &active.capability) { return Err("invalid_message".into()); }
     let text = serde_json::to_string(&outbound(active, message.clone())).map_err(|_| "invalid_message")?;
     if text.len() > 256 * 1024 { return Err("message_too_large".into()); }
-    let valid = if crate::mecha_remote_adapter::supports_deployment(&active.capability) || crate::mecha_remote_adapter::supports_safe_concede(&active.capability) {
+    let valid = if supports_sequential(&active.capability) { true } else if crate::mecha_remote_adapter::supports_deployment(&active.capability) || crate::mecha_remote_adapter::supports_safe_concede(&active.capability) {
         projection::valid_outbound_with_deployment(message, &active.match_id)
     } else { projection::valid_outbound(message, &active.match_id) };
     if !valid { return Err("invalid_message".into()); }
