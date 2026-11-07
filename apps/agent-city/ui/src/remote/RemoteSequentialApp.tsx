@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Action, Cell, MatchState, MechId } from "../game/mecha/board";
 import { mech, moveBudget, occupant, pathDistance } from "../game/mecha/board";
 import { legalActions } from "../game/mecha/combat";
@@ -19,17 +19,16 @@ export function RemoteSequentialApp({ params }: { params: URLSearchParams }) {
   const [selected, setSelected] = useState<MechId>("Assault");
   const [message, setMessage] = useState("");
   const sequence = useRef(0);
-  useEffect(() => {
+  const load = useCallback(async () => {
     if (!client) return;
-    let cancelled = false;
-    void client.sequentialSnapshot(matchId).then(result => {
-      if (cancelled) return;
+    setMessage("");
+    try {
+      const result = await client.sequentialSnapshot(matchId);
       if (!result.ok) { setMessage(`读取失败：${result.error.code}`); return; }
-      try { setTurn(restoreSequentialSnapshot(result.snapshot)); }
-      catch { setMessage("快照无法重建"); }
-    }).catch(() => { if (!cancelled) setMessage("连接失败"); });
-    return () => { cancelled = true; };
+      setTurn(restoreSequentialSnapshot(result.snapshot));
+    } catch { setMessage("连接失败"); }
   }, [client, matchId]);
+  useEffect(() => { void load(); }, [load]);
   const state = turn?.snapshot().match ?? null;
   const submit = async (command: PhoneCommand) => {
     if (!client || !turn || !state) return;
@@ -56,12 +55,14 @@ export function RemoteSequentialApp({ params }: { params: URLSearchParams }) {
     return distance !== null && distance <= moveBudget(selected);
   };
   const actions: Action[] = state ? legalActions(state, selected).filter(action => action.kind !== "skip") : [];
+  const selectedUnit = state?.mechs.find(unit => unit.id === selected) ?? null;
   return <main className="mecha-remote mecha-v15-phone" style={{ padding: 12, maxWidth: 720, margin: "0 auto" }}>
     <h1 style={{ fontSize: 18 }}>机甲战棋 1.5 · 手机续玩</h1>
     {accessError && <p role="alert">{accessError}</p>}
-    {message && <p role="alert">{message}</p>}
+    {message && <p role="alert">{message} <button type="button" onClick={() => void load()}>重新读取</button></p>}
     {!state ? <p>{status === "failed" ? "连接失败" : "正在读取对局…"}</p> : <>
       <p>回合 {state.turn} · revision {state.revision}</p>
+      <p>选中：{NAME[selected]} · HP {selectedUnit?.hp ?? 0} · 大怪 HP {state.boss.hp}</p>
       {state.outcome && <p role="status"><strong>对局结束：{state.outcome === "victory" ? "胜利" : "失败"}</strong></p>}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(10, 1fr)", gap: 2, margin: "8px 0" }}>
         {Array.from({ length: 100 }, (_, index) => {
