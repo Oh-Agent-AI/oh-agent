@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { bossPrepare, createMatch } from "../src/game/mecha/rules.ts";
 import { legalActions } from "../src/game/mecha/combat.ts";
-import { sequentialTargets } from "../src/game/mecha/sequentialTargets.ts";
+import { sequentialTargets } from "../src/game/mecha/actionTargets.ts";
 import { SequentialController } from "../src/game/mecha/sequentialController.ts";
 import { sequentialPresentation } from "../src/game/mecha/sequentialPresentation.ts";
 

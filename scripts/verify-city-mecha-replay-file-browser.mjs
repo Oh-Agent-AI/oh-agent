@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 const { chromium } = createRequire(new URL("../apps/desktop/ui-dev/package.json", import.meta.url))("playwright");
 const browser = await chromium.launch({ headless: true, args: ["--enable-unsafe-swiftshader"] });
 const base = process.argv[2] ?? "http://127.0.0.1:5190/?fixtureSessions=30";
+const classicBase = new URL(base); classicBase.searchParams.set("mechaV15", "0");
 try {
   for (const lang of process.env.MECHA_LANG ? [process.env.MECHA_LANG] : ["zh", "en"]) {
     const zh = lang === "zh";
@@ -29,7 +30,7 @@ try {
       await route.fulfill({ response, body });
     });
     await page.addInitScript(locale => { localStorage.setItem("city.seed", "4196523069"); window.__AV_PLUGIN_LOCALE__ = locale; }, zh ? "zh-Hans" : "en");
-    await page.goto(base, { waitUntil: "domcontentloaded", timeout: 240000 });
+    await page.goto(classicBase.href, { waitUntil: "domcontentloaded", timeout: 240000 });
     await page.locator(".city-loading").waitFor({ state: "hidden" });
     await page.getByRole("button", { name: zh ? "城市设置" : "City settings" }).click();
     await page.getByRole("button", { name: zh ? "机甲战棋" : "Mecha tactics", exact: true }).click();

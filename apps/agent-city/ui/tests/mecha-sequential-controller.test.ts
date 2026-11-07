@@ -45,16 +45,38 @@ test("deployment reset is undoable and cannot alter a confirmed match", () => {
 });
 
 test("preview is isolated; committed moves lock input during presentation and undo restores authority", () => {
-  const c = setup(); deploy(c); const before = structuredClone(c.getState());
+  const c = setup(); deploy(c); c.select("Assault"); const before = structuredClone(c.getState());
   const preview = c.preview({ kind: "move", mech: "Assault", to: { x: 0, y: 7 } });
   assert.ok(preview?.ok); assert.deepEqual(c.getState(), before); assert.equal(c.records().length, 0);
   c.execute({ kind: "move", mech: "Assault", to: { x: 0, y: 7 } });
   const moved = c.getState(); assert.deepEqual(moved.match.mechs[0]!.pos, { x: 0, y: 7 });
   assert.ok(moved.presentation); assert.equal(moved.rights!.Assault.move, false);
-  c.execute({ kind: "undo" }); assert.equal(c.records().length, 1, "presentation locks subsequent input");
-  c.finishPresentation(); c.execute({ kind: "undo" });
+  c.execute({ kind: "undo", mech: "Assault" }); assert.equal(c.records().length, 1, "presentation locks subsequent input");
+  c.finishPresentation(); c.execute({ kind: "undo", mech: "Assault" });
   assert.deepEqual(c.getState().match.mechs[0]!.pos, { x: 0, y: 8 });
   assert.equal(c.getState().rights!.Assault.move, true);
+});
+
+test("undo from the selected Assault panel cannot move Gunner", () => {
+  const c = setup(); deploy(c);
+  c.select("Gunner");
+  c.execute({ kind: "move", mech: "Gunner", to: { x: 3, y: 7 } }); c.finishPresentation();
+  c.select("Assault");
+  c.execute({ kind: "move", mech: "Assault", to: { x: 0, y: 7 } }); c.finishPresentation();
+  c.execute({ kind: "act", mech: "Assault", action: { kind: "skip" } }); c.finishPresentation();
+  const before = c.getState();
+  assert.equal(before.undoMech, "Gunner");
+  assert.equal(before.canUndo, false);
+  assert.equal(c.preview({ kind: "undo", mech: "Assault" }), null);
+  c.execute({ kind: "undo", mech: "Assault" });
+  assert.equal(c.getState(), before);
+  c.select("Gunner");
+  assert.equal(c.getState().canUndo, true);
+  c.execute({ kind: "undo", mech: "Assault" });
+  assert.equal(c.records().length, 3, "stale input cannot undo the newly selected mech");
+  c.execute({ kind: "undo", mech: "Gunner" });
+  assert.deepEqual(c.getState().match.mechs.find(unit => unit.id === "Gunner")!.pos, { x: 3, y: 8 });
+  assert.deepEqual(c.records().at(-1)!.command, { kind: "undo", id: "local-4", revision: before.match.revision });
 });
 
 test("end requires explicit confirmation when actions remain and replay preserves accepted commands", () => {

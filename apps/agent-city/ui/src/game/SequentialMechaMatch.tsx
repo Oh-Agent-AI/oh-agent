@@ -2,14 +2,16 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { CityEngine } from "../engine/CityEngine";
 import { CityMechaWorld, type CityMechaView, type CityMechaWorldHandle } from "./CityMechaWorld";
-import { MechaHudLayout } from "./MechaHudLayout";
+import { MechaHud } from "./MechaHudLayout";
 import { MechaDeploymentActionsView, MechaDeploymentView } from "./MechaDeploymentPanel";
-import { MechaBattlefieldControls, MechaBattleMenu, MechaObjectiveCard, MechaObjectivePanel, MechaObjectiveToggle, MechaSettingsPopover, MechaTargetOptions, MechaTeamPanel, MechaTeamTurnControls, MechaThreatSourceList, MechaTurnOrder } from "./MechaHudPanels";
+import { MechaBattlefieldControls, MechaBattleMenu, MechaCommandDeck, MechaCommandPanel, MechaObjectiveCard, MechaObjectivePanel, MechaObjectiveToggle, MechaSettingsPopover, MechaTargetOptions, MechaTeamPanel, MechaTeamTurnControls, MechaThreatSourceList, MechaTurnOrder } from "./MechaHudPanels";
 import { MechaQuickGuide } from "./MechaQuickGuide";
 import { MechaBattleLegend } from "./MechaBattleLegend";
+import { MechaCellInspector } from "./MechaCellInspector";
 import { useMechaSettings } from "./useMechaSettings";
-import { SequentialMechaCommandPanel, type SequentialHudAction, type SequentialRosterRow } from "./SequentialMechaHud";
 import { MechaRoster } from "./MechaPlanCard";
+import { MechaActionCard } from "./MechaActionCard";
+import { MechaMoveList } from "./MechaMoveList";
 import { MechaActionIcon } from "./MechaActionIcon";
 import { MechaUnitAvatar, MechaUnitPortrait } from "./MechaUnitAvatar";
 import { gameText, type GameLocale } from "./gameCopy";
@@ -17,9 +19,11 @@ import { BOARD, MAX_TURNS, STATS, eq, mech, moveBudget, occupant, pathDistance, 
 import { legalActions } from "./mecha/combat";
 import { cuesFromLog } from "./mecha/controller";
 import { declaredEnemyIntents } from "./mecha/enemyIntentPresentation";
+import { previewEnemyPhase } from "./mecha/enemyPhasePreview";
 import { matchFromSite } from "./mecha/matchFromSite";
 import { sequentialPresentation } from "./mecha/sequentialPresentation";
-import { sequentialTargets } from "./mecha/sequentialTargets";
+import { sequentialTargets } from "./mecha/actionTargets";
+import { inspectCell, inspectionSegments } from "./mecha/cellInspection";
 import { projectMechPositions } from "./mecha/presentation/mechPositions";
 import { SequentialController, type CommandInput } from "./mecha/sequentialController";
 import type { MatchState } from "./mecha/board";
@@ -35,22 +39,24 @@ import { statusBlocks } from "./mecha/statusEffects";
 import { describeStatusBadges } from "./mecha/statusDisplay";
 import { projectStatusForecastState, statusForecast } from "./mecha/statusForecast";
 import { planActionLabel } from "./mecha/planPresentation";
-import "./sequentialMecha.css";
+import { buildSequentialHud } from "./mecha/hud/adapters";
+import type { MechaHudActions, MechaHudModel, MechaHudProjection } from "./mecha/hud/model";
 
 const NAMES: Record<MechId, string> = { Assault: "突击", Gunner: "射手", Support: "支援" };
 const STATUS_SPECIES: Record<StatusMonsterId, [string, string]> = { spore_leaper: ["孢群体", "Spore leaper"], flux_lancer: ["流环体", "Flux lancer"], prism_warden: ["晶簇体", "Prism warden"], gravity_core: ["引力核", "Gravity core"] };
 const cellKey = (cell: Cell) => `${cell.x},${cell.y}`;
 
-export function SequentialMechaMatch({ engine, site, locale, onClose, requestCloseRef, statusSpecies }: { engine: CityEngine; site: CityMechaSite; locale: GameLocale; onClose: () => void; requestCloseRef: React.RefObject<(() => void) | null>; statusSpecies?: StatusMonsterId | null }) {
+export function SequentialMechaMatch({ engine, site, locale, onClose, requestCloseRef, statusSpecies, connectedAssault }: { engine: CityEngine; site: CityMechaSite; locale: GameLocale; onClose: () => void; requestCloseRef: React.RefObject<(() => void) | null>; statusSpecies?: StatusMonsterId | null; connectedAssault: boolean }) {
   const t = (zh: string, en: string) => locale === "en" ? en : zh;
   const [controller] = useState(() => new SequentialController(statusSpecies ? statusDeploymentFromSite(site, statusSpecies) : matchFromSite(site, { ruleset: "mecha-v1.5", preset: "covers_sparse_mid", script: "siege", deployment: true })));
   const state = useSyncExternalStore(controller.subscribe, controller.getState);
   const [choice, setChoice] = useState("");
-  const [actionIndex, setActionIndex] = useState("");
+  const [actionSelection, setActionSelection] = useState<{ actor: MechId; revision: number; index: number } | null>(null);
   const [targetingKind, setTargetingKind] = useState<Action["kind"] | null>(null);
   const [confirmEnd, setConfirmEnd] = useState(false);
   const [viewError, setViewError] = useState<string | null>(null);
   const [mapFocused, setMapFocused] = useState(false);
+  const [inspectedCell, setInspectedCell] = useState<Cell | null>(null);
   const { settingsPanel, setSettingsPanel, closeSettings, toggleSettings } = useMechaSettings(() => setMapFocused(false));
   const [showOrder, setShowOrder] = useState(false);
   const [compactSummary, setCompactSummary] = useState(true);
@@ -95,11 +101,19 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
   useEffect(() => { void readRecovery(); }, []);
   const presentation = state.presentation;
   const display = replayAnimation?.before ?? (replay ? replay.index === 0 ? replay.initial : replay.records[replay.index - 1]!.snapshot.match : presentation?.before ?? state.match);
+  const cellInfo = inspectedCell && !presentation && !replayAnimation
+    ? inspectCell(state.placements ? { ...display, mechs: projectMechPositions(display, state.placements) } : display, inspectedCell)
+    : null;
   const defendedBuildings = stakeBuildings(display);
   const selected = mech(state.match, state.selected);
   const restrictions = (id: MechId) => state.match.statusEncounter ? statusBlocks(state.match.statusEncounter.statuses, id) ?? { move: true, action: true } : { move: false, action: false };
   const canAct = (id: MechId) => Boolean(state.rights?.[id].action && !restrictions(id).action);
   const locked = Boolean(presentation || state.match.outcome || viewError || archiveBusy || replay || !recovery || recovery.pending || recoveryError || state.persistence === "saving" || state.persistence === "unconfirmed");
+  const attackOrderPreview = useMemo(() => {
+    if (!showOrder || locked || state.placements) return null;
+    try { return previewEnemyPhase(state.match); }
+    catch { return { ok: false as const, reason: "enemy_phase_preview_failed" }; }
+  }, [showOrder, locked, state.placements, state.match]);
   const immediateEnd = useMemo(() => {
     if (locked || state.placements) return null;
     try {
@@ -120,6 +134,10 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
   }, [state, selected, locked]);
   const available = replay ? [] : state.placements ? state.deployable : movement;
   const actions = !locked && !state.placements && canAct(state.selected) ? legalActions(state.match, state.selected) : [];
+  const actionIndex = actionSelection?.actor === state.selected && actionSelection.revision === state.match.revision ? String(actionSelection.index) : "";
+  const setActionIndex = (index: string) => setActionSelection(index === "" ? null : {
+    actor: state.selected, revision: state.match.revision, index: Number(index),
+  });
   const action = actionIndex === "" ? null : actions[Number(actionIndex)] ?? null;
   const targetOptions = targetingKind ? sequentialTargets(state.match, actions, targetingKind, state.selected) : [];
   const selectedTarget = targetOptions.find(option => option.actionIndex === Number(actionIndex));
@@ -151,10 +169,13 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
     raiders: display.raiders.map(unit => ({ id: unit.id, x: unit.pos.x, y: unit.pos.y, alive: unit.hp > 0, hp: unit.hp, maxHp: unitMaxHp(unit.id, display) ?? undefined })),
     buildings: display.buildings.map(building => ({ id: building.id, cells: building.cells, hp: building.hp, maxHp: building.maxHp })),
     declaredTelegraph: threats, declaredIntents: intents, projectedTelegraph: null, telegraph: threats, focusedTelegraph: focusedThreat,
+    enemyOrder: showOrder && attackOrderPreview?.ok ? attackOrderPreview.steps.map(step => ({ actor: step.actor, cells: step.cells, position: step.position ?? undefined, order: step.order, cancel: step.cancel })) : [],
     deployment: !replay && Boolean(state.placements), focus: [], reach: available, move: null,
     targets: !locked ? targetOptions.flatMap(option => option.cells) : [], targetIds: !locked ? targetOptions.map(option => option.id) : [],
     targetPreview: !locked && selectedTarget?.cells[0] ? { target: selectedTarget.cells[0] } : undefined, obstacles: display.obstacles,
     missionTarget: display.mission?.target ?? null,
+    inspectedCell: cellInfo?.cell,
+    inspectionSegments: inspectionSegments(cellInfo?.attack ?? null, null),
     combat: currentPresentation && verified?.ok ? { id: currentPresentation.after.revision, actions: cuesFromLog(currentPresentation.events), healthTimeline: verified.health, presentationChanges: verified.changes } : undefined,
   };
   const performCell = (cell: Cell) => {
@@ -163,21 +184,27 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
     if (clickedTarget) { setActionIndex(String(clickedTarget.actionIndex)); return; }
     if (!state.placements) {
       const clickedMech = state.match.mechs.find(unit => unit.hp > 0 && eq(unit.pos, cell));
-      if (clickedMech) { controller.select(clickedMech.id); setChoice(""); setTargetingKind(null); setActionIndex(""); setConfirmEnd(false); return; }
+      if (clickedMech) { select(clickedMech.id); return; }
     }
-    if (!available.some(item => eq(item, cell))) return;
+    if (!available.some(item => eq(item, cell))) { setInspectedCell(cell); return; }
+    setInspectedCell(null);
     if (state.placements) controller.place(state.selected, cell);
-    else void controller.executeDurable({ kind: "move", mech: state.selected, to: cell });
+    else hudActions.moveTo(cell);
     setChoice(""); setTargetingKind(null); setActionIndex(""); setConfirmEnd(false);
   };
-  const select = (id: MechId) => { controller.select(id); setChoice(""); setTargetingKind(null); setActionIndex(""); setConfirmEnd(false); };
-  const rosterRows: SequentialRosterRow[] = (replay ? display.mechs : state.match.mechs).map(unit => {
+  const select = (id: MechId) => { controller.select(id); setInspectedCell(null); setChoice(""); setTargetingKind(null); setActionIndex(""); setConfirmEnd(false); };
+  const rosterRows = (replay ? display.mechs : state.match.mechs).map(unit => {
     const badges = describeStatusBadges(display.statusEncounter?.statuses ?? [], unit.id, locale);
-    const phase = replay ? t("回放", "Replay") : state.placements
-      ? state.placements.some(p => p.mechId === unit.id) ? t("已部署", "Deployed") : t("未部署", "Not deployed")
-      : t("移动", "Move") + " " + (state.rights?.[unit.id].move && !restrictions(unit.id).move ? "✓" : "—") + " · " + t("行动", "Act") + " " + (canAct(unit.id) ? "✓" : "—");
+    const placement = (replay ? replay.placements : state.openingPlacements)?.find(item => item.mechId === unit.id);
+    const moved = state.activity?.moved.includes(unit.id), acted = state.activity?.acted.includes(unit.id);
+    const moveLabel = moved ? t("已移动", "Moved") : restrictions(unit.id).move ? t("移动受限", "Movement blocked")
+      : acted ? t("未移动", "Did not move") : t("可移动", "Can move");
+    const actLabel = acted ? t("已行动", "Acted") : restrictions(unit.id).action ? t("行动受限", "Action blocked") : t("可行动", "Can act");
+    const phase = replay ? t("回放", "Replay") : unit.hp <= 0 ? t("已失去战斗能力", "Disabled")
+      : state.match.outcome ? t("对局已结束", "Match finished") : `${moveLabel} · ${actLabel}`;
     return { id: unit.id, name: gameText(NAMES[unit.id], locale), hp: unit.hp, selected: !replay && unit.id === state.selected,
       disabled: locked || unit.hp <= 0, stateLabel: phase + (badges.text ? " · " + badges.text : ""),
+      placementLabel: placement ? `${t("部署点", "Deployed at")} ${placement.pos.x}, ${placement.pos.y}` : undefined,
       avatar: <MechaUnitAvatar mechId={unit.id} locale={locale} /> };
   });
   const supportedKinds: Action["kind"][] = selected && selected.hp > 0 ? ["skip",
@@ -186,13 +213,17 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
     state.selected === "Assault" ? "charge" : state.selected === "Gunner" ? "pierce" : "repair"] : [];
   const availableKinds = [...new Set(actions.map(entry => entry.kind))];
   const actionKinds = [...availableKinds, ...supportedKinds.filter(kind => !availableKinds.includes(kind))];
-  const actionRows: SequentialHudAction[] = actionKinds.map(kind => {
+  const actionRows = actionKinds.map(kind => {
     const available = availableKinds.includes(kind);
     const cooldown = (kind === "charge" || kind === "pierce" || kind === "repair") && Boolean(selected?.cd);
+    const unavailableReason = state.placements ? t("部署后开放", "Available after deployment")
+      : locked ? t("暂不可用", "Temporarily unavailable")
+      : !state.rights?.[state.selected].action ? t("本回合已行动", "Already acted this turn")
+      : restrictions(state.selected).action ? t("当前状态不能行动", "Status prevents acting")
+      : cooldown ? t("技能冷却中", "Ability on cooldown") : t("无合法目标", "No legal target");
     return { key: kind, label: planActionLabel(kind, locale), icon: <MechaActionIcon kind={kind} />,
       selected: targetingKind === kind || action?.kind === kind, disabled: !available,
-      status: available ? t("准备就绪", "Ready") : t("不可用", "Unavailable"),
-      title: available ? undefined : !canAct(state.selected) ? t("本回合无法行动。", "Cannot act this turn.") : cooldown ? t("技能冷却中。", "Ability is on cooldown.") : t("当前没有合法目标。", "No legal target is available.") };
+      status: available ? t("准备就绪", "Ready") : unavailableReason, title: available ? undefined : unavailableReason };
   });
   const hudDamage = previewEvidence?.ok ? previewEvidence.health.steps.map(step => {
     const effect = step.effect;
@@ -204,12 +235,86 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
   const hudDisplacement = preview?.ok ? preview.events.flatMap(event => event.type === "shove"
     ? [`${event.unit === "boss" ? t("大怪", "Boss") : gameText(NAMES[event.unit], locale)} · ${event.hit ? t("位移受阻", "Push blocked") : t("受到推移", "Pushed")}`] : []) : [];
   const selectedStatuses = display.statusEncounter?.statuses.filter(status => status.target === state.selected) ?? [];
-  const hudStatusNote = restrictions(state.selected).action ? t("眩晕：不能主动移动或行动。", "Stunned: cannot move or act voluntarily.")
-    : restrictions(state.selected).move ? t("冻结：不能主动移动，仍可行动。", "Frozen: cannot move voluntarily, but can act.") : undefined;
+  const undoMechName = state.undoMech ? gameText(NAMES[state.undoMech], locale) : null;
+  const undoHint = undoMechName && !state.canUndo
+    ? t(`请选择${undoMechName}，撤销它最近一次移动。`, `Select ${undoMechName} to undo its latest move.`)
+    : t("撤销当前机甲的移动。", "Undo movement for the selected mech.");
+  const selectedMoved = state.activity?.moved.includes(state.selected);
+  const selectedActed = state.activity?.acted.includes(state.selected);
+  const hudStatusNote = state.placements || replay || state.match.outcome || !selected ? undefined
+    : restrictions(state.selected).action ? t("眩晕：不能主动移动或行动。", "Stunned: cannot move or act voluntarily.")
+    : restrictions(state.selected).move ? t("冻结：不能主动移动，仍可行动。", "Frozen: cannot move voluntarily, but can act.")
+    : selectedActed ? t("本回合已行动，不能再移动或行动。", "Already acted this turn. Movement and actions are finished.")
+    : selectedMoved
+      ? state.canUndo
+        ? t("本回合已移动；仍可撤销当前机甲的移动，再重新选位。", "Movement is used this turn. You can still undo this mech's move and choose a new cell.")
+        : undoMechName
+          ? undoHint
+        : state.resetUsed
+          ? t("本回合已移动；本局唯一一次重置回合也已使用。", "Already moved this turn; the match's only turn reset has also been used.")
+          : t("本回合已移动。点击“重置回合”可恢复本回合的移动和行动机会。", "Already moved this turn. Reset the turn to restore this turn's movement and action rights.")
+    : !locked && movement.length === 0
+      ? t("当前没有可达格子，请检查路径阻挡或选择其他机甲。", "No reachable cells. Check for blocked paths or select another mech.") : undefined;
   const replayLabel = (record: SequentialRecord) => record.causalEvent?.kind === "undo_move" ? t("撤销移动", "Undo move")
     : record.causalEvent?.kind === "reset_turn" ? t("重置回合", "Reset turn")
     : record.command.kind === "move" ? t("移动", "Move") : record.command.kind === "act" ? t("行动", "Action") : t("结束回合", "End turn");
-  const issue = (command: CommandInput) => { void controller.executeDurable(command); };
+  const issue = (command: CommandInput) => {
+    const current = controller.getState();
+    if ("mech" in command && (command.mech !== current.selected || state.match.revision !== current.match.revision)) return;
+    void controller.executeDurable(command);
+  };
+  const clearCommandSelection = () => { setTargetingKind(null); setActionIndex(""); setChoice(""); setConfirmEnd(false); };
+  const hudActions: MechaHudActions = {
+    select,
+    moveTo: cell => { if (!locked && !state.placements) issue({ kind: "move", mech: state.selected, to: cell }); clearCommandSelection(); },
+    chooseAction: kind => {
+      if (kind === "skip") { setTargetingKind(null); setActionIndex(String(actions.findIndex(entry => entry.kind === kind))); }
+      else { setTargetingKind(kind); setActionIndex(""); }
+    },
+    pickTarget: index => { const target = targetOptions[index]; if (target) setActionIndex(String(target.actionIndex)); },
+    confirmAction: () => { if (action && !locked) issue({ kind: "act", mech: state.selected, action }); clearCommandSelection(); },
+    undoMove: () => { if (!locked && state.canUndo) { issue({ kind: "undo", mech: state.selected }); clearCommandSelection(); } },
+    resetTurn: () => {
+      if (locked || state.resetUsed || !window.confirm(t("重置本回合？每局只能使用一次。", "Reset this turn? This can be used once per match."))) return;
+      issue({ kind: "reset" }); clearCommandSelection();
+    },
+    endTurn: () => {
+      if (locked) return;
+      if (state.match.mechs.some(unit => unit.hp > 0 && canAct(unit.id))) setConfirmEnd(true);
+      else { issue({ kind: "end", confirmUnused: false }); clearCommandSelection(); }
+    },
+    confirmEndTurn: unused => { if (!locked) issue({ kind: "end", confirmUnused: unused }); clearCommandSelection(); },
+  };
+  const hudProjection: MechaHudProjection = {
+    label: t("机甲战棋 1.5", "Mecha tactics 1.5"),
+    sourcePhase: state.match.phase,
+    objective: {
+      goal: display.mission ? t("任一存活机甲抵达救援点", "Reach the rescue point with a surviving mech")
+        : defendedBuildings.length ? t("消灭所有敌人 · 至少保住一栋防守建筑", "Defeat all enemies and protect at least one building") : t("消灭所有敌人", "Defeat all enemies"),
+      buildings: display.buildings.map(building => ({ id: building.id, hp: building.hp, maxHp: building.maxHp })),
+      forecast: projectedHp === null ? null : `${projectedHp}/${defendedMax}`,
+    },
+    threats: intents.map(intent => ({ actor: intent.actor, cells: intent.targets })),
+    roster: state.match.mechs.map(unit => ({
+      id: unit.id,
+      maxHp: unitMaxHp(unit.id, display),
+      statuses: (display.statusEncounter?.statuses ?? []).filter(status => status.target === unit.id).map(status => ({
+        icon: ({ poison: "☠️", burn: "🔥", freeze: "🧊", stun: "💫" } as const)[status.kind],
+        label: `${status.kind} · ${status.remainingTurns}`,
+      })),
+      rights: { move: Boolean(state.rights?.[unit.id].move && !restrictions(unit.id).move), action: canAct(unit.id) },
+    })),
+    actions: actionRows.map(row => ({ kind: row.key as Action["kind"], label: row.label, enabled: !row.disabled })),
+    targets: targetOptions.map(option => ({ id: String(option.actionIndex), label: option.id, cells: option.cells })),
+    preview: action ? { status: preview?.ok ? "ready" : preview ? "invalid" : "unavailable", damage: hudDamage } : null,
+    replay: replay ? { step: replay.index, total: replay.records.length } : null,
+    notices: [
+      ...(viewError ? [{ kind: "error" as const, text: viewError }] : []),
+      ...(state.error ? [{ kind: "error" as const, text: state.error }] : []),
+      ...(archiveMessage ? [{ kind: "status" as const, text: archiveMessage }] : []),
+    ],
+  };
+  const hudModel: MechaHudModel = buildSequentialHud(state, hudProjection);
   const deploy = async () => {
     if (!recovery || recovery.pending || locked || !state.canConfirmDeployment) return;
     setArchiveBusy(true);
@@ -284,8 +389,14 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
     } catch { setRecoveryError(true); setArchiveMessage(t("无法确认恢复，请重新读取自动检查点。", "Resume could not be confirmed; reload the automatic checkpoint.")); }
     finally { setArchiveBusy(false); }
   };
-  return <MechaHudLayout className="mecha-overlay is-city has-match is-reference-hud mecha-v15" phase={state.placements ? "deployment" : state.match.outcome ? "finished" : "planning"} mapFocus={mapFocused} ariaLabel={t("机甲战棋 1.5", "Mecha tactics 1.5")} dataMechaV15>
-    <CityMechaWorld ref={worldRef} engine={engine} site={site} locale={locale} view={view} performance={performance} paused={false} onPerformanceComplete={finishPresentation} onCell={(x, y) => { setMapFocused(false); performCell({ x, y }); }} onHoverEnemy={setHoveredEnemy} onUnavailable={reason => setViewError(reason ?? "mode")} />
+  return <MechaHud className="mecha-overlay is-city has-match is-reference-hud mecha-v15" model={hudModel} actions={hudActions} mapFocus={mapFocused} dataMechaV15>
+    <CityMechaWorld ref={worldRef} engine={engine} site={site} locale={locale} view={view} performance={performance} paused={false} connectedAssault={connectedAssault} onPerformanceComplete={finishPresentation} onCell={(x, y) => {
+      const cell = { x, y };
+      setMapFocused(false);
+      if (mapFocused || locked) {
+        if (!presentation && !replayAnimation) setInspectedCell(cell);
+      } else performCell(cell);
+    }} onHoverEnemy={setHoveredEnemy} onUnavailable={reason => setViewError(reason ?? "mode")} />
     <header className="mecha-battle-bar mecha-v15-bar"><div className="mecha-battle-controls"><MechaBattlefieldControls locale={locale} mapFocused={mapFocused} onToggleFocus={() => setMapFocused(value => !value)} onResetCamera={() => worldRef.current?.resetCamera()} /><button type="button" disabled={Boolean(state.placements) || Boolean(replay)} aria-label={t("结算顺序", "Turn order")} aria-expanded={showOrder} aria-controls={showOrder ? "mecha-order-panel" : undefined} onClick={() => { if (!showOrder) { setMapFocused(false); setCompactSummary(false); } else panelRef.current?.querySelector<HTMLElement>(".mecha-turn-summary")?.scrollTo({ top: 0 }); setShowOrder(value => !value); }}>{t("顺序", "Order")}</button><button type="button" data-mecha-settings-trigger="battlefield" aria-expanded={settingsPanel === "battlefield"} aria-controls="mecha-battlefield-settings" onClick={event => toggleSettings("battlefield", event.currentTarget)}>{gameText("战场设置", locale)}</button><MechaBattleMenu locale={locale} exitDisabled={archiveBusy || state.persistence === "saving"} onGuide={trigger => { guideTrigger.current = trigger; setSettingsPanel(null); setMapFocused(false); setShowGuide(true); }} onExit={requestClose} /></div></header>
     <div className="mecha-panel mecha-v15-panel" ref={panelRef} aria-label={t("逐台行动", "Sequential actions")}>
       <details className="mecha-tactical-legend"><summary><span aria-hidden="true">↗</span> {gameText("战场图例", locale)}</summary><MechaBattleLegend locale={locale} view={view} /></details>
@@ -307,6 +418,16 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
           stages={[t("机甲逐台行动", "Individual mech actions"), t("敌方行动", "Enemy actions"), t("下一回合", "Next turn")]}>
           <p>{t("每次移动和行动确认后立即结算；结束回合后敌方行动。", "Each confirmed move or action resolves immediately; enemies act after the turn ends.")}</p>
           <p>{t("立即结束回合的预测会假设放弃剩余行动。", "The end-turn forecast assumes remaining actions are forfeited.")}</p>
+          {attackOrderPreview?.ok ? <ol className="mecha-attack-order">{attackOrderPreview.steps.map(step => {
+            const actorLabel = step.actor === "boss" ? t("大怪", "Boss") : step.actor === "status" ? t("环境与状态", "Environment and status") : step.actor;
+            const cancelLabel = step.cancel === "dead" ? t("已消灭，跳过", "Defeated; skipped") : step.cancel === "frozen" ? t("冻结，无法行动", "Frozen; cannot act") : step.cancel === "stunned" ? t("眩晕，无法行动", "Stunned; cannot act") : step.cancel === "battle_over" ? t("对局结束，后续跳过", "Match ended; skipped") : step.cancel === "no_target" ? t("没有可结算目标", "No valid target") : "";
+            const changes = [...Object.entries(step.outcome.hp).map(([id, delta]) => `${gameText(NAMES[id as MechId], locale)} ${delta > 0 ? "+" : ""}${delta} HP`), ...Object.entries(step.outcome.buildings).map(([id, delta]) => `${t("建筑", "Building")} ${id} ${delta > 0 ? "+" : ""}${delta} HP`)];
+            const skill = step.skill === "status_tick" ? t("毒/燃烧结算", "Poison/burn tick") : step.skill === "environment_tick" ? t("环境结算", "Environment tick") : step.skill;
+            return <li key={`${step.order}-${step.actor}`} data-attack-order-step data-order={step.order} data-cancel={step.cancel || undefined}>
+              <span>{step.order}. {actorLabel} · {skill}{cancelLabel ? ` · ${cancelLabel}` : ""}</span>
+              <small>{changes.length ? changes.join(" · ") : cancelLabel || t("未造成生命值变化", "No HP change")}</small>
+            </li>;
+          })}</ol> : <p role="status">{attackOrderPreview ? t("敌方顺序预测不可用。", "Enemy order preview is unavailable.") : t("当前无法预测敌方行动。", "Enemy actions cannot be previewed now.")}</p>}
         </MechaTurnOrder>}
         {statusSpecies && <p className="mecha-v15-note">{t("状态挑战", "Status challenge")}: {t(...STATUS_SPECIES[statusSpecies])}</p>}
         {showForecast && forecast && <details className="mecha-v15-forecast" role="region" aria-label={t("敌方状态预告", "Enemy status forecast")}><summary>{t("敌方状态预告", "Enemy status forecast")}</summary>
@@ -329,54 +450,56 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
       <MechaTeamTurnControls heading={t("队伍规划", "Squad planning")}
         status={<><strong>{t("逐台回合", "Sequential turn")}</strong><span>{state.persistence === "unconfirmed" ? t("行动锁定：检查点未确认。", "Locked: checkpoint unconfirmed.") : t("每台机甲可移动和行动一次。", "Each mech may move and act once.")}</span></>}>
         {!replay && <div className="mecha-planning-controls">
-          <button type="button" className="mecha-submit-primary" disabled={locked || Boolean(state.match.outcome)} onClick={() => { if (state.match.mechs.some(unit => unit.hp > 0 && canAct(unit.id))) setConfirmEnd(true); else { issue({ kind: "end", confirmUnused: false }); setTargetingKind(null); setActionIndex(""); setChoice(""); } }}>{t("结束回合", "End turn")}</button>
-          <button type="button" className="mecha-reset-turn" disabled={locked || state.resetUsed} onClick={() => { if (window.confirm(t("重置本回合？每局只能使用一次。", "Reset this turn? This can be used once per match."))) { issue({ kind: "reset" }); setTargetingKind(null); setActionIndex(""); setChoice(""); setConfirmEnd(false); } }}>{t("重置回合", "Reset turn")} ({state.resetUsed ? 0 : 1}/1)</button>
+          <button type="button" className="mecha-submit-primary" disabled={locked || Boolean(state.match.outcome)} onClick={hudActions.endTurn}>{t("结束回合", "End turn")}</button>
+          <button type="button" className="mecha-reset-turn" disabled={locked || state.resetUsed} onClick={hudActions.resetTurn}>{t("重置回合", "Reset turn")} ({state.resetUsed ? 0 : 1}/1)</button>
         </div>}
       </MechaTeamTurnControls>
       <MechaRoster className="mecha-v15-roster" label={t("选择机甲", "Select mech")} rows={rosterRows.map(row => ({ ...row, onSelect: select, draft: undefined, openingSuggestion: false, hitDamage: null, locale }))} />
       </>}
       </MechaTeamPanel>
-      {state.placements && !replay ? <MechaDeploymentActionsView locale={locale} selected={state.selected} cells={state.deployable} disabled={locked} onPlace={(id, cell) => controller.place(id, cell)} /> : <SequentialMechaCommandPanel
+      {state.placements && !replay ? <MechaDeploymentActionsView locale={locale} selected={state.selected} cells={state.deployable} disabled={locked} onPlace={(id, cell) => controller.place(id, cell)} /> : <MechaCommandPanel
         label={t("当前机甲行动", "Selected mech actions")}
-        selectedName={t("操作机甲", "Selected mech") + " · " + gameText(NAMES[state.selected], locale)}
-        hp={selected?.hp ?? 0} maxHp={unitMaxHp(state.selected, display) ?? "?"}
-        portrait={<MechaUnitPortrait unitId={state.selected} locale={locale} size={64} className="mecha-selected-portrait" decorative={false} />}
-        movementLabel={state.placements ? t("部署坐标", "Deployment cell") : t("移动坐标", "Move to")}
-        moveListSummary={t("通过列表移动", "Move using a list")} movePlaceholder={t("选择坐标", "Select cell")}
-        moveOptions={available.map(cell => ({ key: cellKey(cell), label: `${cell.x}, ${cell.y}` }))}
-        moveChoice={choice} moveDisabled={locked || available.length === 0}
-        moveActionLabel={state.placements ? t("放置", "Place") : t("移动", "Move")}
-        onMoveChoice={setChoice}
-        onMoveApply={() => { const cell = available.find(item => cellKey(item) === choice); if (cell) performCell(cell); }}
-        statusNote={hudStatusNote} actions={actionRows} actionColumns={actionRows.length}
-        targetInstruction={targetOptions.length ? t("点击高亮目标切换预览，再确认行动。", "Click a highlighted target to preview it, then confirm the action.") : undefined}
-        targetPicker={targetingKind && <div className="mecha-target-preview" aria-label={t("目标试算", "Target preview")}>
-          <p>{t("选择目标后确认行动。", "Choose a target, then confirm the action.")}</p>
-          <MechaTargetOptions options={targetOptions.map(option => ({ key: String(option.actionIndex), selected: actionIndex === String(option.actionIndex),
-            label: <>{option.id in NAMES ? gameText(NAMES[option.id as MechId], locale) : option.id === "boss" ? t("大怪", "Boss") : t("小怪", "Enemy")} · {option.cells.map(cell => `${cell.x},${cell.y}`).join("、")}</> }))}
-            disabled={locked} empty={t("无合法目标", "No legal target")} onSelect={key => setActionIndex(key)} />
+        heading={<h3 tabIndex={-1}><span>{t("操作机甲", "Selected mech") + " · " + gameText(NAMES[state.selected], locale)}</span><span className="mecha-selected-hp">{selected?.hp ?? 0} / {unitMaxHp(state.selected, display) ?? "?"} HP</span></h3>}
+        instruction={<>{hudStatusNote && <p className="mecha-v15-note" role="status">{hudStatusNote}</p>}{targetOptions.length > 0 && <p className="mecha-target-instruction">{t("点击高亮目标切换预览，再确认行动。", "Click a highlighted target to preview it, then confirm the action.")}</p>}</>}
+        deck={<MechaCommandDeck portrait={<MechaUnitPortrait unitId={state.selected} locale={locale} size={64} className="mecha-selected-portrait" decorative={false} />} columns={actionRows.length}>
+          {actionRows.map((row, index) => <MechaActionCard key={row.key} type="button"
+            className={row.disabled ? "is-unavailable" : row.selected ? "is-selected" : ""} title={row.title}
+            aria-pressed={row.selected} disabled={row.disabled || locked || Boolean(state.placements) || Boolean(replay)}
+            onClick={() => { const kind = actionKinds[index]; if (kind) hudActions.chooseAction(kind); }}
+            label={row.label} icon={row.icon} status={row.status ?? t("选择行动", "Select action")} />)}
+        </MechaCommandDeck>}
+        utilities={<div className="mecha-actions mecha-action-utilities">
+          <button type="button" className="mecha-submit-primary" disabled={!action || !preview?.ok || locked || Boolean(state.placements) || Boolean(replay)} onClick={hudActions.confirmAction}>{t("确认行动", "Confirm action")}</button>
+          <button type="button" title={undoHint} disabled={!state.canUndo || locked || Boolean(state.placements) || Boolean(replay)} onClick={hudActions.undoMove}>{t("撤销移动", "Undo move")}</button>
         </div>}
-        previewTitle={action ? t("行动预览", "Action preview") : undefined}
-        previewMessage={action ? previewEvidence?.ok ? previewEvidence.health.steps.length ? undefined : t("生命值无变化。", "No health change.") : t("预览证据不足，无法显示伤害。", "Preview evidence is incomplete; damage is unavailable.") : undefined}
-        damage={hudDamage} displacement={hudDisplacement} actionDisabled={locked || Boolean(state.placements) || Boolean(replay)}
-        confirmActionDisabled={!action || !preview?.ok}
-        onSelectAction={index => {
-          const kind = actionKinds[index];
-          if (!kind) return;
-          if (kind === "skip") { setTargetingKind(null); setActionIndex(String(actions.findIndex(entry => entry.kind === kind))); }
-          else { setTargetingKind(kind); setActionIndex(""); }
-        }}
-        onConfirmAction={() => { if (action) issue({ kind: "act", mech: state.selected, action }); setTargetingKind(null); setActionIndex(""); setConfirmEnd(false); }}
-        onUndo={() => { issue({ kind: "undo" }); setTargetingKind(null); setActionIndex(""); setChoice(""); setConfirmEnd(false); }}
-        actionText={t("选择行动", "Select action")} confirmText={t("确认行动", "Confirm action")} undoText={t("撤销移动", "Undo move")}
-      >
-        {confirmEnd && <div role="alert" className="mecha-v15-confirm"><p>{t("仍可行动", "Still able to act")}: {state.match.mechs.filter(unit => unit.hp > 0 && canAct(unit.id)).map(unit => gameText(NAMES[unit.id], locale)).join("、")}。 {t("结束回合将放弃这些机会。", "Ending the turn forfeits those actions.")}</p><div className="mecha-v15-row"><button type="button" onClick={() => { issue({ kind: "end", confirmUnused: true }); setTargetingKind(null); setActionIndex(""); setChoice(""); setConfirmEnd(false); }}>{t("确认结束", "End turn")}</button><button type="button" onClick={() => setConfirmEnd(false)}>{t("继续行动", "Continue")}</button></div></div>}
+        target={<>
+          {targetingKind && <div className="mecha-target-preview" aria-label={t("目标试算", "Target preview")}>
+            <p>{t("选择目标后确认行动。", "Choose a target, then confirm the action.")}</p>
+            <MechaTargetOptions options={targetOptions.map(option => ({ key: String(option.actionIndex), selected: actionIndex === String(option.actionIndex),
+              label: <>{option.id in NAMES ? gameText(NAMES[option.id as MechId], locale) : option.id === "boss" ? t("大怪", "Boss") : t("小怪", "Enemy")} · {option.cells.map(cell => `${cell.x},${cell.y}`).join("、")}</> }))}
+              disabled={locked} empty={t("无合法目标", "No legal target")} onSelect={key => hudActions.pickTarget(targetOptions.findIndex(option => String(option.actionIndex) === key))} />
+          </div>}
+          {action && <div className="mecha-v15-preview" aria-live="polite"><strong>{t("行动预览", "Action preview")}</strong>
+            {previewEvidence?.ok ? previewEvidence.health.steps.length === 0 && <p>{t("生命值无变化。", "No health change.")}</p> : <p>{t("预览证据不足，无法显示伤害。", "Preview evidence is incomplete; damage is unavailable.")}</p>}
+            {hudDamage.length > 0 && <ul>{hudDamage.map((item, index) => <li key={`${item.target}:${index}`}>{item.target}: {item.before} → {item.after}</li>)}</ul>}
+            {hudDisplacement.map((message, index) => <p key={`${message}:${index}`}>{message}</p>)}
+          </div>}
+        </>}
+        movement={<MechaMoveList id="v15-cell" summary={t("通过列表移动", "Move using a list")}
+          label={state.placements ? t("部署坐标", "Deployment cell") : t("移动坐标", "Move to")}
+          placeholder={t("选择坐标", "Select cell")} applyText={state.placements ? t("放置", "Place") : t("移动", "Move")}
+          options={available.map(cell => ({ value: cellKey(cell), label: `${cell.x}, ${cell.y}` }))}
+          value={choice} disabled={locked || available.length === 0} onChange={setChoice}
+          onApply={() => { const cell = available.find(item => cellKey(item) === choice); if (cell) performCell(cell); }} />}
+        >
+        {confirmEnd && <div role="alert" className="mecha-v15-confirm"><p>{t("仍可行动", "Still able to act")}: {state.match.mechs.filter(unit => unit.hp > 0 && canAct(unit.id)).map(unit => gameText(NAMES[unit.id], locale)).join("、")}。 {t("结束回合将放弃这些机会。", "Ending the turn forfeits those actions.")}</p><div className="mecha-v15-row"><button type="button" onClick={() => hudActions.confirmEndTurn(true)}>{t("确认结束", "End turn")}</button><button type="button" onClick={() => setConfirmEnd(false)}>{t("继续行动", "Continue")}</button></div></div>}
         {selectedStatuses.length > 0 && <details className="mecha-v15-status"><summary>{t("当前状态", "Current statuses")}</summary><ul>{selectedStatuses.map(status => { const name = locale === "en" ? { poison: "Poison", burn: "Burn", freeze: "Freeze", stun: "Stun" }[status.kind] : { poison: "中毒", burn: "燃烧", freeze: "冻结", stun: "眩晕" }[status.kind]; const effect = status.kind === "poison" || status.kind === "burn" ? t("回合结束伤害", "End-of-turn damage") + " " + status.magnitude : status.kind === "freeze" ? t("不能主动移动", "Cannot move voluntarily") : t("不能主动移动或行动", "Cannot move or act voluntarily"); return <li key={status.target + ":" + status.kind + ":" + status.source}>{name} · {effect} · {t("剩余回合", "Turns remaining")} {status.remainingTurns} · {t("来源", "Source")}: {status.source === "boss" ? t("大怪", "Boss") : t("敌人", "Enemy")}</li>; })}</ul></details>}
         {replay && <div className="mecha-v15-replay-controls"><p>{t("逐步播放已验证的行动；重置直接显示恢复后的棋盘。", "Step through verified actions; reset shows the restored board immediately.")} · {replay.index ? replayLabel(replay.records[replay.index - 1]!) : t("部署完成", "Deployment complete")}</p><div className="mecha-v15-row"><button type="button" disabled={Boolean(replayAnimation) || replay.index === 0} onClick={() => setReplay({ ...replay, index: replay.index - 1 })}>{t("上一步", "Previous")}</button><button type="button" disabled={Boolean(replayAnimation) || replay.index === replay.records.length} onClick={() => { const record = replay.records[replay.index]!; const before = replay.index === 0 ? replay.initial : replay.records[replay.index - 1]!.snapshot.match; setReplay({ ...replay, index: replay.index + 1 }); if (record.events.length) setReplayAnimation({ before, after: record.snapshot.match, record }); }}>{t("下一步", "Next")}</button><button type="button" onClick={() => { setReplayAnimation(null); setReplay(null); }}>{t("返回对局", "Return to match")}</button></div>{replayAnimation && verified?.ok && performance && <button type="button" onClick={finishPresentation}>{t("跳过演出", "Skip animation")}</button>}{replay.index === replay.records.length && !display.outcome && <button type="button" disabled={Boolean(replayAnimation) || archiveBusy || recoveryError || !recovery || recovery.pending} onClick={() => void resumeSaved()}>{t("继续此对局", "Resume this match")}</button>}</div>}
-      </SequentialMechaCommandPanel>}
+      </MechaCommandPanel>}
+      {cellInfo && <MechaCellInspector key={cellKey(cellInfo.cell)} info={cellInfo} locale={locale} onClose={() => setInspectedCell(null)} sequential />}
       {!replay && <details className="mecha-v15-replays"><summary>{t("本地回放", "Local replays")}</summary><p className="mecha-v15-note">{t("仅能在相同城市战场重建；保存后会重新校验。", "Rebuilds only on the same city battlefield; saves are rechecked.")}</p><button type="button" disabled={archiveBusy || Boolean(presentation) || state.persistence !== "ready" || !controller.hasReplayEvidence()} onClick={() => void save()}>{t("保存当前回放", "Save current replay")}</button><label htmlFor="v15-replay-choice">{t("选择回放", "Select replay")}</label><select id="v15-replay-choice" value={archiveChoice} disabled={archiveBusy || !archiveEntries.length} onChange={event => setArchiveChoice(event.currentTarget.value)}><option value="">{t("选择回放", "Select replay")}</option>{archiveEntries.map(entry => <option key={entry.key} value={entry.key}>{entry.damaged ? t("损坏的记录", "Damaged record") : entry.savedAt}</option>)}</select><div className="mecha-v15-row"><button type="button" disabled={archiveBusy || Boolean(presentation) || state.persistence === "saving" || state.persistence === "unconfirmed" || !archiveChoice || archiveEntries.find(entry => entry.key === archiveChoice)?.damaged} onClick={() => void load()}>{t("查看回放", "View replay")}</button><button type="button" disabled={archiveBusy || !archiveChoice} onClick={() => void remove()}>{t("删除回放", "Delete replay")}</button></div></details>}
       {presentation && verified?.ok && performance && <button className="mecha-v15-skip" type="button" onClick={finishPresentation}>{t("跳过演出", "Skip animation")}</button>}
     </div>
     {showGuide && <MechaQuickGuide locale={locale} mode="sequential" returnFocusRef={guideTrigger} onClose={() => setShowGuide(false)} />}
-  </MechaHudLayout>;
+  </MechaHud>;
 }

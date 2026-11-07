@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 const { chromium } = createRequire(new URL("../apps/desktop/ui-dev/package.json", import.meta.url))("playwright");
 const browser = await chromium.launch({ headless: true, args: [process.env.MECHA_BROWSER_ANGLE === "metal" ? "--use-angle=metal" : "--enable-unsafe-swiftshader"] });
 const base = process.argv[2] ?? "http://127.0.0.1:5190/?fixtureSessions=30";
+const classicBase = new URL(base); classicBase.searchParams.set("mechaV15", "0");
 const prefix = "agent-city:mecha-local-replay-entry:v1:";
 const preference = "agent-city:mecha-replay-auto-save:v1";
 try {
@@ -66,7 +67,7 @@ try {
       await page.locator("#mecha-battlefield-settings .mecha-settings-close").click();
       await page.locator(".mecha-result-reopen").click(); await dialog.waitFor({ state: "visible" });
     }
-    await page.goto(base, { waitUntil: "domcontentloaded", timeout: 240000 }); await enter();
+    await page.goto(classicBase.href, { waitUntil: "domcontentloaded", timeout: 240000 }); await enter();
     await settings(); assert.equal(await checkbox.isChecked(), true, "new installations default to auto-save"); await page.locator("#mecha-battlefield-settings .mecha-settings-close").click();
     await finish();
     await dialog.getByRole("status").getByText(zh ? "本局回放已自动保存到本机。" : "This battle replay was saved locally automatically.").waitFor();

@@ -4,6 +4,7 @@ import { presentPlanRow } from "./mecha/planPresentation";
 import type { Draft } from "./mecha/planning";
 import type { MechId } from "./mecha/rules";
 import type { FizzledAction } from "./mecha/fizzleForecast";
+import { useMechaHudActions } from "./MechaHudLayout";
 import "./mechaHudClarity.css";
 
 export type MechaPlanCardProps = {
@@ -26,6 +27,7 @@ export type MechaPlanCardProps = {
   avatar?: ReactNode;
   /** Optional authoritative state label for sequential v1.5 matches. */
   stateLabel?: string;
+  placementLabel?: string;
 };
 
 /** Classic HUD roster, populated by either rules adapter. */
@@ -39,7 +41,8 @@ export function MechaRoster({ rows, label, className = "", help, helpId }: {
 }
 
 /** Render directly inside the existing mecha-pack list. */
-export function MechaPlanCard({ id, name, hp, finished, selected, disabled, onSelect, draft, openingSuggestion, hitDamage, fizzle, locale, avatar, stateLabel }: MechaPlanCardProps) {
+export function MechaPlanCard({ id, name, hp, finished, selected, disabled, onSelect, draft, openingSuggestion, hitDamage, fizzle, locale, avatar, stateLabel, placementLabel }: MechaPlanCardProps) {
+  const hudActions = useMechaHudActions();
   const row = presentPlanRow({ draft, openingSuggestion, hitDamage, locale });
   const t = (text: string) => gameText(text, locale);
   const status = row.openingSuggestion ? (locale === "en" ? "Team suggestion" : "全队建议") : row.actionState === "unplanned" ? t("待规划")
@@ -47,10 +50,11 @@ export function MechaPlanCard({ id, name, hp, finished, selected, disabled, onSe
     : t("已规划");
   return (
     <li className={["mecha-plan-card", selected && "is-current", !finished && row.actionState === "unplanned" && "is-open", row.hitDamage !== null && row.hitDamage > 0 && "is-hit"].filter(Boolean).join(" ")}>
-      <button type="button" className={`mecha-plan-card__select${selected ? " is-selected" : ""}`} aria-pressed={selected} disabled={disabled} onClick={() => onSelect(id)}>
+      <button type="button" className={`mecha-plan-card__select${selected ? " is-selected" : ""}`} aria-pressed={selected} disabled={disabled} onClick={() => hudActions ? hudActions.select(id) : onSelect(id)}>
         <span className="mecha-plan-card__avatar" aria-hidden="true">{avatar ?? id.slice(0, 1)}</span>
         <span className="mecha-plan-card__identity"><strong>{name}</strong><span>{hp} HP</span></span>
       </button>
+      {placementLabel && <small className="mecha-v15-unit-state">{placementLabel}</small>}
       {finished ? <span className="mecha-plan-card__status">{t("对局已结束。")}</span> : stateLabel ? <span className="mecha-plan-card__status mecha-v15-unit-state">{stateLabel}</span> : <details className="mecha-plan-card__plan">
         <summary><span className="mecha-plan-card__status">{status}{fizzle ? <span className="mecha-plan-card__fizzle"> · {locale === "en" ? "Forecast: fizzles" : "预计落空"}</span> : null}</span>{row.hitDamage === null || row.hitDamage > 0 ? <span className="mecha-plan-card__risk">{row.hitDamage === null ? t("风险未知") : `${t("受击")} ${row.hitDamage}`}</span> : null}</summary>
         <span className="mecha-plan-card__meta"><span>{status}</span><span className="mecha-plan-card__risk">{row.hitDamage === null ? t("风险未知") : `${t("预计")} ${t("受击")} ${row.hitDamage}`}</span></span>

@@ -4,7 +4,7 @@ import { describeUnitIdentity } from "./mecha/unitIdentity";
 import { monsterSkillName } from "./mecha/skillNames";
 import type { CellInspection } from "./mecha/cellInspection";
 
-export function MechaCellInspector({ info, locale, onClose, compact = false }: { info: CellInspection; locale: GameLocale; onClose: () => void; compact?: boolean }) {
+export function MechaCellInspector({ info, locale, onClose, compact = false, sequential = false }: { info: CellInspection; locale: GameLocale; onClose: () => void; compact?: boolean; sequential?: boolean }) {
   const en = locale === "en";
   const text = (zh: string, english: string) => en ? english : zh;
   const terrain = { land: text("地面", "Ground"), water: text("水域", "Water"), mountain: text("山地", "Mountain"), road: text("道路", "Road") }[info.terrain];
@@ -24,7 +24,7 @@ export function MechaCellInspector({ info, locale, onClose, compact = false }: {
     {info.building ? <p>HP {info.building.hp}/{info.building.maxHp}{info.object === "rubble" ? ` · ${text("已毁", "Destroyed")}` : ""}</p> : null}
     {attack ? <div className="mecha-inspection-intent" data-attack-source="declared"><strong>{text("当前宣告", "Declared attack")} · {attack.skill && attack.skill !== "skip" ? monsterSkillName(attack.skill, locale) : text("无攻击", "No attack")}</strong><p>{attack.targets.length ? `${text("红色箭头 → 攻击落点", "Red arrows → attack cells")} ${attack.targets.map(c => `(${c.x},${c.y})`).join(" ")}` : attack.status === "missing" ? text("没有可用宣告；不推测攻击路线。", "No declaration available; no route inferred.") : text("当前宣告无有效攻击落点。", "The declaration has no active attack cells.")}</p></div> : null}
     {info.movePath?.length ? <p className="mecha-inspection-move">{text("绿色路线 · 我方移动草稿，尚未执行", "Green route · friendly draft move, not executed")}</p> : null}
-    <details><summary>{text("地形与规则", "Terrain & rules")}</summary><p>{terrainDescription}</p>{blocked ? <p>{text("此格被占据：阻挡移动和普通射击。", "Occupied: blocks movement and normal shots.")}</p> : null}{attack ? <p>{text("箭头显示当前宣告的作用方向，不一定代表移动路径。推挤可能改变落点，蓝色 P 格是整包草稿预测。", "Arrows show the declared effect direction, not necessarily a movement path. Shoves may change cells; blue P marks are whole-draft predictions.")}</p> : null}{info.unit?.cd != null ? <p>{text("技能冷却", "Skill cooldown")} {info.unit.cd}</p> : null}</details>
+    <details open={sequential && info.object === "empty" ? true : undefined}><summary>{text("地形与规则", "Terrain & rules")}</summary><p>{terrainDescription}</p>{blocked ? <p>{text("此格被占据：阻挡移动和普通射击。", "Occupied: blocks movement and normal shots.")}</p> : null}{attack ? <p>{text("箭头显示当前宣告的作用方向，不一定代表移动路径。推挤可能改变落点。", "Arrows show the declared effect direction, not necessarily a movement path. Shoves may change cells.")}{!sequential && text("蓝色 P 格是整包草稿预测。", " Blue P marks are whole-draft predictions.")}</p> : null}{info.unit?.cd != null ? <p>{text("技能冷却", "Skill cooldown")} {info.unit.cd}</p> : null}</details>
   </>;
   return <section className="mecha-cell-inspector" data-cell={`${info.cell.x},${info.cell.y}`} data-inspected-unit={info.unit?.id} data-unit-side={identity?.side} aria-label={text("方格属性", "Tile information")} tabIndex={0}>
     <header>

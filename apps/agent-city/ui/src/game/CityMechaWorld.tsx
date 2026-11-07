@@ -12,7 +12,6 @@ import { boardToWorld, cellWorld, type CityMechaSite } from "./mecha/citySite";
 import { MechaBattleAnimator, MechaPerformancePlayer, faceMechaTarget, type MechaCombatCue } from "../render/mecha/animation";
 import { MECHA_FACTION_COLORS, createAssault, createBoss, createGunner, createRaider, createSupport, disposeMechaModel, ensureMechaGlbAsset, getMechaGlbAsset } from "../render/mecha/models";
 import { createAssaultBattleHeight, createAssaultBattlePlayer } from "../render/mecha/assaultBattlePlayer";
-import { useConnectedAssault } from "../render/mecha/connectedAssaultMode";
 import { createAssaultCityGround } from "./assaultCityGround";
 import { positionPerformanceActors } from "./mecha/positionPerformanceActors";
 import type { PlannedMechMove } from "./mecha/presentation/mechPositions";
@@ -67,7 +66,7 @@ export type CityMechaView = {
   /** Mouse or list focus; other enemies' threats remain visible. */
   hoveredEnemy?: string | null;
   /** Position is the event's verified attack-time origin, not the current actor position. */
-  enemyOrder?: Array<{ actor: string; cells: Cell[]; position?: Cell }>;
+  enemyOrder?: Array<{ actor: string; cells: Cell[]; position?: Cell; order?: number; cancel?: string }>;
   combat?: { id: number; actions: MechaCombatCue[]; reset?: true; healthTimeline?: HealthTimeline; presentationChanges?: PresentationChanges };
   /** 规则里的障碍格（场景楼、斜放楼）。缺省当空。 */
   obstacles?: Cell[];
@@ -118,6 +117,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
   view: CityMechaView;
   performance: MechaPerformanceView | null;
   paused: boolean;
+  connectedAssault: boolean;
   performanceSpeed?: ReplaySpeed;
   onPerformanceComplete: () => void;
   onCell: (x: number, y: number, input: "mouse" | "touch") => void;
@@ -125,7 +125,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
   onHoverEnemy?: (id: string | null) => void;
   onUnavailable?: (reason?: "preview" | "asset") => void;
   onPreviewLoading?: (loading: boolean) => void;
-}>(function CityMechaWorld({ engine, site, locale = "zh-Hans", view, performance, paused, performanceSpeed = 1, onPerformanceComplete, onCell, onHoverCell, onHoverEnemy, onUnavailable, onPreviewLoading }, ref) {
+}>(function CityMechaWorld({ engine, site, locale = "zh-Hans", view, performance, paused, connectedAssault, performanceSpeed = 1, onPerformanceComplete, onCell, onHoverCell, onHoverEnemy, onUnavailable, onPreviewLoading }, ref) {
   const badgeLayerRef = useRef<HTMLDivElement>(null);
   const localeRef = useRef(locale);
   localeRef.current = locale;
@@ -959,12 +959,16 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         canvas.width = canvas.height = 96;
         const ctx = canvas.getContext("2d");
         if (!ctx) return;
-        ctx.fillStyle = "#641b25";
+        ctx.fillStyle = event.cancel ? "#465568" : "#641b25";
         ctx.strokeStyle = "#fff3ce";
         ctx.lineWidth = 5;
         ctx.beginPath(); ctx.arc(48, 48, 39, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
         ctx.font = "bold 54px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-        ctx.fillStyle = "#fff"; ctx.fillText(String(index + 1), 48, 50);
+        ctx.fillStyle = "#fff"; ctx.fillText(String(event.order ?? index + 1), 48, 50);
+        if (event.cancel) {
+          ctx.strokeStyle = "#ffd166"; ctx.lineWidth = 7;
+          ctx.beginPath(); ctx.moveTo(23, 72); ctx.lineTo(73, 22); ctx.stroke();
+        }
         const texture = new THREE.CanvasTexture(canvas);
         const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false, depthWrite: false, sizeAttenuation: false, fog: false, toneMapped: false });
         const sprite = new THREE.Sprite(material);
@@ -985,7 +989,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
     let performanceStatuses: DisplayStatus[] | null = null;
     let performanceFields: Map<string, Cell> | null = null;
     let releasePreview: (() => void) | null = null;
-    const connectedPreview = useConnectedAssault(import.meta.env.DEV, location.search);
+    const connectedPreview = connectedAssault;
     let roadHeight: ((x: number, z: number) => number) | undefined;
     let terrainHeight: ((x: number, z: number) => number) | undefined;
     if (connectedPreview) {
@@ -1057,7 +1061,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         applyMechaUnitLight(unit);
         unit.userData.unitLightFor = source;
       }
-      syncOrderMarkers(!performanceRef.current && current.projectedTelegraph != null ? (current.enemyOrder ?? []) : []);
+      syncOrderMarkers(!performanceRef.current ? (current.enemyOrder ?? []) : []);
       // Keep labels readable when a narrow view fits the board from farther
       // away. Non-attenuated sprite size is view-space; convert CSS pixels
       // using the vertical field of view and canvas height.
@@ -1590,7 +1594,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       }
       if (engine.owner === "orbit") engine.restoreReturnView(saved);
     };
-  }, [engine, site]);
+  }, [connectedAssault, engine, site]);
 
   return <div ref={badgeLayerRef} className="mecha-world-unit-labels" aria-hidden="true" />;
 });

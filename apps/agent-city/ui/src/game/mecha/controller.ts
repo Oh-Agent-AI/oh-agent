@@ -16,6 +16,7 @@ import { PLAN_FAULT_CAUSES, gameText, planFaultText, type GameLocale } from "../
 import { deployableCells, deploymentCellFault, validateDeployPlan, deployFaultText, type DeployPlacement, type DeployFault } from "./deployment";
 import { STATS } from "./board";
 import { shotTargetDiagnostics, type ShotTargetDiagnostic } from "./combat";
+import { boardActionTargets, type TargetOption } from "./actionTargets";
 import { performanceFromLog } from "./performance";
 import type { MechaPerformanceEvent } from "../../render/mecha/performance";
 import type { MechaCombatCue } from "../../render/mecha/animation";
@@ -40,7 +41,7 @@ import {
 
 export type TargetKind = Exclude<Action["kind"], "skip">;
 export type UnavailableAction = { kind: TargetKind; reason: "cooldown" | "no_target"; shotTargets?: ShotTargetDiagnostic[] };
-export type TargetOption = { id: string; cells: Cell[] };
+export type { TargetOption } from "./actionTargets";
 export type Planner = (state: MatchState, doctrine: DoctrineId) => ArenaPlan;
 export type Beat = "show" | "resolve";
 
@@ -218,10 +219,6 @@ function draftFingerprint(drafts: DraftMap): string {
   }).join("|");
 }
 
-function footprintCells(anchor: Cell): Cell[] {
-  return [anchor, { x: anchor.x + 1, y: anchor.y }, { x: anchor.x, y: anchor.y + 1 }, { x: anchor.x + 1, y: anchor.y + 1 }];
-}
-
 /** 规则层的 cause 可选；翻译表只认已登记的键，未知值落到 other，不让界面出现空句。 */
 function causeOf(fault: Pick<PlanFault, "cause">): NonNullable<PlanFault["cause"]> {
   return fault.cause && FAULT_CAUSES.has(fault.cause) ? fault.cause : "other";
@@ -372,12 +369,8 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
     const key = `${draftVersion}:${selected}:${targeting}`;
     const cached = targetCache.get(key);
     if (cached) return cached;
-    const options: TargetOption[] = targeting === "repair"
-      ? living(settledDraftBoard(match, draft)).filter((mech) => mech.id !== selected).map((mech) => ({ id: mech.id, cells: [{ ...mech.pos }] }))
-      : [
-        ...(match.boss.hp > 0 ? [{ id: "boss", cells: footprintCells(match.boss.anchor) }] : []),
-        ...match.raiders.filter((raider) => raider.hp > 0).map((raider) => ({ id: raider.id, cells: [{ ...raider.pos }] })),
-      ];
+    const board = targeting === "repair" ? settledDraftBoard(match, draft) : match;
+    const options = boardActionTargets(board, targeting, selected);
     let unavailable = false;
     const rejections: Array<{ option: TargetOption; fault: PlanFault }> = [];
     const legal = options.filter((option) => {

@@ -113,6 +113,17 @@ export function refresh(state: MatchState) {
   }
 }
 
+/** Apply the shared end-of-player-phase cooldown and enter enemy resolution. */
+export function beginEnemyPhase(state: MatchState, options: { advanceRevision?: boolean } = {}): void {
+  for (const unit of state.mechs) {
+    if (unit.skillUsed) unit.skillUsed = false;
+    else if (unit.cd > 0) unit.cd -= 1;
+  }
+  if (options.advanceRevision) state.revision += 1;
+  state.phase = "resolving_boss";
+  refresh(state);
+}
+
 /** Apply the bounded hazard requests once per live round, after enemy actions. */
 export function tickCorrode(state: MatchState): void {
   if (!state.corrode || state.outcome) return;
@@ -517,7 +528,7 @@ function actionIsLegal(state: MatchState, id: MechId, action: Action): boolean {
 }
 
 /** 未写目标的行动在校验时绑定到当时唯一的目标：结算时「目标死了」才有明确含义，不会悄悄改打别人。 */
-function bindTarget(state: MatchState, id: MechId, action: Action): Action {
+export function bindActionTarget(state: MatchState, id: MechId, action: Action): Action {
   if (action.kind === "skip" || action.kind === "repair" || action.target !== undefined) return action;
   const only = kindTargets(state, id, action.kind);
   return only.length === 1 ? { kind: action.kind, target: only[0] } : action;
@@ -605,7 +616,7 @@ export function validateAndApplyPlan(state: MatchState, plan: ArenaPlan): { ok: 
       const err = quiet(() => applyAction(probe, id, action)) ?? "action not legal";
       return fault(id, err, actionFaultCause(err, action, state, trial, { id, pos: { ...mech(trial, id)!.pos } }));
     }
-    actions.set(id, bindTarget(trial, id, action));
+    actions.set(id, bindActionTarget(trial, id, action));
   }
 
   // Rescue completes only after the entire pack is valid and movement settles;
@@ -630,13 +641,7 @@ export function validateAndApplyPlan(state: MatchState, plan: ArenaPlan): { ok: 
       });
     }
   }
-  for (const m of trial.mechs) {
-    if (m.skillUsed) m.skillUsed = false;
-    else if (m.cd > 0) m.cd -= 1;
-  }
-  trial.revision += 1;
-  trial.phase = "resolving_boss";
-  refresh(trial);
+  beginEnemyPhase(trial, { advanceRevision: true });
   Object.assign(state, trial);
   return { ok: true };
 }

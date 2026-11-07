@@ -1,13 +1,13 @@
 /** Local v1.5 view adapter. No persistence, network, DOM or Three.js access. */
 import { BUILDING_COLLISION_RULESET, eq, mech, swapEventSink, type Action, type Cell, type MatchState, type MechId, type PresentationStages, type TurnEvent } from "./board";
 import { applyDeployPlan, deployableCells, deploymentCellFault, validateDeployPlan, type DeployPlacement } from "./deployment";
-import { SequentialTurn, type SequentialCommand, type SequentialRecord } from "./sequentialTurn";
+import { SequentialTurn, type SequentialRecord } from "./sequentialTurn";
 import { canonicalJson } from "./contracts/match";
 import { SequentialDurableAuthority, type SequentialDurableStore } from "./sequentialDurable";
 
 export type CommandInput =
   | { kind: "move"; mech: MechId; to: Cell }
-  | { kind: "undo" }
+  | { kind: "undo"; mech: MechId }
   | { kind: "act"; mech: MechId; action: Action }
   | { kind: "reset" }
   | { kind: "end"; confirmUnused: boolean };
@@ -19,7 +19,10 @@ export type SequentialControllerView = {
   canConfirmDeployment: boolean;
   canUndoPlacement: boolean;
   rights: ReturnType<SequentialTurn["snapshot"]>["rights"] | null;
+  activity: ReturnType<SequentialTurn["turnActivity"]> | null;
+  openingPlacements: DeployPlacement[] | null;
   canUndo: boolean;
+  undoMech: MechId | null;
   resetUsed: boolean;
   /** Recorded command effect; input remains locked until presentation acknowledges it. */
   presentation: { before: MatchState; events: TurnEvent[]; stages: PresentationStages | null } | null;
@@ -59,12 +62,14 @@ export class SequentialController {
   subscribe = (fn: () => void): (() => void) => { this.listeners.add(fn); return () => { this.listeners.delete(fn); }; };
   private rebuild(): void {
     const deployment = this.state.phase === "deployment", authority = this.authority?.snapshot();
+    const undoMech = this.authority?.undoMech() ?? null;
     this.view = {
       match: copy(this.state), selected: this.selected, placements: deployment ? copy(this.placements) : null,
       deployable: deployment ? deployableCells(this.state) : [],
       canConfirmDeployment: deployment && validateDeployPlan(this.state, { revision: this.state.revision, placements: this.placements }).ok,
       canUndoPlacement: deployment && this.deploymentHistory.length > 0,
-      rights: authority?.rights ?? null, canUndo: Boolean(authority?.undo.length), resetUsed: authority?.resetUsed ?? false,
+      rights: authority?.rights ?? null, canUndo: undoMech === this.selected, undoMech, resetUsed: authority?.resetUsed ?? false,
+      activity: this.authority?.turnActivity() ?? null, openingPlacements: copy(this.openingPlacements),
       presentation: this.presentation ? copy(this.presentation) : null, error: this.error,
       persistence: this.saving ? "saving" : this.durable?.needsReload() ? "unconfirmed" : this.durable ? "ready" : "inactive",
     };
@@ -103,12 +108,16 @@ export class SequentialController {
     this.initial = this.authority ? copy(result.state) : null;
     this.placements = []; this.deploymentHistory = []; this.error = null; this.publish();
   }
-  /** Validate against an isolated replay; never change current state or event sink. */
+  private commandInput(input: CommandInput) {
+    if (input.kind !== "undo") return input;
+    if (input.mech !== this.selected || input.mech !== this.authority?.undoMech()) return null;
+    return { kind: "undo" } as const;
+  }
+  /** Validate against a detached trial fork; never change current state or event sink. */
   preview(input: CommandInput): ReturnType<SequentialTurn["execute"]> | null {
     if (!this.authority || this.presentation || this.saving || this.durable?.needsReload()) return null;
-    const initial = this.authorityInitial();
-    const trial = SequentialTurn.replay(initial, this.authority.records());
-    return trial.execute({ ...input, id: `preview-${this.serial}`, revision: this.state.revision } as SequentialCommand);
+    const command = this.commandInput(input);
+    return command ? this.authority.trial({ ...command, id: `preview-${this.serial}`, revision: this.state.revision }) : null;
   }
   private initial: MatchState | null = null;
   private authorityInitial(): MatchState {
@@ -117,8 +126,10 @@ export class SequentialController {
   }
   execute(input: CommandInput): void {
     if (!this.authority || this.presentation || this.durable) return;
+    const command = this.commandInput(input);
+    if (!command) return;
     const before = copy(this.state);
-    const result = this.authority.execute({ ...input, id: `local-${++this.serial}`, revision: this.state.revision } as SequentialCommand);
+    const result = this.authority.execute({ ...command, id: `local-${++this.serial}`, revision: this.state.revision });
     if (!result.ok) { this.error = result.reason; this.publish(); return; }
     this.state = result.snapshot.match;
     this.presentation = result.events.length ? { before, events: result.events, stages: result.presentationStages } : null;
@@ -139,10 +150,12 @@ export class SequentialController {
   }
   async executeDurable(input: CommandInput): Promise<void> {
     if (!this.durable || !this.authority || this.presentation || this.saving || this.durable.needsReload()) return;
+    const command = this.commandInput(input);
+    if (!command) return;
     const before = copy(this.state), revision = this.state.revision;
     this.saving = true; this.error = null; this.publish();
     try {
-      const result = await this.durable.execute({ ...input, id: `c${this.durable.recordCount()}`, revision } as SequentialCommand);
+      const result = await this.durable.execute({ ...command, id: `c${this.durable.recordCount()}`, revision });
       if (!result.ok) { this.error = result.reason; return; }
       this.authority = SequentialTurn.replay(this.authorityInitial(), this.durable.records());
       this.state = result.snapshot.match;

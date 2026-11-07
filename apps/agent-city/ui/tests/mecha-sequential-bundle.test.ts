@@ -39,7 +39,7 @@ function played() {
   assert.equal(c.replayEvidence(), null);
   MECH_IDS.forEach((id, i) => c.place(id, { x: i * 3, y: 8 })); c.confirmDeployment();
   c.execute({ kind: "move", mech: "Assault", to: { x: 0, y: 7 } }); c.finishPresentation();
-  c.execute({ kind: "undo" }); c.finishPresentation();
+  c.select("Assault"); c.execute({ kind: "undo", mech: "Assault" }); c.finishPresentation();
   c.execute({ kind: "act", mech: "Gunner", action: { kind: "skip" } }); c.finishPresentation();
   c.execute({ kind: "reset" }); c.finishPresentation();
   c.execute({ kind: "end", confirmUnused: true }); c.finishPresentation();
@@ -179,7 +179,7 @@ test("resume preserves move undo and rejects altered evidence without replacing 
   const bad = structuredClone(evidence); bad.records[0]!.snapshot.match.boss.hp--;
   assert.equal(next.restore(bad), false); assert.deepEqual(next.getState(), before);
   assert.equal(next.restore(evidence), true); assert.equal(next.getState().canUndo, true);
-  next.execute({ kind: "undo" }); next.finishPresentation();
+  next.execute({ kind: "undo", mech: "Assault" }); next.finishPresentation();
   assert.deepEqual(next.getState().match.mechs[0]!.pos, { x: 0, y: 8 });
   assert.equal(next.getState().rights!.Assault.move, true);
 });

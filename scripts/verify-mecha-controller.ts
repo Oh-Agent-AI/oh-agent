@@ -680,7 +680,7 @@ test("candidate loading gates board input, auto tick and submit across site chan
   assert.match(boardSource, /if \(remoteActive \|\| previewLoading\) return;[\s\S]*controller\?\.previewTarget/);
   assert.match(boardSource, /if \(viewFailed \|\| previewLoading \|\| remoteActive \|\| !auto \|\| paused \|\| performance \|\| !controller\) return undefined/);
   assert.match(boardSource, /const planning = s\.interactive && !sequenceWaiting && !remoteActive && !previewLoading/);
-  assert.match(boardSource, /if \(!nextSite \|\| next === shapeId\) return;\s*requestDestructiveAction\(\(\) => \{\s*if \(!controller\.restart\(\{ site: nextSite, stake: next === "alley" \? "frontage" : "all" \}\)\) return;\s*if \(useConnectedAssault\(import\.meta\.env\.DEV, location\.search\)\) setPreviewLoading\(true\);\s*setShape\(next\)/);
+  assert.match(boardSource, /if \(!nextSite \|\| next === shapeId\) return;\s*requestDestructiveAction\(\(\) => \{\s*if \(!controller\.restart\(\{ site: nextSite, stake: next === "alley" \? "frontage" : "all" \}\)\) return;\s*if \(connectedAssault\) setPreviewLoading\(true\);\s*setShape\(next\)/);
 });
 
 test("battle actors start at their current cells before the first ground sample", () => {

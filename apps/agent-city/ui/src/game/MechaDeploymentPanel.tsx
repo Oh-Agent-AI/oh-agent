@@ -56,7 +56,8 @@ export function MechaDeploymentActionsView({ locale, selected, cells, disabled, 
   const stats = STATS[id];
   return <section className="mecha-selected-actions mecha-deploy-actions" aria-label={t("部署操作")}>
     <h3>{t("放置机甲")} · {t(NAMES[id])}</h3>
-    <div className="mecha-deploy-unit"><MechaUnitPortrait unitId={id} locale={locale} size={88} /><div><strong>{t(NAMES[id])}</strong><p>HP {stats.maxHp} · {t("移动")} {stats.move}</p><p>{t("部署确认后才生成首回合敌意。")}</p></div></div>
+    <div className="mecha-deploy-unit"><MechaUnitPortrait unitId={id} locale={locale} size={88} /><div><strong>{t(NAMES[id])}</strong><p>HP {stats.maxHp} · {t("移动")} {stats.move}</p></div></div>
+    <p className="mecha-deploy-next-step">{t("部署确认后才生成首回合敌意。完成 3/3 并确认后，即可操作机甲、移动和攻击。")}</p>
     <details className="mecha-deploy-list"><summary>{t("通过列表部署")}</summary>
       <label htmlFor="mecha-deploy-choice">{t("选择部署坐标")}</label>
       <div className="mecha-move-controls"><select id="mecha-deploy-choice" value={choice} disabled={disabled} onChange={e => setChoice(e.currentTarget.value)}><option value="" disabled>{t("选择坐标")}</option>{cells.map(c => <option key={`${c.x},${c.y}`} value={`${c.x},${c.y}`}>{c.x}, {c.y}</option>)}</select><button type="button" disabled={disabled || !cells.some(c => `${c.x},${c.y}` === choice)} onClick={() => { const [x, y] = choice.split(",").map(Number); onPlace(id, { x, y }); }}>{t("放置机甲")}</button></div>

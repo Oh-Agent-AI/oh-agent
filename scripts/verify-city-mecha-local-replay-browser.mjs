@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 const { chromium } = createRequire(new URL("../apps/desktop/ui-dev/package.json", import.meta.url))("playwright");
 const base = process.argv[2] ?? "http://127.0.0.1:5190";
+const classicBase = new URL(base); classicBase.searchParams.set("mechaV15", "0");
 const browser = await chromium.launch({ headless: true, args: ["--enable-unsafe-swiftshader"] });
 try {
   for (const lang of process.env.MECHA_LANG ? [process.env.MECHA_LANG] : ["zh", "en"]) {
@@ -43,7 +44,7 @@ try {
       await route.fulfill({ response, body });
     });
     await page.addInitScript(locale => { localStorage.setItem("city.seed", "4196523069"); window.__AV_PLUGIN_LOCALE__ = locale; }, zh ? "zh-Hans" : "en");
-    await page.goto(base, { waitUntil: "domcontentloaded", timeout: 240000 });
+    await page.goto(classicBase.href, { waitUntil: "domcontentloaded", timeout: 240000 });
     await page.locator(".city-loading").waitFor({ state: "hidden" });
     await page.getByRole("button", { name: zh ? "城市设置" : "City settings" }).click();
     await page.getByRole("button", { name: zh ? "机甲战棋" : "Mecha tactics", exact: true }).click();
@@ -62,7 +63,9 @@ try {
     assert.ok(finish.count >= 2, `multiple accepted turns: ${finish.count}`);
     const dialog = page.locator("[data-mecha-result-dialog]");
     await dialog.waitFor({ state: "visible" });
-    assert.ok((await dialog.innerText()).includes(zh ? "可手动保存本局回放到本机" : "Save this replay locally"));
+    await dialog.getByRole("status").getByText(
+      zh ? "本局回放已自动保存到本机。" : "This battle replay was saved locally automatically.",
+    ).waitFor();
     await dialog.locator("[data-result-replay]").click();
     const bar = page.locator("[data-mecha-replay]");
     await bar.waitFor({ state: "visible" });

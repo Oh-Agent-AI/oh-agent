@@ -271,7 +271,9 @@ try {
       // not a verdict on the redesign. Preflight is deliberately outside app checks.
       let response;
       try {
-        response = await page.goto(new URL("/?fixtureSessions=30", base).href, { waitUntil: "domcontentloaded", timeout: 90_000 });
+        const classicUrl = new URL("/?fixtureSessions=30", base);
+        classicUrl.searchParams.set("mechaV15", "0");
+        response = await page.goto(classicUrl.href, { waitUntil: "domcontentloaded", timeout: 90_000 });
         assert.ok(response?.ok(), `server returned ${response?.status()}`);
         await page.locator(".city-loading").waitFor({ state: "hidden", timeout: 90_000 });
         if (injectionError || injectionCount !== 1) throw new Error(injectionError ?? `preview interception count ${injectionCount}, expected 1; use the City Vite server`);
@@ -279,9 +281,14 @@ try {
       const entered = await check("enter synthetic battle", async () => {
         await button("城市设置", "City settings").click();
         await button("机甲战棋", "Mecha tactics").click();
-        await page.locator(".mecha-turn-summary").waitFor(); const preferred = await page.evaluate(() => globalThis.__referenceHudDeployCells);
+        const hud = page.locator(".mecha-overlay.is-reference-hud");
+        await page.locator(".mecha-turn-summary").waitFor();
+        assert.equal(await hud.getAttribute("data-hud-mode"), "classic");
+        assert.equal(await hud.getAttribute("data-hud-phase"), "deployment");
+        const preferred = await page.evaluate(() => globalThis.__referenceHudDeployCells);
         const deployed = await completeLocalDeployment(page, preferred);
         assert.deepEqual(deployed, preferred.map(c => `${c.x},${c.y}`), "HUD fixture must deploy at its original legal cells through the UI");
+        assert.equal(await hud.getAttribute("data-hud-phase"), "planning");
         // Deployment leaves the last placed unit selected. This regression's
         // three-action deck contract is for Assault, so select it through UI.
         await page.locator(".mecha-pack .mecha-plan-card__select").filter({ hasText: text("突击", "Assault") }).click();
@@ -407,11 +414,17 @@ try {
         await forecast.scrollIntoViewIfNeeded(); await forecast.click();
         const order = button("结算顺序", "Attack order");
         await order.scrollIntoViewIfNeeded(); await usable(order); await order.click();
+        const orderSteps = page.locator(".mecha-order [data-attack-order-step]");
+        assert.ok(await orderSteps.count() > 0, "classic mode renders simulated enemy resolution steps");
+        const orderNumbers = await orderSteps.evaluateAll(nodes => nodes.map(node => Number(node.getAttribute("data-order"))));
+        assert.deepEqual(orderNumbers, orderNumbers.map((_, index) => index + 1), "classic order rows follow the actual resolution sequence");
+        if (screenshots) await page.screenshot({ path: join(screenshots, `attack-order-${lang}-${width}x${height}.png`) });
         await check("attack order: no half-lines and all text reachable", async () => {
           await auditDetailLines(page.locator(".mecha-order"), ".mecha-turn-summary");
         });
         const orderItems = page.locator(".mecha-order ol button"), threats = page.locator(".mecha-threat-sources button");
-        assert.ok(await orderItems.count() > 0); assert.deepEqual(await orderItems.allTextContents(), await threats.allTextContents());
+        assert.ok(await orderItems.count() > 0);
+        assert.deepEqual((await orderItems.allTextContents()).map(value => value.replace(/^\d+\.\s*/, "")), await threats.allTextContents());
         await orderItems.first().scrollIntoViewIfNeeded(); await usable(orderItems.first()); await orderItems.first().click();
         assert.equal(await orderItems.first().getAttribute("aria-pressed"), "true");
         await order.scrollIntoViewIfNeeded(); await order.click();
@@ -557,7 +570,7 @@ try {
         await usable(quick);
         assert.equal(await page.locator("details.mecha-resource").count(), 0, "old building prediction must be removed");
         assert.equal(await page.locator(".mecha-threat-sources").getAttribute("aria-label"), zh ? "当前宣告威胁来源" : "Declared threat sources", "failure list must be labeled as declarations, not stale predictions");
-        assert.equal(await page.locator(".mecha-order ol li").count(), 0, "old predicted order must be removed");
+        assert.equal(await page.locator(".mecha-order ol li").count(), 0, "closed order panel must not retain stale rows");
         assert.equal(await page.locator(".mecha-hit").count(), 0, "old predicted hit badges must be removed");
         await page.locator(".mecha-move-list select").selectOption("3,2");
         await button("应用移动", "Apply move").click();
