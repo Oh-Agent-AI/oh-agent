@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { bossPrepare, createMatch } from "../src/game/mecha/rules.ts";
 import { SequentialMatchSession, restoreSequentialSnapshot } from "../src/game/mecha/session/SequentialMatchSession.ts";
+import { SequentialRemoteHost } from "../src/game/mecha/session/SequentialRemoteHost.ts";
 
 function fixture() {
   const state = createMatch({ ruleset: "mecha-v1.5", preset: "covers_sparse_mid", script: "stationary_smash", covers: [], obstacles: [], buildings: [], raiders: [], boss: { x: 4, y: 0 },
@@ -37,4 +38,22 @@ test("restoring a snapshot rejects a truncated command history", () => {
   if (!moved.ok) return;
   const truncated = { ...moved.snapshot, commands: [] };
   assert.throws(() => restoreSequentialSnapshot(truncated), /invalid_sequential_snapshot_revision/);
+});
+
+test("v2 host serves snapshots and commands without accepting another match or protocol", () => {
+  const initial = fixture();
+  const session = new SequentialMatchSession("match-host", initial, []);
+  const host = new SequentialRemoteHost(session);
+  const snapshot = host.handle({ protocol: "mecha-net:v2", type: "request", requestId: "r1", method: "sequential.snapshot", payload: { matchId: "match-host" } });
+  assert.ok(snapshot && snapshot.result.ok);
+  if (!snapshot || !snapshot.result.ok) return;
+  const command = { kind: "move" as const, id: "m", revision: snapshot.result.snapshot.revision, mech: "Assault" as const, to: { x: 3, y: 2 } };
+  const submitted = host.handle({ protocol: "mecha-net:v2", type: "request", requestId: "r2", method: "sequential.command.submit", payload: { matchId: "match-host", baseRevision: command.revision, command } });
+  assert.ok(submitted && submitted.result.ok);
+  if (!submitted || !submitted.result.ok) return;
+  assert.equal(submitted.result.snapshot.commands.length, 1);
+  const stale = host.handle({ protocol: "mecha-net:v2", type: "request", requestId: "r3", method: "sequential.command.submit", payload: { matchId: "match-host", baseRevision: command.revision, command: { ...command, id: "m2" } } });
+  assert.equal(stale?.result.ok, false);
+  assert.equal(host.handle({ protocol: "mecha-net:v1", type: "request", requestId: "r4", method: "sequential.snapshot", payload: { matchId: "match-host" } }), null);
+  assert.equal(host.handle({ protocol: "mecha-net:v2", type: "request", requestId: "r5", method: "sequential.snapshot", payload: { matchId: "other" } })?.result.ok, false);
 });

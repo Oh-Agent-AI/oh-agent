@@ -23,3 +23,18 @@ export type SequentialCommandResult =
 export type SequentialSnapshotResult =
   | { ok: true; snapshot: SequentialSnapshot }
   | { ok: false; error: { code: "match_not_found" } };
+
+export type SequentialMethod = "sequential.snapshot" | "sequential.command.submit";
+export type SequentialRequest = {
+  protocol: SequentialProtocol;
+  type: "request";
+  requestId: string;
+  method: SequentialMethod;
+  payload: { matchId: string; baseRevision?: number; command?: unknown };
+};
+export type SequentialResponse = {
+  protocol: SequentialProtocol;
+  type: "response";
+  requestId: string;
+  result: SequentialSnapshotResult | SequentialCommandResult;
+};
