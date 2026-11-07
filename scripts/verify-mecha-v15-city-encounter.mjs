@@ -27,22 +27,23 @@ try {
   await page.locator("[data-mecha-v15]").waitFor();
   const sites = await page.evaluate(() => ({ selected: globalThis.__encounterTest.encounter.site, actual: globalThis.__encounterTest.v15Site }));
   assert.deepEqual(sites.actual, sites.selected, "the clicked encounter supplies the battle site");
-  const select = page.locator("#v15-cell");
-  await page.waitForFunction(() => { const e = document.querySelector('#v15-cell'); return e && !e.disabled && e.options.length > 3; });
+  await page.locator(".mecha-deploy-list > summary").click();
+  const select = page.locator("#mecha-deploy-choice");
+  await page.waitForFunction(() => { const e = document.querySelector('#mecha-deploy-choice'); return e && !e.disabled && e.options.length > 3; });
   const cells = await select.locator("option").evaluateAll(options => options.map(option => option.value).filter(Boolean).slice(0, 3));
   for (const [index, cell] of cells.entries()) {
-    await page.locator(".mecha-v15-roster button").nth(index).click();
-    await select.selectOption(cell); await page.getByRole("button", { name: "放置", exact: true }).click();
+    await page.locator(".mecha-deploy-roster button").nth(index).click();
+    await select.selectOption(cell); await page.getByRole("button", { name: "放置机甲", exact: true }).click();
   }
   await page.getByRole("button", { name: "确认部署", exact: true }).click();
-  await page.getByText("回合 1", { exact: true }).waitFor();
+  await page.locator(".mecha-turn-summary [role=status]").waitFor();
   await page.goto(`${base}/?fixtureSessions=30&mechaV15=1&mechaStatus=prism_warden`, { waitUntil: "domcontentloaded", timeout: 240000 });
   await page.locator(".city-loading").waitFor({ state: "hidden", timeout: 180000 });
   await page.getByRole("tab", { name: "怪兽" }).click();
   const again = page.getByRole("group", { name: "定位遭遇点" }).getByRole("button").first();
   await again.waitFor(); const againLabel = await again.textContent(); await again.click();
   const againMarker = page.getByRole("button", { name: `${againLabel}，进入机甲战棋` }); await againMarker.waitFor({ state: "visible" }); await againMarker.click();
-  await page.getByText("状态怪物测试不能使用城市遭遇点", { exact: true }).waitFor();
+  await page.getByText("状态挑战不能使用城市遭遇点", { exact: true }).waitFor();
   assert.equal(await page.locator("[data-mecha-v15]").count(), 0, "status monster must not replace the city's visible monster");
   assert.deepEqual(errors, []);
   console.log("PASS v1.5 City encounter: selected site preserved, deployment confirmed, incompatible status request rejected");

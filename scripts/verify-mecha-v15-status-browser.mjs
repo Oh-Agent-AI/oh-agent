@@ -41,10 +41,11 @@ try {
     await page.locator("[data-mecha-v15]").waitFor();
   }
   await enter();
-  const root = page.locator("[data-mecha-v15]"), select = page.locator("#v15-cell");
+  const root = page.locator("[data-mecha-v15]"), select = page.locator("#v15-cell"), deploySelect = page.locator("#mecha-deploy-choice");
+  await root.locator(".mecha-deploy-list > summary").click();
   for (const [index, cell] of scenario.cells.entries()) {
-    await root.locator(".mecha-v15-roster button").nth(index).click();
-    await select.selectOption(cell); await button("放置").click();
+    await root.locator(".mecha-deploy-roster button").nth(index).click();
+    await deploySelect.selectOption(cell); await button("放置机甲").click();
   }
   await button("确认部署").click();
   console.log("Deployment confirmed");

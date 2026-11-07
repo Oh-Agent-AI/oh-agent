@@ -5,6 +5,22 @@
 export type GameLocale = "zh-Hans" | "en";
 
 const ENGLISH: Record<string, string> = {
+  "选择战斗规则": "Choose battle rules",
+  "机甲战棋 1.5 使用逐台行动与即时结算；经典模式保留旧回放并支持远程对战。": "Mecha tactics 1.5 resolves each mech's move and action immediately. Classic mode preserves legacy replays and supports remote matches.",
+  "机甲战棋 1.5 · 本地 PvE": "Mecha tactics 1.5 · local PvE",
+  "状态效果挑战": "Status effect challenge",
+  "经典模式 · 1.4": "Classic mode · 1.4",
+  "选择状态效果挑战": "Choose a status effect challenge",
+  "使用当前城市战场，挑战带有一种特殊状态技能的怪物。": "Use the current city battlefield to face a monster with a status effect skill.",
+  "孢群体 · 中毒": "Spore leaper · poison",
+  "流环体 · 燃烧": "Flux lancer · burn",
+  "晶簇体 · 冻结": "Prism warden · freeze",
+  "引力核 · 眩晕": "Gravity core · stun",
+  "返回": "Back",
+  "状态挑战参数无效": "Invalid status challenge",
+  "请选择受支持的本地状态挑战。": "Choose a supported local status challenge.",
+  "状态挑战不能使用城市遭遇点": "Status challenges cannot use city encounters",
+  "请返回并单独选择状态效果挑战。": "Go back and choose a status effect challenge.",
   "状态测试参数无效": "Invalid status encounter parameter",
   "请选择受支持的本地怪物测试。": "Choose a supported local monster encounter.",
   "状态怪物测试不能使用城市遭遇点": "Status monster tests cannot use city encounters",

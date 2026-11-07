@@ -26,6 +26,24 @@ test("deployment is explicit and remains at the committed cells without an autom
   assert.ok(Object.values(c.getState().rights!).every(right => right.move && right.action));
 });
 
+test("deployment reset is undoable and cannot alter a confirmed match", () => {
+  const c = setup();
+  c.place("Assault", { x: 0, y: 8 });
+  c.place("Gunner", { x: 3, y: 8 });
+  const beforeReset = c.getState().placements;
+  assert.equal(c.getState().canUndoPlacement, true);
+  c.resetPlacement();
+  assert.deepEqual(c.getState().placements, []);
+  c.undoPlacement();
+  assert.deepEqual(c.getState().placements, beforeReset);
+  c.place("Support", { x: 6, y: 8 });
+  c.confirmDeployment();
+  const confirmed = structuredClone(c.getState().match);
+  c.resetPlacement();
+  assert.deepEqual(c.getState().match, confirmed);
+  assert.equal(c.getState().placements, null);
+});
+
 test("preview is isolated; committed moves lock input during presentation and undo restores authority", () => {
   const c = setup(); deploy(c); const before = structuredClone(c.getState());
   const preview = c.preview({ kind: "move", mech: "Assault", to: { x: 0, y: 7 } });
@@ -43,8 +61,12 @@ test("end requires explicit confirmation when actions remain and replay preserve
   const c = setup(); deploy(c); const initial = structuredClone(c.getState().match);
   c.execute({ kind: "end", confirmUnused: false }); assert.equal(c.getState().error, "confirmation_required");
   assert.equal(c.records().length, 0);
+  const forecast = c.preview({ kind: "end", confirmUnused: true });
+  assert.ok(forecast?.ok);
+  assert.deepEqual(c.getState().match, initial, "forecast must not change the live match");
   c.execute({ kind: "end", confirmUnused: true });
   assert.equal(c.getState().match.turn, initial.turn + 1); assert.ok(c.getState().presentation);
+  assert.deepEqual(c.getState().match, forecast.snapshot.match, "ending without another command matches the forecast");
   assert.deepEqual(SequentialTurn.replay(initial, c.records()).snapshot().match, c.getState().match);
   c.finishPresentation(); assert.equal(c.getState().presentation, null);
 });

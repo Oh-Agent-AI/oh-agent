@@ -4,6 +4,7 @@ import "./MechaQuickGuide.css";
 
 export type MechaQuickGuideProps = {
   locale: GameLocale;
+  mode?: "classic" | "sequential";
   /** Optional fallback when the menu item that opened the guide is unmounted. */
   returnFocusRef?: RefObject<HTMLElement | null>;
   /** Called for the close button or Escape; the host must unmount the guide. */
@@ -37,13 +38,36 @@ const COPY = {
   },
 } as const;
 
+const SEQUENTIAL_COPY = {
+  "zh-Hans": {
+    title: "战斗快速指南", introduction: "本地逐台行动的基本流程；具体目标和可用操作以当前对局为准。", close: "关闭指南",
+    steps: [
+      { title: "部署", detail: "选择机甲和绿色部署格；放好三台后确认部署，随后出现首回合敌意。" },
+      { title: "查看预告", detail: "红色斜纹表示当前宣告的敌方攻击格。行动可能改变敌人的预告；预测不可用不代表安全。" },
+      { title: "逐台行动", detail: "选择机甲后，可移动一次并行动一次。移动立即生效；选择技能和目标后可预览，确认行动会立即结算。" },
+      { title: "结束回合", detail: "完成需要的行动后结束回合；若仍有机甲能行动，需要确认放弃机会。随后敌方行动。移动可按当前规则撤销，每局可重置回合一次。" },
+      { title: "回放与恢复", detail: "自动检查点和回放保存在本机。恢复或读取失败时，界面会提示并锁定需要确认的操作。" },
+    ],
+  },
+  en: {
+    title: "Quick battle guide", introduction: "The basics of local sequential play; available controls and objectives depend on the match.", close: "Close guide",
+    steps: [
+      { title: "Deploy", detail: "Choose each mech and a green deployment cell. Confirm all three placements to reveal the first enemy intentions." },
+      { title: "Read the telegraph", detail: "Red stripes mark declared enemy attack cells. Later actions may change them; an unavailable forecast does not mean safety." },
+      { title: "Act one mech at a time", detail: "Each mech may move once and act once. Movement takes effect immediately; choose an ability and target to preview, then confirm to resolve it." },
+      { title: "End the turn", detail: "End the turn after acting. If any mech can still act, confirm that those opportunities are forfeited. Enemies then act. Movement can be undone when allowed, and one turn reset is available per match." },
+      { title: "Replay and recovery", detail: "Checkpoints and replays stay on this device. Failed recovery or reads are reported, and operations requiring confirmation are locked." },
+    ],
+  },
+} as const;
+
 /** Mount only at the player's request. The guide stores no state and does not alter the match. */
-export function MechaQuickGuide({ locale, onClose, returnFocusRef }: MechaQuickGuideProps) {
+export function MechaQuickGuide({ locale, mode = "classic", onClose, returnFocusRef }: MechaQuickGuideProps) {
   const dialog = useRef<HTMLDialogElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
   const titleId = useId();
   const introductionId = useId();
-  const copy = COPY[locale];
+  const copy = mode === "sequential" ? SEQUENTIAL_COPY[locale] : COPY[locale];
 
   useLayoutEffect(() => {
     if (!dialog.current) return;

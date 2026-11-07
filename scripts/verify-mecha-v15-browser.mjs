@@ -8,7 +8,8 @@ const base = process.argv[2] ?? "http://127.0.0.1:5187";
 const reduced = process.env.MECHA_V15_REDUCED === "1";
 const browser = await chromium.launch({ headless: true, args: ["--use-angle=metal"] });
 try {
-  for (const [locale, width, height] of [["zh", 1280, 800], ["en", 390, 844]]) {
+  const cases = process.env.MECHA_V15_LOCALE === "en" ? [["en", 390, 844]] : process.env.MECHA_V15_LOCALE === "zh" ? [["zh", 1280, 800]] : [["zh", 1280, 800], ["en", 390, 844]];
+  for (const [locale, width, height] of cases) {
     const context = await browser.newContext({ viewport: { width, height }, reducedMotion: reduced ? "reduce" : "no-preference" });
     const page = await context.newPage(); page.setDefaultTimeout(60000);
     const errors = []; page.on("pageerror", error => errors.push(error.message));
@@ -30,22 +31,32 @@ try {
     const button = (zh, en) => page.getByRole("button", { name: locale === "zh" ? zh : en, exact: true });
     await button("城市设置", "City settings").click(); await button("机甲战棋", "Mecha tactics").click();
     const root = page.locator("[data-mecha-v15]"); await root.waitFor();
-    const select = page.locator("#v15-cell");
-    const cells = await select.locator("option").evaluateAll(options => options.map(option => option.value).filter(Boolean));
+    await root.locator(".mecha-battle-menu summary").click();
+    await button("战斗教学", "Quick guide").click();
+    assert.match(await page.locator("[data-mecha-quick-guide]").innerText(), locale === "zh" ? /逐台行动/ : /sequential play/);
+    await button("关闭指南", "Close guide").click();
+    assert.equal(await root.locator(".mecha-battle-menu summary").evaluate(el => document.activeElement === el), true, "guide returns focus to its trigger");
+    await root.locator(".mecha-deploy-list > summary").click();
+    const deploySelect = page.locator("#mecha-deploy-choice");
+    const cells = await deploySelect.locator("option").evaluateAll(options => options.map(option => option.value).filter(Boolean));
     assert.ok(cells.length >= 3);
     for (let index = 0; index < 3; index++) {
-      await root.locator(".mecha-v15-roster button").nth(index).click();
-      await select.selectOption(cells[index]); await button("放置", "Place").click();
+      await root.locator(".mecha-deploy-roster button").nth(index).click();
+      await deploySelect.selectOption(cells[index]); await button("放置机甲", "Place mech").click();
     }
     await button("确认部署", "Confirm deployment").click();
-    await page.locator("#v15-action").waitFor();
+    await root.locator(".mecha-action-card").first().waitFor();
     const deployed = await page.evaluate(() => globalThis.__v15Controller.getState().match.mechs.map(m => [m.id, m.pos.x, m.pos.y]));
     assert.deepEqual(deployed.map(m => `${m[1]},${m[2]}`), cells.slice(0, 3));
-    await page.waitForFunction(() => document.querySelector('#v15-action') && !document.querySelector('#v15-action').disabled);
+    await page.waitForFunction(() => document.querySelector('.mecha-action-card:not(:disabled)'));
     // Synthetic presentation projection only; the status encounter remains gated.
     await page.evaluate(() => { globalThis.__v15World.view().statuses = [{ target: "Assault", source: "boss", kind: "poison", remainingTurns: 2 }]; });
     const badge = page.locator('.mecha-world-healthbar[data-unit-id="Assault"]');
-    await page.waitForFunction(expected => document.querySelector('.mecha-world-healthbar[data-unit-id="Assault"] .mecha-world-healthbar__status')?.textContent === expected, locale === "zh" ? "毒2" : "PSN2");
+    await page.waitForFunction(() => document.querySelector('.mecha-world-healthbar[data-unit-id="Assault"] .mecha-world-healthbar__status')?.textContent === "☠️2");
+    await page.waitForFunction(lang => {
+      const label = document.querySelector('.mecha-world-healthbar[data-unit-id="Assault"]')?.getAttribute("aria-label") ?? "";
+      return lang === "zh" ? /中毒.*2/.test(label) : /Poison.*2 turns/.test(label);
+    }, locale);
     assert.match(await badge.getAttribute("aria-label"), locale === "zh" ? /中毒.*2/ : /Poison.*2 turns/);
     await page.evaluate(() => { globalThis.__v15World.view().statuses = []; });
     await page.reload({ waitUntil: "domcontentloaded" });
@@ -68,10 +79,12 @@ try {
       await page.waitForFunction(id => globalThis.__v15Controller.getState().selected === id, pick.id);
     }
     await root.locator(".mecha-v15-roster button").nth(2).click();
+    await root.locator(".mecha-move-list > summary").click();
+    const select = page.locator("#v15-cell");
     const moveCells = await select.locator("option").evaluateAll(options => options.map(option => option.value).filter(Boolean));
     assert.ok(moveCells.length > 0);
     await select.selectOption(moveCells[0]); await button("移动", "Move").click();
-    await page.waitForFunction(() => { const el = document.querySelector('#v15-action'); return el && !el.disabled; });
+    await page.waitForFunction(() => document.querySelector('.mecha-action-card:not(:disabled)'));
     await page.waitForFunction(() => !globalThis.__v15Controller.getState().presentation);
     const moved = await page.evaluate(() => {
       const state = globalThis.__v15Controller.getState(), actor = state.match.mechs.find(m => m.id === state.selected), world = globalThis.__v15World;
@@ -80,15 +93,26 @@ try {
     });
     assert.equal(moved.cell, moveCells[0]); assert.ok(moved.distance < .02, `rendered position differs by ${moved.distance}`);
     await button("撤销移动", "Undo move").click();
-    await page.waitForFunction(() => { const el = document.querySelector('#v15-action'); return el && !el.disabled; });
+    await page.waitForFunction(() => document.querySelector('.mecha-action-card:not(:disabled)'));
     const undone = await page.evaluate(() => globalThis.__v15Controller.getState().match.mechs.find(m => m.id === globalThis.__v15Controller.getState().selected).pos);
     assert.equal(`${undone.x},${undone.y}`, cells[2]);
-    await page.locator("#v15-action").selectOption({ index: 1 });
+    const repair = root.locator(".mecha-action-card").filter({ hasText: locale === "zh" ? "维修" : "Repair" });
+    assert.equal(await repair.count(), 1, "one card per action kind");
+    await repair.click();
+    assert.equal(await button("确认行动", "Confirm action").isDisabled(), true, "targeted action requires a target");
+    const targetChoice = root.locator(".mecha-target-preview .mecha-actions button").first();
+    await targetChoice.click();
+    await root.locator(".mecha-v15-preview").waitFor();
+    assert.equal(await button("确认行动", "Confirm action").isEnabled(), true, "selected legal target can be confirmed");
+    await root.locator(".mecha-action-card:not(:disabled)").first().click();
     await button("确认行动", "Confirm action").click();
     await page.waitForFunction(() => { const el = [...document.querySelectorAll('.mecha-v15-panel button')].find(x => x.textContent.includes('结束回合') || x.textContent === 'End turn'); return el && !el.disabled; });
-    await button("结束回合", "End turn").click(); await button("确认结束", "End turn").last().click();
-    await page.waitForFunction(() => { const text = document.querySelector('.mecha-v15-panel [role=status]')?.textContent ?? ''; return text.includes('2') || text.includes('结束') || text.includes('ended'); });
+    await button("结束回合", "End turn").click();
+    await root.locator(".mecha-v15-confirm").getByRole("button", { name: locale === "zh" ? "确认结束" : "End turn", exact: true }).click();
+    try { await page.waitForFunction(() => { const match = globalThis.__v15Controller.getState().match; return match.turn > 1 || Boolean(match.outcome); }); }
+    catch (error) { console.error("end-turn diagnostics", await page.evaluate(() => { const s = globalThis.__v15Controller.getState(); return { turn: s.match.turn, outcome: s.match.outcome, phase: s.match.phase, error: s.error, persistence: s.persistence, presentation: Boolean(s.presentation), selected: s.selected, rights: s.rights, panel: document.querySelector(".mecha-v15-panel")?.innerText }; })); throw error; }
     await page.waitForFunction(() => !globalThis.__v15Controller.getState().presentation);
+    await page.waitForFunction(() => { const match = globalThis.__v15Controller.getState().match; const text = document.querySelector('.mecha-v15-panel .mecha-objective-round')?.textContent ?? ''; return Boolean(match.outcome) || text.includes(String(match.turn)); });
     const finalState = await page.evaluate(() => globalThis.__v15Controller.getState().match);
     await root.locator(".mecha-v15-replays summary").click();
     await button("保存当前回放", "Save current replay").click();
@@ -146,7 +170,7 @@ try {
     await button("继续此对局", "Resume this match").click();
     await page.getByText(locale === "zh" ? "已恢复对局，可以继续行动。" : "Match restored. You can continue playing.").waitFor();
     assert.deepEqual(await page.evaluate(() => globalThis.__v15Controller.getState().match), finalState, "resume restores the verified authority");
-    await page.locator("#v15-action").selectOption({ index: 1 });
+    await root.locator(".mecha-action-card:not(:disabled)").first().click();
     await button("确认行动", "Confirm action").click();
     await page.waitForFunction(n => globalThis.__v15Controller.records().length === n + 1, count);
     const commandIds = await page.evaluate(() => globalThis.__v15Controller.records().map(record => record.command.id));

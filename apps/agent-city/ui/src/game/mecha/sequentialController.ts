@@ -17,6 +17,7 @@ export type SequentialControllerView = {
   placements: DeployPlacement[] | null;
   deployable: Cell[];
   canConfirmDeployment: boolean;
+  canUndoPlacement: boolean;
   rights: ReturnType<SequentialTurn["snapshot"]>["rights"] | null;
   canUndo: boolean;
   resetUsed: boolean;
@@ -62,6 +63,7 @@ export class SequentialController {
       match: copy(this.state), selected: this.selected, placements: deployment ? copy(this.placements) : null,
       deployable: deployment ? deployableCells(this.state) : [],
       canConfirmDeployment: deployment && validateDeployPlan(this.state, { revision: this.state.revision, placements: this.placements }).ok,
+      canUndoPlacement: deployment && this.deploymentHistory.length > 0,
       rights: authority?.rights ?? null, canUndo: Boolean(authority?.undo.length), resetUsed: authority?.resetUsed ?? false,
       presentation: this.presentation ? copy(this.presentation) : null, error: this.error,
       persistence: this.saving ? "saving" : this.durable?.needsReload() ? "unconfirmed" : this.durable ? "ready" : "inactive",
@@ -86,6 +88,10 @@ export class SequentialController {
   undoPlacement(): void {
     if (this.state.phase !== "deployment" || !this.deploymentHistory.length || this.presentation) return;
     this.placements = this.deploymentHistory.pop()!; this.error = null; this.publish();
+  }
+  resetPlacement(): void {
+    if (this.state.phase !== "deployment" || !this.placements.length || this.presentation || this.saving) return;
+    this.deploymentHistory.push(copy(this.placements)); this.placements = []; this.error = null; this.publish();
   }
   confirmDeployment(): void {
     if (this.state.phase !== "deployment" || this.presentation) return;
