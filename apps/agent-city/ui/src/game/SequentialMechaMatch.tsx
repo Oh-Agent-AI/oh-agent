@@ -620,8 +620,8 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
       getVerifiedReview={() => resultReview ?? { review: { status: "unavailable", rounds: [] }, achievements: null }}
       onRestart={() => { if (practice) { controller.restartDeployment(); setShowResult(false); setReplay(null); } else void restartMatch(); }} onExit={requestClose} />}
     {showGuide && <MechaQuickGuide locale={locale} mode="sequential" returnFocusRef={guideTrigger} onClose={() => setShowGuide(false)} />}
-    {showRemote && <div className="mecha-remote-modal" role="dialog" aria-modal="true" aria-label={t("远程控制", "Remote control")}
-      style={{ position: "fixed", inset: 0, zIndex: 80, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.55)" }}
+    {(showRemote || handedOff) && <div className="mecha-remote-modal" role="dialog" aria-hidden={!showRemote} aria-modal="true" aria-label={t("远程控制", "Remote control")}
+      style={{ position: "fixed", inset: 0, zIndex: 80, display: showRemote ? "flex" : "none", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.55)" }}
       onClick={() => setShowRemote(false)}>
       <div className="mecha-panel" style={{ width: "min(92vw, 520px)", maxHeight: "80vh", overflow: "auto" }} onClick={event => event.stopPropagation()}>
         <SequentialRemoteControls locale={locale} evidence={liveEvidence} disabled={locked || Boolean(state.placements) || Boolean(state.match.outcome)} onActive={setHandedOff} onRecovered={snapshot => { controller.replaceFromSnapshot(snapshot); setHandedOff(false); }} onClose={() => setShowRemote(false)} />
