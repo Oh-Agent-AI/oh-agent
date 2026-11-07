@@ -77,7 +77,7 @@ fn remote_link(active: &Active, ticket: &str, player: &str) -> Result<String, &'
     let mut url = reqwest::Url::parse(&format!("{}/remote", active.relay.trim_end_matches('/'))).map_err(|_| "remote_url_invalid")?;
     url.query_pairs_mut().append_pair("match", &active.match_id).append_pair("player", player)
         .append_pair("ws", &relay_connection(active).ws_endpoint(ticket)?);
-    if matches!(active.capability.id.as_str(), "mecha:v2" | "mecha:v3") { url.query_pairs_mut().append_pair("capability", &active.capability.id); }
+    if matches!(active.capability.id.as_str(), "mecha:v2" | "mecha:v3" | "mecha:v4") { url.query_pairs_mut().append_pair("capability", &active.capability.id); }
     Ok(url.into())
 }
 
@@ -473,8 +473,13 @@ mod tests {
     }
 
     #[test]
-    fn links_preserve_legacy_v1_and_explicitly_identify_v2() {
-        for (id, expected) in [("mecha:v1", None), ("mecha:v2", Some("mecha:v2")), ("mecha:v3", Some("mecha:v3"))] {
+    fn links_preserve_legacy_v1_and_explicitly_identify_versioned_capabilities() {
+        for (id, expected_owner, expected_invite) in [
+            ("mecha:v1", None, None),
+            ("mecha:v2", Some("mecha:v2"), Some("mecha:v2")),
+            ("mecha:v3", Some("mecha:v3"), Some("mecha:v3")),
+            ("mecha:v4", Some("mecha:v4"), None),
+        ] {
             let active = Active {
                 relay: "https://relay.example.com".into(), room_id: "room1".into(), match_id: "match1".into(),
                 capability: crate::remote_protocol::RemoteCapability { id: id.into(), methods: vec![], events: vec![] },
@@ -483,7 +488,7 @@ mod tests {
             };
             let owner = reqwest::Url::parse(&remote_link(&active, "ticket1", "owner").unwrap()).unwrap();
             let invite = reqwest::Url::parse(&invitation_link(&active, "invite1", "invite-secret").unwrap()).unwrap();
-            for url in [&owner, &invite] {
+            for (url, expected) in [(&owner, expected_owner), (&invite, expected_invite)] {
                 let pairs: Vec<_> = url.query_pairs().collect();
                 assert_eq!(pairs.iter().find(|(key, _)| key == "capability").map(|(_, value)| value.as_ref()), expected);
                 assert!(pairs.iter().any(|(key, value)| key == "match" && value == "match1"));
