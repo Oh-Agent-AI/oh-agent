@@ -18,7 +18,7 @@ const mechHp = (state: MatchState): number => state.mechs.reduce((total, unit) =
 const buildingHp = (state: MatchState): number => state.buildings.reduce((total, building) => total + building.hp, 0);
 
 /** Deterministic leaf value; outcome dominates, then enemy damage, our losses and objectives. */
-function value(state: MatchState): number {
+export function stateValue(state: MatchState): number {
   if (state.outcome === "victory") return 1_000_000;
   if (state.outcome) return -1_000_000;
   return -enemyHp(state) * 10 + mechHp(state) * 8 + buildingHp(state) * 6;
@@ -43,7 +43,7 @@ function execute(branch: SequentialTurn, input: SearchCommand) {
 export function nextCommand(authority: SequentialTurn): CommandIntent {
   const snapshot = authority.snapshot(), state = snapshot.match;
   if (state.outcome || state.phase !== "player_plan") return { kind: "end" };
-  const baseline = value(state);
+  const baseline = stateValue(state);
 
   let bestAct: { intent: Extract<CommandIntent, { kind: "act" }>; score: number } | null = null;
   for (const id of MECH_IDS) {
@@ -52,7 +52,7 @@ export function nextCommand(authority: SequentialTurn): CommandIntent {
       if (action.kind === "skip") continue;
       const result = execute(authority.branch(), { kind: "act", mech: id, action });
       if (!result.ok) continue;
-      const score = value(result.snapshot.match);
+      const score = stateValue(result.snapshot.match);
       if (score > baseline && (!bestAct || score > bestAct.score)) bestAct = { intent: { kind: "act", mech: id, action }, score };
     }
   }
@@ -72,7 +72,7 @@ export function nextCommand(authority: SequentialTurn): CommandIntent {
       const result = execute(authority.branch(), { kind: "move", mech: id, to });
       if (!result.ok) continue;
       const gain = approach - nearestEnemy(result.snapshot.match, to);
-      const score = value(result.snapshot.match);
+      const score = stateValue(result.snapshot.match);
       if (gain <= 0 && score <= baseline) continue;
       const total = score + gain * 2;
       if (!bestMove || total > bestMove.score) bestMove = { intent: { kind: "move", mech: id, to }, score: total };
