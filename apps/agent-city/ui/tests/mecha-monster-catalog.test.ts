@@ -25,7 +25,7 @@ test("status species are the only v1.5-capable species and keep their status kin
     assert.ok(statusKindOf(id));
   }
   for (const entry of MONSTER_CATALOG) {
-    assert.equal(catalogSupports(entry.id, "mecha-v1.5"), Boolean(entry.statusKind), entry.id);
+    assert.equal(catalogSupports(entry.id, "mecha-v1.5"), entry.practice, entry.id);
   }
   assert.equal(isStatusSpecies("legacy_boss"), false);
   assert.equal(catalogSupports("legacy_boss", "mecha-v1.5"), false);

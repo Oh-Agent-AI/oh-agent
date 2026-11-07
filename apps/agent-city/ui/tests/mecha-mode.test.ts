@@ -58,3 +58,16 @@ test("invalid build and release inputs fail closed", () => {
   assert.deepEqual(resolveMechaMode(base({ releaseChoice: "preview" as MechaModeInput["releaseChoice"] })), { kind: "closed", reason: "invalid_release_choice" });
   assert.deepEqual(resolveMechaMode(base({ dev: false, prod: false, debug: false })), { kind: "closed", reason: "unsupported_build" });
 });
+
+test("practice routes stay explicit and reject unknown species", () => {
+  const prod = { dev: false, prod: true };
+  assert.deepEqual(resolveMechaMode(base({ ...prod, releaseChoice: "practice" })), { kind: "practice", reason: "release_practice_picker", species: null });
+  assert.deepEqual(resolveMechaMode(base({ ...prod, releaseChoice: "practice", releaseMonster: "porous_shaper" })), { kind: "practice", reason: "release_practice", species: "porous_shaper" });
+  assert.deepEqual(resolveMechaMode(base({ ...prod, releaseChoice: "practice", releaseMonster: "many_core" })), { kind: "closed", reason: "invalid_practice_species" });
+  assert.deepEqual(resolveMechaMode(base({ ...prod, releaseChoice: "practice", releaseMonster: "spore_leaper" })), { kind: "practice", reason: "release_practice", species: "spore_leaper" });
+});
+
+test("development query can open a catalogued monster practice", () => {
+  assert.deepEqual(resolveMechaMode(base({ query: new URLSearchParams("mechaMonster=porous_shaper") })), { kind: "practice", reason: "development_practice_query", species: "porous_shaper" });
+  assert.deepEqual(resolveMechaMode(base({ query: new URLSearchParams("mechaMonster=unknown") })), { kind: "closed", reason: "invalid_practice_species" });
+});

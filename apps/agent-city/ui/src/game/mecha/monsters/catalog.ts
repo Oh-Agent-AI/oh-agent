@@ -12,6 +12,7 @@ export type MonsterStatusKind = "poison" | "burn" | "freeze" | "stun";
 export type MonsterCatalogEntry = Readonly<{
   id: PlannedMonsterSpeciesId;
   name: string;
+  nameEn: string;
   threatLevel: ThreatLevel;
   deliveryMilestone: DeliveryMilestone;
   skillId: (typeof PLANNED_SIGNATURE_SKILLS)[PlannedMonsterSpeciesId];
@@ -25,16 +26,16 @@ const BOTH = ["mecha-v1.4", "mecha-v1.5"] as const;
 const LEGACY_ONLY = ["mecha-v1.4"] as const;
 
 export const MONSTER_CATALOG: readonly MonsterCatalogEntry[] = [
-  { id: "spore_leaper", name: "孢群体", threatLevel: 1, deliveryMilestone: "M2", skillId: PLANNED_SIGNATURE_SKILLS.spore_leaper, supportedRulesets: BOTH, practice: true, statusKind: "poison", visualKey: "spore_leaper" },
-  { id: "flux_lancer", name: "流环体", threatLevel: 2, deliveryMilestone: "M2", skillId: PLANNED_SIGNATURE_SKILLS.flux_lancer, supportedRulesets: BOTH, practice: true, statusKind: "burn", visualKey: "flux_lancer" },
-  { id: "porous_shaper", name: "孔洞行者", threatLevel: 3, deliveryMilestone: "M3", skillId: PLANNED_SIGNATURE_SKILLS.porous_shaper, supportedRulesets: LEGACY_ONLY, practice: true, visualKey: "porous_shaper" },
-  { id: "prism_warden", name: "晶簇体", threatLevel: 4, deliveryMilestone: "M2", skillId: PLANNED_SIGNATURE_SKILLS.prism_warden, supportedRulesets: BOTH, practice: true, statusKind: "freeze", visualKey: "prism_warden" },
-  { id: "swarm_mantle", name: "群构体", threatLevel: 5, deliveryMilestone: "M4", skillId: PLANNED_SIGNATURE_SKILLS.swarm_mantle, supportedRulesets: LEGACY_ONLY, practice: true, visualKey: "swarm_mantle" },
-  { id: "phase_stalker", name: "相位体", threatLevel: 6, deliveryMilestone: "M3", skillId: PLANNED_SIGNATURE_SKILLS.phase_stalker, supportedRulesets: LEGACY_ONLY, practice: true, visualKey: "phase_stalker" },
-  { id: "gravity_core", name: "引力核", threatLevel: 7, deliveryMilestone: "M3", skillId: PLANNED_SIGNATURE_SKILLS.gravity_core, supportedRulesets: BOTH, practice: true, statusKind: "stun", visualKey: "gravity_core" },
-  { id: "neural_weaver", name: "织网体", threatLevel: 8, deliveryMilestone: "M4", skillId: PLANNED_SIGNATURE_SKILLS.neural_weaver, supportedRulesets: LEGACY_ONLY, practice: true, visualKey: "neural_weaver" },
-  { id: "many_core", name: "多核生命", threatLevel: 9, deliveryMilestone: "M5", skillId: PLANNED_SIGNATURE_SKILLS.many_core, supportedRulesets: LEGACY_ONLY, practice: false, visualKey: "many_core" },
-  { id: "field_sovereign", name: "场域生命", threatLevel: 10, deliveryMilestone: "M6", skillId: PLANNED_SIGNATURE_SKILLS.field_sovereign, supportedRulesets: LEGACY_ONLY, practice: false, visualKey: "field_sovereign" },
+  { id: "spore_leaper", name: "孢群体", nameEn: "Spore leaper", threatLevel: 1, deliveryMilestone: "M2", skillId: PLANNED_SIGNATURE_SKILLS.spore_leaper, supportedRulesets: BOTH, practice: true, statusKind: "poison", visualKey: "spore_leaper" },
+  { id: "flux_lancer", name: "流环体", nameEn: "Flux lancer", threatLevel: 2, deliveryMilestone: "M2", skillId: PLANNED_SIGNATURE_SKILLS.flux_lancer, supportedRulesets: BOTH, practice: true, statusKind: "burn", visualKey: "flux_lancer" },
+  { id: "porous_shaper", name: "孔洞行者", nameEn: "Porous shaper", threatLevel: 3, deliveryMilestone: "M3", skillId: PLANNED_SIGNATURE_SKILLS.porous_shaper, supportedRulesets: BOTH, practice: true, visualKey: "porous_shaper" },
+  { id: "prism_warden", name: "晶簇体", nameEn: "Prism warden", threatLevel: 4, deliveryMilestone: "M2", skillId: PLANNED_SIGNATURE_SKILLS.prism_warden, supportedRulesets: BOTH, practice: true, statusKind: "freeze", visualKey: "prism_warden" },
+  { id: "swarm_mantle", name: "群构体", nameEn: "Swarm mantle", threatLevel: 5, deliveryMilestone: "M4", skillId: PLANNED_SIGNATURE_SKILLS.swarm_mantle, supportedRulesets: BOTH, practice: true, visualKey: "swarm_mantle" },
+  { id: "phase_stalker", name: "相位体", nameEn: "Phase stalker", threatLevel: 6, deliveryMilestone: "M3", skillId: PLANNED_SIGNATURE_SKILLS.phase_stalker, supportedRulesets: BOTH, practice: true, visualKey: "phase_stalker" },
+  { id: "gravity_core", name: "引力核", nameEn: "Gravity core", threatLevel: 7, deliveryMilestone: "M3", skillId: PLANNED_SIGNATURE_SKILLS.gravity_core, supportedRulesets: BOTH, practice: true, statusKind: "stun", visualKey: "gravity_core" },
+  { id: "neural_weaver", name: "织网体", nameEn: "Neural weaver", threatLevel: 8, deliveryMilestone: "M4", skillId: PLANNED_SIGNATURE_SKILLS.neural_weaver, supportedRulesets: BOTH, practice: true, visualKey: "neural_weaver" },
+  { id: "many_core", name: "多核生命", nameEn: "Many core", threatLevel: 9, deliveryMilestone: "M5", skillId: PLANNED_SIGNATURE_SKILLS.many_core, supportedRulesets: LEGACY_ONLY, practice: false, visualKey: "many_core" },
+  { id: "field_sovereign", name: "场域生命", nameEn: "Field sovereign", threatLevel: 10, deliveryMilestone: "M6", skillId: PLANNED_SIGNATURE_SKILLS.field_sovereign, supportedRulesets: LEGACY_ONLY, practice: false, visualKey: "field_sovereign" },
 ];
 
 export const STATUS_SPECIES = ["spore_leaper", "flux_lancer", "prism_warden", "gravity_core"] as const;
@@ -54,6 +55,10 @@ export function catalogSupports(id: unknown, ruleset: CatalogRuleset): boolean {
 
 export function isStatusSpecies(value: unknown): value is StatusMonsterId {
   return typeof value === "string" && STATUS_SET.has(value);
+}
+
+export function isPracticeSpecies(value: unknown): value is PlannedMonsterSpeciesId {
+  return typeof value === "string" && MONSTER_CATALOG.some(entry => entry.practice && entry.id === value);
 }
 
 export function practiceSpecies(): PlannedMonsterSpeciesId[] {

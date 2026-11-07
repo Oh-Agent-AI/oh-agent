@@ -49,6 +49,7 @@ import { MechaMonsterPractice, MechaPrismShieldStatus } from "./MechaMonsterPrac
 import { MechaCorrodeSummary, MechaMonsterIntent } from "./MechaMonsterIntent";
 import { monsterSkillName } from "./mecha/skillNames";
 import type { PlannedMonsterSpeciesId } from "./mecha/monsters/contracts";
+import { monsterCatalogEntry, practiceSpecies } from "./mecha/monsters/catalog";
 import { P2_SCENARIOS, resolveP2Scenario } from "./mecha/p2Scenarios";
 import { candidateResult } from "./mecha/candidateResult";
 import { assaultSequenceWaiting } from "./mecha/assaultTurnPlayer";
@@ -192,6 +193,7 @@ export function MechaBoard({ locale, onClose, engine, onAvailability, encounter 
   const [remoteStatus, setRemoteStatus] = useState<RemoteMechaStatus>("idle");
   const [releaseMode, setReleaseMode] = useState<ReleaseChoice>("");
   const [releaseStatus, setReleaseStatus] = useState<StatusMonsterId | null>(null);
+  const [releaseMonster, setReleaseMonster] = useState<PlannedMonsterSpeciesId | null>(null);
   const remoteLocked = useRef(false);
   const changeRemoteStatus = (next: RemoteMechaStatus) => {
     remoteLocked.current = next !== "idle";
@@ -200,7 +202,7 @@ export function MechaBoard({ locale, onClose, engine, onAvailability, encounter 
   const requestMatchClose = useRef<(() => void) | null>(null);
   const searchSeq = useRef(0);
   const playable = phase === "ready" && Boolean(engine) && catalogPlayable(catalog);
-  const runtime = readMechaRuntime({ remoteStatus, releaseChoice: releaseMode, releaseStatus, encounterActive: Boolean(encounter) });
+  const runtime = readMechaRuntime({ remoteStatus, releaseChoice: releaseMode, releaseStatus, releaseMonster, encounterActive: Boolean(encounter) });
 
   useEffect(() => {
     if (!onAvailability) return;
@@ -333,6 +335,7 @@ export function MechaBoard({ locale, onClose, engine, onAvailability, encounter 
       return <CityGate locale={locale} onClose={onClose} title={t("选择战斗规则")} body={t("机甲战棋 1.5 使用逐台行动与即时结算；经典模式仍可用于兼容的远程对局。")} recovery={<div className="mecha-actions">
         <button type="button" onClick={() => setReleaseMode("sequential")}>{t("机甲战棋 1.5 · 本地 PvE")}</button>
         <button type="button" onClick={() => { setReleaseStatus(null); setReleaseMode("status"); }}>{t("状态效果挑战")}</button>
+        <button type="button" onClick={() => { setReleaseMonster(null); setReleaseMode("practice"); }}>{t("怪物练习 · 1.5")}</button>
         <button type="button" onClick={() => setReleaseMode("classic")}>{t("经典模式 · 1.4")}</button>
       </div>} />;
     case "closed": {
@@ -343,6 +346,14 @@ export function MechaBoard({ locale, onClose, engine, onAvailability, encounter 
         : runtime.mode.reason === "invalid_status_species" ? t("请选择受支持的本地状态挑战。")
           : t("当前构建或模式参数无效，请返回后重试。");
       return <CityGate locale={locale} onClose={onClose} title={title} body={body} />;
+    }
+    case "practice": {
+      if (!runtime.mode.species) return <CityGate locale={locale} onClose={onClose} title={t("选择怪物练习")} body={t("用 v1.5 逐台行动规则试玩已接入的怪物。")} recovery={<div className="mecha-actions">
+        {practiceSpecies().map(speciesId => <button key={speciesId} type="button" onClick={() => setReleaseMonster(speciesId)}>{locale === "en" ? monsterCatalogEntry(speciesId)?.nameEn ?? speciesId : t(monsterCatalogEntry(speciesId)?.name ?? speciesId)} · 1.5</button>)}
+        <button type="button" onClick={() => { setReleaseMode(""); setReleaseMonster(null); }}>{t("返回")}</button>
+      </div>} />;
+      if (!sequentialSite) return <CityGate locale={locale} onClose={onClose} title={t("这座城暂时没有可用机坪。")} body={t("当前城市中未找到符合地形和占位条件的战场。可以重试，或关掉战棋。")} />;
+      return <SequentialMechaMatch key={`${runId}-${runtime.mode.species}`} engine={engine} site={sequentialSite} locale={locale} onClose={onClose} requestCloseRef={requestMatchClose} monsterSpecies={runtime.mode.species} connectedAssault={runtime.connectedAssault} />;
     }
     case "status":
       if (!runtime.mode.species) return <CityGate locale={locale} onClose={onClose} title={t("选择状态效果挑战")} body={t("使用当前城市战场，挑战带有一种特殊状态技能的怪物。")} recovery={<div className="mecha-actions">

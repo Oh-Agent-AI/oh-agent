@@ -48,14 +48,18 @@ import { projectStatusForecastState, statusForecast } from "./mecha/statusForeca
 import { planActionLabel } from "./mecha/planPresentation";
 import { buildSequentialHud } from "./mecha/hud/adapters";
 import type { MechaHudActions, MechaHudModel, MechaHudProjection } from "./mecha/hud/model";
+import type { PlannedMonsterSpeciesId } from "./mecha/monsters/contracts";
+import { monsterCatalogEntry } from "./mecha/monsters/catalog";
 
 const NAMES: Record<MechId, string> = { Assault: "突击", Gunner: "射手", Support: "支援" };
 const STATUS_SPECIES: Record<StatusMonsterId, [string, string]> = { spore_leaper: ["孢群体", "Spore leaper"], flux_lancer: ["流环体", "Flux lancer"], prism_warden: ["晶簇体", "Prism warden"], gravity_core: ["引力核", "Gravity core"] };
 const cellKey = (cell: Cell) => `${cell.x},${cell.y}`;
 
-export function SequentialMechaMatch({ engine, site, locale, onClose, requestCloseRef, statusSpecies, connectedAssault }: { engine: CityEngine; site: CityMechaSite; locale: GameLocale; onClose: () => void; requestCloseRef: React.RefObject<(() => void) | null>; statusSpecies?: StatusMonsterId | null; connectedAssault: boolean }) {
+export function SequentialMechaMatch({ engine, site, locale, onClose, requestCloseRef, statusSpecies, monsterSpecies, connectedAssault }: { engine: CityEngine; site: CityMechaSite; locale: GameLocale; onClose: () => void; requestCloseRef: React.RefObject<(() => void) | null>; statusSpecies?: StatusMonsterId | null; monsterSpecies?: PlannedMonsterSpeciesId | null; connectedAssault: boolean }) {
   const t = (zh: string, en: string) => locale === "en" ? en : zh;
-  const [controller] = useState(() => new SequentialController(statusSpecies ? statusDeploymentFromSite(site, statusSpecies) : matchFromSite(site, { ruleset: "mecha-v1.5", preset: "covers_sparse_mid", script: "siege", deployment: true })));
+  const practice = Boolean(monsterSpecies);
+  const [controller] = useState(() => new SequentialController(statusSpecies ? statusDeploymentFromSite(site, statusSpecies)
+    : matchFromSite(site, { ruleset: "mecha-v1.5", preset: "covers_sparse_mid", script: monsterSpecies ? "stationary_smash" : "siege", deployment: true, ...(monsterSpecies ? { monsterContent: { speciesId: monsterSpecies, contentVersion: 1 as const } } : {}) })));
   const state = useSyncExternalStore(controller.subscribe, controller.getState);
   const [choice, setChoice] = useState("");
   const [actionSelection, setActionSelection] = useState<{ actor: MechId; revision: number; index: number } | null>(null);
@@ -111,7 +115,13 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
       setRecovery({ backend, version: checkpoint.revision, pending: checkpoint.raw !== null, restored });
     } catch { setRecoveryError(true); }
   };
-  useEffect(() => { void readRecovery(); }, []);
+  useEffect(() => {
+    if (monsterSpecies) {
+      setRecovery({ backend: { read: async () => ({ revision: 0, raw: null }), write: async revision => revision + 1 }, version: 0, pending: false, restored: null });
+      return;
+    }
+    void readRecovery();
+  }, []);
   const presentation = state.presentation;
   const display = replayAnimation?.before ?? (replay ? replay.index === 0 ? replay.initial : replay.records[replay.index - 1]!.snapshot.match : presentation?.before ?? state.match);
   const cellInfo = inspectedCell && !presentation && !replayAnimation
@@ -301,7 +311,8 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
     const current = controller.getState();
     if ("mech" in command && (command.mech !== current.selected || state.match.revision !== current.match.revision)) return;
     setArchiveMessage(null);
-    void controller.executeDurable(command);
+    if (practice) controller.execute(command);
+    else void controller.executeDurable(command);
   };
   const clearCommandSelection = () => { setTargetingKind(null); setActionIndex(""); setChoice(""); setConfirmEnd(false); };
   const hudActions: MechaHudActions = {
@@ -357,6 +368,7 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
   const hudModel: MechaHudModel = buildSequentialHud(state, hudProjection);
   const deploy = async () => {
     if (!recovery || recovery.pending || locked || !state.canConfirmDeployment) return;
+    if (practice) { controller.confirmDeployment(); return; }
     setArchiveBusy(true);
     try {
       controller.confirmDeployment();
@@ -496,6 +508,7 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
           })}</ol> : <p role="status">{attackOrderPreview ? t("敌方顺序预测不可用。", "Enemy order preview is unavailable.") : t("当前无法预测敌方行动。", "Enemy actions cannot be previewed now.")}</p>}
         </MechaTurnOrder>}
         {statusSpecies && <p className="mecha-v15-note">{t("状态挑战", "Status challenge")}: {t(...STATUS_SPECIES[statusSpecies])}</p>}
+        {monsterSpecies && <p className="mecha-v15-note">{t("怪物练习", "Monster practice")}: {locale === "en" ? monsterCatalogEntry(monsterSpecies)?.nameEn ?? monsterSpecies : monsterCatalogEntry(monsterSpecies)?.name ?? monsterSpecies}</p>}
         {showForecast && forecast && <details className="mecha-v15-forecast" role="region" aria-label={t("敌方状态预告", "Enemy status forecast")}><summary>{t("敌方状态预告", "Enemy status forecast")}</summary>
           <p>{forecast.skill === "spore_leap" ? t("孢子弹跳：存活的命中机甲中毒 2 回合，每回合结束受到 1 点伤害。", "Spore leap: surviving mechs hit are poisoned for 2 turns, taking 1 damage at each turn end.") : forecast.skill === "ring_pierce" ? t("环轨穿刺：存活的命中机甲燃烧 2 回合，每回合结束受到 1 点伤害。", "Ring pierce: surviving mechs hit burn for 2 turns, taking 1 damage at each turn end.") : forecast.skill === "prism_frost" ? t("棱晶寒束：命中射线上首个机甲；若其存活则冻结 1 回合，不能主动移动。", "Prism frost: hits the first mech on the ray; if it survives, it is frozen for 1 turn and cannot move voluntarily.") : t("引力井：牵引撞上单位、建筑或障碍的机甲眩晕 1 回合，不能主动移动或行动。", "Gravity well: a mech pulled into a unit, building or obstacle is stunned for 1 turn and cannot move or act voluntarily.")}</p>
           <p>{t("预告格", "Forecast cells")}: {forecast.cells.length ? forecast.cells.map(cellKey).join(" · ") : t("无", "None")}</p>
@@ -589,7 +602,7 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
     {resultReady && showResult && <MechaBattleResult state={display} locale={locale} matchRecap={resultReview?.matchRecap} onView={() => { setShowResult(false); requestAnimationFrame(() => resultTrigger.current?.focus()); }}
       onReplay={records.length ? replayResult : undefined} archiveBusy={archiveBusy} archiveMessage={archiveMessage}
       getVerifiedReview={() => resultReview ?? { review: { status: "unavailable", rounds: [] }, achievements: null }}
-      onRestart={() => void restartMatch()} onExit={requestClose} />}
+      onRestart={() => { if (practice) { controller.restartDeployment(); setShowResult(false); setReplay(null); } else void restartMatch(); }} onExit={requestClose} />}
     {showGuide && <MechaQuickGuide locale={locale} mode="sequential" returnFocusRef={guideTrigger} onClose={() => setShowGuide(false)} />}
   </MechaHud>;
 }

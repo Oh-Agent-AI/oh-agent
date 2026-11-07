@@ -1,10 +1,12 @@
 import { useConnectedAssault } from "../render/mecha/connectedAssaultMode";
 import { resolveMechaMode, type MechaMode, type ReleaseChoice, type RemoteStatus, type StatusSpecies } from "./mecha/mode";
+import type { PlannedMonsterSpeciesId } from "./mecha/monsters/contracts";
 
 export type MechaRuntimeSelection = {
   remoteStatus: RemoteStatus;
   releaseChoice: ReleaseChoice;
   releaseStatus: StatusSpecies | null;
+  releaseMonster: PlannedMonsterSpeciesId | null;
   encounterActive: boolean;
 };
 
@@ -38,6 +40,7 @@ export function readMechaRuntime(selection: MechaRuntimeSelection): {
       debugFixture,
       releaseChoice: selection.releaseChoice,
       releaseStatus: selection.releaseStatus,
+      releaseMonster: selection.releaseMonster,
       encounterActive: selection.encounterActive,
     }),
     connectedAssault: useConnectedAssault(import.meta.env.DEV, location.search),
