@@ -40,6 +40,7 @@ import { movementSnapshot, presentationSnapshot, stakeBuildings, type Presentati
 import { bossExecute } from "./enemy";
 import { prepareEnemy, scriptedEnemyPlanner } from "./enemy/planner";
 import type { EnemyPlanner } from "./enemy/contracts";
+import { resolveEnemyPhase } from "./execution/enemyPhase";
 
 export {
   BOARD, BOSS_ATK, BOSS_DEF, BOSS_HP, BOSS_MOVE, BUILDING_DEF, BUILDING_HP, COVERS, ENEMY_STATS, FLAT_SPAWN_MAX_DELTA, GDD_RULESET, MAX_TURNS, MECH_IDS, MOVE_QUANTUM,
@@ -275,14 +276,13 @@ function runTurn(state: MatchState, plan: ArenaPlan, capturePresentation = false
       }
     };
     noteOutcome();
-    const hpBefore = Object.fromEntries(next.mechs.map((m) => [m.id, m.hp])) as Record<MechId, number>;
-    if (next.phase === "resolving_boss") bossExecute(next);
-    const afterEnemy = capturePresentation ? presentationSnapshot(next) : null;
-    const hits = Object.fromEntries(MECH_IDS.map((id) => [id, Math.max(0, (hpBefore[id] ?? 0) - (next.mechs.find((m) => m.id === id)?.hp ?? 0))])) as Record<MechId, number>;
-    noteOutcome();
-    if (next.phase === "enemy_prepare") prepareEnemy(next, enemyPlanner);
-    noteOutcome();
-    const afterPrepare = capturePresentation ? presentationSnapshot(next) : null;
+    const enemyPhase = resolveEnemyPhase(next, {
+      planner: enemyPlanner,
+      capturePresentation,
+      afterEnemy: noteOutcome,
+      afterPrepare: noteOutcome,
+    });
+    const { hits, afterEnemy, afterPrepare } = enemyPhase;
     const presentationStages = before && afterMovement && afterPlayer && afterEnemy && afterPrepare
       ? { before, afterMovement, afterPlayer, afterEnemy, afterPrepare,
           ...(next.neural ? { neuralLogIndices: log.flatMap((event, index) => event.type === "neural_event" ? [index] : []) } : {}) } : null;

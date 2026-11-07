@@ -36,6 +36,44 @@ test("action is immediate, locks movement, and reset restores the checkpoint exa
   assert.equal(session.execute({ kind: "reset", id: "reset2", revision: reset.snapshot.match.revision }).ok, false);
 });
 
+test("a different mech acting preserves move undo until the moved mech acts", () => {
+  const state = fixture(), session = new SequentialTurn(state);
+  const moved = session.execute({ kind: "move", id: "support-move", revision: state.revision, mech: "Support", to: { x: 8, y: 7 } });
+  assert.ok(moved.ok); assert.equal(session.canUndo(), true);
+  const assault = session.execute({ kind: "act", id: "assault-hold", revision: moved.snapshot.match.revision, mech: "Assault", action: { kind: "skip" } });
+  assert.ok(assault.ok); assert.equal(assault.snapshot.rights.Support.action, true);
+  assert.deepEqual(session.turnActivity(), { moved: ["Support"], acted: ["Assault"] }, "acting without moving must not be reported as movement");
+  assert.deepEqual(assault.snapshot.undo, [], "the existing serialized snapshot field keeps its previous shape and semantics");
+  assert.equal(session.canUndo(), true, "another mech's action does not lock Support's uncommitted position");
+  const trial = session.trial({ kind: "undo", id: "trial-support-undo", revision: assault.snapshot.match.revision });
+  assert.ok(trial.ok); assert.deepEqual(trial.snapshot.match.mechs.find(unit => unit.id === "Support")!.pos, { x: 8, y: 8 });
+  const undone = session.execute({ kind: "undo", id: "support-undo", revision: assault.snapshot.match.revision });
+  assert.ok(undone.ok); assert.deepEqual(undone.snapshot.match.mechs.find(unit => unit.id === "Support")!.pos, { x: 8, y: 8 });
+  assert.equal(undone.snapshot.rights.Support.move, true); assert.equal(session.canUndo(), false);
+  assert.deepEqual(session.turnActivity(), { moved: [], acted: ["Assault"] }, "undo clears only the committed move");
+  assert.deepEqual(SequentialTurn.replay(state, session.records()).snapshot(), session.snapshot(), "command replay reconstructs pending undo without changing the archive shape");
+});
+
+test("undo skips a newer move when a boss was pushed into its source cell", () => {
+  const state = fixture();
+  state.mechs.find(unit => unit.id === "Support")!.pos = { x: 3, y: 0 };
+  state.mechs.find(unit => unit.id === "Assault")!.pos = { x: 6, y: 0 };
+  const session = new SequentialTurn(state);
+  const gunner = session.execute({ kind: "move", id: "gunner", revision: state.revision, mech: "Gunner", to: { x: 1, y: 5 } });
+  assert.ok(gunner.ok);
+  const support = session.execute({ kind: "move", id: "support", revision: gunner.snapshot.match.revision, mech: "Support", to: { x: 3, y: 2 } });
+  assert.ok(support.ok);
+  const charge = session.execute({ kind: "act", id: "charge", revision: support.snapshot.match.revision, mech: "Assault", action: { kind: "charge", target: "boss" } });
+  assert.ok(charge.ok);
+  assert.deepEqual(charge.snapshot.match.boss.anchor, { x: 3, y: 0 });
+  const undone = session.execute({ kind: "undo", id: "undo", revision: charge.snapshot.match.revision });
+  assert.ok(undone.ok);
+  assert.equal(undone.causalEvent?.kind === "undo_move" && undone.causalEvent.mech, "Gunner");
+  assert.deepEqual(undone.snapshot.match.mechs.find(unit => unit.id === "Support")!.pos, { x: 3, y: 2 });
+  assert.equal(session.canUndo(), false);
+  assert.deepEqual(SequentialTurn.replay(state, session.records()).snapshot(), session.snapshot());
+});
+
 test("invalid moves and stale commands do not alter the authority", () => {
   const state = fixture(), session = new SequentialTurn(state), before = session.snapshot();
   assert.equal(session.execute({ kind: "move", id: "x", revision: state.revision, mech: "Assault", to: { x: 99, y: 1 } }).ok, false);
@@ -46,6 +84,18 @@ test("invalid moves and stale commands do not alter the authority", () => {
   const limited = new SequentialTurn(exhausted), unchanged = limited.snapshot();
   assert.deepEqual(limited.execute({ kind: "reset", id: "limit", revision: exhausted.revision }), { ok: false, reason: "revision_exhausted" });
   assert.deepEqual(limited.snapshot(), unchanged);
+});
+
+test("trial forks the current authority including undo and reset state without changing history", () => {
+  const state = fixture(), session = new SequentialTurn(state);
+  const moved = session.execute({ kind: "move", id: "committed-move", revision: state.revision, mech: "Assault", to: { x: 3, y: 2 } }); assert.ok(moved.ok);
+  const before = session.snapshot(), records = session.records();
+  const trialUndo = session.trial({ kind: "undo", id: "trial-undo", revision: before.match.revision });
+  assert.ok(trialUndo.ok); assert.deepEqual(trialUndo.snapshot.match.mechs[0]!.pos, { x: 3, y: 3 });
+  assert.deepEqual(session.snapshot(), before); assert.deepEqual(session.records(), records);
+  const trialReset = session.trial({ kind: "reset", id: "trial-reset", revision: before.match.revision });
+  assert.ok(trialReset.ok); assert.deepEqual(trialReset.snapshot.match.mechs, state.mechs);
+  assert.deepEqual(session.snapshot(), before); assert.deepEqual(session.records(), records);
 });
 
 test("a unit may pass through an ally but cannot end on its occupied cell", () => {
@@ -74,6 +124,7 @@ test("ending the player phase confirms unused actions, runs the enemy once and o
   const reset = session.execute({ kind: "reset", id: "next-reset", revision: afterMove.snapshot.match.revision }); assert.ok(reset.ok);
   assert.deepEqual(reset.snapshot.match.mechs, committed.snapshot.match.mechs);
   assert.equal(reset.snapshot.resetUsed, true);
+  assert.equal(session.canUndo(), false);
 });
 
 test("reset consumption remains spent across later turns", () => {
@@ -132,6 +183,7 @@ test("rescue victory occurs on the committed move without an enemy phase", () =>
   const moved = session.execute({ kind: "move", id: "rescue", revision: state.revision, mech: "Assault", to: { x: 3, y: 2 } });
   assert.ok(moved.ok); assert.equal(moved.snapshot.match.outcome, "victory"); assert.equal(moved.snapshot.match.phase, "finished");
   assert.deepEqual(moved.events.map(event => event.type), ["move", "outcome"]);
+  assert.equal(session.canUndo(), false);
   assert.equal(session.execute({ kind: "end", id: "end", revision: moved.snapshot.match.revision, confirmUnused: true }).ok, false);
 });
 

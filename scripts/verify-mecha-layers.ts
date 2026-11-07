@@ -76,19 +76,52 @@ test("engine/** never imports game/mecha/** or any new game/** module", () => {
 
 test("rules core (including pure skill primitives) imports only itself", () => {
   const dir = join(SRC, "game/mecha");
-  const core = new Set(["rules", "board", "combat", "enemy", "enemy/contracts", "enemy/planner", "decision", "deployment", "skillEffects", "statusEffects", "statusEncounter", "statusBattle", "sequentialTurn", "skillSwarmLink", "sporeUnitProjection", "ringUnit", "corrodeUnit", "prismUnit", "swarmUnit", "neuralUnit", "displacementUnit", "unitRegistry"].map((n) => join(dir, n)));
+  const core = new Set(["rules", "board", "combat", "enemy", "enemy/contracts", "enemy/planner", "execution/enemyPhase", "enemyPhasePreview", "mode", "decision", "deployment", "skillEffects", "statusEffects", "statusEncounter", "statusTurn", "statusBattle", "sequentialTurn", "skillSwarmLink", "sporeUnitProjection", "ringUnit", "corrodeUnit", "prismUnit", "swarmUnit", "neuralUnit", "displacementUnit", "unitRegistry"].map((n) => join(dir, n)));
   // board/combat/enemy 可能尚未拆出：存在才检查
   const files = [...core].map((p) => `${p}.ts`).filter(existsSync);
   assert.ok(files.some((f) => f.endsWith("rules.ts")), "rules.ts must exist");
   expectNone(check(files, (i) => i.resolved === null || !core.has(stem(i.resolved))));
 });
 
-test("controller/ai/matchFromSite import no react, three or engine", () => {
+test("controllers, AI and match adapters import no react, three or engine", () => {
   const dir = join(SRC, "game/mecha");
-  const files = ["controller", "ai", "matchFromSite"].map((n) => join(dir, `${n}.ts`)).filter(existsSync);
+  const files = ["controller", "sequentialController", "sequentialDurable", "ai", "matchFromSite"].map((n) => join(dir, `${n}.ts`)).filter(existsSync);
   assert.equal(files.length >= 1, true);
   expectNone(check(files, (i) =>
     /^(react|react-dom)(\/|$)/.test(i.spec) || /^three(\/|$)/.test(i.spec) || inside(i.resolved, join(SRC, "engine"))));
+});
+
+test("the shared HUD boundary and model stay outside runtime rules", () => {
+  const hud = join(SRC, "game/MechaHudLayout.tsx");
+  const model = join(SRC, "game/mecha/hud/model.ts");
+  const adapters = join(SRC, "game/mecha/hud/adapters.ts");
+  expectNone(check([hud], (i) => inside(i.resolved, join(SRC, "game/mecha/combat")) ||
+    inside(i.resolved, join(SRC, "game/mecha/rules")) || inside(i.resolved, join(SRC, "game/mecha/enemy"))));
+  expectNone(check([model, adapters], (i) => /^(react|react-dom)(\/|$)/.test(i.spec) ||
+    inside(i.resolved, join(SRC, "game/mecha/combat")) || inside(i.resolved, join(SRC, "game/mecha/rules")) ||
+    inside(i.resolved, join(SRC, "game/mecha/enemy"))));
+});
+
+test("sequential HUD composes shared classic panels without a parallel wrapper", () => {
+  const page = join(SRC, "game/SequentialMechaMatch.tsx");
+  const source = readFileSync(page, "utf8");
+  assert.equal(existsSync(join(SRC, "game/SequentialMechaHud.tsx")), false, "legacy sequential HUD wrapper must stay deleted");
+  assert.equal(existsSync(join(SRC, "game/sequentialMecha.css")), false, "sequential HUD must not own a second stylesheet");
+  assert.match(source, /<MechaCommandPanel\b/);
+  assert.match(source, /<MechaCommandDeck\b/);
+  assert.match(source, /<MechaActionCard\b/);
+  assert.match(source, /<MechaMoveList\b/);
+  assert.doesNotMatch(source, /SequentialMechaCommandPanel/);
+});
+
+test("mode routing stays in the pure resolver instead of the page component", () => {
+  const pages = [join(SRC, "game/MechaBoard.tsx"), join(SRC, "game/SequentialMechaMatch.tsx")].map((path) => readFileSync(path, "utf8"));
+  const mode = join(SRC, "game/mecha/mode.ts");
+  const runtime = readFileSync(join(SRC, "game/MechaModeRuntime.ts"), "utf8");
+  assert.doesNotMatch(pages.join("\n"), /import\.meta\.env|new URLSearchParams\(location\.search\)/);
+  assert.match(pages[0]!, /switch \(runtime\.mode\.kind\)/);
+  assert.match(runtime, /resolveMechaMode\(/);
+  expectNone(check([mode], (i) => i.resolved === null));
 });
 
 test("render/mecha imports nothing from game/** or engine/**", () => {

@@ -307,6 +307,8 @@ export function scriptedEnemyPrepare(state: MatchState): Intent {
   return intent;
 }
 
+export type EnemyActorTrace = { actor: string; before: MatchState; after: MatchState };
+
 function resolveRaider(state: MatchState, raider: Raider) {
   if (raider.hp <= 0) return;
   const intent = raider.intent;
@@ -353,20 +355,24 @@ type SporeEffect =
 
 
 
-export function bossExecute(state: MatchState) {
+export function bossExecute(state: MatchState, traceActor?: (step: EnemyActorTrace) => void) {
   assertMonsterState(state);
   if (state.outcome) {
     refresh(state);
     return;
   }
   if (state.boss.hp <= 0) {
+    const bossBefore = traceActor ? structuredClone(state) : null;
     reconcileNeural(state);
     if (state.boss.intent && (state.boss.intent.skillId === "prism_frost" || Object.values(MONSTER_SKILLS).some(skill => skill === state.boss.intent!.skillId))) {
       state.boss.intent.status = "void"; state.boss.intent.projected = []; state.boss.intent = null;
     }
+    if (bossBefore) traceActor!({ actor: "boss", before: bossBefore, after: structuredClone(state) });
     for (const raider of [...state.raiders]) {
       if (state.outcome) break;
+      const before = traceActor ? structuredClone(state) : null;
       resolveRaider(state, raider);
+      if (before) traceActor!({ actor: raider.id, before, after: structuredClone(state) });
     }
     refresh(state);
     tickCorrode(state);
@@ -385,6 +391,7 @@ export function bossExecute(state: MatchState) {
     }
     return;
   }
+  const bossBefore = traceActor ? structuredClone(state) : null;
   const intent = state.boss.intent;
   const skill = intent?.skillId ?? "skip";
   if (skill === "spore_leap" && !state.monsterContent) throw new Error("unsupported_monster_content");
@@ -428,9 +435,12 @@ export function bossExecute(state: MatchState) {
   else if (state.boss.cdSweep > 0) state.boss.cdSweep -= 1;
   if (skill !== "spore_leap" && skill !== "ring_pierce" && skill !== "prism_guard" && skill !== "prism_frost" && skill !== "corrode_cell" && skill !== "phase_swap" && skill !== "gravity_well" && skill !== "split_swarm" && skill !== "neural_link" && !any && state.boss.intent) state.boss.intent.status = "void";
   state.boss.intent = null;
+  if (bossBefore) traceActor!({ actor: "boss", before: bossBefore, after: structuredClone(state) });
   for (const raider of [...state.raiders]) {
     if (state.outcome) break;
+    const before = traceActor ? structuredClone(state) : null;
     resolveRaider(state, raider);
+    if (before) traceActor!({ actor: raider.id, before, after: structuredClone(state) });
   }
   refresh(state);
   tickCorrode(state);
