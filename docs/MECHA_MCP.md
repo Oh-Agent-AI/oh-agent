@@ -46,7 +46,7 @@ An MCP client entry (`<repo>` is this checkout):
 | `mecha_state` | Compact authoritative state: phase, turn, revision, outcome, units, boss, raiders, buildings |
 | `mecha_legal_actions` | Legal actions plus reachable move cells for one mech |
 | `mecha_move` / `mecha_act` / `mecha_undo` / `mecha_end_turn` | Submit one command and resolve immediately |
-| `mecha_auto_battle` | Run the deterministic command policy until outcome or `maxSteps` |
+| `mecha_auto_battle` | Run the v1.5 EvE harness: squad policy vs the real enemy planner, until outcome or `maxSteps` |
 
 `mecha_new_match` accepts `preset`, `script`, `ruleset`, `deployment`,
 `monsterSpecies`, `mechs`, `boss`, `raiders`, `buildings`, `covers`,
@@ -65,3 +65,16 @@ An MCP client entry (`<repo>` is this checkout):
 Every mutation is applied to a real `SequentialTurn`; rejected commands return
 `isError` with the engine's reason (`stale_revision`, `invalid_action`, ...).
 The server keeps matches in memory for the lifetime of the process.
+
+## v1.5 EvE harness
+
+`apps/agent-city/ui/src/game/mecha/ai/sequentialAutoBattle.ts` exposes:
+
+```ts
+runSequentialAutoBattle(initial, { squad?, enemy?, maxSteps?, maxTurns? })
+compareSequentialPolicies(initial, { name: policy }, options)
+```
+
+Every step is a real `SequentialCommand` on a `SequentialTurn`; the enemy
+phase uses the engine's planner (or the injected `enemy`). Records replay to
+the same revision, so a failing battle can be reopened with `SequentialTurn.replay`.

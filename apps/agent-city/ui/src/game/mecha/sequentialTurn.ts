@@ -2,6 +2,7 @@
 import { BUILDING_COLLISION_RULESET, assertMonsterState, emit, eq, inb, mech, moveBudget, movementSnapshot, occupant, pathDistance, presentationSnapshot, swapEventSink, type Action, type Cell, type MatchState, type MechId, type PresentationSnapshot, type PresentationStages, type TurnEvent } from "./board";
 import { applyAction, beginEnemyPhase } from "./combat";
 import { resolveEnemyPhase } from "./execution/enemyPhase";
+import type { EnemyPlanner } from "./enemy/contracts";
 import { encounterStatusBlocks, STATUS_ENCOUNTER_VERSION } from "./statusEncounter";
 import { finishPlayerEncounterStatuses, removeDeadEncounterStatuses } from "./statusTurn";
 
@@ -84,7 +85,9 @@ export class SequentialTurn {
   private checkpointPendingUndo: Undo[] = [];
   private readonly journal = new Map<string, { fingerprint: string; result: SequentialResult }>();
   private readonly history: SequentialRecord[] = [];
-  constructor(state: MatchState) {
+  private readonly enemyPlanner?: EnemyPlanner;
+  constructor(state: MatchState, options: { enemyPlanner?: EnemyPlanner } = {}) {
+    this.enemyPlanner = options.enemyPlanner;
     if (state.ruleset !== BUILDING_COLLISION_RULESET || state.phase !== "player_plan" || state.outcome) throw new Error("invalid_sequential_start");
     assertMonsterState(state);
     validateStatusLedger(state);
@@ -114,7 +117,7 @@ export class SequentialTurn {
   recordCount(): number { return this.history.length; }
   /** Detached search branch: same authority state, rights, undo, reset and history count. */
   branch(): SequentialTurn {
-    const fork = new SequentialTurn(this.current.match);
+    const fork = new SequentialTurn(this.current.match, this.enemyPlanner ? { enemyPlanner: this.enemyPlanner } : {});
     fork.current = clone(this.current);
     fork.checkpoint = clone(this.checkpoint);
     fork.pendingUndo = clone(this.pendingUndo);
@@ -136,7 +139,7 @@ export class SequentialTurn {
     return -1;
   }
   /** Re-run only committed commands; refuse unverified, duplicate or altered evidence. */
-  static replay(initial: MatchState, records: readonly SequentialRecord[]): SequentialTurn {
+  static replay(initial: MatchState, records: readonly SequentialRecord[], options: { enemyPlanner?: EnemyPlanner } = {}): SequentialTurn {
     if (!Array.isArray(records) || records.length > 4096) throw new Error("invalid_sequential_replay");
     const session = new SequentialTurn(initial);
     const seen = new Set<string>();
@@ -237,6 +240,7 @@ export class SequentialTurn {
           if (!next.match.outcome) beginEnemyPhase(next.match);
           afterPlayer = presentationSnapshot(next.match);
           const enemyPhase = resolveEnemyPhase(next.match, {
+            planner: this.enemyPlanner,
             capturePresentation: true,
             afterBoss: () => {
               // Enemy damage can kill a status-bearing unit; the post-enemy snapshot

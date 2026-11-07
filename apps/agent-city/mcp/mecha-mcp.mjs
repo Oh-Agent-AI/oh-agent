@@ -3,7 +3,7 @@
 import readline from "node:readline";
 import { createMatch, bossPrepare } from "../ui/src/game/mecha/rules.ts";
 import { SequentialTurn } from "../ui/src/game/mecha/sequentialTurn.ts";
-import { nextCommand } from "../ui/src/game/mecha/ai/commandPolicy.ts";
+import { runSequentialAutoBattle } from "../ui/src/game/mecha/ai/sequentialAutoBattle.ts";
 import { legalActions } from "../ui/src/game/mecha/combat.ts";
 import { applyDeployPlan, deployableCells } from "../ui/src/game/mecha/deployment.ts";
 import { MECH_IDS, occupant, pathDistance, moveBudget } from "../ui/src/game/mecha/board.ts";
@@ -63,7 +63,7 @@ const tools = [
   { name: "mecha_act", description: "Resolve one action (melee/shoot/charge/pierce/repair/skip).", inputSchema: { type: "object", required: ["matchId", "mech", "action"], properties: { matchId: { type: "string" }, mech: { type: "string" }, action: { type: "object" } } } },
   { name: "mecha_undo", description: "Undo the last move if available.", inputSchema: { type: "object", required: ["matchId"], properties: { matchId: { type: "string" } } } },
   { name: "mecha_end_turn", description: "End the player turn and resolve the enemy phase.", inputSchema: { type: "object", required: ["matchId"], properties: { matchId: { type: "string" } } } },
-  { name: "mecha_auto_battle", description: "Run the deterministic command policy until outcome or step limit.", inputSchema: { type: "object", required: ["matchId"], properties: { matchId: { type: "string" }, maxSteps: { type: "number" } } } },
+  { name: "mecha_auto_battle", description: "Run the v1.5 EvE harness (squad policy vs enemy planner) until outcome or step limit.", inputSchema: { type: "object", required: ["matchId"], properties: { matchId: { type: "string" }, maxSteps: { type: "number" } } } },
 ];
 
 function callTool(name, args) {
@@ -116,17 +116,12 @@ function callTool(name, args) {
   if (name === "mecha_undo") return execute(args, { kind: "undo" });
   if (name === "mecha_end_turn") return execute(args, { kind: "end", confirmUnused: true });
   if (name === "mecha_auto_battle") {
-    const session = sessionOf(args), max = Math.min(500, Math.max(1, args.maxSteps ?? 100));
-    let steps = 0;
-    while (session.turn && !session.turn.snapshot().match.outcome && steps < max) {
-      const intent = nextCommand(session.turn);
-      const revision = session.turn.snapshot().match.revision;
-      const command = intent.kind === "end" ? { kind: "end", confirmUnused: true } : intent;
-      const result = session.turn.execute({ ...command, id: `mcp-auto-${++commandSerial}`, revision });
-      if (!result.ok) return fail(result.reason, { steps });
-      session.state = result.snapshot.match; steps++;
-    }
-    return ok({ steps, outcome: session.state.outcome, state: summary(session) });
+    const session = sessionOf(args);
+    const maxSteps = Math.min(500, Math.max(1, args.maxSteps ?? 100));
+    const result = runSequentialAutoBattle(session.state, { maxSteps, maxTurns: 15 });
+    session.state = result.state;
+    session.turn = result.state.phase === "player_plan" ? new SequentialTurn(result.state) : null;
+    return ok({ steps: result.steps, outcome: result.outcome, reason: result.reason, fault: result.fault, state: summary(session) });
   }
   throw new Error("unknown_tool");
 }
