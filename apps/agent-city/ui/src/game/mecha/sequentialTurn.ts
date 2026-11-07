@@ -112,8 +112,8 @@ export class SequentialTurn {
   }
   records(): SequentialRecord[] { return clone(this.history); }
   recordCount(): number { return this.history.length; }
-  /** Evaluate a command against a detached fork of the current authority. */
-  trial(command: SequentialCommand): SequentialResult {
+  /** Detached search branch: same authority state, rights, undo, reset and history count. */
+  branch(): SequentialTurn {
     const fork = new SequentialTurn(this.current.match);
     fork.current = clone(this.current);
     fork.checkpoint = clone(this.checkpoint);
@@ -121,7 +121,11 @@ export class SequentialTurn {
     fork.checkpointPendingUndo = clone(this.checkpointPendingUndo);
     // Preserve the history limit without copying the historical records.
     fork.history.length = this.history.length;
-    return fork.execute(command);
+    return fork;
+  }
+  /** Evaluate one command against a detached branch. */
+  trial(command: SequentialCommand): SequentialResult {
+    return this.branch().execute(command);
   }
   private findUndoIndex(snapshot: Snapshot, candidates: readonly Undo[]): number {
     for (let index = candidates.length - 1; index >= 0; index--) {

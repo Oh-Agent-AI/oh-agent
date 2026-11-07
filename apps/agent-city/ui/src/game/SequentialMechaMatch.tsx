@@ -76,6 +76,7 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
   const [compactSummary, setCompactSummary] = useState(true);
   const [showGuide, setShowGuide] = useState(false);
   const [showResult, setShowResult] = useState(false);
+  const [auto, setAuto] = useState(false);
   const resultSeen = useRef(false);
   const guideTrigger = useRef<HTMLElement | null>(null);
   const [hoveredEnemy, setHoveredEnemy] = useState<string | null>(null);
@@ -132,6 +133,13 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
   const restrictions = (id: MechId) => state.match.statusEncounter ? statusBlocks(state.match.statusEncounter.statuses, id) ?? { move: true, action: true } : { move: false, action: false };
   const canAct = (id: MechId) => Boolean(state.rights?.[id].action && !restrictions(id).action);
   const locked = Boolean(presentation || state.match.outcome || viewError || archiveBusy || replay || !recovery || recovery.pending || recoveryError || state.persistence === "saving" || state.persistence === "unconfirmed");
+  useEffect(() => {
+    if (!auto || locked || presentation || state.match.outcome || state.placements || state.error) return;
+    const command = controller.suggest();
+    if (!command) { setAuto(false); return; }
+    if (practice) controller.execute(command);
+    else void controller.executeDurable(command);
+  }, [auto, locked, presentation, state, controller, practice]);
   const attackOrderPreview = useMemo(() => {
     if (!showOrder || locked || state.placements) return null;
     try { return previewEnemyPhase(state.match); }
@@ -241,7 +249,7 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
     else hudActions.moveTo(cell);
     setChoice(""); setTargetingKind(null); setActionIndex(""); setConfirmEnd(false);
   };
-  const select = (id: MechId) => { controller.select(id); setInspectedCell(null); setHoveredCell(null); setChoice(""); setTargetingKind(null); setActionIndex(""); setConfirmEnd(false); };
+  const select = (id: MechId) => { setAuto(false); controller.select(id); setInspectedCell(null); setHoveredCell(null); setChoice(""); setTargetingKind(null); setActionIndex(""); setConfirmEnd(false); };
   const rosterRows = (replay ? display.mechs : state.match.mechs).map(unit => {
     const badges = describeStatusBadges(display.statusEncounter?.statuses ?? [], unit.id, locale);
     const placement = (replay ? replay.placements : state.openingPlacements)?.find(item => item.mechId === unit.id);
@@ -308,6 +316,7 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
     : record.causalEvent?.kind === "reset_turn" ? t("重置回合", "Reset turn")
     : record.command.kind === "move" ? t("移动", "Move") : record.command.kind === "act" ? t("行动", "Action") : t("结束回合", "End turn");
   const issue = (command: CommandInput) => {
+    setAuto(false);
     const current = controller.getState();
     if ("mech" in command && (command.mech !== current.selected || state.match.revision !== current.match.revision)) return;
     setArchiveMessage(null);
@@ -551,6 +560,7 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
         utilities={<div className="mecha-actions mecha-action-utilities">
           <button type="button" className="mecha-submit-primary" disabled={!action || !selectedPreview?.ok || locked || Boolean(state.placements) || Boolean(replay)} onClick={hudActions.confirmAction}>{t("确认行动", "Confirm action")}</button>
           <button type="button" title={undoHint} disabled={!state.canUndo || locked || Boolean(state.placements) || Boolean(replay)} onClick={hudActions.undoMove}>{t("撤销移动", "Undo move")}</button>
+          <button type="button" data-mecha-auto disabled={locked || Boolean(state.placements) || Boolean(replay)} aria-pressed={auto} onClick={() => setAuto(value => !value)}>{auto ? t("停止自动", "Stop auto") : t("自动对战", "Auto play")}</button>
         </div>}
         target={<>
           {!state.placements && !replay && <details className="mecha-unavailable-actions"><summary>{t("技能说明与射击诊断", "Action guide and shot diagnostics")}</summary>

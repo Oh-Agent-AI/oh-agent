@@ -4,6 +4,7 @@ import { applyDeployPlan, deployableCells, deploymentCellFault, validateDeployPl
 import { SequentialTurn, type SequentialRecord } from "./sequentialTurn";
 import { canonicalJson } from "./contracts/match";
 import { catalogSupports } from "./monsters/catalog";
+import { nextCommand } from "./ai/commandPolicy";
 import { SequentialDurableAuthority, type SequentialDurableStore } from "./sequentialDurable";
 
 export type CommandInput =
@@ -60,6 +61,13 @@ export class SequentialController {
     this.rebuild();
   }
   getState = (): SequentialControllerView => this.view;
+  /** Deterministic one-step suggestion; never mutates the live authority. */
+  suggest(): CommandInput | null {
+    if (!this.authority || this.presentation || this.saving || this.durable?.needsReload() || this.state.outcome || this.state.phase !== "player_plan") return null;
+    const intent = nextCommand(this.authority);
+    return intent.kind === "end" ? { kind: "end", confirmUnused: true } : intent;
+  }
+
   subscribe = (fn: () => void): (() => void) => { this.listeners.add(fn); return () => { this.listeners.delete(fn); }; };
   private rebuild(): void {
     const deployment = this.state.phase === "deployment", authority = this.authority?.snapshot();
