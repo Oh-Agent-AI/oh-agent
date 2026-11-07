@@ -130,6 +130,8 @@ export function createMatch(opts: {
   mission?: LocalMissionId;
   /** Explicit experimental local rules; no city, replay or remote integration. */
   monsterContent?: MonsterContent;
+  /** Local-only enemy waves; the first wave is spawned at the next enemy phase. */
+  waves?: { count: number; raidersPerWave?: number; spawns: Cell[] };
 }): MatchState {
   if (opts.ruleset !== undefined && opts.ruleset !== "mecha-v1.4" && opts.ruleset !== "mecha-v1.5") throw new Error("unsupported_ruleset");
   assertMonsterContent(opts);
@@ -162,6 +164,8 @@ export function createMatch(opts: {
       maxHp: b.hp ?? BUILDING_HP,
     })),
     stake: opts.stake ?? "all",
+    ...(opts.waves ? { waves: { version: 1 as const, total: opts.waves.count, remaining: opts.waves.count,
+      spawned: 0, raidersPerWave: Math.max(1, opts.waves.raidersPerWave ?? 2), spawns: opts.waves.spawns.map(cell => ({ ...cell })) } } : {}),
     raiders: (opts.raiders ?? (siege ? SIEGE_RAIDERS : [])).map((r) => ({
       id: r.id,
       pos: { ...r.pos },

@@ -6,7 +6,7 @@ import { resolveRegisteredUnitEffect, unitForSpecies } from "./unitRegistry";
  * 依赖 board.ts（棋盘与寻路）和 combat.ts（伤害、击退）；不依赖 rules.ts。
  */
 import {
-  BOSS_MOVE, BUILDING_DEF, MAX_TURNS, MOVE_QUANTUM, RAIDER_DEF, RAIDER_MOVE, STATS, enemyStatsOf, adjacentCells, dijkstra, emit, enemiesRemain, eq, footprint,
+  spawnNextWave, BOSS_MOVE, BUILDING_DEF, MAX_TURNS, MOVE_QUANTUM, RAIDER_DEF, RAIDER_MOVE, STATS, enemyStatsOf, adjacentCells, dijkstra, emit, enemiesRemain, eq, footprint,
   inb, isObstacle, living, livingBuildingAt, livingRaiders, livingStakeBuildings, manh, mech, occupant, onFootprint, raiderAt, stepCost, water, orderedHealthEffect, sporeLeapCells, sporeLeapReachable, ringPierceCells, STEP_DIRS, assertMonsterState, corrodeWorld, prepareCorrode, resolveCorrode, MONSTER_SKILLS, BOARD, displacementWorld, prepareDisplacement, resolveDisplacement, prepareSwarmIntent, resolveSwarmIntent, prepareNeuralIntent, resolveNeuralIntent, reconcileNeural, neuralBonus,
   type Building, type Cell, type Intent, type MatchState, type MechId, type Raider, type TurnEvent,
 } from "./board";
@@ -262,13 +262,17 @@ export function scriptedEnemyPrepare(state: MatchState): Intent {
   const skip: Intent = { skillId: "skip", local: [], projected: [], cdSweep: state.boss.cdSweep, status: "void" };
   if (state.phase !== "enemy_prepare") return skip;
   if (!enemiesRemain(state)) {
-    refresh(state);
-    // Rescue continues even when there are no enemies left to prepare.
-    if (!state.outcome && state.mission?.kind === "rescue:v1") {
-      state.phase = "player_plan";
-      state.revision += 1;
+    if (spawnNextWave(state)) {
+      // A cleared wave opens the next one at the enemy phase, then normal intent planning resumes.
+    } else {
+      refresh(state);
+      // Rescue continues even when there are no enemies left to prepare.
+      if (!state.outcome && state.mission?.kind === "rescue:v1") {
+        state.phase = "player_plan";
+        state.revision += 1;
+      }
+      return skip;
     }
-    return skip;
   }
   let intent = skip;
   if (state.boss.hp > 0) {

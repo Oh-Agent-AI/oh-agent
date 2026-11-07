@@ -200,6 +200,8 @@ export type MatchState = {
   /** 缺省 all。frontage 只把正交贴着道路的楼算进楼毁和敌方目标。 */
   stake: BuildingStake;
   raiders: Raider[];
+  /** Local-only enemy waves; spawned at the next enemy phase after a wave is cleared. */
+  waves?: { version: 1; total: number; remaining: number; spawned: number; raidersPerWave: number; spawns: Cell[] };
   mechs: Mech[];
   boss: Boss;
   turn: number;
@@ -583,6 +585,21 @@ export function livingRaiders(state: MatchState): Raider[] {
 
 export function enemiesRemain(state: MatchState): boolean {
   return state.boss.hp > 0 || livingRaiders(state).length > 0;
+}
+
+/** Spawn one wave into its declared cells; false when none can be placed. */
+export function spawnNextWave(state: MatchState): boolean {
+  const waves = state.waves;
+  if (!waves || waves.remaining <= 0) return false;
+  const cells = waves.spawns.filter(cell => occupant(state, cell) === "empty").slice(0, waves.raidersPerWave);
+  if (cells.length === 0) return false;
+  const hp = enemyStatsOf(state).raiderHp;
+  for (const [index, pos] of cells.entries()) {
+    state.raiders.push({ id: `wave-${waves.spawned}-${index}`, pos: { ...pos }, hp, intent: null });
+  }
+  waves.remaining -= 1;
+  waves.spawned += 1;
+  return true;
 }
 
 

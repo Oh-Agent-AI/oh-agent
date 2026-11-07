@@ -1,4 +1,4 @@
-import { assertMonsterState, eq, validSwarmBinding, reconcileNeural, swapEventSink } from "../board";
+import { assertMonsterState, eq, validSwarmBinding, reconcileNeural, swapEventSink, spawnNextWave, enemiesRemain } from "../board";
 import { scriptedEnemyPrepare } from "../enemy";
 import type { Intent, MatchState } from "../rules";
 import type { EnemyPlan, EnemyPlanner } from "./contracts";
@@ -111,6 +111,7 @@ export function prepareEnemy(state: MatchState, planner: EnemyPlanner = scripted
   assertMonsterState(state);
   if (state.phase !== "enemy_prepare") return skipIntent(state);
   const isNeural = state.monsterContent?.speciesId === "neural_weaver";
+  if (!enemiesRemain(state) && state.waves && state.waves.remaining > 0) spawnNextWave(state);
   const outer = isNeural ? swapEventSink(null) : null;
   let plan: EnemyPlan;
   try { plan = planner.plan(isNeural ? structuredClone(state) : state); }

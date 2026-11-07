@@ -83,7 +83,7 @@ export function refresh(state: MatchState) {
   if (!state.outcome) {
     if (state.mission?.kind === "rescue:v1") {
       if (living(state).length === 0) state.outcome = "defeat_wipe";
-    } else if (!enemiesRemain(state)) state.outcome = "victory";
+    } else if (!enemiesRemain(state) && !(state.waves && state.waves.remaining > 0)) state.outcome = "victory";
     else if (living(state).length === 0) state.outcome = "defeat_wipe";
     else if (stakeBuildings(state).length > 0 && livingStakeBuildings(state).length === 0) state.outcome = "defeat_buildings";
   }
