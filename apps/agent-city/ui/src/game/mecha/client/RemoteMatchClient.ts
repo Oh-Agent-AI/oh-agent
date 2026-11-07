@@ -1,7 +1,6 @@
 import { MECHA_NET_PROTOCOL, type DeploymentResult, type MatchEvent, type MatchResult, type MatchSnapshot, type SubmitDeploymentCommand, type SubmitPlanCommand, type TurnResolved } from "../contracts/match";
 import type { RevisionState } from "../contracts/match";
 import { deploymentResult, parseRemoteMessage, snapshotResult, turnResult, type RemoteMethod } from "../contracts/transport";
-import type { MatchClient } from "./MatchClient";
 import type { SequentialCommand } from "../sequentialTurn";
 import { parseSequentialCommandResult, parseSequentialSnapshotResult, type SequentialCommandResult, type SequentialSnapshotResult } from "../contracts/sequentialTransport";
 
@@ -18,7 +17,7 @@ export type MechaRemoteCapability = "mecha:v1" | "mecha:v2" | "mecha:v3" | "mech
 type Pending = { resolve: (value: unknown) => void; reject: (reason: Error) => void; timer: ReturnType<typeof setTimeout> };
 const browserSocket: WebSocketFactory = (url) => new WebSocket(url) as WebSocketLike;
 
-export class RemoteMatchClient<S extends RevisionState = RevisionState> implements MatchClient<S> {
+export class RemoteMatchClient<S extends RevisionState = RevisionState> {
   private url: string;
   private readonly playerId: string;
   private readonly capability: MechaRemoteCapability;
