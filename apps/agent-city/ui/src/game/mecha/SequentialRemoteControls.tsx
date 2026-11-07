@@ -1,0 +1,48 @@
+import { useState } from "react";
+import type { DeployPlacement } from "./deployment";
+import type { MatchState } from "./board";
+import type { SequentialRecord } from "./sequentialTurn";
+import { buildSequentialOpening } from "./sequentialOpening";
+import { remoteRequest } from "./RemoteMechaControls";
+
+/** Desktop handoff for the v1.5 command stream; it never routes the host back to classic. */
+export function SequentialRemoteControls({ locale, evidence, disabled }: {
+  locale: "zh-Hans" | "en";
+  evidence: { initial: MatchState; placements: DeployPlacement[]; records: SequentialRecord[] } | null;
+  disabled: boolean;
+}) {
+  const zh = locale !== "en";
+  const [relay] = useState(() => sessionStorage.getItem("agent-city-relay") ?? "");
+  const [link, setLink] = useState("");
+  const [status, setStatus] = useState<"idle" | "starting" | "active" | "stopping">("idle");
+  const [error, setError] = useState("");
+  const start = async () => {
+    if (!evidence || disabled || status !== "idle") return;
+    setStatus("starting"); setError("");
+    try {
+      const opening = buildSequentialOpening(evidence);
+      const result = await remoteRequest("mecha.remote.start-sequential", { relay, opening });
+      if (typeof result.remoteUrl !== "string" || typeof result.matchId !== "string") throw new Error("plugin_response_invalid");
+      sessionStorage.setItem("agent-city-relay", relay);
+      setLink(result.remoteUrl); setStatus("active");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "remote_unavailable");
+      setStatus("idle");
+    }
+  };
+  const stop = async () => {
+    if (status !== "active") return;
+    setStatus("stopping");
+    try { await remoteRequest("mecha.remote.stop", {}); setLink(""); setStatus("idle"); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "remote_unavailable"); setStatus("active"); }
+  };
+  return <details className="mecha-settings mecha-remote-settings">
+    <summary>{zh ? "手机续玩（1.5）" : "Continue on phone (1.5)"}</summary>
+    <div className="mecha-actions">
+      {status !== "active" ? <button type="button" disabled={!evidence || disabled || status !== "idle"} onClick={() => void start()}>{status === "starting" ? (zh ? "正在生成…" : "Creating…") : (zh ? "生成手机链接" : "Create phone link")}</button>
+        : <><a href={link} target="_blank" rel="noreferrer">{zh ? "打开手机链接" : "Open phone link"}</a><button type="button" onClick={() => void stop()}>{zh ? "停止远程" : "Stop remote"}</button></>}
+      {error && <p role="alert">{error}</p>}
+      <p className="mecha-v15-note">{zh ? "交接后桌面端不会自动同步手机上的操作；停止远程前请先确认。" : "Desktop does not auto-sync phone moves; confirm before stopping remote."}</p>
+    </div>
+  </details>;
+}

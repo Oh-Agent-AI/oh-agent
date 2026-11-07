@@ -50,6 +50,7 @@ import { buildSequentialHud } from "./mecha/hud/adapters";
 import type { MechaHudActions, MechaHudModel, MechaHudProjection } from "./mecha/hud/model";
 import type { PlannedMonsterSpeciesId } from "./mecha/monsters/contracts";
 import { monsterCatalogEntry } from "./mecha/monsters/catalog";
+import { SequentialRemoteControls } from "./mecha/SequentialRemoteControls";
 
 const NAMES: Record<MechId, string> = { Assault: "突击", Gunner: "射手", Support: "支援" };
 const STATUS_SPECIES: Record<StatusMonsterId, [string, string]> = { spore_leaper: ["孢群体", "Spore leaper"], flux_lancer: ["流环体", "Flux lancer"], prism_warden: ["晶簇体", "Prism warden"], gravity_core: ["引力核", "Gravity core"] };
@@ -599,6 +600,7 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
         <button type="button" onClick={() => { setPaused(false); finishPresentation(); }}>{t("跳过演出", "Skip animation")}</button>
       </div>}
     </div>
+    {!replay && import.meta.env.DEV && state.match.phase === "player_plan" && <SequentialRemoteControls locale={locale} evidence={controller.replayEvidence()} disabled={locked || Boolean(state.placements) || Boolean(state.match.outcome)} />}
     {replay && <div className="mecha-replay-bar" role="region" aria-label={t("回放控制", "Replay controls")}>
       <strong>{t("回放步骤", "Replay step")} {replay.index}/{replay.records.length} · {replay.index ? replayLabel(replay.records[replay.index - 1]!) : t("部署完成", "Deployment complete")}</strong>
       <button type="button" disabled={Boolean(replayAnimation) || replay.index === 0} onClick={() => setReplay({ ...replay, index: replay.index - 1 })}>{t("上一步", "Previous")}</button>

@@ -7,7 +7,7 @@ import { remoteArenaFromSite, remoteStateFromSite } from "./contracts/arena";
 import type { MatchState } from "./rules";
 
 let sequence = 0;
-async function remoteRequest(method: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+export async function remoteRequest(method: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
   const request: PluginRequestV1 = {
     version: 1,
     instanceId: window.__AV_PLUGIN_INSTANCE__ ?? "",
