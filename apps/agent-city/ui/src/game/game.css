@@ -430,3 +430,47 @@
   .mecha-overlay.is-city.has-match .mecha-battle-bar > div:first-child { display: flex; order: 1; }
   .mecha-overlay.is-city.has-match .mecha-battle-controls button { flex: 0 1 auto; padding: 3px 6px; }
 }
+
+/* v1.5 remote handoff dialog: independent of HUD panel/grid rules. */
+.mecha-remote-dialog {
+  position: relative;
+  width: min(92vw, 480px);
+  max-height: 80vh;
+  overflow: auto;
+  box-sizing: border-box;
+  padding: 16px;
+  border: 1px solid #2a4a63;
+  border-radius: 8px;
+  background: #0b1726;
+  color: #dbe7f3;
+  box-shadow: 0 12px 32px #0008;
+}
+.mecha-remote-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.mecha-remote-dialog-head strong { font-size: 16px; line-height: 1.3; }
+.mecha-remote-dialog-head button {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 56px;
+  min-height: 32px;
+  padding: 4px 10px;
+}
+.mecha-remote-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.mecha-remote-dialog-actions button,
+.mecha-remote-dialog-actions a {
+  flex: 0 0 auto;
+  width: auto;
+  min-height: 36px;
+  padding: 6px 12px;
+}
+.mecha-remote-dialog-actions p { flex: 1 1 100%; margin: 4px 0 0; }

@@ -66,6 +66,12 @@ try {
     await remoteEntry.waitFor();
     await remoteEntry.click();
     await page.locator(".mecha-remote-panel").waitFor();
+    const remoteDialog = page.locator(".mecha-remote-dialog");
+    const dialogBox = await remoteDialog.boundingBox();
+    assert.ok(dialogBox && dialogBox.width <= 520, `remote dialog width ${dialogBox?.width}`);
+    const closeBox = await page.getByRole("button", { name: locale === "zh" ? "关闭" : "Close", exact: true }).boundingBox();
+    assert.ok(closeBox && closeBox.width <= 160, `remote close width ${closeBox?.width}`);
+    await page.screenshot({ path: `/tmp/v15-remote-dialog-${locale}.png` });
     await page.getByRole("button", { name: locale === "zh" ? "关闭" : "Close", exact: true }).click();
 
     await root.locator(".mecha-v15-roster button").nth(1).click();

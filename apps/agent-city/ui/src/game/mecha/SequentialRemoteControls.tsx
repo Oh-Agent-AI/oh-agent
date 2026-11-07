@@ -59,8 +59,8 @@ export function SequentialRemoteControls({ locale, evidence, disabled, onActive,
     catch (cause) { setError(cause instanceof Error ? cause.message : "remote_unavailable"); setStatus("active"); }
   };
   return <section className="mecha-remote-panel" aria-label={zh ? "远程控制" : "Remote control"}>
-    <header className="mecha-v15-row"><strong>{zh ? "手机续玩（1.5）" : "Continue on phone (1.5)"}</strong><button type="button" onClick={onClose}>{zh ? "关闭" : "Close"}</button></header>
-    <div className="mecha-actions">
+    <header className="mecha-remote-dialog-head"><strong>{zh ? "手机续玩（1.5）" : "Continue on phone (1.5)"}</strong><button type="button" onClick={onClose}>{zh ? "关闭" : "Close"}</button></header>
+    <div className="mecha-remote-dialog-actions">
       {status !== "active" ? <button type="button" disabled={!evidence || disabled || status !== "idle"} onClick={() => void start()}>{status === "starting" ? (zh ? "正在生成…" : "Creating…") : (zh ? "生成手机链接" : "Create phone link")}</button>
         : <><a href={link} target="_blank" rel="noreferrer">{zh ? "打开手机链接" : "Open phone link"}</a><button type="button" onClick={() => void stop()}>{zh ? "停止远程" : "Stop remote"}</button></>}
       {error && <p role="alert">{error}</p>}
