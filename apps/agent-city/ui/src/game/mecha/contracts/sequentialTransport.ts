@@ -38,3 +38,33 @@ export type SequentialResponse = {
   requestId: string;
   result: SequentialSnapshotResult | SequentialCommandResult;
 };
+
+const snapshotError = (value: unknown): value is { ok: false; error: { code: "match_not_found" } } => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const result = value as Record<string, unknown>, error = result.error as Record<string, unknown> | undefined;
+  return result.ok === false && error?.code === "match_not_found";
+};
+const commandError = new Set(["stale_revision", "duplicate_command", "invalid_command", "match_finished", "match_not_found"]);
+
+export function parseSequentialSnapshotResult(value: unknown): SequentialSnapshotResult | null {
+  if (snapshotError(value)) return value;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const result = value as Record<string, unknown>;
+  if (result.ok !== true || !result.snapshot || typeof result.snapshot !== "object") return null;
+  const snapshot = result.snapshot as Record<string, unknown>;
+  const initial = snapshot.initial as Record<string, unknown> | undefined;
+  if (snapshot.protocol !== SEQUENTIAL_NET_PROTOCOL || snapshot.ruleset !== "mecha-v1.5" ||
+      typeof snapshot.matchId !== "string" || !Number.isSafeInteger(snapshot.revision) || (snapshot.revision as number) < 0 ||
+      !Array.isArray(snapshot.placements) || !Array.isArray(snapshot.commands) || !initial ||
+      initial.ruleset !== "mecha-v1.5") return null;
+  return value as SequentialSnapshotResult;
+}
+
+export function parseSequentialCommandResult(value: unknown): SequentialCommandResult | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const result = value as Record<string, unknown>;
+  if (result.ok === true) return parseSequentialSnapshotResult({ ok: true, snapshot: result.snapshot }) ? value as SequentialCommandResult : null;
+  if (result.ok !== false) return null;
+  const error = result.error as Record<string, unknown> | undefined;
+  return error && typeof error.code === "string" && commandError.has(error.code) ? value as SequentialCommandResult : null;
+}

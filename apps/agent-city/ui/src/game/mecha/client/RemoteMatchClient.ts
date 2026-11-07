@@ -2,6 +2,8 @@ import { MECHA_NET_PROTOCOL, type DeploymentResult, type MatchEvent, type MatchR
 import type { RevisionState } from "../contracts/match";
 import { deploymentResult, parseRemoteMessage, snapshotResult, turnResult, type RemoteMethod } from "../contracts/transport";
 import type { MatchClient } from "./MatchClient";
+import type { SequentialCommand } from "../sequentialTurn";
+import { parseSequentialCommandResult, parseSequentialSnapshotResult, type SequentialCommandResult, type SequentialSnapshotResult } from "../contracts/sequentialTransport";
 
 export interface WebSocketLike {
   send(data: string): void;
@@ -70,6 +72,19 @@ export class RemoteMatchClient<S extends RevisionState = RevisionState> implemen
   }
 
 
+  /** v2 handoff: opening + commands; never reinterpreted as a v1 plan. */
+  async sequentialSnapshot(matchId: string): Promise<SequentialSnapshotResult> {
+    if (!this.matchId) this.matchId = matchId;
+    const result = parseSequentialSnapshotResult(await this.request("sequential.snapshot", { matchId }));
+    return result ?? { ok: false, error: { code: "match_not_found" } };
+  }
+
+  async submitSequentialCommand(matchId: string, baseRevision: number, command: SequentialCommand): Promise<SequentialCommandResult> {
+    if (!this.matchId) this.matchId = matchId;
+    const result = parseSequentialCommandResult(await this.request("sequential.command.submit", { matchId, baseRevision, command }));
+    return result ?? { ok: false, error: { code: "invalid_command" } };
+  }
+
   async close(matchId: string): Promise<MatchResult<MatchSnapshot<S>>> {
     const result = snapshotResult<S>(await this.request("match.close", { matchId, playerId: this.playerId }));
     return result ?? { ok: false, error: { code: "invalid_message" } };
@@ -108,7 +123,7 @@ export class RemoteMatchClient<S extends RevisionState = RevisionState> implemen
     }, delay);
   }
 
-  private async request(method: RemoteMethod, payload: { matchId: string; playerId?: string }): Promise<unknown> {
+  private async request(method: RemoteMethod, payload: Record<string, unknown> & { matchId: string }): Promise<unknown> {
     if (!this.matchId || payload.matchId !== this.matchId) throw new Error("match_not_found");
     try { await this.connect(); } catch (error) { this.scheduleReconnect(); throw error; }
     const requestId = `remote-${++this.sequence}`;

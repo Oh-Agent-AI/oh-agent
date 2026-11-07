@@ -1,6 +1,6 @@
 import { MECHA_NET_PROTOCOL, type DeploymentResult, type MatchErrorCode, type MatchEvent, type MatchResult, type MatchSnapshot, type RevisionState, type TurnResolved } from "./match";
 
-export type RemoteMethod = "match.snapshot" | "deployment.submit" | "plan.submit" | "match.close";
+export type RemoteMethod = "match.snapshot" | "deployment.submit" | "plan.submit" | "match.close" | "sequential.snapshot" | "sequential.command.submit";
 export type RemoteRequest = {
   protocol: typeof MECHA_NET_PROTOCOL;
   type: "request";
