@@ -62,6 +62,12 @@ try {
     assert.equal(await root.getAttribute("data-hud-phase"), "planning");
     assert.match(await root.locator(".mecha-selected-actions").innerText(), locale === "zh" ? /操作机甲/ : /Selected mech/);
     assert.ok(await root.locator(".mecha-action-card").count() > 0, "v1.5 actions must be available in the planning phase");
+    const remoteEntry = page.getByRole("button", { name: locale === "zh" ? "远程控制" : "Remote control", exact: true });
+    await remoteEntry.waitFor();
+    await remoteEntry.click();
+    await page.locator(".mecha-remote-panel").waitFor();
+    await page.getByRole("button", { name: locale === "zh" ? "关闭" : "Close", exact: true }).click();
+
     await root.locator(".mecha-v15-roster button").nth(1).click();
     const attack = root.locator(".mecha-action-card").filter({ hasText: locale === "zh" ? "射击" : "Shoot" });
     await attack.waitFor();

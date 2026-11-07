@@ -79,6 +79,7 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
   const [showResult, setShowResult] = useState(false);
   const [auto, setAuto] = useState(false);
   const [handedOff, setHandedOff] = useState(false);
+  const [showRemote, setShowRemote] = useState(false);
   const resultSeen = useRef(false);
   const guideTrigger = useRef<HTMLElement | null>(null);
   const [hoveredEnemy, setHoveredEnemy] = useState<string | null>(null);
@@ -485,7 +486,7 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
         if (!presentation && !replayAnimation) setInspectedCell(cell);
       } else performCell(cell);
     }} onHoverCell={setHoveredCell} onHoverEnemy={setHoveredEnemy} onUnavailable={reason => setViewError(reason ?? "mode")} />
-    <header className="mecha-battle-bar mecha-v15-bar"><div className="mecha-battle-controls"><MechaBattlefieldControls locale={locale} mapFocused={mapFocused} onToggleFocus={() => setMapFocused(value => !value)} onResetCamera={() => worldRef.current?.resetCamera()} /><button type="button" disabled={Boolean(state.placements) || Boolean(replay)} aria-label={t("结算顺序", "Turn order")} aria-expanded={showOrder} aria-controls={showOrder ? "mecha-order-panel" : undefined} onClick={() => { if (!showOrder) { setMapFocused(false); setCompactSummary(false); } else panelRef.current?.querySelector<HTMLElement>(".mecha-turn-summary")?.scrollTo({ top: 0 }); setShowOrder(value => !value); }}>{t("顺序", "Order")}</button><button type="button" data-mecha-settings-trigger="battlefield" aria-expanded={settingsPanel === "battlefield"} aria-controls="mecha-battlefield-settings" onClick={event => toggleSettings("battlefield", event.currentTarget)}>{gameText("战场设置", locale)}</button><MechaBattleMenu locale={locale} exitDisabled={archiveBusy || state.persistence === "saving"} onGuide={trigger => { guideTrigger.current = trigger; setSettingsPanel(null); setMapFocused(false); setShowGuide(true); }} onExit={requestClose} /></div></header>
+    <header className="mecha-battle-bar mecha-v15-bar"><div className="mecha-battle-controls"><MechaBattlefieldControls locale={locale} mapFocused={mapFocused} onToggleFocus={() => setMapFocused(value => !value)} onResetCamera={() => worldRef.current?.resetCamera()} /><button type="button" disabled={Boolean(state.placements) || Boolean(replay)} aria-label={t("结算顺序", "Turn order")} aria-expanded={showOrder} aria-controls={showOrder ? "mecha-order-panel" : undefined} onClick={() => { if (!showOrder) { setMapFocused(false); setCompactSummary(false); } else panelRef.current?.querySelector<HTMLElement>(".mecha-turn-summary")?.scrollTo({ top: 0 }); setShowOrder(value => !value); }}>{t("顺序", "Order")}</button><button type="button" aria-label={t("远程控制", "Remote control")} aria-expanded={showRemote} onClick={() => setShowRemote(value => !value)}>{t("远程", "Remote")}</button><button type="button" data-mecha-settings-trigger="battlefield" aria-expanded={settingsPanel === "battlefield"} aria-controls="mecha-battlefield-settings" onClick={event => toggleSettings("battlefield", event.currentTarget)}>{gameText("战场设置", locale)}</button><MechaBattleMenu locale={locale} exitDisabled={archiveBusy || state.persistence === "saving"} onGuide={trigger => { guideTrigger.current = trigger; setSettingsPanel(null); setMapFocused(false); setShowGuide(true); }} onExit={requestClose} /></div></header>
     <div className="mecha-panel mecha-v15-panel" ref={panelRef} aria-label={t("逐台行动", "Sequential actions")}>
       <details className="mecha-tactical-legend"><summary><span aria-hidden="true">↗</span> {gameText("战场图例", locale)}</summary><MechaBattleLegend locale={locale} view={view} /></details>
       <MechaObjectivePanel className={compactSummary ? "is-compact" : ""} label={t("战斗目标与威胁", "Battle objective and threats")}>
@@ -604,7 +605,6 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
         <button type="button" onClick={() => { setPaused(false); finishPresentation(); }}>{t("跳过演出", "Skip animation")}</button>
       </div>}
     </div>
-    {!replay && state.match.phase === "player_plan" && <SequentialRemoteControls locale={locale} evidence={liveEvidence} disabled={locked || Boolean(state.placements) || Boolean(state.match.outcome)} onActive={setHandedOff} onRecovered={snapshot => { controller.replaceFromSnapshot(snapshot); setHandedOff(false); }} />}
     {replay && <div className="mecha-replay-bar" role="region" aria-label={t("回放控制", "Replay controls")}>
       <strong>{t("回放步骤", "Replay step")} {replay.index}/{replay.records.length} · {replay.index ? replayLabel(replay.records[replay.index - 1]!) : t("部署完成", "Deployment complete")}</strong>
       <button type="button" disabled={Boolean(replayAnimation) || replay.index === 0} onClick={() => setReplay({ ...replay, index: replay.index - 1 })}>{t("上一步", "Previous")}</button>
@@ -620,5 +620,12 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
       getVerifiedReview={() => resultReview ?? { review: { status: "unavailable", rounds: [] }, achievements: null }}
       onRestart={() => { if (practice) { controller.restartDeployment(); setShowResult(false); setReplay(null); } else void restartMatch(); }} onExit={requestClose} />}
     {showGuide && <MechaQuickGuide locale={locale} mode="sequential" returnFocusRef={guideTrigger} onClose={() => setShowGuide(false)} />}
+    {showRemote && <div className="mecha-remote-modal" role="dialog" aria-modal="true" aria-label={t("远程控制", "Remote control")}
+      style={{ position: "fixed", inset: 0, zIndex: 80, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.55)" }}
+      onClick={() => setShowRemote(false)}>
+      <div className="mecha-panel" style={{ width: "min(92vw, 520px)", maxHeight: "80vh", overflow: "auto" }} onClick={event => event.stopPropagation()}>
+        <SequentialRemoteControls locale={locale} evidence={liveEvidence} disabled={locked || Boolean(state.placements) || Boolean(state.match.outcome)} onActive={setHandedOff} onRecovered={snapshot => { controller.replaceFromSnapshot(snapshot); setHandedOff(false); }} onClose={() => setShowRemote(false)} />
+      </div>
+    </div>}
   </MechaHud>;
 }
