@@ -4,7 +4,7 @@ import type { PresentationStages } from "../presentationSnapshot";
 import type { RemoteArenaV1 } from "./arena";
 
 export const MECHA_NET_PROTOCOL = "mecha-net:v1" as const;
-export type MatchMode = "pve" | "pvp";
+export type MatchMode = "pve";
 export type MatchSide = "A" | "B";
 export type MatchStatus = "active" | "finished" | "closed";
 export type MatchPlayer = { playerId: string; side: MatchSide; role: "host" | "guest" };
@@ -38,16 +38,6 @@ export type SubmitPlanCommand = {
   commandId: string;
   baseRevision: number;
   plan: ArenaPlan;
-};
-
-/** Revision-bound remote concession; unlike legacy match.concede this is safe to retry. */
-export type SubmitConcedeCommand = {
-  type: "match.concede-v2";
-  protocol: typeof MECHA_NET_PROTOCOL;
-  matchId: string;
-  playerId: string;
-  commandId: string;
-  baseRevision: number;
 };
 
 /** Atomic deployment command supported by the v2 and v3 remote capabilities. */
@@ -91,7 +81,6 @@ export interface MatchRuleAdapter<S extends RevisionState> {
   playTurn(state: S, plan: ArenaPlan): RuleTurn<S>;
   /** PvE rule boundary; remote submission remains disabled until the end-to-end transport is ready. */
   deploy?(state: S, plan: DeployPlan): DeployTurn<S>;
-  concede?(state: S, side: MatchSide): S;
   isFinished(state: S): boolean;
 }
 
@@ -141,17 +130,6 @@ export function parseSubmitPlan(value: unknown): MatchResult<SubmitPlanCommand> 
     return { ok: false, error: { code: "invalid_message" } };
   }
   return { ok: true, value: structuredClone(command) as SubmitPlanCommand };
-}
-
-export function parseSubmitConcede(value: unknown): MatchResult<SubmitConcedeCommand> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: { code: "invalid_message" } };
-  const command = value as Record<string, unknown>;
-  const keys = ["type", "protocol", "matchId", "playerId", "commandId", "baseRevision"];
-  if (command.protocol !== MECHA_NET_PROTOCOL) return { ok: false, error: { code: "ruleset_mismatch" } };
-  if (Object.keys(command).length !== keys.length || !keys.every((key) => Object.hasOwn(command, key))
-    || command.type !== "match.concede-v2" || !id(command.matchId) || !id(command.playerId)
-    || !id(command.commandId) || !revision(command.baseRevision)) return { ok: false, error: { code: "invalid_message" } };
-  return { ok: true, value: structuredClone(command) as SubmitConcedeCommand };
 }
 
 /** Strictly validate the future deployment authority packet, including nested fields. */

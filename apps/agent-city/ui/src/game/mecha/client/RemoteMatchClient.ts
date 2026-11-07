@@ -1,4 +1,4 @@
-import { MECHA_NET_PROTOCOL, type DeploymentResult, type MatchEvent, type MatchResult, type MatchSnapshot, type SubmitConcedeCommand, type SubmitDeploymentCommand, type SubmitPlanCommand, type TurnResolved } from "../contracts/match";
+import { MECHA_NET_PROTOCOL, type DeploymentResult, type MatchEvent, type MatchResult, type MatchSnapshot, type SubmitDeploymentCommand, type SubmitPlanCommand, type TurnResolved } from "../contracts/match";
 import type { RevisionState } from "../contracts/match";
 import { deploymentResult, parseRemoteMessage, snapshotResult, turnResult, type RemoteMethod } from "../contracts/transport";
 import type { MatchClient } from "./MatchClient";
@@ -69,21 +69,6 @@ export class RemoteMatchClient<S extends RevisionState = RevisionState> implemen
     return result ?? { ok: false, error: { code: "invalid_message" } };
   }
 
-  supportsSafeConcede(): boolean { return this.capability === "mecha:v3"; }
-
-  async submitConcede(command: SubmitConcedeCommand, ruleset: string): Promise<MatchResult<TurnResolved<S>>> {
-    if (!this.supportsSafeConcede() || command.playerId !== this.playerId) return { ok: false, error: { code: "unavailable" } };
-    const result = turnResult<S>(await this.request("match.concede-v2", command));
-    if (result?.ok && (result.value.matchId !== command.matchId || result.value.playerId !== command.playerId
-      || result.value.commandId !== command.commandId || result.value.revision !== command.baseRevision + 1
-      || (result.value.state as RevisionState & { ruleset?: unknown }).ruleset !== ruleset)) return { ok: false, error: { code: "invalid_message" } };
-    return result ?? { ok: false, error: { code: "invalid_message" } };
-  }
-
-  async concede(_matchId: string): Promise<MatchResult<TurnResolved<S>>> {
-    // Never send the unversioned legacy command, including to older hosts.
-    return { ok: false, error: { code: "unavailable" } };
-  }
 
   async close(matchId: string): Promise<MatchResult<MatchSnapshot<S>>> {
     const result = snapshotResult<S>(await this.request("match.close", { matchId, playerId: this.playerId }));

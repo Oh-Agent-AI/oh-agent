@@ -340,17 +340,3 @@
 .mecha-overlay.is-city.has-match .mecha-attack-order [data-cancel] small { color: #ffd166; }
 .mecha-overlay.is-city.has-match .mecha-order-rules summary { color: #bcd5df; cursor: pointer; }
 .mecha-overlay.is-city.has-match .mecha-order-rules summary:focus-visible { outline: 2px solid #8fd7ef; outline-offset: 2px; }
-.mecha-archive-controls { display: grid; gap: 6px; margin: 12px 0; padding: 10px; border: 1px solid var(--mecha-line); border-radius: var(--mecha-radius); }
-.mecha-archive-controls label { display: grid; gap: 4px; min-width: 0; }
-.mecha-archive-controls label.mecha-replay-auto-save { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
-.mecha-replay-auto-save input { flex: none; margin: 3px 0 0; }
-.mecha-archive-controls select { width: 100%; min-width: 0; }
-.mecha-archive-controls > strong { color: var(--mecha-ink); }
-.mecha-archive-controls p { margin: 0; line-height: 1.45; }
-.mecha-archive-controls > div { display: flex; flex-wrap: wrap; gap: 6px; }
-.mecha-archive-controls button { min-height: 36px; }
-
-.mecha-replay-file-tools summary { cursor: pointer; color: #bcd5df; }
-.mecha-replay-file-tools summary:focus-visible { outline: 2px solid #8fd7ef; outline-offset: 2px; }
-.mecha-replay-file-tools p { margin-top: 6px; }
-.mecha-replay-file-tools > div { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }

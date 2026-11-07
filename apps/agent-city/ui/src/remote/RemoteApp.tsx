@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { RemoteMatchClient, type RemoteConnectionState } from "../game/mecha/client/RemoteMatchClient";
-import { canonicalJson, MECHA_NET_PROTOCOL, type MatchSnapshot, type SubmitDeploymentCommand, type SubmitConcedeCommand, type SubmitPlanCommand, type TurnResolved } from "../game/mecha/contracts/match";
+import { canonicalJson, MECHA_NET_PROTOCOL, type MatchSnapshot, type SubmitDeploymentCommand, type SubmitPlanCommand, type TurnResolved } from "../game/mecha/contracts/match";
 import { legalActions, living, moveBudget, pathDistance, validateAndApplyPlan, type Action, type Cell, type MatchState, type MechId } from "../game/mecha/rules";
 import { blankDraft, checkDraftAction, checkDraftPlan, draftPlan, settledDraftBoard, type DraftAuthority, type DraftCheck, type DraftMap } from "../game/mecha/planning";
 import { RemoteMatchSynchronizer } from "../game/mecha/client/RemoteMatchSynchronizer";
@@ -8,9 +8,7 @@ import { RemotePresentationCoordinator } from "../game/mecha/presentation/Remote
 import { RemoteBattleScene } from "../game/mecha/presentation/RemoteBattleScene";
 import type { RemoteBattleState } from "../game/mecha/presentation/BattleScenePort";
 import { RemoteDeployment } from "./RemoteDeployment";
-import { PVP_RULESET, playPvpTurn, pvpProjection } from "../game/mecha/rules/pvp";
 import { swapEventSink } from "../game/mecha/board";
-import type { MatchSide } from "../game/mecha/contracts/match";
 import { useRemoteAccess } from "./remoteAccess";
 import { remoteCapability } from "./remoteCapability";
 import { pendingJournal, type PendingMarker } from "./pendingJournal";
@@ -18,16 +16,14 @@ import "./remote.css";
 
 type PendingPlan = (
   | { kind: "plan"; command: SubmitPlanCommand }
-  | { kind: "concede"; command: SubmitConcedeCommand }
 ) & { ruleset: string; baseline: string; uncertain: boolean; changed: boolean };
 
 const names: Record<MechId, string> = { Assault: "突击", Gunner: "射手", Support: "支援" };
 
 // Transport/mode adapter: legality remains with the same authoritative rules
 // used by the host. Planning mechanics themselves are shared with City.
-function remoteAuthority(remote: RemoteBattleState): DraftAuthority {
+function remoteAuthority(remote: MatchState): DraftAuthority {
   return (plan) => {
-    if (remote.ruleset === PVP_RULESET) return playPvpTurn(remote, plan);
     // PvE validation emits into a shared sink, even on rejection. A preflight
     // must not contaminate an enclosing turn log and must restore on exceptions.
     const outer = swapEventSink(null);
@@ -40,10 +36,9 @@ function remoteAuthority(remote: RemoteBattleState): DraftAuthority {
   };
 }
 
-export function remoteDraftProjection(remote: RemoteBattleState, side: MatchSide, draft: DraftMap) {
+export function remoteDraftProjection(state: MatchState, draft: DraftMap) {
   try {
-    const state = remote.ruleset === PVP_RULESET ? pvpProjection(remote, side) : remote;
-    const authority = remoteAuthority(remote);
+    const authority = remoteAuthority(state);
     const movement = checkDraftPlan(draftPlan(state, draft, "movement"), authority);
     if (movement.status !== "ok") return { movement, state: null, invalid: [] as MechId[], actionUnknown: false, plan: movement };
     const projected = settledDraftBoard(state, draft);
@@ -216,16 +211,14 @@ export function RemoteApp() {
   }, []);
 
   const remoteState = snapshot?.state ?? null;
-  const pvp = remoteState?.ruleset === PVP_RULESET;
-  const side = snapshot?.players.find((player) => player.playerId === playerId)?.side ?? "A";
-  const state = remoteState ? pvp ? pvpProjection(remoteState, side) : remoteState as MatchState : null;
-  const deploying = Boolean(!pvp && state?.phase === "deployment");
+  const state = remoteState as MatchState | null;
+  const deploying = Boolean(state?.phase === "deployment");
   const journalBlocked = Boolean(recoveryMarker || journalFault || identityChanged);
   const myTurn = Boolean(!journalBlocked && !pendingPlan && !pendingDeployment && !syncing && !playing && connection === "online" && state && snapshot?.status === "active" && state.phase === "player_plan"
-    && (!pvp || (remoteState.activeSide === side && !remoteState.winner && snapshot.players.some((player) => player.side === "B" && player.role === "guest"))));
+    );
   const ids = state ? living(state).map((mech) => mech.id) : [];
   const selectedMech = state?.mechs.find((mech) => mech.id === selected && mech.hp > 0) ?? null;
-  const projection = useMemo(() => remoteState && myTurn ? remoteDraftProjection(remoteState, side, draft) : null, [remoteState, side, draft, myTurn]);
+  const projection = useMemo(() => remoteState && myTurn ? remoteDraftProjection(remoteState as MatchState, draft) : null, [remoteState, draft, myTurn]);
   const draftState = projection?.state ?? null;
   const actions = draftState && selectedMech && myTurn ? legalActions(draftState, selected) : [];
   const planned = ids.filter((id) => draft[id].explicit && !projection?.invalid.includes(id)).length;
@@ -247,7 +240,7 @@ export function RemoteApp() {
       const target = targeting === "repair" ? mech?.id : enemy;
       const action = target ? { kind: targeting, target } as Action : null;
       if (!action || !draftState || !remoteState) { setError(t("请选择当前草稿下的合法目标。", "Select a legal target for the current draft.")); return; }
-      const check = checkDraftAction(state, draft, selected, action, remoteAuthority(remoteState));
+      const check = checkDraftAction(state, draft, selected, action, remoteAuthority(state));
       if (check.status !== "ok") {
         setError(check.status === "unknown" ? t("行动预检未知，请稍后重试。", "Action check unavailable; try again.") : t("请选择当前草稿下的合法目标。", "Select a legal target for the current draft."));
         return;
@@ -281,7 +274,7 @@ export function RemoteApp() {
     setBusy(true);
     setError("");
     try {
-      const result = pending.kind === "plan" ? await client.submitPlan(pending.command) : await client.submitConcede(pending.command, pending.ruleset);
+      const result = await client.submitPlan(pending.command);
       if (pendingPlanRef.current !== pending) return;
       if (result.ok && result.value.matchId === pending.command.matchId && result.value.playerId === pending.command.playerId
         && result.value.commandId === pending.command.commandId && result.value.revision > pending.command.baseRevision
@@ -319,19 +312,6 @@ export function RemoteApp() {
   };
 
 
-  const concede = async () => {
-    if (!client?.supportsSafeConcede() || !snapshot || snapshotRef.current !== snapshot || !pvp || snapshot.status !== "active" || busy || pendingPlanRef.current
-      || pendingDeploymentRef.current || journalBlocked || journalFaultRef.current || markerRef.current || syncing || playing || connection !== "online" || !synchronizerRef.current?.canInteract() || presentationRef.current?.isPlaying()) return;
-    if (!window.confirm(t("确定认输？本局将立即结束。", "Concede? This will immediately end the match."))) return;
-    const pending: PendingPlan = { kind: "concede", ruleset: snapshot.ruleset, baseline: canonicalJson(snapshot.state), uncertain: false, changed: false, command: {
-      type: "match.concede-v2", protocol: MECHA_NET_PROTOCOL, matchId, playerId,
-      commandId: crypto.randomUUID(), baseRevision: snapshot.revision,
-    } };
-    if (!beginMarker(pending.kind, pending.command)) return;
-    setPending(pending);
-    await sendPendingPlan(pending);
-  };
-
   const resync = async () => {
     if (!synchronizerRef.current) return;
     setError("");
@@ -340,9 +320,9 @@ export function RemoteApp() {
 
   if (!client) return <main className="remote-gate"><h1>Agent City</h1><p role={accessError ? "alert" : "status"}>{accessError || (accessStatus === "waiting" ? t("邀请已登记，请在电脑端批准。批准后会自动进入对战。", "Invitation registered. Approve it on the desktop; this page will join automatically.") : accessStatus === "joining" ? t("正在登记邀请…", "Registering invitation…") : t("链接缺少比赛或连接信息，请从桌面客户端重新打开。", "The link is missing match or connection information. Reopen it from Desktop."))}</p></main>;
   return <main className="remote-app">
-    <header><div><strong>Agent City</strong><span>{t("远程机甲战", "Remote Mecha Tactics")}{pvp ? ` · ${side}` : ""}</span></div><button onClick={resync}>{connection === "online" ? syncing ? t("重新同步", "Sync again") : t("在线", "Online") : connection === "connecting" ? t("连接中", "Connecting") : t("重连", "Reconnect")}</button></header>
+    <header><div><strong>Agent City</strong><span>{t("远程机甲战", "Remote Mecha Tactics")}</span></div><button onClick={resync}>{connection === "online" ? syncing ? t("重新同步", "Sync again") : t("在线", "Online") : connection === "connecting" ? t("连接中", "Connecting") : t("重连", "Reconnect")}</button></header>
     <section className="remote-stage"><canvas ref={canvasRef} aria-label={t("三维机甲战场", "3D mecha battlefield")} />
-      <div className="remote-status"><span>{state ? `${t("回合", "Turn")} ${state.turn} · rev ${state.revision}` : t("正在载入战场…", "Loading battlefield…")}</span><span>{!snapshot ? t("正在同步", "Synchronizing") : snapshot.status !== "active" ? t("比赛已结束", "Match finished") : pendingPlan || pendingDeployment || journalBlocked ? t("提交结果待确认，操作已暂停", "Submission unconfirmed; input paused") : syncing || connection !== "online" ? t("正在同步，操作已暂停", "Synchronizing; input paused") : playing ? t("正在播放结算，操作已暂停", "Playing turn; input paused") : deploying ? t("开局部署", "Deployment") : pvp && !myTurn ? t("等待好友行动", "Waiting for your friend") : `${t("已规划", "Planned")} ${planned}/${ids.length}`}</span></div>
+      <div className="remote-status"><span>{state ? `${t("回合", "Turn")} ${state.turn} · rev ${state.revision}` : t("正在载入战场…", "Loading battlefield…")}</span><span>{!snapshot ? t("正在同步", "Synchronizing") : snapshot.status !== "active" ? t("比赛已结束", "Match finished") : pendingPlan || pendingDeployment || journalBlocked ? t("提交结果待确认，操作已暂停", "Submission unconfirmed; input paused") : syncing || connection !== "online" ? t("正在同步，操作已暂停", "Synchronizing; input paused") : playing ? t("正在播放结算，操作已暂停", "Playing turn; input paused") : deploying ? t("开局部署", "Deployment") : `${t("已规划", "Planned")} ${planned}/${ids.length}`}</span></div>
     </section>
     {sceneUnavailable && <p role="status">{t("此设备无法创建 3D 场景，已保留下方棋盘。", "3D is unavailable; the accessible board remains available.")}</p>}
     {historyUnavailable && <p role="status">{t("已同步最新局面；部分回合记录或演出可能不可回看。", "Synced to the latest state; some turn history or playback may be unavailable.")}</p>}
@@ -351,13 +331,12 @@ export function RemoteApp() {
     {recoveryMarker && <p role="status">{t("刷新前的请求尚未确认，无法在此页面重试。请等待局面更新，或请房主停止远程并重新开局。", "A request from before reload is unconfirmed and cannot be retried here. Wait for an update, or ask the host to stop and restart the match.")}</p>}
     {(journalFault || identityChanged) && <p role="alert">{t("待确认保护存储不可用或身份已变化，操作已暂停。不要清除站点数据；请检查存储权限，或请房主停止远程并重新开局。", "Pending-request storage is unavailable or identity changed; input is paused. Do not clear site data. Check storage permissions, or ask the host to stop and restart the match.")}</p>}
     {pendingPlan && <div className="remote-pending" role="status">
-      <p>{pendingPlan.changed ? t("请求结果尚未确认，操作已暂停。", "The request is unconfirmed; input is paused.") : pendingPlan.kind === "concede" ? t("认输结果尚未确认。同版本快照不能证明原请求已取消，请重试原认输或等待局面更新。", "Concession is unconfirmed. A same-revision snapshot does not cancel the original request; retry the same concession or wait for the state to advance.") : t("提交结果尚未确认。同版本快照不能证明原请求已取消，请重试原命令或等待局面更新。", "Submission is unconfirmed. A same-revision snapshot does not cancel the original request; retry the same command or wait for the state to advance.")}</p>
-      <button disabled={busy || journalBlocked || syncing || playing || connection !== "online" || pendingPlan.changed || snapshot?.ruleset !== pendingPlan.ruleset || snapshot?.revision !== pendingPlan.command.baseRevision || canonicalJson(snapshot.state) !== pendingPlan.baseline} onClick={() => { const pending = pendingPlanRef.current; if (pending) void sendPendingPlan(pending); }}>{pendingPlan.kind === "concede" ? t("重试原认输", "Retry original concession") : t("重试原提交", "Retry original submission")}</button>
+      <p>{t("提交结果尚未确认。同版本快照不能证明原请求已取消，请重试原命令或等待局面更新。", "Submission is unconfirmed. A same-revision snapshot does not cancel the original request; retry the same command or wait for the state to advance.")}</p>
+      <button disabled={busy || journalBlocked || syncing || playing || connection !== "online" || pendingPlan.changed || snapshot?.ruleset !== pendingPlan.ruleset || snapshot?.revision !== pendingPlan.command.baseRevision || canonicalJson(snapshot.state) !== pendingPlan.baseline} onClick={() => { const pending = pendingPlanRef.current; if (pending) void sendPendingPlan(pending); }}>{t("重试原提交", "Retry original submission")}</button>
       {pendingPlan.changed && <p>{t("同版本战场已变化，无法安全重试。请等待局面更新，或请房主停止远程并重新开局。", "The battlefield changed without a new revision; retry is unsafe. Wait for an update, or ask the host to stop and restart the match.")}</p>}
     </div>}
     {pendingDeployment && !deploying && <p role="status">{t("先前的部署请求尚未确认；请等待局面更新，或请房主停止远程并重新开局。", "A previous deployment is unconfirmed. Wait for an update, or ask the host to stop and restart the match.")}</p>}
     {state?.outcome && <p className="remote-outcome">{t("比赛结束", "Match finished")}: {state.outcome}</p>}
-    {pvp && remoteState.winner && <p className="remote-outcome">{t("比赛结束，胜方", "Match finished; winner")}: {remoteState.winner}</p>}
     {deploying && snapshot && state ? <RemoteDeployment
       key={`${snapshot.matchId}:${snapshot.revision}`}
       snapshot={snapshot} state={state} playerId={playerId} client={client} locale={locale}
@@ -376,7 +355,7 @@ export function RemoteApp() {
       <button disabled={!myTurn || busy || !draft[selected].moveTo} onClick={() => { setDraft((current) => ({ ...current, [selected]: { ...current[selected], moveTo: null } })); setTargeting(null); setError(""); }}>{t("取消所选机甲移动", "Clear selected move")}</button>
       {projection && myTurn && <small role="status">{projection.movement.status === "unknown" ? t("移动预检未知，无法预判行动。", "Movement check unavailable; actions cannot be predicted.") : projection.movement.status === "rejected" ? `${t("移动草稿被拒绝，请调整", "Movement draft rejected; adjust it")}: ${projection.movement.fault.reason}` : projection.invalid.length > 0 ? `${t("移动后行动失效，请重新选择", "Actions invalid after movement; choose again")}: ${projection.invalid.map((id) => names[id]).join(", ")}` : projection.actionUnknown ? t("行动预检未知，无法提交。", "Action check unavailable; cannot submit.") : projection.plan.status === "unknown" ? t("整包预检未知，无法提交。", "Plan check unavailable; cannot submit.") : projection.plan.status === "rejected" ? `${t("整包预检被拒绝", "Plan check rejected")}: ${projection.plan.fault.reason}` : t("行动基于草稿移动后局面；实际结算仍可能落空。三维场景显示当前局面。", "Actions use projected positions; resolution may still fizzle. The 3D scene shows current positions.")}</small>}
       <button className="remote-submit" disabled={!state || !myTurn || planned !== ids.length || !canSubmit || busy || state.phase !== "player_plan" || Boolean(state.outcome)} onClick={submit}>{busy ? t("等待电脑结算…", "Resolving on host…") : t("提交整包并结束回合", "Submit squad plan")}</button>
-      {pvp && snapshot?.status === "active" && (client?.supportsSafeConcede?.() ? <button disabled={busy || journalBlocked || Boolean(pendingPlan) || Boolean(pendingDeployment) || syncing || playing || connection !== "online"} onClick={() => void concede()}>{t("认输", "Concede")}</button> : <div className="remote-concede-unavailable"><button disabled aria-describedby="remote-concede-note">{t("认输暂不可用", "Concede unavailable")}</button><small id="remote-concede-note">{t("此远程会话不支持安全认输；请更新房主并重新开启对局，或由房主停止远程对局（桌面将重新开始本地战斗）。", "This session does not support safe concession. Update the host and restart remote play, or ask the host to stop remote play (desktop local battle restarts).")}</small></div>)}
+
     </section>
     <details className="remote-board"><summary>{t("二维棋盘与可访问控制", "2D accessible board")}</summary><div>{(draftState ?? state) && Array.from({ length: 10 }, (_, y) => <div className="remote-row" key={y}>{Array.from({ length: 10 }, (_, x) => {
       const board = draftState ?? state!;

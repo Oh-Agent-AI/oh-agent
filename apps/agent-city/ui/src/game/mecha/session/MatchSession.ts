@@ -1,10 +1,10 @@
 import { bossPrepare, type MatchState } from "../rules";
 export { pveRules } from "../rules/pve";
 import {
-  MECHA_NET_PROTOCOL, canonicalJson, parseSubmitConcede, parseSubmitDeployment,
+  MECHA_NET_PROTOCOL, canonicalJson, parseSubmitDeployment,
   type MatchEvent, type MatchMode, type MatchPlayer, type MatchResult, type MatchRuleAdapter,
   type MatchSnapshot, type MatchStatus, type RevisionState, type SubmitPlanCommand, type TurnResolved,
-  type SubmitDeploymentCommand, type SubmitConcedeCommand, type DeploymentResult,
+  type SubmitDeploymentCommand, type DeploymentResult,
 } from "../contracts/match";
 import type { RemoteArenaV1 } from "../contracts/arena";
 import type { PlanFault } from "../rules";
@@ -21,7 +21,7 @@ type Options<S extends RevisionState> = {
 type JournalEntry<S extends RevisionState> =
   | { kind: "turn"; fingerprint: string; result: TurnResolved<S> }
   | { kind: "deployment"; fingerprint: string; result: MatchSnapshot<S> }
-  | { kind: "concede"; fingerprint: string; result: TurnResolved<S> };
+;
 const clone = <T>(value: T): T => structuredClone(value);
 const failure = <T>(code: "forbidden" | "not_your_turn" | "stale_revision" | "duplicate_command" | "invalid_plan" | "match_finished" | "room_closed" | "unavailable", fault?: PlanFault): MatchResult<T> => ({
   ok: false,
@@ -76,7 +76,6 @@ export class MatchSession<S extends RevisionState = MatchState> {
     if (previous) return previous.kind === "turn" && previous.fingerprint === fingerprint ? { ok: true, value: clone(previous.result) } : failure("duplicate_command");
     if (this.status === "closed") return failure("room_closed");
     if (this.status === "finished") return failure("match_finished");
-    if (this.options.mode === "pvp" && !this.options.players.some((item) => item.side === "B" && item.role === "guest")) return failure("unavailable");
     if (command.baseRevision !== this.state.revision || command.plan.revision !== this.state.revision) return failure("stale_revision");
     if (this.options.rules.activeSide(this.state) !== player.side) return failure("not_your_turn");
 
@@ -129,52 +128,6 @@ export class MatchSession<S extends RevisionState = MatchState> {
     return { ok: true, value: clone(snapshot.value) };
   }
 
-  /** Network concession is bound to one revision and journaled before publication. */
-  submitConcede(playerId: string, input: SubmitConcedeCommand): MatchResult<TurnResolved<S>> {
-    const parsed = parseSubmitConcede(input);
-    if (!parsed.ok) return parsed;
-    const command = parsed.value;
-    const player = this.player(playerId);
-    if (!player || command.matchId !== this.options.matchId || command.playerId !== playerId) return failure("forbidden");
-    const journalKey = JSON.stringify([playerId, command.commandId]);
-    const fingerprint = canonicalJson({ baseRevision: command.baseRevision });
-    const previous = this.journal.get(journalKey);
-    if (previous) return previous.kind === "concede" && previous.fingerprint === fingerprint
-      ? { ok: true, value: clone(previous.result) } : failure("duplicate_command");
-    if (this.status === "closed") return failure("room_closed");
-    if (this.status === "finished") return failure("match_finished");
-    if (command.baseRevision !== this.state.revision) return failure("stale_revision");
-    if (this.options.mode !== "pvp" || !this.options.rules.concede || !Number.isSafeInteger(this.state.revision + 1)) return failure("unavailable");
-    const next = this.options.rules.concede(clone(this.state), player.side);
-    if (next.revision !== this.state.revision + 1 || !this.options.rules.isFinished(next)) return failure("unavailable");
-    this.state = clone(next);
-    this.status = "finished";
-    const resolved: TurnResolved<S> = {
-      type: "turn.resolved", protocol: MECHA_NET_PROTOCOL, matchId: this.options.matchId, playerId,
-      commandId: command.commandId, revision: this.state.revision, state: clone(this.state), log: [], presentationStages: null,
-    };
-    this.remember(journalKey, { kind: "concede", fingerprint, result: resolved });
-    this.publish({ type: "turn.resolved", result: resolved });
-    return { ok: true, value: clone(resolved) };
-  }
-
-  concede(playerId: string): MatchResult<TurnResolved<S>> {
-    const player = this.player(playerId);
-    if (!player) return failure("forbidden");
-    if (this.status === "closed") return failure("room_closed");
-    if (this.status === "finished") return failure("match_finished");
-    if (!this.options.rules.concede) return failure("unavailable");
-    const previousRevision = this.state.revision;
-    this.state = clone(this.options.rules.concede(this.state, player.side));
-    this.status = this.options.rules.isFinished(this.state) ? "finished" : "active";
-    const resolved: TurnResolved<S> = {
-      type: "turn.resolved", protocol: MECHA_NET_PROTOCOL, matchId: this.options.matchId, playerId,
-      commandId: `concede-${previousRevision}`, revision: this.state.revision, state: clone(this.state), log: [], presentationStages: null,
-    };
-    this.publish({ type: "turn.resolved", result: resolved });
-    return { ok: true, value: clone(resolved) };
-  }
-
   close(playerId: string): MatchResult<MatchSnapshot<S>> {
     const player = this.player(playerId);
     if (!player || player.role !== "host") return failure("forbidden");
@@ -183,12 +136,6 @@ export class MatchSession<S extends RevisionState = MatchState> {
       this.publish({ type: "match.closed", matchId: this.options.matchId, revision: this.state.revision });
     }
     return this.snapshot(playerId);
-  }
-
-  addPlayer(player: MatchPlayer): void {
-    if (this.options.mode !== "pvp" || player.role !== "guest" || player.side !== "B" || this.player(player.playerId)) throw new Error("match_player_invalid");
-    if (this.options.players.some((item) => item.side === "B")) throw new Error("match_player_exists");
-    this.options.players.push(clone(player));
   }
 
   subscribe(listener: (event: MatchEvent<S>) => void): () => void {

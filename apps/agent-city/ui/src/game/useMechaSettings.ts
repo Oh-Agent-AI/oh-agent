@@ -20,7 +20,7 @@ export function useMechaSettings(onOpen: () => void) {
     if (!settingsPanel) return;
     const dismiss = (event: PointerEvent) => {
       const target = event.target;
-      if (!(target instanceof Element) || target.closest(".mecha-settings-popover, [data-mecha-settings-trigger], [data-replay-unsaved-guard]")) return;
+      if (!(target instanceof Element) || target.closest(".mecha-settings-popover, [data-mecha-settings-trigger]")) return;
       setSettingsPanel(null);
     };
     document.addEventListener("pointerdown", dismiss, true);

@@ -6,7 +6,6 @@ import { RemotePresentationCoordinator } from "../src/game/mecha/presentation/Re
 import type { BattleScenePort, RemoteBattleState } from "../src/game/mecha/presentation/BattleScenePort.ts";
 import { MECHA_NET_PROTOCOL, type MatchResult, type MatchSnapshot, type TurnResolved } from "../src/game/mecha/contracts/match.ts";
 import { bossPrepare, createMatch, playTurn, type MatchState } from "../src/game/mecha/rules.ts";
-import { PVP_RULESET, createPvpMatch, playPvpTurn } from "../src/game/mecha/rules/pvp.ts";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -55,23 +54,6 @@ test("initial connecting notification does not invalidate the snapshot request",
   h.requests[0].resolve({ ok: true, value: snap(first) }); await start;
   assert.equal(h.sync.canInteract(), true);
   assert.equal(h.snapshots.length, 1);
-});
-
-test("PvP accepts one revision per turn and detects larger gaps", async () => {
-  const arena = { terrain: first.terrain, heights: first.heights, blocked: [], buildings: [] } as never;
-  const initial = createPvpMatch(arena);
-  const nextTurn = (state: typeof initial, id: string): TurnResolved<RemoteBattleState> => {
-    const plan = { revision: state.revision, items: state.units.filter((u) => u.side === state.activeSide && u.hp > 0).map((u) => ({ mechId: u.kind, moveTo: null, action: { kind: "skip" as const } })) };
-    const result = playPvpTurn(state, plan); if (!result.ok) throw new Error(result.fault.reason);
-    return { type: "turn.resolved", protocol: MECHA_NET_PROTOCOL, matchId: "match", playerId: "owner", commandId: id, revision: result.state.revision, ...result };
-  };
-  const one = nextTurn(initial, "1"), two = nextTurn(one.state as typeof initial, "2");
-  const pvpSnap = { ...snap(initial), mode: "pvp" as const, ruleset: PVP_RULESET };
-  const h = harness(); const start = h.sync.resync();
-  h.requests[0].resolve({ ok: true, value: pvpSnap }); await start;
-  h.sync.turn(one); assert.deepEqual(h.turns, [1]);
-  const three = nextTurn(two.state as typeof initial, "3");
-  h.sync.turn(three); assert.equal(h.sync.canInteract(), false); assert.equal(h.requests.length, 2);
 });
 
 test("gap requests snapshot, reports lost history and ignores late duplicate", async () => {

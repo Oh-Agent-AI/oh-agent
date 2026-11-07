@@ -1,9 +1,8 @@
-import { MECHA_NET_PROTOCOL, parseSubmitConcede, parseSubmitDeployment, parseSubmitPlan, type MatchMode, type MatchPlayer, type RevisionState } from "../game/mecha/contracts/match";
+import { MECHA_NET_PROTOCOL, parseSubmitDeployment, parseSubmitPlan, type MatchMode, type MatchPlayer, type RevisionState } from "../game/mecha/contracts/match";
 import { deploymentResult, snapshotResult, turnResult, type RemoteNotification, type RemoteRequest } from "../game/mecha/contracts/transport";
 import { MatchSession, pveRules } from "../game/mecha/session/MatchSession";
 import type { MatchState } from "../game/mecha/rules";
 import { hasUnsupportedRemoteSummons, type RemoteArenaV1 } from "../game/mecha/contracts/arena";
-import { PVP_RULESET, createPvpMatch, pvpRules, type PvpState } from "../game/mecha/rules/pvp";
 
 type HostConfig = {
   matchId: string;
@@ -25,11 +24,11 @@ declare global {
 const error = (code: "unavailable" | "invalid_message" | "invalid_plan" | "forbidden") => ({ ok: false as const, error: { code } });
 
 export function startRemoteSessionHost() {
-  let session: MatchSession<MatchState> | MatchSession<PvpState> | null = null;
+  let session: MatchSession<MatchState> | null = null;
   let unsubscribe: (() => void) | null = null;
   const attach = <S extends RevisionState>(next: MatchSession<S>) => {
     unsubscribe?.();
-    session = next as unknown as MatchSession<MatchState> | MatchSession<PvpState>;
+    session = next as unknown as MatchSession<MatchState>;
     unsubscribe = next.subscribe((event) => {
       const notification: RemoteNotification<RevisionState> = { protocol: MECHA_NET_PROTOCOL, type: "event", event: event as RemoteNotification<RevisionState>["event"] };
       send(notification);
@@ -70,29 +69,7 @@ export function startRemoteSessionHost() {
     }
     if (request.method === "match.join") {
       const joined = (ok: boolean) => { const reply: SessionReply = { type: "joined", token, ok }; void invoke("remote_mecha_message", { reply }); };
-      if (!session || payload.playerId !== "guest") { joined(false); return; }
-      const before = session.snapshot("owner");
-      if (!before.ok || before.value.matchId !== payload.matchId) { joined(false); return; }
-      if (before.value.mode === "pvp") { joined(true); return; }
-      // A PvP invitation must never silently replace an unfinished PvE deployment.
-      if ("phase" in before.value.state && before.value.state.phase === "deployment") { joined(false); return; }
-      // The same matchId is reused: never let a delayed PvE command's baseRevision
-      // become valid again in the replacement PvP session.
-      if (!Number.isSafeInteger(before.value.revision) || before.value.revision >= Number.MAX_SAFE_INTEGER - 1) { joined(false); return; }
-      try {
-        const pvpState = createPvpMatch(before.value.arena);
-        pvpState.revision = before.value.revision + 1;
-        const next = new MatchSession({
-          matchId: before.value.matchId, mode: "pvp", arena: { ...before.value.arena, ruleset: PVP_RULESET },
-          state: pvpState, players: [...before.value.players, { playerId: "guest", side: "B", role: "guest" }], rules: pvpRules,
-        });
-        attach(next);
-        const replacement = next.snapshot("owner");
-        if (replacement.ok) {
-          send({ protocol: MECHA_NET_PROTOCOL, type: "event", event: { type: "match.replaced", snapshot: replacement.value } });
-        }
-        joined(true);
-      } catch { joined(false); }
+      joined(false);
       return;
     }
     if (!session) { resultError(request, "unavailable"); return; }
@@ -106,15 +83,6 @@ export function startRemoteSessionHost() {
       const snapshot = session.snapshot(playerId);
       result = snapshot.ok && snapshot.value.matchId === payload.matchId ? session.close(playerId) : error("forbidden");
       if (!snapshotResult(result)) { resultError(request, "invalid_message"); return; }
-    } else if (request.method === "match.concede") {
-      // Legacy requests have no revision or command ID. An in-flight request could
-      // otherwise concede a replacement match or a later turn: fail closed.
-      result = error("unavailable");
-    } else if (request.method === "match.concede-v2") {
-      // The gateway must bind the authenticated peer and the v3 capability.
-      const command = parseSubmitConcede(payload);
-      result = command.ok ? session.submitConcede(playerId, command.value) : command;
-      if (!turnResult(result as { ok: boolean })) { resultError(request, "invalid_message"); return; }
     } else if (request.method === "deployment.submit") {
       const command = parseSubmitDeployment(payload);
       result = command.ok ? session.submitDeployment(playerId, command.value) : command;

@@ -35,5 +35,3 @@ button.selected { border-color: #75d7ff; background: #20445e; }
 .remote-pending { margin: 8px 14px; padding: 12px; border: 1px solid #bd8c43; border-radius: 10px; background: #312b20; }
 .remote-pending p { margin: 0 0 8px; line-height: 1.45; }
 .remote-pending p:last-child { margin: 8px 0 0; }
-.remote-concede-unavailable { display: grid; gap: 6px; }
-.remote-concede-unavailable small { color: #adc3ce; font-size: 13px; line-height: 1.5; }

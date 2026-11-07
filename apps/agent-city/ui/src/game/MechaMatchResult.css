@@ -38,69 +38,34 @@
   .mecha-match-result__stats > div { padding: 9px 6px; }
 }
 
+/* These replay controls belong to the v1.5 sequential match. */
 .mecha-replay-bar {
-  position: absolute;
-  z-index: 20;
-  pointer-events: auto;
-  bottom: max(12px, env(safe-area-inset-bottom));
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  width: max-content;
-  max-width: calc(100% - 24px);
-  max-height: calc(100% - 12px - max(12px, env(safe-area-inset-bottom)));
-  overflow-y: auto;
-  box-sizing: border-box;
-  padding: 10px 12px;
-  border: 1px solid #60818b;
-  border-radius: 8px;
-  background: #101e29f2;
-  color: #eef6f6;
-  box-shadow: 0 8px 25px #0008;
+  position: absolute; z-index: 20; pointer-events: auto;
+  bottom: max(12px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%);
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px;
+  width: min(920px, calc(100vw - 32px)); box-sizing: border-box;
+  padding: 10px 12px; border: 1px solid #60818b; border-radius: 8px;
+  background: #101e29f2; color: #eef6f6; box-shadow: 0 8px 25px #0008;
 }
 .mecha-replay-bar strong { color: #a9e6cd; }
 .mecha-replay-recap {
-  order: -1;
-  flex: 0 0 100%;
-  min-width: 0;
-  max-height: min(32vh, 240px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding: 8px 10px;
-  box-sizing: border-box;
-  border: 1px solid #354c59;
-  border-radius: 5px;
-  background: #162b36;
+  order: -1; flex: 0 0 100%; min-width: 0; max-height: min(32vh, 240px);
+  overflow-y: auto; overscroll-behavior: contain; padding: 8px 10px; box-sizing: border-box;
+  border: 1px solid #354c59; border-radius: 5px; background: #162b36;
 }
-.mecha-replay-recap .mecha-last-result .mecha-recap-stats {
-  max-width: 560px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 4px 12px;
-}
+.mecha-replay-recap .mecha-last-result .mecha-recap-stats { max-width: 560px; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 12px; }
 .mecha-replay-bar button, .mecha-replay-bar select {
-  min-height: 36px;
-  padding: 6px 10px;
-  border: 1px solid #58717a;
-  border-radius: 5px;
-  background: #1b3340;
-  color: #eef6f6;
-  font: inherit;
+  min-height: 36px; padding: 6px 10px; border: 1px solid #58717a; border-radius: 5px;
+  background: #1b3340; color: #eef6f6; font: inherit;
 }
 .mecha-replay-bar button { cursor: pointer; }
 .mecha-replay-bar button:disabled { opacity: .45; cursor: not-allowed; }
-.mecha-replay-navigation { display: inline-flex; align-items: center; gap: 4px; }
-.mecha-replay-navigation button { min-width: 40px; min-height: 40px; padding: 4px; }
 .mecha-replay-bar :focus-visible { outline: 3px solid #ffe08a; outline-offset: 2px; }
+
 .mecha-match-result__archive-status { margin: 0 0 16px; color: #b8e6d8; font-size: 13px; line-height: 1.5; }
 .mecha-match-result__archive-status.is-error { color: #ffbdad; }
 .mecha-match-result__actions button:disabled { opacity: .55; cursor: not-allowed; }
 
-.mecha-unsaved-replay-guard h2 { margin-top: 0; font-size: clamp(22px, 5vw, 28px); color: #ffe0ab; }
-.mecha-unsaved-replay-guard .mecha-match-result__actions { margin-top: 22px; }
 
 .mecha-match-result__review { margin: 0 0 16px; padding: 10px 12px; border-left: 2px solid #f3a16b; background: #192b34; font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
 .mecha-match-result__review strong { color: #ffd0ab; }

@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { gameText, type GameLocale } from "./gameCopy";
 import { MAX_TURNS, living, stakeBuildings, type MatchState } from "./mecha/rules";
 import type { MatchRecap } from "./mecha/matchRecap";
-import { buildRoundReview, type RoundReview, type RoundReviewRecord } from "./mecha/roundReview";
+import { type RoundReview } from "./mecha/roundReview";
 import { buildMissionAchievements, type MissionAchievements } from "./mecha/missionAchievements";
 import { MechaRoundReview } from "./MechaRoundReview";
 import { MechaMissionAchievements } from "./MechaMissionAchievements";
@@ -12,7 +12,6 @@ type Props = {
   state: MatchState;
   locale: GameLocale;
   matchRecap?: MatchRecap | null;
-  getReviewRounds?: () => readonly RoundReviewRecord[] | null | undefined;
   getVerifiedReview?: () => { review: RoundReview; achievements: MissionAchievements | null };
   onView: () => void;
   onReplay?: () => void;
@@ -23,7 +22,7 @@ type Props = {
 };
 
 /** Mount only after the accepted local result's presentation has completed. */
-export function MechaBattleResult({ state, locale, matchRecap, getReviewRounds, getVerifiedReview, onView, onReplay, archiveBusy, archiveMessage, onRestart, onExit }: Props) {
+export function MechaBattleResult({ state, locale, matchRecap, getVerifiedReview, onView, onReplay, archiveBusy, archiveMessage, onRestart, onExit }: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [reviewData, setReviewData] = useState<{ review: RoundReview; achievements: MissionAchievements | null } | null>(null);
   const t = (text: string) => gameText(text, locale);
@@ -64,15 +63,9 @@ export function MechaBattleResult({ state, locale, matchRecap, getReviewRounds, 
         <button type="button" data-result-restart disabled={archiveBusy} autoFocus={!onReplay} onClick={onRestart}>{t("再开一局")}</button>
         <button type="button" data-result-exit disabled={archiveBusy} onClick={onExit}>{locale === "en" ? "Exit Battle" : t("退出战斗")}</button>
       </div>
-      {getReviewRounds || getVerifiedReview ? <details className="mecha-match-result__details" data-result-review onToggle={event => {
+      {getVerifiedReview ? <details className="mecha-match-result__details" data-result-review onToggle={event => {
         if (!event.currentTarget.open || reviewData) return;
-        if (getVerifiedReview) { setReviewData(getVerifiedReview()); return; }
-        let rounds: readonly RoundReviewRecord[] | null | undefined;
-        try { rounds = getReviewRounds?.(); } catch { rounds = null; }
-        const review = buildRoundReview(state, rounds);
-        // Achievement claims require the stronger full rules-and-log verification too.
-        const achievements = buildMissionAchievements({ scope: "local-pve", final: state, rounds: review.status === "verified" ? rounds : null });
-        setReviewData({ review, achievements });
+        setReviewData(getVerifiedReview());
       }}>
         <summary>{locale === "en" ? "Match review and objectives" : "对局复盘与目标评价"}</summary>
         {reviewData ? <>

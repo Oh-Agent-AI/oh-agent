@@ -50,10 +50,6 @@ import { MechaCorrodeSummary, MechaMonsterIntent } from "./MechaMonsterIntent";
 import { monsterSkillName } from "./mecha/skillNames";
 import type { PlannedMonsterSpeciesId } from "./mecha/monsters/contracts";
 import { P2_SCENARIOS, resolveP2Scenario } from "./mecha/p2Scenarios";
-import { MechaUnsavedReplayGuard } from "./MechaUnsavedReplayGuard";
-import { hasVerifiedReplaySave, type VerifiedReplaySave } from "./mecha/replayPersistenceGuard";
-import { REPLAY_AUTO_SAVE_KEY, readReplayAutoSave, readReplayAutoSaveStrict, writeReplayAutoSave } from "./mecha/replayAutoSave";
-import { ReplayHoldClock, type ReplaySpeed } from "./mecha/replayPlayback";
 import { candidateResult } from "./mecha/candidateResult";
 import { assaultSequenceWaiting } from "./mecha/assaultTurnPlayer";
 import type { DoctrineId } from "./mecha/ai";
@@ -62,8 +58,6 @@ import { buildClassicHud } from "./mecha/hud/adapters";
 import type { MechaHudActions, MechaHudModel, MechaHudProjection } from "./mecha/hud/model";
 import { readMechaRuntime } from "./MechaModeRuntime";
 import type { ReleaseChoice } from "./mecha/mode";
-import { createLocalReplayArchive, listLocalReplays, saveLocalReplayEntry, loadLocalReplayEntryForSites, readLocalReplayEntryArchive, restoreLocalReplayArchiveForSites, saveImportedLocalReplay, LOCAL_REPLAY_MAX_FILE_BYTES, ReplayArchiveError, type ReplayLibraryEntry } from "./mecha/replayArchive";
-import { commitReplay, migrateLegacyReplays, readReplaySnapshot, replayBackend, ReplaySnapshot } from "./mecha/replayRepository";
 import { anchorsFromCity, prepareFightTerrainAsync, type FightCatalog, type FightShape } from "./mecha/citySite";
 import { startPreparedSearch } from "./mecha/fightSearchRunner";
 import { cacheCatalog, cachedCatalog, encounterIsCurrent, forgetCatalog, type MonsterEncounter } from "./mecha/monsterEncounters";
@@ -286,14 +280,10 @@ export function MechaBoard({ locale, onClose, engine, onAvailability, encounter 
       if (event.key !== "Escape" || event.defaultPrevented) return;
       // Native dialogs consume Escape via their cancel handlers; do not close the match.
       if (document.querySelector("[data-mecha-quick-guide][open]")) return;
-      // Let the topmost guard dialog handle Escape before the underlying result.
-      if (document.querySelector("[data-replay-unsaved-guard][open]")) return;
       // The native result dialog handles Escape via onCancel; it has no view button.
       if (document.querySelector("[data-mecha-result-dialog][open]")) return;
       const target = event.target as HTMLElement | null;
       if (target?.closest("select, input, textarea")) return;
-      const replayExit = document.querySelector<HTMLButtonElement>("[data-mecha-replay-exit]");
-      if (replayExit) { event.preventDefault(); event.stopPropagation(); replayExit.click(); return; }
       const settingsClose = document.querySelector<HTMLButtonElement>(".mecha-settings-popover:not([hidden]) .mecha-settings-close");
       if (settingsClose) { event.preventDefault(); event.stopPropagation(); settingsClose.click(); return; }
       if (remoteLocked.current) { event.preventDefault(); event.stopPropagation(); return; }
@@ -340,7 +330,7 @@ export function MechaBoard({ locale, onClose, engine, onAvailability, encounter 
   const sequentialSite = encounter?.site ?? SHAPES.map(shape => catalog[shape.id]).find(Boolean) ?? null;
   switch (runtime.mode.kind) {
     case "picker":
-      return <CityGate locale={locale} onClose={onClose} title={t("选择战斗规则")} body={t("机甲战棋 1.5 使用逐台行动与即时结算；经典模式保留旧回放并支持远程对战。")} recovery={<div className="mecha-actions">
+      return <CityGate locale={locale} onClose={onClose} title={t("选择战斗规则")} body={t("机甲战棋 1.5 使用逐台行动与即时结算；经典模式仍可用于兼容的远程对局。")} recovery={<div className="mecha-actions">
         <button type="button" onClick={() => setReleaseMode("sequential")}>{t("机甲战棋 1.5 · 本地 PvE")}</button>
         <button type="button" onClick={() => { setReleaseStatus(null); setReleaseMode("status"); }}>{t("状态效果挑战")}</button>
         <button type="button" onClick={() => setReleaseMode("classic")}>{t("经典模式 · 1.4")}</button>
@@ -489,110 +479,15 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
   const doctrine = s?.doctrine ?? "tunnel";
 
   const state = performance?.before ?? resolvedState;
-  const [replaySpeed, setReplaySpeed] = useState<ReplaySpeed>(1);
-  const [showReplayRecap, setShowReplayRecap] = useState(false);
-  useEffect(() => { if (!s?.replay) setShowReplayRecap(false); }, [s?.replay]);
-  const emptyReplayHold = useRef<{ performance: NonNullable<typeof performance>; clock: ReplayHoldClock } | null>(null);
   const [showMatchResult, setShowMatchResult] = useState(false);
-  const [archiveBusy, setArchiveBusy] = useState(false);
-  // Auto-save defaults on for new installations; an existing opt-out is preserved.
-  const [autoSaveReplay, setAutoSaveReplay] = useState(() => readReplayAutoSave(() => window.localStorage));
-  const autoSaveConsent = useRef(autoSaveReplay);
-  const autoSaveAttempts = useRef(new WeakSet<object>());
-  useEffect(() => {
-    const changed = (event: StorageEvent) => {
-      if (event.key !== REPLAY_AUTO_SAVE_KEY && event.key !== null) return;
-      const enabled = readReplayAutoSave(() => window.localStorage);
-      autoSaveConsent.current = enabled;
-      setAutoSaveReplay(enabled);
-    };
-    window.addEventListener("storage", changed);
-    return () => window.removeEventListener("storage", changed);
-  }, []);
-  const changeAutoSave = (enabled: boolean) => {
-    // Disabling takes effect in this tab immediately, even if persistence fails.
-    if (!enabled) { autoSaveConsent.current = false; setAutoSaveReplay(false); }
-    try {
-      writeReplayAutoSave(() => window.localStorage, enabled);
-      autoSaveConsent.current = enabled;
-      setAutoSaveReplay(enabled);
-      setArchiveMessage(null);
-    } catch {
-      autoSaveConsent.current = false;
-      setAutoSaveReplay(false);
-      setArchiveMessage("无法保存自动保存设置；当前页面已关闭，请重新打开后检查设置。");
-    }
-  };
-  const archiveLock = useRef(false);
-  const replayDb = useRef(replayBackend());
-  const replaySnapshot = useRef(new ReplaySnapshot());
-  const verifiedSaves = useRef<VerifiedReplaySave<NonNullable<typeof resolvedState>>[]>([]);
-  const [pendingReplayLoss, setPendingReplayLoss] = useState<{ match: NonNullable<typeof resolvedState>; site: typeof site; catalog: FightCatalog; run: () => void } | null>(null);
-  const [archiveMessage, setArchiveMessage] = useState<string | null>(null);
-  const [archiveEntries, setArchiveEntries] = useState<ReplayLibraryEntry[]>([]);
-  const [selectedArchive, setSelectedArchive] = useState("");
-  const [confirmArchiveDelete, setConfirmArchiveDelete] = useState(false);
-  const replayFileInput = useRef<HTMLInputElement | null>(null);
-  const archiveMounted = useRef(false);
-  const migration = useRef<Promise<void> | null>(null);
-  const readyReplayDb = () => {
-    if (!migration.current) migration.current = (async () => {
-      let remaining = 0;
-      try { remaining = await migrateLegacyReplays(replayDb.current, window.localStorage); } catch { /* Keep inaccessible legacy data untouched. */ }
-      if (remaining && archiveMounted.current) setArchiveMessage("部分旧回放未能迁移，原记录已保留在浏览器存储中。");
-    })();
-    return migration.current;
-  };
-  useEffect(() => { archiveMounted.current = true; void readyReplayDb(); return () => { archiveMounted.current = false; }; }, []);
-  const archiveRuntime = useRef({ site, safeCatalog, viewFailed, previewLoading });
-  archiveRuntime.current = { site, safeCatalog, viewFailed, previewLoading };
-  const replaySite = useRef<{ id: FightShape; site: NonNullable<typeof site> } | null>(null);
-  const replayNeedsProtection = () => {
-    if (!controller || remoteLocked.current) return false;
-    const current = controller.getState();
-    if (!current.match.outcome || !current.replayAvailable) return false;
-    try { return !hasVerifiedReplaySave(current.match, verifiedSaves.current, replaySnapshot.current); }
-    catch { return true; } // localStorage itself can be inaccessible.
-  };
-  const requestDestructiveAction = (run: () => void) => {
-    if (remoteLocked.current || archiveLock.current || pendingReplayLoss) return;
-    if (!controller || !controller.getState().match.outcome || !controller.getState().replayAvailable) { run(); return; }
-    const match = controller.getState().match;
-    if (replayNeedsProtection()) { setPendingReplayLoss({ match, site, catalog: safeCatalog, run }); return; }
-    // Verify durable storage again; a stale cache must not suppress the warning.
-    archiveLock.current = true; setArchiveBusy(true);
-    void (async () => {
-      try { replaySnapshot.current = await readReplaySnapshot(replayDb.current); }
-      catch { replaySnapshot.current = new ReplaySnapshot(); }
-      finally { archiveLock.current = false; if (archiveMounted.current) setArchiveBusy(false); }
-      if (!archiveMounted.current || remoteLocked.current || controller.getState().match !== match) return;
-      if (replayNeedsProtection()) setPendingReplayLoss({ match, site, catalog: safeCatalog, run });
-      else run();
-    })();
-  };
+  const matchRuntime = useRef({ site, safeCatalog, viewFailed, previewLoading });
+  matchRuntime.current = { site, safeCatalog, viewFailed, previewLoading };
+  const requestDestructiveAction = (run: () => void) => { if (!remoteLocked.current) run(); };
   const requestClose = () => requestDestructiveAction(onClose);
   useLayoutEffect(() => {
     requestCloseRef.current = requestClose;
     return () => { requestCloseRef.current = null; };
   });
-  useEffect(() => {
-    const beforeUnload = (event: BeforeUnloadEvent) => {
-      if (replayNeedsProtection()) { event.preventDefault(); event.returnValue = ""; }
-    };
-    window.addEventListener("beforeunload", beforeUnload);
-    return () => window.removeEventListener("beforeunload", beforeUnload);
-  });
-  useEffect(() => {
-    if (pendingReplayLoss && (remoteActive || controller?.getState().match !== pendingReplayLoss.match || site !== pendingReplayLoss.site || safeCatalog !== pendingReplayLoss.catalog)) setPendingReplayLoss(null);
-  }, [pendingReplayLoss, remoteActive, controller, resolvedState, site, safeCatalog]);
-  const replayLossGuard = pendingReplayLoss ? <MechaUnsavedReplayGuard locale={locale}
-    onCancel={() => setPendingReplayLoss(null)}
-    onConfirm={() => {
-      const pending = pendingReplayLoss;
-      setPendingReplayLoss(null);
-      if (!remoteLocked.current && !archiveLock.current && controller?.getState().match === pending.match
-        && archiveRuntime.current.site === pending.site && archiveRuntime.current.safeCatalog === pending.catalog) pending.run();
-    }} /> : null;
   const resultShown = useRef(false);
   const resultTrigger = useRef<HTMLButtonElement | null>(null);
   const resultReady = Boolean(state?.outcome && !performance && !remoteActive && !viewFailed);
@@ -610,217 +505,7 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
     setShowMatchResult(false);
     requestAnimationFrame(() => resultTrigger.current?.focus());
   };
-  const advancePerformance = () => {
-    if (!controller) return;
-    const wasReplay = controller.getState().replay;
-    controller.finishPerformance();
-    if (wasReplay && !controller.getState().replay) {
-      if (wasReplay.source === "saved") replaySite.current = null;
-      else setShowMatchResult(true);
-    }
-  };
-  // Empty turns stay visible briefly, rather than disappearing between frames.
-  const finishPerformance = () => {
-    if (s?.replay && performance?.events.length === 0) return;
-    advancePerformance();
-  };
-  useEffect(() => {
-    if (!s?.replay || !performance || performance.events.length) {
-      emptyReplayHold.current = null;
-      return;
-    }
-    if (emptyReplayHold.current?.performance !== performance) {
-      emptyReplayHold.current = { performance, clock: new ReplayHoldClock() };
-    }
-    const clock = emptyReplayHold.current.clock;
-    let timer: number | null = null;
-    const stop = () => {
-      if (timer === null) return;
-      window.clearTimeout(timer);
-      timer = null;
-      clock.stop(window.performance.now());
-    };
-    const start = () => {
-      if (timer !== null || paused || previewLoading || viewFailed || document.hidden) return;
-      const wait = clock.start(window.performance.now(), replaySpeed);
-      timer = window.setTimeout(() => {
-        timer = null;
-        if (clock.stop(window.performance.now()) <= 0) advancePerformance();
-        else start(); // A timer may fire early on some hosts.
-      }, wait);
-    };
-    const visibilityChanged = () => { if (document.hidden) stop(); else start(); };
-    document.addEventListener("visibilitychange", visibilityChanged);
-    start();
-    return () => { stop(); document.removeEventListener("visibilitychange", visibilityChanged); };
-  }, [controller, s?.replay, performance, paused, previewLoading, viewFailed, replaySpeed]);
-  useEffect(() => {
-    if (remoteActive && controller?.getState().replay) { controller.stopReplay(); replaySite.current = null; }
-  }, [remoteActive, controller]);
-  const replayActive = Boolean(s?.replay);
-  useLayoutEffect(() => {
-    if (replayActive) document.querySelector<HTMLButtonElement>("[data-replay-pause]")?.focus();
-  }, [replayActive]);
-  const stopReplay = () => {
-    const source = controller?.getState().replay?.source;
-    controller?.stopReplay();
-    replaySite.current = null;
-    if (source === "current") setShowMatchResult(true);
-  };
-  const startReplay = () => {
-    if (!controller || remoteActive) return;
-    controller.startReplay();
-    if (controller.getState().replay) { setShowMatchResult(false); setSettingsPanel(null); setMapFocused(false); }
-  };
-  const archiveError = (error: unknown): string => {
-    if (error instanceof ReplayArchiveError) {
-      if (error.code === "incompatible") return "回放与当前城市的可用战场或规则不兼容，无法播放。";
-      if (error.code === "invalid") return "回放记录已损坏或格式不支持。";
-      if (error.code === "unavailable") return "当前环境无法校验回放。";
-      if (error.code === "full") return "本机回放已满，请先删除一条记录。";
-      if (error.code === "changed") return "回放记录已变化，请重新选择。";
-    }
-    return "本地存储不可用或空间不足，操作未完成。";
-  };
-  const publishReplaySnapshot = (snapshot: ReplaySnapshot) => {
-    replaySnapshot.current = snapshot;
-    const entries = listLocalReplays(snapshot);
-    setArchiveEntries(entries);
-    setSelectedArchive(previous => entries.some(entry => entry.key === previous) ? previous : entries[0]?.key ?? "");
-  };
-  const refreshArchives = async () => {
-    try { await readyReplayDb(); const snapshot = await readReplaySnapshot(replayDb.current); if (archiveMounted.current) publishReplaySnapshot(snapshot); }
-    catch (error) { if (archiveMounted.current) setArchiveMessage(archiveError(error)); }
-  };
-  useEffect(() => {
-    if (settingsPanel !== "battlefield") { setConfirmArchiveDelete(false); return; }
-    void refreshArchives();
-  }, [settingsPanel]);
-  const saveReplay = async (automatic = false) => {
-    if (!controller || archiveLock.current || remoteLocked.current) return;
-    const before = controller.getState();
-    const source = controller.replayArchiveSource();
-    if (!source) { setArchiveMessage("当前没有可保存的完整本地对局。"); return; }
-    archiveLock.current = true; setArchiveBusy(true); setArchiveMessage(null);
-    try {
-      const archive = await createLocalReplayArchive(source);
-      if (!archiveMounted.current) return;
-      if (remoteLocked.current || controller.getState() !== before || archiveRuntime.current.site !== site || archiveRuntime.current.viewFailed || archiveRuntime.current.previewLoading) { setArchiveMessage("战局已变化，本次操作已取消。"); return; }
-      // Re-read consent immediately before writing: another tab may have opted out.
-      if (automatic && (!autoSaveConsent.current || !readReplayAutoSaveStrict(() => window.localStorage))) return;
-      // Build a detached record, then commit it to the database and read it back.
-      await readyReplayDb();
-      const snapshot = await readReplaySnapshot(replayDb.current);
-      const savedKey = saveLocalReplayEntry(snapshot, archive, source.rounds.length);
-      const raw = snapshot.getItem(savedKey);
-      if (!raw) throw new ReplayArchiveError("storage");
-      const committed = await commitReplay(replayDb.current, savedKey, raw);
-      if (!archiveMounted.current) return;
-      publishReplaySnapshot(committed);
-      verifiedSaves.current = [...verifiedSaves.current.filter(entry => entry.match === before.match), { match: before.match, key: savedKey, raw }];
-      setSelectedArchive(savedKey);
-      setArchiveMessage(automatic ? "本局回放已自动保存到本机。" : "回放已保存到本机，可在战场设置中打开。");
-    } catch (error) {
-      if (archiveMounted.current) setArchiveMessage(automatic
-        ? error instanceof ReplayArchiveError && error.code === "full" ? "自动保存失败：本机回放已满，请先删除一条记录。" : "自动保存失败，请手动保存或检查本机存储空间。"
-        : archiveError(error));
-    }
-    finally { archiveLock.current = false; if (archiveMounted.current) setArchiveBusy(false); }
-  };
-  useEffect(() => {
-    if (!autoSaveReplay || !controller || !resolvedState?.outcome || !resultReady || !s?.replayAvailable
-      || s.replay || archiveBusy || archiveLock.current || remoteLocked.current || !site || previewLoading) return;
-    if (autoSaveAttempts.current.has(resolvedState)) return;
-    try { if (hasVerifiedReplaySave(resolvedState, verifiedSaves.current, replaySnapshot.current)) return; }
-    catch { /* Saving reports the failure; retain the unsaved warning. */ }
-    autoSaveAttempts.current.add(resolvedState);
-    void saveReplay(true);
-  }, [autoSaveReplay, controller, resolvedState, resultReady, s?.replayAvailable, s?.replay, archiveBusy, site, previewLoading]);
-  const playSavedReplay = async () => {
-    if (!controller || archiveLock.current || remoteLocked.current || !site || viewFailed || previewLoading || !selectedArchive) return;
-    const before = controller.getState();
-    if (before.auto || before.paused || before.performance || before.replay) return;
-    archiveLock.current = true; setArchiveBusy(true); setArchiveMessage(null);
-    try {
-      const candidates = [shapeId, ...SHAPES.map(item => item.id).filter(id => id !== shapeId)]
-        .flatMap(id => { const candidate = safeCatalog[id]; return candidate ? [{ id, site: candidate }] : []; });
-      await readyReplayDb();
-      const snapshot = await readReplaySnapshot(replayDb.current);
-      const original = snapshot.getItem(selectedArchive);
-      const replay = await loadLocalReplayEntryForSites(snapshot, selectedArchive, candidates);
-      const latest = await readReplaySnapshot(replayDb.current);
-      if (latest.getItem(selectedArchive) !== original) throw new ReplayArchiveError("changed");
-      if (!archiveMounted.current) return;
-      publishReplaySnapshot(latest);
-      if (remoteLocked.current || controller.getState() !== before || archiveRuntime.current.site !== site || archiveRuntime.current.safeCatalog !== safeCatalog || archiveRuntime.current.viewFailed || archiveRuntime.current.previewLoading) {
-        setArchiveMessage("战局已变化，本次操作已取消。"); return;
-      }
-      if (!replay) { setArchiveMessage("本机还没有保存的回放。"); return; }
-      const matchedSite = safeCatalog[replay.id];
-      if (!matchedSite) { setArchiveMessage("战局已变化，本次操作已取消。"); return; }
-      // Set before publishing the replay snapshot; never restart the live match.
-      replaySite.current = { id: replay.id, site: replay.id === shapeId ? site : replay.site };
-      if (!controller.startSavedReplay(replay.rounds)) { replaySite.current = null; setArchiveMessage("当前状态不能开始回放。"); return; }
-      setShowMatchResult(false); setSettingsPanel(null); setMapFocused(false);
-    } catch (error) { if (archiveMounted.current) setArchiveMessage(archiveError(error)); }
-    finally { archiveLock.current = false; if (archiveMounted.current) setArchiveBusy(false); }
-  };
-  const exportSavedReplay = async () => {
-    if (archiveLock.current || remoteLocked.current || !selectedArchive) return;
-    archiveLock.current = true; setArchiveBusy(true);
-    try {
-      await readyReplayDb();
-      const snapshot = await readReplaySnapshot(replayDb.current);
-      const archive = readLocalReplayEntryArchive(snapshot, selectedArchive);
-      if (!archive) { publishReplaySnapshot(snapshot); setArchiveMessage("回放记录已变化，请重新选择。"); return; }
-      const url = URL.createObjectURL(new Blob([archive], { type: "application/json" }));
-      try {
-        const link = document.createElement("a");
-        link.href = url; link.download = "mecha-battle-replay.json";
-        link.click();
-      } finally { window.setTimeout(() => URL.revokeObjectURL(url), 60_000); }
-      setArchiveMessage("已请求下载回放文件，请检查浏览器下载记录。此文件不是视频。");
-    } catch (error) { setArchiveMessage(error instanceof ReplayArchiveError ? archiveError(error) : "无法导出回放文件。请检查当前环境的下载权限。"); }
-    finally { archiveLock.current = false; if (archiveMounted.current) setArchiveBusy(false); }
-  };
-  const importReplayFile = async (file: File | undefined) => {
-    if (!file || !controller || archiveLock.current || remoteLocked.current || !site || viewFailed || previewLoading) return;
-    const before = controller.getState();
-    archiveLock.current = true; setArchiveBusy(true); setArchiveMessage(null);
-    try {
-      if (file.size < 1 || file.size > LOCAL_REPLAY_MAX_FILE_BYTES) throw new ReplayArchiveError("invalid");
-      const archive = await file.text();
-      const candidates = [shapeId, ...SHAPES.map(item => item.id).filter(id => id !== shapeId)]
-        .flatMap(id => { const candidate = safeCatalog[id]; return candidate ? [{ id, site: candidate }] : []; });
-      const verified = await restoreLocalReplayArchiveForSites(archive, candidates);
-      if (!archiveMounted.current) return;
-      if (remoteLocked.current || controller.getState() !== before || archiveRuntime.current.site !== site || archiveRuntime.current.safeCatalog !== safeCatalog || archiveRuntime.current.viewFailed || archiveRuntime.current.previewLoading) {
-        setArchiveMessage("战局已变化，本次操作已取消。"); return;
-      }
-      await readyReplayDb();
-      const snapshot = await readReplaySnapshot(replayDb.current);
-      const saved = saveImportedLocalReplay(snapshot, archive, verified.rounds.length);
-      const raw = snapshot.getItem(saved.key);
-      if (!raw) throw new ReplayArchiveError("storage");
-      const committed = saved.existing ? await readReplaySnapshot(replayDb.current) : await commitReplay(replayDb.current, saved.key, raw);
-      if (readLocalReplayEntryArchive(committed, saved.key) !== archive) throw new ReplayArchiveError("storage");
-      publishReplaySnapshot(committed); setSelectedArchive(saved.key);
-      setArchiveMessage(saved.existing ? "这条回放已在本机列表中。" : "回放已导入本机，可从列表中播放。");
-    } catch (error) { if (archiveMounted.current) setArchiveMessage(archiveError(error)); }
-    finally { archiveLock.current = false; if (archiveMounted.current) setArchiveBusy(false); }
-  };
-  const deleteSavedReplay = async () => {
-    if (archiveLock.current || remoteLocked.current || !selectedArchive) return;
-    archiveLock.current = true; setArchiveBusy(true);
-    try {
-      await readyReplayDb();
-      await replayDb.current.delete(selectedArchive);
-      const snapshot = await readReplaySnapshot(replayDb.current);
-      if (snapshot.getItem(selectedArchive) !== null) throw new ReplayArchiveError("storage");
-      publishReplaySnapshot(snapshot); setConfirmArchiveDelete(false); setArchiveMessage("本机回放已删除。");
-    } catch (error) { setArchiveMessage(archiveError(error)); }
-    finally { archiveLock.current = false; if (archiveMounted.current) setArchiveBusy(false); }
-  };
+  const finishPerformance = () => controller?.finishPerformance();
   useEffect(() => { setInspectedCell(null); setInspectedUnitId(null); }, [controller, site, state?.turn, performance, resolvedState]);
 
   const sequenceTrial = assaultSequenceTrial;
@@ -1243,15 +928,15 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
   }, [s, state, inspectionState, deployment, draft, selected, reach, targetOptions, paused, performance, sequenceWaiting, focusedBuilding, showOrder, remoteActive, cellInfo, attackOrderPreview]);
 
   if (!controller || !s || !state || !site) {
-    return <><CityGate locale={locale} onClose={requestClose} closeDisabled={archiveBusy} title={t("没有安全的 Assault 出生点。")} body={t("地形采样失败或可用出生点过陡，请退出战斗并尝试其他城市。")} />{replayLossGuard}</>;
+    return <><CityGate locale={locale} onClose={requestClose} title={t("没有安全的 Assault 出生点。")} body={t("地形采样失败或可用出生点过陡，请退出战斗并尝试其他城市。")} /></>;
   }
 
   if (viewFailed) {
     return <>
-      <CityGate locale={locale} onClose={requestClose} closeDisabled={remoteActive || archiveBusy} onRetry={viewFailed === "asset" ? undefined : () => setViewFailed(null)}
+      <CityGate locale={locale} onClose={requestClose} closeDisabled={remoteActive} onRetry={viewFailed === "asset" ? undefined : () => setViewFailed(null)}
         title={viewFailed === "asset" ? "Assault 模型加载失败。" : viewFailed === "preview" ? "Assault 战斗演出不可用。" : "三维视角被其他模式占用。"}
-        body={viewFailed === "asset" ? "Assault 模型未能加载或实例化；退出战斗后检查资源。" : viewFailed === "preview" ? "战斗动画播放失败；可以重试，或退出战斗。" : "先退出影院、驾驶或飞行，再开战。"} recovery={remoteActive ? <RemoteMechaControls locale={locale} site={site} shape={shapeId} state={state} status={remoteStatus} canStart={false} onStatusChange={onRemoteStatusChange} onStopped={() => controller.restart()} /> : s.replay?.source === "saved" ? <button type="button" onClick={() => { controller.stopReplay(); replaySite.current = null; setViewFailed(null); }}>{t("结束回放并返回当前对局")}</button> : null} />
-      {replayLossGuard}
+        body={viewFailed === "asset" ? "Assault 模型未能加载或实例化；退出战斗后检查资源。" : viewFailed === "preview" ? "战斗动画播放失败；可以重试，或退出战斗。" : "先退出影院、驾驶或飞行，再开战。"} recovery={remoteActive ? <RemoteMechaControls locale={locale} site={site} shape={shapeId} state={state} status={remoteStatus} canStart={false} onStatusChange={onRemoteStatusChange} onStopped={() => controller.restart()} /> : null} />
+
     </>;
   }
 
@@ -1261,7 +946,7 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
     const expectedCatalog = safeCatalog;
     setPracticeNotice(null);
     requestDestructiveAction(() => {
-      if (remoteLocked.current || controller.getState().match !== before || archiveRuntime.current.site !== expectedSite || archiveRuntime.current.safeCatalog !== expectedCatalog || archiveRuntime.current.viewFailed || archiveRuntime.current.previewLoading) {
+      if (remoteLocked.current || controller.getState().match !== before || matchRuntime.current.site !== expectedSite || matchRuntime.current.safeCatalog !== expectedCatalog || matchRuntime.current.viewFailed || matchRuntime.current.previewLoading) {
         setPracticeNotice(locale === "en" ? "The match or battlefield changed; please try again." : "对局或战场已变化，请重试。");
         return;
       }
@@ -1354,7 +1039,7 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
       .map(entry => ({ ...entry, label: t(actionLabel(entry.kind)) })),
     targets: s.targetOptions.map(option => ({ id: option.id, label: unitName(option.id), cells: option.cells })),
     preview: { status: s.preview.status, damage: [] },
-    replay: s.replay ? { step: s.replay.index + 1, total: s.replay.total } : null,
+    replay: null,
     notices: [
       ...(s.notice ? [{ kind: s.fault ? "error" as const : "status" as const, text: s.notice }] : []),
       ...(practiceNotice ? [{ kind: "status" as const, text: practiceNotice }] : []),
@@ -1365,32 +1050,7 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
 
   return (
     <MechaHud className="mecha-overlay is-city has-match is-reference-hud" model={hudModel} actions={hudActions} mapFocus={mapFocused} remoteActive={remoteActive}>
-      <CityMechaWorld ref={worldRef} engine={engine} site={s.replay?.source === "saved" ? replaySite.current?.site ?? site : site} locale={locale} view={cityView} performance={performance} paused={paused} connectedAssault={connectedAssault} performanceSpeed={s.replay ? replaySpeed : 1} onPerformanceComplete={finishPerformance} onCell={clickCell} onHoverCell={hoverCell} onHoverEnemy={(id) => controller.setHoveredEnemy(id)} onUnavailable={(reason) => setViewFailed(reason ?? "mode")} onPreviewLoading={setPreviewLoading} />
-      {s.replay ? <section className="mecha-replay-bar" aria-label={t("战斗回放")} data-mecha-replay>
-        {showReplayRecap ? <div className="mecha-replay-recap" id="mecha-replay-recap" data-replay-recap>
-          <MechaLastResult mode="replay" lastLog={s.replay.log} healthTimeline={s.replay.combat.healthTimeline} finalState={s.replay.after} t={t} locale={locale} />
-        </div> : null}
-        <strong role="status" aria-live="polite">{t("战斗回放")} · {t("回合")} {s.replay.turn} <span>({s.replay.index + 1}/{s.replay.total})</span></strong>
-        {s.replay.source === "saved" && replaySite.current?.id !== shapeId ? <span>{t("历史战场回放 · 结束后返回当前对局")}</span> : null}
-        <label>{t("回放回合")} <select data-replay-turn value={s.replay.index} onChange={(event) => controller.selectReplayTurn(Number(event.target.value))}>
-          {s.replay.turns.map((turn, index) => <option key={index} value={index}>{t("回合")} {turn}</option>)}
-        </select></label>
-        <div className="mecha-replay-navigation" role="group" aria-label={t("回合导航")}>
-          <button type="button" data-replay-previous aria-label={t("上一回合")} title={t("上一回合")} disabled={s.replay.index === 0} onClick={() => controller.selectReplayTurn(s.replay!.index - 1)}><span aria-hidden="true">◀</span></button>
-          <button type="button" data-replay-restart aria-label={t("重播本回合")} title={t("重播本回合")} onClick={() => controller.selectReplayTurn(s.replay!.index)}><span aria-hidden="true">↺</span></button>
-          <button type="button" data-replay-next aria-label={t("下一回合")} title={t("下一回合")} disabled={s.replay.index + 1 >= s.replay.total} onClick={() => controller.selectReplayTurn(s.replay!.index + 1)}><span aria-hidden="true">▶</span></button>
-        </div>
-        <label>{t("播放速度")} <select data-replay-speed value={replaySpeed} onChange={(event) => {
-          const speed = Number(event.target.value);
-          if (speed === 0.5 || speed === 1 || speed === 2) setReplaySpeed(speed);
-        }}><option value="0.5">0.5×</option><option value="1">1×</option><option value="2">2×</option></select></label>
-        {performance?.events.length === 0 ? <span role="status">{t("无演出事件")}</span> : null}
-        <button type="button" data-replay-recap-toggle aria-expanded={showReplayRecap} aria-controls={showReplayRecap ? "mecha-replay-recap" : undefined} onClick={() => setShowReplayRecap((value) => !value)}>{t("本回合记录")}</button>
-        <button type="button" data-replay-pause onClick={() => controller.togglePause()}>{paused ? t("继续演出") : t("暂停演出")}</button>
-        <button type="button" onClick={() => worldRef.current?.resetCamera()}>{t("重置视角")}</button>
-        <button type="button" data-mecha-replay-exit onClick={stopReplay}>{t("结束回放")}</button>
-      </section> : null}
-      {!s.replay ? <>
+      <CityMechaWorld ref={worldRef} engine={engine} site={site} locale={locale} view={cityView} performance={performance} paused={paused} connectedAssault={connectedAssault} performanceSpeed={1} onPerformanceComplete={finishPerformance} onCell={clickCell} onHoverCell={hoverCell} onHoverEnemy={(id) => controller.setHoveredEnemy(id)} onUnavailable={(reason) => setViewFailed(reason ?? "mode")} onPreviewLoading={setPreviewLoading} />
       <header className="mecha-battle-bar">
         {previewLoading && <span role="status">{t("正在加载 Assault 模型…")}</span>}
         <div className="mecha-battle-controls">
@@ -1402,7 +1062,7 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
           {auto ? <button type="button" disabled={remoteActive} onClick={() => controller.stopAuto()}>{t("停止自动")}</button> : null}
           {performance || (paused && !state.outcome) ? <button type="button" disabled={remoteActive} onClick={() => controller.togglePause()}>{paused ? t("继续演出") : t("暂停演出")}</button> : null}
           {performance ? <button type="button" onClick={finishPerformance}>{t("跳过演出")}</button> : null}
-          <MechaBattleMenu locale={locale} exitDisabled={remoteActive || archiveBusy} onGuide={trigger => { guideTrigger.current = trigger; setSettingsPanel(null); setShowQuickGuide(true); }} onExit={requestClose} />
+          <MechaBattleMenu locale={locale} exitDisabled={remoteActive} onGuide={trigger => { guideTrigger.current = trigger; setSettingsPanel(null); setShowQuickGuide(true); }} onExit={requestClose} />
         </div>
       </header>
       <div className="mecha-panel" ref={panelRef}>
@@ -1600,42 +1260,14 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
         <MechaSettingsPopover id="mecha-battlefield-settings" title={t("战场设置与规则")} closeLabel={t("关闭设置")} hidden={settingsPanel !== "battlefield"} onClose={closeSettings} bodyClassName="mecha-settings-body mecha-settings">
           <p className="mecha-help">{t("左拖旋转，右拖平移，滚轮缩放；短点击选择格子。暂停时仍可调整视角。")}</p>
           <MechaBattleLegend locale={locale} view={cityView} />
-          <section className="mecha-archive-controls" aria-label={t("本机战斗回放")}>
-            <strong>{t("本机战斗回放")}</strong>
-            <p>{t("最多保存 20 场；自动匹配当前城市战场，规则需兼容。清除站点数据可能删除记录。")}</p>
-            <label className="mecha-replay-auto-save"><input type="checkbox" data-replay-auto-save checked={autoSaveReplay} onChange={event => changeAutoSave(event.target.checked)} /><span>{t("自动保存已结束的本地 PvE 对局")}</span></label>
-            <p>{t("仅保存在本机，不自动覆盖；可随时关闭。远程对局不支持。")}</p>
-            {archiveEntries.length ? <label>{t("选择回放")}
-              <select data-archive-select value={selectedArchive} disabled={archiveBusy || remoteActive} onChange={event => { setSelectedArchive(event.target.value); setConfirmArchiveDelete(false); setArchiveMessage(null); }}>
-                {archiveEntries.map(entry => <option key={entry.key} value={entry.key}>{entry.legacy ? t("旧版回放") : entry.damaged ? t("损坏的回放记录") : `${new Date(entry.savedAt!).toLocaleString(locale === "en" ? "en-US" : "zh-CN")} · ${entry.turns} ${locale === "en" ? (entry.turns === 1 ? "round" : "rounds") : "回合"}`}</option>)}
-              </select>
-            </label> : <p>{t("本机还没有保存的回放。")}</p>}
-            <div>
-              <button type="button" data-archive-save-current disabled={!s.replayAvailable || archiveBusy || remoteActive || Boolean(performance) || Boolean(s.replay)} onClick={() => void saveReplay()}>{t(archiveBusy ? "正在保存…" : "保存本局回放")}</button>
-              <button type="button" data-archive-play disabled={!selectedArchive || archiveBusy || remoteActive || previewLoading || auto || paused || Boolean(performance)} onClick={() => void playSavedReplay()}>{t(archiveBusy ? "正在读取…" : "回放已保存的战斗")}</button>
-              {!confirmArchiveDelete ? <button type="button" data-archive-delete disabled={!selectedArchive || archiveBusy || remoteActive} onClick={() => setConfirmArchiveDelete(true)}>{t("删除本机回放")}</button> : <>
-                <button type="button" data-archive-delete-confirm disabled={archiveBusy || remoteActive} onClick={deleteSavedReplay}>{t("确认删除这条回放")}</button>
-                <button type="button" onClick={() => setConfirmArchiveDelete(false)}>{t("取消删除")}</button>
-              </>}
-            </div>
-            <details className="mecha-replay-file-tools">
-              <summary>{t("备份或导入回放")}</summary>
-              <p>{t("回放文件不是视频；导入需要相同城市战场和兼容规则。")}</p>
-              <div>
-              <button type="button" data-archive-export disabled={!selectedArchive || archiveBusy || remoteActive} onClick={exportSavedReplay}>{t("导出回放文件")}</button>
-              <button type="button" data-archive-import disabled={archiveBusy || remoteActive || !site || Boolean(viewFailed) || previewLoading} onClick={() => replayFileInput.current?.click()}>{t("导入回放文件")}</button>
-              <input ref={replayFileInput} type="file" accept=".json,application/json" hidden onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; void importReplayFile(file); }} />
-              </div>
-            </details>
-            {archiveMessage ? <p role="status" aria-live="polite">{t(archiveMessage)}</p> : null}
-          </section>
+
           {s.notice === t("此战场没有可达的救援点，请更换战场或任务。") ? <p role="alert">{s.notice}</p> : null}
           <div className="mecha-toolbar">
-            <label>{t("任务模式")}<select data-mission-mode disabled={remoteActive || archiveBusy || Boolean(performance)} value={s.match.mission?.kind ?? "eliminate"} onChange={(event) => {
+            <label>{t("任务模式")}<select data-mission-mode disabled={remoteActive || Boolean(performance)} value={s.match.mission?.kind ?? "eliminate"} onChange={(event) => {
               const next = event.target.value === "rescue:v1" ? "rescue:v1" : null;
               if ((s.match.mission?.kind ?? null) !== next) requestDestructiveAction(() => { if (controller.restart({ mission: next, monsterContent: null })) setFocusedBuilding(null); });
             }}><option value="eliminate">{t("消灭敌人")}</option><option value="rescue:v1">{t("救援")}</option></select></label>
-            <label>{t("战场")}<select disabled={remoteActive || archiveBusy || Boolean(performance)} value={shapeId} onChange={(e) => {
+            <label>{t("战场")}<select disabled={remoteActive || Boolean(performance)} value={shapeId} onChange={(e) => {
               const next = e.target.value as FightShape;
               const nextSite = safeCatalog[next];
               if (!nextSite || next === shapeId) return;
@@ -1646,30 +1278,30 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
                 setFocusedBuilding(null);
               });
             }}>{SHAPES.map((item) => <option key={item.id} value={item.id} disabled={!safeCatalog[item.id]}>{t(item.label)}{catalog[item.id] && !safeCatalog[item.id] ? t(" · 出生点不安全") : ""}</option>)}</select></label>
-            <label>{t("脚本")}<select disabled={remoteActive || archiveBusy || Boolean(performance)} value={s.script} onChange={(e) => {
+            <label>{t("脚本")}<select disabled={remoteActive || Boolean(performance)} value={s.script} onChange={(e) => {
               const next = e.target.value as BossScriptId;
               if (next !== s.script) requestDestructiveAction(() => { if (controller.restart({ script: next })) setFocusedBuilding(null); });
             }}>{SCRIPTS.map((sc) => <option key={sc.id} value={sc.id}>{t(sc.label)}</option>)}</select></label>
             <label>{t("打法")}<select disabled={Boolean(s.match.mission) || remoteActive || paused || Boolean(performance) || Boolean(s.match.outcome) || s.match.phase !== "player_plan"} value={doctrine} onChange={(e) => controller.setDoctrine(e.target.value as DoctrineId)}>{DOCTRINES.map((item) => <option key={item.id} value={item.id}>{t(item.label)}</option>)}</select></label>
-            <button type="button" disabled={remoteActive || archiveBusy} onClick={() => requestDestructiveAction(() => { setFocusedBuilding(null); controller.restart(); })}>{t("新开一局")}</button>
+            <button type="button" disabled={remoteActive} onClick={() => requestDestructiveAction(() => { setFocusedBuilding(null); controller.restart(); })}>{t("新开一局")}</button>
             <button type="button" disabled={!s.aiAvailable || !planning || s.doctrineConfirmation} onClick={() => controller.requestDoctrineSuggestion()}>{t("生成行动建议")}</button>
             <button type="button" disabled={!planning || !s.canUndoDoctrine} onClick={() => controller.undoDoctrineSuggestion()}>{t("撤回建议")}</button>
             <button type="button" disabled={!s.aiAvailable || remoteActive || Boolean(deployment) || Boolean(state.outcome)} onClick={() => controller.toggleAuto()}>{auto ? t("停止自动") : t("自动对战")}</button>
           </div>
-          <MechaMonsterPractice locale={locale} activeSpecies={s.match.monsterContent?.speciesId} disabled={remoteActive || archiveBusy || Boolean(performance) || Boolean(viewFailed) || previewLoading} notice={practiceNotice}
+          <MechaMonsterPractice locale={locale} activeSpecies={s.match.monsterContent?.speciesId} disabled={remoteActive || Boolean(performance) || Boolean(viewFailed) || previewLoading} notice={practiceNotice}
             onStart={(speciesId) => changeMonsterPractice(speciesId)} onReset={() => changeMonsterPractice("reset")} onExit={() => changeMonsterPractice(null)} />
           <details className="mecha-evaluation-details" data-p2-scenarios>
             <summary>{locale === "en" ? "Curated battle combinations" : "精选战场组合"}</summary>
             <p className="mecha-help">{locale === "en" ? "Existing enemy patterns on available city sites; these are not new maps or enemy types. Starting one replaces the current match." : "基于当前城市可用战场和现有敌人脚本的组合，并非新地图或新敌人。开始后将替换当前对局。"}</p>
             <div className="mecha-toolbar">
-              <label>{locale === "en" ? "Combination" : "组合"}<select data-p2-scenario-select value={scenarioId} disabled={remoteActive || archiveBusy || Boolean(performance)} onChange={event => { setScenarioId(event.target.value); setConfirmScenario(false); setScenarioNotice(null); }}>
+              <label>{locale === "en" ? "Combination" : "组合"}<select data-p2-scenario-select value={scenarioId} disabled={remoteActive || Boolean(performance)} onChange={event => { setScenarioId(event.target.value); setConfirmScenario(false); setScenarioNotice(null); }}>
                 <option value="">{locale === "en" ? "Choose a combination" : "选择组合"}</option>
                 {P2_SCENARIOS.map(item => <option key={item.id} value={item.id}>{locale === "en" ? item.label.en : item.label.zh}</option>)}
               </select></label>
-              {!confirmScenario ? <button type="button" disabled={!scenarioId || remoteActive || archiveBusy || Boolean(performance)} onClick={() => { setScenarioNotice(null); setConfirmScenario(true); }}>{locale === "en" ? "Start combination" : "开始组合"}</button> : <>
-                <button type="button" data-p2-scenario-confirm disabled={remoteActive || archiveBusy || Boolean(performance)} onClick={() => {
+              {!confirmScenario ? <button type="button" disabled={!scenarioId || remoteActive || Boolean(performance)} onClick={() => { setScenarioNotice(null); setConfirmScenario(true); }}>{locale === "en" ? "Start combination" : "开始组合"}</button> : <>
+                <button type="button" data-p2-scenario-confirm disabled={remoteActive || Boolean(performance)} onClick={() => {
                   const before = controller.getState().match;
-                  const currentCatalog = archiveRuntime.current.safeCatalog;
+                  const currentCatalog = matchRuntime.current.safeCatalog;
                   const candidate = resolveP2Scenario(currentCatalog, scenarioId);
                   if (!candidate.ok) {
                     setScenarioNotice(locale === "en" ? "This combination is unavailable: the current city lacks a safe, valid site or enemy lineup." : "此组合不可用：当前城市没有满足安全、部署或敌人配置条件的战场。 ");
@@ -1677,14 +1309,14 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
                     return;
                   }
                   requestDestructiveAction(() => {
-                    if (remoteLocked.current || controller.getState().match !== before || archiveRuntime.current.safeCatalog !== currentCatalog || archiveRuntime.current.viewFailed || archiveRuntime.current.previewLoading) return;
-                    const checked = resolveP2Scenario(archiveRuntime.current.safeCatalog, scenarioId);
+                    if (remoteLocked.current || controller.getState().match !== before || matchRuntime.current.safeCatalog !== currentCatalog || matchRuntime.current.viewFailed || matchRuntime.current.previewLoading) return;
+                    const checked = resolveP2Scenario(matchRuntime.current.safeCatalog, scenarioId);
                     if (!checked.ok) { setScenarioNotice(locale === "en" ? "The site changed; please choose again." : "战场条件已变化，请重新选择。"); setConfirmScenario(false); return; }
                     const { scenario, site: nextSite } = checked;
                     if (!controller.restart({ site: nextSite, preset: scenario.preset, script: scenario.script, stake: scenario.stake, mission: null, monsterContent: null })) return;
                     // A same-site restart does not remount CityMechaWorld, so it cannot
                     // issue a second loading-complete callback for the existing asset.
-                    if (nextSite !== archiveRuntime.current.site && connectedAssault) setPreviewLoading(true);
+                    if (nextSite !== matchRuntime.current.site && connectedAssault) setPreviewLoading(true);
                     setShape(scenario.shape); setFocusedBuilding(null); setConfirmScenario(false); setScenarioNotice(null);
                   });
                 }}>{locale === "en" ? "Replace match and deploy" : "替换对局并部署"}</button>
@@ -1724,10 +1356,9 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
               <RemoteMechaControls presentation="panel" locale={locale} site={site} shape={shapeId} state={state} status={remoteStatus} canStart={!Object.hasOwn(s.match, "monsterContent") && !state.mission && (s.interactive || Boolean(s.deployment?.interactive)) && !sequenceWaiting && !performance} onStatusChange={onRemoteStatusChange} onStopped={() => controller.restart()} stopTarget={submitTarget} />}
         </MechaSettingsPopover>
       </div>
-      </> : null}
       {showQuickGuide && !(resultReady && showMatchResult) ? <MechaQuickGuide locale={locale} returnFocusRef={guideTrigger} onClose={() => setShowQuickGuide(false)} /> : null}
-      {resultReady && showMatchResult ? <MechaBattleResult state={state} locale={locale} matchRecap={s.matchRecap} getReviewRounds={() => controller.replayArchiveSource()?.rounds} onView={viewResultField} onReplay={s.replayAvailable ? startReplay : undefined} archiveBusy={archiveBusy} archiveMessage={archiveMessage} onRestart={() => requestDestructiveAction(() => { setShowMatchResult(false); setFocusedBuilding(null); controller.restart(); })} onExit={requestClose} /> : null}
-      {replayLossGuard}
+      {resultReady && showMatchResult ? <MechaBattleResult state={state} locale={locale} matchRecap={s.matchRecap} onView={viewResultField} onRestart={() => requestDestructiveAction(() => { setShowMatchResult(false); setFocusedBuilding(null); controller.restart(); })} onExit={requestClose} /> : null}
+
     </MechaHud>
   );
 }

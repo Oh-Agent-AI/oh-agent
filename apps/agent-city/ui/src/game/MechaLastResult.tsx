@@ -34,7 +34,7 @@ function unitName(id: string, t: Translate): string {
     case "raider-w": return t("小怪西");
     case "raider-e": return t("小怪东");
     case "wall": return t("墙或障碍");
-    default: return id; // Unknown IDs are not necessarily raiders (e.g. a PvP unit).
+    default: return id;
   }
 }
 

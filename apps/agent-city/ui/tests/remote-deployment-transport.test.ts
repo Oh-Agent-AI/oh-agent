@@ -96,21 +96,10 @@ test("staged client and host preserve authority over lost replies, retries, and 
     const changed = structuredClone(command); changed.plan.placements[0]!.pos.x = 1;
     assert.deepEqual(await client.submitDeployment(changed), { ok: false, error: { code: "duplicate_command" } });
 
-    // Snapshot may beat a delayed PvE plan across the same-match PvP replacement.
-    // The old payload is otherwise a valid PvP skip plan.
-    const delayed = { type: "plan.submit" as const, protocol: MECHA_NET_PROTOCOL, matchId: "m1", playerId: "owner", commandId: "late-pve", baseRevision: after.value.revision,
-      plan: { revision: after.value.revision, items: MECH_IDS.map((mechId) => ({ mechId, moveTo: null, action: { kind: "skip" as const } })) } };
+    // Guest joins remain rejected after deployment and cannot replace the PvE authority.
     sendHost("match.join", { matchId: "m1", playerId: "guest" });
-    assert.deepEqual(replies.at(-1), { type: "joined", token: "session-secret", ok: true });
-    const replacement = await client.snapshot("m1");
-    assert.ok(replacement.ok); assert.equal(replacement.value.mode, "pvp");
-    assert.equal(replacement.value.revision, after.value.revision + 1);
-    assert.deepEqual(await client.submitPlan(delayed), { ok: false, error: { code: "stale_revision" } });
-    assert.deepEqual(await client.snapshot("m1"), replacement);
-    const current = { ...delayed, commandId: "pvp-plan", baseRevision: replacement.value.revision, plan: { ...delayed.plan, revision: replacement.value.revision } };
-    const accepted = await client.submitPlan(current);
-    assert.ok(accepted.ok); assert.equal(accepted.value.revision, replacement.value.revision + 1);
-    assert.deepEqual(await client.submitPlan(current), accepted);
+    assert.deepEqual(replies.at(-1), { type: "joined", token: "session-secret", ok: false });
+    assert.deepEqual(await client.snapshot("m1"), after);
   } finally {
     client.dispose();
     if (originalWindow === undefined) delete (globalThis as { window?: unknown }).window;
@@ -142,7 +131,7 @@ test("v1 fails closed for deployment without sending a network command", async (
   } finally { client.dispose(); }
 });
 
-test("mode replacement refuses revision exhaustion without modifying the session", () => {
+test("guest join cannot modify a session with an exhausted revision", () => {
   const originalWindow = globalThis.window;
   let dispatch!: (event: { detail: unknown }) => void;
   const replies: any[] = [];

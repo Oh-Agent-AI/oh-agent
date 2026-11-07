@@ -6,9 +6,9 @@
 
 ## 0. 现状快照
 
-- 分支 `mecha/itb-alignment`，基线 checkpoint 为 `d80307cfc`。A 阶段收口包含后续撤销、目标绑定、地块检查和机甲状态显示修复。
+- 分支 `mecha/itb-alignment`；A 阶段已收口并打 tag `itb-alignment-checkpoint-2`，包含后续撤销、目标绑定、地块检查和机甲状态显示修复。
 - 已完成：M0（`trial`）、M2（`mode.ts` + `MechaModeRuntime`）、M3（`execution/enemyPhase`）、M4（`enemyPhasePreview` + 顺序叠层）、M1 大部分（`MechaHud` 契约、删除 `SequentialMechaHud` 与 `sequentialMecha.css`）。
-- **退役本身还没开始。**
+- **执行进度（2026-11-07）：A、B 已完成；C1、C2、C3、D 尚未开始。B 的修改仍在工作树，未 push。**
 
 三个必须先处理的隐性耦合：
 
@@ -46,15 +46,15 @@
 #### B2 旧存档 / 旧回放
 
 - 先把 `ReplayBackend` 与 `sequentialReplayBackend` 从 `replayRepository.ts` 抽到 `replayBackend.ts`，改 `sequentialReplayRepository` 的 import。
-- 再删 `replayArchive.ts`、`replayRepository.ts` 的 v1.4 部分、`MechaBoard` 的经典回放入口/回放栏/自动存档。
+- 再删 `replayArchive.ts`、完成 `replayRepository.ts` 的 v1.4 移除（通用后端已先抽出）、`MechaBoard` 的经典回放入口/回放栏/自动存档；保留并验证 `SequentialMechaMatch` 的 v1.5 回放控件样式。
 - `plugin_state.rs`：删 `mecha-local-replay-entry:v1` 校验与测试，保留 `plugin.state`。
 - **核对容量**：通用插件文件有 32 KiB 限制；机甲回放和检查点的专用 SQLite 路径使用 40,000 字节 archive 和 41,024 字节记录限制。检查前后端实际序列化边界，并覆盖 31/33 KiB、40,000/41,024 字节及超限行为。
 - 旧数据：按未知 schema 忽略或清理，不能阻塞启动。
 
 #### B3 测试/脚本清扫
 
-- 删以旧格式为 fixture 的用例：`mecha-local-replay`、`mecha-replay-playback`、`mecha-replay-archive`、`mecha-replay-persistence-guard`、`mecha-replay-auto-save`、`mecha-rescue-replay`、`mecha-neural-replay-guard`。
-- 同步 `verify-*.mjs` 里对 `.mecha-replay-*` 的选择器。
+- 删以旧格式为 fixture 的用例：`mecha-local-replay`、`mecha-replay-playback`、`mecha-replay-archive`、`mecha-replay-persistence-guard`、`mecha-replay-auto-save`、`mecha-rescue-replay`、`mecha-neural-replay-guard`，以及依赖相同 v1.4 存档的 monster / swarm replay 用例。
+- 清理旧格式浏览器验证脚本和套餐入口；保留 v1.5 浏览器流程中的 `.mecha-replay-*` 控件验收。
 
 ### C. 移植（1.5–2 周）
 

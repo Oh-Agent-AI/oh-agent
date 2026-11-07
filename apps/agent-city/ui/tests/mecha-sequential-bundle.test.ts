@@ -8,7 +8,7 @@ import { createSequentialReplayBundle, restoreSequentialReplayBundle, statusDepl
 import { applyDeployPlan } from "../src/game/mecha/deployment.ts";
 import { SequentialTurn } from "../src/game/mecha/sequentialTurn.ts";
 import { deleteSequentialReplay, listSequentialReplays, loadSequentialReplay, saveSequentialReplay } from "../src/game/mecha/sequentialReplayRepository.ts";
-import type { ReplayBackend } from "../src/game/mecha/replayRepository.ts";
+import type { ReplayBackend } from "../src/game/mecha/replayBackend.ts";
 import { checkpointStore, readSequentialCheckpoint, type Checkpoint, type CheckpointBackend } from "../src/game/mecha/sequentialCheckpoint.ts";
 import { SequentialDurableAuthority } from "../src/game/mecha/sequentialDurable.ts";
 import { projectStatusForecastState, statusForecast } from "../src/game/mecha/statusForecast.ts";
@@ -144,12 +144,14 @@ test("local repository verifies before saving, reads back and restores without m
   await assert.rejects(saveSequentialReplay({ ...site, originX: 8 }, raw, backend));
   assert.equal(rows.size, 0);
   const key = await saveSequentialReplay(site, raw, backend);
+  rows.set("agent-city:mecha-local-replay-entry:v1:12345678-1234-1234-1234-123456789abc", "legacy");
+  rows.set("unrecognized-record", "unknown");
   const list = await listSequentialReplays(backend);
   assert.equal(list.length, 1); assert.equal(list[0]!.damaged, false);
   assert.deepEqual((await loadSequentialReplay(site, key, backend)).session.snapshot().match, c.getState().match);
   rows.set(key, "broken"); assert.equal((await listSequentialReplays(backend))[0]!.damaged, true);
   await assert.rejects(loadSequentialReplay(site, key, backend), /invalid_sequential_entry/);
-  await deleteSequentialReplay(key, backend); assert.equal(rows.size, 0);
+  await deleteSequentialReplay(key, backend); assert.equal(rows.size, 2);
 });
 
 test("resuming a saved match rebuilds undo, rights, checkpoint and spent reset without id collisions", async () => {

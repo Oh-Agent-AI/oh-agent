@@ -235,84 +235,23 @@ test("prepared v2 client isolates responses from v1", async () => {
 });
 
 
-test("remote client never sends legacy concession, including to an old host", async () => {
-  let connected = false;
-  const client = new RemoteMatchClient({ url: "wss://example.test", playerId: "guest", socketFactory: () => { connected = true; return new FakeSocket(); } });
-  try {
-    assert.deepEqual(await client.concede("match-1"), { ok: false, error: { code: "unavailable" } });
-    assert.equal(connected, false);
-  } finally { client.dispose(); }
-});
-
-test("host rejects even delayed legacy concession after PvP replacement", () => {
+test("host rejects guest joins without changing the PvE session", () => {
   const originalWindow = globalThis.window;
   const replies: any[] = []; let dispatch!: (event: { detail: unknown }) => void;
   const host = { __AV_MECHA_SESSION_TOKEN__: "session-secret", __TAURI__: { core: { invoke: (_: string, args: { reply: unknown }) => { replies.push(args.reply); return Promise.resolve(); } } },
     addEventListener: (_: string, handler: typeof dispatch) => { dispatch = handler; } };
   Object.defineProperty(globalThis, "window", { value: host, configurable: true, writable: true });
-  const send = (method: string, payload: unknown, requestId = method) => dispatch({ detail: { token: "session-secret", request: { protocol: MECHA_NET_PROTOCOL, type: "request", requestId, method, payload } } });
+  const send = (method: string, payload: unknown) => dispatch({ detail: { token: "session-secret", request: { protocol: MECHA_NET_PROTOCOL, type: "request", requestId: method, method, payload } } });
   try {
     startRemoteSessionHost();
     send("match.create", { config: { matchId: "match-1", mode: "pve", arena, state: snapshot.state, players: snapshot.players } });
-    send("match.join", { matchId: "match-1", playerId: "guest" });
-    assert.deepEqual(replies.at(-1), { type: "joined", token: "session-secret", ok: true });
-    send("match.snapshot", { matchId: "match-1", playerId: "guest" }, "before");
+    send("match.snapshot", { matchId: "match-1", playerId: "owner" });
     const before = structuredClone(replies.at(-1).message.result);
-    assert.equal(before.value.mode, "pvp");
-    send("match.concede", { matchId: "match-1", playerId: "guest" }, "delayed");
-    assert.deepEqual(replies.at(-1).message.result, { ok: false, error: { code: "unavailable" } });
-    send("match.snapshot", { matchId: "match-1", playerId: "guest" }, "after");
+    send("match.join", { matchId: "match-1", playerId: "guest" });
+    assert.deepEqual(replies.at(-1), { type: "joined", token: "session-secret", ok: false });
+    send("match.snapshot", { matchId: "match-1", playerId: "owner" });
     assert.deepEqual(replies.at(-1).message.result, before);
   } finally {
-    if (originalWindow === undefined) delete (globalThis as { window?: unknown }).window;
-    else Object.defineProperty(globalThis, "window", { value: originalWindow, configurable: true, writable: true });
-  }
-});
-
-test("v3 host/client concession retries the same command after a lost response, without resolving twice", async () => {
-  const originalWindow = globalThis.window;
-  let listener: ((event: { detail: unknown }) => void) | undefined;
-  let socket: FakeSocket | undefined;
-  let dropConcedeResponse = true;
-  let concedeEvents = 0;
-  let lastMethod = "";
-  const host = {
-    __AV_MECHA_SESSION_TOKEN__: "session-secret",
-    __TAURI__: { core: { invoke: (_command: string, args: { reply: any }) => {
-      const reply = args.reply;
-      if (reply.type === "message" && socket) {
-        const message = reply.message;
-        if (message.type === "event" && message.event.type === "turn.resolved") concedeEvents++;
-        if (message.type === "response" && lastMethod === "match.concede-v2" && dropConcedeResponse) dropConcedeResponse = false;
-        else socket.emit("message", { data: JSON.stringify({ ...message, protocol: "app-remote:v1", appId: "city", sessionId: "match-1", capability: "mecha:v3" }) } as never);
-      }
-      return Promise.resolve();
-    } } },
-    addEventListener: (_type: string, handler: (event: { detail: unknown }) => void) => { listener = handler; },
-  };
-  Object.defineProperty(globalThis, "window", { value: host, configurable: true, writable: true });
-  const dispatch = (request: any) => listener!({ detail: { token: "session-secret", request: { ...request, protocol: MECHA_NET_PROTOCOL, type: "request" } } });
-  let client: RemoteMatchClient | undefined;
-  try {
-    startRemoteSessionHost();
-    dispatch({ requestId: "create", method: "match.create", payload: { config: { matchId: "match-1", mode: "pve", arena, state: snapshot.state, players: snapshot.players } } });
-    dispatch({ requestId: "join", method: "match.join", payload: { matchId: "match-1", playerId: "guest" } });
-    socket = new FakeSocket();
-    socket.send = (data: string) => { socket!.sent.push(data); const request = JSON.parse(data); lastMethod = request.method; dispatch(request); };
-    client = new RemoteMatchClient({ url: "wss://example.test", playerId: "guest", capability: "mecha:v3", timeoutMs: 20,
-      socketFactory: () => { queueMicrotask(() => socket!.emit("open", {} as never)); return socket!; } });
-    const current = await client.snapshot("match-1");
-    assert.ok(current.ok && current.value.mode === "pvp");
-    if (!current.ok) return;
-    const command = { type: "match.concede-v2" as const, protocol: MECHA_NET_PROTOCOL, matchId: "match-1", playerId: "guest", commandId: "c1", baseRevision: current.value.revision };
-    await assert.rejects(client.submitConcede(command, current.value.ruleset), /host_offline/);
-    const retry = await client.submitConcede(command, current.value.ruleset);
-    assert.ok(retry.ok);
-    assert.equal(concedeEvents, 1);
-    assert.deepEqual(JSON.parse(socket.sent.at(-1)!).payload, command);
-    assert.equal(JSON.parse(socket.sent.at(-1)!).capability, "mecha:v3");
-  } finally {
-    client?.dispose();
     if (originalWindow === undefined) delete (globalThis as { window?: unknown }).window;
     else Object.defineProperty(globalThis, "window", { value: originalWindow, configurable: true, writable: true });
   }

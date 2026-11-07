@@ -1,6 +1,5 @@
 import { canonicalJson, type MatchEvent, type MatchResult, type MatchSnapshot, type TurnResolved } from "../contracts/match";
 import { presentationSnapshot } from "../board";
-import { PVP_RULESET } from "../rules/pvp";
 import type { RemoteBattleState } from "../presentation/BattleScenePort";
 
 type Snapshot = MatchSnapshot<RemoteBattleState>;
@@ -16,8 +15,7 @@ type Callbacks = {
 /** Revision is a state version, not a turn counter: PvE may advance by three. */
 function contiguous(current: Snapshot, turn: Turn): boolean {
   const diff = turn.revision - current.revision;
-  if (current.ruleset === PVP_RULESET) return diff === 1;
-  if (diff < 1 || diff > 3 || current.state.ruleset === PVP_RULESET || turn.state.ruleset === PVP_RULESET) return false;
+  if (diff < 1 || diff > 3) return false;
   if (turn.state.turn < current.state.turn || turn.state.turn > current.state.turn + 1) return false;
   return !turn.presentationStages || canonicalJson(turn.presentationStages.before) === canonicalJson(presentationSnapshot(current.state));
 }
@@ -157,8 +155,7 @@ export class RemoteMatchSynchronizer {
     this.retryNeeded = false;
     this.retryDelay = 1000;
     const old = this.current;
-    // The host currently transitions from PvE to PvP, never the reverse.
-    if (old && ((old.mode === "pvp" && next.mode === "pve") || (old.mode === next.mode && next.revision < old.revision))) {
+    if (old && (next.mode !== old.mode || (old.mode === next.mode && next.revision < old.revision))) {
       next = old;
     }
     const recovered = Boolean(old && (this.overflow || (next.ruleset === old.ruleset && (next.revision > old.revision
@@ -196,7 +193,7 @@ export class RemoteMatchSynchronizer {
 
   private applyTurn(turn: Turn) {
     const current = this.current!;
-    const finished = "outcome" in turn.state ? turn.state.outcome : turn.state.winner;
+    const finished = turn.state.outcome;
     this.current = { ...current, revision: turn.revision, state: turn.state, status: finished ? "finished" : "active" };
     this.cb.turn(turn, this.current);
   }

@@ -25,11 +25,6 @@ export class LocalMatchClient<S extends RevisionState> implements MatchClient<S>
     return this.session.submitPlan(this.playerId, command);
   }
 
-  async concede(matchId: string): Promise<MatchResult<TurnResolved<S>>> {
-    const snapshot = this.session.snapshot(this.playerId);
-    if (!snapshot.ok) return snapshot;
-    return snapshot.value.matchId === matchId ? this.session.concede(this.playerId) : { ok: false, error: { code: "match_not_found" } };
-  }
 
   async close(matchId: string): Promise<MatchResult<MatchSnapshot<S>>> {
     const snapshot = this.session.snapshot(this.playerId);

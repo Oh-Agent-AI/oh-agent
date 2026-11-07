@@ -7,7 +7,6 @@ import { buildMissionAchievements, type MissionAchievementRound } from "../src/g
 import { buildHealthTimeline } from "../src/game/mecha/healthTimeline.ts";
 import { bossPrepare, createMatch, playTurn, MECH_IDS, moveBudget, pathRoute, setScriptCounters, type MatchState } from "../src/game/mecha/rules.ts";
 import { matchFromSite } from "../src/game/mecha/matchFromSite.ts";
-import { createLocalReplayArchive, restoreLocalReplayArchive, type ReplaySourceRound } from "../src/game/mecha/replayArchive.ts";
 import { createMechaController } from "../src/game/mecha/controller.ts";
 import { planForDoctrine } from "../src/game/mecha/ai.ts";
 import type { CityMechaSite } from "../src/game/mecha/citySite.ts";
@@ -115,7 +114,7 @@ test("only an explicitly local PvE victory is eligible", () => {
   assert.equal(evaluate({ final: lost, rounds: f.rounds }), null);
 });
 
-test("real rescue turn yields usable local replay-shaped records", () => {
+test("real rescue turn yields achievement facts", () => {
   const before = createMatch({ ...options, mission: "rescue:v1" }); bossPrepare(before);
   before.mission!.target = { ...before.mechs[0]!.pos };
   const plan = { revision: before.revision, items: MECH_IDS.map(mechId => ({ mechId, moveTo: null, action: { kind: "skip" as const } })) };
@@ -141,41 +140,6 @@ test("component has readable localized status and no settlement controls", async
 });
 
 
-test("real multi-turn rescue archive reconstructs the same facts; missing or disconnected rounds do not", async () => {
-  const site: CityMechaSite = {
-    originX: 7, originZ: 4, yaw: 0, cellW: 8, cellD: 8,
-    terrain: Array.from({ length: 10 }, () => Array.from({ length: 10 }, () => "land" as const)),
-    heights: Array.from({ length: 10 }, () => Array.from({ length: 10 }, () => 0)), buildings: [], blocked: [],
-    mechs: MECH_IDS.map((id, i) => ({ id, pos: { x: i * 3, y: 9 } })),
-    boss: { x: 4, y: 0 }, raiders: [], spawnSpread: 0,
-  };
-  const opts = { preset: "covers_sparse_mid" as const, script: "stationary_smash" as const, stake: "all" as const, mission: "rescue:v1" as const };
-  let state = matchFromSite(site, opts); bossPrepare(state);
-  const rounds: ReplaySourceRound[] = [];
-  for (let i = 0; i < 15 && !state.outcome; i++) {
-    const unit = state.mechs.find(m => m.hp > 0 && pathRoute(state, m.pos, state.mission!.target, m.id, { alliesPass: true }));
-    assert.ok(unit);
-    const route = pathRoute(state, unit.pos, state.mission!.target, unit.id, { alliesPass: true })!;
-    const destination = [...route.cells].reverse().find(cell => !state.mechs.some(m => m.id !== unit.id && m.hp > 0 && m.pos.x === cell.x && m.pos.y === cell.y)
-      && (pathRoute(state, unit.pos, cell, unit.id, { alliesPass: true })?.cost ?? Infinity) <= moveBudget(unit.id));
-    assert.ok(destination);
-    const plan = { revision: state.revision, items: state.mechs.filter(m => m.hp > 0).map(m => ({ mechId: m.id, moveTo: m.id === unit.id ? destination : null, action: { kind: "skip" as const } })) };
-    const result = playTurn(state, plan); assert.ok(result.ok);
-    rounds.push({ before: state, after: result.state, plan, log: result.log, presentationStages: result.presentationStages });
-    state = result.state;
-  }
-  assert.equal(state.outcome, "victory"); assert.ok(rounds.length > 1);
-  const source = { site, preset: opts.preset, script: opts.script, stake: opts.stake, deployment: false, rounds };
-  const restored = await restoreLocalReplayArchive(await createLocalReplayArchive(source), site);
-  assert.deepEqual(evaluate({ final: state, rounds: restored }), evaluate({ final: state, rounds }));
-  assert.deepEqual(values(evaluate({ final: state, rounds: restored })), ["achieved", "not-applicable"]);
-  assert.deepEqual(values(evaluate({ final: state, rounds: restored.slice(1) })), ["unverifiable", "not-applicable"]);
-  const disconnected = structuredClone(restored);
-  disconnected[1]!.before = structuredClone(disconnected[1]!.before);
-  disconnected[1]!.before.revision++;
-  assert.deepEqual(values(evaluate({ final: state, rounds: disconnected })), ["unverifiable", "not-applicable"]);
-});
-
 
 function controllerSite(): CityMechaSite {
   return { originX: 7, originZ: 4, yaw: 0, cellW: 8, cellD: 8,
@@ -199,10 +163,10 @@ test("authoritative legacy frontage excludes non-target damage and falls back wh
         items: MECH_IDS.map(mechId => ({ mechId, moveTo: null, action: { kind: "skip" as const } })) } : planForDoctrine(state, doctrine) });
     controller.startAuto();
     for (let i = 0; i < 100 && !controller.getState().match.outcome; i++) controller.tick();
-    const final = controller.getState().match, source = controller.replayArchiveSource();
-    assert.equal(final.outcome, "victory"); assert.ok(source);
+    const final = controller.getState().match, rounds = controller.recordedRounds();
+    assert.equal(final.outcome, "victory"); assert.ok(rounds.length);
     assert.deepEqual(final.buildings.map(b => b.hp), [4, 10]);
-    assert.deepEqual(values(evaluate({ final, rounds: source.rounds })), ["achieved", road ? "achieved" : "not-achieved"]);
+    assert.deepEqual(values(evaluate({ final, rounds })), ["achieved", road ? "achieved" : "not-achieved"]);
   }
 });
 
@@ -251,9 +215,9 @@ test("controller accepted rounds preserve armour, collision victims, nested shov
     ] } : planForDoctrine(state, doctrine) });
   controller.startAuto();
   for (let i = 0; i < 100 && !controller.getState().match.outcome; i++) controller.tick();
-  const final = controller.getState().match, source = controller.replayArchiveSource();
-  assert.equal(final.outcome, "victory"); assert.ok(source);
-  const log = source.rounds[0]!.log;
+  const final = controller.getState().match, rounds = controller.recordedRounds();
+  assert.equal(final.outcome, "victory"); assert.ok(rounds.length);
+  const log = rounds[0]!.log;
   const attack = log.find(event => event.type === "act" && event.action === "melee");
   const collision = log.find(event => event.type === "shove" && event.unit === "boss");
   const repair = log.find(event => event.type === "act" && event.action === "repair");
@@ -266,7 +230,7 @@ test("controller accepted rounds preserve armour, collision victims, nested shov
   assert.equal(repair.effects?.[0]?.after! - repair.effects?.[0]?.before!, 2); // +4 capped at max HP
   assert.ok(enemy && enemy.type === "enemy"); assert.equal(enemy.damage, 4); // 6 ATK - 2 DEF
   assert.ok(nested && nested.type === "shove"); assert.equal(nested.damage, 2);
-  assert.deepEqual(values(evaluate({ final, rounds: source.rounds })), ["achieved", "not-applicable"]);
+  assert.deepEqual(values(evaluate({ final, rounds })), ["achieved", "not-applicable"]);
 });
 
 test("controller accepted multi-target sweep sums armour-adjusted victims, not nested damage", () => {
@@ -279,13 +243,13 @@ test("controller accepted multi-target sweep sums armour-adjusted victims, not n
       items: MECH_IDS.map(mechId => ({ mechId, moveTo: null, action: { kind: "skip" as const } })) } : planForDoctrine(state, doctrine) });
   controller.startAuto();
   for (let i = 0; i < 100 && !controller.getState().match.outcome; i++) controller.tick();
-  const final = controller.getState().match, source = controller.replayArchiveSource();
-  assert.equal(final.outcome, "victory"); assert.ok(source);
-  const sweep = source.rounds[0]!.log.find(event => event.type === "enemy" && event.skill === "sweep");
+  const final = controller.getState().match, rounds = controller.recordedRounds();
+  assert.equal(final.outcome, "victory"); assert.ok(rounds.length);
+  const sweep = rounds[0]!.log.find(event => event.type === "enemy" && event.skill === "sweep");
   assert.ok(sweep && sweep.type === "enemy");
   assert.equal(sweep.damage, 9); // 6 - Gunner defence 1; 6 - Assault defence 2
   assert.deepEqual(sweep.effects?.map(effect => effect.before - effect.after), [5, 4]);
-  const capped = source.rounds[1]!.log.find(event => event.type === "shove" && event.unit === "boss");
+  const capped = rounds[1]!.log.find(event => event.type === "shove" && event.unit === "boss");
   assert.ok(capped && capped.type === "shove"); assert.equal(capped.damage, 1); // collision loss capped at remaining HP
-  assert.deepEqual(values(evaluate({ final, rounds: source.rounds })), ["achieved", "not-applicable"]);
+  assert.deepEqual(values(evaluate({ final, rounds })), ["achieved", "not-applicable"]);
 });

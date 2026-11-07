@@ -4,8 +4,6 @@ import { blankDraft, checkDraftAction, checkDraftPlan, draftFromPlan, draftPlan,
 import { bossPrepare, createMatch, living, previewPlan, validateAndApplyPlan, type ArenaPlan, type MatchState } from "../src/game/mecha/rules.ts";
 import { swapEventSink } from "../src/game/mecha/board.ts";
 import { createMechaController } from "../src/game/mecha/controller.ts";
-import { createPvpMatch, playPvpTurn, pvpProjection } from "../src/game/mecha/rules/pvp.ts";
-import type { RemoteArenaV1 } from "../src/game/mecha/contracts/arena.ts";
 
 function pve(): MatchState {
   const state = createMatch({ preset: "covers_sparse_mid", script: "stationary_smash", covers: [], boss: { x: 4, y: 0 }, mechs: [
@@ -58,27 +56,6 @@ test("PvE authority checks full movement and isolated action without mutating so
     assert.deepEqual(outer, []);
     assert.deepEqual(state, before);
   } finally { swapEventSink(previous); }
-});
-
-test("PvP side projections use the same primitives and the PvP authority", () => {
-  const arena: RemoteArenaV1 = { schema: "mecha-arena:v1", arenaId: "planning", sourceRevision: "v1", ruleset: "mecha-pvp:v1", originX: 0, originZ: 0, yaw: 0, cellW: 8, cellD: 8,
-    terrain: Array.from({ length: 10 }, () => Array.from({ length: 10 }, () => "land")), heights: Array.from({ length: 10 }, () => Array(10).fill(0)), buildings: [], blocked: [], mechs: [], boss: { x: 0, y: 0 }, raiders: [], spawnSpread: 0 };
-  for (const side of ["A", "B"] as const) {
-    const remote = createPvpMatch(arena), enemy = side === "A" ? "B" : "A";
-    remote.activeSide = side;
-    remote.units.find((u) => u.id === `${side}:Assault`)!.pos = { x: 4, y: 7 };
-    remote.units.find((u) => u.id === `${enemy}:Assault`)!.pos = { x: 4, y: 4 };
-    const before = structuredClone(remote), state = pvpProjection(remote, side), draft = blankDraft();
-    const authority: DraftAuthority = (plan) => playPvpTurn(remote, plan);
-    draft.Assault.moveTo = { x: 4, y: 5 };
-    assert.equal(checkDraftPlan(draftPlan(state, draft, "movement"), authority).status, "ok");
-    assert.deepEqual(settledDraftBoard(state, draft).mechs.find((m) => m.id === "Assault")!.pos, { x: 4, y: 5 });
-    assert.equal(checkDraftAction(state, draft, "Assault", { kind: "melee", target: `${enemy}:Assault` }, authority).status, "ok");
-    assert.equal(checkDraftAction(state, draft, "Assault", { kind: "melee", target: `${side}:Assault` }, authority).status, "rejected");
-    draft.Assault.moveTo = { ...state.mechs.find((m) => m.id === "Gunner")!.pos };
-    assert.equal(checkDraftPlan(draftPlan(state, draft, "movement"), authority).status, "rejected");
-    assert.deepEqual(remote, before);
-  }
 });
 
 test("authority exceptions stay unknown; controller preserves skip and failed revalidation behavior", () => {

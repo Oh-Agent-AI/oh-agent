@@ -20,8 +20,8 @@ export function draftFromPlan(state: MatchState, plan: ArenaPlan): DraftMap {
 }
 
 /**
- * Include living units in rules order, retaining every drafted move. By default
- * implicit actions wait; `movement` makes every unit hold, and `only`
+ * Include living PvE units in rules order, retaining every drafted move. By
+ * default implicit actions wait; `movement` makes every unit hold, and `only`
  * tests one proposed action.
  */
 export type DraftActions = "explicit" | "movement" | { only: { id: MechId; action: Action } };
@@ -43,7 +43,6 @@ export function draftPlan(state: MatchState, drafts: DraftMap, actions: DraftAct
 /**
  * Optimistic position projection only: this does not validate moves. Callers
  * that require a validated board must first preflight the movement-only plan.
- * PvP callers can pass the active side's MatchState projection here.
  */
 export function settledDraftBoard(state: MatchState, drafts: DraftMap): MatchState {
   const scratch = structuredClone(state);
@@ -56,7 +55,7 @@ export function settledDraftBoard(state: MatchState, drafts: DraftMap): MatchSta
 
 export type DraftCheck = { status: "ok" } | { status: "rejected"; fault: PlanFault } | { status: "unknown" };
 /**
- * Adapt a rules authority (local preview, PvE validator, or PvP turn) at the call site.
+ * Adapt the relevant local or PvE rules authority at the call site.
  * The adapter owns isolation: clone mutable inputs and restore any shared event
  * sink if its authority has side effects. This helper only catches exceptions.
  */

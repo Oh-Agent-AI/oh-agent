@@ -1,6 +1,6 @@
 /** Explicit v1.5 local replay storage; no fallback to transient memory. */
 import type { CityMechaSite } from "./citySite";
-import type { ReplayBackend } from "./replayRepository";
+import type { ReplayBackend } from "./replayBackend";
 import { restoreSequentialReplayBundle } from "./sequentialReplayBundle";
 
 const PREFIX = "agent-city:mecha-sequential-replay-entry:v1:";
@@ -20,13 +20,14 @@ function parse(raw: string): { schema: typeof SCHEMA; savedAt: string; archive: 
   return entry as { schema: typeof SCHEMA; savedAt: string; archive: string };
 }
 async function storage(backend?: ReplayBackend): Promise<ReplayBackend> {
-  return backend ?? (await import("./replayRepository")).sequentialReplayBackend();
+  return backend ?? (await import("./replayBackend")).sequentialReplayBackend();
 }
 export async function listSequentialReplays(provided?: ReplayBackend): Promise<SequentialReplayEntry[]> {
   const backend = await storage(provided);
   const rows = await backend.list();
-  return rows.map(row => {
-    if (!isKey(row.key)) return { key: row.key, savedAt: "", damaged: true };
+  // Foreign/legacy records are not actionable through this repository. Ignore
+  // them instead of showing entries that cannot be loaded or deleted.
+  return rows.filter(row => isKey(row.key)).map(row => {
     try { return { key: row.key, savedAt: parse(row.raw).savedAt, damaged: false }; }
     catch { return { key: row.key, savedAt: "", damaged: true }; }
   }).sort((a, b) => b.savedAt.localeCompare(a.savedAt) || a.key.localeCompare(b.key));

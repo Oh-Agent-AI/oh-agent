@@ -21,7 +21,7 @@ fn object_paths(value: &Value, path: &str, paths: &mut Vec<String>) {
 }
 
 #[test]
-fn actual_city_pve_and_pvp_messages_pass() {
+fn actual_city_pve_and_outbound_messages_are_valid() {
     let data = fixture();
     assert!(valid_start(&data["arena"], &data["state"]));
     for command in data["commands"].as_array().unwrap() { assert!(valid_submit_plan(command)); }
@@ -47,7 +47,7 @@ fn every_object_in_start_projection_rejects_nested_extra_fields() {
     changed["arena"]["terrain"][0][0] = json!({"terrain":"land", "log":"private"});
     assert!(!valid_start(&changed["arena"], &changed["state"]));
     changed = data.clone();
-    changed["state"]["ruleset"] = json!(PVP);
+    changed["state"]["ruleset"] = json!("unsupported-ruleset");
     assert!(!valid_start(&changed["arena"], &changed["state"]));
 }
 
@@ -118,8 +118,8 @@ fn known_scalar_fields_cannot_smuggle_local_text_or_native_ids() {
         *changed.pointer_mut(path).unwrap() = json!("/Users/example/private-log.jsonl");
         assert!(!valid_start(&changed["arena"], &changed["state"]), "accepted {path}");
     }
-    let mut message = data["messages"][4].clone();
-    message["result"]["value"]["state"]["units"][0]["id"] = json!("native-secret");
+    let mut message = data["messages"][0].clone();
+    message["result"]["value"]["state"]["mechs"][0]["id"] = json!("native-secret");
     assert!(!valid_outbound(&message, "m1"));
     let mut failure = data["messages"].as_array().unwrap().iter().find(|v| v["result"]["ok"] == false).unwrap().clone();
     failure["result"]["error"]["code"] = json!("private-error");
@@ -261,7 +261,7 @@ fn deployment_outbound_rejects_foreign_data_and_stays_out_of_v1() {
     assert!(valid_outbound_with_deployment(&closed, "m1"), "closing during deployment must return the closed snapshot");
     assert!(!valid_outbound(&closed, "m1"));
     for (path, value) in [
-        ("/mode", json!("pvp")), ("/status", json!("finished")),
+        ("/mode", json!("unsupported-mode")), ("/status", json!("finished")),
         ("/players", json!([{"playerId":"owner","side":"A","role":"host"},{"playerId":"guest","side":"B","role":"guest"}])),
         ("/revision", json!(42)), ("/state/deployment/zone/0/x", json!(10)),
         ("/state/phase", json!("player_plan")), ("/state/boss/intent", data["state"]["boss"]["intent"].clone()),

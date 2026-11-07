@@ -6,7 +6,6 @@ import { MECH_IDS, MAX_TURNS, moveBudget, pathRoute, type ArenaPlan, type MatchS
 import type { CityMechaSite } from "../src/game/mecha/citySite.ts";
 import { matchFromSite } from "../src/game/mecha/matchFromSite.ts";
 import { createMechaController } from "../src/game/mecha/controller.ts";
-import { createLocalReplayArchive, restoreLocalReplayArchive } from "../src/game/mecha/replayArchive.ts";
 import { buildRoundReview, type RoundReview, type RoundReviewRecord } from "../src/game/mecha/roundReview.ts";
 import { bossPrepare, createMatch, playTurn } from "../src/game/mecha/rules.ts";
 
@@ -24,8 +23,8 @@ function completed() {
     planner: state => ({ revision: state.revision, items: state.mechs.filter(m => m.hp > 0).map(m => ({ mechId: m.id, moveTo: null, action: { kind: "skip" as const } })) }) });
   controller.startAuto();
   for (let i = 0; i < 100 && !controller.getState().match.outcome; i++) controller.tick();
-  const source = controller.replayArchiveSource(); assert.ok(source);
-  return { controller, source, final: controller.getState().match };
+  const rounds = controller.recordedRounds();
+  return { controller, rounds, final: controller.getState().match };
 }
 function finish(state: MatchState, firstPlan: ArenaPlan): RoundReviewRecord[] {
   const rounds: RoundReviewRecord[] = [];
@@ -70,19 +69,16 @@ async function render(review: RoundReview | null, locale: "en" | "zh-Hans") {
   return require("react-dom/server").renderToStaticMarkup(require("react").createElement(component.MechaRoundReview, { review, locale })) as string;
 }
 
-test("completed controller record and restored archive give identical verified round facts without mutation", async () => {
-  const { source, final, controller } = completed();
-  const original = structuredClone({ source, final });
-  const review = buildRoundReview(final, source.rounds);
+test("completed controller record gives verified round facts without mutation", () => {
+  const { rounds, final, controller } = completed();
+  const original = structuredClone({ rounds, final });
+  const review = buildRoundReview(final, rounds);
   assert.equal(review.status, "verified");
   if (review.status !== "verified") return;
-  assert.equal(review.rounds.length, source.rounds.length);
-  assert.deepEqual(review.rounds.map(round => round.turn), source.rounds.map(round => round.before.turn));
+  assert.equal(review.rounds.length, rounds.length);
+  assert.deepEqual(review.rounds.map(round => round.turn), rounds.map(round => round.before.turn));
   assert.deepEqual(review.rounds.map(round => round.buildingDamage), [3, 3, 9, 1]);
-  const raw = await createLocalReplayArchive(source);
-  const restored = await restoreLocalReplayArchive(raw, site);
-  assert.deepEqual(buildRoundReview(final, restored), review);
-  assert.deepEqual({ source, final }, original);
+  assert.deepEqual({ rounds, final }, original);
   assert.deepEqual(controller.getState().match, original.final);
 });
 
@@ -169,7 +165,7 @@ test("local rescue victory is reviewable without changing mission rules", () => 
 });
 
 test("incomplete, disconnected, stale, malformed and unresolvable records are unknown", () => {
-  const { source, final } = completed(); const rounds = source.rounds;
+  const { rounds, final } = completed();
   assert.ok(rounds.length > 1);
   assert.deepEqual(buildRoundReview(null, rounds), unknown);
   assert.deepEqual(buildRoundReview(final, null), unknown);

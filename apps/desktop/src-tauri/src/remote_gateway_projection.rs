@@ -1,5 +1,5 @@
 // Remote match wire contracts. Keep these in sync with the versioned City
-// contracts in game/mecha/{contracts,board.ts,rules/pvp.ts}. Deserialization
+// contracts in game/mecha/{contracts,board.ts}. Deserialization
 // is deliberately strict at every object boundary: accepting an opaque Value
 // here would allow local data to escape through a nested extension field.
 #![allow(dead_code)]
@@ -7,7 +7,6 @@ use serde::Deserialize;
 use serde_json::Value;
 
 const PVE: &str = "mecha-v1.4";
-const PVP: &str = "mecha-pvp:v1";
 const NET: &str = "mecha-net:v1";
 
 fn numeric_id(value: &str, prefix: &str, min_digits: usize) -> bool {
@@ -125,16 +124,6 @@ struct PveState {
     #[serde(default, deserialize_with = "deserialize_deployment")]
     deployment: Option<Deployment>,
 }
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct PvpUnit { id: String, side: String, kind: String, pos: Cell, hp: f64, cd: f64, skill_used: bool }
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct PvpState {
-    ruleset: String, terrain: Vec<Vec<String>>, heights: Vec<Vec<f64>>, covers: Vec<Cell>,
-    obstacles: Vec<Cell>, buildings: Vec<Building>, units: Vec<PvpUnit>, active_side: String,
-    turn: f64, revision: u64, winner: Option<String>,
-}
 impl Intent {
     fn valid(&self) -> bool { skill(&self.skill_id) && matches!(self.status.as_str(), "planned" | "reprojected" | "void") }
 }
@@ -162,22 +151,13 @@ impl PveState {
                 .all(|id| self.mechs.iter().filter(|mech| &mech.id == id).count() == 1)
     }
 }
-impl PvpState {
-    fn valid(&self) -> bool {
-        terrain(&self.terrain) && self.buildings.iter().all(|v| building(&v.id))
-            && self.units.iter().all(|v| matches!(v.side.as_str(), "A" | "B") && mech(&v.kind) && v.id == format!("{}:{}", v.side, v.kind))
-            && matches!(self.active_side.as_str(), "A" | "B")
-            && self.winner.as_deref().is_none_or(|v| matches!(v, "A" | "B" | "draw"))
-    }
-}
 #[derive(Deserialize)]
 #[serde(untagged)]
-enum State { Pve(Box<PveState>), Pvp(Box<PvpState>) }
+enum State { Pve(Box<PveState>) }
 impl State {
     fn matches(&self, ruleset: &str, revision: u64) -> bool {
         match self {
             Self::Pve(state) => ruleset == PVE && state.ruleset == PVE && state.revision == revision && state.valid(),
-            Self::Pvp(state) => ruleset == PVP && state.ruleset == PVP && state.revision == revision && state.valid(),
         }
     }
 }
@@ -196,7 +176,7 @@ impl Snapshot {
             && matches!(self.status.as_str(), "active" | "finished" | "closed")
             && self.players.iter().all(|p| matches!((p.player_id.as_str(), p.side.as_str(), p.role.as_str()), ("owner", "A", "host") | ("guest", "B", "guest")))
             && self.arena.ruleset == self.ruleset && self.state.matches(&self.ruleset, self.revision)
-            && matches!((self.mode.as_str(), self.ruleset.as_str()), ("pve", PVE) | ("pvp", PVP))
+            && self.mode == "pve" && self.ruleset == PVE
     }
     // Only a single owner may view an active or closed PvE deployment.
     fn valid_deployment(&self, match_id: &str) -> bool {
@@ -285,7 +265,7 @@ impl Turn {
         self.kind == "turn.resolved" && self.protocol == NET && self.match_id == match_id
             && matches!(self.player_id.as_str(), "owner" | "guest") && identifier(&self.command_id)
             && self.log.iter().all(TurnEvent::valid) && self.presentation_stages.as_ref().is_none_or(PresentationStages::valid)
-            && (self.state.matches(PVE, self.revision) || self.state.matches(PVP, self.revision))
+            && self.state.matches(PVE, self.revision)
     }
 }
 #[derive(Deserialize)]

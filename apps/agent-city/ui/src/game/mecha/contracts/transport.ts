@@ -1,6 +1,6 @@
 import { MECHA_NET_PROTOCOL, type DeploymentResult, type MatchErrorCode, type MatchEvent, type MatchResult, type MatchSnapshot, type RevisionState, type TurnResolved } from "./match";
 
-export type RemoteMethod = "match.snapshot" | "deployment.submit" | "plan.submit" | "match.concede" | "match.concede-v2" | "match.close";
+export type RemoteMethod = "match.snapshot" | "deployment.submit" | "plan.submit" | "match.close";
 export type RemoteRequest = {
   protocol: typeof MECHA_NET_PROTOCOL;
   type: "request";
@@ -40,7 +40,7 @@ function errorResult(value: unknown): MatchResult<never> | null {
 function validSnapshot(value: unknown): value is MatchSnapshot {
   const snapshot = record(value);
   if (!snapshot || snapshot.protocol !== MECHA_NET_PROTOCOL || typeof snapshot.matchId !== "string"
-    || (snapshot.mode !== "pve" && snapshot.mode !== "pvp") || typeof snapshot.ruleset !== "string"
+    || snapshot.mode !== "pve" || typeof snapshot.ruleset !== "string"
     || (snapshot.status !== "active" && snapshot.status !== "finished" && snapshot.status !== "closed") || !revision(snapshot.revision)
     || !Array.isArray(snapshot.players)) return false;
   const arena = record(snapshot.arena);

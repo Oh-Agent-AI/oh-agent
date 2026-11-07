@@ -6,7 +6,6 @@ import { MatchSession, pveRules } from "../src/game/mecha/session/MatchSession.t
 import { createMatch, MECH_IDS, type MatchState } from "../src/game/mecha/rules.ts";
 import { assaultTerrainBlocked } from "../src/game/mecha/board.ts";
 import { RemoteMatchSynchronizer } from "../src/game/mecha/client/RemoteMatchSynchronizer.ts";
-import { createPvpMatch, pvpRules } from "../src/game/mecha/rules/pvp.ts";
 import type { CityMechaSite } from "../src/game/mecha/citySite.ts";
 
 const terrain = Array.from({ length: 10 }, () => Array.from({ length: 10 }, () => "land" as const));
@@ -94,16 +93,9 @@ test("deployment parser rejects unknown nested fields, oversized arrays and inva
   }
 });
 
-test("deployment is unavailable to PvP and closed matches", () => {
+test("deployment is unavailable on closed matches", () => {
   const { session, command } = setup(); session.close("owner");
   assert.equal(session.submitDeployment("owner", command).error!.code, "room_closed");
-  const { command: pvpCommand } = setup();
-  const arena = remoteArenaFromSite(site, { arenaId: "city-flat", sourceRevision: "flat-1" });
-  const pvp = new MatchSession({ matchId: "m1", mode: "pvp", arena: { ...arena, ruleset: pvpRules.ruleset }, state: createPvpMatch(arena), rules: pvpRules,
-    players: [{ playerId: "owner", side: "A", role: "host" }] });
-  const before = pvp.snapshot("owner");
-  assert.equal(pvp.submitDeployment("owner", pvpCommand).error!.code, "unavailable");
-  assert.deepEqual(pvp.snapshot("owner"), before);
 });
 
 

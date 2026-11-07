@@ -80,11 +80,9 @@ fn mecha_replays(home: &std::path::Path, method: &str, payload: &Value) -> Resul
     if payload["format"].as_str() == Some("sequential-checkpoint-v1") {
         return mecha_checkpoint(home, method, payload);
     }
-    let sequential = match payload.get("format") {
-        None => false,
-        Some(Value::String(format)) if format == "sequential-v1" => true,
-        _ => return Err("invalid_state_value"),
-    };
+    if payload.get("format").and_then(Value::as_str) != Some("sequential-v1") {
+        return Err("invalid_state_value");
+    }
     let op = payload["op"].as_str().ok_or("invalid_state_value")?;
     if !matches!((method, op), ("plugin.state.read", "list") | ("plugin.state.write", "insert" | "delete")) {
         return Err("method_unavailable");
@@ -95,7 +93,7 @@ fn mecha_replays(home: &std::path::Path, method: &str, payload: &Value) -> Resul
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(|_| "state_unavailable")?;
     }
-    let path = dir.join(if sequential { "mecha-sequential-replays.sqlite" } else { "mecha-replays.sqlite" });
+    let path = dir.join("mecha-sequential-replays.sqlite");
     let mut db = Connection::open(&path).map_err(|_| "state_unavailable")?;
     db.busy_timeout(std::time::Duration::from_secs(2)).map_err(|_| "state_unavailable")?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS replay_entries (id TEXT PRIMARY KEY, record TEXT NOT NULL)")
@@ -112,13 +110,13 @@ fn mecha_replays(home: &std::path::Path, method: &str, payload: &Value) -> Resul
         return Ok(serde_json::json!({"entries": entries}));
     }
     let id = payload["id"].as_str().ok_or("invalid_state_value")?;
-    let prefix = if sequential { "agent-city:mecha-sequential-replay-entry:v1:" } else { "agent-city:mecha-local-replay-entry:v1:" };
+    let prefix = "agent-city:mecha-sequential-replay-entry:v1:";
     let suffix = id.strip_prefix(prefix).ok_or("invalid_state_value")?;
     if suffix.len() != 36 || !suffix.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-') { return Err("invalid_state_value"); }
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|_| "state_unavailable")?;
     if op == "insert" {
         let raw = payload["raw"].as_str().ok_or("invalid_state_value")?;
-        if !(if sequential { valid_sequential_replay_record(raw) } else { valid_replay_record(raw) }) { return Err("invalid_state_value"); }
+        if !valid_sequential_replay_record(raw) { return Err("invalid_state_value"); }
         let existing: Option<String> = tx.query_row("SELECT record FROM replay_entries WHERE id=?1", [id], |row| row.get(0))
             .optional().map_err(|_| "state_unavailable")?;
         if let Some(existing) = existing {
@@ -254,50 +252,6 @@ fn valid_sequential_replay_record(raw: &str) -> bool {
     true
 }
 
-fn valid_replay_record(raw: &str) -> bool {
-    fn exact(v: &Value, keys: &[&str]) -> bool {
-        v.as_object().is_some_and(|m| m.len() == keys.len() && keys.iter().all(|k| m.contains_key(*k)))
-    }
-    fn one(v: &Value, names: &[&str]) -> bool { v.as_str().is_some_and(|s| names.contains(&s)) }
-    fn unit(v: &Value) -> bool { one(v, &["Assault", "Gunner", "Support"]) }
-    fn cell(v: &Value) -> bool {
-        exact(v, &["x", "y"]) && v["x"].as_u64().is_some_and(|n| n < 10) && v["y"].as_u64().is_some_and(|n| n < 10)
-    }
-    if raw.len() > 41_024 { return false; }
-    let Ok(record) = serde_json::from_str::<Value>(raw) else { return false; };
-    if !exact(&record, &["schema", "savedAt", "turns", "archive"]) || record["schema"] != "mecha-local-replay-entry:v1"
-        || !record["savedAt"].as_str().is_some_and(|s| s.len() == 24 && s.bytes().all(|c| c.is_ascii_digit() || b"-:.TZ".contains(&c))) { return false; }
-    let Some(turns) = record["turns"].as_u64().filter(|n| (1..=15).contains(n)) else { return false; };
-    let Some(raw_archive) = record["archive"].as_str().filter(|s| s.len() <= 40_000) else { return false; };
-    let Ok(a) = serde_json::from_str::<Value>(raw_archive) else { return false; };
-    if !(exact(&a, &["schema", "ruleset", "siteDigest", "resultDigest", "preset", "script", "stake", "deployment", "placements", "plans"])
-        || (exact(&a, &["schema", "ruleset", "siteDigest", "resultDigest", "preset", "script", "stake", "difficulty", "deployment", "placements", "plans"])
-            && one(&a["difficulty"], &["easy", "normal", "hard"])))
-        || a["schema"] != "mecha-local-replay:v1" || a["ruleset"] != "mecha-v1.4"
-        || !["siteDigest", "resultDigest"].iter().all(|k| a[*k].as_str().is_some_and(|s| s.len() == 64 && s.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))))
-        || !one(&a["preset"], &["covers_sparse_mid", "covers_diag_corridor", "covers_twin_clusters"])
-        || !one(&a["script"], &["stationary_smash", "cadence_ssw", "raid_ssw", "siege"])
-        || !one(&a["stake"], &["all", "frontage"]) { return false; }
-    let Some(deployment) = a["deployment"].as_bool() else { return false; };
-    let Some(placements) = a["placements"].as_array() else { return false; };
-    if placements.len() != if deployment { 3 } else { 0 } || !placements.iter().all(|p| exact(p, &["mechId", "pos"]) && unit(&p["mechId"]) && cell(&p["pos"])) { return false; }
-    let Some(plans) = a["plans"].as_array() else { return false; };
-    if plans.len() != turns as usize { return false; }
-    plans.iter().all(|p| {
-        exact(p, &["revision", "items"]) && p["revision"].as_u64().is_some_and(|v| v <= 9_007_199_254_740_991)
-            && p["items"].as_array().is_some_and(|items| items.len() <= 3 && items.iter().all(|item| {
-                if !exact(item, &["mechId", "moveTo", "action"]) || !unit(&item["mechId"]) || !(item["moveTo"].is_null() || cell(&item["moveTo"])) { return false; }
-                let action = &item["action"];
-                if !(exact(action, &["kind"]) || exact(action, &["kind", "target"]))
-                    || !one(&action["kind"], &["skip", "melee", "shoot", "charge", "pierce", "repair"]) { return false; }
-                let target = action.get("target");
-                if action["kind"] == "skip" { return target.is_none(); }
-                if action["kind"] == "repair" { return target.is_some_and(unit); }
-                target.is_none_or(|v| v.as_str().is_some_and(|s| s == "boss" || s.strip_prefix('r').is_some_and(|n| !n.is_empty() && n.len() <= 2 && n.bytes().all(|b| b.is_ascii_digit()) && (n == "0" || !n.starts_with('0')))))
-            }))
-    })
-}
-
 fn read(allowed_keys: &[String], data_home: &std::path::Path, plugin_id: &str, payload: &Value) -> Result<Value, &'static str> {
     let key = payload["key"].as_str().ok_or("invalid_state_key")?;
     if !valid_key(key) || !allowed_keys.iter().any(|allowed| allowed == key) { return Err("state_key_denied"); }
@@ -354,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn sequential_replays_are_bounded_and_isolated_from_legacy_storage() {
+    fn sequential_replays_are_bounded_and_require_the_v15_format() {
         let home = temp_home();
         let allowed = vec!["mecha-replays:v1".to_string()];
         let digest = "a".repeat(64);
@@ -378,8 +332,8 @@ mod tests {
         handle(&allowed, &home, "city", "plugin.state.write", &payload).unwrap();
         let list = handle(&allowed, &home, "city", "plugin.state.read", &json!({"key":"mecha-replays:v1", "format":"sequential-v1", "op":"list"})).unwrap();
         assert_eq!(list["entries"].as_array().unwrap().len(), 1);
-        let legacy = handle(&allowed, &home, "city", "plugin.state.read", &json!({"key":"mecha-replays:v1", "op":"list"})).unwrap();
-        assert!(legacy["entries"].as_array().unwrap().is_empty());
+        let missing_format = handle(&allowed, &home, "city", "plugin.state.read", &json!({"key":"mecha-replays:v1", "op":"list"}));
+        assert_eq!(missing_format, Err("invalid_state_value"));
         for edit in 0..6 {
             let mut changed = archive.clone();
             match edit {
@@ -396,10 +350,44 @@ mod tests {
     }
 
     #[test]
+    fn sequential_replay_byte_boundaries_use_the_dedicated_sqlite_path() {
+        let fixture = include_str!("../tests/fixtures/mecha-sequential-replay-browser-synthetic.json");
+        let base: Value = serde_json::from_str(fixture).unwrap();
+        let original = base["archive"].as_str().unwrap();
+        let home = temp_home();
+        let allowed = vec!["mecha-replays:v1".to_string()];
+        let id = "agent-city:mecha-sequential-replay-entry:v1:12345678-1234-1234-1234-123456789abc";
+        for size in [31 * 1024, 33 * 1024, 40_000] {
+            let archive = format!("{}{}", original, " ".repeat(size - original.len()));
+            let mut record = base.clone();
+            record["archive"] = json!(archive);
+            let raw = record.to_string();
+            assert!(valid_sequential_replay_record(&raw), "archive bytes: {size}");
+            let payload = json!({"key":"mecha-replays:v1", "format":"sequential-v1", "op":"insert", "id":id, "raw":raw});
+            handle(&allowed, &home, "city", "plugin.state.write", &payload).unwrap();
+            handle(&allowed, &home, "city", "plugin.state.write", &json!({"key":"mecha-replays:v1", "format":"sequential-v1", "op":"delete", "id":id})).unwrap();
+        }
+        let mut record = base.clone();
+        record["archive"] = json!(format!("{}{}", original, " ".repeat(40_001 - original.len())));
+        assert!(!valid_sequential_replay_record(&record.to_string()));
+        let too_large = json!({"key":"mecha-replays:v1", "format":"sequential-v1", "op":"insert", "id":id, "raw":record.to_string()});
+        assert_eq!(handle(&allowed, &home, "city", "plugin.state.write", &too_large), Err("invalid_state_value"));
+        let mut raw = base.to_string();
+        raw.push_str(&" ".repeat(41_024 - raw.len()));
+        assert!(valid_sequential_replay_record(&raw));
+        let payload = |raw: &str| json!({"key":"mecha-replays:v1", "format":"sequential-v1", "op":"insert", "id":id, "raw":raw});
+        handle(&allowed, &home, "city", "plugin.state.write", &payload(&raw)).unwrap();
+        handle(&allowed, &home, "city", "plugin.state.write", &json!({"key":"mecha-replays:v1", "format":"sequential-v1", "op":"delete", "id":id})).unwrap();
+        raw.push(' ');
+        assert!(!valid_sequential_replay_record(&raw));
+        assert_eq!(handle(&allowed, &home, "city", "plugin.state.write", &payload(&raw)), Err("invalid_state_value"));
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
     fn sequential_database_accepts_browser_generated_record() {
         let raw = include_str!("../tests/fixtures/mecha-sequential-replay-browser-synthetic.json");
         assert!(valid_sequential_replay_record(raw));
-        assert!(!valid_replay_record(raw));
         let home = temp_home();
         let allowed = vec!["mecha-replays:v1".to_string()];
         let id = "agent-city:mecha-sequential-replay-entry:v1:12345678-1234-1234-1234-123456789abc";
@@ -440,7 +428,6 @@ mod tests {
     fn sequential_status_v2_accepts_frontend_checkpoint_and_preserves_cas() {
         let raw = include_str!("../tests/fixtures/mecha-sequential-status-v2-synthetic.json");
         assert!(valid_sequential_replay_record(raw));
-        assert!(!valid_replay_record(raw));
         let home = temp_home();
         let allowed = vec!["mecha-replays:v1".to_string()];
         let read = json!({"key":"mecha-replays:v1", "format":"sequential-checkpoint-v1", "op":"read"});
@@ -494,140 +481,6 @@ mod tests {
 
     const KEYS: &[&str] = &["flight-profile:v1"];
     fn keys() -> Vec<String> { KEYS.iter().map(|key| key.to_string()).collect() }
-
-    #[test]
-    fn replay_database_is_authorized_bounded_and_transactional() {
-        let home = temp_home();
-        let allowed = vec!["mecha-replays:v1".to_string()];
-        let key = "agent-city:mecha-local-replay-entry:v1:12345678-1234-1234-1234-123456789abc";
-        let archive = json!({"schema":"mecha-local-replay:v1", "ruleset":"mecha-v1.4", "siteDigest":"a".repeat(64),
-            "resultDigest":"b".repeat(64), "preset":"covers_sparse_mid", "script":"siege", "stake":"all",
-            "deployment":false, "placements":[], "plans":[{"revision":0,"items":[{"mechId":"Assault","moveTo":null,"action":{"kind":"skip"}}]}]});
-        let record = json!({"schema":"mecha-local-replay-entry:v1", "savedAt":"2026-11-03T12:00:00.000Z", "turns":1, "archive":archive.to_string()}).to_string();
-        let list = json!({"key":"mecha-replays:v1", "op":"list"});
-        let insert = json!({"key":"mecha-replays:v1", "op":"insert", "id":key, "raw":record});
-        assert_eq!(handle(&keys(), &home, "city", "plugin.state.read", &list), Err("state_key_denied"));
-        assert_eq!(handle(&allowed, &home, "city", "plugin.state.read", &list).unwrap()["entries"].as_array().unwrap().len(), 0);
-        handle(&allowed, &home, "city", "plugin.state.write", &insert).unwrap();
-        handle(&allowed, &home, "city", "plugin.state.write", &insert).unwrap();
-        assert_eq!(handle(&allowed, &home, "city", "plugin.state.read", &list).unwrap()["entries"][0]["raw"], record);
-        let mut corrupted = insert.clone();
-        corrupted["raw"] = Value::String(record.replace("2026", "2025"));
-        assert_eq!(handle(&allowed, &home, "city", "plugin.state.write", &corrupted), Err("revision_conflict"));
-        let mut injected_archive = archive.clone();
-        injected_archive["prompt"] = json!("private data");
-        let mut injected_record: Value = serde_json::from_str(&record).unwrap();
-        injected_record["archive"] = json!(injected_archive.to_string());
-        corrupted["raw"] = json!(injected_record.to_string());
-        assert_eq!(handle(&allowed, &home, "city", "plugin.state.write", &corrupted), Err("invalid_state_value"));
-        assert_eq!(handle(&allowed, &home, "city", "plugin.state.read", &insert), Err("method_unavailable"));
-        for n in 0..19 {
-            let another = format!("agent-city:mecha-local-replay-entry:v1:{n:08x}-0000-4000-8000-000000000000");
-            handle(&allowed, &home, "city", "plugin.state.write", &json!({"key":"mecha-replays:v1", "op":"insert", "id":another, "raw":record})).unwrap();
-        }
-        let overflow = json!({"key":"mecha-replays:v1", "op":"insert", "id":"agent-city:mecha-local-replay-entry:v1:aaaaaaaa-0000-4000-8000-000000000000", "raw":record});
-        assert_eq!(handle(&allowed, &home, "city", "plugin.state.write", &overflow), Err("replay_full"));
-        assert_eq!(handle(&allowed, &home, "city", "plugin.state.read", &list).unwrap()["entries"].as_array().unwrap().len(), 20);
-        let delete = json!({"key":"mecha-replays:v1", "op":"delete", "id":key});
-        handle(&allowed, &home, "city", "plugin.state.write", &delete).unwrap();
-        assert_eq!(handle(&allowed, &home, "city", "plugin.state.read", &list).unwrap()["entries"].as_array().unwrap().len(), 19);
-        std::fs::remove_dir_all(home).unwrap();
-    }
-
-    #[test]
-    fn replay_record_accepts_only_known_optional_difficulties() {
-        let raw = include_str!("../tests/fixtures/mecha-replay-browser-synthetic.json");
-        assert!(valid_replay_record(raw));
-        let mut record: Value = serde_json::from_str(raw).unwrap();
-        let mut archive: Value = serde_json::from_str(record["archive"].as_str().unwrap()).unwrap();
-        for difficulty in ["easy", "normal", "hard", "unknown"] {
-            archive["difficulty"] = json!(difficulty);
-            record["archive"] = json!(archive.to_string());
-            assert_eq!(valid_replay_record(&record.to_string()), difficulty != "unknown");
-        }
-    }
-
-    #[test]
-    fn replay_database_concurrent_connections_preserve_capacity_and_records() {
-        use std::sync::{Arc, Barrier};
-        // Independent SQLite connections bypass the in-process handle lock, so this
-        // also checks the transaction boundary used by separate app processes.
-        let home = temp_home();
-        let record = include_str!("../tests/fixtures/mecha-replay-browser-synthetic.json");
-        let allowed = vec!["mecha-replays:v1".to_string()];
-        let list = json!({"key":"mecha-replays:v1", "op":"list"});
-        let prefix = "agent-city:mecha-local-replay-entry:v1:";
-        for n in 0..19 {
-            let id = format!("{prefix}{n:08x}-0000-4000-8000-000000000000");
-            handle(&allowed, &home, "city", "plugin.state.write", &json!({"key":"mecha-replays:v1", "op":"insert", "id":id, "raw":record})).unwrap();
-        }
-        let barrier = Arc::new(Barrier::new(8));
-        let workers: Vec<_> = (0..8).map(|n| {
-            let home = home.clone();
-            let barrier = barrier.clone();
-            std::thread::spawn(move || {
-                let id = format!("{prefix}{:08x}-0000-4000-8000-000000000000", n + 100);
-                let payload = json!({"key":"mecha-replays:v1", "op":"insert", "id":id, "raw":record});
-                barrier.wait();
-                mecha_replays(&home, "plugin.state.write", &payload)
-            })
-        }).collect();
-        let results: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
-        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1, "{results:?}");
-        assert_eq!(results.iter().filter(|result| **result == Err("replay_full")).count(), 7, "{results:?}");
-        let entries = handle(&allowed, &home, "city", "plugin.state.read", &list).unwrap();
-        let entries = entries["entries"].as_array().unwrap();
-        assert_eq!(entries.len(), 20);
-        for n in 0..19 {
-            let id = format!("{prefix}{n:08x}-0000-4000-8000-000000000000");
-            assert!(entries.iter().any(|entry| entry["key"] == id && entry["raw"] == record));
-        }
-        std::fs::remove_dir_all(home).unwrap();
-    }
-
-    #[test]
-    fn replay_database_concurrent_conflicts_never_replace_a_record() {
-        use std::sync::{Arc, Barrier};
-        let home = temp_home();
-        let record = include_str!("../tests/fixtures/mecha-replay-browser-synthetic.json");
-        let mut changed: Value = serde_json::from_str(record).unwrap();
-        changed["savedAt"] = json!("2025-11-03T12:00:00.000Z");
-        let candidates = [record.to_string(), changed.to_string()];
-        let id = "agent-city:mecha-local-replay-entry:v1:abcdef12-0000-4000-8000-000000000000";
-        let barrier = Arc::new(Barrier::new(2));
-        let workers: Vec<_> = candidates.iter().cloned().map(|raw| {
-            let home = home.clone();
-            let barrier = barrier.clone();
-            std::thread::spawn(move || {
-                let payload = json!({"key":"mecha-replays:v1", "op":"insert", "id":id, "raw":raw});
-                barrier.wait();
-                mecha_replays(&home, "plugin.state.write", &payload)
-            })
-        }).collect();
-        let results: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
-        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1, "{results:?}");
-        assert_eq!(results.iter().filter(|result| **result == Err("revision_conflict")).count(), 1, "{results:?}");
-        let allowed = vec!["mecha-replays:v1".to_string()];
-        let entries = handle(&allowed, &home, "city", "plugin.state.read", &json!({"key":"mecha-replays:v1", "op":"list"})).unwrap();
-        let entries = entries["entries"].as_array().unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0]["raw"], candidates[results.iter().position(|result| result.is_ok()).unwrap()]);
-        std::fs::remove_dir_all(home).unwrap();
-    }
-
-    #[test]
-    fn replay_database_accepts_browser_generated_match() {
-        // Produced by verify-city-mecha-replay-file-browser.mjs from synthetic City data.
-        let record = include_str!("../tests/fixtures/mecha-replay-browser-synthetic.json");
-        let home = temp_home();
-        let allowed = vec!["mecha-replays:v1".to_string()];
-        let key = "agent-city:mecha-local-replay-entry:v1:12345678-1234-1234-1234-123456789abc";
-        let insert = json!({"key":"mecha-replays:v1", "op":"insert", "id":key, "raw":record});
-        handle(&allowed, &home, "city", "plugin.state.write", &insert).unwrap();
-        let result = handle(&allowed, &home, "city", "plugin.state.read", &json!({"key":"mecha-replays:v1", "op":"list"})).unwrap();
-        assert_eq!(result["entries"][0]["raw"], record);
-        std::fs::remove_dir_all(home).unwrap();
-    }
 
     #[test]
     fn game_links_follow_the_declared_state_key() {

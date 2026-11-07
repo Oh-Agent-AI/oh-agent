@@ -30,7 +30,7 @@ import type { CityMechaSite } from "./citySite";
 import type { LocalMissionId, MonsterContent } from "./board";
 import { matchFromSite, type MonsterPracticeContent } from "./matchFromSite";
 import { pveRules } from "./rules/pve";
-import type { ReplayArchiveSource, ReplaySourceRound } from "./replayArchive";
+import type { MechaRecordedRound } from "./recordedRound";
 import { blankDraft, checkDraftAction, draftFromPlan, draftPlan, settledDraftBoard, type Draft, type DraftMap } from "./planning";
 export type { Draft, DraftMap } from "./planning";
 import {
@@ -186,10 +186,10 @@ export type MechaController = {
   cancelHold(): void;
   finishPerformance(): void;
   /** Isolated input for an explicit local save; unavailable for unfinished and non-city fixtures. */
-  replayArchiveSource(): ReplayArchiveSource | null;
+  recordedRounds(): MechaRecordedRound[];
   startReplay(): void;
   /** Only pass rounds returned by the local archive verifier. Does not change the match or draft. */
-  startSavedReplay(rounds: ReplaySourceRound[]): boolean;
+  startSavedReplay(rounds: MechaRecordedRound[]): boolean;
   stopReplay(): void;
   selectReplayTurn(index: number): void;
   restart(opts?: MechaRestartOptions): boolean;
@@ -279,7 +279,7 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
   let fault: ControllerFault | null = null;
   let lastLog: TurnEvent[] = [];
   let performance: MechaControllerState["performance"] = null;
-  type RecordedRound = ReplaySourceRound & { events: MechaPerformanceEvent[]; combat: MechaControllerState["combat"] };
+  type RecordedRound = MechaRecordedRound & { events: MechaPerformanceEvent[]; combat: MechaControllerState["combat"] };
   let recordedRounds: RecordedRound[] = [];
   let matchRecap: MatchRecap | null = null;
   let playbackRounds: RecordedRound[] = [];
@@ -871,9 +871,8 @@ export function createMechaController(init: MechaControllerInit = {}): MechaCont
       }
       commit();
     },
-    replayArchiveSource() {
-      if (!site || !match.outcome || !recordedRounds.length) return null;
-      return structuredClone({ site, preset, script, stake, ...(recordedRounds[0]?.before.difficulty ? { difficulty: recordedRounds[0].before.difficulty } : {}), deployment: useDeployment, rounds: recordedRounds.map(({ before, after, plan, log, presentationStages }) => ({ before, after, plan, log, presentationStages })) });
+    recordedRounds() {
+      return structuredClone(recordedRounds.map(({ before, after, plan, log, presentationStages }) => ({ before, after, plan, log, presentationStages })));
     },
     startReplay() {
       if (!match.outcome || performance || replay || !recordedRounds.length) return;

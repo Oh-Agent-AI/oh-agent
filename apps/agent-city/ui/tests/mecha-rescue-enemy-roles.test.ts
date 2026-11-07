@@ -7,7 +7,6 @@ import { declaredEnemyIntents, declaredIntentSegments } from "../src/game/mecha/
 import { remoteStateFromSite } from "../src/game/mecha/contracts/arena.ts";
 import { matchFromSite } from "../src/game/mecha/matchFromSite.ts";
 import { applyDeployPlan, bossPrepare, collectTelegraphs, createMatch, playTurn, previewPlan } from "../src/game/mecha/rules.ts";
-import { createLocalReplayArchive, restoreLocalReplayArchive, type ReplaySourceRound } from "../src/game/mecha/replayArchive.ts";
 
 const buildings = [
   { id: "home1", cells: [{ x: 1, y: 5 }] },
@@ -121,45 +120,6 @@ test("rescue deployment checks the real mixed-enemy opening, not only the origin
   for (const p of placements([5, 6, 7])) opening.mechs.find(m => m.id === p.mechId)!.pos = p.pos;
   opening.phase = "enemy_prepare"; bossPrepare(opening);
   assert.equal(rescueReachable(opening, state.mission!.target), false);
-});
-
-for (const deployment of [false, true]) test(`v2 siege rescue replay reselects the same roles, mission and threats (deployment=${deployment})`, async () => {
-  let state = matchFromSite(site, { ...options, deployment });
-  if (deployment) {
-    const placed = applyDeployPlan(state, { revision: state.revision, placements: MECH_IDS.map((mechId, i) => ({ mechId, pos: { x: i, y: 8 } })) });
-    assert.ok(placed.ok); state = placed.state;
-  } else bossPrepare(state);
-  assert.ok(rescueReachable(state, state.mission!.target));
-  assert.deepEqual(state.raiders.map(r => r.role), ["siege", "interceptor"]);
-  const rounds: ReplaySourceRound[] = [];
-  while (!state.outcome && rounds.length < 15) {
-    const plan = skips(state), result = playTurn(state, plan);
-    assert.ok(result.ok);
-    rounds.push({ before: state, after: result.state, plan, log: result.log, presentationStages: result.presentationStages });
-    state = result.state;
-  }
-  assert.ok(state.outcome);
-  const raw = await createLocalReplayArchive({ site, preset: options.preset, script: options.script, stake: options.stake, deployment, rounds });
-  assert.equal(JSON.parse(raw).schema, "mecha-local-replay:v2");
-  const replay = await restoreLocalReplayArchive(raw, site);
-  assert.deepEqual(replay, rounds);
-  assert.deepEqual(replay[0]!.before.mission, rounds[0]!.before.mission);
-  assert.deepEqual(replay[0]!.before.raiders.map(r => ({ role: r.role, pos: r.pos, intent: r.intent })), rounds[0]!.before.raiders.map(r => ({ role: r.role, pos: r.pos, intent: r.intent })));
-});
-
-test("pre-rescue v1 siege replay with raiders reconstructs and re-exports byte-for-byte", async () => {
-  // Captured by running the committed HEAD rules before rescue and these roles.
-  const raw = JSON.stringify({
-    schema: "mecha-local-replay:v1", ruleset: "mecha-v1.4",
-    siteDigest: "65a9bedbf524521f54a8054fdff9743e15736e2dfa5c8c02a7b05f58bfb7554f",
-    resultDigest: "c4a21c48678b60ca86322f05d8571f000052000d11f589f50aa94018907d2d8e",
-    preset: options.preset, script: options.script, stake: options.stake, deployment: false, placements: [],
-    plans: Array.from({ length: 6 }, (_, i) => ({ revision: 1 + i * 3, items: MECH_IDS.map(mechId => ({ mechId, moveTo: null, action: { kind: "skip" } })) })),
-  });
-  const rounds = await restoreLocalReplayArchive(raw, site);
-  assert.equal(rounds.at(-1)!.after.outcome, "defeat_buildings");
-  assert.ok(rounds.every(r => r.before.raiders.every(enemy => !Object.hasOwn(enemy, "role"))));
-  assert.equal(await createLocalReplayArchive({ site, preset: options.preset, script: options.script, stake: options.stake, deployment: false, rounds }), raw);
 });
 
 test("easy rescue remains a single siege raider; hard rescue assigns stable mixed roles", () => {

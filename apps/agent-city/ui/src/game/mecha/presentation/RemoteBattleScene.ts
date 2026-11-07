@@ -4,7 +4,6 @@ import { createAssault, createBoss, createGunner, createRaider, createSupport, d
 import type { RemoteArenaV1 } from "../contracts/arena";
 import type { MatchSnapshot, TurnResolved } from "../contracts/match";
 import type { Cell, MatchState } from "../rules";
-import type { PvpState } from "../rules/pvp";
 import type { PresentationSnapshot, PresentationStages } from "../presentationSnapshot";
 import type { BattleScenePort } from "./BattleScenePort";
 import { deployableCells, type DeployPlacement } from "../deployment";
@@ -76,7 +75,7 @@ export class RemoteBattleScene implements BattleScenePort {
     this.animate();
   }
 
-  applySnapshot(snapshot: MatchSnapshot<MatchState | PvpState>) {
+  applySnapshot(snapshot: MatchSnapshot<MatchState>) {
     this.playSequence += 1;
     if (this.arena !== snapshot.arena) {
       this.arena = snapshot.arena;
@@ -85,7 +84,7 @@ export class RemoteBattleScene implements BattleScenePort {
     this.applyState(snapshot.state);
   }
 
-  async playTurn(turn: TurnResolved<MatchState | PvpState>) {
+  async playTurn(turn: TurnResolved<MatchState>) {
     const sequence = ++this.playSequence;
     const stages = turn.presentationStages;
     if (stages) {
@@ -155,14 +154,10 @@ export class RemoteBattleScene implements BattleScenePort {
     return [stages.before, stages.afterMovement, stages.afterPlayer, stages.afterEnemy, stages.afterPrepare];
   }
 
-  private applyState(state: MatchState | PvpState) {
+  private applyState(state: MatchState) {
     for (const group of Object.values(this.mechs)) group.visible = false;
     this.boss.visible = false;
     for (const group of this.raiders) group.visible = false;
-    if ("units" in state) {
-      for (const mech of state.units) this.place(this.mechs[mech.id], mech.pos, mech.hp > 0);
-      return;
-    }
     // Deployment snapshots contain placeholder positions, not completed placements.
     if (state.phase !== "deployment") for (const mech of state.mechs) this.place(this.mechs[mech.id], mech.pos, mech.hp > 0);
     this.place(this.boss, state.boss.anchor, state.boss.hp > 0);

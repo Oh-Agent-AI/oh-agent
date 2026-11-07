@@ -1,8 +1,6 @@
 import type { MatchSnapshot, TurnResolved } from "../contracts/match";
 import type { MatchState } from "../rules";
-import type { PvpState } from "../rules/pvp";
-
-export type RemoteBattleState = MatchState | PvpState;
+export type RemoteBattleState = MatchState;
 
 export interface BattleScenePort {
   applySnapshot(snapshot: MatchSnapshot<RemoteBattleState>): void;
