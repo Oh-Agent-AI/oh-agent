@@ -603,7 +603,7 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
         <button type="button" onClick={() => { setPaused(false); finishPresentation(); }}>{t("跳过演出", "Skip animation")}</button>
       </div>}
     </div>
-    {!replay && state.match.phase === "player_plan" && <SequentialRemoteControls locale={locale} evidence={controller.replayEvidence()} disabled={locked || Boolean(state.placements) || Boolean(state.match.outcome)} onActive={setHandedOff} />}
+    {!replay && state.match.phase === "player_plan" && <SequentialRemoteControls locale={locale} evidence={controller.replayEvidence()} disabled={locked || Boolean(state.placements) || Boolean(state.match.outcome)} onActive={setHandedOff} onRecovered={snapshot => { controller.replaceFromSnapshot(snapshot); setHandedOff(false); }} />}
     {replay && <div className="mecha-replay-bar" role="region" aria-label={t("回放控制", "Replay controls")}>
       <strong>{t("回放步骤", "Replay step")} {replay.index}/{replay.records.length} · {replay.index ? replayLabel(replay.records[replay.index - 1]!) : t("部署完成", "Deployment complete")}</strong>
       <button type="button" disabled={Boolean(replayAnimation) || replay.index === 0} onClick={() => setReplay({ ...replay, index: replay.index - 1 })}>{t("上一步", "Previous")}</button>

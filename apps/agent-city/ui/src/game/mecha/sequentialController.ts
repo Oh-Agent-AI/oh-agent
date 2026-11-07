@@ -5,6 +5,8 @@ import { SequentialTurn, type SequentialRecord } from "./sequentialTurn";
 import { canonicalJson } from "./contracts/match";
 import { catalogSupports } from "./monsters/catalog";
 import { nextCommand } from "./ai/commandPolicy";
+import { restoreSequentialSnapshot } from "./session/SequentialMatchSession";
+import type { SequentialSnapshot } from "./contracts/sequentialTransport";
 import { SequentialDurableAuthority, type SequentialDurableStore } from "./sequentialDurable";
 
 export type CommandInput =
@@ -46,7 +48,7 @@ export class SequentialController {
   private saving = false;
   private serial = 0;
   private readonly listeners = new Set<() => void>();
-  private readonly deploymentStart: MatchState | null;
+  private deploymentStart: MatchState | null;
   private view!: SequentialControllerView;
   constructor(initial: MatchState) {
     if (initial.ruleset !== BUILDING_COLLISION_RULESET || initial.outcome || !["deployment", "player_plan"].includes(initial.phase)) throw new Error("invalid_sequential_controller_start");
@@ -61,6 +63,18 @@ export class SequentialController {
     this.rebuild();
   }
   getState = (): SequentialControllerView => this.view;
+  /** Replace the live authority with a verified handoff snapshot; used when remote stops. */
+  replaceFromSnapshot(snapshot: SequentialSnapshot): void {
+    const turn = restoreSequentialSnapshot(snapshot);
+    this.state = copy(turn.snapshot().match);
+    this.authority = turn;
+    this.initial = copy(snapshot.initial);
+    this.openingPlacements = copy(snapshot.placements);
+    this.deploymentStart = copy(snapshot.initial);
+    this.presentation = null;
+    this.error = null;
+    this.publish();
+  }
   /** Deterministic one-step suggestion; never mutates the live authority. */
   suggest(): CommandInput | null {
     if (!this.authority || this.presentation || this.saving || this.durable?.needsReload() || this.state.outcome || this.state.phase !== "player_plan") return null;

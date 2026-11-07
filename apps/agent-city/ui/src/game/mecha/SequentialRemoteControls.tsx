@@ -4,13 +4,17 @@ import type { MatchState } from "./board";
 import type { SequentialRecord } from "./sequentialTurn";
 import { buildSequentialOpening } from "./sequentialOpening";
 import { remoteRequest } from "./RemoteMechaControls";
+import { RemoteMatchClient } from "./client/RemoteMatchClient";
+import type { SequentialSnapshot } from "./contracts/sequentialTransport";
+import { remoteCapability } from "../../remote/remoteCapability";
 
 /** Desktop handoff for the v1.5 command stream; it never routes the host back to classic. */
-export function SequentialRemoteControls({ locale, evidence, disabled, onActive }: {
+export function SequentialRemoteControls({ locale, evidence, disabled, onActive, onRecovered }: {
   locale: "zh-Hans" | "en";
   evidence: { initial: MatchState; placements: DeployPlacement[]; records: SequentialRecord[] } | null;
   disabled: boolean;
   onActive?: (active: boolean) => void;
+  onRecovered?: (snapshot: SequentialSnapshot) => void;
 }) {
   const zh = locale !== "en";
   const [relay] = useState(() => sessionStorage.getItem("agent-city-relay") ?? "");
@@ -31,10 +35,28 @@ export function SequentialRemoteControls({ locale, evidence, disabled, onActive 
       setStatus("idle");
     }
   };
+  const recover = async (): Promise<SequentialSnapshot | null> => {
+    if (!link) return null;
+    try {
+      const url = new URL(link, location.href), params = url.searchParams;
+      const capability = remoteCapability(params), ws = params.get("ws") ?? "", matchId = params.get("match") ?? "";
+      if (capability !== "mecha:v4" || !ws || !matchId) return null;
+      const access = params.get("access") ?? "", device = params.get("device") ?? "", token = url.hash.slice(1);
+      const client = new RemoteMatchClient({ url: ws, playerId: "owner", capability,
+        ...(access && device && token ? { reconnect: { url: access, deviceId: device, token } } : {}) });
+      try { const result = await client.sequentialSnapshot(matchId); return result.ok ? result.snapshot : null; }
+      finally { client.dispose(); }
+    } catch { return null; }
+  };
   const stop = async () => {
     if (status !== "active") return;
     setStatus("stopping");
-    try { await remoteRequest("mecha.remote.stop", {}); setLink(""); setStatus("idle"); onActive?.(false); }
+    try {
+      const snapshot = await recover();
+      if (snapshot) onRecovered?.(snapshot);
+      await remoteRequest("mecha.remote.stop", {});
+      setLink(""); setStatus("idle"); onActive?.(false);
+    }
     catch (cause) { setError(cause instanceof Error ? cause.message : "remote_unavailable"); setStatus("active"); }
   };
   return <details className="mecha-settings mecha-remote-settings">
