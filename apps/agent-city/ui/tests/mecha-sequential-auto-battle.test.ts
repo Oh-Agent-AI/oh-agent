@@ -5,6 +5,7 @@ import { SequentialTurn } from "../src/game/mecha/sequentialTurn.ts";
 import { nextCommand } from "../src/game/mecha/ai/commandPolicy.ts";
 import { compareSequentialPolicies, runSequentialAutoBattle } from "../src/game/mecha/ai/sequentialAutoBattle.ts";
 import { nextCoordinatedCommand } from "../src/game/mecha/ai/coordinatedPolicy.ts";
+import { nextBeamCommand } from "../src/game/mecha/ai/beamPolicy.ts";
 
 function fixture() {
   const state = createMatch({ ruleset: "mecha-v1.5", preset: "covers_sparse_mid", script: "stationary_smash", covers: [], obstacles: [], buildings: [], raiders: [], boss: { x: 4, y: 0 },
@@ -46,6 +47,13 @@ test("alternative policies are compared from the same opening", () => {
 test("coordinated policy commits an action plan without mutating the authority", () => {
   const state = fixture(), turn = new SequentialTurn(state), before = turn.snapshot();
   const command = nextCoordinatedCommand(turn);
+  assert.equal(command.kind, "act");
+  assert.deepEqual(turn.snapshot(), before);
+});
+
+test("beam policy returns a command without mutating the authority", () => {
+  const state = fixture(), turn = new SequentialTurn(state), before = turn.snapshot();
+  const command = nextBeamCommand(turn);
   assert.equal(command.kind, "act");
   assert.deepEqual(turn.snapshot(), before);
 });

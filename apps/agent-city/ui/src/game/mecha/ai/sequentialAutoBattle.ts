@@ -2,7 +2,7 @@ import type { MatchState } from "../board";
 import type { EnemyPlanner } from "../enemy/contracts";
 import { SequentialTurn, type SequentialRecord } from "../sequentialTurn";
 import { nextCommand, type CommandIntent } from "./commandPolicy";
-import { nextCoordinatedCommand } from "./coordinatedPolicy";
+import { nextBeamCommand } from "./beamPolicy";
 
 /** A squad policy only observes the authoritative command engine. */
 export type SequentialPolicy = (authority: SequentialTurn) => CommandIntent;
@@ -27,7 +27,7 @@ export function runSequentialAutoBattle(initial: MatchState, options: {
   maxTurns?: number;
 } = {}): SequentialAutoBattleResult {
   const turn = new SequentialTurn(structuredClone(initial), options.enemy ? { enemyPlanner: options.enemy } : {});
-  const squad = options.squad ?? nextCoordinatedCommand;
+  const squad = options.squad ?? nextBeamCommand;
   const maxSteps = Math.min(2000, Math.max(1, options.maxSteps ?? 400));
   const maxTurns = Math.max(1, options.maxTurns ?? 15);
   let steps = 0;

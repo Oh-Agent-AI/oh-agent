@@ -78,3 +78,14 @@ compareSequentialPolicies(initial, { name: policy }, options)
 Every step is a real `SequentialCommand` on a `SequentialTurn`; the enemy
 phase uses the engine's planner (or the injected `enemy`). Records replay to
 the same revision, so a failing battle can be reopened with `SequentialTurn.replay`.
+
+## AI policy benchmark
+
+```bash
+node --experimental-strip-types --import ./scripts/mecha-ts-register.mjs scripts/benchmark-mecha-ai.mjs
+```
+
+It runs greedy (`nextCommand`), coordinated actions (`nextCoordinatedCommand`) and the
+movement-aware beam (`nextBeamCommand`) from the same opening and prints outcome, steps,
+mech HP, boss HP and building HP. The beam policy is the default for the v1.5 auto button
+and the EvE harness; tune `beamWidth`, `maxDepth` and `moveCandidates` in `beamPolicy.ts`.
