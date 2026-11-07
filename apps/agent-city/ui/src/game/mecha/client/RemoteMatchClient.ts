@@ -13,7 +13,7 @@ export interface WebSocketLike {
 export type WebSocketFactory = (url: string) => WebSocketLike;
 export type RemoteConnectionState = "connecting" | "online" | "offline";
 // Deployment-capable links explicitly select v2; links without a capability remain v1.
-export type MechaRemoteCapability = "mecha:v1" | "mecha:v2" | "mecha:v3";
+export type MechaRemoteCapability = "mecha:v1" | "mecha:v2" | "mecha:v3" | "mecha:v4";
 
 type Pending = { resolve: (value: unknown) => void; reject: (reason: Error) => void; timer: ReturnType<typeof setTimeout> };
 const browserSocket: WebSocketFactory = (url) => new WebSocket(url) as WebSocketLike;
@@ -40,7 +40,7 @@ export class RemoteMatchClient<S extends RevisionState = RevisionState> implemen
   constructor(input: { url: string; playerId: string; capability?: MechaRemoteCapability; socketFactory?: WebSocketFactory; timeoutMs?: number; reconnect?: { url: string; deviceId: string; token: string } }) {
     this.url = input.url;
     this.playerId = input.playerId;
-    if (input.capability !== undefined && input.capability !== "mecha:v1" && input.capability !== "mecha:v2" && input.capability !== "mecha:v3") throw new Error("invalid_capability");
+    if (input.capability !== undefined && input.capability !== "mecha:v1" && input.capability !== "mecha:v2" && input.capability !== "mecha:v3" && input.capability !== "mecha:v4") throw new Error("invalid_capability");
     this.capability = input.capability ?? "mecha:v1";
     this.factory = input.socketFactory ?? browserSocket;
     this.timeoutMs = input.timeoutMs ?? 10_000;

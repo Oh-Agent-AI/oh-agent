@@ -12,6 +12,7 @@ import { swapEventSink } from "../game/mecha/board";
 import { useRemoteAccess } from "./remoteAccess";
 import { remoteCapability } from "./remoteCapability";
 import { pendingJournal, type PendingMarker } from "./pendingJournal";
+import { RemoteSequentialApp } from "./RemoteSequentialApp";
 import "./remote.css";
 
 type PendingPlan = (
@@ -54,7 +55,7 @@ export function remoteDraftProjection(state: MatchState, draft: DraftMap) {
   }
 }
 
-export function RemoteApp() {
+function RemoteClassicApp() {
   const params = useMemo(() => new URLSearchParams(location.search), []);
   const locale = navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en";
   const t = (zh: string, en: string) => locale === "zh" ? zh : en;
@@ -365,4 +366,11 @@ export function RemoteApp() {
       return <button key={x} disabled={!myTurn || busy} onClick={() => clickCell({ x, y }, "board")} aria-label={`${x},${y}`}>{mech ? names[mech.id][0] : boss ? "B" : raider ? "E" : board.terrain[y]?.[x] === "water" ? "~" : "·"}</button>;
     })}</div>)}</div></details></>}
   </main>;
+}
+
+export function RemoteApp() {
+  const params = new URLSearchParams(location.search);
+  return remoteCapability(params) === "mecha:v4"
+    ? <RemoteSequentialApp params={params} />
+    : <RemoteClassicApp />;
 }
