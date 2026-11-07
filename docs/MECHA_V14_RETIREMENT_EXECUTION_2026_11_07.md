@@ -8,7 +8,7 @@
 
 - 分支 `mecha/itb-alignment`；A 阶段已收口并打 tag `itb-alignment-checkpoint-2`，包含后续撤销、目标绑定、地块检查和机甲状态显示修复。
 - 已完成：M0（`trial`）、M2（`mode.ts` + `MechaModeRuntime`）、M3（`execution/enemyPhase`）、M4（`enemyPhasePreview` + 顺序叠层）、M1 大部分（`MechaHud` 契约、删除 `SequentialMechaHud` 与 `sequentialMecha.css`）。
-- **执行进度（2026-11-07）：A、B、C1、C2 已完成阶段验收；C1 的 8 个 practice 物种均运行 v1.5 回合，技能映射从 canonical 表派生。C2 已验证共享 cues/HUD 类型边界、基于 `SequentialTurn.trial()` 的确定性 AI 命令建议，以及 v1.5 自动行动浏览器流程。C3 的协议桥接、停止授权、命令去重/陈旧 revision、relay 路由和原生开局数据校验已通过本地自动验收；桌面→真实手机→停止恢复的实机流程仍待验证。D 未完成。当前分支未 push；工作区另有并行 waves 改动，未纳入 C3。**
+- **执行进度（2026-11-07）：A、B、C1、C2 已完成阶段验收；C1 的 8 个 practice 物种均运行 v1.5 回合，技能映射从 canonical 表派生。C2 已验证共享 cues/HUD 类型边界、基于 `SequentialTurn.trial()` 的确定性 AI 命令建议，以及 v1.5 自动行动浏览器流程。C3 的协议桥接、停止授权、命令去重/陈旧 revision、relay 路由和原生开局数据校验已通过本地自动验收；新增手机浏览器回归使用真实 `SequentialRemoteHost`/`SequentialMatchSession` 验证 v1.5 移动命令、刷新恢复和 390px 无横向溢出。桌面→真实手机→停止恢复的实机流程仍待验证。D 未完成。当前分支未 push。**
 
 三个必须先处理的隐性耦合：
 
@@ -80,6 +80,7 @@
 - `RemoteMatchClient` 的 `ruleset !== "mecha-v1.4"` 校验改成 v1.5；`RemoteMatchSynchronizer` 按命令列表重放。
 - `mecha/mode.ts`：删除 `remote_requires_v14`，远程 idle→非 idle 时路由到 `sequential`；保留“单活动设备”锁定。
 - 原生网关：`PVE` 常量改 v1.5，按命令流投影；删除 PVP 相关结构。
+- 本机浏览器验收：`cd apps/agent-city/ui && npm run verify:mecha-v15-remote-browser`；只使用本地合成 WebSocket，不替代实机流程。
 - 验收：桌面开链接 → 手机中途接手 → 停止远程回桌面；重复命令/陈旧 revision 被拒。
 
 ### D. 删 v1.4（2–3 天）
