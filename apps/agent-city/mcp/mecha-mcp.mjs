@@ -55,6 +55,7 @@ const tools = [
       raiders: { type: "array", items: { type: "object" } }, buildings: { type: "array", items: { type: "object" } },
       covers: { type: "array", items: { type: "object" } }, obstacles: { type: "array", items: { type: "object" } },
       difficulty: { type: "string" },
+      waves: { type: "object", properties: { count: { type: "number" }, raidersPerWave: { type: "number" }, spawns: { type: "array", items: { type: "object", properties: { x: { type: "number" }, y: { type: "number" } }, required: ["x", "y"] } } }, required: ["count", "spawns"] },
     } } },
   { name: "mecha_deploy", description: "Finish deployment with explicit placements and start the first player turn.",
     inputSchema: { type: "object", required: ["matchId", "placements"], properties: { matchId: { type: "string" }, placements: { type: "array", items: { type: "object", properties: { mechId: { type: "string" }, pos: { type: "object", properties: { x: { type: "number" }, y: { type: "number" } }, required: ["x", "y"] } }, required: ["mechId", "pos"] } } } } },
@@ -77,6 +78,7 @@ function callTool(name, args) {
       ...(args.raiders ? { raiders: args.raiders } : {}), ...(args.buildings ? { buildings: args.buildings } : {}),
       ...(args.covers ? { covers: args.covers } : {}), ...(args.obstacles ? { obstacles: args.obstacles } : {}),
       ...(args.difficulty ? { difficulty: args.difficulty } : {}),
+      ...(args.waves ? { waves: args.waves } : {}),
       ...(args.monsterSpecies ? { monsterContent: { speciesId: args.monsterSpecies, contentVersion: 1 } } : {}),
     });
     const session = { id, state, turn: null, initial: null, placements: null };
