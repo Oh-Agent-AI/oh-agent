@@ -45,7 +45,6 @@ import { sampleAssaultTerrainSafety } from "./mecha/assaultTerrainSafety";
 import { MechaLastResult } from "./MechaLastResult";
 import { MechaBattleResult } from "./MechaMatchResult";
 import { MechaQuickGuide } from "./MechaQuickGuide";
-import { MechaMonsterPractice, MechaPrismShieldStatus } from "./MechaMonsterPractice";
 import { MechaCorrodeSummary, MechaMonsterIntent } from "./MechaMonsterIntent";
 import { monsterSkillName } from "./mecha/skillNames";
 import type { PlannedMonsterSpeciesId } from "./mecha/monsters/contracts";

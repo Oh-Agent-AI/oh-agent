@@ -10,7 +10,7 @@ import { MechaBattleLegend } from "./MechaBattleLegend";
 import { MechaCellInspector } from "./MechaCellInspector";
 import { MechaBattleResult } from "./MechaMatchResult";
 import { MechaLastResult } from "./MechaLastResult";
-import { MechaPrismShieldView } from "./MechaMonsterPractice";
+import { MechaPrismShieldView } from "./MechaPrismShield";
 import { MechaCorrodeSummary } from "./MechaMonsterIntent";
 import { useMechaSettings } from "./useMechaSettings";
 import { MechaRoster } from "./MechaPlanCard";

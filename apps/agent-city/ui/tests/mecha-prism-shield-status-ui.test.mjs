@@ -12,7 +12,7 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const fixture = `
 import React, { useState, useSyncExternalStore } from 'react';
 import { createRoot } from 'react-dom/client';
-import { MechaPrismShieldStatus } from '/src/game/MechaMonsterPractice.tsx';
+import { MechaPrismShieldStatus } from '/src/game/MechaPrismShield.tsx';
 import { createMechaController } from '/src/game/mecha/controller.ts';
 import { bossPrepare, createMatch, previewPlan } from '/src/game/mecha/rules.ts';
 import { MAX_TURNS } from '/src/game/mecha/board.ts';
