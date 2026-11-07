@@ -3,7 +3,7 @@ import type { DeployPlacement } from "./deployment";
 import type { MatchState } from "./board";
 import type { SequentialRecord } from "./sequentialTurn";
 import { buildSequentialOpening } from "./sequentialOpening";
-import { remoteRequest } from "./RemoteMechaControls";
+import { remoteRequest } from "./remoteRequest";
 import { RemoteMatchClient } from "./client/RemoteMatchClient";
 import type { SequentialSnapshot } from "./contracts/sequentialTransport";
 import { parseSequentialLink } from "../../remote/sequentialLink";

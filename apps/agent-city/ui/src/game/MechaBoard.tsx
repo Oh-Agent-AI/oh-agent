@@ -62,7 +62,7 @@ import type { ReleaseChoice } from "./mecha/mode";
 import { anchorsFromCity, prepareFightTerrainAsync, type FightCatalog, type FightShape } from "./mecha/citySite";
 import { startPreparedSearch } from "./mecha/fightSearchRunner";
 import { cacheCatalog, cachedCatalog, encounterIsCurrent, forgetCatalog, type MonsterEncounter } from "./mecha/monsterEncounters";
-import { RemoteMechaControls, type RemoteMechaStatus } from "./mecha/RemoteMechaControls";
+import type { RemoteMechaStatus } from "./mecha/remoteRequest";
 import {
   FLAT_SPAWN_MAX_DELTA, MAX_TURNS, living, stakeBuildings,
   type Action, type BossScriptId, type Cell, type MechId,
@@ -332,11 +332,10 @@ export function MechaBoard({ locale, onClose, engine, onAvailability, encounter 
   const sequentialSite = encounter?.site ?? SHAPES.map(shape => catalog[shape.id]).find(Boolean) ?? null;
   switch (runtime.mode.kind) {
     case "picker":
-      return <CityGate locale={locale} onClose={onClose} title={t("选择战斗规则")} body={t("机甲战棋 1.5 使用逐台行动与即时结算；经典模式仍可用于兼容的远程对局。")} recovery={<div className="mecha-actions">
+      return <CityGate locale={locale} onClose={onClose} title={t("选择战斗规则")} body={t("机甲战棋 1.5 使用逐台行动与即时结算。")} recovery={<div className="mecha-actions">
         <button type="button" onClick={() => setReleaseMode("sequential")}>{t("机甲战棋 1.5 · 本地 PvE")}</button>
         <button type="button" onClick={() => { setReleaseStatus(null); setReleaseMode("status"); }}>{t("状态效果挑战")}</button>
         <button type="button" onClick={() => { setReleaseMonster(null); setReleaseMode("practice"); }}>{t("怪物练习 · 1.5")}</button>
-        <button type="button" onClick={() => setReleaseMode("classic")}>{t("经典模式 · 1.4")}</button>
       </div>} />;
     case "closed": {
       const title = runtime.mode.reason === "invalid_status_species" ? t("状态挑战参数无效")
@@ -946,7 +945,7 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
     return <>
       <CityGate locale={locale} onClose={requestClose} closeDisabled={remoteActive} onRetry={viewFailed === "asset" ? undefined : () => setViewFailed(null)}
         title={viewFailed === "asset" ? "Assault 模型加载失败。" : viewFailed === "preview" ? "Assault 战斗演出不可用。" : "三维视角被其他模式占用。"}
-        body={viewFailed === "asset" ? "Assault 模型未能加载或实例化；退出战斗后检查资源。" : viewFailed === "preview" ? "战斗动画播放失败；可以重试，或退出战斗。" : "先退出影院、驾驶或飞行，再开战。"} recovery={remoteActive ? <RemoteMechaControls locale={locale} site={site} shape={shapeId} state={state} status={remoteStatus} canStart={false} onStatusChange={onRemoteStatusChange} onStopped={() => controller.restart()} /> : null} />
+        body={viewFailed === "asset" ? "Assault 模型未能加载或实例化；退出战斗后检查资源。" : viewFailed === "preview" ? "战斗动画播放失败；可以重试，或退出战斗。" : "先退出影院、驾驶或飞行，再开战。"} recovery={null} />
 
     </>;
   }
@@ -1363,8 +1362,7 @@ function MechaMatch({ locale, onClose, requestCloseRef, engine, catalog, initial
           <p className="mecha-ruleset">{t("掩体")} {state.covers.length} · {t("建筑")} {state.buildings.filter((b) => b.hp > 0).length} · {state.ruleset}</p>
         </MechaSettingsPopover>
         <MechaSettingsPopover id="mecha-remote-settings" title={t("远程战棋")} closeLabel={t("关闭设置")} hidden={settingsPanel !== "remote"} onClose={closeSettings}>
-            {Object.hasOwn(s.match, "monsterContent") && !remoteActive ? <p role="status" data-monster-practice-remote-disabled>{locale === "en" ? "Monster practice is local only. Return to a normal match before starting remote play." : "怪物演练仅限本地。请先返回普通对局，再开启远程战棋。"}</p> :
-              <RemoteMechaControls presentation="panel" locale={locale} site={site} shape={shapeId} state={state} status={remoteStatus} canStart={!Object.hasOwn(s.match, "monsterContent") && !state.mission && (s.interactive || Boolean(s.deployment?.interactive)) && !sequenceWaiting && !performance} onStatusChange={onRemoteStatusChange} onStopped={() => controller.restart()} stopTarget={submitTarget} />}
+            <p role="status">{locale === "en" ? "Remote handoff is available in Mecha tactics 1.5." : "手机续玩请使用机甲战棋 1.5。"}</p>
         </MechaSettingsPopover>
       </div>
       {showQuickGuide && !(resultReady && showMatchResult) ? <MechaQuickGuide locale={locale} returnFocusRef={guideTrigger} onClose={() => setShowQuickGuide(false)} /> : null}

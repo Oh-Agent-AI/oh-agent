@@ -53,7 +53,7 @@ assert.match(topBar, /data-mecha-settings-trigger="remote"[\s\S]*aria-controls="
 assert.doesNotMatch(board, /className="mecha-options-menu"/);
 assert.match(board, /hidden=\{settingsPanel !== "battlefield"\}/);
 assert.match(board, /hidden=\{settingsPanel !== "remote"\}/);
-assert.match(board, /<RemoteMechaControls presentation="panel"[\s\S]*?stopTarget=\{submitTarget\}/);
+assert.match(board, /手机续玩请使用机甲战棋 1\.5/);
 assert.match(board, /settingsClose\.click\(\); return/);
 assert.match(remote, /presentation === "panel" \? <div className="mecha-remote-settings">/);
 assert.match(remote, /<details className="mecha-settings mecha-remote-settings" name="mecha-battle-options">/);
