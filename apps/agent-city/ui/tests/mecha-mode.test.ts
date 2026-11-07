@@ -17,10 +17,10 @@ const base = (overrides: Partial<MechaModeInput> = {}): MechaModeInput => ({
   ...overrides,
 });
 
-test("development defaults to v1.5 and an explicit classic query preserves the legacy route", () => {
+test("development defaults to v1.5 and the old classic query is retired", () => {
   assert.deepEqual(resolveMechaMode(base()), { kind: "sequential", reason: "development_query" });
   assert.deepEqual(resolveMechaMode(base({ query: new URLSearchParams("mechaV15=1") })), { kind: "sequential", reason: "development_query" });
-  assert.deepEqual(resolveMechaMode(base({ query: new URLSearchParams("mechaV15=0") })), { kind: "classic", reason: "development_classic_override" });
+  assert.deepEqual(resolveMechaMode(base({ query: new URLSearchParams("mechaV15=0") })), { kind: "closed", reason: "classic_retired" });
 });
 
 test("debug probe and local fixture routes are explicit and gated by debug builds", () => {
@@ -33,7 +33,7 @@ test("debug probe and local fixture routes are explicit and gated by debug build
 test("production exposes the release picker and honors each explicit choice", () => {
   const prod = { dev: false, prod: true };
   assert.deepEqual(resolveMechaMode(base(prod)), { kind: "picker" });
-  assert.deepEqual(resolveMechaMode(base({ ...prod, releaseChoice: "classic" })), { kind: "classic", reason: "release_classic" });
+  assert.deepEqual(resolveMechaMode(base({ ...prod, releaseChoice: "classic" as never })), { kind: "closed", reason: "invalid_release_choice" });
   assert.deepEqual(resolveMechaMode(base({ ...prod, releaseChoice: "sequential" })), { kind: "sequential", reason: "release_sequential" });
   assert.deepEqual(resolveMechaMode(base({ ...prod, releaseChoice: "status" })), { kind: "status", reason: "release_status_picker", species: null });
   assert.deepEqual(resolveMechaMode(base({ ...prod, releaseChoice: "status", releaseStatus: "gravity_core" })), { kind: "status", reason: "release_status_challenge", species: "gravity_core" });

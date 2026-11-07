@@ -661,7 +661,7 @@ test("battle entry gates empty, failed and taken-view cities without a fallback 
     assert.match(body, /<CityGate/, `${branch} must stay on the city gate`);
   }
   // 只有一个对局挂载点；viewFailed 在 MechaMatch 内部也必须换成 CityGate，而不是退回棋盘。
-  assert.equal((boardSource.match(/<MechaMatch/g) ?? []).length, 1, "exactly one match mount");
+  assert.equal((boardSource.match(/<MechaMatch/g) ?? []).length, 0, "classic match mount is retired");
   assert.match(boardSource, /if \(viewFailed\) controller\?\.stopAuto\(\)/);
   // The tile-information card is not the removed playable 2D grid. Keep
   // banning every legacy cell token except this exact new inspector class.

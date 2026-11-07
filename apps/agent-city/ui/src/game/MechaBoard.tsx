@@ -364,8 +364,6 @@ export function MechaBoard({ locale, onClose, engine, onAvailability, encounter 
     case "sequential":
       if (!sequentialSite) return <CityGate locale={locale} onClose={onClose} title={t("这座城暂时没有可用机坪。")} body={t("当前城市中未找到符合地形和占位条件的战场。可以重试，或关掉战棋。")} />;
       return <SequentialMechaMatch key={runId} engine={engine} site={sequentialSite} locale={locale} onClose={onClose} requestCloseRef={requestMatchClose} connectedAssault={runtime.connectedAssault} />;
-    case "classic":
-      return <MechaMatch key={runId} locale={locale} onClose={onClose} requestCloseRef={requestMatchClose} engine={engine} catalog={encounter?.catalog ?? catalog} initialShape={encounter?.shape} remoteStatus={remoteStatus} remoteLocked={remoteLocked} onRemoteStatusChange={changeRemoteStatus} connectedAssault={runtime.connectedAssault} assaultSequenceTrial={runtime.assaultSequenceTrial} />;
   }
 }
 
