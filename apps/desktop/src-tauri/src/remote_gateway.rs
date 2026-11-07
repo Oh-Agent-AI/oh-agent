@@ -27,7 +27,7 @@ struct Active {
 }
 
 #[derive(Default)]
-struct State { active: SessionStore<Active>, starting_token: Option<String> }
+struct State { active: SessionStore<Active>, starting_token: Option<String>, last_snapshot: Option<Value> }
 
 // A single shared slot prevents v1, v2 and v3 sessions from being started concurrently.
 fn session_key() -> SessionKey { SessionKey::new("city", "mecha:v1") }
@@ -38,6 +38,7 @@ pub struct RemoteGateway {
     ready: watch::Sender<bool>,
     created: watch::Sender<bool>,
     joined: watch::Sender<Option<bool>>,
+    frozen: watch::Sender<Option<Value>>,
 }
 
 impl Default for RemoteGateway {
@@ -45,7 +46,8 @@ impl Default for RemoteGateway {
         let (ready, _) = watch::channel(false);
         let (created, _) = watch::channel(false);
         let (joined, _) = watch::channel(None);
-        Self { state: Mutex::new(State::default()), operation: tokio::sync::Mutex::new(()), ready, created, joined }
+        let (frozen, _) = watch::channel(None);
+        Self { state: Mutex::new(State::default()), operation: tokio::sync::Mutex::new(()), ready, created, joined, frozen }
     }
 }
 
@@ -57,6 +59,15 @@ fn secret() -> Result<String, &'static str> {
 
 fn valid_id(value: &str) -> bool {
     !value.is_empty() && value.len() <= 80 && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'_' | b'-'))
+}
+
+fn valid_frozen_snapshot(value: &Value, match_id: &str) -> bool {
+    value["protocol"] == "mecha-net:v2" && value["ruleset"] == "mecha-v1.5" && value["matchId"] == match_id
+        && value["revision"].as_u64().is_some_and(|n| n <= 9_007_199_254_740_991)
+        && value["initial"]["revision"].as_u64().zip(value["commands"].as_array()).and_then(|(revision, commands)| revision.checked_add(commands.len() as u64)) == value["revision"].as_u64()
+        && value.get("enemyPolicy").is_none_or(|policy| policy == "baup" || policy == "scripted")
+        && serde_json::to_vec(value).is_ok_and(|bytes| bytes.len() <= 256 * 1024)
+        && projection::valid_start_sequential(&json!({"initial":value["initial"],"placements":value["placements"],"commands":value["commands"]}))
 }
 
 fn valid_relay(value: &str) -> bool {
@@ -242,7 +253,7 @@ async fn start(app: &tauri::AppHandle, capability: &crate::remote_protocol::Remo
         relay: active.relay.clone(), room_id: active.room_id.clone(), match_id: active.match_id.clone(), capability: active.capability.clone(),
         owner_token: active.owner_token.clone(), session_token: active.session_token.clone(), outbox: active.outbox.clone(), cancel: active.cancel.clone(),
     };
-    gateway.state.lock().unwrap().active.insert(session_key(), active)?;
+    { let mut state = gateway.state.lock().unwrap(); state.active.insert(session_key(), active)?; state.last_snapshot = None; }
     tauri::async_runtime::spawn(run_connection(app.clone(), running, ready_sender));
     Ok(json!({"ok":true,"matchId":match_id,"remoteUrl":remote_url,"connection":"connecting"}))
 }
@@ -304,7 +315,7 @@ async fn start_sequential(app: &tauri::AppHandle, capability: &crate::remote_pro
         relay: active.relay.clone(), room_id: active.room_id.clone(), match_id: active.match_id.clone(), capability: active.capability.clone(),
         owner_token: active.owner_token.clone(), session_token: active.session_token.clone(), outbox: active.outbox.clone(), cancel: active.cancel.clone(),
     };
-    gateway.state.lock().unwrap().active.insert(session_key(), active)?;
+    { let mut state = gateway.state.lock().unwrap(); state.active.insert(session_key(), active)?; state.last_snapshot = None; }
     tauri::async_runtime::spawn(run_connection(app.clone(), running, ready_sender));
     Ok(json!({"ok":true,"matchId":match_id,"remoteUrl":remote_url,"connection":"connecting"}))
 }
@@ -367,13 +378,33 @@ pub async fn control_for_city(app: &tauri::AppHandle, plugin_id: &str, capabilit
         "mecha.remote.stop" => {
             let gateway = app.state::<RemoteGateway>();
             let _operation = gateway.operation.lock().await;
-            let active = gateway.state.lock().unwrap().active.remove(&session_key());
+            let mut frozen = gateway.frozen.subscribe();
+            gateway.frozen.send_replace(None);
+            let sequential = {
+                let state = gateway.state.lock().unwrap();
+                if let Some(active) = state.active.get(&session_key()) {
+                    if supports_sequential(&active.capability) {
+                        eval_session(app, active, &json!({"protocol":"mecha-net:v2","type":"request","requestId":"local-freeze","method":"local.freeze","payload":{}}))?;
+                        true
+                    } else { false }
+                } else { false }
+            };
+            let snapshot = if sequential {
+                tokio::time::timeout(Duration::from_secs(10), frozen.wait_for(|value| value.is_some())).await
+                    .map_err(|_| "remote_session_unavailable")?.map_err(|_| "remote_session_unavailable")?.clone()
+            } else { None };
+            let active = {
+                let mut state = gateway.state.lock().unwrap();
+                if snapshot.is_some() { state.last_snapshot = snapshot.clone(); }
+                state.active.remove(&session_key())
+            };
             if let Some(active) = active {
                 active.cancel.send_replace(true);
                 let _ = post(&active, "close", json!({})).await;
             }
             if let Some(view) = app.get_webview_window(SESSION_VIEW) { let _ = view.close(); }
-            Ok(json!({"ok":true}))
+            let result_snapshot = snapshot.or_else(|| gateway.state.lock().unwrap().last_snapshot.clone());
+            Ok(json!({"ok":true, "snapshot":result_snapshot}))
         }
         _ => Err("invalid_request"),
     }
@@ -391,6 +422,11 @@ pub fn remote_mecha_message(app: tauri::AppHandle, webview: tauri::WebviewWindow
     }
     let active = state.active.get(&session_key()).ok_or("remote_not_active")?;
     if reply["token"] != active.session_token { return Err("remote_forbidden".into()); }
+    if reply["type"] == "frozen" {
+        if !supports_sequential(&active.capability) || reply["snapshot"]["ok"] != true || !valid_frozen_snapshot(&reply["snapshot"]["snapshot"], &active.match_id) { return Err("invalid_message".into()); }
+        gateway.frozen.send_replace(Some(reply["snapshot"]["snapshot"].clone()));
+        return Ok(());
+    }
     if reply["type"] == "joined" {
         let ok = reply["ok"].as_bool().ok_or("invalid_message")?;
         gateway.joined.send_replace(Some(ok));
@@ -414,6 +450,21 @@ pub fn remote_mecha_message(app: tauri::AppHandle, webview: tauri::WebviewWindow
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frozen_snapshot_rejects_incomplete_and_wrong_match() {
+        let snapshot = json!({"protocol":"mecha-net:v2","ruleset":"mecha-v1.5","matchId":"m1","revision":0});
+        assert!(!valid_frozen_snapshot(&snapshot, "m1"));
+        assert!(!valid_frozen_snapshot(&snapshot, "other"));
+    }
+
+    #[test]
+    fn frozen_snapshot_accepts_real_v15_session_and_rejects_truncation() {
+        let mut snapshot: Value = serde_json::from_str(include_str!("../tests/fixtures/mecha-sequential-frozen-synthetic.json")).unwrap();
+        assert!(valid_frozen_snapshot(&snapshot, "fixture-match"));
+        snapshot["commands"] = json!([]);
+        assert!(!valid_frozen_snapshot(&snapshot, "fixture-match"));
+    }
 
     #[test]
     fn only_allowlisted_match_requests_reach_the_session() {

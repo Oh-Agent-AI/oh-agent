@@ -7,7 +7,7 @@ import type { SequentialCommand } from "../game/mecha/sequentialTurn";
 
 type HostConfig = { matchId: string; ruleset: "mecha-v1.5"; initial: MatchState; placements: DeployPlacement[]; commands?: SequentialCommand[] };
 type SessionRequest = { token: string; request: { protocol: string; type: string; requestId: string; method: string; payload: Record<string, unknown> } };
-type SessionReply = { type: "ready" | "created"; token: string } | { type: "joined"; token: string; ok: boolean } | { type: "message"; token: string; message: unknown };
+type SessionReply = { type: "ready" | "created"; token: string } | { type: "joined"; token: string; ok: boolean } | { type: "message"; token: string; message: unknown } | { type: "frozen"; token: string; snapshot: unknown };
 declare global {
   interface Window {
     __AV_MECHA_SESSION_TOKEN__?: string;
@@ -50,6 +50,10 @@ export function startRemoteSessionHost() {
       return;
     }
     if (!host) { resultError(request, "unavailable"); return; }
+    if (request.method === "local.freeze") {
+      void invoke("remote_mecha_message", { reply: { type: "frozen", token, snapshot: host.freezeAndSnapshot() } as SessionReply });
+      return;
+    }
     const response = host.handle({ protocol: SEQUENTIAL_NET_PROTOCOL, type: "request", requestId: request.requestId, method: request.method as "sequential.snapshot" | "sequential.command.submit", payload });
     if (!response) { resultError(request, "invalid_message"); return; }
     send(response);

@@ -70,12 +70,15 @@ export class SequentialController {
   /** Replace the live authority with a verified handoff snapshot; used when remote stops. */
   replaceFromSnapshot(snapshot: SequentialSnapshot): void {
     const turn = restoreSequentialSnapshot(snapshot);
+    // The existing durable authority still contains the pre-handoff history.
+    // Freeze it until the recovered history has been persisted and reattached.
+    this.durable?.invalidate();
+    this.durable = null;
     this.enemyPolicy = snapshot.enemyPolicy ?? this.enemyPolicy;
     this.state = copy(turn.snapshot().match);
     this.authority = turn;
     this.initial = copy(snapshot.initial);
     this.openingPlacements = copy(snapshot.placements);
-    this.deploymentStart = copy(snapshot.initial);
     this.presentation = null;
     this.error = null;
     this.publish();

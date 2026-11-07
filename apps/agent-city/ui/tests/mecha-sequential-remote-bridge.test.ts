@@ -10,7 +10,7 @@ test("desktop bridge creates and advances a v1.5 session on the v2 host protocol
   bossPrepare(initial);
   const originalWindow = globalThis.window;
   let dispatch!: (event: { detail: unknown }) => void;
-  const replies: Array<{ type: string; message?: Record<string, unknown> }> = [];
+  const replies: Array<{ type: string; message?: Record<string, unknown>; snapshot?: unknown }> = [];
   const bridge = {
     __AV_MECHA_SESSION_TOKEN__: "session-secret",
     __TAURI__: { core: { invoke: (_name: string, args: { reply: { type: string; message?: Record<string, unknown> } }) => { replies.push(args.reply); return Promise.resolve(); } } },
@@ -39,6 +39,18 @@ test("desktop bridge creates and advances a v1.5 session on the v2 host protocol
     assert.equal(moved.ok, true);
     assert.equal(moved.snapshot?.revision, revision + 1);
     assert.equal(moved.snapshot?.commands.length, 1);
+    const count = replies.length;
+    dispatch({ detail: { token: "wrong-token", request: { protocol: SEQUENTIAL_NET_PROTOCOL, type: "request", requestId: "bad-freeze", method: "local.freeze", payload: {} } } });
+    assert.equal(replies.length, count);
+    send("local.freeze", {}, "freeze");
+    const frozen = replies.at(-1);
+    assert.equal(frozen?.type, "frozen");
+    assert.deepEqual(frozen?.snapshot, { ok: true, snapshot: moved.snapshot });
+    send("sequential.command.submit", { matchId: "match-bridge", baseRevision: revision + 1,
+      command: { kind: "undo", id: "phone-2", revision: revision + 1 } }, "late");
+    assert.equal((replies.at(-1)?.message?.result as { ok: boolean }).ok, false);
+    send("local.freeze", {}, "retry");
+    assert.deepEqual(replies.at(-1)?.snapshot, frozen?.snapshot, "retry returns the same frozen history");
   } finally {
     if (originalWindow === undefined) delete (globalThis as { window?: unknown }).window;
     else Object.defineProperty(globalThis, "window", { value: originalWindow, configurable: true, writable: true });

@@ -9,7 +9,10 @@ import { applyDeployPlan } from "../src/game/mecha/deployment.ts";
 import { SequentialTurn } from "../src/game/mecha/sequentialTurn.ts";
 import { deleteSequentialReplay, listSequentialReplays, loadSequentialReplay, saveSequentialReplay } from "../src/game/mecha/sequentialReplayRepository.ts";
 import type { ReplayBackend } from "../src/game/mecha/replayBackend.ts";
-import { checkpointStore, readSequentialCheckpoint, type Checkpoint, type CheckpointBackend } from "../src/game/mecha/sequentialCheckpoint.ts";
+import { checkpointStore, readSequentialCheckpoint, writeSequentialCheckpoint, type Checkpoint, type CheckpointBackend } from "../src/game/mecha/sequentialCheckpoint.ts";
+import { restoreRemoteCheckpoint } from "../src/game/mecha/restoreRemoteCheckpoint.ts";
+import { SequentialMatchSession, restoreSequentialSnapshot } from "../src/game/mecha/session/SequentialMatchSession.ts";
+import { SequentialRemoteHost } from "../src/game/mecha/session/SequentialRemoteHost.ts";
 import { SequentialDurableAuthority } from "../src/game/mecha/sequentialDurable.ts";
 import { projectStatusForecastState, statusForecast } from "../src/game/mecha/statusForecast.ts";
 
@@ -21,6 +24,58 @@ const site: CityMechaSite = {
   mechs: MECH_IDS.map((id, i) => ({ id, pos: { x: i * 3, y: 9 } })), boss: { x: 4, y: 0 },
   raiders: [{ id: "private-raider", pos: { x: 1, y: 2 } }], spawnSpread: 0,
 };
+test("phone handback persists normalized history and desktop can undo", async () => {
+  const controller = new SequentialController(matchFromSite(site, { ruleset: "mecha-v1.5", preset: "covers_sparse_mid", script: "siege", deployment: true }));
+  MECH_IDS.forEach((id, i) => controller.place(id, { x: i * 3, y: 8 }));
+  controller.confirmDeployment();
+  const opening = controller.replayEvidence(); assert.ok(opening);
+  let saved: Checkpoint = { revision: 0, raw: null };
+  const backend: CheckpointBackend = { async read() { return structuredClone(saved); }, async write(revision, raw) {
+    if (revision !== saved.revision) throw new Error("conflict"); saved = { revision: revision + 1, raw }; return saved.revision;
+  } };
+  const version = await writeSequentialCheckpoint(site, opening, backend, 0);
+  assert.ok(controller.attachDurable(checkpointStore(site, opening, backend, version, opening.initial.revision, opening.enemyPolicy)));
+  const session = new SequentialMatchSession("phone", opening.initial, opening.placements, [], opening.enemyPolicy);
+  const moved = session.submit(session.revision, { kind: "move", id: "phone-1", revision: session.revision, mech: "Assault", to: { x: 0, y: 7 } }); assert.ok(moved.ok);
+  const frozen = new SequentialRemoteHost(session).freezeAndSnapshot(); assert.ok(frozen.ok);
+  const failingBackend: CheckpointBackend = { read: backend.read, async write() { throw new Error("write_failed"); } };
+  await assert.rejects(restoreRemoteCheckpoint(site, failingBackend, controller, frozen.snapshot), /write_failed/);
+  assert.deepEqual(controller.getState().match, opening.initial);
+  await restoreRemoteCheckpoint(site, backend, controller, frozen.snapshot);
+  assert.equal(controller.getState().persistence, "ready");
+  assert.equal(controller.records()[0]?.command.id, "c0");
+  assert.deepEqual(controller.getState().match.mechs[0]!.pos, { x: 0, y: 7 });
+  controller.select("Assault");
+  await controller.executeDurable({ kind: "undo", mech: "Assault" });
+  assert.deepEqual(controller.getState().match.mechs[0]!.pos, { x: 0, y: 8 });
+  const readback = await readSequentialCheckpoint(site, backend);
+  assert.deepEqual(readback.restored?.session.snapshot().match, controller.getState().match);
+  assert.equal(controller.restartDeployment(), true);
+  assert.equal(controller.getState().match.phase, "deployment");
+  assert.deepEqual(controller.getState().placements, []);
+});
+test("phone handback refuses to overwrite a diverged checkpoint", async () => {
+  const controller = new SequentialController(matchFromSite(site, { ruleset: "mecha-v1.5", preset: "covers_sparse_mid", script: "siege", deployment: true }));
+  MECH_IDS.forEach((id, i) => controller.place(id, { x: i * 3, y: 8 }));
+  controller.confirmDeployment();
+  const opening = controller.replayEvidence(); assert.ok(opening);
+  const phone = new SequentialMatchSession("phone", opening.initial, opening.placements, [], opening.enemyPolicy);
+  assert.ok(phone.submit(phone.revision, { kind: "move", id: "phone", revision: phone.revision, mech: "Assault", to: { x: 0, y: 7 } }).ok);
+  const frozen = new SequentialRemoteHost(phone).freezeAndSnapshot(); assert.ok(frozen.ok);
+  const other = new SequentialMatchSession("other", opening.initial, opening.placements, [], opening.enemyPolicy);
+  assert.ok(other.submit(other.revision, { kind: "move", id: "other", revision: other.revision, mech: "Gunner", to: { x: 3, y: 7 } }).ok);
+  let saved: Checkpoint = { revision: 0, raw: null }, writes = 0;
+  const backend: CheckpointBackend = { async read() { return structuredClone(saved); }, async write(revision, raw) {
+    if (revision !== saved.revision) throw new Error("conflict"); writes++; saved = { revision: revision + 1, raw }; return saved.revision;
+  } };
+  const otherSnapshot = other.snapshot(); assert.ok(otherSnapshot.ok);
+  const otherTurn = restoreSequentialSnapshot(otherSnapshot.snapshot);
+  await writeSequentialCheckpoint(site, { ...opening, records: otherTurn.records() }, backend, 0);
+  const before = structuredClone(saved);
+  await assert.rejects(restoreRemoteCheckpoint(site, backend, controller, frozen.snapshot), /checkpoint_conflict/);
+  assert.deepEqual(saved, before); assert.equal(writes, 1);
+  assert.deepEqual(controller.getState().match, opening.initial);
+});
 test("forecast reprojects a committed move without changing the frozen direction or authority", () => {
   const arena: CityMechaSite = { ...structuredClone(site), boss: { x: 4, y: 4 }, buildings: [], raiders: [],
     mechs: [{ id: "Assault", pos: { x: 4, y: 7 } }, { id: "Gunner", pos: { x: 0, y: 9 } }, { id: "Support", pos: { x: 9, y: 9 } }] };

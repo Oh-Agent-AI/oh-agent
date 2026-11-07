@@ -57,3 +57,18 @@ test("v2 host serves snapshots and commands without accepting another match or p
   assert.equal(host.handle({ protocol: "mecha-net:v1", type: "request", requestId: "r4", method: "sequential.snapshot", payload: { matchId: "match-host" } }), null);
   assert.equal(host.handle({ protocol: "mecha-net:v2", type: "request", requestId: "r5", method: "sequential.snapshot", payload: { matchId: "other" } })?.result.ok, false);
 });
+
+test("handoff freeze returns the final snapshot and rejects later phone commands", () => {
+  const session = new SequentialMatchSession("freeze", fixture(), []);
+  const host = new SequentialRemoteHost(session);
+  const before = session.snapshot();
+  assert.ok(before.ok);
+  if (!before.ok) return;
+  const command = { kind: "move" as const, id: "m", revision: before.snapshot.revision, mech: "Assault" as const, to: { x: 3, y: 2 } };
+  const request = { protocol: "mecha-net:v2", type: "request", requestId: "move", method: "sequential.command.submit", payload: { matchId: "freeze", baseRevision: command.revision, command } };
+  assert.ok(host.handle(request)?.result.ok);
+  const final = host.freezeAndSnapshot();
+  assert.ok(final.ok);
+  assert.equal(host.handle(request)?.result.ok, false);
+  assert.deepEqual(session.snapshot(), final);
+});
