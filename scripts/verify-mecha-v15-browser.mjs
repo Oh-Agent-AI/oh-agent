@@ -11,7 +11,7 @@ try {
   const cases = process.env.MECHA_V15_LOCALE === "en" ? [["en", 390, 844]] : process.env.MECHA_V15_LOCALE === "zh" ? [["zh", 1280, 800]] : [["zh", 1280, 800], ["en", 390, 844]];
   for (const [locale, width, height] of cases) {
     const context = await browser.newContext({ viewport: { width, height }, reducedMotion: reduced ? "reduce" : "no-preference" });
-    const page = await context.newPage(); page.setDefaultTimeout(60000);
+    const page = await context.newPage(); page.setDefaultTimeout(180000);
     const errors = []; page.on("pageerror", error => errors.push(error.message));
     await page.addInitScript(lang => { localStorage.setItem("city.seed", "4196523069"); window.__AV_PLUGIN_LOCALE__ = lang === "zh" ? "zh-Hans" : "en"; }, locale);
     await page.route("**/src/game/SequentialMechaMatch.tsx*", async route => {

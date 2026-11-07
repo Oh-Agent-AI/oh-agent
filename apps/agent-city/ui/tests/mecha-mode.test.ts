@@ -40,9 +40,9 @@ test("production exposes the release picker and honors each explicit choice", ()
   assert.deepEqual(resolveMechaMode(base({ ...prod, query: new URLSearchParams("mechaV15=1") })), { kind: "picker" });
 });
 
-test("remote lifecycle always routes through classic v1.4", () => {
+test("remote lifecycle no longer reroutes a v1.5 release back to classic", () => {
   for (const remoteStatus of ["starting", "active", "stopping", "unknown"] as const) {
-    assert.deepEqual(resolveMechaMode(base({ dev: false, prod: true, remoteStatus, releaseChoice: "sequential" })), { kind: "classic", reason: "remote_requires_v14" });
+    assert.deepEqual(resolveMechaMode(base({ dev: false, prod: true, remoteStatus, releaseChoice: "sequential" })), { kind: "sequential", reason: "release_sequential" });
   }
 });
 

@@ -38,9 +38,6 @@ export function resolveMechaMode(input: MechaModeInput): MechaMode {
   if (input.dev && input.prod) return { kind: "closed", reason: "invalid_build_flags" };
   if (!RELEASE_CHOICES.includes(input.releaseChoice)) return { kind: "closed", reason: "invalid_release_choice" };
 
-  // The remote transport is v1.4-only; its state always owns the classic route.
-  if (input.remoteStatus !== "idle") return { kind: "classic", reason: "remote_requires_v14" };
-
   if (input.prod) {
     if (input.releaseChoice === "") return { kind: "picker" };
     if (input.releaseChoice === "classic") return { kind: "classic", reason: "release_classic" };
