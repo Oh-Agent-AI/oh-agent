@@ -6,7 +6,7 @@ import { buildSequentialOpening } from "./sequentialOpening";
 import { remoteRequest } from "./RemoteMechaControls";
 import { RemoteMatchClient } from "./client/RemoteMatchClient";
 import type { SequentialSnapshot } from "./contracts/sequentialTransport";
-import { remoteCapability } from "../../remote/remoteCapability";
+import { parseSequentialLink } from "../../remote/sequentialLink";
 
 /** Desktop handoff for the v1.5 command stream; it never routes the host back to classic. */
 export function SequentialRemoteControls({ locale, evidence, disabled, onActive, onRecovered }: {
@@ -38,13 +38,11 @@ export function SequentialRemoteControls({ locale, evidence, disabled, onActive,
   const recover = async (): Promise<SequentialSnapshot | null> => {
     if (!link) return null;
     try {
-      const url = new URL(link, location.href), params = url.searchParams;
-      const capability = remoteCapability(params), ws = params.get("ws") ?? "", matchId = params.get("match") ?? "";
-      if (capability !== "mecha:v4" || !ws || !matchId) return null;
-      const access = params.get("access") ?? "", device = params.get("device") ?? "", token = url.hash.slice(1);
-      const client = new RemoteMatchClient({ url: ws, playerId: "owner", capability,
-        ...(access && device && token ? { reconnect: { url: access, deviceId: device, token } } : {}) });
-      try { const result = await client.sequentialSnapshot(matchId); return result.ok ? result.snapshot : null; }
+      const parsed = parseSequentialLink(link);
+      if (!parsed) return null;
+      const client = new RemoteMatchClient({ url: parsed.ws, playerId: "owner", capability: "mecha:v4",
+        ...(parsed.access && parsed.device ? { reconnect: { url: parsed.access, deviceId: parsed.device, token: parsed.token } } : {}) });
+      try { const result = await client.sequentialSnapshot(parsed.matchId); return result.ok ? result.snapshot : null; }
       finally { client.dispose(); }
     } catch { return null; }
   };
