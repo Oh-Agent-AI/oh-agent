@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { bossPrepare, createMatch } from "../src/game/mecha/rules.ts";
 import { SequentialMatchSession, restoreSequentialSnapshot } from "../src/game/mecha/session/SequentialMatchSession.ts";
 import { SequentialRemoteHost } from "../src/game/mecha/session/SequentialRemoteHost.ts";
+import { createRemoteSession } from "../src/game/mecha/session/remoteSessionFactory.ts";
 
 function fixture() {
   const state = createMatch({ ruleset: "mecha-v1.5", preset: "covers_sparse_mid", script: "stationary_smash", covers: [], obstacles: [], buildings: [], raiders: [], boss: { x: 4, y: 0 },
@@ -56,4 +57,11 @@ test("v2 host serves snapshots and commands without accepting another match or p
   assert.equal(stale?.result.ok, false);
   assert.equal(host.handle({ protocol: "mecha-net:v1", type: "request", requestId: "r4", method: "sequential.snapshot", payload: { matchId: "match-host" } }), null);
   assert.equal(host.handle({ protocol: "mecha-net:v2", type: "request", requestId: "r5", method: "sequential.snapshot", payload: { matchId: "other" } })?.result.ok, false);
+});
+
+test("the remote factory selects a command host for v1.5", () => {
+  const initial = fixture();
+  const created = createRemoteSession({ matchId: "factory", ruleset: "mecha-v1.5", initial, placements: [] });
+  assert.equal(created.kind, "v1.5");
+  assert.ok(created.kind === "v1.5" && created.session.snapshot().ok);
 });

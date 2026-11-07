@@ -1,6 +1,8 @@
 import { MECHA_NET_PROTOCOL, parseSubmitDeployment, parseSubmitPlan, type MatchMode, type MatchPlayer, type RevisionState } from "../game/mecha/contracts/match";
 import { deploymentResult, snapshotResult, turnResult, type RemoteNotification, type RemoteRequest } from "../game/mecha/contracts/transport";
-import { MatchSession, pveRules } from "../game/mecha/session/MatchSession";
+import { MatchSession } from "../game/mecha/session/MatchSession";
+import { createRemoteSession, type RemoteCreateConfig } from "../game/mecha/session/remoteSessionFactory";
+import { SequentialRemoteHost } from "../game/mecha/session/SequentialRemoteHost";
 import type { MatchState } from "../game/mecha/rules";
 import { hasUnsupportedRemoteSummons, type RemoteArenaV1 } from "../game/mecha/contracts/arena";
 
@@ -25,6 +27,7 @@ const error = (code: "unavailable" | "invalid_message" | "invalid_plan" | "forbi
 
 export function startRemoteSessionHost() {
   let session: MatchSession<MatchState> | null = null;
+  let sequential: SequentialRemoteHost | null = null;
   let unsubscribe: (() => void) | null = null;
   const attach = <S extends RevisionState>(next: MatchSession<S>) => {
     unsubscribe?.();
@@ -49,7 +52,7 @@ export function startRemoteSessionHost() {
   };
   window.addEventListener("__AV_MECHA_REMOTE_REQUEST__", ((event: CustomEvent<SessionRequest>) => {
     const { request, token: sender } = event.detail ?? {};
-    if (sender !== token || !request || request.protocol !== MECHA_NET_PROTOCOL || request.type !== "request") return;
+    if (sender !== token || !request || (request.protocol !== MECHA_NET_PROTOCOL && (request.protocol as string) !== "mecha-net:v2") || request.type !== "request") return;
     const payload = request.payload as Record<string, unknown>;
     if (request.method === "match.create") {
       if (session || !payload.config) { resultError(request, "unavailable"); return; }
@@ -58,11 +61,13 @@ export function startRemoteSessionHost() {
         resultError(request, "invalid_plan"); return;
       }
       try {
-        attach(new MatchSession({ matchId: config.matchId, mode: "pve", arena: config.arena, state: config.state, players: config.players, rules: pveRules }));
-        const created: SessionReply = { type: "created", token };
-        void invoke("remote_mecha_message", { reply: created });
+        const created = createRemoteSession(config as unknown as RemoteCreateConfig);
+        if (created.kind === "v1.5") sequential = new SequentialRemoteHost(created.session);
+        else attach(created.session);
+        const reply: SessionReply = { type: "created", token };
+        void invoke("remote_mecha_message", { reply });
       } catch {
-        session = null;
+        session = null; sequential = null;
         resultError(request, "invalid_plan");
       }
       return;
@@ -71,6 +76,11 @@ export function startRemoteSessionHost() {
       const joined = (ok: boolean) => { const reply: SessionReply = { type: "joined", token, ok }; void invoke("remote_mecha_message", { reply }); };
       joined(false);
       return;
+    }
+    if (sequential) {
+      const response = sequential.handle({ protocol: "mecha-net:v2", type: "request", requestId: request.requestId, method: request.method as "sequential.snapshot" | "sequential.command.submit", payload });
+      if (!response) { resultError(request, "invalid_message"); return; }
+      send(response); return;
     }
     if (!session) { resultError(request, "unavailable"); return; }
     const playerId = typeof payload.playerId === "string" ? payload.playerId : "";
