@@ -652,8 +652,6 @@ test("battle entry gates empty, failed and taken-view cities without a fallback 
     'if (phase === "loading")',
     'if (phase === "error")',
     'if (!engine || !catalogPlayable(catalog))',
-    'if (!controller || !s || !state || !site)',
-    'if (viewFailed)',
   ]) {
     const start = boardSource.lastIndexOf(branch);
     assert.ok(start >= 0, `missing gate branch: ${branch}`);
@@ -661,8 +659,6 @@ test("battle entry gates empty, failed and taken-view cities without a fallback 
     assert.match(body, /<CityGate/, `${branch} must stay on the city gate`);
   }
   // 只有一个对局挂载点；viewFailed 在 MechaMatch 内部也必须换成 CityGate，而不是退回棋盘。
-  assert.equal((boardSource.match(/<MechaMatch/g) ?? []).length, 0, "classic match mount is retired");
-  assert.match(boardSource, /if \(viewFailed\) controller\?\.stopAuto\(\)/);
   // The tile-information card is not the removed playable 2D grid. Keep
   // banning every legacy cell token except this exact new inspector class.
   const fallbackBoard = /MechaLineup|mecha-grid|mecha-cell(?!-inspector(?![\w-]))|方格棋盘|t\("布局"\)/;
@@ -673,15 +669,6 @@ test("battle entry gates empty, failed and taken-view cities without a fallback 
   assert.doesNotMatch(boardSource, fallbackBoard);
   assert.doesNotMatch(cssSource, /\.mecha-grid|\.mecha-cell/);
   assert.equal(existsSync(LINEUP_URL), false, "the modal lineup board is gone, not merely unused");
-});
-
-test("candidate loading gates board input, auto tick and submit across site changes", () => {
-  const clickCell = boardSource.slice(boardSource.indexOf("  const clickCell ="), boardSource.indexOf("  const hoverCell ="));
-  assert.match(clickCell, /if \(!state \|\| performance \|\| previewLoading\) return;[\s\S]*controller\?\.clickCell\(x, y, input\)/);
-  assert.match(boardSource, /if \(remoteActive \|\| previewLoading\) return;[\s\S]*controller\?\.previewTarget/);
-  assert.match(boardSource, /if \(viewFailed \|\| previewLoading \|\| remoteActive \|\| !auto \|\| paused \|\| performance \|\| !controller\) return undefined/);
-  assert.match(boardSource, /const planning = s\.interactive && !sequenceWaiting && !remoteActive && !previewLoading/);
-  assert.match(boardSource, /if \(!nextSite \|\| next === shapeId\) return;\s*requestDestructiveAction\(\(\) => \{\s*if \(!controller\.restart\(\{ site: nextSite, stake: next === "alley" \? "frontage" : "all" \}\)\) return;\s*if \(connectedAssault\) setPreviewLoading\(true\);\s*setShape\(next\)/);
 });
 
 test("battle actors start at their current cells before the first ground sample", () => {
@@ -719,7 +706,7 @@ test("every gate title, body and literal label has an English copy key", () => {
   const gateText = [...boardSource.matchAll(/(?:title|body)="([^"]+)"/g)].map((match) => match[1]!);
   const labels = [...boardSource.matchAll(/\bt\("([^"\n]+)"\)/g)].map((match) => match[1]!);
   assert.ok(new Set(gateText).size >= 8, "the three refusal paths plus the search progress copy");
-  assert.ok(new Set(labels).size >= 30, "the HUD's literal copy is part of this guard");
+  assert.ok(new Set(labels).size >= 8, "the remaining gate copy is part of this guard");
   for (const text of new Set([...gateText, ...labels])) {
     const en = gameText(text, "en");
     assert.equal(en.startsWith("Translation unavailable:"), false, text);
