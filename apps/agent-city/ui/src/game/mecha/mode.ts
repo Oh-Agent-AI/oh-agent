@@ -1,6 +1,8 @@
 export type RemoteStatus = "idle" | "starting" | "active" | "stopping" | "unknown";
 export type ReleaseChoice = "" | "classic" | "sequential" | "status";
-export type StatusSpecies = "spore_leaper" | "flux_lancer" | "prism_warden" | "gravity_core";
+import { isStatusSpecies, type StatusMonsterId } from "./monsters/catalog";
+
+export type StatusSpecies = StatusMonsterId;
 
 export type MechaModeInput = {
   dev: boolean;
@@ -23,9 +25,8 @@ export type MechaMode =
   | { kind: "status"; reason: string; species: StatusSpecies | null }
   | { kind: "closed"; reason: "invalid_build_flags" | "invalid_release_choice" | "invalid_status_species" | "status_challenge_encounter" | "unsupported_build" };
 
-const STATUS_SPECIES: readonly StatusSpecies[] = ["spore_leaper", "flux_lancer", "prism_warden", "gravity_core"];
 const RELEASE_CHOICES: readonly ReleaseChoice[] = ["", "classic", "sequential", "status"];
-const validStatusSpecies = (value: string): value is StatusSpecies => STATUS_SPECIES.includes(value as StatusSpecies);
+const validStatusSpecies = (value: string): value is StatusSpecies => isStatusSpecies(value);
 
 /** Resolves product, development and remote routing without reading browser or build globals. */
 export function resolveMechaMode(input: MechaModeInput): MechaMode {

@@ -3,6 +3,7 @@ import { BUILDING_COLLISION_RULESET, eq, mech, swapEventSink, type Action, type 
 import { applyDeployPlan, deployableCells, deploymentCellFault, validateDeployPlan, type DeployPlacement } from "./deployment";
 import { SequentialTurn, type SequentialRecord } from "./sequentialTurn";
 import { canonicalJson } from "./contracts/match";
+import { catalogSupports } from "./monsters/catalog";
 import { SequentialDurableAuthority, type SequentialDurableStore } from "./sequentialDurable";
 
 export type CommandInput =
@@ -50,7 +51,7 @@ export class SequentialController {
     if (initial.ruleset !== BUILDING_COLLISION_RULESET || initial.outcome || !["deployment", "player_plan"].includes(initial.phase)) throw new Error("invalid_sequential_controller_start");
     if (initial.statusEncounter !== undefined && (initial.statusEncounter?.schema !== "mecha-status-encounter:v1" ||
         !Array.isArray(initial.statusEncounter.statuses) || initial.statusEncounter.statuses.length !== 0 ||
-        !["spore_leaper", "flux_lancer", "prism_warden", "gravity_core"].includes(initial.monsterContent?.speciesId ?? "") ||
+        !catalogSupports(initial.monsterContent?.speciesId, "mecha-v1.5") ||
         initial.monsterContent?.contentVersion !== 1 || initial.mission !== undefined)) throw new Error("status_encounter_not_available");
     this.state = copy(initial);
     this.deploymentStart = initial.phase === "deployment" ? copy(initial) : null;

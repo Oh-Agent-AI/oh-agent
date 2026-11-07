@@ -10,7 +10,8 @@ import type { SequentialRecord, SequentialTurn } from "./sequentialTurn";
 const SCHEMA = "mecha-sequential-bundle:v1";
 const STATUS_SCHEMA = "mecha-sequential-bundle:v2";
 const MAX_BYTES = 40_000;
-export type StatusMonsterId = "spore_leaper" | "flux_lancer" | "prism_warden" | "gravity_core";
+import { isStatusSpecies, type StatusMonsterId } from "./monsters/catalog";
+export type { StatusMonsterId };
 type Opening = { preset: "covers_sparse_mid"; script: "siege"; placements: DeployPlacement[]; encounter?: { speciesId: StatusMonsterId; contentVersion: 1; statusRules: "mecha-status-encounter:v1" } };
 type Bundle = { schema: typeof SCHEMA | typeof STATUS_SCHEMA; ruleset: "mecha-v1.5"; siteDigest: string; opening: Opening; replay: unknown };
 const fail = (): never => { throw new Error("invalid_sequential_bundle"); };
@@ -22,7 +23,7 @@ function validOpening(v: unknown, status: boolean): v is Opening {
   if (!object(v) || !fields(v, status ? ["preset", "script", "placements", "encounter"] : ["preset", "script", "placements"]) || v.preset !== "covers_sparse_mid" || v.script !== "siege" ||
       !Array.isArray(v.placements) || v.placements.length !== MECH_IDS.length) return false;
   if (status && (!object(v.encounter) || !fields(v.encounter, ["speciesId", "contentVersion", "statusRules"]) ||
-      typeof v.encounter.speciesId !== "string" || !["spore_leaper", "flux_lancer", "prism_warden", "gravity_core"].includes(v.encounter.speciesId) ||
+      typeof v.encounter.speciesId !== "string" || !isStatusSpecies(v.encounter.speciesId) ||
       v.encounter.contentVersion !== 1 || v.encounter.statusRules !== "mecha-status-encounter:v1")) return false;
   const ids = new Set<string>(), positions = new Set<string>();
   for (const p of v.placements) {
@@ -38,7 +39,7 @@ async function digest(value: unknown): Promise<string> {
 }
 /** Explicit local status encounter; initialize before deployment prepares enemy intent. */
 export function statusDeploymentFromSite(site: CityMechaSite, speciesId: StatusMonsterId): MatchState {
-  if (!["spore_leaper", "flux_lancer", "prism_warden", "gravity_core"].includes(speciesId)) return fail();
+  if (!isStatusSpecies(speciesId)) return fail();
   const state = matchFromSite(site, { ruleset: "mecha-v1.5", preset: "covers_sparse_mid", script: "siege", deployment: true, monsterContent: { speciesId, contentVersion: 1 } });
   state.statusEncounter = { schema: "mecha-status-encounter:v1", statuses: [] };
   return state;

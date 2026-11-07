@@ -2,11 +2,12 @@ import { useState } from "react";
 import { MONSTER_SKILLS } from "./mecha/board";
 import { PLANNED_MONSTER_SPECIES_IDS, type PlannedMonsterSpeciesId } from "./mecha/monsters/contracts";
 import { lookupMonsterDefinition, MONSTER_CONTENT_VERSION_V1, MONSTER_RULESET_V1 } from "./mecha/monsters/registry";
+import { practiceSpecies } from "./mecha/monsters/catalog";
 import type { GameLocale } from "./gameCopy";
 import type { MechaControllerState } from "./mecha/controller";
 
 // Opt in only after authoritative turns and presentation have been verified.
-const PLAYABLE_PRACTICE_SPECIES = new Set<PlannedMonsterSpeciesId>(["spore_leaper", "flux_lancer", "porous_shaper", "prism_warden", "swarm_mantle", "phase_stalker", "gravity_core", "neural_weaver"]);
+const PLAYABLE_PRACTICE_SPECIES = new Set<PlannedMonsterSpeciesId>(practiceSpecies());
 export function monsterPracticeAvailable(id: PlannedMonsterSpeciesId): boolean {
   return PLAYABLE_PRACTICE_SPECIES.has(id) && Object.hasOwn(MONSTER_SKILLS, id);
 }
