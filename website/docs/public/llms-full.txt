@@ -862,3 +862,32 @@ The wasm crate is excluded from the default workspace build. Its docs mention a 
 - [WorkBuddy data source](https://ohagent.ai/docs/data-sources/workbuddy)
 - [What each building in Agent City means](https://ohagent.ai/docs/city-guide)
 - [Privacy and data](https://ohagent.ai/docs/privacy-and-data) · [Install](https://ohagent.ai/docs/install) · [FAQ](https://ohagent.ai/#faq)
+
+---
+
+# "Agent Vitals Python twin: the byte-for-byte compatible implementation"
+URL: https://ohagent.ai/docs/vitals/python/
+
+Next to the Rust engine, Agent Vitals keeps a Python implementation in `packages/agent-vitals-python/agent_vitals/`. It's a compatibility twin: for the same input, both must produce byte-identical output, which golden tests check in CI. It uses only the standard library, targets Python 3.9, and is what the ClawHub skill package runs through `scripts/scan.py`. The desktop app and Agent City use the Rust engine, not Python.
+
+## Key facts
+
+- **Location:** `packages/agent-vitals-python/agent_vitals/`, with `adapters/` (per agent), `agent/` (sessions, cost, usage facts, manifests, MCP) and `skills/` (skill audit).
+- **Entry point:** `python3 scripts/scan.py …` (a thin wrapper that puts the package on the path).
+- **Parity:** `python3 tests/golden_runner.py --diff` compares against `golden/`; with `AGENT_VITALS_BIN` set, it compares the Rust binary too.
+- **Python version:** 3.9 in CI.
+- **Not bundled** with the desktop app; manifest sources don't need Python either.
+
+## Which commands does it have?
+
+The Python CLI mirrors the skill-auditor and session-audit commands registered in `packages/agent-vitals-python/agent_vitals/cli.py`: `list`, `overlap`, `doctor`, `plan`, `explain`, `snapshot`, `diff`, `behavior`, `duration-audit`, `harnesses`, `codex-evidence`, `codex-session`, `claude-session`, `claude-sync`, `claude-usage-facts`, `manifest-validate`, `workbuddy-usage-facts`, `codex-usage-facts`, `dsh-usage-facts`, `workbuddy-session`, `sessions` (with `list`, `read`, and `navigation`), `oneline`, `calendar`, `state`, and `budget`. The desktop app and Agent City use the Rust `agent-vitals` binary, which adds data-plane commands the Python twin does not ship.
+
+## Why keep two implementations?
+
+The Python version came first and is the reference ("oracle") for output contracts. Keeping both in lockstep means a contract change shows up as a golden diff that has to be reviewed. Golden files must never be refreshed just to silence a failure.
+
+## Related
+
+- [Agent Vitals engine overview](https://ohagent.ai/docs/vitals/overview) · [CLI](https://ohagent.ai/docs/vitals/cli) · [Data MCP tools](https://ohagent.ai/docs/vitals/mcp-tools) · [App SDK](https://ohagent.ai/docs/vitals/app-sdk)
+- [What each building in Agent City means](https://ohagent.ai/docs/city-guide)
+- [Does Oh Agent upload my sessions?](https://ohagent.ai/docs/privacy-and-data)

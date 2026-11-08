@@ -1,5 +1,5 @@
 ---
-draft: true
+lastUpdated: 2026-11-08
 title: "Agent Vitals Python twin: the byte-for-byte compatible implementation"
 description: Agent Vitals keeps a stdlib-only Python implementation next to the Rust engine. Golden tests make both produce identical output, and it powers the ClawHub skill package.
 head:
@@ -35,7 +35,7 @@ Next to the Rust engine, Agent Vitals keeps a Python implementation in `packages
 
 ## Which commands does it have?
 
-The Python CLI mirrors the skill-auditor and session-audit commands: `list`, `overlap`, `doctor`, `plan`, `explain`, `snapshot`, `diff`, `behavior`, `duration-audit`, `harnesses`, `codex-evidence`, `codex-session`, `sessions`, `oneline`, `calendar`, `state`, `budget`, plus `manifest-validate`. **TBD:** the complete list; some subcommands are registered without a simple `add_parser("name")` call and weren't counted here.
+The Python CLI mirrors the skill-auditor and session-audit commands registered in `packages/agent-vitals-python/agent_vitals/cli.py`: `list`, `overlap`, `doctor`, `plan`, `explain`, `snapshot`, `diff`, `behavior`, `duration-audit`, `harnesses`, `codex-evidence`, `codex-session`, `claude-session`, `claude-sync`, `claude-usage-facts`, `manifest-validate`, `workbuddy-usage-facts`, `codex-usage-facts`, `dsh-usage-facts`, `workbuddy-session`, `sessions` (with `list`, `read`, and `navigation`), `oneline`, `calendar`, `state`, and `budget`. The desktop app and Agent City use the Rust `agent-vitals` binary, which adds data-plane commands the Python twin does not ship.
 
 <!-- source: packages/agent-vitals-python/agent_vitals/cli.py (add_parser calls); apps/cli/src/main.rs (ManifestValidate "Mirrors Python scan.py manifest-validate") -->
 
@@ -47,6 +47,6 @@ The Python version came first and is the reference ("oracle") for output contrac
 
 ## Related
 
-- [Agent Vitals engine overview](/docs/vitals/overview)
-- [CLI](/docs/vitals/cli)
-- [Add a new data source](/docs/contributing/adding-a-data-source)
+- [Agent Vitals engine overview](/docs/vitals/overview) · [CLI](/docs/vitals/cli) · [Data MCP tools](/docs/vitals/mcp-tools) · [App SDK](/docs/vitals/app-sdk)
+- [What each building in Agent City means](/docs/city-guide)
+- [Does Oh Agent upload my sessions?](/docs/privacy-and-data)
