@@ -1,4 +1,7 @@
 import { beginEnemyPhase } from "../combat";
+import { SequentialTurn } from "../sequentialTurn";
+import { nextCommand } from "../ai/commandPolicy";
+import { stateValue } from "../ai/commandPolicy";
 import { resolveEnemyPhase } from "../execution/enemyPhase";
 import { MECH_IDS, inb, manh, occupant, type Cell, type MatchState } from "../board";
 import type { Intent } from "../rules";
@@ -84,6 +87,20 @@ function evaluate(initial: MatchState, plan: EnemyPlan, afterEnemy: MatchState):
   return mechDamage * 12 + buildingDamage * 10 + enemyHp(afterEnemy) * 4 + coverage * 2 - complexity * 0.5;
 }
 
+function playerResponse(state: MatchState): MatchState {
+  const turn = new SequentialTurn(state);
+  let steps = 0;
+  while (!turn.snapshot().match.outcome && steps < 10) {
+    const intent = nextCommand(turn);
+    if (intent.kind === "end") break;
+    const revision = turn.snapshot().match.revision;
+    const result = turn.execute({ ...intent, id: `baup-player-${steps}`, revision });
+    if (!result.ok) break;
+    steps++;
+  }
+  return turn.snapshot().match;
+}
+
 function simulate(state: MatchState, plan: EnemyPlan): MatchState {
   const after = structuredClone(state);
   if (!applyEnemyPlan(after, plan)) throw new Error("baup_plan_rejected");
@@ -96,13 +113,22 @@ export const baupEnemyPlanner: EnemyPlanner = {
   policy: "baup:v1",
   plan(state: MatchState): EnemyPlan {
     const base = scriptedEnemyPlanner.plan(state);
-    let best: { plan: EnemyPlan; score: number } | null = null;
+    const ranked: Array<{ plan: EnemyPlan; after: MatchState; score: number }> = [];
     for (const candidate of candidates(base, state)) {
       try {
-        const score = evaluate(state, candidate, simulate(state, candidate));
-        if (!best || score > best.score) best = { plan: candidate, score };
+        const after = simulate(state, candidate);
+        ranked.push({ plan: candidate, after, score: evaluate(state, candidate, after) });
       } catch { /* invalid candidates are not committed */ }
     }
-    return best?.plan ?? base;
+    ranked.sort((a, b) => b.score - a.score);
+    let best: { plan: EnemyPlan; score: number } | null = null;
+    for (const entry of ranked.slice(0, 8)) {
+      try {
+        const afterPlayer = playerResponse(structuredClone(entry.after));
+        const score = entry.score - stateValue(afterPlayer) * 0.15;
+        if (!best || score > best.score) best = { plan: entry.plan, score };
+      } catch { /* simulation failure is not a committed plan */ }
+    }
+    return best?.plan ?? ranked[0]?.plan ?? base;
   },
 };
