@@ -18,7 +18,7 @@ try {
       const response = await route.fetch(); const source = await response.text();
       const seam = "const state = useSyncExternalStore(controller.subscribe, controller.getState);";
       assert.equal(source.split(seam).length, 2);
-      await route.fulfill({ response, body: source.replace(seam, `${seam} globalThis.__v15Controller = controller; globalThis.__v15LegalActions = legalActions; globalThis.__v15MoveHelpers = { BOARD, pathDistance, moveBudget, occupant };`) });
+      await route.fulfill({ response, body: source.replace(seam, `${seam} globalThis.__v15Controller = controller; globalThis.__v15LegalActions = legalActions; globalThis.__v15Verify = sequentialPresentation; globalThis.__v15MoveHelpers = { BOARD, pathDistance, moveBudget, occupant };`) });
     });
     await page.route("**/src/game/CityMechaWorld.tsx*", async route => {
       const response = await route.fetch(); const source = await response.text();
@@ -67,6 +67,13 @@ try {
     await remoteEntry.click();
     await page.locator(".mecha-remote-panel").waitFor();
     const remoteDialog = page.locator(".mecha-remote-dialog");
+    const relayInput = remoteDialog.getByLabel(locale === "zh" ? "中继服务地址" : "Relay service URL");
+    const createLink = remoteDialog.getByRole("button", { name: locale === "zh" ? "生成手机链接" : "Create phone link", exact: true });
+    await relayInput.fill("http://invalid.example");
+    assert.equal(await createLink.isDisabled(), true, "remote handoff requires HTTPS");
+    await relayInput.fill("https://relay.example.com");
+    await page.waitForFunction(() => globalThis.__v15Controller.getState().persistence === "ready");
+    assert.equal(await createLink.isEnabled(), true, "a valid relay enables the handoff entry");
     const dialogBox = await remoteDialog.boundingBox();
     assert.ok(dialogBox && dialogBox.width <= 520, `remote dialog width ${dialogBox?.width}`);
     const closeBox = await page.getByRole("button", { name: locale === "zh" ? "关闭" : "Close", exact: true }).boundingBox();
@@ -109,6 +116,9 @@ try {
     await page.locator(".city-loading").waitFor({ state: "hidden" });
     await button("城市设置", "City settings").click(); await button("机甲战棋", "Mecha tactics").click();
     await root.waitFor(); await button("恢复对局", "Recover match").click();
+    try { await page.waitForFunction(() => globalThis.__v15Controller?.getState().persistence === "ready", null, { timeout: 15000 }); }
+    catch (error) { console.error("recovery diagnostics", await page.evaluate(() => ({ state: globalThis.__v15Controller?.getState(), text: document.querySelector('[data-mecha-v15]')?.textContent }))); throw error; }
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     assert.deepEqual(await page.evaluate(() => globalThis.__v15Controller.getState().match.mechs.map(m => [m.id, m.pos.x, m.pos.y])), deployed, "opening checkpoint survives reload before any action");
     const roster = root.locator(".mecha-v15-roster .mecha-plan-card");
     assert.match(await roster.nth(0).innerText(), locale === "zh" ? /部署点.*可移动 · 可行动/s : /Deployed at.*Can move · Can act/s);
@@ -258,7 +268,8 @@ try {
     await root.locator(".mecha-v15-confirm").getByRole("button", { name: locale === "zh" ? "确认结束" : "End turn", exact: true }).click();
     try { await page.waitForFunction(() => { const match = globalThis.__v15Controller.getState().match; return match.turn > 1 || Boolean(match.outcome); }); }
     catch (error) { console.error("end-turn diagnostics", await page.evaluate(() => { const s = globalThis.__v15Controller.getState(); return { turn: s.match.turn, outcome: s.match.outcome, phase: s.match.phase, error: s.error, persistence: s.persistence, presentation: Boolean(s.presentation), selected: s.selected, rights: s.rights, panel: document.querySelector(".mecha-v15-panel")?.innerText }; })); throw error; }
-    await page.waitForFunction(() => !globalThis.__v15Controller.getState().presentation);
+    try { await page.waitForFunction(() => !globalThis.__v15Controller.getState().presentation, null, { timeout: 20000 }); }
+    catch (error) { const diagnostic = await page.evaluate(() => { const state = globalThis.__v15Controller.getState(), p = state.presentation; return { verification: p && globalThis.__v15Verify(p.before, state.match, p.events, p.stages), state, alert: document.querySelector('.mecha-v15-alert')?.textContent, performance: globalThis.__v15World.performance() }; }); console.error("presentation diagnostics", diagnostic); await writeFile(`/tmp/mecha-v15-presentation-failure-${locale}.json`, JSON.stringify(diagnostic, null, 2)); await page.screenshot({ path: `/tmp/mecha-v15-presentation-failure-${locale}.png` }); throw error; }
     await page.waitForFunction(() => { const match = globalThis.__v15Controller.getState().match; const text = document.querySelector('.mecha-v15-panel .mecha-objective-round')?.textContent ?? ''; return Boolean(match.outcome) || text.includes(String(match.turn)); });
     const finalState = await page.evaluate(() => globalThis.__v15Controller.getState().match);
     await root.locator(".mecha-v15-replays summary").click();
@@ -292,6 +303,8 @@ try {
       await button("跳过演出", "Skip animation").click();
     }
     await page.waitForFunction(() => !globalThis.__v15World.performance());
+    const firstExpected = await page.evaluate(() => globalThis.__v15Controller.records()[0].snapshot.match.mechs.map(m => [m.id, m.pos.x, m.pos.y, m.hp]));
+    await page.waitForFunction(expected => JSON.stringify(globalThis.__v15World.view().figures.map(f => [f.id, f.x, f.y, f.hp])) === JSON.stringify(expected), firstExpected);
     const firstReplay = await page.evaluate(() => ({
       rendered: globalThis.__v15World.view().figures.map(f => [f.id, f.x, f.y, f.hp]),
       expected: globalThis.__v15Controller.records()[0].snapshot.match.mechs.map(m => [m.id, m.pos.x, m.pos.y, m.hp]),
