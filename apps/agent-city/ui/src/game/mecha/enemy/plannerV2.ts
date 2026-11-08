@@ -1,8 +1,5 @@
 import { beginEnemyPhase } from "../combat";
 import { resolveEnemyPhase } from "../execution/enemyPhase";
-import { SequentialTurn, type SequentialCommand } from "../sequentialTurn";
-import { nextCommand } from "../ai/commandPolicy";
-import { stateValue } from "../ai/commandPolicy";
 import { MECH_IDS, inb, manh, occupant, type Cell, type MatchState } from "../board";
 import type { Intent } from "../rules";
 import { applyEnemyPlan, scriptedEnemyPlanner } from "./planner";
@@ -16,6 +13,15 @@ const adjacent = (anchor: Cell): Cell[] => {
   }
   return out;
 };
+
+const cardinal = (cell: Cell): Cell[] => [{ x: cell.x + 1, y: cell.y }, { x: cell.x - 1, y: cell.y }, { x: cell.x, y: cell.y + 1 }, { x: cell.x, y: cell.y - 1 }].filter(inb);
+
+function raiderStrike(state: MatchState, pos: Cell): Intent | null {
+  const targets = cardinal(pos).filter(cell => occupant(state, cell) !== "empty");
+  if (targets.length === 0) return null;
+  const target = targets.sort((a, b) => occupant(state, a) === "building" ? -1 : occupant(state, b) === "building" ? 1 : 0)[0]!;
+  return { skillId: "smash", local: [{ x: target.x - pos.x, y: target.y - pos.y }], projected: [target], cdSweep: 0, status: "planned" };
+}
 
 function intentFor(plan: EnemyPlan, skill: Intent["skillId"], cells: Cell[]): Intent {
   const anchor = plan.boss.anchor;
@@ -55,29 +61,18 @@ function candidates(base: EnemyPlan, state: MatchState): EnemyPlan[] {
         const intent = { skillId: "smash" as const, local: [{ x: cell.x - raider.pos.x, y: cell.y - raider.pos.y }], projected: [cell], cdSweep: 0, status: "planned" as const };
         options.push({ ...plan, raiders: plan.raiders.map(item => item.id === raider.id ? { ...item, intent } : item) });
       }
-      plans = plans.flatMap(item => [item, ...options.slice(0, 2)]);
+      for (const to of cardinal(raider.pos)) {
+        if (occupant(state, to) !== "empty") continue;
+        options.push({ ...plan, raiders: plan.raiders.map(item => item.id === raider.id ? { ...item, pos: to, intent: raiderStrike(state, to) } : item) });
+      }
+      plans = plans.flatMap(item => [item, ...options.slice(0, 3)]);
     }
     return plans;
   }).flat();
-  return [...out, ...raiderVariants].slice(0, 128);
+  return [...out, ...raiderVariants].slice(0, 32);
 }
 
-function playerResponse(state: MatchState): MatchState {
-  const turn = new SequentialTurn(state);
-  let steps = 0;
-  while (!turn.snapshot().match.outcome && steps < 12) {
-    const intent = nextCommand(turn);
-    if (intent.kind === "end") break;
-    const revision = turn.snapshot().match.revision;
-    const command: SequentialCommand = { ...intent, id: `baup-player-${steps}`, revision };
-    const result = turn.execute(command);
-    if (!result.ok) break;
-    steps++;
-  }
-  return turn.snapshot().match;
-}
-
-function evaluate(initial: MatchState, plan: EnemyPlan, afterEnemy: MatchState, afterPlayer: MatchState): number {
+function evaluate(initial: MatchState, plan: EnemyPlan, afterEnemy: MatchState): number {
   const hp = (state: MatchState) => state.mechs.reduce((sum, unit) => sum + unit.hp, 0);
   const buildings = (state: MatchState) => state.buildings.reduce((sum, building) => sum + building.hp, 0);
   const enemyHp = (state: MatchState) => state.boss.hp + state.raiders.reduce((sum, raider) => sum + raider.hp, 0);
@@ -86,17 +81,15 @@ function evaluate(initial: MatchState, plan: EnemyPlan, afterEnemy: MatchState, 
   const projected = [...(plan.boss.intent?.projected ?? []), ...plan.raiders.flatMap(raider => raider.intent?.projected ?? [])];
   const coverage = projected.filter(cell => occupant(initial, cell) !== "empty").length;
   const complexity = projected.length;
-  const future = -stateValue(afterPlayer) * 0.2;
-  return mechDamage * 12 + buildingDamage * 10 + enemyHp(afterEnemy) * 4 + coverage * 2 - complexity * 0.5 + future;
+  return mechDamage * 12 + buildingDamage * 10 + enemyHp(afterEnemy) * 4 + coverage * 2 - complexity * 0.5;
 }
 
-function simulate(state: MatchState, plan: EnemyPlan): { afterEnemy: MatchState; afterPlayer: MatchState } {
+function simulate(state: MatchState, plan: EnemyPlan): MatchState {
   const after = structuredClone(state);
   if (!applyEnemyPlan(after, plan)) throw new Error("baup_plan_rejected");
   beginEnemyPhase(after);
   resolveEnemyPhase(after, { capturePresentation: false });
-  const afterEnemy = structuredClone(after);
-  return { afterEnemy, afterPlayer: playerResponse(after) };
+  return after;
 }
 
 export const baupEnemyPlanner: EnemyPlanner = {
@@ -106,8 +99,7 @@ export const baupEnemyPlanner: EnemyPlanner = {
     let best: { plan: EnemyPlan; score: number } | null = null;
     for (const candidate of candidates(base, state)) {
       try {
-        const simulated = simulate(state, candidate);
-        const score = evaluate(state, candidate, simulated.afterEnemy, simulated.afterPlayer);
+        const score = evaluate(state, candidate, simulate(state, candidate));
         if (!best || score > best.score) best = { plan: candidate, score };
       } catch { /* invalid candidates are not committed */ }
     }
