@@ -5,7 +5,7 @@
  * 这里只做转换，不调 bossPrepare——何时开第一回合是调用方的事。
  */
 import { rearDeployZone } from "./deployment";
-import type { LocalMissionId, MonsterContent, PveRuleset } from "./board";
+import type { Cell, LocalMissionId, MonsterContent, PveRuleset } from "./board";
 import type { CityMechaSite } from "./citySite";
 import type { PlannedMonsterSpeciesId } from "./monsters/contracts";
 import { createMatch, type BossScriptId, type BuildingStake, type CoverPresetId, type DifficultyId, type MatchState } from "./rules";
@@ -15,9 +15,12 @@ export type MonsterPracticeContent = { speciesId: PlannedMonsterSpeciesId; conte
 
 export function matchFromSite(
   site: CityMechaSite,
-  opts: { preset: CoverPresetId; script: BossScriptId; difficulty?: DifficultyId; stake?: BuildingStake; deployment?: boolean; mission?: LocalMissionId; monsterContent?: MonsterPracticeContent; ruleset?: PveRuleset },
+  opts: { preset: CoverPresetId; script: BossScriptId; difficulty?: DifficultyId; stake?: BuildingStake; deployment?: boolean; mission?: LocalMissionId; monsterContent?: MonsterPracticeContent; ruleset?: PveRuleset; waves?: { count: number; raidersPerWave?: number; spawns: Cell[] } },
 ): MatchState {
   const { preset, script, difficulty, stake } = opts;
+  const waves = opts.waves ?? (opts.ruleset === "mecha-v1.5" && opts.deployment && script === "siege"
+    ? { count: 2, raidersPerWave: 1, spawns: [{ x: 1, y: 4 }, { x: 8, y: 4 }] }
+    : undefined);
   return createMatch({
     preset,
     script,
@@ -37,6 +40,7 @@ export function matchFromSite(
     obstacles: site.blocked.map((cell) => ({ ...cell })),
     stake,
     deployment: opts.deployment,
+    ...(waves ? { waves } : {}),
     mission: opts.mission,
     ...(opts.monsterContent === undefined ? {} : { monsterContent: opts.monsterContent as MonsterContent }),
     // City generation already declares its rear spawn band (rows 6–9).
