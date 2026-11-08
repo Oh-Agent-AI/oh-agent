@@ -44,7 +44,22 @@ function candidates(base: EnemyPlan, state: MatchState): EnemyPlan[] {
       out.push({ ...base, boss: { ...base.boss, intent: intentFor(base, "sweep", [cells[i]!, cells[j]!]) } });
     }
   }
-  return out;
+  // Raider intents: keep the scripted position, vary the declared smash target to a
+  // valuable adjacent cell. This is still deterministic and fully telegraphed.
+  const raiderVariants = out.map(plan => {
+    let plans = [plan];
+    for (const raider of plan.raiders) {
+      const options: EnemyPlan[] = [];
+      for (const cell of adjacent(raider.pos)) {
+        if (occupant(state, cell) === "empty") continue;
+        const intent = { skillId: "smash" as const, local: [{ x: cell.x - raider.pos.x, y: cell.y - raider.pos.y }], projected: [cell], cdSweep: 0, status: "planned" as const };
+        options.push({ ...plan, raiders: plan.raiders.map(item => item.id === raider.id ? { ...item, intent } : item) });
+      }
+      plans = plans.flatMap(item => [item, ...options.slice(0, 2)]);
+    }
+    return plans;
+  }).flat();
+  return [...out, ...raiderVariants].slice(0, 128);
 }
 
 function playerResponse(state: MatchState): MatchState {
@@ -68,8 +83,9 @@ function evaluate(initial: MatchState, plan: EnemyPlan, afterEnemy: MatchState, 
   const enemyHp = (state: MatchState) => state.boss.hp + state.raiders.reduce((sum, raider) => sum + raider.hp, 0);
   const mechDamage = Math.max(0, hp(initial) - hp(afterEnemy));
   const buildingDamage = Math.max(0, buildings(initial) - buildings(afterEnemy));
-  const coverage = plan.boss.intent?.projected.filter(cell => occupant(initial, cell) !== "empty").length ?? 0;
-  const complexity = plan.boss.intent?.projected.length ?? 0;
+  const projected = [...(plan.boss.intent?.projected ?? []), ...plan.raiders.flatMap(raider => raider.intent?.projected ?? [])];
+  const coverage = projected.filter(cell => occupant(initial, cell) !== "empty").length;
+  const complexity = projected.length;
   const future = -stateValue(afterPlayer) * 0.2;
   return mechDamage * 12 + buildingDamage * 10 + enemyHp(afterEnemy) * 4 + coverage * 2 - complexity * 0.5 + future;
 }
