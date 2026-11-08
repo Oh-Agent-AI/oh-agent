@@ -1,5 +1,5 @@
 ---
-draft: true
+lastUpdated: 2026-11-08
 title: Agent Vitals 的 Python 对等实现：逐字节兼容的第二套实现
 description: Agent Vitals 在 packages/agent-vitals-python 里维护一套只用标准库的 Python 实现，和 Rust 引擎通过 golden 测试保持逐字节一致，ClawHub 的 skill 包用的就是它。
 head:
@@ -35,7 +35,7 @@ head:
 
 ## 有哪些命令？
 
-Python 命令行对应 skill 体检和会话审计命令：`list`、`overlap`、`doctor`、`plan`、`explain`、`snapshot`、`diff`、`behavior`、`duration-audit`、`harnesses`、`codex-evidence`、`codex-session`、`sessions`、`oneline`、`calendar`、`state`、`budget`，以及 `manifest-validate`。**待确认**：完整列表。有些子命令不是用简单的 `add_parser("name")` 注册的，这里没统计进去。
+Python 命令行对应 `packages/agent-vitals-python/agent_vitals/cli.py` 里注册的 skill 体检和会话审计命令：`list`、`overlap`、`doctor`、`plan`、`explain`、`snapshot`、`diff`、`behavior`、`duration-audit`、`harnesses`、`codex-evidence`、`codex-session`、`claude-session`、`claude-sync`、`claude-usage-facts`、`manifest-validate`、`workbuddy-usage-facts`、`codex-usage-facts`、`dsh-usage-facts`、`workbuddy-session`、`sessions`（含 `list`、`read`、`navigation`）、`oneline`、`calendar`、`state` 和 `budget`。桌面应用和 Agent City 用的是 Rust 的 `agent-vitals` 二进制，它还包含 Python 对等实现没有的数据面命令。
 
 <!-- source: packages/agent-vitals-python/agent_vitals/cli.py (add_parser calls); apps/cli/src/main.rs (ManifestValidate "Mirrors Python scan.py manifest-validate") -->
 
@@ -47,6 +47,6 @@ Python 版本先有，是输出契约的参照（“oracle”）。两套保持�
 
 ## 相关
 
-- [Agent Vitals 引擎总览](/docs/zh/vitals/overview)
-- [命令行](/docs/zh/vitals/cli)
-- [添加新的数据源](/docs/zh/contributing/adding-a-data-source)
+- [Agent Vitals 引擎总览](/docs/zh/vitals/overview) · [命令行](/docs/zh/vitals/cli) · [Data MCP 工具](/docs/zh/vitals/mcp-tools) · [App SDK](/docs/zh/vitals/app-sdk)
+- [Agent City 里的楼代表什么](/docs/zh/city-guide)
+- [Oh Agent 会上传我的会话吗？](/docs/zh/privacy-and-data)

@@ -1,5 +1,5 @@
 ---
-draft: true
+lastUpdated: 2026-11-07
 title: "Agent Vitals App SDK: how Agent City and other plugins read Vitals data"
 description: Agent City is an official built-in plugin. Plugins run in their own WebView and read only the projections they declare in plugins.json, through the host, never the database.
 head:
@@ -58,7 +58,7 @@ Contract types are generated from JSON Schemas in `docs/schemas/` (`npm run gene
 
 1. City's data provider builds a `PluginRequestV1` with `method: "data.read"` and `payload: {projection: "city", version: 3, operation: "overview", windowDays, …}`, then pages `city:v3`. The landing host and `?cityData=v2` still request `{projection: "city", version: 2, windowDays}`.
 2. The host checks that the request came from City's active WebView, that `city:v3` (or `city:v2`) is declared, and runs `query::city_v3::read` or `query::app_local::city_projection` in Rust.
-3. City adapts v3 pages into the v2 UI DTO, validates with `validateCityProjectionV2`, and maps each session to a building in `cityModel.ts`. See [City model](/docs/architecture/city-model).
+3. City adapts v3 pages into the v2 UI DTO, validates with `validateCityProjectionV2`, and maps each session to a building in `cityModel.ts`.
 4. The Findings and Skills panels, and per-building details, call `city:v3` on demand.
 5. In the browser (website demo, standalone preview), the same provider returns a synthetic fixture with `source: "fixture"` and never calls a host.
 
@@ -74,7 +74,7 @@ Contract types are generated from JSON Schemas in `docs/schemas/` (`npm run gene
 | `city:v3` | `data.read` with `operation` | Paged City view on one data snapshot (see below) | Plugins that declare it |
 | `city-settings:v1` | `data.read` | Seed setting stored at `state/plugins/{pluginId}.json` | Plugins that declare it |
 
-`harnesses:v1` is the general Agent Vitals interface. `city:v2` and `city:v3` are shaped for City. **TBD:** whether to promote a general, documented "Vitals data interface" that new apps can rely on. Today a new plugin gets `harnesses:v1` only, unless a new Rust projection handler is added.
+`harnesses:v1` is the general Agent Vitals interface. `city:v2` and `city:v3` are shaped for City. A broader, documented "Vitals data interface" for new apps is not published yet. Today a new plugin gets `harnesses:v1` only, unless a new Rust projection handler is added.
 
 Reads take a consistent snapshot. If the data changes between `harnesses.list` and `harnesses.sessions`, the host returns `revision_changed` and the SDK retries up to three times.
 
@@ -122,13 +122,12 @@ The repo's guide (`docs/OFFICIAL_PLUGIN_INTEGRATION_GUIDE.md`) covers the full s
 
 ## Can third parties publish plugins?
 
-Not today. The desktop plugin host loads only the official UI plugins compiled into the app from `plugins.json`. There are no third-party native plugins and no dynamic install. Independent or externally installed apps would need package signing, process identity, sandboxing and per-request data grants. The repo has specs for these (`docs/APP_PACKAGE_SIGNATURE_CONTRACT_V1.md`, `docs/AGENT_VITALS_EXTENSION_ARCHITECTURE_SPEC.md`), but the policy says it doesn't certify their implementation. **TBD:** whether a third-party plugin path is on the roadmap.
+Not today. The desktop plugin host loads only the official UI plugins compiled into the app from `plugins.json`. There are no third-party native plugins and no dynamic install. Independent or externally installed apps would need package signing, process identity, sandboxing and per-request data grants. The repo has specs for these (`docs/APP_PACKAGE_SIGNATURE_CONTRACT_V1.md`, `docs/AGENT_VITALS_EXTENSION_ARCHITECTURE_SPEC.md`), but the policy says it doesn't certify their implementation. A third-party plugin path is not available in the current product; treat the specs as design notes, not a shipping feature.
 
 <!-- source: AGENTS.md policy item 6 ("Independent or externally installed applications: retain package verification, platform process identity, sandbox restrictions …"); AGENTS.md ("this policy does not certify their implementation") -->
 
 ## Related
 
-- [Agent Vitals engine overview](/docs/vitals/overview)
-- [City model](/docs/architecture/city-model)
-- [Architecture overview](/docs/architecture/overview)
-- [Integrations overview](/docs/integrations)
+- [Agent Vitals engine overview](/docs/vitals/overview) · [CLI](/docs/vitals/cli) · [Data MCP tools](/docs/vitals/mcp-tools)
+- [What each building in Agent City means](/docs/city-guide)
+- [Does Oh Agent upload my sessions?](/docs/privacy-and-data)
