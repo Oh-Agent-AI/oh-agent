@@ -1,5 +1,5 @@
 ---
-draft: true
+lastUpdated: 2026-11-09
 title: How is Oh Agent built? Architecture overview (Agent Vitals + Agent City)
 description: Oh Agent is an open-source platform for analyzing AI agent behavior data. Agent Vitals collects and analyzes local session logs; Agent City is an open-world visualization built on its data interface.
 head:
@@ -23,15 +23,15 @@ Oh Agent is an open-source platform for analyzing AI agent behavior data. Agents
 - **Agent Vitals**, the foundation: a local-first agent behavior data engine, embedded in the app (no server, no network port, no daemon). It finds the session logs your agents already write, parses them, and stores usage facts and behaviour findings in a local SQLite database. Then it serves that data through narrow, read-only interfaces.
 - **Agent City**, built on top. It's an open-world data-visualization game that reads one of those interfaces and turns your sessions into a 3D city you can explore and replay.
 
-Everything runs on your Mac. Nothing in this path uploads your data.
+Everything runs locally on your computer (Apple Silicon Mac, Windows, or Linux). Nothing in this path uploads your data.
 
-What "game" means today: desktop City has free flight and ring challenges, and driving is still in development. The web demo hides the game controls.
+What "game" means today: desktop City has free flight, ring challenges, and free-drive (beta). The web demo hides the game controls.
 
 <!-- source: README.md ("What you can try today" table: Flying, Driving, Website gameplay rows) -->
 
 ## Key facts
 
-- **Desktop shell:** Tauri 2 (`tauri = "2"`), app `Oh Agent.app`, identifier `ai.ohagent.desktop`, version `1.0.0-beta.3`.
+- **Desktop shell:** Tauri 2 (`tauri = "2"`), app `Oh Agent.app`, identifier `ai.ohagent.desktop`, version `1.0.0-beta.4` in the current `dev` tree (the public pre-release is still `1.0.0-beta.3`).
 - **Workbench UI:** React 19 + Vite + Tailwind 4, in `apps/desktop/ui-dev/`.
 - **Agent City:** React 19 + three.js 0.186 + Vite, TypeScript, in `apps/agent-city/ui/`.
 - **Core:** a Rust workspace of layered crates under `crates/` (data, domain, harnesses, query, ingest, billing, trust, MCP).
@@ -167,19 +167,16 @@ The landing page at ohagent.ai embeds a build of the real City frontend from `ap
 
 ## Roadmap / 规划中
 
-Not in the code at `dev` `bf7196a`. Listed so readers don't mistake plans for features.
+Not in the code at `dev` `0636802b`. Listed so readers don't mistake plans for features.
 
 - **Partial:** MCP tools can get / preview / set / reset one session building model (`docs/CITY_BUILDING_MCP.md`). An open City window plays construction from a shared `CityEntityChanged` host event (`entity_kind=building`; road/vehicle handlers later). Successful `preview_building` shows a translucent ghost; compliance / detail-regression / design-coherence rejects flash the lot. Soft design issues return `data.warnings` without blocking. The same write path fans out a squad IM envelope; agents publish `chat`/`claim`/`release` via `im_publish` (`docs/CITY_SQUAD_IM.md`).
-- **TBD:** Incremental hot update. City refreshes on its own after each sync, but it reloads the full projection and rebuilds the scene; sending only changed sessions and patching single buildings isn't implemented. See [Data pipeline](/docs/architecture/data-pipeline#how-does-agent-city-update-when-new-sessions-arrive).
+- **TBD:** Incremental hot update. City refreshes on its own after each sync, but it reloads the full projection and rebuilds the scene; sending only changed sessions and patching single buildings isn't implemented.
 - **TBD:** A community gallery of cities (UGC). No code for this exists in the repo.
-- **TBD:** Signed public installers. GitHub Releases is still empty.
+- **Partial:** GitHub Releases has a 1.0.0-beta.3 pre-release with Apple Silicon (signed and notarized), Windows x64 and Linux x64 (unsigned) packages. A later signed release matching the current `1.0.0-beta.4` tree is not published yet.
 
-See [Integrations](/docs/integrations) for the full list of what exists today.
 
 ## Related
 
 - [Agent Vitals engine: crates, CLI, MCP tools, App SDK](/docs/vitals/overview)
-- [Data pipeline: from session logs to the database](/docs/architecture/data-pipeline)
-- [City model: how sessions become buildings](/docs/architecture/city-model)
-- [Integrations and extension points](/docs/integrations)
-- [Add a new data source](/docs/contributing/adding-a-data-source)
+- [What each building in Agent City means](/docs/city-guide)
+- [Privacy and data](/docs/privacy-and-data) · [Install](/docs/install)
