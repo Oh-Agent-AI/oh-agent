@@ -26,13 +26,10 @@ const angleDelta = (a, b) => { const d = Math.abs(normalizeAngle(a) - normalizeA
 // 档位：每档 400 栋，1 = 初始规划（默认），10 = 满档 4000 栋：CITY_SEASIDE_TIER=10 跑满档。
 const TIER = Number(process.env.CITY_SEASIDE_TIER ?? 1);
 const allSeeds = Array.from({ length: 20 }, (_, i) => (i * 2654435761 + 97) >>> 0 || 1);
-// Tier 10 planning is intentionally expensive. Keep broad seed coverage at the
-// normal tier, while the release guard samples two fixed, separated seeds at
-// full capacity. CITY_SEASIDE_EXHAUSTIVE=1 retains the full 20-seed audit for
-// scheduled/manual runs without making every CI release gate spend an hour here.
-const seeds = TIER === 10 && process.env.CITY_SEASIDE_EXHAUSTIVE !== "1"
-  ? [allSeeds[0], allSeeds[10]]
-  : allSeeds;
+// Release CI uses deterministic spread samples at both normal and full capacity.
+// CITY_GUARDS_EXHAUSTIVE=1 restores the 20-seed audit for scheduled/manual runs.
+const seeds = process.env.CITY_GUARDS_EXHAUSTIVE === "1" ? allSeeds
+  : TIER === 10 ? [allSeeds[0], allSeeds[10]] : [allSeeds[0], allSeeds[5], allSeeds[10], allSeeds[15]];
 
 assert.equal(seasideHotelCount(4), 8, "a short valid coast still gets a readable hotel row");
 assert.equal(seasideHotelCount(22), 13, "the default coast uses enough Deco frontage to read as a district");

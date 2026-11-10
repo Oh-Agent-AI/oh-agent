@@ -284,6 +284,7 @@ pub fn execute(db: &AuthorityDb, config: &RunConfig, now_ms: i64) -> Result<Stri
 mod tests {
     use super::*;
     use crate::l0::STREAM;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     fn test_db(tag: &str) -> (AuthorityDb, std::path::PathBuf) {
         let path = std::env::temp_dir().join(format!(
@@ -301,8 +302,19 @@ mod tests {
     }
 
     fn fake_claude() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("av-runner-claude-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+        let dir = loop {
+            let id = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+            let candidate = std::env::temp_dir().join(format!(
+                "av-runner-claude-{}-{id}",
+                std::process::id()
+            ));
+            match std::fs::create_dir(&candidate) {
+                Ok(()) => break candidate,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create fake Claude fixture directory: {error}"),
+            }
+        };
         let script = dir.join("claude");
         std::fs::write(&script, format!("#!/bin/sh\ncat <<'EOF'\n{STREAM}EOF\n")).unwrap();
         #[cfg(unix)]

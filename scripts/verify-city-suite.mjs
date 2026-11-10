@@ -11,13 +11,15 @@ const argv = process.argv.slice(2);
 const mode = argv.shift() ?? "full";
 const group = mode === "module" ? argv.shift() : undefined;
 let reportPath;
+const excluded = new Set();
 try {
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--no-cache") process.env.CITY_KIT_NO_CACHE = "1";
     else if (argv[i] === "--report" && argv[i + 1]) reportPath = path.resolve(argv[++i]);
+    else if (argv[i] === "--exclude" && argv[i + 1]) excluded.add(argv[++i]);
     else throw new Error("Unknown or incomplete option: " + argv[i]);
   }
-  const selected = selectStages(mode, group);
+  const selected = selectStages(mode, group).filter((stage) => !excluded.has(stage.id));
   const tasks = [typecheck, { id: "verification-harness", file: "verify-city-verification.mjs", env: { CITY_KIT_NO_CACHE: "0" } },
     ...selected, ...(mode === "full" ? [build] : [])];
   const rows = [];
@@ -57,7 +59,7 @@ try {
     console.log("[city " + mode + "] " + row.status.toUpperCase() + " " + row.id + " " + row.durationMs + "ms");
     if (error) { process.exitCode = 1; break; } // Fast feedback; unrun guards are not claimed passed.
   }
-  const result = { mode, group, cache: process.env.CITY_KIT_NO_CACHE !== "1", selected: tasks.map((t) => t.id),
+  const result = { mode, group, excluded: [...excluded], cache: process.env.CITY_KIT_NO_CACHE !== "1", selected: tasks.map((t) => t.id),
     completed: rows.length, complete: rows.length === tasks.length, durationMs: Math.round(performance.now() - start),
     sharedKit: kitStats(), stages: rows };
   console.log("\n[city] " + JSON.stringify(result));

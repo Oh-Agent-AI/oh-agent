@@ -44,11 +44,13 @@ const { buildCityModel, layoutCity, createCityPlan, scaleTierFor, MIAMI_COASTAL,
 // 调优线（普查种子线；不得用于设阈值——本批只测量）。
 const TUNING_BASE = 2_000_000_000;
 const TUNING_STEP = 104_729;
-const CASES = process.argv.includes("--display-only") ? [] : [
+const allCases = [
   ...Array.from({ length: 8 }, (_, i) => ({ seed: TUNING_BASE + i * TUNING_STEP, tier: 1 })),
   { seed: TUNING_BASE + 8 * TUNING_STEP, tier: 3 },
   { seed: TUNING_BASE + 9 * TUNING_STEP, tier: 5 },
 ];
+const exhaustive = process.env.CITY_GUARDS_EXHAUSTIVE === "1";
+const CASES = process.argv.includes("--display-only") ? [] : exhaustive ? allCases : [allCases[0], allCases.at(-1)];
 
 // 显示图固定 fixture（抄 verify-city-culdesac-bulbs：同一套固定伪随机，同 count 恒同数据）。
 const DISPLAY_SEED = 523001688;

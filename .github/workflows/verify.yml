@@ -17,6 +17,12 @@ on:
     branches: [main, "refactor/**", "merge/**"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      city_exhaustive:
+        description: Run the City heavy guards with their complete seed sets
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -242,12 +248,52 @@ jobs:
         run: npm ci
       - name: City 专项守卫
         working-directory: apps/desktop/ui-dev
-        run: npm run verify:city
+        run: >-
+          node ../../../scripts/verify-city-suite.mjs full
+          --exclude verify-city-road-report
+          --exclude verify-react-city-geography
+          --exclude verify-react-city-seaside
+          --exclude seaside-tier10
       - name: City initial data-loading feedback
         run: node scripts/verify-city-initial-loading.mjs
       - name: 术语与命名边界守卫
         working-directory: apps/desktop/ui-dev
         run: npm run verify:terminology
+
+  city_heavy_guards:
+    name: City heavy guard (${{ matrix.guard }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        guard: [road-report, geography, seaside, seaside-tier10]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: |
+            apps/desktop/ui-dev/package-lock.json
+            apps/agent-city/ui/package-lock.json
+      - name: 安装守卫依赖
+        working-directory: apps/desktop/ui-dev
+        run: npm ci
+      - name: 安装 City 插件依赖
+        working-directory: apps/agent-city/ui
+        run: npm ci
+      - name: 运行代表样本守卫
+        working-directory: apps/desktop/ui-dev
+        env:
+          CITY_GUARDS_EXHAUSTIVE: ${{ inputs.city_exhaustive && '1' || '0' }}
+        run: |
+          case "${{ matrix.guard }}" in
+            road-report) node ../../../scripts/verify-city-road-report.mjs ;;
+            geography) node ../../../scripts/verify-react-city-geography.mjs ;;
+            seaside) node ../../../scripts/verify-react-city-seaside.mjs ;;
+            seaside-tier10) CITY_SEASIDE_TIER=10 node ../../../scripts/verify-react-city-seaside.mjs ;;
+          esac
 
   city_typed_data:
     name: City typed data adapter tests
