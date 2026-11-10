@@ -1,5 +1,5 @@
 ---
-draft: true
+lastUpdated: 2026-11-07
 title: Agent Vitals App SDK：Agent City 和其他插件怎么读取 Vitals 数据
 description: Agent City 作为 Oh Agent 桌面应用的官方插件运行，通过 @agent-vitals/app-sdk 的 PluginRequestV1 向宿主请求只读投影（city:v2、city:v3、harnesses:v1）。目前只加载编译进应用的官方插件。
 head:
@@ -58,7 +58,7 @@ Agent City 是构建在 Agent Vitals 引擎上的第一个应用，以插件的�
 
 1. City 的数据 provider 构造一个 `PluginRequestV1`，`method` 是 `"data.read"`，`payload` 是 `{projection: "city", version: 3, operation: "overview", windowDays, …}`，然后分页读取 `city:v3`。落地页宿主和 `?cityData=v2` 仍请求 `{projection: "city", version: 2, windowDays}`。
 2. 宿主确认请求来自 City 当前活动的 WebView、且声明了 `city:v3`（或 `city:v2`），然后在 Rust 里执行 `query::city_v3::read` 或 `query::app_local::city_projection`。
-3. City 把 v3 页适配成 v2 UI DTO，用 `validateCityProjectionV2` 校验，再在 `cityModel.ts` 里把每个会话映射成一栋楼。见[城市模型](/docs/zh/architecture/city-model)。
+3. City 把 v3 页适配成 v2 UI DTO，用 `validateCityProjectionV2` 校验，再在 `cityModel.ts` 里把每个会话映射成一栋楼。
 4. Findings、Skills 面板和单栋楼详情按需调用 `city:v3`。
 5. 在浏览器里（官网演示、独立预览），同一个 provider 返回 `source: "fixture"` 的合成数据，从不调用宿主。
 
@@ -74,7 +74,7 @@ Agent City 是构建在 Agent Vitals 引擎上的第一个应用，以插件的�
 | `city:v3` | 带 `operation` 的 `data.read` | 基于同一数据快照的分页 City 视图（见下文） | 声明了它的插件 |
 | `city-settings:v1` | `data.read` | 种子设置，存在 `state/plugins/{pluginId}.json` | 声明了它的插件 |
 
-`harnesses:v1` 是通用的 Agent Vitals 接口，`city:v2` 和 `city:v3` 是专为 City 设计的。**待确认**：要不要推出一个通用的、有文档的“Vitals 数据接口”供新应用依赖。目前新插件只能拿到 `harnesses:v1`，除非新增一个 Rust 投影处理器。
+`harnesses:v1` 是通用的 Agent Vitals 接口，`city:v2` 和 `city:v3` 是专为 City 设计的。目前还没有面向新应用发布的、有文档的通用「Vitals 数据接口」。新插件目前只能拿到 `harnesses:v1`，除非新增一个 Rust 投影处理器。
 
 读取是一致性快照。如果数据在 `harnesses.list` 和 `harnesses.sessions` 之间变了，宿主返回 `revision_changed`，SDK 最多重试三次。
 
@@ -122,13 +122,12 @@ Agent City 是构建在 Agent Vitals 引擎上的第一个应用，以插件的�
 
 ## 第三方能发布插件吗？
 
-目前不能。桌面插件宿主只加载 `plugins.json` 里编译进应用的官方界面插件，没有第三方原生插件，也不能动态安装。独立安装或外部安装的应用需要包签名、进程身份、沙盒和按请求的数据授权。仓库里有相关规格（`docs/APP_PACKAGE_SIGNATURE_CONTRACT_V1.md`、`docs/AGENT_VITALS_EXTENSION_ARCHITECTURE_SPEC.md`），但政策文件说明它不保证这些已经实现。**待确认**：第三方插件是否在路线图上。
+目前不能。桌面插件宿主只加载 `plugins.json` 里编译进应用的官方界面插件，没有第三方原生插件，也不能动态安装。独立安装或外部安装的应用需要包签名、进程身份、沙盒和按请求的数据授权。仓库里有相关规格（`docs/APP_PACKAGE_SIGNATURE_CONTRACT_V1.md`、`docs/AGENT_VITALS_EXTENSION_ARCHITECTURE_SPEC.md`），但政策文件说明它不保证这些已经实现。当前产品没有第三方插件路径；相关规格应视为设计笔记，而不是已交付功能。
 
 <!-- source: AGENTS.md policy item 6; AGENTS.md ("this policy does not certify their implementation") -->
 
 ## 相关
 
-- [Agent Vitals 引擎总览](/docs/zh/vitals/overview)
-- [城市模型](/docs/zh/architecture/city-model)
-- [架构总览](/docs/zh/architecture/overview)
-- [集成总览](/docs/zh/integrations)
+- [Agent Vitals 引擎总览](/docs/zh/vitals/overview) · [命令行](/docs/zh/vitals/cli) · [Data MCP 工具](/docs/zh/vitals/mcp-tools)
+- [Agent City 里的楼代表什么](/docs/zh/city-guide)
+- [Oh Agent 会上传我的会话吗？](/docs/zh/privacy-and-data)

@@ -1,5 +1,5 @@
 ---
-draft: true
+lastUpdated: 2026-11-09
 title: Oh Agent 是怎么搭起来的？架构总览（Agent Vitals + Agent City）
 description: Oh Agent 是开源的 AI Agent 行为数据分析平台。底层 Agent Vitals 采集和分析本机会话日志，上层 Agent City 是基于它的数据接口做的开放世界可视化游戏。
 head:
@@ -23,15 +23,15 @@ Oh Agent 是一个开源的 AI Agent 行为数据分析平台。Agent 已经成�
 - **Agent Vitals（底层）**：本机优先的 Agent 行为数据引擎，作为库嵌在应用里（不是服务器，不开网络端口，不常驻后台进程）。找到各个 Agent 本来就会写的会话日志，解析后把用量事实和行为发现存进本机的 SQLite 数据库，再通过范围很窄的只读接口对外提供数据。
 - **Agent City（上层）**：数据可视化开放世界游戏。它读取其中一个接口，把你的会话变成一座可以探索、可以回放的 3D 城市。
 
-所有东西都在你的 Mac 上运行，整条链路不上传数据。
+所有东西都在你的电脑上本地运行（Apple Silicon Mac、Windows 或 Linux），整条链路不上传数据。
 
-“游戏”目前包括什么：桌面版 City 有自由飞行和穿环挑战，驾驶还在开发中；网页演示隐藏了游戏入口。
+“游戏”目前包括什么：桌面版 City 有自由飞行、穿环挑战和自由驾驶（beta）；网页演示隐藏了游戏入口。
 
 <!-- source: README.md（“What you can try today” 表：Flying、Driving、Website gameplay 三行） -->
 
 ## 关键事实
 
-- **桌面外壳**：Tauri 2（`tauri = "2"`），应用名 `Oh Agent.app`，标识 `ai.ohagent.desktop`，版本 `1.0.0-beta.3`。
+- **桌面外壳**：Tauri 2（`tauri = "2"`），应用名 `Oh Agent.app`，标识 `ai.ohagent.desktop`，当前 `dev` 树版本是 `1.0.0-beta.4`（公开预发布仍是 `1.0.0-beta.3`）。
 - **工作台界面**：React 19 + Vite + Tailwind 4，在 `apps/desktop/ui-dev/`。
 - **Agent City**：React 19 + three.js 0.186 + Vite，TypeScript，在 `apps/agent-city/ui/`。
 - **核心**：`crates/` 下分层的 Rust workspace（data、domain、harnesses、query、ingest、billing、trust、MCP）。
@@ -162,19 +162,17 @@ ohagent.ai 内嵌的是 `apps/agent-city/ui` 的真实 City 前端，由 `tools/
 
 ## Roadmap / 规划中
 
-以下内容在 `dev` 分支 `bf7196a` 的代码里都还没有，列出来是为了不让读者把规划当成已有功能。
+以下内容在 `dev` 分支 `0636802b` 的代码里都还没有，列出来是为了不让读者把规划当成已有功能。
 
 - **部分完成**：MCP 可以 get / preview / set / reset 一栋会话楼的模型（`docs/CITY_BUILDING_MCP.md`）。城里的施工播放来自共享 `CityEntityChanged` 事件。成功的 `preview_building` 显示半透明幽灵楼；合规 / 细节回退 / 设计连贯性拒绝会闪一下地块。偏软的设计问题走 `data.warnings`，不拦写入。同一条写入路径还会向小队 IM 频道扇出信封；Agent 用 `im_publish` 发 `chat`/`claim`/`release`（`docs/CITY_SQUAD_IM.md`）。
 - **待确认**：增量热更新。每次同步后 City 会自动刷新，但会重新读取完整投影并重建场景；只传变化的会话、只更新单栋楼还没有实现。见[数据管线](/docs/zh/architecture/data-pipeline#有新会话时-agent-city-怎么更新)。
 - **待确认**：城市作品廊（UGC）。仓库里没有相关代码。
-- **待确认**：签名的公开安装包。GitHub Releases 目前还是空的。
+- **部分完成**：GitHub Releases 已有 1.0.0-beta.3 预发布包（Apple Silicon 已签名并公证，Windows x64 与 Linux x64 尚未签名）。匹配当前 `1.0.0-beta.4` 树的后续签名发布还没有。
 
-现在实际有哪些集成，见[集成](/docs/zh/integrations)。
 
 ## 相关
 
 - [Agent Vitals 引擎：crate、命令行、MCP 工具、App SDK](/docs/zh/vitals/overview)
 - [数据管线：从会话日志到数据库](/docs/zh/architecture/data-pipeline)
-- [城市模型：会话怎么变成楼](/docs/zh/architecture/city-model)
-- [集成与扩展点](/docs/zh/integrations)
-- [添加新的数据源](/docs/zh/contributing/adding-a-data-source)
+- [Agent City 里每栋楼代表什么](/docs/zh/city-guide)
+- [数据与隐私](/docs/zh/privacy-and-data) · [安装](/docs/zh/install)

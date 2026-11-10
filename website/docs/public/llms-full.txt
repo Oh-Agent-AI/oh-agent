@@ -461,6 +461,256 @@ No. Credentials are never saved in anything Oh Agent owns. Some test features ca
 
 ---
 
+# How does Oh Agent turn agent session logs into data? The data pipeline
+URL: https://ohagent.ai/docs/architecture/data-pipeline/
+
+Oh Agent's data pipeline has four steps: **discover** each agent's log files, **diff** them against what was already imported, **parse** new events into usage facts, and **write** those facts to a local SQLite database in one transaction. A sync runs every 5 minutes; on the desktop app, a file watcher can start it early when logs change.
+
+## Key facts
+
+- **Sources** come from one registry, in this order: `claude-code` → `codex` → `dsh` → `workbuddy`.
+- **Only changed files are parsed.** Each file's size and modification time are remembered in a `source_files` table.
+- **Every fact has a stable ID**, so re-importing a file creates duplicates that are dropped, not double counts.
+- **One sync batch = one SQLite transaction**, so the database is never half-written.
+- **Default sync interval:** 300 seconds. The file watcher wakes the sync about 1.2 seconds after a log changes (at most 5 seconds while it keeps growing); it never writes to the database itself.
+- **City refreshes itself** after each sync that changes data, by reloading the full projection.
+- **The database stores counts and anchors, not transcripts.** Raw text stays in the agents' own log files.
+
+## Which folders are read?
+
+| Source | Harness id | Files read |
+| --- | --- | --- |
+| Claude Code | `claude-code` | `~/.claude/projects/**/*.jsonl` |
+| Codex | `codex` | `~/.codex/sessions/**/rollout-*.jsonl` and `~/.codex/archived_sessions/**/rollout-*.jsonl` |
+| DeepSeek Harness | `dsh` | `$DSH_HOME/sessions/**/session.jsonl` (or `.jsonl.zstd`); `DSH_HOME` defaults to `~/.dsh` |
+| WorkBuddy | `workbuddy` | `trace_*.json` under `~/.workbuddy/traces/` |
+| Local manifest sources | `harness:<slug>` | Whatever the manifest in `harnesses.d/<slug>/manifest.json` declares |
+
+You can also add extra folders for Claude Code, Codex and DSH in Settings.
+
+## What happens in one sync?
+
+```mermaid
+sequenceDiagram
+  participant T as Tick (every 5 min) / watcher
+  participant S as sync_service
+  participant H as Harness parsers
+  participant DB as agent-vitals.sqlite3
+  T->>S: run sync
+  S->>H: list files for each registered source (+ custom folders)
+  S->>DB: compare (size, mtime) in source_files
+  S->>H: parse only new or changed files
+  H-->>S: usage facts (tokens, model, time, session)
+  S->>DB: one transaction: sync_runs, source_files, sessions, usage_facts
+```
+
+1. **Discover.** For each source in the registry, list its files under the default folder and under any custom folders you added.
+2. **Diff.** Skip files whose size and modification time match the last import. A lost fingerprint only causes a re-parse; duplicates are dropped by fact ID.
+3. **Parse.** The source's parser turns log lines into usage facts: input tokens (uncached, cache read, cache write), output tokens, model, timestamps and session.
+4. **Write.** All facts of one batch, plus file fingerprints and session rows, are committed in a single immediate transaction.
+5. **Enrich.** Session titles are read from side indexes where the agent keeps them, and behaviour findings are evaluated for Claude Code, Codex and DSH.
+
+## How does Agent City update when new sessions arrive?
+
+City refreshes on its own a few seconds after an agent writes to its log. It isn't an incremental, Vite-style hot patch yet: each refresh reloads the whole projection and rebuilds the city scene.
+
+```mermaid
+flowchart LR
+  W["File watcher<br/>(debounce 1.2 s, max 5 s)"] --> S["sync_service<br/>(one transaction)"]
+  S --> R{"revision moved?"}
+  R -- yes --> E["Invalidated event<br/>to the workbench"]
+  E --> P["plugin_invalidate"]
+  P --> C["City refetches<br/>full city:v3"]
+  C --> B["Full scene rebuild<br/>stable layout, height animation"]
+```
+
+1. **Watch.** The file watcher waits 1.2 seconds after the last write, or at most 5 seconds while a log keeps growing, then wakes the sync. The 5-minute tick is the fallback.
+2. **Sync.** New facts are committed in one transaction, which moves the database revision forward.
+3. **Invalidate.** The desktop app emits one `Invalidated` event per new revision. A repeated revision is swallowed, so there's no time-based debounce here.
+4. **Notify City.** The workbench calls `plugin_invalidate`, which fires `__AV_PLUGIN_INVALIDATED__` in City's WebView. A City tab that was hidden gets the same call when you switch back.
+5. **Refetch.** City asks for `city:v3` overview plus the first page, then appends later pages from the same snapshot (up to 4,000 sessions). The landing host still serves `city:v2`. It doesn't fetch only the changed sessions.
+6. **Rebuild.** If the geography changed, City throws away the scene and builds it again. The previous layout is reused, so within one island tier existing buildings keep their lots. Paging appends and mid-load revision changes keep the current city on screen. Buildings you already saw keep their height; new ones grow from the ground.
+
+- **Paged default:** `city:v3` reads page by page from one snapshot. A data change during loading keeps the visible city and restarts the unread pages instead of mixing two versions. `?cityData=v2` forces the compatibility projection.
+- **Not implemented:** incremental diffs (only changed sessions) and patching single buildings. **TBD:** whether this is planned.
+
+## Where do session titles come from?
+
+| Source | Title source |
+| --- | --- |
+| Codex | `~/.codex/session_index.jsonl` (`thread_name`) |
+| Claude Code | the AI-generated title inside the session log |
+| DSH | `<DSH_HOME>/storages/workspace.json` (workspace title) |
+| WorkBuddy | not wired yet |
+
+Titles are scrubbed and length-bounded before they reach the City view.
+
+## How are costs kept honest?
+
+Costs are estimated separately from the city. When the provider or route of a request can't be proven, usage is kept and marked as a **metered estimate** with `has_unresolved = true`, never silently dropped or counted as zero. City shows each session's estimated cost and its status (estimated, subscription, unpriced or unavailable), but cost never changes a building's height.
+
+## What is never stored?
+
+- Credentials and API keys. They are never written to anything Oh Agent owns.
+- Full transcripts. The database keeps source anchors and short, scrubbed excerpts; full text is read from the original log only when you view it locally.
+- If an agent deletes or rotates its log, Oh Agent shows that the source has expired instead of inventing data.
+
+## Where is the data folder?
+
+`~/.agent-vitals/` by default, or the folder in `AGENT_VITALS_HOME`. The database is `agent-vitals.sqlite3` inside it. Plugin state such as the City seed lives in `state/plugins/city.json`. Custom folders are listed in `state/custom-sources.json`.
+
+**How long is data kept?** 13 months by default; you can set 1 to 60 months in Settings. City can show a 366-day window, which fits inside the default retention.
+
+## Related
+
+- [Architecture overview](https://ohagent.ai/docs/architecture/overview)
+- [Claude Code data source](https://ohagent.ai/docs/data-sources/claude-code) · [Codex data source](https://ohagent.ai/docs/data-sources/codex)
+
+---
+
+# How is Oh Agent built? Architecture overview (Agent Vitals + Agent City)
+URL: https://ohagent.ai/docs/architecture/overview/
+
+Oh Agent is an open-source platform for analyzing AI agent behavior data. Agents are now part of everyday work and life, and Oh Agent's goal is to make your agents' history useful to you. Oh Agent is built on the open-source Agent Vitals engine, and Agent City is its first app:
+
+- **Agent Vitals**, the foundation: a local-first agent behavior data engine, embedded in the app (no server, no network port, no daemon). It finds the session logs your agents already write, parses them, and stores usage facts and behaviour findings in a local SQLite database. Then it serves that data through narrow, read-only interfaces.
+- **Agent City**, built on top. It's an open-world data-visualization game that reads one of those interfaces and turns your sessions into a 3D city you can explore and replay.
+
+Everything runs locally on your computer (Apple Silicon Mac, Windows, or Linux). Nothing in this path uploads your data.
+
+What "game" means today: desktop City has free flight, ring challenges, and free-drive (beta). The web demo hides the game controls.
+
+## Key facts
+
+- **Desktop shell:** Tauri 2 (`tauri = "2"`), app `Oh Agent.app`, identifier `ai.ohagent.desktop`, version `1.0.0-beta.4` in the current `dev` tree (the public pre-release is still `1.0.0-beta.3`).
+- **Workbench UI:** React 19 + Vite + Tailwind 4, in `apps/desktop/ui-dev/`.
+- **Agent City:** React 19 + three.js 0.186 + Vite, TypeScript, in `apps/agent-city/ui/`.
+- **Core:** a Rust workspace of layered crates under `crates/` (data, domain, harnesses, query, ingest, billing, trust, MCP).
+- **CLI:** `agent-vitals` (`apps/cli/`). The desktop bundle ships it as `bin/agent-vitals`.
+- **Storage:** one SQLite file, `agent-vitals.sqlite3`, in the data folder `~/.agent-vitals/` (override with `AGENT_VITALS_HOME`).
+- **Website:** static landing page in `website/landing/`, plus a copy of the real City frontend that only gets synthetic data.
+- **Naming:** the desktop app is `Oh Agent.app` (`ai.ohagent.desktop`, renamed on dev in `5c29146`). Crates, the CLI, the internal executable `agent-vitals-menubar` and the data folder still use `agent-vitals`.
+
+## What are the two layers, in code?
+
+| Layer | What it is | Where it lives |
+| --- | --- | --- |
+| **Agent Vitals: sources and parsing** | Per-agent log parsers and the source registry | `crates/agent-vitals-harnesses/` (`src/sources/session_harnesses.rs` is the registry) |
+| **Agent Vitals: storage and sync** | Sync service, tick, watcher, SQLite authority database | `crates/agent-vitals-ingest/`, `crates/agent-vitals-data/` |
+| **Agent Vitals: metrics** | Pure rules, cost and billing, diagnostics | `crates/agent-vitals-domain/`, `crates/agent-vitals-billing/`, `crates/vitals-core/` |
+| **Agent Vitals: data interface** | Read-only projections for apps, the Data MCP server, the CLI and exports | `crates/agent-vitals-query/src/query/` (`app_harnesses.rs`, `app_local.rs`, `export.rs`), `crates/agent-vitals-mcp/`, `apps/cli/` |
+| **Host bridge** | Checks which plugin may read which projection, then calls the query layer | `apps/desktop/src-tauri/src/plugin_host.rs`, `plugin_projections.rs` |
+| **Plugin protocol** | Shared TypeScript types and transport | `packages/agent-vitals-app-sdk/` (`harness-data.ts`, `city-ui-projection.ts`) |
+| **Agent City** | Renderer, replay, flight and driving, photo and film export | `apps/agent-city/ui/`, registered in `apps/desktop/plugins.json` |
+
+City reaches Vitals only through the host: `City → SDK plugin_request → PluginHost → plugin_projections → query::app_local → read-only database`. City never opens the database, never gets SQL, and never sees log paths.
+
+How clean is the boundary? Partly clean.
+
+- **Clean:** City has no Rust code and no database access. It only gets the projections declared in `plugins.json` (`city:v2`, `city:v3`, `city-settings:v1`, `harnesses:v1`). The generic `harnesses:v1` interface (`harnesses.list` / `harnesses.sessions`) is not City-specific.
+- **City-named projections stay opt-in:** `city:v2` / `city:v3` still live in the shared query crate and SDK, and they are still the City scene feed. A second plugin does not receive them unless its own `dataProjections` lists the key. Session open uses the active plugin id as the handle scope (`app:{pluginId}:`). The resolver does not branch on `plugin_id == "city"`.
+- **Not one package:** "Agent Vitals" is the whole Rust workspace plus the CLI, the Python twin and the desktop workbench. No single crate is called "Vitals" (`vitals-core` is only the diagnostics core). The desktop workbench reads Vitals data through its own Tauri IPC commands in `apps/desktop/src-tauri/src/lib.rs`, not through the plugin interface.
+
+## How do the parts fit together?
+
+```mermaid
+flowchart LR
+  subgraph Disk["Your Mac (read-only inputs)"]
+    CC["~/.claude/projects/**/*.jsonl"]
+    CX["~/.codex/sessions + archived_sessions<br/>rollout-*.jsonl"]
+    DSH["$DSH_HOME or ~/.dsh/sessions"]
+    WB["~/.workbuddy/traces"]
+    MF["harnesses.d/&lt;slug&gt;/manifest.json<br/>(local manifest sources)"]
+  end
+  subgraph Core["Agent Vitals (crates/ + apps/cli)"]
+    H["agent-vitals-harnesses<br/>parsers + source registry"]
+    I["agent-vitals-ingest<br/>sync tick + watcher"]
+    DB[("agent-vitals.sqlite3<br/>authority DB")]
+    Q["agent-vitals-query<br/>read-only projections"]
+    M["agent-vitals-mcp<br/>Data MCP tools"]
+  end
+  subgraph App["Desktop app (Tauri 2) + Agent City"]
+    WBN["Workbench (React)"]
+    PH["PluginHost"]
+    CITY["Agent City plugin<br/>React + three.js"]
+  end
+  CC & CX & DSH & WB & MF --> H --> I --> DB
+  DB --> Q --> PH --> CITY
+  Q --> WBN
+  DB --> M --> AG["Your local AI agent<br/>(stdio MCP client)"]
+```
+
+In words: agent log folders on disk (Agent Vitals inputs) → harness parsers → sync service → SQLite authority database → read-only query layer → either the desktop UI (workbench and the Agent City plugin) or the local Data MCP server.
+
+## What are the Rust layers?
+
+The core is split into crates that may only depend on lower layers. `agent-vitals-runtime` is a facade that re-exports them.
+
+| Layer | Crate | What it does |
+| --- | --- | --- |
+| L0–L1 | `agent-vitals-runtime-core` | Data folder, clock, state files, pricing tables, logging |
+| L2–L3 | `agent-vitals-query` | Source registry, session lookups, read-only queries and projections (including City's `app_local.rs`) |
+| L4 | `agent-vitals-billing` | Budgets, price discovery, quota reminders |
+| L5 | `agent-vitals-ingest` | Sync service, 5-minute tick, file watcher, findings evaluation, manifest install |
+| L5 | `agent-vitals-trust` | Trust / egress audit |
+| L6 | `agent-vitals-mcp` | Data MCP tools (the outbound face) |
+| — | `agent-vitals-harnesses` | Per-agent log parsing (Claude Code, Codex, DSH, WorkBuddy, generic manifests) |
+| — | `agent-vitals-domain`, `agent-vitals-data`, `vitals-core` | Pure rules, SQLite schema and writers, diagnostics core |
+
+## Where does each part live in the repo?
+
+| Path | Purpose |
+| --- | --- |
+| `apps/desktop/src-tauri/` | Tauri host: tray, IPC commands, `plugin_host.rs`, `plugin_projections.rs` |
+| `apps/desktop/ui-dev/` | React workbench (Overview, Usage, Sessions, Settings…) |
+| `apps/desktop/plugins.json` | Registry of official built-in plugins (currently only City) |
+| `apps/agent-city/ui/` | City renderer, replay, flight/driving, photo and film export |
+| `packages/agent-vitals-app-sdk/` | Shared plugin protocol and UI transport |
+| `apps/cli/` | `agent-vitals` CLI, including `data-mcp serve` |
+| `crates/` | Rust core (table above) |
+| `packages/agent-vitals-python/` | Python compatibility implementation, kept byte-identical via golden tests |
+| `catalog/` | Official pricing catalog and (empty) source-manifest index |
+| `integrations/dsh/` | DeepSeek Harness skill bundle |
+| `website/landing/` | ohagent.ai landing page and synthetic City demo |
+
+## How is it built and tested?
+
+- **Rust:** `cargo test --release`, and `cargo clippy --release --all-targets -- -D warnings` as the CI lint gate. The desktop crate is its own workspace, so building the CLI does not build the app.
+- **Python parity:** `python3 tests/golden_runner.py --diff` checks byte-for-byte golden outputs; the same runner can compare the Rust binary against Python.
+- **City:** `npm --prefix apps/agent-city/ui run typecheck`, plus the `verify:city*` scripts in `apps/desktop/ui-dev/package.json`.
+- **macOS app:** `bash scripts/build-macos-react-app.sh`, then open the `.app` bundle. Never run the bare menubar binary.
+- **CI workflows** (`.github/workflows/`): `verify.yml`, `app-contracts.yml`, `desktop-platforms.yml` (Windows/Linux packages), `release.yml`, `release-desktop.yml`, `pricing-sync.yml` (daily at 03:17 UTC), `package-clawhub.yml`.
+
+## What does the website run?
+
+The landing page at ohagent.ai embeds a build of the real City frontend from `apps/agent-city/ui`, produced by `tools/build-city3d.mjs` into `website/landing/city3d/`. It only receives synthetic sessions and never reads local logs.
+
+## Design rules worth knowing
+
+- **Read, don't record.** Oh Agent installs no hooks or telemetry; it reads what agents already wrote.
+- **No upload.** Network use is limited to public price/FX catalogs, release checks and explicitly chosen official downloads, with no local data in requests.
+- **Raw text stays in the agents' logs.** The database stores anchors and counts, not full transcripts.
+- **Honest numbers.** Unknown prices stay "unresolved", never zero.
+- **Plugins never touch the database.** The host runs the query and returns only the declared projection.
+
+## Roadmap / 规划中
+
+Not in the code at `dev` `0636802b`. Listed so readers don't mistake plans for features.
+
+- **Partial:** MCP tools can get / preview / set / reset one session building model (`docs/CITY_BUILDING_MCP.md`). An open City window plays construction from a shared `CityEntityChanged` host event (`entity_kind=building`; road/vehicle handlers later). Successful `preview_building` shows a translucent ghost; compliance / detail-regression / design-coherence rejects flash the lot. Soft design issues return `data.warnings` without blocking. The same write path fans out a squad IM envelope; agents publish `chat`/`claim`/`release` via `im_publish` (`docs/CITY_SQUAD_IM.md`).
+- **TBD:** Incremental hot update. City refreshes on its own after each sync, but it reloads the full projection and rebuilds the scene; sending only changed sessions and patching single buildings isn't implemented. See [Data pipeline](https://ohagent.ai/docs/architecture/data-pipeline#how-does-agent-city-update-when-new-sessions-arrive).
+- **TBD:** A community gallery of cities (UGC). No code for this exists in the repo.
+- **Partial:** GitHub Releases has a 1.0.0-beta.3 pre-release with Apple Silicon (signed and notarized), Windows x64 and Linux x64 (unsigned) packages. A later signed release matching the current `1.0.0-beta.4` tree is not published yet.
+
+## Related
+
+- [Agent Vitals engine: crates, CLI, MCP tools, App SDK](https://ohagent.ai/docs/vitals/overview)
+- [Data pipeline: from session logs to the database](https://ohagent.ai/docs/architecture/data-pipeline)
+- [What each building in Agent City means](https://ohagent.ai/docs/city-guide)
+- [Privacy and data](https://ohagent.ai/docs/privacy-and-data) · [Install](https://ohagent.ai/docs/install)
+
+---
+
 # Where does DeepSeek Harness (DSH) store sessions, and how does Oh Agent read them?
 URL: https://ohagent.ai/docs/data-sources/deepseek-harness/
 
@@ -521,6 +771,105 @@ In Agent City the district label for this harness is **WorkBuddy** (fixture `id:
 - [DeepSeek Harness data source](https://ohagent.ai/docs/data-sources/deepseek-harness)
 - [What each building in Agent City means](https://ohagent.ai/docs/city-guide)
 - [Install](https://ohagent.ai/docs/install) · [FAQ](https://ohagent.ai/#faq)
+
+---
+
+# "Agent Vitals App SDK: how Agent City and other plugins read Vitals data"
+URL: https://ohagent.ai/docs/vitals/app-sdk/
+
+Agent City is the first app built on the Agent Vitals engine, and it runs as a plugin of the Oh Agent desktop app. A plugin is a web frontend that runs in its own WebView inside the app window and asks the host for data through one message type, `plugin_request`. The host checks the plugin's declared permissions in `apps/desktop/plugins.json`, runs the query in Rust, and returns only that projection. Today plugins are official and compiled into the app. You add one by contributing to the repo, not by installing a package.
+
+## Key facts
+
+- **Registry:** `apps/desktop/plugins.json`. City is the only entry today; it declares `city:v2`, `city:v3`, `city-settings:v1` and `harnesses:v1`.
+- **Isolation:** each plugin runs in a separate WebView in the same window (an iframe in the browser preview), and only one plugin is active at a time.
+- **Permissions:** `dataProjections` lists what a plugin may read. The default is nothing.
+- **No database access:** plugins never get SQL, file paths, raw logs or unrestricted host IPC.
+- **Shared SDK:** `packages/agent-vitals-app-sdk/` (`@agent-vitals/app-sdk`) holds the protocol types and the UI transport.
+- **Compiled in:** the registry is embedded at build time, so changing it means rebuilding the app.
+
+## What is in the SDK?
+
+`@agent-vitals/app-sdk` (private, version `0.0.0`, not published to npm) exports:
+
+| Export | What it is |
+| --- | --- |
+| `PluginRequestV1` | `{version: 1, instanceId, requestId, method, payload}`, the only request envelope from plugin to host |
+| `PluginResponseV1` | `{version: 1, requestId, ok, result, error: {code, retryable}}` |
+| `PluginState*` types | A bounded private JSON store per plugin: up to 32 KiB per document, with revision-based optimistic writes |
+| `CityUiProjectionV2` | The `city:v2` payload Agent City renders by default |
+| `CityProjectionV3`, `CitySnapshotV3`, `CityWindowV3`, `CitySessionV3`, `CityModuleV3` | The paged `city:v3` types: snapshot context, half-open window, session rows with `asset_ref`, and module states (`ready`, `empty`, `unsupported`, `unavailable`, `stale`) |
+| `validateCityProjectionV2`, `validateCityProjectionV3` | Runtime validators City runs on every response: safe integers, token sums, at most 4,000 (v2) or 500 per page (v3) sessions, `sr_` snapshot handles |
+| `HarnessPublicIdentityV1`, `HarnessListV1`, `HarnessSessionsV1` | The generic `harnesses:v1` types |
+| `createHarnessDataClient(instanceId, send)` | A helper for `list`, `sessions` and a consistent `snapshot` |
+| `negotiateProjection` | Picks a projection version both sides support |
+| `./ui-host` | Toolbar publishing, host commands, locale and health signals for the embedded page |
+
+Contract types are generated from JSON Schemas in `docs/schemas/` (`npm run generate:contracts`) and checked by `verify:contracts`.
+
+## How does Agent City use it?
+
+1. City's data provider builds a `PluginRequestV1` with `method: "data.read"` and `payload: {projection: "city", version: 3, operation: "overview", windowDays, …}`, then pages `city:v3`. The landing host and `?cityData=v2` still request `{projection: "city", version: 2, windowDays}`.
+2. The host checks that the request came from City's active WebView, that `city:v3` (or `city:v2`) is declared, and runs `query::city_v3::read` or `query::app_local::city_projection` in Rust.
+3. City adapts v3 pages into the v2 UI DTO, validates with `validateCityProjectionV2`, and maps each session to a building in `cityModel.ts`.
+4. The Findings and Skills panels, and per-building details, call `city:v3` on demand.
+5. In the browser (website demo, standalone preview), the same provider returns a synthetic fixture with `source: "fixture"` and never calls a host.
+
+## What data interfaces can a plugin read?
+
+| Projection | Method | What it returns | Who uses it |
+| --- | --- | --- | --- |
+| `harnesses:v1` | `harnesses.list` | Sources: opaque id, display name, capabilities | Any plugin that declares it |
+| `harnesses:v1` | `harnesses.sessions` | Per-source session stats for a 7/30/90/366-day window, at most 500 sessions per source, no excerpts or cost | Any plugin that declares it |
+| `city:v2` | `data.read` | City's view: up to 4,000 sessions with token split, model IDs, cost estimate and status, bounded titles and excerpts, plus window totals, models and daily activity | Plugins that declare it (only City today) |
+| `city:v3` | `data.read` with `operation` | Paged City view on one data snapshot (see below) | Plugins that declare it |
+| `city-settings:v1` | `data.read` | Seed setting stored at `state/plugins/{pluginId}.json` | Plugins that declare it |
+
+`harnesses:v1` is the general Agent Vitals interface. `city:v2` and `city:v3` are shaped for City. A broader, documented "Vitals data interface" for new apps is not published yet. Today a new plugin gets `harnesses:v1` only, unless a new Rust projection handler is added.
+
+Reads take a consistent snapshot. If the data changes between `harnesses.list` and `harnesses.sessions`, the host returns `revision_changed` and the SDK retries up to three times.
+
+### What are the five `city:v3` operations?
+
+Every `city:v3` request carries `operation`. The host accepts only these five, each with its own allowed fields:
+
+| Operation | Extra fields | Returns |
+| --- | --- | --- |
+| `overview` | `windowDays`, `timezone`, `calendar_mode` (`rolling` only), `page_size` | Snapshot context, window, source identities, `overview` and `activity` modules, and the first page of sessions |
+| `sessions.page` | `cursor`, `page_size` | The next page from the same snapshot |
+| `session.detail` | `id`, `include_excerpts` | One session with its cost breakdown and excerpts |
+| `module.read` | `module` (`findings` or `skills`), optional `harness` | One data module; `workflow` is reported as unsupported |
+| `assets.resolve` | `save_id`, `asset_refs` | Whether saved City asset IDs still exist |
+
+- **Pages:** default 200 sessions, at most 500. The window is half-open, `[from, to)`.
+- **Snapshots:** every request after `overview` must send back `expected_revision` and `snapshot`. If the data changed in between, the host answers `revision_changed`. City then drops the pages it has collected and starts again, at most 3 times.
+
+## What else can a plugin ask the host for?
+
+- **Open a session in the workbench** (`navigationTargets: ["session"]`). The plugin sends its opaque handle; Rust resolves it and only returns `{opened: true}`.
+- **Save a file** (`allowLocalExports: true`). The file is a blob download, and the user picks the destination in a native save dialog. No network downloads, no arbitrary file writes.
+- **Private state keys** (`stateKeys`), for example City's `flight-profile:v1`.
+
+## How do I add a new official plugin?
+
+The repo's guide (`docs/OFFICIAL_PLUGIN_INTEGRATION_GUIDE.md`) covers the full steps. In short:
+
+1. Create the frontend at `apps/<name>/ui/` with a `build` script and a dependency on `@agent-vitals/app-sdk`. Commit the lockfile.
+2. Add an entry to `apps/desktop/plugins.json` with `id`, `name`, `entry` (`plugins/<Name>.plugin/ui/index.html`), `commandNamespace`, `source` and `dataProjections`.
+3. If it needs data beyond `harnesses:v1`, add a versioned Rust projection handler in `plugin_projections.rs`, backed by a query in `crates/agent-vitals-query`. Declaring a projection doesn't implement it.
+4. Rebuild the desktop app. The registry is compiled in.
+
+`id` can't clash with host tabs such as `overview`, `usage`, `sessions`, `findings`, `trust`, `skills` or `settings`.
+
+## Can third parties publish plugins?
+
+Not today. The desktop plugin host loads only the official UI plugins compiled into the app from `plugins.json`. There are no third-party native plugins and no dynamic install. Independent or externally installed apps would need package signing, process identity, sandboxing and per-request data grants. The repo has specs for these (`docs/APP_PACKAGE_SIGNATURE_CONTRACT_V1.md`, `docs/AGENT_VITALS_EXTENSION_ARCHITECTURE_SPEC.md`), but the policy says it doesn't certify their implementation. A third-party plugin path is not available in the current product; treat the specs as design notes, not a shipping feature.
+
+## Related
+
+- [Agent Vitals engine overview](https://ohagent.ai/docs/vitals/overview) · [CLI](https://ohagent.ai/docs/vitals/cli) · [Data MCP tools](https://ohagent.ai/docs/vitals/mcp-tools)
+- [What each building in Agent City means](https://ohagent.ai/docs/city-guide)
+- [Does Oh Agent upload my sessions?](https://ohagent.ai/docs/privacy-and-data)
 
 ---
 
@@ -763,3 +1112,32 @@ The wasm crate is excluded from the default workspace build. Its docs mention a 
 - [WorkBuddy data source](https://ohagent.ai/docs/data-sources/workbuddy)
 - [What each building in Agent City means](https://ohagent.ai/docs/city-guide)
 - [Privacy and data](https://ohagent.ai/docs/privacy-and-data) · [Install](https://ohagent.ai/docs/install) · [FAQ](https://ohagent.ai/#faq)
+
+---
+
+# "Agent Vitals Python twin: the byte-for-byte compatible implementation"
+URL: https://ohagent.ai/docs/vitals/python/
+
+Next to the Rust engine, Agent Vitals keeps a Python implementation in `packages/agent-vitals-python/agent_vitals/`. It's a compatibility twin: for the same input, both must produce byte-identical output, which golden tests check in CI. It uses only the standard library, targets Python 3.9, and is what the ClawHub skill package runs through `scripts/scan.py`. The desktop app and Agent City use the Rust engine, not Python.
+
+## Key facts
+
+- **Location:** `packages/agent-vitals-python/agent_vitals/`, with `adapters/` (per agent), `agent/` (sessions, cost, usage facts, manifests, MCP) and `skills/` (skill audit).
+- **Entry point:** `python3 scripts/scan.py …` (a thin wrapper that puts the package on the path).
+- **Parity:** `python3 tests/golden_runner.py --diff` compares against `golden/`; with `AGENT_VITALS_BIN` set, it compares the Rust binary too.
+- **Python version:** 3.9 in CI.
+- **Not bundled** with the desktop app; manifest sources don't need Python either.
+
+## Which commands does it have?
+
+The Python CLI mirrors the skill-auditor and session-audit commands registered in `packages/agent-vitals-python/agent_vitals/cli.py`: `list`, `overlap`, `doctor`, `plan`, `explain`, `snapshot`, `diff`, `behavior`, `duration-audit`, `harnesses`, `codex-evidence`, `codex-session`, `claude-session`, `claude-sync`, `claude-usage-facts`, `manifest-validate`, `workbuddy-usage-facts`, `codex-usage-facts`, `dsh-usage-facts`, `workbuddy-session`, `sessions` (with `list`, `read`, and `navigation`), `oneline`, `calendar`, `state`, and `budget`. The desktop app and Agent City use the Rust `agent-vitals` binary, which adds data-plane commands the Python twin does not ship.
+
+## Why keep two implementations?
+
+The Python version came first and is the reference ("oracle") for output contracts. Keeping both in lockstep means a contract change shows up as a golden diff that has to be reviewed. Golden files must never be refreshed just to silence a failure.
+
+## Related
+
+- [Agent Vitals engine overview](https://ohagent.ai/docs/vitals/overview) · [CLI](https://ohagent.ai/docs/vitals/cli) · [Data MCP tools](https://ohagent.ai/docs/vitals/mcp-tools) · [App SDK](https://ohagent.ai/docs/vitals/app-sdk)
+- [What each building in Agent City means](https://ohagent.ai/docs/city-guide)
+- [Does Oh Agent upload my sessions?](https://ohagent.ai/docs/privacy-and-data)
