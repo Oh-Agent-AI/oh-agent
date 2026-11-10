@@ -251,13 +251,30 @@ for (const seed of [1927, 42]) {
   kit.buildInfrastructure(host);
   const m = new kit.THREE.Matrix4(); const color = new kit.THREE.Color();
   const ground = plan.roadEdges.filter((edge) => !edge.bridge && edge.structure !== "deck");
+  // Spatially shortlist only road segments whose pavement envelope can contain
+  // an endpoint. The exact projection/width predicate below remains unchanged;
+  // this avoids checking every curb against every road (O(curbs × roads)).
+  const cellSize = 32;
+  const cellKey = (x, z) => `${Math.floor(x / cellSize)},${Math.floor(z / cellSize)}`;
+  const roadsByCell = new Map();
+  for (const edge of ground) {
+    const [a, b] = edge.points; const reach = edge.width / 2;
+    const minX = Math.floor((Math.min(a.x, b.x) - reach) / cellSize);
+    const maxX = Math.floor((Math.max(a.x, b.x) + reach) / cellSize);
+    const minZ = Math.floor((Math.min(a.z, b.z) - reach) / cellSize);
+    const maxZ = Math.floor((Math.max(a.z, b.z) + reach) / cellSize);
+    for (let x = minX; x <= maxX; x += 1) for (let z = minZ; z <= maxZ; z += 1) {
+      const key = `${x},${z}`; const candidates = roadsByCell.get(key) ?? [];
+      candidates.push(edge); roadsByCell.set(key, candidates);
+    }
+  }
   let intrusions = 0; let checked = 0; const where = [];
   for (let i = 0; i < host.mesh.count; i += 1) {
     host.mesh.getColorAt(i, color); if (color.getHexString() !== "cbc6ba") continue; // 只查路缘（桥面/护栏另有颜色）
     host.mesh.getMatrixAt(i, m); const e = m.elements;
     for (const end of [{ x: e[12] - e[0] / 2, z: e[14] - e[2] / 2 }, { x: e[12] + e[0] / 2, z: e[14] + e[2] / 2 }]) {
       checked += 1;
-      for (const edge of ground) {
+      for (const edge of roadsByCell.get(cellKey(end.x, end.z)) ?? []) {
         const [a, b] = edge.points; const len = Math.hypot(b.x - a.x, b.z - a.z); if (len < 1e-6) continue;
         const ux = (b.x - a.x) / len; const uz = (b.z - a.z) / len;
         const along = (end.x - a.x) * ux + (end.z - a.z) * uz; const across = Math.abs((end.x - a.x) * -uz + (end.z - a.z) * ux);
