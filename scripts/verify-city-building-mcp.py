@@ -92,7 +92,7 @@ def main() -> int:
 
     run_cargo(["test", "-p", "agent-vitals-query", "--lib", "query::city_building::", "--", "--test-threads=1"])
     run_cargo(["test", "-p", "agent-vitals-query", "--lib", "query::city_im::", "--", "--test-threads=1"])
-    run_cargo(["test", "-p", "agent-vitals-query", "--test", "city_v3", "buildings_overrides", "--", "--test-threads=1"])
+    run_cargo(["test", "-p", "agent-vitals-query", "--lib", "query::city_assets::legacy_export_tests::export_pages_preserve_source_rows_and_pin_both_legacy_databases", "--", "--test-threads=1"])
     run_cargo(["test", "-p", "agent-vitals-mcp", "--lib", "city_building::", "--", "--test-threads=1"])
     run_cargo(["test", "-p", "agent-vitals-mcp", "--lib", "city_im::", "--", "--test-threads=1"])
     print("Rust ReACT loop: get → preview fail → preview pass → set conflict → set → get → reset")

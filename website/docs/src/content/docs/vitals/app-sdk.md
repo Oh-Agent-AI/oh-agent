@@ -19,11 +19,11 @@ head:
       }
 ---
 
-Agent City is the first app built on the Agent Vitals engine, and it runs as a plugin of the Oh Agent desktop app. A plugin is a web frontend that runs in its own WebView inside the app window and asks the host for data through one message type, `plugin_request`. The host checks the plugin's declared permissions in `apps/desktop/plugins.json`, runs the query in Rust, and returns only that projection. Today plugins are official and compiled into the app. You add one by contributing to the repo, not by installing a package.
+Agent City is the first app built on the Agent Vitals engine, and it runs as a plugin of the Oh Agent desktop app. A plugin is a web frontend that runs in its own WebView inside the app window and calls fixed host interfaces through `plugin_request`. Rust owns local data authorization, typed DTOs, state/object storage, and transport primitives; the trusted TypeScript adapter owns City projections and game rules. Today plugins are official and compiled into the app. You add one by contributing to the repo, not by installing a package.
 
 ## Key facts
 
-- **Registry:** `apps/desktop/plugins.json`. City is the only entry today; it declares `city:v2`, `city:v3`, `city-settings:v1` and `harnesses:v1`.
+- **Registry:** `apps/desktop/plugins.json`. City declares typed-data datasets, state/object/event/call grants, plus the temporary `city:v3` route used for legacy asset migration.
 - **Isolation:** each plugin runs in a separate WebView in the same window (an iframe in the browser preview), and only one plugin is active at a time.
 - **Permissions:** `dataProjections` lists what a plugin may read. The default is nothing.
 - **No database access:** plugins never get SQL, file paths, raw logs or unrestricted host IPC.
@@ -56,10 +56,10 @@ Contract types are generated from JSON Schemas in `docs/schemas/` (`npm run gene
 
 ## How does Agent City use it?
 
-1. City's data provider builds a `PluginRequestV1` with `method: "data.read"` and `payload: {projection: "city", version: 3, operation: "overview", windowDays, …}`, then pages `city:v3`. The landing host and `?cityData=v2` still request `{projection: "city", version: 2, windowDays}`.
-2. The host checks that the request came from City's active WebView, that `city:v3` (or `city:v2`) is declared, and runs `query::city_v3::read` or `query::app_local::city_projection` in Rust.
-3. City adapts v3 pages into the v2 UI DTO, validates with `validateCityProjectionV2`, and maps each session to a building in `cityModel.ts`. See [City model](/docs/architecture/city-model).
-4. The Findings and Skills panels, and per-building details, call `city:v3` on demand.
+1. City's provider combines descriptor-authorized typed-data DTOs in its trusted TS adapter and maps them into the City scene model.
+2. The host validates plugin instance, dataset grants, fields, query bounds and response size before returning local data.
+3. Persistent City state and game objects use the generic state/object APIs; City-specific schema interpretation remains in TypeScript.
+4. `city:v3` remains temporarily for matching legacy asset references to typed stable refs. It is a migration route, not the normal City projection API.
 5. In the browser (website demo, standalone preview), the same provider returns a synthetic fixture with `source: "fixture"` and never calls a host.
 
 <!-- source: apps/agent-city/ui/src/data/provider.ts (CityDataProvider; PluginRequestV1/PluginResponseV1 import; fixtureProjection source: "fixture"); apps/agent-city/ui/src/CityApp.tsx (projection → buildCityModel); docs/CITY_LOCAL_DATA_PROJECTION.md (MVP 契约: method "data.read", payload { projection: "city", version: 2, windowDays }) -->
@@ -72,13 +72,13 @@ Contract types are generated from JSON Schemas in `docs/schemas/` (`npm run gene
 | `harnesses:v1` | `harnesses.sessions` | Per-source session stats for a 7/30/90/366-day window, at most 500 sessions per source, no excerpts or cost | Any plugin that declares it |
 | `city:v2` | `data.read` | City's view: up to 4,000 sessions with token split, model IDs, cost estimate and status, bounded titles and excerpts, plus window totals, models and daily activity | Plugins that declare it (only City today) |
 | `city:v3` | `data.read` with `operation` | Paged City view on one data snapshot (see below) | Plugins that declare it |
-| `city-settings:v1` | `data.read` | Seed setting stored at `state/plugins/{pluginId}.json` | Plugins that declare it |
+| `plugin.state` | `plugin.state.read/write` | Descriptor-scoped versioned state documents with revision/CAS and size limits | Plugins that declare the state key |
 
-`harnesses:v1` is the general Agent Vitals interface. `city:v2` and `city:v3` are shaped for City. **TBD:** whether to promote a general, documented "Vitals data interface" that new apps can rely on. Today a new plugin gets `harnesses:v1` only, unless a new Rust projection handler is added.
+Fixed typed-data datasets and `plugin.state/object/event/call` are reusable Rust boundaries for plugins. `city:v3` is a temporary City legacy asset crosswalk route and should not be used to integrate new games; game state belongs in the game's trusted TS adapter on generic object/state interfaces.
 
 Reads take a consistent snapshot. If the data changes between `harnesses.list` and `harnesses.sessions`, the host returns `revision_changed` and the SDK retries up to three times.
 
-<!-- source: apps/desktop/src-tauri/src/plugin_projections.rs (read_for_plugin: harnesses.list / harnesses.sessions → query::app_harnesses; data.read city:v2 → query::app_local::city_projection; city-settings:v1) -->
+<!-- source: apps/desktop/src-tauri/src/plugin_projections.rs; apps/desktop/src-tauri/src/typed_data.rs; apps/desktop/src-tauri/src/plugin_state.rs -->
 <!-- source: docs/APP_PLUGIN_HARNESS_DATA_CONTRACT.md (每个来源最多 500 个 session; 不提供 task excerpts、成本、模型…; revision_changed; createHarnessDataClient … 最多重试三轮) -->
 <!-- source: crates/agent-vitals-query/src/query/app_local.rs (SESSION_CAP = 4_000) -->
 

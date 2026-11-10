@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { buildCityModel, type CitySessionRow } from "./cityModel";
 import { prepareCityLayout } from "./engine/cityLayout";
 import { MIAMI_COASTAL } from "./engine/citySeaside";
 import { CityEngine } from "./engine/CityEngine";
-import { tauriCityDataProvider, cityDataProtocol, readBuildingOverrides, reportCityScene, type CityProjectionV1 } from "./data/provider";
+import { tauriCityDataProvider, cityDataProtocol, readBuildingOverrides, stableAssetRefsForProjection, reportCityScene, type CityProjectionV1 } from "./data/provider";
+import { createCityBuildingCallHandlers } from "./data/cityBuildingCalls";
+import { createCitySquadCallHandlers, ensureCitySquadAssetCrosswalks, importLegacyCityClaimsFromTypedStore, readCitySquadSnapshot } from "./data/citySquadCalls";
 import { dispatchEntityChanged, ENTITY_CHANGED_EVENT, parseEntityChanged } from "./engine/entityEvents";
 import { entityChangedFromBuilding } from "./engine/sessionKitConstruction";
 import { SquadFeed } from "./SquadFeed";
@@ -12,7 +14,7 @@ import {
   type SquadFeedState,
 } from "./engine/squadEvents";
 import "./city.css";
-import { embedded, connect, observeHealth, noteBusy, publishToolbar, type Tool } from "./host";
+import { embedded, connect, connectHostCalls, observeHealth, noteBusy, publishToolbar, type Tool } from "./host";
 import type { EngineQualityMode } from "./engine/CityEngine";
 import { CityExperience, useCityExperience } from "./CityExperience";
 import { usePlanRepair } from "./planRepair/usePlanRepair";
@@ -32,6 +34,12 @@ import type { PlayTarget } from "./engine/render/playableVehicles";
 import { useRoadAudit } from "./game/useRoadAudit";
 import { RoadAuditPanel } from "./game/ui/RoadAuditPanel";
 import type { PlanningWorkSnapshot } from "./engine/planner/operationBudget";
+import { createDreamSnapshotCandidate } from "./remote/city/dreamSnapshotCandidate";
+import { prepareDreamSnapshotForPublication } from "./remote/city/dreamTrustedProjection";
+import type { DreamSnapshotEnvelopeV1 } from "./remote/city/dreamSnapshotCodec";
+import type { DreamCitySnapshotV1 } from "./remote/city/dreamSnapshotContract";
+
+const DreamSnapshotPreview = lazy(() => import("./remote/city/DreamSnapshotPreview").then((module) => ({ default: module.DreamSnapshotPreview })));
 
 declare global {
   interface Window {
@@ -39,6 +47,7 @@ declare global {
     __AV_CITY_SET_HOVERED__?: (id: string | null) => void;
     __AV_CITY_SELECT__?: (id: string | null) => void;
     __AV_CITY_REPLAY_BUILD__?: (assetOrSession?: string) => boolean;
+    __CITY_TYPED_SESSION_ROLLOUT__?: { source?: string; status?: string; reason?: unknown; dataRevision?: number; count?: number; total?: number };
   }
 }
 
@@ -60,6 +69,9 @@ export function CityApp() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<CityEngine | null>(null);
   const [projection, setProjection] = useState<CityProjectionV1 | null>(null);
+  const [loadErrorCode, setLoadErrorCode] = useState<string | null>(null);
+  const projectionRef = useRef(projection);
+  projectionRef.current = projection;
   const [windowDays, setWindowDays] = useState<WindowDays>(() => {
     const params = new URLSearchParams(location.search);
     const days = Number(params.get("windowDays"));
@@ -80,6 +92,16 @@ export function CityApp() {
   const [mechaOpen, setMechaOpen] = useState(false);
   const [selectedEncounter, setSelectedEncounter] = useState<MonsterEncounter | null>(null);
   const [mechaAvailability, setMechaAvailability] = useState<"unknown" | MechaAvailability>("unknown");
+  const [dreamPreviewOpen, setDreamPreviewOpen] = useState(false);
+  const [dreamPreviewBusy, setDreamPreviewBusy] = useState(false);
+  const [dreamPreviewError, setDreamPreviewError] = useState<string | null>(null);
+  const [dreamPreviewSnapshot, setDreamPreviewSnapshot] = useState<DreamCitySnapshotV1 | null>(null);
+  const [dreamPreviewEnvelope, setDreamPreviewEnvelope] = useState<DreamSnapshotEnvelopeV1 | null>(null);
+  const [dreamPublicationActive, setDreamPublicationActive] = useState(false);
+  const [dreamPreviewPlainBytes, setDreamPreviewPlainBytes] = useState<number | null>(null);
+  const [dreamPreviewEnvelopeBytes, setDreamPreviewEnvelopeBytes] = useState<number | null>(null);
+  const dreamPreviewRequest = useRef(0);
+  useEffect(() => () => { dreamPreviewRequest.current += 1; }, []);
   const reportMechaAvailability = useCallback((next: MechaAvailability) => {
     setMechaAvailability((prev) => prev === next ? prev : next);
   }, []);
@@ -124,30 +146,37 @@ export function CityApp() {
   drivingActive.current = driving.active;
   // 规划修复（开发开关 ?cityPlan / cityPlanDev=1；未开启时 hook 什么都不做）。与游戏/航拍/导出/忙碌互斥。
   const planRepair = usePlanRepair(engineRef, { seed: experience.seed, model: experience.model, blocked: cinema || game.active || driving.active || mechaOpen || experience.busy || !!experience.film });
-  // 点停车场里的车 / 机坪上的飞机 / 机坪上的机甲直接开：与工具栏同一组互斥条件——
-  // 航拍、导出、忙碌、修复城市、已经在开车、飞行或机甲战时不响应（引擎只在非驾驶世界里派发点击）。
-  // One guard list for every Mecha entry point. The toolbar, the world click and
-  // the settings button all ask this predicate, so a second path cannot start a
-  // mode that overwrites the camera or frame hook owned by another activity.
-  const mechaBlocked = cinema || game.active || driving.active || mechaOpen || experience.busy || !!experience.film || planRepair.state.active;
-  const mechaEntryRefusal = (): string | null => {
-    if (cinema) return "航拍进行中，没有进入机甲战，镜头没有锁到地标。";
-    if (game.active) return "飞行中，没有进入机甲战，镜头没有锁到地标。";
-    if (driving.active) return "驾驶中，没有进入机甲战，镜头没有锁到地标。";
-    if (experience.film) return "视频导出进行中，没有进入机甲战，镜头没有锁到地标。";
-    if (planRepair.state.active) return "正在修复城市，没有进入机甲战，镜头没有锁到地标。";
-    if (experience.busy) return "城市还在忙，没有进入机甲战，镜头没有锁到地标。";
-    if (mechaOpen) return null;
-    const engine = engineRef.current;
-    if (!engine?.currentLayout || !engine.currentModel) return "城市还没准备好，没有进入机甲战，镜头没有锁到地标。";
-    return null;
-  };
+  // World entries, road audit and Dream preview require the same idle scene.
+  // Keep the order used by the Mecha refusal messages.
+  const sceneActivityBlocker = cinema ? "cinema"
+    : game.active ? "flight"
+    : driving.active ? "driving"
+    : experience.film ? "film"
+    : planRepair.state.active ? "repair"
+    : experience.busy ? "busy"
+    : mechaOpen ? "mecha"
+    : null;
   // Require a modelled city: the board is a view of the current layout, not a game
   // that can start against a half-built scene.
   const openMecha = (encounter: MonsterEncounter | null = null) => {
-    const refusal = mechaEntryRefusal();
-    if (refusal) { experience.setError(cityText(refusal, language)); return; }
-    if (mechaBlocked) return;
+    if (sceneActivityBlocker === "mecha") return;
+    if (sceneActivityBlocker !== null) {
+      const reason = {
+        cinema: "航拍进行中，没有进入机甲战，镜头没有锁到地标。",
+        flight: "飞行中，没有进入机甲战，镜头没有锁到地标。",
+        driving: "驾驶中，没有进入机甲战，镜头没有锁到地标。",
+        film: "视频导出进行中，没有进入机甲战，镜头没有锁到地标。",
+        repair: "正在修复城市，没有进入机甲战，镜头没有锁到地标。",
+        busy: "城市还在忙，没有进入机甲战，镜头没有锁到地标。",
+      }[sceneActivityBlocker];
+      experience.setError(cityText(reason, language));
+      return;
+    }
+    const engine = engineRef.current;
+    if (!engine?.currentLayout || !engine.currentModel) {
+      experience.setError(cityText("城市还没准备好，没有进入机甲战，镜头没有锁到地标。", language));
+      return;
+    }
     if (encounter && !encounterIsCurrent(encounter, engineRef.current?.currentLayout ?? null, engineRef.current?.currentModel ?? null)) {
       experience.setError(language === "en" ? "The city changed. Select an encounter again." : "城市布局已变化，请重新选择遭遇点。");
       return;
@@ -161,7 +190,7 @@ export function CityApp() {
   const playRef = useRef<(target: PlayTarget) => void>(() => {});
   playRef.current = (target) => {
     if (target.kind === "mecha") { openMecha(); return; }
-    if (mechaBlocked) return;
+    if (sceneActivityBlocker !== null) return;
     experience.setOptions(false); experience.clearSelection();
     if (target.kind === "car") driving.enterAt(target);
     else game.enterPracticeFrom(target);
@@ -178,10 +207,32 @@ export function CityApp() {
   const [squadNow, setSquadNow] = useState(() => Date.now());
   useEffect(() => () => { geographyAbort.current?.abort(); }, []);
   useEffect(() => observeHealth(() => engineRef.current?.diagnosticState() ?? { engineMissing: true }), []);
+  useEffect(() => connectHostCalls({
+    ...createCitySquadCallHandlers({
+      projection: () => projectionRef.current,
+      onEnvelope: (envelope) => window.dispatchEvent(new CustomEvent(SQUAD_EVENT, { detail: envelope })),
+    }),
+    ...createCityBuildingCallHandlers({ projection: () => projectionRef.current }),
+  }), []);
   useEffect(() => {
     const invalidated = () => setRefresh((value) => value + 1);
     window.addEventListener("__AV_PLUGIN_INVALIDATED__", invalidated);
     return () => window.removeEventListener("__AV_PLUGIN_INVALIDATED__", invalidated);
+  }, []);
+  useEffect(() => {
+    const onHostEvent = (event: Event) => {
+      const envelope = (event as CustomEvent).detail as { version?: unknown; source?: unknown; payload?: unknown } | null;
+      if (!envelope || envelope.version !== 1 || envelope.source !== "host") return;
+      if (parseEntityChanged(envelope.payload)) {
+        window.dispatchEvent(new CustomEvent(ENTITY_CHANGED_EVENT, { detail: envelope.payload }));
+        return;
+      }
+      if (parseSquadEnvelope(envelope.payload)) {
+        window.dispatchEvent(new CustomEvent(SQUAD_EVENT, { detail: envelope.payload }));
+      }
+    };
+    window.addEventListener("__AV_PLUGIN_EVENT__", onHostEvent);
+    return () => window.removeEventListener("__AV_PLUGIN_EVENT__", onHostEvent);
   }, []);
   useEffect(() => {
     const onEntity = (event: Event) => {
@@ -215,6 +266,25 @@ export function CityApp() {
     return () => { window.removeEventListener(SQUAD_EVENT, onSquad); window.clearInterval(tick); };
   }, []);
   useEffect(() => {
+    if (!embedded()) return;
+    let active = true;
+    void readCitySquadSnapshot().then(({ events, claims }) => {
+      if (!active) return;
+      for (const envelope of events) window.dispatchEvent(new CustomEvent(SQUAD_EVENT, { detail: envelope }));
+      for (const claim of claims) {
+        const alreadyRestored = events.some((event) => event.kind === "claim" && event.payload.asset_ref === claim.asset_ref
+          && event.payload.expires_at === claim.expires_at);
+        if (alreadyRestored) continue;
+        window.dispatchEvent(new CustomEvent(SQUAD_EVENT, { detail: {
+          v: 1, id: `evt_restore_${claim.asset_ref}_${claim.updated_at}`, ts: claim.updated_at, session_id: claim.session_id,
+          agent_id: claim.agent_id, agent_name: claim.agent_name, kind: "claim",
+          payload: { asset_ref: claim.asset_ref, expires_at: claim.expires_at },
+        } }));
+      }
+    }).catch(() => {});
+    return () => { active = false; };
+  }, []);
+  useEffect(() => {
     const engine = engineRef.current;
     if (!engine) return;
     const present = new Set(Object.keys(squad.claims));
@@ -240,6 +310,7 @@ export function CityApp() {
     setStatus("正在更新 City 插槽数据…");
     const apply = (data: CityProjectionV1, paging = false) => {
       setProjection(data);
+      setLoadErrorCode(null);
       setDataLoaded(true);
       setCityLoad({ stage: "model", work: null });
       reportSceneStage("model", data.window.days);
@@ -254,6 +325,9 @@ export function CityApp() {
     }).catch(() => {
       if (!active) return;
       setDataLoaded(true);
+      const reason = window.__CITY_TYPED_SESSION_ROLLOUT__?.reason;
+      setLoadErrorCode(typeof reason === "string" && /^[a-z0-9_:-]{1,80}$/i.test(reason)
+        ? reason : "typed_city_projection_unavailable");
       // Keep a city that already rendered; packaged v3 fallback happens inside the provider.
       setProjection((current) => current ?? null);
       setStatus((current) => current === "正在载入 City 插槽数据…" || current === "正在更新 City 插槽数据…"
@@ -400,30 +474,34 @@ export function CityApp() {
   }, [projection, experience.busy, experience.seed, game.active, driving.active, firstModelFrame, mechaOpen]);
 
   useEffect(() => {
-    if (!projection?.v3_context || !embedded()) return;
+    if (!projection || !embedded()) return;
     let active = true;
-    const context = projection.v3_context;
+    const objectRevisions = new Map<string, number>();
     const refs = projection.sessions.map((session) => session.asset_ref).filter((id): id is string => typeof id === "string");
     const applyOverrides = async (animate: boolean) => {
-      const { overrides, events, claims, squadMailbox } = await readBuildingOverrides(context, refs);
+      const stableAssetRefs = stableAssetRefsForProjection(projection);
+      const tokensByAsset = new Map(projection.sessions.flatMap((session) => typeof session.asset_ref === "string"
+        ? [[session.asset_ref, session.tokens.total] as const] : []));
+      const { overrides, objectStates } = await readBuildingOverrides(refs, stableAssetRefs, tokensByAsset);
       if (!active) return;
-      for (const event of events) seenEntityEvents.current.add(event.event_id);
+      const legacyImportReady = await importLegacyCityClaimsFromTypedStore().catch(() => false);
+      await ensureCitySquadAssetCrosswalks(projection, stableAssetRefsForProjection(projection)).catch(() => {});
+      const legacySquad = legacyImportReady ? await readCitySquadSnapshot().catch(() => null) : null;
+      for (const item of objectStates) objectRevisions.set(item.asset_ref, item.state.objectRevision);
       const nowSecs = Math.floor(Date.now() / 1000);
       setSquad((current) => {
-        const stored = claimsFromRows(claims, nowSecs);
         let next = {
           ...current,
-          claims: Object.keys(current.claims).length ? expireClaims(current.claims, nowSecs) : stored,
+          claims: legacyImportReady || Object.keys(current.claims).length
+            ? legacySquad ? claimsFromRows(legacySquad.claims, nowSecs) : expireClaims(current.claims, nowSecs)
+            : expireClaims(current.claims, nowSecs),
         };
-        const parsed = parseSquadEnvelope(squadMailbox);
-        if (parsed) next = applySquadEnvelope(next, parsed, nowSecs);
+        for (const event of legacySquad?.events ?? []) next = applySquadEnvelope(next, event, nowSecs);
         return next;
       });
       for (const row of overrides) {
-        const latest = events.find((event) => event.entity_id === row.asset_ref && event.action === "set" && event.revision === row.revision);
         engineRef.current?.applyBuildingChanged(entityChangedFromBuilding({
           asset_ref: row.asset_ref,
-          event_id: latest?.event_id,
           revision: row.revision,
           kind: "set",
           source: "override",
@@ -436,19 +514,19 @@ export function CityApp() {
       if (document.hidden || !liveCity.current) return;
       void (async () => {
         try {
-          const { overrides, events } = await readBuildingOverrides(context, refs);
-          for (const event of events) {
-            if (seenEntityEvents.current.has(event.event_id)) continue;
-            seenEntityEvents.current.add(event.event_id);
-            const row = overrides.find((item) => item.asset_ref === event.entity_id);
-            if (event.action === "reset") {
-              engineRef.current?.applyBuildingChanged(event, true);
-            } else if (row) {
-              engineRef.current?.applyBuildingChanged(entityChangedFromBuilding({
-                asset_ref: row.asset_ref, event_id: event.event_id, revision: event.revision,
-                kind: "set", source: "override", model: row.model,
-              }), true);
-            }
+          const tokensByAsset = new Map(projection.sessions.flatMap((session) => typeof session.asset_ref === "string"
+            ? [[session.asset_ref, session.tokens.total] as const] : []));
+          const { objectStates } = await readBuildingOverrides(refs,
+            stableAssetRefsForProjection(projection), tokensByAsset);
+          const genericStateByAsset = new Map(objectStates.map((item) => [item.asset_ref, item.state]));
+          for (const [assetRef, state] of genericStateByAsset) {
+            const previousRevision = objectRevisions.get(assetRef);
+            objectRevisions.set(assetRef, state.objectRevision);
+            if (previousRevision === state.objectRevision || (previousRevision === undefined && state.domainRevision === 0)) continue;
+            const event = entityChangedFromBuilding({ asset_ref: assetRef, revision: state.domainRevision,
+              event_id: `be_generic_${assetRef}_${state.objectRevision}`, kind: state.model ? "set" : "reset",
+              source: "generic-object", model: state.model });
+            engineRef.current?.applyBuildingChanged(event, true);
           }
         } catch { /* poll is a backup; push is preferred */ }
       })();
@@ -487,12 +565,65 @@ export function CityApp() {
 
   const dataAvailable = projection !== null && projection.status !== "unavailable";
   const sceneReady = dataAvailable && projection.status !== "empty" && !sceneUnavailable && firstModelFrame;
+  const dreamPreviewEnabled = dreamPublicationActive || (embedded() && projection?.source === "local" && sceneReady
+    && sceneActivityBlocker === null);
+  const openDreamPreview = async () => {
+    if (dreamPublicationActive && dreamPreviewSnapshot) { setDreamPreviewOpen(true); return; }
+    if (!dreamPreviewEnabled) return;
+    const engine = engineRef.current;
+    const model = engine?.currentModel;
+    const layout = engine?.currentLayout;
+    if (!engine || !model || !layout) {
+      setDreamPreviewError("当前城市场景尚未准备完成。");
+      setDreamPreviewOpen(true);
+      return;
+    }
+    const request = ++dreamPreviewRequest.current;
+    setDreamPreviewOpen(true);
+    setDreamPreviewBusy(true);
+    setDreamPreviewError(null);
+    setDreamPreviewSnapshot(null);
+    setDreamPreviewEnvelope(null);
+    setDreamPreviewPlainBytes(null);
+    setDreamPreviewEnvelopeBytes(null);
+    experience.setOptions(false);
+    try {
+      const candidate = createDreamSnapshotCandidate(model, layout, engine.currentBackdrop, engine.captureReturnView());
+      const { candidate: projected, envelope } = await prepareDreamSnapshotForPublication(candidate);
+      if (dreamPreviewRequest.current !== request) return;
+      if (engineRef.current !== engine || engine.currentLayout !== layout || engine.currentModel !== model) {
+        setDreamPreviewError("城市在预览生成期间发生变化，请重新打开预览。");
+        return;
+      }
+      const plain = new TextEncoder().encode(JSON.stringify(projected));
+      setDreamPreviewSnapshot(projected);
+      setDreamPreviewEnvelope(envelope);
+      setDreamPreviewPlainBytes(plain.byteLength);
+      setDreamPreviewEnvelopeBytes(new TextEncoder().encode(JSON.stringify(envelope)).byteLength);
+    } catch (error) {
+      if (dreamPreviewRequest.current !== request) return;
+      const code = error instanceof Error ? error.message : "";
+      setDreamPreviewError(code === "dream_candidate_too_large"
+        ? "快照超过当前远程消息预算，未生成可分享的链接。"
+        : `本机快照校验或压缩失败${/^(?:dream_|invalid_dream_|remote_city_)[a-z0-9_]{1,72}$/.test(code) ? `（${code}）` : ""}，未生成可分享的链接。`);
+    } finally {
+      if (dreamPreviewRequest.current === request) setDreamPreviewBusy(false);
+    }
+  };
+  const closeDreamPreview = () => {
+    dreamPreviewRequest.current += 1;
+    setDreamPreviewOpen(false);
+    setDreamPreviewBusy(false);
+  };
+  useEffect(() => {
+    if (dreamPreviewOpen && !dreamPreviewEnabled) closeDreamPreview();
+  }, [dreamPreviewOpen, dreamPreviewEnabled]);
   const encounterState = useMonsterEncounters(engineRef, sceneReady);
   // The host projection request precedes model/planning progress. Keep the same
   // loading shell visible from the first render, including a slow summary query.
   const cityLoading = !sceneUnavailable && (!dataLoaded || (dataAvailable && projection?.status !== "empty" && !firstModelFrame));
-  const roadAuditEnabled = sceneReady && !driving.active && !game.active && !cinema && !mechaOpen && !experience.busy && !experience.film && !planRepair.state.active;
-  const mechaEntryEnabled = sceneReady && !mechaBlocked && Boolean(experience.model) && mechaAvailability !== "empty";
+  const roadAuditEnabled = sceneReady && sceneActivityBlocker === null;
+  const mechaEntryEnabled = sceneReady && sceneActivityBlocker === null && Boolean(experience.model) && mechaAvailability !== "empty";
   const roadAudit = useRoadAudit(engineRef, roadAuditEnabled && roadAuditOpen);
   const toolbarReady = true; // UI/command channel ready; scene actions stay disabled until the first model frame.
   const tools: Tool[] = [
@@ -590,12 +721,17 @@ export function CityApp() {
       {!cinema && !game.active && !driving.active && !mechaOpen && sceneReady && <SquadFeed
         items={squad.items} nowMs={squadNow} open={squadOpen} onOpen={setSquadOpen}
         onFocus={(assetRef) => { engineRef.current?.focusBuilding(assetRef); }} />}
-      <div hidden={driving.active || mechaOpen}><CityExperience ui={experience} disabled={!sceneReady} cinema={cinema} status={status} quality={quality} game={game} planRepair={planRepair}
+      <div hidden={driving.active || mechaOpen}><CityExperience ui={experience} disabled={!sceneReady} cinema={cinema} status={status} loadErrorCode={loadErrorCode} quality={quality} game={game} planRepair={planRepair}
         windowDays={windowDays} windowOptions={windowOptions} onWindowDays={(days) => setWindowDays(days as WindowDays)} labels={labels} onLabels={(next) => { engineRef.current?.setLabelsVisible(next); setLabels(next); }}
         onQuality={(value) => { if (["auto", "high", "eco"].includes(value)) { engineRef.current?.setQualityMode(value as EngineQualityMode); setQuality(value as EngineQualityMode); } }}
-        onMecha={() => openMecha()} mechaEnabled={mechaEntryEnabled} mechaAvailability={mechaAvailability} /></div>
+        onMecha={() => openMecha()} mechaEnabled={mechaEntryEnabled} mechaAvailability={mechaAvailability}
+        onDreamPreview={() => { void openDreamPreview(); }} dreamPreviewEnabled={dreamPreviewEnabled} dreamPublicationActive={dreamPublicationActive} /></div>
+      {(dreamPreviewOpen || dreamPreviewSnapshot || dreamPreviewBusy) && <Suspense fallback={null}><DreamSnapshotPreview open={dreamPreviewOpen} snapshot={dreamPreviewSnapshot} envelope={dreamPreviewEnvelope} plainBytes={dreamPreviewPlainBytes}
+        envelopeBytes={dreamPreviewEnvelopeBytes} busy={dreamPreviewBusy} error={dreamPreviewError} onClose={closeDreamPreview}
+        onPublicationActive={setDreamPublicationActive} /></Suspense>}
+      {dreamPublicationActive && !dreamPreviewOpen && <button type="button" className="dream-manage-remote-fab" onClick={() => { void openDreamPreview(); }}>管理远程访问</button>}
       {mechaOpen && !game.active && !driving.active && !cinema && <MechaBoard locale={language === "en" ? "en" : "zh-Hans"} engine={engineRef.current} encounter={selectedEncounter} onClose={() => setMechaOpen(false)} onAvailability={reportMechaAvailability} />}
-      {!mechaBlocked && sceneReady && <MonsterWorldMarkers engine={engineRef.current} encounters={encounterState.encounters} language={language} onEnter={openMecha} />}
+      {sceneActivityBlocker === null && sceneReady && <MonsterWorldMarkers engine={engineRef.current} encounters={encounterState.encounters} language={language} onEnter={openMecha} />}
       <CityMinimap engine={engineRef} language={language} driving={{ active: driving.active, pose: driving.pose }} encounters={encounterState}
         hidden={!sceneReady || cinema || game.active || mechaOpen || !!experience.film || driving.hud.phase === "preparing" || driving.hud.phase === "error"} />
       <DrivingHud model={{ active: driving.active, choosingVehicle: driving.choosingVehicle, vtol: driving.vtol, entryError: driving.entryError,

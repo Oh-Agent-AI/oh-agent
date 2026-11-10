@@ -17,7 +17,7 @@ import { roadValidationReport, type RoadValidationReport } from "./roadValidatio
 
 export function useCityDrivingPlay(engine: RefObject<CityEngine | null>, host: Readonly<{
   cinemaActive(): boolean; gameActive(): boolean; busy(): boolean;
-}>) {
+}>, options: Readonly<{ notifyHostBusy?: boolean }> = {}) {
   const visuals = useRef<CarVisuals | null>(null);
   const visualScene = useRef<CityCarSceneCapability | null>(null);
   const inputSource = useRef<KeyboardInput<VtolInputState> | null>(null);
@@ -40,7 +40,7 @@ export function useCityDrivingPlay(engine: RefObject<CityEngine | null>, host: R
     currentVisuals?.dispose(); visuals.current = null; visualScene.current = null; blockedSeen.current = false;
   }, []);
   const car = useCityDriving(engine, {
-    ...host, spawn: null, confirmationEnabled: false,
+    ...host, spawn: null, confirmationEnabled: false, notifyHostBusy: options.notifyHostBusy,
     present: (state, blocked, _reason, frameSeconds, cameraSweep: CameraClearanceQuery, scene: CityCarSceneCapability) => {
       const current = engine.current;
       if (!current) return;
@@ -91,6 +91,7 @@ export function useCityDrivingPlay(engine: RefObject<CityEngine | null>, host: R
     };
     // First AudioContext on WKWebView can block the plugin thread for seconds.
     if (sfxRef.current) start();
+    else if (options.notifyHostBusy === false) start();
     else void noteBusy(8_000).catch(() => {}).finally(start);
   }, [car.resume]);
   const pause = useCallback((reason?: string) => { inputSource.current?.clear(); car.pause(reason); sfxRef.current?.suspend(); }, [car.pause]);

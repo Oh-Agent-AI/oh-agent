@@ -5,12 +5,12 @@
 import { atLeast } from "../roadStandard";
 import { m, REAL } from "../worldScale";
 import * as THREE from "three";
-import { builtFractionAt, hashSeed, type CityBuilding, type CityModel } from "../../cityModel";
+import { builtFractionAt, hashSeed, selectVisualHero, type CityBuilding, type CityModel } from "../../cityModel";
 import { HOTEL_CROWN_MAX_FINS, hotelCrownPlan, type CrownPiece } from "../cityHotelCrown";
 import { roadsideSignPlan, rooftopSignPlan, type RooftopSignPlan } from "../citySkylineProps";
 import type { CityLayout, DistrictLayout, Parcel, Vec2 } from "../cityLayout";
 import { activeTheme } from "../cityTheme";
-import { makeDecoFacadeTexture, makeFacadeTexture, paletteFor } from "../cityTextures";
+import { makeDecoFacadeTexture, makeFacadeTexture, paletteForDistrict } from "../cityTextures";
 import { SegmentIndex } from "../cityPlan";
 import { LIGHT_BUDGET, useOfZone } from "../cityLightBudget";
 import { roadPaintPlan } from "../cityRoadPaint";
@@ -160,7 +160,7 @@ function cursorsFromHost(host: BuildingSystemHost): RuntimeCursors {
 }
 
 function placeRuntime(host: BuildingSystemHost, building: CityBuilding, district: DistrictLayout, slot: Parcel, cursors: RuntimeCursors, fromAppend: boolean): BuildingRuntime {
-      const palette = paletteFor(building.districtId);
+      const palette = paletteForDistrict(host.model, building.districtId);
       const runtime: BuildingRuntime = {
         building,
         slot,
@@ -370,8 +370,8 @@ export function buildRuntimes(host: BuildingSystemHost): void {
     host.buildGroundSpill();
     // 天际线焦点：token 最多的会话。楼高本就是 token 的单调函数，它已是（或几乎是）最高楼；
     // 这里只给它专属冠顶，不改高度——高度是数据语义。
-    let hero: BuildingRuntime | null = null;
-    for (const runtime of host.runtimes) if (!hero || runtime.building.tokensTotal > hero.building.tokensTotal) hero = runtime;
+    const heroBuilding = selectVisualHero(host.runtimes.map(runtime => runtime.building));
+    const hero = host.runtimes.find(runtime => runtime.building === heroBuilding) ?? null;
     if (hero) {
       hero.hero = true;
       hero.roofKind = 0;
@@ -745,7 +745,7 @@ export function buildMassing(host: BuildingSystemHost): void {
 }
 
 export function buildHeroCrown(host: BuildingSystemHost, hero: BuildingRuntime): void {
-    const palette = paletteFor(hero.building.districtId);
+    const palette = paletteForDistrict(host.model, hero.building.districtId);
     const spireMaterial = new THREE.MeshLambertMaterial({ color: "#dfe6ea", emissive: new THREE.Color(palette.accent).multiplyScalar(0.12) });
     const spire = new THREE.Mesh(new THREE.ConeGeometry(1, 1, 8, 1).translate(0, 0.5, 0), spireMaterial);
     spire.castShadow = true;

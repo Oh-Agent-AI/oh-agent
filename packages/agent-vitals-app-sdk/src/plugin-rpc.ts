@@ -18,6 +18,16 @@ export interface PluginResponseV1<TResult = unknown> {
   } | null;
 }
 
+/** Opaque local host call delivered through the descriptor-scoped event port. */
+export interface PluginLocalCallV1<TPayload = Record<string, unknown>> {
+  callId: string;
+  method: string;
+  payload: TPayload;
+}
+export type PluginLocalCallResponseV1<TResult = unknown> =
+  | { ok: true; result: TResult }
+  | { ok: false; error: { code: string } };
+
 /**
  * 通用插件本地状态端口（CITY_GAME_MODE_IMPLEMENTATION_PLAN §9）：
  * 宿主提供有界 JSON 文档存储（应用私有目录 plugins/<registered-id>/state/，路径由宿主生成，

@@ -1,9 +1,10 @@
 import ReactDOM from "react-dom/client";
 import { RemoteApp } from "./RemoteApp";
-import { startRemoteSessionHost } from "./RemoteSessionHost";
+import { startRemoteHostRuntime } from "./RemoteHostRuntime";
+import { REMOTE_HOST_ADAPTERS } from "./remoteHostManifest";
 
 if (new URLSearchParams(location.search).get("sessionHost") === "1") {
-  startRemoteSessionHost();
+  startRemoteHostRuntime(REMOTE_HOST_ADAPTERS);
 } else {
   ReactDOM.createRoot(document.getElementById("root")!).render(<RemoteApp />);
 }

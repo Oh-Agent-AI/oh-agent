@@ -393,7 +393,7 @@ struct SubmitPlan {
     kind: String, protocol: String, match_id: String, player_id: String,
     command_id: String, base_revision: u64, plan: Plan,
 }
-pub(super) fn valid_submit_plan(payload: &Value) -> bool {
+pub(crate) fn valid_submit_plan(payload: &Value) -> bool {
     serde_json::from_value::<SubmitPlan>(payload.clone()).is_ok()
 }
 
@@ -405,7 +405,7 @@ struct SubmitConcede {
     kind: String, protocol: String, match_id: String, player_id: String,
     command_id: String, base_revision: u64,
 }
-pub(super) fn valid_submit_concede(payload: &Value) -> bool {
+pub(crate) fn valid_submit_concede(payload: &Value) -> bool {
     serde_json::from_value::<SubmitConcede>(payload.clone()).is_ok_and(|command|
         command.kind == "match.concede-v2" && command.protocol == NET
             && identifier(&command.match_id) && matches!(command.player_id.as_str(), "owner" | "guest")
@@ -426,26 +426,26 @@ struct SubmitDeployment {
     kind: String, protocol: String, match_id: String, player_id: String,
     command_id: String, base_revision: u64, plan: DeployPlan,
 }
-pub(super) fn valid_submit_deployment(payload: &Value) -> bool {
+pub(crate) fn valid_submit_deployment(payload: &Value) -> bool {
     serde_json::from_value::<SubmitDeployment>(payload.clone()).is_ok_and(|command|
         command.kind == "deployment.submit" && command.protocol == NET
             && identifier(&command.match_id) && command.player_id == "owner" && identifier(&command.command_id)
             && command.plan.revision == command.base_revision && command.plan.placements.len() <= 3
             && command.plan.placements.iter().all(|p| mech(&p.mech_id) && p.pos.board_cell()))
 }
-pub(super) fn valid_start_deployment(arena: &Value, state: &Value) -> bool {
+pub(crate) fn valid_start_deployment(arena: &Value, state: &Value) -> bool {
     let Ok(arena) = serde_json::from_value::<Arena>(arena.clone()) else { return false; };
     let Ok(state) = serde_json::from_value::<PveState>(state.clone()) else { return false; };
     arena.valid() && arena.ruleset == PVE && state.ruleset == PVE && state.valid_deployment()
 }
 
-pub(super) fn valid_start(arena: &Value, state: &Value) -> bool {
+pub(crate) fn valid_start(arena: &Value, state: &Value) -> bool {
     let Ok(arena) = serde_json::from_value::<Arena>(arena.clone()) else { return false; };
     let Ok(state) = serde_json::from_value::<PveState>(state.clone()) else { return false; };
     arena.valid() && arena.ruleset == PVE && state.ruleset == PVE && state.valid()
 }
 
-pub(super) fn valid_start_sequential(opening: &Value) -> bool {
+pub(crate) fn valid_start_sequential(opening: &Value) -> bool {
     serde_json::from_value::<SequentialOpening>(opening.clone()).is_ok_and(|opening| opening.valid())
 }
 
@@ -467,7 +467,7 @@ struct DeploymentError { code: String, fault: DeploymentFault }
 #[serde(deny_unknown_fields)]
 struct DeploymentFailure { ok: bool, error: DeploymentError }
 
-pub(super) fn valid_outbound_with_deployment(message: &Value, match_id: &str) -> bool {
+pub(crate) fn valid_outbound_with_deployment(message: &Value, match_id: &str) -> bool {
     if valid_outbound(message, match_id) { return true; }
     match message["type"].as_str() {
         Some("event") => serde_json::from_value::<Notification>(message.clone()).is_ok_and(|message|
@@ -491,7 +491,7 @@ pub(super) fn valid_outbound_with_deployment(message: &Value, match_id: &str) ->
 // Validate the actual bytes about to leave the trusted host, not just the input
 // to match.create. Both game modes can produce snapshots and turn events, and
 // game logic may copy fields from a remote command into a later state.
-pub(super) fn valid_outbound(message: &Value, match_id: &str) -> bool {
+pub(crate) fn valid_outbound(message: &Value, match_id: &str) -> bool {
     match message["type"].as_str() {
         Some("event") => {
             let Ok(message) = serde_json::from_value::<Notification>(message.clone()) else { return false; };
@@ -517,5 +517,5 @@ pub(super) fn valid_outbound(message: &Value, match_id: &str) -> bool {
 }
 
 #[cfg(test)]
-#[path = "remote_gateway_projection_tests.rs"]
+#[path = "mecha_remote_projection_tests.rs"]
 mod tests;

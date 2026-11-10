@@ -5,7 +5,7 @@ export type Peer = { id: string; role: Role; playerId: string };
 
 export type Capability = { id: string; methods: string[]; events: string[] };
 export type Scope = { appId: string; sessionId: string; capability: Capability };
-export type RoomRecord = Scope & { ownerHash: string; createdAt: number };
+export type RoomRecord = Scope & { ownerHash: string; createdAt: number; hostLeaseExpiresAt?: number };
 export type AccessRecord = {
   id: string;
   role: Role;
@@ -14,6 +14,7 @@ export type AccessRecord = {
   approved: boolean;
   expiresAt: number;
   inviteHash?: string;
+  inviteId?: string;
   joined?: boolean;
 };
 export type TicketRecord = { peer: Peer; expiresAt: number };

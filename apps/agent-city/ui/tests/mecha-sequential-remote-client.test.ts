@@ -22,11 +22,11 @@ class Loopback implements WebSocketLike {
   send(raw: string) {
     const envelope = JSON.parse(raw);
     const response = this.host.handle({ protocol: "mecha-net:v2", type: "request", requestId: envelope.requestId, method: envelope.method, payload: envelope.payload });
-    queueMicrotask(() => this.emit("message", { data: JSON.stringify({ ...response, protocol: "app-remote:v1", appId: "city", sessionId: this.matchId, capability: "mecha:v1" }) }));
+    queueMicrotask(() => this.emit("message", { data: JSON.stringify({ ...response, protocol: "app-remote:v1", appId: "city", sessionId: this.matchId, capability: "mecha:v4" }) }));
   }
 }
 
-test("remote client negotiates v2 snapshots and commands over the existing socket", async () => {
+test("remote client uses the v1.5 capability for snapshots and command submissions", async () => {
   const initial = fixture();
   const session = new SequentialMatchSession("match-r", initial, []);
   const host = new SequentialRemoteHost(session);

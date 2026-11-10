@@ -13,11 +13,24 @@ mod quota_alerts;
 mod plugin_host;
 mod plugin_projections;
 mod plugin_state;
+mod typed_data;
+mod typed_objects;
+// Retained only as a test baseline for the TS City projection migration.
+#[cfg(test)]
+mod city_dream_projection;
+// Retained only as a test parity baseline for the TS City display projector.
+#[cfg(test)]
+mod city_remote_display_projection;
+// Legacy Mecha wire adapters remain only as migration/test baselines. The
+// packaged v1.5 remote match uses the descriptor-driven generic session path.
+#[cfg(test)]
 mod mecha_remote_adapter;
 mod remote_gateway;
 mod remote_protocol;
 mod remote_registry;
+mod remote_adapter_manifest;
 mod remote_sessions;
+mod remote_session_runtime;
 mod remote_transport;
 mod update_check;
 // 「测试」板 Claude IP 风险自检：全部出站探测收敛在此模块（离线包契约：React
@@ -5826,7 +5839,7 @@ pub fn run() {
             plugin_host::plugin_message,
             plugin_host::plugin_request,
             plugin_host::plugin_invalidate,
-            remote_gateway::remote_mecha_message,
+            remote_gateway::remote_host_message,
             read_overview,
             data_status,
             billing_import_candidates,
@@ -6091,15 +6104,22 @@ mod tests {
             });
             (url, worker)
         }
+        // This test targets a local ephemeral server. Keep the request off any
+        // machine-level HTTP proxy so the proxy cannot replace the fixture response.
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
         let (url, worker) = server(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n5\r\nworld\r\n0\r\n\r\n");
         let result = tauri::async_runtime::block_on(async {
-            super::fetch_official_manifest_bytes(&super::manifest_catalog_client().unwrap(), &url, 6).await
+            super::fetch_official_manifest_bytes(&client, &url, 6).await
         });
-        assert!(result.unwrap_err().contains("bytes limit"));
+        assert!(result.as_ref().is_err_and(|error| error.contains("bytes limit")), "unexpected stream-limit result: {result:?}");
         worker.join().unwrap();
         let (url, worker) = server(b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         let result = tauri::async_runtime::block_on(async {
-            super::fetch_official_manifest_bytes(&super::manifest_catalog_client().unwrap(), &url, 6).await
+            super::fetch_official_manifest_bytes(&client, &url, 6).await
         });
         assert!(result.unwrap_err().contains("HTTP 302"));
         worker.join().unwrap();

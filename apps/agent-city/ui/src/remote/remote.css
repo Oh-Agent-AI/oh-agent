@@ -35,3 +35,29 @@ button.selected { border-color: #75d7ff; background: #20445e; }
 .remote-pending { margin: 8px 14px; padding: 12px; border: 1px solid #bd8c43; border-radius: 10px; background: #312b20; }
 .remote-pending p { margin: 0 0 8px; line-height: 1.45; }
 .remote-pending p:last-child { margin: 8px 0 0; }
+.remote-city-phone { height: 100dvh; min-height: 0; max-width: none; margin: 0; padding: 0; display: grid; grid-template-rows: minmax(35dvh, 1fr) minmax(300px, 54dvh); overflow: hidden; background: #0d1b26; }
+.remote-city-scene { position: relative; min-height: 0; overflow: hidden; background: #93aec0; }
+.remote-city-scene--standalone { width: 100%; height: 100%; }
+.remote-city-scene canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.remote-city-scene canvas[hidden] { display: none; }
+.remote-city-game-entry { position: absolute; z-index: 5; inset: 10px auto auto 10px; display: flex; gap: 8px; align-items: center; padding: 8px; border: 1px solid #7394a4; border-radius: 10px; background: #102231e8; }
+.remote-city-game-entry button { min-height: 40px; padding: 7px 12px; border-color: #7394a4; background: #18394b; color: #eaf3f6; }
+.remote-city-game-entry button:disabled { opacity: .55; }
+.remote-city-game-entry span { max-width: 240px; color: #ffd0aa; font-size: 13px; }
+.remote-city-touch-pad { position: absolute; z-index: 6; inset: auto 12px 18px auto; display: grid; grid-template-columns: repeat(2, minmax(64px, 82px)); gap: 8px; touch-action: none; user-select: none; }
+.remote-city-touch-pad button { min-height: 58px; border: 1px solid #91b9c9; border-radius: 14px; background: #102231d9; color: #f2f8fa; font-size: 15px; font-weight: 700; touch-action: none; user-select: none; }
+.remote-city-touch-pad button[aria-pressed="true"] { background: #226b75ee; border-color: #a6eee2; transform: scale(.96); }
+.dream-city-app { position: relative; width: 100%; height: 100dvh; overflow: hidden; background: #0d1b26; }
+.dream-city-status { position: absolute; top: max(12px, env(safe-area-inset-top)); left: 12px; max-width: calc(100% - 24px); margin: 0; padding: 9px 12px; border-radius: 9px; background: #102231e8; color: #eaf3f6; }
+.remote-city-camera-controls { position: absolute; z-index: 5; inset: 10px 10px auto auto; display: flex; gap: 6px; }
+.remote-city-camera-controls button { min-height: 38px; padding: 6px 10px; border-color: #7394a4; background: #102231e8; }
+.remote-city-camera-controls button[aria-pressed="true"] { border-color: #76d5bb; background: #174a44ee; }
+.remote-city-loading { position: absolute; inset: auto 12px 12px; margin: 0; padding: 8px 12px; border-radius: 8px; background: #102231d9; color: #eaf3f6; }
+.remote-city-building { position: absolute; inset: auto 10px 10px; display: grid; gap: 3px; padding: 10px 12px; border: 1px solid #7394a4; border-radius: 10px; background: #102231e8; color: #eaf3f6; }
+.remote-city-building button { position: absolute; right: 8px; top: 7px; }
+.remote-city-building span { color: #bdd0d8; font-size: 13px; }
+.remote-city-overview { position: absolute; inset: 10px 10px auto auto; display: grid; gap: 3px; max-width: min(360px, calc(100% - 20px)); padding: 10px 12px; border: 1px solid #7394a4; border-radius: 10px; background: #102231e8; color: #eaf3f6; }
+.remote-city-overview span { color: #bdd0d8; font-size: 13px; }
+.remote-city-controls { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 12px; }
+.remote-city-instructions { margin: 4px 0 10px; color: #bdd0d8; font-size: 13px; line-height: 1.4; }
+@media (orientation: landscape) { .remote-city-phone { grid-template-columns: minmax(0, 1.3fr) minmax(340px, .7fr); grid-template-rows: 100dvh; } }

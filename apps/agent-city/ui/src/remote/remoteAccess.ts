@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { RemoteMatchClient } from "../game/mecha/client/RemoteMatchClient";
-import type { RemoteBattleState } from "../game/mecha/presentation/BattleScenePort";
 import { remoteCapability, remoteStorageKey, type MechaRemoteCapability } from "./remoteCapability";
 
 type Grant = { deviceId: string; token: string; playerId: "guest" };
 const grantKey = (matchId: string, capability: MechaRemoteCapability) => remoteStorageKey("mecha-guest", matchId, capability);
 const guestJoins = new Map<string, Promise<Grant>>();
 
-export function useRemoteAccess(params: URLSearchParams): { client: RemoteMatchClient<RemoteBattleState> | null; playerId: string; status: string; error: string } {
-  const capability = remoteCapability(params);
+export function useRemoteAccess(params: URLSearchParams): { client: RemoteMatchClient | null; status: string; error: string } {
+  const requestedCapability = remoteCapability(params);
+  const capability: MechaRemoteCapability | null = requestedCapability === "mecha:v4" ? requestedCapability : null;
   const matchId = params.get("match") ?? "";
   const roomId = params.get("room") ?? "";
   const inviteId = params.get("invite") ?? "";
@@ -22,10 +22,9 @@ export function useRemoteAccess(params: URLSearchParams): { client: RemoteMatchC
     } catch { /* A missing credential fails connection; the journal separately blocks sending. */ }
   }
   const endpoint = params.get("access") ?? (roomId ? `${location.origin}/v1/rooms/${roomId}/access` : "");
-  const playerId = params.get("player") ?? "owner";
   const deviceId = params.get("device") ?? "";
   // Do not carry a paired client or grant across a link/capability change.
-  const identity = JSON.stringify([capability, matchId, roomId, inviteId, ownerUrl, endpoint, playerId, deviceId, token]);
+  const identity = JSON.stringify([capability, matchId, roomId, inviteId, ownerUrl, endpoint, deviceId, token]);
   const currentIdentity = useRef(identity);
   currentIdentity.current = identity;
   const readGrant = (): Grant | null => {
@@ -35,7 +34,7 @@ export function useRemoteAccess(params: URLSearchParams): { client: RemoteMatchC
     } catch { return null; }
   };
   const [grant, setGrant] = useState<Grant | null>(readGrant);
-  const [guestClient, setGuestClient] = useState<RemoteMatchClient<RemoteBattleState> | null>(null);
+  const [guestClient, setGuestClient] = useState<RemoteMatchClient | null>(null);
   const [status, setStatus] = useState(capability ? (ownerUrl ? "ready" : "joining") : "failed");
   const [error, setError] = useState(capability ? "" : "unsupported_capability");
   const [stateIdentity, setStateIdentity] = useState(identity);
@@ -48,16 +47,16 @@ export function useRemoteAccess(params: URLSearchParams): { client: RemoteMatchC
 
   const ownerClient = useMemo(() => {
     if (!capability || !ownerUrl || !matchId) return null;
-    return new RemoteMatchClient<RemoteBattleState>({
-      url: ownerUrl, playerId, capability,
+    return new RemoteMatchClient({
+      url: ownerUrl, capability,
       ...(endpoint && deviceId && token ? { reconnect: { url: endpoint, deviceId, token } } : {}),
     });
-  }, [ownerUrl, matchId, endpoint, token, capability, playerId, deviceId]);
+  }, [ownerUrl, matchId, endpoint, token, capability, deviceId]);
 
   useEffect(() => {
     if (!capability || ownerClient || grant || !matchId || !roomId || !inviteId || !token) return;
     let alive = true;
-    const key = capability === "mecha:v1" ? `${roomId}:${inviteId}` : `${capability}:${roomId}:${inviteId}`;
+    const key = `${capability}:${roomId}:${inviteId}`;
     const deviceKey = `mecha-device:${key}`;
     let deviceSecret: string | null;
     try {
@@ -114,7 +113,7 @@ export function useRemoteAccess(params: URLSearchParams): { client: RemoteMatchC
         url.search = "";
         url.searchParams.set("ticket", value.ticket);
         url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
-        setGuestClient(new RemoteMatchClient<RemoteBattleState>({ url: url.toString(), playerId: "guest", capability, reconnect: { url: endpoint, deviceId: grant.deviceId, token: grant.token } }));
+        setGuestClient(new RemoteMatchClient({ url: url.toString(), capability, reconnect: { url: endpoint, deviceId: grant.deviceId, token: grant.token } }));
         setStatus("ready");
       } catch {
         if (!alive || currentIdentity.current !== identity) return;
@@ -127,5 +126,5 @@ export function useRemoteAccess(params: URLSearchParams): { client: RemoteMatchC
     return () => { alive = false; if (timer) clearTimeout(timer); };
   }, [grant, endpoint, capability, ownerClient, identity]);
 
-  return { client: capability ? ownerClient ?? guestClient : null, playerId: ownerClient ? playerId : "guest", status: capability ? status : "failed", error: capability ? error : "unsupported_capability" };
+  return { client: capability ? ownerClient ?? guestClient : null, status: capability ? status : "failed", error: capability ? error : "unsupported_capability" };
 }

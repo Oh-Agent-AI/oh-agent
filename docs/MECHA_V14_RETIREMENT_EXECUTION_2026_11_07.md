@@ -9,6 +9,8 @@
 - 分支 `mecha/itb-alignment`；A 阶段已收口并打 tag `itb-alignment-checkpoint-2`，包含后续撤销、目标绑定、地块检查和机甲状态显示修复。
 - 已完成：M0（`trial`）、M2（`mode.ts` + `MechaModeRuntime`）、M3（`execution/enemyPhase`）、M4（`enemyPhasePreview` + 顺序叠层）、M1 大部分（`MechaHud` 契约、删除 `SequentialMechaHud` 与 `sequentialMecha.css`）。
 - **执行进度（2026-11-07）：A、B、C1、C2 已完成阶段验收；C1 的 8 个 practice 物种均运行 v1.5 回合，技能映射从 canonical 表派生。C2 已验证共享 cues/HUD 类型边界、基于 `SequentialTurn.trial()` 的确定性 AI 命令建议，以及 v1.5 自动行动浏览器流程。C3 的协议桥接、停止授权、命令去重/陈旧 revision、relay 路由和原生开局数据校验已通过本地自动验收；新增手机浏览器回归使用真实 `SequentialRemoteHost`/`SequentialMatchSession` 验证 v1.5 移动命令、刷新恢复和 390px 无横向溢出。审查还发现原生生成 owner 链接遗漏 `mecha:v4`，会让手机端落入退役路由；已修复并加入 Rust 回归。桌面→真实手机→停止恢复的实机流程仍待验证。D 未完成。当前分支未 push。**
+- **C3 后续核查：** 宿主已有冻结并返回最终快照的内部停止路径；模拟测试覆盖冻结后拒绝命令、检查点恢复、冲突和丢失命令确认后的重新读取。原生网关校验接受合成的 v1.5 会话快照。这些检查尚未串成真实 Tauri → 手机 → 桌面验收，进程退出后的最终快照恢复也尚未验证。手机端目前仍是独立 DOM 棋盘，尚未复用桌面的 Agent City 3D 战场；`SequentialOpening` 不包含 `RemoteArenaV1`。沿用现有禁止修改协议的约束时，不能声称已还原同一座城市的战场。`scripted` 策略的对局目前禁止手机交接，避免策略分叉。
+- **本地回归补充：** 修复检查点恢复时克隆会话失败、BAUP 试算事件污染真实演出、恢复时敌人策略丢失，以及自动演出期间无法停止自动行动。最新 `verify:mecha` 为 452 通过；桌面浏览器中文 1280×800 和英文 390×844 分别通过部署、行动、回放和恢复流程。两次浏览器验证分别在最后一轮策略和自动按钮修复前、后执行，并非同一次完整运行；C3 真机门槛仍未满足。
 
 三个必须先处理的隐性耦合：
 
@@ -48,7 +50,7 @@
 - 先把 `ReplayBackend` 与 `sequentialReplayBackend` 从 `replayRepository.ts` 抽到 `replayBackend.ts`，改 `sequentialReplayRepository` 的 import。
 - 再删 `replayArchive.ts`、完成 `replayRepository.ts` 的 v1.4 移除（通用后端已先抽出）、`MechaBoard` 的经典回放入口/回放栏/自动存档；保留并验证 `SequentialMechaMatch` 的 v1.5 回放控件样式。
 - `plugin_state.rs`：删 `mecha-local-replay-entry:v1` 校验与测试，保留 `plugin.state`。
-- **核对容量**：通用插件文件有 32 KiB 限制；机甲回放和检查点的专用 SQLite 路径使用 40,000 字节 archive 和 41,024 字节记录限制。检查前后端实际序列化边界，并覆盖 31/33 KiB、40,000/41,024 字节及超限行为。
+- **容量现状（2026-11-10 更新）**：v1.5 已保存回放改用 descriptor-scoped 通用 object/scope，descriptor 将单条对象限制为 49,152 字节、回放库限制为 20 条；checkpoint 改用通用 `plugin.state`，其 48 KiB 文档上限可容纳现有 41,024 字节记录合同。旧 SQLite 只读 copy-forward 继续识别 40,000 字节 archive / 41,024 字节记录；回放格式和边界没有改变。仍需按发布验收计划验证升级迁移与浏览器体验，不能将编译通过当作真实升级验收。
 - 旧数据：按未知 schema 忽略或清理，不能阻塞启动。
 
 #### B3 测试/脚本清扫

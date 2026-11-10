@@ -9,6 +9,9 @@ const roomKey = "room:v1";
 const accessKey = (id: string) => `access:${id}`;
 const ticketKey = (hash: string) => `ticket:${hash}`;
 const requestLifetimeMs = 30_000;
+const dreamCapability = "city-dream:v1";
+const maxDreamVisitors = 16;
+const orphanRoomGraceMs = 15 * 60_000;
 
 export class MatchRoom implements DurableObject {
   private readonly requests = new Map<string, { peerId: string; requestId: string; expiresAt: number }>();
@@ -17,6 +20,55 @@ export class MatchRoom implements DurableObject {
 
   constructor(ctx: DurableObjectState) {
     this.ctx = ctx;
+  }
+
+  /** Called under the room's concurrency lock whenever a short-lived record is added. */
+  private async scheduleExpiry(expiresAt: number): Promise<void> {
+    const scheduled = await this.ctx.storage.getAlarm();
+    if (scheduled === null || expiresAt < scheduled) await this.ctx.storage.setAlarm(expiresAt);
+  }
+
+  async alarm(): Promise<void> {
+    await this.ctx.blockConcurrencyWhile(async () => {
+      const room = await this.ctx.storage.get<RoomRecord>(roomKey);
+      if (!room) return;
+      const now = Date.now();
+      // Migrate rooms registered before host leases were introduced.
+      if (room.hostLeaseExpiresAt === undefined) {
+        room.hostLeaseExpiresAt = now + orphanRoomGraceMs;
+        await this.ctx.storage.put(roomKey, room);
+      }
+      if (room.hostLeaseExpiresAt !== undefined && room.hostLeaseExpiresAt <= now) {
+        const hostConnected = this.ctx.getWebSockets().some((socket) => (socket.deserializeAttachment() as Peer | null)?.role === "host");
+        if (!hostConnected) {
+          for (const socket of this.ctx.getWebSockets()) socket.close(1001, "room_expired");
+          this.requests.clear();
+          this.rates.clear();
+          await this.ctx.storage.deleteAlarm();
+          await this.ctx.storage.deleteAll();
+          return;
+        }
+        room.hostLeaseExpiresAt = now + orphanRoomGraceMs;
+        await this.ctx.storage.put(roomKey, room);
+      }
+      const tickets = await this.ctx.storage.list<TicketRecord>({ prefix: "ticket:" });
+      let next: number | null = room.hostLeaseExpiresAt ?? null;
+      for (const [key, ticket] of tickets) {
+        if (ticket.expiresAt > now) { next = next === null ? ticket.expiresAt : Math.min(next, ticket.expiresAt); continue; }
+        await this.ctx.storage.delete(key);
+      }
+      const devices = await this.ctx.storage.list<AccessRecord>({ prefix: "access:" });
+      for (const [key, device] of devices) {
+        if (device.expiresAt > now) { next = next === null ? device.expiresAt : Math.min(next, device.expiresAt); continue; }
+        await this.ctx.storage.delete(key);
+        this.requests.forEach((target, requestId) => { if (target.peerId === device.id) this.requests.delete(requestId); });
+        this.rates.delete(device.id);
+        for (const socket of this.ctx.getWebSockets()) {
+          if ((socket.deserializeAttachment() as Peer | null)?.id === device.id) socket.close(1008, "access_expired");
+        }
+      }
+      if (next !== null) await this.ctx.storage.setAlarm(next);
+    });
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -41,9 +93,12 @@ export class MatchRoom implements DurableObject {
     const ownerHash = await secretHash(body.ownerToken);
     return this.ctx.blockConcurrencyWhile(async () => {
       if (await this.ctx.storage.get(roomKey)) return error("room_closed", 409);
+      const createdAt = Date.now();
+      const hostLeaseExpiresAt = createdAt + orphanRoomGraceMs;
       await this.ctx.storage.put(roomKey, {
-        appId: body.appId as string, sessionId: body.sessionId as string, capability, ownerHash, createdAt: Date.now(),
+        appId: body.appId as string, sessionId: body.sessionId as string, capability, ownerHash, createdAt, hostLeaseExpiresAt,
       } satisfies RoomRecord);
+      await this.scheduleExpiry(hostLeaseExpiresAt);
       return Response.json({ ok: true }, { headers: { "Cache-Control": "no-store" } });
     });
   }
@@ -60,9 +115,16 @@ export class MatchRoom implements DurableObject {
       const peer = { id: randomSecret(), role: body.role, playerId: body.role === "host" ? "host" : "owner" } as const;
       if (peer.role === "host") return this.ticket(peer);
       const reconnectToken = randomSecret();
-      await this.ctx.storage.put(accessKey(peer.id), {
-        id: peer.id, role: "owner", playerId: "owner", secretHash: await secretHash(reconnectToken), approved: true, expiresAt: Date.now() + 24 * 60 * 60_000,
-      } satisfies AccessRecord);
+      const expiresAt = Date.now() + 24 * 60 * 60_000;
+      const stored = await this.ctx.blockConcurrencyWhile(async () => {
+        if (!await this.ctx.storage.get(roomKey)) return false;
+        await this.ctx.storage.put(accessKey(peer.id), {
+          id: peer.id, role: "owner", playerId: "owner", secretHash: await secretHash(reconnectToken), approved: true, expiresAt,
+        } satisfies AccessRecord);
+        await this.scheduleExpiry(expiresAt);
+        return true;
+      });
+      if (!stored) return error("room_closed", 409);
       const ticket = await this.ticket(peer);
       const grant = await ticket.json() as Record<string, unknown>;
       return Response.json({ ...grant, deviceId: peer.id, reconnectToken }, { headers: { "Cache-Control": "no-store" } });
@@ -76,9 +138,16 @@ export class MatchRoom implements DurableObject {
     if (body.action === "invite") {
       const secret = randomSecret();
       const inviteId = randomSecret();
-      await this.ctx.storage.put(accessKey(inviteId), {
-        id: inviteId, role: "guest", playerId: "guest", secretHash: await secretHash(secret), approved: false, expiresAt: Date.now() + 10 * 60_000,
-      } satisfies AccessRecord);
+      const expiresAt = Date.now() + 10 * 60_000;
+      const stored = await this.ctx.blockConcurrencyWhile(async () => {
+        if (!await this.ctx.storage.get(roomKey)) return false;
+        await this.ctx.storage.put(accessKey(inviteId), {
+          id: inviteId, role: "guest", playerId: "guest", secretHash: await secretHash(secret), approved: false, expiresAt,
+        } satisfies AccessRecord);
+        await this.scheduleExpiry(expiresAt);
+        return true;
+      });
+      if (!stored) return error("room_closed", 409);
       return Response.json({ ok: true, inviteId, inviteSecret: secret, expiresIn: 600 }, { headers: { "Cache-Control": "no-store" } });
     }
     if (body.action === "approve" && id(body.deviceId)) {
@@ -86,10 +155,11 @@ export class MatchRoom implements DurableObject {
         const device = await this.ctx.storage.get<AccessRecord>(accessKey(body.deviceId as string));
         if (!device || device.role !== "guest" || !device.joined || device.expiresAt <= Date.now()) return error("match_not_found", 404);
         const devices = await this.ctx.storage.list<AccessRecord>({ prefix: "access:" });
-        if ([...devices.values()].some((other) => other.id !== device.id && other.role === "guest" && other.approved && other.expiresAt > Date.now())) return error("unavailable", 409);
+        if (room.capability.id !== dreamCapability && [...devices.values()].some((other) => other.id !== device.id && other.role === "guest" && other.approved && other.expiresAt > Date.now())) return error("unavailable", 409);
         device.approved = true;
         device.expiresAt = Date.now() + 24 * 60 * 60_000;
         await this.ctx.storage.put(accessKey(device.id), device);
+        await this.scheduleExpiry(device.expiresAt);
         return Response.json({ ok: true }, { headers: { "Cache-Control": "no-store" } });
       });
     }
@@ -121,6 +191,18 @@ export class MatchRoom implements DurableObject {
       const key = accessKey(body.inviteId as string);
       const device = await this.ctx.storage.get<AccessRecord>(key);
       if (!device || device.role !== "guest" || device.expiresAt <= Date.now()) return error("unauthenticated", 401);
+      if (room.capability.id === dreamCapability) {
+        if (device.secretHash !== inviteHash || device.joined) return error("unauthenticated", 401);
+        const devices = await this.ctx.storage.list<AccessRecord>({ prefix: "access:" });
+        const guests = [...devices.values()].filter((other) => other.role === "guest" && other.joined && other.expiresAt > Date.now());
+        const existing = guests.find((other) => other.inviteId === device.id && other.secretHash === deviceHash);
+        if (existing) return Response.json({ ok: true, deviceId: existing.id, approved: existing.approved, playerId: "guest" }, { headers: { "Cache-Control": "no-store" } });
+        if (guests.length >= maxDreamVisitors) return error("unavailable", 409);
+        const visitor: AccessRecord = { id: randomSecret(), role: "guest", playerId: "guest", secretHash: deviceHash, inviteId: device.id, joined: true, approved: false, expiresAt: device.expiresAt };
+        await this.ctx.storage.put(accessKey(visitor.id), visitor);
+        await this.scheduleExpiry(visitor.expiresAt);
+        return Response.json({ ok: true, deviceId: visitor.id, approved: false, playerId: "guest" }, { headers: { "Cache-Control": "no-store" } });
+      }
       if (device.joined) {
         if (device.inviteHash !== inviteHash || device.secretHash !== deviceHash) return error("unauthenticated", 401);
       } else {
@@ -137,16 +219,23 @@ export class MatchRoom implements DurableObject {
   private async closeRoom(request: Request, room: RoomRecord): Promise<Response> {
     const token = bearer(request);
     if (!token || await secretHash(token) !== room.ownerHash) return error("forbidden", 403);
-    for (const socket of this.ctx.getWebSockets()) socket.close(1000, "room_closed");
-    this.requests.clear();
-    this.rates.clear();
-    await this.ctx.storage.deleteAll();
-    return Response.json({ ok: true }, { headers: { "Cache-Control": "no-store" } });
+    return this.ctx.blockConcurrencyWhile(async () => {
+      for (const socket of this.ctx.getWebSockets()) socket.close(1000, "room_closed");
+      this.requests.clear();
+      this.rates.clear();
+      await this.ctx.storage.deleteAlarm();
+      await this.ctx.storage.deleteAll();
+      return Response.json({ ok: true }, { headers: { "Cache-Control": "no-store" } });
+    });
   }
 
   private async ticket(peer: Peer): Promise<Response> {
     const ticket = randomSecret();
-    await this.ctx.storage.put(ticketKey(await secretHash(ticket)), { peer, expiresAt: Date.now() + 60_000 } satisfies TicketRecord);
+    const record = { peer, expiresAt: Date.now() + 60_000 } satisfies TicketRecord;
+    await this.ctx.blockConcurrencyWhile(async () => {
+      await this.ctx.storage.put(ticketKey(await secretHash(ticket)), record);
+      await this.scheduleExpiry(record.expiresAt);
+    });
     return Response.json({ ok: true, ticket, expiresIn: 60 }, { headers: { "Cache-Control": "no-store" } });
   }
 
@@ -164,7 +253,12 @@ export class MatchRoom implements DurableObject {
       }
       for (const socket of this.ctx.getWebSockets()) {
         const peer = socket.deserializeAttachment() as Peer | null;
-        if (peer?.role === grant.peer.role) socket.close(1000, "connection_replaced");
+        if (peer?.role === grant.peer.role && (room.capability.id !== dreamCapability || grant.peer.role !== "guest" || peer.id === grant.peer.id)) socket.close(1000, "connection_replaced");
+      }
+      if (grant.peer.role === "host") {
+        room.hostLeaseExpiresAt = Date.now() + orphanRoomGraceMs;
+        await this.ctx.storage.put(roomKey, room);
+        await this.scheduleExpiry(room.hostLeaseExpiresAt);
       }
       const pair = new WebSocketPair();
       const client = pair[0];
@@ -184,6 +278,10 @@ export class MatchRoom implements DurableObject {
     }
     const room = await this.ctx.storage.get<RoomRecord>(roomKey);
     if (!room) { socket.close(1000, "room_closed"); return; }
+    if (room.capability.id === dreamCapability && peer.role !== "host") {
+      const access = await this.ctx.storage.get<AccessRecord>(accessKey(peer.id));
+      if (!access?.approved || access.expiresAt <= Date.now()) { socket.close(1008, "access_revoked"); return; }
+    }
     const now = Date.now();
     // Correlation metadata stays in memory only. Expire it on activity so an
     // unresponsive host cannot permanently exhaust the bounded routing table.
@@ -204,6 +302,10 @@ export class MatchRoom implements DurableObject {
         const target = this.requests.get(envelope.requestId!);
         if (target) {
           this.requests.delete(envelope.requestId!);
+          if (room.capability.id === dreamCapability) {
+            const access = await this.ctx.storage.get<AccessRecord>(accessKey(target.peerId));
+            if (!access?.approved || access.expiresAt <= Date.now()) return;
+          }
           const restored = JSON.stringify({ ...value as Record<string, unknown>, requestId: target.requestId });
           this.ctx.getWebSockets().find((item) => (item.deserializeAttachment() as Peer)?.id === target.peerId)?.send(restored);
           return;
@@ -231,7 +333,15 @@ export class MatchRoom implements DurableObject {
       if (!hostMessage(value, room)) { socket.send(response(room, "invalid", failure("invalid_message"))); return; }
       const envelope = value as { type: string };
       if (envelope.type === "event") {
-        for (const client of this.ctx.getWebSockets()) if ((client.deserializeAttachment() as Peer)?.role !== "host") client.send(message);
+        for (const client of this.ctx.getWebSockets()) {
+          const recipient = client.deserializeAttachment() as Peer | null;
+          if (!recipient || recipient.role === "host") continue;
+          if (room.capability.id === dreamCapability) {
+            const access = await this.ctx.storage.get<AccessRecord>(accessKey(recipient.id));
+            if (!access?.approved || access.expiresAt <= Date.now()) { client.close(1008, "access_revoked"); continue; }
+          }
+          client.send(message);
+        }
       }
       return;
     }
@@ -243,7 +353,10 @@ export class MatchRoom implements DurableObject {
     if (this.requests.size >= 64) { socket.send(response(room, requestId, failure("rate_limited"))); return; }
     const routedId = randomSecret();
     this.requests.set(routedId, { peerId: peer.id, requestId: requestId!, expiresAt: now + requestLifetimeMs });
-    host.send(JSON.stringify({ ...value as Record<string, unknown>, requestId: routedId, peer: { role: peer.role, playerId: peer.playerId } }));
+    const identity = room.capability.id === dreamCapability
+      ? { role: peer.role, playerId: peer.playerId, deviceId: peer.id }
+      : { role: peer.role, playerId: peer.playerId };
+    host.send(JSON.stringify({ ...value as Record<string, unknown>, requestId: routedId, peer: identity }));
   }
 
   async webSocketClose(socket: WebSocket): Promise<void> {
@@ -252,11 +365,29 @@ export class MatchRoom implements DurableObject {
     this.requests.forEach((target, requestId) => { if (target.peerId === peer.id) this.requests.delete(requestId); });
     this.rates.delete(peer.id);
     if (peer.role === "host") {
-      const room = await this.ctx.storage.get<RoomRecord>(roomKey);
-      for (const [requestId, target] of this.requests) {
-        if (room) this.ctx.getWebSockets().find((item) => (item.deserializeAttachment() as Peer)?.id === target.peerId)?.send(response(room, target.requestId, failure("host_offline")));
-        this.requests.delete(requestId);
-      }
+      await this.ctx.blockConcurrencyWhile(async () => {
+        const room = await this.ctx.storage.get<RoomRecord>(roomKey);
+        if (!room) return;
+        const hosts = this.ctx.getWebSockets().filter((client) => (client.deserializeAttachment() as Peer | null)?.role === "host");
+        // A replaced host can deliver its close callback after the replacement
+        // is already serving this room. Do not disturb the new host's requests
+        // or Dream visitors in that case.
+        if (hosts.length > 0) return;
+        for (const [requestId, target] of this.requests) {
+          this.ctx.getWebSockets().find((item) => (item.deserializeAttachment() as Peer)?.id === target.peerId)?.send(response(room, target.requestId, failure("host_offline")));
+          this.requests.delete(requestId);
+        }
+        if (room.capability.id === dreamCapability) {
+          // Dream visitors cannot continue using a stale local scene while the
+          // owner is offline. The room itself remains reconnectable for a short grace period.
+          for (const client of this.ctx.getWebSockets()) {
+            if ((client.deserializeAttachment() as Peer | null)?.role !== "host") client.close(1001, "host_offline");
+          }
+        }
+        room.hostLeaseExpiresAt = Date.now() + orphanRoomGraceMs;
+        await this.ctx.storage.put(roomKey, room);
+        await this.scheduleExpiry(room.hostLeaseExpiresAt);
+      });
     }
   }
 

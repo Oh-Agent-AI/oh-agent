@@ -41,6 +41,8 @@ export function useCityDriving(engine: RefObject<CityEngine | null>, options: Re
   confirmationEnabled?: boolean;
   /** VTOL 推进器会话（Space 喷升；仅游玩，审计/正式校验路径不变）。 */
   vtol?: boolean;
+  /** Remote visitors operate only their browser-local scene and must not call desktop host IPC. */
+  notifyHostBusy?: boolean;
   cinemaActive: () => boolean; gameActive: () => boolean; busy: () => boolean;
 }>) {
   const [hud, setHud] = useState<DrivingHudSnapshot>(IDLE_HUD);
@@ -106,7 +108,7 @@ export function useCityDriving(engine: RefObject<CityEngine | null>, options: Re
         ? "正式道路图尚不可用，暂不能开始驾驶。" : "驾驶出生点尚未完成当前场景确认，暂不能开始。"); return false;
     }
     const confirmedSpawn = authorization?.ok ? authorization.credential : null;
-    try { await noteBusy(10_000); } catch { /* host pulse is best-effort */ }
+    if (optionsRef.current.notifyHostBusy !== false) { try { await noteBusy(10_000); } catch { /* host pulse is best-effort */ } }
     const abort = new AbortController(); abortRef.current = abort;
     const runtime = new GameRuntime<DrivingInputState>({ dt: DRIVING_DT, emptyInput: () => ({ ...EMPTY_DRIVING_INPUT }) }); runtimeRef.current = runtime;
     preparing.current = true;
@@ -116,7 +118,7 @@ export function useCityDriving(engine: RefObject<CityEngine | null>, options: Re
     setEntryError(null); setHud({ ...IDLE_HUD, phase: "preparing" });
     const request = { collider: CITY_CAR_COLLIDER, vtol: vehicle?.vtol ?? (currentOptions.vtol === true), near, onPreparationMetric: runtime.recordPreparation.bind(runtime),
       onPreparationProgress: async (value: PreparationProgress) => {
-        if (value.state === "started") { try { await noteBusy(10_000); } catch { /* host pulse is best-effort */ } }
+        if (value.state === "started" && optionsRef.current.notifyHostBusy !== false) { try { await noteBusy(10_000); } catch { /* host pulse is best-effort */ } }
         setPreparationProgress(value);
       }, present: (frame: CarPresentation, scene: CityCarSceneCapability) => {
       const s = frame.state;
@@ -171,7 +173,7 @@ export function useCityDriving(engine: RefObject<CityEngine | null>, options: Re
   const toggle = useCallback(() => {
     if (runtimeRef.current?.snapshot.phase === "running") pause(); else resume();
   }, [pause, resume]);
-  const setInput = useCallback((input: Partial<DrivingInputState>) => { runtimeRef.current?.setInput({ ...EMPTY_DRIVING_INPUT, ...input }); }, []);
+  const setInput = useCallback((input: Partial<DrivingInputState> & Readonly<{ thruster?: boolean }>) => { runtimeRef.current?.setInput({ ...EMPTY_DRIVING_INPUT, ...input }); }, []);
   const deriveSpawnCandidates = useCallback((binding: SpawnConfirmationBinding, candidates: readonly SpawnCandidateChoice[]) => optionsRef.current.confirmationEnabled === false ? false : confirmationStore.derive(binding, candidates), [confirmationStore]);
   const validateSpawnCandidate = useCallback((binding: SpawnConfirmationBinding, credential: VerifiedSpawnCredential) => optionsRef.current.confirmationEnabled === false ? false : confirmationStore.validate(binding, credential), [confirmationStore]);
   const confirmSpawn = useCallback((binding: SpawnConfirmationBinding, spawnId: string) => optionsRef.current.confirmationEnabled === false ? false : confirmationStore.confirm(binding, spawnId), [confirmationStore]);

@@ -118,7 +118,6 @@ function createV3Host() {
     const payload = request?.payload ?? {};
     const requestId = request.requestId;
     if (request.method !== "data.read") return err(requestId, "plugin_command_unavailable");
-    if (payload.projection === "city-settings") return ok(requestId, { seed: 74031 });
     if (payload.projection === "city" && payload.version === 2) return ok(requestId, v2Projection(payload.windowDays ?? 366, payload.windowDays === 366 ? 800 : 280));
     if (payload.projection !== "city" || payload.version !== 3) return err(requestId, "landing_method_unavailable");
     const days = payload.windowDays ?? payload.window?.days ?? 366;

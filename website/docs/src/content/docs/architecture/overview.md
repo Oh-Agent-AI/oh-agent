@@ -61,7 +61,7 @@ City reaches Vitals only through the host: `City → SDK plugin_request → Plug
 
 How clean is the boundary? Partly clean.
 
-- **Clean:** City has no Rust code and no database access. It only gets the projections declared in `plugins.json` (`city:v2`, `city:v3`, `city-settings:v1`, `harnesses:v1`). The generic `harnesses:v1` interface (`harnesses.list` / `harnesses.sessions`) is not City-specific.
+- **Shared boundary:** plugins do not access the authority database directly. Rust enforces descriptor-scoped typed-data queries and provides generic state/object/event/call and remote transport primitives; trusted TypeScript adapters own app/game projections. City still has a temporary `city:v3` route for legacy asset crosswalk, which is City-specific and not reusable by other games.
 - **City-named projections stay opt-in:** `city:v2` / `city:v3` still live in the shared query crate and SDK, and they are still the City scene feed. A second plugin does not receive them unless its own `dataProjections` lists the key. Session open uses the active plugin id as the handle scope (`app:{pluginId}:`). The resolver does not branch on `plugin_id == "city"`.
 - **Not one package:** "Agent Vitals" is the whole Rust workspace plus the CLI, the Python twin and the desktop workbench. No single crate is called "Vitals" (`vitals-core` is only the diagnostics core). The desktop workbench reads Vitals data through its own Tauri IPC commands in `apps/desktop/src-tauri/src/lib.rs`, not through the plugin interface.
 

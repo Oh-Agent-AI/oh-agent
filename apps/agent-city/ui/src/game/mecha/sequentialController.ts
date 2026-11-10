@@ -212,24 +212,25 @@ export class SequentialController {
     this.serial = 0; this.error = null; this.selected = "Assault"; this.publish(); return true;
   }
   /** Reconstruct the whole authority before replacing the live match. */
-  canRestore(evidence: { placements: DeployPlacement[]; initial: MatchState; records: SequentialRecord[] }): boolean {
+  canRestore(evidence: { placements: DeployPlacement[]; initial: MatchState; records: SequentialRecord[]; enemyPolicy?: EnemyPolicy }): boolean {
     if (!this.deploymentStart || this.presentation || this.saving) return false;
     try {
       const deployed = applyDeployPlan(this.deploymentStart, { revision: this.deploymentStart.revision, placements: evidence.placements });
       if (!deployed.ok || canonicalJson(deployed.state) !== canonicalJson(evidence.initial)) return false;
-      const snapshot = SequentialTurn.replay(evidence.initial, evidence.records, { enemyPlanner: enemyPlannerFor(this.enemyPolicy) }).snapshot();
+      const snapshot = SequentialTurn.replay(evidence.initial, evidence.records, { enemyPlanner: enemyPlannerFor(evidence.enemyPolicy ?? this.enemyPolicy) }).snapshot();
       return !snapshot.match.outcome && snapshot.match.phase === "player_plan" && evidence.records.every(record => {
         const match = /^local-(\d+)$/.exec(record.command.id);
         return !match || (Number.isSafeInteger(Number(match[1])) && Number(match[1]) < Number.MAX_SAFE_INTEGER);
       });
     } catch { return false; }
   }
-  restore(evidence: { placements: DeployPlacement[]; initial: MatchState; records: SequentialRecord[] }): boolean {
+  restore(evidence: { placements: DeployPlacement[]; initial: MatchState; records: SequentialRecord[]; enemyPolicy?: EnemyPolicy }): boolean {
     if (!this.deploymentStart || this.presentation || this.saving) return false;
     try {
       const deployed = applyDeployPlan(this.deploymentStart, { revision: this.deploymentStart.revision, placements: evidence.placements });
       if (!deployed.ok || canonicalJson(deployed.state) !== canonicalJson(evidence.initial)) return false;
-      const session = SequentialTurn.replay(evidence.initial, evidence.records, { enemyPlanner: enemyPlannerFor(this.enemyPolicy) });
+      const policy = evidence.enemyPolicy ?? this.enemyPolicy;
+      const session = SequentialTurn.replay(evidence.initial, evidence.records, { enemyPlanner: enemyPlannerFor(policy) });
       const snapshot = session.snapshot();
       if (snapshot.match.outcome || snapshot.match.phase !== "player_plan") return false;
       let serial = 0;
@@ -240,6 +241,7 @@ export class SequentialController {
         if (!Number.isSafeInteger(value) || value >= Number.MAX_SAFE_INTEGER) return false;
         serial = Math.max(serial, value);
       }
+      this.enemyPolicy = policy;
       this.initial = copy(evidence.initial); this.openingPlacements = copy(evidence.placements);
       this.authority = session; this.durable = null; this.state = snapshot.match; this.serial = serial;
       this.placements = []; this.deploymentHistory = []; this.presentation = null; this.error = null;

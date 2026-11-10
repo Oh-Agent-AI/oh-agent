@@ -90,7 +90,7 @@ if (coastal?.profile === "miami-coastal") {           // CityEngine.ts:448 恒�
 
 城市设置对话框新增「城市背景楼」：`自动（默认，F1 规则）` / `关闭（纯数据城市）` / `繁华（当前行为）`。导出 worker 通过 `FilmJob.backdrop` 使用同一档位，拍照取屏幕当前状态。
 
-实现注：档位暂存本机浏览器存储（`localStorage["city.backdrop"]`），**不**经宿主 `city-settings` 投影——种子走那条路需要宿主（Rust）侧同步改动；换机/换浏览器档位回到「自动」。若要跨设备持久化，另开宿主侧任务。
+实现注：档位暂存本机浏览器存储（`localStorage["city.backdrop"]`），不经宿主持久化；换机/换浏览器档位回到「自动」。City seed 使用 descriptor-scoped 通用 `plugin.state`；若要跨设备同步仍需单独设计授权数据面。
 
 ### F5 视频导出回退（解决 P5）
 

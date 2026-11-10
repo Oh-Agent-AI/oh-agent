@@ -4,7 +4,8 @@
 //! 做乐观并发检查——「读版本→校验→临时文件→原子替换」在进程级互斥锁下串行执行，
 //! 同 key 并发请求不会同时通过同一 revision 检查，也不会互踩临时文件；
 //! 损坏文件读取报错、写入前保留可恢复副本。
-//! 常规状态使用有界 JSON；机甲本地回放使用受授权、固定操作的 SQLite。
+//! 常规状态和机甲回合检查点使用有界 JSON/CAS；已保存回放走通用对象/scope API。
+//! 旧 SQLite 回放与检查点只保留只读 copy-forward 入口。
 //! 本模块不实现游戏规则，也不进 authority DB。
 use serde_json::Value;
 use std::sync::MutexGuard;
@@ -57,12 +58,6 @@ fn load(path: &std::path::Path) -> Result<Option<(u64, Value)>, &'static str> {
 /// 串行化保证 check-and-commit 原子（乐观并发的前提）。
 pub fn handle(allowed_keys: &[String], data_home: &std::path::Path, plugin_id: &str, method: &str, payload: &Value) -> Result<Value, &'static str> {
     let _serialized = state_lock();
-    // game-links:v1 是描述符授予的宿主处理器，不按插件 id 再拦一道。
-    // 这份存档在宿主侧只有一份；声明了该键的插件共用它。
-    if payload["key"].as_str()==Some("game-links:v1") {
-        if !allowed_keys.iter().any(|key| key=="game-links:v1") { return Err("state_key_denied"); }
-        return agent_vitals_runtime::query::city_assets::game_links_state(data_home, method, payload);
-    }
     if payload["key"].as_str() == Some("mecha-replays:v1") {
         if !allowed_keys.iter().any(|key| key == "mecha-replays:v1") { return Err("state_key_denied"); }
         return mecha_replays(data_home, method, payload);
@@ -74,112 +69,65 @@ pub fn handle(allowed_keys: &[String], data_home: &std::path::Path, plugin_id: &
     }
 }
 
-/// A narrowly scoped replay repository, separate from analytical authority data.
-/// Only validated, bounded local PvE replay inputs can be stored here.
+/// Read-only copy-forward access to archives written by the retired SQLite route.
+/// New replay records are stored through the descriptor-scoped generic object API.
 fn mecha_replays(home: &std::path::Path, method: &str, payload: &Value) -> Result<Value, &'static str> {
-    use rusqlite::{params, Connection, OptionalExtension};
     if payload["format"].as_str() == Some("sequential-checkpoint-v1") {
-        return mecha_checkpoint(home, method, payload);
+        return legacy_checkpoint_read(home, method, payload);
     }
     if payload.get("format").and_then(Value::as_str) != Some("sequential-v1") {
         return Err("invalid_state_value");
     }
     let op = payload["op"].as_str().ok_or("invalid_state_value")?;
-    if !matches!((method, op), ("plugin.state.read", "list") | ("plugin.state.write", "insert" | "delete")) {
+    if !matches!((method, op), ("plugin.state.read", "list")) {
         return Err("method_unavailable");
     }
-    let dir = home.join("state/plugins/city-assets");
-    std::fs::create_dir_all(&dir).map_err(|_| "state_unavailable")?;
-    #[cfg(unix)] {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(|_| "state_unavailable")?;
-    }
-    let path = dir.join("mecha-sequential-replays.sqlite");
-    let mut db = Connection::open(&path).map_err(|_| "state_unavailable")?;
-    db.busy_timeout(std::time::Duration::from_secs(2)).map_err(|_| "state_unavailable")?;
-    db.execute_batch("CREATE TABLE IF NOT EXISTS replay_entries (id TEXT PRIMARY KEY, record TEXT NOT NULL)")
-        .map_err(|_| "state_unavailable")?;
-    #[cfg(unix)] {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(|_| "state_unavailable")?;
-    }
-    if op == "list" {
-        let mut stmt = db.prepare("SELECT id, record FROM replay_entries ORDER BY id").map_err(|_| "state_unavailable")?;
-        let rows = stmt.query_map([], |row| Ok(serde_json::json!({"key": row.get::<_,String>(0)?, "raw": row.get::<_,String>(1)?})))
-            .map_err(|_| "state_unavailable")?;
-        let entries = rows.collect::<Result<Vec<_>,_>>().map_err(|_| "state_unavailable")?;
-        return Ok(serde_json::json!({"entries": entries}));
-    }
-    let id = payload["id"].as_str().ok_or("invalid_state_value")?;
-    let prefix = "agent-city:mecha-sequential-replay-entry:v1:";
-    let suffix = id.strip_prefix(prefix).ok_or("invalid_state_value")?;
-    if suffix.len() != 36 || !suffix.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-') { return Err("invalid_state_value"); }
-    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|_| "state_unavailable")?;
-    if op == "insert" {
-        let raw = payload["raw"].as_str().ok_or("invalid_state_value")?;
-        if !valid_sequential_replay_record(raw) { return Err("invalid_state_value"); }
-        let existing: Option<String> = tx.query_row("SELECT record FROM replay_entries WHERE id=?1", [id], |row| row.get(0))
-            .optional().map_err(|_| "state_unavailable")?;
-        if let Some(existing) = existing {
-            if existing != raw { return Err("revision_conflict"); }
-        } else {
-            let count: i64 = tx.query_row("SELECT count(*) FROM replay_entries", [], |row| row.get(0)).map_err(|_| "state_unavailable")?;
-            if count >= 20 { return Err("replay_full"); }
-            tx.execute("INSERT INTO replay_entries(id,record) VALUES (?1,?2)", params![id,raw]).map_err(|_| "state_unavailable")?;
-        }
-    } else {
-        tx.execute("DELETE FROM replay_entries WHERE id=?1", [id]).map_err(|_| "state_unavailable")?;
-    }
-    tx.commit().map_err(|_| "state_unavailable")?;
-    Ok(serde_json::json!({"ok": true}))
+    legacy_replay_list(home)
 }
 
-/// A separate single-slot, compare-and-swap checkpoint. The version persists
-/// even after clearing, so an old window cannot overwrite a later match.
-fn mecha_checkpoint(home: &std::path::Path, method: &str, payload: &Value) -> Result<Value, &'static str> {
-    use rusqlite::{params, Connection, OptionalExtension};
-    let op = payload["op"].as_str().ok_or("invalid_state_value")?;
-    let keys: &[&str] = match (method, op) {
-        ("plugin.state.read", "read") => &["key", "format", "op"],
-        ("plugin.state.write", "write") => &["key", "format", "op", "revision", "raw"],
-        _ => return Err("method_unavailable"),
-    };
-    if !payload.as_object().is_some_and(|m| m.len() == keys.len() && keys.iter().all(|k| m.contains_key(*k))) { return Err("invalid_state_value"); }
-    let dir = home.join("state/plugins/city-assets");
-    std::fs::create_dir_all(&dir).map_err(|_| "state_unavailable")?;
-    #[cfg(unix)] {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(|_| "state_unavailable")?;
-    }
-    let path = dir.join("mecha-sequential-checkpoint.sqlite");
-    let mut db = Connection::open(&path).map_err(|_| "state_unavailable")?;
+fn legacy_replay_list(home: &std::path::Path) -> Result<Value, &'static str> {
+    use rusqlite::{Connection, OpenFlags, OptionalExtension};
+    let path = home.join("state/plugins/city-assets/mecha-sequential-replays.sqlite");
+    if !path.exists() { return Ok(serde_json::json!({"entries": []})); }
+    let db = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|_| "state_unavailable")?;
     db.busy_timeout(std::time::Duration::from_secs(2)).map_err(|_| "state_unavailable")?;
-    db.execute_batch("CREATE TABLE IF NOT EXISTS checkpoint (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL, record TEXT)")
-        .map_err(|_| "state_unavailable")?;
-    #[cfg(unix)] {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(|_| "state_unavailable")?;
-    }
-    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|_| "state_unavailable")?;
-    let current: Option<(u64, Option<String>)> = tx.query_row("SELECT revision, record FROM checkpoint WHERE id=1", [], |row| Ok((row.get(0)?, row.get(1)?)))
+    let table_exists: Option<i64> = db.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='replay_entries'", [], |row| row.get(0))
         .optional().map_err(|_| "state_unavailable")?;
-    let (revision, record) = current.unwrap_or((0, None));
-    if op == "read" { return Ok(serde_json::json!({"revision":revision,"raw":record})); }
-    let expected = payload["revision"].as_u64().filter(|n| *n < 9_007_199_254_740_991).ok_or("invalid_state_value")?;
-    if expected != revision { return Err("revision_conflict"); }
-    let raw = match &payload["raw"] {
-        Value::Null => None,
-        Value::String(raw) if valid_sequential_replay_record(raw) => Some(raw.as_str()),
-        _ => return Err("invalid_state_value"),
-    };
-    tx.execute("INSERT INTO checkpoint(id,revision,record) VALUES (1,?1,?2) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision, record=excluded.record", params![revision + 1, raw])
+    if table_exists.is_none() { return Ok(serde_json::json!({"entries": []})); }
+    let mut stmt = db.prepare("SELECT id, record FROM replay_entries ORDER BY id").map_err(|_| "state_unavailable")?;
+    let rows = stmt.query_map([], |row| Ok(serde_json::json!({"key": row.get::<_,String>(0)?, "raw": row.get::<_,String>(1)?})))
         .map_err(|_| "state_unavailable")?;
-    tx.commit().map_err(|_| "state_unavailable")?;
-    Ok(serde_json::json!({"revision":revision + 1}))
+    let entries = rows.collect::<Result<Vec<_>,_>>().map_err(|_| "state_unavailable")?;
+    Ok(serde_json::json!({"entries": entries}))
+}
+
+/// Read-only copy-forward access to the former single-slot checkpoint.
+fn legacy_checkpoint_read(home: &std::path::Path, method: &str, payload: &Value) -> Result<Value, &'static str> {
+    use rusqlite::{Connection, OpenFlags, OptionalExtension};
+    if method != "plugin.state.read" || payload["op"] != "read"
+        || !payload.as_object().is_some_and(|map| map.len() == 3
+            && ["key", "format", "op"].iter().all(|key| map.contains_key(*key))) {
+        return Err("method_unavailable");
+    }
+    let path = home.join("state/plugins/city-assets/mecha-sequential-checkpoint.sqlite");
+    if !path.exists() { return Ok(serde_json::json!({"revision":0,"raw":null})); }
+    let db = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|_| "state_unavailable")?;
+    db.busy_timeout(std::time::Duration::from_secs(2)).map_err(|_| "state_unavailable")?;
+    let table_exists: Option<i64> = db.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='checkpoint'", [], |row| row.get(0))
+        .optional().map_err(|_| "state_unavailable")?;
+    if table_exists.is_none() { return Ok(serde_json::json!({"revision":0,"raw":null})); }
+    let current: Option<(u64, Option<String>)> = db.query_row(
+        "SELECT revision, record FROM checkpoint WHERE id=1", [], |row| Ok((row.get(0)?, row.get(1)?)))
+        .optional().map_err(|_| "state_unavailable")?;
+    let (revision, raw) = current.unwrap_or((0, None));
+    Ok(serde_json::json!({"revision":revision,"raw":raw}))
 }
 
 /// Validate only the bounded, anonymized v1.5 archive schema. Rule execution and
 /// digest verification remain in the versioned game interpreter at restore time.
+#[cfg(test)]
 fn valid_sequential_replay_record(raw: &str) -> bool {
     fn exact(v: &Value, keys: &[&str]) -> bool {
         v.as_object().is_some_and(|m| m.len() == keys.len() && keys.iter().all(|k| m.contains_key(*k)))
@@ -221,7 +169,14 @@ fn valid_sequential_replay_record(raw: &str) -> bool {
         if !seen_units.insert(p["mechId"].as_str().unwrap()) || !seen_cells.insert((p["pos"]["x"].as_u64().unwrap(), p["pos"]["y"].as_u64().unwrap())) { return false; }
     }
     let replay = &a["replay"];
-    if !exact(replay, if status { &["schema", "ruleset", "initialDigest", "finalDigest", "entries", "statusRules"] } else { &["schema", "ruleset", "initialDigest", "finalDigest", "entries"] })
+    let has_policy = replay.get("enemyPolicy").is_some();
+    let fields: &[&str] = match (status, has_policy) {
+        (true, true) => &["schema", "ruleset", "enemyPolicy", "initialDigest", "finalDigest", "entries", "statusRules"],
+        (true, false) => &["schema", "ruleset", "initialDigest", "finalDigest", "entries", "statusRules"],
+        (false, true) => &["schema", "ruleset", "enemyPolicy", "initialDigest", "finalDigest", "entries"],
+        (false, false) => &["schema", "ruleset", "initialDigest", "finalDigest", "entries"],
+    };
+    if !exact(replay, fields) || (has_policy && !matches!(replay["enemyPolicy"].as_str(), Some("scripted" | "baup")))
         || replay["schema"] != if status { "mecha-sequential-replay:v2" } else { "mecha-sequential-replay:v1" }
         || (status && replay["statusRules"] != "mecha-status-encounter:v1")
         || replay["ruleset"] != "mecha-v1.5" || !hash(&replay["initialDigest"]) || !hash(&replay["finalDigest"]) { return false; }
@@ -309,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn sequential_replays_are_bounded_and_require_the_v15_format() {
+    fn sequential_replay_legacy_store_is_read_only() {
         let home = temp_home();
         let allowed = vec!["mecha-replays:v1".to_string()];
         let digest = "a".repeat(64);
@@ -330,9 +285,9 @@ mod tests {
         let id = "agent-city:mecha-sequential-replay-entry:v1:12345678-1234-1234-1234-123456789abc";
         let payload = json!({"key":"mecha-replays:v1", "format":"sequential-v1", "op":"insert", "id":id, "raw":record(&archive)});
         assert_eq!(handle(&[], &home, "city", "plugin.state.write", &payload), Err("state_key_denied"));
-        handle(&allowed, &home, "city", "plugin.state.write", &payload).unwrap();
+        assert_eq!(handle(&allowed, &home, "city", "plugin.state.write", &payload), Err("method_unavailable"));
         let list = handle(&allowed, &home, "city", "plugin.state.read", &json!({"key":"mecha-replays:v1", "format":"sequential-v1", "op":"list"})).unwrap();
-        assert_eq!(list["entries"].as_array().unwrap().len(), 1);
+        assert!(list["entries"].as_array().unwrap().is_empty());
         let missing_format = handle(&allowed, &home, "city", "plugin.state.read", &json!({"key":"mecha-replays:v1", "op":"list"}));
         assert_eq!(missing_format, Err("invalid_state_value"));
         for edit in 0..6 {
@@ -351,51 +306,54 @@ mod tests {
     }
 
     #[test]
-    fn sequential_replay_byte_boundaries_use_the_dedicated_sqlite_path() {
+    fn sequential_checkpoint_accepts_known_enemy_policies_and_legacy_records() {
+        let fixture: Value = serde_json::from_str(include_str!("../tests/fixtures/mecha-sequential-replay-browser-synthetic.json")).unwrap();
+        let archive: Value = serde_json::from_str(fixture["archive"].as_str().unwrap()).unwrap();
+        let record = |value: &Value| json!({"schema":"mecha-sequential-replay-entry:v1", "savedAt":"2026-11-06T12:00:00.000Z", "archive":value.to_string()}).to_string();
+        assert!(valid_sequential_replay_record(&record(&archive)));
+        for policy in ["scripted", "baup"] {
+            let mut next = archive.clone();
+            next["replay"]["enemyPolicy"] = json!(policy);
+            assert!(valid_sequential_replay_record(&record(&next)));
+        }
+        let mut invalid = archive;
+        invalid["replay"]["enemyPolicy"] = json!("unknown");
+        assert!(!valid_sequential_replay_record(&record(&invalid)));
+    }
+
+    #[test]
+    fn sequential_replay_validator_keeps_the_existing_byte_boundaries() {
         let fixture = include_str!("../tests/fixtures/mecha-sequential-replay-browser-synthetic.json");
         let base: Value = serde_json::from_str(fixture).unwrap();
         let original = base["archive"].as_str().unwrap();
-        let home = temp_home();
-        let allowed = vec!["mecha-replays:v1".to_string()];
-        let id = "agent-city:mecha-sequential-replay-entry:v1:12345678-1234-1234-1234-123456789abc";
         for size in [31 * 1024, 33 * 1024, 40_000] {
             let archive = format!("{}{}", original, " ".repeat(size - original.len()));
             let mut record = base.clone();
             record["archive"] = json!(archive);
             let raw = record.to_string();
             assert!(valid_sequential_replay_record(&raw), "archive bytes: {size}");
-            let payload = json!({"key":"mecha-replays:v1", "format":"sequential-v1", "op":"insert", "id":id, "raw":raw});
-            handle(&allowed, &home, "city", "plugin.state.write", &payload).unwrap();
-            handle(&allowed, &home, "city", "plugin.state.write", &json!({"key":"mecha-replays:v1", "format":"sequential-v1", "op":"delete", "id":id})).unwrap();
         }
         let mut record = base.clone();
         record["archive"] = json!(format!("{}{}", original, " ".repeat(40_001 - original.len())));
         assert!(!valid_sequential_replay_record(&record.to_string()));
-        let too_large = json!({"key":"mecha-replays:v1", "format":"sequential-v1", "op":"insert", "id":id, "raw":record.to_string()});
-        assert_eq!(handle(&allowed, &home, "city", "plugin.state.write", &too_large), Err("invalid_state_value"));
         let mut raw = base.to_string();
         raw.push_str(&" ".repeat(41_024 - raw.len()));
         assert!(valid_sequential_replay_record(&raw));
-        let payload = |raw: &str| json!({"key":"mecha-replays:v1", "format":"sequential-v1", "op":"insert", "id":id, "raw":raw});
-        handle(&allowed, &home, "city", "plugin.state.write", &payload(&raw)).unwrap();
-        handle(&allowed, &home, "city", "plugin.state.write", &json!({"key":"mecha-replays:v1", "format":"sequential-v1", "op":"delete", "id":id})).unwrap();
         raw.push(' ');
         assert!(!valid_sequential_replay_record(&raw));
-        assert_eq!(handle(&allowed, &home, "city", "plugin.state.write", &payload(&raw)), Err("invalid_state_value"));
-        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
-    fn sequential_database_accepts_browser_generated_record() {
+    fn sequential_replay_legacy_writer_is_retired() {
         let raw = include_str!("../tests/fixtures/mecha-sequential-replay-browser-synthetic.json");
         assert!(valid_sequential_replay_record(raw));
         let home = temp_home();
         let allowed = vec!["mecha-replays:v1".to_string()];
         let id = "agent-city:mecha-sequential-replay-entry:v1:12345678-1234-1234-1234-123456789abc";
         let insert = json!({"key":"mecha-replays:v1", "format":"sequential-v1", "op":"insert", "id":id, "raw":raw});
-        handle(&allowed, &home, "city", "plugin.state.write", &insert).unwrap();
+        assert_eq!(handle(&allowed, &home, "city", "plugin.state.write", &insert), Err("method_unavailable"));
         let list = handle(&allowed, &home, "city", "plugin.state.read", &json!({"key":"mecha-replays:v1", "format":"sequential-v1", "op":"list"})).unwrap();
-        assert_eq!(list["entries"][0]["raw"], raw);
+        assert!(list["entries"].as_array().unwrap().is_empty());
         std::fs::remove_dir_all(home).unwrap();
     }
 
@@ -426,74 +384,41 @@ mod tests {
     }
 
     #[test]
-    fn sequential_status_v2_accepts_frontend_checkpoint_and_preserves_cas() {
+    fn sequential_status_v2_checkpoint_is_read_only_during_copy_forward() {
         let raw = include_str!("../tests/fixtures/mecha-sequential-status-v2-synthetic.json");
         assert!(valid_sequential_replay_record(raw));
         let home = temp_home();
         let allowed = vec!["mecha-replays:v1".to_string()];
         let read = json!({"key":"mecha-replays:v1", "format":"sequential-checkpoint-v1", "op":"read"});
         let write = json!({"key":"mecha-replays:v1", "format":"sequential-checkpoint-v1", "op":"write", "revision":0, "raw":raw});
-        assert_eq!(handle(&allowed, &home, "city", "plugin.state.write", &write).unwrap(), json!({"revision":1}));
-        assert_eq!(handle(&allowed, &home, "city", "plugin.state.read", &read).unwrap(), json!({"revision":1,"raw":raw}));
-        assert_eq!(handle(&allowed, &home, "city", "plugin.state.write", &write), Err("revision_conflict"));
+        assert_eq!(handle(&allowed, &home, "city", "plugin.state.read", &read).unwrap(), json!({"revision":0,"raw":null}));
+        assert_eq!(handle(&allowed, &home, "city", "plugin.state.write", &write), Err("method_unavailable"));
         std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
-    fn sequential_checkpoint_uses_cas_and_keeps_generation_after_clear() {
+    fn sequential_checkpoint_legacy_record_can_be_read_without_mutating_sqlite() {
         let raw = include_str!("../tests/fixtures/mecha-sequential-replay-browser-synthetic.json");
         let home = temp_home();
         let allowed = vec!["mecha-replays:v1".to_string()];
         let read = json!({"key":"mecha-replays:v1", "format":"sequential-checkpoint-v1", "op":"read"});
-        let write = |revision, value: Value| json!({"key":"mecha-replays:v1", "format":"sequential-checkpoint-v1", "op":"write", "revision":revision, "raw":value});
-        assert_eq!(handle(&[], &home, "city", "plugin.state.read", &read), Err("state_key_denied"));
-        assert_eq!(handle(&allowed, &home, "city", "plugin.state.read", &read).unwrap(), json!({"revision":0,"raw":null}));
-        assert_eq!(handle(&allowed, &home, "city", "plugin.state.write", &write(0, json!("bad"))), Err("invalid_state_value"));
-        assert_eq!(handle(&allowed, &home, "city", "plugin.state.write", &write(0, json!(raw))).unwrap(), json!({"revision":1}));
-        assert_eq!(handle(&allowed, &home, "city", "plugin.state.write", &write(0, json!(raw))), Err("revision_conflict"));
-        assert_eq!(handle(&allowed, &home, "city", "plugin.state.read", &read).unwrap(), json!({"revision":1,"raw":raw}));
-        assert_eq!(handle(&allowed, &home, "city", "plugin.state.write", &write(1, Value::Null)).unwrap(), json!({"revision":2}));
-        assert_eq!(handle(&allowed, &home, "city", "plugin.state.write", &write(0, json!(raw))), Err("revision_conflict"));
-        assert_eq!(handle(&allowed, &home, "city", "plugin.state.read", &read).unwrap(), json!({"revision":2,"raw":null}));
-        std::fs::remove_dir_all(home).unwrap();
-    }
-
-    #[test]
-    fn sequential_checkpoint_concurrent_connections_commit_only_once() {
-        use std::sync::{Arc, Barrier};
-        let raw = include_str!("../tests/fixtures/mecha-sequential-replay-browser-synthetic.json");
-        let home = temp_home();
-        let read = json!({"key":"mecha-replays:v1", "format":"sequential-checkpoint-v1", "op":"read"});
-        mecha_checkpoint(&home, "plugin.state.read", &read).unwrap();
-        let barrier = Arc::new(Barrier::new(2));
-        let workers: Vec<_> = (0..2).map(|_| {
-            let barrier = barrier.clone(); let home = home.clone();
-            std::thread::spawn(move || {
-                let payload = json!({"key":"mecha-replays:v1", "format":"sequential-checkpoint-v1", "op":"write", "revision":0, "raw":raw});
-                barrier.wait(); mecha_checkpoint(&home, "plugin.state.write", &payload)
-            })
-        }).collect();
-        let results: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
-        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1, "{results:?}");
-        assert_eq!(results.iter().filter(|result| **result == Err("revision_conflict")).count(), 1, "{results:?}");
-        assert_eq!(mecha_checkpoint(&home, "plugin.state.read", &read).unwrap(), json!({"revision":1,"raw":raw}));
+        let path = home.join("state/plugins/city-assets/mecha-sequential-checkpoint.sqlite");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE checkpoint (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL, record TEXT);").unwrap();
+        db.execute("INSERT INTO checkpoint(id,revision,record) VALUES(1,7,?1)", [raw]).unwrap();
+        drop(db);
+        assert_eq!(handle(&allowed, &home, "city", "plugin.state.read", &read).unwrap(), json!({"revision":7,"raw":raw}));
+        let write = json!({"key":"mecha-replays:v1", "format":"sequential-checkpoint-v1", "op":"write", "revision":7, "raw":null});
+        assert_eq!(handle(&allowed, &home, "city", "plugin.state.write", &write), Err("method_unavailable"));
+        let db = rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let stored: (u64, String) = db.query_row("SELECT revision,record FROM checkpoint WHERE id=1", [], |row| Ok((row.get(0)?,row.get(1)?))).unwrap();
+        assert_eq!(stored, (7, raw.to_string()));
         std::fs::remove_dir_all(home).unwrap();
     }
 
     const KEYS: &[&str] = &["flight-profile:v1"];
     fn keys() -> Vec<String> { KEYS.iter().map(|key| key.to_string()).collect() }
-
-    #[test]
-    fn game_links_follow_the_declared_state_key() {
-        let home=temp_home().join("game-links");
-        let payload=json!({"key":"game-links:v1"});
-        assert_eq!(handle(&keys(),&home,"city","plugin.state.read",&payload),Err("state_key_denied"));
-        let allowed=vec!["game-links:v1".to_owned()];
-        assert_eq!(handle(&allowed,&home,"other","plugin.state.read",&payload).unwrap()["revision"],0);
-        assert_eq!(handle(&allowed,&home,"city","plugin.state.read",&payload).unwrap()["revision"],0);
-        assert_eq!(handle(&allowed,&home,"city","plugin.state.write",&json!({"key":"game-links:v1","revision":0,"value":{"schemaVersion":1,"assetRefs":[]}})).unwrap()["revision"],1);
-        std::fs::remove_dir_all(home).unwrap();
-    }
 
     #[test]
     fn round_trip_with_revision_and_allowlist() {

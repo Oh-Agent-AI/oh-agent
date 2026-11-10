@@ -1,0 +1,33 @@
+{
+  "schema": "dream-city-snapshot:v2",
+  "revision": 1,
+  "snapshot": {
+    "model": {
+      "districts": [{ "id": "district-0001" }],
+      "buildings": [{ "id": "building-0001", "districtId": "district-0001" }],
+      "rows": [],
+      "stats": {}
+    },
+    "layout": {
+      "schema": "remote-city-layout:v1",
+      "generatorVersion": 1,
+      "camera": {},
+      "data": {
+        "districts": [{ "id": "district-0001", "slots": { "__remoteMap": [["building-0001", {}]] } }]
+      }
+    }
+  },
+  "display": {
+    "schema": "agent-city-display:v1",
+    "city": { "sessionCount": 1, "activeCount": 0, "tokensTotal": 12, "truncated": false },
+    "districts": [{ "id": "district-0001", "label": "Test city", "sessionCount": 1, "activeCount": 0, "tokensTotal": 12 }],
+    "buildings": [{ "id": "building-0001", "title": "Test session", "titleSource": "codex_thread_name", "sessionCount": 1, "active": false, "tokensTotal": 12 }]
+  },
+  "palettes": [{
+    "districtId": "district-0001",
+    "palette": { "wall": "#112233", "roof": "#445566", "accent": "#abcdef", "park": "#123456" },
+    "landmarkHeight": 45,
+    "flagShare": 1
+  }],
+  "heroBuildingId": "building-0001"
+}

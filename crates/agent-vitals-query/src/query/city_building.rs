@@ -1,21 +1,9 @@
-//! Session-building model overrides for Agent City (MCP MVP).
+//! Legacy City building read store and migration compatibility.
 //!
-//! Persistence is a City-owned SQLite file keyed by stable `asset_ref`, separate
-//! from the analytical authority DB. Validation is pure: `session-kit/v1` is
-//! params + ≤64 parts, no scripts.
-//!
-//! After a successful set/reset commit the same write path notifies the desktop
-//! PluginHost (unix socket push + durable mailbox) using the shared
-//! `CityEntityChanged` envelope (`entity_kind=building` today). City dispatches
-//! on kind and plays construction. `build_events` remains the poll fallback.
-//!
-//! Preview success and compliance / detail-regression / design-coherence
-//! rejects use the same envelope (`action=preview|reject`) but never persist:
-//! they write `edit.json` (not `notify.json`) so a later persist mailbox poll
-//! cannot be overwritten. Soft design issues stay `ok: true` with `warnings[]`.
-//!
-//! The same write path also fans out a squad IM envelope (`docs/CITY_SQUAD_IM.md`)
-//! on `squad.json` + `host.sock`. That channel never overwrites persist notify.
+//! Production building calls now use descriptor-authorized generic plugin calls
+//! and are validated/persisted by the trusted TypeScript adapter. This legacy
+//! Rust implementation is compiled only for crate parity tests; production
+//! legacy export is isolated in `city_assets`.
 
 use std::path::{Path, PathBuf};
 
@@ -23,13 +11,18 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 
 use super::city_assets;
+#[cfg(test)]
 use super::city_im;
-use super::city_building_compliance::{self, compliant_catalog_ids, derive_slot, slot_to_json};
+#[cfg(test)]
+use super::city_building_compliance;
+#[cfg(test)]
+use super::city_building_compliance::{compliant_catalog_ids, derive_slot, slot_to_json};
+#[cfg(test)]
 use super::city_building_design;
-use super::city_building_inheritance::{
-    is_inheritance_document, normalize_inheritance, resolve_inheritance, resolve_to_mesh,
-    INHERITANCE_KIT_VERSION,
-};
+#[cfg(test)]
+use super::city_building_inheritance::{is_inheritance_document, resolve_inheritance, resolve_to_mesh};
+#[cfg(test)]
+use super::city_building_inheritance::{normalize_inheritance, INHERITANCE_KIT_VERSION};
 use super::session_ref::{self, session_ref};
 
 pub const KIT_VERSION: &str = "session-kit/v1";
@@ -43,6 +36,7 @@ pub const ENTITY_KIND_BUILDING: &str = "building";
 /// Live edit actions. Not stored in `build_events`; City treats them as ephemeral.
 pub const ENTITY_ACTION_PREVIEW: &str = "preview";
 pub const ENTITY_ACTION_REJECT: &str = "reject";
+#[cfg(test)]
 const FLASH_RULES: &[&str] = &[
     "invalid_model",
     "detail_regression",
@@ -50,18 +44,28 @@ const FLASH_RULES: &[&str] = &[
     city_building_design::RULE_MASSING_DRIFT,
 ];
 
+#[cfg(test)]
 const KINDS: &[&str] = &["box", "cylinder", "cone"];
+#[cfg(test)]
 const ROLES: &[&str] = &["wall", "trim", "roof", "glass", "structure", "door", "window"];
+#[cfg(test)]
 const FORMS: &[&str] = &["tower", "slab", "block", "midrise"];
+#[cfg(test)]
 const PART_KEYS: &[&str] = &["id", "kind", "role", "at", "size", "rot", "color"];
+#[cfg(test)]
 const MODEL_KEYS: &[&str] = &["kit_version", "params", "parts"];
+#[cfg(test)]
 const PARAM_KEYS: &[&str] = &["form", "palette", "catalog_id", "build_cost", "floors", "story_height", "detail_tier"];
 
 /// Canonical lot envelope in local parcel coordinates (world units, 1 u = 2 m).
 /// Cheap out-of-bounds check until the city loader can supply the real parcel.
+#[cfg(test)]
 const LOT_HALF_X: f64 = 4.0;
+#[cfg(test)]
 const LOT_HALF_Z: f64 = 6.0;
+#[cfg(test)]
 const MAX_HEIGHT: f64 = 48.0;
+#[cfg(test)]
 const OVERLAP_EPS: f64 = 0.02;
 
 /// Payload is boxed so `Result<T, BuildingError>` stays under clippy's
@@ -115,6 +119,7 @@ impl BuildingError {
         Self::new("validation", rule, parts, message, Some(fix.into()), Vec::new())
     }
 
+    #[cfg(test)]
     pub(crate) fn invalid_model_compliance(
         message: impl Into<String>,
         fix: impl Into<String>,
@@ -123,6 +128,7 @@ impl BuildingError {
         Self::new("validation", "invalid_model", Vec::new(), message, Some(fix.into()), candidates.to_vec())
     }
 
+    #[cfg(test)]
     pub(crate) fn detail_regression(
         message: impl Into<String>,
         fix: impl Into<String>,
@@ -130,6 +136,7 @@ impl BuildingError {
     ) -> Self {
         Self::new("validation", "detail_regression", Vec::new(), message, Some(fix.into()), candidates.to_vec())
     }
+    #[cfg(test)]
     fn conflict(current_revision: u64) -> Self {
         Self::new(
             "conflict",
@@ -180,9 +187,11 @@ impl BuildingIdentity {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone)]
 struct Aabb { min: [f64; 3], max: [f64; 3] }
 
+#[cfg(test)]
 impl Aabb {
     fn height(&self) -> f64 { (self.max[1] - self.min[1]).max(0.0) }
     fn overlaps(&self, other: &Aabb) -> bool {
@@ -196,11 +205,13 @@ impl Aabb {
 }
 
 /// Token → height, same curve as `cityModel.tokensToHeight` (1e3→3.4 / 1e5→15.8 / 1e7→38.6, cap 48).
+#[cfg(test)]
 pub fn tokens_to_height(tokens: i64) -> f64 {
     let magnitude = ((tokens.max(1) as f64).log10() - 1.0).max(0.0);
     (0.75 * magnitude.powf(2.2)).clamp(2.6, 48.0)
 }
 
+#[cfg(test)]
 pub fn validate_model(model: &Value) -> Result<Value, BuildingError> {
     let obj = model.as_object().ok_or_else(|| {
         BuildingError::validation("invalid_model", vec![], "model must be a JSON object", "send {kit_version, params, parts}")
@@ -314,6 +325,7 @@ pub fn validate_model(model: &Value) -> Result<Value, BuildingError> {
     }))
 }
 
+#[cfg(test)]
 fn validate_part(index: usize, part: &Value, seen_ids: &mut std::collections::BTreeSet<String>) -> Result<(String, Aabb, Value), BuildingError> {
     let obj = part.as_object().ok_or_else(|| {
         BuildingError::validation("invalid_part", vec![index_label(index)], format!("parts[{index}] must be an object"), "each part needs kind, role, at, size")
@@ -401,6 +413,7 @@ fn validate_part(index: usize, part: &Value, seen_ids: &mut std::collections::BT
     Ok((label, aabb, Value::Object(clean)))
 }
 
+#[cfg(test)]
 fn vec3(value: Option<&Value>, label: &str, field: &str) -> Result<[f64; 3], BuildingError> {
     let arr = value.and_then(Value::as_array).ok_or_else(|| {
         BuildingError::validation("invalid_part", vec![label.to_string()], format!("part `{label}` {field} must be [x, y, z]"), "send three finite numbers")
@@ -425,6 +438,7 @@ fn vec3(value: Option<&Value>, label: &str, field: &str) -> Result<[f64; 3], Bui
     Ok(out)
 }
 
+#[cfg(test)]
 fn part_aabb(at: [f64; 3], size: [f64; 3], rot: Option<[f64; 3]>) -> Aabb {
     // `at` is the base centre (y = bottom), matching the City Part `anchor: "base"` default.
     let (hx, hz) = if rot.filter(|r| r.iter().any(|n| n.abs() > 1e-6)).is_some() {
@@ -439,13 +453,16 @@ fn part_aabb(at: [f64; 3], size: [f64; 3], rot: Option<[f64; 3]>) -> Aabb {
     }
 }
 
+#[cfg(test)]
 fn is_hex_color(value: &str) -> bool {
     let rest = match value.strip_prefix('#') { Some(r) => r, None => return false };
     rest.len() == 6 && rest.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+#[cfg(test)]
 fn index_label(index: usize) -> String { format!("#{index}") }
 
+#[cfg(test)]
 pub fn geometric_summary(model: &Value) -> Value {
     let parts = model.get("parts").and_then(Value::as_array).cloned().unwrap_or_default();
     let mut bbox: Option<Aabb> = None;
@@ -471,12 +488,15 @@ pub fn geometric_summary(model: &Value) -> Value {
     })
 }
 
+#[cfg(test)]
 fn round4(n: f64) -> f64 { (n * 10_000.0).round() / 10_000.0 }
 
+#[cfg(test)]
 fn default_form(height: f64) -> &'static str {
     if height >= 30.0 { "tower" } else if height >= 14.0 { "midrise" } else { "block" }
 }
 
+#[cfg(test)]
 pub fn default_model(tokens_total: i64) -> Value {
     let height = tokens_to_height(tokens_total);
     let form = default_form(height);
@@ -505,25 +525,14 @@ pub fn default_model(tokens_total: i64) -> Value {
     })
 }
 
+#[cfg(test)]
 fn current_model(home: &Path, identity: &BuildingIdentity) -> Result<Value, BuildingError> {
     let db = open_store(home)?;
     let stored = load_override(&db, &identity.asset_ref)?;
     Ok(resolve_to_mesh(identity, stored.model.as_ref()))
 }
 
-fn resolve_stored_row(
-    home: &Path,
-    conn: &Connection,
-    asset_ref: &str,
-    stored: &StoredOverride,
-) -> Result<(Value, Option<Value>), BuildingError> {
-    let identity = resolve_identity(home, conn, asset_ref)?;
-    let raw = stored.model.as_ref();
-    let inheritance = raw.filter(|doc| is_inheritance_document(doc)).cloned();
-    let model = resolve_to_mesh(&identity, raw);
-    Ok((model, inheritance))
-}
-
+#[cfg(test)]
 fn validate_for_session(
     home: &Path,
     identity: &BuildingIdentity,
@@ -539,6 +548,7 @@ fn validate_for_session(
     Ok((clean, warnings))
 }
 
+#[cfg(test)]
 fn attach_design_warnings(mut out: Value, warnings: Vec<Value>) -> Value {
     let n = warnings.len();
     out["warnings"] = json!(warnings);
@@ -630,12 +640,14 @@ fn load_override(db: &Connection, asset_ref: &str) -> Result<StoredOverride, Bui
     }
 }
 
+#[cfg(test)]
 fn new_build_event_id(db: &Connection) -> Result<String, BuildingError> {
     let hex: String = db.query_row("SELECT lower(hex(randomblob(16)))", [], |r| r.get(0))
         .map_err(|_| store_unavailable())?;
     Ok(format!("be_{hex}"))
 }
 
+#[cfg(test)]
 fn construction_stub(kind: &str, part_count: usize, build_event_id: &str, ui: &str) -> Value {
     json!({
         "mode": "block-by-block",
@@ -644,13 +656,13 @@ fn construction_stub(kind: &str, part_count: usize, build_event_id: &str, ui: &s
         "kind": kind,
         "part_count": part_count,
         "build_event_id": build_event_id,
-        // pushed = host socket accepted the event; queued = mailbox only (City
-        // or PluginHost poll of build_events / notify.json is the backup).
+        // pushed = generic host-event queue accepted the event; queued = only
+        // the compatibility mailbox is available as a later state refresh.
         "ui": ui,
     })
 }
 
-/// Directory that owns the override SQLite, the notify mailbox, and the host socket.
+/// Directory that owns the override SQLite and compatibility mailboxes.
 pub fn store_dir(home: &Path) -> PathBuf {
     home.join("state/plugins/city-buildings")
 }
@@ -663,14 +675,7 @@ pub fn mailbox_path(home: &Path) -> PathBuf {
     store_dir(home).join("notify.json")
 }
 
-pub fn socket_path(home: &Path) -> PathBuf {
-    store_dir(home).join("host.sock")
-}
-
-/// Host event contract: PluginHost evals this JSON as `__AV_PLUGIN_ENTITY_CHANGED__`.
-/// Generic fields (`entity_kind` / `entity_id` / `action` / `revision` / `event_id`)
-/// are the reusable shape; building aliases (`asset_ref`, `build_event_id`, `kind`)
-/// stay so MCP + SQLite vocabulary round-trips.
+/// City building notification payload, interpreted only by the trusted City TS adapter.
 pub fn entity_changed_payload(
     entity_kind: &str,
     entity_id: &str,
@@ -720,6 +725,7 @@ pub fn is_entity_changed(payload: &Value) -> bool {
         && entity_event_id(payload).is_some()
 }
 
+#[cfg(test)]
 pub fn is_flash_rule(rule: &str) -> bool {
     FLASH_RULES.contains(&rule)
 }
@@ -742,32 +748,16 @@ fn write_mailbox(home: &Path, payload: &Value) -> Result<(), BuildingError> {
     Ok(())
 }
 
-/// Best-effort push to the desktop PluginHost. Returns true when the host socket
-/// accepted a full JSON line. Failure is not an error: mailbox + build_events stay.
-pub fn try_push_socket(home: &Path, payload: &Value) -> bool {
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::net::UnixStream;
-        use std::time::Duration;
-        let Ok(mut stream) = UnixStream::connect(socket_path(home)) else { return false; };
-        let _ = stream.set_write_timeout(Some(Duration::from_millis(150)));
-        let _ = stream.set_read_timeout(Some(Duration::from_millis(150)));
-        let line = format!("{payload}\n");
-        stream.write_all(line.as_bytes()).is_ok()
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (home, payload);
-        false
-    }
+fn publish_city_event(home: &Path, payload: &Value) -> bool {
+    entity_event_id(payload).is_some_and(|event_id|
+        super::plugin_events::publish(home, "city", event_id, payload).is_ok())
 }
 
-/// Persist-path notify: mailbox always, socket when the host is listening.
-/// `"pushed"` / `"queued"` become `construction.ui`.
+/// Persist-path notify: keep the compatibility mailbox and append to the
+/// generic event queue. `"pushed"` means the queue accepted the event.
 pub fn notify_city_ui(home: &Path, payload: &Value) -> &'static str {
     let _ = write_mailbox(home, payload);
-    if try_push_socket(home, payload) { "pushed" } else { "queued" }
+    if publish_city_event(home, payload) { "pushed" } else { "queued" }
 }
 
 pub fn read_mailbox(home: &Path) -> Option<Value> {
@@ -793,11 +783,11 @@ fn write_edit_mailbox(home: &Path, payload: &Value) -> Result<(), BuildingError>
     write_named_mailbox(home, "edit.json", payload)
 }
 
-/// Preview / reject notify: separate mailbox so persist `notify.json` stays intact.
-/// `"pushed"` / `"queued"` become `notify.ui`. Ghost/flash only matter while City is open.
+/// Preview / reject notify: retain a separate compatibility mailbox so persist
+/// `notify.json` stays intact, and use the generic event queue for live delivery.
 pub fn notify_edit_ui(home: &Path, payload: &Value) -> &'static str {
     let _ = write_edit_mailbox(home, payload);
-    if try_push_socket(home, payload) { "pushed" } else { "queued" }
+    if publish_city_event(home, payload) { "pushed" } else { "queued" }
 }
 
 pub fn read_edit_mailbox(home: &Path) -> Option<Value> {
@@ -805,6 +795,7 @@ pub fn read_edit_mailbox(home: &Path) -> Option<Value> {
     serde_json::from_str(&raw).ok()
 }
 
+#[cfg(test)]
 fn peek_revision(home: &Path, asset_ref: &str) -> u64 {
     open_existing(home).ok().flatten()
         .and_then(|db| load_override(&db, asset_ref).ok())
@@ -812,6 +803,7 @@ fn peek_revision(home: &Path, asset_ref: &str) -> u64 {
         .unwrap_or(0)
 }
 
+#[cfg(test)]
 fn new_edit_event_id(action: &str) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(1);
@@ -820,6 +812,7 @@ fn new_edit_event_id(action: &str) -> String {
     format!("ui_{action}_{now:012x}{seq:08x}")
 }
 
+#[cfg(test)]
 fn attach_edit_notify(
     home: &Path,
     identity: &BuildingIdentity,
@@ -839,6 +832,7 @@ fn attach_edit_notify(
     })
 }
 
+#[cfg(test)]
 fn with_preview_notify(mut out: Value, home: &Path, identity: &BuildingIdentity, model: &Value, warnings: &[Value]) -> Value {
     let summary = geometric_summary(model);
     out["notify"] = attach_edit_notify(home, identity, ENTITY_ACTION_PREVIEW, json!({
@@ -855,6 +849,7 @@ fn with_preview_notify(mut out: Value, home: &Path, identity: &BuildingIdentity,
     }), Some(&summary), warnings))
 }
 
+#[cfg(test)]
 fn with_reject_notify(mut out: Value, home: &Path, identity: &BuildingIdentity, error: &BuildingError, origin: &str) -> Value {
     if is_flash_rule(error.rule) {
         out["notify"] = attach_edit_notify(home, identity, ENTITY_ACTION_REJECT, json!({
@@ -880,6 +875,7 @@ fn with_reject_notify(mut out: Value, home: &Path, identity: &BuildingIdentity, 
     }))
 }
 
+#[cfg(test)]
 fn attach_squad(mut out: Value, home: &Path, identity: &BuildingIdentity, kind: &str, payload: Value) -> Value {
     if let Some(squad) = city_im::fanout_building(home, identity, &city_im::connection_actor(), kind, payload) {
         out["squad"] = squad;
@@ -889,6 +885,7 @@ fn attach_squad(mut out: Value, home: &Path, identity: &BuildingIdentity, kind: 
 
 /// Squad row facts the City feed can turn into a sentence. `warnings` are the
 /// soft design notes; hard failures already carry `error` on `base`.
+#[cfg(test)]
 fn squad_facts(mut base: Value, summary: Option<&Value>, warnings: &[Value]) -> Value {
     if let Some(summary) = summary {
         if let Some(count) = summary.get("part_count").and_then(Value::as_u64) {
@@ -914,6 +911,7 @@ fn squad_facts(mut base: Value, summary: Option<&Value>, warnings: &[Value]) -> 
     base
 }
 
+#[cfg(test)]
 fn clip_chars(text: &str, max_chars: usize) -> String {
     let mut out = String::new();
     for (index, ch) in text.chars().enumerate() {
@@ -924,10 +922,9 @@ fn clip_chars(text: &str, max_chars: usize) -> String {
 }
 
 /// Current overrides (model_json NOT NULL). Missing store → empty, not an error.
-/// `model` is always the resolved mesh for City UI; `inheritance` is present when stored as layer 2.
+/// `stored_document` is returned unchanged; City's trusted TypeScript adapter owns resolution.
 pub fn list_overrides(
     home: &Path,
-    authority: Option<&Connection>,
     asset_refs: &[String],
 ) -> Result<Vec<Value>, BuildingError> {
     let Some(db) = open_existing(home)? else { return Ok(Vec::new()); };
@@ -948,7 +945,7 @@ pub fn list_overrides(
         for row in rows {
             let (asset_ref, revision, kit_version, model_json, updated_at_ms) = row.map_err(|_| store_unavailable())?;
             let stored_doc: Value = serde_json::from_str(&model_json).map_err(|_| store_unavailable())?;
-            let row = override_list_row(home, authority, &asset_ref, revision as u64, &kit_version, &stored_doc, Some(updated_at_ms))?;
+            let row = override_list_row(&asset_ref, revision as u64, &kit_version, &stored_doc, Some(updated_at_ms));
             out.push(row);
         }
         return Ok(out);
@@ -957,69 +954,30 @@ pub fn list_overrides(
         if !is_asset_ref(asset_ref) { continue; }
         let stored = load_override(&db, asset_ref)?;
         let Some(stored_doc) = stored.model else { continue; };
-        out.push(override_list_row(
-            home,
-            authority,
-            asset_ref,
-            stored.revision,
-            &stored.kit_version,
-            &stored_doc,
-            None,
-        )?);
+        out.push(override_list_row(asset_ref, stored.revision, &stored.kit_version, &stored_doc, None));
     }
     Ok(out)
 }
 
 fn override_list_row(
-    home: &Path,
-    authority: Option<&Connection>,
     asset_ref: &str,
     revision: u64,
     kit_version: &str,
     stored_doc: &Value,
     updated_at_ms: Option<i64>,
-) -> Result<Value, BuildingError> {
-    let inheritance = stored_doc
-        .as_object()
-        .filter(|_| is_inheritance_document(stored_doc))
-        .map(|_| stored_doc.clone());
-    let model = if is_inheritance_document(stored_doc) {
-        if let Some(conn) = authority {
-            resolve_stored_row(home, conn, asset_ref, &StoredOverride {
-                revision,
-                kit_version: kit_version.to_string(),
-                model: Some(stored_doc.clone()),
-            })?
-            .0
-        } else {
-            resolve_inheritance(
-                &BuildingIdentity {
-                    asset_ref: asset_ref.to_string(),
-                    session_id: String::new(),
-                    harness: String::new(),
-                    session_key: String::new(),
-                    tokens_total: 50_000,
-                },
-                stored_doc,
-            )?
-        }
-    } else {
-        stored_doc.clone()
-    };
+) -> Value {
     let mut row = json!({
         "asset_ref": asset_ref,
         "revision": revision,
         "kit_version": kit_version,
         "source": "override",
-        "model": model,
+        "model": null,
+        "stored_document": stored_doc,
     });
     if let Some(ms) = updated_at_ms {
         row["updated_at_ms"] = json!(ms);
     }
-    if let Some(inheritance) = inheritance {
-        row["inheritance"] = inheritance;
-    }
-    Ok(row)
+    row
 }
 
 /// Queued construction records. Missing store → empty.
@@ -1080,6 +1038,7 @@ fn open_existing(home: &Path) -> Result<Option<Connection>, BuildingError> {
     Ok(Some(open_store(home)?))
 }
 
+#[cfg(test)]
 fn observe_text(source: &str, summary: &Value, revision: u64) -> String {
     format!(
         "{source} model, {} parts, height {}, revision {revision}",
@@ -1141,6 +1100,7 @@ fn session_stats(conn: &Connection, session_key: &str) -> Result<(String, i64), 
     Ok((harness, tokens))
 }
 
+#[cfg(test)]
 fn projection_meta(identity: &BuildingIdentity, summary: &Value, kit_status: &str) -> Value {
     let slot = derive_slot(&identity.session_key, identity.tokens_total());
     json!({
@@ -1156,6 +1116,7 @@ fn projection_meta(identity: &BuildingIdentity, summary: &Value, kit_status: &st
     })
 }
 
+#[cfg(test)]
 pub fn get_building(home: &Path, conn: &Connection, session_id: &str) -> Result<Value, BuildingError> {
     let identity = resolve_identity(home, conn, session_id)?;
     let db = open_store(home)?;
@@ -1194,6 +1155,7 @@ pub fn get_building(home: &Path, conn: &Connection, session_id: &str) -> Result<
     Ok(out)
 }
 
+#[cfg(test)]
 pub fn preview_building(home: &Path, conn: &Connection, session_id: &str, inheritance: &Value) -> Result<Value, BuildingError> {
     let identity = resolve_identity(home, conn, session_id)?;
     if inheritance.get("reset").and_then(Value::as_bool) == Some(true) {
@@ -1265,6 +1227,7 @@ pub fn preview_building(home: &Path, conn: &Connection, session_id: &str, inheri
     }
 }
 
+#[cfg(test)]
 pub fn set_building_model(
     home: &Path,
     conn: &Connection,
@@ -1308,16 +1271,19 @@ pub fn set_building_model(
     apply_override(home, &identity, Some(stored), expected_revision, "set", Some(clean), warnings)
 }
 
+#[cfg(test)]
 pub fn reset_building(home: &Path, conn: &Connection, session_id: &str, expected_revision: u64) -> Result<Value, BuildingError> {
     let identity = resolve_identity(home, conn, session_id)?;
     apply_override(home, &identity, None, expected_revision, "reset", None, Vec::new())
 }
 
+#[cfg(test)]
 fn current_revision(home: &Path, asset_ref: &str) -> Result<u64, BuildingError> {
     let db = open_store(home)?;
     Ok(load_override(&db, asset_ref)?.revision)
 }
 
+#[cfg(test)]
 fn apply_override(
     home: &Path,
     identity: &BuildingIdentity,
@@ -1661,8 +1627,8 @@ mod tests {
         assert!(set["build_event_id"].as_str().unwrap().starts_with("be_"));
         assert_eq!(set["construction"]["mode"], "block-by-block");
         assert_eq!(set["construction"]["replayable"], true);
-        assert_eq!(set["construction"]["ui"], "queued");
-        assert_eq!(set["notify"]["channel"], "mailbox");
+        assert_eq!(set["construction"]["ui"], "pushed");
+        assert_eq!(set["notify"]["channel"], "host-socket");
         let mail = read_mailbox(&home).expect("mailbox after persist");
         assert!(is_entity_changed(&mail));
         assert_eq!(mail["type"], ENTITY_CHANGED_TYPE);
@@ -1674,10 +1640,10 @@ mod tests {
         assert_eq!(mail["build_event_id"], set["build_event_id"]);
         assert_eq!(mail["revision"], 1);
         assert_eq!(mail["kind"], "set");
-        let listed = list_overrides(&home, Some(db.conn()), std::slice::from_ref(&asset)).unwrap();
+        let listed = list_overrides(&home, std::slice::from_ref(&asset)).unwrap();
         assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0]["model"]["parts"][1]["id"], got["model"]["parts"][1]["id"]);
-        assert!(listed[0]["inheritance"].is_object());
+        assert_eq!(listed[0]["model"], Value::Null);
+        assert_eq!(listed[0]["stored_document"], inheritance);
         let events = list_build_events(&home, &[], None, 10).unwrap();
         assert_eq!(events[0]["build_event_id"], set["build_event_id"]);
 
@@ -1695,63 +1661,6 @@ mod tests {
         let after = get_building(&home, db.conn(), &session_id).unwrap();
         assert_eq!(after["source"], "default");
         assert_eq!(after["revision"], 2);
-        let _ = std::fs::remove_dir_all(&home);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn persist_pushes_host_socket_when_listening() {
-        use std::io::{BufRead, BufReader};
-        use std::os::unix::net::UnixListener;
-        let (home, db, session_id) = seed();
-        std::fs::create_dir_all(store_dir(&home)).unwrap();
-        let listener = UnixListener::bind(socket_path(&home)).unwrap();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            // Persist notify plus IM fanout share host.sock; drain a few accepts.
-            let _ = listener.set_nonblocking(true);
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-            while std::time::Instant::now() < deadline {
-                match listener.accept() {
-                    Ok((stream, _)) => {
-                        let _ = stream.set_nonblocking(false);
-                        let mut line = String::new();
-                        if BufReader::new(stream).read_line(&mut line).is_ok() && !line.trim().is_empty() {
-                            let _ = tx.send(line);
-                        }
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(std::time::Duration::from_millis(20));
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-        let inheritance = json!({
-            "kit_version": INHERITANCE_KIT_VERSION,
-            "base": { "kind": "projection" },
-            "overrides": {}
-        });
-        let set = set_building_model(&home, db.conn(), &session_id, &inheritance, 0).unwrap();
-        assert_eq!(set["ok"], true);
-        assert_eq!(set["construction"]["ui"], "pushed");
-        assert_eq!(set["notify"]["channel"], "host-socket");
-        let line = rx.recv_timeout(std::time::Duration::from_secs(2)).expect("socket payload");
-        let mut payloads = vec![serde_json::from_str::<Value>(line.trim()).unwrap()];
-        while let Ok(extra) = rx.recv_timeout(std::time::Duration::from_millis(200)) {
-            if let Ok(value) = serde_json::from_str::<Value>(extra.trim()) { payloads.push(value); }
-        }
-        let payload = payloads.iter().find(|row| is_entity_changed(row)).cloned().expect("construction notify");
-        assert!(is_entity_changed(&payload));
-        assert_eq!(payload["type"], ENTITY_CHANGED_TYPE);
-        assert_eq!(payload["entity_kind"], ENTITY_KIND_BUILDING);
-        assert_eq!(payload["action"], "set");
-        assert_eq!(payload["event_id"], set["build_event_id"]);
-        assert_eq!(payload["build_event_id"], set["build_event_id"]);
-        assert_eq!(payload["revision"], 1);
-        assert_eq!(payload["kind"], "set");
-        assert!(payload["entity_id"].as_str().unwrap().starts_with("ca_"));
-        assert!(payload["asset_ref"].as_str().unwrap().starts_with("ca_"));
         let _ = std::fs::remove_dir_all(&home);
     }
 

@@ -67,7 +67,8 @@ fn isolation_probe_event(webview: Webview, state: tauri::State<'_, ProbeState>, 
 async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: tauri::State<'_, ProbeState>, plugin_host: tauri::State<'_, crate::plugin_host::PluginHost>, request: crate::plugin_host::PluginRequestV1) -> Result<crate::plugin_host::PluginResponseV1, String> {
     let sender = webview.label().to_owned();
     let formal_v15 = std::env::args().any(|arg| arg == "--plugin-formal-v15-probe" || arg == "--plugin-formal-v15-resume" || arg == "--plugin-formal-v15-status-probe" || arg == "--plugin-formal-v15-status-resume") && sender.starts_with("plugin-city-")
-        && matches!(request.method.as_str(), "plugin.state.read" | "plugin.state.write") && request.payload["key"] == "mecha-replays:v1";
+        && matches!(request.method.as_str(), "plugin.state.read" | "plugin.state.write")
+        && matches!(request.payload["key"].as_str(), Some("mecha-replays:v1" | "mecha-checkpoint:v1"));
     if ![CITY, RESTART].contains(&sender.as_str()) && !formal_v15 { return Err("probe_sender_unavailable".into()); }
     let request_id = {
         let mut data = state.0.lock().unwrap();
@@ -449,18 +450,19 @@ fn formal_v15_exercise(app: &tauri::AppHandle, state: &ProbeState, resume: bool,
         while Instant::now() < deadline && !state.0.lock().unwrap().codes.contains(*event) { std::thread::sleep(Duration::from_millis(100)); }
         if !state.0.lock().unwrap().codes.contains(*event) { return Err(format!("{event}_timeout")); }
     }
-    let allowed = vec!["mecha-replays:v1".to_owned()];
-    let payload = json!({"key":"mecha-replays:v1", "format":"sequential-checkpoint-v1", "op":"read"});
+    let allowed = vec!["mecha-checkpoint:v1".to_owned()];
+    let payload = json!({"key":"mecha-checkpoint:v1"});
     let checkpoint = crate::plugin_state::handle(&allowed, &root, "city", "plugin.state.read", &payload).map_err(str::to_owned)?;
-    let raw = checkpoint["raw"].as_str().ok_or("v15_checkpoint_missing")?;
+    let checkpoint_revision = checkpoint["value"]["revision"].as_u64().unwrap_or(0);
+    let raw = checkpoint["value"]["raw"].as_str().ok_or("v15_checkpoint_missing")?;
     let record: Value = serde_json::from_str(raw).map_err(|_| "v15_checkpoint_invalid")?;
     let archive: Value = serde_json::from_str(record["archive"].as_str().ok_or("v15_checkpoint_invalid")?).map_err(|_| "v15_checkpoint_invalid")?;
     let commands = archive["replay"]["entries"].as_array().ok_or("v15_checkpoint_invalid")?;
     if status {
-        if archive["schema"] != "mecha-sequential-bundle:v2" || archive["opening"]["encounter"]["speciesId"] != "prism_warden" || archive["opening"]["encounter"]["statusRules"] != "mecha-status-encounter:v1" || checkpoint["revision"].as_u64().unwrap_or(0) < 1 || !commands.is_empty() {
+        if archive["schema"] != "mecha-sequential-bundle:v2" || archive["opening"]["encounter"]["speciesId"] != "prism_warden" || archive["opening"]["encounter"]["statusRules"] != "mecha-status-encounter:v1" || checkpoint_revision < 1 || !commands.is_empty() {
             return Err("v15_status_checkpoint_mismatch".into());
         }
-    } else if checkpoint["revision"].as_u64().unwrap_or(0) < 3 || commands.len() != 2 || commands[0]["command"]["kind"] != "move" || commands[1]["command"]["kind"] != "undo" {
+    } else if checkpoint_revision < 3 || commands.len() != 2 || commands[0]["command"]["kind"] != "move" || commands[1]["command"]["kind"] != "undo" {
         return Err("v15_checkpoint_mismatch".into());
     }
     host.eval("window.__TAURI__.core.invoke('plugin_close',{instanceId:'plugin-city-1'}).then(()=>window.__TAURI__.core.invoke('isolation_probe_event',{code:'formal_disposed'}))").map_err(|_| "formal_dispose_failed")?;

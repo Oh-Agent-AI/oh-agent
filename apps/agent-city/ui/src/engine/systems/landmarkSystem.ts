@@ -6,7 +6,7 @@ import * as THREE from "three";
 import { hashSeed, type CityModel } from "../../cityModel";
 import type { CityLayout } from "../cityLayout";
 import { activeTheme } from "../cityTheme";
-import { paletteFor } from "../cityTextures";
+import { paletteForDistrict } from "../cityTextures";
 import { createRenderCanvas } from "../renderCanvas";
 import { LANDMARK_BUILDERS } from "../render/landmarkBuilders";
 import type { LandmarkHost } from "../models/landmarkContext";
@@ -99,7 +99,7 @@ const WINDOW_PITCH = 2.4;
 export function buildDistrictLandmarks(host: LandmarkSystemHost): void {
   const neon = activeTheme().neon;
   for (const spot of host.layout.districtLandmarks ?? []) {
-    const palette = paletteFor(spot.districtId);
+    const palette = paletteForDistrict(host.model, spot.districtId);
     const h = host.districtLandmarkHeight(spot.districtId);
     // 地基随楼高放大（按会话楼「高楼加宽」的策略），只在地标已预留的整块街区里放大；街区里其余部分做前院（停车场、绿化）。
     const parcels = host.layout.blocks.flatMap((block) => block.parcels);

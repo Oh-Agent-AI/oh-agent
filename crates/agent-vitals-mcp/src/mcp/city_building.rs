@@ -22,7 +22,6 @@ use std::path::Path;
 use serde_json::{json, Value};
 
 use super::{build_envelope, coverage_not_applicable, AuthorityHandle, ToolError, ToolSpec};
-use crate::query::city_building::{self, BuildingError};
 
 fn spec(name: &'static str, description: &'static str, properties: Value, required: &[&str]) -> ToolSpec {
     ToolSpec {
@@ -66,7 +65,7 @@ fn revision_prop() -> Value {
 pub fn get_spec() -> ToolSpec {
     spec(
         "get_building",
-        "Return the current Agent City model for one session building (override or default). Includes asset_ref, resolved parts (≤64), optional inheritance subclass, revision, kit_version, and a geometric summary. Primary feedback is JSON, not an image.",
+        "Return the current Agent City model for one session building (override or default) from the open local City window. Includes asset_ref, resolved parts (≤64), revision, kit_version, and a geometric summary. Primary feedback is JSON, not an image.",
         json!({ "session_id": session_id_prop() }),
         &["session_id"],
     )
@@ -142,15 +141,6 @@ fn writes_denied() -> ToolError {
     )
 }
 
-fn map_error(error: BuildingError) -> Result<Value, ToolError> {
-    match error.kind {
-        "not_found" if error.rule == "unknown_session" => {
-            Err(ToolError::new("not_found", error.message.as_str()))
-        }
-        _ => Err(ToolError::new("data_unavailable", error.message.as_str())),
-    }
-}
-
 fn envelope(handle: &AuthorityHandle, data: Value) -> Value {
     build_envelope(
         handle.conn(),
@@ -165,21 +155,48 @@ fn envelope(handle: &AuthorityHandle, data: Value) -> Value {
 pub fn run_get(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     let session_id = required_string(args, "session_id")?;
     let handle = AuthorityHandle::open(data_home)?;
-    match city_building::get_building(data_home, handle.conn(), session_id) {
-        Ok(data) => Ok(envelope(&handle, data)),
-        Err(error) => map_error(error),
+    let request = json!({ "session_id": session_id });
+    let response = agent_vitals_query::query::plugin_calls::call(
+        data_home, "city", "city.building.get", &request, 5_000,
+    ).map_err(map_host_error)?;
+    if response["ok"] != true {
+        let code = response["error"]["code"].as_str().unwrap_or("plugin_call_failed");
+        return Err(map_host_error(code));
     }
+    let data = response.get("result").filter(|value| value.is_object()).cloned()
+        .ok_or_else(|| ToolError::new("data_unavailable", "City returned an invalid building response"))?;
+    Ok(envelope(&handle, data))
+}
+
+fn map_host_error(code: &str) -> ToolError {
+    match code {
+        "session_unavailable" => ToolError::new("not_found", "the session is not available in the open Agent City window"),
+        "invalid_payload" => ToolError::new("invalid_argument", "the building request is invalid"),
+        "plugin_call_timeout" | "plugin_call_expired" | "plugin_call_method_unavailable" => {
+            ToolError::new("plugin_unavailable", "Open the local Agent City window and retry the request")
+        }
+        _ => ToolError::new("data_unavailable", code),
+    }
+}
+
+fn run_local_building_call(method: &str, args: &Value, data_home: &Path) -> Result<Value, ToolError> {
+    let handle = AuthorityHandle::open(data_home)?;
+    let response = agent_vitals_query::query::plugin_calls::call(data_home, "city", method, args, 10_000)
+        .map_err(map_host_error)?;
+    if response["ok"] != true {
+        let code = response["error"]["code"].as_str().unwrap_or("plugin_call_failed");
+        return Err(map_host_error(code));
+    }
+    let data = response.get("result").filter(|value| value.is_object()).cloned()
+        .ok_or_else(|| ToolError::new("data_unavailable", "City returned an invalid building response"))?;
+    Ok(envelope(&handle, data))
 }
 
 pub fn run_preview(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     reject_full_mesh_replace(args)?;
     let session_id = required_string(args, "session_id")?;
     let inheritance = required_object(args, "inheritance")?;
-    let handle = AuthorityHandle::open(data_home)?;
-    match city_building::preview_building(data_home, handle.conn(), session_id, inheritance) {
-        Ok(data) => Ok(envelope(&handle, data)),
-        Err(error) => map_error(error),
-    }
+    run_local_building_call("city.building.preview", &json!({"session_id": session_id, "inheritance": inheritance}), data_home)
 }
 
 pub fn run_set(args: &Value, data_home: &Path, allow_local_writes: bool) -> Result<Value, ToolError> {
@@ -188,22 +205,16 @@ pub fn run_set(args: &Value, data_home: &Path, allow_local_writes: bool) -> Resu
     let session_id = required_string(args, "session_id")?;
     let inheritance = required_object(args, "inheritance")?;
     let expected = required_u64(args, "expected_revision")?;
-    let handle = AuthorityHandle::open(data_home)?;
-    match city_building::set_building_model(data_home, handle.conn(), session_id, inheritance, expected) {
-        Ok(data) => Ok(envelope(&handle, data)),
-        Err(error) => map_error(error),
-    }
+    run_local_building_call("city.building.set", &json!({"session_id": session_id, "inheritance": inheritance,
+        "expected_revision": expected}), data_home)
 }
 
 pub fn run_reset(args: &Value, data_home: &Path, allow_local_writes: bool) -> Result<Value, ToolError> {
     if !allow_local_writes { return Err(writes_denied()); }
     let session_id = required_string(args, "session_id")?;
     let expected = required_u64(args, "expected_revision")?;
-    let handle = AuthorityHandle::open(data_home)?;
-    match city_building::reset_building(data_home, handle.conn(), session_id, expected) {
-        Ok(data) => Ok(envelope(&handle, data)),
-        Err(error) => map_error(error),
-    }
+    run_local_building_call("city.building.reset", &json!({"session_id": session_id,
+        "expected_revision": expected}), data_home)
 }
 
 #[cfg(test)]
@@ -211,7 +222,7 @@ mod tests {
     use super::*;
     use agent_vitals_data::authority::AuthorityDb;
     use crate::mcp::{dispatch, dispatch_with_permissions};
-    use crate::query::city_building_inheritance::INHERITANCE_KIT_VERSION;
+    use std::time::{Duration, Instant};
 
     fn tmp_home() -> std::path::PathBuf {
         let home = std::env::temp_dir().join(format!(
@@ -223,146 +234,78 @@ mod tests {
         home
     }
 
-    fn seed(home: &Path) -> String {
-        let db = AuthorityDb::open(&agent_vitals_data::authority::default_authority_path(home), 1_700_000_000_000).unwrap();
-        db.conn().execute(
-            "INSERT INTO sync_runs(run_id, started_at_ms, trigger, status, schema_version) VALUES ('run',1,'cli','succeeded',2)",
-            [],
-        ).unwrap();
-        db.conn().execute(
-            "INSERT INTO sessions(session_key, harness, native_session_id, machine_namespace, last_observed_at_ms)
-             VALUES ('sess-city', 'codex', 'native-city', 'ns', 1)",
-            [],
-        ).unwrap();
-        db.conn().execute(
-            "INSERT INTO usage_facts(fact_id, harness, machine_namespace, native_session_id, session_key,
-                 source_event_id, observation_kind, event_ts_ms, uncached_input_tokens, cache_read_tokens,
-                 cache_write_tokens, output_tokens, ingested_run_id, created_at_ms, updated_at_ms)
-             VALUES ('fc', 'codex', 'ns', 'native-city', 'sess-city', 'e1', 'assistant-usage', 1, 50000, 0, 0, 50000, 'run', 1, 1)",
-            [],
-        ).unwrap();
-        drop(db);
-        let salt = crate::query::session_ref::load_or_create_salt(home).unwrap();
-        crate::query::session_ref::session_ref(&salt, "sess-city")
+    fn seed(home: &Path) {
+        let _ = AuthorityDb::open(&agent_vitals_data::authority::default_authority_path(home), 1_700_000_000_000).unwrap();
     }
 
-    fn data(env: &Value) -> &Value { &env["data"] }
-
-    fn catalog_inheritance(catalog_id: &str) -> Value {
-        json!({
-            "kit_version": INHERITANCE_KIT_VERSION,
-            "base": { "kind": "catalog", "catalog_id": catalog_id },
-            "overrides": {}
-        })
-    }
-
-    fn overlapping_inheritance() -> Value {
-        json!({
-            "kit_version": INHERITANCE_KIT_VERSION,
-            "base": { "kind": "catalog", "catalog_id": "kit-low-block" },
-            "overrides": {
-                "parts_add": [
-                    {"id": "a", "kind": "box", "role": "wall", "at": [0, 0.2, 0], "size": [2, 1, 2]}
-                ]
+    fn dispatch_through_city_host(name: &'static str, args: Value, allow_local_writes: bool, expected_method: &'static str) -> Value {
+        let home = tmp_home();
+        seed(&home);
+        let worker_home = home.clone();
+        let worker = std::thread::spawn(move || dispatch_with_permissions(name, &args, &worker_home, allow_local_writes));
+        let allowed = vec![expected_method.to_string()];
+        let started = Instant::now();
+        let (call_id, payload) = loop {
+            let pending = crate::query::plugin_calls::claim_pending(&home, "city", "test-city-instance", &allowed, 1).unwrap();
+            if let Some(call) = pending.into_iter().next() {
+                assert_eq!(call["method"], expected_method);
+                break (call["callId"].as_str().unwrap().to_string(), call["payload"].clone());
             }
-        })
+            assert!(started.elapsed() < Duration::from_secs(2), "City host call was not queued");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(payload["session_id"], "session-test");
+        crate::query::plugin_calls::respond(&home, "city", "test-city-instance", &call_id,
+            &json!({"ok":true,"result":{"ok":true,"revision":1}})).unwrap();
+        let result = worker.join().unwrap().unwrap();
+        let _ = std::fs::remove_dir_all(&home);
+        result
     }
 
     #[test]
-    fn react_loop_get_preview_set_reset() {
-        let home = tmp_home();
-        let session_id = seed(&home);
+    fn city_tools_dispatch_only_through_descriptor_scoped_plugin_calls() {
+        let get = dispatch_through_city_host(
+            "get_building", json!({"session_id":"session-test"}), false, "city.building.get",
+        );
+        assert_eq!(get["data"]["ok"], true);
 
+        let inheritance = json!({"kit_version":"session-kit/inheritance/v1","base":{"kind":"projection"},"overrides":{}});
+        let preview = dispatch_through_city_host(
+            "preview_building", json!({"session_id":"session-test","inheritance":inheritance}), false, "city.building.preview",
+        );
+        assert_eq!(preview["data"]["ok"], true);
+
+        let set = dispatch_through_city_host(
+            "set_building_model",
+            json!({"session_id":"session-test","inheritance":{"kit_version":"session-kit/inheritance/v1","base":{"kind":"projection"},"overrides":{}},"expected_revision":0}),
+            true,
+            "city.building.set",
+        );
+        assert_eq!(set["data"]["ok"], true);
+
+        let reset = dispatch_through_city_host(
+            "reset_building", json!({"session_id":"session-test","expected_revision":1}), true, "city.building.reset",
+        );
+        assert_eq!(reset["data"]["ok"], true);
+    }
+
+    #[test]
+    fn city_mutations_and_legacy_mesh_payloads_fail_closed() {
+        let home = tmp_home();
+        seed(&home);
         let denied = dispatch_with_permissions(
             "set_building_model",
-            &json!({"session_id": session_id, "inheritance": catalog_inheritance("kit-low-block"), "expected_revision": 0}),
+            &json!({"session_id":"session-test","inheritance":{"kit_version":"session-kit/inheritance/v1","base":{"kind":"projection"},"overrides":{}},"expected_revision":0}),
             &home,
             false,
         ).unwrap_err();
         assert_eq!(denied.code, "permission_denied");
 
         let mesh_denied = dispatch("preview_building", &json!({
-            "session_id": session_id,
-            "model": catalog_inheritance("kit-low-block"),
+            "session_id":"session-test",
+            "model":{"parts":[]},
         }), &home).unwrap_err();
         assert_eq!(mesh_denied.code, "invalid_argument");
-
-        let got = data(&dispatch("get_building", &json!({"session_id": session_id}), &home).unwrap()).clone();
-        assert_eq!(got["ok"], true);
-        assert_eq!(got["source"], "default");
-        assert_eq!(got["revision"], 0);
-        let asset = got["projection"]["asset_ref"].as_str().unwrap();
-        assert!(asset.starts_with("ca_"));
-        assert_eq!(got["observe"]["summary"]["part_count"], 5);
-
-        let fail = data(&dispatch("preview_building", &json!({"session_id": session_id, "inheritance": overlapping_inheritance()}), &home).unwrap()).clone();
-        assert_eq!(fail["ok"], false);
-        assert_eq!(fail["error"]["kind"], "validation");
-        assert_eq!(fail["error"]["rule"], "overlap");
-        assert!(fail["error"]["suggested_fix"].as_str().unwrap().contains("shrink"));
-
-        let projection_inheritance = json!({
-            "kit_version": INHERITANCE_KIT_VERSION,
-            "base": { "kind": "projection" },
-            "overrides": {}
-        });
-        let pass = data(&dispatch("preview_building", &json!({"session_id": session_id, "inheritance": projection_inheritance}), &home).unwrap()).clone();
-        assert_eq!(pass["ok"], true);
-        assert_eq!(pass["persisted"], false);
-        assert_eq!(pass["warnings"].as_array().map(|a| a.len()), Some(0));
-
-        let conflict = data(&dispatch_with_permissions(
-            "set_building_model",
-            &json!({"session_id": session_id, "inheritance": projection_inheritance, "expected_revision": 7}),
-            &home,
-            true,
-        ).unwrap()).clone();
-        assert_eq!(conflict["ok"], false);
-        assert_eq!(conflict["error"]["kind"], "conflict");
-        assert_eq!(conflict["error"]["rule"], "revision_conflict");
-        assert_eq!(conflict["revision"], 0);
-
-        let set = data(&dispatch_with_permissions(
-            "set_building_model",
-            &json!({"session_id": session_id, "inheritance": projection_inheritance, "expected_revision": 0}),
-            &home,
-            true,
-        ).unwrap()).clone();
-        assert_eq!(set["ok"], true);
-        assert_eq!(set["revision"], 1);
-        let event = set["build_event_id"].as_str().unwrap().to_string();
-        assert!(event.starts_with("be_"));
-        assert_eq!(set["construction"]["mode"], "block-by-block");
-        assert_eq!(set["construction"]["replayable"], true);
-        assert!(matches!(set["construction"]["ui"].as_str(), Some("pushed") | Some("queued")));
-
-        let confirm = data(&dispatch("get_building", &json!({"session_id": session_id}), &home).unwrap()).clone();
-        assert_eq!(confirm["ok"], true);
-        assert_eq!(confirm["revision"], 1);
-        assert_eq!(confirm["source"], "override");
-        assert_eq!(confirm["model"]["parts"][1]["id"], "shaft");
-        assert!(confirm["inheritance"].is_object());
-        assert_eq!(confirm["projection"]["asset_ref"], set["projection"]["asset_ref"]);
-
-        let by_asset = data(&dispatch("get_building", &json!({"session_id": asset}), &home).unwrap()).clone();
-        assert_eq!(by_asset["revision"], 1);
-
-        let reset = data(&dispatch_with_permissions(
-            "reset_building",
-            &json!({"session_id": session_id, "expected_revision": 1}),
-            &home,
-            true,
-        ).unwrap()).clone();
-        assert_eq!(reset["ok"], true);
-        assert_eq!(reset["revision"], 2);
-        assert_eq!(reset["source"], "default");
-        assert_ne!(reset["build_event_id"], event);
-
-        let after = data(&dispatch("get_building", &json!({"session_id": session_id}), &home).unwrap()).clone();
-        assert_eq!(after["source"], "default");
-        assert_eq!(after["revision"], 2);
-        assert_eq!(after["model"]["parts"][0]["id"], "podium");
-
         let _ = std::fs::remove_dir_all(&home);
     }
 }

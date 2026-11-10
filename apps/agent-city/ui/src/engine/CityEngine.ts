@@ -19,7 +19,7 @@ import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js"
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { GTAOPass } from "three/addons/postprocessing/GTAOPass.js";
 import { Reflector } from "three/addons/objects/Reflector.js";
-import type { CityModel } from "../cityModel";
+import { selectVisualHero, type CityModel } from "../cityModel";
 import { activeTheme, BIOME_GRADES, skyYawOf } from "./cityTheme";
 import { loadCityAssets, type CityAssets } from "./cityAssets";
 import { loadBiomeFlora } from "./cityFlora";
@@ -43,7 +43,7 @@ import { DRIVING_PARAMS } from "../game/DrivingSimulation";
 import { CAR_DIMENSIONS } from "../game/carDimensions";
 import { PLAYABLE_CAR_PREFIX, PLAYABLE_MECHA_NAME, PLAYABLE_PLANE_NAME, playableKind, type PlayTarget } from "./render/playableVehicles";
 import { claimParkedMechaClick, parkedMechaPickBoxes } from "./render/mechaPick";
-import { paletteFor } from "./cityTextures";
+import { paletteFor, paletteForDistrict } from "./cityTextures";
 import { CarCamera } from "../game/CarCamera";
 import { FlightCameraControls } from "../game/FlightCameraControls";
 import { RainbowArch, RainOverlay } from "./cityWeather";
@@ -145,6 +145,7 @@ export class CityEngine {
   private readonly pendingEdits = new Map<string, BuildingEditEvent>();
   /** 对外的生效布局（已套规划修复补丁；无补丁时就是 baseLayout）。GameSession/FlightWorld/拾取读的都是它。 */
   private layout: CityLayout | null = null;
+  private nextLayoutOverride: CityLayout | null = null;
   /** Read-only driving-surface snapshots of the rendered city; invalidated whenever parts rebuild. */
   private readonly environment = new CityEnvironment();
   private environmentSnapshot = this.environment.sample(Date.now());
@@ -677,6 +678,22 @@ export class CityEngine {
     return this.layout;
   }
 
+  get currentBackdrop(): BackdropMode {
+    return this.backdrop;
+  }
+
+  /** Mount a trusted, allowlisted remote projection of the already-laid-out city. */
+  applyRemoteModel(model: CityModel, layout: CityLayout, backdrop: BackdropMode): void {
+    this.seed = layout.seed;
+    this.backdrop = backdrop;
+    this.planPatchValue = null;
+    this.planResult = null;
+    this.baseLayout = null;
+    this.layout = null;
+    this.nextLayoutOverride = layout;
+    this.applyModel(model, false);
+  }
+
   /** 规划修复（CITY_PLAN_MANUAL_REPAIR_SPEC §13）：当前种子生效的补丁、套用结果（失效清单/id 对照）与未打补丁的底层布局。 */
   get planPatch(): PlanPatchV1 | null {
     return this.planPatchValue && this.planPatchValue.seed === this.seed ? this.planPatchValue : null;
@@ -706,6 +723,8 @@ export class CityEngine {
   get currentModel(): CityModel | null {
     return this.model;
   }
+
+  get currentSeed(): number | null { return this.seed; }
 
   get replayCursor(): number | null {
     return this.cursorMs;
@@ -892,9 +911,11 @@ export class CityEngine {
     this.model = model;
     if (this.seed === null) return;
     const patch = this.planPatch;
-    const base = keepBase && sameModel && this.baseLayout ? this.baseLayout
-      : layoutCity(model, reuse ? this.baseLayout : null, this.seed, MIAMI_COASTAL, this.backdrop, layoutPinsFor(patch));
-    const planResult = patch ? applyPlanPatch(base, patch) : null;
+    const remoteLayout = this.nextLayoutOverride;
+    this.nextLayoutOverride = null;
+    const base = remoteLayout ?? (keepBase && sameModel && this.baseLayout ? this.baseLayout
+      : layoutCity(model, reuse ? this.baseLayout : null, this.seed, MIAMI_COASTAL, this.backdrop, layoutPinsFor(patch)));
+    const planResult = remoteLayout ? null : patch ? applyPlanPatch(base, patch) : null;
     const layout = planResult ? planResult.layout : base;
     // 同岛分页：不拆 CityParts / 实例网格 / 相机 / 选中态；只把新楼写进已有批次。
     // 修订导致会话丢失或搬家时走下面的整层重建。
@@ -1267,7 +1288,7 @@ export class CityEngine {
       "session-tower": () => pick((b) => P.formOf(b) === "tower" && b.height > 25),
       "session-slab": () => pick((b) => P.formOf(b) === "slab" && b.height > 12),
       "session-deco": () => pick((b, s) => P.facadeFor(b) === 3 && !s.blockId.startsWith("hotel:")),
-      "hero-tower": () => { let best: CityModel["buildings"][number] | null = null; for (const b of model.buildings) if (!best || b.tokensTotal > best.tokensTotal) best = b; const slot = best ? slots.get(best.id) : null; return best && slot ? [slot.x, best.height * 0.6, slot.z, Math.max(60, best.height * 2.4)] : null; },
+      "hero-tower": () => { const best = selectVisualHero(model.buildings); const slot = best ? slots.get(best.id) : null; return best && slot ? [slot.x, best.height * 0.6, slot.z, Math.max(60, best.height * 2.4)] : null; },
       "session-hotel": () => pick((_b, s) => s.blockId.startsWith("hotel:")),
       "district-landmark": () => (districtLandmark ? [districtLandmark.x, 45, districtLandmark.z, 150] : null),
       "twin-towers": () => landmark("twin-towers", 38, 160),
@@ -1558,7 +1579,7 @@ export class CityEngine {
       const car = this.parts.group.getObjectByName(`${PLAYABLE_CAR_PREFIX}${districtId}`);
       if (!car) return null;
       const at = car.getWorldPosition(new THREE.Vector3());
-      return { kind, districtId, color: paletteFor(districtId).accent, x: at.x, z: at.z, heading: heading(car, new THREE.Vector3(0, 0, 1)) };
+      return { kind, districtId, color: (this.model ? paletteForDistrict(this.model, districtId) : paletteFor(districtId)).accent, x: at.x, z: at.z, heading: heading(car, new THREE.Vector3(0, 0, 1)) };
     }
     if (kind === "mecha") {
       const squad = this.parts.group.getObjectByName(PLAYABLE_MECHA_NAME);

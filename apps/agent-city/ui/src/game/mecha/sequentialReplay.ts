@@ -78,11 +78,14 @@ export async function replaySequentialArchive(initial: MatchState, raw: string):
   const version = archiveVersion(initial);
   let value: unknown;
   try { value = JSON.parse(raw); } catch { return fail(); }
-  if (!obj(value) || !fields(value, version === "v2" ? ["schema", "ruleset", "enemyPolicy", "initialDigest", "finalDigest", "entries", "statusRules"] : ["schema", "ruleset", "enemyPolicy", "initialDigest", "finalDigest", "entries"]) ||
+  if (!obj(value)) return fail();
+  const hasPolicy = Object.hasOwn(value, "enemyPolicy");
+  const expected = ["schema", "ruleset", ...(hasPolicy ? ["enemyPolicy"] : []), "initialDigest", "finalDigest", "entries", ...(version === "v2" ? ["statusRules"] : [])];
+  if (!fields(value, expected) ||
       value.schema !== (version === "v2" ? STATUS_SCHEMA : SCHEMA) || (version === "v2" && value.statusRules !== "mecha-status-encounter:v1") ||
-      value.ruleset !== "mecha-v1.5" || (value.enemyPolicy !== "scripted" && value.enemyPolicy !== "baup") || !hash(value.initialDigest) || !hash(value.finalDigest) ||
+      value.ruleset !== "mecha-v1.5" || (hasPolicy && value.enemyPolicy !== "scripted" && value.enemyPolicy !== "baup") || !hash(value.initialDigest) || !hash(value.finalDigest) ||
       !Array.isArray(value.entries) || value.entries.length > MAX_COMMANDS || await digest(initial) !== value.initialDigest) return fail();
-  const session = new SequentialTurn(initial, { enemyPlanner: enemyPlannerFor(value.enemyPolicy as EnemyPolicy) });
+  const session = new SequentialTurn(initial, { enemyPlanner: enemyPlannerFor(hasPolicy ? value.enemyPolicy as EnemyPolicy : "scripted") });
   for (const [index, entry] of value.entries.entries()) {
     if (!obj(entry) || !fields(entry, ["command", "eventDigest"]) || !validSequentialCommand(entry.command) ||
         entry.command.id !== `c${index}` || !hash(entry.eventDigest)) return fail();

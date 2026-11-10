@@ -69,7 +69,12 @@ export function hasUnsupportedRemoteSummons(state: Pick<MatchState, "raiders">):
 }
 
 export function remoteStateFromSite(site: CityMechaSite, state: MatchState): MatchState {
-  if ("mission" in state || Object.hasOwn(state, "monsterContent") || hasUnsupportedRemoteSummons(state)) throw new Error("remote_match_unsupported");
+  if (["mission", "monsterContent", "statusEncounter", "corrode", "swarm", "neural", "waves"].some(key => Object.hasOwn(state, key))
+    || Object.hasOwn(state.boss, "shield") || state.raiders.some(raider => Object.hasOwn(raider, "role"))
+    || hasUnsupportedRemoteSummons(state)) throw new Error("remote_match_unsupported");
+  const safeIntent = (value: MatchState["boss"]["intent"]) => !value || ["skillId", "local", "projected", "cdSweep", "status"].every(key => Object.hasOwn(value, key))
+    && Object.keys(value).every(key => ["skillId", "local", "projected", "cdSweep", "status"].includes(key));
+  if (!safeIntent(state.boss.intent) || state.raiders.some(raider => !safeIntent(raider.intent))) throw new Error("remote_match_unsupported");
   const cell = ({ x, y }: Cell): Cell => ({ x, y });
   const intent = (value: MatchState["boss"]["intent"]) => value && ({
     skillId: value.skillId, local: value.local.map(cell), projected: value.projected.map(cell), cdSweep: value.cdSweep, status: value.status,

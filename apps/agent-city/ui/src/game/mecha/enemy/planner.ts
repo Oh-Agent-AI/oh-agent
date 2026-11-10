@@ -112,10 +112,11 @@ export function prepareEnemy(state: MatchState, planner: EnemyPlanner = scripted
   if (state.phase !== "enemy_prepare") return skipIntent(state);
   const isNeural = state.monsterContent?.speciesId === "neural_weaver";
   if (!enemiesRemain(state) && state.waves && state.waves.remaining > 0) spawnNextWave(state);
-  const outer = isNeural ? swapEventSink(null) : null;
+  // Planner trials are speculative and must never enter the authoritative event log.
+  const outer = swapEventSink(null);
   let plan: EnemyPlan;
   try { plan = planner.plan(isNeural ? structuredClone(state) : state); }
-  finally { if (isNeural) swapEventSink(outer); }
+  finally { swapEventSink(outer); }
   if (!applyEnemyPlan(state, plan)) throw new Error("Enemy plan rejected");
   return state.boss.intent ?? skipIntent(state);
 }

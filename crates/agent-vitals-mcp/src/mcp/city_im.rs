@@ -8,8 +8,6 @@ use std::path::Path;
 use serde_json::{json, Value};
 
 use super::{build_envelope, coverage_not_applicable, AuthorityHandle, ToolError, ToolSpec};
-use crate::query::city_building::BuildingError;
-use crate::query::city_im;
 
 pub fn spec() -> ToolSpec {
     ToolSpec {
@@ -70,16 +68,6 @@ fn writes_denied() -> ToolError {
     )
 }
 
-fn map_error(error: BuildingError) -> Result<Value, ToolError> {
-    match error.kind {
-        "not_found" if error.rule == "unknown_session" => {
-            Err(ToolError::new("not_found", error.message.as_str()))
-        }
-        "validation" => Err(ToolError::new("invalid_argument", error.message.as_str())),
-        _ => Err(ToolError::new("data_unavailable", error.message.as_str())),
-    }
-}
-
 fn envelope(handle: &AuthorityHandle, data: Value) -> Value {
     build_envelope(
         handle.conn(),
@@ -98,14 +86,30 @@ pub fn run(args: &Value, data_home: &Path, allow_local_writes: bool) -> Result<V
     let agent_name = required_string(args, "agent_name")?;
     let kind = required_string(args, "kind")?;
     let payload = required_object(args, "payload")?;
-    let actor = match city_im::parse_actor(agent_id, agent_name) {
-        Ok(actor) => actor,
-        Err(error) => return map_error(error),
-    };
     let handle = AuthorityHandle::open(data_home)?;
-    match city_im::publish(data_home, handle.conn(), session_id, &actor, kind, payload) {
-        Ok(data) => Ok(envelope(&handle, data)),
-        Err(error) => map_error(error),
+    let method = "city.im.publish";
+    let request = json!({ "session_id": session_id, "agent_id": agent_id, "agent_name": agent_name, "kind": kind, "payload": payload });
+    let response = agent_vitals_query::query::plugin_calls::call(data_home, "city", method, &request, 20_000)
+        .map_err(map_host_error)?;
+    if response["ok"] != true {
+        let code = response["error"]["code"].as_str().unwrap_or("plugin_call_failed");
+        return Err(map_host_error(code));
+    }
+    let data = response.get("result").filter(|value| value.is_object()).cloned()
+        .ok_or_else(|| ToolError::new("data_unavailable", "City returned an invalid response"))?;
+    Ok(envelope(&handle, data))
+}
+
+fn map_host_error(code: &str) -> ToolError {
+    match code {
+        "session_unavailable" => ToolError::new("not_found", "the session is not available in the open Agent City window"),
+        "invalid_actor" | "invalid_chat" | "invalid_payload" | "invalid_ttl" | "invalid_release" | "kind_forbidden" | "asset_mismatch" => {
+            ToolError::new("invalid_argument", code)
+        }
+        "plugin_call_timeout" | "plugin_call_expired" | "plugin_call_method_unavailable" => {
+            ToolError::new("plugin_unavailable", "Open the local Agent City window and retry the request")
+        }
+        _ => ToolError::new("data_unavailable", code),
     }
 }
 
@@ -114,6 +118,7 @@ mod tests {
     use super::*;
     use agent_vitals_data::authority::AuthorityDb;
     use crate::mcp::{dispatch, dispatch_with_permissions};
+    use std::time::{Duration, Instant};
 
     fn tmp_home() -> std::path::PathBuf {
         let home = std::env::temp_dir().join(format!(
@@ -125,58 +130,63 @@ mod tests {
         home
     }
 
-    fn seed(home: &Path) -> String {
-        let db = AuthorityDb::open(&agent_vitals_data::authority::default_authority_path(home), 1_700_000_000_000).unwrap();
-        db.conn().execute(
-            "INSERT INTO sync_runs(run_id, started_at_ms, trigger, status, schema_version) VALUES ('run',1,'cli','succeeded',2)",
-            [],
-        ).unwrap();
-        db.conn().execute(
-            "INSERT INTO sessions(session_key, harness, native_session_id, machine_namespace, last_observed_at_ms)
-             VALUES ('sess-im-mcp', 'codex', 'native-im-mcp', 'ns', 1)",
-            [],
-        ).unwrap();
-        db.conn().execute(
-            "INSERT INTO usage_facts(fact_id, harness, machine_namespace, native_session_id, session_key,
-                 source_event_id, observation_kind, event_ts_ms, uncached_input_tokens, cache_read_tokens,
-                 cache_write_tokens, output_tokens, ingested_run_id, created_at_ms, updated_at_ms)
-             VALUES ('fim', 'codex', 'ns', 'native-im-mcp', 'sess-im-mcp', 'e1', 'assistant-usage', 1, 50000, 0, 0, 50000, 'run', 1, 1)",
-            [],
-        ).unwrap();
-        drop(db);
-        let salt = crate::query::session_ref::load_or_create_salt(home).unwrap();
-        crate::query::session_ref::session_ref(&salt, "sess-im-mcp")
+    fn seed(home: &Path) {
+        let _ = AuthorityDb::open(&agent_vitals_data::authority::default_authority_path(home), 1_700_000_000_000).unwrap();
     }
 
-    fn data(env: &Value) -> &Value { &env["data"] }
+    fn dispatch_through_city_host(args: Value, expected_error: Option<&'static str>) -> Result<Value, ToolError> {
+        let home = tmp_home();
+        seed(&home);
+        let worker_home = home.clone();
+        let worker = std::thread::spawn(move || dispatch_with_permissions("im_publish", &args, &worker_home, true));
+        let allowed = vec!["city.im.publish".to_string()];
+        let started = Instant::now();
+        let (call_id, payload) = loop {
+            let pending = crate::query::plugin_calls::claim_pending(&home, "city", "test-city-instance", &allowed, 1).unwrap();
+            if let Some(call) = pending.into_iter().next() {
+                assert_eq!(call["method"], "city.im.publish");
+                break (call["callId"].as_str().unwrap().to_string(), call["payload"].clone());
+            }
+            assert!(started.elapsed() < Duration::from_secs(2), "City host call was not queued");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(payload["session_id"], "session-test");
+        let response = if let Some(code) = expected_error {
+            json!({"ok":false,"error":{"code":code}})
+        } else {
+            json!({"ok":true,"result":{"ok":true,"envelope":{"kind":"claim","agent_name":"Nano","v":1,"id":"evt_test"}}})
+        };
+        crate::query::plugin_calls::respond(&home, "city", "test-city-instance", &call_id, &response).unwrap();
+        let result = worker.join().unwrap();
+        let _ = std::fs::remove_dir_all(&home);
+        result
+    }
 
     #[test]
     fn publish_requires_writes_and_rejects_building_kinds() {
         let home = tmp_home();
-        let session_id = seed(&home);
+        seed(&home);
         let denied = dispatch("im_publish", &json!({
-            "session_id": session_id, "agent_id": "nano", "agent_name": "Nano",
+            "session_id": "session-test", "agent_id": "nano", "agent_name": "Nano",
             "kind": "chat", "payload": {"text": "hi"},
         }), &home).unwrap_err();
         assert_eq!(denied.code, "permission_denied");
 
-        let forbidden = dispatch_with_permissions("im_publish", &json!({
-            "session_id": session_id, "agent_id": "nano", "agent_name": "Nano",
+        let forbidden = dispatch_through_city_host(json!({
+            "session_id": "session-test", "agent_id": "nano", "agent_name": "Nano",
             "kind": "preview", "payload": {"asset_ref": "x"},
-        }), &home, true).unwrap_err();
+        }), Some("kind_forbidden")).unwrap_err();
         assert_eq!(forbidden.code, "invalid_argument");
 
-        let got = dispatch("get_building", &json!({"session_id": session_id}), &home).unwrap();
-        let asset = got["data"]["projection"]["asset_ref"].as_str().unwrap();
-        let claimed = data(&dispatch_with_permissions("im_publish", &json!({
-            "session_id": session_id, "agent_id": "nano", "agent_name": "Nano",
-            "kind": "claim", "payload": {"asset_ref": asset, "ttl_sec": 60},
-        }), &home, true).unwrap()).clone();
-        assert_eq!(claimed["ok"], true);
-        assert_eq!(claimed["envelope"]["kind"], "claim");
-        assert_eq!(claimed["envelope"]["agent_name"], "Nano");
-        assert_eq!(claimed["envelope"]["v"], 1);
-        assert!(claimed["envelope"]["id"].as_str().unwrap().starts_with("evt_"));
+        let claimed = dispatch_through_city_host(json!({
+            "session_id": "session-test", "agent_id": "nano", "agent_name": "Nano",
+            "kind": "claim", "payload": {"asset_ref": "ca_test", "ttl_sec": 60},
+        }), None).unwrap();
+        assert_eq!(claimed["data"]["ok"], true);
+        assert_eq!(claimed["data"]["envelope"]["kind"], "claim");
+        assert_eq!(claimed["data"]["envelope"]["agent_name"], "Nano");
+        assert_eq!(claimed["data"]["envelope"]["v"], 1);
+        assert_eq!(claimed["data"]["envelope"]["id"], "evt_test");
         let _ = std::fs::remove_dir_all(&home);
     }
 }

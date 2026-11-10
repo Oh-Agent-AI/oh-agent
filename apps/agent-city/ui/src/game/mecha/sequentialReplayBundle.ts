@@ -6,6 +6,7 @@ import { applyDeployPlan, type DeployPlacement } from "./deployment";
 import { matchFromSite } from "./matchFromSite";
 import { createSequentialArchive, replaySequentialArchive } from "./sequentialReplay";
 import type { SequentialRecord, SequentialTurn } from "./sequentialTurn";
+import type { EnemyPolicy } from "./enemy/contracts";
 
 const SCHEMA = "mecha-sequential-bundle:v1";
 const STATUS_SCHEMA = "mecha-sequential-bundle:v2";
@@ -68,7 +69,7 @@ export async function createSequentialReplayBundle(site: CityMechaSite, evidence
 }
 
 /** Reject an incompatible site or any unverified opening, command, event or final digest. */
-export async function restoreSequentialReplayBundle(site: CityMechaSite, raw: string): Promise<{ initial: MatchState; placements: DeployPlacement[]; session: SequentialTurn }> {
+export async function restoreSequentialReplayBundle(site: CityMechaSite, raw: string): Promise<{ initial: MatchState; placements: DeployPlacement[]; session: SequentialTurn; enemyPolicy: EnemyPolicy }> {
   if (typeof raw !== "string" || new TextEncoder().encode(raw).length > MAX_BYTES) return fail();
   let value: unknown;
   try { value = JSON.parse(raw); } catch { return fail(); }
@@ -79,5 +80,5 @@ export async function restoreSequentialReplayBundle(site: CityMechaSite, raw: st
   if (await digest(savedSite) !== value.siteDigest) return fail();
   const initial = openingState(savedSite, value.opening);
   const session = await replaySequentialArchive(initial, JSON.stringify(value.replay));
-  return { initial, placements: structuredClone(value.opening.placements), session };
+  return { initial, placements: structuredClone(value.opening.placements), session, enemyPolicy: (value.replay.enemyPolicy ?? "scripted") as EnemyPolicy };
 }

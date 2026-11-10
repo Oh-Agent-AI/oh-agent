@@ -117,11 +117,11 @@ type CommandPolicy = {
 - 草稿评估、候选后果、落空预测：v1.5 用命令预览替代。
 - PvP：整段删除（`rules/pvp.ts`、`PvpState`、`PVP` 常量、相关测试），不迁。
 - `MatchRuleAdapter` 的整包提交语义：远程 v2 用 `command.submit`，不再扩展 plan 协议。
-- `mecha-local-replay:v1/v2/v3` 的读写路径：整栈删除；v1.4 原生回放库命令一并删除，存档只走 `plugin.state`（key `mecha-replays:v1`）。
+- `mecha-local-replay:v1/v2/v3` 的读写路径：整栈删除；v1.4 原生回放库命令一并删除。现行已保存回放走 descriptor 授权的通用 object/scope；checkpoint 走通用 `plugin.state`（key `mecha-checkpoint:v1`）。旧 `mecha-replays:v1` 仅用于 SQLite 旧归档和旧 checkpoint 的只读 copy-forward，迁移后应移除该兼容读取键。
 
 ## 7. 完成标准
 
 - v1.5 支持：本地 PvE、状态挑战、全部怪物、AI/自动对战、远程 PvE（手机续玩）；**无 PvP**。
-- 存档只有一条路径：`plugin.state`（key `mecha-replays:v1`），没有 v1.4 分支。
+- 存档只有通用端口路径：saved replay 使用 object/scope，checkpoint 使用 `plugin.state`（key `mecha-checkpoint:v1`）；旧 SQLite 只读迁移后删除 `mecha-replays:v1` 路由。
 - v1.4 代码（入口、控制器、AI、旧录像读取器、远程适配）全部移除；`mecha-v1.4` 字符串只作为历史数据标记存在。
 - 没有任何“v1.5 因缺功能而回退到 v1.4”的入口。

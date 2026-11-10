@@ -1,4 +1,7 @@
 .mecha-quick-guide {
+  /* The city HUD shell is pointer-transparent so clicks reach the board.
+     A modal guide is a direct child of that shell and must opt back in. */
+  pointer-events: auto;
   box-sizing: border-box;
   width: min(620px, calc(100vw - 24px));
   max-width: none;

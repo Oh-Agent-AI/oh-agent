@@ -162,12 +162,15 @@ function CityGate({ locale, onClose, title, body, busy, extra, onRetry, closeDis
 }
 
 /** Loads (or reuses) the four-shape catalog, then mounts a match keyed by it. */
-export function MechaBoard({ locale, onClose, engine, onAvailability, encounter }: {
+export function MechaBoard({ locale, onClose, engine, onAvailability, encounter, remoteControlsEnabled = true, connectedAssault }: {
   locale: GameLocale;
   onClose: () => void;
   engine: CityEngine | null;
   onAvailability?: (next: MechaAvailability) => void;
   encounter?: MonsterEncounter | null;
+  remoteControlsEnabled?: boolean;
+  /** Override the ambient connected Assault preview mode for isolated local scenes. */
+  connectedAssault?: boolean;
 }) {
   const t = (text: string) => gameText(text, locale);
   const [catalog, setCatalog] = useState<FightCatalog | null>(() => cachedCatalog(engine?.currentLayout ?? null, engine?.currentModel ?? null));
@@ -195,6 +198,7 @@ export function MechaBoard({ locale, onClose, engine, onAvailability, encounter 
   const searchSeq = useRef(0);
   const playable = phase === "ready" && Boolean(engine) && catalogPlayable(catalog);
   const runtime = readMechaRuntime({ remoteStatus, releaseChoice: releaseMode, releaseStatus, releaseMonster, encounterActive: Boolean(encounter) });
+  const useConnectedAssault = connectedAssault ?? runtime.connectedAssault;
 
   useEffect(() => {
     if (!onAvailability) return;
@@ -344,7 +348,7 @@ export function MechaBoard({ locale, onClose, engine, onAvailability, encounter 
         <button type="button" onClick={() => { setReleaseMode(""); setReleaseMonster(null); }}>{t("返回")}</button>
       </div>} />;
       if (!sequentialSite) return <CityGate locale={locale} onClose={onClose} title={t("这座城暂时没有可用机坪。")} body={t("当前城市中未找到符合地形和占位条件的战场。可以重试，或关掉战棋。")} />;
-      return <SequentialMechaMatch key={`${runId}-${runtime.mode.species}`} engine={engine} site={sequentialSite} locale={locale} onClose={onClose} requestCloseRef={requestMatchClose} monsterSpecies={runtime.mode.species} connectedAssault={runtime.connectedAssault} />;
+      return <SequentialMechaMatch key={`${runId}-${runtime.mode.species}`} engine={engine} site={sequentialSite} locale={locale} onClose={onClose} requestCloseRef={requestMatchClose} monsterSpecies={runtime.mode.species} connectedAssault={useConnectedAssault} remoteControlsEnabled={remoteControlsEnabled} />;
     }
     case "status":
       if (!runtime.mode.species) return <CityGate locale={locale} onClose={onClose} title={t("选择状态效果挑战")} body={t("使用当前城市战场，挑战带有一种特殊状态技能的怪物。")} recovery={<div className="mecha-actions">
@@ -352,10 +356,10 @@ export function MechaBoard({ locale, onClose, engine, onAvailability, encounter 
         <button type="button" onClick={() => { setReleaseMode(""); setReleaseStatus(null); }}>{t("返回")}</button>
       </div>} />;
       if (!sequentialSite) return <CityGate locale={locale} onClose={onClose} title={t("这座城暂时没有可用机坪。")} body={t("当前城市中未找到符合地形和占位条件的战场。可以重试，或关掉战棋。")} />;
-      return <SequentialMechaMatch key={runId} engine={engine} site={sequentialSite} locale={locale} onClose={onClose} requestCloseRef={requestMatchClose} statusSpecies={runtime.mode.species} connectedAssault={runtime.connectedAssault} />;
+      return <SequentialMechaMatch key={runId} engine={engine} site={sequentialSite} locale={locale} onClose={onClose} requestCloseRef={requestMatchClose} statusSpecies={runtime.mode.species} connectedAssault={useConnectedAssault} remoteControlsEnabled={remoteControlsEnabled} />;
     case "sequential":
       if (!sequentialSite) return <CityGate locale={locale} onClose={onClose} title={t("这座城暂时没有可用机坪。")} body={t("当前城市中未找到符合地形和占位条件的战场。可以重试，或关掉战棋。")} />;
-      return <SequentialMechaMatch key={runId} engine={engine} site={sequentialSite} locale={locale} onClose={onClose} requestCloseRef={requestMatchClose} connectedAssault={runtime.connectedAssault} />;
+      return <SequentialMechaMatch key={runId} engine={engine} site={sequentialSite} locale={locale} onClose={onClose} requestCloseRef={requestMatchClose} connectedAssault={useConnectedAssault} remoteControlsEnabled={remoteControlsEnabled} />;
   }
 }
 

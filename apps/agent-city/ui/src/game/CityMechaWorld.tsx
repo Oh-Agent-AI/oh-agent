@@ -113,6 +113,8 @@ export type MechaPerformanceView = { events: MechaPerformanceEvent[] };
 export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
   engine: CityEngine;
   site: CityMechaSite;
+  /** Keep the host's City-wide view on mount; callers may expose resetCamera as a battle-focus action. */
+  frameOnMount?: boolean;
   locale?: GameLocale;
   view: CityMechaView;
   performance: MechaPerformanceView | null;
@@ -125,7 +127,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
   onHoverEnemy?: (id: string | null) => void;
   onUnavailable?: (reason?: "preview" | "asset") => void;
   onPreviewLoading?: (loading: boolean) => void;
-}>(function CityMechaWorld({ engine, site, locale = "zh-Hans", view, performance, paused, connectedAssault, performanceSpeed = 1, onPerformanceComplete, onCell, onHoverCell, onHoverEnemy, onUnavailable, onPreviewLoading }, ref) {
+}>(function CityMechaWorld({ engine, site, locale = "zh-Hans", view, performance, paused, connectedAssault, performanceSpeed = 1, frameOnMount = true, onPerformanceComplete, onCell, onHoverCell, onHoverEnemy, onUnavailable, onPreviewLoading }, ref) {
   const badgeLayerRef = useRef<HTMLDivElement>(null);
   const localeRef = useRef(locale);
   localeRef.current = locale;
@@ -771,7 +773,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
         lease.setOrbitView({ position, target, fov: current.fov, minDistance: 45, maxDistance });
       },
     };
-    resetCamera();
+    if (frameOnMount) resetCamera();
 
     const raycaster = new THREE.Raycaster();
     raycaster.layers.set(1);
@@ -1594,7 +1596,7 @@ export const CityMechaWorld = forwardRef<CityMechaWorldHandle, {
       }
       if (engine.owner === "orbit") engine.restoreReturnView(saved);
     };
-  }, [connectedAssault, engine, site]);
+  }, [connectedAssault, engine, frameOnMount, site]);
 
   return <div ref={badgeLayerRef} className="mecha-world-unit-labels" aria-hidden="true" />;
 });

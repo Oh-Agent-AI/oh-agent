@@ -68,6 +68,8 @@ struct Instance {
     id: String,
     plugin_id: String,
     command_namespace: String,
+    max_toolbar_items: usize,
+    performance_metrics: Vec<String>,
     started: Instant,
     pulse: Instant,
     ready: bool,
@@ -89,13 +91,72 @@ struct Instance {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PluginDefinition { id: String, name: String, entry: String, command_namespace: String,
+    #[serde(default = "default_max_toolbar_items")] max_toolbar_items: usize,
+    #[serde(default)] performance_metrics: Vec<String>,
+    #[serde(default)] remote_host_entry: Option<String>,
+    #[serde(default)] remote_sessions: std::collections::BTreeMap<String, RemoteSessionProfile>,
+    #[serde(default)] remote_projection_grants: std::collections::BTreeMap<String, Vec<String>>,
+    #[serde(default)] remote_projection_passthrough: Vec<String>,
+    #[serde(default)] typed_data_grants: std::collections::BTreeMap<String, crate::typed_data::TypedDataGrant>,
+    #[serde(default)] legacy_data_grants: std::collections::BTreeMap<String, crate::typed_data::LegacyExportGrant>,
+    #[serde(default)] object_grants: std::collections::BTreeMap<String, agent_vitals_runtime::query::object_store::ObjectGrant>,
+    #[serde(default)] scope_grants: std::collections::BTreeMap<String, agent_vitals_runtime::query::object_store::ScopeGrant>,
     #[serde(default)] data_projections: Vec<String>, #[serde(default)] allow_local_exports: bool,
     #[serde(default)] navigation_targets: Vec<String>,
     /// 允许的 plugin.state.* 键（如 flight-profile:v1）；描述表声明即边界（游戏模式 §9）。
     #[serde(default)] state_keys: Vec<String>,
-    /// 活动插件要接收的宿主推送（building / squad）。未声明则不投递，不按插件 id 判断。
+    /// 活动插件可接收的通用宿主事件通道。未声明则不投递，不按插件 id 判断。
     #[serde(default)] host_events: Vec<String>,
+    /// 本机 request/reply 能力白名单。Host 只转发 opaque payload，不解释业务字段。
+    #[serde(default)] local_calls: Vec<String>,
     #[serde(default)] remote_capabilities: Vec<crate::remote_protocol::RemoteCapability> }
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RemoteSessionProfile {
+    pub version: u16,
+    pub bootstrap_method: String,
+    #[serde(default)] pub approval_method: Option<String>,
+    #[serde(default)] pub stop_method: Option<String>,
+    pub stop_policy: String,
+    pub max_bootstrap_bytes: usize,
+    pub links: crate::remote_registry::RemoteLinkSpec,
+}
+
+fn default_max_toolbar_items() -> usize { 10 }
+
+fn valid_performance_metric(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 64
+        && value.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+impl RemoteSessionProfile {
+    fn is_valid(&self, capability: &crate::remote_protocol::RemoteCapability) -> bool {
+        let method = |value: &str| !value.is_empty() && value.len() <= 80
+            && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'_' | b'-' | b'.'));
+        let link = &self.links;
+        let query_key = |value: &str| !value.is_empty() && value.len() <= 32
+            && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+        let owner_keys = [Some(link.session_param.as_str()), Some(link.player_param.as_str()), Some(link.websocket_param.as_str()), Some(link.access_param.as_str()), Some(link.device_param.as_str()), link.owner_secret_param.as_deref(), link.owner_capability_param.as_deref()];
+        let owner_keys: Vec<_> = owner_keys.into_iter().flatten().collect();
+        let invite_keys = [Some(link.session_param.as_str()), Some(link.invitation_room_param.as_str()), Some(link.invitation_id_param.as_str()), link.invitation_secret_param.as_deref(), link.invitation_capability_param.as_deref()];
+        let invite_keys: Vec<_> = invite_keys.into_iter().flatten().collect();
+        let methods = [Some(self.bootstrap_method.as_str()), self.approval_method.as_deref(), self.stop_method.as_deref()];
+        let methods: Vec<_> = methods.into_iter().flatten().collect();
+        self.version == 1 && method(&self.bootstrap_method)
+            && self.approval_method.as_deref().is_none_or(method)
+            && self.stop_method.as_deref().is_none_or(method)
+            && self.stop_policy == if self.stop_method.is_some() { "freezeSnapshot" } else { "closeOnly" }
+            && self.max_bootstrap_bytes > 0 && self.max_bootstrap_bytes <= 256 * 1024
+            && link.path.starts_with('/') && !link.path.starts_with("//") && link.path.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'_' | b'-'))
+            && [link.session_param.as_str(), link.player_param.as_str(), link.websocket_param.as_str(), link.access_param.as_str(), link.device_param.as_str(), link.invitation_room_param.as_str(), link.invitation_id_param.as_str()].iter().all(|key| query_key(key))
+            && [link.owner_secret_param.as_deref(), link.invitation_secret_param.as_deref(), link.owner_capability_param.as_deref(), link.invitation_capability_param.as_deref()].iter().flatten().all(|key| query_key(key))
+            && owner_keys.iter().all(|key| query_key(key)) && owner_keys.iter().collect::<std::collections::BTreeSet<_>>().len() == owner_keys.len()
+            && invite_keys.iter().all(|key| query_key(key)) && invite_keys.iter().collect::<std::collections::BTreeSet<_>>().len() == invite_keys.len()
+            && methods.iter().collect::<std::collections::BTreeSet<_>>().len() == methods.len()
+            && capability.is_valid()
+    }
+}
 
 #[derive(Deserialize)]
 struct PluginRegistry { version: u16, plugins: Vec<PluginDefinition> }
@@ -109,14 +170,137 @@ fn definitions() -> &'static [PluginDefinition] {
         for plugin in &registry.plugins {
             assert!(!plugin.id.is_empty() && plugin.id.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-') && ids.insert(&plugin.id));
             assert!(!plugin.name.is_empty() && !plugin.command_namespace.is_empty());
+            assert!((1..=20).contains(&plugin.max_toolbar_items), "invalid plugin toolbar item limit");
+            let mut performance_metrics = std::collections::BTreeSet::new();
+            assert!(plugin.performance_metrics.len() <= 16 && plugin.performance_metrics.iter().all(|metric|
+                valid_performance_metric(metric) && performance_metrics.insert(metric)), "invalid plugin performance metric grant");
             assert!(plugin.entry.starts_with("plugins/") && plugin.entry.ends_with("/ui/index.html") && !plugin.entry.contains(".."));
+            if let Some(entry) = &plugin.remote_host_entry {
+                assert!(entry.starts_with("plugins/") && entry.ends_with("/ui/remote.html") && !entry.contains(".."));
+            }
             let mut capabilities = std::collections::BTreeSet::new();
             for capability in &plugin.remote_capabilities {
                 assert!(capability.is_valid() && capabilities.insert(&capability.id));
             }
+            for (capability_id, profile) in &plugin.remote_sessions {
+                let capability = plugin.remote_capabilities.iter().find(|capability| capability.id == *capability_id)
+                    .expect("remote session profile capability must be declared");
+                assert!(profile.is_valid(capability), "invalid trusted remote session profile");
+            }
+            for (capability_id, projections) in &plugin.remote_projection_grants {
+                assert!(plugin.remote_capabilities.iter().any(|capability| &capability.id == capability_id));
+                assert!(!projections.is_empty());
+                let mut unique = std::collections::BTreeSet::new();
+                assert!(projections.iter().all(|projection| (plugin.data_projections.contains(projection) || plugin.remote_projection_passthrough.contains(projection))
+                    && !projection.is_empty() && projection.len() <= 80
+                    && projection.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'_' | b'-' | b'.'))
+                    && unique.insert(projection)));
+            }
+            let mut passthrough_unique = std::collections::BTreeSet::new();
+            assert!(plugin.remote_projection_passthrough.iter().all(|projection| {
+                !projection.is_empty() && projection.len() <= 80
+                    && projection.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'_' | b'-' | b'.'))
+                    && passthrough_unique.insert(projection)
+                    && plugin.remote_projection_grants.values().any(|grants| grants.contains(projection))
+            }));
+            for (dataset_id, grant) in &plugin.typed_data_grants {
+                assert!(grant.is_valid(dataset_id), "invalid trusted typed-data grant");
+            }
+            for (dataset_id, grant) in &plugin.legacy_data_grants {
+                assert!(grant.is_valid(dataset_id), "invalid trusted legacy data export grant");
+            }
+            for (object_type, grant) in &plugin.object_grants {
+                assert!(grant.validate_for(object_type).is_ok(), "invalid trusted typed-object grant");
+            }
+            for (scope_type, grant) in &plugin.scope_grants {
+                assert!(grant.validate_for(scope_type, &plugin.object_grants).is_ok(), "invalid trusted typed-object scope grant");
+            }
+            let mut local_call_methods = std::collections::BTreeSet::new();
+            assert!(plugin.local_calls.len() <= 128 && plugin.local_calls.iter().all(|method| {
+                !method.is_empty() && method.len() <= 96
+                    && method.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'_' | b'-' | b'.'))
+                    && local_call_methods.insert(method)
+            }), "invalid trusted local-call grant");
         }
         registry
     }).plugins
+}
+
+/// Returns a trusted built-in plugin asset path for the generic remote host.
+/// The path comes only from the packaged plugin registry, never from IPC data.
+pub(crate) fn remote_host_entry(plugin_id: &str) -> Option<String> {
+    definitions().iter().find(|plugin| plugin.id == plugin_id).and_then(|plugin| plugin.remote_host_entry.clone())
+}
+
+/// A packaged, versioned host-session contract. It supplies only transport
+/// lifecycle and link shape; application payloads stay opaque to Rust.
+pub(crate) fn remote_session_profile(plugin_id: &str, capability_id: &str) -> Option<RemoteSessionProfile> {
+    let plugin = definitions().iter().find(|plugin| plugin.id == plugin_id)?;
+    let capability = plugin.remote_capabilities.iter().find(|capability| capability.id == capability_id)?;
+    let profile = plugin.remote_sessions.get(capability_id)?;
+    profile.is_valid(capability).then(|| profile.clone())
+}
+
+/// Exact capability descriptors are grants from the packaged built-in plugin registry.
+pub(crate) fn remote_capability(plugin_id: &str, capability_id: &str) -> Option<crate::remote_protocol::RemoteCapability> {
+    definitions().iter().find(|plugin| plugin.id == plugin_id)?
+        .remote_capabilities.iter().find(|capability| capability.id == capability_id && capability.is_valid()).cloned()
+}
+
+/// A remote host remains bound to the exact built-in plugin instance that
+/// started it. Suspended tabs retain their instance; failed or replaced ones
+/// lose authority immediately.
+pub(crate) fn remote_owner_instance_alive(app: &tauri::AppHandle, plugin_id: &str, instance_id: &str) -> bool {
+    let host = app.state::<PluginHost>();
+    let alive = host.0.lock().unwrap().current.as_ref().is_some_and(|instance| {
+        instance.id == instance_id && instance.plugin_id == plugin_id && instance.failed.is_none()
+    });
+    alive
+}
+
+fn attach_remote_owner(payload: &Value, instance_id: &str) -> Result<Value, &'static str> {
+    let mut payload = payload.clone();
+    let object = payload.as_object_mut().ok_or("remote_forbidden")?;
+    object.insert("__hostOwnerInstanceId".into(), Value::String(instance_id.to_owned()));
+    Ok(payload)
+}
+
+/// Enforces descriptor-scoped projection grants and generic resource limits
+/// before a bootstrap enters the relay. App projections marked passthrough are
+/// already produced and validated by their trusted TypeScript adapter.
+pub(crate) fn prepare_remote_bootstrap(plugin_id: &str, capability_id: &str, payload: &Value) -> Result<Value, &'static str> {
+    let plugin = definitions().iter().find(|plugin| plugin.id == plugin_id).ok_or("remote_forbidden")?;
+    let bootstrap = payload.get("bootstrap").filter(|value| value.is_object()).ok_or("remote_match_invalid")?;
+    let mut sanitized = bootstrap.clone();
+    if let Some(projections) = bootstrap.get("projections") {
+        let values = projections.as_array().ok_or("projection_denied")?;
+        let allowed = plugin.remote_projection_grants.get(capability_id).map(Vec::as_slice).unwrap_or(&[]);
+        let mut seen = std::collections::BTreeSet::new();
+        let mut output = Vec::with_capacity(values.len());
+        let mut declared = Vec::with_capacity(values.len());
+        for projection in values {
+            let object = projection.as_object().filter(|object| object.len() == 2 && object.contains_key("id") && object.contains_key("value")).ok_or("projection_denied")?;
+            let id = object.get("id").and_then(Value::as_str).ok_or("projection_denied")?;
+            if !allowed.iter().any(|grant| grant == id) || !seen.insert(id.to_owned()) { return Err("projection_denied"); }
+            declared.push((id, object.get("value").ok_or("projection_denied")?));
+        }
+        for (id, candidate) in declared {
+            let value = if plugin.remote_projection_passthrough.iter().any(|projection| projection == id) {
+                // The trusted TypeScript application adapter owns this payload's
+                // business contract. Rust enforces descriptor grant and overall
+                // bootstrap bounds, then treats the projection as opaque.
+                if !candidate.is_object() { return Err("projection_denied"); }
+                candidate.clone()
+            } else {
+                crate::plugin_projections::prepare_remote_projection(plugin_id, id, candidate)?
+            };
+            output.push(serde_json::json!({"id":id,"value":value}));
+        }
+        sanitized["projections"] = Value::Array(output);
+    }
+    let bytes = serde_json::to_vec(&sanitized).map_err(|_| "remote_match_invalid")?;
+    if bytes.len() > 256 * 1024 { return Err("remote_match_too_large"); }
+    Ok(sanitized)
 }
 
 /// Linux WebKitGTK: `.incognito(true)` makes wry ignore the shared WebContext
@@ -272,11 +456,9 @@ fn persist_diagnostics(instance: &Instance) {
     }
 }
 
-fn valid_tools(namespace: &str, items: &[Tool]) -> bool {
+fn valid_tools(namespace: &str, max_items: usize, items: &[Tool]) -> bool {
     let mut ids = std::collections::BTreeSet::new();
-    // City also publishes the mecha entry; keep the previous bound for other namespaces.
-    let limit = if namespace == "city" { 11 } else { 10 };
-    items.len() <= limit && items.iter().all(|item| {
+    items.len() <= max_items && items.iter().all(|item| {
         !item.id.is_empty() && item.id.len() <= 64 && ids.insert(&item.id)
             && item.command_id.starts_with(&format!("{namespace}.")) && item.command_id.len() <= 64
             && !item.label.is_empty() && item.label.len() <= 100
@@ -325,139 +507,114 @@ fn notify_host(app: &tauri::AppHandle) {
     }
 }
 
-/// PluginHost → City: shared entity channel. Same CustomEvent hook as
-/// plugin_command / plugin_invalidate. Keep the name in lockstep with
-/// `agent_vitals_runtime::query::city_building::ENTITY_CHANGED_EVENT`.
-pub(crate) fn entity_event_script(payload: &serde_json::Value) -> String {
-    let channel = agent_vitals_runtime::query::city_building::ENTITY_CHANGED_EVENT;
-    format!("window.dispatchEvent(new CustomEvent('{channel}', {{detail: {payload}}}));")
-}
+const HOST_EVENT_MAX_BYTES: usize = 64 * 1024;
+const HOST_EVENT_DEDUPE_CAPACITY: usize = 256;
+static HOST_EVENTS_DELIVERED: OnceLock<Mutex<std::collections::VecDeque<String>>> = OnceLock::new();
+static HOST_EVENT_CURSORS: OnceLock<Mutex<std::collections::BTreeMap<String, (String, i64)>>> = OnceLock::new();
 
-/// PluginHost → City: squad IM envelope (v:1). Same host.sock, different event.
-pub(crate) fn squad_event_script(payload: &serde_json::Value) -> String {
-    let channel = agent_vitals_runtime::query::city_im::SQUAD_EVENT;
-    format!("window.dispatchEvent(new CustomEvent('{channel}', {{detail: {payload}}}));")
-}
-
-static ENTITY_DELIVERED: OnceLock<Mutex<String>> = OnceLock::new();
-static SQUAD_DELIVERED: OnceLock<Mutex<String>> = OnceLock::new();
-static ENTITY_BRIDGE: OnceLock<()> = OnceLock::new();
-
-fn subscriber_view_id(app: &tauri::AppHandle, event: &str) -> Option<String> {
+fn subscriber_view(app: &tauri::AppHandle, event: &str) -> Option<(String, String)> {
     let host = app.state::<PluginHost>();
     let guard = host.0.lock().unwrap();
     let instance = guard.current.as_ref()?;
     if !instance.ready || instance.failed.is_some() || instance.suspended { return None; }
     let subscribed = definitions().iter().find(|plugin| plugin.id == instance.plugin_id)
         .is_some_and(|plugin| plugin.host_events.iter().any(|name| name == event));
-    if subscribed { Some(instance.id.clone()) } else { None }
+    if subscribed { Some((instance.id.clone(), instance.plugin_id.clone())) } else { None }
 }
 
-fn deliver_entity_event(app: &tauri::AppHandle, payload: &serde_json::Value) -> bool {
-    use agent_vitals_runtime::query::city_building::{entity_event_id, is_entity_changed};
-    if !is_entity_changed(payload) { return false; }
-    let Some(event_id) = entity_event_id(payload) else { return false; };
-    {
-        let delivered = ENTITY_DELIVERED.get_or_init(|| Mutex::new(String::new())).lock().unwrap();
-        if delivered.as_str() == event_id { return true; }
-    }
-    let Some(id) = subscriber_view_id(app, "building") else { return false; };
+fn deliver_host_payload(app: &tauri::AppHandle, expected_plugin_id: &str, payload: &serde_json::Value) -> bool {
+    if !payload.is_object() { return false; }
+    let envelope = serde_json::json!({"version":1,"source":"host","payload":payload});
+    let Ok(bytes) = serde_json::to_vec(&envelope) else { return false; };
+    if bytes.len() > HOST_EVENT_MAX_BYTES { return false; }
+    let digest = {
+        use sha2::Digest;
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(expected_plugin_id.as_bytes());
+        hasher.update([0]);
+        hasher.update(&bytes);
+        format!("{:x}", hasher.finalize())
+    };
+    let Some((id, plugin_id)) = subscriber_view(app, "plugin.event") else { return false; };
+    if plugin_id != expected_plugin_id { return false; }
     let Some(view) = app.get_webview(&id) else { return false; };
-    if view.eval(entity_event_script(payload)).is_err() { return false; }
-    *ENTITY_DELIVERED.get_or_init(|| Mutex::new(String::new())).lock().unwrap() = event_id.to_string();
-    let kind = payload.get("entity_kind").and_then(Value::as_str).unwrap_or("entity");
-    agent_vitals_runtime::logging::log_info("plugin_host", &format!("{kind} event {event_id}"));
+    let delivered = HOST_EVENTS_DELIVERED.get_or_init(|| Mutex::new(std::collections::VecDeque::new()));
+    let mut delivered = delivered.lock().unwrap();
+    if delivered.iter().any(|previous| previous == &digest) { return true; }
+    let Ok(encoded_envelope) = serde_json::to_string(&envelope) else { return false; };
+    let Ok(js_string) = serde_json::to_string(&encoded_envelope) else { return false; };
+    let script = format!("window.dispatchEvent(new CustomEvent('__AV_PLUGIN_EVENT__', {{detail: JSON.parse({js_string})}}));");
+    if view.eval(script).is_err() { return false; }
+    delivered.push_back(digest);
+    if delivered.len() > HOST_EVENT_DEDUPE_CAPACITY { delivered.pop_front(); }
+    agent_vitals_runtime::logging::log_info("plugin_host", "generic plugin event delivered");
     true
 }
 
-fn deliver_squad_event(app: &tauri::AppHandle, payload: &serde_json::Value) -> bool {
-    use agent_vitals_runtime::query::city_im::{envelope_id, is_squad_envelope};
-    if !is_squad_envelope(payload) { return false; }
-    let Some(event_id) = envelope_id(payload) else { return false; };
-    {
-        let delivered = SQUAD_DELIVERED.get_or_init(|| Mutex::new(String::new())).lock().unwrap();
-        if delivered.as_str() == event_id { return true; }
-    }
-    let Some(id) = subscriber_view_id(app, "squad") else { return false; };
-    let Some(view) = app.get_webview(&id) else { return false; };
-    if view.eval(squad_event_script(payload)).is_err() { return false; }
-    *SQUAD_DELIVERED.get_or_init(|| Mutex::new(String::new())).lock().unwrap() = event_id.to_string();
-    let kind = payload.get("kind").and_then(Value::as_str).unwrap_or("im");
-    agent_vitals_runtime::logging::log_info("plugin_host", &format!("squad {kind} {event_id}"));
-    true
-}
-
-fn deliver_host_payload(app: &tauri::AppHandle, payload: &serde_json::Value) -> bool {
-    if deliver_entity_event(app, payload) { return true; }
-    deliver_squad_event(app, payload)
-}
-
-fn poll_building_mailbox(app: &tauri::AppHandle) {
+/// Poll the generic plugin-scoped local event port. A new WebView instance
+/// starts at the high-water mark and never replays another instance's queue.
+fn poll_plugin_event_queue(app: &tauri::AppHandle) {
+    let Some((instance_id, plugin_id)) = subscriber_view(app, "plugin.event") else { return; };
     let home = crate::overview::data_home();
-    if let Some(payload) = agent_vitals_runtime::query::city_building::read_mailbox(&home) {
-        let _ = deliver_entity_event(app, &payload);
+    let cursors = HOST_EVENT_CURSORS.get_or_init(|| Mutex::new(std::collections::BTreeMap::new()));
+    let mut cursors = cursors.lock().unwrap();
+    let cursor = cursors.entry(plugin_id.clone()).or_insert_with(|| {
+        (instance_id.clone(), agent_vitals_runtime::query::plugin_events::latest_cursor(&home, &plugin_id).unwrap_or(0))
+    });
+    if cursor.0 != instance_id {
+        cursor.0 = instance_id.clone();
+        cursor.1 = agent_vitals_runtime::query::plugin_events::latest_cursor(&home, &plugin_id).unwrap_or(cursor.1);
     }
-    // Preview / reject live on edit.json so persist notify.json is never overwritten.
-    if let Some(payload) = agent_vitals_runtime::query::city_building::read_edit_mailbox(&home) {
-        let _ = deliver_entity_event(app, &payload);
-    }
-    // Squad IM is a third mailbox: never overwrite persist or edit.
-    if let Some(payload) = agent_vitals_runtime::query::city_im::read_squad_mailbox(&home) {
-        let _ = deliver_squad_event(app, &payload);
+    let Ok(events) = agent_vitals_runtime::query::plugin_events::page_after(&home, &plugin_id, cursor.1, 64) else { return; };
+    for event in events {
+        if !deliver_host_payload(app, &plugin_id, &event.payload) { break; }
+        cursor.1 = event.sequence;
     }
 }
 
-fn start_building_bridge(app: &tauri::AppHandle) {
-    if ENTITY_BRIDGE.set(()).is_err() { return; }
-    #[cfg(unix)]
-    {
-        use std::io::{BufRead, BufReader};
-        use std::os::unix::fs::PermissionsExt;
-        use std::os::unix::net::UnixListener;
-        let app = app.clone();
-        std::thread::spawn(move || {
-            let home = crate::overview::data_home();
-            let dir = agent_vitals_runtime::query::city_building::store_dir(&home);
-            let _ = std::fs::create_dir_all(&dir);
-            let sock = agent_vitals_runtime::query::city_building::socket_path(&home);
-            let _ = std::fs::remove_file(&sock);
-            match UnixListener::bind(&sock) {
-                Ok(listener) => {
-                    let _ = std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600));
-                    agent_vitals_runtime::logging::log_info("plugin_host", "city building host.sock listening");
-                    for stream in listener.incoming() {
-                        let Ok(stream) = stream else { continue; };
-                        let mut line = String::new();
-                        if BufReader::new(stream).read_line(&mut line).is_err() { continue; }
-                        let Ok(payload) = serde_json::from_str::<Value>(line.trim()) else { continue; };
-                        let _ = deliver_host_payload(&app, &payload);
-                    }
-                }
-                Err(error) => {
-                    agent_vitals_runtime::logging::log_warn("plugin_host", &format!("city building socket: {error}"));
+/// Deliver only descriptor-authorized pending local calls to the current
+/// plugin instance. The request store and event envelope are app-neutral.
+fn poll_plugin_call_queue(app: &tauri::AppHandle) {
+    let Some((instance_id, plugin_id)) = subscriber_view(app, "plugin.event") else { return; };
+    let Some(definition) = definitions().iter().find(|plugin| plugin.id == plugin_id) else { return; };
+    if definition.local_calls.is_empty() { return; }
+    let home = crate::overview::data_home();
+    let _ = agent_vitals_runtime::query::plugin_calls::release_orphaned_claims(&home, &plugin_id, &instance_id);
+    let Ok(calls) = agent_vitals_runtime::query::plugin_calls::claim_pending(
+        &home, &plugin_id, &instance_id, &definition.local_calls, 8,
+    ) else { return; };
+    for (index, call) in calls.iter().enumerate() {
+        if !deliver_host_payload(app, &plugin_id, &json!({"kind":"plugin.call.request", "call":call})) {
+            for pending in &calls[index..] {
+                if let Some(call_id) = pending["callId"].as_str() {
+                    let _ = agent_vitals_runtime::query::plugin_calls::release_claim(&home, &plugin_id, &instance_id, call_id);
                 }
             }
-        });
+            break;
+        }
     }
-    #[cfg(not(unix))]
-    { let _ = app; }
 }
 
 fn start_watchdog(app: &tauri::AppHandle, state: &PluginHost) {
     let mut host = state.0.lock().unwrap();
     if host.watchdog_started { return; }
     host.watchdog_started = true;
-    start_building_bridge(app);
     let app = app.clone();
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(500));
-        let changed = {
+        let faulted_instance = {
             let state = app.state::<PluginHost>();
             let mut host = state.0.lock().unwrap();
-            host.current.as_mut().is_some_and(refresh_fault)
+            if let Some(instance) = host.current.as_mut() {
+                if refresh_fault(instance) { Some(instance.id.clone()) } else { None }
+            } else { None }
         };
-        if changed { notify_host(&app); }
-        poll_building_mailbox(&app);
+        if let Some(instance_id) = faulted_instance {
+            crate::remote_gateway::close_sessions_for_instance(&app, &instance_id);
+            notify_host(&app);
+        }
+        poll_plugin_event_queue(&app);
+        poll_plugin_call_queue(&app);
     });
 }
 
@@ -533,15 +690,18 @@ pub async fn plugin_open(app: tauri::AppHandle, webview: Webview, state: tauri::
     }
     if bounds_only { return Err("plugin_instance_unavailable".into()); }
     let old = state.0.lock().unwrap().current.take();
-    if let Some(old) = old { if let Some(view) = app.get_webview(&old.id) {
-        agent_vitals_runtime::logging::log_warn("plugin_host", &format!("view.close() [replace] id={}", old.id));
-        let _ = view.close();
-    } }
+    if let Some(old) = old {
+        crate::remote_gateway::close_sessions_for_instance(&app, &old.id);
+        if let Some(view) = app.get_webview(&old.id) {
+            agent_vitals_runtime::logging::log_warn("plugin_host", &format!("view.close() [replace] id={}", old.id));
+            let _ = view.close();
+        }
+    }
     let id = {
         let mut host = state.0.lock().unwrap();
         host.generation += 1;
         let id = format!("plugin-{}-{}", definition.id, host.generation);
-        let mut current = Instance { id: id.clone(), plugin_id: definition.id.clone(), command_namespace: definition.command_namespace.clone(), started: Instant::now(), pulse: Instant::now(), ready: false, suspended: false,
+        let mut current = Instance { id: id.clone(), plugin_id: definition.id.clone(), command_namespace: definition.command_namespace.clone(), max_toolbar_items: definition.max_toolbar_items, performance_metrics: definition.performance_metrics.clone(), started: Instant::now(), pulse: Instant::now(), ready: false, suspended: false,
             failed: None, revision: 0, items: Vec::new(), sequence: 0, pending: None, in_flight: 0, busy_until: None, events: Vec::new() };
         note(&mut current, "create_started");
         host.current = Some(current);
@@ -688,10 +848,13 @@ pub async fn plugin_close(app: tauri::AppHandle, webview: Webview, state: tauri:
         let mut host = state.0.lock().unwrap();
         if host.current.as_ref().is_some_and(|i| i.id == instance_id) { host.current.take() } else { None }
     };
-    if let Some(old) = old { if let Some(view) = app.get_webview(&old.id) {
-        agent_vitals_runtime::logging::log_warn("plugin_host", &format!("view.close() [plugin_close] id={}", old.id));
-        view.close().map_err(|_| "plugin_close_failed")?;
-    } }
+    if let Some(old) = old {
+        crate::remote_gateway::close_sessions_for_instance(&app, &old.id);
+        if let Some(view) = app.get_webview(&old.id) {
+            agent_vitals_runtime::logging::log_warn("plugin_host", &format!("view.close() [plugin_close] id={}", old.id));
+            view.close().map_err(|_| "plugin_close_failed")?;
+        }
+    }
     Ok(())
 }
 
@@ -707,8 +870,7 @@ pub fn plugin_snapshot(webview: Webview, state: tauri::State<'_, PluginHost>) ->
 
 #[tauri::command]
 pub fn plugin_message(app: tauri::AppHandle, webview: Webview, state: tauri::State<'_, PluginHost>, message: Value) -> Result<(), String> {
-    let changed = message["type"] != "heartbeat" && message["type"] != "performance.city"
-        && message["type"] != "performance.city_scene";
+    let changed = message["type"] != "heartbeat" && message["type"] != "plugin.performance";
     let mut host = state.0.lock().unwrap();
     let i = host.current.as_mut().ok_or("plugin_instance_unavailable")?;
     let result = apply_message(i, webview.label(), message);
@@ -742,7 +904,7 @@ fn apply_message(i: &mut Instance, sender: &str, message: Value) -> Result<(), S
             let revision = message["revision"].as_u64().ok_or("plugin_revision_invalid")?;
             if revision <= i.revision { return Err("plugin_revision_stale".into()); }
             let items: Vec<Tool> = serde_json::from_value(message["items"].clone()).map_err(|_| "plugin_toolbar_invalid")?;
-            if !valid_tools(&i.command_namespace, &items) { return Err("plugin_toolbar_invalid".into()); }
+            if !valid_tools(&i.command_namespace, i.max_toolbar_items, &items) { return Err("plugin_toolbar_invalid".into()); }
             i.items = items; i.revision = revision; i.ready = true; i.pulse = Instant::now();
             note(i, "toolbar_updated");
         }
@@ -752,15 +914,10 @@ fn apply_message(i: &mut Instance, sender: &str, message: Value) -> Result<(), S
             note(i, if message["ok"] == true { "command_succeeded" } else { "command_rejected" });
             i.pending = None;
         }
-        Some("performance.city_scene") if i.plugin_id == "city" => {
-            let fields = city_scene_fields(&message)?;
+        Some("plugin.performance") => {
+            let fields = performance_fields(&i.performance_metrics, &message)?;
             i.pulse = Instant::now();
-            agent_vitals_runtime::logging::log_info("city_perf", &format!("city_scene_stage {fields}"));
-        }
-        Some("performance.city") if i.plugin_id == "city" => {
-            let fields = city_load_fields(&message)?;
-            i.pulse = Instant::now();
-            agent_vitals_runtime::logging::log_info("city_perf", &format!("city_load_finished {fields}"));
+            agent_vitals_runtime::logging::log_info("plugin_performance", &format!("plugin={} {fields}", i.plugin_id));
         }
         Some("runtime.error") => { i.failed = Some("plugin_runtime_error"); note(i, "plugin_runtime_error"); }
         _ => return Err("plugin_message_unavailable".into()),
@@ -799,53 +956,38 @@ pub fn plugin_invalidate(app: tauri::AppHandle, webview: Webview, state: tauri::
         .map_err(|_| "plugin_delivery_failed".into())
 }
 
-fn city_load_fields(message: &Value) -> Result<String, &'static str> {
-    let outcome = match message["outcome"].as_str() {
-        Some("success" | "partial" | "cancelled" | "fallback_v2" | "failed") => message["outcome"].as_str().unwrap(),
-        _ => return Err("plugin_performance_outcome_invalid"),
-    };
-    let elapsed = message["elapsedMs"].as_u64().filter(|ms| *ms <= 86_400_000).ok_or("plugin_performance_value_invalid")?;
-    let attempts = message["attemptCount"].as_u64().filter(|n| (1..=10).contains(n)).ok_or("plugin_performance_value_invalid")?;
-    let retries = message["revisionRetryCount"].as_u64().filter(|n| *n <= 10).ok_or("plugin_performance_value_invalid")?;
-    let fallback = match message["fallbackKind"].as_str() {
-        Some("none" | "v2") => message["fallbackKind"].as_str().unwrap(),
-        _ => return Err("plugin_performance_fallback_invalid"),
-    };
-    let days = message["windowDays"].as_u64().filter(|days| matches!(days, 7 | 30 | 90 | 366)).ok_or("plugin_performance_window_invalid")?;
-    let page = match message.get("pageReturned") {
-        None => "none".to_string(),
-        Some(value) => value.as_u64().filter(|n| *n <= 4000).ok_or("plugin_performance_value_invalid")?.to_string(),
-    };
-    Ok(format!("outcome={outcome} elapsed_ms={elapsed} attempt_count={attempts} revision_retry_count={retries} fallback={fallback} window_days={days} page_returned={page}"))
-}
-
-fn city_scene_fields(message: &Value) -> Result<String, &'static str> {
-    let stage = match message["stage"].as_str() {
-        Some("model" | "planning" | "mounting" | "rendering" | "first_frame") => message["stage"].as_str().unwrap(),
-        _ => return Err("plugin_performance_stage_invalid"),
-    };
-    let outcome = match message["outcome"].as_str() {
-        Some("success" | "failed" | "cancelled") => message["outcome"].as_str().unwrap(),
-        _ => return Err("plugin_performance_outcome_invalid"),
-    };
-    let elapsed = message["elapsedMs"].as_u64().filter(|ms| *ms <= 86_400_000).ok_or("plugin_performance_value_invalid")?;
-    let days = message["windowDays"].as_u64().filter(|days| matches!(days, 7 | 30 | 90 | 366)).ok_or("plugin_performance_window_invalid")?;
-    Ok(format!("stage={stage} outcome={outcome} elapsed_ms={elapsed} window_days={days}"))
-}
-
-fn log_city_ipc_outcome(payload: &Value, started: Instant, outcome: &str) {
-    if payload["projection"] != "city" || payload["version"] != 3 || payload["operation"] != "overview" { return; }
-    let window_days = payload["windowDays"].as_u64().filter(|days| matches!(days, 7 | 30 | 90 | 366));
-    agent_vitals_runtime::logging::log_info("city_perf", &format!(
-        "city_ipc_finished operation=overview window_days={} outcome={outcome} elapsed_ms={}",
-        window_days.map(|days| days.to_string()).unwrap_or_else(|| "unknown".into()),
-        started.elapsed().as_millis(),
-    ));
+fn performance_fields(allowed_metrics: &[String], message: &Value) -> Result<String, &'static str> {
+    let object = message.as_object().filter(|object| object.len() == 7
+        && ["version", "instanceId", "type", "metric", "outcome", "elapsedMs", "dimensions"].iter().all(|key| object.contains_key(*key)))
+        .ok_or("plugin_performance_invalid")?;
+    let metric = object.get("metric").and_then(Value::as_str).filter(|metric| allowed_metrics.iter().any(|allowed| allowed == metric))
+        .ok_or("plugin_performance_denied")?;
+    let outcome = object.get("outcome").and_then(Value::as_str)
+        .filter(|outcome| matches!(*outcome, "success" | "partial" | "failed" | "cancelled"))
+        .ok_or("plugin_performance_invalid")?;
+    let elapsed = object.get("elapsedMs").and_then(Value::as_u64).filter(|ms| *ms <= 86_400_000)
+        .ok_or("plugin_performance_invalid")?;
+    let dimensions = object.get("dimensions").and_then(Value::as_object).filter(|dimensions| dimensions.len() <= 8)
+        .ok_or("plugin_performance_invalid")?;
+    let mut safe_dimensions = serde_json::Map::new();
+    for (key, value) in dimensions {
+        if !valid_performance_metric(key) || key.len() > 32 { return Err("plugin_performance_invalid"); }
+        let safe = match value {
+            Value::Bool(_) => value.clone(),
+            Value::Number(number) if number.as_u64().is_some_and(|n| n <= 86_400_000) => value.clone(),
+            Value::String(text) if !text.is_empty() && text.len() <= 40
+                && text.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-')) => value.clone(),
+            _ => return Err("plugin_performance_invalid"),
+        };
+        safe_dimensions.insert(key.clone(), safe);
+    }
+    let dimensions = serde_json::to_string(&safe_dimensions).map_err(|_| "plugin_performance_invalid")?;
+    Ok(format!("metric={metric} outcome={outcome} elapsed_ms={elapsed} dimensions={dimensions}"))
 }
 
 #[tauri::command]
 pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: tauri::State<'_, PluginHost>, request: PluginRequestV1) -> Result<PluginResponseV1, String> {
-    let (allowed, navigation, state_keys, plugin_id) = {
+    let (allowed, navigation, state_keys, typed_data_grants, legacy_data_grants, object_grants, scope_grants, remote_capabilities, plugin_id) = {
         let host = state.0.lock().unwrap();
         let i = host.current.as_ref().ok_or("plugin_instance_unavailable")?;
         if i.id != webview.label() || i.failed.is_some() || i.suspended || request.instance_id != i.id {
@@ -855,7 +997,7 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
             return Ok(plugin_request_error(request.request_id, code, false));
         }
         let definition = definitions().iter().find(|p| p.id == i.plugin_id).ok_or("plugin_unknown")?;
-        (definition.data_projections.clone(), definition.navigation_targets.clone(), definition.state_keys.clone(), i.plugin_id.clone())
+        (definition.data_projections.clone(), definition.navigation_targets.clone(), definition.state_keys.clone(), definition.typed_data_grants.clone(), definition.legacy_data_grants.clone(), definition.object_grants.clone(), definition.scope_grants.clone(), definition.remote_capabilities.clone(), i.plugin_id.clone())
     };
     begin_activity(&state, &request.instance_id);
     let _activity = ActivityGuard { app: app.clone(), id: request.instance_id.clone() };
@@ -873,14 +1015,22 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
     }
     let method = request.method.clone();
     let payload = request.payload.clone();
-    let payload_for_log = payload.clone();
-    let request_started = Instant::now();
-    if let Some(adapter) = crate::remote_registry::registered(&plugin_id, &method) {
-        let capability = definitions().iter().find(|p| p.id == plugin_id)
-            .and_then(|p| p.remote_capabilities.iter().find(|cap| cap.id == adapter.capability_id));
-        let result = match capability {
-            Some(capability) => adapter.dispatch(&app, capability, &method, &payload).await,
-            None => Err("remote_forbidden"),
+    if let Some(action) = method.strip_prefix("remote.session.") {
+        let scoped_payload = attach_remote_owner(&payload, &request.instance_id).map_err(str::to_owned)?;
+        let capability_id = scoped_payload["capabilityId"].as_str().ok_or_else(|| "remote_forbidden".to_owned())?;
+        let capability = remote_capabilities.iter().find(|capability| capability.id == capability_id && capability.is_valid()).ok_or_else(|| "remote_forbidden".to_owned())?;
+        let adapter = crate::remote_registry::for_capability(&plugin_id, capability);
+        let result = match action {
+            "start" => match adapter {
+                Some(adapter) if adapter.wire_policy == crate::remote_registry::WirePolicy::LegacyTyped => crate::remote_gateway::start(&app, &plugin_id, capability, &scoped_payload).await,
+                _ => crate::remote_gateway::start_generic(&app, &plugin_id, capability, &scoped_payload).await,
+            },
+            "stop" => crate::remote_gateway::stop(&app, &plugin_id, capability, &scoped_payload).await,
+            "invite" => crate::remote_gateway::control(&app, &plugin_id, capability, &scoped_payload, "invite").await,
+            "approve" => crate::remote_gateway::control(&app, &plugin_id, capability, &scoped_payload, "approve").await,
+            "revoke" => crate::remote_gateway::control(&app, &plugin_id, capability, &scoped_payload, "revoke").await,
+            "pending" => crate::remote_gateway::control(&app, &plugin_id, capability, &scoped_payload, "pending").await,
+            _ => return Ok(plugin_request_error(request.request_id, "remote_forbidden", false)),
         };
         let host = state.0.lock().unwrap();
         if !host.current.as_ref().is_some_and(|i| i.id == request.instance_id && i.failed.is_none() && !i.suspended) {
@@ -890,6 +1040,24 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
             Ok(value) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(value), error: None },
             Err(code) => plugin_request_error(request.request_id, code, matches!(code, "remote_unavailable" | "remote_session_unavailable")),
         });
+    }
+    if let Some(definition) = definitions().iter().find(|p| p.id == plugin_id) {
+        if let Some(adapter) = crate::remote_registry::registered(&plugin_id, &definition.remote_capabilities, &method) {
+            let dispatch_payload = attach_remote_owner(&payload, &request.instance_id).map_err(str::to_owned)?;
+            let capability = definition.remote_capabilities.iter().find(|cap| cap.id == adapter.capability_id);
+            let result = match capability {
+                Some(capability) => adapter.dispatch(&app, capability, &method, &dispatch_payload).await,
+                None => Err("remote_forbidden"),
+            };
+            let host = state.0.lock().unwrap();
+            if !host.current.as_ref().is_some_and(|i| i.id == request.instance_id && i.failed.is_none() && !i.suspended) {
+                return Err("plugin_instance_mismatch".into());
+            }
+            return Ok(match result {
+                Ok(value) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(value), error: None },
+                Err(code) => plugin_request_error(request.request_id, code, matches!(code, "remote_unavailable" | "remote_session_unavailable")),
+            });
+        }
     }
     // 通用本地状态端口（游戏模式 §9）：文件操作在阻塞线程执行，响应送达前复验实例。
     if matches!(method.as_str(), "plugin.state.read" | "plugin.state.write") {
@@ -906,6 +1074,61 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
             Err(code) => plugin_request_error(request.request_id, code, matches!(code, "state_unavailable" | "revision_conflict")),
         });
     }
+    if method == "typed-data.read" {
+        let grants = typed_data_grants;
+        let legacy_grants = legacy_data_grants;
+        let typed_data_plugin_id = plugin_id.clone();
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            crate::typed_data::read_authorized_for_plugin(&grants, &legacy_grants,
+                &crate::overview::data_home(), &typed_data_plugin_id, &payload)
+        }).await.map_err(|_| "plugin_query_failed".to_string())?;
+        let host = state.0.lock().unwrap();
+        if !host.current.as_ref().is_some_and(|i| i.id == request.instance_id && i.failed.is_none() && !i.suspended) {
+            return Err("plugin_instance_mismatch".into());
+        }
+        return Ok(match result {
+            Ok(value) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(value), error: None },
+            Err(code) => plugin_request_error(request.request_id, code, matches!(code, "data_unavailable" | "revision_changed" | "legacy_export_changed")),
+        });
+    }
+    if method == "typed-object.request" {
+        let grants = object_grants;
+        let typed_object_plugin_id = plugin_id.clone();
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            crate::typed_objects::request_for_plugin(&grants, &scope_grants, &crate::overview::data_home(), &typed_object_plugin_id, &payload)
+        }).await.map_err(|_| "plugin_query_failed".to_string())?;
+        let host = state.0.lock().unwrap();
+        if !plugin_response_owner_active(&host, &request.instance_id, &plugin_id) {
+            return Err("plugin_instance_mismatch".into());
+        }
+        return Ok(match result {
+            Ok(value) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(value), error: None },
+            Err(code) => plugin_request_error(request.request_id, code,
+                matches!(code, "storage_unavailable" | "revision_conflict" | "idempotency_capacity")),
+        });
+    }
+    if method == "plugin.call.respond" {
+        if payload.as_object().is_none_or(|object| object.len() != 2)
+            || payload["callId"].as_str().is_none()
+            || !payload["response"].is_object() {
+            return Ok(plugin_request_error(request.request_id, "plugin_call_invalid", false));
+        }
+        let call_id = payload["callId"].as_str().unwrap_or_default().to_owned();
+        let response_value = payload["response"].clone();
+        let host = state.0.lock().unwrap();
+        if !plugin_response_owner_active(&host, &request.instance_id, &plugin_id) {
+            return Err("plugin_instance_mismatch".into());
+        }
+        // Keep the instance lock across the bounded local DB response commit:
+        // plugin_open/close cannot replace this owner between validation and delivery.
+        let result = agent_vitals_runtime::query::plugin_calls::respond(
+            &crate::overview::data_home(), &plugin_id, &request.instance_id, &call_id, &response_value,
+        );
+        return Ok(match result {
+            Ok(()) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(json!({"accepted":true})), error: None },
+            Err(code) => plugin_request_error(request.request_id, code, matches!(code, "plugin_call_store_unavailable")),
+        });
+    }
     let result = tauri::async_runtime::spawn_blocking(move || {
         crate::plugin_projections::read_for_plugin(&allowed, &method, &payload, &plugin_id)
     }).await.map_err(|_| "plugin_query_failed".to_string())?;
@@ -916,12 +1139,15 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
     let response = match result {
         Ok(value) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(value), error: None },
         Err(code) => {
-            log_city_ipc_outcome(&payload_for_log, request_started, &format!("error:{code}"));
             plugin_request_error(request.request_id, code, matches!(code, "data_unavailable" | "revision_changed"))
         }
     };
-    if response.ok { log_city_ipc_outcome(&payload_for_log, request_started, "success"); }
     Ok(response)
+}
+
+fn plugin_response_owner_active(host: &HostState, instance_id: &str, plugin_id: &str) -> bool {
+    host.current.as_ref().is_some_and(|instance| instance.id == instance_id && instance.plugin_id == plugin_id
+        && instance.failed.is_none() && !instance.suspended)
 }
 
 #[cfg(test)]
@@ -979,13 +1205,176 @@ mod plugin_request_tests {
             assert_eq!(encoded["error"]["retryable"], false);
         }
     }
+
+    #[test]
+    fn typed_object_response_is_dropped_after_owner_instance_replacement_or_failure() {
+        let mut host = HostState { current: Some(Instance {
+            id:"plugin-city-new".into(),plugin_id:"city".into(),command_namespace:"city".into(),
+            max_toolbar_items:11,
+            performance_metrics:vec!["scene".into(),"data-load".into()],
+            started:Instant::now(),pulse:Instant::now(),ready:true,suspended:false,failed:None,revision:0,
+            items:Vec::new(),sequence:0,pending:None,in_flight:0,busy_until:None,events:Vec::new(),
+        }), ..HostState::default() };
+        assert!(plugin_response_owner_active(&host,"plugin-city-new","city"));
+        assert!(!plugin_response_owner_active(&host,"plugin-city-old","city"));
+        assert!(!plugin_response_owner_active(&host,"plugin-city-new","other-app"));
+        host.current.as_mut().unwrap().failed = Some("plugin_unresponsive");
+        assert!(!plugin_response_owner_active(&host,"plugin-city-new","city"));
+        host.current.as_mut().unwrap().failed = None;
+        host.current.as_mut().unwrap().suspended = true;
+        assert!(!plugin_response_owner_active(&host,"plugin-city-new","city"));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn city_registry_declares_sequential_remote_capability() {
+        let city = definitions().iter().find(|plugin| plugin.id == "city").expect("city plugin");
+        assert_eq!(remote_host_entry("city").as_deref(), Some("plugins/AgentCity.plugin/ui/remote.html"));
+        assert_eq!(remote_host_entry("unregistered").as_deref(), None);
+        let usage = city.typed_data_grants.get("harness-sessions:v1").expect("typed session usage grant");
+        assert!(usage.is_valid("harness-sessions:v1"));
+        let usage_v2 = city.typed_data_grants.get("harness-sessions:v2").expect("typed session page grant");
+        assert!(usage_v2.is_valid("harness-sessions:v2"));
+        let usage_summary = city.typed_data_grants.get("usage-summary:v1").expect("typed usage summary grant");
+        assert!(usage_summary.is_valid("usage-summary:v1"));
+        for dataset in ["harness-sessions:v3", "activity-summary:v1", "model-usage:v1", "time-coverage:v1", "finding-summary:v1",
+            "skill-usage-summary:v1", "workflow-activity-summary:v1", "harness-session-detail:v1",
+            "session-excerpts:v1", "session-cost:v1", "session-source-status:v1"] {
+            assert!(city.typed_data_grants.get(dataset).is_some_and(|grant| grant.is_valid(dataset)),
+                "City must declare a valid generic typed-data grant for {dataset}");
+        }
+        let legacy_export = city.legacy_data_grants.get("city-legacy-store:v1").expect("City legacy asset migration grant");
+        assert!(legacy_export.is_valid("city-legacy-store:v1"));
+        let asset_crosswalk = city.legacy_data_grants.get("city-asset-crosswalk:v1").expect("City legacy asset crosswalk grant");
+        assert!(asset_crosswalk.is_valid("city-asset-crosswalk:v1"));
+        let object = city.object_grants.get("city.building-kit:v1").expect("typed object grant");
+        assert!(object.validate_for("city.building-kit:v1").is_ok());
+        assert!(object.allow_aliases && object.operations.iter().any(|op| op == "readAlias"));
+        assert!(object.operations.contains(&"create".to_owned()) && object.operations.contains(&"commit".to_owned()));
+        let asset = city.object_grants.get("city.asset:v1").expect("generic City asset identity grant");
+        assert!(asset.validate_for("city.asset:v1").is_ok());
+        assert!(asset.allow_aliases && asset.operations.contains(&"attachAlias".to_owned()));
+        assert!(asset.operations.contains(&"list".to_owned()));
+        let scope = city.scope_grants.get("city.save:v1").expect("typed object scope grant");
+        assert!(scope.validate_for("city.save:v1", &city.object_grants).is_ok());
+        assert!(scope.object_types.contains(&"city.asset:v1".to_owned()));
+        assert!(!city.object_grants.contains_key("other.type:v1"));
+        assert!(!usage.fields.iter().any(|field| field.contains("title") || field.contains("log") || field.contains("path")));
+        let capability = city.remote_capabilities.iter().find(|capability| capability.id == "mecha:v4").expect("sequential capability");
+        assert!(crate::mecha_remote_adapter::supports_sequential(capability));
+        assert!(city.remote_projection_grants.get("mecha:v4").is_some_and(|grants| grants.len() == 1 && grants[0] == "city-remote-display:v2"));
+        assert!(city.remote_projection_passthrough.iter().any(|projection| projection == "city-remote-display:v2"));
+        assert!(!city.data_projections.iter().any(|projection| projection == "city-remote-display:v2"), "City display projection must not dispatch through a Rust business handler");
+        let profile = remote_session_profile("city", "mecha:v4").expect("generic session profile");
+        assert_eq!(profile.bootstrap_method, "session.bootstrap");
+        assert_eq!(profile.stop_policy, "freezeSnapshot");
+        let dream = remote_capability("city", "city-dream:v1").expect("Dream snapshot-only capability");
+        assert_eq!(dream.methods, ["dream.snapshot"]);
+        assert!(dream.events.is_empty(), "Dream host does not declare events it never emits");
+        let dream_profile = remote_session_profile("city", "city-dream:v1").expect("Dream lifecycle profile");
+        assert_eq!(dream_profile.bootstrap_method, "dream.bootstrap");
+        assert_eq!(dream_profile.stop_policy, "closeOnly");
+        assert!(dream_profile.approval_method.is_none() && dream_profile.stop_method.is_none());
+        assert_eq!(dream_profile.links.session_param, "publication");
+        assert_eq!(dream_profile.links.invitation_room_param, "room");
+        assert_eq!(dream_profile.links.invitation_id_param, "invite");
+        assert_eq!(dream_profile.links.invitation_secret_param, None, "invite secret must stay in URL fragment");
+        assert_eq!(dream_profile.links.invitation_capability_param.as_deref(), Some("capability"));
+        assert_eq!(city.remote_projection_grants.get("city-dream:v1").map(Vec::as_slice), Some(["city-dream:v1".to_owned()].as_slice()));
+        assert_eq!(city.remote_projection_passthrough, ["city-dream:v1", "city-remote-display:v2"]);
+        assert!(!city.data_projections.iter().any(|projection| projection == "city-dream:v1"), "Dream projection must not dispatch through a Rust business handler");
+    }
+
+    #[test]
+    fn generic_profile_supports_non_mecha_close_only_apps_and_link_shapes() {
+        let capability = crate::remote_protocol::RemoteCapability { id: "island:v1".into(), methods: vec!["island.visit".into()], events: vec!["island.changed".into()] };
+        let profile = RemoteSessionProfile {
+            version: 1,
+            bootstrap_method: "visit.bootstrap".into(),
+            approval_method: None,
+            stop_method: None,
+            stop_policy: "closeOnly".into(),
+            max_bootstrap_bytes: 64 * 1024,
+            links: crate::remote_registry::RemoteLinkSpec {
+                path: "/island".into(), session_param: "island".into(), player_param: "visitor".into(), websocket_param: "socket".into(),
+                access_param: "grant".into(), device_param: "device".into(), owner_secret_param: Some("ownerKey".into()),
+                invitation_room_param: "room".into(), invitation_id_param: "invitation".into(), invitation_secret_param: Some("secret".into()),
+                owner_capability_param: Some("appCapability".into()), invitation_capability_param: Some("appCapability".into()),
+            },
+        };
+        assert!(profile.is_valid(&capability));
+        assert_eq!(profile.links.path, "/island");
+        assert_eq!(profile.stop_policy, "closeOnly");
+        let mut invalid = profile.clone();
+        invalid.links.path = "https://evil.example/island".into();
+        assert!(!invalid.is_valid(&capability));
+        let mut duplicate_method = profile.clone();
+        duplicate_method.approval_method = Some(duplicate_method.bootstrap_method.clone());
+        assert!(!duplicate_method.is_valid(&capability));
+    }
+
+    #[test]
+    fn remote_owner_instance_is_injected_by_the_host_and_overwrites_caller_claims() {
+        let caller = json!({"capabilityId":"mecha:v4","__hostOwnerInstanceId":"forged"});
+        let bound = attach_remote_owner(&caller, "plugin-city-9").unwrap();
+        assert_eq!(bound["__hostOwnerInstanceId"], "plugin-city-9");
+        assert_eq!(caller["__hostOwnerInstanceId"], "forged");
+        assert!(attach_remote_owner(&json!("not-an-object"), "plugin-city-9").is_err());
+    }
+
+    #[test]
+    fn remote_bootstrap_rejects_projections_without_an_exact_capability_grant() {
+        let payload = json!({"bootstrap":{"projections":[{"id":"city-dream:v1","value":{}}]}});
+        assert_eq!(prepare_remote_bootstrap("city", "mecha:v4", &payload), Err("projection_denied"));
+        assert_eq!(prepare_remote_bootstrap("city", "mecha:v1", &payload), Err("projection_denied"));
+        assert_eq!(prepare_remote_bootstrap("unregistered", "mecha:v4", &payload), Err("remote_forbidden"));
+    }
+
+    #[test]
+    fn remote_bootstrap_rejects_duplicate_projection_envelopes() {
+        let payload = json!({"bootstrap":{"projections":[
+            {"id":"city-remote-display:v2","value":{}},
+            {"id":"city-remote-display:v2","value":{}}
+        ]}});
+        assert_eq!(prepare_remote_bootstrap("city", "mecha:v4", &payload), Err("projection_denied"));
+    }
+
+    #[test]
+    fn dream_bootstrap_uses_granted_opaque_object_passthrough() {
+        let projection = json!({
+            "schema": "dream-city-gzip:v1",
+            "plainBytes": 123,
+            "data": "H4sIAAAAAAAA",
+            "adapterMetadata": {"version": 1}
+        });
+        let payload = json!({"bootstrap":{"projections":[{"id":"city-dream:v1","value":projection}]}});
+        let prepared = prepare_remote_bootstrap("city", "city-dream:v1", &payload).unwrap();
+        assert_eq!(prepared["projections"][0]["id"], "city-dream:v1");
+        assert_eq!(prepared["projections"][0]["value"], projection, "Rust must forward the trusted TS adapter envelope without rewriting app fields");
+
+        let non_object = json!({"bootstrap":{"projections":[{"id":"city-dream:v1","value":"opaque scalars are not accepted"}]}});
+        assert_eq!(prepare_remote_bootstrap("city", "city-dream:v1", &non_object), Err("projection_denied"));
+
+        let too_large = json!({"bootstrap":{"projections":[{"id":"city-dream:v1","value":{"blob":"x".repeat(256 * 1024)}}]}});
+        assert_eq!(prepare_remote_bootstrap("city", "city-dream:v1", &too_large), Err("remote_match_too_large"));
+    }
+
+    #[test]
+    fn mecha_city_display_uses_granted_opaque_object_passthrough() {
+        let projection = json!({"schema":"remote-city-display:v2","seed":7,"model":{"opaque":true},"layout":{"opaque":true}});
+        let payload = json!({"bootstrap":{"projections":[{"id":"city-remote-display:v2","value":projection}]}});
+        let prepared = prepare_remote_bootstrap("city", "mecha:v4", &payload).unwrap();
+        assert_eq!(prepared["projections"][0]["value"], projection);
+        assert_eq!(prepare_remote_bootstrap("city", "city-dream:v1", &payload), Err("projection_denied"));
+        let scalar = json!({"bootstrap":{"projections":[{"id":"city-remote-display:v2","value":null}]}});
+        assert_eq!(prepare_remote_bootstrap("city", "mecha:v4", &scalar), Err("projection_denied"));
+    }
+
     fn instance() -> Instance {
-        Instance { id: "plugin-city-2".into(), plugin_id: "city".into(), command_namespace: "city".into(), started: Instant::now(), pulse: Instant::now(), ready: false, suspended: false,
+        Instance { id: "plugin-city-2".into(), plugin_id: "city".into(), command_namespace: "city".into(), max_toolbar_items:11, performance_metrics:vec!["scene".into(),"data-load".into()], started: Instant::now(), pulse: Instant::now(), ready: false, suspended: false,
             failed: None, revision: 0, items: Vec::new(), sequence: 0, pending: None, in_flight: 0, busy_until: None, events: Vec::new() }
     }
     #[test]
@@ -1043,54 +1432,36 @@ mod tests {
         assert!(!refresh_fault(&mut i));
     }
     #[test]
-    fn city_load_performance_message_is_allowlisted() {
+    fn performance_message_uses_descriptor_grants_and_bounded_dimensions() {
         let message = json!({
-            "version":1,"instanceId":"plugin-city-2","type":"performance.city",
-            "outcome":"success","elapsedMs":1234,"attemptCount":1,"revisionRetryCount":0,
-            "fallbackKind":"none","windowDays":366,"pageReturned":500
+            "version":1,"instanceId":"plugin-city-2","type":"plugin.performance",
+            "metric":"data-load","outcome":"success","elapsedMs":1234,
+            "dimensions":{"attempt_count":1,"window_days":366,"fallback":"none","page_returned":500}
         });
-        let fields = city_load_fields(&message).unwrap();
+        let metrics = vec!["data-load".to_owned()];
+        let fields = performance_fields(&metrics, &message).unwrap();
+        assert!(fields.contains("metric=data-load"));
         assert!(fields.contains("outcome=success"));
         assert!(fields.contains("elapsed_ms=1234"));
-        assert!(fields.contains("fallback=none"));
-        assert!(fields.contains("window_days=366"));
-        assert!(fields.contains("page_returned=500"));
-        for key in ["outcome", "fallbackKind", "windowDays", "elapsedMs", "attemptCount", "revisionRetryCount", "pageReturned"] {
-            let mut bad = message.clone();
-            bad[key] = match key {
-                "windowDays" => json!(14),
-                "pageReturned" => json!("secret"),
-                _ => json!("secret"),
-            };
-            assert!(city_load_fields(&bad).is_err(), "{key} must be allowlisted");
-        }
-        let mut omitted = message.clone();
-        omitted.as_object_mut().unwrap().remove("pageReturned");
-        assert!(city_load_fields(&omitted).unwrap().contains("page_returned=none"));
+        let mut ungranted = message.clone();
+        ungranted["metric"] = json!("secret.metric");
+        assert_eq!(performance_fields(&metrics, &ungranted), Err("plugin_performance_denied"));
+        let mut private_value = message.clone();
+        private_value["dimensions"]["path"] = json!("/Users/private/session.json");
+        assert_eq!(performance_fields(&metrics, &private_value), Err("plugin_performance_invalid"));
+        let mut oversized = message.clone();
+        oversized["dimensions"]["large"] = json!(86_400_001_u64);
+        assert_eq!(performance_fields(&metrics, &oversized), Err("plugin_performance_invalid"));
+        let mut too_many = message.clone();
+        too_many["dimensions"] = json!({"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9});
+        assert_eq!(performance_fields(&metrics, &too_many), Err("plugin_performance_invalid"));
     }
 
     #[test]
-    fn city_scene_performance_message_is_allowlisted() {
+    fn generic_performance_message_updates_pulse_for_any_registered_plugin() {
         let message = json!({
-            "version":1,"instanceId":"plugin-city-2","type":"performance.city_scene",
-            "stage":"first_frame","outcome":"success","elapsedMs":5678,"windowDays":366
-        });
-        let fields = city_scene_fields(&message).unwrap();
-        assert!(fields.contains("stage=first_frame"));
-        assert!(fields.contains("elapsed_ms=5678"));
-        assert!(fields.contains("window_days=366"));
-        for key in ["stage", "outcome", "elapsedMs", "windowDays"] {
-            let mut bad = message.clone();
-            bad[key] = if key == "stage" { json!("secret") } else if key == "windowDays" { json!(14) } else { json!("secret") };
-            assert!(city_scene_fields(&bad).is_err(), "{key} must be allowlisted");
-        }
-    }
-
-    #[test]
-    fn city_scene_performance_message_updates_pulse_and_requires_city_plugin() {
-        let message = json!({
-            "version":1,"instanceId":"plugin-city-2","type":"performance.city_scene",
-            "stage":"first_frame","outcome":"success","elapsedMs":5678,"windowDays":366
+            "version":1,"instanceId":"plugin-city-2","type":"plugin.performance",
+            "metric":"scene","outcome":"success","elapsedMs":5678,"dimensions":{"stage":"first_frame"}
         });
         let mut i = instance();
         i.pulse = Instant::now() - Duration::from_secs(6);
@@ -1098,23 +1469,8 @@ mod tests {
         assert!(i.pulse > Instant::now() - Duration::from_secs(1));
         let mut metrics = instance();
         metrics.plugin_id = "metrics".into();
-        assert!(apply_message(&mut metrics, "plugin-city-2", message).is_err());
-    }
-
-    #[test]
-    fn city_load_performance_message_updates_pulse_and_requires_city_plugin() {
-        let message = json!({
-            "version":1,"instanceId":"plugin-city-2","type":"performance.city",
-            "outcome":"success","elapsedMs":1234,"attemptCount":1,"revisionRetryCount":0,
-            "fallbackKind":"none","windowDays":366
-        });
-        let mut i = instance();
-        i.pulse = Instant::now() - Duration::from_secs(6);
-        assert!(apply_message(&mut i, "plugin-city-2", message.clone()).is_ok());
-        assert!(i.pulse > Instant::now() - Duration::from_secs(1));
-        let mut metrics = instance();
-        metrics.plugin_id = "metrics".into();
-        assert!(apply_message(&mut metrics, "plugin-city-2", message).is_err());
+        metrics.performance_metrics = vec!["scene".into()];
+        assert!(apply_message(&mut metrics, "plugin-city-2", message).is_ok());
     }
 
     #[test]
@@ -1136,71 +1492,37 @@ mod tests {
     #[test]
     fn toolbar_rejects_duplicates_and_unknown_selected_value() {
         let mut tools: Vec<Tool> = serde_json::from_value(json!([{"id":"window","commandId":"city.window","label":"Window","kind":"select","enabled":true,"value":"30","options":[{"value":"30","label":"30 days"}]}])).unwrap();
-        assert!(valid_tools("city", &tools));
-        tools.push(tools[0].clone()); assert!(!valid_tools("city", &tools));
-        tools.pop(); tools[0].value = Some("14".into()); assert!(!valid_tools("city", &tools));
+        assert!(valid_tools("city", 11, &tools));
+        tools.push(tools[0].clone()); assert!(!valid_tools("city", 11, &tools));
+        tools.pop(); tools[0].value = Some("14".into()); assert!(!valid_tools("city", 11, &tools));
     }
     #[test]
-    fn city_toolbar_allows_mecha_entry_without_removing_other_tools() {
+    fn descriptor_toolbar_limit_allows_game_entry_without_namespace_special_cases() {
         let tools: Vec<Tool> = (0..11).map(|n| serde_json::from_value(json!({
             "id": format!("tool-{n}"), "commandId": format!("city.tool-{n}"),
             "label": "Tool", "kind": "button", "enabled": true
         })).unwrap()).collect();
-        assert!(valid_tools("city", &tools));
+        assert!(valid_tools("city", 11, &tools));
         let mut too_many = tools.clone();
         too_many.push(serde_json::from_value(json!({"id":"extra","commandId":"city.extra","label":"Extra","kind":"button","enabled":true})).unwrap());
-        assert!(!valid_tools("city", &too_many));
+        assert!(!valid_tools("city", 11, &too_many));
         let other: Vec<Tool> = (0..11).map(|n| serde_json::from_value(json!({
             "id": format!("tool-{n}"), "commandId": format!("metrics.tool-{n}"),
             "label": "Tool", "kind": "button", "enabled": true
         })).unwrap()).collect();
-        assert!(valid_tools("metrics", &other[..10]));
-        assert!(!valid_tools("metrics", &other));
+        assert!(valid_tools("metrics", 10, &other[..10]));
+        assert!(!valid_tools("metrics", 10, &other));
+        assert!(valid_tools("metrics", 11, &other));
     }
     #[test]
     fn namespace_validation_is_not_specific_to_the_first_plugin() {
         let tools: Vec<Tool> = serde_json::from_value(json!([{"id":"refresh","commandId":"metrics.refresh","label":"Refresh","kind":"button","enabled":true}])).unwrap();
-        assert!(valid_tools("metrics", &tools));
-        assert!(!valid_tools("city", &tools));
+        assert!(valid_tools("metrics", 10, &tools));
+        assert!(!valid_tools("city", 10, &tools));
         let registry = definitions();
         assert!(!registry.is_empty());
         let city = registry.iter().find(|plugin| plugin.id == "city").unwrap();
-        assert!(city.host_events.iter().any(|event| event == "building"));
-        assert!(city.host_events.iter().any(|event| event == "squad"));
-    }
-
-    #[test]
-    fn entity_event_script_is_the_shared_city_custom_event_hook() {
-        let payload = json!({
-            "type":"CityEntityChanged","schema_version":1,
-            "entity_kind":"building","entity_id":"ca_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "action":"set","revision":3,"event_id":"be_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            "asset_ref":"ca_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","build_event_id":"be_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","kind":"set"
-        });
-        let script = entity_event_script(&payload);
-        assert!(script.contains("__AV_PLUGIN_ENTITY_CHANGED__"));
-        assert!(!script.contains("__AV_PLUGIN_BUILDING_CHANGED__"));
-        assert!(script.contains("\"entity_kind\":\"building\""));
-        assert!(script.contains("ca_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
-        assert!(script.contains("be_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
-        assert!(script.contains("\"revision\":3"));
-        let road = json!({"type":"CityEntityChanged","entity_kind":"road","entity_id":"rd_1","action":"set","revision":1,"event_id":"ev_1"});
-        assert!(entity_event_script(&road).contains("__AV_PLUGIN_ENTITY_CHANGED__"));
-        let preview = json!({"type":"CityEntityChanged","entity_kind":"building","entity_id":"ca_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","action":"preview","revision":0,"event_id":"ui_preview_1"});
-        assert!(entity_event_script(&preview).contains("\"action\":\"preview\""));
-        let reject = json!({"type":"CityEntityChanged","entity_kind":"building","entity_id":"ca_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","action":"reject","revision":1,"event_id":"ui_reject_1"});
-        assert!(entity_event_script(&reject).contains("\"action\":\"reject\""));
-        let squad = json!({
-            "v":1,"id":"evt_1","ts":1761180000,
-            "session_id":"sr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "agent_id":"nano","agent_name":"Nano","kind":"claim",
-            "payload":{"asset_ref":"ca_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","ttl_sec":90,"expires_at":1761180090}
-        });
-        let script = squad_event_script(&squad);
-        assert!(script.contains("__AV_PLUGIN_SQUAD_EVENT__"));
-        assert!(!script.contains("__AV_PLUGIN_ENTITY_CHANGED__"));
-        assert!(script.contains("\"kind\":\"claim\""));
-        assert_eq!(agent_vitals_runtime::query::city_im::SQUAD_EVENT, "__AV_PLUGIN_SQUAD_EVENT__");
+        assert_eq!(city.host_events, vec!["plugin.event".to_owned()]);
     }
 
     #[test]

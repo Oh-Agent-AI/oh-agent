@@ -150,7 +150,7 @@ pub fn skill_activity(conn: &Connection, from: i64, to: i64, harness: Option<&st
         SUM(CASE WHEN w.event_type='skill_finished' AND w.outcome='succeeded' THEN 1 ELSE 0 END)
         FROM workflow_events w JOIN sessions s ON s.session_key=w.session_key
         WHERE w.event_type IN ('skill_invoked','skill_finished') AND w.event_ts_ms>=?1 AND w.event_ts_ms<?2
-          AND (?3 IS NULL OR s.harness=?3) AND w.capability_id IS NOT NULL
+          AND (?3 IS NULL OR s.harness=?3) AND s.deleted_at_ms IS NULL AND w.capability_id IS NOT NULL
         GROUP BY s.harness,w.capability_id
         ORDER BY 3 DESC,s.harness,w.capability_id LIMIT 201")?;
     let rows=stmt.query_map(params![from,to,harness],|r|Ok(json!({"harness":r.get::<_,String>(0)?,

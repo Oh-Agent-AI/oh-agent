@@ -33,12 +33,16 @@ Object.assign(globalThis, { WebSocketPair: Pair, Response: TestResponse });
 class State {
   values = new Map<string, unknown>();
   sockets: Socket[] = [];
+  alarmAt: number | null = null;
   storage = {
     get: async (key: string) => this.values.get(key),
     put: async (key: string, value: unknown) => { this.values.set(key, structuredClone(value)); },
     delete: async (key: string) => this.values.delete(key),
     deleteAll: async () => { this.values.clear(); },
     list: async ({ prefix }: { prefix: string }) => new Map([...this.values].filter(([key]) => key.startsWith(prefix))),
+    getAlarm: async () => this.alarmAt,
+    setAlarm: async (time: number) => { this.alarmAt = time; },
+    deleteAlarm: async () => { this.alarmAt = null; },
   };
   blockConcurrencyWhile<T>(callback: () => Promise<T>) { return callback(); }
   acceptWebSocket(socket: Socket) { this.sockets.push(socket); }
@@ -169,6 +173,242 @@ test("a second guest cannot take over an approved guest seat", async () => {
   assert.equal((await post(object, "access", { action: "approve", deviceId: joined[0] })).status, 200);
   assert.equal((await post(object, "access", { action: "approve", deviceId: joined[1] })).status, 409);
   assert.equal((await post(object, "access", { action: "pair", deviceId: joined[1] }, "b".repeat(64))).status, 401);
+});
+
+test("dream visitors join one link, route independently and revoke separately", async () => {
+  const cap = { id: "city-dream:v1", methods: ["dream.snapshot"], events: ["dream.closed"] };
+  const dream = { appId: "city", sessionId: "dream-1", capability: cap.id };
+  const { object, state } = await room(cap, dream);
+  const host = await connect(object, "host");
+  const invite = await (await post(object, "access", { action: "invite" })).json() as { inviteId: string; inviteSecret: string };
+  const secrets = ["a".repeat(64), "b".repeat(64)];
+  const ids: string[] = [];
+  for (const deviceSecret of secrets) {
+    const body = { protocol: PROTOCOL, ...dream, inviteId: invite.inviteId, deviceSecret };
+    const join = await post(object, "join", body, invite.inviteSecret);
+    assert.equal(join.status, 200);
+    const { deviceId } = await join.json() as { deviceId: string };
+    ids.push(deviceId);
+    assert.equal((await (await post(object, "join", body, invite.inviteSecret)).json() as { deviceId: string }).deviceId, deviceId);
+    assert.equal((await post(object, "access", { action: "pair", deviceId }, deviceSecret)).status, 401);
+    assert.equal((await post(object, "access", { action: "approve", deviceId })).status, 200);
+  }
+  assert.notEqual(ids[0], ids[1]);
+  const first = await connect(object, "guest", secrets[0], ids[0]);
+  const second = await connect(object, "guest", secrets[1], ids[1]);
+  assert.equal(first.closed, null);
+  for (const socket of [first, second]) {
+    await object.webSocketMessage(socket as never, JSON.stringify({ protocol: PROTOCOL, ...dream, type: "request", requestId: "same", method: "dream.snapshot", payload: {}, peer: { role: "owner", deviceId: "forged" } }));
+  }
+  const routed = host.sent.slice(-2).map((message) => JSON.parse(message));
+  assert.deepEqual(routed.map((message) => message.peer), ids.map((deviceId) => ({ role: "guest", playerId: "guest", deviceId })));
+  const [firstId, secondId] = routed.map((message) => message.requestId);
+  assert.notEqual(firstId, secondId);
+  await post(object, "access", { action: "revoke", deviceId: ids[0] });
+  assert.equal(first.closed, 1008);
+  assert.equal(second.closed, null);
+  for (const [requestId, value] of [[firstId, "private-first"], [secondId, "private-second"]]) {
+    await object.webSocketMessage(host as never, JSON.stringify({ protocol: PROTOCOL, ...dream, type: "response", requestId, result: { ok: true, value } }));
+  }
+  assert.equal(first.sent.some((message) => message.includes("private-first")), false);
+  assert.equal(JSON.parse(second.sent.at(-1)!).result.value, "private-second");
+  assert.equal(JSON.stringify([...state.values.values()]).includes("private-second"), false);
+  await object.webSocketMessage(second as never, JSON.stringify({ protocol: PROTOCOL, ...dream, type: "request", requestId: "wrong", method: "sequential.snapshot", payload: {} }));
+  assert.equal(JSON.parse(second.sent.at(-1)!).result.error.code, "invalid_message");
+});
+
+test("dream delivery rechecks expired access before responses and events", async () => {
+  const cap = { id: "city-dream:v1", methods: ["dream.snapshot"], events: ["dream.closed"] };
+  const dream = { appId: "city", sessionId: "dream-expiry", capability: cap.id };
+  const { object, state } = await room(cap, dream);
+  const host = await connect(object, "host");
+  const invite = await (await post(object, "access", { action: "invite" })).json() as { inviteId: string; inviteSecret: string };
+  const deviceSecret = "c".repeat(64);
+  const { deviceId } = await (await post(object, "join", { protocol: PROTOCOL, ...dream, inviteId: invite.inviteId, deviceSecret }, invite.inviteSecret)).json() as { deviceId: string };
+  await post(object, "access", { action: "approve", deviceId });
+  const visitor = await connect(object, "guest", deviceSecret, deviceId);
+  await object.webSocketMessage(visitor as never, JSON.stringify({ protocol: PROTOCOL, ...dream, type: "request", requestId: "pending", method: "dream.snapshot", payload: {} }));
+  const routedId = JSON.parse(host.sent.at(-1)!).requestId;
+  const access = state.values.get(`access:${deviceId}`) as { expiresAt: number };
+  access.expiresAt = Date.now() - 1;
+  await object.webSocketMessage(host as never, JSON.stringify({ protocol: PROTOCOL, ...dream, type: "response", requestId: routedId, result: { ok: true, value: "expired-secret" } }));
+  assert.equal(visitor.sent.some((message) => message.includes("expired-secret")), false);
+  await object.webSocketMessage(host as never, JSON.stringify({ protocol: PROTOCOL, ...dream, type: "event", event: { type: "dream.closed" } }));
+  assert.equal(visitor.closed, 1008);
+  assert.equal(visitor.sent.some((message) => message.includes("dream.closed")), false);
+});
+
+test("dream room becomes reconnectable orphan and host reconnect renews its lease", async () => {
+  const cap = { id: "city-dream:v1", methods: ["dream.snapshot"], events: ["dream.closed"] };
+  const dream = { appId: "city", sessionId: "dream-orphan", capability: cap.id };
+  const { object, state } = await room(cap, dream);
+  const host = await connect(object, "host");
+  const invite = await (await post(object, "access", { action: "invite" })).json() as { inviteId: string; inviteSecret: string };
+  const deviceSecret = "d".repeat(64);
+  const { deviceId } = await (await post(object, "join", { protocol: PROTOCOL, ...dream, inviteId: invite.inviteId, deviceSecret }, invite.inviteSecret)).json() as { deviceId: string };
+  await post(object, "access", { action: "approve", deviceId });
+  const visitor = await connect(object, "guest", deviceSecret, deviceId);
+
+  host.close(1006);
+  await object.webSocketClose(host as never);
+  const orphan = state.values.get("room:v1") as { hostLeaseExpiresAt: number };
+  assert.ok(orphan.hostLeaseExpiresAt > Date.now());
+  assert.ok(state.alarmAt !== null && state.alarmAt <= orphan.hostLeaseExpiresAt);
+  assert.equal(visitor.closed, 1001);
+  assert.equal((await post(object, "access", { action: "invite" })).status, 200);
+
+  await connect(object, "host");
+  const reconnected = state.values.get("room:v1") as { hostLeaseExpiresAt: number };
+  assert.ok(reconnected.hostLeaseExpiresAt >= orphan.hostLeaseExpiresAt);
+  assert.ok(state.values.has("room:v1"));
+});
+
+test("expired orphan dream room is deleted and cannot be re-registered until cleared", async () => {
+  const cap = { id: "city-dream:v1", methods: ["dream.snapshot"], events: ["dream.closed"] };
+  const dream = { appId: "city", sessionId: "dream-expired", capability: cap.id };
+  const { object, state } = await room(cap, dream);
+  const host = await connect(object, "host");
+  const invite = await (await post(object, "access", { action: "invite" })).json() as { inviteId: string; inviteSecret: string };
+  const deviceSecret = "e".repeat(64);
+  const { deviceId } = await (await post(object, "join", { protocol: PROTOCOL, ...dream, inviteId: invite.inviteId, deviceSecret }, invite.inviteSecret)).json() as { deviceId: string };
+  await post(object, "access", { action: "approve", deviceId });
+  const visitor = await connect(object, "guest", deviceSecret, deviceId);
+
+  host.close(1006);
+  await object.webSocketClose(host as never);
+  const roomRecord = state.values.get("room:v1") as { hostLeaseExpiresAt: number };
+  roomRecord.hostLeaseExpiresAt = Date.now() - 1;
+  state.values.set("room:v1", roomRecord);
+  await object.alarm();
+
+  assert.equal(state.values.has("room:v1"), false);
+  assert.equal(state.values.size, 0);
+  assert.equal(state.alarmAt, null);
+  assert.equal(visitor.closed, 1001);
+  const registered = await object.fetch(new Request("https://relay/v1/rooms/r1/register", { method: "POST", body: JSON.stringify({ protocol: PROTOCOL, ...dream, capability: cap, ownerToken }) }));
+  assert.equal(registered.status, 200);
+});
+
+test("delayed close from replaced dream host preserves new host requests and visitors", async () => {
+  const cap = { id: "city-dream:v1", methods: ["dream.snapshot"], events: [] };
+  const dream = { appId: "city", sessionId: "dream-replaced-host", capability: cap.id };
+  const { object } = await room(cap, dream);
+  const oldHost = await connect(object, "host");
+  const owner = await connect(object, "owner");
+  const newHost = await connect(object, "host");
+  const invite = await (await post(object, "access", { action: "invite" })).json() as { inviteId: string; inviteSecret: string };
+  const deviceSecret = "f".repeat(64);
+  const { deviceId } = await (await post(object, "join", { protocol: PROTOCOL, ...dream, inviteId: invite.inviteId, deviceSecret }, invite.inviteSecret)).json() as { deviceId: string };
+  await post(object, "access", { action: "approve", deviceId });
+  const visitor = await connect(object, "guest", deviceSecret, deviceId);
+  oldHost.close(1000);
+  await object.webSocketMessage(owner as never, JSON.stringify({ protocol: PROTOCOL, ...dream, type: "request", requestId: "new-host-request", method: "dream.snapshot", payload: {} }));
+  const routedId = JSON.parse(newHost.sent.at(-1)!).requestId;
+
+  await object.webSocketClose(oldHost as never);
+  assert.equal(visitor.closed, null);
+  await object.webSocketMessage(newHost as never, JSON.stringify({ protocol: PROTOCOL, ...dream, type: "response", requestId: routedId, result: { ok: true, value: "served" } }));
+  assert.equal(JSON.parse(owner.sent.at(-1)!).result.value, "served");
+});
+
+test("room lease alarm cleans a room even when host close callback never ran", async () => {
+  const { object, state } = await room();
+  const host = await connect(object, "host");
+  host.close(1006);
+  const roomRecord = state.values.get("room:v1") as { hostLeaseExpiresAt: number };
+  roomRecord.hostLeaseExpiresAt = Date.now() - 1;
+  state.values.set("room:v1", roomRecord);
+  await object.alarm();
+  assert.equal(state.values.has("room:v1"), false);
+  assert.equal(state.values.size, 0);
+});
+
+test("dream host disconnect closes visitors so their local scenes can be cleared", async () => {
+  const cap = { id: "city-dream:v1", methods: ["dream.snapshot"], events: [] };
+  const dream = { appId: "city", sessionId: "dream-offline", capability: cap.id };
+  const { object } = await room(cap, dream);
+  const host = await connect(object, "host");
+  const invite = await (await post(object, "access", { action: "invite" })).json() as { inviteId: string; inviteSecret: string };
+  const secret = "d".repeat(64);
+  const { deviceId } = await (await post(object, "join", { protocol: PROTOCOL, ...dream, inviteId: invite.inviteId, deviceSecret: secret }, invite.inviteSecret)).json() as { deviceId: string };
+  await post(object, "access", { action: "approve", deviceId });
+  const visitor = await connect(object, "guest", secret, deviceId);
+  host.close();
+  await object.webSocketClose(host as never);
+  assert.equal(visitor.closed, 1001);
+});
+
+test("dream expiry alarm closes only expired visitors without requiring activity", async () => {
+  const cap = { id: "city-dream:v1", methods: ["dream.snapshot"], events: [] };
+  const dream = { appId: "city", sessionId: "dream-alarm", capability: cap.id };
+  const { object, state } = await room(cap, dream);
+  const invite = await (await post(object, "access", { action: "invite" })).json() as { inviteId: string; inviteSecret: string };
+  const ids: string[] = [];
+  const sockets: Socket[] = [];
+  for (const secret of ["e".repeat(64), "f".repeat(64)]) {
+    const { deviceId } = await (await post(object, "join", { protocol: PROTOCOL, ...dream, inviteId: invite.inviteId, deviceSecret: secret }, invite.inviteSecret)).json() as { deviceId: string };
+    ids.push(deviceId);
+    await post(object, "access", { action: "approve", deviceId });
+    sockets.push(await connect(object, "guest", secret, deviceId));
+  }
+  assert.ok(state.alarmAt && state.alarmAt > Date.now(), "an invitation schedules an expiry alarm");
+  const record = state.values.get(`access:${ids[0]}`) as { expiresAt: number };
+  record.expiresAt = Date.now() - 1;
+  state.alarmAt = null; // Cloudflare consumes the alarm before invoking the handler.
+  await object.alarm();
+  assert.equal(sockets[0].closed, 1008);
+  assert.equal(sockets[1].closed, null);
+  assert.equal(state.values.has(`access:${ids[0]}`), false);
+  assert.equal((await post(object, "access", { action: "pair", deviceId: ids[0] }, "e".repeat(64))).status, 401);
+  assert.ok(state.alarmAt && state.alarmAt > Date.now(), "remaining access schedules the next expiry");
+  await post(object, "close", {});
+  assert.equal(state.alarmAt, null, "closing the room cancels its alarm");
+});
+
+test("generic room alarm removes expired access and unused tickets", async () => {
+  const { object, state } = await room();
+  const invite = await (await post(object, "access", { action: "invite" })).json() as { inviteId: string; inviteSecret: string };
+  const secret = "a".repeat(64);
+  const joined = await post(object, "join", { protocol: PROTOCOL, ...scope, matchId: "m1", inviteId: invite.inviteId, deviceSecret: secret }, invite.inviteSecret);
+  assert.equal(joined.status, 200, await joined.clone().text());
+  const { deviceId } = await joined.json() as { deviceId: string };
+  await post(object, "access", { action: "approve", deviceId });
+  const guest = await connect(object, "guest", secret, deviceId);
+  await post(object, "access", { action: "pair", deviceId }, secret); // Leave one one-time ticket unused.
+  assert.ok(state.alarmAt && state.alarmAt > Date.now());
+  for (const [key, value] of state.values) {
+    if ((key.startsWith("access:") || key.startsWith("ticket:")) && typeof value === "object" && value !== null && "expiresAt" in value) {
+      (value as { expiresAt: number }).expiresAt = Date.now() - 1;
+    }
+  }
+  state.alarmAt = null; // Cloudflare consumes the alarm before invoking the handler.
+  await object.alarm();
+  assert.equal(guest.closed, 1008);
+  assert.equal([...state.values.keys()].some((key) => key.startsWith("access:") || key.startsWith("ticket:")), false);
+  assert.ok(state.alarmAt !== null && state.alarmAt > Date.now(), "the room host lease remains scheduled after access cleanup");
+});
+
+test("closing a dream wins over an invitation waiting for the room lock", async () => {
+  const cap = { id: "city-dream:v1", methods: ["dream.snapshot"], events: [] };
+  const dream = { appId: "city", sessionId: "dream-close-race", capability: cap.id };
+  const { object, state } = await room(cap, dream);
+  let release!: () => void;
+  let observed!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const waiting = new Promise<void>(resolve => { observed = resolve; });
+  const normal = state.blockConcurrencyWhile.bind(state);
+  let first = true;
+  state.blockConcurrencyWhile = async <T>(callback: () => Promise<T>) => {
+    if (first) { first = false; observed(); await gate; }
+    return normal(callback);
+  };
+  const invitation = post(object, "access", { action: "invite" });
+  await waiting;
+  assert.equal((await post(object, "close", {})).status, 200);
+  release();
+  assert.equal((await invitation).status, 409);
+  assert.equal(state.values.size, 0);
+  assert.equal(state.alarmAt, null);
 });
 
 test("synthetic island uses the same room router without crossing scopes", async () => {

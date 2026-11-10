@@ -26,16 +26,62 @@ function validate(value: unknown): Checkpoint {
   if (!validRevision(v.revision) || !(v.raw === null || validRaw(v.raw))) return fail();
   return { revision: v.revision, raw: v.raw } as Checkpoint;
 }
-async function native(op: "read" | "write", args: Record<string, unknown> = {}) {
+const CHECKPOINT_KEY = "mecha-checkpoint:v1";
+type StoredCheckpoint = { schemaVersion: 1; revision: number; raw: string | null };
+async function stateRequest(method: "plugin.state.read" | "plugin.state.write", payload: object) {
   const { invokeHost } = await import("../../host");
+  const instanceId = window.__AV_PLUGIN_INSTANCE__;
+  if (!instanceId) return fail();
   const requestId = `city-checkpoint-${crypto.randomUUID()}`;
-  const response = await invokeHost<import("@agent-vitals/app-sdk").PluginResponseV1<{ revision?: number; raw?: string | null }>>("plugin_request", { request: {
-    version: 1, instanceId: window.__AV_PLUGIN_INSTANCE__, requestId,
-    method: op === "read" ? "plugin.state.read" : "plugin.state.write",
-    payload: { key: "mecha-replays:v1", format: "sequential-checkpoint-v1", op, ...args },
+  const response = await invokeHost<import("@agent-vitals/app-sdk").PluginResponseV1<{ revision: number; value?: unknown }>>("plugin_request", { request: {
+    version: 1, instanceId, requestId, method, payload,
   } });
-  if (response.version !== 1 || response.requestId !== requestId || !response.ok || !response.result) return fail();
+  if (response.version !== 1 || response.requestId !== requestId || !response.ok || !response.result) {
+    throw new Error(response.error?.code ?? "checkpoint_unavailable");
+  }
   return response.result;
+}
+function storedCheckpoint(value: unknown): Checkpoint | null {
+  if (value === null || value === undefined) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return fail();
+  const state = value as Record<string, unknown>;
+  if (Object.keys(state).length !== 3 || state.schemaVersion !== 1 || !validRevision(state.revision)
+      || !(state.raw === null || validRaw(state.raw))) return fail();
+  return { revision: state.revision, raw: state.raw };
+}
+async function genericCheckpoint() {
+  const state = await stateRequest("plugin.state.read", { key: CHECKPOINT_KEY });
+  if (!validRevision(state.revision)) return fail();
+  return { storageRevision: state.revision, checkpoint: storedCheckpoint(state.value) };
+}
+async function readLegacyCheckpoint(): Promise<Checkpoint> {
+  const { invokeHost } = await import("../../host");
+  const instanceId = window.__AV_PLUGIN_INSTANCE__;
+  if (!instanceId) return fail();
+  const requestId = `city-legacy-checkpoint-${crypto.randomUUID()}`;
+  const response = await invokeHost<import("@agent-vitals/app-sdk").PluginResponseV1<{ revision: number; raw: string | null }>>("plugin_request", { request: {
+    version: 1, instanceId, requestId, method: "plugin.state.read",
+    payload: { key: "mecha-replays:v1", format: "sequential-checkpoint-v1", op: "read" },
+  } });
+  if (response.version !== 1 || response.requestId !== requestId || !response.ok || !response.result) {
+    throw new Error(response.error?.code ?? "checkpoint_unavailable");
+  }
+  return validate(response.result);
+}
+async function loadCheckpoint(): Promise<{ storageRevision: number; checkpoint: Checkpoint }> {
+  let current = await genericCheckpoint();
+  if (current.checkpoint) return current as { storageRevision: number; checkpoint: Checkpoint };
+  const legacy = await readLegacyCheckpoint();
+  try {
+    const written = await stateRequest("plugin.state.write", { key: CHECKPOINT_KEY, revision: current.storageRevision,
+      value: { schemaVersion: 1, revision: legacy.revision, raw: legacy.raw } });
+    if (written.revision !== current.storageRevision + 1) return fail();
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== "revision_conflict") throw error;
+  }
+  current = await genericCheckpoint();
+  if (!current.checkpoint) return fail();
+  return current as { storageRevision: number; checkpoint: Checkpoint };
 }
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -75,12 +121,15 @@ export async function checkpointBackend(): Promise<CheckpointBackend> {
   const { embedded } = await import("../../host");
   if (!embedded()) return browserBackend;
   return {
-    async read() { return validate(await native("read")); },
+    async read() { return (await loadCheckpoint()).checkpoint; },
     async write(revision, raw) {
       if (!validRevision(revision) || revision >= Number.MAX_SAFE_INTEGER || !(raw === null || validRaw(raw))) return fail();
-      const result = await native("write", { revision, raw });
-      if (result.revision !== revision + 1) return fail();
-      return result.revision;
+      const current = await loadCheckpoint();
+      if (current.checkpoint.revision !== revision) throw new Error("revision_conflict");
+      const written = await stateRequest("plugin.state.write", { key: CHECKPOINT_KEY, revision: current.storageRevision,
+        value: { schemaVersion: 1, revision: revision + 1, raw } });
+      if (written.revision !== current.storageRevision + 1) return fail();
+      return revision + 1;
     },
   };
 }
@@ -107,7 +156,7 @@ export async function clearSequentialCheckpoint(backend: CheckpointBackend, vers
 /** All writes are verified and CAS-protected. On any failure the durable authority freezes. */
 export function checkpointStore(site: CityMechaSite, opening: { initial: MatchState; placements: DeployPlacement[] }, backend: CheckpointBackend, initialVersion: number, initialMatchRevision: number, enemyPolicy: EnemyPolicy = "baup"): SequentialDurableStore {
   let version = initialVersion, matchRevision = initialMatchRevision;
-  const savedSite = structuredClone(site), savedOpening = structuredClone(opening);
+  const savedSite = structuredClone(site), savedOpening = structuredClone({ initial: opening.initial, placements: opening.placements });
   if (!validRevision(version) || !validRevision(matchRevision)) throw new Error("checkpoint_unavailable");
   return { async commit(expectedRevision, records: readonly SequentialRecord[]) {
     const last = records.at(-1);

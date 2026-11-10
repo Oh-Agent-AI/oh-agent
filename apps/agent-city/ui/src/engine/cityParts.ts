@@ -689,7 +689,9 @@ export class CityParts {
    *  实测（700 模拟会话）：DeepSeek 43 → 56，ZCode 82 → 70，Claude Code 120 → 84，Codex 135 → 90。
    *  曾按「最少 → 最多城区」相对插值：最大城区恒为 90、最小恒为 40，全体同比增长时高度不变，别区增长还会变矮。 */
   districtLandmarkHeight(districtId: string, sessions?: number): number {
-    const own = sessions ?? this.model.districts.find((d) => d.id === districtId)?.sessionCount ?? 0;
+    const district = this.model.districts.find((d) => d.id === districtId);
+    if (sessions === undefined && district?.visualLandmarkHeight !== undefined) return district.visualLandmarkHeight;
+    const own = sessions ?? district?.sessionCount ?? 0;
     const floor = Math.max(30, ...this.model.buildings.map((b) => b.height)) * 1.1;
     return Math.min(90, floor + 0.16 * own);
   }

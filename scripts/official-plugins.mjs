@@ -9,7 +9,12 @@ const ids = new Set();
 for (const plugin of registry.plugins) {
   if (!/^[a-z][a-z0-9-]*$/.test(plugin.id) || ids.has(plugin.id)
     || !/^[a-z][a-z0-9-]*$/.test(plugin.commandNamespace)
+    || !Number.isInteger(plugin.maxToolbarItems ?? 10) || (plugin.maxToolbarItems ?? 10) < 1 || (plugin.maxToolbarItems ?? 10) > 20
+    || !Array.isArray(plugin.performanceMetrics ?? []) || (plugin.performanceMetrics ?? []).length > 16
+    || (plugin.performanceMetrics ?? []).some((metric, index, metrics) => typeof metric !== "string" || !/^[a-z0-9._-]{1,64}$/.test(metric) || metrics.indexOf(metric) !== index)
     || !/^plugins\/[A-Za-z][A-Za-z0-9-]*\.plugin\/ui\/index\.html$/.test(plugin.entry)
+    || (plugin.remoteHostEntry != null && (!/^plugins\/[A-Za-z][A-Za-z0-9-]*\.plugin\/ui\/remote\.html$/.test(plugin.remoteHostEntry)
+      || path.dirname(plugin.remoteHostEntry) !== path.dirname(plugin.entry)))
     || !/^apps\/[a-z0-9-]+\/ui$/.test(plugin.source)) throw new Error("Invalid official plugin descriptor");
   ids.add(plugin.id);
 }
@@ -22,6 +27,10 @@ export function buildOfficialPlugins({ install = false, probe = false, copy = tr
     runNpm(["run", "build", ...(probe ? ["--", "--mode", "debug"] : [])], { cwd, stdio: "inherit" });
     const entry = path.join(cwd, "dist/index.html");
     if (!existsSync(entry)) throw new Error(`Plugin entry missing: ${plugin.id}`);
+    if (plugin.remoteHostEntry) {
+      const remoteHostEntry = path.join(cwd, "dist", path.basename(plugin.remoteHostEntry));
+      if (!existsSync(remoteHostEntry)) throw new Error(`Plugin remote host entry missing: ${plugin.id}`);
+    }
     if (plugin.debugProbeMarker) {
       const assets = path.join(cwd, "dist/assets");
       const hasProbe = readdirSync(assets).filter((file) => file.endsWith(".js"))

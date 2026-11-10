@@ -8,7 +8,7 @@
 
 import * as THREE from "three";
 import type { CityLayout } from "./cityLayout";
-import { hashSeed } from "../cityModel";
+import { hashSeed, type CityModel } from "../cityModel";
 import { activeTheme, groundFor } from "./cityTheme";
 import { roadPaintPlan } from "./cityRoadPaint";
 import { cornerArc, renderRoadEdges, roadJunctionPlan, SIDEWALK_BAND, taperOutline } from "./cityRoadJunctions";
@@ -29,6 +29,11 @@ export function paletteFor(harnessId: string): DistrictPalette {
   // 迁移期兼容：旧事实/旧缓存里的 `plugin:` 前缀折算到现行 `harness:` 命名空间再查表。
   const key = harnessId.startsWith("plugin:") ? `harness:${harnessId.slice("plugin:".length)}` : harnessId;
   return theme.harnesses[key] ?? theme.fallback;
+}
+
+/** Per-model override: remote aliases never change the frozen district colors. */
+export function paletteForDistrict(model: CityModel, districtId: string): DistrictPalette {
+  return model.districts.find(district => district.id === districtId)?.visualPalette ?? paletteFor(districtId);
 }
 
 function canvas2d(width: number, height: number): { canvas: RenderCanvas; ctx: RenderContext2D } {

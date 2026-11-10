@@ -33,10 +33,6 @@ fn plugin_scope_ok(plugin_id: &str) -> bool {
         && bytes.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
 }
 
-/// City projections still mint `app:city:…`. Same resolver, scope `city`.
-pub fn city_session_target(data_home: &Path, handle: &str) -> Result<(String, String), &'static str> {
-    plugin_session_target(data_home, "city", handle)
-}
 fn timestamp(ms: i64) -> Result<String, &'static str> {
     jiff::Timestamp::from_millisecond(ms).map(|t| t.to_string()).map_err(|_| "invalid_window")
 }
@@ -62,7 +58,7 @@ pub(crate) fn clean_excerpts(candidates: &[Value]) -> Vec<Value> {
             if clean.text.trim().is_empty() || !seen.insert(clean.text.clone()) { continue; }
             out.push(json!({"role":role,"text":clean.text,"provenance":if clean.provenance.as_str()=="verbatim" {
                 candidate["provenance"].as_str().unwrap_or("scrubbed")
-            } else { clean.provenance.as_str() },"is_excerpt":true,"scope":"session","excerpt_at":null}));
+            } else { clean.provenance.as_str() },"is_excerpt":true,"scope":"session_lifetime","excerpt_at":null}));
             if out.len()==2 { break; }
         }
     }
@@ -151,7 +147,7 @@ pub fn city_projection(data_home: &Path, days: u16, now: i64) -> Result<Value, &
         let mut session = projected_session(&row,models_by_key.get(key).map(Vec::as_slice).unwrap_or(&[]),&salt,
             identities.contains_key(row["harness"].as_str().unwrap_or("")))?;
         let bucket = buckets.get(key).map(Vec::as_slice).unwrap_or(&[]);
-        let mut cost = super::city_v3::cost_breakdown(bucket,row["tokens"]["total"].as_i64().ok_or("data_unavailable")?)?;
+        let mut cost = super::app_harnesses::session_cost_breakdown(bucket,row["tokens"]["total"].as_i64().ok_or("data_unavailable")?)?;
         if cost["reason"]=="legacy_aggregate_not_priced" { cost["reason"]=json!("legacy-aggregate-not-priced"); }
         session["cost_minor"] = cost["cost_minor"].clone();
         session["cost_breakdown"] = cost["breakdown"].clone();

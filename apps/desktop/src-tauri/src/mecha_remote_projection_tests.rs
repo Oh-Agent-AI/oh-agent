@@ -5,6 +5,35 @@ fn fixture() -> Value {
     serde_json::from_str(include_str!("../tests/remote_gateway_projection_fixture.json")).unwrap()
 }
 
+#[test]
+fn remote_city_layout_district_rejects_findings_and_unknown_fields() {
+    let mut district = json!({
+        "id":"district-0001", "label":"Codex", "center":{}, "radius":1, "terrain":{},
+        "slots":{}, "grounds":{}, "carPaths":[], "river":null, "riverHalfWidth":0,
+        "trees":[], "plaza":{}, "anomaly":null, "sessionCount":1, "landValue":{}, "roads":[]
+    });
+    assert!(crate::city_remote_display_projection::valid_remote_layout_district(&district));
+    district["anomaly"] = json!({"severity":"critical","count":7});
+    assert!(!crate::city_remote_display_projection::valid_remote_layout_district(&district));
+    district["anomaly"] = Value::Null;
+    district["privateExtra"] = json!("unexpected");
+    assert!(!crate::city_remote_display_projection::valid_remote_layout_district(&district));
+}
+
+#[test]
+fn remote_city_layout_causeway_requires_aliased_node_references() {
+    let mut causeway = json!({"fromNode":"entity-000001", "from":{"x":0,"z":0}, "to":{"x":1,"z":1}});
+    assert!(crate::city_remote_display_projection::valid_remote_city_aliases(&causeway));
+    causeway["fromNode"] = json!("host-node-123");
+    assert!(!crate::city_remote_display_projection::valid_remote_city_aliases(&causeway));
+}
+
+#[test]
+fn remote_city_merged_parcel_requires_an_alias() {
+    assert!(crate::city_remote_display_projection::valid_remote_city_aliases(&json!({"mergedWith":"entity-000001"})));
+    assert!(!crate::city_remote_display_projection::valid_remote_city_aliases(&json!({"mergedWith":"private-parcel"})));
+}
+
 fn object_paths(value: &Value, path: &str, paths: &mut Vec<String>) {
     match value {
         Value::Object(object) => {

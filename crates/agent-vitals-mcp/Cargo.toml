@@ -20,6 +20,7 @@ mcp-internal = []
 agent-vitals-ingest = { path = "../agent-vitals-ingest" }
 agent-vitals-trust = { path = "../agent-vitals-trust" }
 agent-vitals-data = { path = "../agent-vitals-data" }
+agent-vitals-query = { path = "../agent-vitals-query" }
 agent-vitals-domain = { path = "../agent-vitals-domain" }
 agent-vitals-harnesses = { path = "../agent-vitals-harnesses", features = ["sources"] }
 rusqlite = { version = "0.31", features = ["bundled"] }

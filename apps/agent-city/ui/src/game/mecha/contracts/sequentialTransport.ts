@@ -26,7 +26,7 @@ export type SequentialSnapshotResult =
   | { ok: true; snapshot: SequentialSnapshot }
   | { ok: false; error: { code: "match_not_found" } };
 
-export type SequentialMethod = "sequential.snapshot" | "sequential.command.submit";
+export type SequentialMethod = "sequential.snapshot" | "sequential.command.submit" | "city.snapshot";
 export type SequentialRequest = {
   protocol: SequentialProtocol;
   type: "request";
@@ -38,7 +38,7 @@ export type SequentialResponse = {
   protocol: SequentialProtocol;
   type: "response";
   requestId: string;
-  result: SequentialSnapshotResult | SequentialCommandResult;
+  result: SequentialSnapshotResult | SequentialCommandResult | { ok: true; scene: unknown };
 };
 
 const snapshotError = (value: unknown): value is { ok: false; error: { code: "match_not_found" } } => {

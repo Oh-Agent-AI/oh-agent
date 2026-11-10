@@ -1,7 +1,7 @@
 /**
  * Session-kit/v1 construction apply path (no renderer).
  *
- * Host events and city:v3 `buildings.overrides` share this reducer so load,
+ * Host events and generic typed-object snapshots share this reducer so load,
  * live push, poll fallback, and replay all agree on: which revision wins,
  * whether to animate, and which parts are visible at a given progress.
  *
@@ -22,9 +22,19 @@ export type KitPart = {
   color?: string;
 };
 
+export type KitParams = {
+  form?: "tower" | "slab" | "block" | "midrise";
+  palette?: string;
+  catalog_id?: string;
+  build_cost?: number;
+  floors?: number;
+  story_height?: number;
+  detail_tier?: 0 | 1 | 2 | "coarse" | "standard" | "detailed";
+};
+
 export type KitModel = {
   kit_version: string;
-  params?: { form?: string; palette?: string };
+  params?: KitParams;
   parts: KitPart[];
 };
 
@@ -48,8 +58,42 @@ export type OverlayDecision = {
   animate: boolean;
 };
 
+function round4(value: number): number { return Math.round(value * 10_000) / 10_000; }
+
+/** Default City building model derived from the session's token volume. */
+export function defaultKitModel(tokens: number): KitModel {
+  const magnitude = Math.max(Math.log10(Math.max(tokens, 1)) - 1, 0);
+  const height = Math.max(2.6, Math.min(48, 0.75 * magnitude ** 2.2));
+  const form = height >= 30 ? "tower" : height >= 14 ? "midrise" : "block";
+  const [width, depth] = form === "tower" ? [3.2, 3.2] : form === "midrise" ? [5.2, 4.4] : [4.6, 4.6];
+  const podium = Math.max(0.6, Math.min(1.2, height * 0.2));
+  const roof = Math.max(0.25, Math.min(0.4, height * 0.08));
+  const shaftHeight = Math.max(0.8, height - podium - roof);
+  const shaftWidth = Math.max(width * 0.86, 1.2);
+  const shaftDepth = Math.max(depth * 0.86, 1.2);
+  const storyHeight = Math.max(2.4, Math.min(4.2, shaftHeight / 2));
+  return {
+    kit_version: "session-kit/v1",
+    params: { form, floors: 2, story_height: round4(storyHeight) },
+    parts: [
+      { id: "podium", kind: "box", role: "structure", at: [0, 0, 0], size: [width, podium, depth] },
+      { id: "shaft", kind: "box", role: "wall", at: [0, podium, 0], size: [shaftWidth, shaftHeight, shaftDepth] },
+      { id: "roof", kind: "box", role: "roof", at: [0, podium + shaftHeight, 0], size: [width, roof, depth] },
+      { id: "door", kind: "box", role: "door", at: [0, 0, depth / 2 + 0.11], size: [1.2, 2, 0.2] },
+      { id: "window", kind: "box", role: "window", at: [0, podium + shaftHeight * 0.35, depth / 2 + 0.085], size: [1.4, 1.2, 0.15] },
+    ],
+  };
+}
+
 const KINDS = new Set<KitKind>(["box", "cylinder", "cone"]);
 const ROLES = new Set<KitRole>(["wall", "trim", "roof", "glass", "structure", "door", "window"]);
+const MODEL_FIELDS = new Set(["kit_version", "params", "parts"]);
+const PARAM_FIELDS = new Set(["form", "palette", "catalog_id", "build_cost", "floors", "story_height", "detail_tier"]);
+const PART_FIELDS = new Set(["id", "kind", "role", "at", "size", "rot", "color"]);
+const LOT_HALF_X = 4;
+const LOT_HALF_Z = 6;
+const MAX_BUILDING_HEIGHT = 48;
+const OVERLAP_EPSILON = 0.02;
 
 export function isKitKind(value: string): value is KitKind {
   return KINDS.has(value as KitKind);
@@ -89,32 +133,82 @@ export function partReveal(progress: number, index: number, partCount: number): 
 export function parseKitPart(raw: unknown): KitPart | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const row = raw as Record<string, unknown>;
+  if (Object.keys(row).some((key) => !PART_FIELDS.has(key))) return null;
+  if (row.id !== undefined && (typeof row.id !== "string" || row.id.length === 0 || row.id.length > 64)) return null;
   if (typeof row.kind !== "string" || !isKitKind(row.kind)) return null;
   if (typeof row.role !== "string" || !isKitRole(row.role)) return null;
   const at = vec3(row.at);
   const size = vec3(row.size);
   if (!at || !size || size.some((n) => n <= 0)) return null;
+  if (size[0] > LOT_HALF_X * 2 + 0.5 || size[2] > LOT_HALF_Z * 2 + 0.5 || size[1] > MAX_BUILDING_HEIGHT) return null;
   const rot = row.rot === undefined ? undefined : vec3(row.rot);
   if (row.rot !== undefined && !rot) return null;
-  const color = typeof row.color === "string" && /^#[0-9a-fA-F]{6}$/.test(row.color) ? row.color : undefined;
-  const id = typeof row.id === "string" && row.id.length > 0 && row.id.length <= 64 ? row.id : undefined;
+  if (row.color !== undefined && (typeof row.color !== "string" || !/^#[0-9a-fA-F]{6}$/.test(row.color))) return null;
+  const color = row.color as string | undefined;
+  const id = row.id as string | undefined;
   return { id, kind: row.kind, role: row.role, at, size, ...(rot ? { rot } : {}), ...(color ? { color } : {}) };
 }
 
 export function parseKitModel(raw: unknown): KitModel | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const row = raw as Record<string, unknown>;
+  if (Object.keys(row).some((key) => !MODEL_FIELDS.has(key))) return null;
   if (row.kit_version !== "session-kit/v1" || !Array.isArray(row.parts) || row.parts.length < 1 || row.parts.length > 64) return null;
+  let params: KitParams | undefined;
+  if (row.params !== undefined) {
+    if (!row.params || typeof row.params !== "object" || Array.isArray(row.params)) return null;
+    const rawParams = row.params as Record<string, unknown>;
+    if (Object.keys(rawParams).some((key) => !PARAM_FIELDS.has(key))) return null;
+    if (rawParams.form !== undefined && !["tower", "slab", "block", "midrise"].includes(String(rawParams.form))) return null;
+    if (rawParams.palette !== undefined && (typeof rawParams.palette !== "string" || !/^#[0-9a-fA-F]{6}$/.test(rawParams.palette))) return null;
+    if (rawParams.catalog_id !== undefined && typeof rawParams.catalog_id !== "string") return null;
+    if (rawParams.build_cost !== undefined && (typeof rawParams.build_cost !== "number" || !Number.isFinite(rawParams.build_cost) || rawParams.build_cost < 0)) return null;
+    if (rawParams.floors !== undefined && (!Number.isSafeInteger(rawParams.floors) || Number(rawParams.floors) < 1)) return null;
+    if (rawParams.story_height !== undefined && (typeof rawParams.story_height !== "number" || !Number.isFinite(rawParams.story_height) || rawParams.story_height <= 0)) return null;
+    if (rawParams.detail_tier !== undefined && !([0, 1, 2, "coarse", "standard", "detailed"] as unknown[]).includes(rawParams.detail_tier)) return null;
+    params = { ...rawParams } as KitParams;
+  }
   const parts: KitPart[] = [];
   for (const item of row.parts) {
     const part = parseKitPart(item);
     if (!part) return null;
     parts.push(part);
   }
-  return { kit_version: "session-kit/v1", parts };
+  const ids = parts.flatMap((part) => part.id ? [part.id] : []);
+  if (new Set(ids).size !== ids.length || !validKitGeometry(parts)) return null;
+  return { kit_version: "session-kit/v1", ...(params ? { params } : {}), parts };
 }
 
-/** Lift a SQLite / city:v3 build_events row onto the shared host envelope. */
+type KitBounds = { min: [number, number, number]; max: [number, number, number] };
+
+function kitPartBounds(part: KitPart): KitBounds {
+  // Match the host validator's conservative rotated footprint approximation.
+  const rotated = !!part.rot?.some((value) => Math.abs(value) > 1e-6);
+  const halfX = rotated ? Math.max(part.size[0], part.size[2]) / 2 : part.size[0] / 2;
+  const halfZ = rotated ? Math.max(part.size[0], part.size[2]) / 2 : part.size[2] / 2;
+  return { min: [part.at[0] - halfX, part.at[1], part.at[2] - halfZ],
+    max: [part.at[0] + halfX, part.at[1] + part.size[1], part.at[2] + halfZ] };
+}
+
+function validKitGeometry(parts: readonly KitPart[]): boolean {
+  const bounds = parts.map(kitPartBounds);
+  for (const box of bounds) {
+    if (box.min[0] < -LOT_HALF_X - OVERLAP_EPSILON || box.max[0] > LOT_HALF_X + OVERLAP_EPSILON
+        || box.min[2] < -LOT_HALF_Z - OVERLAP_EPSILON || box.max[2] > LOT_HALF_Z + OVERLAP_EPSILON
+        || box.min[1] < -OVERLAP_EPSILON || box.max[1] > MAX_BUILDING_HEIGHT + OVERLAP_EPSILON) return false;
+  }
+  for (let left = 0; left < bounds.length; left += 1) {
+    for (let right = left + 1; right < bounds.length; right += 1) {
+      const a = bounds[left]!;
+      const b = bounds[right]!;
+      if ([0, 1, 2].every((axis) => a.min[axis]! < b.max[axis]! - OVERLAP_EPSILON
+          && b.min[axis]! < a.max[axis]! - OVERLAP_EPSILON)) return false;
+    }
+  }
+  return true;
+}
+
+/** Lift a building kit revision change onto the shared host event envelope. */
 export function entityChangedFromBuilding(row: {
   asset_ref: string;
   revision: number;

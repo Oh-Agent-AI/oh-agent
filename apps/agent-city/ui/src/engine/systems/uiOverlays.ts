@@ -7,9 +7,10 @@ import { PLAYABLE_CAR_PREFIX, PLAYABLE_MECHA_NAME, PLAYABLE_PLANE_NAME } from ".
 import { hashSeed, type CityBuilding, type CityModel } from "../../cityModel";
 import type { CityLayout } from "../cityLayout";
 import { decorKindForName } from "../cityDecor";
-import { makeLabelSprite, paletteFor } from "../cityTextures";
+import { makeLabelSprite, paletteForDistrict } from "../cityTextures";
 
 export interface UiOverlayHost {
+  model: CityModel;
   layout: CityLayout;
   group: THREE.Group;
   disposables: Array<{ dispose: () => void }>;
@@ -44,8 +45,8 @@ export function makeGroundRing(host: UiOverlayHost, color: string): THREE.Mesh {
 
 export function buildLabels(host: UiOverlayHost): void {
   for (const district of host.layout.districts) {
-    const palette = paletteFor(district.id);
-    const detail = `${district.sessionCount} sessions`;
+    const palette = paletteForDistrict(host.model, district.id);
+    const detail = host.model.hideSessionLabels ? "" : `${district.sessionCount} sessions`;
     const { texture, aspect } = makeLabelSprite(district.label, detail, palette.accent);
     texture.colorSpace = THREE.SRGBColorSpace;
     const material = new THREE.SpriteMaterial({ map: texture, depthTest: false, transparent: true, sizeAttenuation: false });

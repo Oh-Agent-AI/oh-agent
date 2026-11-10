@@ -2,7 +2,7 @@ import { sessionCostLabel } from "./data/sessionCostLabel";
 import { playableKind } from "./engine/render/playableVehicles";
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { CityModel } from "./cityModel";
-import { readCitySessionDetail, type CityProjectionV1 } from "./data/provider";
+import { readCitySessionDetail, stableAssetRefsForProjection, type CityProjectionV1 } from "./data/provider";
 import { citySeed, randomSeed } from "./data/seed";
 import type { CityEngine, EngineStats } from "./engine/CityEngine";
 import type { CinematicCard, CinematicCut, CinematicPlan } from "./engine/cityCinematic";
@@ -67,7 +67,7 @@ export function useCityExperience(engine: RefObject<CityEngine | null>, projecti
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(3600);
   const [cut, setCut] = useState<CinematicCut>("short");
-  // 背景楼档位（F4）：按本机浏览器存储（与种子不同，不经宿主 city-settings 投影——那需要宿主侧改动，见 SPEC §4 F4 注）。
+  // 背景楼档位（F4）只保存在本机浏览器；种子则保存在 descriptor-scoped plugin.state。
   const [backdrop, setBackdropState] = useState<BackdropMode>(() => {
     try { const saved = localStorage.getItem("city.backdrop"); return saved === "auto" || saved === "full" ? saved : "off"; } catch { return "off"; }
   });
@@ -276,7 +276,7 @@ export function useCityExperience(engine: RefObject<CityEngine | null>, projecti
     lockSelection: (id: string) => engine.current?.lockSelection(id) };
 }
 
-export function CityExperience({ ui, disabled, cinema, status, quality, onQuality, game, planRepair, windowDays, windowOptions, onWindowDays, labels, onLabels, onMecha, mechaEnabled, mechaAvailability = "unknown" }: { ui: ReturnType<typeof useCityExperience>; disabled: boolean; cinema: boolean; status?: string; quality: string; onQuality: (value: string) => void; game: ReturnType<typeof useCityGame>; planRepair: PlanRepairUi; windowDays: number; windowOptions: readonly number[]; onWindowDays: (days: number) => void; labels: boolean; onLabels: (next: boolean) => void; onMecha?: () => void; mechaEnabled: boolean; mechaAvailability?: "unknown" | "searching" | "ready" | "empty" | "error" }) {
+export function CityExperience({ ui, disabled, cinema, status, loadErrorCode, quality, onQuality, game, planRepair, windowDays, windowOptions, onWindowDays, labels, onLabels, onMecha, mechaEnabled, mechaAvailability = "unknown", onDreamPreview, dreamPreviewEnabled = false, dreamPublicationActive = false }: { ui: ReturnType<typeof useCityExperience>; disabled: boolean; cinema: boolean; status?: string; loadErrorCode?: string | null; quality: string; onQuality: (value: string) => void; game: ReturnType<typeof useCityGame>; planRepair: PlanRepairUi; windowDays: number; windowOptions: readonly number[]; onWindowDays: (days: number) => void; labels: boolean; onLabels: (next: boolean) => void; onMecha?: () => void; mechaEnabled: boolean; mechaAvailability?: "unknown" | "searching" | "ready" | "empty" | "error"; onDreamPreview?: () => void; dreamPreviewEnabled?: boolean; dreamPublicationActive?: boolean }) {
   const language = useCityLanguage();
   // Presentation only: the landing host still enforces its own fixture/method boundary.
   const landingPreview = embedded() && new URLSearchParams(location.search).get("presentation") === "landing";
@@ -411,6 +411,7 @@ export function CityExperience({ ui, disabled, cinema, status, quality, onQualit
     {!cinema && !gameActive && summaryOpen && <section id="city-summary-panel" className="city-legend" aria-label="城市摘要">
       <h2>城市摘要</h2>
       <p>{status}</p>
+      {loadErrorCode && <p role="status">{language === "en" ? "Data load error code" : "数据加载错误码"}: {loadErrorCode}</p>}
       <dl><dt>已载入会话</dt><dd>{ui.projection?.coverage.returned ?? "—"} / {ui.projection?.coverage.total ?? "—"}</dd>
         <dt>Token</dt><dd>{totalTokens === undefined ? "—" : tokens(totalTokens)}</dd>
         <dt>活跃</dt><dd>{model?.stats.activeCount ?? "—"}</dd>
@@ -434,7 +435,9 @@ export function CityExperience({ ui, disabled, cinema, status, quality, onQualit
       </nav></div>)}
       <p className="city-context-note">灰调背景楼为城市氛围 · 不计入会话</p>
       <p>会话楼高表示 token 规模；施工状态和生长进度是可视化估算，不代表任务完成度。</p>
-      <p>{ui.projection?.source === "local" ? "本机只读投影 · 不上传数据" : "本地演示数据 · 尚未接入真实数据源"}</p>
+      <p>{ui.projection?.source === "local" ? "本机只读投影 · 不上传数据"
+        : ui.projection?.source === "fixture" ? "本地演示数据 · 尚未接入真实数据源"
+          : "City 数据暂不可用"}</p>
     </section>}
     {catalog && !cinema && !gameActive && <aside className="city-catalog" aria-label="建筑说明">
       <button className="city-close" aria-label="关闭建筑说明" onClick={() => setCatalog(false)}>×</button>
@@ -556,7 +559,13 @@ export function CityExperience({ ui, disabled, cinema, status, quality, onQualit
         {detailState === "unavailable" && <p role="status">详情暂不可用；已尝试重新读取快照。若城市仍在更新，请稍候后重开详情。</p>}
         {session.excerpt_scope === "session_lifetime_not_window" && <p>摘录来自整个会话，可能早于当前统计窗口。</p>}
         <p>会话定位号（可能变化）：{session.id}</p>
-        {session.asset_ref && <BuildingBookmark key={session.asset_ref} assetRef={session.asset_ref} language={language} windowDays={ui.projection!.window.days} />}
+        {session.asset_ref && <BuildingBookmark key={session.asset_ref} assetRef={session.asset_ref}
+          stableRef={stableAssetRefsForProjection(ui.projection!).get(session.asset_ref)}
+          stableRefs={stableAssetRefsForProjection(ui.projection!)} snapshot={ui.projection!.v3_context ?? (ui.projection!.data_revision === undefined ? undefined : {
+            data_revision: ui.projection!.data_revision,
+            window: { from_ms: Date.parse(ui.projection!.window.from), to_ms: Date.parse(ui.projection!.window.to) },
+          })}
+          language={language} windowDays={ui.projection!.window.days} />}
         {session.asset_ref && <><p>楼号：{session.asset_ref}</p><button onClick={() => { void navigator.clipboard?.writeText(session.asset_ref!).catch(() => setDetailState("unavailable")); }}>复制楼号</button></>}
         {session.cost_breakdown && session.cost_breakdown.length > 0 && <><h3>分项估价（按币种和依据）</h3>
           {session.cost_breakdown.map((part) => <p key={`${part.currency}:${part.basis}`}>{costLabel({ ...session, cost_minor: part,
@@ -584,6 +593,11 @@ export function CityExperience({ ui, disabled, cinema, status, quality, onQualit
       <label htmlFor="city-window">时间范围</label><select id="city-window" value={String(windowDays)} disabled={locked || gameActive} onChange={(e) => onWindowDays(Number(e.target.value))}>{windowOptions.map((days) => <option key={days} value={String(days)}>{`${days} 天`}</option>)}</select>
       <label className="city-check" htmlFor="city-labels"><input id="city-labels" type="checkbox" checked={labels} disabled={locked || gameActive} onChange={(e) => onLabels(e.target.checked)} />显示建筑标签</label>
       <label htmlFor="city-quality">画质</label><select id="city-quality" value={quality} onChange={(e) => onQuality(e.target.value)}><option value="auto">自动</option><option value="high">高画质</option><option value="eco">节能</option></select>
+      <section className="city-dream-preview-entry" aria-labelledby="city-dream-preview-title">
+        <h3 id="city-dream-preview-title">梦境城市</h3>
+        <p>{dreamPublicationActive ? "远程城市已发布。可查看快照、管理访客授权或停止访问。" : "先预览访客将看到的冻结城市；创建链接前会展示分享字段与中继说明，并要求明确确认。"}</p>
+        <button disabled={!dreamPreviewEnabled || !onDreamPreview} onClick={onDreamPreview}>{dreamPublicationActive ? "管理远程访问" : "预览并分享城市"}</button>
+      </section>
       {!landingPreview && <><label htmlFor="city-cut">航拍与视频长度</label><select id="city-cut" value={ui.cut} disabled={locked} onChange={(e) => ui.setCut(e.target.value as CinematicCut)}><option value="short">短片</option><option value="full">完整航线</option></select>
       <details className="city-settings-help"><summary>导出说明</summary><p>拍照保存 PNG；视频后台逐帧生成 30 FPS MP4（H.264；环境不支持时改为 WebM），并显示实际生成画面的低帧率预览。硬件渲染为 1080p，软件渲染降至 360p。导出中暂停拍照，避免并发导出和保存；离开 City 会取消任务。不上传数据。</p></details>
       <div className="city-game-entry">

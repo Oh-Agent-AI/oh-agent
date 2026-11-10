@@ -54,6 +54,15 @@ test("phone handback persists normalized history and desktop can undo", async ()
   assert.equal(controller.getState().match.phase, "deployment");
   assert.deepEqual(controller.getState().placements, []);
 });
+test("checkpoint store accepts restored evidence containing a live session", async () => {
+  const { evidence } = played();
+  const raw = await createSequentialReplayBundle(site, evidence);
+  const restored = await restoreSequentialReplayBundle(site, raw);
+  assert.equal(restored.enemyPolicy, evidence.enemyPolicy);
+  assert.equal(await createSequentialReplayBundle(site, { ...restored, records: restored.session.records() }), raw);
+  const backend: CheckpointBackend = { async read() { return { revision: 0, raw: null }; }, async write() { return 1; } };
+  assert.doesNotThrow(() => checkpointStore(site, restored, backend, 0, restored.session.snapshot().match.revision));
+});
 test("phone handback refuses to overwrite a diverged checkpoint", async () => {
   const controller = new SequentialController(matchFromSite(site, { ruleset: "mecha-v1.5", preset: "covers_sparse_mid", script: "siege", deployment: true }));
   MECH_IDS.forEach((id, i) => controller.place(id, { x: i * 3, y: 8 }));
@@ -101,6 +110,33 @@ function played() {
   const evidence = c.replayEvidence(); assert.ok(evidence);
   return { c, evidence };
 }
+
+test("restoring a checkpoint retains its scripted enemy policy", () => {
+  const initial = matchFromSite(site, { ruleset: "mecha-v1.5", preset: "covers_sparse_mid", script: "siege", deployment: true });
+  const source = new SequentialController(initial, { enemyPolicy: "scripted" });
+  MECH_IDS.forEach((id, i) => source.place(id, { x: i * 3, y: 8 }));
+  source.confirmDeployment();
+  source.execute({ kind: "end", confirmUnused: true }); source.finishPresentation();
+  const evidence = source.replayEvidence(); assert.ok(evidence);
+  const destination = new SequentialController(initial, { enemyPolicy: "baup" });
+  assert.equal(destination.canRestore(evidence), true);
+  assert.equal(destination.restore(evidence), true);
+  assert.equal(destination.replayEvidence()?.enemyPolicy, "scripted");
+  assert.deepEqual(destination.getState().match, source.getState().match);
+});
+
+test("legacy checkpoint without an enemy policy restores as scripted", async () => {
+  const initial = matchFromSite(site, { ruleset: "mecha-v1.5", preset: "covers_sparse_mid", script: "siege", deployment: true });
+  const controller = new SequentialController(initial, { enemyPolicy: "scripted" });
+  MECH_IDS.forEach((id, i) => controller.place(id, { x: i * 3, y: 8 }));
+  controller.confirmDeployment();
+  const evidence = controller.replayEvidence(); assert.ok(evidence);
+  const legacy = JSON.parse(await createSequentialReplayBundle(site, evidence));
+  delete legacy.replay.enemyPolicy;
+  const restored = await restoreSequentialReplayBundle(site, JSON.stringify(legacy));
+  assert.equal(restored.enemyPolicy, "scripted");
+  assert.deepEqual(restored.session.snapshot().match, controller.getState().match);
+});
 
 for (const speciesId of ["spore_leaper", "flux_lancer", "prism_warden", "gravity_core"] as StatusMonsterId[]) {
   test(`v2 status bundle reconstructs ${speciesId} opening and validates its command history`, async () => {

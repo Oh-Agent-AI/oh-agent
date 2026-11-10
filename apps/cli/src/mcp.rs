@@ -59,7 +59,6 @@ pub(crate) fn run_loop_with_permissions(
     allow_local_writes: bool,
 ) {
     let mut initialized = false;
-    mcp::note_mcp_client(None);
 
     for line in reader.lines() {
         let line = match line {
@@ -97,7 +96,6 @@ pub(crate) fn run_loop_with_permissions(
 
         let response = if method == "initialize" {
             initialized = true;
-            mcp::note_mcp_client(client_info_name(&params));
             handle_initialize(id)
         } else if method == "ping" {
             rpc_ok(id, json!({}))
@@ -115,12 +113,7 @@ pub(crate) fn run_loop_with_permissions(
         }
     }
 
-    mcp::note_mcp_client(None);
     let _ = out.flush();
-}
-
-fn client_info_name(params: &Value) -> Option<&str> {
-    params.get("clientInfo").and_then(|info| info.get("name")).and_then(Value::as_str).filter(|name| !name.trim().is_empty())
 }
 
 fn handle_initialize(id: Value) -> Value {

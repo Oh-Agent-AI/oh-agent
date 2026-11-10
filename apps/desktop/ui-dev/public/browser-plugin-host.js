@@ -22,7 +22,7 @@
     if (message.type === "toolbar.update") {
       if (!Number.isSafeInteger(message.revision) || message.revision <= current.revision) throw new Error("stale_revision");
       const text = (value, limit, nonempty = false) => typeof value === "string" && value.length <= limit && (!nonempty || value.length > 0);
-      if (!Array.isArray(message.items) || message.items.length > 9 || message.items.some((item) =>
+      if (!Array.isArray(message.items) || message.items.length > current.maxToolbarItems || message.items.some((item) =>
         !item || !text(item.id, 64, true) || !text(item.label, 100, true) || typeof item.enabled !== "boolean"
         || !text(item.commandId, 64, true) || !item.commandId.startsWith(`${current.commandNamespace}.`) || !["button", "select"].includes(item.kind)
         || (item.kind === "select" && (!Array.isArray(item.options) || item.options.length < 1 || item.options.length > 8
@@ -32,6 +32,19 @@
       current.items = message.items; current.revision = message.revision; current.status = "ready";
       note("toolbar_updated"); notify();
     } else if (message.type === "heartbeat") current.pulse = Date.now();
+    else if (message.type === "plugin.performance") {
+      const dimensions = message.dimensions;
+      if (Object.keys(message).sort().join(",") !== "dimensions,elapsedMs,instanceId,metric,outcome,type,version"
+        || !current.performanceMetrics.includes(message.metric)
+        || !["success", "partial", "failed", "cancelled"].includes(message.outcome)
+        || !Number.isSafeInteger(message.elapsedMs) || message.elapsedMs < 0 || message.elapsedMs > 86400000
+        || !dimensions || typeof dimensions !== "object" || Array.isArray(dimensions) || Object.keys(dimensions).length > 8
+        || Object.entries(dimensions).some(([key, value]) => !/^[a-z0-9._-]{1,32}$/.test(key)
+          || !(typeof value === "boolean" || (Number.isSafeInteger(value) && value >= 0 && value <= 86400000)
+            || (typeof value === "string" && value.length > 0 && value.length <= 40 && /^[A-Za-z0-9._:-]+$/.test(value))))) {
+        throw new Error("invalid_performance_message");
+      }
+    }
     else if (message.type === "runtime.error") fail("plugin_runtime_error");
     else if (message.type === "command.result") {
       if (message.requestId !== current.pending) throw new Error("stale_request");
@@ -71,11 +84,18 @@
     if (command === "plugin_open") {
       const definition = definitions().find((plugin) => plugin.id === args.pluginId);
       if (!definition) throw new Error("plugin_unknown");
+      const maxToolbarItems = definition.maxToolbarItems ?? 10;
+      if (!Number.isInteger(maxToolbarItems) || maxToolbarItems < 1 || maxToolbarItems > 20) throw new Error("invalid_plugin_descriptor");
+      const performanceMetrics = definition.performanceMetrics ?? [];
+      if (!Array.isArray(performanceMetrics) || performanceMetrics.length > 16
+        || performanceMetrics.some((metric, index) => typeof metric !== "string" || !/^[a-z0-9._-]{1,64}$/.test(metric) || performanceMetrics.indexOf(metric) !== index)) {
+        throw new Error("invalid_plugin_descriptor");
+      }
       const bounds = args.bounds;
       if (!bounds || ![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite) || bounds.width <= 0 || bounds.height <= 0) throw new Error("invalid_bounds");
       if (args.restart) {
         frame?.remove();
-        current = { pluginId: definition.id, commandNamespace: definition.commandNamespace, instanceId: `browser-plugin-${definition.id}-${++generation}`, status: "loading", error: null, items: [], revision: 0, pending: null, events: [], started: Date.now(), pulse: Date.now() };
+        current = { pluginId: definition.id, commandNamespace: definition.commandNamespace, maxToolbarItems, performanceMetrics, instanceId: `browser-plugin-${definition.id}-${++generation}`, status: "loading", error: null, items: [], revision: 0, pending: null, events: [], started: Date.now(), pulse: Date.now() };
         frame = document.createElement("iframe"); frame.title = `${definition.name} 浏览器预览`;
         frame.dataset.pluginId = definition.id;
         frame.src = `/${definition.entry}?instanceId=${current.instanceId}&locale=${args.locale === "zh-Hans" ? "zh-Hans" : "en"}`;

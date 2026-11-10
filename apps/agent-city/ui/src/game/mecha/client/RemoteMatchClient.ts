@@ -1,97 +1,60 @@
-import { MECHA_NET_PROTOCOL, type DeploymentResult, type MatchEvent, type MatchResult, type MatchSnapshot, type SubmitDeploymentCommand, type SubmitPlanCommand, type TurnResolved } from "../contracts/match";
-import type { RevisionState } from "../contracts/match";
-import { deploymentResult, parseRemoteMessage, snapshotResult, turnResult, type RemoteMethod } from "../contracts/transport";
 import type { SequentialCommand } from "../sequentialTurn";
 import { parseSequentialCommandResult, parseSequentialSnapshotResult, type SequentialCommandResult, type SequentialSnapshotResult } from "../contracts/sequentialTransport";
+import { RemoteRequestChannel } from "../../../remote/RemoteRequestChannel";
 
 export interface WebSocketLike {
+  readonly readyState: number;
   send(data: string): void;
   close(code?: number, reason?: string): void;
-  addEventListener(type: "open" | "message" | "close" | "error", listener: (event: never) => void): void;
+  addEventListener(type: string, listener: (event: any) => void): void;
 }
 export type WebSocketFactory = (url: string) => WebSocketLike;
 export type RemoteConnectionState = "connecting" | "online" | "offline";
-// Deployment-capable links explicitly select v2; links without a capability remain v1.
-export type MechaRemoteCapability = "mecha:v1" | "mecha:v2" | "mecha:v3" | "mecha:v4";
+export type MechaRemoteCapability = "mecha:v4";
 
-type Pending = { resolve: (value: unknown) => void; reject: (reason: Error) => void; timer: ReturnType<typeof setTimeout> };
 const browserSocket: WebSocketFactory = (url) => new WebSocket(url) as WebSocketLike;
 
-export class RemoteMatchClient<S extends RevisionState = RevisionState> {
+export class RemoteMatchClient {
   private url: string;
-  private readonly playerId: string;
   private readonly capability: MechaRemoteCapability;
   private readonly factory: WebSocketFactory;
   private readonly timeoutMs: number;
   private readonly reconnect?: { url: string; deviceId: string; token: string };
   private socket: WebSocketLike | null = null;
+  private channel: RemoteRequestChannel | null = null;
   private connecting: Promise<void> | null = null;
-  private sequence = 0;
   private disposed = false;
   private matchId = "";
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private retryDelay = 1000;
   private state: RemoteConnectionState = "offline";
-  private readonly pending = new Map<string, Pending>();
-  private readonly listeners = new Set<(event: MatchEvent<S>) => void>();
   private readonly statusListeners = new Set<(state: RemoteConnectionState) => void>();
 
-  constructor(input: { url: string; playerId: string; capability?: MechaRemoteCapability; socketFactory?: WebSocketFactory; timeoutMs?: number; reconnect?: { url: string; deviceId: string; token: string } }) {
+  constructor(input: { url: string; capability?: MechaRemoteCapability; socketFactory?: WebSocketFactory; timeoutMs?: number; reconnect?: { url: string; deviceId: string; token: string } }) {
     this.url = input.url;
-    this.playerId = input.playerId;
-    if (input.capability !== undefined && input.capability !== "mecha:v1" && input.capability !== "mecha:v2" && input.capability !== "mecha:v3" && input.capability !== "mecha:v4") throw new Error("invalid_capability");
-    this.capability = input.capability ?? "mecha:v1";
+    if (input.capability !== undefined && input.capability !== "mecha:v4") throw new Error("invalid_capability");
+    this.capability = input.capability ?? "mecha:v4";
     this.factory = input.socketFactory ?? browserSocket;
     this.timeoutMs = input.timeoutMs ?? 10_000;
     this.reconnect = input.reconnect;
   }
 
-  async snapshot(matchId: string): Promise<MatchResult<MatchSnapshot<S>>> {
-    if (this.matchId && this.matchId !== matchId) throw new Error("match_not_found");
-    this.matchId = matchId;
-    const result = snapshotResult<S>(await this.request("match.snapshot", { matchId, playerId: this.playerId }));
-    return result ?? { ok: false, error: { code: "invalid_message" } };
-  }
-
-  async submitDeployment(command: SubmitDeploymentCommand): Promise<DeploymentResult<S>> {
-    if (this.capability !== "mecha:v2" && this.capability !== "mecha:v3") return { ok: false, error: { code: "invalid_message" } };
-    const result = deploymentResult<S>(await this.request("deployment.submit", command));
-    if (result?.ok) {
-      const phase = (result.value.state as RevisionState & { phase?: unknown }).phase;
-      if (result.value.matchId !== command.matchId || result.value.revision !== command.baseRevision + 1
-        || result.value.ruleset !== "mecha-v1.4" || result.value.status === "closed"
-        || (phase !== "player_plan" && phase !== "finished")) return { ok: false, error: { code: "invalid_message" } };
-    }
-    return result ?? { ok: false, error: { code: "invalid_message" } };
-  }
-
-  async submitPlan(command: SubmitPlanCommand): Promise<MatchResult<TurnResolved<S>>> {
-    const result = turnResult<S>(await this.request("plan.submit", command));
-    return result ?? { ok: false, error: { code: "invalid_message" } };
-  }
-
-
-  /** v2 handoff: opening + commands; never reinterpreted as a v1 plan. */
   async sequentialSnapshot(matchId: string): Promise<SequentialSnapshotResult> {
     if (!this.matchId) this.matchId = matchId;
     const result = parseSequentialSnapshotResult(await this.request("sequential.snapshot", { matchId }));
     return result ?? { ok: false, error: { code: "match_not_found" } };
   }
 
+  async citySnapshot(matchId: string): Promise<unknown> {
+    if (this.capability !== "mecha:v4") throw new Error("invalid_message");
+    if (!this.matchId) this.matchId = matchId;
+    return this.request("city.snapshot", { matchId });
+  }
+
   async submitSequentialCommand(matchId: string, baseRevision: number, command: SequentialCommand): Promise<SequentialCommandResult> {
     if (!this.matchId) this.matchId = matchId;
     const result = parseSequentialCommandResult(await this.request("sequential.command.submit", { matchId, baseRevision, command }));
     return result ?? { ok: false, error: { code: "invalid_command" } };
-  }
-
-  async close(matchId: string): Promise<MatchResult<MatchSnapshot<S>>> {
-    const result = snapshotResult<S>(await this.request("match.close", { matchId, playerId: this.playerId }));
-    return result ?? { ok: false, error: { code: "invalid_message" } };
-  }
-
-  subscribe(listener: (event: MatchEvent<S>) => void): () => void {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
   }
 
   onStatus(listener: (state: RemoteConnectionState) => void): () => void {
@@ -104,7 +67,8 @@ export class RemoteMatchClient<S extends RevisionState = RevisionState> {
     this.disposed = true;
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.socket?.close(1000, "client_disposed");
-    this.failPending(new Error("host_offline"));
+    this.channel?.invalidate();
+    this.channel = null;
     this.setState("offline");
   }
 
@@ -114,26 +78,20 @@ export class RemoteMatchClient<S extends RevisionState = RevisionState> {
     this.retryDelay = Math.min(delay * 2, 15000);
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null;
-      void this.snapshot(this.matchId).then((result) => {
+      void this.sequentialSnapshot(this.matchId).then((result) => {
         if (!result.ok) { this.scheduleReconnect(); return; }
         this.retryDelay = 1000;
-        for (const listener of [...this.listeners]) listener({ type: "match.replaced", snapshot: structuredClone(result.value) });
       }).catch(() => this.scheduleReconnect());
     }, delay);
   }
 
-  private async request(method: RemoteMethod, payload: Record<string, unknown> & { matchId: string }): Promise<unknown> {
+  private async request(method: "sequential.snapshot" | "sequential.command.submit" | "city.snapshot", payload: Record<string, unknown> & { matchId: string }): Promise<unknown> {
     if (!this.matchId || payload.matchId !== this.matchId) throw new Error("match_not_found");
     try { await this.connect(); } catch (error) { this.scheduleReconnect(); throw error; }
-    const requestId = `remote-${++this.sequence}`;
-    const request = { protocol: "app-remote:v1", appId: "city", sessionId: this.matchId, capability: this.capability, type: "request", requestId, method, payload };
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(requestId);
-        reject(new Error("host_offline"));
-      }, this.timeoutMs);
-      this.pending.set(requestId, { resolve, reject, timer });
-      this.socket!.send(JSON.stringify(request));
+    if (!this.channel) throw new Error("host_offline");
+    return this.channel.request(method, payload).catch(error => {
+      if (error instanceof Error && ["remote_timeout", "remote_disconnected"].includes(error.message)) throw new Error("host_offline");
+      throw error;
     });
   }
 
@@ -174,34 +132,16 @@ export class RemoteMatchClient<S extends RevisionState = RevisionState> {
           if (this.disposed || disconnectedOnce) { socket.close(1000, "client_disposed"); return; }
           opened = true;
           this.socket = socket;
+          this.channel = new RemoteRequestChannel(socket, { appId: "city", sessionId: this.matchId, capability: this.capability }, 1_000_000, this.timeoutMs);
           this.setState("online");
           resolve();
-        });
-        socket.addEventListener("message", (event) => {
-          if (this.disposed || this.socket !== socket) return;
-          const data = (event as unknown as { data?: unknown }).data;
-          if (typeof data !== "string" || data.length > 1_000_000) return;
-          try {
-            const envelope = JSON.parse(data) as Record<string, unknown> | null;
-            if (!envelope || envelope.protocol !== "app-remote:v1" || envelope.appId !== "city" || envelope.sessionId !== this.matchId || envelope.capability !== this.capability) return;
-            const message = parseRemoteMessage({ ...envelope, protocol: MECHA_NET_PROTOCOL });
-            if (!message) return;
-            if (message.type === "response") {
-              const pending = this.pending.get(message.requestId);
-              if (!pending) return;
-              this.pending.delete(message.requestId);
-              clearTimeout(pending.timer);
-              pending.resolve(message.result);
-            } else {
-              for (const listener of [...this.listeners]) listener(structuredClone(message.event as MatchEvent<S>));
-            }
-          } catch { /* malformed network payloads are ignored */ }
         });
         const disconnected = () => {
           if (disconnectedOnce) return;
           disconnectedOnce = true;
           if (this.socket === socket) this.socket = null;
-          this.failPending(new Error("host_offline"));
+          this.channel?.invalidate();
+          this.channel = null;
           this.setState("offline");
           this.scheduleReconnect();
           if (!opened || this.disposed) reject(new Error("host_offline"));
@@ -219,14 +159,6 @@ export class RemoteMatchClient<S extends RevisionState = RevisionState> {
     } finally {
       if (this.connecting === connecting) this.connecting = null;
     }
-  }
-
-  private failPending(reason: Error) {
-    for (const pending of this.pending.values()) {
-      clearTimeout(pending.timer);
-      pending.reject(reason);
-    }
-    this.pending.clear();
   }
 
   private setState(state: RemoteConnectionState) {

@@ -19,11 +19,11 @@ head:
       }
 ---
 
-Agent City 是构建在 Agent Vitals 引擎上的第一个应用，以插件的形式运行在 Oh Agent 桌面应用里。插件是一个网页前端，在应用窗口内独立的 WebView 里运行，只能通过一种消息 `plugin_request` 向宿主要数据。宿主按 `apps/desktop/plugins.json` 里声明的权限做检查，在 Rust 里执行查询，只返回对应的投影。目前插件都是官方的、编译进应用里；想加插件要给仓库贡献代码，而不是安装一个包。
+Agent City 是构建在 Agent Vitals 引擎上的第一个应用，以插件的形式运行在 Oh Agent 桌面应用里。插件是一个网页前端，在应用窗口内独立的 WebView 里运行，通过 `plugin_request` 调用宿主提供的固定接口。Rust 负责本地数据授权、typed DTO、状态与对象存储；可信 TS adapter 负责 City 投影和游戏规则。目前插件都是官方的、编译进应用里；想加插件要给仓库贡献代码，而不是安装一个包。
 
 ## 关键事实
 
-- **注册表**：`apps/desktop/plugins.json`，目前只有 City 一个条目，声明了 `city:v2`、`city:v3`、`city-settings:v1` 和 `harnesses:v1`。
+- **注册表**：`apps/desktop/plugins.json`，目前 City 声明了通用 typed-data、state/object/event/call grants，以及旧资产迁移用的 `city:v3` 路由。
 - **隔离**：每个插件在同一窗口里的独立 WebView 中运行（浏览器预览里是 iframe），同一时间只有一个插件处于活动状态。
 - **权限**：`dataProjections` 列出插件可以读什么，默认什么都不能读。
 - **不能碰数据库**：插件拿不到 SQL、文件路径、原始日志，也拿不到不受限的宿主 IPC。
@@ -42,9 +42,9 @@ Agent City 是构建在 Agent Vitals 引擎上的第一个应用，以插件的�
 | `PluginRequestV1` | `{version: 1, instanceId, requestId, method, payload}`，插件发给宿主的唯一请求信封 |
 | `PluginResponseV1` | `{version: 1, requestId, ok, result, error: {code, retryable}}` |
 | `PluginState*` 类型 | 每个插件一个有上限的私有 JSON 存储：每份文档最多 32 KiB，按 revision 做乐观写入 |
-| `CityUiProjectionV2` | Agent City 默认渲染用的 `city:v2` 数据 |
-| `CityProjectionV3`、`CitySnapshotV3`、`CityWindowV3`、`CitySessionV3`、`CityModuleV3` | 分页投影 `city:v3` 的类型：快照上下文、半开时间窗、带 `asset_ref` 的会话行，以及模块状态（`ready`、`empty`、`unsupported`、`unavailable`、`stale`） |
-| `validateCityProjectionV2`、`validateCityProjectionV3` | City 对每个响应做的运行时校验：安全整数、Token 加总、会话数上限（v2 最多 4000，v3 每页最多 500）、`sr_` 快照句柄 |
+| Typed-data DTO 与 `createTypedDataClient` | 通过固定 dataset/schema version、descriptor grants 和界限分页读取 Agent Vitals 本地数据 |
+| `CityProjectionV3`、`CitySnapshotV3`、`CityWindowV3`、`CitySessionV3` | 临时旧资产 crosswalk 读取类型；不作为 City 的默认投影 |
+| `validateCityProjectionV3` | 对旧 crosswalk 响应执行安全整数、分页和 snapshot 上下文校验 |
 | `HarnessPublicIdentityV1`、`HarnessListV1`、`HarnessSessionsV1` | 通用 `harnesses:v1` 的类型 |
 | `createHarnessDataClient(instanceId, send)` | 封装 `list`、`sessions` 和一致性 `snapshot` 的辅助函数 |
 | `negotiateProjection` | 选出双方都支持的投影版本 |
@@ -56,10 +56,10 @@ Agent City 是构建在 Agent Vitals 引擎上的第一个应用，以插件的�
 
 ## Agent City 怎么用它？
 
-1. City 的数据 provider 构造一个 `PluginRequestV1`，`method` 是 `"data.read"`，`payload` 是 `{projection: "city", version: 3, operation: "overview", windowDays, …}`，然后分页读取 `city:v3`。落地页宿主和 `?cityData=v2` 仍请求 `{projection: "city", version: 2, windowDays}`。
-2. 宿主确认请求来自 City 当前活动的 WebView、且声明了 `city:v3`（或 `city:v2`），然后在 Rust 里执行 `query::city_v3::read` 或 `query::app_local::city_projection`。
-3. City 把 v3 页适配成 v2 UI DTO，用 `validateCityProjectionV2` 校验，再在 `cityModel.ts` 里把每个会话映射成一栋楼。见[城市模型](/docs/zh/architecture/city-model)。
-4. Findings、Skills 面板和单栋楼详情按需调用 `city:v3`。
+1. City provider 通过 SDK 读取 descriptor 授权的通用 typed DTO，由可信 TS adapter 组合成 City UI projection。
+2. Rust 校验活动插件实例、dataset grant、字段、查询范围、分页与字节上限，再返回固定 DTO。
+3. City seed、收藏、建筑状态与玩法数据分别通过通用 state/object/event/call API 保存；规则和业务 schema 由 TS adapter 负责。
+4. `city:v3` 仅用于将仍存在的旧资产引用关联到 typed stable ref，后续退役。
 5. 在浏览器里（官网演示、独立预览），同一个 provider 返回 `source: "fixture"` 的合成数据，从不调用宿主。
 
 <!-- source: apps/agent-city/ui/src/data/provider.ts; apps/agent-city/ui/src/CityApp.tsx; docs/CITY_LOCAL_DATA_PROJECTION.md (MVP 契约) -->
@@ -70,11 +70,11 @@ Agent City 是构建在 Agent Vitals 引擎上的第一个应用，以插件的�
 | --- | --- | --- | --- |
 | `harnesses:v1` | `harnesses.list` | 数据源：不透明 id、显示名、能力 | 声明了它的任何插件 |
 | `harnesses:v1` | `harnesses.sessions` | 7/30/90/366 天窗口内每个数据源的会话统计，每个数据源最多 500 个会话，不含摘录和费用 | 声明了它的任何插件 |
-| `city:v2` | `data.read` | City 的视图：最多 4,000 个会话，含 Token 拆分、模型 ID、费用估算和状态、有长度上限的标题和摘录，以及全窗口合计、模型和每日活动 | 声明了它的插件（目前只有 City） |
-| `city:v3` | 带 `operation` 的 `data.read` | 基于同一数据快照的分页 City 视图（见下文） | 声明了它的插件 |
-| `city-settings:v1` | `data.read` | 种子设置，存在 `state/plugins/{pluginId}.json` | 声明了它的插件 |
+| Typed-data datasets | `typed-data.read` | descriptor 授权的固定本地 DTO，例如会话、用量、findings、skills 和 workflow 汇总 | 声明对应 dataset grant 的插件 |
+| `city:v3` | 带 `operation` 的 `data.read` | 旧 City 资产 crosswalk 的临时数据源 | City 迁移期间 |
+| `plugin.state` | `plugin.state.read/write` | 按 descriptor 授权的版本化状态文档，带 revision/CAS 和大小限制 | 声明了对应 state key 的插件 |
 
-`harnesses:v1` 是通用的 Agent Vitals 接口，`city:v2` 和 `city:v3` 是专为 City 设计的。**待确认**：要不要推出一个通用的、有文档的“Vitals 数据接口”供新应用依赖。目前新插件只能拿到 `harnesses:v1`，除非新增一个 Rust 投影处理器。
+固定 typed-data datasets 和 `plugin.state/object/event/call` 是插件可复用的 Rust 边界。`city:v3` 是临时 City 旧资产 crosswalk 路由，不应作为新游戏的接入方式；新玩法数据由游戏自己的 TS adapter 写入通用对象/state 接口。
 
 读取是一致性快照。如果数据在 `harnesses.list` 和 `harnesses.sessions` 之间变了，宿主返回 `revision_changed`，SDK 最多重试三次。
 

@@ -1,4 +1,4 @@
-//! Squad IM channel (phase 1): envelope v1 + soft claim lock + host.sock fanout.
+//! Squad IM channel (phase 1): envelope v1 + soft claim lock + generic host event queue.
 //!
 //! Agents publish only `chat` / `claim` / `release` via MCP `im_publish`.
 //! Building MCP tools fanout `preview` / `reject` / `set` / `reset` themselves
@@ -15,9 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Map, Value};
 
-use super::city_building::{
-    self, resolve_identity, store_dir, try_push_socket, BuildingError, BuildingIdentity,
-};
+use super::city_building::{self, resolve_identity, store_dir, BuildingError, BuildingIdentity};
 
 pub const SQUAD_EVENT: &str = "__AV_PLUGIN_SQUAD_EVENT__";
 pub const ENVELOPE_V: u64 = 1;
@@ -46,7 +44,7 @@ impl ImActor {
 std::thread_local! {
     /// One stdio MCP connection is one client. `initialize.clientInfo.name`
     /// is remembered here so building fanout is not stuck on "City MCP".
-    /// Direct library calls (tests, city:v3) leave the default in place.
+    /// Direct library calls in tests leave the default in place.
     static CONNECTION_ACTOR: std::cell::RefCell<ImActor> = std::cell::RefCell::new(ImActor::mcp_default());
 }
 
@@ -146,8 +144,8 @@ pub fn is_agent_publish_kind(kind: &str) -> bool {
     AGENT_PUBLISH_KINDS.contains(&kind)
 }
 
-/// Host → City IM envelope. Distinct JSON from `CityEntityChanged` so the two
-/// cannot overwrite each other's mailbox, but they share `host.sock`.
+/// City IM envelope. Distinct JSON from `CityEntityChanged`; both flow through
+/// the generic plugin event queue while the legacy state snapshots migrate.
 pub fn envelope(
     session_id: &str,
     actor: &ImActor,
@@ -185,7 +183,9 @@ pub fn is_squad_envelope(payload: &Value) -> bool {
 
 pub fn notify_squad_ui(home: &Path, payload: &Value) -> &'static str {
     let _ = city_building::write_named_mailbox(home, "squad.json", payload);
-    if try_push_socket(home, payload) { "pushed" } else { "queued" }
+    let queued = envelope_id(payload).is_some_and(|event_id|
+        super::plugin_events::publish(home, "city", event_id, payload).is_ok());
+    if queued { "pushed" } else { "queued" }
 }
 
 pub fn read_squad_mailbox(home: &Path) -> Option<Value> {
@@ -647,7 +647,7 @@ mod tests {
         // Last envelope is the building fanout `set`; set_won release is also on the channel.
         assert!(squad["kind"] == "set" || squad["kind"] == "release");
         assert!(list_active_claims(&home, now_unix_secs()).is_empty());
-        assert_eq!(set["notify"]["channel"], "mailbox");
+        assert_eq!(set["notify"]["channel"], "host-socket");
         let edit = city_building::read_edit_mailbox(&home);
         assert!(edit.is_none() || edit.unwrap()["action"] != "set");
         let _ = std::fs::remove_dir_all(&home);

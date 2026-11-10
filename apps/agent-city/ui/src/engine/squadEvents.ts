@@ -1,6 +1,7 @@
 /**
  * Squad IM envelope v:1 — parse, feed reducer, kind filter, claim tint state.
- * TypeScript only renders; Rust assigns id/ts and owns the claim table.
+ * The City TypeScript adapter owns new messages and claim state; it imports
+ * legacy Rust rows during the transition. This module remains presentation state.
  */
 export const SQUAD_EVENT = "__AV_PLUGIN_SQUAD_EVENT__";
 export const ENVELOPE_V = 1;

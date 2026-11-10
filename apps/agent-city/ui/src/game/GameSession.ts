@@ -23,7 +23,7 @@ import { FlightAdapter } from "./runtime/FlightAdapter";
 import type { GameSceneLease } from "./runtime/GameScenePort";
 import type { GameSceneSnapshot } from "./runtime/GameSceneSnapshot";
 import { compileCitySolidInputs } from "../engine/surface/compileCitySolidInputs";
-import type { EnterHostState, GamePauseReason, GameSelection, ReturnCameraView, FlightInputState } from "./types";
+import { EMPTY_INPUT, type EnterHostState, type GamePauseReason, type GameSelection, type ReturnCameraView, type FlightInputState } from "./types";
 
 const FIXED_DT = 1 / 60;
 const HUD_HZ = 10;
@@ -70,6 +70,7 @@ export class GameSession {
   private cameraScratch: THREE.PerspectiveCamera | null = null;
   private cameraControls: FlightCameraControls | null = null;
   private input: FlightInput | null = null;
+  private touchInput: FlightInputState = { ...EMPTY_INPUT };
   private sceneLease: GameSceneLease<GameSceneSnapshot, import("three").Object3D> | null = null;
   private prepareAbort: AbortController | null = null;
   private readonly runtime = new GameRuntime<FlightInputState>({
@@ -270,7 +271,15 @@ export class GameSession {
       const runtimeLease: GameSceneLease<GameSceneSnapshot, import("three").Object3D> = {
         ...lease,
         setFrameHook: (frame) => lease.setFrameHook(frame ? (seconds) => {
-          this.runtime.setInput(this.input?.snapshot() ?? { throttleUp: false, throttleDown: false, turnLeft: false, turnRight: false, pitchUp: false, pitchDown: false });
+          const keyboard = this.input?.snapshot() ?? EMPTY_INPUT;
+          this.runtime.setInput({
+            throttleUp: keyboard.throttleUp || this.touchInput.throttleUp,
+            throttleDown: keyboard.throttleDown || this.touchInput.throttleDown,
+            turnLeft: keyboard.turnLeft || this.touchInput.turnLeft,
+            turnRight: keyboard.turnRight || this.touchInput.turnRight,
+            pitchUp: keyboard.pitchUp || this.touchInput.pitchUp,
+            pitchDown: keyboard.pitchDown || this.touchInput.pitchDown,
+          });
           frame(seconds);
         } : null),
         release: () => { lease.release(); if (this.sceneLease === lease) this.sceneLease = null; },
@@ -428,6 +437,7 @@ export class GameSession {
 
   private releaseRunObjects(): void {
     this.mission?.abort(); this.input?.detach(); this.input = null;
+    this.touchInput = { ...EMPTY_INPUT };
     this.audio.stop(); this.sfx.stop();
     if (this.visuals) {
       this.sceneLease?.detach([this.visuals.group, this.visuals.sceneRoot]);
@@ -472,6 +482,8 @@ export class GameSession {
       musicEnabled: this.musicEnabled,
     };
   }
+
+  setTouchInput(input: FlightInputState): void { this.touchInput = { ...input }; }
 
   /** 把面板设置下发到两个引擎（进入 run 与每次面板操作时调用，幂等）。 */
   private applySoundSettings(): void {

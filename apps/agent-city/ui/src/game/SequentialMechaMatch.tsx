@@ -53,17 +53,26 @@ import type { PlannedMonsterSpeciesId } from "./mecha/monsters/contracts";
 import { monsterCatalogEntry } from "./mecha/monsters/catalog";
 import { SequentialRemoteControls } from "./mecha/SequentialRemoteControls";
 import { restoreRemoteCheckpoint } from "./mecha/restoreRemoteCheckpoint";
+import type { EnemyPolicy } from "./mecha/enemy/contracts";
+import { createCityDisplayProjector } from "../remote/city/cityDisplayProjection";
 
 const NAMES: Record<MechId, string> = { Assault: "突击", Gunner: "射手", Support: "支援" };
 const STATUS_SPECIES: Record<StatusMonsterId, [string, string]> = { spore_leaper: ["孢群体", "Spore leaper"], flux_lancer: ["流环体", "Flux lancer"], prism_warden: ["晶簇体", "Prism warden"], gravity_core: ["引力核", "Gravity core"] };
 const cellKey = (cell: Cell) => `${cell.x},${cell.y}`;
 
-export function SequentialMechaMatch({ engine, site, locale, onClose, requestCloseRef, statusSpecies, monsterSpecies, connectedAssault }: { engine: CityEngine; site: CityMechaSite; locale: GameLocale; onClose: () => void; requestCloseRef: React.RefObject<(() => void) | null>; statusSpecies?: StatusMonsterId | null; monsterSpecies?: PlannedMonsterSpeciesId | null; connectedAssault: boolean }) {
+export function SequentialMechaMatch({ engine, site, locale, onClose, requestCloseRef, statusSpecies, monsterSpecies, connectedAssault, remoteControlsEnabled = true }: { engine: CityEngine; site: CityMechaSite; locale: GameLocale; onClose: () => void; requestCloseRef: React.RefObject<(() => void) | null>; statusSpecies?: StatusMonsterId | null; monsterSpecies?: PlannedMonsterSpeciesId | null; connectedAssault: boolean; remoteControlsEnabled?: boolean }) {
   const t = (zh: string, en: string) => locale === "en" ? en : zh;
   const practice = Boolean(monsterSpecies);
   const [controller] = useState(() => new SequentialController(statusSpecies ? statusDeploymentFromSite(site, statusSpecies)
     : matchFromSite(site, { ruleset: "mecha-v1.5", preset: "covers_sparse_mid", script: monsterSpecies ? "stationary_smash" : "siege", deployment: true, ...(monsterSpecies ? { monsterContent: { speciesId: monsterSpecies, contentVersion: 1 as const } } : {}) })));
   const state = useSyncExternalStore(controller.subscribe, controller.getState);
+  const citySeed = engine.currentSeed;
+  const cityModel = engine.currentModel;
+  const cityLayout = engine.currentLayout;
+  const cityScene = useMemo(() => {
+    return citySeed === null || !cityModel || !cityLayout ? null
+      : createCityDisplayProjector(citySeed, site, cityLayout, engine.currentBackdrop, engine.captureReturnView())(cityModel);
+  }, [engine, citySeed, site, cityModel, cityLayout, state.match.revision]);
   const [choice, setChoice] = useState("");
   const [actionSelection, setActionSelection] = useState<{ actor: MechId; revision: number; index: number } | null>(null);
   const [targetingKind, setTargetingKind] = useState<Action["kind"] | null>(null);
@@ -93,7 +102,7 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
   const [archiveMessage, setArchiveMessage] = useState<string | null>(null);
   const [archiveEntries, setArchiveEntries] = useState<SequentialReplayEntry[]>([]);
   const [archiveChoice, setArchiveChoice] = useState("");
-  const [replay, setReplay] = useState<{ initial: MatchState; placements: DeployPlacement[]; records: SequentialRecord[]; index: number } | null>(null);
+  const [replay, setReplay] = useState<{ initial: MatchState; placements: DeployPlacement[]; records: SequentialRecord[]; enemyPolicy: EnemyPolicy; index: number } | null>(null);
   const [replayAnimation, setReplayAnimation] = useState<{ before: MatchState; after: MatchState; record: SequentialRecord } | null>(null);
   const [reduceMotion, setReduceMotion] = useState(() => window.matchMedia("(prefers-reduced-motion: reduce)").matches);
   useEffect(() => {
@@ -199,7 +208,7 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
     }
   }, [display.outcome, resultReady]);
   const liveEvidence = useMemo(() => controller.replayEvidence(), [state.match.revision]);
-  const evidence = replay ? { initial: replay.initial, records: replay.records.slice(0, replay.index) } : liveEvidence;
+  const evidence = replay ? { initial: replay.initial, records: replay.records.slice(0, replay.index), enemyPolicy: replay.enemyPolicy } : liveEvidence;
   const resultReview = useMemo(() => showResult && evidence && display.outcome ? buildSequentialReview(evidence.initial, evidence.records, display, "enemyPolicy" in evidence ? evidence.enemyPolicy : "scripted") : null,
     [showResult, state.match.revision, replay?.index, Boolean(replay)]);
   const records = evidence?.records ?? [];
@@ -399,14 +408,18 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
     if (!recovery?.restored || recovery.restored.session.snapshot().match.outcome) return;
     const evidence = { ...recovery.restored, records: recovery.restored.session.records() };
     if (!controller.canRestore(evidence)) { setArchiveMessage(t("检查点属于其他遭遇，请切换回对应战场。", "This checkpoint belongs to a different encounter; reopen its battlefield.")); return; }
-    if (!controller.restore(evidence) || !controller.attachDurable(checkpointStore(site, evidence, recovery.backend, recovery.version, evidence.session.snapshot().match.revision))) {
+    if (!controller.restore(evidence) || !controller.attachDurable(checkpointStore(site, evidence, recovery.backend, recovery.version, evidence.session.snapshot().match.revision, evidence.enemyPolicy))) {
       setRecoveryError(true); return;
     }
     setRecovery({ ...recovery, pending: false }); setRecoveryError(false);
     setArchiveMessage(t("已恢复自动检查点。", "Automatic checkpoint restored."));
   };
   const discardRecovery = async () => {
-    if (!recovery || !window.confirm(t("删除自动检查点并开始新对局？", "Delete the automatic checkpoint and start a new match?"))) return;
+    // The recovery panel already presents an explicit "Discard and start"
+    // choice beside "Recover match". Do not add a native window.confirm here:
+    // Tauri's WebView dialog is not reliably surfaced by the desktop UI and
+    // silently blocks this otherwise explicit, accessible recovery action.
+    if (!recovery) return;
     setArchiveBusy(true);
     try { const version = await clearSequentialCheckpoint(recovery.backend, recovery.version); if (!controller.restartDeployment()) throw new Error("restart_unavailable"); setRecovery({ ...recovery, version, pending: false, restored: null }); setRecoveryError(false); setReplay(null); }
     catch { setRecoveryError(true); }
@@ -429,7 +442,7 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
     setArchiveBusy(true); setArchiveMessage(null);
     try {
       const restored = await loadSequentialReplay(site, archiveChoice);
-      setReplay({ initial: restored.initial, placements: restored.placements, records: restored.session.records(), index: 0 });
+      setReplay({ initial: restored.initial, placements: restored.placements, records: restored.session.records(), enemyPolicy: restored.enemyPolicy, index: 0 });
       setSettingsPanel(null); setTargetingKind(null); setActionIndex(""); setChoice(""); setConfirmEnd(false);
     } catch { setArchiveMessage(t("回放损坏或与当前战场不兼容。", "Replay is damaged or incompatible with this battlefield.")); }
     finally { setArchiveBusy(false); }
@@ -443,14 +456,14 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
   };
   const resumeSaved = async () => {
     if (!replay || !recovery || replayAnimation || archiveBusy || state.persistence === "saving" || recovery.pending || recoveryError) return;
-    const evidence = { initial: replay.initial, placements: replay.placements, records: replay.records };
+    const evidence = { initial: replay.initial, placements: replay.placements, records: replay.records, enemyPolicy: replay.enemyPolicy };
     if (!controller.canRestore(evidence)) { setArchiveMessage(t("该回放属于其他遭遇，请切换回对应战场。", "This replay belongs to a different encounter; reopen its battlefield.")); return; }
     if (!window.confirm(t("继续此回放将替换当前对局，是否继续？", "Continue this replay and replace the current match?"))) return;
     setArchiveBusy(true);
     try {
       const current = await recovery.backend.read();
       const version = await writeSequentialCheckpoint(site, evidence, recovery.backend, current.revision);
-      if (!controller.restore(evidence) || !controller.attachDurable(checkpointStore(site, evidence, recovery.backend, version, evidence.records.at(-1)?.revision ?? evidence.initial.revision))) throw new Error("resume_unavailable");
+      if (!controller.restore(evidence) || !controller.attachDurable(checkpointStore(site, evidence, recovery.backend, version, evidence.records.at(-1)?.revision ?? evidence.initial.revision, evidence.enemyPolicy))) throw new Error("resume_unavailable");
       setRecovery({ ...recovery, version, pending: false, restored: null });
       setReplay(null); setArchiveMessage(t("已恢复对局，可以继续行动。", "Match restored. You can continue playing."));
     } catch { setRecoveryError(true); setArchiveMessage(t("无法确认恢复，请重新读取自动检查点。", "Resume could not be confirmed; reload the automatic checkpoint.")); }
@@ -462,7 +475,7 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
     try {
       const current = await recovery.backend.read();
       const activeEvidence = controller.replayEvidence() ?? (recovery.restored ? {
-        initial: recovery.restored.initial, placements: recovery.restored.placements, records: recovery.restored.session.records(),
+        initial: recovery.restored.initial, placements: recovery.restored.placements, records: recovery.restored.session.records(), enemyPolicy: recovery.restored.enemyPolicy,
       } : null);
       if (current.raw && (!activeEvidence || JSON.parse(current.raw).archive !== await createSequentialReplayBundle(site, activeEvidence))) {
         throw new Error("checkpoint_changed");
@@ -475,7 +488,7 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
     finally { setArchiveBusy(false); }
   };
   const replayResult = () => {
-    const source = replay ? { initial: replay.initial, placements: replay.placements, records: replay.records } : controller.replayEvidence();
+    const source = replay ? { initial: replay.initial, placements: replay.placements, records: replay.records, enemyPolicy: replay.enemyPolicy } : controller.replayEvidence();
     if (!source?.records.length) return;
     setShowResult(false); setReplay({ ...source, index: 0 }); setReplayAnimation(null);
   };
@@ -487,7 +500,7 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
         if (!presentation && !replayAnimation) setInspectedCell(cell);
       } else performCell(cell);
     }} onHoverCell={setHoveredCell} onHoverEnemy={setHoveredEnemy} onUnavailable={reason => setViewError(reason ?? "mode")} />
-    <header className="mecha-battle-bar mecha-v15-bar"><div className="mecha-battle-controls"><MechaBattlefieldControls locale={locale} mapFocused={mapFocused} onToggleFocus={() => setMapFocused(value => !value)} onResetCamera={() => worldRef.current?.resetCamera()} /><button type="button" disabled={Boolean(state.placements) || Boolean(replay)} aria-label={t("结算顺序", "Turn order")} aria-expanded={showOrder} aria-controls={showOrder ? "mecha-order-panel" : undefined} onClick={() => { if (!showOrder) { setMapFocused(false); setCompactSummary(false); } else panelRef.current?.querySelector<HTMLElement>(".mecha-turn-summary")?.scrollTo({ top: 0 }); setShowOrder(value => !value); }}>{t("顺序", "Order")}</button><button type="button" aria-label={t("远程控制", "Remote control")} aria-expanded={showRemote} onClick={() => setShowRemote(value => !value)}>{t("远程", "Remote")}</button><button type="button" data-mecha-settings-trigger="battlefield" aria-expanded={settingsPanel === "battlefield"} aria-controls="mecha-battlefield-settings" onClick={event => toggleSettings("battlefield", event.currentTarget)}>{gameText("战场设置", locale)}</button><MechaBattleMenu locale={locale} exitDisabled={handedOff || archiveBusy || state.persistence === "saving"} onGuide={trigger => { guideTrigger.current = trigger; setSettingsPanel(null); setMapFocused(false); setShowGuide(true); }} onExit={requestClose} /></div></header>
+    <header className="mecha-battle-bar mecha-v15-bar"><div className="mecha-battle-controls"><MechaBattlefieldControls locale={locale} mapFocused={mapFocused} onToggleFocus={() => setMapFocused(value => !value)} onResetCamera={() => worldRef.current?.resetCamera()} /><button type="button" disabled={Boolean(state.placements) || Boolean(replay)} aria-label={t("结算顺序", "Turn order")} aria-expanded={showOrder} aria-controls={showOrder ? "mecha-order-panel" : undefined} onClick={() => { if (!showOrder) { setMapFocused(false); setCompactSummary(false); } else panelRef.current?.querySelector<HTMLElement>(".mecha-turn-summary")?.scrollTo({ top: 0 }); setShowOrder(value => !value); }}>{t("顺序", "Order")}</button>{remoteControlsEnabled && <button type="button" aria-label={t("远程控制", "Remote control")} aria-expanded={showRemote} onClick={() => setShowRemote(value => !value)}>{t("远程", "Remote")}</button>}<button type="button" data-mecha-settings-trigger="battlefield" aria-expanded={settingsPanel === "battlefield"} aria-controls="mecha-battlefield-settings" onClick={event => toggleSettings("battlefield", event.currentTarget)}>{gameText("战场设置", locale)}</button><MechaBattleMenu locale={locale} exitDisabled={handedOff || archiveBusy || state.persistence === "saving"} onGuide={trigger => { guideTrigger.current = trigger; setSettingsPanel(null); setMapFocused(false); setShowGuide(true); }} onExit={requestClose} /></div></header>
     <div className="mecha-panel mecha-v15-panel" ref={panelRef} aria-label={t("逐台行动", "Sequential actions")}>
       <details className="mecha-tactical-legend"><summary><span aria-hidden="true">↗</span> {gameText("战场图例", locale)}</summary><MechaBattleLegend locale={locale} view={view} /></details>
       <MechaObjectivePanel className={compactSummary ? "is-compact" : ""} label={t("战斗目标与威胁", "Battle objective and threats")}>
@@ -536,7 +549,7 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
       {lastTurn && !replay && !presentation && !showResult && <MechaLastResult lastLog={lastTurn.events} healthTimeline={lastTurn.health} finalState={lastTurn.after} t={text => gameText(text, locale)} locale={locale} />}
       {(viewError || state.error || recoveryError || state.persistence === "unconfirmed" || (currentPresentation && !verified?.ok)) && <div className="mecha-v15-alert" role="alert"><p>{viewError ? t("三维战场不可用，请退出后重试。", "The 3D battlefield is unavailable. Exit and try again.") : state.error ? t("操作未执行", "Command rejected") + ": " + state.error : recoveryError || state.persistence === "unconfirmed" ? t("自动检查点状态未确认，行动已锁定。", "Checkpoint status is unconfirmed; actions are locked.") : t("演出证据不足；可跳过演出并查看权威结果。", "Animation evidence is incomplete; skip to the authoritative result.")}</p>{recoveryError || state.persistence === "unconfirmed" ? <button type="button" disabled={archiveBusy} onClick={() => { setReplay(null); void readRecovery(); }}>{t("重新读取恢复", "Reload recovery")}</button> : null}{currentPresentation && !verified?.ok ? <button type="button" onClick={finishPresentation}>{t("查看结果", "Show result")}</button> : null}</div>}
       {handedOff && <p className="mecha-v15-note" role="status">{t("已交给手机，桌面操作已暂停；停止远程后解除。", "Handed off to phone; desktop input is paused until remote stops.")}</p>}
-      {recovery?.pending && !recoveryError && !replay && <div className="mecha-v15-recovery"><p>{recovery.restored ? recovery.restored.session.snapshot().match.outcome ? t("自动检查点已结束，可以查看结果。", "The automatic checkpoint is finished; you can review it.") : t("发现未完成的自动检查点。", "An unfinished automatic checkpoint was found.") : t("自动检查点损坏或与当前战场不兼容。", "The checkpoint is damaged or incompatible with this battlefield.")}</p><div className="mecha-v15-row">{recovery.restored?.session.snapshot().match.outcome ? <button type="button" disabled={archiveBusy} onClick={() => { const restored = recovery.restored!; const records = restored.session.records(); setReplay({ initial: restored.initial, placements: restored.placements, records, index: records.length }); }}>{t("查看已结束对局", "Review finished match")}</button> : <button type="button" disabled={archiveBusy || !recovery.restored} onClick={recover}>{t("恢复对局", "Recover match")}</button>}<button type="button" disabled={archiveBusy} onClick={() => void discardRecovery()}>{t("删除并新开", "Discard and start")}</button></div></div>}
+      {recovery?.pending && !recoveryError && !replay && <div className="mecha-v15-recovery"><p>{recovery.restored ? recovery.restored.session.snapshot().match.outcome ? t("自动检查点已结束，可以查看结果。", "The automatic checkpoint is finished; you can review it.") : t("发现未完成的自动检查点。", "An unfinished automatic checkpoint was found.") : t("自动检查点损坏或与当前战场不兼容。", "The checkpoint is damaged or incompatible with this battlefield.")}</p><div className="mecha-v15-row">{recovery.restored?.session.snapshot().match.outcome ? <button type="button" disabled={archiveBusy} onClick={() => { const restored = recovery.restored!; const records = restored.session.records(); setReplay({ initial: restored.initial, placements: restored.placements, records, enemyPolicy: restored.enemyPolicy, index: records.length }); }}>{t("查看已结束对局", "Review finished match")}</button> : <button type="button" disabled={archiveBusy || !recovery.restored} onClick={recover}>{t("恢复对局", "Recover match")}</button>}<button type="button" disabled={archiveBusy} onClick={() => void discardRecovery()}>{t("删除并新开", "Discard and start")}</button></div></div>}
       {!recovery && !recoveryError && <p className="mecha-v15-alert" role="status">{t("正在读取自动检查点…", "Reading automatic checkpoint…")}</p>}
       <MechaTeamPanel label={t("回合与队伍规划", "Turn and squad planning")}>
       {state.placements && !replay ? <MechaDeploymentView locale={locale} units={state.match.mechs.map(unit => unit.id)} selected={state.selected}
@@ -567,7 +580,7 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
         utilities={<div className="mecha-actions mecha-action-utilities">
           <button type="button" className="mecha-submit-primary" disabled={!action || !selectedPreview?.ok || locked || Boolean(state.placements) || Boolean(replay)} onClick={hudActions.confirmAction}>{t("确认行动", "Confirm action")}</button>
           <button type="button" title={undoHint} disabled={!state.canUndo || locked || Boolean(state.placements) || Boolean(replay)} onClick={hudActions.undoMove}>{t("撤销移动", "Undo move")}</button>
-          <button type="button" data-mecha-auto disabled={locked || Boolean(state.placements) || Boolean(replay)} aria-pressed={auto} onClick={() => setAuto(value => !value)}>{auto ? t("停止自动", "Stop auto") : t("自动对战", "Auto play")}</button>
+          <button type="button" data-mecha-auto disabled={(!auto && locked) || Boolean(state.placements) || Boolean(replay)} aria-pressed={auto} onClick={() => setAuto(value => !value)}>{auto ? t("停止自动", "Stop auto") : t("自动对战", "Auto play")}</button>
         </div>}
         target={<>
           {!state.placements && !replay && <details className="mecha-unavailable-actions"><summary>{t("技能说明与射击诊断", "Action guide and shot diagnostics")}</summary>
@@ -621,11 +634,11 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
       getVerifiedReview={() => resultReview ?? { review: { status: "unavailable", rounds: [] }, achievements: null }}
       onRestart={() => { if (practice) { controller.restartDeployment(); setShowResult(false); setReplay(null); } else void restartMatch(); }} onExit={requestClose} />}
     {showGuide && <MechaQuickGuide locale={locale} mode="sequential" returnFocusRef={guideTrigger} onClose={() => setShowGuide(false)} />}
-    {typeof document !== "undefined" && (showRemote || handedOff) && createPortal(<div className="mecha-remote-modal" role="dialog" aria-hidden={!showRemote} aria-modal="true" aria-label={t("远程控制", "Remote control")}
+    {remoteControlsEnabled && typeof document !== "undefined" && (showRemote || handedOff) && createPortal(<div className="mecha-remote-modal" role="dialog" aria-hidden={!showRemote} aria-modal="true" aria-label={t("远程控制", "Remote control")}
       style={{ position: "fixed", inset: 0, zIndex: 9999, display: showRemote ? "flex" : "none", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.55)", pointerEvents: "auto" }}
       onClick={() => setShowRemote(false)}>
       <div className="mecha-remote-dialog" onClick={event => event.stopPropagation()}>
-        <SequentialRemoteControls locale={locale} evidence={liveEvidence} disabled={locked || auto || Boolean(state.placements) || Boolean(state.match.outcome)} onActive={active => { if (active) setAuto(false); setHandedOff(active); }} onRecovered={async snapshot => {
+        <SequentialRemoteControls locale={locale} evidence={liveEvidence} cityScene={cityScene} site={site} disabled={locked || auto || Boolean(state.placements) || Boolean(state.match.outcome)} onActive={active => { if (active) setAuto(false); setHandedOff(active); }} onRecovered={async snapshot => {
           if (!recovery) throw new Error("checkpoint_unavailable");
           const version = await restoreRemoteCheckpoint(site, recovery.backend, controller, snapshot);
           setRecovery({ ...recovery, version, pending: false, restored: null });

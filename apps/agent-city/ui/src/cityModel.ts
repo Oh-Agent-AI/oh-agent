@@ -1,4 +1,5 @@
 import { DetMath as Math } from "./engine/detMath"; // 跨引擎确定性：见 engine/detMath.ts
+import type { HarnessPaletteEntry } from "./engine/cityTheme";
 /**
  * City 模型层：把 Agent Vitals 的业务数据（Session / Harness / Token / Finding / 时间）
  * 映射成一座"数据城市"的中性模型。本文件不依赖任何渲染库——三维引擎只消费
@@ -78,6 +79,8 @@ export type CityBuilding = {
   seed: number;
   /** 建筑材料量：session 总 token（聚合楼为成员之和）。 */
   tokensTotal: number;
+  /** Optional frozen hero-crown selection for a redacted remote model. */
+  visualHero?: boolean;
   /** 封顶高度（世界单位），由 token 对数映射。 */
   height: number;
   footprint: number;
@@ -94,6 +97,15 @@ export type CityBuilding = {
   extraCount: number;
 };
 
+/** Preserve the historical first-highest tie break unless a frozen hero is supplied. */
+export function selectVisualHero(buildings: readonly CityBuilding[]): CityBuilding | null {
+  const frozen = buildings.find(building => building.visualHero === true);
+  if (frozen) return frozen;
+  let hero: CityBuilding | null = null;
+  for (const building of buildings) if (!hero || building.tokensTotal > hero.tokensTotal) hero = building;
+  return hero;
+}
+
 export type DistrictAnomaly = {
   severity: "critical" | "warning" | "info";
   count: number;
@@ -103,6 +115,11 @@ export type DistrictAnomaly = {
 export type CityDistrict = {
   id: string;
   label: string;
+  /** Optional frozen rendering colors for an anonymized remote snapshot. */
+  visualPalette?: HarnessPaletteEntry;
+  /** Frozen geometry, used when the source session counts are not shared. */
+  visualLandmarkHeight?: number;
+  visualFlagShare?: number;
   /** 该区真实 session 数（含被聚合部分）。 */
   sessionCount: number;
   tokensTotal: number;
@@ -111,6 +128,8 @@ export type CityDistrict = {
 };
 
 export type CityModel = {
+  /** Remote presentation may hide count-bearing labels. */
+  hideSessionLabels?: boolean;
   generatedAt: number;
   windowStartMs: number;
   windowEndMs: number;
