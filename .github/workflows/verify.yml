@@ -224,6 +224,7 @@ jobs:
   city_guards:
     name: City 专项守卫
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -247,6 +248,23 @@ jobs:
       - name: 术语与命名边界守卫
         working-directory: apps/desktop/ui-dev
         run: npm run verify:terminology
+
+  city_typed_data:
+    name: City typed data adapter tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/agent-city/ui/package-lock.json
+      - name: 安装 City 插件依赖
+        working-directory: apps/agent-city/ui
+        run: npm ci
+      - name: typed data 投影与快照契约
+        working-directory: apps/agent-city/ui
+        run: node --experimental-strip-types --test tests/typed-city-session-adapter.test.ts
 
   # 机甲战棋的确定性守卫。仓库其它 City 守卫固定 Node 20，而这里用
   # `--experimental-strip-types` 直接跑 .ts 源码（Node ≥ 22.6），所以单独一个
