@@ -9,7 +9,7 @@ const { THREE, buildCivics, buildGardens, buildFlags, GARDEN_MINIMUM_SIZE, CIVIC
   "engine/models/layoutPlacementGeometry.ts": ["GARDEN_MINIMUM_SIZE", "CIVIC_RENDER_ENVELOPES", "civicMinimumSize", "civicEnvelopeSize", "gardenFlagPosition", "DISTRICT_LANDMARK_ENVELOPE", "DISTRICT_LANDMARK_RENDER_GEOMETRY"],
 });
 function host(layout) {
-  const h = { layout, group: new THREE.Group(), water: { material: new THREE.MeshBasicMaterial() }, disposables: [],
+  const h = { layout, model: { districts: [] }, group: new THREE.Group(), water: { material: new THREE.MeshBasicMaterial() }, disposables: [],
     nightLights: null, flagTime: { value: 0 }, civicPieces: [], civicMeshes: [], civicProgress: [], civicTarget: [],
     matrix: new THREE.Matrix4(), quaternion: new THREE.Quaternion(), euler: new THREE.Euler(),
     scaleVector: new THREE.Vector3(), positionVector: new THREE.Vector3(), color: new THREE.Color(),
