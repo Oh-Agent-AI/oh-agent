@@ -170,7 +170,7 @@ The landing page at ohagent.ai embeds a build of the real City frontend from `ap
 Not in the code at `dev` `0636802b`. Listed so readers don't mistake plans for features.
 
 - **Partial:** MCP tools can get / preview / set / reset one session building model (`docs/CITY_BUILDING_MCP.md`). An open City window plays construction from a shared `CityEntityChanged` host event (`entity_kind=building`; road/vehicle handlers later). Successful `preview_building` shows a translucent ghost; compliance / detail-regression / design-coherence rejects flash the lot. Soft design issues return `data.warnings` without blocking. The same write path fans out a squad IM envelope; agents publish `chat`/`claim`/`release` via `im_publish` (`docs/CITY_SQUAD_IM.md`).
-- **TBD:** Incremental hot update. City refreshes on its own after each sync, but it reloads the full projection and rebuilds the scene; sending only changed sessions and patching single buildings isn't implemented.
+- **TBD:** Incremental hot update. City refreshes on its own after each sync, but it reloads the full projection and rebuilds the scene; sending only changed sessions and patching single buildings isn't implemented. See [Data pipeline](/docs/architecture/data-pipeline#how-does-agent-city-update-when-new-sessions-arrive).
 - **TBD:** A community gallery of cities (UGC). No code for this exists in the repo.
 - **Partial:** GitHub Releases has a 1.0.0-beta.3 pre-release with Apple Silicon (signed and notarized), Windows x64 and Linux x64 (unsigned) packages. A later signed release matching the current `1.0.0-beta.4` tree is not published yet.
 
@@ -178,5 +178,6 @@ Not in the code at `dev` `0636802b`. Listed so readers don't mistake plans for f
 ## Related
 
 - [Agent Vitals engine: crates, CLI, MCP tools, App SDK](/docs/vitals/overview)
+- [Data pipeline: from session logs to the database](/docs/architecture/data-pipeline)
 - [What each building in Agent City means](/docs/city-guide)
 - [Privacy and data](/docs/privacy-and-data) · [Install](/docs/install)

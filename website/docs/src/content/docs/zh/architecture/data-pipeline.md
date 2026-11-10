@@ -1,5 +1,5 @@
 ---
-draft: true
+lastUpdated: 2026-11-10
 title: Oh Agent 怎么把 Agent 会话日志变成数据？数据管线
 description: Oh Agent 找到 Claude Code、Codex、DeepSeek Harness 和 WorkBuddy 的日志，每 5 分钟只解析有变化的文件，把用量事实写进本机 SQLite 数据库。
 head:
@@ -42,7 +42,7 @@ Oh Agent 的数据管线分四步：**发现**各 Agent 的日志文件，和已
 | WorkBuddy | `workbuddy` | `~/.workbuddy/traces/` 下的 `trace_*.json` |
 | 本地 manifest 数据源 | `harness:<slug>` | `harnesses.d/<slug>/manifest.json` 里声明的文件 |
 
-Claude Code、Codex 和 DSH 还可以在设置里添加其他目录，见[添加其他目录和 manifest 数据源](/docs/zh/integrations/custom-sources-and-manifests)。
+Claude Code、Codex 和 DSH 还可以在设置里添加其他目录。
 
 <!-- source: session_harnesses.rs (usage_source_roots); claude_code/sources/mod.rs; codex/sources/mod.rs; dsh/sources/discovery.rs; crates/agent-vitals-query/src/sessions/discovery.rs (DSH_HOME → ~/.dsh); workbuddy/sources/mod.rs, traces.rs; harness_registry.rs (harnesses.d); source_controls.rs (harness:{slug}) -->
 
@@ -82,7 +82,7 @@ flowchart LR
   S --> R{"revision 前进了？"}
   R -- 是 --> E["Invalidated 事件<br/>发给工作台"]
   E --> P["plugin_invalidate"]
-  P --> C["City 重新读取<br/>完整 city:v2"]
+  P --> C["City 重新读取<br/>完整 city:v3"]
   C --> B["整体重建场景<br/>布局稳定、楼高动画"]
 ```
 
@@ -94,7 +94,7 @@ flowchart LR
 6. **重建**：地理信息变了才丢掉旧场景重新构建。上一次的布局会被复用，所以在同一岛屿档位内，已有的楼保持在原来的地块上。分页追加和载入中途的 revision 变化会保留当前城市。看过的楼保持原高度，新楼从地面长出来。
 
 - **默认分页**：`city:v3` 从同一快照逐页读取。载入过程中数据变了会保留已显示的城市并重新读取未完成的页，而不是把两个版本拼在一起。`?cityData=v2` 强制走兼容投影。
-- **尚未实现**：增量差异（只传变化的会话）和单栋楼的局部更新。**待确认**：是否在计划中，见 [Roadmap](/docs/zh/integrations#roadmap--规划中)。
+- **尚未实现**：增量差异（只传变化的会话）和单栋楼的局部更新。**待确认**：是否在计划中。
 
 <!-- source: crates/agent-vitals-ingest/src/ingest/watch.rs（DEBOUNCE = 1_200 ms；MAX_DEBOUNCE = 5 s）；apps/desktop/src-tauri/src/lib.rs（InvalidationPublisher：revision 严格前进才发 Invalidated）；apps/desktop/ui-dev/react/src/app/plugins/usePlugin.tsx；apps/desktop/src-tauri/src/plugin_host.rs（plugin_invalidate）；apps/agent-city/ui/src/CityApp.tsx；apps/agent-city/ui/src/engine/CityEngine.ts（displaySnapshot）；engine/cityLayout.ts（档位内刷新不改地图）；data/provider.ts；dev bf7196a -->
 
@@ -131,13 +131,11 @@ flowchart LR
 
 <!-- source: crates/agent-vitals-runtime-core/src/core/home.rs; crates/agent-vitals-data/src/authority.rs; docs/CITY_LOCAL_DATA_PROJECTION.md; custom_sources.rs -->
 
-**数据保留多久？** 默认 13 个月，可以在设置里改成 1 到 60 个月。**待确认**：在界面上核实清理旧数据后，City 时间窗里的旧会话也会一起消失（366 天在默认保留期之内）。
+**数据保留多久？** 默认 13 个月，可以在设置里改成 1 到 60 个月。City 可以显示 366 天的时间窗，这个窗口落在默认保留期之内。
 
 <!-- source: crates/agent-vitals-runtime-core/src/core/retention.rs (DEFAULT_RETENTION_MONTHS = 13, MIN 1, MAX 60) -->
 
 ## 相关
 
 - [架构总览](/docs/zh/architecture/overview)
-- [城市模型：会话怎么变成楼](/docs/zh/architecture/city-model)
 - [Claude Code 数据来源](/docs/zh/data-sources/claude-code) · [Codex 数据来源](/docs/zh/data-sources/codex)
-- [添加新的数据源](/docs/zh/contributing/adding-a-data-source)

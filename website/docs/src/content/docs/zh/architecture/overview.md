@@ -165,7 +165,7 @@ ohagent.ai 内嵌的是 `apps/agent-city/ui` 的真实 City 前端，由 `tools/
 以下内容在 `dev` 分支 `0636802b` 的代码里都还没有，列出来是为了不让读者把规划当成已有功能。
 
 - **部分完成**：MCP 可以 get / preview / set / reset 一栋会话楼的模型（`docs/CITY_BUILDING_MCP.md`）。城里的施工播放来自共享 `CityEntityChanged` 事件。成功的 `preview_building` 显示半透明幽灵楼；合规 / 细节回退 / 设计连贯性拒绝会闪一下地块。偏软的设计问题走 `data.warnings`，不拦写入。同一条写入路径还会向小队 IM 频道扇出信封；Agent 用 `im_publish` 发 `chat`/`claim`/`release`（`docs/CITY_SQUAD_IM.md`）。
-- **待确认**：增量热更新。每次同步后 City 会自动刷新，但会重新读取完整投影并重建场景；只传变化的会话、只更新单栋楼还没有实现。
+- **待确认**：增量热更新。每次同步后 City 会自动刷新，但会重新读取完整投影并重建场景；只传变化的会话、只更新单栋楼还没有实现。见[数据管线](/docs/zh/architecture/data-pipeline#有新会话时-agent-city-怎么更新)。
 - **待确认**：城市作品廊（UGC）。仓库里没有相关代码。
 - **部分完成**：GitHub Releases 已有 1.0.0-beta.3 预发布包（Apple Silicon 已签名并公证，Windows x64 与 Linux x64 尚未签名）。匹配当前 `1.0.0-beta.4` 树的后续签名发布还没有。
 
@@ -173,5 +173,6 @@ ohagent.ai 内嵌的是 `apps/agent-city/ui` 的真实 City 前端，由 `tools/
 ## 相关
 
 - [Agent Vitals 引擎：crate、命令行、MCP 工具、App SDK](/docs/zh/vitals/overview)
+- [数据管线：从会话日志到数据库](/docs/zh/architecture/data-pipeline)
 - [Agent City 里每栋楼代表什么](/docs/zh/city-guide)
 - [数据与隐私](/docs/zh/privacy-and-data) · [安装](/docs/zh/install)

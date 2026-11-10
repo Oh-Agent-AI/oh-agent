@@ -1,5 +1,5 @@
 ---
-draft: true
+lastUpdated: 2026-11-10
 title: How does Oh Agent turn agent session logs into data? The data pipeline
 description: Oh Agent finds Claude Code, Codex, DeepSeek Harness and WorkBuddy logs, parses only changed files every 5 minutes, and writes usage facts to a local SQLite database.
 head:
@@ -46,7 +46,7 @@ Oh Agent's data pipeline has four steps: **discover** each agent's log files, **
 | WorkBuddy | `workbuddy` | `trace_*.json` under `~/.workbuddy/traces/` |
 | Local manifest sources | `harness:<slug>` | Whatever the manifest in `harnesses.d/<slug>/manifest.json` declares |
 
-You can also add extra folders for Claude Code, Codex and DSH in Settings. See [Custom folders and manifest sources](/docs/integrations/custom-sources-and-manifests).
+You can also add extra folders for Claude Code, Codex and DSH in Settings.
 
 <!-- source: session_harnesses.rs (usage_source_roots: .claude/projects, .codex/sessions, .codex/archived_sessions, workbuddy_root, dsh_home/sessions) -->
 <!-- source: harnesses/claude_code/sources/mod.rs (claude_project_files_with_errors: .claude/projects, extension jsonl); harnesses/codex/sources/mod.rs (codex_rollout_files_with_errors: starts_with "rollout-" && ends_with ".jsonl") -->
@@ -90,7 +90,7 @@ flowchart LR
   S --> R{"revision moved?"}
   R -- yes --> E["Invalidated event<br/>to the workbench"]
   E --> P["plugin_invalidate"]
-  P --> C["City refetches<br/>full city:v2"]
+  P --> C["City refetches<br/>full city:v3"]
   C --> B["Full scene rebuild<br/>stable layout, height animation"]
 ```
 
@@ -102,7 +102,7 @@ flowchart LR
 6. **Rebuild.** If the geography changed, City throws away the scene and builds it again. The previous layout is reused, so within one island tier existing buildings keep their lots. Paging appends and mid-load revision changes keep the current city on screen. Buildings you already saw keep their height; new ones grow from the ground.
 
 - **Paged default:** `city:v3` reads page by page from one snapshot. A data change during loading keeps the visible city and restarts the unread pages instead of mixing two versions. `?cityData=v2` forces the compatibility projection.
-- **Not implemented:** incremental diffs (only changed sessions) and patching single buildings. **TBD:** whether this is planned; see the [Roadmap](/docs/integrations#roadmap--规划中).
+- **Not implemented:** incremental diffs (only changed sessions) and patching single buildings. **TBD:** whether this is planned.
 
 <!-- source: crates/agent-vitals-ingest/src/ingest/watch.rs (DEBOUNCE = 1_200 ms; MAX_DEBOUNCE = 5 s; "正确性仍由 tick 指纹对账保证") -->
 <!-- source: apps/desktop/src-tauri/src/lib.rs (InvalidationPublisher: "权威 revision 严格前进才向 webview 发 Invalidated … 取代了 FoldCompleted + 200ms 去抖"; publish_invalidation) -->
@@ -143,13 +143,11 @@ Costs are estimated separately from the city. When the provider or route of a re
 
 <!-- source: crates/agent-vitals-runtime-core/src/core/home.rs; crates/agent-vitals-data/src/authority.rs; docs/CITY_LOCAL_DATA_PROJECTION.md (state/plugins/city.json); crates/agent-vitals-query/src/sources/custom_sources.rs (state/custom-sources.json) -->
 
-**How long is data kept?** 13 months by default; you can set 1 to 60 months in Settings. **TBD:** confirm in the UI that pruning also removes old sessions from the City window (366 days fits inside the default).
+**How long is data kept?** 13 months by default; you can set 1 to 60 months in Settings. City can show a 366-day window, which fits inside the default retention.
 
 <!-- source: crates/agent-vitals-runtime-core/src/core/retention.rs (DEFAULT_RETENTION_MONTHS = 13, MIN 1, MAX 60, retention-config.json); apps/desktop/src-tauri/src/lib.rs (retention_config / save_retention_config IPC) -->
 
 ## Related
 
 - [Architecture overview](/docs/architecture/overview)
-- [City model: how sessions become buildings](/docs/architecture/city-model)
 - [Claude Code data source](/docs/data-sources/claude-code) · [Codex data source](/docs/data-sources/codex)
-- [Add a new data source](/docs/contributing/adding-a-data-source)
