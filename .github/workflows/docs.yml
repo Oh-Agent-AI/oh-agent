@@ -31,7 +31,7 @@ jobs:
         working-directory: website/docs
         run: npm ci
 
-      - name: Build documentation site (production: drafts excluded)
+      - name: "Build documentation site (production: drafts excluded)"
         working-directory: website/docs
         run: npm run build
 

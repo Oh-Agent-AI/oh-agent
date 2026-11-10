@@ -254,6 +254,11 @@ jobs:
           --exclude verify-react-city-geography
           --exclude verify-react-city-seaside
           --exclude seaside-tier10
+          --exclude verify-city-planning
+          --exclude verify-react-city-infrastructure
+          --exclude verify-react-city-layout
+          --exclude verify-react-city-cinematic
+          --exclude verify-city-cross-engine
       - name: City initial data-loading feedback
         run: node scripts/verify-city-initial-loading.mjs
       - name: 术语与命名边界守卫
@@ -263,11 +268,11 @@ jobs:
   city_heavy_guards:
     name: City heavy guard (${{ matrix.guard }})
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        guard: [road-report, geography, seaside, seaside-tier10]
+        guard: [road-report, geography, seaside, seaside-tier10, planning, infrastructure, layout, cinematic, cross-engine]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -283,7 +288,7 @@ jobs:
       - name: 安装 City 插件依赖
         working-directory: apps/agent-city/ui
         run: npm ci
-      - name: 运行代表样本守卫
+      - name: 运行独立守卫
         working-directory: apps/desktop/ui-dev
         env:
           CITY_GUARDS_EXHAUSTIVE: ${{ inputs.city_exhaustive && '1' || '0' }}
@@ -293,6 +298,11 @@ jobs:
             geography) node ../../../scripts/verify-react-city-geography.mjs ;;
             seaside) node ../../../scripts/verify-react-city-seaside.mjs ;;
             seaside-tier10) CITY_SEASIDE_TIER=10 node ../../../scripts/verify-react-city-seaside.mjs ;;
+            planning) node ../../../scripts/verify-city-planning.mjs ;;
+            infrastructure) node ../../../scripts/verify-react-city-infrastructure.mjs ;;
+            layout) node ../../../scripts/verify-react-city-layout.mjs ;;
+            cinematic) node ../../../scripts/verify-react-city-cinematic.mjs ;;
+            cross-engine) node ../../../scripts/verify-city-cross-engine.mjs ;;
           esac
 
   city_typed_data:
