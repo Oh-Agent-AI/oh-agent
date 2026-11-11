@@ -1,0 +1,80 @@
+name: Release Windows and Linux packages
+
+# 本地只有 Mac 的维护者用这条工作流补齐 Windows / Linux 安装包：
+# - macOS 由本机 `cargo tauri build` + `create-macos-dmg.sh` 产出并手动上传；
+# - 这里只跑无需代码签名/公证凭据的 Windows NSIS 与 Linux deb/AppImage，
+#   然后创建（或复用）GitHub Pre-release 并上传产物 + 校验和。
+#
+# 不依赖 Apple secrets；也不碰 macOS 产物。触发方式：
+#   gh workflow run release-platforms.yml -f release_tag=app-v1.0.0-beta.4
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing app-v* tag to build and attach platform packages to"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-platforms-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  platforms:
+    name: build platform installers
+    uses: ./.github/workflows/desktop-platforms.yml
+    with:
+      ref: ${{ inputs.release_tag }}
+
+  publish:
+    name: attach platform packages to release
+    needs: platforms
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: dist
+          merge-multiple: true
+
+      - name: Validate tag and staged assets
+        shell: bash
+        run: |
+          set -eu
+          case "$RELEASE_TAG" in
+            app-v*) ;;
+            *) echo "release tag must start with app-v*: $RELEASE_TAG" >&2; exit 1 ;;
+          esac
+          version="${RELEASE_TAG#app-v}"
+          test -f "dist/oh-agent-${version}-windows-x86_64-setup.exe"
+          test -f "dist/oh-agent-${version}-linux-x86_64.deb"
+          test -f "dist/oh-agent-${version}-linux-x86_64.AppImage"
+
+      - name: Checksums
+        shell: bash
+        run: |
+          set -eu
+          cd dist
+          shasum -a 256 oh-agent-* > SHA256SUMS
+
+      - name: Create or reuse prerelease and upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -eu
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag \
+              --title "$RELEASE_TAG" --generate-notes --prerelease
+          fi
+          gh release upload "$RELEASE_TAG" dist/* --clobber
