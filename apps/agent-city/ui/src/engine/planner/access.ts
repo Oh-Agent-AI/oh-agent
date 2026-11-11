@@ -279,7 +279,7 @@ export function candidatesFor(world: SiteCandidateWorld, spec: SiteSpec, current
  */
 export function siteCandidateHardReject(world: SiteCandidateWorld, spec: SiteSpec, candidate: SiteCandidate): string | null {
   spendPlanningWork("site:hard-candidate", { candidate: 1 });
-  const geo = { height: world.height, inRiver: world.inRiver, riverBank: world.riverBank };
+  const geo = { elevation: world.height, inRiver: world.inRiver, riverBank: world.riverBank };
   const at = { x: candidate.x, z: candidate.z };
   const r = spec.radius;
   const footprint = siteFootprint(spec.kind, `candidate:${spec.kind}`, r);
@@ -393,7 +393,7 @@ export function restickSitesClearOfRingRuns(ctx: FrontageMoveContext): void {
  *  要求可建、占地全干、不压环线高架、距其它用地 ≥ r_o+r+10；开口轴（局部 z）沿道路方向。 */
 export function straddleSitesAcrossTrunk(ctx: Pick<FrontageMoveContext, "publicSites" | "landmarks" | "trunkSegments" | "groundRoads" | "ringRuns" | "buildable" | "height" | "inRiver" | "riverBank" | "relocateSiteIds" | "straddleProbeFractions">): void {
   const { publicSites, landmarks, trunkSegments, ringRuns, buildable, height, inRiver, riverBank } = ctx;
-  const footprintGeo = { height, inRiver, riverBank };
+  const footprintGeo = { elevation: height, inRiver, riverBank };
   const footprintDry = (c: Vec2, r: number) => isDry(footprintGeo, c, r);
   for (const site of landmarks) {
     if (ctx.relocateSiteIds && !ctx.relocateSiteIds.has(site.id)) continue;
@@ -421,7 +421,7 @@ export function straddleSitesAcrossTrunk(ctx: Pick<FrontageMoveContext, "publicS
  *  避高架、距其它用地 ≥ r_o+r+10。找不到临街位置且被主干穿过时，snap 挪到离主干 ≥ r+8 处。 */
 export function frontSitesOnTrunks(ctx: FrontageMoveContext): void {
   const { publicSites, landmarks, trunkSegments, trunkRuns, ringRuns, buildable, landClearance, height, inRiver, riverBank, snap, siteClearance } = ctx;
-  const footprintGeo = { height, inRiver, riverBank };
+  const footprintGeo = { elevation: height, inRiver, riverBank };
   const footprintDry = (c: Vec2, r: number) => isDry(footprintGeo, c, r);
   const distanceToTrunks = (p: Vec2) => polylineDistance(trunkRuns, p);
   for (const site of [...publicSites, ...landmarks]) {
@@ -464,7 +464,7 @@ export function frontSitesOnTrunks(ctx: FrontageMoveContext): void {
  *  不全干，用 snap（accept 含四项联合判据）重贴。岸边/跨路/广场豁免（各有专属遍/构造保证）。 */
 export function resnapSitesOntoDryLand(ctx: FrontageMoveContext): void {
   const { publicSites, landmarks, trunkRuns, ringRuns, landClearance, height, inRiver, riverBank, snap, siteClearance } = ctx;
-  const footprintGeo = { height, inRiver, riverBank };
+  const footprintGeo = { elevation: height, inRiver, riverBank };
   const footprintDry = (c: Vec2, r: number) => isDry(footprintGeo, c, r);
   const distanceToTrunks = (p: Vec2) => polylineDistance(trunkRuns, p);
   for (const site of [...publicSites, ...landmarks]) {

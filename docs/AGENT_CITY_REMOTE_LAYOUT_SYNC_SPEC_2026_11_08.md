@@ -53,6 +53,13 @@ type RemoteCityLayoutSnapshotV1 = {
     up: [number, number, number];
     fov: number;
   };
+  // Current TypeScript DTO also carries the world generator identity and its
+  // validated options; old coastal snapshots without these fields remain readable.
+  geographyGeneratorId?: "coastal-islands-v1" | "arid-dunes-v1";
+  geographyOptions?: Record<string, unknown>;
+  biome?: "tropical" | "temperate" | "boreal" | "savanna" | "eastasian" | "arid";
+  features?: { coastline: boolean; ocean: boolean; river: boolean; islets: boolean };
+  worldProfileKey?: string;
   districts: RemoteDistrict[];
   buildings: RemoteBuilding[];
   roads: RemoteRoad[];
@@ -69,6 +76,7 @@ type RemoteCityLayoutSnapshotV1 = {
 - 道路和规划修改采用桌面最终生效的可视几何，不能只传未经应用的修复补丁。
 - `camera` 从桌面当前城市返回视角导出；它只控制初始视角，手机仍可自行旋转和缩放。
 - `generatorVersion` 用于识别基础岛屿或资源布局规则变化。DTO 字段不兼容时递增 schema 版本。
+- 新快照须成对携带 `geographyGeneratorId` 与该生成器专属 `geographyOptions`，同时携带 `biome`、生成器能力一致的 `features` 和长度不超过 512 的 `worldProfileKey`。`arid-dunes-v1` 必须使用 `biome: "arid"`、全 false 地理 features，且不携带海岸配置；校验器拒绝未知 options 字段、部分字段和 generator/biome/features 不匹配。仅旧海岸快照可缺省这些参数并走兼容重建。
 
 战棋棋盘场地和单位状态继续使用现有 `RemoteArenaV1` 与 v1.5 对局快照；城市布局 DTO 不成为战斗规则数据源。
 

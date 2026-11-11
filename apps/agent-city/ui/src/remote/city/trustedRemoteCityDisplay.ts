@@ -1,13 +1,16 @@
 import type { RemoteCityDisplay } from "./cityDisplayProjection";
+import { GEOGRAPHY_GENERATOR_IDS, validateGeographyBuildOptions, type GeographyGeneratorId } from "../../engine/planner/geography";
 
 const MAX_BYTES = 230 * 1024;
 type Obj = Record<string, any>;
 const isObj = (value: unknown): value is Obj => !!value && typeof value === "object" && !Array.isArray(value);
 const isArray = Array.isArray;
 const exact = (value: unknown, keys: readonly string[]): value is Obj => isObj(value) && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
+const hasExactKeys = (value: Obj, keys: readonly string[]): boolean => Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 const finite = (value: unknown, min: number, max: number) => typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
 const uint = (value: unknown, max = Number.MAX_SAFE_INTEGER) => Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= max;
-const DISPLAY_KEYS = ["scaleTier", "biome", "core", "islandRadius", "seed", "districts", "blocks", "roadNodes", "roadEdges", "activityKey", "coastRoads", "culDeSacEnds", "junctionRings", "highwayRamps", "districtLandmarks", "terrain", "extent", "coast", "river", "publicSites", "parkTrees", "urbanBounds", "bridges", "boatLanes", "boundsRadius", "decorMountains", "districtAnchors", "highways", "massing", "civics", "landmarks", "seaside", "airport", "coastalConfigKey", "coastalConfig", "contextBuildings", "gardens", "boatLoops", "seaMountains"] as const;
+const LEGACY_DISPLAY_KEYS = ["scaleTier", "biome", "core", "islandRadius", "seed", "districts", "blocks", "roadNodes", "roadEdges", "activityKey", "coastRoads", "culDeSacEnds", "junctionRings", "highwayRamps", "districtLandmarks", "terrain", "extent", "coast", "river", "publicSites", "parkTrees", "urbanBounds", "bridges", "boatLanes", "boundsRadius", "decorMountains", "districtAnchors", "highways", "massing", "civics", "landmarks", "seaside", "airport", "coastalConfigKey", "coastalConfig", "contextBuildings", "gardens", "boatLoops", "seaMountains"] as const;
+const DISPLAY_KEYS = [...LEGACY_DISPLAY_KEYS.slice(0, 5), "features", "geographyGeneratorId", "geographyOptions", "worldProfileKey", ...LEGACY_DISPLAY_KEYS.slice(5)] as const;
 const ALIAS_PREFIXES = ["district-", "building-", "hotel:entity-", "oceandrive:entity-", "entity-"] as const;
 const FIELD_ALIAS_PREFIXES = ["building-", "district-", "entity-", "hotel:entity-", "oceandrive:entity-"] as const;
 
@@ -109,11 +112,23 @@ function validateLayout(layout: unknown, seed: number): boolean {
   const camera = layout.camera;
   if (!exact(camera, ["position", "target", "up", "fov"]) || !finite(camera.fov, 10, 120)
       || ["position", "target", "up"].some(key => !isArray(camera[key]) || camera[key].length !== 3 || !camera[key].every((n: unknown) => finite(n, -100_000, 100_000)))) return false;
-  const data = layout.data;
-  if (!exact(data, DISPLAY_KEYS) || data.seed !== seed || !uint(data.scaleTier, 32) || data.scaleTier === 0 || !finite(data.islandRadius, 10, 100_000) || !finite(data.extent, 10, 200_000)
-      || !["tropical", "temperate", "boreal", "savanna", "eastasian"].includes(data.biome) || !isArray(data.districts) || data.districts.length === 0 || data.districts.length > 32
+  const data = layout.data as Obj;
+  const legacy = hasExactKeys(data, LEGACY_DISPLAY_KEYS);
+  if ((!legacy && !hasExactKeys(data, DISPLAY_KEYS)) || data.seed !== seed || !uint(data.scaleTier, 32) || data.scaleTier === 0 || !finite(data.islandRadius, 10, 100_000) || !finite(data.extent, 10, 200_000)
+      || !["tropical", "temperate", "boreal", "savanna", "eastasian", "arid"].includes(data.biome) || !isArray(data.districts) || data.districts.length === 0 || data.districts.length > 32
       || !data.districts.every(validDistrict) || !isArray(data.blocks) || data.blocks.length > 20_000 || !isArray(data.roadEdges) || data.roadEdges.length > 20_000
       || !isArray(data.roadNodes) || data.roadNodes.length > 50_000 || !isObj(data.terrain?.__remoteTerrain)) return false;
+  if (!legacy) {
+    const generator = data.geographyGeneratorId;
+    if (!(GEOGRAPHY_GENERATOR_IDS as readonly string[]).includes(generator) || !isObj(data.features)
+        || !exact(data.features, ["coastline", "ocean", "river", "islets"])
+        || Object.values(data.features).some(value => typeof value !== "boolean")
+        || typeof data.worldProfileKey !== "string" || data.worldProfileKey.length < 1 || data.worldProfileKey.length > 512) return false;
+    try { validateGeographyBuildOptions(generator as GeographyGeneratorId, data.geographyOptions); } catch { return false; }
+    if ((generator === "arid-dunes-v1") !== (data.biome === "arid")
+        || (generator === "arid-dunes-v1" && Object.values(data.features).some(Boolean))
+        || (generator === "coastal-islands-v1" && (data.features.coastline !== true || data.features.ocean !== true))) return false;
+  } else if (data.biome === "arid") return false;
   return !hasForbiddenKey(data) && validAliases(data);
 }
 

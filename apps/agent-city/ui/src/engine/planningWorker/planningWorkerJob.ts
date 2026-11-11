@@ -15,7 +15,8 @@ export function executePlanningWorkerJob(input: unknown,
     ledger = createPlanningWorkLedger(request.parameters.limits, () => false, onProgress ? workBudget =>
       onProgress({ version: PLANNING_PROTOCOL_VERSION, requestId, status: "progress", workBudget }) : undefined);
     const plan = createCityPlan(request.parameters.seed, request.parameters.tier, request.parameters.coastal,
-      { workLedger: ledger, memoizeTerrain: request.parameters.memoizeTerrain });
+      { workLedger: ledger, memoizeTerrain: request.parameters.memoizeTerrain, geographyGenerator: request.parameters.geographyGenerator,
+        geographyOptions: request.parameters.geographyOptions, biome: request.parameters.biome });
     if (!plan.derivedFinalization.ok || !plan.capacity.satisfied || plan.planningOutcome.status === "failed")
       return { ...fail("planning-outcome-failed"), workBudget: ledger.snapshot() };
     return { version: PLANNING_PROTOCOL_VERSION, requestId, status: "computed", snapshot: serializePlanningPlan(plan, request.parameters) };

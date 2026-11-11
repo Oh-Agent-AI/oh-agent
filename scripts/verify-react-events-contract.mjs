@@ -37,6 +37,11 @@ callback?.({ payload: { type: "HarnessNavigationChanged", path: "/private/path" 
 callback?.({ payload: { type: "SourceDataDeleted", path: "/private/path" } });
 callback?.({ payload: { type: "WatcherHealthChanged", mode: "active", topology_revision: 2, pending_roots: 0, reason_code: null } });
 callback?.({ payload: { type: "WatcherHealthChanged", mode: "not-a-mode", raw: "/private/path" } });
+callback?.({ payload: { type: "CreatorPlaytestOpenCityRequested", runId: "playtest-123", secret: "must-not-cross" } });
+callback?.({ payload: { type: "CreatorPlaytestReturnRequested", runId: "playtest-123", projectId: "project-456", secret: "must-not-cross" } });
+callback?.({ payload: { type: "CreatorPlaytestOpenCityRequested", runId: "../arbitrary/path" } });
+callback?.({ payload: { type: "CreatorPlaytestReturnRequested", runId: "playtest-123", projectId: "" } });
+callback?.({ payload: { type: "CreatorPlaytestNavigate", target: "https://example.invalid" } });
 callback?.({ payload: { type: "UnknownInternalEvent", secret: "drop" } });
 // RUNTIME_INVALIDATION spec §6：Invalidated 只透 revision（限幅）+ harnesses（闭集过滤）。
 callback?.({ payload: { type: "Invalidated", schema_version: 1, revision: 42, harnesses: ["dsh", "codex", "/private/path", 7], payload: { secret: "drop" } } });
@@ -53,6 +58,8 @@ assert.equal(JSON.stringify(events), JSON.stringify([
   { type: "SourceDataDeleted" },
   { type: "WatcherHealthChanged" },
   { type: "WatcherHealthChanged" },
+  { type: "CreatorPlaytestOpenCityRequested", runId: "playtest-123" },
+  { type: "CreatorPlaytestReturnRequested", runId: "playtest-123", projectId: "project-456" },
   { type: "Invalidated", revision: 42, harnesses: ["dsh", "codex"] },
   { type: "Invalidated", harnesses: [] },
   { type: "Invalidated", harnesses: [] },
@@ -133,4 +140,12 @@ assert.ok(!source.includes('listen("sync-status-updated"'));
 assert.ok(!source.includes('listen("usage-fold-updated"'));
 assert.ok(!source.includes('listen("trust-monitor-updated"'));
 assert.ok(!source.includes('listen("source-data-deleted"'));
-console.log("React event bus contract: OK (app-event allowlist, Invalidated revision/harnesses, invalidation gate, payload redaction, cleanup, burst queue, watcher-health closed set)");
+const pluginRegistry = JSON.parse(readFileSync(path.join(repo, "apps/desktop/plugins.json"), "utf8"));
+for (const id of ["city", "creator-studio"]) {
+  assert.ok(pluginRegistry.plugins.some((plugin) => plugin.id === id), `${id} handoff destination is registered`);
+}
+const appSource = readFileSync(path.join(ui, "react/src/app/App.tsx"), "utf8");
+assert.ok(appSource.includes('event.type === "CreatorPlaytestOpenCityRequested" ? "city"'));
+assert.ok(appSource.includes('event.type === "CreatorPlaytestReturnRequested" ? "creator-studio"'));
+assert.ok(appSource.includes("target && isPage(target)"), "handoff target must be a registered page");
+console.log("React event bus contract: OK (app-event allowlist, creator handoff validation/navigation, registered destinations, Invalidated revision/harnesses, invalidation gate, payload redaction, cleanup, burst queue, watcher-health closed set)");

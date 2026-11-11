@@ -13,6 +13,7 @@ mod quota_alerts;
 mod plugin_host;
 mod plugin_projections;
 mod plugin_state;
+mod creator_projects;
 mod typed_data;
 mod typed_objects;
 // Retained only as a test baseline for the TS City projection migration.
@@ -5805,6 +5806,11 @@ pub fn run() {
         return;
     }
     tauri::Builder::default()
+        .register_asynchronous_uri_scheme_protocol("ohcityasset", |context, request, responder| {
+            let app = context.app_handle().clone();
+            let webview_label = context.webview_label().to_owned();
+            std::thread::spawn(move || responder.respond(plugin_host::creator_asset_protocol_response(&app, &webview_label, request)));
+        })
         .plugin(tauri_plugin_notification::init())
         .manage(SyncLock(Mutex::new(())))
         .manage(HarnessActivityTable(std::sync::Mutex::new(

@@ -40,7 +40,8 @@ export class CarAdapter implements VehicleAdapter<DrivingInputState> {
   private queryStatus: "resolved" | "unresolved" | undefined;
   readonly revision: string;
   constructor(private readonly binding: CarWorldBinding, private readonly spawn: Readonly<DrivingState>,
-    private readonly render: (frame: CarPresentation) => void, private readonly cameraSweep: CameraClearanceQuery) {
+    private readonly render: (frame: CarPresentation) => void, private readonly cameraSweep: CameraClearanceQuery,
+    private readonly onFixedStep?: (state: CarPresentationState) => void) {
     this.binding = Object.freeze({ ...binding });
     this.revision = binding.revision;
     this.spawn = Object.freeze({ ...spawn });
@@ -64,6 +65,7 @@ export class CarAdapter implements VehicleAdapter<DrivingInputState> {
     // display that step, even when its numerical result looks valid.
     this.assertCurrent();
     this.previous = this.state; this.state = result.state;
+    this.onFixedStep?.(this.state as CarPresentationState);
     this.blocked = result.motion.blocked || result.motion.contact === true; this.reason = result.motion.reason;
     this.contactIds = Object.freeze([...new Set(result.motion.contacts?.map((contact) => contact.obstacleId) ?? [])].slice(0, 32));
     this.queryStatus = result.motion.queryStatus;

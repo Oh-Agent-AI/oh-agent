@@ -72,7 +72,21 @@ export function buildCars(host: AmbientHost): { mesh: THREE.InstancedMesh; cars:
 export function buildBoats(host: AmbientHost): { mesh: THREE.InstancedMesh; boats: Array<{ path: CarPath; distance: number; speed: number; phase: number; wakeTimer: number }>; wakeMesh: THREE.InstancedMesh; wakes: Array<{ x: number; z: number; birth: number; driftX: number; driftZ: number }> } {
   // 船沿海岸外扩航道巡航（折线推进，与车辆同一套采样）。
   const boats: ReturnType<typeof buildBoats>["boats"] = [];
-  host.layout.boatLoops?.forEach((loop, laneIndex) => {
+  if (host.layout.features?.ocean === false) {
+    const emptyMesh = () => {
+      const geometry = new THREE.BufferGeometry();
+      const material = new THREE.MeshBasicMaterial();
+      const mesh = new THREE.InstancedMesh(geometry, material, 1);
+      mesh.count = 0;
+      mesh.visible = false;
+      host.disposables.push(geometry, material);
+      return mesh;
+    };
+    host.yachtMesh = null;
+    host.yachtIndices = [];
+    return { mesh: emptyMesh(), boats, wakeMesh: emptyMesh(), wakes: [] };
+  }
+  (host.layout.boatLoops ?? []).forEach((loop, laneIndex) => {
     const { cumulative, total } = polyCumulative(loop);
     const count = 3 + (laneIndex % 2);
     for (let index = 0; index < count; index += 1) {

@@ -97,6 +97,12 @@
 .city-dialog form { margin-bottom: 12px; }
 .city-seed-controls { display: flex; gap: var(--city-control-gap); align-items: center; }.city-seed-controls input { flex: 1; }.city-seed-controls button { flex-shrink: 0; }
 .city-settings-help { margin: 12px 0; color: var(--city-muted); }.city-settings-help summary { cursor: pointer; padding-block: 6px; }.city-settings-help summary:focus-visible { outline: 2px solid #a2d6ff; outline-offset: 3px; }
+.city-world-import { margin: 14px 0; border-top: 1px solid var(--city-border); padding-top: 10px; color: var(--city-muted); }
+.city-world-import summary { cursor: pointer; padding-block: 6px; color: var(--city-text); }
+.city-world-import textarea { box-sizing: border-box; width: 100%; min-height: 150px; resize: vertical; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.city-world-import-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.city-world-import-diagnostics { padding-left: 20px; color: #ffd2bc; overflow-wrap: anywhere; }
+.city-world-import-diagnostics code { color: #ffe6d7; }
 .city-excerpt { border-top: 1px solid var(--city-border); padding-top: 10px; }.city-excerpt blockquote { margin: 10px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .city-cinematic-overlay { position: absolute; inset: 0; pointer-events: none; }
 .city-cinema-top, .city-cinema-bottom { position: absolute; left: 0; right: 0; height: 10%; background: #05080e; }

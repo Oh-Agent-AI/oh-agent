@@ -9,7 +9,7 @@
 import * as THREE from "three";
 import type { CityLayout } from "./cityLayout";
 import { hashSeed, type CityModel } from "../cityModel";
-import { activeTheme, groundFor } from "./cityTheme";
+import { activeTheme, groundFor, type CityTheme } from "./cityTheme";
 import { roadPaintPlan } from "./cityRoadPaint";
 import { cornerArc, renderRoadEdges, roadJunctionPlan, SIDEWALK_BAND, taperOutline } from "./cityRoadJunctions";
 import { polygonDistance } from "./cityPlan";
@@ -24,16 +24,15 @@ export type DistrictPalette = {
   park: string;
 };
 
-export function paletteFor(harnessId: string): DistrictPalette {
-  const theme = activeTheme();
+export function paletteFor(harnessId: string, theme: CityTheme = activeTheme()): DistrictPalette {
   // 迁移期兼容：旧事实/旧缓存里的 `plugin:` 前缀折算到现行 `harness:` 命名空间再查表。
   const key = harnessId.startsWith("plugin:") ? `harness:${harnessId.slice("plugin:".length)}` : harnessId;
   return theme.harnesses[key] ?? theme.fallback;
 }
 
 /** Per-model override: remote aliases never change the frozen district colors. */
-export function paletteForDistrict(model: CityModel, districtId: string): DistrictPalette {
-  return model.districts.find(district => district.id === districtId)?.visualPalette ?? paletteFor(districtId);
+export function paletteForDistrict(model: CityModel, districtId: string, theme: CityTheme = activeTheme()): DistrictPalette {
+  return model.districts.find(district => district.id === districtId)?.visualPalette ?? paletteFor(districtId, theme);
 }
 
 function canvas2d(width: number, height: number): { canvas: RenderCanvas; ctx: RenderContext2D } {
@@ -156,7 +155,7 @@ function strokePolyline(ctx: RenderContext2D, points: Array<{ x: number; z: numb
 }
 
 /** One city-wide ground atlas: continuous land, hardscape blocks and connected streets. */
-export function makeCityTexture(layout: CityLayout): THREE.Texture {
+export function makeCityTexture(layout: CityLayout, theme: CityTheme = activeTheme()): THREE.Texture {
   // 2048 铺 1600 单位 ~1.3px/单位，街道偏窄但可辨；4096 的 RGBA 原图 64MiB，
   // 反复重建时内存峰值过高（WebView 实测峰值 2.6GB）。静态缓存落地后只在
   // 换 seed 时付一次生成成本，2048 是内存/清晰度的折衷。
@@ -166,7 +165,7 @@ export function makeCityTexture(layout: CityLayout): THREE.Texture {
   const toPixel = (x: number, z: number): [number, number] => [(x + layout.extent / 2) * scale, (z + layout.extent / 2) * scale];
   const ground = canvas2d(384, 384);
   const pixels = ground.ctx.createImageData(384, 384);
-  const groundColors = groundFor(activeTheme(), layout.biome);
+  const groundColors = groundFor(theme, layout.biome);
   // 街区铺装与空街区草坪也跟着生态带走：它们占了地图的大半，只改沙滩/草地色时生态带几乎看不出（截图实测）。
   const toHex = (c: number[]) => `#${c.map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0")).join("")}`;
   const mixRgb = (a0: number[], b0: number[], t: number) => a0.map((v, i) => v + (b0[i] - v) * t);
@@ -186,6 +185,8 @@ export function makeCityTexture(layout: CityLayout): THREE.Texture {
     residential: "#becbc3",
   };
   const urbanGround = mixRgb(groundColors.sand, groundColors.lawn, 0.42);
+  const dryWorld = layout.features?.ocean === false && layout.features?.river !== true;
+  const aridWorld = dryWorld && layout.biome === "arid";
   const coastDistanceOf = (x: number, z: number) => polygonDistance({ x, z }, layout.coast);
   for (let iz = 0; iz < 384; iz += 1) for (let ix = 0; ix < 384; ix += 1) {
     const x = (ix / 383 - 0.5) * layout.extent;
@@ -195,8 +196,10 @@ export function makeCityTexture(layout: CityLayout): THREE.Texture {
     const g = groundColors;
     // G2：海岸 30 内才是沙；内陆低平原（高 1.2，同样 < 2.5）曾一律按沙色画，整座城看起来像沙漠。
     // 内陆改成偏草坪的浅色地面（迈阿密是「绿 + 白 + 粉彩」，不是黄沙）。
-    const inland = h >= 0 && h < 2.5 && coastDistanceOf(x, z) > 30;
-    const color = h < 0 ? g.sea : inland ? urbanGround : h < 2.5 ? g.sand : h < 9 ? g.lawn : h < 35 ? g.grass : g.rock;
+    const inland = !dryWorld && h >= 0 && h < 2.5 && coastDistanceOf(x, z) > 30;
+    const color = h < 0 ? (dryWorld ? g.rock : g.sea)
+      : aridWorld ? (h < 30 ? g.sand : g.rock)
+        : inland ? urbanGround : h < 2.5 ? g.sand : h < 9 ? g.lawn : h < 35 ? g.grass : g.rock;
     const index = (iz * 384 + ix) * 4;
     pixels.data[index] = color[0] + noise; pixels.data[index+1] = color[1] + noise; pixels.data[index+2] = color[2] + noise; pixels.data[index+3] = 255;
   }

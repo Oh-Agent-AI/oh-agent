@@ -1,6 +1,14 @@
 # Oh Agent Creator Studio 软件架构
 
-状态：P0 设计建议，待评审。适用于随 Oh Agent 发布的官方 City 和 Creator Studio 插件。产品假设、竞品研究和商店路线见[产品方案](AGENT_CITY_CREATOR_STORE_PRODUCT_2026_11_09.md)。
+## 代码落地状态（2026-11-11）
+
+Creator Studio 已作为官方插件 `creator-studio` 注册并有内嵌 WebView 首版：支持本地项目列表、竞速/收集模板、声明式规则 JSON 与场景对象 JSON 编辑、预览校验和 revision 提交。桌面端使用独立 SQLite Creator 项目库；插件请求路由只接受当前就绪且前台的 `creator-studio` 实例，数据库与分析 authority 分离。预览凭据绑定调用实例、项目、基线 revision 和内容，十分钟失效且最多保留 128 个活跃预览；提交采用 SQLite immediate transaction、revision CAS 和 operationId 幂等。持久操作结果使用稳定的本机 Creator principal，因而 Studio WebView 重开后仍可查询或幂等重试；短期预览仍绑定原 WebView 实例，不能被新实例接管。Rust 再校验规则字段、模型/锚点/静态盒体碰撞对象、变换数值、操作 allowlist 和预算。场景支持模型实例、锚点和显式静态盒体碰撞对象的 upsert/remove；碰撞对象目前通过 JSON 编辑，未提供独立图形碰撞编辑工具。`data-mcp` 已注册 Creator Studio 的项目读写工具，经官方插件 descriptor 的 `localCalls` 队列投递给当前前台 Studio；项目创建和 revision 提交仍要求 `--allow-local-writes`。MCP 读取按 UTF-8 字节分块，以适配本机插件调用队列的 64 KiB 单消息上限。
+
+City 布局快照、项目挂载/皮肤事务和本地不可变发布版本已接通。布局快照包含稳定锚点及有界、按 drive/walk 能力标记的道路连通链接，不包含几何坐标；SDK、Rust 项目服务、Studio 和 City 运行时据此一致检查绑定是否从入口可达。几何解析、净空与路线质量仍由 City 可信运行时判断。Creator 可发布已保存 revision；release 固定游戏规则、挂载、布局引用、注册的 City 皮肤 ID、场景模型实例、显式静态盒体碰撞代理、资产目录和对应摘要引用；GLB 字节仍由本机项目内容寻址存储持有，因此当前 release 不是独立可分发包。City 插件只能读取匹配当前布局版本的发布内容，并在小地图“小游戏”图层显示驾驶区域小游戏入口。运行时会重新校验游戏摘要、布局、锚点能力和事件类型，然后复用 City 驾驶租约与固定步规则运行器；小游戏开始时临时应用 release 皮肤，退出时恢复此前的 City 外观，不改用户皮肤偏好和地图版本。Creator release 的静态盒体碰撞代理有独立数量和尺寸限制，并与 City 世界 revision 合并进该次驾驶的冻结碰撞索引；视觉模型不会自动推断碰撞。Studio 发起的可视试玩会以同一份编译几何显示碰撞线框，并在试玩退出、失败或 City 场景失效时清理；碰撞代理仍通过 JSON 编辑，尚无独立图形编辑器，桌面视觉验收尚未完成。发布场景中的受限静态 GLB 通过宿主注册的 `ohcityasset://` 协议按 release 与内容摘要加载；协议只向当前活动的官方 City WebView 开放，读取时重新验证资产引用与字节摘要。动画、蒙皮、glTF 扩展、动态/网格碰撞和模型交互仍未支持。MCP 仍通过当前前台 Studio 操作项目；发布必须显式触发，草稿不会进入 City 运行面。
+
+按用户/项目隔离的授权 grants 与撤销、跨日授权恢复、Creator 视觉场景对象的真实渲染、步行位移运行时、无头断言/输入事件级试玩证据、Shop 安装/权益流程仍未实现。可视驾驶小游戏现会将有界终态摘要写入本机 SQLite，并通过 `creator_playtest_history` MCP 工具读取；该摘要由 City 客户端报告，不是防作弊或排行榜凭据。Studio“预览”仍是结构校验和差异摘要，不等于可视试玩；跨插件试玩往返只恢复 projectId/revision，桌面端 smoke test 尚未完成。当前代码切片尚不能称为完整 Creator Studio。
+
+状态：P0 架构规格，首个本地发布/City 运行切片已落地；授权 grants、跨插件可视交接与 Shop 尚未验收。适用于随 Oh Agent 发布的官方 City 和 Creator Studio 插件。产品假设、竞品研究和商店路线见[产品方案](AGENT_CITY_CREATOR_STORE_PRODUCT_2026_11_09.md)。
 
 先升级现有 City 的皮肤、场地与小游戏组合架构，再接官方 Shop。用两种皮肤、两个固定合成布局和两种玩法验证。玩家和 Agent 可以编辑同一份草稿，启动独立于草稿的试玩，退出后继续修改。正式可视试玩使用 City 的生产输入、相机和 HUD 路径。City 是用户入口，Studio 从 City 的挑战入口打开。
 
@@ -67,6 +75,14 @@ MCP 和 Studio UI 各有身份适配层，最终调用同一项目服务。适�
 
 ## 5. Studio 与 City 交接契约
 
+### P0 当前实现状态（2026-11-11）
+
+P0 已实现最小的跨 WebView 试玩往返：Studio 对已发布 release 调用 `creator.project.playtest.start`，Rust 将 `runId`、release、项目与 revision 写入本地 SQLite；宿主发出固定的 City 导航事件。活动的官方 City 实例通过 `city.creator.playtest.claim` 领取固定 release，运行小游戏；游戏完成、失败或玩家退出时，City 以单一终态调用 `city.creator.playtest.finish`，并附带有界的运行摘要。运行启动或内容预检失败时，City 可附带受限字符集的稳定 `failureCode`，让 Studio 与本地历史呈现可诊断的失败原因，而不把它伪装成运行证据。Rust 绑定并验证 release snapshot digest、项目 revision、world revision 与 game 引用后本地持久化。宿主随后发出固定的 Studio 返回事件，新的 Studio 实例调用 `creator.project.playtest.return_context`，读取一次性返回信息和摘要并重开原项目；Agent 可通过 MCP `creator_playtest_history` 按项目读取有界历史。
+
+当前返回信息只恢复 `projectId` 与已试玩的 `revision`，另附终态摘要；不会保留选中对象、面板、视口或原 WebView 实例。它是“关闭后重建 Studio 并恢复项目”的交接，不是多 WebView 并行、挂起/恢复或完整 `ReturnContextV1`。运行引用绑定 City 实例；未完成的 pending run 在 30 分钟后过期。自动导航、项目重开与后端状态机已有契约检查、定向 Rust 测试及前端构建验证；生产桌面端真实交互仍需人工 smoke test。
+
+### 后续目标契约
+
 ```text
 Studio → Host: requestPlaytest(projectId, revision, mode, returnContext)
 Host: 检查授权，固定快照，登记 runId 和返回上下文
@@ -94,7 +110,7 @@ Shop 是随 Oh Agent 分发的独立官方 WebView。Rust 宿主持有目录、�
 
 ## 7. 试玩证据和验收
 
-`PlaytestEvidenceV1` 记录运行 ID、模式、快照摘要和 revision、规则与运行时版本、seed、运行环境、终态和断言。失败时按可用性记录对象 ID、规则节点 ID、事件序号、tick 以及预期与实际结果。可视运行额外记录已触发的检查点、终局和失败位置等有界观察。工程验收单独检查正常玩家控制链、HUD 和资源释放。运行结果不写回输入快照，常规键鼠轨迹、原始日志和截图上传不进入该流程。
+无头 `PlaytestEvidenceV1` 由 City SDK 本地 `runHeadless` 生成。可视 `VisualPlaytestEvidenceV1` 当前持久化运行 ID（由表行关联）、release/project revision、release snapshot digest、world revision、game 引用、seed、tick、计数器、终态和可选稳定错误码。Rust 对字段 allowlist 与预算严格校验，结果标记为 `city-client-reported`；它可帮助 Agent 继续调试，不是服务器权威模拟、反作弊或排行榜证明。输入轨迹、原始日志、截图、提示文本和 Agent 分析数据均不保存。完整运行事件/断言证据仍待实现；运行结果不写回输入快照。
 
 | 验收层 | 通过条件 |
 |---|---|

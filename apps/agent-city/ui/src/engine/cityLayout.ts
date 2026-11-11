@@ -6,13 +6,15 @@ import { hydratePlanningPlan, serializePlanningPlan, type PlanningParameters } f
 import { deleteCityPlanSnapshot, readCityPlanSnapshot, writeCityPlanSnapshot } from "./planningWorker/cityPlanDiskCache";
 import type { PlanningWorkSnapshot } from "./planner/operationBudget";
 import { PLANNING_WORK_UNITS } from "./planner/operationBudget";
+import { DEFAULT_GEOGRAPHY_GENERATOR, validateGeographyBuildOptions, type GeographyGeneratorId, type GeographyGeneratorOptions } from "./planner/geography";
 import { hashSeed, RENDER_CAP, type CityModel } from "../cityModel";
-import { createCityPlan, type Biome, type Landmark } from "./cityPlan";
+import { bayOf, createCityPlan, createCityShape, type Biome, type Landmark } from "./cityPlan";
 import { gradeRoadLandings } from "./surface/roadLandingGrading";
 import { layoutAirport, type AirportPlan } from "./airportPlan";
 import { clearsHighways, polygonDistance, segmentDistance } from "./roadGeometry";
 import { scaleTierFor } from "./scaleTier";
 import { oceanDriveSplitZ, oceanDriveWall, seasideHotelLots, seasideStripContains, type CoastalConfig } from "./citySeaside";
+import { cityWorldBuildConfig, coastalConfigForWorld, type CityWorldProfileV1 } from "./cityWorldProfile";
 import { preserveDemandPaths, preserveDisplayJunctions, retainBridgeLandings } from "./planner/retention";
 import { diagnoseNetwork } from "./planner/intent";
 import type { ParcelFrontageProof } from "./planner/roadBlocks";
@@ -112,6 +114,13 @@ export const CIVIC_PER_SESSIONS = 45;
 export type BridgeLayout = { from: Vec2; to: Vec2; angle: number; length: number };
 export type PublicSite = Vec2 & { id: string; kind: "civic" | "station" | "stadium" | "park" | "tower" | "harbor"; radius: number; yaw: number; access?: import("./planner/jointSite").PlotAccess };
 export type CityLayout = {
+  features?: { coastline: boolean; ocean: boolean; river: boolean; islets: boolean };
+  geographyGeneratorId?: GeographyGeneratorId;
+  /** Serializable generator-specific parameters used to reproduce this world. */
+  geographyOptions?: GeographyGeneratorOptions[GeographyGeneratorId];
+  /** Stable composition identity for layouts created through the world-profile API.
+   * Generator/profile revisions must not reuse a rendered static scene. */
+  worldProfileKey?: string;
   /** Full accepted plan status; display pruning is a separate projection. */
   planningOutcome?: ReturnType<typeof import("./planner/solve").repairPlanningOutcome>;
   derivedFinalization?: { ok: boolean; reason?: string };
@@ -319,6 +328,27 @@ function aggregateOverflow(districtId: string, anchor: Vec2, overflow: CityModel
 /** 规划修复补丁的移楼钉子（planPatch.ts::layoutPinsFor）：buildingId → parcelId，只在档位一致时生效。 */
 export type LayoutPins = { scaleTier: number; parcels: ReadonlyMap<string, string> };
 
+function canonicalWorldValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalWorldValue);
+  if (!value || typeof value !== "object") return value;
+  const record = value as Record<string, unknown>;
+  return Object.fromEntries(Object.keys(record).sort().map((key) => [key, canonicalWorldValue(record[key])]));
+}
+
+function geographyOptionsForLayout(seed: number, coastal: CoastalConfig | null, generator: GeographyGeneratorId,
+  supplied?: GeographyGeneratorOptions[GeographyGeneratorId]): GeographyGeneratorOptions[GeographyGeneratorId] {
+  if (supplied !== undefined) return validateGeographyBuildOptions(generator, supplied);
+  if (generator !== "coastal-islands-v1") throw new Error("city-world-options-required");
+  return validateGeographyBuildOptions("coastal-islands-v1", { shape: createCityShape(seed), bay: bayOf(coastal) });
+}
+
+function biomeForLayout(seed: number, coastal: CoastalConfig | null, supplied?: Biome): Biome {
+  if (supplied !== undefined) return supplied;
+  if (coastal) return coastal.biome;
+  const legacyBiomes: Biome[] = ["tropical", "temperate", "boreal", "savanna", "eastasian"];
+  return legacyBiomes[Math.floor(hashSeed(`${seed}:biome`) * legacyBiomes.length) % legacyBiomes.length];
+}
+
 function layoutCoastalKey(coastal: CoastalConfig | null): string {
   return coastal
     ? `${coastal.profile}:v${coastal.version}:${[
@@ -330,8 +360,10 @@ function layoutCoastalKey(coastal: CoastalConfig | null): string {
       ].join(",")}`
     : "none";
 }
-function layoutPlanKey(seed: number, tier: number, coastal: CoastalConfig | null): string {
-  return `${seed}:${tier}:${layoutCoastalKey(coastal)}`;
+function layoutPlanKey(seed: number, tier: number, coastal: CoastalConfig | null, geographyGenerator: GeographyGeneratorId = DEFAULT_GEOGRAPHY_GENERATOR,
+  geographyOptions?: GeographyGeneratorOptions[GeographyGeneratorId], biome?: Biome): string {
+  const optionsKey = JSON.stringify(canonicalWorldValue(geographyOptionsForLayout(seed, coastal, geographyGenerator, geographyOptions)));
+  return `${seed}:${tier}:${geographyGenerator}:${biome ?? "seed-biome"}:${optionsKey}:${layoutCoastalKey(coastal)}`;
 }
 
 /** Warm the exact layout plan on a local worker before mounting a large city.
@@ -349,9 +381,14 @@ function rememberPlan(key: string, plan: ReturnType<typeof createCityPlan>, seed
 }
 
 export async function prepareCityLayout(model: CityModel, seed: number, coastal: CoastalConfig | null,
-  options: { signal: AbortSignal; workerFactory?: () => PlanningWorkerPort; onPlanningProgress?: (snapshot: PlanningWorkSnapshot) => void }): Promise<void> {
+  options: { signal: AbortSignal; workerFactory?: () => PlanningWorkerPort; onPlanningProgress?: (snapshot: PlanningWorkSnapshot) => void;
+    geographyGenerator?: GeographyGeneratorId; geographyOptions?: GeographyGeneratorOptions[GeographyGeneratorId]; biome?: Biome }): Promise<void> {
   if (options.signal.aborted) throw new Error("layout-preparation-cancelled");
-  const tier = scaleTierFor(layoutPopulation(model)), key = layoutPlanKey(seed, tier, coastal);
+  const geographyGenerator = options.geographyGenerator ?? DEFAULT_GEOGRAPHY_GENERATOR;
+  const geographyOptions = geographyOptionsForLayout(seed, coastal, geographyGenerator, options.geographyOptions);
+  const biome = biomeForLayout(seed, coastal, options.biome);
+  if ((geographyGenerator === "arid-dunes-v1") !== (biome === "arid")) throw new Error("city-world-biome-generator-mismatch");
+  const tier = scaleTierFor(layoutPopulation(model)), key = layoutPlanKey(seed, tier, coastal, geographyGenerator, geographyOptions, biome);
   if (plans.has(key)) {
     lastPrepareSource = "memory";
     warmOccupancyScratch(plans.get(key)!, seed, coastal);
@@ -360,7 +397,7 @@ export async function prepareCityLayout(model: CityModel, seed: number, coastal:
   // Existing synchronous planning has no aggregate work cap. Transport accounting
   // preserves that policy; worker cancellation/heartbeat remains independently bounded.
   const limits = Object.fromEntries(PLANNING_WORK_UNITS.map(unit => [unit, Number.MAX_SAFE_INTEGER])) as Record<typeof PLANNING_WORK_UNITS[number], number>;
-  const parameters: PlanningParameters = { seed, tier, coastal, limits };
+  const parameters = { seed, tier, coastal, geographyGenerator, geographyOptions, biome, limits } as PlanningParameters;
   try {
     const snapshot = await readCityPlanSnapshot(parameters);
     if (options.signal.aborted) throw new Error("layout-preparation-cancelled");
@@ -384,11 +421,15 @@ export async function prepareCityLayout(model: CityModel, seed: number, coastal:
 }
 
 /** Cache the geography plan without occupying parcels — same LRU as layoutCity. */
-export function ensureCityPlan(seed: number, tier: number, coastal: CoastalConfig | null = null) {
-  const key = layoutPlanKey(seed, tier, coastal);
+export function ensureCityPlan(seed: number, tier: number, coastal: CoastalConfig | null = null, geographyGenerator: GeographyGeneratorId = DEFAULT_GEOGRAPHY_GENERATOR,
+  geographyOptions?: GeographyGeneratorOptions[GeographyGeneratorId], biome?: Biome) {
+  const resolvedGeographyOptions = geographyOptionsForLayout(seed, coastal, geographyGenerator, geographyOptions);
+  const resolvedBiome = biomeForLayout(seed, coastal, biome);
+  if ((geographyGenerator === "arid-dunes-v1") !== (resolvedBiome === "arid")) throw new Error("city-world-biome-generator-mismatch");
+  const key = layoutPlanKey(seed, tier, coastal, geographyGenerator, resolvedGeographyOptions, resolvedBiome);
   let plan = plans.get(key);
   if (plan) { plans.delete(key); plans.set(key, plan); warmOccupancyScratch(plan, seed, coastal); return plan; }
-  plan = createCityPlan(seed, tier, coastal);
+  plan = createCityPlan(seed, tier, coastal, { geographyGenerator, geographyOptions: resolvedGeographyOptions, biome: resolvedBiome });
   if (plan.derivedFinalization.ok && plan.capacity.satisfied && plan.planningOutcome.status !== "failed") {
     plans.set(key, plan);
     while (plans.size > CITY_PLAN_CACHE_CONFIG.maxEntries) plans.delete(plans.keys().next().value!);
@@ -397,19 +438,26 @@ export function ensureCityPlan(seed: number, tier: number, coastal: CoastalConfi
   return plan;
 }
 
-export function layoutCity(model: CityModel, previous?: CityLayout | null, seed = 1927, coastal: CoastalConfig | null = null, backdrop: BackdropMode = "auto", pins: LayoutPins | null = null): CityLayout {
+export function layoutCity(model: CityModel, previous?: CityLayout | null, seed = 1927, coastal: CoastalConfig | null = null, backdrop: BackdropMode = "auto", pins: LayoutPins | null = null,
+  geographyGenerator: GeographyGeneratorId = DEFAULT_GEOGRAPHY_GENERATOR, suppliedGeographyOptions?: GeographyGeneratorOptions[GeographyGeneratorId], biome?: Biome): CityLayout {
   const clock = beginLayoutClock();
+  const geographyOptions = geographyOptionsForLayout(seed, coastal, geographyGenerator, suppliedGeographyOptions);
+  const resolvedBiome = biomeForLayout(seed, coastal, biome);
+  if ((geographyGenerator === "arid-dunes-v1") !== (resolvedBiome === "arid")) throw new Error("city-world-biome-generator-mismatch");
+  const sameWorld = !!(previous && previous.seed === seed && previous.geographyGeneratorId === geographyGenerator
+    && previous.biome === resolvedBiome && previous.coastalConfigKey === layoutCoastalKey(coastal)
+    && JSON.stringify(canonicalWorldValue(previous.geographyOptions)) === JSON.stringify(canonicalWorldValue(geographyOptions)));
   // 规模档位由全窗会话总数分档，不由当前已载入页：分页追加不得换档重排全城。
   const tier = scaleTierFor(layoutPopulation(model));
   // plans 缓存键携带海滨配置身份（profile+version）：同 seed 不同配置不得复用旧规划。
   // 缓存键含参数指纹：同 profile/version 改参数（如 maxCoastalHeight）必须产生
   // 新规划——曾只带 profile:version，参数变化时复用旧海滨带（审查 #5 复现）。
-  const planKey = layoutPlanKey(seed, tier, coastal);
+  const planKey = layoutPlanKey(seed, tier, coastal, geographyGenerator, geographyOptions, resolvedBiome);
   let plan = plans.get(planKey);
   const planCached = !!plan;
   if (plan) { plans.delete(planKey); plans.set(planKey, plan); }
   else {
-    plan = createCityPlan(seed, tier, coastal);
+    plan = createCityPlan(seed, tier, coastal, { geographyGenerator, geographyOptions, biome: resolvedBiome });
     if (plan.derivedFinalization.ok && plan.capacity.satisfied && plan.planningOutcome.status !== "failed") {
       plans.set(planKey, plan);
       while (plans.size > CITY_PLAN_CACHE_CONFIG.maxEntries) plans.delete(plans.keys().next().value!);
@@ -491,7 +539,7 @@ export function layoutCity(model: CityModel, previous?: CityLayout | null, seed 
   // 跨档（会话数越过 400 的整数倍）：岛按原形状放大，地块编号对应的位置变了，旧地址不能原样复用——
   // 按放大比例把每栋楼映射到「放大后的原位置」最近的空地块（SPEC §4.2），城市看起来是整体长大而不是整体洗牌。
   // 先落位的是更早开工的楼（占最好的位置）；映射不到（半径 > 120 内没有空地块）的留给后面的常规落位。
-  if (previous?.seed === seed && previous.scaleTier !== tier && previous.islandRadius > 0) {
+  if (sameWorld && previous!.scaleTier !== tier && previous!.islandRadius > 0) {
     const ratio = plan.islandRadius / previous.islandRadius;
     const old = new Map(previous.districts.flatMap((district) => [...district.slots]));
     const CELL = 40;
@@ -522,7 +570,7 @@ export function layoutCity(model: CityModel, previous?: CityLayout | null, seed 
       }
     }
   }
-  if (previous?.seed === seed && previous.scaleTier === tier) {
+  if (sameWorld && previous!.scaleTier === tier) {
     const old = new Map(previous.districts.flatMap((district) => [...district.slots]));
     for (const building of model.buildings) {
       const parcel = old.get(building.id);
@@ -621,7 +669,7 @@ export function layoutCity(model: CityModel, previous?: CityLayout | null, seed 
   const placementReport: NonNullable<CityLayout["placementReport"]> = [];
   const placementBudget = { limit: LAYOUT_PLACEMENT_WORK_CONFIG.terrainSampleBudget, spent: 0, remaining: LAYOUT_PLACEMENT_WORK_CONFIG.terrainSampleBudget };
   const occupiedParcels = () => parcels.filter((parcel) => used.has(parcel.id));
-  const sameGeography = !!(previous && previous.seed === seed && previous.scaleTier === tier);
+  const sameGeography = !!(sameWorld && previous!.scaleTier === tier);
   const prevLayout = sameGeography ? previous : null;
   const placementExtras: Pick<BlockPlacementInput, "roadIndex" | "roadPolygons" | "roadPolygonIndex"> = { roadIndex: scratch.roadIndex };
   const envOf = (occupied: readonly Parcel[]) => layoutPlacementEnvironment(plan, occupied, placementExtras);
@@ -985,8 +1033,32 @@ export function layoutCity(model: CityModel, previous?: CityLayout | null, seed 
     aggregatedSessionCount: massing.reduce((sum, block) => sum + block.count, 0) });
   clock.mark("airportAndCapacity");
   lastLayoutTimings = clock.finish(planCached);
-  return { ...plan, ...grown, roadEdges: airportRoads.roadEdges as RoadEdge[], roadNodes: airportRoads.roadNodes as RoadNode[], airport: airportRoads.airport,
+  return { ...plan, ...grown, geographyGeneratorId: geographyGenerator, geographyOptions, roadEdges: airportRoads.roadEdges as RoadEdge[], roadNodes: airportRoads.roadNodes as RoadNode[], airport: airportRoads.airport,
     landmarks: [...plan.landmarks, ...scratch.villas!], culDeSacEnds, districtLandmarks, districts, seed, massing, civics, gardens, placementReport, placementBudget, sessionCapacity, boatLanes: [], decorMountains: [], boatLoops, seaMountains, coastalConfigKey: layoutCoastalKey(coastal), coastalConfig: coastal, contextBuildings: contextOffRoad };
+}
+
+/** Public world-composition entry point. Callers select a versioned world
+ * profile; generator-specific configuration stays inside this adapter.
+ */
+export function layoutCityForWorld(model: CityModel, previous: CityLayout | null | undefined, seed: number,
+  profile: CityWorldProfileV1, backdrop: BackdropMode = "auto", pins: LayoutPins | null = null): CityLayout {
+  const world = cityWorldBuildConfig(profile, createCityShape(seed));
+  const profileParameters = JSON.stringify(canonicalWorldValue(profile.geography.parameters));
+  const worldProfileKey = `${profile.id}@${profile.version}:${world.geographyGenerator}:${world.biome}:${world.themeId}:${profileParameters}`;
+  const reusablePrevious = previous?.worldProfileKey === worldProfileKey ? previous : null;
+  const layout = layoutCity(model, reusablePrevious, seed, coastalConfigForWorld(profile), backdrop, pins,
+    world.geographyGenerator, world.geographyOptions, world.biome);
+  return { ...layout, worldProfileKey };
+}
+
+/** Worker prewarm counterpart to `layoutCityForWorld`, using the same selected
+ * profile so first-paint and direct-layout paths share one world identity.
+ */
+export function prepareCityWorldLayout(model: CityModel, seed: number, profile: CityWorldProfileV1,
+  options: { signal: AbortSignal; workerFactory?: () => PlanningWorkerPort; onPlanningProgress?: (snapshot: PlanningWorkSnapshot) => void }): Promise<void> {
+  const world = cityWorldBuildConfig(profile, createCityShape(seed));
+  return prepareCityLayout(model, seed, coastalConfigForWorld(profile), { ...options, geographyGenerator: world.geographyGenerator,
+    geographyOptions: world.geographyOptions, biome: world.biome });
 }
 
 /**

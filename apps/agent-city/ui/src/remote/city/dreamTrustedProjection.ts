@@ -1,5 +1,6 @@
 import { encodeDreamSnapshot, type DreamSnapshotEnvelopeV1 } from "./dreamSnapshotCodec";
 import { parseDreamCitySnapshot, type DreamCitySnapshotV1 } from "./dreamSnapshotContract";
+import { GEOGRAPHY_GENERATOR_IDS, validateGeographyBuildOptions, type GeographyGeneratorId } from "../../engine/planner/geography";
 
 const MAX_PLAIN = 4 * 1024 * 1024;
 const MAX_ENVELOPE = 230 * 1024;
@@ -132,10 +133,22 @@ function validateGeometry(data: any): void {
   if (!Number.isSafeInteger(data.seed) || Number(data.seed) < 0 || Number(data.seed) > Number.MAX_SAFE_INTEGER
       || !Number.isInteger(data.scaleTier) || Number(data.scaleTier) < 1 || Number(data.scaleTier) > 32
       || !str(data.activityKey) || !/^dream-publication-[a-f0-9]{32}$/.test(data.activityKey)
-      || !["tropical", "temperate", "boreal", "savanna", "eastasian"].includes(String(data.biome)) || !point(data.core) || !terrainMeta(data.terrain)
+      || !["tropical", "temperate", "boreal", "savanna", "eastasian", "arid"].includes(String(data.biome)) || !point(data.core) || !terrainMeta(data.terrain)
       || !finite(data.islandRadius, 10, 100_000) || !finite(data.extent, 10, 200_000) || !finite(data.boundsRadius, 0.01, 200_000)
-      || !path(data.coast, 8) || !path(data.river) || !path(data.districtAnchors) || !paths(data.highways) || !paths(data.boatLoops)
+      || !(data.geographyGeneratorId === "arid-dunes-v1" ? arr(data.coast) && data.coast.length === 0 : path(data.coast, 8)) || !path(data.river) || !path(data.districtAnchors) || !paths(data.highways) || !paths(data.boatLoops)
       || !(data.coastRoads === null || paths(data.coastRoads)) || !(data.culDeSacEnds === null || path(data.culDeSacEnds))) fail("invalid_dream_geometry");
+  const hasGenerator = Object.hasOwn(data, "geographyGeneratorId") || Object.hasOwn(data, "geographyOptions")
+    || Object.hasOwn(data, "features") || Object.hasOwn(data, "worldProfileKey");
+  if (hasGenerator) {
+    const generator = data.geographyGeneratorId;
+    if (!(GEOGRAPHY_GENERATOR_IDS as readonly string[]).includes(generator) || !exact(data.features, ["coastline", "ocean", "river", "islets"])
+        || Object.values(data.features).some(value => typeof value !== "boolean")
+        || !str(data.worldProfileKey) || data.worldProfileKey.length < 1 || data.worldProfileKey.length > 512) fail("invalid_dream_geometry");
+    try { validateGeographyBuildOptions(generator as GeographyGeneratorId, data.geographyOptions); } catch { fail("invalid_dream_geometry"); }
+    if ((generator === "arid-dunes-v1") !== (data.biome === "arid")
+        || (generator === "arid-dunes-v1" && Object.values(data.features).some(Boolean))
+        || (generator === "coastal-islands-v1" && (data.features.coastline !== true || data.features.ocean !== true))) fail("invalid_dream_geometry");
+  } else if (data.biome === "arid") fail("invalid_dream_geometry");
   const bounds = data.urbanBounds;
   if (!exact(bounds, ["left", "right", "north", "south"]) || ["left", "right", "north", "south"].some(k => !finite(bounds[k], -200_000, 200_000))
       || Number(bounds.left) > Number(bounds.right) || Number(bounds.north) > Number(bounds.south)) fail("invalid_dream_geometry");
@@ -306,6 +319,9 @@ function validConfig(config: any, key: any): boolean {
 }
 
 function validateCoastal(data: any): void {
+  if (data.geographyGeneratorId === "arid-dunes-v1" && (data.coastalConfig !== null
+      || !(data.coastalConfigKey === "none" || (str(data.coastalConfigKey) && /^dream-publication-[a-f0-9]{32}$/.test(data.coastalConfigKey))))) fail("invalid_dream_coast");
+  if (data.geographyGeneratorId === "arid-dunes-v1" && data.seaside !== null) fail("invalid_dream_coast");
   if (!validConfig(data.coastalConfig, data.coastalConfigKey)) fail("invalid_dream_coast");
   const nodes = data.roadNodes as any[];
   if (!arr(nodes)) fail("invalid_dream_coast");
@@ -396,8 +412,9 @@ export function validateDreamCandidate(value: any): asserts value is DreamCitySn
   if (!exact(camera, ["position", "target", "up", "fov"]) || !finite(camera.fov, 10, 120)
       || ["position", "target", "up"].some(field => !arr(camera[field]) || camera[field].length !== 3 || !camera[field].every((n: unknown) => finite(n, -200_000, 200_000)))) fail("invalid_dream_layout");
   const data = layout.data as Obj;
-  const fields = ["scaleTier", "biome", "core", "islandRadius", "seed", "districts", "blocks", "roadNodes", "roadEdges", "activityKey", "coastRoads", "culDeSacEnds", "junctionRings", "highwayRamps", "districtLandmarks", "terrain", "extent", "coast", "river", "publicSites", "parkTrees", "urbanBounds", "bridges", "boatLanes", "boundsRadius", "decorMountains", "districtAnchors", "highways", "massing", "civics", "landmarks", "seaside", "airport", "coastalConfigKey", "coastalConfig", "contextBuildings", "gardens", "boatLoops", "seaMountains"];
-  if (!exact(data, fields)) fail("invalid_dream_layout");
+  const legacyFields = ["scaleTier", "biome", "core", "islandRadius", "seed", "districts", "blocks", "roadNodes", "roadEdges", "activityKey", "coastRoads", "culDeSacEnds", "junctionRings", "highwayRamps", "districtLandmarks", "terrain", "extent", "coast", "river", "publicSites", "parkTrees", "urbanBounds", "bridges", "boatLanes", "boundsRadius", "decorMountains", "districtAnchors", "highways", "massing", "civics", "landmarks", "seaside", "airport", "coastalConfigKey", "coastalConfig", "contextBuildings", "gardens", "boatLoops", "seaMountains"];
+  const fields = [...legacyFields.slice(0, 5), "features", "geographyGeneratorId", "geographyOptions", "worldProfileKey", ...legacyFields.slice(5)];
+  if (!exact(data, fields) && !exact(data, legacyFields)) fail("invalid_dream_layout");
   validateGeometry(data); validateDistricts(data, model); validateParcels(data, buildings); validateFacilities(data, model);
   validateFacilityReferences(data); validateCoastal(data); validateAirport(data);
   // Keep the existing full visitor parser as a second independent compatibility/bounds pass.

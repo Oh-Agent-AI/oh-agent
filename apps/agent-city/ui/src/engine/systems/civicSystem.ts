@@ -5,6 +5,7 @@
 import * as THREE from "three";
 import { hashSeed, type CityModel } from "../../cityModel";
 import type { CityLayout } from "../cityLayout";
+import type { CityTheme } from "../cityTheme";
 import { paletteForDistrict } from "../cityTextures";
 import { civicFlagLocalX, civicGroundFootprint, stationCanopyLocalZ, stationEntranceLocal, stationHallLocal } from "../models/publicSiteGeometry";
 import { BOX, CYLINDER, selfLitMaterial } from "../render/shared";
@@ -16,6 +17,7 @@ import { gardenFlagPosition, GARDEN_RENDER_GEOMETRY, CIVIC_RENDER_GEOMETRY } fro
 export interface CivicSystemHost {
   model: CityModel;
   layout: CityLayout;
+  theme: CityTheme;
   group: THREE.Group;
   water: THREE.Mesh;
   disposables: Array<{ dispose: () => void }>;
@@ -109,7 +111,7 @@ export function buildPublicSites(host: CivicSystemHost): void {
         const fx = civicFlagLocalX(r, i, districts.length);
         const pole = 6 + 14 * (district.visualFlagShare ?? district.sessionCount / total);
         cyl(fx, 0, r * 0.78, 0.15, pole, "#d9d9d4");
-        box(fx + 1.2, pole - 1.6, r * 0.78, 2.4, 1.4, 0.08, paletteForDistrict(host.model, district.id).accent);
+        box(fx + 1.2, pole - 1.6, r * 0.78, 2.4, 1.4, 0.08, paletteForDistrict(host.model, district.id, host.theme).accent);
       });
       // 异常信标：任一城区有异常时穹顶顶上亮信标（critical 红 / warning 琥珀 / info 青），点击市政厅看是哪个城区。
       const severities = host.model.districts.map((d) => d.anomaly?.severity).filter(Boolean);
@@ -283,7 +285,7 @@ export function buildFlags(host: CivicSystemHost): void {
       x: flag.x,
       z: flag.z,
       y: garden.y, yaw: garden.yaw, pole: 7.5, cloth: 1,
-      color: paletteForDistrict(host.model, garden.districtId).accent,
+      color: paletteForDistrict(host.model, garden.districtId, host.theme).accent,
     });
   }
   const tower = host.layout.publicSites.find((site) => site.kind === "tower");
@@ -377,7 +379,7 @@ export function buildGardens(host: CivicSystemHost): void {
     }
     // 亭：四柱 + 方台 + 攒尖顶（执行环境强调色），在湖的另一侧。
     const pavilion = at(W * 0.34, -D * 0.18);
-    const roofColor = new THREE.Color(paletteForDistrict(host.model, garden.districtId).accent).lerp(new THREE.Color("#5a3b2c"), 0.35).getStyle();
+    const roofColor = new THREE.Color(paletteForDistrict(host.model, garden.districtId, host.theme).accent).lerp(new THREE.Color("#5a3b2c"), 0.35).getStyle();
     boxes.push({ x: pavilion.x, y: base + 0.25, z: pavilion.z, sx: 5.4, sy: 0.5, sz: 5.4, yaw: garden.yaw, tilt: 0, color: "#d8d1c2" });
     for (const [dx, dz] of [[-2, -2], [2, -2], [-2, 2], [2, 2]]) {
       const q = at(W * 0.34 + dx, -D * 0.18 + dz);

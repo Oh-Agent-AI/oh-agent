@@ -58,6 +58,11 @@ export const BIOME_FLORA: Record<Biome, FloraSpecies[]> = {
     { url: pineRoundUrl, height: m(9), weight: 2 },                    // 园林松
     { url: bushUrl, height: m(1.5), weight: 2 },
   ],
+  arid: [
+    { url: plateauUrl, height: m(4), weight: 2, tint: "#a58c57" },
+    { url: thinUrl, height: m(5), weight: 1, tint: "#927447" },
+    { url: bushTriangleUrl, height: m(1.5), weight: 3, tint: "#9c8851" },
+  ],
 };
 
 const cache = new Map<string, Promise<THREE.BufferGeometry | null>>();

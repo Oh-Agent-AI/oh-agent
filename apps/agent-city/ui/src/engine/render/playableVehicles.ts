@@ -58,6 +58,9 @@ export function parkedPlane(diagonal: number, disposables: Array<{ dispose: () =
 export function parkedMechaSquad(disposables: Array<{ dispose: () => void }>): THREE.Group {
   const group = new THREE.Group();
   group.name = PLAYABLE_MECHA_NAME;
+  // Parked actors are not animated; CityParts holds their model upgrades while
+  // a driving snapshot is leased. Their current posed geometry remains solid.
+  group.userData.cityDrivingStaticPose = true;
   const spacing = 22;
   for (const [index, make] of [createAssault, createGunner, createSupport].entries()) {
     const mech = make();
