@@ -156,7 +156,10 @@ fn game_template(template: &str) -> Result<Value, &'static str> {
     let value = match template {
         "checkpoint-race" => json!({
             "schemaVersion":1,"id":"creator.checkpoint-race","rulesVersion":1,
-            "slots":{"points":{"kind":"zone","min":2,"max":8,"requires":["drive"]}},
+            // points 下限必须与完成条件一致：计数器 next 的上限与 finish 的判定都是
+            // 固定 3（counter.eq value:3）。曾允许 min:2——绑两个检查点的竞速永远
+            // 无法完成（计数到 2 就封顶，finish 条件够不着）。
+            "slots":{"points":{"kind":"zone","min":3,"max":8,"requires":["drive"]}},
             "integerParameters":{"timeLimitTicks":{"min":60,"max":36000,"default":2700}},
             "rules":{"counters":{"next":{"initial":0,"max":3}},"nodes":[
                 {"id":"start-timer","on":{"type":"run.started"},"actions":[{"op":"timer.start","timerId":"timeout","durationTicks":{"parameter":"timeLimitTicks"}}]},

@@ -355,23 +355,24 @@ function App() {
 
   return <main className="studio">
     <header><div><span className="eyebrow">OH AGENT · CITY SDK</span><h1>Creator Studio</h1><p>用 Agent 或编辑器创建可验证的 City 小游戏。</p></div><span className="badge">{browserPreview ? "预览夹具 · 合成数据" : "本机项目"}</span></header>
-    <section className="new-project">
-      <label>新建模板<select value={template} disabled={busy} onChange={event => setTemplate(event.target.value)}><option value="checkpoint-race">驾驶检查点竞速</option><option value="collect-one">驾驶区域收集</option></select></label>
-      <label>绑定 City 世界<select value={worldRevision} disabled={busy || layouts.length === 0} onChange={event => setWorldRevision(event.target.value)}>{layouts.map(layout => <option key={layout.worldRevision} value={layout.worldRevision}>{layout.layoutId} · seed {layout.seed} · {layout.anchorCount} 个锚点</option>)}</select></label>
-      <button disabled={busy || !worldRevision} onClick={() => guardDrafts("create", () => void createProject())}>{switchConfirm === "create" ? "确认丢弃草稿并新建" : "新建项目"}</button>
-      {layouts.length === 0 && <p className="muted">尚无 City 布局快照。先打开 City 生成道路地图，再回到 Studio。</p>}
-    </section>
-    <section className="viewport" aria-label="City 实时视口">
-      <div className="section-title">City 实时视口{viewportSeed !== null ? ` · seed ${viewportSeed}` : ""}</div>
-      {viewportSeed !== null
-        ? <div className="viewport-frame"><CityViewport seed={viewportSeed} worldProfile={worldProfile} /></div>
-        : <div className="empty viewport-empty">{viewportUnavailable
-          ? "当前项目没有绑定的 City 布局快照，视口无法恢复它编辑的城市。请在 City 中重新生成道路地图后新建项目。"
-          : "先打开 City 生成道路地图，这里会显示同一座实时城市。"}</div>}
-    </section>
     <div className="workspace">
-      <aside><div className="section-title">我的项目</div>{projects.length === 0 ? <p className="muted">还没有项目。创建一个模板开始。</p> : projects.map(row => <button className={`project-row ${project?.projectId === row.projectId ? "selected" : ""} ${switchConfirm === row.projectId ? "confirm" : ""}`} key={row.projectId} disabled={busy} onClick={() => guardDrafts(row.projectId, () => void openProject(row.projectId))}><strong>{row.title}</strong><span>revision {row.revision}</span></button>)}</aside>
-      <section className="editor">
+      <section className="viewport" aria-label="City 实时视口">
+        <div className="viewport-head"><div className="section-title">City 实时视口{viewportSeed !== null ? ` · seed ${viewportSeed}` : ""}</div></div>
+        {viewportSeed !== null
+          ? <div className="viewport-frame"><CityViewport seed={viewportSeed} worldProfile={worldProfile} /></div>
+          : <div className="empty viewport-empty">{viewportUnavailable
+            ? "当前项目没有绑定的 City 布局快照，视口无法恢复它编辑的城市。请在 City 中重新生成道路地图后新建项目。"
+            : "先打开 City 生成道路地图，这里会显示同一座实时城市。"}</div>}
+      </section>
+      <aside className="panel">
+        <section className="new-project">
+          <label>新建模板<select value={template} disabled={busy} onChange={event => setTemplate(event.target.value)}><option value="checkpoint-race">驾驶检查点竞速</option><option value="collect-one">驾驶区域收集</option></select></label>
+          <label>绑定 City 世界<select value={worldRevision} disabled={busy || layouts.length === 0} onChange={event => setWorldRevision(event.target.value)}>{layouts.map(layout => <option key={layout.worldRevision} value={layout.worldRevision}>{layout.layoutId} · seed {layout.seed} · {layout.anchorCount} 个锚点</option>)}</select></label>
+          <button disabled={busy || !worldRevision} onClick={() => guardDrafts("create", () => void createProject())}>{switchConfirm === "create" ? "确认丢弃草稿并新建" : "新建项目"}</button>
+          {layouts.length === 0 && <p className="muted">尚无 City 布局快照。先打开 City 生成道路地图，再回到 Studio。</p>}
+        </section>
+        <div className="projects"><div className="section-title">我的项目</div>{projects.length === 0 ? <p className="muted">还没有项目。创建一个模板开始。</p> : projects.map(row => <button className={`project-row ${project?.projectId === row.projectId ? "selected" : ""} ${switchConfirm === row.projectId ? "confirm" : ""}`} key={row.projectId} disabled={busy} onClick={() => guardDrafts(row.projectId, () => void openProject(row.projectId))}><strong>{row.title}</strong><span>revision {row.revision}</span></button>)}</div>
+        <section className="editor">
         <div className="section-title">{project ? `${project.projectId} · revision ${project.revision}` : "选择一个项目"}</div>
         {project ? <>
           <p className="muted">编辑声明式规则 JSON。脚本和未知动作会被拒绝。</p>
@@ -408,7 +409,8 @@ function App() {
           </details>
         </> : <div className="empty">选择左侧项目，或创建一个小游戏模板。</div>}
         {message && <p className="status" role="status">{message}</p>}
-      </section>
+        </section>
+      </aside>
     </div>
   </main>;
 }

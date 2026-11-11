@@ -1,27 +1,28 @@
 :root { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #eaf1f4; background: #11191d; font-synthesis: none; }
 * { box-sizing: border-box; }
-body { margin: 0; min-width: 700px; min-height: 100vh; background: radial-gradient(ellipse at 12% 0%, #20383b 0, transparent 44%), #11191d; }
+body { margin: 0; min-width: 960px; height: 100vh; overflow: hidden; background: radial-gradient(ellipse at 12% 0%, #20383b 0, transparent 44%), #11191d; }
 button, select, textarea, input { font: inherit; }
 button { border: 1px solid #86e7cf; background: #86e7cf; color: #10211e; border-radius: 8px; padding: 9px 13px; font-weight: 650; cursor: pointer; }
 button:disabled { opacity: .45; cursor: default; }
-.studio { max-width: 1320px; margin: 0 auto; padding: 28px 32px; }
-header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 1px solid #304044; padding-bottom: 20px; }
+.studio { display: flex; flex-direction: column; height: 100vh; }
+header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 1px solid #304044; padding: 14px 20px; }
 .eyebrow { color: #86e7cf; font-size: 11px; letter-spacing: .13em; font-weight: 700; }
 h1 { margin: 7px 0 5px; font-size: 27px; letter-spacing: -.03em; }
 header p, .muted { color: #99aeb3; font-size: 13px; margin: 0; }
 .badge { border: 1px solid #43565a; color: #b4c4c7; border-radius: 99px; padding: 6px 10px; font-size: 12px; }
-.new-project { display: flex; align-items: end; gap: 12px; padding: 18px 0; border-bottom: 1px solid #304044; flex-wrap: wrap; }
+.new-project { display: flex; align-items: end; gap: 12px; padding-bottom: 14px; border-bottom: 1px solid #304044; flex-wrap: wrap; }
 label { display: grid; gap: 6px; color: #9eb3b7; font-size: 12px; }
 select, textarea { color: #eaf1f4; background: #172226; border: 1px solid #3d5155; border-radius: 8px; padding: 9px 10px; }
 input { color: #eaf1f4; background: #172226; border: 1px solid #3d5155; border-radius: 8px; padding: 9px 10px; }
-.workspace { display: grid; grid-template-columns: 260px minmax(0, 1fr); min-height: 560px; }
-aside { border-right: 1px solid #304044; padding: 18px 14px 18px 0; }
-.editor { padding: 18px 0 18px 20px; display: flex; flex-direction: column; min-height: 560px; }
+/* 视口为主画布（左），新建/项目/编辑器收进右侧面板——编辑时城市与操作同屏。 */
+.workspace { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 420px; }
+.panel { border-left: 1px solid #304044; padding: 14px 16px 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+.editor { padding: 0; display: flex; flex-direction: column; min-height: 0; }
 .section-title { color: #d8e4e7; font-size: 13px; font-weight: 700; margin-bottom: 13px; }
 .project-row { width: 100%; background: transparent; color: #dce7e9; border: 1px solid transparent; text-align: left; display: grid; gap: 4px; margin-bottom: 5px; }
 .project-row span { color: #8fa5a9; font-size: 11px; font-weight: 400; }
 .project-row.selected { border-color: #4c7770; background: #1a2c2d; }
-textarea { margin-top: 13px; flex: 1; min-height: 420px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.55; tab-size: 2; }
+textarea { margin-top: 13px; flex: 1; min-height: 240px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.55; tab-size: 2; }
 .actions { display: flex; justify-content: end; gap: 8px; padding-top: 12px; flex-wrap: wrap; }
 button.secondary { color: #dce8e8; background: #1c2a2e; border-color: #486064; }
 .empty { display: grid; place-items: center; flex: 1; border: 1px dashed #35494d; border-radius: 10px; color: #8fa5a9; font-size: 13px; }
@@ -35,8 +36,9 @@ button.secondary { color: #dce8e8; background: #1c2a2e; border-color: #486064; }
 .composition .muted { line-height: 1.5; }
 .anchor-catalog { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .anchor-catalog code { color: #b6d8d2; background: #1a2c2d; border: 1px solid #30494a; border-radius: 6px; padding: 4px 7px; font-size: 11px; }
-.viewport { padding: 18px 0; border-bottom: 1px solid #304044; }
-.viewport-frame { height: 460px; border: 1px solid #30464a; border-radius: 12px; overflow: hidden; background: #0a1321; }
+.viewport { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 14px; gap: 10px; }
+.viewport-head { display: flex; align-items: center; justify-content: space-between; }
+.viewport-frame { flex: 1; min-height: 0; border: 1px solid #30464a; border-radius: 12px; overflow: hidden; background: #0a1321; }
 .viewport-frame .city-app { border-radius: 12px; }
 .viewport-empty { min-height: 120px; }
 .project-row.confirm { border-color: #c9803e; background: #2a2013; }
