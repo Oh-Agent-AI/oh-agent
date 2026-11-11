@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { buildCityModel, type CitySessionRow } from "./cityModel";
+import { buildCityModel } from "./cityModel";
 import { prepareCityWorldLayout } from "./engine/cityLayout";
 import { readCityAppearancePreference, type CityWorldProfileV1 } from "./engine/cityWorldProfile";
 import { createCityWorldProfileCallHandlers } from "./engine/cityWorldProfileCalls";
@@ -40,6 +40,8 @@ import type { PlayTarget } from "./engine/render/playableVehicles";
 import { useRoadAudit } from "./game/useRoadAudit";
 import { RoadAuditPanel } from "./game/ui/RoadAuditPanel";
 import type { PlanningWorkSnapshot } from "./engine/planner/operationBudget";
+import { projectionSessionRows } from "./viewport/projectionRows";
+import { readCityWindowDays, writeCityWindowDays } from "./viewport/windowPreference";
 import { createDreamSnapshotCandidate } from "./remote/city/dreamSnapshotCandidate";
 import { prepareDreamSnapshotForPublication } from "./remote/city/dreamTrustedProjection";
 import type { DreamSnapshotEnvelopeV1 } from "./remote/city/dreamSnapshotCodec";
@@ -83,10 +85,13 @@ export function CityApp() {
     const params = new URLSearchParams(location.search);
     const days = Number(params.get("windowDays"));
     // The browser landing starts with its mock window, avoiding a second full
-    // scene build. The native default remains the latest 500 sessions/year.
+    // scene build. The native default follows the shared window preference so
+    // the Studio viewport rebuilds the same layout after a restart.
     return embedded() && params.get("presentation") === "landing" && windowOptions.includes(days as WindowDays)
-      ? days as WindowDays : 366;
+      ? days as WindowDays : readCityWindowDays();
   });
+  // 窗口偏好同源共享给 Studio 视口；City 改窗口后两边装出同一座布局。
+  useEffect(() => { writeCityWindowDays(windowDays); }, [windowDays]);
   const [status, setStatus] = useState("正在载入 City 插槽数据…");
   const [sceneUnavailable, setSceneUnavailable] = useState(false);
   const [dataLoaded, setDataLoaded] = useState(false);
@@ -202,7 +207,19 @@ export function CityApp() {
           version: 1, instanceId, requestId: `city-layout:${view.worldRevision.slice(0, 32)}`,
           method: "city.creator.layout.publish", payload: snapshot,
         } });
-        if (!cancelled && response.ok) publishedCreatorLayouts.current.add(view.worldRevision);
+        if (!cancelled && response.ok) {
+          publishedCreatorLayouts.current.add(view.worldRevision);
+          // 补丁随布局发布一起进入 creator 服务（切片 2 的导入源，按 seed+摘要幂等）。
+          // 补丁编辑不改变 worldRevision，这里的保证是「布局发布时补丁是新的」；
+          // 修复会话保存后自动续发在下一增量接入。
+          const patch = engineRef.current?.planPatch;
+          if (patch) {
+            void invokeHost<{ ok: boolean }>("plugin_request", { request: {
+              version: 1, instanceId, requestId: `city-patch:${view.worldRevision.slice(0, 24)}:${Date.now()}`,
+              method: "city.creator.patch.publish", payload: { seed: patch.seed, patch },
+            } }).catch(() => {});
+          }
+        }
         else if (!cancelled && publishRetries < 5) {
           publishRetries += 1;
           retryTimer = setTimeout(() => { void publishWhenReady(); }, publishRetries * 500);
@@ -505,28 +522,7 @@ export function CityApp() {
     const from = Date.parse(projection.window.from);
     const to = Date.parse(projection.window.to);
     setCityLoad({ stage: "model", work: null });
-    const rows: CitySessionRow[] = projection.sessions.map((session) => ({
-      session_ref: session.id,
-      asset_ref: session.asset_ref ?? null,
-      harness: session.harness,
-      title: session.title ?? null,
-      title_source: session.title_source ?? null,
-      first_event_at: session.first_event_at,
-      last_event_at: session.last_event_at,
-      event_count: session.event_count ?? 1,
-      peak_tokens: session.tokens.total,
-      model_ids: session.model_ids ?? [],
-      tokens: {
-        uncached_input_tokens: session.tokens.uncached_input ?? session.tokens.input,
-        cache_read_tokens: session.tokens.cache_read ?? 0,
-        cache_write_tokens: session.tokens.cache_write ?? 0,
-        output_tokens: session.tokens.output,
-        total: session.tokens.total,
-      },
-      cost_minor: session.cost_minor && ["metered_actual", "metered_estimate", "fixed_subscription", "api_equivalent", "other"].includes(session.cost_minor.basis)
-        ? session.cost_minor as CitySessionRow["cost_minor"] : null,
-      cost_status: session.cost_status ?? { state: "unavailable", reason: "cost_not_projected", has_unresolved: true },
-    }));
+    const rows = projectionSessionRows(projection);
     const model = buildCityModel({
       harnessNames: Object.fromEntries(projection.harnesses.map((h) => [h.id, h.display_name])),
       rows,

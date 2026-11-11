@@ -22,6 +22,15 @@ const MAX_PLAYTEST_EVIDENCE_BYTES: usize = 8 * 1024;
 const MAX_PLAYTEST_COUNTERS: usize = 32;
 const MAX_PLAYTEST_TICKS: u64 = 2_000_000;
 const MAX_ACTIVE_PREVIEWS: usize = 128;
+// 城市补丁（切片 2：旧 patch 导入与共享 revision）。Rust 只做结构、预算与种子一致性
+// 校验（AGENTS.md 插件面政策）；几何/语义校验由 City 引擎在套用时执行。
+const MAX_CITY_PATCH_BYTES: usize = 256 * 1024;
+const MAX_CITY_PATCH_OPS: usize = 4_096;
+const MAX_CITY_PATCH_HIGHWAY_OPS: usize = 1_024;
+// 玩家土方尚未进入本切片的操作契约：作为有界透传收下，语义校验留给 City 引擎。
+const MAX_CITY_PATCH_TERRAIN_OPS: usize = 256;
+const MAX_PATCH_COORD: f64 = 1_000_000.0;
+const MAX_PATCH_ROAD_WIDTH: f64 = 64.0;
 // This desktop app currently has one local profile per OS data_home. Keep the
 // persistent operation principal separate from the ephemeral WebView instance:
 // operation retries must remain queryable after Studio is closed and reopened.
@@ -104,6 +113,10 @@ fn database(home: &Path) -> Result<Connection, &'static str> {
         CREATE TABLE IF NOT EXISTS creator_city_layouts (
             world_revision TEXT PRIMARY KEY, layout_id TEXT NOT NULL, snapshot_json TEXT NOT NULL,
             snapshot_digest TEXT NOT NULL, updated_at_ms INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS creator_city_patches (
+            seed INTEGER PRIMARY KEY, patch_json TEXT NOT NULL, patch_digest TEXT NOT NULL,
+            updated_at_ms INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS creator_releases (
             release_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, revision INTEGER NOT NULL,
@@ -341,6 +354,186 @@ fn read_city_layout_snapshot(home: &Path, world_revision: &str) -> Result<Value,
     serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")
 }
 
+// ── 城市补丁（PlanPatchV1 镜像，切片 2）──
+
+fn patch_point(value: &Value) -> Result<(), &'static str> {
+    let point = value.as_object().filter(|point| point.len() == 2 && only_keys(point, &["x", "z"])).ok_or("creator_city_patch_invalid")?;
+    for key in ["x", "z"] {
+        let coordinate = point.get(key).and_then(Value::as_f64).ok_or("creator_city_patch_invalid")?;
+        if !coordinate.is_finite() || coordinate.abs() > MAX_PATCH_COORD { return Err("creator_city_patch_invalid"); }
+    }
+    Ok(())
+}
+
+fn patch_optional_point(object: &serde_json::Map<String, Value>, key: &str) -> Result<(), &'static str> {
+    if let Some(anchor) = object.get(key) { patch_point(anchor)?; }
+    Ok(())
+}
+
+fn patch_optional_purpose(object: &serde_json::Map<String, Value>) -> Result<(), &'static str> {
+    if let Some(purpose) = object.get("purpose") {
+        if purpose.as_str() != Some("waterfront") { return Err("creator_city_patch_invalid"); }
+    }
+    Ok(())
+}
+
+fn patch_road_width(value: &Value) -> Result<f64, &'static str> {
+    let width = value.as_f64().ok_or("creator_city_patch_invalid")?;
+    if !width.is_finite() || width <= 0.0 || width > MAX_PATCH_ROAD_WIDTH { return Err("creator_city_patch_invalid"); }
+    Ok(width)
+}
+
+fn validate_road_op(operation: &Value) -> Result<(), &'static str> {
+    let operation = operation.as_object().ok_or("creator_city_patch_invalid")?;
+    match operation.get("t").and_then(Value::as_str) {
+        Some("add") if only_keys(operation, &["t", "from", "to", "width", "purpose", "via"]) && operation.len() >= 4 => {
+            patch_point(operation.get("from").ok_or("creator_city_patch_invalid")?)?;
+            patch_point(operation.get("to").ok_or("creator_city_patch_invalid")?)?;
+            patch_road_width(operation.get("width").ok_or("creator_city_patch_invalid")?)?;
+            patch_optional_purpose(operation)?;
+            patch_optional_point(operation, "via")
+        }
+        Some("drop") if only_keys(operation, &["t", "edge", "anchor"]) && operation.len() >= 2 => {
+            if !operation.get("edge").and_then(Value::as_str).is_some_and(valid_id) { return Err("creator_city_patch_invalid"); }
+            patch_optional_point(operation, "anchor")
+        }
+        Some("move") if only_keys(operation, &["t", "node", "to", "anchor"]) && operation.len() >= 3 => {
+            if !operation.get("node").and_then(Value::as_str).is_some_and(valid_id) { return Err("creator_city_patch_invalid"); }
+            patch_point(operation.get("to").ok_or("creator_city_patch_invalid")?)?;
+            patch_optional_point(operation, "anchor")
+        }
+        Some("restyle") if only_keys(operation, &["t", "edge", "width", "purpose", "anchor"]) && operation.len() >= 3 => {
+            if !operation.get("edge").and_then(Value::as_str).is_some_and(valid_id) { return Err("creator_city_patch_invalid"); }
+            patch_road_width(operation.get("width").ok_or("creator_city_patch_invalid")?)?;
+            patch_optional_purpose(operation)?;
+            patch_optional_point(operation, "anchor")
+        }
+        _ => Err("creator_city_patch_invalid"),
+    }
+}
+
+fn validate_site_op(operation: &Value) -> Result<(), &'static str> {
+    let operation = operation.as_object().ok_or("creator_city_patch_invalid")?;
+    // cls 是「种类/子类」签名字符串（siteClassOf），to 是地块 id 或自由级 "@x,z" 目标——
+    // 都按长度受限的字符串收下，具体语义由 City 引擎套用时校验。
+    let class_ok = |value: Option<&Value>| value.map_or(true, |cls| cls.as_str().is_some_and(|cls| !cls.is_empty() && cls.len() <= 128));
+    let target_ok = |value: Option<&Value>| value.map_or(true, |to| to.as_str().is_some_and(|to| !to.is_empty() && to.len() <= 128));
+    match operation.get("t").and_then(Value::as_str) {
+        Some("remove") if only_keys(operation, &["t", "id", "at", "cls"]) && operation.len() >= 2 => {
+            if !operation.get("id").and_then(Value::as_str).is_some_and(valid_id) { return Err("creator_city_patch_invalid"); }
+            patch_optional_point(operation, "at")?;
+            if !class_ok(operation.get("cls")) { return Err("creator_city_patch_invalid"); }
+            Ok(())
+        }
+        Some("move") if only_keys(operation, &["t", "id", "at", "to", "toAnchor", "cls"]) && operation.len() >= 3 => {
+            if !operation.get("id").and_then(Value::as_str).is_some_and(valid_id) { return Err("creator_city_patch_invalid"); }
+            if !target_ok(operation.get("to")) { return Err("creator_city_patch_invalid"); }
+            patch_optional_point(operation, "at")?;
+            patch_optional_point(operation, "toAnchor")?;
+            if !class_ok(operation.get("cls")) { return Err("creator_city_patch_invalid"); }
+            Ok(())
+        }
+        _ => Err("creator_city_patch_invalid"),
+    }
+}
+
+/// 结构 + 预算 + 种子一致性校验。与 PlanPatchV1（apps/agent-city …/engine/planPatch.ts）逐字段对应：
+/// 已知字段严格校验；terrainOps 是尚未进入本切片契约的玩家土方日志，按有界透传收下。
+fn validate_city_patch(patch: &Value, expected_seed: u64) -> Result<(), &'static str> {
+    const KEYS: &[&str] = &["version", "seed", "scaleTier", "generatorVersion", "islandRadius", "updatedAt",
+        "roadOps", "highwayOps", "siteOps", "buildingMoves", "moveAnchors", "suppressedContext", "terrainOps"];
+    let patch = patch.as_object()
+        .filter(|patch| !patch.is_empty() && patch.len() <= KEYS.len() && patch.keys().all(|key| KEYS.contains(&key.as_str())))
+        .ok_or("creator_city_patch_invalid")?;
+    if patch.get("version").and_then(Value::as_u64) != Some(1) { return Err("creator_city_patch_invalid"); }
+    let seed = patch.get("seed").and_then(Value::as_u64).filter(|seed| *seed <= u32::MAX as u64).ok_or("creator_city_patch_invalid")?;
+    if seed != expected_seed { return Err("creator_city_patch_seed_mismatch"); }
+    patch.get("scaleTier").and_then(Value::as_u64).filter(|tier| *tier <= 1024).ok_or("creator_city_patch_invalid")?;
+    if let Some(version) = patch.get("generatorVersion") {
+        if !version.as_u64().is_some_and(|version| (1..=1024).contains(&version)) { return Err("creator_city_patch_invalid"); }
+    }
+    patch.get("updatedAt").and_then(Value::as_u64).ok_or("creator_city_patch_invalid")?;
+    if let Some(radius) = patch.get("islandRadius") {
+        if !radius.as_f64().is_some_and(|radius| radius.is_finite() && radius > 0.0 && radius <= 100_000.0) { return Err("creator_city_patch_invalid"); }
+    }
+    let moves = patch.get("buildingMoves").and_then(Value::as_object).filter(|moves| moves.len() <= MAX_CITY_PATCH_OPS).ok_or("creator_city_patch_invalid")?;
+    for (building, target) in moves {
+        if !valid_id(building) || !target.as_str().is_some_and(valid_id) { return Err("creator_city_patch_invalid"); }
+    }
+    if let Some(anchors) = patch.get("moveAnchors") {
+        let anchors = anchors.as_object().filter(|anchors| anchors.len() <= MAX_CITY_PATCH_OPS).ok_or("creator_city_patch_invalid")?;
+        for anchor in anchors.values() { patch_point(anchor)?; }
+    }
+    let suppressed = patch.get("suppressedContext").and_then(Value::as_array).filter(|items| items.len() <= MAX_CITY_PATCH_OPS).ok_or("creator_city_patch_invalid")?;
+    for id in suppressed {
+        if !id.as_str().is_some_and(valid_id) { return Err("creator_city_patch_invalid"); }
+    }
+    let road_ops = patch.get("roadOps").and_then(Value::as_array).filter(|ops| ops.len() <= MAX_CITY_PATCH_OPS).ok_or("creator_city_patch_invalid")?;
+    for operation in road_ops { validate_road_op(operation)?; }
+    let site_ops = patch.get("siteOps").and_then(Value::as_array).filter(|ops| ops.len() <= MAX_CITY_PATCH_OPS).ok_or("creator_city_patch_invalid")?;
+    for operation in site_ops { validate_site_op(operation)?; }
+    if let Some(highway_ops) = patch.get("highwayOps") {
+        let highway_ops = highway_ops.as_array().filter(|ops| ops.len() <= MAX_CITY_PATCH_HIGHWAY_OPS).ok_or("creator_city_patch_invalid")?;
+        for operation in highway_ops {
+            let operation = operation.as_object().ok_or("creator_city_patch_invalid")?;
+            match operation.get("t").and_then(Value::as_str) {
+                Some("add") if only_keys(operation, &["t", "points"]) => {
+                    let points = operation.get("points").and_then(Value::as_array).filter(|points| (2..=256).contains(&points.len())).ok_or("creator_city_patch_invalid")?;
+                    for point in points { patch_point(point)?; }
+                }
+                Some("cut") if only_keys(operation, &["t", "at"]) => patch_point(operation.get("at").ok_or("creator_city_patch_invalid")?)?,
+                _ => return Err("creator_city_patch_invalid"),
+            }
+        }
+    }
+    if let Some(terrain_ops) = patch.get("terrainOps") {
+        let terrain_ops = terrain_ops.as_array().filter(|ops| ops.len() <= MAX_CITY_PATCH_TERRAIN_OPS).ok_or("creator_city_patch_invalid")?;
+        for operation in terrain_ops {
+            if !operation.is_object() { return Err("creator_city_patch_invalid"); }
+        }
+    }
+    Ok(())
+}
+
+/// City 侧补丁发布（切片 2 的导入源）：同 seed 最新补丁胜出，摘要幂等——重试不会产生重复数据。
+pub fn publish_city_patch(home: &Path, payload: &Value) -> Result<Value, &'static str> {
+    let payload = payload.as_object().filter(|payload| payload.len() == 2 && only_keys(payload, &["seed", "patch"])).ok_or("creator_request_invalid")?;
+    let seed = payload["seed"].as_u64().filter(|seed| *seed <= u32::MAX as u64).ok_or("creator_request_invalid")?;
+    validate_city_patch(&payload["patch"], seed)?;
+    let canonical = canonical_json(&payload["patch"]).map_err(|_| "creator_city_patch_invalid")?;
+    if canonical.len() > MAX_CITY_PATCH_BYTES { return Err("creator_city_patch_too_large"); }
+    let patch_digest = digest(&canonical);
+    let db = database(home)?;
+    db.execute("INSERT INTO creator_city_patches(seed,patch_json,patch_digest,updated_at_ms) VALUES(?1,?2,?3,?4)
+        ON CONFLICT(seed) DO UPDATE SET patch_json=excluded.patch_json,patch_digest=excluded.patch_digest,updated_at_ms=excluded.updated_at_ms",
+        params![seed, payload["patch"].to_string(), patch_digest, now_ms()]).map_err(|_| "creator_store_unavailable")?;
+    Ok(json!({"seed":seed,"digest":patch_digest}))
+}
+
+fn latest_city_patch(home: &Path, seed: u64) -> Result<Option<(Value, String)>, &'static str> {
+    let db = database(home)?;
+    let raw: Option<String> = db.query_row("SELECT patch_json FROM creator_city_patches WHERE seed=?1", [seed], |row| row.get(0))
+        .optional().map_err(|_| "creator_store_unavailable")?;
+    let Some(raw) = raw else { return Ok(None) };
+    let patch: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
+    let patch_digest = digest(&canonical_json(&patch).map_err(|_| "creator_store_unavailable")?);
+    Ok(Some((patch, patch_digest)))
+}
+
+/// City 运行时读取绑定到该种子的最新项目的补丁与 revision（不返回未发布内容之外的项目文档）。
+pub fn read_city_patch_for_seed(home: &Path, seed: u64) -> Result<Value, &'static str> {
+    let db = database(home)?;
+    let mut statement = db.prepare("SELECT document_json,revision FROM creator_projects ORDER BY updated_at_ms DESC, project_id ASC LIMIT 64").map_err(|_| "creator_store_unavailable")?;
+    let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))).map_err(|_| "creator_store_unavailable")?;
+    for row in rows {
+        let (raw, revision) = row.map_err(|_| "creator_store_unavailable")?;
+        let Ok(document) = serde_json::from_str::<Value>(&raw) else { continue };
+        if document.get("cityLayout").and_then(|layout| layout.get("seed")).and_then(Value::as_u64) != Some(seed) { continue; }
+        return Ok(json!({"projectId":document.get("projectId"),"revision":revision,"patch":document.get("cityPatch")}));
+    }
+    Ok(json!({"projectId":null,"revision":null,"patch":null}))
+}
+
 #[cfg(test)]
 fn create_project(home: &Path, actor: &str, template: &str, operation_id: &str) -> Result<Value, &'static str> {
     create_project_internal(home, actor, template, operation_id, None)
@@ -358,8 +551,17 @@ fn create_project_internal(home: &Path, actor: &str, template: &str, operation_i
     let project_id = new_id("project-")?;
     let title = if template == "checkpoint-race" { "驾驶检查点竞速" } else { "驾驶区域收集" };
     let layout_revision = city_layout.as_ref().and_then(|snapshot| snapshot.get("worldRevision")).and_then(Value::as_str).unwrap_or("unbound").to_owned();
-    let document = serde_json::to_string(&json!({"schemaVersion":1,"projectId":project_id,"revision":0,"title":title,
-        "kind":"city-minigame-project","cityLayout":city_layout,"game":serde_json::from_str::<Value>(&game_json).map_err(|_| "creator_game_invalid")?,"scene":{"schemaVersion":1,"objects":[]},"assets":{"schemaVersion":1,"entries":[]},"assetRefs":[],"mounts":[]})).map_err(|_| "creator_store_unavailable")?;
+    let mut document_value = json!({"schemaVersion":1,"projectId":project_id,"revision":0,"title":title,
+        "kind":"city-minigame-project","cityLayout":city_layout,"game":serde_json::from_str::<Value>(&game_json).map_err(|_| "creator_game_invalid")?,"scene":{"schemaVersion":1,"objects":[]},"assets":{"schemaVersion":1,"entries":[]},"assetRefs":[],"mounts":[]});
+    // 旧补丁导入（PRD §4 / 架构 §6）：项目创建时读取 City 已发布的同种子补丁。
+    // 发布按摘要幂等、创建按 operationId 幂等，导入重试不会产生重复项目或重复补丁。
+    if let Some(seed) = document_value.get("cityLayout").and_then(|layout| layout.get("seed")).and_then(Value::as_u64) {
+        if let Some((patch, patch_digest)) = latest_city_patch(home, seed)? {
+            document_value["cityPatch"] = patch;
+            document_value["cityPatchImport"] = json!({"digest":patch_digest,"importedAtMs":now_ms(),"source":"city-publish"});
+        }
+    }
+    let document = serde_json::to_string(&document_value).map_err(|_| "creator_store_unavailable")?;
     let db = database(home)?;
     let mut db = db;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
@@ -972,6 +1174,32 @@ fn apply_mount_skin_operation(document: &mut Value, operation: &Value) -> Result
 fn apply_scene_operations(document: &mut Value, operations: &Value) -> Result<Vec<String>, &'static str> {
     let operations = operations.as_array().filter(|operations| !operations.is_empty() && operations.len() <= 128).ok_or("creator_scene_ops_invalid")?;
     let mut touched = Vec::with_capacity(operations.len());
+    // 城市补丁操作作用于项目根（不走 scene.objects）：先于场景作用域处理。
+    // 种子必须与绑定的 City 布局一致，移动到另一座城市的补丁会在提交时被拒绝。
+    {
+        let project = document.as_object_mut().ok_or("creator_project_invalid")?;
+        for operation in operations {
+            let Some(operation) = operation.as_object() else { continue };
+            match operation.get("op").and_then(Value::as_str) {
+                Some("city.patch.upsert") if only_keys(operation, &["op", "patch"]) && operation.len() == 2 => {
+                    let layout_seed = project.get("cityLayout").and_then(|layout| layout.get("seed")).and_then(Value::as_u64).ok_or("creator_city_patch_requires_city_layout")?;
+                    let patch = operation.get("patch").ok_or("creator_scene_ops_invalid")?;
+                    validate_city_patch(patch, layout_seed)?;
+                    let raw = serde_json::to_string(patch).map_err(|_| "creator_city_patch_invalid")?;
+                    if raw.len() > MAX_CITY_PATCH_BYTES { return Err("creator_city_patch_too_large"); }
+                    project.insert("cityPatch".to_owned(), patch.clone());
+                    // 修订后导入记录不再代表当前补丁来源；来源历史留在 creator_changes。
+                    project.remove("cityPatchImport");
+                    touched.push("cityPatch".to_owned());
+                }
+                Some("city.patch.remove") if only_keys(operation, &["op"]) && operation.len() == 1 => {
+                    project.remove("cityPatch");
+                    touched.push("cityPatch".to_owned());
+                }
+                _ => {}
+            }
+        }
+    }
     {
         let project = document.as_object_mut().ok_or("creator_project_invalid")?;
         project.entry("scene").or_insert_with(|| json!({"schemaVersion":1,"objects":[]}));
@@ -982,7 +1210,7 @@ fn apply_scene_operations(document: &mut Value, operations: &Value) -> Result<Ve
         if objects.len() > MAX_SCENE_OBJECTS { return Err("creator_scene_budget_exceeded"); }
         for operation in operations {
             let operation = operation.as_object().ok_or("creator_scene_ops_invalid")?;
-            if matches!(operation.get("op").and_then(Value::as_str), Some("mount.bind" | "mount.remove" | "skin.select")) { continue; }
+            if matches!(operation.get("op").and_then(Value::as_str), Some("mount.bind" | "mount.remove" | "skin.select" | "city.patch.upsert" | "city.patch.remove")) { continue; }
             match operation.get("op").and_then(Value::as_str) {
                 Some("scene.object.upsert") | Some("anchor.upsert") if operation.len() == 2 && only_keys(operation, &["op", "object"]) => {
                     let object = operation.get("object").ok_or("creator_scene_object_invalid")?;
@@ -1088,6 +1316,9 @@ pub fn dispatch_city_runtime(home: &Path, city_instance: &str, method: &str, pay
             payload["releaseId"].as_str().ok_or("creator_request_invalid")?,
             payload["layoutId"].as_str().ok_or("creator_request_invalid")?,
             payload["worldRevision"].as_str().ok_or("creator_request_invalid")?),
+        "city.creator.patch.publish" if exact_payload(payload, &["seed", "patch"]) => publish_city_patch(home, payload),
+        "city.creator.patch.read" if exact_payload(payload, &["seed"]) => read_city_patch_for_seed(home,
+            payload["seed"].as_u64().filter(|seed| *seed <= u32::MAX as u64).ok_or("creator_request_invalid")?),
         "city.creator.playtest.claim" if exact_payload(payload, &[]) => claim_playtest(home, city_instance),
         "city.creator.playtest.finish" if exact_payload(payload, &["runId", "status", "evidence"])
             || exact_payload(payload, &["runId", "status", "evidence", "failureCode"]) => finish_playtest(home, city_instance,
@@ -1788,6 +2019,86 @@ mod tests {
         }}]);
         assert_eq!(preview_scene_operations(&home, "studio-instance", project, 2, &invalid).unwrap_err(), "creator_mount_slot_not_found");
         assert_eq!(apply_scene_operations(&mut read_project(&home, project).unwrap(), &json!([{"op":"skin.select","skinId":"untrusted"}] )).unwrap_err(), "creator_skin_not_found");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    // ── 城市补丁（切片 2）──
+
+    fn sample_patch(seed: u64) -> Value {
+        json!({"version":1,"seed":seed,"scaleTier":1,"generatorVersion":6,"updatedAt":1000,
+            "roadOps":[
+                {"t":"add","from":{"x":1.5,"z":2.5},"to":{"x":3.5,"z":2.5},"width":8},
+                {"t":"drop","edge":"road-edge:ab:0","anchor":{"x":2.0,"z":2.5}}
+            ],
+            "siteOps":[{"t":"move","id":"context:p1","to":"parcel-9","at":{"x":1.0,"z":1.0},"cls":"context/"}],
+            "buildingMoves":{"session-1":"parcel-2"},
+            "moveAnchors":{"session-1":{"x":5.0,"z":6.0}},
+            "suppressedContext":["context:parcel-3"]})
+    }
+
+    #[test]
+    fn city_patch_publish_is_idempotent_and_validates_structure() {
+        let home = home();
+        let patch = sample_patch(7);
+        let first = publish_city_patch(&home, &json!({"seed":7,"patch":patch.clone()})).unwrap();
+        let second = publish_city_patch(&home, &json!({"seed":7,"patch":patch})).unwrap();
+        assert_eq!(first["digest"], second["digest"]);
+        let mismatched = sample_patch(8);
+        assert_eq!(publish_city_patch(&home, &json!({"seed":7,"patch":mismatched})).unwrap_err(), "creator_city_patch_seed_mismatch");
+        assert_eq!(publish_city_patch(&home, &json!({"seed":7,"patch":json!({"version":1,"seed":7,"scaleTier":1,"updatedAt":1,
+            "roadOps":[{"t":"teleport"}],"siteOps":[],"buildingMoves":{},"suppressedContext":[]})})).unwrap_err(), "creator_city_patch_invalid");
+        assert_eq!(publish_city_patch(&home, &json!({"seed":7,"patch":json!({"version":1,"seed":7,"scaleTier":1,"updatedAt":1,
+            "roadOps":[{"t":"add","from":{"x":0.0,"z":0.0},"to":{"x":1.0,"z":0.0},"width":80}],"siteOps":[],"buildingMoves":{},"suppressedContext":[]})})).unwrap_err(), "creator_city_patch_invalid");
+        let mut moves = serde_json::Map::new();
+        for index in 0..=MAX_CITY_PATCH_OPS { moves.insert(format!("session-{index}"), json!("parcel-1")); }
+        let mut over_budget = sample_patch(7);
+        over_budget["buildingMoves"] = Value::Object(moves);
+        assert_eq!(publish_city_patch(&home, &json!({"seed":7,"patch":over_budget})).unwrap_err(), "creator_city_patch_invalid");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn project_creation_imports_published_patch_and_upsert_enforces_seed() {
+        let home = home();
+        publish_city_layout_snapshot(&home, &layout_snapshot()).unwrap();
+        publish_city_patch(&home, &json!({"seed":7,"patch":sample_patch(7)})).unwrap();
+        let created = create_project_from_city_layout(&home, LOCAL_CREATOR_OWNER, "checkpoint-race", "create-import", "world-rev-test").unwrap();
+        let project_id = created["projectId"].as_str().unwrap();
+        let project = read_project(&home, project_id).unwrap();
+        assert_eq!(project["cityPatch"]["buildingMoves"]["session-1"], "parcel-2");
+        assert_eq!(project["cityPatchImport"]["source"], "city-publish");
+        // 创建幂等：同一 operationId 重试返回同一项目，不产生重复导入。
+        let retry = create_project_from_city_layout(&home, LOCAL_CREATOR_OWNER, "checkpoint-race", "create-import", "world-rev-test").unwrap();
+        assert_eq!(retry["projectId"], created["projectId"]);
+
+        let upsert = preview_scene_operations(&home, "studio-instance", project_id, 0, &json!([{"op":"city.patch.upsert","patch":sample_patch(7)}])).unwrap();
+        let saved = commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", project_id, upsert["previewId"].as_str().unwrap(), 0, "patch-upsert-1").unwrap();
+        assert_eq!(saved["revision"], 1);
+        let after_upsert = read_project(&home, project_id).unwrap();
+        assert_eq!(after_upsert["cityPatch"]["updatedAt"], 1000);
+        assert!(after_upsert["cityPatchImport"].is_null());
+        assert_eq!(preview_scene_operations(&home, "studio-instance", project_id, 1,
+            &json!([{"op":"city.patch.upsert","patch":sample_patch(8)}])).unwrap_err(), "creator_city_patch_seed_mismatch");
+        let bare = create_project(&home, LOCAL_CREATOR_OWNER, "checkpoint-race", "create-bare").unwrap();
+        assert_eq!(preview_scene_operations(&home, "studio-instance", bare["projectId"].as_str().unwrap(), 0,
+            &json!([{"op":"city.patch.upsert","patch":sample_patch(7)}])).unwrap_err(), "creator_city_patch_requires_city_layout");
+        let remove = preview_scene_operations(&home, "studio-instance", project_id, 1, &json!([{"op":"city.patch.remove"}])).unwrap();
+        commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", project_id, remove["previewId"].as_str().unwrap(), 1, "patch-remove").unwrap();
+        assert!(read_project(&home, project_id).unwrap()["cityPatch"].is_null());
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn city_patch_read_reports_newest_bound_project() {
+        let home = home();
+        assert_eq!(read_city_patch_for_seed(&home, 7).unwrap(), json!({"projectId":null,"revision":null,"patch":null}));
+        publish_city_layout_snapshot(&home, &layout_snapshot()).unwrap();
+        publish_city_patch(&home, &json!({"seed":7,"patch":sample_patch(7)})).unwrap();
+        let created = create_project_from_city_layout(&home, LOCAL_CREATOR_OWNER, "checkpoint-race", "create-read", "world-rev-test").unwrap();
+        let found = read_city_patch_for_seed(&home, 7).unwrap();
+        assert_eq!(found["projectId"], created["projectId"]);
+        assert_eq!(found["patch"]["seed"], 7);
+        assert!(read_city_patch_for_seed(&home, 9).unwrap()["projectId"].is_null());
         let _ = std::fs::remove_dir_all(home);
     }
 }

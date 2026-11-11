@@ -52,8 +52,14 @@ jobs:
       - name: Install Linux desktop dependencies
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev librsvg2-dev libayatana-appindicator3-dev patchelf
+          export DEBIAN_FRONTEND=noninteractive
+          # 22.04 runner 上 apt 曾无输出挂起 50+ 分钟：加非交互、超时与重试，
+          # 避免 debconf 提示或镜像无响应把打包卡死。
+          sudo -E apt-get update -o Acquire::Retries=3 -o Acquire::http::Timeout=30
+          sudo -E apt-get install -y --no-install-recommends \
+            -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
+            libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev \
+            libssl-dev librsvg2-dev libayatana-appindicator3-dev patchelf
       - name: Verify platform configuration
         run: |
           node scripts/verify-desktop-platforms.mjs
