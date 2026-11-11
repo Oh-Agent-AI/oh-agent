@@ -492,8 +492,12 @@ pub fn codex_session_audit_json_for_files(
             )));
         }
     }
-    out.insert("truncated".into(), json!(truncated));
-    out.insert("truncated_bytes".into(), json!(truncated_bytes));
+    // 只有真的截断才加这两个键：未截断会话必须与 Python 侧逐字节一致
+    // （test_cli_matrix 的 codex-session 差分钉住 JSON 形状）。
+    if truncated {
+        out.insert("truncated".into(), json!(true));
+        out.insert("truncated_bytes".into(), json!(truncated_bytes));
+    }
     out.insert("notes".into(), notes);
     Some(Value::Object(out))
 }
