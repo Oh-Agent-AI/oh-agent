@@ -1078,7 +1078,7 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
             Err(code) => plugin_request_error(request.request_id, code, matches!(code, "creator_store_unavailable")),
         });
     }
-    if matches!(method.as_str(), "city.creator.experiences.list" | "city.creator.experiences.read" | "city.creator.playtest.claim" | "city.creator.playtest.finish") {
+    if matches!(method.as_str(), "city.creator.experiences.list" | "city.creator.experiences.read" | "city.creator.playtest.claim" | "city.creator.playtest.finish" | "city.creator.patch.publish" | "city.creator.patch.read") {
         let _operation = state.1.lock().unwrap();
         {
             let host = state.0.lock().unwrap();
@@ -1454,7 +1454,7 @@ mod tests {
     #[test]
     fn city_registry_declares_sequential_remote_capability() {
         let city = definitions().iter().find(|plugin| plugin.id == "city").expect("city plugin");
-        for method in ["city.creator.layout.publish", "city.creator.experiences.list", "city.creator.experiences.read", "city.creator.playtest.claim", "city.creator.playtest.finish", "city.world.profile.preview", "city.world.profile.apply"] {
+        for method in ["city.creator.layout.publish", "city.creator.patch.publish", "city.creator.patch.read", "city.creator.experiences.list", "city.creator.experiences.read", "city.creator.playtest.claim", "city.creator.playtest.finish", "city.world.profile.preview", "city.world.profile.apply"] {
             assert!(city.local_calls.iter().any(|declared| declared == method), "City must declare {method}");
         }
         assert_eq!(remote_host_entry("city").as_deref(), Some("plugins/AgentCity.plugin/ui/remote.html"));

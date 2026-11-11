@@ -203,7 +203,19 @@ export function CityApp() {
           version: 1, instanceId, requestId: `city-layout:${view.worldRevision.slice(0, 32)}`,
           method: "city.creator.layout.publish", payload: snapshot,
         } });
-        if (!cancelled && response.ok) publishedCreatorLayouts.current.add(view.worldRevision);
+        if (!cancelled && response.ok) {
+          publishedCreatorLayouts.current.add(view.worldRevision);
+          // 补丁随布局发布一起进入 creator 服务（切片 2 的导入源，按 seed+摘要幂等）。
+          // 补丁编辑不改变 worldRevision，这里的保证是「布局发布时补丁是新的」；
+          // 修复会话保存后自动续发在下一增量接入。
+          const patch = engineRef.current?.planPatch;
+          if (patch) {
+            void invokeHost<{ ok: boolean }>("plugin_request", { request: {
+              version: 1, instanceId, requestId: `city-patch:${view.worldRevision.slice(0, 24)}:${Date.now()}`,
+              method: "city.creator.patch.publish", payload: { seed: patch.seed, patch },
+            } }).catch(() => {});
+          }
+        }
         else if (!cancelled && publishRetries < 5) {
           publishRetries += 1;
           retryTimer = setTimeout(() => { void publishWhenReady(); }, publishRetries * 500);

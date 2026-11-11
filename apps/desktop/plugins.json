@@ -435,7 +435,7 @@
       "allowLocalExports": true,
       "navigationTargets": ["session"],
       "hostEvents": ["plugin.event"],
-      "localCalls": ["city.building.get", "city.building.preview", "city.building.set", "city.building.reset", "city.im.publish", "city.creator.layout.publish", "city.creator.experiences.list", "city.creator.experiences.read", "city.creator.playtest.claim", "city.creator.playtest.finish", "city.world.profile.preview", "city.world.profile.apply"],
+      "localCalls": ["city.building.get", "city.building.preview", "city.building.set", "city.building.reset", "city.im.publish", "city.creator.layout.publish", "city.creator.patch.publish", "city.creator.patch.read", "city.creator.experiences.list", "city.creator.experiences.read", "city.creator.playtest.claim", "city.creator.playtest.finish", "city.world.profile.preview", "city.world.profile.apply"],
       "remoteCapabilities": [{
         "id": "mecha:v4",
         "methods": ["sequential.snapshot", "sequential.command.submit", "city.snapshot"],
