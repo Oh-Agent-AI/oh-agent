@@ -42,3 +42,48 @@ button.secondary { color: #dce8e8; background: #1c2a2e; border-color: #486064; }
 .viewport-frame .city-app { border-radius: 12px; }
 .viewport-empty { min-height: 120px; }
 .project-row.confirm { border-color: #c9803e; background: #2a2013; }
+
+/* Studio workspace */
+body { min-width: 0; background: #10181b; }
+header { align-items: center; padding: 10px 18px; background: #172126; }
+.brand, .header-actions { display: flex; align-items: center; gap: 12px; min-width: 0; }
+h1 { margin: 0; font-size: 16px; letter-spacing: -.02em; white-space: nowrap; }
+.header-project { border-left: 1px solid #405055; padding-left: 12px; color: #b4c4c7; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.header-actions button { padding: 7px 14px; }
+.workspace { grid-template-columns: minmax(0, 1fr) minmax(300px, 360px); }
+.viewport { padding: 12px; gap: 8px; }
+.viewport-head .section-title { margin: 0; }
+.viewport-hint { color: #90a5a9; font-size: 11px; }
+.panel { background: #151f23; gap: 12px; padding: 14px; }
+.project-create { border: 1px solid #34484b; border-radius: 8px; }
+.project-create summary { padding: 10px 12px; cursor: pointer; color: #dce8e8; font-size: 13px; font-weight: 650; }
+.new-project { padding: 4px 12px 12px; border: 0; display: grid; grid-template-columns: 1fr; }
+.projects { border-bottom: 1px solid #304044; padding-bottom: 10px; }
+.section-title { margin-bottom: 8px; }
+.editor textarea { flex: none; width: 100%; min-height: 260px; }
+.editor > .muted { line-height: 1.5; }
+.status { line-height: 1.5; overflow-wrap: anywhere; }
+@media (max-width: 700px) {
+  body, .studio { height: auto; min-height: 100vh; overflow: auto; }
+  .workspace { display: flex; flex-direction: column; }
+  .viewport { height: 52vh; min-height: 320px; }
+  .panel { border-left: 0; border-top: 1px solid #304044; overflow: visible; }
+  .header-project { display: none; }
+}
+
+/* City remains the primary workspace while project controls stay available. */
+:root { background: #10171b; }
+header { min-height: 56px; border-bottom-color: #2b383e; }
+.brand h1 { font-size: 17px; }
+.viewport { position: relative; padding: 10px; }
+.viewport-head { position: absolute; z-index: 2; top: 22px; left: 24px; right: 24px; pointer-events: none; }
+.viewport-head .section-title, .viewport-hint { padding: 7px 10px; border-radius: 7px; background: rgba(17, 27, 31, .84); color: #e3eeee; }
+.viewport-frame { border-radius: 10px; }
+.panel { background: #172126; border-left-color: #2b383e; }
+.projects { padding-top: 3px; }
+.project-row { background: #1b292c; border-color: #304044; padding: 11px 12px; }
+.editor { gap: 4px; }
+.editor > .empty { min-height: 120px; padding: 20px; text-align: center; }
+.header-actions button:not(:disabled):hover, .project-row:hover { filter: brightness(1.12); }
+button:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2px solid #86e7cf; outline-offset: 2px; }
+@media (max-width: 700px) { .viewport-head { right: 20px; left: 20px; } }

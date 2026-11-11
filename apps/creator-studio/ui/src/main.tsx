@@ -354,10 +354,10 @@ function App() {
   );
 
   return <main className="studio">
-    <header><div><span className="eyebrow">OH AGENT · CITY SDK</span><h1>Creator Studio</h1><p>用 Agent 或编辑器创建可验证的 City 小游戏。</p></div><span className="badge">{browserPreview ? "预览夹具 · 合成数据" : "本机项目"}</span></header>
+    <header><div className="brand"><h1>Creator Studio</h1><span className="header-project">{projects.find(row => row.projectId === project?.projectId)?.title ?? "选择城市项目"}</span></div><div className="header-actions"><span className="badge">{browserPreview ? "合成数据预览" : hasUncommittedProjectEdits ? "有未提交修改" : "本机项目"}</span><button className="secondary" disabled={busy || !publishedReleaseId || hasUncommittedProjectEdits} onClick={() => void startPlaytest()}>试玩</button><button disabled={busy || !project || hasUncommittedProjectEdits || (project.mounts?.length ?? 0) === 0} onClick={() => void publish()}>发布</button></div></header>
     <div className="workspace">
       <section className="viewport" aria-label="City 实时视口">
-        <div className="viewport-head"><div className="section-title">City 实时视口{viewportSeed !== null ? ` · seed ${viewportSeed}` : ""}</div></div>
+        <div className="viewport-head"><div className="section-title">城市视图</div><span className="viewport-hint">拖动旋转 · 滚轮缩放</span></div>
         {viewportSeed !== null
           ? <div className="viewport-frame"><CityViewport seed={viewportSeed} worldProfile={worldProfile} /></div>
           : <div className="empty viewport-empty">{viewportUnavailable
@@ -365,21 +365,19 @@ function App() {
             : "先打开 City 生成道路地图，这里会显示同一座实时城市。"}</div>}
       </section>
       <aside className="panel">
-        <section className="new-project">
+        <details className="project-create"><summary>新建项目</summary><section className="new-project">
           <label>新建模板<select value={template} disabled={busy} onChange={event => setTemplate(event.target.value)}><option value="checkpoint-race">驾驶检查点竞速</option><option value="collect-one">驾驶区域收集</option></select></label>
           <label>绑定 City 世界<select value={worldRevision} disabled={busy || layouts.length === 0} onChange={event => setWorldRevision(event.target.value)}>{layouts.map(layout => <option key={layout.worldRevision} value={layout.worldRevision}>{layout.layoutId} · seed {layout.seed} · {layout.anchorCount} 个锚点</option>)}</select></label>
           <button disabled={busy || !worldRevision} onClick={() => guardDrafts("create", () => void createProject())}>{switchConfirm === "create" ? "确认丢弃草稿并新建" : "新建项目"}</button>
           {layouts.length === 0 && <p className="muted">尚无 City 布局快照。先打开 City 生成道路地图，再回到 Studio。</p>}
-        </section>
+        </section></details>
         <div className="projects"><div className="section-title">我的项目</div>{projects.length === 0 ? <p className="muted">还没有项目。创建一个模板开始。</p> : projects.map(row => <button className={`project-row ${project?.projectId === row.projectId ? "selected" : ""} ${switchConfirm === row.projectId ? "confirm" : ""}`} key={row.projectId} disabled={busy} onClick={() => guardDrafts(row.projectId, () => void openProject(row.projectId))}><strong>{row.title}</strong><span>revision {row.revision}</span></button>)}</div>
         <section className="editor">
-        <div className="section-title">{project ? `${project.projectId} · revision ${project.revision}` : "选择一个项目"}</div>
+        <div className="section-title">{project ? `游戏规则 · revision ${project.revision}` : "选择一个项目"}</div>
         {project ? <>
           <p className="muted">编辑声明式规则 JSON。脚本和未知动作会被拒绝。</p>
           <textarea aria-label="Mini-game JSON" spellCheck={false} value={text} disabled={busy} onChange={event => { setText(event.target.value); setPreviewId(null); setPreviewKind(null); }} />
-          <div className="actions"><button className="secondary" disabled={busy} onClick={() => void preview()}>校验规则并预览</button><button disabled={busy || !previewId || previewKind !== "game"} onClick={() => void commit()}>提交 revision</button>
-            <button disabled={busy || hasUncommittedProjectEdits || (project.mounts?.length ?? 0) === 0} onClick={() => void publish()}>发布已保存版本到 City</button></div>
-          <div className="actions"><button className="secondary" disabled={busy || !publishedReleaseId || hasUncommittedProjectEdits} onClick={() => void startPlaytest()}>在 City 试玩已发布版本</button></div>
+          <div className="actions"><button className="secondary" disabled={busy} onClick={() => void preview()}>校验规则</button><button disabled={busy || !previewId || previewKind !== "game"} onClick={() => void commit()}>保存规则</button></div>
           <p className="muted">发布固定已保存 revision 的游戏规则、挂载与官方 City 皮肤；草稿、模型场景对象和分析数据不会进入 City 运行目录。</p>
           <details className="scene-editor">
             <summary>城市场景与组合</summary>
