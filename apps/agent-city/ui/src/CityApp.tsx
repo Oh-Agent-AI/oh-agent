@@ -41,6 +41,7 @@ import { useRoadAudit } from "./game/useRoadAudit";
 import { RoadAuditPanel } from "./game/ui/RoadAuditPanel";
 import type { PlanningWorkSnapshot } from "./engine/planner/operationBudget";
 import { projectionSessionRows } from "./viewport/projectionRows";
+import { readCityWindowDays, writeCityWindowDays } from "./viewport/windowPreference";
 import { createDreamSnapshotCandidate } from "./remote/city/dreamSnapshotCandidate";
 import { prepareDreamSnapshotForPublication } from "./remote/city/dreamTrustedProjection";
 import type { DreamSnapshotEnvelopeV1 } from "./remote/city/dreamSnapshotCodec";
@@ -84,10 +85,13 @@ export function CityApp() {
     const params = new URLSearchParams(location.search);
     const days = Number(params.get("windowDays"));
     // The browser landing starts with its mock window, avoiding a second full
-    // scene build. The native default remains the latest 500 sessions/year.
+    // scene build. The native default follows the shared window preference so
+    // the Studio viewport rebuilds the same layout after a restart.
     return embedded() && params.get("presentation") === "landing" && windowOptions.includes(days as WindowDays)
-      ? days as WindowDays : 366;
+      ? days as WindowDays : readCityWindowDays();
   });
+  // 窗口偏好同源共享给 Studio 视口；City 改窗口后两边装出同一座布局。
+  useEffect(() => { writeCityWindowDays(windowDays); }, [windowDays]);
   const [status, setStatus] = useState("正在载入 City 插槽数据…");
   const [sceneUnavailable, setSceneUnavailable] = useState(false);
   const [dataLoaded, setDataLoaded] = useState(false);

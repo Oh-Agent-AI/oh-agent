@@ -4,16 +4,20 @@ import { prepareCityWorldLayout } from "../engine/cityLayout";
 import { readCityAppearancePreference, type CityWorldProfileV1 } from "../engine/cityWorldProfile";
 import { CityEngine } from "../engine/CityEngine";
 import { tauriCityDataProvider, type CityProjectionV1 } from "../data/provider";
+import { cityPlanPatchStore } from "../data/planPatch";
+import type { PlanPatchV1 } from "../engine/planPatch";
 import { noteBusy } from "../host";
 import { cityText, useCityLanguage } from "../i18n";
 import { replayStartMs } from "../replayRange";
 import type { PlanningWorkSnapshot } from "../engine/planner/operationBudget";
 import { projectionSessionRows, type CityViewportWindowDays } from "./projectionRows";
+import { readCityWindowDays } from "./windowPreference";
 import "../city.css";
 
 export type CityViewportProps = {
-  /** 城市种子。Studio 传最近一次发布的 City 布局快照里的 seed，保证和 City 是同一座城。 */
+  /** 城市种子。Studio 传当前项目绑定的布局快照 seed，保证和 City 是同一座城。 */
   seed: number;
+  /** 缺省读与 City 共享的窗口偏好；City 改窗口后 Studio 跟随，避免装出不同布局。 */
   windowDays?: CityViewportWindowDays;
   worldProfile?: CityWorldProfileV1;
   /** 引擎创建/销毁回调；父页面需要引擎实例（如后续编辑操作）时使用。 */
@@ -23,13 +27,14 @@ export type CityViewportProps = {
 type ViewportLoadState = Readonly<{ stage: "data" | "model" | "planning" | "mounting" | "rendering"; work: number | null }>;
 
 /**
- * Studio 复用的最小实时城市视口：只负责「引擎生命周期 + 投影数据 → 场景装配」。
+ * Studio 复用的最小实时城市视口：只负责「引擎生命周期 + 投影数据 + 修复补丁 → 场景装配」。
  * 选取、修复、游戏、机甲等交互留在 CityApp；两边共享同一个 CityEngine、
- * 同一份投影提供方和同一个布局规划器，所以看到的是同一座城市。
+ * 同一份投影提供方、同一个布局规划器和同一份补丁存档（同源 localStorage），所以看到的是同一座城市。
  * 暂停/恢复沿用引擎已注册的宿主 __AV_PLUGIN_SUSPENDED__/RESUMED__ 事件与
  * visibilitychange，销毁入口就是组件卸载时的 engine.dispose()。
  */
-export function CityViewport({ seed, windowDays = 366, worldProfile, onEngineChange }: CityViewportProps) {
+export function CityViewport({ seed, windowDays, worldProfile, onEngineChange }: CityViewportProps) {
+  const days = windowDays ?? readCityWindowDays();
   const language = useCityLanguage();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<CityEngine | null>(null);
@@ -40,6 +45,7 @@ export function CityViewport({ seed, windowDays = 366, worldProfile, onEngineCha
   const [sceneUnavailable, setSceneUnavailable] = useState(false);
   const [firstModelFrame, setFirstModelFrame] = useState(false);
   const [cityLoad, setCityLoad] = useState<ViewportLoadState>({ stage: "data", work: null });
+  const [patch, setPatch] = useState<PlanPatchV1 | null>(null);
   // 未显式传外观时与 City 同源读取偏好；useMemo 保持引用稳定，引擎不会因渲染重建。
   const profile = useMemo(() => worldProfile ?? readCityAppearancePreference(), [worldProfile]);
 
@@ -68,7 +74,7 @@ export function CityViewport({ seed, windowDays = 366, worldProfile, onEngineCha
     const loading = new AbortController();
     setCityLoad({ stage: "data", work: null });
     // 与 CityApp 同一份投影提供方；数据授权按活动插件描述符在宿主侧逐请求校验。
-    tauriCityDataProvider.getProjection({ windowDays, signal: loading.signal }).then((data) => {
+    tauriCityDataProvider.getProjection({ windowDays: days, signal: loading.signal }).then((data) => {
       if (!active) return;
       setProjection(data);
       setDataLoaded(true);
@@ -79,7 +85,18 @@ export function CityViewport({ seed, windowDays = 366, worldProfile, onEngineCha
       setCityLoad({ stage: "data", work: null });
     });
     return () => { active = false; loading.abort(); };
-  }, [windowDays]);
+  }, [days]);
+
+  // 修复补丁与 City 同源读取（宿主投影未注册时回落同源 localStorage，见 data/planPatch.ts）。
+  // 不套补丁的话，用户搬过的楼、修过的路在 Studio 里会恢复成生成时的样子。
+  useEffect(() => {
+    let active = true;
+    void cityPlanPatchStore("read").then((store) => {
+      if (!active) return;
+      setPatch(store?.patches[String(seed)] ?? null);
+    }).catch(() => { if (active) setPatch(null); });
+    return () => { active = false; };
+  }, [seed]);
 
   useEffect(() => {
     if (!firstModelFrame) return;
@@ -87,12 +104,17 @@ export function CityViewport({ seed, windowDays = 366, worldProfile, onEngineCha
   }, [firstModelFrame]);
 
   const fingerprint = useRef("");
+  const patchFingerprint = useRef("");
   const geographyKey = useRef("");
   const geographyAbort = useRef<AbortController | null>(null);
   useEffect(() => () => { geographyAbort.current?.abort(); }, []);
   useEffect(() => {
     const engine = engineRef.current;
     if (!projection || !engine) return;
+    const patchForSeed = patch?.seed === seed ? patch : null;
+    const patchKey = patchForSeed
+      ? `${patchForSeed.updatedAt}:${Object.keys(patchForSeed.buildingMoves).length}:${patchForSeed.roadOps.length}:${patchForSeed.highwayOps?.length ?? 0}:${patchForSeed.siteOps.length}`
+      : "";
     const model = buildCityModel({
       harnessNames: Object.fromEntries(projection.harnesses.map((h) => [h.id, h.display_name])),
       rows: projectionSessionRows(projection),
@@ -115,7 +137,13 @@ export function CityViewport({ seed, windowDays = 366, worldProfile, onEngineCha
     const geography = JSON.stringify([projection.window, seed, planned]);
     const occupants = projection.sessions.map((session) => session.id).join("\0");
     const signature = `${geography}|${occupants}|${JSON.stringify(projection.findings)}`;
-    if (signature === fingerprint.current) return;
+    if (signature === fingerprint.current) {
+      if (patchKey === patchFingerprint.current) return;
+      // 只有补丁变了：引擎按移楼钉子对比走快路径（缓存的底层布局上重套补丁），与 City 的 setPlanPatch 一致。
+      engine.setPlanPatch(patchForSeed);
+      patchFingerprint.current = patchKey;
+      return;
+    }
     geographyAbort.current?.abort();
     const preparation = new AbortController();
     geographyAbort.current = preparation;
@@ -133,6 +161,9 @@ export function CityViewport({ seed, windowDays = 366, worldProfile, onEngineCha
       await noteBusy(15_000).catch(() => {});
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
       if (preparation.signal.aborted || engineRef.current !== engine) return;
+      // 布局装配前先交补丁：移楼钉子参与底层布局，装配顺序与 City（session.load → applyModel）一致。
+      engine.setPlanPatch(patchForSeed);
+      patchFingerprint.current = patchKey;
       engine.applyModel(model, false);
       setCityLoad({ stage: "rendering", work: null });
       // applyModel 在返回前同步渲染该模型的首帧。
@@ -142,7 +173,7 @@ export function CityViewport({ seed, windowDays = 366, worldProfile, onEngineCha
       if (!preparation.signal.aborted) { setSceneUnavailable(true); setCityLoad({ stage: "data", work: null }); }
     });
     return () => preparation.abort();
-  }, [projection, seed, profile]);
+  }, [projection, seed, profile, patch]);
 
   const dataAvailable = projection !== null && projection.status !== "unavailable";
   const cityLoading = !sceneUnavailable && (!dataLoaded || (dataAvailable && projection.status !== "empty" && !firstModelFrame));
