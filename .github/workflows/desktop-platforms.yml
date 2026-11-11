@@ -52,12 +52,18 @@ jobs:
       - name: Install Linux desktop dependencies
         if: runner.os == 'Linux'
         run: |
+          set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
-          # 22.04 runner 上 apt 曾无输出挂起 50+ 分钟：加非交互、超时与重试，
-          # 避免 debconf 提示或镜像无响应把打包卡死。
-          sudo -E apt-get update -o Acquire::Retries=3 -o Acquire::http::Timeout=30
-          sudo -E apt-get install -y --no-install-recommends \
+          # 22.04 runner 上 apt 曾无输出挂起 50+ 分钟。除了非交互/超时/重试，
+          # 还要处理开机时 unattended-upgrades 持锁 + dpkg 锁等待。
+          sudo systemctl stop unattended-upgrades 2>/dev/null || true
+          sudo systemctl disable unattended-upgrades 2>/dev/null || true
+          timeout 600 sudo -E apt-get update \
             -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
+            -o DPkg::Lock::Timeout=600
+          timeout 900 sudo -E apt-get install -y --no-install-recommends \
+            -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
+            -o DPkg::Lock::Timeout=600 \
             libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev \
             libssl-dev librsvg2-dev libayatana-appindicator3-dev patchelf
       - name: Verify platform configuration
