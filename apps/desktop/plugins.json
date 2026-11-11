@@ -2,6 +2,35 @@
   "version": 1,
   "plugins": [
     {
+      "id": "creator-studio",
+      "name": "Creator Studio",
+      "entry": "plugins/CreatorStudio.plugin/ui/index.html",
+      "commandNamespace": "creator",
+      "maxToolbarItems": 4,
+      "performanceMetrics": [],
+      "dataProjections": [],
+      "localCalls": [
+        "creator.layout.list",
+        "creator.project.list",
+        "creator.project.read",
+        "creator.project.read_chunk",
+        "creator.operation.status",
+        "creator.project.create",
+        "creator.game.preview",
+        "creator.asset.import",
+        "creator.game.commit",
+        "creator.scene.preview",
+        "creator.scene.commit",
+        "creator.project.commit",
+        "creator.project.publish",
+        "creator.project.playtest.start",
+        "creator.project.playtest.return_context",
+        "creator.project.playtest.history"
+      ],
+      "hostEvents": ["plugin.event"],
+      "source": "apps/creator-studio/ui"
+    },
+    {
       "id": "city",
       "name": "City",
       "entry": "plugins/AgentCity.plugin/ui/index.html",
@@ -232,7 +261,7 @@
       "allowLocalExports": true,
       "navigationTargets": ["session"],
       "hostEvents": ["plugin.event"],
-      "localCalls": ["city.building.get", "city.building.preview", "city.building.set", "city.building.reset", "city.im.publish"],
+      "localCalls": ["city.building.get", "city.building.preview", "city.building.set", "city.building.reset", "city.im.publish", "city.creator.layout.publish", "city.creator.experiences.list", "city.creator.experiences.read", "city.creator.playtest.claim", "city.creator.playtest.finish", "city.world.profile.preview", "city.world.profile.apply"],
       "remoteCapabilities": [{
         "id": "mecha:v4",
         "methods": ["sequential.snapshot", "sequential.command.submit", "city.snapshot"],

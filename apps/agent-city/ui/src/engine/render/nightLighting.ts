@@ -7,7 +7,7 @@ import * as THREE from "three";
 import { battleClarityPresentation } from "../battleClarity";
 import { LIGHT_BUDGET, lampTier, nightFactor, windowRate } from "../cityLightBudget";
 import { CAR_LAMP_FADE_FAR, CAR_LAMP_FADE_NEAR, carPoolFadeUniforms } from "./drivingStreetLights";
-import { activeTheme } from "../cityTheme";
+import type { CityTheme } from "../cityTheme";
 import { roadPaintPlan } from "../cityRoadPaint";
 import { pavementIndex, renderRoadEdges } from "../cityRoadJunctions";
 import { createRenderCanvas } from "../renderCanvas";
@@ -29,6 +29,7 @@ type NightFacadeUniforms = {
 
 export interface NightHost {
   layout: CityLayout;
+  theme: CityTheme;
   group: THREE.Group;
   disposables: Array<{ dispose: () => void }>;
   nightLights: NightLights | null;
@@ -72,7 +73,7 @@ export function setNightWater(host: NightHost, night: number): void {
 }
 
 export function setSkyMix(host: NightHost, dayMix: number): void {
-  const amount = activeTheme().skyGrade.amount * (1 - dayMix);
+  const amount = host.theme.skyGrade.amount * (1 - dayMix);
   if (host.waterAssetUniforms) host.waterAssetUniforms.uGradeAmount.value = amount;
   for (const uniforms of host.facadeUniforms) uniforms.uGradeAmount.value = amount;
 }

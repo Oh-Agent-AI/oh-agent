@@ -11,11 +11,15 @@ import type { RuntimeDiagnosticSnapshot } from "./runtime/RuntimeDiagnostics";
 import type { PreparationProgress } from "./runtime/Preparation";
 import type { RoadValidationReport } from "./roadValidation";
 import type { DrivingEvent } from "./runtime/DrivingEventLog";
+import type { CheckpointRaceSnapshotV1 } from "./activity/checkpointRace";
 import "./game.css";
 
 export type DrivingHudModel = Readonly<{
   active: boolean;
   choosingVehicle?: boolean; vtol?: boolean;
+  activityKind?: "race" | "collect" | "creator" | null; activityTitle?: string | null;
+  creatorGames?: readonly Readonly<{ releaseId: string; mountId: string; title: string }>[];
+  race?: CheckpointRaceSnapshotV1 | null; raceEntryError?: string | null;
   entryError: string | null;
   initialPaused: boolean;
   preparationProgress: PreparationProgress | null;
@@ -30,7 +34,8 @@ export type DrivingHudModel = Readonly<{
   roadCheck?: RoadValidationReport | null;
 }>;
 export type DrivingHudActions = Readonly<{
-  selectVehicle(vtol: boolean): void; clearEntryError(): void; exit(): void; pause(): void; resume(): void; openUiContext(): void;
+  selectVehicle(vtol: boolean): void; startRace(): void; startCollect(): void; startCreatorGame(releaseId: string, mountId: string): void;
+  clearEntryError(): void; exit(): void; pause(): void; resume(): void; openUiContext(): void;
 }>;
 
 const DRIVING_CONTROLS: readonly GameControlRow[] = [
@@ -63,10 +68,13 @@ export function DrivingHud({ model, actions, locale, sound }: {
   const t = (text: string) => gameText(text, locale);
   const openUi = () => actions.openUiContext();
   if (model.choosingVehicle) return <GameSessionPanel locale={locale} title="选择驾驶模式"
-    description={t("普通汽车沿道路驾驶；喷气飞车可长按空格升空，松开后下降。")}
+    description={<>{t("普通汽车沿道路驾驶；喷气飞车可长按空格升空，松开后下降。")}{model.raceEntryError && <span role="alert"> {t(model.raceEntryError)}</span>}</>}
     onKeyDown={(event) => { if (event.code === "Escape") { event.preventDefault(); actions.exit(); } }}
     actions={[{ label: "普通汽车", onAction: () => actions.selectVehicle(false) },
-      { label: "喷气飞车", onAction: () => actions.selectVehicle(true) }, { label: "取消", tone: "danger", onAction: actions.exit }]} />;
+      { label: "喷气飞车", onAction: () => actions.selectVehicle(true) }, { label: "检查点竞速", onAction: actions.startRace },
+      { label: "区域寻宝", onAction: actions.startCollect },
+      ...(model.creatorGames ?? []).map(game => ({ label: `创作者游戏 · ${game.title}`, onAction: () => actions.startCreatorGame(game.releaseId, game.mountId) })),
+      { label: "取消", tone: "danger", onAction: actions.exit }]} />;
   const closeError = !model.active && model.entryError;
   if (!model.active && !closeError) return null;
   const entryDescription = model.entryError?.startsWith("暂不能开始驾驶：") && locale === "en"
@@ -99,14 +107,17 @@ export function DrivingHud({ model, actions, locale, sound }: {
   else if (hud.phase === "error") panel = <GameSessionPanel locale={locale} title="场景已失效" description={t(sceneError)} role="alertdialog"
     actions={[{ label: "退出驾驶", tone: "danger", onAction: actions.exit}]} />;
   else if (hud.phase === "paused") panel = <GameSessionPanel locale={locale}
-    title={hud.reason === "camera-safety" ? "相机安全检查已暂停驾驶" : hud.reason === "long-frame" ? "帧间隔过长，已暂停" : model.initialPaused ? "准备就绪" : "已暂停"}
-    description={hud.reason === "camera-safety" ? t("相机安全检查无法确认，驾驶已暂停。") : model.initialPaused ? spawnReadyText(model.roadCheck, t, locale) : hud.reason === "long-frame" ? t("帧间隔恢复后，可显式继续驾驶") : undefined}
+    title={model.race?.status === "success" ? (model.activityKind === "collect" ? "寻宝完成" : model.activityKind === "creator" ? `${model.activityTitle ?? "小游戏"} · 完成` : "竞速完成") : model.race?.status === "failure" ? (model.activityKind === "creator" ? `${model.activityTitle ?? "小游戏"} · 未完成` : "时间到") : model.race?.status === "error" ? "小游戏运行出错" : hud.reason === "camera-safety" ? "相机安全检查已暂停驾驶" : hud.reason === "long-frame" ? "帧间隔过长，已暂停" : model.initialPaused ? (model.race ? (model.activityKind === "collect" ? "寻宝准备就绪" : model.activityKind === "creator" ? `${model.activityTitle ?? "小游戏"} · 准备就绪` : "竞速准备就绪") : "准备就绪") : "已暂停"}
+    description={model.race?.status === "success" ? (locale === "en" ? `Completed ${model.race.completed}/${model.race.total} in ${model.race.elapsedSeconds}s` : `${model.race.completed} / ${model.race.total} 个目标 · ${model.race.elapsedSeconds} 秒`) : model.race?.status === "failure" ? (locale === "en" ? `Reached ${model.race.completed}/${model.race.total}` : `通过 ${model.race.completed} / ${model.race.total}`) : model.race?.status === "error" ? t(model.race.reason ?? "小游戏运行出错") : hud.reason === "camera-safety" ? t("相机安全检查无法确认，驾驶已暂停。") : model.initialPaused ? (model.race ? (model.activityKind === "collect" ? "驾驶穿过三个区域，收集全部目标即可完成。" : model.activityKind === "creator" ? "按游戏目标完成已发布小游戏。" : "沿路线通过三个检查点，时间限制为 45 秒。") : spawnReadyText(model.roadCheck, t, locale)) : hud.reason === "long-frame" ? t("帧间隔恢复后，可显式继续驾驶") : undefined}
     children={<><GameControlsHelp locale={locale} rows={controls} className="city-game-panel-help" />
       {sound && <GameSoundPanel locale={locale} sound={sound} />}</>}
-    actions={[{ label: model.initialPaused ? "开始驾驶" : "继续", onAction: actions.resume }, { label: "退出驾驶", tone: "danger", onAction: actions.exit}]} />;
+    actions={model.race?.status === "success" || model.race?.status === "failure" || model.race?.status === "error"
+      ? [{ label: model.activityKind === "creator" ? "退出游戏" : "退出竞速", tone: "danger", onAction: actions.exit }]
+      : [{ label: model.race?.status === "ready" ? "开始竞速" : model.initialPaused ? "开始驾驶" : "继续", onAction: actions.resume }, { label: "退出驾驶", tone: "danger", onAction: actions.exit}]} />;
 
   const title = <>
     <div className="city-game-chip"><strong>{t(model.vtol ? "喷气飞车" : "自由驾驶")}</strong></div>
+    {model.race && <div className="city-game-chip" role="status"><strong>{model.activityKind === "collect" ? "寻宝" : model.activityKind === "creator" ? model.activityTitle ?? "小游戏" : t("竞速")}</strong> · {model.race.completed}/{model.race.total} · {model.race.elapsedSeconds}s</div>}
     {roadCheckChip(model.roadCheck, t)}
     {hud.phase === "running" && <button className="city-game-compact-action" type="button" onClick={() => { openUi(); actions.pause(); }}>{t("暂停")}</button>}
   </>;

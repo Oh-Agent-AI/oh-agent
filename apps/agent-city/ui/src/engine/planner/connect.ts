@@ -150,7 +150,7 @@ const fallbackPolicy = (world: ConnectorWorld, request?: ConnectionRequest, marg
 export function walkableCorridor(geo: Geography, a: Vec2, b: Vec2): boolean {
   const distance = Math.hypot(b.x - a.x, b.z - a.z);
   const steps = Math.max(1, Math.ceil(distance / 4));
-  for (let k = 0; k <= steps; k += 1) if (!geo.buildable(a.x + (b.x - a.x) * k / steps, a.z + (b.z - a.z) * k / steps)) return false;
+  for (let k = 0; k <= steps; k += 1) if (!geo.landform.isBuildable(a.x + (b.x - a.x) * k / steps, a.z + (b.z - a.z) * k / steps)) return false;
   return true;
 }
 
@@ -433,7 +433,7 @@ function proposeGridAStar(request: ConnectionRequest, world: ConnectorWorld): St
     if (memo !== undefined) return memo;
     const p = { x: cx * step, z: cz * step };
     let blocked = true;
-    if (world.geo.height(p.x, p.z) > 0.5 && !world.inRiver(p.x, p.z) && world.geo.buildable(p.x, p.z) && world.geo.terrain.slope(p.x, p.z) <= policy.maxSlope) {
+    if (world.geo.landform.elevation(p.x, p.z) > 0.5 && !world.inRiver(p.x, p.z) && world.geo.landform.isBuildable(p.x, p.z) && world.geo.landform.slope(p.x, p.z) <= policy.maxSlope) {
       blocked = policy.sites.some((site) => Math.hypot(p.x - site.x, p.z - site.z)
         < site.radius + policy.siteMargin + (policy.roadWidth ?? 0) / 2);
       if (!blocked) {
@@ -626,7 +626,7 @@ function proposeBridgeCandidate(request: ConnectionRequest, world: ConnectorWorl
       const q = at(k);
       for (let j = 0; j <= lateralSteps; j += 1) {
         const offset = width * (j / lateralSteps - 0.5);
-        if (world.geo.height(q.x + nx * offset, q.z + nz * offset) <= 0.5 || world.inRiver(q.x + nx * offset, q.z + nz * offset)) return true;
+        if (world.geo.landform.elevation(q.x + nx * offset, q.z + nz * offset) <= 0.5 || world.inRiver(q.x + nx * offset, q.z + nz * offset)) return true;
       }
       return false;
     };

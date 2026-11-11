@@ -30,7 +30,7 @@ const HIGHWAY = "#4a4f55";
 const LAND = [30, 40, 34, 120], WATER = [34, 92, 130, 170];
 const STORAGE = { open: "city-minimap-open", tab: "city-minimap-tab" } as const;
 
-type Tab = "routes" | "audit" | "monsters";
+type Tab = "routes" | "audit" | "monsters" | "games";
 type Mode = Tab | "drive";
 type Pose = Readonly<{ x: number; z: number; heading: number }>;
 /** 视窗：世界里一个以 (cx, cz) 为中心、边长 span 的正方形，映射到 SIZE×SIZE 的画布。 */
@@ -95,7 +95,7 @@ function drawMap(g: CanvasRenderingContext2D, model: MinimapModel, traffic: Traf
 }
 
 /** 闪烁的点：审计看拥堵点，驾驶看路况问题点；路线看法不打点。 */
-type Spot = { at: { x: number; z: number }; color: string; text: { zh: string; en: string } };
+type Spot = { at: { x: number; z: number }; color: string; text: { zh: string; en: string }; select?: () => void };
 function spotsOf(model: MinimapModel, traffic: TrafficModel | null, mode: Mode): Spot[] {
   if (mode === "audit") return [
     ...(traffic?.hotspots ?? []).map((h) => ({ at: h.at, color: h.vc >= 1 ? TRAFFIC_COLOR.jam : TRAFFIC_COLOR.slow, text: h.text })),
@@ -113,25 +113,25 @@ function arrow(g: CanvasRenderingContext2D, x: number, y: number, angle: number,
 
 const COPY = {
   zh: {
-    title: "小地图", tabs: { routes: "路线", audit: "拥堵估算", monsters: "怪兽" }, drive: "路况", follow: "跟随", whole: "全城", close: "收起小地图", open: "展开小地图",
+    title: "小地图", tabs: { routes: "路线", audit: "拥堵估算", monsters: "怪兽", games: "小游戏" }, drive: "路况", follow: "跟随", whole: "全城", close: "收起小地图", open: "展开小地图",
     monsterLoading: "正在寻找遭遇点…", monsterError: "遭遇点搜索失败，请稍后重试。", monsterEmpty: "当前城市没有可用遭遇点。", monsterCount: (count: number) => `${count} 个怪兽遭遇点 · 点选定位`,
     routes: (roads: number, bridges: number) => `${roads} 段路 · ${bridges} 座桥`,
     computing: "正在估算高峰车流…",
     // 摘要一行装得下：拥堵/偏慢/断路三个数，到不了的出行占比只在有时才加；「这是估算」写在悬停提示（title）与图例旁的标签页名里。
     audit: (t: TrafficModel, blocked: number) => `拥堵 ${t.counts.jam} · 偏慢 ${t.counts.slow}${blocked ? ` · 断路 ${blocked}` : ""}${t.unreachable ? ` · ${Math.round((t.unreachable / Math.max(1, t.trips)) * 100)}% 到不了` : ""}`,
     driveSummary: (m: MinimapModel) => (m.counts.blocked ? `开不过去 ${m.counts.blocked}` : "全城可通行") + (m.counts.steep ? ` · 很陡 ${m.counts.steep}` : ""),
-    hint: { routes: "点地图，镜头飞过去。", audit: "估算：按街区用地生成高峰出行、按拥堵后的行程时间走最短路；高架不计入。紫色虚线的路车开不过去，修复城市里可以修。", monsters: "点怪兽定位，再点击城市中的遭遇标记进入机甲战棋。", drive: "红 = 开不过去，琥珀 = 很陡。三角是你的车。" },
-    legend: { routes: ["主干道", "次干道", "小路", "桥", "高架", "镜头"], audit: ["畅通", "较忙", "偏慢", "拥堵", "开不过去"], monsters: ["怪兽遭遇点", "镜头"], drive: ["开不过去", "很陡", "正常路", "我的位置"] },
+    hint: { routes: "点地图，镜头飞过去。", audit: "估算：按街区用地生成高峰出行、按拥堵后的行程时间走最短路；高架不计入。紫色虚线的路车开不过去，修复城市里可以修。", monsters: "点怪兽定位，再点击城市中的遭遇标记进入机甲战棋。", games: "点击入口标记，启动已发布到这座 City 的小游戏。", drive: "红 = 开不过去，琥珀 = 很陡。三角是你的车。" },
+    legend: { routes: ["主干道", "次干道", "小路", "桥", "高架", "镜头"], audit: ["畅通", "较忙", "偏慢", "拥堵", "开不过去"], monsters: ["怪兽遭遇点", "镜头"], games: ["小游戏入口"], drive: ["开不过去", "很陡", "正常路", "我的位置"] },
   },
   en: {
-    title: "Minimap", tabs: { routes: "Routes", audit: "Traffic est.", monsters: "Monsters" }, drive: "Road conditions", follow: "Follow", whole: "City", close: "Collapse minimap", open: "Expand minimap",
+    title: "Minimap", tabs: { routes: "Routes", audit: "Traffic est.", monsters: "Monsters", games: "Games" }, drive: "Road conditions", follow: "Follow", whole: "City", close: "Collapse minimap", open: "Expand minimap",
     monsterLoading: "Finding encounters…", monsterError: "Encounter search failed.", monsterEmpty: "No encounters available in this city.", monsterCount: (count: number) => `${count} encounters · select to focus`,
     routes: (roads: number, bridges: number) => `${roads} roads · ${bridges} bridge${bridges === 1 ? "" : "s"}`,
     computing: "Estimating peak traffic…",
     audit: (t: TrafficModel, blocked: number) => `Jam ${t.counts.jam} · Slow ${t.counts.slow}${blocked ? ` · Cut ${blocked}` : ""}${t.unreachable ? ` · ${Math.round((t.unreachable / Math.max(1, t.trips)) * 100)}% stranded` : ""}`,
     driveSummary: (m: MinimapModel) => (m.counts.blocked ? `Blocked ${m.counts.blocked}` : "All drivable") + (m.counts.steep ? ` · Steep ${m.counts.steep}` : ""),
-    hint: { routes: "Click to fly the camera there.", audit: "Estimate: peak trips from block land use, routed by congested travel time; expressways not counted. Dashed purple roads can't be driven; fix them in Repair city.", monsters: "Select a monster to focus, then click its city marker to start tactics.", drive: "Red = cars can't pass, amber = steep. The triangle is your car." },
-    legend: { routes: ["Arterial", "Secondary", "Local", "Bridge", "Expressway", "Camera"], audit: ["Free", "Busy", "Slow", "Jammed", "Can't pass"], monsters: ["Encounter", "Camera"], drive: ["Can't pass", "Steep", "Road", "You"] },
+    hint: { routes: "Click to fly the camera there.", audit: "Estimate: peak trips from block land use, routed by congested travel time; expressways not counted. Dashed purple roads can't be driven; fix them in Repair city.", monsters: "Select a monster to focus, then click its city marker to start tactics.", games: "Select a game entrance to start a published game in this City.", drive: "Red = cars can't pass, amber = steep. The triangle is your car." },
+    legend: { routes: ["Arterial", "Secondary", "Local", "Bridge", "Expressway", "Camera"], audit: ["Free", "Busy", "Slow", "Jammed", "Can't pass"], monsters: ["Encounter", "Camera"], games: ["Game entrance"], drive: ["Can't pass", "Steep", "Road", "You"] },
   },
 } as const;
 
@@ -141,12 +141,14 @@ function readStored<T extends string>(key: string, allowed: readonly T[], fallba
 
 export type MinimapDriving = Readonly<{ active: boolean; pose: () => Pose | null }>;
 
-export function CityMinimap({ engine, hidden, language = "zh", driving, encounters }: {
+export function CityMinimap({ engine, hidden, language = "zh", driving, encounters, creatorGames = [], onStartCreatorGame }: {
   engine: RefObject<CityEngine | null>; hidden: boolean; language?: string; driving?: MinimapDriving; encounters: EncounterState;
+  creatorGames?: readonly Readonly<{ releaseId: string; mountId: string; title: string; at: Readonly<{ x: number; z: number }> }>[];
+  onStartCreatorGame?(releaseId: string, mountId: string): void;
 }) {
   const copy = language === "en" ? COPY.en : COPY.zh;
   const [open, setOpen] = useState(() => readStored(STORAGE.open, ["1", "0"], "1") === "1");
-  const [tab, setTab] = useState<Tab>(() => readStored(STORAGE.tab, ["routes", "audit", "monsters"], "routes"));
+  const [tab, setTab] = useState<Tab>(() => readStored(STORAGE.tab, ["routes", "audit", "monsters", "games"], "routes"));
   const [follow, setFollow] = useState(true);
   const [layout, setLayout] = useState<CityLayout | null>(null);
   const [traffic, setTraffic] = useState<TrafficModel | null>(null);
@@ -174,7 +176,9 @@ export function CityMinimap({ engine, hidden, language = "zh", driving, encounte
     const timer = window.setTimeout(() => setTraffic(trafficModel(layout, model.blocked)), 30);
     return () => window.clearTimeout(timer);
   }, [layout, model, mode, open, hidden]);
-  const spots = useMemo(() => mode === "monsters" ? encounters.encounters.map((point) => ({ at: point.at, color: "#ff586c", text: { zh: `${{ flat: "平地", shore: "靠岸", ridge: "翻山", alley: "巷战" }[point.shape]}怪兽遭遇点`, en: `${point.shape} monster encounter` } })) : (model ? spotsOf(model, traffic, mode) : []), [model, traffic, mode, encounters]);
+  const spots = useMemo<Spot[]>(() => mode === "monsters" ? encounters.encounters.map((point) => ({ at: point.at, color: "#ff586c", text: { zh: `${{ flat: "平地", shore: "靠岸", ridge: "翻山", alley: "巷战" }[point.shape]}怪兽遭遇点`, en: `${point.shape} monster encounter` } }))
+    : mode === "games" ? creatorGames.map(game => ({ at: game.at, color: "#70e0c2", text: { zh: `小游戏入口 · ${game.title}`, en: `Game · ${game.title}` }, select: () => onStartCreatorGame?.(game.releaseId, game.mountId) }))
+      : (model ? spotsOf(model, traffic, mode) : []), [model, traffic, mode, encounters, creatorGames, onStartCreatorGame]);
   spotsRef.current = spots;
   const ratio = typeof window === "undefined" ? 1 : Math.min(2, window.devicePixelRatio || 1);
 
@@ -248,10 +252,10 @@ export function CityMinimap({ engine, hidden, language = "zh", driving, encounte
     return { x: view.cx - view.span / 2 + sx / scaleOf(view), z: view.cz - view.span / 2 + sy / scaleOf(view), spot: best };
   };
   const bridges = model.roads.filter((r) => r.cls === "bridge").length;
-  const summary = mode === "routes" ? copy.routes(model.roads.length - bridges, bridges) : mode === "audit" ? (traffic ? copy.audit(traffic, model.blocked.size) : copy.computing) : mode === "monsters" ? (encounters.status === "loading" ? copy.monsterLoading : encounters.status === "error" ? copy.monsterError : spots.length ? copy.monsterCount(spots.length) : copy.monsterEmpty) : copy.driveSummary(model);
+  const summary = mode === "routes" ? copy.routes(model.roads.length - bridges, bridges) : mode === "audit" ? (traffic ? copy.audit(traffic, model.blocked.size) : copy.computing) : mode === "monsters" ? (encounters.status === "loading" ? copy.monsterLoading : encounters.status === "error" ? copy.monsterError : spots.length ? copy.monsterCount(spots.length) : copy.monsterEmpty) : mode === "games" ? (spots.length ? `${spots.length} 个已发布小游戏入口 · 点选启动` : "当前 City 尚无已发布小游戏") : copy.driveSummary(model);
   const bad = mode === "audit" ? !!traffic && (traffic.counts.jam > 0 || traffic.unreachable > 0 || model.blocked.size > 0) : mode === "drive" && model.counts.blocked > 0;
   const swatches: readonly string[] = mode === "routes" ? [ROAD_COLOR.main, ROAD_COLOR.secondary, ROAD_COLOR.local, ROAD_COLOR.bridge, HIGHWAY]
-    : mode === "audit" ? [TRAFFIC_COLOR.free, TRAFFIC_COLOR.busy, TRAFFIC_COLOR.slow, TRAFFIC_COLOR.jam, IMPASSABLE] : mode === "monsters" ? ["#ff586c"] : [CONDITION_COLOR.blocked, CONDITION_COLOR.steep, ROAD_COLOR.secondary];
+    : mode === "audit" ? [TRAFFIC_COLOR.free, TRAFFIC_COLOR.busy, TRAFFIC_COLOR.slow, TRAFFIC_COLOR.jam, IMPASSABLE] : mode === "monsters" ? ["#ff586c"] : mode === "games" ? ["#70e0c2"] : [CONDITION_COLOR.blocked, CONDITION_COLOR.steep, ROAD_COLOR.secondary];
   const labels = copy.legend[mode];
   // Controls and status occupy their own rows; the square canvas stays unobscured.
   // The color key is optional, and keyboard users can open it without hovering.
@@ -261,28 +265,28 @@ export function CityMinimap({ engine, hidden, language = "zh", driving, encounte
         {mode === "drive" ? <>
           <button className={follow ? "is-on" : ""} aria-pressed={follow} onClick={() => setFollow(true)}>{copy.follow}</button>
           <button className={follow ? "" : "is-on"} aria-pressed={!follow} onClick={() => setFollow(false)}>{copy.whole}</button>
-        </> : (["routes", "audit", "monsters"] as const).map((id) => <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? "is-on" : ""} onClick={() => { setHover(null); setTab(id); }}>{copy.tabs[id]}</button>)}
+        </> : (["routes", "audit", "monsters", "games"] as const).map((id) => <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? "is-on" : ""} onClick={() => { setHover(null); setTab(id); }}>{copy.tabs[id]}</button>)}
       </div>
       <div className="city-minimap-map">
         <canvas ref={setCanvas} width={SIZE} height={SIZE} style={{ width: SIZE, height: SIZE, cursor: mode === "drive" ? "default" : "crosshair" }}
           onMouseMove={(event) => setHover(pointer(event).spot)} onMouseLeave={() => setHover(null)}
-          onClick={(event) => { if (mode === "drive") return; const p = pointer(event); engine.current?.focusPoint(p.spot ? p.spot.at.x : p.x, p.spot ? p.spot.at.z : p.z); }} />
-        {mode === "monsters" && spots.map((spot, index) => {
+          onClick={(event) => { if (mode === "drive") return; const p = pointer(event); if (p.spot?.select) { p.spot.select(); return; } engine.current?.focusPoint(p.spot ? p.spot.at.x : p.x, p.spot ? p.spot.at.z : p.z); }} />
+        {(mode === "monsters" || mode === "games") && spots.map((spot, index) => {
           const position = toCanvas(wholeView(model), spot.at.x, spot.at.z);
           const name = language === "en" ? spot.text.en : spot.text.zh;
           return <button key={index} type="button" className="city-minimap-spot" style={{ left: position.x, top: position.y }} aria-label={name}
             onMouseEnter={() => setHover(spot)} onMouseLeave={() => setHover(null)} onFocus={() => setHover(spot)} onBlur={() => setHover(null)}
-            onClick={() => engine.current?.focusPoint(spot.at.x, spot.at.z)} />;
+            onClick={() => spot.select ? spot.select() : engine.current?.focusPoint(spot.at.x, spot.at.z)} />;
         })}
-        {mode === "monsters" && hover && (() => {
+        {(mode === "monsters" || mode === "games") && hover && (() => {
           const position = toCanvas(wholeView(model), hover.at.x, hover.at.z);
           return <div role="tooltip" className="city-minimap-tooltip" style={{ left: Math.max(4, Math.min(SIZE - 4, position.x)), top: Math.max(4, position.y - 12) }}>{language === "en" ? hover.text.en : hover.text.zh}</div>;
         })()}
       </div>
       <div className="city-minimap-bottom">
         <p className={`city-minimap-summary ${hover && mode !== "monsters" ? "is-detail" : bad ? "is-bad" : "is-ok"}`} title={copy.hint[mode]}>{hover && mode !== "monsters" ? (language === "en" ? hover.text.en : hover.text.zh) : summary}</p>
-        {mode === "monsters" && spots.length > 0 && <div className="city-minimap-encounters" role="group" aria-label={language === "en" ? "Focus encounters" : "定位遭遇点"}>
-          {spots.map((spot, index) => <button key={index} type="button" onClick={() => engine.current?.focusPoint(spot.at.x, spot.at.z)}
+        {(mode === "monsters" || mode === "games") && spots.length > 0 && <div className="city-minimap-encounters" role="group" aria-label={language === "en" ? (mode === "games" ? "Launch games" : "Focus encounters") : (mode === "games" ? "启动小游戏" : "定位遭遇点")}>
+          {spots.map((spot, index) => <button key={index} type="button" onClick={() => spot.select ? spot.select() : engine.current?.focusPoint(spot.at.x, spot.at.z)}
             onFocus={() => setHover(spot)} onBlur={() => setHover(null)}>{language === "en" ? spot.text.en : spot.text.zh}</button>)}
         </div>}
         <details className="city-minimap-key"><summary>{language === "en" ? "Legend" : "图例"}</summary>

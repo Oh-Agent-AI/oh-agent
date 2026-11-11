@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
 import type { CityEngine } from "../engine/CityEngine";
 import { GameSession, type GameSessionSnapshot } from "./GameSession";
 import type { FlightInputState } from "./types";
+import type { CityActivityCoordinator, CityActivityLease } from "./activity/CityActivityCoordinator";
 import type { GameLocale } from "./gameCopy";
 import { closeOpenGameDisclosure } from "./ui/closeOpenDisclosure";
 import { EMPTY_PROFILE, loadProfilePort, mergeRecord, saveProfile, type FlightProfileV1, type ProfilePort } from "../data/profile";
@@ -22,6 +23,7 @@ export type GameHostBridge = {
   /** 游戏退出后触发一次最新投影刷新。 */
   requestRefresh: () => void;
   locale: () => GameLocale;
+  activityCoordinator: CityActivityCoordinator;
 };
 
 export function useCityGame(engine: RefObject<CityEngine | null>, host: GameHostBridge, options: { persistProfile?: boolean } = {}) {
@@ -32,6 +34,7 @@ export function useCityGame(engine: RefObject<CityEngine | null>, host: GameHost
   const [persistTier, setPersistTier] = useState<"native" | "local" | "memory" | null>(null);
   const [saveFailed, setSaveFailed] = useState(false);
   const sessionRef = useRef<GameSession | null>(null);
+  const activityLeaseRef = useRef<CityActivityLease | null>(null);
   const pilotRef = useRef<(() => void) | null>(null);
   const portRef = useRef<ProfilePort | null>(null);
   const profileRef = useRef<FlightProfileV1>({ ...EMPTY_PROFILE });
@@ -48,6 +51,7 @@ export function useCityGame(engine: RefObject<CityEngine | null>, host: GameHost
       sessionRef.current = new GameSession(engineInstance, {
         onState: (next) => setSnapshot(next),
         onExited: () => {
+          activityLeaseRef.current?.release(); activityLeaseRef.current = null;
           engineInstance.setLabelsVisible(hostRef.current.labelsVisible());
           hostRef.current.requestRefresh();
         },
@@ -85,18 +89,30 @@ export function useCityGame(engine: RefObject<CityEngine | null>, host: GameHost
     const session = getSession();
     const engineInstance = engine.current;
     if (!session || !engineInstance) return;
+    const admission = hostRef.current.activityCoordinator.tryAcquire("flight");
+    if (!admission.ok) {
+      const locale = hostRef.current.locale();
+      setEntryError(locale === "en" ? `Cannot enter flight while ${admission.active.activityId} is ${admission.active.phase}.` : `当前${admission.active.activityId}活动正在${admission.active.phase === "preparing" ? "准备" : "运行"}，暂不能进入飞行。`);
+      return;
+    }
+    activityLeaseRef.current = admission.lease;
     setEntryError(null);
     const hostState = session.hostState(hostRef.current.cinemaActive(), hostRef.current.filmActive(), hostRef.current.busy());
     let result: Awaited<ReturnType<GameSession["enter"]>>;
     try { result = await session.enter({ mode }, hostState, origin); }
     catch (error) {
+      admission.lease.release(); if (activityLeaseRef.current === admission.lease) activityLeaseRef.current = null;
       if (sessionRef.current === session && session.controller.snapshot.phase !== "data") {
         setEntryError(error instanceof Error ? error.message : (hostRef.current.locale() === "en" ? "Cannot prepare the flight scene." : "飞行场景准备失败。"));
       }
       return;
     }
-    if (sessionRef.current !== session || session.controller.snapshot.phase === "data") return;
+    if (sessionRef.current !== session || session.controller.snapshot.phase === "data") {
+      admission.lease.release(); if (activityLeaseRef.current === admission.lease) activityLeaseRef.current = null;
+      return;
+    }
     if (!result.ok) {
+      admission.lease.release(); if (activityLeaseRef.current === admission.lease) activityLeaseRef.current = null;
       const locale = hostRef.current.locale();
       const reasons: Record<string, string> = {
         "cinema-active": locale === "en" ? "Finish the aerial tour before entering the game." : "航拍进行中，请先结束航拍再进入游戏。",
@@ -111,6 +127,11 @@ export function useCityGame(engine: RefObject<CityEngine | null>, host: GameHost
       const text = reasons[result.reason] ?? (locale === "en" ? "Cannot take off right now." : "暂时无法起飞。");
       if (text) setEntryError(text);
     } else {
+      if (!admission.lease.activate()) {
+        session.exit();
+        setEntryError(hostRef.current.locale() === "en" ? "Flight activity ownership expired; please try again." : "飞行活动已失效，请重新进入。");
+        return;
+      }
       engineInstance.setLabelsVisible(false);
     }
   }, [engine, getSession]);

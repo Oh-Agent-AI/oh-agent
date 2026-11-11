@@ -22,7 +22,7 @@ export interface RepairContext {
   demandCatalogue?: readonly ConnectionDemand[];
   /** Dispatcher-owned authority. Pending reservations do not certify complete model physics. */
   readonly planningWorld?: PlanningWorld;
-  height: (x: number, z: number) => number;
+  elevation: (x: number, z: number) => number;
   inRiver: (x: number, z: number) => boolean;
   publicSites: PublicSite[];
   landmarks: Landmark[];

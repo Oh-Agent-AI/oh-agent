@@ -9,6 +9,7 @@ import { useCityGame } from "../../game/useCityGame";
 import { GameHud } from "../../game/GameHud";
 import { useCityDrivingPlay } from "../../game/useCityDrivingPlay";
 import { DrivingHud } from "../../game/DrivingHud";
+import { CityActivityCoordinator } from "../../game/activity/CityActivityCoordinator";
 import { MechaBoard } from "../../game/MechaBoard";
 import { hydrateRemoteCityLayout, type RemoteCityDisplay, type RemoteCitySnapshot, type RemoteCityVisualPalette } from "./cityDisplayProjection";
 
@@ -45,12 +46,15 @@ function RemoteCitySceneContent({ snapshot, battle, palettes, heroBuildingId, di
   const [mechaOpen, setMechaOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [cameraMode, setCameraMode] = useState<"city" | "battle">("city");
+  const [activityCoordinator] = useState(() => new CityActivityCoordinator());
   const game = useCityGame(engine, {
     cinemaActive: () => false, filmActive: () => false, busy: () => false,
     labelsVisible: () => true, requestRefresh: () => {}, locale: () => "zh-Hans",
+    activityCoordinator,
   }, { persistProfile: false });
   const driving = useCityDrivingPlay(engine, {
     cinemaActive: () => false, gameActive: () => game.active, busy: () => false,
+    activityCoordinator,
   }, { notifyHostBusy: false });
   useEffect(() => {
     const element = canvas.current;
@@ -118,9 +122,10 @@ function RemoteCitySceneContent({ snapshot, battle, palettes, heroBuildingId, di
       onToggleMusic: game.toggleMusic, onPause: () => game.pause("user"),
     }} />}
     {standalone && <DrivingHud model={{ active: driving.active, choosingVehicle: driving.choosingVehicle, vtol: driving.vtol,
+      race: driving.race, raceEntryError: driving.raceEntryError,
       entryError: driving.entryError, initialPaused: driving.initialPaused, hud: driving.hud,
       preparationProgress: driving.preparationProgress, events: driving.events, diagnostics: driving.diagnostics(), roadCheck: driving.roadCheck }}
-      actions={{ selectVehicle: driving.selectVehicle, clearEntryError: driving.clearEntryError, exit: driving.exit,
+      actions={{ selectVehicle: driving.selectVehicle, startRace: driving.startRace, startCollect: driving.startCollect, startCreatorGame: () => {}, clearEntryError: driving.clearEntryError, exit: driving.exit,
         pause: driving.pause, resume: driving.resume, openUiContext: driving.openUiContext }} locale="zh-Hans" sound={driving.sound} />}
     {standalone && game.active && !game.snapshot?.controller.paused && game.snapshot?.controller.phase !== "preparing" && game.snapshot?.controller.phase !== "result" && game.snapshot?.controller.phase !== "data" && <TouchPad
       label="飞行触控" buttons={FLIGHT_TOUCH_BUTTONS} onChange={(pressed) => game.setTouchInput({

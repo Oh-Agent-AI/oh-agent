@@ -30,7 +30,7 @@ export function* localResiteCandidates(site: Vec2): Iterable<Vec2> {
 export function resiteViolatingSites(ctx: RepairContext, opts: { skipWetShore?: boolean } = {}): number {
   const all = [...ctx.publicSites, ...ctx.landmarks].filter((s) => s.radius) as S[];
   const solid = [...ctx.network.edges.values()].filter((e) => !e.bridge);
-  const geo = { height: ctx.height, inRiver: ctx.inRiver };
+  const geo = { elevation: ctx.elevation, inRiver: ctx.inRiver };
   const nearestRoad = (x: number, z: number) => polylineDistance(solid.map((e) => e.points), { x, z });
   const limit = (s: S) => (ctx.SHORE_SITE_KINDS.has(s.kind) ? 3 : 0);
   const violates = (s: S): boolean => {
@@ -48,7 +48,7 @@ export function resiteViolatingSites(ctx: RepairContext, opts: { skipWetShore?: 
     return all.some((o) => o !== s && (o.kind > s.kind || fixed(o)) && Math.hypot(o.x - s.x, o.z - s.z) < o.radius + s.radius);
   };
   const acceptable = (s: S, x: number, z: number): boolean => {
-    if (ctx.height(x, z) <= 0.5 || wetCount(geo, { x, z }, s.radius, { river: true }) > limit(s)) return false;
+    if (ctx.elevation(x, z) <= 0.5 || wetCount(geo, { x, z }, s.radius, { river: true }) > limit(s)) return false;
     if (all.some((o) => o !== s && Math.hypot(o.x - x, o.z - z) < o.radius + s.radius)) return false;
     if (!clearsHighways({ x, z }, s.radius * 2, s.radius * 2, ctx.ringRuns)) return false;
     if (polylineDistance(ctx.trunkRuns, { x, z }) < s.radius * 0.7 || nearBridgeEnd(ctx.bridges, x, z, s.radius)) return false;
@@ -104,7 +104,7 @@ const SHORE_KINDS = coastalSitingKinds();
  */
 export function retreatShoreSitesToDryLand(ctx: ShoreMoveContext): void {
   const { landmarks, core, height, inRiver, trunkRuns, bridges } = ctx;
-  const footprintGeo = { height: ctx.height, inRiver: ctx.inRiver, riverBank: ctx.riverBank };
+  const footprintGeo = { elevation: ctx.height, inRiver: ctx.inRiver, riverBank: ctx.riverBank };
   const distanceToTrunks = (p: Vec2) => polylineDistance(trunkRuns, p);
   for (const site of landmarks) {
     if (ctx.relocateSiteIds && !ctx.relocateSiteIds.has(site.id)) continue;
@@ -149,7 +149,7 @@ export function settleHarborOnCoast(ctx: ShoreMoveContext): void {
  */
 export function settleShoreSitesOnCoast(ctx: ShoreMoveContext): void {
   const { publicSites, landmarks, coast, coastDistance, height, inRiver, trunkRuns, bridges, ringRuns } = ctx;
-  const footprintGeo = { height: ctx.height, inRiver: ctx.inRiver, riverBank: ctx.riverBank };
+  const footprintGeo = { elevation: ctx.height, inRiver: ctx.inRiver, riverBank: ctx.riverBank };
   const distanceToTrunks = (p: Vec2) => polylineDistance(trunkRuns, p);
   for (const site of landmarks) {
     if (ctx.relocateSiteIds && !ctx.relocateSiteIds.has(site.id)) continue;
@@ -229,7 +229,7 @@ export function supportedShoreLanding(geo: Pick<ShoreMoveContext, "height" | "in
 
 export function settleSailOperaOffshore(ctx: ShoreMoveContext): SailOperaCandidateSet[] {
   const { publicSites, landmarks, coast, core, height } = ctx;
-  const footprintGeo = { height: ctx.height, inRiver: ctx.inRiver, riverBank: ctx.riverBank };
+      const footprintGeo = { elevation: ctx.height, inRiver: ctx.inRiver, riverBank: ctx.riverBank };
   const candidateSets: SailOperaCandidateSet[] = [];
   for (const site of landmarks) {
     if (ctx.relocateSiteIds && !ctx.relocateSiteIds.has(site.id)) continue;

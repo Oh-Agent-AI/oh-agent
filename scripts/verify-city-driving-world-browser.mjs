@@ -19,11 +19,34 @@ try {
     const { captureRenderedSolids } = await import("/src/engine/surface/renderedSolids.ts");
     const { createCityCarSession, createCityCarDiagnosticSession } = await import("/src/game/runtime/createCityCarSession.ts");
     const { GameRuntime } = await import("/src/game/runtime/GameRuntime.ts");
+    const { installMechaGlbs, loadMechaGlb } = await import("/src/render/mecha/glbRegistry.ts");
+    const { installMechaGlbProvider } = await import("/src/render/mecha/models.ts");
+    const delayedAsset = await loadMechaGlb("Assault");
+    let resolveUpgrade;
+    const delayed = new Promise(resolve => { resolveUpgrade = resolve; });
+    installMechaGlbProvider({ has: role => role === "Assault", peek: () => null, load: () => delayed });
+    const pendingEngine = new CityEngine({ canvas: document.querySelector("canvas"), headless: true });
+    try {
+      pendingEngine.setSeed(2); pendingEngine.applyModel(model);
+      const squad = pendingEngine.parts.group.getObjectByName("city-playable-mecha");
+      if (!squad) throw new Error("airport parked mecha fixture missing");
+      const actor = squad.children[0];
+      const frozen = pendingEngine.parts.acquireStaticSceneSource();
+      try {
+        resolveUpgrade(delayedAsset);
+        await Promise.resolve(); await Promise.resolve();
+        if (actor.userData.glb) throw new Error("parked mecha upgraded during a frozen driving lease");
+        if (!frozen.source.rendered.verifyCurrent()) throw new Error("parked geometry changed during driving lease");
+      } finally { frozen.release(); }
+      if (!actor.userData.glb) throw new Error("parked mecha upgrade was not applied after driving lease");
+    } finally { pendingEngine.dispose(); installMechaGlbProvider(null); }
+    installMechaGlbs();
+    await Promise.all(["Assault", "Gunner", "Support"].map(loadMechaGlb));
     const check = (ok, message) => { if (!ok) throw new Error(message); };
     const same = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
     const engine = new CityEngine({ canvas: document.querySelector("canvas"), headless: true });
     const leases = [];
-    const acquire = async () => { const c = await engine.captureDrivingWorld(); check(c.status === "ready", "world lease ready"); leases.push(c); return c; };
+    const acquire = async () => { const c = await engine.captureDrivingWorld(); check(c.status === "ready", `world lease ready: ${c.reason ?? c.status}`); leases.push(c); return c; };
     const matchActual = (lease) => {
       const actual = captureRenderedSolids(engine.parts.drivingRoots).solids, owned = lease.readWorld().renderedSolids;
       check(actual.length === owned.length, "registered render mesh count matches");
@@ -32,6 +55,13 @@ try {
     };
     try {
       engine.setSeed(1); engine.applyModel(model);
+      const parked = engine.parts.group.getObjectByName("city-playable-mecha");
+      let parkedSkins = 0; parked?.traverse(object => { if (object.isSkinnedMesh) parkedSkins++; });
+      check(parkedSkins > 0, "parked airport mecha use loaded skinned GLB geometry");
+      const initial = engine.parts.acquireStaticSceneSource();
+      check(initial.source.rendered.verifyCurrent(), "preloaded parked mecha rendered geometry remains current immediately after capture");
+      check(initial.drivingSource.verifySolidsCurrent(), "preloaded parked mecha scene proxies remain current immediately after capture");
+      initial.release();
       const [a, b] = await Promise.all([acquire(), acquire()]);
       check(a.worldRevision === b.worldRevision && engine.parts.drivingFreezeCount === 2, "shared freeze, independent leases");
       const solids = matchActual(a), roles = new Set(solids.map((s) => s.role));

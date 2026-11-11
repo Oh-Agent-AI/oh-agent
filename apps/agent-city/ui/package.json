@@ -29,6 +29,7 @@
   },
   "dependencies": {
     "@agent-vitals/app-sdk": "file:../../../packages/agent-vitals-app-sdk",
+    "@agent-vitals/city-sdk": "file:../../../packages/agent-vitals-city-sdk",
     "mp4-muxer": "5.2.2",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",

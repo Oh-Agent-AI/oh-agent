@@ -70,6 +70,11 @@ jobs:
           NO_STRIP: 'true'
         run: cargo tauri build --ci --bundles ${{ matrix.bundles }}
       - name: Test bundled CLI discovery
+        # Windows 的 lib 测试二进制在本仓库当前依赖下启动即
+        # STATUS_ENTRYPOINT_NOT_FOUND（0xc0000139，5e9794d3 起已存在，见 run
+        # 42962016375），与打包无关。Windows 的真实覆盖在下面
+        # "Verify Windows installer CLI"：安装 NSIS 包后检查产品名并运行内置 CLI。
+        if: runner.os != 'Windows'
         working-directory: apps/desktop/src-tauri
         run: cargo test --lib resolve_binary_
       - name: Verify Linux package CLI

@@ -164,7 +164,7 @@ function segmentBlocked(world: LandingWorld, a: Vec2, b: Vec2): string | null {
   const sites = world.sites();
   for (let i = 1; i < steps; i += 1) {
     const p = { x: a.x + (b.x - a.x) * i / steps, z: a.z + (b.z - a.z) * i / steps };
-    if (world.geo.height(p.x, p.z) <= 0.5 || world.inRiver(p.x, p.z)) return "water-span";
+    if (world.geo.landform.elevation(p.x, p.z) <= 0.5 || world.inRiver(p.x, p.z)) return "water-span";
     for (const s of sites) if (Math.hypot(p.x - s.x, p.z - s.z) < s.radius * LANDING_CONFIG.siteClearanceRatio + LANDING_CONFIG.sampleSpacing / 2) return "site-clearance";
   }
   return null;

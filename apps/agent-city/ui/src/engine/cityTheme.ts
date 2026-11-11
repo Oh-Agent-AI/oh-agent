@@ -4,7 +4,7 @@
  * 执行环境配色在两个主题里都必须互相可分辨（色相不同），因为楼的颜色承载「哪个执行环境」。
  */
 
-export type CityThemeName = "miami";
+export type CityThemeName = "miami" | "desert";
 
 export type HarnessPaletteEntry = { wall: string; roof: string; accent: string; park: string };
 
@@ -48,7 +48,7 @@ export type CityTheme = {
   fallback: HarnessPaletteEntry;
 };
 
-/** 唯一的皮肤：迈阿密风（Miami Vice）——珊瑚/青/薄荷/紫的粉彩执行环境色、棕榈行道树、屋顶霓虹与 bloom。
+/** 当前唯一注册的皮肤：迈阿密风（Miami Vice）——珊瑚/青/薄荷/紫的粉彩执行环境色、棕榈行道树、屋顶霓虹与 bloom。
  *  曾有「日光」「日落霓虹」两个主题可切换；24 小时昼夜（citySky）上线后，白天/黄昏/夜晚由光照负责，
  *  主题开关只剩「同一座城两种配色」的重复，且日光版明显粗糙，于是只保留这一套。 */
 const MIAMI: CityTheme = {
@@ -89,15 +89,62 @@ const MIAMI: CityTheme = {
   fallback: { wall: "#f6e6cf", roof: "#d9a98c", accent: "#e8a07a", park: "#86d6a6" },
 };
 
+/** Arid dune appearance. The geography generator controls dune shape/elevation;
+ * this theme only supplies light, surface palette and environment colors. */
+const DESERT: CityTheme = {
+  name: "desert",
+  skyTop: "#4d6f89",
+  skyMid: "#c58e67",
+  skyHorizon: "#edc58a",
+  fog: "#ddbb91",
+  hemiSky: "#b6c2bf",
+  hemiGround: "#9c7758",
+  hemiIntensity: 0.72,
+  sunColor: "#fff0d1",
+  sunIntensity: 2.8,
+  sunAzimuthDeg: -42,
+  sunElevationDeg: 35,
+  skySunAzimuthDeg: 12,
+  exposure: 1.08,
+  water: { deep: "#475d61", shallow: "#82958c", sky: "#e0c59c" },
+  waterFog: [900, 2800],
+  skyImage: "dusk",
+  skyGrade: { top: "#8296a1", horizon: "#e6bd88", amount: 0.34 },
+  ground: { sea: [82, 94, 88], sand: [217, 177, 119], lawn: [158, 139, 91], grass: [124, 119, 76], rock: [142, 112, 86] },
+  neon: false,
+  vegetation: "round",
+  trunk: "#735139",
+  foliage: "#78824b",
+  streetTreeSpacing: 0,
+  harnesses: {
+    "claude-code": { wall: "#ead1b1", roof: "#bd7957", accent: "#cf9362", park: "#9ca36a" },
+    codex: { wall: "#d8dbd0", roof: "#778d8c", accent: "#829d99", park: "#9ca36a" },
+    dsh: { wall: "#e5d3ad", roof: "#bda15e", accent: "#c9aa67", park: "#9ca36a" },
+    workbuddy: { wall: "#ded0c1", roof: "#947c6a", accent: "#ad8e75", park: "#9ca36a" },
+    "harness:zcode": { wall: "#d8d0c1", roof: "#8e806f", accent: "#a2967e", park: "#9ca36a" },
+    "harness:minimax-code": { wall: "#ead0c1", roof: "#bf8069", accent: "#d2987a", park: "#9ca36a" },
+  },
+  fallback: { wall: "#e8dcc8", roof: "#b39b7c", accent: "#c1a07b", park: "#9ca36a" },
+};
+
 
 /** 天空全景的 u 偏移（0–1）：着色器里 u = atan(z,x)/2π + 0.5 + skyYaw。 */
 export function skyYawOf(theme: CityTheme): number {
   return (theme.skySunAzimuthDeg - theme.sunAzimuthDeg) / 360;
 }
 
-/** 当前皮肤（唯一）：纹理/配色/植被在构建期读取。 */
+/** Backward-compatible default for callers that have no world profile. */
 export function activeTheme(): CityTheme {
-  return MIAMI;
+  return themeFor("miami");
+}
+
+/** Resolve a visual theme explicitly so world profiles and separate CityEngine
+ * instances do not depend on a process-global mutable theme selection.
+ */
+export function themeFor(name: CityThemeName): CityTheme {
+  if (name === "miami") return MIAMI;
+  if (name === "desert") return DESERT;
+  throw new Error("city-world-theme-unsupported");
 }
 
 /** 生态带调色（CITY_PLANNING_SPEC §4.1）：只改观感、不改数据语义；与主题叠加而非替换，
@@ -111,12 +158,13 @@ export type BiomeGrade = {
   waterAmount: number;
 };
 
-export const BIOME_GRADES: Record<"tropical" | "temperate" | "boreal" | "savanna" | "eastasian", BiomeGrade> = {
+export const BIOME_GRADES: Record<"tropical" | "temperate" | "boreal" | "savanna" | "eastasian" | "arid", BiomeGrade> = {
   tropical: { ground: { sand: [255, 241, 208], lawn: [104, 204, 138], grass: [74, 178, 118] }, groundAmount: 0.75, water: { shallow: "#5fe0d0", deep: "#0f8fb8" }, waterAmount: 0.65 },
   temperate: { ground: {}, groundAmount: 0, water: null, waterAmount: 0 },
   boreal: { ground: { sand: [170, 162, 146], lawn: [84, 118, 92], grass: [62, 96, 74], rock: [128, 128, 126] }, groundAmount: 0.8, water: { shallow: "#7da4b4", deep: "#1c4258" }, waterAmount: 0.65 },
   savanna: { ground: { sand: [228, 192, 128], lawn: [186, 172, 98], grass: [164, 150, 84], rock: [168, 128, 96] }, groundAmount: 0.8, water: { shallow: "#7cc7b0", deep: "#2f7f78" }, waterAmount: 0.6 },
   eastasian: { ground: { lawn: [118, 176, 108], grass: [92, 150, 96] }, groundAmount: 0.7, water: { shallow: "#8fd6bf", deep: "#2c8a86" }, waterAmount: 0.65 },
+  arid: { ground: { sand: [226, 187, 130], lawn: [169, 146, 91], grass: [145, 132, 78], rock: [153, 119, 88] }, groundAmount: 0.82, water: null, waterAmount: 0 },
 };
 
 /** 主题地面色 + 生态带调色。 */

@@ -1,7 +1,8 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { buildCityModel, type CitySessionRow } from "./cityModel";
-import { prepareCityLayout } from "./engine/cityLayout";
-import { MIAMI_COASTAL } from "./engine/citySeaside";
+import { prepareCityWorldLayout } from "./engine/cityLayout";
+import { readCityAppearancePreference, type CityWorldProfileV1 } from "./engine/cityWorldProfile";
+import { createCityWorldProfileCallHandlers } from "./engine/cityWorldProfileCalls";
 import { CityEngine } from "./engine/CityEngine";
 import { tauriCityDataProvider, cityDataProtocol, readBuildingOverrides, stableAssetRefsForProjection, reportCityScene, type CityProjectionV1 } from "./data/provider";
 import { createCityBuildingCallHandlers } from "./data/cityBuildingCalls";
@@ -14,7 +15,7 @@ import {
   type SquadFeedState,
 } from "./engine/squadEvents";
 import "./city.css";
-import { embedded, connect, connectHostCalls, observeHealth, noteBusy, publishToolbar, type Tool } from "./host";
+import { embedded, connect, connectHostCalls, invokeHost, observeHealth, noteBusy, publishToolbar, type Tool } from "./host";
 import type { EngineQualityMode } from "./engine/CityEngine";
 import { CityExperience, useCityExperience } from "./CityExperience";
 import { usePlanRepair } from "./planRepair/usePlanRepair";
@@ -28,6 +29,11 @@ import { MonsterWorldMarkers } from "./game/MonsterWorldMarkers";
 import { encounterIsCurrent, type MonsterEncounter } from "./game/mecha/monsterEncounters";
 import { useMonsterEncounters } from "./game/mecha/useMonsterEncounters";
 import { prewarmAudioContext } from "./game/GameSfx";
+import { CityActivityCoordinator, type CityActivityLease } from "./game/activity/CityActivityCoordinator";
+import { claimCreatorPlaytest, finishCreatorPlaytest, loadCreatorPublishedMiniGames, type CreatorPlaytestHandoffV1 } from "./game/activity/loadCreatorExperiences";
+import type { CreatorPublishedMiniGameV1 } from "./game/activity/creatorMiniGame";
+import { loadCreatorSceneModels } from "./game/activity/creatorSceneModels";
+import { createCreatorLayoutSnapshot } from "./engine/sdk/cityLayoutAdapter";
 import { useCityDrivingPlay } from "./game/useCityDrivingPlay";
 import { DrivingHud } from "./game/DrivingHud";
 import type { PlayTarget } from "./engine/render/playableVehicles";
@@ -66,6 +72,7 @@ function projectionStatusLabel(data: CityProjectionV1): string {
 
 export function CityApp() {
   const language = useCityLanguage();
+  const [worldProfile, setWorldProfile] = useState<CityWorldProfileV1>(() => readCityAppearancePreference());
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<CityEngine | null>(null);
   const [projection, setProjection] = useState<CityProjectionV1 | null>(null);
@@ -86,6 +93,7 @@ export function CityApp() {
   const [firstModelFrame, setFirstModelFrame] = useState(false);
   const [cityLoad, setCityLoad] = useState<CityLoadState>({ stage: "data", work: null });
   const [quality, setQuality] = useState<EngineQualityMode>("auto");
+  const cityWorldProfileApplyAllowed = useRef(false);
   const [labels, setLabels] = useState(true);
   const [cinema, setCinema] = useState(false);
   const [roadAuditOpen, setRoadAuditOpen] = useState(false);
@@ -102,6 +110,10 @@ export function CityApp() {
   const [dreamPreviewEnvelopeBytes, setDreamPreviewEnvelopeBytes] = useState<number | null>(null);
   const dreamPreviewRequest = useRef(0);
   useEffect(() => () => { dreamPreviewRequest.current += 1; }, []);
+  const activityCoordinatorRef = useRef<CityActivityCoordinator | null>(null);
+  if (!activityCoordinatorRef.current) activityCoordinatorRef.current = new CityActivityCoordinator();
+  const activityCoordinator = activityCoordinatorRef.current;
+  const mechaActivityLease = useRef<CityActivityLease | null>(null);
   const reportMechaAvailability = useCallback((next: MechaAvailability) => {
     setMechaAvailability((prev) => prev === next ? prev : next);
   }, []);
@@ -114,7 +126,97 @@ export function CityApp() {
   const mechaActive = useRef(false);
   mechaActive.current = mechaOpen;
   const [refresh, setRefresh] = useState(0);
-  const experience = useCityExperience(engineRef, projection);
+  const experience = useCityExperience(engineRef, projection, worldProfile);
+  const [creatorExperiences, setCreatorExperiences] = useState<readonly CreatorPublishedMiniGameV1[]>([]);
+  const [creatorPlaytest, setCreatorPlaytest] = useState<CreatorPlaytestHandoffV1 | null>(null);
+  useEffect(() => {
+    setCreatorExperiences([]); setCreatorPlaytest(null);
+    if (!firstModelFrame || !embedded()) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let attempts = 0;
+    const load = async () => {
+      const view = engineRef.current?.getCitySdkLayoutView();
+      if (!view) return;
+      try {
+        const handoff = await claimCreatorPlaytest(view);
+        if (handoff) {
+          if (!cancelled) { setCreatorPlaytest(handoff); setCreatorExperiences(handoff.experiences); }
+          return;
+        }
+        const items = await loadCreatorPublishedMiniGames(view);
+        if (!cancelled) setCreatorExperiences(items);
+      } catch (error) {
+        if (!cancelled && attempts < 5 && error instanceof Error && ["creator_layout_not_found", "plugin_call_timeout", "plugin_call_expired"].includes(error.message)) {
+          attempts += 1;
+          timer = setTimeout(() => { void load(); }, attempts * 500);
+        }
+      }
+    };
+    void load();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  }, [firstModelFrame, experience.seed, worldProfile]);
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine || !firstModelFrame || !embedded() || !creatorExperiences.length) return;
+    let cancelled = false;
+    let mounted: Awaited<ReturnType<typeof loadCreatorSceneModels>> | null = null;
+    void loadCreatorSceneModels(creatorExperiences).then(runtime => {
+      if (cancelled) { runtime.dispose(); return; }
+      mounted = runtime;
+      if (runtime.group.children.length) engine.addOverlay(runtime.group);
+    }).catch(() => undefined);
+    return () => {
+      cancelled = true;
+      if (!mounted) return;
+      engine.removeOverlay(mounted.group);
+      mounted.dispose();
+    };
+  }, [creatorExperiences, firstModelFrame, worldProfile]);
+  const publishedCreatorLayouts = useRef(new Set<string>());
+  useEffect(() => {
+    if (!firstModelFrame || !embedded()) return;
+    let cancelled = false;
+    let frame = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let attempts = 0;
+    let publishRetries = 0;
+    const publishWhenReady = async () => {
+      if (cancelled) return;
+      const view = engineRef.current?.getCitySdkLayoutView();
+      if (!view) {
+        attempts += 1;
+        if (attempts < 300) frame = requestAnimationFrame(() => { void publishWhenReady(); });
+        return;
+      }
+      if (publishedCreatorLayouts.current.has(view.worldRevision)) return;
+      const instanceId = (window as Window & { __AV_PLUGIN_INSTANCE__?: string }).__AV_PLUGIN_INSTANCE__;
+      if (!instanceId) {
+        attempts += 1;
+        if (attempts < 300) frame = requestAnimationFrame(() => { void publishWhenReady(); });
+        return;
+      }
+      const snapshot = createCreatorLayoutSnapshot(view);
+      try {
+        const response = await invokeHost<{ ok: boolean; result?: unknown }>("plugin_request", { request: {
+          version: 1, instanceId, requestId: `city-layout:${view.worldRevision.slice(0, 32)}`,
+          method: "city.creator.layout.publish", payload: snapshot,
+        } });
+        if (!cancelled && response.ok) publishedCreatorLayouts.current.add(view.worldRevision);
+        else if (!cancelled && publishRetries < 5) {
+          publishRetries += 1;
+          retryTimer = setTimeout(() => { void publishWhenReady(); }, publishRetries * 500);
+        }
+      } catch {
+        if (!cancelled && publishRetries < 5) {
+          publishRetries += 1;
+          retryTimer = setTimeout(() => { void publishWhenReady(); }, publishRetries * 500);
+        }
+      }
+    };
+    frame = requestAnimationFrame(() => { void publishWhenReady(); });
+    return () => { cancelled = true; cancelAnimationFrame(frame); if (retryTimer) clearTimeout(retryTimer); };
+  }, [firstModelFrame, experience.seed, worldProfile]);
   const sessionCount = projection?.sessions.length ?? 0;
   // 换种子或会话规模后战场目录作废。空目录会把门禁留下，这里先放开，等下一次搜索再锁。
   useEffect(() => { setMechaAvailability("unknown"); }, [experience.seed, sessionCount]);
@@ -137,12 +239,24 @@ export function CityApp() {
     labelsVisible: () => labelsRef.current,
     requestRefresh: () => setRefresh((value) => value + 1),
     locale: () => (language === "en" ? "en" : "zh-Hans"),
+    activityCoordinator,
   });
   const driving = useCityDrivingPlay(engineRef, {
     cinemaActive: () => cinemaRef.current,
     gameActive: () => game.active,
     busy: () => busyRef.current || filmRef.current || planRepairActive.current || mechaActive.current,
-  });
+    activityCoordinator,
+  }, { creatorExperiences, playtestContext: creatorPlaytest ? { runId: creatorPlaytest.runId, releaseId: creatorPlaytest.releaseId,
+    projectId: creatorPlaytest.projectId, revision: creatorPlaytest.revision, snapshotDigest: creatorPlaytest.snapshotDigest } : undefined, finishPlaytest: finishCreatorPlaytest });
+  const startedCreatorPlaytest = useRef<string | null>(null);
+  useEffect(() => {
+    if (!creatorPlaytest || !firstModelFrame || driving.active || startedCreatorPlaytest.current === creatorPlaytest.runId) return;
+    const first = creatorPlaytest.experiences[0];
+    if (!first) { void finishCreatorPlaytest(creatorPlaytest.runId, "failed", undefined, "creator_playtest_experience_unavailable"); return; }
+    startedCreatorPlaytest.current = creatorPlaytest.runId;
+    driving.startCreatorGame(first.releaseId, first.mount.mountId);
+  }, [creatorPlaytest, firstModelFrame, driving.active, driving.startCreatorGame]);
+  useEffect(() => () => { mechaActivityLease.current?.release(); mechaActivityLease.current = null; }, []);
   drivingActive.current = driving.active;
   // 规划修复（开发开关 ?cityPlan / cityPlanDev=1；未开启时 hook 什么都不做）。与游戏/航拍/导出/忙碌互斥。
   const planRepair = usePlanRepair(engineRef, { seed: experience.seed, model: experience.model, blocked: cinema || game.active || driving.active || mechaOpen || experience.busy || !!experience.film });
@@ -156,6 +270,7 @@ export function CityApp() {
     : experience.busy ? "busy"
     : mechaOpen ? "mecha"
     : null;
+  cityWorldProfileApplyAllowed.current = !!engineRef.current && firstModelFrame && sceneActivityBlocker === null;
   // Require a modelled city: the board is a view of the current layout, not a game
   // that can start against a half-built scene.
   const openMecha = (encounter: MonsterEncounter | null = null) => {
@@ -181,6 +296,13 @@ export function CityApp() {
       experience.setError(language === "en" ? "The city changed. Select an encounter again." : "城市布局已变化，请重新选择遭遇点。");
       return;
     }
+    const admission = activityCoordinator.tryAcquire("mecha");
+    if (!admission.ok) {
+      experience.setError(cityText(`当前${admission.active.activityId}活动正在${admission.active.phase === "preparing" ? "准备" : "运行"}，暂不能进入机甲战。`, language));
+      return;
+    }
+    mechaActivityLease.current = admission.lease;
+    admission.lease.activate();
     setSelectedEncounter(encounter);
     experience.setError(null);
     experience.setOptions(false);
@@ -213,6 +335,11 @@ export function CityApp() {
       onEnvelope: (envelope) => window.dispatchEvent(new CustomEvent(SQUAD_EVENT, { detail: envelope })),
     }),
     ...createCityBuildingCallHandlers({ projection: () => projectionRef.current }),
+    ...createCityWorldProfileCallHandlers({
+      instanceId: () => window.__AV_PLUGIN_INSTANCE__ ?? null,
+      canApply: () => cityWorldProfileApplyAllowed.current,
+      onApplied: (profile) => { setFirstModelFrame(false); setWorldProfile(profile); },
+    }),
   }), []);
   useEffect(() => {
     const invalidated = () => setRefresh((value) => value + 1);
@@ -342,7 +469,7 @@ export function CityApp() {
     if (!canvas) return;
     let engine: CityEngine;
     try {
-      engine = new CityEngine({ canvas, ...experience.callbacks, onPlay: (target) => playRef.current(target), onFirstFrame: () => setFirstModelFrame(true), onCinematic: (_elapsed, _plan, ended) => {
+      engine = new CityEngine({ canvas, worldProfile, ...experience.callbacks, onPlay: (target) => playRef.current(target), onFirstFrame: () => setFirstModelFrame(true), onCinematic: (_elapsed, _plan, ended) => {
         experience.callbacks.onCinematic(_elapsed, _plan, ended);
         if (ended) { setCinema(false); }
       } });
@@ -355,7 +482,7 @@ export function CityApp() {
       engine.dispose();
       engineRef.current = null;
     };
-  }, []);
+  }, [worldProfile]);
 
   useEffect(() => {
     if (!firstModelFrame || !projection || !embedded()) return;
@@ -434,7 +561,7 @@ export function CityApp() {
       setFirstModelFrame(false);
       setCityLoad({ stage: "planning", work: null });
       reportSceneStage("planning", projection.window.days);
-      void prepareCityLayout(model, experience.seed, MIAMI_COASTAL, { signal: preparation.signal,
+      void prepareCityWorldLayout(model, experience.seed, worldProfile, { signal: preparation.signal,
         onPlanningProgress: (snapshot: PlanningWorkSnapshot) => {
           const work = Object.values(snapshot.consumed).reduce((sum, value) => sum + value, 0);
           setCityLoad({ stage: "planning", work });
@@ -461,7 +588,7 @@ export function CityApp() {
     }
     if (!firstModelFrame) { experience.refreshSelection(); return; }
     const preparation = new AbortController();
-    void prepareCityLayout(model, experience.seed, MIAMI_COASTAL, { signal: preparation.signal }).then(async () => {
+    void prepareCityWorldLayout(model, experience.seed, worldProfile, { signal: preparation.signal }).then(async () => {
       if (preparation.signal.aborted || engineRef.current !== engine) return;
       await noteBusy(8_000).catch(() => {});
       if (preparation.signal.aborted || engineRef.current !== engine) return;
@@ -471,7 +598,7 @@ export function CityApp() {
     }).catch(() => {});
     experience.refreshSelection();
     return () => preparation.abort();
-  }, [projection, experience.busy, experience.seed, game.active, driving.active, firstModelFrame, mechaOpen]);
+  }, [projection, experience.busy, experience.seed, worldProfile, game.active, driving.active, firstModelFrame, mechaOpen]);
 
   useEffect(() => {
     if (!projection || !embedded()) return;
@@ -721,7 +848,7 @@ export function CityApp() {
       {!cinema && !game.active && !driving.active && !mechaOpen && sceneReady && <SquadFeed
         items={squad.items} nowMs={squadNow} open={squadOpen} onOpen={setSquadOpen}
         onFocus={(assetRef) => { engineRef.current?.focusBuilding(assetRef); }} />}
-      <div hidden={driving.active || mechaOpen}><CityExperience ui={experience} disabled={!sceneReady} cinema={cinema} status={status} loadErrorCode={loadErrorCode} quality={quality} game={game} planRepair={planRepair}
+      <div hidden={driving.active || mechaOpen}><CityExperience ui={experience} disabled={!sceneReady} cinema={cinema} status={status} loadErrorCode={loadErrorCode} quality={quality} theme={engineRef.current?.currentTheme} game={game} planRepair={planRepair}
         windowDays={windowDays} windowOptions={windowOptions} onWindowDays={(days) => setWindowDays(days as WindowDays)} labels={labels} onLabels={(next) => { engineRef.current?.setLabelsVisible(next); setLabels(next); }}
         onQuality={(value) => { if (["auto", "high", "eco"].includes(value)) { engineRef.current?.setQualityMode(value as EngineQualityMode); setQuality(value as EngineQualityMode); } }}
         onMecha={() => openMecha()} mechaEnabled={mechaEntryEnabled} mechaAvailability={mechaAvailability}
@@ -730,14 +857,18 @@ export function CityApp() {
         envelopeBytes={dreamPreviewEnvelopeBytes} busy={dreamPreviewBusy} error={dreamPreviewError} onClose={closeDreamPreview}
         onPublicationActive={setDreamPublicationActive} /></Suspense>}
       {dreamPublicationActive && !dreamPreviewOpen && <button type="button" className="dream-manage-remote-fab" onClick={() => { void openDreamPreview(); }}>{cityText("管理远程访问", language)}</button>}
-      {mechaOpen && !game.active && !driving.active && !cinema && <MechaBoard locale={language === "en" ? "en" : "zh-Hans"} engine={engineRef.current} encounter={selectedEncounter} onClose={() => setMechaOpen(false)} onAvailability={reportMechaAvailability} />}
+      {mechaOpen && !game.active && !driving.active && !cinema && <MechaBoard locale={language === "en" ? "en" : "zh-Hans"} engine={engineRef.current} encounter={selectedEncounter} onClose={() => {
+        mechaActivityLease.current?.release(); mechaActivityLease.current = null; setMechaOpen(false);
+      }} onAvailability={reportMechaAvailability} />}
       {sceneActivityBlocker === null && sceneReady && <MonsterWorldMarkers engine={engineRef.current} encounters={encounterState.encounters} language={language} onEnter={openMecha} />}
       <CityMinimap engine={engineRef} language={language} driving={{ active: driving.active, pose: driving.pose }} encounters={encounterState}
+        creatorGames={driving.creatorGames} onStartCreatorGame={driving.startCreatorGame}
         hidden={!sceneReady || cinema || game.active || mechaOpen || !!experience.film || driving.hud.phase === "preparing" || driving.hud.phase === "error"} />
-      <DrivingHud model={{ active: driving.active, choosingVehicle: driving.choosingVehicle, vtol: driving.vtol, entryError: driving.entryError,
+      <DrivingHud model={{ active: driving.active, choosingVehicle: driving.choosingVehicle, vtol: driving.vtol, activityKind: driving.activityKind, activityTitle: driving.activityTitle, creatorGames: driving.creatorGames, entryError: driving.entryError,
+        race: driving.race, raceEntryError: driving.raceEntryError,
         initialPaused: driving.initialPaused, hud: driving.hud, preparationProgress: driving.preparationProgress, events: driving.events, diagnostics: driving.diagnostics(),
         roadCheck: driving.roadCheck }}
-        actions={{ selectVehicle: driving.selectVehicle, clearEntryError: driving.clearEntryError, exit: driving.exit, pause: driving.pause,
+        actions={{ selectVehicle: driving.selectVehicle, startRace: driving.startRace, startCollect: driving.startCollect, startCreatorGame: driving.startCreatorGame, clearEntryError: driving.clearEntryError, exit: driving.exit, pause: driving.pause,
           resume: driving.resume, openUiContext: driving.openUiContext }}
         locale={language === "en" ? "en" : "zh-Hans"} sound={driving.sound} />
       {roadAuditEnabled && roadAuditOpen && <RoadAuditPanel snapshot={roadAudit.snapshot} run={() => { void roadAudit.run(); }} cancel={() => roadAudit.cancel()}

@@ -6,11 +6,15 @@ export type Unsubscribe = () => void;
  * replaced `FoldCompleted` + `FactsIngested`: the desktop now publishes one
  * level-triggered signal per authority-revision advance instead of forwarding
  * domain events one by one. */
-export type AppEventType = "Invalidated" | "SyncStatusChanged" | "HarnessNavigationChanged" | "TrustMonitorEvent" | "TrustMonitorInvalidated" | "SourceDataDeleted" | "WatcherHealthChanged";
-/** Only `Invalidated` carries fields across the bridge: a monotonic revision and
- * the harnesses touched by that drain (a lower bound, never an exact set). Every
- * other type is reduced to its tag — payloads stay on the desktop side. */
-export type AppEvent = { type: AppEventType; revision?: number; harnesses?: string[] };
+export type AppEventType = "Invalidated" | "SyncStatusChanged" | "HarnessNavigationChanged" | "TrustMonitorEvent" | "TrustMonitorInvalidated" | "SourceDataDeleted" | "WatcherHealthChanged" | "CreatorPlaytestOpenCityRequested" | "CreatorPlaytestReturnRequested";
+/** `Invalidated` carries its bounded revision/harness summary. The two Creator
+ * handoff events carry only opaque, bounded IDs; all other events are tags. */
+export type AppEvent =
+  | { type: "Invalidated"; revision?: number; harnesses?: string[] }
+  | { type: "SourceDataDeleted"; revision?: number }
+  | { type: "CreatorPlaytestOpenCityRequested"; runId: string }
+  | { type: "CreatorPlaytestReturnRequested"; runId: string; projectId: string }
+  | { type: Exclude<AppEventType, "Invalidated" | "SourceDataDeleted" | "CreatorPlaytestOpenCityRequested" | "CreatorPlaytestReturnRequested"> };
 
 /** Data-refresh gate (spec §6 + REFRESH_STORM R1): refresh on `SourceDataDeleted`
  * (revision-carrying poll syntheses compare against the watermark; real deletions
@@ -3497,7 +3501,7 @@ export async function listen(event: string, handler: (payload: unknown) => void)
   };
 }
 
-const appEventTypes = new Set<AppEventType>(["Invalidated", "SyncStatusChanged", "HarnessNavigationChanged", "TrustMonitorEvent", "TrustMonitorInvalidated", "SourceDataDeleted", "WatcherHealthChanged"]);
+const appEventTypes = new Set<AppEventType>(["Invalidated", "SyncStatusChanged", "HarnessNavigationChanged", "TrustMonitorEvent", "TrustMonitorInvalidated", "SourceDataDeleted", "WatcherHealthChanged", "CreatorPlaytestOpenCityRequested", "CreatorPlaytestReturnRequested"]);
 
 /** Closed harness vocabulary for `Invalidated.harnesses` (unknown names are dropped). */
 const invalidationHarnesses: ReadonlySet<string> = new Set(["claude-code", "codex", "dsh", "workbuddy"]);
@@ -3509,8 +3513,21 @@ function safeAppEvent(raw: unknown): AppEvent | null {
   if (!candidate || typeof candidate !== "object") return null;
   const type = (candidate as { type?: unknown }).type;
   if (typeof type !== "string" || !appEventTypes.has(type as AppEventType)) return null;
-  if (type !== "Invalidated") return { type: type as AppEventType };
   const record = candidate as Record<string, unknown>;
+  // IDs use the same bounded ASCII vocabulary as the Rust creator store. The
+  // renderer gets only these opaque IDs; arbitrary host payloads are discarded.
+  const validId = (value: unknown): value is string => typeof value === "string"
+    && value.length > 0 && value.length <= 128
+    && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value);
+  if (type === "CreatorPlaytestOpenCityRequested") {
+    return validId(record.runId) ? { type, runId: record.runId } : null;
+  }
+  if (type === "CreatorPlaytestReturnRequested") {
+    return validId(record.runId) && validId(record.projectId)
+      ? { type, runId: record.runId, projectId: record.projectId }
+      : null;
+  }
+  if (type !== "Invalidated") return { type: type as Exclude<AppEventType, "Invalidated" | "SourceDataDeleted" | "CreatorPlaytestOpenCityRequested" | "CreatorPlaytestReturnRequested"> };
   const rawRevision = record.revision;
   const revision = typeof rawRevision === "number" && Number.isFinite(rawRevision) && rawRevision >= 0 && rawRevision <= Number.MAX_SAFE_INTEGER
     ? Math.floor(rawRevision)

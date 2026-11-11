@@ -13,7 +13,7 @@ import { DetMath as Math } from "./detMath"; // 跨引擎确定性：见 detMath
  */
 import { hashSeed } from "../cityModel";
 import { fbm, smoothstep } from "./cityNoise";
-import { boulevardSegments, buildSeasideBand, MIAMI_COASTAL, seasideStripContains, type CoastalConfig, type SeasideBand, type SeasideWorld } from "./citySeaside";
+import { boulevardSegments, buildSeasideBand, seasideStripContains, type CoastalConfig, type SeasideBand, type SeasideWorld } from "./citySeaside";
 import type { RepairContext } from "./planner/context";
 import { initializeRepairPlanningWorld, runRepairDerivedFinalization, solvePlan } from "./planner/solve";
 import { CONSTRAINTS, type CityPlan as ConstraintPlan } from "./planner/constraints";
@@ -24,15 +24,14 @@ import { assignConnectedSite } from "./planner/jointSite";
 import { proposeShorePlotAccess } from "./planner/shorePlotAccess";
 import { frontSitesOnTrunks, resnapSitesOntoDryLand, restickSitesClearOfRingRuns, straddleSitesAcrossTrunk, groundFrontageSegments, type FrontageMoveContext } from "./planner/access";
 import { localResiteCandidates, retreatShoreSitesToDryLand, settleHarborOnCoast, settleSailOperaOffshore, settleShoreSitesOnCoast, SAIL_OPERA_CONFIG, type ShoreMoveContext } from "./planner/siting";
-import { buildGeography, type BayOptions } from "./planner/geography";
+import { buildGeographyWithGenerator, DEFAULT_GEOGRAPHY_GENERATOR, type BayOptions, type GeographyBuildOptions, type GeographyGeneratorId, validateGeographyBuildOptions } from "./planner/geography";
 import { withPlanningWorkLedger, spendPlanningWork, type PlanningWorkLedger } from "./planner/operationBudget";
 import { roadCandidateCrowding } from "./planner/roadAdmission";
 import { extractRoadFaces } from "./planner/roadFaces";
 import { generateRoadBlocks, type RoadBlockReport } from "./planner/roadBlocks";
 import { componentOf, diagnoseNetwork, type ConnectionDemand } from "./planner/intent";
 import { buildSkeleton, chooseCore } from "./planner/skeleton";
-import { buildSeasideBoulevard } from "./planner/seasideBoulevard";
-import { buildCoastalRingRoads } from "./planner/coastalRingRoad";
+import { buildCoastalRoadSystem } from "./planner/coastalRoadSystem";
 import { addNetworkEdge, commitNetwork, emptyNetwork, keyOf, type Network } from "./planner/network";
 import { runConnection, endpointClear, commitFixedLink, parseFailure, type ConnectionAttempt, type ConnectorWorld } from "./planner/connect";
 import { frontSitesAndAssignJointSites } from "./planner/siteFrontage";
@@ -56,7 +55,7 @@ export type { Shape } from "./cityShape";
 export { clearsHighways, polygonDistance, roadNodeId, SegmentIndex, segmentDistance } from "./roadGeometry";
 export { MAX_TIER, scaleTierFor, SESSIONS_PER_TIER, targetParcels } from "./scaleTier";
 
-export type Biome = "tropical" | "temperate" | "boreal" | "savanna" | "eastasian";
+export type Biome = "tropical" | "temperate" | "boreal" | "savanna" | "eastasian" | "arid";
 
 /** 致敬型地标（SPEC §4.4）：程序化几何、不复刻具体建筑；纯装饰，不占会话地块、不进统计。 */
 export type LandmarkKind = "tv-tower" | "sail-opera" | "arch" | "pagoda" | "lighthouse" | "ferris-wheel" | "suspension-bridge" | "twin-towers" | "twist-tower" | "villa-complex" | "islet-mansion" | "islet-grounds";
@@ -92,7 +91,8 @@ export function bayOf(config: CoastalConfig | null): BayOptions | null {
 }
 
 /** `opts.skipSolve` 仅供守卫（verify-city-solve）取「修复前」的草案；生产调用不传。 */
-export type CityPlanOptions = { skipSolve?: boolean; memoizeTerrain?: boolean; legacyGridParcels?: boolean; workLedger?: PlanningWorkLedger };
+export type CityPlanOptions = { skipSolve?: boolean; memoizeTerrain?: boolean; legacyGridParcels?: boolean; workLedger?: PlanningWorkLedger;
+  geographyGenerator?: GeographyGeneratorId; geographyOptions?: GeographyBuildOptions; biome?: Biome };
 export function createCityPlan(seed: number, tier = 2, config: CoastalConfig | null = null, opts: CityPlanOptions = {}) {
   if (!opts.workLedger) return createCityPlanDraft(seed, tier, config, opts);
   const ledger = opts.workLedger;
@@ -105,11 +105,14 @@ function createCityPlanDraft(seed: number, tier: number, config: CoastalConfig |
   const shape = createCityShape(seed);
   // 海滨配置（VICE B1）：提供 config 时强制生态带（miami-coastal → tropical），
   // 否则保持原有随机五选一——无配置调用方行为不变。
-  const biome: Biome = config ? config.biome : BIOMES[Math.floor(random("biome") * BIOMES.length) % BIOMES.length];
+  const biome: Biome = opts.biome ?? (config ? config.biome : BIOMES[Math.floor(random("biome") * BIOMES.length) % BIOMES.length]);
   // 先按档位估一个半径，再按实测地块数校正（最多 4 次）：面积 ∝ R²。
   // 起始估计：390 半径 ≈ 一档 400 会话的地皮，再按实测地块数校正。
   let radius = 390 * Math.sqrt(tier);
-  let plan = buildPlan(seed, radius, shape, biome, config, tier, !!opts.skipSolve, opts.memoizeTerrain === true, opts.legacyGridParcels === true);
+  const geographyGenerator = opts.geographyGenerator ?? DEFAULT_GEOGRAPHY_GENERATOR;
+  if ((geographyGenerator === "arid-dunes-v1") !== (biome === "arid")) throw new Error("city-world-biome-generator-mismatch");
+  let plan = buildPlan(seed, radius, shape, biome, config, tier, !!opts.skipSolve, opts.memoizeTerrain === true,
+    opts.legacyGridParcels === true, geographyGenerator, opts.geographyOptions);
   let radiusAttempts = 0; // 诊断（批次 8 §5.7「先测再做」）：半径校正实际重建次数的分布
   const radiusHistory = [{ attempt: 0, radius, generatedParcels: plan.parcelGeneration.generated,
     available: plan.blocks.reduce((sum, block) => sum + block.parcels.length, 0), roads: plan.roadEdges.length, blocks: plan.blocks.length }];
@@ -117,7 +120,8 @@ function createCityPlanDraft(seed: number, tier: number, config: CoastalConfig |
     const parcels = plan.blocks.reduce((sum, block) => sum + block.parcels.length, 0);
     if (parcels >= targetParcels(tier)) break;
     radius = plan.blocks.length === 0 ? radius * RADIUS_CALIBRATION_CONFIG.unsupportedNudge : nextCalibrationRadius(radius, targetParcels(tier), parcels);
-    plan = buildPlan(seed, radius, shape, biome, config, tier, !!opts.skipSolve, opts.memoizeTerrain === true, opts.legacyGridParcels === true);
+    plan = buildPlan(seed, radius, shape, biome, config, tier, !!opts.skipSolve, opts.memoizeTerrain === true,
+      opts.legacyGridParcels === true, geographyGenerator, opts.geographyOptions);
     radiusAttempts += 1;
     radiusHistory.push({ attempt: radiusAttempts, radius, generatedParcels: plan.parcelGeneration.generated,
       available: plan.blocks.reduce((sum, block) => sum + block.parcels.length, 0), roads: plan.roadEdges.length, blocks: plan.blocks.length });
@@ -130,13 +134,19 @@ function createCityPlanDraft(seed: number, tier: number, config: CoastalConfig |
     capacity: { required: targetParcels(tier), available: availableParcels, satisfied: availableParcels >= targetParcels(tier) } };
 }
 
-function buildPlan(seed: number, R: number, shape: Shape, biome: Biome, config: CoastalConfig | null, tier: number, skipSolve: boolean, memoizeTerrain: boolean, legacyGridParcels: boolean) {
+function buildPlan(seed: number, R: number, shape: Shape, biome: Biome, config: CoastalConfig | null, tier: number, skipSolve: boolean,
+  memoizeTerrain: boolean, legacyGridParcels: boolean, geographyGenerator: GeographyGeneratorId, geographyOptions?: GeographyBuildOptions) {
   spendPlanningWork("radius:attempt", { radiusAttempt: 1 });
   const random = (key: string) => hashSeed(`${seed}:${key}`);
 
   // ── L1 地理（V2 步 2a：逐字迁至 planner/geography.ts，random 无状态键控哈希、迁移不改调用序）──
-  const geo = buildGeography(seed, R, shape, { memoize: memoizeTerrain, bay: bayOf(config) });
-  const { coast, bbox, hasRiver, river, riverShift, riverX, riverWidth, coastDistance, landClearance, hillAngle, hillDir, hillLine, hillProj, height, buildable, terrain } = geo;
+  const geo = geographyGenerator === "coastal-islands-v1"
+    ? buildGeographyWithGenerator("coastal-islands-v1", { seed, radius: R, memoize: memoizeTerrain,
+      options: validateGeographyBuildOptions("coastal-islands-v1", geographyOptions ?? { shape, bay: bayOf(config) }) })
+    : buildGeographyWithGenerator("arid-dunes-v1", { seed, radius: R, memoize: memoizeTerrain,
+      options: validateGeographyBuildOptions("arid-dunes-v1", geographyOptions) });
+  const { coast, bbox, hasRiver, river, riverShift, riverX, riverWidth, hillAngle, hillDir, hillLine, hillProj, terrain } = geo;
+  const { signedLandDistance: coastDistance, waterClearance: landClearance, elevation: height, isBuildable: buildable } = geo.landform;
 
   // ── 核心点（V2 步 2a 迁出；步 4 起带环线成活率降分与出口弦净空，见 skeleton.ts）──
   let core = chooseCore(geo, seed, random);
@@ -163,9 +173,11 @@ function buildPlan(seed: number, R: number, shape: Shape, biome: Biome, config: 
   const publicSites: PublicSite[] = [];
   // Municipal commitments exist before either skeleton or joint site search.
   // A failed station/stadium candidate cannot erase its placement/access duty.
-  const declaredSiteDemands: ConnectionDemand[] = ["civic-square", "observation-tower", "riverside-park",
-    "working-harbor", "central-station", "east-stadium"].map((ownerId) => ({ id: `site:${ownerId}`,
-      class: "site-access", required: true, anchor: ownerId, originAnchor: ownerId }));
+  const requiredPublicSiteIds = ["civic-square", "observation-tower", "riverside-park"];
+  if (geo.features.coastline) requiredPublicSiteIds.push("working-harbor");
+  requiredPublicSiteIds.push("central-station", "east-stadium");
+  const declaredSiteDemands: ConnectionDemand[] = requiredPublicSiteIds.map((ownerId) => ({ id: `site:${ownerId}`,
+    class: "site-access", required: true, anchor: ownerId, originAnchor: ownerId }));
   // 离水的最小距离：港口只要 ~24（堆场 1.5r×1.2r，近边正好落在水线上），其余预留地仍是 radius+14。
   // 曾一律 radius+14=51，港口中心被推到离水 ~60 的内陆，码头和吊车立在沙地上（拍照实测）。
   const siteClearance = (kind: string, radius: number) => (kind === "harbor" ? 24 : radius + 14);
@@ -186,8 +198,9 @@ function buildPlan(seed: number, R: number, shape: Shape, biome: Biome, config: 
   // 岸边用地（港口、岸边地标）的候选岸点：开湾时排除湾口那段轮廓——整岛轮廓在海湾两端横跨湾口，
   // 那几个「岸点」其实在湾面上；核心又贴着湾，最近的岸点正好落在湾口，港口被放进水里、路接不上
   // （seed 1703350391/2 档实测：港口中心离湾中线 38、湾半宽 100+）。窄河不变。
-  const outerShore = geo.maxWaterSpan > 140 ? coast.filter((p) => Math.abs(p.x - riverX(p.z)) > riverWidth(p.z) + 40) : coast;
-  {
+  const outerShore = !geo.features.coastline ? [] : geo.maxWaterSpan > 140
+    ? coast.filter((p) => Math.abs(p.x - riverX(p.z)) > riverWidth(p.z) + 40) : coast;
+  if (geo.features.coastline) {
     // 港口：离核心最近的一段海岸内侧（码头离市中心不远）。
     // 取离核心 ≥150 的最近岸点：核心贴海时（用户种子）曾取到市政广场旁的岸点，再被避让推进内陆，港口落在市中心（真机截图）。
     // 开湾时港口只放西岛外岸：东岛外岸是整段海滩（海滨带窗口 ~160°），港口落在里面会和海滩带贴脸
@@ -222,10 +235,14 @@ function buildPlan(seed: number, R: number, shape: Shape, biome: Biome, config: 
       // 大岛上这与「朝城心反向」并不重合——平行水线才能读成滨海庄园。
       { kind: "villa-complex", weight: biome === "tropical" ? 4 : 1, site: () => { const shore = shoreOrder[Math.min(shoreOrder.length - 1, 5)]; const at = inwardFrom(shore, 0.08); return { at, radius: 34, clearance: 16, yaw: Math.atan2(shore.x - at.x, shore.z - at.z) }; } },
     ];
+    // Coast-dependent civic landmarks are part of the Miami world content set;
+    // inland generators never receive empty-shore callbacks in their draw pool.
+    const coastalLandmarks = new Set<LandmarkKind>(["sail-opera", "lighthouse", "ferris-wheel", "villa-complex"]);
+    const availableCandidates = candidates.filter((candidate) => geo.features.coastline || !coastalLandmarks.has(candidate.kind));
     // 数量随岛规模增长：1 档 4 座，每两档多一座，最多 7 座。曾固定抽 2–3 座：摩天轮只在 16/60 个种子里出现，
     // 真机反馈「原来的吊桥和摩天轮为什么没看见」。
     const count = Math.min(9, 6 + Math.floor((tier - 1) / 2)); // 固定地标增至 5 座（塔/庄园/摩天轮/歌剧院/灯塔），总数随之上调，仍给抽签留 1–4 席
-    const pool = [...candidates];
+    const pool = [...availableCandidates];
     // Vice City 的第一眼轮廓需要一座 downtown 高塔；若完全按抽签，某些种子会
     // 只抽到灯塔/摩天轮/低矮文化馆，低会话量时整座城就像空地块规划图。
     // 高塔属于固定城市地标，不代表会话、不进数据统计；具体造型仍由 seed 决定。
@@ -312,7 +329,7 @@ function buildPlan(seed: number, R: number, shape: Shape, biome: Biome, config: 
   const footprintGeo = { height, inRiver, riverBank: (x: number, z: number, bank: number) => hasRiver && Math.abs(x - riverX(z)) < riverWidth(z) + bank };
 
   // 岸边类集合由 sitespec 表派生（V2 网络优先 6b-2：值 === 原 Set 字面量，守卫 verify-city-sitespec 证相等）。
-  const SHORE_SITE_KINDS = coastalSitingKinds(); // 庄园：临水拱廊，同属岸边地标
+  const SHORE_SITE_KINDS = geo.features.coastline ? coastalSitingKinds() : new Set<string>(); // 仅海岸世界启用岸边选址语义
   // Selected landmarks are committed before roads; optional selection itself
   // remains a distinct capability, not a reason to drop an accepted owner.
   for (const site of landmarks) if (site.radius) declaredSiteDemands.push({ id: `site:${site.id}`,
@@ -342,12 +359,15 @@ function buildPlan(seed: number, R: number, shape: Shape, biome: Biome, config: 
   const distanceToRing = (p: Vec2) => polylineDistance(ringRuns, p);
 
   // ── 海滨带 + 滨海大道（R5 步 3：逐字迁至 planner/seasideBoulevard.ts）──
-  const { seaside, coastalRoadRuns, trimmedTrunkEnds } = buildSeasideBoulevard({ network, publicSites, landmarks, coast, hasRiver, riverX, riverWidth,
-    coastDistance, height, coastalRoadEdgeIds, coastalRoadNodeIds }, { config, seed, core });
-
-  // ── 环岛滨海路 + 河岸路（R5 步 4：逐字迁至 planner/coastalRingRoad.ts）──
-  const { coastRoadRuns, coastalRunCount } = buildCoastalRingRoads({ network, coast, bbox, hasRiver, riverX, riverWidth, coastDistance, landClearance,
-    hillProj, hillLine, height, inRiver, reservations, ringIndex }, { core, seaside });
+  const coastalRoadResult = geo.features.coastline
+    ? buildCoastalRoadSystem({ enabled: true,
+      seaside: { world: { network, publicSites, landmarks, coast, hasRiver, riverX, riverWidth, coastDistance, height,
+        coastalRoadEdgeIds, coastalRoadNodeIds }, params: { config, seed, core } },
+      ring: { world: { network, coast, bbox, hasRiver, riverX, riverWidth, coastDistance, landClearance,
+        hillProj, hillLine, height, inRiver, reservations, ringIndex }, params: { core, seaside: null } },
+    })
+    : buildCoastalRoadSystem({ enabled: false });
+  const { seaside, coastalRoadRuns, trimmedTrunkEnds, coastRoadRuns, coastalRunCount } = coastalRoadResult;
   const coastRoadIndex = new SegmentIndex(coastRoadRuns);
 
   // 两端都接入陆侧主干道，避免只有拓扑连通但车辆到大道时会瞬移/断头。
@@ -395,7 +415,8 @@ function buildPlan(seed: number, R: number, shape: Shape, biome: Biome, config: 
   // 分区判定 + 扇区街网（R5 步 6b：逐字迁至 planner/sectorBlocks.ts）：zoneFor 的惰性主干索引、街区网格、
   // 经 commitFixedLink 事务加街；网络原地改，blocks/parcelBuilders/frontNodes/roadGenerationDiagnostics 作返回值。
   const { zoneFor, blocks, roadGenerationDiagnostics, parcelBuilders, frontNodes } = buildSectorBlocks({ R, core, trunks, random, network,
-    connectorWorld, seaside, buildable, coastDistance, reservations, key, trunkIndex, ringIndex, coastRoadIndex });
+    connectorWorld, seaside, hasSurfaceWater: geo.features.ocean || geo.features.river,
+    waterClearance: geo.landform.waterClearance, buildable, reservations, key, trunkIndex, ringIndex, coastRoadIndex });
 
   // 街网缝合（R5 步 6s：逐字迁至 planner/streetStitch.ts）：沿海路断头互接 → 环岛路 T 接 → 中途节点切边 → 首排角点接主干道 → 大道端接入。
   // 网络原地改（经 connectToNetwork / runConnection / addEdge），顺序不变。
@@ -668,7 +689,7 @@ function buildPlan(seed: number, R: number, shape: Shape, biome: Biome, config: 
   // ── F1 闭环（CITY_ROAD_F1_ALGORITHM_SPEC）：路网不是一次生成就完事——所有改路步骤（接入路、断头路收尾、
   // 碎边合并）之后，对违规的用地/断头修复。修复遍已搬到 planner/repairs.ts，由 planner/solve.ts 的策略表按原顺序执行
   // （临街 → 推开穿路用地 → 绕行被截断的路 → 延伸断头；顺序见 solve.ts 头注释）。
-  const repairCtx: RepairContext = { network, connectionLog, siteObligations, demandCatalogue: declaredSiteDemands, primaryAnchorNodeId: primaryAnchorNodeIds.find((id) => nodes.has(id)) ?? null, geo, height, inRiver, trunkRuns, bridges, publicSites, landmarks, blocks, ringRuns, coast, core, SHORE_SITE_KINDS, carPaths, seaside, coastRoadRunEnds: coastRoadRuns.flatMap((r) => [r[0], r[r.length - 1]]), coastRoadRuns, coastalRunCount, riverRoadRuns: coastRoadRuns.slice(coastalRunCount) };
+  const repairCtx: RepairContext = { network, connectionLog, siteObligations, demandCatalogue: declaredSiteDemands, primaryAnchorNodeId: primaryAnchorNodeIds.find((id) => nodes.has(id)) ?? null, geo, elevation: height, inRiver, trunkRuns, bridges, publicSites, landmarks, blocks, ringRuns, coast, core, SHORE_SITE_KINDS, carPaths, seaside, coastRoadRunEnds: coastRoadRuns.flatMap((r) => [r[0], r[r.length - 1]]), coastRoadRuns, coastalRunCount, riverRoadRuns: coastRoadRuns.slice(coastalRunCount) };
   const solveReport = skipSolve ? null : solvePlan(repairCtx);
   if (skipSolve) initializeRepairPlanningWorld(repairCtx);
   // ── 高架立交匝道（planner/highwayRamps.ts）：高架跨越干道处做菱形立交，匝道走廊随后与高架一起作为街区生成的避让。
@@ -832,7 +853,7 @@ function buildPlan(seed: number, R: number, shape: Shape, biome: Biome, config: 
   // 是计划内终点，几何上却是路戛然而止——把它们的坐标作为加性字段输出，渲染层据此画
   // 死胡同回车圈。classifyEndpoints 经 diagnoseNetwork 调用，只读（verify-city-intent
   // 已证诊断前后 plan 深比较一致），不改任何路网/用地字段，计划基线哈希不受影响。
-  const plan = { blocks, roadNodes: [...nodes.values()], roadEdges: [...edges.values()], terrain, extent, coast, river, publicSites, parkTrees,
+  const plan = { features: geo.features, blocks, roadNodes: [...nodes.values()], roadEdges: [...edges.values()], terrain, extent, coast, river, publicSites, parkTrees,
     urbanBounds, bridges, boundsRadius, carPaths, junctionRings, highwayRamps, coastRoads: coastRoadRuns.slice(0, coastalRunCount), riverRoadRuns: coastRoadRuns.slice(coastalRunCount), districtAnchors, highways: highwayRuns, core, islandRadius: R, landmarks, seaside, islets: geo.islets, waterEdges: geo.waterEdges,
     // 修复可能合并掉一个 civic 节点；只在骨架预先声明的锚点集合内重绑，不能选附近支路。
     connections: connectionLog, primaryAnchorNodeId: repairCtx.primaryAnchorNodeId ?? null, junctionReport, solveReport, siteObligations,

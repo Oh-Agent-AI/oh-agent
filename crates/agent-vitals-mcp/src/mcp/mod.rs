@@ -36,6 +36,8 @@ mod workflow_summary;
 pub mod trust_profiles;
 mod city_building;
 mod city_im;
+mod creator_studio;
+mod city_world;
 #[cfg(feature = "mcp-internal")]
 mod query_sql_readonly;
 #[cfg(feature = "mcp-internal")]
@@ -93,6 +95,8 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         city_building::reset_spec(),
         city_im::spec(),
     ];
+    out.extend(creator_studio::specs());
+    out.extend(city_world::specs());
     #[cfg(feature = "mcp-internal")]
     {
         out.push(query_sql_readonly::spec());
@@ -220,6 +224,9 @@ pub fn dispatch_with_permissions(
         "set_building_model" => city_building::run_set(args, data_home, allow_local_writes),
         "reset_building" => city_building::run_reset(args, data_home, allow_local_writes),
         "im_publish" => city_im::run(args, data_home, allow_local_writes),
+        "creator_layout_list" | "creator_project_list" | "creator_project_read" | "creator_operation_status" | "creator_playtest_history" | "creator_project_create"
+        | "creator_game_preview" | "creator_scene_preview" | "creator_project_commit" | "creator_project_publish" => creator_studio::run(name, args, data_home, allow_local_writes),
+        "city_world_profile_preview" | "city_world_profile_apply" => city_world::run(name, args, data_home, allow_local_writes),
         #[cfg(feature = "mcp-internal")]
         "query_sql_readonly" => query_sql_readonly::run(args, data_home),
         #[cfg(feature = "mcp-internal")]
@@ -378,6 +385,32 @@ mod tests {
                 .map(|e| e.code);
             assert_ne!(err, Some("internal_error"), "tool {name} not wired");
         }
+    }
+
+    #[test]
+    fn creator_publish_tool_requires_explicit_local_write_permission() {
+        assert!(tool_specs().iter().any(|tool| tool.name == "creator_project_publish"));
+        let error = dispatch("creator_project_publish", &json!({"projectId":"project-1","expectedRevision":2}), Path::new("/unused"))
+            .unwrap_err();
+        assert_eq!(error.code, "permission_denied");
+    }
+
+    #[test]
+    fn creator_playtest_history_is_registered_and_limits_are_bounded() {
+        assert!(tool_specs().iter().any(|tool| tool.name == "creator_playtest_history"));
+        let error = dispatch("creator_playtest_history", &json!({"projectId":"project-1","limit":0}), Path::new("/unused"))
+            .unwrap_err();
+        assert_eq!(error.code, "invalid_argument");
+    }
+
+    #[test]
+    fn city_world_profile_apply_requires_explicit_local_write_permission() {
+        let names: Vec<_> = tool_specs().iter().map(|tool| tool.name).collect();
+        assert!(names.contains(&"city_world_profile_preview"));
+        assert!(names.contains(&"city_world_profile_apply"));
+        let error = dispatch("city_world_profile_apply", &json!({"previewId":"cwp_preview0001","operationId":"op-1"}), Path::new("/unused"))
+            .unwrap_err();
+        assert_eq!(error.code, "permission_denied");
     }
 
     #[test]

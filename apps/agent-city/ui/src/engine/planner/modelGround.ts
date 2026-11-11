@@ -8,7 +8,7 @@ import { WATER_LEVEL } from "./footprint";
 
 export const MODEL_GROUND_CONFIG = { version: 1, maxStep: 1, maxHeightQueries: 4096, planningDryLevel: WATER_LEVEL, rendererSeaLevel: -0.55 } as const;
 export type GroundOwner = { readonly id: string; readonly kind: string; readonly x: number; readonly z: number; readonly yaw: number; readonly radius: number };
-export type GroundGeo = { readonly height: (x: number, z: number) => number; readonly inRiver: (x: number, z: number) => boolean };
+export type GroundGeo = { readonly elevation: (x: number, z: number) => number; readonly inRiver: (x: number, z: number) => boolean };
 export type GroundWitness = { readonly at: { readonly x: number; readonly z: number }; readonly terrain: number; readonly supportY: number; readonly part: number };
 export type GroundFinding = { readonly code: "foundation-water" | "foundation-gap" | "foundation-embed" | "foundation-relief";
   readonly witness: GroundWitness; readonly observed: number; readonly allowed: number };
@@ -78,7 +78,7 @@ export function inspectModelGround(owner: GroundOwner, geo: GroundGeo, options: 
   const unsupported = (reasonCode: Extract<ModelGroundInspection, { status: "unsupported" }>["reasonCode"], reason: string): ModelGroundInspection =>
     ({ status: "unsupported", ownerId: owner?.id ?? "", reasonCode, reason, heightQueries, wholeModelReady: false });
   if (!owner || !owner.id || !owner.kind || ![owner.x, owner.z, owner.yaw, owner.radius].every(Number.isFinite)
-    || owner.radius < 0 || !geo || typeof geo.height !== "function" || typeof geo.inRiver !== "function")
+    || owner.radius < 0 || !geo || typeof geo.elevation !== "function" || typeof geo.inRiver !== "function")
     return unsupported("invalid-context", "invalid ground owner/terrain contract");
   const queryLimit = options.maxHeightQueries ?? MODEL_GROUND_CONFIG.maxHeightQueries;
   if (!Number.isSafeInteger(queryLimit) || queryLimit < 1 || queryLimit > MODEL_GROUND_CONFIG.maxHeightQueries)
@@ -91,7 +91,7 @@ export function inspectModelGround(owner: GroundOwner, geo: GroundGeo, options: 
   if (!samples || samples.length === 0) return unsupported("budget-exhausted", "ground support exceeds bounded sampling coverage");
   try {
     heightQueries += 1;
-    const centreHeight = geo.height(owner.x, owner.z);
+    const centreHeight = geo.elevation(owner.x, owner.z);
     if (!Number.isFinite(centreHeight)) return unsupported("invalid-context", "non-finite centre terrain height");
     const baseY = Math.max(0.3, centreHeight), supportY = baseY + foundation.baseOffset;
     const cos = Math.cos(owner.yaw), sin = Math.sin(owner.yaw), findings = new Map<GroundFinding["code"], GroundFinding>();
@@ -104,7 +104,7 @@ export function inspectModelGround(owner: GroundOwner, geo: GroundGeo, options: 
     for (const sample of samples) {
       const at = { x: owner.x + sample.x * cos + sample.z * sin, z: owner.z - sample.x * sin + sample.z * cos };
       heightQueries += 1;
-      const terrain = geo.height(at.x, at.z), river = geo.inRiver(at.x, at.z);
+      const terrain = geo.elevation(at.x, at.z), river = geo.inRiver(at.x, at.z);
       if (!Number.isFinite(terrain) || typeof river !== "boolean") return unsupported("invalid-context", "non-finite height or invalid river evidence");
       const witness = { at, terrain, supportY, part: sample.part };
       if (terrain < minTerrain) { minTerrain = terrain; minWitness = witness; }

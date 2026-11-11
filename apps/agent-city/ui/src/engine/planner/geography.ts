@@ -15,6 +15,8 @@ import { spendPlanningUnit } from "./operationBudget";
 import { ISLET_CAUSEWAY_OFFSET } from "../cityIsletEstate";
 
 export type Geography = {
+  landform: LandformQueriesV1;
+  features: { coastline: boolean; ocean: boolean; river: boolean; islets: boolean };
   R: number;
   coast: Vec2[];
   bbox: { minX: number; maxX: number; minZ: number; maxZ: number };
@@ -43,11 +45,93 @@ export type Geography = {
   waterEdges: Vec2[][];
 };
 
+/** The terrain-facing contract shared by every world generator. Distances are
+ * signed: playable land is positive, water/outside-land is negative. */
+export type LandformQueriesV1 = {
+  version: 1;
+  bounds: { minX: number; maxX: number; minZ: number; maxZ: number };
+  signedLandDistance: (x: number, z: number) => number;
+  waterClearance: (x: number, z: number) => number;
+  elevation: (x: number, z: number) => number;
+  slope: (x: number, z: number) => number;
+  isBuildable: (x: number, z: number) => boolean;
+  waterBodies: WaterBodyBoundaryV1[];
+};
+
+/** Water is represented by deterministic boundaries and an optional centerline;
+ * renderers can choose how to realize each body without inferring Miami rules. */
+export type WaterBodyBoundaryV1 = {
+  id: string;
+  kind: "ocean" | "river" | "bay";
+  surfaceElevation: number;
+  shorelines: Vec2[][];
+  centerline?: Vec2[];
+};
+
 /** 中央海湾参数（来自 CoastalConfig.bayHalfWidth / bayShift）；null = 原来的窄河。 */
 export type BayOptions = { halfWidth: number; shift: number };
 
-export function buildGeography(seed: number, R: number, seedShape: Shape, opts: { memoize?: boolean; bay?: BayOptions | null } = {}): Geography {
-  const bay = opts.bay && opts.bay.halfWidth > 0 ? opts.bay : null;
+export const GEOGRAPHY_GENERATOR_IDS = ["coastal-islands-v1", "arid-dunes-v1"] as const;
+export type GeographyGeneratorId = typeof GEOGRAPHY_GENERATOR_IDS[number];
+export const DEFAULT_GEOGRAPHY_GENERATOR: GeographyGeneratorId = "coastal-islands-v1";
+export type AridDunesOptionsV1 = { duneScale: number; duneAmplitude: number; orientationDeg: number };
+export type GeographyGeneratorOptions = {
+  "coastal-islands-v1": { shape: Shape; bay?: BayOptions | null };
+  "arid-dunes-v1": AridDunesOptionsV1;
+};
+export type GeographyBuildOptions = GeographyGeneratorOptions[GeographyGeneratorId];
+export type LegacyGeographyBuildOptions = { memoize?: boolean; bay?: BayOptions | null };
+export type GeographyBuildRequest<G extends GeographyGeneratorId = GeographyGeneratorId> = {
+  seed: number; radius: number; memoize?: boolean; options: GeographyGeneratorOptions[G];
+};
+export type GeographyGenerator<G extends GeographyGeneratorId = GeographyGeneratorId> = (request: GeographyBuildRequest<G>) => Geography;
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const isFiniteNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+
+/** Validate untrusted profile/worker options before dispatching a generator. */
+export function validateGeographyBuildOptions<G extends GeographyGeneratorId>(generator: G, value: unknown): GeographyGeneratorOptions[G] {
+  if (!isRecord(value)) throw new Error("city-world-options-invalid");
+  if (generator === "arid-dunes-v1") {
+    const options = value as Record<string, unknown>;
+    const allowed = new Set(["duneScale", "duneAmplitude", "orientationDeg"]);
+    if (Object.keys(options).some((key) => !allowed.has(key))
+      || !isFiniteNumber(options.duneScale) || options.duneScale < 96 || options.duneScale > 600
+      || !isFiniteNumber(options.duneAmplitude) || options.duneAmplitude < 1 || options.duneAmplitude > 36
+      || !isFiniteNumber(options.orientationDeg) || options.orientationDeg < -180 || options.orientationDeg > 180) {
+      throw new Error("city-world-options-invalid");
+    }
+    return options as GeographyGeneratorOptions[G];
+  }
+  if (generator === "coastal-islands-v1") {
+    const options = value as Record<string, unknown>;
+    if (Object.keys(options).some((key) => key !== "shape" && key !== "bay") || !isRecord(options.shape)) throw new Error("city-world-options-invalid");
+    const shape = options.shape;
+    if (Object.keys(shape).some((key) => !["spin", "stretch", "harmonics", "bays"].includes(key))
+      || !isFiniteNumber(shape.spin) || !isFiniteNumber(shape.stretch) || shape.stretch < 0.25 || shape.stretch > 4
+      || !Array.isArray(shape.harmonics) || shape.harmonics.length < 1 || shape.harmonics.length > 16
+      || !shape.harmonics.every((harmonic) => isRecord(harmonic)
+        && Object.keys(harmonic).every((key) => ["k", "a", "p"].includes(key))
+        && isFiniteNumber(harmonic.k) && Number.isSafeInteger(harmonic.k) && harmonic.k >= 1 && harmonic.k <= 16
+        && isFiniteNumber(harmonic.a) && Math.abs(harmonic.a) <= 0.5 && isFiniteNumber(harmonic.p))
+      || !Array.isArray(shape.bays) || shape.bays.length > 8
+      || !shape.bays.every((bay) => isRecord(bay)
+        && Object.keys(bay).every((key) => ["at", "depth", "width"].includes(key))
+        && isFiniteNumber(bay.at) && isFiniteNumber(bay.depth) && bay.depth >= 0 && bay.depth <= 1
+        && isFiniteNumber(bay.width) && bay.width > 0 && bay.width <= Math.PI * 2)) throw new Error("city-world-options-invalid");
+    if (options.bay !== undefined && options.bay !== null && (!isRecord(options.bay)
+      || Object.keys(options.bay).some((key) => key !== "halfWidth" && key !== "shift")
+      || !isFiniteNumber(options.bay.halfWidth) || options.bay.halfWidth < 0 || !isFiniteNumber(options.bay.shift))) {
+      throw new Error("city-world-options-invalid");
+    }
+    return options as GeographyGeneratorOptions[G];
+  }
+  throw new Error("city-world-generator-unsupported");
+}
+
+function buildCoastalIslandGeography({ seed, radius: R, memoize = false, options }: GeographyBuildRequest<"coastal-islands-v1">): Geography {
+  const { shape: seedShape } = options;
+  const bay = options.bay && options.bay.halfWidth > 0 ? options.bay : null;
   // 开湾时岛形定向：长轴固定南北（spin 0、x 向压扁），不挖随机海湾，二次谐波减半。
   // 随机旋转/拉伸/挖湾下，湾东侧有时只剩几十个地块的碎片或被掐断成孤岛（4 种子 × 3 档实测：
   // 海滩落东岛 1/4、一个种子无跨湾桥）。保留 3/5 次谐波，海岸仍各不相同。
@@ -58,7 +142,7 @@ export function buildGeography(seed: number, R: number, seedShape: Shape, opts: 
   // Each radius attempt owns its caches. Only the original exact scalar result
   // is reused, and eviction affects cost rather than planning decisions.
   const field = <T extends number | boolean>(evaluate: (x: number, z: number) => T) => {
-    const query = opts.memoize === true ? exactFieldCache(evaluate).query : evaluate;
+    const query = memoize ? exactFieldCache(evaluate).query : evaluate;
     return (x: number, z: number): T => { spendPlanningUnit("terrain:field-query", "terrainSample"); return query(x, z); };
   };
   const stretch = shape.stretch; // Field closures must not depend on mutable caller-owned scalars.
@@ -239,5 +323,136 @@ export function buildGeography(seed: number, R: number, seedShape: Shape, opts: 
   }
   // 斜穿的主干道跨距比湾的全宽长，留 1.6 倍余量 + 对岸退界。
   const maxWaterSpan = bay ? Math.max(140, Math.ceil(bayHalf * 1.22 * 2 * 1.6 + 60)) : 140;
-  return { R, coast, bbox, hasRiver, river, riverShift, riverX, riverWidth, coastDistance, landClearance, hillAngle, hillDir, hillLine, hillProj, height, buildable, terrain, maxWaterSpan, islets, isletClearance, waterEdges };
+  const waterBodies: WaterBodyBoundaryV1[] = [{ id: "outer-water", kind: "ocean", surfaceElevation: 0, shorelines: [coast] }];
+  if (hasRiver && river.length) {
+    const banks = [-1, 1].map((side) => river.map((point) => ({ x: riverX(point.z) + side * riverWidth(point.z), z: point.z })));
+    waterBodies.push({ id: bay ? "central-bay" : "river", kind: bay ? "bay" : "river", surfaceElevation: 0, shorelines: banks, centerline: river });
+  }
+  const landform: LandformQueriesV1 = { version: 1, bounds: bbox, signedLandDistance: coastDistance, waterClearance: landClearance,
+    elevation: height, slope: terrain.slope, isBuildable: buildable, waterBodies };
+  return { landform, features: { coastline: true, ocean: true, river: hasRiver, islets: islets.length > 0 }, R, coast, bbox, hasRiver, river, riverShift, riverX, riverWidth, coastDistance, landClearance, hillAngle, hillDir, hillLine, hillProj, height, buildable, terrain, maxWaterSpan, islets, isletClearance, waterEdges };
+}
+
+/** Deterministic dryland basin with broad, buildable dune fields. It has a
+ * finite play-area boundary, but that boundary is not water or a shoreline. */
+function buildAridDunesGeography({ seed, radius: R, memoize = false, options }: GeographyBuildRequest<"arid-dunes-v1">): Geography {
+  const checked = validateGeographyBuildOptions("arid-dunes-v1", options);
+  const { duneScale, duneAmplitude, orientationDeg } = checked;
+  const field = <T extends number | boolean>(evaluate: (x: number, z: number) => T) => {
+    const query = memoize ? exactFieldCache(evaluate).query : evaluate;
+    return (x: number, z: number): T => { spendPlanningUnit("terrain:field-query", "terrainSample"); return query(x, z); };
+  };
+  const radians = orientationDeg * Math.PI / 180;
+  const duneAxis = { x: Math.cos(radians), z: Math.sin(radians) };
+  const random = (key: string) => hashSeed(`${seed}:${key}`);
+  const boundaryRadius = (angle: number) => R * (1 + 0.035 * fbm(Math.cos(angle) * 1.2, Math.sin(angle) * 1.2, seed + 311, 3));
+  const bbox = { minX: -R * 1.04, maxX: R * 1.04, minZ: -R * 1.04, maxZ: R * 1.04 };
+  const coastDistance = field((x: number, z: number) => {
+    let angle = Math.atan2(z, x); if (angle < 0) angle += Math.PI * 2;
+    return (boundaryRadius(angle) - Math.hypot(x, z)) * 0.94;
+  });
+  // These compatibility fields describe the playable boundary only. No fake
+  // coastline/river arrays are returned and no caller should infer water from them.
+  const landClearance = coastDistance;
+  const riverShift = 0;
+  const riverX = (_z: number) => 0;
+  const riverWidth = (_z: number) => -1e6;
+  const slopeRaw = (x: number, z: number) => {
+    const h = (px: number, pz: number) => {
+      const boundary = coastDistance(px, pz);
+      if (boundary <= 0) return -3 - Math.min(6, -boundary * 0.12);
+      const axis = px * duneAxis.x + pz * duneAxis.z;
+      const warp = 0.28 * fbm(px * 0.0025, pz * 0.0025, seed + 73, 3);
+      const wave = 0.5 + 0.5 * Math.sin((axis / duneScale + warp) * Math.PI * 2);
+      const dune = duneAmplitude * Math.pow(wave, 1.45);
+      const broadRelief = 1.8 * fbm(px * 0.003, pz * 0.003, seed + 119, 3);
+      const edgeBlend = smoothstep(0, Math.min(48, R * 0.12), boundary);
+      return -3 + edgeBlend * (6 + dune + broadRelief);
+    };
+    return Math.hypot(h(x + 1, z) - h(x - 1, z), h(x, z + 1) - h(x, z - 1)) / 2;
+  };
+  const height = field((x: number, z: number) => {
+    const boundary = coastDistance(x, z);
+    if (boundary <= 0) return -3 - Math.min(6, -boundary * 0.12);
+    const axis = x * duneAxis.x + z * duneAxis.z;
+    const warp = 0.28 * fbm(x * 0.0025, z * 0.0025, seed + 73, 3);
+    const wave = 0.5 + 0.5 * Math.sin((axis / duneScale + warp) * Math.PI * 2);
+    const dune = duneAmplitude * Math.pow(wave, 1.45);
+    const broadRelief = 1.8 * fbm(x * 0.003, z * 0.003, seed + 119, 3);
+    const edgeBlend = smoothstep(0, Math.min(48, R * 0.12), boundary);
+    return -3 + edgeBlend * (6 + dune + broadRelief);
+  });
+  const slope = field(slopeRaw);
+  const buildable = field((x: number, z: number) => coastDistance(x, z) > 24 && slope(x, z) < 0.42);
+  const terrain: TerrainField = {
+    height,
+    slope,
+    buildable,
+    center: { x: 0, z: 0 },
+    radius: R * 1.3,
+    coastRadius: () => R,
+    hasRiver: false,
+  };
+  const hillAngle = radians + Math.PI / 2;
+  const hillDir = { x: Math.cos(hillAngle), z: Math.sin(hillAngle) };
+  const hillLine = R * 1.08;
+  const hillProj = (x: number, z: number) => x * hillDir.x + z * hillDir.z;
+  const islets: Geography["islets"] = [];
+  const isletClearance = (_x: number, _z: number) => -Infinity;
+  const waterBodies: WaterBodyBoundaryV1[] = [];
+  const landform: LandformQueriesV1 = {
+    version: 1,
+    bounds: bbox,
+    signedLandDistance: coastDistance,
+    waterClearance: (_x: number, _z: number) => Infinity,
+    elevation: height,
+    slope,
+    isBuildable: buildable,
+    waterBodies,
+  };
+  return {
+    landform,
+    features: { coastline: false, ocean: false, river: false, islets: false },
+    R,
+    coast: [],
+    bbox,
+    hasRiver: false,
+    river: [],
+    riverShift,
+    riverX,
+    riverWidth,
+    coastDistance,
+    landClearance,
+    hillAngle,
+    hillDir,
+    hillLine,
+    hillProj,
+    height,
+    buildable,
+    terrain,
+    maxWaterSpan: 0,
+    islets,
+    isletClearance,
+    waterEdges: [],
+  };
+}
+
+/** Registered pure geography generators. New landforms must satisfy the same
+ * deterministic terrain/query contract consumed by the city planner. */
+const GEOGRAPHY_GENERATORS: { [G in GeographyGeneratorId]: GeographyGenerator<G> } = {
+  "coastal-islands-v1": buildCoastalIslandGeography,
+  "arid-dunes-v1": buildAridDunesGeography,
+};
+
+export function buildGeographyWithGenerator<G extends GeographyGeneratorId>(generator: G, request: GeographyBuildRequest<G>): Geography {
+  validateGeographyBuildOptions(generator, request.options);
+  const build = GEOGRAPHY_GENERATORS[generator] as GeographyGenerator<G> | undefined;
+  if (!build) throw new Error("city-world-generator-unsupported");
+  return build(request);
+}
+
+/** Legacy convenience entry for internal callers that still target the
+ * current official Miami world. New world-aware code must name its generator. */
+export function buildGeography(seed: number, radius: number, shape: Shape, options: LegacyGeographyBuildOptions = {}): Geography {
+  return buildGeographyWithGenerator(DEFAULT_GEOGRAPHY_GENERATOR, { seed, radius, memoize: options.memoize, options: { shape, bay: options.bay } });
 }

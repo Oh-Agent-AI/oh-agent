@@ -7,7 +7,7 @@ import { DetMath as Math } from "../detMath";
  * 通过后由 commitFixedLink 事务提交四条边界街道，再登记街区与延迟生成地块的 buildParcels。
  *
  * 对外部世界的读写（原为 buildPlan 闭包变量，现显式传入）：
- *   读：R、core、trunks、random()、seaside、buildable、coastDistance、reservations、key、
+ *   读：R、core、trunks、random()、seaside、buildable、waterClearance、reservations、key、
  *       trunkIndex / ringIndex / coastRoadIndex（SegmentIndex，只查询）、network.edges（惰性主干索引与现有路网）
  *   原地改：network（经 commitFixedLink(connectorWorld, …) 加边，与原段相同的调用与顺序）
  *   新产生并返回：zoneFor（闭包带惰性 primaryIndexCache，首次调用时才扫 edges——与原行为相同）、
@@ -30,8 +30,9 @@ export type SectorBlocksWorld = {
   network: Network;
   connectorWorld: ConnectorWorld;
   seaside: SeasideBand | null;
+  hasSurfaceWater: boolean;
+  waterClearance: (x: number, z: number) => number;
   buildable: (x: number, z: number) => boolean;
-  coastDistance: (x: number, z: number) => number;
   reservations: () => Array<Vec2 & { radius: number }>;
   key: (p: Vec2) => Vec2;
   trunkIndex: SegmentIndex;
@@ -40,16 +41,16 @@ export type SectorBlocksWorld = {
 };
 
 export function buildSectorBlocks(w: SectorBlocksWorld) {
-  const { R, core, trunks, random, network, connectorWorld, seaside, buildable, coastDistance, reservations, key, trunkIndex, ringIndex, coastRoadIndex } = w;
+  const { R, core, trunks, random, network, connectorWorld, seaside, hasSurfaceWater, waterClearance, buildable, reservations, key, trunkIndex, ringIndex, coastRoadIndex } = w;
   const { edges } = network;
   let primaryIndexCache: SegmentIndex | null = null;
   const primaryRoadIndex = () => (primaryIndexCache ??= new SegmentIndex([...edges.values()].filter((edge) => atLeast(edge, "arterial") && !edge.bridge).map((edge) => edge.points)));
   const zoneFor = (center: Vec2): Zone => {
-    // 分区由地理与骨架决定：核心附近 downtown、临海 waterfront、主干道两侧 commercial、其余 residential。
+    // 分区由地理与骨架决定：核心附近 downtown、临任意已声明地表水 waterfront、主干道两侧 commercial、其余 residential。
     // 实测 380 栋会话楼 97% 落在 residential、0 栋商业：downtown 半径 0.24R 几乎被市政广场与用地占满，
     // commercial 只认放射主干道。改为 0.3R，且临任意宽路（环岛滨海路、河岸路、海滨大道）也算商业街。
     if (Math.hypot(center.x - core.x, center.z - core.z) < 0.3 * R) return "downtown";
-    if (coastDistance(center.x, center.z) < 90) return "waterfront";
+    if (hasSurfaceWater && waterClearance(center.x, center.z) < 90) return "waterfront";
     if (trunkIndex.closerThan(center, 80) || primaryRoadIndex().closerThan(center, 60)) return "commercial"; // 主干道 80 / 宽路 60：曾 60/45，商业仅 ~9%
     return "residential";
   };

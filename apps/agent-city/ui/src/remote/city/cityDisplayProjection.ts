@@ -1,7 +1,8 @@
 import type { CityModel } from "../../cityModel";
 import { createCityShape } from "../../engine/cityShape";
 import type { CityLayout, BackdropMode } from "../../engine/cityLayout";
-import { buildGeography } from "../../engine/planner/geography";
+import { buildGeographyWithGenerator, validateGeographyBuildOptions, DEFAULT_GEOGRAPHY_GENERATOR, GEOGRAPHY_GENERATOR_IDS,
+  type GeographyGeneratorId, type GeographyGeneratorOptions } from "../../engine/planner/geography";
 import { gradeRoadLandings } from "../../engine/surface/roadLandingGrading";
 import { paletteFor, type DistrictPalette } from "../../engine/cityTextures";
 import type { ReturnCameraView } from "../../game/types";
@@ -9,7 +10,7 @@ import { remoteArenaFromSite, type RemoteArenaV1 } from "../../game/mecha/contra
 import type { CityMechaSite } from "../../game/mecha/citySite";
 
 const LAYOUT_FIELDS = [
-  "scaleTier", "biome", "core", "islandRadius", "seed", "districts", "blocks", "roadNodes", "roadEdges",
+  "scaleTier", "biome", "core", "islandRadius", "seed", "features", "geographyGeneratorId", "geographyOptions", "worldProfileKey", "districts", "blocks", "roadNodes", "roadEdges",
   "activityKey", "coastRoads", "culDeSacEnds", "junctionRings", "highwayRamps", "districtLandmarks",
   "terrain", "extent", "coast", "river", "publicSites", "parkTrees", "urbanBounds", "bridges", "boatLanes",
   "boundsRadius", "decorMountains", "districtAnchors", "highways", "massing", "civics", "landmarks", "seaside",
@@ -173,9 +174,34 @@ export function hydrateRemoteCityLayout(snapshot: RemoteCityLayoutSnapshotV1): C
   }
   const data = hydrateValue(snapshot.data) as Record<string, unknown>;
   const config = data.coastalConfig as { bayHalfWidth?: number; bayShift?: number } | null;
-  const geography = buildGeography(snapshot.seed, Number(data.islandRadius), createCityShape(snapshot.seed), {
-    bay: config && Number(config.bayHalfWidth) > 0 ? { halfWidth: Number(config.bayHalfWidth), shift: Number(config.bayShift ?? 0) } : null,
-  });
+  const geographyValue = data.geographyGeneratorId;
+  if (geographyValue !== undefined && (typeof geographyValue !== "string" || !(GEOGRAPHY_GENERATOR_IDS as readonly string[]).includes(geographyValue))) {
+    throw new Error("remote_city_layout_unsupported");
+  }
+  const geographyGenerator = (geographyValue as GeographyGeneratorId | undefined) ?? DEFAULT_GEOGRAPHY_GENERATOR;
+  if (!(["tropical", "temperate", "boreal", "savanna", "eastasian", "arid"] as unknown[]).includes(data.biome)
+    || ((geographyGenerator === "arid-dunes-v1") !== (data.biome === "arid"))) throw new Error("remote_city_layout_geography_mismatch");
+  const optionsValue = data.geographyOptions;
+  let geographyOptions: GeographyGeneratorOptions[GeographyGeneratorId];
+  if (optionsValue === undefined && geographyGenerator === "coastal-islands-v1") {
+    // Compatibility for snapshots created before generator-specific options
+    // were serialized. New inland generators must provide explicit options.
+    geographyOptions = validateGeographyBuildOptions("coastal-islands-v1", { shape: createCityShape(snapshot.seed),
+      bay: config && Number(config.bayHalfWidth) > 0 ? { halfWidth: Number(config.bayHalfWidth), shift: Number(config.bayShift ?? 0) } : null });
+  } else {
+    if (optionsValue === undefined) throw new Error("remote_city_layout_geography_options_missing");
+    geographyOptions = validateGeographyBuildOptions(geographyGenerator, optionsValue);
+  }
+  const geography = geographyGenerator === "coastal-islands-v1"
+    ? buildGeographyWithGenerator("coastal-islands-v1", { seed: snapshot.seed, radius: Number(data.islandRadius), options: geographyOptions as GeographyGeneratorOptions["coastal-islands-v1"] })
+    : buildGeographyWithGenerator("arid-dunes-v1", { seed: snapshot.seed, radius: Number(data.islandRadius), options: geographyOptions as GeographyGeneratorOptions["arid-dunes-v1"] });
+  if (data.features !== undefined) {
+    const features = data.features as Record<string, unknown>;
+    if (!features || typeof features !== "object" || Object.keys(geography.features).some((key) => features[key] !== geography.features[key as keyof typeof geography.features])) {
+      throw new Error("remote_city_layout_geography_mismatch");
+    }
+  } else data.features = geography.features;
+  data.geographyOptions = geographyOptions;
   const roads = data.roadEdges as CityLayout["roadEdges"];
   const terrain = gradeRoadLandings(geography.terrain, roads);
   const terrainFor = (meta: RemoteTerrainMeta): CityLayout["terrain"] => ({

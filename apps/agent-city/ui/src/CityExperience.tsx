@@ -5,9 +5,10 @@ import type { CityModel } from "./cityModel";
 import { readCitySessionDetail, stableAssetRefsForProjection, type CityProjectionV1 } from "./data/provider";
 import { citySeed, randomSeed } from "./data/seed";
 import type { CityEngine, EngineStats } from "./engine/CityEngine";
+import type { CityTheme } from "./engine/cityTheme";
 import type { CinematicCard, CinematicCut, CinematicPlan } from "./engine/cityCinematic";
-import { prepareCityLayout, type BackdropMode } from "./engine/cityLayout";
-import { MIAMI_COASTAL } from "./engine/citySeaside";
+import { prepareCityWorldLayout, type BackdropMode } from "./engine/cityLayout";
+import { ARID_DUNES_CITY_WORLD_V1, BUILTIN_CITY_SKINS_V1, MIAMI_CITY_WORLD_V1, parseCityWorldProfileJson, writeCitySkinPreference, writeCityWorldProfileJson, writeCityWorldProfilePreference, type CityWorldProfileV1 } from "./engine/cityWorldProfile";
 import { prepareSeedChange, SeedChangeError } from "./engine/prepareSeedChange";
 import { paletteFor } from "./engine/cityTextures";
 import { invokeHost, embedded, pluginLocale, noteBusy } from "./host";
@@ -47,7 +48,7 @@ function download(blob: Blob, name: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
-export function useCityExperience(engine: RefObject<CityEngine | null>, projection: CityProjectionV1 | null) {
+export function useCityExperience(engine: RefObject<CityEngine | null>, projection: CityProjectionV1 | null, worldProfile: CityWorldProfileV1) {
   const modelRef = useRef<CityModel | null>(null);
   const [model, setModel] = useState<CityModel | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
@@ -179,7 +180,7 @@ export function useCityExperience(engine: RefObject<CityEngine | null>, projecti
     setSeedBusy(true); setError(null);
     try {
       const result = await prepareSeedChange({ seed: value, signal: preparation.signal, currentEngine: () => engine.current,
-        prepare: (model, nextSeed, signal) => prepareCityLayout(model, nextSeed, MIAMI_COASTAL, { signal }),
+        prepare: (model, nextSeed, signal) => prepareCityWorldLayout(model, nextSeed, worldProfile, { signal }),
         persist: async (nextSeed) => {
           if (await citySeed("write", nextSeed) !== nextSeed) throw new Error("seed-not-saved");
         }, beforeWork: () => noteBusy(15_000).catch(() => {}) });
@@ -267,7 +268,9 @@ export function useCityExperience(engine: RefObject<CityEngine | null>, projecti
   };
   return { modelRef, model, setModel, tooltipRef, callbacks, selected, setSelected, clearSelection, orbitLocked, releaseOrbitLock: () => engine.current?.releaseOrbitLock(), details, setDetails, options, setOptions, catalog, setCatalog,
     seed, seedDraft, setSeedDraft, seedBusy, confirmSeed, applySeed, reseed, cursor, playing, speed, setSpeed,
-    cut, setCut, backdrop, setBackdrop, film, photoBusy, busy, error, setError, stats, card, progress, seek, replay, live, previewRef,
+    cut, setCut, backdrop, setBackdrop, worldProfile, skinId: worldProfile.visuals.themeId === "desert" ? "desert-evening" : "miami-vice",
+    changeWorldProfile: (profileId: string) => { if (writeCityWorldProfilePreference(profileId)) window.location.reload(); },
+    changeSkin: (skinId: string) => { if (writeCitySkinPreference(skinId)) window.location.reload(); }, film, photoBusy, busy, error, setError, stats, card, progress, seek, replay, live, previewRef,
     describe, photo, exportFilm, refreshSelection, openHostSession, projection,
     districtServices: (id: string) => engine.current?.currentLayout?.civics.filter((c) => c.districtId === id).map((c) => c.kind) ?? [],
     serviceDistrict: (id: string | null) => engine.current?.currentLayout?.civics.find((c) => c.id === id?.split("#")[1])?.districtId ?? null,
@@ -276,7 +279,7 @@ export function useCityExperience(engine: RefObject<CityEngine | null>, projecti
     lockSelection: (id: string) => engine.current?.lockSelection(id) };
 }
 
-export function CityExperience({ ui, disabled, cinema, status, loadErrorCode, quality, onQuality, game, planRepair, windowDays, windowOptions, onWindowDays, labels, onLabels, onMecha, mechaEnabled, mechaAvailability = "unknown", onDreamPreview, dreamPreviewEnabled = false, dreamPublicationActive = false }: { ui: ReturnType<typeof useCityExperience>; disabled: boolean; cinema: boolean; status?: string; loadErrorCode?: string | null; quality: string; onQuality: (value: string) => void; game: ReturnType<typeof useCityGame>; planRepair: PlanRepairUi; windowDays: number; windowOptions: readonly number[]; onWindowDays: (days: number) => void; labels: boolean; onLabels: (next: boolean) => void; onMecha?: () => void; mechaEnabled: boolean; mechaAvailability?: "unknown" | "searching" | "ready" | "empty" | "error"; onDreamPreview?: () => void; dreamPreviewEnabled?: boolean; dreamPublicationActive?: boolean }) {
+export function CityExperience({ ui, disabled, cinema, status, loadErrorCode, quality, onQuality, game, planRepair, windowDays, windowOptions, onWindowDays, labels, onLabels, onMecha, mechaEnabled, mechaAvailability = "unknown", onDreamPreview, dreamPreviewEnabled = false, dreamPublicationActive = false, theme }: { ui: ReturnType<typeof useCityExperience>; disabled: boolean; cinema: boolean; status?: string; loadErrorCode?: string | null; quality: string; onQuality: (value: string) => void; game: ReturnType<typeof useCityGame>; planRepair: PlanRepairUi; windowDays: number; windowOptions: readonly number[]; onWindowDays: (days: number) => void; labels: boolean; onLabels: (next: boolean) => void; onMecha?: () => void; mechaEnabled: boolean; mechaAvailability?: "unknown" | "searching" | "ready" | "empty" | "error"; onDreamPreview?: () => void; dreamPreviewEnabled?: boolean; dreamPublicationActive?: boolean; theme?: CityTheme }) {
   const language = useCityLanguage();
   // Presentation only: the landing host still enforces its own fixture/method boundary.
   const landingPreview = embedded() && new URLSearchParams(location.search).get("presentation") === "landing";
@@ -300,6 +303,8 @@ export function CityExperience({ ui, disabled, cinema, status, loadErrorCode, qu
     return () => { active = false; clearTimeout(timer); };
   }, [disabled, ui.model, landingPreview]);
   const [summaryOpen, setSummaryOpen] = useState(false);
+  const [worldProfileJson, setWorldProfileJson] = useState("");
+  const [worldProfileImport, setWorldProfileImport] = useState<ReturnType<typeof parseCityWorldProfileJson> | null>(null);
   const [dataPlace, setDataPlace] = useState<CityDataPlaceId | null>(null);
   const [dataDistrict, setDataDistrict] = useState<string | null>(null);
   const [dataPlaceFromDirectory, setDataPlaceFromDirectory] = useState(false);
@@ -426,7 +431,7 @@ export function CityExperience({ ui, disabled, cinema, status, loadErrorCode, qu
       </nav>
       <h2>执行环境城区</h2>
       {(model?.districts ?? []).map((district) => <div key={district.id}><button disabled={locked} onClick={() => ui.focusDistrict(district.id)}>
-        <span aria-hidden="true" style={{ background: paletteFor(district.id).accent }} /><strong>{district.label}</strong>
+        <span aria-hidden="true" style={{ background: paletteFor(district.id, theme).accent }} /><strong>{district.label}</strong>
         <span className="city-district-meta">{district.sessionCount} 会话 · {district.activeCount} 活跃</span>
         {district.anomaly && <span className="city-district-meta">{district.anomaly.severity} · {district.anomaly.count} 条异常（部分投影）</span>}
       </button><nav className="city-district-services" aria-label={cityText("城区公共服务", language)}>
@@ -484,7 +489,7 @@ export function CityExperience({ ui, disabled, cinema, status, loadErrorCode, qu
           <dt>岛屿档位</dt><dd>{tier} / 10（每档约 400 个会话）</dd></dl>
         <h3>城区份额</h3>
         {ranked.map((d) => <button key={d.id} className="city-civic-share" disabled={locked} onClick={() => ui.focusDistrict(d.id)}>
-          <span style={{ background: paletteFor(d.id).accent, width: `${Math.max(4, (d.sessionCount / total) * 100)}%` }} />
+          <span style={{ background: paletteFor(d.id, theme).accent, width: `${Math.max(4, (d.sessionCount / total) * 100)}%` }} />
           {d.label} · {d.sessionCount} · {Math.round((d.sessionCount / total) * 100)}%</button>)}
         {alerts.length ? <><h3>异常</h3>{alerts.map((d) => <p key={d.id}>{d.label} · {d.anomaly!.severity} · {d.anomaly!.count} 条（部分投影）</p>)}</> : <p>{ui.projection?.coverage.findings_state === "partial" ? "当前没有城区异常。" : "问题统计尚未载入，请打开诊断中心。"}</p>}
         <p>市政厅随岛屿档位升级；广场前的城区旗高度表示各城区会话占比，穹顶信标表示有城区异常。</p>
@@ -581,6 +586,28 @@ export function CityExperience({ ui, disabled, cinema, status, loadErrorCode, qu
     <dialog className="city-dialog" ref={settingsRef} onCancel={(event) => { event.preventDefault(); event.stopPropagation(); ui.setOptions(false); }} onClose={() => ui.setOptions(false)} aria-label="城市设置">
       <header className="city-dialog-header"><h2>城市设置</h2><button className="city-close" aria-label="关闭城市设置" onClick={() => ui.setOptions(false)}>×</button></header>
       <div className="city-dialog-body">
+      <label htmlFor="city-world-profile">城市世界</label><select id="city-world-profile" value={ui.worldProfile.id} disabled={locked} onChange={(e) => ui.changeWorldProfile(e.target.value)}><option value={MIAMI_CITY_WORLD_V1.id}>迈阿密海岸群岛</option><option value={ARID_DUNES_CITY_WORLD_V1.id}>干旱沙丘</option>{ui.worldProfile.id !== MIAMI_CITY_WORLD_V1.id && ui.worldProfile.id !== ARID_DUNES_CITY_WORLD_V1.id && <option value={ui.worldProfile.id}>{ui.worldProfile.id}（导入）</option>}</select>
+      <p>更换世界会重载 City；会话数据与岛屿种子保持不变。</p>
+      <details className="city-world-import">
+        <summary>导入自定义世界 Profile</summary>
+        <p>粘贴由 City SDK 生成的 CityWorldProfileV1 JSON。仅支持已注册的海岸群岛/沙丘生成器和官方视觉主题；不接受代码、资源路径或额外字段。应用后保存在本机并重载 City。</p>
+        <label htmlFor="city-world-profile-json">Profile JSON</label>
+        <textarea id="city-world-profile-json" value={worldProfileJson} disabled={locked} maxLength={64 * 1024} spellCheck={false} onChange={(event) => { setWorldProfileJson(event.target.value); setWorldProfileImport(null); }} placeholder="粘贴 CityWorldProfileV1 JSON" />
+        <div className="city-world-import-actions">
+          <button disabled={locked || !worldProfileJson.trim()} onClick={() => setWorldProfileImport(parseCityWorldProfileJson(worldProfileJson))}>校验并预览</button>
+          <button disabled={locked || !worldProfileImport?.ok} onClick={() => {
+            const applied = writeCityWorldProfileJson(worldProfileJson);
+            setWorldProfileImport(applied);
+            if (applied.ok) window.location.reload();
+          }}>应用并重载</button>
+          <button disabled={locked || (ui.worldProfile.id === MIAMI_CITY_WORLD_V1.id && ui.worldProfile.geography.generator === MIAMI_CITY_WORLD_V1.geography.generator)} onClick={() => ui.changeWorldProfile(MIAMI_CITY_WORLD_V1.id)}>恢复内置世界</button>
+        </div>
+        {worldProfileImport?.ok && <p role="status">校验通过：{worldProfileImport.profile.id} · {worldProfileImport.profile.geography.generator} · 主题 {worldProfileImport.profile.visuals.themeId}</p>}
+        {worldProfileImport && !worldProfileImport.ok && <ul className="city-world-import-diagnostics" role="alert">{worldProfileImport.diagnostics.map((item, index) => <li key={`${item.code}:${index}`}><code>{item.code}</code>：{item.message}</li>)}</ul>}
+        {(ui.worldProfile.id !== MIAMI_CITY_WORLD_V1.id && ui.worldProfile.id !== ARID_DUNES_CITY_WORLD_V1.id) && <p>当前使用自定义世界：{ui.worldProfile.id}。恢复内置世界会清除自定义配置。</p>}
+      </details>
+      <label htmlFor="city-skin">城市皮肤</label><select id="city-skin" value={ui.skinId} disabled={locked} onChange={(e) => ui.changeSkin(e.target.value)}>{BUILTIN_CITY_SKINS_V1.map(skin => <option key={skin.id} value={skin.id}>{skin.id === "miami-vice" ? "迈阿密霓虹" : "沙漠暮色"}</option>)}</select>
+      <p>皮肤只更改视觉主题，不改变地貌、道路或玩法。</p>
       {!landingPreview && <><form onSubmit={(e) => { e.preventDefault(); void ui.applySeed(Number(ui.seedDraft.trim())); }}>
         <label htmlFor="city-seed">岛屿种子</label><div className="city-seed-controls"><input id="city-seed" inputMode="numeric" value={ui.seedDraft} disabled={locked} onChange={(e) => ui.setSeedDraft(e.target.value)} />
         <button disabled={locked}>应用种子</button></div>

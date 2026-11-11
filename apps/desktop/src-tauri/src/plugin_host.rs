@@ -3,10 +3,59 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use tauri::{Manager, Webview, WebviewBuilder, WebviewUrl};
+use tauri::{Emitter, Manager, Webview, WebviewBuilder, WebviewUrl};
 
 #[derive(Default)]
 pub struct PluginHost(Mutex<HostState>, Mutex<()>);
+
+fn city_asset_webview_authorized(host: &HostState, webview_label: &str) -> bool {
+    webview_label.starts_with("plugin-city-") && host.current.as_ref().is_some_and(|instance|
+        instance.id == webview_label && instance.plugin_id == "city" && instance.ready && !instance.suspended && instance.failed.is_none())
+}
+
+pub(crate) fn creator_asset_protocol_response(app: &tauri::AppHandle, webview_label: &str, request: tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Vec<u8>> {
+    let respond = |status, body: Vec<u8>| {
+        tauri::http::Response::builder().status(status)
+            .header(tauri::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")
+            .header(tauri::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .header(tauri::http::header::ACCESS_CONTROL_ALLOW_METHODS, "GET, HEAD, OPTIONS")
+            .header(tauri::http::header::ACCESS_CONTROL_ALLOW_HEADERS, "*")
+            .header(tauri::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+            .body(body).unwrap_or_else(|_| tauri::http::Response::new(Vec::new()))
+    };
+    let status = |code: tauri::http::StatusCode, message: &'static str| respond(code, message.as_bytes().to_vec());
+    if request.method() == tauri::http::Method::OPTIONS { return status(tauri::http::StatusCode::NO_CONTENT, ""); }
+    if request.method() != tauri::http::Method::GET && request.method() != tauri::http::Method::HEAD {
+        return status(tauri::http::StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed");
+    }
+    if request.uri().host() != Some("localhost") { return status(tauri::http::StatusCode::NOT_FOUND, "not_found"); }
+    let mut parts = request.uri().path().split('/').filter(|part| !part.is_empty());
+    if parts.next() != Some("v1") { return status(tauri::http::StatusCode::NOT_FOUND, "not_found"); }
+    let (Some(release_id), Some(filename), None) = (parts.next(), parts.next(), parts.next()) else {
+        return status(tauri::http::StatusCode::NOT_FOUND, "not_found");
+    };
+    let Some(hash) = filename.strip_suffix(".glb") else { return status(tauri::http::StatusCode::NOT_FOUND, "not_found"); };
+    let asset_digest = format!("sha256:{hash}");
+    let Some(host_state) = app.try_state::<PluginHost>() else { return status(tauri::http::StatusCode::FORBIDDEN, "permission_denied"); };
+    let authorized = city_asset_webview_authorized(&host_state.0.lock().unwrap_or_else(|error| error.into_inner()), webview_label);
+    if !authorized { return status(tauri::http::StatusCode::FORBIDDEN, "permission_denied"); }
+    match crate::creator_projects::read_city_release_asset(&crate::overview::data_home(), release_id, &asset_digest) {
+        Ok(bytes) => {
+            let length = bytes.len();
+            let body = if request.method() == tauri::http::Method::HEAD { Vec::new() } else { bytes };
+            tauri::http::Response::builder().status(tauri::http::StatusCode::OK)
+                .header(tauri::http::header::CONTENT_TYPE, "model/gltf-binary")
+                .header(tauri::http::header::CONTENT_LENGTH, length)
+                .header(tauri::http::header::CACHE_CONTROL, "private, max-age=31536000, immutable")
+                .header(tauri::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .header(tauri::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+                .body(body).unwrap_or_else(|_| tauri::http::Response::new(Vec::new()))
+        }
+        Err("creator_release_asset_not_found" | "creator_release_not_found") => status(tauri::http::StatusCode::NOT_FOUND, "asset_not_found"),
+        Err("creator_store_unavailable") => status(tauri::http::StatusCode::SERVICE_UNAVAILABLE, "asset_unavailable"),
+        Err(_) => status(tauri::http::StatusCode::FORBIDDEN, "asset_unavailable"),
+    }
+}
 
 // Wry's child attachment uses the raw window NSView. A WebviewWindow may
 // replace its contentView when creating the host; verify the child actually
@@ -987,7 +1036,7 @@ fn performance_fields(allowed_metrics: &[String], message: &Value) -> Result<Str
 
 #[tauri::command]
 pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: tauri::State<'_, PluginHost>, request: PluginRequestV1) -> Result<PluginResponseV1, String> {
-    let (allowed, navigation, state_keys, typed_data_grants, legacy_data_grants, object_grants, scope_grants, remote_capabilities, plugin_id) = {
+    let (allowed, navigation, state_keys, typed_data_grants, legacy_data_grants, object_grants, scope_grants, remote_capabilities, local_calls, plugin_id) = {
         let host = state.0.lock().unwrap();
         let i = host.current.as_ref().ok_or("plugin_instance_unavailable")?;
         if i.id != webview.label() || i.failed.is_some() || i.suspended || request.instance_id != i.id {
@@ -997,7 +1046,7 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
             return Ok(plugin_request_error(request.request_id, code, false));
         }
         let definition = definitions().iter().find(|p| p.id == i.plugin_id).ok_or("plugin_unknown")?;
-        (definition.data_projections.clone(), definition.navigation_targets.clone(), definition.state_keys.clone(), definition.typed_data_grants.clone(), definition.legacy_data_grants.clone(), definition.object_grants.clone(), definition.scope_grants.clone(), definition.remote_capabilities.clone(), i.plugin_id.clone())
+        (definition.data_projections.clone(), definition.navigation_targets.clone(), definition.state_keys.clone(), definition.typed_data_grants.clone(), definition.legacy_data_grants.clone(), definition.object_grants.clone(), definition.scope_grants.clone(), definition.remote_capabilities.clone(), definition.local_calls.clone(), i.plugin_id.clone())
     };
     begin_activity(&state, &request.instance_id);
     let _activity = ActivityGuard { app: app.clone(), id: request.instance_id.clone() };
@@ -1015,6 +1064,113 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
     }
     let method = request.method.clone();
     let payload = request.payload.clone();
+    if method == "city.creator.layout.publish" {
+        let _operation = state.1.lock().unwrap();
+        {
+            let host = state.0.lock().unwrap();
+            if !city_creator_runtime_authorized(&host, &plugin_id, &request.instance_id, &local_calls, &method) {
+                return Err("plugin_instance_mismatch".into());
+            }
+        }
+        let result = crate::creator_projects::publish_city_layout_snapshot(&crate::overview::data_home(), &payload);
+        return Ok(match result {
+            Ok(value) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(value), error: None },
+            Err(code) => plugin_request_error(request.request_id, code, matches!(code, "creator_store_unavailable")),
+        });
+    }
+    if matches!(method.as_str(), "city.creator.experiences.list" | "city.creator.experiences.read" | "city.creator.playtest.claim" | "city.creator.playtest.finish") {
+        let _operation = state.1.lock().unwrap();
+        {
+            let host = state.0.lock().unwrap();
+            if !city_creator_runtime_authorized(&host, &plugin_id, &request.instance_id, &local_calls, &method) {
+                return Err("plugin_instance_mismatch".into());
+            }
+        }
+        let result = crate::creator_projects::dispatch_city_runtime(&crate::overview::data_home(), &request.instance_id, &method, &payload);
+        drop(_operation);
+        if method == "city.creator.playtest.finish" {
+            if let Ok(value) = &result {
+                let _ = app.emit("app-event", json!({"type":"CreatorPlaytestReturnRequested","runId":value["runId"],
+                    "projectId":value["projectId"],"revision":value["revision"],"status":value["status"],"failureCode":value["failureCode"]}));
+            }
+        }
+        return Ok(match result {
+            Ok(value) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(value), error: None },
+            Err(code) => plugin_request_error(request.request_id, code, matches!(code, "creator_store_unavailable")),
+        });
+    }
+    if method.starts_with("creator.") {
+        if plugin_id != "creator-studio" { return Ok(plugin_request_error(request.request_id, "permission_denied", false)); }
+        if !local_calls.iter().any(|allowed| allowed == &method) { return Ok(plugin_request_error(request.request_id, "permission_denied", false)); }
+        if method == "creator.asset.import" {
+            let Some(object) = payload.as_object().filter(|object| object.len() == 3
+                && object.keys().all(|key| matches!(key.as_str(), "projectId" | "expectedRevision" | "operationId"))) else {
+                return Ok(plugin_request_error(request.request_id, "creator_request_invalid", false));
+            };
+            let Some(project_id) = object.get("projectId").and_then(Value::as_str).map(str::to_owned) else {
+                return Ok(plugin_request_error(request.request_id, "creator_request_invalid", false));
+            };
+            let Some(expected_revision) = object.get("expectedRevision").and_then(Value::as_u64) else {
+                return Ok(plugin_request_error(request.request_id, "creator_request_invalid", false));
+            };
+            let Some(operation_id) = object.get("operationId").and_then(Value::as_str).map(str::to_owned) else {
+                return Ok(plugin_request_error(request.request_id, "creator_request_invalid", false));
+            };
+            let valid_creator_id = |value: &str| !value.is_empty() && value.len() <= 128
+                && value.as_bytes()[0].is_ascii_alphanumeric()
+                && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'));
+            if !valid_creator_id(&project_id) || !valid_creator_id(&operation_id) {
+                return Ok(plugin_request_error(request.request_id, "creator_request_invalid", false));
+            }
+            {
+                let host = state.0.lock().unwrap();
+                if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            let selected = tauri::async_runtime::spawn_blocking(|| rfd::FileDialog::new()
+                .add_filter("glTF Binary", &["glb"]).pick_file())
+                .await.map_err(|_| "creator_asset_picker_failed".to_string())?;
+            let Some(source) = selected else { return Ok(plugin_request_error(request.request_id, "creator_asset_import_cancelled", false)); };
+            let result = {
+                let _operation = state.1.lock().unwrap();
+                {
+                    let host = state.0.lock().unwrap();
+                    if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                        return Err("plugin_instance_mismatch".into());
+                    }
+                }
+                crate::creator_projects::import_model_asset(&crate::overview::data_home(), crate::creator_projects::LOCAL_CREATOR_OWNER,
+                    &project_id, expected_revision, &operation_id, &source)
+            };
+            return Ok(match result {
+                Ok(value) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(value), error: None },
+                Err(code) => plugin_request_error(request.request_id, code, matches!(code, "creator_store_unavailable")),
+            });
+        }
+        // Serialize authorization and SQLite commit against plugin_open/close. A
+        // switch cannot revoke the instance between this check and the write.
+        let result = {
+            let _operation = state.1.lock().unwrap();
+            {
+                let host = state.0.lock().unwrap();
+                if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            let instance = request.instance_id.clone();
+            crate::creator_projects::dispatch_as(&crate::overview::data_home(), crate::creator_projects::LOCAL_CREATOR_OWNER, &instance, &method, &payload)
+        };
+        if method == "creator.project.playtest.start" {
+            if let Ok(value) = &result {
+                let _ = app.emit("app-event", json!({"type":"CreatorPlaytestOpenCityRequested","runId":value["runId"]}));
+            }
+        }
+        return Ok(match result {
+            Ok(value) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(value), error: None },
+            Err(code) => plugin_request_error(request.request_id, code, matches!(code, "creator_store_unavailable")),
+        });
+    }
     if let Some(action) = method.strip_prefix("remote.session.") {
         let scoped_payload = attach_remote_owner(&payload, &request.instance_id).map_err(str::to_owned)?;
         let capability_id = scoped_payload["capabilityId"].as_str().ok_or_else(|| "remote_forbidden".to_owned())?;
@@ -1150,9 +1306,31 @@ fn plugin_response_owner_active(host: &HostState, instance_id: &str, plugin_id: 
         && instance.failed.is_none() && !instance.suspended)
 }
 
+fn city_creator_runtime_authorized(host: &HostState, plugin_id: &str, instance_id: &str, local_calls: &[String], method: &str) -> bool {
+    plugin_id == "city" && local_calls.iter().any(|allowed| allowed == method)
+        && host.current.as_ref().is_some_and(|instance| instance.id == instance_id && instance.plugin_id == "city"
+            && instance.ready && !instance.suspended && instance.failed.is_none())
+}
+
 #[cfg(test)]
 mod plugin_request_tests {
     use super::*;
+
+    #[test]
+    fn creator_assets_are_only_available_from_the_active_city_webview() {
+        let host = HostState { current: Some(Instance {
+            id:"plugin-city-7".into(),plugin_id:"city".into(),command_namespace:"city".into(),
+            max_toolbar_items:11,performance_metrics:Vec::new(),started:Instant::now(),pulse:Instant::now(),
+            ready:true,suspended:false,failed:None,revision:0,items:Vec::new(),sequence:0,pending:None,
+            in_flight:0,busy_until:None,events:Vec::new(),
+        }), ..HostState::default() };
+        assert!(city_asset_webview_authorized(&host, "plugin-city-7"));
+        assert!(!city_asset_webview_authorized(&host, "plugin-city-6"));
+        assert!(!city_asset_webview_authorized(&host, "plugin-creator-studio-7"));
+        let mut suspended = host;
+        suspended.current.as_mut().unwrap().suspended = true;
+        assert!(!city_asset_webview_authorized(&suspended, "plugin-city-7"));
+    }
 
     #[test]
     fn generic_request_envelope_uses_shared_camel_case_contract() {
@@ -1224,14 +1402,49 @@ mod plugin_request_tests {
         host.current.as_mut().unwrap().suspended = true;
         assert!(!plugin_response_owner_active(&host,"plugin-city-new","city"));
     }
+
+    #[test]
+    fn city_creator_runtime_route_requires_declared_ready_active_city_instance() {
+        let host = HostState { current: Some(Instance {
+            id:"plugin-city-1".into(),plugin_id:"city".into(),command_namespace:"city".into(),
+            max_toolbar_items:11,performance_metrics:Vec::new(),started:Instant::now(),pulse:Instant::now(),
+            ready:true,suspended:false,failed:None,revision:0,items:Vec::new(),sequence:0,pending:None,
+            in_flight:0,busy_until:None,events:Vec::new(),
+        }), ..HostState::default() };
+        let calls = vec!["city.creator.experiences.list".to_owned(), "city.creator.playtest.claim".to_owned()];
+        assert!(city_creator_runtime_authorized(&host,"city","plugin-city-1",&calls,"city.creator.experiences.list"));
+        assert!(city_creator_runtime_authorized(&host,"city","plugin-city-1",&calls,"city.creator.playtest.claim"));
+        assert!(!city_creator_runtime_authorized(&host,"city","plugin-city-old",&calls,"city.creator.experiences.list"));
+        assert!(!city_creator_runtime_authorized(&host,"creator-studio","plugin-city-1",&calls,"city.creator.experiences.list"));
+        assert!(!city_creator_runtime_authorized(&host,"city","plugin-city-1",&calls,"city.creator.experiences.read"));
+        let mut not_ready = host;
+        not_ready.current.as_mut().unwrap().ready = false;
+        assert!(!city_creator_runtime_authorized(&not_ready,"city","plugin-city-1",&calls,"city.creator.experiences.list"));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
+    fn creator_studio_is_a_registered_first_party_app_without_data_projection_grants() {
+        let studio = definitions().iter().find(|plugin| plugin.id == "creator-studio").expect("Creator Studio plugin");
+        assert_eq!(studio.entry, "plugins/CreatorStudio.plugin/ui/index.html");
+        assert!(studio.data_projections.is_empty());
+        assert!(studio.typed_data_grants.is_empty());
+        assert!(studio.local_calls.iter().any(|method| method == "creator.layout.list"));
+        assert!(studio.local_calls.iter().any(|method| method == "creator.project.create"));
+        assert!(studio.local_calls.iter().any(|method| method == "creator.project.publish"));
+        assert!(studio.local_calls.iter().any(|method| method == "creator.project.playtest.start"));
+        assert!(studio.local_calls.iter().any(|method| method == "creator.project.playtest.return_context"));
+    }
+
+    #[test]
     fn city_registry_declares_sequential_remote_capability() {
         let city = definitions().iter().find(|plugin| plugin.id == "city").expect("city plugin");
+        for method in ["city.creator.layout.publish", "city.creator.experiences.list", "city.creator.experiences.read", "city.creator.playtest.claim", "city.creator.playtest.finish", "city.world.profile.preview", "city.world.profile.apply"] {
+            assert!(city.local_calls.iter().any(|declared| declared == method), "City must declare {method}");
+        }
         assert_eq!(remote_host_entry("city").as_deref(), Some("plugins/AgentCity.plugin/ui/remote.html"));
         assert_eq!(remote_host_entry("unregistered").as_deref(), None);
         let usage = city.typed_data_grants.get("harness-sessions:v1").expect("typed session usage grant");

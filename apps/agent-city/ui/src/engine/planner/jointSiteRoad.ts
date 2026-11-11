@@ -148,7 +148,7 @@ export function prepareJointSiteRoadRelocation(ctx: RepairContext, ownerId: stri
   const envelope = resolveModelEnvelope({ ...owner, ...at });
   if (envelope.status !== "partial" || envelope.relocationCorridorEnvelope?.schemaVersion !== 1
     || envelope.relocationCorridorEnvelope.coverage !== "complete-conservative-renderer-xy") return reject("joint-owner-XY-unsupported");
-  const ground = registeredModelGroundFailure({ ...owner, ...at }, { height: ctx.height, inRiver: ctx.inRiver });
+  const ground = registeredModelGroundFailure({ ...owner, ...at }, { elevation: ctx.elevation, inRiver: ctx.inRiver });
   if (ground) return reject(ground);
   const initial = relocatedSitePositionFailure(ctx, owner, at, true);
   if (initial !== "owner-road-envelope") return reject(initial ?? "joint-owner-has-no-road-blocker");

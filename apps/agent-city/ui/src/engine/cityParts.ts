@@ -14,7 +14,7 @@ import { HOTEL_CROWN_MAX_FINS, hotelCrownPlan, type CrownPiece } from "./cityHot
 import { roadsideSignPlan, rooftopSignPlan, type RooftopSignPlan } from "./citySkylineProps";
 import { buildVillaComplex } from "./cityLandmarkVilla";
 import type { CityLayout, DistrictLayout, Parcel, Vec2 } from "./cityLayout";
-import { activeTheme, skyYawOf } from "./cityTheme";
+import { activeTheme, skyYawOf, type CityTheme } from "./cityTheme";
 import type { CityAssets } from "./cityAssets";
 import type { LoadedFlora } from "./cityFlora";
 import { decorKindForName } from "./cityDecor";
@@ -25,6 +25,7 @@ import { SegmentIndex, polygonDistance } from "./cityPlan";
 import { buildAirport } from "./cityAirport";
 import { LANDMARK_BUILDERS } from "./render/landmarkBuilders";
 import { captureRenderedSolids, type RenderedSolidRoot, type RenderedSolidRole } from "./surface/renderedSolids";
+import { holdMechaGlbUpgrade } from "../render/mecha/models";
 import type { LandmarkHost } from "./models/landmarkContext";
 import { buildGardens, buildCivics, buildFlags, buildPublicSites, updateCivics, writeCivic, type CivicSystemHost } from "./systems/civicSystem";
 import { applyDistrictLandmarkGrowth, buildDistrictLandmarks, buildLandmarks, type LandmarkSystemHost } from "./systems/landmarkSystem";
@@ -72,6 +73,7 @@ export type OccupancySnapshot = {
 
 type StaticCity = {
   seed: number;
+  themeId: string;
   landmarkWindows: CityParts["landmarkWindows"];
   lifeguardGlowMaterial: THREE.MeshBasicMaterial | null;
   layout: CityLayout;
@@ -80,7 +82,7 @@ type StaticCity = {
   drivingRoots: RenderedSolidRoot[];
   group: THREE.Group;
   disposables: Array<{ dispose: () => void }>;
-  water: THREE.Mesh;
+  water: THREE.Mesh | null;
   treeMesh: THREE.InstancedMesh;
   carMesh: THREE.InstancedMesh;
   cars: Array<{ path: CarPath; distance: number; speed: number }>;
@@ -114,12 +116,13 @@ export class CityParts {
   private drivingFrozenSource: CitySurfaceSource | null = null;
   private staticFrozenSource: CityStaticSceneSource | null = null;
   private drivingDisposed = false;
+  private drivingModelHolds: Array<() => void> = [];
   private drivingDeferredCursor: [number, boolean, number] | null = null;
   private drivingDeferredSnap: boolean | null = null;
   private drivingDeferredReset = false;
   readonly group = new THREE.Group();
   readonly raycastTargets: THREE.Object3D[] = [];
-  readonly water: THREE.Mesh;
+  readonly water: THREE.Mesh | null;
   private readonly runtimes: BuildingRuntime[] = [];
   private readonly runtimeById = new Map<string, BuildingRuntime>();
   private readonly kitBySession = new Map<string, KitRuntime>();
@@ -186,7 +189,7 @@ export class CityParts {
   private readonly cars: Car[];
   private readonly boats: Array<{ path: CarPath; distance: number; speed: number; phase: number; wakeTimer: number }>;
   private readonly clouds: Array<{ x: number; z: number; y: number; speed: number; scale: number }>;
-  private readonly waterUniforms: { uTime: { value: number }; uSun: { value: THREE.Vector3 }; uShallow: { value: THREE.Color }; uDeep: { value: THREE.Color }; uSky: { value: THREE.Color } };
+  private readonly waterUniforms: { uTime: { value: number }; uSun: { value: THREE.Vector3 }; uShallow: { value: THREE.Color }; uDeep: { value: THREE.Color }; uSky: { value: THREE.Color } } | null;
   private readonly matrix = new THREE.Matrix4();
   private readonly quaternion = new THREE.Quaternion();
   private readonly euler = new THREE.Euler();
@@ -204,7 +207,8 @@ export class CityParts {
   hoveredId: string | null = null;
   selectedId: string | null = null;
 
-  constructor(private model: CityModel, private layout: CityLayout, previousDisplays: Map<string, number> | null = null) {
+  constructor(private model: CityModel, private layout: CityLayout, previousDisplays: Map<string, number> | null = null,
+    private readonly theme: CityTheme = activeTheme()) {
     CityParts.constructCount += 1;
     this.previousDisplays = previousDisplays;
     const total = model.buildings.length;
@@ -213,7 +217,8 @@ export class CityParts {
     const planned = Math.min(RENDER_CAP, Math.max(total, Number.isFinite(model.stats?.totalSessions) ? model.stats.totalSessions : 0));
 
     // ── 静态城（seed 决定）：缓存命中则整段复用，重建只花在建筑层 ──────
-    let staticCity = staticCityCache && staticCityCache.seed === layout.seed && staticCityCache.layout.scaleTier === layout.scaleTier
+    let staticCity = staticCityCache && staticCityCache.seed === layout.seed && staticCityCache.themeId === theme.name && staticCityCache.layout.scaleTier === layout.scaleTier
+      && staticCityCache.layout.worldProfileKey === layout.worldProfileKey
       && staticCityCache.layout.coastalConfigKey === layout.coastalConfigKey
       && staticCityCache.layout.activityKey === layout.activityKey // G1：建成区变化 → 地面与路网重画
       && staticCityCache.layout.highways === layout.highways
@@ -232,7 +237,8 @@ export class CityParts {
       buildHighwayRamps(this as unknown as RoadHost);
       this.nightLights = this.buildNightLights();
       this.buildPublicSites();
-      this.buildMarina();
+      const hasOcean = this.layout.features?.ocean !== false;
+      if (hasOcean) this.buildMarina();
       {
         // L-4 机场岛：布局期规划（layout.airport），堤道已是路网里的一段桥面（上面的桥梁渲染画它）。
         // 岛是可行驶的地标平台：航站楼 / 塔台 / 指廊进驾驶碰撞（注册为地标驾驶根），跑道等贴面薄层自标非实体。
@@ -246,14 +252,18 @@ export class CityParts {
       this.buildTrussBridges();
       this.registerDrivingRoots("landmark", () => this.buildDistrictLandmarks());
       this.registerDrivingRoots("context", () => this.buildUrbanContext());
-      this.buildSeaMountains();
-      this.buildBeachRibbon();
+      if (hasOcean) {
+        this.buildSeaMountains();
+        this.buildBeachRibbon();
+      }
       const seaside = this.layout.seaside;
-      if (seaside && !seaside.degraded) this.buildPromenade(promenadeSegments(seaside));
+      if (hasOcean && seaside && !seaside.degraded) this.buildPromenade(promenadeSegments(seaside));
       this.buildPromenade(this.urbanPromenadeSegments());
       // 装饰酒店排已退役：酒店地块交给会话（cityLayout hotelBlocks），只有落户的会话才成楼。
-      this.buildLifeguardTowers();
-      this.buildBeachFurniture();
+      if (hasOcean) {
+        this.buildLifeguardTowers();
+        this.buildBeachFurniture();
+      }
       // 酒店招牌随装饰酒店一起退役（它们挂在不存在的楼面上）。
       this.treeMesh = this.buildTrees();
       const carResult = this.buildCars();
@@ -264,11 +274,12 @@ export class CityParts {
       this.wakes = boatResult.wakes;
       const cloudResult = this.buildClouds();
       this.cloudMesh = cloudResult.mesh;
-      this.water = this.buildWater();
+      this.water = hasOcean ? this.buildWater() : null;
       this.buildGardens();
       this.buildFlags();
       staticCity = {
         seed: layout.seed,
+        themeId: theme.name,
         layout,
         groundRoadSurface: this.groundRoadSurface!,
         drivingRoots: this.drivingRoots.slice(),
@@ -329,13 +340,13 @@ export class CityParts {
     this.civicProgress = staticCity.civics.progress;
     this.civicTarget = staticCity.civics.target;
     this.captureAnimationOrigin();
-    this.waterUniforms = (this.water.material as THREE.ShaderMaterial).uniforms as unknown as {
+    this.waterUniforms = this.water ? (this.water.material as THREE.ShaderMaterial).uniforms as unknown as {
       uTime: { value: number };
       uSun: { value: THREE.Vector3 };
       uShallow: { value: THREE.Color };
       uDeep: { value: THREE.Color };
       uSky: { value: THREE.Color };
-    };
+    } : null;
 
     // ── 建筑：立面（3 变体 × [主体+退台] 两段）──────────────────────────
     const facades = [makeFacadeTexture(0, 11), makeFacadeTexture(1, 37), makeFacadeTexture(2, 71), makeDecoFacadeTexture()];
@@ -375,10 +386,10 @@ export class CityParts {
         uGrid: { value: new THREE.Vector2(...(FACADE_GRIDS[variant] ?? [4, 4])) },
         uEnv: { value: null },
         uEnvStrength: { value: 0 },
-        uGradeTop: { value: new THREE.Color(activeTheme().skyGrade.top) },
-        uGradeHorizon: { value: new THREE.Color(activeTheme().skyGrade.horizon) },
-        uGradeAmount: { value: activeTheme().skyGrade.amount },
-        uSkyYaw: { value: skyYawOf(activeTheme()) },
+        uGradeTop: { value: new THREE.Color(this.theme.skyGrade.top) },
+        uGradeHorizon: { value: new THREE.Color(this.theme.skyGrade.horizon) },
+        uGradeAmount: { value: this.theme.skyGrade.amount },
+        uSkyYaw: { value: skyYawOf(this.theme) },
       };
       this.facadeUniforms.push(uniforms);
       const mesh = new THREE.InstancedMesh(geometry, facadeMaterial(texture, uniforms, String(variant)), capacity);
@@ -410,7 +421,7 @@ export class CityParts {
       mesh.name = `city-roof-profile-${index + 1}`;
       this.roofProfiles.push(mesh);
     });
-    this.gardenTreeMesh = this.makeInstanced(new THREE.IcosahedronGeometry(1, 0).translate(0, 1, 0), new THREE.MeshLambertMaterial({ color: activeTheme().foliage }), planned * 3);
+    this.gardenTreeMesh = this.makeInstanced(new THREE.IcosahedronGeometry(1, 0).translate(0, 1, 0), new THREE.MeshLambertMaterial({ color: this.theme.foliage }), planned * 3);
     this.gardenTreeMesh.castShadow = true;
     const decoCount = Math.max(facadeCounts[3] + 4, planned);
     this.decoTrimMesh = this.makeInstanced(BOX, selfLitMaterial(0.24), decoCount * 2);
@@ -516,7 +527,7 @@ export class CityParts {
 
   /** 素材到齐后原地换上：地面细节、照片立面、灰泥法线、水面法线与天空反射。 */
   applyAssets(assets: CityAssets): void {
-    const theme = activeTheme();
+    const theme = this.theme;
     const mean = (texture: THREE.Texture): THREE.Vector3 => {
       const image = texture.image as CanvasImageSource & { width: number; height: number };
       const canvas = createRenderCanvas();
@@ -594,6 +605,10 @@ export class CityParts {
     this.drivingFreezeCount++;
     try {
       if (!this.drivingFrozenSource) {
+        this.group.traverse((object) => {
+          if (object.userData.cityDrivingStaticPose !== true) return;
+          for (const actor of object.children) if (actor instanceof THREE.Group) this.drivingModelHolds.push(holdMechaGlbUpgrade(actor));
+        });
         const rendered = captureRenderedSolids(this.drivingRoots);
         const sceneSolids = Object.freeze(collectSceneSolids(this.group));
         // Geometry and proxy transforms are captured once for this display lease.
@@ -609,13 +624,18 @@ export class CityParts {
         this.staticFrozenSource = Object.freeze({ layout: drivingSource.layout, rendered: drivingSource.rendered!, solids: sceneSolids,
           isCurrent: current, verifyCurrent: () => current() && drivingSource.verifySolidsCurrent!() });
       }
-    } catch (error) { this.drivingFreezeCount--; throw error; }
+    } catch (error) {
+      this.drivingFreezeCount--;
+      for (const release of this.drivingModelHolds.splice(0)) release();
+      throw error;
+    }
     let active = true;
     return { source: this.staticFrozenSource!, drivingSource: this.drivingFrozenSource!, release: () => {
       if (!active) return; active = false;
       if (--this.drivingFreezeCount !== 0) return;
       this.drivingFrozenSource = null;
       this.staticFrozenSource = null;
+      for (const release of this.drivingModelHolds.splice(0)) release();
       if (this.drivingDisposed) return;
       const cursor = this.drivingDeferredCursor, snap = this.drivingDeferredSnap, reset = this.drivingDeferredReset;
       this.drivingDeferredCursor = null; this.drivingDeferredSnap = null; this.drivingDeferredReset = false;
@@ -1155,7 +1175,7 @@ export class CityParts {
   /** 每帧增量更新。返回是否有矩阵写入（供引擎决定是否强制重绘）。 */
   update(dt: number, elapsed: number): boolean {
     if (this.drivingFreezeCount) return false;
-    this.waterUniforms.uTime.value = elapsed;
+    if (this.waterUniforms) this.waterUniforms.uTime.value = elapsed;
     if (this.flagTime) this.flagTime.value = elapsed;
     this.updateCivics(dt);
     this.updateContext(dt);
@@ -1376,6 +1396,7 @@ export class CityParts {
 
   dispose(): void {
     this.drivingDisposed = true;
+    for (const release of this.drivingModelHolds.splice(0)) release();
     // 只拆动态层：静态城（地形/基建/车船云）留在模块级缓存，同一 seed 的下一次
     // 重建直接复用；换 seed 时由构造函数统一释放旧缓存。
     this.group.removeFromParent();

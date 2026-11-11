@@ -89,10 +89,10 @@ export function relocatedSitePositionFailure(ctx: RepairContext, owner: RepairCo
   shoreReassignment: boolean): string | null {
   const old = { x: owner.x, z: owner.z }, shore = ctx.SHORE_SITE_KINDS.has(owner.kind);
   const riverBank = (x: number, z: number, bank: number) => ctx.geo.hasRiver && Math.abs(x - ctx.geo.riverX(z)) < ctx.geo.riverWidth(z) + bank;
-  const geo = { height: ctx.geo.height, inRiver: ctx.inRiver, riverBank };
-  if (shore ? wetCount(geo, at, owner.radius, { river: true, riverBank: 14 }) > 3 || ctx.geo.height(at.x, at.z) <= 0.5
+  const geo = { elevation: ctx.geo.landform.elevation, inRiver: ctx.inRiver, riverBank };
+  if (shore ? wetCount(geo, at, owner.radius, { river: true, riverBank: 14 }) > 3 || ctx.geo.landform.elevation(at.x, at.z) <= 0.5
     || ctx.geo.coastDistance(at.x, at.z) > Math.max(owner.radius * (shoreReassignment ? 2 : 0.7), ctx.geo.coastDistance(old.x, old.z))
-    : !ctx.geo.buildable(at.x, at.z) || !isDry(geo, at, owner.radius)) return "owner-footprint-unsafe";
+    : !ctx.geo.landform.isBuildable(at.x, at.z) || !isDry(geo, at, owner.radius)) return "owner-footprint-unsafe";
   const envelope = resolveModelEnvelope({ ...owner, ...at });
   const declaredXY = envelope.status === "partial" && envelope.relocationCorridorEnvelope?.schemaVersion === 1
     && envelope.relocationCorridorEnvelope.coverage === "complete-conservative-renderer-xy";

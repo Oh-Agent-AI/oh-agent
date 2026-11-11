@@ -1,0 +1,19 @@
+{
+  "name": "@agent-vitals/creator-studio-ui",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "vite build", "typecheck": "tsc -p tsconfig.json --noEmit" },
+  "dependencies": {
+    "@agent-vitals/app-sdk": "file:../../../packages/agent-vitals-app-sdk",
+    "@agent-vitals/city-sdk": "file:../../../packages/agent-vitals-city-sdk",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "typescript": "^7.0.2",
+    "vite": "^6.1.0"
+  }
+}

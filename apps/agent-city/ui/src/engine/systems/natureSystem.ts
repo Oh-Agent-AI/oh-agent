@@ -11,12 +11,13 @@ import { SegmentIndex } from "../cityPlan";
 import { bandSegmentsAt, promenadeSegments } from "../citySeaside";
 import { roadPaintPlan } from "../cityRoadPaint";
 import { renderRoadEdges } from "../cityRoadJunctions";
-import { activeTheme } from "../cityTheme";
+import type { CityTheme } from "../cityTheme";
 import { EXPRESSWAY_DECK_WIDTH, mergeGeometries } from "../render/shared";
 
 /** natureSystem 用到的 CityParts 成员（调用方以 `this as unknown as NatureHost` 传入）。 */
 export interface NatureHost {
   readonly layout: CityLayout;
+  readonly theme: CityTheme;
   readonly group: THREE.Group;
   readonly disposables: Array<{ dispose: () => void }>;
   readonly matrix: THREE.Matrix4;
@@ -30,14 +31,14 @@ export interface NatureHost {
 /** 树位：规划层的 parkTrees（此前算出来却从没渲染，district.trees 恒为空）+
  *  棕榈主题下沿街行道树（避开桥、水面和路口）。 */
 export function treeSpots(host: NatureHost): Array<{ x: number; z: number; y: number; seed: number }> {
-  const theme = activeTheme();
+  const theme = host.theme;
   const spots: Array<{ x: number; z: number; y: number; seed: number }> = [];
   for (const district of host.layout.districts) spots.push(...district.trees);
   spots.push(...(host.layout.parkTrees ?? []));
   // 海滨步道棕榈列（VICE B3）：沿步道折线 ~9 单位间距、两侧交错，走同一份
   // treeSpots——进 treeMesh（棕榈几何）与 applyFlora（真实生态带管线）双路径。
   {
-    const seaside = host.layout.seaside;
+    const seaside = host.layout.features?.ocean === false ? null : host.layout.seaside;
     const promenades = [...(seaside && !seaside.degraded ? promenadeSegments(seaside) : []), ...host.urbanPromenadeSegments()]; // S3：城区岸段步道也有棕榈列
     if (promenades.length) {
       const terrain = host.layout.terrain;
@@ -141,7 +142,7 @@ export function treeSpots(host: NatureHost): Array<{ x: number; z: number; y: nu
 
 /** 圆冠树：树干 + 二十面体树冠。 */
 export function roundTreeGeometry(host: NatureHost): THREE.BufferGeometry {
-  const theme = activeTheme();
+  const theme = host.theme;
   const trunk = new THREE.CylinderGeometry(0.14, 0.2, 0.9, 5).translate(0, 0.45, 0);
   const crown = new THREE.IcosahedronGeometry(0.78, 0).translate(0, 1.35, 0);
   return tintedMerge(host, [[trunk, theme.trunk], [crown, theme.foliage]]);
@@ -149,7 +150,7 @@ export function roundTreeGeometry(host: NatureHost): THREE.BufferGeometry {
 
 /** 棕榈：略弯的细高树干 + 一圈下垂的羽叶（每片叶 = 前倾的扁长方体）。 */
 export function palmGeometry(host: NatureHost): THREE.BufferGeometry {
-  const theme = activeTheme();
+  const theme = host.theme;
   const height = 4.6;
   const trunk = new THREE.CylinderGeometry(0.1, 0.19, height, 6).translate(0, height / 2, 0);
   // 树干顶端微微偏向一侧，避免整齐得像电线杆。
@@ -230,7 +231,7 @@ export function applyFlora(host: NatureHost, flora: LoadedFlora): void {
 
 export function buildTrees(host: NatureHost): THREE.InstancedMesh {
   const spots = treeSpots(host);
-  const palm = activeTheme().vegetation === "palm";
+  const palm = host.theme.vegetation === "palm";
   const treeGeometry = palm ? palmGeometry(host) : roundTreeGeometry(host);
   const material = new THREE.MeshLambertMaterial({ vertexColors: true });
   const mesh = new THREE.InstancedMesh(treeGeometry, material, Math.max(spots.length, 1));

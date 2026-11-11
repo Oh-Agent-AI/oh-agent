@@ -124,3 +124,20 @@ console.log("Car runtime: 30/60/120 Hz parity, long-frame time-drop (racing conv
   assert.ok(Math.abs(Math.sin(frame.state.heading) - Math.sin(-Math.PI + .01)) < 1e-12, "different support handles snap to verified endpoint");
   adapter.dispose();
 }
+{
+  // Gameplay consumers (e.g. SDK zone triggers) observe authoritative fixed
+  // simulation steps, never render interpolation frequency.
+  const positions = [];
+  const kernel = new DrivingKernel({ move: (before, desired) => ({ ...desired, x: before.x + .1, z: before.z,
+    heading: before.heading, y: 0, pitch: 0, roll: 0, surfaceId: "pad", blocked: false }) },
+    { baseSnapshotHash: "fixture", vehicleConfigHash: "car", kernelBuildId: "kernel", physicsVersion: 1, collisionVersion: 1, queryVersion: 1 });
+  const adapter = new CarAdapter({ revision: "fixture", kernel, isCurrent: () => true, validateSpawn: () => true },
+    initialDrivingState(), () => {}, null, (state) => positions.push(state.x));
+  await adapter.prepare(new AbortController().signal);
+  adapter.fixedStep(empty);
+  adapter.present(0); adapter.present(.5); adapter.present(1);
+  assert.deepEqual(positions, [.1], "render calls do not emit duplicate gameplay input");
+  adapter.fixedStep(empty);
+  assert.deepEqual(positions, [.1, .2], "each authoritative physics step emits one position");
+  adapter.dispose();
+}

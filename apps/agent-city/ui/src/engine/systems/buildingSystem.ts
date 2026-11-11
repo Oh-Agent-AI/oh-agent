@@ -9,7 +9,7 @@ import { builtFractionAt, hashSeed, selectVisualHero, type CityBuilding, type Ci
 import { HOTEL_CROWN_MAX_FINS, hotelCrownPlan, type CrownPiece } from "../cityHotelCrown";
 import { roadsideSignPlan, rooftopSignPlan, type RooftopSignPlan } from "../citySkylineProps";
 import type { CityLayout, DistrictLayout, Parcel, Vec2 } from "../cityLayout";
-import { activeTheme } from "../cityTheme";
+import type { CityTheme } from "../cityTheme";
 import { makeDecoFacadeTexture, makeFacadeTexture, paletteForDistrict } from "../cityTextures";
 import { SegmentIndex } from "../cityPlan";
 import { LIGHT_BUDGET, useOfZone } from "../cityLightBudget";
@@ -20,6 +20,7 @@ import type { BuildingRuntime } from "../render/types";
 export interface BuildingSystemHost {
   model: CityModel;
   layout: CityLayout;
+  theme: CityTheme;
   group: THREE.Group;
   disposables: Array<{ dispose: () => void }>;
   runtimes: BuildingRuntime[];
@@ -160,7 +161,7 @@ function cursorsFromHost(host: BuildingSystemHost): RuntimeCursors {
 }
 
 function placeRuntime(host: BuildingSystemHost, building: CityBuilding, district: DistrictLayout, slot: Parcel, cursors: RuntimeCursors, fromAppend: boolean): BuildingRuntime {
-      const palette = paletteForDistrict(host.model, building.districtId);
+      const palette = paletteForDistrict(host.model, building.districtId, host.theme);
       const runtime: BuildingRuntime = {
         building,
         slot,
@@ -327,7 +328,7 @@ function commitRuntimeCounts(host: BuildingSystemHost, cursors: RuntimeCursors, 
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     }
     host.gardenTreeMesh.count = cursors.roofCount * 3;
-    host.neonMesh.count = activeTheme().neon ? cursors.roofCount : 0;
+    host.neonMesh.count = host.theme.neon ? cursors.roofCount : 0;
     if (host.neonMesh.instanceColor) host.neonMesh.instanceColor.needsUpdate = true;
     if (host.roofMesh.instanceColor) host.roofMesh.instanceColor.needsUpdate = true;
     host.scaffoldMesh.count = cursors.scaffoldCount;
@@ -343,15 +344,15 @@ function commitRuntimeCounts(host: BuildingSystemHost, cursors: RuntimeCursors, 
     // 霓虹载体（冠底带/牌框/色条）与 neonMesh 同一门控：非霓虹主题整体收起，物理件（鳍片/柱/板）常在。
     // 鳍片按实际片数收口——曾漏设 count（makeInstanced 初始为 0），城里所有酒店冠都不渲染。
     host.crownFinMesh.count = cursors.crownFinCursor;
-    host.crownStripMesh.count = activeTheme().neon ? cursors.crownCursor : 0;
+    host.crownStripMesh.count = host.theme.neon ? cursors.crownCursor : 0;
     if (host.crownStripMesh.instanceColor) host.crownStripMesh.instanceColor.needsUpdate = true;
     if (withRoadsideSigns) {
       host.buildRoadsideSigns(cursors.signCursor);
       // 路边牌占位后才知道四批次的实际用量：屋顶牌 0..signCursor-1，路边牌 signCursor..。
       host.signPostMesh.count = host.signPostCount * 2;
       host.signPanelMesh.count = host.signPostCount;
-      host.signFrameMesh.count = activeTheme().neon ? host.signPostCount * 4 : 0;
-      host.signStripeMesh.count = activeTheme().neon ? host.signPostCount * 3 : 0;
+      host.signFrameMesh.count = host.theme.neon ? host.signPostCount * 4 : 0;
+      host.signStripeMesh.count = host.theme.neon ? host.signPostCount * 3 : 0;
       if (host.signFrameMesh.instanceColor) host.signFrameMesh.instanceColor.needsUpdate = true;
       if (host.signStripeMesh.instanceColor) host.signStripeMesh.instanceColor.needsUpdate = true;
     }
@@ -745,15 +746,15 @@ export function buildMassing(host: BuildingSystemHost): void {
 }
 
 export function buildHeroCrown(host: BuildingSystemHost, hero: BuildingRuntime): void {
-    const palette = paletteForDistrict(host.model, hero.building.districtId);
+    const palette = paletteForDistrict(host.model, hero.building.districtId, host.theme);
     const spireMaterial = new THREE.MeshLambertMaterial({ color: "#dfe6ea", emissive: new THREE.Color(palette.accent).multiplyScalar(0.12) });
     const spire = new THREE.Mesh(new THREE.ConeGeometry(1, 1, 8, 1).translate(0, 0.5, 0), spireMaterial);
     spire.castShadow = true;
-    const ringMaterial = new THREE.MeshBasicMaterial({ color: new THREE.Color(palette.accent).multiplyScalar(activeTheme().neon ? 3 : 1.4), toneMapped: false });
+    const ringMaterial = new THREE.MeshBasicMaterial({ color: new THREE.Color(palette.accent).multiplyScalar(host.theme.neon ? 3 : 1.4), toneMapped: false });
     const rings = [0, 1, 2].map(() => new THREE.Mesh(new THREE.TorusGeometry(1, 0.06, 6, 40).rotateX(Math.PI / 2), ringMaterial));
     let beam: THREE.Mesh | null = null;
     const disposables: Array<{ dispose(): void }> = [spire.geometry, spireMaterial, ringMaterial, ...rings.map((ring) => ring.geometry)];
-    if (activeTheme().neon) {
+    if (host.theme.neon) {
       const beamMaterial = new THREE.MeshBasicMaterial({ color: new THREE.Color(palette.accent).lerp(new THREE.Color("#ffffff"), 0.4).multiplyScalar(2.2), transparent: true, opacity: 0.22, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false });
       // 光柱自下而上淡出（加色混合下顶点色 → 黑 = 透明）：曾是等亮度的 900 高圆柱，近看顶端是一截平切的白块。
       const beamGeometry = new THREE.CylinderGeometry(0.6, 1.6, 1, 16, 6, true).translate(0, 0.5, 0);

@@ -249,6 +249,24 @@ export function App() {
     setPage(next);
   };
 
+  // Only the two host-validated Creator handoff events may switch app pages.
+  // Both destinations are resolved against the build-time plugin navigation
+  // registry, so an event cannot navigate to an arbitrary plugin or URL.
+  useEffect(() => {
+    let active = true;
+    let unsubscribe = () => {};
+    void listenAppEvents((event) => {
+      if (!active) return;
+      const target = event.type === "CreatorPlaytestOpenCityRequested" ? "city"
+        : event.type === "CreatorPlaytestReturnRequested" ? "creator-studio" : null;
+      if (target && isPage(target)) navigate(target);
+    }).then((cleanup) => {
+      if (active) unsubscribe = cleanup;
+      else cleanup();
+    }).catch(() => { /* Handoff navigation stays unavailable without the native host. */ });
+    return () => { active = false; unsubscribe(); };
+  }, []);
+
   const headerStatus = page === "overview"
     ? overview === null ? { tone: "neutral" as const, label: message("toolbar.loading", language) } : overview.sync.ok ? { tone: "success" as const, label: message("toolbar.synced", language) } : { tone: "warning" as const, label: message("toolbar.syncIssue", language) }
     : { tone: "success" as const, label: message("toolbar.local", language) };

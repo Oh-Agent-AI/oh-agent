@@ -12,6 +12,7 @@
 import { DetMath as Math } from "../detMath";
 import { segmentDistance } from "../roadGeometry";
 import type { Vec2 } from "../cityLayout";
+import type { LandformQueriesV1 } from "./geography";
 import { roadSegmentsCrossInterior } from "./relations";
 
 /** 现有各口径的水位常量：siteInWater 系 <0.5；占地「干地」≥0.8；海上岛「深水」≤-0.8。 */
@@ -19,9 +20,9 @@ export const WATER_LEVEL = 0.5;
 export const DRY_LEVEL = 0.8;
 export const DEEP_LEVEL = -0.8;
 
-/** 地理判定注入：调用方传各自的 height/inRiver 闭包（cityPlan 的闭包含 hasRiver 短路，保持原语义）。 */
+/** 地表判定注入：高程是通用地形查询，河道/河岸是可选水文扩展。 */
 export type FootprintGeo = {
-  height: (x: number, z: number) => number;
+  elevation: (x: number, z: number) => number;
   inRiver: (x: number, z: number) => boolean;
   /** 河岸带：点到河中线 < riverWidth+bank。无河的调用方不传（opts.riverBank 不出现即不检查）。 */
   riverBank?: (x: number, z: number, bank: number) => boolean;
@@ -43,7 +44,7 @@ export function wetCount(geo: FootprintGeo, c: Vec2, radius: number, opts: WetOp
   for (let k = 0; k < 16; k += 1) {
     const t = (k / 16) * Math.PI * 2; const r = k % 2 ? radius : radius * 0.6;
     const x = c.x + Math.cos(t) * r; const z = c.z + Math.sin(t) * r;
-    if (geo.height(x, z) < level || (opts.river && geo.inRiver(x, z)) || (opts.riverBank !== undefined && geo.riverBank !== undefined && geo.riverBank(x, z, opts.riverBank))) n += 1;
+    if (geo.elevation(x, z) < level || (opts.river && geo.inRiver(x, z)) || (opts.riverBank !== undefined && geo.riverBank !== undefined && geo.riverBank(x, z, opts.riverBank))) n += 1;
   }
   return n;
 }
@@ -53,7 +54,7 @@ export function isDry(geo: FootprintGeo, c: Vec2, radius: number): boolean {
   for (let k = 0; k < 16; k += 1) {
     const t = (k / 16) * Math.PI * 2; const r = k % 2 ? radius : radius * 0.6;
     const x = c.x + Math.cos(t) * r; const z = c.z + Math.sin(t) * r;
-    if (geo.height(x, z) < DRY_LEVEL || geo.inRiver(x, z)) return false;
+    if (geo.elevation(x, z) < DRY_LEVEL || geo.inRiver(x, z)) return false;
   }
   return true;
 }
@@ -63,7 +64,7 @@ export function isDeepWater(geo: FootprintGeo, c: Vec2, radius: number): boolean
   for (let k = 0; k < 16; k += 1) {
     const t = (k / 16) * Math.PI * 2; const r = k % 2 ? radius : radius * 0.6;
     const x = c.x + Math.cos(t) * r; const z = c.z + Math.sin(t) * r;
-    if (geo.height(x, z) > DEEP_LEVEL || geo.inRiver(x, z) || (geo.riverBank !== undefined && geo.riverBank(x, z, 60))) return false;
+    if (geo.elevation(x, z) > DEEP_LEVEL || geo.inRiver(x, z) || (geo.riverBank !== undefined && geo.riverBank(x, z, 60))) return false;
   }
   return true;
 }
@@ -213,12 +214,12 @@ export function footprintClearsRoadBand(polygon: Vec2[], center: Vec2, boundingR
 }
 
 /** 两点连线能否通过（可建、坡度可走、不穿预留地）。reservations = publicSites + landmarks。 */
-export function safeRoadLink(geo: { buildable: (x: number, z: number) => boolean; terrain: { slope: (x: number, z: number) => number } }, reservations: Array<{ x: number; z: number; radius: number }>, a: Vec2, b: Vec2): boolean {
+export function safeRoadLink(landform: Pick<LandformQueriesV1, "isBuildable" | "slope">, reservations: Array<{ x: number; z: number; radius: number }>, a: Vec2, b: Vec2): boolean {
   const distance = Math.hypot(b.x - a.x, b.z - a.z);
   const steps = Math.max(1, Math.ceil(distance / 4));
   for (let i = 0; i <= steps; i += 1) {
     const p = { x: a.x + (b.x - a.x) * i / steps, z: a.z + (b.z - a.z) * i / steps };
-    if (!geo.buildable(p.x, p.z) || geo.terrain.slope(p.x, p.z) > 0.9) return false;
+    if (!landform.isBuildable(p.x, p.z) || landform.slope(p.x, p.z) > 0.9) return false;
     if (reservations.some((site) => Math.hypot(p.x - site.x, p.z - site.z) < site.radius + 5)) return false;
   }
   return true;
