@@ -2,7 +2,7 @@
 import { runNpm } from "./run-npm.mjs";
 
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { buildOfficialPlugins } from "./official-plugins.mjs";
 import path from "node:path";
 
@@ -15,6 +15,18 @@ runNpm(["--prefix", "apps/desktop/ui-dev", "run", "build:react"], {
   cwd: repo,
   stdio: "inherit",
 });
+
+// 官方插件（creator-studio）依赖 workspace 包 `@agent-vitals/city-sdk`，它的
+// `main` 指向 `dist/index.js`；不先构建会得到 Vite 的 "Failed to resolve entry
+// for package @agent-vitals/city-sdk"（Windows CI 实测）。这里在任何插件构建
+// 之前把 SDK 装好并构建，保证本地与 CI 同一条路径。
+{
+  const citySdk = path.join(repo, "packages/agent-vitals-city-sdk");
+  if (existsSync(path.join(citySdk, "package.json"))) {
+    runNpm(["ci"], { cwd: citySdk, stdio: "inherit" });
+    runNpm(["run", "build"], { cwd: citySdk, stdio: "inherit" });
+  }
+}
 
 {
   const probe = process.env.AGENT_VITALS_PLUGIN_ISOLATION_PROBE === "1";
