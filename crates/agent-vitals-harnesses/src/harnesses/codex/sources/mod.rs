@@ -44,6 +44,7 @@ pub mod findings;
 // v0.9 Stage A emitter 归位（R4 §5.2）：UsageFact emitter 从二进制
 // apps/cli/src/agent/ 迁来——读文件 → 读内存，仍属 I/O 层。
 pub mod usage_fact;
+pub mod jsonl;
 pub mod workflow;
 
 fn empty_result() -> Map<String, Value> {
@@ -158,6 +159,73 @@ pub fn parse_codex_session_log(text: &str) -> Value {
 /// 读文件（非 UTF-8 字节替换为 U+FFFD，与 Python `errors="replace"` 对齐），再交给
 /// 纯解析。文件缺失/不可读时降级为 `file-missing`。
 pub fn read_codex_session_log(path: &Path) -> Value {
+    read_codex_session_log_with_limit(path, Some(MAX_SESSION_AUDIT_BYTES))
+}
+
+/// 审计读取的硬预算：单文件只保留「头部 2 MiB（provenance）+ 尾部 64 MiB
+/// （最近行为）」。2 GB 活跃会话曾让审计把整份 JSONL 变成 16 GB 的 `Value`
+/// 树（2026-11-11 事故）；截断是**显式**的：结果带 `truncated/truncated_bytes`，
+/// 调用方（findings）据此拒绝深审计，绝不拿半份历史假装完整结论。
+pub const MAX_SESSION_AUDIT_BYTES: u64 = 64 * 1024 * 1024;
+const SESSION_HEAD_BYTES: u64 = 2 * 1024 * 1024;
+
+pub fn read_codex_session_log_with_limit(path: &Path, limit: Option<u64>) -> Value {
+    let size = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+    let truncated = limit.is_some_and(|limit| size > limit);
+    if truncated {
+        let limit = limit.unwrap_or(size);
+        let mut file = match std::fs::File::open(path) {
+            Ok(file) => file,
+            Err(_) => return degraded("file-missing"),
+        };
+        use std::io::{Read, Seek, SeekFrom};
+        let head_len = SESSION_HEAD_BYTES.min(limit).min(size);
+        let mut head = vec![0u8; head_len as usize];
+        if file.read_exact(&mut head).is_err() {
+            return degraded("file-missing");
+        }
+        // 头部只取完整行，避免和尾部拼接时制造半行。
+        let head_end = head
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        let tail_start = size.saturating_sub(limit).max(head_end as u64);
+        let mut tail = Vec::new();
+        if tail_start < size {
+            if file.seek(SeekFrom::Start(tail_start)).is_err() {
+                return degraded("file-missing");
+            }
+            if file.read_to_end(&mut tail).is_err() {
+                return degraded("file-missing");
+            }
+            // 起始位置可能落在行中间：丢掉第一段残行。
+            if tail_start > 0 {
+                let skip = tail
+                    .iter()
+                    .position(|byte| *byte == b'\n')
+                    .map(|index| index + 1)
+                    .unwrap_or(tail.len());
+                tail.drain(..skip);
+            }
+        }
+        let mut text = String::from_utf8_lossy(&head[..head_end]).into_owned();
+        text.push_str(&String::from_utf8_lossy(&tail));
+        // 活动文件可能在最后一行写到一半：截断窗口末尾的半行必须丢掉，否则
+        // 一次 probe 会因「非 JSON」整份降级 → session_id 丢失 → 审计把它当成
+        // 另一个会话（2026-11-11 实测：2 GB 活动文件因此完全没进审计）。
+        if !text.ends_with('\n') {
+            if let Some(end) = text.rfind('\n') {
+                text.truncate(end + 1);
+            }
+        }
+        let mut parsed = parse_codex_session_log(&text);
+        if let Some(map) = parsed.as_object_mut() {
+            map.insert("truncated".to_string(), Value::Bool(true));
+            map.insert("truncated_bytes".to_string(), json!(size));
+        }
+        return parsed;
+    }
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(_) => return degraded("file-missing"),
@@ -706,4 +774,44 @@ mod tests {
         assert_eq!(index.get("x").map(String::as_str), Some("标题"));
         let _ = std::fs::remove_dir_all(&home);
     }
+    /// 审计预算：超限文件只读「头部 provenance + 尾部行为」，中间必须被丢掉，
+    /// 且结果显式标 `truncated`——不能让调用方把半份历史当完整会话。
+    #[test]
+    fn oversized_session_audit_read_is_windowed_and_marked() {
+        let dir = std::env::temp_dir().join(format!("av-budget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rollout.jsonl");
+        let head = "{\"type\":\"session_meta\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"payload\":{\"session_id\":\"s-budget\"}}\n";
+        let middle = "{\"type\":\"event_msg\",\"timestamp\":\"2026-01-01T00:00:01Z\",\"payload\":{\"type\":\"middle-marker\"}}\n";
+        let mut body = String::new();
+        for _ in 0..2000 {
+            body.push_str(middle);
+        }
+        let tail = "{\"type\":\"event_msg\",\"timestamp\":\"2026-01-01T00:00:09Z\",\"payload\":{\"type\":\"tail-marker\"}}\n";
+        std::fs::write(&path, format!("{head}{body}{tail}")).unwrap();
+
+        let parsed = read_codex_session_log_with_limit(&path, Some(3 * 1024));
+        assert_eq!(parsed.get("truncated").and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            parsed.get("session_id").and_then(Value::as_str),
+            Some("s-budget"),
+            "head window must keep provenance"
+        );
+        let items = parsed.get("items").and_then(Value::as_array).expect("items");
+        assert!(
+            items.len() < 2100,
+            "middle of the file must be dropped, got {} items",
+            items.len()
+        );
+        let has_tail = items.iter().any(|item| {
+            item.pointer("/payload/type").and_then(Value::as_str) == Some("tail-marker")
+        });
+        assert!(has_tail, "tail window must be kept");
+
+        let complete = read_codex_session_log_with_limit(&path, None);
+        assert_eq!(complete.get("truncated"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
 }

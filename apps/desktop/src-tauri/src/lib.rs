@@ -1757,7 +1757,28 @@ fn start_refresh_tick(
                         scheduler.heavy_finished(std::time::Instant::now());
                     }
                     TickKind::Light(harnesses) => {
+                        let started = std::time::Instant::now();
                         let (tray_refreshed, escalated) = sync_tick_light(&app, harnesses, plan.tray_due);
+                        let elapsed = started.elapsed();
+                        // 慢轮自保（2026-11-11）：单轮 >10 s 说明这轮在啃大文件/
+                        // 大量积压，把 watcher 冷却翻倍（上限 5 分钟），避免「刚
+                        // 扫完又被写入唤醒」背靠背重跑。冷却由 self_monitor 在
+                        // CPU 回落后收回基线，这里只负责抬高。
+                        if elapsed > std::time::Duration::from_secs(10) {
+                            let cooldown = app.state::<WatcherCooldownOverride>();
+                            let next = cooldown
+                                .get()
+                                .saturating_mul(2)
+                                .min(std::time::Duration::from_secs(300));
+                            cooldown.set(next);
+                            agent_vitals_runtime::logging::log_info(
+                                "sync",
+                                &format!(
+                                    "轻 tick 耗时 {:?} > 10s，watcher 冷却提升到 {:?}",
+                                    elapsed, next
+                                ),
+                            );
+                        }
                         scheduler.light_finished(
                             LightOutcome { tray_refreshed, escalated },
                             std::time::Instant::now(),

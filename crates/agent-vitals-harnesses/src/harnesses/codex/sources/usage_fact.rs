@@ -31,9 +31,11 @@
 //! 字节行为零改动（差分 + golden 钉住）。
 
 use std::collections::{HashMap, HashSet};
+use std::io::{Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use agent_vitals_provider::{resolve_billing_attribution, RouteEvidence};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::codex_usage::{CodexFoldState, CodexTokenOutcome};
@@ -44,6 +46,18 @@ use agent_vitals_domain::usage_fact::build_usage_fact;
 use agent_vitals_domain::workflow::WorkflowEvent;
 
 const HARNESS: &str = "codex";
+
+/// 文件末尾才构造事实行：流式解析期间只保留这些小的中间量，不保留 `Value`
+/// 树——这是「内存不随文件大小增长」的关键。
+type FactSeed = (
+    usize,
+    [i64; 5],
+    String,
+    Option<String>,
+    String,
+    Option<String>,
+    Option<RouteEvidence>,
+);
 const OBSERVATION_KIND: &str = "assistant-usage";
 
 /// `codex_rollouts_to_usage_facts` 的 Rust 返回类型——镜像 Python
@@ -67,106 +81,6 @@ pub struct UsageFactEmitResult {
     pub total_token_count_events: i64,
     pub skip_rows: i64,
     pub malformed: i64,
-}
-
-/// 原始字节 → `(行首偏移, 行字节)` 段。只认 \\n / \\r\\n / \\r，末段无换行也
-/// 消费——与 Python `_iter_raw_lines` 逐字节同款（镜像 `util::split_lines` 的
-/// 换行语义，但保留 JSONL 字节流偏移：split_lines 在解码后 &str 上切，偏移丢了）。
-///
-/// 偏移是传入字节流的位置；`.zst` 调用方先完整解压，因此为解压后 JSONL 的逻辑偏移。
-/// UTF-8 多字节序列的续字节 ∈ 0x80..0xBF，0x0A /
-/// 0x0D（< 0x80）绝不可能出现在续字节里——所以字节级切分与解码后 &str 级切分
-/// 的边界恒一致（坏 UTF-8 也一致），Python↔Rust 偏移不会因解码替换分叉。
-fn raw_line_segments(data: &[u8]) -> Vec<(usize, &[u8])> {
-    let mut out = Vec::new();
-    let mut start = 0usize;
-    let mut i = 0usize;
-    while i < data.len() {
-        match data[i] {
-            b'\n' => {
-                out.push((start, &data[start..i]));
-                i += 1;
-                start = i;
-            }
-            b'\r' => {
-                out.push((start, &data[start..i]));
-                i += if i + 1 < data.len() && data[i + 1] == b'\n' {
-                    2
-                } else {
-                    1
-                };
-                start = i;
-            }
-            _ => i += 1,
-        }
-    }
-    if start < data.len() {
-        out.push((start, &data[start..]));
-    }
-    out
-}
-
-/// 原始 rollout 字节 → `(items, degraded)`。
-///
-/// `items` = `(行首字节偏移, 已解析 dict)`，空白行跳过（镜像
-/// `codex_session::parse_codex_session_log`：空白行不是事件）。任一条非空白行
-/// JSON 解析失败 → 整份 `degraded="non-json"`；空文件（无任何行）→
-/// `degraded="missing-header"`——codex-cost 对 degraded 文件按空折叠，emitter
-/// 同款：零事件、计进 malformed。降级判定与 codex_session 对齐，这样 emitter
-/// 与 codex-cost 对同一份坏文件说同一种话。
-fn parse_rollout_bytes(data: &[u8]) -> (Vec<(usize, Value)>, Option<&'static str>) {
-    let segments = raw_line_segments(data);
-    if segments.is_empty() {
-        return (Vec::new(), Some("missing-header"));
-    }
-    let mut items = Vec::new();
-    for (offset, raw) in segments {
-        // 非 UTF-8 字节替换而非报错——镜像 Python `errors="replace"`（正常
-        // rollout JSONL 都是合法 UTF-8，此路只是防御对齐）。
-        let text = String::from_utf8_lossy(raw);
-        if text.trim().is_empty() {
-            continue;
-        }
-        let item: Value = match serde_json::from_str(&text) {
-            Ok(v) => v,
-            Err(_) => return (Vec::new(), Some("non-json")),
-        };
-        items.push((offset, item));
-    }
-    (items, None)
-}
-
-/// spec §3.4：`session_meta.payload.session_id`（键整个缺席才退回 `.id`）→
-/// `path.stem` 兜底。只扫 session_meta 条目、只收 str——与 Python
-/// `_resolve_native_session_id` 逐字段同款：键存在即便 null 不退回 .id、也不把
-/// 已得值覆盖成空（present-null 语义与 codex_session.py 的 provenance 抽同一
-/// 条判读）。带 session_meta 的文件 → 逻辑 session_id；纯 fold fixture（无
-/// session_meta）→ 该文件自成一会话（stem 兜底），诚实语义是「不假装知道逻辑
-/// 归属」。
-fn resolve_native_session_id(path: &Path, items: &[(usize, Value)]) -> String {
-    let mut session_id: Option<String> = None;
-    for (_offset, item) in items {
-        if item.get("type").and_then(|v| v.as_str()) != Some("session_meta") {
-            continue;
-        }
-        let Some(payload) = item.get("payload").and_then(|v| v.as_object()) else {
-            continue;
-        };
-        // 键在 → 用键值（null / 非 str 自然走不进 and_then，不覆盖已得值）；
-        // 键整个缺席 → 退回 `.id`。
-        let sid = if payload.contains_key("session_id") {
-            payload.get("session_id")
-        } else {
-            payload.get("id")
-        };
-        if let Some(s) = sid.and_then(|v| v.as_str()) {
-            session_id = Some(s.to_string());
-        }
-    }
-    match session_id {
-        Some(sid) => sid,
-        None => rollout_source_stem(path),
-    }
 }
 
 fn rollout_source_stem(path: &Path) -> String {
@@ -246,81 +160,6 @@ fn route_evidence_id(native_session_id: &str, route: &RouteEvidence) -> String {
         route.evidence_basis.as_str()
     );
     format!("route:{}", fnv1a64_hex(key.as_bytes()))
-}
-
-fn route_states_before(
-    items: &[(usize, Value)],
-    _fallback: Option<&RouteEvidence>,
-) -> Vec<(usize, Option<RouteEvidence>)> {
-    // Historical attribution is session-only.  Keep the parameter for source
-    // compatibility, but never seed a rollout with current config/env state.
-    let mut current = None;
-    let mut states = Vec::new();
-    for (offset, item) in items {
-        let payload = item.get("payload");
-        let is_route_payload = item.get("type").and_then(Value::as_str) == Some("session_meta")
-            || payload.and_then(|v| v.get("type")).and_then(Value::as_str)
-                == Some("route_changed");
-        let explicit = if is_route_payload {
-            payload.and_then(route_evidence_from)
-        } else {
-            payload
-                .and_then(|v| v.get("thread_settings"))
-                .and_then(route_evidence_from)
-        };
-        if explicit.is_some() {
-            current = explicit;
-        }
-        states.push((*offset, current.clone()));
-    }
-    states
-}
-
-fn route_at(states: &[(usize, Option<RouteEvidence>)], offset: usize) -> Option<RouteEvidence> {
-    let mut current = None;
-    for (event_offset, route) in states {
-        if *event_offset > offset {
-            break;
-        }
-        current = route.clone();
-    }
-    current
-}
-
-fn provider_states_before(items: &[(usize, Value)]) -> Vec<(usize, Option<String>)> {
-    let mut current = None;
-    let mut states = Vec::new();
-    for (offset, item) in items {
-        let payload = item.get("payload");
-        if item.get("type").and_then(Value::as_str) == Some("session_meta") {
-            if let Some(provider) = payload
-                .and_then(|v| v.get("model_provider"))
-                .and_then(Value::as_str)
-            {
-                current = Some(provider.to_string());
-            }
-        }
-        if let Some(provider) = payload
-            .and_then(|v| v.get("thread_settings"))
-            .and_then(|v| v.get("model_provider_id"))
-            .and_then(Value::as_str)
-        {
-            current = Some(provider.to_string());
-        }
-        states.push((*offset, current.clone()));
-    }
-    states
-}
-
-fn provider_at(states: &[(usize, Option<String>)], offset: usize) -> Option<String> {
-    let mut current = None;
-    for (event_offset, provider) in states {
-        if *event_offset > offset {
-            break;
-        }
-        current = provider.clone();
-    }
-    current
 }
 
 /// spec §3.3：`rollout_source_id(:path.stem) + byte_offset + fnv1a64(canonical_row)`。
@@ -421,6 +260,40 @@ fn consumed_to_usage_fact(
     build_usage_fact(&fields).ok()
 }
 
+/// 增量续读检查点（per rollout）：文件身份 + 可安全续读的 offset + 折叠游标 +
+/// 归属游标。**只在 facts 事务提交成功后落盘**（见 ingest sync_service）；
+/// 丢失/损坏的 checkpoint 只让该文件退化为全量，不会漏计（重读产生 duplicate）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CodexResumeState {
+    /// 绝对字节偏移，且一定落在行边界之后（`LineStats::complete_bytes`）。
+    pub offset: u64,
+    pub size: u64,
+    pub dev: u64,
+    pub ino: u64,
+    pub session_id: Option<String>,
+    pub model_provider: Option<String>,
+    pub provider: Option<String>,
+    pub route: Option<RouteEvidence>,
+    /// `CodexFoldState::cursor_json()`。
+    pub fold: Value,
+}
+
+/// `(size, dev, ino)`；非 unix 平台 dev/ino 恒 0（仍按 size/offset 续读，
+/// 截断由 `offset <= size` 判）。
+fn file_identity(path: &Path) -> Option<(u64, u64, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some((meta.len(), meta.dev(), meta.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        Some((meta.len(), 0, 0))
+    }
+}
+
+
 /// 整批 rollout 文件 → `UsageFactEmitResult`。
 ///
 /// 与 Python `codex_rollouts_to_usage_facts` 字节等价：
@@ -450,6 +323,33 @@ pub fn codex_rollouts_to_usage_facts_with_route(
     source_profile: &str,
     route: Option<&RouteEvidence>,
 ) -> Result<UsageFactEmitResult, String> {
+    codex_rollouts_to_usage_facts_with_resume_and_route(
+        paths,
+        machine_namespace,
+        source_profile,
+        &HashMap::new(),
+        route,
+    )
+    .map(|(result, _)| result)
+}
+
+/// 带增量检查点的变体：`resumes` 里身份匹配且 `offset <= size` 的文件从
+/// `offset` 续读，其余全量。返回 `(结果, 更新后的检查点)`——调用方必须在
+/// **事实落库成功后**才保存后者（先写检查点后写库 = 崩溃即丢事实）。
+pub fn codex_rollouts_to_usage_facts_with_resume(
+    paths: &[PathBuf],
+    machine_namespace: &str,
+    source_profile: &str,
+    resumes: &HashMap<PathBuf, CodexResumeState>,
+) -> Result<(UsageFactEmitResult, HashMap<PathBuf, CodexResumeState>), String> {
+    codex_rollouts_to_usage_facts_with_resume_and_route(paths, machine_namespace, source_profile, resumes, None)
+}
+
+pub fn codex_rollouts_to_usage_facts_with_resume_and_route(
+    paths: &[PathBuf], machine_namespace: &str, source_profile: &str,
+    resumes: &HashMap<PathBuf, CodexResumeState>, _route_hint: Option<&RouteEvidence>,
+) -> Result<(UsageFactEmitResult, HashMap<PathBuf, CodexResumeState>), String> {
+    let mut updated: HashMap<PathBuf, CodexResumeState> = HashMap::new();
     let mut facts: Vec<Value> = Vec::new();
     let mut attempts: HashMap<String, i64> = HashMap::new();
     attempts.insert(SKIP.to_string(), 0);
@@ -463,106 +363,264 @@ pub fn codex_rollouts_to_usage_facts_with_route(
     let mut seen: HashSet<String> = HashSet::new();
     let mut folds: Vec<Value> = Vec::new();
     for p in paths {
-        let raw = std::fs::read(p).map_err(|e| format!("read {}: {}", p.display(), e))?; // OSError → 上抛
-        let decoded;
-        let data = if p.to_string_lossy().ends_with(".jsonl.zst") {
-            match crate::harnesses::dsh::sources::decode_zstd_multi_frame(&raw) {
-                Some(bytes) => {
-                    decoded = bytes;
-                    decoded.as_slice()
+        let stem = rollout_source_stem(p);
+        let is_zst = p.to_string_lossy().ends_with(".jsonl.zst");
+        let identity = file_identity(p);
+        // zstd 的 offset 是解压流语义，不能拿压缩文件的 seek 位置续读：保持
+        // 全量（压缩 rollout 通常 MB 级）。
+        let resume = if is_zst {
+            None
+        } else {
+            identity.and_then(|(size, dev, ino)| {
+                resumes.get(p).filter(|state| {
+                    state.offset > 0
+                        && state.offset <= size
+                        && state.dev == dev
+                        && state.ino == ino
+                })
+            })
+        };
+        let base_offset = resume.map(|state| state.offset).unwrap_or(0);
+        let mut native_session_id = resume
+            .and_then(|state| state.session_id.clone())
+            .unwrap_or_else(|| stem.clone());
+        let mut model_provider = resume.and_then(|state| state.model_provider.clone());
+        let mut current_route = resume.and_then(|state| state.route.clone());
+        let mut current_provider = resume.and_then(|state| state.provider.clone());
+        let mut local_seen: HashSet<String> = HashSet::new();
+        let mut seeds: Vec<FactSeed> = Vec::new();
+        let mut local_total = 0i64;
+        let mut local_skip = 0i64;
+        let mut local_duplicate = 0i64;
+        let mut local_attempts: HashMap<&'static str, i64> = HashMap::new();
+        local_attempts.insert(SKIP, 0);
+        local_attempts.insert(UNREADABLE, 0);
+        local_attempts.insert(UNATTRIBUTED, 0);
+        let mut state = CodexFoldState::new();
+        if let Some(resume) = resume {
+            state.restore_cursor(&resume.fold);
+        }
+        let mut degraded = false;
+
+        // 逐行处理，**不再把整份 rollout 读进内存**（2026-11-11 事故：2 GB
+        // 文件每 30–60 s 全量解析，单轮 high-water 16 GB）。所有计数先记在
+        // 本文件的局部变量里：旧语义是「一行坏 JSON = 整份零事件」，只有文件
+        // 完整解析成功才合并进全局计数（否则 seen/attempts 会被半份文件污染）。
+        let mut apply_line = |offset: u64, raw: &[u8]| -> bool {
+            let text = String::from_utf8_lossy(raw);
+            if text.trim().is_empty() {
+                return true;
+            }
+            let item: Value = match serde_json::from_str(&text) {
+                Ok(value) => value,
+                Err(_) => {
+                    degraded = true;
+                    return false;
                 }
-                None => {
-                    malformed += 1;
-                    continue;
+            };
+
+            // §3.4：session_meta 的 session_id（键在即用，null 不退回 .id），
+            // 后出现的有效值覆盖前值（fork 续接文件的历史语义）。
+            if item.get("type").and_then(Value::as_str) == Some("session_meta") {
+                if let Some(payload) = item.get("payload").and_then(Value::as_object) {
+                    let sid = if payload.contains_key("session_id") {
+                        payload.get("session_id")
+                    } else {
+                        payload.get("id")
+                    };
+                    if let Some(sid) = sid.and_then(Value::as_str) {
+                        native_session_id = sid.to_string();
+                    }
+                    if model_provider.is_none() {
+                        if let Some(provider) =
+                            payload.get("model_provider").and_then(Value::as_str)
+                        {
+                            model_provider = Some(provider.to_string());
+                        }
+                    }
+                }
+            } else if model_provider.is_none() {
+                if let Some(provider) = item
+                    .pointer("/payload/thread_settings/model_provider_id")
+                    .and_then(Value::as_str)
+                {
+                    model_provider = Some(provider.to_string());
                 }
             }
-        } else {
-            raw.as_slice()
-        };
-        let (items, degraded) = parse_rollout_bytes(data);
-        if degraded.is_some() {
-            malformed += 1;
-            continue;
-        }
-        let native_session_id = resolve_native_session_id(p, &items);
-        let route_states = route_states_before(&items, route);
-        let provider_states = provider_states_before(&items);
-        let model_provider = items.iter().find_map(|item| {
-            if item.1.get("type").and_then(Value::as_str) == Some("session_meta") {
-                item.1
-                    .get("payload")
+
+            // 归属状态在**消费本事件之前**推进——与 route_states_before /
+            // provider_states_before 的「同 offset 含本事件更新」一致。
+            let payload = item.get("payload");
+            let is_route_payload = item.get("type").and_then(Value::as_str)
+                == Some("session_meta")
+                || payload
+                    .and_then(|v| v.get("type"))
+                    .and_then(Value::as_str)
+                    == Some("route_changed");
+            let explicit = if is_route_payload {
+                payload.and_then(route_evidence_from)
+            } else {
+                payload
+                    .and_then(|v| v.get("thread_settings"))
+                    .and_then(route_evidence_from)
+            };
+            if explicit.is_some() {
+                current_route = explicit;
+            }
+            if item.get("type").and_then(Value::as_str) == Some("session_meta") {
+                if let Some(provider) = payload
                     .and_then(|v| v.get("model_provider"))
                     .and_then(Value::as_str)
-                    .map(str::to_string)
-            } else {
-                item.1
-                    .get("payload")
-                    .and_then(|v| v.get("thread_settings"))
-                    .and_then(|v| v.get("model_provider_id"))
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
+                {
+                    current_provider = Some(provider.to_string());
+                }
             }
-        });
-        let stem = rollout_source_stem(p);
-        let mut state = CodexFoldState::new();
-        for (offset, item) in items {
+            if let Some(provider) = payload
+                .and_then(|v| v.get("thread_settings"))
+                .and_then(|v| v.get("model_provider_id"))
+                .and_then(Value::as_str)
+            {
+                current_provider = Some(provider.to_string());
+            }
+
             match state.apply(&item) {
-                // NotTokenCount（session_meta/turn_context/thread_settings…）与
-                // Repeat（同一计量复读）→ 不 emit 也不计（§3.5.2/§4）。
                 CodexTokenOutcome::NotTokenCount | CodexTokenOutcome::Repeat => {}
                 CodexTokenOutcome::Skip => {
-                    total += 1;
-                    *attempts.get_mut(SKIP).unwrap() += 1;
-                    skip_rows += 1;
+                    local_total += 1;
+                    *local_attempts.get_mut(SKIP).unwrap() += 1;
+                    local_skip += 1;
                 }
                 CodexTokenOutcome::Unreadable => {
-                    total += 1;
-                    *attempts.get_mut(UNREADABLE).unwrap() += 1;
-                    skip_rows += 1;
+                    local_total += 1;
+                    *local_attempts.get_mut(UNREADABLE).unwrap() += 1;
+                    local_skip += 1;
                 }
                 CodexTokenOutcome::Unattributed => {
-                    total += 1;
-                    *attempts.get_mut(UNATTRIBUTED).unwrap() += 1;
-                    skip_rows += 1;
+                    local_total += 1;
+                    *local_attempts.get_mut(UNATTRIBUTED).unwrap() += 1;
+                    local_skip += 1;
                 }
                 CodexTokenOutcome::Consumed {
                     facts: f,
                     model,
                     event_ts_utc,
                 } => {
-                    total += 1;
-                    // Consumed：可折进 by_model = 可 emit（§2.3 发射集定义）。
-                    let source_event_id = derived_event_id(&stem, offset, &item);
-                    if seen.contains(&source_event_id) {
-                        // §3.5.3 同物理 rollout（同 stem）重复来源 → duplicate。
-                        duplicate += 1;
-                        skip_rows += 1;
-                        continue;
-                    }
-                    seen.insert(source_event_id.clone());
-                    let route_at_event = route_at(&route_states, offset);
-                    let model_provider_at =
-                        provider_at(&provider_states, offset).or_else(|| model_provider.clone());
-                    match consumed_to_usage_fact(
-                        &f,
-                        &model,
-                        &event_ts_utc,
-                        &source_event_id,
-                        &native_session_id,
-                        machine_namespace,
-                        source_profile,
-                        model_provider_at.as_deref(),
-                        route_at_event.as_ref(),
-                    ) {
-                        Some(fact) => facts.push(fact),
-                        None => {
-                            // 防御性 bad_id 哨兵（builder 校验拒绝）
-                            bad_id += 1;
-                            skip_rows += 1;
-                        }
+                    local_total += 1;
+                    let source_event_id = derived_event_id(&stem, offset as usize, &item);
+                    if seen.contains(&source_event_id) || local_seen.contains(&source_event_id)
+                    {
+                        local_duplicate += 1;
+                        local_skip += 1;
+                    } else {
+                        local_seen.insert(source_event_id.clone());
+                        let provider_at_event =
+                            current_provider.clone().or_else(|| model_provider.clone());
+                        seeds.push((
+                            offset as usize,
+                            f,
+                            model,
+                            event_ts_utc,
+                            source_event_id,
+                            provider_at_event,
+                            current_route.clone(),
+                        ));
                     }
                 }
             }
+            true
+        };
+
+        let stats = if is_zst {
+            // 多帧流式解压：内存 = 一帧窗口 + 单行缓冲，不再整份解压。
+            let file =
+                std::fs::File::open(p).map_err(|e| format!("read {}: {}", p.display(), e))?;
+            let reader = match super::jsonl::MultiFrameZstdReader::new(file) {
+                Ok(reader) => reader,
+                Err(_) => {
+                    malformed += 1;
+                    continue;
+                }
+            };
+            super::jsonl::for_each_line(
+                reader,
+                super::jsonl::DEFAULT_MAX_LINE_BYTES,
+                &mut apply_line,
+            )
+        } else {
+            let mut file =
+                std::fs::File::open(p).map_err(|e| format!("read {}: {}", p.display(), e))?;
+            if base_offset > 0 {
+                file.seek(SeekFrom::Start(base_offset))
+                    .map_err(|e| format!("seek {}: {}", p.display(), e))?;
+            }
+            super::jsonl::for_each_line_from(
+                std::io::BufReader::with_capacity(256 * 1024, file),
+                base_offset,
+                super::jsonl::DEFAULT_MAX_LINE_BYTES,
+                &mut apply_line,
+            )
+        }
+        .map_err(|e| format!("read {}: {}", p.display(), e))?;
+
+        // 空文件 = missing-header；坏行/超长行 = 整份降级（旧语义）。zstd 的
+        // 解压失败已在上面 `continue`。
+        if degraded || stats.oversized > 0 || stats.bytes == 0 {
+            malformed += 1;
+            continue;
+        }
+
+        total += local_total;
+        skip_rows += local_skip;
+        duplicate += local_duplicate;
+        for (key, value) in local_attempts {
+            *attempts.get_mut(key).unwrap() += value;
+        }
+        seen.extend(local_seen);
+
+        // facts 在文件末尾才构造：native_session_id 可能被后续 session_meta
+        // 覆盖（fork 语义），而事实行要带最终 id。
+        for (offset, f, model, event_ts_utc, source_event_id, provider_at_event, route_at_event) in
+            seeds
+        {
+            let _ = offset;
+            match consumed_to_usage_fact(
+                &f,
+                &model,
+                &event_ts_utc,
+                &source_event_id,
+                &native_session_id,
+                machine_namespace,
+                source_profile,
+                provider_at_event.as_deref(),
+                route_at_event.as_ref(),
+            ) {
+                Some(fact) => facts.push(fact),
+                None => {
+                    bad_id += 1;
+                    skip_rows += 1;
+                }
+            }
+        }
+        if !is_zst {
+        if let Some((size, dev, ino)) = identity {
+            // 只有走到这里（完整解析、未降级）才允许推进检查点。offset 用
+            // `complete_bytes`：文件以无换行残行结尾时停在残行行首，下一轮
+            // 重读该行（重复事实由 fact_id 去重），不会把写了一半的行跳过。
+            updated.insert(
+                p.clone(),
+                CodexResumeState {
+                    offset: stats.complete_bytes,
+                    size,
+                    dev,
+                    ino,
+                    session_id: Some(native_session_id.clone()),
+                    model_provider: model_provider.clone(),
+                    provider: current_provider.clone(),
+                    route: current_route.clone(),
+                    fold: state.cursor_json(),
+                },
+            );
+        }
         }
         folds.push(state.finish());
     }
@@ -585,7 +643,7 @@ pub fn codex_rollouts_to_usage_facts_with_route(
         .map_or((None, None), |(contract, payload_json)| {
             (Some(contract), Some(payload_json))
         });
-    Ok(UsageFactEmitResult {
+    Ok((UsageFactEmitResult {
         facts,
         workflow_events: paths
             .iter()
@@ -600,7 +658,7 @@ pub fn codex_rollouts_to_usage_facts_with_route(
         total_token_count_events: total,
         skip_rows,
         malformed,
-    })
+    }, updated))
 }
 
 /// CLI `--json` 输出的完整 payload——键序与 Python `cli.py` 的
@@ -685,6 +743,7 @@ pub fn to_human_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     static TEMP_DIR_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -1143,4 +1202,107 @@ mod tests {
         assert_eq!(r.malformed, 1, "坏文件整份降级 → malformed=1");
         std::fs::remove_dir_all(&tmp).ok();
     }
+    /// 增量续读：只处理追加的尾部，且尾部事实的 offset 身份与全量解析一致。
+    /// 同时锁定「session_meta/turn_context 不在尾部也要恢复会话与模型」——
+    /// 这是折叠游标存在的理由。
+    #[test]
+    fn resume_reads_only_the_appended_tail_with_restored_cursor() {
+        let tmp = temp_dir();
+        let p = tmp.join("rollout-resume.jsonl");
+        let lines = rollout_lines();
+        std::fs::write(&p, lines[..3].join("")).unwrap();
+        let empty = std::collections::HashMap::new();
+        let (first, states) =
+            codex_rollouts_to_usage_facts_with_resume(std::slice::from_ref(&p), "ns-test", "default", &empty)
+                .unwrap();
+        assert_eq!(first.facts.len(), 1);
+        let state = states.get(&p).expect("checkpoint written").clone();
+        assert!(state.offset > 0);
+
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&p)
+            .unwrap()
+            .write_all(lines[3].as_bytes())
+            .unwrap();
+        let (tail, _) = codex_rollouts_to_usage_facts_with_resume(
+            std::slice::from_ref(&p),
+            "ns-test",
+            "default",
+            &states,
+        )
+        .unwrap();
+        assert_eq!(tail.facts.len(), 1, "only the appended line produces a fact");
+        assert_eq!(
+            tail.facts[0].get("native_session_id").and_then(Value::as_str),
+            Some("ses-abc123"),
+            "session_meta was in the prefix; resume must restore it"
+        );
+        assert_eq!(
+            tail.facts[0].get("model_raw").and_then(Value::as_str),
+            Some("gpt-5-codex"),
+            "turn_context cursor must survive the resume"
+        );
+
+        let (full, _) =
+            codex_rollouts_to_usage_facts_with_resume(std::slice::from_ref(&p), "ns-test", "default", &empty)
+                .unwrap();
+        assert_eq!(full.facts.len(), 2);
+        assert_eq!(
+            tail.facts[0].get("source_event_id"),
+            full.facts[1].get("source_event_id"),
+            "resumed fact must keep the absolute byte-offset identity"
+        );
+        std::fs::remove_dir_all(tmp).ok();
+    }
+
+    /// 文件被截断/替换到 offset 之前：检查点必须失效，退化为全量，绝不能从
+    /// 旧的尾部偏移继续读（否则事实永久缺失）。
+    #[test]
+    fn resume_falls_back_to_full_parse_when_the_file_truncates() {
+        let tmp = temp_dir();
+        let p = tmp.join("rollout-truncate.jsonl");
+        let lines = rollout_lines();
+        std::fs::write(&p, lines.join("")).unwrap();
+        let empty = std::collections::HashMap::new();
+        let (_, states) =
+            codex_rollouts_to_usage_facts_with_resume(std::slice::from_ref(&p), "ns-test", "default", &empty)
+                .unwrap();
+        std::fs::write(&p, lines[0].as_bytes()).unwrap();
+        let (after, _) = codex_rollouts_to_usage_facts_with_resume(
+            std::slice::from_ref(&p),
+            "ns-test",
+            "default",
+            &states,
+        )
+        .unwrap();
+        assert_eq!(after.malformed, 0);
+        assert!(after.facts.is_empty(), "truncated file must be re-read from zero");
+        std::fs::remove_dir_all(tmp).ok();
+    }
+
+
+    /// 多帧 zstd rollout：逐帧流式解压后与明文走同一条解析路径，事实数一致。
+    #[test]
+    fn zstd_multi_frame_rollout_yields_the_same_facts() {
+        let tmp = temp_dir();
+        let p = tmp.join("rollout-zstd.jsonl.zst");
+        let lines = rollout_lines();
+        let mut frames: Vec<u8> = Vec::new();
+        for chunk in [lines[..2].join(""), lines[2..].join("")] {
+            ruzstd::encoding::compress(
+                chunk.as_bytes(),
+                &mut frames,
+                ruzstd::encoding::CompressionLevel::Fastest,
+            );
+        }
+        std::fs::write(&p, frames).unwrap();
+        let r =
+            codex_rollouts_to_usage_facts(std::slice::from_ref(&p), "ns-test", "default").unwrap();
+        assert_eq!(r.facts.len(), 2);
+        assert_eq!(r.malformed, 0);
+        std::fs::remove_dir_all(tmp).ok();
+    }
+
+
 }
