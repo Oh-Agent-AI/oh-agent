@@ -253,7 +253,7 @@ jobs:
         run: node scripts/verify-city-initial-loading.mjs
       - name: 术语与命名边界守卫
         working-directory: apps/desktop/ui-dev
-        run: npm run verify:terminology
+        run: node ../../../scripts/verify-harness-terminology.mjs
 
   city_heavy_guards:
     name: City heavy guard (${{ matrix.guard }})
