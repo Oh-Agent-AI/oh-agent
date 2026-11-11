@@ -57,7 +57,7 @@ export function resiteArchesOnAcceptedRoads(ctx: RepairContext): number {
     groundRoads: [...ctx.network.edges.values()].filter(road => !road.bridge),
     trunkSegments: groundFrontageSegments([...ctx.network.edges.values()]), ringRuns: ctx.ringRuns,
     straddleProbeFractions: ARCH_RESITE_CONFIG.probes,
-    buildable: ctx.geo.buildable, height: ctx.geo.height, inRiver: ctx.inRiver,
+    buildable: ctx.geo.landform.isBuildable, height: ctx.geo.landform.elevation, inRiver: ctx.inRiver,
     riverBank: (x, z, bank) => ctx.geo.hasRiver && Math.abs(x - ctx.geo.riverX(z)) < ctx.geo.riverWidth(z) + bank,
     relocateSiteIds: new Set(arches.map((site) => site.id)) });
   const changed = arches.filter((site) => { const before = old.get(site.id)!; return site.x !== before.x || site.z !== before.z || site.yaw !== before.yaw; }).length;
@@ -126,7 +126,7 @@ function unservedShoreCandidates(ctx: RepairContext, constraint: "siteWithoutDoo
   const unmet = new Set(diagnostics?.demands.filter((entry) => entry.demand.required && !entry.satisfied
     && entry.demand.class === "site-access").map((entry) => entry.demand.anchor) ?? []);
   const wetFindings = constraint !== "siteWithoutDoorRoad" ? CONSTRAINTS.find((entry) => entry.id === constraint)!.measure(plan) : [];
-  const groundGeo = { height: ctx.height, inRiver: ctx.inRiver };
+  const groundGeo = { elevation: ctx.elevation, inRiver: ctx.inRiver };
   const groundFailed = new Set(constraint === "siteInWater" ? [...ctx.publicSites, ...ctx.landmarks]
     .filter(owner => registeredModelGroundFailure(owner, groundGeo)).map(owner => owner.id) : []);
   const isWetOwner = (owner: { id: string; kind: string; x: number; z: number }) => groundFailed.has(owner.id) || wetFindings.some((finding) =>
@@ -161,7 +161,7 @@ function unservedShoreCandidates(ctx: RepairContext, constraint: "siteWithoutDoo
       }
       candidates.push({ constraint, name: `${constraint === "siteInWater" ? "resiteWetShore" : "resiteUnservedShore"}:${owner.id}:${at.x}:${at.z}`, run: (draft) => {
         const site = [...draft.publicSites, ...draft.landmarks].find((entry) => entry.id === owner.id);
-        const missing = constraint !== "siteWithoutDoorRoad" ? !!site && ((constraint === "siteInWater" && registeredModelGroundFailure(site, { height: draft.height, inRiver: draft.inRiver }))
+        const missing = constraint !== "siteWithoutDoorRoad" ? !!site && ((constraint === "siteInWater" && registeredModelGroundFailure(site, { elevation: draft.elevation, inRiver: draft.inRiver }))
           || CONSTRAINTS.find((entry) => entry.id === constraint)!.measure(planView(draft))
             .some((finding) => (constraint === "sitesOverlap" && finding.identity?.split("/").includes(site.id))
               || (finding.site === site.kind && finding.at?.x === site.x && finding.at?.z === site.z)))
@@ -172,7 +172,7 @@ function unservedShoreCandidates(ctx: RepairContext, constraint: "siteWithoutDoo
         if (failure) return { changes: 0, reason: failure };
         if (draft.blocks.some((block) => block.parcels.some((parcel) => Math.hypot(parcel.x - at.x, parcel.z - at.z)
           < site.radius + 9 + Math.hypot(parcel.width, parcel.depth) / 2))) return { changes: 0, reason: "owner-parcel-envelope" };
-        const groundFailure = registeredModelGroundFailure({ ...site, ...at }, { height: draft.height, inRiver: draft.inRiver });
+        const groundFailure = registeredModelGroundFailure({ ...site, ...at }, { elevation: draft.elevation, inRiver: draft.inRiver });
         if (groundFailure) return { changes: 0, reason: groundFailure };
         const previousLoose = new Set(CONSTRAINTS.find((constraint) => constraint.id === "looseInlandRoadEnds")!
           .measure(planView(draft)).map((violation) => `${violation.at!.x}:${violation.at!.z}`));
@@ -279,7 +279,7 @@ export const REPAIR_STRATEGIES: RepairStrategy[] = [
   // 选址后置（siting.ts）：路网定型后，对仍然入水/重叠的用地在候选表里重新落位。放在表尾，不动点循环会让前面的策略对新位置再跑一遍。
   { constraint: "siteInWater", name: "resiteWetShoreSites", run: () => 0, candidates: (ctx) => unservedShoreCandidates(ctx, "siteInWater"),
     emptyReason: (ctx) => [...ctx.publicSites, ...ctx.landmarks].some(owner => canRelocateGroundSite(owner) && ctx.SHORE_SITE_KINDS.has(owner.kind)
-      && registeredModelGroundFailure(owner, { height: ctx.height, inRiver: ctx.inRiver }))
+      && registeredModelGroundFailure(owner, { elevation: ctx.elevation, inRiver: ctx.inRiver }))
       ? "registered ground placement unsupported or original wet-shore candidate budget exhausted; no expanded search or fabricated water support" : undefined },
   { constraint: "siteInWater", name: "resiteViolatingSites", run: (ctx) => resiteViolatingSites(ctx, { skipWetShore: true }) },
 ];
@@ -301,7 +301,7 @@ class ProtectedDemandMutation extends Error {}
 const protectedCatalogues = new WeakMap<RepairContext, readonly ConnectionDemand[]>();
 const draftScopes = new WeakMap<RepairContext, { referenceCursor: number; failure?: string }>();
 type RepairWorldState = { world: PlanningWorld; network: string; sites: string; blocks: string; reservations: string; bindings: string;
-  height: RepairContext["height"]; terrain: string; terrainFunctions: Record<string, unknown>; inRiver: RepairContext["inRiver"] };
+  elevation: RepairContext["elevation"]; terrain: string; terrainFunctions: Record<string, unknown>; inRiver: RepairContext["inRiver"] };
 const repairWorldStates = new WeakMap<RepairContext, RepairWorldState>();
 const sorted = <T extends { id: string }>(rows: T[]): T[] => rows.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 const legacyPhysical = { status: "pending" as const, reason: "legacy planning admission; full model, foundation and entrance corridor proof is not registered" };
@@ -354,7 +354,7 @@ function repairWorldProjection(ctx: RepairContext) {
 function makeWorldState(ctx: RepairContext, world: PlanningWorld, projection = repairWorldProjection(ctx)): RepairWorldState {
   return { world, network: projection.network, sites: projection.sites, blocks: projection.blocks,
     reservations: JSON.stringify(projection.reservations), bindings: JSON.stringify(projection.demandBindings),
-    height: ctx.height, terrain: JSON.stringify(ctx.geo.terrain),
+    elevation: ctx.elevation, terrain: JSON.stringify(ctx.geo.terrain),
     terrainFunctions: Object.fromEntries(Object.entries(ctx.geo.terrain).filter(([, value]) => typeof value === "function")), inRiver: ctx.inRiver };
 }
 function installRepairWorld(ctx: RepairContext, state: RepairWorldState): void {
@@ -383,7 +383,7 @@ function worldBaseFailure(ctx: RepairContext, state: RepairWorldState): string |
   if (ctx.planningWorld && ctx.planningWorld !== state.world) return "repair planning-world authority replaced";
   const actualVersion = ctx.network.version;
   if (actualVersion !== state.world.versions.network) return "stale repair world: network version";
-  if (ctx.height !== state.height || JSON.stringify(ctx.geo.terrain) !== state.terrain || ctx.inRiver !== state.inRiver ||
+  if (ctx.elevation !== state.elevation || JSON.stringify(ctx.geo.terrain) !== state.terrain || ctx.inRiver !== state.inRiver ||
       Object.entries(state.terrainFunctions).some(([key, value]) => (ctx.geo.terrain as unknown as Record<string, unknown>)[key] !== value))
     return "stale repair world: terrain source changed";
   const projection = repairWorldProjection(ctx);
@@ -429,7 +429,7 @@ export function repairPlanningOutcome(ctx: RepairContext): {
   const unmetDemandIds = diagnostics?.unmet.map(d => d.demandId) ?? [];
   const stale = state ? worldBaseFailure(ctx, state) : "production world is not initialized";
   const reservations = state?.world.reservations.filter(r => r.state !== "released") ?? [];
-  const groundInspections = [...ctx.publicSites, ...ctx.landmarks].map(owner => ({ owner, inspection: inspectModelGround(owner, { height: ctx.height, inRiver: ctx.inRiver }) }));
+  const groundInspections = [...ctx.publicSites, ...ctx.landmarks].map(owner => ({ owner, inspection: inspectModelGround(owner, { elevation: ctx.elevation, inRiver: ctx.inRiver }) }));
   const groundFailures = groundInspections.flatMap(({ owner, inspection }) => inspection.status === "violation"
     ? [{ ownerId: owner.id, reason: inspection.findings.map(finding => finding.code).join(",") }]
     : inspection.status === "unsupported" && Object.hasOwn(GROUND_MODEL_FACTORIES, owner.kind) ? [{ ownerId: owner.id, reason: inspection.reason }] : []);
@@ -482,7 +482,7 @@ function repairDerivedFinalizationDraft(ctx: RepairContext, derive: (draft: Repa
     return fail("derived finalization changed a plot owner");
   for (const field of ["bridges", "core", "ringRuns", "trunkRuns", "coast", "coastRoadRuns", "riverRoadRuns", "coastRoadRunEnds", "siteObligations", "primaryAnchorNodeId"] as const)
     if (JSON.stringify(ctx[field]) !== JSON.stringify(draft[field])) return fail(`derived finalization changed ${field}`);
-  if (ctx.height !== draft.height || ctx.inRiver !== draft.inRiver || JSON.stringify(ctx.geo.terrain) !== JSON.stringify(draft.geo.terrain) ||
+  if (ctx.elevation !== draft.elevation || ctx.inRiver !== draft.inRiver || JSON.stringify(ctx.geo.terrain) !== JSON.stringify(draft.geo.terrain) ||
       Object.entries(base.terrainFunctions).some(([key, value]) => (draft.geo.terrain as unknown as Record<string, unknown>)[key] !== value))
     return fail("derived finalization changed terrain source");
   const pointKey = (p: { x: number; z: number }) => `${Math.round(p.x * 100)}:${Math.round(p.z * 100)}`;
@@ -584,9 +584,9 @@ export function repairAcceptance(before: RepairContext, after: RepairContext, re
       return `repair removed registered ground contract: ${owner.id}`;
     const changed = !old || owner.x !== old.x || owner.z !== old.z || owner.yaw !== old.yaw || owner.radius !== old.radius || owner.kind !== old.kind;
     if (!changed) continue;
-    const failure = registeredModelGroundFailure(owner, { height: after.height, inRiver: after.inRiver });
+    const failure = registeredModelGroundFailure(owner, { elevation: after.elevation, inRiver: after.inRiver });
     if (failure) return `${owner.id}: ${failure}`;
-    if (old && registeredModelGroundFailure(old, { height: before.height, inRiver: before.inRiver })
+    if (old && registeredModelGroundFailure(old, { elevation: before.elevation, inRiver: before.inRiver })
       && Object.hasOwn(GROUND_MODEL_FACTORIES, owner.kind)) improved = true;
   }
   const previousDemands = diagnoseNetwork(planView(before))?.demands ?? [];
@@ -709,7 +709,7 @@ export function solvePlan(ctx: RepairContext, maxRounds = MAX_SOLVE_ROUNDS): Sol
   // 保留跨约束候选生成；每个候选都独立接受，不再原地运行后补救。
   const ids = new Set(REPAIR_STRATEGIES.map((s) => s.constraint));
   const anyViolation = CONSTRAINTS.some((c) => ids.has(c.id) && c.measure(planView(ctx)).length > 0)
-    || [...ctx.publicSites, ...ctx.landmarks].some(owner => registeredModelGroundFailure(owner, { height: ctx.height, inRiver: ctx.inRiver }));
+    || [...ctx.publicSites, ...ctx.landmarks].some(owner => registeredModelGroundFailure(owner, { elevation: ctx.elevation, inRiver: ctx.inRiver }));
   if (anyViolation) {
     for (let round = 0; round < maxRounds; round += 1) {
       let changed = 0;

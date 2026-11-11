@@ -49,7 +49,7 @@ export const siteInWater: Constraint = {
   id: "siteInWater", description: "占地圈 16 点地形高于水面（岸边类允许 ≤4 点；港口与岛上地标 shore 豁免）",
   measure(plan) {
     const out: Violation[] = [];
-    const geo = { height: plan.terrain.height, inRiver: () => false };
+    const geo = { elevation: plan.terrain.height, inRiver: () => false };
     for (const s of planSites(plan)) {
       const declaration = specByKind(s.kind);
       const footprint = declaration?.placement === "inland-frontage" ? siteFootprint(s.kind, s.id ?? `reservation:${s.kind}`, s.radius) : null;

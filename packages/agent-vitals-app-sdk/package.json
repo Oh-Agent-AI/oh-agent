@@ -3,13 +3,18 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "files": [
+    "src",
+    "README.md"
+  ],
   "exports": {
     ".": "./src/index.ts",
     "./ui-host": "./src/ui-host.ts"
   },
   "scripts": {
     "generate:contracts": "node ../../scripts/generate-app-contracts.mjs --write",
-    "verify:contracts": "node ../../scripts/generate-app-contracts.mjs && node --test tests/*.test.mjs && tsc --noEmit"
+    "verify:contracts": "node ../../scripts/generate-app-contracts.mjs && node --test tests/*.test.mjs && tsc --noEmit",
+    "pack:check": "npm pack --dry-run"
   },
   "devDependencies": {
     "ajv": "8.20.0",

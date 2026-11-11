@@ -20,21 +20,22 @@ import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { GTAOPass } from "three/addons/postprocessing/GTAOPass.js";
 import { Reflector } from "three/addons/objects/Reflector.js";
 import { selectVisualHero, type CityModel } from "../cityModel";
-import { activeTheme, BIOME_GRADES, skyYawOf } from "./cityTheme";
+import { BIOME_GRADES, skyYawOf, themeFor, type CityTheme, type CityThemeName } from "./cityTheme";
 import { loadCityAssets, type CityAssets } from "./cityAssets";
 import { loadBiomeFlora } from "./cityFlora";
 import { planCinematic, type CinematicCut, type CinematicPlan } from "./cityCinematic";
 import { drawFilmOverlay, type FilmCardText } from "./cityFilmOverlay";
 import { Mp4Writer } from "./mp4Muxer";
 import { WebmFilmWriter, type WebmCodec } from "./webmMuxer";
-import { layoutCity, type CityLayout, type BackdropMode } from "./cityLayout";
+import { layoutCityForWorld, type CityLayout, type BackdropMode } from "./cityLayout";
 import { applyPlanPatch, layoutPinsFor, type PatchedLayout, type PlanPatchV1 } from "./planPatch";
 import { CityParts, occupantsCanAppend, type QualityLevel } from "./cityParts";
 import { applyBuildingEvent, parseBuildingChanged, replayDecision, type BuildingChangedEvent, type OverlayDecision } from "./sessionKitConstruction";
 import { applyEditEvent, parseBuildingEdit, type BuildingEditEvent, type EditVisual } from "./sessionKitEditState";
 import { parseSquadEnvelope, type ClaimTint, type SquadEnvelope } from "./squadEvents";
 import { skyStateAt, type CitySkyPreset } from "./citySky";
-import { MIAMI_COASTAL } from "./citySeaside";
+import { MIAMI_CITY_WORLD_V1 } from "./cityWorldProfile";
+import type { CityWorldProfileV1 } from "./cityWorldProfile";
 import { CityAurora } from "./cityAurora";
 import { CityAmbient } from "./cityAmbient";
 import { CityWildlife } from "./cityWildlife";
@@ -58,6 +59,15 @@ import type { CameraPose, GameSelection } from "../game/runtime/GameScenePort";
 import type { GameSceneSnapshot } from "../game/runtime/GameSceneSnapshot";
 import type { CameraClearanceQuery, ChaseCameraSafety } from "../game/VehicleChaseCamera";
 import type { GameSceneLease } from "../game/runtime/GameScenePort";
+import { createSdkViewForCityLayout, type CityLayoutSdkViewV1 } from "./sdk/cityLayoutAdapter";
+
+export type CityCreatorSkinId = "miami-vice" | "desert-evening";
+export type CityCreatorSkinOverrideToken = Readonly<{
+  owner: symbol;
+  serial: number;
+  previousTheme: CityThemeName;
+  skinId: CityCreatorSkinId;
+}>;
 
 /** 航拍的昼夜区间（小时）：黄昏渐入，片尾 > 19:00 城市全亮（见 citySky 的灯光曲线）。 */
 const CINEMATIC_HOUR_FROM = 15;
@@ -99,6 +109,8 @@ export type RepairHook = { onClick(click: RepairClick): void; onMove?(ground: { 
 
 export type CityEngineOptions = {
   canvas: RenderCanvas;
+  /** Explicit world composition; defaults to Miami for existing embedded scenes. */
+  worldProfile?: CityWorldProfileV1;
   /** Worker-only renderer: no DOM events, OrbitControls or realtime loop. */
   headless?: boolean;
   onHover?: (id: string | null, clientX: number, clientY: number) => void;
@@ -190,7 +202,11 @@ export class CityEngine {
   private aurora: CityAurora | null = null;
   private ambient: CityAmbient | null = null;
   private wildlife: CityWildlife | null = null;
-  private themeName = activeTheme().name;
+  private themeName: CityThemeName;
+  private theme: CityTheme;
+  private readonly creatorSkinOwner = Symbol("city-creator-skin");
+  private creatorSkinSerial = 0;
+  private creatorSkinOverride: CityCreatorSkinOverrideToken | null = null;
   private rain: RainOverlay | null = null;
   private rainbow: RainbowArch | null = null;
   private fillLight: THREE.DirectionalLight | null = null;
@@ -273,7 +289,11 @@ export class CityEngine {
       if (!parts || !this.layout || this.disposed) return Object.freeze({ status: "unavailable", reason: "city-not-ready" });
       let frozen: ReturnType<CityParts["acquireStaticSceneSource"]>;
       try { frozen = parts.acquireStaticSceneSource(); }
-      catch { return Object.freeze({ status: "unavailable", reason: "static-source-unavailable" }); }
+      catch (error) {
+        const code = error instanceof Error && /^(driving-world-unavailable|rendered-solids-budget|unsupported-rendered-solid-deformation:(building|landmark|civic|context|massing):(skinned|morph)|invalid-rendered-solid-position|unsupported-rendered-solid-draw-range|unsupported-rendered-solid-groups|invalid-rendered-solid-index|invalid-rendered-solid-transform)$/.test(error.message)
+          ? error.message : "static-source-unavailable";
+        return Object.freeze({ status: "unavailable", reason: code });
+      }
       const staticWorld = await this.staticWorldPort.capture(frozen.source, frozen.release, signal);
       if (staticWorld.status !== "ready") return Object.freeze({ status: staticWorld.status === "cancelled" ? "cancelled" : "unavailable", reason: staticWorld.reason ?? staticWorld.status });
       let drivingWorld: ReadyCitySurfaceCapture | undefined;
@@ -345,6 +365,8 @@ export class CityEngine {
   });
 
   constructor(private readonly options: CityEngineOptions) {
+    this.theme = themeFor(options.worldProfile?.visuals.themeId ?? "miami");
+    this.themeName = this.theme.name;
     // 开发调试钩子（仅 vite dev + ?cityDebug）：把场景与 THREE 挂到 window，供比例尺测量等脚本遍历真实场景图。生产构建不含。
     if (import.meta.env.DEV && typeof location !== "undefined" && new URLSearchParams(location.search).has("cityDebug")) {
       const self = this;
@@ -359,7 +381,7 @@ export class CityEngine {
     const rendererInfo = gl.getExtension("WEBGL_debug_renderer_info");
     this.softwareRenderer = !!rendererInfo && /swiftshader|llvmpipe|software|softpipe/i.test(String(gl.getParameter(rendererInfo.UNMASKED_RENDERER_WEBGL)));
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = activeTheme().exposure;
+    this.renderer.toneMappingExposure = this.theme.exposure;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
 
@@ -380,7 +402,7 @@ export class CityEngine {
     this.controls.autoRotateSpeed = 0.45;
     this.controls.zoomToCursor = true;
 
-    const theme = activeTheme();
+    const theme = this.theme;
     this.scene.background = new THREE.Color(theme.skyHorizon);
     this.hemisphere = new THREE.HemisphereLight(theme.hemiSky, theme.hemiGround, theme.hemiIntensity);
     this.scene.add(this.hemisphere);
@@ -534,6 +556,12 @@ export class CityEngine {
   private renderMirror(): void {
     const parts = this.parts;
     if (!parts) return;
+    if (!parts.water) {
+      parts.setMirror(null, null);
+      this.mirror?.dispose();
+      this.mirror = null;
+      return;
+    }
     if (this.quality < 1) {
       parts.setMirror(null, null);
       return;
@@ -568,7 +596,7 @@ export class CityEngine {
     this.flushSurface();
     this.renderMirror();
     const wantAo = this.quality >= 1;
-    const wantBloom = activeTheme().neon && this.quality >= 1;
+    const wantBloom = this.theme.neon && this.quality >= 1;
     if (!wantAo && !wantBloom) {
       this.renderer.render(this.scene, this.camera);
       return;
@@ -678,8 +706,79 @@ export class CityEngine {
     return this.layout;
   }
 
+  /** Public, renderer-independent SDK view of the active City's road anchors. */
+  getCitySdkLayoutView(): CityLayoutSdkViewV1 | null {
+    return this.layout ? createSdkViewForCityLayout(this.layout) : null;
+  }
+
   get currentBackdrop(): BackdropMode {
     return this.backdrop;
+  }
+
+  get currentTheme(): CityTheme {
+    return this.theme;
+  }
+
+  /** Apply a built-in Creator release skin to this live City only; no preference or geography is persisted. */
+  applyCreatorSkin(skinId: CityCreatorSkinId): CityCreatorSkinOverrideToken {
+    if (skinId !== "miami-vice" && skinId !== "desert-evening") throw new Error("city_creator_skin_not_found");
+    if (this.disposed) throw new Error("city_engine_disposed");
+    if (this.creatorSkinOverride) {
+      if (this.creatorSkinOverride.skinId === skinId) return this.creatorSkinOverride;
+      throw new Error("creator_skin_override_active");
+    }
+    this.assertCreatorSkinCanChange();
+    const nextTheme: CityThemeName = skinId === "miami-vice" ? "miami" : "desert";
+    const token: CityCreatorSkinOverrideToken = Object.freeze({ owner: this.creatorSkinOwner, serial: ++this.creatorSkinSerial,
+      previousTheme: this.theme.name, skinId });
+    this.creatorSkinOverride = token;
+    try { this.applyRuntimeTheme(nextTheme); }
+    catch (error) {
+      this.creatorSkinOverride = null;
+      try { this.applyRuntimeTheme(token.previousTheme); } catch { /* Keep the original failure; engine teardown remains safe. */ }
+      throw error;
+    }
+    return token;
+  }
+
+  /** Restore only the current engine-owned override. Stale and repeated tokens are harmless no-ops. */
+  restoreCreatorSkin(token: CityCreatorSkinOverrideToken): boolean {
+    if (this.disposed || token.owner !== this.creatorSkinOwner || this.creatorSkinOverride !== token) return false;
+    this.assertCreatorSkinCanChange();
+    this.applyRuntimeTheme(token.previousTheme);
+    this.creatorSkinOverride = null;
+    return true;
+  }
+
+  private assertCreatorSkinCanChange(): void {
+    if (this.disposed) throw new Error("city_engine_disposed");
+    if (this.gameSceneToken || this.gameFrame || this.drivingWorldFrame || this.cinematic || this.modeLeases.busy || this.cameraOwner !== "orbit") {
+      throw new Error("city_creator_skin_runtime_busy");
+    }
+  }
+
+  private applyRuntimeTheme(themeName: CityThemeName): void {
+    if (this.theme.name === themeName) return;
+    this.theme = themeFor(themeName);
+    this.themeName = this.theme.name;
+    this.renderer.toneMappingExposure = this.theme.exposure;
+    const uniforms = (this.skyDome?.material as THREE.ShaderMaterial | undefined)?.uniforms;
+    if (uniforms) {
+      (uniforms.uGradeTop.value as THREE.Color).set(this.theme.skyGrade.top);
+      (uniforms.uGradeHorizon.value as THREE.Color).set(this.theme.skyGrade.horizon);
+      uniforms.uGradeAmount.value = this.theme.skyGrade.amount;
+      uniforms.uSkyYaw.value = skyYawOf(this.theme);
+    }
+    this.composer?.dispose();
+    this.composer = null;
+    this.composerKey = "";
+    // Rebuild themed materials from the existing base layout. keepBase avoids
+    // regenerating geography or changing SDK anchor/world revisions.
+    if (this.model && this.seed !== null && this.baseLayout) this.applyModel(this.model, false, true);
+    this.lastSkyHour = -1;
+    this.lastWeatherKey = "";
+    this.updateScene(0);
+    if (!this.disposed && !this.contextLost) this.renderFrame();
   }
 
   /** Mount a trusted, allowlisted remote projection of the already-laid-out city. */
@@ -914,7 +1013,7 @@ export class CityEngine {
     const remoteLayout = this.nextLayoutOverride;
     this.nextLayoutOverride = null;
     const base = remoteLayout ?? (keepBase && sameModel && this.baseLayout ? this.baseLayout
-      : layoutCity(model, reuse ? this.baseLayout : null, this.seed, MIAMI_COASTAL, this.backdrop, layoutPinsFor(patch)));
+      : layoutCityForWorld(model, reuse ? this.baseLayout : null, this.seed, this.options.worldProfile ?? MIAMI_CITY_WORLD_V1, this.backdrop, layoutPinsFor(patch)));
     const planResult = remoteLayout ? null : patch ? applyPlanPatch(base, patch) : null;
     const layout = planResult ? planResult.layout : base;
     // 同岛分页：不拆 CityParts / 实例网格 / 相机 / 选中态；只把新楼写进已有批次。
@@ -952,14 +1051,15 @@ export class CityEngine {
     this.surfacePort.invalidate();
     this.drivingWorldPort.invalidate();
     if (this.parts) {
-      this.scene.remove(this.parts.group, this.parts.water);
+      this.scene.remove(this.parts.group);
+      if (this.parts.water) this.scene.remove(this.parts.water);
       this.parts.dispose();
       this.parts = null;
     }
     this.baseLayout = base;
     this.planResult = planResult;
     this.layout = layout;
-    this.parts = new CityParts(model, layout, previousDisplays);
+    this.parts = new CityParts(model, layout, previousDisplays, this.theme);
     this.parts.setLabelsVisible(this.labelsVisible);
     this.parts.setBattleClarity(this.modeBattleClarity);
     if (this.assets) this.parts.applyAssets(this.assets);
@@ -968,7 +1068,8 @@ export class CityEngine {
     // 生态带植被异步到达：只在 parts 仍是这一份时替换（换种子/换主题会重建 parts）。
     const parts = this.parts;
     this.floraReady = loadBiomeFlora(layout.biome).then((flora) => { if (this.parts === parts && !this.disposed) parts.applyFlora(flora); });
-    this.scene.add(this.parts.group, this.parts.water);
+    this.scene.add(this.parts.group);
+    if (this.parts.water) this.scene.add(this.parts.water);
     this.reapplyKits("mount");
 
     this.cityCenter = { x: (layout.urbanBounds.left + layout.urbanBounds.right) / 2, z: (layout.urbanBounds.north + layout.urbanBounds.south) / 2 };
@@ -1010,7 +1111,7 @@ export class CityEngine {
     const bounds = Math.max(100, Math.hypot(layout.urbanBounds.right - layout.urbanBounds.left, layout.urbanBounds.south - layout.urbanBounds.north) / 2 + 35);
     this.boundsRadius = bounds;
     this.controls.maxDistance = bounds * 4.5;
-    this.scene.fog = new THREE.Fog(new THREE.Color(activeTheme().fog), bounds * 2.1, bounds * 7.5);
+    this.scene.fog = new THREE.Fog(new THREE.Color(this.theme.fog), bounds * 2.1, bounds * 7.5);
     const shadowBox = bounds * 0.85 + 24;
     const shadowCamera = this.sun.shadow.camera as THREE.OrthographicCamera;
     this.placeSun();
@@ -1054,7 +1155,7 @@ export class CityEngine {
   /** 按主题的方位/高度角放太阳。曾放在城市中心正上方约 bounds 高、水平只偏 139 处——
    *  高度角约 79°，影子只有楼高的五分之一、全藏在楼底下，看起来像「没有太阳」。 */
   private placeSun(): void {
-    const theme = activeTheme();
+    const theme = this.theme;
     const azimuth = THREE.MathUtils.degToRad(theme.sunAzimuthDeg);
     const elevation = THREE.MathUtils.degToRad(theme.sunElevationDeg);
     const distance = this.sunDistance();
@@ -1579,7 +1680,7 @@ export class CityEngine {
       const car = this.parts.group.getObjectByName(`${PLAYABLE_CAR_PREFIX}${districtId}`);
       if (!car) return null;
       const at = car.getWorldPosition(new THREE.Vector3());
-      return { kind, districtId, color: (this.model ? paletteForDistrict(this.model, districtId) : paletteFor(districtId)).accent, x: at.x, z: at.z, heading: heading(car, new THREE.Vector3(0, 0, 1)) };
+      return { kind, districtId, color: (this.model ? paletteForDistrict(this.model, districtId, this.theme) : paletteFor(districtId, this.theme)).accent, x: at.x, z: at.z, heading: heading(car, new THREE.Vector3(0, 0, 1)) };
     }
     if (kind === "mecha") {
       const squad = this.parts.group.getObjectByName(PLAYABLE_MECHA_NAME);
@@ -1653,19 +1754,19 @@ export class CityEngine {
       depthWrite: false,
       fog: false,
       uniforms: {
-        topColor: { value: new THREE.Color(activeTheme().skyTop) },
-        midColor: { value: new THREE.Color(activeTheme().skyMid) },
-        horizonColor: { value: new THREE.Color(activeTheme().skyHorizon) },
+        topColor: { value: new THREE.Color(this.theme.skyTop) },
+        midColor: { value: new THREE.Color(this.theme.skyMid) },
+        horizonColor: { value: new THREE.Color(this.theme.skyHorizon) },
         // 全景天空图（HDR 转出）；uHasSky=0 时退回上面的三色渐变。
         uSky: { value: null as THREE.Texture | null },
         uHasSky: { value: 0 },
         // 白天照片与混合量：白天照片在 6–8 点渐入、16–18:30 渐出（见 updateDaylight），其余时间是黄昏照片（夜里再乘 uSkyDim）。
         uSkyDay: { value: null as THREE.Texture | null },
         uDayMix: { value: 0 },
-        uGradeTop: { value: new THREE.Color(activeTheme().skyGrade.top) },
-        uGradeHorizon: { value: new THREE.Color(activeTheme().skyGrade.horizon) },
-        uGradeAmount: { value: activeTheme().skyGrade.amount },
-        uSkyYaw: { value: skyYawOf(activeTheme()) },
+        uGradeTop: { value: new THREE.Color(this.theme.skyGrade.top) },
+        uGradeHorizon: { value: new THREE.Color(this.theme.skyGrade.horizon) },
+        uGradeAmount: { value: this.theme.skyGrade.amount },
+        uSkyYaw: { value: skyYawOf(this.theme) },
         // 昼夜：渐变分支的程序星点强度；HDR 全景分支的夜间压暗（1=白天原样）。
         uStars: { value: 0 },
         uSkyDim: { value: 1 },
@@ -2296,7 +2397,7 @@ export class CityEngine {
       // 夜晚城市亮窗：立面自发光抬升（保留 theme 基线的下限）。
       this.parts.setNightGlow(sky.selfLit);
       // N1：夜里曝光压低约 0.35 EV，暗是底色、光源才有层次。
-      this.renderer.toneMappingExposure = activeTheme().exposure * (1 - LIGHT_BUDGET.ambient.exposureCut * nightFactor(sky.selfLit));
+      this.renderer.toneMappingExposure = this.theme.exposure * (1 - LIGHT_BUDGET.ambient.exposureCut * nightFactor(sky.selfLit));
       this.parts.applySelfLit(this.themeSelfLit);
       this.parts.setNightWater(skyUniforms.uNight.value as number);
     }
@@ -2492,7 +2593,8 @@ export class CityEngine {
     this.cameraOwner = "orbit";
     this.observers.forEach((cleanup) => cleanup());
     if (this.parts) {
-      this.scene.remove(this.parts.group, this.parts.water);
+      this.scene.remove(this.parts.group);
+      if (this.parts.water) this.scene.remove(this.parts.water);
       this.parts.dispose();
       this.parts = null;
     }

@@ -25,7 +25,7 @@ const relocationCandidates = (ctx: RepairContext, id: string): Array<{ from: str
     const at = keyOf({ x: node.x + direction.x * radius, z: node.z + direction.z * radius });
     const candidateId = roadNodeId(at);
     if (candidateId === id || ctx.network.nodes.has(candidateId) || ctx.inRiver(at.x, at.z)) continue;
-    const height = ctx.height(at.x, at.z);
+    const height = ctx.elevation(at.x, at.z);
     if (!Number.isFinite(height) || height <= 0.5) continue;
     candidates.push({ ...at, id: candidateId, height, distance: Math.hypot(at.x - node.x, at.z - node.z) });
   }

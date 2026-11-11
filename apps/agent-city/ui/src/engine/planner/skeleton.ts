@@ -229,7 +229,7 @@ export function buildSkeleton(opts: {
       // 岸边带内的点也不进路线：否则路线先走到岸边、再折回桥头，引道是一段回头路。
       // 门槛 13（> buildable 的 12）：离岸 10–12 的路点过不了地面路走廊的可建设检查，整段被退回到更早的点，
       // 端头停在离水 ~50 的内陆成了断头（seed 1703294958/2 档实测 trunk 3 building-setback）。
-      if (geo.maxWaterSpan > 140 && geo.landClearance(q.x, q.z) < 13) continue;
+      if (geo.maxWaterSpan > 140 && geo.landform.waterClearance(q.x, q.z) < 13) continue;
       lastLand = q;
       if (step % 3 === 0) points.push(q);
     }

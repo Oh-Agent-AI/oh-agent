@@ -28,14 +28,32 @@ export function captureRenderedSolids(roots: readonly RenderedSolidRoot[]): Rend
       const wasVisible = visible(mesh);
       checks.push(() => visible(mesh) === wasVisible);
       if (!wasVisible) return;
-      if ((mesh as THREE.SkinnedMesh).isSkinnedMesh || mesh.morphTargetInfluences?.some((x) => x !== 0)) throw new Error("unsupported-rendered-solid-deformation");
+      const skinned = (mesh as THREE.SkinnedMesh).isSkinnedMesh ? mesh as THREE.SkinnedMesh : null;
+      let staticPose = false;
+      for (let parent: THREE.Object3D | null = mesh; parent; parent = parent.parent) if (parent.userData.cityDrivingStaticPose === true) { staticPose = true; break; }
+      if (skinned && !staticPose) throw new Error(`unsupported-rendered-solid-deformation:${root.role}:skinned`);
+      if (mesh.morphTargetInfluences?.some((x) => x !== 0)) throw new Error(`unsupported-rendered-solid-deformation:${root.role}:morph`);
       const geometry = mesh.geometry, attribute = geometry.getAttribute("position"), index = geometry.index;
       const lifetime = geometryLifetime(geometry), epoch = lifetime.epoch;
       if (!attribute || attribute.itemSize !== 3) throw new Error("invalid-rendered-solid-position");
       vertices += attribute.count;
       if (vertices > RENDERED_SOLID_LIMITS.vertices) throw new Error("rendered-solids-budget");
       const positions = new Float32Array(attribute.count * 3);
-      for (let i = 0; i < attribute.count; i++) positions.set([attribute.getX(i), attribute.getY(i), attribute.getZ(i)], i * 3);
+      const vertex = new THREE.Vector3();
+      const readPositions = (out: Float32Array) => {
+        if (skinned) {
+          skinned.updateWorldMatrix(true, true);
+          // SkinnedMesh overrides updateMatrixWorld to refresh its bind inverse;
+          // Object3D.updateWorldMatrix alone does not run that override.
+          skinned.updateMatrixWorld(true);
+          for (const bone of skinned.skeleton.bones) bone.updateWorldMatrix(true, false);
+        }
+        for (let i = 0; i < attribute.count; i++) {
+          if (skinned) { skinned.getVertexPosition(i, vertex); out.set([vertex.x, vertex.y, vertex.z], i * 3); }
+          else out.set([attribute.getX(i), attribute.getY(i), attribute.getZ(i)], i * 3);
+        }
+      };
+      readPositions(positions);
       if (!positions.every(Number.isFinite)) throw new Error("invalid-rendered-solid-position");
       const length = index?.count ?? attribute.count, selected: number[] = [];
       if (length > 3000000) throw new Error("rendered-solids-budget");
@@ -77,7 +95,9 @@ export function captureRenderedSolids(roots: readonly RenderedSolidRoot[]): Rend
         if (lifetime.epoch !== epoch || mesh.geometry !== geometry || geometry.getAttribute("position") !== attribute || geometry.index !== index ||
           mesh.morphTargetInfluences?.some((x) => x !== 0) ||
           (instanced?.count ?? 1) !== count || JSON.stringify(geometry.groups) !== groups || JSON.stringify(geometry.drawRange) !== range || mesh.material !== material) return false;
-        for (let i = 0; i < attribute.count; i++) if (attribute.getX(i) !== positions[i*3] || attribute.getY(i) !== positions[i*3+1] || attribute.getZ(i) !== positions[i*3+2]) return false;
+        const currentPositions = new Float32Array(positions.length);
+        readPositions(currentPositions);
+        if (!currentPositions.every((value, i) => value === positions[i])) return false;
         const now: number[] = [];
         for (let i = drawStart; i + 2 < drawEnd; i += 3) if (active(i)) for (let k = 0; k < 3; k++) now.push(index ? index.getX(i+k) : i+k);
         if (now.length !== indices.length || now.some((n, i) => n !== indices[i])) return false;

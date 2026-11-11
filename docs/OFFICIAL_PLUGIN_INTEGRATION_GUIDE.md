@@ -58,6 +58,14 @@ apps/desktop/src-tauri/src/
 
 注册表由导航、原生加载器、浏览器资源路由和构建脚本共同消费。原生以 `include_str!` 编译嵌入，修改后需要重新编译 APP；开发服务器修改注册表后建议重启。当前一次只运行一个活动插件，不支持多个插件并排常驻。
 
+### App Plugin 与 City 内容包的边界
+
+`plugins.json` 描述的是随 Oh Agent 构建、由 Rust 宿主持有身份和权限的官方 WebView 应用。City、Studio、Shop 这类产品入口属于 App Plugin；它们各自需要应用入口、宿主生命周期和最小权限描述。注册表不是 City 内容目录。
+
+City SDK 的 `city-layout`、`city-skin`、`city-minigame` 是由 City 加载的版本化内容包：皮肤只改变允许的视觉属性，小游戏通过 City 的挂载与活动运行时执行。购买、权益、下载/安装、应用皮肤、挂载小游戏是不同状态；这些内容包不应因为上架 Shop 就成为 `plugins.json` 项目，也不应各自创建一个 WebView。独立的 App Game 则属于应用级扩展，需要走单独的代码包验证、签名/安装、隔离和授权设计；当前注册表只支持随应用打包的官方应用，不支持用户动态安装第三方 App Plugin。
+
+单活动限制同样属于宿主契约：用 `plugin_open` 切换到另一个 App Plugin 时，宿主会关闭当前子 WebView 并替换活动实例；`plugin_close(suspend: true)` 只隐藏并保留同一个活动实例，不会让两个应用并排驻留。因此 City 与 Studio/Shop 之间若需返回原项目或页面，返回上下文必须由宿主可持久化的数据承载，不能依赖旧 WebView 仍留在内存。现有宿主尚未提供通用 handoff/return-context API；任何界面流程在该能力完成前都必须把此限制纳入实现与验收。
+
 ## 3. 最小 UI 项目
 
 插件可以不用 React。`package.json` 至少提供 `build` 脚本并依赖共享 SDK：

@@ -5,7 +5,7 @@
 import * as THREE from "three";
 import { hashSeed, type CityModel } from "../../cityModel";
 import type { CityLayout } from "../cityLayout";
-import { activeTheme } from "../cityTheme";
+import type { CityTheme } from "../cityTheme";
 import { paletteForDistrict } from "../cityTextures";
 import { createRenderCanvas } from "../renderCanvas";
 import { LANDMARK_BUILDERS } from "../render/landmarkBuilders";
@@ -22,6 +22,7 @@ import { m, REAL } from "../worldScale";
 export interface LandmarkSystemHost {
   model: CityModel;
   layout: CityLayout;
+  theme: CityTheme;
   group: THREE.Group;
   disposables: Array<{ dispose: () => void }>;
   nightLights: NightLights | null;
@@ -43,7 +44,7 @@ export function buildLandmarks(city: LandmarkSystemHost): void {
   if (!landmarks.length) return;
   const tallest = Math.max(30, ...city.model.buildings.map((building) => building.height));
   const cap = Math.max(70, tallest * 0.9);
-  const neon = activeTheme().neon;
+  const neon = city.theme.neon;
   // 批 0a：按 (color, emissive, side) 缓存；需要事后改动的材质传 { private: true }（见 render/landmarkMaterials.ts）。
   const material = createMaterialFactory((m) => city.disposables.push(m));
   const mesh = (geometry: THREE.BufferGeometry, mat: THREE.Material, parent: THREE.Object3D, x: number, y: number, z: number, ry = 0) => {
@@ -97,9 +98,9 @@ export function applyDistrictLandmarkGrowth(host: LandmarkSystemHost, cursor: nu
 const WINDOW_PITCH = 2.4;
 
 export function buildDistrictLandmarks(host: LandmarkSystemHost): void {
-  const neon = activeTheme().neon;
+  const neon = host.theme.neon;
   for (const spot of host.layout.districtLandmarks ?? []) {
-    const palette = paletteForDistrict(host.model, spot.districtId);
+    const palette = paletteForDistrict(host.model, spot.districtId, host.theme);
     const h = host.districtLandmarkHeight(spot.districtId);
     // 地基随楼高放大（按会话楼「高楼加宽」的策略），只在地标已预留的整块街区里放大；街区里其余部分做前院（停车场、绿化）。
     const parcels = host.layout.blocks.flatMap((block) => block.parcels);

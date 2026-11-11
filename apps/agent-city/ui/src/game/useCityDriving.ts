@@ -4,8 +4,9 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
 import type { CityEngine } from "../engine/CityEngine";
 import { EMPTY_DRIVING_INPUT, DRIVING_DT, type DrivingState, type DrivingInputState } from "./DrivingSimulation";
 import { GameRuntime } from "./runtime/GameRuntime";
+import type { CityActivityCoordinator, CityActivityLease } from "./activity/CityActivityCoordinator";
 import { createCityCarSession, createCityCarDiagnosticSession, createCityCarFreeDriveSession, type CityCarSceneCapability } from "./runtime/createCityCarSession";
-import type { CollisionDimensions } from "./driving/CollisionIndex";
+import type { CollisionDimensions, SolidInput } from "./driving/CollisionIndex";
 import type { CarPresentation } from "./runtime/CarAdapter";
 import type { CameraClearanceQuery, ChaseCameraSafety } from "./VehicleChaseCamera";
 import type { RuntimeDiagnosticSnapshot } from "./runtime/RuntimeDiagnostics";
@@ -43,15 +44,22 @@ export function useCityDriving(engine: RefObject<CityEngine | null>, options: Re
   vtol?: boolean;
   /** Remote visitors operate only their browser-local scene and must not call desktop host IPC. */
   notifyHostBusy?: boolean;
+  /** Fixed-step position callback for SDK gameplay; receives simulation state, not rendered interpolation. */
+  onFixedStep?: (state: Readonly<Pick<DrivingState, "x" | "y" | "z">>) => void;
+  /** Frozen, release-scoped geometry for a Creator minigame. Only free-drive entry consumes it. */
+  additionalSolids?: () => Readonly<{ revision: string; solids: readonly SolidInput[] }> | null;
+  activityCoordinator: CityActivityCoordinator;
   cinemaActive: () => boolean; gameActive: () => boolean; busy: () => boolean;
 }>) {
   const [hud, setHud] = useState<DrivingHudSnapshot>(IDLE_HUD);
   const [entryError, setEntryError] = useState<string | null>(null);
+  const lastEntryFailure = useRef<string | null>(null);
   const [preparationProgress, setPreparationProgress] = useState<PreparationProgress | null>(null);
   const [events, setEvents] = useState<readonly DrivingEvent[]>(Object.freeze([]));
   const eventLog = useRef<DrivingEventLog | null>(null);
   if (!eventLog.current) eventLog.current = new DrivingEventLog();
   const runtimeRef = useRef<GameRuntime<DrivingInputState> | null>(null);
+  const activityLeaseRef = useRef<CityActivityLease | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const preparing = useRef(false);
   const latest = useRef({ speed: 0, blocked: false, reason: null as string | null, coverage: null as string | null, gear: "N" as DrivingHudSnapshot["gear"], altitude: null as number | null, boost: null as number | null });
@@ -70,9 +78,11 @@ export function useCityDriving(engine: RefObject<CityEngine | null>, options: Re
   }, []);
   useEffect(() => {
     alive.current = true;
-    if (options.confirmationEnabled === false) return () => { alive.current = false; abortRef.current?.abort(); runtimeRef.current?.dispose(); runtimeRef.current = null; };
+    if (options.confirmationEnabled === false) return () => { alive.current = false; abortRef.current?.abort(); runtimeRef.current?.dispose(); runtimeRef.current = null;
+      activityLeaseRef.current?.release(); activityLeaseRef.current = null; };
     const unsubscribe = confirmationStore.subscribe(() => setSpawnConfirmation(confirmationStore.snapshot));
-    return () => { alive.current = false; unsubscribe(); abortRef.current?.abort(); runtimeRef.current?.dispose(); runtimeRef.current = null; };
+    return () => { alive.current = false; unsubscribe(); abortRef.current?.abort(); runtimeRef.current?.dispose(); runtimeRef.current = null;
+      activityLeaseRef.current?.release(); activityLeaseRef.current = null; };
   }, [confirmationStore, options.confirmationEnabled]);
   useEffect(() => {
     if (options.confirmationEnabled === false) return;
@@ -96,6 +106,7 @@ export function useCityDriving(engine: RefObject<CityEngine | null>, options: Re
   }, [hud.phase, publish]);
 
   const start = useCallback(async (mode: "formal" | "free-drive" | "diagnostic", vehicle?: Readonly<{ vtol: boolean }>, near?: Readonly<{ x: number; z: number }>): Promise<boolean> => {
+    lastEntryFailure.current = null;
     const host = engine.current;
     if (!host || runtimeRef.current) return false;
     if (optionsRef.current.cinemaActive() || optionsRef.current.gameActive() || optionsRef.current.busy()) {
@@ -108,8 +119,19 @@ export function useCityDriving(engine: RefObject<CityEngine | null>, options: Re
         ? "正式道路图尚不可用，暂不能开始驾驶。" : "驾驶出生点尚未完成当前场景确认，暂不能开始。"); return false;
     }
     const confirmedSpawn = authorization?.ok ? authorization.credential : null;
-    if (optionsRef.current.notifyHostBusy !== false) { try { await noteBusy(10_000); } catch { /* host pulse is best-effort */ } }
+    const additionalSolids = mode === "free-drive" ? currentOptions.additionalSolids?.() ?? null : null;
+    const admission = optionsRef.current.activityCoordinator.tryAcquire("driving");
+    if (!admission.ok) { setEntryError(`当前 ${admission.active.activityId} 活动正在${admission.active.phase === "preparing" ? "准备" : "运行"}，暂不能开始驾驶。`); return false; }
+    activityLeaseRef.current = admission.lease;
     const abort = new AbortController(); abortRef.current = abort;
+    if (currentOptions.notifyHostBusy !== false) {
+      try { await noteBusy(10_000); } catch { /* host pulse is best-effort */ }
+    }
+    if (abort.signal.aborted || !alive.current) {
+      admission.lease.release(); if (activityLeaseRef.current === admission.lease) activityLeaseRef.current = null;
+      if (abortRef.current === abort) abortRef.current = null;
+      return false;
+    }
     const runtime = new GameRuntime<DrivingInputState>({ dt: DRIVING_DT, emptyInput: () => ({ ...EMPTY_DRIVING_INPUT }) }); runtimeRef.current = runtime;
     preparing.current = true;
     setPreparationProgress({ stage: "world-capture", state: "started" });
@@ -117,6 +139,8 @@ export function useCityDriving(engine: RefObject<CityEngine | null>, options: Re
     latest.current = { speed: 0, blocked: false, reason: null, coverage: null, gear: "N", altitude: null, boost: null };
     setEntryError(null); setHud({ ...IDLE_HUD, phase: "preparing" });
     const request = { collider: CITY_CAR_COLLIDER, vtol: vehicle?.vtol ?? (currentOptions.vtol === true), near, onPreparationMetric: runtime.recordPreparation.bind(runtime),
+      onFixedStep: currentOptions.onFixedStep,
+      ...(additionalSolids ? { additionalSolids: additionalSolids.solids, additionalSolidsRevision: additionalSolids.revision } : {}),
       onPreparationProgress: async (value: PreparationProgress) => {
         if (value.state === "started" && optionsRef.current.notifyHostBusy !== false) { try { await noteBusy(10_000); } catch { /* host pulse is best-effort */ } }
         setPreparationProgress(value);
@@ -147,16 +171,23 @@ export function useCityDriving(engine: RefObject<CityEngine | null>, options: Re
         : mode === "free-drive" ? await createCityCarFreeDriveSession(host, runtime, request, abort.signal)
         : await createCityCarSession(host, runtime, { ...request, x: confirmedSpawn!.x, z: confirmedSpawn!.z, heading: confirmedSpawn!.heading,
           layerId: confirmedSpawn!.layerId, validatedSpawn: confirmedSpawn! }, abort.signal);
-      if (abort.signal.aborted || runtimeRef.current !== runtime || !alive.current) { runtime.dispose(); return false; }
+      if (abort.signal.aborted || runtimeRef.current !== runtime || !alive.current) { runtime.dispose(); admission.lease.release();
+        if (activityLeaseRef.current === admission.lease) activityLeaseRef.current = null; return false; }
       preparing.current = false;
       setPreparationProgress(null);
       if (entry.status !== "ready") {
+        lastEntryFailure.current = entry.reason;
         runtime.dispose(); runtimeRef.current = null;
+        admission.lease.release(); if (activityLeaseRef.current === admission.lease) activityLeaseRef.current = null;
         setEntryError(`暂不能开始驾驶：${entry.reason}`); publish(); return false;
       }
+      if (!admission.lease.activate()) { runtime.dispose(); runtimeRef.current = null; preparing.current = false;
+        admission.lease.release(); if (activityLeaseRef.current === admission.lease) activityLeaseRef.current = null;
+        setEntryError("驾驶活动已失效，请重新进入。"); publish(); return false; }
       latest.current.coverage = entry.coverage; publish(); return true;
     } catch (error) {
       runtime.dispose();
+      admission.lease.release(); if (activityLeaseRef.current === admission.lease) activityLeaseRef.current = null;
       if (runtimeRef.current === runtime) { runtimeRef.current = null; preparing.current = false; setPreparationProgress(null); }
       if (alive.current && !abort.signal.aborted) { setEntryError(`暂不能开始驾驶：${error instanceof Error ? error.message : "city-driving-entry-failed"}`); publish(); }
       return false;
@@ -166,6 +197,7 @@ export function useCityDriving(engine: RefObject<CityEngine | null>, options: Re
     abortRef.current?.abort(); abortRef.current = null;
     preparing.current = false; setPreparationProgress(null);
     runtimeRef.current?.dispose(); runtimeRef.current = null;
+    activityLeaseRef.current?.release(); activityLeaseRef.current = null;
     latest.current = { speed: 0, blocked: false, reason: null, coverage: null, gear: "N", altitude: null, boost: null }; publish();
   }, [publish]);
   const pause = useCallback((reason = "user-paused") => { runtimeRef.current?.pause(reason); publish(); }, [publish]);
@@ -180,7 +212,8 @@ export function useCityDriving(engine: RefObject<CityEngine | null>, options: Re
   const cancelSpawn = useCallback(() => { if (optionsRef.current.confirmationEnabled !== false) confirmationStore.cancel(); }, [confirmationStore]);
   const invalidateSpawn = useCallback((reason?: string) => { if (optionsRef.current.confirmationEnabled !== false) confirmationStore.invalidate(reason); }, [confirmationStore]);
   const diagnostics = useCallback((): RuntimeDiagnosticSnapshot | null => runtimeRef.current?.diagnostics ?? null, []);
+  const getLastEntryFailure = useCallback(() => lastEntryFailure.current, []);
   return { hud, entryError, preparationProgress, events, clearEntryError: () => setEntryError(null), spawnConfirmation,
-    deriveSpawnCandidates, validateSpawnCandidate, confirmSpawn, cancelSpawn, invalidateSpawn,
+    deriveSpawnCandidates, validateSpawnCandidate, confirmSpawn, cancelSpawn, invalidateSpawn, getLastEntryFailure,
     enter: () => start("formal"), enterFreeDrive: (vehicle?: Readonly<{ vtol: boolean }>, near?: Readonly<{ x: number; z: number }>) => start("free-drive", vehicle, near), enterDiagnostic: () => start("diagnostic"), exit, pause, resume, toggle, setInput, diagnostics, physicsStep: DRIVING_DT };
 }

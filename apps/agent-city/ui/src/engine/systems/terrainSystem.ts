@@ -6,8 +6,7 @@
 import * as THREE from "three";
 import { fbm } from "../cityNoise";
 import type { CityLayout } from "../cityLayout";
-import { MIAMI_COASTAL } from "../citySeaside";
-import { activeTheme, skyYawOf } from "../cityTheme";
+import { skyYawOf, type CityTheme } from "../cityTheme";
 import { makeCityTexture } from "../cityTextures";
 import { LIGHT_BUDGET, useOfZone } from "../cityLightBudget";
 import { CAR_STREET_LIGHT_GLSL, carLampsAdd, carStreetLightUniforms } from "../render/drivingStreetLights";
@@ -16,6 +15,7 @@ import { createRenderCanvas } from "../renderCanvas";
 /** terrainSystem 用到的 CityParts 成员（调用方以 `this as unknown as TerrainHost` 传入）。 */
 export interface TerrainHost {
   readonly layout: CityLayout;
+  readonly theme: CityTheme;
   readonly group: THREE.Group;
   readonly disposables: Array<{ dispose: () => void }>;
   /** buildGroundSpill 只读每栋楼的占地与已建比例。 */
@@ -96,7 +96,7 @@ export function buildTerrain(host: TerrainHost): void {
       position.setXYZ(index, worldX, host.layout.terrain.height(worldX, worldZ), worldZ);
     }
     geometry.computeVertexNormals();
-    const texture = makeCityTexture(host.layout);
+    const texture = makeCityTexture(host.layout, host.theme);
     texture.colorSpace = THREE.SRGBColorSpace;
     const material = new THREE.MeshLambertMaterial({ map: texture });
     installGroundDetail(host, material);
@@ -278,15 +278,15 @@ export function buildWater(host: TerrainHost): THREE.Mesh {
     uniforms: {
       uTime: { value: 0 },
       uSun: { value: new THREE.Vector3(0.55, 0.75, 0.36).normalize() },
-      uDeep: { value: new THREE.Color(activeTheme().water.deep) },
-      uShallow: { value: new THREE.Color(activeTheme().water.shallow) },
-      uSky: { value: new THREE.Color(activeTheme().water.sky) },
+      uDeep: { value: new THREE.Color(host.theme.water.deep) },
+      uShallow: { value: new THREE.Color(host.theme.water.shallow) },
+      uSky: { value: new THREE.Color(host.theme.water.sky) },
       uDepth: { value: depthTexture },
       uDepthWorld: { value: DEPTH_WORLD },
       // 与 scene.background 同色：ShaderMaterial 不吃 scene.fog，水面远处要自己淡出到天空色，
       // 否则 2600 见方的水面直边会像「世界边缘」露在天空下。
-      uFog: { value: new THREE.Color(activeTheme().skyHorizon) },
-      uFogRange: { value: new THREE.Vector2(...activeTheme().waterFog) },
+      uFog: { value: new THREE.Color(host.theme.skyHorizon) },
+      uFogRange: { value: new THREE.Vector2(...host.theme.waterFog) },
       uNormal: { value: null as THREE.Texture | null },
       // 平面镜反射（引擎每帧把镜像相机看到的场景渲染进来）：岸边的楼、山、桥倒映在水里。
       uMirror: { value: null as THREE.Texture | null },
@@ -298,10 +298,10 @@ export function buildWater(host: TerrainHost): THREE.Mesh {
       uExtent: { value: host.layout.extent },
       uSkyTex: { value: null as THREE.Texture | null },
       uHasAssets: { value: 0 },
-      uGradeTop: { value: new THREE.Color(activeTheme().skyGrade.top) },
-      uGradeHorizon: { value: new THREE.Color(activeTheme().skyGrade.horizon) },
-      uGradeAmount: { value: activeTheme().skyGrade.amount },
-      uSkyYaw: { value: skyYawOf(activeTheme()) },
+      uGradeTop: { value: new THREE.Color(host.theme.skyGrade.top) },
+      uGradeHorizon: { value: new THREE.Color(host.theme.skyGrade.horizon) },
+      uGradeAmount: { value: host.theme.skyGrade.amount },
+      uSkyYaw: { value: skyYawOf(host.theme) },
     },
     vertexShader: /* glsl */ `
       varying vec3 vWorld;

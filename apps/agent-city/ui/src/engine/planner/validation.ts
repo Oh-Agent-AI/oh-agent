@@ -95,18 +95,18 @@ export function corridorViolation(world: ConnectorWorld, a: Vec2, b: Vec2, polic
       const offset = width * (j / (lateralSteps || 1) - 0.5);
       const px = a.x + dxAB * i / steps + nx * offset;
       const pz = a.z + dzAB * i / steps + nz * offset;
-      const height = geo.height(px, pz);
+      const height = geo.landform.elevation(px, pz);
       if (!Number.isFinite(height)) return { kind: "projection-loss", cause: "invalid-geometry", at: { x: px, z: pz } };
       if (!endpoint && (height <= 0.5 || world.inRiver(px, pz))) return { kind: "water-span", cause: "water-envelope", at: { x: px, z: pz } };
-      if (policy.requireBuildable && !geo.buildable(px, pz)) return { kind: "slope", cause: "building-setback", at: { x: px, z: pz } };
+      if (policy.requireBuildable && !geo.landform.isBuildable(px, pz)) return { kind: "slope", cause: "building-setback", at: { x: px, z: pz } };
       if (waterfront) {
-        const clearance = geo.landClearance?.(px, pz);
+        const clearance = geo.landform.waterClearance(px, pz);
         const hillGap = geo.hillLine - geo.hillProj?.(px, pz);
         if (!Number.isFinite(clearance) || !Number.isFinite(hillGap)) return { kind: "projection-loss", cause: "invalid-geometry", at: { x: px, z: pz } };
         if (clearance <= waterfront.minLandClearance || hillGap <= waterfront.hillSetback
           || height >= waterfront.maxHeight) return { kind: "slope", cause: "roadway-setback", at: { x: px, z: pz } };
       }
-      const slope = terrain.slope(px, pz);
+      const slope = geo.landform.slope(px, pz);
       if (!Number.isFinite(slope) || slope > policy.maxSlope) return { kind: "slope", cause: "road-slope", at: { x: px, z: pz } };
     }
   }
@@ -137,11 +137,11 @@ export function corridorBlocked(world: ConnectorWorld, a: Vec2, b: Vec2, policy:
       const offset = width * (j / (lateralSteps || 1) - 0.5);
       const px = a.x + dxAB * i / steps + nx * offset;
       const pz = a.z + dzAB * i / steps + nz * offset;
-      const height = geo.height(px, pz);
+      const height = geo.landform.elevation(px, pz);
       if (!Number.isFinite(height)) return true;
       if (height <= 0.5 || world.inRiver(px, pz)) return true;
-      if (policy.requireBuildable && !geo.buildable(px, pz)) return true;
-      const slope = terrain.slope(px, pz);
+      if (policy.requireBuildable && !geo.landform.isBuildable(px, pz)) return true;
+      const slope = geo.landform.slope(px, pz);
       if (!Number.isFinite(slope) || slope > policy.maxSlope) return true;
     }
     return false;

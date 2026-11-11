@@ -35,13 +35,13 @@ import type { RepairContext } from "./context";
 
 /** 用地修复遍共用的几何：可挪动的用地、最近非桥路段（含垂足）、占地圈湿点数。路网在这些遍内不变，所以每个遍各算一份与原先共用一份等价。 */
 export function siteGeometry(ctx: RepairContext, onlyOwnerId?: string) {
-  const { publicSites, landmarks, height, inRiver } = ctx; const { edges } = ctx.network;
+  const { publicSites, landmarks, elevation: height, inRiver } = ctx; const { edges } = ctx.network;
   // 港口在 solve 前有专属贴岸遍。通用避路遍会把它从岸边推到内陆，覆盖明确的岸线规划意图；
   // 港口的道路接入由 site-access 连接负责，不应通过移动港口中心来解决。
   const movable = [...publicSites, ...landmarks].filter((s) => s.radius && canRelocateGroundSite(s)
     && (onlyOwnerId === undefined || s.id === onlyOwnerId));
   const solidRuns = [...edges.values()].filter((e) => !e.bridge).map((e) => e.points);
-  const geo = { height, inRiver };
+  const geo = { elevation: height, inRiver };
   const nearestRoad = (x: number, z: number) => polylineClosest(solidRuns, { x, z });
   const wetAt = (site: { radius: number }, x: number, z: number) => wetCount(geo, { x, z }, site.radius, { river: true });
   return { movable, nearestRoad, wetAt };
@@ -50,7 +50,7 @@ type SiteGeometry = ReturnType<typeof siteGeometry>;
 
 /** 临街：车站/体育场拉到离路 0.85 半径（先不转向、再转向车站正面各一遍，与原先顺序一致）。返回挪动次数。 */
 export function frontStationsAndStadiums(ctx: RepairContext): number {
-  const { publicSites, landmarks, blocks, ringRuns, height } = ctx;
+  const { publicSites, landmarks, blocks, ringRuns, elevation: height } = ctx;
   const { movable, nearestRoad, wetAt } = siteGeometry(ctx);
   let moved = 0;
   // 临街：车站/体育场的正面要贴着路边（用户截图：车站离路一大截——「门前有路」守卫只要求 ≤ 半径+20）。
@@ -100,7 +100,7 @@ export function frontStationsAndStadiums(ctx: RepairContext): number {
 /** Read-only, lazy candidates for the existing bounded coastal fallback. */
 export function* shoreRelocationCandidates(ctx: RepairContext, site: RepairContext["landmarks"][number] | RepairContext["publicSites"][number], g: SiteGeometry,
   others: Array<{ x: number; z: number; radius: number }>): Iterable<Vec2> {
-  const { ringRuns, coast, core, height, SHORE_SITE_KINDS } = ctx;
+  const { ringRuns, coast, core, elevation: height, SHORE_SITE_KINDS } = ctx;
   const { nearestRoad, wetAt } = g;
   const groundRoads = [...ctx.network.edges.values()].filter(road => !road.bridge);
   if (!(SHORE_SITE_KINDS.has(site.kind)) || (site as { shore?: Vec2 }).shore) return;
@@ -118,7 +118,7 @@ export function* shoreRelocationCandidates(ctx: RepairContext, site: RepairConte
     if (others.some((o) => Math.hypot(o.x - nx, o.z - nz) < o.radius + site.radius)) continue;
     if (!clearsHighways({ x: nx, z: nz }, site.radius * 2, site.radius * 2, ringRuns)) continue;
     if (polylineDistance(ctx.trunkRuns, { x: nx, z: nz }) < site.radius * 0.7) continue;
-    if (registeredModelGroundFailure({ ...site, x: nx, z: nz }, { height, inRiver: ctx.inRiver })) continue;
+    if (registeredModelGroundFailure({ ...site, x: nx, z: nz }, { elevation: height, inRiver: ctx.inRiver })) continue;
     yield { x: nx, z: nz };
   }
 }
@@ -134,7 +134,7 @@ export function relocateShoreSite(ctx: RepairContext, site: RepairContext["landm
 
 /** 穿路的用地推离路（最多 6 轮直到没有挪动）；推不开的岸边用地走 relocateShoreSite。返回总挪动数。 */
 export function nudgeSitesOffRoads(ctx: RepairContext, onlyOwnerId?: string): number {
-  const { publicSites, landmarks, blocks, ringRuns, height } = ctx;
+  const { publicSites, landmarks, blocks, ringRuns, elevation: height } = ctx;
   const g = siteGeometry(ctx, onlyOwnerId);
   const { movable, nearestRoad, wetAt } = g;
   const groundRoads = [...ctx.network.edges.values()].filter(road => !road.bridge);
@@ -161,7 +161,7 @@ export function nudgeSitesOffRoads(ctx: RepairContext, onlyOwnerId?: string): nu
           if (others.some((o) => Math.hypot(o.x - nx, o.z - nz) < o.radius + site.radius)) continue;
           if (!clearsHighways({ x: nx, z: nz }, site.radius * 2, site.radius * 2, ringRuns)) continue;
           if (polylineDistance(ctx.trunkRuns, { x: nx, z: nz }) < site.radius * 0.7) continue;
-          if (registeredModelGroundFailure({ ...site, x: nx, z: nz }, { height, inRiver: ctx.inRiver })) continue;
+          if (registeredModelGroundFailure({ ...site, x: nx, z: nz }, { elevation: height, inRiver: ctx.inRiver })) continue;
           site.x = nx; site.z = nz; done = true; moved += 1;
           for (const block of blocks) block.parcels = block.parcels.filter((p) => Math.hypot(p.x - nx, p.z - nz) >= site.radius);
         }
@@ -178,7 +178,7 @@ export function nudgeSitesOffRoads(ctx: RepairContext, onlyOwnerId?: string): nu
 
 /** 被用地截断的路：两个共线断头隔着同一块用地时，用绕用地外缘的折线接起来。返回新增折线数。 */
 export function detourAroundSites(ctx: RepairContext): number {
-  const { height, inRiver, publicSites, landmarks } = ctx; const { nodes, edges } = ctx.network; const addEdge = (a: Vec2, b: Vec2, arterial: boolean, bridge = false, primary = false) => addNetworkEdge(ctx.network, a, b, arterial, bridge, primary); const key = keyOf;
+  const { elevation: height, inRiver, publicSites, landmarks } = ctx; const { nodes, edges } = ctx.network; const addEdge = (a: Vec2, b: Vec2, arterial: boolean, bridge = false, primary = false) => addNetworkEdge(ctx.network, a, b, arterial, bridge, primary); const key = keyOf;
   let joined = 0;
     const solid = () => [...edges.values()].filter((e) => !e.bridge);
     const degree = new Map<string, RoadEdge[]>();
@@ -263,7 +263,7 @@ export function extendLooseEnds(ctx: RepairContext, onlyNodeId?: string): number
         if (Math.hypot(target.x - hostStart.x, target.z - hostStart.z) < 12) target = hostStart;
         else if (Math.hypot(target.x - hostEnd.x, target.z - hostEnd.z) < 12) target = hostEnd;
         if (roadNodeId(target) === id) continue;
-        if (!safeRoadLink(ctx.geo, [...publicSites, ...landmarks], at, target)) continue;
+        if (!safeRoadLink(ctx.geo.landform, [...publicSites, ...landmarks], at, target)) continue;
         // Ordinary new T junctions share the same 35-degree contract.
         const ex2 = d.x - c.x; const ez2 = d.z - c.z; const cosA = Math.abs((ux * ex2 + uz * ez2) / lenE);
         const targetIsEndpoint = target === hostStart || target === hostEnd;
