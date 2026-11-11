@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { connectHostCalls, invokeHost, observeHealth, publishToolbar } from "@agent-vitals/app-sdk/ui-host";
 import { canonicalJson, validateCityLayoutSnapshot, validateMiniGamePack, validateMount, type CityGameMountV1, type CityLayoutSnapshotV1 } from "@agent-vitals/city-sdk";
@@ -59,6 +59,47 @@ function App() {
   const [publishedReleaseId, setPublishedReleaseId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  // 未完成操作的幂等标识：结果确定前保留，响应失败时用于重试与状态查询。
+  const [pendingEdit, setPendingEdit] = useState<{ projectId: string; operationId: string } | null>(null);
+  const [pendingCreateId, setPendingCreateId] = useState<string | null>(null);
+  // ── 草稿保护：每个编辑区域（规则/场景/挂载/皮肤）的草稿 = 当前输入 ≠ 上次同步的已保存值。
+  // preserve：保留有草稿区域的本地输入（草稿基于新 revision 重新校验后提交），同步无草稿区域；
+  // replace：重置全部表单（显式切换/新建项目），丢弃前在状态区明确告知。
+  const savedForms = (p: Project) => ({
+    game: JSON.stringify(p.game, null, 2),
+    scene: JSON.stringify(p.scene ?? { schemaVersion: 1, objects: [] }, null, 2),
+    bindings: JSON.stringify(p.mounts?.[0]?.bindings ?? {}, null, 2),
+    entry: p.mounts?.[0]?.entryAnchorId ?? p.cityLayout?.layout.anchors.find(anchor => anchor.kind === "spawn")?.id ?? "",
+    skin: p.skinId ?? "miami-vice",
+  });
+  const dirtyRegions = (p: Project) => {
+    const saved = savedForms(p);
+    return {
+      game: text !== saved.game,
+      scene: sceneText !== saved.scene,
+      mount: bindingsText !== saved.bindings || entryAnchorId !== saved.entry,
+      skin: skinId !== saved.skin,
+    };
+  };
+  const hasDrafts = (p: Project | null) => p !== null && Object.values(dirtyRegions(p)).some(Boolean);
+  const applyProject = (next: Project, mode: "preserve" | "replace", previous: Project | null) => {
+    const sameProject = previous !== null && previous.projectId === next.projectId;
+    const dirty = sameProject ? dirtyRegions(previous) : null;
+    const saved = savedForms(next);
+    setProject(next);
+    setText(dirty?.game ? text : saved.game);
+    setSceneText(dirty?.scene ? sceneText : saved.scene);
+    setBindingsText(dirty?.mount ? bindingsText : saved.bindings);
+    setEntryAnchorId(dirty?.mount ? entryAnchorId : saved.entry);
+    setSkinId(dirty?.skin ? skinId : saved.skin);
+    setPreviewId(null); setPreviewKind(null);
+    if (mode === "replace" && hasDrafts(previous)) setMessage("已切换项目；之前项目的未提交草稿已丢弃。");
+    return { preservedDrafts: mode === "preserve" && !!dirty && Object.values(dirty).some(Boolean) };
+  };
+  // 宿主事件与异步回调持有旧渲染的闭包；经 ref 始终调用最新实现，否则用户刚
+  // 输入的草稿会被旧闭包里的旧文本误判为「无草稿」而被覆盖。
+  const applyRef = useRef(applyProject);
+  applyRef.current = applyProject;
   const refresh = useCallback(async () => {
     const [response, layoutResponse] = await Promise.all([
       creatorRequest<{ projects: ProjectRow[] }>("creator.project.list", { limit: 50 }),
@@ -87,12 +128,14 @@ function App() {
       void refresh().then(async () => {
         if (!project) return;
         const current = await creatorRequest<Project>("creator.project.read", { projectId: project.projectId });
-        setProject(current); setText(JSON.stringify(current.game, null, 2));
-        setSceneText(JSON.stringify(current.scene ?? { schemaVersion: 1, objects: [] }, null, 2));
-        setEntryAnchorId(current.mounts?.[0]?.entryAnchorId ?? current.cityLayout?.layout.anchors.find(anchor => anchor.kind === "spawn")?.id ?? "");
-        setBindingsText(JSON.stringify(current.mounts?.[0]?.bindings ?? {}, null, 2));
-        setSkinId(current.skinId ?? "miami-vice");
-        setPreviewId(null); setPreviewKind(null);
+        // Agent/其他来源的提交经此刷新：有草稿的区域保留本地输入（基于新
+        // revision 重新校验后提交），无草稿区域同步服务端状态；revision 前进时提示冲突。
+        const outcome = applyRef.current(current, "preserve", project);
+        if (current.revision !== project.revision) {
+          setMessage(outcome.preservedDrafts
+            ? `项目已保存新版本（revision ${current.revision}，来自 Agent 或其他来源）。你的未提交草稿已保留在旧版本基础上；提交前请重新校验预览（差异按新版本计算），或手动放弃。`
+            : `项目已保存新版本（revision ${current.revision}，来自 Agent 或其他来源）。`);
+        }
       }).catch(error => setMessage(error instanceof Error ? error.message : "creator_refresh_failed"));
     };
     window.addEventListener("__CREATOR_PROJECT_CHANGED__", changed);
@@ -107,31 +150,35 @@ function App() {
         const counters = context.evidence ? Object.entries(context.evidence.counters).map(([key, value]) => `${key}=${value}`).join(", ") : "";
         const result = context.evidence ? ` · tick ${context.evidence.tick} · ${context.evidence.outcome ?? "未完成"}${counters ? ` · ${counters}` : ""}` : context.failureCode ? ` · ${context.failureCode}` : "";
         const message = `City 试玩已返回：${context.status} · revision ${context.revision}${result} · ${context.runId}`;
-        void openProject(context.projectId).then(() => setMessage(message));
+        // PRD：试玩结束回到同一编辑上下文——保留未提交草稿。
+        void openProject(context.projectId, "preserve").then(() => setMessage(message));
       }).catch(error => {
         const code = errorCode(error, "creator_playtest_return_failed");
         if (code !== "creator_playtest_not_found") setMessage(code);
       });
   }, []);
 
-  const openProject = async (projectId: string) => {
+  const openProject = async (projectId: string, mode: "replace" | "preserve" = "replace") => {
     setBusy(true); setMessage(""); setPreviewId(null); setPreviewKind(null); setPublishedReleaseId(null);
     try {
       const next = await creatorRequest<Project>("creator.project.read", { projectId });
-      setProject(next); setText(JSON.stringify(next.game, null, 2));
-      setSceneText(JSON.stringify(next.scene ?? { schemaVersion: 1, objects: [] }, null, 2));
-      setEntryAnchorId(next.mounts?.[0]?.entryAnchorId ?? next.cityLayout?.layout.anchors.find(anchor => anchor.kind === "spawn")?.id ?? "");
-      setBindingsText(JSON.stringify(next.mounts?.[0]?.bindings ?? {}, null, 2));
-      setSkinId(next.skinId ?? "miami-vice");
+      applyProject(next, mode, project);
     } catch (error) { setMessage(error instanceof Error ? error.message : "creator_read_failed"); }
     finally { setBusy(false); }
   };
   const createProject = async () => {
     setBusy(true); setMessage("");
+    // 创建同样幂等：结果确定前保留同一 operationId，响应失败后重试命中服务端
+    // 记录而不是重复建项目。
+    const operationId = pendingCreateId ?? `create:${crypto.randomUUID()}`;
+    setPendingCreateId(operationId);
+    const discardedDrafts = hasDrafts(project);
     try {
       if (!worldRevision) throw new Error("creator_layout_not_bound");
-      const created = await creatorRequest<{ projectId: string }>("creator.project.create", { template, worldRevision, operationId: `create:${crypto.randomUUID()}` });
+      const created = await creatorRequest<{ projectId: string }>("creator.project.create", { template, worldRevision, operationId });
+      setPendingCreateId(null);
       await refresh(); await openProject(created.projectId);
+      if (discardedDrafts) setMessage("已创建新项目；之前项目的未提交草稿已丢弃。");
     } catch (error) { setMessage(error instanceof Error ? error.message : "creator_create_failed"); }
     finally { setBusy(false); }
   };
@@ -228,10 +275,32 @@ function App() {
   const commit = async () => {
     if (!project || !previewId || !previewKind) return;
     setBusy(true); setMessage("");
+    // 同一次操作在结果确定前保留同一 operationId：服务端已提交而响应丢失时，
+    // 重试命中幂等记录而不是产生第二次提交，操作状态查询也用它。
+    const operationId = pendingEdit?.projectId === project.projectId ? pendingEdit.operationId : `edit:${crypto.randomUUID()}`;
+    setPendingEdit({ projectId: project.projectId, operationId });
+    const finish = async (note: string) => {
+      setPendingEdit(null); setPreviewId(null); setPublishedReleaseId(null);
+      const current = await creatorRequest<Project>("creator.project.read", { projectId: project.projectId });
+      // 保留其他区域的未提交草稿：刚提交的区域草稿与新保存值一致，自然被同步。
+      applyProject(current, "preserve", project);
+      await refresh();
+      setMessage(note);
+    };
     try {
-      await creatorRequest(previewKind === "game" ? "creator.game.commit" : "creator.scene.commit", { projectId: project.projectId, previewId, expectedRevision: project.revision, operationId: `edit:${crypto.randomUUID()}` });
-      setPreviewId(null); setPublishedReleaseId(null); await openProject(project.projectId); await refresh(); setMessage("已保存新版本。");
-    } catch (error) { setMessage(error instanceof Error ? error.message : "creator_commit_failed"); }
+      await creatorRequest(previewKind === "game" ? "creator.game.commit" : "creator.scene.commit", { projectId: project.projectId, previewId, expectedRevision: project.revision, operationId });
+      await finish("已保存新版本。");
+    } catch (error) {
+      const code = errorCode(error, "creator_commit_failed");
+      // 响应失败不等于操作失败：用保留的 operationId 查询服务端结果再下结论。
+      try {
+        const status = await creatorRequest<{ status: string }>("creator.operation.status", { projectId: project.projectId, operationId });
+        if (status.status === "committed") await finish("上一次提交已生效（此前响应丢失）；已恢复最新版本。");
+        else setMessage(`${code} · 提交未完成（服务端无此操作记录）；本次操作标识已保留，可直接重试。`);
+      } catch {
+        setMessage(`${code} · 无法确认提交结果；本次操作标识已保留，可直接重试。`);
+      }
+    }
     finally { setBusy(false); }
   };
   const publish = async () => {

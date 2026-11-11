@@ -1592,12 +1592,16 @@ pub fn commit_preview_as(home: &Path, owner: &str, instance: &str, project_id: &
         return serde_json::from_str(&result).map_err(|_| "creator_store_unavailable");
     }
     let preview = {
+        // Peek, do not consume: the preview stays available until the transaction
+        // commits, so a mid-way SQLite failure can be retried with the same
+        // request instead of dead-ending on preview_expired. Concurrent reuse of
+        // the same preview is still bounded by the revision CAS below and the
+        // creator_changes primary key.
         let mut active_previews = previews().lock().unwrap_or_else(|p| p.into_inner());
         let preview = active_previews.get(preview_id).cloned().ok_or("preview_expired")?;
         if preview.created.elapsed().map_or(true, |age| age > PREVIEW_TTL) { active_previews.remove(preview_id); return Err("preview_expired"); }
         if preview.actor != instance || preview.project_id != project_id { return Err("permission_denied"); }
         if preview.base_revision != expected_revision { return Err("revision_conflict"); }
-        active_previews.remove(preview_id);
         preview
     };
     let current: u64 = tx.query_row("SELECT revision FROM creator_projects WHERE project_id=?1", [project_id], |row| row.get(0)).optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_project_not_found")?;
@@ -1607,11 +1611,15 @@ pub fn commit_preview_as(home: &Path, owner: &str, instance: &str, project_id: &
     document["revision"] = json!(next);
     let serialized = document.to_string();
     let now = now_ms();
-    tx.execute("UPDATE creator_projects SET revision=?2,document_json=?3,updated_at_ms=?4 WHERE project_id=?1 AND revision=?5", params![project_id, next, serialized, now, current]).map_err(|_| "creator_store_unavailable")?;
+    let updated = tx.execute("UPDATE creator_projects SET revision=?2,document_json=?3,updated_at_ms=?4 WHERE project_id=?1 AND revision=?5", params![project_id, next, serialized, now, current]).map_err(|_| "creator_store_unavailable")?;
+    if updated == 0 { return Err("revision_conflict"); }
     tx.execute("INSERT INTO creator_changes(project_id,revision,actor_id,operation_id,operation_hash,document_json,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)", params![project_id, next, owner, operation_id, preview.operation_hash, serialized, now]).map_err(|_| "creator_store_unavailable")?;
     let result = json!({"projectId":project_id,"revision":next,"operationId":operation_id,"documentDigest":digest(&serialized)});
     tx.execute("INSERT INTO creator_operations(project_id,actor_id,operation_id,operation_hash,result_json,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6)", params![project_id, owner, operation_id, request_hash, result.to_string(), now]).map_err(|_| "creator_store_unavailable")?;
     tx.commit().map_err(|_| "creator_store_unavailable")?;
+    // Consumed only after a successful commit: the preview credential's
+    // lifetime matches the transaction, not the attempt.
+    previews().lock().unwrap_or_else(|p| p.into_inner()).remove(preview_id);
     Ok(result)
 }
 
@@ -2099,6 +2107,33 @@ mod tests {
         assert_eq!(found["projectId"], created["projectId"]);
         assert_eq!(found["patch"]["seed"], 7);
         assert!(read_city_patch_for_seed(&home, 9).unwrap()["projectId"].is_null());
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    // 事务中途失败（写入阶段约束冲突）不得消费预览凭据：同一 previewId 与
+    // operationId 必须能重试成功；成功后再重试命中幂等记录返回同一结果。
+    #[test]
+    fn failed_commit_keeps_preview_available_for_retry() {
+        let home = home();
+        publish_city_layout_snapshot(&home, &layout_snapshot()).unwrap();
+        let created = create_project_from_city_layout(&home, LOCAL_CREATOR_OWNER, "checkpoint-race", "create-retry", "world-rev-test").unwrap();
+        let project_id = created["projectId"].as_str().unwrap().to_owned();
+        // 预置一条 change 行挡住 revision 1 的提交写入，制造事务中途失败。
+        {
+            let db = database(&home).unwrap();
+            db.execute("INSERT INTO creator_changes(project_id,revision,actor_id,operation_id,operation_hash,document_json,created_at_ms) VALUES(?1,1,'blocker','block','block','{}',0)", params![project_id]).unwrap();
+        }
+        let preview = preview_scene_operations(&home, "studio-instance", &project_id, 0, &json!([{"op":"skin.select","skinId":"desert-evening"}])).unwrap();
+        let preview_id = preview["previewId"].as_str().unwrap().to_owned();
+        assert_eq!(commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", &project_id, &preview_id, 0, "retry-op").unwrap_err(), "creator_store_unavailable");
+        {
+            let db = database(&home).unwrap();
+            db.execute("DELETE FROM creator_changes WHERE project_id=?1 AND revision=1", params![project_id]).unwrap();
+        }
+        let saved = commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", &project_id, &preview_id, 0, "retry-op").unwrap();
+        assert_eq!(saved["revision"], 1);
+        let again = commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", &project_id, &preview_id, 0, "retry-op").unwrap();
+        assert_eq!(again, saved);
         let _ = std::fs::remove_dir_all(home);
     }
 }
