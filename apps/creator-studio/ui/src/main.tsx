@@ -100,6 +100,23 @@ function App() {
   // 输入的草稿会被旧闭包里的旧文本误判为「无草稿」而被覆盖。
   const applyRef = useRef(applyProject);
   applyRef.current = applyProject;
+  // 离开当前项目（切换项目行/新建）前先确认：有未提交草稿时第一次点击只提示，
+  // 第二次点击才真正丢弃——提示先于丢弃，而不是丢弃后补一句。
+  const [switchConfirm, setSwitchConfirm] = useState<string | null>(null);
+  const switchTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(switchTimer.current), []);
+  const guardDrafts = (target: string, proceed: () => void) => {
+    if (!hasDrafts(project) || switchConfirm === target) {
+      window.clearTimeout(switchTimer.current);
+      setSwitchConfirm(null);
+      proceed();
+      return;
+    }
+    setSwitchConfirm(target);
+    setMessage("当前项目有未提交草稿；再次点击确认丢弃并继续。");
+    window.clearTimeout(switchTimer.current);
+    switchTimer.current = window.setTimeout(() => setSwitchConfirm(null), 5000);
+  };
   const refresh = useCallback(async () => {
     const [response, layoutResponse] = await Promise.all([
       creatorRequest<{ projects: ProjectRow[] }>("creator.project.list", { limit: 50 }),
@@ -221,13 +238,14 @@ function App() {
       const imported = await creatorRequest<{ revision: number; assetId: string; assetRef: Record<string, unknown>; byteLength: number; boundsMeters: { x: number; y: number; z: number } }>(
         "creator.asset.import", { projectId: project.projectId, expectedRevision: project.revision, operationId: `asset:${crypto.randomUUID()}` });
       const updated = await creatorRequest<Project>("creator.project.read", { projectId: project.projectId });
-      const scene: SceneDraft = JSON.parse(sceneText);
       const model = { id: `model-${crypto.randomUUID()}`, kind: "model", asset: imported.assetRef, transform: {
         positionMeters: { x: 0, y: 0, z: 0 }, rotationRadians: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 },
       } };
-      setProject(updated); setText(JSON.stringify(updated.game, null, 2));
+      // 资产导入也是一次 revision 提交：其他区域草稿（如规则 JSON）保留，场景草稿继续在当前输入上追加模型。
+      applyProject(updated, "preserve", project);
+      const scene: SceneDraft = JSON.parse(sceneText);
       setSceneText(JSON.stringify({ ...scene, objects: [...scene.objects, model] }, null, 2));
-      setPreviewId(null); setPreviewKind(null); setPublishedReleaseId(null); await refresh();
+      setPublishedReleaseId(null); await refresh();
       setMessage(`模型已导入并加入场景草稿（${imported.assetId} · ${Math.ceil(imported.byteLength / 1024)} KiB）。请校验并提交场景 revision。`);
     } catch (error) { setMessage(error instanceof Error ? error.message : "creator_asset_import_failed"); }
     finally { setBusy(false); }
@@ -337,7 +355,7 @@ function App() {
     <section className="new-project">
       <label>新建模板<select value={template} disabled={busy} onChange={event => setTemplate(event.target.value)}><option value="checkpoint-race">驾驶检查点竞速</option><option value="collect-one">驾驶区域收集</option></select></label>
       <label>绑定 City 世界<select value={worldRevision} disabled={busy || layouts.length === 0} onChange={event => setWorldRevision(event.target.value)}>{layouts.map(layout => <option key={layout.worldRevision} value={layout.worldRevision}>{layout.layoutId} · seed {layout.seed} · {layout.anchorCount} 个锚点</option>)}</select></label>
-      <button disabled={busy || !worldRevision} onClick={() => void createProject()}>新建项目</button>
+      <button disabled={busy || !worldRevision} onClick={() => guardDrafts("create", () => void createProject())}>{switchConfirm === "create" ? "确认丢弃草稿并新建" : "新建项目"}</button>
       {layouts.length === 0 && <p className="muted">尚无 City 布局快照。先打开 City 生成道路地图，再回到 Studio。</p>}
     </section>
     <section className="viewport" aria-label="City 实时视口">
@@ -349,7 +367,7 @@ function App() {
           : "先打开 City 生成道路地图，这里会显示同一座实时城市。"}</div>}
     </section>
     <div className="workspace">
-      <aside><div className="section-title">我的项目</div>{projects.length === 0 ? <p className="muted">还没有项目。创建一个模板开始。</p> : projects.map(row => <button className={`project-row ${project?.projectId === row.projectId ? "selected" : ""}`} key={row.projectId} disabled={busy} onClick={() => void openProject(row.projectId)}><strong>{row.title}</strong><span>revision {row.revision}</span></button>)}</aside>
+      <aside><div className="section-title">我的项目</div>{projects.length === 0 ? <p className="muted">还没有项目。创建一个模板开始。</p> : projects.map(row => <button className={`project-row ${project?.projectId === row.projectId ? "selected" : ""} ${switchConfirm === row.projectId ? "confirm" : ""}`} key={row.projectId} disabled={busy} onClick={() => guardDrafts(row.projectId, () => void openProject(row.projectId))}><strong>{row.title}</strong><span>revision {row.revision}</span></button>)}</aside>
       <section className="editor">
         <div className="section-title">{project ? `${project.projectId} · revision ${project.revision}` : "选择一个项目"}</div>
         {project ? <>

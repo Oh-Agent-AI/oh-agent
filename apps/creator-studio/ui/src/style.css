@@ -39,3 +39,4 @@ button.secondary { color: #dce8e8; background: #1c2a2e; border-color: #486064; }
 .viewport-frame { height: 460px; border: 1px solid #30464a; border-radius: 12px; overflow: hidden; background: #0a1321; }
 .viewport-frame .city-app { border-radius: 12px; }
 .viewport-empty { min-height: 120px; }
+.project-row.confirm { border-color: #c9803e; background: #2a2013; }
