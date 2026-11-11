@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { buildCityModel, type CitySessionRow } from "./cityModel";
+import { buildCityModel } from "./cityModel";
 import { prepareCityWorldLayout } from "./engine/cityLayout";
 import { readCityAppearancePreference, type CityWorldProfileV1 } from "./engine/cityWorldProfile";
 import { createCityWorldProfileCallHandlers } from "./engine/cityWorldProfileCalls";
@@ -40,6 +40,7 @@ import type { PlayTarget } from "./engine/render/playableVehicles";
 import { useRoadAudit } from "./game/useRoadAudit";
 import { RoadAuditPanel } from "./game/ui/RoadAuditPanel";
 import type { PlanningWorkSnapshot } from "./engine/planner/operationBudget";
+import { projectionSessionRows } from "./viewport/projectionRows";
 import { createDreamSnapshotCandidate } from "./remote/city/dreamSnapshotCandidate";
 import { prepareDreamSnapshotForPublication } from "./remote/city/dreamTrustedProjection";
 import type { DreamSnapshotEnvelopeV1 } from "./remote/city/dreamSnapshotCodec";
@@ -505,28 +506,7 @@ export function CityApp() {
     const from = Date.parse(projection.window.from);
     const to = Date.parse(projection.window.to);
     setCityLoad({ stage: "model", work: null });
-    const rows: CitySessionRow[] = projection.sessions.map((session) => ({
-      session_ref: session.id,
-      asset_ref: session.asset_ref ?? null,
-      harness: session.harness,
-      title: session.title ?? null,
-      title_source: session.title_source ?? null,
-      first_event_at: session.first_event_at,
-      last_event_at: session.last_event_at,
-      event_count: session.event_count ?? 1,
-      peak_tokens: session.tokens.total,
-      model_ids: session.model_ids ?? [],
-      tokens: {
-        uncached_input_tokens: session.tokens.uncached_input ?? session.tokens.input,
-        cache_read_tokens: session.tokens.cache_read ?? 0,
-        cache_write_tokens: session.tokens.cache_write ?? 0,
-        output_tokens: session.tokens.output,
-        total: session.tokens.total,
-      },
-      cost_minor: session.cost_minor && ["metered_actual", "metered_estimate", "fixed_subscription", "api_equivalent", "other"].includes(session.cost_minor.basis)
-        ? session.cost_minor as CitySessionRow["cost_minor"] : null,
-      cost_status: session.cost_status ?? { state: "unavailable", reason: "cost_not_projected", has_unresolved: true },
-    }));
+    const rows = projectionSessionRows(projection);
     const model = buildCityModel({
       harnessNames: Object.fromEntries(projection.harnesses.map((h) => [h.id, h.display_name])),
       rows,

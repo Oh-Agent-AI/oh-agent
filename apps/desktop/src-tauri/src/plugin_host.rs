@@ -1431,7 +1431,19 @@ mod tests {
         let studio = definitions().iter().find(|plugin| plugin.id == "creator-studio").expect("Creator Studio plugin");
         assert_eq!(studio.entry, "plugins/CreatorStudio.plugin/ui/index.html");
         assert!(studio.data_projections.is_empty());
-        assert!(studio.typed_data_grants.is_empty());
+        // 视口复用 City 的同一批有界数据集授权（官方内置插件、描述符声明、宿主逐请求校验），
+        // 业务投影授权保持为空。数据授权必须与 city 一致，两边才渲染同一座城市。
+        let city = definitions().iter().find(|plugin| plugin.id == "city").expect("city plugin");
+        assert_eq!(studio.typed_data_grants.keys().collect::<Vec<_>>(), city.typed_data_grants.keys().collect::<Vec<_>>());
+        for (dataset, grant) in &studio.typed_data_grants {
+            assert!(grant.is_valid(dataset), "Studio typed-data grant must be valid for {dataset}");
+        }
+        assert_eq!(studio.legacy_data_grants.keys().collect::<Vec<_>>(), city.legacy_data_grants.keys().collect::<Vec<_>>());
+        for (dataset, grant) in &studio.legacy_data_grants {
+            assert!(grant.is_valid(dataset), "Studio legacy grant must be valid for {dataset}");
+        }
+        assert_eq!(studio.object_grants, city.object_grants);
+        assert_eq!(studio.scope_grants, city.scope_grants);
         assert!(studio.local_calls.iter().any(|method| method == "creator.layout.list"));
         assert!(studio.local_calls.iter().any(|method| method == "creator.project.create"));
         assert!(studio.local_calls.iter().any(|method| method == "creator.project.publish"));

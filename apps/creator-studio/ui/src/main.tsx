@@ -2,6 +2,9 @@ import { useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { connectHostCalls, invokeHost, observeHealth, publishToolbar } from "@agent-vitals/app-sdk/ui-host";
 import { canonicalJson, validateCityLayoutSnapshot, validateMiniGamePack, validateMount, type CityGameMountV1, type CityLayoutSnapshotV1 } from "@agent-vitals/city-sdk";
+// 视口与 City 插件共享同一份引擎与装配管线，保证 Studio 看到的是同一座城市。
+import { CityViewport } from "../../../agent-city/ui/src/viewport/CityViewport";
+import { readCityAppearancePreference } from "../../../agent-city/ui/src/engine/cityWorldProfile";
 import "./style.css";
 
 type ProjectRow = { projectId: string; revision: number; title: string; updatedAtMs: number };
@@ -35,6 +38,10 @@ async function creatorRequest<T>(method: string, payload: Record<string, unknown
 function App() {
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [layouts, setLayouts] = useState<LayoutRow[]>([]);
+  // 世界外观偏好与 City 同源（同源 WebView 共享 localStorage）；打开期间不追踪 City 侧更改。
+  const [worldProfile] = useState(() => readCityAppearancePreference());
+  // 视口种子取最新一次 City 发布的布局快照；City 重新播种会生成新快照，这里随之更新。
+  const viewportSeed = layouts[0]?.seed ?? null;
   const [project, setProject] = useState<Project | null>(null);
   const [text, setText] = useState("");
   const [sceneText, setSceneText] = useState('{\n  "schemaVersion": 1,\n  "objects": []\n}');
@@ -259,6 +266,12 @@ function App() {
       <label>绑定 City 世界<select value={worldRevision} disabled={busy || layouts.length === 0} onChange={event => setWorldRevision(event.target.value)}>{layouts.map(layout => <option key={layout.worldRevision} value={layout.worldRevision}>{layout.layoutId} · seed {layout.seed} · {layout.anchorCount} 个锚点</option>)}</select></label>
       <button disabled={busy || !worldRevision} onClick={() => void createProject()}>新建项目</button>
       {layouts.length === 0 && <p className="muted">尚无 City 布局快照。先打开 City 生成道路地图，再回到 Studio。</p>}
+    </section>
+    <section className="viewport" aria-label="City 实时视口">
+      <div className="section-title">City 实时视口{viewportSeed !== null ? ` · seed ${viewportSeed}` : ""}</div>
+      {viewportSeed !== null
+        ? <div className="viewport-frame"><CityViewport seed={viewportSeed} worldProfile={worldProfile} /></div>
+        : <div className="empty viewport-empty">先打开 City 生成道路地图，这里会显示同一座实时城市。</div>}
     </section>
     <div className="workspace">
       <aside><div className="section-title">我的项目</div>{projects.length === 0 ? <p className="muted">还没有项目。创建一个模板开始。</p> : projects.map(row => <button className={`project-row ${project?.projectId === row.projectId ? "selected" : ""}`} key={row.projectId} disabled={busy} onClick={() => void openProject(row.projectId)}><strong>{row.title}</strong><span>revision {row.revision}</span></button>)}</aside>
