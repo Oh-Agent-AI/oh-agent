@@ -616,5 +616,3 @@ pub fn render_codex_session_html(output_path: &Path, out: &Value) {
     }
 
 }
-
-

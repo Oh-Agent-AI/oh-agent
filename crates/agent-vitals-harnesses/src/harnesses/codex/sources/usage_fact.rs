@@ -270,7 +270,6 @@ pub struct CodexResumeState {
     pub size: u64,
     pub dev: u64,
     pub ino: u64,
-    pub modified_ns: u128,
     pub session_id: Option<String>,
     pub model_provider: Option<String>,
     pub provider: Option<String>,
@@ -294,9 +293,6 @@ fn file_identity(path: &Path) -> Option<(u64, u64, u64)> {
     }
 }
 
-fn file_modified_ns(path: &Path) -> Option<u128> {
-    std::fs::metadata(path).ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|v| v.as_nanos())
-}
 
 /// 整批 rollout 文件 → `UsageFactEmitResult`。
 ///
@@ -351,7 +347,7 @@ pub fn codex_rollouts_to_usage_facts_with_resume(
 
 pub fn codex_rollouts_to_usage_facts_with_resume_and_route(
     paths: &[PathBuf], machine_namespace: &str, source_profile: &str,
-    resumes: &HashMap<PathBuf, CodexResumeState>, route_hint: Option<&RouteEvidence>,
+    resumes: &HashMap<PathBuf, CodexResumeState>, _route_hint: Option<&RouteEvidence>,
 ) -> Result<(UsageFactEmitResult, HashMap<PathBuf, CodexResumeState>), String> {
     let mut updated: HashMap<PathBuf, CodexResumeState> = HashMap::new();
     let mut facts: Vec<Value> = Vec::new();
@@ -381,7 +377,6 @@ pub fn codex_rollouts_to_usage_facts_with_resume_and_route(
                         && state.offset <= size
                         && state.dev == dev
                         && state.ino == ino
-                        && file_modified_ns(p) == Some(state.modified_ns)
                 })
             })
         };
@@ -390,7 +385,7 @@ pub fn codex_rollouts_to_usage_facts_with_resume_and_route(
             .and_then(|state| state.session_id.clone())
             .unwrap_or_else(|| stem.clone());
         let mut model_provider = resume.and_then(|state| state.model_provider.clone());
-        let mut current_route = resume.and_then(|state| state.route.clone()).or_else(|| route_hint.cloned());
+        let mut current_route = resume.and_then(|state| state.route.clone());
         let mut current_provider = resume.and_then(|state| state.provider.clone());
         let mut local_seen: HashSet<String> = HashSet::new();
         let mut seeds: Vec<FactSeed> = Vec::new();
@@ -618,7 +613,6 @@ pub fn codex_rollouts_to_usage_facts_with_resume_and_route(
                     size,
                     dev,
                     ino,
-                    modified_ns: file_modified_ns(p).unwrap_or_default(),
                     session_id: Some(native_session_id.clone()),
                     model_provider: model_provider.clone(),
                     provider: current_provider.clone(),
