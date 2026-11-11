@@ -6,6 +6,7 @@ import { CityEngine } from "../engine/CityEngine";
 import { tauriCityDataProvider, type CityProjectionV1 } from "../data/provider";
 import { cityPlanPatchStore } from "../data/planPatch";
 import type { PlanPatchV1 } from "../engine/planPatch";
+import { PlanRepairSession, type RepairCandidate } from "../planRepair/session";
 import { noteBusy } from "../host";
 import { cityText, useCityLanguage } from "../i18n";
 import { replayStartMs } from "../replayRange";
@@ -22,7 +23,12 @@ export type CityViewportProps = {
   worldProfile?: CityWorldProfileV1;
   /** 引擎创建/销毁回调；父页面需要引擎实例（如后续编辑操作）时使用。 */
   onEngineChange?: (engine: CityEngine | null) => void;
+  /** 允许在视口里选取会话楼并移动到就近地块：复用现有修复会话的校验/存档机器。
+   *  目标候选先由用户手选；Agent 提案经 MCP 接入后走同一 moveBuilding 入口。 */
+  editable?: boolean;
 };
+
+type BuildingSelection = { id: string; candidates: RepairCandidate[] };
 
 type ViewportLoadState = Readonly<{ stage: "data" | "model" | "planning" | "mounting" | "rendering"; work: number | null }>;
 
@@ -33,7 +39,7 @@ type ViewportLoadState = Readonly<{ stage: "data" | "model" | "planning" | "moun
  * 暂停/恢复沿用引擎已注册的宿主 __AV_PLUGIN_SUSPENDED__/RESUMED__ 事件与
  * visibilitychange，销毁入口就是组件卸载时的 engine.dispose()。
  */
-export function CityViewport({ seed, windowDays, worldProfile, onEngineChange }: CityViewportProps) {
+export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, editable = false }: CityViewportProps) {
   const days = windowDays ?? readCityWindowDays();
   const language = useCityLanguage();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -46,8 +52,30 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange }:
   const [firstModelFrame, setFirstModelFrame] = useState(false);
   const [cityLoad, setCityLoad] = useState<ViewportLoadState>({ stage: "data", work: null });
   const [patch, setPatch] = useState<PlanPatchV1 | null>(null);
+  // 选取与移动状态：editable 下点会话楼 → 聚焦 + 就近候选；移动经修复会话提交。
+  const [engineState, setEngineState] = useState<CityEngine | null>(null);
+  const [selection, setSelection] = useState<BuildingSelection | null>(null);
+  const [moveError, setMoveError] = useState<string | null>(null);
+  const sessionRef = useRef<PlanRepairSession | null>(null);
+  const editableRef = useRef(editable);
+  editableRef.current = editable;
   // 未显式传外观时与 City 同源读取偏好；useMemo 保持引用稳定，引擎不会因渲染重建。
   const profile = useMemo(() => worldProfile ?? readCityAppearancePreference(), [worldProfile]);
+  // 选取入口：点击回调用它，window 调试/自动化钩子（同 CityApp __AV_CITY_SELECT__ 先例）也用它。
+  const selectBuilding = (id: string | null) => {
+    if (!id) { setSelection(null); return; }
+    const session = sessionRef.current;
+    const engine = engineRef.current;
+    if (!session || !engine) return;
+    // 只有能移动的会话楼进入选中态；背景楼/地块装饰点了不算。
+    const candidates = session.candidates(id, 5);
+    if (!candidates.length) { setSelection(null); return; }
+    engine.focusBuilding(id);
+    setMoveError(null);
+    setSelection({ id, candidates });
+  };
+  const selectRef = useRef(selectBuilding);
+  selectRef.current = selectBuilding;
 
   // 引擎创建/销毁必须先于装配 effect 声明：同一次提交里先建引擎，装配才能拿到实例。
   // setSeed 必须在装配前完成——engine.seed 为 null 时 applyModel 会静默早退，
@@ -57,20 +85,47 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange }:
     if (!canvas) return;
     let engine: CityEngine;
     try {
-      engine = new CityEngine({ canvas, worldProfile: profile, onFirstFrame: () => setFirstModelFrame(true) });
+      engine = new CityEngine({ canvas, worldProfile: profile, onFirstFrame: () => setFirstModelFrame(true), onSelect: (id) => {
+        if (!editableRef.current || !id) { setSelection(null); return; }
+        selectRef.current(id);
+      } });
       engine.setSeed(seed);
     } catch {
       setSceneUnavailable(true);
       return;
     }
     engineRef.current = engine;
+    setEngineState(engine);
     onEngineChangeRef.current?.(engine);
     return () => {
       engine.dispose();
       engineRef.current = null;
+      setEngineState(null);
       onEngineChangeRef.current?.(null);
     };
   }, [profile, seed]);
+
+  // 修复会话跟随当前引擎（引擎重建时旧会话必须作废）：存档读写与移动校验都在
+  // PlanRepairSession 内，视口只发起操作、展示候选与结果。
+  useEffect(() => {
+    if (!editable || !engineState) return;
+    const session = new PlanRepairSession(engineState);
+    sessionRef.current = session;
+    void session.load(seed);
+    return () => { session.dispose(); sessionRef.current = null; };
+  }, [editable, engineState, seed]);
+
+  const applyMove = (parcelId: string) => {
+    const session = sessionRef.current;
+    if (!session || !selection) return;
+    const result = session.moveBuilding(selection.id, parcelId);
+    if (result.ok) { setSelection(null); setMoveError(null); }
+    else setMoveError(result.reason === "blocked" ? `无法移动：${(result.blockers ?? []).join("、")}` : result.reason);
+  };
+  const [editTick, setEditTick] = useState(0);
+  const bumpEdit = () => setEditTick((value) => value + 1);
+  const sessionStatus = editable && sessionRef.current ? sessionRef.current.status() : null;
+  void editTick;
 
   useEffect(() => {
     let active = true;
@@ -184,10 +239,17 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange }:
   useEffect(() => {
     (window as Window & { __CITY_VIEWPORT_PROBE__?: () => Record<string, unknown> }).__CITY_VIEWPORT_PROBE__ = () => ({
       seed, engine: engineRef.current?.diagnosticState() ?? null, projection: projection?.status ?? null,
-      cityLoad, firstModelFrame, sceneUnavailable,
+      cityLoad, firstModelFrame, sceneUnavailable, editable,
+      selection: selection ? { id: selection.id, candidates: selection.candidates.length } : null,
+      moveError,
+      sessionReady: !!sessionRef.current,
+      districtSlots: engineRef.current?.currentLayout?.districts.flatMap((district) => [...district.slots.keys()]).slice(0, 8) ?? null,
+      probeCandidates: (id: string) => sessionRef.current?.candidates(id, 5) ?? null,
+      select: (id: string | null) => selectRef.current(id),
       scene: (() => {
         const inspected = engineRef.current?.inspectScene();
-        return inspected ? { occupantCount: inspected.occupantCount, camera: inspected.camera, lastApplyMode: inspected.lastApplyMode, scaleTier: inspected.scaleTier } : null;
+        return inspected ? { occupantCount: inspected.occupantCount, camera: inspected.camera, lastApplyMode: inspected.lastApplyMode, scaleTier: inspected.scaleTier,
+          kits: (inspected.kits ?? []).map((kit) => kit.sessionId) } : null;
       })(),
     });
     return () => { delete (window as Window & { __CITY_VIEWPORT_PROBE__?: () => Record<string, unknown> }).__CITY_VIEWPORT_PROBE__; };
@@ -209,6 +271,18 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange }:
         </div>
       </div>}
       {sceneMessage && !cityLoading && <p className="city-scene-message" role="status">{sceneMessage}</p>}
+      {editable && selection && <div className="selection-card" role="dialog" aria-label="选中建筑">
+        <div className="selection-head"><strong>选中建筑</strong><code>{selection.id}</code><button className="secondary" onClick={() => setSelection(null)}>关闭</button></div>
+        <p className="selection-hint">就近可移动地块（按距离，移动即保存到草稿）：</p>
+        {selection.candidates.map((candidate) => <button key={candidate.parcelId} className="candidate" onClick={() => applyMove(candidate.parcelId)}>
+          移到 {candidate.parcelId.length > 20 ? `${candidate.parcelId.slice(0, 20)}…` : candidate.parcelId} · {candidate.distance}m{candidate.warnings.length ? ` · ${candidate.warnings.join("、")}` : ""}
+        </button>)}
+        <div className="selection-foot">
+          <button className="secondary" disabled={!(sessionStatus?.canUndo)} onClick={() => { sessionRef.current?.undo(); bumpEdit(); }}>撤销</button>
+          <button className="secondary" disabled={!(sessionStatus?.canRedo)} onClick={() => { sessionRef.current?.redo(); bumpEdit(); }}>重做</button>
+        </div>
+        {moveError && <p className="status" role="status">{moveError}</p>}
+      </div>}
     </section>
   );
 }

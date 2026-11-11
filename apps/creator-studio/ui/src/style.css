@@ -87,3 +87,16 @@ header { min-height: 56px; border-bottom-color: #2b383e; }
 .header-actions button:not(:disabled):hover, .project-row:hover { filter: brightness(1.12); }
 button:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2px solid #86e7cf; outline-offset: 2px; }
 @media (max-width: 700px) { .viewport-head { right: 20px; left: 20px; } }
+
+/* Viewport selection card: click a movable session building, move to a nearby parcel. */
+.viewport-frame { position: relative; }
+.selection-card { position: absolute; z-index: 3; right: 16px; top: 56px; width: 264px; padding: 12px; border: 1px solid #3a4f54; border-radius: 10px; background: rgba(16, 24, 27, .93); display: grid; gap: 8px; }
+.selection-head { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.selection-head strong { font-size: 13px; color: #e3eeee; white-space: nowrap; }
+.selection-head code { color: #9fb4b8; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.selection-head button { padding: 4px 10px; font-size: 12px; }
+.selection-hint { color: #90a5a9; font-size: 12px; margin: 0; line-height: 1.5; }
+.selection-card .candidate { width: 100%; text-align: left; background: #1c2a2e; border-color: #486064; color: #dce8e8; font-weight: 400; padding: 8px 10px; font-size: 12px; }
+.selection-card .candidate:hover:not(:disabled) { border-color: #6fa39a; }
+.selection-foot { display: flex; gap: 8px; }
+.selection-foot button { flex: 1; padding: 7px 10px; font-size: 12px; }

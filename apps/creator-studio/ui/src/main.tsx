@@ -359,7 +359,7 @@ function App() {
       <section className="viewport" aria-label="City 实时视口">
         <div className="viewport-head"><div className="section-title">城市视图</div><span className="viewport-hint">拖动旋转 · 滚轮缩放</span></div>
         {viewportSeed !== null
-          ? <div className="viewport-frame"><CityViewport seed={viewportSeed} worldProfile={worldProfile} /></div>
+          ? <div className="viewport-frame"><CityViewport seed={viewportSeed} worldProfile={worldProfile} editable /></div>
           : <div className="empty viewport-empty">{viewportUnavailable
             ? "当前项目没有绑定的 City 布局快照，视口无法恢复它编辑的城市。请在 City 中重新生成道路地图后新建项目。"
             : "先打开 City 生成道路地图，这里会显示同一座实时城市。"}</div>}
