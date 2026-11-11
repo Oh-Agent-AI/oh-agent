@@ -21,6 +21,12 @@ assert.match(playHook, /enterFreeDrive\(\{ vtol: fly \}\)/, "the normal City dri
 assert.doesNotMatch(playHook, /enterDiagnostic|UAT/, "the player-facing control is independent of the diagnostic build flag");
 assert.match(cityApp, /\{ id: "car", commandId: "city\.car", label: driving\.active \? "退出驾驶" : "驾车"/,
   "the normal City toolbar exposes driving without a UAT flag");
+assert.match(cityApp, /case "city\.car":[\s\S]*else if \(sceneReady\) \{/,
+  "the host driving command no-ops until the first model frame (throwing would fail the plugin)");
+assert.doesNotMatch(cityApp, /city_not_ready/, "a premature drive click must not reject the plugin command");
+assert.match(cityApp, /await noteBusy\(15_000\)/, "first-frame compile declares a host busy budget before blocking");
+assert.match(playHook, /car\.hud\.phase === "running"\) focusCanvas\(\)/, "running play re-focuses the canvas after the start panel unmounts");
+assert.match(playHook, /noteBusy\(8_000\)/, "first audio graph creation is preceded by a host busy pulse");
 assert.doesNotMatch(cityApp, /CITY_DRIVING_UAT|useCityDrivingUat/, "ordinary builds do not gate driving on UAT");
 const m = await loadCity({
   "engine/surface/meshBoundaries.ts": ["extractMeshBoundaries"],

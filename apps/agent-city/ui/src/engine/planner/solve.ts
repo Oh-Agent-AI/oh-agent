@@ -1,3 +1,4 @@
+import { roadWidthFor } from "../roadStandard";
 import type { RepairContext } from "./context";
 import { isPlanningInterrupted, spendPlanningWork, checkPlanningWork } from "./operationBudget";
 import { CONSTRAINTS } from "./constraints";
@@ -261,7 +262,7 @@ export const REPAIR_STRATEGIES: RepairStrategy[] = [
   { constraint: "looseInlandRoadEnds", name: "joinNearMissEnds", run: joinNearMissEnds,
     candidates: (ctx) => CONSTRAINTS.find((constraint) => constraint.id === "looseInlandRoadEnds")!.measure(planView(ctx))
       .map((violation) => `${violation.at!.x}:${violation.at!.z}`).sort().flatMap((id) => {
-        const primaryLeaf = [...ctx.network.edges.values()].some((edge) => !edge.bridge && edge.width === 12 && (edge.from === id || edge.to === id));
+        const primaryLeaf = [...ctx.network.edges.values()].some((edge) => !edge.bridge && edge.width === roadWidthFor("arterial") && (edge.from === id || edge.to === id));
         return (primaryLeaf ? [false, true] : [false]).flatMap((collector) =>
           (["direct-projection", "node-merge", "detour", "grid-astar"] as const).map((strategy) => ({
             constraint: "looseInlandRoadEnds", name: `joinNearMissEnd:${id}:${strategy}${collector ? ":collector" : ""}`,

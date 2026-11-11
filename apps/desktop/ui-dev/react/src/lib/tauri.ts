@@ -202,7 +202,7 @@ export type AboutDiagnosticsReport = {
   sync: { state: "ok" | "needs_attention" | "unknown" };
 };
 export type DiagnosticExportReceipt = { status: "saved" | "cancelled"; uploadPerformed: false };
-export type UpdateCheckResult = { status: "ok" | "no_release" | "unavailable"; currentVersion: string | null; latestTag: string | null; automaticInstall: false };
+export type UpdateCheckResult = { status: "ok" | "no_release" | "unavailable"; currentVersion: string | null; latestTag: string | null; updateAvailable: boolean; automaticInstall: false; releaseUrl: string | null; onLatestStable: boolean };
 
 export type SkillHarnessSummary = { harness: string; skills_on_disk: number; discoverable_skills: number; runtime_verified_loaded_skills: number | null; unique_discoverable_skills: number; description_budget: { available: boolean; used_chars: number | null; budget_chars: number | null; pct_used: number | null; source: string | null }; trigger_data: "available" | "unavailable" | "unknown" };
 export type SkillDiagnostic = { code: string; name: string; severity: "critical" | "warning" | "info"; skill: string | null; evidence_count: number; impact: string | null; recommendation: string | null; caveats: string[] };
@@ -1354,14 +1354,37 @@ function parseDiagnosticExportReceipt(value: unknown): DiagnosticExportReceipt {
   return { status, uploadPerformed: false };
 }
 
+const APP_RELEASE_TAG = /^app-v[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+function parseTrustedReleaseUrl(value: unknown, expectedTag: string | null): string | null {
+  if (value == null) return null;
+  const url = stringField(value, "release url");
+  // 离线门禁禁止源码写远端 origin；按 path 段校验发布根或 /releases/tag/<safe app-v>。
+  if (/[?#@\\]/.test(url)) throw new Error("发布页链接不安全");
+  const parts = url.split("/");
+  if (parts[0] !== "https:" || parts[1] !== "" || parts[2] !== "github.com" || parts[3] !== "Oh-Agent-AI" || parts[4] !== "oh-agent" || parts[5] !== "releases") {
+    throw new Error("发布页链接不安全");
+  }
+  if (parts.length === 6) return url;
+  if (parts.length === 8 && parts[6] === "tag" && APP_RELEASE_TAG.test(parts[7])) {
+    if (expectedTag !== null && parts[7] !== expectedTag) throw new Error("发布页链接与标签不一致");
+    return url;
+  }
+  throw new Error("发布页链接不安全");
+}
+
 function parseUpdateCheck(value: unknown): UpdateCheckResult {
   const root = record(value, "update check");
   const status = boundedEnum(root.status, "update check status", ["ok", "no_release"], "unavailable") as UpdateCheckResult["status"];
   const currentVersion = safeVersion(root.current_version, "current version");
   const latestTag = root.latest_tag == null ? null : stringField(root.latest_tag, "latest release tag");
-  if (latestTag !== null && !/^app-v[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(latestTag)) throw new Error("最新发布标签不安全");
+  if (latestTag !== null && !APP_RELEASE_TAG.test(latestTag)) throw new Error("最新发布标签不安全");
   if (root.automatic_install !== false) throw new Error("自动安装状态不安全");
-  return { status, currentVersion, latestTag, automaticInstall: false };
+  // 后端按通道（beta 用户看 beta + 正式版，正式版用户只看正式版）与 semver 比较后给出；缺省视为无更新。
+  const updateAvailable = status === "ok" && latestTag !== null && root.update_available === true;
+  const onLatestStable = status === "ok" && !updateAvailable && root.reason === "on_latest_stable";
+  const releaseUrl = parseTrustedReleaseUrl(root.release_url, latestTag);
+  return { status, currentVersion, latestTag, updateAvailable, automaticInstall: false, releaseUrl, onLatestStable };
 }
 
 function safeSkillText(value: unknown, label: string): string | null {
@@ -2861,14 +2884,15 @@ export async function saveDiagnosticPackage(): Promise<DiagnosticExportReceipt> 
 
 export async function checkForUpdates(): Promise<UpdateCheckResult> {
   const handler = globalTauri()?.core?.invoke;
-  if (!handler) return { status: "no_release", currentVersion: "browser-preview", latestTag: null, automaticInstall: false };
-  try { return parseUpdateCheck(await handler("check_for_updates")); } catch { return { status: "unavailable", currentVersion: null, latestTag: null, automaticInstall: false }; }
+  if (!handler) return { status: "no_release", currentVersion: "browser-preview", latestTag: null, updateAvailable: false, automaticInstall: false, releaseUrl: null, onLatestStable: false };
+  try { return parseUpdateCheck(await handler("check_for_updates")); } catch { return { status: "unavailable", currentVersion: null, latestTag: null, updateAvailable: false, automaticInstall: false, releaseUrl: null, onLatestStable: false }; }
 }
 
-export async function openTrustedReleasesPage(): Promise<{ status: "opened" }> {
+export async function openTrustedReleasesPage(releaseUrl?: string | null): Promise<{ status: "opened" }> {
   const handler = globalTauri()?.core?.invoke;
   if (!handler) return { status: "opened" };
-  const root = record(await handler("open_trusted_releases_page"), "open releases page");
+  const url = releaseUrl ? parseTrustedReleaseUrl(releaseUrl, null) : null;
+  const root = record(await handler("open_trusted_releases_page", url ? { url } : {}), "open releases page");
   if (root.status !== "opened") throw new Error("发布页打开未确认");
   return { status: "opened" };
 }

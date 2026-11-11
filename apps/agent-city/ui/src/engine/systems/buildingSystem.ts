@@ -2,14 +2,15 @@
  * 会话楼系统：自 cityParts.ts 原样搬出（纯搬迁，见 docs/CITY_ENGINE_SPLIT_SPEC.md §4-6）。
  * 函数体与原方法逐字一致，仅 `this.` → `host.`；cityParts 里保留同名一行转发。
  */
+import { atLeast } from "../roadStandard";
 import { m, REAL } from "../worldScale";
 import * as THREE from "three";
-import { builtFractionAt, hashSeed, type CityBuilding, type CityModel } from "../../cityModel";
+import { builtFractionAt, hashSeed, selectVisualHero, type CityBuilding, type CityModel } from "../../cityModel";
 import { HOTEL_CROWN_MAX_FINS, hotelCrownPlan, type CrownPiece } from "../cityHotelCrown";
 import { roadsideSignPlan, rooftopSignPlan, type RooftopSignPlan } from "../citySkylineProps";
 import type { CityLayout, DistrictLayout, Parcel, Vec2 } from "../cityLayout";
 import { activeTheme } from "../cityTheme";
-import { makeDecoFacadeTexture, makeFacadeTexture, paletteFor } from "../cityTextures";
+import { makeDecoFacadeTexture, makeFacadeTexture, paletteForDistrict } from "../cityTextures";
 import { SegmentIndex } from "../cityPlan";
 import { LIGHT_BUDGET, useOfZone } from "../cityLightBudget";
 import { roadPaintPlan } from "../cityRoadPaint";
@@ -74,36 +75,101 @@ export interface BuildingSystemHost {
   writeContext(): void;
 }
 
-export function buildRuntimes(host: BuildingSystemHost): void {
-    const districtsById = new Map(host.layout.districts.map((district) => [district.id, district]));
-    let podiumCount = 0;
-    let roofCount = 0;
-    let scaffoldCount = 0;
-    let antennaCount = 0;
-    let beaconCount = 0;
-    let craneCount = 0;
-    let cylinderCount = 0;
-    const shaftCursor = [0, 0, 0, 0];
-    let decoCursor = 0;
-    let crownCursor = 0;
-    let crownFinCursor = 0;
-    let signCursor = 0;
+type RuntimeCursors = {
+  podiumCount: number;
+  roofCount: number;
+  scaffoldCount: number;
+  antennaCount: number;
+  beaconCount: number;
+  craneCount: number;
+  cylinderCount: number;
+  shaftCursor: number[];
+  decoCursor: number;
+  crownCursor: number;
+  crownFinCursor: number;
+  signCursor: number;
+  allowRooftopSigns: boolean;
+};
 
-    const ordered = [...host.model.buildings].sort((left, right) => left.startedAt - right.startedAt);
-    for (const building of ordered) {
-      const district = districtsById.get(building.districtId);
-      const slot = district?.slots.get(building.id);
-      if (!district || !slot) continue;
-      const palette = paletteFor(building.districtId);
+/** Grow an InstancedMesh in place so later session pages can add instances without replacing the mesh. */
+export function ensureInstancedCapacity(mesh: THREE.InstancedMesh, needed: number): void {
+  const max = mesh.instanceMatrix.count;
+  if (needed <= max) return;
+  const nextMax = Math.max(needed, Math.ceil(max * 1.5) || needed);
+  const nextMatrix = new THREE.InstancedBufferAttribute(new Float32Array(nextMax * 16), 16);
+  nextMatrix.setUsage(THREE.DynamicDrawUsage);
+  (nextMatrix.array as Float32Array).set(mesh.instanceMatrix.array as Float32Array);
+  mesh.instanceMatrix = nextMatrix;
+  if (mesh.instanceColor) {
+    const nextColor = new THREE.InstancedBufferAttribute(new Float32Array(nextMax * 3), 3);
+    (nextColor.array as Float32Array).set(mesh.instanceColor.array as Float32Array);
+    mesh.instanceColor = nextColor;
+  }
+  const geometry = mesh.geometry;
+  for (const name of Object.keys(geometry.attributes)) {
+    const attr = geometry.getAttribute(name);
+    if (!(attr as THREE.BufferAttribute & { isInstancedBufferAttribute?: boolean }).isInstancedBufferAttribute) continue;
+    if (attr.count >= nextMax) continue;
+    const grown = new THREE.InstancedBufferAttribute(new Float32Array(nextMax * attr.itemSize), attr.itemSize);
+    (grown.array as Float32Array).set(attr.array as Float32Array);
+    geometry.setAttribute(name, grown);
+  }
+}
+
+/** Same geography, existing buildings still at the same parcels, and the next model only adds occupants. */
+export function occupantsCanAppend(previous: CityModel, next: CityModel, prevLayout: CityLayout, nextLayout: CityLayout): boolean {
+  if (next.buildings.length <= previous.buildings.length) return false;
+  if (nextLayout.seed !== prevLayout.seed || nextLayout.scaleTier !== prevLayout.scaleTier) return false;
+  const nextIds = new Set(next.buildings.map((building) => building.id));
+  const prevSlots = new Map(prevLayout.districts.flatMap((district) => [...district.slots]));
+  const nextSlots = new Map(nextLayout.districts.flatMap((district) => [...district.slots]));
+  for (const building of previous.buildings) {
+    if (!nextIds.has(building.id)) return false;
+    const prevSlot = prevSlots.get(building.id);
+    if (!prevSlot) continue;
+    const nextSlot = nextSlots.get(building.id);
+    if (!nextSlot || nextSlot.id !== prevSlot.id || nextSlot.x !== prevSlot.x || nextSlot.z !== prevSlot.z) return false;
+  }
+  return true;
+}
+
+function emptyCursors(allowRooftopSigns: boolean): RuntimeCursors {
+  return {
+    podiumCount: 0, roofCount: 0, scaffoldCount: 0, antennaCount: 0, beaconCount: 0, craneCount: 0, cylinderCount: 0,
+    shaftCursor: [0, 0, 0, 0], decoCursor: 0, crownCursor: 0, crownFinCursor: 0, signCursor: 0, allowRooftopSigns,
+  };
+}
+
+function cursorsFromHost(host: BuildingSystemHost): RuntimeCursors {
+  const cursors = emptyCursors(false);
+  cursors.podiumCount = host.podiumMesh.count;
+  cursors.roofCount = host.roofMesh.count;
+  cursors.scaffoldCount = host.scaffoldMesh.count;
+  cursors.antennaCount = host.antennaMesh.count;
+  cursors.beaconCount = host.beaconMesh.count;
+  cursors.craneCount = host.craneMastMesh.count;
+  cursors.cylinderCount = host.cylinderMesh.count;
+  host.shaftMeshes.forEach((mesh, variant) => { cursors.shaftCursor[variant] = mesh.count; });
+  cursors.decoCursor = host.decoCornerMesh.count;
+  cursors.crownFinCursor = host.crownFinMesh.count;
+  for (const runtime of host.runtimes) {
+    if (runtime.crownBase >= 0) cursors.crownCursor = Math.max(cursors.crownCursor, runtime.crownBase + 1);
+    if (runtime.signBase >= 0) cursors.signCursor = Math.max(cursors.signCursor, runtime.signBase + 1);
+  }
+  return cursors;
+}
+
+function placeRuntime(host: BuildingSystemHost, building: CityBuilding, district: DistrictLayout, slot: Parcel, cursors: RuntimeCursors, fromAppend: boolean): BuildingRuntime {
+      const palette = paletteForDistrict(host.model, building.districtId);
       const runtime: BuildingRuntime = {
         building,
         slot,
         facade: -1,
         groundY: district.grounds.get(building.id) ?? 0,
         paletteWall: new THREE.Color(palette.wall).multiplyScalar(0.92 + building.seed * 0.16),
-        display: host.previousDisplays?.get(building.id) ?? 0,
+        display: fromAppend ? 0 : (host.previousDisplays?.get(building.id) ?? 0),
         target: building.builtFraction,
-        settled: host.previousDisplays ? host.previousDisplays.has(building.id) : true,
+        settled: fromAppend ? false : (host.previousDisplays ? host.previousDisplays.has(building.id) : true),
         district,
         shaftPrimary: -1,
         shaftUpper: -1,
@@ -130,8 +196,10 @@ export function buildRuntimes(host: BuildingSystemHost): void {
 
       runtime.facade = host.facadeFor(building);
       if (runtime.facade === 3) {
-        runtime.deco = decoCursor;
-        decoCursor += 1;
+        ensureInstancedCapacity(host.decoCornerMesh, cursors.decoCursor + 1);
+        ensureInstancedCapacity(host.decoTrimMesh, (cursors.decoCursor + 1) * 2);
+        runtime.deco = cursors.decoCursor;
+        cursors.decoCursor += 1;
         // 装饰艺术楼墙面用执行环境强调色的粉彩版（而不是执行环境的浅墙色）：浅墙色在黄昏暖光下被压成灰，
         // 海滨要的是一眼能认出的粉、薄荷、青、紫。
         runtime.paletteWall = new THREE.Color(palette.accent).lerp(new THREE.Color("#ffffff"), 0.52).multiplyScalar(0.96 + building.seed * 0.08);
@@ -151,135 +219,188 @@ export function buildRuntimes(host: BuildingSystemHost): void {
       const instanceMap = host.shaftIdByInstance[runtime.facade];
       const wantsUpper = host.formOf(building) === "tower" || host.formOf(building) === "landmark";
       const zone = host.zoneById.get(building.id);
-      if (host.formOf(building) === "tower" && zone !== "waterfront" && hashSeed(`cylinder:${building.id}`) < 0.14 && cylinderCount < 64) { runtime.cylinder = cylinderCount; cylinderCount += 1; }
-      runtime.shaftPrimary = shaftCursor[runtime.facade];
+      if (host.formOf(building) === "tower" && zone !== "waterfront" && hashSeed(`cylinder:${building.id}`) < 0.14 && cursors.cylinderCount < 64) {
+        ensureInstancedCapacity(host.cylinderMesh, cursors.cylinderCount + 1);
+        runtime.cylinder = cursors.cylinderCount; cursors.cylinderCount += 1;
+      }
+      ensureInstancedCapacity(mesh, cursors.shaftCursor[runtime.facade] + (wantsUpper ? 2 : 1));
+      runtime.shaftPrimary = cursors.shaftCursor[runtime.facade];
       mesh.setColorAt(runtime.shaftPrimary, runtime.paletteWall);
       (mesh.geometry.getAttribute("aFloors") as THREE.InstancedBufferAttribute).setX(runtime.shaftPrimary, Math.max(2, Math.round(building.height / m(REAL.floorHeight))));
       (mesh.geometry.getAttribute("aLight") as THREE.InstancedBufferAttribute).setXY(runtime.shaftPrimary, useOfZone(zone) === "office" ? 1 : 0, building.active ? 1 : 0);
       instanceMap.set(runtime.shaftPrimary, building.id);
-      shaftCursor[runtime.facade] += 1;
+      cursors.shaftCursor[runtime.facade] += 1;
       if (wantsUpper) {
-        runtime.shaftUpper = shaftCursor[runtime.facade];
+        runtime.shaftUpper = cursors.shaftCursor[runtime.facade];
         mesh.setColorAt(runtime.shaftUpper, runtime.paletteWall.clone().multiplyScalar(0.94));
         (mesh.geometry.getAttribute("aFloors") as THREE.InstancedBufferAttribute).setX(runtime.shaftUpper, Math.max(2, Math.round((building.height * 0.28) / m(REAL.floorHeight))));
         (mesh.geometry.getAttribute("aLight") as THREE.InstancedBufferAttribute).setXY(runtime.shaftUpper, useOfZone(zone) === "office" ? 1 : 0, building.active ? 1 : 0);
         instanceMap.set(runtime.shaftUpper, building.id);
-        shaftCursor[runtime.facade] += 1;
+        cursors.shaftCursor[runtime.facade] += 1;
       }
 
       const needsPodium = host.formOf(building) !== "tower" && host.formOf(building) !== "landmark";
       if (needsPodium) {
-        runtime.podium = podiumCount;
-        host.podiumMesh.setColorAt(podiumCount, runtime.paletteWall.clone().multiplyScalar(0.88));
-        podiumCount += 1;
+        ensureInstancedCapacity(host.podiumMesh, cursors.podiumCount + 1);
+        runtime.podium = cursors.podiumCount;
+        host.podiumMesh.setColorAt(cursors.podiumCount, runtime.paletteWall.clone().multiplyScalar(0.88));
+        cursors.podiumCount += 1;
       }
-      runtime.roof = roofCount;
-      host.roofMesh.setColorAt(roofCount, new THREE.Color(palette.roof).multiplyScalar(0.94 + building.seed * 0.12));
+      ensureInstancedCapacity(host.roofMesh, cursors.roofCount + 1);
+      ensureInstancedCapacity(host.neonMesh, cursors.roofCount + 1);
+      ensureInstancedCapacity(host.scaffoldMesh, cursors.scaffoldCount + 1);
+      ensureInstancedCapacity(host.gardenTreeMesh, (cursors.roofCount + 1) * 3);
+      for (const profile of host.roofProfiles) ensureInstancedCapacity(profile, cursors.roofCount + 1);
+      runtime.roof = cursors.roofCount;
+      host.roofMesh.setColorAt(cursors.roofCount, new THREE.Color(palette.roof).multiplyScalar(0.94 + building.seed * 0.12));
       runtime.roofKind = host.roofKindFor(building, runtime.facade);
       const roofColor = new THREE.Color(palette.roof).multiplyScalar(0.94 + building.seed * 0.12);
       const profileColors = [roofColor, new THREE.Color(palette.accent).lerp(new THREE.Color("#e8eef0"), 0.55), runtime.paletteWall.clone().multiplyScalar(0.96), new THREE.Color("#7fae6a")];
-      host.roofProfiles.forEach((mesh, index) => mesh.setColorAt(roofCount, profileColors[index]));
+      host.roofProfiles.forEach((mesh, index) => mesh.setColorAt(cursors.roofCount, profileColors[index]));
       // 乘 3.2 让亮度越过 bloom 阈值（MeshBasicMaterial 不吃光照，toneMapped=false 保留 HDR 值）。
       // N1：霓虹描边只留给高楼与酒店冠，普通会话楼不再每栋一圈彩边（荧光玩具感）；其余实例色置黑 = 不发光。
-      host.neonMesh.setColorAt(roofCount, new THREE.Color(palette.accent).multiplyScalar(building.height >= 24 || slot.blockId.startsWith("hotel:") ? LIGHT_BUDGET.neon.roof : 0));
-      roofCount += 1;
+      host.neonMesh.setColorAt(cursors.roofCount, new THREE.Color(palette.accent).multiplyScalar(building.height >= 24 || slot.blockId.startsWith("hotel:") ? LIGHT_BUDGET.neon.roof : 0));
+      cursors.roofCount += 1;
       // 海滨酒店冠（L-1）：方案在建模期算一次存住；冠底霓虹带走独立实例（neonMesh 与 roofCount
       // 是 1:1 索引，每楼可变条数会破坏该映射）。
       if (slot.blockId.startsWith("hotel:")) {
         const plan = hotelCrownPlan(slot.width, slot.depth, building.height, building.seed);
         if (plan) {
           runtime.crown = plan;
-          runtime.crownBase = crownCursor;
-          crownFinCursor += plan.fins.length;
-          host.crownStripMesh.setColorAt(crownCursor, new THREE.Color(palette.accent).multiplyScalar(3.2));
-          crownCursor += 1;
+          runtime.crownBase = cursors.crownCursor;
+          ensureInstancedCapacity(host.crownFinMesh, cursors.crownFinCursor + plan.fins.length);
+          ensureInstancedCapacity(host.crownStripMesh, cursors.crownCursor + 1);
+          cursors.crownFinCursor += plan.fins.length;
+          host.crownStripMesh.setColorAt(cursors.crownCursor, new THREE.Color(palette.accent).multiplyScalar(3.2));
+          cursors.crownCursor += 1;
         }
-      } else if (runtime.roofKind === 0 && (slot.zone === "commercial" || slot.zone === "downtown" || (host.percentileOf(building) ?? 0) >= 0.6) && building.height >= 18 && signCursor < 24) {
+      } else if (cursors.allowRooftopSigns && runtime.roofKind === 0 && (slot.zone === "commercial" || slot.zone === "downtown" || (host.percentileOf(building) ?? 0) >= 0.6) && building.height >= 18 && cursors.signCursor < 24) {
         // 屋顶立牌（L-2）：商业区高楼的尺度符号；已有尖顶/退台冠的楼让位（roofKind ≠ 0 不立牌）。
         // roofY 传 0：模块给的件 y 都是「屋顶面相对高度」，写矩阵时再加地面 + 楼高。
+        // 分页追加不再新立屋顶牌：路边牌已从第一页的 rooftopCount 起编址，插入会撞号。
         const plan = rooftopSignPlan(slot.width, slot.depth, 0, building.seed);
         if (plan) {
           runtime.signPlan = plan;
-          runtime.signBase = signCursor;
+          runtime.signBase = cursors.signCursor;
           const frameColor = new THREE.Color(palette.accent).multiplyScalar(3.2);
-          plan.frame.forEach((_, k) => host.signFrameMesh.setColorAt(signCursor * 4 + k, frameColor));
+          plan.frame.forEach((_, k) => host.signFrameMesh.setColorAt(cursors.signCursor * 4 + k, frameColor));
           const stripeColors = [new THREE.Color(palette.accent).multiplyScalar(2.4), new THREE.Color("#f8f4ea").multiplyScalar(2.4), new THREE.Color(palette.roof).multiplyScalar(2.4)];
-          plan.stripes.forEach((_, k) => host.signStripeMesh.setColorAt(signCursor * 3 + k, stripeColors[k % 3]));
-          signCursor += 1;
+          plan.stripes.forEach((_, k) => host.signStripeMesh.setColorAt(cursors.signCursor * 3 + k, stripeColors[k % 3]));
+          cursors.signCursor += 1;
         }
       }
-      runtime.scaffold = scaffoldCount;
-      scaffoldCount += 1;
+      runtime.scaffold = cursors.scaffoldCount;
+      cursors.scaffoldCount += 1;
       // C-2 轮廓配件：≥24 高、无尖顶冠（roofKind 0）的楼按种子约三成立天线 + 航空灯，打断板楼单调的天际线（backlog C-2）。
       const roofline = runtime.roofKind === 0 && !slot.blockId.startsWith("hotel:") && building.height >= 24 && hashSeed(`roofline:${building.id}`) < 0.32;
-      if ((host.formOf(building) === "landmark" || roofline) && antennaCount < 94) {
-        runtime.antenna = antennaCount;
-        antennaCount += 1;
-        runtime.beacon = beaconCount;
-        beaconCount += 1;
+      if ((host.formOf(building) === "landmark" || roofline) && cursors.antennaCount < 94) {
+        ensureInstancedCapacity(host.antennaMesh, cursors.antennaCount + 1);
+        ensureInstancedCapacity(host.beaconMesh, cursors.beaconCount + 1);
+        runtime.antenna = cursors.antennaCount;
+        cursors.antennaCount += 1;
+        runtime.beacon = cursors.beaconCount;
+        cursors.beaconCount += 1;
       }
-      if (building.active && craneCount < 46) {
-        runtime.craneMast = craneCount;
-        runtime.craneArm = craneCount;
-        craneCount += 1;
+      if (building.active && cursors.craneCount < 46) {
+        ensureInstancedCapacity(host.craneMastMesh, cursors.craneCount + 1);
+        ensureInstancedCapacity(host.craneArmMesh, cursors.craneCount + 1);
+        runtime.craneMast = cursors.craneCount;
+        runtime.craneArm = cursors.craneCount;
+        cursors.craneCount += 1;
       }
 
       host.runtimes.push(runtime);
       host.runtimeById.set(building.id, runtime);
-    }
-    host.buildGroundSpill();
+      return runtime;
+}
 
+function commitRuntimeCounts(host: BuildingSystemHost, cursors: RuntimeCursors, withRoadsideSigns: boolean): void {
     host.shaftMeshes.forEach((mesh, variant) => {
-      mesh.count = shaftCursor[variant];
+      mesh.count = cursors.shaftCursor[variant];
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     });
-    host.podiumMesh.count = podiumCount;
+    host.podiumMesh.count = cursors.podiumCount;
     if (host.podiumMesh.instanceColor) host.podiumMesh.instanceColor.needsUpdate = true;
-    host.roofMesh.count = roofCount;
+    host.roofMesh.count = cursors.roofCount;
     for (const mesh of host.roofProfiles) {
-      mesh.count = roofCount;
+      mesh.count = cursors.roofCount;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     }
-    host.gardenTreeMesh.count = roofCount * 3;
+    host.gardenTreeMesh.count = cursors.roofCount * 3;
+    host.neonMesh.count = activeTheme().neon ? cursors.roofCount : 0;
+    if (host.neonMesh.instanceColor) host.neonMesh.instanceColor.needsUpdate = true;
+    if (host.roofMesh.instanceColor) host.roofMesh.instanceColor.needsUpdate = true;
+    host.scaffoldMesh.count = cursors.scaffoldCount;
+    host.antennaMesh.count = cursors.antennaCount;
+    host.cylinderMesh.count = cursors.cylinderCount;
+    host.beaconMesh.count = cursors.beaconCount;
+    host.craneMastMesh.count = cursors.craneCount;
+    host.decoCornerMesh.count = cursors.decoCursor;
+    host.decoTrimMesh.count = cursors.decoCursor * 2;
+    if (host.decoCornerMesh.instanceColor) host.decoCornerMesh.instanceColor.needsUpdate = true;
+    if (host.decoTrimMesh.instanceColor) host.decoTrimMesh.instanceColor.needsUpdate = true;
+    host.craneArmMesh.count = cursors.craneCount;
+    // 霓虹载体（冠底带/牌框/色条）与 neonMesh 同一门控：非霓虹主题整体收起，物理件（鳍片/柱/板）常在。
+    // 鳍片按实际片数收口——曾漏设 count（makeInstanced 初始为 0），城里所有酒店冠都不渲染。
+    host.crownFinMesh.count = cursors.crownFinCursor;
+    host.crownStripMesh.count = activeTheme().neon ? cursors.crownCursor : 0;
+    if (host.crownStripMesh.instanceColor) host.crownStripMesh.instanceColor.needsUpdate = true;
+    if (withRoadsideSigns) {
+      host.buildRoadsideSigns(cursors.signCursor);
+      // 路边牌占位后才知道四批次的实际用量：屋顶牌 0..signCursor-1，路边牌 signCursor..。
+      host.signPostMesh.count = host.signPostCount * 2;
+      host.signPanelMesh.count = host.signPostCount;
+      host.signFrameMesh.count = activeTheme().neon ? host.signPostCount * 4 : 0;
+      host.signStripeMesh.count = activeTheme().neon ? host.signPostCount * 3 : 0;
+      if (host.signFrameMesh.instanceColor) host.signFrameMesh.instanceColor.needsUpdate = true;
+      if (host.signStripeMesh.instanceColor) host.signStripeMesh.instanceColor.needsUpdate = true;
+    }
+}
+
+export function buildRuntimes(host: BuildingSystemHost): void {
+    const districtsById = new Map(host.layout.districts.map((district) => [district.id, district]));
+    const cursors = emptyCursors(true);
+    const ordered = [...host.model.buildings].sort((left, right) => left.startedAt - right.startedAt);
+    for (const building of ordered) {
+      const district = districtsById.get(building.districtId);
+      const slot = district?.slots.get(building.id);
+      if (!district || !slot) continue;
+      placeRuntime(host, building, district, slot, cursors, false);
+    }
+    host.buildGroundSpill();
     // 天际线焦点：token 最多的会话。楼高本就是 token 的单调函数，它已是（或几乎是）最高楼；
     // 这里只给它专属冠顶，不改高度——高度是数据语义。
-    let hero: BuildingRuntime | null = null;
-    for (const runtime of host.runtimes) if (!hero || runtime.building.tokensTotal > hero.building.tokensTotal) hero = runtime;
+    const heroBuilding = selectVisualHero(host.runtimes.map(runtime => runtime.building));
+    const hero = host.runtimes.find(runtime => runtime.building === heroBuilding) ?? null;
     if (hero) {
       hero.hero = true;
       hero.roofKind = 0;
       host.buildHeroCrown(hero);
     }
-    host.neonMesh.count = activeTheme().neon ? roofCount : 0;
-    if (host.neonMesh.instanceColor) host.neonMesh.instanceColor.needsUpdate = true;
-    if (host.roofMesh.instanceColor) host.roofMesh.instanceColor.needsUpdate = true;
-    host.scaffoldMesh.count = scaffoldCount;
-    host.antennaMesh.count = antennaCount;
-    host.cylinderMesh.count = cylinderCount;
-    host.beaconMesh.count = beaconCount;
-    host.craneMastMesh.count = craneCount;
-    host.decoCornerMesh.count = decoCursor;
-    host.decoTrimMesh.count = decoCursor * 2;
-    if (host.decoCornerMesh.instanceColor) host.decoCornerMesh.instanceColor.needsUpdate = true;
-    if (host.decoTrimMesh.instanceColor) host.decoTrimMesh.instanceColor.needsUpdate = true;
-    host.craneArmMesh.count = craneCount;
-    // 霓虹载体（冠底带/牌框/色条）与 neonMesh 同一门控：非霓虹主题整体收起，物理件（鳍片/柱/板）常在。
-    // 鳍片按实际片数收口——曾漏设 count（makeInstanced 初始为 0），城里所有酒店冠都不渲染。
-    host.crownFinMesh.count = crownFinCursor;
-    host.crownStripMesh.count = activeTheme().neon ? crownCursor : 0;
-    if (host.crownStripMesh.instanceColor) host.crownStripMesh.instanceColor.needsUpdate = true;
-    host.buildRoadsideSigns(signCursor);
-    // 路边牌占位后才知道四批次的实际用量：屋顶牌 0..signCursor-1，路边牌 signCursor..。
-    host.signPostMesh.count = host.signPostCount * 2;
-    host.signPanelMesh.count = host.signPostCount;
-    host.signFrameMesh.count = activeTheme().neon ? host.signPostCount * 4 : 0;
-    host.signStripeMesh.count = activeTheme().neon ? host.signPostCount * 3 : 0;
-    if (host.signFrameMesh.instanceColor) host.signFrameMesh.instanceColor.needsUpdate = true;
-    if (host.signStripeMesh.instanceColor) host.signStripeMesh.instanceColor.needsUpdate = true;
+    commitRuntimeCounts(host, cursors, true);
 
     // 初次落矩阵：回访的楼按已知高度写（settled），新到的楼从 display=0 藏起，
     // 由 update 循环长入——immediate=true 会按 target 写满高，新楼会先闪一下。
     for (const runtime of host.runtimes) host.applyConstruction(runtime, runtime.settled);
+}
+
+/** Place only buildings the current CityParts does not yet have. Existing instance indices stay put. */
+export function appendRuntimes(host: BuildingSystemHost): BuildingRuntime[] {
+    const districtsById = new Map(host.layout.districts.map((district) => [district.id, district]));
+    const cursors = cursorsFromHost(host);
+    const added: BuildingRuntime[] = [];
+    const ordered = [...host.model.buildings].sort((left, right) => left.startedAt - right.startedAt);
+    for (const building of ordered) {
+      if (host.runtimeById.has(building.id)) continue;
+      const district = districtsById.get(building.districtId);
+      const slot = district?.slots.get(building.id);
+      if (!district || !slot) continue;
+      added.push(placeRuntime(host, building, district, slot, cursors, true));
+    }
+    if (!added.length) return added;
+    commitRuntimeCounts(host, cursors, false);
+    for (const runtime of added) host.applyConstruction(runtime, false);
+    return added;
 }
 
 /**
@@ -624,7 +745,7 @@ export function buildMassing(host: BuildingSystemHost): void {
 }
 
 export function buildHeroCrown(host: BuildingSystemHost, hero: BuildingRuntime): void {
-    const palette = paletteFor(hero.building.districtId);
+    const palette = paletteForDistrict(host.model, hero.building.districtId);
     const spireMaterial = new THREE.MeshLambertMaterial({ color: "#dfe6ea", emissive: new THREE.Color(palette.accent).multiplyScalar(0.12) });
     const spire = new THREE.Mesh(new THREE.ConeGeometry(1, 1, 8, 1).translate(0, 0.5, 0), spireMaterial);
     spire.castShadow = true;
@@ -682,7 +803,7 @@ export function buildRoadsideSigns(host: BuildingSystemHost, rooftopCount: numbe
     // 按合并后的整条路取候选：路网被 T 路口切分、滨海路按 ~15 细分后，单条路段几乎没有 ≥60 的，
     // 曾因此一块牌都没立（实例全藏在 y=-40，建筑说明取景时发现）。整条路 ≥60 时取其最长一段的中点。
     const candidates = roadPaintPlan(host.layout.roadEdges ?? [])
-      .runs.filter((run) => run.kind === "arterial" && run.width >= 8)
+      .runs.filter((run) => run.kind === "arterial" && atLeast(run, "collector"))
       .flatMap((run) => {
         let best: { a: Vec2; b: Vec2; len: number } | null = null; let total = 0;
         for (let i = 1; i < run.points.length; i += 1) {

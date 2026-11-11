@@ -23,14 +23,17 @@ export const CONTINUOUS_MOTION_DEFAULTS=Object.freeze({maxSlides:4,maxSupportSeg
  *  真实城市里卡死成 travel-prefix-precision（0/42 匝道落地端，D1 审计 simulation-invalid）：
  *  1. 支撑跳变：同区域内的接缝允许 ≤ aliasTolerance（0.1）的高差，过缝那一小段里竖直落差 0.05 而水平只有 0.03，
  *     3D 长度被跳变撑大且不随裁切比例缩小，12 次裁切都压不进预算。超出最大坡度所能解释的那部分竖直落差
- *     （封顶 SUPPORT_STEP_EXEMPT）不算油门行程——与可越路缘的 riseAllowance 同一道理；真坡道照旧按 3D 计费。
+ *     不算油门行程（无可越覆盖时封顶 SUPPORT_STEP_EXEMPT，可越路缘用自己的预算）；真坡道照旧按 3D 计费。
+ *     曾在可越覆盖时把整段 dy 都豁免：高架/匝道板的 XZ 包住车，每 tick 的 speedFraction≈1−sin(pitch)，
+ *     全油门也在坡上平衡到几 km/h。坡度本身能解释的爬升必须计费。
  *  2. 浮点：坐标 ~600、高度来自 float32 时，裁切结果比预算多 2.3e-9 就判失败；容差改为相对量。 */
 const SUPPORT_STEP_EXEMPT = 0.1 + 1e-6;
 const budgetSlack = (remaining: number) => 1e-9 + remaining * 1e-7;
 function chargedLength(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }, riseAllowance: number, maxSlope: number): number {
   const h = Math.hypot(b.x - a.x, b.z - a.z), dy = Math.abs(b.y - a.y);
-  const step = Math.min(Math.max(0, dy - h * Math.tan(maxSlope)), SUPPORT_STEP_EXEMPT);
-  return Math.hypot(h, dy) - Math.max(step, Math.min(dy, riseAllowance));
+  const excess = Math.max(0, dy - h * Math.tan(maxSlope));
+  const cap = riseAllowance > 0 ? riseAllowance : SUPPORT_STEP_EXEMPT;
+  return Math.hypot(h, dy) - Math.min(excess, cap);
 }
 function pathCharge(path: readonly { x: number; y: number; z: number }[], riseAllowance: number, maxSlope: number): number {
   let total = 0;

@@ -1,4 +1,5 @@
 /** 亚单位近接端点合并；道路与 owner/车流引用在求解草稿中一起更新。 */
+import { atLeast, roadWidthFor, kindOfWidth, isStandardEdge, EXPRESSWAY_DECK_WIDTH } from "../roadStandard";
 import { DetMath as Math } from "../detMath";
 import type { RepairContext } from "./context";
 import { commitNetworkPatch, keyOf, type Network, type NetworkPatch } from "./network";
@@ -102,7 +103,7 @@ export function relocatedSitePositionFailure(ctx: RepairContext, owner: RepairCo
   };
   // Same accepted deck width and sidewalk setback; change only the explicitly
   // declared complete XY obstacle, never the shore/plot/service constraints.
-  if (declaredXY ? ctx.ringRuns.some(run => !projectionClear(run, 5.25 + 1))
+  if (declaredXY ? ctx.ringRuns.some(run => !projectionClear(run, EXPRESSWAY_DECK_WIDTH / 2 + 1))
     : !clearsRingRuns(at, owner.radius * 2, owner.radius * 2, ctx.ringRuns)) return "owner-highway-clearance";
   if ([...ctx.publicSites, ...ctx.landmarks].some((other) => other !== owner
     && Math.hypot(other.x - at.x, other.z - at.z) < other.radius + owner.radius)) return "owner-spacing";
@@ -517,7 +518,7 @@ export function rerouteUnsafeGroundCrossings(ctx: RepairContext): { changes: num
     if (considered >= maxCandidates) break;
     const candidates = finding.edges.map((id) => ctx.network.edges.get(id)).filter((edge): edge is NonNullable<typeof edge> => !!edge)
       .filter((edge) => !edge.bridge && edge.structure === "ground-road" && edge.points.length === 2
-        && (edge.kind === "arterial" ? edge.width === 8 || edge.width === 12 : edge.width === 5)
+        && isStandardEdge(edge)
         && !edgeIsReferenced(edge) && !attempted.has(`reroute-crossing:${edge.id}`))
       .sort((a, b) => a.width - b.width || (a.id < b.id ? -1 : 1));
     for (const edge of candidates) {
@@ -540,7 +541,7 @@ export function rerouteUnsafeGroundCrossings(ctx: RepairContext): { changes: num
           reservations: () => [...ctx.publicSites, ...ctx.landmarks] };
         const result = runConnection({ id: attemptId, source: { x: source.x, z: source.z }, target: { kind: "node", id: targetId },
           purpose: "district-access", allowBridge: false, maxLength: Math.min(700, Math.max(160, Math.hypot(target.x - source.x, target.z - source.z) * 2.5)),
-          roadClass: edge.width >= 8 ? "arterial" : "local", primary: edge.width >= 12 }, world,
+          roadClass: kindOfWidth(edge.width), primary: atLeast(edge, "arterial") }, world,
         { strategies: ["direct-projection", "node-merge", "detour", "grid-astar"], crossings: true });
         if (!result.ok) { rejected.push(`${edge.id}:${result.detail ?? result.reason}`); continue; }
         const preserved = new Set(groundJunctionFindings([...ctx.network.edges.values()])
@@ -610,7 +611,7 @@ export function trimLeafBeforeUnsafeCrossing(ctx: RepairContext): { changes: num
     let committed = false;
     for (let ownIndex = 0; ownIndex < 2 && !committed; ownIndex += 1) {
       const edge = pair[ownIndex]!, other = pair[1 - ownIndex]!;
-      if (edge.width >= 12 || edge.structure !== "ground-road" || edge.points.length !== 2 || edgeReferenced(edge)) continue;
+      if (atLeast(edge, "arterial") || edge.structure !== "ground-road" || edge.points.length !== 2 || edgeReferenced(edge)) continue;
       const relation = classifyRoadSegments(edge.points[0], edge.points[1], other.points[0], other.points[1]);
       const length = Math.hypot(edge.points[1].x - edge.points[0].x, edge.points[1].z - edge.points[0].z);
       if (length < 6) continue;

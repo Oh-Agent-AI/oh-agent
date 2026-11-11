@@ -17,6 +17,7 @@
  * 岸外半径），但「先到先得」改为「hard 全过 + soft 加权后取最优」——这是行为变更批的差异点，
  * 不是本批的行为。
  */
+import { roadWidthFor, EXPRESSWAY_DECK_WIDTH } from "../roadStandard";
 import { DetMath as Math } from "../detMath";
 import type { Landmark } from "../cityPlan";
 import { segmentDistance } from "../roadGeometry";
@@ -94,15 +95,15 @@ const projectOnSegment = (p: Vec2, a: Vec2, b: Vec2) => {
   return { foot: { x: a.x + dx * t, z: a.z + dz * t }, dx, dz, len };
 };
 
-/** 环线净空（与 cityPlan.clearsHighways 同公式：5.25 + 半对角 + 1；纯函数版，无空间索引）。 */
+/** 环线净空（与 cityPlan.clearsHighways 同公式：EXPRESSWAY_DECK_WIDTH / 2 + 半对角 + 1；纯函数版，无空间索引）。 */
 export function clearsRingRuns(p: Vec2, width: number, depth: number, ringRuns: Vec2[][]): boolean {
-  return polylineDistance(ringRuns, p) >= 5.25 + Math.hypot(width, depth) / 2 + 1;
+  return polylineDistance(ringRuns, p) >= EXPRESSWAY_DECK_WIDTH / 2 + Math.hypot(width, depth) / 2 + 1;
 }
 
 /** Read-only frontage spans: segmentation into short graph edges must not
  * hide an otherwise continuous straight road. Never chord a bent road, cross
  * a junction/bridge or merge different widths, structures or purposes. */
-export function groundFrontageSegments(edges: readonly RoadEdge[], minWidth = 12): Array<[Vec2, Vec2]> {
+export function groundFrontageSegments(edges: readonly RoadEdge[], minWidth = roadWidthFor("arterial")): Array<[Vec2, Vec2]> {
   if (!Number.isFinite(minWidth) || minWidth <= 0) return [];
   const incident = new Map<string, RoadEdge[]>();
   for (const edge of edges) for (const id of [edge.from, edge.to]) {
@@ -320,7 +321,7 @@ export function siteCandidateHardReject(world: SiteCandidateWorld, spec: SiteSpe
         ?? (isDry(geo, at, r) ? null : "dry-footprint")
         ?? ring()
         ?? spacing(10)
-        ?? ((world.groundRoads ?? world.trunkRuns.map(points => ({ points, width: 12 }))).every(road => road.points.slice(1).every((point, i) => siteRoadClear(
+        ?? ((world.groundRoads ?? world.trunkRuns.map(points => ({ points, width: roadWidthFor("arterial") }))).every(road => road.points.slice(1).every((point, i) => siteRoadClear(
           { ...at, id: candidate.id, kind: spec.kind, yaw: candidate.yaw, radius: r }, road.points[i], point, road.width)))
           ? null : "declared-passage-road-clearance");
     case "shore":
@@ -407,7 +408,7 @@ export function straddleSitesAcrossTrunk(ctx: Pick<FrontageMoveContext, "publicS
       if (!clearsRingRuns(q, site.radius * 2, site.radius * 2, ringRuns)) continue; // 不能压在环线高架下（geography 守卫）
       if (others.some((o) => Math.hypot(o.x - q.x, o.z - q.z) < o.radius + site.radius + 10)) continue;
       const pose = { ...site, ...q, yaw: Math.atan2(dx, dz) };
-      const roads = ctx.groundRoads ?? trunkSegments.map(([u, v]) => ({ points: [u, v], width: 12 }));
+      const roads = ctx.groundRoads ?? trunkSegments.map(([u, v]) => ({ points: [u, v], width: roadWidthFor("arterial") }));
       if (!roads.every(road => road.points.slice(1).every((point, i) => siteRoadClear(pose, road.points[i], point, road.width)))) continue;
       site.x = q.x; site.z = q.z; site.yaw = pose.yaw;
       break place;

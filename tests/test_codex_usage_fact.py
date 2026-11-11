@@ -86,6 +86,28 @@ def _write(tmpd, name, rows):
 class CodexUsageFactEmitterCase(unittest.TestCase):
     """Python 端 emitter 直调——不依赖 Rust 二进制，覆盖 §6 acceptance #1-#9。"""
 
+    def test_zstd_rollout_is_decompressed_before_emission(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = _single_consume(1000, 150, cached=400, cache_write=100, reasoning=30)
+            text = "".join(json.dumps(row) + "\n" for row in rows)
+            plain = Path(tmp) / "rollout-zstd.jsonl"
+            compressed = Path(tmp) / "rollout-zstd.jsonl.zst"
+            plain.write_bytes(text.encode("utf-8"))
+            compressed.write_bytes(b"compressed fixture")
+
+            with patch("agent_vitals.adapters.dsh._zstd", return_value=object()), \
+                    patch("agent_vitals.adapters.dsh.decode_zstd_multi_frame",
+                          return_value=text.encode("utf-8")):
+                result = codex_rollouts_to_usage_facts(
+                    [plain, compressed], machine_namespace="ns-zstd", source_profile="default")
+
+            self.assertEqual(result.malformed, 0)
+            self.assertEqual(result.coverage["fact_rows"], 1)
+            self.assertEqual(result.attempts.get("duplicate"), 1)
+            self.assertTrue(result.facts[0]["source_event_id"].startswith("rollout-zstd:"))
+
     def test_bucket_mapping_and_reasoning_merge(self):
         """acceptance #1 + #2a：5→4 桶映射 + reasoning ⊆ output 不叠加。
 

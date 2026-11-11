@@ -1,3 +1,4 @@
+import { atLeast, roadWidthFor } from "../roadStandard";
 import { DetMath as Math } from "../detMath";
 import { segmentDistance } from "../roadGeometry";
 import type { RoadEdge, Vec2 } from "../cityLayout";
@@ -136,7 +137,7 @@ function plannedEndWorld(ctx: RepairContext, sites: Array<{ x: number; z: number
 /** 能删吗：窄路、非桥、不切断、不夺门前路、不拆车流回路。删出来的短枝由表尾的 pruneShortSpurs 收尾
  *  （策略顺序见 solve.ts 注释）；2026-10-08 起 prune 不再有高度盲区，平地短枝同样会被收掉。 */
 function removable(ctx: RepairContext, edge: RoadEdge, baseline: number): boolean {
-  if (edge.bridge || edge.width >= 12) return false;
+  if (edge.bridge || atLeast(edge, "arterial")) return false;
   // 桥头连续（评审修复轮实测）：地面引道是桥面的唯一地面接入，删了就剩悬空桥板
   // （seed 2000104729：连接器建好引道+桥面，prune 把引道当普通窄枝收走）。
   for (const other of ctx.network.edges.values()) {
@@ -175,7 +176,7 @@ function roundaboutWorld(ctx: RepairContext): ConnectorWorld {
 
 /** Rotate a protected local junction leg into a legal approach using a sampled cubic; endpoints/topology stay fixed. */
 function bendAcuteLocalLeg(ctx: RepairContext, junctionId: string, edge: RoadEdge): boolean {
-  if (edge.bridge || edge.kind !== "local" || edge.width >= 8 || edge.structure !== "ground-road" || edge.points.length !== 2) return false;
+  if (edge.bridge || edge.kind !== "local" || atLeast(edge, "collector") || edge.structure !== "ground-road" || edge.points.length !== 2) return false;
   const junction = ctx.network.nodes.get(junctionId); if (!junction) return false;
   const fromJunction = edge.from === junctionId;
   const farId = fromJunction ? edge.to : edge.from;
@@ -288,7 +289,7 @@ export function resolveAcuteJunctions(ctx: RepairContext): number {
       // the graph, try a smooth local-road approach bend with fixed endpoints.
       if (roundaboutSiteBlocked) {
         const candidates = [sorted[k].e, sorted[(k + 1) % sorted.length].e]
-          .filter((road) => road.kind === "local" && road.width < 8)
+          .filter((road) => road.kind === "local" && road.width < roadWidthFor("collector"))
           .sort((a, b) => edgeLength(a) - edgeLength(b) || (a.id < b.id ? -1 : 1));
         if (candidates.some((road) => bendAcuteLocalLeg(ctx, id, road))) { resolved += 1; break; }
       }
@@ -318,7 +319,7 @@ export function pruneShortSpurs(ctx: RepairContext): number {
       const chain: RoadEdge[] = []; let cur = id; let prev: RoadEdge | null = null; let len = 0; let ok = true;
       for (let step = 0; step < 12; step += 1) {
         const next: RoadEdge | undefined = (deg.get(cur) ?? []).find((e) => e !== prev && ctx.network.edges.has(e.id));
-        if (!next || next.width >= 12) { ok = false; break; }
+        if (!next || atLeast(next, "arterial")) { ok = false; break; }
         chain.push(next); len += edgeLength(next); prev = next; cur = next.from === cur ? next.to : next.from;
         if ((deg.get(cur)?.length ?? 0) >= 3) break;
         if (len >= 60) { ok = false; break; }
@@ -355,7 +356,7 @@ export function connectLooseEnd(ctx: RepairContext, id: string, strategy: Connec
   if (!node || incident.length !== 1 || isPlannedRoadEnd(node,
     plannedEndWorld(ctx, [...ctx.publicSites, ...ctx.landmarks].filter((site) => site.radius)))) return { changes: 0 };
   const own = incident[0];
-  if (collectorAccess && own.width !== 12) return { changes: 0 };
+  if (collectorAccess && own.width !== roadWidthFor("arterial")) return { changes: 0 };
   const attemptId = `endpoint:${id}:${strategy}${collectorAccess ? ":collector" : ""}`;
   const crowdedCount = (network: RepairContext["network"]) => {
     const arterials = [...network.edges.values()].filter((edge) => !edge.bridge && edge.kind === "arterial");
@@ -372,7 +373,7 @@ export function connectLooseEnd(ctx: RepairContext, id: string, strategy: Connec
     target: { kind: "edges", include: (edge) => !edge.bridge && edge.id !== own.id && edge.from !== id && edge.to !== id },
     purpose: "district-access", allowBridge: false,
     maxLength: strategy === "direct-projection" ? 24 : ENDPOINT_REPAIR_CONFIG.maxRouteLength,
-    roadClass: own.kind === "arterial" ? "arterial" : "local", primary: own.width >= 12 && !collectorAccess,
+    roadClass: own.kind === "arterial" ? "arterial" : "local", primary: atLeast(own, "arterial") && !collectorAccess,
   }, { network: ctx.network, geo: ctx.geo, inRiver: ctx.inRiver,
     reservations: () => [...ctx.publicSites, ...ctx.landmarks].filter((site) => site.radius),
     draftAcceptance: (draft) => crowdedCount(draft) > baselineCrowded ? "crossing endpoint route increases crowded arterials" : null,
@@ -404,7 +405,7 @@ export function joinNearMissEnds(ctx: RepairContext, onlyNodeId?: string): numbe
     const result = runConnection({ id: `near-junction:${id}`, source: node,
       target: { kind: "edges", include: (e) => !e.bridge && e.id !== own.id && e.from !== id && e.to !== id },
       purpose: "district-access", allowBridge: false, maxLength: 24,
-      roadClass: own.kind === "arterial" ? "arterial" : "local", primary: own.width >= 12,
+      roadClass: own.kind === "arterial" ? "arterial" : "local", primary: atLeast(own, "arterial"),
     }, world, { strategies: ["direct-projection"] });
     ctx.connectionLog?.push({ id: `near-junction:${id}`, purpose: "district-access", ok: result.ok,
       ...(result.ok ? { strategy: result.strategy } : { reason: result.reason, detail: result.detail }) });

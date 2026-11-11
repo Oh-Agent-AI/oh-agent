@@ -10,6 +10,7 @@
  * 都按 reservations 做用地净距，桥面段不查——新地面路因此绕开低段，跨越只能发生在高架已经够高的地方。
  * 骨架已提交的路（包括宿主路）不受影响。圆盘从 START 开始，让开落地区本身（宿主路与匝道在那里本来就相交）。
  */
+import { EXPRESSWAY_DECK_WIDTH } from "../roadStandard";
 import type { Vec2 } from "../cityLayout";
 
 export const RAMP_LOW_ZONE = {
@@ -18,8 +19,8 @@ export const RAMP_LOW_ZONE = {
   /** 落地端起算：桥面底到此处已高于车辆净空（ease 剖面实测约 2.3）。 */
   end: 48,
   step: 4,
-  /** 高架桥面半宽（与 skeleton 出口弦净空的 5.25 同口径）。 */
-  radius: 5.25,
+  /** 高架桥面半宽（与 skeleton 出口弦净空的 EXPRESSWAY_DECK_WIDTH / 2 同口径）。 */
+  radius: EXPRESSWAY_DECK_WIDTH / 2,
 };
 
 export type RampLowZoneDisc = Vec2 & { radius: number; kind: "ramp-low-zone"; id: string };

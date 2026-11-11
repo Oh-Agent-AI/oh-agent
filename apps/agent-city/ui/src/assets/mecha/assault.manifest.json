@@ -1,0 +1,50 @@
+{
+  "id": "assault",
+  "version": 1,
+  "role": "Assault",
+  "footprint": [
+    1,
+    1
+  ],
+  "forward": "-Z",
+  "heightMeters": 19.98,
+  "maxExtentMeters": [
+    21.0,
+    10.8
+  ],
+  "clips": {
+    "idle": {
+      "duration": 3.14,
+      "loop": true
+    },
+    "move": {
+      "duration": 0.79,
+      "loop": true
+    },
+    "attack": {
+      "duration": 0.95,
+      "loop": false
+    },
+    "hit": {
+      "duration": 0.48,
+      "loop": false
+    },
+    "defeat": {
+      "duration": 0.85,
+      "loop": false,
+      "holdLastFrame": true
+    }
+  },
+  "actionMap": {
+    "repair": "attack"
+  },
+  "materials": [
+    "armor_palette",
+    "faction_accent"
+  ],
+  "source": {
+    "kind": "hand-modelled in Blender 5.4; hulls from designed outlines positioned against AI-reference and Codex measurements; detail layer sourced from the concept board or the AI reference, each part tagged in the build script (reference meshes not shipped)",
+    "blend_sha256": "40f5c99dad51e71073b8d2bd1c3f9f29889666b04e718a2ca1ea496adefde650",
+    "glb_sha256": "89efe920fd964eb4ac77c72f06439295446e16b7763f570f90ec7a724bec13fb"
+  }
+}

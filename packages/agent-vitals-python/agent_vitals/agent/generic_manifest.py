@@ -115,7 +115,7 @@ class PluginManifest(object):
 
     def __init__(self, slug, display_name, roots, include, session_pattern,
                  recipe, overrides, event_key_paths, max_rows_per_file,
-                 billing_locked):
+                 billing_locked, compression="none"):
         self.slug = slug
         self.display_name = display_name
         self.roots = roots
@@ -126,6 +126,7 @@ class PluginManifest(object):
         self.event_key_paths = event_key_paths
         self.max_rows_per_file = max_rows_per_file
         self.billing_locked = billing_locked
+        self.compression = compression
 
     @property
     def facts_harness(self):
@@ -277,13 +278,18 @@ def parse_manifest(value):
     if not isinstance(source, dict):
         raise _err("source", "必须是 object")
     for key in source.keys():
-        if key != "format":
+        if key not in ("format", "compression"):
             raise _err("source.%s" % key, "未知字段")
     fmt = source.get("format")
     if not isinstance(fmt, str):
         raise _err("source.format", "必须是字符串")
     if fmt != "jsonl":
         raise _err("source.format", "P0 仅支持 jsonl（得到 %s）" % fmt)
+    compression = source.get("compression", "none")
+    if not isinstance(compression, str):
+        raise _err("source.compression", "必须是字符串")
+    if compression not in ("none", "zstd"):
+        raise _err("source.compression", "仅支持 none 或 zstd（得到 %s）" % compression)
 
     session = value.get("session")
     if not isinstance(session, dict):
@@ -371,7 +377,7 @@ def parse_manifest(value):
 
     return PluginManifest(slug, display_name, roots, include, session_pattern,
                           recipe, overrides, event_key_paths, max_rows,
-                          billing_locked)
+                          billing_locked, compression)
 
 
 def load_manifest(path):

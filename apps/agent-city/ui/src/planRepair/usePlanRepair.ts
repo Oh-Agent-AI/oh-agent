@@ -4,6 +4,7 @@
  * 开发开关（planDevEnabled）未开启时本 hook 什么都不做：不读存档、不挂 window、不碰引擎。
  * 与游戏/航拍/导出互斥（SPEC §8）：`blocked` 变真即退出修复模式，进入也被拒。
  */
+import { roadWidthFor, EXPRESSWAY_DECK_WIDTH } from "../engine/roadStandard";
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import type { CityModel } from "../cityModel";
 import type { CityEngine } from "../engine/CityEngine";
@@ -189,7 +190,7 @@ export function usePlanRepair(engine: RefObject<CityEngine | null>, options: { s
     const hasImpact = !!impact && (impact.bulldozed.length > 0 || impact.relocated.length > 0 || impact.homeless.length > 0);
     if (preview?.kind === "erase") ribbons.push({ points: preview.points, width: preview.width, tone: preview.ok ? "erase" : "erase-blocked" });
     if (preview?.kind === "proposal") {
-      for (const points of preview.erase) ribbons.push({ points, width: 5, tone: "erase" });
+      for (const points of preview.erase) ribbons.push({ points, width: roadWidthFor("local"), tone: "erase" });
       ribbons.push({ points: [preview.draw.from, preview.draw.to], width: preview.draw.width, tone: "draw" });
       markers.push({ ...preview.draw.from, tone: "snap" }, { ...preview.draw.to, tone: "snap" });
     }
@@ -201,7 +202,7 @@ export function usePlanRepair(engine: RefObject<CityEngine | null>, options: { s
     // 画路预览按实际铺成的折线画（拐角倒圆时 path 从旧路尾端的切点开始，弧线一目了然）。
     if (preview?.kind === "draw") { ribbons.push({ points: preview.path ?? [preview.from, preview.to], width: preview.width, tone: !preview.ok ? "draw-blocked" : hasImpact ? "draw-warn" : "draw" }); markers.push({ ...preview.to, tone: preview.ok ? "snap" : "snap-blocked" }); }
     if (preview?.kind === "viaduct") {
-      if (preview.points.length >= 2) ribbons.push({ points: preview.points, width: 10.5, tone: !preview.ok ? "draw-blocked" : hasImpact ? "draw-warn" : "draw" });
+      if (preview.points.length >= 2) ribbons.push({ points: preview.points, width: EXPRESSWAY_DECK_WIDTH, tone: !preview.ok ? "draw-blocked" : hasImpact ? "draw-warn" : "draw" });
       markers.push({ ...preview.points[preview.points.length - 1], tone: preview.ok ? "snap" : "snap-blocked" });
     }
     for (const point of state.viaduct) markers.push({ ...point, tone: "start" });

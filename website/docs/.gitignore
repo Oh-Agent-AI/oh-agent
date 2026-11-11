@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Astro generated files
+.astro/
+
+# Environment
+.env
+.env.local
+.env.*.local
+public/llms.txt
+public/llms-full.txt

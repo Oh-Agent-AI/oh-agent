@@ -220,7 +220,7 @@ if (process.argv.includes("--cities")) {
     // by design; everything else — curbs included — must still equal the pre-descriptor renderer.
     const before = baseline[`${seed}/${tier}`]; const corrected = correctedPlans[`${seed}/${tier}`];
     for (const name of Object.keys(before)) {
-      const expected = baselineFile.bridgeLandingBlend?.plans?.[`${seed}/${tier}`]?.[name] ?? baselineFile.planRefresh?.plans?.[`${seed}/${tier}`]?.[name] ?? baselineFile.terrainResolution?.plans?.[`${seed}/${tier}`]?.[name] ?? baselineFile.bridgeheadTruss?.plans?.[`${seed}/${tier}`]?.[name] ?? baselineFile.portalPiers?.plans?.[`${seed}/${tier}`]?.[name] ?? baselineFile.rollTransition?.plans?.[`${seed}/${tier}`]?.[name] ?? (name === "buildInfrastructure" || name === "buildTrussBridges" ? corrected[name] : corrected[name] ?? before[name]);
+      const expected = baselineFile.landmarkPlatforms?.plans?.[`${seed}/${tier}`]?.[name] ?? baselineFile.bridgeLandingBlend?.plans?.[`${seed}/${tier}`]?.[name] ?? baselineFile.planRefresh?.plans?.[`${seed}/${tier}`]?.[name] ?? baselineFile.terrainResolution?.plans?.[`${seed}/${tier}`]?.[name] ?? baselineFile.bridgeheadTruss?.plans?.[`${seed}/${tier}`]?.[name] ?? baselineFile.portalPiers?.plans?.[`${seed}/${tier}`]?.[name] ?? baselineFile.rollTransition?.plans?.[`${seed}/${tier}`]?.[name] ?? (name === "buildInfrastructure" || name === "buildTrussBridges" ? corrected[name] : corrected[name] ?? before[name]);
       assert.equal(digests[name], expected, `seed ${seed} tier ${tier}: ${name} render output changed`);
     }
     const { c, regions } = build(plan);

@@ -295,9 +295,15 @@ export class FlightWorld {
    * 确定性：环形扫描，无随机数。找不到返回 null（调用方拒绝开始，给自由练习/重新生成）。
    * 出生环必须在软边界以内（曾从 0.82×hard 起——软边界在 0.78×hard，出生即告警）。
    */
+  /** 自由练习的巡航高度。机场起飞用同一档，而不是贴着 1.4 的跑道面爬几个机身半径。 */
+  flightAltitude(clearance: number): number {
+    const { bounds } = this;
+    return Math.min(bounds.maxY - clearance * 2, Math.max(30, (bounds.maxY - 40) * 0.55 + 26));
+  }
+
   findSafeSpawn(clearance: number, cameraBack: number, cameraUp: number): SpawnPoint | null {
     const { bounds } = this;
-    const altitude = Math.min(bounds.maxY - clearance * 2, Math.max(30, (bounds.maxY - 40) * 0.55 + 26));
+    const altitude = this.flightAltitude(clearance);
     for (let ring = 0; ring < 5; ring += 1) {
       const radius = bounds.softRadius * (0.9 + ring * 0.04);
       const steps = 24;

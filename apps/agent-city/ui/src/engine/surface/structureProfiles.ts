@@ -3,7 +3,7 @@
  *  路灯曾按 8.2（板底）立杆，光斑埋进桥面板、又因半径大于半幅桥宽漏到桥下地面。 */
 export const EXPRESSWAY_DECK_Y = 8.2;
 export const EXPRESSWAY_DECK_THICKNESS = 0.9;
-export const EXPRESSWAY_DECK_WIDTH = 10.5;
+export { EXPRESSWAY_DECK_WIDTH } from "../roadStandard";
 export const EXPRESSWAY_DECK_TOP = EXPRESSWAY_DECK_Y + EXPRESSWAY_DECK_THICKNESS;
 /** 高架两端的匝道长度：环线在海岸/山体处断开成几段，段尾曾悬在 8.2 高的半空、下面是沙地（拍照实测）。 */
 export const EXPRESSWAY_RAMP = 90;

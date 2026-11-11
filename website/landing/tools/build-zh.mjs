@@ -1,0 +1,90 @@
+#!/usr/bin/env node
+// Prerenders the Chinese landing page at /zh/ (zh/index.html) from index.html + i18n.js,
+// so search engines get static Chinese HTML with its own canonical and hreflang pairs.
+// Usage: node tools/build-zh.mjs [--check]   (--check fails if zh/index.html is stale)
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import vm from 'node:vm';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const read = (name) => readFileSync(path.join(root, name), 'utf8');
+const html = read('index.html');
+
+// Find the matching close tag, counting nested elements with the same name.
+const VOID = new Set(['img', 'input', 'br', 'meta', 'link', 'source', 'hr']);
+function innerRange(src, openEnd, tag) {
+  if (VOID.has(tag)) return [openEnd, openEnd];
+  const re = new RegExp(`<(/?)${tag}\\b[^>]*>`, 'g');
+  re.lastIndex = openEnd;
+  let depth = 1, m;
+  while ((m = re.exec(src))) {
+    if (m[0].endsWith('/>')) continue;
+    depth += m[1] ? -1 : 1;
+    if (depth === 0) return [openEnd, m.index];
+  }
+  throw new Error(`Unclosed <${tag}> at ${openEnd}`);
+}
+
+// Run the real i18n.js against lightweight nodes to get every Chinese string.
+const nodes = [];
+for (const m of html.matchAll(/<([a-z0-9-]+)\b([^>]*\bdata-i18n(?:-aria|-alt)?="[^"]+"[^>]*)>/g)) {
+  const attrs = Object.fromEntries([...m[2].matchAll(/([\w-]+)="([^"]*)"/g)].map((v) => [v[1], v[2]]));
+  const [start, end] = innerRange(html, m.index + m[0].length, m[1]);
+  nodes.push({ tag: m[1], openStart: m.index, openEnd: start, innerEnd: end, original: html.slice(start, end), innerHTML: html.slice(start, end), attrs,
+    getAttribute: (k) => attrs[k], setAttribute: (k, v) => { attrs[k] = v; } });
+}
+const meta = {};
+const document = { documentElement: { dataset: { staticLang: 'zh' } }, title: '',
+  querySelector: (sel) => ({ dataset: {}, setAttribute: (k, v) => { meta[sel] = v; } }),
+  querySelectorAll: (sel) => nodes.filter((n) => n.attrs[sel.slice(1, -1)] !== undefined) };
+const ctx = { document, location: { search: '', pathname: '/zh/', hash: '' }, localStorage: { getItem: () => null, setItem() {} }, URLSearchParams, window: {} };
+vm.runInNewContext(read('i18n.js'), ctx);
+const t = ctx.window.__avLandingLang.t;
+
+// Rebuild the page: translated element contents and attributes, right to left.
+let out = html;
+for (const n of [...nodes].sort((a, b) => b.openStart - a.openStart)) {
+  let open = out.slice(n.openStart, n.openEnd);
+  let inner = out.slice(n.openEnd, n.innerEnd);
+  if (n.attrs['data-i18n'] && !VOID.has(n.tag)) inner = t(n.attrs['data-i18n']);
+  for (const [a, prop] of [['data-i18n-aria', 'aria-label'], ['data-i18n-alt', 'alt']]) {
+    if (n.attrs[a]) open = open.replace(new RegExp(`\\b${prop}="[^"]*"`), `${prop}="${t(n.attrs[a])}"`);
+  }
+  out = out.slice(0, n.openStart) + open + inner + out.slice(n.innerEnd);
+}
+
+const zhTitle = 'Oh Agent — Agent 在工作，你的世界在生长。';
+const desc = meta['meta[name="description"]'];
+const ogTitle = meta['meta[property="og:title"]'];
+if (!desc || !ogTitle) throw new Error('i18n.js no longer provides zh meta strings');
+const replaceOnce = (from, to) => { if (!out.includes(from)) throw new Error(`build-zh: missing ${from}`); out = out.replace(from, to); };
+replaceOnce('<html lang="en">', '<html lang="zh-CN" data-static-lang="zh" data-site-root="../">');
+out = out.replace(/<title>[^<]*<\/title>/, `<title>${zhTitle}</title>`);
+out = out.replace(/(<meta name="description" content=")[^"]*/, `$1${desc}`)
+  .replace(/(<meta property="og:description" content=")[^"]*/, `$1${meta['meta[property="og:description"]']}`)
+  .replace(/(<meta name="twitter:description" content=")[^"]*/, `$1${meta['meta[name="twitter:description"]']}`)
+  .replace(/(<meta property="og:title" content=")[^"]*/, `$1${ogTitle}`)
+  .replace(/(<meta name="twitter:title" content=")[^"]*/, `$1${meta['meta[name="twitter:title"]']}`);
+replaceOnce('<link rel="canonical" href="https://ohagent.ai/" data-zh-href="https://ohagent.ai/zh/">', '<link rel="canonical" href="https://ohagent.ai/zh/">');
+replaceOnce('<meta property="og:url" content="https://ohagent.ai/">', '<meta property="og:url" content="https://ohagent.ai/zh/">\n  <meta property="og:locale" content="zh_CN">');
+// Static language switch back to English (?lang=en also resets a saved zh preference).
+out = out.replace(/<a class="language" href="zh\/" data-lang-switch="zh" lang="zh-CN" hreflang="zh-CN">中文<\/a>/, '<a class="language" href="../?lang=en" data-lang-switch="en" lang="en" hreflang="en">EN</a>');
+// Docs links go to the Chinese docs.
+out = out.replace(/href="\/docs\/" data-href-zh="\/docs\/zh\/"/g, 'href="/docs/zh/" data-href-zh="/docs/zh/"');
+// Relative asset URLs move one level up.
+out = out.replace(/\b(src|href)="(?!https?:|\/|#|\.\.\/|\?|mailto:|data:)([^"]+)"/g, '$1="../$2"');
+// The poster alt etc. are translated; the iframe titles come from city-host.js at runtime.
+out = `<!-- Generated by website/landing/tools/build-zh.mjs from index.html + i18n.js. Do not edit by hand. -->\n${out}`;
+
+const target = path.join(root, 'zh/index.html');
+if (process.argv.includes('--check')) {
+  let current = '';
+  try { current = readFileSync(target, 'utf8'); } catch {}
+  if (current !== out) { console.error('zh/index.html is stale: run node website/landing/tools/build-zh.mjs'); process.exit(1); }
+  console.log('zh/index.html: up to date');
+} else {
+  mkdirSync(path.dirname(target), { recursive: true });
+  writeFileSync(target, out);
+  console.log(`zh/index.html: written (${nodes.length} translated elements)`);
+}

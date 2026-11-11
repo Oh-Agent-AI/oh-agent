@@ -5,11 +5,243 @@
       "id": "city",
       "name": "City",
       "entry": "plugins/AgentCity.plugin/ui/index.html",
+      "remoteHostEntry": "plugins/AgentCity.plugin/ui/remote.html",
       "commandNamespace": "city",
-      "dataProjections": ["city:v2", "city:v3", "city-settings:v1", "harnesses:v1"],
-      "stateKeys": ["flight-profile:v1", "game-links:v1"],
+      "maxToolbarItems": 11,
+      "performanceMetrics": ["scene", "data-load"],
+      "dataProjections": ["harnesses:v1"],
+      "remoteProjectionGrants": { "mecha:v4": ["city-remote-display:v2"], "city-dream:v1": ["city-dream:v1"] },
+      "remoteProjectionPassthrough": ["city-dream:v1", "city-remote-display:v2"],
+      "typedDataGrants": {
+        "harness-sessions:v1": {
+          "fields": ["session.id", "session.harness_id", "session.first_event_at_ms", "session.last_event_at_ms", "session.event_count", "session.tokens.input", "session.tokens.output", "session.tokens.total"],
+          "windowDays": [7, 30, 90, 366],
+          "maxRows": 500,
+          "maxBytes": 262144
+        },
+        "harness-sessions:v2": {
+          "fields": ["session.id", "session.harness_id", "session.first_event_at_ms", "session.last_event_at_ms", "session.event_count", "session.tokens.input", "session.tokens.output", "session.tokens.total"],
+          "windowDays": [7, 30, 90, 366],
+          "maxRows": 500,
+          "maxTotalRows": 4000,
+          "maxBytes": 262144
+        },
+        "harness-sessions:v3": {
+          "fields": ["session.id", "session.harness_id", "session.title", "session.title_source", "session.window_first_event_at_ms", "session.window_last_event_at_ms", "session.window_order", "session.lifetime_first_event_at_ms", "session.lifetime_last_event_at_ms", "session.event_count", "session.tokens.input", "session.tokens.output", "session.tokens.total", "session.tokens.uncached_input", "session.tokens.cache_read", "session.tokens.cache_write", "session.model_ids", "session.model_coverage"],
+          "windowDays": [7, 30, 90, 366],
+          "maxRows": 500,
+          "maxTotalRows": 4000,
+          "maxBytes": 262144
+        },
+        "harness-sessions:v4": {
+          "fields": ["session.id", "session.stable_ref"],
+          "windowDays": [7, 30, 90, 366],
+          "maxRows": 500,
+          "maxTotalRows": 4000,
+          "maxBytes": 262144
+        },
+        "harness-session-identities:v1": {
+          "fields": ["session.id", "session.stable_ref"],
+          "maxRows": 500,
+          "maxTotalRows": 100000,
+          "maxBytes": 262144
+        },
+        "harness-sessions:v5": {
+          "fields": ["session.id", "session.harness_id", "session.title", "session.title_source", "session.lifetime_first_event_at_ms", "session.lifetime_last_event_at_ms", "session.event_count", "session.tokens.input", "session.tokens.output", "session.tokens.total", "session.tokens.uncached_input", "session.tokens.cache_read", "session.tokens.cache_write", "session.model_ids", "session.model_coverage", "session.stable_ref"],
+          "maxRows": 500,
+          "maxTotalRows": 100000,
+          "maxBytes": 262144
+        },
+        "usage-summary:v1": {
+          "fields": ["summary.session_count", "summary.usage_event_count", "summary.tokens.input", "summary.tokens.output", "summary.tokens.total", "summary.tokens.uncached_input", "summary.tokens.cache_read", "summary.tokens.cache_write"],
+          "windowDays": [7, 30, 90, 366],
+          "maxRows": 1,
+          "maxBytes": 16384
+        },
+        "activity-summary:v1": {
+          "fields": ["activity.date", "activity.session_count", "activity.event_count", "activity.tokens"],
+          "windowDays": [7, 30, 90, 366],
+          "maxRows": 368,
+          "maxBytes": 65536
+        },
+        "model-usage:v1": {
+          "fields": ["model.model_id", "model.usage_event_count", "model.legacy_usage_event_count", "model.tokens.input", "model.tokens.output", "model.tokens.total", "model.tokens.uncached_input", "model.tokens.cache_read", "model.tokens.cache_write", "coverage.unknown_model_usage_events", "coverage.legacy_usage_events", "scope", "pricing_independent"],
+          "windowDays": [7, 30, 90, 366],
+          "maxRows": 500,
+          "maxBytes": 262144
+        },
+        "time-coverage:v1": {
+          "fields": ["coverage.scope", "coverage.unknown_time_only", "coverage.mixed_time", "coverage.excluded_no_usage"],
+          "windowDays": [7, 30, 90, 366],
+          "maxRows": 1,
+          "maxBytes": 16384
+        },
+        "finding-summary:v1": {
+          "fields": ["findings.current_backlog.harness_id", "findings.current_backlog.severity", "findings.current_backlog.count", "findings.window_new.harness_id", "findings.window_new.severity", "findings.window_new.count", "capabilities.harness_id", "capabilities.available", "capabilities.reason"],
+          "windowDays": [7, 30, 90, 366],
+          "maxRows": 500,
+          "maxBytes": 65536
+        },
+        "skill-usage-summary:v1": {
+          "fields": ["skill.harness_id", "skill.label", "skill.invocations", "skill.sessions", "skill.last_invoked_at_ms", "skill.finished_events", "skill.failed_events", "skill.succeeded_events"],
+          "windowDays": [7, 30, 90, 366],
+          "maxRows": 200,
+          "maxBytes": 65536
+        },
+        "workflow-activity-summary:v1": {
+          "fields": ["event.harness_id", "event.event_type", "event.count", "event.sessions", "event.last_event_at_ms", "event.failed_events"],
+          "windowDays": [7, 30, 90, 366],
+          "maxRows": 200,
+          "maxBytes": 65536
+        },
+        "harness-session-detail:v1": {
+          "fields": ["session.id", "session.harness_id", "session.title", "session.title_source", "session.first_event_at", "session.last_event_at", "session.window_first_event_at", "session.window_last_event_at", "session.lifetime_first_event_at", "session.lifetime_last_event_at", "session.event_count", "session.tokens.input", "session.tokens.output", "session.tokens.total", "session.tokens.uncached_input", "session.tokens.cache_read", "session.tokens.cache_write", "session.model_ids", "session.model_coverage"],
+          "windowDays": [7, 30, 90, 366],
+          "maxRows": 1,
+          "maxBytes": 65536
+        },
+        "session-excerpts:v1": {
+          "fields": ["excerpt.role", "excerpt.text", "excerpt.provenance", "excerpt.is_excerpt", "excerpt.scope", "excerpt.excerpt_at"],
+          "windowDays": [7, 30, 90, 366],
+          "maxRows": 2,
+          "maxBytes": 16384
+        },
+        "session-cost:v1": {
+          "fields": ["cost.status", "cost.reason", "cost.has_unresolved", "cost.complete", "cost.cost_minor", "cost.coverage", "cost.pricing_versions", "cost.reference_prices", "cost.pricing_sources", "cost.breakdown"],
+          "windowDays": [7, 30, 90, 366],
+          "maxRows": 1,
+          "maxBytes": 65536
+        },
+        "session-source-status:v1": {
+          "fields": ["source.stable_ref", "source.state", "source.has_usage_in_window"],
+          "windowDays": [7, 30, 90, 366],
+          "maxRows": 200,
+          "maxBytes": 32768
+        }
+      },
+      "legacyDataGrants": {
+        "city-legacy-store:v1": { "maxRows": 500, "maxBytes": 1048576 },
+        "city-asset-crosswalk:v1": { "maxRows": 4000, "maxBytes": 1048576 }
+      },
+      "objectGrants": {
+        "city.asset:v1": {
+          "objectType": "city.asset:v1",
+          "schemaVersion": 1,
+          "allowAliases": true,
+          "operations": ["create", "read", "readAlias", "commit", "attachAlias", "list"],
+          "maxObjectBytes": 2048,
+          "maxObjects": 4000,
+          "maxTotalBytes": 8388608,
+          "maxEventBytes": 256,
+          "maxEventsPerObject": 1,
+          "maxEventsPerCommit": 1,
+          "maxEventPage": 1,
+          "maxListPage": 200,
+          "eventTypes": []
+        },
+        "city.building-kit:v1": {
+          "objectType": "city.building-kit:v1",
+          "schemaVersion": 1,
+          "allowAliases": true,
+          "operations": ["create", "read", "commit", "eventPage", "list", "delete", "readAlias", "attachAlias"],
+          "maxObjectBytes": 65536,
+          "maxObjects": 4000,
+          "maxTotalBytes": 33554432,
+          "maxEventBytes": 4096,
+          "maxEventsPerObject": 1000,
+          "maxEventsPerCommit": 4,
+          "maxEventPage": 50,
+          "maxListPage": 200,
+          "eventTypes": ["object.changed", "object.reset", "city.building.changed", "city.building.reset"]
+        },
+        "city.mecha-replay:v1": {
+          "objectType": "city.mecha-replay:v1",
+          "schemaVersion": 1,
+          "allowAliases": true,
+          "operations": ["create", "read", "commit", "list", "delete", "readAlias"],
+          "maxObjectBytes": 49152,
+          "maxObjects": 100,
+          "maxTotalBytes": 5242880,
+          "maxEventBytes": 1,
+          "maxEventsPerObject": 1,
+          "maxEventsPerCommit": 1,
+          "maxEventPage": 1,
+          "maxListPage": 20,
+          "eventTypes": []
+        }
+      },
+      "scopeGrants": {
+        "city.save:v1": {
+          "scopeType": "city.save:v1",
+          "operations": ["read", "commit"],
+          "objectTypes": ["city.asset:v1", "city.building-kit:v1"],
+          "maxScopes": 1000,
+          "maxMembers": 4000
+        },
+        "city.mecha-replay-library:v1": {
+          "scopeType": "city.mecha-replay-library:v1",
+          "operations": ["read", "commit"],
+          "objectTypes": ["city.mecha-replay:v1"],
+          "maxScopes": 2,
+          "maxMembers": 20
+        }
+      },
+      "remoteSessions": {
+        "mecha:v4": {
+          "version": 1,
+          "bootstrapMethod": "session.bootstrap",
+          "approvalMethod": "session.join",
+          "stopMethod": "session.freeze",
+          "stopPolicy": "freezeSnapshot",
+          "maxBootstrapBytes": 262144,
+          "links": {
+            "path": "/remote",
+            "sessionParam": "match",
+            "playerParam": "player",
+            "websocketParam": "ws",
+            "accessParam": "access",
+            "deviceParam": "device",
+            "invitationRoomParam": "room",
+            "invitationIdParam": "invite",
+            "ownerCapabilityParam": "capability"
+          }
+        },
+        "city-dream:v1": {
+          "version": 1,
+          "bootstrapMethod": "dream.bootstrap",
+          "approvalMethod": null,
+          "stopMethod": null,
+          "stopPolicy": "closeOnly",
+          "maxBootstrapBytes": 262144,
+          "links": {
+            "path": "/remote",
+            "sessionParam": "publication",
+            "playerParam": "player",
+            "websocketParam": "ws",
+            "accessParam": "access",
+            "deviceParam": "device",
+            "invitationRoomParam": "room",
+            "invitationIdParam": "invite",
+            "invitationSecretParam": null,
+            "ownerCapabilityParam": "capability",
+            "invitationCapabilityParam": "capability"
+          }
+        }
+      },
+      "stateKeys": ["city-seed:v1", "city-bookmarks:v1", "city-squad:v1", "flight-profile:v1", "mecha-replays:v1", "mecha-replay-library:v1", "mecha-checkpoint:v1"],
       "allowLocalExports": true,
       "navigationTargets": ["session"],
+      "hostEvents": ["plugin.event"],
+      "localCalls": ["city.building.get", "city.building.preview", "city.building.set", "city.building.reset", "city.im.publish"],
+      "remoteCapabilities": [{
+        "id": "mecha:v4",
+        "methods": ["sequential.snapshot", "sequential.command.submit", "city.snapshot"],
+        "events": []
+      }, {
+        "id": "city-dream:v1",
+        "methods": ["dream.snapshot"],
+        "events": []
+      }],
       "source": "apps/agent-city/ui",
       "debugProbeMarker": "__CITY_PROBE_SPIN__"
     }

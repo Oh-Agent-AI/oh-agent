@@ -1,3 +1,4 @@
+import { roadWidthFor } from "../roadStandard";
 import { DetMath as Math } from "../detMath";
 import type { Landmark } from "../cityPlan";
 import { clearsHighways } from "../roadGeometry";
@@ -205,7 +206,7 @@ export function settleShoreSitesOnCoast(ctx: ShoreMoveContext): void {
 export type SailOperaCandidate = { x: number; z: number; yaw: number; shore: Vec2 };
 export type SailOperaCandidateSet = { siteId: string; candidates: SailOperaCandidate[] };
 export const SAIL_OPERA_CONFIG = { version: 2, coastCandidates: 40, jointCandidates: 40,
-  landingInsets: [6, 8, 10, 12, 14, 16, 18, 20, 22, 24] as const, landingRoadWidth: 5 };
+  landingInsets: [6, 8, 10, 12, 14, 16, 18, 20, 22, 24] as const, landingRoadWidth: roadWidthFor("local") };
 
 /** A dry centre does not support a full-width causeway landing. Keep the
  * historical 6-unit inset when it is valid; otherwise search a bounded inland

@@ -1,0 +1,31 @@
+# Oh Agent
+
+> Oh Agent is a free, open-source (MIT) platform for analyzing AI agent behavior data. It is built on the local-first Agent Vitals engine, which reads the session logs of Claude Code, Codex, DeepSeek Harness and WorkBuddy into a local database on your machine (no server, no upload, no account). Agent City, its first app, is a data-visualization open-world game: a 3D city where every building is one agent session.
+
+Current release: 1.0.0-beta.3 (pre-release), https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.3
+- macOS Apple Silicon: oh-agent-1.0.0-beta.3-arm64.dmg (Developer ID signed and notarized)
+- Windows x64: oh-agent-1.0.0-beta.3-windows-x86_64-setup.exe (not code-signed yet)
+- Linux x64: oh-agent-1.0.0-beta.3-linux-x86_64.deb and oh-agent-1.0.0-beta.3-linux-x86_64.AppImage (not signed yet)
+- Checksums: SHA256SUMS. Intel Mac: coming later.
+The web demo at https://ohagent.ai/ runs the real City frontend on synthetic sessions and does not read local data.
+
+## Docs
+- [What is Oh Agent? Open-source AI agent behavior analytics, with Agent City](https://ohagent.ai/docs/): Oh Agent is a free, open-source platform for analyzing your AI agents' behavior data, locally on your machine. The Agent Vitals engine reads Claude Code, Codex, DeepSeek Harness and WorkBuddy sessions; Agent City turns them into a 3D city.
+- [How do I install Oh Agent? Downloads for macOS, Windows and Linux](https://ohagent.ai/docs/install/): Download Oh Agent 1.0.0-beta.3 (pre-release) for Apple Silicon Mac, Windows x64 or Linux x64. Install steps per platform, checksum verification, signing status and first run.
+- [What does each building in Agent City mean? How is height calculated?](https://ohagent.ai/docs/city-guide/): In Agent City each session building is one agent session, and its height follows the session's total tokens on a log curve. What every building means.
+- [Where does Claude Code store session history, and how does Oh Agent read it?](https://ohagent.ai/docs/data-sources/claude-code/): Claude Code saves each session as a JSONL file under ~/.claude/projects. Oh Agent reads those files locally and turns every session into a building.
+- [Where does Codex store session logs, and how does Oh Agent visualize them?](https://ohagent.ai/docs/data-sources/codex/): Codex CLI saves each session as a rollout-*.jsonl file under ~/.codex/sessions. Oh Agent reads them on your computer and builds a Codex district in Agent City.
+- [Does Oh Agent upload my sessions? Data and privacy explained](https://ohagent.ai/docs/privacy-and-data/): Oh Agent analyzes Claude Code and Codex history on your computer and never uploads sessions. What it reads, when it goes online, and what MCP changes.
+- [Where does DeepSeek Harness (DSH) store sessions, and how does Oh Agent read them?](https://ohagent.ai/docs/data-sources/deepseek-harness/): Oh Agent reads DeepSeek Harness session logs from $DSH_HOME/sessions (default ~/.dsh), including zstd-compressed files, and builds a DSH district in Agent City.
+- [How does Oh Agent read WorkBuddy sessions?](https://ohagent.ai/docs/data-sources/workbuddy/): Oh Agent reads WorkBuddy usage from trace files under ~/.workbuddy/traces and builds a WorkBuddy district in Agent City. Extra folders and behaviour checks are not supported.
+- ["Agent Vitals CLI (agent-vitals): commands for syncing, querying and exporting agent data"](https://ohagent.ai/docs/vitals/cli/): The agent-vitals command-line tool runs the Agent Vitals engine without the desktop app. Sync agent logs, check data status, export facts, manage manifest sources and start the Data MCP server.
+- ["Agent Vitals Data MCP tools: let your AI agent read your agent data locally"](https://ohagent.ai/docs/vitals/mcp-tools/): Oh Agent's CLI includes a local stdio MCP server, agent-vitals data-mcp serve, that lets Claude Code, Codex or another MCP client query your agent usage data. Read-only by default.
+- ["What is the Agent Vitals engine? Local-first agent behavior data engine"](https://ohagent.ai/docs/vitals/overview/): "Oh Agent is built on Agent Vitals, an open-source, local-first engine for AI agent behavior data. It is an embedded library with an SQLite store, not a server: no network port, no daemon."
+
+## Product
+- [Website and web demo](https://ohagent.ai/)
+- [Source code (GitHub)](https://github.com/Oh-Agent-AI/oh-agent)
+
+## Optional
+- [中文文档](https://ohagent.ai/docs/zh/)
+- [Full docs as plain text](https://ohagent.ai/llms-full.txt)

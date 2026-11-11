@@ -1,5 +1,6 @@
 /** CPU-only ordinary-road geometry compiler. Geometry order and attributes
  * preserve the previous renderer contract; this does not certify drivability. */
+import { roadWidthFor, roadClassSpec } from "../roadStandard";
 import type { CityLayout, RoadEdge, Vec2 } from "../cityLayout";
 import { roadPaintPlan } from "../cityRoadPaint";
 import { cornerArc, junctionIndex, renderRoadEdges, roadJunctionPlan, STRAIGHT_GAP, taperOutline, type JunctionArm, type RoadJunction } from "../cityRoadJunctions";
@@ -36,17 +37,17 @@ const FILL_ARC_STEP = Math.PI / 9;
 
 /** 宽度 → 层（0 = 人行道，1 = 路口填充，2–4 = 支路 / 次干 / 主干）。 */
 export function roadLayerOf(width: number): 2 | 3 | 4 {
-  return width <= 5 ? 2 : width <= 8 ? 3 : 4;
+  return width <= roadWidthFor("local") ? 2 : width <= roadWidthFor("collector") ? 3 : 4;
 }
 /** 人行道带宽（每侧）。视觉风格线（claude/city-visual-style-analysis）把路面与人行道
  *  垫底统一到 cityRoadJunctions.SIDEWALK_BAND = 1.8（曾 1.2，真实 ≥2），此处同步。 */
-const SIDEWALK = 1.8;
+const SIDEWALK = roadClassSpec("local").sidewalk;
 const SIDEWALK_COLOR = "#d4cfc2";
 /** aRoadRun.w：0 = 路段带（画标线），1 = 沥青填充，2 = 人行道。 */
 const PIECE_RIBBON = 0; const PIECE_FILL = 1; const PIECE_SIDEWALK = 2;
 /** 宽度 → 标线方案：0 支路（虚中线）、1 次干（黄虚中线 + 白边线）、2 主干（双黄实线 + 白车道虚线 + 白边线）。 */
 export function roadMarkingKindOf(width: number): 0 | 1 | 2 {
-  return width < 8 ? 0 : width < 12 ? 1 : 2;
+  return width < roadWidthFor("collector") ? 0 : width < roadWidthFor("arterial") ? 1 : 2;
 }
 const asphaltOf = (kind: RoadEdge["kind"]) => (kind === "arterial" ? "#505b60" : "#646c6b");
 

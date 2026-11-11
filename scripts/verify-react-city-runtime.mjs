@@ -115,10 +115,6 @@ async function openWorkbench({ noWebGL = false, failModule = false } = {}) {
     window.cityTest = { mode: "ready", rejectDays: null, delayDays: null, calls: [] };
     window.__AV_BROWSER_PROVIDERS__ = {};
     window.__AV_BROWSER_PROVIDERS__.city = async (request) => {
-      if (request.payload.projection === "city-settings") {
-        if (request.payload.action === "write") window.cityTest.seed = request.payload.seed;
-        return { seed: window.cityTest.seed ?? 74031 };
-      }
       const days = request.payload.windowDays;
       const { mode, rejectDays, delayDays } = window.cityTest;
       window.cityTest.calls.push(days);

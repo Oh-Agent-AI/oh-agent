@@ -79,5 +79,40 @@
       "65537/2": "854bb0a3f0447fae6fce5b643eb7da2365b02b2189de70b73c7d3f1c1e279b0f",
       "65537/3": "003dd9952db385c39a263e86f652c8b0a3c7951cc1016abf22a94170f82216b5"
     }
+  },
+  "sidewalkStandard": {
+    "sourceCommit": "48381b955d9625d59d0d0fb02240ea5fef927f42",
+    "sidewalk": 1.8,
+    "terrainSegments": 384,
+    "generatorVersion": 6,
+    "reason": "The intentional sidewalk widening in 48381b95 (merged via 8c647cf2) changed only layer 0 of the nine synthetic fixtures. Recompiling with 1.2 reproduces every historical fixture digest exactly. Road carriageway/junction layers remain byte-identical. Generated plans are pinned separately to generator v6; historical v1 plan digests above remain unchanged.",
+    "fixtures": {
+      "empty": "f63626a3d18b001b1994e47287dd39790f43e3dd896e1aec20865e766060417c",
+      "straight": "5df8cb02b6d49c75aa32e331f09d9ebff5741213d6f89bca993540071e70714f",
+      "bend": "4d95644dddf7cb96dd201f8b8432e2f8539e224c9667ca96020cbd1117b5cc83",
+      "tee": "f53e9fcab2fd9a301a6c1b6738333b5347cf062cab98777c35be3682a66d38d6",
+      "skew": "4cba26d03b402aad3d20fd2fff5ff4d5a28433a1e450fd4f5567b0880f1747ef",
+      "width-transition": "08b096f3c7ec4f46270f892c3a84e8f19cdfe77ea8685e926870f94178f9a67b",
+      "bridge-boundary": "4101678909885477b6c828bd08676cfb8c0d0745936facc7a84580e90f397104",
+      "closed-loop": "338c339d6c4f784b64615510c761157870423e5f321f9c67aa2db50305ba06c7",
+      "wavy-tee": "0a7d17e120f311c341cc68348f00d718ab2e01c93b0309795b303a40bdce99cd"
+    },
+    "generatedPlans": {
+      "1/1": "a4b1aac1bfbbbcaebd81940cdf7342fc7d0ee995d1e683e1210e87e37c0a6259",
+      "1/2": "a4b1aac1bfbbbcaebd81940cdf7342fc7d0ee995d1e683e1210e87e37c0a6259",
+      "1/3": "c3edf85c32d8370fec6231d2f8603fdcda1de4f1aaf2327e7c1504731c3ded8b",
+      "7/1": "8f22b53eed6e34a5ab56f1ce2d0026ca0327422c10a2e973a3bf93cc820f1460",
+      "7/2": "9c609e5614508ed3e8b2e4dac2b3e75de836687c1df702991d739c9577ceac99",
+      "7/3": "794baff953d2f1b99e45ffe512018ffd504c54ac54bd7480e8dfee00ff8a45c8",
+      "42/1": "0cc0f89770b51a3920adf969229ec74c9c4bacbccf4a7fd5abcef7e4ebebf60f",
+      "42/2": "be7af3b5f8fc7d6d4edbb9cefc4719e8a7e33756531d63334d6fcc275d5156df",
+      "42/3": "bfd7138eec948d4a643bb4998f39615b4627e46e462fce1b315fa9d06b3695ca",
+      "2026/1": "85192bee56315d10088c1cea5c2a4cc3ab85a780ab3c26bb99c7f6a627166976",
+      "2026/2": "a030c1a75ee885740955ef430439ba0d548a0b8709f18e606e6427932da1c13b",
+      "2026/3": "af31024d6efcb8711a1c97ff3f30eddab9afbbb2b85e8701ea10a57f33eea370",
+      "65537/1": "ca7165fdd534acdc87f2e705beb69912850f4f7609e1ecb1e36ddc72a33809f6",
+      "65537/2": "6f04e68faa3931744dc8e38b53b846e672d2b40d199bd700386df1b81c84805f",
+      "65537/3": "d59bf6a9f8fef3a33b2fa73bdbc6453717ba2b285dc38c5233e7fd54fb19f414"
+    }
   }
 }

@@ -63,8 +63,8 @@ from agent_vitals.codex_cost import (  # noqa: E402
     _reset_beijing_text_at,
 )
 from agent_vitals.adapters.codex_session import (  # noqa: E402
-    codex_session_roots_report, parse_codex_session_log, parse_session_index,
-    read_session_index,
+    codex_rollout_files, codex_session_roots_report, parse_codex_session_log,
+    parse_session_index, read_codex_session_log, read_session_index,
 )
 
 
@@ -3223,6 +3223,49 @@ class TestCodexSessionRoots(unittest.TestCase):
             self.assertEqual(report["roots"][1]["exists"], False)
             self.assertEqual(report["roots"][1]["file_count"], 0)
             self.assertEqual(report["roots"][1]["total_bytes"], 0)
+
+    def test_compressed_rollouts_are_counted_and_discovered(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            root = home / ".codex" / "sessions" / "2026" / "10"
+            root.mkdir(parents=True)
+            compressed = root / "rollout-a.jsonl.zst"
+            compressed.write_bytes(b"zstd-placeholder")
+            (root / "not-a-rollout.jsonl.zst").write_bytes(b"ignored")
+            (root / "rollout-b.jsonl").write_bytes(b"{}\n")
+
+            self.assertEqual(codex_rollout_files(home), [compressed, root / "rollout-b.jsonl"])
+            report = codex_session_roots_report(home=home)
+            self.assertEqual(report["roots"][0]["file_count"], 3)
+            self.assertEqual(
+                report["roots"][0]["total_bytes"],
+                len(b"zstd-placeholder") + len(b"ignored") + len(b"{}\n"),
+            )
+
+    def test_compressed_rollout_reader_degrades_without_optional_zstandard(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rollout-a.jsonl.zst"
+            path.write_bytes(b"opaque compressed data")
+            with patch("agent_vitals.adapters.dsh._zstd", return_value=None):
+                result = read_codex_session_log(path)
+            self.assertEqual(result["degraded"], "unsupported-compression")
+            self.assertIsNone(result["items"])
+
+    def test_compressed_rollout_reader_uses_zstd_decoder(self):
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rollout-a.jsonl.zst"
+            text = '{"type":"session_meta","payload":{"session_id":"compressed"}}\n'
+            path.write_bytes(b"compressed fixture")
+            with patch("agent_vitals.adapters.dsh._zstd", return_value=object()), \
+                    patch("agent_vitals.adapters.dsh.decode_zstd_multi_frame",
+                          return_value=text.encode("utf-8")):
+                result = read_codex_session_log(path)
+            self.assertEqual(result["degraded"], False)
+            self.assertEqual(result["session_id"], "compressed")
 
     def test_default_home_respects_home_env(self):
         # 默认走 Path.home()，即 $HOME——测试用 isolated_home_env 注入。

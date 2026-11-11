@@ -22,6 +22,7 @@
  *
  * 确定性：无随机、无墙钟；分量按 root id、候选按 (距离, id) 排序；失败零副作用（§5A-7）。
  */
+import { roadWidthFor } from "../roadStandard";
 import { DetMath as Math } from "../detMath";
 import { roadNodeId } from "../roadGeometry";
 import type { RoadEdge, RoadNode, Vec2 } from "../cityLayout";
@@ -92,7 +93,7 @@ function serviceLoopSignature(
   for (const cycle of degreeTwoCycles(members, compEdges)) {
     if (cycle.some(nearSite)) return { entryPool: cycle, kind: "ring" };
   }
-  if (compEdges.length && compEdges.every((e) => e.width < 8) && members.some((m) => nearSite(m.id))) {
+  if (compEdges.length && compEdges.every((e) => e.width < roadWidthFor("collector")) && members.some((m) => nearSite(m.id))) {
     return { entryPool: members.map((m) => m.id), kind: "narrow" };
   }
   return null;

@@ -11,6 +11,7 @@
  * 宽路（≥ 8）沿右侧车道开（车道中心 = 路中线向右 1/4 路宽），窄路沿中线；渠化路口的导流岛另由 keepRightOfIslands 绕开。
  * 桥沿中线开：窄桥两侧是护栏，偏到右车道时桥头接缝处车轮探出桥面（7/2 重画的 5 宽桥实测）。
  */
+import { roadWidthFor } from "../engine/roadStandard";
 import type { CityLayout, Vec2 } from "../engine/cityLayout";
 import { bridgeChain, bridgeChainPolyline, edgeLocked } from "../engine/planPatch";
 import { compileCitySurface } from "../engine/surface/compileSurface";
@@ -214,7 +215,7 @@ export function testDrive(layout: CityLayout, edgeId: string, whole = false): Te
   const regions = drivingRegions(layout, target.path, whole);
   // 桥沿中线开（窄桥两侧是护栏，车在 5 宽的桥上靠中走；偏到右车道，桥头接缝处车轮会探出桥面）；路沿右车道开（避开导流岛）。
   // 窄路（< 8，单车道宽）也沿中线：5 宽路右车道只剩 0.3 余量，弯道上领航员内切 0.25 就擦人行道（弧线抽样实测）。
-  const lane = target.kind === "bridge" || target.width < 8 ? 0 : Math.max(0, Math.min(target.width / 4, target.width / 2 - DRIVING_FOOTPRINT.halfWidth - 0.3));
+  const lane = target.kind === "bridge" || target.width < roadWidthFor("collector") ? 0 : Math.max(0, Math.min(target.width / 4, target.width / 2 - DRIVING_FOOTPRINT.halfWidth - 0.3));
   const islands = channelizedGeometry(windowAround(layout, target.path)).islands;
   const forward = driveLeg(regions, keepRightOfIslands(rightLane(target.path, lane), islands));
   const back = driveLeg(regions, keepRightOfIslands(rightLane([...target.path].reverse(), lane), islands));

@@ -1,4 +1,5 @@
 /** New arterial candidates use the same real-polyline relation as final verification. */
+import { roadWidthFor } from "../roadStandard";
 import { DetMath as Math } from "../detMath";
 import type { RoadEdge, Vec2 } from "../cityLayout";
 import { keyOf } from "./network";
@@ -12,7 +13,7 @@ export function roadCandidateCrowding(accepted: readonly RoadEdge[], candidates:
     const candidate = candidates[i];
     if (!candidate.arterial) continue;
     const a = keyOf(candidate.a), b = keyOf(candidate.b), from = `${a.x}:${a.z}`, to = `${b.x}:${b.z}`;
-    const proposed: RoadEdge = { id: [from, to].sort().join("/"), from, to, width: 8, kind: "arterial", points: [a, b] };
+    const proposed: RoadEdge = { id: [from, to].sort().join("/"), from, to, width: roadWidthFor("collector"), kind: "arterial", points: [a, b] };
     for (const road of roads) {
       if ([from, to].some((id) => id === road.from || id === road.to)) continue;
       const gap = ARTERIAL_CROWDING_CONFIG.maxDistance;

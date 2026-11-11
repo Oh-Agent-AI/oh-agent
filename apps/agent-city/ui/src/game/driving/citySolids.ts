@@ -18,7 +18,9 @@ export type SolidOnRoad = Readonly<{ id: string; role: string; x: number; z: num
 /** Solids that a car standing on drivable road would touch: a grid probe over every solid's XZ box;
  * each drivable sample places a small upright body on that surface and asks the index. Structure
  * solids the region rules already bound (railings, rails, islands, the decks themselves) are skipped
- * by role. One witness per solid; this is a report, not a gate. */
+ * by role; landmark platforms (sea opera islet, airport apron — patch ids `platform:*`) are plazas whose
+ * buildings are meant to be driven around, so samples on them are not "road". One witness per solid;
+ * this is a report, not a gate. */
 export function solidsOnRoad(regions: SurfaceRegionsBuild, collision: CollisionIndex, options: { step?: number; skipRoles?: ReadonlySet<string>; maxSamplesPerSolid?: number } = {}): SolidOnRoad[] {
   if (regions.status !== "ready") return [];
   const step = options.step ?? 1;
@@ -34,7 +36,7 @@ export function solidsOnRoad(regions: SurfaceRegionsBuild, collision: CollisionI
       const x = Math.min(solid.maxX, solid.minX + i * step), z = Math.min(solid.maxZ, solid.minZ + j * step);
       for (const layerId of layers) {
         const at = regions.classify(x, z, layerId);
-        if (at.status !== "drivable") continue;
+        if (at.status !== "drivable" || at.patchId.startsWith("platform:")) continue;
         const hit = collision.hit(carBody({ x, z, heading: 0 }, { y: at.y, pitch: 0, roll: 0 }, 0.05, 0.05));
         if (hit.status === "hit" && hit.solid.id === solid.id) { found = Object.freeze({ id: solid.id, role: solid.role, x, z, regionId: at.regionId, layerId }); break; }
       }

@@ -1,6 +1,6 @@
 /** Shared version identities for deterministic static-solid compilation. Keep this a leaf. */
-// v5: descriptor/索引全链透传 mountableHeight；桥面与高架板顶唇边按有界预算处理。
-export const CITY_SOLID_COMPILER_VERSION = 5;
+// v6: ramp-deck top-edge mounting envelope includes the pitched swept car body.
+export const CITY_SOLID_COMPILER_VERSION = 6;
 export const CITY_SOLID_QUERY_CANDIDATE_BUDGET = 4096;
 /** Mountable-solid traversal is a caller policy, never an implicit property of geometry. */
 export const MOUNTABLE_POLICY_VERSION = 1;

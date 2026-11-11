@@ -19,8 +19,11 @@ type SpawnStep = Readonly<{ kind: "candidate" }> | Readonly<{ kind: "move"; star
 const SPAWN_PROBE_DISTANCE = 6;
 const DIAGNOSTIC_SPAWN_CANDIDATE_LIMIT = 512;
 
+type Near = Readonly<{ x: number; z: number }>;
+const patchCentre = (v: ArrayLike<number>) => { let x = 0, z = 0; const n = v.length / 3; for (let i = 0; i < v.length; i += 3) { x += v[i]; z += v[i + 2]; } return { x: x / n, z: z / n }; };
+
 function* diagnosticSpawnSteps(surface: CompiledCitySurface, regions: Extract<SurfaceRegionsBuild, { status: "ready" }>,
-  environment: SpawnEnvironment): Generator<SpawnStep, DrivingState | null, DrivingMoveResult | undefined> {
+  environment: SpawnEnvironment, near?: Near): Generator<SpawnStep, DrivingState | null, DrivingMoveResult | undefined> {
   let budget = DIAGNOSTIC_SPAWN_CANDIDATE_LIMIT;
   let forwardOnly: DrivingState | null = null;
 
@@ -46,7 +49,12 @@ function* diagnosticSpawnSteps(surface: CompiledCitySurface, regions: Extract<Su
 
   // Ground carriageways first. The longest axis of a road mesh gives a more
   // reliable tangent than the farthest vertex from its bounding-box midpoint.
-  for (const patch of surface.patches) {
+  // near（从地标停车场出发）：先试离出发点最近的路面——候选与校验一条不少，只是顺序换成由近到远，
+  // 512 个候选的预算先花在地标门口，而不是全城第一块路面上（那样车会出生在城另一头）。
+  const ordered = near ? surface.patches.filter((p) => p.kind === "carriageway" && p.vertices.length >= 9)
+    .map((patch) => { const c = patchCentre(patch.vertices); return { patch, d: Math.hypot(c.x - near.x, c.z - near.z) }; })
+    .sort((a, b) => a.d - b.d).map((item) => item.patch) : surface.patches;
+  for (const patch of ordered) {
     if (patch.kind !== "carriageway") continue;
     const v = patch.vertices;
     if (v.length < 9) continue;
@@ -93,8 +101,8 @@ function* diagnosticSpawnSteps(surface: CompiledCitySurface, regions: Extract<Su
 
 /** Synchronous audit/fixture compatibility; identical candidate order and checks. */
 export function diagnosticSpawn(surface: CompiledCitySurface, regions: Extract<SurfaceRegionsBuild, { status: "ready" }>,
-  environment: SpawnEnvironment): DrivingState | null {
-  const steps = diagnosticSpawnSteps(surface, regions, environment);
+  environment: SpawnEnvironment, near?: Near): DrivingState | null {
+  const steps = diagnosticSpawnSteps(surface, regions, environment, near);
   let next = steps.next();
   while (!next.done) {
     const step = next.value;
@@ -106,8 +114,8 @@ export function diagnosticSpawn(surface: CompiledCitySurface, regions: Extract<S
 /** Real interactive entry yields between candidates without changing the search. */
 export async function diagnosticSpawnAsync(surface: CompiledCitySurface, regions: Extract<SurfaceRegionsBuild, { status: "ready" }>,
   environment: SpawnEnvironment, signal?: AbortSignal, isCurrent: () => boolean = () => true,
-  onCandidateProgress?: (completedCandidates: number, candidateLimit: number) => void): Promise<DrivingState | null> {
-  const steps = diagnosticSpawnSteps(surface, regions, environment);
+  onCandidateProgress?: (completedCandidates: number, candidateLimit: number) => void, near?: Near): Promise<DrivingState | null> {
+  const steps = diagnosticSpawnSteps(surface, regions, environment, near);
   let completedCandidates = 0;
   let deadline = preparationNow() + 8;
   const checkpoint = async () => {

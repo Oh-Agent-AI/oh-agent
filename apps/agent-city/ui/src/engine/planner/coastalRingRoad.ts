@@ -9,6 +9,7 @@
  *       （原先是 buildPlan 里的 const 数组与 let 计数器；数组在块内原地 push，顺序即原顺序）。
  * 不调用 random()；河岸路穿过桥头引道处用 commitNetworkPatch 拆出 T 口（见下）；不 import ../cityPlan 的运行时（R2 边界）。
  */
+import { atLeast } from "../roadStandard";
 import { DetMath as Math } from "../detMath";
 import { seasideStripContains, type SeasideBand } from "../citySeaside";
 import type { Vec2 } from "../cityLayout";
@@ -44,7 +45,7 @@ export function buildCoastalRingRoads(env: CoastalRingRoadWorld, params: Coastal
   const coastRoadRuns: Vec2[][] = [];
   let coastalRunCount = 0; // 之前是环岛滨海路段，之后是河岸路段（S3 滨海景观带只沿前者铺）
   {
-    const existingPrimary = new SegmentIndex([...edges.values()].filter((edge) => edge.width >= 12).map((edge) => edge.points));
+    const existingPrimary = new SegmentIndex([...edges.values()].filter((edge) => atLeast(edge, "arterial")).map((edge) => edge.points));
     const n = coast.length;
     const offsetPoint = (i: number) => {
       const p = coast[i]; const prev = coast[(i - 1 + n) % n]; const next = coast[(i + 1) % n];
@@ -78,7 +79,7 @@ export function buildCoastalRingRoads(env: CoastalRingRoadWorld, params: Coastal
       // 只有与岸线大致平行的既有主干道才挡河岸路（避免两条主干道贴着并排）。垂直穿过岸线的主干道——主要是跨湾桥的引道——
       // 曾同样被当成「已有主干道」：岸路在每个桥头两侧各丢两三个采样点、断出 80–90 的口子，再由街网在内陆绕一个 V 字接回来
       // （用户截图「这个主干道为什么不直接连起来」）。现在它们不挡路，岸路在交叉处与引道做 T 口（见下方 joinCrossings）。
-      const arterialSegments = [...edges.values()].filter((edge) => edge.width >= 8 && !edge.bridge)
+      const arterialSegments = [...edges.values()].filter((edge) => atLeast(edge, "collector") && !edge.bridge)
         .flatMap((edge) => edge.points.slice(1).map((b, k) => ({ a: edge.points[k], b })));
       const PARALLEL_COS = Math.cos((50 * Math.PI) / 180);
       const bankDirection = (z: number) => { const dx = riverX(z + 10) - riverX(z - 10); const l = Math.hypot(dx, 20); return { x: dx / l, z: 20 / l }; };

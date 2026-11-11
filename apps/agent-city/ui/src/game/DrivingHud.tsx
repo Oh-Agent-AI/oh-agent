@@ -9,6 +9,7 @@ import { TelemetryChip } from "./ui/TelemetryChip";
 import type { GameSoundCapabilities } from "./ui/GameSoundPanel";
 import type { RuntimeDiagnosticSnapshot } from "./runtime/RuntimeDiagnostics";
 import type { PreparationProgress } from "./runtime/Preparation";
+import type { RoadValidationReport } from "./roadValidation";
 import type { DrivingEvent } from "./runtime/DrivingEventLog";
 import "./game.css";
 
@@ -26,6 +27,7 @@ export type DrivingHudModel = Readonly<{
     altitude: number | null; boost: number | null;
   }>;
   diagnostics: RuntimeDiagnosticSnapshot | null;
+  roadCheck?: RoadValidationReport | null;
 }>;
 export type DrivingHudActions = Readonly<{
   selectVehicle(vtol: boolean): void; clearEntryError(): void; exit(): void; pause(): void; resume(): void; openUiContext(): void;
@@ -36,6 +38,20 @@ const DRIVING_CONTROLS: readonly GameControlRow[] = [
   { keys: "A / D / ← / →", description: "左右转向" }, { keys: "Esc", description: "暂停 / 继续" },
   { keys: "拖动 / 滚轮", description: "环绕汽车 / 拉近拉远（双击复位）" },
 ];
+
+function spawnReadyText(report: RoadValidationReport | null | undefined, t: (text: string) => string, locale: GameLocale): string {
+  const spawn = t("出生点已通过本地支撑与净空检查。");
+  if (report?.verdict !== "failed" || !report.primary) return spawn;
+  const detail = locale === "en" ? report.primary.text.en : report.primary.text.zh;
+  return `${spawn} ${detail} ${t("已标在小地图上。")}`;
+}
+function roadCheckChip(report: RoadValidationReport | null | undefined, t: (text: string) => string) {
+  if (!report) return null;
+  if (report.verdict === "passed") return <div className="city-game-chip" aria-label={t("道路体检通过")}>{t("道路体检通过")}</div>;
+  const label = `${t("道路体检未通过")} · ${report.blocked} ${t("处阻断")}`;
+  const detail = report.primary ? `${report.primary.text.zh} / ${report.primary.text.en}` : label;
+  return <div className="city-game-chip city-game-status" data-tone="warn" aria-label={label} title={detail}>{label}</div>;
+}
 
 export function DrivingHud({ model, actions, locale, sound }: {
   model: DrivingHudModel; actions: DrivingHudActions; locale: GameLocale; sound?: GameSoundCapabilities;
@@ -84,14 +100,14 @@ export function DrivingHud({ model, actions, locale, sound }: {
     actions={[{ label: "退出驾驶", tone: "danger", onAction: actions.exit}]} />;
   else if (hud.phase === "paused") panel = <GameSessionPanel locale={locale}
     title={hud.reason === "camera-safety" ? "相机安全检查已暂停驾驶" : hud.reason === "long-frame" ? "帧间隔过长，已暂停" : model.initialPaused ? "准备就绪" : "已暂停"}
-    description={hud.reason === "camera-safety" ? t("相机安全检查无法确认，驾驶已暂停。") : model.initialPaused ? t("出生点已通过本地支撑与净空检查；城市道路尚未完成全量认证。") : hud.reason === "long-frame" ? t("帧间隔恢复后，可显式继续驾驶") : undefined}
+    description={hud.reason === "camera-safety" ? t("相机安全检查无法确认，驾驶已暂停。") : model.initialPaused ? spawnReadyText(model.roadCheck, t, locale) : hud.reason === "long-frame" ? t("帧间隔恢复后，可显式继续驾驶") : undefined}
     children={<><GameControlsHelp locale={locale} rows={controls} className="city-game-panel-help" />
       {sound && <GameSoundPanel locale={locale} sound={sound} />}</>}
     actions={[{ label: model.initialPaused ? "开始驾驶" : "继续", onAction: actions.resume }, { label: "退出驾驶", tone: "danger", onAction: actions.exit}]} />;
 
   const title = <>
     <div className="city-game-chip"><strong>{t(model.vtol ? "喷气飞车" : "自由驾驶")}</strong></div>
-    <div className="city-game-chip city-game-uat-mark" aria-label={t("城市道路尚未完成全量认证")}>{t("道路认证中")}</div>
+    {roadCheckChip(model.roadCheck, t)}
     {hud.phase === "running" && <button className="city-game-compact-action" type="button" onClick={() => { openUi(); actions.pause(); }}>{t("暂停")}</button>}
   </>;
   const blocked = hud.blocked ? t("前方有障碍") : hud.reason === "long-frame" ? t("帧间隔过长，已自动暂停") : undefined;

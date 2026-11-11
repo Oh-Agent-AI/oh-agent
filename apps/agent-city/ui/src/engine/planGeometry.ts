@@ -16,7 +16,8 @@ export const quantize = (p: Vec2): Vec2 => ({ x: Math.round(p.x * 100) / 100, z:
 
 /** 高架桥面宽与两端匝道长——与渲染层 render/shared.ts 的 EXPRESSWAY_DECK_WIDTH / EXPRESSWAY_RAMP 同值
  *  （那个模块带 three，规则层不引；verify-plan-bulldozer 断言两边相等）。 */
-export const VIADUCT_DECK_WIDTH = 10.5;
+export { EXPRESSWAY_DECK_WIDTH as VIADUCT_DECK_WIDTH } from "./roadStandard";
+import { EXPRESSWAY_DECK_WIDTH as VIADUCT_DECK_WIDTH } from "./roadStandard";
 export const VIADUCT_RAMP = 90;
 
 /** 锁定口径（放权后，SPEC §15）：只锁**桥面**——它的几何由桥梁模型（桥塔/桁架）绑定，单独擦或拖会留下悬空的桥。

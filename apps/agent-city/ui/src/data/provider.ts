@@ -1,13 +1,56 @@
-import { invokeHost } from "../host";
-import { validateCityProjectionV2, validateCityProjectionV3, type CitySnapshotV3, type CityProjectionV3, type PluginRequestV1, type PluginResponseV1, type CityUiProjectionV2 } from "@agent-vitals/app-sdk";
+import { embedded, invokeHost } from "../host";
+import { validateCityProjectionV2, type CityModuleV3, type PluginRequestV1, type PluginResponseV1, type TypedObjectResultV1, type CityUiProjectionV2 } from "@agent-vitals/app-sdk";
+import { defaultKitModel, parseKitModel, type KitModel } from "../engine/sessionKitConstruction";
+import { isInheritanceDocument, resolveInheritance } from "../engine/sessionKitInheritance";
+import { ensureCityAssetObject, reconcileLegacyCityAssetIdentities, resolveCityAssetRefsByStableRef,
+  type CityAssetBookmarkObjectClient } from "./cityAssetBookmarks";
+import {
+  readTypedCityActivityShadowFromHost,
+  readTypedCityFindingShadowFromHost,
+  readTypedCitySkillWorkflowShadowFromHost,
+  readTypedCityModelUsageShadowFromHost,
+  readTypedCityTimeCoverageShadowFromHost,
+  readTypedCitySessionShadowFromHost,
+  readTypedCityStableRefsFromHost,
+  readTypedCityUsageSummaryShadowFromHost,
+  readTypedCitySessionDetailFromHost,
+  promoteCityTypedWindowValues,
+  type CityTypedSessionDetail,
+} from "./typedCitySessionAdapter";
+import { readLegacyCityAssetCrosswalk, readLegacyCityStoreSnapshot } from "./cityLegacyStore";
+import { importLegacyBuildingOverride, listCityBuildingObjectsByStableRef, readCityBuildingObject,
+  type CityBuildingObjectClient, type CityBuildingObjectSnapshot, type CityBuildingStoredObject } from "./cityBuildingObjects";
 
 export type CityProjectionV1 = CityUiProjectionV2;
 
-export interface CityDataProvider {
-  getProjection(input: { windowDays: 7 | 30 | 90 | 366; signal?: AbortSignal; onStage?: (stage: "reading_summary" | "reading_sessions" | "ready") => void }): Promise<CityProjectionV1>;
+const stableAssetRefsByProjection = new WeakMap<CityProjectionV1, Map<string, string>>();
+export function stableAssetRefsForProjection(projection: CityProjectionV1): ReadonlyMap<string, string> {
+  return stableAssetRefsByProjection.get(projection) ?? new Map();
+}
+function rememberStableAssetRefs(projection: CityProjectionV1, refs: Map<string, string> | undefined): void {
+  if (refs) stableAssetRefsByProjection.set(projection, refs);
 }
 
-let requestSequence = 0;
+type WindowDays = 7 | 30 | 90 | 366;
+
+function monotonicNow(): number {
+  return typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+}
+
+export interface CityDataProvider {
+  getProjection(input: {
+    windowDays: 7 | 30 | 90 | 366;
+    signal?: AbortSignal;
+    onStage?: (stage: "reading_summary" | "reading_sessions" | "ready") => void;
+    onPartial?: (projection: CityProjectionV1) => void;
+  }): Promise<CityProjectionV1>;
+}
+
+/** Packaged City reads always use generic typed-data; v3 remains migration-only. */
+export function cityDataProtocol(): "typed" {
+  return "typed";
+}
+
 
 /** 独立页 `?fixtureSessions=N`：确定性合成 N 个会话，用来在浏览器里看「楼多起来」的城市。
  *  默认 3 个会话的 fixture 几乎没有会话楼，酒店街/立面/天际线都无从评估。只走 fixture 路径。 */
@@ -146,33 +189,338 @@ function completeFixture(projection: CityProjectionV1): CityProjectionV1 {
     models:[...new Set(sessions.flatMap((s)=>s.model_ids))].sort(),
     model_coverage:{unknown_model_usage_events:0,legacy_usage_events:0},activity:{days:activity,busiest_day:busiest,timezone:"UTC"} };
 }
-async function readV3(payload: Record<string, unknown>, signal?: AbortSignal): Promise<CityProjectionV3> {
+
+async function applyLegacyBookmarkCrosswalk(
+  projection: CityProjectionV1,
+  legacyRefs: readonly string[],
+  legacySourceRevision: string,
+  dataRevision: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (!legacyRefs.length) return;
   if (signal?.aborted) throw new Error("city_request_cancelled");
-  const request: PluginRequestV1 = { version: 1, instanceId: window.__AV_PLUGIN_INSTANCE__ ?? "city-standalone",
-    requestId: `city-request-${++requestSequence}`, method: "data.read", payload: { projection: "city", version: 3, ...payload } };
-  const response = await invokeHost<PluginResponseV1<CityProjectionV3>>("plugin_request", { request });
+  if (projection.data_revision !== dataRevision) {
+    throw new Error("city_asset_crosswalk_revision_changed");
+  }
+  const result = await readLegacyCityAssetCrosswalk(legacyRefs, legacySourceRevision, dataRevision);
   if (signal?.aborted) throw new Error("city_request_cancelled");
-  if (response.version !== 1 || response.requestId !== request.requestId) throw new Error("plugin_response_invalid");
-  if (!response.ok || !response.result) throw new Error(response.error?.code ?? "plugin_request_failed");
-  return validateCityProjectionV3(response.result);
+  if (result.dataRevision !== projection.data_revision || result.sourceRevision !== legacySourceRevision) {
+    throw new Error("city_asset_crosswalk_revision_changed");
+  }
+  const matched = result.pairs.map(({ asset_ref, stable_ref }) => ({ legacyAssetRef: asset_ref, stableRef: stable_ref }));
+  const objectClient = await cityBuildingObjectClient() as unknown as CityAssetBookmarkObjectClient;
+  await reconcileLegacyCityAssetIdentities(objectClient, matched.map(({ legacyAssetRef, stableRef }) => ({ legacyAssetRef, stableRef })));
+  for (let offset = 0; offset < matched.length; offset += 8) {
+    await Promise.all(matched.slice(offset, offset + 8).map(({ legacyAssetRef, stableRef }) =>
+      ensureCityAssetObject(objectClient, legacyAssetRef, stableRef)));
+  }
+  const currentStableByAsset = stableAssetRefsForProjection(projection);
+  const currentByStableRef = new Map(projection.sessions.flatMap((session) => {
+    const stableRef = session.asset_ref ? currentStableByAsset.get(session.asset_ref) : undefined;
+    return stableRef ? [[stableRef, session] as const] : [];
+  }));
+  const assetRefs = new Map(currentStableByAsset);
+  for (const { legacyAssetRef, stableRef } of matched) {
+    const session = currentByStableRef.get(stableRef);
+    if (!session) continue;
+    const projectedAssetRef = session.asset_ref;
+    session.asset_ref = legacyAssetRef;
+    if (projectedAssetRef) assetRefs.delete(projectedAssetRef);
+    assetRefs.set(legacyAssetRef, stableRef);
+  }
+  rememberStableAssetRefs(projection, assetRefs);
+  (window as Window & { __CITY_ASSET_CROSSWALK_ROLLOUT__?: unknown }).__CITY_ASSET_CROSSWALK_ROLLOUT__ = {
+    source: "typed-legacy-crosswalk", status: "bookmark-migration", dataRevision: projection.data_revision,
+    sourceRevision: legacySourceRevision, matched: matched.length, unresolved: result.unresolved.length,
+  };
 }
-function continuation(context: CitySnapshotV3): Record<string, unknown> {
-  return { expected_revision: context.data_revision, snapshot: context.snapshot, context: context.context,
-    query_semantics: context.query_semantics, window: context.window };
+export type BuildingOverrideRow = { asset_ref: string; revision: number; kit_version: string; source: string; model: KitModel; updated_at_ms?: number };
+export type BuildingOverridesResult = {
+  overrides: BuildingOverrideRow[];
+  objectStates: Array<{ asset_ref: string; state: CityBuildingObjectSnapshot }>;
+};
+
+function parseOverrideRow(raw: unknown, tokensByAsset: ReadonlyMap<string, number>): BuildingOverrideRow | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const row = raw as Record<string, unknown>;
+  if (typeof row.asset_ref !== "string" || !/^ca_[0-9a-f]{32}$/.test(row.asset_ref)) return null;
+  if (typeof row.revision !== "number" || !Number.isSafeInteger(row.revision) || row.revision < 0) return null;
+  const stored = row.stored_document ?? row.model;
+  let candidate = stored;
+  if (isInheritanceDocument(stored)) {
+    const tokens = tokensByAsset.get(row.asset_ref);
+    if (tokens === undefined || !Number.isSafeInteger(tokens) || tokens < 0) return null;
+    try { candidate = resolveInheritance(defaultKitModel(tokens), stored); }
+    catch { return null; }
+  }
+  const model = parseKitModel(candidate);
+  if (!model) return null;
+  return { asset_ref: row.asset_ref, revision: row.revision, kit_version: model.kit_version,
+    source: typeof row.source === "string" ? row.source : "override", model,
+    ...(typeof row.updated_at_ms === "number" && Number.isSafeInteger(row.updated_at_ms) && row.updated_at_ms >= 0 ? { updated_at_ms: row.updated_at_ms } : {}) };
+}
+
+export async function cityBuildingObjectClient(): Promise<CityBuildingObjectClient> {
+  const instanceId = window.__AV_PLUGIN_INSTANCE__;
+  if (!instanceId) throw new Error("plugin_instance_unavailable");
+  const [{ createTypedObjectClient }] = await Promise.all([import("@agent-vitals/app-sdk")]);
+  return createTypedObjectClient(instanceId, (request) =>
+    invokeHost<PluginResponseV1<TypedObjectResultV1>>("plugin_request", { request })) as CityBuildingObjectClient;
+}
+
+// Session refs already migrated during this WebView lifetime no longer need the
+// City-specific v3 read path. Generic object revisions are the live poll source.
+const legacyBuildingSnapshotResolved = new Set<string>();
+const legacyBuildingSnapshotInFlight = new Set<string>();
+const legacyBuildingSnapshotByAsset = new Map<string, BuildingOverrideRow | null>();
+const cityAssetCrosswalkResolved = new Set<string>();
+let legacyBuildingRowsPromise: Promise<{ rows: unknown[]; sourceRevision: string }> | null = null;
+
+/** Read old building rows through the descriptor-scoped typed migration dataset. */
+async function readLegacyBuildingRows(expectedRevision?: string): Promise<{ rows: unknown[]; sourceRevision: string }> {
+  if (legacyBuildingRowsPromise) {
+    const cached = await legacyBuildingRowsPromise;
+    if (expectedRevision === undefined || cached.sourceRevision === expectedRevision) return cached;
+    throw new Error("city_legacy_source_changed");
+  }
+  legacyBuildingRowsPromise = readLegacyCityStoreSnapshot().then((snapshot) => {
+    if (expectedRevision !== undefined && snapshot.sourceRevision !== expectedRevision) throw new Error("city_legacy_source_changed");
+    return { rows: snapshot.buildingRows, sourceRevision: snapshot.sourceRevision };
+  }).catch((error) => {
+    legacyBuildingRowsPromise = null;
+    throw error;
+  });
+  return legacyBuildingRowsPromise;
+}
+
+async function findUnmappedLegacyAssetRefs(refs: readonly string[]): Promise<string[]> {
+  const unique = [...new Set(refs)];
+  if (unique.length > 4_000) throw new Error("city_legacy_asset_limit");
+  if (!unique.length) return [];
+  const client = await cityBuildingObjectClient() as unknown as CityAssetBookmarkObjectClient;
+  const mapped = new Set<string>();
+  for (let offset = 0; offset < unique.length; offset += 200) {
+    const aliases = unique.slice(offset, offset + 200);
+    const page = await client.list({ objectType: "city.asset:v1", schemaVersion: 1, aliases });
+    if (page.hasMore || page.nextCursor !== null || page.objects.length > aliases.length) throw new Error("city_asset_identity_invalid");
+    const requested = new Set(aliases);
+    for (const object of page.objects) {
+      const assetRef = object.body?.assetRef;
+      const stableRef = object.body?.sourceRef;
+      if (object.schemaVersion !== 1 || object.deleted || !object.body || object.body.schema !== "city-asset-ref:v1"
+          || Object.keys(object.body).length !== 3 || typeof assetRef !== "string" || !/^ca_[0-9a-f]{32}$/.test(assetRef)
+          || (stableRef !== null && (typeof stableRef !== "string" || !/^srp_[a-f0-9]{32}$/.test(stableRef)))) {
+        throw new Error("city_asset_identity_invalid");
+      }
+      if (typeof stableRef === "string" && requested.has(assetRef)) mapped.add(assetRef);
+    }
+  }
+  return unique.filter((assetRef) => !mapped.has(assetRef));
+}
+
+/** Import typed legacy building rows once per asset ref, then poll generic objects. */
+export async function readBuildingOverrides(assetRefs: string[],
+  stableAssetRefs: ReadonlyMap<string, string> = new Map(), tokensByAsset: ReadonlyMap<string, number> = new Map()): Promise<BuildingOverridesResult> {
+  const overrides: BuildingOverrideRow[] = [];
+  const objectStates: Array<{ asset_ref: string; state: CityBuildingObjectSnapshot }> = [];
+  const seen = new Set<string>();
+  let typedObjectClient: CityBuildingObjectClient | null = null;
+  let imported = 0;
+  let matched = 0;
+  let genericAuthoritative = 0;
+  let conflicts = 0;
+  let missing = 0;
+  const refs = [...new Set(assetRefs.filter((id) => /^ca_[0-9a-f]{32}$/.test(id)))];
+  for (const [assetRef, stableRef] of stableAssetRefs) {
+    if (!/^ca_[0-9a-f]{32}$/.test(assetRef) || !/^srp_[a-f0-9]{32}$/.test(stableRef)) throw new Error("typed_city_stable_ref_invalid");
+  }
+  const slices = refs.length ? Array.from({ length: Math.ceil(refs.length / 200) }, (_, index) => refs.slice(index * 200, index * 200 + 200)) : [[]];
+  for (const slice of slices) {
+    const legacySlice = slice.filter((assetRef) => !legacyBuildingSnapshotResolved.has(assetRef) && !legacyBuildingSnapshotInFlight.has(assetRef));
+    legacySlice.forEach((assetRef) => legacyBuildingSnapshotInFlight.add(assetRef));
+    let legacySnapshotReady = false;
+    try {
+      const rawOverrides = legacySlice.length
+        ? (await readLegacyBuildingRows()).rows.filter((item) => {
+          const row = item && typeof item === "object" && !Array.isArray(item) ? item as Record<string, unknown> : null;
+          return typeof row?.asset_ref === "string" && legacySlice.includes(row.asset_ref);
+        })
+        : [];
+      if (legacySlice.length) legacySnapshotReady = true;
+      const legacyOverrideRefs = new Set(rawOverrides.flatMap((item) => {
+        const row = item && typeof item === "object" && !Array.isArray(item) ? item as Record<string, unknown> : null;
+        return typeof row?.asset_ref === "string" && legacySlice.includes(row.asset_ref) ? [row.asset_ref] : [];
+      }));
+      const legacyHandledRefs = new Set<string>();
+      const stableRefsForPage = [...new Set(slice.flatMap((assetRef) => {
+        const stableRef = stableAssetRefs.get(assetRef);
+        return stableRef ? [stableRef] : [];
+      }))];
+      let prefetchedObjects = new Map<string, CityBuildingStoredObject>();
+      let prefetchComplete = false;
+      if (stableRefsForPage.length) {
+        try {
+          typedObjectClient ??= await cityBuildingObjectClient();
+          prefetchedObjects = await listCityBuildingObjectsByStableRef(typedObjectClient, stableRefsForPage);
+          prefetchComplete = true;
+        } catch { /* fall back to scoped readByAlias requests below */ }
+      }
+      const genericByAsset = new Map<string, CityBuildingObjectSnapshot>();
+      const objectStateByAsset = new Map<string, CityBuildingObjectSnapshot>();
+      if (stableRefsForPage.length && typedObjectClient) {
+        for (const assetRef of slice) {
+          const stableRef = stableAssetRefs.get(assetRef);
+          if (!stableRef) continue;
+          try {
+            const stored = prefetchComplete ? prefetchedObjects.get(stableRef) ?? null : undefined;
+            const state = await readCityBuildingObject(typedObjectClient, stableRef, stored);
+            if (state) {
+              objectStateByAsset.set(assetRef, state);
+              if (state.authority === "generic-object") {
+                genericByAsset.set(assetRef, state);
+                genericAuthoritative += 1;
+              }
+            }
+          } catch { missing += 1; /* Keep legacy fallback when the generic object is unavailable or malformed. */ }
+        }
+      }
+      for (const item of rawOverrides) {
+        let row = parseOverrideRow(item, tokensByAsset);
+        if (row && !seen.has(row.asset_ref)) {
+          const generic = genericByAsset.get(row.asset_ref);
+          if (generic) {
+            legacyHandledRefs.add(row.asset_ref);
+            seen.add(row.asset_ref);
+            if (generic.model) overrides.push({ asset_ref: row.asset_ref, revision: generic.domainRevision,
+              kit_version: generic.model.kit_version, source: "generic-object", model: generic.model,
+              ...(generic.updatedAtMs === undefined ? {} : { updated_at_ms: generic.updatedAtMs }) });
+            continue;
+          }
+          const stableRef = stableAssetRefs.get(row.asset_ref);
+          if (stableRef) {
+            try {
+              typedObjectClient ??= await cityBuildingObjectClient();
+              // Persist the legacy ca_* ↔ stable source-ref crosswalk in the
+              // generic asset object store while the old session page still
+              // supplies both identities. This lets later readers stop calling
+              // the City-specific asset registry without losing saved assets.
+              const crosswalkKey = `${row.asset_ref}\0${stableRef}`;
+              if (!cityAssetCrosswalkResolved.has(crosswalkKey)) {
+                await ensureCityAssetObject(typedObjectClient as unknown as CityAssetBookmarkObjectClient, row.asset_ref, stableRef);
+                if (cityAssetCrosswalkResolved.size >= 4_000) cityAssetCrosswalkResolved.clear();
+                cityAssetCrosswalkResolved.add(crosswalkKey);
+              }
+            } catch { missing += 1; /* Preserve legacy building reads if crosswalk migration is unavailable. */ }
+            try {
+              typedObjectClient ??= await cityBuildingObjectClient();
+              const migrated = await importLegacyBuildingOverride(typedObjectClient, stableRef, row,
+                prefetchComplete ? prefetchedObjects.get(stableRef) ?? null : undefined);
+              if (migrated.state === "imported") imported += 1;
+              else if (migrated.state === "matched") matched += 1;
+              else if (migrated.state === "conflict" || migrated.state === "invalid") conflicts += 1;
+              else missing += 1;
+              if (migrated.state === "imported" || migrated.state === "matched") {
+                legacyHandledRefs.add(row.asset_ref);
+                legacyBuildingSnapshotByAsset.set(row.asset_ref, row);
+              }
+              // The typed legacy export remains authoritative until the typed object and
+              // old row agree; imported objects never change this frame's result.
+              if ((migrated.state === "imported" || migrated.state === "matched") && migrated.model) row = { ...row, model: migrated.model };
+            } catch { missing += 1; /* object grant or transport unavailable: keep the legacy row */ }
+          }
+          seen.add(row.asset_ref); overrides.push(row);
+        }
+      }
+      for (const [assetRef, generic] of genericByAsset) {
+        if (seen.has(assetRef)) continue;
+        seen.add(assetRef);
+        if (generic.model) overrides.push({ asset_ref: assetRef, revision: generic.domainRevision,
+          kit_version: generic.model.kit_version, source: "generic-object", model: generic.model,
+          ...(generic.updatedAtMs === undefined ? {} : { updated_at_ms: generic.updatedAtMs }) });
+      }
+      for (const assetRef of slice) {
+        if (seen.has(assetRef)) continue;
+        const cachedLegacy = legacyBuildingSnapshotByAsset.get(assetRef);
+        if (cachedLegacy) {
+          seen.add(assetRef);
+          overrides.push(cachedLegacy);
+        }
+      }
+      for (const [assetRef, state] of objectStateByAsset) objectStates.push({ asset_ref: assetRef, state });
+      if (legacySnapshotReady) {
+        for (const assetRef of legacySlice) {
+          if (!legacyOverrideRefs.has(assetRef)) {
+            legacyBuildingSnapshotByAsset.set(assetRef, null);
+            legacyBuildingSnapshotResolved.add(assetRef);
+          } else if (legacyHandledRefs.has(assetRef)) legacyBuildingSnapshotResolved.add(assetRef);
+        }
+      }
+    } finally {
+      legacySlice.forEach((assetRef) => legacyBuildingSnapshotInFlight.delete(assetRef));
+    }
+  }
+  if (typeof window !== "undefined" && stableAssetRefs.size) {
+    (window as Window & { __CITY_TYPED_BUILDING_OBJECTS__?: unknown }).__CITY_TYPED_BUILDING_OBJECTS__ = {
+      status: conflicts ? "parity_conflict" : genericAuthoritative > 0 ? "authoritative" : imported + matched > 0 ? "active" : "not_migrated",
+      imported, matched, genericAuthoritative, conflicts, missing,
+    };
+  }
+  return { overrides, objectStates };
+}
+function mapTypedSessionDetail(base: CityProjectionV1["sessions"][number], typed: CityTypedSessionDetail): CityProjectionV1["sessions"][number] {
+  const session = typed.detail.session;
+  const excerpts = typed.excerpts.excerpts.map((excerpt) => {
+    if (!["verbatim", "truncated", "scrubbed"].includes(excerpt.provenance)) throw new Error("typed_city_detail_excerpt_invalid");
+    return { role: excerpt.role, text: excerpt.text, provenance: excerpt.provenance as "verbatim" | "truncated" | "scrubbed", is_excerpt: true as const };
+  });
+  const cost = typed.cost.cost;
+  return {
+    ...base,
+    id: session.id,
+    harness: session.harness,
+    title: session.title,
+    title_source: session.title_source,
+    first_event_at: session.first_event_at,
+    last_event_at: session.last_event_at,
+    window_first_event_at: session.window_first_event_at,
+    window_last_event_at: session.window_last_event_at,
+    lifetime_first_event_at: session.lifetime_first_event_at,
+    lifetime_last_event_at: session.lifetime_last_event_at,
+    tokens: session.tokens,
+    event_count: session.event_count,
+    usage_event_count: session.event_count,
+    model_ids: session.model_ids,
+    model_coverage: session.model_coverage,
+    title_state: session.title ? "available" : "unavailable",
+    task_excerpts: excerpts,
+    excerpt_scope: "session_lifetime_not_window",
+    cost_minor: cost.cost_minor,
+    cost_breakdown: cost.breakdown,
+    cost_complete: cost.complete,
+    cost_reference_prices: cost.reference_prices,
+    cost_status: { state: cost.status, reason: cost.reason, has_unresolved: cost.has_unresolved },
+  } as unknown as CityProjectionV1["sessions"][number];
 }
 export async function readCitySessionDetail(projection: CityProjectionV1, id: string, signal?: AbortSignal): Promise<CityProjectionV1["sessions"][number]> {
-  if (!projection.v3_context) {
-    const session = projection.sessions.find((s) => s.id === id);
-    if (!session) throw new Error("session_unavailable");
-    return session;
+  const base = projection.sessions.find((session) => session.id === id);
+  if (!base) throw new Error("session_unavailable");
+  if (projection.source !== "local") return base;
+  if (signal?.aborted) throw new Error("city_request_cancelled");
+  const target = window as Window & { __CITY_TYPED_SESSION_DETAIL_ROLLOUT__?: unknown };
+  try {
+    const typed = await readTypedCitySessionDetailFromHost({ sessionRef: id, windowDays: projection.window.days }, signal);
+    if (typed.detail.session.id !== id) throw new Error("typed_city_detail_session_mismatch");
+    if (signal?.aborted) throw new Error("city_request_cancelled");
+    target.__CITY_TYPED_SESSION_DETAIL_ROLLOUT__ = { source: "typed", status: "authoritative",
+      dataRevision: typed.detail.dataRevision, sessionRef: id };
+    return mapTypedSessionDetail(base, typed);
+  } catch (error) {
+    target.__CITY_TYPED_SESSION_DETAIL_ROLLOUT__ = { source: "typed", status: "unavailable",
+      reason: error instanceof Error ? error.message : "typed_city_detail_unavailable", sessionRef: id };
+    throw error;
   }
-  const response = await readV3({ ...continuation(projection.v3_context), operation: "session.detail", id, include_excerpts: true }, signal);
-  if (response.snapshot !== projection.v3_context.snapshot || response.detail?.id !== id) throw new Error("city_detail_invalid");
-  const detail = response.detail;
-  return { ...detail, cost_minor: detail.cost.cost_minor, cost_breakdown: detail.cost.breakdown, cost_complete: detail.cost.complete, cost_reference_prices: detail.cost.reference_prices,
-    cost_status: { state: detail.cost.status, reason: detail.cost.reason, has_unresolved: detail.cost.has_unresolved } };
 }
-export async function readCityModule(projection: CityProjectionV1, module: "findings" | "skills" | "workflow", signal?: AbortSignal, fresh = false, harness?: string) {
+export async function readCityModule(projection: CityProjectionV1, module: "findings" | "skills" | "workflow", signal?: AbortSignal, _fresh = false, harness?: string) {
   if (projection.source !== "local") return { source: "fixture" as const, window: projection.window, generated_at: projection.generated_at,
     result: module === "findings" ? { state: "ready", supported: true, data: { current_backlog: projection.findings.filter((row) => !harness || row.harness === harness), window_new: [], detail_state: "unsupported" } }
       : module === "skills" ? { state: "ready", supported: true, data: { coverage: "synthetic_fixture", inventory_included: false, truncated: false,
@@ -182,75 +530,253 @@ export async function readCityModule(projection: CityProjectionV1, module: "find
       : { state: "ready", supported: true, data: { coverage: "synthetic_fixture", truncated: false, outcome_scope: "unpaired_events",
         events: projection.harnesses.filter((item) => !harness || item.id === harness).map((item) => ({ harness: item.id,
           event_type: "tool_finished", events: 3, sessions: 2, failed_events: 1, last_event_at_ms: Date.parse(projection.window.to) - 60000 })) } } };
-  const context = (fresh ? undefined : projection.v3_context) ?? await readV3({ operation: "overview", windowDays: projection.window.days,
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, page_size: 1 }, signal);
-  const response = await readV3({ ...continuation(context), operation: "module.read", module, ...(harness ? { harness } : {}) }, signal);
-  if (harness && (response as unknown as { scope?: { harness?: string } }).scope?.harness !== harness) throw new Error("city_module_scope_mismatch");
-  return response;
+  if (signal?.aborted) throw new Error("city_request_cancelled");
+  let revision: number;
+  let fromMs: number;
+  let toMs: number;
+  let result: CityModuleV3;
+  if (module === "findings") {
+    const typed = await readTypedCityFindingShadowFromHost(projection.window.days);
+    if (signal?.aborted) throw new Error("city_request_cancelled");
+    revision = typed.dataRevision;
+    fromMs = typed.window.fromMs;
+    toMs = typed.window.toMs;
+    if (typed.windowDays !== projection.window.days || toMs - fromMs !== projection.window.days * 86_400_000) {
+      throw new Error("typed_city_module_window_invalid");
+    }
+    const data = {
+      current_backlog: typed.current_backlog.map((row) => ({ harness: row.harness_id, severity: row.severity, count: row.count })),
+      window_new: typed.window_new.map((row) => ({ harness: row.harness_id, severity: row.severity, count: row.count })),
+      capabilities: typed.capabilities.map((row) => {
+        const identity = projection.harnesses.find((item) => item.id === row.harness_id);
+        return identity ? { ...identity, capabilities: { ...identity.capabilities,
+          findings: { available: row.available, reason: row.reason } } }
+          : { id: row.harness_id, display_name: row.harness_id, capabilities: { findings: { available: row.available, reason: row.reason } } };
+      }),
+      detail_state: "unsupported",
+    };
+    const scopedData = harness ? { ...data,
+      current_backlog: data.current_backlog.filter((row) => row.harness === harness),
+      window_new: data.window_new.filter((row) => row.harness === harness),
+      capabilities: data.capabilities.filter((row) => row.id === harness),
+    } : data;
+    const supported = scopedData.capabilities.some((row) => row.capabilities.findings.available);
+    result = { state: !supported ? "unsupported" : scopedData.current_backlog.length || scopedData.window_new.length ? "ready" : "empty",
+      supported, data: scopedData };
+  } else {
+    const { skills, workflow } = await readTypedCitySkillWorkflowShadowFromHost(projection.window.days);
+    if (signal?.aborted) throw new Error("city_request_cancelled");
+    if (skills.dataRevision !== workflow.dataRevision || skills.windowDays !== workflow.windowDays
+        || skills.window.fromMs !== workflow.window.fromMs || skills.window.toMs !== workflow.window.toMs
+        || skills.windowDays !== projection.window.days || skills.window.toMs - skills.window.fromMs !== projection.window.days * 86_400_000) {
+      throw new Error("typed_city_module_snapshot_mismatch");
+    }
+    revision = skills.dataRevision;
+    fromMs = skills.window.fromMs;
+    toMs = skills.window.toMs;
+    const rows = module === "skills" ? skills.skills.map((row) => ({ harness: row.harness_id, skill: row.label,
+      invocations: row.invocations, sessions: row.sessions, last_invoked_at_ms: row.last_invoked_at_ms,
+      finished_events: row.finished_events, failed_events: row.failed_events, succeeded_events: row.succeeded_events }))
+      : workflow.events.map((row) => ({ harness: row.harness_id,
+        event_type: row.event_type, events: row.count, sessions: row.sessions, last_event_at_ms: row.last_event_at_ms,
+        failed_events: row.failed_events }));
+    const scopedRows = harness ? rows.filter((row) => row.harness === harness) : rows;
+    const rawData: Record<string, unknown> = module === "skills"
+      ? { skills: scopedRows, truncated: skills.truncated, coverage: skills.coverage,
+        outcome_scope: skills.outcomeScope, inventory_included: skills.inventoryIncluded }
+      : { events: scopedRows, truncated: workflow.truncated, coverage: workflow.coverage, outcome_scope: workflow.outcomeScope };
+    result = { state: scopedRows.length ? "ready" : "empty", supported: true, data: rawData };
+  }
+  if (signal?.aborted) throw new Error("city_request_cancelled");
+  (window as Window & { __CITY_TYPED_MODULE_ROLLOUT__?: unknown }).__CITY_TYPED_MODULE_ROLLOUT__ = {
+    module, source: "typed", status: "authoritative", dataRevision: revision,
+    window: { fromMs, toMs },
+  };
+  return { source: "local" as const, result, window: { days: projection.window.days,
+    from_ms: fromMs, to_ms: toMs, from: new Date(fromMs).toISOString(), to: new Date(toMs).toISOString(),
+    timezone: projection.activity?.timezone ?? "UTC", calendar_mode: "rolling" as const, boundary: "half_open" as const },
+    generated_at: new Date().toISOString() };
 }
-/** Resolve only references already persisted by the trusted host save handler. */
-export async function resolveSavedCityAssets(windowDays: number, assetRefs: string[]) {
-  const context = await readV3({ operation: "overview", windowDays, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, page_size: 1 });
-  return readV3({ ...continuation(context), operation: "assets.resolve", save_id: "city-primary", asset_refs: assetRefs });
+async function readTypedProjection(windowDays: 7 | 30 | 90 | 366, signal?: AbortSignal,
+  onStage?: (stage: "reading_summary" | "reading_sessions" | "ready") => void,
+  pin?: { toMs: number; dataRevision: number }): Promise<CityProjectionV1> {
+  onStage?.("reading_summary");
+  const [sessions, harnesses] = await Promise.all([
+    readTypedCitySessionShadowFromHost(windowDays, signal, pin),
+    (async () => {
+      const instanceId = window.__AV_PLUGIN_INSTANCE__;
+      if (!instanceId) throw new Error("plugin_instance_unavailable");
+      const [{ createHarnessDataClient }] = await Promise.all([import("@agent-vitals/app-sdk")]);
+      const client = createHarnessDataClient(instanceId, (request) => invokeHost<PluginResponseV1>("plugin_request", { request }));
+      return client.list();
+    })(),
+  ]);
+  if (signal?.aborted) throw new Error("city_request_cancelled");
+  if (sessions.dataRevision !== harnesses.data_revision) throw new Error("revision_changed");
+  const stableRefs = await readTypedCityStableRefsFromHost(windowDays, {
+    toMs: sessions.window.toMs, dataRevision: sessions.dataRevision,
+  }, signal);
+  if (stableRefs.dataRevision !== sessions.dataRevision || stableRefs.window.fromMs !== sessions.window.fromMs
+      || stableRefs.window.toMs !== sessions.window.toMs || stableRefs.bySessionId.size !== sessions.sessions.length) {
+    throw new Error("typed_city_stable_ref_parity");
+  }
+  const stableRefBySessionId = new Map<string, string>();
+  for (const session of sessions.sessions) {
+    const stableRef = stableRefs.bySessionId.get(session.id);
+    if (!stableRef) throw new Error("typed_city_stable_ref_parity");
+    stableRefBySessionId.set(session.id, stableRef);
+  }
+  const objectClient = await cityBuildingObjectClient();
+  const assetRefByStableRef = await resolveCityAssetRefsByStableRef(
+    objectClient as unknown as CityAssetBookmarkObjectClient, [...stableRefBySessionId.values()]);
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const typedValues = await promoteCityTypedWindowValues({
+    readers: {
+      summary: readTypedCityUsageSummaryShadowFromHost,
+      activity: readTypedCityActivityShadowFromHost,
+      models: readTypedCityModelUsageShadowFromHost,
+      timeCoverage: readTypedCityTimeCoverageShadowFromHost,
+      findings: readTypedCityFindingShadowFromHost,
+    },
+    legacy: {}, windowDays, timezone,
+    window: { fromMs: sessions.window.fromMs, toMs: sessions.window.toMs },
+    dataRevision: sessions.dataRevision, signal,
+  });
+  const summary = typedValues.values.summary;
+  if (!summary?.tokens || !Number.isSafeInteger(summary.session_count) || !Number.isSafeInteger(summary.usage_event_count)
+      || !Number.isSafeInteger(summary.tokens.input) || !Number.isSafeInteger(summary.tokens.output)
+      || !Number.isSafeInteger(summary.tokens.total)) throw new Error("typed_city_summary_unavailable");
+  const models = typedValues.values.models;
+  const timeCoverage = typedValues.values.timeCoverage;
+  const findings = typedValues.values.findings;
+  const activityData = typedValues.values.activity;
+  const assetRefs = new Map<string, string>();
+  const projectionSessions = sessions.sessions.map((session) => {
+    const stableRef = stableRefBySessionId.get(session.id)!;
+    const assetRef = assetRefByStableRef.get(stableRef);
+    if (!assetRef) throw new Error("city_asset_identity_invalid");
+    assetRefs.set(assetRef, stableRef);
+    return {
+      id: session.id, harness: session.harness,
+      title: session.title ?? null, title_source: session.title_source ?? null,
+      title_state: session.title_state, asset_ref: assetRef,
+      first_event_at: session.lifetime_first_event_at ?? session.first_event_at,
+      last_event_at: session.lifetime_last_event_at ?? session.last_event_at,
+      window_first_event_at: session.first_event_at, window_last_event_at: session.last_event_at,
+      lifetime_first_event_at: session.lifetime_first_event_at, lifetime_last_event_at: session.lifetime_last_event_at,
+      layout_order: session.window_order, event_count: session.event_count, usage_event_count: session.event_count,
+      tokens: { ...session.tokens }, model_ids: [...session.model_ids], model_coverage: { ...session.model_coverage },
+      cost_minor: null,
+      cost_status: { state: "unavailable" as const, reason: "load_on_demand", has_unresolved: false },
+    };
+  });
+  onStage?.("reading_sessions");
+  const projection = validateCityProjectionV2({
+    protocol: "city:v2", source: "local", data_revision: sessions.dataRevision,
+    generated_at: new Date().toISOString(), harnesses: harnesses.harnesses,
+    window: { days: windowDays, label: `最近 ${windowDays} 天`, from: new Date(sessions.window.fromMs).toISOString(), to: new Date(sessions.window.toMs).toISOString() },
+    sessions: projectionSessions,
+    summary: { ...summary, tokens: { ...summary.tokens } },
+    models: models?.models.map((row) => row.model_id).filter((id): id is string => typeof id === "string") ?? [],
+    model_coverage: models ? {
+      unknown_model_usage_events: models.coverage.unknown_model_usage_events ?? 0,
+      legacy_usage_events: models.coverage.legacy_usage_events ?? 0,
+    } : undefined,
+    activity: activityData ? {
+      timezone: activityData.timezone,
+      days: activityData.days.map((row) => ({ date: row.date!, session_count: row.session_count!, event_count: row.event_count!, tokens: row.tokens! })),
+      busiest_day: activityData.days.reduce((best, row) => !best || (row.tokens ?? 0) > (best.tokens ?? 0)
+        ? { date: row.date!, session_count: row.session_count!, event_count: row.event_count!, tokens: row.tokens! } : best, null as CityProjectionV1["activity"] extends { busiest_day: infer T } ? T : never),
+    } : undefined,
+    findings: findings?.current_backlog.map((row) => ({ harness: row.harness_id, severity: row.severity, count: row.count })) ?? [],
+    coverage: {
+      total: sessions.coverage.total, returned: sessions.coverage.returned, truncated: sessions.coverage.truncated,
+      unknown_time: (timeCoverage?.unknown_time_only ?? 0) + (timeCoverage?.mixed_time ?? 0),
+      unknown_time_semantics: "compat_any_untimed_fact_all_sessions",
+      time_classification: timeCoverage,
+      findings_state: findings ? "partial" : "unavailable",
+    },
+    status: sessions.coverage.total > 0 ? "ready" : "empty",
+  });
+  rememberStableAssetRefs(projection, assetRefs);
+  (window as Window & { __CITY_TYPED_SESSION_ROLLOUT__?: unknown }).__CITY_TYPED_SESSION_ROLLOUT__ = {
+    source: "typed", status: "authoritative", dataRevision: sessions.dataRevision,
+    count: sessions.coverage.returned, total: sessions.coverage.total,
+  };
+  (window as Window & { __CITY_TYPED_MODULE_ROLLOUT__?: unknown }).__CITY_TYPED_MODULE_ROLLOUT__ = {
+    source: "typed", values: typedValues.statuses, dataRevision: sessions.dataRevision,
+    window: { fromMs: sessions.window.fromMs, toMs: sessions.window.toMs },
+  };
+  onStage?.("ready");
+  return projection;
 }
+
+/** Typed-only projection with a revision-pinned migration bridge for old City asset IDs. */
+async function readTypedProjectionWithLegacyMigration(windowDays: 7 | 30 | 90 | 366, signal?: AbortSignal,
+  onStage?: (stage: "reading_summary" | "reading_sessions" | "ready") => void): Promise<CityProjectionV1> {
+  const legacySnapshot = await readLegacyCityStoreSnapshot();
+  legacyBuildingRowsPromise = Promise.resolve({ rows: legacySnapshot.buildingRows, sourceRevision: legacySnapshot.sourceRevision });
+  const legacyRefs = new Set([...legacySnapshot.bookmarkRefs, ...legacySnapshot.claimRefs]);
+  for (const item of legacySnapshot.buildingRows) {
+    const row = item && typeof item === "object" && !Array.isArray(item) ? item as Record<string, unknown> : null;
+    if (typeof row?.asset_ref === "string" && /^ca_[0-9a-f]{32}$/.test(row.asset_ref)) legacyRefs.add(row.asset_ref);
+  }
+  const pendingLegacyRefs = await findUnmappedLegacyAssetRefs([...legacyRefs]);
+  if (!pendingLegacyRefs.length) return readTypedProjection(windowDays, signal, onStage);
+  const projection = await readTypedProjection(windowDays, signal, onStage);
+  const dataRevision = projection.data_revision;
+  if (typeof dataRevision !== "number" || !Number.isSafeInteger(dataRevision)) throw new Error("city_asset_crosswalk_revision_changed");
+  await applyLegacyBookmarkCrosswalk(projection, pendingLegacyRefs, legacySnapshot.sourceRevision,
+    dataRevision, signal);
+  return projection;
+}
+
+export function reportCityScene(stage: "model" | "planning" | "mounting" | "rendering" | "first_frame",
+  elapsedMs: number, windowDays: WindowDays): void {
+  if (!embedded() || !window.__AV_PLUGIN_INSTANCE__) return;
+  void invokeHost("plugin_message", { message: {
+    version: 1, instanceId: window.__AV_PLUGIN_INSTANCE__, type: "plugin.performance",
+    metric: "scene", outcome: "success", elapsedMs: Math.max(0, Math.round(elapsedMs)),
+    dimensions: { stage, windowDays },
+  } }).catch(() => {});
+}
+
+function reportCityLoad(outcome: "success" | "partial" | "cancelled" | "failed",
+  started: number, windowDays: WindowDays, attempts: number, revisionRetries: number,
+  fallback: "none", pageReturned?: number): void {
+  if (!embedded() || !window.__AV_PLUGIN_INSTANCE__) return;
+  void invokeHost("plugin_message", { message: {
+    version: 1, instanceId: window.__AV_PLUGIN_INSTANCE__, type: "plugin.performance",
+    metric: "data-load", outcome, elapsedMs: Math.max(0, Math.round(monotonicNow() - started)),
+    dimensions: { attempt_count: attempts, revision_retry_count: revisionRetries, fallback, window_days: windowDays,
+      ...(typeof pageReturned === "number" ? { page_returned: pageReturned } : {}) },
+  } }).catch(() => {});
+}
+
 export const tauriCityDataProvider: CityDataProvider = {
-  async getProjection({ windowDays, signal, onStage }) {
+  async getProjection({ windowDays, signal, onStage, onPartial }) {
     const standalone = !window.__AV_PLUGIN_INSTANCE__;
     if (standalone && new URLSearchParams(location.search).get("demo") === "1") return completeFixture(demoCityProjection(windowDays));
     if (standalone || window.__CITY_ISOLATION_FIXTURE__) return completeFixture(fixtureProjection(windowDays));
-    if (new URLSearchParams(location.search).get("cityData") !== "v3") {
-      onStage?.("reading_summary");
-      const request: PluginRequestV1 = { version: 1, instanceId: window.__AV_PLUGIN_INSTANCE__!, requestId: `city-request-${++requestSequence}`,
-        method: "data.read", payload: { projection: "city", version: 2, windowDays } };
-      const response = await invokeHost<PluginResponseV1<CityProjectionV1>>("plugin_request", { request });
+    const started = monotonicNow();
+    try {
+      const projection = await readTypedProjectionWithLegacyMigration(windowDays, signal, onStage);
       if (signal?.aborted) throw new Error("city_request_cancelled");
-      if (response.version !== 1 || response.requestId !== request.requestId) throw new Error("plugin_response_invalid");
-      if (!response.ok || !response.result) throw new Error(response.error?.code ?? "plugin_request_failed");
-      onStage?.("ready");
-      return validateCityProjectionV2(response.result);
-    }
-    // Stage pages privately; apply the model once. A revision change discards every staged page.
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      try {
-        onStage?.("reading_summary");
-        const first = await readV3({ operation: "overview", windowDays, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          calendar_mode: "rolling", page_size: 500 }, signal);
-        if (!first.page || !first.harnesses || !first.modules?.overview.data) throw new Error("city_overview_invalid");
-        const context: CitySnapshotV3 = { data_revision: first.data_revision, snapshot: first.snapshot, context: first.context,
-          query_semantics: first.query_semantics, window: first.window };
-        const sessions = [...first.page.sessions];
-        const ids = new Set(sessions.map((session) => session.id));
-        let cursor = first.page.next_cursor;
-        onStage?.("reading_sessions");
-        while (cursor && sessions.length < 4000) {
-          const page = await readV3({ ...continuation(context), operation: "sessions.page", cursor, page_size: 500 }, signal);
-          if (page.snapshot !== first.snapshot || !page.page || page.page.coverage.offset !== sessions.length
-            || page.page.sessions.length === 0) throw new Error("city_page_invalid");
-          for (const session of page.page.sessions) {
-            if (ids.has(session.id)) throw new Error("city_page_duplicate");
-            ids.add(session.id); sessions.push(session);
-          }
-          if (page.page.next_cursor === cursor) throw new Error("city_cursor_invalid");
-          cursor = page.page.next_cursor;
-        }
-        sessions.sort((a,b) => a.layout_order - b.layout_order);
-        const summary = first.modules.overview.data as CityProjectionV1["summary"] & {
-          models?: { model_ids?: string[] }; time_classification?: { unknown_time_only: number; mixed_time: number } };
-        const activity = first.modules.activity.data as CityProjectionV1["activity"];
-        if (!summary?.tokens || !Number.isSafeInteger(summary.tokens.total)) throw new Error("city_overview_invalid");
-        onStage?.("ready");
-        return { protocol: "city:v2", source: "local", v3_context: context, data_revision: first.data_revision,
-          generated_at: first.generated_at, harnesses: first.harnesses,
-          window: { days: windowDays, label: `最近 ${windowDays} 天`, from: first.window.from, to: first.window.to },
-          sessions, models: summary.models?.model_ids ?? [], activity, summary,
-          findings: [], coverage: { total: first.page.coverage.matched, returned: sessions.length,
-            truncated: first.page.coverage.matched > sessions.length,
-            unknown_time: (summary.time_classification?.unknown_time_only ?? 0) + (summary.time_classification?.mixed_time ?? 0),
-            findings_state: "unavailable" }, status: first.page.coverage.matched > 0 ? "ready" : "empty" };
-      } catch (error) {
-        if (!(error instanceof Error) || error.message !== "revision_changed" || attempt === 2) throw error;
+      onPartial?.(projection);
+      reportCityLoad("success", started, windowDays, 1, 0, "none", projection.coverage.returned);
+      return projection;
+    } catch (error) {
+      if (signal?.aborted || (error instanceof Error && error.message === "city_request_cancelled")) {
+        reportCityLoad("cancelled", started, windowDays, 1, 0, "none");
+      } else {
+        const reason = error instanceof Error && /^[a-z0-9_:-]{1,80}$/i.test(error.message)
+          ? error.message : "typed_city_projection_unavailable";
+        (window as Window & { __CITY_TYPED_SESSION_ROLLOUT__?: unknown }).__CITY_TYPED_SESSION_ROLLOUT__ = {
+          source: "typed", status: "unavailable", reason,
+        };
+        reportCityLoad("failed", started, windowDays, 1, 0, "none");
       }
+      throw error;
     }
-    throw new Error("revision_changed");
   },
 };

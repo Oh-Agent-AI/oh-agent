@@ -1,3 +1,4 @@
+import { atLeast } from "../roadStandard";
 import { DetMath as Math } from "../detMath";
 /**
  * 用地临街（R5 步 5）：自 cityPlan.ts::buildPlan 逐字迁出的「公共用地 / 地标 选址后挪动」工序段。
@@ -138,7 +139,7 @@ export function frontSitesAndAssignJointSites(w: SiteFrontageWorld) {
           const fixedBlocker = initialSites.find((site) => blockerIds.has(site.id)
             && (site.kind === "civic" || site.kind === "harbor" || ("access" in site && site.access)));
           if (fixedBlocker) return `site-relocation-fixed-blocker(${fixedBlocker.id})`;
-          const actualTrunks = [...candidateNetwork.edges.values()].filter((edge) => !edge.bridge && edge.width >= 8).map((edge) => edge.points);
+          const actualTrunks = [...candidateNetwork.edges.values()].filter((edge) => !edge.bridge && atLeast(edge, "collector")).map((edge) => edge.points);
           const actualSegments = actualTrunks.flatMap((run) => run.slice(1).map((point, index) => [run[index], point] as [Vec2, Vec2]));
           const stagedFrontage = { ...frontageCtx, trunkRuns: actualTrunks, trunkSegments: actualSegments,
             publicSites: stagedPublic, landmarks: stagedLandmarks, relocateSiteIds: blockerIds };

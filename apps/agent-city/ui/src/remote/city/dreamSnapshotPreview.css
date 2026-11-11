@@ -1,0 +1,35 @@
+.dream-manage-remote-fab { position: fixed; z-index: 90; top: 14px; right: 14px; border: 1px solid #93c5fd; border-radius: 8px; padding: 9px 13px; color: #eff6ff; background: #0b1b2def; box-shadow: 0 4px 18px #0005; font: inherit; font-weight: 700; cursor: pointer; }
+.dream-manage-remote-fab:hover { background: #173653; }
+
+.city-app .city-dream-preview-entry { margin: 18px 0; padding: 12px; border: 1px solid #466176; border-radius: 10px; background: #0d1a29; }
+.city-app .city-dream-preview-entry h3 { margin: 0 0 5px; font-size: 14px; }
+.city-app .city-dream-preview-entry p { margin: 0 0 9px; color: #adc3ce; font-size: 12px; }
+.city-app .city-dream-preview-dialog { width: min(1180px, calc(100% - 32px)); height: min(820px, calc(100% - 32px)); }
+.city-app .dream-snapshot-body { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(260px, .8fr); gap: 16px; flex: 1; }
+.city-app .dream-snapshot-scene { position: relative; min-height: 380px; overflow: hidden; border: 1px solid #466176; border-radius: 10px; background: #93aec0; }
+.city-app .dream-snapshot-scene .remote-city-scene { position: relative; width: 100%; height: 100%; min-height: 380px; overflow: hidden; background: #93aec0; }
+.city-app .dream-snapshot-scene .remote-city-scene canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.city-app .dream-snapshot-scene .remote-city-loading { position: absolute; inset: auto 12px 12px; margin: 0; padding: 8px 12px; border-radius: 8px; background: #102231d9; color: #eaf3f6; }
+.city-app .dream-snapshot-scene > p { position: absolute; inset: 12px auto auto 12px; margin: 0; padding: 8px 10px; border-radius: 8px; background: #102231e8; }
+.city-app .dream-snapshot-details { min-width: 0; overflow: auto; }
+.city-app .dream-snapshot-details h3 { margin: 0 0 8px; }
+.city-app .dream-snapshot-details ul { padding-left: 20px; color: #c2d0d8; line-height: 1.55; }
+.city-app .dream-snapshot-details li + li { margin-top: 6px; }
+.city-app .dream-snapshot-details dl { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+.city-app .dream-snapshot-details dd { margin: 0; text-align: right; }
+.city-app .dream-publication-controls { display: grid; gap: 10px; margin: 16px 0; padding: 12px; border: 1px solid #466176; border-radius: 10px; background: #102231; }
+.city-app .dream-publication-controls h3, .city-app .dream-publication-controls h4 { margin: 0; }
+.city-app .dream-publication-controls > label:not(.dream-consent) { display: grid; gap: 5px; color: #c2d0d8; }
+.city-app .dream-publication-controls input[type="url"] { width: 100%; box-sizing: border-box; }
+.city-app .dream-consent { display: flex; align-items: flex-start; gap: 8px; color: #d2dfe5; line-height: 1.45; }
+.city-app .dream-consent input { flex: 0 0 auto; margin-top: 3px; }
+.city-app .dream-publication-controls textarea { width: 100%; min-height: 74px; box-sizing: border-box; resize: vertical; overflow-wrap: anywhere; }
+.city-app .dream-publication-actions, .city-app .dream-visitor-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.city-app .dream-visitor-row { justify-content: space-between; padding: 7px 0; border-top: 1px solid #344c5e; }
+.city-app .dream-visitor-row span { overflow-wrap: anywhere; }
+.city-app .dream-snapshot-notice { padding: 10px; border: 1px solid #b67d51; border-radius: 8px; background: #33251d; color: #ffd5b5 !important; }
+@media (max-width: 760px) {
+  .city-app .city-dream-preview-dialog { height: min(900px, calc(100% - 20px)); }
+  .city-app .dream-snapshot-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(300px, 1fr) auto; }
+  .city-app .dream-snapshot-scene, .city-app .dream-snapshot-scene .remote-city-scene { min-height: 300px; }
+}

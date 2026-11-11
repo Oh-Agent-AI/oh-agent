@@ -1,0 +1,15 @@
+/* Oh Agent brand colours (website/landing/styles.css: --ink #edf5ef, --mint #bcf4cd, dark #0a1111). */
+/* Starlight styles live in a cascade layer, so these unlayered rules win; scope dark-only values to the dark theme. */
+:root[data-theme='dark'] {
+  --sl-color-accent-low: #12302a;
+  --sl-color-accent: #3f9f78;
+  --sl-color-accent-high: #bcf4cd;
+  --sl-color-black: #0a1111;
+  --sl-color-gray-6: #121b1a;
+  --sl-color-gray-5: #1c2a28;
+}
+:root[data-theme='light'] {
+  --sl-color-accent-low: #d8f5e3;
+  --sl-color-accent: #1f7a57;
+  --sl-color-accent-high: #0f3d2c;
+}

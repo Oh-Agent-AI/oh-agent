@@ -32,7 +32,10 @@ const PLAZA_GAP = m(2);
 
 export type SiteHost = { disposables: Array<{ dispose: () => void }>; landmarkWindows: Array<{ material: THREE.MeshLambertMaterial; day: THREE.Texture; lit: THREE.Texture; dayEmissive: THREE.Color }> };
 
-export function buildDistrictLandmarkSite(site: LandmarkSite, districtId: string, accent: string, neon: boolean, host: SiteHost): { group: THREE.Group; podiumTop: number } {
+/** 可开走的那辆车停的车位（场地子组的局部坐标，车头朝 +z、朝街）。没有停车场时为 null。 */
+export type HeroStall = { x: number; z: number; y: number };
+
+export function buildDistrictLandmarkSite(site: LandmarkSite, districtId: string, accent: string, neon: boolean, host: SiteHost): { group: THREE.Group; podiumTop: number; heroStall: HeroStall | null } {
   const group = new THREE.Group();
   group.name = "district-landmark-site";
   group.rotation.y = site.turn;
@@ -123,6 +126,7 @@ export function buildDistrictLandmarkSite(site: LandmarkSite, districtId: string
   const asphalt = lambert("#3b4148");
   const lineGeometries: THREE.BufferGeometry[] = [];
   const cars: Array<{ x: number; z: number; color: string }> = [];
+  let heroStall: HeroStall | null = null;
   const carColors = ["#e8e8e8", "#c9ced2", "#2c3036", "#b3413a", "#355c8c", "#d8c79a"];
   const inner = PLAZA_WIDTH / 2 + PLAZA_GAP; // 车位整体在广场（含雨棚、台阶）两侧之外，不压铺装
   const lotSides: Array<[number, number]> = [[rect.u0, cu - inner], [cu + inner, rect.u1]];
@@ -143,6 +147,9 @@ export function buildDistrictLandmarkSite(site: LandmarkSite, districtId: string
         lineGeometries.push(line);
       }
       for (let k = 0; k < stalls; k += 1) {
+        // 可开走的车（2026-10-22，用户：「每个城区地标楼下面的停车场可以放汽车模型，点击以后进入开车模式」）：
+        // 停在左侧停车场靠街那一排、离步道最近的车位——从大门一眼就能看见；这个车位不再停装饰车。
+        if (!heroStall && side === 0 && rowIndex === rowCenters.length - 1 && k === stalls - 1) { heroStall = { x: x0 + (k + 0.5) * STALL.width, z, y: LINE_TOP }; continue; }
         if (rnd(`car:${side}:${rowIndex}:${k}`) > 0.5) continue;
         cars.push({ x: x0 + (k + 0.5) * STALL.width, z: z + (rnd(`park:${side}:${rowIndex}:${k}`) - 0.5) * 0.3, color: carColors[Math.floor(rnd(`color:${side}:${rowIndex}:${k}`) * carColors.length) % carColors.length] });
       }
@@ -203,5 +210,5 @@ export function buildDistrictLandmarkSite(site: LandmarkSite, districtId: string
     host.disposables.push(trunks, crowns);
   }
   void accent;
-  return { group, podiumTop };
+  return { group, podiumTop, heroStall };
 }

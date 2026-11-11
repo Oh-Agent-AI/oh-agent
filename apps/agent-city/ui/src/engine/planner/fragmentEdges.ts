@@ -6,6 +6,7 @@
  * 写：仅 network.nodes / network.edges（显式原地修改传入的 network，不拷贝、不换对象）。
  * 无随机、无返回值。
  */
+import { atLeast, roadWidthFor } from "../roadStandard";
 import { DetMath as Math } from "../detMath";
 import type { PublicSite, Vec2 } from "../cityLayout";
 import { addNetworkEdge, type Network } from "./network";
@@ -24,10 +25,10 @@ export function mergeFragmentEdges(network: Network, { publicSites, primaryAncho
   const declaredEntranceNodes = new Set(publicSites.flatMap((site) => site.access ? [site.access.nodeId] : []));
   for (let pass = 0; pass < 50; pass += 1) {
     // 宽 12 的骨架（海滨大道按 ~15 细分、段间可能 <5）不合并：并掉会打断大道的车流回路（seaside 守卫）。
-    const sliver = [...edges.values()].find((e) => !sliverSkip.has(e.id) && !declaredEntranceNodes.has(e.from) && !declaredEntranceNodes.has(e.to) && !e.bridge && e.width < 12 && Math.hypot(e.points[1].x - e.points[0].x, e.points[1].z - e.points[0].z) < 5);
+    const sliver = [...edges.values()].find((e) => !sliverSkip.has(e.id) && !declaredEntranceNodes.has(e.from) && !declaredEntranceNodes.has(e.to) && !e.bridge && e.width < roadWidthFor("arterial") && Math.hypot(e.points[1].x - e.points[0].x, e.points[1].z - e.points[0].z) < 5);
     if (!sliver) break;
     // 保留挂着骨架（宽 12）的那一端：并掉海滨大道端点会让大道车流回路引用不存在的节点（seaside 守卫 10 档）。
-    const touchesPrimary = (id: string) => [...edges.values()].some((e) => e !== sliver && e.width >= 12 && (e.from === id || e.to === id));
+    const touchesPrimary = (id: string) => [...edges.values()].some((e) => e !== sliver && atLeast(e, "arterial") && (e.from === id || e.to === id));
     const fromPrimary = touchesPrimary(sliver.from); const toPrimary = touchesPrimary(sliver.to);
     const fromPinned = primaryAnchorNodeIds.includes(sliver.from); const toPinned = primaryAnchorNodeIds.includes(sliver.to);
     const touchesBridge = (id: string) => [...edges.values()].some((e) => e.bridge && (e.from === id || e.to === id));
@@ -44,7 +45,7 @@ export function mergeFragmentEdges(network: Network, { publicSites, primaryAncho
       if (e.from !== dropId && e.to !== dropId) continue;
       edges.delete(e.id);
       const other = e.from === dropId ? e.points[1] : e.points[0];
-      addEdge(keepNode, other, e.kind === "arterial", e.bridge ?? false, e.width >= 12);
+      addEdge(keepNode, other, e.kind === "arterial", e.bridge ?? false, atLeast(e, "arterial"));
     }
     nodes.delete(dropId);
   }

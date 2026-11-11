@@ -1,3 +1,4 @@
+import { atLeast } from "../roadStandard";
 import { DetMath as Math } from "../detMath";
 /**
  * 扇区街网（R5 步 6b）：自 cityPlan.ts::buildPlan 逐字迁出的「分区判定 + 扇区街区网格」工序段。
@@ -42,7 +43,7 @@ export function buildSectorBlocks(w: SectorBlocksWorld) {
   const { R, core, trunks, random, network, connectorWorld, seaside, buildable, coastDistance, reservations, key, trunkIndex, ringIndex, coastRoadIndex } = w;
   const { edges } = network;
   let primaryIndexCache: SegmentIndex | null = null;
-  const primaryRoadIndex = () => (primaryIndexCache ??= new SegmentIndex([...edges.values()].filter((edge) => edge.width >= 12 && !edge.bridge).map((edge) => edge.points)));
+  const primaryRoadIndex = () => (primaryIndexCache ??= new SegmentIndex([...edges.values()].filter((edge) => atLeast(edge, "arterial") && !edge.bridge).map((edge) => edge.points)));
   const zoneFor = (center: Vec2): Zone => {
     // 分区由地理与骨架决定：核心附近 downtown、临海 waterfront、主干道两侧 commercial、其余 residential。
     // 实测 380 栋会话楼 97% 落在 residential、0 栋商业：downtown 半径 0.24R 几乎被市政广场与用地占满，
@@ -63,7 +64,7 @@ export function buildSectorBlocks(w: SectorBlocksWorld) {
     const off = ((a - lo) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
     return off > 0 && off < span;
   };
-  const primarySegments = [...edges.values()].filter((edge) => edge.width >= 12 && !edge.bridge).map((edge) => edge.points);
+  const primarySegments = [...edges.values()].filter((edge) => atLeast(edge, "arterial") && !edge.bridge).map((edge) => edge.points);
   const parallelPrimaryGap = (a: Vec2, b: Vec2) => {
     const mid = { x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 };
     const angle = Math.atan2(b.z - a.z, b.x - a.x);

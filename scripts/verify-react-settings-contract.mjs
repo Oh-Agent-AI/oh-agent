@@ -11,6 +11,7 @@ const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const source = readFileSync(path.join(repo, "apps/desktop/ui-dev/react/src/features/settings/SettingsPage.tsx"), "utf8");
 const bridge = readFileSync(path.join(repo, "apps/desktop/ui-dev/react/src/lib/tauri.ts"), "utf8");
 const i18n = readFileSync(path.join(repo, "apps/desktop/ui-dev/react/src/lib/i18n.ts"), "utf8");
+const app = readFileSync(path.join(repo, "apps/desktop/ui-dev/react/src/app/App.tsx"), "utf8");
 
 for (const name of ["sourceRequest", "sourceControlsRequest", "customRequest", "budgetRequest", "billingRequest", "dataRequest", "aboutRequest", "quotaReminderRequest"]) {
   assert.match(source, new RegExp(`const ${name} = useRef\\(0\\)`), `${name} generation missing`);
@@ -68,5 +69,15 @@ for (const kind of ["manifest_or_source_invalid", "source_busy", "authority_unav
   assert.ok(i18n.includes(`source.error.${kind}`), `dynamic source error kind ${kind} has no localized label`);
 }
 assert.match(source, /source\.error_kinds\.map\(\(kind\) => sourceErrorLabel\(kind, language\)\)/u, "source diagnostic labels are not rendered in Settings");
+assert.match(source, /invoke<McpSetupInfo>\("mcp_setup_info"\)/u, "Settings does not load MCP setup from the native resolver");
+assert.match(source, /\["settings-mcp", message\("sx\.navMcp", language\)\]/u, "MCP section is missing from Settings navigation");
+assert.match(source, /id="settings-mcp"/u, "MCP settings section is missing");
+assert.ok(source.includes('args = ["data-mcp", "serve", "--allow-local-writes"]'), "Codex MCP config does not enable the documented local server");
+assert.match(source, /copyToClipboard\(config\)/u, "MCP config copy action is missing");
+assert.match(source, /mcpCodexConfig\(mcpInfo\.cli_path\)/u, "Codex MCP config is not offered");
+assert.match(source, /mcpInfo\.tools\.map\(\(tool\)/u, "MCP tools are not rendered from runtime tool specs");
+assert.match(i18n, /"sx\.mcpTitle":/u, "MCP settings labels are not localized");
+assert.match(app, /mainContent\.current\?\.scrollTo\(\{ top: 0, left: 0, behavior: "instant" \}\)/u, "page navigation does not reset the shared main scroll position");
+assert.match(app, /if \(page === "settings" && focusSettingSection\) return/u, "settings deep links do not preserve their requested section target");
 
-console.log("React Settings contract: OK (per-projection generations, sync refresh, dynamic error labels, unmount guard, pause receipt)");
+console.log("React Settings contract: OK (per-projection generations, sync refresh, dynamic error labels, MCP setup/copy, unmount guard, pause receipt)");

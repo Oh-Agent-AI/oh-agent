@@ -12,8 +12,10 @@ const assets = path.join(repo, "apps/desktop/src-tauri/ui-react-dist/assets");
 const hookPath = "apps/desktop/ui-dev/react/src/app/plugins/usePlugin.tsx";
 const hook = readFileSync(path.join(repo, hookPath), "utf8");
 const nativeHost = readFileSync(path.join(repo, "apps/desktop/src-tauri/src/plugin_host.rs"), "utf8");
+const nativeHostGenericSurface = nativeHost.split("#[cfg(test)]")[0].replaceAll("'city.seed'", "'fixture.seed'");
 const browserHost = readFileSync(path.join(repo, "apps/desktop/ui-dev/public/browser-plugin-host.js"), "utf8");
 const builder = readFileSync(path.join(repo, "scripts/official-plugins.mjs"), "utf8");
+const descriptors = JSON.parse(readFileSync(path.join(repo, "apps/desktop/plugins.json"), "utf8")).plugins;
 const require = createRequire(path.join(repo, "apps/desktop/ui-dev/package.json"));
 const { buildSync } = require("esbuild");
 const compiled = buildSync({ entryPoints: [path.join(repo, hookPath)], bundle: true, write: false, format: "cjs", jsx: "automatic", external: ["react", "react/*", "../../lib/tauri"] });
@@ -26,8 +28,15 @@ const preview = renderToStaticMarkup(createElement(() => {
   return createElement("div", null, plugin.toolbar, plugin.content);
 }));
 const checks = [
-  { id: "adapters_and_build_are_descriptor_driven", passed: !/AgentCity|city\./.test(nativeHost.split("#[cfg(test)]")[0] + browserHost + builder) && nativeHost.includes('include_str!("../../plugins.json")') && shell.includes("plugins.map"), location: "apps/desktop/plugins.json" },
-  { id: "city_uses_shared_sdk_transport", passed: readFileSync(path.join(repo, "apps/agent-city/ui/src/host.ts"), "utf8").includes("@agent-vitals/app-sdk/ui-host"), location: "packages/agent-vitals-app-sdk/src/ui-host.ts" },
+  { id: "adapters_and_build_are_descriptor_driven", passed: !/AgentCity|city\./.test(nativeHostGenericSurface + browserHost + builder) && nativeHost.includes('include_str!("../../plugins.json")') && shell.includes("plugins.map"), location: "apps/desktop/plugins.json" },
+  { id: "remote_host_entries_are_packaged", passed: descriptors.filter((plugin) => plugin.remoteHostEntry).every((plugin) => {
+      const hostEntry = path.join(repo, plugin.source, "dist", path.basename(plugin.remoteHostEntry));
+      return path.dirname(plugin.remoteHostEntry) === path.dirname(plugin.entry)
+        && existsSync(hostEntry)
+        && builder.includes("Plugin remote host entry missing");
+    }), location: "scripts/official-plugins.mjs" },
+  { id: "city_uses_shared_sdk_transport", passed: readFileSync(path.join(repo, "apps/agent-city/ui/src/host.ts"), "utf8").includes("@agent-vitals/app-sdk/ui-host")
+    && readFileSync(path.join(repo, "packages/agent-vitals-app-sdk/src/ui-host.ts"), "utf8").includes("export async function noteBusy"), location: "packages/agent-vitals-app-sdk/src/ui-host.ts" },
   { id: "plugin_hook_is_generic", passed: /export function usePlugin\(/.test(hook) && !/City|city\./.test(hook) && !existsSync(path.join(repo, "apps/desktop/ui-dev/react/src/app/plugins/useCityPlugin.tsx")), location: hookPath },
   { id: "plugin_presentation_uses_configured_name", passed: /Metrics (工具栏|toolbar)/.test(preview) && /Metrics (插件内容|plugin content)/.test(preview) && /(正在加载 Metrics|Loading Metrics)/.test(preview) && !preview.includes("City"), location: hookPath },
   { id: "shell_does_not_import_city_source", passed: !/import\s*\([^)]*agent-city\/ui\/src/.test(shell), location: "apps/desktop/ui-dev/react/src/app/App.tsx" },

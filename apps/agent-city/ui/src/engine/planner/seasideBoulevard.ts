@@ -9,6 +9,7 @@
  * 返回：seaside、coastalRoadRuns、trimmedTrunkEnds（原先是 buildPlan 里 let/const 的三个局部）。
  * 不调用 random()、不使用 commitNetwork；不 import ../cityPlan 的运行时（R2 边界）。
  */
+import { roadWidthFor } from "../roadStandard";
 import { DetMath as Math } from "../detMath";
 import { boulevardSegments, buildSeasideBand, type CoastalConfig, type SeasideBand, type SeasideWorld } from "../citySeaside";
 import type { Landmark } from "../cityPlan";
@@ -87,7 +88,7 @@ export function buildSeasideBoulevard(env: SeasideBoulevardWorld, params: Seasid
     const boulevardIndex = new SegmentIndex(coastalRoadRuns);
     const loose: Vec2[] = [];
     for (const edge of [...edges.values()]) {
-      if (edge.bridge || coastalRoadEdgeIds.has(edge.id) || edge.width < 12) continue;
+      if (edge.bridge || coastalRoadEdgeIds.has(edge.id) || edge.width < roadWidthFor("arterial")) continue;
       const [a, b] = edge.points;
       if (!boulevardIndex.closerThan(a, 18) || !boulevardIndex.closerThan(b, 18)) continue;
       edges.delete(edge.id); loose.push(a, b);

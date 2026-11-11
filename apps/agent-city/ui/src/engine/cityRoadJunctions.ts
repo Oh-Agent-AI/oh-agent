@@ -11,10 +11,11 @@
  * 本模块只算几何（切点、圆心、停止线位置、渐变梯形），贴图与路缘两个消费方各自取用同一份结果——
  * 这样路面圆角与路缘圆弧按构造一致，不会出现「路面是圆角、路缘还直插进路口」的两套口径。
  */
+import { roadClassSpec } from "./roadStandard";
 import type { RoadEdge, Vec2 } from "./cityLayout";
 
-/** 人行道带宽（贴图里人行道是路宽 +2.4 的描边 = 每侧 1.2）。转角处的人行道沿半径 r−1.2 的同心弧走。 */
-export const SIDEWALK_BAND = 1.8; // 人行道每侧 1.8 m（曾 1.2，真实 ≥2）；与 roadSurfaceSystem.SIDEWALK 必须同值
+/** 人行道带宽取道路标准表（每侧 1.8 世界单位 = 3.6 m）；路口、路面填充共用。 */
+export const SIDEWALK_BAND = roadClassSpec("local").sidewalk;
 /** 圆角不得超过所在臂长的 40%（臂长 = 直路链长，见 JunctionArm.length）：两端都做圆角时最多吃掉 80%，中间总留一段直路。 */
 export const CORNER_EDGE_SHARE = 0.4;
 /** 夹角 ≥ 177° 视为直行（两条边线平行或背离），这一侧不需要圆角。 */

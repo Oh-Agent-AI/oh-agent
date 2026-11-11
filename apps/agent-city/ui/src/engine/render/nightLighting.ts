@@ -4,6 +4,7 @@
  */
 import { m, REAL } from "../worldScale";
 import * as THREE from "three";
+import { battleClarityPresentation } from "../battleClarity";
 import { LIGHT_BUDGET, lampTier, nightFactor, windowRate } from "../cityLightBudget";
 import { CAR_LAMP_FADE_FAR, CAR_LAMP_FADE_NEAR, carPoolFadeUniforms } from "./drivingStreetLights";
 import { activeTheme } from "../cityTheme";
@@ -33,6 +34,7 @@ export interface NightHost {
   nightLights: NightLights | null;
   nightHour: number;
   nightGlow: number;
+  battleClarity?: boolean;
   facadeUniforms: NightFacadeUniforms[];
   terrainUniforms: Record<string, { value: unknown }> | null;
   waterAssetUniforms: Record<string, { value: unknown }> | null;
@@ -305,16 +307,17 @@ export function setNightGlow(host: NightHost, selfLit: number): void {
     beamMaterial.opacity = 0.22 * Math.min(1, night * 1.5);
   }
   const lights = host.nightLights;
+  const presentation = battleClarityPresentation(Boolean(host.battleClarity));
   if (lights) {
     // 电灯白天完全熄灭（0），随 night 线性亮起：此前留的 0.12/0.1「白天底线」
     // 在 4600 盏灯的规模下肉眼可见，读作「灯没关」；灯杆由 Lambert 灰呈现，
     // 灯头不需要白天亮度。
-    lights.heads.color.setRGB(1, 0.78, 0.45).multiplyScalar(night * LIGHT_BUDGET.street.head);
+    lights.heads.color.setRGB(1, 0.78, 0.45).multiplyScalar(night * LIGHT_BUDGET.street.head * presentation.streetBrightness);
     lights.pools.color.setRGB(1, 0.62, 0.3).multiplyScalar(night * LIGHT_BUDGET.street.pool);
-    lights.pools.visible = night > 0.03;
-    lights.strips.color.setRGB(1, 0.7, 0.4).multiplyScalar(night * LIGHT_BUDGET.street.strip);
+    lights.pools.visible = night > 0.03 && presentation.showStreetPools;
+    lights.strips.color.setRGB(1, 0.7, 0.4).multiplyScalar(night * LIGHT_BUDGET.street.strip * presentation.streetBrightness);
     // 霓虹/边缘光：实例色决定色相（青/洋红/暖白），这里只管亮度；白天熄灭。
-    lights.neon.color.setRGB(1, 1, 1).multiplyScalar(night * LIGHT_BUDGET.neon.bridge);
+    lights.neon.color.setRGB(1, 1, 1).multiplyScalar(night * LIGHT_BUDGET.neon.bridge * presentation.streetBrightness);
     // 白天整体关掉：近黑的实例色在日光下读作一块块深色方块（桥塔上的霓虹点实测）。
     lights.neon.visible = night > 0.04;
   }

@@ -62,8 +62,15 @@ function validate(layout, input) {
     assert(visited.has(site.access.nodeId), `${site.id}: declared plot gate must survive display pruning on the primary network`);
   }
   const groundNodes = new Set(layout.roadEdges.filter((edge) => !edge.bridge).flatMap((edge) => [edge.from, edge.to]));
+  const airportCauseway = layout.airport?.causeway;
+  const airportPlatformNode = airportCauseway ? `${airportCauseway.to.x}:${airportCauseway.to.z}` : null;
+  const airportCausewayEdgeId = airportCauseway ? `${airportCauseway.fromNode}/${airportPlatformNode}` : null;
   for (const edge of layout.roadEdges) if (edge.bridge) for (const id of [edge.from, edge.to]) {
-    assert(groundNodes.has(id) || layout.retentionReport.missingBridgeLandings.includes(id), `${edge.id}: display pruning lost a planned ground landing at ${id}`);
+    const declaredAirportPlatformLanding = edge.id === airportCausewayEdgeId
+      && edge.from === airportCauseway.fromNode
+      && edge.to === airportPlatformNode
+      && id === airportPlatformNode;
+    assert(groundNodes.has(id) || declaredAirportPlatformLanding || layout.retentionReport.missingBridgeLandings.includes(id), `${edge.id}: display pruning lost a planned ground landing at ${id}`);
   }
   for (const [, parcel] of all) {
     assert(Number.isFinite(layout.terrain.height(parcel.x, parcel.z)));
@@ -294,5 +301,22 @@ for (const seed of [7, 42, 2026, 31337, 99991, 123456789, 4294967295]) {
   const ratio = big.islandRadius / small.islandRadius;
   assert(ratio > 1.2, "a larger tier grows the island");
   small.coast.forEach((p, i) => { const q = big.coast[i]; assert(Math.hypot(q.x - p.x * ratio, q.z - p.z * ratio) < 0.5, "tier change scales the coast without reshaping it"); });
+}
+// v3 progressive load: plan the island for the full window so later pages fill lots
+// instead of retiering and reshuffling the first page.
+{
+  const withStats = (count, total) => {
+    const input = model(count);
+    input.stats = { totalSessions: total, tokensTotal: 0, renderedSessions: count, aggregatedSessions: 0, activeCount: 0, truncated: count < total };
+    return input;
+  };
+  const firstPage = layoutCity(withStats(500, 4000), null, 42);
+  const laterPages = layoutCity(withStats(2000, 4000), firstPage, 42);
+  assert.equal(firstPage.scaleTier, laterPages.scaleTier, "paging must not change the planned island tier");
+  const was = addresses(firstPage);
+  const now = addresses(laterPages);
+  let kept = 0;
+  for (const id of Object.keys(was)) if (now[id] && now[id][0] === was[id][0]) kept += 1;
+  assert(kept >= 480, `later pages keep first-page parcels (${kept}/500)`);
 }
 console.log("City layout: full placement, unique lots, road clearance/connectivity, traffic, incremental stability, civic growth, per-user seeds and deterministic Vice City context buildings passed.");

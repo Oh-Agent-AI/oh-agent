@@ -7,7 +7,8 @@ extract" 三段（五段式流水线 locate → shape → extract → derive →
 与 Rust `src/codex_session.rs` 逐字节对齐——两条实现产出同一份字典，字节序
 （键序）一致，`tests/test_cli_matrix.py::both()` 的差分靠的就是这份一致。
 
-Codex 的 rollout 落盘在 `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-*.jsonl`，
+Codex 的 rollout 落盘在 `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-*.jsonl`
+或 Zstandard 压缩的 `rollout-*.jsonl.zst`，
 明文 append-only JSONL，每行一个 `{type, timestamp, payload}` 包络。会话被
 归档时会移到 `~/.codex/archived_sessions/`——两个根都在
 `codex_session_roots_report` 里报告，只认识 live 就是 cc-trace 研究 §B 的漏读
@@ -147,13 +148,26 @@ def parse_codex_session_log(text):
 
 
 def read_codex_session_log(path):
-    """读文件（非 UTF-8 字节替换为 U+FFFD，与 Python `errors="replace"`、Rust
-    `String::from_utf8_lossy` 对齐），再交给纯解析。文件缺失/不可读时降级为
-    `file-missing`。"""
+    """读 JSONL 或 `.jsonl.zst` 文件，再交给纯解析。
+
+    Zstandard 读取复用 DSH 的多帧解码器。Python 环境未安装可选的
+    `zstandard` 时明确降级为 `unsupported-compression`，绝不把压缩字节误报为
+    `non-json`。文件缺失/不可读时降级为 `file-missing`。
+    """
     try:
-        text = Path(path).read_text(encoding="utf-8", errors="replace")
+        path = Path(path)
+        data = path.read_bytes()
     except OSError:
         return _degraded("file-missing")
+    if str(path).endswith(".jsonl.zst"):
+        from .dsh import _zstd, decode_zstd_multi_frame
+
+        if _zstd() is None:
+            return _degraded("unsupported-compression")
+        data = decode_zstd_multi_frame(data)
+        if data is None:
+            return _degraded("zstd-decode-error")
+    text = data.decode("utf-8", errors="replace")
     return parse_codex_session_log(text)
 
 
@@ -201,7 +215,10 @@ def codex_session_roots_report(home=None):
         file_count = 0
         total_bytes = 0
         if exists:
-            files = sorted(root.rglob("*.jsonl"), key=str)
+            files = sorted(
+                (p for p in root.rglob("*") if p.is_file() and _is_session_log_file(p.name)),
+                key=str,
+            )
             file_count = len(files)
             total_bytes = sum(_file_bytes(f) for f in files)
         roots.append({
@@ -215,7 +232,7 @@ def codex_session_roots_report(home=None):
 
 
 def codex_rollout_files(home=None):
-    """`codex-cost` 的输入枚举：两个会话根下所有 `rollout-*.jsonl`（live + archived）。
+    """枚举两个会话根下所有未压缩及 Zstandard 压缩 rollout（live + archived）。
 
     与 `codex_session_roots_report` 同一套根集合，但那是存在性报告（统计数量/
     字节），这里给出**实际要折叠的文件**。**全局按路径字符串排序**（不是按根
@@ -231,8 +248,16 @@ def codex_rollout_files(home=None):
     for _kind, rel in CODEX_SESSION_ROOTS:
         root = home / ".codex" / rel
         if root.is_dir():
-            files.extend(root.rglob("rollout-*.jsonl"))
+            files.extend(p for p in root.rglob("*") if p.is_file() and _is_rollout_file(p.name))
     return sorted((p for p in files if p.is_file()), key=str)
+
+
+def _is_rollout_file(name):
+    return name.startswith("rollout-") and (name.endswith(".jsonl") or name.endswith(".jsonl.zst"))
+
+
+def _is_session_log_file(name):
+    return name.endswith(".jsonl") or name.endswith(".jsonl.zst")
 
 
 def parse_session_index(text):

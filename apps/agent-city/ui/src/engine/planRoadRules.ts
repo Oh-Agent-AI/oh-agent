@@ -12,6 +12,7 @@
  * 近似声明（如实）：楼的「接路」按最近路段的较近端点判定，不是地块 frontage 的精确证明——
  * 足以拦住「删掉这条路让楼断网/离路太远」，但不保证与规划器的 frontage 判定逐点一致。
  */
+import { atLeast, roadWidthFor, kindOfWidth, isStandardRoadWidth, REPAIR_VIADUCT_EXTRA } from "./roadStandard";
 import type { CityModel } from "../cityModel";
 import type { CityLayout, RoadEdge, Vec2 } from "./cityLayout";
 import { bridgeChain, buildingRect, deckUnderLandmark, edgeLocked, edgesNear, highwayHit, nearestOnPolyline, rectClearOfEdges, VIADUCT_DECK_WIDTH, VIADUCT_JOIN_RADIUS, VIADUCT_RAMP, type BuildingRect } from "./planPatch";
@@ -448,6 +449,7 @@ function minGap(angles: readonly number[]): number {
  * 入水、穿过楼/配套/花园、与现有道路交叉（要在交叉点连接）、新引入的锐角路口。警告：新断头。
  */
 export function validateRoadAdd(layout: CityLayout, model: CityModel, from: Vec2, to: Vec2, width: number, purpose?: "waterfront", ignoreSites: readonly string[] = [], via?: Vec2): RoadVerdict {
+  if (!isStandardRoadWidth(width)) return { blockers: ["non-standard-width"], warnings: [] };
   if (via) return validateCurveAdd(layout, model, from, via, to, width, purpose);
   const blockers: string[] = []; const warnings: string[] = [];
   const a = quantize(from); const b = quantize(to);
@@ -467,7 +469,7 @@ export function validateRoadAdd(layout: CityLayout, model: CityModel, from: Vec2
   if (ea.kind === "free" && eb.kind === "free" && junctions === 0) warnings.push("isolated-road");
   if (ea.kind === "free" || eb.kind === "free") warnings.push("creates-dead-end");
 
-  const next: RoadEdge = { id: "new", from: "a", to: "b", width, kind: width >= 8 ? "arterial" : "local", points: [a, b], structure: "ground-road" };
+  const next: RoadEdge = { id: "new", from: "a", to: "b", width, kind: kindOfWidth(width), points: [a, b], structure: "ground-road" };
   // 地面桥（路线图 P1-5）：一笔恰好跨一段水、两端在陆地上、桥长 ≤ MAX_GROUND_BRIDGE → 水面段架成桥（重放时拆成 引道 + 桥面 + 引道，
   // 同一个 wetSpan 判定）；端点在水里、连跨两段水 → 仍是 road-in-water；水面太宽 → bridge-too-long（请用高架）。
   const span = wetSpan(layout, a, b);
@@ -532,7 +534,7 @@ function validateCurveAdd(layout: CityLayout, model: CityModel, from: Vec2, via:
   if (ea.kind === "free" && eb.kind === "free" && junctions === 0) warnings.push("isolated-road");
   if (ea.kind === "free" || eb.kind === "free") warnings.push("creates-dead-end");
   if (!blockers.includes("curve-over-water")) gradeCheck(layout, [pts], blockers, warnings);
-  const next: RoadEdge = { id: "new", from: "a", to: "b", width, kind: width >= 8 ? "arterial" : "local", points: pts, structure: "ground-road" };
+  const next: RoadEdge = { id: "new", from: "a", to: "b", width, kind: kindOfWidth(width), points: pts, structure: "ground-road" };
   applyImpact(roadImpact(layout, model, [next]), blockers, warnings);
   if (junctions) warnings.push(`auto-junction:${junctions}`);
   if (purpose === "waterfront" && layout.coast?.length && Math.abs(polygonDistance(pts[Math.floor(pts.length / 2)], layout.coast)) > FAR_FROM_COAST) warnings.push("far-from-coast");
@@ -587,6 +589,7 @@ export function roadRun(layout: CityLayout, edgeId: string): string[] {
  * 滨海大道离海远提示；把滨海路/主干道改成普通路提示（景观带随之撤掉 / 骨架变窄）——提示不拦。
  */
 export function validateRestyle(layout: CityLayout, model: CityModel, edgeIds: readonly string[], width: number, purpose?: "waterfront"): RoadVerdict {
+  if (!isStandardRoadWidth(width)) return { blockers: ["non-standard-width"], warnings: [] };
   const blockers: string[] = []; const warnings: string[] = [];
   const byId = new Map(layout.roadEdges.map((edge) => [edge.id, edge]));
   const edges = edgeIds.map((id) => byId.get(id)).filter((edge): edge is RoadEdge => !!edge);
@@ -597,7 +600,7 @@ export function validateRestyle(layout: CityLayout, model: CityModel, edgeIds: r
   const wider = changing.filter((edge) => width > edge.width).map((edge) => ({ ...edge, width }));
   if (wider.length) applyImpact(roadImpact(layout, model, wider), blockers, warnings);
   if (changing.some((edge) => edge.purpose === "waterfront") && purpose !== "waterfront") warnings.push("drops-waterfront");
-  if (changing.some((edge) => edge.width >= 8) && width < 8) warnings.push("narrows-arterial");
+  if (changing.some((edge) => atLeast(edge, "collector")) && width < roadWidthFor("collector")) warnings.push("narrows-arterial");
   if (purpose === "waterfront" && layout.coast?.length) {
     const mids = changing.map((edge) => edge.points[Math.floor(edge.points.length / 2)]);
     if (mids.every((p) => Math.abs(polygonDistance(p, layout.coast!)) > FAR_FROM_COAST)) warnings.push("far-from-coast");
@@ -615,7 +618,7 @@ const MIN_VIADUCT = 30;
 /** 高架折线 → 「路段」形状（宽 = 桥面宽 + 1 的净空），给压到建筑的判定与推土机用。不进路网。 */
 export function viaductEdges(points: readonly Vec2[]): RoadEdge[] {
   const out: RoadEdge[] = [];
-  for (let i = 1; i < points.length; i += 1) out.push({ id: `viaduct:${i}`, from: "va", to: "vb", width: VIADUCT_DECK_WIDTH + 1, kind: "arterial", points: [points[i - 1], points[i]], structure: "ground-road" });
+  for (let i = 1; i < points.length; i += 1) out.push({ id: `viaduct:${i}`, from: "va", to: "vb", width: VIADUCT_DECK_WIDTH + REPAIR_VIADUCT_EXTRA, kind: "arterial", points: [points[i - 1], points[i]], structure: "ground-road" });
   return out;
 }
 

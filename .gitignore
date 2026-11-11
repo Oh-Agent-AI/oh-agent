@@ -59,3 +59,10 @@ lib/
 docs/ATTRIBUTABLE_WASTE_副本.md
 /.workbuddy/
 .wrangler/
+
+# Linux Tauri click-through output (deb extract, seeded sqlite home, Playwright webm)
+/artifacts/city-v3-linux-clickthrough/native/pkg/
+/artifacts/city-v3-linux-clickthrough/native/home/
+/artifacts/city-v3-linux-clickthrough/native-fix/pkg/
+/artifacts/city-v3-linux-clickthrough/native-release/pkg/
+/artifacts/city-v3-linux-clickthrough/video/

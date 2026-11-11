@@ -56,7 +56,7 @@ export type CityProjectionV3 = CitySnapshotV3 & {
   protocol: "city:v3"; source: "local"; generated_at: string;
   harnesses?: HarnessPublicIdentityV1[];
   page?: { sessions: CitySessionV3[]; next_cursor: string | null; coverage: { matched: number; returned: number; offset: number; has_more: boolean; render_budget: number; selection: string; order: string } };
-  modules?: Record<"overview" | "activity" | "findings" | "skills" | "workflow", CityModuleV3>;
+  modules?: Partial<Record<"overview" | "activity" | "findings" | "skills" | "workflow", CityModuleV3>>;
   detail?: CitySessionV3 & { cost: { cost_minor: CityUiProjectionV2["sessions"][number]["cost_minor"]; status: "estimated" | "subscription" | "unpriced" | "unavailable"; reason: string; has_unresolved: boolean; complete: boolean; reference_prices?: Array<{ pricing_version: string; captured_at_ms: number }>; breakdown: Array<{ amount_minor: number; currency: string; basis: string }> }; excerpt_scope?: "session_lifetime_not_window" };
   module?: "findings" | "skills" | "workflow";
   result?: CityModuleV3 | Record<string, unknown>;

@@ -1,4 +1,5 @@
 /** 骨架之后的地块入口联合指派。plot-gate 不冒充模型门洞，后者另有物理声明契约。 */
+import { atLeast } from "../roadStandard";
 import { DetMath as Math } from "../detMath";
 import type { PublicSite, Vec2 } from "../cityLayout";
 import { siteCandidateHardReject, type SiteCandidate, type SiteCandidateWorld } from "./access";
@@ -85,7 +86,7 @@ export function assignConnectedSite(world: SiteCandidateWorld, connector: Connec
   for (let cursor = 0; cursor < queue.length; cursor += 1) for (const node of adjacent.get(queue[cursor]) ?? []) if (!primaryNodes.has(node)) {
     primaryNodes.add(node); queue.push(node);
   }
-  const frontage = [...connector.network.edges.values()].filter((edge) => !edge.bridge && edge.width >= 8 && primaryNodes.has(edge.from)).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  const frontage = [...connector.network.edges.values()].filter((edge) => !edge.bridge && atLeast(edge, "collector") && primaryNodes.has(edge.from)).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   const routeRetries: SiteCandidate[] = [];
   const routeFailureEvidence = new Map<string, string>();
   let corridorRelineEvaluations = 0;
@@ -96,7 +97,7 @@ export function assignConnectedSite(world: SiteCandidateWorld, connector: Connec
       const worldPolygons = worldParts(modelFootprint, candidate, candidate.yaw);
       const footprint: LocalFootprint = { parts: worldPolygons.map((vertices) => ({ shape: "convex", vertices })) };
       const blockers = [...connector.network.edges.values()].filter((edge) => {
-        const required = Math.max(edge.width / 2 + 3, edge.width >= 8 ? 8 : 0);
+        const required = Math.max(edge.width / 2 + 3, atLeast(edge, "collector") ? 8 : 0);
         return footprintRunsDistance(modelFootprint, candidate, candidate.yaw, [edge.points]) < required;
       });
       if (blockers.length) {
@@ -105,7 +106,7 @@ export function assignConnectedSite(world: SiteCandidateWorld, connector: Connec
         const oldFindings = new Set(groundJunctionFindings([...connector.network.edges.values()]).map((finding) => finding.id));
         const relineEdges: NonNullable<import("./network").NetworkPatch["relineEdges"]> = [];
         for (const edge of blockers) {
-          const required = Math.max(edge.width / 2 + 3, edge.width >= 8 ? 8 : 0);
+          const required = Math.max(edge.width / 2 + 3, atLeast(edge, "collector") ? 8 : 0);
           if (edge.bridge || edge.structure !== "ground-road"
             || footprintRunsDistance(modelFootprint, candidate, candidate.yaw, [[edge.points[0]]]) < required
             || footprintRunsDistance(modelFootprint, candidate, candidate.yaw, [[edge.points[edge.points.length - 1]]]) < required)
@@ -161,7 +162,7 @@ export function assignConnectedSite(world: SiteCandidateWorld, connector: Connec
     const poseFailure = siteCandidateHardReject({ ...world, allowGroundCorridorRelocation: true }, spec, finalPose);
     if (poseFailure) return `final-pose-${poseFailure}`;
     if (modelFootprint.exact && [...candidateBaseNetwork.edges.values()].some(edge =>
-      footprintRunsDistance(modelFootprint, finalPose, yaw, [edge.points]) < Math.max(edge.width / 2 + 3, edge.width >= 8 ? 8 : 0)))
+      footprintRunsDistance(modelFootprint, finalPose, yaw, [edge.points]) < Math.max(edge.width / 2 + 3, atLeast(edge, "collector") ? 8 : 0)))
       return "final-pose-road-clearance";
     const gate = keyOf(declaredGate);
     // Use the actual quantized gate, not the ideal r+8 radius: rounding can

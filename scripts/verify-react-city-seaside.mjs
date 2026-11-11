@@ -25,7 +25,11 @@ const normalizeAngle = (a) => { let r = a % (Math.PI * 2); if (r < 0) r += Math.
 const angleDelta = (a, b) => { const d = Math.abs(normalizeAngle(a) - normalizeAngle(b)); return Math.min(d, Math.PI * 2 - d); };
 // 档位：每档 400 栋，1 = 初始规划（默认），10 = 满档 4000 栋：CITY_SEASIDE_TIER=10 跑满档。
 const TIER = Number(process.env.CITY_SEASIDE_TIER ?? 1);
-const seeds = Array.from({ length: 20 }, (_, i) => (i * 2654435761 + 97) >>> 0 || 1);
+const allSeeds = Array.from({ length: 20 }, (_, i) => (i * 2654435761 + 97) >>> 0 || 1);
+// Release CI uses deterministic spread samples at both normal and full capacity.
+// CITY_GUARDS_EXHAUSTIVE=1 restores the 20-seed audit for scheduled/manual runs.
+const seeds = process.env.CITY_GUARDS_EXHAUSTIVE === "1" ? allSeeds
+  : TIER === 10 ? [allSeeds[0], allSeeds[10]] : [allSeeds[0], allSeeds[5], allSeeds[10], allSeeds[15]];
 
 assert.equal(seasideHotelCount(4), 8, "a short valid coast still gets a readable hotel row");
 assert.equal(seasideHotelCount(22), 13, "the default coast uses enough Deco frontage to read as a district");
@@ -40,7 +44,7 @@ assert.equal(seasideHotelCount(80), 18, "large coast frontage remains instance-b
     assert.ok(plan.blocks.length > 0, `seed ${seed}: 无配置仍生成街区`);
     biomes.add(plan.biome);
   }
-  assert.ok(biomes.size >= 2, `无配置时生态带应保持随机（20 种子只见 ${biomes.size} 种）`);
+  assert.ok(biomes.size >= 2, `无配置时生态带应保持随机（${seeds.length} 种子只见 ${biomes.size} 种）`);
 }
 
 // 2) 确定性：同 seed 同 config 两次构建，seaside 逐位相等。
@@ -131,13 +135,15 @@ assert.equal(seasideHotelCount(80), 18, "large coast frontage remains instance-b
       assert.equal(boulevardSegments({ ...band, degraded: true }).length, 0, `seed ${seed}: 降级时大道为零段`);
     }
   }
-  assert.ok(validBands >= 18, `20 种子至少 18 个非降级海滨带（实际 ${validBands}）`);
+  assert.ok(validBands >= Math.ceil(seeds.length * 0.9), `${seeds.length} 种子至少 90% 非降级海滨带（实际 ${validBands}）`);
 }
 
 // 4) 降级路径：不可能的净空阈值 → degraded + reason，规划不炸、街区照常。
 {
   const impossible = { ...MIAMI_COASTAL, maxCoastalHeight: -1 };
-  const plan = createCityPlan(seeds[1], TIER, impossible);
+  // Degradation semantics do not depend on city capacity; keep this functional
+  // case at tier 1 so the tier-10 release guard measures actual full-capacity output.
+  const plan = createCityPlan(allSeeds[1], 1, impossible);
   assert.ok(plan.seaside.degraded, "不可能阈值必须降级");
   assert.ok(typeof plan.seaside.reason === "string" && plan.seaside.reason.length > 0, "降级必须带原因");
   assert.ok(plan.blocks.length > 0, "降级不影响街区生成");
@@ -158,13 +164,14 @@ assert.equal(seasideHotelCount(80), 18, "large coast frontage remains instance-b
 // 6) 参数级缓存身份（审查 #5）：同 profile/version 改参数 → 不同海滨带。
 {
   const modified = { ...MIAMI_COASTAL, maxCoastalHeight: -1 };
-  const normal = createCityPlan(seeds[2], TIER, MIAMI_COASTAL).seaside;
-  const degraded = createCityPlan(seeds[2], TIER, modified).seaside;
+  const cacheSeed = allSeeds[2];
+  const normal = createCityPlan(cacheSeed, 1, MIAMI_COASTAL).seaside;
+  const degraded = createCityPlan(cacheSeed, 1, modified).seaside;
   assert.equal(normal.degraded, false, "标准配置应产出有效海滨带");
   assert.equal(degraded.degraded, true, "修改参数后必须独立降级（不能复用旧规划）");
   const emptyModel = { buildings: [], districts: [] };
-  const cachedNormal = layoutCity(emptyModel, null, seeds[2], MIAMI_COASTAL);
-  const cachedModified = layoutCity(emptyModel, null, seeds[2], modified);
+  const cachedNormal = layoutCity(emptyModel, null, cacheSeed, MIAMI_COASTAL);
+  const cachedModified = layoutCity(emptyModel, null, cacheSeed, modified);
   assert.equal(cachedNormal.seaside.degraded, false, "标准布局缓存应保存有效海滨带");
   assert.equal(cachedModified.seaside.degraded, true, "layoutCity 缓存键必须纳入全部配置参数");
   assert.notEqual(cachedNormal.coastalConfigKey, cachedModified.coastalConfigKey, "静态场景可用配置指纹判断失效");

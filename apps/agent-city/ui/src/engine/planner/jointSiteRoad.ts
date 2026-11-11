@@ -1,5 +1,6 @@
 /** Bounded joint ground-owner/corridor proposals. Call mutation only on a solve
  * draft; the dispatcher publishes network/site/references together. */
+import { EXPRESSWAY_DECK_WIDTH } from "../roadStandard";
 import { DetMath as Math } from "../detMath";
 import type { RoadEdge, Vec2 } from "../cityLayout";
 import type { LocalFootprint } from "../models/physical";
@@ -160,7 +161,7 @@ export function prepareJointSiteRoadRelocation(ctx: RepairContext, ownerId: stri
   if (roads.some(road => ctx.planningWorld?.reservations.some(reservation => reservation.ownerId === `road:${road.id}`
     && reservation.state !== "released" && (reservation.immutable || reservation.state !== "tentative")))) return reject("joint-road-reservation-protected");
   const world = { network: ctx.network, geo: ctx.geo, inRiver: ctx.inRiver, reservations: () => [...ctx.publicSites, ...ctx.landmarks].filter(site => site.id !== ownerId) };
-  const decks = [...ctx.ringRuns.map(points => ({ points, width: 10.5 })), ...[...ctx.network.edges.values()].filter(edge => edge.bridge)];
+  const decks = [...ctx.ringRuns.map(points => ({ points, width: EXPRESSWAY_DECK_WIDTH })), ...[...ctx.network.edges.values()].filter(edge => edge.bridge)];
   const endpointsInside = new Set(roads.flatMap(road => [road.from, road.to].filter((nodeId, index) =>
     footprintPolylineDistance(envelope.conservativeProjection, [road.points[index === 0 ? 0 : road.points.length - 1]]) < road.width / 2 + 3)));
   const relocationOptions: Array<{ nodes: Array<{ from: string; to: string; targetAt: Vec2 }>; edges: NonNullable<NetworkPatch["relineEdges"]> }> = [];

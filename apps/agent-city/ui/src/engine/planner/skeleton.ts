@@ -4,6 +4,7 @@
  * chooseCore 从 buildPlan 逐字迁出：25×25 网格打分（离岸 0.32R、离山脊远、靠河、种子抖动）。
  * random 为无状态键控哈希，迁移不改调用序；行为保持由基线哈希证明。
  */
+import { roadWidthFor, EXPRESSWAY_DECK_WIDTH } from "../roadStandard";
 import { DetMath as Math } from "../detMath";
 import { fbm } from "../cityNoise";
 import type { Landmark } from "../cityPlan";
@@ -31,7 +32,7 @@ export function screenTrunkRoute(world: ConnectorWorld, input: Vec2[], spans: Ci
     for (let k = 1; k < route.length; k += 1) {
       const a = route[k - 1], b = route[k], id = [idOf(a), idOf(b)].sort().join("/");
       const edge = network.edges.get(id);
-      if (!edge || edge.width !== 12 || edge.kind !== "arterial" || !!edge.bridge !== isDeck(a, b)) return { index: k,
+      if (!edge || edge.width !== roadWidthFor("arterial") || edge.kind !== "arterial" || !!edge.bridge !== isDeck(a, b)) return { index: k,
         diagnostic: { trunk, phase: "route", reason: "projection-loss", cause: "geometry-or-class-mismatch" } };
       if (edge.bridge) {
         const groundAt = (nodeId: string) => [...network.edges.values()].some((road) => !road.bridge && (road.from === nodeId || road.to === nodeId)
@@ -286,7 +287,7 @@ export function buildSkeleton(opts: {
   // Highway fragments stop at the coast today, where the deck still hangs above
   // the ground. Trim each end to buildable land, then connect it to a nearby arterial.
   // 批次 5-2：出口接驳弦的净空/可走校验改走连接器共享的 corridor validator（connect.ts），
-  // 不再当 69 特例——公式同源（re-stick 净空 5.25 + hypot(88,88)/2 + 1，向上取整 = 69）。
+  // 不再当 69 特例——公式同源（re-stick 净空 EXPRESSWAY_DECK_WIDTH / 2 + hypot(88,88)/2 + 1，向上取整 = 69）。
   // 落点以NetworkPatch拓扑细分，继承宿主等级/宽度/结构而不按默认arterial重建。
   const EXIT_CONE = (60 * Math.PI) / 180; // 出口接驳弦与环线切线的最大夹角
   const EXIT_STEP = 8;                    // 接驳曲线采样间距（世界单位）
@@ -307,9 +308,9 @@ export function buildSkeleton(opts: {
     const exits: Vec2[] = [];
     const exitCurves: Vec2[][] = [[], []];
     const unit = (v: Vec2): Vec2 => { const l = Math.hypot(v.x, v.z) || 1; return { x: v.x / l, z: v.z / l }; };
-    // 接驳弦/曲线不得压公共用地与地标（与 verify-react-city-geography 同口径：桥面半宽 5.25 + 半径 + 1）：
+    // 接驳弦/曲线不得压公共用地与地标（与 verify-react-city-geography 同口径：桥面半宽 EXPRESSWAY_DECK_WIDTH / 2 + 半径 + 1）：
     // 曲线比直弦外拱，曾把高架送到港口上（seed 3576928465 间距 29.5）。
-    const sitesClear = (a: Vec2, b: Vec2) => [...publicSites, ...landmarks].every((site) => !site.radius || chordClearsDisc(a, b, site, 5.25 + site.radius + 1));
+    const sitesClear = (a: Vec2, b: Vec2) => [...publicSites, ...landmarks].every((site) => !site.radius || chordClearsDisc(a, b, site, EXPRESSWAY_DECK_WIDTH / 2 + site.radius + 1));
     const pickExit = (fromStart: boolean): { p: Vec2; curve: Vec2[] } | null => {
       for (let trim = 0; trim <= 8 && points.length > 6; trim += 1) {
         const i = fromStart ? 0 : points.length - 1; const j = fromStart ? 1 : points.length - 2;

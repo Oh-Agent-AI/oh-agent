@@ -8,6 +8,7 @@
  *     经 connectToNetwork 的写入同样落在这个 network 上。
  * 无随机、无返回值。
  */
+import { atLeast } from "../roadStandard";
 import { DetMath as Math } from "../detMath";
 import type { PublicSite, RoadEdge, Vec2 } from "../cityLayout";
 import type { Network } from "./network";
@@ -43,7 +44,7 @@ export function finishDeadEnds(network: Network, { publicSites, landmarks, coast
         cursor = next.from === cursor ? next.to : next.from;
         if (d2.get(cursor) !== 2) break;
       }
-      const wide = chain.some((e) => e.width >= 12);
+      const wide = chain.some((e) => atLeast(e, "arterial"));
       if (connectToNetwork(end, wide ? 120 : 60, false, (edge) => chain.includes(edge), 45)) continue;
       if (chain.some((e) => e.bridge || [...edges.values()].some((b) => b.bridge && [b.from, b.to].some((id) => id === e.from || id === e.to))) || length >= (wide ? 40 : 30)) continue;
       for (const e of chain) edges.delete(e.id);

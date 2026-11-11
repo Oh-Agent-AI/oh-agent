@@ -158,3 +158,234 @@ fn generic_plugin_face_tracks_activation_history_revision_and_corruption() {
     drop(db);
     std::fs::remove_dir_all(home).unwrap();
 }
+
+#[test]
+fn generic_session_detail_uses_plugin_scoped_handle_and_opt_in_lifetime_excerpts() {
+    let home = std::env::temp_dir().join(format!("av-session-detail-{}-{}", std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let now = agent_vitals_query::clock::now_ms();
+    let db = AuthorityDb::open(&default_authority_path(&home), now).unwrap();
+    db.begin_run("fixture", "cli", now).unwrap();
+    db.conn().execute("INSERT INTO sessions(session_key,harness,native_session_id,machine_namespace,last_observed_at_ms,title,title_source)
+        VALUES('private-session-key','codex','private-native-session','private-machine',?1,'Safe title','codex_thread_name')", [now]).unwrap();
+    db.conn().execute("INSERT INTO usage_facts(fact_id,harness,machine_namespace,native_session_id,session_key,source_event_id,
+        observation_kind,event_ts_ms,uncached_input_tokens,output_tokens,model_id,ingested_run_id,created_at_ms,updated_at_ms)
+        VALUES('private-fact','codex','private-machine','private-native-session','private-session-key','private-event','delta',?1,10,5,'test-model','fixture',?2,?2)",
+        rusqlite::params![now - 1_000, now]).unwrap();
+    db.conn().execute("INSERT INTO session_excerpts(session_key,ordinal,role,excerpt,provenance,ingested_run_id)
+        VALUES('private-session-key',1,'user_first','Review this local project','scrubbed','fixture')", []).unwrap();
+    let revision = db.revision().unwrap();
+    drop(db);
+
+    let page = app_harnesses::sessions_page(&home, "codex", 30, now, revision, "city", 0, 10).unwrap();
+    let handle = page["sessions"][0]["id"].as_str().unwrap();
+    let without_excerpts = app_harnesses::session_detail(&home, "city", handle, 30, now, revision, false).unwrap();
+    assert_eq!(without_excerpts["protocol"], "harness-session-detail:v1");
+    assert_eq!(without_excerpts["data_revision"], revision);
+    assert_eq!(without_excerpts["session"]["id"], handle);
+    assert_eq!(without_excerpts["session"]["tokens"]["total"], 15);
+    assert!(without_excerpts["session"].get("excerpts").is_none());
+    assert!(!without_excerpts.to_string().contains("private-session-key"));
+    assert!(!without_excerpts.to_string().contains("private-native-session"));
+    assert!(!without_excerpts.to_string().contains("private-machine"));
+
+    let with_excerpts = app_harnesses::session_detail(&home, "city", handle, 30, now, revision, true).unwrap();
+    assert_eq!(with_excerpts["session"]["excerpt_scope"], "session_lifetime");
+    assert_eq!(with_excerpts["session"]["excerpts"].as_array().unwrap().len(), 1);
+    assert_eq!(with_excerpts["session"]["excerpts"][0]["role"], "user_first");
+    assert_eq!(with_excerpts["session"]["excerpts"][0]["provenance"], "scrubbed");
+    assert!(!with_excerpts.to_string().contains("private-session-key"));
+    assert_eq!(app_harnesses::session_detail(&home, "other-plugin", handle, 30, now, revision, false), Err("session_unavailable"));
+    assert_eq!(app_harnesses::session_detail(&home, "city", handle, 30, now, revision + 1, false), Err("revision_changed"));
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
+fn generic_activity_summary_returns_bounded_timezone_calendar_buckets() {
+    let home = std::env::temp_dir().join(format!("av-activity-summary-{}-{}", std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let now = agent_vitals_query::clock::now_ms();
+    let db = AuthorityDb::open(&default_authority_path(&home), now).unwrap();
+    db.begin_run("fixture", "cli", now).unwrap();
+    for (key, event_ts) in [("synthetic-a", now - 1_000), ("synthetic-b", now - 86_401_000)] {
+        db.conn().execute("INSERT INTO sessions(session_key,harness,native_session_id,machine_namespace,last_observed_at_ms)
+            VALUES(?1,'codex',?1,'synthetic-machine',?2)", rusqlite::params![key, now]).unwrap();
+        db.conn().execute("INSERT INTO usage_facts(fact_id,harness,machine_namespace,native_session_id,session_key,
+            source_event_id,observation_kind,event_ts_ms,uncached_input_tokens,cache_read_tokens,cache_write_tokens,
+            output_tokens,ingested_run_id,created_at_ms,updated_at_ms)
+            VALUES(?1,'codex','synthetic-machine',?1,?1,?1,'delta',?2,10,2,3,5,'fixture',?3,?3)",
+            rusqlite::params![key, event_ts, now]).unwrap();
+    }
+    let revision = db.revision().unwrap();
+    drop(db);
+
+    let activity = app_harnesses::activity_summary(&home, 7, "UTC", now, revision).unwrap();
+    assert_eq!(activity["protocol"], "activity-summary:v1");
+    assert_eq!(activity["data_revision"], revision);
+    assert_eq!(activity["window"]["days"], 7);
+    assert_eq!(activity["timezone"], "UTC");
+    let days = activity["days"].as_array().unwrap();
+    assert_eq!(days.len(), 2);
+    assert!(days.iter().all(|day| day["session_count"] == 1 && day["event_count"] == 1 && day["tokens"] == 20));
+    assert_eq!(days[0].as_object().unwrap().keys().cloned().collect::<Vec<_>>(),
+        vec!["date", "session_count", "event_count", "tokens"]);
+    assert!(!activity.to_string().contains("synthetic-a"));
+    assert!(!activity.to_string().contains("codex"));
+    assert_eq!(app_harnesses::activity_summary(&home, 7, "UTC", now, revision + 1), Err("revision_changed"));
+    assert_eq!(app_harnesses::activity_summary(&home, 30, "not/a-timezone", now, revision), Err("invalid_timezone"));
+    assert_eq!(app_harnesses::activity_summary(&home, 14, "UTC", now, revision), Err("invalid_window"));
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
+fn generic_activity_summary_respects_dst_calendar_boundaries() {
+    let home = std::env::temp_dir().join(format!("av-activity-dst-{}-{}", std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let now = agent_vitals_query::clock::now_ms();
+    let db = AuthorityDb::open(&default_authority_path(&home), now).unwrap();
+    db.begin_run("fixture", "cli", now).unwrap();
+    for (key, event_ts) in [
+        ("before-gap", "2026-03-08T06:59:00Z"),
+        ("after-gap", "2026-03-08T07:01:00Z"),
+        ("next-day", "2026-03-09T04:00:00Z"),
+    ] {
+        let event_ts = event_ts.parse::<jiff::Timestamp>().unwrap().as_millisecond();
+        db.conn().execute("INSERT INTO sessions(session_key,harness,native_session_id,machine_namespace,last_observed_at_ms)
+            VALUES(?1,'codex',?1,'synthetic-machine',?2)", rusqlite::params![key, now]).unwrap();
+        db.conn().execute("INSERT INTO usage_facts(fact_id,harness,machine_namespace,native_session_id,session_key,
+            source_event_id,observation_kind,event_ts_ms,uncached_input_tokens,output_tokens,ingested_run_id,created_at_ms,updated_at_ms)
+            VALUES(?1,'codex','synthetic-machine',?1,?1,?1,'delta',?2,1,1,'fixture',?3,?3)",
+            rusqlite::params![key, event_ts, now]).unwrap();
+    }
+    let revision = db.revision().unwrap();
+    drop(db);
+
+    let activity = app_harnesses::activity_summary(&home, 366, "America/New_York", now, revision).unwrap();
+    let days = activity["days"].as_array().unwrap();
+    let march_8 = days.iter().find(|day| day["date"] == "2026-03-08").unwrap();
+    let march_9 = days.iter().find(|day| day["date"] == "2026-03-09").unwrap();
+    assert_eq!(march_8["event_count"], 2);
+    assert_eq!(march_9["event_count"], 1);
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
+fn generic_model_usage_summary_preserves_unknown_legacy_and_token_buckets() {
+    let home = std::env::temp_dir().join(format!("av-model-usage-{}-{}", std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let now = agent_vitals_query::clock::now_ms();
+    let db = AuthorityDb::open(&default_authority_path(&home), now).unwrap();
+    db.begin_run("fixture", "cli", now).unwrap();
+    for key in ["synthetic-a", "synthetic-b", "synthetic-c"] {
+        db.conn().execute("INSERT INTO sessions(session_key,harness,native_session_id,machine_namespace,last_observed_at_ms)
+            VALUES(?1,'codex',?1,'synthetic-machine',?2)", rusqlite::params![key, now]).unwrap();
+    }
+    let facts = [
+        ("fact-a", "synthetic-a", Some("model-a"), "delta", 10, 2, 3, 5),
+        ("fact-b", "synthetic-b", Some("model-a"), "delta", 1, 0, 0, 4),
+        ("fact-c", "synthetic-c", None, "legacy_aggregate", 0, 0, 0, 7),
+        ("fact-d", "synthetic-c", Some("<unknown>"), "delta", 0, 0, 0, 2),
+    ];
+    for (fact, session, model, kind, uncached, cache_read, cache_write, output) in facts {
+        db.conn().execute("INSERT INTO usage_facts(fact_id,harness,machine_namespace,native_session_id,session_key,source_event_id,
+            observation_kind,event_ts_ms,uncached_input_tokens,cache_read_tokens,cache_write_tokens,output_tokens,model_id,
+            ingested_run_id,created_at_ms,updated_at_ms)
+            VALUES(?1,'codex','synthetic-machine',?2,?2,?1,?3,?4,?5,?6,?7,?8,?9,'fixture',?4,?4)",
+            rusqlite::params![fact, session, kind, now - 1_000, uncached, cache_read, cache_write, output, model]).unwrap();
+    }
+    let revision = db.revision().unwrap();
+    drop(db);
+
+    let result = app_harnesses::model_usage_summary(&home, 30, now, revision).unwrap();
+    assert_eq!(result["protocol"], "model-usage:v1");
+    assert_eq!(result["scope"], "window");
+    assert_eq!(result["pricing_independent"], true);
+    assert_eq!(result["coverage"], json!({"unknown_model_usage_events":2,"legacy_usage_events":1}));
+    assert_eq!(result["models"].as_array().unwrap().len(), 2);
+    let unknown = result["models"].as_array().unwrap().iter().find(|row| row["model_id"].is_null()).unwrap();
+    assert_eq!(unknown["usage_event_count"], 2);
+    assert_eq!(unknown["legacy_usage_event_count"], 1);
+    assert_eq!(unknown["tokens"], json!({"uncached_input":0,"cache_read":0,"cache_write":0,"input":0,"output":9,"total":9}));
+    let known = result["models"].as_array().unwrap().iter().find(|row| row["model_id"] == "model-a").unwrap();
+    assert_eq!(known["usage_event_count"], 2);
+    assert_eq!(known["tokens"], json!({"uncached_input":11,"cache_read":2,"cache_write":3,"input":16,"output":9,"total":25}));
+    for forbidden in ["synthetic-a", "synthetic-machine", "codex"] { assert!(!result.to_string().contains(forbidden)); }
+    assert_eq!(app_harnesses::model_usage_summary(&home, 30, now, revision + 1), Err("revision_changed"));
+    assert_eq!(app_harnesses::model_usage_summary(&home, 14, now, revision), Err("invalid_window"));
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
+fn generic_time_coverage_keeps_lifetime_denominator_and_categories() {
+    let home = std::env::temp_dir().join(format!("av-time-coverage-{}-{}", std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let now = agent_vitals_query::clock::now_ms();
+    let db = AuthorityDb::open(&default_authority_path(&home), now).unwrap();
+    db.begin_run("fixture", "cli", now).unwrap();
+    for key in ["unknown-time", "mixed-time", "no-usage"] {
+        db.conn().execute("INSERT INTO sessions(session_key,harness,native_session_id,machine_namespace,last_observed_at_ms)
+            VALUES(?1,'codex',?1,'synthetic-machine',?2)", rusqlite::params![key, now]).unwrap();
+    }
+    for (fact, session, event_ts) in [("fact-unknown", "unknown-time", None),
+        ("fact-mixed-timed", "mixed-time", Some(now - 1_000)), ("fact-mixed-untimed", "mixed-time", None)] {
+        db.conn().execute("INSERT INTO usage_facts(fact_id,harness,machine_namespace,native_session_id,session_key,source_event_id,
+            observation_kind,event_ts_ms,uncached_input_tokens,output_tokens,ingested_run_id,created_at_ms,updated_at_ms)
+            VALUES(?1,'codex','synthetic-machine',?2,?2,?1,'delta',?3,1,1,'fixture',?4,?4)",
+            rusqlite::params![fact, session, event_ts, now]).unwrap();
+    }
+    let revision = db.revision().unwrap();
+    drop(db);
+
+    let coverage = app_harnesses::time_coverage(&home, revision).unwrap();
+    assert_eq!(coverage, json!({"protocol":"time-coverage:v1","data_revision":revision,
+        "scope":"all_non_deleted_sessions","unknown_time_only":1,"mixed_time":1,"excluded_no_usage":1}));
+    for forbidden in ["unknown-time", "mixed-time", "no-usage", "synthetic-machine", "codex"] {
+        assert!(!coverage.to_string().contains(forbidden));
+    }
+    assert_eq!(app_harnesses::time_coverage(&home, revision + 1), Err("revision_changed"));
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
+fn generic_finding_summary_keeps_distinct_scopes_capability_and_redaction() {
+    let home = std::env::temp_dir().join(format!("av-finding-summary-{}-{}", std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let now = agent_vitals_query::clock::now_ms();
+    let db = AuthorityDb::open(&default_authority_path(&home), now).unwrap();
+    db.begin_run("fixture", "cli", now).unwrap();
+    db.conn().execute("INSERT INTO sessions(session_key,harness,native_session_id,machine_namespace,last_observed_at_ms)
+        VALUES('unsupported-session','harness:unavailable-agent','native-private','machine-private',?1)", [now]).unwrap();
+    db.conn().execute("INSERT INTO usage_facts(fact_id,harness,machine_namespace,native_session_id,session_key,
+        source_event_id,observation_kind,event_ts_ms,uncached_input_tokens,output_tokens,ingested_run_id,created_at_ms,updated_at_ms)
+        VALUES('private-fact','harness:unavailable-agent','machine-private','native-private','unsupported-session',
+        'private-event','delta',?1,1,1,'fixture',?1,?1)", [now]).unwrap();
+    for (id, harness, issue_type, fingerprint, status, severity, opened) in [
+        ("private-old-backlog", "codex", "private-category", "private-fingerprint-old", "open", "warning", now - 40 * 86_400_000),
+        ("private-new-closed", "codex", "private-category", "private-fingerprint-new", "closed", "critical", now - 1_000),
+        ("private-unsupported", "harness:unavailable-agent", "private-category", "private-fingerprint-unsupported", "open", "info", now - 1_000),
+    ] {
+        db.conn().execute("INSERT INTO issue_instances(issue_id,machine_namespace,harness,issue_type,instance_fingerprint,status,
+            severity,evaluator_id,evaluator_version,evidence_fingerprint,opened_at_ms,metadata_json)
+            VALUES(?1,'machine-private',?2,?3,?4,?5,?6,'private-evaluator','1','private-evidence',?7,'{\"private\":true}')",
+            rusqlite::params![id,harness,issue_type,fingerprint,status,severity,opened]).unwrap();
+    }
+    let revision = db.revision().unwrap();
+    drop(db);
+
+    let result = app_harnesses::finding_summary(&home, 30, now, revision).unwrap();
+    assert_eq!(result["protocol"], "finding-summary:v1");
+    assert_eq!(result["window"]["days"], 30);
+    assert_eq!(result["current_backlog"], json!([{"harness_id":"codex","severity":"warning","count":1}]));
+    assert_eq!(result["window_new"], json!([{"harness_id":"codex","severity":"critical","count":1}]));
+    let unsupported = result["capabilities"].as_array().unwrap().iter()
+        .find(|item| item["harness_id"] == "harness:unavailable-agent").unwrap();
+    assert_eq!(unsupported["available"], false);
+    assert_eq!(unsupported["reason"], "findings_not_supported");
+    for forbidden in ["private-old-backlog", "private-new-closed", "private-unsupported", "private-category",
+        "private-fingerprint", "private-evidence", "private-evaluator", "private-event", "machine-private", "native-private"] {
+        assert!(!result.to_string().contains(forbidden), "finding DTO leaked {forbidden}");
+    }
+    assert_eq!(app_harnesses::finding_summary(&home, 30, now, revision + 1), Err("revision_changed"));
+    assert_eq!(app_harnesses::finding_summary(&home, 14, now, revision), Err("invalid_window"));
+    std::fs::remove_dir_all(home).unwrap();
+}

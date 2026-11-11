@@ -1,5 +1,7 @@
 //! Immutable, offline extension objects. No activation, transport or garbage collection.
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
+#[cfg(not(windows))]
+use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -37,7 +39,14 @@ fn read(path: &Path, hash: &str) -> Result<(Vec<u8>, Value), &'static str> {
     let value = serde_json::from_slice(&bytes).map_err(|_| "object_json")?;
     Ok((bytes, value))
 }
+// Call sites pass directories only. POSIX permits fsync on a directory handle;
+// Windows does not support FlushFileBuffers-style syncing for directory handles
+// through std::fs::File, so payload files remain flushed but directory metadata
+// durability is left to the filesystem there.
+#[cfg(not(windows))]
 fn sync(path: &Path) -> Result<(), &'static str> { io(io(File::open(path))?.sync_all()) }
+#[cfg(windows)]
+fn sync(_path: &Path) -> Result<(), &'static str> { Ok(()) }
 
 pub struct ObjectStore { root: PathBuf }
 impl ObjectStore {
@@ -92,6 +101,10 @@ impl ObjectStore {
             let mut file = io(OpenOptions::new().write(true).create_new(true).open(payload))?;
             io(file.write_all(&bytes))?;
             io(file.sync_all())?;
+            // Windows refuses to rename a directory while a child file handle
+            // is still open without FILE_SHARE_DELETE. Close the flushed
+            // payload before publishing the containing directory.
+            drop(file);
             sync(&temporary)?;
             match fs::rename(&temporary, &target) {
                 Ok(()) => { sync(&objects)?; Ok(parsed) },

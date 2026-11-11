@@ -12,6 +12,7 @@
  * 匝道折线由「桥面端 → 地面端」排列；高度由渲染层按路程从桥面平滑降到地面（规划层不碰高度）。
  * 匝道走廊随后与高架一并作为街区生成的避让（cityPlan 把它们并进 generateRoadBlocks 的 highways），地块会让开。
  */
+import { atLeast, roadWidthFor } from "../roadStandard";
 import { DetMath as Math } from "../detMath";
 import type { RoadEdge, Vec2 } from "../cityLayout";
 import { segmentDistance } from "../roadGeometry";
@@ -62,7 +63,7 @@ export function planHighwayRamps(opts: {
       const a = run[i - 1], b = run[i];
       const dir = unit({ x: b.x - a.x, z: b.z - a.z });
       for (const edge of ground) {
-        if (edge.width < 8) continue;
+        if (edge.width < roadWidthFor("collector")) continue;
         for (let j = 1; j < edge.points.length; j += 1) {
           const c = edge.points[j - 1], d = edge.points[j];
           const ux = b.x - a.x, uz = b.z - a.z, vx = d.x - c.x, vz = d.z - c.z;
@@ -113,7 +114,7 @@ function buildDiamond(crossing: Crossing, ground: readonly RoadEdge[], opts: Par
     const landing = { x: at.x + toward.x * (C.offset / sin), z: at.z + toward.z * (C.offset / sin) };
     // 落点必须属于实际宿主折线，不能只落在宿主无限延长线上。
     // 路口会把同一条干道拆成多条边，落点可在相邻的共线宿主边上，但必须存在真实路段。
-    const host = ground.find((edge) => edge.width >= 8 && edge.points.slice(1).some((p, i) => {
+    const host = ground.find((edge) => atLeast(edge, "collector") && edge.points.slice(1).some((p, i) => {
       const a = edge.points[i], direction = unit({ x: p.x - a.x, z: p.z - a.z });
       return Math.abs(direction.x * artDir.x + direction.z * artDir.z) > 0.99 && segmentDistance(landing, a, p) < 0.02;
     }));

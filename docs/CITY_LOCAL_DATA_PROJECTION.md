@@ -6,7 +6,7 @@
 
 `City → app SDK plugin_request → Rust PluginHost → plugin_projections → query::app_local → readonly AuthorityDb`
 
-`apps/desktop/plugins.json` 的 `dataProjections: ["city:v2", "city-settings:v1", "harnesses:v1"]` 声明允许的投影及私有设置接口。PluginHost 校验发送 WebView、活动实例与请求信封；查询在阻塞任务中执行，不持有实例锁；响应交付前重新检查实例是否仍有效。业务分发在 `plugin_projections.rs`，通用 PluginHost 不解释 City 的参数。
+`apps/desktop/plugins.json` 声明 City 所需的固定投影和 typed-data grants。PluginHost 校验发送 WebView、活动实例与请求信封；查询在阻塞任务中执行，不持有实例锁；响应交付前重新检查实例是否仍有效。业务分发在 `plugin_projections.rs`，City 场景投影正迁往可信 TS adapter；新状态通过 descriptor-scoped 通用 `plugin.state` 存取。
 
 ## MVP 契约
 
@@ -30,8 +30,12 @@ City 建筑详情展示这些摘录，并明确标记“非完整提示词”。
 
 ## 私有设置、宿主详情与本地导出
 
-- `data.read` 的 `{projection:"city-settings",version:1,action:"read"|"write",seed?:number}` 只读写 `state/plugins/city.json` 中的非零 uint32 种子。首次读取兼容旧 `state/city-seed.json`，不删除旧文件；插件不提供文件路径。浏览器 fixture 使用合成状态，standalone 使用 localStorage。
+- City seed 使用通用 `plugin.state.read/write` 与 descriptor 声明的 `city-seed:v1`，值为 `{schemaVersion:1, seed:uint32}`，revision 由宿主 CAS 保护。内部测试阶段不再读取旧 `city-settings:v1` 投影或 copy-forward 旧 seed 文件；没有当前 state 时由 City 生成新 seed 并写入。插件不提供文件路径。浏览器 fixture 使用合成状态，standalone 使用 localStorage。
 - 声明 `navigationTargets:["session"]` 后，City 可请求 `ui.open-session`，payload 只含 City 的 opaque handle。Rust 内部解析到宿主会话目标并导航 Sessions，响应只含 `{opened:true}`，插件不获得宿主标识或轨迹内容。
 - `allowLocalExports:true` 只允许活动插件的 blob 下载，通过原生保存对话框由用户选择目的地；不开放 HTTP 下载或任意文件写入。照片/影片只叠加统计，不把用户摘录写入成片。
 
 浏览器回归仍为合成数据，不能证明原生真实数据端到端。功能迁移与验收状态见 [City 插件功能迁移](CITY_PLUGIN_FEATURE_MIGRATION.md)。
+
+## 远程机甲战的独立网络边界
+
+上述 `city:v2` 本地投影和 MCP/export 权限不因远程机甲战而扩大。仅在桌面用户主动开启远程或批准好友时，`mecha.remote.*` 可以通过 Cloudflare 传输当前比赛的 `RemoteArenaV1`、命令、快照与战斗事件；不包含本文件中的会话摘录、统计、opaque handle、设置或其他 City 数据。中继只持久化短期授权元数据，不持久化比赛正文。详细设计与验收限制见 [远程机甲战与好友对战设计计划](MECHA_REMOTE_MULTIPLAYER_DESIGN_PLAN.md)。

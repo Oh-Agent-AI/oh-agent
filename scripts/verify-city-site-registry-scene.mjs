@@ -64,7 +64,7 @@ for (const count of [380, 1600]) {
       });
       assert(currentMeshes.length > 0); assert.deepEqual(currentMeshes, legacyMeshes);
       assert.deepEqual(parts.decorTargets, currentMeshes);
-      let civicPieces = 0, districts = 0;
+      let civicPieces = 0, districts = 0, playableCars = 0;
       for (const piece of parts.civicPieces) {
         const civic = layout.civics[piece.civic]; assert(civic);
         const id = parts.decorAt(parts.civicMeshes[piece.mesh], piece.index);
@@ -72,11 +72,23 @@ for (const count of [380, 1600]) {
         civicPieces++;
       }
       for (const [mesh, route] of routes) if (route === "district-landmark") {
-        const id = parts.decorAt(mesh), district = decorDistrictId(id);
+        const id = parts.decorAt(mesh);
+        // 地标停车场里那辆可开的车（2026-10-22）点出来是「开这辆」（play:car:<区>），不是地标说明；它也必须属于一个真实城区。
+        const district = id.startsWith("play:car:") ? id.slice("play:car:".length) : decorDistrictId(id);
+        if (id.startsWith("play:car:")) playableCars++;
         assert(layout.districtLandmarks.some(item => item.districtId === district)); districts++;
       }
       assert(civicPieces > 0 && districts > 0);
-      console.log(JSON.stringify({ count, night, classifiedInstances: identities.size, counts, pickableMeshes: currentMeshes.length, civicPieces, districtMeshes: districts,
+      assert(playableCars > 0, "every landmark lot parks a drivable car that picks as play:car:<district>");
+      // 机坪上的飞机（机场岛存在时）：点它的任何一个网格都是 play:plane，不是「机场岛」说明。
+      let planeMeshes = 0;
+      parts.group.getObjectByName("city-playable-plane")?.traverse((node) => { if (node.isMesh && node.visible) { assert.equal(parts.decorAt(node), "play:plane"); planeMeshes++; } });
+      if (parts.group.getObjectByName("city-landmark-airport")) assert(planeMeshes > 0, "the airport parks a flyable plane");
+      // 机坪上的三台机甲：点任何一块网格都是 play:mecha，不是「机场岛」说明。
+      let mechaMeshes = 0;
+      parts.group.getObjectByName("city-playable-mecha")?.traverse((node) => { if (node.isMesh && node.visible) { assert.equal(parts.decorAt(node), "play:mecha"); mechaMeshes++; } });
+      if (parts.group.getObjectByName("city-landmark-airport")) assert(mechaMeshes > 0, "the airport parks a mecha squad");
+      console.log(JSON.stringify({ count, night, classifiedInstances: identities.size, counts, pickableMeshes: currentMeshes.length, civicPieces, districtMeshes: districts, playableCars, mechaMeshes,
         scope: "actual scene classification/identity; model footprint/height and browser/editor validation pending" }));
     }
   } finally { parts.dispose(); }

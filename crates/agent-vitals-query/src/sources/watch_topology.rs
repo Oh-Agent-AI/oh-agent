@@ -178,7 +178,7 @@ pub fn validate_descriptor(
             // 规范化不得落到 `/` 或 canonical home（整盘/整个 home 的监听没有
             // 产品语义）。
             if let Ok(canonical_root) = path.canonicalize() {
-                if canonical_root == *"/" {
+                if canonical_root == std::path::Path::new("/") {
                     return Err(RootRejection::FilesystemRoot);
                 }
                 if let Ok(canonical_home) = user_home.canonicalize() {

@@ -2,6 +2,7 @@
  * 夜景灯光预算（CITY_NIGHT_LIGHTING_SPEC N4）：所有「光源」的强度、色温、亮灯率都从这里取，
  * 画面里的灯具强度才一致；墙面/屋顶轮廓不是光源，不在预算内。纯函数、无 three 依赖，可单测。
  */
+import { atLeast } from "./roadStandard";
 
 export const LIGHT_BUDGET = {
   /** 窗光：亮度 0.3..2.0（平方分布，多数暗少数亮）；色温 2400K 暖黄 → 5000K 冷白。 */
@@ -41,7 +42,7 @@ export type WindowUse = "residential" | "office";
 
 /** 道路 → 路灯档位：主干 1.0、次干/支路 0.6、步道 0.45（光斑半径与亮度同乘）。 */
 export function lampTier(width: number): number {
-  if (width >= 12) return 1;
+  if (atLeast({ width }, "arterial")) return 1;
   if (width >= 7) return 0.6;
   return 0.45;
 }

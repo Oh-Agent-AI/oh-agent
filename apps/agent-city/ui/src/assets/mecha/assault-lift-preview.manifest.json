@@ -1,0 +1,49 @@
+{
+  "id": "assault-lift-preview",
+  "version": 1,
+  "role": "Assault",
+  "footprint": [
+    1,
+    1
+  ],
+  "forward": "-Z",
+  "heightMeters": 19.98,
+  "maxExtentMeters": [
+    21.0,
+    10.8
+  ],
+  "clips": {
+    "idle": {
+      "duration": 3.14,
+      "loop": true
+    },
+    "move": {
+      "duration": 0.79,
+      "loop": true
+    },
+    "attack": {
+      "duration": 0.95,
+      "loop": false
+    },
+    "hit": {
+      "duration": 0.48,
+      "loop": false
+    },
+    "defeat": {
+      "duration": 0.85,
+      "loop": false,
+      "holdLastFrame": true
+    }
+  },
+  "actionMap": {
+    "repair": "attack"
+  },
+  "materials": [
+    "armor_palette",
+    "faction_accent"
+  ],
+  "source": {
+    "kind": "experimental high-detail gait with alternating foot lift; not approved for battle",
+    "glb_sha256": "a491ac0e064cd15c582c0c539fd0201fb0336e8409b465bda93f4305780122f5"
+  }
+}

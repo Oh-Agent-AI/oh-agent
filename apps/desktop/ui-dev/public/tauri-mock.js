@@ -870,9 +870,14 @@
         return { status: "updated", source_url: "https://example.invalid/pricing.json", source_version: "public-browser-mock", model_count: 7, last_success_at_ms: pricingLastSuccessAt };
       }
       case "about_diagnostics": return { status: "ok", app_version: "browser-mock", cli_version: "browser-mock", engine_version: "browser-mock", architecture: "browser-mock", authority_schema: "browser-mock", statistics_timezone: timezone, pricing: { version: "public-browser-mock", captured_at_ms: Date.now() - 3600000 }, sync: { ok: true, message: "浏览器样式调试数据" } };
-      case "open_trusted_releases_page": return { status: "opened", url: "https://example.invalid/releases", automatic_install: false };
+      case "open_trusted_releases_page": {
+        const requested = args && args.url;
+        const trustedRoot = "https://github.com/Oh-Agent-AI/oh-agent/releases";
+        const trustedTag = typeof requested === "string" && requested.startsWith(trustedRoot + "/tag/app-v") ? requested : null;
+        return { status: "opened", url: trustedTag || trustedRoot, automatic_install: false };
+      }
       case "restore_authority_backup": return { status: "cancelled" };
-      case "check_for_updates": return { status: "ok", current_version: "browser-mock", latest_tag: "app-v1.0.0", url: "https://example.invalid/releases", automatic_install: false };
+      case "check_for_updates": return { status: "ok", current_version: "browser-mock", latest_tag: "app-v1.0.0", update_available: true, release_url: "https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0", automatic_install: false };
       // Shape: apps/desktop/src-tauri/src/lib.rs:2776 quota_reminder_config() -> {status, enabled}
       // 用户补的价卡：{cards: {<provider>: {<model>: {input_uncached,input_cached,output}}}}，
       // 形状与 assets/pricing.json 的 providers 段同形。

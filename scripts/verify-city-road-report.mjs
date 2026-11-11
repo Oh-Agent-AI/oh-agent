@@ -44,11 +44,13 @@ const { buildCityModel, layoutCity, createCityPlan, scaleTierFor, MIAMI_COASTAL,
 // 调优线（普查种子线；不得用于设阈值——本批只测量）。
 const TUNING_BASE = 2_000_000_000;
 const TUNING_STEP = 104_729;
-const CASES = process.argv.includes("--display-only") ? [] : [
+const allCases = [
   ...Array.from({ length: 8 }, (_, i) => ({ seed: TUNING_BASE + i * TUNING_STEP, tier: 1 })),
   { seed: TUNING_BASE + 8 * TUNING_STEP, tier: 3 },
   { seed: TUNING_BASE + 9 * TUNING_STEP, tier: 5 },
 ];
+const exhaustive = process.env.CITY_GUARDS_EXHAUSTIVE === "1";
+const CASES = process.argv.includes("--display-only") ? [] : exhaustive ? allCases : [allCases[0], allCases.at(-1)];
 
 // 显示图固定 fixture（抄 verify-city-culdesac-bulbs：同一套固定伪随机，同 count 恒同数据）。
 const DISPLAY_SEED = 523001688;
@@ -166,7 +168,11 @@ const civicJunctions = reference.roadNodes.filter((node) => Math.hypot(node.x - 
 assert.ok(civicJunctions.length > 0, "planned civic perimeter must have a real road junction");
 for (const node of civicJunctions) assert.ok(degree(layout.roadEdges, node.id) >= 3, `display must preserve civic junction ${node.id}`);
 const plannedIds = new Set(reference.roadEdges.map((edge) => edge.id));
-assert.ok(layout.roadEdges.every((edge) => plannedIds.has(edge.id)), "display closure must only retain existing planning edges");
+// 唯一例外：机场堤道（2026-10-22，airportPlan.layoutAirport）——它是剪枝之后挂上去的地标桥段（到机场岛平台），
+// 不是显示闭包的产物；按 layout.airport.causeway 认定，且必须恰好是这一条桥面。
+const causeway = layout.airport?.causeway ? `${layout.airport.causeway.fromNode}/${layout.airport.causeway.to.x}:${layout.airport.causeway.to.z}` : null;
+const unplanned = layout.roadEdges.filter((edge) => !plannedIds.has(edge.id));
+assert.ok(unplanned.every((edge) => edge.id === causeway && edge.bridge && edge.structure === "deck"), `display closure must only retain existing planning edges (unplanned: ${unplanned.map((e) => e.id).join(", ")})`);
 for (const blocks of [[], layout.blocks.map((b) => ({ ...b, vacant: false }))]) {
   const report = roadReport({ layer: "display", roadEdges: layout.roadEdges, blocks, publicSites: layout.publicSites, landmarks: layout.landmarks });
   assert.equal(report.layer, "display", "empty/fully built display stays a display graph");

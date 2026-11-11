@@ -1,3 +1,4 @@
+import { atLeast, isStandardEdge } from "../roadStandard";
 import { DetMath as Math } from "../detMath"; // 跨引擎确定性：与 cityPlan.ts 同一份 Math（见 detMath.ts）
 import { clearsHighways, roadNodeId, segmentDistance } from "../roadGeometry";
 import type { RoadEdge, Vec2 } from "../cityLayout";
@@ -214,7 +215,7 @@ export function detourAroundSites(ctx: RepairContext): number {
           if (k > 0 && crosses(chain[k - 1], q)) ok = false;
         }
         if (!ok) continue;
-        for (let k = 1; k < chain.length; k += 1) addEdge(chain[k - 1], chain[k], A.edge.kind === "arterial", false, A.edge.width >= 12);
+        for (let k = 1; k < chain.length; k += 1) addEdge(chain[k - 1], chain[k], A.edge.kind === "arterial", false, atLeast(A.edge, "arterial"));
         used.add(A.id); used.add(B.id); joined += 1;
         break;
       }
@@ -238,7 +239,7 @@ export function extendLooseEnds(ctx: RepairContext, onlyNodeId?: string): number
         const at = nodes.get(id); if (!at || isPlannedRoadEnd(at, plannedEndWorld(ctx))) continue;
         if (sitesAll2.some((o) => Math.hypot(o.x - at.x, o.z - at.z) < o.radius + 12)) continue; // 伸进用地边缘的门前路是正常终点
         const own = list[0];
-        if (own.width !== (own.kind === "arterial" ? own.width >= 12 ? 12 : 8 : 5)) continue;
+        if (!isStandardEdge(own)) continue;
         const from = own.from === id ? own.points[1] : own.points[own.points.length - 2];
         const dx = at.x - from.x; const dz = at.z - from.z; const dl = Math.hypot(dx, dz); if (dl < 1) continue;
         const ux = dx / dl; const uz = dz / dl;
@@ -272,7 +273,7 @@ export function extendLooseEnds(ctx: RepairContext, onlyNodeId?: string): number
         const world = { network: ctx.network, geo: ctx.geo, inRiver: ctx.inRiver, reservations: () => [...publicSites, ...landmarks] };
         const result = commitNetworkPatch(ctx.network, { baseVersion: ctx.network.version,
           removeEdgeIds: [], splits: targetIsEndpoint ? [] : [{ edgeId: host.id, at: target }],
-          addEdges: [{ a: at, b: target, arterial: own.kind === "arterial", primary: own.width >= 12 }] }, (draft) => {
+          addEdges: [{ a: at, b: target, arterial: own.kind === "arterial", primary: atLeast(own, "arterial") }] }, (draft) => {
           const verdict = validateCandidate(world, draft, { id: `extend:${id}`, crossings: true, blockers: [],
             segments: [{ a: at, b: target, width: own.width, kind: "ground-road" }] },
           { roadPolicy: { requireBuildable: true, maxSlope: 0.9, sites: world.reservations(), siteMargin: 3, roadWidth: own.width } });

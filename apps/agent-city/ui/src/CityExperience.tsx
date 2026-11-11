@@ -1,13 +1,16 @@
 import { sessionCostLabel } from "./data/sessionCostLabel";
+import { playableKind } from "./engine/render/playableVehicles";
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { CityModel } from "./cityModel";
-import { readCitySessionDetail, type CityProjectionV1 } from "./data/provider";
+import { readCitySessionDetail, stableAssetRefsForProjection, type CityProjectionV1 } from "./data/provider";
 import { citySeed, randomSeed } from "./data/seed";
 import type { CityEngine, EngineStats } from "./engine/CityEngine";
 import type { CinematicCard, CinematicCut, CinematicPlan } from "./engine/cityCinematic";
-import type { BackdropMode } from "./engine/cityLayout";
+import { prepareCityLayout, type BackdropMode } from "./engine/cityLayout";
+import { MIAMI_COASTAL } from "./engine/citySeaside";
+import { prepareSeedChange, SeedChangeError } from "./engine/prepareSeedChange";
 import { paletteFor } from "./engine/cityTextures";
-import { invokeHost, embedded, pluginLocale } from "./host";
+import { invokeHost, embedded, pluginLocale, noteBusy } from "./host";
 import type { PluginResponseV1 } from "@agent-vitals/app-sdk";
 import { runFilmJob, supportsBackgroundFilm } from "./export/filmJob";
 import { cinematicCopy } from "./engine/cinematicCopy";
@@ -59,11 +62,12 @@ export function useCityExperience(engine: RefObject<CityEngine | null>, projecti
   const [seedBusy, setSeedBusy] = useState(true);
   const [confirmSeed, setConfirmSeed] = useState(false);
   const seedTimer = useRef<number | undefined>(undefined);
+  const seedPreparation = useRef<AbortController | null>(null);
   const [cursor, setCursor] = useState<number | null>(null);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(3600);
   const [cut, setCut] = useState<CinematicCut>("short");
-  // 背景楼档位（F4）：按本机浏览器存储（与种子不同，不经宿主 city-settings 投影——那需要宿主侧改动，见 SPEC §4 F4 注）。
+  // 背景楼档位（F4）只保存在本机浏览器；种子则保存在 descriptor-scoped plugin.state。
   const [backdrop, setBackdropState] = useState<BackdropMode>(() => {
     try { const saved = localStorage.getItem("city.backdrop"); return saved === "auto" || saved === "full" ? saved : "off"; } catch { return "off"; }
   });
@@ -107,7 +111,7 @@ export function useCityExperience(engine: RefObject<CityEngine | null>, projecti
         if (active) { engine.current?.setSeed(74031); setError("岛屿种子无法保存，本次使用临时种子。"); }
       } finally { if (active) setSeedBusy(false); }
     })();
-    return () => { active = false; mounted.current = false; abort.current?.abort(); window.clearTimeout(seedTimer.current); };
+    return () => { active = false; mounted.current = false; abort.current?.abort(); seedPreparation.current?.abort(); window.clearTimeout(seedTimer.current); };
   }, []);
 
   const clearSelection = () => { setSelected(null); setDetails(false); engine.current?.setSelected(null); };
@@ -119,6 +123,17 @@ export function useCityExperience(engine: RefObject<CityEngine | null>, projecti
     onHover(id: string | null, x: number, y: number) {
       const tooltip = tooltipRef.current;
       if (!tooltip) return;
+      // 可开的载具：提示「点击开车 / 开飞机」，车带上它所属城区的名字（颜色就是这个城区的 harness 楼色）。
+      const play = playableKind(id);
+      if (play) {
+        const en = pluginLocale() === "en";
+        tooltip.textContent = play === "plane" ? (en ? "Plane · click to fly from the runway" : "飞机 · 点击从跑道起飞")
+          : play === "mecha" ? (en ? "Mechs · click to start the battle" : "机甲 · 点击进入战斗")
+          : `${districtLabel(id!.slice("play:car:".length))} · ${en ? "click to drive from this landmark" : "点击从这座地标出发开车"}`;
+        tooltip.style.opacity = "1";
+        tooltip.style.transform = `translate(${Math.min(x + 14, Math.max(8, window.innerWidth - 270))}px, ${Math.min(y + 14, window.innerHeight - 60)}px)`;
+        return;
+      }
       const decor = id && isDecorId(id) ? describeDecor(id) : null;
       const building = decor ? undefined : modelRef.current?.buildings.find((b) => b.id === id);
       if (!building && !decor) { tooltip.style.opacity = "0"; return; }
@@ -157,14 +172,29 @@ export function useCityExperience(engine: RefObject<CityEngine | null>, projecti
   }, [options, details, film]);
 
   const applySeed = async (value: number) => {
-    if (busy || !Number.isInteger(value) || value < 1 || value > 4294967295) { setError("种子须为 1–4294967295 的整数。"); return; }
+    if (busy || seedPreparation.current) return;
+    if (!Number.isInteger(value) || value < 1 || value > 4294967295) { setError("种子须为 1–4294967295 的整数。"); return; }
+    const preparation = new AbortController();
+    seedPreparation.current = preparation;
     setSeedBusy(true); setError(null);
     try {
-      await citySeed("write", value);
-      if (!mounted.current) return;
-      engine.current?.setSeed(value); setSeed(value); setSeedDraft(String(value)); clearSelection();
-    } catch { if (mounted.current) setError("无法保存岛屿种子，原岛屿保持不变。"); }
-    finally { if (mounted.current) setSeedBusy(false); }
+      const result = await prepareSeedChange({ seed: value, signal: preparation.signal, currentEngine: () => engine.current,
+        prepare: (model, nextSeed, signal) => prepareCityLayout(model, nextSeed, MIAMI_COASTAL, { signal }),
+        persist: async (nextSeed) => {
+          if (await citySeed("write", nextSeed) !== nextSeed) throw new Error("seed-not-saved");
+        }, beforeWork: () => noteBusy(15_000).catch(() => {}) });
+      if (!mounted.current || result === "cancelled") return;
+      setSeed(value); setSeedDraft(String(value)); clearSelection();
+    } catch (error) {
+      if (mounted.current) setError(error instanceof SeedChangeError && error.saved
+        ? "新种子已写入本地状态，但城市未能更新；请重启城市。"
+        : error instanceof SeedChangeError && error.persistAttempted
+          ? "无法确认种子是否保存，城市未主动切换；请重启城市以确认。"
+          : "无法准备岛屿种子，城市未主动切换。");
+    } finally {
+      if (seedPreparation.current === preparation) seedPreparation.current = null;
+      if (mounted.current) setSeedBusy(false);
+    }
   };
   const reseed = () => {
     if (!confirmSeed) { setConfirmSeed(true); seedTimer.current = window.setTimeout(() => setConfirmSeed(false), 4000); return; }
@@ -246,7 +276,7 @@ export function useCityExperience(engine: RefObject<CityEngine | null>, projecti
     lockSelection: (id: string) => engine.current?.lockSelection(id) };
 }
 
-export function CityExperience({ ui, disabled, cinema, status, quality, onQuality, game, planRepair, windowDays, windowOptions, onWindowDays, labels, onLabels }: { ui: ReturnType<typeof useCityExperience>; disabled: boolean; cinema: boolean; status?: string; quality: string; onQuality: (value: string) => void; game: ReturnType<typeof useCityGame>; planRepair: PlanRepairUi; windowDays: number; windowOptions: readonly number[]; onWindowDays: (days: number) => void; labels: boolean; onLabels: (next: boolean) => void }) {
+export function CityExperience({ ui, disabled, cinema, status, loadErrorCode, quality, onQuality, game, planRepair, windowDays, windowOptions, onWindowDays, labels, onLabels, onMecha, mechaEnabled, mechaAvailability = "unknown", onDreamPreview, dreamPreviewEnabled = false, dreamPublicationActive = false }: { ui: ReturnType<typeof useCityExperience>; disabled: boolean; cinema: boolean; status?: string; loadErrorCode?: string | null; quality: string; onQuality: (value: string) => void; game: ReturnType<typeof useCityGame>; planRepair: PlanRepairUi; windowDays: number; windowOptions: readonly number[]; onWindowDays: (days: number) => void; labels: boolean; onLabels: (next: boolean) => void; onMecha?: () => void; mechaEnabled: boolean; mechaAvailability?: "unknown" | "searching" | "ready" | "empty" | "error"; onDreamPreview?: () => void; dreamPreviewEnabled?: boolean; dreamPublicationActive?: boolean }) {
   const language = useCityLanguage();
   // Presentation only: the landing host still enforces its own fixture/method boundary.
   const landingPreview = embedded() && new URLSearchParams(location.search).get("presentation") === "landing";
@@ -330,14 +360,21 @@ export function CityExperience({ ui, disabled, cinema, status, quality, onQualit
   const initialSession = ui.projection?.sessions.find((s) => s.id === ui.selected);
   const [loadedDetail, setLoadedDetail] = useState<CityProjectionV1["sessions"][number] | null>(null);
   const [detailState, setDetailState] = useState<"idle" | "loading" | "ready" | "unavailable">("idle");
+  const detailRefresh = useRef(false);
   useEffect(() => {
     setLoadedDetail(null); setDetailState("idle");
-    if (!ui.details || !initialSession || !ui.projection) return;
+    if (!ui.details || !initialSession || !ui.projection) { detailRefresh.current = false; return; }
     const request = new AbortController();
     setDetailState("loading");
     void readCitySessionDetail(ui.projection, initialSession.id, request.signal).then((detail) => {
       if (!request.signal.aborted) { setLoadedDetail(detail); setDetailState("ready"); }
-    }).catch(() => { if (!request.signal.aborted) setDetailState("unavailable"); });
+    }).catch(() => {
+      if (request.signal.aborted) return;
+      setDetailState("unavailable");
+      if (detailRefresh.current) return;
+      detailRefresh.current = true;
+      window.dispatchEvent(new Event("__AV_PLUGIN_INVALIDATED__"));
+    });
     return () => request.abort();
   }, [ui.details, initialSession?.id, ui.projection]);
   const session = loadedDetail?.id === initialSession?.id ? loadedDetail ?? initialSession : initialSession;
@@ -374,6 +411,7 @@ export function CityExperience({ ui, disabled, cinema, status, quality, onQualit
     {!cinema && !gameActive && summaryOpen && <section id="city-summary-panel" className="city-legend" aria-label="城市摘要">
       <h2>城市摘要</h2>
       <p>{status}</p>
+      {loadErrorCode && <p role="status">{language === "en" ? "Data load error code" : "数据加载错误码"}: {loadErrorCode}</p>}
       <dl><dt>已载入会话</dt><dd>{ui.projection?.coverage.returned ?? "—"} / {ui.projection?.coverage.total ?? "—"}</dd>
         <dt>Token</dt><dd>{totalTokens === undefined ? "—" : tokens(totalTokens)}</dd>
         <dt>活跃</dt><dd>{model?.stats.activeCount ?? "—"}</dd>
@@ -397,7 +435,9 @@ export function CityExperience({ ui, disabled, cinema, status, quality, onQualit
       </nav></div>)}
       <p className="city-context-note">灰调背景楼为城市氛围 · 不计入会话</p>
       <p>会话楼高表示 token 规模；施工状态和生长进度是可视化估算，不代表任务完成度。</p>
-      <p>{ui.projection?.source === "local" ? "本机只读投影 · 不上传数据" : "本地演示数据 · 尚未接入真实数据源"}</p>
+      <p>{ui.projection?.source === "local" ? "本机只读投影 · 不上传数据"
+        : ui.projection?.source === "fixture" ? "本地演示数据 · 尚未接入真实数据源"
+          : "City 数据暂不可用"}</p>
     </section>}
     {catalog && !cinema && !gameActive && <aside className="city-catalog" aria-label="建筑说明">
       <button className="city-close" aria-label="关闭建筑说明" onClick={() => setCatalog(false)}>×</button>
@@ -431,7 +471,7 @@ export function CityExperience({ ui, disabled, cinema, status, quality, onQualit
     {ui.selected === "decor:site:civic" && !dataOpen && !cinema && !gameActive && model && (() => {
       // 市政厅 = 全城的功能性标志：面板展示全城概况（用户：「市政广场的市政厅能提供哪些功能性信息」）。
       const total = model.stats.totalSessions || 1;
-      const tier = scaleTierFor(model.buildings.length);
+      const tier = scaleTierFor(Math.min(4000, Math.max(model.buildings.length, model.stats.totalSessions)));
       const stage = tier >= 8 ? "议会大厦" : tier >= 5 ? "市政中心" : tier >= 3 ? "市政厅" : "镇政厅";
       const ranked = [...model.districts].sort((a, b) => b.sessionCount - a.sessionCount);
       const alerts = ranked.filter((d) => d.anomaly);
@@ -516,10 +556,16 @@ export function CityExperience({ ui, disabled, cinema, status, quality, onQualit
           <dt>模型</dt><dd>{session.model_ids?.length ? session.model_ids.join("、") : "无模型标识"}</dd>
           <dt>费用</dt><dd>{costLabel(session)}</dd><dt>统计截止</dt><dd>{session.last_event_at}</dd></dl>
         {detailState === "loading" && <p role="status">正在读取会话详情…</p>}
-        {detailState === "unavailable" && <p role="status">详情暂不可用；数据可能已更新，请刷新城市后重试。</p>}
+        {detailState === "unavailable" && <p role="status">详情暂不可用；已尝试重新读取快照。若城市仍在更新，请稍候后重开详情。</p>}
         {session.excerpt_scope === "session_lifetime_not_window" && <p>摘录来自整个会话，可能早于当前统计窗口。</p>}
         <p>会话定位号（可能变化）：{session.id}</p>
-        {session.asset_ref && <BuildingBookmark key={session.asset_ref} assetRef={session.asset_ref} language={language} windowDays={ui.projection!.window.days} />}
+        {session.asset_ref && <BuildingBookmark key={session.asset_ref} assetRef={session.asset_ref}
+          stableRef={stableAssetRefsForProjection(ui.projection!).get(session.asset_ref)}
+          stableRefs={stableAssetRefsForProjection(ui.projection!)} snapshot={ui.projection!.v3_context ?? (ui.projection!.data_revision === undefined ? undefined : {
+            data_revision: ui.projection!.data_revision,
+            window: { from_ms: Date.parse(ui.projection!.window.from), to_ms: Date.parse(ui.projection!.window.to) },
+          })}
+          language={language} windowDays={ui.projection!.window.days} />}
         {session.asset_ref && <><p>楼号：{session.asset_ref}</p><button onClick={() => { void navigator.clipboard?.writeText(session.asset_ref!).catch(() => setDetailState("unavailable")); }}>复制楼号</button></>}
         {session.cost_breakdown && session.cost_breakdown.length > 0 && <><h3>分项估价（按币种和依据）</h3>
           {session.cost_breakdown.map((part) => <p key={`${part.currency}:${part.basis}`}>{costLabel({ ...session, cost_minor: part,
@@ -539,6 +585,7 @@ export function CityExperience({ ui, disabled, cinema, status, quality, onQualit
         <label htmlFor="city-seed">岛屿种子</label><div className="city-seed-controls"><input id="city-seed" inputMode="numeric" value={ui.seedDraft} disabled={locked} onChange={(e) => ui.setSeedDraft(e.target.value)} />
         <button disabled={locked}>应用种子</button></div>
       </form>
+      {ui.seedBusy && <p role="status">正在准备岛屿，请稍候。</p>}
       <button onClick={ui.reseed} disabled={locked}>{ui.confirmSeed ? "确认重新生成（4 秒内）" : "重新生成岛屿"}</button>
       <p>只改变地形与布局，不删除会话数据。种子保存于插件私有本地状态。</p></>}
       <label htmlFor="city-backdrop">城市背景楼</label><select id="city-backdrop" value={ui.backdrop} disabled={locked} onChange={(e) => ui.setBackdrop(e.target.value as BackdropMode)}><option value="auto">自动（随会话数，不挤占城区）</option><option value="off">关闭（纯数据城市）</option><option value="full">繁华（铺满城区周边）</option></select>
@@ -546,6 +593,11 @@ export function CityExperience({ ui, disabled, cinema, status, quality, onQualit
       <label htmlFor="city-window">时间范围</label><select id="city-window" value={String(windowDays)} disabled={locked || gameActive} onChange={(e) => onWindowDays(Number(e.target.value))}>{windowOptions.map((days) => <option key={days} value={String(days)}>{`${days} 天`}</option>)}</select>
       <label className="city-check" htmlFor="city-labels"><input id="city-labels" type="checkbox" checked={labels} disabled={locked || gameActive} onChange={(e) => onLabels(e.target.checked)} />显示建筑标签</label>
       <label htmlFor="city-quality">画质</label><select id="city-quality" value={quality} onChange={(e) => onQuality(e.target.value)}><option value="auto">自动</option><option value="high">高画质</option><option value="eco">节能</option></select>
+      <section className="city-dream-preview-entry" aria-labelledby="city-dream-preview-title">
+        <h3 id="city-dream-preview-title">梦境城市</h3>
+        <p>{dreamPublicationActive ? "远程城市已发布。可查看快照、管理访客授权或停止访问。" : "先预览访客将看到的冻结城市；创建链接前会展示分享字段与中继说明，并要求明确确认。"}</p>
+        <button disabled={!dreamPreviewEnabled || !onDreamPreview} onClick={onDreamPreview}>{dreamPublicationActive ? "管理远程访问" : "预览并分享城市"}</button>
+      </section>
       {!landingPreview && <><label htmlFor="city-cut">航拍与视频长度</label><select id="city-cut" value={ui.cut} disabled={locked} onChange={(e) => ui.setCut(e.target.value as CinematicCut)}><option value="short">短片</option><option value="full">完整航线</option></select>
       <details className="city-settings-help"><summary>导出说明</summary><p>拍照保存 PNG；视频后台逐帧生成 30 FPS MP4（H.264；环境不支持时改为 WebM），并显示实际生成画面的低帧率预览。硬件渲染为 1080p，软件渲染降至 360p。导出中暂停拍照，避免并发导出和保存；离开 City 会取消任务。不上传数据。</p></details>
       <div className="city-game-entry">
@@ -554,10 +606,12 @@ export function CityExperience({ ui, disabled, cinema, status, quality, onQualit
         <div style={{ display: "flex", gap: 8 }}>
           <button disabled={cinema || ui.busy || gameActive || !ui.model} onClick={() => { ui.setOptions(false); game.enterPractice(); }}>{gameText("自由练习", language === "en" ? "en" : "zh-Hans")}</button>
           <button disabled={cinema || ui.busy || gameActive || !ui.model} onClick={() => { ui.setOptions(false); game.enterRace(); }}>{gameText("穿环挑战", language === "en" ? "en" : "zh-Hans")}</button>
+          <button disabled={!mechaEnabled || !onMecha} onClick={() => { ui.setOptions(false); onMecha?.(); }}>{gameText("机甲战棋", language === "en" ? "en" : "zh-Hans")}</button>
           {typeof __CITY_GAME_UAT__ !== "undefined" && __CITY_GAME_UAT__ && <button disabled={cinema || ui.busy || gameActive || !ui.model} onClick={() => { ui.setOptions(false); void game.enterUatRace(); }}>UAT keyboard pilot</button>}
         </div>
         {game.entryError && <p role="alert">{game.entryError}</p>}
         <p>{gameText("进入后用 W/S/A/D 与方向键飞行，Esc 暂停。", language === "en" ? "en" : "zh-Hans")}</p>
+        <p>{gameText(mechaAvailability === "empty" ? "这座城暂时没有可用机坪，不能开战。" : "在这座城市的机坪上开战。整包提交，非法则整包退回。没有机坪时不会进入对局。", language === "en" ? "en" : "zh-Hans")}</p>
       </div>
       {ui.film && <p role="status" aria-atomic="true">航拍导出 {Math.round(ui.film.frame / ui.film.total * 100)}% · 关闭设置不取消导出</p>}
       {!supportsBackgroundFilm() && <p>当前环境不支持后台视频导出；可使用拍照。</p>}</>}

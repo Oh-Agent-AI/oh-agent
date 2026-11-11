@@ -13,9 +13,31 @@ mod quota_alerts;
 mod plugin_host;
 mod plugin_projections;
 mod plugin_state;
+mod typed_data;
+mod typed_objects;
+// Retained only as a test baseline for the TS City projection migration.
+#[cfg(test)]
+mod city_dream_projection;
+// Retained only as a test parity baseline for the TS City display projector.
+#[cfg(test)]
+mod city_remote_display_projection;
+// Legacy Mecha wire adapters remain only as migration/test baselines. The
+// packaged v1.5 remote match uses the descriptor-driven generic session path.
+#[cfg(test)]
+mod mecha_remote_adapter;
+mod remote_gateway;
+mod remote_protocol;
+mod remote_registry;
+mod remote_adapter_manifest;
+mod remote_sessions;
+mod remote_session_runtime;
+mod remote_transport;
+mod update_check;
 // 「测试」板 Claude IP 风险自检：全部出站探测收敛在此模块（离线包契约：React
 // 源码不得含远端 URL / 网络客户端），并按 scutil --proxy 对齐系统代理路由。
 mod ip_check;
+// Windows：GUI 父进程拉起控制台子系统 agent-vitals 必须 CREATE_NO_WINDOW。
+mod cli_process;
 #[cfg(all(feature = "plugin-isolation-probe", target_os = "macos"))]
 mod plugin_isolation_probe;
 
@@ -23,7 +45,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri_plugin_notification::NotificationExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Mutex, atomic::{AtomicU64, Ordering}};
 use tauri::menu::{Menu, MenuBuilder, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
@@ -1112,11 +1133,14 @@ const NAVIGATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2
 ///
 /// stderr 与 discover 同款 G4 盲区：之前是 `piped()` 了却从未读过，子进程真正
 /// 报的错（比如时区非法、执行环境目录不可读）在这三条 `None` 路径里全部消失。
+///
+/// 这是托盘常驻时重 tick（约 5 分钟）会拉起的子进程。Windows 上走
+/// `cli_command`：管道接得住 JSON，但挡不住控制台子系统 exe 的闪窗。
 fn run_navigation(bin: &Path, day: &str) -> Option<Value> {
     let timezone = agent_vitals_runtime::statistics_timezone::timezone_name(&overview::data_home())
         .ok()
         .unwrap_or_else(agent_vitals_runtime::clock::system_timezone_name);
-    let mut child = match std::process::Command::new(bin)
+    let mut child = match cli_process::cli_command(bin)
         .args([
             "sessions".to_string(),
             "navigation".to_string(),
@@ -1250,7 +1274,7 @@ fn resolve_binary() -> Option<PathBuf> {
 /// 启动失败或输出无法识别时返回 `None`，不把 App 版本冒充 CLI 版本。
 fn resolved_cli_version() -> Option<String> {
     let binary = resolve_binary()?;
-    let output = Command::new(binary).arg("--version").output().ok()?;
+    let output = cli_process::cli_command(&binary).arg("--version").output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -2266,7 +2290,8 @@ fn warm_authority_db(app: &AppHandle) {
         let lock = app.state::<store::StoreBuildLock>().inner().clone();
         let _guard = lock.acquire();
         let Some(bin) = resolve_binary() else { return };
-        let mut cmd = std::process::Command::new(&bin);
+        // 启动预热是安装后第一发可见闪窗。与 tick / IPC 共用 cli_command。
+        let mut cmd = cli_process::cli_command(&bin);
         cmd.args(["data-status", "--json"]);
         cmd.env("AGENT_VITALS_HOME", overview::data_home());
         let _ = cmd.output();
@@ -4163,73 +4188,117 @@ fn about_diagnostics() -> Value {
     })
 }
 
-const TRUSTED_RELEASES_URL: &str = "https://github.com/Oh-Agent-AI/oh-agent/releases";
-const LATEST_RELEASE_API: &str = "https://api.github.com/repos/Oh-Agent-AI/oh-agent/releases/latest";
+use update_check::{
+    classify_releases_http, resolve_open_url, ReleasesHttpClass, SelectOutcome, TRUSTED_RELEASES_URL,
+};
 
-fn parse_latest_release_tag(payload: &Value) -> Result<String, String> {
-    let tag = payload
-        .get("tag_name")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "trusted release response has no tag_name".to_string())?;
-    if !tag.starts_with("app-v") {
-        return Err(format!("trusted release tag is not an app release: {tag}"));
-    }
-    Ok(tag.to_string())
-}
-
+/// 应用内版本检查：拉取 `/releases` 列表（`/releases/latest` 会跳过 prerelease，
+/// beta 用户因此永远收不到下一个 beta），再由 `update_check::select_update`
+/// 按通道与 semver 选候选。只报告、不下载、不安装（automatic_install 恒为 false）。
+/// 列表为空 / 404 / 无 app-v → no_release；真限流（429，或 403 且 remaining=0 /
+/// Retry-After）→ unavailable/rate_limited；其它 403 → unavailable/forbidden。
+/// 正式版用户面对「只有 beta」时是 ok + on_latest_stable，不是 no_release。
+/// 这些都不当作错误弹给用户。CARGO_PKG_VERSION 由 Cargo 保证是 semver。
 #[tauri::command]
 async fn check_for_updates() -> Result<Value, String> {
+    let current_version = env!("CARGO_PKG_VERSION");
+    let current = semver::Version::parse(current_version)
+        .expect("CARGO_PKG_VERSION is Cargo-enforced semver");
+    let unavailable = |reason: &str| {
+        serde_json::json!({
+            "status": "unavailable",
+            "reason": reason,
+            "current_version": current_version,
+            "release_url": TRUSTED_RELEASES_URL,
+            "automatic_install": false,
+        })
+    };
+    let no_release = || {
+        serde_json::json!({
+            "status": "no_release",
+            "current_version": current_version,
+            "release_url": TRUSTED_RELEASES_URL,
+            "automatic_install": false,
+        })
+    };
     let client = reqwest::Client::builder()
-        .user_agent(format!("agent-vitals/{}", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("agent-vitals/{current_version}"))
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|error| format!("build update client failed: {error}"))?;
     let response = client
-        .get(LATEST_RELEASE_API)
+        .get(update_check::RELEASES_API)
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
         .send()
         .await
         .map_err(|error| format!("check updates failed: {error}"))?;
+    let remaining = response
+        .headers()
+        .get("x-ratelimit-remaining")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let retry_after = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     let status = response.status();
-    if status == reqwest::StatusCode::NOT_FOUND {
-        return Ok(serde_json::json!({
-            "status": "no_release",
-            "current_version": env!("CARGO_PKG_VERSION"),
-            "url": TRUSTED_RELEASES_URL,
-            "automatic_install": false,
-        }));
-    }
-    if !status.is_success() {
-        return Err(format!("check updates returned HTTP {status}"));
+    match classify_releases_http(
+        status.as_u16(),
+        remaining.as_deref(),
+        retry_after.as_deref(),
+    ) {
+        ReleasesHttpClass::Ok => {}
+        ReleasesHttpClass::NotFound => return Ok(no_release()),
+        ReleasesHttpClass::RateLimited => return Ok(unavailable("rate_limited")),
+        ReleasesHttpClass::Forbidden => return Ok(unavailable("forbidden")),
+        ReleasesHttpClass::Other => {
+            return Err(format!("check updates returned HTTP {status}"));
+        }
     }
     let payload: Value = response
         .json()
         .await
         .map_err(|error| format!("parse update response failed: {error}"))?;
-    let tag = parse_latest_release_tag(&payload)?;
-    Ok(serde_json::json!({
-        "status": "ok",
-        "current_version": env!("CARGO_PKG_VERSION"),
-        "latest_tag": tag,
-        "url": TRUSTED_RELEASES_URL,
-        "automatic_install": false,
-    }))
+    Ok(match update_check::select_update(&current, &payload) {
+        SelectOutcome::Selected(selection) => serde_json::json!({
+            "status": "ok",
+            "current_version": current_version,
+            "latest_tag": selection.latest.tag,
+            "update_available": selection.update_available,
+            "release_url": selection.latest.release_url,
+            "automatic_install": false,
+        }),
+        SelectOutcome::OnLatestStable => serde_json::json!({
+            "status": "ok",
+            "current_version": current_version,
+            "update_available": false,
+            "reason": "on_latest_stable",
+            "release_url": TRUSTED_RELEASES_URL,
+            "automatic_install": false,
+        }),
+        SelectOutcome::None => no_release(),
+    })
 }
 
+/// 只打开可信发布根，或检查结果里已经过 `resolve_open_url` 校验的 tag 页。
+/// 前端传入的 `url` 不可信：命令侧会再校验一遍，非法值回落到根。
 #[tauri::command]
-fn open_trusted_releases_page() -> Result<Value, String> {
+fn open_trusted_releases_page(url: Option<String>) -> Result<Value, String> {
+    let target = resolve_open_url(url.as_deref());
     #[cfg(target_os = "macos")]
     let status = std::process::Command::new("open")
-        .arg(TRUSTED_RELEASES_URL)
+        .arg(&target)
         .status()
         .map_err(|e| format!("open trusted releases page failed: {e}"))?;
     #[cfg(target_os = "linux")]
     let status = std::process::Command::new("xdg-open")
-        .arg(TRUSTED_RELEASES_URL)
+        .arg(&target)
         .status()
         .map_err(|e| format!("open trusted releases page failed: {e}"))?;
     #[cfg(target_os = "windows")]
     let status = std::process::Command::new("rundll32")
-        .args(["url.dll,FileProtocolHandler", TRUSTED_RELEASES_URL])
+        .args(["url.dll,FileProtocolHandler", target.as_str()])
         .status()
         .map_err(|e| format!("open trusted releases page failed: {e}"))?;
     if !status.success() {
@@ -4237,7 +4306,7 @@ fn open_trusted_releases_page() -> Result<Value, String> {
     }
     Ok(serde_json::json!({
         "status": "opened",
-        "url": TRUSTED_RELEASES_URL,
+        "url": target,
         "automatic_install": false,
     }))
 }
@@ -4449,13 +4518,13 @@ Oh Agent runs on the user's machine and reads their AI coding tools' session log
 Claude Code:
 
 ```bash
-claude mcp add agent-vitals -- {shell_bin} data-mcp serve --allow-local-writes
+claude mcp add oh-agent -- {shell_bin} data-mcp serve --allow-local-writes
 ```
 
 Codex CLI (`~/.codex/config.toml`):
 
 ```toml
-[mcp_servers.agent-vitals]
+[mcp_servers.oh-agent]
 command = "{bin}"
 args = ["data-mcp", "serve", "--allow-local-writes"]
 ```
@@ -4463,10 +4532,12 @@ args = ["data-mcp", "serve", "--allow-local-writes"]
 Any MCP client (`mcpServers` JSON):
 
 ```json
-{{ "mcpServers": {{ "agent-vitals": {{ "command": "{bin}", "args": ["data-mcp", "serve", "--allow-local-writes"] }} }} }}
+{{ "mcpServers": {{ "oh-agent": {{ "command": "{bin}", "args": ["data-mcp", "serve", "--allow-local-writes"] }} }} }}
 ```
 
-Drop `--allow-local-writes` for a strictly read-only server. With it, the only writes are typed local actions (price cards, billing declarations, budget settings, source controls) — never SQL, never files, never URLs.
+`oh-agent` is the connection name in the client config, not a credential. An existing key such as `agent-vitals` keeps working while `command` and `args` stay the same. Restart the client only after you rename the key.
+
+Drop `--allow-local-writes` for a strictly read-only server. With it, the only writes are typed local actions (price cards, billing declarations, budget settings, source controls, city building model overrides) — never SQL, never files, never URLs.
 
 ## Ground rules — keep the numbers honest
 
@@ -4492,6 +4563,8 @@ Every response is an envelope with `data`, `coverage`, `freshness` and `warnings
 **Data health** — `data_status` (sync, integrity, `unresolved_tokens_month`, `unpriced_metered_tokens_month`) + `data_quality_issues`; list what needs the user's hand, most valuable first.
 
 **Session drill-down** — `sessions_search` (window / harness / model) → `session_detail` / `session_trace` by `session_ref`. Never ask for or echo native session ids or paths.
+
+**Edit one Agent City session building** — `sessions_search` → `get_building` with that `session_ref` (or the `ca_…` `asset_ref`) → `preview_building`. `data.ok` is not design approval: if `data.warnings` is non-empty, show every warning (massing/additive) and do not set until the user accepts or you redesign inside the current mass. Only then `set_building_model` with `expected_revision`. Confirm via returned `revision` + `build_event_id`. `reset_building` restores the default. Mutations need `--allow-local-writes`. On failure read structured `data.error` (`validation` vs `conflict`, including `disconnected_part` / `massing_drift`); do not depend on screenshots. An open City window plays the construction animation from the host event.
 
 **Hourly pattern** — `usage_hourly` for one day (tokens only; cost per hour lives in `cost_breakdown`).
 
@@ -5755,6 +5828,7 @@ pub fn run() {
             }
         })
         .manage(plugin_host::PluginHost::default())
+        .manage(remote_gateway::RemoteGateway::default())
         .invoke_handler({
             let handler: Box<dyn Fn(tauri::ipc::Invoke) -> bool + Send + Sync> = Box::new(tauri::generate_handler![
             plugin_host::plugin_open,
@@ -5765,6 +5839,7 @@ pub fn run() {
             plugin_host::plugin_message,
             plugin_host::plugin_request,
             plugin_host::plugin_invalidate,
+            remote_gateway::remote_host_message,
             read_overview,
             data_status,
             billing_import_candidates,
@@ -6029,15 +6104,22 @@ mod tests {
             });
             (url, worker)
         }
+        // This test targets a local ephemeral server. Keep the request off any
+        // machine-level HTTP proxy so the proxy cannot replace the fixture response.
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
         let (url, worker) = server(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n5\r\nworld\r\n0\r\n\r\n");
         let result = tauri::async_runtime::block_on(async {
-            super::fetch_official_manifest_bytes(&super::manifest_catalog_client().unwrap(), &url, 6).await
+            super::fetch_official_manifest_bytes(&client, &url, 6).await
         });
-        assert!(result.unwrap_err().contains("bytes limit"));
+        assert!(result.as_ref().is_err_and(|error| error.contains("bytes limit")), "unexpected stream-limit result: {result:?}");
         worker.join().unwrap();
         let (url, worker) = server(b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         let result = tauri::async_runtime::block_on(async {
-            super::fetch_official_manifest_bytes(&super::manifest_catalog_client().unwrap(), &url, 6).await
+            super::fetch_official_manifest_bytes(&client, &url, 6).await
         });
         assert!(result.unwrap_err().contains("HTTP 302"));
         worker.join().unwrap();
@@ -6931,6 +7013,9 @@ mod tests {
         for t in agent_vitals_runtime::mcp::tool_specs() {
             assert!(md.contains(&format!("- `{}` — ", t.name)), "工具 {} 不在清单里", t.name);
         }
+        assert!(md.contains("claude mcp add oh-agent -- "));
+        assert!(md.contains("[mcp_servers.oh-agent]"));
+        assert!(md.contains("\"oh-agent\""));
         assert!(md.contains("data-mcp serve --allow-local-writes"));
         assert!(md.contains("Never invent prices"), "诚实规则必须在");
     }
@@ -7977,15 +8062,5 @@ mod tests {
         assert_eq!(std::fs::read(&target).unwrap(), b"keep-current");
         assert!(!root.join("authority.sqlite.pre-restore-43.bak").exists());
         let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn latest_release_parser_accepts_only_app_tags() {
-        assert_eq!(
-            parse_latest_release_tag(&serde_json::json!({"tag_name": "app-v1.0.0"})).unwrap(),
-            "app-v1.0.0"
-        );
-        assert!(parse_latest_release_tag(&serde_json::json!({})).is_err());
-        assert!(parse_latest_release_tag(&serde_json::json!({"tag_name": "v1.0.0"})).is_err());
     }
 }

@@ -12,13 +12,14 @@
 
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { ModeLeaseBook } from "./modeLease";
 import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { GTAOPass } from "three/addons/postprocessing/GTAOPass.js";
 import { Reflector } from "three/addons/objects/Reflector.js";
-import type { CityModel } from "../cityModel";
+import { selectVisualHero, type CityModel } from "../cityModel";
 import { activeTheme, BIOME_GRADES, skyYawOf } from "./cityTheme";
 import { loadCityAssets, type CityAssets } from "./cityAssets";
 import { loadBiomeFlora } from "./cityFlora";
@@ -28,16 +29,21 @@ import { Mp4Writer } from "./mp4Muxer";
 import { WebmFilmWriter, type WebmCodec } from "./webmMuxer";
 import { layoutCity, type CityLayout, type BackdropMode } from "./cityLayout";
 import { applyPlanPatch, layoutPinsFor, type PatchedLayout, type PlanPatchV1 } from "./planPatch";
-import { CityParts, type QualityLevel } from "./cityParts";
+import { CityParts, occupantsCanAppend, type QualityLevel } from "./cityParts";
+import { applyBuildingEvent, parseBuildingChanged, replayDecision, type BuildingChangedEvent, type OverlayDecision } from "./sessionKitConstruction";
+import { applyEditEvent, parseBuildingEdit, type BuildingEditEvent, type EditVisual } from "./sessionKitEditState";
+import { parseSquadEnvelope, type ClaimTint, type SquadEnvelope } from "./squadEvents";
 import { skyStateAt, type CitySkyPreset } from "./citySky";
 import { MIAMI_COASTAL } from "./citySeaside";
 import { CityAurora } from "./cityAurora";
 import { CityAmbient } from "./cityAmbient";
 import { CityWildlife } from "./cityWildlife";
-import { planAirport, roadSamples } from "./cityAirport";
 import { LIGHT_BUDGET, nightFactor } from "./cityLightBudget";
 import { DRIVING_PARAMS } from "../game/DrivingSimulation";
 import { CAR_DIMENSIONS } from "../game/carDimensions";
+import { PLAYABLE_CAR_PREFIX, PLAYABLE_MECHA_NAME, PLAYABLE_PLANE_NAME, playableKind, type PlayTarget } from "./render/playableVehicles";
+import { claimParkedMechaClick, parkedMechaPickBoxes } from "./render/mechaPick";
+import { paletteFor, paletteForDistrict } from "./cityTextures";
 import { CarCamera } from "../game/CarCamera";
 import { FlightCameraControls } from "../game/FlightCameraControls";
 import { RainbowArch, RainOverlay } from "./cityWeather";
@@ -45,7 +51,7 @@ import { CityEnvironment, type CityEnvironmentSnapshot } from "./environment/Cit
 import { createRenderCanvas, renderContext2D, type RenderCanvas } from "./renderCanvas";
 import { buildingFrame, isSelectionGesture } from "./cityCameraInteraction";
 import type { ReturnCameraView } from "../game/types";
-import { CitySurfacePort, type CitySurfaceCapture, type ReadyCitySurfaceCapture } from "./surface/citySurfacePort";
+import { CitySurfacePort, type CitySurfaceCapture, type ReadyCitySurfaceCapture, type CitySurfaceSource } from "./surface/citySurfacePort";
 import { CityStaticWorldPort, type ReadyCityStaticWorldCapture } from "./surface/cityStaticWorldPort";
 import { HostGameScenePort } from "../game/runtime/HostGameScenePort";
 import type { CameraPose, GameSelection } from "../game/runtime/GameScenePort";
@@ -64,6 +70,26 @@ export type PhotoView = { position: number[]; target: number[]; fov: number; ela
 /** 相机所有权（游戏模式 §4）：同一帧只允许一个所有者推进相机。 */
 export type CameraOwner = "orbit" | "cinematic" | "game";
 
+/** 轻量模式租约：相机、帧钩子、场景对象由一个 token 持有，release 幂等。
+ *  与 `gameScenePort` 的完整场景租约并存：后者冻结静态世界，这里只需要独占
+ *  控制权（机甲战棋这类在同一座城市上叠加一层对象的模式）。 */
+export type ModeOrbitView = {
+  position: { x: number; y: number; z: number };
+  target: { x: number; y: number; z: number };
+  fov?: number;
+  minDistance?: number;
+  maxDistance?: number;
+};
+export type ModeLease = {
+  readonly id: number;
+  attach: (objects: THREE.Object3D[]) => void;
+  setFrameHook: (hook: ((dt: number) => void) | null) => void;
+  /** Reversible city decoration masking owned by this lease. */
+  setBattleClarity: (active: boolean) => void;
+  setOrbitView: (view: ModeOrbitView) => void;
+  release: () => void;
+};
+
 /** 规划修复模式的点击钩子：引擎把一次选取手势翻成「点中的会话楼/非楼物体 id + 点到的地面坐标」交给它，自己不再选楼/飞镜头。 */
 /** 选取手势的射线（世界坐标）：设施拾取按占地盒求交，不能只靠射线与地形的交点（高楼会把交点推到楼后面）。 */
 export type RepairRay = { origin: { x: number; y: number; z: number }; direction: { x: number; y: number; z: number } };
@@ -77,6 +103,8 @@ export type CityEngineOptions = {
   headless?: boolean;
   onHover?: (id: string | null, clientX: number, clientY: number) => void;
   onSelect?: (id: string | null) => void;
+  /** 点到可开的载具（地标停车场的车 / 机坪的飞机）：宿主据此进入开车或开飞机，不走选中流程。 */
+  onPlay?: (target: PlayTarget) => void;
   onOrbitLock?: (id: string | null) => void;
   onStats?: (stats: EngineStats) => void;
   onTimeCursor?: (ms: number, live: boolean) => void;
@@ -107,14 +135,25 @@ export class CityEngine {
   private readonly sun: THREE.DirectionalLight;
   private readonly raycaster = new THREE.Raycaster();
   private readonly pointer = new THREE.Vector2();
+  private readonly encounterTargets = new Map<THREE.Object3D, () => void>();
   private parts: CityParts | null = null;
+  /** Last applyModel path: mount rebuilds CityParts; append keeps the scene and adds occupants. */
+  lastApplyMode: "mount" | "append" = "mount";
+  private readonly kitDecisions = new Map<string, OverlayDecision>();
+  private readonly pendingKits = new Map<string, { event: BuildingChangedEvent; animate: boolean }>();
+  private readonly editVisuals = new Map<string, EditVisual>();
+  private readonly pendingEdits = new Map<string, BuildingEditEvent>();
   /** 对外的生效布局（已套规划修复补丁；无补丁时就是 baseLayout）。GameSession/FlightWorld/拾取读的都是它。 */
   private layout: CityLayout | null = null;
+  private nextLayoutOverride: CityLayout | null = null;
   /** Read-only driving-surface snapshots of the rendered city; invalidated whenever parts rebuild. */
   private readonly environment = new CityEnvironment();
   private environmentSnapshot = this.environment.sample(Date.now());
   /** Shared facts for lighting, rain, audio and future world systems. */
   get environmentState(): CityEnvironmentSnapshot { return this.environmentSnapshot; }
+  /** 当前「夜」量 [0,1]（与天空 uNight 同值：黄昏及之前 0，入夜渐变到 1）。 */
+  private nightAmount = 0;
+  get skyNight(): number { return this.nightAmount; }
   private readonly surfacePort = new CitySurfacePort();
   private readonly staticWorldPort = new CityStaticWorldPort();
   private readonly drivingWorldPort = new CitySurfacePort();
@@ -217,12 +256,16 @@ export class CityEngine {
   // tween/拾取，唯一的相机更新来自 gameFrame 回调（由 GameModeController 侧注册）。
   private cameraOwner: CameraOwner = "orbit";
   private gameFrame: ((dt: number) => void) | null = null;
+  /** 相机 / 帧钩子 / 叠加对象的独占租约。ID 单调递增，过期 token 不能操作新租约。 */
+  private readonly modeLeases = new ModeLeaseBook();
+  private modeBattleClarity = false;
+  private labelsVisible = true;
   readonly gameScenePort = new HostGameScenePort<GameSceneSnapshot, THREE.Object3D>({
     epoch: () => this.hostEpoch,
     isAlive: () => !this.disposed,
     canAcquire: () => {
       if (!this.parts || !this.layout || !this.model) return Object.freeze({ status: "unavailable", reason: "city-not-ready" });
-      if (this.cinematic || this.drivingWorldFrame || this.gameFrame || this.cameraOwner !== "orbit") return Object.freeze({ status: "busy", reason: "host-busy" });
+      if (this.cinematic || this.drivingWorldFrame || this.gameFrame || this.modeLeases.busy || this.cameraOwner !== "orbit") return Object.freeze({ status: "busy", reason: "host-busy" });
       return true;
     },
     capture: async (selection: GameSelection, signal) => {
@@ -260,6 +303,7 @@ export class CityEngine {
     captureReturnState: () => ({ view: this.captureReturnView(), cameraNear: this.camera.near, controlsEnabled: this.controls.enabled,
       autoRotate: this.controls.autoRotate, ambientCarsVisible: this.readAmbientCarsVisible() }),
     takeOwnership: (token) => {
+      if (this.modeLeases.busy) return false;
       if (!this.setCameraOwner("game")) return false;
       this.gameSceneToken = token;
       this.camera.near = 0.15;
@@ -402,9 +446,8 @@ export class CityEngine {
       this.pointerDown = null;
       this.noteActivity();
       if (!down || down.id !== event.pointerId) return;
-      // 游戏持有相机时画布手势归飞行相机（拖动环绕/双击复位）；短点击若仍当作选楼，
-      // 会 flyTo + 改写 OrbitControls 的距离/平移参数，退出游戏后污染返回视角。
-      if (this.cameraOwner === "game") return;
+      // 模式持有画布时，短点击由模式自己的拾取器处理；不能穿透为选楼或飞镜头。
+      if (this.cameraOwner === "game" || this.modeLeases.busy) return;
       const moved = Math.max(down.moved, Math.hypot(event.clientX - down.x, event.clientY - down.y));
       if (event.ctrlKey || event.metaKey || event.shiftKey) return;
       if (!isSelectionGesture(event.button, event.isPrimary, moved, performance.now() - down.at)) return;
@@ -635,6 +678,22 @@ export class CityEngine {
     return this.layout;
   }
 
+  get currentBackdrop(): BackdropMode {
+    return this.backdrop;
+  }
+
+  /** Mount a trusted, allowlisted remote projection of the already-laid-out city. */
+  applyRemoteModel(model: CityModel, layout: CityLayout, backdrop: BackdropMode): void {
+    this.seed = layout.seed;
+    this.backdrop = backdrop;
+    this.planPatchValue = null;
+    this.planResult = null;
+    this.baseLayout = null;
+    this.layout = null;
+    this.nextLayoutOverride = layout;
+    this.applyModel(model, false);
+  }
+
   /** 规划修复（CITY_PLAN_MANUAL_REPAIR_SPEC §13）：当前种子生效的补丁、套用结果（失效清单/id 对照）与未打补丁的底层布局。 */
   get planPatch(): PlanPatchV1 | null {
     return this.planPatchValue && this.planPatchValue.seed === this.seed ? this.planPatchValue : null;
@@ -665,6 +724,8 @@ export class CityEngine {
     return this.model;
   }
 
+  get currentSeed(): number | null { return this.seed; }
+
   get replayCursor(): number | null {
     return this.cursorMs;
   }
@@ -681,11 +742,13 @@ export class CityEngine {
   /** 游戏对象挂载/摘除（飞机、圆环等）；渲染管线与既有场景不动。 */
   attachGameObjects(...objects: THREE.Object3D[]): void {
     if (this.gameSceneToken) throw new Error("scene-lease-required");
+    if (this.modeLeases.busy) throw new Error("mode-lease-active");
     this.scene.add(...objects);
   }
 
   detachGameObjects(...objects: THREE.Object3D[]): void {
     if (this.gameSceneToken) throw new Error("scene-lease-required");
+    if (this.modeLeases.busy) throw new Error("mode-lease-active");
     this.scene.remove(...objects);
   }
 
@@ -693,6 +756,7 @@ export class CityEngine {
    *  orbit 归还时恢复 controls；cinematic 所有权由 startCinematic/stopCinematic 自管。 */
   setCameraOwner(owner: CameraOwner): boolean {
     if (this.gameSceneToken && owner !== "game") return false;
+    if (this.modeLeases.busy && owner === "orbit") return false; // 租约未释放前不得改判
     if (owner === "game" && this.drivingWorldFrame) return false;
     if (owner === this.cameraOwner) return true;
     if (owner === "game") {
@@ -710,9 +774,76 @@ export class CityEngine {
     return true;
   }
 
+  /** 取一份独占租约：相机 + 帧钩子 + 叠加对象。冲突时返回 null（调用方应保持
+   *  原模式，不得静默覆盖别人的相机/钩子）。release 幂等；过期 token 的写操作
+   *  抛 `stale-mode-lease`。 */
+  acquireModeLease(options: { camera?: "fixed" | "orbit" } = {}): ModeLease | null {
+    if (this.disposed || this.gameSceneToken || this.cinematic || this.drivingWorldFrame || this.gameFrame || this.modeLeases.busy || this.cameraOwner !== "orbit") return null;
+    const token = this.modeLeases.acquire();
+    if (!token) return null;
+    if (options.camera !== "orbit" && !this.setCameraOwner("game")) {
+      this.modeLeases.release(token);
+      return null;
+    }
+    const attached = new Set<THREE.Object3D>();
+    const current = () => this.modeLeases.isCurrent(token);
+    const check = () => { if (!current()) throw new Error("stale-mode-lease"); };
+    return {
+      id: token.id,
+      attach: (objects) => {
+        check();
+        for (const object of objects) {
+          this.scene.add(object);
+          attached.add(object);
+        }
+      },
+      setBattleClarity: (active) => {
+        check();
+        this.modeBattleClarity = active;
+        this.parts?.setBattleClarity(active);
+      },
+      setFrameHook: (hook) => {
+        check();
+        this.gameFrame = hook;
+      },
+      setOrbitView: (view) => {
+        check();
+        if (options.camera !== "orbit") throw new Error("orbit-mode-required");
+        this.tween = null;
+        this.attracted = false;
+        this.orbitLockedId = null;
+        this.controls.autoRotate = false;
+        this.controls.enabled = true;
+        this.controls.enablePan = true;
+        this.controls.zoomToCursor = true;
+        this.controls.minDistance = view.minDistance ?? 36;
+        this.controls.maxDistance = view.maxDistance ?? 480;
+        this.camera.position.set(view.position.x, view.position.y, view.position.z);
+        this.controls.target.set(view.target.x, view.target.y, view.target.z);
+        this.camera.up.set(0, 1, 0);
+        this.camera.fov = view.fov ?? 40;
+        this.camera.updateProjectionMatrix();
+        this.clearCameraMomentum();
+        this.camera.lookAt(this.controls.target);
+      },
+      release: () => {
+        // The book drops the token before the engine cleanup, so a second call
+        // (or a stale lease) cannot clear the next owner's frame hook/camera.
+        if (!this.modeLeases.release(token)) return;
+        this.gameFrame = null;
+        this.modeBattleClarity = false;
+        this.parts?.setBattleClarity(false);
+        for (const object of attached) this.scene.remove(object);
+        attached.clear();
+        if (this.cameraOwner === "game") this.setCameraOwner("orbit");
+      },
+    };
+  }
+
   /** 游戏每帧回调：owner === "game" 时在 updateScene 中调用（dt 秒），不启动第二个绘制循环。 */
   setGameFrameHook(fn: ((dt: number) => void) | null): void {
     if (this.gameSceneToken) throw new Error("scene-lease-required");
+    if (this.modeLeases.busy) throw new Error("mode-lease-active");
     if (fn && this.drivingWorldFrame) throw new Error("driving-frame-already-owned");
     this.gameFrame = fn;
   }
@@ -775,11 +906,47 @@ export class CityEngine {
   /** reuse=false：丢弃上一布局做全量重排（分页到齐后的圈层修正）。
    *  keepBase：模型与钉子都没变，沿用缓存的底层布局只重套补丁（setPlanPatch 的快路径）。 */
   applyModel(model: CityModel, reuse = true, keepBase = false): void {
-    const sameModel = model === this.model;
+    const previousModel = this.model;
+    const sameModel = model === previousModel;
     this.model = model;
     if (this.seed === null) return;
+    const patch = this.planPatch;
+    const remoteLayout = this.nextLayoutOverride;
+    this.nextLayoutOverride = null;
+    const base = remoteLayout ?? (keepBase && sameModel && this.baseLayout ? this.baseLayout
+      : layoutCity(model, reuse ? this.baseLayout : null, this.seed, MIAMI_COASTAL, this.backdrop, layoutPinsFor(patch)));
+    const planResult = remoteLayout ? null : patch ? applyPlanPatch(base, patch) : null;
+    const layout = planResult ? planResult.layout : base;
+    // 同岛分页：不拆 CityParts / 实例网格 / 相机 / 选中态；只把新楼写进已有批次。
+    // 修订导致会话丢失或搬家时走下面的整层重建。
+    if (reuse && this.parts && previousModel && this.layout && occupantsCanAppend(previousModel, model, this.layout, layout)) {
+      this.baseLayout = base;
+      this.planResult = planResult;
+      this.layout = layout;
+      this.lastApplyMode = "append";
+      this.parts.appendOccupants(model, layout);
+      this.drivingWorldPort.invalidate();
+      this.parts.setLabelsVisible(this.labelsVisible);
+      this.parts.setQualityLevel(this.quality);
+      if (this.cursorMs !== null) this.parts.applyCursor(this.cursorMs, false, this.playbackSpeed * 1000);
+      this.parts.snapToTargets();
+      this.parts.setSelected(this.selectedId?.startsWith("decor:") ? null : this.selectedId);
+      this.parts.setHovered(this.hoveredId);
+      this.reapplyKits("append");
+      if (!this.options.headless && !this.contextLost) {
+        this.updateScene(0);
+        this.renderFrame();
+        this.lastRenderAt = performance.now();
+        if (!this.firstFrameSent) {
+          this.firstFrameSent = true;
+          this.options.onFirstFrame?.();
+        }
+      }
+      return;
+    }
     // 重建前抓显示进度：回访的楼保持高度（不闪缩、不重演生长），新到的楼从 0 长入。
     const previousDisplays = this.parts ? this.parts.displaySnapshot() : null;
+    this.lastApplyMode = "mount";
     this.hostEpoch += 1;
     this.gameScenePort.invalidate();
     this.surfacePort.invalidate();
@@ -789,14 +956,12 @@ export class CityEngine {
       this.parts.dispose();
       this.parts = null;
     }
-    const patch = this.planPatch;
-    const base = keepBase && sameModel && this.baseLayout ? this.baseLayout
-      : layoutCity(model, reuse ? this.baseLayout : null, this.seed, MIAMI_COASTAL, this.backdrop, layoutPinsFor(patch));
     this.baseLayout = base;
-    this.planResult = patch ? applyPlanPatch(base, patch) : null;
-    const layout = this.planResult ? this.planResult.layout : base;
+    this.planResult = planResult;
     this.layout = layout;
     this.parts = new CityParts(model, layout, previousDisplays);
+    this.parts.setLabelsVisible(this.labelsVisible);
+    this.parts.setBattleClarity(this.modeBattleClarity);
     if (this.assets) this.parts.applyAssets(this.assets);
     this.parts.setSkyMix(this.dayMix);
     this.lastSkyHour = -1; // 新建的 parts 还是白天默认状态：强制下一帧按当前时刻重新应用昼夜（灯光/亮窗/天空）
@@ -804,6 +969,7 @@ export class CityEngine {
     const parts = this.parts;
     this.floraReady = loadBiomeFlora(layout.biome).then((flora) => { if (this.parts === parts && !this.disposed) parts.applyFlora(flora); });
     this.scene.add(this.parts.group, this.parts.water);
+    this.reapplyKits("mount");
 
     this.cityCenter = { x: (layout.urbanBounds.left + layout.urbanBounds.right) / 2, z: (layout.urbanBounds.north + layout.urbanBounds.south) / 2 };
     this.aurora?.dispose();
@@ -860,7 +1026,7 @@ export class CityEngine {
       const home = this.homeView();
       this.flyTo(home, { ...this.cityCenter, y: 6 }, 900);
     }
-    this.parts.setLabelsVisible(true);
+    this.parts.setLabelsVisible(this.labelsVisible);
     this.parts.setQualityLevel(this.quality);
     if (this.cursorMs !== null) this.parts.applyCursor(this.cursorMs, false, this.playbackSpeed * 1000);
     // 重建后 display 是「已完工」初值：先对齐到当前时间轴进度，否则回放中
@@ -1059,22 +1225,23 @@ export class CityEngine {
   focusBuilding(id: string): boolean {
     if (!this.parts) return false;
     if (this.cinematic) this.stopCinematic();
-    const anchor = this.parts.focusAnchorFor(id);
+    const resolved = this.parts.sessionIdForAsset(id) ?? id;
+    const anchor = this.parts.focusAnchorFor(resolved);
     if (!anchor) return false;
-    this.setSelected(id); // Keyboard/menu selection must also update the engine's selected target.
+    this.setSelected(resolved); // Keyboard/menu selection must also update the engine's selected target.
     this.attracted = false;
     const framing = buildingFrame(anchor.height, anchor.footprint, this.camera.fov, this.camera.aspect);
     const target = new THREE.Vector3(anchor.x, anchor.ground + anchor.height * 0.5, anchor.z);
     const direction = new THREE.Vector3().subVectors(this.camera.position, this.controls.target).setY(0).normalize();
     if (direction.lengthSq() < 0.01) direction.set(0.8, 0, 0.6).normalize();
     // Start with neighbourhood context for small buildings; wheel zoom remains much closer.
-    const position = this.buildingViewPosition(id, target, direction, Math.max(framing.distance, framing.minDistance * 6));
+    const position = this.buildingViewPosition(resolved, target, direction, Math.max(framing.distance, framing.minDistance * 6));
     this.controls.enablePan = false;
     this.controls.zoomToCursor = false;
     this.controls.minDistance = framing.minDistance;
     this.controls.maxDistance = Math.max(this.boundsRadius * 4.5, position.distanceTo(target) * 1.5);
-    this.orbitLockedId = id;
-    this.options.onOrbitLock?.(id);
+    this.orbitLockedId = resolved;
+    this.options.onOrbitLock?.(resolved);
     this.flyTo(position, target, 550);
     return true;
   }
@@ -1121,7 +1288,7 @@ export class CityEngine {
       "session-tower": () => pick((b) => P.formOf(b) === "tower" && b.height > 25),
       "session-slab": () => pick((b) => P.formOf(b) === "slab" && b.height > 12),
       "session-deco": () => pick((b, s) => P.facadeFor(b) === 3 && !s.blockId.startsWith("hotel:")),
-      "hero-tower": () => { let best: CityModel["buildings"][number] | null = null; for (const b of model.buildings) if (!best || b.tokensTotal > best.tokensTotal) best = b; const slot = best ? slots.get(best.id) : null; return best && slot ? [slot.x, best.height * 0.6, slot.z, Math.max(60, best.height * 2.4)] : null; },
+      "hero-tower": () => { const best = selectVisualHero(model.buildings); const slot = best ? slots.get(best.id) : null; return best && slot ? [slot.x, best.height * 0.6, slot.z, Math.max(60, best.height * 2.4)] : null; },
       "session-hotel": () => pick((_b, s) => s.blockId.startsWith("hotel:")),
       "district-landmark": () => (districtLandmark ? [districtLandmark.x, 45, districtLandmark.z, 150] : null),
       "twin-towers": () => landmark("twin-towers", 38, 160),
@@ -1130,7 +1297,7 @@ export class CityEngine {
       "sail-opera": () => landmark("sail-opera", 10, 75),
       "suspension-bridge": () => landmark("suspension-bridge", 12, 95),
       "truss-bridge": () => (truss ? [(truss.from.x + truss.to.x) / 2, 4, (truss.from.z + truss.to.z) / 2, 55] : null),
-      airport: () => { const avoid = [...L.publicSites.filter((x) => x.kind === "harbor"), ...(L.landmarks ?? []).filter((x) => x.kind === "sail-opera"), ...(L.seaside && !L.seaside.degraded ? L.seaside.samples.filter((x) => x.valid).map((x) => x.waterline) : [])]; const a = planAirport(L.coast, L.core ?? { x: 0, z: 0 }, avoid, roadSamples(L.roadEdges), (x, z) => L.terrain.height(x, z) < -0.6); return a ? [a.centre.x, 6, a.centre.z, 230] : null; },
+      airport: () => (L.airport ? [L.airport.centre.x, 6, L.airport.centre.z, 230] : null),
       harbor: () => (harbor ? [harbor.x, 6, harbor.z, 75] : null),
       hospital: () => civicOf("hospital"), school: () => civicOf("school"), mall: () => civicOf("mall"),
       garden: () => { const g = (L.gardens ?? [])[0]; return g ? [g.x, 2, g.z, 60] : null; },
@@ -1211,6 +1378,7 @@ export class CityEngine {
   }
 
   setLabelsVisible(visible: boolean): void {
+    this.labelsVisible = visible;
     this.parts?.setLabelsVisible(visible);
   }
 
@@ -1225,6 +1393,11 @@ export class CityEngine {
     this.selectedId = id;
     if (!id || (this.orbitLockedId && this.orbitLockedId !== id)) this.releaseOrbitLock();
     this.parts?.setSelected(id?.startsWith("decor:") ? null : id);
+  }
+
+  setHovered(id: string | null): void {
+    this.hoveredId = id;
+    this.parts?.setHovered(id);
   }
 
   /** 时间游标：null = live（跟随现在）；play = 以 speed 倍率回放。 */
@@ -1261,6 +1434,16 @@ export class CityEngine {
   removeOverlay(object: THREE.Object3D): void {
     this.scene.remove(object);
     this.noteActivity();
+  }
+
+  addEncounterTarget(object: THREE.Object3D, onClick: () => void): void {
+    this.encounterTargets.set(object, onClick);
+    this.addOverlay(object);
+  }
+
+  removeEncounterTarget(object: THREE.Object3D): void {
+    this.encounterTargets.delete(object);
+    this.removeOverlay(object);
   }
 
   /** Car presentation shares the leased frame loop; no independent camera timer.
@@ -1356,7 +1539,22 @@ export class CityEngine {
       this.repairHook.onClick({ pickedId: picked, ground, ray: this.currentRay() });
       return;
     }
+    this.raycaster.setFromCamera(this.pointer, this.camera);
+    const hit = this.raycaster.intersectObjects([...this.encounterTargets.keys()].filter((object) => object.visible), true).find((entry) => Number.isFinite(entry.distance) && entry.distance >= this.camera.near && entry.point.toArray().every(Number.isFinite));
+    if (hit) {
+      const obstacle = this.raycaster.intersectObjects([...this.parts.raycastTargets, ...this.parts.decorTargets], false).find((entry) => Number.isFinite(entry.distance) && entry.distance >= this.camera.near && entry.point.toArray().every(Number.isFinite));
+      const ground = this.groundPointAtPointer();
+      const groundDistance = ground && this.layout ? this.raycaster.ray.origin.distanceTo(new THREE.Vector3(ground.x, this.layout.terrain.height(ground.x, ground.z), ground.z)) : Infinity;
+      if ((!obstacle || hit.distance < obstacle.distance) && hit.distance <= groundDistance + 0.1) {
+        let object: THREE.Object3D | null = hit.object;
+        while (object && !this.encounterTargets.has(object)) object = object.parent;
+        const onClick = object && this.encounterTargets.get(object);
+        if (onClick) { onClick(); return; }
+      }
+    }
     const id = this.pick();
+    const play = playableKind(id) ? this.playableAt(id!) : null;
+    if (play) { this.options.onPlay?.(play); return; }
     if (id && id.startsWith("decor:")) {
       // Decorations share orbit locking, but not session-only selection rings.
       this.lockSelection(id);
@@ -1370,28 +1568,63 @@ export class CityEngine {
     }
   }
 
+  /** 可开载具的世界位姿：车 = 停车位与车头朝向（出发点就是这座地标）；飞机 = 跑道西端、顺跑道方向（起飞点）。 */
+  playableAt(id: string): PlayTarget | null {
+    const kind = playableKind(id);
+    if (!this.parts || !kind) return null;
+    const heading = (object: THREE.Object3D, local: THREE.Vector3) => { const d = local.transformDirection(object.matrixWorld); return Math.atan2(d.z, d.x); };
+    this.parts.group.updateMatrixWorld(true);
+    if (kind === "car") {
+      const districtId = id.slice("play:car:".length);
+      const car = this.parts.group.getObjectByName(`${PLAYABLE_CAR_PREFIX}${districtId}`);
+      if (!car) return null;
+      const at = car.getWorldPosition(new THREE.Vector3());
+      return { kind, districtId, color: (this.model ? paletteForDistrict(this.model, districtId) : paletteFor(districtId)).accent, x: at.x, z: at.z, heading: heading(car, new THREE.Vector3(0, 0, 1)) };
+    }
+    if (kind === "mecha") {
+      const squad = this.parts.group.getObjectByName(PLAYABLE_MECHA_NAME);
+      return squad ? { kind } : null;
+    }
+    const runway = this.parts.group.getObjectByName(PLAYABLE_PLANE_NAME)?.userData.runway as THREE.Object3D | undefined;
+    if (!runway) return null;
+    const at = runway.getWorldPosition(new THREE.Vector3());
+    return { kind, x: at.x, y: at.y, z: at.z, heading: heading(runway, new THREE.Vector3(1, 0, 0)) };
+  }
+
   private pick(): string | null {
     if (!this.parts || !this.pointerClient) return null;
     this.pickedDecor = null;
     this.raycaster.setFromCamera(this.pointer, this.camera);
     // 会话楼与非会话建筑一起测，取最近的命中：站在海滨酒店前点它，得到的是酒店说明而不是背后的会话楼。
     const hits = this.raycaster.intersectObjects([...this.parts.raycastTargets, ...this.parts.decorTargets], false);
+    let chosen: string | null = null;
+    let chosenHit: THREE.Intersection | null = null;
     for (const hit of hits) {
       // Hidden zero-scale/procedural instances may produce non-finite ray intersections.
       // They are not visible targets and must never poison the camera or hover selection.
       if (!Number.isFinite(hit.distance) || hit.distance < this.camera.near || !hit.point.toArray().every(Number.isFinite)) continue;
       if (hit.instanceId !== undefined) {
         const id = this.parts.idAt(hit.object, hit.instanceId);
-        if (id) return id;
+        if (id) { chosen = id; chosenHit = hit; break; }
       }
       const decor = this.parts.decorAt(hit.object, hit.instanceId, hit.point);
       if (decor) {
         // Merged/procedural decoration bounds can cover many objects; use the visible hit.
         this.pickedDecor = { id: decor, point: hit.point.clone() };
-        return decor;
+        chosen = decor;
+        chosenHit = hit;
+        break;
       }
     }
-    return null;
+    const squad = this.parts.group?.getObjectByName(PLAYABLE_MECHA_NAME);
+    if (chosen !== "play:mecha" && squad && claimParkedMechaClick({
+      boxes: parkedMechaPickBoxes(squad), ray: this.raycaster.ray,
+      hit: chosenHit ? { distance: chosenHit.distance, point: chosenHit.point, airportLandmark: chosen === "decor:landmark:airport", protectedAirportStructure: chosen === "decor:landmark:airport" && !chosenHit.object.userData.mechaApron } : null,
+    })) {
+      this.pickedDecor = null;
+      return "play:mecha";
+    }
+    return chosen;
   }
 
   /** 天穹：内翻大球，顶部到地平线的垂直渐变，1 次绘制的"天空感"。 */
@@ -1521,6 +1754,113 @@ export class CityEngine {
       loopScheduled: !!this.raf, modelApplied: !!this.model,
       frameAgeMs: Math.round(performance.now() - this.lastRenderAt),
       width: this.renderer.domElement.width, height: this.renderer.domElement.height };
+  }
+
+  inspectScene() {
+    const occupancy = this.parts?.occupancySnapshot() ?? { runtimeCount: 0, byId: {} as Record<string, { x: number; z: number; shaftPrimary: unknown }> };
+    const positions: Record<string, { x: number; z: number; shaftPrimary: unknown }> = {};
+    for (const [id, row] of Object.entries(occupancy.byId)) positions[id] = { x: row.x, z: row.z, shaftPrimary: row.shaftPrimary };
+    return { lastApplyMode: this.lastApplyMode, scaleTier: this.layout?.scaleTier ?? null,
+      selectedId: this.selectedId, hoveredId: this.hoveredId, camera: this.photoView(),
+      occupantCount: occupancy.runtimeCount, positions, kits: this.parts?.kitSnapshot() ?? [],
+      edits: this.parts?.editSnapshot() ?? [...this.editVisuals.values()].map((visual) => ({
+        sessionId: visual.sessionId, assetRef: visual.assetRef, kind: visual.kind, eventId: visual.eventId,
+      })),
+      claims: this.parts?.claimSnapshot() ?? [] };
+  }
+
+  applyBuildingChanged(raw: unknown, animate: boolean): OverlayDecision | null {
+    if (this.applyBuildingEdit(raw)) return null;
+    const event = parseBuildingChanged(raw);
+    if (!event) return null;
+    const assetRef = event.entity_id;
+    const sessionId = event.session_id
+      ?? this.parts?.sessionIdForAsset(assetRef)
+      ?? this.model?.buildings.find((building) => building.assetRef === assetRef)?.id;
+    if (!sessionId) {
+      this.pendingKits.set(assetRef, { event, animate });
+      return null;
+    }
+    const current = this.kitDecisions.get(sessionId) ?? null;
+    const next = applyBuildingEvent(current, event, sessionId, animate);
+    if (!next) return null;
+    if (current && current.buildEventId === next.buildEventId) return next;
+    this.kitDecisions.set(sessionId, next);
+    this.pendingKits.delete(assetRef);
+    this.parts?.applySessionKit(next);
+    this.clearBuildingEdit(sessionId);
+    return next;
+  }
+
+  applyBuildingEdit(raw: unknown): boolean {
+    const event = parseBuildingEdit(raw);
+    if (!event) return false;
+    const assetRef = event.entity_id;
+    const sessionId = event.session_id
+      ?? this.parts?.sessionIdForAsset(assetRef)
+      ?? this.model?.buildings.find((building) => building.assetRef === assetRef)?.id;
+    if (!sessionId) {
+      this.pendingEdits.set(assetRef, event);
+      return true;
+    }
+    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+    const next = applyEditEvent(this.editVisuals.get(sessionId) ?? null, event, sessionId, now);
+    if (!next) return true;
+    this.editVisuals.set(sessionId, next);
+    this.pendingEdits.delete(assetRef);
+    this.parts?.applySessionEdit(next);
+    return true;
+  }
+
+  clearBuildingEdit(sessionId: string): void {
+    this.editVisuals.delete(sessionId);
+    this.parts?.clearSessionEdit(sessionId);
+  }
+
+  applySquadEvent(raw: unknown): SquadEnvelope | null {
+    const event = parseSquadEnvelope(raw);
+    if (!event) return null;
+    return event;
+  }
+
+  applyClaimTint(visual: ClaimTint): boolean {
+    return this.parts?.applySessionClaim(visual) ?? false;
+  }
+
+  clearClaimTint(sessionOrAsset: string): boolean {
+    const sessionId = this.parts?.sessionIdForAsset(sessionOrAsset) ?? sessionOrAsset;
+    return this.parts?.clearSessionClaim(sessionId) ?? false;
+  }
+
+  replayBuilding(assetOrSession: string): boolean {
+    const sessionId = this.kitDecisions.has(assetOrSession)
+      ? assetOrSession
+      : [...this.kitDecisions.values()].find((decision) => decision.assetRef === assetOrSession)?.sessionId;
+    if (!sessionId) return false;
+    const current = this.kitDecisions.get(sessionId);
+    if (!current) return false;
+    const next = replayDecision(current);
+    this.kitDecisions.set(sessionId, next);
+    return this.parts?.replaySessionKit(sessionId) ?? false;
+  }
+
+  private reapplyKits(mode: "mount" | "append"): void {
+    if (!this.parts) return;
+    const present = new Set(this.parts.kitSnapshot().map((row) => row.sessionId));
+    for (const decision of this.kitDecisions.values()) {
+      if (mode === "append" && present.has(decision.sessionId)) continue;
+      this.parts.applySessionKit({ ...decision, animate: false });
+    }
+    for (const [assetRef, pending] of [...this.pendingKits]) {
+      if (!this.parts.sessionIdForAsset(assetRef)) continue;
+      this.pendingKits.delete(assetRef);
+      this.applyBuildingChanged(pending.event, pending.animate);
+    }
+    for (const [assetRef, pending] of [...this.pendingEdits]) {
+      if (!this.parts.sessionIdForAsset(assetRef)) continue;
+      this.pendingEdits.delete(assetRef);
+      this.applyBuildingEdit(pending);
+    }
   }
 
   private stopLoop(): void {
@@ -1902,6 +2242,7 @@ export class CityEngine {
     // sunIntensity：日 1.55 / 黄昏 1.05 / 夜 0.32 → 黄昏及之前 0，入夜渐变到 1。
     const night = 1 - Math.min(1, Math.max(0, (sky.sunIntensity - 0.32) / (0.95 - 0.32)));
     skyUniforms.uNight.value = night * night * (3 - 2 * night);
+    this.nightAmount = skyUniforms.uNight.value;
     this.parts?.setNightWater(skyUniforms.uNight.value);
     skyUniforms.uOvercast.value = 0; // applyWeather 随后再按当天天气写入：每个 tick 先归零，不累积
     (this.scene.background as THREE.Color).set(sky.fog);
@@ -1972,10 +2313,9 @@ export class CityEngine {
     if (this.cinematic) this.rain?.setAmount(0);
     else this.rain?.update(dt, this.elapsed, this.camera);
     if (this.drivingWorldFrame) { this.parts?.update(dt, this.elapsed); return; }
-    // 游戏模式：环境装饰照常更新，但回放推进/tween/轨道相机/地形夹取/拾取全部让位——
-    // 相机与模拟只由 gameFrame 回调推进（单一所有权，§4）。渲染仍走本循环。
+    // 固定游戏相机由帧钩子独占；轨道模式在对象更新后继续走 City 的 OrbitControls。
+    this.gameFrame?.(dt);
     if (this.cameraOwner === "game" && this.gameFrame) {
-      this.gameFrame(dt);
       this.parts?.update(dt, this.elapsed);
       return;
     }
@@ -2086,6 +2426,12 @@ export class CityEngine {
    *  Building/landmark solids are not yet in this structural snapshot (coverage is explicit). */
   captureDrivingSurface(signal?: AbortSignal): Promise<CitySurfaceCapture> {
     return this.surfacePort.capture(this.parts?.drivingSurfaceSource() ?? null, signal);
+  }
+
+  captureMechaGroundSource(): { source: CitySurfaceSource; isCurrent: () => boolean } | null {
+    const parts = this.parts, source = parts?.drivingSurfaceSource();
+    if (!parts || !source || this.disposed) return null;
+    return { source, isCurrent: () => !this.disposed && this.parts === parts && parts.drivingSurfaceSource() === source };
   }
 
   /** Explicit display-freeze lease. The caller MUST release it, including on refused entry.

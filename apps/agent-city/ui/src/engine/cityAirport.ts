@@ -5,67 +5,16 @@
  */
 import * as THREE from "three";
 import type { Vec2 } from "./cityLayout";
+import { parkedMechaSquad, parkedPlane } from "./render/playableVehicles";
 
-export type AirportPlan = { shore: Vec2; centre: Vec2; yaw: number; outward: Vec2 };
+export { AIRPORT_PLATFORM, airportCausewayEnd, planAirport, roadSamples, type AirportPlan } from "./airportPlan";
+import { AIRPORT_PLATFORM, type AirportPlan } from "./airportPlan";
 
-/** 在海岸上挑一个点：离核心最远方向里、离港口与海滨景观段都远的岸点。 */
-/** 把非桥路段按 ~20 采样成点集，供选址判断「岸点离路多远」。 */
-export function roadSamples(edges: Array<{ points: Vec2[]; bridge?: boolean }>): Vec2[] {
-  const out: Vec2[] = [];
-  for (const e of edges) {
-    if (e.bridge) continue;
-    const a = e.points[0]; const b = e.points[e.points.length - 1];
-    const n = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.z - a.z) / 20));
-    for (let k = 0; k <= n; k += 1) out.push({ x: a.x + ((b.x - a.x) * k) / n, z: a.z + ((b.z - a.z) * k) / n });
-  }
-  return out;
-}
-
-export function planAirport(coast: Vec2[], core: Vec2, avoid: Vec2[], roads: Vec2[] = [], isWater?: (x: number, z: number) => boolean): AirportPlan | null {
-  if (coast.length < 8) return null;
-  // 堤道陆地端必须落在路网上（用户截图：堤道接到没有路的山岬上）：岸点 30 内有路的优先，其次才是纯按远近。
-  // 整个平台（240×110 + 护岸，沿海岸平行铺开）必须全在水里（用户截图：机场压在陆地上——海岸弯曲时长边的一头会伸到岸上）：
-  // 按得分从高到低试岸点，每个岸点试 140/170/200/240 四个离岸距离，平台范围按 20 间距采样全部入水才通过。
-  const ranked: Array<{ p: Vec2; score: number }> = [];
-  for (const p of coast) {
-    const far = Math.hypot(p.x - core.x, p.z - core.z);
-    const clear = Math.min(...avoid.map((a) => Math.hypot(a.x - p.x, a.z - p.z)), 999);
-    if (clear < 160) continue;
-    let road = Infinity; for (const r of roads) road = Math.min(road, Math.hypot(r.x - p.x, r.z - p.z));
-    ranked.push({ p, score: far + clear * 0.5 + (roads.length ? (road <= 30 ? 1000 : -road) : 0) });
-  }
-  ranked.sort((a, b) => b.score - a.score);
-  const L = 240 + 12; const W = 110 + 12;
-  const footprintWet = (centre: Vec2, yaw: number): boolean => {
-    if (!isWater) return true;
-    const c = Math.cos(yaw); const sn = Math.sin(yaw);
-    for (let lx = -L / 2; lx <= L / 2 + 0.1; lx += 20) for (let lz = -W / 2; lz <= W / 2 + 0.1; lz += 20) {
-      // three 的 rotation.y = θ：本地 (lx, lz) → 世界 (lx·cosθ + lz·sinθ, −lx·sinθ + lz·cosθ)
-      if (!isWater(centre.x + lx * c + lz * sn, centre.z - lx * sn + lz * c)) return false;
-    }
-    return true;
-  };
-  for (const cand of ranked) {
-    const len = Math.hypot(cand.p.x - core.x, cand.p.z - core.z) || 1;
-    const outward = { x: (cand.p.x - core.x) / len, z: (cand.p.z - core.z) / len };
-    let shore = cand.p;
-    if (roads.length) { // 起点吸附到最近路点（≤40），堤道从路上起步
-      let nearest = roads[0]; let nd = Infinity;
-      for (const r of roads) { const d = Math.hypot(r.x - cand.p.x, r.z - cand.p.z); if (d < nd) { nd = d; nearest = r; } }
-      if (nd <= 40) shore = { x: nearest.x, z: nearest.z };
-    }
-    for (const dist of [140, 170, 200, 240]) {
-      const centre = { x: cand.p.x + outward.x * dist, z: cand.p.z + outward.z * dist };
-      const yaw = Math.atan2(outward.x, outward.z);
-      if (footprintWet(centre, yaw)) return { shore, centre, outward, yaw };
-    }
-  }
-  return null;
-}
-
-/** 生成机场岛 + 堤道网格组（单一 Group，名字以 city-landmark-airport 开头供拾取）。 */
+/** 生成机场岛网格组（单一 Group，名字以 city-landmark-airport 开头供拾取）。堤道是路网里的一段桥面
+ *  （cityLayout 加进 roadEdges，普通桥梁渲染器画桥面 / 护栏 / 桥墩），这里只画岛。
+ *  跑道、滑行道、标线是贴在平台顶面的薄层（标记 cityDrivingNonSolid）：平台是可行驶的地标平台，车从上面开过。 */
 export function buildAirport(plan: AirportPlan, disposables: Array<{ dispose: () => void }>, nightHead: THREE.Material | null,
-  roadTopAt?: (x: number, z: number) => number | null): THREE.Group {
+  planeScaleDiagonal?: number): THREE.Group {
   const group = new THREE.Group();
   group.name = "city-landmark-airport";
   const mat = (color: string) => { const m = new THREE.MeshLambertMaterial({ color }); disposables.push(m); return m; };
@@ -78,13 +27,15 @@ export function buildAirport(plan: AirportPlan, disposables: Array<{ dispose: ()
   island.position.set(plan.centre.x, 0, plan.centre.z);
   island.rotation.y = plan.yaw;
   group.add(island);
-  const L = 240; const W = 110;
-  add(new THREE.BoxGeometry(L, 2.4, W).translate(0, 0.2, 0), mat("#cfc9b8"), 0, -1, 0);                   // 填海平台
-  add(new THREE.BoxGeometry(L + 6, 0.8, W + 6).translate(0, 0.4, 0), mat("#9c968a"), 0, -1.4, 0);        // 护岸石
-  add(new THREE.BoxGeometry(L - 20, 0.1, 22).translate(0, 0.05, 0), mat("#3e4448"), 0, 1.4, -18);        // 跑道
-  for (let x = -L / 2 + 22; x < L / 2 - 22; x += 12) add(new THREE.BoxGeometry(6, 0.02, 0.6), mat("#f2f0e6"), x, 1.52, -18);  // 中线
-  for (const side of [-1, 1]) for (let k = 0; k < 6; k += 1) add(new THREE.BoxGeometry(0.6, 0.02, 14), mat("#f2f0e6"), side * (L / 2 - 16 - k * 1.6), 1.52, -18); // 端头斑马线
-  add(new THREE.BoxGeometry(L - 40, 0.08, 10).translate(0, 0.04, 0), mat("#565c60"), 0, 1.4, 4);         // 滑行道
+  const L = AIRPORT_PLATFORM.length; const W = AIRPORT_PLATFORM.width; const TOP = AIRPORT_PLATFORM.top;
+  // 平台顶面 = TOP（曾是 0.4，而跑道 / 航站楼 / 塔台底都在 1.4：整组悬空 1）。
+  add(new THREE.BoxGeometry(L, TOP + 2, W).translate(0, (TOP + 2) / 2, 0), mat("#cfc9b8"), 0, -2, 0).userData.mechaApron = true;  // 填海平台（−2 … TOP）
+  add(new THREE.BoxGeometry(L + 6, 0.8, W + 6).translate(0, 0.4, 0), mat("#9c968a"), 0, -1.4, 0).userData.mechaApron = true; // 护岸石
+  const flat = (mesh: THREE.Mesh) => { mesh.userData.cityDrivingNonSolid = true; mesh.userData.mechaApron = true; return mesh; }; // 贴面薄层：车从上面开过
+  flat(add(new THREE.BoxGeometry(L - 20, 0.02, 22).translate(0, 0.01, 0), mat("#3e4448"), 0, TOP, -18));        // 跑道
+  for (let x = -L / 2 + 22; x < L / 2 - 22; x += 12) flat(add(new THREE.BoxGeometry(6, 0.01, 0.6), mat("#f2f0e6"), x, TOP + 0.025, -18));  // 中线
+  for (const side of [-1, 1]) for (let k = 0; k < 6; k += 1) flat(add(new THREE.BoxGeometry(0.6, 0.01, 14), mat("#f2f0e6"), side * (L / 2 - 16 - k * 1.6), TOP + 0.025, -18)); // 端头斑马线
+  flat(add(new THREE.BoxGeometry(L - 40, 0.015, 10).translate(0, 0.0075, 0), mat("#565c60"), 0, TOP, 4));     // 滑行道
   // 壳形航站楼：沿弧排列的褶皱壳片。
   const shell = mat("#f4f6f2");
   for (let k = 0; k < 7; k += 1) {
@@ -101,46 +52,23 @@ export function buildAirport(plan: AirportPlan, disposables: Array<{ dispose: ()
   add(new THREE.CylinderGeometry(5, 4, 4.5, 10).translate(0, 2.25, 0), mat("#3f5f6e"), 80, 31.4, 34);
   add(new THREE.CylinderGeometry(5.4, 5.4, 0.6, 10), mat("#e2ddd2"), 80, 36.2, 34);
   add(new THREE.SphereGeometry(0.7, 8, 6), nightHead ?? mat("#ff3b3b"), 80, 37.2, 34);
+  // 机坪上停着一架可以开的飞机（2026-10-22，用户：「把飞机游戏的建模放到机场，用户点击以后可以开始玩开飞机」）：
+  // 滑行道与航站楼之间、指廊西侧，机头顺跑道；落在平台顶面（TOP）上。机场岛是驾驶地标根，停着的飞机开车时也是障碍物。点它从跑道西端顺跑道方向起飞（runway 标记点给出世界位姿，CityEngine.playableAt）。
+  if (planeScaleDiagonal !== undefined) {
+    const plane = parkedPlane(planeScaleDiagonal, disposables);
+    plane.position.set(-62, TOP, 14);
+    island.add(plane);
+    const runway = new THREE.Object3D(); runway.name = "city-playable-plane-runway";
+    runway.position.set(-L / 2 + 30, TOP, -18);
+    island.add(runway);
+    plane.userData.runway = runway;
+    // 三台机甲停在机坪东侧、滑行道和航站楼之间，面朝跑道。点任何一台进入机甲战棋。
+    // 机场岛是驾驶地标根，它们开车时也是障碍。避开跑道西端（飞机起飞点）和航站楼中轴。
+    const squad = parkedMechaSquad(disposables);
+    squad.position.set(40, TOP, 14);
+    island.add(squad);
+  }
   // 跑道边灯（夜间与路灯同批次材质，白天不亮）。
   if (nightHead) for (let x = -L / 2 + 14; x <= L / 2 - 14; x += 14) for (const z of [-30, -6]) add(new THREE.BoxGeometry(0.6, 0.4, 0.6), nightHead, x, 1.6, z);
-  buildCauseway(group, plan.shore, { x: plan.centre.x - plan.outward.x * (W / 2), z: plan.centre.z - plan.outward.z * (W / 2) }, mat, add, roadTopAt);
   return group;
-}
-
-/** L-5 多跨堤道：薄板桥面 + 每 20 一排架墩 + 两侧护栏，桥面中部微拱；机场岛与歌剧院岛共用。 */
-export function buildCauseway(
-  group: THREE.Group, start: Vec2, end: Vec2,
-  mat: (color: string) => THREE.Material,
-  add: (geometry: THREE.BufferGeometry, material: THREE.Material, x: number, y: number, z: number, ry?: number, parent?: THREE.Object3D) => THREE.Mesh,
-  roadTopAt?: (x: number, z: number) => number | null,
-): void {
-  const span = Math.hypot(end.x - start.x, end.z - start.z);
-  const yaw = -Math.atan2(end.z - start.z, end.x - start.x);
-  const steps = Math.max(4, Math.round(span / 20));
-  // The causeway is scenery, not a released driving surface. Where it crosses a real
-  // ground road, its actual underside must leave headroom (formerly only 1.1 units).
-  // Probe the complete slab footprint, including a margin outside both side edges.
-  const clearances: number[] = [];
-  let shoreLift = 0;
-  for (let i = 0; i < steps; i++) {
-    let required = -Infinity;
-    if (roadTopAt) for (let s = i * span / steps - 1; s <= (i + 1) * span / steps + 1; s += 0.5) for (let side = -7; side <= 7; side += 0.5) {
-      const x = start.x + Math.cos(yaw) * s + Math.sin(yaw) * side;
-      const z = start.z - Math.sin(yaw) * s + Math.cos(yaw) * side;
-      const y = roadTopAt(x,z);
-      if (y !== null && Number.isFinite(y)) required = Math.max(required, y + 2 + 0.35);
-    }
-    clearances.push(required);
-    const tm = (i + 0.5) / steps, base = 2.2 + Math.sin(tm * Math.PI) * 1.6;
-    shoreLift = Math.max(shoreLift, (required - base) / (1 - tm));
-  }
-  for (let i = 0; i < steps; i += 1) {
-    const t0 = i / steps; const t1 = (i + 1) / steps; const tm = (t0 + t1) / 2;
-    const deck = Math.max(clearances[i], 2.2 + Math.sin(tm * Math.PI) * 1.6 + shoreLift * (1-tm));
-    const x = start.x + (end.x - start.x) * tm; const z = start.z + (end.z - start.z) * tm;
-    add(new THREE.BoxGeometry(span / steps + 0.2, 0.7, 12), mat("#8e9496"), x, deck, z, yaw, group);
-    for (const side of [-1, 1]) add(new THREE.BoxGeometry(span / steps, 0.8, 0.3).translate(0, 0.4, 0), mat("#d9dcd6"), x + Math.sin(yaw) * side * 5.8, deck + 0.35, z + Math.cos(yaw) * side * 5.8, yaw, group);
-    const px = start.x + (end.x - start.x) * t1; const pz = start.z + (end.z - start.z) * t1;
-    add(new THREE.BoxGeometry(1.6, deck + 2, 10).translate(0, -(deck + 2) / 2, 0), mat("#a9aaa0"), px, deck, pz, yaw, group);  // 排架墩
-  }
 }

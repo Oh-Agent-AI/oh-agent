@@ -1,3 +1,4 @@
+import { atLeast } from "./roadStandard";
 import { DetMath as Math } from "./detMath"; // 跨引擎确定性：见 detMath.ts
 /**
  * Seeded, data-independent geography and municipal land reservations.
@@ -49,6 +50,9 @@ import { planHighwayRamps, type HighwayRamp } from "./planner/highwayRamps";
 import type { CityBlock, CityLayout, Parcel, PublicSite, RoadEdge, RoadNode, TerrainField, Vec2, Zone } from "./cityLayout";
 import { clearsHighways, polygonDistance, roadNodeId, SegmentIndex, segmentDistance } from "./roadGeometry";
 import { targetParcels } from "./scaleTier";
+import { createCityShape, type Shape } from "./cityShape";
+export { createCityShape } from "./cityShape";
+export type { Shape } from "./cityShape";
 export { clearsHighways, polygonDistance, roadNodeId, SegmentIndex, segmentDistance } from "./roadGeometry";
 export { MAX_TIER, scaleTierFor, SESSIONS_PER_TIER, targetParcels } from "./scaleTier";
 
@@ -80,24 +84,6 @@ export function nextCalibrationRadius(radius: number, required: number, availabl
   if (available >= required) return radius;
   return radius * Math.min(Math.sqrt(RADIUS_CALIBRATION_CONFIG.maxAreaGrowth),
     Math.sqrt(required / Math.max(1, available)) * RADIUS_CALIBRATION_CONFIG.capacityMargin);
-}
-
-export type Shape = {
-  stretch: number; spin: number;
-  harmonics: Array<{ k: number; a: number; p: number }>;
-  bays: Array<{ at: number; depth: number; width: number }>;
-};
-
-/** Shared seed recipe for worker transport hydration; never approximate the
- * returned terrain with a sampled grid or rerun full planning on the UI. */
-export function createCityShape(seed: number): Shape {
-  const random = (key: string) => hashSeed(`${seed}:${key}`);
-  return {
-    stretch: 0.78 + random("stretch") * 0.5,
-    spin: random("spin") * Math.PI * 2,
-    harmonics: [2, 3, 5].map((k) => ({ k, a: 0.05 + random(`h${k}`) * (k === 2 ? 0.16 : 0.1), p: random(`hp${k}`) * Math.PI * 2 })),
-    bays: Array.from({ length: 1 + Math.floor(random("bays") * 3) }, (_, i) => ({ at: random(`bay${i}`) * Math.PI * 2, depth: 0.14 + random(`bayd${i}`) * 0.18, width: 0.18 + random(`bayw${i}`) * 0.25 })),
-  };
 }
 
 /** 海岸配置里的中央海湾参数（worker 复算地理时用同一个换算，两边逐位一致）。 */
@@ -619,7 +605,7 @@ function buildPlan(seed: number, R: number, shape: Shape, biome: Biome, config: 
     const identity = (finding: { site?: string; at?: Vec2; detail?: string }) => JSON.stringify([finding.site, finding.at, finding.detail]);
     const baseline = new Map(ownerRules.map((rule) => [rule.id, new Set(rule.measure(view(network, publicSites)).map(identity))]));
     const assigned = assignConnectedSite({ ...geo, core, turn,
-      trunkRuns: [...edges.values()].filter((edge) => !edge.bridge && edge.width >= 8).map((edge) => edge.points),
+      trunkRuns: [...edges.values()].filter((edge) => !edge.bridge && atLeast(edge, "collector")).map((edge) => edge.points),
       ringRuns, bridges, placed: reservations(), height, inRiver, riverBank: footprintGeo.riverBank },
       connectorWorld, specByKind(programme[1])!, obligation.ownerId,
       primaryAnchorNodeIds.find((id) => nodes.has(id)) ?? null, (owner, candidate) => {

@@ -83,6 +83,7 @@ export const EXACT: Record<string, string> = {
   "选中的楼已不在城市里": "The selected building is no longer in the city",
   "已撤销": "Undone", "已重做": "Redone", "已恢复生成": "Restored to the generated city",
   "已清除失效的修改（撤销可恢复）": "Stale edits cleared (undo restores them)",
+  "道路宽度不符合标准：请选择支路、次干道或主干道": "Non-standard road width: choose a local road, collector or arterial",
   // 阻断原因（controller BLOCKER_TEXT）
   "该地块已被其他会话楼、配套或背景楼占用": "This plot is taken by another session building, facility or backdrop building",
   "楼会压到道路上": "The building would sit on a road",

@@ -16,6 +16,7 @@
  * clearAngle/交叉检查），批次 4-2 迁移以基线哈希不变为证明；node-merge/detour/grid-astar 是孤立分量
  * 兜底的替代路径（批次 4-3，行为变更），用地避让沿用旧 tolerance=1 档的 r+3。
  */
+import { atLeast, roadWidthFor, isStandardEdge, EXPRESSWAY_DECK_WIDTH } from "../roadStandard";
 import { DetMath as Math } from "../detMath";
 import { spendPlanningWork } from "./operationBudget";
 import { roadNodeId, segmentDistance } from "../roadGeometry";
@@ -141,7 +142,7 @@ export type ConnectorWorld = {
 // ── 共享校验（§5B：连接器与骨架共用 corridor validator，skeleton.ts 出口弦不再当特例）──────────────
 
 /** 请求对应的道路全宽（批 A2 胶囊口径：主干 12 / 次干 8 / 支路 5——与 roundaboutRebuildable 的重建集合同源）。 */
-const roadWidthOf = (request: ConnectionRequest): number => (request.primary ?? false) ? 12 : request.roadClass !== "local" ? 8 : 5;
+const roadWidthOf = (request: ConnectionRequest): number => roadWidthFor((request.primary ?? false) ? "arterial" : request.roadClass !== "local" ? "collector" : "local");
 const directPolicy = (world: ConnectorWorld, request: ConnectionRequest): CorridorPolicy => ({ requireBuildable: true, maxSlope: 0.9, sites: world.reservations(), siteMargin: CONNECTOR_CONFIG.directSiteMargin, roadWidth: roadWidthOf(request) });
 const fallbackPolicy = (world: ConnectorWorld, request?: ConnectionRequest, margin = CONNECTOR_CONFIG.fallbackSiteMargin): CorridorPolicy => ({ requireBuildable: true, maxSlope: 0.9, sites: world.reservations(), siteMargin: margin, roadWidth: request ? roadWidthOf(request) : 0 });
 
@@ -153,8 +154,8 @@ export function walkableCorridor(geo: Geography, a: Vec2, b: Vec2): boolean {
   return true;
 }
 
-/** re-stick 净空（clearsHighways 同公式，向上取整对齐既有 69 门）：5.25 + hypot(w,d)/2 + 1。 */
-export const reStickClearance = (width: number, depth: number) => Math.ceil(5.25 + Math.hypot(width, depth) / 2 + 1);
+/** re-stick 净空（clearsHighways 同公式，向上取整对齐既有 69 门）：EXPRESSWAY_DECK_WIDTH / 2 + hypot(w,d)/2 + 1。 */
+export const reStickClearance = (width: number, depth: number) => Math.ceil(EXPRESSWAY_DECK_WIDTH / 2 + Math.hypot(width, depth) / 2 + 1);
 /** 接驳弦不得切进保护区圆（skeleton.ts 出口弦 69 门的共享化形态，批次 5-2）。 */
 export function chordClearsDisc(a: Vec2, b: Vec2, center: Vec2, clearance: number): boolean {
   return segmentDistance(center, a, b) >= clearance;
@@ -706,7 +707,7 @@ export type RoundaboutResult =
  *  桥腿不参与（环段是地面弧边，不能替换桥跨）。环段一律 local 5 宽：环是慢行环流，等级在进口
  *  保留；同时避免 4/6 段环的对边平行弧段触发 crowdedArterials（该约束先于环存在，不为其豁免）。 */
 function roundaboutRebuildable(edge: RoadEdge): boolean {
-  return !edge.bridge && (edge.kind === "arterial" ? edge.width === 8 || edge.width === 12 : edge.width === 5);
+  return !edge.bridge && isStandardEdge(edge);
 }
 
 /** 提案：几何 + 走廊 + 交叉 + 环上角度复核；半径按 [10,12,14] 顺序试第一档全过的（确定性）。 */
@@ -794,7 +795,7 @@ function proposeMiniRoundabout(
     }
     if (failure) { last = { reason: failure, detail }; continue; }
     // 补丁：删 3 条整腿，加腿剩余段（arterial/primary 标志精确重建 5/8/12 宽）+ 弧段（local 5 宽的环流）。
-    const addEdges: NetworkPatch["addEdges"] = directed.map((d, k) => ({ a: ring.find((r) => r.leg === k)!.p, b: d.far, arterial: d.leg.kind === "arterial", primary: d.leg.width >= 12 }));
+    const addEdges: NetworkPatch["addEdges"] = directed.map((d, k) => ({ a: ring.find((r) => r.leg === k)!.p, b: d.far, arterial: d.leg.kind === "arterial", primary: atLeast(d.leg, "arterial") }));
     for (let k = 0; k < ring.length; k += 1) addEdges.push({ a: ring[k].p, b: ring[(k + 1) % ring.length].p, arterial: false });
     return { patch: { baseVersion: world.network.version ?? 0, removeEdgeIds: legs.map((e) => e.id), splits: [], addEdges }, radius, ring: ring.map((r) => r.p) };
   }
@@ -873,7 +874,7 @@ export function runJunctionRing(world: ConnectorWorld, center: { id: string; x: 
     const a = Math.atan2(far.z - center.z, far.x - center.x);
     return { leg, far, a: ((a % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2), len: Math.hypot(far.x - center.x, far.z - center.z) };
   }).sort((x, y) => x.a - y.a || (x.leg.id < y.leg.id ? -1 : 1));
-  const ringWidth = options.ringArterial ? 8 : 5;
+  const ringWidth = roadWidthFor(options.ringArterial ? "collector" : "local");
   const policy = fallbackPolicy(world, { roadClass: options.ringArterial ? "arterial" : "local", primary: false } as Parameters<typeof fallbackPolicy>[1]);
   const legIds = new Set(legs.map((e) => e.id));
   let last: { reason: ConnectionFailure; detail: string } = { reason: "no-target", detail: "no radius candidate" };
@@ -903,7 +904,7 @@ export function runJunctionRing(world: ConnectorWorld, center: { id: string; x: 
       }
     }
     if (failure) { last = { reason: failure, detail }; continue; }
-    const addEdges: NetworkPatch["addEdges"] = directed.map((d, k) => ({ a: ring.find((r) => r.leg === k)!.p, b: d.far, arterial: d.leg.kind === "arterial", primary: d.leg.width >= 12 }));
+    const addEdges: NetworkPatch["addEdges"] = directed.map((d, k) => ({ a: ring.find((r) => r.leg === k)!.p, b: d.far, arterial: d.leg.kind === "arterial", primary: atLeast(d.leg, "arterial") }));
     for (let k = 0; k < ring.length; k += 1) addEdges.push({ a: ring[k].p, b: ring[(k + 1) % ring.length].p, arterial: options.ringArterial });
     // 建环会把原本共享环心的整腿拆成不共享节点的短段；即使不交叉，也可能与旁边干道平行贴近。
     // 与道路准入和最终 crowdedArterials 同源校验，包含新增边之间的冲突；失败继续尝试下一半径，正式路网不动。
@@ -989,7 +990,7 @@ export function draftProblem(world: ConnectorWorld, proposed: ConnectionProposal
     segments: adds.map((e, k) => ({
       a: e.a,
       b: e.b,
-      width: e.primary ? 12 : e.arterial ? 8 : 5,
+      width: roadWidthFor(e.primary ? "arterial" : e.arterial ? "collector" : "local"),
       kind: e.bridge ? "deck" : approach ? "ground-approach" : "ground-road",
       touchesDeck: approach && !e.bridge && ((k > 0 && adds[k - 1].bridge) || (k < adds.length - 1 && adds[k + 1].bridge)),
     })),
@@ -1041,7 +1042,7 @@ export function commitFixedLink(world: ConnectorWorld, addEdges: NetworkPatch["a
     id: "fixed-link",
     crossings: true,
     blockers: [], // deck 段不查 sites；ground-road 段用 roadPolicy.sites——blockers 无消费方
-    segments: addEdges.map((e) => ({ a: e.a, b: e.b, width: e.primary ? 12 : e.arterial ? 8 : 5, kind: e.bridge ? "deck" : "ground-road" })),
+    segments: addEdges.map((e) => ({ a: e.a, b: e.b, width: roadWidthFor(e.primary ? "arterial" : e.arterial ? "collector" : "local"), kind: e.bridge ? "deck" : "ground-road" })),
   };
   return commitNetworkPatch(world.network, { baseVersion: world.network.version ?? 0, removeEdgeIds: [], splits: [], addEdges }, (draft) => {
     if (opts.splitInherit) return null;

@@ -23,7 +23,7 @@ import { FlightAdapter } from "./runtime/FlightAdapter";
 import type { GameSceneLease } from "./runtime/GameScenePort";
 import type { GameSceneSnapshot } from "./runtime/GameSceneSnapshot";
 import { compileCitySolidInputs } from "../engine/surface/compileCitySolidInputs";
-import type { EnterHostState, GamePauseReason, GameSelection, ReturnCameraView, FlightInputState } from "./types";
+import { EMPTY_INPUT, type EnterHostState, type GamePauseReason, type GameSelection, type ReturnCameraView, type FlightInputState } from "./types";
 
 const FIXED_DT = 1 / 60;
 const HUD_HZ = 10;
@@ -70,6 +70,7 @@ export class GameSession {
   private cameraScratch: THREE.PerspectiveCamera | null = null;
   private cameraControls: FlightCameraControls | null = null;
   private input: FlightInput | null = null;
+  private touchInput: FlightInputState = { ...EMPTY_INPUT };
   private sceneLease: GameSceneLease<GameSceneSnapshot, import("three").Object3D> | null = null;
   private prepareAbort: AbortController | null = null;
   private readonly runtime = new GameRuntime<FlightInputState>({
@@ -115,7 +116,11 @@ export class GameSession {
     return { cityReady: !!(this.engine.currentLayout && this.engine.currentModel), cinemaActive, filmActive, busy };
   }
 
-  async enter(kind: GameSelection, host: EnterHostState): Promise<{ ok: true } | { ok: false; reason: string }> {
+  /** 练习从这里起飞（点了机坪上的飞机：跑道西端、顺跑道方向）；null = 按世界安全位挑出生点。 */
+  private origin: Readonly<{ x: number; y: number; z: number; heading: number }> | null = null;
+
+  async enter(kind: GameSelection, host: EnterHostState, origin?: Readonly<{ x: number; y: number; z: number; heading: number }>): Promise<{ ok: true } | { ok: false; reason: string }> {
+    this.origin = kind.mode === "practice" ? origin ?? null : null;
     const attempt = this.controller.enter(kind, host);
     if (!attempt.ok) return { ok: false, reason: attempt.refusal };
     const runId = this.controller.snapshot.runId;
@@ -236,8 +241,8 @@ export class GameSession {
     }
     if (!this.input) {
       this.input = new FlightInput({
-        isGameFocused: () => this.canvasFocused(),
-        focusTarget: () => {
+        isGameFocused: () => this.gameWindowFocused(),
+        blurFocusTarget: () => {
           const target = this.engine.domCanvas;
           return typeof HTMLElement !== "undefined" && target instanceof HTMLElement ? target : null;
         },
@@ -250,10 +255,6 @@ export class GameSession {
     this.sfx.start();
     this.lastCountdownSec = null;
     this.resetToSpawn();
-    // 进场即把焦点交给画布（与 resume 同规则）：不可编辑目标上输入法无组合通路，
-    // WASD 直接进飞行状态，不再打到入口按钮/设置控件上。
-    const entryCanvas = this.engine.domCanvas;
-    if (entryCanvas instanceof HTMLElement) entryCanvas.focus({ preventScroll: true });
     this.controller.prepareDone();
     if (this.runtime.snapshot.phase === "idle" || this.runtime.snapshot.phase === "error") {
       const lease = this.sceneLease;
@@ -270,7 +271,15 @@ export class GameSession {
       const runtimeLease: GameSceneLease<GameSceneSnapshot, import("three").Object3D> = {
         ...lease,
         setFrameHook: (frame) => lease.setFrameHook(frame ? (seconds) => {
-          this.runtime.setInput(this.input?.snapshot() ?? { throttleUp: false, throttleDown: false, turnLeft: false, turnRight: false, pitchUp: false, pitchDown: false });
+          const keyboard = this.input?.snapshot() ?? EMPTY_INPUT;
+          this.runtime.setInput({
+            throttleUp: keyboard.throttleUp || this.touchInput.throttleUp,
+            throttleDown: keyboard.throttleDown || this.touchInput.throttleDown,
+            turnLeft: keyboard.turnLeft || this.touchInput.turnLeft,
+            turnRight: keyboard.turnRight || this.touchInput.turnRight,
+            pitchUp: keyboard.pitchUp || this.touchInput.pitchUp,
+            pitchDown: keyboard.pitchDown || this.touchInput.pitchDown,
+          });
           frame(seconds);
         } : null),
         release: () => { lease.release(); if (this.sceneLease === lease) this.sceneLease = null; },
@@ -297,6 +306,21 @@ export class GameSession {
         return { x, y, z, heading: Math.atan2(first.nz, first.nx) };
       }
     }
+    // 从机场起飞：没有地面滑跑。出生在跑道正上方的练习巡航高度、朝向顺着跑道。
+    // 贴着平台顶（1.4）只抬几个机身半径时，人和追尾相机都还在航站楼/塔台高度里，画面仍停在机坪。
+    // 这一档净空失败才退回世界安全位，不把人塞进障碍。
+    const origin = this.origin;
+    if (origin && !this.course) {
+      const clearance = params.planeRadius + 1.5, back = params.planeRadius * 5.2, up = params.planeRadius * 2.4;
+      const cruise = world.flightAltitude(clearance);
+      const deck = Math.max(origin.y, Math.max(0, world.terrainHeight(origin.x, origin.z)));
+      const ceiling = world.bounds.maxY - clearance;
+      const camX = origin.x - Math.cos(origin.heading) * back, camZ = origin.z - Math.sin(origin.heading) * back;
+      for (const y of [Math.max(cruise, deck + clearance * 2.5), cruise + 24, Math.min(ceiling, 120)]) {
+        if (!Number.isFinite(y) || y <= deck || y > ceiling) continue;
+        if (world.isPointClear(origin.x, y, origin.z, clearance) && world.isPointClear(camX, y + up, camZ, clearance * 0.6)) return { x: origin.x, y, z: origin.z, heading: origin.heading };
+      }
+    }
     return world.findSafeSpawn(params.planeRadius + 1.5, params.planeRadius * 5.2, params.planeRadius * 2.4);
   }
 
@@ -314,8 +338,6 @@ export class GameSession {
     this.input?.clear();
     if (!this.runtime.resume()) return;
     this.audio.resume(); this.sfx.resume();
-    const canvas = this.engine.domCanvas;
-    if (canvas instanceof HTMLElement) canvas.focus({ preventScroll: true });
     this.controller.resume(); this.emit(true);
   }
 
@@ -415,6 +437,7 @@ export class GameSession {
 
   private releaseRunObjects(): void {
     this.mission?.abort(); this.input?.detach(); this.input = null;
+    this.touchInput = { ...EMPTY_INPUT };
     this.audio.stop(); this.sfx.stop();
     if (this.visuals) {
       this.sceneLease?.detach([this.visuals.group, this.visuals.sceneRoot]);
@@ -459,6 +482,8 @@ export class GameSession {
       musicEnabled: this.musicEnabled,
     };
   }
+
+  setTouchInput(input: FlightInputState): void { this.touchInput = { ...input }; }
 
   /** 把面板设置下发到两个引擎（进入 run 与每次面板操作时调用，幂等）。 */
   private applySoundSettings(): void {
@@ -657,6 +682,9 @@ export class GameSession {
     this.input?.clear();
     this.camera?.reset(this.sim, params);
     this.visuals?.update(this.sim, 0);
+    // reset 只动克隆相机。进场第一帧若净空查询未决，present 会在写回前返回，
+    // 轨道相机已经关掉，画面就停在点飞机之前的视角。出生时先把追尾位写上。
+    this.applyCameraPose();
   }
 
   private interrupt(reason: Extract<GamePauseReason, "focus-lost" | "host-hidden" | "lag">): void { this.runtime.pause(reason); }
@@ -667,8 +695,8 @@ export class GameSession {
     this.emit(true);
   }
 
-  private canvasFocused(): boolean {
-    return typeof document !== "undefined" && document.activeElement === this.engine.domCanvas;
+  private gameWindowFocused(): boolean {
+    return typeof document !== "undefined" && document.visibilityState !== "hidden" && document.hasFocus();
   }
 
   private emit(force = false): void {

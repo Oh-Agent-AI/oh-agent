@@ -15,6 +15,7 @@
  * 选中建筑后悬停有落位试算（绿 = 能放，红 = 不能放并写原因）；画路/拖路口的推平与安置是推土机试算的确切结果（SPEC §16）。
  * 画路/橡皮擦只用地面点（引擎射线与地形的交点），不看射线先打到的建筑——与悬停预览用的是同一个点，所见即所点。
  */
+import { roadWidthFor } from "../engine/roadStandard";
 import type { SnapPoint, RoadVerdict } from "../engine/planRoadRules";
 import type { Vec2 } from "../engine/cityLayout";
 import type { RepairRay } from "../engine/CityEngine";
@@ -29,7 +30,7 @@ export type DriveReport = { verdict: "passed" | "blocked" | "undetermined"; path
 export type RoadType = "local" | "secondary" | "main" | "waterfront" | "viaduct";
 export type DrawMode = "straight" | "curve";
 export const ROAD_SPEC: Record<Exclude<RoadType, "viaduct">, { width: number; purpose?: RoadPurpose }> = {
-  local: { width: 5 }, secondary: { width: 8 }, main: { width: 12 }, waterfront: { width: 12, purpose: "waterfront" },
+  local: { width: roadWidthFor("local") }, secondary: { width: roadWidthFor("collector") }, main: { width: roadWidthFor("arterial") }, waterfront: { width: roadWidthFor("arterial"), purpose: "waterfront" },
 };
 
 const ROAD_TYPE_LABEL: Record<RoadType, string> = { local: "小路", secondary: "次干道", main: "主干道", waterfront: "滨海大道", viaduct: "高架" };
@@ -148,6 +149,7 @@ const BLOCKER_TEXT: Record<string, string> = {
   "missing-parcel": "地块不存在（城市已重排）",
   "unknown-building": "这栋楼不在当前城市里",
   // 道路
+  "non-standard-width": "道路宽度不符合标准：请选择支路、次干道或主干道",
   "locked-edge": "桥面由桥梁模型绑定，不能单独编辑（橡皮擦可以整座擦掉）",
   "hits-locked-site": "会压到悬索桥（它是路网里的一段桥面）",
   "site-locked": "这座设施已锁定",

@@ -1330,9 +1330,9 @@ function mcpConfigTexts(cliPath) {
   const bin = cliPath || "/path/to/agent-vitals";
   const shellBin = bin.includes(" ") ? JSON.stringify(bin) : bin;
   return {
-    claude: "claude mcp add agent-vitals -- " + shellBin + " data-mcp serve --allow-local-writes",
-    codex: "[mcp_servers.agent-vitals]\ncommand = " + JSON.stringify(bin) + "\nargs = [\"data-mcp\", \"serve\", \"--allow-local-writes\"]",
-    json: JSON.stringify({ mcpServers: { "agent-vitals": { command: bin, args: ["data-mcp", "serve", "--allow-local-writes"] } } }, null, 2),
+    claude: "claude mcp add oh-agent -- " + shellBin + " data-mcp serve --allow-local-writes",
+    codex: "[mcp_servers.oh-agent]\ncommand = " + JSON.stringify(bin) + "\nargs = [\"data-mcp\", \"serve\", \"--allow-local-writes\"]",
+    json: JSON.stringify({ mcpServers: { "oh-agent": { command: bin, args: ["data-mcp", "serve", "--allow-local-writes"] } } }, null, 2),
   };
 }
 async function copyTextFrom(el) {
@@ -1651,6 +1651,20 @@ function bindDiagnosticExport() {
   };
 }
 
+const TRUSTED_RELEASES_ROOT = "https://github.com/Oh-Agent-AI/oh-agent/releases";
+const APP_RELEASE_TAG = /^app-v[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+let lastUpdateReleaseUrl = null;
+
+function trustedReleaseOpenUrl(url) {
+  if (typeof url !== "string") return null;
+  if (url === TRUSTED_RELEASES_ROOT) return url;
+  const prefix = TRUSTED_RELEASES_ROOT + "/tag/";
+  if (!url.startsWith(prefix)) return null;
+  const tag = url.slice(prefix.length);
+  if (!APP_RELEASE_TAG.test(tag)) return null;
+  return url;
+}
+
 function bindTrustedReleasesPage() {
   const button = document.getElementById("ov-releases-open");
   if (!button || button.dataset.bound === "1") return;
@@ -1658,7 +1672,8 @@ function bindTrustedReleasesPage() {
   button.onclick = async () => {
     button.disabled = true;
     try {
-      await invoke("open_trusted_releases_page");
+      const url = trustedReleaseOpenUrl(lastUpdateReleaseUrl);
+      await invoke("open_trusted_releases_page", url ? { url } : {});
     } catch (e) {
       const target = document.getElementById("ov-diagnostic-status");
       if (target) { target.hidden = false; target.textContent = "打开发布页失败：" + errText(e); }
@@ -1675,11 +1690,19 @@ function bindUpdateCheck() {
     button.disabled = true;
     status.hidden = false;
     status.textContent = "正在检查可信发布页…不会上传本地数据。";
+    lastUpdateReleaseUrl = null;
     try {
       const result = await invoke("check_for_updates");
+      lastUpdateReleaseUrl = result && result.update_available
+        ? trustedReleaseOpenUrl(result.release_url)
+        : null;
       status.textContent = result && result.latest_tag
-        ? "当前包 " + (result.current_version || "—") + " · 最新发布 " + result.latest_tag + "；请从可信发布页确认安装。"
-        : "未找到可用的 app-v 发布。";
+        ? (result.update_available
+          ? "有新版本 " + result.latest_tag + "（当前包 " + (result.current_version || "—") + "）；请从可信发布页下载，不会自动安装。"
+          : "当前包 " + (result.current_version || "—") + " · 最新发布 " + result.latest_tag + "；请从可信发布页确认安装。")
+        : (result && result.reason === "on_latest_stable"
+          ? "当前已是最新正式版。"
+          : (result && result.status === "unavailable" ? "版本检查暂不可用，稍后再试。" : "未找到可用的 app-v 发布。"));
     } catch (e) {
       status.textContent = "检查新版本失败：" + errText(e);
     } finally { button.disabled = false; }

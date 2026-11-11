@@ -5,6 +5,7 @@
  * 纯函数；本步先让 buildPlan 与 RepairContext 共享同一个 Network 对象，替代 addEdge/key 闭包成员
  * （spec D5：闭包杂物袋 → 数据引用）。
  */
+import { roadWidthFor } from "../roadStandard";
 import { roadNodeId } from "../roadGeometry";
 import type { RoadEdge, RoadNode, Vec2 } from "../cityLayout";
 import { classifyRoadSegments } from "./relations";
@@ -41,7 +42,7 @@ export function addNetworkEdge(network: Network, a0: Vec2, b0: Vec2, arterial: b
   const id = [from, to].sort().join("/");
   network.nodes.set(from, { ...a, id: from }); network.nodes.set(to, { ...b, id: to });
   const approachesDeck = [...network.edges.values()].some((edge) => edge.bridge && [edge.from, edge.to].some((node) => node === from || node === to));
-  if (!network.edges.has(id)) network.edges.set(id, { id, from, to, width: primary ? 12 : arterial ? 8 : 5, kind: arterial ? "arterial" : "local", points: [a, b], bridge, structure: bridge ? "deck" : approachesDeck ? "ground-approach" : "ground-road" });
+  if (!network.edges.has(id)) network.edges.set(id, { id, from, to, width: roadWidthFor(primary ? "arterial" : arterial ? "collector" : "local"), kind: arterial ? "arterial" : "local", points: [a, b], bridge, structure: bridge ? "deck" : approachesDeck ? "ground-approach" : "ground-road" });
   if (network.edges.get(id)?.bridge) for (const edge of network.edges.values()) if (!edge.bridge && [edge.from, edge.to].some((node) => node === from || node === to)) edge.structure = "ground-approach";
 }
 

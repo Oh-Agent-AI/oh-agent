@@ -5,7 +5,7 @@ import vm from "node:vm";
 import { createRequire } from "node:module";
 import { groundSurfaceFixtures, groundGeometryDigest } from "./city-kit/ground-surface-fixtures.mjs";
 const require = createRequire(new URL("../apps/agent-city/ui/package.json", import.meta.url));
-const { buildSync } = require("esbuild");
+const { build, buildSync } = require("esbuild");
 const built = buildSync({ entryPoints: [new URL("../apps/agent-city/ui/src/engine/surface/groundRoadCompiler.ts", import.meta.url).pathname], bundle: true, write: false, platform: "node", format: "cjs", metafile: true });
 for (const input of Object.keys(built.metafile.inputs)) {
   assert.ok(!/node_modules|engine\/systems|host\.ts|cityPlan\.ts|cityLayout\.ts|\/data\//.test(input), `CPU compiler leaked runtime dependency ${input}`);
@@ -37,8 +37,8 @@ const inspect = (compiled) => {
 };
 assert.deepEqual(Object.keys(baseline.corrected.fixtures).sort(), ["closed-loop", "wavy-tee"], "only non-flat/closed fixtures may differ from the pre-refactor renderer");
 const kit = await import("./city-kit/index.mjs");
-const { terrainSurfaceHeight, extractMeshBoundaries, ROAD_SURFACE_LIFT } = await kit.loadCity({
-  "engine/surface/terrainSampling.ts": ["terrainSurfaceHeight"], "engine/surface/meshBoundaries.ts": ["extractMeshBoundaries"], "engine/surface/groundRoadCompiler.ts": ["ROAD_SURFACE_LIFT"] });
+const { terrainSurfaceHeight, extractMeshBoundaries, ROAD_SURFACE_LIFT, TERRAIN_SEGMENTS, CITY_GENERATOR_VERSION, roadClassSpec } = await kit.loadCity({
+  "engine/surface/terrainSampling.ts": ["terrainSurfaceHeight", "TERRAIN_SEGMENTS"], "engine/generatorVersion.ts": ["CITY_GENERATOR_VERSION"], "engine/roadStandard.ts": ["roadClassSpec"], "engine/surface/meshBoundaries.ts": ["extractMeshBoundaries"], "engine/surface/groundRoadCompiler.ts": ["ROAD_SURFACE_LIFT"] });
 /** Independent of the compiler's own deviation function: dense barycentric samples of every
  * Float32 triangle against the rendered terrain, plus manifold boundaries for every piece. */
 const fitAndTopology = (name, compiled, layout, samples = 5) => {
@@ -86,12 +86,27 @@ const fitAndTopology = (name, compiled, layout, samples = 5) => {
     assert.equal(b.status, "complete"); assert.deepEqual(b.loops.map((l) => l.hole).sort(), [false, true], "closed run welds at its seam");
   }
 }
+assert.equal(roadClassSpec("local").sidewalk, baseline.sidewalkStandard.sidewalk);
+assert.equal(TERRAIN_SEGMENTS, baseline.sidewalkStandard.terrainSegments);
+assert.equal(CITY_GENERATOR_VERSION, baseline.sidewalkStandard.generatorVersion);
+const historicalBuild = await build({ entryPoints: [new URL("../apps/agent-city/ui/src/engine/surface/groundRoadCompiler.ts", import.meta.url).pathname], bundle: true, write: false, platform: "node", format: "cjs",
+  plugins: [{ name: "historical-sidewalk-width", setup(build) {
+    build.onLoad({ filter: /roadStandard\.ts$/ }, ({ path }) => {
+      const source = readFileSync(path, "utf8");
+      assert.equal((source.match(/const SIDEWALK = 1\.8;/g) ?? []).length, 1, "historical override must match exactly once");
+      return { contents: source.replace("const SIDEWALK = 1.8;", "const SIDEWALK = 1.2;"), loader: "ts" };
+    });
+  } }] });
+const historicalModule = { exports: {} };
+vm.runInNewContext(historicalBuild.outputFiles[0].text, { module: historicalModule, exports: historicalModule.exports });
 for (const [name, layout] of groundSurfaceFixtures()) {
   const compiled = compileGroundRoadSurface(layout);
-  // Flat fixtures must still equal the pre-refactor renderer byte for byte; the two that the
-  // terrain-conforming fix deliberately changed are pinned in baseline.corrected with the reason.
-  const expected = baseline.terrainResolution?.fixtures?.[name] ?? baseline.corrected.fixtures[name] ?? baseline.fixtures[name];
-  assert.equal(groundGeometryDigest(compiled.layers), expected, `${name}: render geometry changed (${name in baseline.corrected.fixtures ? "corrected" : "pre-refactor"} baseline)`);
+  const historical = historicalModule.exports.compileGroundRoadSurface(layout);
+  const historicalDigest = baseline.terrainResolution?.fixtures?.[name] ?? baseline.corrected.fixtures[name] ?? baseline.fixtures[name];
+  assert.equal(groundGeometryDigest(historical.layers), historicalDigest, `${name}: only the documented sidewalk widening may explain the old baseline difference`);
+  assert.equal(groundGeometryDigest(compiled.layers.slice(1)), groundGeometryDigest(historical.layers.slice(1)), `${name}: widening sidewalks must not change road/junction triangles`);
+  const expected = baseline.sidewalkStandard.fixtures[name];
+  assert.equal(groundGeometryDigest(compiled.layers), expected, `${name}: current standard render geometry changed`);
   fitAndTopology(name, compiled, layout);
   inspect(compiled);
   assertGroundRoadSurfaceMatches(compiled, layout);
@@ -100,7 +115,7 @@ for (const [name, layout] of groundSurfaceFixtures()) {
   assert.equal(groundGeometryDigest(again.layers), groundGeometryDigest(compiled.layers));
   assert.equal(JSON.stringify(again.pieces), JSON.stringify(compiled.pieces));
 }
-console.log("Ground surface: seven flat pre-refactor buffer baselines + two corrected, exact terrain fit (dense samples), manifold drivable pieces, kinked terrain, stub bend, closed-loop seam, semantic ownership, Float32 views, deterministic IDs and pure import boundary passed.");
+console.log("Ground surface: historical 1.2 sidewalks reproduced, current 1.8 sidewalks with unchanged road layers, exact terrain fit (dense samples), manifold drivable pieces, kinked terrain, stub bend, closed-loop seam, semantic ownership, Float32 views, deterministic IDs and pure import boundary passed.");
 
 if (process.argv.includes("--cities")) {
   const { loadCity, cachedPlan } = await import("./city-kit/index.mjs");
@@ -108,7 +123,9 @@ if (process.argv.includes("--cities")) {
   for (const seed of [1, 7, 42, 2026, 65537]) for (const tier of [1, 2, 3]) {
     const plan = cachedPlan(createCityPlan, seed, tier);
     const compiled = compileGroundRoadSurface(plan);
-    assert.equal(groundGeometryDigest(compiled.layers), baseline.terrainResolution?.generatedPlans[`${seed}/${tier}`] ?? baseline.corrected.generatedPlans[`${seed}/${tier}`], `seed ${seed}, tier ${tier}: versioned terrain/road buffer baseline`);
+    const historical = historicalModule.exports.compileGroundRoadSurface(plan);
+    assert.equal(groundGeometryDigest(compiled.layers.slice(1)), groundGeometryDigest(historical.layers.slice(1)), `seed ${seed} tier ${tier}: 1.8 m sidewalks must not alter generated road/junction triangles`);
+    assert.equal(groundGeometryDigest(compiled.layers), baseline.sidewalkStandard.generatedPlans[`${seed}/${tier}`], `seed ${seed}, tier ${tier}: generator-v6 / 1.8-sidewalk buffer baseline`);
     inspect(compiled);
     const fit = fitAndTopology(`seed ${seed} tier ${tier}`, compiled, plan, 2);
     assert.equal(fit.sidewalkUnresolved, 0, `seed ${seed} tier ${tier}: ${fit.sidewalkUnresolved} sidewalk pieces without manifold boundary`);

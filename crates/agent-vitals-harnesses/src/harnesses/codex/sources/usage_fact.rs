@@ -9,11 +9,11 @@
 //! commit 1 的共享 per-`token_count` 观察者）逐事件 `apply`，按返回的判别出口
 //! 发射。emitter 只补 fold 不管的两件事：
 //!
-//! 1. **byte_offset**（§3.3）：derived `source_event_id` 需要行首在原文件里的
-//!    字节位置。core `CodexFoldState` 只吃 `&Value`、不含行号；`codex_session`
-//!    的 `parse_codex_session_log` 在解码后的 `&str` 上切、丢偏移——所以这里在
-//!    原始字节上做一次带偏移的逐字节切分（`raw_line_segments`），换行语义复刻
-//!    `util::split_lines`（只认 \\n / \\r\\n / \\r，末段无换行也消费）。
+//! 1. **byte_offset**（§3.3）：derived `source_event_id` 需要行首在逻辑 JSONL
+//!    字节流里的位置。明文 rollout 下它也是原文件偏移；`.zst` 下它是完整解压后
+//!    JSONL 的偏移，不能直接作为压缩文件 seek 位置。core `CodexFoldState` 只吃
+//!    `&Value`、不含行号；所以这里在解析字节上做一次带偏移的逐字节切分，换行语义
+//!    复刻 `util::split_lines`（只认 \\n / \\r\\n / \\r，末段无换行也消费）。
 //! 2. **native_session_id 解析**（§3.4）：逻辑 session_id（`session_meta`）→
 //!    `path.stem` 兜底。
 //!
@@ -71,9 +71,10 @@ pub struct UsageFactEmitResult {
 
 /// 原始字节 → `(行首偏移, 行字节)` 段。只认 \\n / \\r\\n / \\r，末段无换行也
 /// 消费——与 Python `_iter_raw_lines` 逐字节同款（镜像 `util::split_lines` 的
-/// 换行语义，但保留原文件字节偏移：split_lines 在解码后 &str 上切，偏移丢了）。
+/// 换行语义，但保留 JSONL 字节流偏移：split_lines 在解码后 &str 上切，偏移丢了）。
 ///
-/// 偏移是**原文件**的字节位置。UTF-8 多字节序列的续字节 ∈ 0x80..0xBF，0x0A /
+/// 偏移是传入字节流的位置；`.zst` 调用方先完整解压，因此为解压后 JSONL 的逻辑偏移。
+/// UTF-8 多字节序列的续字节 ∈ 0x80..0xBF，0x0A /
 /// 0x0D（< 0x80）绝不可能出现在续字节里——所以字节级切分与解码后 &str 级切分
 /// 的边界恒一致（坏 UTF-8 也一致），Python↔Rust 偏移不会因解码替换分叉。
 fn raw_line_segments(data: &[u8]) -> Vec<(usize, &[u8])> {
@@ -164,12 +165,16 @@ fn resolve_native_session_id(path: &Path, items: &[(usize, Value)]) -> String {
     }
     match session_id {
         Some(sid) => sid,
-        None => path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or_default()
-            .to_string(),
+        None => rollout_source_stem(path),
     }
+}
+
+fn rollout_source_stem(path: &Path) -> String {
+    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or_default();
+    name.strip_suffix(".jsonl.zst")
+        .or_else(|| name.strip_suffix(".jsonl"))
+        .unwrap_or_else(|| path.file_stem().and_then(|s| s.to_str()).unwrap_or_default())
+        .to_string()
 }
 
 fn route_evidence_from(value: &Value) -> Option<RouteEvidence> {
@@ -458,8 +463,23 @@ pub fn codex_rollouts_to_usage_facts_with_route(
     let mut seen: HashSet<String> = HashSet::new();
     let mut folds: Vec<Value> = Vec::new();
     for p in paths {
-        let data = std::fs::read(p).map_err(|e| format!("read {}: {}", p.display(), e))?; // OSError → 上抛
-        let (items, degraded) = parse_rollout_bytes(&data);
+        let raw = std::fs::read(p).map_err(|e| format!("read {}: {}", p.display(), e))?; // OSError → 上抛
+        let decoded;
+        let data = if p.to_string_lossy().ends_with(".jsonl.zst") {
+            match crate::harnesses::dsh::sources::decode_zstd_multi_frame(&raw) {
+                Some(bytes) => {
+                    decoded = bytes;
+                    decoded.as_slice()
+                }
+                None => {
+                    malformed += 1;
+                    continue;
+                }
+            }
+        } else {
+            raw.as_slice()
+        };
+        let (items, degraded) = parse_rollout_bytes(data);
         if degraded.is_some() {
             malformed += 1;
             continue;
@@ -483,11 +503,7 @@ pub fn codex_rollouts_to_usage_facts_with_route(
                     .map(str::to_string)
             }
         });
-        let stem = p
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or_default()
-            .to_string();
+        let stem = rollout_source_stem(p);
         let mut state = CodexFoldState::new();
         for (offset, item) in items {
             match state.apply(&item) {
@@ -1051,6 +1067,31 @@ mod tests {
             r.total_token_count_events, 4,
             "四次非复读 token_count（每份 2）"
         );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn compressed_rollout_emits_facts_and_dedups_with_plain_copy() {
+        let tmp = temp_dir();
+        let plain = tmp.join("rollout-zstd.jsonl");
+        let compressed = tmp.join("rollout-zstd.jsonl.zst");
+        let bytes = rollout_lines().join("");
+        std::fs::write(&plain, &bytes).unwrap();
+        let mut compressed_bytes = Vec::new();
+        ruzstd::encoding::compress(
+            bytes.as_bytes(),
+            &mut compressed_bytes,
+            ruzstd::encoding::CompressionLevel::Fastest,
+        );
+        std::fs::write(&compressed, compressed_bytes).unwrap();
+
+        let result = codex_rollouts_to_usage_facts(
+            &[plain, compressed], "ns-test", "default").unwrap();
+        assert_eq!(result.malformed, 0);
+        assert_eq!(result.facts.len(), 2);
+        assert_eq!(result.attempts.get("duplicate"), Some(&2));
+        assert!(result.facts.iter().all(|fact| fact["source_event_id"]
+            .as_str().unwrap_or_default().starts_with("rollout-zstd:")));
         std::fs::remove_dir_all(&tmp).ok();
     }
 

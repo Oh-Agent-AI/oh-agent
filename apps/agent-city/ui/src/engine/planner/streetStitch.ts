@@ -1,3 +1,4 @@
+import { atLeast, roadWidthFor } from "../roadStandard";
 import { DetMath as Math } from "../detMath";
 /**
  * 街网缝合（R5 步 6s）：自 cityPlan.ts::buildPlan 逐字迁出的、扇区街网生成之后的几遍接路 / 切边工序段。
@@ -74,7 +75,7 @@ export function stitchStreetNetwork(w: StreetStitchWorld): void {
   }
   for (const node of [...nodes.values()]) {
     if (!coastRoadIndex.closerThan(node, 16) || coastRoadIndex.closerThan(node, 0.5)) continue;
-    connectToNetwork(node, 18, false, (edge) => edge.width < 12 || !coastRoadIndex.closerThan(edge.points[0], 0.5));
+    connectToNetwork(node, 18, false, (edge) => edge.width < roadWidthFor("arterial") || !coastRoadIndex.closerThan(edge.points[0], 0.5));
   }
   // 节点落在别的路段中间时把那条路段切开（S4 裁切块的边沿网格线只走到裁切点，与相邻整格的同线整边重叠成 0° 「锐角」）：
   // 重叠的共线边因此变成共享路段，T 接点成为真正的路口。按 60 分桶避免 O(N·E)。
@@ -96,7 +97,7 @@ export function stitchStreetNetwork(w: StreetStitchWorld): void {
           && Math.hypot(node.x - edge.points[0].x, node.z - edge.points[0].z) > 0.5 && Math.hypot(node.x - edge.points[1].x, node.z - edge.points[1].z) > 0.5);
         if (!host) continue;
         edges.delete(host.id);
-        const primary = host.width >= 12; const art = host.kind === "arterial";
+        const primary = atLeast(host, "arterial"); const art = host.kind === "arterial";
         addEdge(host.points[0], node, art, false, primary); addEdge(node, host.points[1], art, false, primary);
         split += 1;
       }
@@ -112,7 +113,7 @@ export function stitchStreetNetwork(w: StreetStitchWorld): void {
       const id = roadNodeId(key(p));
       if (seen.has(id)) continue; seen.add(id);
       if (!nodes.has(id)) continue; // 角点上没有任何街道（整条边都贴主干道）就不必接
-      connectToNetwork(p, 18, false, (edge) => edge.kind !== "arterial" || edge.width < 12);
+      connectToNetwork(p, 18, false, (edge) => edge.kind !== "arterial" || edge.width < roadWidthFor("arterial"));
     }
   }
   // 街网生成后再给大道两端各补一条到街区街道的接入路（同一套 localConstraints）。

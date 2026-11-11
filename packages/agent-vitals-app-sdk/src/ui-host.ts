@@ -55,6 +55,42 @@ export async function invokeHost<T>(command: string, args: Record<string, unknow
     window.parent.postMessage({ channel: "av-plugin-rpc", version: 1, instanceId: browserInstance, type: "request", requestId, command, args }, location.origin);
   });
 }
+
+/**
+ * Register opaque local calls declared by the trusted plugin descriptor.
+ * Application adapters own method names, payload validation and business logic;
+ * this helper only dispatches and returns bounded host responses.
+ */
+export function connectHostCalls(handlers: Record<string,
+  (payload: Record<string, unknown>) => unknown | Promise<unknown>>) {
+  if (!window.__AV_PLUGIN_INSTANCE__ || !window.__TAURI__?.core?.invoke) return () => {};
+  const receive = (event: Event) => {
+    const envelope = (event as CustomEvent).detail;
+    const call = envelope?.payload?.call as Record<string, unknown> | undefined;
+    if (envelope?.version !== 1 || envelope?.source !== "host" || envelope?.payload?.kind !== "plugin.call.request"
+      || !call || typeof call !== "object" || Array.isArray(call)
+      || typeof call.callId !== "string" || !/^pc_[a-f0-9]{32}$/.test(call.callId)
+      || typeof call.method !== "string" || !/^[A-Za-z0-9:_.-]{1,96}$/.test(call.method)
+      || !call.payload || typeof call.payload !== "object" || Array.isArray(call.payload)) return;
+    const method = call.method;
+    const payload = call.payload as Record<string, unknown>;
+    const handler = Object.hasOwn(handlers, method) ? handlers[method] : undefined;
+    const respond = (response: Record<string, unknown>) => invokeHost("plugin_request", { request: { version: 1, instanceId: window.__AV_PLUGIN_INSTANCE__,
+        requestId: `plugin-call-${call.callId}`, method: "plugin.call.respond", payload: {
+          callId: call.callId, response,
+        } } });
+    if (!handler) { void respond({ ok: false, error: { code: "plugin_call_method_unavailable" } }).catch(() => {}); return; }
+    void Promise.resolve().then(() => handler(payload)).then(
+      (result) => respond({ ok: true, result: result ?? null }),
+      (reason: unknown) => {
+        const code = reason instanceof Error && /^[a-z][a-z0-9_]{0,63}$/.test(reason.message) ? reason.message : "plugin_call_failed";
+        return respond({ ok: false, error: { code } });
+      },
+    ).catch(() => {});
+  };
+  window.addEventListener("__AV_PLUGIN_EVENT__", receive);
+  return () => window.removeEventListener("__AV_PLUGIN_EVENT__", receive);
+}
 let revision = 0;
 export const embedded = () => !!window.__AV_PLUGIN_INSTANCE__;
 export async function publish(type: string, payload: Record<string, unknown> = {}) {
@@ -72,6 +108,13 @@ export function connect(handler: (command: Command) => void) {
   };
   window.addEventListener("__AV_PLUGIN_COMMAND__", receive);
   return () => window.removeEventListener("__AV_PLUGIN_COMMAND__", receive);
+}
+/** Tell the host a sync stretch is about to run so the 5s pulse is not a hang.
+ * `budgetMs` is capped at 15s — the same boot-timeout ceiling. Await this before
+ * the blocking work; a fire-and-forget publish can lose the race. */
+export async function noteBusy(budgetMs = 8_000) {
+  const busyMs = Math.max(1, Math.min(Math.floor(budgetMs), 15_000));
+  await publish("heartbeat", { diagnostic: { busyMs } });
 }
 export function observeHealth(state?: () => Record<string, number | boolean>) {
   const fault = (event: Event) => {

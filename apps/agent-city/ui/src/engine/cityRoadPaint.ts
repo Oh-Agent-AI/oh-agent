@@ -1,3 +1,4 @@
+import { atLeast } from "./roadStandard";
 import type { RoadEdge, Vec2 } from "./cityLayout";
 
 /** Merge degree-two continuations; junctions, bridges and width changes remain boundaries. */
@@ -64,7 +65,7 @@ export function channelizedTPlan(edges: RoadEdge[]): ChannelizedMouth[] {
   const bridged = new Set(edges.filter((edge) => edge.bridge).flatMap((edge) => [edge.from, edge.to]));
   const mouths: ChannelizedMouth[] = [];
   for (const [id, list] of incident) {
-    if (list.length !== 3 || list.some((edge) => edge.width >= 12)) continue;
+    if (list.length !== 3 || list.some((edge) => atLeast(edge, "arterial"))) continue;
     if (bridged.has(id)) continue; // 节点上挂着桥 = 桥头而不是画在地面上的三岔口
     const node = list[0].from === id ? list[0].points[0] : list[0].points[list[0].points.length - 1];
     const angleOf = (edge: RoadEdge) => {

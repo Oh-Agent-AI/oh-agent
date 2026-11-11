@@ -134,6 +134,38 @@ const snap = (layout) => JSON.stringify({
   })),
 });
 
+// Standard widths are checked before either preview or replay can split a host road.
+{
+  const from = { x: -200, z: -200 }, to = { x: -140, z: -200 };
+  for (const width of [4.2, 10, 0, -1, NaN, Infinity]) {
+    const layout = makeLayout();
+    assert.deepEqual(validateRoadAdd(layout, model, from, to, width).blockers, ["non-standard-width"]);
+    assert.deepEqual(validateRoadAdd(layout, model, from, to, width, undefined, [], { x: -170, z: -190 }).blockers, ["non-standard-width"]);
+    assert.deepEqual(validateRestyle(layout, model, [E1.id], width).blockers, ["non-standard-width"]);
+    for (const op of [{ t: "add", from, to, width }, { t: "restyle", edge: E1.id, width }]) {
+      const patch = fresh(); patch.roadOps = [op];
+      const result = applyPlanPatch(layout, patch);
+      assert.deepEqual(result.stale.map((x) => x.reason), ["non-standard-width"]);
+      assert.deepEqual(result.layout.roadEdges, layout.roadEdges, "invalid width must not alter existing roads");
+      assert.deepEqual(result.layout.roadNodes, layout.roadNodes, "invalid width must not leave split nodes");
+    }
+  }
+  for (const width of [5, 8, 12]) {
+    const patch = fresh(); patch.roadOps = [{ t: "add", from, to, width }];
+    const result = applyPlanPatch(makeLayout(), patch);
+    assert.equal(result.stale.length, 0);
+    assert.ok(result.layout.roadEdges.some((e) => e.width === width && e.points[0].x === from.x));
+    patch.roadOps = [{ t: "restyle", edge: E1.id, width }];
+    const restyled = applyPlanPatch(makeLayout(), patch);
+    assert.equal(restyled.stale.length, 0);
+    assert.equal(restyled.layout.roadEdges.find((e) => e.id === E1.id).width, width);
+  }
+  const saved = fresh(); saved.roadOps = [{ t: "add", from, to, width: 4.2 }, { t: "restyle", edge: E1.id, width: 10 }];
+  assert.deepEqual(applyPlanPatch(makeLayout(), coercePlanPatch(saved)).stale.map((x) => x.reason), ["non-standard-width", "non-standard-width"], "imported edits obey the same entry rule");
+  const legacy = makeLayout(); legacy.roadEdges = [{ ...E1, width: 4.2 }];
+  assert.deepEqual(applyPlanPatch(legacy, fresh()).layout.roadEdges, legacy.roadEdges, "loading existing custom roads must not silently normalize them");
+}
+
 // (a) 确定性：同输入两次 → 相同；buildingMoves 条目倒序 → 相同；roadOps 顺序是语义（日志）。
 {
   const patch = fresh();

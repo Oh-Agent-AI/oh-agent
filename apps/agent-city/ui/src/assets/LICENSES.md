@@ -51,3 +51,28 @@ licence as the repository.
 `catalog/hospital.jpg`, `catalog/school.jpg`, `catalog/mall.jpg`, `catalog/garden.jpg`,
 `catalog/hero-tower.jpg`,
 `catalog/airport.jpg`
+
+## Mecha character models (`mecha/`)
+
+All mecha character models and their `.manifest.json` files are original Agent City artwork (project-owned; same
+licence as the repository). The `.blend` sources are kept outside the repository; the hashes in each manifest identify
+the shipped GLB (and the source blend where applicable). None of these files contains third-party textures.
+
+| File | Origin |
+| --- | --- |
+| `mecha/assault.glb` + `mecha/assault.manifest.json` | Legacy Assault mecha, modelled by hand in Blender 5.4. An AI-generated low-poly mesh (Tencent Hunyuan 3D Pro via the 胜算云 router, 2026-10-26) was used only as a proportion/detail reference inside Blender and is not part of this file. Materials are an 8×1 colour palette plus one emissive accent material. |
+| `mecha/gunner.glb` + `mecha/gunner.manifest.json` | Gunner, rebuilt from the Hunyuan 3D high model, retopologised/reduced and rigged in Blender; 2048 diffuse atlas baked from the high model, no third-party textures. |
+| `mecha/support.glb` + `mecha/support.manifest.json` | Support, generated with Hunyuan 3D Pro, split per joint, repaired and rigged in Blender; 2048 atlas baked from the generated model's map. |
+| `mecha/assault-trial.glb` + `mecha/assault-trial.manifest.json` | Experimental Assault trial candidate (restored left lower leg, forward punch); not validated for battle. |
+| `mecha/assault-gait-preview.glb` + `mecha/assault-gait-preview.manifest.json` | Experimental shorter-step Assault preview; not approved for battle. Embedded textures were downscaled to 512 px WebP in 2026-10-30 to bring the preview under the city asset cap. |
+| `mecha/assault-lift-preview.glb` + `mecha/assault-lift-preview.manifest.json` | Experimental high-detail alternating-foot-lift Assault preview; not approved for battle. |
+| `mecha/assault-connected-candidate.glb` + `mecha/assault-connected-candidate.manifest.json` | Connected-leg Assault model derived from the project's lifted-foot model and registered as the default for game playback. |
+
+## Mecha unit portraits (`mecha/portraits/`)
+
+The five 256×256 JPEG portraits (`assault`, `gunner`, `support`, `boss`, `raider`) are cropped from
+the existing project-generated character concept sheets in `docs/design/mecha/2026-10-26/`,
+not new artwork or third-party stock. They retain the repository's artwork licence.
+`mecha/portraits/README.md` records the source hashes and crop/export recipe; the full sheets
+remain design documentation and are not shipped as runtime thumbnails. West/east raiders share
+the same approved Raider art, while their distinct names and non-colour cues are preserved.

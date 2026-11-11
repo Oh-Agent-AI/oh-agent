@@ -1,3 +1,4 @@
+import { atLeast } from "../roadStandard";
 // 规划约束的共享度量（CITY_ARCHITECTURE §2「约束即守卫」，迁移步 5 前半）。
 //
 // 原先这些几何度量内联在 scripts/verify-city-context.mjs 与 verify-city-planning.mjs 里，只有 CI 能「事后」看到
@@ -193,7 +194,7 @@ export const archStraddlesRoad: Constraint = {
     const roads = nonBridge(plan);
     for (const s of planSites(plan)) {
       if (s.kind !== "arch") continue;
-      const host = roads.filter((e: Site) => e.width >= 12).map((e: Site) => closestPolylineSegment(e.points, s)).find((near) => near && near.d < 3);
+      const host = roads.filter((e: Site) => atLeast(e, "arterial")).map((e: Site) => closestPolylineSegment(e.points, s)).find((near) => near && near.d < 3);
       if (!host) out.push(v("archStraddlesRoad", s, `${s.kind} not on a road`));
       else {
         const dir = Math.atan2(host.b.x - host.a.x, host.b.z - host.a.z);

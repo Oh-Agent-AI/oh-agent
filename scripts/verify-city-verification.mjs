@@ -14,9 +14,9 @@ assert(manifest.some((s) => s.file === "verify-city-solve.mjs" && !s.shared));
 // Preserve the existing stages and register the new production causeway guard.
 // 63 + city-opt 的 5 个（villa-placement / model-envelope / site-registry / site-registry-scene / joint-site-road）+ 规划修复的 6 个守卫（verify-plan-patch / -road-rules / -sites / -repair-controller / -bulldozer / -remap）+ R2 的 verify-city-import-boundary。计数锁防的是悄悄增减，
 // 有意登记就同步改这里，并在下面断言它们确实挂进了 planning 组——否则登记了却不跑。
-// 88（驾驶线）+ 视觉风格线 3 个（junction-rings / highway-ramps / world-scale）。计数锁防的是悄悄增减，
+// 88（驾驶线）+ 视觉风格线 3 个（junction-rings / highway-ramps / world-scale）+ 机甲 UX 守卫（verify-city-mecha-ux，挂在 game 组）。计数锁防的是悄悄增减，
 // 有意登记就同步改这里，并在下面断言它们确实挂进了 planning 组——否则登记了却不跑。
-assert.equal(manifest.length, 113);
+assert.equal(manifest.length, 117);
 assert(selectStages("module", "display").some(stage => stage.id === "verify-city-coastal-receivers"));
 for (const id of ["verify-city-road-audit-ui", "verify-city-road-audit-worker", "verify-city-road-audit-history"]) {
   assert(manifest.some((stage) => stage.id === id), `${id} must be registered`);
@@ -31,8 +31,10 @@ assert(selectStages("module", "planning").some((stage) => stage.id === "verify-c
 for (const mode of ["full", "fast", "module"]) assert(selectStages(mode, mode === "module" ? "planning" : undefined)
   .some(stage => stage.id === "verify-city-planning-job"));
 for (const mode of ["full", "fast", "module"]) assert(selectStages(mode, mode === "module" ? "planning" : undefined)
+  .some(stage => stage.id === "verify-city-plan-disk-cache"));
+for (const mode of ["full", "fast", "module"]) assert(selectStages(mode, mode === "module" ? "planning" : undefined)
   .some(stage => stage.id === "verify-city-operation-budget"));
-for (const id of ["verify-plan-patch", "verify-plan-road-rules", "verify-plan-sites", "verify-plan-repair-controller", "verify-plan-bulldozer", "verify-plan-remap", "verify-plan-repair-copy", "verify-plan-repair-bridgehead", "verify-plan-repair-drivability", "verify-city-minimap"]) {
+for (const id of ["verify-plan-patch", "verify-plan-road-rules", "verify-plan-sites", "verify-plan-repair-controller", "verify-plan-bulldozer", "verify-plan-remap", "verify-plan-repair-copy", "verify-plan-repair-bridgehead", "verify-plan-repair-drivability", "verify-city-minimap", "verify-city-road-standard"]) {
   assert(selectStages("module", "planning").some((stage) => stage.id === id), `${id} must run in the planning group`);
 }
 for (const group of ["network", "planning", "sites"]) assert(selectStages("module", group).some(stage => stage.id === "verify-city-joint-site-road"));

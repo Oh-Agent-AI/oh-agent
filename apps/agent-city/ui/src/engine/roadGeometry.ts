@@ -1,3 +1,4 @@
+import { EXPRESSWAY_DECK_WIDTH } from "./roadStandard";
 import { DetMath as Math } from "./detMath"; // 跨引擎确定性：见 detMath.ts
 // 道路几何叶子工具（CITY_PLANNER_REFACTOR_SPEC R1）：逐字搬自 cityPlan.ts，打断 planner/* ↔ cityPlan 的运行时循环。
 import type { Vec2 } from "./cityLayout";
@@ -48,7 +49,7 @@ export class SegmentIndex {
 
 /** Conservative footprint guard: includes the full deck and a sidewalk setback. */
 export function clearsHighways(p: Vec2, width: number, depth: number, highways: Vec2[][] | SegmentIndex): boolean {
-  const clearance = 5.25 + Math.hypot(width, depth) / 2 + 1;
+  const clearance = EXPRESSWAY_DECK_WIDTH / 2 + Math.hypot(width, depth) / 2 + 1;
   if (highways instanceof SegmentIndex) return !highways.closerThan(p, clearance);
   for (const run of highways) for (let i = 1; i < run.length; i += 1) {
     if (segmentDistance(p, run[i - 1], run[i]) < clearance) return false;

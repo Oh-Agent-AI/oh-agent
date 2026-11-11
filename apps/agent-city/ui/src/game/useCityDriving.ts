@@ -11,6 +11,7 @@ import type { CameraClearanceQuery, ChaseCameraSafety } from "./VehicleChaseCame
 import type { RuntimeDiagnosticSnapshot } from "./runtime/RuntimeDiagnostics";
 import { DrivingEventLog, type DrivingEvent } from "./runtime/DrivingEventLog";
 import type { PreparationProgress } from "./runtime/Preparation";
+import { noteBusy } from "../host";
 import type { VerifiedSpawnCredential } from "./driving/spawnPoints";
 import { resolveFormalSpawn, SpawnConfirmationStore, type SpawnCandidateChoice, type SpawnConfirmationBinding, type SpawnConfirmationSnapshot } from "./driving/SpawnConfirmation";
 
@@ -40,6 +41,8 @@ export function useCityDriving(engine: RefObject<CityEngine | null>, options: Re
   confirmationEnabled?: boolean;
   /** VTOL 推进器会话（Space 喷升；仅游玩，审计/正式校验路径不变）。 */
   vtol?: boolean;
+  /** Remote visitors operate only their browser-local scene and must not call desktop host IPC. */
+  notifyHostBusy?: boolean;
   cinemaActive: () => boolean; gameActive: () => boolean; busy: () => boolean;
 }>) {
   const [hud, setHud] = useState<DrivingHudSnapshot>(IDLE_HUD);
@@ -92,7 +95,7 @@ export function useCityDriving(engine: RefObject<CityEngine | null>, options: Re
     return () => window.clearInterval(timer);
   }, [hud.phase, publish]);
 
-  const start = useCallback(async (mode: "formal" | "free-drive" | "diagnostic", vehicle?: Readonly<{ vtol: boolean }>): Promise<boolean> => {
+  const start = useCallback(async (mode: "formal" | "free-drive" | "diagnostic", vehicle?: Readonly<{ vtol: boolean }>, near?: Readonly<{ x: number; z: number }>): Promise<boolean> => {
     const host = engine.current;
     if (!host || runtimeRef.current) return false;
     if (optionsRef.current.cinemaActive() || optionsRef.current.gameActive() || optionsRef.current.busy()) {
@@ -105,6 +108,7 @@ export function useCityDriving(engine: RefObject<CityEngine | null>, options: Re
         ? "正式道路图尚不可用，暂不能开始驾驶。" : "驾驶出生点尚未完成当前场景确认，暂不能开始。"); return false;
     }
     const confirmedSpawn = authorization?.ok ? authorization.credential : null;
+    if (optionsRef.current.notifyHostBusy !== false) { try { await noteBusy(10_000); } catch { /* host pulse is best-effort */ } }
     const abort = new AbortController(); abortRef.current = abort;
     const runtime = new GameRuntime<DrivingInputState>({ dt: DRIVING_DT, emptyInput: () => ({ ...EMPTY_DRIVING_INPUT }) }); runtimeRef.current = runtime;
     preparing.current = true;
@@ -112,8 +116,11 @@ export function useCityDriving(engine: RefObject<CityEngine | null>, options: Re
     eventLog.current!.clear(); setEvents(Object.freeze([]));
     latest.current = { speed: 0, blocked: false, reason: null, coverage: null, gear: "N", altitude: null, boost: null };
     setEntryError(null); setHud({ ...IDLE_HUD, phase: "preparing" });
-    const request = { collider: CITY_CAR_COLLIDER, vtol: vehicle?.vtol ?? (currentOptions.vtol === true), onPreparationMetric: runtime.recordPreparation.bind(runtime),
-      onPreparationProgress: (value: PreparationProgress) => setPreparationProgress(value), present: (frame: CarPresentation, scene: CityCarSceneCapability) => {
+    const request = { collider: CITY_CAR_COLLIDER, vtol: vehicle?.vtol ?? (currentOptions.vtol === true), near, onPreparationMetric: runtime.recordPreparation.bind(runtime),
+      onPreparationProgress: async (value: PreparationProgress) => {
+        if (value.state === "started" && optionsRef.current.notifyHostBusy !== false) { try { await noteBusy(10_000); } catch { /* host pulse is best-effort */ } }
+        setPreparationProgress(value);
+      }, present: (frame: CarPresentation, scene: CityCarSceneCapability) => {
       const s = frame.state;
       latest.current = { ...latest.current, speed: Math.abs(frame.state.speed), blocked: frame.blocked, reason: frame.reason,
         altitude: Number.isFinite(s.boost) ? (s.y ?? null) : null, boost: Number.isFinite(s.boost) ? (s.boost ?? null) : null,
@@ -166,7 +173,7 @@ export function useCityDriving(engine: RefObject<CityEngine | null>, options: Re
   const toggle = useCallback(() => {
     if (runtimeRef.current?.snapshot.phase === "running") pause(); else resume();
   }, [pause, resume]);
-  const setInput = useCallback((input: Partial<DrivingInputState>) => { runtimeRef.current?.setInput({ ...EMPTY_DRIVING_INPUT, ...input }); }, []);
+  const setInput = useCallback((input: Partial<DrivingInputState> & Readonly<{ thruster?: boolean }>) => { runtimeRef.current?.setInput({ ...EMPTY_DRIVING_INPUT, ...input }); }, []);
   const deriveSpawnCandidates = useCallback((binding: SpawnConfirmationBinding, candidates: readonly SpawnCandidateChoice[]) => optionsRef.current.confirmationEnabled === false ? false : confirmationStore.derive(binding, candidates), [confirmationStore]);
   const validateSpawnCandidate = useCallback((binding: SpawnConfirmationBinding, credential: VerifiedSpawnCredential) => optionsRef.current.confirmationEnabled === false ? false : confirmationStore.validate(binding, credential), [confirmationStore]);
   const confirmSpawn = useCallback((binding: SpawnConfirmationBinding, spawnId: string) => optionsRef.current.confirmationEnabled === false ? false : confirmationStore.confirm(binding, spawnId), [confirmationStore]);
@@ -175,5 +182,5 @@ export function useCityDriving(engine: RefObject<CityEngine | null>, options: Re
   const diagnostics = useCallback((): RuntimeDiagnosticSnapshot | null => runtimeRef.current?.diagnostics ?? null, []);
   return { hud, entryError, preparationProgress, events, clearEntryError: () => setEntryError(null), spawnConfirmation,
     deriveSpawnCandidates, validateSpawnCandidate, confirmSpawn, cancelSpawn, invalidateSpawn,
-    enter: () => start("formal"), enterFreeDrive: (vehicle?: Readonly<{ vtol: boolean }>) => start("free-drive", vehicle), enterDiagnostic: () => start("diagnostic"), exit, pause, resume, toggle, setInput, diagnostics, physicsStep: DRIVING_DT };
+    enter: () => start("formal"), enterFreeDrive: (vehicle?: Readonly<{ vtol: boolean }>, near?: Readonly<{ x: number; z: number }>) => start("free-drive", vehicle, near), enterDiagnostic: () => start("diagnostic"), exit, pause, resume, toggle, setInput, diagnostics, physicsStep: DRIVING_DT };
 }

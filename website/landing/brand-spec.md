@@ -15,4 +15,4 @@ Extension of the existing City-first developer-product landing. Audience: people
 
 ## Preserved contracts and changes
 
-Preserve `#city`, `#play`, `#how`, `#insights`, `#privacy`, `#faq`, `#download`, locale preference, local synthetic data host, same-origin scripts/assets and privacy/cost explanations. Add a third VTOL conceptual preview, clear public source links and truthful platform release summaries. No installer links until actual release assets are published and verified. Desktop selectors/platform summaries use three columns; below 700px they stack without fixed content widths.
+Preserve `#city`, `#play`, `#how`, `#insights`, `#privacy`, `#faq`, `#download`, locale preference, local synthetic data host, same-origin scripts/assets and privacy/cost explanations. Add a third VTOL conceptual preview, clear public source links and truthful platform release summaries. Installer links point only at published, API-verified release assets for a specific tag (currently `app-v1.0.0-beta.3`), never `/releases/latest`. Desktop selectors/platform summaries use three columns; below 700px they stack without fixed content widths.

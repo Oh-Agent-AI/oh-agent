@@ -127,7 +127,7 @@
 .city-app { --city-timeline-height: 62px; }
 .city-app .city-header { top: 12px; left: 16px; right: 16px; justify-content: flex-end; }
 .city-app .city-local-toolbar { max-width: 100%; }
-.city-app .city-summary-trigger { position: absolute; top: 16px; left: 16px; display: flex; align-items: center; gap: var(--city-control-gap); border-color: #ffffff38; box-shadow: 0 2px 8px #0001; }
+.city-app .city-summary-trigger { position: absolute; top: 16px; left: 16px; display: flex; align-items: center; gap: var(--city-control-gap); min-height: 34px; border-color: #ffffff38; box-shadow: 0 2px 8px #0001; }
 .city-app .city-summary-trigger:hover:not(:disabled) { border-color: #ffffff70; }
 .city-coverage-badge { color: #ffdf9b; font-size: 12px; }
 .city-legend { top: 72px; left: 16px; width: min(320px, calc(100% - 32px)); max-height: calc(100% - 104px - var(--city-timeline-height)); padding: 16px; display: block; font-size: 13px; line-height: 1.5; box-shadow: 0 8px 24px #0002; }
@@ -280,6 +280,13 @@
 /* 小地图（2026-10-21）：路网与路况，左下角，在时间回放条之上。 */
 /* 小地图：正方形，贴着窗口左缘。静止时半透明、无边框文字（不挡视线）；悬停或键盘聚焦时变实，标签/摘要/图例浮在图内。
    收起时整块缩进左缘，只留一个窄把手。 */
+.city-monster-markers { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
+.city-monster-marker { position: absolute; visibility: hidden; transform: translate(-50%, -50%); pointer-events: auto; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 2px solid #fff; border-radius: 50%; background: #b6223c; color: #fff; box-shadow: 0 2px 12px #000a; cursor: pointer; }
+.city-monster-marker:focus-visible { outline: 3px solid #ffe47b; outline-offset: 2px; }
+.city-minimap-map { position: relative; width: var(--mm-size); height: var(--mm-size); }
+.city-minimap-spot { position: absolute; width: 20px; height: 20px; padding: 0; transform: translate(-50%, -50%); border: 0; border-radius: 50%; background: transparent; cursor: pointer; }
+.city-minimap-spot:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
+.city-minimap-tooltip { position: absolute; z-index: 1; max-width: 170px; padding: 4px 7px; border: 1px solid #ff9aa8; border-radius: 4px; background: #17222d; color: #fff; white-space: nowrap; transform: translate(-50%, -100%); pointer-events: none; box-shadow: 0 2px 8px #0008; }
 .city-minimap { --mm-size: 184px; position: absolute; left: 0; bottom: calc(var(--city-timeline-height, 48px) + 30px); z-index: 4; display: flex; align-items: center; font-size: 11px; transition: transform 0.22s ease; }
 .city-minimap.is-driving { bottom: 76px; }
 .city-minimap.is-collapsed { transform: translateX(calc(-1 * var(--mm-size) - 8px)); }
@@ -292,6 +299,9 @@
 .city-minimap-bottom { width: var(--mm-size); padding: 6px 4px 2px; box-sizing: border-box; color: #e8eaec; }
 .city-minimap-tabs { display: flex; gap: 4px; padding: 2px; border-radius: 6px; background: rgba(8, 12, 16, 0.72); }
 .city-minimap-tabs button { flex: 1; min-height: 28px; border: 0; border-radius: 4px; padding: 3px 6px; background: none; color: rgba(255, 255, 255, 0.85); font: inherit; font-size: 11px; line-height: 1.5; cursor: pointer; white-space: nowrap; }
+.city-minimap-encounters { display: flex; flex-wrap: wrap; gap: 3px; margin: 4px 0; max-width: var(--mm-size); }
+.city-minimap-encounters button { border: 1px solid #afc7db; border-radius: 4px; padding: 3px 5px; background: #16283a; color: #fff; font: inherit; cursor: pointer; }
+.city-minimap-encounters button:focus-visible { outline: 2px solid #ffe47b; outline-offset: 2px; }
 .city-minimap-key { margin-top: 4px; }
 .city-minimap-key > summary { width: fit-content; padding: 3px 0; color: #b9c7d5; cursor: pointer; font-size: 11px; }
 .city-minimap-key[open] .city-minimap-legend { padding-top: 4px; }
@@ -312,3 +322,25 @@
 .city-minimap-handle em { font-style: normal; font-size: 11px; writing-mode: vertical-rl; letter-spacing: 1px; }
 @media (hover: none) { .city-minimap-handle { opacity: 1; } }
 @media (max-width: 720px) { .city-minimap { transform-origin: left bottom; } .city-minimap:not(.is-collapsed) { transform: scale(0.8); } }
+
+.city-squad-feed { position: absolute; right: 16px; top: 72px; z-index: 5; width: auto; max-width: calc(100% - 32px); max-height: calc(100% - 160px); display: flex; flex-direction: column; background: var(--city-surface, rgba(10, 18, 28, .82)); border: 1px solid var(--city-border, #ffffff28); border-radius: 10px; color: var(--city-text, #edf3fc); font-size: 12px; pointer-events: auto; }
+.city-squad-feed.is-open { width: min(320px, calc(100% - 32px)); padding: 12px; border-radius: 12px; }
+.city-squad-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.city-squad-header strong { font-size: 13px; font-weight: 600; }
+.city-squad-feed .city-squad-toggle { display: flex; align-items: center; justify-content: center; gap: 7px; min-height: 32px; margin: 0; padding: 0 10px; border: 1px solid var(--city-border, #ffffff28); border-radius: 7px; background: #ffffff08; color: inherit; font: inherit; }
+.city-squad-feed.is-open .city-squad-toggle { width: 30px; min-height: 30px; padding: 0; border-color: transparent; background: transparent; font-size: 21px; line-height: 1; }
+.city-squad-toggle:hover { background: #ffffff14; }
+.city-squad-toggle:focus-visible { outline: 2px solid #8fc9ff; outline-offset: 2px; }
+.city-squad-hint { margin: 10px 0 12px; color: var(--city-muted, #9eb0c4); font-size: 11px; line-height: 1.6; }
+.city-squad-feed ol { margin: 0; padding: 0; overflow: auto; list-style: none; }
+.city-squad-feed li { margin: 0 0 8px; padding-bottom: 8px; border-bottom: 1px solid #ffffff14; }
+.city-squad-meta { display: block; color: #d5e4f4; font-weight: 600; }
+.city-squad-body { display: block; margin: 2px 0 4px; color: var(--city-muted, #9eb0c4); overflow-wrap: anywhere; }
+.city-squad-feed button { min-height: 28px; margin: 0; }
+.city-squad-kill { position: absolute; top: 16px; left: 50%; z-index: 6; transform: translateX(-50%); display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; pointer-events: auto; }
+.city-squad-kill li { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 999px; background: rgba(10, 18, 28, .78); border: 1px solid #f0c14b55; font-size: 12px; }
+.city-squad-kill button { min-height: 28px; margin: 0; }
+@media (max-width: 720px) {
+  .city-squad-feed, .city-squad-feed.is-open { left: 12px; right: 12px; width: auto; top: auto; bottom: 72px; max-height: 36%; }
+  .city-squad-kill { top: auto; bottom: calc(72px + 36% + 8px); }
+}

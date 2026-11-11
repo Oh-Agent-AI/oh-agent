@@ -43,7 +43,9 @@ function shape(id: string, vertices: readonly V[], faces: readonly (readonly num
     const normal=unit(n); normals.push(normal);
     // Every face must be planar, with the entire convex polyhedron on one side.
     const distances=vertices.map(v=>dot(normal,sub(v,vertices[f[0]])));
-    const scale=Math.max(1,...vertices.map(v=>length(sub(v,vertices[f[0]]))));
+    // Roundoff scales with the absolute coordinates too (as in separation()): corners at |x| ≈ 500 carry ~1e-13 of
+    // rounding, more than a tolerance sized only by the solid's own extent allows — 8 of 68k city boxes failed on it.
+    const scale=Math.max(1,...vertices.map(v=>length(sub(v,vertices[f[0]]))),...vertices.map(v=>Math.max(Math.abs(v.x),Math.abs(v.y),Math.abs(v.z))));
     if (f.some(i=>Math.abs(distances[i])>128*Number.EPSILON*scale) || (Math.min(...distances)<-128*Number.EPSILON*scale&&Math.max(...distances)>128*Number.EPSILON*scale)) throw new Invalid();
     for (let i=0;i<f.length;i++) { const e=sub(vertices[f[(i+1)%f.length]],vertices[f[i]]); if (!(length(e)>1e-12)) throw new Invalid(); edges.push(unit(e)); }
   }
@@ -363,7 +365,9 @@ export function buildCollisionIndex(inputs: readonly SolidInput[] | Readonly<{re
   const obstacles: StructureObstacle[]=inputs.map(input=>input.kind === "box"
     ? ({id:input.id,role:input.role,shape:"box",corners:boxPoly(input.center,input.halfAxes).vertices,...(input.mountableHeight===undefined?{}:{mountableHeight:input.mountableHeight})} as StructureObstacle)
     : ({id:input.id,role:input.role,shape:"prism",ring:input.ring,yMin:input.yMin,yMax:input.yMax,mountableHeight:input.mountableHeight} as StructureObstacle));
-  const built=buildFrozenCollisionIndex({revision:"legacy-static-unversioned",obstacles},{maxCandidates:params.maxCandidates ?? DEFAULT_COLLISION_LIMITS.maxCandidates},{...DEFAULT_COLLISION_PARAMS,...params} as CollisionParams);
+  // Pass the inputs as source solids, like buildVersionedCollisionIndex: boxes keep their half-axes instead of
+  // re-proving planarity from world corners (seed 7's platform-bridge railings failed that on rounding alone).
+  const built=buildFrozenCollisionIndex({revision:"legacy-static-unversioned",obstacles},{maxCandidates:params.maxCandidates ?? DEFAULT_COLLISION_LIMITS.maxCandidates},{...DEFAULT_COLLISION_PARAMS,...params} as CollisionParams,inputs);
   if(built.status!=="ready")throw new Error(`collision-index-${built.reason}`);
   return built.index;
 }

@@ -147,6 +147,8 @@ CREATE INDEX usage_facts_session_time
   ON usage_facts(session_key, event_ts_ms) WHERE deleted_at_ms IS NULL;
 CREATE INDEX usage_facts_provider_model_time
   ON usage_facts(provider_id, model_id, event_ts_ms) WHERE deleted_at_ms IS NULL;
+CREATE INDEX usage_facts_event_time
+  ON usage_facts(event_ts_ms) WHERE deleted_at_ms IS NULL;  -- v33：跨 harness 事件时间范围查询
 ```
 
 `fact_id` 继续由既有 UsageFact 身份规则产生。`UNIQUE(...)` 是第二道防线：同一事实即使出现 hash 规则回归，也不能悄悄重复入账。事实修正采用 tombstone + 新事实，或受控 `UPDATE` 写入 `fact_revisions`；初版选择前者以保持审计可追溯。

@@ -12,6 +12,7 @@ import { channelizedTPlan, type ChannelizedArm } from "../cityRoadPaint";
 import { EXPRESSWAY_DECK_THICKNESS, EXPRESSWAY_DECK_WIDTH, EXPRESSWAY_DECK_Y, EXPRESSWAY_RAMP, expresswayDeckHeights } from "./structureProfiles";
 import { terrainSurfaceHeight } from "./terrainSampling";
 import { groundRoadClearance } from "./roadClearance";
+import { platformAt, platformSurfaceAt, type PlatformLayout } from "./landmarkPlatforms";
 
 /** Road surface lift (same constant as groundRoadCompiler.ROAD_SURFACE_LIFT; kept here to avoid a cycle). */
 const ROAD_LIFT = 0.04;
@@ -58,7 +59,7 @@ export function boxTopFace(part: BoxPart, innerHalf = part.sz / 2) {
 }
 
 type Terrain = Pick<CityLayout, "terrain">["terrain"];
-type BridgeLayoutInput = Pick<CityLayout, "terrain" | "extent" | "roadEdges">;
+type BridgeLayoutInput = Pick<CityLayout, "terrain" | "extent" | "roadEdges"> & PlatformLayout;
 const part = (x: number, y: number, z: number, sx: number, sy: number, sz: number, color: string, role: StructureRole, ry = 0, rz = 0, order: EulerOrder = "XYZ", rx = 0): BoxPart =>
   Object.freeze({ x, y, z, sx, sy, sz, rx, ry, rz, order, color, role });
 
@@ -135,7 +136,11 @@ function landingRoadHalf(layout: BridgeLayoutInput, p: Vec2): number {
  * 桥头路面不是戳出桥面就是一道台阶（十五城 28 座桥没有一座两端都接得上）。 */
 export function bridgeDeckProfile(layout: BridgeLayoutInput, from: Vec2, to: Vec2, width = 0, levelFloor = -Infinity) {
   const level = Math.max(levelFloor, layout.terrain.height(from.x, from.z), layout.terrain.height(to.x, to.z));
-  const fromLands = landsOnRoad(layout, from); const toLands = landsOnRoad(layout, to);
+  // 落地：接到普通路面的路端，或落进可行驶的地标平台（海上歌剧院 / 机场岛，landmarkPlatforms）。
+  // 平台端的「路面」是平台顶面（平的），桥面落到它上面；曾经平台不算落地，桥面停在半空、尽头加横栏。
+  const padFrom = platformAt(layout, from.x, from.z), padTo = platformAt(layout, to.x, to.z);
+  const fromLands = landsOnRoad(layout, from) || padFrom !== null;
+  const toLands = landsOnRoad(layout, to) || padTo !== null;
   const road = (p: Vec2) => terrainSurfaceHeight(layout, p.x, p.z) + ROAD_LIFT;
   const length = Math.hypot(to.x - from.x, to.z - from.z);
   // Cross slope: the landed road surfaces lean sideways; a level-across deck left their edges
@@ -144,22 +149,44 @@ export function bridgeDeckProfile(layout: BridgeLayoutInput, from: Vec2, to: Vec
   const lean = (p: Vec2) => half > 0 ? (road({ x: p.x + nx * half, z: p.z + nz * half }) - road({ x: p.x - nx * half, z: p.z - nz * half })) / width : 0;
   // 端头那段箱体的长度 = 落地过渡区按 0.5 切出的一格（bridgeDeckSplitParts 的 blendSteps）。
   const blendLength = Math.min(3, length / 3); const section = blendLength / Math.max(1, Math.ceil(blendLength / 0.5));
+  // 平台端：平台路面从桥端一直伸到桥下——堤道斜着进平台时伸得更远（42/2 的机场堤道：平台在桥下 8 以上）。
+  // 桥面在整段重叠上必须平贴平台（同层：桥下高出 / 低于平台都会让两块路面分属两个区域，车压到交界即
+  // ambiguous-region），过了重叠再用一个普通落地区缓回跨中的弦。只看平台，不采样平台外的海底地形。
+  const padFlat = (pad: typeof padFrom, end: Vec2, inward: Vec2) => {
+    if (!pad) return 0;
+    let covered = 0;
+    for (let d = 0; d <= length; d += 0.5) {
+      const cx = end.x + inward.x * d, cz = end.z + inward.z * d;
+      if ([0, -1, 1].some((k) => pad.contains(cx + nx * half * k, cz + nz * half * k))) covered = d + 0.5;
+    }
+    return covered;
+  };
+  const flatFrom = padFlat(padFrom, from, { x: (to.x - from.x) / length, z: (to.z - from.z) / length });
+  const flatTo = padFlat(padTo, to, { x: (from.x - to.x) / length, z: (from.z - to.z) / length });
+  // 平台端落地区取 0.5 的整数倍：落地区每 0.5 一刀，非整倍时末刀与跨中刀挨得极近，切出 0.01 长的护栏碎段
+  // （seed 7 的歌剧院堤道：退化箱体，碰撞索引 invalid-input）。
+  const halfSteps = (v: number) => Math.max(0.5, Math.floor(v / 0.5) * 0.5);
+  const zoneFrom = padFrom ? halfSteps(Math.min(flatFrom + 3, length / 2)) : blendLength;
+  const zoneTo = padTo ? halfSteps(Math.min(flatTo + 3, length / 2)) : blendLength;
+  const surfaceOf = (pad: typeof padFrom) => (p: Vec2) => pad ? pad.y : road(p);
+  const leanOf = (pad: typeof padFrom) => (p: Vec2) => pad ? 0 : lean(p);
   const overlapHalf = (p: Vec2) => Math.min(half - 0.3, landingRoadHalf(layout, p)); // = bridgeDrivableHalf ∩ 引道
-  const fitFrom = fromLands ? seamFit(road, lean, from, { x: -(to.x - from.x) / length, z: -(to.z - from.z) / length }, nx, nz, overlapHalf(from), section) : NO_SEAM_FIT;
-  const fitTo = toLands ? seamFit(road, lean, to, { x: (to.x - from.x) / length, z: (to.z - from.z) / length }, nx, nz, overlapHalf(to), section) : NO_SEAM_FIT;
-  const ya = fromLands ? road(from) + fitFrom.dy : toLands ? road(to) + fitTo.dy : level;
-  const yb = toLands ? road(to) + fitTo.dy : fromLands ? road(from) + fitFrom.dy : level;
+  const fitFrom = fromLands && !padFrom ? seamFit(road, lean, from, { x: -(to.x - from.x) / length, z: -(to.z - from.z) / length }, nx, nz, overlapHalf(from), section) : NO_SEAM_FIT;
+  const fitTo = toLands && !padTo ? seamFit(road, lean, to, { x: (to.x - from.x) / length, z: (to.z - from.z) / length }, nx, nz, overlapHalf(to), section) : NO_SEAM_FIT;
+  const ya = fromLands ? surfaceOf(padFrom)(from) + fitFrom.dy : toLands ? surfaceOf(padTo)(to) + fitTo.dy : level;
+  const yb = toLands ? surfaceOf(padTo)(to) + fitTo.dy : fromLands ? surfaceOf(padFrom)(from) + fitFrom.dy : level;
   const pitch = Math.atan2(yb - ya, length);
-  const leans = [fromLands ? lean(from) + fitFrom.dlean : null, toLands ? lean(to) + fitTo.dlean : null].filter((v): v is number => v !== null);
+  const leans = [fromLands ? leanOf(padFrom)(from) + fitFrom.dlean : null, toLands ? leanOf(padTo)(to) + fitTo.dlean : null].filter((v): v is number => v !== null);
   const crossSlope = leans.length ? leans.reduce((n, v) => n + v, 0) / leans.length : 0;
-  const leanFrom = fromLands ? lean(from) + fitFrom.dlean : crossSlope, leanTo = toLands ? lean(to) + fitTo.dlean : crossSlope;
+  const leanFrom = fromLands ? leanOf(padFrom)(from) + fitFrom.dlean : crossSlope, leanTo = toLands ? leanOf(padTo)(to) + fitTo.dlean : crossSlope;
   // A bridge end can overlap the road's junction fan for up to LANDING_ZONE. A single plane
   // between the endpoint heights then sits below the rising ground fan (notably on steep banks),
   // making the same-layer road/deck pair disconnected. Follow the rendered terrain surface only
   // within a bounded landing zone, then ease back to the span chord. No-ground ends keep the old
-  // chord and never sample the terrain profile.
-  const smoothFalloff = (distance: number) => {
-    const t = Math.max(0, Math.min(1, distance / blendLength));
+  // chord and never sample the terrain profile. A platform end stays flat over the platform first.
+  const falloff = (distance: number, zone: number, flat: number) => {
+    if (distance <= flat) return 1;
+    const t = Math.max(0, Math.min(1, (distance - flat) / (zone - flat)));
     return 1 - t * t * (3 - 2 * t);
   };
   const baseAt = (t: number) => ya + (yb - ya) * t;
@@ -168,22 +195,23 @@ export function bridgeDeckProfile(layout: BridgeLayoutInput, from: Vec2, to: Vec
   // The seam fit (if any) of the end whose landing zone t lies in rides on top of the road profile.
   const endAt = (t: number) => {
     const distance = Math.max(0, Math.min(length, t * length));
-    if (fromLands && distance < blendLength) return { blend: smoothFalloff(distance), fit: fitFrom };
-    if (toLands && length - distance < blendLength) return { blend: smoothFalloff(length - distance), fit: fitTo };
+    if (fromLands && distance < zoneFrom) return { blend: falloff(distance, zoneFrom, flatFrom), fit: fitFrom, surface: surfaceOf(padFrom), lean: leanOf(padFrom) };
+    if (toLands && length - distance < zoneTo) return { blend: falloff(length - distance, zoneTo, flatTo), fit: fitTo, surface: surfaceOf(padTo), lean: leanOf(padTo) };
     return null;
   };
   const at = (t: number) => {
     const base = baseAt(t), end = endAt(t);
     if (!end || end.blend === 0) return base;
     const p = positionAt(t);
-    return base + (road(p) + end.fit.dy - base) * end.blend;
+    return base + (end.surface(p) + end.fit.dy - base) * end.blend;
   };
   const leanAt = (t: number) => {
     const base = baseLeanAt(t), end = endAt(t);
     if (!end || end.blend === 0) return base;
-    return base + (lean(positionAt(t)) + end.fit.dlean - base) * end.blend;
+    return base + (end.lean(positionAt(t)) + end.fit.dlean - base) * end.blend;
   };
-  return Object.freeze({ ya, yb, length, pitch, crossSlope, leanFrom, leanTo, fromLands, toLands, blendLength,
+  return Object.freeze({ ya, yb, length, pitch, crossSlope, leanFrom, leanTo, fromLands, toLands, blendLength, blendFrom: zoneFrom, blendTo: zoneTo,
+    onPlatform: padFrom !== null || padTo !== null,
     slant: Math.hypot(length, yb - ya), at, leanAt });
 }
 /** Edge bridge (straight span): deck slab, railings, lane lines, dashes, piers — the parts
@@ -243,13 +271,17 @@ function bridgeDeckSplitParts(edge: RoadEdge, layout: BridgeLayoutInput, profile
   const roll=Math.abs(profile.leanTo-profile.leanFrom)*edge.width;
   const count=Math.min(256,Math.max(2,Math.ceil(profile.length/8),Math.ceil(roll/0.04)));
   const stations = new Set(Array.from({ length: count + 1 }, (_, i) => i / count));
-  const blendSteps = Math.ceil(profile.blendLength / 0.5);
-  if (profile.fromLands) for (let i = 0; i <= blendSteps; i++) stations.add((profile.blendLength * i / blendSteps) / profile.length);
-  if (profile.toLands) for (let i = 0; i <= blendSteps; i++) stations.add(1 - (profile.blendLength * i / blendSteps) / profile.length);
+  // 落地区每 0.5 一刀（平台端的落地区更长：平贴平台的整段 + 普通落地区）。普通路端与以前逐刀相同。
+  const stepsFrom = Math.ceil(profile.blendFrom / 0.5), stepsTo = Math.ceil(profile.blendTo / 0.5);
+  if (profile.fromLands) for (let i = 0; i <= stepsFrom; i++) stations.add((profile.blendFrom * i / stepsFrom) / profile.length);
+  if (profile.toLands) for (let i = 0; i <= stepsTo; i++) stations.add(1 - (profile.blendTo * i / stepsTo) / profile.length);
   const sortedStations = [...stations].sort((x, y) => x - y);
   const cuts: number[] = [];
+  // 落在平台上的桥：落地区很长，与跨中刀（每 ≤ 8）挨近的刀合并（< 0.1 的段是碎片，护栏成退化箱体）。
+  // 普通路对路桥保持原门槛，逐字节不变。
+  const minSection = profile.onPlatform ? 0.1 : 1e-6;
   for (const t of sortedStations) {
-    if (!cuts.length || (t - cuts[cuts.length - 1]) * profile.length > 1e-6) cuts.push(t);
+    if (!cuts.length || (t - cuts[cuts.length - 1]) * profile.length > minSection) cuts.push(t);
     else if (t === 1) cuts[cuts.length - 1] = 1;
   }
   const parts:BoxPart[]=[];
@@ -271,7 +303,7 @@ function appendDeadEndBarriers(edge: RoadEdge, layout: BridgeLayoutInput, parts:
   const [a, b] = edge.points;
   const yaw = -Math.atan2(b.z - a.z, b.x - a.x);
   for (const end of [a, b] as const) {
-    if (landsOnRoad(layout, end)) continue;
+    if (landsOnRoad(layout, end) || platformSurfaceAt(layout, end.x, end.z) !== null) continue;
     parts.push(part(end.x, profile.at(end === a ? 0 : 1) + 0.45, end.z, 0.3, 0.9, Math.max(1, edge.width - 0.6), "#b9bcb2", "bridge-railing", yaw));
   }
 }

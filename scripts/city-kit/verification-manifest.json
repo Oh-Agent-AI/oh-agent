@@ -6,6 +6,12 @@
     "shared": false
   },
   {
+    "id": "verify-city-plan-disk-cache",
+    "file": "verify-city-plan-disk-cache.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
     "id": "verify-city-operation-budget",
     "file": "verify-city-operation-budget.mjs",
     "env": {},
@@ -222,6 +228,12 @@
   {
     "id": "verify-react-city-data",
     "file": "verify-react-city-data.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-react-city-append",
+    "file": "verify-react-city-append.mjs",
     "env": {},
     "shared": false
   },
@@ -484,6 +496,12 @@
     "shared": false
   },
   {
+    "id": "verify-city-road-standard",
+    "file": "verify-city-road-standard.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
     "id": "verify-city-minimap",
     "file": "verify-city-minimap.mjs",
     "env": {},
@@ -498,6 +516,12 @@
   {
     "id": "verify-plan-terrain",
     "file": "verify-plan-terrain.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
+    "id": "verify-city-landmark-platforms",
+    "file": "verify-city-landmark-platforms.mjs",
     "env": {},
     "shared": false
   },

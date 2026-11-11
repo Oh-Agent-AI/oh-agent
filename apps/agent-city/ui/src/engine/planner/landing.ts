@@ -23,6 +23,7 @@
  * 通过者；任一半径失败零副作用，全部失败如实 declined（不建「通向虚无的环」冒充连续——
  * 真无地可接时让约束违例如实可见）。
  */
+import { atLeast, roadWidthFor } from "../roadStandard";
 import { DetMath as Math } from "../detMath";
 import { roadNodeId } from "../roadGeometry";
 import type { RoadEdge, Vec2 } from "../cityLayout";
@@ -136,7 +137,7 @@ function groundChainAtRisk(world: LandingWorld, incident: Map<string, RoadEdge[]
     if (!forward.length) return false; // 链尾断头：pruneShortSpurs 要求尽头 ≥3 地面度才整链删除
     if (forward.length > 1) return true; // 分岔路口：链到此为止，前面的链满足可删形状
     const next = forward[0];
-    if (next.width >= 12) return false;
+    if (atLeast(next, "arterial")) return false;
     length += edgeLength(next);
     if (length >= LANDING_CONFIG.riskChainMax) return false;
     const mid = { x: (next.points[0].x + next.points[1].x) / 2, z: (next.points[0].z + next.points[1].z) / 2 };
@@ -279,7 +280,7 @@ export function buildLandingCircles(world: LandingWorld): LandingReport {
           const p = keyOf({ x: o.x + ((gp.x - o.x) / d) * radius, z: o.z + ((gp.z - o.z) / d) * radius });
           if (roadNodeId(p) !== headId) {
             removeIds.push(g.id);
-            adds.push({ a: p, b: keyOf(gp), arterial: g.kind === "arterial", primary: g.width >= 12 });
+            adds.push({ a: p, b: keyOf(gp), arterial: g.kind === "arterial", primary: atLeast(g, "arterial") });
             anchors.push({ p, angle: Math.atan2(p.z - o.z, p.x - o.x) });
           } // 重锚点即桥头（对端在环心延长线上）：边不动，锚就是桥头
         } else if (d >= radius - 2) {
@@ -306,8 +307,8 @@ export function buildLandingCircles(world: LandingWorld): LandingReport {
           for (const p of snapped) if (!bounds.some((q) => Math.hypot(p.x - q.x, p.z - q.z) < 1)) bounds.push(p);
           if (!bounds.length) { failed = "edge-inside"; break; }
           removeIds.push(host.id);
-          if (!aIn) adds.push({ a: keyOf(a), b: keyOf(bounds[0]), arterial: host.kind === "arterial", primary: host.width >= 12 });
-          if (!bIn) adds.push({ a: keyOf(bounds[bounds.length - 1]), b: keyOf(b), arterial: host.kind === "arterial", primary: host.width >= 12 });
+          if (!aIn) adds.push({ a: keyOf(a), b: keyOf(bounds[0]), arterial: host.kind === "arterial", primary: atLeast(host, "arterial") });
+          if (!bIn) adds.push({ a: keyOf(bounds[bounds.length - 1]), b: keyOf(b), arterial: host.kind === "arterial", primary: atLeast(host, "arterial") });
           for (const p of bounds) anchors.push({ p: keyOf(p), angle: Math.atan2(p.z - o.z, p.x - o.x) });
         } else if (missing && d <= radius + LANDING_CONFIG.captureReach) {
           const dx = b.x - a.x; const dz = b.z - a.z; const l2 = dx * dx + dz * dz || 1;
@@ -329,7 +330,7 @@ export function buildLandingCircles(world: LandingWorld): LandingReport {
         if (nearEnd && Math.hypot(p.x - node.x, p.z - node.z) < LANDING_CONFIG.endpointSnap) {
           const far = roadNodeId(nearEnd) === roadNodeId(keyOf(a)) ? keyOf(b) : keyOf(a);
           removeIds.push(pick.edge.id);
-          adds.push({ a: keyOf(node), b: far, arterial: pick.edge.kind === "arterial", primary: pick.edge.width >= 12 });
+          adds.push({ a: keyOf(node), b: far, arterial: pick.edge.kind === "arterial", primary: atLeast(pick.edge, "arterial") });
         } else if (nearEnd) {
           adds.push({ a: p, b: nearEnd, arterial: false, primary: false });
           anchors.push({ p, angle: Math.atan2(p.z - o.z, p.x - o.x) });
@@ -452,7 +453,7 @@ export function buildLandingCircles(world: LandingWorld): LandingReport {
       if (!committed.ok) { lastReason = committed.reason === "validation" ? (committed.detail?.split(" ")[0] ?? "validation") : committed.reason; continue; }
       report.built += 1;
       report.rings.push({ center: o, radius, node: headId });
-      for (const e of adds) report.addedEdges.push({ a: e.a, b: e.b, width: e.primary ? 12 : e.arterial ? 8 : 5 });
+      for (const e of adds) report.addedEdges.push({ a: e.a, b: e.b, width: roadWidthFor(e.primary ? "arterial" : e.arterial ? "collector" : "local") });
       break placement;
     }
     if (!report.rings.some((ring) => ring.node === headId)) report.declined.push({ node: headId, reason: lastReason });

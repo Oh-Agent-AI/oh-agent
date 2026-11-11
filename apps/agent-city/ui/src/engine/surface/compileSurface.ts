@@ -15,6 +15,7 @@ import { assertGroundRoadSurfaceMatches, compileGroundRoadSurface, type Compiled
 import { buildLandingPortals, DEFAULT_LANDING_PORTAL_OPTIONS } from "./landingPortals";
 import { extractMeshBoundaries } from "./meshBoundaries";
 import { buildSurfaceIndex } from "./SurfaceIndex";
+import { landmarkPlatforms } from "./landmarkPlatforms";
 import {
   boxCorners, boxPoint, boxTopFace, bridgeDeckParts, bridgeDrivableHalf, channelizedGeometry, culDeSacDiscs, culDeSacTopCap,
   EXPRESSWAY_DRIVABLE_HALF, expresswayPieces, FLARE_LIFT, flareTriangles, highwayRampPieces, rampDrivableHalf, ribbonFaces, trussBarPart, trussBars, type BoxPart,
@@ -54,7 +55,7 @@ export type CitySurfaceCompilation = Readonly<{
   landings: readonly StructureLanding[];
   counts: Readonly<{ bridges: number; expresswaySegments: number; flares: number; islands: number; culDeSacs: number }>;
 }>;
-export type CitySurfaceLayout = Pick<CityLayout, "roadEdges" | "extent" | "terrain" | "highways" | "bridges" | "landmarks" | "culDeSacEnds"> & Partial<Pick<CityLayout, "highwayRamps">>;
+export type CitySurfaceLayout = Pick<CityLayout, "roadEdges" | "extent" | "terrain" | "highways" | "bridges" | "landmarks" | "culDeSacEnds"> & Partial<Pick<CityLayout, "highwayRamps" | "airport">>;
 
 /** Road-compiler-independent static collision descriptors shared by plane and car. */
 export function compileStaticStructureObstacles(layout: CitySurfaceLayout): readonly StructureObstacle[] {
@@ -102,7 +103,13 @@ export function compileStaticStructureObstacles(layout: CitySurfaceLayout): read
     } else if (piece.role === "ramp-deck") {
       const corners = boxCorners(piece);
       const topYs = [corners[2].y, corners[3].y, corners[6].y, corners[7].y];
-      const mountableHeight = Math.min(0.9, Math.round((Math.max(...topYs) - Math.min(...topYs) + 0.3) * 100) / 100);
+      // At a ramp grade the car body is pitched along the top face. The
+      // conservative swept body bottom can sit slightly below the road plane,
+      // while the far end of this long slab is higher than the car center.
+      // 0.9 clipped that combined envelope (e.g. 0.985 on seed 42), so the
+      // ramp's own support slab became a wall and reset uphill speed to zero.
+      // Keep the exemption bounded; deep overlap and the underside still collide.
+      const mountableHeight = Math.min(1.1, Math.round((Math.max(...topYs) - Math.min(...topYs) + 0.3) * 100) / 100);
       obstacles.push(Object.freeze({ id: `ramp:${piece.ramp}:${String(piece.segment).padStart(4, "0")}:slab`, role: "ramp-deck", shape: "box", corners: Object.freeze(corners), mountableHeight }));
     }
   }
@@ -183,6 +190,16 @@ export function compileCitySurface(layout: CitySurfaceLayout, options: { ground?
     add(`culdesac:${disc.x}:${disc.z}`, "junction", "ground", { kind: "junction", id: `culdesac:${disc.x}:${disc.z}` }, rim.map((p, k) => [center, p, rim[(k + 1) % rim.length]] as const));
   }
 
+  // ── Landmark platforms (sea opera islet, airport island): a flat drivable top the causeway lands on.
+  //    Same layer as the roads; the deck landing on it is aligned by construction (bridgeDeckProfile).
+  const platforms = landmarkPlatforms(layout);
+  for (const platform of platforms) {
+    const n = platform.outline.length;
+    const centre = platform.outline.reduce((acc, p) => ({ x: acc.x + p.x / n, y: platform.y, z: acc.z + p.z / n }), { x: 0, y: platform.y, z: 0 });
+    const rim = platform.outline.map((p) => ({ x: p.x, y: platform.y, z: p.z }));
+    add(platform.id, "junction", "ground", { kind: "junction", id: platform.id }, rim.map((p, k) => [centre, p, rim[(k + 1) % n]] as const));
+  }
+
   // Ground-only index decides whether a bridge deck may share the ground layer.
   const groundIndex = buildSurfaceIndex({ ...groundSnapshot, revision: "layering", patches: Object.freeze([...patches]) });
   const groundY = (x: number, z: number): number | null => {
@@ -217,7 +234,9 @@ export function compileCitySurface(layout: CitySurfaceLayout, options: { ground?
     // (aligned → connected, otherwise conflict → closed): fail-closed either way.
     let overpass = false;
     const half = bridgeDrivableHalf(edge);
-    const landingPatch = (id: string) => (landingOf.get(id) ?? []).some((node) => node === edge.from || node === edge.to);
+    // 落进地标平台的桥：平台路面就是它的落地面（深入桥下几米，不是从桥下穿过的路）。
+    const landedPlatforms = new Set(platforms.filter((pl) => pl.contains(a.x, a.z) || pl.contains(b.x, b.z)).map((pl) => pl.id));
+    const landingPatch = (id: string) => landedPlatforms.has(id) || (landingOf.get(id) ?? []).some((node) => node === edge.from || node === edge.to);
     for (let s = 0; s <= len && !overpass; s += 0.5) for (let w = -half; w <= half + 1e-9 && !overpass; w += Math.max(0.5, half / 4)) {
       overpass = groundPatchesAt(a.x + ux * s - uz * w, a.z + uz * s + ux * w).some((id) => !landingPatch(id) && s > LANDING_ZONE && s < len - LANDING_ZONE);
     }

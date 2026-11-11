@@ -6,6 +6,7 @@
  * 开关：已于 2026-10-14 移除（原 `?cityPlan` / `cityPlanDev=1`），修复规划默认开启：
  * 存档始终读取，补丁随会话生效；没有补丁时引擎的 planPatch 为空，地图与未编辑时逐字节一致。
  */
+import { roadWidthFor } from "../engine/roadStandard";
 import type { CityEngine } from "../engine/CityEngine";
 import { auditLayout, tagAuditOrigins, type PlanIssue } from "../engine/planAudit";
 import { surfaceHoles, testDrive } from "./testDrive";
@@ -313,7 +314,7 @@ export class PlanRepairSession {
       const moved = applyPlanPatch(generated, patch).layout;
       const placed = listSites(moved).find((candidate) => candidate.id === site.id);
       const road = placed ? accessRoadFor(moved, model, placed) : null;
-      if (road) { patch = appendRoadOp(patch, { t: "add", from: road.from, to: road.to, width: 5 }); warnings.push(`access-road:${road.length}`); }
+      if (road) { patch = appendRoadOp(patch, { t: "add", from: road.from, to: road.to, width: roadWidthFor("local") }); warnings.push(`access-road:${road.length}`); }
       else if (!placed || !siteTouchesRoad(moved, placed)) warnings.push("no-access-road");
       const after = road ? applyPlanPatch(generated, patch).layout : moved;
       const accessNode = (before.landmarks ?? []).find((landmark) => landmark.id === site.id)?.access?.nodeId

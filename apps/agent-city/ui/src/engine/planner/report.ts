@@ -25,6 +25,7 @@
  *    用地 radius+16、酒店地块 26）——空置区窄路的「预留/无支撑」判定与裁剪时的 serves() 同口径，
  *    于是「无支撑」即连通性 BFS 加回的窄边。
  */
+import { atLeast, roadWidthFor } from "../roadStandard";
 import { seasideHotelLots, type SeasideBand } from "../citySeaside";
 import type { CityBlock, PublicSite, RoadEdge, RoadNode, Vec2 } from "../cityLayout";
 import type { Landmark } from "../cityPlan";
@@ -315,9 +316,9 @@ export function roadReport(input: RoadReportInput): RoadReport {
   const totalLength = segments.reduce((sum, s) => sum + lengthOf(s), 0);
   const bucketLength = (pred: (e: RoadEdge) => boolean) => segments.filter((s) => pred(s.edge)).reduce((sum, s) => sum + lengthOf(s), 0);
   const share = (len: number) => (totalLength > 0 ? round4(len / totalLength) : 0);
-  const len12 = bucketLength((e) => e.width >= 12);
-  const len8 = bucketLength((e) => e.width >= 8 && e.width < 12);
-  const lenRest = bucketLength((e) => e.width < 8);
+  const len12 = bucketLength((e) => atLeast(e, "arterial"));
+  const len8 = bucketLength((e) => atLeast(e, "collector") && e.width < roadWidthFor("arterial"));
+  const lenRest = bucketLength((e) => e.width < roadWidthFor("collector"));
 
   // A5 路口度数分布 + 最小交角（度≥3 计路口；角度取该点各对入边方向的夹角最小值）。
   const acuteFindings: AcuteJunctionFinding[] = [];
@@ -477,7 +478,7 @@ export function roadReport(input: RoadReportInput): RoadReport {
     const reservedIds: string[] = [];
     const unsupportedIds: string[] = [];
     for (const s of segments) {
-      if (s.edge.bridge || s.edge.width >= 12) continue;
+      if (s.edge.bridge || atLeast(s.edge, "arterial")) continue;
       const mid = { x: (s.a.x + s.b.x) / 2, z: (s.a.z + s.b.z) / 2 };
       if (liveAnchors.some((a) => Math.hypot(a.x - mid.x, a.z - mid.z) < a.r)) continue; // 服务建成街区，不在空置区
       if (siteAnchors.some((a) => Math.hypot(a.x - mid.x, a.z - mid.z) < a.r) || hotelAnchors.some((a) => Math.hypot(a.x - mid.x, a.z - mid.z) < a.r)) reservedIds.push(s.id);

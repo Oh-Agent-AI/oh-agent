@@ -613,5 +613,60 @@
         "buildTrussBridges": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
       }
     }
+  },
+  "landmarkPlatforms": {
+    "note": "2026-10-22: the sea-opera causeway lands on the drivable opera islet platform (surface/landmarkPlatforms): the deck is flat over the platform, eases to the span chord, and the dead-end barrier is gone. Only bridges ending on a landmark platform change; every road-to-road bridge, curb and other system is byte-identical.",
+    "plans": {
+      "1/1": {
+        "buildInfrastructure": "9f42325e9cf808444b5faa5125b00a52475ee20676787de88ee56fd4dbe936f2"
+      },
+      "1/2": {
+        "buildInfrastructure": "9f42325e9cf808444b5faa5125b00a52475ee20676787de88ee56fd4dbe936f2"
+      },
+      "1/3": {
+        "buildInfrastructure": "3a7ceab55fead417e6421a5c4678144dc1ed2d59dcc4c3b6c469a780e0bde5ae",
+        "buildTrussBridges": "df53a08932b635613a80769a9b412ec9faf8a40c02ca96e07f70eaa15057edda"
+      },
+      "7/1": {
+        "buildInfrastructure": "e5ec54dd2845f775fb7a1861cec782f637b4338a6a141fc3aca436828ab9f6f3"
+      },
+      "7/2": {
+        "buildInfrastructure": "4167323678373fa7c145c69da784e8a30370ad75f8278fc7baba2a0a19a34940",
+        "buildTrussBridges": "822911eaa57791282ca1b498cde1e963c963cac7679ba45ff7fae1a0de9ac0f1"
+      },
+      "7/3": {
+        "buildInfrastructure": "f305f931749fba880034bd1d6546617af9cd72ce603f98170994f2f98a9f9493",
+        "buildTrussBridges": "f06c541dd6aca71bf4909bd4063b14e5aa7bc8c0d45035fd85c4fb4e381f5df9"
+      },
+      "42/1": {
+        "buildInfrastructure": "c839bae87c4551e84355584b7b9f578d30cf9a696ec5a6c82e0d11b4ac2d7c1a"
+      },
+      "42/2": {
+        "buildInfrastructure": "3960495022307f96988cf5fe3526be411769cc14cff81e780f543760ea9eda7e",
+        "buildTrussBridges": "d9549c80f26f82bf040461949c956532e94cadf7753e45b7b40ad5458f171995"
+      },
+      "42/3": {
+        "buildInfrastructure": "83f6ce3e610986b73d4625b484c6de95512475a81f2564e2c60a0e1d0bc44fae",
+        "buildTrussBridges": "3c01a760adac6cb412208f6af194828d289327532d5717590d76b0764d76c18d"
+      },
+      "2026/1": {
+        "buildInfrastructure": "c40ff625f7e5dda46d94283ad7c86f8ef65b13a5b4433bcd387c9074e011b2c2"
+      },
+      "2026/2": {
+        "buildInfrastructure": "7aea3ad2ae0175cce63946bc96cfee1ee7e65ab386b2a1f4bab8f1fc513ee329"
+      },
+      "2026/3": {
+        "buildInfrastructure": "a9509a81ca858b94043933f8b87f62f144b1c093de6d99e989e5e9781bb4b02b"
+      },
+      "65537/1": {
+        "buildInfrastructure": "06ee1833c1b4a4ef608132d5c8bbe5c487faf46bfc5b6cbf23a4df68b9149786"
+      },
+      "65537/2": {
+        "buildInfrastructure": "a48161beb1ea6ec30bc86fc303b6d8465335d2a089e8613508630174035f585f"
+      },
+      "65537/3": {
+        "buildInfrastructure": "3db01dca2cc66551e35e93de80d1073b8448e721b47128e85fa07e2337349108"
+      }
+    }
   }
 }

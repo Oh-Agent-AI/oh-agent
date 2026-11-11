@@ -1,0 +1,10 @@
+{
+  "districts": [{ "id": "district-0001", "label": "城区 1", "sessionCount": 0, "tokensTotal": 0, "activeCount": 0, "anomaly": null }],
+  "buildings": [{
+    "id": "building-0001", "districtId": "district-0001", "archetype": "tower", "facade": 1,
+    "seed": 0.5, "tokensTotal": 0, "height": 8, "footprint": 3, "active": false,
+    "builtFraction": 1, "busyness": 0, "aggregated": false, "extraCount": 0, "startedAt": 1, "endedAt": null
+  }],
+  "stats": { "renderedSessions": 0, "aggregatedSessions": 0, "totalSessions": 0, "tokensTotal": 0, "activeCount": 0, "truncated": false },
+  "rows": []
+}

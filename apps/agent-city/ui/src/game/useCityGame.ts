@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import type { CityEngine } from "../engine/CityEngine";
 import { GameSession, type GameSessionSnapshot } from "./GameSession";
+import type { FlightInputState } from "./types";
 import type { GameLocale } from "./gameCopy";
 import { closeOpenGameDisclosure } from "./ui/closeOpenDisclosure";
 import { EMPTY_PROFILE, loadProfilePort, mergeRecord, saveProfile, type FlightProfileV1, type ProfilePort } from "../data/profile";
@@ -23,7 +24,8 @@ export type GameHostBridge = {
   locale: () => GameLocale;
 };
 
-export function useCityGame(engine: RefObject<CityEngine | null>, host: GameHostBridge) {
+export function useCityGame(engine: RefObject<CityEngine | null>, host: GameHostBridge, options: { persistProfile?: boolean } = {}) {
+  const persistProfile = options.persistProfile !== false;
   const [snapshot, setSnapshot] = useState<GameSessionSnapshot | null>(null);
   const [entryError, setEntryError] = useState<string | null>(null);
   /** 档案存储层级与保存状态（HUD 提示「本次成绩尚未保存」）。 */
@@ -49,7 +51,7 @@ export function useCityGame(engine: RefObject<CityEngine | null>, host: GameHost
           engineInstance.setLabelsVisible(hostRef.current.labelsVisible());
           hostRef.current.requestRefresh();
         },
-        onRecord: (courseId, bestTimeMs, collisions) => {
+        onRecord: persistProfile ? (courseId, bestTimeMs, collisions) => {
           // 新最佳 → 合并档案并保存（失败不丢本次结果，HUD 标注未保存）。
           profileRef.current = mergeRecord(profileRef.current, { courseId, bestTimeMs, collisions });
           const port = portRef.current;
@@ -59,7 +61,7 @@ export function useCityGame(engine: RefObject<CityEngine | null>, host: GameHost
             setPersistTier(next.tier);
             setSaveFailed(next.tier === "memory" || next.readOnly);
           }).catch(() => setSaveFailed(true));
-        },
+        } : undefined,
       });
     }
     return sessionRef.current;
@@ -67,6 +69,7 @@ export function useCityGame(engine: RefObject<CityEngine | null>, host: GameHost
 
   // 档案载入：端口就绪后注入跨会话最佳成绩（§9；原生不可用降级 localStorage/内存）。
   useEffect(() => {
+    if (!persistProfile) return;
     let active = true;
     void loadProfilePort().then((port) => {
       if (!active) return;
@@ -76,16 +79,16 @@ export function useCityGame(engine: RefObject<CityEngine | null>, host: GameHost
       sessionRef.current?.adoptProfileRecords(port.profile.records);
     }).catch(() => { if (active) setPersistTier("memory"); });
     return () => { active = false; };
-  }, []);
+  }, [persistProfile]);
 
-  const enterGame = useCallback(async (mode: "practice" | "race") => {
+  const enterGame = useCallback(async (mode: "practice" | "race", origin?: Readonly<{ x: number; y: number; z: number; heading: number }>) => {
     const session = getSession();
     const engineInstance = engine.current;
     if (!session || !engineInstance) return;
     setEntryError(null);
     const hostState = session.hostState(hostRef.current.cinemaActive(), hostRef.current.filmActive(), hostRef.current.busy());
     let result: Awaited<ReturnType<GameSession["enter"]>>;
-    try { result = await session.enter({ mode }, hostState); }
+    try { result = await session.enter({ mode }, hostState, origin); }
     catch (error) {
       if (sessionRef.current === session && session.controller.snapshot.phase !== "data") {
         setEntryError(error instanceof Error ? error.message : (hostRef.current.locale() === "en" ? "Cannot prepare the flight scene." : "飞行场景准备失败。"));
@@ -160,6 +163,8 @@ export function useCityGame(engine: RefObject<CityEngine | null>, host: GameHost
     saveFailed,
     clearEntryError: () => setEntryError(null),
     enterPractice: () => enterGame("practice"),
+    /** 点了机场机坪上的飞机：练习模式，从跑道起飞。 */
+    enterPracticeFrom: (origin: Readonly<{ x: number; y: number; z: number; heading: number }>) => enterGame("practice", origin),
     enterRace: () => enterGame("race"),
     enterUatRace: async () => {
       if (typeof __CITY_GAME_UAT__ === "undefined" || !__CITY_GAME_UAT__) return;
@@ -181,6 +186,7 @@ export function useCityGame(engine: RefObject<CityEngine | null>, host: GameHost
       const session = getSession();
       session?.setSoundVolume(volume);
     },
+    setTouchInput: (input: FlightInputState) => getSession()?.setTouchInput(input),
     toggleSfx: () => call("toggleSfx"),
     toggleMusic: () => call("toggleMusic"),
     exit: () => call("exit"),

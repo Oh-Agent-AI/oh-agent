@@ -14,6 +14,7 @@
  * 「前一点 → 进口切点 → 沿环逆时针的弧点 → 出口切点 → 后一点」；以 V 为端点的改从切点起。其余被引用的节点
  * （设施出入口、主锚点、高架出口、桥头）一律不建环——那些引用没有「绕环」的语义。
  */
+import { atLeast, roadWidthFor } from "../roadStandard";
 import { DetMath as Math } from "../detMath";
 import { roadNodeId } from "../roadGeometry";
 import type { RoadEdge, Vec2 } from "../cityLayout";
@@ -52,13 +53,13 @@ export function buildJunctionRings(opts: {
   const incident = (id: string) => [...network.edges.values()].filter((e) => e.from === id || e.to === id).sort((a, b) => (a.id < b.id ? -1 : 1));
   const candidates = [...network.nodes.values()].sort((a, b) => (a.id < b.id ? -1 : 1)).map((node) => {
     const legs = incident(node.id);
-    const primary = legs.filter((e) => e.width >= 12).length;
-    const arterial = legs.filter((e) => e.width >= 8).length;
+    const primary = legs.filter((e) => atLeast(e, "arterial")).length;
+    const arterial = legs.filter((e) => atLeast(e, "collector")).length;
     // 主干环岛：度 ≥5、≥3 条主干交汇，或干道/次干道的十字（四岔里 ≥3 条宽 ≥8）——实测规划期的「≥3 条主干」几乎都在桥头
     // （岸路 × 引道），通往桥头的那条腿只有 8–12、放不下环。规划期城内的大路口实测是四条干道（宽 ≥8）的十字（大岛约 25 个），
     // 由 majorSpacing 稀疏化；「≥3 条宽 ≥8」会把每个 T 口也算进来（实测大岛 53 个），太密。
     const kind: JunctionRing["kind"] | null = legs.length >= 5 || (legs.length >= 3 && primary >= 3) || (legs.length === 4 && arterial === 4) ? "major"
-      : (legs.length === 3 || legs.length === 4) && legs.every((e) => e.width === 5 && e.kind === "local") && random(`junction-ring:${node.id}`) < JUNCTION_RING_CONFIG.minorShare ? "minor" : null;
+      : (legs.length === 3 || legs.length === 4) && legs.every((e) => e.width === roadWidthFor("local") && e.kind === "local") && random(`junction-ring:${node.id}`) < JUNCTION_RING_CONFIG.minorShare ? "minor" : null;
     return { node, legs, kind };
   }).filter((c) => c.kind) as Array<{ node: { id: string; x: number; z: number }; legs: RoadEdge[]; kind: JunctionRing["kind"] }>;
   // 主干环岛优先（它们是路网的结构节点），同类按 id。
@@ -81,7 +82,7 @@ export function buildJunctionRings(opts: {
     }));
     const result = runJunctionRing(world, { id: node.id, x: node.x, z: node.z }, legs, options);
     if (!result.ok) { declined.push({ node: node.id, reason: `${result.reason}: ${result.detail}` }); continue; }
-    rings.push({ x: node.x, z: node.z, radius: result.radius, width: options.ringArterial ? 8 : 5, kind });
+    rings.push({ x: node.x, z: node.z, radius: result.radius, width: roadWidthFor(options.ringArterial ? "collector" : "local"), kind });
     rewriteRoutes(routes, node, result.ring, farOf);
   }
   return { rings, declined };

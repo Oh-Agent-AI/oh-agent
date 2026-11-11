@@ -34,6 +34,8 @@ mod price_cards;
 mod data_quality_issues;
 mod workflow_summary;
 pub mod trust_profiles;
+mod city_building;
+mod city_im;
 #[cfg(feature = "mcp-internal")]
 mod query_sql_readonly;
 #[cfg(feature = "mcp-internal")]
@@ -85,6 +87,11 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         trust_profiles::validate_spec(),
         trust_profiles::stage_spec(),
         trust_profiles::status_spec(),
+        city_building::get_spec(),
+        city_building::preview_spec(),
+        city_building::set_spec(),
+        city_building::reset_spec(),
+        city_im::spec(),
     ];
     #[cfg(feature = "mcp-internal")]
     {
@@ -208,6 +215,11 @@ pub fn dispatch_with_permissions(
         "trust_profile_validate" => trust_profiles::run_validate(args, data_home),
         "trust_profile_stage" => trust_profiles::run_stage(args, data_home, allow_local_writes),
         "trust_profile_proposal_status" => trust_profiles::run_status(data_home),
+        "get_building" => city_building::run_get(args, data_home),
+        "preview_building" => city_building::run_preview(args, data_home),
+        "set_building_model" => city_building::run_set(args, data_home, allow_local_writes),
+        "reset_building" => city_building::run_reset(args, data_home, allow_local_writes),
+        "im_publish" => city_im::run(args, data_home, allow_local_writes),
         #[cfg(feature = "mcp-internal")]
         "query_sql_readonly" => query_sql_readonly::run(args, data_home),
         #[cfg(feature = "mcp-internal")]
@@ -355,6 +367,9 @@ mod tests {
         assert!(names.contains(&"data_status"));
         for name in ["trust_profile_schema", "trust_profile_list", "trust_profile_validate", "trust_profile_stage", "trust_profile_proposal_status"] {
             assert!(names.contains(&name), "Trust profile control-plane tool missing: {name}");
+        }
+        for name in ["get_building", "preview_building", "set_building_model", "reset_building", "im_publish"] {
+            assert!(names.contains(&name), "City building/IM MCP tool missing: {name}");
         }
         // 每个注册的工具都有可分发的实现（不是 internal_error）。
         for name in names {

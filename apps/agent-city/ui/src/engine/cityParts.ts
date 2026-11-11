@@ -8,7 +8,7 @@
  */
 
 import * as THREE from "three";
-import { builtFractionAt, hashSeed, type CityBuilding, type CityModel } from "../cityModel";
+import { builtFractionAt, hashSeed, RENDER_CAP, type CityBuilding, type CityModel } from "../cityModel";
 import { promenadeSegments, validRuns } from "./citySeaside";
 import { HOTEL_CROWN_MAX_FINS, hotelCrownPlan, type CrownPiece } from "./cityHotelCrown";
 import { roadsideSignPlan, rooftopSignPlan, type RooftopSignPlan } from "./citySkylineProps";
@@ -22,12 +22,13 @@ import { makeDecoFacadeTexture, makeFacadeTexture, makeLabelSprite, paletteFor }
 import type { TerrainField } from "./cityLayout";
 import { createRenderCanvas } from "./renderCanvas";
 import { SegmentIndex, polygonDistance } from "./cityPlan";
-import { buildAirport, planAirport, roadSamples } from "./cityAirport";
+import { buildAirport } from "./cityAirport";
 import { LANDMARK_BUILDERS } from "./render/landmarkBuilders";
 import { captureRenderedSolids, type RenderedSolidRoot, type RenderedSolidRole } from "./surface/renderedSolids";
 import type { LandmarkHost } from "./models/landmarkContext";
 import { buildGardens, buildCivics, buildFlags, buildPublicSites, updateCivics, writeCivic, type CivicSystemHost } from "./systems/civicSystem";
 import { applyDistrictLandmarkGrowth, buildDistrictLandmarks, buildLandmarks, type LandmarkSystemHost } from "./systems/landmarkSystem";
+import { battleClarityPresentation } from "./battleClarity";
 import { LIGHT_BUDGET, activeBoost, lampTier, nightFactor, useOfZone, windowRate } from "./cityLightBudget";
 import { roadPaintPlan } from "./cityRoadPaint";
 import { buildGroundSpill, buildSeaMountains, buildTerrain, buildWater, type TerrainHost } from "./systems/terrainSystem";
@@ -39,7 +40,6 @@ import type { CitySurfaceSource } from "./surface/citySurfacePort";
 import type { RenderedSolidSource } from "./surface/renderedSolidTypes";
 import type { SolidInput } from "../game/driving/CollisionIndex";
 import { collectSceneSolids } from "./surface/sceneSolids";
-import { groundRoadTopAt } from "./surface/structureCompiler";
 import { buildInfrastructure, buildCulDeSacBulbs, buildJunctionIslands, buildChannelizedJunctions, buildDistrictExpressways, buildHighwayRamps, buildTrussBridges, type RoadHost } from "./systems/roadSystem";
 import { urbanPromenadeSegments, buildPromenade, buildBeachFurniture, buildBeachRibbon, buildMarina, buildLifeguardTowers, type SeasideHost } from "./systems/seasideSystem";
 import { applySelfLit, applyNightOverlay, buildNightLights, setNightGlow, setNightHour, setNightWater, setSkyMix, type NightHost } from "./render/nightLighting";
@@ -53,7 +53,18 @@ import { artDecoTowerGeometry, BOX, CYLINDER, EXPRESSWAY_DECK_THICKNESS, EXPRESS
 import type { BuildingRuntime, Car, CarPath, NightLights, QualityLevel } from "./render/types";
 export type { QualityLevel };
 import { FACADE_GRIDS, facadeMaterial, type FacadeUniforms } from "./render/facadeMaterial";
-import { applyConstruction, applyCraneArm, buildAnomalyMarkers, buildHeroCrown, buildMassing, buildRoadsideSigns, buildRuntimes, buildUrbanContext, facadeFor, hideAll, percentileOf, placeHeroCrown, roofKindFor, updateContext, writeContext, type BuildingSystemHost } from "./systems/buildingSystem";
+import { appendRuntimes, applyConstruction, applyCraneArm, buildAnomalyMarkers, buildHeroCrown, buildMassing, buildRoadsideSigns, buildRuntimes, buildUrbanContext, facadeFor, hideAll, occupantsCanAppend, percentileOf, placeHeroCrown, roofKindFor, updateContext, writeContext, type BuildingSystemHost } from "./systems/buildingSystem";
+export { occupantsCanAppend };
+import { createClaimRuntime, createEditRuntime, createKitRuntime, disposeClaimRuntime, disposeEditRuntime, disposeKitRuntime, replayKitRuntime, stepEditRuntime, stepKitRuntime, type ClaimRuntime, type EditRuntime, type KitRuntime } from "./sessionKitOverride";
+import type { ClaimTint } from "./squadEvents";
+import type { OverlayDecision } from "./sessionKitConstruction";
+import { editPresentation, type EditVisual } from "./sessionKitEditState";
+
+export type OccupancySnapshot = {
+  runtimeCount: number;
+  shaftUuids: string[];
+  byId: Record<string, { shaftPrimary: number; shaftUpper: number; podium: number; roof: number; x: number; z: number; facade: number }>;
+};
 
 /** 静态城（只依赖 seed 的部分：地形/基建/高架/公共设施/地标/远山/树/水面/
  *  车/船/云/花园）。模块级缓存——数据刷新重建时整段复用，重建成本只剩建筑层；
@@ -94,6 +105,10 @@ type StaticCity = {
 let staticCityCache: StaticCity | null = null;
 
 export class CityParts {
+  static constructCount = 0;
+  static appendCount = 0;
+  static resetMountCounters(): void { CityParts.constructCount = 0; CityParts.appendCount = 0; }
+
   private drivingRoots: RenderedSolidRoot[] = [];
   private drivingFreezeCount = 0;
   private drivingFrozenSource: CitySurfaceSource | null = null;
@@ -107,6 +122,9 @@ export class CityParts {
   readonly water: THREE.Mesh;
   private readonly runtimes: BuildingRuntime[] = [];
   private readonly runtimeById = new Map<string, BuildingRuntime>();
+  private readonly kitBySession = new Map<string, KitRuntime>();
+  private readonly editBySession = new Map<string, EditRuntime>();
+  private readonly claimBySession = new Map<string, ClaimRuntime>();
   private readonly shaftMeshes: THREE.InstancedMesh[] = [];
   private zoneById: Map<string, string> = new Map();
   private readonly shaftIdByInstance: Array<Map<number, string>> = [];
@@ -180,14 +198,19 @@ export class CityParts {
   private cursor = Number.NaN;
   private live = true;
   private labelsVisible = true;
+  private battleClarity = false;
   /** 重建前各楼的显示进度（null = 首个模型，全城直接成像）。 */
   private previousDisplays: Map<string, number> | null = null;
   hoveredId: string | null = null;
   selectedId: string | null = null;
 
   constructor(private model: CityModel, private layout: CityLayout, previousDisplays: Map<string, number> | null = null) {
+    CityParts.constructCount += 1;
     this.previousDisplays = previousDisplays;
     const total = model.buildings.length;
+    // 分页追加预留到规划人口：InstancedMesh 的 max 在构造时钉死，先按全窗会话数开槽，
+    // 后面的页只提高 count / 必要时 grow，不必拆掉整层建筑网格。
+    const planned = Math.min(RENDER_CAP, Math.max(total, Number.isFinite(model.stats?.totalSessions) ? model.stats.totalSessions : 0));
 
     // ── 静态城（seed 决定）：缓存命中则整段复用，重建只花在建筑层 ──────
     let staticCity = staticCityCache && staticCityCache.seed === layout.seed && staticCityCache.layout.scaleTier === layout.scaleTier
@@ -211,12 +234,12 @@ export class CityParts {
       this.buildPublicSites();
       this.buildMarina();
       {
-        // L-4 机场岛 + L-5 堤道：避开港口与海滨景观段。
-        const avoid = [...this.layout.publicSites.filter((x) => x.kind === "harbor"), ...(this.layout.landmarks ?? []).filter((x) => x.kind === "sail-opera"), ...(this.layout.seaside && !this.layout.seaside.degraded ? this.layout.seaside.samples.filter((x) => x.valid).map((x) => x.waterline) : [])];
-        const core = this.layout.core ?? { x: 0, z: 0 };
-        const plan = planAirport(this.layout.coast, core, avoid, roadSamples(this.layout.roadEdges), (x, z) => this.layout.terrain.height(x, z) < -0.6);
-        if (plan) this.group.add(buildAirport(plan, this.disposables, this.nightLights?.heads ?? null,
-          (x,z) => groundRoadTopAt(this.layout,x,z)));
+        // L-4 机场岛：布局期规划（layout.airport），堤道已是路网里的一段桥面（上面的桥梁渲染画它）。
+        // 岛是可行驶的地标平台：航站楼 / 塔台 / 指廊进驾驶碰撞（注册为地标驾驶根），跑道等贴面薄层自标非实体。
+        const airport = this.layout.airport;
+        if (airport) this.registerDrivingRoots("landmark", () => this.group.add(buildAirport(airport, this.disposables, this.nightLights?.heads ?? null,
+          // 机坪上那架飞机与飞行游戏同一尺度（GameSession：flightParamsFor(城区对角线)）。
+          Math.hypot(this.layout.urbanBounds.right - this.layout.urbanBounds.left, this.layout.urbanBounds.south - this.layout.urbanBounds.north))));
       }
       this.registerDrivingRoots("civic", () => this.buildCivics());
       this.registerDrivingRoots("landmark", () => this.buildLandmarks());
@@ -332,7 +355,7 @@ export class CityParts {
       facadeCounts[this.facadeFor(building)] += this.formOf(building) === "tower" || this.formOf(building) === "landmark" ? 2 : 1;
     }
     facades.forEach((texture, variant) => {
-      const capacity = facadeCounts[variant] + 8;
+      const capacity = Math.max(facadeCounts[variant] + 8, planned * 2 + 8);
       const geometry = BOX.clone();
       geometry.setAttribute("aFloors", new THREE.InstancedBufferAttribute(new Float32Array(capacity), 1));
       geometry.setAttribute("aLight", new THREE.InstancedBufferAttribute(new Float32Array(capacity * 2), 2)); // x = 办公用途(0/1)，y = 活跃会话(0/1)
@@ -382,21 +405,21 @@ export class CityParts {
     const spire = new THREE.ConeGeometry(0.5, 1, 4, 1).rotateY(Math.PI / 4).translate(0, 0.5, 0);
     const profileGeometries = [pitched, spire, BOX, BOX];
     profileGeometries.forEach((geometry, index) => {
-      const mesh = this.makeInstanced(geometry, selfLitMaterial(0.18), total);
+      const mesh = this.makeInstanced(geometry, selfLitMaterial(0.18), planned);
       mesh.castShadow = true;
       mesh.name = `city-roof-profile-${index + 1}`;
       this.roofProfiles.push(mesh);
     });
-    this.gardenTreeMesh = this.makeInstanced(new THREE.IcosahedronGeometry(1, 0).translate(0, 1, 0), new THREE.MeshLambertMaterial({ color: activeTheme().foliage }), total * 3);
+    this.gardenTreeMesh = this.makeInstanced(new THREE.IcosahedronGeometry(1, 0).translate(0, 1, 0), new THREE.MeshLambertMaterial({ color: activeTheme().foliage }), planned * 3);
     this.gardenTreeMesh.castShadow = true;
-    const decoCount = facadeCounts[3] + 4;
+    const decoCount = Math.max(facadeCounts[3] + 4, planned);
     this.decoTrimMesh = this.makeInstanced(BOX, selfLitMaterial(0.24), decoCount * 2);
     this.decoCornerMesh = this.makeInstanced(CYLINDER, selfLitMaterial(0.24), decoCount);
-    this.podiumMesh = this.makeInstanced(BOX, new THREE.MeshLambertMaterial({ color: "#e8e2d5" }), total);
-    this.roofMesh = this.makeInstanced(BOX, new THREE.MeshLambertMaterial({ color: "#ffffff" }), total);
-    this.neonMesh = this.makeInstanced(BOX, new THREE.MeshBasicMaterial({ color: "#ffffff", toneMapped: false }), total);
+    this.podiumMesh = this.makeInstanced(BOX, new THREE.MeshLambertMaterial({ color: "#e8e2d5" }), planned);
+    this.roofMesh = this.makeInstanced(BOX, new THREE.MeshLambertMaterial({ color: "#ffffff" }), planned);
+    this.neonMesh = this.makeInstanced(BOX, new THREE.MeshBasicMaterial({ color: "#ffffff", toneMapped: false }), planned);
     this.neonMesh.castShadow = false;
-    this.scaffoldMesh = this.makeInstanced(BOX, new THREE.MeshLambertMaterial({ color: "#e0a83f", transparent: true, opacity: 0.24, depthWrite: false }), total);
+    this.scaffoldMesh = this.makeInstanced(BOX, new THREE.MeshLambertMaterial({ color: "#e0a83f", transparent: true, opacity: 0.24, depthWrite: false }), planned);
     this.scaffoldMesh.castShadow = false;
     {
       // L-6 圆筒玻璃塔（backlog）：竖向条纹幕墙，夜里亮窗（landmarkWindows 同一套白天/夜间贴图切换）。
@@ -666,7 +689,9 @@ export class CityParts {
    *  实测（700 模拟会话）：DeepSeek 43 → 56，ZCode 82 → 70，Claude Code 120 → 84，Codex 135 → 90。
    *  曾按「最少 → 最多城区」相对插值：最大城区恒为 90、最小恒为 40，全体同比增长时高度不变，别区增长还会变矮。 */
   districtLandmarkHeight(districtId: string, sessions?: number): number {
-    const own = sessions ?? this.model.districts.find((d) => d.id === districtId)?.sessionCount ?? 0;
+    const district = this.model.districts.find((d) => d.id === districtId);
+    if (sessions === undefined && district?.visualLandmarkHeight !== undefined) return district.visualLandmarkHeight;
+    const own = sessions ?? district?.sessionCount ?? 0;
     const floor = Math.max(30, ...this.model.buildings.map((b) => b.height)) * 1.1;
     return Math.min(90, floor + 0.16 * own);
   }
@@ -776,6 +801,166 @@ export class CityParts {
 
   private buildRuntimes(): void { buildRuntimes(this as unknown as BuildingSystemHost); }
 
+  /** Later session pages: add only new buildings into the existing instanced layer. */
+  appendOccupants(model: CityModel, layout: CityLayout): number {
+    this.model = model;
+    this.layout = layout;
+    const zoneById = new Map<string, string>();
+    for (const district of layout.districts) {
+      for (const [id, parcel] of district.slots) zoneById.set(id, parcel.zone);
+    }
+    this.zoneById = zoneById;
+    if (this.landValueCache) {
+      for (const district of layout.districts) {
+        const ranked = [...(district.landValue ?? [])].sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]));
+        ranked.forEach(([id], index) => {
+          if (!this.landValueCache!.has(id)) this.landValueCache!.set(id, ranked.length > 1 ? index / (ranked.length - 1) : 0.5);
+        });
+      }
+    }
+    for (const building of model.buildings) {
+      const existing = this.runtimeById.get(building.id);
+      if (existing) existing.building = building;
+    }
+    const added = appendRuntimes(this as unknown as BuildingSystemHost);
+    CityParts.appendCount += 1;
+    return added.length;
+  }
+
+  sessionIdForAsset(assetRef: string): string | null {
+    for (const building of this.model.buildings) {
+      if (building.assetRef === assetRef) return building.id;
+    }
+    for (const [id, row] of this.model.rows) {
+      if (row.asset_ref === assetRef) return id;
+    }
+    return null;
+  }
+
+  applySessionKit(decision: OverlayDecision): boolean {
+    const sessionId = this.runtimeById.has(decision.sessionId) ? decision.sessionId : (this.sessionIdForAsset(decision.assetRef) ?? decision.sessionId);
+    const runtime = this.runtimeById.get(sessionId);
+    if (!runtime) return false;
+    const existing = this.kitBySession.get(sessionId);
+    if (existing) {
+      disposeKitRuntime(existing);
+      this.kitBySession.delete(sessionId);
+    }
+    if (decision.kind === "reset" && decision.parts.length === 0) {
+      runtime.settled = !decision.animate;
+      if (decision.animate) runtime.display = 0;
+      this.applyConstruction(runtime, !decision.animate);
+      return true;
+    }
+    const palette = `#${runtime.paletteWall.getHexString()}`;
+    const kit = createKitRuntime({ ...decision, sessionId }, runtime, palette);
+    this.group.add(kit.group);
+    this.kitBySession.set(sessionId, kit);
+    this.hideAll(runtime);
+    return true;
+  }
+
+  replaySessionKit(sessionId: string): boolean {
+    const kit = this.kitBySession.get(sessionId);
+    if (!kit) return false;
+    replayKitRuntime(kit);
+    const runtime = this.runtimeById.get(sessionId);
+    if (runtime) this.hideAll(runtime);
+    return true;
+  }
+
+  kitSnapshot(): Array<{ sessionId: string; assetRef: string; revision: number; buildEventId: string; kind: string; progress: number }> {
+    return [...this.kitBySession.entries()].map(([sessionId, kit]) => ({
+      sessionId, assetRef: kit.decision.assetRef, revision: kit.decision.revision,
+      buildEventId: kit.decision.buildEventId, kind: kit.decision.kind, progress: kit.progress,
+    }));
+  }
+
+  applySessionEdit(visual: EditVisual): boolean {
+    const sessionId = this.runtimeById.has(visual.sessionId) ? visual.sessionId : (this.sessionIdForAsset(visual.assetRef) ?? visual.sessionId);
+    const runtime = this.runtimeById.get(sessionId);
+    if (!runtime) return false;
+    const existing = this.editBySession.get(sessionId);
+    if (existing) {
+      disposeEditRuntime(existing);
+      this.editBySession.delete(sessionId);
+    }
+    const palette = `#${runtime.paletteWall.getHexString()}`;
+    const edit = createEditRuntime({ ...visual, sessionId }, runtime, palette);
+    if (!edit) return false;
+    this.group.add(edit.group);
+    this.editBySession.set(sessionId, edit);
+    return true;
+  }
+
+  clearSessionEdit(sessionId: string): boolean {
+    const edit = this.editBySession.get(sessionId);
+    if (!edit) return false;
+    disposeEditRuntime(edit);
+    this.editBySession.delete(sessionId);
+    return true;
+  }
+
+  applySessionClaim(visual: ClaimTint): boolean {
+    const sessionId = this.runtimeById.has(visual.sessionId) ? visual.sessionId : (this.sessionIdForAsset(visual.assetRef) ?? visual.sessionId);
+    const runtime = this.runtimeById.get(sessionId);
+    if (!runtime) return false;
+    const existing = this.claimBySession.get(sessionId);
+    if (existing) {
+      disposeClaimRuntime(existing);
+      this.claimBySession.delete(sessionId);
+    }
+    const claim = createClaimRuntime({ ...visual, sessionId }, runtime);
+    this.group.add(claim.group);
+    this.claimBySession.set(sessionId, claim);
+    return true;
+  }
+
+  clearSessionClaim(sessionId: string): boolean {
+    const claim = this.claimBySession.get(sessionId);
+    if (!claim) return false;
+    disposeClaimRuntime(claim);
+    this.claimBySession.delete(sessionId);
+    return true;
+  }
+
+  claimSnapshot(): Array<{ sessionId: string; assetRef: string; agentId: string; expiresAt: number }> {
+    return [...this.claimBySession.entries()].map(([sessionId, claim]) => ({
+      sessionId, assetRef: claim.visual.assetRef, agentId: claim.visual.agentId, expiresAt: claim.visual.expiresAt,
+    }));
+  }
+
+  editSnapshot(): Array<{ sessionId: string; assetRef: string; kind: string; eventId: string; rule?: string; opacity: number; active: boolean }> {
+    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+    return [...this.editBySession.entries()].map(([sessionId, edit]) => {
+      const shown = editPresentation(edit.visual, now);
+      return {
+        sessionId,
+        assetRef: edit.visual.assetRef,
+        kind: edit.visual.kind,
+        eventId: edit.visual.eventId,
+        ...(edit.visual.kind === "reject" ? { rule: edit.visual.rule } : {}),
+        opacity: shown.opacity,
+        active: shown.active,
+      };
+    });
+  }
+
+  occupancySnapshot(): OccupancySnapshot {
+    const byId: OccupancySnapshot["byId"] = {};
+    for (const runtime of this.runtimes) {
+      byId[runtime.building.id] = {
+        shaftPrimary: runtime.shaftPrimary, shaftUpper: runtime.shaftUpper, podium: runtime.podium, roof: runtime.roof,
+        x: runtime.slot.x, z: runtime.slot.z, facade: runtime.facade,
+      };
+    }
+    return { runtimeCount: this.runtimes.length, shaftUuids: this.shaftMeshes.map((mesh) => mesh.uuid), byId };
+  }
+
+  canAppend(nextModel: CityModel, nextLayout: CityLayout): boolean {
+    return occupantsCanAppend(this.model, nextModel, this.layout, nextLayout);
+  }
+
   /** 路边双柱广告牌（L-2）：主干道长段中点的外侧净空点，静态摆件；牌位编址接在屋顶牌之后。
    *  与屋顶牌共用四批次网格，但不动施工状态——路面和牌不随会话生长。 */
   private buildRoadsideSigns(rooftopCount: number): void { buildRoadsideSigns(this as unknown as BuildingSystemHost, rooftopCount); }
@@ -879,6 +1064,16 @@ export class CityParts {
 
   setLabelsVisible(visible: boolean): void { setLabelsVisible(this as unknown as UiOverlayHost, visible); }
 
+  /** Keep preferences/geometry intact; current daylight is reapplied on release. */
+  setBattleClarity(active: boolean): void {
+    this.battleClarity = active;
+    const presentation = battleClarityPresentation(active);
+    for (const label of this.labels) label.visible = this.labelsVisible && presentation.showLabels;
+    this.setHovered(this.hoveredId);
+    this.setSelected(this.selectedId);
+    this.setNightGlow(this.nightGlow);
+  }
+
   private decorTargetsCache: THREE.Object3D[] | null = null;
 
   /** 非会话建筑的拾取目标（酒店、地标、配套、市政设施、背景楼、聚合楼群、海滨装饰、火山）：
@@ -969,6 +1164,11 @@ export class CityParts {
     let dirty = false;
     const rate = Math.min(1, dt * 1.35);
     for (const runtime of this.runtimes) {
+      const kit = this.kitBySession.get(runtime.building.id);
+      if (kit && kit.decision.kind === "set") {
+        this.hideAll(runtime);
+        continue;
+      }
       if (Math.abs(runtime.display - runtime.target) > 0.0012) {
         runtime.display += (runtime.target - runtime.display) * rate;
         this.applyConstruction(runtime, false);
@@ -977,6 +1177,26 @@ export class CityParts {
         runtime.display = runtime.target;
         runtime.settled = true;
         this.applyConstruction(runtime, false);
+        dirty = true;
+      }
+    }
+    for (const kit of this.kitBySession.values()) {
+      if (stepKitRuntime(kit, dt)) dirty = true;
+    }
+    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+    for (const [sessionId, edit] of [...this.editBySession]) {
+      if (stepEditRuntime(edit, now)) dirty = true;
+      if (edit.visual.kind === "reject" && !editPresentation(edit.visual, now).active) {
+        disposeEditRuntime(edit);
+        this.editBySession.delete(sessionId);
+        dirty = true;
+      }
+    }
+    const nowSecs = Math.floor(Date.now() / 1000);
+    for (const [sessionId, claim] of [...this.claimBySession]) {
+      if (claim.visual.expiresAt <= nowSecs) {
+        disposeClaimRuntime(claim);
+        this.claimBySession.delete(sessionId);
         dirty = true;
       }
     }
@@ -1162,6 +1382,12 @@ export class CityParts {
     if (staticCityCache && staticCityCache.seed === this.layout.seed) {
       this.group.remove(staticCityCache.group);
     }
+    for (const kit of this.kitBySession.values()) disposeKitRuntime(kit);
+    this.kitBySession.clear();
+    for (const edit of this.editBySession.values()) disposeEditRuntime(edit);
+    this.editBySession.clear();
+    for (const claim of this.claimBySession.values()) disposeClaimRuntime(claim);
+    this.claimBySession.clear();
     for (const disposable of this.disposables) disposable.dispose();
   }
 }

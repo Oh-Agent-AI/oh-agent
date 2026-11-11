@@ -25,6 +25,7 @@
  * suppressedContext（M3）仅透传过滤。plan 级约束复用（体检的另一半）等 city-opt 的
  * constraints.ts 导出稳定后再接（SPEC §0 重估条款）。
  */
+import { kindOfWidth, isStandardRoadWidth } from "./roadStandard";
 import { hashSeed, type CityBuilding, type CityModel } from "../cityModel";
 import { clearsHighways, roadNodeId, segmentDistance } from "./cityPlan";
 import type { CityLayout, RoadEdge, RoadNode, Vec2 } from "./cityLayout";
@@ -102,7 +103,7 @@ export type PlanPatchV1 = {
 export type PatchStaleEntry = {
   kind: "building-move" | "road-drop" | "road-move" | "road-add" | "road-restyle" | "site-remove" | "site-move" | "context-suppress" | "highway-add" | "highway-cut" | "terrain-op";
   id: string;
-  reason: "missing-node" | "missing-edge" | "missing-parcel" | "unknown-building" | "missing-context" | "locked-edge" | "parcel-occupied" | "node-collision" | "tier-changed" | "generator-changed" | "edge-exists" | "degenerate" | "unknown-site" | "site-changed" | "missing-target" | "target-occupied" | "site-blocked" | "missing-highway" | "road-in-water"
+  reason: "non-standard-width" | "missing-node" | "missing-edge" | "missing-parcel" | "unknown-building" | "missing-context" | "locked-edge" | "parcel-occupied" | "node-collision" | "tier-changed" | "generator-changed" | "edge-exists" | "degenerate" | "unknown-site" | "site-changed" | "missing-target" | "target-occupied" | "site-blocked" | "missing-highway" | "road-in-water"
     | "terrain-invalid" | "terrain-too-large" | "terrain-ramp-too-short" | "terrain-ramp-too-steep" | "terrain-on-water" | "terrain-too-many";
   detail: string;
 };
@@ -433,6 +434,9 @@ function replayRoadOps(layout: CityLayout, ops: readonly RoadOp[], stale: PatchS
   const endMap = new Map((layout.culDeSacEnds ?? []).map((end) => { const id = roadNodeId(quantize(end)); return [id, id] as [string, string]; }));
   ops.forEach((op, index) => {
     const label = `${index + 1}:${op.t}`;
+    if ((op.t === "add" || op.t === "restyle") && !isStandardRoadWidth(op.width)) {
+      stale.push({ kind: op.t === "add" ? "road-add" : "road-restyle", id: label, reason: "non-standard-width", detail: "道路宽度不符合标准：请选择支路、次干道或主干道" }); return;
+    }
     const trial: RoadState = { nodes: state.nodes.map((node) => ({ ...node })), edges: [...state.edges] };
     if (op.t === "drop") {
       const edge = trial.edges.find((candidate) => candidate.id === op.edge);
@@ -455,7 +459,7 @@ function replayRoadOps(layout: CityLayout, ops: readonly RoadOp[], stale: PatchS
       const { purpose: _old, ...rest } = edge;
       void _old;
       trial.edges = trial.edges.map((candidate) => (candidate !== edge ? candidate
-        : { ...rest, width: op.width, kind: op.width >= 8 ? "arterial" as const : "local" as const, ...(op.purpose ? { purpose: op.purpose } : {}) }));
+        : { ...rest, width: op.width, kind: kindOfWidth(op.width), ...(op.purpose ? { purpose: op.purpose } : {}) }));
     } else if (op.t === "move") {
       const node = trial.nodes.find((candidate) => candidate.id === op.node);
       if (!node) { stale.push({ kind: "road-move", id: label, reason: "missing-node", detail: `路口 ${op.node} 不存在` }); return; }
@@ -491,7 +495,7 @@ function replayRoadOps(layout: CityLayout, ops: readonly RoadOp[], stale: PatchS
         for (let i = 1; i < pts.length; i += 1) {
           if (wetSpan(layout, pts[i - 1], pts[i]).kind !== "dry") { stale.push({ kind: "road-add", id: label, reason: "road-in-water", detail: "弧线不能过水——过河请用直线（会自动架桥）" }); return; }
         }
-        const kind = op.width >= 8 ? "arterial" as const : "local" as const;
+        const kind = kindOfWidth(op.width);
         const mine = new Set<string>();
         let prev = na.id; let run: Vec2[] = [{ x: na.x, z: na.z }]; let laid = 0;
         const close = (to: string, at: Vec2) => {
@@ -556,7 +560,7 @@ function replayRoadOps(layout: CityLayout, ops: readonly RoadOp[], stale: PatchS
       }
       if (b.id !== chain[chain.length - 1]) chain.push(b.id);
       let added = 0;
-      const kind = op.width >= 8 ? "arterial" as const : "local" as const;
+      const kind = kindOfWidth(op.width);
       const nodeAt = (p: Vec2): string => { const id = roadNodeId(p); if (!trial.nodes.some((node) => node.id === id)) trial.nodes.push({ id, x: p.x, z: p.z }); return id; };
       for (let i = 1; i < chain.length; i += 1) {
         const id = edgeIdOf(chain[i - 1], chain[i]);

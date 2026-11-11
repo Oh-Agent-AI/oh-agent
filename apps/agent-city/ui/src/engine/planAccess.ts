@@ -8,6 +8,7 @@
  *   - `strandedAccessEdges`：原址留下的断头接入路（从生成器登记的接入点 / 原占地内的断头路口沿单行链往外走）。
  *     只是**列出来**让用户一键擦掉，不自动删——断头路也可能服务着别的楼。
  */
+import { roadWidthFor } from "./roadStandard";
 import type { CityModel } from "../cityModel";
 import type { CityLayout, Vec2 } from "./cityLayout";
 import { nearestOnPolyline } from "./planPatch";
@@ -39,7 +40,7 @@ export function siteTouchesRoad(layout: CityLayout, site: SiteInfo): boolean {
  * 起笔就在门口，路带擦到设施自己不算压到它（ignoreSites）；但路不能穿过设施本体去够背后的路——那样的候选跳过。
  * 只接受「不推平、不安置、不入水」的路；正门已挨着路返回 null（不需要）。
  */
-export function accessRoadFor(layout: CityLayout, model: CityModel, site: SiteInfo, width = 5): AccessRoad | null {
+export function accessRoadFor(layout: CityLayout, model: CityModel, site: SiteInfo, width = roadWidthFor("local")): AccessRoad | null {
   const footprint = site.footprint; if (!footprint) return null;
   if (siteTouchesRoad(layout, site)) return null;
   const { at: door, outward } = frontEntrance(footprint, site, site.yaw);
