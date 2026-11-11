@@ -76,7 +76,14 @@
         }
         if (current?.instanceId !== instanceId || current.status === "failed") throw new Error("stale_instance");
       } else throw new Error("plugin_command_unavailable");
-    } catch { error = "preview_request_rejected"; }
+    } catch (requestError) {
+      // 保留受控错误码供插件界面显示，诊断日志留在本页内存，不上传。
+      const code = requestError instanceof Error && /^[a-z][a-z0-9_]{0,63}$/.test(requestError.message) ? requestError.message
+        : typeof requestError === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(requestError) ? requestError : "preview_request_rejected";
+      (window.__hostLog ||= []).push({ command: message.command, method: message.args?.request?.method, code,
+        projection: message.args?.request?.payload?.projection ?? null, dataset: message.args?.request?.payload?.dataset ?? null });
+      error = code;
+    }
     target.postMessage({ channel: "av-plugin-rpc", version: 1, instanceId, type: "response", requestId: message.requestId, result, error }, event.origin);
   });
   window.__TAURI__.core.invoke = async (command, args = {}) => {

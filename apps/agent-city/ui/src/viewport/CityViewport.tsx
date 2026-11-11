@@ -50,12 +50,15 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange }:
   const profile = useMemo(() => worldProfile ?? readCityAppearancePreference(), [worldProfile]);
 
   // 引擎创建/销毁必须先于装配 effect 声明：同一次提交里先建引擎，装配才能拿到实例。
+  // setSeed 必须在装配前完成——engine.seed 为 null 时 applyModel 会静默早退，
+  // 场景只剩天空（曾让 Studio 视口一片素色）。
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     let engine: CityEngine;
     try {
       engine = new CityEngine({ canvas, worldProfile: profile, onFirstFrame: () => setFirstModelFrame(true) });
+      engine.setSeed(seed);
     } catch {
       setSceneUnavailable(true);
       return;
@@ -67,7 +70,7 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange }:
       engineRef.current = null;
       onEngineChangeRef.current?.(null);
     };
-  }, [profile]);
+  }, [profile, seed]);
 
   useEffect(() => {
     let active = true;
@@ -177,6 +180,18 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange }:
 
   const dataAvailable = projection !== null && projection.status !== "unavailable";
   const cityLoading = !sceneUnavailable && (!dataLoaded || (dataAvailable && projection.status !== "empty" && !firstModelFrame));
+  // 与 CityApp 的 __AV_CITY_PROBE__ 同款轻量调试口：工作台/自动化用它读视口装配状态。
+  useEffect(() => {
+    (window as Window & { __CITY_VIEWPORT_PROBE__?: () => Record<string, unknown> }).__CITY_VIEWPORT_PROBE__ = () => ({
+      seed, engine: engineRef.current?.diagnosticState() ?? null, projection: projection?.status ?? null,
+      cityLoad, firstModelFrame, sceneUnavailable,
+      scene: (() => {
+        const inspected = engineRef.current?.inspectScene();
+        return inspected ? { occupantCount: inspected.occupantCount, camera: inspected.camera, lastApplyMode: inspected.lastApplyMode, scaleTier: inspected.scaleTier } : null;
+      })(),
+    });
+    return () => { delete (window as Window & { __CITY_VIEWPORT_PROBE__?: () => Record<string, unknown> }).__CITY_VIEWPORT_PROBE__; };
+  });
   const sceneMessage = sceneUnavailable ? cityText("当前环境无法显示三维城市，仍可查看会话摘要。", language)
     : dataLoaded && !dataAvailable ? cityText("City 数据暂不可用", language)
     : projection?.status === "empty" ? cityText("当前时间范围没有会话", language)

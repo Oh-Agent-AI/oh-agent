@@ -757,6 +757,12 @@ export const tauriCityDataProvider: CityDataProvider = {
   async getProjection({ windowDays, signal, onStage, onPartial }) {
     const standalone = !window.__AV_PLUGIN_INSTANCE__;
     if (standalone && new URLSearchParams(location.search).get("demo") === "1") return completeFixture(demoCityProjection(windowDays));
+    // 浏览器预览（ui-dev 工作台 iframe）：有插件实例但没有原生宿主，typed 链与
+    // legacy 桥都无法满足。按数据政策走合成夹具（界面如实标注「合成 fixture」），
+    // 与独立页同一条路径，绝不把预览请求伪装成本机数据。
+    if (!standalone && window.parent !== window && !(window as Window & { __TAURI__?: { core?: { invoke?: unknown } } }).__TAURI__?.core?.invoke) {
+      return completeFixture(fixtureProjection(windowDays));
+    }
     if (standalone || window.__CITY_ISOLATION_FIXTURE__) return completeFixture(fixtureProjection(windowDays));
     const started = monotonicNow();
     try {

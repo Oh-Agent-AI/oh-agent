@@ -13,6 +13,9 @@ type SceneDraft = { schemaVersion: 1; objects: Array<Record<string, unknown>> };
 type Project = { projectId: string; revision: number; kind: string; game: unknown; cityLayout?: CityLayoutSnapshotV1 | null; scene?: SceneDraft; assets?: { schemaVersion: 1; entries: Array<{ assetId: string; relativePath: string; sha256: string; byteLength: number; format: "glb-v2"; boundsMeters?: { x: number; y: number; z: number } }> }; assetRefs?: Array<Record<string, unknown>>; mounts: CityGameMountV1[]; skinId?: string };
 type PluginResponse<T> = { version: number; requestId: string; ok: boolean; result?: T; error?: { code: string } };
 let sequence = 0;
+// 浏览器预览（ui-dev 工作台 iframe）：有插件实例但没有原生宿主，数据来自合成夹具。
+const browserPreview = typeof window !== "undefined" && window.parent !== window
+  && !(window as Window & { __TAURI__?: { core?: { invoke?: unknown } } }).__TAURI__?.core?.invoke;
 
 function errorCode(error: unknown, fallback: string): string {
   const candidate = error instanceof Error ? error.message : typeof error === "string" ? error : "";
@@ -351,7 +354,7 @@ function App() {
   );
 
   return <main className="studio">
-    <header><div><span className="eyebrow">OH AGENT · CITY SDK</span><h1>Creator Studio</h1><p>用 Agent 或编辑器创建可验证的 City 小游戏。</p></div><span className="badge">本机项目</span></header>
+    <header><div><span className="eyebrow">OH AGENT · CITY SDK</span><h1>Creator Studio</h1><p>用 Agent 或编辑器创建可验证的 City 小游戏。</p></div><span className="badge">{browserPreview ? "预览夹具 · 合成数据" : "本机项目"}</span></header>
     <section className="new-project">
       <label>新建模板<select value={template} disabled={busy} onChange={event => setTemplate(event.target.value)}><option value="checkpoint-race">驾驶检查点竞速</option><option value="collect-one">驾驶区域收集</option></select></label>
       <label>绑定 City 世界<select value={worldRevision} disabled={busy || layouts.length === 0} onChange={event => setWorldRevision(event.target.value)}>{layouts.map(layout => <option key={layout.worldRevision} value={layout.worldRevision}>{layout.layoutId} · seed {layout.seed} · {layout.anchorCount} 个锚点</option>)}</select></label>
