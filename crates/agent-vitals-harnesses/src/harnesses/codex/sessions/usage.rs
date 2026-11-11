@@ -433,6 +433,53 @@ pub struct CodexFoldState {
     unaccounted: std::collections::BTreeMap<String, (i64, i64)>,
 }
 
+impl CodexFoldState {
+    /// 增量续读的折叠游标：只保留跨行状态（模型 / 速度 / 累计签名 / 配额 plan）。
+    /// 不保留 by_hour/by_model 聚合桶——那些只服务 fold 报告；emitter 从每行
+    /// `last_token_usage` 独立产事实，续读不依赖历史桶。
+    pub fn cursor_json(&self) -> Value {
+        let signature = self.last_total_sig.map(|t| {
+            json!([t.0, t.1, t.2, t.3, t.4, t.5])
+        });
+        json!({
+            "model": self.model,
+            "speed": self.speed,
+            "last_total_sig": signature,
+            "plan": self.plan,
+        })
+    }
+
+    /// 用 checkpoint 里的游标恢复跨行状态；缺字段/坏形状一律按「没有历史」
+    /// 处理（宁可重复也不要错算：重读一行最多产生 duplicate，游标错会漏计）。
+    pub fn restore_cursor(&mut self, cursor: &Value) {
+        self.model = cursor
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        self.speed = match cursor.get("speed").and_then(Value::as_str) {
+            Some("fast") => "fast",
+            _ => "standard",
+        };
+        self.last_total_sig = cursor
+            .get("last_total_sig")
+            .and_then(Value::as_array)
+            .and_then(|values| {
+                if values.len() != 6 {
+                    return None;
+                }
+                Some((
+                    values[0].as_i64()?,
+                    values[1].as_i64()?,
+                    values[2].as_i64()?,
+                    values[3].as_i64()?,
+                    values[4].as_i64()?,
+                    values[5].as_i64()?,
+                ))
+            });
+        self.plan = cursor.get("plan").cloned().filter(|plan| !plan.is_null());
+    }
+}
+
 impl Default for CodexFoldState {
     /// 每文件一份干净折叠状态（`speed: "standard"` 是 fold 的默认档，不是
     /// 从某 harness 读来的值——clippy `new_without_default`：唯一构造路径走 new）。

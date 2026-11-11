@@ -31,6 +31,50 @@ use serde_json::{json, Value};
 /// **无时间戳字段**：指纹就是状态，字节确定性由构造保证。
 /// （换行边界扫描在 `agent-vitals-harnesses::sources::parsers`——P3 起它属于
 /// 解析器注册表，只有增量能力执行环境才需要写换行边界检查点。）
+/// Codex 增量续读检查点（facts 事务提交成功后才写）。
+///
+/// 与 SourceGraph 的 `byte_offset` 不同：这里还要带折叠游标（模型/速度/累计
+/// 签名/plan），否则续读出的每条 token_count 都会缺上下文。损坏/缺失一律
+/// 退化为全量——重复事实由 fact_id 去重，不丢数。
+fn codex_resume_file(data_home: &Path) -> std::path::PathBuf {
+    data_home.join("state").join("codex-usage-resume.json")
+}
+
+fn load_codex_resumes(path: &Path) -> std::collections::HashMap<std::path::PathBuf, agent_vitals_harnesses::codex_usage_fact::CodexResumeState> {
+    let Ok(text) = std::fs::read_to_string(path) else { return Default::default() };
+    let Ok(by_path) = serde_json::from_str::<std::collections::HashMap<String, agent_vitals_harnesses::codex_usage_fact::CodexResumeState>>(&text) else {
+        return Default::default();
+    };
+    by_path.into_iter().map(|(p, state)| (std::path::PathBuf::from(p), state)).collect()
+}
+
+/// 合并 + 原子写；失败只记日志（facts 已经提交，不能因 checkpoint 失败把
+/// 整轮同步标红——下一轮全量重跑最多多花一次解析）。
+fn save_codex_resumes(
+    path: &Path,
+    updates: &std::collections::HashMap<std::path::PathBuf, agent_vitals_harnesses::codex_usage_fact::CodexResumeState>,
+) {
+    let mut all = load_codex_resumes(path);
+    all.extend(updates.iter().map(|(p, state)| (p.clone(), state.clone())));
+    // 源文件已删除/归档掉的条目不再有续读价值：顺手清掉，避免 sidecar 只增不减。
+    all.retain(|p, _| p.is_file());
+    let by_path: std::collections::HashMap<String, _> = all
+        .into_iter()
+        .map(|(p, state)| (p.to_string_lossy().to_string(), state))
+        .collect();
+    let Ok(json) = serde_json::to_string(&by_path) else {
+        crate::core::logging::log_warn("sync", "codex resume: serialize failed");
+        return;
+    };
+    let tmp = path.with_extension("json.tmp");
+    let write = std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))
+        .and_then(|_| std::fs::write(&tmp, json))
+        .and_then(|_| std::fs::rename(&tmp, path));
+    if let Err(error) = write {
+        crate::core::logging::log_warn("sync", &format!("codex resume: write failed: {error}"));
+    }
+}
+
 fn fingerprint(path: &Path) -> Option<(u64, u64)> {
     let meta = std::fs::metadata(path).ok()?;
     let mtime = meta
@@ -239,6 +283,38 @@ fn sync_harness(
         dirty.push((path, fp));
     }
 
+    // 2026-11-11 内存事故的调度闸：**活跃写入中的超大 rollout 本轮不碰**。
+    // 旧行为是每次 watcher 唤醒都全量重读（2 GB 文件每 30–60 s 一轮，单轮
+    // high-water 16 GB）。流式解析已把单轮内存压到有界，这里再避免「文件还
+    // 在写就反复扫」——等它静默 120 s 再补齐，UI 侧的「正在补齐历史数据」
+    // 由后续切片接。
+    if harness == "codex" {
+        const ACTIVE_ROLLOUT_DEFER_BYTES: u64 = 256 * 1024 * 1024;
+        const ACTIVE_ROLLOUT_QUIET_MS: i64 = 60_000;
+        let before = dirty.len();
+        dirty.retain(|(_path, (size, mtime_ns))| {
+            let age_ms = now.saturating_sub((*mtime_ns / 1_000_000) as i64);
+            let active = *size >= ACTIVE_ROLLOUT_DEFER_BYTES && age_ms < ACTIVE_ROLLOUT_QUIET_MS;
+            if active {
+                crate::core::logging::log_info(
+                    "sync",
+                    &format!(
+                        "codex: 延后活跃大文件 {} MB（{} ms 前仍在写），等静默窗口再补齐",
+                        size / (1024 * 1024),
+                        age_ms
+                    ),
+                );
+            }
+            !active
+        });
+        if dirty.len() < before {
+            crate::core::logging::log_info(
+                "sync",
+                &format!("codex: 本轮延后 {} 个活跃 rollout", before - dirty.len()),
+            );
+        }
+    }
+
     if agent_vitals_harnesses::sources::session_harnesses::session_harness(harness)
         .is_some_and(|h| h.findings.is_some())
     {
@@ -261,15 +337,47 @@ fn sync_harness(
     // archived 同 stem 双收靠它）——差量集必须一批喂进去，逐文件调用会把
     // 去重丢给 ingest 层（账不错但 duplicate 通胀 + 双倍 emit；tick 常驻后
     // 每 5 分钟付一次，审查 P2-1）。claude/dsh 是单文件语义，逐文件隔离错误。
+    let resume_path = codex_resume_file(data_home);
+    let codex_resumes = load_codex_resumes(&resume_path);
+    // 每轮字节预算：一次 tick 最多处理 256 MiB「未读部分」。超出的文件保持
+    // dirty 下轮继续（单文件超过预算时仍单独处理——流式解析本身有界）。
+    if harness == "codex" && !dirty.is_empty() {
+        const CODEX_ROUND_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
+        let mut kept: Vec<(PathBuf, (u64, u64))> = Vec::new();
+        let mut spent = 0u64;
+        let mut deferred = 0usize;
+        for (path, fp) in dirty.drain(..) {
+            let offset = codex_resumes.get(&path).map_or(0, |state| state.offset);
+            let remaining = fp.0.saturating_sub(offset);
+            if !kept.is_empty() && spent.saturating_add(remaining) > CODEX_ROUND_BUDGET_BYTES {
+                deferred += 1;
+                continue;
+            }
+            spent = spent.saturating_add(remaining);
+            kept.push((path, fp));
+        }
+        if deferred > 0 {
+            crate::core::logging::log_info(
+                "sync",
+                &format!(
+                    "codex: 本轮预算 {} MiB，延后 {deferred} 个 rollout 下轮继续（正在补齐历史数据）",
+                    CODEX_ROUND_BUDGET_BYTES / (1024 * 1024)
+                ),
+            );
+        }
+        dirty = kept;
+    }
     let codex_dirty: Vec<PathBuf> = dirty.iter().map(|(p, _)| p.clone()).collect();
+    let mut codex_resume_updates = None;
     if harness == "codex" && !codex_dirty.is_empty() {
-        match agent_vitals_harnesses::codex_usage_fact::codex_rollouts_to_usage_facts_with_route(
+        match agent_vitals_harnesses::codex_usage_fact::codex_rollouts_to_usage_facts_with_resume(
             &codex_dirty,
             ns,
             "default",
-            None,
+            &codex_resumes,
         ) {
-            Ok(r) => {
+            Ok((r, updated)) => {
+                codex_resume_updates = Some(updated);
                 if let (Some(contract), Some(payload)) = (r.quota_snapshot, r.quota_snapshot_payload_json) {
                     // 观察时刻挪到这里派生：**解析失败只跳过这条快照，不再让整批写入
                     // 失败**（旧行为是 Err 上抛，一个坏时间戳会连累整个执行环境的 facts）。
@@ -457,6 +565,10 @@ fn sync_harness(
         report.sql_inserted = Some(outcome.inserted);
         report.sql_duplicate = Some(outcome.duplicate);
         report.errors.extend(outcome.errors);
+        // facts 已提交，才允许推进续读检查点（先写检查点后写库 = 崩溃丢事实）。
+        if let Some(updated) = codex_resume_updates.take() {
+            save_codex_resumes(&resume_path, &updated);
+        }
     }
 
     // V32：侧车索引型会话标题——注册表声明（codex `session_index.jsonl`、DSH

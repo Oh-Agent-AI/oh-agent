@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Map, Value};
 
 use super::cost::{codex_cost_report, load_codex_pricing};
-use super::{codex_rollout_files, read_codex_session_log, read_session_index};
+use super::{codex_rollout_files, read_codex_session_log_with_limit, read_session_index};
 use crate::codex_evidence::{build_codex_evidence, codex_evidence_json, CodexEvidence};
 use crate::codex_usage::{codex_hour_of, codex_merge_folds};
 
@@ -45,6 +45,21 @@ struct FileInfo {
     first: Option<String>,
     last: Option<String>,
     items: Vec<Value>,
+    /// 审计预算截断（见 `sources::read_codex_session_log_with_limit`）。
+    truncated: bool,
+    truncated_bytes: u64,
+}
+
+/// 列会话只需要元数据，不需要把每个 rollout 的 items 留在内存里（`--list`
+/// 曾把全部会话的 items 攒在 `by_session` 中，8.6 GB 会话库 = GB 级）。
+#[derive(Clone)]
+struct FileMeta {
+    session_id: String,
+    history_mode: Option<String>,
+    cli_version: Option<String>,
+    model: Option<String>,
+    first: Option<String>,
+    last: Option<String>,
 }
 
 fn item_ts(item: &Value) -> Option<String> {
@@ -192,8 +207,16 @@ pub fn codex_session_id_of(path: &Path) -> String {
     file_info(path).session_id
 }
 
+/// 整个会话（多份 rollout）的审计读取总预算。单文件预算之外再加一层：
+/// 一个 100 文件、2 GB 的会话，即使每份都窗口化，26×64 MiB 仍会到 GB 级。
+const MAX_SESSION_TOTAL_AUDIT_BYTES: u64 = 96 * 1024 * 1024;
+
 fn file_info(path: &Path) -> FileInfo {
-    let parsed = read_codex_session_log(path);
+    file_info_with_limit(path, Some(crate::harnesses::codex::sources::MAX_SESSION_AUDIT_BYTES))
+}
+
+fn file_info_with_limit(path: &Path, limit: Option<u64>) -> FileInfo {
+    let parsed = read_codex_session_log_with_limit(path, limit);
     let items: Vec<Value> = parsed
         .get("items")
         .and_then(|v| v.as_array())
@@ -223,6 +246,21 @@ fn file_info(path: &Path) -> FileInfo {
         first: items.first().and_then(item_ts),
         last: items.last().and_then(item_ts),
         items,
+        truncated: parsed.get("truncated").and_then(Value::as_bool).unwrap_or(false),
+        truncated_bytes: parsed.get("truncated_bytes").and_then(Value::as_u64).unwrap_or(0),
+    }
+}
+
+impl FileInfo {
+    fn meta(&self) -> FileMeta {
+        FileMeta {
+            session_id: self.session_id.clone(),
+            history_mode: self.history_mode.clone(),
+            cli_version: self.cli_version.clone(),
+            model: self.model.clone(),
+            first: self.first.clone(),
+            last: self.last.clone(),
+        }
     }
 }
 
@@ -234,11 +272,13 @@ fn file_info(path: &Path) -> FileInfo {
 /// 字节一致的一部分，不能重排。
 pub fn codex_session_list(home: &Path) -> Value {
     let index = read_session_index(home);
-    let mut by_session: BTreeMap<String, Vec<FileInfo>> = BTreeMap::new();
+    let mut by_session: BTreeMap<String, Vec<FileMeta>> = BTreeMap::new();
     // codex_rollout_files 返回全局路径序；分组内 push 保持该序，`last` 即路径序
     // 最后一个文件（「当前状态」惯例）。
+    // 4 MiB 探针（头 2 MiB + 尾 2 MiB）：列会话只需要 id/时间跨度/模型。
+    const LISTING_PROBE_BYTES: u64 = 1024 * 1024;
     for path in codex_rollout_files(home) {
-        let info = file_info(&path);
+        let info = file_info_with_limit(&path, Some(LISTING_PROBE_BYTES)).meta();
         by_session.entry(info.session_id.clone()).or_default().push(info);
     }
     let mut sessions: Vec<Value> = by_session
@@ -296,25 +336,69 @@ pub fn codex_session_audit_json_for_files(
     candidates: &[PathBuf],
 ) -> Option<Value> {
     let index = read_session_index(home);
-    let mut files: Vec<FileInfo> = Vec::new();
+    // 两阶段：先用 64 KiB 探针按 session_id 过滤（候选是全部 rollout，直接
+    // 按预算读会在遇到目标会话前就把预算花光），再只对目标会话的文件花预算。
+    const PROBE_BYTES: u64 = 1024 * 1024;
+    let mut matching: Vec<(PathBuf, u64)> = Vec::new();
     for path in candidates {
-        let info = file_info(path);
-        if info.session_id == session_id {
-            files.push(info);
+        let probe = file_info_with_limit(path, Some(PROBE_BYTES));
+        if probe.session_id == session_id {
+            let size = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+            matching.push((path.clone(), size));
         }
     }
+    let mut files: Vec<FileInfo> = Vec::new();
+    let mut budget = MAX_SESSION_TOTAL_AUDIT_BYTES;
+    // 预算按**新→旧**分配：当前状态在路径序最后一份 rollout，先保证它拿到
+    // 尾部窗口；读完后按路径序还原，保持 all_items/ordinal 的既有顺序。
+    matching.sort_by(|a, b| b.0.cmp(&a.0));
+    let total = matching.len() as u64;
+    for (index, (path, size)) in matching.into_iter().enumerate() {
+        if budget == 0 {
+            if let Some(last) = files.last_mut() {
+                last.truncated = true;
+            }
+            break;
+        }
+        let remaining = total.saturating_sub(index as u64).max(1);
+        // 当前文件优先拿 32 MiB 尾部（最近行为）；其余按剩余文件平分，保证
+        // 每份 rollout 都有窗口——否则几份大 subagent 文件会吃光预算，主文件
+        // 连一行都进不了审计。
+        let fair = if index == 0 {
+            budget.min(32 * 1024 * 1024)
+        } else {
+            budget / remaining
+        };
+        let limit = fair
+            .min(crate::harnesses::codex::sources::MAX_SESSION_AUDIT_BYTES)
+            .min(size.max(1))
+            .max(1);
+        let info = file_info_with_limit(&path, Some(limit));
+        budget = budget.saturating_sub(limit.min(size));
+        files.push(info);
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
     if files.is_empty() {
         return None;
     }
     // 分组内路径序（codex_rollout_files 已全局排，push 保序）。
     let current = files.last().expect("non-empty");
+    // `current` 是 `files` 的借用；下面要把 items 从 files 里 move 出去，先把它
+    // 需要的四个小字段拷出来（都是 Option<String>/Vec<String>，与 items 无关）。
+    let current_history_mode = current.history_mode.clone();
+    let current_cli_version = current.cli_version.clone();
+    let current_workspace_roots = current.workspace_roots.clone();
+    let current_model = current.model.clone();
 
     // ── 逐 session 成本：折叠 → 合并 → 计价（codex-cost 同一条路径）──────
     let mut all_items: Vec<Value> = Vec::new();
     let mut fold_folds: Vec<Value> = Vec::new();
-    for f in &files {
-        all_items.extend(f.items.iter().cloned());
+    // 2026-11-11：把 items 的所有权移进 all_items（不是 clone）。同会话多份
+    // rollout 时，旧写法在内存里同时留 FileInfo.items + all_items 两份，
+    // 2 GB 会话的审计峰值因此翻倍。
+    for f in &mut files {
         fold_folds.push(crate::codex_usage::codex_fold_file(&f.items));
+        all_items.extend(std::mem::take(&mut f.items));
     }
     // 上下文窗口必须在 all_items 被 build_codex_evidence 消耗之前读（最后看见的
     // token_count.info.model_context_window 赢）。
@@ -351,13 +435,13 @@ pub fn codex_session_audit_json_for_files(
 
     // ── 出处：concat 全部 items → 一次 build（覆盖 = 跨文件并集）──────────
     let evidence = build_codex_evidence(
-        all_items.clone(),
+        std::mem::take(&mut all_items),
         session_id.to_string(),
         index.get(session_id).cloned(),
-        current.history_mode.clone(),
-        current.cli_version.clone(),
-        current.workspace_roots.clone(),
-        current.model.clone(),
+        current_history_mode.clone(),
+        current_cli_version.clone(),
+        current_workspace_roots.clone(),
+        current_model.clone(),
     );
     let ev = codex_evidence_json(&evidence);
     let audit = audit_projection(&evidence);
@@ -370,10 +454,10 @@ pub fn codex_session_audit_json_for_files(
     out.insert("currency".into(), json!("USD"));
     out.insert("session_id".into(), json!(session_id));
     out.insert("title".into(), index.get(session_id).cloned().into());
-    out.insert("model".into(), current.model.clone().into());
-    out.insert("cli_version".into(), current.cli_version.clone().into());
-    out.insert("history_mode".into(), current.history_mode.clone().into());
-    out.insert("workspace_roots".into(), json!(current.workspace_roots));
+    out.insert("model".into(), current_model.clone().into());
+    out.insert("cli_version".into(), current_cli_version.clone().into());
+    out.insert("history_mode".into(), current_history_mode.clone().into());
+    out.insert("workspace_roots".into(), json!(current_workspace_roots));
     out.insert(
         "files".into(),
         json!(files
@@ -384,17 +468,33 @@ pub fn codex_session_audit_json_for_files(
     out.insert("context_window".into(), context_window.map_or(Value::Null, |w| json!(w)));
     out.insert("date_span".into(), json!({ "first": first, "last": last_ts }));
     out.insert("audit".into(), audit.clone());
-    out.insert("quota_trajectory".into(), quota_trajectory_of(&all_items));
-    out.insert("permission_transitions".into(), permission_trajectory_of(&all_items));
+    out.insert("quota_trajectory".into(), quota_trajectory_of(&evidence.items));
+    out.insert("permission_transitions".into(), permission_trajectory_of(&evidence.items));
     out.insert("turn_ends".into(), turn_ends_of(&evidence));
-    out.insert("effort".into(), effort_of(&all_items));
-    out.insert("tool_output_bytes".into(), tool_output_bytes_of(&all_items));
-    out.insert("turn_timeline".into(), turn_timeline_of(&all_items, &audit));
+    out.insert("effort".into(), effort_of(&evidence.items));
+    out.insert("tool_output_bytes".into(), tool_output_bytes_of(&evidence.items));
+    out.insert("turn_timeline".into(), turn_timeline_of(&evidence.items, &audit));
     out.insert("cost_report".into(), cost_report);
     out.insert("coverage".into(), ev["coverage"].clone());
     out.insert("signals".into(), ev["signals"].clone());
     out.insert("attempts".into(), ev["attempts"].clone());
-    out.insert("notes".into(), ev["notes"].clone());
+    let truncated = files.iter().any(|file| file.truncated);
+    let truncated_bytes: u64 = files
+        .iter()
+        .filter(|file| file.truncated)
+        .map(|file| file.truncated_bytes)
+        .sum();
+    let mut notes = ev["notes"].clone();
+    if truncated {
+        if let Some(items) = notes.as_array_mut() {
+            items.push(json!(format!(
+                "history truncated: audit read only head 2 MiB + tail 64 MiB of a {truncated_bytes} byte session; findings are deferred until a windowed audit exists"
+            )));
+        }
+    }
+    out.insert("truncated".into(), json!(truncated));
+    out.insert("truncated_bytes".into(), json!(truncated_bytes));
+    out.insert("notes".into(), notes);
     Some(Value::Object(out))
 }
 
@@ -514,4 +614,7 @@ pub fn render_codex_session_html(output_path: &Path, out: &Value) {
         eprintln!("failed to write {}", output_path.display());
         std::process::exit(2);
     }
+
 }
+
+

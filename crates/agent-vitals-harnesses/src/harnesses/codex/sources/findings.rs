@@ -95,6 +95,14 @@ pub fn evaluate(
     let mut errors = Vec::new();
     for (sid, files) in groups(changed, &index) {
         match super::session_audit::codex_session_audit_json_for_files(ctx.roots.user_home, &sid, &files) {
+            Some(payload) if payload.get("truncated").and_then(serde_json::Value::as_bool) == Some(true) => {
+                // 预算截断的会话不产出行为 findings：拿半份历史出结论比不出更糟。
+                // 用 error 面显式暴露（同步报告可见），等窗口化审计落地后再放开。
+                errors.push(format!(
+                    "codex findings {sid}: history truncated at {} bytes; deep audit deferred",
+                    payload.get("truncated_bytes").and_then(serde_json::Value::as_u64).unwrap_or(0)
+                ));
+            }
             Some(payload) => out.push(SessionFindings {
                 harness: "codex",
                 native_id: sid.clone(),
