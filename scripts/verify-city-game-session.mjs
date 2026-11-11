@@ -32,7 +32,7 @@ const windowShim = {
 // FlightVisuals 的涂装贴图走 canvas 2D；Node 里没有画布，用吞掉所有绘制调用的代理顶替（只验证会话逻辑，不验证像素）。
 const ctx2dShim = new Proxy({}, { get: (_t, key) => (key === "createLinearGradient" ? () => ({ addColorStop: () => {} }) : () => {}), set: () => true });
 const canvasShim = () => ({ width: 1, height: 1, getContext: () => ctx2dShim });
-const documentShim = { visibilityState: "visible", activeElement: null, addEventListener: () => {}, removeEventListener: () => {}, createElement: canvasShim };
+const documentShim = { visibilityState: "visible", activeElement: null, hasFocus: () => documentShim.activeElement !== null, addEventListener: () => {}, removeEventListener: () => {}, createElement: canvasShim };
 const pressKey = (code) => {
   for (const fn of windowListeners.get("keydown") ?? []) fn({ code, target: windowShim, isComposing: false, repeat: false, preventDefault: () => {} });
 };

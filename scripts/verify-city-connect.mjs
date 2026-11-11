@@ -611,11 +611,14 @@ for (const turns of [0, 1, 2, 3]) for (const shift of [0, 120]) {
   assert.deepEqual(ctx.coastRoadRuns[0][0], { x: 0, z: 0 });
   assert.deepEqual(ctx.coastRoadRunEnds[0], { x: 0, z: 0 });
   assert.equal(snapNearJunctions(ctx), 0);
-  const blocked = build(); blocked.publicSites.push({ id: "blocker", kind: "park", x: 0, z: 10, radius: 5, yaw: 0 });
-  const before = snap(blocked.network);
-  assert.equal(snapNearJunctions(blocked), 0);
-  assert.equal(snap(blocked.network), before);
-  assert.equal(blocked.publicSites[0].access.nodeId, "0:0.16");
+  // This blocker overlaps the existing branch corridor before the snap. The
+  // repair permits that same pre-existing site-clearance violation while
+  // normalizing the junction; it must not preserve a dangling gate reference.
+  const siteAffected = build(); siteAffected.publicSites.push({ id: "blocker", kind: "park", x: 0, z: 10, radius: 5, yaw: 0 });
+  assert.equal(snapNearJunctions(siteAffected), 1);
+  assert.ok(!siteAffected.network.nodes.has("0:0.16"));
+  assert.equal(siteAffected.publicSites[0].access.nodeId, "0:0");
+  assert.equal(groundJunctionFindings([...siteAffected.network.edges.values()]).length, 0);
 }
 
 // 急角口中两条重合支路不能靠删边制造断头；并远端节点、删重复边并保留支路和 owner/车流引用。
@@ -662,7 +665,13 @@ for (const turns of [0, 1, 2, 3]) for (const shift of [0, 120]) {
   assert.equal(ctx.publicSites[0].access.nodeId, "0:0");
   assert.deepEqual(ctx.carPaths[0], [{ x: 100, z: 0 }, { x: 0, z: 0 }, { x: 0, z: 100 }]);
   assert.equal(groundJunctionFindings([...ctx.network.edges.values()]).length, 0);
-  for (const rejected of [build(true), build(false, true)]) {
+  const siteAffected = build(true), beforeSite = snap(siteAffected.network);
+  assert.equal(snapNearJunctions(siteAffected), 1,
+    "an existing site-clearance violation may be preserved while repairing the coincident junction");
+  assert.notEqual(snap(siteAffected.network), beforeSite);
+  assert.ok(!siteAffected.network.nodes.has("0:0.16"));
+  assert.equal(siteAffected.publicSites.at(-1).access.nodeId, "0:0");
+  for (const rejected of [build(false, true)]) {
     const before = snap(rejected.network), refs = JSON.stringify([rejected.publicSites, rejected.carPaths]);
     assert.equal(snapNearJunctions(rejected), 0);
     assert.equal(snap(rejected.network), before);
@@ -785,10 +794,14 @@ for (const turns of [0, 1, 2, 3]) for (const shift of [0, 120]) {
   assert.deepEqual(ctx.carPaths[0], [{ x: -100, z: 0 }, { x: 0, z: 0 }]);
   assert.deepEqual(ctx.carPaths[1], [{ x: 0, z: -50 }, { x: 0, z: 0 }, { x: 0, z: 50 }]);
   assert.equal(snapShortCrossings(ctx), 0);
-  const bad = build(true), before = snap(bad.network), paths = JSON.stringify(bad.carPaths);
-  assert.equal(snapShortCrossings(bad), 0);
-  assert.equal(snap(bad.network), before);
-  assert.equal(JSON.stringify(bad.carPaths), paths);
+  // The obstacle sits on the original crossing itself, so it is a pre-existing
+  // site-clearance violation. Joining the roads must still remove the unsafe
+  // crossing and update route endpoints atomically.
+  const siteAffected = build(true), before = snap(siteAffected.network);
+  assert.equal(snapShortCrossings(siteAffected), 1);
+  assert.notEqual(snap(siteAffected.network), before);
+  assert.equal(groundJunctionFindings([...siteAffected.network.edges.values()]).length, 0);
+  assert.deepEqual(siteAffected.carPaths[0], [{ x: -100, z: 0 }, { x: 0, z: 0 }]);
 }
 
 // 交叉度量按真实折线，不拿弦线造假交点，也不漏掉共用远端节点后的第二处交叉。

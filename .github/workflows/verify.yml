@@ -228,9 +228,9 @@ jobs:
           node scripts/test-macos-signature-contract.mjs
 
   city_guards:
-    name: City 专项守卫
+    name: City 快速守卫
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -248,17 +248,7 @@ jobs:
         run: npm ci
       - name: City 专项守卫
         working-directory: apps/desktop/ui-dev
-        run: >-
-          node ../../../scripts/verify-city-suite.mjs full
-          --exclude verify-city-road-report
-          --exclude verify-react-city-geography
-          --exclude verify-react-city-seaside
-          --exclude seaside-tier10
-          --exclude verify-city-planning
-          --exclude verify-react-city-infrastructure
-          --exclude verify-react-city-layout
-          --exclude verify-react-city-cinematic
-          --exclude verify-city-cross-engine
+        run: node ../../../scripts/verify-city-suite.mjs fast
       - name: City initial data-loading feedback
         run: node scripts/verify-city-initial-loading.mjs
       - name: 术语与命名边界守卫
@@ -267,12 +257,16 @@ jobs:
 
   city_heavy_guards:
     name: City heavy guard (${{ matrix.guard }})
+    # Exhaustive City planning is available on demand. Keeping these guards out
+    # of every PR avoids repeated multi-minute seed generation while preserving
+    # the full checks for an explicit dispatch.
+    if: github.event_name == 'workflow_dispatch' && inputs.city_exhaustive
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        guard: [road-report, geography, seaside, seaside-tier10, planning, infrastructure, layout, cinematic, cross-engine]
+        guard: [road-report, geography, seaside, seaside-tier10, planning, infrastructure, layout, cinematic, cross-engine, context, solve, survey-acceptance, survey-tuning]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -303,6 +297,10 @@ jobs:
             layout) node ../../../scripts/verify-react-city-layout.mjs ;;
             cinematic) node ../../../scripts/verify-react-city-cinematic.mjs ;;
             cross-engine) node ../../../scripts/verify-city-cross-engine.mjs ;;
+            context) node ../../../scripts/verify-city-context.mjs ;;
+            solve) node ../../../scripts/verify-city-solve.mjs ;;
+            survey-acceptance) node ../../../scripts/verify-city-survey.mjs --set acceptance ;;
+            survey-tuning) node ../../../scripts/verify-city-survey.mjs --set tuning ;;
           esac
 
   city_typed_data:

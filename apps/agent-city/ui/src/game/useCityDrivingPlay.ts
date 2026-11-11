@@ -94,6 +94,13 @@ export function useCityDrivingPlay(engine: RefObject<CityEngine | null>, host: R
     else if (options.notifyHostBusy === false) start();
     else void noteBusy(8_000).catch(() => {}).finally(start);
   }, [car.resume]);
+  const focusCanvas = useCallback(() => {
+    const canvas = engine.current?.domCanvas;
+    if (canvas instanceof HTMLCanvasElement) canvas.focus({ preventScroll: true });
+  }, [engine]);
+  useEffect(() => {
+    if (car.hud.phase === "running") focusCanvas();
+  }, [car.hud.phase, focusCanvas]);
   const pause = useCallback((reason?: string) => { inputSource.current?.clear(); car.pause(reason); sfxRef.current?.suspend(); }, [car.pause]);
   const exit = useCallback(() => { setChoosingVehicle(false); inputSource.current?.clear(); car.exit(); removeVisuals(); sfxRef.current?.dispose(); sfxRef.current = null; setSoundAvailable(false); setInitialPaused(false); setRoadCheck(null); }, [car.exit, removeVisuals]);
   const openUiContext = useCallback(() => { inputSource.current?.clear(); if (phaseRef.current === "running") car.pause(); sfxRef.current?.suspend(); }, [car.pause]);

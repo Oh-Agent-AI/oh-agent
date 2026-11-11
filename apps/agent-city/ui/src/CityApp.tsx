@@ -574,7 +574,7 @@ export function CityApp() {
     const model = engine?.currentModel;
     const layout = engine?.currentLayout;
     if (!engine || !model || !layout) {
-      setDreamPreviewError("当前城市场景尚未准备完成。");
+      setDreamPreviewError(cityText("当前城市场景尚未准备完成。", language));
       setDreamPreviewOpen(true);
       return;
     }
@@ -592,7 +592,7 @@ export function CityApp() {
       const { candidate: projected, envelope } = await prepareDreamSnapshotForPublication(candidate);
       if (dreamPreviewRequest.current !== request) return;
       if (engineRef.current !== engine || engine.currentLayout !== layout || engine.currentModel !== model) {
-        setDreamPreviewError("城市在预览生成期间发生变化，请重新打开预览。");
+        setDreamPreviewError(cityText("城市在预览生成期间发生变化，请重新打开预览。", language));
         return;
       }
       const plain = new TextEncoder().encode(JSON.stringify(projected));
@@ -604,7 +604,7 @@ export function CityApp() {
       if (dreamPreviewRequest.current !== request) return;
       const code = error instanceof Error ? error.message : "";
       setDreamPreviewError(code === "dream_candidate_too_large"
-        ? "快照超过当前远程消息预算，未生成可分享的链接。"
+        ? cityText("快照超过当前远程消息预算，未生成可分享的链接。", language)
         : `本机快照校验或压缩失败${/^(?:dream_|invalid_dream_|remote_city_)[a-z0-9_]{1,72}$/.test(code) ? `（${code}）` : ""}，未生成可分享的链接。`);
     } finally {
       if (dreamPreviewRequest.current === request) setDreamPreviewBusy(false);
@@ -729,7 +729,7 @@ export function CityApp() {
       {(dreamPreviewOpen || dreamPreviewSnapshot || dreamPreviewBusy) && <Suspense fallback={null}><DreamSnapshotPreview open={dreamPreviewOpen} snapshot={dreamPreviewSnapshot} envelope={dreamPreviewEnvelope} plainBytes={dreamPreviewPlainBytes}
         envelopeBytes={dreamPreviewEnvelopeBytes} busy={dreamPreviewBusy} error={dreamPreviewError} onClose={closeDreamPreview}
         onPublicationActive={setDreamPublicationActive} /></Suspense>}
-      {dreamPublicationActive && !dreamPreviewOpen && <button type="button" className="dream-manage-remote-fab" onClick={() => { void openDreamPreview(); }}>管理远程访问</button>}
+      {dreamPublicationActive && !dreamPreviewOpen && <button type="button" className="dream-manage-remote-fab" onClick={() => { void openDreamPreview(); }}>{cityText("管理远程访问", language)}</button>}
       {mechaOpen && !game.active && !driving.active && !cinema && <MechaBoard locale={language === "en" ? "en" : "zh-Hans"} engine={engineRef.current} encounter={selectedEncounter} onClose={() => setMechaOpen(false)} onAvailability={reportMechaAvailability} />}
       {sceneActivityBlocker === null && sceneReady && <MonsterWorldMarkers engine={engineRef.current} encounters={encounterState.encounters} language={language} onEnter={openMecha} />}
       <CityMinimap engine={engineRef} language={language} driving={{ active: driving.active, pose: driving.pose }} encounters={encounterState}

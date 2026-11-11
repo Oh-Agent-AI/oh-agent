@@ -20,7 +20,7 @@ assert.match(hud, /自由驾驶/); assert.match(hud, /道路体检通过/); asse
 assert.doesNotMatch(hud, /道路认证中/); assert.match(hud, /details className="city-game-chip city-game-diagnostics"/);
 assert.match(flightHud, /GameHudShell/); assert.match(flightHud, /GameSessionSnapshot/);
 assert.match(keyboard, /event\.repeat/); assert.match(keyboard, /\["range", "checkbox", "radio", "button", "submit", "reset", "color", "file"\]/);
-assert.match(keyboard, /if \(!this\.options\.isFocused\(\)\) return;/);
+assert.match(keyboard, /return this\.options\.isFocused\(\) && document\.visibilityState !== "hidden";/);
 assert.match(carInput, /event\.code === "Escape"/); assert.match(carInput, /event\.repeat/);
 assert.match(carInput, /phaseRef\.current === "preparing"\) exit\(\)/); assert.doesNotMatch(carInput, /event\.repeat\) exit\(\)/);
 assert.match(hud, /hud\.phase === "running" \|\| helpOpen/);
