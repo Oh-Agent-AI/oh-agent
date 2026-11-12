@@ -526,7 +526,7 @@ MCP 仍负责：JSON-RPC 帧、`tool_specs` 的 `additionalProperties: false`、
 | 生成物锁步 | `scripts/generate-creator-capabilities.mjs --check` | `assets/creator/*` 与 SDK 源字节一致 |
 | 描述符形状 | Rust 单测 | 非法 ID/超预算/未知 kind/重复项被拒 |
 | 对照语料 | `fixtures/creator/*` + TS/Rust 测试 | P0 记录两侧结论及差异；迁移后 Rust 测宿主不变量，City 语义归 SDK 测试 |
-| 字面量守卫 | Rust 测试读 `include_str!("creator_projects.rs")` | 不含 `"miami-vice"`、`"checkpoint-race"`、`"zone.entered"` 等内容字面量 |
+| 字面量守卫 | Rust 测试读 `include_str!("creator_projects.rs")` | 不含 `"miami-vice"`、`"zone.entered"`、`"creator.checkpoint-race"`、标题中文等内容字面量（注册表中的模板 id 属登记键，允许保留） |
 | 版本协商 | Rust 单测 | preview 的 capabilityVersion 与当前不符 → commit 拒绝 |
 | 迁移 | Rust 单测 | 旧 `creator_operations` 表升级后读写正常 |
 | 传输预算 | `plugin_calls` 单测 | 超预算请求与响应均返回 `plugin_call_too_large`；请求调用方收到明确错误，响应侧释放/终结 claim，不能遗留 pending 并等待超时 |

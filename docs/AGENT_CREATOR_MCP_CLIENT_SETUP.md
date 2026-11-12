@@ -68,9 +68,9 @@ Claude Code（`claude mcp add` 或项目 `.mcp.json`，字段名以 Claude Code 
 | creator_playtest_start | releaseId（ASCII 字母数字与 `.` `_` `:` `-`） | projectId、expectedRevision、requestId | 写入 |
 | creator_playtest_result | runId | — | 只读 |
 | creator_playtest_cancel | runId | — | 写入 |
-| creator_project_create | template（`checkpoint-race` 或 `collect-one`）、operationId、worldRevision | — | 写入 |
-| creator_game_preview | projectId、baseRevision、game（对象 ≤48KiB） | — | 预览（不落盘） |
-| creator_scene_preview | projectId、baseRevision、operations（1..=128 条，≤48KiB） | — | 预览（不落盘） |
+| creator_project_create | template（模板 id 经 `creator_capabilities_list`（category `project`）发现）、operationId、worldRevision | — | 写入 |
+| creator_game_preview | projectId、baseRevision、game（≤384KiB；内容预算 gameBytes 由宿主执行） | — | 预览（不落盘） |
+| creator_scene_preview | projectId、baseRevision、operations（1..=128 条，≤384KiB） | — | 预览（不落盘） |
 | creator_project_commit | projectId、previewId、expectedRevision、operationId | — | 写入 |
 | creator_project_publish | projectId、expectedRevision | — | 写入 |
 | creator_scene_describe | projectId | revision、selectedObjectId | 只读 |

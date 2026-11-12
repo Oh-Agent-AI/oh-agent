@@ -47,9 +47,9 @@ pub fn read_for_plugin(allowed: &[String], method: &str, payload: &Value, plugin
     let key = format!("{name}:v{version}");
     if !allowed.contains(&key) { return Err("projection_denied"); }
     // Key is the projection contract from `dataProjections`. The caller's id only scopes storage.
-    match key.as_str() {
-        _ => Err("projection_unavailable"),
-    }
+    // No registered data.read projections yet; harnesses.* are dispatched above.
+    let _ = key;
+    Err("projection_unavailable")
 }
 
 #[cfg(test)]

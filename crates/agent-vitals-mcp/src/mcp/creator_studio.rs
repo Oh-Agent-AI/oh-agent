@@ -37,7 +37,7 @@ pub fn specs() -> Vec<ToolSpec> {
         spec("creator_playtest_start", "Ask the active Studio to start one visual playtest of a published, immutable City release. The player drives the playtest in the City plugin; results are read by creator_playtest_result. Provide projectId/expectedRevision to fail fast when the release belongs to another project or revision. Requires `data-mcp serve --allow-local-writes` and the official Creator Studio plugin to be open.", json!({"releaseId":{"type":"string","minLength":1,"maxLength":128},"projectId":project_id_prop(),"expectedRevision":revision_prop(),"requestId":{"type":"string","minLength":1,"maxLength":128,"description":"调用方关联标识；原样回传，便于对齐消息与结果。"}}), &["releaseId"]),
         spec("creator_playtest_result", "Read one playtest run by runId: status (pending/claimed/completed/cancelled/failed/expired), finish time, failure code and bounded client-reported evidence summary.", json!({"runId":{"type":"string","minLength":1,"maxLength":128}}), &["runId"]),
         spec("creator_playtest_cancel", "Cancel one pending or claimed playtest run and release its activity lease. Requires `data-mcp serve --allow-local-writes`. Cancelling an already-finished run returns its terminal state unchanged (cancelled=false); unknown runIds return not_found.", json!({"runId":{"type":"string","minLength":1,"maxLength":128}}), &["runId"]),
-        spec("creator_project_create", "Create a local City mini-game project. Pin a listed worldRevision to bind it to trusted City road anchors. Requires `data-mcp serve --allow-local-writes` and the official Creator Studio plugin to be open.", json!({"template":{"type":"string","enum":["checkpoint-race","collect-one"]},"operationId":operation_id_prop(),"worldRevision":{"type":"string","minLength":1,"maxLength":256}}), &["template","operationId","worldRevision"]),
+        spec("creator_project_create", "Create a local City mini-game project from a template listed by creator_capabilities_list (category `project`, field `templates`). Pin a listed worldRevision to bind it to trusted City road anchors. Requires `data-mcp serve --allow-local-writes` and the official Creator Studio plugin to be open.", json!({"template":{"type":"string","minLength":1,"maxLength":64},"operationId":operation_id_prop(),"worldRevision":{"type":"string","minLength":1,"maxLength":256}}), &["template","operationId","worldRevision"]),
         spec("creator_game_preview", "Validate a declarative mini-game JSON draft without committing it. Returns a short-lived previewId bound to the active Studio instance and base revision.", json!({"projectId":project_id_prop(),"baseRevision":revision_prop(),"game":{"type":"object"}}), &["projectId","baseRevision","game"]),
         spec("creator_scene_preview", "Preview up to 128 operations: scene.object.upsert/remove, anchor.upsert/remove, mount.bind {mount}, mount.remove {mountId}, and skin.select {skinId}. Rust checks schema, IDs, references, slot cardinality, transforms, budgets, and drive/walk reachability in the pinned City's trusted traversal graph. Requires the official Creator Studio plugin to be open.", json!({"projectId":project_id_prop(),"baseRevision":revision_prop(),"operations":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"object"}}}), &["projectId","baseRevision","operations"]),
         spec("creator_project_commit", "Commit a previously previewed game, scene, mount, or skin edit. Requires `data-mcp serve --allow-local-writes`; the preview is single-instance, revision-bound, short-lived, and single-use.", json!({"projectId":project_id_prop(),"previewId":{"type":"string","minLength":1,"maxLength":128},"expectedRevision":revision_prop(),"operationId":operation_id_prop()}), &["projectId","previewId","expectedRevision","operationId"]),
@@ -62,6 +62,8 @@ fn call_error(code: &str) -> ToolError {
         "creator_capture_budget_exceeded" => ToolError::new("invalid_argument", "The captured frame exceeded the bounded image budget."),
         "creator_object_not_found" => ToolError::new("not_found", "The objectId is not a scene object, mount or pinned layout anchor of this project."),
         "creator_capability_unknown" => ToolError::new("invalid_argument", "Unknown capability category; call without `category` to list supported categories."),
+        "creator_template_not_found" => ToolError::new("invalid_argument", "Unknown project template; list valid ids via creator_capabilities_list (category `project`, field `templates`)."),
+        "creator_template_asset_invalid" => ToolError::new("data_unavailable", "The installed Creator template assets failed validation; reinstall the desktop bundle."),
         "creator_capability_version_unsupported" => ToolError::new("invalid_argument", "Only capability schemaVersion 1 is supported."),
         "creator_validation_profile_unsupported" => ToolError::new("invalid_argument", "`validationProfile` only supports \"static\"; runtime checks are reported as unchecked instead of executed."),
         "creator_layout_not_found" => ToolError::new("not_found", "The selected City layout snapshot is no longer available. List layouts again and retry."),
@@ -86,11 +88,10 @@ fn call(data_home: &Path, method: &str, payload: &Value, timeout_ms: u64) -> Res
 }
 
 /// 预览类调用的传输预算（§5.5）：请求放宽到 384 KiB（承载 256 KiB 内容 +
-/// 信封开销），响应 64 KiB（previewId/diff/诊断有界）。业务内容预算（gameBytes
-/// 等）仍由宿主执行——传输预算不是内容预算的替代。
+/// 信封开销）；响应沿用 mailbox 默认 64 KiB（previewId/diff/诊断有界），由 respond
+/// 侧统一执行。业务内容预算（gameBytes 等）仍由宿主执行——传输预算不是内容预算的替代。
 mod creator_budgets {
     pub const PREVIEW_REQUEST_BYTES: usize = 384 * 1024;
-    pub const PREVIEW_RESPONSE_BYTES: usize = 64 * 1024;
 }
 
 /// 传输预算变体：game/scene preview 的载荷可超过默认 64 KiB 邮箱。
@@ -152,10 +153,6 @@ fn optional_u64(args: &Value, key: &str) -> Result<Option<u64>, ToolError> {
         None | Some(Value::Null) => Ok(None),
         Some(value) => value.as_u64().map(Some).ok_or_else(|| ToolError::new("invalid_argument", format!("`{key}` must be a non-negative integer"))),
     }
-}
-
-fn optional_bounded_u64(args: &Value, key: &str, max: u64) -> Result<Option<u64>, ToolError> {
-    optional_u64(args, key)?.map_or_else(|| Ok(None), |value| if value <= max { Ok(Some(value)) } else { Err(ToolError::new("invalid_argument", format!("`{key}` must be <= {max}"))) })
 }
 
 fn optional_nonempty_string<'a>(args: &'a Value, key: &str) -> Result<Option<&'a str>, ToolError> {
@@ -257,8 +254,9 @@ pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool)
         }
         "creator_project_create" => {
             if !allow_local_writes { return Err(ToolError::new("permission_denied", "Creator project creation requires `data-mcp serve --allow-local-writes`.")); }
+            // 去硬编码（§7 P1）：模板词表由生成描述符持有，Rust 权威校验返回
+            // creator_template_not_found；这里只透传并映射该错误。
             let template = required_string(args,"template")?;
-            if !matches!(template,"checkpoint-race"|"collect-one") { return Err(ToolError::new("invalid_argument", "unsupported Creator project template")); }
             let payload = json!({"template":template,"operationId":required_string(args,"operationId")?,
                 "worldRevision":required_string(args,"worldRevision")?});
             call(data_home, "creator.project.create", &payload, 15_000)

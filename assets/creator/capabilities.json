@@ -2,7 +2,7 @@
   "budgets": {
     "cityPatchBytes": 262144,
     "gameBytes": 262144,
-    "mountBindings": 64,
+    "mountBindings": 32,
     "sceneColliders": 256,
     "sceneObjects": 10000
   },

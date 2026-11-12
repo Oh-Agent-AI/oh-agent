@@ -54,12 +54,13 @@ export const CREATOR_CONTENT_V1 = Object.freeze({
   skins: ["miami-vice", "desert-evening"],
 });
 
-/** 内容预算：Rust 保留硬上限并 clamp（描述符不能把上限调高）。 */
+/** 内容预算：Rust 保留硬上限并 clamp（描述符不能把上限调高）。数值与
+ * apps/desktop/src-tauri/src/creator_projects.rs 的 MAX_* 常量一致（Rust 守卫测试锁定）。 */
 export const CREATOR_BUDGETS_V1 = Object.freeze({
   gameBytes: 262144,
   sceneObjects: 10000,
   sceneColliders: 256,
-  mountBindings: 64,
+  mountBindings: 32,
   cityPatchBytes: 262144,
 });
 
