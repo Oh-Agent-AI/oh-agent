@@ -113,3 +113,13 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, summary:focu
 .project-tools > .new-project, .project-tools > .editor { margin: 12px; }
 /* Persistent draft-save status floating in the viewport (prototype bottom bar). */
 .viewport-savebar { position: absolute; z-index: 2; left: 14px; bottom: 14px; padding: 6px 12px; border-radius: 8px; background: rgba(17, 27, 31, .88); color: #a8ead8; font-size: 12px; pointer-events: none; }
+
+/* Agent activity cards: MCP-originated previews/commits/publishes/playtests. */
+.agent-activity { display: grid; gap: 8px; }
+.agent-card { border: 1px solid #2b383e; border-radius: 8px; padding: 9px 11px; background: #142023; display: grid; gap: 4px; }
+.agent-card.failed { border-color: #6e3a3a; }
+.agent-card-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.agent-label { color: #dce8e8; font-size: 12px; font-weight: 650; }
+.agent-time { color: #8fa5a9; font-size: 11px; }
+.agent-card p { margin: 0; font-size: 11px; line-height: 1.5; }
+.agent-summary { color: #a8ead8; overflow-wrap: anywhere; }

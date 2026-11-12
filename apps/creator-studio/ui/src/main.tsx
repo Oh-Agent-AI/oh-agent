@@ -65,6 +65,9 @@ function App() {
   // 未完成操作的幂等标识：结果确定前保留，响应失败时用于重试与状态查询。
   const [pendingEdit, setPendingEdit] = useState<{ projectId: string; operationId: string } | null>(null);
   const [pendingCreateId, setPendingCreateId] = useState<string | null>(null);
+  // Agent 活动卡片（设计 §7.3）：经活动 Studio 转发的 MCP 预览/提交/发布/试玩请求，
+  // 新在前、有界保留；UI 自己的操作直连宿主、不出现在这里。
+  const [agentActivity, setAgentActivity] = useState<ReadonlyArray<{ method: string; label: string; summary: string; ok: boolean; revision?: number; at: number }>>([]);
   // ── 草稿保护：每个编辑区域（规则/场景/挂载/皮肤）的草稿 = 当前输入 ≠ 上次同步的已保存值。
   // preserve：保留有草稿区域的本地输入（草稿基于新 revision 重新校验后提交），同步无草稿区域；
   // replace：重置全部表单（显式切换/新建项目），丢弃前在状态区明确告知。
@@ -136,10 +139,40 @@ function App() {
   useEffect(() => {
     const methods = ["creator.layout.list", "creator.project.list", "creator.project.read", "creator.project.read_chunk", "creator.operation.status", "creator.project.create",
       "creator.game.preview", "creator.asset.import", "creator.game.commit", "creator.scene.preview", "creator.scene.commit", "creator.project.commit", "creator.project.publish",
-      "creator.project.playtest.start", "creator.project.playtest.return_context", "creator.project.playtest.history"];
+      "creator.project.playtest.start", "creator.project.playtest.result", "creator.project.playtest.cancel", "creator.project.playtest.return_context", "creator.project.playtest.history"];
+    // 这些调用只能来自宿主/MCP 路由（UI 自己的请求直连宿主、不经此转发），
+    // 所以这里的捕获天然就是「Agent 来源」的变更记录——设计 §7.3 的变更卡片数据源。
+    const noteAgent = (method: string, payload: Record<string, unknown>, ok: boolean, result: unknown) => {
+      const labels: Record<string, string> = {
+        "creator.project.create": "新建项目", "creator.game.preview": "规则预览", "creator.scene.preview": "场景预览",
+        "creator.game.commit": "提交规则", "creator.scene.commit": "提交场景", "creator.project.commit": "Agent 提交",
+        "creator.project.publish": "发布到 City", "creator.project.playtest.start": "请求试玩",
+        "creator.project.playtest.cancel": "取消试玩", "creator.asset.import": "导入模型",
+      };
+      const label = labels[method];
+      if (!label) return;
+      let summary = "";
+      if (method === "creator.scene.preview" && Array.isArray(payload.operations)) {
+        const counts = new Map<string, number>();
+        for (const operation of payload.operations as Array<{ op?: string }>) {
+          const kind = String(operation.op ?? "unknown").split(".")[0];
+          counts.set(kind, (counts.get(kind) ?? 0) + 1);
+        }
+        summary = [...counts.entries()].map(([kind, count]) => `${kind}×${count}`).join("、");
+      } else if (typeof payload.releaseId === "string") summary = payload.releaseId;
+      const revision = (result as { revision?: number } | null)?.revision;
+      setAgentActivity(list => [{ method, label, summary, ok, revision, at: Date.now() }, ...list].slice(0, 6));
+    };
     const handlers = Object.fromEntries(methods.map(method => [method, async (payload: Record<string, unknown>) => {
-      const result = await creatorRequest(method, payload);
+      let result: unknown;
+      try {
+        result = await creatorRequest(method, payload);
+      } catch (error) {
+        noteAgent(method, payload, false, null);
+        throw error;
+      }
       if (method === "creator.project.create" || method.endsWith(".commit")) window.dispatchEvent(new Event("__CREATOR_PROJECT_CHANGED__"));
+      noteAgent(method, payload, true, result);
       return result;
     }]));
     const disconnectHostCalls = connectHostCalls(handlers);
@@ -390,10 +423,15 @@ function App() {
       <aside className="panel">
         <section className="agent-panel" aria-label="City Agent">
           <div className="section-title">City Agent</div>
-          <div className="agent-empty">
-            <p><strong>Agent 对话将在下一切片经 Studio MCP 接入</strong>，选中对象与变更预览会出现在这里。</p>
+          {agentActivity.length > 0 ? <div className="agent-activity">{agentActivity.map(item => <div key={item.at} className={`agent-card ${item.ok ? "" : "failed"}`}>
+            <div className="agent-card-head"><span className="agent-label">{item.label}</span><span className="agent-time">{new Date(item.at).toLocaleTimeString()}</span></div>
+            {item.summary && <p className="agent-summary">{item.summary}</p>}
+            <p className="muted">{item.ok ? `已受理${item.revision !== undefined ? ` · revision ${item.revision}` : ""}` : "请求失败（错误码见状态区）"}</p>
+          </div>)}</div>
+          : <div className="agent-empty">
+            <p><strong>Agent 对话将经 Studio MCP 接入</strong>：外部 Agent（Codex / Claude Code 等）对项目的预览、提交、发布和试玩请求会作为变更卡片显示在这里。</p>
             <p>当前可直接在左侧视口点选建筑移动（保存到同一草稿）；规则与场景在下方项目工具中编辑。</p>
-          </div>
+          </div>}
         </section>
         <details className="project-tools" open>
           <summary>项目工具{project ? ` · ${project.title}` : ""}</summary>

@@ -1298,8 +1298,26 @@ pub fn dispatch_as(home: &Path, owner: &str, instance: &str, method: &str, paylo
             payload["expectedRevision"].as_u64().ok_or("creator_request_invalid")?, payload["operationId"].as_str().ok_or("creator_request_invalid")?),
         "creator.project.publish" if exact_payload(payload, &["projectId", "expectedRevision"]) => publish_project_release(home,
             payload["projectId"].as_str().ok_or("creator_request_invalid")?, payload["expectedRevision"].as_u64().ok_or("creator_request_invalid")?),
-        "creator.project.playtest.start" if exact_payload(payload, &["releaseId"]) => start_playtest(home, instance,
-            payload["releaseId"].as_str().ok_or("creator_request_invalid")?),
+        // 试玩启动：releaseId 必填；projectId/expectedRevision/requestId 可选（MCP 契约 §6.3，
+        // 提供即校验归属）。UI 的 {releaseId} 形状继续有效。
+        "creator.project.playtest.start" if payload.as_object().is_some_and(|object| {
+            object.contains_key("releaseId")
+                && object.keys().all(|key| matches!(key.as_str(), "releaseId" | "projectId" | "expectedRevision" | "requestId"))
+        }) => {
+            let release_id = payload["releaseId"].as_str().filter(|id| valid_id(id)).ok_or("creator_request_invalid")?;
+            let expected_project = payload.get("projectId").and_then(Value::as_str).filter(|id| valid_id(id));
+            let expected_revision = payload.get("expectedRevision").and_then(Value::as_u64);
+            if payload.get("requestId").is_some_and(|value| !value.as_str().is_some_and(|id| !id.is_empty() && id.len() <= 128)) {
+                return Err("creator_request_invalid");
+            }
+            let mut result = start_playtest(home, instance, release_id, expected_project, expected_revision)?;
+            if let Some(request_id) = payload.get("requestId").and_then(Value::as_str) { result["requestId"] = json!(request_id); }
+            Ok(result)
+        }
+        "creator.project.playtest.result" if exact_payload(payload, &["runId"]) => read_playtest_result(home,
+            payload["runId"].as_str().filter(|id| valid_id(id)).ok_or("creator_request_invalid")?),
+        "creator.project.playtest.cancel" if exact_payload(payload, &["runId"]) => cancel_playtest(home, instance,
+            payload["runId"].as_str().filter(|id| valid_id(id)).ok_or("creator_request_invalid")?),
         "creator.project.playtest.return_context" if exact_payload(payload, &[]) => take_playtest_return(home),
         "creator.project.playtest.history" if exact_payload(payload, &["projectId", "limit"]) => list_playtest_history(home,
             payload["projectId"].as_str().ok_or("creator_request_invalid")?, payload["limit"].as_u64().ok_or("creator_request_invalid")?),
@@ -1338,23 +1356,31 @@ fn expire_playtests(tx: &rusqlite::Transaction<'_>, now: u64) -> Result<(), &'st
     Ok(())
 }
 
-fn start_playtest(home: &Path, studio_instance: &str, release_id: &str) -> Result<Value, &'static str> {
+fn start_playtest(home: &Path, studio_instance: &str, release_id: &str, expected_project: Option<&str>, expected_revision: Option<u64>) -> Result<Value, &'static str> {
     if !valid_id(studio_instance) || !valid_id(release_id) { return Err("creator_request_invalid"); }
     let mut db = database(home)?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
     let now = now_ms();
     expire_playtests(&tx, now)?;
-    let active: Option<(String, String, String)> = tx.query_row("SELECT run_id,release_id,studio_instance_id FROM creator_playtest_runs WHERE active_slot=1", [],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional().map_err(|_| "creator_store_unavailable")?;
-    if let Some((run_id, active_release, active_studio)) = active {
+    let active: Option<(String, String, String, u64, String)> = tx.query_row("SELECT run_id,release_id,studio_instance_id,revision,project_id FROM creator_playtest_runs WHERE active_slot=1", [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))).optional().map_err(|_| "creator_store_unavailable")?;
+    if let Some((run_id, active_release, active_studio, active_revision, active_project)) = active {
         if active_release == release_id && active_studio == studio_instance {
             tx.commit().map_err(|_| "creator_store_unavailable")?;
-            return Ok(json!({"runId":run_id,"releaseId":release_id,"status":"pending"}));
+            return Ok(json!({"runId":run_id,"releaseId":release_id,"projectId":active_project,"revision":active_revision,"status":"pending"}));
         }
         return Err("creator_playtest_active");
     }
     let (project_id, revision, raw): (String, u64, String) = tx.query_row("SELECT project_id,revision,snapshot_json FROM creator_releases WHERE release_id=?1", [release_id],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_release_not_found")?;
+    // MCP 契约（设计 §6.3）：调用方显式声明意图范围，归属不符直接拒绝——
+    // 防止 releaseId 串项目，或对旧 revision 的 release 误启动试玩。
+    if let Some(expected) = expected_project {
+        if project_id != expected { return Err("creator_release_project_mismatch"); }
+    }
+    if let Some(expected) = expected_revision {
+        if revision != expected { return Err("creator_release_revision_mismatch"); }
+    }
     if raw.len() > MAX_RELEASE_BYTES { return Err("creator_release_invalid"); }
     let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
     if snapshot.get("projectId").and_then(Value::as_str) != Some(&project_id)
@@ -1368,7 +1394,7 @@ fn start_playtest(home: &Path, studio_instance: &str, release_id: &str) -> Resul
     tx.execute("DELETE FROM creator_playtest_runs WHERE active_slot IS NULL AND run_id NOT IN (SELECT run_id FROM creator_playtest_runs ORDER BY created_at_ms DESC LIMIT ?1)", [MAX_PLAYTEST_HISTORY])
         .map_err(|_| "creator_store_unavailable")?;
     tx.commit().map_err(|_| "creator_store_unavailable")?;
-    Ok(json!({"runId":run_id,"releaseId":release_id,"status":"pending"}))
+    Ok(json!({"runId":run_id,"releaseId":release_id,"projectId":project_id,"revision":revision,"status":"pending"}))
 }
 
 fn claim_playtest(home: &Path, city_instance: &str) -> Result<Value, &'static str> {
@@ -1541,6 +1567,46 @@ fn list_playtest_history(home: &Path, project_id: &str, limit: u64) -> Result<Va
             "finishedAtMs":finished_at_ms,"evidenceSource":if evidence.is_null() { Value::Null } else { json!("city-client-reported") },"evidence":evidence,"failureCode":failure_code}));
     }
     Ok(json!({"projectId":project_id,"runs":runs}))
+}
+
+/// MCP 试玩闭环（设计 §6.3）：按 runId 读取单次结果的有界摘要。
+fn read_playtest_result(home: &Path, run_id: &str) -> Result<Value, &'static str> {
+    if !valid_id(run_id) { return Err("creator_request_invalid"); }
+    let db = database(home)?;
+    let row: Option<(String,String,String,u64,String,u64,Option<u64>,Option<String>,Option<String>)> = db.query_row(
+        "SELECT run_id,release_id,project_id,revision,status,created_at_ms,finished_at_ms,evidence_json,failure_code FROM creator_playtest_runs WHERE run_id=?1", [run_id],
+        |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?)))
+        .optional().map_err(|_| "creator_store_unavailable")?;
+    let Some((run_id,release_id,project_id,revision,status,created_at_ms,finished_at_ms,evidence_json,failure_code)) = row else {
+        return Err("creator_playtest_not_found");
+    };
+    let evidence = evidence_json.map(|raw| serde_json::from_str::<Value>(&raw).map_err(|_| "creator_store_unavailable")).transpose()?.unwrap_or(Value::Null);
+    Ok(json!({"runId":run_id,"releaseId":release_id,"projectId":project_id,"revision":revision,"status":status,
+        "createdAtMs":created_at_ms,"finishedAtMs":finished_at_ms,
+        "evidenceSource":if evidence.is_null() { Value::Null } else { json!("city-client-reported") },"evidence":evidence,"failureCode":failure_code}))
+}
+
+/// 取消一次试玩：pending/claimed 都可以取消并释放活动槽位（claimed 时 City 的
+/// 下一次 finish 会得到干净的终态拒绝）；已终态的 run 幂等返回原状态，不重复取消。
+fn cancel_playtest(home: &Path, studio_instance: &str, run_id: &str) -> Result<Value, &'static str> {
+    if !valid_id(studio_instance) || !valid_id(run_id) { return Err("creator_request_invalid"); }
+    let mut db = database(home)?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
+    let now = now_ms();
+    expire_playtests(&tx, now)?;
+    let row: Option<(String,String,u64,String)> = tx.query_row(
+        "SELECT status,studio_instance_id,revision,project_id FROM creator_playtest_runs WHERE run_id=?1", [run_id],
+        |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)))
+        .optional().map_err(|_| "creator_store_unavailable")?;
+    let Some((status,owner,revision,project_id)) = row else { return Err("creator_playtest_not_found"); };
+    if owner != studio_instance { return Err("creator_playtest_instance_mismatch"); }
+    if matches!(status.as_str(), "completed" | "cancelled" | "failed" | "expired") {
+        return Ok(json!({"runId":run_id,"projectId":project_id,"revision":revision,"status":status,"cancelled":false}));
+    }
+    tx.execute("UPDATE creator_playtest_runs SET status='cancelled',active_slot=NULL,finished_at_ms=?1 WHERE run_id=?2", params![now,run_id])
+        .map_err(|_| "creator_store_unavailable")?;
+    tx.commit().map_err(|_| "creator_store_unavailable")?;
+    Ok(json!({"runId":run_id,"projectId":project_id,"revision":revision,"status":"cancelled","cancelled":true}))
 }
 
 pub fn preview_replace_game(home: &Path, actor: &str, project_id: &str, base_revision: u64, game: &Value) -> Result<Value, &'static str> {
@@ -1872,6 +1938,39 @@ mod tests {
         assert_eq!(read_city_release(&home, &first_id, "city-layout-v1-test", "world-rev-test").unwrap(), first_read);
         assert_eq!(publish_project_release(&home, &project_id, revision).unwrap_err(), "revision_conflict");
         assert_eq!(saved["revision"], revision);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    // MCP 试玩闭环（设计 §6.3）：归属校验拒绝 → pending 取消 → result 终态 →
+    // 重复取消幂等；claimed 取消同样收敛；未知 runId 明确 not_found。
+    #[test]
+    fn playtest_start_result_cancel_reach_unique_terminal_states() {
+        let home = home();
+        let (project_id, revision) = publishable_project(&home);
+        let published = publish_project_release(&home, &project_id, revision).unwrap();
+        let release_id = published["releaseId"].as_str().unwrap().to_owned();
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.playtest.start",
+            &json!({"releaseId":release_id,"projectId":"other-project","expectedRevision":revision})).unwrap_err(), "creator_release_project_mismatch");
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.playtest.start",
+            &json!({"releaseId":release_id,"expectedRevision":revision + 1})).unwrap_err(), "creator_release_revision_mismatch");
+        let start = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.playtest.start",
+            &json!({"releaseId":release_id,"projectId":project_id,"expectedRevision":revision,"requestId":"mcp-req-1"})).unwrap();
+        assert_eq!(start["projectId"], project_id);
+        assert_eq!(start["revision"], revision);
+        assert_eq!(start["requestId"], "mcp-req-1");
+        let run_id = start["runId"].as_str().unwrap().to_owned();
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.playtest.result", &json!({"runId":run_id})).unwrap()["status"], "pending");
+        assert_eq!(dispatch_city_runtime(&home, "city-instance", "city.creator.playtest.claim", &json!({})).unwrap()["runId"], run_id);
+        let cancelled = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.playtest.cancel", &json!({"runId":run_id})).unwrap();
+        assert_eq!(cancelled["status"], "cancelled");
+        assert_eq!(cancelled["cancelled"], true);
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.playtest.result", &json!({"runId":run_id})).unwrap()["status"], "cancelled");
+        let again = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.playtest.cancel", &json!({"runId":run_id})).unwrap();
+        assert_eq!(again, json!({"runId":run_id,"projectId":project_id,"revision":revision,"status":"cancelled","cancelled":false}));
+        let second = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.playtest.start", &json!({"releaseId":release_id})).unwrap();
+        assert_ne!(second["runId"], run_id);
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.playtest.result", &json!({"runId":"playtest-missing"})).unwrap_err(), "creator_playtest_not_found");
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.playtest.cancel", &json!({"runId":"playtest-missing"})).unwrap_err(), "creator_playtest_not_found");
         let _ = std::fs::remove_dir_all(home);
     }
 

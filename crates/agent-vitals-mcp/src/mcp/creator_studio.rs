@@ -26,6 +26,9 @@ pub fn specs() -> Vec<ToolSpec> {
         spec("creator_project_read", "Read a bounded UTF-8 byte chunk of a local Creator Studio project document. Reassemble chunks by nextOffset until complete=true; verify the shared documentDigest.", json!({"projectId":project_id_prop(),"offset":{"type":"integer","minimum":0},"maxBytes":{"type":"integer","minimum":1,"maximum":32768}}), &["projectId"]),
         spec("creator_operation_status", "Look up the durable result for a project operation after a timeout; not_found means no committed result is visible.", json!({"projectId":project_id_prop(),"operationId":operation_id_prop()}), &["projectId","operationId"]),
         spec("creator_playtest_history", "Read bounded local visual-playtest summaries for one project. Evidence is client-reported gameplay state, not anti-cheat or leaderboard proof; no input traces, raw logs or analytics are returned.", json!({"projectId":project_id_prop(),"limit":{"type":"integer","minimum":1,"maximum":32}}), &["projectId","limit"]),
+        spec("creator_playtest_start", "Ask the active Studio to start one visual playtest of a published, immutable City release. The player drives the playtest in the City plugin; results are read by creator_playtest_result. Provide projectId/expectedRevision to fail fast when the release belongs to another project or revision. Requires `data-mcp serve --allow-local-writes` and the official Creator Studio plugin to be open.", json!({"releaseId":{"type":"string","minLength":1,"maxLength":128},"projectId":project_id_prop(),"expectedRevision":revision_prop(),"requestId":{"type":"string","minLength":1,"maxLength":128,"description":"调用方关联标识；原样回传，便于对齐消息与结果。"}}), &["releaseId"]),
+        spec("creator_playtest_result", "Read one playtest run by runId: status (pending/claimed/completed/cancelled/failed/expired), finish time, failure code and bounded client-reported evidence summary.", json!({"runId":{"type":"string","minLength":1,"maxLength":128}}), &["runId"]),
+        spec("creator_playtest_cancel", "Cancel one pending or claimed playtest run and release its activity lease. Requires `data-mcp serve --allow-local-writes`. Cancelling an already-finished run returns its terminal state unchanged (cancelled=false); unknown runIds return not_found.", json!({"runId":{"type":"string","minLength":1,"maxLength":128}}), &["runId"]),
         spec("creator_project_create", "Create a local City mini-game project. Pin a listed worldRevision to bind it to trusted City road anchors. Requires `data-mcp serve --allow-local-writes` and the official Creator Studio plugin to be open.", json!({"template":{"type":"string","enum":["checkpoint-race","collect-one"]},"operationId":operation_id_prop(),"worldRevision":{"type":"string","minLength":1,"maxLength":256}}), &["template","operationId","worldRevision"]),
         spec("creator_game_preview", "Validate a declarative mini-game JSON draft without committing it. Returns a short-lived previewId bound to the active Studio instance and base revision.", json!({"projectId":project_id_prop(),"baseRevision":revision_prop(),"game":{"type":"object"}}), &["projectId","baseRevision","game"]),
         spec("creator_scene_preview", "Preview up to 128 operations: scene.object.upsert/remove, anchor.upsert/remove, mount.bind {mount}, mount.remove {mountId}, and skin.select {skinId}. Rust checks schema, IDs, references, slot cardinality, transforms, budgets, and drive/walk reachability in the pinned City's trusted traversal graph. Requires the official Creator Studio plugin to be open.", json!({"projectId":project_id_prop(),"baseRevision":revision_prop(),"operations":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"object"}}}), &["projectId","baseRevision","operations"]),
@@ -40,6 +43,13 @@ fn call_error(code: &str) -> ToolError {
         "plugin_call_capacity" => ToolError::new("busy", "Creator Studio local request capacity was reached."),
         "plugin_call_too_large" => ToolError::new("invalid_argument", "Creator request exceeded the local IPC payload limit."),
         "creator_project_not_found" => ToolError::new("not_found", "Creator project was not found."),
+        "creator_playtest_not_found" => ToolError::new("not_found", "Playtest run was not found; list history to find valid runIds."),
+        "creator_playtest_active" => ToolError::new("busy", "Another playtest run is active; cancel it via creator_playtest_cancel or wait for it to finish."),
+        "creator_playtest_instance_mismatch" => ToolError::new("permission_denied", "The playtest run belongs to a different Studio session."),
+        "creator_playtest_expired" => ToolError::new("preview_expired", "The playtest run expired before completion; start a new one."),
+        "creator_playtest_terminal" | "creator_playtest_not_claimed" | "creator_playtest_evidence_required" => ToolError::new("invalid_argument", "Playtest run reached a terminal or invalid state for this transition."),
+        "creator_release_project_mismatch" | "creator_release_revision_mismatch" => ToolError::new("invalid_argument", "The releaseId does not match the declared project or revision."),
+        "creator_release_not_found" => ToolError::new("not_found", "The City release was not found; publish the project revision again."),
         "creator_layout_not_found" => ToolError::new("not_found", "The selected City layout snapshot is no longer available. List layouts again and retry."),
         "revision_conflict" => ToolError::new("revision_conflict", "Project revision changed; read the current draft and preview again."),
         "preview_expired" => ToolError::new("preview_expired", "Preview expired or was already consumed; create a new preview."),
@@ -86,6 +96,29 @@ pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool)
         "creator_playtest_history" => {
             let limit = args.get("limit").and_then(Value::as_u64).filter(|limit| (1..=32).contains(limit)).ok_or_else(|| ToolError::new("invalid_argument", "`limit` must be in 1..=32"))?;
             call(data_home, "creator.project.playtest.history", &json!({"projectId":required_string(args,"projectId")?,"limit":limit}), 15_000)
+        }
+        "creator_playtest_start" => {
+            if !allow_local_writes { return Err(ToolError::new("permission_denied", "Starting a playtest requires `data-mcp serve --allow-local-writes`.")); }
+            let release_id = required_string(args,"releaseId")?;
+            if !release_id.chars().next().is_some_and(|c| c.is_ascii_alphanumeric()) || !release_id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-')) {
+                return Err(ToolError::new("invalid_argument", "`releaseId` must be a stable object id"));
+            }
+            let mut payload = json!({"releaseId":release_id});
+            if let Some(project_id) = args.get("projectId").and_then(Value::as_str).filter(|value| !value.is_empty()) {
+                payload["projectId"] = json!(project_id);
+            }
+            if let Some(revision) = args.get("expectedRevision").and_then(Value::as_u64) {
+                payload["expectedRevision"] = json!(revision);
+            }
+            if let Some(request_id) = args.get("requestId").and_then(Value::as_str).filter(|value| !value.is_empty()) {
+                payload["requestId"] = json!(request_id);
+            }
+            call(data_home, "creator.project.playtest.start", &payload, 15_000)
+        }
+        "creator_playtest_result" => call(data_home, "creator.project.playtest.result", &json!({"runId":required_string(args,"runId")?}), 15_000),
+        "creator_playtest_cancel" => {
+            if !allow_local_writes { return Err(ToolError::new("permission_denied", "Cancelling a playtest requires `data-mcp serve --allow-local-writes`.")); }
+            call(data_home, "creator.project.playtest.cancel", &json!({"runId":required_string(args,"runId")?}), 15_000)
         }
         "creator_project_create" => {
             if !allow_local_writes { return Err(ToolError::new("permission_denied", "Creator project creation requires `data-mcp serve --allow-local-writes`.")); }
