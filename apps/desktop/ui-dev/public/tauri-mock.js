@@ -1402,22 +1402,72 @@
           generatedAtMs: Date.now(),
         };
       };
-      const capabilities = () => ({
-        schemaVersion: 1,
-        categories: {
-          game: { preview: "creator.game.preview", commit: "creator.project.commit", maxGameBytes: 262144 },
-          scene: { preview: "creator.scene.preview", commit: "creator.scene.commit",
-            objectKinds: ["model", "anchor", "collider"], maxObjects: 10000,
-            maxColliders: 256, maxOperationsPerPreview: 128 },
-          mount: { bind: "mount.bind", remove: "mount.remove", maxReleaseMounts: 32 },
-          skin: { select: "skin.select", skins: ["miami-vice", "desert-evening"] },
-          cityPatch: { upsert: "city.patch.upsert", remove: "city.patch.remove", maxBytes: 262144 },
-          assets: { import: "creator.asset.import（桌面原生选择器，MCP 不接收路径）", maxImportedModelBytes: 67108864, maxAssets: 4096 },
-          playtest: { start: "creator.project.playtest.start", result: "creator.project.playtest.result", cancel: "creator.project.playtest.cancel", ttlMs: 1800000 },
-          project: { create: "creator.project.create", publish: "creator.project.publish", maxDocumentBytes: 2097152, maxReleaseBytes: 524288 },
-        },
-        preview: { ttlMs: 600000, maxActive: 128, singleUse: true, instanceBound: true },
-      });
+      const capabilities = (category) => {
+        const all = {
+          schemaVersion: 1,
+          categories: {
+            game: { preview: "creator.game.preview", commit: "creator.project.commit", maxGameBytes: 262144 },
+            scene: { preview: "creator.scene.preview", commit: "creator.scene.commit",
+              objectKinds: ["model", "anchor", "collider"], maxObjects: 10000,
+              maxColliders: 256, maxOperationsPerPreview: 128 },
+            mount: { bind: "mount.bind", remove: "mount.remove", maxReleaseMounts: 32 },
+            skin: { select: "skin.select", skins: ["miami-vice", "desert-evening"] },
+            cityPatch: { upsert: "city.patch.upsert", remove: "city.patch.remove", maxBytes: 262144 },
+            assets: { import: "creator.asset.import（桌面原生选择器，MCP 不接收路径）", maxImportedModelBytes: 67108864, maxAssets: 4096 },
+            playtest: { start: "creator.project.playtest.start", result: "creator.project.playtest.result", cancel: "creator.project.playtest.cancel", ttlMs: 1800000 },
+            project: { create: "creator.project.create", publish: "creator.project.publish", maxDocumentBytes: 2097152, maxReleaseBytes: 524288 },
+          },
+          preview: { ttlMs: 600000, maxActive: 128, singleUse: true, instanceBound: true },
+        };
+        // category 过滤与 Rust 侧语义一致：未知类别显式拒绝，已知类别只返回该类别
+        if (!category) return all;
+        const entry = all.categories[category];
+        if (!entry) throw new Error("creator_capability_unknown");
+        return { schemaVersion: 1, category, capabilities: entry, preview: all.preview, supportedCategories: Object.keys(all.categories) };
+      };
+      // MCP P1（镜像 creator_projects.rs 的 inspect_scene_object/validate_scene）：
+      // 白名单字段、静态检查逐项报告、运行时检查如实标注未运行。
+      const inspectObject = (document, objectId) => {
+        const object = (document.scene?.objects ?? []).find(candidate => candidate.id === objectId);
+        if (object) {
+          const entry = { id: object.id, kind: object.kind, transform: object.transform ?? null,
+            editableVia: ["scene.object.upsert", "scene.object.remove"], requiresPreview: true };
+          if (object.kind === "model") { entry.assetRef = object.asset ?? null; entry.constraints = { assetMustReferenceBoundLayout: true }; }
+          return { projectId: document.projectId, revision: document.revision, object: entry, source: "scene" };
+        }
+        const mount = (document.mounts ?? []).find(candidate => candidate.mountId === objectId);
+        if (mount) {
+          return { projectId: document.projectId, revision: document.revision, object: {
+            id: mount.mountId, kind: "mount", entryAnchorId: mount.entryAnchorId, bindings: mount.bindings,
+            layout: mount.layout, game: mount.game, editableVia: ["mount.bind", "mount.remove"], requiresPreview: true }, source: "mount" };
+        }
+        const anchor = (document.cityLayout?.layout?.anchors ?? []).find(candidate => candidate.id === objectId);
+        if (anchor) {
+          return { projectId: document.projectId, revision: document.revision, object: {
+            id: anchor.id, kind: anchor.kind, capabilities: anchor.capabilities, geometryRef: anchor.geometryRef,
+            editable: false, constraint: "只读锚点：来自 City 布局快照，仅可作为挂载绑定或检查点引用" }, source: "cityLayout" };
+        }
+        throw new Error("creator_object_not_found");
+      };
+      const validateScene = (document) => {
+        const items = [];
+        const push = (code, severity, source, objectId, message) =>
+          items.push({ code, severity, source, objectId: objectId ?? null, message });
+        const seen = new Set();
+        let colliders = 0;
+        for (const object of document.scene?.objects ?? []) {
+          if (seen.has(object.id)) { push("creator_scene_duplicate_id", "error", "static-schema", object.id, "对象 ID 重复"); continue; }
+          seen.add(object.id);
+          if (object.kind === "collider") colliders += 1;
+        }
+        if (colliders > 256) push("creator_scene_collider_budget_exceeded", "error", "static-schema", null, "碰撞代理数量超出预算");
+        const unchecked = [
+          { check: "drive_reachability", reason: "requires_city_runtime" },
+          { check: "collision_overlap", reason: "requires_city_runtime" },
+          { check: "visual_review", reason: "requires_human_or_renderer" }];
+        return { projectId: document.projectId, revision: document.revision, ok: items.every(item => item.severity !== "error"),
+          items, unchecked };
+      };
       // path + action 与 Rust apply_scene_operations 的返回对齐（action ∈ added/updated/removed）。
       const sceneChanges = (document, operations) => operations.map((operation) => {
         const op = String(operation?.op || "");
@@ -1493,7 +1543,9 @@
             previews.set(previewId, { projectId: document.projectId, baseRevision: document.revision, kind: "scene", operations });
             const changes = sceneChanges(document, operations);
             const changedObjects = changes.map(({ path, action }) => ({
-              id: path.split(".").pop(),
+              // 稳定 id 可能含点（scene.objects.villa.01）：只剥 scene.objects. 前缀，
+              // 其余路径整段保留——与 Rust 侧 strip_prefix 语义一致。
+              id: path.startsWith("scene.objects.") ? path.slice("scene.objects.".length) : path,
               path,
               kind: path === "cityPatch" ? "cityPatch" : path.startsWith("mounts") ? "mount" : path === "skinId" ? "skin" : "sceneObject",
               action,
@@ -1506,7 +1558,14 @@
           case "creator.scene.describe":
             return describeScene(project(payload), payload);
           case "creator.capabilities.list":
+            // category/schemaVersion 过滤与 Rust 侧语义一致：未知类别显式拒绝
+            if (payload.category) return capabilities(payload.category);
+            if (payload.schemaVersion && payload.schemaVersion !== 1) throw new Error("creator_capability_version_unsupported");
             return capabilities();
+          case "creator.scene.inspect":
+            return inspectObject(project(payload), payload);
+          case "creator.scene.validate":
+            return validateScene(project(payload));
           case "creator.game.commit":
           case "creator.scene.commit":
           case "creator.project.commit": {

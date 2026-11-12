@@ -164,6 +164,9 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
     const result = session.moveBuilding(selection.id, parcelId);
     if (result.ok) {
       setSelection(null); setMoveError(null);
+      // 本地补丁 state 同步回写：否则 Agent 推进 projectPatch 后 memo 按较新者
+      // 取补丁时，会把刚做的本地移动覆盖回退（存档还在，但视口回到旧位置）。
+      setLocalPatch(result.patch);
       // 写通到项目草稿（preview→commit，与 Agent/MCP 共用）；本地存档写入已由会话完成。
       onPatchCommitRef.current?.(result.patch);
     }

@@ -223,14 +223,18 @@ function App() {
     (handlers as Record<string, (payload: Record<string, unknown>) => Promise<unknown>>)["creator.scene.capture"] = async (payload: Record<string, unknown>) => {
       const engine = studioEngineRef.current;
       if (!engine) throw new Error("creator_capture_unavailable");
-      if (typeof payload.revision === "number" && projectRef.current && payload.revision !== projectRef.current.revision) throw new Error("revision_conflict");
+      // 契约要求捕获绑定捕获时的 revision：没有打开的项目就没有可绑定的 revision
+      if (!projectRef.current) throw new Error("creator_capture_requires_project");
+      if (typeof payload.revision === "number" && payload.revision !== projectRef.current.revision) throw new Error("revision_conflict");
+      // 帧必须装进插件调用 64 KiB 邮箱（含信封开销）：引擎内部质量/分辨率逐档降级，
+      // 全部档位用尽才报预算超限——与 creator_capture_unavailable（视口不可用）区分。
       const frame = engine.captureFrame();
-      if (!frame) throw new Error("creator_capture_unavailable");
+      if (!frame) throw new Error("creator_capture_budget_exceeded");
       const camera = engine.inspectScene().camera as { position?: number[]; target?: number[] } | null;
-      const result = { format: "image/jpeg", dataUrl: frame.dataUrl, width: frame.width, height: frame.height,
-        bytes: Math.ceil(frame.dataUrl.length * 0.75), revision: projectRef.current?.revision ?? null,
+      const result = { format: "image/jpeg", dataUrl: frame.dataUrl, width: frame.width, height: frame.height, downscaled: frame.downscaled,
+        bytes: Math.ceil(frame.dataUrl.length * 0.75), revision: projectRef.current.revision,
         camera: camera ? { position: camera.position, target: camera.target } : null, capturedAtMs: Date.now() };
-      noteAgent("creator.scene.capture", payload, true, { revision: projectRef.current?.revision });
+      noteAgent("creator.scene.capture", payload, true, { revision: projectRef.current.revision });
       return result;
     };
     const disconnectHostCalls = connectHostCalls(handlers);
