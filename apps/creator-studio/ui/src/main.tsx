@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { connectHostCalls, invokeHost, observeHealth, publishToolbar } from "@agent-vitals/app-sdk/ui-host";
 import { canonicalJson, validateCityLayoutSnapshot, validateMiniGamePack, validateMount, type CityGameMountV1, type CityLayoutSnapshotV1 } from "@agent-vitals/city-sdk";
+import { buildGameValidation, buildSceneValidation } from "./sdkValidation";
 // 视口与 City 插件共享同一份引擎与装配管线，保证 Studio 看到的是同一座城市。
 import { CityViewport } from "../../../agent-city/ui/src/viewport/CityViewport";
 import { readCityAppearancePreference } from "../../../agent-city/ui/src/engine/cityWorldProfile";
@@ -127,7 +128,8 @@ function App() {
         const operationId = `patch:${patch.updatedAt}:${Object.keys(patch.buildingMoves).length}:${patch.roadOps.length}:${attempt}`;
         try {
           const preview = await creatorRequest<{ previewId: string }>("creator.scene.preview",
-            { projectId: current.projectId, baseRevision: current.revision, operations: [{ op: "city.patch.upsert", patch }] });
+            { projectId: current.projectId, baseRevision: current.revision, operations: [{ op: "city.patch.upsert", patch }],
+              validation: buildSceneValidation(current, [{ op: "city.patch.upsert", patch }]) });
           await creatorRequest("creator.scene.commit", { projectId: current.projectId, previewId: preview.previewId, expectedRevision: current.revision, operationId });
           const updated = await creatorRequest<Project>("creator.project.read", { projectId: current.projectId });
           applyRef.current(updated, "preserve", current);
@@ -206,10 +208,17 @@ function App() {
       const revision = (result as { revision?: number } | null)?.revision;
       setAgentActivity(list => [{ method, label, summary, ok, revision, at: Date.now() }, ...list].slice(0, 6));
     };
+    // P2 语义搬运（设计 §5.2）：Agent 来源的 preview 在转发前经 Studio 的 city-sdk
+    // 校验并附加 validation 信封；Rust 签发时原子绑定结论，commit 闸门据此放行。
+    const attachValidation = (method: string, payload: Record<string, unknown>): Record<string, unknown> => {
+      if (method === "creator.game.preview") return { ...payload, validation: buildGameValidation(payload.game) };
+      if (method === "creator.scene.preview") return { ...payload, validation: buildSceneValidation(projectRef.current, payload.operations) };
+      return payload;
+    };
     const handlers = Object.fromEntries(methods.map(method => [method, async (payload: Record<string, unknown>) => {
       let result: unknown;
       try {
-        result = await creatorRequest(method, payload);
+        result = await creatorRequest(method, attachValidation(method, payload));
       } catch (error) {
         noteAgent(method, payload, false, null);
         throw error;
@@ -307,8 +316,11 @@ function App() {
     setBusy(true); setMessage("");
     try {
       const game: unknown = JSON.parse(text);
-      const result = await creatorRequest<{ previewId: string; diff: unknown }>("creator.game.preview", { projectId: project.projectId, baseRevision: project.revision, game });
-      setPreviewId(result.previewId); setPreviewKind("game"); setMessage("规则预览通过。确认提交后生成新 revision。");
+      const validation = buildGameValidation(game);
+      const result = await creatorRequest<{ previewId: string; diff: unknown }>("creator.game.preview", { projectId: project.projectId, baseRevision: project.revision, game, validation });
+      setPreviewId(result.previewId); setPreviewKind("game");
+      setMessage(validation.ok ? "规则预览通过。确认提交后生成新 revision。"
+        : "SDK 语义校验发现问题：预览仍已生成，但提交会被拒绝。");
     } catch (error) { setMessage(error instanceof Error ? error.message : "creator_preview_failed"); }
     finally { setBusy(false); }
   };
@@ -329,8 +341,11 @@ function App() {
         if (!previous || JSON.stringify(previous) !== JSON.stringify(object)) operations.push({ op: object.kind === "anchor" ? "anchor.upsert" : "scene.object.upsert", object });
       }
       if (operations.length === 0) throw new Error("scene_no_changes");
-      const result = await creatorRequest<{ previewId: string }>("creator.scene.preview", { projectId: project.projectId, baseRevision: project.revision, operations });
-      setPreviewId(result.previewId); setPreviewKind("scene"); setMessage(`场景预览通过（${operations.length} 项变更）。确认提交后生成新 revision。`);
+      const validation = buildSceneValidation(project, operations);
+      const result = await creatorRequest<{ previewId: string }>("creator.scene.preview", { projectId: project.projectId, baseRevision: project.revision, operations, validation });
+      setPreviewId(result.previewId); setPreviewKind("scene");
+      setMessage(validation.ok ? `场景预览通过（${operations.length} 项变更）。确认提交后生成新 revision。`
+        : `SDK 语义校验发现问题（${operations.length} 项变更）：预览仍已生成，但提交会被拒绝。`);
     } catch (error) { setMessage(error instanceof Error ? error.message : "creator_scene_preview_failed"); }
     finally { setBusy(false); }
   };
@@ -375,6 +390,7 @@ function App() {
       if (!mountResult.ok) throw new Error(mountResult.diagnostics[0]?.code ?? "creator_mount_invalid");
       const result = await creatorRequest<{ previewId: string }>("creator.scene.preview", {
         projectId: project.projectId, baseRevision: project.revision, operations: [{ op: "mount.bind", mount }],
+        validation: buildSceneValidation(project, [{ op: "mount.bind", mount }]),
       });
       setPreviewId(result.previewId); setPreviewKind("mount");
       setMessage("挂载校验通过。提交后保存到项目；发布后可在绑定的 City 中试玩。");
@@ -387,6 +403,7 @@ function App() {
     try {
       const result = await creatorRequest<{ previewId: string }>("creator.scene.preview", {
         projectId: project.projectId, baseRevision: project.revision, operations: [{ op: "skin.select", skinId }],
+        validation: buildSceneValidation(project, [{ op: "skin.select", skinId }]),
       });
       setPreviewId(result.previewId); setPreviewKind("skin");
       setMessage("皮肤选择可提交。当前只保存官方皮肤 ID，不会改变已打开 City 的外观。");

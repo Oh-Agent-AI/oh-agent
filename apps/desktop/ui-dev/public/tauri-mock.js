@@ -1527,9 +1527,10 @@
             const beforeDigest = digestOf(document.game);
             const afterDigest = digestOf(payload.game);
             return { previewId, projectId: document.projectId, baseRevision: document.revision, expiresInMs: 600000,
+              validation: payload.validation ? "sdk" : "legacy",
               diff: { path: "game", beforeDigest, afterDigest },
               changedObjects: [{ id: payload.game?.id || "game", kind: "game", action: "updated", fields: ["game"], beforeDigest, afterDigest }],
-              diagnostics: [] };
+              diagnostics: payload.validation?.diagnostics ?? [] };
           }
           case "creator.scene.preview": {
             const document = project(payload);
@@ -1540,7 +1541,8 @@
             // 在副本上套用一次，既得到 afterDigest，也让非法操作/引用在预览期就被拒绝。
             const next = clone(document);
             applyOperations(next, operations);
-            previews.set(previewId, { projectId: document.projectId, baseRevision: document.revision, kind: "scene", operations });
+            previews.set(previewId, { projectId: document.projectId, baseRevision: document.revision, kind: "scene", operations,
+              semanticOk: payload.validation ? payload.validation.ok === true : null });
             const changes = sceneChanges(document, operations);
             const changedObjects = changes.map(({ path, action }) => ({
               // 稳定 id 可能含点（scene.objects.villa.01）：只剥 scene.objects. 前缀，
@@ -1550,10 +1552,13 @@
               kind: path === "cityPatch" ? "cityPatch" : path.startsWith("mounts") ? "mount" : path === "skinId" ? "skin" : "sceneObject",
               action,
             }));
+            const sdkObjects = payload.validation?.diff?.changedObjects;
             return { previewId, projectId: document.projectId, baseRevision: document.revision, expiresInMs: 600000,
-              diff: { paths: changes.map(({ path }) => path), beforeDigest: digestOf(document), afterDigest: digestOf(next) },
-              changedObjects,
-              diagnostics: [] };
+              validation: payload.validation ? "sdk" : "legacy",
+              diff: { paths: changes.map(({ path }) => path), beforeDigest: digestOf(document), afterDigest: digestOf(next),
+                changedObjectsSource: Array.isArray(sdkObjects) && sdkObjects.length ? "sdk" : "host" },
+              changedObjects: Array.isArray(sdkObjects) && sdkObjects.length ? sdkObjects : changedObjects,
+              diagnostics: payload.validation?.diagnostics ?? [] };
           }
           case "creator.scene.describe":
             return describeScene(project(payload), payload);
@@ -1582,6 +1587,8 @@
             if (preview.projectId !== document.projectId) throw new Error("permission_denied");
             checkRevision(document, payload);
             if (preview.baseRevision !== document.revision) throw new Error("revision_conflict");
+            // 与 Rust commit 闸门一致：SDK 判负的 preview 签发但不落盘。
+            if (preview.semanticOk === false) throw new Error("creator_preview_invalid");
             if (preview.kind === "game") document.game = preview.game;
             else applyOperations(document, preview.operations || []);
             document.revision += 1;
