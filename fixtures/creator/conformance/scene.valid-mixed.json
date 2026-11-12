@@ -1,0 +1,98 @@
+{
+  "ruleFamily": "scene",
+  "case": "scene.valid-mixed",
+  "expectTs": "ok",
+  "rustNote": "Rust validate_scene_object 对三类对象逐个静态阅读同样接受（model/collider/anchor 字段白名单、transform 边界 ±100000/±6283/0.001..100 一致）；Rust 无单次草稿级集合校验，对象数/collider 数预算在 apply_scene_operations 层强制。待 Rust 运行时验证。",
+  "input": {
+    "schemaVersion": 1,
+    "objects": [
+      {
+        "id": "villa-shell",
+        "kind": "model",
+        "asset": {
+          "package": {
+            "kind": "city-minigame",
+            "id": "loop-sprint",
+            "version": "1.0.0",
+            "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          },
+          "assetId": "villa-shell-mesh",
+          "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "villa-entry",
+        "kind": "anchor",
+        "anchor": {
+          "id": "villa-entry",
+          "kind": "spawn",
+          "capabilities": [
+            "walk"
+          ],
+          "geometryRef": "geom-villa-entry"
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "villa-wall",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 6,
+          "y": 3,
+          "z": 0.4
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,174 @@
+{
+  "ruleFamily": "mount",
+  "case": "mount.invalid-entry-capability",
+  "expectTs": "error:entry_capability_missing",
+  "rustNote": "Rust 同样拒绝：入口锚点缺 slot requires 能力 → creator_mount_entry_capability_missing；两侧约束一致。待 Rust 运行时验证。",
+  "input": {
+    "layout": {
+      "schemaVersion": 1,
+      "id": "island-layout",
+      "coordinateSystem": "city-local-m-v1",
+      "anchors": [
+        {
+          "id": "spawn-e",
+          "kind": "spawn",
+          "capabilities": [
+            "walk"
+          ],
+          "geometryRef": "geom-spawn-e"
+        },
+        {
+          "id": "zone-b",
+          "kind": "zone",
+          "capabilities": [
+            "drive",
+            "walk"
+          ],
+          "geometryRef": "geom-zone-b"
+        },
+        {
+          "id": "route-c",
+          "kind": "route",
+          "capabilities": [
+            "drive"
+          ],
+          "geometryRef": "geom-route-c"
+        }
+      ],
+      "links": [
+        {
+          "id": "link-1",
+          "fromAnchorId": "spawn-e",
+          "toAnchorId": "zone-b",
+          "capabilities": [
+            "walk"
+          ]
+        }
+      ]
+    },
+    "game": {
+      "schemaVersion": 1,
+      "id": "loop-sprint",
+      "rulesVersion": 1,
+      "slots": {
+        "gates": {
+          "kind": "zone",
+          "min": 1,
+          "max": 2,
+          "requires": [
+            "drive"
+          ]
+        },
+        "waypoints": {
+          "kind": "route",
+          "min": 1,
+          "max": 4
+        }
+      },
+      "integerParameters": {
+        "laps": {
+          "min": 1,
+          "max": 3,
+          "default": 2
+        }
+      },
+      "rules": {
+        "counters": {
+          "done": {
+            "initial": 0,
+            "max": 99
+          }
+        },
+        "nodes": [
+          {
+            "id": "on-start",
+            "on": {
+              "type": "run.started"
+            },
+            "actions": [
+              {
+                "op": "timer.start",
+                "timerId": "countdown",
+                "durationTicks": {
+                  "parameter": "laps"
+                }
+              },
+              {
+                "op": "hud.hint",
+                "text": "Reach the gate then finish the loop."
+              }
+            ]
+          },
+          {
+            "id": "on-gate",
+            "on": {
+              "type": "zone.entered",
+              "slot": "gates"
+            },
+            "when": [
+              {
+                "op": "counter.eqEventIndex",
+                "counter": "done"
+              }
+            ],
+            "actions": [
+              {
+                "op": "counter.add",
+                "counter": "done",
+                "amount": 1
+              }
+            ]
+          },
+          {
+            "id": "on-lap",
+            "on": {
+              "type": "zone.entered",
+              "slot": "gates"
+            },
+            "when": [
+              {
+                "op": "counter.eq",
+                "counter": "done",
+                "value": 2
+              }
+            ],
+            "actions": [
+              {
+                "op": "run.finish",
+                "outcome": "success"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "mount": {
+      "schemaVersion": 1,
+      "mountId": "loop-mount-01",
+      "layout": {
+        "kind": "city-layout",
+        "id": "island-layout",
+        "version": "1.0.0",
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "game": {
+        "kind": "city-minigame",
+        "id": "loop-sprint",
+        "version": "1.0.0",
+        "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "entryAnchorId": "spawn-e",
+      "bindings": {
+        "gates": [
+          "zone-b"
+        ],
+        "waypoints": [
+          "route-c"
+        ]
+      },
+      "parameterOverrides": {
+        "laps": 2
+      }
+    }
+  }
+}

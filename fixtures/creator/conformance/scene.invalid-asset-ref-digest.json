@@ -1,0 +1,42 @@
+{
+  "ruleFamily": "scene",
+  "case": "scene.invalid-asset-ref-digest",
+  "expectTs": "error:scene_asset_ref_invalid",
+  "rustNote": "Rust 同样拒绝：asset.digest 必须 sha256:+64 位小写十六进制 → creator_scene_asset_invalid；两侧摘要格式一致。待 Rust 运行时验证。",
+  "input": {
+    "schemaVersion": 1,
+    "objects": [
+      {
+        "id": "tree-z",
+        "kind": "model",
+        "asset": {
+          "package": {
+            "kind": "city-minigame",
+            "id": "loop-sprint",
+            "version": "1.0.0",
+            "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          },
+          "assetId": "villa-shell-mesh",
+          "digest": "deadbeef"
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,116 @@
+{
+  "ruleFamily": "game",
+  "case": "game.invalid-slot-not-found",
+  "expectTs": "error:rule_slot_not_found",
+  "rustNote": "Rust 同样拒绝：event.slot 必须存在于 slots → creator_game_invalid；两侧拒绝结论一致，错误码粒度不同（TS 附带 rule_invalid_event 第二条诊断）。待 Rust 运行时验证。",
+  "input": {
+    "schemaVersion": 1,
+    "id": "relic-walk",
+    "rulesVersion": 1,
+    "slots": {
+      "relics": {
+        "kind": "object",
+        "min": 1,
+        "max": 6,
+        "requires": [
+          "walk"
+        ]
+      }
+    },
+    "integerParameters": {
+      "pace": {
+        "min": 1,
+        "max": 120,
+        "default": 60
+      }
+    },
+    "rules": {
+      "counters": {
+        "found": {
+          "initial": 0,
+          "max": 99
+        }
+      },
+      "nodes": [
+        {
+          "id": "on-start",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "timer.start",
+              "timerId": "round",
+              "durationTicks": 600
+            },
+            {
+              "op": "hud.hint",
+              "text": "Collect the relic before the round timer ends."
+            }
+          ]
+        },
+        {
+          "id": "on-relic",
+          "on": {
+            "type": "zone.entered",
+            "slot": "ghosts"
+          },
+          "when": [
+            {
+              "op": "counter.eq",
+              "counter": "found",
+              "value": 0
+            }
+          ],
+          "actions": [
+            {
+              "op": "counter.add",
+              "counter": "found",
+              "amount": 1
+            },
+            {
+              "op": "timer.start",
+              "timerId": "round",
+              "durationTicks": {
+                "parameter": "pace"
+              }
+            }
+          ]
+        },
+        {
+          "id": "on-timeout",
+          "on": {
+            "type": "timer.expired",
+            "timerId": "round"
+          },
+          "actions": [
+            {
+              "op": "run.finish",
+              "outcome": "failure"
+            }
+          ]
+        },
+        {
+          "id": "on-success",
+          "on": {
+            "type": "item.collected",
+            "slot": "relics"
+          },
+          "when": [
+            {
+              "op": "counter.eq",
+              "counter": "found",
+              "value": 1
+            }
+          ],
+          "actions": [
+            {
+              "op": "run.finish",
+              "outcome": "success"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

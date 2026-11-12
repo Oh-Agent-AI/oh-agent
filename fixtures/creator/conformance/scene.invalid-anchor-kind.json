@@ -1,0 +1,40 @@
+{
+  "ruleFamily": "scene",
+  "case": "scene.invalid-anchor-kind",
+  "expectTs": "error:layout_invalid_anchor_kind",
+  "rustNote": "Rust 同样拒绝：scene anchor 的 kind 白名单（spawn/route/zone/object）与 inner id==object.id 一致 → creator_scene_anchor_invalid；TS 复用 validateCityLayout 产生 layout_invalid_anchor_kind（诊断来源不同、拒绝结论一致）。待 Rust 运行时验证。",
+  "input": {
+    "schemaVersion": 1,
+    "objects": [
+      {
+        "id": "villa-gate",
+        "kind": "anchor",
+        "anchor": {
+          "id": "villa-gate",
+          "kind": "waypoint",
+          "capabilities": [
+            "walk"
+          ],
+          "geometryRef": "geom-villa-gate"
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      }
+    ]
+  }
+}

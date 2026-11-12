@@ -1,0 +1,32 @@
+{
+  "ruleFamily": "scene",
+  "case": "scene.invalid-unknown-kind",
+  "expectTs": "error:scene_object_invalid",
+  "rustNote": "Rust 同样拒绝：kind 不在 model/collider/anchor → creator_scene_object_invalid；两侧 kind 白名单一致。待 Rust 运行时验证。",
+  "input": {
+    "schemaVersion": 1,
+    "objects": [
+      {
+        "id": "villa-lamp",
+        "kind": "light",
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      }
+    ]
+  }
+}

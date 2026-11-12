@@ -1,0 +1,101 @@
+{
+  "ruleFamily": "mount",
+  "case": "mount.invalid-slot-not-found",
+  "expectTs": "error:slot_not_found",
+  "rustNote": "Rust 同样拒绝：绑定名不在 game.slots → creator_mount_slot_not_found；两侧约束一致。待 Rust 运行时验证。",
+  "input": {
+    "layout": {
+      "schemaVersion": 1,
+      "id": "gate-optional-layout",
+      "coordinateSystem": "city-local-m-v1",
+      "anchors": [
+        {
+          "id": "spawn-a",
+          "kind": "spawn",
+          "capabilities": [
+            "drive",
+            "walk"
+          ],
+          "geometryRef": "geom-spawn-a"
+        },
+        {
+          "id": "zone-b",
+          "kind": "zone",
+          "capabilities": [
+            "drive",
+            "walk"
+          ],
+          "geometryRef": "geom-zone-b"
+        }
+      ],
+      "links": [
+        {
+          "id": "link-1",
+          "fromAnchorId": "spawn-a",
+          "toAnchorId": "zone-b",
+          "capabilities": [
+            "drive",
+            "walk"
+          ]
+        }
+      ]
+    },
+    "game": {
+      "schemaVersion": 1,
+      "id": "gate-optional",
+      "rulesVersion": 1,
+      "slots": {
+        "gates": {
+          "kind": "zone",
+          "min": 0,
+          "max": 2
+        }
+      },
+      "rules": {
+        "counters": {
+          "done": {
+            "initial": 0,
+            "max": 9
+          }
+        },
+        "nodes": [
+          {
+            "id": "on-start",
+            "on": {
+              "type": "run.started"
+            },
+            "actions": [
+              {
+                "op": "hud.hint",
+                "text": "Optional gate warm-up."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "mount": {
+      "schemaVersion": 1,
+      "mountId": "loop-mount-01",
+      "layout": {
+        "kind": "city-layout",
+        "id": "gate-optional-layout",
+        "version": "1.0.0",
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "game": {
+        "kind": "city-minigame",
+        "id": "gate-optional",
+        "version": "1.0.0",
+        "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "entryAnchorId": "spawn-a",
+      "bindings": {
+        "ghosts": [
+          "zone-b"
+        ]
+      },
+      "parameterOverrides": {}
+    }
+  }
+}
