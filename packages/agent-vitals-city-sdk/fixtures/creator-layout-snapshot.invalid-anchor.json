@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "worldRevision": "world-rev-2026-11-12-a",
+  "seed": 305419896,
+  "layout": {
+    "schemaVersion": 1,
+    "id": "sprint-layout",
+    "coordinateSystem": "city-local-m-v1",
+    "anchors": [
+      { "id": "spawn-a", "kind": "spawn", "capabilities": ["drive", "walk"], "geometryRef": "geom-spawn-a" },
+      { "id": "anchor-bad", "kind": "teleport", "capabilities": ["fly"], "geometryRef": "geom-anchor-bad" }
+    ]
+  }
+}

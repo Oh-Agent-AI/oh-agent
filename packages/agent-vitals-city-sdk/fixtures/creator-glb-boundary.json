@@ -1,0 +1,50 @@
+{
+  "description": "GLB v2 boundary samples for the inspectGlbBytes contract surface. Each sample is a byte-exact base64-encoded GLB; byteLength must equal the decoded byte count.",
+  "samples": {
+    "validMinimal": {
+      "byteLength": 48,
+      "note": "Minimal GLB v2 with a single JSON chunk; inspection succeeds with a bounds-unavailable warning.",
+      "base64": "Z2xURgIAAAAwAAAAHAAAAEpTT057ImFzc2V0Ijp7InZlcnNpb24iOiIyLjAifX0g"
+    },
+    "validWithBinaryChunk": {
+      "byteLength": 88,
+      "note": "GLB v2 with a JSON chunk and one embedded 4-byte binary buffer.",
+      "base64": "Z2xURgIAAABYAAAAOAAAAEpTT057ImFzc2V0Ijp7InZlcnNpb24iOiIyLjAifSwiYnVmZmVycyI6W3siYnl0ZUxlbmd0aCI6NH1dfQQAAABCSU4AAAAAAA=="
+    },
+    "invalidMagic": {
+      "byteLength": 48,
+      "note": "Header magic replaced with 'LIF\\0'; container is not a GLB.",
+      "base64": "TElGAAIAAAAwAAAAHAAAAEpTT057ImFzc2V0Ijp7InZlcnNpb24iOiIyLjAifX0g"
+    },
+    "unsupportedVersion": {
+      "byteLength": 48,
+      "note": "Header version is 1; only GLB version 2 is supported.",
+      "base64": "Z2xURgEAAAAwAAAAHAAAAEpTT057ImFzc2V0Ijp7InZlcnNpb24iOiIyLjAifX0g"
+    },
+    "lengthMismatch": {
+      "byteLength": 48,
+      "note": "Declared header length (52) exceeds the supplied byte length (48).",
+      "base64": "Z2xURgIAAAA0AAAAHAAAAEpTT057ImFzc2V0Ijp7InZlcnNpb24iOiIyLjAifX0g"
+    },
+    "trailingJunkTruncatedChunk": {
+      "byteLength": 28,
+      "note": "Trailing bytes leave a truncated final chunk header.",
+      "base64": "Z2xURgIAAAAcAAAABAAAAEpTT057ImEiAAAAAA=="
+    },
+    "invalidChunkJson": {
+      "byteLength": 28,
+      "note": "JSON chunk payload is not valid JSON.",
+      "base64": "Z2xURgIAAAAcAAAACAAAAEpTT05ub3QganNvbg=="
+    },
+    "missingAssetVersion": {
+      "byteLength": 24,
+      "note": "glTF JSON does not declare asset version 2.0.",
+      "base64": "Z2xURgIAAAAYAAAABAAAAEpTT057fSAg"
+    },
+    "unsupportedRequiredExtension": {
+      "byteLength": 96,
+      "note": "Bounded inspector rejects any declared extension, required or not.",
+      "base64": "Z2xURgIAAABgAAAATAAAAEpTT057ImFzc2V0Ijp7InZlcnNpb24iOiIyLjAifSwiZXh0ZW5zaW9uc1JlcXVpcmVkIjpbIkVYVF9tZXNob3B0X2NvbXByZXNzaW9uIl19"
+    }
+  }
+}

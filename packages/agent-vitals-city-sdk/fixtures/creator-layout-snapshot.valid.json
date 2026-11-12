@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "worldRevision": "world-rev-2026-11-12-a",
+  "seed": 305419896,
+  "layout": {
+    "schemaVersion": 1,
+    "id": "sprint-layout",
+    "coordinateSystem": "city-local-m-v1",
+    "anchors": [
+      { "id": "spawn-a", "kind": "spawn", "capabilities": ["drive", "walk"], "geometryRef": "geom-spawn-a" },
+      { "id": "zone-b", "kind": "zone", "capabilities": ["drive", "walk"], "geometryRef": "geom-zone-b" },
+      { "id": "pad-c", "kind": "object", "capabilities": ["drive"], "geometryRef": "geom-pad-c" },
+      { "id": "walk-d", "kind": "object", "capabilities": ["walk"], "geometryRef": "geom-walk-d" }
+    ],
+    "links": [
+      { "id": "link-1", "fromAnchorId": "spawn-a", "toAnchorId": "zone-b", "capabilities": ["drive", "walk"] },
+      { "id": "link-2", "fromAnchorId": "spawn-a", "toAnchorId": "pad-c", "capabilities": ["drive"] },
+      { "id": "link-3", "fromAnchorId": "zone-b", "toAnchorId": "walk-d", "capabilities": ["walk"] }
+    ]
+  }
+}
