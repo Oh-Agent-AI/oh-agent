@@ -1333,7 +1333,35 @@ pub fn dispatch_as(home: &Path, owner: &str, instance: &str, method: &str, paylo
             let selected = payload.get("selectedObjectId").and_then(Value::as_str).filter(|id| valid_id(id));
             describe_scene(home, project_id, expected, selected)
         }
-        "creator.capabilities.list" if exact_payload(payload, &[]) => Ok(creator_capabilities()),
+        "creator.capabilities.list" => {
+            let object = payload.as_object().ok_or("creator_request_invalid")?;
+            if object.keys().any(|key| !matches!(key.as_str(), "category" | "schemaVersion")) { return Err("creator_request_invalid"); }
+            let category = payload.get("category").and_then(Value::as_str).filter(|value| valid_id(value));
+            let version = payload.get("schemaVersion").and_then(Value::as_u64);
+            match category {
+                Some(category) => creator_capabilities_filtered(category, version.unwrap_or(1)),
+                None => {
+                    if let Some(version) = version {
+                        if version != 1 { return Err("creator_capability_version_unsupported"); }
+                    }
+                    Ok(creator_capabilities())
+                }
+            }
+        }
+        "creator.scene.inspect" if exact_payload(payload, &["projectId", "revision", "objectId"]) => inspect_scene_object(home,
+            payload["projectId"].as_str().filter(|id| valid_id(id)).ok_or("creator_request_invalid")?,
+            payload["revision"].as_u64().ok_or("creator_request_invalid")?,
+            payload["objectId"].as_str().filter(|id| valid_id(id)).ok_or("creator_request_invalid")?),
+        "creator.scene.validate" => {
+            let object = payload.as_object().ok_or("creator_request_invalid")?;
+            if !object.contains_key("projectId") || object.keys().any(|key| !matches!(key.as_str(), "projectId" | "revision" | "validationProfile")) {
+                return Err("creator_request_invalid");
+            }
+            let project_id = payload["projectId"].as_str().filter(|id| valid_id(id)).ok_or("creator_request_invalid")?;
+            let expected = payload.get("revision").and_then(Value::as_u64);
+            let profile = payload.get("validationProfile").and_then(Value::as_str);
+            validate_scene(home, project_id, expected, profile)
+        }
         "creator.project.playtest.history" if exact_payload(payload, &["projectId", "limit"]) => list_playtest_history(home,
             payload["projectId"].as_str().ok_or("creator_request_invalid")?, payload["limit"].as_u64().ok_or("creator_request_invalid")?),
         _ => Err("creator_method_unavailable"),
@@ -1684,6 +1712,132 @@ fn creator_capabilities() -> Value {
         },
         "preview":{"ttlMs":PREVIEW_TTL.as_millis(),"maxActive":MAX_ACTIVE_PREVIEWS,"singleUse":true,"instanceBound":true},
     })
+}
+
+/// MCP P1（设计 §6.4）：category 过滤——未知类别返回 creator_capability_unknown，
+/// schemaVersion 仅支持 1；已知类别只返回该类别的登记能力。
+fn creator_capabilities_filtered(category: &str, schema_version: u64) -> Result<Value, &'static str> {
+    if schema_version != 1 { return Err("creator_capability_version_unsupported"); }
+    let all = creator_capabilities();
+    let entry = all["categories"].as_object().and_then(|known| known.get(category)).ok_or("creator_capability_unknown")?;
+    let supported = all["categories"].as_object().map(|known| known.keys().collect::<Vec<_>>()).unwrap_or_default();
+    Ok(json!({"schemaVersion":1,"category":category,"capabilities":entry,
+        "preview":all["preview"],"supportedCategories":supported}))
+}
+
+/// MCP P1（设计 §6.4）：按稳定 objectId 检查单个对象/锚点/挂载，只返回白名单
+/// 字段、引用关系和编辑限制。revision 必填并校验漂移；不返回源路径、GLB 字节
+/// 或布局外的关联数据。
+fn inspect_scene_object(home: &Path, project_id: &str, expected_revision: u64, object_id: &str) -> Result<Value, &'static str> {
+    if !valid_id(project_id) || !valid_id(object_id) { return Err("creator_request_invalid"); }
+    let db = database(home)?;
+    let raw: String = db.query_row("SELECT document_json FROM creator_projects WHERE project_id=?1", [project_id], |row| row.get(0))
+        .optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_project_not_found")?;
+    let document: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
+    let revision = document.get("revision").and_then(Value::as_u64).ok_or("creator_project_invalid")?;
+    if expected_revision != revision { return Err("revision_conflict"); }
+    // 场景对象（model/anchor/collider）：白名单字段 + 引用的资产标识
+    if let Some(object) = document.get("scene").and_then(|scene| scene.get("objects")).and_then(Value::as_array)
+        .and_then(|objects| objects.iter().find(|object| object.get("id").and_then(Value::as_str) == Some(object_id))) {
+        let kind = object.get("kind").and_then(Value::as_str).unwrap_or("unknown");
+        let mut entry = json!({"id":object.get("id"),"kind":kind,"transform":object.get("transform").cloned().unwrap_or(Value::Null),
+            "editableVia":["scene.object.upsert","scene.object.remove"],"requiresPreview":true});
+        if kind == "model" {
+            entry["assetRef"] = object.get("asset").cloned().unwrap_or(Value::Null);
+            entry["constraints"] = json!({"assetMustReferenceBoundLayout": true});
+        }
+        return Ok(json!({"projectId":project_id,"revision":revision,"object":entry,"source":"scene"}));
+    }
+    // 挂载：按 mountId 检查
+    if let Some(mount) = document.get("mounts").and_then(Value::as_array)
+        .and_then(|mounts| mounts.iter().find(|mount| mount.get("mountId").and_then(Value::as_str) == Some(object_id))) {
+        return Ok(json!({"projectId":project_id,"revision":revision,"object":json!({
+            "id":mount.get("mountId"),"kind":"mount","entryAnchorId":mount.get("entryAnchorId"),
+            "bindings":mount.get("bindings"),"layout":mount.get("layout"),"game":mount.get("game"),
+            "editableVia":["mount.bind","mount.remove"],"requiresPreview":true}),"source":"mount"}));
+    }
+    // 绑定布局里的锚点是来自 City 的只读引用：只能作为挂载目标，不能改布局
+    if let Some(anchor) = document.get("cityLayout").and_then(|layout| layout.get("layout")).and_then(|layout| layout.get("anchors"))
+        .and_then(Value::as_array).and_then(|anchors| anchors.iter().find(|anchor| anchor.get("id").and_then(Value::as_str) == Some(object_id))) {
+        return Ok(json!({"projectId":project_id,"revision":revision,"object":json!({
+            "id":anchor.get("id"),"kind":anchor.get("kind"),"capabilities":anchor.get("capabilities"),
+            "geometryRef":anchor.get("geometryRef"),"editable":false,
+            "constraint":"只读锚点：来自 City 布局快照，仅可作为挂载绑定或检查点引用"}),"source":"cityLayout"}));
+    }
+    Err("creator_object_not_found")
+}
+
+/// MCP P1（设计 §6.4）：结构化校验——静态 schema/资产存储检查逐项报告，
+/// 需要 City 运行时的检查如实标记为未运行，不得显示通过。确定性：同一
+/// 输入/revision 的结果稳定（不消耗 preview、不写库）。
+fn validate_scene(home: &Path, project_id: &str, expected_revision: Option<u64>, profile: Option<&str>) -> Result<Value, &'static str> {
+    if !valid_id(project_id) { return Err("creator_request_invalid"); }
+    match profile {
+        None | Some("static") => {}
+        _ => return Err("creator_validation_profile_unsupported"),
+    }
+    let db = database(home)?;
+    let raw: String = db.query_row("SELECT document_json FROM creator_projects WHERE project_id=?1", [project_id], |row| row.get(0))
+        .optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_project_not_found")?;
+    let mut document: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
+    let revision = document.get("revision").and_then(Value::as_u64).ok_or("creator_project_invalid")?;
+    if let Some(expected) = expected_revision {
+        if expected != revision { return Err("revision_conflict"); }
+    }
+    let mut items: Vec<Value> = Vec::new();
+    let item = |code: &str, severity: &str, source: &str, object_id: Option<&str>, message: &str| {
+        json!({"code":code,"severity":severity,"source":source,
+            "objectId":object_id.map(Value::from).unwrap_or(Value::Null),"message":message})
+    };
+    let empty_objects = Vec::new();
+    let objects = document.get("scene").and_then(|scene| scene.get("objects")).and_then(Value::as_array).unwrap_or(&empty_objects);
+    let mut seen = std::collections::HashSet::new();
+    let mut colliders = 0usize;
+    for object in objects {
+        let id = object.get("id").and_then(Value::as_str).unwrap_or("unknown");
+        if let Err(code) = validate_scene_object(object) {
+            items.push(item(code, "error", "static-schema", Some(id), "对象未通过 schema 校验"));
+            continue;
+        }
+        if !seen.insert(id.to_owned()) {
+            items.push(item("creator_scene_duplicate_id", "error", "static-schema", Some(id), "对象 ID 重复"));
+            continue;
+        }
+        if object.get("kind").and_then(Value::as_str) == Some("collider") { colliders += 1; }
+        // model 的资产引用逐项校验：包匹配布局版本 + 引用登记（静态）；文件字节在资产存储侧单独检查
+        if object.get("kind").and_then(Value::as_str) == Some("model") {
+            if let Err(code) = validate_project_asset_ref(&document, object) {
+                items.push(item(code, "error", "static-schema", Some(id), "资产引用与绑定布局或登记不符"));
+            }
+        }
+    }
+    if colliders > MAX_SCENE_COLLIDERS {
+        items.push(item("creator_scene_collider_budget_exceeded", "error", "static-schema", None, "碰撞代理数量超出预算"));
+    }
+    // 资产存储：真实读取本机项目目录里的字节并核对摘要（区别于静态 schema 检查）
+    if let Err(code) = verify_scene_asset_bytes(home, project_id, &document) {
+        items.push(item(code, "error", "asset-store", None, "已登记资产的字节缺失或摘要不匹配"));
+    }
+    for mount in document.get("mounts").and_then(Value::as_array).unwrap_or(&Vec::new()) {
+        if let Err(code) = validate_mount(&document, mount) {
+            items.push(item(code, "error", "static-schema", mount.get("mountId").and_then(Value::as_str), "挂载未通过校验"));
+        }
+    }
+    if let Some(patch) = document.get("cityPatch") {
+        if let Some(seed) = document.get("cityLayout").and_then(|layout| layout.get("seed")).and_then(Value::as_u64) {
+            if let Err(code) = validate_city_patch(patch, seed) {
+                items.push(item(code, "error", "static-schema", None, "城市补丁未通过校验"));
+            }
+        }
+    }
+    // 需要 City 运行时的检查如实列为未运行——绝不因此显示通过
+    let unchecked = json!([
+        {"check":"drive_reachability","reason":"requires_city_runtime"},
+        {"check":"collision_overlap","reason":"requires_city_runtime"},
+        {"check":"visual_review","reason":"requires_human_or_renderer"}
+    ]);
+    let ok = !items.iter().any(|entry| entry["severity"] == "error");
+    Ok(json!({"projectId":project_id,"revision":revision,"ok":ok,"items":items,"unchecked":unchecked}))
 }
 
 pub fn preview_replace_game(home: &Path, actor: &str, project_id: &str, base_revision: u64, game: &Value) -> Result<Value, &'static str> {
@@ -2112,6 +2266,60 @@ mod tests {
         let game_preview = preview_replace_game(&home, "studio-instance", &project_id, 1, &project["game"]).unwrap();
         assert_eq!(game_preview["changedObjects"][0]["kind"], "game");
         assert_eq!(game_preview["diagnostics"], json!([]));
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    // MCP P1（设计 §6.4）：inspect 白名单字段与三种来源（场景对象/挂载/只读布局锚点）、
+    // validate 的静态检查与如实未运行项、capabilities 的类别过滤。
+    #[test]
+    fn scene_inspect_validate_and_capabilities_cover_whitelisted_views() {
+        let home = home();
+        publish_city_layout_snapshot(&home, &layout_snapshot()).unwrap();
+        let created = create_project_from_city_layout(&home, LOCAL_CREATOR_OWNER, "checkpoint-race", "create-inspect", "world-rev-test").unwrap();
+        let project_id = created["projectId"].as_str().unwrap().to_owned();
+        let preview = preview_scene_operations(&home, "studio-instance", &project_id, 0, &json!([
+            {"op":"anchor.upsert","object":{"id":"zone:gazebo","kind":"anchor","transform":{"positionMeters":{"x":1.0,"y":0.0,"z":2.0},"rotationRadians":{"x":0.0,"y":0.0,"z":0.0},"scale":{"x":1.0,"y":1.0,"z":1.0}},
+                "anchor":{"id":"zone:gazebo","kind":"zone","capabilities":["walk"],"geometryRef":"layout-ground:gazebo"}}}
+        ])).unwrap();
+        commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", &project_id, preview["previewId"].as_str().unwrap(), 0, "inspect-anchor").unwrap();
+        let revision = read_project(&home, &project_id).unwrap()["revision"].as_u64().unwrap();
+        // 场景对象：白名单字段 + 编辑通道
+        let inspected = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.scene.inspect",
+            &json!({"projectId":project_id,"revision":revision,"objectId":"zone:gazebo"})).unwrap();
+        assert_eq!(inspected["object"]["kind"], "anchor");
+        assert_eq!(inspected["object"]["editableVia"][0], "scene.object.upsert");
+        assert_eq!(inspected["source"], "scene");
+        // 挂载：先绑一个再检查
+        let game_digest = digest(&canonical_json(&read_project(&home, &project_id).unwrap()["game"]).unwrap());
+        let mount = json!({"schemaVersion":1,"mountId":"inspect-mount",
+            "layout":{"kind":"city-layout","id":"city-layout-v1-test","version":"1","digest":"world-rev-test"},
+            "game":{"kind":"city-minigame","id":read_project(&home, &project_id).unwrap()["game"]["id"],"version":"1","digest":game_digest},
+            "entryAnchorId":"road-spawn:a","bindings":{"points":["road-checkpoint:ab","road-checkpoint:bc","road-checkpoint:cd"]},"parameterOverrides":{"timeLimitTicks":2400}});
+        let mount_preview = preview_scene_operations(&home, "studio-instance", &project_id, 1, &json!([{"op":"mount.bind","mount":mount}])).unwrap();
+        commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", &project_id, mount_preview["previewId"].as_str().unwrap(), 1, "inspect-mount").unwrap();
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.scene.inspect",
+            &json!({"projectId":project_id,"revision":2,"objectId":"inspect-mount"})).unwrap()["object"]["kind"], "mount");
+        // 只读布局锚点：不可编辑
+        let layout_anchor = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.scene.inspect",
+            &json!({"projectId":project_id,"revision":2,"objectId":"road-spawn:a"})).unwrap();
+        assert_eq!(layout_anchor["source"], "cityLayout");
+        assert_eq!(layout_anchor["object"]["editable"], false);
+        // 未知名与 revision 漂移
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.scene.inspect",
+            &json!({"projectId":project_id,"revision":2,"objectId":"zone:missing"})).unwrap_err(), "creator_object_not_found");
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.scene.inspect",
+            &json!({"projectId":project_id,"revision":99,"objectId":"zone:gazebo"})).unwrap_err(), "revision_conflict");
+        // validate：干净项目 ok + 运行时检查如实未运行
+        let validated = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.scene.validate", &json!({"projectId":project_id})).unwrap();
+        assert_eq!(validated["ok"], true);
+        assert!(validated["unchecked"].as_array().unwrap().iter().any(|entry| entry["check"] == "drive_reachability"));
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.scene.validate",
+            &json!({"projectId":project_id,"validationProfile":"runtime"})).unwrap_err(), "creator_validation_profile_unsupported");
+        // capabilities：类别过滤与未知类别
+        let filtered = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.capabilities.list", &json!({"category":"scene"})).unwrap();
+        assert_eq!(filtered["category"], "scene");
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.capabilities.list",
+            &json!({"category":"physics-sim"})).unwrap_err(), "creator_capability_unknown");
         let _ = std::fs::remove_dir_all(home);
     }
 

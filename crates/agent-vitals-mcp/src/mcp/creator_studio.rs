@@ -28,7 +28,9 @@ pub fn specs() -> Vec<ToolSpec> {
         spec("creator_playtest_history", "Read bounded local visual-playtest summaries for one project. Evidence is client-reported gameplay state, not anti-cheat or leaderboard proof; no input traces, raw logs or analytics are returned.", json!({"projectId":project_id_prop(),"limit":{"type":"integer","minimum":1,"maximum":32}}), &["projectId","limit"]),
         spec("creator_scene_describe", "Compact Agent-facing summary of one project/revision: revision, object counts by kind, optional selected-object whitelist summary, mounts/skin overview, city patch size and editable categories. Bounded; does not return the full project document. Provide `revision` to fail with revision_conflict when the project has moved on. Requires the official Creator Studio plugin to be open.", json!({"projectId":project_id_prop(),"revision":revision_prop(),"selectedObjectId":{"type":"string","minLength":1,"maxLength":128}}), &["projectId"]),
         spec("creator_scene_capture", "Capture a bounded JPEG frame of the live 3D viewport from the active official Studio renderer (local only; no file paths or URLs). Bound to the capture-time project revision with camera info; rejected when the viewport is not ready or the encoded frame exceeds the byte budget. Clients that cannot render images should use the readable degrade summary instead.", json!({"projectId":project_id_prop(),"revision":revision_prop()}), &["projectId"]),
-        spec("creator_capabilities_list", "List the registered Creator operation categories, object kinds, budgets and capability versions (schemaVersion 1). Stable contract discovery; returns no executable code, and generated operations still go through preview/commit validation.", json!({}), &[]),
+        spec("creator_capabilities_list", "List the registered Creator operation categories, object kinds, budgets and capability versions (schemaVersion 1). Provide `category` to get just that category's capabilities (unknown categories return creator_capability_unknown); `schemaVersion` only supports 1. Stable contract discovery; returns no executable code, and generated operations still go through preview/commit validation.", json!({"category":{"type":"string","minLength":1,"maxLength":64},"schemaVersion":{"type":"integer","enum":[1]}}), &[]),
+        spec("creator_scene_inspect", "Inspect one stable objectId (scene object, mount id, or pinned City layout anchor) at an explicit revision: whitelist fields, references and edit constraints only. Never returns source paths, GLB bytes or unrelated analytics. revision_conflict means the project moved on; creator_object_not_found means the id is not an object, mount or layout anchor of this project.", json!({"projectId":project_id_prop(),"revision":revision_prop(),"objectId":{"type":"string","minLength":1,"maxLength":128}}), &["projectId","revision","objectId"]),
+        spec("creator_scene_validate", "Run bounded structural validation for one project revision and return per-item diagnostics with stable codes, severity, objectId and source (static-schema vs asset-store), plus explicitly unchecked items that require the City runtime (drive reachability, collision, visual review). Deterministic for the same input/revision; consumes nothing. `validationProfile` only supports \"static\". Requires the official Creator Studio plugin to be open.", json!({"projectId":project_id_prop(),"revision":revision_prop(),"validationProfile":{"type":"string","enum":["static"]}}), &["projectId"]),
         spec("creator_playtest_start", "Ask the active Studio to start one visual playtest of a published, immutable City release. The player drives the playtest in the City plugin; results are read by creator_playtest_result. Provide projectId/expectedRevision to fail fast when the release belongs to another project or revision. Requires `data-mcp serve --allow-local-writes` and the official Creator Studio plugin to be open.", json!({"releaseId":{"type":"string","minLength":1,"maxLength":128},"projectId":project_id_prop(),"expectedRevision":revision_prop(),"requestId":{"type":"string","minLength":1,"maxLength":128,"description":"调用方关联标识；原样回传，便于对齐消息与结果。"}}), &["releaseId"]),
         spec("creator_playtest_result", "Read one playtest run by runId: status (pending/claimed/completed/cancelled/failed/expired), finish time, failure code and bounded client-reported evidence summary.", json!({"runId":{"type":"string","minLength":1,"maxLength":128}}), &["runId"]),
         spec("creator_playtest_cancel", "Cancel one pending or claimed playtest run and release its activity lease. Requires `data-mcp serve --allow-local-writes`. Cancelling an already-finished run returns its terminal state unchanged (cancelled=false); unknown runIds return not_found.", json!({"runId":{"type":"string","minLength":1,"maxLength":128}}), &["runId"]),
@@ -55,6 +57,10 @@ fn call_error(code: &str) -> ToolError {
         "creator_release_not_found" => ToolError::new("not_found", "The City release was not found; publish the project revision again."),
         "creator_capture_unavailable" => ToolError::new("data_unavailable", "Viewport capture is unavailable: open Creator Studio with a loaded 3D viewport and retry, or use creator_scene_describe for a readable summary."),
         "creator_capture_budget_exceeded" => ToolError::new("invalid_argument", "The captured frame exceeded the bounded image budget."),
+        "creator_object_not_found" => ToolError::new("not_found", "The objectId is not a scene object, mount or pinned layout anchor of this project."),
+        "creator_capability_unknown" => ToolError::new("invalid_argument", "Unknown capability category; call without `category` to list supported categories."),
+        "creator_capability_version_unsupported" => ToolError::new("invalid_argument", "Only capability schemaVersion 1 is supported."),
+        "creator_validation_profile_unsupported" => ToolError::new("invalid_argument", "`validationProfile` only supports \"static\"; runtime checks are reported as unchecked instead of executed."),
         "creator_layout_not_found" => ToolError::new("not_found", "The selected City layout snapshot is no longer available. List layouts again and retry."),
         "revision_conflict" => ToolError::new("revision_conflict", "Project revision changed; read the current draft and preview again."),
         "preview_expired" => ToolError::new("preview_expired", "Preview expired or was already consumed; create a new preview."),
@@ -140,7 +146,29 @@ pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool)
             if let Some(revision) = args.get("revision").and_then(Value::as_u64) { payload["revision"] = json!(revision); }
             call(data_home, "creator.scene.capture", &payload, 20_000)
         }
-        "creator_capabilities_list" => call(data_home, "creator.capabilities.list", &json!({}), 15_000),
+        "creator_capabilities_list" => {
+            let mut payload = json!({});
+            if let Some(category) = args.get("category").and_then(Value::as_str).filter(|value| !value.is_empty()) {
+                payload["category"] = json!(category);
+            }
+            if let Some(version) = args.get("schemaVersion").and_then(Value::as_u64) {
+                payload["schemaVersion"] = json!(version);
+            }
+            call(data_home, "creator.capabilities.list", &payload, 15_000)
+        }
+        "creator_scene_inspect" => call(data_home, "creator.scene.inspect", &json!({
+            "projectId":required_string(args,"projectId")?,
+            "revision":args.get("revision").and_then(Value::as_u64).ok_or_else(|| ToolError::new("invalid_argument", "`revision` must be a non-negative integer"))?,
+            "objectId":required_string(args,"objectId")?}), 15_000),
+        "creator_scene_validate" => {
+            let project_id = required_string(args,"projectId")?;
+            let mut payload = json!({"projectId":project_id});
+            if let Some(revision) = args.get("revision").and_then(Value::as_u64) { payload["revision"] = json!(revision); }
+            if let Some(profile) = args.get("validationProfile").and_then(Value::as_str).filter(|value| !value.is_empty()) {
+                payload["validationProfile"] = json!(profile);
+            }
+            call(data_home, "creator.scene.validate", &payload, 20_000)
+        }
         "creator_project_create" => {
             if !allow_local_writes { return Err(ToolError::new("permission_denied", "Creator project creation requires `data-mcp serve --allow-local-writes`.")); }
             let template = required_string(args,"template")?;

@@ -186,15 +186,15 @@ MVP 有三个不同身份，不应混成一个 Agent token：
 
 ### 6.4 对照 Blender / Unity MCP 后建议补充的接口
 
-以下接口来自 Blender / Unity MCP 的对照调研。**P0 的 `creator_scene_describe`、`creator_scene_capture` 与 P1 的 `creator_capabilities_list` 已在 `creator_studio.rs` 注册并接入**（见 §11.1）；`creator_scene_inspect`、`creator_scene_validate` 仍是候选，未注册。保持 City 领域操作，不暴露通用 Python、JavaScript 或脚本执行。
+以下接口来自 Blender / Unity MCP 的对照调研。**`creator_scene_describe`、`creator_scene_capture`、`creator_capabilities_list`、`creator_scene_inspect`、`creator_scene_validate` 均已在 `creator_studio.rs` 注册并接入**（见 §11.1；inspect/validate 为 2026-11-12 第二批）。保持 City 领域操作，不暴露通用 Python、JavaScript 或脚本执行。
 
 | 接口 | 主要输入 | 返回 | 优先级 | 状态 |
 |---|---|---|---|---|
 | creator_scene_describe | projectId；可选 revision、selectedObjectId | 城市/项目摘要、revision、对象类别计数、选中对象摘要、挂载/皮肤摘要、可用编辑类别 | P0 | 已实现 |
 | creator_scene_capture | projectId；可选 revision | 有界 JPEG 数据 URL、revision、镜头信息 | P0 | 已实现（输入窄于设计） |
-| creator_scene_inspect | projectId、revision、objectId | 指定对象/锚点/挂载的白名单字段、引用关系和编辑限制 | P1 | 未实现 |
-| creator_capabilities_list | 无参数 | 操作类别、对象类别、预算和能力版本（schemaVersion 1） | P1 | 已实现（无 category 过滤） |
-| creator_scene_validate | projectId、revision 或 releaseId、validationProfile | 结构化检查项、错误/警告、对象 ID 和可修复建议 | P1 | 未实现 |
+| creator_scene_inspect | projectId、revision、objectId | 指定对象/锚点/挂载的白名单字段、引用关系和编辑限制；布局锚点标记为只读引用 | P1 | 已实现（2026-11-12 第二批） |
+| creator_capabilities_list | 无参数 | 操作类别、对象类别、预算和能力版本（schemaVersion 1） | P1 | 已实现（含 category/schemaVersion 过滤，2026-11-12 第二批） |
+| creator_scene_validate | projectId、可选 revision、validationProfile（仅 static） | 静态 schema/资产存储检查逐项报告；City 运行时检查如实列为未运行（releaseId 变体未做） | P1 | 已实现（2026-11-12 第二批） |
 
 接口语义：
 
@@ -308,7 +308,7 @@ Codex、Claude Code 和其他支持本地 MCP stdio 的客户端使用同一 ser
 | creator_playtest_cancel | 可取消 pending/claimed run 并释放活动租约；终态 run 幂等返回原终态；未知 runId 返回 not_found；取消后不能再写入完成证据。 |
 | creator_scene_describe | 对指定项目和 revision 返回项目摘要、对象类别计数、可选选中对象摘要、挂载/皮肤概况和可编辑类别；响应有界且不包含完整项目文档；revision 不匹配返回 revision_conflict；结果带 generatedAtMs，改变项目后旧摘要能被识别为旧 revision。 |
 | creator_scene_capture | 仅从活动官方 Studio 的本地 WebView 渲染器捕获；输出绑定捕获时的 projectId/revision 和镜头信息；编码后字节超预算、视口不可用或 Studio 未活动时返回可诊断错误；不接受任意路径、URL、远程读取或文件写入。当前输入只接受 projectId/revision。 |
-| creator_capabilities_list | 返回 schemaVersion 1 的类别登记表：操作名、对象类别、预算和 preview 约束；不含可执行代码；生成的操作仍需经 preview 做权威校验；当前无参数，不支持 category 过滤。 |
+| creator_capabilities_list | 返回 schemaVersion 1 的类别登记表：操作名、对象类别、预算和 preview 约束；不含可执行代码；生成的操作仍需经 preview 做权威校验；支持可选 category（未知类别返回 creator_capability_unknown）与 schemaVersion=1 过滤。 |
 
 ### 11.2 尚未实现的候选接口
 

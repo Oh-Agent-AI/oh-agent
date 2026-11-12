@@ -202,6 +202,8 @@
         "creator.project.playtest.history",
         "creator.scene.describe",
         "creator.scene.capture",
+        "creator.scene.inspect",
+        "creator.scene.validate",
         "creator.capabilities.list"
       ],
       "hostEvents": ["plugin.event"],
