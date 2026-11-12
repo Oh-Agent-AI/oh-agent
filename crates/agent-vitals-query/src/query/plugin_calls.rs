@@ -2,6 +2,11 @@
 //!
 //! This module stores opaque envelopes only. The host must authorize methods
 //! against the active plugin descriptor before claiming or delivering a call.
+//!
+//! 传输预算（设计 AGENT_CREATOR_RUST_BOUNDARY_OPTIMIZATION §5.5）：默认 64 KiB
+//! 保持历史行为；需要更大载荷的调用方经 `call_with_budgets`/`submit_with_budget`
+//! 传入宿主 clamp 后的按方法预算。响应超预算时终结调用（写入小错误响应），
+//! 不遗留 claimed 等待超时。
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
 use std::{path::Path, time::Duration};
@@ -67,10 +72,15 @@ fn new_id() -> Result<String, &'static str> {
 /// Submit an opaque call. The caller must use a method declared by the target
 /// plugin; the receiving host independently checks that descriptor grant.
 pub fn submit(home: &Path, plugin_id: &str, method: &str, payload: &Value, ttl_ms: u64) -> Result<String, &'static str> {
+    submit_with_budget(home, plugin_id, method, payload, ttl_ms, MAX_CALL_BYTES)
+}
+
+/// 按方法传输预算的提交变体（§5.5）：request_max_bytes 由宿主 clamp 后传入。
+pub fn submit_with_budget(home: &Path, plugin_id: &str, method: &str, payload: &Value, ttl_ms: u64, request_max_bytes: usize) -> Result<String, &'static str> {
     if !valid_token(plugin_id, 64) || !valid_token(method, 96) || !payload.is_object()
         || ttl_ms == 0 || ttl_ms > MAX_TTL_MS { return Err("plugin_call_invalid"); }
     let encoded = serde_json::to_string(payload).map_err(|_| "plugin_call_invalid")?;
-    if encoded.len() > MAX_CALL_BYTES { return Err("plugin_call_too_large"); }
+    if encoded.len() > request_max_bytes { return Err("plugin_call_too_large"); }
     let now = now_ms()?;
     let expires = now.checked_add(ttl_ms as i64).ok_or("plugin_call_invalid")?;
     let db = open(home)?;
@@ -123,11 +133,25 @@ pub fn claim_pending(home: &Path, plugin_id: &str, instance_id: &str, allowed_me
 
 /// Complete a call only from the instance that claimed it.
 pub fn respond(home: &Path, plugin_id: &str, instance_id: &str, call_id: &str, response: &Value) -> Result<(), &'static str> {
+    respond_with_budget(home, plugin_id, instance_id, call_id, response, MAX_CALL_BYTES)
+}
+
+/// 按方法响应预算的完成变体（§5.5）：响应超预算时终结调用——写入小错误响应
+/// 让 wait_response 立即拿到终态（而不是让 claimed 挂到过期），并向宿主返回
+/// plugin_call_too_large 以便调用方改用分块或更小载荷。
+pub fn respond_with_budget(home: &Path, plugin_id: &str, instance_id: &str, call_id: &str, response: &Value, response_max_bytes: usize) -> Result<(), &'static str> {
     if !valid_token(plugin_id, 64) || !valid_token(instance_id, 128) || !valid_token(call_id, 64) || !response.is_object() {
         return Err("plugin_call_invalid");
     }
     let encoded = serde_json::to_string(response).map_err(|_| "plugin_call_invalid")?;
-    if encoded.len() > MAX_CALL_BYTES { return Err("plugin_call_too_large"); }
+    if encoded.len() > response_max_bytes {
+        let db = open(home)?;
+        let error_response = json!({"error":{"code":"plugin_call_too_large"}}).to_string();
+        db.execute("UPDATE plugin_calls SET status='completed',response=?1 WHERE call_id=?2 AND plugin_id=?3 AND claimed_instance=?4 AND status='claimed'",
+            params![error_response,call_id,plugin_id,instance_id])
+            .map_err(|_| "plugin_call_store_unavailable")?;
+        return Err("plugin_call_too_large");
+    }
     let now = now_ms()?;
     let db = open(home)?;
     let changed = db.execute("UPDATE plugin_calls SET status='completed',response=?1 WHERE call_id=?2 AND plugin_id=?3
@@ -194,4 +218,54 @@ pub fn wait_response(home: &Path, call_id: &str, timeout_ms: u64) -> Result<Valu
 pub fn call(home: &Path, plugin_id: &str, method: &str, payload: &Value, timeout_ms: u64) -> Result<Value, &'static str> {
     let call_id = submit(home, plugin_id, method, payload, timeout_ms)?;
     wait_response(home, &call_id, timeout_ms)
+}
+
+/// 按方法传输预算的提交+等待变体（§5.5）：request 预算在提交时执行，
+/// response 预算由宿主 respond 侧执行（见 respond_with_budget）。
+pub fn call_with_budgets(home: &Path, plugin_id: &str, method: &str, payload: &Value, timeout_ms: u64,
+    request_max_bytes: usize) -> Result<Value, &'static str> {
+    let call_id = submit_with_budget(home, plugin_id, method, payload, timeout_ms, request_max_bytes)?;
+    wait_response(home, &call_id, timeout_ms)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn home() -> std::path::PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let dir = std::env::temp_dir().join(format!("plugin-calls-test-{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 默认 64 KiB：超预算请求拒绝。
+    #[test]
+    fn oversize_request_is_rejected_at_default_budget() {
+        let home = home();
+        let payload = json!({"blob": "A".repeat(MAX_CALL_BYTES + 1)});
+        assert_eq!(submit(&home, "city", "city.ping", &payload, 60_000).unwrap_err(), "plugin_call_too_large");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// 按方法预算放宽后同负载可入箱；响应侧超预算终结调用（写小错误响应）
+    /// 而不是遗留 claimed 挂到过期。
+    #[test]
+    fn budget_override_allows_large_request_and_oversize_response_terminates() {
+        let home = home();
+        let payload = json!({"blob": "A".repeat(70_000)});
+        submit_with_budget(&home, "city", "city.ping", &payload, 60_000, 128 * 1024).unwrap();
+        let call_id: String = {
+            let db = open(&home).unwrap();
+            db.query_row("SELECT call_id FROM plugin_calls WHERE plugin_id='city' AND status='pending'", [], |row| row.get(0)).unwrap()
+        };
+        // claim 后以超预算响应完成 → 写入小错误响应并终结
+        claim_pending(&home, "city", "inst-1", &["city.ping".into()], 4).unwrap();
+        let oversize_response = json!({"blob": "B".repeat(70_000)});
+        assert_eq!(respond_with_budget(&home, "city", "inst-1", &call_id, &oversize_response, 64 * 1024).unwrap_err(), "plugin_call_too_large");
+        // 调用已终结（completed），wait_response 拿到错误响应而不是挂到超时
+        let result = wait_response(&home, &call_id, 2_000).unwrap();
+        assert_eq!(result["error"]["code"], "plugin_call_too_large");
+        let _ = std::fs::remove_dir_all(&home);
+    }
 }

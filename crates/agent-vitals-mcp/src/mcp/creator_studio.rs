@@ -85,6 +85,29 @@ fn call(data_home: &Path, method: &str, payload: &Value, timeout_ms: u64) -> Res
     Ok(json!({"ok":true,"data":result}))
 }
 
+/// 预览类调用的传输预算（§5.5）：请求放宽到 384 KiB（承载 256 KiB 内容 +
+/// 信封开销），响应 64 KiB（previewId/diff/诊断有界）。业务内容预算（gameBytes
+/// 等）仍由宿主执行——传输预算不是内容预算的替代。
+mod creator_budgets {
+    pub const PREVIEW_REQUEST_BYTES: usize = 384 * 1024;
+    pub const PREVIEW_RESPONSE_BYTES: usize = 64 * 1024;
+}
+
+/// 传输预算变体：game/scene preview 的载荷可超过默认 64 KiB 邮箱。
+/// 响应预算由宿主 respond 侧按方法执行（调用方只控制请求侧）。
+fn call_with_budgets(data_home: &Path, method: &str, payload: &Value, timeout_ms: u64,
+    request_max_bytes: usize) -> Result<Value, ToolError> {
+    let response = agent_vitals_query::query::plugin_calls::call_with_budgets(
+        data_home, "creator-studio", method, payload, timeout_ms, request_max_bytes,
+    ).map_err(call_error)?;
+    if response["ok"] != true {
+        let code = response["error"]["code"].as_str().unwrap_or("creator_request_failed");
+        return Err(call_error(code));
+    }
+    let result = response.get("result").cloned().ok_or_else(|| ToolError::new("data_unavailable", "Creator Studio returned no result."))?;
+    Ok(json!({"ok":true,"data":result}))
+}
+
 /// creator_scene_capture 的结果信封（审查 P1）：图像以 MCP image content 块返回，
 /// structuredContent 只保留元数据（revision/镜头/字节数），dataUrl 不作为文本进入
 /// Agent 上下文。超出字节预算显式拒绝，不做静默降档。纯函数，便于接口级测试。
@@ -244,15 +267,19 @@ pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool)
             let project_id = required_string(args,"projectId")?;
             let revision = args.get("baseRevision").and_then(Value::as_u64).ok_or_else(|| ToolError::new("invalid_argument", "`baseRevision` must be a non-negative integer"))?;
             let game = args.get("game").filter(|value| value.is_object()).ok_or_else(|| ToolError::new("invalid_argument", "`game` must be an object"))?;
-            if game.to_string().len() > 48 * 1024 { return Err(ToolError::new("invalid_argument", "Game preview exceeds the bounded MCP payload size.")); }
-            call(data_home, "creator.game.preview", &json!({"projectId":project_id,"baseRevision":revision,"game":game}), 15_000)
+            // 传输预算（§5.5）：mailbox 按方法预算放宽到 384 KiB 后，业务内容预算
+            // （262 KiB gameBytes）由宿主执行——MCP 只保留帧级安全余量。
+            if game.to_string().len() > 384 * 1024 { return Err(ToolError::new("invalid_argument", "Game preview exceeds the bounded MCP payload size.")); }
+            call_with_budgets(data_home, "creator.game.preview", &json!({"projectId":project_id,"baseRevision":revision,"game":game}), 15_000,
+                creator_budgets::PREVIEW_REQUEST_BYTES)
         }
         "creator_scene_preview" => {
             let project_id = required_string(args,"projectId")?;
             let revision = args.get("baseRevision").and_then(Value::as_u64).ok_or_else(|| ToolError::new("invalid_argument", "`baseRevision` must be a non-negative integer"))?;
             let operations = args.get("operations").filter(|value| value.as_array().is_some_and(|items| !items.is_empty() && items.len() <= 128)).ok_or_else(|| ToolError::new("invalid_argument", "`operations` must contain 1..=128 operations"))?;
-            if operations.to_string().len() > 48 * 1024 { return Err(ToolError::new("invalid_argument", "Scene operations exceed the bounded MCP payload size.")); }
-            call(data_home, "creator.scene.preview", &json!({"projectId":project_id,"baseRevision":revision,"operations":operations}), 15_000)
+            if operations.to_string().len() > 384 * 1024 { return Err(ToolError::new("invalid_argument", "Scene operations exceed the bounded MCP payload size.")); }
+            call_with_budgets(data_home, "creator.scene.preview", &json!({"projectId":project_id,"baseRevision":revision,"operations":operations}), 15_000,
+                creator_budgets::PREVIEW_REQUEST_BYTES)
         }
         "creator_project_commit" => {
             if !allow_local_writes { return Err(ToolError::new("permission_denied", "Creator project commit requires `data-mcp serve --allow-local-writes`.")); }
