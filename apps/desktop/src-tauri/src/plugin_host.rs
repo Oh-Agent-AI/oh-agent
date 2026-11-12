@@ -123,6 +123,12 @@ struct Instance {
     pulse: Instant,
     ready: bool,
     suspended: bool,
+    /// The frontend reports visibility with its diagnostic heartbeat. The view's
+    /// health timer keeps running while hidden (background throttling disabled),
+    /// so a live hidden page keeps re-declaring; `hidden_since` bounds how long
+    /// a hidden declaration may suppress the watchdog after declarations stop.
+    page_hidden: bool,
+    hidden_since: Option<Instant>,
     failed: Option<&'static str>,
     revision: u64,
     items: Vec<Tool>,
@@ -519,6 +525,12 @@ fn valid_tools(namespace: &str, max_items: usize, items: &[Tool]) -> bool {
 
 fn refresh_fault(i: &mut Instance) -> bool {
     if i.suspended { return false; }
+    // A hidden retained view must not fail just for being hidden — but its
+    // health timer keeps running while hidden, so the hidden declaration is
+    // refreshed every couple of seconds. A stale declaration means the page
+    // died while hidden; stop suppressing so the normal checks below fire
+    // instead of staying blind forever.
+    if i.page_hidden && i.hidden_since.is_some_and(|since| since.elapsed() <= Duration::from_secs(30)) { return false; }
     if i.failed.is_some() { return false; }
     if i.in_flight > 0 { return false; }
     if i.busy_until.is_some_and(|until| Instant::now() < until) { return false; }
@@ -751,7 +763,7 @@ pub async fn plugin_open(app: tauri::AppHandle, webview: Webview, state: tauri::
         host.generation += 1;
         let id = format!("plugin-{}-{}", definition.id, host.generation);
         let mut current = Instance { id: id.clone(), plugin_id: definition.id.clone(), command_namespace: definition.command_namespace.clone(), max_toolbar_items: definition.max_toolbar_items, performance_metrics: definition.performance_metrics.clone(), started: Instant::now(), pulse: Instant::now(), ready: false, suspended: false,
-            failed: None, revision: 0, items: Vec::new(), sequence: 0, pending: None, in_flight: 0, busy_until: None, events: Vec::new() };
+            page_hidden: false, hidden_since: None, failed: None, revision: 0, items: Vec::new(), sequence: 0, pending: None, in_flight: 0, busy_until: None, events: Vec::new() };
         note(&mut current, "create_started");
         host.current = Some(current);
         id
@@ -934,6 +946,12 @@ fn apply_message(i: &mut Instance, sender: &str, message: Value) -> Result<(), S
         Some("heartbeat") => {
             i.pulse = Instant::now();
             if let Some(source) = message["diagnostic"].as_object() {
+                    if let Some(hidden) = source.get("hidden").and_then(Value::as_bool) {
+                        i.page_hidden = hidden;
+                        // Re-arm/clear with every declaration so the watchdog can
+                        // tell a live hidden page from a stale hidden flag.
+                        i.hidden_since = if hidden { Some(Instant::now()) } else { None };
+                    }
                 let mut fields = serde_json::Map::new();
                 for key in ["hidden", "focused", "firstFrame", "contextLost", "loopScheduled", "modelApplied", "engineMissing", "frameAgeMs", "width", "height", "busyMs"] {
                     if let Some(value) = source.get(key).filter(|v| v.is_boolean() || v.as_u64().is_some_and(|n| n <= 86_400_000)) {
@@ -968,7 +986,20 @@ fn apply_message(i: &mut Instance, sender: &str, message: Value) -> Result<(), S
             i.pulse = Instant::now();
             agent_vitals_runtime::logging::log_info("plugin_performance", &format!("plugin={} {fields}", i.plugin_id));
         }
-        Some("runtime.error") => { i.failed = Some("plugin_runtime_error"); note(i, "plugin_runtime_error"); }
+        Some("runtime.error") => {
+            i.failed = Some("plugin_runtime_error");
+            // 受控错误码（诊断 serving-face 约束）：异常 message/stack 可能带本地
+            // 路径、项目内容等用户数据，不落诊断文件。只收保守字符集限定的错误
+            // 标识符；其余字段丢弃，而不是截断后入库。
+            let name = message["error"]["name"].as_str()
+                .filter(|name| !name.is_empty() && name.len() <= 120
+                    && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '.' | '_' | '-' | ':' | '#')))
+                .map(str::to_owned);
+            let detail = name.map_or_else(|| json!({}), |name| json!({ "name": name }));
+            if i.events.len() == 100 { i.events.remove(0); }
+            i.events.push(json!({"atMs": i.started.elapsed().as_millis() as u64, "code": "plugin_runtime_error", "error": detail}));
+            persist_diagnostics(i);
+        }
         _ => return Err("plugin_message_unavailable".into()),
     }
     Ok(())
@@ -1321,7 +1352,7 @@ mod plugin_request_tests {
         let host = HostState { current: Some(Instance {
             id:"plugin-city-7".into(),plugin_id:"city".into(),command_namespace:"city".into(),
             max_toolbar_items:11,performance_metrics:Vec::new(),started:Instant::now(),pulse:Instant::now(),
-            ready:true,suspended:false,failed:None,revision:0,items:Vec::new(),sequence:0,pending:None,
+            ready:true,suspended:false,page_hidden:false,hidden_since:None,failed:None,revision:0,items:Vec::new(),sequence:0,pending:None,
             in_flight:0,busy_until:None,events:Vec::new(),
         }), ..HostState::default() };
         assert!(city_asset_webview_authorized(&host, "plugin-city-7"));
@@ -1390,7 +1421,7 @@ mod plugin_request_tests {
             id:"plugin-city-new".into(),plugin_id:"city".into(),command_namespace:"city".into(),
             max_toolbar_items:11,
             performance_metrics:vec!["scene".into(),"data-load".into()],
-            started:Instant::now(),pulse:Instant::now(),ready:true,suspended:false,failed:None,revision:0,
+            started:Instant::now(),pulse:Instant::now(),ready:true,suspended:false,page_hidden:false,hidden_since:None,failed:None,revision:0,
             items:Vec::new(),sequence:0,pending:None,in_flight:0,busy_until:None,events:Vec::new(),
         }), ..HostState::default() };
         assert!(plugin_response_owner_active(&host,"plugin-city-new","city"));
@@ -1408,7 +1439,7 @@ mod plugin_request_tests {
         let host = HostState { current: Some(Instance {
             id:"plugin-city-1".into(),plugin_id:"city".into(),command_namespace:"city".into(),
             max_toolbar_items:11,performance_metrics:Vec::new(),started:Instant::now(),pulse:Instant::now(),
-            ready:true,suspended:false,failed:None,revision:0,items:Vec::new(),sequence:0,pending:None,
+            ready:true,suspended:false,page_hidden:false,hidden_since:None,failed:None,revision:0,items:Vec::new(),sequence:0,pending:None,
             in_flight:0,busy_until:None,events:Vec::new(),
         }), ..HostState::default() };
         let calls = vec!["city.creator.experiences.list".to_owned(), "city.creator.playtest.claim".to_owned()];
@@ -1600,7 +1631,7 @@ mod tests {
 
     fn instance() -> Instance {
         Instance { id: "plugin-city-2".into(), plugin_id: "city".into(), command_namespace: "city".into(), max_toolbar_items:11, performance_metrics:vec!["scene".into(),"data-load".into()], started: Instant::now(), pulse: Instant::now(), ready: false, suspended: false,
-            failed: None, revision: 0, items: Vec::new(), sequence: 0, pending: None, in_flight: 0, busy_until: None, events: Vec::new() }
+            page_hidden: false, hidden_since: None, failed: None, revision: 0, items: Vec::new(), sequence: 0, pending: None, in_flight: 0, busy_until: None, events: Vec::new() }
     }
     #[test]
     fn fault_deadlines_are_independent_of_frontend_polling_and_sticky() {
@@ -1644,6 +1675,48 @@ mod tests {
         loading.started = Instant::now() - Duration::from_secs(16);
         loading.in_flight = 1;
         assert!(!refresh_fault(&mut loading), "boot timeout waits while the plugin is inside a host request");
+    }
+    #[test]
+    fn hidden_plugin_does_not_trip_watchdog_and_visible_heartbeat_resumes_checks() {
+        let mut i = instance();
+        i.ready = true;
+        i.page_hidden = true;
+        i.hidden_since = Some(Instant::now());
+        i.pulse = Instant::now() - Duration::from_secs(60);
+        assert!(!refresh_fault(&mut i), "background timer throttling must not mark the plugin failed");
+        assert!(i.failed.is_none());
+
+        let message = json!({"version":1,"instanceId":"plugin-city-2","type":"heartbeat","diagnostic":{"hidden":false}});
+        assert!(apply_message(&mut i, "plugin-city-2", message).is_ok());
+        assert!(!i.page_hidden);
+        i.pulse = Instant::now() - Duration::from_secs(6);
+        assert!(refresh_fault(&mut i), "a visible plugin with a stale pulse must still fail");
+    }
+    #[test]
+    fn stale_hidden_declaration_stops_suppressing_the_watchdog() {
+        let mut i = instance();
+        i.ready = true;
+        i.page_hidden = true;
+        i.hidden_since = Some(Instant::now() - Duration::from_secs(60));
+        i.pulse = Instant::now() - Duration::from_secs(10);
+        assert!(refresh_fault(&mut i), "a hidden flag that stopped being refreshed must not blind the watchdog forever");
+        assert_eq!(i.failed, Some("plugin_unresponsive"));
+    }
+    #[test]
+    fn runtime_error_keeps_controlled_identifier_only() {
+        let mut i = instance();
+        let message = json!({"version":1,"instanceId":"plugin-city-2","type":"runtime.error","error":{
+            "name":"TypeError","message":"cannot read C:\\Users\\me\\secret","stack":"at CityApp (app://city/src/CityApp.tsx:42:7)"
+        }});
+        assert!(apply_message(&mut i, "plugin-city-2", message).is_ok());
+        assert_eq!(i.failed, Some("plugin_runtime_error"));
+        // 只有保守字符集限定的错误标识符入库；message/stack 原文永不持久化。
+        assert_eq!(i.events.last().unwrap()["error"], json!({"name":"TypeError"}));
+        let hostile = json!({"version":1,"instanceId":"plugin-city-2","type":"runtime.error","error":{
+            "name":"bad name with 中文 and {braces}"
+        }});
+        assert!(apply_message(&mut i, "plugin-city-2", hostile).is_ok());
+        assert_eq!(i.events.last().unwrap()["error"], json!({}));
     }
     #[test]
     fn heartbeat_busy_ms_is_capped_and_refreshes_pulse() {
