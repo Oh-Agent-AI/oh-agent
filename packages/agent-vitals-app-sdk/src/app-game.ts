@@ -70,9 +70,7 @@ async function stateRequest<TResult>(method: string, payload: Record<string, unk
   }
   if (!response.ok) {
     const code = response.error?.code;
-    if (response.result !== null || !response.error || typeof response.error.retryable !== "boolean"
-      || typeof code !== "string" || !/^[a-z][a-z0-9_]{0,63}$/.test(code)) fail("plugin_response_invalid");
-    fail(code);
+    fail(typeof code === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(code) ? code : "plugin_request_failed");
   }
   if (response.error !== null || response.result === null || typeof response.result !== "object" || Array.isArray(response.result)) {
     fail("plugin_response_invalid");
@@ -84,7 +82,6 @@ function validateReadResult(value: unknown): PluginStateReadResult {
   if (!validRecord(value) || !Number.isSafeInteger(value.revision) || (value.revision as number) < 0
     || !(value.value === null || validRecord(value.value))) fail("plugin_response_invalid");
   if (value.value !== null) assertJsonValue(value.value);
-  if (new TextEncoder().encode(JSON.stringify(value)).byteLength > MAX_STATE_BYTES) fail("plugin_response_invalid");
   return value as unknown as PluginStateReadResult;
 }
 
