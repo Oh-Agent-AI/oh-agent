@@ -240,12 +240,19 @@ jobs:
           cache-dependency-path: |
             apps/desktop/ui-dev/package-lock.json
             apps/agent-city/ui/package-lock.json
+            packages/agent-vitals-city-sdk/package-lock.json
       - name: 安装守卫依赖
         working-directory: apps/desktop/ui-dev
         run: npm ci
       - name: 安装 City 插件依赖
         working-directory: apps/agent-city/ui
         run: npm ci
+      - name: 安装 City SDK 依赖
+        working-directory: packages/agent-vitals-city-sdk
+        run: npm ci
+      - name: 构建 City SDK（types + dist）
+        working-directory: packages/agent-vitals-city-sdk
+        run: npm run build
       - name: City 专项守卫
         working-directory: apps/desktop/ui-dev
         run: node ../../../scripts/verify-city-suite.mjs fast
@@ -276,12 +283,19 @@ jobs:
           cache-dependency-path: |
             apps/desktop/ui-dev/package-lock.json
             apps/agent-city/ui/package-lock.json
+            packages/agent-vitals-city-sdk/package-lock.json
       - name: 安装守卫依赖
         working-directory: apps/desktop/ui-dev
         run: npm ci
       - name: 安装 City 插件依赖
         working-directory: apps/agent-city/ui
         run: npm ci
+      - name: 安装 City SDK 依赖
+        working-directory: packages/agent-vitals-city-sdk
+        run: npm ci
+      - name: 构建 City SDK（types + dist）
+        working-directory: packages/agent-vitals-city-sdk
+        run: npm run build
       - name: 运行独立守卫
         working-directory: apps/desktop/ui-dev
         env:
@@ -316,6 +330,12 @@ jobs:
       - name: 安装 City 插件依赖
         working-directory: apps/agent-city/ui
         run: npm ci
+      - name: 安装 City SDK 依赖
+        working-directory: packages/agent-vitals-city-sdk
+        run: npm ci
+      - name: 构建 City SDK（types + dist）
+        working-directory: packages/agent-vitals-city-sdk
+        run: npm run build
       - name: typed data 投影与快照契约
         working-directory: apps/agent-city/ui
         run: node --experimental-strip-types --test tests/typed-city-session-adapter.test.ts
@@ -345,6 +365,12 @@ jobs:
       - name: 安装 City 插件依赖
         working-directory: apps/agent-city/ui
         run: npm ci
+      - name: 安装 City SDK 依赖
+        working-directory: packages/agent-vitals-city-sdk
+        run: npm ci
+      - name: 构建 City SDK（types + dist）
+        working-directory: packages/agent-vitals-city-sdk
+        run: npm run build
       - name: 构建（确认 Worker chunk 能打包）
         working-directory: apps/agent-city/ui
         run: |
