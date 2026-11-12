@@ -56,7 +56,7 @@ Claude Code（`claude mcp add` 或项目 `.mcp.json`，字段名以 Claude Code 
 
 ## 3. 工具面（与 creator_studio.rs specs() 一致）
 
-以下 13 个工具名逐一核对自 crates/agent-vitals-mcp/src/mcp/creator_studio.rs 的 `specs()` 与 `run()`。协议为 JSON-RPC 2.0 行分隔帧；`initialize` 协议版本 `2025-06-18`，`serverInfo.name` 为 `Oh Agent MCP`。
+以下 16 个工具名逐一核对自 crates/agent-vitals-mcp/src/mcp/creator_studio.rs 的 `specs()` 与 `run()`。协议为 JSON-RPC 2.0 行分隔帧；`initialize` 协议版本 `2025-06-18`，`serverInfo.name` 为 `Oh Agent MCP`。
 
 | MCP 工具 | 必需入参 | 可选入参 | 类别 |
 |---|---|---|---|
@@ -73,12 +73,15 @@ Claude Code（`claude mcp add` 或项目 `.mcp.json`，字段名以 Claude Code 
 | creator_scene_preview | projectId、baseRevision、operations（1..=128 条，≤48KiB） | — | 预览（不落盘） |
 | creator_project_commit | projectId、previewId、expectedRevision、operationId | — | 写入 |
 | creator_project_publish | projectId、expectedRevision | — | 写入 |
+| creator_scene_describe | projectId | revision、selectedObjectId | 只读 |
+| creator_scene_capture | projectId | revision | 只读（WebView 本地出帧） |
+| creator_capabilities_list | — | — | 只读 |
 
-需要 `--allow-local-writes` 的写入工具共 5 个：creator_playtest_start、creator_playtest_cancel、creator_project_create、creator_project_commit、creator_project_publish。其余 8 个不需要开关，但同样要求 Studio 活动。
+需要 `--allow-local-writes` 的写入工具共 5 个：creator_playtest_start、creator_playtest_cancel、creator_project_create、creator_project_commit、creator_project_publish。其余 11 个（含新增的 describe/capture/capabilities_list）不需要开关，但同样要求 Studio 活动。
 
-### 3.1 当前已知限制：试玩三工具 MCP 分发未接线
+### 3.1 分发表状态
 
-creator_playtest_start、creator_playtest_result、creator_playtest_cancel 已在 `specs()` 声明（tools/list 可见）、`run()` 已实现、宿主服务已就绪，但 crates/agent-vitals-mcp/src/mcp/mod.rs 的分发 match 尚未路由这三个名字：经 `data-mcp serve` 调用会返回 `internal_error`（"registered but not wired"）。Rust 测试 `mcp::tests::tool_specs_and_dispatch_agree` 当前正是因此失败（实测：75 通过、1 失败）。多客户端实测前需先在 mod.rs 补上这三个名字的分发路由。
+所有 creator 工具（含试玩三工具与 2026-11-12 新增的 describe/capture/capabilities_list）都已在 crates/agent-vitals-mcp/src/mcp/mod.rs 的 dispatch match 中路由；`mcp::tests::tool_specs_and_dispatch_agree` 逐工具断言不存在 “registered but not wired”。
 
 ## 4. 连接自检清单（设计 §8.1）
 
@@ -86,8 +89,8 @@ creator_playtest_start、creator_playtest_result、creator_playtest_cancel 已�
 
 1. **进程握手。** 启动 serve 后 stderr 出现 `data-mcp: serving on stdio (protocol 2025-06-18, data_home …)` 横幅。
 2. **initialize。** 返回 `protocolVersion: "2025-06-18"`、`capabilities.tools`、`serverInfo.name: "Oh Agent MCP"`。initialize 之前的请求被拒（JSON-RPC error `-32002`）。
-3. **tools/list。** 结果应逐个包含以下 13 个 creator 工具名（与 specs() 一致）：
-   creator_layout_list、creator_project_list、creator_project_read、creator_operation_status、creator_playtest_history、creator_playtest_start、creator_playtest_result、creator_playtest_cancel、creator_project_create、creator_game_preview、creator_scene_preview、creator_project_commit、creator_project_publish。
+3. **tools/list。** 结果应逐个包含以下 16 个 creator 工具名（与 specs() 一致）：
+   creator_layout_list、creator_project_list、creator_project_read、creator_operation_status、creator_playtest_history、creator_playtest_start、creator_playtest_result、creator_playtest_cancel、creator_project_create、creator_game_preview、creator_scene_preview、creator_project_commit、creator_project_publish、creator_scene_describe、creator_scene_capture、creator_capabilities_list。
 4. **只读自检：creator_project_list。** 参数 `{"limit": 10}`。预期分两种：
    - Studio 已打开：返回 `ok: true` 与有界项目列表（没有项目时为空列表）。
    - Studio 未打开：等待约 15 秒后返回 `plugin_unavailable`，提示打开官方 Creator Studio 插件后重试。
@@ -103,14 +106,14 @@ creator_playtest_start、creator_playtest_result、creator_playtest_cancel 已�
 
 | # | 场景（设计 §11） | Rust 自动化覆盖 | 需真实客户端 | 需桌面 bundle |
 |---|---|---|---|---|
-| 1 | 工具发现 + 无开关拒绝写入 | `tool_specs_and_dispatch_agree`、`creator_publish_tool_requires_explicit_local_write_permission`、`tool_schemas_are_closed_objects`（crates/agent-vitals-mcp/src/mcp/mod.rs）。注：`tool_specs_and_dispatch_agree` 当前失败（§3.1 试玩分发缺口）；开关拒绝测试目前只钉了 publish，create/commit/playtest 的开关拒绝在 creator_studio.rs `run()` 内实现但无独立测试 | 用真实客户端验证 tools/list 发现 13 个工具 | — |
+| 1 | 工具发现 + 无开关拒绝写入 | `tool_specs_and_dispatch_agree`、`creator_publish_tool_requires_explicit_local_write_permission`、`tool_schemas_are_closed_objects`（crates/agent-vitals-mcp/src/mcp/mod.rs）。开关拒绝测试目前只钉了 publish，create/commit/playtest 的开关拒绝在 creator_studio.rs `run()` 内实现但无独立测试 | 用真实客户端验证 tools/list 发现 16 个工具 | — |
 | 2 | Studio 未打开/被替换/过期时失败不写入 | `committed_operation_survives_studio_instance_replacement_but_preview_does_not`（apps/desktop/src-tauri/src/creator_projects.rs）、`typed_object_response_is_dropped_after_owner_instance_replacement_or_failure`（apps/desktop/src-tauri/src/plugin_host.rs） | 验证 Studio 关闭 → `plugin_unavailable` | Studio 完全未打开的 15 秒超时路径依赖活动 WebView 缺席，自动化测试未覆盖 |
 | 3 | 创建→读 chunk→预览→UI 确认→提交→视口新 revision | 宿主侧：`project_preview_commit_revision_and_idempotency`（creator_projects.rs） | 端到端走通一次 | UI 确认卡片与 3D 视口刷新只能人工在 bundle 里确认 |
 | 4 | 无效对象/越界/超预算/额外字段被拒绝，revision 不变 | `dispatch_rejects_unknown_arguments`、`dispatch_rejects_non_object_arguments`（mod.rs）；`creator_scene_accepts_only_bounded_explicit_box_colliders`、`creator_mount_rejects_anchors_disconnected_in_the_pinned_city_topology`、`mount_skin_operations_preview_commit_and_enforce_game_bindings`、`creator_playtest_history_is_registered_and_limits_are_bounded`（creator_projects.rs） | — | — |
 | 5 | 预览过期/revision 推进/重复消费拒绝，重预览成功 | `project_preview_commit_revision_and_idempotency`（creator_projects.rs） | — | — |
 | 6 | 提交响应丢失后原 operationId 只产生一次 revision | `project_preview_commit_revision_and_idempotency`、`failed_commit_keeps_preview_available_for_retry`（creator_projects.rs） | 用真实客户端模拟响应丢失后查 creator_operation_status | — |
 | 7 | 两个不同 MCP 客户端行为与错误语义一致 | 无直接自动化；间接依赖所有客户端共用同一 dispatch（mod.rs 单一入口） | **尚未执行——阶段 D 的核心待办** | — |
-| 8 | 试玩取消/失败/完成形成唯一终态，release 快照不可变 | `playtest_start_result_cancel_reach_unique_terminal_states`、`playtest_handoff_is_release_pinned_city_bound_and_returns_once`、`city_release_is_immutable_revision_bound_and_filtered_by_current_layout`（creator_projects.rs）。注：MCP 分发未接线（§3.1），端到端暂不可走 | 修复分发后验证试玩闭环 | City 插件 claim/finish 与返回 Studio 需 bundle 实测 |
+| 8 | 试玩取消/失败/完成形成唯一终态，release 快照不可变 | `playtest_start_result_cancel_reach_unique_terminal_states`、`playtest_handoff_is_release_pinned_city_bound_and_returns_once`、`city_release_is_immutable_revision_bound_and_filtered_by_current_layout`（creator_projects.rs） | 验证试玩闭环 | City 插件 claim/finish 与返回 Studio 需 bundle 实测 |
 | 9 | MCP 输出不含路径/原始日志/提示词/凭证 | 工具面按构造只回有界 DTO（creator_studio.rs 无路径字段）；审计不带原始参数：`tools_call_emits_mcp_audit_event_without_raw_args`（apps/cli/src/mcp.rs） | 对真实客户端可见输出做最终检查 | — |
 
 待客户端实测清单（阶段 D 收口条件）：场景 1 的真实 tools/list、场景 2 的 Studio 缺席路径、场景 3 的 UI 确认与视口、场景 6 的响应丢失演练、场景 7 全部、场景 8 端到端、场景 9 的输出终检。其中场景 8 先决条件是修复 §3.1 的分发缺口。

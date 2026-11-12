@@ -225,7 +225,8 @@ pub fn dispatch_with_permissions(
         "reset_building" => city_building::run_reset(args, data_home, allow_local_writes),
         "im_publish" => city_im::run(args, data_home, allow_local_writes),
         "creator_layout_list" | "creator_project_list" | "creator_project_read" | "creator_operation_status" | "creator_playtest_history" | "creator_playtest_start" | "creator_playtest_result" | "creator_playtest_cancel" | "creator_project_create"
-        | "creator_game_preview" | "creator_scene_preview" | "creator_project_commit" | "creator_project_publish" => creator_studio::run(name, args, data_home, allow_local_writes),
+        | "creator_game_preview" | "creator_scene_preview" | "creator_project_commit" | "creator_project_publish"
+        | "creator_scene_describe" | "creator_scene_capture" | "creator_capabilities_list" => creator_studio::run(name, args, data_home, allow_local_writes),
         "city_world_profile_preview" | "city_world_profile_apply" => city_world::run(name, args, data_home, allow_local_writes),
         #[cfg(feature = "mcp-internal")]
         "query_sql_readonly" => query_sql_readonly::run(args, data_home),
@@ -401,6 +402,21 @@ mod tests {
         let error = dispatch("creator_playtest_history", &json!({"projectId":"project-1","limit":0}), Path::new("/unused"))
             .unwrap_err();
         assert_eq!(error.code, "invalid_argument");
+    }
+
+    #[test]
+    fn creator_scene_tools_are_registered_and_require_project_id() {
+        let names: Vec<_> = tool_specs().iter().map(|tool| tool.name).collect();
+        for name in ["creator_scene_describe", "creator_scene_capture", "creator_capabilities_list"] {
+            assert!(names.contains(&name), "Creator scene MCP tool missing: {name}");
+        }
+        // 只读入口：缺少 projectId 时在参数校验阶段拒绝，不会向插件转发。
+        for name in ["creator_scene_describe", "creator_scene_capture"] {
+            let error = dispatch(name, &json!({}), Path::new("/unused")).unwrap_err();
+            assert_eq!(error.code, "invalid_argument", "{name} accepted a missing projectId");
+        }
+        let error = dispatch("creator_scene_describe", &json!({"projectId":"project-1"}), Path::new("/unused")).unwrap_err();
+        assert_ne!(error.code, "internal_error");
     }
 
     #[test]

@@ -5,11 +5,14 @@ import { canonicalJson, validateCityLayoutSnapshot, validateMiniGamePack, valida
 // 视口与 City 插件共享同一份引擎与装配管线，保证 Studio 看到的是同一座城市。
 import { CityViewport } from "../../../agent-city/ui/src/viewport/CityViewport";
 import { readCityAppearancePreference } from "../../../agent-city/ui/src/engine/cityWorldProfile";
+import type { CityEngine } from "../../../agent-city/ui/src/engine/CityEngine";
 import "./style.css";
 
 type ProjectRow = { projectId: string; revision: number; title: string; updatedAtMs: number };
 type LayoutRow = { worldRevision: string; layoutId: string; seed: number; anchorCount: number; updatedAtMs: number };
 type SceneDraft = { schemaVersion: 1; objects: Array<Record<string, unknown>> };
+// 试玩历史行（creator.project.playtest.history 返回的 runs 元素），状态沿用后端英文枚举不翻译。
+type PlaytestRun = { runId: string; releaseId: string; revision: number; status: "pending" | "claimed" | "completed" | "cancelled" | "failed" | "expired"; createdAtMs: number; finishedAtMs: number | null; evidenceSource: string | null; evidence: unknown; failureCode: string | null };
 type Project = { projectId: string; revision: number; title?: string; kind: string; game: unknown; cityLayout?: CityLayoutSnapshotV1 | null; scene?: SceneDraft; assets?: { schemaVersion: 1; entries: Array<{ assetId: string; relativePath: string; sha256: string; byteLength: number; format: "glb-v2"; boundsMeters?: { x: number; y: number; z: number } }> }; assetRefs?: Array<Record<string, unknown>>; mounts: CityGameMountV1[]; skinId?: string };
 type PluginResponse<T> = { version: number; requestId: string; ok: boolean; result?: T; error?: { code: string } };
 let sequence = 0;
@@ -106,6 +109,11 @@ function App() {
   // 输入的草稿会被旧闭包里的旧文本误判为「无草稿」而被覆盖。
   const applyRef = useRef(applyProject);
   applyRef.current = applyProject;
+  // 视口引擎实例（creator.scene.capture 从这里取帧）；projectRef 供宿主转发的
+  // 处理器读取当前 revision（handlers effect 的闭包是空依赖，拿不到新 state）。
+  const studioEngineRef = useRef<CityEngine | null>(null);
+  const projectRef = useRef<Project | null>(null);
+  projectRef.current = project;
   // 离开当前项目（切换项目行/新建）前先确认：有未提交草稿时第一次点击只提示，
   // 第二次点击才真正丢弃——提示先于丢弃，而不是丢弃后补一句。
   const [switchConfirm, setSwitchConfirm] = useState<string | null>(null);
@@ -139,7 +147,8 @@ function App() {
   useEffect(() => {
     const methods = ["creator.layout.list", "creator.project.list", "creator.project.read", "creator.project.read_chunk", "creator.operation.status", "creator.project.create",
       "creator.game.preview", "creator.asset.import", "creator.game.commit", "creator.scene.preview", "creator.scene.commit", "creator.project.commit", "creator.project.publish",
-      "creator.project.playtest.start", "creator.project.playtest.result", "creator.project.playtest.cancel", "creator.project.playtest.return_context", "creator.project.playtest.history"];
+      "creator.project.playtest.start", "creator.project.playtest.result", "creator.project.playtest.cancel", "creator.project.playtest.return_context", "creator.project.playtest.history",
+      "creator.scene.describe", "creator.capabilities.list"];
     // 这些调用只能来自宿主/MCP 路由（UI 自己的请求直连宿主、不经此转发），
     // 所以这里的捕获天然就是「Agent 来源」的变更记录——设计 §7.3 的变更卡片数据源。
     const noteAgent = (method: string, payload: Record<string, unknown>, ok: boolean, result: unknown) => {
@@ -148,6 +157,7 @@ function App() {
         "creator.game.commit": "提交规则", "creator.scene.commit": "提交场景", "creator.project.commit": "Agent 提交",
         "creator.project.publish": "发布到 City", "creator.project.playtest.start": "请求试玩",
         "creator.project.playtest.cancel": "取消试玩", "creator.asset.import": "导入模型",
+        "creator.scene.capture": "视口捕获",
       };
       const label = labels[method];
       if (!label) return;
@@ -175,6 +185,21 @@ function App() {
       noteAgent(method, payload, true, result);
       return result;
     }]));
+    // creator.scene.capture 在 WebView 本地完成（渲染器在这里，图像不出本机）；
+    // describe/capabilities 走上面的转发、由 Rust 权威分发。projectRef 拿当前 revision。
+    (handlers as Record<string, (payload: Record<string, unknown>) => Promise<unknown>>)["creator.scene.capture"] = async (payload: Record<string, unknown>) => {
+      const engine = studioEngineRef.current;
+      if (!engine) throw new Error("creator_capture_unavailable");
+      if (typeof payload.revision === "number" && projectRef.current && payload.revision !== projectRef.current.revision) throw new Error("revision_conflict");
+      const frame = engine.captureFrame();
+      if (!frame) throw new Error("creator_capture_unavailable");
+      const camera = engine.inspectScene().camera as { position?: number[]; target?: number[] } | null;
+      const result = { format: "image/jpeg", dataUrl: frame.dataUrl, width: frame.width, height: frame.height,
+        bytes: Math.ceil(frame.dataUrl.length * 0.75), revision: projectRef.current?.revision ?? null,
+        camera: camera ? { position: camera.position, target: camera.target } : null, capturedAtMs: Date.now() };
+      noteAgent("creator.scene.capture", payload, true, { revision: projectRef.current?.revision });
+      return result;
+    };
     const disconnectHostCalls = connectHostCalls(handlers);
     publishToolbar([]);
     const disconnectHealth = observeHealth();
@@ -415,7 +440,7 @@ function App() {
       <section className="viewport" aria-label="City 实时视口">
         <div className="viewport-head"><div className="section-title">城市视图</div><span className="viewport-hint">点选建筑移动 · 拖动旋转 · 滚轮缩放</span></div>
         {viewportSeed !== null
-          ? <div className="viewport-frame"><CityViewport seed={viewportSeed} worldProfile={worldProfile} editable focusSignal={focusSignal} /></div>
+          ? <div className="viewport-frame"><CityViewport seed={viewportSeed} worldProfile={worldProfile} editable focusSignal={focusSignal} onEngineChange={engine => { studioEngineRef.current = engine; }} /></div>
           : <div className="empty viewport-empty">{viewportUnavailable
             ? "当前项目没有绑定的 City 布局快照，视口无法恢复它编辑的城市。请在 City 中重新生成道路地图后新建项目。"
             : "先打开 City 生成道路地图，这里会显示同一座实时城市。"}</div>}

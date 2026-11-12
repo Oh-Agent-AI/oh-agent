@@ -186,20 +186,20 @@ MVP 有三个不同身份，不应混成一个 Agent token：
 
 ### 6.4 对照 Blender / Unity MCP 后建议补充的接口
 
-以下接口是下一轮设计候选，**当前未在 creator_studio.rs 注册**。借鉴 Blender 的分领域工具，以及 Unity 的编辑器观察和 Play Mode 验证闭环；保持 City 领域操作，不暴露通用 Python、JavaScript 或脚本执行。
+以下接口来自 Blender / Unity MCP 的对照调研。**P0 的 `creator_scene_describe`、`creator_scene_capture` 与 P1 的 `creator_capabilities_list` 已在 `creator_studio.rs` 注册并接入**（见 §11.1）；`creator_scene_inspect`、`creator_scene_validate` 仍是候选，未注册。保持 City 领域操作，不暴露通用 Python、JavaScript 或脚本执行。
 
-| 候选接口 | 主要输入 | 返回 | 优先级 |
-|---|---|---|---|
-| creator_scene_describe | projectId；可选 revision、selectedObjectId | 城市/项目摘要、revision、对象类别计数、选中对象摘要、挂载/皮肤摘要、可用编辑类别 | P0 |
-| creator_scene_capture | projectId；可选 revision、cameraPreset、targetObjectId、imageFormat | 有界预览图或受控图像引用、revision、镜头信息 | P0 |
-| creator_scene_inspect | projectId、revision、objectId | 指定对象/锚点/挂载的白名单字段、引用关系和编辑限制 | P1 |
-| creator_capabilities_list | 可选 category、schemaVersion | 可用操作类别、操作 schema、预算和能力版本 | P1 |
-| creator_scene_validate | projectId、revision 或 releaseId、validationProfile | 结构化检查项、错误/警告、对象 ID 和可修复建议 | P1 |
+| 接口 | 主要输入 | 返回 | 优先级 | 状态 |
+|---|---|---|---|---|
+| creator_scene_describe | projectId；可选 revision、selectedObjectId | 城市/项目摘要、revision、对象类别计数、选中对象摘要、挂载/皮肤摘要、可用编辑类别 | P0 | 已实现 |
+| creator_scene_capture | projectId；可选 revision | 有界 JPEG 数据 URL、revision、镜头信息 | P0 | 已实现（输入窄于设计） |
+| creator_scene_inspect | projectId、revision、objectId | 指定对象/锚点/挂载的白名单字段、引用关系和编辑限制 | P1 | 未实现 |
+| creator_capabilities_list | 无参数 | 操作类别、对象类别、预算和能力版本（schemaVersion 1） | P1 | 已实现（无 category 过滤） |
+| creator_scene_validate | projectId、revision 或 releaseId、validationProfile | 结构化检查项、错误/警告、对象 ID 和可修复建议 | P1 | 未实现 |
 
 接口语义：
 
 - describe 返回面向 Agent 的紧凑摘要，不代替 creator_project_read；对象较多时按类别摘要或分页。
-- capture 只能由活动官方 Studio 在本地渲染器中生成，不接受任意文件路径或 URL。图像有最大像素和字节预算，并绑定捕获时的 revision；不支持图像内容的 MCP 客户端收到可读降级摘要。
+- capture 只能由活动官方 Studio 在本地渲染器中生成，不接受任意文件路径或 URL。当前只接受 projectId/revision：cameraPreset、targetObjectId、imageFormat 尚未实现；编码后字节超预算或视口不可用时返回受控错误，图片绑定捕获时的 revision。不支持图像内容的 MCP 客户端改用 describe。
 - inspect 仅允许白名单字段，不返回本机路径、GLB 字节、authority DB 内容或无关分析数据。
 - capabilities_list 提供稳定契约发现，不返回可执行代码；最终写入仍经 preview/commit 权威校验。
 - validate 明确区分静态 schema 校验和 City 运行时校验。没有真实执行道路可达、净空、物理或视觉检查时，不得报告这些检查通过。
@@ -306,17 +306,17 @@ Codex、Claude Code 和其他支持本地 MCP stdio 的客户端使用同一 ser
 | creator_playtest_start | 写入开关关闭时拒绝；release 存在且可由当前 City 运行时认领；提供 projectId/expectedRevision 时必须匹配 release 归属；重复请求不能启动重复 run；返回 runId 和固定 release/revision。 |
 | creator_playtest_result | 对 pending、claimed、completed、cancelled、failed、expired 等状态返回正确的唯一 run；终态不被后续查询改变；仅返回有界结果摘要和稳定失败码。 |
 | creator_playtest_cancel | 可取消 pending/claimed run 并释放活动租约；终态 run 幂等返回原终态；未知 runId 返回 not_found；取消后不能再写入完成证据。 |
+| creator_scene_describe | 对指定项目和 revision 返回项目摘要、对象类别计数、可选选中对象摘要、挂载/皮肤概况和可编辑类别；响应有界且不包含完整项目文档；revision 不匹配返回 revision_conflict；结果带 generatedAtMs，改变项目后旧摘要能被识别为旧 revision。 |
+| creator_scene_capture | 仅从活动官方 Studio 的本地 WebView 渲染器捕获；输出绑定捕获时的 projectId/revision 和镜头信息；编码后字节超预算、视口不可用或 Studio 未活动时返回可诊断错误；不接受任意路径、URL、远程读取或文件写入。当前输入只接受 projectId/revision。 |
+| creator_capabilities_list | 返回 schemaVersion 1 的类别登记表：操作名、对象类别、预算和 preview 约束；不含可执行代码；生成的操作仍需经 preview 做权威校验；当前无参数，不支持 category 过滤。 |
 
-### 11.2 新增候选接口
+### 11.2 尚未实现的候选接口
 
 以下候选接口尚未注册。实现时须逐条通过对应验收，并加入工具发现、权限、负载预算和契约测试。
 
 | 接口 | 验收标准 |
 |---|---|
-| creator_scene_describe | 对指定项目和 revision 返回项目摘要、对象类别计数、可选选中对象摘要、挂载/皮肤概况和可编辑类别；响应有界且不包含完整项目文档；revision 不存在时返回 revision_conflict 或 not_found；改变项目后旧摘要能被识别为旧 revision。 |
-| creator_scene_capture | 仅从活动官方 Studio 的本地渲染器捕获；输出绑定捕获时 projectId/revision 和镜头信息；像素尺寸、编码后字节数和耗时均有上限；禁止任意路径、URL、远程读取和文件写入；Studio 未活动、视口未就绪或超时分别返回可诊断错误；图像不支持的客户端收到明确降级响应，不把截图描述成当前 revision 的结果。 |
 | creator_scene_inspect | 只接受项目、revision 和稳定 objectId；只返回该对象允许的白名单属性、引用关系及约束；不存在对象返回 not_found，过时 revision 返回 revision_conflict；不得返回源文件路径、GLB 字节、数据库字段或未授权的关联对象数据。 |
-| creator_capabilities_list | 对未知 category、schemaVersion 返回明确错误或受支持版本列表；已知类别只返回登记过的操作名、参数 schema、预算和能力版本；响应不得包含可执行代码；生成的操作仍需经 preview 做权威校验。新增或移除能力时，工具发现结果和 SDK 契约 fixture 同步变化。 |
 | creator_scene_validate | 每项诊断含稳定 code、severity、对象 ID（若适用）和用户可读说明；静态 schema 检查与真实 City 运行时检查分开标记；未运行的检查不得显示通过；同一输入/revision 的确定性检查结果稳定；错误、警告和未检查项均能区分。 |
 | creator_asset_list | 仅列出指定项目已导入资源的稳定 ID、摘要、受限元数据及允许引用位置；分页/数量受限；不返回原始文件路径或二进制；资源缺失或摘要不匹配返回诊断，不伪装成可用资源。 |
 
@@ -324,9 +324,9 @@ Codex、Claude Code 和其他支持本地 MCP stdio 的客户端使用同一 ser
 
 creator_game_preview 和 creator_scene_preview 的差异结果满足以下条件：
 
-- 含 projectId、baseRevision、previewId、expiresAt 和规范化操作摘要。
-- changedObjects 使用稳定 ID，明确列出新增、删除或修改字段及必要的前后值摘要；不得只返回“成功”。
-- diagnostics 使用稳定 code 和 severity，能定位对象；诊断结果与 Studio 变更卡片一致。
+- 含 projectId、baseRevision、previewId、expiresInMs 和规范化操作摘要（preview 在服务端已绑定操作摘要，不在响应中回显）。
+- changedObjects 使用稳定 ID 和规范路径，带 kind 与 action（added/updated/removed）；game 预览另带 fields 与前后摘要，scene 预览的前后摘要由 diff.beforeDigest/afterDigest 提供；不得只返回“成功”。
+- diagnostics 当前恒为空数组：校验失败以稳定错误码返回。后续切片若要填充逐项诊断，必须使用稳定 code 和 severity，并能定位对象，与 Studio 变更卡片一致。
 - 每个 preview 绑定当前 Creator Studio 实例、基线 revision 和操作；超时、跨实例、改 payload 或重复消费时不能提交。
 - Studio 收到同一 preview 后能在 City 视口定位或高亮受影响对象；提交后视口、项目 revision 和 MCP 响应结果一致。
 

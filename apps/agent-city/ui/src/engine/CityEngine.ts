@@ -1152,6 +1152,17 @@ export class CityEngine {
     return Math.max(900, this.boundsRadius * 2.2);
   }
 
+  /** 当前画布 JPEG 数据 URL（Studio 的 creator.scene.capture 用）：先渲染一帧确保内容最新。
+   *  headless/上下文丢失/已销毁返回 null——调用方据此给出可诊断错误，不给空图。 */
+  captureFrame(quality = 0.72): { dataUrl: string; width: number; height: number } | null {
+    if (this.options.headless || this.disposed || this.contextLost) return null;
+    this.renderFrame();
+    const canvas = this.renderer.domElement;
+    const dataUrl = canvas.toDataURL("image/jpeg", quality);
+    if (!dataUrl.startsWith("data:image/jpeg") || dataUrl.length > 300_000) return null;
+    return { dataUrl, width: canvas.width, height: canvas.height };
+  }
+
   /** 按主题的方位/高度角放太阳。曾放在城市中心正上方约 bounds 高、水平只偏 139 处——
    *  高度角约 79°，影子只有楼高的五分之一、全藏在楼底下，看起来像「没有太阳」。 */
   private placeSun(): void {

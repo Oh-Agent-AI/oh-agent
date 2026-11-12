@@ -1358,6 +1358,87 @@
           } else throw new Error("creator_scene_operation_unsupported");
         }
       };
+      // 形状来源：creator_projects.rs::describe_scene / creator_capabilities /
+      // preview_replace_game / preview_scene_operations（2026-11-12 的 MCP P0 实现）。
+      // 只镜像有界字段，不是权威实现；权威校验仍在 Rust。
+      const digestOf = (value) => {
+        let hash = 0;
+        for (const char of JSON.stringify(value)) hash = (hash * 31 + char.codePointAt(0)) >>> 0;
+        return `preview-digest-${hash.toString(16).padStart(8, "0")}`;
+      };
+      const describeScene = (document, payload) => {
+        if (payload.revision !== undefined && payload.revision !== document.revision) throw new Error("revision_conflict");
+        const objectCounts = {};
+        for (const object of document.scene.objects) {
+          const kind = object.kind || "unknown";
+          objectCounts[kind] = (objectCounts[kind] || 0) + 1;
+        }
+        const selected = payload.selectedObjectId
+          ? (() => {
+              const object = document.scene.objects.find((item) => item.id === payload.selectedObjectId);
+              return object ? { id: object.id, kind: object.kind, transform: object.transform ?? null } : null;
+            })()
+          : null;
+        return {
+          projectId: document.projectId,
+          revision: document.revision,
+          title: document.title,
+          cityLayout: {
+            worldRevision: document.cityLayout.worldRevision,
+            seed: document.cityLayout.seed,
+            anchorCount: document.cityLayout.layout.anchors.length,
+          },
+          objectCounts,
+          mounts: (document.mounts || []).map((mount) => ({
+            mountId: mount.mountId,
+            entryAnchorId: mount.entryAnchorId,
+            slotCount: mount.bindings ? Object.keys(mount.bindings).length : 0,
+          })),
+          skinId: document.skinId ?? null,
+          cityPatchBuildingMoves: document.cityPatch?.buildingMoves ? Object.keys(document.cityPatch.buildingMoves).length : 0,
+          assetCount: document.assets?.entries?.length ?? 0,
+          selected,
+          editableCategories: ["game", "scene", "mount", "skin", "cityPatch"],
+          generatedAtMs: Date.now(),
+        };
+      };
+      const capabilities = () => ({
+        schemaVersion: 1,
+        categories: {
+          game: { preview: "creator.game.preview", commit: "creator.project.commit", maxGameBytes: 262144 },
+          scene: { preview: "creator.scene.preview", commit: "creator.scene.commit",
+            objectKinds: ["model", "anchor", "collider"], maxObjects: 10000,
+            maxColliders: 256, maxOperationsPerPreview: 128 },
+          mount: { bind: "mount.bind", remove: "mount.remove", maxReleaseMounts: 32 },
+          skin: { select: "skin.select", skins: ["miami-vice", "desert-evening"] },
+          cityPatch: { upsert: "city.patch.upsert", remove: "city.patch.remove", maxBytes: 262144 },
+          assets: { import: "creator.asset.import（桌面原生选择器，MCP 不接收路径）", maxImportedModelBytes: 67108864, maxAssets: 4096 },
+          playtest: { start: "creator.project.playtest.start", result: "creator.project.playtest.result", cancel: "creator.project.playtest.cancel", ttlMs: 1800000 },
+          project: { create: "creator.project.create", publish: "creator.project.publish", maxDocumentBytes: 2097152, maxReleaseBytes: 524288 },
+        },
+        preview: { ttlMs: 600000, maxActive: 128, singleUse: true, instanceBound: true },
+      });
+      // path + action 与 Rust apply_scene_operations 的返回对齐（action ∈ added/updated/removed）。
+      const sceneChanges = (document, operations) => operations.map((operation) => {
+        const op = String(operation?.op || "");
+        const mounts = document.mounts || [];
+        if (op === "city.patch.upsert") return { path: "cityPatch", action: document.cityPatch ? "updated" : "added" };
+        if (op === "city.patch.remove") return { path: "cityPatch", action: "removed" };
+        if (op === "scene.object.upsert" || op === "anchor.upsert") {
+          const id = operation.object?.id;
+          const exists = document.scene.objects.some((object) => object.id === id);
+          return { path: `scene.objects.${id}`, action: exists ? "updated" : "added" };
+        }
+        if (op === "scene.object.remove" || op === "anchor.remove") return { path: `scene.objects.${operation.objectId}`, action: "removed" };
+        if (op === "mount.bind") {
+          const exists = mounts.some((mount) => mount.mountId === operation.mount?.mountId);
+          return { path: `mounts.${operation.mount?.mountId}`, action: exists ? "updated" : "added" };
+        }
+        if (op === "mount.remove") return { path: `mounts.${operation.mountId}`, action: "removed" };
+        if (op === "skin.select") return { path: "skinId", action: document.skinId ? "updated" : "added" };
+        throw new Error("creator_scene_operation_unsupported");
+      });
+
       return async (request) => {
         const payload = request.payload || {};
         // 视口复用 City 的数据通道（data.read 全部投影）：城市数据与 City 预览同源同种子。
@@ -1393,16 +1474,39 @@
             checkRevision(document, payload);
             const previewId = nextId("preview");
             previews.set(previewId, { projectId: document.projectId, baseRevision: document.revision, kind: "game", game: clone(payload.game) });
-            return { previewId, diff: {} };
+            const beforeDigest = digestOf(document.game);
+            const afterDigest = digestOf(payload.game);
+            return { previewId, projectId: document.projectId, baseRevision: document.revision, expiresInMs: 600000,
+              diff: { path: "game", beforeDigest, afterDigest },
+              changedObjects: [{ id: payload.game?.id || "game", kind: "game", action: "updated", fields: ["game"], beforeDigest, afterDigest }],
+              diagnostics: [] };
           }
           case "creator.scene.preview": {
             const document = project(payload);
             checkRevision(document, payload);
             if (!Array.isArray(payload.operations) || !payload.operations.length || payload.operations.length > 128) throw new Error("creator_scene_ops_invalid");
             const previewId = nextId("preview");
-            previews.set(previewId, { projectId: document.projectId, baseRevision: document.revision, kind: "scene", operations: clone(payload.operations) });
-            return { previewId };
+            const operations = clone(payload.operations);
+            // 在副本上套用一次，既得到 afterDigest，也让非法操作/引用在预览期就被拒绝。
+            const next = clone(document);
+            applyOperations(next, operations);
+            previews.set(previewId, { projectId: document.projectId, baseRevision: document.revision, kind: "scene", operations });
+            const changes = sceneChanges(document, operations);
+            const changedObjects = changes.map(({ path, action }) => ({
+              id: path.split(".").pop(),
+              path,
+              kind: path === "cityPatch" ? "cityPatch" : path.startsWith("mounts") ? "mount" : path === "skinId" ? "skin" : "sceneObject",
+              action,
+            }));
+            return { previewId, projectId: document.projectId, baseRevision: document.revision, expiresInMs: 600000,
+              diff: { paths: changes.map(({ path }) => path), beforeDigest: digestOf(document), afterDigest: digestOf(next) },
+              changedObjects,
+              diagnostics: [] };
           }
+          case "creator.scene.describe":
+            return describeScene(project(payload), payload);
+          case "creator.capabilities.list":
+            return capabilities();
           case "creator.game.commit":
           case "creator.scene.commit":
           case "creator.project.commit": {

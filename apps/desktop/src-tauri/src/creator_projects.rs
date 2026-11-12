@@ -1141,7 +1141,7 @@ fn validate_mount<'a>(document: &Value, value: &'a Value) -> Result<&'a str, &'s
     Ok(mount["mountId"].as_str().unwrap_or_default())
 }
 
-fn apply_mount_skin_operation(document: &mut Value, operation: &Value) -> Result<Option<String>, &'static str> {
+fn apply_mount_skin_operation(document: &mut Value, operation: &Value) -> Result<Option<(String, &'static str)>, &'static str> {
     let operation = operation.as_object().ok_or("creator_scene_ops_invalid")?;
     match operation.get("op").and_then(Value::as_str) {
         Some("mount.bind") if operation.len() == 2 && only_keys(operation, &["op", "mount"]) => {
@@ -1150,12 +1150,13 @@ fn apply_mount_skin_operation(document: &mut Value, operation: &Value) -> Result
             let project = document.as_object_mut().ok_or("creator_project_invalid")?;
             let mounts = project.entry("mounts").or_insert_with(|| json!([])).as_array_mut().ok_or("creator_project_invalid")?;
             let index = mounts.iter().position(|item| item.get("mountId").and_then(Value::as_str) == Some(&mount_id));
+            let action = if index.is_some() { "updated" } else { "added" };
             if let Some(index) = index { mounts[index] = mount.clone(); }
             else {
                 if mounts.len() >= 128 { return Err("creator_mount_budget_exceeded"); }
                 mounts.push(mount.clone());
             }
-            Ok(Some(format!("mounts.{mount_id}")))
+            Ok(Some((format!("mounts.{mount_id}"), action)))
         }
         Some("mount.remove") if operation.len() == 2 && only_keys(operation, &["op", "mountId"]) => {
             let mount_id = operation.get("mountId").and_then(Value::as_str).filter(|id| valid_id(id)).ok_or("creator_mount_invalid")?;
@@ -1163,18 +1164,18 @@ fn apply_mount_skin_operation(document: &mut Value, operation: &Value) -> Result
             let mounts = project.entry("mounts").or_insert_with(|| json!([])).as_array_mut().ok_or("creator_project_invalid")?;
             let index = mounts.iter().position(|item| item.get("mountId").and_then(Value::as_str) == Some(mount_id)).ok_or("creator_mount_not_found")?;
             mounts.remove(index);
-            Ok(Some(format!("mounts.{mount_id}")))
+            Ok(Some((format!("mounts.{mount_id}"), "removed")))
         }
         Some("skin.select") if operation.len() == 2 && only_keys(operation, &["op", "skinId"]) => {
             let skin_id = operation.get("skinId").and_then(Value::as_str).filter(|id| matches!(*id, "miami-vice" | "desert-evening")).ok_or("creator_skin_not_found")?;
             document.as_object_mut().ok_or("creator_project_invalid")?.insert("skinId".into(), json!(skin_id));
-            Ok(Some("skinId".into()))
+            Ok(Some(("skinId".into(), "updated")))
         }
         _ => Ok(None),
     }
 }
 
-fn apply_scene_operations(document: &mut Value, operations: &Value) -> Result<Vec<String>, &'static str> {
+fn apply_scene_operations(document: &mut Value, operations: &Value) -> Result<Vec<(String, &'static str)>, &'static str> {
     let operations = operations.as_array().filter(|operations| !operations.is_empty() && operations.len() <= 128).ok_or("creator_scene_ops_invalid")?;
     let mut touched = Vec::with_capacity(operations.len());
     // 城市补丁操作作用于项目根（不走 scene.objects）：先于场景作用域处理。
@@ -1190,14 +1191,15 @@ fn apply_scene_operations(document: &mut Value, operations: &Value) -> Result<Ve
                     validate_city_patch(patch, layout_seed)?;
                     let raw = serde_json::to_string(patch).map_err(|_| "creator_city_patch_invalid")?;
                     if raw.len() > MAX_CITY_PATCH_BYTES { return Err("creator_city_patch_too_large"); }
+                    let action = if project.contains_key("cityPatch") { "updated" } else { "added" };
                     project.insert("cityPatch".to_owned(), patch.clone());
                     // 修订后导入记录不再代表当前补丁来源；来源历史留在 creator_changes。
                     project.remove("cityPatchImport");
-                    touched.push("cityPatch".to_owned());
+                    touched.push(("cityPatch".to_owned(), action));
                 }
                 Some("city.patch.remove") if only_keys(operation, &["op"]) && operation.len() == 1 => {
                     project.remove("cityPatch");
-                    touched.push("cityPatch".to_owned());
+                    touched.push(("cityPatch".to_owned(), "removed"));
                 }
                 _ => {}
             }
@@ -1220,19 +1222,20 @@ fn apply_scene_operations(document: &mut Value, operations: &Value) -> Result<Ve
                     let id = validate_scene_object(object)?;
                     if operation.get("op").and_then(Value::as_str) == Some("anchor.upsert") && object.get("kind").and_then(Value::as_str) != Some("anchor") { return Err("creator_scene_object_invalid"); }
                     let index = objects.iter().position(|existing| existing.get("id").and_then(Value::as_str) == Some(id));
+                    let action = if index.is_some() { "updated" } else { "added" };
                     if let Some(index) = index { objects[index] = object.clone(); }
                     else {
                         if objects.len() >= MAX_SCENE_OBJECTS { return Err("creator_scene_budget_exceeded"); }
                         objects.push(object.clone());
                     }
-                    touched.push(format!("scene.objects.{id}"));
+                    touched.push((format!("scene.objects.{id}"), action));
                 }
                 Some("scene.object.remove") | Some("anchor.remove") if operation.len() == 2 && only_keys(operation, &["op", "objectId"]) => {
                     let id = operation.get("objectId").and_then(Value::as_str).filter(|id| valid_id(id)).ok_or("creator_scene_ops_invalid")?;
                     let index = objects.iter().position(|existing| existing.get("id").and_then(Value::as_str) == Some(id)).ok_or("creator_scene_object_not_found")?;
                     if operation.get("op").and_then(Value::as_str) == Some("anchor.remove") && objects[index].get("kind").and_then(Value::as_str) != Some("anchor") { return Err("creator_scene_object_kind_mismatch"); }
                     objects.remove(index);
-                    touched.push(format!("scene.objects.{id}"));
+                    touched.push((format!("scene.objects.{id}"), "removed"));
                 }
                 _ => return Err("creator_scene_operation_unsupported"),
             }
@@ -1250,7 +1253,7 @@ fn apply_scene_operations(document: &mut Value, operations: &Value) -> Result<Ve
         validate_project_asset_ref(document, object)?;
     }
     for operation in operations {
-        if let Some(path) = apply_mount_skin_operation(document, operation)? { touched.push(path); }
+        if let Some((path, action)) = apply_mount_skin_operation(document, operation)? { touched.push((path, action)); }
     }
     let mounts = document.get("mounts").and_then(Value::as_array).ok_or("creator_project_invalid")?;
     for mount in mounts { validate_mount(document, mount)?; }
@@ -1319,6 +1322,18 @@ pub fn dispatch_as(home: &Path, owner: &str, instance: &str, method: &str, paylo
         "creator.project.playtest.cancel" if exact_payload(payload, &["runId"]) => cancel_playtest(home, instance,
             payload["runId"].as_str().filter(|id| valid_id(id)).ok_or("creator_request_invalid")?),
         "creator.project.playtest.return_context" if exact_payload(payload, &[]) => take_playtest_return(home),
+        // MCP P0/P1（设计 §6.4）：场景摘要与能力发现；capture 由 Studio WebView 处理器本地生成，不经此分发。
+        "creator.scene.describe" => {
+            let object = payload.as_object().ok_or("creator_request_invalid")?;
+            if !object.contains_key("projectId") || object.keys().any(|key| !matches!(key.as_str(), "projectId" | "revision" | "selectedObjectId")) {
+                return Err("creator_request_invalid");
+            }
+            let project_id = payload["projectId"].as_str().filter(|id| valid_id(id)).ok_or("creator_request_invalid")?;
+            let expected = payload.get("revision").and_then(Value::as_u64);
+            let selected = payload.get("selectedObjectId").and_then(Value::as_str).filter(|id| valid_id(id));
+            describe_scene(home, project_id, expected, selected)
+        }
+        "creator.capabilities.list" if exact_payload(payload, &[]) => Ok(creator_capabilities()),
         "creator.project.playtest.history" if exact_payload(payload, &["projectId", "limit"]) => list_playtest_history(home,
             payload["projectId"].as_str().ok_or("creator_request_invalid")?, payload["limit"].as_u64().ok_or("creator_request_invalid")?),
         _ => Err("creator_method_unavailable"),
@@ -1609,6 +1624,68 @@ fn cancel_playtest(home: &Path, studio_instance: &str, run_id: &str) -> Result<V
     Ok(json!({"runId":run_id,"projectId":project_id,"revision":revision,"status":"cancelled","cancelled":true}))
 }
 
+/// MCP P0（设计 §6.4）：面向 Agent 的项目/场景紧凑摘要——有界、白名单字段、
+/// 不含完整项目文档。提供 revision 时校验漂移，防止 Agent 基于旧摘要生成操作。
+fn describe_scene(home: &Path, project_id: &str, expected_revision: Option<u64>, selected_object_id: Option<&str>) -> Result<Value, &'static str> {
+    if !valid_id(project_id) { return Err("creator_request_invalid"); }
+    let db = database(home)?;
+    let raw: String = db.query_row("SELECT document_json FROM creator_projects WHERE project_id=?1", [project_id], |row| row.get(0))
+        .optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_project_not_found")?;
+    let document: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
+    let revision = document.get("revision").and_then(Value::as_u64).ok_or("creator_project_invalid")?;
+    if let Some(expected) = expected_revision {
+        if expected != revision { return Err("revision_conflict"); }
+    }
+    // BTreeMap 而不是 serde_json::Map：后者存 Value，`+= 1` 不成立；顺带钉住稳定的键序。
+    let mut object_counts: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    for object in document.get("scene").and_then(|scene| scene.get("objects")).and_then(Value::as_array).unwrap_or(&Vec::new()) {
+        let kind = object.get("kind").and_then(Value::as_str).unwrap_or("unknown").to_owned();
+        *object_counts.entry(kind).or_insert(0) += 1;
+    }
+    let mounts: Vec<Value> = document.get("mounts").and_then(Value::as_array).map(|list|
+        list.iter().map(|mount| json!({"mountId":mount.get("mountId"),"entryAnchorId":mount.get("entryAnchorId"),
+            "slotCount":mount.get("bindings").and_then(Value::as_object).map_or(0, serde_json::Map::len)})).collect()).unwrap_or_default();
+    let selected = selected_object_id.and_then(|id| document.get("scene").and_then(|scene| scene.get("objects")).and_then(Value::as_array)
+        .and_then(|objects| objects.iter().find(|object| object.get("id").and_then(Value::as_str) == Some(id))))
+        .map(|object| json!({"id":object.get("id"),"kind":object.get("kind"),"transform":object.get("transform").cloned().unwrap_or(Value::Null)}));
+    Ok(json!({
+        "projectId":project_id,
+        "revision":revision,
+        "title":document.get("title"),
+        "cityLayout":{"worldRevision":document["cityLayout"]["worldRevision"],"seed":document["cityLayout"]["seed"],
+            "anchorCount":document["cityLayout"]["layout"]["anchors"].as_array().map_or(0, Vec::len)},
+        "objectCounts":object_counts,
+        "mounts":mounts,
+        "skinId":document.get("skinId").cloned().unwrap_or(Value::Null),
+        "cityPatchBuildingMoves":document.get("cityPatch").and_then(|patch| patch.get("buildingMoves")).and_then(Value::as_object).map_or(0, serde_json::Map::len),
+        "assetCount":document["assets"]["entries"].as_array().map_or(0, Vec::len),
+        "selected":selected,
+        "editableCategories":["game","scene","mount","skin","cityPatch"],
+        "generatedAtMs":now_ms(),
+    }))
+}
+
+/// MCP P1（设计 §6.4）：稳定的契约发现——登记过的操作类别、预算和能力版本。
+/// 只描述能力，不返回可执行代码；生成的操作仍经 preview/commit 权威校验。
+fn creator_capabilities() -> Value {
+    json!({
+        "schemaVersion":1,
+        "categories":{
+            "game":{"preview":"creator.game.preview","commit":"creator.project.commit","maxGameBytes":MAX_GAME_BYTES},
+            "scene":{"preview":"creator.scene.preview","commit":"creator.scene.commit",
+                "objectKinds":["model","anchor","collider"],"maxObjects":MAX_SCENE_OBJECTS,
+                "maxColliders":MAX_SCENE_COLLIDERS,"maxOperationsPerPreview":128},
+            "mount":{"bind":"mount.bind","remove":"mount.remove","maxReleaseMounts":MAX_RELEASE_MOUNTS},
+            "skin":{"select":"skin.select","skins":["miami-vice","desert-evening"]},
+            "cityPatch":{"upsert":"city.patch.upsert","remove":"city.patch.remove","maxBytes":MAX_CITY_PATCH_BYTES},
+            "assets":{"import":"creator.asset.import（桌面原生选择器，MCP 不接收路径）","maxImportedModelBytes":MAX_IMPORTED_MODEL_BYTES,"maxAssets":MAX_PROJECT_ASSETS},
+            "playtest":{"start":"creator.project.playtest.start","result":"creator.project.playtest.result","cancel":"creator.project.playtest.cancel","ttlMs":PLAYTEST_TTL_MS},
+            "project":{"create":"creator.project.create","publish":"creator.project.publish","maxDocumentBytes":MAX_PROJECT_BYTES,"maxReleaseBytes":MAX_RELEASE_BYTES},
+        },
+        "preview":{"ttlMs":PREVIEW_TTL.as_millis(),"maxActive":MAX_ACTIVE_PREVIEWS,"singleUse":true,"instanceBound":true},
+    })
+}
+
 pub fn preview_replace_game(home: &Path, actor: &str, project_id: &str, base_revision: u64, game: &Value) -> Result<Value, &'static str> {
     if actor.is_empty() || actor.len() > 128 || !valid_id(project_id) { return Err("creator_request_invalid"); }
     let game_json = validate_game(game)?;
@@ -1622,8 +1699,13 @@ pub fn preview_replace_game(home: &Path, actor: &str, project_id: &str, base_rev
     let mut active_previews = previews().lock().unwrap_or_else(|p| p.into_inner());
     active_previews.retain(|_, item| item.created.elapsed().is_ok_and(|age| age <= PREVIEW_TTL));
     if active_previews.len() >= MAX_ACTIVE_PREVIEWS { return Err("creator_preview_budget_exceeded"); }
-    active_previews.insert(preview_id.clone(), Preview { actor: actor.into(), project_id: project_id.into(), base_revision, operation_hash: digest(&normalized), document: document.to_string(), created: SystemTime::now() });
-    Ok(json!({"previewId":preview_id,"projectId":project_id,"baseRevision":revision,"expiresInMs":PREVIEW_TTL.as_millis(),"diff":{"path":"game","beforeDigest":digest(&raw),"afterDigest":digest(&game_json)}}))
+    active_previews.insert(preview_id.clone(), Preview { actor: actor.into(), project_id: project_id.into(), base_revision, operation_hash: digest(&normalized), document: document.to_string(), created: SystemTime::now(),
+        });
+    let game_id = game.get("id").and_then(Value::as_str).filter(|id| valid_id(id)).unwrap_or("game").to_owned();
+    Ok(json!({"previewId":preview_id,"projectId":project_id,"baseRevision":revision,"expiresInMs":PREVIEW_TTL.as_millis(),
+        "diff":{"path":"game","beforeDigest":digest(&raw),"afterDigest":digest(&game_json)},
+        "changedObjects":[{"id":game_id,"kind":"game","fields":["game"],"beforeDigest":digest(&raw),"afterDigest":digest(&game_json)}],
+        "diagnostics":[]}))
 }
 
 pub fn preview_scene_operations(home: &Path, actor: &str, project_id: &str, base_revision: u64, operations: &Value) -> Result<Value, &'static str> {
@@ -1642,8 +1724,21 @@ pub fn preview_scene_operations(home: &Path, actor: &str, project_id: &str, base
     let mut active_previews = previews().lock().unwrap_or_else(|p| p.into_inner());
     active_previews.retain(|_, item| item.created.elapsed().is_ok_and(|age| age <= PREVIEW_TTL));
     if active_previews.len() >= MAX_ACTIVE_PREVIEWS { return Err("creator_preview_budget_exceeded"); }
-    active_previews.insert(preview_id.clone(), Preview { actor: actor.into(), project_id: project_id.into(), base_revision, operation_hash: digest(&normalized), document: serialized.clone(), created: SystemTime::now() });
-    Ok(json!({"previewId":preview_id,"projectId":project_id,"baseRevision":revision,"expiresInMs":PREVIEW_TTL.as_millis(),"diff":{"paths":touched,"beforeDigest":digest(&raw),"afterDigest":digest(&serialized)}}))
+    active_previews.insert(preview_id.clone(), Preview { actor: actor.into(), project_id: project_id.into(), base_revision, operation_hash: digest(&normalized), document: serialized.clone(), created: SystemTime::now(),
+        });
+    let paths: Vec<&str> = touched.iter().map(|(path, _)| path.as_str()).collect();
+    let changed_objects: Vec<Value> = touched.iter().map(|(path, action)| {
+        let id = path.rsplit('.').next().unwrap_or(path);
+        let kind = if path.starts_with("cityPatch") { "cityPatch" }
+            else if path.starts_with("mounts") { "mount" }
+            else if path.starts_with("skinId") { "skin" }
+            else { "sceneObject" };
+        json!({"id":id,"path":path,"kind":kind,"action":action})
+    }).collect();
+    Ok(json!({"previewId":preview_id,"projectId":project_id,"baseRevision":revision,"expiresInMs":PREVIEW_TTL.as_millis(),
+        "diff":{"paths":paths,"beforeDigest":digest(&raw),"afterDigest":digest(&serialized)},
+        "changedObjects":changed_objects,
+        "diagnostics":[]}))
 }
 
 #[cfg(test)]
@@ -1949,28 +2044,74 @@ mod tests {
         let (project_id, revision) = publishable_project(&home);
         let published = publish_project_release(&home, &project_id, revision).unwrap();
         let release_id = published["releaseId"].as_str().unwrap().to_owned();
+        // 归属不符直接拒绝，且不产生 run
         assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.playtest.start",
             &json!({"releaseId":release_id,"projectId":"other-project","expectedRevision":revision})).unwrap_err(), "creator_release_project_mismatch");
         assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.playtest.start",
             &json!({"releaseId":release_id,"expectedRevision":revision + 1})).unwrap_err(), "creator_release_revision_mismatch");
+        // 契约形状启动：requestId 透传，结果带 project/revision
         let start = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.playtest.start",
             &json!({"releaseId":release_id,"projectId":project_id,"expectedRevision":revision,"requestId":"mcp-req-1"})).unwrap();
         assert_eq!(start["projectId"], project_id);
         assert_eq!(start["revision"], revision);
         assert_eq!(start["requestId"], "mcp-req-1");
         let run_id = start["runId"].as_str().unwrap().to_owned();
+        // pending → result
         assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.playtest.result", &json!({"runId":run_id})).unwrap()["status"], "pending");
+        // claim 后取消：City 的 finish 收到干净终态拒绝
         assert_eq!(dispatch_city_runtime(&home, "city-instance", "city.creator.playtest.claim", &json!({})).unwrap()["runId"], run_id);
         let cancelled = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.playtest.cancel", &json!({"runId":run_id})).unwrap();
         assert_eq!(cancelled["status"], "cancelled");
         assert_eq!(cancelled["cancelled"], true);
         assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.playtest.result", &json!({"runId":run_id})).unwrap()["status"], "cancelled");
+        // 重复取消幂等：返回原终态，不再变更
         let again = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.playtest.cancel", &json!({"runId":run_id})).unwrap();
         assert_eq!(again, json!({"runId":run_id,"projectId":project_id,"revision":revision,"status":"cancelled","cancelled":false}));
+        // 取消后活动槽位释放：可以启动新 run
         let second = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.playtest.start", &json!({"releaseId":release_id})).unwrap();
         assert_ne!(second["runId"], run_id);
+        // 未知 runId
         assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.playtest.result", &json!({"runId":"playtest-missing"})).unwrap_err(), "creator_playtest_not_found");
         assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.playtest.cancel", &json!({"runId":"playtest-missing"})).unwrap_err(), "creator_playtest_not_found");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    // MCP P0（设计 §6.4）：场景摘要 + 能力发现 + 预览结构化差异。
+    #[test]
+    fn scene_describe_capabilities_and_preview_diff_are_bounded() {
+        let home = home();
+        publish_city_layout_snapshot(&home, &layout_snapshot()).unwrap();
+        let created = create_project_from_city_layout(&home, LOCAL_CREATOR_OWNER, "checkpoint-race", "create-describe", "world-rev-test").unwrap();
+        let project_id = created["projectId"].as_str().unwrap().to_owned();
+        // 一个锚点对象让类别计数非零；预览结果必须带结构化差异
+        let preview = preview_scene_operations(&home, "studio-instance", &project_id, 0, &json!([
+            {"op":"anchor.upsert","object":{"id":"zone:gazebo","kind":"anchor","anchor":{"id":"zone:gazebo","kind":"zone","capabilities":["drive"],"geometryRef":"preview-node:z"},"transform":{"positionMeters":{"x":1.0,"y":0.0,"z":2.0},"rotationRadians":{"x":0.0,"y":0.0,"z":0.0},"scale":{"x":1.0,"y":1.0,"z":1.0}}}}
+        ])).unwrap();
+        assert_eq!(preview["changedObjects"][0]["id"], "zone:gazebo");
+        assert_eq!(preview["changedObjects"][0]["kind"], "sceneObject");
+        assert_eq!(preview["changedObjects"][0]["action"], "added");
+        assert_eq!(preview["diagnostics"], json!([]));
+        commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", &project_id, preview["previewId"].as_str().unwrap(), 0, "describe-anchor").unwrap();
+        let described = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.scene.describe", &json!({"projectId":project_id})).unwrap();
+        assert_eq!(described["objectCounts"]["anchor"], 1);
+        assert_eq!(described["revision"], 1);
+        assert_eq!(described["editableCategories"][0], "game");
+        assert_eq!(described["cityLayout"]["seed"], 7);
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.scene.describe",
+            &json!({"projectId":project_id,"revision":0})).unwrap_err(), "revision_conflict");
+        let selected = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.scene.describe",
+            &json!({"projectId":project_id,"selectedObjectId":"zone:gazebo"})).unwrap();
+        assert_eq!(selected["selected"]["id"], "zone:gazebo");
+        assert!(selected["selected"]["transform"].is_object());
+        let capabilities = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.capabilities.list", &json!({})).unwrap();
+        assert_eq!(capabilities["schemaVersion"], 1);
+        assert_eq!(capabilities["categories"]["scene"]["objectKinds"][0], "model");
+        assert_eq!(capabilities["preview"]["singleUse"], true);
+        // 游戏预览同样带结构化差异
+        let project = read_project(&home, &project_id).unwrap();
+        let game_preview = preview_replace_game(&home, "studio-instance", &project_id, 1, &project["game"]).unwrap();
+        assert_eq!(game_preview["changedObjects"][0]["kind"], "game");
+        assert_eq!(game_preview["diagnostics"], json!([]));
         let _ = std::fs::remove_dir_all(home);
     }
 

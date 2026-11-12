@@ -199,7 +199,10 @@
         "creator.project.publish",
         "creator.project.playtest.start",
         "creator.project.playtest.return_context",
-        "creator.project.playtest.history"
+        "creator.project.playtest.history",
+        "creator.scene.describe",
+        "creator.scene.capture",
+        "creator.capabilities.list"
       ],
       "hostEvents": ["plugin.event"],
       "source": "apps/creator-studio/ui"
