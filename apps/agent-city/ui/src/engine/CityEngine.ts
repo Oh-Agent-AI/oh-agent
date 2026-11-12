@@ -1153,14 +1153,40 @@ export class CityEngine {
   }
 
   /** 当前画布 JPEG 数据 URL（Studio 的 creator.scene.capture 用）：先渲染一帧确保内容最新。
-   *  headless/上下文丢失/已销毁返回 null——调用方据此给出可诊断错误，不给空图。 */
-  captureFrame(quality = 0.72): { dataUrl: string; width: number; height: number } | null {
+   *  帧必须装进插件调用的 64 KiB 邮箱（含 JSON 信封开销，编码预算 ~44K 字符）：
+   *  质量从 0.72 逐档降到 0.3，仍超则按 0.75× 降采样重绘再压——降级是渐进的，
+   *  全部档位用尽仍超预算才返回 null（调用方报 creator_capture_budget_exceeded）。
+   *  headless/上下文丢失/已销毁同样返回 null。 */
+  captureFrame(maxChars = 44_000): { dataUrl: string; width: number; height: number; downscaled: boolean } | null {
     if (this.options.headless || this.disposed || this.contextLost) return null;
+    const encode = (canvas: HTMLCanvasElement, quality: number) => {
+      const dataUrl = canvas.toDataURL("image/jpeg", quality);
+      return dataUrl.startsWith("data:image/jpeg") ? dataUrl : null;
+    };
     this.renderFrame();
-    const canvas = this.renderer.domElement;
-    const dataUrl = canvas.toDataURL("image/jpeg", quality);
-    if (!dataUrl.startsWith("data:image/jpeg") || dataUrl.length > 300_000) return null;
-    return { dataUrl, width: canvas.width, height: canvas.height };
+    const source = this.renderer.domElement;
+    for (const quality of [0.72, 0.5, 0.35]) {
+      const dataUrl = encode(source, quality);
+      if (dataUrl && dataUrl.length <= maxChars) return { dataUrl, width: source.width, height: source.height, downscaled: false };
+    }
+    // 原尺寸压不进预算：离屏画布降采样重绘（最远降到 0.35 质量 + 0.4× 尺寸）。
+    let scale = 0.75;
+    while (scale >= 0.4) {
+      const offscreen = document.createElement("canvas");
+      offscreen.width = Math.max(1, Math.round(source.width * scale));
+      offscreen.height = Math.max(1, Math.round(source.height * scale));
+      const context = offscreen.getContext("2d");
+      if (!context) return null;
+      context.drawImage(source, 0, 0, offscreen.width, offscreen.height);
+      for (const quality of [0.6, 0.4]) {
+        const dataUrl = encode(offscreen, quality);
+        if (dataUrl && dataUrl.length <= maxChars) {
+          return { dataUrl, width: offscreen.width, height: offscreen.height, downscaled: true };
+        }
+      }
+      scale -= 0.15;
+    }
+    return null;
   }
 
   /** 按主题的方位/高度角放太阳。曾放在城市中心正上方约 bounds 高、水平只偏 139 处——

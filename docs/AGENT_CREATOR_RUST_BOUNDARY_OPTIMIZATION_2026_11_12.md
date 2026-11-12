@@ -20,7 +20,7 @@
 - 能力目录（`creator_capabilities`）
 - 场景操作应用与差异（`apply_scene_operations` / `changedObjects`）
 
-这些规则在 `packages/agent-vitals-city-sdk/src/content.ts`、`validate.ts` 和 City 引擎里已经存在一份。两套实现没有对等测试，已经出现漂移（§3.4），并且让“加一种皮肤/模板/工具”必须改 Rust（§3.5）。
+这些规则在 `packages/agent-vitals-city-sdk/src/content.ts`、`validate.ts` 和 City 引擎里有职责重叠的实现。现有证据支持“存在重复与漂移风险”，但尚不足以证明每条规则完全一一对应；需要按规则建立对照 fixture（§3.3、§3.4）。模板和皮肤的固定目录确实让新增内容需要修改 Rust（§3.5）。
 
 ### 1.2 目标
 
@@ -37,7 +37,7 @@
 
 - 新增皮肤/模板：只改 SDK 内容定义 + 生成的资产 JSON，**Rust 零改动**（皮肤要求 City 渲染按 skin pack 的 `themeId` 工作；复用现有操作的新模板不需要 City 代码）。
 - 规则单一来源：SDK 定义 → 构建期生成 JSON → Rust/MCP 消费；新增对等 fixture 与锁步测试。
-- 预算单一来源：内容预算在描述符，传输预算在宿主通道；MCP 不再自建上限。
+- 预算按责任分层：内容预算来自描述符并由宿主执行；mailbox 方法预算由宿主描述符执行；MCP 保留独立帧/内存安全上限，不重复维护业务预算。
 - 每次 preview/commit 记录 `capabilityVersion`，版本偏斜可诊断。
 
 ---
@@ -102,29 +102,29 @@ creator_projects.rs
 | 能力目录 | City SDK 声明 | `creator_capabilities`（[:1698](apps/desktop/src-tauri/src/creator_projects.rs:1698)） | ❌ 无 SDK 来源 |
 | 场景操作应用/差异 | 通用宿主应用 + SDK 语义差异 | `apply_scene_operations`（[:1178](apps/desktop/src-tauri/src/creator_projects.rs:1178)）、`changedObjects` | ❌ 语义混入 |
 | MCP 传输边界 | MCP | `creator_studio.rs` 类型校验 | ✅ |
-| MCP 内容枚举/二次预算 | 不应存在 | `template` enum（[creator_studio.rs:40](crates/agent-vitals-mcp/src/mcp/creator_studio.rs:40)）、48 KiB 上限（[:242](crates/agent-vitals-mcp/src/mcp/creator_studio.rs:242)） | ❌ |
+| MCP 内容枚举/业务预算 | 不应存在 | `template` enum（[creator_studio.rs:40](crates/agent-vitals-mcp/src/mcp/creator_studio.rs:40)）、48 KiB 业务上限（[:242](crates/agent-vitals-mcp/src/mcp/creator_studio.rs:242)） | ❌；MCP 仍须保留独立的 JSON-RPC 帧/进程安全上限 |
 | Studio 可视交互 | Studio | 只调 `creatorRequest`，capture 本地出帧 | ✅ |
 
 ### 3.3 重复量化
 
 | 规则族 | Rust | TS（city-sdk / City） | 关系 |
 |---|---|---|---|
-| 小游戏 DSL | `validate_game`，约 89 行 | `validateMiniGamePack`（[content.ts:35](packages/agent-vitals-city-sdk/src/content.ts:35)），约 134 行 | 近似 1:1 |
-| 场景对象 | `validate_scene_object`，约 41 行 | `validateSceneDraft`（[validate.ts:203](packages/agent-vitals-city-sdk/src/validate.ts:203)） | 近似 1:1 |
-| 挂载 + 可达性 | `validate_mount`，约 86 行 | `validateMount`（[validate.ts:262](packages/agent-vitals-city-sdk/src/validate.ts:262)），含同构 BFS | 近似 1:1 |
-| 城市补丁 | `validate_city_patch` + 道路/设施 op，约 140 行 | `planPatch` 类型 + City 修复会话 | 部分重复 |
+| 小游戏 DSL | `validate_game` | `validateMiniGamePack`（[content.ts:35](packages/agent-vitals-city-sdk/src/content.ts:35)） | 职责重叠；字段、拒绝条件与诊断需 fixture 对照 |
+| 场景对象 | `validate_scene_object` | `validateSceneDraft`（[validate.ts:203](packages/agent-vitals-city-sdk/src/validate.ts:203)） | 职责重叠；需逐字段对照 |
+| 挂载 + 可达性 | `validate_mount` | `validateMount`（[validate.ts:262](packages/agent-vitals-city-sdk/src/validate.ts:262)） | 两侧都有挂载/可达性规则；图输入与边界条件尚需证明一致 |
+| 城市补丁 | `validate_city_patch` + 道路/设施 op | `planPatch` 类型 + City 修复会话 | 部分重叠，不能据此认定为等价校验 |
 | 模板 | `game_template` | `checkpointRace.ts` 组包 | 5 处（含 MCP 枚举、Studio 选项、mock） |
 | 皮肤 | 3 处 | City UI 目录 + 引擎映射 + 加载校验 | 共 9 处 |
 | 能力目录 | `creator_capabilities` | 无 | Rust 单点 |
 
-`creator_projects.rs` 约 2600 行，其中 City 语义相关约 **700–800 行**；`validate.ts` + `content.ts` 合计 658 行覆盖同一批规则。
+行数只作粗略定位，不作为重复代码量的量化结论。当前文件约 2600 行；City 内容相关逻辑横跨校验、存储和运行时交接，简单按函数或行数划分会把通用安全/事务代码一并算入。后续以 §3.3 的逐规则 fixture 和职责表为迁移基线。
 
 ### 3.4 已发生的漂移
 
-1. **预算口径矛盾**：capabilities 广告 `maxGameBytes: 262144`（[creator_projects.rs:1702](apps/desktop/src-tauri/src/creator_projects.rs:1702)），MCP 预览却在入参层拒绝 >48 KiB（[creator_studio.rs:242](crates/agent-vitals-mcp/src/mcp/creator_studio.rs:242)），文档也写 ≤48 KiB（[接入指南:72](docs/AGENT_CREATOR_MCP_CLIENT_SETUP.md:72)）。
+1. **预算层级被混为一谈**：项目内容预算、MCP 请求体、插件 mailbox 请求/响应、截图编码大小分别限制不同阶段（见 §5.5）。当前 game/scene 预览存在内容预算与传输预算不一致的风险；需测出序列化后的实际边界并对账，不能简单将它们合成一个数。
 2. **诊断质量反向**：SDK 返回带 `code/severity/path/objectId` 的 `DiagnosticV1`；Rust 先返回单一粗码，`validate_scene` 再拼出泛化 message（[creator_projects.rs:1799](apps/desktop/src-tauri/src/creator_projects.rs:1799)）。权威路径给 Agent 的信息比 SDK 预检更少。
 3. **版本只活在字面量里**：`schemaVersion/rulesVersion = 1` 在 Rust 与 TS 各写一遍；升级 v2 需要同时改两处且无协商字段。
-4. **无 RS↔TS 对等测试**：仓库对 Python↔Rust 有 differential/lockstep 纪律，这条线没有；两套实现已经分叉而无人发现。
+4. **缺少规则级 RS↔TS 对照**：目前没有覆盖 Creator 语义的系统性共享 fixture；因此不能断言两侧整体已分叉，但也无法证明行为一致。需先建立合法/非法样例并记录当前差异。
 5. **能力发现被绑在 UI 上**：`creator.capabilities.list` 走插件信箱（[creator_studio.rs:209](crates/agent-vitals-mcp/src/mcp/creator_studio.rs:209)），Studio 没开就查不到静态目录。
 
 ### 3.5 变更成本（用户判断的实证）
@@ -244,8 +244,10 @@ creator_projects.rs
 }
 ```
 
-- `kind` 是**协议级**概念，只有 `upsert/remove/bind/set` 四种；新增模板/皮肤不新增 kind。
-- `operations` 之外的字段/语义由 SDK 校验；Rust 不解释 `target` 的领域含义，只做路径存在性与类型检查。
+- `kind` 是**协议级**概念，首版仅支持固定的 `upsert/remove/bind/set` 四种；新增内容不能增加 kind。
+- `target` 只能是 Rust 编译期固定枚举（如 sceneObjects、mounts、skinId、cityPatch），禁止描述符提供任意 JSON path、字段名或 SQL/IPC 路由。
+- 描述符不得自行授予新的写能力。未知操作、未知 target、重复 ID、目标集合不匹配、删除仍被引用对象等情况由 Rust 通用安全/完整性检查拒绝。
+- SDK 校验其余 City 语义；Rust 应用层只按固定 target/kind 执行有限文档操作。若新内容需要新的持久化形状或操作语义，应新增经过评审的协议能力，不能靠数据描述符绕过代码评审。
 - `budgets` 是内容预算；Rust 保留硬上限并 clamp（描述符不能把上限调高）。
 
 #### 5.1.2 单一来源与生成
@@ -336,10 +338,12 @@ MCP creator_scene_preview
 
 - `diagnostics` ≤ 200 条、`diff.changedObjects` ≤ 500 条、信封 ≤ 32 KiB；超出则截断并置 `truncated: true`。
 - `semanticOk=false` 的 preview 仍返回 `previewId` 与诊断，但 commit 返回 `creator_preview_invalid` + 诊断摘要（让 Agent 能改）。
-- commit 不重新跑语义校验，只复核结构/预算/版本，并消费 `semanticOk=true` 的 preview。
+- Rust 在签发 preview 前自行计算规范化项目/操作摘要，并把 projectId、baseRevision、operationDigest、capabilityVersion、validatorVersion、SDK bundle identity 和 semantic verdict 原子保存在服务端；客户端不能提交或覆盖已签发 preview 的这些字段。
+- commit 仅消费服务端保存的 preview 记录，核对当前 projectId/revision、operationDigest 和 capabilityVersion，重新检查结构、预算、引用与资产完整性。不得接收调用方传入的 semanticOk 作为授权结论。
+- SDK verdict 仍来自活动官方 Studio。宿主应确认调用来自当前 descriptor 授权实例，并把验证请求和响应关联到同一 requestId；若请求/响应的绑定或版本信息缺失、超时或不匹配，拒绝签发可提交 preview。不得用一个未绑定的 ok 布尔值放行。
 - 响应中的 `changedObjects` 优先用 SDK 的 diff；缺失/被截断时 Rust 用通用规则（描述符 target + 存在性）兜底。diff 只用于展示，不参与提交判定。
 
-**信任模型**：Studio 是官方可信插件，因此接受其 validation 结论；但这只是内容语义的信任，不是安全边界。Rust 的结构/预算/字节/revision 检查不可省略。若未来出现第三方 Studio，必须换成签名描述符或独立校验进程。
+**信任模型**：官方 Studio 是受信任的业务适配器，但 WebView 返回值仍是宿主输入，不能仅凭“官方插件”身份证明某项语义校验确实执行过。Rust 的结构/预算/字节/revision 检查不可省略；validation 结果必须绑定服务端保存的确切候选内容。若威胁模型要求抵御本机对 WebView 的篡改，则语义校验需移到宿主可验证的进程/签名执行环境，或保留 Rust 权威校验；普通哈希不能证明验证器执行过。
 
 ### 5.3 `creator.scene.validate` 拆分
 
@@ -364,29 +368,37 @@ MCP creator_scene_preview
 
 MCP 仍负责：JSON-RPC 帧、`tool_specs` 的 `additionalProperties: false`、必填/类型、错误映射。它不再知道任何 City 模板/皮肤/操作细节。
 
-### 5.5 传输预算统一（capture 案例）
+### 5.5 预算分层与双向 mailbox 限制
 
-当前 capture 有 **3 份预算**：
+预算不是一个数字，而是不同边界上的上限。实现前必须用序列化后的字节数核对每一段，不能用图片像素、data URL 字符数或 JSON 文档字节数相互替代。
 
-1. `CityEngine.captureFrame`：`dataUrl.length > 300_000` 返回 null（[CityEngine.ts:1162](apps/agent-city/ui/src/engine/CityEngine.ts:1162)）
-2. MCP：`MAX_CAPTURE_ENCODED_CHARS = 350_000`（当前 `creator_studio.rs`）
-3. 插件信箱：`MAX_CALL_BYTES = 64 * 1024`，且 `respond` 对**响应**同样限制（[plugin_calls.rs:9](crates/agent-vitals-query/src/query/plugin_calls.rs:9)、[:130](crates/agent-vitals-query/src/query/plugin_calls.rs:130)）
+| 边界 | 计量单位 | 当前/目标责任 | 说明 |
+|---|---|---|---|
+| Creator 内容 | 规范化 JSON/资产字节 | Rust 硬上限；SDK 声明更小的内容预算 | 例如 gameBytes；大于内容上限在项目服务拒绝 |
+| MCP tool request | MCP JSON-RPC arguments 编码字节 | MCP transport 层 | 需要允许完整承载内容预算，或用分块/草稿句柄 |
+| mailbox request | 实际序列化请求消息字节 | PluginHost / plugin_calls 按方法策略 | creator.game.preview、creator.scene.preview 请求必须覆盖声明的最大合法内容 |
+| mailbox response | 实际序列化响应消息字节 | PluginHost / plugin_calls 按方法策略 | preview diagnostics、项目 chunk 和 capture 各有预算 |
+| MCP tool response | structuredContent 与 content 编码字节 | MCP server | image content 应按二进制编码实际大小计量，限制总响应 |
+| viewport capture | 图像编码后的原始字节 | Studio renderer + mailbox + MCP | data URL/base64 会增加传输大小；各阶段预算应换算并实测 |
 
-结果：帧稍大就会在 `respond` 被拒，状态停在 `claimed`，MCP 等到超时并报 `plugin_unavailable`（“打开 Studio 重试”），三份预算谁都没说对。
+当前 mailbox 默认 64 KiB，且对响应也有限制。**仅增加 response budget 不会解决 256 KiB game/scene 请求被 request mailbox 拦截的问题。**
 
-目标：
-
-- 在插件描述符声明**按方法的响应预算**，默认 64 KiB，上限 1 MiB：
+目标是在插件描述符声明每方法的请求和响应预算，并由宿主校验后传给发送、响应路径。默认 64 KiB，宿主绝对上限例如 1 MiB（具体值需按 IPC 与 MCP 序列化测试确定）：
 
 ```json
-"localCallResponseBudgets": {
-  "creator.scene.capture": 524288
+"localCallBudgets": {
+  "creator.game.preview": { "requestBytes": 393216, "responseBytes": 65536 },
+  "creator.scene.preview": { "requestBytes": 393216, "responseBytes": 65536 },
+  "creator.project.read_chunk": { "requestBytes": 8192, "responseBytes": 49152 },
+  "creator.scene.capture": { "requestBytes": 8192, "responseBytes": 524288 }
 }
 ```
 
-- `plugin_calls::respond` 接受宿主传入的预算（硬上限 clamp），超限返回 `plugin_call_too_large`。
-- MCP 不再自建 capture 预算，只映射错误；UI 只做质量/尺寸自适应，最终预算由宿主判定，不再在 UI 里维护第二个硬编码上限。
-- 错误语义：超预算 → `creator_capture_budget_exceeded`（可诊断），不再伪装成 unavailable。
+- 字段名和具体数值是设计提案；最终 API 应统一使用 request/response budgets，不能只配置响应预算。
+- `plugin_calls::call` 与 `respond` 均接受经过 PluginHost 校验、被宿主硬上限 clamp 的方法预算。
+- 如果 game/scene 的完整 MCP 参数可超过 mailbox 上限，则实施有摘要校验的分块传输或先上传临时草稿再 preview；不能简单删掉 MCP 48 KiB 限制后假设链路已支持更大负载。
+- MCP 不复制 mailbox 的方法预算常量；它仍应保护自身 JSON-RPC 帧/进程内存的绝对上限。MCP 总帧安全上限和业务内容预算是不同层级。
+- UI 可降低截图质量，但不能作为唯一预算执行点；最终超限由宿主以稳定错误码拒绝。超限截图返回 `creator_capture_budget_exceeded`，不得留下永久 claimed 请求或映射成 plugin_unavailable。
 
 ### 5.6 版本与兼容
 
@@ -419,11 +431,11 @@ MCP 仍负责：JSON-RPC 帧、`tool_specs` 的 `additionalProperties: false`、
 | 文件 | 改动 |
 |---|---|
 | `creator_projects.rs` | 删除 `game_template`、`validate_game`、`validate_scene_object`、`validate_mount` 的语义部分、`valid_skin_id`；`apply_scene_operations` 改为 kind 驱动；`preview_*` 接收 validation 信封；`Preview` 增 `semantic_ok/validation_digest/capability_version`；`commit_preview_as` 增加闸门；`validate_scene` 缩为 `structure_check`；`creator_capabilities` 改为描述符投影 |
-| `plugin_host.rs` | `PluginDefinition` 增加 `localCallResponseBudgets`（无 `deny_unknown_fields`，漏改会静默忽略）；`respond` 传预算；启动校验预算表 |
-| `plugin_calls.rs` | `respond(home, …, max_bytes)`；默认/硬上限常量 |
-| `creator_studio.rs` | 删 `template` enum 与 48 KiB 上限；capabilities 直接读嵌入 JSON；capture 只做响应信封；错误映射补新码 |
+| `plugin_host.rs` | `PluginDefinition` 增加 `localCallBudgets` 请求/响应预算（启用严格反序列化或显式拒绝未知字段，避免拼写错误静默忽略）；启动时校验方法白名单、预算范围与绝对上限 |
+| `plugin_calls.rs` | `call/respond(home, …, request_max_bytes, response_max_bytes)`；宿主校验后的按方法预算与进程硬上限 |
+| `creator_studio.rs` | 在完整请求链路预算或分块/临时草稿句柄落地后，删业务层 `template` enum 与 48 KiB 上限；保留 MCP JSON-RPC 帧/内存安全上限；capabilities 直接读嵌入 JSON；capture 只做响应信封；错误映射补新码 |
 | `mod.rs` | 路由新增内部方法（不新增 MCP 工具） |
-| `plugins.json` | `localCallResponseBudgets`；`creator.scene.structure_check` 加入 `localCalls` |
+| `plugins.json` | `localCallBudgets` 请求/响应预算；`creator.scene.structure_check` 加入 `localCalls` |
 | `creator-studio/ui/main.tsx` | preview 前跑 SDK 校验并附 validation；`creator.scene.validate` 改为 Studio 合并；capabilities 展示 |
 | `agent-city/ui/src/engine/cityWorldProfile.ts` | 皮肤目录改由 city-sdk 导出（或生成） |
 | `agent-city/ui/src/game/activity/checkpointRace.ts` | 模板 pack 改用 `creatorTemplates.ts` |
@@ -433,7 +445,7 @@ MCP 仍负责：JSON-RPC 帧、`tool_specs` 的 `additionalProperties: false`、
 ### 6.3 删除/降级
 
 - `game_template`、`validate_game`、`validate_scene_object`、`validate_mount`、`valid_skin_id`、`creator_capabilities` 手写目录。
-- MCP `template` enum、MCP 48 KiB 上限、MCP capture 预算常量。
+- MCP `template` enum 与业务层 48 KiB 上限（仅在请求帧、mailbox 请求/响应及内容预算已闭环后删除）；MCP 自身的帧/内存防护上限继续保留。MCP capture 业务预算常量可迁至宿主方法预算，但保留传输层安全上限。
 - `Preview.kind/summary` 这类未使用字段不再新增。
 
 ---
@@ -445,9 +457,9 @@ MCP 仍负责：JSON-RPC 帧、`tool_specs` 的 `additionalProperties: false`、
 **范围**
 
 1. 生成脚本 + `assets/creator/capabilities.json`（先只含 operations/content/budgets，不接消费方）。
-2. 对等语料 `fixtures/creator/` 与两侧测试；先钉住**当前**两套实现的一致/不一致。
-3. 预算对账：把 `maxGameBytes`、preview 48 KiB、capture 三份预算写成一张表并修正文档/常量。
-4. 传输预算机制（`respond` 带预算）与 capture 错误语义。
+2. 对照语料 `fixtures/creator/` 与两侧测试；记录当前实现接受/拒绝结果、稳定错误码和已知差异。
+3. 预算对账：分别记录内容、MCP 帧、mailbox 请求、mailbox 响应和 capture 的计量方式与字节上限。
+4. 双向传输预算机制（`call/respond` 按方法预算）与 capture 错误语义；若大请求仍超 mailbox，定义分块或临时草稿句柄。
 
 **退出条件**
 
@@ -463,7 +475,7 @@ MCP 仍负责：JSON-RPC 帧、`tool_specs` 的 `additionalProperties: false`、
 
 1. Rust 加载描述符；`creator.capabilities.list` 由描述符投影，且不需要 Studio。
 2. 模板/皮肤从生成资产读取；删除三处 Rust 字面量；皮肤目录上移到 city-sdk。
-3. MCP `template` 去枚举；删 MCP 48 KiB 上限。
+3. MCP `template` 去枚举；先实现并验证完整请求链路的 mailbox 预算或分块/临时草稿句柄，再删除 48 KiB 业务上限；保留 MCP 帧/内存安全上限。
 4. 守卫测试：Rust 源码不得出现模板/皮肤字面量。
 
 **退出条件**
@@ -513,11 +525,11 @@ MCP 仍负责：JSON-RPC 帧、`tool_specs` 的 `additionalProperties: false`、
 |---|---|---|
 | 生成物锁步 | `scripts/generate-creator-capabilities.mjs --check` | `assets/creator/*` 与 SDK 源字节一致 |
 | 描述符形状 | Rust 单测 | 非法 ID/超预算/未知 kind/重复项被拒 |
-| 对等语料 | `fixtures/creator/*` + TS/Rust 测试 | 同一输入两实现结论一致（P0）；P2 后语义只归 SDK |
+| 对照语料 | `fixtures/creator/*` + TS/Rust 测试 | P0 记录两侧结论及差异；迁移后 Rust 测宿主不变量，City 语义归 SDK 测试 |
 | 字面量守卫 | Rust 测试读 `include_str!("creator_projects.rs")` | 不含 `"miami-vice"`、`"checkpoint-race"`、`"zone.entered"` 等内容字面量 |
 | 版本协商 | Rust 单测 | preview 的 capabilityVersion 与当前不符 → commit 拒绝 |
 | 迁移 | Rust 单测 | 旧 `creator_operations` 表升级后读写正常 |
-| 传输预算 | `plugin_calls` 单测 | 超预算 `respond` 返回 `plugin_call_too_large`，不会超时 |
+| 传输预算 | `plugin_calls` 单测 | 超预算请求与响应均返回 `plugin_call_too_large`；请求调用方收到明确错误，响应侧释放/终结 claim，不能遗留 pending 并等待超时 |
 | 能力可用性 | MCP 单测 | Studio 未开时 `creator_capabilities_list` 仍返回 schemaVersion 1 |
 | capture 信封 | MCP 单测 | dataUrl 不进 structuredContent；超预算返回专用码 |
 | 端到端冒烟 | 手工/脚本 | Studio 预览→commit→revision 前进；无效预览被 commit 拒绝 |
@@ -531,7 +543,7 @@ CI 需要跑：根 workspace `cargo test` + clippy、`apps/desktop/src-tauri` `c
 | 风险 | 影响 | 缓解 |
 |---|---|---|
 | 削弱权威：SDK 说 ok 就放行 | 高 | Rust 结构/预算/字节/revision 永远独立校验；SDK 只影响 `semantic_ok` |
-| Studio 被篡改/伪造 validation | 中 | 官方插件+实例绑定；未来第三方 Studio 需签名描述符或独立校验进程 |
+| Studio WebView 伪造 validation | 高（若纳入本机篡改威胁模型） | 实例绑定和摘要绑定只能绑定请求与候选内容，不能证明验证器确实执行；需由宿主可验证的进程/签名环境运行语义校验，或保留 Rust 权威语义校验。若产品明确不防本机篡改，记录该信任假设并限制在官方内置 Studio |
 | 版本偏斜（旧 Studio/新宿主） | 中 | capabilityVersion 协商 + `requireSdkValidation` 灰度 + 明确错误码 |
 | 语义校验搬到 Studio 增加延迟 | 低 | preview 本来就走 Studio；validate 结果按 revision 缓存 |
 | 诊断顺序/文案不稳定 | 中 | SDK 诊断排序规范 + 快照测试 |
@@ -546,9 +558,9 @@ CI 需要跑：根 workspace `cargo test` + clippy、`apps/desktop/src-tauri` `c
 - [ ] `assets/creator/capabilities.json` 由 SDK 生成，`--check` 在 CI 通过。
 - [ ] 新增皮肤/模板的演示 PR **不修改 Rust**（守卫测试通过）。
 - [ ] `creator_capabilities_list` 在 Studio 关闭时可用。
-- [ ] 语义非法内容：preview 返回带 code/path 的诊断，commit 拒绝；合法内容端到端通过。
+- [ ] SDK 语义非法内容的诊断绑定 project/revision/operationDigest/capabilityVersion，commit 拒绝；Rust 结构、预算、引用和资产不变量继续由 Rust 拒绝。
 - [ ] 每次 commit 记录 `capabilityVersion`，可由 `creator_operations`/审计读到。
-- [ ] 预算只有两处：内容（描述符，Rust clamp）、传输（插件描述符，宿主执行）；MCP 无自建上限。
+- [ ] 内容预算、MCP 帧硬上限、mailbox 请求/响应预算和截图编码预算分别定义并实测；按方法 mailbox 预算由宿主统一执行，MCP 不复制业务预算常量。
 - [ ] capture 超预算返回 `creator_capture_budget_exceeded`，不再超时/伪装 unavailable。
 - [ ] 根 workspace 与 desktop workspace 的测试、clippy、两套 UI typecheck/build 全绿。
 - [ ] 设计文档 §4/§6.4/§11 与接入指南同步更新。
