@@ -25,13 +25,13 @@ Oh Agent is an open-source platform for analyzing AI agent behavior data. Agents
 
 Everything runs on your Mac. Nothing in this path uploads your data.
 
-What "game" means today: desktop City has free flight and ring challenges, and driving is still in development. The web demo hides the game controls.
+What "game" means today: desktop City has free flight, ring challenges and free drive. The web demo hides the game controls and cannot enter Mecha tactics, which are fought on the city apron in the desktop app.
 
 <!-- source: README.md ("What you can try today" table: Flying, Driving, Website gameplay rows) -->
 
 ## Key facts
 
-- **Desktop shell:** Tauri 2 (`tauri = "2"`), app `Oh Agent.app`, identifier `ai.ohagent.desktop`, version `1.0.0-beta.3`.
+- **Desktop shell:** Tauri 2 (`tauri = "2"`), app `Oh Agent.app`, identifier `ai.ohagent.desktop`, version `1.0.0-beta.4`.
 - **Workbench UI:** React 19 + Vite + Tailwind 4, in `apps/desktop/ui-dev/`.
 - **Agent City:** React 19 + three.js 0.186 + Vite, TypeScript, in `apps/agent-city/ui/`.
 - **Core:** a Rust workspace of layered crates under `crates/` (data, domain, harnesses, query, ingest, billing, trust, MCP).
@@ -40,7 +40,7 @@ What "game" means today: desktop City has free flight and ring challenges, and d
 - **Website:** static landing page in `website/landing/`, plus a copy of the real City frontend that only gets synthetic data.
 - **Naming:** the desktop app is `Oh Agent.app` (`ai.ohagent.desktop`, renamed on dev in `5c29146`). Crates, the CLI, the internal executable `agent-vitals-menubar` and the data folder still use `agent-vitals`.
 
-<!-- source: apps/desktop/src-tauri/Cargo.toml (tauri = "2", version 1.0.0-beta.3); apps/desktop/src-tauri/tauri.conf.json (identifier, bundle.resources "../../../target/release/agent-vitals": "bin/agent-vitals") -->
+<!-- source: apps/desktop/src-tauri/Cargo.toml (tauri = "2", version 1.0.0-beta.4); apps/desktop/src-tauri/tauri.conf.json (identifier, bundle.resources "../../../target/release/agent-vitals": "bin/agent-vitals") -->
 <!-- source: apps/desktop/ui-dev/package.json (react, tailwindcss, vite); apps/agent-city/ui/package.json (react ^19.3.0, three ^0.186.1, vite ^6.1.0) -->
 <!-- source: crates/agent-vitals-runtime-core/src/core/home.rs (AGENT_VITALS_HOME → ~/.agent-vitals, legacy ~/.skill-vitals); crates/agent-vitals-data/src/authority.rs (default_authority_path → agent-vitals.sqlite3) -->
 <!-- source: README.md ("Repository names, CLI commands, crates, application identifiers ... still use agent-vitals") -->

@@ -58,7 +58,7 @@ Claude Code 把会话记录存在 `~/.claude/projects/` 下面，每个项目一
 - **时间范围里没有会话**：桌面版城市显示近 7、30、90 或 366 天，可以把范围调大。
 - **旧记录被清理了**：如果 Claude Code 在 Oh Agent 导入之前就删除了记录，该会话将无法导入。已经导入的统计在 Oh Agent 的保留期内仍可显示；删除源日志只会使对应原文无法查看。Claude Code 默认 30 天后删除会话记录，见[为什么 Agent City 里缺了较早的会话？](#为什么-agent-city-里缺了较早的会话)
 - **在别的电脑上用的**：其他设备上的历史不会合并进来。
-- **改过配置目录**：设置了 `CLAUDE_CONFIG_DIR` 后，Claude Code 会把会话历史存到那个目录，不再放在 `~/.claude`（见 [Anthropic 设置文档](https://docs.anthropic.com/en/docs/claude-code/settings)）。Oh Agent 1.0.0-beta.3 不跟随这个变量。可以在“设置 → 其他读取位置”里添加目录，但每个目录都会按 `<目录>/.claude/projects` 去读，所以多数自定义配置目录还是读不到。
+- **改过配置目录**：设置了 `CLAUDE_CONFIG_DIR` 后，Claude Code 会把会话历史存到那个目录，不再放在 `~/.claude`（见 [Anthropic 设置文档](https://docs.anthropic.com/en/docs/claude-code/settings)）。Oh Agent 1.0.0-beta.4 不跟随这个变量。可以在“设置 → 其他读取位置”里添加目录，但每个目录都会按 `<目录>/.claude/projects` 去读，所以多数自定义配置目录还是读不到。
 - **会话超过 4000 次**：每个时间范围只载入最近的 4000 次。
 - **权限**：macOS 可能需要你允许 Oh Agent 读取这个目录。
 

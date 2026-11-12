@@ -1,6 +1,6 @@
 ---
 title: Agent City 里的楼代表什么？楼高是怎么算的
-lastUpdated: 2026-10-22
+lastUpdated: 2026-11-12
 description: Agent City 里每栋会话楼对应一次 Agent 会话，楼高按总 Token 数取对数计算。逐一说明楼、城区、地标的含义。
 head:
   - tag: script
@@ -112,6 +112,10 @@ m    = max(0, log10(tokens) − 1)
 不是。城市只是把记录到的活动画出来，不是生产力评分。楼长高不代表任务完成了，反复重试也不等于白干。楼的详情里会显示估算费用，但费用不影响楼高，估算也不等于账单。
 
 <!-- source: README.md（“不是生产力排名。建筑生长不代表任务完成，重试也不等于浪费”）；website/landing/i18n.js faq.6 -->
+
+## 能改一栋会话楼吗？
+
+在桌面应用里，MCP 可以预览、设置或重置单独一栋会话楼：预览会显示幽灵楼，失败时地块会闪一下。详见 [Agent Vitals 的 MCP 工具](/docs/zh/vitals/mcp-tools)。这不是整座城的编辑，也不代表 Agent 已经能自主建造城市。
 
 ## 相关页面
 

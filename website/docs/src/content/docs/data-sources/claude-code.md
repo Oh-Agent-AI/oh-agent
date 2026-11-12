@@ -59,7 +59,7 @@ The Agent City view never receives full prompts, file paths, working directories
 - **No sessions yet in the window.** The desktop city shows the last 7, 30, 90 or 366 days; widen the window.
 - **Old transcripts were cleaned up.** If Claude Code deleted a transcript before Oh Agent imported it, that session cannot be imported. Statistics already imported remain available within Oh Agent's retention window; deleting the source log only makes its original conversation unavailable. By default Claude Code deletes transcripts after 30 days; see [Why are my older sessions missing?](#why-are-my-older-sessions-missing-from-agent-city)
 - **Another device.** History from other computers isn't merged.
-- **Custom config folder.** If you set `CLAUDE_CONFIG_DIR`, Claude Code stores session history there instead of `~/.claude` (per [Anthropic's settings docs](https://docs.anthropic.com/en/docs/claude-code/settings)). Oh Agent 1.0.0-beta.3 doesn't follow that variable. You can add extra folders in Settings → Additional read locations, but each one is read as `<folder>/.claude/projects`, so it doesn't cover most custom config folders.
+- **Custom config folder.** If you set `CLAUDE_CONFIG_DIR`, Claude Code stores session history there instead of `~/.claude` (per [Anthropic's settings docs](https://docs.anthropic.com/en/docs/claude-code/settings)). Oh Agent 1.0.0-beta.4 doesn't follow that variable. You can add extra folders in Settings → Additional read locations, but each one is read as `<folder>/.claude/projects`, so it doesn't cover most custom config folders.
 - **More than 4,000 sessions.** The most recent 4,000 sessions in the window are loaded.
 - **Permission.** macOS may ask you to allow Oh Agent to read the folder.
 

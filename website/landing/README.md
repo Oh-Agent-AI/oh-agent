@@ -64,16 +64,16 @@ Current brand captures are in `docs/assets/oh-agent-2026-10-16/` from repository
 
 The repository `https://github.com/MixLabPro/oh-agent-ai` was verified public on 2026-10-19 and moved to `https://github.com/Oh-Agent-AI/oh-agent` on 2026-10-22; the FAQ links to it in both locales.
 
-**Current release: `1.0.0-beta.3`** — GitHub pre-release [`app-v1.0.0-beta.3`](https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.3), published 2026-10-22 13:42 (UTC+8) and checked through the GitHub Releases API the same day. The download section links these assets directly:
+**Current release: `1.0.0-beta.4`** — GitHub pre-release [`app-v1.0.0-beta.4`](https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.4), published 2026-11-11 23:17 (Asia/Shanghai) and checked through the GitHub Releases API on 2026-11-12. Built from `main@974c2137`; assets repacked 2026-11-12 (Asia/Shanghai). The download section links these assets directly:
 
-| Platform | Asset | Signing |
-| --- | --- | --- |
-| macOS, Apple Silicon (macOS 11+, per `tauri.conf.json`) | `oh-agent-1.0.0-beta.3-arm64.dmg` | Developer ID signed, notarized, stapled |
-| Windows x64 | `oh-agent-1.0.0-beta.3-windows-x86_64-setup.exe` | Not Authenticode-signed (unknown-publisher / SmartScreen warning possible) |
-| Linux x64 | `oh-agent-1.0.0-beta.3-linux-x86_64.deb`, `oh-agent-1.0.0-beta.3-linux-x86_64.AppImage` | Unsigned; AppImage needs `chmod +x` and FUSE |
-| Checksums | `SHA256SUMS` | — |
+| Platform | Asset | SHA-256 | Signing |
+| --- | --- | --- | --- |
+| macOS, Apple Silicon (macOS 11+, per `tauri.conf.json`) | `oh-agent-1.0.0-beta.4-arm64.dmg` | `d1b6a42a8a08c83fa9391c037e17e3daeb5e88a5aaa65c7eab1b46b259da268b` | Developer ID signed, notarized, stapled |
+| Windows x64 | `oh-agent-1.0.0-beta.4-windows-x86_64-setup.exe` | `5d8253f91fdc900083d9be442816a1dbaefb9dbeab9de63b26bb4909ecb63bcc` | Not Authenticode-signed (unknown-publisher / SmartScreen warning possible) |
+| Linux x64 | `oh-agent-1.0.0-beta.4-linux-x86_64.deb` / `oh-agent-1.0.0-beta.4-linux-x86_64.AppImage` | `f2d80bc7c8f169f14de8de286a7d0a1a3cc9613ca46e550dd1264dbba5c099e2` / `86a55b747933dea37dcb988e505379d689171da9945f9e413f4e80970c4abbc8` | Unsigned (built on Ubuntu 22.04); AppImage needs `chmod +x` and FUSE |
+| Checksums | `SHA256SUMS` | — | — |
 
-Intel Mac packages are not included and are described as "coming later" with no link. Known limits stated on the page: beta; some City road-passability checks are not fully certified; interactive gameplay on Windows and Linux has not been manually accepted.
+Intel Mac packages are not included and are described as "coming later" with no link. Known limits stated on the page: beta; hands-on testing has focused on Apple Silicon Mac; interactive gameplay on Windows and Linux has not been manually accepted.
 
 Link rules: never use `/releases/latest` (it skips pre-releases). Link the tag page and `releases/download/app-v<version>/<asset>` URLs. For the next release, verify the assets via the API, then update the URLs, both locales and the verifier's `releaseTag`/`releaseAssets` allowlist together. Domain availability or a merged landing change does not mean the site is deployed.
 

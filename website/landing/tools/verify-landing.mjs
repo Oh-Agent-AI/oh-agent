@@ -23,7 +23,7 @@ assert.match(html, /data-exploration-panel="vtol"/);
 assert.match(read('i18n.js'), /桌面版已开放自由驾驶/);
 assert.match(html, /Oh-Agent-AI\/oh-agent/, 'The source FAQ must name the relocated repository');
 assert.match(html, /public source repository is/);
-assert.match(html, /Download the 1\.0\.0-beta\.3 desktop beta/);
+assert.match(html, /Download the 1\.0\.0-beta\.4 desktop beta/);
 assert.doesNotMatch(html, /desktop installer is not published yet|installers are still being prepared/);
 assert.match(read('i18n.js'), /'faq\.8\.before': '项目代码采用 MIT 许可。公开源码仓库位于 '/, 'The Chinese FAQ must link to the public repository');
 const scripts = [...html.matchAll(/<script[^>]+src="([^"]+)"/g)].map((m) => m[1].split('?')[0]);
@@ -48,10 +48,10 @@ assert.match(html, /<span>Oh Agent<small/);
 assert.doesNotMatch(html, /Agent Vitals/);
 assert.doesNotMatch(read('i18n.js'), /Agent Vitals/);
 assert.match(html, /An estimate, not a bill/);
-// Release state: 1.0.0-beta.3 is a published GitHub pre-release (verified 2026-10-22).
+// Release state: 1.0.0-beta.4 is a published GitHub pre-release (verified 2026-11-12).
 const i18n = read('i18n.js');
-assert.match(html, /Beta · 1\.0\.0-beta\.3 · Pre-release/);
-assert.match(i18n, /测试版 · 1\.0\.0-beta\.3 · 预发布/);
+assert.match(html, /Beta · 1\.0\.0-beta\.4 · Pre-release/);
+assert.match(i18n, /测试版 · 1\.0\.0-beta\.4 · 预发布/);
 assert.match(html, /A private desktop app for your Claude Code and Codex history/);
 assert.match(html, /data-i18n="nav.download">Download</);
 assert.match(i18n, /'nav\.download': "下载"/);
@@ -59,25 +59,30 @@ assert.match(html, /Intel Mac: coming later/);
 assert.match(i18n, /Intel Mac 版本随后提供/);
 assert.match(html, /not code-signed yet/, 'Windows unsigned note');
 assert.match(i18n, /暂未代码签名/, 'Chinese Windows unsigned note');
-assert.match(html, /road-passability checks are not fully certified/);
-assert.match(i18n, /道路通行检查尚未完全通过认证/);
+assert.doesNotMatch(html + i18n, /road-passability|道路通行检查尚未完全通过认证/);
+assert.doesNotMatch(html + i18n, /Linux packages are not in this release|Linux 安装包本版没有/);
 assert.match(html, /Windows x64 · Linux x64/);
+assert.match(html, /Mecha tactics fought on the city apron/);
+assert.match(html, /it cannot enter Mecha/);
+assert.match(i18n, /机甲战棋/);
+assert.match(html, /linux-x86_64\.deb/);
+assert.match(html, /linux-x86_64\.AppImage/);
 for (const stale of [/Mac app/, /Desktop release in preparation/, /No desktop installer is published/, /not currently claimed/i, /for Mac\."/, /on your Mac/, /INSIDE YOUR MAC/]) assert.doesNotMatch(html, stale, `Stale Mac-only/pending copy: ${stale}`);
 for (const stale of [/Mac 应用/, /尚未发布桌面安装包/, /安装包仍在准备中/, /发布进度/, /全部在你的 MAC 内/, /留在你的 Mac/]) assert.doesNotMatch(i18n, stale, `Stale Chinese copy: ${stale}`);
 assert.match(css, /city-window:not\(\[data-city-state="ready"\]\):not\(\[data-city-state="updating"\]\) \.city-actions/);
 assert.ok(html.indexOf('id="city"') < html.indexOf('id="insights"'));
 assert.ok(!html.includes('data-ascii'), 'No obsolete primary animation dependency');
 const publicLinks = [...html.matchAll(/<a[^>]+href="(https?:[^"]+)"/g)].map((match) => match[1]);
-const releaseTag = 'app-v1.0.0-beta.3';
+const releaseTag = 'app-v1.0.0-beta.4';
 const releasePage = `https://github.com/Oh-Agent-AI/oh-agent/releases/tag/${releaseTag}`;
 const assetBase = `https://github.com/Oh-Agent-AI/oh-agent/releases/download/${releaseTag}/`;
-const releaseAssets = ['oh-agent-1.0.0-beta.3-arm64.dmg', 'oh-agent-1.0.0-beta.3-windows-x86_64-setup.exe',
-  'oh-agent-1.0.0-beta.3-linux-x86_64.deb', 'oh-agent-1.0.0-beta.3-linux-x86_64.AppImage', 'SHA256SUMS'];
+const releaseAssets = ['oh-agent-1.0.0-beta.4-arm64.dmg', 'oh-agent-1.0.0-beta.4-windows-x86_64-setup.exe',
+  'oh-agent-1.0.0-beta.4-linux-x86_64.deb', 'oh-agent-1.0.0-beta.4-linux-x86_64.AppImage', 'SHA256SUMS'];
 const allowedLinks = new Set(['https://github.com/Oh-Agent-AI/oh-agent', 'https://x.com/ohagentai', releasePage, ...releaseAssets.map((name) => assetBase + name)]);
 for (const link of publicLinks) assert.ok(allowedLinks.has(link), `Unverified public link: ${link}`);
 for (const link of allowedLinks) assert.ok(publicLinks.includes(link), `Missing verified release link: ${link}`);
 assert.doesNotMatch(html, /releases\/latest/, '/releases/latest skips pre-releases; link the tag');
-assert.doesNotMatch(html, /x86_64\.dmg|x64\.dmg/, 'Intel Mac is not part of beta.3');
+assert.doesNotMatch(html, /x86_64\.dmg|x64\.dmg/, 'Intel Mac is not part of beta.4');
 for (const [, anchor] of html.matchAll(/href="#([\w-]+)"/g)) assert.ok(html.includes(`id="${anchor}"`), `Missing anchor ${anchor}`);
 assert.doesNotMatch(html, /health score|framework-agnostic|burning money|saves you/i);
 
@@ -90,8 +95,8 @@ assert.match(navBlock, /<a href="\/docs\/" data-href-zh="\/docs\/zh\/" data-i18n
 assert.match(navBlock, /href="https:\/\/github\.com\/Oh-Agent-AI\/oh-agent" target="_blank" rel="noopener">GitHub ↗<\/a>/, 'Nav links to GitHub');
 assert.match(i18n, /'nav\.blog': '博客'/);
 assert.match(i18n, /'nav\.docs': '文档'/);
-assert.match(html, /id="hero-download" href="#download" data-i18n="cta\.download">Download the beta · v1\.0\.0-beta\.3</);
-assert.match(i18n, /'cta\.download': '下载测试版 · v1\.0\.0-beta\.3'/);
+assert.match(html, /id="hero-download" href="#download" data-i18n="cta\.download">Download the beta · v1\.0\.0-beta\.4</);
+assert.match(i18n, /'cta\.download': '下载测试版 · v1\.0\.0-beta\.4'/);
 assert.match(html, /data-i18n="hero\.star">★ Star on GitHub</);
 assert.match(i18n, /'hero\.star': '★ 在 GitHub 点 Star'/);
 assert.doesNotMatch(read('app.js'), /api\.github|stargazers/, 'No GitHub API star count');
@@ -103,7 +108,7 @@ assert.doesNotMatch(html + i18n, /cost is not shown in City|does not currently p
 assert.match(html, /up to 4,000 recent sessions/, 'FAQ 4 matches SESSION_CAP = 4_000');
 assert.doesNotMatch(i18n, /Mock 会话|mock 会话/);
 assert.doesNotMatch(html, /⌘ Codex/);
-assert.match(html, /"@type": "SoftwareApplication"[\s\S]*"softwareVersion": "1\.0\.0-beta\.3"[\s\S]*"downloadUrl": "https:\/\/github\.com\/Oh-Agent-AI\/oh-agent\/releases\/tag\/app-v1\.0\.0-beta\.3"/);
+assert.match(html, /"@type": "SoftwareApplication"[\s\S]*"softwareVersion": "1\.0\.0-beta\.4"[\s\S]*"downloadUrl": "https:\/\/github\.com\/Oh-Agent-AI\/oh-agent\/releases\/tag\/app-v1\.0\.0-beta\.4"/);
 assert.match(html, /og:image" content="https:\/\/ohagent\.ai\/assets\/oh-agent-preview-beta3\.jpg"/);
 assert.ok(existsSync(path.join(root, 'assets/oh-agent-preview-beta3.jpg')), 'OG image asset exists');
 assert.match(html, /<link rel="alternate" hreflang="zh-CN" href="https:\/\/ohagent\.ai\/zh\/">/);
@@ -203,16 +208,16 @@ translated('zh');
 // Platform hint: the hero download button adopts the matching card's direct link.
 for (const [ua, expected] of [['Macintosh', 'mac'], ['Windows NT 10.0', 'windows'], ['X11; Linux x86_64', 'linux'], ['iPhone', ''], ['X11; CrOS x86_64', '']]) {
   const links = { mac: 'MAC-LINK', windows: 'WIN-LINK', linux: 'LINUX-LINK' };
-  const cards = Object.fromEntries(Object.keys(links).map((id) => [id, { classList: { added: [], add(c) { this.added.push(c); } },
-    querySelector: () => ({ getAttribute: () => links[id] }) }]));
-  const lines = Object.fromEntries(Object.keys(links).map((id) => [id, { hidden: true }]));
+  const cards = Object.fromEntries(['mac', 'windows', 'linux'].map((id) => [id, { classList: { added: [], add(c) { this.added.push(c); } },
+    querySelector: () => (links[id] ? { getAttribute: () => links[id] } : null) }]));
+  const lines = Object.fromEntries(['mac', 'windows', 'linux'].map((id) => [id, { hidden: true }]));
   const hero = { href: '#download' };
   const note = { hidden: true, querySelector: (sel) => lines[sel.match(/"(\w+)"/)[1]] };
   const documentElement = { dataset: {} };
   vm.runInNewContext(read('app.js'), { navigator: { userAgent: `Mozilla/5.0 (${ua})` }, document: { documentElement,
     querySelector: (sel) => cards[sel.match(/data-platform="(\w+)"/)?.[1]] || null, querySelectorAll: () => [],
     getElementById: (id) => (id === 'hero-download' ? hero : id === 'hero-download-note' ? note : null) } });
-  assert.equal(hero.href, expected ? links[expected] : '#download', `Hero download for ${ua}`);
+  assert.equal(hero.href, expected && links[expected] ? links[expected] : '#download', `Hero download for ${ua}`);
   assert.equal(documentElement.dataset.platform, expected || undefined);
   if (expected) assert.deepEqual(cards[expected].classList.added, ['is-detected']);
   if (expected) assert.equal(lines[expected].hidden, false);
@@ -328,4 +333,4 @@ assert.equal(localFile.elements['.city-window'].dataset.cityState, 'local-file')
 assert.equal(localFile.elements['city-launch'].disabled, true);
 assert.equal(localFile.elements['city-status'].textContent, 'city.localFile');
 console.log(`City host: PASS (v2 fixture ${seven.sessions.length}/${thirty.sessions.length} sessions, origin/method checks, explicit readiness, teardown, timeout, stale response, retry, missing build)`);
-console.log('verify-landing: PASS (local implementation checks; links 1.0.0-beta.3 pre-release assets)');
+console.log('verify-landing: PASS (local implementation checks; links 1.0.0-beta.4 pre-release assets)');
