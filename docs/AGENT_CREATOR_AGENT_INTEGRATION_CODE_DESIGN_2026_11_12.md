@@ -166,7 +166,7 @@ MVP 有三个不同身份，不应混成一个 Agent token：
 
 ### 6.3 试玩工具
 
-当前 MCP 工具面没有启动或读取单次试玩结果的工具。以下契约已实现（2026-11-12，见 creator_studio.rs 与 creator_projects.rs 的 result/cancel）：
+试玩工具已实现，工具名和输入以 creator_studio.rs 为准。启动以 releaseId 为必需参数，projectId、expectedRevision 和 requestId 可选，用于归属校验或关联调用；结果与取消按 runId 操作。
 
 | 工具提案 | 输入 | 结果 |
 |---|---|---|
@@ -182,7 +182,39 @@ MVP 有三个不同身份，不应混成一个 Agent token：
 - 玩家手动操作视口是 MVP 的可视试玩路径。未来若允许 Agent 驱动可视输入，需增加有时限、绑定 runId 的输入能力和用户接管机制。
 - 插件未活动、City 无法 claim run、交接失败或用户取消时，返回明确终态并释放活动租约。
 
-以上工具名是提案，落地时应与本地 Rust 方法和工具目录一起定稿。
+当前结果是 City 客户端报告的有限试玩证据，不是防作弊或排行榜证明。
+
+### 6.4 对照 Blender / Unity MCP 后建议补充的接口
+
+以下接口是下一轮设计候选，**当前未在 creator_studio.rs 注册**。借鉴 Blender 的分领域工具，以及 Unity 的编辑器观察和 Play Mode 验证闭环；保持 City 领域操作，不暴露通用 Python、JavaScript 或脚本执行。
+
+| 候选接口 | 主要输入 | 返回 | 优先级 |
+|---|---|---|---|
+| creator_scene_describe | projectId；可选 revision、selectedObjectId | 城市/项目摘要、revision、对象类别计数、选中对象摘要、挂载/皮肤摘要、可用编辑类别 | P0 |
+| creator_scene_capture | projectId；可选 revision、cameraPreset、targetObjectId、imageFormat | 有界预览图或受控图像引用、revision、镜头信息 | P0 |
+| creator_scene_inspect | projectId、revision、objectId | 指定对象/锚点/挂载的白名单字段、引用关系和编辑限制 | P1 |
+| creator_capabilities_list | 可选 category、schemaVersion | 可用操作类别、操作 schema、预算和能力版本 | P1 |
+| creator_scene_validate | projectId、revision 或 releaseId、validationProfile | 结构化检查项、错误/警告、对象 ID 和可修复建议 | P1 |
+
+接口语义：
+
+- describe 返回面向 Agent 的紧凑摘要，不代替 creator_project_read；对象较多时按类别摘要或分页。
+- capture 只能由活动官方 Studio 在本地渲染器中生成，不接受任意文件路径或 URL。图像有最大像素和字节预算，并绑定捕获时的 revision；不支持图像内容的 MCP 客户端收到可读降级摘要。
+- inspect 仅允许白名单字段，不返回本机路径、GLB 字节、authority DB 内容或无关分析数据。
+- capabilities_list 提供稳定契约发现，不返回可执行代码；最终写入仍经 preview/commit 权威校验。
+- validate 明确区分静态 schema 校验和 City 运行时校验。没有真实执行道路可达、净空、物理或视觉检查时，不得报告这些检查通过。
+- describe、capture、inspect 结果均带 projectId、revision 和生成时间；revision 漂移后 Agent 应重新读取。
+
+应同时完善 creator_game_preview 和 creator_scene_preview 的结构化差异结果，不另造平行的 edit diff 工具。结果至少包含 changedObjects（稳定 ID、变更字段和前后摘要）、diagnostics（级别、稳定 code、对象 ID、用户可读信息）、baseRevision、previewId、expiresAt 及可视预览关联信息。Studio 使用同一结果呈现变更卡片和场景 overlay。
+
+### 6.5 资产接口边界
+
+Blender MCP 常覆盖导入/导出、材质、网格、渲染等资产工作流。Creator Studio 逐步增加与 City 项目直接相关的资产能力：
+
+- 保留现有桌面原生文件选择器 creator.asset.import；MCP 不接收本机路径或任意二进制。
+- 可后续增加 creator_asset_list，返回项目内已导入资源的 ID、摘要、预算和允许引用位置。
+- 资源下载和 Shop 安装属于受信任 package 流程，不由通用 MCP URL 工具代替。
+- 材质节点、任意网格编辑、物理脚本和着色器图不属于当前 City SDK 的 MCP P0。
 
 ## 7. 预览、提交和并发
 
@@ -215,6 +247,8 @@ previewId 至少绑定 projectId、baseRevision、规范化操作摘要、Creato
 - 一次只读 creator_project_list 自检。
 
 Codex、Claude Code 和其他支持本地 MCP stdio 的客户端使用同一 server 和工具 schema。客户端配置文档可以不同，但不能改变工具的业务含义。
+
+接入步骤、工具清单、连接自检与 §11 场景覆盖映射见 [Creator MCP 多客户端接入指南](AGENT_CREATOR_MCP_CLIENT_SETUP.md)。
 
 ### 8.2 远程 Agent
 
@@ -253,19 +287,60 @@ Codex、Claude Code 和其他支持本地 MCP stdio 的客户端使用同一 ser
 
 ## 11. 测试与验收
 
-验收需证明 MCP 工具经过真实 Rust 分发、PluginHost 活动实例校验、Creator 服务校验，并让 Studio 视口观察到提交结果。
+验收需证明工具经过真实 Rust MCP 分发、PluginHost 活动实例校验和 Creator 服务校验。当前已实现接口按“现有”行验收；第 6.4 节建议接口的验收标准是实现该接口时的准入条件，不代表接口已经存在。
 
-最低场景：
+### 11.1 当前已实现接口
 
-1. MCP 初始化后可发现只读 Creator 工具；无 --allow-local-writes 时创建、提交和发布被拒绝。
-2. Studio 未打开、被替换或实例过期时调用失败，不写入。
-3. Agent 创建项目、读取 chunk、预览合法操作、UI 确认、提交成功，视口显示新 revision。
+| 接口 | 验收标准 |
+|---|---|
+| creator_layout_list | 返回数量不超过 limit 的布局快照；每项含稳定布局 ID、worldRevision 和允许创建项目使用的锚点摘要；不含场景几何、分析数据或本机路径。非法 limit 和无可用 City 时返回明确错误。 |
+| creator_project_list | 仅列出本地 Creator 项目，条数受 limit 限制；列表字段不含项目完整文档或资产字节；Studio 不可用时返回 plugin_unavailable。 |
+| creator_project_read | 按 UTF-8 字节边界返回有界 chunk、nextOffset、complete 和一致的 documentDigest；chunk 拼接结果与同 revision 的完整文档一致；偏移越界、项目不存在和文档变更均可诊断。 |
+| creator_operation_status | 对已提交 operationId 返回与原提交相同的持久结果；未找到返回 not_found；不能因查询而重复执行操作。 |
+| creator_playtest_history | 返回 limit 范围内、绑定项目的有限历史摘要；不返回输入轨迹、原始日志或未验证的防作弊结论。 |
+| creator_project_create | 写入开关关闭时拒绝且不创建项目；开启时需引用有效 worldRevision 和支持的模板；相同 operationId 重试不创建重复项目；结果包含 projectId 和初始 revision。 |
+| creator_game_preview | 有效 JSON 返回绑定 projectId/baseRevision 的短期 preview 和结构化诊断；非法规则、超限 payload、版本冲突被拒绝且不改变项目 revision。 |
+| creator_scene_preview | 接受范围内的操作并返回诊断、对象差异和单次 preview；未知操作、未知字段、非法对象引用、数量/字节/变换超限均拒绝；预览不持久化草稿、不增加 revision。 |
+| creator_project_commit | 写入开关关闭时拒绝；有效 preview 仅能消费一次，expectedRevision 一致时原子提交并推进一次 revision；旧 revision、过期 preview、跨实例 preview 均拒绝且不部分写入；operationId 重试返回原结果。 |
+| creator_project_publish | 写入开关关闭时拒绝；仅发布指定且当前保存的 revision；release 内容摘要固定，重复发布或超时查询不会改变既有 release；项目无有效挂载时返回具体诊断。 |
+| creator_playtest_start | 写入开关关闭时拒绝；release 存在且可由当前 City 运行时认领；提供 projectId/expectedRevision 时必须匹配 release 归属；重复请求不能启动重复 run；返回 runId 和固定 release/revision。 |
+| creator_playtest_result | 对 pending、claimed、completed、cancelled、failed、expired 等状态返回正确的唯一 run；终态不被后续查询改变；仅返回有界结果摘要和稳定失败码。 |
+| creator_playtest_cancel | 可取消 pending/claimed run 并释放活动租约；终态 run 幂等返回原终态；未知 runId 返回 not_found；取消后不能再写入完成证据。 |
+
+### 11.2 新增候选接口
+
+以下候选接口尚未注册。实现时须逐条通过对应验收，并加入工具发现、权限、负载预算和契约测试。
+
+| 接口 | 验收标准 |
+|---|---|
+| creator_scene_describe | 对指定项目和 revision 返回项目摘要、对象类别计数、可选选中对象摘要、挂载/皮肤概况和可编辑类别；响应有界且不包含完整项目文档；revision 不存在时返回 revision_conflict 或 not_found；改变项目后旧摘要能被识别为旧 revision。 |
+| creator_scene_capture | 仅从活动官方 Studio 的本地渲染器捕获；输出绑定捕获时 projectId/revision 和镜头信息；像素尺寸、编码后字节数和耗时均有上限；禁止任意路径、URL、远程读取和文件写入；Studio 未活动、视口未就绪或超时分别返回可诊断错误；图像不支持的客户端收到明确降级响应，不把截图描述成当前 revision 的结果。 |
+| creator_scene_inspect | 只接受项目、revision 和稳定 objectId；只返回该对象允许的白名单属性、引用关系及约束；不存在对象返回 not_found，过时 revision 返回 revision_conflict；不得返回源文件路径、GLB 字节、数据库字段或未授权的关联对象数据。 |
+| creator_capabilities_list | 对未知 category、schemaVersion 返回明确错误或受支持版本列表；已知类别只返回登记过的操作名、参数 schema、预算和能力版本；响应不得包含可执行代码；生成的操作仍需经 preview 做权威校验。新增或移除能力时，工具发现结果和 SDK 契约 fixture 同步变化。 |
+| creator_scene_validate | 每项诊断含稳定 code、severity、对象 ID（若适用）和用户可读说明；静态 schema 检查与真实 City 运行时检查分开标记；未运行的检查不得显示通过；同一输入/revision 的确定性检查结果稳定；错误、警告和未检查项均能区分。 |
+| creator_asset_list | 仅列出指定项目已导入资源的稳定 ID、摘要、受限元数据及允许引用位置；分页/数量受限；不返回原始文件路径或二进制；资源缺失或摘要不匹配返回诊断，不伪装成可用资源。 |
+
+### 11.3 预览差异与端到端验收
+
+creator_game_preview 和 creator_scene_preview 的差异结果满足以下条件：
+
+- 含 projectId、baseRevision、previewId、expiresAt 和规范化操作摘要。
+- changedObjects 使用稳定 ID，明确列出新增、删除或修改字段及必要的前后值摘要；不得只返回“成功”。
+- diagnostics 使用稳定 code 和 severity，能定位对象；诊断结果与 Studio 变更卡片一致。
+- 每个 preview 绑定当前 Creator Studio 实例、基线 revision 和操作；超时、跨实例、改 payload 或重复消费时不能提交。
+- Studio 收到同一 preview 后能在 City 视口定位或高亮受影响对象；提交后视口、项目 revision 和 MCP 响应结果一致。
+
+端到端最少验收：
+
+1. MCP 初始化后可发现所有当前工具；无 --allow-local-writes 时所有写入操作被拒绝，项目和 run 状态不变。
+2. Studio 未打开、被替换或实例过期时调用失败，不发生写入；Studio 重开后可重新读取已提交项目。
+3. Agent 创建项目、读取 chunk、预览有效修改、用户确认、提交成功，Studio 视口显示新 revision。
 4. 无效对象、越界操作、超预算请求和额外 schema 字段被拒绝，项目 revision 不变。
-5. 预览过期、其他编辑推进 revision、preview 重复消费均正确拒绝；重新预览后可成功。
+5. preview 过期、并发编辑推进 revision、preview 重复消费均按预期拒绝；重新读取和预览后可继续。
 6. 提交响应丢失后，使用原 operationId 查询或重试只产生一次 revision。
-7. 两个不同 MCP 客户端调用相同工具时，项目行为和错误语义一致；差异限于客户端安装/连接方式。
-8. 试玩取消、启动失败、运行完成和返回 Studio 均形成唯一终态，release 快照不被编辑修改。
-9. MCP 输出不含本机路径、原始日志、会话提示词、凭证或超出工具必要范围的数据。
+7. 两个不同 MCP 客户端调用相同工具时，工具发现、项目行为和错误语义一致；差异限于客户端安装/连接方式。
+8. 试玩取消、启动失败、完成和返回 Studio 都形成唯一终态，固定 release 快照不被后续编辑改变。
+9. 所有 MCP 响应不含本机路径、原始日志、会话提示词、凭证或超出该工具必要范围的数据。
 
 一个 Agent 成功调用工具不足以证明多客户端兼容。至少用两个不同 MCP 客户端验证工具发现、预览、提交和错误反馈。
 
