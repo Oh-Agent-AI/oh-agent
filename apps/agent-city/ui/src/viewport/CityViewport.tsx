@@ -13,6 +13,7 @@ import { replayStartMs } from "../replayRange";
 import type { PlanningWorkSnapshot } from "../engine/planner/operationBudget";
 import { projectionSessionRows, type CityViewportWindowDays } from "./projectionRows";
 import { readCityWindowDays } from "./windowPreference";
+import { createMoveGhost, type MoveGhost } from "./moveGhost";
 import "../city.css";
 
 export type CityViewportProps = {
@@ -59,6 +60,8 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
   const [selection, setSelection] = useState<BuildingSelection | null>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
   const sessionRef = useRef<PlanRepairSession | null>(null);
+  // 候选 ghost 的当前实例：卡片按钮 hover 时经它高亮场景里的对应盒体（见 moveGhost.ts）。
+  const ghostRef = useRef<MoveGhost | null>(null);
   const editableRef = useRef(editable);
   editableRef.current = editable;
   // 未显式传外观时与 City 同源读取偏好；useMemo 保持引用稳定，引擎不会因渲染重建。
@@ -121,6 +124,27 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
     void session.load(seed).then(() => setSaveState("saved"));
     return () => { session.dispose(); sessionRef.current = null; };
   }, [editable, engineState, seed]);
+
+  // 移动候选 ghost：选中时把每个候选地块画成半透明盒体挂到场景根（CityEngine.addOverlay），
+  // 让用户在地图上直接比较候选位置，而不仅靠卡片文字。依赖 engineState（引擎实例）而非
+  // engineRef：引擎因 worldProfile/seed 重建时依赖变化会先走清理——从旧引擎摘下并 dispose
+  // 旧 group，再在新引擎上重挂，与上面会话跟随引擎的守卫思路一致。applyModel 重建 CityParts
+  // 不影响它（叠加层本来就挂在 parts 之外的场景根上）。
+  useEffect(() => {
+    if (!engineState) return;
+    const engine = engineState;
+    const ghost = selection && selection.candidates.length ? createMoveGhost(selection.candidates) : null;
+    if (!ghost) return;
+    ghostRef.current = ghost;
+    engine.addOverlay(ghost.group);
+    return () => {
+      // 卸载顺序先摘后释放：引擎 dispose 先于本清理执行时，removeOverlay 在已停渲染的场景根上
+      // 只是把对象摘出场景，仍然安全（与 CityApp 卸载 creator 模型叠加层同款顺序）。
+      engine.removeOverlay(ghost.group);
+      ghost.dispose();
+      if (ghostRef.current === ghost) ghostRef.current = null;
+    };
+  }, [engineState, selection]);
 
   // 父页面信号：打开/切回项目、试玩返回后回到全局视角。
   useEffect(() => { if (focusSignal > 0) engineRef.current?.resetView(); }, [focusSignal]);
@@ -286,7 +310,9 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
       {editable && selection && <div className="selection-card" role="dialog" aria-label="选中建筑">
         <div className="selection-head"><strong>选中建筑</strong><code>{selection.id}</code><button className="secondary" onClick={() => setSelection(null)}>关闭</button></div>
         <p className="selection-hint">就近可移动地块（按距离，移动即保存到草稿）：</p>
-        {selection.candidates.map((candidate) => <button key={candidate.parcelId} className="candidate" onClick={() => applyMove(candidate.parcelId)}>
+        {selection.candidates.map((candidate, index) => <button key={candidate.parcelId} className="candidate" onClick={() => applyMove(candidate.parcelId)}
+          onMouseEnter={() => ghostRef.current?.setHighlighted(index)}
+          onMouseLeave={() => ghostRef.current?.setHighlighted(null)}>
           移到 {candidate.parcelId.length > 20 ? `${candidate.parcelId.slice(0, 20)}…` : candidate.parcelId} · {candidate.distance}m{candidate.warnings.length ? ` · ${candidate.warnings.join("、")}` : ""}
         </button>)}
         <div className="selection-foot">
