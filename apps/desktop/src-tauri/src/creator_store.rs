@@ -98,6 +98,15 @@ pub(crate) fn database(home: &Path) -> Result<Connection, &'static str> {
     if !columns.iter().any(|column| column == "failure_code") {
         db.execute("ALTER TABLE creator_playtest_runs ADD COLUMN failure_code TEXT", []).map_err(|_| "creator_store_unavailable")?;
     }
+    // 版本偏斜审计（设计 §5.6）：operation 记录携带签发 preview 时的能力版本。
+    let operation_columns = {
+        let mut statement = db.prepare("PRAGMA table_info(creator_operations)").map_err(|_| "creator_store_unavailable")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(1)).map_err(|_| "creator_store_unavailable")?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|_| "creator_store_unavailable")?
+    };
+    if !operation_columns.iter().any(|column| column == "capability_version") {
+        db.execute("ALTER TABLE creator_operations ADD COLUMN capability_version TEXT NOT NULL DEFAULT ''", []).map_err(|_| "creator_store_unavailable")?;
+    }
     Ok(db)
 }
 
