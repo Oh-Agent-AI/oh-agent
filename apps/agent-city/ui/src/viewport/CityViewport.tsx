@@ -26,6 +26,8 @@ export type CityViewportProps = {
   /** 允许在视口里选取会话楼并移动到就近地块：复用现有修复会话的校验/存档机器。
    *  目标候选先由用户手选；Agent 提案经 MCP 接入后走同一 moveBuilding 入口。 */
   editable?: boolean;
+  /** 递增信号：父页面（打开/切回项目、试玩返回）触发视口回到全局视角。 */
+  focusSignal?: number;
 };
 
 type BuildingSelection = { id: string; candidates: RepairCandidate[] };
@@ -39,7 +41,7 @@ type ViewportLoadState = Readonly<{ stage: "data" | "model" | "planning" | "moun
  * 暂停/恢复沿用引擎已注册的宿主 __AV_PLUGIN_SUSPENDED__/RESUMED__ 事件与
  * visibilitychange，销毁入口就是组件卸载时的 engine.dispose()。
  */
-export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, editable = false }: CityViewportProps) {
+export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, editable = false, focusSignal = 0 }: CityViewportProps) {
   const days = windowDays ?? readCityWindowDays();
   const language = useCityLanguage();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -106,14 +108,22 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
   }, [profile, seed]);
 
   // 修复会话跟随当前引擎（引擎重建时旧会话必须作废）：存档读写与移动校验都在
-  // PlanRepairSession 内，视口只发起操作、展示候选与结果。
+  // PlanRepairSession 内，视口只发起操作、展示候选与结果；存档状态经底部状态条持续可见。
+  const [saveState, setSaveState] = useState<"saved" | "pending" | "failed" | null>(null);
   useEffect(() => {
     if (!editable || !engineState) return;
     const session = new PlanRepairSession(engineState);
     sessionRef.current = session;
-    void session.load(seed);
+    session.onSaveSettled = () => {
+      const status = session.status();
+      setSaveState(status.saveFailed ? "failed" : status.savePending ? "pending" : "saved");
+    };
+    void session.load(seed).then(() => setSaveState("saved"));
     return () => { session.dispose(); sessionRef.current = null; };
   }, [editable, engineState, seed]);
+
+  // 父页面信号：打开/切回项目、试玩返回后回到全局视角。
+  useEffect(() => { if (focusSignal > 0) engineRef.current?.resetView(); }, [focusSignal]);
 
   const applyMove = (parcelId: string) => {
     const session = sessionRef.current;
@@ -271,6 +281,8 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
         </div>
       </div>}
       {sceneMessage && !cityLoading && <p className="city-scene-message" role="status">{sceneMessage}</p>}
+      {editable && saveState && <div className="viewport-savebar" role="status">{saveState === "pending" ? "草稿保存中…"
+        : saveState === "failed" ? "保存失败：本次修改仅临时生效，可重试" : "草稿已保存"}</div>}
       {editable && selection && <div className="selection-card" role="dialog" aria-label="选中建筑">
         <div className="selection-head"><strong>选中建筑</strong><code>{selection.id}</code><button className="secondary" onClick={() => setSelection(null)}>关闭</button></div>
         <p className="selection-hint">就近可移动地块（按距离，移动即保存到草稿）：</p>

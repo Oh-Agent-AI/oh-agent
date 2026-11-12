@@ -100,3 +100,16 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, summary:focu
 .selection-card .candidate:hover:not(:disabled) { border-color: #6fa39a; }
 .selection-foot { display: flex; gap: 8px; }
 .selection-foot button { flex: 1; padding: 7px 10px; font-size: 12px; }
+
+/* Header project selector: project management lives in the top bar. */
+.header-project-select { max-width: 300px; color: #eaf1f4; background: #172226; border: 1px solid #3d5155; border-radius: 8px; padding: 7px 10px; font-size: 13px; }
+/* Agent panel is the right-side main body; project tools fold below it. */
+.agent-panel { border: 1px solid #2b383e; border-radius: 10px; padding: 12px 14px; background: #131c20; }
+.agent-empty p { margin: 0 0 8px; color: #9fb4b8; font-size: 12px; line-height: 1.55; }
+.agent-empty strong { color: #d8e4e7; font-weight: 650; }
+.project-tools { border: 1px solid #2b383e; border-radius: 10px; }
+.project-tools summary { padding: 10px 12px; cursor: pointer; color: #dce8e8; font-size: 13px; font-weight: 650; }
+.project-tools[open] summary { border-bottom: 1px solid #2b383e; }
+.project-tools > .new-project, .project-tools > .editor { margin: 12px; }
+/* Persistent draft-save status floating in the viewport (prototype bottom bar). */
+.viewport-savebar { position: absolute; z-index: 2; left: 14px; bottom: 14px; padding: 6px 12px; border-radius: 8px; background: rgba(17, 27, 31, .88); color: #a8ead8; font-size: 12px; pointer-events: none; }

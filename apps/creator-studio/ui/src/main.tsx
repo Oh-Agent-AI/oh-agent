@@ -10,7 +10,7 @@ import "./style.css";
 type ProjectRow = { projectId: string; revision: number; title: string; updatedAtMs: number };
 type LayoutRow = { worldRevision: string; layoutId: string; seed: number; anchorCount: number; updatedAtMs: number };
 type SceneDraft = { schemaVersion: 1; objects: Array<Record<string, unknown>> };
-type Project = { projectId: string; revision: number; kind: string; game: unknown; cityLayout?: CityLayoutSnapshotV1 | null; scene?: SceneDraft; assets?: { schemaVersion: 1; entries: Array<{ assetId: string; relativePath: string; sha256: string; byteLength: number; format: "glb-v2"; boundsMeters?: { x: number; y: number; z: number } }> }; assetRefs?: Array<Record<string, unknown>>; mounts: CityGameMountV1[]; skinId?: string };
+type Project = { projectId: string; revision: number; title?: string; kind: string; game: unknown; cityLayout?: CityLayoutSnapshotV1 | null; scene?: SceneDraft; assets?: { schemaVersion: 1; entries: Array<{ assetId: string; relativePath: string; sha256: string; byteLength: number; format: "glb-v2"; boundsMeters?: { x: number; y: number; z: number } }> }; assetRefs?: Array<Record<string, unknown>>; mounts: CityGameMountV1[]; skinId?: string };
 type PluginResponse<T> = { version: number; requestId: string; ok: boolean; result?: T; error?: { code: string } };
 let sequence = 0;
 // 浏览器预览（ui-dev 工作台 iframe）：有插件实例但没有原生宿主，数据来自合成夹具。
@@ -108,6 +108,10 @@ function App() {
   const [switchConfirm, setSwitchConfirm] = useState<string | null>(null);
   const switchTimer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearTimeout(switchTimer.current), []);
+  // 顶栏项目选择器的二次确认目标（有草稿时第一次选择只提示）。
+  const [pendingSwitch, setPendingSwitch] = useState<string | null>(null);
+  // 打开/切回项目后让视口回到全局视角（CityViewport 收到递增信号即 resetView）。
+  const [focusSignal, setFocusSignal] = useState(0);
   const guardDrafts = (target: string, proceed: () => void) => {
     if (!hasDrafts(project) || switchConfirm === target) {
       window.clearTimeout(switchTimer.current);
@@ -170,8 +174,8 @@ function App() {
         const counters = context.evidence ? Object.entries(context.evidence.counters).map(([key, value]) => `${key}=${value}`).join(", ") : "";
         const result = context.evidence ? ` · tick ${context.evidence.tick} · ${context.evidence.outcome ?? "未完成"}${counters ? ` · ${counters}` : ""}` : context.failureCode ? ` · ${context.failureCode}` : "";
         const message = `City 试玩已返回：${context.status} · revision ${context.revision}${result} · ${context.runId}`;
-        // PRD：试玩结束回到同一编辑上下文——保留未提交草稿。
-        void openProject(context.projectId, "preserve").then(() => setMessage(message));
+        // PRD：试玩结束回到同一编辑上下文——保留未提交草稿，并回到全局视角。
+        void openProject(context.projectId, "preserve").then(() => { setFocusSignal(value => value + 1); setMessage(message); });
       }).catch(error => {
         const code = errorCode(error, "creator_playtest_return_failed");
         if (code !== "creator_playtest_not_found") setMessage(code);
@@ -183,6 +187,7 @@ function App() {
     try {
       const next = await creatorRequest<Project>("creator.project.read", { projectId });
       applyProject(next, mode, project);
+      setFocusSignal(value => value + 1);
     } catch (error) { setMessage(error instanceof Error ? error.message : "creator_read_failed"); }
     finally { setBusy(false); }
   };
@@ -354,24 +359,50 @@ function App() {
   );
 
   return <main className="studio">
-    <header><div className="brand"><h1>Creator Studio</h1><span className="header-project">{projects.find(row => row.projectId === project?.projectId)?.title ?? "选择城市项目"}</span></div><div className="header-actions"><span className="badge">{browserPreview ? "合成数据预览" : hasUncommittedProjectEdits ? "有未提交修改" : "本机项目"}</span><button className="secondary" disabled={busy || !publishedReleaseId || hasUncommittedProjectEdits} onClick={() => void startPlaytest()}>试玩</button><button disabled={busy || !project || hasUncommittedProjectEdits || (project.mounts?.length ?? 0) === 0} onClick={() => void publish()}>发布</button></div></header>
+    <header><div className="brand"><h1>Creator Studio</h1><select className="header-project-select" aria-label="选择城市项目" value={pendingSwitch ?? project?.projectId ?? ""} disabled={busy || projects.length === 0}
+      onChange={event => {
+        const targetId = event.target.value;
+        if (!targetId || targetId === project?.projectId) return;
+        // 与项目行同一守卫：有未提交草稿时第一次选择只提示，同一目标再选一次才丢弃切换。
+        if (!hasDrafts(project) || pendingSwitch === targetId) {
+          window.clearTimeout(switchTimer.current);
+          setPendingSwitch(null);
+          void openProject(targetId);
+          return;
+        }
+        setPendingSwitch(targetId);
+        setMessage("当前项目有未提交草稿；再次选择该项目确认丢弃并切换。");
+        window.clearTimeout(switchTimer.current);
+        switchTimer.current = window.setTimeout(() => setPendingSwitch(null), 5000);
+      }}>
+      <option value="" disabled>选择城市项目</option>
+      {projects.map(row => <option key={row.projectId} value={row.projectId}>{row.title} · revision {row.revision}{pendingSwitch === row.projectId ? "（再次选择确认）" : ""}</option>)}
+    </select></div><div className="header-actions"><span className="badge">{browserPreview ? "合成数据预览" : hasUncommittedProjectEdits ? "有未提交修改" : "本机项目"}</span><button className="secondary" disabled={busy || !publishedReleaseId || hasUncommittedProjectEdits} onClick={() => void startPlaytest()}>试玩</button><button disabled={busy || !project || hasUncommittedProjectEdits || (project.mounts?.length ?? 0) === 0} onClick={() => void publish()}>发布</button></div></header>
     <div className="workspace">
       <section className="viewport" aria-label="City 实时视口">
-        <div className="viewport-head"><div className="section-title">城市视图</div><span className="viewport-hint">拖动旋转 · 滚轮缩放</span></div>
+        <div className="viewport-head"><div className="section-title">城市视图</div><span className="viewport-hint">点选建筑移动 · 拖动旋转 · 滚轮缩放</span></div>
         {viewportSeed !== null
-          ? <div className="viewport-frame"><CityViewport seed={viewportSeed} worldProfile={worldProfile} editable /></div>
+          ? <div className="viewport-frame"><CityViewport seed={viewportSeed} worldProfile={worldProfile} editable focusSignal={focusSignal} /></div>
           : <div className="empty viewport-empty">{viewportUnavailable
             ? "当前项目没有绑定的 City 布局快照，视口无法恢复它编辑的城市。请在 City 中重新生成道路地图后新建项目。"
             : "先打开 City 生成道路地图，这里会显示同一座实时城市。"}</div>}
       </section>
       <aside className="panel">
-        <details className="project-create"><summary>新建项目</summary><section className="new-project">
+        <section className="agent-panel" aria-label="City Agent">
+          <div className="section-title">City Agent</div>
+          <div className="agent-empty">
+            <p><strong>Agent 对话将在下一切片经 Studio MCP 接入</strong>，选中对象与变更预览会出现在这里。</p>
+            <p>当前可直接在左侧视口点选建筑移动（保存到同一草稿）；规则与场景在下方项目工具中编辑。</p>
+          </div>
+        </section>
+        <details className="project-tools" open>
+          <summary>项目工具{project ? ` · ${project.title}` : ""}</summary>
+        <section className="new-project">
           <label>新建模板<select value={template} disabled={busy} onChange={event => setTemplate(event.target.value)}><option value="checkpoint-race">驾驶检查点竞速</option><option value="collect-one">驾驶区域收集</option></select></label>
           <label>绑定 City 世界<select value={worldRevision} disabled={busy || layouts.length === 0} onChange={event => setWorldRevision(event.target.value)}>{layouts.map(layout => <option key={layout.worldRevision} value={layout.worldRevision}>{layout.layoutId} · seed {layout.seed} · {layout.anchorCount} 个锚点</option>)}</select></label>
           <button disabled={busy || !worldRevision} onClick={() => guardDrafts("create", () => void createProject())}>{switchConfirm === "create" ? "确认丢弃草稿并新建" : "新建项目"}</button>
           {layouts.length === 0 && <p className="muted">尚无 City 布局快照。先打开 City 生成道路地图，再回到 Studio。</p>}
-        </section></details>
-        <div className="projects"><div className="section-title">我的项目</div>{projects.length === 0 ? <p className="muted">还没有项目。创建一个模板开始。</p> : projects.map(row => <button className={`project-row ${project?.projectId === row.projectId ? "selected" : ""} ${switchConfirm === row.projectId ? "confirm" : ""}`} key={row.projectId} disabled={busy} onClick={() => guardDrafts(row.projectId, () => void openProject(row.projectId))}><strong>{row.title}</strong><span>revision {row.revision}</span></button>)}</div>
+        </section>
         <section className="editor">
         <div className="section-title">{project ? `游戏规则 · revision ${project.revision}` : "选择一个项目"}</div>
         {project ? <>
@@ -408,6 +439,7 @@ function App() {
         </> : <div className="empty">选择左侧项目，或创建一个小游戏模板。</div>}
         {message && <p className="status" role="status">{message}</p>}
         </section>
+        </details>
       </aside>
     </div>
   </main>;
