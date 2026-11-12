@@ -1,0 +1,74 @@
+{
+  "budgets": {
+    "cityPatchBytes": 262144,
+    "gameBytes": 262144,
+    "mountBindings": 64,
+    "sceneColliders": 256,
+    "sceneObjects": 10000
+  },
+  "capabilityVersion": "2026-11-12.1",
+  "content": {
+    "skins": [
+      "miami-vice",
+      "desert-evening"
+    ],
+    "templates": [
+      "checkpoint-race",
+      "collect-one"
+    ]
+  },
+  "operations": [
+    {
+      "id": "scene.object.upsert",
+      "idField": "id",
+      "kind": "upsert",
+      "target": "scene.objects"
+    },
+    {
+      "id": "scene.object.remove",
+      "idField": "id",
+      "kind": "remove",
+      "target": "scene.objects"
+    },
+    {
+      "id": "anchor.upsert",
+      "idField": "id",
+      "kind": "upsert",
+      "target": "scene.objects"
+    },
+    {
+      "id": "anchor.remove",
+      "idField": "id",
+      "kind": "remove",
+      "target": "scene.objects"
+    },
+    {
+      "id": "mount.bind",
+      "idField": "mountId",
+      "kind": "bind",
+      "target": "mounts"
+    },
+    {
+      "id": "mount.remove",
+      "idField": "mountId",
+      "kind": "remove",
+      "target": "mounts"
+    },
+    {
+      "id": "skin.select",
+      "kind": "set",
+      "target": "skinId"
+    },
+    {
+      "id": "city.patch.upsert",
+      "kind": "set",
+      "target": "cityPatch"
+    },
+    {
+      "id": "city.patch.remove",
+      "kind": "remove",
+      "target": "cityPatch"
+    }
+  ],
+  "schemaVersion": 1
+}

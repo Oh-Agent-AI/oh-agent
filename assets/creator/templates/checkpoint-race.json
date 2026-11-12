@@ -1,0 +1,105 @@
+{
+  "label": "驾驶检查点竞速",
+  "pack": {
+    "id": "creator.checkpoint-race",
+    "integerParameters": {
+      "timeLimitTicks": {
+        "default": 2700,
+        "max": 36000,
+        "min": 60
+      }
+    },
+    "rules": {
+      "counters": {
+        "next": {
+          "initial": 0,
+          "max": 3
+        }
+      },
+      "nodes": [
+        {
+          "actions": [
+            {
+              "durationTicks": {
+                "parameter": "timeLimitTicks"
+              },
+              "op": "timer.start",
+              "timerId": "timeout"
+            }
+          ],
+          "id": "start-timer",
+          "on": {
+            "type": "run.started"
+          }
+        },
+        {
+          "actions": [
+            {
+              "amount": 1,
+              "counter": "next",
+              "op": "counter.add"
+            }
+          ],
+          "id": "advance",
+          "on": {
+            "slot": "points",
+            "type": "zone.entered"
+          },
+          "when": [
+            {
+              "counter": "next",
+              "op": "counter.eqEventIndex"
+            }
+          ]
+        },
+        {
+          "actions": [
+            {
+              "op": "run.finish",
+              "outcome": "success"
+            }
+          ],
+          "id": "finish",
+          "on": {
+            "slot": "points",
+            "type": "zone.entered"
+          },
+          "when": [
+            {
+              "counter": "next",
+              "op": "counter.eq",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "actions": [
+            {
+              "op": "run.finish",
+              "outcome": "failure"
+            }
+          ],
+          "id": "timeout",
+          "on": {
+            "timerId": "timeout",
+            "type": "timer.expired"
+          }
+        }
+      ]
+    },
+    "rulesVersion": 1,
+    "schemaVersion": 1,
+    "slots": {
+      "points": {
+        "kind": "zone",
+        "max": 8,
+        "min": 3,
+        "requires": [
+          "drive"
+        ]
+      }
+    }
+  },
+  "schemaVersion": 1,
+  "templateId": "checkpoint-race"
+}

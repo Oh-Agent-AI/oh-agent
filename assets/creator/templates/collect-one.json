@@ -1,0 +1,65 @@
+{
+  "label": "驾驶区域收集",
+  "pack": {
+    "id": "creator.collect-one",
+    "integerParameters": {},
+    "rules": {
+      "counters": {
+        "found": {
+          "initial": 0,
+          "max": 1
+        }
+      },
+      "nodes": [
+        {
+          "actions": [
+            {
+              "amount": 1,
+              "counter": "found",
+              "op": "counter.add"
+            }
+          ],
+          "id": "collect",
+          "on": {
+            "slot": "targets",
+            "type": "zone.entered"
+          }
+        },
+        {
+          "actions": [
+            {
+              "op": "run.finish",
+              "outcome": "success"
+            }
+          ],
+          "id": "finish",
+          "on": {
+            "slot": "targets",
+            "type": "zone.entered"
+          },
+          "when": [
+            {
+              "counter": "found",
+              "op": "counter.eq",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    },
+    "rulesVersion": 1,
+    "schemaVersion": 1,
+    "slots": {
+      "targets": {
+        "kind": "zone",
+        "max": 1,
+        "min": 1,
+        "requires": [
+          "drive"
+        ]
+      }
+    }
+  },
+  "schemaVersion": 1,
+  "templateId": "collect-one"
+}
