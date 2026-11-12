@@ -15,6 +15,9 @@ fn spec(name: &'static str, description: &'static str, properties: Value, requir
     }
 }
 
+/// creator_scene_capture 的编码帧字节预算（≈256 KiB base64，图像为有界预览而非全尺寸截图）。
+pub const MAX_CAPTURE_ENCODED_CHARS: usize = 350_000;
+
 fn project_id_prop() -> Value { json!({"type":"string","minLength":1,"maxLength":128}) }
 fn operation_id_prop() -> Value { json!({"type":"string","minLength":1,"maxLength":128,"description":"稳定幂等键；超时重试必须复用同一个值。"}) }
 fn revision_prop() -> Value { json!({"type":"integer","minimum":0}) }
@@ -27,7 +30,7 @@ pub fn specs() -> Vec<ToolSpec> {
         spec("creator_operation_status", "Look up the durable result for a project operation after a timeout; not_found means no committed result is visible.", json!({"projectId":project_id_prop(),"operationId":operation_id_prop()}), &["projectId","operationId"]),
         spec("creator_playtest_history", "Read bounded local visual-playtest summaries for one project. Evidence is client-reported gameplay state, not anti-cheat or leaderboard proof; no input traces, raw logs or analytics are returned.", json!({"projectId":project_id_prop(),"limit":{"type":"integer","minimum":1,"maximum":32}}), &["projectId","limit"]),
         spec("creator_scene_describe", "Compact Agent-facing summary of one project/revision: revision, object counts by kind, optional selected-object whitelist summary, mounts/skin overview, city patch size and editable categories. Bounded; does not return the full project document. Provide `revision` to fail with revision_conflict when the project has moved on. Requires the official Creator Studio plugin to be open.", json!({"projectId":project_id_prop(),"revision":revision_prop(),"selectedObjectId":{"type":"string","minLength":1,"maxLength":128}}), &["projectId"]),
-        spec("creator_scene_capture", "Capture a bounded JPEG frame of the live 3D viewport from the active official Studio renderer (local only; no file paths or URLs). Bound to the capture-time project revision with camera info; rejected when the viewport is not ready or the encoded frame exceeds the byte budget. Clients that cannot render images should use the readable degrade summary instead.", json!({"projectId":project_id_prop(),"revision":revision_prop()}), &["projectId"]),
+        spec("creator_scene_capture", "Capture a bounded JPEG preview frame of the live 3D viewport from the active official Studio renderer. The image is returned as an MCP image content block (≤256 KiB encoded, bound to the capture-time project revision with camera info in structuredContent); the calling client receives it in its own context — cloud-connected agents will see the image outside this machine. Local only: no file paths, URLs or remote reads. Rejected when the viewport is not ready or the encoded frame exceeds the budget; use creator_scene_describe for a readable summary instead.", json!({"projectId":project_id_prop(),"revision":revision_prop()}), &["projectId"]),
         spec("creator_capabilities_list", "List the registered Creator operation categories, object kinds, budgets and capability versions (schemaVersion 1). Provide `category` to get just that category's capabilities (unknown categories return creator_capability_unknown); `schemaVersion` only supports 1. Stable contract discovery; returns no executable code, and generated operations still go through preview/commit validation.", json!({"category":{"type":"string","minLength":1,"maxLength":64},"schemaVersion":{"type":"integer","enum":[1]}}), &[]),
         spec("creator_scene_inspect", "Inspect one stable objectId (scene object, mount id, or pinned City layout anchor) at an explicit revision: whitelist fields, references and edit constraints only. Never returns source paths, GLB bytes or unrelated analytics. revision_conflict means the project moved on; creator_object_not_found means the id is not an object, mount or layout anchor of this project.", json!({"projectId":project_id_prop(),"revision":revision_prop(),"objectId":{"type":"string","minLength":1,"maxLength":128}}), &["projectId","revision","objectId"]),
         spec("creator_scene_validate", "Run bounded structural validation for one project revision and return per-item diagnostics with stable codes, severity, objectId and source (static-schema vs asset-store), plus explicitly unchecked items that require the City runtime (drive reachability, collision, visual review). Deterministic for the same input/revision; consumes nothing. `validationProfile` only supports \"static\". Requires the official Creator Studio plugin to be open.", json!({"projectId":project_id_prop(),"revision":revision_prop(),"validationProfile":{"type":"string","enum":["static"]}}), &["projectId"]),
@@ -82,8 +85,61 @@ fn call(data_home: &Path, method: &str, payload: &Value, timeout_ms: u64) -> Res
     Ok(json!({"ok":true,"data":result}))
 }
 
+/// creator_scene_capture 的结果信封（审查 P1）：图像以 MCP image content 块返回，
+/// structuredContent 只保留元数据（revision/镜头/字节数），dataUrl 不作为文本进入
+/// Agent 上下文。超出字节预算显式拒绝，不做静默降档。纯函数，便于接口级测试。
+pub fn capture_result_envelope(data: &Value) -> Result<Value, ToolError> {
+    let data_url = data.get("dataUrl").and_then(Value::as_str)
+        .filter(|url| url.starts_with("data:image/jpeg;base64,"))
+        .ok_or_else(|| ToolError::new("creator_capture_unavailable", "Viewport did not return a JPEG frame."))?;
+    let raw = data_url.strip_prefix("data:image/jpeg;base64,").unwrap_or_default();
+    if raw.len() > MAX_CAPTURE_ENCODED_CHARS {
+        return Err(ToolError::new("creator_capture_budget_exceeded",
+            format!("The encoded frame is {} base64 chars; the budget is {MAX_CAPTURE_ENCODED_CHARS}. Zoom in or reduce the viewport and retry.", raw.len())));
+    }
+    let mut metadata = data.clone();
+    if let Some(metadata_object) = metadata.as_object_mut() {
+        metadata_object.remove("dataUrl");
+        metadata_object.insert("imageOmittedFromStructuredContent".into(), json!(true));
+        metadata_object.insert("encodedCharBudget".into(), json!(MAX_CAPTURE_ENCODED_CHARS));
+    }
+    let summary = format!("Viewport capture returned: revision {}, {}×{}, {} bytes. The image is attached as an MCP image content block above.",
+        metadata.get("revision").map_or(Value::Null, Value::clone),
+        metadata.get("width").map_or(Value::Null, Value::clone),
+        metadata.get("height").map_or(Value::Null, Value::clone),
+        metadata.get("bytes").map_or(json!("unknown"), Value::clone));
+    Ok(json!({
+        "ok":true,
+        "data":metadata,
+        "content":[
+            {"type":"image","data":raw,"mimeType":"image/jpeg"},
+            {"type":"text","text":summary},
+        ],
+    }))
+}
+
 fn required_string<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {
     args.get(key).and_then(Value::as_str).filter(|value| !value.is_empty()).ok_or_else(|| ToolError::new("invalid_argument", format!("`{key}` is required")))
+}
+
+/// 可选字段严格校验（审查 P1）：字段**存在但类型错误**时显式拒绝，
+/// 而不是静默丢弃——静默丢弃会让调用方以为版本约束/归属校验仍然生效。
+fn optional_u64(args: &Value, key: &str) -> Result<Option<u64>, ToolError> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value.as_u64().map(Some).ok_or_else(|| ToolError::new("invalid_argument", format!("`{key}` must be a non-negative integer"))),
+    }
+}
+
+fn optional_bounded_u64(args: &Value, key: &str, max: u64) -> Result<Option<u64>, ToolError> {
+    optional_u64(args, key)?.map_or_else(|| Ok(None), |value| if value <= max { Ok(Some(value)) } else { Err(ToolError::new("invalid_argument", format!("`{key}` must be <= {max}"))) })
+}
+
+fn optional_nonempty_string<'a>(args: &'a Value, key: &str) -> Result<Option<&'a str>, ToolError> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value.as_str().filter(|value| !value.is_empty()).map(Some).ok_or_else(|| ToolError::new("invalid_argument", format!("`{key}` must be a non-empty string"))),
+    }
 }
 
 pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool) -> Result<Value, ToolError> {
@@ -109,19 +165,24 @@ pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool)
             call(data_home, "creator.project.playtest.history", &json!({"projectId":required_string(args,"projectId")?,"limit":limit}), 15_000)
         }
         "creator_playtest_start" => {
-            if !allow_local_writes { return Err(ToolError::new("permission_denied", "Starting a playtest requires `data-mcp serve --allow-local-writes`.")); }
+            // 参数校验先于写入授权门：类型错误的可选字段（如字符串 revision）得到
+            // invalid_argument 而非 permission_denied——调用方先修参数再看授权。
             let release_id = required_string(args,"releaseId")?;
             if !release_id.chars().next().is_some_and(|c| c.is_ascii_alphanumeric()) || !release_id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-')) {
                 return Err(ToolError::new("invalid_argument", "`releaseId` must be a stable object id"));
             }
+            let expected_project = optional_nonempty_string(args, "projectId")?;
+            let expected_revision = optional_u64(args, "expectedRevision")?;
+            let request_id = optional_nonempty_string(args, "requestId")?;
+            if !allow_local_writes { return Err(ToolError::new("permission_denied", "Starting a playtest requires `data-mcp serve --allow-local-writes`.")); }
             let mut payload = json!({"releaseId":release_id});
-            if let Some(project_id) = args.get("projectId").and_then(Value::as_str).filter(|value| !value.is_empty()) {
+            if let Some(project_id) = expected_project {
                 payload["projectId"] = json!(project_id);
             }
-            if let Some(revision) = args.get("expectedRevision").and_then(Value::as_u64) {
+            if let Some(revision) = expected_revision {
                 payload["expectedRevision"] = json!(revision);
             }
-            if let Some(request_id) = args.get("requestId").and_then(Value::as_str).filter(|value| !value.is_empty()) {
+            if let Some(request_id) = request_id {
                 payload["requestId"] = json!(request_id);
             }
             call(data_home, "creator.project.playtest.start", &payload, 15_000)
@@ -134,8 +195,8 @@ pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool)
         "creator_scene_describe" => {
             let project_id = required_string(args,"projectId")?;
             let mut payload = json!({"projectId":project_id});
-            if let Some(revision) = args.get("revision").and_then(Value::as_u64) { payload["revision"] = json!(revision); }
-            if let Some(selected) = args.get("selectedObjectId").and_then(Value::as_str).filter(|value| !value.is_empty()) {
+            if let Some(revision) = optional_u64(args, "revision")? { payload["revision"] = json!(revision); }
+            if let Some(selected) = optional_nonempty_string(args, "selectedObjectId")? {
                 payload["selectedObjectId"] = json!(selected);
             }
             call(data_home, "creator.scene.describe", &payload, 15_000)
@@ -143,15 +204,17 @@ pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool)
         "creator_scene_capture" => {
             let project_id = required_string(args,"projectId")?;
             let mut payload = json!({"projectId":project_id});
-            if let Some(revision) = args.get("revision").and_then(Value::as_u64) { payload["revision"] = json!(revision); }
-            call(data_home, "creator.scene.capture", &payload, 20_000)
+            if let Some(revision) = optional_u64(args, "revision")? { payload["revision"] = json!(revision); }
+            let data = call(data_home, "creator.scene.capture", &payload, 20_000)?;
+            let data = data.get("data").cloned().ok_or_else(|| ToolError::new("data_unavailable", "Creator Studio returned no capture."))?;
+            capture_result_envelope(&data)
         }
         "creator_capabilities_list" => {
             let mut payload = json!({});
-            if let Some(category) = args.get("category").and_then(Value::as_str).filter(|value| !value.is_empty()) {
+            if let Some(category) = optional_nonempty_string(args, "category")? {
                 payload["category"] = json!(category);
             }
-            if let Some(version) = args.get("schemaVersion").and_then(Value::as_u64) {
+            if let Some(version) = optional_u64(args, "schemaVersion")? {
                 payload["schemaVersion"] = json!(version);
             }
             call(data_home, "creator.capabilities.list", &payload, 15_000)
@@ -163,8 +226,8 @@ pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool)
         "creator_scene_validate" => {
             let project_id = required_string(args,"projectId")?;
             let mut payload = json!({"projectId":project_id});
-            if let Some(revision) = args.get("revision").and_then(Value::as_u64) { payload["revision"] = json!(revision); }
-            if let Some(profile) = args.get("validationProfile").and_then(Value::as_str).filter(|value| !value.is_empty()) {
+            if let Some(revision) = optional_u64(args, "revision")? { payload["revision"] = json!(revision); }
+            if let Some(profile) = optional_nonempty_string(args, "validationProfile")? {
                 payload["validationProfile"] = json!(profile);
             }
             call(data_home, "creator.scene.validate", &payload, 20_000)
@@ -209,5 +272,36 @@ pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool)
             call(data_home, "creator.project.publish", &json!({"projectId":project_id,"expectedRevision":revision}), 15_000)
         }
         _ => Err(ToolError::new("internal_error", "Creator Studio MCP tool is not wired.")),
+    }
+}
+
+#[cfg(test)]
+mod capture_tests {
+    use super::*;
+
+    /// 合法 JPEG dataUrl → image content 块 + 元数据；dataUrl 从 structuredContent 摘除。
+    #[test]
+    fn capture_result_returns_image_content_and_strips_data_url() {
+        let data = json!({"format":"image/jpeg","dataUrl":"data:image/jpeg;base64,/9j/4AAQ","width":885,"height":738,
+            "bytes":1200,"revision":3,"camera":{"position":[1.0,2.0,3.0]},"capturedAtMs":1234});
+        let envelope = capture_result_envelope(&data).unwrap();
+        assert_eq!(envelope["ok"], true);
+        let content = envelope["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "image");
+        assert_eq!(content[0]["mimeType"], "image/jpeg");
+        assert_eq!(content[0]["data"], "/9j/4AAQ");
+        assert!(envelope["data"].get("dataUrl").is_none(), "dataUrl must not enter structuredContent");
+        assert_eq!(envelope["data"]["revision"], 3);
+        assert_eq!(envelope["data"]["imageOmittedFromStructuredContent"], true);
+    }
+
+    /// 非法形状与超预算显式拒绝。
+    #[test]
+    fn capture_result_rejects_missing_frame_and_over_budget() {
+        let without_frame = json!({"format":"image/jpeg","width":885,"height":738});
+        assert_eq!(capture_result_envelope(&without_frame).unwrap_err().code, "creator_capture_unavailable");
+        let oversize = json!({"dataUrl":format!("data:image/jpeg;base64,{}", "A".repeat(MAX_CAPTURE_ENCODED_CHARS + 1)),
+            "bytes":MAX_CAPTURE_ENCODED_CHARS as u64 + 100});
+        assert_eq!(capture_result_envelope(&oversize).unwrap_err().code, "creator_capture_budget_exceeded");
     }
 }

@@ -168,11 +168,17 @@ fn handle_tools_call(id: Value, params: &Value, data_home: &std::path::Path, all
     // 当前可接受；多连接/远程库化时移后台线程是既定演进项。库不存在则跳过
     // （**不建库**：serve 在未同步机器上必须照常工作）。
     audit_tool_call(data_home, name, &args, started.elapsed().as_millis() as i64, !is_error);
+    // 工具可在信封自带 content 数组（MCP 图像等非文本内容块，如视口捕获）。
+    // 此时 structuredContent 摘除该键——图像字节只出现在 image content 块里，
+    // 不再作为文本进入 Agent 上下文。缺省仍是 pretty-printed 全文文本块。
+    let mut structured = structured;
+    let tool_content = structured.as_object_mut().and_then(|object| object.remove("content"));
     let text = serde_json::to_string_pretty(&structured).unwrap_or_default();
+    let content = tool_content.unwrap_or_else(|| json!([{ "type": "text", "text": text }]));
     rpc_ok(
         id,
         json!({
-            "content": [{ "type": "text", "text": text }],
+            "content": content,
             "structuredContent": structured,
             "isError": is_error,
         }),

@@ -417,12 +417,29 @@ mod tests {
         }
         let error = dispatch("creator_scene_describe", &json!({"projectId":"project-1"}), Path::new("/unused")).unwrap_err();
         assert_ne!(error.code, "internal_error");
-        // P1：inspect 缺 objectId 在参数校验阶段拒绝；capabilities 合法参数在无活动
+        // P1：inspect 缺 objectId、capabilities 合法参数在无活动
         // Studio 的单测环境里止步于路由错误（不得 internal_error）
         let error = dispatch("creator_scene_inspect", &json!({"projectId":"project-1","revision":1}), Path::new("/unused")).unwrap_err();
         assert_eq!(error.code, "invalid_argument");
         let error = dispatch("creator_capabilities_list", &json!({"category":"scene","schemaVersion":1}), Path::new("/unused")).unwrap_err();
         assert_ne!(error.code, "internal_error");
+    }
+
+    /// 审查 P1-2：可选字段类型错误必须显式拒绝——静默丢弃会让调用方误以为
+    /// revision 约束/归属校验仍然生效（例如字符串形式的 revision）。
+    #[test]
+    fn optional_fields_with_wrong_types_are_rejected() {
+        for (name, args) in [
+            ("creator_playtest_start", json!({"releaseId":"release-1","expectedRevision":"3"})),
+            ("creator_playtest_start", json!({"releaseId":"release-1","projectId":7})),
+            ("creator_scene_describe", json!({"projectId":"project-1","revision":"3"})),
+            ("creator_scene_capture", json!({"projectId":"project-1","revision":"3"})),
+            ("creator_scene_validate", json!({"projectId":"project-1","validationProfile":7})),
+            ("creator_capabilities_list", json!({"schemaVersion":"1"})),
+        ] {
+            let error = dispatch(name, &args, Path::new("/unused")).unwrap_err();
+            assert_eq!(error.code, "invalid_argument", "{name} accepted a mistyped optional field: {args}");
+        }
     }
 
     #[test]

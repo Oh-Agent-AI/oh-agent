@@ -2251,6 +2251,9 @@ mod tests {
         assert_eq!(described["revision"], 1);
         assert_eq!(described["editableCategories"][0], "game");
         assert_eq!(described["cityLayout"]["seed"], 7);
+        // 紧凑摘要不含完整文档：场景对象数组与规则 JSON 不得出现
+        assert!(described.get("scene").is_none());
+        assert!(described.get("game").is_none());
         assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.scene.describe",
             &json!({"projectId":project_id,"revision":0})).unwrap_err(), "revision_conflict");
         let selected = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.scene.describe",
@@ -2261,6 +2264,20 @@ mod tests {
         assert_eq!(capabilities["schemaVersion"], 1);
         assert_eq!(capabilities["categories"]["scene"]["objectKinds"][0], "model");
         assert_eq!(capabilities["preview"]["singleUse"], true);
+        // validate：诊断项结构（code/severity/source/objectId）与未运行项如实标注
+        let validated = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.scene.validate", &json!({"projectId":project_id})).unwrap();
+        assert_eq!(validated["ok"], true);
+        for entry in validated["items"].as_array().unwrap() {
+            assert!(entry.get("code").is_some() && entry.get("severity").is_some() && entry.get("source").is_some(),
+                "validation item must carry code/severity/source: {entry}");
+        }
+        for entry in validated["unchecked"].as_array().unwrap() {
+            assert!(entry.get("check").is_some() && entry.get("reason").is_some(), "unchecked entry must name the check: {entry}");
+        }
+        let filtered = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.capabilities.list", &json!({"category":"scene"})).unwrap();
+        assert_eq!(filtered["category"], "scene");
+        assert!(filtered["capabilities"].get("preview").is_some());
+        assert!(filtered["supportedCategories"].as_array().unwrap().iter().any(|value| value == "game"));
         // 游戏预览同样带结构化差异
         let project = read_project(&home, &project_id).unwrap();
         let game_preview = preview_replace_game(&home, "studio-instance", &project_id, 1, &project["game"]).unwrap();
