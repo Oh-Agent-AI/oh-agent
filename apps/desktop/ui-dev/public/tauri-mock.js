@@ -1449,24 +1449,25 @@
         }
         throw new Error("creator_object_not_found");
       };
-      const validateScene = (document) => {
+      // structure_check（§5.3）：只做结构侧事实；语义诊断由 Studio 的 city-sdk 合并。
+      const structureCheck = (document) => {
         const items = [];
         const push = (code, severity, source, objectId, message) =>
           items.push({ code, severity, source, objectId: objectId ?? null, message });
         const seen = new Set();
         let colliders = 0;
         for (const object of document.scene?.objects ?? []) {
-          if (seen.has(object.id)) { push("creator_scene_duplicate_id", "error", "static-schema", object.id, "对象 ID 重复"); continue; }
+          if (seen.has(object.id)) { push("creator_scene_duplicate_id", "error", "structure", object.id, "对象 ID 重复"); continue; }
           seen.add(object.id);
           if (object.kind === "collider") colliders += 1;
         }
-        if (colliders > 256) push("creator_scene_collider_budget_exceeded", "error", "static-schema", null, "碰撞代理数量超出预算");
+        if (colliders > 256) push("creator_scene_collider_budget_exceeded", "error", "structure", null, "碰撞代理数量超出预算");
         const unchecked = [
           { check: "drive_reachability", reason: "requires_city_runtime" },
           { check: "collision_overlap", reason: "requires_city_runtime" },
           { check: "visual_review", reason: "requires_human_or_renderer" }];
         return { projectId: document.projectId, revision: document.revision, ok: items.every(item => item.severity !== "error"),
-          items, unchecked };
+          truncated: false, items, unchecked };
       };
       // path + action 与 Rust apply_scene_operations 的返回对齐（action ∈ added/updated/removed）。
       const sceneChanges = (document, operations) => operations.map((operation) => {
@@ -1569,8 +1570,8 @@
             return capabilities();
           case "creator.scene.inspect":
             return inspectObject(project(payload), payload);
-          case "creator.scene.validate":
-            return validateScene(project(payload));
+          case "creator.scene.structure_check":
+            return structureCheck(project(payload));
           case "creator.game.commit":
           case "creator.scene.commit":
           case "creator.project.commit": {

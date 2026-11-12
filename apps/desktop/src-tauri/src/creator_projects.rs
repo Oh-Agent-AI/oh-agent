@@ -27,7 +27,7 @@ const MAX_ACTIVE_PREVIEWS: usize = 128;
 // 城市补丁（切片 2：旧 patch 导入与共享 revision）。Rust 只做结构、预算与种子一致性
 // 校验（AGENTS.md 插件面政策）；几何/语义校验由 City 引擎在套用时执行。
 pub(crate) const MAX_CITY_PATCH_BYTES: usize = 256 * 1024;
-/// creator.scene.validate 的单次资产字节核对预算（超出部分如实标注 skipped）。
+/// structure_check 的单次资产字节核对预算（超出部分如实标注 skipped）。
 const MAX_VALIDATE_ASSET_CHECKS: usize = 64;
 // This desktop app currently has one local profile per OS data_home. Keep the
 // persistent operation principal separate from the ephemeral WebView instance:
@@ -637,7 +637,7 @@ fn validate_project_asset_ref(document: &Value, object: &Value) -> Result<(), &'
 }
 
 /// `budget`：None = 全量核对（发布/预览路径，字节核对是提交资格检查）；
-/// Some(n) = 核对 n 个资产后返回 skip 代码（creator.scene.validate 的有界模式，
+/// Some(n) = 核对 n 个资产后返回 skip 代码（structure_check 的有界模式，
 /// 由调用方如实标注「字节核对未运行」）。
 fn verify_scene_asset_bytes(home: &Path, project_id: &str, document: &Value, budget: Option<usize>) -> Result<(), &'static str> {
     let objects = document.get("scene").and_then(|scene| scene.get("objects")).and_then(Value::as_array).ok_or("creator_project_invalid")?;
@@ -976,15 +976,16 @@ pub fn dispatch_as(home: &Path, owner: &str, instance: &str, method: &str, paylo
             payload["projectId"].as_str().filter(|id| valid_id(id)).ok_or("creator_request_invalid")?,
             payload["revision"].as_u64().ok_or("creator_request_invalid")?,
             payload["objectId"].as_str().filter(|id| valid_id(id)).ok_or("creator_request_invalid")?),
-        "creator.scene.validate" => {
+        // 结构侧只读依赖（§5.3）：creator.scene.validate 由 Studio 合并 SDK 诊断，
+        // 本方法不直接面向 MCP 工具表。
+        "creator.scene.structure_check" => {
             let object = payload.as_object().ok_or("creator_request_invalid")?;
-            if !object.contains_key("projectId") || object.keys().any(|key| !matches!(key.as_str(), "projectId" | "revision" | "validationProfile")) {
+            if !object.contains_key("projectId") || object.keys().any(|key| !matches!(key.as_str(), "projectId" | "revision")) {
                 return Err("creator_request_invalid");
             }
             let project_id = payload["projectId"].as_str().filter(|id| valid_id(id)).ok_or("creator_request_invalid")?;
             let expected = payload.get("revision").and_then(Value::as_u64);
-            let profile = payload.get("validationProfile").and_then(Value::as_str);
-            validate_scene(home, project_id, expected, profile)
+            structure_check(home, project_id, expected)
         }
         "creator.project.playtest.history" if exact_payload(payload, &["projectId", "limit"]) => list_playtest_history(home,
             payload["projectId"].as_str().ok_or("creator_request_invalid")?, payload["limit"].as_u64().ok_or("creator_request_invalid")?),
@@ -1137,15 +1138,12 @@ fn inspect_scene_object(home: &Path, project_id: &str, expected_revision: u64, o
     Err("creator_object_not_found")
 }
 
-/// MCP P1（设计 §6.4）：结构化校验——静态 schema/资产存储检查逐项报告，
-/// 需要 City 运行时的检查如实标记为未运行，不得显示通过。确定性：同一
-/// 输入/revision 的结果稳定（不消耗 preview、不写库）。
-fn validate_scene(home: &Path, project_id: &str, expected_revision: Option<u64>, profile: Option<&str>) -> Result<Value, &'static str> {
+/// MCP P1→P2（设计 §5.3）：structure_check——只做结构侧事实：ID 形状/唯一性、
+/// 预算、资产字节/摘要、补丁种子一致性。对象/挂载语义归 Studio 的 city-sdk
+/// 合并（creator.scene.validate 由 Studio 处理，本方法是其内部只读依赖，
+/// 不暴露到 MCP 工具表）。确定性：同一输入/revision 结果稳定；不写库。
+fn structure_check(home: &Path, project_id: &str, expected_revision: Option<u64>) -> Result<Value, &'static str> {
     if !valid_id(project_id) { return Err("creator_request_invalid"); }
-    match profile {
-        None | Some("static") => {}
-        _ => return Err("creator_validation_profile_unsupported"),
-    }
     const MAX_ITEMS: usize = 100;
     let db = database(home)?;
     let raw: String = db.query_row("SELECT document_json FROM creator_projects WHERE project_id=?1", [project_id], |row| row.get(0))
@@ -1172,24 +1170,24 @@ fn validate_scene(home: &Path, project_id: &str, expected_revision: Option<u64>,
     let mut colliders = 0usize;
     for object in objects {
         let id = object.get("id").and_then(Value::as_str).unwrap_or("unknown");
-        if let Err(code) = validate_scene_object(object) {
-            push_item(&mut items, &mut truncated, item(code, "error", "static-schema", Some(id), "对象未通过 schema 校验"));
+        if !id.is_empty() && !valid_id(id) {
+            push_item(&mut items, &mut truncated, item("creator_scene_id_invalid", "error", "structure", Some(id), "对象 ID 不满足存储完整性约束"));
             continue;
         }
         if !seen.insert(id.to_owned()) {
-            push_item(&mut items, &mut truncated, item("creator_scene_duplicate_id", "error", "static-schema", Some(id), "对象 ID 重复"));
+            push_item(&mut items, &mut truncated, item("creator_scene_duplicate_id", "error", "structure", Some(id), "对象 ID 重复"));
             continue;
         }
         if object.get("kind").and_then(Value::as_str) == Some("collider") { colliders += 1; }
         // model 的资产引用逐项校验：包匹配布局版本 + 引用登记（静态）；文件字节在资产存储侧单独检查
         if object.get("kind").and_then(Value::as_str) == Some("model") {
             if let Err(code) = validate_project_asset_ref(&document, object) {
-                push_item(&mut items, &mut truncated, item(code, "error", "static-schema", Some(id), "资产引用与绑定布局或登记不符"));
+                push_item(&mut items, &mut truncated, item(code, "error", "structure", Some(id), "资产引用与绑定布局或登记不符"));
             }
         }
     }
     if colliders > MAX_SCENE_COLLIDERS {
-        push_item(&mut items, &mut truncated, item("creator_scene_collider_budget_exceeded", "error", "static-schema", None, "碰撞代理数量超出预算"));
+        push_item(&mut items, &mut truncated, item("creator_scene_collider_budget_exceeded", "error", "structure", None, "碰撞代理数量超出预算"));
     }
     // 资产存储：真实读取本机项目目录里的字节并核对摘要（区别于静态 schema 检查）。
     // 大项目逐个读 64 MiB 资产可能远超 20s 工具预算——失败时如实标记跳过，
@@ -1203,15 +1201,10 @@ fn validate_scene(home: &Path, project_id: &str, expected_revision: Option<u64>,
             push_item(&mut items, &mut truncated, item(code, "error", "asset-store", None, "已登记资产的字节缺失或摘要不匹配"));
         }
     }
-    for mount in document.get("mounts").and_then(Value::as_array).unwrap_or(&Vec::new()) {
-        if let Err(code) = validate_mount(&document, mount) {
-            push_item(&mut items, &mut truncated, item(code, "error", "static-schema", mount.get("mountId").and_then(Value::as_str), "挂载未通过校验"));
-        }
-    }
     if let Some(patch) = document.get("cityPatch") {
         if let Some(seed) = document.get("cityLayout").and_then(|layout| layout.get("seed")).and_then(Value::as_u64) {
             if let Err(code) = validate_city_patch(patch, seed) {
-                push_item(&mut items, &mut truncated, item(code, "error", "static-schema", None, "城市补丁未通过校验"));
+                push_item(&mut items, &mut truncated, item(code, "error", "structure", None, "城市补丁未通过校验"));
             }
         }
     }
@@ -1221,7 +1214,7 @@ fn validate_scene(home: &Path, project_id: &str, expected_revision: Option<u64>,
         {"check":"collision_overlap","reason":"requires_city_runtime"},
         {"check":"visual_review","reason":"requires_human_or_renderer"}
     ]);
-    // ok 只看未截断的静态错误；截断本身不代表通过，调用方据 truncated 自行重试
+    // ok 只看未截断的结构错误；截断本身不代表通过，调用方据 truncated 自行重试
     let ok = !truncated && !items.iter().any(|entry| entry["severity"] == "error");
     Ok(json!({"projectId":project_id,"revision":revision,"ok":ok,"truncated":truncated,"items":items,"unchecked":unchecked}))
 }
@@ -1686,8 +1679,8 @@ mod tests {
         assert_eq!(capabilities["schemaVersion"], 1);
         assert_eq!(capabilities["categories"]["scene"]["objectKinds"][0], "model");
         assert_eq!(capabilities["preview"]["singleUse"], true);
-        // validate：诊断项结构（code/severity/source/objectId）与未运行项如实标注
-        let validated = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.scene.validate", &json!({"projectId":project_id})).unwrap();
+        // structure_check：诊断项结构（code/severity/source/objectId）与未运行项如实标注
+        let validated = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.scene.structure_check", &json!({"projectId":project_id})).unwrap();
         assert_eq!(validated["ok"], true);
         for entry in validated["items"].as_array().unwrap() {
             assert!(entry.get("code").is_some() && entry.get("severity").is_some() && entry.get("source").is_some(),
@@ -1748,12 +1741,12 @@ mod tests {
             &json!({"projectId":project_id,"revision":2,"objectId":"zone:missing"})).unwrap_err(), "creator_object_not_found");
         assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.scene.inspect",
             &json!({"projectId":project_id,"revision":99,"objectId":"zone:gazebo"})).unwrap_err(), "revision_conflict");
-        // validate：干净项目 ok + 运行时检查如实未运行
-        let validated = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.scene.validate", &json!({"projectId":project_id})).unwrap();
+        // structure_check：干净项目 ok + 运行时检查如实未运行；validate 方法不再由 Rust 提供（§5.3）
+        let validated = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.scene.structure_check", &json!({"projectId":project_id})).unwrap();
         assert_eq!(validated["ok"], true);
         assert!(validated["unchecked"].as_array().unwrap().iter().any(|entry| entry["check"] == "drive_reachability"));
         assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.scene.validate",
-            &json!({"projectId":project_id,"validationProfile":"runtime"})).unwrap_err(), "creator_validation_profile_unsupported");
+            &json!({"projectId":project_id})).unwrap_err(), "creator_method_unavailable");
         // capabilities：类别过滤与未知类别
         let filtered = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.capabilities.list", &json!({"category":"scene"})).unwrap();
         assert_eq!(filtered["category"], "scene");

@@ -204,6 +204,7 @@
         "creator.scene.capture",
         "creator.scene.inspect",
         "creator.scene.validate",
+        "creator.scene.structure_check",
         "creator.capabilities.list"
       ],
       "hostEvents": ["plugin.event"],

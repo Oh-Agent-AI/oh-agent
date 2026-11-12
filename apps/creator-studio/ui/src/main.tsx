@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { connectHostCalls, invokeHost, observeHealth, publishToolbar } from "@agent-vitals/app-sdk/ui-host";
-import { canonicalJson, validateCityLayoutSnapshot, validateMiniGamePack, validateMount, type CityGameMountV1, type CityLayoutSnapshotV1 } from "@agent-vitals/city-sdk";
+import { canonicalJson, validateCityLayoutSnapshot, validateMiniGamePack, validateMount, validateSceneDraft, type CityGameMountV1, type CityLayoutSnapshotV1 } from "@agent-vitals/city-sdk";
 import { buildGameValidation, buildSceneValidation } from "./sdkValidation";
 // 视口与 City 插件共享同一份引擎与装配管线，保证 Studio 看到的是同一座城市。
 import { CityViewport } from "../../../agent-city/ui/src/viewport/CityViewport";
@@ -245,6 +245,43 @@ function App() {
         camera: camera ? { position: camera.position, target: camera.target } : null, capturedAtMs: Date.now() };
       noteAgent("creator.scene.capture", payload, true, { revision: projectRef.current.revision });
       return result;
+    };
+    // creator.scene.validate 由 Studio 合并三方结果（设计 §5.3）：Rust structure_check
+    // 提供结构/预算/资产字节事实，SDK 提供 game/scene/mount 语义诊断，这里合并、
+    // 去重（code+objectId）、排序并截断。MCP 工具表不暴露 structure_check。
+    (handlers as Record<string, (payload: Record<string, unknown>) => Promise<unknown>>)["creator.scene.validate"] = async (payload: Record<string, unknown>) => {
+      const profile = payload.validationProfile;
+      if (profile !== undefined && profile !== "static") throw new Error("creator_validation_profile_unsupported");
+      const document = await creatorRequest<Project>("creator.project.read", { projectId: String(payload.projectId ?? "") });
+      if (typeof payload.revision === "number" && payload.revision !== document.revision) throw new Error("revision_conflict");
+      const structure = await creatorRequest<{ ok: boolean; truncated: boolean; items: Array<Record<string, unknown>>; unchecked: unknown[] }>(
+        "creator.scene.structure_check", { projectId: document.projectId, revision: document.revision });
+      const sdkItems: Array<Record<string, unknown>> = [];
+      const pushSdk = (diagnostics: readonly { code: string; severity: "error" | "warning"; path: string; objectId?: string; message: string }[]) => {
+        for (const item of diagnostics) {
+          sdkItems.push({ code: item.code, severity: item.severity, source: "static-schema",
+            objectId: item.objectId ?? null, message: item.message });
+        }
+      };
+      pushSdk(validateMiniGamePack(document.game).diagnostics);
+      if (document.scene) pushSdk(validateSceneDraft(document.scene).diagnostics);
+      const layout = document.cityLayout && !Array.isArray(document.cityLayout) ? (document.cityLayout as { layout?: unknown }).layout : undefined;
+      for (const mount of document.mounts ?? []) {
+        if (!layout) { sdkItems.push({ code: "creator_layout_not_bound", severity: "error", source: "static-schema", objectId: mount.mountId ?? null, message: "项目未绑定 City 布局，挂载无法校验。" }); continue; }
+        pushSdk(validateMount({ layout, game: document.game, mount }).diagnostics);
+      }
+      // 合并去重（code+objectId 同一违例只报一次），error 优先、其余稳定排序，超限截断。
+      const merged = new Map<string, Record<string, unknown>>();
+      for (const entry of [...structure.items, ...sdkItems]) {
+        const key = `${entry.code}|${entry.objectId ?? ""}`;
+        if (!merged.has(key)) merged.set(key, entry);
+      }
+      const MAX_ITEMS = 100;
+      const ordered = [...merged.values()].sort((a, b) => (a.severity === b.severity ? String(a.code).localeCompare(String(b.code)) : a.severity === "error" ? -1 : 1));
+      const truncated = structure.truncated || ordered.length > MAX_ITEMS;
+      const items = ordered.slice(0, MAX_ITEMS);
+      const ok = !truncated && !items.some(entry => entry.severity === "error");
+      return { projectId: document.projectId, revision: document.revision, ok, truncated, items, unchecked: structure.unchecked };
     };
     const disconnectHostCalls = connectHostCalls(handlers);
     publishToolbar([]);
