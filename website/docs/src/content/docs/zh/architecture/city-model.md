@@ -1,5 +1,5 @@
 ---
-draft: true
+lastUpdated: 2026-11-12
 title: Agent City 怎么把会话变成楼？城市模型
 description: Agent City 从 Agent Vitals 数据接口读取最近最多 4000 个会话，包括 Token、模型和费用估算。楼高按总 Token 取对数计算，公共建筑可以打开数据面板。
 head:
@@ -98,7 +98,7 @@ Agent City 是建在 Agent Vitals 之上的游戏层。它默认向宿主请求�
 | `busyness` | 近期每小时 Token 量，驱动工地吊车的节奏 |
 | `startedAt` | 第一条事件的时间，决定回放时楼什么时候出现 |
 
-**待确认**：`cityModel.ts` 只定初始形态。建筑说明里写的是最终形态跟随地价（好地段长塔楼，便宜地段长板楼和街坊楼），这一步在后面的布局阶段决定。详细写之前要确认最终由哪个文件决定。
+**最终形态跟随地价。** `cityModel.ts` 只定初始形态。绘制城市时，`engine/cityParts.ts` 里的 `formOf` 在每个区内按地价排名：前 25% 的地块长成塔楼，后 30% 长成板楼或街坊楼（由 seed 决定），中间的保留模型给的原型。地标保持不变。楼高不受影响，大小仍由 Token 决定。
 
 <!-- source: cityModel.ts (buildCityModel); apps/agent-city/ui/src/i18n.tsx (地价 strings) -->
 

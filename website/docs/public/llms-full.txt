@@ -461,6 +461,108 @@ No. Credentials are never saved in anything Oh Agent owns. Some test features ca
 
 ---
 
+# How does Agent City turn sessions into buildings? The city model
+URL: https://ohagent.ai/docs/architecture/city-model/
+
+Agent City is the game layer on top of Agent Vitals. It asks the host for a paged `city:v3` snapshot by default (the landing host and `?cityData=v2` still use `city:v2`), which holds up to 4,000 of your most recent sessions in the chosen time window. A pure TypeScript model (`cityModel.ts`) maps each session to one building. Then the planner and renderer lay out the island and draw it with three.js. This page covers the data side. For what each building looks like, see [What each building means](https://ohagent.ai/docs/city-guide).
+
+## Key facts
+
+- **Time windows:** 7, 30, 90 or 366 days, rolling. `city:v2` uses UTC; `city:v3` uses your declared time zone.
+- **Session cap:** 4,000 per window. The most recent ones by last activity are kept, then ordered oldest first so the city grows outward.
+- **1 session = 1 building.** The render cap is also 4,000, so every loaded session gets its own building.
+- **Height = total tokens**: uncached input + cache read + cache write + output.
+- **Height curve:** `clamp(0.75 × (log10(tokens) − 1)^2.2, 2.6, 48)`, so about 3.4 units at 1K tokens, 15.8 at 100K and 38.6 at 10M.
+- **Island tier:** `ceil(windowSessions / 400)`, from 1 to 10, using the full window count so later pages do not retier the island. Each tier plans `ceil(400 × tier × 1.35)` lots.
+- **Districts = sources** (Claude Code, Codex, …), ordered by total tokens.
+- **Cost is shown as an estimate.** v3 building cards ask you to open details for the estimate (`load_on_demand`); v2 still ships a cost on the list row. When a session can't be priced in full, City shows the reason instead of a number. Cost never affects height.
+- **Data facilities:** some public buildings open data panels (city overview, activity and models, findings, skills).
+
+## What is in the City projection?
+
+By default City reads one JSON object (`protocol: "city:v2"`) per window:
+
+| Field | Meaning |
+| --- | --- |
+| `harnesses` | Public source identities: id, display name, capabilities |
+| `sessions[]` | Per session: an opaque `id`, `harness`, bounded `title` and `title_source`, first and last event time, `event_count`, `tokens {input, uncached_input, cache_read, cache_write, output, total}`, `model_ids`, `cost_minor`, `cost_breakdown` (per currency and billing basis), `cost_complete`, `cost_status {state, reason, has_unresolved}`, up to 2 `task_excerpts` |
+| `summary` | Totals for the whole window (session count, usage events, tokens), not just the loaded sessions |
+| `models`, `model_coverage` | Model IDs seen in the whole window, plus counts of usage with an unknown model or legacy data |
+| `activity` | Per-day active sessions, usage rows and tokens, and the busiest day |
+| `findings[]` | Open findings counted per source and severity (not per session) |
+| `coverage` | `total`, `returned`, `truncated`, unknown-time counts, and the selection and order rules |
+| `window`, `generated_at`, `data_revision`, `status` | Snapshot metadata; `status` is `ready` or `empty` |
+
+- **Session IDs are one-way.** Each is a salted handle (`sr_` + 32 hex), scoped to City. The plugin never sees native session IDs, paths or database keys.
+- **Costs are estimates.** `cost_status.state` is `estimated`, `subscription`, `unpriced` or `unavailable`. Mixed currencies and partly priced sessions get no single total.
+- **Excerpts are short and filtered.** At most 2 per session: the first up to 200 characters, a later one up to 120. System wrappers, bare file paths and one-word replies such as "ok" or "继续" are skipped.
+- **No fake fallback.** If real data fails, City shows "unavailable"; it doesn't switch to synthetic data.
+
+### What does `city:v3` add?
+
+`city:v3` is a paged, snapshot-based version of the same data, with five operations (see [App SDK](https://ohagent.ai/docs/vitals/app-sdk)). The packaged City plugin loads through v3 by default (the plugin WebView has no query string) and falls back to `city:v2` if v3 errors or exhausts snapshot retries. The website landing host only answers v2; `?cityData=v2` remains an explicit override. Findings, skills, and session details use v3 on demand. It adds:
+
+- **`asset_ref`:** a stable, random City asset ID per session, kept in a separate registry under `~/.agent-vitals/state/plugins/city-assets/`. It holds no title, excerpt, path or native ID.
+- **`layout_order`, `usage_event_count`, `title_state`**, and separate window and lifetime first/last event times.
+- **Lazy details:** `session.detail` returns one building's cost breakdown and excerpts, scoped to the whole session.
+
+The first page is enough to render; later pages append into a stable island planned for the full window. Native click-through on a macOS bundle is still a separate acceptance.
+
+## Which buildings open data panels?
+
+Public buildings are entry points to data, not extra sessions or game income. Each one maps to a data place in `cityDataPlaces.ts`:
+
+| Data place (`id`) | Building (catalog id) | What it shows | State on dev |
+| --- | --- | --- | --- |
+| City Hall · Overview (`overview`) | `civic-hall` | Whole-window statistics and loading coverage | Live data |
+| Observatory · Activity & models (`activity`) | `observation-tower` | Daily active sessions, usage rows and tokens; model IDs seen | Live data |
+| Diagnostics · Findings (`findings`) | `hospital` | Current open backlog and findings new in the window, by source and severity | Loaded on demand (`module.read`) |
+| Academy · Skills (`skills`) | `school` | Skill invocations with recorded evidence: count, sessions, outcomes, last used | Loaded on demand (`module.read`); up to 200 rows |
+| Station · Workflow (`workflow`) | `station` | Tool execution and outcomes | Not available yet: shown as unsupported |
+
+If a building doesn't exist yet because the city is small, its panel still opens from the **Data facilities** list in the city summary.
+
+## How is a building computed?
+
+For each session row, `buildCityModel` computes:
+
+| Property | Rule |
+| --- | --- |
+| `height` | `tokensToHeight(total)` (log curve above). The top ~12 sessions by tokens get ×1.12 as landmarks |
+| `seed` | FNV-1a hash of the session ID, so appearance is stable between refreshes |
+| `archetype` | Initial form from height and seed: tower, slab, midrise, block or landmark |
+| `active` | The session had an event today (local day), the same rule as the menu bar |
+| `builtFraction` | 1 for finished sessions; for active ones, tokens ÷ the district's p95, clamped to 0.08–0.92 |
+| `busyness` | Recent tokens per hour, which drives crane animation on active sites |
+| `startedAt` | First event time, which decides when the building appears during replay |
+
+**Final form follows land value.** `cityModel.ts` only sets the initial archetype. When the city is drawn, `formOf` in `engine/cityParts.ts` ranks lots by land value within each district: the top 25% become towers, the bottom 30% become slabs or blocks (chosen by seed), and the middle keeps the archetype from the model. Landmarks stay landmarks. Height is unchanged, so tokens still decide size.
+
+## What if there are more than 4,000 sessions?
+
+The host returns only the most recent 4,000 and sets `coverage.truncated = true`. The model has a fallback for more rows than the render cap: it splits 4,000 building slots among districts by session share, and merges the rest into 2 to 26 low-detail "aggregated blocks" per district. Because the host cap equals the render cap, that path doesn't run with real data today.
+
+## How does replay work?
+
+Each building grows from its first to its last event. The model has no per-event token series, so growth over a session is a linear approximation. During replay, each rise is clamped to 0.9–3.5 wall-clock seconds so short sessions don't flash and long ones don't crawl.
+
+## How are findings shown?
+
+Findings are only counted per source, so they appear as a district anomaly marker, not on single buildings. The list is partial: an empty list doesn't prove there were no problems. Findings cover Claude Code, Codex and DSH only. For more detail, open the Diagnostics panel (hospital).
+
+## Where does the rendering happen?
+
+After the model, City runs a planner (terrain, roads, lots), a layout step (sessions to lots) and a three.js renderer, under `apps/agent-city/ui/src/engine/`. The target is layers L0 (model) → L5 (runtime) where only L4 knows three.js. That design is still a proposal and only partly carried out.
+
+## Related
+
+- [What each building means](https://ohagent.ai/docs/city-guide)
+- [Architecture overview](https://ohagent.ai/docs/architecture/overview)
+- [Data pipeline](https://ohagent.ai/docs/architecture/data-pipeline)
+- [Plugins and the data interface](https://ohagent.ai/docs/vitals/app-sdk)
+
+---
+
 # How does Oh Agent turn agent session logs into data? The data pipeline
 URL: https://ohagent.ai/docs/architecture/data-pipeline/
 

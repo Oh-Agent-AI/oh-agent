@@ -1,5 +1,5 @@
 ---
-draft: true
+lastUpdated: 2026-11-12
 title: How does Agent City turn sessions into buildings? The city model
 description: Agent City reads up to 4,000 recent sessions, with tokens, models and cost estimates, from the Agent Vitals data interface. Height follows total tokens on a log curve, and public buildings open data panels.
 head:
@@ -107,9 +107,10 @@ For each session row, `buildCityModel` computes:
 | `busyness` | Recent tokens per hour, which drives crane animation on active sites |
 | `startedAt` | First event time, which decides when the building appears during replay |
 
-**TBD:** `cityModel.ts` only sets an initial archetype. The building guide says the final form follows land value (towers on prime lots, slabs and blocks on cheaper ones), and that is decided later in layout. Confirm which file owns the final choice before documenting it in detail.
+**Final form follows land value.** `cityModel.ts` only sets the initial archetype. When the city is drawn, `formOf` in `engine/cityParts.ts` ranks lots by land value within each district: the top 25% become towers, the bottom 30% become slabs or blocks (chosen by seed), and the middle keeps the archetype from the model. Landmarks stay landmarks. Height is unchanged, so tokens still decide size.
 
 <!-- source: cityModel.ts (buildCityModel: landmarkThreshold = percentile(1 − 12/n); finalHeight = height × 1.12; hashSeed FNV-1a; archetypeFor; isActiveToday; builtFraction clamp 0.08–0.92; busyness) -->
+<!-- source: apps/agent-city/ui/src/engine/cityParts.ts (dev: formOf; landValue percentile >= 0.75 tower, < 0.3 slab/block by seed) -->
 <!-- source: apps/agent-city/ui/src/i18n.tsx ("区内地价最高 … 长成玻璃幕墙塔楼"; "形态只随地价变化，楼高仍由 token 决定") -->
 
 ## What if there are more than 4,000 sessions?
