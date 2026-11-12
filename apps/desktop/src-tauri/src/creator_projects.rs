@@ -1,38 +1,34 @@
 //! Local authority for Agent City creator projects.
 //! Drafts and revisions are isolated from the analytical authority database.
 //! WebView/MCP identity and foreground authorization are enforced by the caller.
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
-use std::{collections::HashMap, path::Path, sync::{Mutex, OnceLock}, time::{Duration, SystemTime, UNIX_EPOCH}};
+use std::{collections::HashMap, path::Path, sync::{Mutex, OnceLock}, time::{Duration, SystemTime}};
+
+use crate::creator_assets::inspect_glb;
+pub use crate::creator_assets::read_city_release_asset;
+use crate::creator_city_patch::{latest_city_patch, list_city_layout_snapshots, publish_city_patch, read_city_patch_for_seed, read_city_layout_snapshot, validate_city_patch, validate_layout_snapshot};
+pub use crate::creator_city_patch::publish_city_layout_snapshot;
+use crate::creator_playtest::{cancel_playtest, claim_playtest, finish_playtest, list_playtest_history, read_playtest_result, start_playtest, take_playtest_return};
+use crate::creator_store::{bytes_digest, canonical_json, database, digest, new_id, now_ms, only_keys, valid_id};
 
 const MAX_GAME_BYTES: usize = 256 * 1024;
 const MAX_PROJECT_BYTES: usize = 2 * 1024 * 1024;
-const MAX_RELEASE_BYTES: usize = 512 * 1024;
-const MAX_RELEASE_MOUNTS: usize = 32;
+pub(crate) const MAX_RELEASE_BYTES: usize = 512 * 1024;
+pub(crate) const MAX_RELEASE_MOUNTS: usize = 32;
 const MAX_SCENE_OBJECTS: usize = 10_000;
 const MAX_SCENE_COLLIDERS: usize = 256;
 const MAX_RELEASE_COLLIDERS: usize = 64;
-const MAX_IMPORTED_MODEL_BYTES: u64 = 64 * 1024 * 1024;
+pub(crate) const MAX_IMPORTED_MODEL_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_PROJECT_ASSETS: usize = 4_096;
 const PREVIEW_TTL: Duration = Duration::from_secs(600);
-const PLAYTEST_TTL_MS: u64 = 30 * 60 * 1000;
-const MAX_PLAYTEST_HISTORY: i64 = 64;
-const MAX_PLAYTEST_EVIDENCE_BYTES: usize = 8 * 1024;
-const MAX_PLAYTEST_COUNTERS: usize = 32;
-const MAX_PLAYTEST_TICKS: u64 = 2_000_000;
+pub(crate) const PLAYTEST_TTL_MS: u64 = 30 * 60 * 1000;
 const MAX_ACTIVE_PREVIEWS: usize = 128;
 // 城市补丁（切片 2：旧 patch 导入与共享 revision）。Rust 只做结构、预算与种子一致性
 // 校验（AGENTS.md 插件面政策）；几何/语义校验由 City 引擎在套用时执行。
-const MAX_CITY_PATCH_BYTES: usize = 256 * 1024;
+pub(crate) const MAX_CITY_PATCH_BYTES: usize = 256 * 1024;
 /// creator.scene.validate 的单次资产字节核对预算（超出部分如实标注 skipped）。
 const MAX_VALIDATE_ASSET_CHECKS: usize = 64;
-const MAX_CITY_PATCH_OPS: usize = 4_096;
-const MAX_CITY_PATCH_HIGHWAY_OPS: usize = 1_024;
-// 玩家土方尚未进入本切片的操作契约：作为有界透传收下，语义校验留给 City 引擎。
-const MAX_CITY_PATCH_TERRAIN_OPS: usize = 256;
-const MAX_PATCH_COORD: f64 = 1_000_000.0;
-const MAX_PATCH_ROAD_WIDTH: f64 = 64.0;
 // This desktop app currently has one local profile per OS data_home. Keep the
 // persistent operation principal separate from the ephemeral WebView instance:
 // operation retries must remain queryable after Studio is closed and reopened.
@@ -64,7 +60,7 @@ fn default_skin_id() -> &'static str {
         .and_then(Value::as_str).expect("descriptor content.skins must be non-empty")
 }
 
-fn valid_skin_id(value: &str) -> bool {
+pub(crate) fn valid_skin_id(value: &str) -> bool {
     creator_descriptor()["content"]["skins"].as_array().is_some_and(|skins| skins.iter().any(|skin| skin.as_str() == Some(value)))
 }
 
@@ -95,110 +91,6 @@ struct Preview {
 fn previews() -> &'static Mutex<HashMap<String, Preview>> {
     static PREVIEWS: OnceLock<Mutex<HashMap<String, Preview>>> = OnceLock::new();
     PREVIEWS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn now_ms() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64 }
-fn digest(text: &str) -> String { format!("sha256:{:x}", Sha256::digest(text.as_bytes())) }
-fn bytes_digest(bytes: &[u8]) -> String { format!("sha256:{:x}", Sha256::digest(bytes)) }
-
-/// playtest 行查询的投影元组（clippy type_complexity 别名；字段次序跟随各 SELECT）。
-type PlaytestClaimRow = (String, String, String, u64, String, Option<String>, String);
-type PlaytestResultRow = (String, Option<String>, String, String, u64, Option<u64>, u64, String, Option<String>, Option<String>);
-type PlaytestReturnRow = (String, String, u64, String, Option<String>, Option<String>);
-type PlaytestReadRow = (String, String, String, u64, String, u64, Option<u64>, Option<String>, Option<String>);
-fn canonical_json(value: &Value) -> Result<String, serde_json::Error> {
-    fn write(value: &Value, output: &mut String) -> Result<(), serde_json::Error> {
-        match value {
-            Value::Object(object) => {
-                output.push('{');
-                let mut keys: Vec<&String> = object.keys().collect();
-                keys.sort();
-                for (index, key) in keys.iter().enumerate() {
-                    if index > 0 { output.push(','); }
-                    output.push_str(&serde_json::to_string(key)?);
-                    output.push(':');
-                    write(&object[*key], output)?;
-                }
-                output.push('}');
-            }
-            Value::Array(items) => {
-                output.push('[');
-                for (index, item) in items.iter().enumerate() {
-                    if index > 0 { output.push(','); }
-                    write(item, output)?;
-                }
-                output.push(']');
-            }
-            _ => output.push_str(&serde_json::to_string(value)?),
-        }
-        Ok(())
-    }
-    let mut output = String::new();
-    write(value, &mut output)?;
-    Ok(output)
-}
-fn valid_id(value: &str) -> bool { !value.is_empty() && value.len() <= 128 && value.as_bytes()[0].is_ascii_alphanumeric() && value.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-')) }
-fn only_keys(object: &serde_json::Map<String, Value>, allowed: &[&str]) -> bool { object.keys().all(|key| allowed.contains(&key.as_str())) }
-
-fn database(home: &Path) -> Result<Connection, &'static str> {
-    let directory = home.join("state/creator");
-    std::fs::create_dir_all(&directory).map_err(|_| "creator_store_unavailable")?;
-    let db = Connection::open(directory.join("projects.sqlite")).map_err(|_| "creator_store_unavailable")?;
-    db.busy_timeout(Duration::from_secs(3)).map_err(|_| "creator_store_unavailable")?;
-    db.execute_batch("PRAGMA journal_mode=WAL;
-        CREATE TABLE IF NOT EXISTS creator_projects (
-            project_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, document_json TEXT NOT NULL,
-            created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS creator_changes (
-            project_id TEXT NOT NULL, revision INTEGER NOT NULL, actor_id TEXT NOT NULL,
-            operation_id TEXT NOT NULL, operation_hash TEXT NOT NULL, document_json TEXT NOT NULL,
-            created_at_ms INTEGER NOT NULL, PRIMARY KEY(project_id, revision)
-        );
-        CREATE TABLE IF NOT EXISTS creator_operations (
-            project_id TEXT NOT NULL, actor_id TEXT NOT NULL, operation_id TEXT NOT NULL,
-            operation_hash TEXT NOT NULL, result_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL,
-            PRIMARY KEY(project_id, actor_id, operation_id)
-        );
-        CREATE TABLE IF NOT EXISTS creator_city_layouts (
-            world_revision TEXT PRIMARY KEY, layout_id TEXT NOT NULL, snapshot_json TEXT NOT NULL,
-            snapshot_digest TEXT NOT NULL, updated_at_ms INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS creator_city_patches (
-            seed INTEGER PRIMARY KEY, patch_json TEXT NOT NULL, patch_digest TEXT NOT NULL,
-            updated_at_ms INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS creator_releases (
-            release_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, revision INTEGER NOT NULL,
-            layout_id TEXT NOT NULL, world_revision TEXT NOT NULL, snapshot_json TEXT NOT NULL,
-            snapshot_digest TEXT NOT NULL, created_at_ms INTEGER NOT NULL,
-            UNIQUE(project_id, revision)
-        );
-        CREATE TABLE IF NOT EXISTS creator_playtest_runs (
-            run_id TEXT PRIMARY KEY, release_id TEXT NOT NULL, project_id TEXT NOT NULL,
-            revision INTEGER NOT NULL, studio_instance_id TEXT NOT NULL, city_instance_id TEXT,
-            status TEXT NOT NULL, active_slot INTEGER UNIQUE, created_at_ms INTEGER NOT NULL,
-            expires_at_ms INTEGER NOT NULL, finished_at_ms INTEGER, return_consumed INTEGER NOT NULL DEFAULT 0,
-            evidence_json TEXT, failure_code TEXT
-        );") .map_err(|_| "creator_store_unavailable")?;
-    let columns = {
-        let mut statement = db.prepare("PRAGMA table_info(creator_playtest_runs)").map_err(|_| "creator_store_unavailable")?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(1)).map_err(|_| "creator_store_unavailable")?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|_| "creator_store_unavailable")?
-    };
-    if !columns.iter().any(|column| column == "evidence_json") {
-        db.execute("ALTER TABLE creator_playtest_runs ADD COLUMN evidence_json TEXT", []).map_err(|_| "creator_store_unavailable")?;
-    }
-    if !columns.iter().any(|column| column == "failure_code") {
-        db.execute("ALTER TABLE creator_playtest_runs ADD COLUMN failure_code TEXT", []).map_err(|_| "creator_store_unavailable")?;
-    }
-    Ok(db)
-}
-
-fn new_id(prefix: &str) -> Result<String, &'static str> {
-    let mut bytes = [0u8; 16];
-    getrandom::fill(&mut bytes).map_err(|_| "creator_id_unavailable")?;
-    Ok(format!("{prefix}{}", bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>()))
 }
 
 fn validate_game(game: &Value) -> Result<String, &'static str> {
@@ -290,273 +182,6 @@ fn validate_game(game: &Value) -> Result<String, &'static str> {
     Ok(serialized)
 }
 
-fn validate_layout_snapshot(value: &Value) -> Result<(&str, &str), &'static str> {
-    let snapshot = value.as_object().filter(|object| object.len() == 4 && only_keys(object, &["schemaVersion", "worldRevision", "seed", "layout"]))
-        .ok_or("creator_layout_snapshot_invalid")?;
-    if snapshot.get("schemaVersion").and_then(Value::as_u64) != Some(1)
-        || !snapshot.get("worldRevision").and_then(Value::as_str).is_some_and(|revision| !revision.is_empty() && revision.len() <= 256)
-        || snapshot.get("seed").and_then(Value::as_u64).is_none_or(|seed| seed > u32::MAX as u64) { return Err("creator_layout_snapshot_invalid"); }
-    let layout = snapshot.get("layout").and_then(Value::as_object)
-        .filter(|layout| (layout.len() == 4 || layout.len() == 5) && only_keys(layout, &["schemaVersion", "id", "coordinateSystem", "anchors", "links"]))
-        .ok_or("creator_layout_snapshot_invalid")?;
-    if layout.get("schemaVersion").and_then(Value::as_u64) != Some(1)
-        || layout.get("coordinateSystem").and_then(Value::as_str) != Some("city-local-m-v1")
-        || !layout.get("id").and_then(Value::as_str).is_some_and(valid_id) { return Err("creator_layout_snapshot_invalid"); }
-    let anchors = layout.get("anchors").and_then(Value::as_array).filter(|anchors| (1..=64).contains(&anchors.len())).ok_or("creator_layout_snapshot_invalid")?;
-    let mut seen = std::collections::HashSet::new();
-    let mut anchor_capabilities = HashMap::<&str, std::collections::HashSet<&str>>::new();
-    for anchor in anchors {
-        let anchor = anchor.as_object().filter(|anchor| anchor.len() == 4 && only_keys(anchor, &["id", "kind", "capabilities", "geometryRef"]))
-            .ok_or("creator_layout_snapshot_invalid")?;
-        let id = anchor.get("id").and_then(Value::as_str).filter(|id| valid_id(id)).ok_or("creator_layout_snapshot_invalid")?;
-        if !seen.insert(id) { return Err("creator_layout_snapshot_invalid"); }
-        if !matches!(anchor.get("kind").and_then(Value::as_str), Some("spawn" | "route" | "zone" | "object"))
-            || !anchor.get("geometryRef").and_then(Value::as_str).is_some_and(valid_id) { return Err("creator_layout_snapshot_invalid"); }
-        let capabilities = anchor.get("capabilities").and_then(Value::as_array).filter(|items| items.len() <= 2).ok_or("creator_layout_snapshot_invalid")?;
-        if capabilities.iter().any(|item| !matches!(item.as_str(), Some("drive" | "walk")))
-            || capabilities.iter().enumerate().any(|(index, item)| capabilities[..index].contains(item)) { return Err("creator_layout_snapshot_invalid"); }
-        anchor_capabilities.insert(id, capabilities.iter().filter_map(Value::as_str).collect());
-    }
-    if let Some(links_value) = layout.get("links") {
-        let links = links_value.as_array().filter(|links| links.len() <= 256).ok_or("creator_layout_snapshot_invalid")?;
-        let mut link_ids = std::collections::HashSet::new();
-        for link in links {
-            let link = link.as_object().filter(|link| link.len() == 4 && only_keys(link, &["id", "fromAnchorId", "toAnchorId", "capabilities"]))
-                .ok_or("creator_layout_snapshot_invalid")?;
-            let id = link.get("id").and_then(Value::as_str).filter(|id| valid_id(id)).ok_or("creator_layout_snapshot_invalid")?;
-            let from = link.get("fromAnchorId").and_then(Value::as_str).filter(|id| valid_id(id)).ok_or("creator_layout_snapshot_invalid")?;
-            let to = link.get("toAnchorId").and_then(Value::as_str).filter(|id| valid_id(id)).ok_or("creator_layout_snapshot_invalid")?;
-            if !link_ids.insert(id) || from == to { return Err("creator_layout_snapshot_invalid"); }
-            let from_capabilities = anchor_capabilities.get(from).ok_or("creator_layout_snapshot_invalid")?;
-            let to_capabilities = anchor_capabilities.get(to).ok_or("creator_layout_snapshot_invalid")?;
-            let capabilities = link.get("capabilities").and_then(Value::as_array).filter(|items| !items.is_empty() && items.len() <= 2).ok_or("creator_layout_snapshot_invalid")?;
-            if capabilities.iter().any(|item| !matches!(item.as_str(), Some("drive" | "walk")))
-                || capabilities.iter().enumerate().any(|(index, item)| capabilities[..index].contains(item)
-                    || item.as_str().is_none_or(|capability| !from_capabilities.contains(capability) || !to_capabilities.contains(capability))) {
-                return Err("creator_layout_snapshot_invalid");
-            }
-        }
-    }
-    Ok((snapshot["worldRevision"].as_str().unwrap_or_default(), layout["id"].as_str().unwrap_or_default()))
-}
-
-pub fn publish_city_layout_snapshot(home: &Path, snapshot: &Value) -> Result<Value, &'static str> {
-    let (world_revision, layout_id) = validate_layout_snapshot(snapshot)?;
-    let raw = serde_json::to_string(snapshot).map_err(|_| "creator_layout_snapshot_invalid")?;
-    if raw.len() > 32 * 1024 { return Err("creator_layout_snapshot_too_large"); }
-    let snapshot_digest = digest(&raw);
-    let db = database(home)?;
-    let existing: Option<String> = db.query_row("SELECT snapshot_digest FROM creator_city_layouts WHERE world_revision=?1", [world_revision], |row| row.get(0)).optional().map_err(|_| "creator_store_unavailable")?;
-    if existing.as_ref().is_some_and(|digest| digest != &snapshot_digest) { return Err("creator_layout_revision_conflict"); }
-    db.execute("INSERT INTO creator_city_layouts(world_revision,layout_id,snapshot_json,snapshot_digest,updated_at_ms)
-        VALUES(?1,?2,?3,?4,?5) ON CONFLICT(world_revision) DO UPDATE SET updated_at_ms=excluded.updated_at_ms",
-        params![world_revision,layout_id,raw,snapshot_digest,now_ms()]).map_err(|_| "creator_store_unavailable")?;
-    Ok(json!({"layoutId":layout_id,"worldRevision":world_revision,"anchorCount":snapshot["layout"]["anchors"].as_array().map_or(0, Vec::len)}))
-}
-
-pub fn list_city_layout_snapshots(home: &Path, limit: u64) -> Result<Value, &'static str> {
-    let db = database(home)?;
-    let mut statement = db.prepare("SELECT world_revision,layout_id,snapshot_json,updated_at_ms FROM creator_city_layouts ORDER BY updated_at_ms DESC,world_revision ASC LIMIT ?1")
-        .map_err(|_| "creator_store_unavailable")?;
-    let rows = statement.query_map([limit.clamp(1, 16)], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,u64>(3)?)))
-        .map_err(|_| "creator_store_unavailable")?;
-    let catalogs = rows.map(|row| {
-        let (world_revision, layout_id, raw, updated_at_ms) = row.map_err(|_| "creator_store_unavailable")?;
-        let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
-        Ok(json!({"worldRevision":world_revision,"layoutId":layout_id,"seed":snapshot["seed"],
-            "anchorCount":snapshot["layout"]["anchors"].as_array().map_or(0, Vec::len),"updatedAtMs":updated_at_ms}))
-    }).collect::<Result<Vec<_>, &'static str>>()?;
-    Ok(json!({"layouts":catalogs}))
-}
-
-fn read_city_layout_snapshot(home: &Path, world_revision: &str) -> Result<Value, &'static str> {
-    if world_revision.is_empty() || world_revision.len() > 256 { return Err("creator_layout_not_found"); }
-    let db = database(home)?;
-    let raw: String = db.query_row("SELECT snapshot_json FROM creator_city_layouts WHERE world_revision=?1", [world_revision], |row| row.get(0))
-        .optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_layout_not_found")?;
-    serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")
-}
-
-// ── 城市补丁（PlanPatchV1 镜像，切片 2）──
-
-fn patch_point(value: &Value) -> Result<(), &'static str> {
-    let point = value.as_object().filter(|point| point.len() == 2 && only_keys(point, &["x", "z"])).ok_or("creator_city_patch_invalid")?;
-    for key in ["x", "z"] {
-        let coordinate = point.get(key).and_then(Value::as_f64).ok_or("creator_city_patch_invalid")?;
-        if !coordinate.is_finite() || coordinate.abs() > MAX_PATCH_COORD { return Err("creator_city_patch_invalid"); }
-    }
-    Ok(())
-}
-
-fn patch_optional_point(object: &serde_json::Map<String, Value>, key: &str) -> Result<(), &'static str> {
-    if let Some(anchor) = object.get(key) { patch_point(anchor)?; }
-    Ok(())
-}
-
-fn patch_optional_purpose(object: &serde_json::Map<String, Value>) -> Result<(), &'static str> {
-    if let Some(purpose) = object.get("purpose") {
-        if purpose.as_str() != Some("waterfront") { return Err("creator_city_patch_invalid"); }
-    }
-    Ok(())
-}
-
-fn patch_road_width(value: &Value) -> Result<f64, &'static str> {
-    let width = value.as_f64().ok_or("creator_city_patch_invalid")?;
-    if !width.is_finite() || width <= 0.0 || width > MAX_PATCH_ROAD_WIDTH { return Err("creator_city_patch_invalid"); }
-    Ok(width)
-}
-
-fn validate_road_op(operation: &Value) -> Result<(), &'static str> {
-    let operation = operation.as_object().ok_or("creator_city_patch_invalid")?;
-    match operation.get("t").and_then(Value::as_str) {
-        Some("add") if only_keys(operation, &["t", "from", "to", "width", "purpose", "via"]) && operation.len() >= 4 => {
-            patch_point(operation.get("from").ok_or("creator_city_patch_invalid")?)?;
-            patch_point(operation.get("to").ok_or("creator_city_patch_invalid")?)?;
-            patch_road_width(operation.get("width").ok_or("creator_city_patch_invalid")?)?;
-            patch_optional_purpose(operation)?;
-            patch_optional_point(operation, "via")
-        }
-        Some("drop") if only_keys(operation, &["t", "edge", "anchor"]) && operation.len() >= 2 => {
-            if !operation.get("edge").and_then(Value::as_str).is_some_and(valid_id) { return Err("creator_city_patch_invalid"); }
-            patch_optional_point(operation, "anchor")
-        }
-        Some("move") if only_keys(operation, &["t", "node", "to", "anchor"]) && operation.len() >= 3 => {
-            if !operation.get("node").and_then(Value::as_str).is_some_and(valid_id) { return Err("creator_city_patch_invalid"); }
-            patch_point(operation.get("to").ok_or("creator_city_patch_invalid")?)?;
-            patch_optional_point(operation, "anchor")
-        }
-        Some("restyle") if only_keys(operation, &["t", "edge", "width", "purpose", "anchor"]) && operation.len() >= 3 => {
-            if !operation.get("edge").and_then(Value::as_str).is_some_and(valid_id) { return Err("creator_city_patch_invalid"); }
-            patch_road_width(operation.get("width").ok_or("creator_city_patch_invalid")?)?;
-            patch_optional_purpose(operation)?;
-            patch_optional_point(operation, "anchor")
-        }
-        _ => Err("creator_city_patch_invalid"),
-    }
-}
-
-fn validate_site_op(operation: &Value) -> Result<(), &'static str> {
-    let operation = operation.as_object().ok_or("creator_city_patch_invalid")?;
-    // cls 是「种类/子类」签名字符串（siteClassOf），to 是地块 id 或自由级 "@x,z" 目标——
-    // 都按长度受限的字符串收下，具体语义由 City 引擎套用时校验。
-    let class_ok = |value: Option<&Value>| value.is_none_or(|cls| cls.as_str().is_some_and(|cls| !cls.is_empty() && cls.len() <= 128));
-    let target_ok = |value: Option<&Value>| value.is_none_or(|to| to.as_str().is_some_and(|to| !to.is_empty() && to.len() <= 128));
-    match operation.get("t").and_then(Value::as_str) {
-        Some("remove") if only_keys(operation, &["t", "id", "at", "cls"]) && operation.len() >= 2 => {
-            if !operation.get("id").and_then(Value::as_str).is_some_and(valid_id) { return Err("creator_city_patch_invalid"); }
-            patch_optional_point(operation, "at")?;
-            if !class_ok(operation.get("cls")) { return Err("creator_city_patch_invalid"); }
-            Ok(())
-        }
-        Some("move") if only_keys(operation, &["t", "id", "at", "to", "toAnchor", "cls"]) && operation.len() >= 3 => {
-            if !operation.get("id").and_then(Value::as_str).is_some_and(valid_id) { return Err("creator_city_patch_invalid"); }
-            if !target_ok(operation.get("to")) { return Err("creator_city_patch_invalid"); }
-            patch_optional_point(operation, "at")?;
-            patch_optional_point(operation, "toAnchor")?;
-            if !class_ok(operation.get("cls")) { return Err("creator_city_patch_invalid"); }
-            Ok(())
-        }
-        _ => Err("creator_city_patch_invalid"),
-    }
-}
-
-/// 结构 + 预算 + 种子一致性校验。与 PlanPatchV1（apps/agent-city …/engine/planPatch.ts）逐字段对应：
-/// 已知字段严格校验；terrainOps 是尚未进入本切片契约的玩家土方日志，按有界透传收下。
-fn validate_city_patch(patch: &Value, expected_seed: u64) -> Result<(), &'static str> {
-    const KEYS: &[&str] = &["version", "seed", "scaleTier", "generatorVersion", "islandRadius", "updatedAt",
-        "roadOps", "highwayOps", "siteOps", "buildingMoves", "moveAnchors", "suppressedContext", "terrainOps"];
-    let patch = patch.as_object()
-        .filter(|patch| !patch.is_empty() && patch.len() <= KEYS.len() && patch.keys().all(|key| KEYS.contains(&key.as_str())))
-        .ok_or("creator_city_patch_invalid")?;
-    if patch.get("version").and_then(Value::as_u64) != Some(1) { return Err("creator_city_patch_invalid"); }
-    let seed = patch.get("seed").and_then(Value::as_u64).filter(|seed| *seed <= u32::MAX as u64).ok_or("creator_city_patch_invalid")?;
-    if seed != expected_seed { return Err("creator_city_patch_seed_mismatch"); }
-    patch.get("scaleTier").and_then(Value::as_u64).filter(|tier| *tier <= 1024).ok_or("creator_city_patch_invalid")?;
-    if let Some(version) = patch.get("generatorVersion") {
-        if !version.as_u64().is_some_and(|version| (1..=1024).contains(&version)) { return Err("creator_city_patch_invalid"); }
-    }
-    patch.get("updatedAt").and_then(Value::as_u64).ok_or("creator_city_patch_invalid")?;
-    if let Some(radius) = patch.get("islandRadius") {
-        if !radius.as_f64().is_some_and(|radius| radius.is_finite() && radius > 0.0 && radius <= 100_000.0) { return Err("creator_city_patch_invalid"); }
-    }
-    let moves = patch.get("buildingMoves").and_then(Value::as_object).filter(|moves| moves.len() <= MAX_CITY_PATCH_OPS).ok_or("creator_city_patch_invalid")?;
-    for (building, target) in moves {
-        if !valid_id(building) || !target.as_str().is_some_and(valid_id) { return Err("creator_city_patch_invalid"); }
-    }
-    if let Some(anchors) = patch.get("moveAnchors") {
-        let anchors = anchors.as_object().filter(|anchors| anchors.len() <= MAX_CITY_PATCH_OPS).ok_or("creator_city_patch_invalid")?;
-        for anchor in anchors.values() { patch_point(anchor)?; }
-    }
-    let suppressed = patch.get("suppressedContext").and_then(Value::as_array).filter(|items| items.len() <= MAX_CITY_PATCH_OPS).ok_or("creator_city_patch_invalid")?;
-    for id in suppressed {
-        if !id.as_str().is_some_and(valid_id) { return Err("creator_city_patch_invalid"); }
-    }
-    let road_ops = patch.get("roadOps").and_then(Value::as_array).filter(|ops| ops.len() <= MAX_CITY_PATCH_OPS).ok_or("creator_city_patch_invalid")?;
-    for operation in road_ops { validate_road_op(operation)?; }
-    let site_ops = patch.get("siteOps").and_then(Value::as_array).filter(|ops| ops.len() <= MAX_CITY_PATCH_OPS).ok_or("creator_city_patch_invalid")?;
-    for operation in site_ops { validate_site_op(operation)?; }
-    if let Some(highway_ops) = patch.get("highwayOps") {
-        let highway_ops = highway_ops.as_array().filter(|ops| ops.len() <= MAX_CITY_PATCH_HIGHWAY_OPS).ok_or("creator_city_patch_invalid")?;
-        for operation in highway_ops {
-            let operation = operation.as_object().ok_or("creator_city_patch_invalid")?;
-            match operation.get("t").and_then(Value::as_str) {
-                Some("add") if only_keys(operation, &["t", "points"]) => {
-                    let points = operation.get("points").and_then(Value::as_array).filter(|points| (2..=256).contains(&points.len())).ok_or("creator_city_patch_invalid")?;
-                    for point in points { patch_point(point)?; }
-                }
-                Some("cut") if only_keys(operation, &["t", "at"]) => patch_point(operation.get("at").ok_or("creator_city_patch_invalid")?)?,
-                _ => return Err("creator_city_patch_invalid"),
-            }
-        }
-    }
-    if let Some(terrain_ops) = patch.get("terrainOps") {
-        let terrain_ops = terrain_ops.as_array().filter(|ops| ops.len() <= MAX_CITY_PATCH_TERRAIN_OPS).ok_or("creator_city_patch_invalid")?;
-        for operation in terrain_ops {
-            if !operation.is_object() { return Err("creator_city_patch_invalid"); }
-        }
-    }
-    Ok(())
-}
-
-/// City 侧补丁发布（切片 2 的导入源）：同 seed 最新补丁胜出，摘要幂等——重试不会产生重复数据。
-pub fn publish_city_patch(home: &Path, payload: &Value) -> Result<Value, &'static str> {
-    let payload = payload.as_object().filter(|payload| payload.len() == 2 && only_keys(payload, &["seed", "patch"])).ok_or("creator_request_invalid")?;
-    let seed = payload["seed"].as_u64().filter(|seed| *seed <= u32::MAX as u64).ok_or("creator_request_invalid")?;
-    validate_city_patch(&payload["patch"], seed)?;
-    let canonical = canonical_json(&payload["patch"]).map_err(|_| "creator_city_patch_invalid")?;
-    if canonical.len() > MAX_CITY_PATCH_BYTES { return Err("creator_city_patch_too_large"); }
-    let patch_digest = digest(&canonical);
-    let db = database(home)?;
-    db.execute("INSERT INTO creator_city_patches(seed,patch_json,patch_digest,updated_at_ms) VALUES(?1,?2,?3,?4)
-        ON CONFLICT(seed) DO UPDATE SET patch_json=excluded.patch_json,patch_digest=excluded.patch_digest,updated_at_ms=excluded.updated_at_ms",
-        params![seed, payload["patch"].to_string(), patch_digest, now_ms()]).map_err(|_| "creator_store_unavailable")?;
-    Ok(json!({"seed":seed,"digest":patch_digest}))
-}
-
-fn latest_city_patch(home: &Path, seed: u64) -> Result<Option<(Value, String)>, &'static str> {
-    let db = database(home)?;
-    let raw: Option<String> = db.query_row("SELECT patch_json FROM creator_city_patches WHERE seed=?1", [seed], |row| row.get(0))
-        .optional().map_err(|_| "creator_store_unavailable")?;
-    let Some(raw) = raw else { return Ok(None) };
-    let patch: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
-    let patch_digest = digest(&canonical_json(&patch).map_err(|_| "creator_store_unavailable")?);
-    Ok(Some((patch, patch_digest)))
-}
-
-/// City 运行时读取绑定到该种子的最新项目的补丁与 revision（不返回未发布内容之外的项目文档）。
-pub fn read_city_patch_for_seed(home: &Path, seed: u64) -> Result<Value, &'static str> {
-    let db = database(home)?;
-    let mut statement = db.prepare("SELECT document_json,revision FROM creator_projects ORDER BY updated_at_ms DESC, project_id ASC LIMIT 64").map_err(|_| "creator_store_unavailable")?;
-    let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))).map_err(|_| "creator_store_unavailable")?;
-    for row in rows {
-        let (raw, revision) = row.map_err(|_| "creator_store_unavailable")?;
-        let Ok(document) = serde_json::from_str::<Value>(&raw) else { continue };
-        if document.get("cityLayout").and_then(|layout| layout.get("seed")).and_then(Value::as_u64) != Some(seed) { continue; }
-        return Ok(json!({"projectId":document.get("projectId"),"revision":revision,"patch":document.get("cityPatch")}));
-    }
-    Ok(json!({"projectId":null,"revision":null,"patch":null}))
-}
-
 #[cfg(test)]
 fn create_project(home: &Path, actor: &str, template: &str, operation_id: &str) -> Result<Value, &'static str> {
     create_project_internal(home, actor, template, operation_id, None)
@@ -608,100 +233,6 @@ pub fn read_project(home: &Path, project_id: &str) -> Result<Value, &'static str
     let db = database(home)?;
     let raw: String = db.query_row("SELECT document_json FROM creator_projects WHERE project_id=?1", [project_id], |row| row.get(0)).optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_project_not_found")?;
     serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")
-}
-
-fn inspect_glb(bytes: &[u8]) -> Result<Value, &'static str> {
-    if bytes.len() < 20 || &bytes[..4] != b"glTF"
-        || u32::from_le_bytes(bytes[4..8].try_into().map_err(|_| "creator_asset_invalid")?) != 2
-        || u32::from_le_bytes(bytes[8..12].try_into().map_err(|_| "creator_asset_invalid")?) as usize != bytes.len() {
-        return Err("creator_asset_glb_invalid");
-    }
-    let mut offset = 12usize;
-    let mut json_chunk: Option<&[u8]> = None;
-    let mut bin_length = 0usize;
-    while offset < bytes.len() {
-        if offset.saturating_add(8) > bytes.len() { return Err("creator_asset_glb_invalid"); }
-        let length = u32::from_le_bytes(bytes[offset..offset + 4].try_into().map_err(|_| "creator_asset_glb_invalid")?) as usize;
-        let kind = u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().map_err(|_| "creator_asset_glb_invalid")?);
-        offset += 8;
-        let end = offset.checked_add(length).filter(|end| *end <= bytes.len()).ok_or("creator_asset_glb_invalid")?;
-        match kind {
-            0x4e4f534a if json_chunk.is_none() => json_chunk = Some(&bytes[offset..end]),
-            0x004e4942 if bin_length == 0 => bin_length = length,
-            _ => return Err("creator_asset_glb_invalid"),
-        }
-        offset = end;
-    }
-    let json_bytes = json_chunk.ok_or("creator_asset_glb_invalid")?;
-    let document: Value = serde_json::from_slice(json_bytes).map_err(|_| "creator_asset_glb_invalid")?;
-    if document.get("asset").and_then(|asset| asset.get("version")).and_then(Value::as_str) != Some("2.0") {
-        return Err("creator_asset_glb_invalid");
-    }
-    if document.get("buffers").and_then(Value::as_array).is_some_and(|buffers| buffers.iter().any(|buffer| buffer.get("uri").is_some()))
-        || document.get("images").and_then(Value::as_array).is_some_and(|images| images.iter().any(|image| image.get("uri").is_some())) {
-        return Err("creator_asset_external_resource_denied");
-    }
-    if document.get("extensionsUsed").and_then(Value::as_array).is_some_and(|extensions| !extensions.is_empty())
-        || document.get("extensionsRequired").and_then(Value::as_array).is_some_and(|extensions| !extensions.is_empty())
-        || document.get("skins").and_then(Value::as_array).is_some_and(|skins| !skins.is_empty())
-        || document.get("animations").and_then(Value::as_array).is_some_and(|animations| !animations.is_empty())
-        || document.get("buffers").and_then(Value::as_array).is_none_or(|buffers| buffers.len() != 1)
-        || document.get("bufferViews").and_then(Value::as_array).is_none_or(|views| views.is_empty() || views.len() > 16_384)
-        || document.get("accessors").and_then(Value::as_array).is_none_or(|accessors| accessors.is_empty() || accessors.len() > 16_384)
-        || document.get("meshes").and_then(Value::as_array).is_none_or(|meshes| meshes.is_empty() || meshes.len() > 512)
-        || document.get("nodes").and_then(Value::as_array).is_some_and(|nodes| nodes.len() > 4_096) {
-        return Err("creator_asset_budget_exceeded");
-    }
-    let declared_bin = document.get("buffers").and_then(Value::as_array).and_then(|buffers| buffers.first())
-        .and_then(|buffer| buffer.get("byteLength")).and_then(Value::as_u64).unwrap_or(0) as usize;
-    if declared_bin == 0 || bin_length == 0 || declared_bin > bin_length { return Err("creator_asset_glb_invalid"); }
-    let views = document.get("bufferViews").and_then(Value::as_array).ok_or("creator_asset_glb_invalid")?;
-    for view in views {
-        if view.get("buffer").and_then(Value::as_u64) != Some(0) { return Err("creator_asset_glb_invalid"); }
-        let start = view.get("byteOffset").and_then(Value::as_u64).unwrap_or(0);
-        let length = view.get("byteLength").and_then(Value::as_u64).filter(|length| *length > 0).ok_or("creator_asset_glb_invalid")?;
-        if start.saturating_add(length) > declared_bin as u64 || view.get("byteStride").and_then(Value::as_u64).is_some_and(|stride| !(4..=252).contains(&stride)) {
-            return Err("creator_asset_glb_invalid");
-        }
-    }
-    let accessors = document.get("accessors").and_then(Value::as_array).ok_or("creator_asset_glb_invalid")?;
-    for accessor in accessors {
-        if accessor.get("sparse").is_some() || accessor.get("count").and_then(Value::as_u64).is_none_or(|count| count == 0 || count > 1_000_000)
-            || accessor.get("bufferView").and_then(Value::as_u64).is_none_or(|index| index as usize >= views.len()) {
-            return Err("creator_asset_budget_exceeded");
-        }
-    }
-    let mut min = [f64::INFINITY; 3];
-    let mut max = [f64::NEG_INFINITY; 3];
-    let mut found_position = false;
-    let mut primitive_count = 0usize;
-    let mut total_position_vertices = 0u64;
-    for mesh in document["meshes"].as_array().ok_or("creator_asset_glb_invalid")? {
-        for primitive in mesh.get("primitives").and_then(Value::as_array).ok_or("creator_asset_glb_invalid")? {
-            primitive_count = primitive_count.saturating_add(1);
-            if primitive_count > 2_048 { return Err("creator_asset_budget_exceeded"); }
-            let index = primitive.get("attributes").and_then(|attributes| attributes.get("POSITION")).and_then(Value::as_u64).ok_or("creator_asset_glb_invalid")? as usize;
-            let accessor = accessors.get(index).ok_or("creator_asset_glb_invalid")?;
-            if accessor.get("type").and_then(Value::as_str) != Some("VEC3") || accessor.get("componentType").and_then(Value::as_u64) != Some(5126) {
-                return Err("creator_asset_geometry_unsupported");
-            }
-            total_position_vertices = total_position_vertices.saturating_add(accessor.get("count").and_then(Value::as_u64).unwrap_or(u64::MAX));
-            if total_position_vertices > 1_000_000 { return Err("creator_asset_budget_exceeded"); }
-            let low = accessor.get("min").and_then(Value::as_array).filter(|values| values.len() == 3).ok_or("creator_asset_bounds_invalid")?;
-            let high = accessor.get("max").and_then(Value::as_array).filter(|values| values.len() == 3).ok_or("creator_asset_bounds_invalid")?;
-            for axis in 0..3 {
-                let lo = low[axis].as_f64().filter(|value| value.is_finite()).ok_or("creator_asset_bounds_invalid")?;
-                let hi = high[axis].as_f64().filter(|value| value.is_finite() && *value >= lo).ok_or("creator_asset_bounds_invalid")?;
-                min[axis] = min[axis].min(lo);
-                max[axis] = max[axis].max(hi);
-            }
-            found_position = true;
-        }
-    }
-    if !found_position { return Err("creator_asset_bounds_invalid"); }
-    let dimensions = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
-    if dimensions.iter().any(|value| !value.is_finite() || *value <= 0.0 || *value > 10_000.0) { return Err("creator_asset_bounds_invalid"); }
-    Ok(json!({"x":dimensions[0],"y":dimensions[1],"z":dimensions[2]}))
 }
 
 /// Import a GLB selected by the native desktop file picker. The source path is
@@ -922,38 +453,6 @@ pub fn read_city_release(home: &Path, release_id: &str, layout_id: &str, world_r
         "scene":snapshot.get("scene").cloned().unwrap_or_else(|| json!({"schemaVersion":1,"objects":[]})),
         "assets":snapshot.get("assets").cloned().unwrap_or_else(|| json!({"schemaVersion":1,"entries":[]})),
         "assetRefs":snapshot.get("assetRefs").cloned().unwrap_or_else(|| json!([]))}))
-}
-
-/// Read one immutable release asset only after proving it is referenced by that
-/// release. The caller separately binds access to the active official City WebView.
-pub fn read_city_release_asset(home: &Path, release_id: &str, asset_digest: &str) -> Result<Vec<u8>, &'static str> {
-    if !valid_id(release_id) || !asset_digest.strip_prefix("sha256:").is_some_and(|hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())) {
-        return Err("creator_asset_invalid");
-    }
-    let db = database(home)?;
-    let (raw, snapshot_digest): (String, String) = db.query_row("SELECT snapshot_json,snapshot_digest FROM creator_releases WHERE release_id=?1", [release_id], |row| Ok((row.get(0)?,row.get(1)?)))
-        .optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_release_not_found")?;
-    if raw.len() > MAX_RELEASE_BYTES { return Err("creator_release_invalid"); }
-    if digest(&raw) != snapshot_digest { return Err("creator_release_digest_mismatch"); }
-    let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
-    let asset = snapshot.get("assets").and_then(|assets| assets.get("entries")).and_then(Value::as_array)
-        .and_then(|entries| entries.iter().find(|entry| entry.get("sha256").and_then(Value::as_str) == Some(asset_digest)))
-        .ok_or("creator_release_asset_not_found")?;
-    let referenced = snapshot.get("assetRefs").and_then(Value::as_array).is_some_and(|refs|
-        refs.iter().any(|reference| reference.get("digest").and_then(Value::as_str) == Some(asset_digest)))
-        && snapshot.get("scene").and_then(|scene| scene.get("objects")).and_then(Value::as_array).is_some_and(|objects|
-            objects.iter().any(|object| object.get("kind").and_then(Value::as_str) == Some("model")
-                && object.get("asset").and_then(|asset| asset.get("digest")).and_then(Value::as_str) == Some(asset_digest)));
-    if !referenced { return Err("creator_release_asset_not_found"); }
-    let project_id = snapshot.get("projectId").and_then(Value::as_str).filter(|value| valid_id(value)).ok_or("creator_release_invalid")?;
-    let byte_length = asset.get("byteLength").and_then(Value::as_u64).filter(|length| *length <= MAX_IMPORTED_MODEL_BYTES).ok_or("creator_release_asset_invalid")?;
-    let path = home.join("state/creator/projects").join(project_id).join("assets").join(format!("{}.glb", &asset_digest[7..]));
-    let metadata = std::fs::symlink_metadata(&path).map_err(|_| "creator_release_asset_missing")?;
-    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() || metadata.len() != byte_length { return Err("creator_release_asset_invalid"); }
-    let bytes = std::fs::read(path).map_err(|_| "creator_release_asset_missing")?;
-    if bytes_digest(&bytes) != asset_digest { return Err("creator_release_asset_digest_mismatch"); }
-    inspect_glb(&bytes)?;
-    Ok(bytes)
 }
 
 fn exact_payload(payload: &Value, keys: &[&str]) -> bool {
@@ -1421,265 +920,6 @@ pub fn dispatch_city_runtime(home: &Path, city_instance: &str, method: &str, pay
     }
 }
 
-fn expire_playtests(tx: &rusqlite::Transaction<'_>, now: u64) -> Result<(), &'static str> {
-    tx.execute("UPDATE creator_playtest_runs SET status='expired',active_slot=NULL,finished_at_ms=?1 WHERE active_slot=1 AND expires_at_ms<=?1", [now])
-        .map_err(|_| "creator_store_unavailable")?;
-    Ok(())
-}
-
-fn start_playtest(home: &Path, studio_instance: &str, release_id: &str, expected_project: Option<&str>, expected_revision: Option<u64>) -> Result<Value, &'static str> {
-    if !valid_id(studio_instance) || !valid_id(release_id) { return Err("creator_request_invalid"); }
-    let mut db = database(home)?;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
-    let now = now_ms();
-    expire_playtests(&tx, now)?;
-    let active: Option<(String, String, String, u64, String)> = tx.query_row("SELECT run_id,release_id,studio_instance_id,revision,project_id FROM creator_playtest_runs WHERE active_slot=1", [],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))).optional().map_err(|_| "creator_store_unavailable")?;
-    if let Some((run_id, active_release, active_studio, active_revision, active_project)) = active {
-        if active_release == release_id && active_studio == studio_instance {
-            tx.commit().map_err(|_| "creator_store_unavailable")?;
-            return Ok(json!({"runId":run_id,"releaseId":release_id,"projectId":active_project,"revision":active_revision,"status":"pending"}));
-        }
-        return Err("creator_playtest_active");
-    }
-    let (project_id, revision, raw): (String, u64, String) = tx.query_row("SELECT project_id,revision,snapshot_json FROM creator_releases WHERE release_id=?1", [release_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_release_not_found")?;
-    // MCP 契约（设计 §6.3）：调用方显式声明意图范围，归属不符直接拒绝——
-    // 防止 releaseId 串项目，或对旧 revision 的 release 误启动试玩。
-    if let Some(expected) = expected_project {
-        if project_id != expected { return Err("creator_release_project_mismatch"); }
-    }
-    if let Some(expected) = expected_revision {
-        if revision != expected { return Err("creator_release_revision_mismatch"); }
-    }
-    if raw.len() > MAX_RELEASE_BYTES { return Err("creator_release_invalid"); }
-    let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
-    if snapshot.get("projectId").and_then(Value::as_str) != Some(&project_id)
-        || snapshot.get("revision").and_then(Value::as_u64) != Some(revision)
-        || !snapshot.get("game").is_some_and(Value::is_object)
-        || !snapshot.get("mounts").is_some_and(Value::is_array) { return Err("creator_release_invalid"); }
-    let run_id = new_id("playtest-")?;
-    tx.execute("INSERT INTO creator_playtest_runs(run_id,release_id,project_id,revision,studio_instance_id,status,active_slot,created_at_ms,expires_at_ms)
-        VALUES(?1,?2,?3,?4,?5,'pending',1,?6,?7)", params![run_id,release_id,project_id,revision,studio_instance,now,now.saturating_add(PLAYTEST_TTL_MS)])
-        .map_err(|_| "creator_store_unavailable")?;
-    tx.execute("DELETE FROM creator_playtest_runs WHERE active_slot IS NULL AND run_id NOT IN (SELECT run_id FROM creator_playtest_runs ORDER BY created_at_ms DESC LIMIT ?1)", [MAX_PLAYTEST_HISTORY])
-        .map_err(|_| "creator_store_unavailable")?;
-    tx.commit().map_err(|_| "creator_store_unavailable")?;
-    Ok(json!({"runId":run_id,"releaseId":release_id,"projectId":project_id,"revision":revision,"status":"pending"}))
-}
-
-fn claim_playtest(home: &Path, city_instance: &str) -> Result<Value, &'static str> {
-    if !valid_id(city_instance) { return Err("creator_request_invalid"); }
-    let mut db = database(home)?;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
-    let now = now_ms();
-    expire_playtests(&tx, now)?;
-    let row: Option<PlaytestClaimRow> = tx.query_row(
-        "SELECT run_id,release_id,project_id,revision,studio_instance_id,city_instance_id,status FROM creator_playtest_runs WHERE active_slot=1", [],
-        |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?)))
-        .optional().map_err(|_| "creator_store_unavailable")?;
-    let (run_id, release_id, project_id, revision, _studio_instance, claimed_city, status) = row.ok_or("creator_playtest_not_found")?;
-    if status == "claimed" && claimed_city.as_deref() != Some(city_instance) { return Err("creator_playtest_claimed"); }
-    if status != "pending" && status != "claimed" { return Err("creator_playtest_not_found"); }
-    if status == "pending" {
-        tx.execute("UPDATE creator_playtest_runs SET status='claimed',city_instance_id=?1 WHERE run_id=?2 AND status='pending'", params![city_instance,run_id])
-            .map_err(|_| "creator_store_unavailable")?;
-    }
-    let (raw, snapshot_digest): (String, String) = tx.query_row("SELECT snapshot_json,snapshot_digest FROM creator_releases WHERE release_id=?1", [&release_id], |row| Ok((row.get(0)?,row.get(1)?)))
-        .optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_release_not_found")?;
-    if raw.len() > MAX_RELEASE_BYTES { return Err("creator_release_invalid"); }
-    if digest(&raw) != snapshot_digest { return Err("creator_release_digest_mismatch"); }
-    let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
-    if snapshot.get("projectId").and_then(Value::as_str) != Some(&project_id)
-        || snapshot.get("revision").and_then(Value::as_u64) != Some(revision)
-        || !snapshot.get("game").is_some_and(Value::is_object)
-        || !snapshot.get("mounts").and_then(Value::as_array).is_some_and(|mounts| !mounts.is_empty() && mounts.len() <= MAX_RELEASE_MOUNTS) {
-        return Err("creator_release_invalid");
-    }
-    let skin_id = snapshot.get("skinId").cloned().unwrap_or(Value::Null);
-    if !skin_id.is_null() && !skin_id.as_str().is_some_and(valid_skin_id) { return Err("creator_release_invalid"); }
-    tx.commit().map_err(|_| "creator_store_unavailable")?;
-    Ok(json!({"runId":run_id,"releaseId":release_id,"projectId":project_id,"revision":revision,"snapshotDigest":snapshot_digest,"skinId":skin_id,
-        "game":snapshot["game"],"mounts":snapshot["mounts"],
-        "scene":snapshot.get("scene").cloned().unwrap_or_else(|| json!({"schemaVersion":1,"objects":[]})),
-        "assets":snapshot.get("assets").cloned().unwrap_or_else(|| json!({"schemaVersion":1,"entries":[]})),
-        "assetRefs":snapshot.get("assetRefs").cloned().unwrap_or_else(|| json!([])),
-        "returnContext":{"projectId":project_id,"revision":revision}}))
-}
-
-fn validate_playtest_evidence(value: &Value, status: &str, release_id: &str, revision: u64, snapshot_digest: &str, snapshot: &Value) -> Result<String, &'static str> {
-    let snapshot_json = serde_json::to_string(snapshot).map_err(|_| "creator_release_invalid")?;
-    if digest(&snapshot_json) != snapshot_digest { return Err("creator_release_digest_mismatch"); }
-    let evidence = value.as_object().filter(|object| object.len() == 12 && only_keys(object, &[
-        "schemaVersion","runtimeVersion","releaseId","projectRevision","snapshotDigest","worldRevision","seed","game","tick","counters","outcome","reasonCode",
-    ])).ok_or("creator_playtest_evidence_invalid")?;
-    if evidence.get("schemaVersion").and_then(Value::as_u64) != Some(1)
-        || evidence.get("runtimeVersion").and_then(Value::as_str) != Some("city-mini-game-runtime-v1")
-        || evidence.get("releaseId").and_then(Value::as_str) != Some(release_id)
-        || evidence.get("projectRevision").and_then(Value::as_u64) != Some(revision)
-        || evidence.get("snapshotDigest").and_then(Value::as_str) != Some(snapshot_digest)
-        || evidence.get("worldRevision").and_then(Value::as_str) != snapshot.get("worldRevision").and_then(Value::as_str)
-        || evidence.get("seed").and_then(Value::as_u64).is_none_or(|seed| seed > u32::MAX as u64)
-        || evidence.get("tick").and_then(Value::as_u64).is_none_or(|tick| tick > MAX_PLAYTEST_TICKS) {
-        return Err("creator_playtest_evidence_invalid");
-    }
-    let game = evidence.get("game").and_then(Value::as_object)
-        .filter(|game| game.len() == 3 && only_keys(game, &["id","version","digest"]))
-        .ok_or("creator_playtest_evidence_invalid")?;
-    let game_id = game.get("id").and_then(Value::as_str).filter(|value| valid_id(value)).ok_or("creator_playtest_evidence_invalid")?;
-    let game_version = game.get("version").and_then(Value::as_str).filter(|value| valid_id(value)).ok_or("creator_playtest_evidence_invalid")?;
-    let game_digest = game.get("digest").and_then(Value::as_str).filter(|value| value.len() <= 256).ok_or("creator_playtest_evidence_invalid")?;
-    let release_game_id = snapshot.get("game").and_then(|game| game.get("id")).and_then(Value::as_str);
-    let game_ref_matches = snapshot.get("mounts").and_then(Value::as_array).is_some_and(|mounts| mounts.iter().any(|mount|
-        mount.get("game").is_some_and(|reference| reference.get("id").and_then(Value::as_str) == Some(game_id)
-            && reference.get("version").and_then(Value::as_str) == Some(game_version)
-            && reference.get("digest").and_then(Value::as_str) == Some(game_digest))));
-    if release_game_id != Some(game_id) || !game_ref_matches { return Err("creator_playtest_evidence_mismatch"); }
-    let counters = evidence.get("counters").and_then(Value::as_object).filter(|counters| counters.len() <= MAX_PLAYTEST_COUNTERS)
-        .ok_or("creator_playtest_evidence_invalid")?;
-    if counters.iter().any(|(key, value)| !valid_id(key) || value.as_u64().is_none_or(|count| count > u32::MAX as u64)) {
-        return Err("creator_playtest_evidence_invalid");
-    }
-    if !matches!(evidence.get("outcome"), Some(Value::Null))
-        && !matches!(evidence.get("outcome").and_then(Value::as_str), Some("success" | "failure")) {
-        return Err("creator_playtest_evidence_invalid");
-    }
-    let outcome = evidence.get("outcome").and_then(Value::as_str);
-    if (status == "completed" && outcome != Some("success"))
-        || (status == "failed" && outcome == Some("success")) {
-        return Err("creator_playtest_evidence_mismatch");
-    }
-    if !matches!(evidence.get("reasonCode"), Some(Value::Null))
-        && !evidence.get("reasonCode").and_then(Value::as_str).is_some_and(valid_id) {
-        return Err("creator_playtest_evidence_invalid");
-    }
-    let serialized = serde_json::to_string(value).map_err(|_| "creator_playtest_evidence_invalid")?;
-    if serialized.len() > MAX_PLAYTEST_EVIDENCE_BYTES { return Err("creator_playtest_evidence_too_large"); }
-    Ok(serialized)
-}
-
-fn finish_playtest(home: &Path, city_instance: &str, run_id: &str, status: &str, evidence: Option<&Value>, failure_code: Option<&str>) -> Result<Value, &'static str> {
-    if !valid_id(city_instance) || !valid_id(run_id) || !matches!(status,"completed"|"cancelled"|"failed") { return Err("creator_request_invalid"); }
-    if failure_code.is_some_and(|code| !valid_id(code)) || (status != "failed" && failure_code.is_some()) { return Err("creator_request_invalid"); }
-    let mut db = database(home)?;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
-    let row: Option<PlaytestResultRow> = tx.query_row(
-        "SELECT status,city_instance_id,run_id,project_id,revision,finished_at_ms,expires_at_ms,release_id,evidence_json,failure_code FROM creator_playtest_runs WHERE run_id=?1", [run_id],
-        |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?,row.get(9)?)))
-        .optional().map_err(|_| "creator_store_unavailable")?;
-    let (current, city, run_id, project_id, revision, finished_at, expires_at, release_id, existing_evidence, existing_failure_code) = row.ok_or("creator_playtest_not_found")?;
-    if city.as_deref() != Some(city_instance) { return Err("creator_playtest_instance_mismatch"); }
-    if matches!(current.as_str(),"completed"|"cancelled"|"failed") {
-        if current != status { return Err("creator_playtest_terminal"); }
-        if failure_code.is_some() && failure_code != existing_failure_code.as_deref() { return Err("creator_playtest_terminal"); }
-        if let Some(value) = evidence {
-            let (raw, snapshot_digest): (String,String) = tx.query_row("SELECT snapshot_json,snapshot_digest FROM creator_releases WHERE release_id=?1", [&release_id], |row| Ok((row.get(0)?,row.get(1)?)))
-                .optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_release_not_found")?;
-            let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
-            if Some(validate_playtest_evidence(value, status, &release_id, revision, &snapshot_digest, &snapshot)?.as_str()) != existing_evidence.as_deref() {
-                return Err("creator_playtest_terminal");
-            }
-        }
-        tx.commit().map_err(|_| "creator_store_unavailable")?;
-        return Ok(json!({"runId":run_id,"projectId":project_id,"revision":revision,"status":current,"finishedAtMs":finished_at,"failureCode":existing_failure_code}));
-    }
-    if current != "claimed" { return Err("creator_playtest_not_claimed"); }
-    let finished_at = now_ms();
-    if expires_at <= finished_at {
-        tx.execute("UPDATE creator_playtest_runs SET status='expired',active_slot=NULL,finished_at_ms=?1 WHERE run_id=?2", params![finished_at,run_id])
-            .map_err(|_| "creator_store_unavailable")?;
-        tx.commit().map_err(|_| "creator_store_unavailable")?;
-        return Err("creator_playtest_expired");
-    }
-    let evidence_json = if let Some(value) = evidence {
-        let (raw, snapshot_digest): (String,String) = tx.query_row("SELECT snapshot_json,snapshot_digest FROM creator_releases WHERE release_id=?1", [&release_id], |row| Ok((row.get(0)?,row.get(1)?)))
-            .optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_release_not_found")?;
-        let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
-        Some(validate_playtest_evidence(value, status, &release_id, revision, &snapshot_digest, &snapshot)?)
-    } else { None };
-    if status == "completed" && evidence_json.is_none() { return Err("creator_playtest_evidence_required"); }
-    tx.execute("UPDATE creator_playtest_runs SET status=?1,active_slot=NULL,finished_at_ms=?2,evidence_json=?3,failure_code=?4 WHERE run_id=?5", params![status,finished_at,evidence_json,failure_code,run_id])
-        .map_err(|_| "creator_store_unavailable")?;
-    tx.commit().map_err(|_| "creator_store_unavailable")?;
-    Ok(json!({"runId":run_id,"projectId":project_id,"revision":revision,"status":status,"finishedAtMs":finished_at,"failureCode":failure_code}))
-}
-
-fn take_playtest_return(home: &Path) -> Result<Value, &'static str> {
-    let mut db = database(home)?;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
-    let row: Option<PlaytestReturnRow> = tx.query_row("SELECT run_id,project_id,revision,status,evidence_json,failure_code FROM creator_playtest_runs
-        WHERE active_slot IS NULL AND return_consumed=0 AND status IN ('completed','cancelled','failed') ORDER BY finished_at_ms DESC LIMIT 1", [],
-        |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?))).optional().map_err(|_| "creator_store_unavailable")?;
-    if let Some((run_id,project_id,revision,status,evidence_json,failure_code)) = row {
-        tx.execute("UPDATE creator_playtest_runs SET return_consumed=1 WHERE return_consumed=0 AND status IN ('completed','cancelled','failed')", [])
-            .map_err(|_| "creator_store_unavailable")?;
-        tx.commit().map_err(|_| "creator_store_unavailable")?;
-        let evidence = evidence_json.map(|raw| serde_json::from_str::<Value>(&raw).map_err(|_| "creator_store_unavailable")).transpose()?.unwrap_or(Value::Null);
-        return Ok(json!({"runId":run_id,"projectId":project_id,"revision":revision,"status":status,"evidence":evidence,"failureCode":failure_code}));
-    }
-    tx.commit().map_err(|_| "creator_store_unavailable")?;
-    Ok(Value::Null)
-}
-
-fn list_playtest_history(home: &Path, project_id: &str, limit: u64) -> Result<Value, &'static str> {
-    if !valid_id(project_id) || !(1..=32).contains(&limit) { return Err("creator_request_invalid"); }
-    let db = database(home)?;
-    let mut statement = db.prepare("SELECT run_id,release_id,revision,status,created_at_ms,finished_at_ms,evidence_json,failure_code
-        FROM creator_playtest_runs WHERE project_id=?1 ORDER BY created_at_ms DESC,run_id ASC LIMIT ?2")
-        .map_err(|_| "creator_store_unavailable")?;
-    let rows = statement.query_map(params![project_id,limit], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,u64>(2)?,
-        row.get::<_,String>(3)?,row.get::<_,u64>(4)?,row.get::<_,Option<u64>>(5)?,row.get::<_,Option<String>>(6)?,row.get::<_,Option<String>>(7)?)))
-        .map_err(|_| "creator_store_unavailable")?;
-    let mut runs = Vec::new();
-    for row in rows {
-        let (run_id,release_id,revision,status,created_at_ms,finished_at_ms,evidence_json,failure_code) = row.map_err(|_| "creator_store_unavailable")?;
-        let evidence = evidence_json.map(|raw| serde_json::from_str::<Value>(&raw).map_err(|_| "creator_store_unavailable")).transpose()?.unwrap_or(Value::Null);
-        runs.push(json!({"runId":run_id,"releaseId":release_id,"revision":revision,"status":status,"createdAtMs":created_at_ms,
-            "finishedAtMs":finished_at_ms,"evidenceSource":if evidence.is_null() { Value::Null } else { json!("city-client-reported") },"evidence":evidence,"failureCode":failure_code}));
-    }
-    Ok(json!({"projectId":project_id,"runs":runs}))
-}
-
-/// MCP 试玩闭环（设计 §6.3）：按 runId 读取单次结果的有界摘要。
-fn read_playtest_result(home: &Path, run_id: &str) -> Result<Value, &'static str> {
-    if !valid_id(run_id) { return Err("creator_request_invalid"); }
-    let db = database(home)?;
-    let row: Option<PlaytestReadRow> = db.query_row(
-        "SELECT run_id,release_id,project_id,revision,status,created_at_ms,finished_at_ms,evidence_json,failure_code FROM creator_playtest_runs WHERE run_id=?1", [run_id],
-        |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?)))
-        .optional().map_err(|_| "creator_store_unavailable")?;
-    let Some((run_id,release_id,project_id,revision,status,created_at_ms,finished_at_ms,evidence_json,failure_code)) = row else {
-        return Err("creator_playtest_not_found");
-    };
-    let evidence = evidence_json.map(|raw| serde_json::from_str::<Value>(&raw).map_err(|_| "creator_store_unavailable")).transpose()?.unwrap_or(Value::Null);
-    Ok(json!({"runId":run_id,"releaseId":release_id,"projectId":project_id,"revision":revision,"status":status,
-        "createdAtMs":created_at_ms,"finishedAtMs":finished_at_ms,
-        "evidenceSource":if evidence.is_null() { Value::Null } else { json!("city-client-reported") },"evidence":evidence,"failureCode":failure_code}))
-}
-
-/// 取消一次试玩：pending/claimed 都可以取消并释放活动槽位（claimed 时 City 的
-/// 下一次 finish 会得到干净的终态拒绝）；已终态的 run 幂等返回原状态，不重复取消。
-fn cancel_playtest(home: &Path, studio_instance: &str, run_id: &str) -> Result<Value, &'static str> {
-    if !valid_id(studio_instance) || !valid_id(run_id) { return Err("creator_request_invalid"); }
-    let mut db = database(home)?;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
-    let now = now_ms();
-    expire_playtests(&tx, now)?;
-    let row: Option<(String,String,u64,String)> = tx.query_row(
-        "SELECT status,studio_instance_id,revision,project_id FROM creator_playtest_runs WHERE run_id=?1", [run_id],
-        |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)))
-        .optional().map_err(|_| "creator_store_unavailable")?;
-    let Some((status,owner,revision,project_id)) = row else { return Err("creator_playtest_not_found"); };
-    if owner != studio_instance { return Err("creator_playtest_instance_mismatch"); }
-    if matches!(status.as_str(), "completed" | "cancelled" | "failed" | "expired") {
-        return Ok(json!({"runId":run_id,"projectId":project_id,"revision":revision,"status":status,"cancelled":false}));
-    }
-    tx.execute("UPDATE creator_playtest_runs SET status='cancelled',active_slot=NULL,finished_at_ms=?1 WHERE run_id=?2", params![now,run_id])
-        .map_err(|_| "creator_store_unavailable")?;
-    tx.commit().map_err(|_| "creator_store_unavailable")?;
-    Ok(json!({"runId":run_id,"projectId":project_id,"revision":revision,"status":"cancelled","cancelled":true}))
-}
-
 /// MCP P0（设计 §6.4）：面向 Agent 的项目/场景紧凑摘要——有界、白名单字段、
 /// 不含完整项目文档。提供 revision 时校验漂移，防止 Agent 基于旧摘要生成操作。
 fn describe_scene(home: &Path, project_id: &str, expected_revision: Option<u64>, selected_object_id: Option<&str>) -> Result<Value, &'static str> {
@@ -1995,6 +1235,8 @@ pub fn commit_preview_as(home: &Path, owner: &str, instance: &str, project_id: &
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::creator_city_patch::MAX_CITY_PATCH_OPS;
+    use rusqlite::Connection;
     #[test]
     fn creator_content_digest_uses_sorted_canonical_json_keys() {
         let value = json!({"z":1,"a":{"b":2,"a":3}});

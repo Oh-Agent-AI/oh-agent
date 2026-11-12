@@ -14,6 +14,10 @@ mod plugin_host;
 mod plugin_projections;
 mod plugin_state;
 mod creator_projects;
+mod creator_assets;
+mod creator_city_patch;
+mod creator_playtest;
+mod creator_store;
 mod typed_data;
 mod typed_objects;
 // Retained only as a test baseline for the TS City projection migration.
