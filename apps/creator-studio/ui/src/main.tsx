@@ -6,6 +6,7 @@ import { canonicalJson, validateCityLayoutSnapshot, validateMiniGamePack, valida
 import { CityViewport } from "../../../agent-city/ui/src/viewport/CityViewport";
 import { readCityAppearancePreference } from "../../../agent-city/ui/src/engine/cityWorldProfile";
 import type { CityEngine } from "../../../agent-city/ui/src/engine/CityEngine";
+import type { PlanPatchV1 } from "../../../agent-city/ui/src/engine/planPatch";
 import "./style.css";
 
 type ProjectRow = { projectId: string; revision: number; title: string; updatedAtMs: number };
@@ -13,7 +14,7 @@ type LayoutRow = { worldRevision: string; layoutId: string; seed: number; anchor
 type SceneDraft = { schemaVersion: 1; objects: Array<Record<string, unknown>> };
 // 试玩历史行（creator.project.playtest.history 返回的 runs 元素），状态沿用后端英文枚举不翻译。
 type PlaytestRun = { runId: string; releaseId: string; revision: number; status: "pending" | "claimed" | "completed" | "cancelled" | "failed" | "expired"; createdAtMs: number; finishedAtMs: number | null; evidenceSource: string | null; evidence: unknown; failureCode: string | null };
-type Project = { projectId: string; revision: number; title?: string; kind: string; game: unknown; cityLayout?: CityLayoutSnapshotV1 | null; scene?: SceneDraft; assets?: { schemaVersion: 1; entries: Array<{ assetId: string; relativePath: string; sha256: string; byteLength: number; format: "glb-v2"; boundsMeters?: { x: number; y: number; z: number } }> }; assetRefs?: Array<Record<string, unknown>>; mounts: CityGameMountV1[]; skinId?: string };
+type Project = { projectId: string; revision: number; title?: string; kind: string; game: unknown; cityLayout?: CityLayoutSnapshotV1 | null; cityPatch?: Record<string, unknown> | null; scene?: SceneDraft; assets?: { schemaVersion: 1; entries: Array<{ assetId: string; relativePath: string; sha256: string; byteLength: number; format: "glb-v2"; boundsMeters?: { x: number; y: number; z: number } }> }; assetRefs?: Array<Record<string, unknown>>; mounts: CityGameMountV1[]; skinId?: string };
 type PluginResponse<T> = { version: number; requestId: string; ok: boolean; result?: T; error?: { code: string } };
 let sequence = 0;
 // 浏览器预览（ui-dev 工作台 iframe）：有插件实例但没有原生宿主，数据来自合成夹具。
@@ -114,6 +115,38 @@ function App() {
   const studioEngineRef = useRef<CityEngine | null>(null);
   const projectRef = useRef<Project | null>(null);
   projectRef.current = project;
+  // 视口内移动的写通：把补丁经 preview→commit 提交到项目 revision（与 Agent/MCP
+  // 共用同一草稿）。revision 被 Agent 推进时重读项目并用新 revision 重试一次；
+  // operationId 绑定补丁内容，重复提交命中服务端幂等记录。本地存档由视口的
+  // 修复会话负责，失败不回滚——状态区如实提示。
+  const commitCityPatch = (patch: PlanPatchV1) => {
+    void (async () => {
+      let current = projectRef.current;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        if (!current) return;
+        const operationId = `patch:${patch.updatedAt}:${Object.keys(patch.buildingMoves).length}:${patch.roadOps.length}:${attempt}`;
+        try {
+          const preview = await creatorRequest<{ previewId: string }>("creator.scene.preview",
+            { projectId: current.projectId, baseRevision: current.revision, operations: [{ op: "city.patch.upsert", patch }] });
+          await creatorRequest("creator.scene.commit", { projectId: current.projectId, previewId: preview.previewId, expectedRevision: current.revision, operationId });
+          const updated = await creatorRequest<Project>("creator.project.read", { projectId: current.projectId });
+          applyRef.current(updated, "preserve", current);
+          setMessage(`城市修改已写入项目（revision ${updated.revision}）。`);
+          return;
+        } catch (error) {
+          const code = error instanceof Error ? error.message : "creator_patch_commit_failed";
+          if (code === "revision_conflict" && attempt === 0) {
+            try { current = await creatorRequest<Project>("creator.project.read", { projectId: current.projectId }); } catch { setMessage("项目补丁写入失败：无法重读当前项目。"); return; }
+            continue;
+          }
+          setMessage(`项目补丁写入失败（${code}）；本地修改已保存。`);
+          return;
+        }
+      }
+    })();
+  };
+  const commitPatchRef = useRef(commitCityPatch);
+  commitPatchRef.current = commitCityPatch;
   // 离开当前项目（切换项目行/新建）前先确认：有未提交草稿时第一次点击只提示，
   // 第二次点击才真正丢弃——提示先于丢弃，而不是丢弃后补一句。
   const [switchConfirm, setSwitchConfirm] = useState<string | null>(null);
@@ -440,7 +473,9 @@ function App() {
       <section className="viewport" aria-label="City 实时视口">
         <div className="viewport-head"><div className="section-title">城市视图</div><span className="viewport-hint">点选建筑移动 · 拖动旋转 · 滚轮缩放</span></div>
         {viewportSeed !== null
-          ? <div className="viewport-frame"><CityViewport seed={viewportSeed} worldProfile={worldProfile} editable focusSignal={focusSignal} onEngineChange={engine => { studioEngineRef.current = engine; }} /></div>
+          ? <div className="viewport-frame"><CityViewport seed={viewportSeed} worldProfile={worldProfile} editable focusSignal={focusSignal}
+              projectPatch={(project?.cityPatch ?? null) as PlanPatchV1 | null} onPatchCommit={patch => commitPatchRef.current(patch)}
+              onEngineChange={engine => { studioEngineRef.current = engine; }} /></div>
           : <div className="empty viewport-empty">{viewportUnavailable
             ? "当前项目没有绑定的 City 布局快照，视口无法恢复它编辑的城市。请在 City 中重新生成道路地图后新建项目。"
             : "先打开 City 生成道路地图，这里会显示同一座实时城市。"}</div>}

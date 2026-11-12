@@ -29,6 +29,12 @@ export type CityViewportProps = {
   editable?: boolean;
   /** 递增信号：父页面（打开/切回项目、试玩返回）触发视口回到全局视角。 */
   focusSignal?: number;
+  /** 项目文档里的城市补丁（creator.cityPatch）。与本地存档按 updatedAt 取较新者：
+   *  项目补丁代表 Agent/MCP 已确认的修改，本地存档代表 City 修复模式的修改。 */
+  projectPatch?: PlanPatchV1 | null;
+  /** 视口内移动成功后回调：父页面经 preview→commit 把补丁写通到项目 revision
+   *  （与 Agent/MCP 共用同一草稿）。本地存档写入由 PlanRepairSession 负责，不在这里。 */
+  onPatchCommit?: (patch: PlanPatchV1) => void;
 };
 
 type BuildingSelection = { id: string; candidates: RepairCandidate[] };
@@ -42,7 +48,7 @@ type ViewportLoadState = Readonly<{ stage: "data" | "model" | "planning" | "moun
  * 暂停/恢复沿用引擎已注册的宿主 __AV_PLUGIN_SUSPENDED__/RESUMED__ 事件与
  * visibilitychange，销毁入口就是组件卸载时的 engine.dispose()。
  */
-export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, editable = false, focusSignal = 0 }: CityViewportProps) {
+export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, editable = false, focusSignal = 0, projectPatch = null, onPatchCommit }: CityViewportProps) {
   const days = windowDays ?? readCityWindowDays();
   const language = useCityLanguage();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -54,7 +60,7 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
   const [sceneUnavailable, setSceneUnavailable] = useState(false);
   const [firstModelFrame, setFirstModelFrame] = useState(false);
   const [cityLoad, setCityLoad] = useState<ViewportLoadState>({ stage: "data", work: null });
-  const [patch, setPatch] = useState<PlanPatchV1 | null>(null);
+  const [localPatch, setLocalPatch] = useState<PlanPatchV1 | null>(null);
   // 选取与移动状态：editable 下点会话楼 → 聚焦 + 就近候选；移动经修复会话提交。
   const [engineState, setEngineState] = useState<CityEngine | null>(null);
   const [selection, setSelection] = useState<BuildingSelection | null>(null);
@@ -81,6 +87,9 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
   };
   const selectRef = useRef(selectBuilding);
   selectRef.current = selectBuilding;
+  // 写通回调同样经 ref 取最新实现（移动成功时父页面的 project.revision 可能已推进）。
+  const onPatchCommitRef = useRef(onPatchCommit);
+  onPatchCommitRef.current = onPatchCommit;
 
   // 引擎创建/销毁必须先于装配 effect 声明：同一次提交里先建引擎，装配才能拿到实例。
   // setSeed 必须在装配前完成——engine.seed 为 null 时 applyModel 会静默早退，
@@ -153,7 +162,11 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
     const session = sessionRef.current;
     if (!session || !selection) return;
     const result = session.moveBuilding(selection.id, parcelId);
-    if (result.ok) { setSelection(null); setMoveError(null); }
+    if (result.ok) {
+      setSelection(null); setMoveError(null);
+      // 写通到项目草稿（preview→commit，与 Agent/MCP 共用）；本地存档写入已由会话完成。
+      onPatchCommitRef.current?.(result.patch);
+    }
     else setMoveError(result.reason === "blocked" ? `无法移动：${(result.blockers ?? []).join("、")}` : result.reason);
   };
   const [editTick, setEditTick] = useState(0);
@@ -179,14 +192,21 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
     return () => { active = false; loading.abort(); };
   }, [days]);
 
-  // 修复补丁与 City 同源读取（宿主投影未注册时回落同源 localStorage，见 data/planPatch.ts）。
-  // 不套补丁的话，用户搬过的楼、修过的路在 Studio 里会恢复成生成时的样子。
+  // 修复补丁双源合并：本地存档（City 修复模式写入）与项目 cityPatch（Agent/MCP/
+  // Studio 写通）按 updatedAt 取较新者——两边都是同一座城的合法编辑来源，
+  // last-writer-wins 是迁移期的诚实规则；不比较就叠加会互相覆盖。
+  const patch = useMemo(() => {
+    const candidates = [localPatch, projectPatch].filter((candidate): candidate is PlanPatchV1 =>
+      !!candidate && candidate.seed === seed);
+    if (!candidates.length) return null;
+    return candidates.reduce((newer, candidate) => (candidate.updatedAt ?? 0) > (newer.updatedAt ?? 0) ? candidate : newer);
+  }, [localPatch, projectPatch, seed]);
   useEffect(() => {
     let active = true;
     void cityPlanPatchStore("read").then((store) => {
       if (!active) return;
-      setPatch(store?.patches[String(seed)] ?? null);
-    }).catch(() => { if (active) setPatch(null); });
+      setLocalPatch(store?.patches[String(seed)] ?? null);
+    }).catch(() => { if (active) setLocalPatch(null); });
     return () => { active = false; };
   }, [seed]);
 
