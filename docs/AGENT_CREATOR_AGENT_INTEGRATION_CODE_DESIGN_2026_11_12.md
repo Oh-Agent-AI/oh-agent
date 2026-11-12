@@ -309,15 +309,15 @@ Codex、Claude Code 和其他支持本地 MCP stdio 的客户端使用同一 ser
 | creator_scene_describe | 对指定项目和 revision 返回项目摘要、对象类别计数、可选选中对象摘要、挂载/皮肤概况和可编辑类别；响应有界且不包含完整项目文档；revision 不匹配返回 revision_conflict；结果带 generatedAtMs，改变项目后旧摘要能被识别为旧 revision。 |
 | creator_scene_capture | 仅从活动官方 Studio 的本地 WebView 渲染器捕获；输出绑定捕获时的 projectId/revision 和镜头信息；编码后字节超预算、视口不可用或 Studio 未活动时返回可诊断错误；不接受任意路径、URL、远程读取或文件写入。当前输入只接受 projectId/revision。 |
 | creator_capabilities_list | 返回 schemaVersion 1 的类别登记表：操作名、对象类别、预算和 preview 约束；不含可执行代码；生成的操作仍需经 preview 做权威校验；支持可选 category（未知类别返回 creator_capability_unknown）与 schemaVersion=1 过滤。 |
+| creator_scene_inspect | 只接受 projectId、revision 和稳定 objectId（三者必需）；只返回该对象允许的白名单属性、引用关系、编辑通道与约束；场景对象、挂载与只读 City 布局锚点三类来源可区分，布局锚点标记不可编辑；未知 objectId 返回 creator_object_not_found，过时 revision 返回 revision_conflict；不得返回源文件路径、GLB 字节、数据库字段或未授权的关联对象数据。当前验证：creator_projects.rs `scene_inspect_validate_and_capabilities_cover_whitelisted_views`。 |
+| creator_scene_validate | projectId 必需，revision 与 validationProfile（仅 `"static"`）可选；逐项诊断含稳定 code、severity、source 与 objectId（若适用）；需要 City 运行时的检查（drive 可达、碰撞、视觉评审等）如实列入 unchecked 并注明原因，未运行的检查不得显示通过；同一输入/revision 的确定性检查结果稳定且不消耗任何资源。当前验证：creator_projects.rs `scene_inspect_validate_and_capabilities_cover_whitelisted_views`、`scene_describe_capabilities_and_preview_diff_are_bounded`。 |
 
 ### 11.2 尚未实现的候选接口
 
-以下候选接口尚未注册。实现时须逐条通过对应验收，并加入工具发现、权限、负载预算和契约测试。
+以下候选接口尚未注册。实现时须逐条通过对应验收，并加入工具发现、权限、负载预算和契约测试。（creator_scene_inspect 与 creator_scene_validate 已于 2026-11-12 实现并通过 §11.1 验收行，移出本表。）
 
 | 接口 | 验收标准 |
 |---|---|
-| creator_scene_inspect | 只接受项目、revision 和稳定 objectId；只返回该对象允许的白名单属性、引用关系及约束；不存在对象返回 not_found，过时 revision 返回 revision_conflict；不得返回源文件路径、GLB 字节、数据库字段或未授权的关联对象数据。 |
-| creator_scene_validate | 每项诊断含稳定 code、severity、对象 ID（若适用）和用户可读说明；静态 schema 检查与真实 City 运行时检查分开标记；未运行的检查不得显示通过；同一输入/revision 的确定性检查结果稳定；错误、警告和未检查项均能区分。 |
 | creator_asset_list | 仅列出指定项目已导入资源的稳定 ID、摘要、受限元数据及允许引用位置；分页/数量受限；不返回原始文件路径或二进制；资源缺失或摘要不匹配返回诊断，不伪装成可用资源。 |
 
 ### 11.3 预览差异与端到端验收

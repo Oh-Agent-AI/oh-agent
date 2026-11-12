@@ -56,7 +56,7 @@ Claude Code（`claude mcp add` 或项目 `.mcp.json`，字段名以 Claude Code 
 
 ## 3. 工具面（与 creator_studio.rs specs() 一致）
 
-以下 16 个工具名逐一核对自 crates/agent-vitals-mcp/src/mcp/creator_studio.rs 的 `specs()` 与 `run()`。协议为 JSON-RPC 2.0 行分隔帧；`initialize` 协议版本 `2025-06-18`，`serverInfo.name` 为 `Oh Agent MCP`。
+以下 18 个工具名逐一核对自 crates/agent-vitals-mcp/src/mcp/creator_studio.rs 的 `specs()` 与 `run()`。协议为 JSON-RPC 2.0 行分隔帧；`initialize` 协议版本 `2025-06-18`，`serverInfo.name` 为 `Oh Agent MCP`。
 
 | MCP 工具 | 必需入参 | 可选入参 | 类别 |
 |---|---|---|---|
@@ -75,13 +75,15 @@ Claude Code（`claude mcp add` 或项目 `.mcp.json`，字段名以 Claude Code 
 | creator_project_publish | projectId、expectedRevision | — | 写入 |
 | creator_scene_describe | projectId | revision、selectedObjectId | 只读 |
 | creator_scene_capture | projectId | revision | 只读（WebView 本地出帧） |
-| creator_capabilities_list | — | — | 只读 |
+| creator_capabilities_list | — | category（1..=64 字符；未知类别返回 `creator_capability_unknown`）、schemaVersion（仅支持 1） | 只读 |
+| creator_scene_inspect | projectId、revision、objectId（三者必需） | — | 只读 |
+| creator_scene_validate | projectId | revision、validationProfile（仅 `"static"`） | 只读 |
 
-需要 `--allow-local-writes` 的写入工具共 5 个：creator_playtest_start、creator_playtest_cancel、creator_project_create、creator_project_commit、creator_project_publish。其余 11 个（含新增的 describe/capture/capabilities_list）不需要开关，但同样要求 Studio 活动。
+需要 `--allow-local-writes` 的写入工具共 5 个：creator_playtest_start、creator_playtest_cancel、creator_project_create、creator_project_commit、creator_project_publish。其余 13 个（含 describe/capture/capabilities_list/scene_inspect/scene_validate）不需要开关，但同样要求 Studio 活动。
 
 ### 3.1 分发表状态
 
-所有 creator 工具（含试玩三工具与 2026-11-12 新增的 describe/capture/capabilities_list）都已在 crates/agent-vitals-mcp/src/mcp/mod.rs 的 dispatch match 中路由；`mcp::tests::tool_specs_and_dispatch_agree` 逐工具断言不存在 “registered but not wired”。
+所有 creator 工具（含试玩三工具与 2026-11-12 两批新增的 describe/capture/capabilities_list/scene_inspect/scene_validate）都已在 crates/agent-vitals-mcp/src/mcp/mod.rs 的 dispatch match 中路由；`mcp::tests::tool_specs_and_dispatch_agree` 逐工具断言不存在 “registered but not wired”。
 
 ## 4. 连接自检清单（设计 §8.1）
 
@@ -89,8 +91,8 @@ Claude Code（`claude mcp add` 或项目 `.mcp.json`，字段名以 Claude Code 
 
 1. **进程握手。** 启动 serve 后 stderr 出现 `data-mcp: serving on stdio (protocol 2025-06-18, data_home …)` 横幅。
 2. **initialize。** 返回 `protocolVersion: "2025-06-18"`、`capabilities.tools`、`serverInfo.name: "Oh Agent MCP"`。initialize 之前的请求被拒（JSON-RPC error `-32002`）。
-3. **tools/list。** 结果应逐个包含以下 16 个 creator 工具名（与 specs() 一致）：
-   creator_layout_list、creator_project_list、creator_project_read、creator_operation_status、creator_playtest_history、creator_playtest_start、creator_playtest_result、creator_playtest_cancel、creator_project_create、creator_game_preview、creator_scene_preview、creator_project_commit、creator_project_publish、creator_scene_describe、creator_scene_capture、creator_capabilities_list。
+3. **tools/list。** 结果应逐个包含以下 18 个 creator 工具名（与 specs() 一致）：
+   creator_layout_list、creator_project_list、creator_project_read、creator_operation_status、creator_playtest_history、creator_playtest_start、creator_playtest_result、creator_playtest_cancel、creator_project_create、creator_game_preview、creator_scene_preview、creator_project_commit、creator_project_publish、creator_scene_describe、creator_scene_capture、creator_capabilities_list、creator_scene_inspect、creator_scene_validate。
 4. **只读自检：creator_project_list。** 参数 `{"limit": 10}`。预期分两种：
    - Studio 已打开：返回 `ok: true` 与有界项目列表（没有项目时为空列表）。
    - Studio 未打开：等待约 15 秒后返回 `plugin_unavailable`，提示打开官方 Creator Studio 插件后重试。
@@ -106,7 +108,7 @@ Claude Code（`claude mcp add` 或项目 `.mcp.json`，字段名以 Claude Code 
 
 | # | 场景（设计 §11） | Rust 自动化覆盖 | 需真实客户端 | 需桌面 bundle |
 |---|---|---|---|---|
-| 1 | 工具发现 + 无开关拒绝写入 | `tool_specs_and_dispatch_agree`、`creator_publish_tool_requires_explicit_local_write_permission`、`tool_schemas_are_closed_objects`（crates/agent-vitals-mcp/src/mcp/mod.rs）。开关拒绝测试目前只钉了 publish，create/commit/playtest 的开关拒绝在 creator_studio.rs `run()` 内实现但无独立测试 | 用真实客户端验证 tools/list 发现 16 个工具 | — |
+| 1 | 工具发现 + 无开关拒绝写入 | `tool_specs_and_dispatch_agree`、`creator_publish_tool_requires_explicit_local_write_permission`、`tool_schemas_are_closed_objects`（crates/agent-vitals-mcp/src/mcp/mod.rs）。开关拒绝测试目前只钉了 publish，create/commit/playtest 的开关拒绝在 creator_studio.rs `run()` 内实现但无独立测试 | 用真实客户端验证 tools/list 发现 18 个工具 | — |
 | 2 | Studio 未打开/被替换/过期时失败不写入 | `committed_operation_survives_studio_instance_replacement_but_preview_does_not`（apps/desktop/src-tauri/src/creator_projects.rs）、`typed_object_response_is_dropped_after_owner_instance_replacement_or_failure`（apps/desktop/src-tauri/src/plugin_host.rs） | 验证 Studio 关闭 → `plugin_unavailable` | Studio 完全未打开的 15 秒超时路径依赖活动 WebView 缺席，自动化测试未覆盖 |
 | 3 | 创建→读 chunk→预览→UI 确认→提交→视口新 revision | 宿主侧：`project_preview_commit_revision_and_idempotency`（creator_projects.rs） | 端到端走通一次 | UI 确认卡片与 3D 视口刷新只能人工在 bundle 里确认 |
 | 4 | 无效对象/越界/超预算/额外字段被拒绝，revision 不变 | `dispatch_rejects_unknown_arguments`、`dispatch_rejects_non_object_arguments`（mod.rs）；`creator_scene_accepts_only_bounded_explicit_box_colliders`、`creator_mount_rejects_anchors_disconnected_in_the_pinned_city_topology`、`mount_skin_operations_preview_commit_and_enforce_game_bindings`、`creator_playtest_history_is_registered_and_limits_are_bounded`（creator_projects.rs） | — | — |
@@ -116,13 +118,14 @@ Claude Code（`claude mcp add` 或项目 `.mcp.json`，字段名以 Claude Code 
 | 8 | 试玩取消/失败/完成形成唯一终态，release 快照不可变 | `playtest_start_result_cancel_reach_unique_terminal_states`、`playtest_handoff_is_release_pinned_city_bound_and_returns_once`、`city_release_is_immutable_revision_bound_and_filtered_by_current_layout`（creator_projects.rs） | 验证试玩闭环 | City 插件 claim/finish 与返回 Studio 需 bundle 实测 |
 | 9 | MCP 输出不含路径/原始日志/提示词/凭证 | 工具面按构造只回有界 DTO（creator_studio.rs 无路径字段）；审计不带原始参数：`tools_call_emits_mcp_audit_event_without_raw_args`（apps/cli/src/mcp.rs） | 对真实客户端可见输出做最终检查 | — |
 
-待客户端实测清单（阶段 D 收口条件）：场景 1 的真实 tools/list、场景 2 的 Studio 缺席路径、场景 3 的 UI 确认与视口、场景 6 的响应丢失演练、场景 7 全部、场景 8 端到端、场景 9 的输出终检。其中场景 8 先决条件是修复 §3.1 的分发缺口。
+待客户端实测清单（阶段 D 收口条件）：场景 1 的真实 tools/list、场景 2 的 Studio 缺席路径、场景 3 的 UI 确认与视口、场景 6 的响应丢失演练、场景 7 全部、场景 8 端到端、场景 9 的输出终检。
 
 ## 6. 数据边界提醒（设计 §5.3 摘要）
 
 - MCP 只返回创作所需字段：项目字段、对象引用、校验错误、试玩摘要。不暴露 authority DB、任意 SQL、任意文件路径、原始会话日志、用户提示词或凭证。
 - 大文档有界分块：creator_project_read 单块 ≤32768 字节，按 `nextOffset` 拼接到 `complete=true`，用 `documentDigest` 校验。
-- 预览负载有上限：game ≤48KiB、scene 操作 1..=128 条且 ≤48KiB；插件信箱单条 ≤64KiB。
+- 预览负载有上限：creator_game_preview / creator_scene_preview 的 MCP 侧载荷各 ≤384 KiB，scene 操作仍限 1..=128 条；插件信箱默认单条 64 KiB，仅上述两个预览方法按方法放宽（请求 384 KiB、响应 64 KiB，见 creator_studio.rs 的 `creator_budgets` 常量）。
+- 传输预算分层提案（边界优化文档 §5.5 的描述符声明式按方法 `localCallBudgets` requestBytes/responseBytes，宿主校验后对全部 creator 方法生效）**是设计提案，尚未实现**。当前实现仅有 `plugin_calls` 的预算参数（`call_with_budgets` / `respond_with_budget`）与上述两个预览方法的固定常量；creator_project_read、creator_scene_capture 等方法仍走默认 64 KiB 信箱。
 - 工具调用不授予上传或后台网络能力。所选 Agent 服务会收到用户主动提交给它的项目上下文；连接与 UI 应说明这一点。
 - 外部包、未验证插件和浏览器预览不得获得真实本机数据或 Creator 写权限。
 
@@ -133,6 +136,6 @@ Claude Code（`claude mcp add` 或项目 `.mcp.json`，字段名以 Claude Code 
 | 工具列表里没有 creator_* | 连的不是本仓库构建的 agent-vitals | 核对 `command` 指向 `target/release/agent-vitals` 并重连 |
 | 调用约 15 秒后 `plugin_unavailable` | Studio 未打开或 WebView 实例已失效 | 打开官方 Creator Studio 插件后重试 |
 | `permission_denied` 且消息要求写入开关 | serve 未带 `--allow-local-writes` | 用 §1.1 的完整命令重启 MCP |
-| `internal_error`（registered but not wired） | 命中 §3.1 试玩分发缺口（playtest 三工具） | 先修 mod.rs 分发，再重试 |
+| `internal_error`（registered but not wired） | specs() 注册的工具未进入 mod.rs 分发 match；当前代码所有 18 个工具均已路由，正常构建不应出现 | 重新 `cargo build --release` 后重连（`tool_specs_and_dispatch_agree` 已逐工具守卫） |
 | `revision_conflict` / `preview_expired` | 项目已被推进或预览过期/已消费 | 重读 → 重新预览 → 重新提交 |
 | 请求在 initialize 前被拒（-32002） | 客户端未按 MCP 握手顺序发送 | 走标准 initialize → notifications/initialized 流程 |
