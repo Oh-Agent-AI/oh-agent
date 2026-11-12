@@ -77,7 +77,7 @@ Claude Code（`claude mcp add` 或项目 `.mcp.json`，字段名以 Claude Code 
 | creator_scene_capture | projectId | revision | 只读（WebView 本地出帧） |
 | creator_capabilities_list | — | category（1..=64 字符；未知类别返回 `creator_capability_unknown`）、schemaVersion（仅支持 1） | 只读 |
 | creator_scene_inspect | projectId、revision、objectId（三者必需） | — | 只读 |
-| creator_scene_validate | projectId | revision、validationProfile（仅 `"static"`） | 只读 |
+| creator_scene_validate | projectId | revision、validationProfile（仅 `"static"`）；由 Studio 合并 city-sdk 语义诊断与宿主结构/资产事实 | 只读 |
 
 需要 `--allow-local-writes` 的写入工具共 5 个：creator_playtest_start、creator_playtest_cancel、creator_project_create、creator_project_commit、creator_project_publish。其余 13 个（含 describe/capture/capabilities_list/scene_inspect/scene_validate）不需要开关，但同样要求 Studio 活动。
 
@@ -92,7 +92,7 @@ Claude Code（`claude mcp add` 或项目 `.mcp.json`，字段名以 Claude Code 
 1. **进程握手。** 启动 serve 后 stderr 出现 `data-mcp: serving on stdio (protocol 2025-06-18, data_home …)` 横幅。
 2. **initialize。** 返回 `protocolVersion: "2025-06-18"`、`capabilities.tools`、`serverInfo.name: "Oh Agent MCP"`。initialize 之前的请求被拒（JSON-RPC error `-32002`）。
 3. **tools/list。** 结果应逐个包含以下 18 个 creator 工具名（与 specs() 一致）：
-   creator_layout_list、creator_project_list、creator_project_read、creator_operation_status、creator_playtest_history、creator_playtest_start、creator_playtest_result、creator_playtest_cancel、creator_project_create、creator_game_preview、creator_scene_preview、creator_project_commit、creator_project_publish、creator_scene_describe、creator_scene_capture、creator_capabilities_list、creator_scene_inspect、creator_scene_validate。
+   creator_layout_list、creator_project_list、creator_project_read、creator_operation_status、creator_playtest_history、creator_playtest_start、creator_playtest_result、creator_playtest_cancel、creator_project_create、creator_game_preview、creator_scene_preview、creator_project_commit、creator_project_publish、creator_scene_describe、creator_scene_capture、creator_capabilities_list、creator_scene_inspect、creator_scene_validate、creator.scene.structure_check（内部只读依赖，不暴露为 MCP 工具）。
 4. **只读自检：creator_project_list。** 参数 `{"limit": 10}`。预期分两种：
    - Studio 已打开：返回 `ok: true` 与有界项目列表（没有项目时为空列表）。
    - Studio 未打开：等待约 15 秒后返回 `plugin_unavailable`，提示打开官方 Creator Studio 插件后重试。

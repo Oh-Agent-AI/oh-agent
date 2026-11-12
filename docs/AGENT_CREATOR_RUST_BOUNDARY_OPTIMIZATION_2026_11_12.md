@@ -452,7 +452,7 @@ MCP 仍负责：JSON-RPC 帧、`tool_specs` 的 `additionalProperties: false`、
 
 ## 7. 分阶段实施
 
-### P0：护栏与单一来源（不改变行为）
+### P0：护栏与单一来源（不改变行为）——已实现（assets 生成链 + 对照语料 + 传输预算 + P0 工具）
 
 **范围**
 
@@ -469,7 +469,7 @@ MCP 仍负责：JSON-RPC 帧、`tool_specs` 的 `additionalProperties: false`、
 
 **回滚**：全部为新增/独立改动，可单独回退。
 
-### P1：去硬编码
+### P1：去硬编码——已实现（include_str! 描述符 + 守卫测试 + MCP 枚举移除）
 
 **范围**
 
@@ -486,7 +486,7 @@ MCP 仍负责：JSON-RPC 帧、`tool_specs` 的 `additionalProperties: false`、
 
 **回滚**：保留旧路径到 P2（描述符未命中时回退旧表），但默认走新路径。
 
-### P2：搬运语义
+### P2：搬运语义——已实现（validation 信封 + commit 闸门 + validate Studio 合并 + structure_check + 语义删除 + requireSdkValidation 开启）
 
 **范围**
 

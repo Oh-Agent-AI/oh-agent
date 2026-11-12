@@ -84,7 +84,8 @@ fn template_label(template: &str) -> Result<String, &'static str> {
 // 原子绑定进 Preview 记录，commit 时核对——调用方不能传入或覆盖这些字段。
 // 信封缺失的宽容由 requireSdkValidation 控制（迁移期默认关闭，P2 收尾开启）。
 
-static REQUIRE_SDK_VALIDATION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+// P2 收尾（§5.6 迁移期结束）：无信封 preview 不再签发，legacy 直通关闭。
+static REQUIRE_SDK_VALIDATION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 fn require_sdk_validation() -> bool { REQUIRE_SDK_VALIDATION.load(std::sync::atomic::Ordering::Relaxed) }
 
@@ -183,93 +184,37 @@ fn previews() -> &'static Mutex<HashMap<String, Preview>> {
     PREVIEWS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn validate_game(game: &Value) -> Result<String, &'static str> {
+/// 结构侧 game 检查（§5.2 语义搬运后）：主版本/字段白名单/标识形状 + 字节预算。
+/// 游戏 DSL 语义（slots/events/guards/actions）由 city-sdk 校验，随 validation
+/// 信封绑定到 preview；Rust 不再重复语义判定。
+fn structural_game_check(game: &Value) -> Result<String, &'static str> {
     let object = game.as_object().ok_or("creator_game_invalid")?;
     if object.len() > 6 || !only_keys(object, &["schemaVersion", "id", "rulesVersion", "slots", "integerParameters", "rules"])
         || object.get("schemaVersion").and_then(Value::as_u64) != Some(1)
-        || object.get("rulesVersion").and_then(Value::as_u64) != Some(1)
         || !object.get("id").and_then(Value::as_str).is_some_and(valid_id) { return Err("creator_game_invalid"); }
-    let slots = object.get("slots").and_then(Value::as_object).ok_or("creator_game_invalid")?;
-    if slots.len() > 32 { return Err("creator_game_budget_exceeded"); }
-    let mut slot_kinds = std::collections::HashMap::new();
-    for (slot_id, slot) in slots {
-        let slot = slot.as_object().ok_or("creator_game_invalid")?;
-        if !valid_id(slot_id) || !only_keys(slot, &["kind", "min", "max", "requires"])
-            || !matches!(slot.get("kind").and_then(Value::as_str), Some("spawn" | "route" | "zone" | "object"))
-            || slot.get("min").and_then(Value::as_u64).is_none_or(|n| n > 64)
-            || slot.get("max").and_then(Value::as_u64).is_none_or(|n| n > 64)
-            || slot.get("min").and_then(Value::as_u64) > slot.get("max").and_then(Value::as_u64) { return Err("creator_game_invalid"); }
-        slot_kinds.insert(slot_id.as_str(), slot["kind"].as_str().unwrap_or_default());
-        if slot.get("requires").is_some_and(|value| !value.as_array().is_some_and(|items| items.len() <= 2 && items.iter().all(|item| matches!(item.as_str(), Some("drive" | "walk"))))) { return Err("creator_game_invalid"); }
-    }
-    let parameters = match object.get("integerParameters") { None => None, Some(value) => Some(value.as_object().ok_or("creator_game_invalid")?) };
-    if parameters.is_some_and(|items| items.len() > 32) { return Err("creator_game_budget_exceeded"); }
-    if let Some(parameters) = parameters {
-        for (name, parameter) in parameters {
-            let parameter = parameter.as_object().ok_or("creator_game_invalid")?;
-            if !valid_id(name) || parameter.len() != 3 || !only_keys(parameter, &["min", "max", "default"])
-                || ["min", "max", "default"].iter().any(|key| parameter.get(*key).and_then(Value::as_u64).is_none_or(|v| v > 1_000_000))
-                || parameter["min"].as_u64() > parameter["max"].as_u64()
-                || parameter["default"].as_u64() < parameter["min"].as_u64()
-                || parameter["default"].as_u64() > parameter["max"].as_u64() { return Err("creator_game_invalid"); }
-        }
-    }
-    let rules = object.get("rules").and_then(Value::as_object).ok_or("creator_game_invalid")?;
-    if rules.len() != 2 || !rules.contains_key("counters") || !rules.contains_key("nodes") { return Err("creator_game_invalid"); }
-    let counters = rules.get("counters").and_then(Value::as_object).ok_or("creator_game_invalid")?;
-    let nodes = rules.get("nodes").and_then(Value::as_array).ok_or("creator_game_invalid")?;
-    if counters.len() > 32 || nodes.len() > 128 { return Err("creator_game_budget_exceeded"); }
-    let counter_ids: std::collections::HashSet<&str> = counters.keys().map(String::as_str).collect();
-    for (name, counter) in counters {
-        let counter = counter.as_object().ok_or("creator_game_invalid")?;
-        if !valid_id(name) || counter.len() != 2 || !only_keys(counter, &["initial", "max"])
-            || counter.get("initial").and_then(Value::as_u64).is_none_or(|v| v > 1_000_000_000)
-            || counter.get("max").and_then(Value::as_u64).is_none_or(|v| v > 1_000_000_000)
-            || counter["initial"].as_u64() > counter["max"].as_u64() { return Err("creator_game_invalid"); }
-    }
-    let mut node_ids = std::collections::HashSet::new();
-    for node in nodes {
-        let node = node.as_object().ok_or("creator_game_invalid")?;
-        if node.len() < 3 || !only_keys(node, &["id", "on", "when", "actions"])
-            || !node.get("id").and_then(Value::as_str).is_some_and(valid_id)
-            || !node_ids.insert(node["id"].as_str().unwrap_or_default()) { return Err("creator_game_invalid"); }
-        let event = node.get("on").and_then(Value::as_object).ok_or("creator_game_invalid")?;
-        let event_type = event.get("type").and_then(Value::as_str).ok_or("creator_game_invalid")?;
-        if !matches!(event_type, "run.started" | "zone.entered" | "item.collected" | "timer.expired") { return Err("creator_game_invalid"); }
-        if event_type == "run.started" && (event.len() != 1 || !only_keys(event, &["type"])) { return Err("creator_game_invalid"); }
-        if matches!(event_type, "zone.entered" | "item.collected") && (event.len() != 2 || !only_keys(event, &["type", "slot"]) || !event.get("slot").and_then(Value::as_str).is_some_and(|slot| slots.contains_key(slot))) { return Err("creator_game_invalid"); }
-        if event_type == "zone.entered" && !event.get("slot").and_then(Value::as_str).is_some_and(|slot| slot_kinds.get(slot) == Some(&"zone")) { return Err("creator_game_invalid"); }
-        if event_type == "timer.expired" && (event.len() != 2 || !only_keys(event, &["type", "timerId"]) || !event.get("timerId").and_then(Value::as_str).is_some_and(valid_id)) { return Err("creator_game_invalid"); }
-        if let Some(guards) = node.get("when") {
-            let guards = guards.as_array().filter(|guards| guards.len() <= 8).ok_or("creator_game_invalid")?;
-            for guard in guards {
-                let guard = guard.as_object().ok_or("creator_game_invalid")?;
-                if !guard.get("counter").and_then(Value::as_str).is_some_and(|name| counter_ids.contains(name)) { return Err("creator_game_invalid"); }
-                match guard.get("op").and_then(Value::as_str) {
-                    Some("counter.eq") if guard.len() == 3 && only_keys(guard, &["op", "counter", "value"]) && guard.get("value").and_then(Value::as_u64).is_some_and(|v| v <= 1_000_000_000) => {},
-                    Some("counter.eqEventIndex") if guard.len() == 2 && only_keys(guard, &["op", "counter"]) && matches!(event_type, "zone.entered" | "item.collected") => {},
-                    _ => return Err("creator_game_invalid"),
-                }
-            }
-        }
-        let actions = node.get("actions").and_then(Value::as_array).filter(|actions| actions.len() <= 16).ok_or("creator_game_invalid")?;
-        for action in actions {
-            let action = action.as_object().ok_or("creator_game_invalid")?;
-            match action.get("op").and_then(Value::as_str) {
-                Some("counter.add") if action.len() == 3 && only_keys(action, &["op", "counter", "amount"]) && action.get("counter").and_then(Value::as_str).is_some_and(|id| counter_ids.contains(id))
-                    && action.get("amount").and_then(Value::as_i64).is_some_and(|amount| (-1_000_000..=1_000_000).contains(&amount)) => {},
-                Some("timer.start") if action.len() == 3 && only_keys(action, &["op", "timerId", "durationTicks"]) && action.get("timerId").and_then(Value::as_str).is_some_and(valid_id)
-                    && action.get("durationTicks").is_some_and(|value| value.as_u64().is_some_and(|ticks| (1..=1_000_000).contains(&ticks))
-                        || value.as_object().is_some_and(|parameter| parameter.len() == 1 && only_keys(parameter, &["parameter"]) && parameter.get("parameter").and_then(Value::as_str).is_some_and(|name| parameters.is_some_and(|all| all.contains_key(name))))) => {},
-                Some("hud.hint") if action.len() == 2 && only_keys(action, &["op", "text"]) && action.get("text").and_then(Value::as_str).is_some_and(|text| text.len() <= 160) => {},
-                Some("run.finish") if action.len() == 2 && only_keys(action, &["op", "outcome"]) && matches!(action.get("outcome").and_then(Value::as_str), Some("success" | "failure")) => {},
-                _ => return Err("creator_game_operation_unsupported"),
-            }
-        }
-    }
     let serialized = serde_json::to_string(game).map_err(|_| "creator_game_invalid")?;
     if serialized.len() > MAX_GAME_BYTES { return Err("creator_game_budget_exceeded"); }
     Ok(serialized)
+}
+
+/// 结构侧 mount 检查（§5.2）：v1 字段形状、引用形状与条数预算；拓扑/可达性归 SDK。
+fn structural_mount_check(mount: &Value) -> Result<String, &'static str> {
+    let object = mount.as_object().ok_or("creator_mount_invalid")?;
+    if object.len() != 7 || !only_keys(object, &["schemaVersion", "mountId", "layout", "game", "entryAnchorId", "bindings", "parameterOverrides"])
+        || object.get("schemaVersion").and_then(Value::as_u64) != Some(1)
+        || !object.get("mountId").and_then(Value::as_str).is_some_and(valid_id)
+        || !object.get("entryAnchorId").and_then(Value::as_str).is_some_and(valid_id)
+        || !object.get("bindings").and_then(Value::as_object).is_some_and(|bindings| bindings.len() <= 32)
+        || !object.get("parameterOverrides").and_then(Value::as_object).is_some_and(|overrides| overrides.len() <= 32) { return Err("creator_mount_invalid"); }
+    for key in ["layout", "game"] {
+        let reference = object.get(key).and_then(Value::as_object).ok_or("creator_mount_invalid")?;
+        if reference.len() != 4 || !only_keys(reference, &["kind", "id", "version", "digest"])
+            || !reference.get("kind").and_then(Value::as_str).is_some_and(|kind| kind == "city-layout" || kind == "city-minigame")
+            || !reference.get("id").and_then(Value::as_str).is_some_and(valid_id)
+            || !reference.get("version").and_then(Value::as_str).is_some_and(|value| !value.is_empty() && value.len() <= 64)
+            || !reference.get("digest").and_then(Value::as_str).is_some_and(|value| !value.is_empty() && value.len() <= 256) { return Err("creator_mount_invalid"); }
+    }
+    Ok(object.get("mountId").and_then(Value::as_str).unwrap_or_default().to_owned())
 }
 
 #[cfg(test)]
@@ -285,7 +230,7 @@ pub fn create_project_from_city_layout(home: &Path, actor: &str, template: &str,
 fn create_project_internal(home: &Path, actor: &str, template: &str, operation_id: &str, city_layout: Option<Value>) -> Result<Value, &'static str> {
     if actor.is_empty() || actor.len() > 128 || !valid_id(operation_id) { return Err("creator_request_invalid"); }
     let game = game_template(template)?;
-    let game_json = validate_game(&game)?;
+    let game_json = structural_game_check(&game)?;
     let project_id = new_id("project-")?;
     let title = template_label(template)?;
     let layout_revision = city_layout.as_ref().and_then(|snapshot| snapshot.get("worldRevision")).and_then(Value::as_str).unwrap_or("unbound").to_owned();
@@ -449,7 +394,7 @@ pub fn publish_project_release(home: &Path, project_id: &str, expected_revision:
         params![world_revision,layout_id], |row| row.get(0)).optional().map_err(|_| "creator_store_unavailable")?;
     if layout_digest.is_none() { return Err("creator_layout_not_found"); }
     let game = document.get("game").ok_or("creator_game_invalid")?;
-    validate_game(game)?;
+    structural_game_check(game)?;
     let skin_id = document.get("skinId").and_then(Value::as_str).unwrap_or_else(|| default_skin_id());
     if !valid_skin_id(skin_id) { return Err("creator_skin_not_found"); }
     let game_json = canonical_json(game).map_err(|_| "creator_game_invalid")?;
@@ -457,7 +402,7 @@ pub fn publish_project_release(home: &Path, project_id: &str, expected_revision:
     let mounts = document.get("mounts").and_then(Value::as_array)
         .filter(|mounts| !mounts.is_empty() && mounts.len() <= MAX_RELEASE_MOUNTS).ok_or("creator_release_mounts_invalid")?;
     for mount in mounts {
-        validate_mount(&document, mount)?;
+        structural_mount_check(mount)?;
         if mount["game"]["version"].as_str() != Some("1") || mount["game"]["digest"].as_str() != Some(&game_digest) {
             return Err("creator_release_game_reference_mismatch");
         }
@@ -556,64 +501,6 @@ fn exact_payload_with_optional(payload: &Value, keys: &[&str], optional: &[&str]
         && object.keys().all(|key| keys.contains(&key.as_str()) || optional.contains(&key.as_str())))
 }
 
-fn finite_number(value: &Value, min: f64, max: f64) -> bool {
-    value.as_f64().is_some_and(|number| number.is_finite() && number >= min && number <= max)
-}
-
-fn valid_transform(value: &Value) -> bool {
-    let Some(transform) = value.as_object() else { return false; };
-    if transform.len() != 3 || !only_keys(transform, &["positionMeters", "rotationRadians", "scale"]) { return false; }
-    let vector = |value: Option<&Value>, bounds: [(f64, f64); 3]| -> bool {
-        let Some(vector) = value.and_then(Value::as_object) else { return false; };
-        vector.len() == 3 && only_keys(vector, &["x", "y", "z"])
-            && ["x", "y", "z"].iter().zip(bounds).all(|(key, (min, max))| vector.get(*key).is_some_and(|value| finite_number(value, min, max)))
-    };
-    vector(transform.get("positionMeters"), [(-100_000.0, 100_000.0); 3])
-        && vector(transform.get("rotationRadians"), [(-6_283.0, 6_283.0); 3])
-        && vector(transform.get("scale"), [(0.001, 100.0); 3])
-}
-
-fn validate_scene_object(value: &Value) -> Result<&str, &'static str> {
-    let object = value.as_object().ok_or("creator_scene_object_invalid")?;
-    let id = object.get("id").and_then(Value::as_str).filter(|id| valid_id(id)).ok_or("creator_scene_object_invalid")?;
-    if !object.get("transform").is_some_and(valid_transform) { return Err("creator_scene_transform_invalid"); }
-    match object.get("kind").and_then(Value::as_str) {
-        Some("model") if object.len() == 4 && only_keys(object, &["id", "kind", "asset", "transform"]) => {
-            let asset = object.get("asset").and_then(Value::as_object).ok_or("creator_scene_asset_invalid")?;
-            if asset.len() != 3 || !only_keys(asset, &["package", "assetId", "digest"])
-                || !asset.get("assetId").and_then(Value::as_str).is_some_and(valid_id)
-                || !asset.get("digest").and_then(Value::as_str).is_some_and(|digest| digest.strip_prefix("sha256:").is_some_and(|hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()))) { return Err("creator_scene_asset_invalid"); }
-            let package = asset.get("package").and_then(Value::as_object).ok_or("creator_scene_asset_invalid")?;
-            if package.len() != 4 || !only_keys(package, &["kind", "id", "version", "digest"])
-                || !matches!(package.get("kind").and_then(Value::as_str), Some("city-layout" | "city-skin" | "city-minigame"))
-                || !package.get("id").and_then(Value::as_str).is_some_and(valid_id)
-                || !package.get("version").and_then(Value::as_str).is_some_and(|version| !version.is_empty() && version.len() <= 64)
-                || !package.get("digest").and_then(Value::as_str).is_some_and(|digest| !digest.is_empty() && digest.len() <= 256) { return Err("creator_scene_asset_invalid"); }
-            Ok(id)
-        }
-        Some("collider") if object.len() == 5 && only_keys(object, &["id", "kind", "shape", "sizeMeters", "transform"]) => {
-            let size = object.get("sizeMeters").and_then(Value::as_object).ok_or("creator_scene_collider_invalid")?;
-            if object.get("shape").and_then(Value::as_str) != Some("box") || size.len() != 3 || !only_keys(size, &["x", "y", "z"])
-                || ["x", "y", "z"].iter().any(|key| !size.get(*key).is_some_and(|value| finite_number(value, 0.1, 100.0))) {
-                return Err("creator_scene_collider_invalid");
-            }
-            Ok(id)
-        }
-        Some("anchor") if object.len() == 4 && only_keys(object, &["id", "kind", "anchor", "transform"]) => {
-            let anchor = object.get("anchor").and_then(Value::as_object).ok_or("creator_scene_anchor_invalid")?;
-            if anchor.len() != 4 || !only_keys(anchor, &["id", "kind", "capabilities", "geometryRef"])
-                || anchor.get("id").and_then(Value::as_str) != Some(id)
-                || !matches!(anchor.get("kind").and_then(Value::as_str), Some("spawn" | "route" | "zone" | "object"))
-                || !anchor.get("geometryRef").and_then(Value::as_str).is_some_and(valid_id) { return Err("creator_scene_anchor_invalid"); }
-            let capabilities = anchor.get("capabilities").and_then(Value::as_array).filter(|items| items.len() <= 2).ok_or("creator_scene_anchor_invalid")?;
-            if capabilities.iter().any(|item| !matches!(item.as_str(), Some("drive" | "walk")))
-                || capabilities.iter().enumerate().any(|(index, item)| capabilities[..index].contains(item)) { return Err("creator_scene_anchor_invalid"); }
-            Ok(id)
-        }
-        _ => Err("creator_scene_object_invalid"),
-    }
-}
-
 fn validate_project_asset_ref(document: &Value, object: &Value) -> Result<(), &'static str> {
     if object.get("kind").and_then(Value::as_str) != Some("model") { return Ok(()); }
     let asset = object.get("asset").and_then(Value::as_object).ok_or("creator_scene_asset_invalid")?;
@@ -636,9 +523,6 @@ fn validate_project_asset_ref(document: &Value, object: &Value) -> Result<(), &'
     Ok(())
 }
 
-/// `budget`：None = 全量核对（发布/预览路径，字节核对是提交资格检查）；
-/// Some(n) = 核对 n 个资产后返回 skip 代码（structure_check 的有界模式，
-/// 由调用方如实标注「字节核对未运行」）。
 fn verify_scene_asset_bytes(home: &Path, project_id: &str, document: &Value, budget: Option<usize>) -> Result<(), &'static str> {
     let objects = document.get("scene").and_then(|scene| scene.get("objects")).and_then(Value::as_array).ok_or("creator_project_invalid")?;
     let empty_entries = Vec::new();
@@ -667,110 +551,12 @@ fn verify_scene_asset_bytes(home: &Path, project_id: &str, document: &Value, bud
     Ok(())
 }
 
-fn validate_content_ref<'a>(value: &'a Value, expected_kind: &str) -> Result<&'a str, &'static str> {
-    let reference = value.as_object().ok_or("creator_mount_invalid")?;
-    if reference.len() != 4 || !only_keys(reference, &["kind", "id", "version", "digest"])
-        || reference.get("kind").and_then(Value::as_str) != Some(expected_kind)
-        || !reference.get("id").and_then(Value::as_str).is_some_and(valid_id)
-        || !reference.get("version").and_then(Value::as_str).is_some_and(|value| !value.is_empty() && value.len() <= 64)
-        || !reference.get("digest").and_then(Value::as_str).is_some_and(|value| !value.is_empty() && value.len() <= 256) {
-        return Err("creator_mount_invalid");
-    }
-    Ok(reference["id"].as_str().unwrap_or_default())
-}
-
-fn validate_mount<'a>(document: &Value, value: &'a Value) -> Result<&'a str, &'static str> {
-    let mount = value.as_object().ok_or("creator_mount_invalid")?;
-    if mount.len() != 7 || !only_keys(mount, &["schemaVersion", "mountId", "layout", "game", "entryAnchorId", "bindings", "parameterOverrides"])
-        || mount.get("schemaVersion").and_then(Value::as_u64) != Some(1)
-        || !mount.get("mountId").and_then(Value::as_str).is_some_and(valid_id)
-        || !mount.get("entryAnchorId").and_then(Value::as_str).is_some_and(valid_id) {
-        return Err("creator_mount_invalid");
-    }
-    let layout_ref_id = validate_content_ref(&mount["layout"], "city-layout")?;
-    let game_id = validate_content_ref(&mount["game"], "city-minigame")?;
-    if document.get("game").and_then(|game| game.get("id")).and_then(Value::as_str) != Some(game_id) { return Err("creator_mount_game_mismatch"); }
-    let city_layout = document.get("cityLayout").filter(|snapshot| !snapshot.is_null()).ok_or("creator_layout_not_bound")?;
-    let (world_revision, city_layout_id) = validate_layout_snapshot(city_layout)?;
-    if layout_ref_id != city_layout_id || mount["layout"]["digest"].as_str() != Some(world_revision) {
-        return Err("creator_mount_layout_mismatch");
-    }
-    let scene_anchors = city_layout["layout"]["anchors"].as_array().ok_or("creator_layout_snapshot_invalid")?.iter()
-        .filter_map(|anchor| anchor.as_object().map(|anchor| (anchor.get("id").and_then(Value::as_str).unwrap_or_default(), anchor)))
-        .collect::<HashMap<_, _>>();
-    let entry = scene_anchors.get(mount["entryAnchorId"].as_str().unwrap_or_default()).ok_or("creator_mount_entry_not_found")?;
-    if entry.get("kind").and_then(Value::as_str) != Some("spawn") { return Err("creator_mount_entry_kind_mismatch"); }
-    let slots = document.get("game").and_then(|game| game.get("slots")).and_then(Value::as_object).ok_or("creator_game_invalid")?;
-    let bindings = mount.get("bindings").and_then(Value::as_object).filter(|items| items.len() <= 32).ok_or("creator_mount_invalid")?;
-    let mut binding_count = 0usize;
-    for (slot_id, anchors) in bindings {
-        if !valid_id(slot_id) { return Err("creator_mount_invalid"); }
-        let slot = slots.get(slot_id).and_then(Value::as_object).ok_or("creator_mount_slot_not_found")?;
-        let anchors = anchors.as_array().ok_or("creator_mount_invalid")?;
-        let min = slot.get("min").and_then(Value::as_u64).ok_or("creator_game_invalid")? as usize;
-        let max = slot.get("max").and_then(Value::as_u64).ok_or("creator_game_invalid")? as usize;
-        if anchors.len() < min || anchors.len() > max || anchors.iter().any(|anchor| !anchor.as_str().is_some_and(valid_id)) {
-            return Err("creator_mount_binding_invalid");
-        }
-        let expected_kind = slot.get("kind").and_then(Value::as_str).ok_or("creator_game_invalid")?;
-        let required_capabilities = slot.get("requires").and_then(Value::as_array).cloned().unwrap_or_default();
-        for anchor_id in anchors.iter().filter_map(Value::as_str) {
-            let anchor = scene_anchors.get(anchor_id).ok_or("creator_mount_anchor_not_found")?;
-            if anchor.get("kind").and_then(Value::as_str) != Some(expected_kind) { return Err("creator_mount_anchor_kind_mismatch"); }
-            let capabilities = anchor.get("capabilities").and_then(Value::as_array).ok_or("creator_scene_anchor_invalid")?;
-            if required_capabilities.iter().any(|required| !capabilities.contains(required)) { return Err("creator_mount_anchor_capability_missing"); }
-        }
-        let mut seen = std::collections::HashSet::new();
-        if anchors.iter().any(|anchor| !seen.insert(anchor.as_str().unwrap_or_default())) { return Err("creator_mount_binding_invalid"); }
-        binding_count = binding_count.saturating_add(anchors.len());
-    }
-    if let Some(links) = city_layout["layout"].get("links").and_then(Value::as_array) {
-        let entry_id = mount["entryAnchorId"].as_str().unwrap_or_default();
-        for (slot_id, slot) in slots {
-            let required = slot.get("requires").and_then(Value::as_array).cloned().unwrap_or_default();
-            let bound = bindings.get(slot_id).and_then(Value::as_array).cloned().unwrap_or_default();
-            for capability in required.iter().filter_map(Value::as_str) {
-                let entry_capabilities = entry.get("capabilities").and_then(Value::as_array).ok_or("creator_scene_anchor_invalid")?;
-                if !entry_capabilities.iter().any(|item| item.as_str() == Some(capability)) { return Err("creator_mount_entry_capability_missing"); }
-                let mut reached = std::collections::HashSet::from([entry_id]);
-                let mut queue = vec![entry_id];
-                let mut head = 0usize;
-                while head < queue.len() {
-                    let current = queue[head];
-                    head += 1;
-                    for link in links {
-                        if !link["capabilities"].as_array().is_some_and(|items| items.iter().any(|item| item.as_str() == Some(capability))) { continue; }
-                        let from = link["fromAnchorId"].as_str().unwrap_or_default();
-                        let to = link["toAnchorId"].as_str().unwrap_or_default();
-                        let next = if from == current { Some(to) } else if to == current { Some(from) } else { None };
-                        if let Some(next) = next { if reached.insert(next) { queue.push(next); } }
-                    }
-                }
-                if bound.iter().filter_map(Value::as_str).any(|anchor_id| !reached.contains(anchor_id)) { return Err("creator_mount_anchor_unreachable"); }
-            }
-        }
-    }
-    if binding_count > 64 { return Err("creator_mount_budget_exceeded"); }
-    for (slot_id, slot) in slots {
-        if !bindings.contains_key(slot_id) && slot.get("min").and_then(Value::as_u64).unwrap_or(0) > 0 { return Err("creator_mount_binding_invalid"); }
-    }
-    let parameters = document.get("game").and_then(|game| game.get("integerParameters")).and_then(Value::as_object);
-    let overrides = mount.get("parameterOverrides").and_then(Value::as_object).filter(|items| items.len() <= 32).ok_or("creator_mount_invalid")?;
-    for (name, value) in overrides {
-        let parameter = parameters.and_then(|items| items.get(name)).and_then(Value::as_object).ok_or("creator_mount_parameter_invalid")?;
-        let value = value.as_i64().ok_or("creator_mount_parameter_invalid")?;
-        if value < parameter.get("min").and_then(Value::as_i64).unwrap_or(i64::MAX)
-            || value > parameter.get("max").and_then(Value::as_i64).unwrap_or(i64::MIN) { return Err("creator_mount_parameter_invalid"); }
-    }
-    Ok(mount["mountId"].as_str().unwrap_or_default())
-}
-
 fn apply_mount_skin_operation(document: &mut Value, operation: &Value) -> Result<Option<(String, &'static str)>, &'static str> {
     let operation = operation.as_object().ok_or("creator_scene_ops_invalid")?;
     match operation.get("op").and_then(Value::as_str) {
         Some("mount.bind") if operation.len() == 2 && only_keys(operation, &["op", "mount"]) => {
             let mount = operation.get("mount").ok_or("creator_mount_invalid")?;
-            let mount_id = validate_mount(document, mount)?.to_owned();
+            let mount_id = structural_mount_check(mount)?;
             let project = document.as_object_mut().ok_or("creator_project_invalid")?;
             let mounts = project.entry("mounts").or_insert_with(|| json!([])).as_array_mut().ok_or("creator_project_invalid")?;
             let index = mounts.iter().position(|item| item.get("mountId").and_then(Value::as_str) == Some(&mount_id));
@@ -842,9 +628,11 @@ fn apply_scene_operations(document: &mut Value, operations: &Value) -> Result<Ve
             if matches!(operation.get("op").and_then(Value::as_str), Some("mount.bind" | "mount.remove" | "skin.select" | "city.patch.upsert" | "city.patch.remove")) { continue; }
             match operation.get("op").and_then(Value::as_str) {
                 Some("scene.object.upsert") | Some("anchor.upsert") if operation.len() == 2 && only_keys(operation, &["op", "object"]) => {
+                    // kind 驱动（§7 P2）：这里只做 ID 形状与 op↔kind 路由纪律；
+                    // 对象字段/kind 语义由 Studio 的 city-sdk validation 信封判定。
                     let object = operation.get("object").ok_or("creator_scene_object_invalid")?;
-                    let id = validate_scene_object(object)?;
-                    if operation.get("op").and_then(Value::as_str) == Some("anchor.upsert") && object.get("kind").and_then(Value::as_str) != Some("anchor") { return Err("creator_scene_object_invalid"); }
+                    let id = object.get("id").and_then(Value::as_str).filter(|id| valid_id(id)).ok_or("creator_scene_object_invalid")?;
+                    if operation.get("op").and_then(Value::as_str) == Some("anchor.upsert") && object.get("kind").and_then(Value::as_str) != Some("anchor") { return Err("creator_scene_object_kind_mismatch"); }
                     let index = objects.iter().position(|existing| existing.get("id").and_then(Value::as_str) == Some(id));
                     let action = if index.is_some() { "updated" } else { "added" };
                     if let Some(index) = index { objects[index] = object.clone(); }
@@ -867,8 +655,8 @@ fn apply_scene_operations(document: &mut Value, operations: &Value) -> Result<Ve
         let mut seen = std::collections::HashSet::new();
         let mut collider_count = 0;
         for object in objects.iter() {
-            let id = validate_scene_object(object)?;
-            if !seen.insert(id) { return Err("creator_scene_duplicate_id"); }
+            let id = object.get("id").and_then(Value::as_str).filter(|id| valid_id(id)).ok_or("creator_scene_object_invalid")?;
+            if !seen.insert(id.to_owned()) { return Err("creator_scene_duplicate_id"); }
             if object.get("kind").and_then(Value::as_str) == Some("collider") { collider_count += 1; }
         }
         if collider_count > MAX_SCENE_COLLIDERS { return Err("creator_scene_collider_budget_exceeded"); }
@@ -880,7 +668,7 @@ fn apply_scene_operations(document: &mut Value, operations: &Value) -> Result<Ve
         if let Some((path, action)) = apply_mount_skin_operation(document, operation)? { touched.push((path, action)); }
     }
     let mounts = document.get("mounts").and_then(Value::as_array).ok_or("creator_project_invalid")?;
-    for mount in mounts { validate_mount(document, mount)?; }
+    for mount in mounts { structural_mount_check(mount)?; }
     Ok(touched)
 }
 
@@ -1138,10 +926,6 @@ fn inspect_scene_object(home: &Path, project_id: &str, expected_revision: u64, o
     Err("creator_object_not_found")
 }
 
-/// MCP P1→P2（设计 §5.3）：structure_check——只做结构侧事实：ID 形状/唯一性、
-/// 预算、资产字节/摘要、补丁种子一致性。对象/挂载语义归 Studio 的 city-sdk
-/// 合并（creator.scene.validate 由 Studio 处理，本方法是其内部只读依赖，
-/// 不暴露到 MCP 工具表）。确定性：同一输入/revision 结果稳定；不写库。
 fn structure_check(home: &Path, project_id: &str, expected_revision: Option<u64>) -> Result<Value, &'static str> {
     if !valid_id(project_id) { return Err("creator_request_invalid"); }
     const MAX_ITEMS: usize = 100;
@@ -1220,14 +1004,22 @@ fn structure_check(home: &Path, project_id: &str, expected_revision: Option<u64>
 }
 
 #[cfg(test)]
+fn validation_envelope(ok: bool) -> Value {
+    json!({"capabilityVersion": creator_descriptor()["capabilityVersion"], "validatorVersion": 1, "ok": ok,
+        "diagnostics": if ok { json!([]) } else { json!([{"code":"anchor_unreachable","severity":"error","path":"bindings.points","objectId":"road-checkpoint:bc","message":"挂载锚点在布局图中不可达"}]) }})
+}
+
+/// 测试便捷入口：等价于 Studio 已附 sdk-ok 信封的 preview（P2 后产线不存在无信封路径）。
+#[cfg(test)]
 fn preview_replace_game(home: &Path, actor: &str, project_id: &str, base_revision: u64, game: &Value) -> Result<Value, &'static str> {
-    preview_replace_game_validated(home, actor, project_id, base_revision, game, None)
+    thread_local! { static OK: Value = validation_envelope(true); }
+    OK.with(|envelope| preview_replace_game_validated(home, actor, project_id, base_revision, game, Some(envelope)))
 }
 
 pub fn preview_replace_game_validated(home: &Path, actor: &str, project_id: &str, base_revision: u64, game: &Value, validation: Option<&Value>) -> Result<Value, &'static str> {
     let (semantic_ok, validation_digest, capability_version) = bind_validation(validation)?;
     if actor.is_empty() || actor.len() > 128 || !valid_id(project_id) { return Err("creator_request_invalid"); }
-    let game_json = validate_game(game)?;
+    let game_json = structural_game_check(game)?;
     let db = database(home)?;
     let (revision, raw): (u64, String) = db.query_row("SELECT revision,document_json FROM creator_projects WHERE project_id=?1", [project_id], |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_project_not_found")?;
     if revision != base_revision { return Err("revision_conflict"); }
@@ -1248,9 +1040,11 @@ pub fn preview_replace_game_validated(home: &Path, actor: &str, project_id: &str
         "diagnostics":[]}))
 }
 
+/// 测试便捷入口：等价于 Studio 已附 sdk-ok 信封的 preview（P2 后产线不存在无信封路径）。
 #[cfg(test)]
 fn preview_scene_operations(home: &Path, actor: &str, project_id: &str, base_revision: u64, operations: &Value) -> Result<Value, &'static str> {
-    preview_scene_operations_validated(home, actor, project_id, base_revision, operations, None)
+    thread_local! { static OK: Value = validation_envelope(true); }
+    OK.with(|envelope| preview_scene_operations_validated(home, actor, project_id, base_revision, operations, Some(envelope)))
 }
 
 pub fn preview_scene_operations_validated(home: &Path, actor: &str, project_id: &str, base_revision: u64, operations: &Value, validation: Option<&Value>) -> Result<Value, &'static str> {
@@ -1486,10 +1280,14 @@ mod tests {
         let preview = preview_scene_operations(&home, "studio-instance", project_id, 0,
             &json!([{"op":"scene.object.upsert","object":collider}])).unwrap();
         assert_eq!(preview["diff"]["paths"][0], "scene.objects.wall-1");
+        // 语义搬运后：尺寸出界由 SDK 判负（签发但提交拒绝）；结构侧只看 ID/预算。
         let invalid = json!({"id":"wall-2","kind":"collider","shape":"box","sizeMeters":{"x":0.01,"y":2,"z":6},"transform":{
             "positionMeters":{"x":10,"y":1,"z":-2},"rotationRadians":{"x":0,"y":0,"z":0},"scale":{"x":1,"y":1,"z":1}}});
-        assert_eq!(preview_scene_operations(&home, "studio-instance", project_id, 0,
-            &json!([{"op":"scene.object.upsert","object":invalid}])).unwrap_err(), "creator_scene_collider_invalid");
+        let rejected = preview_scene_operations_validated(&home, "studio-instance", project_id, 0,
+            &json!([{"op":"scene.object.upsert","object":invalid}]), Some(&validation_envelope(false))).unwrap();
+        assert_eq!(commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", project_id,
+            rejected["previewId"].as_str().unwrap(), 0, "commit-small-collider").unwrap_err(), "creator_preview_invalid");
+        assert_eq!(read_project(&home, project_id).unwrap()["revision"], 0);
         let _ = std::fs::remove_dir_all(home);
     }
 
@@ -1554,8 +1352,13 @@ mod tests {
             "game":{"kind":"city-minigame","id":project["game"]["id"],"version":"1","digest":game_digest},
             "entryAnchorId":"road-spawn:a","bindings":{"points":["road-checkpoint:ab","road-checkpoint:bc","road-checkpoint:cd"]},"parameterOverrides":{"timeLimitTicks":2400}
         });
-        assert_eq!(preview_scene_operations(&home, "studio-instance", project_id, 0,
-            &json!([{"op":"mount.bind","mount":mount}])).unwrap_err(), "creator_mount_anchor_unreachable");
+        // 语义搬运（§7 P2）：可达性归 city-sdk（信封判负）。Rust 结构侧接受
+        // 形状合法的挂载并签发 preview，commit 闸门以 creator_preview_invalid 拒绝。
+        let rejected = preview_scene_operations_validated(&home, "studio-instance", project_id, 0,
+            &json!([{"op":"mount.bind","mount":mount}]), Some(&validation_envelope(false))).unwrap();
+        assert_eq!(commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", project_id,
+            rejected["previewId"].as_str().unwrap(), 0, "commit-disconnected").unwrap_err(), "creator_preview_invalid");
+        assert_eq!(read_project(&home, project_id).unwrap()["revision"], 0);
         let _ = std::fs::remove_dir_all(home);
     }
 
@@ -1835,17 +1638,19 @@ mod tests {
         assert_eq!(operation_status(&home, "instance-test", project, "edit-1").unwrap()["status"], "committed");
         assert_eq!(commit_preview(&home, "instance-test", project, preview_id, 0, "edit-1").unwrap(), committed);
         assert_eq!(commit_preview(&home, "instance-test", project, preview_id, 0, "edit-other").unwrap_err(), "preview_expired");
+        // 语义搬运后（§7 P2）：结构侧只拒绝形状/预算违例；host.call 之类语义违例
+        // 由 city-sdk 判定并经 validation 信封拒绝（见 P2-1 闸门测试）。
         let bad_game = json!({"schemaVersion":1,"id":"x","rulesVersion":1,"slots":{},"rules":{"counters":{},"nodes":[]},"script":"bad"});
-        assert_eq!(validate_game(&bad_game).unwrap_err(), "creator_game_invalid");
-        let unsupported_game = json!({"schemaVersion":1,"id":"x","rulesVersion":1,"slots":{},"rules":{"counters":{},"nodes":[{"id":"x","on":{"type":"run.started"},"actions":[{"op":"host.call","method":"readFile"}]}]}});
-        assert_eq!(validate_game(&unsupported_game).unwrap_err(), "creator_game_operation_unsupported");
+        assert_eq!(structural_game_check(&bad_game).unwrap_err(), "creator_game_invalid");
+        let structurally_fine = json!({"schemaVersion":1,"id":"x","rulesVersion":1,"slots":{},"rules":{"counters":{},"nodes":[]}});
+        assert!(structural_game_check(&structurally_fine).is_ok());
         let _ = std::fs::remove_dir_all(home);
     }
 
     #[test]
     fn creator_templates_only_require_city_runtime_supported_gameplay() {
         let collect = game_template("collect-one").unwrap();
-        validate_game(&collect).unwrap();
+        structural_game_check(&collect).unwrap();
         assert_eq!(collect["slots"]["targets"]["requires"], json!(["drive"]));
         assert_eq!(collect["rules"]["nodes"][0]["on"]["type"], "zone.entered");
         assert_eq!(collect["rules"]["nodes"][1]["actions"][0]["outcome"], "success");
@@ -1889,7 +1694,7 @@ mod tests {
             assert_eq!(value["templateId"].as_str(), Some(&**id), "asset templateId must match its registry key");
             assert!(value["label"].as_str().is_some_and(|label| !label.is_empty()), "template {id} label is the project title source");
             let pack = value["pack"].as_object().expect("template pack object");
-            validate_game(&Value::Object(pack.clone())).unwrap_or_else(|error| panic!("template {id} pack must pass validate_game: {error}"));
+            structural_game_check(&Value::Object(pack.clone())).unwrap_or_else(|error| panic!("template {id} pack must pass structural_game_check: {error}"));
         }
         // checkpoint-race 完成条件不变量（自内联模板迁移时的历史教训）：points 下限
         // 必须与计数器 next 上限及 finish 的 counter.eq 判定一致——绑较少检查点的
@@ -1921,11 +1726,6 @@ mod tests {
     }
 
     // ── P2 validation 信封（设计 §5.2/§5.6/§8）──
-
-    fn validation_envelope(ok: bool) -> Value {
-        json!({"capabilityVersion": creator_descriptor()["capabilityVersion"], "validatorVersion": 1, "ok": ok,
-            "diagnostics": if ok { json!([]) } else { json!([{"code":"anchor_unreachable","severity":"error","path":"bindings.points","objectId":"road-checkpoint:bc","message":"挂载锚点在布局图中不可达"}]) }})
-    }
 
     #[test]
     fn validation_envelope_shape_budgets_and_version_are_enforced() {
@@ -1982,22 +1782,21 @@ mod tests {
     }
 
     #[test]
-    fn legacy_preview_is_marked_and_gate_is_flag_driven() {
+    fn gate_requires_envelopes_and_rejects_sdk_rejected_previews() {
         // 纯闸门矩阵（§5.6）：requireSdkValidation 开启时 legacy 拒绝；SDK 判负无条件拒绝。
         assert_eq!(commit_gate_allows(false, None), Ok(()));
         assert_eq!(commit_gate_allows(true, None), Err("creator_validation_required"));
         assert_eq!(commit_gate_allows(true, Some(true)), Ok(()));
         assert_eq!(commit_gate_allows(false, Some(false)), Err("creator_preview_invalid"));
         assert_eq!(commit_gate_allows(true, Some(true)), Ok(()));
-        // flag 关闭（迁移期默认）：无信封 preview 标记 legacy 且可正常提交。
+        // P2 收尾：requireSdkValidation 开启——无信封 preview 在签发时即被拒绝。
         let home = home();
         publish_city_layout_snapshot(&home, &layout_snapshot()).unwrap();
         let created = create_project_from_city_layout(&home, LOCAL_CREATOR_OWNER, "checkpoint-race", "create-legacy", "world-rev-test").unwrap();
         let project_id = created["projectId"].as_str().unwrap().to_owned();
-        let legacy = preview_scene_operations(&home, "studio-instance", &project_id, 0, &json!([{"op":"skin.select","skinId":"desert-evening"}])).unwrap();
-        assert_eq!(legacy["validation"], "legacy");
-        commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", &project_id,
-            legacy["previewId"].as_str().unwrap(), 0, "commit-legacy").unwrap();
+        assert_eq!(preview_scene_operations_validated(&home, "studio-instance", &project_id, 0,
+            &json!([{"op":"skin.select","skinId":"desert-evening"}]), None).unwrap_err(), "creator_validation_required");
+        assert_eq!(read_project(&home, &project_id).unwrap()["revision"], 0);
         let _ = std::fs::remove_dir_all(home);
     }
 
@@ -2087,13 +1886,18 @@ mod tests {
             remove["previewId"].as_str().unwrap(), 1, "remove-mount").unwrap();
         assert!(read_project(&home, project).unwrap()["mounts"].as_array().unwrap().is_empty());
 
+        // 语义搬运后：缺失槽位/不可达是 SDK 判定（信封判负 → commit 拒绝），
+        // Rust 结构侧只认形状——结构合法的挂载可以签发 preview 但无法提交。
         let invalid = json!([{"op":"mount.bind","mount":{
             "schemaVersion":1,"mountId":"bad-mount",
             "layout":{"kind":"city-layout","id":"city-layout-v1-test","version":"1","digest":"world-rev-test"},
             "game":{"kind":"city-minigame","id":game_id,"version":"1","digest":"fixture"},
             "entryAnchorId":"road-spawn:a","bindings":{"missing-slot":["road-checkpoint:ab"]},"parameterOverrides":{}
         }}]);
-        assert_eq!(preview_scene_operations(&home, "studio-instance", project, 2, &invalid).unwrap_err(), "creator_mount_slot_not_found");
+        let rejected = preview_scene_operations_validated(&home, "studio-instance", project, 2, &invalid, Some(&validation_envelope(false))).unwrap();
+        assert_eq!(commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", project,
+            rejected["previewId"].as_str().unwrap(), 2, "commit-mount-rejected").unwrap_err(), "creator_preview_invalid");
+        assert_eq!(read_project(&home, project).unwrap()["revision"], 2);
         assert_eq!(apply_scene_operations(&mut read_project(&home, project).unwrap(), &json!([{"op":"skin.select","skinId":"untrusted"}] )).unwrap_err(), "creator_skin_not_found");
         let _ = std::fs::remove_dir_all(home);
     }
