@@ -28,6 +28,17 @@ runNpm(["--prefix", "apps/desktop/ui-dev", "run", "build:react"], {
   }
 }
 
+// creator-studio 直接引用 agent-city 的视口源码，Rollup 会从源文件目录
+// （apps/agent-city/ui）向上解析依赖。CI 的 fresh checkout 里那里没有
+// node_modules，于是 three / mp4-muxer 等逐个解析失败。先把 city 的依赖装好，
+// 后续插件构建共享这棵树；buildOfficialPlugins 仍会各自 npm ci。
+{
+  const cityUi = path.join(repo, "apps/agent-city/ui");
+  if (existsSync(path.join(cityUi, "package.json"))) {
+    runNpm(["ci"], { cwd: cityUi, stdio: "inherit" });
+  }
+}
+
 {
   const probe = process.env.AGENT_VITALS_PLUGIN_ISOLATION_PROBE === "1";
   buildOfficialPlugins({ install: true, probe });
