@@ -5,19 +5,26 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { Worker as NodeWorker } from "node:worker_threads";
 import { citySrc, loadCity, repo } from "./city-kit/index.mjs";
-const { runPlanningJob, executePlanningWorkerJob, hydratePlanningPlan, planningRequestKey, createCityPlan,
+const { runPlanningJob, executePlanningWorkerJob, hydratePlanningPlan, planningRequestKey, PLANNING_PROTOCOL_VERSION, createCityPlan, bayOf, createCityShape,
   MIAMI_COASTAL, PLANNING_WORK_UNITS, buildCityModel, layoutCity, cityPlanCacheSize, CITY_PLAN_CACHE_CONFIG, prepareCityLayout,
   createPlanningWorkLedger, withPlanningWorkLedger } = await loadCity({
   "engine/planningWorker/planningJob.ts": ["runPlanningJob"],
   "engine/planningWorker/planningWorkerJob.ts": ["executePlanningWorkerJob"],
-  "engine/planningWorker/planningProtocol.ts": ["hydratePlanningPlan", "planningRequestKey"],
+  "engine/planningWorker/planningProtocol.ts": ["hydratePlanningPlan", "planningRequestKey", "PLANNING_PROTOCOL_VERSION"],
   "engine/planner/operationBudget.ts": ["PLANNING_WORK_UNITS", "createPlanningWorkLedger", "withPlanningWorkLedger"],
   "engine/cityLayout.ts": ["layoutCity", "cityPlanCacheSize", "CITY_PLAN_CACHE_CONFIG", "prepareCityLayout"], "cityModel.ts": ["buildCityModel"],
-  "engine/cityPlan.ts": ["createCityPlan"], "engine/citySeaside.ts": ["MIAMI_COASTAL"],
+  "engine/cityPlan.ts": ["createCityPlan", "bayOf"], "engine/cityShape.ts": ["createCityShape"], "engine/citySeaside.ts": ["MIAMI_COASTAL"],
 });
-const parameters = () => ({ seed: 4005969553, tier: 1, coastal: { ...MIAMI_COASTAL },
-  limits: Object.fromEntries(PLANNING_WORK_UNITS.map(unit => [unit, Number.MAX_SAFE_INTEGER])) });
-const input = parameters(), response = executePlanningWorkerJob({ version: 1, requestId: "direct", parameters: input });
+// 规划协议现在要求完整的世界参数；与 createCityPlan 的默认路径保持一致
+// （shape 来自 seed，bay 来自 coastal），否则 worker 会判 invalid-planning-request。
+const PLANNING_SEED = 4005969553;
+const parameters = () => {
+  const coastal = { ...MIAMI_COASTAL };
+  return { seed: PLANNING_SEED, tier: 1, biome: "tropical", geographyGenerator: "coastal-islands-v1",
+    geographyOptions: { shape: createCityShape(PLANNING_SEED), bay: bayOf(coastal) }, coastal,
+    limits: Object.fromEntries(PLANNING_WORK_UNITS.map(unit => [unit, Number.MAX_SAFE_INTEGER])) };
+};
+const input = parameters(), response = executePlanningWorkerJob({ version: PLANNING_PROTOCOL_VERSION, requestId: "direct", parameters: input });
 assert.equal(response.status, "computed");
 const snapshot = structuredClone(response.snapshot), hydrated = hydratePlanningPlan(snapshot, input);
 const baseline = createCityPlan(input.seed, input.tier, input.coastal);
@@ -31,9 +38,9 @@ assert.equal(hydrated.terrain.coastRadius(0.73), baseline.terrain.coastRadius(0.
 assert.throws(() => hydratePlanningPlan(snapshot, { ...input, seed: input.seed + 1 }), /stale/);
 assert.throws(() => hydratePlanningPlan({ ...snapshot, plan: { ...snapshot.plan, terrain: { ...snapshot.plan.terrain, radius: 1 } } }, input), /terrain/);
 assert.notEqual(planningRequestKey(input), planningRequestKey({ ...input, coastal: { ...input.coastal, boulevardOffset: input.coastal.boulevardOffset + 1 } }));
-for (const invalid of [null, {}, { version: 1, requestId: "bad", parameters: { ...input, tier: 1.5 } }])
+for (const invalid of [null, {}, { version: PLANNING_PROTOCOL_VERSION, requestId: "bad", parameters: { ...input, tier: 1.5 } }])
   assert.equal(executePlanningWorkerJob(invalid).status, "failed");
-assert.equal(executePlanningWorkerJob({ version: 1, requestId: "private", parameters: { ...input, model: { prompt: "must-not-be-transferred" } } }).status, "failed");
+assert.equal(executePlanningWorkerJob({ version: PLANNING_PROTOCOL_VERSION, requestId: "private", parameters: { ...input, model: { prompt: "must-not-be-transferred" } } }).status, "failed");
 const missingNode = structuredClone(snapshot); missingNode.plan.roadEdges[0].from = "missing";
 assert.throws(() => hydratePlanningPlan(missingNode, input), /network/);
 const missingOwner = structuredClone(snapshot); missingOwner.plan.publicSites = missingOwner.plan.publicSites.filter(owner => owner.id !== "central-station");
@@ -42,7 +49,7 @@ const changedVersion = structuredClone(snapshot); changedVersion.plan.derivedNet
 assert.throws(() => hydratePlanningPlan(changedVersion, input), /version/);
 const changedCoast = structuredClone(snapshot); changedCoast.plan.coast[0].x += 1;
 assert.throws(() => hydratePlanningPlan(changedCoast, input), /geography/);
-const exhausted = executePlanningWorkerJob({ version: 1, requestId: "budget", parameters: { ...input,
+const exhausted = executePlanningWorkerJob({ version: PLANNING_PROTOCOL_VERSION, requestId: "budget", parameters: { ...input,
   limits: { ...input.limits, terrainSample: 0 } } });
 assert.equal(exhausted.status, "failed"); assert.equal(exhausted.stop.status, "budget-exhausted");
 assert.equal(exhausted.snapshot, undefined, "an exhausted worker sends no partial map");

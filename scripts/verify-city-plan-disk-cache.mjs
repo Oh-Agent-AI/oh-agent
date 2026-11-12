@@ -3,30 +3,36 @@ import assert from "node:assert/strict";
 import { loadCity } from "./city-kit/index.mjs";
 
 const {
-  executePlanningWorkerJob, hydratePlanningPlan, planningRequestKey, cityPlanDiskKey,
+  executePlanningWorkerJob, hydratePlanningPlan, planningRequestKey, PLANNING_PROTOCOL_VERSION, cityPlanDiskKey,
   createMemoryCityPlanStore, setCityPlanDiskStore, clearCityPlanDiskCache, readCityPlanSnapshot,
   writeCityPlanSnapshot, CITY_PLAN_DISK_CACHE, RADIUS_CALIBRATION_CONFIG,
   PLANNING_WORK_UNITS, buildCityModel, layoutCity, clearCityPlanCache, prepareCityLayout,
-  takePreparePlanSource, cityPlanCacheSize, MIAMI_COASTAL, createCityPlan,
+  takePreparePlanSource, cityPlanCacheSize, MIAMI_COASTAL, createCityPlan, bayOf, createCityShape,
 } = await loadCity({
   "engine/planningWorker/planningWorkerJob.ts": ["executePlanningWorkerJob"],
-  "engine/planningWorker/planningProtocol.ts": ["hydratePlanningPlan", "planningRequestKey"],
+  "engine/planningWorker/planningProtocol.ts": ["hydratePlanningPlan", "planningRequestKey", "PLANNING_PROTOCOL_VERSION"],
   "engine/planningWorker/cityPlanDiskCache.ts": [
     "cityPlanDiskKey", "createMemoryCityPlanStore", "setCityPlanDiskStore", "clearCityPlanDiskCache",
     "readCityPlanSnapshot", "writeCityPlanSnapshot", "CITY_PLAN_DISK_CACHE",
   ],
-  "engine/cityPlan.ts": ["RADIUS_CALIBRATION_CONFIG", "createCityPlan"],
+  "engine/cityPlan.ts": ["RADIUS_CALIBRATION_CONFIG", "createCityPlan", "bayOf"],
+  "engine/cityShape.ts": ["createCityShape"],
   "engine/planner/operationBudget.ts": ["PLANNING_WORK_UNITS"],
   "engine/cityLayout.ts": ["layoutCity", "clearCityPlanCache", "prepareCityLayout", "takePreparePlanSource", "cityPlanCacheSize"],
   "cityModel.ts": ["buildCityModel"],
   "engine/citySeaside.ts": ["MIAMI_COASTAL"],
 });
 
-const parameters = (overrides = {}) => ({
-  seed: 4005969553, tier: 1, coastal: { ...MIAMI_COASTAL },
-  limits: Object.fromEntries(PLANNING_WORK_UNITS.map(unit => [unit, Number.MAX_SAFE_INTEGER])),
-  ...overrides,
-});
+const PLANNING_SEED = 4005969553;
+const parameters = (overrides = {}) => {
+  const coastal = { ...MIAMI_COASTAL };
+  return {
+    seed: PLANNING_SEED, tier: 1, biome: "tropical", geographyGenerator: "coastal-islands-v1",
+    geographyOptions: { shape: createCityShape(PLANNING_SEED), bay: bayOf(coastal) }, coastal,
+    limits: Object.fromEntries(PLANNING_WORK_UNITS.map(unit => [unit, Number.MAX_SAFE_INTEGER])),
+    ...overrides,
+  };
+};
 const model = () => buildCityModel({
   rows: [], findings: [], windowStartMs: 0, windowEndMs: 86400000, windowLabel: "synthetic",
   totalSessions: 0, truncated: false, generatedAt: 1,
@@ -34,7 +40,7 @@ const model = () => buildCityModel({
 const shape = (plan) => JSON.parse(JSON.stringify({ ...plan, terrain: undefined, workBudget: undefined }));
 
 const input = parameters();
-const response = executePlanningWorkerJob({ version: 1, requestId: "disk", parameters: input });
+const response = executePlanningWorkerJob({ version: PLANNING_PROTOCOL_VERSION, requestId: "disk", parameters: input });
 assert.equal(response.status, "computed");
 const snapshot = structuredClone(response.snapshot);
 const baseline = createCityPlan(input.seed, input.tier, input.coastal);

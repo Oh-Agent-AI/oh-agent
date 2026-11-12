@@ -86,13 +86,13 @@ const limits = maximum => Object.fromEntries(PLANNING_WORK_UNITS.map(unit => [un
 {
   const ledger = createPlanningWorkLedger({ ...limits(100), terrainSample: 0 });
   assert.throws(() => withPlanningWorkLedger(ledger, () => inspectModelGround({ id: "villa", kind: "villa-complex", x: 0, z: 0, yaw: 0, radius: 34 }, {
-    height: () => { spendPlanningWork("ground:probe", { terrainSample: 1 }); return 1.2; }, inRiver: () => false,
+    elevation: () => { spendPlanningWork("ground:probe", { terrainSample: 1 }); return 1.2; }, inRiver: () => false,
   })), error => error instanceof PlanningInterrupted, "foundation inspection cannot turn a terminal stop into unsupported and continue");
   const foreign = await loadCity({ "engine/planner/operationBudget.ts": ["createPlanningWorkLedger"] });
   assert.notEqual(foreign.createPlanningWorkLedger, createPlanningWorkLedger);
   const foreignLedger = foreign.createPlanningWorkLedger({ ...limits(100), terrainSample: 0 });
   assert.throws(() => withPlanningWorkLedger(foreignLedger, () => inspectModelGround({ id: "villa", kind: "villa-complex", x: 0, z: 0, yaw: 0, radius: 34 }, {
-    height: () => { spendPlanningWork("foreign-ground:probe", { terrainSample: 1 }); return 1.2; }, inRiver: () => false,
+    elevation: () => { spendPlanningWork("foreign-ground:probe", { terrainSample: 1 }); return 1.2; }, inRiver: () => false,
   })), error => error.code === "city-planning-interrupted" && error.detail?.unit === "terrainSample",
   "a terminal error from another bundle must propagate instead of becoming unsupported");
 }
@@ -102,7 +102,7 @@ const limits = maximum => Object.fromEntries(PLANNING_WORK_UNITS.map(unit => [un
   const result = withPlanningWorkLedger(ledger, () => runConnection({ id: "metered-grid", source: { x: 0, z: 0 },
     target: { kind: "primary", isPrimaryNode: () => true }, purpose: "site-access", allowBridge: false,
     maxLength: 80, roadClass: "local", minAngleDeg: 35 }, { network,
-    geo: { height: () => 1.2, buildable: () => true, terrain: { slope: () => 0 } }, inRiver: () => false, reservations: () => [],
+    geo: { landform: { elevation: () => 1.2, isBuildable: () => true, slope: () => 0 } }, inRiver: () => false, reservations: () => [],
   }, { strategies: ["grid-astar"] }));
   assert.equal(result.ok, true);
   assert(ledger.snapshot().consumed.expandedState > 0, "real A* expansions spend the job ledger");
