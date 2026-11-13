@@ -98,17 +98,25 @@ fn commit_gate_allows(semantic_ok: Option<bool>) -> Result<(), &'static str> {
 }
 
 /// 信封形状与预算校验；capabilityVersion 必须与当前描述符一致（版本协商在签发时执行）。
+/// 作用域字段（projectId/baseRevision/payloadDigest）在此只做形状校验；签发时由
+/// preview 对收到的载荷重算摘要并逐项匹配（verify_validation_scope）。
 /// 诊断字段与 city-sdk DiagnosticV1 对齐（severity: error|warning，path 必填）。
 fn validate_validation_envelope(value: &Value) -> Result<(), &'static str> {
     let object = value.as_object().ok_or("creator_validation_invalid")?;
-    if !only_keys(object, &["capabilityVersion", "validatorVersion", "ok", "diagnostics", "diff", "truncated"])
+    if !only_keys(object, &["capabilityVersion", "validatorVersion", "projectId", "baseRevision", "payloadDigest", "ok", "diagnostics", "diff", "truncated"])
         || !object.contains_key("capabilityVersion") || !object.contains_key("validatorVersion")
-        || !object.contains_key("ok") || !object.contains_key("diagnostics") { return Err("creator_validation_invalid"); }
+        || !object.contains_key("projectId") || !object.contains_key("baseRevision")
+        || !object.contains_key("payloadDigest") || !object.contains_key("ok") || !object.contains_key("diagnostics") { return Err("creator_validation_invalid"); }
     let serialized = serde_json::to_string(value).map_err(|_| "creator_validation_invalid")?;
     if serialized.len() > MAX_VALIDATION_BYTES { return Err("creator_validation_invalid"); }
     if !object.get("capabilityVersion").and_then(Value::as_str).is_some_and(|version| {
         !version.is_empty() && version.len() <= 64 && version == creator_descriptor()["capabilityVersion"].as_str().unwrap_or_default()
     }) { return Err("creator_capability_version_mismatch"); }
+    if !object.get("projectId").and_then(Value::as_str).is_some_and(valid_id)
+        || object.get("baseRevision").and_then(Value::as_u64).is_none() { return Err("creator_validation_invalid"); }
+    if !object.get("payloadDigest").and_then(Value::as_str).is_some_and(|value| {
+        value.strip_prefix("sha256:").is_some_and(|hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()))
+    }) { return Err("creator_validation_invalid"); }
     if object.get("validatorVersion").and_then(Value::as_u64) != Some(1)
         || object.get("ok").and_then(Value::as_bool).is_none() { return Err("creator_validation_invalid"); }
     if object.get("truncated").is_some_and(|value| !value.is_boolean()) { return Err("creator_validation_invalid"); }
@@ -141,6 +149,16 @@ fn validate_validation_envelope(value: &Value) -> Result<(), &'static str> {
         }
     }
     Ok(())
+}
+
+/// 作用域核对（审查修复）：信封必须证明它校验的正是本次 preview 的项目、
+/// revision 与载荷——对收到的载荷重算规范摘要并逐项匹配。摘要输入是
+/// canonical_json（键排序、紧凑），与 Studio 侧 city-sdk canonicalJson 同规格。
+fn verify_validation_scope(envelope: &Value, project_id: &str, base_revision: u64, canonical_payload: &str) -> Result<(), &'static str> {
+    let matches = envelope["projectId"].as_str() == Some(project_id)
+        && envelope["baseRevision"].as_u64() == Some(base_revision)
+        && envelope["payloadDigest"].as_str() == Some(&digest(canonical_payload));
+    if matches { Ok(()) } else { Err("creator_validation_scope_mismatch") }
 }
 
 /// 信封的三元绑定：SDK 判定、信封摘要（审计）、描述符内容版本（偏斜诊断）。
@@ -1046,20 +1064,50 @@ fn structure_check(home: &Path, project_id: &str, expected_revision: Option<u64>
 
 #[cfg(test)]
 fn validation_envelope(ok: bool) -> Value {
-    json!({"capabilityVersion": creator_descriptor()["capabilityVersion"], "validatorVersion": 1, "ok": ok,
+    json!({"capabilityVersion": creator_descriptor()["capabilityVersion"], "validatorVersion": 1,
+        "projectId":"project-scope","baseRevision":0,"payloadDigest":format!("sha256:{}", "0".repeat(64)), "ok": ok,
         "diagnostics": if ok { json!([]) } else { json!([{"code":"anchor_unreachable","severity":"error","path":"bindings.points","objectId":"road-checkpoint:bc","message":"挂载锚点在布局图中不可达"}]) }})
+}
+
+/// 作用域信封（mod tests 内也可经 super::* 使用）：projectId/baseRevision/payloadDigest
+/// 与实际 preview 载荷匹配（canonical_json 与 Rust 侧同规格），模拟 Studio 对该
+/// 确切载荷的校验结论。
+#[cfg(test)]
+fn scene_envelope(ok: bool, project_id: &str, base_revision: u64, operations: &Value) -> Value {
+    let mut envelope = validation_envelope(ok);
+    envelope["projectId"] = json!(project_id);
+    envelope["baseRevision"] = json!(base_revision);
+    envelope["payloadDigest"] = json!(digest(&canonical_json(operations).unwrap()));
+    envelope
+}
+
+#[cfg(test)]
+fn game_envelope(ok: bool, project_id: &str, base_revision: u64, game: &Value) -> Value {
+    let mut envelope = validation_envelope(ok);
+    envelope["projectId"] = json!(project_id);
+    envelope["baseRevision"] = json!(base_revision);
+    envelope["payloadDigest"] = json!(digest(&canonical_json(game).unwrap()));
+    envelope
 }
 
 /// 测试便捷入口：等价于 Studio 已附 sdk-ok 信封的 preview（P2 后产线不存在无信封路径）。
 #[cfg(test)]
 fn preview_replace_game(home: &Path, actor: &str, project_id: &str, base_revision: u64, game: &Value) -> Result<Value, &'static str> {
-    thread_local! { static OK: Value = validation_envelope(true); }
-    OK.with(|envelope| preview_replace_game_validated(home, actor, project_id, base_revision, game, Some(envelope)))
+    let mut envelope = game_envelope(true, project_id, base_revision, game);
+    envelope["projectId"] = json!(project_id);
+    envelope["baseRevision"] = json!(base_revision);
+    envelope["payloadDigest"] = json!(digest(&canonical_json(game).unwrap()));
+    preview_replace_game_validated(home, actor, project_id, base_revision, game, Some(&envelope))
 }
 
 pub fn preview_replace_game_validated(home: &Path, actor: &str, project_id: &str, base_revision: u64, game: &Value, validation: Option<&Value>) -> Result<Value, &'static str> {
     let (semantic_ok, validation_digest, capability_version) = bind_validation(validation)?;
     if actor.is_empty() || actor.len() > 128 || !valid_id(project_id) { return Err("creator_request_invalid"); }
+    // 信封作用域核对：它必须证明校验的正是本次 projectId/revision/game 载荷。
+    if let Some(value) = validation {
+        let canonical = canonical_json(game).map_err(|_| "creator_game_invalid")?;
+        verify_validation_scope(value, project_id, base_revision, &canonical)?;
+    }
     let game_json = structural_game_check(game)?;
     let db = database(home)?;
     let (revision, raw): (u64, String) = db.query_row("SELECT revision,document_json FROM creator_projects WHERE project_id=?1", [project_id], |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_project_not_found")?;
@@ -1084,8 +1132,11 @@ pub fn preview_replace_game_validated(home: &Path, actor: &str, project_id: &str
 /// 测试便捷入口：等价于 Studio 已附 sdk-ok 信封的 preview（P2 后产线不存在无信封路径）。
 #[cfg(test)]
 fn preview_scene_operations(home: &Path, actor: &str, project_id: &str, base_revision: u64, operations: &Value) -> Result<Value, &'static str> {
-    thread_local! { static OK: Value = validation_envelope(true); }
-    OK.with(|envelope| preview_scene_operations_validated(home, actor, project_id, base_revision, operations, Some(envelope)))
+    let mut envelope = scene_envelope(true, project_id, base_revision, operations);
+    envelope["projectId"] = json!(project_id);
+    envelope["baseRevision"] = json!(base_revision);
+    envelope["payloadDigest"] = json!(digest(&canonical_json(operations).unwrap()));
+    preview_scene_operations_validated(home, actor, project_id, base_revision, operations, Some(&envelope))
 }
 
 pub fn preview_scene_operations_validated(home: &Path, actor: &str, project_id: &str, base_revision: u64, operations: &Value, validation: Option<&Value>) -> Result<Value, &'static str> {
@@ -1093,6 +1144,12 @@ pub fn preview_scene_operations_validated(home: &Path, actor: &str, project_id: 
     if actor.is_empty() || actor.len() > 128 || !valid_id(project_id) { return Err("creator_request_invalid"); }
     let normalized = serde_json::to_string(operations).map_err(|_| "creator_scene_ops_invalid")?;
     if normalized.len() > MAX_PROJECT_BYTES { return Err("creator_project_budget_exceeded"); }
+    // 信封作用域核对：它必须证明校验的正是本次 projectId/revision/operations 载荷
+    // （canonical_json 与 Studio 侧 city-sdk canonicalJson 同规格）。
+    if let Some(value) = validation {
+        let canonical = canonical_json(operations).map_err(|_| "creator_scene_ops_invalid")?;
+        verify_validation_scope(value, project_id, base_revision, &canonical)?;
+    }
     let db = database(home)?;
     let (revision, raw): (u64, String) = db.query_row("SELECT revision,document_json FROM creator_projects WHERE project_id=?1", [project_id], |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_project_not_found")?;
     if revision != base_revision { return Err("revision_conflict"); }
@@ -1324,8 +1381,9 @@ mod tests {
         // 语义搬运后：尺寸出界由 SDK 判负（签发但提交拒绝）；结构侧只看 ID/预算。
         let invalid = json!({"id":"wall-2","kind":"collider","shape":"box","sizeMeters":{"x":0.01,"y":2,"z":6},"transform":{
             "positionMeters":{"x":10,"y":1,"z":-2},"rotationRadians":{"x":0,"y":0,"z":0},"scale":{"x":1,"y":1,"z":1}}});
+        let invalid_ops = json!([{"op":"scene.object.upsert","object":invalid}]);
         let rejected = preview_scene_operations_validated(&home, "studio-instance", project_id, 0,
-            &json!([{"op":"scene.object.upsert","object":invalid}]), Some(&validation_envelope(false))).unwrap();
+            &invalid_ops, Some(&scene_envelope(false, project_id, 0, &invalid_ops))).unwrap();
         assert_eq!(commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", project_id,
             rejected["previewId"].as_str().unwrap(), 0, "commit-small-collider").unwrap_err(), "creator_preview_invalid");
         assert_eq!(read_project(&home, project_id).unwrap()["revision"], 0);
@@ -1395,8 +1453,9 @@ mod tests {
         });
         // 语义搬运（§7 P2）：可达性归 city-sdk（信封判负）。Rust 结构侧接受
         // 形状合法的挂载并签发 preview，commit 闸门以 creator_preview_invalid 拒绝。
+        let bind_ops = json!([{"op":"mount.bind","mount":mount}]);
         let rejected = preview_scene_operations_validated(&home, "studio-instance", project_id, 0,
-            &json!([{"op":"mount.bind","mount":mount}]), Some(&validation_envelope(false))).unwrap();
+            &bind_ops, Some(&scene_envelope(false, project_id, 0, &bind_ops))).unwrap();
         assert_eq!(commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", project_id,
             rejected["previewId"].as_str().unwrap(), 0, "commit-disconnected").unwrap_err(), "creator_preview_invalid");
         assert_eq!(read_project(&home, project_id).unwrap()["revision"], 0);
@@ -1776,7 +1835,8 @@ mod tests {
         let project_id = created["projectId"].as_str().unwrap().to_owned();
         let operations = json!([{"op":"skin.select","skinId":"desert-evening"}]);
         // 版本协商：capabilityVersion 与当前描述符不符在签发时拒绝（该 preview 无法进入提交）。
-        let stale = json!({"capabilityVersion":"2000-01-01.0","validatorVersion":1,"ok":true,"diagnostics":[]});
+        let mut stale = scene_envelope(true, &project_id, 0, &operations);
+        let _ = stale.as_object_mut().unwrap().insert("capabilityVersion".into(), json!("2000-01-01.0"));
         assert_eq!(preview_scene_operations_validated(&home, "studio-instance", &project_id, 0, &operations, Some(&stale)).unwrap_err(), "creator_capability_version_mismatch");
         // 形状：validatorVersion/ok 类型、未知字段、诊断条目字段全部严格校验。
         let version = creator_descriptor()["capabilityVersion"].clone();
@@ -1791,6 +1851,14 @@ mod tests {
         ] {
             assert_eq!(preview_scene_operations_validated(&home, "studio-instance", &project_id, 0, &operations, Some(&bad)).unwrap_err(), "creator_validation_invalid");
         }
+        // 作用域核对（审查修复）：形状合法但绑定其他项目/revision/载荷的信封在签发时拒绝。
+        let other_ops = json!([{"op":"skin.select","skinId":"miami-vice"}]);
+        assert_eq!(preview_scene_operations_validated(&home, "studio-instance", &project_id, 0, &operations,
+            Some(&scene_envelope(true, "project-scope", 0, &operations))).unwrap_err(), "creator_validation_scope_mismatch");
+        assert_eq!(preview_scene_operations_validated(&home, "studio-instance", &project_id, 0, &operations,
+            Some(&scene_envelope(true, &project_id, 7, &operations))).unwrap_err(), "creator_validation_scope_mismatch");
+        assert_eq!(preview_scene_operations_validated(&home, "studio-instance", &project_id, 0, &operations,
+            Some(&scene_envelope(true, &project_id, 0, &other_ops))).unwrap_err(), "creator_validation_scope_mismatch");
         let _ = std::fs::remove_dir_all(home);
     }
 
@@ -1802,21 +1870,21 @@ mod tests {
         let project_id = created["projectId"].as_str().unwrap().to_owned();
         let operations = json!([{"op":"skin.select","skinId":"desert-evening"}]);
         // SDK 判负：preview 照常签发并回传诊断，但 commit 以 creator_preview_invalid 拒绝。
-        let rejected = preview_scene_operations_validated(&home, "studio-instance", &project_id, 0, &operations, Some(&validation_envelope(false))).unwrap();
+        let rejected = preview_scene_operations_validated(&home, "studio-instance", &project_id, 0, &operations, Some(&scene_envelope(false, &project_id, 0, &operations))).unwrap();
         assert_eq!(rejected["validation"], "sdk");
         assert_eq!(rejected["diagnostics"][0]["code"], "anchor_unreachable");
         assert_eq!(commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", &project_id,
             rejected["previewId"].as_str().unwrap(), 0, "commit-rejected").unwrap_err(), "creator_preview_invalid");
         assert_eq!(read_project(&home, &project_id).unwrap()["revision"], 0);
         // SDK 判可：提交成功，capabilityVersion 进入 operation 记录（版本偏斜审计）。
-        let approved = preview_scene_operations_validated(&home, "studio-instance", &project_id, 0, &operations, Some(&validation_envelope(true))).unwrap();
+        let approved = preview_scene_operations_validated(&home, "studio-instance", &project_id, 0, &operations, Some(&scene_envelope(true, &project_id, 0, &operations))).unwrap();
         let saved = commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", &project_id,
             approved["previewId"].as_str().unwrap(), 0, "commit-approved").unwrap();
         assert_eq!(saved["revision"], 1);
         // 响应 changedObjects 优先采用 SDK diff；来源标注 sdk。
-        let with_diff = preview_scene_operations_validated(&home, "studio-instance", &project_id, 1, &operations, Some(&json!({
-            "capabilityVersion": creator_descriptor()["capabilityVersion"], "validatorVersion": 1, "ok": true, "diagnostics": [],
-            "diff": {"changedObjects": [{"id":"studio.says","path":"scene.objects.studio.says","kind":"sceneObject","action":"added"}]}}))).unwrap();
+        let mut with_diff = scene_envelope(true, &project_id, 1, &operations);
+        let _ = with_diff.as_object_mut().unwrap().insert("diff".into(), json!({"changedObjects": [{"id":"studio.says","path":"scene.objects.studio.says","kind":"sceneObject","action":"added"}]}));
+        let with_diff = preview_scene_operations_validated(&home, "studio-instance", &project_id, 1, &operations, Some(&with_diff)).unwrap();
         assert_eq!(with_diff["changedObjects"][0]["id"], "studio.says");
         assert_eq!(with_diff["diff"]["changedObjectsSource"], "sdk");
         let _ = std::fs::remove_dir_all(home);
@@ -1933,7 +2001,7 @@ mod tests {
             "game":{"kind":"city-minigame","id":game_id,"version":"1","digest":"fixture"},
             "entryAnchorId":"road-spawn:a","bindings":{"missing-slot":["road-checkpoint:ab"]},"parameterOverrides":{}
         }}]);
-        let rejected = preview_scene_operations_validated(&home, "studio-instance", project, 2, &invalid, Some(&validation_envelope(false))).unwrap();
+        let rejected = preview_scene_operations_validated(&home, "studio-instance", project, 2, &invalid, Some(&scene_envelope(false, project, 2, &invalid))).unwrap();
         assert_eq!(commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", project,
             rejected["previewId"].as_str().unwrap(), 2, "commit-mount-rejected").unwrap_err(), "creator_preview_invalid");
         assert_eq!(read_project(&home, project).unwrap()["revision"], 2);

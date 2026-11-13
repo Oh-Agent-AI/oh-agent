@@ -68,6 +68,7 @@ fn call_error(code: &str) -> ToolError {
         "creator_preview_invalid" => ToolError::new("invalid_argument", "SDK semantic validation rejected this preview; fix the diagnostics returned with the preview and re-preview."),
         "creator_validation_required" => ToolError::new("invalid_argument", "This Creator build requires SDK semantic validation; previews must originate from the active official Studio."),
         "creator_validation_invalid" => ToolError::new("invalid_argument", "The SDK validation envelope accompanying this preview is malformed."),
+        "creator_validation_scope_mismatch" => ToolError::new("invalid_argument", "The validation envelope was produced for a different project, revision or payload; re-run the preview against the current state."),
         "creator_capability_version_unsupported" => ToolError::new("invalid_argument", "Only capability schemaVersion 1 is supported."),
         "creator_validation_profile_unsupported" => ToolError::new("invalid_argument", "`validationProfile` only supports \"static\"; runtime checks are reported as unchecked instead of executed."),
         "creator_layout_not_found" => ToolError::new("not_found", "The selected City layout snapshot is no longer available. List layouts again and retry."),
