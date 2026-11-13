@@ -305,6 +305,8 @@ node --experimental-transform-types \
 | 挂载拓扑/可达性 | SDK | 与 `validateMount` 同源 |
 | 皮肤兼容性 | SDK | geography/theme |
 | 资产字节/摘要/GLB | Rust | 磁盘事实 |
+| City 补丁结构/预算/种子一致性 | Rust | **保留的 City 领域服务边界**：road/site 操作的形状与数值上限、buildingMoves 引用形状、seed 与绑定布局一致；几何/玩法语义由 City 引擎在套用时执行 |
+| validation 信封作用域 | Rust | Studio 信封携带 projectId/baseRevision/payloadDigest（canonical JSON 摘要），签发时对收到的载荷重算并逐项匹配 |
 | revision/幂等/preview 绑定 | Rust | 事务 |
 
 **提交流程（目标态）**
@@ -602,7 +604,7 @@ CI 需要跑：根 workspace `cargo test` + clippy、`apps/desktop/src-tauri` `c
 | `validate_game` | SDK `validateMiniGamePack` | 删除 |
 | `validate_scene_object` | SDK `validateSceneDraft` | 删除 |
 | `validate_mount` | SDK `validateMount` | 删除 |
-| `validate_city_patch` | SDK/City planPatch 校验 | 保留结构上限，语义移走 |
+| `validate_city_patch` | Rust（保留）+ City 引擎 | **Rust 保留结构与种子一致性作为 City 领域服务边界**；几何/玩法语义由 City 引擎套用时执行。SDK 侧 planPatch 校验器（含补丁规则 fixture）为后续项，未迁移前不得声称补丁语义已归 SDK |
 | `apply_scene_operations` | Rust 通用 kind 应用 | 保留，去语义 |
 | `validate_scene` | Rust `structure_check` + Studio 合并 | 拆分 |
 | `creator_capabilities` | 描述符投影 | 重写 |
