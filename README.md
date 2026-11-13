@@ -7,7 +7,7 @@ an explorable city — and helps you understand the activity and token usage beh
 
 **Your agents built it. Now explore it.**
 
-[Explore the demo](https://ohagent.ai/) · [Download 1.0.0-beta.3](https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.3) · [Docs](https://ohagent.ai/docs/) · [Source repository](https://github.com/Oh-Agent-AI/oh-agent) · [中文](#中文) ·
+[Explore the demo](https://ohagent.ai/) · [Download 1.0.0-beta.4](https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.4) · [Docs](https://ohagent.ai/docs/) · [Source repository](https://github.com/Oh-Agent-AI/oh-agent) · [中文](#中文) ·
 [Desktop development](apps/desktop/src-tauri/README.md) · [MIT license](LICENSE)
 
 ## What is Oh Agent?
@@ -21,7 +21,7 @@ Oh Agent analyzes supported records on your own machine:
 - **Usage and cost analysis:** explore usage by source and time, inspect available
   session traces, and distinguish subscription fees, nominal estimates and evidenced spend.
 - **Playful exploration:** desktop City includes free-flight practice, ring
-  challenges and free drive (beta).
+  challenges, free drive (beta), and Mecha tactics fought on the city apron.
 
 The city is a visual interpretation of recorded activity, not a productivity
 score. Building growth does not establish task success, and repetition alone
@@ -32,10 +32,10 @@ does not prove wasted work.
 | Surface | Current scope |
 | --- | --- |
 | [Web demo](https://ohagent.ai/) | Real City frontend with 2000 synthetic sessions in the default 30-day window. Explore buildings and replay activity; it does not read your computer's logs. |
-| Desktop app | 1.0.0-beta.3 pre-release: Apple Silicon Mac (signed + notarized), Windows x64 and Linux x64 (unsigned). [Download](https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.3) |
+| Desktop app | 1.0.0-beta.4 pre-release: Apple Silicon Mac (signed, notarized and stapled) Windows x64 and Linux x64 (unsigned). [Download](https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.4) |
 | Flying | Free practice and ring-challenge entry points exist in City settings outside the landing presentation. Version and scene readiness affect availability. |
 | Driving | Free drive available in desktop City (beta). |
-| Website gameplay | The landing presentation hides game, export and seed controls. The public mock demo does **not** offer flying or driving entry points. Desktop City includes flying and free-drive modes. |
+| Website gameplay | The landing presentation hides game, export and seed controls. The public mock demo does **not** offer flying, driving, or Mecha entry points. Desktop City includes flying, free-drive, and Mecha tactics on the city apron. |
 
 Only describe a package as signed, notarized or platform-tested after the
 corresponding release checks pass. [Windows/Linux build notes](docs/DESKTOP_PLATFORM_BUILDS.md)
@@ -146,9 +146,9 @@ preserves earlier explanations; its old matrices are not current support guarant
 - **探索你的 Agent 城市：** 会话变成数据建筑，工具组成街区，Token 规模影响楼高。
 - **回放工作节奏：** 查看已加载时间范围内的活动，点选建筑了解对应会话。
 - **看懂用量与费用：** 订阅费、名义估算与真实支出分开呈现，未知金额不当作零。
-- **让历史更好玩：** 桌面 City 已提供自由飞行、穿环挑战和自由驾驶（测试版）。
+- **让历史更好玩：** 桌面 City 已提供自由飞行、穿环挑战、自由驾驶（测试版），以及在城市机坪上进行的机甲战棋。
 
-**下载：** 1.0.0-beta.3 预发布版，支持 Apple Silicon Mac（已签名并公证）、Windows x64 和 Linux x64（暂未签名），Intel Mac 版本随后提供。[前往下载](https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.3) · [文档](https://ohagent.ai/docs/zh/)
+**下载：** 1.0.0-beta.4 预发布版，支持 Apple Silicon Mac（已签名、公证并装订票据）、Windows x64 和 Linux x64（暂未签名），Intel Mac 版本随后提供。[前往下载](https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.4) · [文档](https://ohagent.ai/docs/zh/)
 
 源代码与开发历史见 [GitHub 仓库](https://github.com/Oh-Agent-AI/oh-agent)。
 

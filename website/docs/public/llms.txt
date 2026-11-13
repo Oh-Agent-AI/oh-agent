@@ -2,16 +2,16 @@
 
 > Oh Agent is a free, open-source (MIT) platform for analyzing AI agent behavior data. It is built on the local-first Agent Vitals engine, which reads the session logs of Claude Code, Codex, DeepSeek Harness and WorkBuddy into a local database on your machine (no server, no upload, no account). Agent City, its first app, is a data-visualization open-world game: a 3D city where every building is one agent session.
 
-Current release: 1.0.0-beta.3 (pre-release), https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.3
-- macOS Apple Silicon: oh-agent-1.0.0-beta.3-arm64.dmg (Developer ID signed and notarized)
-- Windows x64: oh-agent-1.0.0-beta.3-windows-x86_64-setup.exe (not code-signed yet)
-- Linux x64: oh-agent-1.0.0-beta.3-linux-x86_64.deb and oh-agent-1.0.0-beta.3-linux-x86_64.AppImage (not signed yet)
+Current release: 1.0.0-beta.4 (pre-release), https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.4
+- macOS Apple Silicon: oh-agent-1.0.0-beta.4-arm64.dmg (Developer ID signed, notarized and stapled)
+- Windows x64: oh-agent-1.0.0-beta.4-windows-x86_64-setup.exe (not code-signed yet)
+- Linux x64: oh-agent-1.0.0-beta.4-linux-x86_64.deb and oh-agent-1.0.0-beta.4-linux-x86_64.AppImage (not signed yet)
 - Checksums: SHA256SUMS. Intel Mac: coming later.
 The web demo at https://ohagent.ai/ runs the real City frontend on synthetic sessions and does not read local data.
 
 ## Docs
 - [What is Oh Agent? Open-source AI agent behavior analytics, with Agent City](https://ohagent.ai/docs/): Oh Agent is a free, open-source platform for analyzing your AI agents' behavior data, locally on your machine. The Agent Vitals engine reads Claude Code, Codex, DeepSeek Harness and WorkBuddy sessions; Agent City turns them into a 3D city.
-- [How do I install Oh Agent? Downloads for macOS, Windows and Linux](https://ohagent.ai/docs/install/): Download Oh Agent 1.0.0-beta.3 (pre-release) for Apple Silicon Mac, Windows x64 or Linux x64. Install steps per platform, checksum verification, signing status and first run.
+- [How do I install Oh Agent? Downloads for macOS, Windows and Linux](https://ohagent.ai/docs/install/): Download Oh Agent 1.0.0-beta.4 (pre-release) for Apple Silicon Mac, Windows x64 or Linux x64. Install steps per platform, checksum verification, signing status and first run.
 - [What does each building in Agent City mean? How is height calculated?](https://ohagent.ai/docs/city-guide/): In Agent City each session building is one agent session, and its height follows the session's total tokens on a log curve. What every building means.
 - [Where does Claude Code store session history, and how does Oh Agent read it?](https://ohagent.ai/docs/data-sources/claude-code/): Claude Code saves each session as a JSONL file under ~/.claude/projects. Oh Agent reads those files locally and turns every session into a building.
 - [Where does Codex store session logs, and how does Oh Agent visualize them?](https://ohagent.ai/docs/data-sources/codex/): Codex CLI saves each session as a rollout-*.jsonl file under ~/.codex/sessions. Oh Agent reads them on your computer and builds a Codex district in Agent City.

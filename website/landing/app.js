@@ -24,10 +24,10 @@
   const card = platform ? document.querySelector(`[data-platform="${platform}"]`) : null;
   const direct = card?.querySelector('.platform-downloads a');
   const hero = document.getElementById?.('hero-download');
-  if (!card || !direct || !hero) return;
+  if (!card || !hero) return;
   document.documentElement.dataset.platform = platform;
   card.classList.add('is-detected');
-  hero.href = direct.getAttribute('href');
+  if (direct) hero.href = direct.getAttribute('href');
   const note = document.getElementById?.('hero-download-note');
   const line = note?.querySelector(`[data-platform-note="${platform}"]`);
   if (note && line) { note.hidden = false; line.hidden = false; }

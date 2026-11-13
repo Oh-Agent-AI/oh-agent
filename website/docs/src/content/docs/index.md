@@ -1,6 +1,6 @@
 ---
 title: What is Oh Agent? Open-source AI agent behavior analytics, with Agent City
-lastUpdated: 2026-10-22
+lastUpdated: 2026-11-12
 description: Oh Agent is a free, open-source platform for analyzing your AI agents' behavior data, locally on your machine. The Agent Vitals engine reads Claude Code, Codex, DeepSeek Harness and WorkBuddy sessions; Agent City turns them into a 3D city.
 head:
   - tag: script
@@ -14,8 +14,8 @@ head:
         "name": "Oh Agent",
         "applicationCategory": "DeveloperApplication",
         "operatingSystem": "macOS 11+ (Apple Silicon), Windows x64, Linux x64",
-        "softwareVersion": "1.0.0-beta.3",
-        "downloadUrl": "https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.3",
+        "softwareVersion": "1.0.0-beta.4",
+        "downloadUrl": "https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.4",
         "isAccessibleForFree": true,
         "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
         "license": "https://opensource.org/licenses/MIT",
@@ -49,15 +49,15 @@ All analysis happens on your machine; your sessions are not uploaded.
 
 ## Key facts
 
-- **Version:** 1.0.0-beta.3, a pre-release (beta) on [GitHub](https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.3).
-- **Platforms:** Apple Silicon Mac (signed and notarized), Windows x64 and Linux x64 (not code-signed yet). Intel Mac is coming later. See [Install](/docs/install).
+- **Version:** 1.0.0-beta.4, a pre-release (beta) on [GitHub](https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.4).
+- **Platforms:** Apple Silicon Mac (signed, notarized and stapled) Windows x64 and Linux x64 (not code-signed yet). Intel Mac is coming later. See [Install](/docs/install).
 - **Supported agents:** Claude Code, Codex, DeepSeek Harness and WorkBuddy.
 - **One building = one session.** Building height follows the session's token count on a log curve.
 - **Local-first:** no account and no API key needed; sessions are never uploaded.
 - **License:** MIT. Source: [github.com/Oh-Agent-AI/oh-agent](https://github.com/Oh-Agent-AI/oh-agent).
 - **Web demo:** [ohagent.ai](https://ohagent.ai/) runs the real City frontend on 2,000 synthetic sessions. It does not read your computer.
 
-<!-- source: apps/desktop/src-tauri/tauri.conf.json ("version": "1.0.0-beta.3", "minimumSystemVersion": "11.0"); GitHub release app-v1.0.0-beta.3 (prerelease, arm64 dmg + Windows/Linux x86_64 assets) -->
+<!-- source: apps/desktop/src-tauri/tauri.conf.json ("version": "1.0.0-beta.4", "minimumSystemVersion": "11.0"); GitHub release app-v1.0.0-beta.4 (prerelease, arm64 dmg + Windows/Linux x86_64 assets; repacked from main@974c2137) -->
 <!-- source: crates/agent-vitals-query/src/sources/watch_topology.rs (default_source_watch_roots: claude-code, codex, workbuddy, dsh) -->
 <!-- source: website/landing/README.md ("Public release": Releases page empty; demo = 2000 mock sessions / 30 days) -->
 <!-- source: LICENSE (MIT) -->
@@ -90,7 +90,7 @@ Yes. Sessions are analyzed on your machine and never uploaded. The app only goes
 
 ## How do I install it?
 
-Download 1.0.0-beta.3 for Apple Silicon Mac, Windows or Linux. See [Install](/docs/install) for the files, install steps per platform and checksum verification.
+Download 1.0.0-beta.4 for Apple Silicon Mac, Windows or Linux. See [Install](/docs/install) for the files, install steps per platform and checksum verification.
 
 ## More
 

@@ -46,9 +46,9 @@
         "name": "Oh Agent",
         "applicationCategory": "DeveloperApplication",
         "operatingSystem": "macOS 11+ (Apple Silicon), Windows x64, Linux x64",
-        "softwareVersion": "1.0.0-beta.3",
+        "softwareVersion": "1.0.0-beta.4",
         "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
-        "downloadUrl": "https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.3",
+        "downloadUrl": "https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.4",
         "license": "https://opensource.org/licenses/MIT",
         "url": "https://ohagent.ai/"
       }
@@ -58,7 +58,7 @@
   <link rel="icon" href="../assets/app-icon.png">
   <link rel="stylesheet" href="../styles.css?v=20261023-blog">
   <link rel="stylesheet" href="../exploration.css?v=20261019-vtol">
-  <script src="../i18n.js?v=20261023-blog" defer></script>
+  <script src="../i18n.js?v=20261112-beta4" defer></script>
   <script src="../app.js?v=20261022-pr4" defer></script>
   <script src="../city-host.js?v=20261022-pr4" defer></script>
 </head>
@@ -75,7 +75,7 @@
         <p class="eyebrow"><span class="status-dot"></span><span data-i18n="hero.kicker">让 AGENT 的使用历史，鲜活起来。</span></p>
         <h1 id="hero-title"><span data-i18n="hero.line1">Agent 在工作，</span><br><em data-i18n="hero.line2">你的世界在生长。</em></h1>
         <p class="lede" data-i18n="hero.lede">一款在本机分析 Claude Code、Codex 使用历史的桌面应用。把会话变成城市，回放工作节奏，看清 Token 去向。不上传会话。</p>
-        <div class="actions"><a class="button primary" href="#city" data-start-city data-i18n="cta.explore">探索演示城市 ↗</a><a class="button" id="hero-download" href="#download" data-i18n="cta.download">下载测试版 · v1.0.0-beta.3</a></div>
+        <div class="actions"><a class="button primary" href="#city" data-start-city data-i18n="cta.explore">探索演示城市 ↗</a><a class="button" id="hero-download" href="#download" data-i18n="cta.download">下载测试版 · v1.0.0-beta.4</a></div>
         <p class="hero-download-note" id="hero-download-note" hidden><span data-platform-note="mac" hidden data-i18n="hero.note.mac">Apple Silicon 版 .dmg · Intel Mac 版本随后提供</span><span data-platform-note="windows" hidden data-i18n="hero.note.windows">Windows x64 安装程序 · 暂未代码签名</span><span data-platform-note="linux" hidden data-i18n="hero.note.linux">Linux x64 .deb · AppImage 见下载区</span></p>
         <ul class="assurances"><li data-i18n="trust.local">本机分析</li><li data-i18n="trust.key">无需 API Key</li><li data-i18n="trust.license">MIT 许可</li></ul>
         <p class="hero-star"><a class="text-link" href="https://github.com/Oh-Agent-AI/oh-agent" target="_blank" rel="noopener" data-i18n="hero.star">★ 在 GitHub 点 Star</a></p>
@@ -132,7 +132,7 @@
         <div data-exploration-panel="vtol"><span class="play-availability" data-i18n="play.vtol.status">喷气飞车 · 桌面 City</span><h3 data-i18n="play.vtol.title">这辆敞篷车，还能向上出发。</h3><p data-i18n="play.vtol.body">复古敞篷造型，加上喷气助推。在飞车模式中，长按空格喷升，松开下落；着陆后回充助推，再沿地面继续探索。</p></div>
         <a class="text-link" href="#city" data-start-city data-i18n="play.cta">先去演示城市逛逛 ↗</a>
       </div>
-      <p class="play-disclosure" data-i18n="play.disclosure">视觉为探索概念：真实 City 模拟数据画面叠加示意路线，并非游戏实录。桌面 City 已实现飞机、驾驶与喷气飞车玩法，已随 1.0.0-beta.3 桌面测试版提供。网页演示支持建筑探索和活动回放。</p>
+      <p class="play-disclosure" data-i18n="play.disclosure">视觉为探索概念：真实 City 模拟数据画面叠加示意路线，并非游戏实录。桌面 City 已实现飞机、驾驶与喷气飞车玩法，已随 1.0.0-beta.4 桌面测试版提供。桌面 City 还在城市机坪上进行机甲战棋。网页演示支持建筑探索和活动回放，不能进入机甲。</p>
     </section>
 
     <section class="section shell mapping" id="how" aria-labelledby="how-title">
@@ -161,31 +161,31 @@
 
     <section class="section shell faq-section" id="faq" aria-labelledby="faq-title"><div><p class="eyebrow" data-i18n="faq.kicker">出发之前</p><h2 id="faq-title" data-i18n="faq.title">你可能还想<br>了解这些。</h2></div><div class="faq-list">
       <details><summary data-i18n="faq.1.q">样例城市使用了我的数据吗？</summary><p data-i18n="faq.1.a">没有。本网站只使用合成的示例会话，不会读取本机 Agent 记录。你的专属城市由安装后的桌面应用，基于受支持的本地记录生成。</p></details>
-      <details><summary data-i18n="faq.2.q">支持哪些 Agent 和电脑？</summary><p data-i18n="faq.2.a">1.0.0-beta.3 桌面测试版提供 Apple Silicon Mac（macOS 11 及以上）、Windows x64 和 Linux x64（.deb 与 AppImage）安装包，Intel Mac 版本随后提供。实测目前以 Apple Silicon Mac 为主，Windows 与 Linux 上的交互玩法尚未完成人工验收。数据来源包括 Claude Code、Codex、DeepSeek Harness 和 WorkBuddy；用量、轨迹与费用证据的覆盖因来源与版本而异。详情以发行说明为准。</p></details>
+      <details><summary data-i18n="faq.2.q">支持哪些 Agent 和电脑？</summary><p data-i18n="faq.2.a">1.0.0-beta.4 桌面测试版提供 Apple Silicon Mac（macOS 11 及以上）、Windows x64 和 Linux x64（.deb 与 AppImage）安装包，Intel Mac 版本随后提供。实测目前以 Apple Silicon Mac 为主，Windows 与 Linux 上的交互玩法尚未完成人工验收。数据来源包括 Claude Code、Codex、DeepSeek Harness 和 WorkBuddy；用量、轨迹与费用证据的覆盖因来源与版本而异。详情以发行说明为准。</p></details>
       <details><summary data-i18n="faq.3.q">城市里的一栋楼代表什么？</summary><p data-i18n="faq.3.a">数据建筑对应已载入的会话，楼高体现 Token 规模，来源组成城区。装饰建筑构成风景。建筑生长是视觉隐喻，不衡量任务完成度或产出质量。</p></details>
       <details><summary data-i18n="faq.4.q">能看到完整的使用历史吗？</summary><p data-i18n="faq.4.a">当前城市视图载入所选时间范围内最多 4000 条近期会话，并说明覆盖情况。可用历史取决于 Agent 工具保留了哪些记录。缺失记录不会用虚构活动补齐。</p></details>
       <details><summary data-i18n="faq.5.q">第一次打开没有数据怎么办？</summary><p data-i18n="faq.5.a">先使用受支持的 Agent，产生本地记录。然后在桌面应用中检查来源状态、读取权限和同步情况。无记录、无权限和读取失败需要分别处理；你也可以先探索网站中的样例城市。</p></details>
       <details><summary data-i18n="faq.6.q">费用就是实际扣款或省下的钱吗？</summary><p data-i18n="faq.6.a">按量金额可能是估算，不是扣款。订阅费与有依据支出各自标明口径，不跨币种直接相加。订阅费与 API 等价估算的比较，不能证明已经省钱。桌面版城市会在建筑详情里显示单个会话的估价；网页演示不含费用数据。</p></details>
       <details><summary data-i18n="faq.7.q">需要 API Key 或账号吗？</summary><p data-i18n="faq.7.a">本机分析无需 API Key 或云端账号。应用读取受支持工具已经保留在你电脑上的记录；系统可能要求你允许读取相关位置。</p></details>
-      <details><summary data-i18n="faq.8.q">在哪里下载和查看源码？</summary><p><span data-i18n="faq.8.before">项目代码采用 MIT 许可。公开源码仓库位于 </span><a href="https://github.com/Oh-Agent-AI/oh-agent" target="_blank" rel="noopener">Oh-Agent-AI/oh-agent</a><span data-i18n="faq.8.after">。1.0.0-beta.3 桌面测试版可在下方下载区或 GitHub 发布页下载。macOS 版已签名并通过公证；Windows 与 Linux 版暂未代码签名，系统可能弹出安全提示。</span></p></details>
+      <details><summary data-i18n="faq.8.q">在哪里下载和查看源码？</summary><p><span data-i18n="faq.8.before">项目代码采用 MIT 许可。公开源码仓库位于 </span><a href="https://github.com/Oh-Agent-AI/oh-agent" target="_blank" rel="noopener">Oh-Agent-AI/oh-agent</a><span data-i18n="faq.8.after">。1.0.0-beta.4 桌面测试版可在下方下载区或 GitHub 发布页下载。macOS 版已签名并通过公证；Windows 与 Linux 版暂未代码签名，系统可能弹出安全提示。</span></p></details>
     </div></section>
 
     <section class="section download-section" id="download" aria-labelledby="download-title">
       <div class="shell download-inner">
         <p class="eyebrow" data-i18n="download.kicker">源码已公开，世界留在你的设备里。</p>
         <h2 id="download-title" data-i18n="download.title">先来逛逛，<br><em>再把世界变成自己的。</em></h2>
-        <p data-i18n="download.body">Oh Agent 1.0.0-beta.3 已上线，支持 Apple Silicon Mac、Windows 和 Linux。可以先在浏览器里逛逛演示城市，也可以下载桌面测试版，探索你自己的历史。</p>
+        <p data-i18n="download.body">Oh Agent 1.0.0-beta.4 已上线，支持 Apple Silicon Mac、Windows 和 Linux。可以先在浏览器里逛逛演示城市，也可以下载桌面测试版，探索你自己的历史。</p>
         <div class="release-status">
-          <span class="status-dot amber" aria-hidden="true"></span><strong data-i18n="download.status">测试版 · 1.0.0-beta.3 · 预发布</strong>
-          <p data-i18n="download.note">这是测试版：部分 City 道路通行检查尚未完全通过认证，Windows 与 Linux 上的交互玩法尚未完成人工验收。遇到问题欢迎在 GitHub 反馈。</p>
+          <span class="status-dot amber" aria-hidden="true"></span><strong data-i18n="download.status">测试版 · 1.0.0-beta.4 · 预发布</strong>
+          <p data-i18n="download.note">这是测试版：实测目前以 Apple Silicon Mac 为主，Windows 与 Linux 上的交互玩法尚未完成人工验收。遇到问题欢迎在 GitHub 反馈。</p>
         </div>
         <ul class="release-platforms" aria-label="各平台桌面版下载" data-i18n-aria="download.platforms">
-          <li data-platform="mac"><span class="platform-index" aria-hidden="true">01 / MAC</span><h3>macOS</h3><strong data-i18n="download.mac.status">Apple Silicon · 已签名并公证</strong><p data-i18n="download.mac.body">已使用 Developer ID 签名并通过 Apple 公证。打开 DMG，把 Oh Agent 拖进“应用程序”即可。Intel Mac 版本随后提供。</p><div class="platform-downloads"><a class="button primary small" href="https://github.com/Oh-Agent-AI/oh-agent/releases/download/app-v1.0.0-beta.3/oh-agent-1.0.0-beta.3-arm64.dmg" data-i18n="download.mac.button">下载 Apple Silicon 版 · .dmg</a></div></li>
-          <li data-platform="windows"><span class="platform-index" aria-hidden="true">02 / PC</span><h3>Windows</h3><strong data-i18n="download.windows.status">Windows x64 · 未签名测试版</strong><p data-i18n="download.windows.body">运行 setup 安装程序即可。安装包暂未代码签名，Windows 可能提示“未知发布者”或弹出 SmartScreen 警告。</p><div class="platform-downloads"><a class="button primary small" href="https://github.com/Oh-Agent-AI/oh-agent/releases/download/app-v1.0.0-beta.3/oh-agent-1.0.0-beta.3-windows-x86_64-setup.exe" data-i18n="download.windows.button">下载 Windows 版 · .exe</a></div></li>
-          <li data-platform="linux"><span class="platform-index" aria-hidden="true">03 / LINUX</span><h3>Linux</h3><strong data-i18n="download.linux.status">Linux x64 · 未签名测试版</strong><p data-i18n="download.linux.body">Debian / Ubuntu 可安装 .deb。AppImage 需先执行 chmod +x，并需要系统支持 FUSE。软件包暂未签名。</p><div class="platform-downloads"><a class="button primary small" href="https://github.com/Oh-Agent-AI/oh-agent/releases/download/app-v1.0.0-beta.3/oh-agent-1.0.0-beta.3-linux-x86_64.deb" data-i18n="download.linux.deb">下载 .deb</a><a class="button small" href="https://github.com/Oh-Agent-AI/oh-agent/releases/download/app-v1.0.0-beta.3/oh-agent-1.0.0-beta.3-linux-x86_64.AppImage" data-i18n="download.linux.appimage">下载 AppImage</a></div></li>
+          <li data-platform="mac"><span class="platform-index" aria-hidden="true">01 / MAC</span><h3>macOS</h3><strong data-i18n="download.mac.status">Apple Silicon · 已签名并公证</strong><p data-i18n="download.mac.body">已使用 Developer ID 签名并通过 Apple 公证。打开 DMG，把 Oh Agent 拖进“应用程序”即可。Intel Mac 版本随后提供。</p><div class="platform-downloads"><a class="button primary small" href="https://github.com/Oh-Agent-AI/oh-agent/releases/download/app-v1.0.0-beta.4/oh-agent-1.0.0-beta.4-arm64.dmg" data-i18n="download.mac.button">下载 Apple Silicon 版 · .dmg</a></div></li>
+          <li data-platform="windows"><span class="platform-index" aria-hidden="true">02 / PC</span><h3>Windows</h3><strong data-i18n="download.windows.status">Windows x64 · 未签名测试版</strong><p data-i18n="download.windows.body">运行 setup 安装程序即可。安装包暂未代码签名，Windows 可能提示“未知发布者”或弹出 SmartScreen 警告。</p><div class="platform-downloads"><a class="button primary small" href="https://github.com/Oh-Agent-AI/oh-agent/releases/download/app-v1.0.0-beta.4/oh-agent-1.0.0-beta.4-windows-x86_64-setup.exe" data-i18n="download.windows.button">下载 Windows 版 · .exe</a></div></li>
+          <li data-platform="linux"><span class="platform-index" aria-hidden="true">03 / LINUX</span><h3>Linux</h3><strong data-i18n="download.linux.status">Linux x64 · 未签名测试版</strong><p data-i18n="download.linux.body">Debian / Ubuntu 可安装 .deb。AppImage 需先执行 chmod +x，并需要系统支持 FUSE。软件包暂未签名。</p><div class="platform-downloads"><a class="button primary small" href="https://github.com/Oh-Agent-AI/oh-agent/releases/download/app-v1.0.0-beta.4/oh-agent-1.0.0-beta.4-linux-x86_64.deb" data-i18n="download.linux.deb">下载 .deb</a><a class="button small" href="https://github.com/Oh-Agent-AI/oh-agent/releases/download/app-v1.0.0-beta.4/oh-agent-1.0.0-beta.4-linux-x86_64.AppImage" data-i18n="download.linux.appimage">下载 AppImage</a></div></li>
         </ul>
         <div class="actions release-actions"><a class="button primary" href="#city" data-start-city data-i18n="download.explore">先去演示城市逛逛 ↗</a><a class="button" href="https://github.com/Oh-Agent-AI/oh-agent" target="_blank" rel="noopener" data-i18n="download.source">在 GitHub 查看源码 ↗</a></div>
-        <p class="release-links"><a class="text-link release-link" href="https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.3" target="_blank" rel="noopener" data-i18n="download.releases">1.0.0-beta.3 发布说明 ↗</a><a class="text-link release-link" href="https://github.com/Oh-Agent-AI/oh-agent/releases/download/app-v1.0.0-beta.3/SHA256SUMS" target="_blank" rel="noopener" data-i18n="download.checksums">SHA256SUMS 校验文件 ↗</a></p>
+        <p class="release-links"><a class="text-link release-link" href="https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.4" target="_blank" rel="noopener" data-i18n="download.releases">1.0.0-beta.4 发布说明 ↗</a><a class="text-link release-link" href="https://github.com/Oh-Agent-AI/oh-agent/releases/download/app-v1.0.0-beta.4/SHA256SUMS" target="_blank" rel="noopener" data-i18n="download.checksums">SHA256SUMS 校验文件 ↗</a></p>
         <p class="footnote" data-i18n="download.requirements">系统要求：Apple Silicon 上的 macOS 11 及以上 · Windows x64 · Linux x64。Intel Mac 版本随后提供。生成自己的城市需要受支持 Agent 的本地记录。下载后可用 SHA256SUMS 校验文件。</p>
       </div>
     </section>

@@ -55,7 +55,7 @@ File paths, working directories, tool arguments and raw errors are never passed 
 ## Why are some Codex sessions missing?
 
 - **Outside the time window.** Widen it to 30, 90 or 366 days.
-- **Custom `CODEX_HOME`.** Codex can keep its data in another folder via the `CODEX_HOME` environment variable. Oh Agent 1.0.0-beta.3 doesn't follow that variable. You can add extra folders in Settings → Additional read locations, but each one is read as `<folder>/.codex/sessions` and `<folder>/.codex/archived_sessions`.
+- **Custom `CODEX_HOME`.** Codex can keep its data in another folder via the `CODEX_HOME` environment variable. Oh Agent 1.0.0-beta.4 doesn't follow that variable. You can add extra folders in Settings → Additional read locations, but each one is read as `<folder>/.codex/sessions` and `<folder>/.codex/archived_sessions`.
 - **Deleted log files.** If a rollout file was deleted before Oh Agent imported it, that session cannot be imported. Already imported statistics remain available within Oh Agent's retention window (13 months by default), unless you explicitly delete the source's data in Settings. They can still appear in City within the selected time window, but the original conversation is unavailable once its source file is gone.
 - **Other devices.** History from other computers isn't merged.
 - **More than 4,000 sessions.** The most recent 4,000 in the window are loaded.

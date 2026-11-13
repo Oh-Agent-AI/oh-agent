@@ -25,13 +25,13 @@ Oh Agent 是一个开源的 AI Agent 行为数据分析平台。Agent 已经成�
 
 所有东西都在你的 Mac 上运行，整条链路不上传数据。
 
-“游戏”目前包括什么：桌面版 City 有自由飞行和穿环挑战，驾驶还在开发中；网页演示隐藏了游戏入口。
+“游戏”目前包括什么：桌面版 City 有自由飞行、穿环挑战和自由驾驶。网页演示隐藏了游戏入口，也不能进入机甲战棋；机甲战棋在桌面版的城市机坪上进行。
 
 <!-- source: README.md（“What you can try today” 表：Flying、Driving、Website gameplay 三行） -->
 
 ## 关键事实
 
-- **桌面外壳**：Tauri 2（`tauri = "2"`），应用名 `Oh Agent.app`，标识 `ai.ohagent.desktop`，版本 `1.0.0-beta.3`。
+- **桌面外壳**：Tauri 2（`tauri = "2"`），应用名 `Oh Agent.app`，标识 `ai.ohagent.desktop`，版本 `1.0.0-beta.4`。
 - **工作台界面**：React 19 + Vite + Tailwind 4，在 `apps/desktop/ui-dev/`。
 - **Agent City**：React 19 + three.js 0.186 + Vite，TypeScript，在 `apps/agent-city/ui/`。
 - **核心**：`crates/` 下分层的 Rust workspace（data、domain、harnesses、query、ingest、billing、trust、MCP）。
