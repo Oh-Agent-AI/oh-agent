@@ -164,7 +164,34 @@ struct PluginDefinition { id: String, name: String, entry: String, command_names
     #[serde(default)] host_events: Vec<String>,
     /// 本机 request/reply 能力白名单。Host 只转发 opaque payload，不解释业务字段。
     #[serde(default)] local_calls: Vec<String>,
+    /// 按方法传输预算（设计 §5.5）：宿主校验描述符声明后统一执行到投递与响应
+    /// 路径；未声明的方法保持 64 KiB 默认。描述符是唯一配置点，调用方传入的
+    /// 预算只是提示，不是授权。
+    #[serde(default)] local_call_budgets: std::collections::BTreeMap<String, TransportBudget>,
     #[serde(default)] remote_capabilities: Vec<crate::remote_protocol::RemoteCapability> }
+
+#[derive(Clone, Copy, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct TransportBudget {
+    pub request_bytes: u64,
+    pub response_bytes: u64,
+}
+
+/// 绝对上限（§5.5）：描述符不能把预算调到 IPC 安全上限之上；下限拒绝无效声明。
+const TRANSPORT_BUDGET_MIN_BYTES: u64 = 1024;
+const TRANSPORT_BUDGET_MAX_BYTES: u64 = 1024 * 1024;
+const TRANSPORT_BUDGET_DEFAULT_BYTES: usize = 64 * 1024;
+/// plugin.call.request 信封（kind/callId/method 包装）开销余量。
+const CALL_ENVELOPE_SLACK_BYTES: usize = 4 * 1024;
+
+fn transport_budget_for(definition: &PluginDefinition, method: &str) -> (usize, usize) {
+    let declared = definition.local_call_budgets.get(method);
+    let clamp = |bytes: u64| bytes.clamp(TRANSPORT_BUDGET_MIN_BYTES, TRANSPORT_BUDGET_MAX_BYTES) as usize;
+    match declared {
+        Some(budget) => (clamp(budget.request_bytes), clamp(budget.response_bytes)),
+        None => (TRANSPORT_BUDGET_DEFAULT_BYTES, TRANSPORT_BUDGET_DEFAULT_BYTES),
+    }
+}
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -276,6 +303,13 @@ fn definitions() -> &'static [PluginDefinition] {
                     && method.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'_' | b'-' | b'.'))
                     && local_call_methods.insert(method)
             }), "invalid trusted local-call grant");
+            // 按方法传输预算（§5.5）：只允许指向已授予的方法，且不超过 IPC 安全上限。
+            for (method, budget) in &plugin.local_call_budgets {
+                assert!(local_call_methods.contains(method), "transport budget must target a granted local call: {method}");
+                assert!((TRANSPORT_BUDGET_MIN_BYTES..=TRANSPORT_BUDGET_MAX_BYTES).contains(&budget.request_bytes)
+                    && (TRANSPORT_BUDGET_MIN_BYTES..=TRANSPORT_BUDGET_MAX_BYTES).contains(&budget.response_bytes),
+                    "transport budget for {method} exceeds the IPC safety cap");
+            }
         }
         registry
     }).plugins
@@ -584,10 +618,16 @@ fn subscriber_view(app: &tauri::AppHandle, event: &str) -> Option<(String, Strin
 }
 
 fn deliver_host_payload(app: &tauri::AppHandle, expected_plugin_id: &str, payload: &serde_json::Value) -> bool {
+    deliver_host_payload_capped(app, expected_plugin_id, payload, HOST_EVENT_MAX_BYTES)
+}
+
+/// `max_bytes`：通用宿主事件保持 64 KiB 安全上限；plugin.call.request 由宿主按
+/// 描述符的方法请求预算放宽（§5.5）。
+fn deliver_host_payload_capped(app: &tauri::AppHandle, expected_plugin_id: &str, payload: &serde_json::Value, max_bytes: usize) -> bool {
     if !payload.is_object() { return false; }
     let envelope = serde_json::json!({"version":1,"source":"host","payload":payload});
     let Ok(bytes) = serde_json::to_vec(&envelope) else { return false; };
-    if bytes.len() > HOST_EVENT_MAX_BYTES { return false; }
+    if bytes.len() > max_bytes { return false; }
     let digest = {
         use sha2::Digest;
         let mut hasher = sha2::Sha256::new();
@@ -645,14 +685,30 @@ fn poll_plugin_call_queue(app: &tauri::AppHandle) {
         &home, &plugin_id, &instance_id, &definition.local_calls, 8,
     ) else { return; };
     for (index, call) in calls.iter().enumerate() {
-        if !deliver_host_payload(app, &plugin_id, &json!({"kind":"plugin.call.request", "call":call})) {
-            for pending in &calls[index..] {
-                if let Some(call_id) = pending["callId"].as_str() {
-                    let _ = agent_vitals_runtime::query::plugin_calls::release_claim(&home, &plugin_id, &instance_id, call_id);
-                }
+        // 方法请求预算（§5.5）：宿主按描述符执行；信封包装开销单独留余量。
+        let method = call["method"].as_str().unwrap_or_default().to_owned();
+        let (request_budget, response_budget) = transport_budget_for(definition, &method);
+        let envelope = json!({"kind":"plugin.call.request", "call":call});
+        let delivery_limit = request_budget.saturating_add(CALL_ENVELOPE_SLACK_BYTES);
+        if deliver_host_payload_capped(app, &plugin_id, &envelope, delivery_limit) { continue; }
+        // 超预算的调用必须立即终结而不是释放回队列让调用方干等：写入小错误响应，
+        // wait_response 马上拿到 plugin_call_too_large 终态（不得遗留 pending/claimed）。
+        let oversize = serde_json::to_vec(&envelope).map(|bytes| bytes.len() > delivery_limit).unwrap_or(true);
+        if oversize {
+            if let Some(call_id) = call["callId"].as_str() {
+                let _ = agent_vitals_runtime::query::plugin_calls::respond_with_budget(
+                    &home, &plugin_id, &instance_id, call_id,
+                    &json!({"error":{"code":"plugin_call_too_large"}}), response_budget);
             }
-            break;
+            continue;
         }
+        // 其余投递失败（无订阅 WebView 等）：保持既有语义——释放回队列等后续 poll。
+        for pending in &calls[index..] {
+            if let Some(call_id) = pending["callId"].as_str() {
+                let _ = agent_vitals_runtime::query::plugin_calls::release_claim(&home, &plugin_id, &instance_id, call_id);
+            }
+        }
+        break;
     }
 }
 
@@ -1306,10 +1362,22 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
         if !plugin_response_owner_active(&host, &request.instance_id, &plugin_id) {
             return Err("plugin_instance_mismatch".into());
         }
+        // 响应预算（§5.5）由宿主按描述符的 claimed 方法执行，而不是固定 64 KiB；
+        // 超预算时 respond_with_budget 写入小错误响应终结调用。
+        let data_home = crate::overview::data_home();
+        let claimed_method = agent_vitals_runtime::query::plugin_calls::claimed_call_method(
+            &data_home, &plugin_id, &request.instance_id, &call_id).ok().flatten().unwrap_or_default();
+        let (_request_budget, response_budget) = {
+            let definition = definitions().iter().find(|plugin| plugin.id == plugin_id);
+            match definition {
+                Some(definition) => transport_budget_for(definition, &claimed_method),
+                None => (TRANSPORT_BUDGET_DEFAULT_BYTES, TRANSPORT_BUDGET_DEFAULT_BYTES),
+            }
+        };
         // Keep the instance lock across the bounded local DB response commit:
         // plugin_open/close cannot replace this owner between validation and delivery.
-        let result = agent_vitals_runtime::query::plugin_calls::respond(
-            &crate::overview::data_home(), &plugin_id, &request.instance_id, &call_id, &response_value,
+        let result = agent_vitals_runtime::query::plugin_calls::respond_with_budget(
+            &data_home, &plugin_id, &request.instance_id, &call_id, &response_value, response_budget,
         );
         return Ok(match result {
             Ok(()) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(json!({"accepted":true})), error: None },
@@ -1345,6 +1413,39 @@ fn city_creator_runtime_authorized(host: &HostState, plugin_id: &str, instance_i
 
 #[cfg(test)]
 mod plugin_request_tests {
+    // 按方法传输预算（§5.5）：描述符是唯一配置点，宿主启动即校验并 clamp 到
+    // IPC 安全上限；未声明的方法保持 64 KiB 默认。
+    #[test]
+    fn transport_budgets_default_clamp_and_validate() {
+        let parse = |json: &str| -> Result<PluginRegistry, _> { serde_json::from_str(json) };
+        let base = |budgets: &str| format!(r#"{{
+            "version": 1,
+            "plugins": [{{
+                "id": "creator-studio", "name": "Creator Studio",
+                "entry": "plugins/CreatorStudio.plugin/ui/index.html",
+                "commandNamespace": "creator", "maxToolbarItems": 4,
+                "localCalls": ["creator.scene.preview"],
+                "localCallBudgets": {budgets}
+            }}]
+        }}"#);
+        // 合法声明：方向、上限内
+        let ok = parse(&base(r#"{"creator.scene.preview": {"requestBytes": 393216, "responseBytes": 65536}}"#)).unwrap();
+        let (request, response) = transport_budget_for(ok.plugins.first().unwrap(), "creator.scene.preview");
+        assert_eq!((request, response), (393216, 65536));
+        // 未声明方法回落默认 64 KiB
+        let (request, response) = transport_budget_for(ok.plugins.first().unwrap(), "creator.project.read");
+        assert_eq!((request, response), (TRANSPORT_BUDGET_DEFAULT_BYTES, TRANSPORT_BUDGET_DEFAULT_BYTES));
+        // 超上限：启动校验拒绝（definitions 的 assert 路径不可直调，这里验证解析产物被 clamp）
+        let over = parse(&base(r#"{"creator.scene.preview": {"requestBytes": 2097152, "responseBytes": 65536}}"#)).unwrap();
+        let (request, _response) = transport_budget_for(over.plugins.first().unwrap(), "creator.scene.preview");
+        assert_eq!(request, TRANSPORT_BUDGET_MAX_BYTES as usize, "descriptor values are clamped, trusted only after validation");
+        // 未知字段：严格拒绝，防止拼写错误静默失效
+        assert!(parse(&base(r#"{"creator.scene.preview": {"requestBytes": 65536, "responsBytes": 65536}}"#)).is_err());
+        // budget 指向未授予方法：definitions 校验会拒绝（这里只验证解析层接受、校验层字段存在）
+        let stray = parse(&base(r#"{"creator.project.read": {"requestBytes": 65536, "responseBytes": 65536}}"#)).unwrap();
+        assert!(stray.plugins.first().unwrap().local_call_budgets.contains_key("creator.project.read"));
+    }
+
     use super::*;
 
     #[test]

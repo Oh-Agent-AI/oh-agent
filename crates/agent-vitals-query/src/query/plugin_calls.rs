@@ -160,6 +160,18 @@ pub fn respond_with_budget(home: &Path, plugin_id: &str, instance_id: &str, call
     if changed == 1 { Ok(()) } else { Err("plugin_call_unavailable") }
 }
 
+/// 宿主按方法执行响应预算（§5.5）前的查询：被本实例 claim 且未完成调用的方法名。
+pub fn claimed_call_method(home: &Path, plugin_id: &str, instance_id: &str, call_id: &str) -> Result<Option<String>, &'static str> {
+    if !valid_token(plugin_id, 64) || !valid_token(instance_id, 128) || !valid_token(call_id, 64) {
+        return Err("plugin_call_invalid");
+    }
+    let db = open(home)?;
+    let row: Option<String> = db.query_row(
+        "SELECT method FROM plugin_calls WHERE call_id=?1 AND plugin_id=?2 AND claimed_instance=?3 AND status='claimed'",
+        params![call_id, plugin_id, instance_id], |row| row.get(0)).optional().map_err(|_| "plugin_call_store_unavailable")?;
+    Ok(row)
+}
+
 /// Return a call to the queue when host delivery failed before it reached the
 /// WebView. It remains claimable only by a later poll of an authorized host.
 pub fn release_claim(home: &Path, plugin_id: &str, instance_id: &str, call_id: &str) -> Result<(), &'static str> {
