@@ -82,25 +82,18 @@ fn template_label(template: &str) -> Result<String, &'static str> {
 // SDK verdict 只来自活动官方 Studio：Studio 在 preview 前用 city-sdk 校验，
 // 把结果信封附在 preview 请求上；本文件签发 preview 时把 verdict 与描述符版本
 // 原子绑定进 Preview 记录，commit 时核对——调用方不能传入或覆盖这些字段。
-// 信封缺失的宽容由 requireSdkValidation 控制（迁移期默认关闭，P2 收尾开启）。
-
-// P2 收尾（§5.6 迁移期结束）：无信封 preview 不再签发，legacy 直通关闭。
-static REQUIRE_SDK_VALIDATION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
-
-fn require_sdk_validation() -> bool { REQUIRE_SDK_VALIDATION.load(std::sync::atomic::Ordering::Relaxed) }
+// 信封缺失在签发时即拒绝（P2 收尾：迁移期结束，legacy 直通已关闭）。
 
 const MAX_VALIDATION_BYTES: usize = 32 * 1024;
 const MAX_VALIDATION_DIAGNOSTICS: usize = 200;
 const MAX_VALIDATION_DIFF_OBJECTS: usize = 500;
 
-/// 纯闸门（便于无全局状态的单元测试）：requireSdkValidation 开启时，无信封
-/// （legacy）或 SDK 判负的 preview 一律拒绝提交；关闭时仅 SDK 判负拒绝。
-fn commit_gate_allows(require: bool, semantic_ok: Option<bool>) -> Result<(), &'static str> {
+/// 纯闸门（便于无全局状态的单元测试）：SDK 判负或无信封（legacy）一律拒绝提交。
+fn commit_gate_allows(semantic_ok: Option<bool>) -> Result<(), &'static str> {
     match semantic_ok {
         Some(true) => Ok(()),
         Some(false) => Err("creator_preview_invalid"),
-        None if require => Err("creator_validation_required"),
-        None => Ok(()),
+        None => Err("creator_validation_required"),
     }
 }
 
@@ -161,8 +154,8 @@ fn bind_validation(validation: Option<&Value>) -> Result<ValidationBinding, &'st
             let version = value["capabilityVersion"].as_str().map(str::to_owned);
             Ok((Some(value["ok"].as_bool().unwrap_or(false)), Some(digest(&serialized)), version))
         }
-        None if require_sdk_validation() => Err("creator_validation_required"),
-        None => Ok((None, None, None)),
+        // P2 收尾后不存在无信封路径：缺信封在签发时直接拒绝。
+        None => Err("creator_validation_required"),
     }
 }
 
@@ -685,100 +678,148 @@ pub fn operation_status(home: &Path, actor: &str, project_id: &str, operation_id
 /// Dispatch using a stable local project principal and a short-lived UI actor.
 /// The stable principal owns project operations/history; the instance actor is
 /// used only for preview capabilities so they cannot cross a Studio handoff.
-pub fn dispatch_as(home: &Path, owner: &str, instance: &str, method: &str, payload: &Value) -> Result<Value, &'static str> {
-    match method {
-        "creator.layout.list" if exact_payload(payload, &["limit"]) => list_city_layout_snapshots(home, payload["limit"].as_u64().ok_or("creator_request_invalid")?),
-        "creator.project.create" if exact_payload(payload, &["template", "operationId", "worldRevision"]) => create_project_from_city_layout(home, owner,
-            payload["template"].as_str().ok_or("creator_request_invalid")?, payload["operationId"].as_str().ok_or("creator_request_invalid")?,
-            payload["worldRevision"].as_str().ok_or("creator_request_invalid")?),
-        "creator.project.list" if exact_payload(payload, &["limit"]) => list_projects(home, payload["limit"].as_u64().ok_or("creator_request_invalid")?),
-        "creator.project.read" if exact_payload(payload, &["projectId"]) => read_project(home, payload["projectId"].as_str().ok_or("creator_request_invalid")?),
-        "creator.project.read_chunk" if exact_payload(payload, &["projectId", "offset", "maxBytes"]) => read_project_chunk(home,
-            payload["projectId"].as_str().ok_or("creator_request_invalid")?, payload["offset"].as_u64().ok_or("creator_request_invalid")?,
-            payload["maxBytes"].as_u64().ok_or("creator_request_invalid")?),
-        "creator.operation.status" if exact_payload(payload, &["projectId", "operationId"]) => operation_status(home, owner,
-            payload["projectId"].as_str().ok_or("creator_request_invalid")?, payload["operationId"].as_str().ok_or("creator_request_invalid")?),
-        "creator.game.preview" if exact_payload_with_optional(payload, &["projectId", "baseRevision", "game"], &["validation"]) => preview_replace_game_validated(home, instance,
-            payload["projectId"].as_str().ok_or("creator_request_invalid")?, payload["baseRevision"].as_u64().ok_or("creator_request_invalid")?, &payload["game"], payload.get("validation")),
-        "creator.scene.preview" if exact_payload_with_optional(payload, &["projectId", "baseRevision", "operations"], &["validation"]) => preview_scene_operations_validated(home, instance,
-            payload["projectId"].as_str().ok_or("creator_request_invalid")?, payload["baseRevision"].as_u64().ok_or("creator_request_invalid")?, &payload["operations"], payload.get("validation")),
-        "creator.game.commit" if exact_payload(payload, &["projectId", "previewId", "expectedRevision", "operationId"]) => commit_preview_as(home, owner, instance,
-            payload["projectId"].as_str().ok_or("creator_request_invalid")?, payload["previewId"].as_str().ok_or("creator_request_invalid")?,
-            payload["expectedRevision"].as_u64().ok_or("creator_request_invalid")?, payload["operationId"].as_str().ok_or("creator_request_invalid")?),
-        "creator.scene.commit" if exact_payload(payload, &["projectId", "previewId", "expectedRevision", "operationId"]) => commit_preview_as(home, owner, instance,
-            payload["projectId"].as_str().ok_or("creator_request_invalid")?, payload["previewId"].as_str().ok_or("creator_request_invalid")?,
-            payload["expectedRevision"].as_u64().ok_or("creator_request_invalid")?, payload["operationId"].as_str().ok_or("creator_request_invalid")?),
-        "creator.project.commit" if exact_payload(payload, &["projectId", "previewId", "expectedRevision", "operationId"]) => commit_preview_as(home, owner, instance,
-            payload["projectId"].as_str().ok_or("creator_request_invalid")?, payload["previewId"].as_str().ok_or("creator_request_invalid")?,
-            payload["expectedRevision"].as_u64().ok_or("creator_request_invalid")?, payload["operationId"].as_str().ok_or("creator_request_invalid")?),
-        "creator.project.publish" if exact_payload(payload, &["projectId", "expectedRevision"]) => publish_project_release(home,
-            payload["projectId"].as_str().ok_or("creator_request_invalid")?, payload["expectedRevision"].as_u64().ok_or("creator_request_invalid")?),
-        // 试玩启动：releaseId 必填；projectId/expectedRevision/requestId 可选（MCP 契约 §6.3，
-        // 提供即校验归属）。UI 的 {releaseId} 形状继续有效。
-        "creator.project.playtest.start" if payload.as_object().is_some_and(|object| {
-            object.contains_key("releaseId")
-                && object.keys().all(|key| matches!(key.as_str(), "releaseId" | "projectId" | "expectedRevision" | "requestId"))
-        }) => {
-            let release_id = payload["releaseId"].as_str().filter(|id| valid_id(id)).ok_or("creator_request_invalid")?;
-            let expected_project = payload.get("projectId").and_then(Value::as_str).filter(|id| valid_id(id));
-            let expected_revision = payload.get("expectedRevision").and_then(Value::as_u64);
-            if payload.get("requestId").is_some_and(|value| !value.as_str().is_some_and(|id| !id.is_empty() && id.len() <= 128)) {
-                return Err("creator_request_invalid");
-            }
-            let mut result = start_playtest(home, instance, release_id, expected_project, expected_revision)?;
-            if let Some(request_id) = payload.get("requestId").and_then(Value::as_str) { result["requestId"] = json!(request_id); }
-            Ok(result)
-        }
-        "creator.project.playtest.result" if exact_payload(payload, &["runId"]) => read_playtest_result(home,
-            payload["runId"].as_str().filter(|id| valid_id(id)).ok_or("creator_request_invalid")?),
-        "creator.project.playtest.cancel" if exact_payload(payload, &["runId"]) => cancel_playtest(home, instance,
-            payload["runId"].as_str().filter(|id| valid_id(id)).ok_or("creator_request_invalid")?),
-        "creator.project.playtest.return_context" if exact_payload(payload, &[]) => take_playtest_return(home),
-        // MCP P0/P1（设计 §6.4）：场景摘要与能力发现；capture 由 Studio WebView 处理器本地生成，不经此分发。
-        "creator.scene.describe" => {
-            let object = payload.as_object().ok_or("creator_request_invalid")?;
-            if !object.contains_key("projectId") || object.keys().any(|key| !matches!(key.as_str(), "projectId" | "revision" | "selectedObjectId")) {
-                return Err("creator_request_invalid");
-            }
-            let project_id = payload["projectId"].as_str().filter(|id| valid_id(id)).ok_or("creator_request_invalid")?;
-            let expected = payload.get("revision").and_then(Value::as_u64);
-            let selected = payload.get("selectedObjectId").and_then(Value::as_str).filter(|id| valid_id(id));
-            describe_scene(home, project_id, expected, selected)
-        }
-        "creator.capabilities.list" => {
-            let object = payload.as_object().ok_or("creator_request_invalid")?;
-            if object.keys().any(|key| !matches!(key.as_str(), "category" | "schemaVersion")) { return Err("creator_request_invalid"); }
-            let category = payload.get("category").and_then(Value::as_str).filter(|value| valid_id(value));
-            let version = payload.get("schemaVersion").and_then(Value::as_u64);
-            match category {
-                Some(category) => creator_capabilities_filtered(category, version.unwrap_or(1)),
-                None => {
-                    if let Some(version) = version {
-                        if version != 1 { return Err("creator_capability_version_unsupported"); }
-                    }
-                    Ok(creator_capabilities())
-                }
-            }
-        }
-        "creator.scene.inspect" if exact_payload(payload, &["projectId", "revision", "objectId"]) => inspect_scene_object(home,
-            payload["projectId"].as_str().filter(|id| valid_id(id)).ok_or("creator_request_invalid")?,
-            payload["revision"].as_u64().ok_or("creator_request_invalid")?,
-            payload["objectId"].as_str().filter(|id| valid_id(id)).ok_or("creator_request_invalid")?),
-        // 结构侧只读依赖（§5.3）：creator.scene.validate 由 Studio 合并 SDK 诊断，
-        // 本方法不直接面向 MCP 工具表。
-        "creator.scene.structure_check" => {
-            let object = payload.as_object().ok_or("creator_request_invalid")?;
-            if !object.contains_key("projectId") || object.keys().any(|key| !matches!(key.as_str(), "projectId" | "revision")) {
-                return Err("creator_request_invalid");
-            }
-            let project_id = payload["projectId"].as_str().filter(|id| valid_id(id)).ok_or("creator_request_invalid")?;
-            let expected = payload.get("revision").and_then(Value::as_u64);
-            structure_check(home, project_id, expected)
-        }
-        "creator.project.playtest.history" if exact_payload(payload, &["projectId", "limit"]) => list_playtest_history(home,
-            payload["projectId"].as_str().ok_or("creator_request_invalid")?, payload["limit"].as_u64().ok_or("creator_request_invalid")?),
-        _ => Err("creator_method_unavailable"),
+/// 表驱动参数解析（设计 §7 P3）：每方法一行的声明式契约。新增操作 = 加一个
+/// handler fn + 一行注册，match 不再按内容增长。handler 统一签名为
+/// (home, owner, instance, payload)；owner 是稳定的本地操作主体，instance 是
+/// 短活的 Studio UI 实例（仅 preview 能力绑定使用）。
+type CreatorHandler = fn(&Path, &str, &str, &Value) -> Result<Value, &'static str>;
+struct CreatorMethodRow {
+    method: &'static str,
+    required: &'static [&'static str],
+    optional: &'static [&'static str],
+    handler: CreatorHandler,
+}
+
+macro_rules! creator_row {
+    ($method:literal, $required:expr, $optional:expr, $handler:ident) => {
+        CreatorMethodRow { method: $method, required: $required, optional: $optional, handler: $handler }
+    };
+}
+
+fn args_str<'a>(payload: &'a Value, key: &str) -> Result<&'a str, &'static str> {
+    payload[key].as_str().ok_or("creator_request_invalid")
+}
+fn args_u64(payload: &Value, key: &str) -> Result<u64, &'static str> {
+    payload[key].as_u64().ok_or("creator_request_invalid")
+}
+fn args_valid_id<'a>(payload: &'a Value, key: &str) -> Result<&'a str, &'static str> {
+    payload[key].as_str().filter(|id| valid_id(id)).ok_or("creator_request_invalid")
+}
+
+fn run_layout_list(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    list_city_layout_snapshots(home, args_u64(payload, "limit")?)
+}
+fn run_project_create(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    create_project_from_city_layout(home, owner, args_str(payload, "template")?, args_str(payload, "operationId")?, args_str(payload, "worldRevision")?)
+}
+fn run_project_list(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    list_projects(home, args_u64(payload, "limit")?)
+}
+fn run_project_read(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    read_project(home, args_valid_id(payload, "projectId")?)
+}
+fn run_project_read_chunk(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    read_project_chunk(home, args_valid_id(payload, "projectId")?, args_u64(payload, "offset")?, args_u64(payload, "maxBytes")?)
+}
+fn run_operation_status(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    operation_status(home, owner, args_valid_id(payload, "projectId")?, args_valid_id(payload, "operationId")?)
+}
+fn run_game_preview(home: &Path, _owner: &str, instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    preview_replace_game_validated(home, instance, args_valid_id(payload, "projectId")?, args_u64(payload, "baseRevision")?, &payload["game"], payload.get("validation"))
+}
+fn run_scene_preview(home: &Path, _owner: &str, instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    preview_scene_operations_validated(home, instance, args_valid_id(payload, "projectId")?, args_u64(payload, "baseRevision")?, &payload["operations"], payload.get("validation"))
+}
+fn run_commit(home: &Path, owner: &str, instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    commit_preview_as(home, owner, instance, args_valid_id(payload, "projectId")?, args_valid_id(payload, "previewId")?,
+        args_u64(payload, "expectedRevision")?, args_valid_id(payload, "operationId")?)
+}
+fn run_project_publish(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    publish_project_release(home, args_valid_id(payload, "projectId")?, args_u64(payload, "expectedRevision")?)
+}
+/// 试玩启动：releaseId 必填；projectId/expectedRevision/requestId 可选（MCP 契约 §6.3，
+/// 提供即校验归属）。requestId 原样回传，供调用方关联异步结果。
+fn run_playtest_start(home: &Path, _owner: &str, instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    let release_id = args_valid_id(payload, "releaseId")?;
+    let expected_project = payload.get("projectId").and_then(Value::as_str).filter(|id| valid_id(id));
+    let expected_revision = payload.get("expectedRevision").and_then(Value::as_u64);
+    if payload.get("requestId").is_some_and(|value| !value.as_str().is_some_and(|id| !id.is_empty() && id.len() <= 128)) {
+        return Err("creator_request_invalid");
     }
+    let mut result = start_playtest(home, instance, release_id, expected_project, expected_revision)?;
+    if let Some(request_id) = payload.get("requestId").and_then(Value::as_str) { result["requestId"] = json!(request_id); }
+    Ok(result)
+}
+fn run_playtest_result(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    read_playtest_result(home, args_valid_id(payload, "runId")?)
+}
+fn run_playtest_cancel(home: &Path, _owner: &str, instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    cancel_playtest(home, instance, args_valid_id(payload, "runId")?)
+}
+fn run_playtest_return(_home: &Path, _owner: &str, _instance: &str, _payload: &Value) -> Result<Value, &'static str> {
+    take_playtest_return(_home)
+}
+fn run_scene_describe(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    describe_scene(home, args_valid_id(payload, "projectId")?,
+        payload.get("revision").and_then(Value::as_u64),
+        payload.get("selectedObjectId").and_then(Value::as_str).filter(|id| valid_id(id)))
+}
+fn run_capabilities_list(_home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    let category = payload.get("category").and_then(Value::as_str).filter(|value| valid_id(value));
+    let version = payload.get("schemaVersion").and_then(Value::as_u64);
+    match category {
+        Some(category) => creator_capabilities_filtered(category, version.unwrap_or(1)),
+        None => {
+            if let Some(version) = version {
+                if version != 1 { return Err("creator_capability_version_unsupported"); }
+            }
+            Ok(creator_capabilities())
+        }
+    }
+}
+fn run_scene_inspect(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    inspect_scene_object(home, args_valid_id(payload, "projectId")?, args_u64(payload, "revision")?, args_valid_id(payload, "objectId")?)
+}
+/// 结构侧只读依赖（§5.3）：creator.scene.validate 由 Studio 合并 SDK 诊断，
+/// 本方法不直接面向 MCP 工具表。
+fn run_structure_check(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    structure_check(home, args_valid_id(payload, "projectId")?, payload.get("revision").and_then(Value::as_u64))
+}
+fn run_playtest_history(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    list_playtest_history(home, args_str(payload, "projectId")?, args_u64(payload, "limit")?)
+}
+
+static DISPATCH_ROWS: &[CreatorMethodRow] = &[
+    creator_row!("creator.capabilities.list", &[], &["category", "schemaVersion"], run_capabilities_list),
+    creator_row!("creator.game.commit", &["projectId", "previewId", "expectedRevision", "operationId"], &[], run_commit),
+    creator_row!("creator.game.preview", &["projectId", "baseRevision", "game"], &["validation"], run_game_preview),
+    creator_row!("creator.layout.list", &["limit"], &[], run_layout_list),
+    creator_row!("creator.operation.status", &["projectId", "operationId"], &[], run_operation_status),
+    creator_row!("creator.project.commit", &["projectId", "previewId", "expectedRevision", "operationId"], &[], run_commit),
+    creator_row!("creator.project.create", &["template", "operationId", "worldRevision"], &[], run_project_create),
+    creator_row!("creator.project.list", &["limit"], &[], run_project_list),
+    creator_row!("creator.project.playtest.cancel", &["runId"], &[], run_playtest_cancel),
+    creator_row!("creator.project.playtest.history", &["projectId", "limit"], &[], run_playtest_history),
+    creator_row!("creator.project.playtest.result", &["runId"], &[], run_playtest_result),
+    creator_row!("creator.project.playtest.return_context", &[], &[], run_playtest_return),
+    creator_row!("creator.project.playtest.start", &["releaseId"], &["projectId", "expectedRevision", "requestId"], run_playtest_start),
+    creator_row!("creator.project.publish", &["projectId", "expectedRevision"], &[], run_project_publish),
+    creator_row!("creator.project.read", &["projectId"], &[], run_project_read),
+    creator_row!("creator.project.read_chunk", &["projectId", "offset", "maxBytes"], &[], run_project_read_chunk),
+    creator_row!("creator.scene.commit", &["projectId", "previewId", "expectedRevision", "operationId"], &[], run_commit),
+    creator_row!("creator.scene.describe", &["projectId"], &["revision", "selectedObjectId"], run_scene_describe),
+    creator_row!("creator.scene.inspect", &["projectId", "revision", "objectId"], &[], run_scene_inspect),
+    creator_row!("creator.scene.preview", &["projectId", "baseRevision", "operations"], &["validation"], run_scene_preview),
+    creator_row!("creator.scene.structure_check", &["projectId"], &["revision"], run_structure_check),
+];
+
+/// Stable local project principal + short-lived UI actor dispatch. The stable
+/// principal owns project operations/history; the instance actor is used only
+/// for preview capabilities so they cannot cross a Studio handoff.
+pub fn dispatch_as(home: &Path, owner: &str, instance: &str, method: &str, payload: &Value) -> Result<Value, &'static str> {
+    let row = DISPATCH_ROWS.iter().find(|row| row.method == method).ok_or("creator_method_unavailable")?;
+    if !exact_payload_with_optional(payload, row.required, row.optional) { return Err("creator_request_invalid"); }
+    (row.handler)(home, owner, instance, payload)
 }
 
 /// Separate City runtime face. This does not share the Creator Studio draft
@@ -1034,7 +1075,7 @@ pub fn preview_replace_game_validated(home: &Path, actor: &str, project_id: &str
         semantic_ok, validation_digest, capability_version });
     let game_id = game.get("id").and_then(Value::as_str).filter(|id| valid_id(id)).unwrap_or("game").to_owned();
     Ok(json!({"previewId":preview_id,"projectId":project_id,"baseRevision":revision,"expiresInMs":PREVIEW_TTL.as_millis(),
-        "validation":if validation.is_some() {"sdk"} else {"legacy"},
+        "validation":"sdk",
         "diff":{"path":"game","beforeDigest":digest(&raw),"afterDigest":digest(&game_json)},
         "changedObjects":[{"id":game_id,"kind":"game","fields":["game"],"beforeDigest":digest(&raw),"afterDigest":digest(&game_json)}],
         "diagnostics":[]}))
@@ -1086,7 +1127,7 @@ pub fn preview_scene_operations_validated(home: &Path, actor: &str, project_id: 
         _ => (changed_objects, "host"),
     };
     Ok(json!({"previewId":preview_id,"projectId":project_id,"baseRevision":revision,"expiresInMs":PREVIEW_TTL.as_millis(),
-        "validation":if validation.is_some() {"sdk"} else {"legacy"},
+        "validation":"sdk",
         "diff":{"paths":paths,"beforeDigest":digest(&raw),"afterDigest":digest(&serialized),"changedObjectsSource":diff_source},
         "changedObjects":changed_objects,
         "diagnostics":validation.and_then(|value| value.get("diagnostics")).cloned().unwrap_or(json!([]))}))
@@ -1122,7 +1163,7 @@ pub fn commit_preview_as(home: &Path, owner: &str, instance: &str, project_id: &
     // 语义闸门（§5.2）：SDK 判负的 preview 不可提交；requireSdkValidation 开启时
     // 无信封（legacy）同样拒绝。判定取自签发时原子绑定的服务端记录，
     // 不接收调用方传入的结论。
-    commit_gate_allows(require_sdk_validation(), preview.semantic_ok)?;
+    commit_gate_allows(preview.semantic_ok)?;
     // 防御性版本再核对：描述符可能在 preview 签发后轮换（§5.6 版本协商）。
     if let Some(capability_version) = &preview.capability_version {
         if capability_version != creator_descriptor()["capabilityVersion"].as_str().unwrap_or_default() { return Err("creator_capability_version_mismatch"); }
@@ -1138,7 +1179,7 @@ pub fn commit_preview_as(home: &Path, owner: &str, instance: &str, project_id: &
     if updated == 0 { return Err("revision_conflict"); }
     tx.execute("INSERT INTO creator_changes(project_id,revision,actor_id,operation_id,operation_hash,document_json,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)", params![project_id, next, owner, operation_id, preview.operation_hash, serialized, now]).map_err(|_| "creator_store_unavailable")?;
     let result = json!({"projectId":project_id,"revision":next,"operationId":operation_id,"documentDigest":digest(&serialized),
-        "validation":if preview.semantic_ok == Some(true) {"sdk"} else {"legacy"},
+        "validation":"sdk",
         "validationDigest":preview.validation_digest.clone(),"capabilityVersion":preview.capability_version.clone()});
     tx.execute("INSERT INTO creator_operations(project_id,actor_id,operation_id,operation_hash,result_json,capability_version,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)", params![project_id, owner, operation_id, request_hash, result.to_string(), preview.capability_version.clone().unwrap_or_default(), now]).map_err(|_| "creator_store_unavailable")?;
     tx.commit().map_err(|_| "creator_store_unavailable")?;
@@ -1784,11 +1825,9 @@ mod tests {
     #[test]
     fn gate_requires_envelopes_and_rejects_sdk_rejected_previews() {
         // 纯闸门矩阵（§5.6）：requireSdkValidation 开启时 legacy 拒绝；SDK 判负无条件拒绝。
-        assert_eq!(commit_gate_allows(false, None), Ok(()));
-        assert_eq!(commit_gate_allows(true, None), Err("creator_validation_required"));
-        assert_eq!(commit_gate_allows(true, Some(true)), Ok(()));
-        assert_eq!(commit_gate_allows(false, Some(false)), Err("creator_preview_invalid"));
-        assert_eq!(commit_gate_allows(true, Some(true)), Ok(()));
+        assert_eq!(commit_gate_allows(Some(true)), Ok(()));
+        assert_eq!(commit_gate_allows(Some(false)), Err("creator_preview_invalid"));
+        assert_eq!(commit_gate_allows(None), Err("creator_validation_required"));
         // P2 收尾：requireSdkValidation 开启——无信封 preview 在签发时即被拒绝。
         let home = home();
         publish_city_layout_snapshot(&home, &layout_snapshot()).unwrap();

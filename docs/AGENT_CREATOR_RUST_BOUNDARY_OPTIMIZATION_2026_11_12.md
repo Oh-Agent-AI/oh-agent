@@ -504,7 +504,7 @@ MCP 仍负责：JSON-RPC 帧、`tool_specs` 的 `additionalProperties: false`、
 
 **回滚**：`requireSdkValidation=false` + 保留旧校验函数一个版本；不删代码直到 P3。
 
-### P3：表驱动收尾
+### P3：表驱动收尾——已实现（dispatch_as 表驱动 + flag/legacy 删除；city_runtime 面为固定协议，保持 match）
 
 **范围**
 
