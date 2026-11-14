@@ -18,6 +18,7 @@ import {
   type CityTypedSessionDetail,
 } from "./typedCitySessionAdapter";
 import { readLegacyCityAssetCrosswalk, readLegacyCityStoreSnapshot } from "./cityLegacyStore";
+import { cityProjectionDelay, cityProjectionErrorCode, retryCityProjection } from "./projectionRetry";
 import { importLegacyBuildingOverride, listCityBuildingObjectsByStableRef, readCityBuildingObject,
   type CityBuildingObjectClient, type CityBuildingObjectSnapshot, type CityBuildingStoredObject } from "./cityBuildingObjects";
 
@@ -765,22 +766,24 @@ export const tauriCityDataProvider: CityDataProvider = {
     }
     if (standalone || window.__CITY_ISOLATION_FIXTURE__) return completeFixture(fixtureProjection(windowDays));
     const started = monotonicNow();
+    let attempts = 0, revisionRetries = 0;
     try {
-      const projection = await readTypedProjectionWithLegacyMigration(windowDays, signal, onStage);
+      const projection = await retryCityProjection(() => readTypedProjectionWithLegacyMigration(windowDays, signal, onStage), {
+        signal, delay: cityProjectionDelay, onAttempt: (count, code) => { attempts = count; if (code === "revision_changed") revisionRetries++; },
+      });
       if (signal?.aborted) throw new Error("city_request_cancelled");
       onPartial?.(projection);
-      reportCityLoad("success", started, windowDays, 1, 0, "none", projection.coverage.returned);
+      reportCityLoad("success", started, windowDays, attempts, revisionRetries, "none", projection.coverage.returned);
       return projection;
     } catch (error) {
       if (signal?.aborted || (error instanceof Error && error.message === "city_request_cancelled")) {
-        reportCityLoad("cancelled", started, windowDays, 1, 0, "none");
+        reportCityLoad("cancelled", started, windowDays, attempts, revisionRetries, "none");
       } else {
-        const reason = error instanceof Error && /^[a-z0-9_:-]{1,80}$/i.test(error.message)
-          ? error.message : "typed_city_projection_unavailable";
+        const reason = cityProjectionErrorCode(error);
         (window as Window & { __CITY_TYPED_SESSION_ROLLOUT__?: unknown }).__CITY_TYPED_SESSION_ROLLOUT__ = {
           source: "typed", status: "unavailable", reason,
         };
-        reportCityLoad("failed", started, windowDays, 1, 0, "none");
+        reportCityLoad("failed", started, windowDays, attempts, revisionRetries, "none");
       }
       throw error;
     }

@@ -56,6 +56,21 @@ pub(crate) fn database(home: &Path) -> Result<Connection, &'static str> {
             project_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, document_json TEXT NOT NULL,
             created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS creator_cities (
+            city_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, document_json TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS creator_city_operations (
+            actor_id TEXT NOT NULL, operation_id TEXT NOT NULL, operation_hash TEXT NOT NULL,
+            city_id TEXT NOT NULL, result_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL,
+            PRIMARY KEY(actor_id, operation_id)
+        );
+        CREATE TABLE IF NOT EXISTS creator_city_diagnostics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, city_id TEXT NOT NULL, city_revision INTEGER NOT NULL,
+            correlation_id TEXT NOT NULL, event TEXT NOT NULL, code TEXT, elapsed_ms INTEGER,
+            created_at_ms INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS creator_city_diagnostics_city_id ON creator_city_diagnostics(city_id,id DESC);
         CREATE TABLE IF NOT EXISTS creator_changes (
             project_id TEXT NOT NULL, revision INTEGER NOT NULL, actor_id TEXT NOT NULL,
             operation_id TEXT NOT NULL, operation_hash TEXT NOT NULL, document_json TEXT NOT NULL,
@@ -69,6 +84,11 @@ pub(crate) fn database(home: &Path) -> Result<Connection, &'static str> {
         CREATE TABLE IF NOT EXISTS creator_city_layouts (
             world_revision TEXT PRIMARY KEY, layout_id TEXT NOT NULL, snapshot_json TEXT NOT NULL,
             snapshot_digest TEXT NOT NULL, updated_at_ms INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS creator_city_layouts_v2 (
+            city_id TEXT NOT NULL, city_revision INTEGER NOT NULL, world_revision TEXT NOT NULL,
+            layout_id TEXT NOT NULL, snapshot_json TEXT NOT NULL, snapshot_digest TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL, PRIMARY KEY(city_id,city_revision,world_revision)
         );
         CREATE TABLE IF NOT EXISTS creator_city_patches (
             seed INTEGER PRIMARY KEY, patch_json TEXT NOT NULL, patch_digest TEXT NOT NULL,

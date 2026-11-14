@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { compileRules, createRun, runHeadless } from "../src/runtime";
 import { parseMiniGamePackJson, validateMiniGamePack } from "../src/content";
-import { validateCityLayoutSnapshot, validateCitySkinPack, validateMount } from "../src/validate";
+import { validateCityLayoutScope, validateCityLayoutSnapshot, validateCityLayoutSnapshotV2, validateCitySkinPack, validateMount } from "../src/validate";
 import type { CityGameMountV1, CityLayoutV1, MiniGamePackV1 } from "../src/types";
 
 const layout: CityLayoutV1 = { schemaVersion: 1, id: "fixture", coordinateSystem: "city-local-m-v1", anchors: [
@@ -33,6 +33,19 @@ test("validates and freezes host-captured City layout snapshots", () => {
   }
   assert.equal(validateCityLayoutSnapshot({ schemaVersion: 1, worldRevision: "", seed: 7, layout }).ok, false);
   assert.equal(validateCityLayoutSnapshot({ schemaVersion: 1, worldRevision: "r", seed: -1, layout }).ok, false);
+});
+test("multi-City layout scope rejects cross-City and stale bindings even with matching world revisions", () => {
+  const snapshot = { schemaVersion: 2, cityId: "city-desert", cityRevision: 3, worldRevision: "world-r7", seed: 7, layout };
+  const city = { cityId: "city-desert", revision: 3, seed: 7 };
+  const result = validateCityLayoutScope(snapshot, city);
+  assert.equal(result.ok, true);
+  if (result.ok) assert.equal(Object.isFrozen(result.value.layout.anchors), true);
+  assert.equal(validateCityLayoutScope(snapshot, { ...city, cityId: "city-miami" }).ok, false);
+  assert.equal(validateCityLayoutScope(snapshot, { ...city, revision: 4 }).ok, false);
+  assert.equal(validateCityLayoutScope(snapshot, { ...city, seed: 8 }).ok, false);
+  assert.equal(validateCityLayoutSnapshotV2({ ...snapshot, cityId: "../miami" }).ok, false);
+  assert.equal(validateCityLayoutSnapshotV2({ ...snapshot, extra: true }).ok, false);
+  assert.equal(validateCityLayoutSnapshotV2({ schemaVersion: 1, worldRevision: "world-r7", seed: 7, layout }).ok, false);
 });
 const mount: CityGameMountV1 = { schemaVersion: 1, mountId: "race-1", layout: { kind: "city-layout", id: layout.id, version: "1", digest: "fixture" }, game: { kind: "city-minigame", id: game.id, version: "1", digest: "fixture" }, entryAnchorId: "start", bindings: { points: ["cp-1", "cp-2"] }, parameterOverrides: {} };
 

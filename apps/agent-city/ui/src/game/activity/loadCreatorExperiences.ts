@@ -38,7 +38,7 @@ async function validateRelease(view: CityLayoutSdkViewV1, release: { releaseId: 
   const parsed = parseMiniGamePackJson(gameJson);
   if (!parsed.ok) { fail(parsed.diagnostics[0]?.code ?? "creator_release_game_invalid"); return []; }
   const game = parsed.value as MiniGamePackV1;
-  const gameDigest = await sha256(game);
+  const gameDigest = await sha256(release.game);
   const sceneResult = validateSceneDraft(release.scene ?? { schemaVersion: 1, objects: [] });
   if (!sceneResult.ok) { fail(sceneResult.diagnostics[0]?.code ?? "creator_release_scene_invalid"); return []; }
   const projectAssets = validateCityProjectAssetCatalog(release.assets ?? { schemaVersion: 1, entries: [] });

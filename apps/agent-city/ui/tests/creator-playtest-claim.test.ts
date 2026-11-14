@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { webcrypto, createHash } from "node:crypto";
 import { canonicalJson } from "@agent-vitals/city-sdk";
 
-const game = { schemaVersion: 1, id: "creator.collect-one", rulesVersion: 1, slots: { targets: { kind: "zone", min: 1, max: 2, requires: ["drive"] } }, rules: { counters: {}, nodes: [] } };
+const game = { schemaVersion: 1, id: "creator.collect-one", rulesVersion: 1, integerParameters: {}, slots: { targets: { kind: "zone", min: 1, max: 2, requires: ["drive"] } }, rules: { counters: {}, nodes: [] } };
 const digest = `sha256:${createHash("sha256").update(canonicalJson(game)).digest("hex")}`;
 const view = { layout: { schemaVersion: 1, id: "fixture", coordinateSystem: "city-local-m-v1", anchors: [
   { id: "spawn", kind: "spawn", capabilities: ["drive"], geometryRef: "g:spawn" },

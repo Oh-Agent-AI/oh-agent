@@ -1,4 +1,4 @@
-import type { AnchorCapability, AnchorFilterV1, AnchorKind, CityAnchorV1, CityAnchorLinkV1, CityGameMountV1, CityLayoutSnapshotV1, CityLayoutV1, CityProjectAssetCatalogV1, CityProjectAssetEntryV1, CitySkinPackV1, CityWorldProfileV1, CoastalWorldParametersV1, ContentRef, DiagnosticV1, MiniGamePackV1, ModelAssetCatalogEntryV1, ModelAssetCatalogV1, ModelAssetFilterV1, ModelAssetRefV1, ResolvedModelAssetRefsV1, Result, SceneDraftV1, SceneObjectFilterV1, SceneObjectV1 } from "./types";
+import type { AnchorCapability, AnchorFilterV1, AnchorKind, CityAnchorV1, CityAnchorLinkV1, CityGameMountV1, CityInstanceV1, CityLayoutSnapshotV1, CityLayoutSnapshotV2, CityLayoutV1, CityProjectAssetCatalogV1, CityProjectAssetEntryV1, CitySkinPackV1, CityWorldProfileV1, CoastalWorldParametersV1, ContentRef, DiagnosticV1, MiniGamePackV1, ModelAssetCatalogEntryV1, ModelAssetCatalogV1, ModelAssetFilterV1, ModelAssetRefV1, ResolvedModelAssetRefsV1, Result, SceneDraftV1, SceneObjectFilterV1, SceneObjectV1 } from "./types";
 import { validateMiniGamePack } from "./content";
 
 const error = (code: string, path: string, message: string, objectId?: string): DiagnosticV1 => ({ code, severity: "error", path, message, ...(objectId ? { objectId } : {}) });
@@ -10,6 +10,24 @@ const ANCHOR_KINDS = new Set<AnchorKind>(["spawn", "route", "zone", "object"]);
 const CAPABILITIES = new Set<AnchorCapability>(["drive", "walk"]);
 const MAX_LAYOUT_ANCHORS = 20_000;
 const MAX_LAYOUT_LINKS = 100_000;
+
+/** Validate and detach the persisted City identity and its world recipe. */
+export function validateCityInstance(value: unknown): Result<CityInstanceV1> {
+  if (!isObject(value) || !exactKeys(value, ["schemaVersion", "cityId", "revision", "name", "seed", "profile"])) {
+    return { ok: false, diagnostics: [error("city_instance_invalid_shape", "$", "City must contain only the version 1 instance fields.")] };
+  }
+  if (value.schemaVersion !== 1 || typeof value.cityId !== "string" || !identifier.test(value.cityId)
+    || !Number.isSafeInteger(value.revision) || (value.revision as number) < 0
+    || typeof value.name !== "string" || value.name.trim() !== value.name || [...value.name].length < 1 || [...value.name].length > 120
+    || /\p{Cc}/u.test(value.name)
+    || !Number.isSafeInteger(value.seed) || (value.seed as number) < 0 || (value.seed as number) > 0xffffffff) {
+    return { ok: false, diagnostics: [error("city_instance_invalid_identity", "$", "City identity, name, revision or seed is invalid.")] };
+  }
+  const profile = validateCityWorldProfile(value.profile);
+  if (!profile.ok) return { ok: false, diagnostics: profile.diagnostics.map(item => ({ ...item, path: `profile.${item.path}` })) };
+  return { ok: true, value: Object.freeze({ schemaVersion: 1, cityId: value.cityId, revision: value.revision as number,
+    name: value.name, seed: value.seed as number, profile: profile.value }), diagnostics: [] };
+}
 
 /** Validate a data-only, versioned world recipe. Generator execution stays in City. */
 export function validateCityWorldProfile(value: unknown): Result<CityWorldProfileV1> {
@@ -197,6 +215,31 @@ export function validateCityLayoutSnapshot(value: unknown): Result<CityLayoutSna
   const layout = validateCityLayout(value.layout);
   if (!layout.ok) return layout;
   return { ok: true, value: Object.freeze({ schemaVersion: 1, worldRevision: value.worldRevision, seed: value.seed as number, layout: layout.value }), diagnostics: [] };
+}
+
+/** Validates a multi-City layout without treating legacy worldRevision as a global city identity. */
+export function validateCityLayoutSnapshotV2(value: unknown): Result<CityLayoutSnapshotV2> {
+  if (!isObject(value) || !exactKeys(value, ["schemaVersion", "cityId", "cityRevision", "worldRevision", "seed", "layout"])) {
+    return { ok: false, diagnostics: [error("layout_snapshot_invalid_shape", "$", "Version 2 layout snapshot requires its City identity and revision.")] };
+  }
+  if (value.schemaVersion !== 2 || typeof value.cityId !== "string" || !identifier.test(value.cityId)
+    || !Number.isSafeInteger(value.cityRevision) || (value.cityRevision as number) < 0) {
+    return { ok: false, diagnostics: [error("layout_snapshot_invalid_city", "cityId", "Layout must identify a valid City and its revision.")] };
+  }
+  const legacy = validateCityLayoutSnapshot({ schemaVersion: 1, worldRevision: value.worldRevision, seed: value.seed, layout: value.layout });
+  if (!legacy.ok) return legacy;
+  return { ok: true, value: Object.freeze({ schemaVersion: 2, cityId: value.cityId, cityRevision: value.cityRevision as number,
+    worldRevision: legacy.value.worldRevision, seed: legacy.value.seed, layout: legacy.value.layout }), diagnostics: [] };
+}
+
+/** Reject stale or cross-City bindings even when the seed or world revision matches. */
+export function validateCityLayoutScope(value: unknown, city: Pick<CityInstanceV1, "cityId" | "revision" | "seed">): Result<CityLayoutSnapshotV2> {
+  const snapshot = validateCityLayoutSnapshotV2(value);
+  if (!snapshot.ok) return snapshot;
+  if (snapshot.value.cityId !== city.cityId || snapshot.value.cityRevision !== city.revision || snapshot.value.seed !== city.seed) {
+    return { ok: false, diagnostics: [error("layout_snapshot_city_mismatch", "cityId", "Layout belongs to a different City, revision or seed.")] };
+  }
+  return snapshot;
 }
 
 /** Validate a bounded, data-only scene draft. Asset existence is checked separately with validateAssetRefs. */

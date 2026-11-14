@@ -224,7 +224,7 @@ pub fn dispatch_with_permissions(
         "set_building_model" => city_building::run_set(args, data_home, allow_local_writes),
         "reset_building" => city_building::run_reset(args, data_home, allow_local_writes),
         "im_publish" => city_im::run(args, data_home, allow_local_writes),
-        "creator_layout_list" | "creator_project_list" | "creator_project_read" | "creator_operation_status" | "creator_playtest_history" | "creator_playtest_start" | "creator_playtest_result" | "creator_playtest_cancel" | "creator_project_create"
+        "creator_city_create" | "creator_city_edit_preview" | "creator_city_edit_commit" | "creator_city_list" | "creator_city_read" | "creator_city_diagnostics" | "creator_city_view" | "creator_city_view_status" | "creator_city_capture" | "creator_city_layout_read" | "creator_city_layout_save" | "creator_layout_list" | "creator_project_list" | "creator_project_read" | "creator_operation_status" | "creator_playtest_history" | "creator_playtest_start" | "creator_playtest_result" | "creator_playtest_cancel" | "creator_project_create"
         | "creator_game_preview" | "creator_scene_preview" | "creator_project_commit" | "creator_project_publish"
         | "creator_scene_describe" | "creator_scene_capture" | "creator_scene_inspect" | "creator_scene_validate" | "creator_capabilities_list" => creator_studio::run(name, args, data_home, allow_local_writes),
         "city_world_profile_preview" | "city_world_profile_apply" => city_world::run(name, args, data_home, allow_local_writes),
@@ -449,6 +449,22 @@ mod tests {
         assert!(names.contains(&"city_world_profile_apply"));
         let error = dispatch("city_world_profile_apply", &json!({"previewId":"cwp_preview0001","operationId":"op-1"}), Path::new("/unused"))
             .unwrap_err();
+        assert_eq!(error.code, "permission_denied");
+    }
+
+    #[test]
+    fn creator_city_create_is_registered_and_requires_local_write_permission() {
+        let names: Vec<_> = tool_specs().into_iter().map(|tool| tool.name).collect();
+        assert!(names.contains(&"creator_city_create"));
+        assert!(names.contains(&"creator_city_edit_preview"));
+        assert!(names.contains(&"creator_city_edit_commit"));
+        assert!(names.contains(&"creator_city_list"));
+        assert!(names.contains(&"creator_city_read"));
+        let error = dispatch("creator_city_create", &json!({"name":"Desert","seed":42,"profile":{},"operationId":"op-1"}), Path::new("/unused")).unwrap_err();
+        assert_eq!(error.code, "permission_denied");
+        let error = dispatch("creator_city_edit_commit", &json!({"cityId":"city-1","previewId":"preview-1","expectedRevision":0,"operationId":"op-2"}), Path::new("/unused")).unwrap_err();
+        assert_eq!(error.code, "permission_denied");
+        let error = dispatch("creator_city_layout_save", &json!({"cityId":"city-1","revision":0}), Path::new("/unused")).unwrap_err();
         assert_eq!(error.code, "permission_denied");
     }
 

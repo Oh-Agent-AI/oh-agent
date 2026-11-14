@@ -807,8 +807,69 @@ fn run_playtest_history(home: &Path, _owner: &str, _instance: &str, payload: &Va
     list_playtest_history(home, args_str(payload, "projectId")?, args_u64(payload, "limit")?)
 }
 
+fn run_city_create(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    let name = args_str(payload, "name")?;
+    let seed = args_u64(payload, "seed")?;
+    if seed > u32::MAX as u64 { return Err("creator_city_invalid"); }
+    let operation_id = args_valid_id(payload, "operationId")?;
+    let profile = payload.get("profile").filter(|profile| profile.is_object()).ok_or("creator_city_invalid")?;
+    let validation = payload.get("validation").and_then(Value::as_object).ok_or("creator_validation_required")?;
+    if validation.len() != 3 || validation.get("schemaVersion").and_then(Value::as_u64) != Some(1)
+        || validation.get("ok").and_then(Value::as_bool) != Some(true) { return Err("creator_preview_invalid"); }
+    let request = json!({"name":name,"seed":seed,"profile":profile,"operationId":operation_id});
+    let expected = digest(&canonical_json(&request).map_err(|_| "creator_city_invalid")?);
+    if validation.get("requestDigest").and_then(Value::as_str) != Some(expected.as_str()) { return Err("creator_validation_scope_mismatch"); }
+    crate::creator_cities::create_city(home, owner, operation_id, name, seed as u32, profile)
+}
+fn run_city_read(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_cities::read_city(home, args_valid_id(payload, "cityId")?)
+}
+fn run_city_list(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    let after = match payload.get("cursor") { None => "", Some(value) => value.as_str().ok_or("creator_city_invalid")? };
+    crate::creator_cities::list_cities(home, after, args_u64(payload, "limit")?)
+}
+fn run_city_preview(home: &Path, _owner: &str, instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    let city_id = args_valid_id(payload, "cityId")?;
+    let revision = args_u64(payload, "baseRevision")?;
+    let name = args_str(payload, "name")?;
+    let seed = args_u64(payload, "seed")?;
+    if seed > u32::MAX as u64 { return Err("creator_city_invalid"); }
+    let profile = payload.get("profile").filter(|value| value.is_object()).ok_or("creator_city_invalid")?;
+    let validation = payload.get("validation").and_then(Value::as_object).ok_or("creator_validation_required")?;
+    if validation.len() != 3 || validation.get("schemaVersion").and_then(Value::as_u64) != Some(1)
+        || validation.get("ok").and_then(Value::as_bool) != Some(true) { return Err("creator_preview_invalid"); }
+    let request = json!({"cityId":city_id,"baseRevision":revision,"name":name,"seed":seed,"profile":profile});
+    let expected = digest(&canonical_json(&request).map_err(|_| "creator_city_invalid")?);
+    if validation.get("requestDigest").and_then(Value::as_str) != Some(expected.as_str()) { return Err("creator_validation_scope_mismatch"); }
+    crate::creator_cities::preview_city(home, instance, city_id, revision, name, seed as u32, profile)
+}
+fn run_city_commit(home: &Path, owner: &str, instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_cities::commit_city(home, owner, instance, args_valid_id(payload, "cityId")?, args_valid_id(payload, "previewId")?,
+        args_u64(payload, "expectedRevision")?, args_valid_id(payload, "operationId")?)
+}
+fn run_city_layout_store(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_city_patch::store_scoped_city_layout(home, payload.get("snapshot").ok_or("creator_request_invalid")?)
+}
+fn run_city_diagnostic_record(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    let code = match payload.get("code") { None => None, Some(v) => Some(v.as_str().ok_or("creator_diagnostic_invalid")?) };
+    let elapsed = match payload.get("elapsedMs") { None => None, Some(v) => Some(v.as_u64().ok_or("creator_diagnostic_invalid")?) };
+    crate::creator_cities::record_diagnostic(home, args_valid_id(payload, "cityId")?, args_u64(payload, "revision")?, args_valid_id(payload, "correlationId")?, args_str(payload, "event")?, code, elapsed)?;
+    Ok(json!({"recorded":true}))
+}
+fn run_city_diagnostic_list(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_cities::read_diagnostics(home, args_valid_id(payload, "cityId")?, args_u64(payload, "limit")?)
+}
+
 static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.capabilities.list", &[], &["category", "schemaVersion"], run_capabilities_list),
+    creator_row!("creator.city.create", &["name", "seed", "profile", "operationId", "validation"], &[], run_city_create),
+    creator_row!("creator.city.diagnostic.list", &["cityId", "limit"], &[], run_city_diagnostic_list),
+    creator_row!("creator.city.diagnostic.record", &["cityId", "revision", "correlationId", "event"], &["code", "elapsedMs"], run_city_diagnostic_record),
+    creator_row!("creator.city.edit.commit", &["cityId", "previewId", "expectedRevision", "operationId"], &[], run_city_commit),
+    creator_row!("creator.city.edit.preview", &["cityId", "baseRevision", "name", "seed", "profile", "validation"], &[], run_city_preview),
+    creator_row!("creator.city.layout.store", &["snapshot"], &[], run_city_layout_store),
+    creator_row!("creator.city.list", &["limit"], &["cursor"], run_city_list),
+    creator_row!("creator.city.read", &["cityId"], &[], run_city_read),
     creator_row!("creator.game.commit", &["projectId", "previewId", "expectedRevision", "operationId"], &[], run_commit),
     creator_row!("creator.game.preview", &["projectId", "baseRevision", "game"], &["validation"], run_game_preview),
     creator_row!("creator.layout.list", &["limit"], &[], run_layout_list),
@@ -1126,7 +1187,7 @@ pub fn preview_replace_game_validated(home: &Path, actor: &str, project_id: &str
         "validation":"sdk",
         "diff":{"path":"game","beforeDigest":digest(&raw),"afterDigest":digest(&game_json)},
         "changedObjects":[{"id":game_id,"kind":"game","fields":["game"],"beforeDigest":digest(&raw),"afterDigest":digest(&game_json)}],
-        "diagnostics":[]}))
+        "diagnostics":validation.and_then(|value| value.get("diagnostics")).cloned().unwrap_or(json!([]))}))
 }
 
 /// 测试便捷入口：等价于 Studio 已附 sdk-ok 信封的 preview（P2 后产线不存在无信封路径）。

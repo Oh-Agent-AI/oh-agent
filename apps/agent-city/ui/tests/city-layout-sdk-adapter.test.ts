@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { listAnchors } from "@agent-vitals/city-sdk";
+import { listAnchors, validateCityLayoutScope } from "@agent-vitals/city-sdk";
 import { createCityLayoutSdkView, createCreatorLayoutSnapshot, createSdkViewForCityLayout, selectCheckpointRaceCourse } from "../src/engine/sdk/cityLayoutAdapter.ts";
 import { layoutCityForWorld } from "../src/engine/cityLayout.ts";
 import { applyCitySkinToWorldProfile, ARID_DUNES_CITY_WORLD_V1, BUILTIN_CITY_SKINS_V1, MIAMI_CITY_WORLD_V1 } from "../src/engine/cityWorldProfile.ts";
+import { buildCityModel } from "../src/cityModel.ts";
 
 const view = () => createCityLayoutSdkView({
   layoutId: "fixture-city-v1", worldRevision: "world-rev-1",
@@ -38,6 +39,9 @@ test("exports a bounded creator layout snapshot without serializing trusted geom
   assert.deepEqual(snapshot.layout.anchors.map(anchor => anchor.id), ["road-spawn:n1", "road-spawn:n2", "road-checkpoint:e1"]);
   assert.equal(snapshot.layout.links?.length, 2);
   assert.equal(Object.hasOwn(snapshot, "geometry"), false);
+  const scoped = { ...snapshot, schemaVersion: 2, cityId: "city-desert", cityRevision: 1 };
+  assert.equal(validateCityLayoutScope(scoped, { cityId: "city-desert", revision: 1, seed: snapshot.seed }).ok, true);
+  assert.equal(validateCityLayoutScope(scoped, { cityId: "city-miami", revision: 1, seed: snapshot.seed }).ok, false);
   assert.throws(() => createCreatorLayoutSnapshot(adapted, 1), /city-sdk-creator-anchor-budget-invalid/);
 });
 
@@ -96,4 +100,14 @@ test("keeps SDK courses playable across geography and skin combinations", () => 
     assert.ok(selectCheckpointRaceCourse(adapted), `${base.id} with ${skin.id} exposes a connected checkpoint route`);
     assert.equal(layout.worldProfileKey?.includes(`:${world.visuals.themeId}:`), true);
   }
+});
+
+test("independent empty desert generates road anchors without personal session data", () => {
+  const model = buildCityModel({ harnessNames: {}, rows: [], findings: [], windowStartMs: 0, windowEndMs: 1,
+    windowLabel: "独立空城", totalSessions: 0, truncated: false, generatedAt: 0 });
+  const layout = layoutCityForWorld(model, null, 657066710, ARID_DUNES_CITY_WORLD_V1, "off");
+  const snapshot = createCreatorLayoutSnapshot(createSdkViewForCityLayout(layout));
+  assert.equal(model.buildings.length, 0);
+  assert.ok(snapshot.layout.anchors.some(anchor => anchor.kind === "spawn"));
+  assert.ok(snapshot.layout.anchors.some(anchor => anchor.kind === "zone"));
 });

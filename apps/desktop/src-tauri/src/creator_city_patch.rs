@@ -3,7 +3,7 @@
 //! access. Geometry and gameplay semantics are enforced by the City engine
 //! when the patch is applied (AGENTS.md plugin-face policy); this module only
 //! gates what enters the authority store.
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::Path;
@@ -80,6 +80,38 @@ pub fn publish_city_layout_snapshot(home: &Path, snapshot: &Value) -> Result<Val
         VALUES(?1,?2,?3,?4,?5) ON CONFLICT(world_revision) DO UPDATE SET updated_at_ms=excluded.updated_at_ms",
         params![world_revision,layout_id,raw,snapshot_digest,now_ms()]).map_err(|_| "creator_store_unavailable")?;
     Ok(json!({"layoutId":layout_id,"worldRevision":world_revision,"anchorCount":snapshot["layout"]["anchors"].as_array().map_or(0, Vec::len)}))
+}
+
+/// Trusted Studio captures the snapshot from its live renderer and validates V2
+/// semantics. The host checks structure, identity, bounds and transactional scope.
+pub(crate) fn store_scoped_city_layout(home: &Path, snapshot: &Value) -> Result<Value, &'static str> {
+    let object = snapshot.as_object().filter(|o| o.len() == 6 && only_keys(o, &["schemaVersion", "cityId", "cityRevision", "worldRevision", "seed", "layout"]))
+        .ok_or("creator_layout_snapshot_invalid")?;
+    let city_id = object.get("cityId").and_then(Value::as_str).filter(|v| valid_id(v)).ok_or("creator_layout_snapshot_invalid")?;
+    let city_revision = object.get("cityRevision").and_then(Value::as_u64).filter(|v| *v <= i64::MAX as u64).ok_or("creator_layout_snapshot_invalid")?;
+    if object.get("schemaVersion").and_then(Value::as_u64) != Some(2) { return Err("creator_layout_snapshot_invalid"); }
+    let legacy = json!({"schemaVersion":1,"worldRevision":snapshot["worldRevision"],"seed":snapshot["seed"],"layout":snapshot["layout"]});
+    let (world_revision, layout_id) = validate_layout_snapshot(&legacy)?;
+    let raw = canonical_json(snapshot).map_err(|_| "creator_layout_snapshot_invalid")?;
+    if raw.len() > 32 * 1024 { return Err("creator_layout_snapshot_too_large"); }
+    let hash = digest(&raw);
+    let mut db = database(home)?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
+    let city: Option<(u64, String)> = tx.query_row("SELECT revision,document_json FROM creator_cities WHERE city_id=?1", [city_id], |row| Ok((row.get(0)?,row.get(1)?)))
+        .optional().map_err(|_| "creator_store_unavailable")?;
+    let (current_revision, document) = city.ok_or("creator_city_not_found")?;
+    if current_revision != city_revision { return Err("revision_conflict"); }
+    let document: Value = serde_json::from_str(&document).map_err(|_| "creator_store_unavailable")?;
+    if document["seed"].as_u64() != snapshot["seed"].as_u64() { return Err("creator_layout_scope_invalid"); }
+    let existing: Option<String> = tx.query_row("SELECT snapshot_digest FROM creator_city_layouts_v2 WHERE city_id=?1 AND city_revision=?2 AND world_revision=?3",
+        params![city_id,city_revision,world_revision], |row| row.get(0)).optional().map_err(|_| "creator_store_unavailable")?;
+    if existing.as_ref().is_some_and(|previous| previous != &hash) { return Err("creator_layout_revision_conflict"); }
+    if existing.is_none() {
+        tx.execute("INSERT INTO creator_city_layouts_v2(city_id,city_revision,world_revision,layout_id,snapshot_json,snapshot_digest,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            params![city_id,city_revision,world_revision,layout_id,raw,hash,now_ms()]).map_err(|_| "creator_store_unavailable")?;
+    }
+    tx.commit().map_err(|_| "creator_store_unavailable")?;
+    Ok(json!({"cityId":city_id,"cityRevision":city_revision,"worldRevision":world_revision,"layoutId":layout_id,"snapshotDigest":hash}))
 }
 
 pub fn list_city_layout_snapshots(home: &Path, limit: u64) -> Result<Value, &'static str> {

@@ -1559,13 +1559,14 @@ mod plugin_request_tests {
 mod tests {
     use super::*;
     #[test]
-    fn creator_studio_is_a_registered_first_party_app_without_data_projection_grants() {
+    fn creator_studio_has_the_same_scoped_city_data_grants() {
         let studio = definitions().iter().find(|plugin| plugin.id == "creator-studio").expect("Creator Studio plugin");
         assert_eq!(studio.entry, "plugins/CreatorStudio.plugin/ui/index.html");
-        assert!(studio.data_projections.is_empty());
         // 视口复用 City 的同一批有界数据集授权（官方内置插件、描述符声明、宿主逐请求校验），
-        // 业务投影授权保持为空。数据授权必须与 city 一致，两边才渲染同一座城市。
+        // 只允许共享的 harnesses 列表，不能恢复已退役的 City 业务投影。
         let city = definitions().iter().find(|plugin| plugin.id == "city").expect("city plugin");
+        assert_eq!(studio.data_projections, vec!["harnesses:v1"]);
+        assert_eq!(studio.data_projections, city.data_projections);
         assert_eq!(studio.typed_data_grants.keys().collect::<Vec<_>>(), city.typed_data_grants.keys().collect::<Vec<_>>());
         for (dataset, grant) in &studio.typed_data_grants {
             assert!(grant.is_valid(dataset), "Studio typed-data grant must be valid for {dataset}");

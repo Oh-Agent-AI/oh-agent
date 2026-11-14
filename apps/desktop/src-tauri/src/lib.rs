@@ -14,6 +14,7 @@ mod plugin_host;
 mod plugin_projections;
 mod plugin_state;
 mod creator_projects;
+mod creator_cities;
 mod creator_assets;
 mod creator_city_patch;
 mod creator_playtest;

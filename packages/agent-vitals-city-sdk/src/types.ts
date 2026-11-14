@@ -36,6 +36,15 @@ export interface CityLayoutSnapshotV1 {
   seed: number;
   layout: CityLayoutV1;
 }
+/** Multi-City snapshot: world revisions and anchors are scoped to one City revision. */
+export interface CityLayoutSnapshotV2 {
+  schemaVersion: 2;
+  cityId: string;
+  cityRevision: number;
+  worldRevision: string;
+  seed: number;
+  layout: CityLayoutV1;
+}
 export type CityGeographyGeneratorV1 = "coastal-islands-v1" | "arid-dunes-v1";
 export interface CoastalWorldParametersV1 {
   profile: "miami-coastal";
@@ -72,6 +81,15 @@ export type CityWorldProfileV1 = CityWorldProfileBaseV1 & (
   | { biome: "tropical"; geography: { generator: "coastal-islands-v1"; parameters: { coastal: CoastalWorldParametersV1 } }; visuals: { themeId: "miami" | "desert" } }
   | { biome: "arid"; geography: { generator: "arid-dunes-v1"; parameters: { dunes: AridDunesWorldParametersV1 } }; visuals: { themeId: "miami" | "desert" } }
 );
+/** Persisted identity of an independently authored City, not a plugin instance or a world profile ID. */
+export interface CityInstanceV1 {
+  schemaVersion: 1;
+  cityId: string;
+  revision: number;
+  name: string;
+  seed: number;
+  profile: CityWorldProfileV1;
+}
 export interface CitySkinPackV1 {
   schemaVersion: 1;
   id: string;

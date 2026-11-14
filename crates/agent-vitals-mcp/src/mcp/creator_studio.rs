@@ -24,6 +24,17 @@ fn revision_prop() -> Value { json!({"type":"integer","minimum":0}) }
 
 pub fn specs() -> Vec<ToolSpec> {
     vec![
+        spec("creator_city_create", "Create an independent saved City draft without changing or opening the active City. The draft is not yet renderable or connected to Creator projects. Requires active Studio and --allow-local-writes.", json!({"name":{"type":"string","minLength":1,"maxLength":120},"seed":{"type":"integer","minimum":0,"maximum":u32::MAX},"profile":{"type":"object"},"operationId":operation_id_prop()}), &["name","seed","profile","operationId"]),
+        spec("creator_city_edit_preview", "Validate a replacement City draft recipe without writing or rendering it. Returns a short-lived instance- and revision-bound preview.", json!({"cityId":project_id_prop(),"baseRevision":revision_prop(),"name":{"type":"string","minLength":1,"maxLength":120},"seed":{"type":"integer","minimum":0,"maximum":u32::MAX},"profile":{"type":"object"}}), &["cityId","baseRevision","name","seed","profile"]),
+        spec("creator_city_edit_commit", "Save a previously validated City draft preview. Does not load or render the City. Requires --allow-local-writes.", json!({"cityId":project_id_prop(),"previewId":project_id_prop(),"expectedRevision":revision_prop(),"operationId":operation_id_prop()}), &["cityId","previewId","expectedRevision","operationId"]),
+        spec("creator_city_list", "List independent saved City drafts; legacy City is not migrated or included.", json!({"limit":{"type":"integer","minimum":1,"maximum":50},"cursor":{"type":"string","minLength":1,"maxLength":128}}), &["limit"]),
+        spec("creator_city_read", "Read one independent saved City draft by City ID. This does not load the City runtime.", json!({"cityId":{"type":"string","minLength":1,"maxLength":128}}), &["cityId"]),
+        spec("creator_city_diagnostics", "Read bounded, local, redacted City preview diagnostics retained across restarts; no raw errors, paths or session content.", json!({"cityId":project_id_prop(),"limit":{"type":"integer","minimum":1,"maximum":100}}), &["cityId","limit"]),
+        spec("creator_city_view", "Request a read-only Studio viewport for a saved City draft; returns loading, not proof of a rendered frame. Does not switch the active City or use legacy City patches.", json!({"cityId":project_id_prop(),"revision":revision_prop()}), &["cityId","revision"]),
+        spec("creator_city_view_status", "Report loading, ready or failed for the requested City draft viewport and revision.", json!({"cityId":project_id_prop(),"revision":revision_prop()}), &["cityId","revision"]),
+        spec("creator_city_capture", "Capture a bounded JPEG of a ready City draft viewport, bound to the current saved City revision. The image is exposed to the calling Agent.", json!({"cityId":project_id_prop(),"revision":revision_prop()}), &["cityId","revision"]),
+        spec("creator_city_layout_read", "Read the currently rendered draft City's bounded road-anchor snapshot, scoped to its City ID, revision and seed. This does not persist it or bind a game project.", json!({"cityId":project_id_prop(),"revision":revision_prop()}), &["cityId","revision"]),
+        spec("creator_city_layout_save", "Save the current rendered City's scoped road-anchor snapshot for later use. Caller cannot supply a layout; requires --allow-local-writes. This does not bind a game project.", json!({"cityId":project_id_prop(),"revision":revision_prop()}), &["cityId","revision"]),
         spec("creator_layout_list", "List bounded, host-captured City layout snapshots available for new Creator projects. Layouts contain stable trusted anchor IDs and a world revision, not geometry or user analytics.", json!({"limit":{"type":"integer","minimum":1,"maximum":16}}), &[]),
         spec("creator_project_list", "List local Creator Studio projects. Requires the official Creator Studio plugin to be open.", json!({"limit":{"type":"integer","minimum":1,"maximum":100}}), &["limit"]),
         spec("creator_project_read", "Read a bounded UTF-8 byte chunk of a local Creator Studio project document. Reassemble chunks by nextOffset until complete=true; verify the shared documentDigest.", json!({"projectId":project_id_prop(),"offset":{"type":"integer","minimum":0},"maxBytes":{"type":"integer","minimum":1,"maximum":32768}}), &["projectId"]),
@@ -51,6 +62,9 @@ fn call_error(code: &str) -> ToolError {
         "plugin_call_capacity" => ToolError::new("busy", "Creator Studio local request capacity was reached."),
         "plugin_call_too_large" => ToolError::new("invalid_argument", "Creator request exceeded the local IPC payload limit."),
         "creator_project_not_found" => ToolError::new("not_found", "Creator project was not found."),
+        "creator_city_not_found" => ToolError::new("not_found", "City draft was not found."),
+        "creator_city_invalid" | "operation_id_conflict" => ToolError::new("invalid_argument", "City request is invalid or operationId was reused for different input."),
+        "creator_preview_budget_exceeded" => ToolError::new("busy", "Too many active previews; retry after they expire."),
         "creator_playtest_not_found" => ToolError::new("not_found", "Playtest run was not found; list history to find valid runIds."),
         "creator_playtest_active" => ToolError::new("busy", "Another playtest run is active; cancel it via creator_playtest_cancel or wait for it to finish."),
         "creator_playtest_instance_mismatch" => ToolError::new("permission_denied", "The playtest run belongs to a different Studio session."),
@@ -60,6 +74,8 @@ fn call_error(code: &str) -> ToolError {
         "creator_release_not_found" => ToolError::new("not_found", "The City release was not found; publish the project revision again."),
         "creator_capture_unavailable" => ToolError::new("data_unavailable", "Viewport capture is unavailable: open Creator Studio with a loaded 3D viewport and retry, or use creator_scene_describe for a readable summary."),
         "creator_capture_budget_exceeded" => ToolError::new("invalid_argument", "The captured frame exceeded the bounded image budget."),
+        "creator_layout_not_ready" => ToolError::new("data_unavailable", "City road layout is not ready."),
+        "creator_layout_scope_invalid" => ToolError::new("data_unavailable", "City road layout did not match the current City revision."),
         "creator_object_not_found" => ToolError::new("not_found", "The objectId is not a scene object, mount or pinned layout anchor of this project."),
         "creator_capability_unknown" => ToolError::new("invalid_argument", "Unknown capability category; call without `category` to list supported categories."),
         "creator_template_not_found" => ToolError::new("invalid_argument", "Unknown project template; list valid ids via creator_capabilities_list (category `project`, field `templates`)."),
@@ -169,6 +185,43 @@ fn optional_nonempty_string<'a>(args: &'a Value, key: &str) -> Result<Option<&'a
 
 pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool) -> Result<Value, ToolError> {
     match name {
+        "creator_city_create" => {
+            if !allow_local_writes { return Err(ToolError::new("permission_denied", "City creation requires `data-mcp serve --allow-local-writes`.")); }
+            let name = required_string(args, "name")?;
+            let seed = args.get("seed").and_then(Value::as_u64).filter(|seed| *seed <= u32::MAX as u64).ok_or_else(|| ToolError::new("invalid_argument", "`seed` must be a 32-bit unsigned integer"))?;
+            let profile = args.get("profile").filter(|v| v.is_object() && v.to_string().len() <= 16 * 1024).ok_or_else(|| ToolError::new("invalid_argument", "`profile` must be a bounded object"))?;
+            call(data_home, "creator.city.create", &json!({"name":name,"seed":seed,"profile":profile,"operationId":required_string(args,"operationId")?}), 15_000)
+        }
+        "creator_city_edit_preview" => {
+            let seed = args.get("seed").and_then(Value::as_u64).filter(|seed| *seed <= u32::MAX as u64).ok_or_else(|| ToolError::new("invalid_argument", "`seed` must be a 32-bit unsigned integer"))?;
+            let profile = args.get("profile").filter(|v| v.is_object() && v.to_string().len() <= 16 * 1024).ok_or_else(|| ToolError::new("invalid_argument", "`profile` must be a bounded object"))?;
+            let revision = args.get("baseRevision").and_then(Value::as_u64).ok_or_else(|| ToolError::new("invalid_argument", "`baseRevision` must be a non-negative integer"))?;
+            call(data_home, "creator.city.edit.preview", &json!({"cityId":required_string(args,"cityId")?,"baseRevision":revision,"name":required_string(args,"name")?,"seed":seed,"profile":profile}), 15_000)
+        }
+        "creator_city_edit_commit" => {
+            if !allow_local_writes { return Err(ToolError::new("permission_denied", "City edits require `data-mcp serve --allow-local-writes`.")); }
+            let revision = args.get("expectedRevision").and_then(Value::as_u64).ok_or_else(|| ToolError::new("invalid_argument", "`expectedRevision` must be a non-negative integer"))?;
+            call(data_home, "creator.city.edit.commit", &json!({"cityId":required_string(args,"cityId")?,"previewId":required_string(args,"previewId")?,"expectedRevision":revision,"operationId":required_string(args,"operationId")?}), 15_000)
+        }
+        "creator_city_list" => {
+            let limit = args.get("limit").and_then(Value::as_u64).filter(|n| (1..=50).contains(n)).ok_or_else(|| ToolError::new("invalid_argument", "`limit` must be in 1..=50"))?;
+            let mut payload = json!({"limit":limit});
+            if let Some(cursor) = optional_nonempty_string(args, "cursor")? { payload["cursor"] = json!(cursor); }
+            call(data_home, "creator.city.list", &payload, 15_000)
+        }
+        "creator_city_read" => call(data_home, "creator.city.read", &json!({"cityId":required_string(args,"cityId")?}), 15_000),
+        "creator_city_diagnostics" => {
+            let limit = args.get("limit").and_then(Value::as_u64).filter(|value| (1..=100).contains(value)).ok_or_else(|| ToolError::new("invalid_argument", "`limit` must be in 1..=100"))?;
+            call(data_home, "creator.city.diagnostic.list", &json!({"cityId":required_string(args,"cityId")?,"limit":limit}), 15_000)
+        }
+        "creator_city_view" | "creator_city_view_status" | "creator_city_capture" | "creator_city_layout_read" | "creator_city_layout_save" => {
+            if name == "creator_city_layout_save" && !allow_local_writes { return Err(ToolError::new("permission_denied", "Saving a City layout requires `data-mcp serve --allow-local-writes`.")); }
+            let revision = args.get("revision").and_then(Value::as_u64).ok_or_else(|| ToolError::new("invalid_argument", "`revision` must be a non-negative integer"))?;
+            let method = match name { "creator_city_view" => "creator.city.view", "creator_city_view_status" => "creator.city.view.status", "creator_city_layout_read" => "creator.city.layout.read", "creator_city_layout_save" => "creator.city.layout.save", _ => "creator.city.capture" };
+            let result = call(data_home, method, &json!({"cityId":required_string(args,"cityId")?,"revision":revision}), 20_000)?;
+            if name == "creator_city_capture" { return capture_result_envelope(result.get("data").ok_or_else(|| ToolError::new("data_unavailable", "Creator Studio returned no capture."))?); }
+            Ok(result)
+        }
         "creator_layout_list" => {
             let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(8);
             if !(1..=16).contains(&limit) { return Err(ToolError::new("invalid_argument", "`limit` must be in 1..=16")); }

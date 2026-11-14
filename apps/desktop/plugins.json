@@ -463,8 +463,23 @@
       },
       "maxToolbarItems": 4,
       "performanceMetrics": [],
-      "dataProjections": [],
+      "dataProjections": [
+        "harnesses:v1"
+      ],
       "localCalls": [
+        "creator.city.create",
+        "creator.city.diagnostic.record",
+        "creator.city.diagnostic.list",
+        "creator.city.edit.commit",
+        "creator.city.edit.preview",
+        "creator.city.list",
+        "creator.city.read",
+        "creator.city.view",
+        "creator.city.view.status",
+        "creator.city.capture",
+        "creator.city.layout.read",
+        "creator.city.layout.store",
+        "creator.city.layout.save",
         "creator.layout.list",
         "creator.project.list",
         "creator.project.read",
@@ -493,6 +508,10 @@
       ],
       "source": "apps/creator-studio/ui",
       "localCallBudgets": {
+        "creator.city.capture": {
+          "requestBytes": 8192,
+          "responseBytes": 524288
+        },
         "creator.game.preview": {
           "requestBytes": 393216,
           "responseBytes": 65536

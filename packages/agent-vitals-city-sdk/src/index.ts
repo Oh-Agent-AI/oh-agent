@@ -1,5 +1,5 @@
 export * from "./types";
-export { listAnchors, listAssets, listSceneObjects, validateAssetRefs, validateCityLayout, validateCityLayoutSnapshot, validateCityProjectAssetCatalog, validateCitySkinPack, validateCityWorldProfile, validateMount, validateSceneDraft } from "./validate";
+export { listAnchors, listAssets, listSceneObjects, validateAssetRefs, validateCityInstance, validateCityLayout, validateCityLayoutScope, validateCityLayoutSnapshot, validateCityLayoutSnapshotV2, validateCityProjectAssetCatalog, validateCitySkinPack, validateCityWorldProfile, validateMount, validateSceneDraft } from "./validate";
 export { compileRules, createRun, runHeadless } from "./runtime";
 export type { CompiledRulesV1, RuleRunV1 } from "./runtime";
 export { parseMiniGamePackJson, validateMiniGamePack } from "./content";
