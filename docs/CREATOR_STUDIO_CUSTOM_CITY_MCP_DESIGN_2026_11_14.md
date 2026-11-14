@@ -41,6 +41,8 @@
 | `creator_city_validate` | `cityId`, `revision`, `profile: static | runtime` → 每项 `passed/failed/unchecked`、诊断及证据身份；runtime 模式需要对应场景就绪 |
 | `creator_city_capture` | `cityId`, `revision` → 有界画面和相机、城市与 revision；画面未准备好返回错误，不能把旧帧当新城证据 |
 
+**2026-11-14 实现状态**：已实现 `creator_city_list/create/read/edit_preview/edit_commit`（当前 edit_preview 只做 name/seed/profile 的配置替换，**不接受 operations[]**）、`creator_city_view/view_status/capture`、`creator_city_layout_read/layout_save` 与诊断读取。**未实现** `creator_city_open`、`creator_city_operation_status`、`creator_city_validate`、按 operations 的场景/样式编辑、项目绑定与发布、旧迈阿密迁移、城市切换与全链路隔离；只读视口尚未做桌面真机验收。表内其余行为是目标契约，不是现有能力。
+
 能力发现扩充现有 `creator_capabilities_list`，列出受支持的生成器、主题、风格字段与数值范围、对象类型、资产类别及预算。与既有项目接口演进兼容：新增按城市筛选的 layout 查询，新建项目必须显式提供 `cityId + layoutId + worldRevision`；场景、项目、发布和试玩在服务端逐层核对城市身份。保留旧接口供迁移期旧项目使用，不能将旧调用隐式指向沙丘。具体兼容窗口及版本号在实现 PR 中确定。
 
 `world.set` 修改地形或 seed 时生成新布局身份并标记旧布局绑定为待修复，不能自动把旧锚点视为有效。风格变更按能力区分纯视觉与影响几何的变更；后者同样使受影响布局/挂载失效。已发布 release 保持不可变，运行前仍需确认其城市及布局匹配。

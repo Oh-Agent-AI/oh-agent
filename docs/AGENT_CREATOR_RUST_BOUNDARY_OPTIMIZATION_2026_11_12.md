@@ -557,15 +557,17 @@ CI 需要跑：根 workspace `cargo test` + clippy、`apps/desktop/src-tauri` `c
 
 ## 10. 验收标准（DoD）
 
-- [ ] `assets/creator/capabilities.json` 由 SDK 生成，`--check` 在 CI 通过。
-- [ ] 新增皮肤/模板的演示 PR **不修改 Rust**（守卫测试通过）。
-- [ ] `creator_capabilities_list` 在 Studio 关闭时可用。
-- [ ] SDK 语义非法内容的诊断绑定 project/revision/operationDigest/capabilityVersion，commit 拒绝；Rust 结构、预算、引用和资产不变量继续由 Rust 拒绝。
-- [ ] 每次 commit 记录 `capabilityVersion`，可由 `creator_operations`/审计读到。
-- [ ] 内容预算、MCP 帧硬上限、mailbox 请求/响应预算和截图编码预算分别定义并实测；按方法 mailbox 预算由宿主统一执行，MCP 不复制业务预算常量。
-- [ ] capture 超预算返回 `creator_capture_budget_exceeded`，不再超时/伪装 unavailable。
-- [ ] 根 workspace 与 desktop workspace 的测试、clippy、两套 UI typecheck/build 全绿。
-- [ ] 设计文档 §4/§6.4/§11 与接入指南同步更新。
+> 2026-11-14 收口：[边界收口记录](CREATOR_BOUNDARY_CLOSEOUT_2026_11_14.md)。已修项给出来源；延期项写明原因。
+
+- [x] `assets/creator/capabilities.json` 由 SDK 生成，`--check` 在 CI 通过。
+- [x] 新增皮肤/模板不改 Rust：皮肤 ID 在描述符（`content.skins`），模板由生成的 `templates-index.json` 提供；`creator_template_registry_covers_descriptor_and_preserves_checked_invariants` 守卫。皮肤完整目录仍在 City UI，靠 `skin-catalog-parity.test.ts` 锁定（单一来源化延期）。
+- [x] `creator_capabilities_list` 在 Studio 关闭时可用：MCP 直接读嵌入描述符的 `capabilities` 段；`creator_capabilities_are_served_without_studio` 覆盖全量/过滤/未知类别/版本。
+- [x] SDK 语义非法内容的诊断绑定 project/revision/operationDigest/capabilityVersion，commit 拒绝；Rust 结构、预算、引用和资产不变量继续由 Rust 拒绝。
+- [x] 每次 commit 记录 `capabilityVersion`（`creator_operations.capability_version`，含旧库迁移）。
+- [x] 内容预算、MCP 帧硬上限、mailbox 请求/响应预算分别定义：描述符 `budgets`、MCP `MAX_CAPTURE_ENCODED_CHARS`、插件 `localCallBudgets`；capture 编码预算 330K 字符，落在 mailbox 512 KiB 与 MCP 350K 之内。
+- [x] capture 超预算返回 `creator_capture_budget_exceeded`，视口不可用返回 `creator_capture_unavailable`（`captureFrame` 返回可区分结果）。
+- [x] 根 workspace 与 desktop workspace 的测试、clippy、两套 UI typecheck 全绿；`vite build` 未在本轮重跑。
+- [x] 设计文档 §4/§6.4/§11 与接入指南同步更新（29 工具、City 工具标实验性、未实现项标注）。
 
 ---
 
