@@ -237,15 +237,39 @@ fn structural_mount_check(mount: &Value) -> Result<String, &'static str> {
 
 #[cfg(test)]
 fn create_project(home: &Path, actor: &str, template: &str, operation_id: &str) -> Result<Value, &'static str> {
-    create_project_internal(home, actor, template, operation_id, None)
+    create_project_internal(home, actor, template, operation_id, None, None)
 }
 
 pub fn create_project_from_city_layout(home: &Path, actor: &str, template: &str, operation_id: &str, world_revision: &str) -> Result<Value, &'static str> {
     let snapshot = read_city_layout_snapshot(home, world_revision)?;
-    create_project_internal(home, actor, template, operation_id, Some(snapshot))
+    create_project_internal(home, actor, template, operation_id, Some(snapshot), None)
 }
 
-fn create_project_internal(home: &Path, actor: &str, template: &str, operation_id: &str, city_layout: Option<Value>) -> Result<Value, &'static str> {
+/// 绑定独立 City 草稿的布局：按 cityId + worldRevision 取最新 cityRevision 的 v2
+/// 布局，归一化为 legacy 形状存进项目，同时把 cityId/cityRevision/layoutId 写进
+/// 项目文档，发布与试玩据此核对城市身份。
+pub fn create_project_from_city_draft(home: &Path, actor: &str, template: &str, operation_id: &str, world_revision: &str, city_id: &str) -> Result<Value, &'static str> {
+    if !valid_id(city_id) || world_revision.is_empty() || world_revision.len() > 256 { return Err("creator_request_invalid"); }
+    let db = database(home)?;
+    let city_revision: Option<u64> = db.query_row("SELECT revision FROM creator_cities WHERE city_id=?1", [city_id], |row| row.get(0))
+        .optional().map_err(|_| "creator_store_unavailable")?;
+    if city_revision.is_none() { return Err("creator_city_not_found"); }
+    let scoped: Option<(u64, String, String)> = db.query_row(
+        "SELECT city_revision,layout_id,snapshot_json FROM creator_city_layouts_v2 WHERE city_id=?1 AND world_revision=?2 ORDER BY city_revision DESC LIMIT 1",
+        params![city_id, world_revision], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .optional().map_err(|_| "creator_store_unavailable")?;
+    let (layout_city_revision, layout_id, raw) = scoped.ok_or("creator_layout_not_found")?;
+    let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
+    if snapshot["schemaVersion"].as_u64() != Some(2) || snapshot["cityId"].as_str() != Some(city_id)
+        || snapshot["worldRevision"].as_str() != Some(world_revision) {
+        return Err("creator_layout_scope_mismatch");
+    }
+    let normalized = json!({"schemaVersion":1,"worldRevision":world_revision,"seed":snapshot["seed"],"layout":snapshot["layout"]});
+    let binding = json!({"cityId":city_id,"cityRevision":layout_city_revision,"layoutId":layout_id});
+    create_project_internal(home, actor, template, operation_id, Some(normalized), Some(binding))
+}
+
+fn create_project_internal(home: &Path, actor: &str, template: &str, operation_id: &str, city_layout: Option<Value>, city_binding: Option<Value>) -> Result<Value, &'static str> {
     if actor.is_empty() || actor.len() > 128 || !valid_id(operation_id) { return Err("creator_request_invalid"); }
     let game = game_template(template)?;
     let game_json = structural_game_check(&game)?;
@@ -254,19 +278,36 @@ fn create_project_internal(home: &Path, actor: &str, template: &str, operation_i
     let layout_revision = city_layout.as_ref().and_then(|snapshot| snapshot.get("worldRevision")).and_then(Value::as_str).unwrap_or("unbound").to_owned();
     let mut document_value = json!({"schemaVersion":1,"projectId":project_id,"revision":0,"title":title,
         "kind":"city-minigame-project","cityLayout":city_layout,"game":serde_json::from_str::<Value>(&game_json).map_err(|_| "creator_game_invalid")?,"scene":{"schemaVersion":1,"objects":[]},"assets":{"schemaVersion":1,"entries":[]},"assetRefs":[],"mounts":[]});
+    if let Some(binding) = city_binding.clone() {
+        if let Some(document) = document_value.as_object_mut() {
+            for key in ["cityId", "cityRevision", "layoutId"] {
+                document.insert(key.to_owned(), binding.get(key).cloned().unwrap_or(Value::Null));
+            }
+        }
+    }
     // 旧补丁导入（PRD §4 / 架构 §6）：项目创建时读取 City 已发布的同种子补丁。
     // 发布按摘要幂等、创建按 operationId 幂等，导入重试不会产生重复项目或重复补丁。
-    if let Some(seed) = document_value.get("cityLayout").and_then(|layout| layout.get("seed")).and_then(Value::as_u64) {
-        if let Some((patch, patch_digest)) = latest_city_patch(home, seed)? {
-            document_value["cityPatch"] = patch;
-            document_value["cityPatchImport"] = json!({"digest":patch_digest,"importedAtMs":now_ms(),"source":"city-publish"});
+    // 旧 seed 补丁只属于 legacy 单 City 世界；独立 City 项目不能按 seed 把另一座
+    // 城的修复补丁导进来（隔离要求）。
+    if city_binding.is_none() {
+        if let Some(seed) = document_value.get("cityLayout").and_then(|layout| layout.get("seed")).and_then(Value::as_u64) {
+            if let Some((patch, patch_digest)) = latest_city_patch(home, seed)? {
+                document_value["cityPatch"] = patch;
+                document_value["cityPatchImport"] = json!({"digest":patch_digest,"importedAtMs":now_ms(),"source":"city-publish"});
+            }
         }
     }
     let document = serde_json::to_string(&document_value).map_err(|_| "creator_store_unavailable")?;
     let db = database(home)?;
     let mut db = db;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
-    let creation_hash = digest(&format!("{template}:{layout_revision}"));
+    // legacy 创建沿用旧摘要，保证升级后重试既有 operationId 仍然幂等；只有独立
+    // City 项目才把城市绑定纳入摘要。
+    let creation_hash = match &city_binding {
+        None => digest(&format!("{template}:{layout_revision}")),
+        Some(binding) => digest(&canonical_json(&json!({"template":template,"worldRevision":layout_revision,"city":binding}))
+            .map_err(|_| "creator_store_unavailable")?),
+    };
     let existing: Option<(String, String)> = tx.query_row("SELECT operation_hash,result_json FROM creator_operations WHERE project_id='new' AND actor_id=?1 AND operation_id=?2", params![actor, operation_id], |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(|_| "creator_store_unavailable")?;
     if let Some((previous_hash, result)) = existing {
         if previous_hash != creation_hash { return Err("operation_id_conflict"); }
@@ -408,8 +449,15 @@ pub fn publish_project_release(home: &Path, project_id: &str, expected_revision:
     let document: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
     let layout_snapshot = document.get("cityLayout").filter(|value| !value.is_null()).ok_or("creator_layout_not_bound")?;
     let (world_revision, layout_id) = validate_layout_snapshot(layout_snapshot)?;
-    let layout_digest: Option<String> = tx.query_row("SELECT snapshot_digest FROM creator_city_layouts WHERE world_revision=?1 AND layout_id=?2",
-        params![world_revision,layout_id], |row| row.get(0)).optional().map_err(|_| "creator_store_unavailable")?;
+    let layout_digest: Option<String> = match document.get("cityId").and_then(Value::as_str) {
+        Some(city_id) => {
+            let city_revision = document.get("cityRevision").and_then(Value::as_u64).ok_or("creator_layout_scope_mismatch")?;
+            tx.query_row("SELECT snapshot_digest FROM creator_city_layouts_v2 WHERE city_id=?1 AND city_revision=?2 AND world_revision=?3 AND layout_id=?4",
+                params![city_id,city_revision,world_revision,layout_id], |row| row.get(0)).optional().map_err(|_| "creator_store_unavailable")?
+        }
+        None => tx.query_row("SELECT snapshot_digest FROM creator_city_layouts WHERE world_revision=?1 AND layout_id=?2",
+            params![world_revision,layout_id], |row| row.get(0)).optional().map_err(|_| "creator_store_unavailable")?,
+    };
     if layout_digest.is_none() { return Err("creator_layout_not_found"); }
     let game = document.get("game").ok_or("creator_game_invalid")?;
     structural_game_check(game)?;
@@ -446,9 +494,16 @@ pub fn publish_project_release(home: &Path, project_id: &str, expected_revision:
     release_document["assets"] = json!({"schemaVersion":1,"entries":assets});
     release_document["assetRefs"] = json!(asset_refs);
     verify_scene_asset_bytes(home, project_id, &release_document, None)?;
-    let snapshot = json!({"projectId":project_id,"revision":revision,"title":document.get("title").and_then(Value::as_str).unwrap_or("City Game"),
+    let mut snapshot = json!({"projectId":project_id,"revision":revision,"title":document.get("title").and_then(Value::as_str).unwrap_or("City Game"),
         "layoutId":layout_id,"worldRevision":world_revision,"skinId":skin_id,"game":game,"mounts":mounts,
         "scene":scene,"assets":release_document["assets"],"assetRefs":release_document["assetRefs"]});
+    // 独立 City 项目：把城市身份连同不可变 release 一起冻结，运行时才能验证
+    // “这个 release 属于哪座城/哪个城市 revision”。
+    if let Some(city_id) = document.get("cityId") {
+        snapshot["cityId"] = city_id.clone();
+        snapshot["cityRevision"] = document.get("cityRevision").cloned().unwrap_or(Value::Null);
+        snapshot["cityLayoutId"] = document.get("layoutId").cloned().unwrap_or(Value::Null);
+    }
     let snapshot_json = serde_json::to_string(&snapshot).map_err(|_| "creator_release_invalid")?;
     if snapshot_json.len() > MAX_RELEASE_BYTES { return Err("creator_release_too_large"); }
     let snapshot_digest = digest(&snapshot_json);
@@ -735,7 +790,14 @@ fn run_layout_list(home: &Path, _owner: &str, _instance: &str, payload: &Value) 
     list_city_layout_snapshots(home, args_u64(payload, "limit")?)
 }
 fn run_project_create(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
-    create_project_from_city_layout(home, owner, args_str(payload, "template")?, args_str(payload, "operationId")?, args_str(payload, "worldRevision")?)
+    let template = args_str(payload, "template")?;
+    let operation_id = args_str(payload, "operationId")?;
+    let world_revision = args_str(payload, "worldRevision")?;
+    match payload.get("cityId") {
+        Some(value) => create_project_from_city_draft(home, owner, template, operation_id, world_revision,
+            value.as_str().filter(|id| valid_id(id)).ok_or("creator_request_invalid")?),
+        None => create_project_from_city_layout(home, owner, template, operation_id, world_revision),
+    }
 }
 fn run_project_list(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
     list_projects(home, args_u64(payload, "limit")?)
@@ -882,7 +944,7 @@ static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.layout.list", &["limit"], &[], run_layout_list),
     creator_row!("creator.operation.status", &["projectId", "operationId"], &[], run_operation_status),
     creator_row!("creator.project.commit", &["projectId", "previewId", "expectedRevision", "operationId"], &[], run_commit),
-    creator_row!("creator.project.create", &["template", "operationId", "worldRevision"], &[], run_project_create),
+    creator_row!("creator.project.create", &["template", "operationId", "worldRevision"], &["cityId"], run_project_create),
     creator_row!("creator.project.list", &["limit"], &[], run_project_list),
     creator_row!("creator.project.playtest.cancel", &["runId"], &[], run_playtest_cancel),
     creator_row!("creator.project.playtest.history", &["projectId", "limit"], &[], run_playtest_history),
@@ -1984,6 +2046,84 @@ mod tests {
     }
 
     // §5.6 迁移：旧库 creator_operations 无 capability_version 列，database() 打开时补列。
+    #[test]
+    fn independent_city_layout_binds_project_identity_and_rejects_scope_drift() {
+        let home = home();
+        let layout = layout_snapshot();
+        let seed = layout["seed"].as_u64().unwrap() as u32;
+        let city = crate::creator_cities::create_city(&home, "owner", "create-desert", "沙海之门", seed,
+            &json!({"schemaVersion":1,"id":"egypt-desert","version":1})).unwrap();
+        let city_id = city["cityId"].as_str().unwrap();
+        let scoped = json!({"schemaVersion":2,"cityId":city_id,"cityRevision":0,"worldRevision":"world-r1",
+            "seed":layout["seed"],"layout":layout["layout"]});
+        crate::creator_city_patch::store_scoped_city_layout(&home, &scoped).unwrap();
+
+        let created = create_project_from_city_draft(&home, "owner", "checkpoint-race", "city-project", "world-r1", city_id).unwrap();
+        let project_id = created["projectId"].as_str().unwrap();
+        let document = read_project(&home, project_id).unwrap();
+        assert_eq!(document["cityId"], city_id);
+        assert_eq!(document["cityRevision"], 0);
+        assert_eq!(document["layoutId"], layout["layout"]["id"]);
+        assert_eq!(document["cityLayout"]["worldRevision"], "world-r1");
+        // 同一 operationId 重放返回同一项目；换城市/换世界必须拒绝，不能悄悄绑到别处。
+        assert_eq!(create_project_from_city_draft(&home, "owner", "checkpoint-race", "city-project", "world-r1", city_id).unwrap(), created);
+        assert_eq!(create_project_from_city_draft(&home, "owner", "checkpoint-race", "city-project-2", "missing-world", city_id).unwrap_err(), "creator_layout_not_found");
+        assert_eq!(create_project_from_city_draft(&home, "owner", "checkpoint-race", "city-project-3", "world-r1", "city-missing").unwrap_err(), "creator_city_not_found");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn release_snapshot_carries_independent_city_identity() {
+        let home = home();
+        let layout = layout_snapshot();
+        let seed = layout["seed"].as_u64().unwrap() as u32;
+        let city = crate::creator_cities::create_city(&home, "owner", "create-release-city", "沙海之门", seed,
+            &json!({"schemaVersion":1,"id":"egypt-desert","version":1})).unwrap();
+        let city_id = city["cityId"].as_str().unwrap();
+        let scoped = json!({"schemaVersion":2,"cityId":city_id,"cityRevision":0,"worldRevision":"world-r1",
+            "seed":layout["seed"],"layout":layout["layout"]});
+        crate::creator_city_patch::store_scoped_city_layout(&home, &scoped).unwrap();
+        let created = create_project_from_city_draft(&home, LOCAL_CREATOR_OWNER, "checkpoint-race", "release-city-project", "world-r1", city_id).unwrap();
+        let project_id = created["projectId"].as_str().unwrap().to_owned();
+        let project = read_project(&home, &project_id).unwrap();
+        let game_digest = digest(&canonical_json(&project["game"]).unwrap());
+        let mount = json!({"schemaVersion":1,"mountId":"city-release-mount",
+            "layout":{"kind":"city-layout","id":layout["layout"]["id"],"version":"1","digest":"world-r1"},
+            "game":{"kind":"city-minigame","id":project["game"]["id"],"version":"1","digest":game_digest},
+            "entryAnchorId":"road-spawn:a","bindings":{"points":["road-checkpoint:ab","road-checkpoint:bc","road-checkpoint:cd"]},"parameterOverrides":{"timeLimitTicks":2400}});
+        let preview = preview_scene_operations(&home, "studio-instance", &project_id, 0, &json!([{"op":"mount.bind","mount":mount}])).unwrap();
+        commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", &project_id, preview["previewId"].as_str().unwrap(), 0, "city-release-mount").unwrap();
+        publish_project_release(&home, &project_id, 1).unwrap();
+        let db = database(&home).unwrap();
+        let raw: String = db.query_row("SELECT snapshot_json FROM creator_releases WHERE project_id=?1", [&project_id], |row| row.get(0)).unwrap();
+        let snapshot: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(snapshot["cityId"], city_id);
+        assert_eq!(snapshot["cityRevision"], 0);
+        assert_eq!(snapshot["cityLayoutId"], layout["layout"]["id"]);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn creator_store_reports_unwritable_directory_and_recovers() {
+        let home = home();
+        create_project(&home, "store-health", "checkpoint-race", "store-1").unwrap();
+        assert_eq!(crate::creator_store::health(&home)["status"], "ok");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let directory = home.join("state/creator");
+            let original = std::fs::metadata(&directory).unwrap().permissions();
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let denied = create_project(&home, "store-health", "checkpoint-race", "store-2").unwrap_err();
+            std::fs::set_permissions(&directory, original).unwrap();
+            // 只读目录在 macOS/Linux 上可能被 SQLite 报成 ReadOnly/CannotOpen/PermissionDenied，
+            // 三者都归为 unwritable；绝不能退回笼统的 creator_store_unavailable。
+            assert_eq!(denied, "creator_store_unwritable", "read-only creator dir must be diagnosed, got {denied}");
+            create_project(&home, "store-health", "checkpoint-race", "store-2").unwrap();
+        }
+        let _ = std::fs::remove_dir_all(home);
+    }
+
     #[test]
     fn operations_table_migrates_capability_version_column() {
         let home = home();

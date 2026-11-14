@@ -25,7 +25,7 @@ const PROTOCOL_VERSION: &str = "2025-06-18";
 const SERVER_NAME: &str = "Oh Agent MCP";
 
 /// `agent-vitals data-mcp serve` 的入口。永不返回（stdin EOF → exit 0）。
-pub fn serve(allow_local_writes: bool) -> ! {
+pub fn serve(allow_local_writes: bool, enable_city_tools: bool) -> ! {
     let data_home = agent_vitals_runtime::home::data_home();
     // 生命周期横幅，不是问题——保留原样直出 stderr（外部 MCP harness 常年就是
     // 这么认这个进程活没活的），同时落一条 info 到文件（本机侧的进程存活
@@ -38,7 +38,7 @@ pub fn serve(allow_local_writes: bool) -> ! {
     agent_vitals_runtime::logging::log_info("data-mcp", &banner);
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    run_loop_with_permissions(stdin.lock(), stdout.lock(), &data_home, allow_local_writes);
+    run_loop_with_permissions(stdin.lock(), stdout.lock(), &data_home, allow_local_writes, enable_city_tools);
     eprintln!("data-mcp: stdin closed, exiting");
     agent_vitals_runtime::logging::log_info("data-mcp", "stdin closed, exiting");
     std::process::exit(0);
@@ -49,7 +49,7 @@ pub fn serve(allow_local_writes: bool) -> ! {
 /// 真 stdio + `exit(0)`）。
 #[cfg(test)]
 pub(crate) fn run_loop(reader: impl BufRead, mut out: impl Write, data_home: &std::path::Path) {
-    run_loop_with_permissions(reader, &mut out, data_home, false);
+    run_loop_with_permissions(reader, &mut out, data_home, false, false);
 }
 
 pub(crate) fn run_loop_with_permissions(
@@ -57,6 +57,7 @@ pub(crate) fn run_loop_with_permissions(
     mut out: impl Write,
     data_home: &std::path::Path,
     allow_local_writes: bool,
+    enable_city_tools: bool,
 ) {
     let mut initialized = false;
 
@@ -103,8 +104,8 @@ pub(crate) fn run_loop_with_permissions(
             rpc_error(id, -32002, "received request before `initialize`")
         } else {
             match method {
-                "tools/list" => handle_tools_list(id),
-                "tools/call" => handle_tools_call(id, &params, data_home, allow_local_writes),
+                "tools/list" => handle_tools_list(id, enable_city_tools),
+                "tools/call" => handle_tools_call(id, &params, data_home, allow_local_writes, enable_city_tools),
                 other => rpc_error(id, -32601, format!("method not found: {other}")),
             }
         };
@@ -127,8 +128,8 @@ fn handle_initialize(id: Value) -> Value {
     )
 }
 
-fn handle_tools_list(id: Value) -> Value {
-    let tools: Vec<Value> = mcp::tool_specs()
+fn handle_tools_list(id: Value, enable_city_tools: bool) -> Value {
+    let tools: Vec<Value> = mcp::tool_specs_with_city(enable_city_tools)
         .iter()
         .map(|t| {
             json!({
@@ -142,17 +143,17 @@ fn handle_tools_list(id: Value) -> Value {
     rpc_ok(id, json!({ "tools": tools }))
 }
 
-fn handle_tools_call(id: Value, params: &Value, data_home: &std::path::Path, allow_local_writes: bool) -> Value {
+fn handle_tools_call(id: Value, params: &Value, data_home: &std::path::Path, allow_local_writes: bool, enable_city_tools: bool) -> Value {
     let Some(name) = params.get("name").and_then(Value::as_str) else {
         return rpc_error(id, -32602, "tools/call requires a string `name`");
     };
-    if !mcp::tool_specs().iter().any(|t| t.name == name) {
+    if !mcp::tool_specs_with_city(enable_city_tools).iter().any(|t| t.name == name) {
         return rpc_error(id, -32602, format!("unknown tool: {name}"));
     }
     let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
 
     let started = std::time::Instant::now();
-    let (structured, is_error) = match mcp::dispatch_with_permissions(name, &args, data_home, allow_local_writes) {
+    let (structured, is_error) = match mcp::dispatch_with_permissions_options(name, &args, data_home, allow_local_writes, enable_city_tools) {
         Ok(envelope) => (envelope, false),
         Err(err) => {
             agent_vitals_runtime::logging::log_warn(

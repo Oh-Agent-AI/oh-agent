@@ -96,7 +96,12 @@ export function createCityWorldProfileCallHandlers(options: CityWorldProfileCall
       const preview = previews.get(payload.previewId);
       if (!preview || preview.expiresAt <= now()) { previews.delete(payload.previewId); throw new Error("preview_expired"); }
       if (preview.instanceId !== instanceId) throw new Error("plugin_instance_mismatch");
-      if (JSON.stringify(readCityWorldProfilePreference()) !== preview.baseProfile) throw new Error("revision_conflict");
+      const current = readCityWorldProfilePreference();
+      if (JSON.stringify(current) !== preview.baseProfile) throw new Error("revision_conflict");
+      // 独立 City 隔离完成前，禁止把另一个生成器/生态的 profile 应用到当前 City：
+      // 沙漠 profile 一旦写到迈阿密的单份偏好，就会改掉用户现有城市。主题/参数
+      // 调整仍允许（同一 generator），跨 generator 必须走独立 City 草稿。
+      if (preview.profile.geography.generator !== current.geography.generator) throw new Error("city_world_profile_city_mismatch");
       if (!options.canApply()) throw new Error("city_world_busy");
       const persisted = writeCityWorldProfileJson(JSON.stringify(preview.profile));
       if (!persisted.ok) throw new Error(persisted.diagnostics[0]?.code ?? "city_world_profile_invalid");

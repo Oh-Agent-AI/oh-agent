@@ -6030,6 +6030,12 @@ pub fn run() {
             ) {
                 agent_vitals_runtime::logging::log_warn("timezone", &format!("unavailable: {error}"));
             }
+            // Creator 存储启动自检：失败只记稳定码（不写路径），让“所有 Creator 工具都报
+            // storage unavailable”在日志里可区分是权限/锁定/损坏/迁移。
+            let creator_health = crate::creator_store::health(&overview::data_home());
+            if creator_health["status"] != "ok" {
+                agent_vitals_runtime::logging::log_warn("creator_store", &format!("startup health: {creator_health}"));
+            }
             // 记下系统区域：CLI / MCP 不读系统偏好，靠这份提示算出与 app 相同的默认报告币种
             // （并列报价的「默认假设」据此挑套）。
             let _ = agent_vitals_runtime::core::fx_settings::save_locale_hint(&overview::data_home(), &system_locale());

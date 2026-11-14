@@ -124,9 +124,24 @@ pub fn list_city_layout_snapshots(home: &Path, limit: u64) -> Result<Value, &'st
         let (world_revision, layout_id, raw, updated_at_ms) = row.map_err(|_| "creator_store_unavailable")?;
         let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
         Ok(json!({"worldRevision":world_revision,"layoutId":layout_id,"seed":snapshot["seed"],
-            "anchorCount":snapshot["layout"]["anchors"].as_array().map_or(0, Vec::len),"updatedAtMs":updated_at_ms}))
+            "anchorCount":snapshot["layout"]["anchors"].as_array().map_or(0, Vec::len),"updatedAtMs":updated_at_ms,
+            "source":"legacy"}))
     }).collect::<Result<Vec<_>, &'static str>>()?;
-    Ok(json!({"layouts":catalogs}))
+    // 独立 City 草稿的布局（v2）单独列出：旧接口按裸 worldRevision 查找，不能把
+    // 它们混进 legacy 数组，否则跨 City 绑定会绕过 cityId/revision 校验。
+    let mut statement = db.prepare("SELECT city_id,city_revision,world_revision,layout_id,snapshot_json,created_at_ms FROM creator_city_layouts_v2 ORDER BY created_at_ms DESC LIMIT ?1")
+        .map_err(|_| "creator_store_unavailable")?;
+    let rows = statement.query_map([limit.clamp(1, 16)], |row| Ok((row.get::<_,String>(0)?,row.get::<_,u64>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,String>(4)?,row.get::<_,u64>(5)?)))
+        .map_err(|_| "creator_store_unavailable")?;
+    let city_layouts = rows.map(|row| {
+        let (city_id, city_revision, world_revision, layout_id, raw, created_at_ms) = row.map_err(|_| "creator_store_unavailable")?;
+        let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
+        Ok(json!({"cityId":city_id,"cityRevision":city_revision,"worldRevision":world_revision,
+            "layoutId":layout_id,"seed":snapshot["seed"],
+            "anchorCount":snapshot["layout"]["anchors"].as_array().map_or(0, Vec::len),
+            "updatedAtMs":created_at_ms,"source":"cityDraft"}))
+    }).collect::<Result<Vec<_>, &'static str>>()?;
+    Ok(json!({"layouts":catalogs,"cityLayouts":city_layouts}))
 }
 
 pub(crate) fn read_city_layout_snapshot(home: &Path, world_revision: &str) -> Result<Value, &'static str> {

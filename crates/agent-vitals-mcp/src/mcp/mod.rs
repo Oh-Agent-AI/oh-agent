@@ -68,7 +68,11 @@ pub use crate::envelope::*;
 // ─────────────────────────── 工具注册表 ───────────────────────────
 
 /// 当前构建注册的工具。传输层据此渲染 `tools/list` 并校验 `tools/call` 的名字。
-pub fn tool_specs() -> Vec<ToolSpec> {
+pub fn tool_specs() -> Vec<ToolSpec> { tool_specs_with_city(true) }
+
+/// 实验性独立 City 工具默认不对外暴露：它们只覆盖草稿/只读视口，尚不能
+/// 绑定项目/发布/切换城市。需要时用 `data-mcp serve --enable-city-tools` 显式开启。
+pub fn tool_specs_with_city(include_city: bool) -> Vec<ToolSpec> {
     // `mut` 只在 `mcp-internal` 构建里用到（下方 push）；公开构建不加工具。
     #[cfg_attr(not(feature = "mcp-internal"), allow(unused_mut))]
     let mut out = vec![
@@ -102,6 +106,9 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         out.push(query_sql_readonly::spec());
         out.push(billing_workflow::spec());
         out.push(authority_audit::spec());
+    }
+    if !include_city {
+        out.retain(|tool| !tool.name.starts_with("creator_city_"));
     }
     out
 }
@@ -194,6 +201,20 @@ pub fn dispatch_with_permissions(
     data_home: &Path,
     allow_local_writes: bool,
 ) -> Result<Value, ToolError> {
+    dispatch_with_permissions_options(name, args, data_home, allow_local_writes, true)
+}
+
+pub fn dispatch_with_permissions_options(
+    name: &str,
+    args: &Value,
+    data_home: &Path,
+    allow_local_writes: bool,
+    include_city: bool,
+) -> Result<Value, ToolError> {
+    if !include_city && name.starts_with("creator_city_") {
+        return Err(ToolError::new("invalid_argument",
+            "Independent City tools are experimental and disabled. Start `data-mcp serve --enable-city-tools` to use them."));
+    }
     #[cfg(not(feature = "mcp-internal"))]
     let _ = allow_local_writes;
     let spec = tool_specs()
@@ -420,6 +441,19 @@ mod tests {
         // P1：inspect 缺 objectId 在参数校验阶段拒绝，不向插件转发。
         let error = dispatch("creator_scene_inspect", &json!({"projectId":"project-1","revision":1}), Path::new("/unused")).unwrap_err();
         assert_eq!(error.code, "invalid_argument");
+    }
+
+    #[test]
+    fn independent_city_tools_are_hidden_unless_explicitly_enabled() {
+        let default_names: Vec<_> = tool_specs_with_city(false).into_iter().map(|tool| tool.name).collect();
+        assert!(!default_names.iter().any(|name| name.starts_with("creator_city_")), "experimental city tools must be hidden by default");
+        assert!(default_names.contains(&"creator_project_create"));
+        let enabled: Vec<_> = tool_specs_with_city(true).into_iter().map(|tool| tool.name).collect();
+        assert!(enabled.contains(&"creator_city_create"));
+        let disabled = dispatch_with_permissions_options("creator_city_list", &json!({"limit":5}), Path::new("/unused"), false, false).unwrap_err();
+        assert_eq!(disabled.code, "invalid_argument");
+        let enabled_error = dispatch_with_permissions_options("creator_city_list", &json!({"limit":5}), Path::new("/unused"), false, true).unwrap_err();
+        assert_ne!(enabled_error.code, "internal_error");
     }
 
     /// 能力发现是静态契约：没有活动 Studio 也必须可用（DoD §10）。

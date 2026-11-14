@@ -36,6 +36,7 @@ fn call_error(code: &str) -> ToolError {
         "preview_expired" => ToolError::new("preview_expired", "The preview expired or was already applied; create a new preview."),
         "revision_conflict" => ToolError::new("revision_conflict", "The current City world changed after preview; preview the profile again."),
         "city_world_busy" => ToolError::new("busy", "City is running another activity. Stop it, then apply the world profile."),
+        "city_world_profile_city_mismatch" => ToolError::new("invalid_argument", "This profile targets a different City. Create an independent City draft instead of changing the active City."),
         "operation_id_conflict" => ToolError::new("invalid_argument", "This operationId was already used for a different preview."),
         value if value.starts_with("world_profile_") || value.starts_with("city_world_") => ToolError::new("invalid_argument", "The City world profile failed schema, runtime registration, or size validation."),
         _ => ToolError::new("data_unavailable", "The City world profile request failed."),
