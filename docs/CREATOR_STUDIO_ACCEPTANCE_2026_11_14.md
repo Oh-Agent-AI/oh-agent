@@ -15,7 +15,7 @@
 
 | 检查 | 结果 |
 |---|---|
-| desktop `cargo test` | 368 passed（本文件落盘前最后一批） |
+| desktop `cargo test` | 369 passed |
 | MCP `cargo test` | 84 passed |
 | city-sdk `npm test` | 106 passed |
 | Creator Studio `npm test` | 13 passed |
@@ -23,7 +23,7 @@
 | Agent City 全量测试 | 980/995 passed；14 项失败在 `dev@18d27cdd` 基线同样存在（基线 15/988），不属于本轮回归 |
 | Studio / Agent City typecheck | 通过 |
 | `cargo build --release -p agent-vitals` | 通过（16:09 版本） |
-| Tauri `.app` bundle | 通过（16:09，尚未包含本文件之前的收尾改动） |
+| Tauri `.app` bundle | 通过（21:21，包含内容包预检 UI） |
 
 自动化只能证明这些模块自洽；下面的 A1–A7 以桌面 `.app` + 真实项目为准。
 
@@ -52,7 +52,7 @@
 | CS-07 并发编辑冲突 | 通过（自动化） | 同 A4。 |
 | CS-08 故障恢复/半写 | 未测 | 无强杀/崩溃恢复证据。 |
 | CS-09 独立沙丘 City 创建/预览/绑定/发布 | 部分 | 创建、只读视口、截图、布局保存、绑定项目、发布 release 已验证；不能切换为运行城市，不能试玩。 |
-| CS-10 世界内容包预检 | 待真机 | Rust 完整性检查 + 原生选择器 + Studio「选择并预检世界包…」已实现；`installable:false`，不安装。 |
+| CS-10 世界内容包预检 | 部分 | Rust 文件预检测试、UI 结果模型测试通过；Studio「选择并预检世界包…」已进构建。原生文件选择器的桌面人工点击尚未完成（辅助功能无法稳定驱动该弹窗），不能标真机通过。 |
 
 ## 5. 未通过发布验收的阻塞项
 
@@ -69,11 +69,12 @@
 
 ## 6. 本轮收口内容
 
-- Studio「项目」面板新增**世界内容包预检**：原生选择器 → 宿主 Rust 完整性检查 →
+- Studio「项目」面板顶部新增**世界内容包预检**：原生选择器 → 宿主 Rust 完整性检查 →
   UI 只展示 packageId/version/fileCount/digest 与「语义/兼容/来源未检查、不可安装」。
   路径和字节不进入 UI/Agent/MCP。
 - CLI `verify-world` 增加原始字节**重复键拒绝**，与 Rust `inspect_world_integrity_v2`
   对齐；`JSON.parse` 折叠重复键不再能绕过。
+- Rust `inspect_selected_world_file` 增加文件边界测试（普通文件通过；缺失/目录拒绝）。
 - 本矩阵替代「测试通过=发布通过」的口头结论。
 
 ## 7. 发布结论

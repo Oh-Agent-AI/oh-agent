@@ -182,6 +182,23 @@ mod tests {
     }
 
     #[test]
+    fn selected_world_file_preflight_accepts_only_a_regular_integrity_checked_file() {
+        let path = std::env::temp_dir().join(format!("world-preflight-{}-{}.json",
+            std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::write(&path, include_bytes!("../../../../fixtures/city-content-v2/integrity-vector.json")).unwrap();
+        let inspected = inspect_selected_world_file(&path).unwrap();
+        assert_eq!(inspected["kind"], "city-world");
+        assert_eq!(inspected["installable"], false);
+        assert_eq!(inspected["checks"]["integrity"], "passed");
+        assert_eq!(inspected["checks"]["installation"], "unavailable");
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(inspect_selected_world_file(&path).unwrap_err(), "content_read_failed");
+        std::fs::create_dir(&path).unwrap();
+        assert_eq!(inspect_selected_world_file(&path).unwrap_err(), "content_file_invalid");
+        std::fs::remove_dir(&path).unwrap();
+    }
+
+    #[test]
     fn rejects_duplicate_keys_and_noncanonical_paths() {
         let valid = fixture().to_string();
         let duplicate = valid.replacen("\"format\":", "\"format\":\"oh-agent-city-content-v2\",\"format\":", 1);
