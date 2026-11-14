@@ -15,15 +15,15 @@
 
 | 检查 | 结果 |
 |---|---|
-| desktop `cargo test` | 373 passed（并入 `origin/dev` 的 Linux plugin WebView 修复后） |
+| desktop `cargo test` | 377 passed（含 4 项内容包本机安装测试） |
 | MCP `cargo test` | 84 passed |
 | city-sdk `npm test` | 106 passed |
-| Creator Studio `npm test` | 13 passed |
+| Creator Studio `npm test` | 15 passed |
 | Agent City 新增 patch 测试 | 3 passed |
 | Agent City 全量测试 | 980/995 passed；14 项失败在 `dev@18d27cdd` 基线同样存在（基线 15/988），不属于本轮回归 |
 | Studio / Agent City typecheck | 通过 |
 | `cargo build --release -p agent-vitals` | 通过（16:09 版本） |
-| Tauri `.app` bundle | 通过（21:21，包含内容包预检 UI） |
+| Tauri `.app` bundle | 通过（21:42，包含内容包预检与本机安装 UI） |
 
 自动化只能证明这些模块自洽；下面的 A1–A7 以桌面 `.app` + 真实项目为准。
 
@@ -74,6 +74,8 @@
 - CLI `verify-world` 增加原始字节**重复键拒绝**，与 Rust `inspect_world_integrity_v2`
   对齐；`JSON.parse` 折叠重复键不再能绕过。
 - Rust `inspect_selected_world_file` 增加文件边界测试（普通文件通过；缺失/目录拒绝）。
+- 本机安装：预检 token → 重新校验同一文件 → 临时目录/原子 rename/DB 记录 →
+  已安装列表/卸载；设计见 [CREATOR_CONTENT_INSTALL_2026_11_14.md](CREATOR_CONTENT_INSTALL_2026_11_14.md)。
 - 本矩阵替代「测试通过=发布通过」的口头结论。
 
 ## 7. 发布结论
