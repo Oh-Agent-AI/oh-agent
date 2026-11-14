@@ -11,6 +11,7 @@ mod budget_alerts;
 // Claude Pro 的额度窗口提醒：与预算提醒共用投递账本，但键按窗口取。
 mod quota_alerts;
 mod plugin_host;
+mod plugin_webview_layout;
 mod plugin_projections;
 mod plugin_state;
 mod creator_projects;

@@ -420,6 +420,16 @@ pub(crate) fn apply_plugin_webview_platform(app: &tauri::AppHandle, builder: Web
 }
 
 fn set_plugin_bounds(view: &Webview, bounds: &Bounds) -> Result<(), String> {
+    // Linux: wry ignores set_bounds for GtkBox-packed children; place the
+    // view in the host overlay instead (see plugin_webview_layout).
+    #[cfg(target_os = "linux")]
+    {
+        let geometry = crate::plugin_webview_layout::overlay_child_geometry(bounds.x, bounds.y, bounds.width, bounds.height);
+        crate::plugin_webview_layout::linux::set_bounds(view, geometry).inspect_err(|error| {
+            agent_vitals_runtime::logging::log_error("plugin_host", &format!("set_bounds failed: {error}"));
+        }).map_err(|_| "plugin_layout_failed".into())
+    }
+    #[cfg(not(target_os = "linux"))]
     view.set_bounds(tauri::Rect {
         position: tauri::LogicalPosition::new(bounds.x, bounds.y).into(),
         size: tauri::LogicalSize::new(bounds.width, bounds.height).into(),
@@ -903,6 +913,10 @@ pub async fn plugin_open(app: tauri::AppHandle, webview: Webview, state: tauri::
             return Err(code.into());
         }
     };
+    // Linux: add_child packs the view into the window's vertical GtkBox
+    // beside the host; move it into the host overlay at the requested bounds.
+    #[cfg(target_os = "linux")]
+    crate::plugin_webview_layout::linux::adopt(&view, crate::plugin_webview_layout::overlay_child_geometry(bounds.x, bounds.y, bounds.width, bounds.height))?;
     ensure_native_attachment(&app, &view)?;
     let _ = view.set_focus();
     Ok(id)
