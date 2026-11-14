@@ -58,6 +58,8 @@ CLI 现提供 `pack-world <目录> --out <文件> --seed N --generator-version N
 
 桌面 Rust 新增独立的 v2 世界产物完整性检查器，拒绝重复 JSON 键、非法路径、文件集合不一致、非规范 base64 及摘要不符；Rust 与 SDK 测试读取同一完整性向量。此函数尚未接入安装入口，不验证世界语义、GLB、图片、签名/来源或兼容性；它返回的字节仍属于不可信输入。
 
+**本机安装切片（2026-11-14）**：Studio 预检返回一次性 `inspectionId`；用户确认后宿主重新读取并校验同一文件，写入 `<data_home>/state/creator/content/world/<packageId>/<version>/package.json`，元数据写入 `creator_content_packages`。安装通过临时目录 + 原子 rename + DB insert 完成，崩溃留下的孤儿目录在再次安装时按摘要收养；`creator.content.list/uninstall` 提供列表与卸载。安装**仍不**执行内容、不切换城市、不验证来源/签名/运行时兼容，也不代表可分发。
+
 world entry 包含经 SDK 校验的 profile、生成器版本、默认 seed 和兼容主题引用；game entry 包含规则、槽位能力、参数与资产引用，**不包含某座 City 的锚点 ID**。场景资源和 GLB 字节必须包含在包闭包内。游戏包不可执行代码，不接受外部 URI、绝对路径、`..`、链接、重复路径、未声明文件或无法验证的资源。沿用现有 GLB 限制；包与解码大小、文件数、模型数和规则预算需由实现常量统一限制并纳入契约文档和测试，不能只限制压缩大小。
 
 现有 v1 可继续用于开发验证；仅当显式转换器能完整解析、校验并产出 v2 时才能导入为 v2，转换失败保留原文件并给出诊断。v1 的具体 layout/mount 是绑定数据，转换不得伪装成可跨城市的通用游戏；可以生成 game 包和一份仅针对原布局的绑定建议。禁止从 v1 静默升级。

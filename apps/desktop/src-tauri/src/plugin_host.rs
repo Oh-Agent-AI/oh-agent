@@ -1179,7 +1179,7 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
             Err(code) => plugin_request_error(request.request_id, code, matches!(code, "creator_store_unavailable")),
         });
     }
-    if matches!(method.as_str(), "city.creator.experiences.list" | "city.creator.experiences.read" | "city.creator.playtest.claim" | "city.creator.playtest.finish" | "city.creator.patch.publish" | "city.creator.patch.read") {
+    if matches!(method.as_str(), "city.creator.experiences.list" | "city.creator.experiences.read" | "city.creator.playtest.pending" | "city.creator.playtest.claim" | "city.creator.playtest.finish" | "city.creator.patch.publish" | "city.creator.patch.read") {
         let _operation = state.1.lock().unwrap();
         {
             let host = state.0.lock().unwrap();
@@ -1214,6 +1214,7 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
             let selected = tauri::async_runtime::spawn_blocking(|| rfd::FileDialog::new()
                 .add_filter("City 内容包", &["json"]).pick_file()).await.map_err(|_| "content_picker_failed".to_string())?;
             let Some(source) = selected else { return Ok(plugin_request_error(request.request_id, "content_picker_cancelled", false)); };
+            let source_for_remember = source.clone();
             let result = tauri::async_runtime::spawn_blocking(move || crate::creator_content_v2::inspect_selected_world_file(&source))
                 .await.map_err(|_| "content_inspection_failed".to_string())?;
             {
@@ -1222,6 +1223,84 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
                     return Err("plugin_instance_mismatch".into());
                 }
             }
+            return Ok(match result {
+                Ok(mut value) => {
+                    let Some(package_id) = value["packageId"].as_str().map(str::to_owned) else { return Ok(plugin_request_error(request.request_id, "content_inspect_invalid", false)); };
+                    let Some(version) = value["version"].as_str().map(str::to_owned) else { return Ok(plugin_request_error(request.request_id, "content_inspect_invalid", false)); };
+                    let Some(digest) = value["contentDigest"].as_str().map(str::to_owned) else { return Ok(plugin_request_error(request.request_id, "content_inspect_invalid", false)); };
+                    match crate::creator_content_install::remember_inspection(&crate::overview::data_home(), &request.instance_id, &source_for_remember, &package_id, &version, &digest) {
+                        Ok(token) => { value["inspectionId"] = json!(token);
+                            PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(value), error: None } }
+                        Err(code) => plugin_request_error(request.request_id, code, false),
+                    }
+                }
+                Err(code) => plugin_request_error(request.request_id, code, false),
+            });
+        }
+        if method == "creator.content.install" {
+            let Some(object) = payload.as_object().filter(|object| object.len() == 1
+                && object.keys().all(|key| key == "inspectionId")) else {
+                return Ok(plugin_request_error(request.request_id, "creator_request_invalid", false));
+            };
+            let Some(inspection_id) = object.get("inspectionId").and_then(Value::as_str) else {
+                return Ok(plugin_request_error(request.request_id, "creator_request_invalid", false));
+            };
+            let _operation = state.1.lock().unwrap();
+            {
+                let host = state.0.lock().unwrap();
+                if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            let home = crate::overview::data_home();
+            let claimed = match crate::creator_content_install::claim_inspection(&home, &request.instance_id, inspection_id) {
+                Ok(claimed) => claimed,
+                Err(code) => return Ok(plugin_request_error(request.request_id, code, false)),
+            };
+            let result = crate::creator_content_v2::read_selected_world_file(&claimed.source)
+                .and_then(|raw| crate::creator_content_install::install_inspected_world(&home, &raw, &claimed.package_id, &claimed.version, &claimed.digest));
+            drop(_operation);
+            return Ok(match result {
+                Ok(value) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(value), error: None },
+                Err(code) => plugin_request_error(request.request_id, code, false),
+            });
+        }
+        if method == "creator.content.list" {
+            if !payload.as_object().is_some_and(|object| object.is_empty()) { return Ok(plugin_request_error(request.request_id, "creator_request_invalid", false)); }
+            let _operation = state.1.lock().unwrap();
+            {
+                let host = state.0.lock().unwrap();
+                if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            let result = crate::creator_content_install::list_installed(&crate::overview::data_home());
+            drop(_operation);
+            return Ok(match result {
+                Ok(value) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(value), error: None },
+                Err(code) => plugin_request_error(request.request_id, code, false),
+            });
+        }
+        if method == "creator.content.uninstall" {
+            let Some(object) = payload.as_object().filter(|object| object.len() == 2
+                && object.keys().all(|key| matches!(key.as_str(), "packageId" | "version"))) else {
+                return Ok(plugin_request_error(request.request_id, "creator_request_invalid", false));
+            };
+            let Some(package_id) = object.get("packageId").and_then(Value::as_str) else {
+                return Ok(plugin_request_error(request.request_id, "creator_request_invalid", false));
+            };
+            let Some(version) = object.get("version").and_then(Value::as_str) else {
+                return Ok(plugin_request_error(request.request_id, "creator_request_invalid", false));
+            };
+            let _operation = state.1.lock().unwrap();
+            {
+                let host = state.0.lock().unwrap();
+                if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            let result = crate::creator_content_install::uninstall(&crate::overview::data_home(), package_id, version);
+            drop(_operation);
             return Ok(match result {
                 Ok(value) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(value), error: None },
                 Err(code) => plugin_request_error(request.request_id, code, false),

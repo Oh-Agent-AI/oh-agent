@@ -3,6 +3,7 @@
  * 禁止 UI 把“完整性通过”误读成“可安装/可信任”。
  */
 export type WorldPackageInspection = Readonly<{
+  inspectionId: string;
   packageId: string;
   version: string;
   contentDigest: string;
@@ -10,13 +11,14 @@ export type WorldPackageInspection = Readonly<{
   checks: Readonly<{ integrity: string; semantics: string; compatibility: string; publisher: string; installation: string }>;
 }>;
 
-const KEYS = ["kind", "packageId", "version", "contentDigest", "fileCount", "installable", "checks"] as const;
+const KEYS = ["kind", "inspectionId", "packageId", "version", "contentDigest", "fileCount", "installable", "checks"] as const;
 const CHECK_KEYS = ["integrity", "semantics", "compatibility", "publisher", "installation"] as const;
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 export function parseWorldPackageInspection(raw: unknown): WorldPackageInspection | null {
   if (!isObject(raw) || Object.keys(raw).length !== KEYS.length || !KEYS.every(key => key in raw)) return null;
   if (raw.kind !== "city-world" || raw.installable !== false) return null;
+  if (typeof raw.inspectionId !== "string" || !/^content-inspection-\d+-\d+$/.test(raw.inspectionId)) return null;
   if (typeof raw.packageId !== "string" || raw.packageId.length === 0 || raw.packageId.length > 128) return null;
   if (typeof raw.version !== "string" || raw.version.length === 0 || raw.version.length > 64) return null;
   if (typeof raw.contentDigest !== "string" || !/^sha256:[a-f0-9]{64}$/.test(raw.contentDigest)) return null;
@@ -25,6 +27,7 @@ export function parseWorldPackageInspection(raw: unknown): WorldPackageInspectio
   const checks = raw.checks as Record<string, unknown>;
   if (!CHECK_KEYS.every(key => typeof checks[key] === "string" && (checks[key] as string).length <= 64)) return null;
   return Object.freeze({
+    inspectionId: raw.inspectionId,
     packageId: raw.packageId,
     version: raw.version,
     contentDigest: raw.contentDigest,

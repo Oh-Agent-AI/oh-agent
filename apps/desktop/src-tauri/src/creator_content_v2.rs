@@ -21,7 +21,7 @@ pub struct IntegrityCheckedWorldV2 {
 
 /// Read a native-picker selection with bounded IO. Return only non-sensitive
 /// metadata; this preflight never persists, installs or authorizes the package.
-pub(crate) fn inspect_selected_world_file(path: &Path) -> Result<Value, &'static str> {
+pub(crate) fn read_selected_world_file(path: &Path) -> Result<Vec<u8>, &'static str> {
     let before = std::fs::symlink_metadata(path).map_err(|_| "content_read_failed")?;
     if !before.file_type().is_file() || before.file_type().is_symlink() || before.len() == 0 || before.len() > MAX_ARTIFACT as u64 { return Err("content_file_invalid"); }
     let mut file = std::fs::File::open(path).map_err(|_| "content_read_failed")?;
@@ -35,6 +35,11 @@ pub(crate) fn inspect_selected_world_file(path: &Path) -> Result<Value, &'static
     let mut raw = Vec::new();
     (&mut file).take(MAX_ARTIFACT as u64 + 1).read_to_end(&mut raw).map_err(|_| "content_read_failed")?;
     if raw.len() as u64 != opened.len() || raw.len() > MAX_ARTIFACT || file.metadata().map_err(|_| "content_read_failed")?.len() != opened.len() { return Err("content_file_changed"); }
+    Ok(raw)
+}
+
+pub(crate) fn inspect_selected_world_file(path: &Path) -> Result<Value, &'static str> {
+    let raw = read_selected_world_file(path)?;
     let checked = inspect_world_integrity_v2(&raw)?;
     Ok(serde_json::json!({"kind":"city-world","packageId":checked.manifest["packageId"],"version":checked.manifest["version"],
         "contentDigest":checked.manifest["contentDigest"],"fileCount":checked.files.len(),"installable":false,

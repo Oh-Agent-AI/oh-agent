@@ -6,6 +6,7 @@ import { buildGameValidation, buildSceneValidation, scopeMismatchEnvelope } from
 import { loadStudioAtStartup } from "./startupLoad";
 import { resolveProjectCity } from "./projectCityScope";
 import { formatWorldPackageInspection, parseWorldPackageInspection, type WorldPackageInspection } from "./contentPackageInspect";
+import { formatInstalledPackage, parseInstalledPackages, parseInstallResult, type InstalledContentPackage } from "./installedContent";
 // 视口与 City 插件共享同一份引擎与装配管线，保证 Studio 看到的是同一座城市。
 import { CityViewport } from "../../../agent-city/ui/src/viewport/CityViewport";
 import { createCreatorLayoutSnapshot } from "../../../agent-city/ui/src/engine/sdk/cityLayoutAdapter";
@@ -115,6 +116,7 @@ function App() {
   const [previewKind, setPreviewKind] = useState<"game" | "scene" | "mount" | "skin" | null>(null);
   const [publishedReleaseId, setPublishedReleaseId] = useState<string | null>(null);
   const [packageInspection, setPackageInspection] = useState<WorldPackageInspection | null>(null);
+  const [installedPackages, setInstalledPackages] = useState<ReadonlyArray<InstalledContentPackage>>([]);
   const [busy, setBusy] = useState(false);
   const [activePanel, setActivePanel] = useState<"play" | "agent" | "project">("agent");
   const [message, setMessage] = useState("");
@@ -554,6 +556,37 @@ function App() {
     } catch (error) { setPackageInspection(null); setMessage(`世界内容包预检失败（${errorCode(error, "content_inspection_failed")}）。`); }
     finally { setBusy(false); }
   };
+  const refreshInstalled = async () => {
+    if (browserPreview) return;
+    try {
+      const parsed = parseInstalledPackages(await creatorRequest<unknown>("creator.content.list", {}));
+      if (parsed) setInstalledPackages(parsed);
+    } catch { /* 内容库列表是可选状态，不阻塞创作 */ }
+  };
+  useEffect(() => { void refreshInstalled(); }, []);
+  const installInspectedPackage = async () => {
+    if (!packageInspection) return;
+    setBusy(true); setMessage("");
+    try {
+      const result = parseInstallResult(await creatorRequest<unknown>("creator.content.install", { inspectionId: packageInspection.inspectionId }));
+      if (!result) throw new Error("content_install_invalid");
+      setPackageInspection(null);
+      await refreshInstalled();
+      setMessage(result.alreadyInstalled ? `${result.packageId}@${result.version} 已在本机内容库中。`
+        : `已安装 ${result.packageId}@${result.version} 到本机内容库（仅存储，尚不可运行）。`);
+    } catch (error) { setMessage(`内容包安装失败（${errorCode(error, "content_install_failed")}）。`); }
+    finally { setBusy(false); }
+  };
+  const uninstallInstalledPackage = async (item: InstalledContentPackage) => {
+    if (!window.confirm(`从本机内容库卸载 ${item.packageId}@${item.version}？`)) return;
+    setBusy(true); setMessage("");
+    try {
+      await creatorRequest("creator.content.uninstall", { packageId: item.packageId, version: item.version });
+      await refreshInstalled();
+      setMessage(`已卸载 ${item.packageId}@${item.version}。`);
+    } catch (error) { setMessage(`内容包卸载失败（${errorCode(error, "content_uninstall_failed")}）。`); }
+    finally { setBusy(false); }
+  };
   const importModel = async () => {
     if (!project) return;
     setBusy(true); setMessage("");
@@ -706,7 +739,7 @@ function App() {
       if (value === "more") { setActivePanel("project"); return; }
       const row = toolbarProjects[Number(value)];
       if (row && row.projectId !== project?.projectId) guardDrafts(row.projectId, () => void openProject(row.projectId));
-    } else if (commandId === "creator.playtest" && !busy && publishedReleaseId && !project?.cityId && !hasUncommittedProjectEdits) void startPlaytest();
+    } else if (commandId === "creator.playtest" && !busy && publishedReleaseId && !hasUncommittedProjectEdits) void startPlaytest();
     else if (commandId === "creator.publish" && !busy && project && !hasUncommittedProjectEdits && project.mounts?.length) void publish();
   };
   useEffect(() => connect(command => toolbarActionRef.current(command.commandId, command.value)), []);
@@ -718,7 +751,7 @@ function App() {
           ...toolbarProjects.map((row, index) => ({ value: String(index), label: `${row.title} · 版本 ${row.revision}`.slice(0, 100) })),
           { value: "more", label: project ? "更多项目…" : "选择城市项目…" },
         ] },
-      { id: "playtest", commandId: "creator.playtest", label: "试玩", kind: "button", enabled: !browserPreview && !busy && !!publishedReleaseId && !project?.cityId && !hasUncommittedProjectEdits },
+      { id: "playtest", commandId: "creator.playtest", label: "试玩", kind: "button", enabled: !browserPreview && !busy && !!publishedReleaseId && !hasUncommittedProjectEdits },
       { id: "publish", commandId: "creator.publish", label: "发布", kind: "button", enabled: !busy && !!project && !hasUncommittedProjectEdits && !!project.mounts?.length },
     ]);
   }, [projects, project, busy, publishedReleaseId, hasUncommittedProjectEdits]);
@@ -776,7 +809,9 @@ function App() {
           <div><div className="section-title">世界内容包预检</div><p className="muted">通过桌面原生选择器打开 unsigned 的 v2 世界包，核对清单、文件集合与摘要。不导入、不安装，文件路径和字节不会传入 Agent/MCP。</p>
           <button className="secondary" disabled={busy || browserPreview} onClick={() => void inspectWorldPackage()}>选择并预检世界包…</button>
           {browserPreview && <p className="muted">浏览器预览没有原生文件选择器，请在桌面应用中使用。</p>}
-          {packageInspection && <code>{formatWorldPackageInspection(packageInspection)}</code>}</div>
+          {packageInspection && <code>{formatWorldPackageInspection(packageInspection)}</code>}
+          {packageInspection && <div className="actions"><button disabled={busy} onClick={() => void installInspectedPackage()}>安装到本机内容库</button><span className="muted">仅本机存储，尚不可运行</span></div>}
+          {installedPackages.length > 0 && <div><div className="section-title">已安装内容包</div>{installedPackages.map(item => <div key={`${item.packageId}:${item.version}`} className="actions"><code>{formatInstalledPackage(item)}</code><button className="secondary" disabled={busy} onClick={() => void uninstallInstalledPackage(item)}>卸载</button></div>)}</div>}</div>
           <div className="section-title">打开项目</div>
           <div className="project-list">{projects.map(row => <button key={row.projectId} className={`project-row ${project?.projectId === row.projectId ? "selected" : ""}`} disabled={busy} onClick={() => { if (row.projectId !== project?.projectId) guardDrafts(row.projectId, () => void openProject(row.projectId)); }}><strong>{row.title}</strong><span>版本 {row.revision}{project?.projectId === row.projectId ? " · 当前项目" : switchConfirm === row.projectId ? " · 再次点击以丢弃草稿" : ""}</span></button>)}</div>
           <div><div className="section-title">创建新项目</div><p className="muted">选择玩法和 City 布局，创建独立的本地草稿。</p></div>
