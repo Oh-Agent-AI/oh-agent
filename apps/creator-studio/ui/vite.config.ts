@@ -6,6 +6,8 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   base: "./",
   plugins: [react()],
+  // The Studio viewport and its planning worker are shared with Agent City.
+  server: { fs: { allow: [fileURLToPath(new URL(".", import.meta.url)), fileURLToPath(new URL("../../agent-city/ui", import.meta.url)), fileURLToPath(new URL("../../../packages", import.meta.url))] } },
   // 视口源码来自 agent-city，react 必须去重到本应用的同一份，否则两份 React
   // 实例会让 hook 调用直接崩溃。
   resolve: {

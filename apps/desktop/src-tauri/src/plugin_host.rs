@@ -1207,7 +1207,7 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
     if method.starts_with("creator.") {
         if plugin_id != "creator-studio" { return Ok(plugin_request_error(request.request_id, "permission_denied", false)); }
         if !local_calls.iter().any(|allowed| allowed == &method) { return Ok(plugin_request_error(request.request_id, "permission_denied", false)); }
-        if method == "creator.source.export" {
+        if method == "creator.source.export" || method == "creator.city.source.export" {
             {
                 let host = state.0.lock().unwrap();
                 if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
@@ -1224,7 +1224,11 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
                     return Err("plugin_instance_mismatch".into());
                 }
             }
-            let result = crate::creator_source_export::export_source(&crate::overview::data_home(), &parent, &payload);
+            let result = if method == "creator.city.source.export" {
+                crate::creator_source_export::export_city_source(&crate::overview::data_home(), &parent, &payload)
+            } else {
+                crate::creator_source_export::export_source(&crate::overview::data_home(), &parent, &payload)
+            };
             {
                 let host = state.0.lock().unwrap();
                 if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {

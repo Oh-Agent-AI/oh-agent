@@ -1282,6 +1282,8 @@
     // 行为（revision CAS、预览凭据、operation 幂等），只服务设计预览，不是权威实现。
     "creator-studio": (() => {
       const SEED = 1703294958;
+      const previewCity = { schemaVersion: 1, cityId: "city-preview-desert", revision: 0, name: "沙漠城市（预览夹具）", seed: 42,
+        profile: { schemaVersion: 1, id: "arid-dunes", version: 1, biome: "arid", geography: { generator: "arid-dunes-v1", parameters: { dunes: { duneScale: 190, duneAmplitude: 11, orientationDeg: 18 } } }, visuals: { themeId: "desert" } } };
       const world = {
         schemaVersion: 1, worldRevision: "preview-world-rev-1", seed: SEED,
         layout: { schemaVersion: 1, id: "preview-layout-1", coordinateSystem: "city-local-m-v1",
@@ -1495,6 +1497,11 @@
         // 视口复用 City 的数据通道（data.read 全部投影）：城市数据与 City 预览同源同种子。
         if (request.method === "data.read") return cityPreviewProvider(request);
         switch (request.method) {
+          case "creator.city.list":
+            return { cities: payload.cursor ? [] : [{ cityId: previewCity.cityId, revision: previewCity.revision, name: previewCity.name }], nextCursor: null };
+          case "creator.city.read":
+            if (payload.cityId !== previewCity.cityId || (payload.revision !== undefined && payload.revision !== previewCity.revision)) throw new Error("creator_city_not_found");
+            return clone(previewCity);
           case "creator.layout.list":
             return { layouts: [{ worldRevision: world.worldRevision, layoutId: world.layout.id,
               seed: world.seed, anchorCount: world.layout.anchors.length, updatedAtMs: 0 }] };

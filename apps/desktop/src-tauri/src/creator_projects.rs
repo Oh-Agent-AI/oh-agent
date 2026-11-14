@@ -2447,6 +2447,40 @@ mod tests {
     }
 
     #[test]
+    fn independent_project_road_edit_is_revision_bound_and_does_not_change_other_city() {
+        let home = home();
+        let layout = layout_snapshot();
+        let seed = layout["seed"].as_u64().unwrap() as u32;
+        let profile = json!({"schemaVersion":1,"id":"desert","version":1});
+        let dunes = crate::creator_cities::create_city(&home, "owner", "create-dunes-isolation", "Dunes", seed, &profile).unwrap();
+        let miami = crate::creator_cities::create_city(&home, "owner", "create-miami-isolation", "Miami", seed, &profile).unwrap();
+        let dunes_id = dunes["cityId"].as_str().unwrap();
+        let miami_id = miami["cityId"].as_str().unwrap();
+        for (city_id, world_revision) in [(dunes_id, "world-dunes"), (miami_id, "world-miami")] {
+            crate::creator_city_patch::store_scoped_city_layout(&home, &json!({"schemaVersion":2,"cityId":city_id,"cityRevision":0,
+                "worldRevision":world_revision,"seed":seed,"layout":layout["layout"]})).unwrap();
+        }
+        let dunes_project = create_project_from_city_draft(&home, LOCAL_CREATOR_OWNER, "checkpoint-race", "create-dunes-project", "world-dunes", dunes_id).unwrap();
+        let miami_project = create_project_from_city_draft(&home, LOCAL_CREATOR_OWNER, "checkpoint-race", "create-miami-project", "world-miami", miami_id).unwrap();
+        let dunes_project_id = dunes_project["projectId"].as_str().unwrap();
+        let miami_project_id = miami_project["projectId"].as_str().unwrap();
+        let miami_before = read_project(&home, miami_project_id).unwrap();
+        let city_before = crate::creator_cities::read_city(&home, miami_id).unwrap();
+        let patch = json!({"version":1,"seed":seed,"scaleTier":1,"generatorVersion":6,"updatedAt":1000,
+            "roadOps":[{"t":"restyle","edge":"road-edge:ab:0","width":8}],"siteOps":[],"buildingMoves":{},"suppressedContext":[]});
+        let preview = preview_scene_operations(&home, "studio-instance", dunes_project_id, 0, &json!([{"op":"city.patch.upsert","patch":patch}])).unwrap();
+        let preview_id = preview["previewId"].as_str().unwrap();
+        assert_eq!(commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", miami_project_id, preview_id, 0, "wrong-city").unwrap_err(), "permission_denied");
+        let result = commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", dunes_project_id, preview_id, 0, "save-dunes-road").unwrap();
+        assert_eq!(result["revision"], 1);
+        assert_eq!(commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", dunes_project_id, preview_id, 0, "save-dunes-road").unwrap(), result);
+        assert_eq!(read_project(&home, dunes_project_id).unwrap()["cityPatch"], patch);
+        assert_eq!(read_project(&home, miami_project_id).unwrap(), miami_before);
+        assert_eq!(crate::creator_cities::read_city(&home, miami_id).unwrap(), city_before);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
     fn city_patch_read_reports_newest_bound_project() {
         let home = home();
         assert_eq!(read_city_patch_for_seed(&home, 7).unwrap(), json!({"projectId":null,"revision":null,"patch":null}));

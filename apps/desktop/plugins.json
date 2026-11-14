@@ -490,6 +490,7 @@
         "creator.game.preview",
         "creator.asset.import",
         "creator.source.export",
+        "creator.city.source.export",
         "creator.content.inspect",
         "creator.content.install",
         "creator.content.list",

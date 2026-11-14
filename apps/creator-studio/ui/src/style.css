@@ -90,6 +90,8 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, summary:focu
 
 /* Viewport selection card: click a movable session building, move to a nearby parcel. */
 .viewport-frame { position: relative; }
+.viewport-base { display: flex; flex: 1; min-height: 0; }
+.viewport-agent-preview { position: absolute; inset: 50px 10px 10px; z-index: 5; }
 .selection-card { position: absolute; z-index: 3; right: 16px; top: 56px; width: 264px; padding: 12px; border: 1px solid #3a4f54; border-radius: 10px; background: rgba(16, 24, 27, .93); display: grid; gap: 8px; }
 .selection-head { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
 .selection-head strong { font-size: 13px; color: #e3eeee; white-space: nowrap; }
@@ -112,7 +114,8 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, summary:focu
 .project-tools[open] summary { border-bottom: 1px solid #2b383e; }
 .project-tools > .new-project, .project-tools > .editor { margin: 12px; }
 /* Persistent draft-save status floating in the viewport (prototype bottom bar). */
-.viewport-savebar { position: absolute; z-index: 2; left: 14px; bottom: 14px; padding: 6px 12px; border-radius: 8px; background: rgba(17, 27, 31, .88); color: #a8ead8; font-size: 12px; pointer-events: none; }
+.viewport-savebar { position: absolute; z-index: 10; left: 14px; bottom: 14px; padding: 6px 12px; border-radius: 8px; background: rgba(17, 27, 31, .88); color: #a8ead8; font-size: 12px; pointer-events: none; }
+.viewport-savebar button { pointer-events: auto; }
 
 /* Agent activity cards: MCP-originated previews/commits/publishes/playtests. */
 .agent-activity { display: grid; gap: 8px; }
@@ -122,6 +125,7 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, summary:focu
 .agent-label { color: #dce8e8; font-size: 12px; font-weight: 650; }
 .agent-time { color: #8fa5a9; font-size: 11px; }
 .agent-card p { margin: 0; font-size: 11px; line-height: 1.5; }
+.agent-proposal-content { max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
 .agent-summary { color: #a8ead8; overflow-wrap: anywhere; }
 
 /* Creator workspace: navigation, canvas and task-focused inspector. */
