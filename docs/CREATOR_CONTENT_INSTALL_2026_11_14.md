@@ -13,6 +13,9 @@
    - 宿主重新读取同一路径并重新验证；确认 `packageId/version/contentDigest` 与预检一致后才落盘。
    - 任何变化返回 `content_file_changed`，不安装。
 3. 安装结果与已安装列表通过 `creator.content.list` 展示；`creator.content.uninstall` 删除。
+   卸载用「卸载 → 确认卸载」两段式按钮，不依赖 `window.confirm`（Tauri WebView 下原生 confirm
+   不可靠，首版真机点击会静默无响应）。切到项目面板时重新拉取已安装列表，避免插件 ready 前的
+   首次请求失败后一直显示空列表。
 
 ## 2. 存储与原子性
 
@@ -38,3 +41,17 @@
 - `creator_content_install`：幂等安装、identity drift 拒绝、卸载/列表、崩溃孤儿收养、token 一次性/实例绑定。
 - Rust 文件入口：普通文件通过、缺失/目录拒绝。
 - Studio：预检结果、已安装列表/安装结果的严格解析；`npm test` 15 项、typecheck 通过。
+
+## 5. 桌面真机验证（2026-11-14 22:07）
+
+- 重新构建 `.app` 后从 LaunchServices 启动，Creator Studio → 项目 → 世界内容包预检。
+- 原生选择器选择 `pack-world` 生成的 `arid-dunes@1`（1365 bytes，3 个文件）：
+  界面显示「完整性预检通过：可安装到本机内容库……安装后仍不可运行」。
+- 点击「安装到本机内容库」后：
+  - `creator_content_packages` 出现 `arid-dunes|1|sha256:7ca82de3…|3|1365`；
+  - 文件写入 `state/creator/content/world/arid-dunes/1/package.json`；
+  - UI 显示 `arid-dunes@1 · 3 个文件 · 2 KiB · 仅本机安装`。
+- 点击「卸载」变为「确认卸载」，再次点击后文件与 DB 行均删除，状态显示「已卸载 arid-dunes@1」。
+- 重新预检并安装成功。
+- 注意：预检结果文案里的“当前不可安装”已改为“可安装到本机内容库”；`window.confirm` 在
+  Tauri WebView 下不可靠，卸载改为两段式按钮；切到项目面板会重新拉取已安装列表。

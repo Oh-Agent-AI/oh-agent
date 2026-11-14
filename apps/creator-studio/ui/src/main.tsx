@@ -117,6 +117,7 @@ function App() {
   const [publishedReleaseId, setPublishedReleaseId] = useState<string | null>(null);
   const [packageInspection, setPackageInspection] = useState<WorldPackageInspection | null>(null);
   const [installedPackages, setInstalledPackages] = useState<ReadonlyArray<InstalledContentPackage>>([]);
+  const [confirmUninstall, setConfirmUninstall] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [activePanel, setActivePanel] = useState<"play" | "agent" | "project">("agent");
   const [message, setMessage] = useState("");
@@ -552,7 +553,7 @@ function App() {
       const inspection = parseWorldPackageInspection(await creatorRequest<unknown>("creator.content.inspect", {}));
       if (!inspection) throw new Error("content_inspection_invalid");
       setPackageInspection(inspection);
-      setMessage("世界内容包完整性预检通过：语义、运行时兼容、来源均未检查，当前不可安装。");
+      setMessage("世界内容包完整性预检通过：可安装到本机内容库；语义、运行时兼容、来源未检查，安装后仍不可运行。");
     } catch (error) { setPackageInspection(null); setMessage(`世界内容包预检失败（${errorCode(error, "content_inspection_failed")}）。`); }
     finally { setBusy(false); }
   };
@@ -564,6 +565,8 @@ function App() {
     } catch { /* 内容库列表是可选状态，不阻塞创作 */ }
   };
   useEffect(() => { void refreshInstalled(); }, []);
+  // 插件实例可能比首帧更晚 ready；切到项目面板时再拉一次已安装列表。
+  useEffect(() => { if (activePanel === "project") void refreshInstalled(); }, [activePanel]);
   const installInspectedPackage = async () => {
     if (!packageInspection) return;
     setBusy(true); setMessage("");
@@ -578,8 +581,7 @@ function App() {
     finally { setBusy(false); }
   };
   const uninstallInstalledPackage = async (item: InstalledContentPackage) => {
-    if (!window.confirm(`从本机内容库卸载 ${item.packageId}@${item.version}？`)) return;
-    setBusy(true); setMessage("");
+    setBusy(true); setMessage(""); setConfirmUninstall(null);
     try {
       await creatorRequest("creator.content.uninstall", { packageId: item.packageId, version: item.version });
       await refreshInstalled();
@@ -806,12 +808,12 @@ function App() {
           </div>}
         </section>}
         {activePanel === "project" && <section className="new-project">
-          <div><div className="section-title">世界内容包预检</div><p className="muted">通过桌面原生选择器打开 unsigned 的 v2 世界包，核对清单、文件集合与摘要。不导入、不安装，文件路径和字节不会传入 Agent/MCP。</p>
+          <div><div className="section-title">世界内容包预检</div><p className="muted">通过桌面原生选择器打开 unsigned 的 v2 世界包，核对清单、文件集合与摘要；校验后可显式安装到本机内容库。文件路径和字节不会传入 Agent/MCP。</p>
           <button className="secondary" disabled={busy || browserPreview} onClick={() => void inspectWorldPackage()}>选择并预检世界包…</button>
           {browserPreview && <p className="muted">浏览器预览没有原生文件选择器，请在桌面应用中使用。</p>}
           {packageInspection && <code>{formatWorldPackageInspection(packageInspection)}</code>}
           {packageInspection && <div className="actions"><button disabled={busy} onClick={() => void installInspectedPackage()}>安装到本机内容库</button><span className="muted">仅本机存储，尚不可运行</span></div>}
-          {installedPackages.length > 0 && <div><div className="section-title">已安装内容包</div>{installedPackages.map(item => <div key={`${item.packageId}:${item.version}`} className="actions"><code>{formatInstalledPackage(item)}</code><button className="secondary" disabled={busy} onClick={() => void uninstallInstalledPackage(item)}>卸载</button></div>)}</div>}</div>
+          {installedPackages.length > 0 && <div><div className="section-title">已安装内容包</div>{installedPackages.map(item => <div key={`${item.packageId}:${item.version}`} className="actions"><code>{formatInstalledPackage(item)}</code><button className="secondary" disabled={busy} onClick={() => { const key = `${item.packageId}:${item.version}`; if (confirmUninstall === key) void uninstallInstalledPackage(item); else setConfirmUninstall(key); }}>{confirmUninstall === `${item.packageId}:${item.version}` ? "确认卸载" : "卸载"}</button></div>)}</div>}</div>
           <div className="section-title">打开项目</div>
           <div className="project-list">{projects.map(row => <button key={row.projectId} className={`project-row ${project?.projectId === row.projectId ? "selected" : ""}`} disabled={busy} onClick={() => { if (row.projectId !== project?.projectId) guardDrafts(row.projectId, () => void openProject(row.projectId)); }}><strong>{row.title}</strong><span>版本 {row.revision}{project?.projectId === row.projectId ? " · 当前项目" : switchConfirm === row.projectId ? " · 再次点击以丢弃草稿" : ""}</span></button>)}</div>
           <div><div className="section-title">创建新项目</div><p className="muted">选择玩法和 City 布局，创建独立的本地草稿。</p></div>

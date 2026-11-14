@@ -52,7 +52,7 @@
 | CS-07 并发编辑冲突 | 通过（自动化） | 同 A4。 |
 | CS-08 故障恢复/半写 | 未测 | 无强杀/崩溃恢复证据。 |
 | CS-09 独立沙丘 City 创建/预览/绑定/发布 | 部分 | 创建、只读视口、截图、布局保存、绑定项目、发布 release 已验证；不能切换为运行城市，不能试玩。 |
-| CS-10 世界内容包预检/本机安装 | 部分 | 预检、一次性 inspectionId、本机安装、列表/卸载已实现；Rust/Studio 自动化通过。原生文件选择器与安装按钮的桌面人工点击尚未完成，且安装后仍不能运行，不能标真机通过。 |
+| CS-10 世界内容包预检/本机安装 | 通过（仅本机安装） | 桌面真机已验证：原生选择器选包 → 完整性预检通过 → 安装 `arid-dunes@1` → 文件落 `state/creator/content/world/arid-dunes/1/package.json`、DB `creator_content_packages` 有行 → 列表显示 → 两段式卸载删除文件与行 → 重新安装成功。安装后仍不可运行/不可信分发，见 §5。 |
 
 ## 5. 未通过发布验收的阻塞项
 
@@ -75,7 +75,8 @@
   对齐；`JSON.parse` 折叠重复键不再能绕过。
 - Rust `inspect_selected_world_file` 增加文件边界测试（普通文件通过；缺失/目录拒绝）。
 - 本机安装：预检 token → 重新校验同一文件 → 临时目录/原子 rename/DB 记录 →
-  已安装列表/卸载；设计见 [CREATOR_CONTENT_INSTALL_2026_11_14.md](CREATOR_CONTENT_INSTALL_2026_11_14.md)。
+  已安装列表/卸载；桌面真机已走通预检、安装、列表、两段式卸载、重新安装。
+  设计见 [CREATOR_CONTENT_INSTALL_2026_11_14.md](CREATOR_CONTENT_INSTALL_2026_11_14.md)。
 - 本矩阵替代「测试通过=发布通过」的口头结论。
 
 ## 7. 发布结论
