@@ -82,10 +82,10 @@ export async function pendingCreatorPlaytest(): Promise<PendingCreatorPlaytestV1
 }
 
 /** Claims a Studio-initiated playtest only after a release is pinned to this live City revision. */
-export async function claimCreatorPlaytest(view: CityLayoutSdkViewV1): Promise<CreatorPlaytestHandoffV1 | null> {
+export async function claimCreatorPlaytest(view: CityLayoutSdkViewV1, expectedRunId?: string): Promise<CreatorPlaytestHandoffV1 | null> {
   let handoff: { runId: string; releaseId: string; projectId: string; revision: number; snapshotDigest: string; skinId?: unknown; game: unknown; mounts: CityGameMountV1[] } & ReleaseSceneFields;
   try {
-    handoff = await hostCall<typeof handoff>("city.creator.playtest.claim", {});
+    handoff = await hostCall<typeof handoff>("city.creator.playtest.claim", expectedRunId ? { runId: expectedRunId } : {});
   } catch (error) {
     if (error instanceof Error && error.message === "creator_playtest_not_found") return null;
     throw error;

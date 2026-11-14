@@ -22,6 +22,8 @@
 @media (prefers-reduced-motion: reduce) { .city-loading-card, .city-loading-mark span, .city-loading-mark i, .city-loading-track span, .city-preparation-track span { animation-duration: 8s; } }
 .city-detail-panel .city-camera-help { font-size: 12px; line-height: 1.5; }
 .city-app .city-scene-message { position: absolute; inset: 45% 36px auto; margin: 0; text-align: center; color: #aebdd0; font-size: 13px; }
+.city-app .city-playtest-error { position: absolute; z-index: 10; top: 20px; left: 50%; transform: translateX(-50%); padding: 12px 16px; border: 1px solid #a87568; border-radius: 8px; background: #271b1a; color: #fff0e9; font-size: 13px; }
+.city-app .city-playtest-error button { margin-left: 8px; }
 .city-app .city-header { position: absolute; top: 30px; left: 36px; right: 36px; display: flex; justify-content: space-between; align-items: flex-start; pointer-events: none; }
 .city-app .city-header > * { pointer-events: auto; }
 .city-app .eyebrow { color: #8da3bf; font-size: 10px; font-weight: 700; letter-spacing: .16em; }

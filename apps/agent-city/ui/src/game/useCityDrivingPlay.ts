@@ -1,3 +1,5 @@
+import { playtestOutcome } from "./activity/playtestOutcome";
+import { spawnDistanceFailure } from "./runtime/spawnDistance";
 /** Player-facing free-drive UI. The session chooses a safe local spawn, while
  * road-wide audit/release evidence remains a separate system. */
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
@@ -101,7 +103,8 @@ export function useCityDrivingPlay(engine: RefObject<CityEngine | null>, host: R
             removeCreatorColliderVisuals();
             exitCarRef.current?.();
             restoreCreatorSkin();
-            finishPlaytestOnce(controller.snapshot.status === "success" ? "completed" : "failed", controller.snapshot.reason ?? "creator_minigame_failed");
+            const outcome = playtestOutcome(controller.snapshot.status as "success" | "failure" | "error", controller.snapshot.reason);
+            finishPlaytestOnce(outcome.status, outcome.failureCode);
           }
         }
         racePauseRef.current?.("race-finished");
@@ -190,8 +193,8 @@ export function useCityDrivingPlay(engine: RefObject<CityEngine | null>, host: R
     const startPosition = { x: worldUnits(plan.value.course.startPositionMeters.x), z: worldUnits(plan.value.course.startPositionMeters.z) };
     void car.enterFreeDrive({ vtol: false }, startPosition).then(ready => {
       if (ready) {
-        const actualSpawn = poseRef.current;
-        if (!actualSpawn || Math.hypot(actualSpawn.x - startPosition.x, actualSpawn.z - startPosition.z) > 40) {
+        const actualSpawn = car.getSpawnPose();
+        if (spawnDistanceFailure(actualSpawn, startPosition)) {
           car.exit(); controller.dispose(); if (raceControllerRef.current === controller) raceControllerRef.current = null; setRace(null);
           if (raceVisualsRef.current) raceVisualSceneRef.current?.detach([raceVisualsRef.current.root]);
           raceVisualsRef.current?.dispose(); raceVisualsRef.current = null; raceVisualSceneRef.current = null;
@@ -222,8 +225,8 @@ export function useCityDrivingPlay(engine: RefObject<CityEngine | null>, host: R
     const startPosition = { x: worldUnits(plan.value.course.startPositionMeters.x), z: worldUnits(plan.value.course.startPositionMeters.z) };
     void car.enterFreeDrive({ vtol: false }, startPosition).then(ready => {
       if (ready) {
-        const actualSpawn = poseRef.current;
-        if (!actualSpawn || Math.hypot(actualSpawn.x - startPosition.x, actualSpawn.z - startPosition.z) > 40) {
+        const actualSpawn = car.getSpawnPose();
+        if (spawnDistanceFailure(actualSpawn, startPosition)) {
           car.exit(); controller.dispose(); if (raceControllerRef.current === controller) raceControllerRef.current = null; setRace(null); setActivityKind(null);
           raceVisualsRef.current?.dispose(); raceVisualsRef.current = null; raceVisualSceneRef.current = null;
           setRaceEntryError("安全出生点离寻宝起点太远，未开始寻宝。"); setChoosingVehicle(true); return;
@@ -274,10 +277,11 @@ export function useCityDrivingPlay(engine: RefObject<CityEngine | null>, host: R
     const startPosition = { x: worldUnits(entryGeometry.positionMeters.x), z: worldUnits(entryGeometry.positionMeters.z) };
     void car.enterFreeDrive({ vtol: false }, startPosition).then(ready => {
       if (ready) {
-        const actualSpawn = poseRef.current;
-        if (!actualSpawn || Math.hypot(actualSpawn.x - startPosition.x, actualSpawn.z - startPosition.z) > 40) {
+        const actualSpawn = car.getSpawnPose();
+        const spawnFailure = spawnDistanceFailure(actualSpawn, startPosition);
+        if (spawnFailure) {
           car.exit(); controller.dispose(); if (raceControllerRef.current === controller) raceControllerRef.current = null;
-          failPlaytest("creator_spawn_distance_exceeded");
+          failPlaytest(spawnFailure === "too-far" ? "creator_spawn_distance_exceeded" : "creator_spawn_pose_unavailable");
           setRace(null); setActivityKind(null); setActivityTitle(null); raceVisualsRef.current?.dispose(); raceVisualsRef.current = null; raceVisualSceneRef.current = null;
           setRaceEntryError("安全出生点离小游戏入口太远，未开始游戏。"); setChoosingVehicle(true); return;
         }

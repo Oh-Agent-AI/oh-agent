@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { buildCityModel } from "./cityModel";
+import { buildIndependentCityModel } from "./viewport/independentCityModel";
 import { prepareCityWorldLayout } from "./engine/cityLayout";
 import { readCityAppearancePreference, type CityWorldProfileV1 } from "./engine/cityWorldProfile";
 import { createCityWorldProfileCallHandlers } from "./engine/cityWorldProfileCalls";
@@ -31,7 +32,9 @@ import { useMonsterEncounters } from "./game/mecha/useMonsterEncounters";
 import { prewarmAudioContext } from "./game/GameSfx";
 import { CityActivityCoordinator, type CityActivityLease } from "./game/activity/CityActivityCoordinator";
 import { claimCreatorPlaytest, finishCreatorPlaytest, loadCreatorPublishedMiniGames, pendingCreatorPlaytest, type CreatorPlaytestHandoffV1 } from "./game/activity/loadCreatorExperiences";
-import { clearPlaytestBootstrap, readPlaytestBootstrap, writePlaytestBootstrap } from "./game/activity/playtestBootstrap";
+import type { PendingCreatorPlaytestV1 } from "./game/activity/creatorPlaytestPending";
+import { resolveCityBoot } from "./game/activity/resolveCityBoot";
+import type { PlanPatchV1 } from "./engine/planPatch";
 import type { CreatorPublishedMiniGameV1 } from "./game/activity/creatorMiniGame";
 import { loadCreatorSceneModels } from "./game/activity/creatorSceneModels";
 import { createCreatorLayoutSnapshot } from "./engine/sdk/cityLayoutAdapter";
@@ -73,9 +76,39 @@ function projectionStatusLabel(data: CityProjectionV1): string {
   return "City 数据不可用";
 }
 
+type CityBoot = Extract<PendingCreatorPlaytestV1, { pending: true }>;
+
 export function CityApp() {
+  const [boot, setBoot] = useState<PendingCreatorPlaytestV1 | null>(null);
+  const [error, setError] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    if (!embedded()) { setBoot({ pending: false }); return; }
+    // The host marks the plugin ready after the first toolbar publication.
+    // Keep health reporting active while the engine is gated.
+    publishToolbar([]);
+    const stopHealth = observeHealth();
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    void resolveCityBoot(pendingCreatorPlaytest,
+      () => new Promise<void>(resolve => { timer = setTimeout(resolve, 300); }),
+      () => cancelled).then(result => {
+        if (result && !cancelled) { stopHealth(); setError(false); setBoot(result); }
+      }).catch(() => { if (!cancelled) setError(true); });
+    return () => { cancelled = true; if (timer) clearTimeout(timer); stopHealth(); };
+  }, [attempt]);
+  if (!boot) return <section className="city-app"><div className="city-loading" role="status"><div className="city-loading-card">
+    <h2>{error ? "无法确认试玩状态" : "正在准备城市"}</h2>
+    <p>{error ? "无法连接城市服务，请重试。试玩不会使用其他城市继续。" : "正在确认城市与试玩状态…"}</p>
+    {error && <button onClick={() => { setError(false); setAttempt(value => value + 1); }}>重试</button>}
+  </div></div></section>;
+  return <CityAppRuntime key={boot.pending ? boot.runId : "player-city"} boot={boot.pending ? boot : null}
+    onPlaytestFinished={() => setBoot({ pending: false })} />;
+}
+
+function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; onPlaytestFinished: () => void }) {
   const language = useCityLanguage();
-  const [worldProfile, setWorldProfile] = useState<CityWorldProfileV1>(() => readPlaytestBootstrap()?.profile ?? readCityAppearancePreference());
+  const [worldProfile, setWorldProfile] = useState<CityWorldProfileV1>(() => boot?.city.profile ?? readCityAppearancePreference());
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<CityEngine | null>(null);
   const [projection, setProjection] = useState<CityProjectionV1 | null>(null);
@@ -132,76 +165,35 @@ export function CityApp() {
   const mechaActive = useRef(false);
   mechaActive.current = mechaOpen;
   const [refresh, setRefresh] = useState(0);
-  const experience = useCityExperience(engineRef, projection, worldProfile);
+  const experience = useCityExperience(engineRef, projection, worldProfile, boot?.city.seed);
   const [creatorExperiences, setCreatorExperiences] = useState<readonly CreatorPublishedMiniGameV1[]>([]);
   const [creatorPlaytest, setCreatorPlaytest] = useState<CreatorPlaytestHandoffV1 | null>(null);
-  // City-scoped playtest: load the release's frozen city revision as a transient
-  // City-scoped playtest boots the frozen city through a one-shot sessionStorage
-  // override + reload. The pending request can race the plugin becoming ready
-  // (`plugin_instance_mismatch`), so keep retrying until the host answers; never
-  // claim before this gate settles or the release is validated against Miami.
-  const [playtestBootReady, setPlaytestBootReady] = useState(!embedded());
-  useEffect(() => {
-    if (!embedded()) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let attempts = 0;
-    const check = async () => {
-      try {
-        const pending = await pendingCreatorPlaytest();
-        if (cancelled) return;
-        const boot = readPlaytestBootstrap();
-        if (pending.pending) {
-          if (!boot || boot.runId !== pending.runId) {
-            writePlaytestBootstrap({ runId: pending.runId, worldRevision: pending.worldRevision,
-              seed: pending.city.seed, profile: pending.city.profile });
-            window.location.reload();
-            return;
-          }
-        } else if (boot) {
-          clearPlaytestBootstrap();
-          window.location.reload();
-          return;
-        }
-        setPlaytestBootReady(true);
-      } catch {
-        if (cancelled) return;
-        if (attempts < 60) { attempts += 1; timer = setTimeout(() => { void check(); }, 300); }
-        else setPlaytestBootReady(true);
-      }
-    };
-    void check();
-    return () => { cancelled = true; if (timer) clearTimeout(timer); };
-  }, []);
+  const [playtestError, setPlaytestError] = useState<string | null>(null);
   useEffect(() => {
     setCreatorExperiences([]); setCreatorPlaytest(null);
-    if (!firstModelFrame || !embedded() || !playtestBootReady) return;
+    if (!firstModelFrame || !embedded()) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let attempts = 0;
     const load = async () => {
       const view = engineRef.current?.getCitySdkLayoutView();
       if (!view) return;
-      const boot = readPlaytestBootstrap();
       if (boot && view.worldRevision !== boot.worldRevision) {
         if (attempts < 30) { attempts += 1; timer = setTimeout(() => { void load(); }, 400); }
+        else setPlaytestError("试玩城市布局与发布版本不一致，请返回 Studio 取消并重新发布。");
         return;
       }
       try {
-        const handoff = await claimCreatorPlaytest(view);
+        const handoff = await claimCreatorPlaytest(view, boot?.runId);
         if (handoff) {
           if (!cancelled) { setCreatorPlaytest(handoff); setCreatorExperiences(handoff.experiences); }
           return;
         }
+        if (boot) { if (!cancelled) setPlaytestError("试玩已失效，请返回 Studio 检查此次试玩。"); return; }
         const items = await loadCreatorPublishedMiniGames(view);
         if (!cancelled) setCreatorExperiences(items);
       } catch (error) {
-        if (!cancelled && readPlaytestBootstrap() && error instanceof Error
-          && !["creator_layout_not_found", "plugin_call_timeout", "plugin_call_expired"].includes(error.message)) {
-          clearPlaytestBootstrap();
-          window.location.reload();
-          return;
-        }
+        if (!cancelled && boot) setPlaytestError("试玩启动失败，请返回 Studio 检查或取消此次试玩。");
         if (!cancelled && attempts < 5 && error instanceof Error && ["creator_layout_not_found", "plugin_call_timeout", "plugin_call_expired"].includes(error.message)) {
           attempts += 1;
           timer = setTimeout(() => { void load(); }, attempts * 500);
@@ -210,7 +202,7 @@ export function CityApp() {
     };
     void load();
     return () => { cancelled = true; if (timer) clearTimeout(timer); };
-  }, [firstModelFrame, experience.seed, worldProfile, playtestBootReady]);
+  }, [firstModelFrame, experience.seed, worldProfile, boot]);
   useEffect(() => {
     const engine = engineRef.current;
     if (!engine || !firstModelFrame || !embedded() || !creatorExperiences.length) return;
@@ -230,7 +222,7 @@ export function CityApp() {
   }, [creatorExperiences, firstModelFrame, worldProfile]);
   const publishedCreatorLayouts = useRef(new Set<string>());
   useEffect(() => {
-    if (!firstModelFrame || !embedded()) return;
+    if (boot || !firstModelFrame || !embedded()) return;
     let cancelled = false;
     let frame = 0;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -283,7 +275,7 @@ export function CityApp() {
     };
     frame = requestAnimationFrame(() => { void publishWhenReady(); });
     return () => { cancelled = true; cancelAnimationFrame(frame); if (retryTimer) clearTimeout(retryTimer); };
-  }, [firstModelFrame, experience.seed, worldProfile]);
+  }, [firstModelFrame, experience.seed, worldProfile, boot]);
   const sessionCount = projection?.sessions.length ?? 0;
   // 换种子或会话规模后战场目录作废。空目录会把门禁留下，这里先放开，等下一次搜索再锁。
   useEffect(() => { setMechaAvailability("unknown"); }, [experience.seed, sessionCount]);
@@ -308,14 +300,19 @@ export function CityApp() {
     locale: () => (language === "en" ? "en" : "zh-Hans"),
     activityCoordinator,
   });
-  const finishPlaytest = useCallback(async (runId: string, status: "completed" | "cancelled" | "failed", evidence?: Parameters<typeof finishCreatorPlaytest>[2], failureCode?: string) => {
-    try { await finishCreatorPlaytest(runId, status, evidence, failureCode); }
-    finally {
-      if (readPlaytestBootstrap()) { clearPlaytestBootstrap(); window.location.reload(); return; }
+  const [finishRetry, setFinishRetry] = useState<Parameters<typeof finishCreatorPlaytest> | null>(null);
+  const finishPlaytest = useCallback(async (...args: Parameters<typeof finishCreatorPlaytest>) => {
+    try {
+      await finishCreatorPlaytest(...args);
+      setFinishRetry(null);
       setCreatorPlaytest(null);
       setCreatorExperiences([]);
+      if (boot) onPlaytestFinished();
+    } catch {
+      setFinishRetry(args);
+      setStatus("试玩结果未能保存，请重试。");
     }
-  }, []);
+  }, [boot, onPlaytestFinished]);
   const driving = useCityDrivingPlay(engineRef, {
     cinemaActive: () => cinemaRef.current,
     gameActive: () => game.active,
@@ -327,14 +324,14 @@ export function CityApp() {
   useEffect(() => {
     if (!creatorPlaytest || !firstModelFrame || driving.active || startedCreatorPlaytest.current === creatorPlaytest.runId) return;
     const first = creatorPlaytest.experiences[0];
-    if (!first) { void finishCreatorPlaytest(creatorPlaytest.runId, "failed", undefined, "creator_playtest_experience_unavailable"); return; }
+    if (!first) { void finishPlaytest(creatorPlaytest.runId, "failed", undefined, "creator_playtest_experience_unavailable"); return; }
     startedCreatorPlaytest.current = creatorPlaytest.runId;
     driving.startCreatorGame(first.releaseId, first.mount.mountId);
   }, [creatorPlaytest, firstModelFrame, driving.active, driving.startCreatorGame]);
   useEffect(() => () => { mechaActivityLease.current?.release(); mechaActivityLease.current = null; }, []);
   drivingActive.current = driving.active;
   // 规划修复（开发开关 ?cityPlan / cityPlanDev=1；未开启时 hook 什么都不做）。与游戏/航拍/导出/忙碌互斥。
-  const planRepair = usePlanRepair(engineRef, { seed: experience.seed, model: experience.model, blocked: cinema || game.active || driving.active || mechaOpen || experience.busy || !!experience.film });
+  const planRepair = usePlanRepair(engineRef, { seed: experience.seed, model: experience.model, blocked: !!boot || cinema || game.active || driving.active || mechaOpen || experience.busy || !!experience.film });
   // World entries, road audit and Dream preview require the same idle scene.
   // Keep the order used by the Mecha refusal messages.
   const sceneActivityBlocker = cinema ? "cinema"
@@ -345,7 +342,7 @@ export function CityApp() {
     : experience.busy ? "busy"
     : mechaOpen ? "mecha"
     : null;
-  cityWorldProfileApplyAllowed.current = !!engineRef.current && firstModelFrame && sceneActivityBlocker === null;
+  cityWorldProfileApplyAllowed.current = !boot && !!engineRef.current && firstModelFrame && sceneActivityBlocker === null;
   // Require a modelled city: the board is a view of the current layout, not a game
   // that can start against a half-built scene.
   const openMecha = (encounter: MonsterEncounter | null = null) => {
@@ -507,6 +504,7 @@ export function CityApp() {
   }, [firstModelFrame]);
 
   useEffect(() => {
+    if (boot) { setDataLoaded(true); return; }
     let active = true;
     const loading = new AbortController();
     setStatus("正在更新 City 插槽数据…");
@@ -537,7 +535,7 @@ export function CityApp() {
         ? "City 数据暂不可用" : current);
     });
     return () => { active = false; loading.abort(); };
-  }, [windowDays, refresh]);
+  }, [windowDays, refresh, boot]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -545,10 +543,11 @@ export function CityApp() {
     let engine: CityEngine;
     setFirstModelFrame(false);
     try {
-      engine = new CityEngine({ canvas, worldProfile, ...experience.callbacks, onPlay: (target) => playRef.current(target), onFirstFrame: () => setFirstModelFrame(true), onCinematic: (_elapsed, _plan, ended) => {
+      engine = new CityEngine({ canvas, worldProfile, ...experience.callbacks, onPlay: (target) => playRef.current(target), onFirstFrame: () => { if (!boot) setFirstModelFrame(true); }, onCinematic: (_elapsed, _plan, ended) => {
         experience.callbacks.onCinematic(_elapsed, _plan, ended);
         if (ended) { setCinema(false); }
       } });
+      if (boot) engine.setSeed(boot.city.seed);
     } catch {
       setSceneUnavailable(true);
       return;
@@ -576,36 +575,36 @@ export function CityApp() {
       geographyAbort.current = null;
       geographyKey.current = "";
     }
-    if (!projection || !engineRef.current || experience.busy || game.active || driving.active || mechaOpen) return;
+    if ((!projection && !boot) || !engineRef.current || experience.busy || game.active || driving.active || mechaOpen) return;
     const engine = engineRef.current;
-    const from = Date.parse(projection.window.from);
-    const to = Date.parse(projection.window.to);
+    const from = projection ? Date.parse(projection.window.from) : 0;
+    const to = projection ? Date.parse(projection.window.to) : 1;
     setCityLoad({ stage: "model", work: null });
-    const rows = projectionSessionRows(projection);
-    const model = buildCityModel({
-      harnessNames: Object.fromEntries(projection.harnesses.map((h) => [h.id, h.display_name])),
+    const rows = projection ? projectionSessionRows(projection) : [];
+    const model = boot ? buildIndependentCityModel() : buildCityModel({
+      harnessNames: Object.fromEntries(projection!.harnesses.map((h) => [h.id, h.display_name])),
       rows,
-      findings: projection.findings.map((finding) => ({
+      findings: projection!.findings.map((finding) => ({
         harness: finding.harness,
         rule: "harness_summary",
         severity: finding.severity,
         status_rollup: { open: finding.count, later: 0 },
       })),
-      windowStartMs: replayStartMs(projection.sessions, from, to),
+      windowStartMs: replayStartMs(projection!.sessions, from, to),
       windowEndMs: to,
-      windowLabel: projection.window.label,
-      totalSessions: projection.coverage.total,
-      truncated: projection.coverage.truncated,
-      generatedAt: Date.parse(projection.generated_at ?? new Date().toISOString()),
+      windowLabel: projection!.window.label,
+      totalSessions: projection!.coverage.total,
+      truncated: projection!.coverage.truncated,
+      generatedAt: Date.parse(projection!.generated_at ?? new Date().toISOString()),
     });
     experience.modelRef.current = model;
     experience.setModel(model);
     // Geography is keyed by window + planned population, not the sessions array.
     // Occupant-only page updates must not abort the in-flight island plan or hide the first frame.
-    const planned = Math.min(4000, Math.max(projection.sessions.length, projection.coverage.total));
-    const geography = JSON.stringify([projection.window, experience.seed, planned]);
-    const occupants = projection.sessions.map((session) => session.id).join("\0");
-    const signature = `${geography}|${occupants}|${JSON.stringify(projection.findings)}`;
+    const planned = boot ? 0 : Math.min(4000, Math.max(projection!.sessions.length, projection!.coverage.total));
+    const geography = JSON.stringify([boot ? "independent-empty-city" : projection!.window, experience.seed, planned]);
+    const occupants = boot ? "" : projection!.sessions.map((session) => session.id).join("\0");
+    const signature = `${geography}|${occupants}|${JSON.stringify(boot ? [] : projection!.findings)}`;
     if (signature === fingerprint.current) { experience.refreshSelection(); return; }
     if (geographyKey.current !== geography) {
       geographyAbort.current?.abort();
@@ -615,7 +614,7 @@ export function CityApp() {
       fingerprint.current = "";
       setFirstModelFrame(false);
       setCityLoad({ stage: "planning", work: null });
-      reportSceneStage("planning", projection.window.days);
+      reportSceneStage("planning", projection?.window.days ?? windowDays);
       void prepareCityWorldLayout(model, experience.seed, worldProfile, { signal: preparation.signal,
         onPlanningProgress: (snapshot: PlanningWorkSnapshot) => {
           const work = Object.values(snapshot.consumed).reduce((sum, value) => sum + value, 0);
@@ -623,16 +622,17 @@ export function CityApp() {
         } }).then(async () => {
         if (preparation.signal.aborted || engineRef.current !== engine) return;
         setCityLoad({ stage: "mounting", work: null });
-        reportSceneStage("mounting", projection.window.days);
+        reportSceneStage("mounting", projection?.window.days ?? windowDays);
         await noteBusy(15_000).catch(() => {});
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
         if (preparation.signal.aborted || engineRef.current !== engine) return;
+        if (boot) engine.setPlanPatch((boot.city.planPatch ?? null) as PlanPatchV1 | null);
         engine.applyModel(model, false);
         setCityLoad({ stage: "rendering", work: null });
-        reportSceneStage("rendering", projection.window.days);
+        reportSceneStage("rendering", projection?.window.days ?? windowDays);
         // applyModel synchronously renders the first frame for this model before returning.
         setFirstModelFrame(true);
-        appliedWindow.current = projection.window.days;
+        appliedWindow.current = projection?.window.days ?? windowDays;
         fingerprint.current = signature;
         experience.refreshSelection();
       }).catch(() => {
@@ -653,7 +653,7 @@ export function CityApp() {
     }).catch(() => {});
     experience.refreshSelection();
     return () => preparation.abort();
-  }, [projection, experience.busy, experience.seed, worldProfile, game.active, driving.active, firstModelFrame, mechaOpen]);
+  }, [projection, experience.busy, experience.seed, worldProfile, game.active, driving.active, firstModelFrame, mechaOpen, boot]);
 
   useEffect(() => {
     if (!projection || !embedded()) return;
@@ -746,7 +746,7 @@ export function CityApp() {
   }, [projection, labels, quality, cinema, experience.busy, game.active, driving.active]);
 
   const dataAvailable = projection !== null && projection.status !== "unavailable";
-  const sceneReady = dataAvailable && projection.status !== "empty" && !sceneUnavailable && firstModelFrame;
+  const sceneReady = (boot !== null || (dataAvailable && projection.status !== "empty")) && !sceneUnavailable && firstModelFrame;
   const dreamPreviewEnabled = dreamPublicationActive || (embedded() && projection?.source === "local" && sceneReady
     && sceneActivityBlocker === null);
   const openDreamPreview = async () => {
@@ -803,7 +803,7 @@ export function CityApp() {
   const encounterState = useMonsterEncounters(engineRef, sceneReady);
   // The host projection request precedes model/planning progress. Keep the same
   // loading shell visible from the first render, including a slow summary query.
-  const cityLoading = !sceneUnavailable && (!dataLoaded || (dataAvailable && projection?.status !== "empty" && !firstModelFrame));
+  const cityLoading = !sceneUnavailable && (boot ? !firstModelFrame : (!dataLoaded || (dataAvailable && projection?.status !== "empty" && !firstModelFrame)));
   const roadAuditEnabled = sceneReady && sceneActivityBlocker === null;
   const mechaEntryEnabled = sceneReady && sceneActivityBlocker === null && Boolean(experience.model) && mechaAvailability !== "empty";
   const roadAudit = useRoadAudit(engineRef, roadAuditEnabled && roadAuditOpen);
@@ -826,7 +826,7 @@ export function CityApp() {
     { id: "car", commandId: "city.car", label: driving.active ? "退出驾驶" : "驾车", kind: "button" as const,
       enabled: driving.active || (sceneReady && !cinema && !game.active && !experience.busy && !experience.film && !planRepair.state.active) },
     { id: "mecha", commandId: "city.mecha", label: "机甲战棋", kind: "button" as const, enabled: mechaEntryEnabled },
-  ].map((tool) => ({ ...tool, enabled: tool.enabled && !mechaOpen && (tool.id === "car" || !driving.active) })).map((tool: { id: string; label: string; options?: Array<{ value: string; label: string }> }) => ({ ...tool, placement: tool.id === "cinema" || tool.id === "game" || tool.id === "car" || tool.id === "mecha" || tool.id === "film" && experience.film ? "primary" : "overflow", label: cityText(tool.label, language), options: tool.options?.map((option) => ({ ...option, label: cityText(option.label, language) })) })) as Tool[];
+  ].map((tool) => ({ ...tool, enabled: tool.enabled && !mechaOpen && (tool.id === "car" || !driving.active) && (!boot || (tool.id === "car" && driving.active)) })).map((tool: { id: string; label: string; options?: Array<{ value: string; label: string }> }) => ({ ...tool, placement: tool.id === "cinema" || tool.id === "game" || tool.id === "car" || tool.id === "mecha" || tool.id === "film" && experience.film ? "primary" : "overflow", label: cityText(tool.label, language), options: tool.options?.map((option) => ({ ...option, label: cityText(option.label, language) })) })) as Tool[];
   const execute = (commandId: string, value?: string) => {
     const engine = engineRef.current;
     if (driving.active && commandId !== "city.car") throw new Error("driving_active");
@@ -881,9 +881,11 @@ export function CityApp() {
   // scene completion. Planning runs on a local worker while scene tools stay disabled.
   useEffect(() => { if (toolbarReady) publishToolbar(tools); }, [language, toolbarReady, windowDays, quality, labels, cinema, mechaOpen, roadAuditOpen, sceneReady, sceneUnavailable, game.active, driving.active, planRepair.state.active, experience.busy, experience.film?.frame, experience.film?.total, mechaEntryEnabled]);
   const sceneMessage = sceneUnavailable ? "当前环境无法显示三维城市，仍可查看会话摘要。"
-    : !dataAvailable || projection.status === "empty" ? status : null;
+    : !boot && (!dataAvailable || projection.status === "empty") ? status : null;
   return cityView((
     <section className="city-app" aria-label="Agent City">
+      {playtestError && <div role="alert" className="city-playtest-error">{playtestError}</div>}
+      {finishRetry && <div role="alert" className="city-playtest-error">试玩结果未保存。 <button onClick={() => { void finishPlaytest(...finishRetry); }}>重试保存</button></div>}
       <canvas className="city-canvas" ref={canvasRef} aria-label="Agent City 三维城市" style={{ visibility: sceneMessage && !game.active ? "hidden" : "visible" }} />
       {cityLoading && <div className="city-loading" role="status" aria-live="polite">
         <div className="city-loading-card"><div className="city-loading-mark" aria-hidden="true"><span /><span /><span /><i /></div>
@@ -900,10 +902,10 @@ export function CityApp() {
           ? <select key={tool.id} aria-label={tool.label} value={tool.value} disabled={!tool.enabled} onChange={(event) => execute(tool.commandId, event.target.value)}>{tool.options?.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
           : <button key={tool.id} disabled={!tool.enabled} onClick={() => execute(tool.commandId)}>{tool.label}</button>)}</div>
       </header>}
-      {!cinema && !game.active && !driving.active && !mechaOpen && sceneReady && <SquadFeed
+      {!boot && !cinema && !game.active && !driving.active && !mechaOpen && sceneReady && <SquadFeed
         items={squad.items} nowMs={squadNow} open={squadOpen} onOpen={setSquadOpen}
         onFocus={(assetRef) => { engineRef.current?.focusBuilding(assetRef); }} />}
-      <div hidden={driving.active || mechaOpen}><CityExperience ui={experience} disabled={!sceneReady} cinema={cinema} status={status} loadErrorCode={loadErrorCode} quality={quality} theme={engineRef.current?.currentTheme} game={game} planRepair={planRepair}
+      <div hidden={driving.active || mechaOpen}><CityExperience ui={experience} disabled={!sceneReady || !!boot} cinema={cinema} status={status} loadErrorCode={loadErrorCode} quality={quality} theme={engineRef.current?.currentTheme} game={game} planRepair={planRepair}
         windowDays={windowDays} windowOptions={windowOptions} onWindowDays={(days) => setWindowDays(days as WindowDays)} labels={labels} onLabels={(next) => { engineRef.current?.setLabelsVisible(next); setLabels(next); }}
         onQuality={(value) => { if (["auto", "high", "eco"].includes(value)) { engineRef.current?.setQualityMode(value as EngineQualityMode); setQuality(value as EngineQualityMode); } }}
         onMecha={() => openMecha()} mechaEnabled={mechaEntryEnabled} mechaAvailability={mechaAvailability}

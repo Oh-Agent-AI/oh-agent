@@ -1025,7 +1025,8 @@ pub fn dispatch_city_runtime(home: &Path, city_instance: &str, method: &str, pay
         "city.creator.patch.read" if exact_payload(payload, &["seed"]) => read_city_patch_for_seed(home,
             payload["seed"].as_u64().filter(|seed| *seed <= u32::MAX as u64).ok_or("creator_request_invalid")?),
         "city.creator.playtest.pending" if exact_payload(payload, &[]) => crate::creator_playtest::pending_playtest(home),
-        "city.creator.playtest.claim" if exact_payload(payload, &[]) => claim_playtest(home, city_instance),
+        "city.creator.playtest.claim" if exact_payload(payload, &[]) => claim_playtest(home, city_instance, None),
+        "city.creator.playtest.claim" if exact_payload(payload, &["runId"]) => claim_playtest(home, city_instance, Some(payload.get("runId").and_then(Value::as_str).ok_or("creator_request_invalid")?)),
         "city.creator.playtest.finish" if exact_payload(payload, &["runId", "status", "evidence"])
             || exact_payload(payload, &["runId", "status", "evidence", "failureCode"]) => finish_playtest(home, city_instance,
             payload["runId"].as_str().ok_or("creator_request_invalid")?,
@@ -2187,7 +2188,9 @@ mod tests {
         assert_eq!(pending["city"]["cityId"], city_id);
         assert_eq!(pending["city"]["seed"], layout["seed"]);
         assert_eq!(pending["layout"]["layout"]["id"], layout["layout"]["id"]);
-        let claimed = dispatch_city_runtime(&home, "city-instance", "city.creator.playtest.claim", &json!({})).unwrap();
+        assert_eq!(dispatch_city_runtime(&home, "city-instance", "city.creator.playtest.claim", &json!({})).unwrap_err(), "creator_playtest_run_required");
+        assert_eq!(dispatch_city_runtime(&home, "city-instance", "city.creator.playtest.claim", &json!({"runId":"another-run"})).unwrap_err(), "creator_playtest_run_mismatch");
+        let claimed = dispatch_city_runtime(&home, "city-instance", "city.creator.playtest.claim", &json!({"runId":started["runId"]})).unwrap();
         assert_eq!(claimed["runId"], started["runId"]);
         assert_eq!(claimed["city"]["cityId"], city_id);
         assert_eq!(claimed["city"]["revision"], 0);
@@ -2207,6 +2210,44 @@ mod tests {
         assert_eq!(snapshot["cityId"], city_id);
         assert_eq!(snapshot["cityRevision"], 0);
         assert_eq!(snapshot["cityLayoutId"], layout["layout"]["id"]);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn source_export_roundtrips_real_project_with_verified_assets() {
+        let home = home();
+        let layout = layout_snapshot();
+        let seed = layout["seed"].as_u64().unwrap() as u32;
+        let city = crate::creator_cities::create_city(&home, "owner", "create-export-city", "导出之城", seed,
+            &json!({"schemaVersion":1,"id":"egypt-desert","version":1})).unwrap();
+        let city_id = city["cityId"].as_str().unwrap();
+        let scoped = json!({"schemaVersion":2,"cityId":city_id,"cityRevision":0,"worldRevision":"world-export-r1",
+            "seed":layout["seed"],"layout":layout["layout"]});
+        crate::creator_city_patch::store_scoped_city_layout(&home, &scoped).unwrap();
+        let created = create_project_from_city_draft(&home, LOCAL_CREATOR_OWNER, "checkpoint-race", "source-export-project", "world-export-r1", city_id).unwrap();
+        let project_id = created["projectId"].as_str().unwrap().to_owned();
+        let source = home.join("model.glb");
+        let bytes = test_glb(false);
+        std::fs::write(&source, &bytes).unwrap();
+        let imported = import_model_asset(&home, LOCAL_CREATOR_OWNER, &project_id, 0, "export-asset", &source).unwrap();
+        let asset_digest = imported["digest"].as_str().unwrap().to_owned();
+        let project = read_project(&home, &project_id).unwrap();
+        let revision = project["revision"].as_u64().unwrap();
+        let mut files = serde_json::Map::new();
+        for name in crate::creator_source_export::REQUIRED { files.insert((*name).to_owned(), json!("{}\n")); }
+        let destination = home.join("destination");
+        std::fs::create_dir(&destination).unwrap();
+        let payload = json!({"projectId":project_id,"revision":revision,"files":files,"assetDigests":[asset_digest]});
+        let output = crate::creator_source_export::export_source(&home, &destination, &payload).unwrap();
+        assert_eq!(output["assetCount"], 1);
+        assert_eq!(output["projectRevision"], revision);
+        let root = destination.join(output["directoryName"].as_str().unwrap());
+        assert_eq!(std::fs::read(root.join("games/game/assets").join(format!("{}.glb", &asset_digest[7..]))).unwrap(), bytes);
+        // 磁盘字节被篡改后必须拒绝导出，而不是把损坏资产写进分享目录。
+        let mut tampered = bytes.clone();
+        tampered[20] ^= 1;
+        std::fs::write(home.join("state/creator/projects").join(&project_id).join("assets").join(format!("{}.glb", &asset_digest[7..])), tampered).unwrap();
+        assert_eq!(crate::creator_source_export::export_source(&home, &destination, &payload).unwrap_err(), "creator_export_asset_mismatch");
         let _ = std::fs::remove_dir_all(home);
     }
 

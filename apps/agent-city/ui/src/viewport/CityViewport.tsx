@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { buildCityModel } from "../cityModel";
+import { buildIndependentCityModel } from "./independentCityModel";
 import { prepareCityWorldLayout } from "../engine/cityLayout";
 import { readCityAppearancePreference, type CityWorldProfileV1 } from "../engine/cityWorldProfile";
 import { CityEngine } from "../engine/CityEngine";
@@ -245,8 +246,7 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
     if ((!projection && !isolatedDraft) || !engine) return;
     const patchForSeed = patch?.seed === seed ? patch : null;
     const patchKey = patchForSeed ? hashPlanPatch(patchForSeed) : "";
-    const model = isolatedDraft ? buildCityModel({ harnessNames: {}, rows: [], findings: [], windowStartMs: 0, windowEndMs: 1,
-      windowLabel: "独立空城", totalSessions: 0, truncated: false, generatedAt: 0 }) : buildCityModel({
+    const model = isolatedDraft ? buildIndependentCityModel() : buildCityModel({
       harnessNames: Object.fromEntries(projection!.harnesses.map((h) => [h.id, h.display_name])),
       rows: projectionSessionRows(projection!),
       findings: projection!.findings.map((finding) => ({

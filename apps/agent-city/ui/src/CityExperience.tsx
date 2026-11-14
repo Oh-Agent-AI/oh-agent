@@ -3,7 +3,6 @@ import { playableKind } from "./engine/render/playableVehicles";
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { CityModel } from "./cityModel";
 import { readCitySessionDetail, stableAssetRefsForProjection, type CityProjectionV1 } from "./data/provider";
-import { readPlaytestBootstrap } from "./game/activity/playtestBootstrap";
 import { citySeed, randomSeed } from "./data/seed";
 import type { CityEngine, EngineStats } from "./engine/CityEngine";
 import type { CityTheme } from "./engine/cityTheme";
@@ -49,7 +48,7 @@ function download(blob: Blob, name: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
-export function useCityExperience(engine: RefObject<CityEngine | null>, projection: CityProjectionV1 | null, worldProfile: CityWorldProfileV1) {
+export function useCityExperience(engine: RefObject<CityEngine | null>, projection: CityProjectionV1 | null, worldProfile: CityWorldProfileV1, playtestSeed?: number) {
   const modelRef = useRef<CityModel | null>(null);
   const [model, setModel] = useState<CityModel | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
@@ -102,11 +101,10 @@ export function useCityExperience(engine: RefObject<CityEngine | null>, projecti
     let active = true;
     void (async () => {
       try {
-        const boot = readPlaytestBootstrap();
-        const saved = await citySeed("read");
-        const value = boot?.seed ?? saved ?? randomSeed();
+        const saved = playtestSeed === undefined ? await citySeed("read") : null;
+        const value = playtestSeed ?? saved ?? randomSeed();
         if (!active) return;
-        if (!boot && saved === null) await citySeed("write", value);
+        if (playtestSeed === undefined && saved === null) await citySeed("write", value);
         if (!active) return;
         engine.current?.setBackdrop(backdrop); // 首次布局前就用已存档位，避免先按 auto 排一遍再换
         engine.current?.setSeed(value); setSeed(value); setSeedDraft(String(value));

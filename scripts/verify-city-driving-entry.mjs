@@ -198,6 +198,17 @@ for (const vtol of [false,true]) {
   assert.ok(spawn, "a useful run-up exists away from the splitter nose");
   assert.ok(Math.abs(spawn.x) > 5, "spawn search must reject a pocket that only has short clearance");
 }
+// A long road can pass the requested entrance while its midpoint and coarse
+// samples are far away. Prefer the closest point but retain collision checks.
+{
+  const road = snapshot([patch("near-long-road", "carriageway", grid(-200, -8, 200, 8, 40, 4))]);
+  const index = m.buildSurfaceIndex(road);
+  const regions = m.buildSurfaceRegions(road, index);
+  const environment = new m.SurfaceDrivingEnvironment(regions);
+  const spawn = m.diagnosticSpawn(road, regions, environment, { x: 190, z: 0 });
+  assert.ok(spawn, "a safe pose near the entrance exists");
+  assert.ok(Math.hypot(spawn.x - 190, spawn.z) <= 40, "long road search must consider the point nearest the entrance");
+}
 console.log("Driving entry: paused start, resume/pause/exit, stale-world paths, diagnostic placement, blocked-spawn refusal, and directional clearance passed.");
 
 // Optional rendered CityParts regression: no browser/real user data; exercises

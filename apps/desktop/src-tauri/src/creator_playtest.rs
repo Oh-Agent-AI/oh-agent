@@ -91,7 +91,8 @@ pub(crate) fn start_playtest(home: &Path, studio_instance: &str, release_id: &st
     Ok(json!({"runId":run_id,"releaseId":release_id,"projectId":project_id,"revision":revision,"status":"pending"}))
 }
 
-pub(crate) fn claim_playtest(home: &Path, city_instance: &str) -> Result<Value, &'static str> {
+pub(crate) fn claim_playtest(home: &Path, city_instance: &str, expected_run: Option<&str>) -> Result<Value, &'static str> {
+    if expected_run.is_some_and(|id| !valid_id(id)) { return Err("creator_request_invalid"); }
     if !valid_id(city_instance) { return Err("creator_request_invalid"); }
     let mut db = database(home)?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
@@ -102,6 +103,7 @@ pub(crate) fn claim_playtest(home: &Path, city_instance: &str) -> Result<Value, 
         |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?)))
         .optional().map_err(|_| "creator_store_unavailable")?;
     let (run_id, release_id, project_id, revision, _studio_instance, claimed_city, status) = row.ok_or("creator_playtest_not_found")?;
+    if expected_run.is_some_and(|expected| expected != run_id) { return Err("creator_playtest_run_mismatch"); }
     agent_vitals_runtime::logging::log_info("creator_playtest", &format!("claim run={run_id} release={release_id} city_instance={city_instance} status={status}"));
     if status == "claimed" && claimed_city.as_deref() != Some(city_instance) { return Err("creator_playtest_claimed"); }
     if status != "pending" && status != "claimed" { return Err("creator_playtest_not_found"); }
@@ -122,6 +124,7 @@ pub(crate) fn claim_playtest(home: &Path, city_instance: &str) -> Result<Value, 
     }
     let skin_id = snapshot.get("skinId").cloned().unwrap_or(Value::Null);
     if !skin_id.is_null() && !skin_id.as_str().is_some_and(valid_skin_id) { return Err("creator_release_invalid"); }
+    if has_city_scope(&snapshot) && expected_run.is_none() { return Err("creator_playtest_run_required"); }
     let city_scope = if has_city_scope(&snapshot) { Some(release_city_scope(home, &snapshot)?) } else { None };
     tx.commit().map_err(|_| "creator_store_unavailable")?;
     let mut response = json!({"runId":run_id,"releaseId":release_id,"projectId":project_id,"revision":revision,"snapshotDigest":snapshot_digest,"skinId":skin_id,
