@@ -18,6 +18,7 @@ function usage() {
     "  init app-game <directory> [--app-sdk-tarball <file>]  Create an App Game WebView starter",
     "  init city-minigame <directory>   Create a runnable City mini-game project",
     "  init city-world <directory> [--generator miami|arid-dunes]  Create a City world profile project",
+    "  init city-project <directory> [--generator miami|arid-dunes]  Create a City source project",
     "  validate <directory>             Validate layout, game, mount, and optional scene assets",
     "  validate-world <file|directory>  Validate a public CityWorldProfileV1 JSON profile",
     "  asset inspect <file.glb>          Inspect a bounded local GLB and compute its SHA-256",
@@ -190,6 +191,21 @@ async function initWorld(directory, generator) {
   if (!validated.ok) throw new Error(validated.diagnostics[0]?.code ?? "world_profile_invalid");
   await writeFile(filePath, `${JSON.stringify(validated.value, null, 2)}\n`, { flag: "wx" });
   output({ ok: true, projectDir: project, generator, files: ["world.json"] });
+}
+
+async function initCityProject(directory, generator) {
+  const project = projectPath(directory);
+  const profile = worldTemplate(generator);
+  const validated = validateCityWorldProfile(profile);
+  if (!validated.ok) throw new Error(validated.diagnostics[0]?.code ?? "world_profile_invalid");
+  // Refuse even an existing empty directory: no source file can be overwritten.
+  await mkdir(project);
+  for (const name of ["world", "games", "design", "tests"]) await mkdir(path.join(project, name));
+  await writeFile(path.join(project, "world", "world.json"), `${JSON.stringify(validated.value, null, 2)}\n`, { flag: "wx" });
+  await writeFile(path.join(project, "README.md"), `# City source project\n\nWorld: ${validated.value.id} v${validated.value.version}.\n\nThe world/ directory is the SDK world input. Add games as separate projects in games/.\nA world artifact does not include games or user City data; runtime installation is not implemented by this scaffold.\n`, { flag: "wx" });
+  await writeFile(path.join(project, ".gitignore"), "dist/\n", { flag: "wx" });
+  output({ ok: true, projectDir: project, generator, files: ["README.md", ".gitignore", "world/world.json"],
+    directories: ["world", "games", "design", "tests"], installable: false });
 }
 
 async function loadProject(directory) {
@@ -763,7 +779,7 @@ async function main(args) {
       }
       return initAppGame(directory, appSdkTarball);
     }
-    if (rest[0] === "city-world") {
+    if (rest[0] === "city-world" || rest[0] === "city-project") {
       const directory = rest[1];
       let generator = "coastal-islands-v1";
       for (let index = 2; index < rest.length; index += 1) {
@@ -772,7 +788,7 @@ async function main(args) {
           generator = selection === "arid-dunes" ? "arid-dunes-v1" : selection === "miami" ? "coastal-islands-v1" : selection;
         } else throw new Error(`Unknown or invalid city-world argument '${rest[index]}'.`);
       }
-      return initWorld(directory, generator);
+      return rest[0] === "city-project" ? initCityProject(directory, generator) : initWorld(directory, generator);
     }
     return init(rest[0], rest[1]);
   }

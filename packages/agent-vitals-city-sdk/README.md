@@ -38,6 +38,9 @@ oh-agent-sdk pack ./my-city-game --out ./my-city-game.ohcity.json
 oh-agent-sdk verify ./my-city-game.ohcity.json
 oh-agent-sdk init city-world ./my-world --generator arid-dunes
 oh-agent-sdk validate-world ./my-world
+oh-agent-sdk init city-project ./my-city --generator arid-dunes
+oh-agent-sdk init city-minigame ./my-city/games/my-game
+oh-agent-sdk validate-world ./my-city/world
 oh-agent-sdk asset inspect ./models/bridge.glb
 oh-agent-sdk asset import ./my-city-game ./models/bridge.glb --asset-id bridge
 oh-agent-sdk asset verify ./my-city-game
@@ -61,6 +64,12 @@ cannot be installed or published. The CLI never loads executable content and
 does not connect to the desktop host.
 `city-world` scaffolds and validates the public world profile contract only; it
 does not run the City generator or create an installable world package.
+`city-project` creates a new source root with `world/`, `games/`, `design/`,
+and `tests/`, following the City project directory convention. It refuses an
+existing directory. Mini-games are independent projects inside `games/`;
+the starter game uses a synthetic layout and must be rebound to a real City.
+This scaffold does not export Studio's existing SQLite projects, install a
+world, or create a City instance.
 `asset inspect` reads one explicitly named local GLB of at most 64 MiB, runs the
 bounded in-memory structural inspector, and computes a SHA-256 digest of the
 bytes it read. `asset import` adds a checked GLB to a project-local,

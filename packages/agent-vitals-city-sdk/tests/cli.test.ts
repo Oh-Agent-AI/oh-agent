@@ -71,6 +71,23 @@ test("CLI creates and validates public City world profile projects", async () =>
   }
 });
 
+test("City source project scaffold follows the directory contract without overwriting", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "oh-agent-city-project-"));
+  const project = path.join(tempRoot, "arid-dunes"), world = path.join(project, "world"), artifact = path.join(tempRoot, "world.json");
+  try {
+    assert.equal(run(["init", "city-project", project, "--generator", "arid-dunes"]).status, 0);
+    assert.equal(JSON.parse(await readFile(path.join(world, "world.json"), "utf8")).id, "arid-dunes");
+    assert.equal(run(["validate-world", world]).status, 0);
+    assert.equal(run(["pack-world", world, "--out", artifact, "--seed", "42", "--generator-version", "6"]).status, 0);
+    assert.equal(run(["verify-world", artifact]).status, 0);
+    assert.notEqual(run(["init", "city-project", project, "--generator", "miami"]).status, 0);
+    assert.equal(JSON.parse(await readFile(path.join(world, "world.json"), "utf8")).id, "arid-dunes");
+    const game = path.join(project, "games", "sample");
+    assert.equal(run(["init", "city-minigame", game]).status, 0);
+    assert.equal(run(["validate", game]).status, 0);
+  } finally { await rm(tempRoot, { recursive: true, force: true }); }
+});
+
 test("world development artifact exports reproducibly and detects tampering", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "oh-agent-world-pack-"));
   const project = path.join(tempRoot, "dunes"), first = path.join(tempRoot, "one.json"), second = path.join(tempRoot, "two.json");
