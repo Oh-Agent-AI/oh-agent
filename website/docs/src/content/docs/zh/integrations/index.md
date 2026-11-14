@@ -58,8 +58,8 @@ DSH 没有 `harnesses/dsh/skills/` 目录；它的 skill 作用域写在 `HARNES
 ## 该用哪一个？
 
 - **想让自己的 AI Agent 回答用量问题**：用 [Data MCP 服务](/docs/zh/vitals/mcp-tools)。
-- **Claude Code、Codex 或 DSH 的日志在别的地方**（比如备份盘）：在桌面设置里添加其他目录。
-- **你的 Agent 还不支持**，但会写带 Token 用量的 JSONL 日志：写一个 manifest，不用写代码。
+- **Claude Code、Codex 或 DSH 的日志在别的地方**（比如备份盘）：在桌面设置里添加[其他目录](/docs/zh/integrations/custom-sources-and-manifests)。
+- **你的 Agent 还不支持**，但会写带 Token 用量的 JSONL 日志：写一个 [manifest](/docs/zh/integrations/custom-sources-and-manifests)，不用写代码。
 - **想给新 Agent 做完整支持**（包括行为检查）：用 Rust 添加数据源，然后提 PR。
 - **想在 Agent Vitals 数据上做新的可视化视图**：见 [App SDK](/docs/zh/vitals/app-sdk)。
 
@@ -87,4 +87,5 @@ DSH 没有 `harnesses/dsh/skills/` 目录；它的 skill 作用域写在 `HARNES
 
 - [Agent Vitals 引擎](/docs/zh/vitals/overview)
 - [架构总览](/docs/zh/architecture/overview)
+- [其他目录与 manifest 数据源](/docs/zh/integrations/custom-sources-and-manifests)
 - [数据管线](/docs/zh/architecture/data-pipeline)

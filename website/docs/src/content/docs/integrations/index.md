@@ -61,8 +61,8 @@ DSH has no `harnesses/dsh/skills/` folder; its skill scopes are described in `HA
 ## Which one should I use?
 
 - **You want your own AI agent to answer questions about your usage**: use the [Data MCP server](/docs/vitals/mcp-tools).
-- **Your Claude Code, Codex or DSH logs live somewhere else**, such as a backup drive: add an extra folder in Desktop Settings.
-- **Your agent isn't supported** but writes JSONL logs with token usage: write a manifest. No code needed.
+- **Your Claude Code, Codex or DSH logs live somewhere else**, such as a backup drive: add an [extra folder](/docs/integrations/custom-sources-and-manifests) in Desktop Settings.
+- **Your agent isn't supported** but writes JSONL logs with token usage: write a [manifest](/docs/integrations/custom-sources-and-manifests). No code needed.
 - **You want full support for a new agent**, including behaviour checks: add a data source in Rust and open a PR.
 - **You want a new visual view** on top of Agent Vitals data: see [Built-in plugins](/docs/vitals/app-sdk).
 
@@ -93,4 +93,5 @@ These items are still planned or only partly shipped on `dev` at `36e4b55a`.
 
 - [Agent Vitals engine](/docs/vitals/overview)
 - [Architecture overview](/docs/architecture/overview)
+- [Extra folders and manifest sources](/docs/integrations/custom-sources-and-manifests)
 - [Data pipeline](/docs/architecture/data-pipeline)
