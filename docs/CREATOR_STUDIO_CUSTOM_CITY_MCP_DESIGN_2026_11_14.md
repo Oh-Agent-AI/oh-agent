@@ -2,7 +2,7 @@
 
 状态：设计提案，尚未实现或通过真机验收。日期：2026-11-14。
 
-实施进度：已开始接入独立 City 草稿的创建、读取、列表，以及配置替换的预览和版本化提交；Studio 新增只读视口、状态和截图接口，跳过旧的按 seed 索引补丁。V2 布局从活动草稿视口生成，绑定 City ID、修订和种子并支持保存；目前尚不能用于项目绑定。只读视口尚未完成桌面真机验收，也不是 City 运行时切换；草稿尚不能绑定项目或发布。旧迈阿密尚未迁移，城市切换和全链路隔离尚未实现，因此这些接口不能作为独立城市验收通过的证据。
+实施进度：已接入独立 City 草稿的创建、读取、列表、配置替换预览与版本化提交、只读视口/状态/截图、布局保存；V2 布局绑定 City ID、修订和种子，并可通过 `creator_project_create` 的 `cityId` 绑定项目（项目与 release 快照冻结 cityId/cityRevision/cityLayoutId）。只读视口尚未完成桌面真机验收，也不是 City 运行时切换；旧迈阿密尚未迁移，城市切换与全链路隔离尚未实现，活动 City 的跨 generator 世界切换已被拒绝（`city_world_profile_city_mismatch`）。因此这些接口仍不能作为独立城市验收通过的证据。
 
 关联：[Creator Studio 架构](AGENT_CITY_CREATOR_STUDIO_CODE_ARCHITECTURE_2026_11_11.md)、[SDK 迁移现状](AGENT_CITY_SDK_MIGRATION_2026_11_10.md)、[沙海之门 SPEC](EGYPT_DESERT_CITY_SPEC_2026_11_14.md)。本方案细化城市身份与自定义风格，不改变仓库本地数据及远程访问政策。
 
