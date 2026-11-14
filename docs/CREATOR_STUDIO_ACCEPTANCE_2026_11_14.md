@@ -57,11 +57,12 @@
 
 ## 5. 未通过发布验收的阻塞项
 
-1. **独立 City 试玩闭环进行中（未验收）**：host 已允许 city-scoped release 启动，新增
-   `city.creator.playtest.pending`，claim 返回冻结的 City revision + scoped layout；City 端
-   会先以临时 seed/profile 加载该 revision、等待 worldRevision 匹配再 claim，结束后恢复
-   玩家自己的 City。host/TS 单元测试通过，但真机测试中 City 插件当前未到达 first frame，
-   run 停留在 pending，尚不能判定 A5 通过。
+1. **独立 City 试玩闭环进行中（未验收）**：host 已允许 city-scoped release 启动，
+   `city.creator.playtest.pending` 返回冻结的 City revision + scoped layout；City 端通过
+   sessionStorage 一次性 bootstrap + reload 以该 revision 启动，并增加了 pending 授权
+   竞态重试（`plugin_instance_mismatch` 时继续等插件 ready）。host/TS 单元测试通过。
+   真机仍卡在 City 启动阶段：pending 已成功返回并写入 bootstrap，但 reload 后 City 未
+   产生新的 first frame / claim，run 仍为 pending；A5 不能判通过。
 2. **内容包不可运行/可信分发**：本机安装与卸载已实现，但安装的包不会执行或加载为 City；仍无签名/来源/运行时兼容校验，也没有分发/依赖/版本升级。
 3. **A3/A5/A6/A7 未闭环**：Agent 提案确认、完整竞速结算与返回、实例切换/崩溃恢复、
    撤销/重做与旧补丁迁移。

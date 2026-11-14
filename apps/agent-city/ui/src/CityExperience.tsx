@@ -3,6 +3,7 @@ import { playableKind } from "./engine/render/playableVehicles";
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { CityModel } from "./cityModel";
 import { readCitySessionDetail, stableAssetRefsForProjection, type CityProjectionV1 } from "./data/provider";
+import { readPlaytestBootstrap } from "./game/activity/playtestBootstrap";
 import { citySeed, randomSeed } from "./data/seed";
 import type { CityEngine, EngineStats } from "./engine/CityEngine";
 import type { CityTheme } from "./engine/cityTheme";
@@ -101,10 +102,11 @@ export function useCityExperience(engine: RefObject<CityEngine | null>, projecti
     let active = true;
     void (async () => {
       try {
+        const boot = readPlaytestBootstrap();
         const saved = await citySeed("read");
-        const value = saved ?? randomSeed();
+        const value = boot?.seed ?? saved ?? randomSeed();
         if (!active) return;
-        if (saved === null) await citySeed("write", value);
+        if (!boot && saved === null) await citySeed("write", value);
         if (!active) return;
         engine.current?.setBackdrop(backdrop); // 首次布局前就用已存档位，避免先按 auto 排一遍再换
         engine.current?.setSeed(value); setSeed(value); setSeedDraft(String(value));

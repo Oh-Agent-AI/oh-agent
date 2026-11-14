@@ -1180,10 +1180,14 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
         });
     }
     if matches!(method.as_str(), "city.creator.experiences.list" | "city.creator.experiences.read" | "city.creator.playtest.pending" | "city.creator.playtest.claim" | "city.creator.playtest.finish" | "city.creator.patch.publish" | "city.creator.patch.read") {
+        if method.starts_with("city.creator.playtest.") {
+            agent_vitals_runtime::logging::log_info("creator_playtest", &format!("plugin_request method={method} instance={}", request.instance_id));
+        }
         let _operation = state.1.lock().unwrap();
         {
             let host = state.0.lock().unwrap();
             if !city_creator_runtime_authorized(&host, &plugin_id, &request.instance_id, &local_calls, &method) {
+                agent_vitals_runtime::logging::log_warn("creator_playtest", &format!("authorization_denied method={method} instance={}", request.instance_id));
                 return Err("plugin_instance_mismatch".into());
             }
         }

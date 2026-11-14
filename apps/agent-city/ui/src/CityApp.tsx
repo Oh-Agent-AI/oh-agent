@@ -31,6 +31,7 @@ import { useMonsterEncounters } from "./game/mecha/useMonsterEncounters";
 import { prewarmAudioContext } from "./game/GameSfx";
 import { CityActivityCoordinator, type CityActivityLease } from "./game/activity/CityActivityCoordinator";
 import { claimCreatorPlaytest, finishCreatorPlaytest, loadCreatorPublishedMiniGames, pendingCreatorPlaytest, type CreatorPlaytestHandoffV1 } from "./game/activity/loadCreatorExperiences";
+import { clearPlaytestBootstrap, readPlaytestBootstrap, writePlaytestBootstrap } from "./game/activity/playtestBootstrap";
 import type { CreatorPublishedMiniGameV1 } from "./game/activity/creatorMiniGame";
 import { loadCreatorSceneModels } from "./game/activity/creatorSceneModels";
 import { createCreatorLayoutSnapshot } from "./engine/sdk/cityLayoutAdapter";
@@ -74,7 +75,7 @@ function projectionStatusLabel(data: CityProjectionV1): string {
 
 export function CityApp() {
   const language = useCityLanguage();
-  const [worldProfile, setWorldProfile] = useState<CityWorldProfileV1>(() => readCityAppearancePreference());
+  const [worldProfile, setWorldProfile] = useState<CityWorldProfileV1>(() => readPlaytestBootstrap()?.profile ?? readCityAppearancePreference());
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<CityEngine | null>(null);
   const [projection, setProjection] = useState<CityProjectionV1 | null>(null);
@@ -135,42 +136,58 @@ export function CityApp() {
   const [creatorExperiences, setCreatorExperiences] = useState<readonly CreatorPublishedMiniGameV1[]>([]);
   const [creatorPlaytest, setCreatorPlaytest] = useState<CreatorPlaytestHandoffV1 | null>(null);
   // City-scoped playtest: load the release's frozen city revision as a transient
-  // world (never persisted), wait for the planned layout to match the release,
-  // then claim. Restore the player's own city when the run ends.
-  const playtestTransientRef = useRef<{ runId: string; previousSeed: number; previousProfile: CityWorldProfileV1; expectedWorldRevision: string } | null>(null);
+  // City-scoped playtest boots the frozen city through a one-shot sessionStorage
+  // override + reload. The pending request can race the plugin becoming ready
+  // (`plugin_instance_mismatch`), so keep retrying until the host answers; never
+  // claim before this gate settles or the release is validated against Miami.
+  const [playtestBootReady, setPlaytestBootReady] = useState(!embedded());
+  useEffect(() => {
+    if (!embedded()) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let attempts = 0;
+    const check = async () => {
+      try {
+        const pending = await pendingCreatorPlaytest();
+        if (cancelled) return;
+        const boot = readPlaytestBootstrap();
+        if (pending.pending) {
+          if (!boot || boot.runId !== pending.runId) {
+            writePlaytestBootstrap({ runId: pending.runId, worldRevision: pending.worldRevision,
+              seed: pending.city.seed, profile: pending.city.profile });
+            window.location.reload();
+            return;
+          }
+        } else if (boot) {
+          clearPlaytestBootstrap();
+          window.location.reload();
+          return;
+        }
+        setPlaytestBootReady(true);
+      } catch {
+        if (cancelled) return;
+        if (attempts < 60) { attempts += 1; timer = setTimeout(() => { void check(); }, 300); }
+        else setPlaytestBootReady(true);
+      }
+    };
+    void check();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  }, []);
   useEffect(() => {
     setCreatorExperiences([]); setCreatorPlaytest(null);
-    if (!firstModelFrame || !embedded()) return;
+    if (!firstModelFrame || !embedded() || !playtestBootReady) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let attempts = 0;
     const load = async () => {
       const view = engineRef.current?.getCitySdkLayoutView();
       if (!view) return;
+      const boot = readPlaytestBootstrap();
+      if (boot && view.worldRevision !== boot.worldRevision) {
+        if (attempts < 30) { attempts += 1; timer = setTimeout(() => { void load(); }, 400); }
+        return;
+      }
       try {
-        let pending: Awaited<ReturnType<typeof pendingCreatorPlaytest>> = { pending: false };
-        try { pending = await pendingCreatorPlaytest(); }
-        catch (error) {
-          // Older hosts have no pending face: fall back to the legacy claim path.
-          if (!(error instanceof Error) || error.message !== "creator_method_unavailable") throw error;
-        }
-        if (cancelled) return;
-        if (pending.pending) {
-          const transient = playtestTransientRef.current;
-          if (!transient) {
-            playtestTransientRef.current = { runId: pending.runId, previousSeed: experience.seed,
-              previousProfile: worldProfile, expectedWorldRevision: pending.worldRevision };
-            experience.loadTransientSeed(pending.city.seed);
-            setWorldProfile(pending.city.profile);
-            setFirstModelFrame(false);
-            return;
-          }
-          if (transient.runId !== pending.runId) return;
-          if (view.worldRevision !== pending.worldRevision) {
-            if (attempts < 30) { attempts += 1; timer = setTimeout(() => { void load(); }, 400); }
-            return;
-          }
-        }
         const handoff = await claimCreatorPlaytest(view);
         if (handoff) {
           if (!cancelled) { setCreatorPlaytest(handoff); setCreatorExperiences(handoff.experiences); }
@@ -179,11 +196,11 @@ export function CityApp() {
         const items = await loadCreatorPublishedMiniGames(view);
         if (!cancelled) setCreatorExperiences(items);
       } catch (error) {
-        if (!cancelled && playtestTransientRef.current) {
-          const transient = playtestTransientRef.current; playtestTransientRef.current = null;
-          experience.loadTransientSeed(transient.previousSeed);
-          setWorldProfile(transient.previousProfile);
-          setFirstModelFrame(false);
+        if (!cancelled && readPlaytestBootstrap() && error instanceof Error
+          && !["creator_layout_not_found", "plugin_call_timeout", "plugin_call_expired"].includes(error.message)) {
+          clearPlaytestBootstrap();
+          window.location.reload();
+          return;
         }
         if (!cancelled && attempts < 5 && error instanceof Error && ["creator_layout_not_found", "plugin_call_timeout", "plugin_call_expired"].includes(error.message)) {
           attempts += 1;
@@ -193,7 +210,7 @@ export function CityApp() {
     };
     void load();
     return () => { cancelled = true; if (timer) clearTimeout(timer); };
-  }, [firstModelFrame, experience.seed, worldProfile]);
+  }, [firstModelFrame, experience.seed, worldProfile, playtestBootReady]);
   useEffect(() => {
     const engine = engineRef.current;
     if (!engine || !firstModelFrame || !embedded() || !creatorExperiences.length) return;
@@ -291,22 +308,14 @@ export function CityApp() {
     locale: () => (language === "en" ? "en" : "zh-Hans"),
     activityCoordinator,
   });
-  const restorePlaytestTransient = useCallback(() => {
-    const transient = playtestTransientRef.current;
-    if (!transient) return;
-    playtestTransientRef.current = null;
-    experience.loadTransientSeed(transient.previousSeed);
-    setWorldProfile(transient.previousProfile);
-    setFirstModelFrame(false);
-  }, [experience]);
   const finishPlaytest = useCallback(async (runId: string, status: "completed" | "cancelled" | "failed", evidence?: Parameters<typeof finishCreatorPlaytest>[2], failureCode?: string) => {
     try { await finishCreatorPlaytest(runId, status, evidence, failureCode); }
     finally {
-      restorePlaytestTransient();
+      if (readPlaytestBootstrap()) { clearPlaytestBootstrap(); window.location.reload(); return; }
       setCreatorPlaytest(null);
       setCreatorExperiences([]);
     }
-  }, [restorePlaytestTransient]);
+  }, []);
   const driving = useCityDrivingPlay(engineRef, {
     cinemaActive: () => cinemaRef.current,
     gameActive: () => game.active,

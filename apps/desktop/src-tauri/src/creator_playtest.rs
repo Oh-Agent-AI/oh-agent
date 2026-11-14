@@ -81,6 +81,7 @@ pub(crate) fn start_playtest(home: &Path, studio_instance: &str, release_id: &st
         || !snapshot.get("mounts").is_some_and(Value::is_array) { return Err("creator_release_invalid"); }
     if has_city_scope(&snapshot) { release_city_scope(home, &snapshot)?; }
     let run_id = new_id("playtest-")?;
+    agent_vitals_runtime::logging::log_info("creator_playtest", &format!("start run={run_id} release={release_id} project={project_id} city={:?}", snapshot.get("cityId")));
     tx.execute("INSERT INTO creator_playtest_runs(run_id,release_id,project_id,revision,studio_instance_id,status,active_slot,created_at_ms,expires_at_ms)
         VALUES(?1,?2,?3,?4,?5,'pending',1,?6,?7)", params![run_id,release_id,project_id,revision,studio_instance,now,now.saturating_add(PLAYTEST_TTL_MS)])
         .map_err(|_| "creator_store_unavailable")?;
@@ -101,6 +102,7 @@ pub(crate) fn claim_playtest(home: &Path, city_instance: &str) -> Result<Value, 
         |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?)))
         .optional().map_err(|_| "creator_store_unavailable")?;
     let (run_id, release_id, project_id, revision, _studio_instance, claimed_city, status) = row.ok_or("creator_playtest_not_found")?;
+    agent_vitals_runtime::logging::log_info("creator_playtest", &format!("claim run={run_id} release={release_id} city_instance={city_instance} status={status}"));
     if status == "claimed" && claimed_city.as_deref() != Some(city_instance) { return Err("creator_playtest_claimed"); }
     if status != "pending" && status != "claimed" { return Err("creator_playtest_not_found"); }
     if status == "pending" {
@@ -154,6 +156,7 @@ pub(crate) fn pending_playtest(home: &Path) -> Result<Value, &'static str> {
         return Err("creator_release_invalid");
     }
     if !has_city_scope(&snapshot) { return Ok(json!({"pending":false})); }
+    agent_vitals_runtime::logging::log_info("creator_playtest", &format!("pending run={run_id} release={release_id} city={:?}", snapshot.get("cityId")));
     let (city, layout) = release_city_scope(home, &snapshot)?;
     Ok(json!({"pending":true,"runId":run_id,"releaseId":release_id,"projectId":project_id,"revision":revision,
         "worldRevision":snapshot["worldRevision"],"city":city,"layout":layout}))
@@ -322,6 +325,7 @@ pub(crate) fn cancel_playtest(home: &Path, studio_instance: &str, run_id: &str) 
         |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)))
         .optional().map_err(|_| "creator_store_unavailable")?;
     let Some((status,owner,revision,project_id)) = row else { return Err("creator_playtest_not_found"); };
+    agent_vitals_runtime::logging::log_info("creator_playtest", &format!("cancel run={run_id} studio={studio_instance} status={status}"));
     if owner != studio_instance { return Err("creator_playtest_instance_mismatch"); }
     if matches!(status.as_str(), "completed" | "cancelled" | "failed" | "expired") {
         return Ok(json!({"runId":run_id,"projectId":project_id,"revision":revision,"status":status,"cancelled":false}));
