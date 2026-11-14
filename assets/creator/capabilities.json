@@ -6,7 +6,74 @@
     "sceneColliders": 256,
     "sceneObjects": 10000
   },
-  "capabilityVersion": "2026-11-12.1",
+  "capabilities": {
+    "capabilityVersion": "2026-11-12.2",
+    "categories": {
+      "assets": {
+        "import": "creator.asset.import（桌面原生选择器，MCP 不接收路径）",
+        "maxAssets": 4096,
+        "maxImportedModelBytes": 67108864
+      },
+      "cityPatch": {
+        "maxBytes": 262144,
+        "remove": "city.patch.remove",
+        "upsert": "city.patch.upsert"
+      },
+      "game": {
+        "commit": "creator.project.commit",
+        "maxGameBytes": 262144,
+        "preview": "creator.game.preview"
+      },
+      "mount": {
+        "bind": "mount.bind",
+        "maxReleaseMounts": 32,
+        "remove": "mount.remove"
+      },
+      "playtest": {
+        "cancel": "creator.project.playtest.cancel",
+        "result": "creator.project.playtest.result",
+        "start": "creator.project.playtest.start",
+        "ttlMs": 1800000
+      },
+      "project": {
+        "create": "creator.project.create",
+        "maxDocumentBytes": 2097152,
+        "maxReleaseBytes": 524288,
+        "publish": "creator.project.publish",
+        "templates": [
+          "checkpoint-race",
+          "collect-one"
+        ]
+      },
+      "scene": {
+        "commit": "creator.scene.commit",
+        "maxColliders": 256,
+        "maxObjects": 10000,
+        "maxOperationsPerPreview": 128,
+        "objectKinds": [
+          "model",
+          "anchor",
+          "collider"
+        ],
+        "preview": "creator.scene.preview"
+      },
+      "skin": {
+        "select": "skin.select",
+        "skins": [
+          "miami-vice",
+          "desert-evening"
+        ]
+      }
+    },
+    "preview": {
+      "instanceBound": true,
+      "maxActive": 128,
+      "singleUse": true,
+      "ttlMs": 600000
+    },
+    "schemaVersion": 1
+  },
+  "capabilityVersion": "2026-11-12.2",
   "content": {
     "skins": [
       "miami-vice",

@@ -27,6 +27,9 @@ const files = new Map([["capabilities.json", capabilities]]);
 for (const template of CREATOR_TEMPLATES_V1) {
   files.set(path.join("templates", `${template.id}.json`), render({ schemaVersion: 1, templateId: template.id, label: template.label, pack: template.pack }));
 }
+// 模板索引：Rust/MCP 只 include_str! 这一个文件；新增模板 = SDK 常量 + 重新生成，
+// 不再需要手工在 Rust 注册表里加一行（设计 §1.3 / DoD）。
+files.set("templates-index.json", render({ schemaVersion: 1, templates: CREATOR_TEMPLATES_V1.map(({ id, label, pack }) => ({ id, label, pack })) }));
 
 const check = process.argv.includes("--check");
 let drift = false;

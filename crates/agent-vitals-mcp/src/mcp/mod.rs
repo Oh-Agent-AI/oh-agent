@@ -417,12 +417,29 @@ mod tests {
         }
         let error = dispatch("creator_scene_describe", &json!({"projectId":"project-1"}), Path::new("/unused")).unwrap_err();
         assert_ne!(error.code, "internal_error");
-        // P1：inspect 缺 objectId、capabilities 合法参数在无活动
-        // Studio 的单测环境里止步于路由错误（不得 internal_error）
+        // P1：inspect 缺 objectId 在参数校验阶段拒绝，不向插件转发。
         let error = dispatch("creator_scene_inspect", &json!({"projectId":"project-1","revision":1}), Path::new("/unused")).unwrap_err();
         assert_eq!(error.code, "invalid_argument");
-        let error = dispatch("creator_capabilities_list", &json!({"category":"scene","schemaVersion":1}), Path::new("/unused")).unwrap_err();
-        assert_ne!(error.code, "internal_error");
+    }
+
+    /// 能力发现是静态契约：没有活动 Studio 也必须可用（DoD §10）。
+    #[test]
+    fn creator_capabilities_are_served_without_studio() {
+        let full = dispatch("creator_capabilities_list", &json!({}), Path::new("/unused")).expect("capabilities must not require Studio");
+        let data = &full["data"];
+        assert_eq!(data["schemaVersion"], 1);
+        assert_eq!(data["categories"]["scene"]["maxObjects"], 10_000);
+        assert_eq!(data["categories"]["project"]["templates"][0], "checkpoint-race");
+
+        let filtered = dispatch("creator_capabilities_list", &json!({"category":"scene","schemaVersion":1}), Path::new("/unused")).expect("filtered capabilities");
+        assert_eq!(filtered["data"]["category"], "scene");
+        assert_eq!(filtered["data"]["capabilities"]["maxColliders"], 256);
+        assert!(filtered["data"]["supportedCategories"].as_array().unwrap().iter().any(|value| value == "project"));
+
+        let unknown = dispatch("creator_capabilities_list", &json!({"category":"physics-sim"}), Path::new("/unused")).unwrap_err();
+        assert_eq!(unknown.code, "invalid_argument");
+        let bad_version = dispatch("creator_capabilities_list", &json!({"schemaVersion":2}), Path::new("/unused")).unwrap_err();
+        assert_eq!(bad_version.code, "invalid_argument");
     }
 
     /// 审查 P1-2：可选字段类型错误必须显式拒绝——静默丢弃会让调用方误以为
