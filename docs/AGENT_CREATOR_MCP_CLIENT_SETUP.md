@@ -56,7 +56,7 @@ Claude Code（`claude mcp add` 或项目 `.mcp.json`，字段名以 Claude Code 
 
 ## 3. 工具面（与 creator_studio.rs specs() 一致）
 
-默认暴露 42 个工具；启动时加 `--enable-city-tools` 会再暴露 11 个独立 City 草稿实验工具（共 53 个）。以下工具名逐一核对自 crates/agent-vitals-mcp/src/mcp/creator_studio.rs 的 `specs()` 与 `run()`。协议为 JSON-RPC 2.0 行分隔帧；`initialize` 协议版本 `2025-06-18`，`serverInfo.name` 为 `Oh Agent MCP`。
+默认暴露 42 个工具；启动时加 `--enable-city-tools` 会再暴露 12 个独立 City 草稿实验工具（共 54 个）。以下工具名逐一核对自 crates/agent-vitals-mcp/src/mcp/creator_studio.rs 的 `specs()` 与 `run()`。协议为 JSON-RPC 2.0 行分隔帧；`initialize` 协议版本 `2025-06-18`，`serverInfo.name` 为 `Oh Agent MCP`。
 
 | MCP 工具 | 必需入参 | 可选入参 | 类别 |
 |---|---|---|---|
@@ -80,9 +80,10 @@ Claude Code（`claude mcp add` 或项目 `.mcp.json`，字段名以 Claude Code 
 | creator_scene_validate | projectId | revision、validationProfile（仅 `"static"`）；由 Studio 合并 city-sdk 语义诊断与宿主结构/资产事实 | 只读 |
 | creator_city_create | name、seed、profile、operationId | — | 写入 |
 | creator_city_edit_preview | cityId、baseRevision、name、seed、profile | — | 预览（不落盘） |
+| creator_city_patch_preview | cityId、baseRevision、patch（对象或 null 清除） | — | 预览（不落盘；运行时几何未检查） |
 | creator_city_edit_commit | cityId、previewId、expectedRevision、operationId | — | 写入 |
 | creator_city_list | limit（1..=50） | cursor | 只读 |
-| creator_city_read | cityId | — | 只读 |
+| creator_city_read | cityId | revision（已保留的历史版本） | 只读 |
 | creator_city_diagnostics | cityId、limit（1..=100） | — | 只读 |
 | creator_city_view | cityId、revision | — | 只读（只读视口，需 Studio） |
 | creator_city_view_status | cityId、revision | — | 只读 |
@@ -96,7 +97,7 @@ Claude Code（`claude mcp add` 或项目 `.mcp.json`，字段名以 Claude Code 
 
 ### 3.1 分发表状态
 
-所有工具（含试玩三工具、2026-11-12 的 describe/capture/capabilities_list/scene_inspect/scene_validate，以及 2026-11-14 的 11 个 creator_city_* 工具）都已在 crates/agent-vitals-mcp/src/mcp/mod.rs 的 dispatch match 中路由；`mcp::tests::tool_specs_and_dispatch_agree` 逐工具断言不存在 “registered but not wired”。
+所有工具（含 12 个 creator_city_* 实验工具）都已在 crates/agent-vitals-mcp/src/mcp/mod.rs 的 dispatch match 中路由；`mcp::tests::tool_specs_and_dispatch_agree` 逐工具断言不存在 “registered but not wired”。
 
 ## 4. 连接自检清单（设计 §8.1）
 
@@ -106,8 +107,8 @@ Claude Code（`claude mcp add` 或项目 `.mcp.json`，字段名以 Claude Code 
 2. **initialize。** 返回 `protocolVersion: "2025-06-18"`、`capabilities.tools`、`serverInfo.name: "Oh Agent MCP"`。initialize 之前的请求被拒（JSON-RPC error `-32002`）。
 3. **tools/list。** 默认共 42 个工具，其中 `creator_*` 18 个：
    creator_layout_list、creator_project_list、creator_project_read、creator_operation_status、creator_playtest_history、creator_playtest_start、creator_playtest_result、creator_playtest_cancel、creator_project_create、creator_game_preview、creator_scene_preview、creator_project_commit、creator_project_publish、creator_scene_describe、creator_scene_capture、creator_capabilities_list、creator_scene_inspect、creator_scene_validate。
-   加 `--enable-city-tools` 后共 53 个，额外包含 11 个：
-   creator_city_create、creator_city_edit_preview、creator_city_edit_commit、creator_city_list、creator_city_read、creator_city_diagnostics、creator_city_view、creator_city_view_status、creator_city_capture、creator_city_layout_read、creator_city_layout_save。
+   加 `--enable-city-tools` 后共 54 个，额外包含 12 个：
+   creator_city_create、creator_city_edit_preview、creator_city_patch_preview、creator_city_edit_commit、creator_city_list、creator_city_read、creator_city_diagnostics、creator_city_view、creator_city_view_status、creator_city_capture、creator_city_layout_read、creator_city_layout_save。
    `creator.scene.structure_check` 是内部只读依赖，不暴露为 MCP 工具。
 4. **只读自检：creator_project_list。** 参数 `{"limit": 10}`。预期分两种：
    - Studio 已打开：返回 `ok: true` 与有界项目列表（没有项目时为空列表）。

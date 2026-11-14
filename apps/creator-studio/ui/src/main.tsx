@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { connect, connectHostCalls, invokeHost, observeHealth, publishToolbar } from "@agent-vitals/app-sdk/ui-host";
-import { canonicalJson, validateCityInstance, validateCityLayoutScope, validateCityLayoutSnapshot, validateMiniGamePack, validateMount, validateSceneDraft, type CityGameMountV1, type CityInstanceV1, type CityLayoutSnapshotV1 } from "@agent-vitals/city-sdk";
+import { canonicalJson, validateCityInstance, validateCityLayoutScope, validateCityLayoutSnapshot, validateMiniGamePack, validateMount, validateSceneDraft, validateWorldPlanPatch, type CityGameMountV1, type CityInstanceV1, type CityLayoutSnapshotV1 } from "@agent-vitals/city-sdk";
 import { buildGameValidation, buildSceneValidation, scopeMismatchEnvelope } from "./sdkValidation";
 import { loadStudioAtStartup } from "./startupLoad";
+import { resolveProjectCity } from "./projectCityScope";
+import { formatWorldPackageInspection, parseWorldPackageInspection, type WorldPackageInspection } from "./contentPackageInspect";
 // 视口与 City 插件共享同一份引擎与装配管线，保证 Studio 看到的是同一座城市。
 import { CityViewport } from "../../../agent-city/ui/src/viewport/CityViewport";
 import { createCreatorLayoutSnapshot } from "../../../agent-city/ui/src/engine/sdk/cityLayoutAdapter";
 import { readCityAppearancePreference } from "../../../agent-city/ui/src/engine/cityWorldProfile";
 import type { CityEngine } from "../../../agent-city/ui/src/engine/CityEngine";
-import type { PlanPatchV1 } from "../../../agent-city/ui/src/engine/planPatch";
+import { CITY_GENERATOR_VERSION, type PlanPatchV1 } from "../../../agent-city/ui/src/engine/planPatch";
 import "./style.css";
 
 type ProjectRow = { projectId: string; revision: number; title: string; updatedAtMs: number };
@@ -17,7 +19,7 @@ type LayoutRow = { worldRevision: string; layoutId: string; seed: number; anchor
 type SceneDraft = { schemaVersion: 1; objects: Array<Record<string, unknown>> };
 // 试玩历史行（creator.project.playtest.history 返回的 runs 元素），状态沿用后端英文枚举不翻译。
 type PlaytestRun = { runId: string; releaseId: string; revision: number; status: "pending" | "claimed" | "completed" | "cancelled" | "failed" | "expired"; createdAtMs: number; finishedAtMs: number | null; evidenceSource: string | null; evidence: unknown; failureCode: string | null };
-type Project = { projectId: string; revision: number; title?: string; kind: string; game: unknown; cityLayout?: CityLayoutSnapshotV1 | null; cityPatch?: Record<string, unknown> | null; scene?: SceneDraft; assets?: { schemaVersion: 1; entries: Array<{ assetId: string; relativePath: string; sha256: string; byteLength: number; format: "glb-v2"; boundsMeters?: { x: number; y: number; z: number } }> }; assetRefs?: Array<Record<string, unknown>>; mounts: CityGameMountV1[]; skinId?: string };
+type Project = { projectId: string; revision: number; title?: string; kind: string; game: unknown; cityId?: string; cityRevision?: number; cityLayout?: CityLayoutSnapshotV1 | null; cityPatch?: Record<string, unknown> | null; scene?: SceneDraft; assets?: { schemaVersion: 1; entries: Array<{ assetId: string; relativePath: string; sha256: string; byteLength: number; format: "glb-v2"; boundsMeters?: { x: number; y: number; z: number } }> }; assetRefs?: Array<Record<string, unknown>>; mounts: CityGameMountV1[]; skinId?: string };
 type PluginResponse<T> = { version: number; requestId: string; ok: boolean; result?: T; error?: { code: string } };
 let sequence = 0;
 // 浏览器预览（ui-dev 工作台 iframe）：有插件实例但没有原生宿主，数据来自合成夹具。
@@ -66,6 +68,7 @@ function App() {
   // 世界外观偏好与 City 同源（同源 WebView 共享 localStorage）；打开期间不追踪 City 侧更改。
   const [worldProfile] = useState(() => readCityAppearancePreference());
   const [project, setProject] = useState<Project | null>(null);
+  const [projectCity, setProjectCity] = useState<{ key: string; city: CityInstanceV1 | null; error?: string } | null>(null);
   const [draftCityView, setDraftCityView] = useState<CityInstanceV1 | null>(null);
   const draftCityViewRef = useRef<CityInstanceV1 | null>(null);
   const draftEngineRef = useRef<CityEngine | null>(null);
@@ -93,9 +96,25 @@ function App() {
   const viewportSeed: number | null =
     project?.cityLayout?.seed ?? (worldRevision ? layouts.find(layout => layout.worldRevision === worldRevision)?.seed ?? null : null);
   const viewportUnavailable = project !== null && !project.cityLayout;
+  const projectCityKey = project?.cityId ? `${project.cityId}:${project.cityRevision}` : null;
+  const scopedProjectPatch = projectCity?.city ? project?.cityPatch ?? projectCity.city.planPatch : null;
+  const isolatedPatchResult = projectCityKey && projectCity?.key === projectCityKey && projectCity.city && scopedProjectPatch
+    ? validateWorldPlanPatch(scopedProjectPatch, projectCity.city.seed, CITY_GENERATOR_VERSION) : null;
+  useEffect(() => {
+    if (!projectCityKey || !project?.cityId) { setProjectCity(null); return; }
+    let cancelled = false;
+    setProjectCity(null);
+    void creatorRequest<unknown>("creator.city.read", { cityId: project.cityId, revision: project.cityRevision }).then(raw => {
+      const city = resolveProjectCity(raw, { cityId: project.cityId!, cityRevision: project.cityRevision, seed: project.cityLayout?.seed });
+      if (!city) throw new Error("creator_city_revision_unavailable");
+      if (!cancelled) setProjectCity({ key: projectCityKey, city });
+    }).catch(() => { if (!cancelled) setProjectCity({ key: projectCityKey, city: null, error: "项目绑定的城市版本不可用，请重新生成并绑定对应布局。" }); });
+    return () => { cancelled = true; };
+  }, [projectCityKey, project?.cityId, project?.cityRevision, project?.cityLayout?.seed]);
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [previewKind, setPreviewKind] = useState<"game" | "scene" | "mount" | "skin" | null>(null);
   const [publishedReleaseId, setPublishedReleaseId] = useState<string | null>(null);
+  const [packageInspection, setPackageInspection] = useState<WorldPackageInspection | null>(null);
   const [busy, setBusy] = useState(false);
   const [activePanel, setActivePanel] = useState<"play" | "agent" | "project">("agent");
   const [message, setMessage] = useState("");
@@ -204,7 +223,7 @@ function App() {
     setWorldRevision(current => layoutResponse.layouts.some(layout => layout.worldRevision === current) ? current : layoutResponse.layouts[0]?.worldRevision ?? "");
   }, []);
   useEffect(() => {
-    const methods = ["creator.city.create", "creator.city.diagnostic.list", "creator.city.edit.preview", "creator.city.edit.commit", "creator.city.list", "creator.city.read", "creator.layout.list", "creator.project.list", "creator.project.read", "creator.project.read_chunk", "creator.operation.status", "creator.project.create",
+    const methods = ["creator.city.create", "creator.city.diagnostic.list", "creator.city.edit.preview", "creator.city.patch.preview", "creator.city.edit.commit", "creator.city.list", "creator.city.read", "creator.layout.list", "creator.project.list", "creator.project.read", "creator.project.read_chunk", "creator.operation.status", "creator.project.create",
       "creator.game.preview", "creator.asset.import", "creator.game.commit", "creator.scene.preview", "creator.scene.commit", "creator.project.commit", "creator.project.publish",
       "creator.project.playtest.start", "creator.project.playtest.result", "creator.project.playtest.cancel", "creator.project.playtest.return_context", "creator.project.playtest.history",
       "creator.scene.describe", "creator.scene.inspect", "creator.scene.validate", "creator.capabilities.list"];
@@ -250,6 +269,15 @@ function App() {
           name: request.name, seed: request.seed, profile: request.profile });
         return { ...request, validation: { schemaVersion: 1, requestDigest: await digest(request), ok: checked.ok } };
       }
+      if (method === "creator.city.patch.preview") {
+        const request = { cityId: payload.cityId, baseRevision: payload.baseRevision, patch: payload.patch };
+        let ok = false;
+        try {
+          const city = validateCityInstance(await creatorRequest<unknown>("creator.city.read", { cityId: request.cityId }));
+          ok = city.ok && city.value.revision === request.baseRevision && (request.patch === null || validateWorldPlanPatch(request.patch, city.value.seed, CITY_GENERATOR_VERSION).ok);
+        } catch { ok = false; }
+        return { ...request, validation: { schemaVersion: 1, requestDigest: await digest(request), ok } };
+      }
       const projectId = String(payload.projectId ?? "");
       const baseRevision = Number(payload.baseRevision ?? 0);
       if (method === "creator.game.preview") {
@@ -290,6 +318,7 @@ function App() {
       const checked = validateCityInstance(document);
       if (!checked.ok) throw new Error("creator_city_invalid");
       if (checked.value.cityId !== payload.cityId || checked.value.revision !== payload.revision) throw new Error("revision_conflict");
+      if (checked.value.planPatch && !validateWorldPlanPatch(checked.value.planPatch, checked.value.seed, CITY_GENERATOR_VERSION).ok) throw new Error("creator_city_patch_incompatible");
       draftCityViewRef.current = checked.value;
       draftViewStatusRef.current = "loading";
       draftViewFailureRef.current = undefined;
@@ -434,19 +463,22 @@ function App() {
     return () => { cancelled = true; };
   }, [refresh]);
   useEffect(() => {
-    void creatorRequest<{ runId: string; projectId: string; revision: number; status: "completed" | "cancelled" | "failed";
-      evidence?: { tick: number; counters: Record<string, number>; outcome: "success" | "failure" | null } | null; failureCode?: string | null } | null>("creator.project.playtest.return_context", {})
-      .then(context => {
-        if (!context) return;
+    let cancelled = false;
+    void loadStudioAtStartup(async () => {
+      const context = await creatorRequest<{ runId: string; projectId: string; revision: number; status: "completed" | "cancelled" | "failed";
+      evidence?: { tick: number; counters: Record<string, number>; outcome: "success" | "failure" | null } | null; failureCode?: string | null } | null>("creator.project.playtest.return_context", {});
+      if (!cancelled && context) {
         const counters = context.evidence ? Object.entries(context.evidence.counters).map(([key, value]) => `${key}=${value}`).join(", ") : "";
         const result = context.evidence ? ` · tick ${context.evidence.tick} · ${context.evidence.outcome ?? "未完成"}${counters ? ` · ${counters}` : ""}` : context.failureCode ? ` · ${context.failureCode}` : "";
         const message = `City 试玩已返回：${context.status} · revision ${context.revision}${result} · ${context.runId}`;
         // PRD：试玩结束回到同一编辑上下文——保留未提交草稿，并回到全局视角。
         void openProject(context.projectId, "preserve").then(() => { setFocusSignal(value => value + 1); setMessage(message); });
-      }).catch(error => {
+      }
+    }, { isCancelled: () => cancelled, delay: ms => new Promise(resolve => window.setTimeout(resolve, ms)) }).catch(error => {
         const code = errorCode(error, "creator_playtest_return_failed");
-        if (code !== "creator_playtest_not_found") setMessage(code);
+        if (!cancelled && code !== "creator_playtest_not_found") setMessage(code);
       });
+    return () => { cancelled = true; };
   }, []);
 
   const openProject = async (projectId: string, mode: "replace" | "preserve" = "replace") => {
@@ -510,6 +542,16 @@ function App() {
       setMessage(validation.ok ? `场景预览通过（${operations.length} 项变更）。确认提交后生成新 revision。`
         : `SDK 语义校验发现问题（${operations.length} 项变更）：预览仍已生成，但提交会被拒绝。`);
     } catch (error) { setMessage(error instanceof Error ? error.message : "creator_scene_preview_failed"); }
+    finally { setBusy(false); }
+  };
+  const inspectWorldPackage = async () => {
+    setBusy(true); setMessage("");
+    try {
+      const inspection = parseWorldPackageInspection(await creatorRequest<unknown>("creator.content.inspect", {}));
+      if (!inspection) throw new Error("content_inspection_invalid");
+      setPackageInspection(inspection);
+      setMessage("世界内容包完整性预检通过：语义、运行时兼容、来源均未检查，当前不可安装。");
+    } catch (error) { setPackageInspection(null); setMessage(`世界内容包预检失败（${errorCode(error, "content_inspection_failed")}）。`); }
     finally { setBusy(false); }
   };
   const importModel = async () => {
@@ -651,7 +693,7 @@ function App() {
     if (slots && Object.keys(slots).length === 1 && ("points" in slots || "targets" in slots)) visualSlot = "points" in slots ? "points" : "targets";
     if (visualSlot && Number.isInteger(slots[visualSlot]?.min)) slotMinimum = slots[visualSlot].min;
   } catch { /* 高级规则无效时不猜测绑定方式 */ }
-  const releaseHint = browserPreview && publishedReleaseId && !hasUncommittedProjectEdits ? "浏览器预览不支持试玩，请在桌面应用中试玩" : !project ? "先打开或创建项目" : hasUncommittedProjectEdits ? "请先保存未提交的修改" : !project.mounts?.length ? "请先配置并保存玩法场地" : !publishedReleaseId ? "发布后即可试玩当前版本" : "已发布版本可供试玩";
+  const releaseHint = browserPreview && publishedReleaseId && !hasUncommittedProjectEdits ? "浏览器预览不支持试玩，请在桌面应用中试玩" : !project ? "先打开或创建项目" : project.cityId ? "独立城市暂不支持运行时试玩" : hasUncommittedProjectEdits ? "请先保存未提交的修改" : !project.mounts?.length ? "请先配置并保存玩法场地" : !publishedReleaseId ? "发布后即可试玩当前版本" : "已发布版本可供试玩";
 
   // 宿主工具栏选项限制为 8 项、值不超过 32 字节；用索引作为短值，
   // 超出的项目仍可在项目面板中访问，避免向宿主泄漏或截断项目 ID。
@@ -664,7 +706,7 @@ function App() {
       if (value === "more") { setActivePanel("project"); return; }
       const row = toolbarProjects[Number(value)];
       if (row && row.projectId !== project?.projectId) guardDrafts(row.projectId, () => void openProject(row.projectId));
-    } else if (commandId === "creator.playtest" && !busy && publishedReleaseId && !hasUncommittedProjectEdits) void startPlaytest();
+    } else if (commandId === "creator.playtest" && !busy && publishedReleaseId && !project?.cityId && !hasUncommittedProjectEdits) void startPlaytest();
     else if (commandId === "creator.publish" && !busy && project && !hasUncommittedProjectEdits && project.mounts?.length) void publish();
   };
   useEffect(() => connect(command => toolbarActionRef.current(command.commandId, command.value)), []);
@@ -676,7 +718,7 @@ function App() {
           ...toolbarProjects.map((row, index) => ({ value: String(index), label: `${row.title} · 版本 ${row.revision}`.slice(0, 100) })),
           { value: "more", label: project ? "更多项目…" : "选择城市项目…" },
         ] },
-      { id: "playtest", commandId: "creator.playtest", label: "试玩", kind: "button", enabled: !browserPreview && !busy && !!publishedReleaseId && !hasUncommittedProjectEdits },
+      { id: "playtest", commandId: "creator.playtest", label: "试玩", kind: "button", enabled: !browserPreview && !busy && !!publishedReleaseId && !project?.cityId && !hasUncommittedProjectEdits },
       { id: "publish", commandId: "creator.publish", label: "发布", kind: "button", enabled: !busy && !!project && !hasUncommittedProjectEdits && !!project.mounts?.length },
     ]);
   }, [projects, project, busy, publishedReleaseId, hasUncommittedProjectEdits]);
@@ -690,7 +732,7 @@ function App() {
       </nav>
       <section className="viewport" aria-label="City 实时视口">
         <div className="viewport-head"><div className="section-title">城市视图</div><span className="viewport-hint">点选建筑移动 · 拖动旋转 · 滚轮缩放</span><button className="secondary reset-view" onClick={() => setFocusSignal(value => value + 1)}>重置视角</button></div>
-        {draftCityView ? <div className="viewport-frame"><CityViewport key={`${draftCityView.cityId}:${draftCityView.revision}`} seed={draftCityView.seed} worldProfile={draftCityView.profile} isolatedDraft focusSignal={focusSignal}
+        {draftCityView ? <div className="viewport-frame"><CityViewport key={`${draftCityView.cityId}:${draftCityView.revision}`} seed={draftCityView.seed} worldProfile={draftCityView.profile} isolatedDraft isolatedProjectPatch={(draftCityView.planPatch ?? null) as PlanPatchV1 | null} focusSignal={focusSignal}
           onEngineChange={engine => { if (draftCityViewRef.current === draftCityView) draftEngineRef.current = engine; }}
           onViewportStatus={(status, code) => { if (draftCityViewRef.current === draftCityView) {
             draftViewStatusRef.current = status; draftViewFailureRef.current = code;
@@ -701,6 +743,12 @@ function App() {
             }
           } }} />
           <div className="viewport-savebar" role="status">独立城市只读预览 · {draftCityView.name} · 版本 {draftCityView.revision} <button onClick={() => { draftCityViewRef.current = null; setDraftCityView(null); }}>返回项目视图</button></div></div>
+          : projectCityKey ? (projectCity?.key !== projectCityKey
+            ? <div className="empty viewport-empty">正在读取项目绑定的城市…</div>
+            : projectCity.city && isolatedPatchResult && !isolatedPatchResult.ok ? <div className="empty viewport-empty">城市编辑补丁无效或与当前生成器不兼容，无法安全预览。</div>
+            : projectCity.city ? <div className="viewport-frame"><CityViewport key={projectCityKey} seed={projectCity.city.seed} worldProfile={projectCity.city.profile} isolatedDraft isolatedProjectPatch={isolatedPatchResult?.ok ? isolatedPatchResult.value as unknown as PlanPatchV1 : null} focusSignal={focusSignal} />
+              <div className="viewport-savebar" role="status">独立城市只读预览 · 项目编辑与运行时切换尚不可用</div></div>
+            : <div className="empty viewport-empty">{projectCity.error}</div>)
           : viewportSeed !== null
           ? <div className="viewport-frame"><CityViewport seed={viewportSeed} worldProfile={worldProfile} editable={!!project} focusSignal={focusSignal}
               projectPatch={(project?.cityPatch ?? null) as PlanPatchV1 | null} onPatchCommit={patch => commitPatchRef.current(patch)}
@@ -732,6 +780,10 @@ function App() {
           <label>绑定 City 世界<select value={worldRevision} disabled={busy || layouts.length === 0} onChange={event => setWorldRevision(event.target.value)}>{layouts.map(layout => <option key={layout.worldRevision} value={layout.worldRevision}>{layout.layoutId} · seed {layout.seed} · {layout.anchorCount} 个锚点</option>)}</select></label>
           <button disabled={busy || !worldRevision} onClick={() => guardDrafts("create", () => void createProject())}>{switchConfirm === "create" ? "确认丢弃草稿并新建" : "新建项目"}</button>
           {layouts.length === 0 && <p className="muted">尚无 City 布局快照。先打开 City 生成道路地图，再回到 Studio。</p>}
+          <div><div className="section-title">世界内容包预检</div><p className="muted">通过桌面原生选择器打开 unsigned 的 v2 世界包，核对清单、文件集合与摘要。不导入、不安装，文件路径和字节不会传入 Agent/MCP。</p>
+          <button className="secondary" disabled={busy || browserPreview} onClick={() => void inspectWorldPackage()}>选择并预检世界包…</button>
+          {browserPreview && <p className="muted">浏览器预览没有原生文件选择器，请在桌面应用中使用。</p>}
+          {packageInspection && <code>{formatWorldPackageInspection(packageInspection)}</code>}</div>
         </section>}
         {activePanel === "play" && <section className="editor">
         <div className="section-title">{project ? "玩法与场地" : "选择一个项目"}</div>

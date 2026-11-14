@@ -1,4 +1,4 @@
-export type ContentKind = "city-layout" | "city-skin" | "city-minigame";
+export type ContentKind = "city-layout" | "city-skin" | "city-minigame" | "city-world";
 export type ContentRef<K extends ContentKind = ContentKind> = {
   kind: K;
   id: string;
@@ -89,6 +89,7 @@ export interface CityInstanceV1 {
   name: string;
   seed: number;
   profile: CityWorldProfileV1;
+  planPatch?: Readonly<Record<string, unknown>>;
 }
 export interface CitySkinPackV1 {
   schemaVersion: 1;
@@ -307,4 +308,17 @@ export interface CityContentPackageV1 {
   format: "oh-agent-city-package-v1";
   manifest: PackageManifestV1;
   files: Readonly<Record<string, unknown>>;
+}
+
+/** Data-only v2 content manifest. This is not an installation authorization. */
+export interface ContentPackageManifestV2 {
+  formatVersion: 2;
+  kind: "city-world" | "city-minigame";
+  packageId: string;
+  version: string;
+  sdkContractVersion: string;
+  minCityRuntimeVersion: string;
+  entry: { profile: string; scene: string; assets: string; generatorVersion: number; defaultSeed: number; patch?: string } | { game: string; assets: string };
+  files: ReadonlyArray<{ path: string; mediaType: "application/json" | "model/gltf-binary" | "image/png" | "image/jpeg"; byteLength: number; sha256: string }>;
+  contentDigest: string;
 }

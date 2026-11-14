@@ -44,6 +44,8 @@ pub(crate) fn create_city(home: &Path, actor: &str, operation_id: &str, name: &s
     let now = now_ms();
     tx.execute("INSERT INTO creator_cities(city_id,revision,document_json,created_at_ms,updated_at_ms) VALUES(?1,0,?2,?3,?3)",
         params![city_id, document_json, now]).map_err(|_| "creator_store_unavailable")?;
+    tx.execute("INSERT INTO creator_city_revisions(city_id,revision,document_json,created_at_ms) VALUES(?1,0,?2,?3)",
+        params![city_id, document_json, now]).map_err(|_| "creator_store_unavailable")?;
     tx.execute("INSERT INTO creator_city_operations(actor_id,operation_id,operation_hash,city_id,result_json,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6)",
         params![actor, operation_id, request_hash, city_id, result_json, now]).map_err(|_| "creator_store_unavailable")?;
     tx.commit().map_err(|_| "creator_store_unavailable")?;
@@ -56,6 +58,24 @@ pub(crate) fn read_city(home: &Path, city_id: &str) -> Result<Value, &'static st
     let raw: String = db.query_row("SELECT document_json FROM creator_cities WHERE city_id=?1", [city_id], |row| row.get(0))
         .optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_city_not_found")?;
     serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")
+}
+
+/// Read a pinned revision; legacy databases can only recover their current
+/// revision until it has been captured before the next edit.
+pub(crate) fn read_city_revision(home: &Path, city_id: &str, revision: u64) -> Result<Value, &'static str> {
+    if !valid_id(city_id) || revision > i64::MAX as u64 { return Err("creator_city_invalid"); }
+    let db = database(home)?;
+    let raw: Option<String> = db.query_row("SELECT document_json FROM creator_city_revisions WHERE city_id=?1 AND revision=?2",
+        params![city_id,revision], |row| row.get(0)).optional().map_err(|_| "creator_store_unavailable")?;
+    let raw = match raw {
+        Some(raw) => raw,
+        None => db.query_row("SELECT document_json FROM creator_cities WHERE city_id=?1 AND revision=?2",
+            params![city_id,revision], |row| row.get(0)).optional().map_err(|_| "creator_store_unavailable")?
+            .ok_or("creator_city_revision_unavailable")?,
+    };
+    let document: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
+    if document["cityId"].as_str() != Some(city_id) || document["revision"].as_u64() != Some(revision) { return Err("creator_store_corrupt"); }
+    Ok(document)
 }
 
 /// Fixed diagnostic vocabulary only; no raw errors, paths or session content.
@@ -116,6 +136,7 @@ pub(crate) fn preview_city(home: &Path, instance: &str, city_id: &str, base_revi
         || canonical_json(profile).map_err(|_| "creator_city_invalid")?.len() > MAX_PROFILE_BYTES { return Err("creator_city_invalid"); }
     let mut document = read_city(home, city_id)?;
     if document["revision"].as_u64() != Some(base_revision) { return Err("revision_conflict"); }
+    if document.get("planPatch").is_some() && document["seed"].as_u64() != Some(seed as u64) { return Err("creator_city_patch_seed_mismatch"); }
     let mut changed = Vec::new();
     if document["name"] != json!(name) { changed.push("name"); }
     if document["seed"] != json!(seed) { changed.push("seed"); }
@@ -129,6 +150,28 @@ pub(crate) fn preview_city(home: &Path, instance: &str, city_id: &str, base_revi
     if entries.len() >= 128 { return Err("creator_preview_budget_exceeded"); }
     entries.insert(preview_id.clone(), CityPreview { home: home.to_path_buf(), instance: instance.into(), city_id: city_id.into(), base_revision, document, created: Instant::now() });
     Ok(json!({"previewId":preview_id,"cityId":city_id,"baseRevision":base_revision,"changedFields":changed,"expiresInMs":PREVIEW_TTL.as_millis(),"checks":{"static":"passed","runtime":"unchecked"}}))
+}
+
+/// A city-scoped portable patch uses the same revision-bound preview/commit path
+/// as the recipe. It must never import legacy session-building references.
+pub(crate) fn preview_city_patch(home: &Path, instance: &str, city_id: &str, base_revision: u64, patch: &Value) -> Result<Value, &'static str> {
+    if !valid_id(instance) || !valid_id(city_id) { return Err("creator_city_invalid"); }
+    let mut document = read_city(home, city_id)?;
+    if document["revision"].as_u64() != Some(base_revision) { return Err("revision_conflict"); }
+    if !patch.is_null() {
+        let seed = document["seed"].as_u64().ok_or("creator_city_invalid")?;
+        if canonical_json(patch).map_err(|_| "creator_city_patch_invalid")?.len() > crate::creator_projects::MAX_CITY_PATCH_BYTES { return Err("creator_city_patch_invalid"); }
+        crate::creator_city_patch::validate_city_patch(patch, seed)?;
+        if patch["buildingMoves"].as_object().is_none_or(|moves| !moves.is_empty())
+            || patch.get("moveAnchors").is_some_and(|anchors| anchors.as_object().is_none_or(|anchors| !anchors.is_empty())) { return Err("creator_city_patch_invalid"); }
+        document["planPatch"] = patch.clone();
+    } else if let Some(object) = document.as_object_mut() { object.remove("planPatch"); }
+    let preview_id = new_id("city-preview-")?;
+    let mut entries = previews().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    entries.retain(|_, preview| preview.created.elapsed() <= PREVIEW_TTL);
+    if entries.len() >= 128 { return Err("creator_preview_budget_exceeded"); }
+    entries.insert(preview_id.clone(), CityPreview { home: home.to_path_buf(), instance: instance.into(), city_id: city_id.into(), base_revision, document, created: Instant::now() });
+    Ok(json!({"previewId":preview_id,"cityId":city_id,"baseRevision":base_revision,"changedFields":["planPatch"],"expiresInMs":PREVIEW_TTL.as_millis(),"checks":{"static":"passed","runtime":"unchecked"}}))
 }
 
 pub(crate) fn commit_city(home: &Path, owner: &str, instance: &str, city_id: &str, preview_id: &str, expected_revision: u64, operation_id: &str) -> Result<Value, &'static str> {
@@ -147,7 +190,7 @@ pub(crate) fn commit_city(home: &Path, owner: &str, instance: &str, city_id: &st
     if preview.created.elapsed() > PREVIEW_TTL { entries.remove(preview_id); return Err("preview_expired"); }
     if preview.home != home || preview.instance != instance || preview.city_id != city_id { return Err("permission_denied"); }
     if preview.base_revision != expected_revision { return Err("revision_conflict"); }
-    let current: u64 = tx.query_row("SELECT revision FROM creator_cities WHERE city_id=?1", [city_id], |row| row.get(0))
+    let (current, current_document): (u64, String) = tx.query_row("SELECT revision,document_json FROM creator_cities WHERE city_id=?1", [city_id], |row| Ok((row.get(0)?,row.get(1)?)))
         .optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_city_not_found")?;
     if current != expected_revision { return Err("revision_conflict"); }
     let next = current.checked_add(1).filter(|n| *n <= i64::MAX as u64).ok_or("creator_city_invalid")?;
@@ -155,9 +198,18 @@ pub(crate) fn commit_city(home: &Path, owner: &str, instance: &str, city_id: &st
     document["revision"] = json!(next);
     let serialized = canonical_json(&document).map_err(|_| "creator_city_invalid")?;
     let now = now_ms();
+    // Capture the old revision in the same transaction, including for cities
+    // created before revision history was introduced. Never overwrite history.
+    tx.execute("INSERT OR IGNORE INTO creator_city_revisions(city_id,revision,document_json,created_at_ms) SELECT city_id,revision,document_json,updated_at_ms FROM creator_cities WHERE city_id=?1 AND revision=?2",
+        params![city_id,current]).map_err(|_| "creator_store_unavailable")?;
+    let retained: String = tx.query_row("SELECT document_json FROM creator_city_revisions WHERE city_id=?1 AND revision=?2",
+        params![city_id,current], |row| row.get(0)).map_err(|_| "creator_store_unavailable")?;
+    if retained != current_document { return Err("creator_store_corrupt"); }
     let changed = tx.execute("UPDATE creator_cities SET revision=?2,document_json=?3,updated_at_ms=?4 WHERE city_id=?1 AND revision=?5",
         params![city_id,next,serialized,now,current]).map_err(|_| "creator_store_unavailable")?;
     if changed != 1 { return Err("revision_conflict"); }
+    tx.execute("INSERT INTO creator_city_revisions(city_id,revision,document_json,created_at_ms) VALUES(?1,?2,?3,?4)",
+        params![city_id,next,serialized,now]).map_err(|_| "creator_store_unavailable")?;
     let result = json!({"cityId":city_id,"revision":next,"runtimeStatus":"not_loaded"});
     let result_json = canonical_json(&result).map_err(|_| "creator_city_invalid")?;
     tx.execute("INSERT INTO creator_city_operations(actor_id,operation_id,operation_hash,city_id,result_json,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6)",
@@ -246,11 +298,74 @@ mod tests {
         assert_eq!(commit_city(&home, "owner", "studio-1", other_id, id, 0, "edit-1").unwrap_err(), "permission_denied");
         let result = commit_city(&home, "owner", "studio-1", city_id, id, 0, "edit-1").unwrap();
         assert_eq!(result["revision"], 1);
+        assert_eq!(read_city_revision(&home, city_id, 0).unwrap()["name"], "Desert");
+        assert_eq!(read_city_revision(&home, city_id, 1).unwrap()["name"], "Dunes");
+        assert_eq!(read_city_revision(&home, other_id, 1).unwrap_err(), "creator_city_revision_unavailable");
         assert_eq!(commit_city(&home, "owner", "studio-2", city_id, id, 0, "edit-1").unwrap(), result);
         assert_eq!(commit_city(&home, "owner", "studio-1", city_id, stale["previewId"].as_str().unwrap(), 0, "edit-2").unwrap_err(), "revision_conflict");
         assert_eq!(read_city(&home, other_id).unwrap()["name"], "Miami");
         assert_eq!(read_city(&home, city_id).unwrap()["name"], "Dunes");
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn legacy_current_revision_is_retained_atomically_on_next_edit() {
+        let home = std::env::temp_dir().join(new_id("city-history-test-").unwrap());
+        let profile = json!({"schemaVersion":1,"id":"desert"});
+        let created = create_city(&home, "owner", "create-legacy", "Old", 42, &profile).unwrap();
+        let city_id = created["cityId"].as_str().unwrap();
+        database(&home).unwrap().execute("DELETE FROM creator_city_revisions WHERE city_id=?1", [city_id]).unwrap();
+        assert_eq!(read_city_revision(&home, city_id, 0).unwrap()["name"], "Old");
+        let preview = preview_city(&home, "studio-1", city_id, 0, "New", 42, &profile).unwrap();
+        commit_city(&home, "owner", "studio-1", city_id, preview["previewId"].as_str().unwrap(), 0, "edit-legacy").unwrap();
+        assert_eq!(read_city_revision(&home, city_id, 0).unwrap()["name"], "Old");
+        assert_eq!(read_city_revision(&home, city_id, 1).unwrap()["name"], "New");
+        assert_eq!(read_city_revision(&home, city_id, 2).unwrap_err(), "creator_city_revision_unavailable");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn history_write_failure_rolls_back_city_and_can_retry() {
+        let home = std::env::temp_dir().join(new_id("city-history-rollback-").unwrap());
+        let profile = json!({"schemaVersion":1,"id":"desert"});
+        let created = create_city(&home, "owner", "create", "Old", 42, &profile).unwrap();
+        let city_id = created["cityId"].as_str().unwrap();
+        let preview = preview_city(&home, "studio-1", city_id, 0, "New", 42, &profile).unwrap();
+        let preview_id = preview["previewId"].as_str().unwrap();
+        database(&home).unwrap().execute_batch("CREATE TRIGGER fail_city_history BEFORE INSERT ON creator_city_revisions WHEN NEW.revision=1 BEGIN SELECT RAISE(ABORT, 'test failure'); END;").unwrap();
+        assert_eq!(commit_city(&home, "owner", "studio-1", city_id, preview_id, 0, "edit").unwrap_err(), "creator_store_unavailable");
+        assert_eq!(read_city(&home, city_id).unwrap()["name"], "Old");
+        assert_eq!(read_city_revision(&home, city_id, 1).unwrap_err(), "creator_city_revision_unavailable");
+        database(&home).unwrap().execute_batch("DROP TRIGGER fail_city_history;").unwrap();
+        commit_city(&home, "owner", "studio-1", city_id, preview_id, 0, "edit").unwrap();
+        assert_eq!(read_city_revision(&home, city_id, 1).unwrap()["name"], "New");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn city_patch_preview_commit_is_revision_bound_and_isolated() {
+        let home = std::env::temp_dir().join(new_id("city-patch-test-").unwrap());
+        let profile = json!({"schemaVersion":1,"id":"desert"});
+        let city = create_city(&home, "owner", "create-a", "Dunes", 42, &profile).unwrap();
+        let other = create_city(&home, "owner", "create-b", "Miami", 42, &profile).unwrap();
+        let city_id = city["cityId"].as_str().unwrap(); let other_id = other["cityId"].as_str().unwrap();
+        let patch = json!({"version":1,"seed":42,"scaleTier":1,"generatorVersion":6,"updatedAt":1,
+            "roadOps":[{"t":"drop","edge":"-117.42:-196.17/97.59:-193.63"}],"siteOps":[],"buildingMoves":{},"suppressedContext":[]});
+        let preview = preview_city_patch(&home, "studio-1", city_id, 0, &patch).unwrap();
+        let preview_id = preview["previewId"].as_str().unwrap();
+        assert!(read_city(&home, city_id).unwrap().get("planPatch").is_none());
+        assert_eq!(commit_city(&home, "owner", "studio-1", other_id, preview_id, 0, "bad-city").unwrap_err(), "permission_denied");
+        let committed = commit_city(&home, "owner", "studio-1", city_id, preview_id, 0, "edit-patch").unwrap();
+        assert_eq!(committed["revision"], 1);
+        assert_eq!(read_city_revision(&home, city_id, 1).unwrap()["planPatch"], patch);
+        assert!(read_city(&home, other_id).unwrap().get("planPatch").is_none());
+        assert_eq!(preview_city(&home, "studio-1", city_id, 1, "Dunes", 43, &profile).unwrap_err(), "creator_city_patch_seed_mismatch");
+        assert_eq!(preview_city_patch(&home, "studio-1", city_id, 0, &Value::Null).unwrap_err(), "revision_conflict");
+        let clear = preview_city_patch(&home, "studio-1", city_id, 1, &Value::Null).unwrap();
+        commit_city(&home, "owner", "studio-1", city_id, clear["previewId"].as_str().unwrap(), 1, "clear-patch").unwrap();
+        assert!(read_city(&home, city_id).unwrap().get("planPatch").is_none());
+        assert_eq!(read_city_revision(&home, city_id, 1).unwrap()["planPatch"], patch);
+        let _ = std::fs::remove_dir_all(home);
     }
 
     #[test]

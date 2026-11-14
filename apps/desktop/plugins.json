@@ -472,6 +472,7 @@
         "creator.city.diagnostic.list",
         "creator.city.edit.commit",
         "creator.city.edit.preview",
+        "creator.city.patch.preview",
         "creator.city.list",
         "creator.city.read",
         "creator.city.view",
@@ -488,6 +489,7 @@
         "creator.project.create",
         "creator.game.preview",
         "creator.asset.import",
+        "creator.content.inspect",
         "creator.game.commit",
         "creator.scene.preview",
         "creator.scene.commit",
@@ -508,6 +510,14 @@
       ],
       "source": "apps/creator-studio/ui",
       "localCallBudgets": {
+        "creator.city.read": {
+          "requestBytes": 8192,
+          "responseBytes": 393216
+        },
+        "creator.city.patch.preview": {
+          "requestBytes": 393216,
+          "responseBytes": 65536
+        },
         "creator.city.capture": {
           "requestBytes": 8192,
           "responseBytes": 524288

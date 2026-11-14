@@ -3,7 +3,7 @@ import { access, lstat, open, readFile, writeFile, mkdir, rename, realpath } fro
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { canonicalJson, inspectGlbBytes, validateAssetRefs, validateCityContentPackage, validateCityLayout, validateCityProjectAssetCatalog, validateCityWorldProfile, validateMiniGamePack, validateMount, validatePackageManifest, validateSceneDraft, runHeadless } from "../dist/index.js";
+import { canonicalJson, inspectContentPackageV2, inspectGlbBytes, validateAssetRefs, validateCityContentPackage, validateCityLayout, validateCityProjectAssetCatalog, validateCityWorldProfile, hasDuplicateJsonKeys, validateContentPackageManifestV2, validateMiniGamePack, validateMount, validatePackageManifest, validateSceneDraft, runHeadless } from "../dist/index.js";
 
 const MAX_INPUT_BYTES = 2 * 1024 * 1024;
 const root = process.cwd();
@@ -26,6 +26,8 @@ function usage() {
     "  sync-refs <directory>            Refresh mount and scene asset refs after edits",
     "  playtest <directory> [--seed N]  Run trace.json as a deterministic headless playtest",
     "  pack <directory> --out <file>    Create an unsigned .ohcity.json development artifact",
+    "  pack-world <directory> --out <file> --seed N --generator-version N  Create an unsigned v2 world artifact",
+    "  verify-world <file>              Inspect a v2 world artifact (not installation)",
     "  verify <file>                    Verify package structure and SHA-256 integrity",
   ].join("\n");
 }
@@ -358,9 +360,17 @@ async function importAsset(directory, file, assetId) {
     return;
   }
   const { project, assets, catalogPath } = await projectAssetPaths(directory);
-  const rawGame = await readJson(project, "game.json");
-  const gameResult = validateMiniGamePack(rawGame);
-  if (!gameResult.ok) throw new Error(`Project game is invalid: ${gameResult.diagnostics.map(item => item.code).join(", ")}`);
+  let assetPackage;
+  try {
+    const gameResult = validateMiniGamePack(await readJson(project, "game.json"));
+    if (!gameResult.ok) throw new Error(`Project game is invalid: ${gameResult.diagnostics.map(item => item.code).join(", ")}`);
+    assetPackage = { kind: "city-minigame", id: gameResult.value.id, version: "1", digest: digest(gameResult.value) };
+  } catch (error) {
+    if (!(error && typeof error === "object" && error.code === "ENOENT")) throw error;
+    const worldResult = validateCityWorldProfile(await readJson(project, "world.json"));
+    if (!worldResult.ok) throw new Error(`World profile is invalid: ${worldResult.diagnostics.map(item => item.code).join(", ")}`);
+    assetPackage = { kind: "city-world", id: worldResult.value.id, version: String(worldResult.value.version), digest: "self" };
+  }
   const catalog = await readProjectAssetCatalog(catalogPath);
   const existingId = catalog.entries.find(entry => entry.assetId === assetId);
   if (existingId && existingId.sha256 !== sha256) throw new Error(`Asset ID '${assetId}' already refers to different bytes.`);
@@ -385,7 +395,7 @@ async function importAsset(directory, file, assetId) {
   const validated = validateCityProjectAssetCatalog({ schemaVersion: 1, entries });
   if (!validated.ok) throw new Error(`Imported asset metadata is invalid: ${validated.diagnostics.map(item => item.code).join(", ")}`);
   await writeProjectAssetCatalog(catalogPath, validated.value);
-  const assetRef = { package: { kind: "city-minigame", id: gameResult.value.id, version: "1", digest: digest(gameResult.value) }, assetId, digest: sha256 };
+  const assetRef = { package: assetPackage, assetId, digest: sha256 };
   output({ ok: true, projectDir: project, asset: entry, assetRef, usableInScene: Boolean(entry.boundsMeters), trust: "unsigned-project-local-file", installable: false,
     note: entry.boundsMeters
       ? "The GLB is in the project inventory and the assetRef can be used in scene.json. pack includes it in an unsigned artifact; Creator/City runtime loading and installation are not implemented."
@@ -496,6 +506,87 @@ async function playtest(directory, seed) {
   const result = runHeadless({ layout, game: gameResult.value, mount, seed, trace, expected: { outcome: "success" } });
   output({ ok: result.ok && result.value.passed, projectDir: project, evidence: result.ok ? result.value : null, diagnostics: result.diagnostics });
   if (!result.ok || !result.value.passed) process.exitCode = 1;
+}
+
+async function packWorld(directory, outFile, seed, generatorVersion) {
+  if (!outFile || !Number.isSafeInteger(seed) || seed < 0 || seed > 0xffffffff || !Number.isSafeInteger(generatorVersion) || generatorVersion < 1)
+    throw new Error("pack-world requires --out, --seed (u32), and a positive --generator-version.");
+  const project = projectPath(directory);
+  const profile = validateCityWorldProfile(await readJson(project, "world.json"));
+  if (!profile.ok) throw new Error(`World profile is invalid: ${profile.diagnostics.map(item => item.code).join(", ")}`);
+  let scene;
+  try { scene = await readJson(project, "scene.json"); }
+  catch (error) { if (error && typeof error === "object" && error.code === "ENOENT") scene = { schemaVersion: 1, objects: [] }; else throw error; }
+  let patch;
+  try { patch = await readJson(project, "plan-patch.json"); }
+  catch (error) { if (!(error && typeof error === "object" && error.code === "ENOENT")) throw error; }
+  const { project: physicalProject, catalogPath } = await projectAssetPaths(project);
+  const catalog = await readProjectAssetCatalog(catalogPath);
+  const checkedScene = validateSceneDraft(scene);
+  if (!checkedScene.ok) throw new Error(`World scene is invalid: ${checkedScene.diagnostics.map(item => item.code).join(", ")}`);
+  const assetsById = new Map(catalog.entries.map(asset => [asset.assetId, asset]));
+  const packageScene = { schemaVersion: 1, objects: checkedScene.value.objects.map(object => {
+    if (object.kind !== "model") return object;
+    const asset = assetsById.get(object.asset.assetId);
+    if (!asset || asset.sha256 !== object.asset.digest) throw new Error(`Scene asset '${object.asset.assetId}' is not in the project catalog with the same digest.`);
+    return { ...object, asset: { ...object.asset, package: { kind: "city-world", id: profile.value.id, version: String(profile.value.version), digest: "self" } } };
+  }) };
+  const content = new Map([
+    ["assets/catalog.json", Buffer.from(canonicalJson(catalog))],
+    ["scene/objects.json", Buffer.from(canonicalJson(packageScene))],
+    ["world/profile.json", Buffer.from(canonicalJson(profile.value))],
+  ]);
+  if (patch !== undefined) content.set("world/plan-patch.json", Buffer.from(canonicalJson(patch)));
+  for (const asset of catalog.entries) {
+    const checked = await readInspectedGlb(path.join(physicalProject, asset.relativePath));
+    if (!checked.inspection.ok || checked.sha256 !== asset.sha256 || checked.bytes.byteLength !== asset.byteLength)
+      throw new Error(`Project asset '${asset.assetId}' failed verification.`);
+    if (content.has(asset.relativePath)) throw new Error("Duplicate package asset path.");
+    content.set(asset.relativePath, checked.bytes);
+  }
+  const files = [...content].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([name, bytes]) => ({
+    path: name, mediaType: name.endsWith(".glb") ? "model/gltf-binary" : "application/json", byteLength: bytes.length,
+    sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+  }));
+  const unsigned = { formatVersion: 2, kind: "city-world", packageId: profile.value.id, version: String(profile.value.version),
+    sdkContractVersion: "1", minCityRuntimeVersion: "1", entry: { profile: "world/profile.json", scene: "scene/objects.json", assets: "assets/catalog.json", generatorVersion, defaultSeed: seed, ...(patch === undefined ? {} : { patch: "world/plan-patch.json" }) }, files };
+  const manifest = { ...unsigned, contentDigest: digest(unsigned) };
+  const checked = await inspectContentPackageV2(manifest, content);
+  if (!checked.ok) throw new Error(`World package inspection failed: ${checked.diagnostics.map(item => item.code).join(", ")}`);
+  const artifact = { format: "oh-agent-city-content-v2", manifest: checked.value.manifest, files: Object.fromEntries([...content].map(([name, bytes]) => [name, bytes.toString("base64")])) };
+  const outputPath = path.resolve(root, outFile);
+  await writeFile(outputPath, `${JSON.stringify(artifact)}\n`, { flag: "wx" });
+  output({ ok: true, output: outputPath, contentDigest: manifest.contentDigest, trust: "unsigned-development-artifact", installable: false, unchecked: checked.value.unchecked });
+}
+
+async function verifyWorld(packageFile) {
+  if (!packageFile) throw new Error("verify-world requires a package file path.");
+  const filePath = path.resolve(root, packageFile);
+  const info = await lstat(filePath);
+  if (!info.isFile() || info.isSymbolicLink() || info.size > 140 * 1024 * 1024) throw new Error("World artifact must be a regular bounded file.");
+  const raw = await readFile(filePath);
+  if (raw.length > 140 * 1024 * 1024) throw new Error("World artifact exceeds the encoded size limit.");
+  const artifactText = raw.toString("utf8");
+  const artifact = JSON.parse(artifactText);
+  if (hasDuplicateJsonKeys(artifactText)) throw new Error("World artifact contains duplicate JSON object keys.");
+  if (!artifact || typeof artifact !== "object" || Array.isArray(artifact) || Object.keys(artifact).sort().join(",") !== "files,format,manifest" || artifact.format !== "oh-agent-city-content-v2" || !artifact.files || typeof artifact.files !== "object" || Array.isArray(artifact.files)) throw new Error("World artifact shape is invalid.");
+  const shape = validateContentPackageManifestV2(artifact.manifest);
+  if (!shape.ok || shape.value.kind !== "city-world") throw new Error("World artifact manifest is invalid.");
+  const names = Object.keys(artifact.files).sort();
+  if (names.length !== shape.value.files.length || names.some((name, index) => name !== shape.value.files[index].path)) throw new Error("World artifact file set differs from its manifest.");
+  const content = new Map();
+  for (const declaration of shape.value.files) {
+    const name = declaration.path, encoded = artifact.files[name];
+    if (typeof encoded !== "string" || encoded.length !== Math.ceil(declaration.byteLength / 3) * 4 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) throw new Error("Artifact file encoding is invalid.");
+    const bytes = Buffer.from(encoded, "base64");
+    if (bytes.toString("base64") !== encoded) throw new Error("Artifact file encoding is not canonical.");
+    content.set(name, bytes);
+  }
+  const checked = await inspectContentPackageV2(artifact.manifest, content);
+  if (!checked.ok || checked.value.manifest.kind !== "city-world") {
+    output({ ok: false, diagnostics: checked.ok ? [{ code: "content_kind_invalid" }] : checked.diagnostics }); process.exitCode = 1; return;
+  }
+  output({ ok: true, contentDigest: checked.value.manifest.contentDigest, trust: "unsigned-development-artifact", installable: false, unchecked: checked.value.unchecked });
 }
 
 async function pack(directory, outFile) {
@@ -711,6 +802,18 @@ async function main(args) {
     if (!Number.isSafeInteger(seed)) throw new Error("--seed must be a safe integer.");
     return playtest(directory, seed);
   }
+  if (command === "pack-world") {
+    const directory = rest[0]; let outFile, seed, generatorVersion;
+    for (let index = 1; index < rest.length; index += 1) {
+      const option = rest[index], value = rest[index + 1];
+      if (option === "--out" && value && !value.startsWith("-") && outFile === undefined) { outFile = value; index++; }
+      else if (option === "--seed" && /^\d+$/.test(value ?? "") && seed === undefined) { seed = Number(value); index++; }
+      else if (option === "--generator-version" && /^\d+$/.test(value ?? "") && generatorVersion === undefined) { generatorVersion = Number(value); index++; }
+      else throw new Error(`Unknown, repeated or invalid pack-world argument '${option}'.`);
+    }
+    return packWorld(directory, outFile, seed, generatorVersion);
+  }
+  if (command === "verify-world" && rest.length === 1) return verifyWorld(rest[0]);
   if (command === "pack") {
     const directory = rest[0];
     let outFile;

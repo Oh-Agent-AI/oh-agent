@@ -1,5 +1,6 @@
 import type { AnchorCapability, AnchorFilterV1, AnchorKind, CityAnchorV1, CityAnchorLinkV1, CityGameMountV1, CityInstanceV1, CityLayoutSnapshotV1, CityLayoutSnapshotV2, CityLayoutV1, CityProjectAssetCatalogV1, CityProjectAssetEntryV1, CitySkinPackV1, CityWorldProfileV1, CoastalWorldParametersV1, ContentRef, DiagnosticV1, MiniGamePackV1, ModelAssetCatalogEntryV1, ModelAssetCatalogV1, ModelAssetFilterV1, ModelAssetRefV1, ResolvedModelAssetRefsV1, Result, SceneDraftV1, SceneObjectFilterV1, SceneObjectV1 } from "./types";
 import { validateMiniGamePack } from "./content";
+import { validateWorldPlanPatch } from "./worldPlanPatch";
 
 const error = (code: string, path: string, message: string, objectId?: string): DiagnosticV1 => ({ code, severity: "error", path, message, ...(objectId ? { objectId } : {}) });
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -13,7 +14,7 @@ const MAX_LAYOUT_LINKS = 100_000;
 
 /** Validate and detach the persisted City identity and its world recipe. */
 export function validateCityInstance(value: unknown): Result<CityInstanceV1> {
-  if (!isObject(value) || !exactKeys(value, ["schemaVersion", "cityId", "revision", "name", "seed", "profile"])) {
+  if (!isObject(value) || !exactKeys(value, ["schemaVersion", "cityId", "revision", "name", "seed", "profile", "planPatch"])) {
     return { ok: false, diagnostics: [error("city_instance_invalid_shape", "$", "City must contain only the version 1 instance fields.")] };
   }
   if (value.schemaVersion !== 1 || typeof value.cityId !== "string" || !identifier.test(value.cityId)
@@ -25,8 +26,15 @@ export function validateCityInstance(value: unknown): Result<CityInstanceV1> {
   }
   const profile = validateCityWorldProfile(value.profile);
   if (!profile.ok) return { ok: false, diagnostics: profile.diagnostics.map(item => ({ ...item, path: `profile.${item.path}` })) };
+  let planPatch: Readonly<Record<string, unknown>> | undefined;
+  if (value.planPatch !== undefined) {
+    const version = isObject(value.planPatch) ? value.planPatch.generatorVersion ?? 1 : 0;
+    const checked = validateWorldPlanPatch(value.planPatch, value.seed as number, version as number);
+    if (!checked.ok) return checked;
+    planPatch = checked.value;
+  }
   return { ok: true, value: Object.freeze({ schemaVersion: 1, cityId: value.cityId, revision: value.revision as number,
-    name: value.name, seed: value.seed as number, profile: profile.value }), diagnostics: [] };
+    name: value.name, seed: value.seed as number, profile: profile.value, ...(planPatch ? { planPatch } : {}) }), diagnostics: [] };
 }
 
 /** Validate a data-only, versioned world recipe. Generator execution stays in City. */
@@ -256,7 +264,7 @@ export function validateSceneDraft(value: unknown): Result<SceneDraftV1> {
     isObject(raw) && exactKeys(raw, ["x", "y", "z"]) && [raw.x, raw.y, raw.z].every(number => typeof number === "number" && Number.isFinite(number) && number >= bounds[0] && number <= bounds[1]);
   const validRef = (raw: unknown): raw is ModelAssetRefV1 => isObject(raw) && exactKeys(raw, ["package", "assetId", "digest"])
     && isObject(raw.package) && exactKeys(raw.package, ["kind", "id", "version", "digest"])
-    && typeof raw.package.kind === "string" && ["city-layout", "city-skin", "city-minigame"].includes(raw.package.kind)
+    && typeof raw.package.kind === "string" && ["city-layout", "city-skin", "city-minigame", "city-world"].includes(raw.package.kind)
     && typeof raw.package.id === "string" && identifier.test(raw.package.id)
     && typeof raw.package.version === "string" && raw.package.version.length > 0 && raw.package.version.length <= 64
     && typeof raw.package.digest === "string" && raw.package.digest.length > 0 && raw.package.digest.length <= 256
@@ -478,7 +486,7 @@ export function validateAssetRefs(input: unknown): Result<ResolvedModelAssetRefs
   const fail = (code: string, path: string, message: string, objectId?: string) => diagnostics.push(error(code, path, message, objectId));
   const validPackageRef = (value: unknown): value is ContentRef => isObject(value)
     && exactKeys(value, ["kind", "id", "version", "digest"])
-    && typeof value.kind === "string" && ["city-layout", "city-skin", "city-minigame"].includes(value.kind)
+    && typeof value.kind === "string" && ["city-layout", "city-skin", "city-minigame", "city-world"].includes(value.kind)
     && typeof value.id === "string" && identifier.test(value.id)
     && typeof value.version === "string" && value.version.length > 0 && value.version.length <= 64
     && typeof value.digest === "string" && value.digest.length > 0 && value.digest.length <= 256;

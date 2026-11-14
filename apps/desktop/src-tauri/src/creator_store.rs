@@ -89,6 +89,10 @@ pub(crate) fn database(home: &Path) -> Result<Connection, &'static str> {
             city_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, document_json TEXT NOT NULL,
             created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS creator_city_revisions (
+            city_id TEXT NOT NULL, revision INTEGER NOT NULL, document_json TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL, PRIMARY KEY(city_id, revision)
+        );
         CREATE TABLE IF NOT EXISTS creator_city_operations (
             actor_id TEXT NOT NULL, operation_id TEXT NOT NULL, operation_hash TEXT NOT NULL,
             city_id TEXT NOT NULL, result_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL,
@@ -181,4 +185,23 @@ pub(crate) fn new_id(prefix: &str) -> Result<String, &'static str> {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).map_err(|_| "creator_id_unavailable")?;
     Ok(format!("{prefix}{}", bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>()))
+}
+
+#[cfg(test)]
+mod content_digest_tests {
+    use super::*;
+
+    #[test]
+    fn v2_manifest_canonical_digest_matches_sdk_vector() {
+        let sha = "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a";
+        let manifest = serde_json::json!({"formatVersion":2,"kind":"city-world","packageId":"example.desert","version":"1.0.0",
+            "sdkContractVersion":"1","minCityRuntimeVersion":"1.0.0",
+            "entry":{"profile":"world/profile.json","scene":"scene/objects.json","assets":"assets/catalog.json","generatorVersion":1,"defaultSeed":42},
+            "files":[
+                {"path":"assets/catalog.json","mediaType":"application/json","byteLength":2,"sha256":sha},
+                {"path":"scene/objects.json","mediaType":"application/json","byteLength":2,"sha256":sha},
+                {"path":"world/profile.json","mediaType":"application/json","byteLength":2,"sha256":sha}
+            ]});
+        assert_eq!(digest(&canonical_json(&manifest).unwrap()), "sha256:432a5a6173179521080db1ae9aa71a0d49e41d27681ed2b5ce0b62ba87383682");
+    }
 }

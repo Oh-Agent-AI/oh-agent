@@ -37,6 +37,8 @@ pub(crate) fn start_playtest(home: &Path, studio_instance: &str, release_id: &st
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))).optional().map_err(|_| "creator_store_unavailable")?;
     if let Some((run_id, active_release, active_studio, active_revision, active_project)) = active {
         if active_release == release_id && active_studio == studio_instance {
+            if expected_project.is_some_and(|expected| expected != active_project) { return Err("creator_release_project_mismatch"); }
+            if expected_revision.is_some_and(|expected| expected != active_revision) { return Err("creator_release_revision_mismatch"); }
             tx.commit().map_err(|_| "creator_store_unavailable")?;
             return Ok(json!({"runId":run_id,"releaseId":release_id,"projectId":active_project,"revision":active_revision,"status":"pending"}));
         }
@@ -54,6 +56,9 @@ pub(crate) fn start_playtest(home: &Path, studio_instance: &str, release_id: &st
     }
     if raw.len() > MAX_RELEASE_BYTES { return Err("creator_release_invalid"); }
     let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
+    // The current City runtime only loads the legacy active world. An independent
+    // release must not be played there until runtime selection is city-scoped.
+    if snapshot.get("cityId").is_some_and(|value| !value.is_null()) { return Err("creator_independent_city_runtime_unavailable"); }
     if snapshot.get("projectId").and_then(Value::as_str) != Some(&project_id)
         || snapshot.get("revision").and_then(Value::as_u64) != Some(revision)
         || !snapshot.get("game").is_some_and(Value::is_object)
@@ -90,6 +95,7 @@ pub(crate) fn claim_playtest(home: &Path, city_instance: &str) -> Result<Value, 
     if raw.len() > MAX_RELEASE_BYTES { return Err("creator_release_invalid"); }
     if digest(&raw) != snapshot_digest { return Err("creator_release_digest_mismatch"); }
     let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
+    if snapshot.get("cityId").is_some_and(|value| !value.is_null()) { return Err("creator_independent_city_runtime_unavailable"); }
     if snapshot.get("projectId").and_then(Value::as_str) != Some(&project_id)
         || snapshot.get("revision").and_then(Value::as_u64) != Some(revision)
         || !snapshot.get("game").is_some_and(Value::is_object)

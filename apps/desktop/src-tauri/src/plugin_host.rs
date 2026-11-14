@@ -1189,6 +1189,30 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
     if method.starts_with("creator.") {
         if plugin_id != "creator-studio" { return Ok(plugin_request_error(request.request_id, "permission_denied", false)); }
         if !local_calls.iter().any(|allowed| allowed == &method) { return Ok(plugin_request_error(request.request_id, "permission_denied", false)); }
+        if method == "creator.content.inspect" {
+            if !payload.as_object().is_some_and(|object| object.is_empty()) { return Ok(plugin_request_error(request.request_id, "creator_request_invalid", false)); }
+            {
+                let host = state.0.lock().unwrap();
+                if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            let selected = tauri::async_runtime::spawn_blocking(|| rfd::FileDialog::new()
+                .add_filter("City 内容包", &["json"]).pick_file()).await.map_err(|_| "content_picker_failed".to_string())?;
+            let Some(source) = selected else { return Ok(plugin_request_error(request.request_id, "content_picker_cancelled", false)); };
+            let result = tauri::async_runtime::spawn_blocking(move || crate::creator_content_v2::inspect_selected_world_file(&source))
+                .await.map_err(|_| "content_inspection_failed".to_string())?;
+            {
+                let host = state.0.lock().unwrap();
+                if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            return Ok(match result {
+                Ok(value) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(value), error: None },
+                Err(code) => plugin_request_error(request.request_id, code, false),
+            });
+        }
         if method == "creator.asset.import" {
             let Some(object) = payload.as_object().filter(|object| object.len() == 3
                 && object.keys().all(|key| matches!(key.as_str(), "projectId" | "expectedRevision" | "operationId"))) else {

@@ -310,8 +310,31 @@ fn create_project_internal(home: &Path, actor: &str, template: &str, operation_i
     };
     let existing: Option<(String, String)> = tx.query_row("SELECT operation_hash,result_json FROM creator_operations WHERE project_id='new' AND actor_id=?1 AND operation_id=?2", params![actor, operation_id], |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(|_| "creator_store_unavailable")?;
     if let Some((previous_hash, result)) = existing {
-        if previous_hash != creation_hash { return Err("operation_id_conflict"); }
+        // An identical independent-City request remains idempotent even when a
+        // newer revision has since produced a layout with the same worldRevision.
+        let mut matches = previous_hash == creation_hash;
+        if !matches {
+            if let Some(binding) = &city_binding {
+                let recorded: Value = serde_json::from_str(&result).map_err(|_| "creator_store_unavailable")?;
+                let recorded_id = recorded["projectId"].as_str().ok_or("creator_store_corrupt")?;
+                let raw: String = tx.query_row("SELECT document_json FROM creator_projects WHERE project_id=?1", [recorded_id], |row| row.get(0))
+                    .optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_store_corrupt")?;
+                let saved: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_corrupt")?;
+                let recorded_binding = json!({"cityId":saved["cityId"],"cityRevision":saved["cityRevision"],"layoutId":saved["layoutId"]});
+                let recorded_hash = digest(&canonical_json(&json!({"template":template,"worldRevision":layout_revision,"city":recorded_binding}))
+                    .map_err(|_| "creator_store_unavailable")?);
+                matches = saved["cityId"] == binding["cityId"] && previous_hash == recorded_hash;
+            }
+        }
+        if !matches { return Err("operation_id_conflict"); }
         return serde_json::from_str(&result).map_err(|_| "creator_store_unavailable");
+    }
+    if let Some(binding) = &city_binding {
+        let city_id = binding["cityId"].as_str().ok_or("creator_layout_scope_mismatch")?;
+        let city_revision = binding["cityRevision"].as_u64().ok_or("creator_layout_scope_mismatch")?;
+        let current: Option<u64> = tx.query_row("SELECT revision FROM creator_cities WHERE city_id=?1", [city_id], |row| row.get(0))
+            .optional().map_err(|_| "creator_store_unavailable")?;
+        if current != Some(city_revision) { return Err("revision_conflict"); }
     }
     let now = now_ms();
     tx.execute("INSERT INTO creator_projects(project_id,revision,document_json,created_at_ms,updated_at_ms) VALUES(?1,0,?2,?3,?3)", params![project_id, document, now]).map_err(|_| "creator_store_unavailable")?;
@@ -528,7 +551,7 @@ pub fn list_city_releases(home: &Path, layout_id: &str, world_revision: &str, li
     require_catalog_layout(home, layout_id, world_revision)?;
     let db = database(home)?;
     let mut statement = db.prepare("SELECT release_id,project_id,revision,snapshot_json,created_at_ms FROM creator_releases
-        WHERE layout_id=?1 AND world_revision=?2 ORDER BY created_at_ms DESC,release_id ASC LIMIT ?3").map_err(|_| "creator_store_unavailable")?;
+        WHERE layout_id=?1 AND world_revision=?2 AND json_type(snapshot_json, '$.cityId') IS NULL ORDER BY created_at_ms DESC,release_id ASC LIMIT ?3").map_err(|_| "creator_store_unavailable")?;
     let rows = statement.query_map(params![layout_id,world_revision,limit.clamp(1, 32)], |row|
         Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,u64>(2)?,row.get::<_,String>(3)?,row.get::<_,u64>(4)?)))
         .map_err(|_| "creator_store_unavailable")?;
@@ -553,6 +576,7 @@ pub fn read_city_release(home: &Path, release_id: &str, layout_id: &str, world_r
     if raw.len() > MAX_RELEASE_BYTES { return Err("creator_release_invalid"); }
     if digest(&raw) != snapshot_digest { return Err("creator_release_digest_mismatch"); }
     let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
+    if snapshot.get("cityId").is_some_and(|value| !value.is_null()) { return Err("creator_release_not_found"); }
     if snapshot.get("revision").and_then(Value::as_u64) != Some(revision)
         || snapshot.get("layoutId").and_then(Value::as_str) != Some(layout_id)
         || snapshot.get("worldRevision").and_then(Value::as_str) != Some(world_revision)
@@ -828,8 +852,8 @@ fn run_project_publish(home: &Path, _owner: &str, _instance: &str, payload: &Val
 /// 提供即校验归属）。requestId 原样回传，供调用方关联异步结果。
 fn run_playtest_start(home: &Path, _owner: &str, instance: &str, payload: &Value) -> Result<Value, &'static str> {
     let release_id = args_valid_id(payload, "releaseId")?;
-    let expected_project = payload.get("projectId").and_then(Value::as_str).filter(|id| valid_id(id));
-    let expected_revision = payload.get("expectedRevision").and_then(Value::as_u64);
+    let expected_project = if payload.get("projectId").is_some() { Some(args_valid_id(payload, "projectId")?) } else { None };
+    let expected_revision = if payload.get("expectedRevision").is_some() { Some(args_u64(payload, "expectedRevision")?) } else { None };
     if payload.get("requestId").is_some_and(|value| !value.as_str().is_some_and(|id| !id.is_empty() && id.len() <= 128)) {
         return Err("creator_request_invalid");
     }
@@ -891,7 +915,9 @@ fn run_city_create(home: &Path, owner: &str, _instance: &str, payload: &Value) -
     crate::creator_cities::create_city(home, owner, operation_id, name, seed as u32, profile)
 }
 fn run_city_read(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
-    crate::creator_cities::read_city(home, args_valid_id(payload, "cityId")?)
+    let city_id = args_valid_id(payload, "cityId")?;
+    if payload.get("revision").is_some() { crate::creator_cities::read_city_revision(home, city_id, args_u64(payload, "revision")?) }
+    else { crate::creator_cities::read_city(home, city_id) }
 }
 fn run_city_list(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
     let after = match payload.get("cursor") { None => "", Some(value) => value.as_str().ok_or("creator_city_invalid")? };
@@ -916,6 +942,18 @@ fn run_city_commit(home: &Path, owner: &str, instance: &str, payload: &Value) ->
     crate::creator_cities::commit_city(home, owner, instance, args_valid_id(payload, "cityId")?, args_valid_id(payload, "previewId")?,
         args_u64(payload, "expectedRevision")?, args_valid_id(payload, "operationId")?)
 }
+fn run_city_patch_preview(home: &Path, _owner: &str, instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    let city_id = args_valid_id(payload, "cityId")?;
+    let revision = args_u64(payload, "baseRevision")?;
+    let patch = payload.get("patch").ok_or("creator_request_invalid")?;
+    let validation = payload.get("validation").and_then(Value::as_object).ok_or("creator_validation_required")?;
+    if validation.len() != 3 || validation.get("schemaVersion").and_then(Value::as_u64) != Some(1)
+        || validation.get("ok").and_then(Value::as_bool) != Some(true) { return Err("creator_preview_invalid"); }
+    let request = json!({"cityId":city_id,"baseRevision":revision,"patch":patch});
+    let expected = digest(&canonical_json(&request).map_err(|_| "creator_city_patch_invalid")?);
+    if validation.get("requestDigest").and_then(Value::as_str) != Some(expected.as_str()) { return Err("creator_validation_scope_mismatch"); }
+    crate::creator_cities::preview_city_patch(home, instance, city_id, revision, patch)
+}
 fn run_city_layout_store(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
     crate::creator_city_patch::store_scoped_city_layout(home, payload.get("snapshot").ok_or("creator_request_invalid")?)
 }
@@ -936,9 +974,10 @@ static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.city.diagnostic.record", &["cityId", "revision", "correlationId", "event"], &["code", "elapsedMs"], run_city_diagnostic_record),
     creator_row!("creator.city.edit.commit", &["cityId", "previewId", "expectedRevision", "operationId"], &[], run_city_commit),
     creator_row!("creator.city.edit.preview", &["cityId", "baseRevision", "name", "seed", "profile", "validation"], &[], run_city_preview),
+    creator_row!("creator.city.patch.preview", &["cityId", "baseRevision", "patch", "validation"], &[], run_city_patch_preview),
     creator_row!("creator.city.layout.store", &["snapshot"], &[], run_city_layout_store),
     creator_row!("creator.city.list", &["limit"], &["cursor"], run_city_list),
-    creator_row!("creator.city.read", &["cityId"], &[], run_city_read),
+    creator_row!("creator.city.read", &["cityId"], &["revision"], run_city_read),
     creator_row!("creator.game.commit", &["projectId", "previewId", "expectedRevision", "operationId"], &[], run_commit),
     creator_row!("creator.game.preview", &["projectId", "baseRevision", "game"], &["validation"], run_game_preview),
     creator_row!("creator.layout.list", &["limit"], &[], run_layout_list),
@@ -1783,6 +1822,10 @@ mod tests {
         assert_eq!(start["status"], "pending");
         let run_id = start["runId"].as_str().unwrap().to_owned();
         assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.playtest.start", &json!({"releaseId":release_id})).unwrap(), start);
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.playtest.start", &json!({"releaseId":release_id,"projectId":"other-project"})).unwrap_err(), "creator_release_project_mismatch");
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.playtest.start", &json!({"releaseId":release_id,"expectedRevision":revision + 1})).unwrap_err(), "creator_release_revision_mismatch");
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.playtest.start", &json!({"releaseId":release_id,"projectId":null})).unwrap_err(), "creator_request_invalid");
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.playtest.start", &json!({"releaseId":release_id,"expectedRevision":"1"})).unwrap_err(), "creator_request_invalid");
         assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance-2", "creator.project.playtest.start", &json!({"releaseId":release_id})).unwrap_err(), "creator_playtest_active");
 
         let claimed = dispatch_city_runtime(&home, "city-instance", "city.creator.playtest.claim", &json!({})).unwrap();
@@ -2069,6 +2112,47 @@ mod tests {
         assert_eq!(create_project_from_city_draft(&home, "owner", "checkpoint-race", "city-project", "world-r1", city_id).unwrap(), created);
         assert_eq!(create_project_from_city_draft(&home, "owner", "checkpoint-race", "city-project-2", "missing-world", city_id).unwrap_err(), "creator_layout_not_found");
         assert_eq!(create_project_from_city_draft(&home, "owner", "checkpoint-race", "city-project-3", "world-r1", "city-missing").unwrap_err(), "creator_city_not_found");
+        let profile = json!({"schemaVersion":1,"id":"egypt-desert","version":1});
+        let preview = crate::creator_cities::preview_city(&home, "studio-instance", city_id, 0, "新版沙海", seed + 1, &profile).unwrap();
+        crate::creator_cities::commit_city(&home, "owner", "studio-instance", city_id, preview["previewId"].as_str().unwrap(), 0, "edit-desert").unwrap();
+        let pinned = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.city.read", &json!({"cityId":city_id,"revision":document["cityRevision"]})).unwrap();
+        assert_eq!(pinned["seed"], seed);
+        assert_eq!(pinned["name"], "沙海之门");
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.city.read", &json!({"cityId":city_id})).unwrap()["seed"], seed + 1);
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.city.read", &json!({"cityId":city_id,"revision":null})).unwrap_err(), "creator_request_invalid");
+        // The old layout is not current, but retrying its completed creation is safe.
+        assert_eq!(create_project_from_city_draft(&home, "owner", "checkpoint-race", "city-project", "world-r1", city_id).unwrap(), created);
+        assert_eq!(create_project_from_city_draft(&home, "owner", "checkpoint-race", "stale-project", "world-r1", city_id).unwrap_err(), "revision_conflict");
+        let mut new_layout = scoped.clone();
+        new_layout["cityRevision"] = json!(1);
+        new_layout["seed"] = json!(seed + 1);
+        crate::creator_city_patch::store_scoped_city_layout(&home, &new_layout).unwrap();
+        assert_eq!(create_project_from_city_draft(&home, "owner", "checkpoint-race", "city-project", "world-r1", city_id).unwrap(), created);
+        assert_eq!(create_project_from_city_draft(&home, "owner", "collect-one", "city-project", "world-r1", city_id).unwrap_err(), "operation_id_conflict");
+        let next = create_project_from_city_draft(&home, "owner", "checkpoint-race", "new-project", "world-r1", city_id).unwrap();
+        assert_eq!(read_project(&home, next["projectId"].as_str().unwrap()).unwrap()["cityRevision"], 1);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn independent_city_patch_dispatch_requires_scoped_validation() {
+        let home = home();
+        let city = crate::creator_cities::create_city(&home, "owner", "create-city-patch", "Dunes", 42,
+            &json!({"schemaVersion":1,"id":"desert"})).unwrap();
+        let city_id = city["cityId"].as_str().unwrap();
+        let patch = json!({"version":1,"seed":42,"scaleTier":1,"generatorVersion":6,"updatedAt":1,
+            "roadOps":[{"t":"drop","edge":"-117.42:-196.17/97.59:-193.63"}],"siteOps":[],"buildingMoves":{},"suppressedContext":[]});
+        let request = json!({"cityId":city_id,"baseRevision":0,"patch":patch});
+        let mut payload = request.clone();
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.city.patch.preview", &payload).unwrap_err(), "creator_request_invalid");
+        payload["validation"] = json!({"schemaVersion":1,"ok":true,"requestDigest":"sha256:wrong"});
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.city.patch.preview", &payload).unwrap_err(), "creator_validation_scope_mismatch");
+        payload["validation"]["requestDigest"] = json!(digest(&canonical_json(&request).unwrap()));
+        let preview = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.city.patch.preview", &payload).unwrap();
+        let committed = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.city.edit.commit", &json!({"cityId":city_id,"previewId":preview["previewId"],"expectedRevision":0,"operationId":"commit-city-patch"})).unwrap();
+        assert_eq!(committed["revision"], 1);
+        let read = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.city.read", &json!({"cityId":city_id,"revision":1})).unwrap();
+        assert_eq!(read["planPatch"], patch);
         let _ = std::fs::remove_dir_all(home);
     }
 
@@ -2093,7 +2177,17 @@ mod tests {
             "entryAnchorId":"road-spawn:a","bindings":{"points":["road-checkpoint:ab","road-checkpoint:bc","road-checkpoint:cd"]},"parameterOverrides":{"timeLimitTicks":2400}});
         let preview = preview_scene_operations(&home, "studio-instance", &project_id, 0, &json!([{"op":"mount.bind","mount":mount}])).unwrap();
         commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", &project_id, preview["previewId"].as_str().unwrap(), 0, "city-release-mount").unwrap();
-        publish_project_release(&home, &project_id, 1).unwrap();
+        let release = publish_project_release(&home, &project_id, 1).unwrap();
+        let release_id = release["releaseId"].as_str().unwrap();
+        assert_eq!(crate::creator_playtest::start_playtest(&home, "studio-instance", release_id, Some(&project_id), Some(1)).unwrap_err(), "creator_independent_city_runtime_unavailable");
+        // Matching layout and seed do not authorize an independent City release
+        // to appear in the legacy runtime's catalog.
+        let mut legacy_layout = layout.clone();
+        legacy_layout["worldRevision"] = json!("world-r1");
+        publish_city_layout_snapshot(&home, &legacy_layout).unwrap();
+        let layout_id = layout["layout"]["id"].as_str().unwrap();
+        assert!(list_city_releases(&home, layout_id, "world-r1", 8).unwrap()["releases"].as_array().unwrap().is_empty());
+        assert_eq!(read_city_release(&home, release_id, layout_id, "world-r1").unwrap_err(), "creator_release_not_found");
         let db = database(&home).unwrap();
         let raw: String = db.query_row("SELECT snapshot_json FROM creator_releases WHERE project_id=?1", [&project_id], |row| row.get(0)).unwrap();
         let snapshot: Value = serde_json::from_str(&raw).unwrap();
@@ -2246,6 +2340,13 @@ mod tests {
         let first = publish_city_patch(&home, &json!({"seed":7,"patch":patch.clone()})).unwrap();
         let second = publish_city_patch(&home, &json!({"seed":7,"patch":patch})).unwrap();
         assert_eq!(first["digest"], second["digest"]);
+        let mut geometry_ids = sample_patch(7);
+        geometry_ids["roadOps"][1]["edge"] = json!("-117.42:-196.17/97.59:-193.63");
+        geometry_ids["buildingMoves"]["session-1"] = json!("road-block:face:-233.69:208.57/-283.34:215.61/1:1");
+        geometry_ids["suppressedContext"][0] = json!("context:parcel:-10.0:2.0/4.0:5.0");
+        assert!(validate_city_patch(&geometry_ids, 7).is_ok());
+        geometry_ids["roadOps"][1]["edge"] = json!("-1:2/3:4\\bad");
+        assert_eq!(validate_city_patch(&geometry_ids, 7).unwrap_err(), "creator_city_patch_invalid");
         let mismatched = sample_patch(8);
         assert_eq!(publish_city_patch(&home, &json!({"seed":7,"patch":mismatched})).unwrap_err(), "creator_city_patch_seed_mismatch");
         assert_eq!(publish_city_patch(&home, &json!({"seed":7,"patch":json!({"version":1,"seed":7,"scaleTier":1,"updatedAt":1,

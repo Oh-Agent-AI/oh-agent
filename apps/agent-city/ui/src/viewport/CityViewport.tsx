@@ -6,7 +6,7 @@ import { CityEngine } from "../engine/CityEngine";
 import { tauriCityDataProvider, type CityProjectionV1 } from "../data/provider";
 import { cityPlanPatchStore } from "../data/planPatch";
 import { cityProjectionErrorCode } from "../data/projectionRetry";
-import type { PlanPatchV1 } from "../engine/planPatch";
+import { hashPlanPatch, type PlanPatchV1 } from "../engine/planPatch";
 import { PlanRepairSession, type RepairCandidate } from "../planRepair/session";
 import { noteBusy } from "../host";
 import { cityText, useCityLanguage } from "../i18n";
@@ -36,6 +36,8 @@ export type CityViewportProps = {
   projectPatch?: PlanPatchV1 | null;
   /** Independent draft preview: never read or write the legacy seed-keyed City patch store. */
   isolatedDraft?: boolean;
+  /** Explicitly city-scoped project patch; never read from the legacy store. */
+  isolatedProjectPatch?: PlanPatchV1 | null;
   onViewportStatus?: (status: "loading" | "ready" | "failed", failureCode?: string) => void;
   /** 视口内移动成功后回调：父页面经 preview→commit 把补丁写通到项目 revision
    *  （与 Agent/MCP 共用同一草稿）。本地存档写入由 PlanRepairSession 负责，不在这里。 */
@@ -53,7 +55,7 @@ type ViewportLoadState = Readonly<{ stage: "data" | "model" | "planning" | "moun
  * 暂停/恢复沿用引擎已注册的宿主 __AV_PLUGIN_SUSPENDED__/RESUMED__ 事件与
  * visibilitychange，销毁入口就是组件卸载时的 engine.dispose()。
  */
-export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, editable = false, focusSignal = 0, projectPatch = null, isolatedDraft = false, onViewportStatus, onPatchCommit }: CityViewportProps) {
+export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, editable = false, focusSignal = 0, projectPatch = null, isolatedDraft = false, isolatedProjectPatch = null, onViewportStatus, onPatchCommit }: CityViewportProps) {
   const days = windowDays ?? readCityWindowDays();
   const language = useCityLanguage();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -69,9 +71,10 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
   const [firstModelFrame, setFirstModelFrame] = useState(false);
   const statusCallbackRef = useRef(onViewportStatus);
   statusCallbackRef.current = onViewportStatus;
-  useEffect(() => { statusCallbackRef.current?.(sceneUnavailable ? "failed" : firstModelFrame ? "ready" : "loading", sceneFailureCode); }, [sceneUnavailable, firstModelFrame, sceneFailureCode]);
   const [cityLoad, setCityLoad] = useState<ViewportLoadState>({ stage: "data", work: null });
   const [localPatch, setLocalPatch] = useState<PlanPatchV1 | null>(null);
+  const [stalePatchCount, setStalePatchCount] = useState(0);
+  useEffect(() => { statusCallbackRef.current?.(sceneUnavailable || (isolatedDraft && stalePatchCount > 0) ? "failed" : firstModelFrame ? "ready" : "loading", sceneFailureCode ?? (isolatedDraft && stalePatchCount > 0 ? "city_patch_stale" : undefined)); }, [sceneUnavailable, firstModelFrame, sceneFailureCode, isolatedDraft, stalePatchCount]);
   // 选取与移动状态：editable 下点会话楼 → 聚焦 + 就近候选；移动经修复会话提交。
   const [engineState, setEngineState] = useState<CityEngine | null>(null);
   const [selection, setSelection] = useState<BuildingSelection | null>(null);
@@ -215,8 +218,8 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
   // Studio 写通）按 updatedAt 取较新者——两边都是同一座城的合法编辑来源，
   // last-writer-wins 是迁移期的诚实规则；不比较就叠加会互相覆盖。
   const patch = useMemo(() => {
-    return selectViewportPatch(isolatedDraft, seed, localPatch, projectPatch);
-  }, [localPatch, projectPatch, seed, isolatedDraft]);
+    return selectViewportPatch(isolatedDraft, seed, localPatch, projectPatch, isolatedProjectPatch);
+  }, [localPatch, projectPatch, isolatedProjectPatch, seed, isolatedDraft]);
   useEffect(() => {
     if (isolatedDraft) { setLocalPatch(null); return; }
     let active = true;
@@ -241,9 +244,7 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
     const engine = engineRef.current;
     if ((!projection && !isolatedDraft) || !engine) return;
     const patchForSeed = patch?.seed === seed ? patch : null;
-    const patchKey = patchForSeed
-      ? `${patchForSeed.updatedAt}:${Object.keys(patchForSeed.buildingMoves).length}:${patchForSeed.roadOps.length}:${patchForSeed.highwayOps?.length ?? 0}:${patchForSeed.siteOps.length}`
-      : "";
+    const patchKey = patchForSeed ? hashPlanPatch(patchForSeed) : "";
     const model = isolatedDraft ? buildCityModel({ harnessNames: {}, rows: [], findings: [], windowStartMs: 0, windowEndMs: 1,
       windowLabel: "独立空城", totalSessions: 0, truncated: false, generatedAt: 0 }) : buildCityModel({
       harnessNames: Object.fromEntries(projection!.harnesses.map((h) => [h.id, h.display_name])),
@@ -271,6 +272,7 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
       if (patchKey === patchFingerprint.current) return;
       // 只有补丁变了：引擎按移楼钉子对比走快路径（缓存的底层布局上重套补丁），与 City 的 setPlanPatch 一致。
       engine.setPlanPatch(patchForSeed);
+      setStalePatchCount(engine.planPatched?.stale.length ?? 0);
       patchFingerprint.current = patchKey;
       return;
     }
@@ -295,6 +297,7 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
       engine.setPlanPatch(patchForSeed);
       patchFingerprint.current = patchKey;
       engine.applyModel(model, false);
+      setStalePatchCount(engine.planPatched?.stale.length ?? 0);
       setCityLoad({ stage: "rendering", work: null });
       // applyModel 在返回前同步渲染该模型的首帧。
       setFirstModelFrame(true);
@@ -347,6 +350,7 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
         </div>
       </div>}
       {sceneMessage && !cityLoading && <div className="city-scene-message" role="status">{sceneMessage}{!isolatedDraft && dataErrorCode && <><span>（{dataErrorCode}）</span> <button onClick={() => setDataRetry(value => value + 1)}>重试</button></>}</div>}
+      {isolatedDraft && !cityLoading && stalePatchCount > 0 && <div className="city-scene-message" role="status">{stalePatchCount} 项城市编辑未能应用，请检查布局和生成器版本。</div>}
       {editable && saveState && <div className="viewport-savebar" role="status">{saveState === "pending" ? "城市视图修改保存中…"
         : saveState === "failed" ? "城市视图修改保存失败，可重试" : "城市视图修改已保存"}</div>}
       {editable && selection && <div className="selection-card" role="dialog" aria-label="选中建筑">

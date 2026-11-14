@@ -18,6 +18,14 @@ const MAX_CITY_PATCH_TERRAIN_OPS: usize = 256;
 const MAX_PATCH_COORD: f64 = 1_000_000.0;
 const MAX_PATCH_ROAD_WIDTH: f64 = 64.0;
 
+// City geometry IDs include signed coordinates and slash-separated endpoints;
+// this is not a filesystem path or a general Creator object identifier.
+fn valid_patch_ref(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 128
+        && (value.as_bytes()[0].is_ascii_alphanumeric() || value.as_bytes()[0] == b'-')
+        && value.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-' | b'/'))
+}
+
 pub(crate) fn validate_layout_snapshot(value: &Value) -> Result<(&str, &str), &'static str> {
     let snapshot = value.as_object().filter(|object| object.len() == 4 && only_keys(object, &["schemaVersion", "worldRevision", "seed", "layout"]))
         .ok_or("creator_layout_snapshot_invalid")?;
@@ -192,16 +200,16 @@ fn validate_road_op(operation: &Value) -> Result<(), &'static str> {
             patch_optional_point(operation, "via")
         }
         Some("drop") if only_keys(operation, &["t", "edge", "anchor"]) && operation.len() >= 2 => {
-            if !operation.get("edge").and_then(Value::as_str).is_some_and(valid_id) { return Err("creator_city_patch_invalid"); }
+            if !operation.get("edge").and_then(Value::as_str).is_some_and(valid_patch_ref) { return Err("creator_city_patch_invalid"); }
             patch_optional_point(operation, "anchor")
         }
         Some("move") if only_keys(operation, &["t", "node", "to", "anchor"]) && operation.len() >= 3 => {
-            if !operation.get("node").and_then(Value::as_str).is_some_and(valid_id) { return Err("creator_city_patch_invalid"); }
+            if !operation.get("node").and_then(Value::as_str).is_some_and(valid_patch_ref) { return Err("creator_city_patch_invalid"); }
             patch_point(operation.get("to").ok_or("creator_city_patch_invalid")?)?;
             patch_optional_point(operation, "anchor")
         }
         Some("restyle") if only_keys(operation, &["t", "edge", "width", "purpose", "anchor"]) && operation.len() >= 3 => {
-            if !operation.get("edge").and_then(Value::as_str).is_some_and(valid_id) { return Err("creator_city_patch_invalid"); }
+            if !operation.get("edge").and_then(Value::as_str).is_some_and(valid_patch_ref) { return Err("creator_city_patch_invalid"); }
             patch_road_width(operation.get("width").ok_or("creator_city_patch_invalid")?)?;
             patch_optional_purpose(operation)?;
             patch_optional_point(operation, "anchor")
@@ -218,13 +226,13 @@ fn validate_site_op(operation: &Value) -> Result<(), &'static str> {
     let target_ok = |value: Option<&Value>| value.is_none_or(|to| to.as_str().is_some_and(|to| !to.is_empty() && to.len() <= 128));
     match operation.get("t").and_then(Value::as_str) {
         Some("remove") if only_keys(operation, &["t", "id", "at", "cls"]) && operation.len() >= 2 => {
-            if !operation.get("id").and_then(Value::as_str).is_some_and(valid_id) { return Err("creator_city_patch_invalid"); }
+            if !operation.get("id").and_then(Value::as_str).is_some_and(valid_patch_ref) { return Err("creator_city_patch_invalid"); }
             patch_optional_point(operation, "at")?;
             if !class_ok(operation.get("cls")) { return Err("creator_city_patch_invalid"); }
             Ok(())
         }
         Some("move") if only_keys(operation, &["t", "id", "at", "to", "toAnchor", "cls"]) && operation.len() >= 3 => {
-            if !operation.get("id").and_then(Value::as_str).is_some_and(valid_id) { return Err("creator_city_patch_invalid"); }
+            if !operation.get("id").and_then(Value::as_str).is_some_and(valid_patch_ref) { return Err("creator_city_patch_invalid"); }
             if !target_ok(operation.get("to")) { return Err("creator_city_patch_invalid"); }
             patch_optional_point(operation, "at")?;
             patch_optional_point(operation, "toAnchor")?;
@@ -256,7 +264,7 @@ pub(crate) fn validate_city_patch(patch: &Value, expected_seed: u64) -> Result<(
     }
     let moves = patch.get("buildingMoves").and_then(Value::as_object).filter(|moves| moves.len() <= MAX_CITY_PATCH_OPS).ok_or("creator_city_patch_invalid")?;
     for (building, target) in moves {
-        if !valid_id(building) || !target.as_str().is_some_and(valid_id) { return Err("creator_city_patch_invalid"); }
+        if !valid_id(building) || !target.as_str().is_some_and(valid_patch_ref) { return Err("creator_city_patch_invalid"); }
     }
     if let Some(anchors) = patch.get("moveAnchors") {
         let anchors = anchors.as_object().filter(|anchors| anchors.len() <= MAX_CITY_PATCH_OPS).ok_or("creator_city_patch_invalid")?;
@@ -264,7 +272,7 @@ pub(crate) fn validate_city_patch(patch: &Value, expected_seed: u64) -> Result<(
     }
     let suppressed = patch.get("suppressedContext").and_then(Value::as_array).filter(|items| items.len() <= MAX_CITY_PATCH_OPS).ok_or("creator_city_patch_invalid")?;
     for id in suppressed {
-        if !id.as_str().is_some_and(valid_id) { return Err("creator_city_patch_invalid"); }
+        if !id.as_str().is_some_and(valid_patch_ref) { return Err("creator_city_patch_invalid"); }
     }
     let road_ops = patch.get("roadOps").and_then(Value::as_array).filter(|ops| ops.len() <= MAX_CITY_PATCH_OPS).ok_or("creator_city_patch_invalid")?;
     for operation in road_ops { validate_road_op(operation)?; }

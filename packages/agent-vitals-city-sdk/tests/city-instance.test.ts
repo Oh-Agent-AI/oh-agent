@@ -27,3 +27,12 @@ test("City rejects unscoped extra fields, invalid identities and invalid world r
     { ...city(), active: true }, { ...city(), profile: { ...profile(), biome: "tropical" } },
   ]) assert.equal(validateCityInstance(candidate).ok, false);
 });
+
+test("City retains an isolated patch and rejects wrong seed, invalid version and session moves", () => {
+  const patch = { version: 1, seed: 42, scaleTier: 1, generatorVersion: 6, updatedAt: 1, roadOps: [], siteOps: [], buildingMoves: {}, suppressedContext: [] };
+  const checked = validateCityInstance({ ...city(), planPatch: patch });
+  assert.equal(checked.ok, true); if (checked.ok) assert.deepEqual(checked.value.planPatch, patch);
+  assert.equal(validateCityInstance({ ...city(), planPatch: { ...patch, seed: 43 } }).ok, false);
+  assert.equal(validateCityInstance({ ...city(), planPatch: { ...patch, generatorVersion: "6" } }).ok, false);
+  assert.equal(validateCityInstance({ ...city(), planPatch: { ...patch, buildingMoves: { "session:1": "parcel:2" } } }).ok, false);
+});

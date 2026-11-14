@@ -2,7 +2,7 @@
 
 状态：设计提案，尚未实现或通过真机验收。日期：2026-11-14。
 
-实施进度：已接入独立 City 草稿的创建、读取、列表、配置替换预览与版本化提交、只读视口/状态/截图、布局保存；V2 布局绑定 City ID、修订和种子，并可通过 `creator_project_create` 的 `cityId` 绑定项目（项目与 release 快照冻结 cityId/cityRevision/cityLayoutId）。只读视口尚未完成桌面真机验收，也不是 City 运行时切换；旧迈阿密尚未迁移，城市切换与全链路隔离尚未实现，活动 City 的跨 generator 世界切换已被拒绝（`city_world_profile_city_mismatch`）。因此这些接口仍不能作为独立城市验收通过的证据。
+实施进度：已接入独立 City 草稿的创建、读取、列表、配置替换预览与版本化提交、只读视口/状态/截图、布局保存；V2 布局绑定 City ID、修订和种子，并可通过 `creator_project_create` 的 `cityId` 绑定项目（项目与 release 快照冻结 cityId/cityRevision/cityLayoutId）。只读视口已有一次桌面真机加载和截图记录，但它不是 City 运行时切换；旧迈阿密尚未迁移，城市切换与全链路隔离尚未实现，活动 City 的跨 generator 世界切换已被拒绝（`city_world_profile_city_mismatch`）。因此这些接口仍不能作为独立城市验收通过的证据。
 
 关联：[Creator Studio 架构](AGENT_CITY_CREATOR_STUDIO_CODE_ARCHITECTURE_2026_11_11.md)、[SDK 迁移现状](AGENT_CITY_SDK_MIGRATION_2026_11_10.md)、[沙海之门 SPEC](EGYPT_DESERT_CITY_SPEC_2026_11_14.md)。本方案细化城市身份与自定义风格，不改变仓库本地数据及远程访问政策。
 
@@ -41,7 +41,15 @@
 | `creator_city_validate` | `cityId`, `revision`, `profile: static | runtime` → 每项 `passed/failed/unchecked`、诊断及证据身份；runtime 模式需要对应场景就绪 |
 | `creator_city_capture` | `cityId`, `revision` → 有界画面和相机、城市与 revision；画面未准备好返回错误，不能把旧帧当新城证据 |
 
-**2026-11-14 实现状态**：已实现 `creator_city_list/create/read/edit_preview/edit_commit`（当前 edit_preview 只做 name/seed/profile 的配置替换，**不接受 operations[]**）、`creator_city_view/view_status/capture`、`creator_city_layout_read/layout_save` 与诊断读取。**未实现** `creator_city_open`、`creator_city_operation_status`、`creator_city_validate`、按 operations 的场景/样式编辑、项目绑定与发布、旧迈阿密迁移、城市切换与全链路隔离；只读视口尚未做桌面真机验收。表内其余行为是目标契约，不是现有能力。
+**2026-11-14 实现状态**：已实现 `creator_city_list/create/read/edit_preview/edit_commit`（当前 edit_preview 只做 name/seed/profile 的配置替换，**不接受 operations[]**）、`creator_city_view/view_status/capture`、`creator_city_layout_read/layout_save` 与诊断读取。独立布局已可绑定项目并生成带城市身份的本地 release，只读视口已完成一次真机加载和截图。**未实现** `creator_city_open`、`creator_city_operation_status`、`creator_city_validate`、按 operations 的城市级场景/样式编辑、旧迈阿密迁移、城市切换、安装与全链路隔离。独立 City release 暂不允许在 legacy City 运行时试玩；表内其余行为是目标契约，不是现有能力。
+
+城市草稿现在按 `cityId + revision` 保留不可变配置；创建和编辑时历史与当前版本在同一数据库事务内写入，项目视口按固定版本读取。升级前的城市在首次后续编辑时保存当时的当前版本；更早已被覆盖的版本无法凭空恢复，读取时返回 `creator_city_revision_unavailable`。这只是配置版本历史，尚不是完整城市实例迁移、场景版本或安装服务。
+
+独立城市的新项目创建在写入事务内重新核对布局所属 revision 与城市当前 revision；过期布局返回版本冲突。已成功的同一 `operationId` 可在城市更新后重试并返回原项目，即使同一世界修订后来有了新布局；不同请求复用该操作 ID 仍被拒绝。
+
+独立项目的只读视口可加载经 seed/生成器版本校验的项目或固定城市版本补丁；不会读取按 seed 保存的旧 City 补丁或真实会话数据。引擎重放后若存在失效条目，视口显示数量；该能力不代表内容包安装、项目场景渲染或可视编辑已完成。
+
+新增实验工具 `creator_city_patch_preview`：输入 `cityId/baseRevision/patch`（`null` 清除），经 Studio SDK 和宿主双重校验后返回绑定实例及版本的 preview；沿用 `creator_city_edit_commit` 提交，补丁随城市 revision 原子保存和历史读取。仅允许不含会话建筑移动的便携补丁；更换种子前必须清除旧补丁。`creator_city_view` 在只读独立视口重放补丁，存在失效条目时状态为 failed，不允许生成成功布局快照。项目视口使用显式项目补丁，未指定时回退该项目固定城市 revision 的补丁。此工具仍需 `--enable-city-tools`，不代表可视编辑、城市切换或安装已完成。
 
 能力发现扩充现有 `creator_capabilities_list`，列出受支持的生成器、主题、风格字段与数值范围、对象类型、资产类别及预算。与既有项目接口演进兼容：新增按城市筛选的 layout 查询，新建项目必须显式提供 `cityId + layoutId + worldRevision`；场景、项目、发布和试玩在服务端逐层核对城市身份。保留旧接口供迁移期旧项目使用，不能将旧调用隐式指向沙丘。具体兼容窗口及版本号在实现 PR 中确定。
 

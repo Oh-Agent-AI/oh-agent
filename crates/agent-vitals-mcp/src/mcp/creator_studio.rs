@@ -57,11 +57,12 @@ fn revision_prop() -> Value { json!({"type":"integer","minimum":0}) }
 
 pub fn specs() -> Vec<ToolSpec> {
     vec![
-        spec("creator_city_create", "Create an independent saved City draft without changing or opening the active City. The draft is not yet renderable or connected to Creator projects. Requires active Studio and --allow-local-writes.", json!({"name":{"type":"string","minLength":1,"maxLength":120},"seed":{"type":"integer","minimum":0,"maximum":u32::MAX},"profile":{"type":"object"},"operationId":operation_id_prop()}), &["name","seed","profile","operationId"]),
+        spec("creator_city_create", "Create an independent saved City draft without changing the active City. The draft supports read-only Studio preview and project binding; an independent City runtime and installation are not yet available. Requires active Studio and --allow-local-writes.", json!({"name":{"type":"string","minLength":1,"maxLength":120},"seed":{"type":"integer","minimum":0,"maximum":u32::MAX},"profile":{"type":"object"},"operationId":operation_id_prop()}), &["name","seed","profile","operationId"]),
         spec("creator_city_edit_preview", "Validate a replacement City draft recipe without writing or rendering it. Returns a short-lived instance- and revision-bound preview.", json!({"cityId":project_id_prop(),"baseRevision":revision_prop(),"name":{"type":"string","minLength":1,"maxLength":120},"seed":{"type":"integer","minimum":0,"maximum":u32::MAX},"profile":{"type":"object"}}), &["cityId","baseRevision","name","seed","profile"]),
+        spec("creator_city_patch_preview", "Preview an independent City's portable road/site/terrain patch, or null to clear it. Runtime geometry is unchecked; commit using creator_city_edit_commit.", json!({"cityId":project_id_prop(),"baseRevision":revision_prop(),"patch":{"type":["object","null"]}}), &["cityId","baseRevision","patch"]),
         spec("creator_city_edit_commit", "Save a previously validated City draft preview. Does not load or render the City. Requires --allow-local-writes.", json!({"cityId":project_id_prop(),"previewId":project_id_prop(),"expectedRevision":revision_prop(),"operationId":operation_id_prop()}), &["cityId","previewId","expectedRevision","operationId"]),
         spec("creator_city_list", "List independent saved City drafts; legacy City is not migrated or included.", json!({"limit":{"type":"integer","minimum":1,"maximum":50},"cursor":{"type":"string","minLength":1,"maxLength":128}}), &["limit"]),
-        spec("creator_city_read", "Read one independent saved City draft by City ID. This does not load the City runtime.", json!({"cityId":{"type":"string","minLength":1,"maxLength":128}}), &["cityId"]),
+        spec("creator_city_read", "Read an independent City draft, optionally at a retained revision. This does not load the City runtime; older revisions may be unavailable for pre-history drafts.", json!({"cityId":{"type":"string","minLength":1,"maxLength":128},"revision":revision_prop()}), &["cityId"]),
         spec("creator_city_diagnostics", "Read bounded, local, redacted City preview diagnostics retained across restarts; no raw errors, paths or session content.", json!({"cityId":project_id_prop(),"limit":{"type":"integer","minimum":1,"maximum":100}}), &["cityId","limit"]),
         spec("creator_city_view", "Request a read-only Studio viewport for a saved City draft; returns loading, not proof of a rendered frame. Does not switch the active City or use legacy City patches.", json!({"cityId":project_id_prop(),"revision":revision_prop()}), &["cityId","revision"]),
         spec("creator_city_view_status", "Report loading, ready or failed for the requested City draft viewport and revision.", json!({"cityId":project_id_prop(),"revision":revision_prop()}), &["cityId","revision"]),
@@ -100,6 +101,10 @@ fn call_error(code: &str) -> ToolError {
         "creator_preview_budget_exceeded" => ToolError::new("busy", "Too many active previews; retry after they expire."),
         "creator_playtest_not_found" => ToolError::new("not_found", "Playtest run was not found; list history to find valid runIds."),
         "creator_playtest_active" => ToolError::new("busy", "Another playtest run is active; cancel it via creator_playtest_cancel or wait for it to finish."),
+        "creator_city_revision_unavailable" => ToolError::new("not_found", "The requested City revision was not retained; it cannot be reconstructed safely."),
+        "creator_city_patch_seed_mismatch" => ToolError::new("invalid_argument", "The patch seed differs from the City; clear or replace the patch before changing its seed."),
+        "creator_city_patch_invalid" | "creator_city_patch_incompatible" => ToolError::new("invalid_argument", "The City patch is invalid, contains disallowed session-building data, or is incompatible with the active generator."),
+        "creator_independent_city_runtime_unavailable" => ToolError::new("data_unavailable", "Independent City runtime selection is not available yet; this release cannot be played in the active legacy City."),
         "creator_playtest_instance_mismatch" => ToolError::new("permission_denied", "The playtest run belongs to a different Studio session."),
         "creator_playtest_expired" => ToolError::new("preview_expired", "The playtest run expired before completion; start a new one."),
         "creator_playtest_terminal" | "creator_playtest_not_claimed" | "creator_playtest_evidence_required" => ToolError::new("invalid_argument", "Playtest run reached a terminal or invalid state for this transition."),
@@ -235,6 +240,12 @@ pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool)
             let revision = args.get("baseRevision").and_then(Value::as_u64).ok_or_else(|| ToolError::new("invalid_argument", "`baseRevision` must be a non-negative integer"))?;
             call(data_home, "creator.city.edit.preview", &json!({"cityId":required_string(args,"cityId")?,"baseRevision":revision,"name":required_string(args,"name")?,"seed":seed,"profile":profile}), 15_000)
         }
+        "creator_city_patch_preview" => {
+            let revision = args.get("baseRevision").and_then(Value::as_u64).ok_or_else(|| ToolError::new("invalid_argument", "`baseRevision` must be a non-negative integer"))?;
+            let patch = args.get("patch").filter(|value| value.is_null() || value.is_object()).ok_or_else(|| ToolError::new("invalid_argument", "`patch` must be an object or null"))?;
+            if patch.to_string().len() > 262144 { return Err(ToolError::new("invalid_argument", "City patch exceeds the 256 KiB limit.")); }
+            call_with_budgets(data_home, "creator.city.patch.preview", &json!({"cityId":required_string(args,"cityId")?,"baseRevision":revision,"patch":patch}), 15_000, creator_budgets::PREVIEW_REQUEST_BYTES)
+        }
         "creator_city_edit_commit" => {
             if !allow_local_writes { return Err(ToolError::new("permission_denied", "City edits require `data-mcp serve --allow-local-writes`.")); }
             let revision = args.get("expectedRevision").and_then(Value::as_u64).ok_or_else(|| ToolError::new("invalid_argument", "`expectedRevision` must be a non-negative integer"))?;
@@ -246,7 +257,11 @@ pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool)
             if let Some(cursor) = optional_nonempty_string(args, "cursor")? { payload["cursor"] = json!(cursor); }
             call(data_home, "creator.city.list", &payload, 15_000)
         }
-        "creator_city_read" => call(data_home, "creator.city.read", &json!({"cityId":required_string(args,"cityId")?}), 15_000),
+        "creator_city_read" => {
+            let mut payload = json!({"cityId":required_string(args,"cityId")?});
+            if let Some(revision) = optional_u64(args, "revision")? { payload["revision"] = json!(revision); }
+            call(data_home, "creator.city.read", &payload, 15_000)
+        }
         "creator_city_diagnostics" => {
             let limit = args.get("limit").and_then(Value::as_u64).filter(|value| (1..=100).contains(value)).ok_or_else(|| ToolError::new("invalid_argument", "`limit` must be in 1..=100"))?;
             call(data_home, "creator.city.diagnostic.list", &json!({"cityId":required_string(args,"cityId")?,"limit":limit}), 15_000)
@@ -396,6 +411,13 @@ pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool)
 #[cfg(test)]
 mod capture_tests {
     use super::*;
+
+    #[test]
+    fn independent_city_runtime_failure_explains_the_scope_limit() {
+        let error = call_error("creator_independent_city_runtime_unavailable");
+        assert_eq!(error.code, "data_unavailable");
+        assert!(error.message.contains("legacy City"));
+    }
 
     /// 合法 JPEG dataUrl → image content 块 + 元数据；dataUrl 从 structuredContent 摘除。
     #[test]

@@ -48,6 +48,16 @@ MVP 使用官方 City App Plugin 作为受信任运行时，安装的是数据�
 
 定义新格式 `oh-agent-city-content-v2`，与现有 v1 开发包并存。新 manifest 最小字段：`formatVersion`、`kind`（`city-world` / `city-minigame`）、`packageId`、`version`、`sdkContractVersion`、`minCityRuntimeVersion`、`entry`、排序的 `files[]`（相对路径、mediaType、byteLength、sha256）、`contentDigest`。每种 kind 对 entry 定义固定 schema；未知字段、格式或版本明确拒绝。digest 的规范化 JSON、文件排序和摘要输入须在实现前写成可跨 Rust/TS 共享的规范及测试向量；不得自包含 digest。
 
+**当前实现切片**：SDK `validateContentPackageManifestV2` 已实现清单结构校验。world 入口为 `profile/scene/assets/generatorVersion/defaultSeed`，game 入口为 `game/assets`；入口路径必须是已声明的不同 JSON 文件。当前文件类型限 JSON、GLB、PNG 和 JPG，最多 128 个文件、总计 100 MiB；路径按代码点排序，拒绝大小写冲突、绝对路径、反斜杠及路径穿越。`verifyContentPackageBytesV2` 检查精确文件集合、原始字节长度及 SHA-256，并验证 manifest 摘要；这是完整性校验，尚不验证 JSON 语义、资产闭包、来源或运行时兼容，也不提供打包和安装，不得作为可信安装依据。
+
+`inspectContentPackageV2` 在独立字节快照上先验完整性，再检查 profile、场景或游戏规则、项目资产目录、受限 GLB 结构和场景模型 ID/摘要是否能在目录中解析。世界场景模型引用必须指向当前包的 `city-world`、packageId 和 version，digest 使用 `self` 标记，避免内容摘要循环；导出时仅对匹配本项目资产目录及摘要的引用改写为该标记。其 `unchecked` 明确包含来源、运行时兼容、图片解码、额外 JSON 语义、世界道路几何及安装。即使返回成功，也不是完整资产闭包、可运行或可安装的证明。
+
+CLI 现提供 `pack-world <目录> --out <文件> --seed N --generator-version N` 和 `verify-world <文件>`：将 world.json、可选 scene.json、可选 plan-patch.json 和项目资产目录中的 GLB 写入确定性的 base64 JSON 开发产物，并验证完整性与已实现的语义检查。可选补丁保留道路、高架、静态设施和地形操作，并检查 seed、生成器版本及形状；会话建筑标识和移动不允许进入可分享包。补丁的实际重放、地形与道路几何仍须 City 引擎验证。命令必须显式提供 seed 和生成器版本，拒绝覆盖已有输出；结果标记 unsigned、不可安装并返回未检查项目。当前不导出图片或游戏包，也不能将此产物导入宿主安装。
+
+摘要输入：从已校验的清单移除 `contentDigest`，其余字段以 SDK `canonicalJson` 递归按键排序、无多余空白编码为 UTF-8，再计算 SHA-256；每个文件的摘要针对原始字节。清单当前允许的字符串和路径为 ASCII、数字为安全整数。TypeScript 与 Rust 使用相同固定向量覆盖此输入；正式安装实现还须独立校验实际内容与文件系统操作。
+
+桌面 Rust 新增独立的 v2 世界产物完整性检查器，拒绝重复 JSON 键、非法路径、文件集合不一致、非规范 base64 及摘要不符；Rust 与 SDK 测试读取同一完整性向量。此函数尚未接入安装入口，不验证世界语义、GLB、图片、签名/来源或兼容性；它返回的字节仍属于不可信输入。
+
 world entry 包含经 SDK 校验的 profile、生成器版本、默认 seed 和兼容主题引用；game entry 包含规则、槽位能力、参数与资产引用，**不包含某座 City 的锚点 ID**。场景资源和 GLB 字节必须包含在包闭包内。游戏包不可执行代码，不接受外部 URI、绝对路径、`..`、链接、重复路径、未声明文件或无法验证的资源。沿用现有 GLB 限制；包与解码大小、文件数、模型数和规则预算需由实现常量统一限制并纳入契约文档和测试，不能只限制压缩大小。
 
 现有 v1 可继续用于开发验证；仅当显式转换器能完整解析、校验并产出 v2 时才能导入为 v2，转换失败保留原文件并给出诊断。v1 的具体 layout/mount 是绑定数据，转换不得伪装成可跨城市的通用游戏；可以生成 game 包和一份仅针对原布局的绑定建议。禁止从 v1 静默升级。

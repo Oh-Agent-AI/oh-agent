@@ -71,6 +71,61 @@ test("CLI creates and validates public City world profile projects", async () =>
   }
 });
 
+test("world development artifact exports reproducibly and detects tampering", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "oh-agent-world-pack-"));
+  const project = path.join(tempRoot, "dunes"), first = path.join(tempRoot, "one.json"), second = path.join(tempRoot, "two.json");
+  try {
+    assert.equal(run(["init", "city-world", project, "--generator", "arid-dunes"]).status, 0);
+    const patch = { version: 1, seed: 42, scaleTier: 2, generatorVersion: 6, updatedAt: 0,
+      roadOps: [{ t: "add", from: { x: 0, z: 0 }, to: { x: 20, z: 0 }, width: 8 }], siteOps: [], buildingMoves: {}, suppressedContext: [] };
+    await writeFile(path.join(project, "plan-patch.json"), JSON.stringify(patch));
+    assert.notEqual(run(["pack-world", project, "--out", first, "--seed", "42"]).status, 0);
+    const args = ["--seed", "42", "--generator-version", "6"];
+    const packed = run(["pack-world", project, "--out", first, ...args]);
+    assert.equal(packed.status, 0, packed.stderr); assert.equal(JSON.parse(packed.stdout).installable, false);
+    assert.equal(run(["pack-world", project, "--out", second, ...args]).status, 0);
+    assert.deepEqual(await readFile(first), await readFile(second));
+    const verified = run(["verify-world", first]); assert.equal(verified.status, 0, verified.stderr);
+    assert.ok(JSON.parse(verified.stdout).unchecked.includes("installation"));
+    // 原始字节里的重复键必须与 Rust 宿主一致：JSON.parse 会折叠它，不能让 CLI 放行。
+    const clean = await readFile(first);
+    await writeFile(first, clean.toString().replace('"format":"oh-agent-city-content-v2"',
+      '"format":"oh-agent-city-content-v2","format":"oh-agent-city-content-v2"'));
+    assert.notEqual(run(["verify-world", first]).status, 0);
+    await writeFile(first, clean);
+    assert.equal(run(["verify-world", first]).status, 0, "restored artifact must verify again");
+    assert.notEqual(run(["pack-world", project, "--out", first, ...args]).status, 0);
+    const artifact = JSON.parse(await readFile(first, "utf8"));
+    assert.deepEqual(JSON.parse(Buffer.from(artifact.files["world/plan-patch.json"], "base64").toString("utf8")), patch);
+    assert.equal(artifact.manifest.entry.patch, "world/plan-patch.json");
+    artifact.files["world/profile.json"] = Buffer.from("{}").toString("base64");
+    await writeFile(first, JSON.stringify(artifact));
+    assert.notEqual(run(["verify-world", first]).status, 0);
+  } finally { await rm(tempRoot, { recursive: true, force: true }); }
+});
+
+test("world GLB import and export bind scene assets to the world package", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "oh-agent-world-asset-"));
+  const project = path.join(root, "world"), model = path.join(root, "gate.glb"), output = path.join(root, "world.json");
+  try {
+    assert.equal(run(["init", "city-world", project, "--generator", "arid-dunes"]).status, 0);
+    const bytes = makeGlb({ asset: { version: "2.0" }, buffers: [{ byteLength: 12 }], bufferViews: [{ buffer: 0, byteLength: 12 }],
+      accessors: [{ bufferView: 0, componentType: 5126, count: 1, type: "VEC3", min: [0, 0, 0], max: [1, 1, 1] }], meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }], nodes: [{ mesh: 0 }] }, Buffer.alloc(12));
+    await writeFile(model, bytes);
+    const imported = run(["asset", "import", project, model, "--asset-id", "gate"]);
+    assert.equal(imported.status, 0, imported.stderr); const ref = JSON.parse(imported.stdout).assetRef;
+    assert.equal(ref.package.kind, "city-world"); assert.equal(ref.package.digest, "self");
+    await writeFile(path.join(project, "scene.json"), JSON.stringify({ schemaVersion: 1, objects: [{ id: "gate", kind: "model", asset: ref,
+      transform: { positionMeters: { x: 0, y: 0, z: 0 }, rotationRadians: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } } }] }));
+    const packed = run(["pack-world", project, "--out", output, "--seed", "42", "--generator-version", "6"]);
+    assert.equal(packed.status, 0, packed.stderr); const verified = run(["verify-world", output]); assert.equal(verified.status, 0, verified.stderr);
+    const artifact = JSON.parse(await readFile(output, "utf8"));
+    const scene = JSON.parse(Buffer.from(artifact.files["scene/objects.json"], "base64").toString("utf8"));
+    assert.deepEqual(scene.objects[0].asset.package, { digest: "self", id: artifact.manifest.packageId, kind: "city-world", version: artifact.manifest.version });
+    assert.ok(artifact.files[`assets/${ref.digest.slice(7)}.glb`]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("asset inspect computes the digest of the exact bounded GLB bytes without claiming installation", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "oh-agent-city-glb-"));
   const modelPath = path.join(tempRoot, "fixture.glb");
