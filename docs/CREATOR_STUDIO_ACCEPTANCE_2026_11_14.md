@@ -15,7 +15,7 @@
 
 | 检查 | 结果 |
 |---|---|
-| desktop `cargo test` | 369 passed |
+| desktop `cargo test` | 373 passed（并入 `origin/dev` 的 Linux plugin WebView 修复后） |
 | MCP `cargo test` | 84 passed |
 | city-sdk `npm test` | 106 passed |
 | Creator Studio `npm test` | 13 passed |
