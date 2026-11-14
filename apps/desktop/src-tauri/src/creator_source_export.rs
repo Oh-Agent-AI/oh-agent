@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use std::{collections::HashSet, io::Write, path::Path};
 use crate::creator_store::{bytes_digest, new_id, valid_id};
 
-pub(crate) const REQUIRED: &[&str] = &["README.md", ".gitignore", "world/world.json", "games/game/game.json", "games/game/layout.json", "games/game/mount.json", "games/game/scene.json", "games/game/assets/catalog.json"];
+pub(crate) const REQUIRED: &[&str] = &["README.md", ".gitignore", "world/world.json", "games/game/game.json", "games/game/layout.json", "games/game/scene.json", "games/game/assets/catalog.json"];
 const MAX_TEXT: usize = 4 * 1024 * 1024;
 const MAX_ASSETS: usize = 64;
 const MAX_ASSET_TOTAL: u64 = 128 * 1024 * 1024;
@@ -31,8 +31,8 @@ pub(crate) fn export_source(home: &Path, parent: &Path, payload: &Value) -> Resu
     let project_id = object.get("projectId").and_then(Value::as_str).filter(|id| valid_id(id)).ok_or("creator_export_invalid")?;
     let revision = object.get("revision").and_then(Value::as_u64).ok_or("creator_export_invalid")?;
     let files = object.get("files").and_then(Value::as_object).ok_or("creator_export_invalid")?;
-    if files.len() < REQUIRED.len() || files.len() > REQUIRED.len() + 1 || !REQUIRED.iter().all(|key| files.contains_key(*key))
-        || files.keys().any(|key| !REQUIRED.contains(&key.as_str()) && key != "world/plan-patch.json") { return Err("creator_export_invalid"); }
+    if files.len() < REQUIRED.len() || files.len() > REQUIRED.len() + 2 || !REQUIRED.iter().all(|key| files.contains_key(*key))
+        || files.keys().any(|key| !REQUIRED.contains(&key.as_str()) && !matches!(key.as_str(), "world/plan-patch.json" | "games/game/mount.json")) { return Err("creator_export_invalid"); }
     let mut total = 0usize;
     for value in files.values() {
         let value = value.as_str().ok_or("creator_export_invalid")?;
@@ -45,6 +45,8 @@ pub(crate) fn export_source(home: &Path, parent: &Path, payload: &Value) -> Resu
     let project = crate::creator_projects::read_project(home, project_id)?;
     if project.get("revision").and_then(Value::as_u64) != Some(revision) { return Err("revision_conflict"); }
     if project.get("cityId").and_then(Value::as_str).filter(|id| valid_id(id)).is_none() { return Err("creator_export_city_required"); }
+    let mounts = project.get("mounts").and_then(Value::as_array).ok_or("creator_export_invalid")?;
+    if mounts.len() > 1 || files.contains_key("games/game/mount.json") != (mounts.len() == 1) { return Err("creator_export_mount_mismatch"); }
     let entries = project.get("assets").and_then(|v| v.get("entries")).and_then(Value::as_array).ok_or("creator_export_invalid")?;
     if entries.len() != requested.len() { return Err("creator_export_asset_mismatch"); }
     let mut assets = Vec::new();
@@ -63,6 +65,30 @@ pub(crate) fn export_source(home: &Path, parent: &Path, payload: &Value) -> Resu
         crate::creator_assets::inspect_glb(&bytes)?;
         assets.push((format!("{name}.glb"), bytes));
     }
+    let name = write_source(parent, files, assets, true)?;
+    Ok(json!({"directoryName":name,"assetCount":requested.len(),"projectRevision":revision}))
+}
+
+pub(crate) fn export_city_source(home: &Path, parent: &Path, payload: &Value) -> Result<Value, &'static str> {
+    let object = payload.as_object().filter(|v| v.len() == 3).ok_or("creator_export_invalid")?;
+    let city_id = object.get("cityId").and_then(Value::as_str).filter(|id| valid_id(id)).ok_or("creator_export_invalid")?;
+    let revision = object.get("revision").and_then(Value::as_u64).ok_or("creator_export_invalid")?;
+    let files = object.get("files").and_then(Value::as_object).ok_or("creator_export_invalid")?;
+    const CITY_REQUIRED: &[&str] = &["README.md", ".gitignore", "world/world.json"];
+    if files.len() < CITY_REQUIRED.len() || files.len() > CITY_REQUIRED.len() + 1 || !CITY_REQUIRED.iter().all(|key| files.contains_key(*key))
+        || files.keys().any(|key| !CITY_REQUIRED.contains(&key.as_str()) && key != "world/plan-patch.json") { return Err("creator_export_invalid"); }
+    let mut total = 0usize;
+    for value in files.values() {
+        total = total.checked_add(value.as_str().ok_or("creator_export_invalid")?.len()).ok_or("creator_export_too_large")?;
+        if total > MAX_TEXT { return Err("creator_export_too_large"); }
+    }
+    let city = crate::creator_cities::read_city(home, city_id)?;
+    if city.get("revision").and_then(Value::as_u64) != Some(revision) { return Err("revision_conflict"); }
+    let name = write_source(parent, files, Vec::new(), false)?;
+    Ok(json!({"directoryName":name,"cityRevision":revision}))
+}
+
+fn write_source(parent: &Path, files: &serde_json::Map<String, Value>, assets: Vec<(String, Vec<u8>)>, has_game: bool) -> Result<String, &'static str> {
     let info = std::fs::symlink_metadata(parent).map_err(|_| "creator_export_destination_invalid")?;
     if !info.is_dir() || info.file_type().is_symlink() { return Err("creator_export_destination_invalid"); }
     let name = new_id("city-source-")?;
@@ -70,8 +96,12 @@ pub(crate) fn export_source(home: &Path, parent: &Path, payload: &Value) -> Resu
     let final_path = parent.join(&name);
     std::fs::create_dir(&staging).map_err(|_| "creator_export_write_failed")?;
     let result = (|| -> Result<(), &'static str> {
-        for dir in ["world", "games", "games/game", "games/game/assets", "design", "tests"] {
+        for dir in ["world", "games", "design", "tests"] {
             std::fs::create_dir(staging.join(dir)).map_err(|_| "creator_export_write_failed")?;
+        }
+        if has_game {
+            std::fs::create_dir(staging.join("games/game")).map_err(|_| "creator_export_write_failed")?;
+            std::fs::create_dir(staging.join("games/game/assets")).map_err(|_| "creator_export_write_failed")?;
         }
         for (path, value) in files {
             let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(staging.join(path)).map_err(|_| "creator_export_write_failed")?;
@@ -86,7 +116,7 @@ pub(crate) fn export_source(home: &Path, parent: &Path, payload: &Value) -> Resu
     })();
     if result.is_err() { let _ = std::fs::remove_dir_all(&staging); }
     result?;
-    Ok(json!({"directoryName":name,"assetCount":requested.len(),"projectRevision":revision}))
+    Ok(name)
 }
 
 #[cfg(test)]
@@ -98,7 +128,7 @@ mod tests {
         let dir = std::env::temp_dir().join(new_id("creator-source-test-").unwrap());
         std::fs::create_dir(&dir).unwrap();
         let db = database(&dir).unwrap();
-        let document = json!({"projectId":"project-test","revision":3,"cityId":"city-test","assets":{"schemaVersion":1,"entries":[]}});
+        let document = json!({"projectId":"project-test","revision":3,"cityId":"city-test","mounts":[],"assets":{"schemaVersion":1,"entries":[]}});
         db.execute("INSERT INTO creator_projects(project_id,revision,document_json,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,?4,?4)",
             rusqlite::params!["project-test",3,document.to_string(),now_ms()]).unwrap();
         dir
@@ -116,8 +146,10 @@ mod tests {
         let output = export_source(&home, &destination, &payload()).unwrap();
         let root = destination.join(output["directoryName"].as_str().unwrap());
         assert_eq!(std::fs::read_to_string(root.join("world/world.json")).unwrap(), "{}\n");
-        assert!(root.join("games/game/mount.json").is_file());
+        assert!(root.join("games/game/game.json").is_file());
         assert!(root.join("design").is_dir());
+        let mut unexpected_mount = payload(); unexpected_mount["files"]["games/game/mount.json"] = json!("{}\n");
+        assert_eq!(export_source(&home, &destination, &unexpected_mount).unwrap_err(), "creator_export_mount_mismatch");
         assert_eq!(export_source(&home, &destination, &json!({"projectId":"project-test","revision":4,"files":payload()["files"],"assetDigests":[]})).unwrap_err(), "revision_conflict");
         let mut unsafe_payload = payload(); unsafe_payload["files"]["../outside"] = json!("escape");
         assert_eq!(export_source(&home, &destination, &unsafe_payload).unwrap_err(), "creator_export_invalid");
@@ -135,6 +167,28 @@ mod tests {
         assert!(commit_directory(&stage, &final_path).is_err());
         assert_eq!(std::fs::read_to_string(final_path.join("keep")).unwrap(), "user data");
         assert!(stage.is_dir());
+        let _ = std::fs::remove_dir_all(home);
+    }
+    #[test]
+    fn independent_city_export_checks_revision_and_fixed_paths() {
+        let home = fixture();
+        let city = crate::creator_cities::create_city(&home, "owner", "city-source-test", "Desert", 42,
+            &json!({"schemaVersion":1,"id":"egypt-desert","version":1})).unwrap();
+        let destination = home.join("destination");
+        std::fs::create_dir(&destination).unwrap();
+        let mut payload = json!({"cityId":city["cityId"],"revision":0,"files":{
+            "README.md":"city\n", ".gitignore":"dist/\n", "world/world.json":"{}\n"}});
+        let result = export_city_source(&home, &destination, &payload).unwrap();
+        let root = destination.join(result["directoryName"].as_str().unwrap());
+        assert!(root.join("world/world.json").is_file());
+        assert!(root.join("games").is_dir());
+        assert!(!root.join("games/game").exists());
+        payload["revision"] = json!(1);
+        assert_eq!(export_city_source(&home, &destination, &payload).unwrap_err(), "revision_conflict");
+        payload["revision"] = json!(0);
+        payload["files"]["../outside"] = json!("escape");
+        assert_eq!(export_city_source(&home, &destination, &payload).unwrap_err(), "creator_export_invalid");
+        assert!(!home.join("outside").exists());
         let _ = std::fs::remove_dir_all(home);
     }
 }
