@@ -12,3 +12,4 @@ export { inspectGlbBytes } from "./model";
 export type { GlbModelInspectionV1 } from "./model";
 
 export { hasDuplicateJsonKeys } from "./jsonStrict";
+export { validateGameTypeDescriptorV1, type GameTypeCapabilityV1, type GameTypeDescriptorV1, type GameTypeSlotKindV1 } from "./gameTypes";

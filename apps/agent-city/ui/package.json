@@ -34,7 +34,8 @@
     "mp4-muxer": "5.2.2",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
-    "three": "^0.186.1"
+    "three": "^0.186.1",
+    "@agent-vitals/city-game-runtime": "file:../../../packages/agent-vitals-city-game-runtime"
   },
   "devDependencies": {
     "@babel/parser": "7.29.9",
