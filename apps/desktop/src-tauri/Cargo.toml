@@ -61,3 +61,8 @@ semver = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
+
+# Plugin child WebView placement (see src/plugin_webview_layout.rs). Same
+# version tauri/wry already link, so no new native dependency.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
