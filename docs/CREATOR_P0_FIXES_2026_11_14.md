@@ -108,9 +108,33 @@ MCP 工具面实测：默认 `tools/list` = 42，city 工具 0 个；
   mailbox 写入被拒）；用完整文件权限复测后，mailbox 正常，返回 `plugin_unavailable`。
 - 结论：**存储与 mailbox 已恢复，但重启后 Creator Studio 插件未打开**。需要用户在
   应用里打开 Creator Studio，之后才能执行 `creator_city_create` 等草稿冒烟。
-- 冒烟顺序（待 Studio 打开后）：`creator_project_list` → `creator_city_create`
-  （`egypt-desert-world.profile.json`）→ `creator_city_list` → `creator_city_view`
-  → `creator_city_capture`。
+- 2026-11-14 16:34 通过辅助功能点击打开了 Creator Studio，完整 MCP 冒烟已执行（见 §7）。
+
+## 7. 实机 MCP 冒烟（2026-11-14 16:35）
+
+通过 `agent-vitals data-mcp serve --enable-city-tools --allow-local-writes` 对运行中的
+Oh Agent（新 bundle）执行：
+
+| 步骤 | 结果 |
+|---|---|
+| `creator_project_list` | OK，列出已有项目 |
+| `creator_city_create`（沙海之门，seed 42，`egypt-desert`） | OK，`cityId=city-4375314413d0862154a055384c01c1d4`，revision 0 |
+| `creator_city_view` → `creator_city_view_status` | loading → **ready** |
+| `creator_city_capture` | OK，655×822 JPEG，111,267 bytes → [artifacts/desert-gate-city-2026-11-14.jpg](../artifacts/desert-gate-city-2026-11-14.jpg) |
+| `creator_city_layout_read/save` | OK，`worldRevision=city-road-v2:42:501b17412264f858145a94bbcefccb5a`，`layoutId=city-layout-v1:42:100:501b17412264f858145a94bbcefccb5a` |
+| `creator_project_create`（`cityId` 绑定） | OK，`projectId=project-91aedaed84340880679d76be7efee16e`，项目文档含 cityId/cityRevision/layoutId |
+| `creator_scene_preview`（mount.bind） + `creator_project_commit` | OK，revision 0 → 1 |
+| `creator_project_publish` | OK，`releaseId=release-80c516e01c9a97a2d1913329896dbce9` |
+
+额外核对：`creator_releases.snapshot_json` 中 `cityId=city-4375…`、`cityRevision=0`、
+`cityLayoutId=city-layout-v1:42:100:…`，与项目/Release 身份一致。
+
+P0-1 实机验证（City 插件激活后）：`city_world_profile_preview` 当前世界为
+`miami-islands`，提交 `egypt-desert` 的 apply 返回 `invalid_argument`（“targets a
+different City”），再次 preview 当前世界仍是 `miami-islands`——迈阿密未被改写。
+
+截图显示的是 `arid-dunes-v1` + `desert` 的沙丘基底与路网，**不是**电影风格巨门：
+专属资产/渲染仍未实现（见沙漠 SPEC）。
 
 ## 7. 仍未完成（非本轮 P0 代码范围）
 
