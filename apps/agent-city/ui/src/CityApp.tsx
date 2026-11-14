@@ -30,7 +30,7 @@ import { encounterIsCurrent, type MonsterEncounter } from "./game/mecha/monsterE
 import { useMonsterEncounters } from "./game/mecha/useMonsterEncounters";
 import { prewarmAudioContext } from "./game/GameSfx";
 import { CityActivityCoordinator, type CityActivityLease } from "./game/activity/CityActivityCoordinator";
-import { claimCreatorPlaytest, finishCreatorPlaytest, loadCreatorPublishedMiniGames, type CreatorPlaytestHandoffV1 } from "./game/activity/loadCreatorExperiences";
+import { claimCreatorPlaytest, finishCreatorPlaytest, loadCreatorPublishedMiniGames, pendingCreatorPlaytest, type CreatorPlaytestHandoffV1 } from "./game/activity/loadCreatorExperiences";
 import type { CreatorPublishedMiniGameV1 } from "./game/activity/creatorMiniGame";
 import { loadCreatorSceneModels } from "./game/activity/creatorSceneModels";
 import { createCreatorLayoutSnapshot } from "./engine/sdk/cityLayoutAdapter";
@@ -134,6 +134,10 @@ export function CityApp() {
   const experience = useCityExperience(engineRef, projection, worldProfile);
   const [creatorExperiences, setCreatorExperiences] = useState<readonly CreatorPublishedMiniGameV1[]>([]);
   const [creatorPlaytest, setCreatorPlaytest] = useState<CreatorPlaytestHandoffV1 | null>(null);
+  // City-scoped playtest: load the release's frozen city revision as a transient
+  // world (never persisted), wait for the planned layout to match the release,
+  // then claim. Restore the player's own city when the run ends.
+  const playtestTransientRef = useRef<{ runId: string; previousSeed: number; previousProfile: CityWorldProfileV1; expectedWorldRevision: string } | null>(null);
   useEffect(() => {
     setCreatorExperiences([]); setCreatorPlaytest(null);
     if (!firstModelFrame || !embedded()) return;
@@ -144,6 +148,29 @@ export function CityApp() {
       const view = engineRef.current?.getCitySdkLayoutView();
       if (!view) return;
       try {
+        let pending: Awaited<ReturnType<typeof pendingCreatorPlaytest>> = { pending: false };
+        try { pending = await pendingCreatorPlaytest(); }
+        catch (error) {
+          // Older hosts have no pending face: fall back to the legacy claim path.
+          if (!(error instanceof Error) || error.message !== "creator_method_unavailable") throw error;
+        }
+        if (cancelled) return;
+        if (pending.pending) {
+          const transient = playtestTransientRef.current;
+          if (!transient) {
+            playtestTransientRef.current = { runId: pending.runId, previousSeed: experience.seed,
+              previousProfile: worldProfile, expectedWorldRevision: pending.worldRevision };
+            experience.loadTransientSeed(pending.city.seed);
+            setWorldProfile(pending.city.profile);
+            setFirstModelFrame(false);
+            return;
+          }
+          if (transient.runId !== pending.runId) return;
+          if (view.worldRevision !== pending.worldRevision) {
+            if (attempts < 30) { attempts += 1; timer = setTimeout(() => { void load(); }, 400); }
+            return;
+          }
+        }
         const handoff = await claimCreatorPlaytest(view);
         if (handoff) {
           if (!cancelled) { setCreatorPlaytest(handoff); setCreatorExperiences(handoff.experiences); }
@@ -152,6 +179,12 @@ export function CityApp() {
         const items = await loadCreatorPublishedMiniGames(view);
         if (!cancelled) setCreatorExperiences(items);
       } catch (error) {
+        if (!cancelled && playtestTransientRef.current) {
+          const transient = playtestTransientRef.current; playtestTransientRef.current = null;
+          experience.loadTransientSeed(transient.previousSeed);
+          setWorldProfile(transient.previousProfile);
+          setFirstModelFrame(false);
+        }
         if (!cancelled && attempts < 5 && error instanceof Error && ["creator_layout_not_found", "plugin_call_timeout", "plugin_call_expired"].includes(error.message)) {
           attempts += 1;
           timer = setTimeout(() => { void load(); }, attempts * 500);
@@ -258,13 +291,29 @@ export function CityApp() {
     locale: () => (language === "en" ? "en" : "zh-Hans"),
     activityCoordinator,
   });
+  const restorePlaytestTransient = useCallback(() => {
+    const transient = playtestTransientRef.current;
+    if (!transient) return;
+    playtestTransientRef.current = null;
+    experience.loadTransientSeed(transient.previousSeed);
+    setWorldProfile(transient.previousProfile);
+    setFirstModelFrame(false);
+  }, [experience]);
+  const finishPlaytest = useCallback(async (runId: string, status: "completed" | "cancelled" | "failed", evidence?: Parameters<typeof finishCreatorPlaytest>[2], failureCode?: string) => {
+    try { await finishCreatorPlaytest(runId, status, evidence, failureCode); }
+    finally {
+      restorePlaytestTransient();
+      setCreatorPlaytest(null);
+      setCreatorExperiences([]);
+    }
+  }, [restorePlaytestTransient]);
   const driving = useCityDrivingPlay(engineRef, {
     cinemaActive: () => cinemaRef.current,
     gameActive: () => game.active,
     busy: () => busyRef.current || filmRef.current || planRepairActive.current || mechaActive.current,
     activityCoordinator,
   }, { creatorExperiences, playtestContext: creatorPlaytest ? { runId: creatorPlaytest.runId, releaseId: creatorPlaytest.releaseId,
-    projectId: creatorPlaytest.projectId, revision: creatorPlaytest.revision, snapshotDigest: creatorPlaytest.snapshotDigest } : undefined, finishPlaytest: finishCreatorPlaytest });
+    projectId: creatorPlaytest.projectId, revision: creatorPlaytest.revision, snapshotDigest: creatorPlaytest.snapshotDigest } : undefined, finishPlaytest });
   const startedCreatorPlaytest = useRef<string | null>(null);
   useEffect(() => {
     if (!creatorPlaytest || !firstModelFrame || driving.active || startedCreatorPlaytest.current === creatorPlaytest.runId) return;
@@ -485,6 +534,7 @@ export function CityApp() {
     const canvas = canvasRef.current;
     if (!canvas) return;
     let engine: CityEngine;
+    setFirstModelFrame(false);
     try {
       engine = new CityEngine({ canvas, worldProfile, ...experience.callbacks, onPlay: (target) => playRef.current(target), onFirstFrame: () => setFirstModelFrame(true), onCinematic: (_elapsed, _plan, ended) => {
         experience.callbacks.onCinematic(_elapsed, _plan, ended);

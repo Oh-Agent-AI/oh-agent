@@ -1,6 +1,7 @@
 import { canonicalJson, parseMiniGamePackJson, validateAssetRefs, validateCityProjectAssetCatalog, validateMount, validateSceneDraft,
   type CityGameMountV1, type CityProjectAssetCatalogV1, type ContentRef, type MiniGamePackV1, type ModelAssetCatalogV1, type ModelAssetRefV1, type SceneDraftV1, type VisualPlaytestEvidenceV1 } from "@agent-vitals/city-sdk";
 import { invokeHost } from "../../host";
+import { parsePendingCreatorPlaytest, type PendingCreatorPlaytestV1 } from "./creatorPlaytestPending";
 import type { CityLayoutSdkViewV1 } from "../../engine/sdk/cityLayoutAdapter";
 import { m as worldUnits } from "../../engine/worldScale";
 import type { CreatorPublishedMiniGameV1 } from "./creatorMiniGame";
@@ -72,6 +73,12 @@ async function validateRelease(view: CityLayoutSdkViewV1, release: { releaseId: 
       entryPositionWorld: Object.freeze({ x: worldUnits(geometry.positionMeters.x), z: worldUnits(geometry.positionMeters.z) }) }));
   }
   return Object.freeze(output);
+}
+
+/** Reads a pending city-scoped playtest before claiming, so the City runtime can
+ * load the release's frozen city revision without switching the active City. */
+export async function pendingCreatorPlaytest(): Promise<PendingCreatorPlaytestV1> {
+  return parsePendingCreatorPlaytest(await hostCall<unknown>("city.creator.playtest.pending", {}));
 }
 
 /** Claims a Studio-initiated playtest only after a release is pinned to this live City revision. */

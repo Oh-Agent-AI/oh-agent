@@ -18,6 +18,7 @@
 | desktop `cargo test` | 377 passed（含 4 项内容包本机安装测试） |
 | MCP `cargo test` | 84 passed |
 | city-sdk `npm test` | 106 passed |
+| Agent City playtest pending 测试 | 2 passed |
 | Creator Studio `npm test` | 15 passed |
 | Agent City 新增 patch 测试 | 3 passed |
 | Agent City 全量测试 | 980/995 passed；14 项失败在 `dev@18d27cdd` 基线同样存在（基线 15/988），不属于本轮回归 |
@@ -56,9 +57,11 @@
 
 ## 5. 未通过发布验收的阻塞项
 
-1. **独立 City 不可试玩**：`creator_playtest_start/claim` 对 `cityId` release 返回
-   `creator_independent_city_runtime_unavailable`；没有 city-scoped 运行时。沙丘 release
-   只能看/截屏。
+1. **独立 City 试玩闭环进行中（未验收）**：host 已允许 city-scoped release 启动，新增
+   `city.creator.playtest.pending`，claim 返回冻结的 City revision + scoped layout；City 端
+   会先以临时 seed/profile 加载该 revision、等待 worldRevision 匹配再 claim，结束后恢复
+   玩家自己的 City。host/TS 单元测试通过，但真机测试中 City 插件当前未到达 first frame，
+   run 停留在 pending，尚不能判定 A5 通过。
 2. **内容包不可运行/可信分发**：本机安装与卸载已实现，但安装的包不会执行或加载为 City；仍无签名/来源/运行时兼容校验，也没有分发/依赖/版本升级。
 3. **A3/A5/A6/A7 未闭环**：Agent 提案确认、完整竞速结算与返回、实例切换/崩溃恢复、
    撤销/重做与旧补丁迁移。

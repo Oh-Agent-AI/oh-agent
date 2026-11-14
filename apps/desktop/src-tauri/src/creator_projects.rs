@@ -1024,6 +1024,7 @@ pub fn dispatch_city_runtime(home: &Path, city_instance: &str, method: &str, pay
         "city.creator.patch.publish" if exact_payload(payload, &["seed", "patch"]) => publish_city_patch(home, payload),
         "city.creator.patch.read" if exact_payload(payload, &["seed"]) => read_city_patch_for_seed(home,
             payload["seed"].as_u64().filter(|seed| *seed <= u32::MAX as u64).ok_or("creator_request_invalid")?),
+        "city.creator.playtest.pending" if exact_payload(payload, &[]) => crate::creator_playtest::pending_playtest(home),
         "city.creator.playtest.claim" if exact_payload(payload, &[]) => claim_playtest(home, city_instance),
         "city.creator.playtest.finish" if exact_payload(payload, &["runId", "status", "evidence"])
             || exact_payload(payload, &["runId", "status", "evidence", "failureCode"]) => finish_playtest(home, city_instance,
@@ -2179,7 +2180,19 @@ mod tests {
         commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", &project_id, preview["previewId"].as_str().unwrap(), 0, "city-release-mount").unwrap();
         let release = publish_project_release(&home, &project_id, 1).unwrap();
         let release_id = release["releaseId"].as_str().unwrap();
-        assert_eq!(crate::creator_playtest::start_playtest(&home, "studio-instance", release_id, Some(&project_id), Some(1)).unwrap_err(), "creator_independent_city_runtime_unavailable");
+        let started = crate::creator_playtest::start_playtest(&home, "studio-instance", release_id, Some(&project_id), Some(1)).unwrap();
+        let pending = dispatch_city_runtime(&home, "city-instance", "city.creator.playtest.pending", &json!({})).unwrap();
+        assert_eq!(pending["pending"], true);
+        assert_eq!(pending["runId"], started["runId"]);
+        assert_eq!(pending["city"]["cityId"], city_id);
+        assert_eq!(pending["city"]["seed"], layout["seed"]);
+        assert_eq!(pending["layout"]["layout"]["id"], layout["layout"]["id"]);
+        let claimed = dispatch_city_runtime(&home, "city-instance", "city.creator.playtest.claim", &json!({})).unwrap();
+        assert_eq!(claimed["runId"], started["runId"]);
+        assert_eq!(claimed["city"]["cityId"], city_id);
+        assert_eq!(claimed["city"]["revision"], 0);
+        assert_eq!(claimed["worldRevision"], "world-r1");
+        assert_eq!(claimed["layout"]["worldRevision"], "world-r1");
         // Matching layout and seed do not authorize an independent City release
         // to appear in the legacy runtime's catalog.
         let mut legacy_layout = layout.clone();

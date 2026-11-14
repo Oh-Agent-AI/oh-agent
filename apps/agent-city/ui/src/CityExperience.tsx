@@ -197,6 +197,16 @@ export function useCityExperience(engine: RefObject<CityEngine | null>, projecti
       if (mounted.current) setSeedBusy(false);
     }
   };
+  /** Loads an explicit seed without persisting it. Used only for a City-scoped
+   * Creator playtest: the release's city revision is temporary and the player's
+   * saved seed must be restored when the run ends. */
+  const loadTransientSeed = (value: number) => {
+    seedPreparation.current?.abort();
+    seedPreparation.current = null;
+    setSeedBusy(false);
+    engine.current?.setSeed(value);
+    setSeed(value); setSeedDraft(String(value)); clearSelection();
+  };
   const reseed = () => {
     if (!confirmSeed) { setConfirmSeed(true); seedTimer.current = window.setTimeout(() => setConfirmSeed(false), 4000); return; }
     setConfirmSeed(false); window.clearTimeout(seedTimer.current); void applySeed(randomSeed());
@@ -268,7 +278,7 @@ export function useCityExperience(engine: RefObject<CityEngine | null>, projecti
   };
   return { modelRef, model, setModel, tooltipRef, callbacks, selected, setSelected, clearSelection, orbitLocked, releaseOrbitLock: () => engine.current?.releaseOrbitLock(), details, setDetails, options, setOptions, catalog, setCatalog,
     seed, seedDraft, setSeedDraft, seedBusy, confirmSeed, applySeed, reseed, cursor, playing, speed, setSpeed,
-    cut, setCut, backdrop, setBackdrop, worldProfile, skinId: worldProfile.visuals.themeId === "desert" ? "desert-evening" : "miami-vice",
+    cut, setCut, backdrop, setBackdrop, loadTransientSeed, worldProfile, skinId: worldProfile.visuals.themeId === "desert" ? "desert-evening" : "miami-vice",
     changeWorldProfile: (profileId: string) => { if (writeCityWorldProfilePreference(profileId)) window.location.reload(); },
     changeSkin: (skinId: string) => { if (writeCitySkinPreference(skinId)) window.location.reload(); }, film, photoBusy, busy, error, setError, stats, card, progress, seek, replay, live, previewRef,
     describe, photo, exportFilm, refreshSelection, openHostSession, projection,

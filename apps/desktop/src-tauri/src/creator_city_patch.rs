@@ -152,6 +152,24 @@ pub fn list_city_layout_snapshots(home: &Path, limit: u64) -> Result<Value, &'st
     Ok(json!({"layouts":catalogs,"cityLayouts":city_layouts}))
 }
 
+/// 读取按 cityId + cityRevision + worldRevision + layoutId 精确绑定的 v2 布局。
+/// 独立 City 试玩必须按这四元组取布局，不能按裸 worldRevision 回退到别的城的快照。
+pub(crate) fn read_scoped_city_layout(home: &Path, city_id: &str, city_revision: u64, world_revision: &str, layout_id: &str) -> Result<Value, &'static str> {
+    if !valid_id(city_id) || city_revision > i64::MAX as u64 || world_revision.is_empty() || world_revision.len() > 256
+        || layout_id.is_empty() || layout_id.len() > 256 { return Err("creator_request_invalid"); }
+    let db = database(home)?;
+    let raw: String = db.query_row("SELECT snapshot_json FROM creator_city_layouts_v2 WHERE city_id=?1 AND city_revision=?2 AND world_revision=?3 AND layout_id=?4",
+        params![city_id,city_revision,world_revision,layout_id], |row| row.get(0))
+        .optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_layout_not_found")?;
+    let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
+    if snapshot["schemaVersion"].as_u64() != Some(2) || snapshot["cityId"].as_str() != Some(city_id)
+        || snapshot["cityRevision"].as_u64() != Some(city_revision) || snapshot["worldRevision"].as_str() != Some(world_revision)
+        || snapshot["layout"]["id"].as_str() != Some(layout_id) || !snapshot["layout"].is_object() {
+        return Err("creator_layout_scope_mismatch");
+    }
+    Ok(snapshot)
+}
+
 pub(crate) fn read_city_layout_snapshot(home: &Path, world_revision: &str) -> Result<Value, &'static str> {
     if world_revision.is_empty() || world_revision.len() > 256 { return Err("creator_layout_not_found"); }
     let db = database(home)?;

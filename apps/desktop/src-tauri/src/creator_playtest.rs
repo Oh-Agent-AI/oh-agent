@@ -21,6 +21,25 @@ type PlaytestResultRow = (String, Option<String>, String, String, u64, Option<u6
 type PlaytestReturnRow = (String, String, u64, String, Option<String>, Option<String>);
 type PlaytestReadRow = (String, String, String, u64, String, u64, Option<u64>, Option<String>, Option<String>);
 
+/// Resolves the immutable city revision + scoped layout frozen into a release.
+/// A city-scoped release must never fall back to the active legacy City or to a
+/// layout from another City/revision.
+fn release_city_scope(home: &Path, snapshot: &Value) -> Result<(Value, Value), &'static str> {
+    let city_id = snapshot.get("cityId").and_then(Value::as_str).filter(|id| valid_id(id)).ok_or("creator_release_invalid")?;
+    let city_revision = snapshot.get("cityRevision").and_then(Value::as_u64).filter(|revision| *revision <= i64::MAX as u64).ok_or("creator_release_invalid")?;
+    let world_revision = snapshot.get("worldRevision").and_then(Value::as_str).filter(|revision| !revision.is_empty() && revision.len() <= 256).ok_or("creator_release_invalid")?;
+    let layout_id = snapshot.get("cityLayoutId").and_then(Value::as_str).filter(|id| !id.is_empty() && id.len() <= 256).ok_or("creator_release_invalid")?;
+    if snapshot.get("layoutId").and_then(Value::as_str) != Some(layout_id) { return Err("creator_release_invalid"); }
+    let city = crate::creator_cities::read_city_revision(home, city_id, city_revision)?;
+    let layout = crate::creator_city_patch::read_scoped_city_layout(home, city_id, city_revision, world_revision, layout_id)?;
+    if city["cityId"].as_str() != Some(city_id) || city["revision"].as_u64() != Some(city_revision) { return Err("creator_release_invalid"); }
+    if city["seed"] != layout["seed"] { return Err("creator_release_invalid"); }
+    if layout["worldRevision"].as_str() != Some(world_revision) || layout["layout"]["id"].as_str() != Some(layout_id) { return Err("creator_release_invalid"); }
+    Ok((city, layout))
+}
+
+fn has_city_scope(snapshot: &Value) -> bool { snapshot.get("cityId").is_some_and(|value| !value.is_null()) }
+
 fn expire_playtests(tx: &rusqlite::Transaction<'_>, now: u64) -> Result<(), &'static str> {
     tx.execute("UPDATE creator_playtest_runs SET status='expired',active_slot=NULL,finished_at_ms=?1 WHERE active_slot=1 AND expires_at_ms<=?1", [now])
         .map_err(|_| "creator_store_unavailable")?;
@@ -56,13 +75,11 @@ pub(crate) fn start_playtest(home: &Path, studio_instance: &str, release_id: &st
     }
     if raw.len() > MAX_RELEASE_BYTES { return Err("creator_release_invalid"); }
     let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
-    // The current City runtime only loads the legacy active world. An independent
-    // release must not be played there until runtime selection is city-scoped.
-    if snapshot.get("cityId").is_some_and(|value| !value.is_null()) { return Err("creator_independent_city_runtime_unavailable"); }
     if snapshot.get("projectId").and_then(Value::as_str) != Some(&project_id)
         || snapshot.get("revision").and_then(Value::as_u64) != Some(revision)
         || !snapshot.get("game").is_some_and(Value::is_object)
         || !snapshot.get("mounts").is_some_and(Value::is_array) { return Err("creator_release_invalid"); }
+    if has_city_scope(&snapshot) { release_city_scope(home, &snapshot)?; }
     let run_id = new_id("playtest-")?;
     tx.execute("INSERT INTO creator_playtest_runs(run_id,release_id,project_id,revision,studio_instance_id,status,active_slot,created_at_ms,expires_at_ms)
         VALUES(?1,?2,?3,?4,?5,'pending',1,?6,?7)", params![run_id,release_id,project_id,revision,studio_instance,now,now.saturating_add(PLAYTEST_TTL_MS)])
@@ -95,7 +112,6 @@ pub(crate) fn claim_playtest(home: &Path, city_instance: &str) -> Result<Value, 
     if raw.len() > MAX_RELEASE_BYTES { return Err("creator_release_invalid"); }
     if digest(&raw) != snapshot_digest { return Err("creator_release_digest_mismatch"); }
     let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
-    if snapshot.get("cityId").is_some_and(|value| !value.is_null()) { return Err("creator_independent_city_runtime_unavailable"); }
     if snapshot.get("projectId").and_then(Value::as_str) != Some(&project_id)
         || snapshot.get("revision").and_then(Value::as_u64) != Some(revision)
         || !snapshot.get("game").is_some_and(Value::is_object)
@@ -104,13 +120,43 @@ pub(crate) fn claim_playtest(home: &Path, city_instance: &str) -> Result<Value, 
     }
     let skin_id = snapshot.get("skinId").cloned().unwrap_or(Value::Null);
     if !skin_id.is_null() && !skin_id.as_str().is_some_and(valid_skin_id) { return Err("creator_release_invalid"); }
+    let city_scope = if has_city_scope(&snapshot) { Some(release_city_scope(home, &snapshot)?) } else { None };
     tx.commit().map_err(|_| "creator_store_unavailable")?;
-    Ok(json!({"runId":run_id,"releaseId":release_id,"projectId":project_id,"revision":revision,"snapshotDigest":snapshot_digest,"skinId":skin_id,
+    let mut response = json!({"runId":run_id,"releaseId":release_id,"projectId":project_id,"revision":revision,"snapshotDigest":snapshot_digest,"skinId":skin_id,
         "game":snapshot["game"],"mounts":snapshot["mounts"],
         "scene":snapshot.get("scene").cloned().unwrap_or_else(|| json!({"schemaVersion":1,"objects":[]})),
         "assets":snapshot.get("assets").cloned().unwrap_or_else(|| json!({"schemaVersion":1,"entries":[]})),
         "assetRefs":snapshot.get("assetRefs").cloned().unwrap_or_else(|| json!([])),
-        "returnContext":{"projectId":project_id,"revision":revision}}))
+        "returnContext":{"projectId":project_id,"revision":revision}});
+    if let Some((city, layout)) = city_scope {
+        response["city"] = city;
+        response["layout"] = layout;
+        response["worldRevision"] = snapshot["worldRevision"].clone();
+    }
+    Ok(response)
+}
+
+/// Pre-claim descriptor for the City runtime: read the active run and, when it
+/// is city-scoped, return the frozen city revision + layout without claiming or
+/// mutating the run. The City plugin loads this transient city, then claims and
+/// validates the release against the resulting layout view.
+pub(crate) fn pending_playtest(home: &Path) -> Result<Value, &'static str> {
+    let db = database(home)?;
+    let active: Option<(String, String, String, u64, String)> = db.query_row(
+        "SELECT run_id,release_id,project_id,revision,status FROM creator_playtest_runs WHERE active_slot=1", [],
+        |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))).optional().map_err(|_| "creator_store_unavailable")?;
+    let Some((run_id, release_id, project_id, revision, _status)) = active else { return Ok(json!({"pending":false})) };
+    let (raw, snapshot_digest): (String, String) = db.query_row("SELECT snapshot_json,snapshot_digest FROM creator_releases WHERE release_id=?1", [&release_id],
+        |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_release_not_found")?;
+    if raw.len() > MAX_RELEASE_BYTES || digest(&raw) != snapshot_digest { return Err("creator_release_digest_mismatch"); }
+    let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
+    if snapshot.get("projectId").and_then(Value::as_str) != Some(&project_id) || snapshot.get("revision").and_then(Value::as_u64) != Some(revision) {
+        return Err("creator_release_invalid");
+    }
+    if !has_city_scope(&snapshot) { return Ok(json!({"pending":false})); }
+    let (city, layout) = release_city_scope(home, &snapshot)?;
+    Ok(json!({"pending":true,"runId":run_id,"releaseId":release_id,"projectId":project_id,"revision":revision,
+        "worldRevision":snapshot["worldRevision"],"city":city,"layout":layout}))
 }
 
 fn validate_playtest_evidence(value: &Value, status: &str, release_id: &str, revision: u64, snapshot_digest: &str, snapshot: &Value) -> Result<String, &'static str> {
