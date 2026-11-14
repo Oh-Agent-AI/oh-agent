@@ -22,6 +22,7 @@ mod creator_playtest;
 mod creator_store;
 pub mod creator_content_v2;
 mod creator_content_install;
+mod creator_source_export;
 mod typed_data;
 mod typed_objects;
 // Retained only as a test baseline for the TS City projection migration.

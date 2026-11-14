@@ -1207,6 +1207,35 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
     if method.starts_with("creator.") {
         if plugin_id != "creator-studio" { return Ok(plugin_request_error(request.request_id, "permission_denied", false)); }
         if !local_calls.iter().any(|allowed| allowed == &method) { return Ok(plugin_request_error(request.request_id, "permission_denied", false)); }
+        if method == "creator.source.export" {
+            {
+                let host = state.0.lock().unwrap();
+                if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            let selected = tauri::async_runtime::spawn_blocking(|| rfd::FileDialog::new().pick_folder())
+                .await.map_err(|_| "creator_export_picker_failed".to_string())?;
+            let Some(parent) = selected else { return Ok(plugin_request_error(request.request_id, "creator_export_cancelled", false)); };
+            let _operation = state.1.lock().unwrap();
+            {
+                let host = state.0.lock().unwrap();
+                if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            let result = crate::creator_source_export::export_source(&crate::overview::data_home(), &parent, &payload);
+            {
+                let host = state.0.lock().unwrap();
+                if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            return Ok(match result {
+                Ok(value) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(value), error: None },
+                Err(code) => plugin_request_error(request.request_id, code, matches!(code, "creator_store_unavailable")),
+            });
+        }
         if method == "creator.content.inspect" {
             if !payload.as_object().is_some_and(|object| object.is_empty()) { return Ok(plugin_request_error(request.request_id, "creator_request_invalid", false)); }
             {

@@ -7,6 +7,7 @@ import { loadStudioAtStartup } from "./startupLoad";
 import { resolveProjectCity } from "./projectCityScope";
 import { formatWorldPackageInspection, parseWorldPackageInspection, type WorldPackageInspection } from "./contentPackageInspect";
 import { formatInstalledPackage, parseInstalledPackages, parseInstallResult, type InstalledContentPackage } from "./installedContent";
+import { buildProjectSourceExport } from "./projectSourceExport";
 // 视口与 City 插件共享同一份引擎与装配管线，保证 Studio 看到的是同一座城市。
 import { CityViewport } from "../../../agent-city/ui/src/viewport/CityViewport";
 import { createCreatorLayoutSnapshot } from "../../../agent-city/ui/src/engine/sdk/cityLayoutAdapter";
@@ -721,6 +722,22 @@ function App() {
     || skinId !== (project.skinId ?? "miami-vice")
   );
 
+  const exportSource = async () => {
+    if (!project || !projectCity?.city || projectCity.key !== projectCityKey || hasUncommittedProjectEdits || busy) return;
+    setBusy(true); setMessage("");
+    try {
+      const source = await buildProjectSourceExport(project, projectCity.city, CITY_GENERATOR_VERSION);
+      const result = await creatorRequest<{ directoryName: string; assetCount: number }>("creator.source.export", {
+        projectId: project.projectId, revision: project.revision, ...source,
+      });
+      if (!/^city-source-[a-f0-9]+$/.test(result.directoryName) || !Number.isSafeInteger(result.assetCount)) throw new Error("creator_export_invalid");
+      setMessage(`源码已导出至所选目录中的 ${result.directoryName}；游戏布局为当前城市快照，换城市须重新绑定。`);
+    } catch (error) {
+      const code = errorCode(error, "creator_export_failed");
+      if (code !== "creator_export_cancelled") setMessage(`源码导出失败（${code}）。请检查项目版本、城市绑定及资产。`);
+    } finally { setBusy(false); }
+  };
+
   let visualSlot: "points" | "targets" | null = null;
   let slotMinimum = 0;
   try {
@@ -728,7 +745,7 @@ function App() {
     if (slots && Object.keys(slots).length === 1 && ("points" in slots || "targets" in slots)) visualSlot = "points" in slots ? "points" : "targets";
     if (visualSlot && Number.isInteger(slots[visualSlot]?.min)) slotMinimum = slots[visualSlot].min;
   } catch { /* 高级规则无效时不猜测绑定方式 */ }
-  const releaseHint = browserPreview && publishedReleaseId && !hasUncommittedProjectEdits ? "浏览器预览不支持试玩，请在桌面应用中试玩" : !project ? "先打开或创建项目" : project.cityId ? "独立城市暂不支持运行时试玩" : hasUncommittedProjectEdits ? "请先保存未提交的修改" : !project.mounts?.length ? "请先配置并保存玩法场地" : !publishedReleaseId ? "发布后即可试玩当前版本" : "已发布版本可供试玩";
+  const releaseHint = browserPreview && publishedReleaseId && !hasUncommittedProjectEdits ? "浏览器预览不支持试玩，请在桌面应用中试玩" : !project ? "先打开或创建项目" : hasUncommittedProjectEdits ? "请先保存未提交的修改" : !project.mounts?.length ? "请先配置并保存玩法场地" : !publishedReleaseId ? "发布后即可试玩当前版本" : "已发布版本可供试玩";
 
   // 宿主工具栏选项限制为 8 项、值不超过 32 字节；用索引作为短值，
   // 超出的项目仍可在项目面板中访问，避免向宿主泄漏或截断项目 ID。
@@ -782,7 +799,7 @@ function App() {
             ? <div className="empty viewport-empty">正在读取项目绑定的城市…</div>
             : projectCity.city && isolatedPatchResult && !isolatedPatchResult.ok ? <div className="empty viewport-empty">城市编辑补丁无效或与当前生成器不兼容，无法安全预览。</div>
             : projectCity.city ? <div className="viewport-frame"><CityViewport key={projectCityKey} seed={projectCity.city.seed} worldProfile={projectCity.city.profile} isolatedDraft isolatedProjectPatch={isolatedPatchResult?.ok ? isolatedPatchResult.value as unknown as PlanPatchV1 : null} focusSignal={focusSignal} />
-              <div className="viewport-savebar" role="status">独立城市只读预览 · 项目编辑与运行时切换尚不可用</div></div>
+              <div className="viewport-savebar" role="status">独立城市只读预览 · 城市编辑尚不可用</div></div>
             : <div className="empty viewport-empty">{projectCity.error}</div>)
           : viewportSeed !== null
           ? <div className="viewport-frame"><CityViewport seed={viewportSeed} worldProfile={worldProfile} editable={!!project} focusSignal={focusSignal}
@@ -808,6 +825,8 @@ function App() {
           </div>}
         </section>}
         {activePanel === "project" && <section className="new-project">
+          <div><div className="section-title">导出源码项目</div><p className="muted">导出已保存的独立城市和小游戏；游戏绑定当前城市布局，不包含用户会话或试玩结果。</p>
+            <button className="secondary" disabled={browserPreview || busy || !project || !projectCity?.city || projectCity.key !== projectCityKey || hasUncommittedProjectEdits || project.mounts.length !== 1} onClick={() => void exportSource()}>导出源码目录…</button></div>
           <div><div className="section-title">世界内容包预检</div><p className="muted">通过桌面原生选择器打开 unsigned 的 v2 世界包，核对清单、文件集合与摘要；校验后可显式安装到本机内容库。文件路径和字节不会传入 Agent/MCP。</p>
           <button className="secondary" disabled={busy || browserPreview} onClick={() => void inspectWorldPackage()}>选择并预检世界包…</button>
           {browserPreview && <p className="muted">浏览器预览没有原生文件选择器，请在桌面应用中使用。</p>}

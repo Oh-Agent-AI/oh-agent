@@ -59,6 +59,9 @@ flate2 = "1.1"
 # 应用内版本检查按 semver 优先级比较 app-v 标签（beta.10 > beta.9 > …，1.0.0 > 1.0.0-beta.N）。
 semver = "1"
 
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
 
