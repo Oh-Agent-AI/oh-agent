@@ -62,6 +62,10 @@ import type { GameSceneLease } from "../game/runtime/GameScenePort";
 import { createSdkViewForCityLayout, type CityLayoutSdkViewV1 } from "./sdk/cityLayoutAdapter";
 
 export type CityCreatorSkinId = "miami-vice" | "desert-evening";
+/** 视口捕获结果：不可用与超预算必须可区分，调用方按 code 映射 MCP 错误。 */
+export type CaptureFrameResult =
+  | { ok: true; dataUrl: string; width: number; height: number; downscaled: boolean }
+  | { ok: false; code: "creator_capture_unavailable" | "creator_capture_budget_exceeded" };
 export type CityCreatorSkinOverrideToken = Readonly<{
   owner: symbol;
   serial: number;
@@ -1152,13 +1156,14 @@ export class CityEngine {
     return Math.max(900, this.boundsRadius * 2.2);
   }
 
-  /** 当前画布 JPEG 数据 URL（Studio 的 creator.scene.capture 用）：先渲染一帧确保内容最新。
-   *  帧必须装进插件调用的 64 KiB 邮箱（含 JSON 信封开销，编码预算 ~44K 字符）：
-   *  质量从 0.72 逐档降到 0.3，仍超则按 0.75× 降采样重绘再压——降级是渐进的，
-   *  全部档位用尽仍超预算才返回 null（调用方报 creator_capture_budget_exceeded）。
-   *  headless/上下文丢失/已销毁同样返回 null。 */
-  captureFrame(maxChars = 44_000): { dataUrl: string; width: number; height: number; downscaled: boolean } | null {
-    if (this.options.headless || this.disposed || this.contextLost) return null;
+  /** 当前画布 JPEG 数据 URL（Studio 的 creator.scene.capture / creator.city.capture 用）：
+   *  先渲染一帧确保内容最新。编码预算 330K 字符：插件描述符给 capture 的 mailbox
+   *  响应预算是 512 KiB，MCP 侧另有 350K 字符的帧安全上限，330K 留出 JSON 信封余量。
+   *  质量从 0.72 逐档降到 0.3，仍超则按 0.75× 降采样重绘再压；全部档位用尽才返回
+   *  budget 失败。视口不可用（headless/上下文丢失/已销毁）与超预算用不同 code
+   *  返回，调用方不得把二者混成一句“unavailable”。 */
+  captureFrame(maxChars = 330_000): CaptureFrameResult {
+    if (this.options.headless || this.disposed || this.contextLost) return { ok: false, code: "creator_capture_unavailable" };
     const encode = (canvas: HTMLCanvasElement, quality: number) => {
       const dataUrl = canvas.toDataURL("image/jpeg", quality);
       return dataUrl.startsWith("data:image/jpeg") ? dataUrl : null;
@@ -1167,7 +1172,7 @@ export class CityEngine {
     const source = this.renderer.domElement;
     for (const quality of [0.72, 0.5, 0.35]) {
       const dataUrl = encode(source, quality);
-      if (dataUrl && dataUrl.length <= maxChars) return { dataUrl, width: source.width, height: source.height, downscaled: false };
+      if (dataUrl && dataUrl.length <= maxChars) return { ok: true, dataUrl, width: source.width, height: source.height, downscaled: false };
     }
     // 原尺寸压不进预算：离屏画布降采样重绘（最远降到 0.35 质量 + 0.4× 尺寸）。
     let scale = 0.75;
@@ -1176,17 +1181,17 @@ export class CityEngine {
       offscreen.width = Math.max(1, Math.round(source.width * scale));
       offscreen.height = Math.max(1, Math.round(source.height * scale));
       const context = offscreen.getContext("2d");
-      if (!context) return null;
+      if (!context) return { ok: false, code: "creator_capture_unavailable" };
       context.drawImage(source, 0, 0, offscreen.width, offscreen.height);
       for (const quality of [0.6, 0.4]) {
         const dataUrl = encode(offscreen, quality);
         if (dataUrl && dataUrl.length <= maxChars) {
-          return { dataUrl, width: offscreen.width, height: offscreen.height, downscaled: true };
+          return { ok: true, dataUrl, width: offscreen.width, height: offscreen.height, downscaled: true };
         }
       }
       scale -= 0.15;
     }
-    return null;
+    return { ok: false, code: "creator_capture_budget_exceeded" };
   }
 
   /** 按主题的方位/高度角放太阳。曾放在城市中心正上方约 bounds 高、水平只偏 139 处——

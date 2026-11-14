@@ -315,7 +315,7 @@ function App() {
       if (!validated.ok || validated.value.revision !== current.revision) throw new Error("revision_conflict");
       if (draftCityViewRef.current !== current || draftEngineRef.current !== engine || draftViewStatusRef.current !== "ready") throw new Error("creator_capture_unavailable");
       const frame = engine.captureFrame();
-      if (!frame) throw new Error("creator_capture_budget_exceeded");
+      if (!frame.ok) throw new Error(frame.code);
       const camera = engine.inspectScene().camera as { position?: number[]; target?: number[] } | null;
       return { format: "image/jpeg", dataUrl: frame.dataUrl, width: frame.width, height: frame.height, downscaled: frame.downscaled,
         bytes: Math.ceil(frame.dataUrl.length * 0.75), cityId: current.cityId, revision: current.revision,
@@ -357,10 +357,10 @@ function App() {
       // 契约要求捕获绑定捕获时的 revision：没有打开的项目就没有可绑定的 revision
       if (!projectRef.current) throw new Error("creator_capture_requires_project");
       if (typeof payload.revision === "number" && payload.revision !== projectRef.current.revision) throw new Error("revision_conflict");
-      // 帧必须装进插件调用 64 KiB 邮箱（含信封开销）：引擎内部质量/分辨率逐档降级，
-      // 全部档位用尽才报预算超限——与 creator_capture_unavailable（视口不可用）区分。
+      // 帧按描述符给 capture 的 mailbox 预算（512 KiB）与 MCP 帧上限（350K 字符）
+      // 逐档降级；不可用与超预算由 captureFrame 返回不同 code，不能混成一句。
       const frame = engine.captureFrame();
-      if (!frame) throw new Error("creator_capture_budget_exceeded");
+      if (!frame.ok) throw new Error(frame.code);
       const camera = engine.inspectScene().camera as { position?: number[]; target?: number[] } | null;
       const result = { format: "image/jpeg", dataUrl: frame.dataUrl, width: frame.width, height: frame.height, downscaled: frame.downscaled,
         bytes: Math.ceil(frame.dataUrl.length * 0.75), revision: projectRef.current.revision,
