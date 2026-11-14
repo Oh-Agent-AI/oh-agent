@@ -20,3 +20,13 @@ test("independent project uses only its explicit scoped patch, never the legacy 
   const changed = { ...scoped, roadOps: [{ ...scoped.roadOps[0]!, to: { x: 20, z: 0 } }] };
   assert.notEqual(hashPlanPatch(scoped), hashPlanPatch(changed), "same count and timestamp must not hide a changed road");
 });
+
+test("temporary preview overrides persisted patches without crossing seeds", () => {
+  const local = { ...emptyPlanPatch(42, 2), updatedAt: 100 };
+  const preview = { ...emptyPlanPatch(42, 2), updatedAt: 1, buildingMoves: { building: "parcel" } };
+  assert.equal(selectViewportPatch(false, 42, local, local, null, preview), preview);
+  assert.equal(selectViewportPatch(true, 42, local, local, local, preview), preview);
+  assert.equal(selectViewportPatch(false, 43, local, local, null, preview), null);
+  assert.equal(selectViewportPatch(false, 42, local, local, null, null), null);
+  assert.equal(selectViewportPatch(false, 42, local, local), local);
+});

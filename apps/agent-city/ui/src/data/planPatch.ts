@@ -45,15 +45,15 @@ function coerceStore(raw: unknown): PlanPatchStoreV1 | null {
 /** localStorage 读写都可能抛（隐私窗口、配额、被清的站点数据、手改坏的 JSON）：
  *  曾直接 `JSON.parse(localStorage.getItem(...))`，存档损坏时连 catch 分支里都在抛，补丁读取把整个挂载流程带崩。 */
 function readLocal(): PlanPatchStoreV1 | null {
-  try { return coerceStore(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null")); } catch { return null; }
+  try { const raw = localStorage.getItem(STORAGE_KEY); return raw === null ? emptyPlanPatchStore() : coerceStore(JSON.parse(raw)); } catch { return null; }
 }
-function writeLocal(store: PlanPatchStoreV1): void {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(store)); } catch { /* 无存储：本次修改仅临时生效 */ }
+function writeLocal(store: PlanPatchStoreV1): boolean {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(store)); return true; } catch { return false; }
 }
 
 export async function cityPlanPatchStore(action: "read" | "write", store?: PlanPatchStoreV1): Promise<PlanPatchStoreV1 | null> {
   if (!embedded() || window.__CITY_ISOLATION_FIXTURE__) {
-    if (action === "write" && store) writeLocal(store);
+    if (action === "write" && store && !writeLocal(store)) return null;
     return readLocal();
   }
   const requestId = `city-plan-patch-${++sequence}`;
@@ -66,7 +66,7 @@ export async function cityPlanPatchStore(action: "read" | "write", store?: PlanP
     return coerceStore(response.result.store);
   } catch {
     // 宿主投影未注册/IPC 未就绪：回退 localStorage（同 seed.ts 的挂载竞态口径）。
-    if (action === "write" && store) writeLocal(store);
+    if (action === "write" && store && !writeLocal(store)) return null;
     return readLocal();
   }
 }
