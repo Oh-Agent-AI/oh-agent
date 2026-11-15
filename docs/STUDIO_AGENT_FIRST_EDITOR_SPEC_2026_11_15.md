@@ -146,6 +146,103 @@ type CreatorJobV1 = Readonly<{
 
 「Agent 优先的 Agent 编辑器」完成 = Agent 仅凭 MCP（无人在场、UI 关闭）完成一次完整创作闭环并把全部证据留在会话/作业记录中；人在 UI 上看到的是同一场工作的只读监视视图；每一步失败都有指向下一步的结构化建议。E1–E6 全部通过时达成。
 
+## 8. 代码设计
+
+### 8.1 持久化（creator_store.rs 迁移链，CREATE TABLE IF NOT EXISTS + PRAGMA table_info 列探测）
+
+```sql
+CREATE TABLE IF NOT EXISTS creator_sessions (
+  session_id TEXT PRIMARY KEY,          -- "csession-<hex>"
+  agent_id TEXT NOT NULL,               -- 声明式标识（非认证）
+  scope_project_id TEXT, scope_city_id TEXT,
+  state TEXT NOT NULL,                  -- open | closed
+  created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS creator_session_operations (
+  session_id TEXT NOT NULL, seq INTEGER NOT NULL,
+  kind TEXT NOT NULL,                   -- preview | commit | job
+  ref TEXT NOT NULL,                    -- previewId / operationId / jobId
+  status TEXT NOT NULL,                 -- pending | ready | failed | expired
+  summary TEXT NOT NULL, created_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (session_id, seq)
+);
+CREATE TABLE IF NOT EXISTS creator_jobs (
+  job_id TEXT PRIMARY KEY,              -- "cjob-<hex>"
+  kind TEXT NOT NULL,                   -- layout-build | world-apply | playtest | capture
+  status TEXT NOT NULL,                 -- queued | running | ready | failed | cancelled
+  subject_json TEXT NOT NULL,           -- {cityId?, projectId?, releaseId?}
+  progress_json TEXT NOT NULL,          -- {tick?, total?, stage}
+  failure_json TEXT, cancel_requested INTEGER NOT NULL DEFAULT 0,
+  session_id TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
+);
+```
+
+保留策略：`closed` 会话 7 天后清理；终态作业 24 小时后清理（沿 creator_city_diagnostics 的淘汰模式）；活跃预览/试玩的既有 TTL 不变——会话表只引用，不接管它们的过期语义。
+
+### 8.2 city-sdk 契约（新文件 `src/creatorSession.ts`，index 导出）
+
+- 类型与校验器：`validateCreatorSessionV1`（exact-keys、sessionId/agentId 标识符、operations ≤200）、`validateCreatorJobV1`（kind 白名单、status 状态机合法迁移）、`validateRecoverySuggestionsV1`（≤8 条、tool 必须在已注册工具集内——由生成产物核对）。
+- 预算常量：`CREATOR_SESSION_LIMITS_V1 = { maxOperations: 200, maxRecoveries: 8, maxSessionsPerAgent: 4 }`。
+- gameTypes 投影扩展：`playtestSupported` 与 `runtimeStatus` 的**数据源约定**——app 侧 registry 的真实注册状态（city-game-runtime registry + app adapter 就绪位）经生成链写入 capabilities.json；生成脚本从 app 导出的注册清单读取，SDK 不自行推断。
+
+### 8.3 Rust 模块布局
+
+| 模块 | 职责 |
+|---|---|
+| `creator_sessions.rs`（新） | 会话生命周期（open/status/close，agentId 维度重放）、未决操作登记（预览签发/提交/作业创建时同步登记）、FIFO 淘汰 |
+| `creator_jobs.rs`（新） | 作业注册表 + 状态机 + 取消位；把既有孤立状态源接入：layout-build→view_status、world-apply→edit_commit 后的布局重建、playtest→playtest_runs、capture→capture 链 |
+| `creator_cities.rs` | 阶段 2 锚点宿主逻辑（沿用 S2b/S4 模式：结构闸 + CAS + 幂等） |
+| `creator_projects.rs` | 阶段 1 vehicle（已就位）+ 阶段 4 发布冻结（release 快照携带 gameType/vehicleId/runtimeContractVersion/mountCount/playtestReady；发布闸：无 vehicle/无 mount/覆盖缺失/运行时缺失 → 拒绝） |
+| `creator_playtest.rs` | `start_playtest_with_game_type` 已就位；接上 dispatch 行后生效 |
+| `plugin_host.rs` | 新方法的白名单/预算/实例绑定（沿 creator.vehicle.* 模式） |
+| dispatch | `dispatch_city_runtime` 新增 session/job/anchor 分支（exact_payload 模式） |
+
+### 8.4 语义校验的 headless 三分法（E5 关键决策）
+
+现状：语义校验信封来自 Studio webview（TS）；无 webview 时宿主只有结构硬闸。三条路径：
+
+1. **结构完备子集（首选首片）**：vehicle/world/anchor 的语义已完全可由生成产物表达（键/范围/枚举）——这些方法 headless 直接可用（`validation: "structural"` 标记）。scene/game（SceneDraft/MiniGamePack 语义）不在此列。
+2. **city-sdk WASM 嵌入（目标态）**：仓库已有 `crates/agent-vitals-wasm`（wasm-pack 产物就绪）。把 city-sdk 校验器编译进宿主可执行 WASM，headless 下运行完整语义校验——校验逻辑仍单源 city-sdk，宿主只是新运行时载体。需先验证 wasm 产物的确定性与体积预算。
+3. **延迟语义校验（过渡）**：headless 接受载荷但标记 `semantic: "deferred"`，**不可 commit**；Studio 打开后补验通过才放行 commit。仅作为 1→2 的过渡桥，不得长期存在。
+
+### 8.5 MCP 工具 schema（冻结草案，7 个新工具；additionalProperties:false 全程）
+
+```jsonc
+creator_session_open   { agentId, projectId?, cityId? } → { sessionId, pending: SessionOperationV1[] }
+creator_session_status { sessionId } → { state, operations[], jobs[] }
+creator_session_close  { sessionId } → { cleared: n }
+creator_job_list       { sessionId?, kind? } → { jobs: CreatorJobV1[] }
+creator_job_status     { jobId } → CreatorJobV1 + failure.next?
+creator_job_wait       { jobId, timeoutMs? } → CreatorJobV1（阻塞至终态或超时）
+creator_game_type_list { status? } → { gameTypes: [{ id, template, runtime, contractVersion, playtestSupported, runtimeStatus }] }
+```
+
+只读工具（list/status/game_type_list）离线可用（与 capabilities 同策略）；`job_wait` 阻塞上限 30 s（超时返回 running 快照，非错误）。
+
+### 8.6 新错误码
+
+`creator_session_not_found`、`creator_session_closed`、`creator_session_limit_exceeded`、`creator_job_not_found`、`creator_job_not_cancellable`、`creator_job_wait_timeout`、`creator_publish_blocked_no_vehicle`、`creator_publish_blocked_no_mount`、`creator_publish_blocked_slot_coverage`、`creator_publish_blocked_runtime_missing`（全部带 recoveries 建议，见 §3.3）。
+
+### 8.7 测试映射
+
+| 切片 | 测试位置 |
+|---|---|
+| E1 | creator_sessions.rs tests（open/replay/close/淘汰/多 agent 隔离）+ MCP 注册守卫 + sdk creatorSession 校验测试 |
+| E2 | creator_jobs.rs tests（状态机迁移/取消安全点/wait 超时/跨项目并行）+ 与既有 view_status/playtest_runs 的对账测试 |
+| E3 | capabilities 生成锁步（recoveries 段）+ 抽样错误码 `next` 断言（Rust）+ Studio UI 同源展示测试 |
+| E4 | gameTypes 投影锁步（app registry 状态 → capabilities.json）+ planned 类型拒试玩断言 |
+| E5 | headless 三分法：结构子集放行矩阵 + WASM 语义对齐测试（与 TS 侧同输入同诊断）+ deferred 不可 commit 断言 |
+| E6 | 端到端脚本 `scripts/verify-creator-flight-e2e.mjs`（7 步 MCP 调用 → 证据 JSON：projectId/releaseId/调用记录/两份轨迹摘要与差异） |
+
+### 8.8 作业状态机
+
+```text
+queued → running → ready | failed | cancelled
+        running → queued（仅 layout-build：radius 校准重试既有语义）
+取消：queued/running 置 cancel_requested → 引擎安全点确认 → cancelled；终态不可迁移
+```
+
+
 ## 9. 参考实现研究：T3 Code（pingdotgg/t3code，MIT）
 
 T3 Code 的定位是「coding agents 的开源控制平面」：不内嵌 agent，而是把机器上已有的多个 coding agent（Claude Code/Codex/Cursor/…，经 ACP 可插拔协议）统一驱动，一个 server、桌面/手机/网页三端同线程。它与 Studio 的方向同构——**agent 是主要工作者，编辑器是控制平面**——其开源架构是本规格最直接的外部参照。
