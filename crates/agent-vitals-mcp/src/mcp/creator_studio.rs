@@ -433,7 +433,7 @@ pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool)
                     // E5 headless 结构子集（§8.4）：Studio 关闭时给即时结构反馈；
                     // 绝不签发 previewId——语义与提交必须等 Studio 补验信封。
                     Err(error) if error.code == "plugin_unavailable" => {
-                        let report = headless_world_operations(operations)?;
+                        let report = headless_world_operations(&Value::Array(operations.clone()))?;
                         Ok(json!({"ok":true,"data":{"validation":"structural","commitBlocked":"deferred-semantic",
                             "checks":{"layoutInvalidation":"new-world-revision","patchReplay":"needs-review"},
                             "structural":report,
