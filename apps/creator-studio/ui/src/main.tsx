@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { connect, connectHostCalls, invokeHost, observeHealth, publishToolbar } from "@agent-vitals/app-sdk/ui-host";
-import { canonicalJson, validateCityInstance, validateCityLayoutScope, validateCityLayoutSnapshot, validateMiniGamePack, validateMount, validateSceneDraft, validateWorldPlanPatch, type CityGameMountV1, type CityInstanceV1, type CityLayoutSnapshotV1 } from "@agent-vitals/city-sdk";
+import { canonicalJson, validateCityInstance, validateCityLayoutScope, validateCityLayoutSnapshot, validateMiniGamePack, validateMount, validateSceneDraft, validateWorldPlanPatch, type CityGameMountV1, type CityInstanceV1, type CityLayoutSnapshotV1, type CityWorldProfileV1 } from "@agent-vitals/city-sdk";
+import { applyCityWorldOperations } from "./cityWorldOperations";
 import { buildGameValidation, buildSceneValidation, scopeMismatchEnvelope } from "./sdkValidation";
 import { loadStudioAtStartup } from "./startupLoad";
 import { resolveProjectCity } from "./projectCityScope";
@@ -335,6 +336,28 @@ function App() {
         return { ...request, validation: { schemaVersion: 1, requestDigest: await digest(request), ok: checked.ok } };
       }
       if (method === "creator.city.edit.preview") {
+        // world.set 形态（世界多样化规格 §5.2）：operations 与 name/seed 配方替换
+        // 互斥（宿主同样拒绝）。语义合并以 city-sdk 为单一来源：读权威文档、按
+        // 生成器落位（arid legacy 键→dunes，其余→diversity；coastal→coastal 字段），
+        // 合并结果经 validateCityWorldProfile 复验；摘要绑定 profile+operations。
+        // 任何失败按判负出信封（ok=false），结构侧稳定错误码（world_params_* 等）
+        // 由宿主先行给出。
+        if (Array.isArray(payload.operations)) {
+          let fallbackProfile: unknown = {};
+          let merged: CityWorldProfileV1 | null = null;
+          try {
+            const city = validateCityInstance(await creatorRequest<unknown>("creator.city.read", { cityId: payload.cityId }));
+            if (city.ok) {
+              fallbackProfile = city.value.profile;
+              if (city.value.revision === payload.baseRevision) {
+                merged = applyCityWorldOperations(city.value.profile, payload.operations);
+              }
+            }
+          } catch { merged = null; }
+          const request = { cityId: payload.cityId, baseRevision: payload.baseRevision,
+            profile: merged ?? fallbackProfile, operations: payload.operations };
+          return { ...request, validation: { schemaVersion: 1, requestDigest: await digest(request), ok: merged !== null } };
+        }
         const request = { cityId: payload.cityId, baseRevision: payload.baseRevision, name: payload.name, seed: payload.seed, profile: payload.profile };
         const checked = validateCityInstance({ schemaVersion: 1, cityId: request.cityId, revision: request.baseRevision,
           name: request.name, seed: request.seed, profile: request.profile });

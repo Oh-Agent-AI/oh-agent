@@ -926,17 +926,44 @@ fn run_city_list(home: &Path, _owner: &str, _instance: &str, payload: &Value) ->
 fn run_city_preview(home: &Path, _owner: &str, instance: &str, payload: &Value) -> Result<Value, &'static str> {
     let city_id = args_valid_id(payload, "cityId")?;
     let revision = args_u64(payload, "baseRevision")?;
-    let name = args_str(payload, "name")?;
-    let seed = args_u64(payload, "seed")?;
-    if seed > u32::MAX as u64 { return Err("creator_city_invalid"); }
-    let profile = payload.get("profile").filter(|value| value.is_object()).ok_or("creator_city_invalid")?;
     let validation = payload.get("validation").and_then(Value::as_object).ok_or("creator_validation_required")?;
     if validation.len() != 3 || validation.get("schemaVersion").and_then(Value::as_u64) != Some(1)
-        || validation.get("ok").and_then(Value::as_bool) != Some(true) { return Err("creator_preview_invalid"); }
-    let request = json!({"cityId":city_id,"baseRevision":revision,"name":name,"seed":seed,"profile":profile});
-    let expected = digest(&canonical_json(&request).map_err(|_| "creator_city_invalid")?);
-    if validation.get("requestDigest").and_then(Value::as_str) != Some(expected.as_str()) { return Err("creator_validation_scope_mismatch"); }
-    crate::creator_cities::preview_city(home, instance, city_id, revision, name, seed as u32, profile)
+        || validation.get("ok").and_then(Value::as_bool).is_none() { return Err("creator_preview_invalid"); }
+    // 两种编辑形态互斥（世界多样化规格 §5.2 S4 决策）：operations（world.set）
+    // 与 name/seed 配方替换不能同给——同一 preview 请求只承载一种编辑。
+    // `profile` 两种形态都出现：形态 A 是替换输入，形态 B 是 Studio 适配器合并
+    // world.set 后的结果（经 validateCityWorldProfile 复验），因此互斥集合只含
+    // name/seed。
+    let operations = payload.get("operations");
+    if operations.is_some() && (payload.get("name").is_some() || payload.get("seed").is_some()) {
+        return Err("world_profile_invalid_parameters");
+    }
+    match operations {
+        Some(operations) => {
+            if !operations.is_array() { return Err("world_params_invalid"); }
+            // Form B：profile 必须由 Studio 适配器给出（合并结果；MCP 不传 profile）。
+            let profile = payload.get("profile").filter(|value| value.is_object()).ok_or("creator_city_invalid")?;
+            crate::creator_cities::validate_world_operations(home, city_id, operations)?;
+            let request = json!({"cityId":city_id,"baseRevision":revision,"profile":profile,"operations":operations});
+            let expected = digest(&canonical_json(&request).map_err(|_| "creator_city_invalid")?);
+            if validation.get("requestDigest").and_then(Value::as_str) != Some(expected.as_str()) { return Err("creator_validation_scope_mismatch"); }
+            // 结构码优先于 SDK verdict：world.* 错误是调用方可直接修正的信号，
+            // 即便语义层判负也要先暴露（信封 ok 在摘要核对之后检查）。
+            if validation.get("ok").and_then(Value::as_bool) != Some(true) { return Err("creator_preview_invalid"); }
+            crate::creator_cities::preview_city_operations(home, instance, city_id, revision, profile)
+        }
+        None => {
+            if validation.get("ok").and_then(Value::as_bool) != Some(true) { return Err("creator_preview_invalid"); }
+            let name = payload.get("name").and_then(Value::as_str).ok_or("creator_request_invalid")?;
+            let seed = args_u64(payload, "seed")?;
+            if seed > u32::MAX as u64 { return Err("creator_city_invalid"); }
+            let profile = payload.get("profile").filter(|value| value.is_object()).ok_or("creator_city_invalid")?;
+            let request = json!({"cityId":city_id,"baseRevision":revision,"name":name,"seed":seed,"profile":profile});
+            let expected = digest(&canonical_json(&request).map_err(|_| "creator_city_invalid")?);
+            if validation.get("requestDigest").and_then(Value::as_str) != Some(expected.as_str()) { return Err("creator_validation_scope_mismatch"); }
+            crate::creator_cities::preview_city(home, instance, city_id, revision, name, seed as u32, profile)
+        }
+    }
 }
 fn run_city_commit(home: &Path, owner: &str, instance: &str, payload: &Value) -> Result<Value, &'static str> {
     crate::creator_cities::commit_city(home, owner, instance, args_valid_id(payload, "cityId")?, args_valid_id(payload, "previewId")?,
@@ -973,7 +1000,7 @@ static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.city.diagnostic.list", &["cityId", "limit"], &[], run_city_diagnostic_list),
     creator_row!("creator.city.diagnostic.record", &["cityId", "revision", "correlationId", "event"], &["code", "elapsedMs"], run_city_diagnostic_record),
     creator_row!("creator.city.edit.commit", &["cityId", "previewId", "expectedRevision", "operationId"], &[], run_city_commit),
-    creator_row!("creator.city.edit.preview", &["cityId", "baseRevision", "name", "seed", "profile", "validation"], &[], run_city_preview),
+    creator_row!("creator.city.edit.preview", &["cityId", "baseRevision", "validation"], &["name", "seed", "profile", "operations"], run_city_preview),
     creator_row!("creator.city.patch.preview", &["cityId", "baseRevision", "patch", "validation"], &[], run_city_patch_preview),
     creator_row!("creator.city.layout.store", &["snapshot"], &[], run_city_layout_store),
     creator_row!("creator.city.list", &["limit"], &["cursor"], run_city_list),
@@ -1959,6 +1986,15 @@ mod tests {
         assert_eq!(category("project")["templates"], descriptor["content"]["templates"]);
         assert_eq!(capabilities["preview"]["ttlMs"], PREVIEW_TTL.as_millis() as u64);
         assert_eq!(capabilities["preview"]["maxActive"], MAX_ACTIVE_PREVIEWS);
+        // 世界参数预算（CITY_WORLD_DIVERSIFICATION_SDK_SPEC_2026_11_15 §5.2）：
+        // 能力发现面必须与 Rust 硬上限逐项一致——SDK 改数字后不能虚报（与皮肤
+        // 锁步同模式）。生成目录 worlds.json 与 capabilities.json 同链路。
+        let worlds = category("worlds");
+        assert_eq!(worlds["operation"], "world.set");
+        assert_eq!(worlds["budgets"]["maxOperationsPerPreview"], crate::creator_cities::MAX_WORLD_OPERATIONS_PER_PREVIEW);
+        assert_eq!(worlds["budgets"]["maxParametersPerSet"], crate::creator_cities::MAX_WORLD_PARAMETERS_PER_SET);
+        assert_eq!(worlds["budgets"]["maxRequestBytes"], crate::creator_cities::MAX_WORLD_OPERATIONS_BYTES);
+        crate::creator_cities::guard_worlds_catalog_within_hard_caps();
     }
 
     #[test]

@@ -58,7 +58,7 @@ fn revision_prop() -> Value { json!({"type":"integer","minimum":0}) }
 pub fn specs() -> Vec<ToolSpec> {
     vec![
         spec("creator_city_create", "Create an independent saved City draft without changing the active City. The draft supports read-only Studio preview and project binding; an independent City runtime and installation are not yet available. Requires active Studio and --allow-local-writes.", json!({"name":{"type":"string","minLength":1,"maxLength":120},"seed":{"type":"integer","minimum":0,"maximum":u32::MAX},"profile":{"type":"object"},"operationId":operation_id_prop()}), &["name","seed","profile","operationId"]),
-        spec("creator_city_edit_preview", "Validate a replacement City draft recipe without writing or rendering it. Returns a short-lived instance- and revision-bound preview.", json!({"cityId":project_id_prop(),"baseRevision":revision_prop(),"name":{"type":"string","minLength":1,"maxLength":120},"seed":{"type":"integer","minimum":0,"maximum":u32::MAX},"profile":{"type":"object"}}), &["cityId","baseRevision","name","seed","profile"]),
+        spec("creator_city_edit_preview", "Validate a City draft edit without writing or rendering it. Two mutually exclusive forms: (A) recipe replacement with name/seed/profile, or (B) an operations array of world.set steps ({op:\"world.set\", preset?, params?}) whose capability keys/ranges/presets come from creator_capabilities_list category `worlds`. world.set always invalidates the layout (new world revision); style.set is not cataloged and is rejected. Returns a short-lived instance- and revision-bound preview; commit with creator_city_edit_commit.", json!({"cityId":project_id_prop(),"baseRevision":revision_prop(),"name":{"type":"string","minLength":1,"maxLength":120},"seed":{"type":"integer","minimum":0,"maximum":u32::MAX},"profile":{"type":"object"},"operations":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"object","properties":{"op":{"type":"string","enum":["world.set"]},"preset":{"type":"string","minLength":1,"maxLength":64},"params":{"type":"object","description":"Capability-keyed world parameters, e.g. {\"shape.family\":\"lobed\"}; keys and ranges come from creator_capabilities_list category `worlds`."}},"required":["op"]}}}), &["cityId","baseRevision"]),
         spec("creator_city_patch_preview", "Preview an independent City's portable road/site/terrain patch, or null to clear it. Runtime geometry is unchecked; commit using creator_city_edit_commit.", json!({"cityId":project_id_prop(),"baseRevision":revision_prop(),"patch":{"type":["object","null"]}}), &["cityId","baseRevision","patch"]),
         spec("creator_city_edit_commit", "Save a previously validated City draft preview. Does not load or render the City. Requires --allow-local-writes.", json!({"cityId":project_id_prop(),"previewId":project_id_prop(),"expectedRevision":revision_prop(),"operationId":operation_id_prop()}), &["cityId","previewId","expectedRevision","operationId"]),
         spec("creator_city_list", "List independent saved City drafts; legacy City is not migrated or included.", json!({"limit":{"type":"integer","minimum":1,"maximum":50},"cursor":{"type":"string","minLength":1,"maxLength":128}}), &["limit"]),
@@ -98,6 +98,13 @@ fn call_error(code: &str) -> ToolError {
         "creator_project_not_found" => ToolError::new("not_found", "Creator project was not found."),
         "creator_city_not_found" => ToolError::new("not_found", "City draft was not found."),
         "creator_city_invalid" | "operation_id_conflict" => ToolError::new("invalid_argument", "City request is invalid or operationId was reused for different input."),
+        "world_params_unknown" => ToolError::new("invalid_argument", "Unknown world parameter key for this generator; list valid keys via creator_capabilities_list (category `worlds`)."),
+        "world_params_out_of_range" => ToolError::new("invalid_argument", "A world parameter value is the wrong type or outside its declared range; check the capability descriptor."),
+        "world_params_invalid" => ToolError::new("invalid_argument", "A world.set operation is structurally invalid; each operation needs op=world.set plus preset and/or params."),
+        "world_params_budget_exceeded" => ToolError::new("invalid_argument", "The world edit exceeded its budget (≤16 operations, ≤32 parameters, 8 KiB)."),
+        "world_preset_unknown" => ToolError::new("invalid_argument", "Unknown world preset id; presets are listed in creator_capabilities_list (category `worlds`)."),
+        "world_style_unsupported" => ToolError::new("invalid_argument", "style.set is not cataloged in this build, so it cannot be invoked; only world.set is accepted (spec §2.3)."),
+        "world_profile_invalid_parameters" => ToolError::new("invalid_argument", "`operations` and the name/seed/profile replacement form are mutually exclusive; send one edit form per preview."),
         "creator_preview_budget_exceeded" => ToolError::new("busy", "Too many active previews; retry after they expire."),
         "creator_confirmation_required" => ToolError::new("creator_confirmation_required", "The edit is awaiting user confirmation in the Studio Agent panel. Do not retry as a new operation; query creator_operation_status using the same operationId after the user acts."),
         "creator_approval_busy" => ToolError::new("busy", "Another Agent edit is awaiting confirmation in Studio."),
@@ -239,10 +246,23 @@ pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool)
             call(data_home, "creator.city.create", &json!({"name":name,"seed":seed,"profile":profile,"operationId":required_string(args,"operationId")?}), 15_000)
         }
         "creator_city_edit_preview" => {
-            let seed = args.get("seed").and_then(Value::as_u64).filter(|seed| *seed <= u32::MAX as u64).ok_or_else(|| ToolError::new("invalid_argument", "`seed` must be a 32-bit unsigned integer"))?;
-            let profile = args.get("profile").filter(|v| v.is_object() && v.to_string().len() <= 16 * 1024).ok_or_else(|| ToolError::new("invalid_argument", "`profile` must be a bounded object"))?;
+            let city_id = required_string(args,"cityId")?;
             let revision = args.get("baseRevision").and_then(Value::as_u64).ok_or_else(|| ToolError::new("invalid_argument", "`baseRevision` must be a non-negative integer"))?;
-            call(data_home, "creator.city.edit.preview", &json!({"cityId":required_string(args,"cityId")?,"baseRevision":revision,"name":required_string(args,"name")?,"seed":seed,"profile":profile}), 15_000)
+            // 两种编辑形态互斥（spec S4）：operations（world.set）与 name/seed/profile
+            // 配方替换不能同给。结构预算在这里预检，权威校验在宿主（生成目录硬上限）。
+            if let Some(operations) = args.get("operations") {
+                let operations = operations.as_array().filter(|items| !items.is_empty() && items.len() <= 16)
+                    .ok_or_else(|| ToolError::new("invalid_argument", "`operations` must contain 1..=16 world.set operations"))?;
+                if args.get("name").is_some() || args.get("seed").is_some() || args.get("profile").is_some() {
+                    return Err(ToolError::new("invalid_argument", "`operations` is mutually exclusive with `name`/`seed`/`profile`; send one edit form per preview (world_profile_invalid_parameters)."));
+                }
+                if Value::Array(operations.clone()).to_string().len() > 8 * 1024 { return Err(ToolError::new("invalid_argument", "World operations exceed the 8 KiB budget (world_params_budget_exceeded).")); }
+                call(data_home, "creator.city.edit.preview", &json!({"cityId":city_id,"baseRevision":revision,"operations":operations}), 15_000)
+            } else {
+                let seed = args.get("seed").and_then(Value::as_u64).filter(|seed| *seed <= u32::MAX as u64).ok_or_else(|| ToolError::new("invalid_argument", "`seed` must be a 32-bit unsigned integer"))?;
+                let profile = args.get("profile").filter(|v| v.is_object() && v.to_string().len() <= 16 * 1024).ok_or_else(|| ToolError::new("invalid_argument", "`profile` must be a bounded object"))?;
+                call(data_home, "creator.city.edit.preview", &json!({"cityId":city_id,"baseRevision":revision,"name":required_string(args,"name")?,"seed":seed,"profile":profile}), 15_000)
+            }
         }
         "creator_city_patch_preview" => {
             let revision = args.get("baseRevision").and_then(Value::as_u64).ok_or_else(|| ToolError::new("invalid_argument", "`baseRevision` must be a non-negative integer"))?;
@@ -415,6 +435,39 @@ pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool)
 #[cfg(test)]
 mod capture_tests {
     use super::*;
+
+    /// world.set 错误码（spec S4/§5.2）映射为可执行的 invalid_argument 提示。
+    #[test]
+    fn city_world_error_codes_map_to_actionable_messages() {
+        let cases = [
+            ("world_params_unknown", "creator_capabilities_list"),
+            ("world_params_out_of_range", "declared range"),
+            ("world_params_invalid", "op=world.set"),
+            ("world_params_budget_exceeded", "≤16 operations"),
+            ("world_preset_unknown", "creator_capabilities_list"),
+            ("world_style_unsupported", "style.set is not cataloged"),
+            ("world_profile_invalid_parameters", "mutually exclusive"),
+        ];
+        for (code, needle) in cases {
+            let error = call_error(code);
+            assert_eq!(error.code, "invalid_argument", "{code}");
+            assert!(error.message.contains(needle), "{code} => {}", error.message);
+        }
+    }
+
+    /// schema 放宽（4.3）：operations 进入属性表；name/seed/profile 退为可选，
+    /// 组合互斥由 run() 的稳定错误码执行。
+    #[test]
+    fn creator_city_edit_preview_schema_accepts_operations_form() {
+        let spec = specs().into_iter().find(|spec| spec.name == "creator_city_edit_preview").expect("city edit preview spec");
+        let properties = spec.input_schema.get("properties").and_then(Value::as_object).expect("properties object");
+        assert!(properties.contains_key("operations"), "operations must be discoverable in the schema");
+        let required = spec.input_schema.get("required").and_then(Value::as_array).expect("required array");
+        assert!(required.iter().all(|item| item.as_str() != Some("name")), "name is optional in the two-form contract");
+        let operations = properties.get("operations").and_then(Value::as_object).expect("operations schema");
+        assert_eq!(operations.get("maxItems"), Some(&Value::from(16)), "MCP-side operation budget mirrors the host hard cap");
+        assert_eq!(spec.input_schema.get("additionalProperties"), Some(&Value::Bool(false)));
+    }
 
     #[test]
     fn independent_city_runtime_failure_explains_the_scope_limit() {
