@@ -6,6 +6,7 @@
  * 后续阶段（skeleton/sites/network）只读本产物：coast/height/riverX 等闭包即 Geography 的字段。
  */
 import { DetMath as Math } from "../detMath";
+import { ARID_DUNES_LEGACY_KEYS, ARID_DUNES_WORLD_V2, validateWorldParametersV1 } from "@agent-vitals/city-sdk";
 import { hashSeed } from "../../cityModel";
 import { fbm, smoothstep } from "../cityNoise";
 import type { TerrainField, Vec2 } from "../cityLayout";
@@ -74,7 +75,37 @@ export type BayOptions = { halfWidth: number; shift: number };
 export const GEOGRAPHY_GENERATOR_IDS = ["coastal-islands-v1", "arid-dunes-v1"] as const;
 export type GeographyGeneratorId = typeof GEOGRAPHY_GENERATOR_IDS[number];
 export const DEFAULT_GEOGRAPHY_GENERATOR: GeographyGeneratorId = "coastal-islands-v1";
-export type AridDunesOptionsV1 = { duneScale: number; duneAmplitude: number; orientationDeg: number };
+export type AridDunesOptionsV1 = {
+  duneScale: number; duneAmplitude: number; orientationDeg: number;
+  // S1 世界参数契约（CITY_WORLD_DIVERSIFICATION_SDK_SPEC §2.1）：入口可选携带，
+  // validateGeographyBuildOptions 校验后原样透传（不回填默认，保 worldRevision 稳定）。
+  // 除 coastFractal 外的字段由 S2/S3 逐字段消费，非默认值在实现前被拒绝。
+  shapeFamily?: "disc" | "lobed" | "dumbbell" | "coastal";
+  shapeCores?: number; shapeAspectRatio?: number; shapeCorridorPull?: number;
+  coastFractal?: number;
+  radiusClass?: "small" | "medium" | "large";
+  duneFrequency?: number; ridgeSecondary?: number;
+  oasisCount?: number; lakeCount?: number; lakeSizeM?: number;
+  greenbeltWidth?: number; forestPatchiness?: number;
+  rockOutcropDensity?: number; riverMeander?: number; riverWidthM?: number;
+  ridgeCount?: number; ridgeHeightM?: number;
+  ringCount?: number;
+};
+/** 能力键 → 归一化选项字段名；顺序无关，缺一即校验失败。 */
+const ARID_OPTION_FIELDS: Record<string, string> = {
+  "shape.family": "shapeFamily", "shape.cores": "shapeCores", "shape.aspectRatio": "shapeAspectRatio",
+  "shape.corridorPull": "shapeCorridorPull", "shape.coastFractal": "coastFractal", "shape.radiusClass": "radiusClass",
+  "landform.duneFrequency": "duneFrequency", "landform.ridgeSecondary": "ridgeSecondary",
+  "water.oasisCount": "oasisCount", "water.lakeCount": "lakeCount", "water.lakeSizeM": "lakeSizeM",
+  "vegetation.greenbeltWidth": "greenbeltWidth", "vegetation.forestPatchiness": "forestPatchiness",
+  "landscape.rockOutcropDensity": "rockOutcropDensity", "landscape.riverMeander": "riverMeander", "landscape.riverWidthM": "riverWidthM",
+  "landscape.ridgeCount": "ridgeCount", "landscape.ridgeHeightM": "ridgeHeightM",
+  "skeleton.ringCount": "ringCount",
+};
+/** 反向映射（裸字段名 → 能力键）：校验器对归一化形态幂等。 */
+const ARID_FIELD_TO_KEY: Record<string, string> = Object.fromEntries(Object.entries(ARID_OPTION_FIELDS).map(([key, field]) => [field, key]));
+/** S1 已实现消费的 diversity 字段（能力键）；其余字段必须保持目录默认。 */
+const ARID_CONSUMED_OPTION_KEYS = new Set(["shape.coastFractal"]);
 export type GeographyGeneratorOptions = {
   "coastal-islands-v1": { shape: Shape; bay?: BayOptions | null };
   "arid-dunes-v1": AridDunesOptionsV1;
@@ -94,14 +125,37 @@ export function validateGeographyBuildOptions<G extends GeographyGeneratorId>(ge
   if (!isRecord(value)) throw new Error("city-world-options-invalid");
   if (generator === "arid-dunes-v1") {
     const options = value as Record<string, unknown>;
-    const allowed = new Set(["duneScale", "duneAmplitude", "orientationDeg"]);
-    if (Object.keys(options).some((key) => !allowed.has(key))
-      || !isFiniteNumber(options.duneScale) || options.duneScale < 96 || options.duneScale > 600
-      || !isFiniteNumber(options.duneAmplitude) || options.duneAmplitude < 1 || options.duneAmplitude > 36
-      || !isFiniteNumber(options.orientationDeg) || options.orientationDeg < -180 || options.orientationDeg > 180) {
+    const { duneScale, duneAmplitude, orientationDeg, ...diversity } = options;
+    if (!isFiniteNumber(duneScale) || duneScale < 96 || duneScale > 600
+      || !isFiniteNumber(duneAmplitude) || duneAmplitude < 1 || duneAmplitude > 36
+      || !isFiniteNumber(orientationDeg) || orientationDeg < -180 || orientationDeg > 180) {
       throw new Error("city-world-options-invalid");
     }
-    return options as GeographyGeneratorOptions[G];
+    // diversity 双词汇接受（幂等）：能力键（"shape.family"，来自 profile 合并）与
+    // 已归一化的裸字段名（coastFractal，来自二次校验）都映射回能力键后再校验。
+    // 输出恒为裸字段形态：legacy 三参数之外只透传显式设置的字段、不回填默认，
+    // layoutPlanKey/worldRevision 对既有世界逐字节稳定。
+    const capabilityView: Record<string, number | string> = {};
+    for (const [key, val] of Object.entries(diversity)) {
+      const capabilityKey = key.includes(".") ? key : ARID_FIELD_TO_KEY[key];
+      if (capabilityKey === undefined || capabilityKey in capabilityView) throw new Error("city-world-options-invalid");
+      capabilityView[capabilityKey] = val as number | string;
+    }
+    const checked = validateWorldParametersV1(ARID_DUNES_WORLD_V2, capabilityView);
+    if (!checked.ok) throw new Error("city-world-options-invalid");
+    // 消费守卫：S1 只实现 coastFractal；其余新参数在对应切片实现前必须保持默认，
+    // 禁止静默忽略（逐字段实现后从本集合移除）。
+    for (const descriptor of ARID_DUNES_WORLD_V2.parameters) {
+      const key = `${descriptor.group}.${descriptor.id}`;
+      if (ARID_DUNES_LEGACY_KEYS.includes(key) || ARID_CONSUMED_OPTION_KEYS.has(key)) continue;
+      if (checked.value[key] !== descriptor.default) throw new Error("city-world-options-invalid");
+    }
+    // 只透传显式设置的字段、不回填默认：layoutPlanKey/worldRevision 对既有世界逐字节稳定。
+    const normalized: AridDunesOptionsV1 = { duneScale, duneAmplitude, orientationDeg };
+    for (const key of Object.keys(capabilityView)) {
+      (normalized as Record<string, unknown>)[ARID_OPTION_FIELDS[key]] = checked.value[key];
+    }
+    return normalized as GeographyGeneratorOptions[G];
   }
   if (generator === "coastal-islands-v1") {
     const options = value as Record<string, unknown>;
@@ -345,7 +399,10 @@ function buildAridDunesGeography({ seed, radius: R, memoize = false, options }: 
   const radians = orientationDeg * Math.PI / 180;
   const duneAxis = { x: Math.cos(radians), z: Math.sin(radians) };
   const random = (key: string) => hashSeed(`${seed}:${key}`);
-  const boundaryRadius = (angle: number) => R * (1 + 0.035 * fbm(Math.cos(angle) * 1.2, Math.sin(angle) * 1.2, seed + 311, 3));
+  // S1 已消费的多样化参数：海岸分形幅度。默认值与能力目录一致（0.035 = 既有行为），
+  // 校验器保证显式值已通过范围与消费守卫；类型层可选以兼容原始入口形态。
+  const coastFractal = checked.coastFractal ?? 0.035;
+  const boundaryRadius = (angle: number) => R * (1 + coastFractal * fbm(Math.cos(angle) * 1.2, Math.sin(angle) * 1.2, seed + 311, 3));
   const bbox = { minX: -R * 1.04, maxX: R * 1.04, minZ: -R * 1.04, maxZ: R * 1.04 };
   const coastDistance = field((x: number, z: number) => {
     let angle = Math.atan2(z, x); if (angle < 0) angle += Math.PI * 2;

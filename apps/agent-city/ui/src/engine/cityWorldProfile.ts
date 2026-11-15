@@ -184,7 +184,9 @@ export function geographyBuildOptionsForWorld(profile: CityWorldProfileV1, seedS
       : null;
     return validateGeographyBuildOptions("coastal-islands-v1", { shape: seedShape, bay });
   }
-  return validateGeographyBuildOptions("arid-dunes-v1", profile.geography.parameters.dunes);
+  // 词汇合并：legacy 扁平三参数 + 能力键 diversity。layoutPlanKey/worldRevision 对该
+  // 原始形态哈希——无 diversity 时必须与既有世界逐字节一致（不得在此回填默认值）。
+  return validateGeographyBuildOptions("arid-dunes-v1", { ...profile.geography.parameters.dunes, ...profile.geography.parameters.diversity });
 }
 
 export function biomeForWorld(profile: CityWorldProfileV1): CityWorldBiomeV1 {

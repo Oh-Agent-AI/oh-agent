@@ -79,7 +79,11 @@ export interface CityWorldProfileBaseV1 {
 }
 export type CityWorldProfileV1 = CityWorldProfileBaseV1 & (
   | { biome: "tropical"; geography: { generator: "coastal-islands-v1"; parameters: { coastal: CoastalWorldParametersV1 } }; visuals: { themeId: "miami" | "desert" } }
-  | { biome: "arid"; geography: { generator: "arid-dunes-v1"; parameters: { dunes: AridDunesWorldParametersV1 } }; visuals: { themeId: "miami" | "desert" } }
+  | { biome: "arid"; geography: { generator: "arid-dunes-v1"; parameters: { dunes: AridDunesWorldParametersV1;
+      /** Optional diversification record (CITY_WORLD_DIVERSIFICATION_SDK_SPEC §2): capability-keyed
+       * world parameters; must not restate the version 1 dune fields. Absence preserves the
+       * pre-catalog world byte-for-byte. */
+      diversity?: Readonly<Record<string, number | string>> } }; visuals: { themeId: "miami" | "desert" } }
 );
 /** Persisted identity of an independently authored City, not a plugin instance or a world profile ID. */
 export interface CityInstanceV1 {

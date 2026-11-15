@@ -1,6 +1,7 @@
 import type { AnchorCapability, AnchorFilterV1, AnchorKind, CityAnchorV1, CityAnchorLinkV1, CityGameMountV1, CityInstanceV1, CityLayoutSnapshotV1, CityLayoutSnapshotV2, CityLayoutV1, CityProjectAssetCatalogV1, CityProjectAssetEntryV1, CitySkinPackV1, CityWorldProfileV1, CoastalWorldParametersV1, ContentRef, DiagnosticV1, MiniGamePackV1, ModelAssetCatalogEntryV1, ModelAssetCatalogV1, ModelAssetFilterV1, ModelAssetRefV1, ResolvedModelAssetRefsV1, Result, SceneDraftV1, SceneObjectFilterV1, SceneObjectV1 } from "./types";
 import { validateMiniGamePack } from "./content";
 import { validateWorldPlanPatch } from "./worldPlanPatch";
+import { ARID_DUNES_LEGACY_KEYS, ARID_DUNES_WORLD_V2, validateWorldParametersV1 } from "./worldParameters";
 
 const error = (code: string, path: string, message: string, objectId?: string): DiagnosticV1 => ({ code, severity: "error", path, message, ...(objectId ? { objectId } : {}) });
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -55,9 +56,10 @@ export function validateCityWorldProfile(value: unknown): Result<CityWorldProfil
   let profile: CityWorldProfileV1;
   if (value.geography.generator === "arid-dunes-v1") {
     const parameters = value.geography.parameters;
-    if (value.biome !== "arid" || !exactKeys(parameters, ["dunes"]) || !isObject(parameters.dunes)
+    if (value.biome !== "arid" || !isObject(parameters) || !hasOwn(parameters, "dunes")
+      || Object.keys(parameters).some(key => key !== "dunes" && key !== "diversity") || !isObject(parameters.dunes)
       || !exactKeys(parameters.dunes, ["duneScale", "duneAmplitude", "orientationDeg"])) {
-      return { ok: false, diagnostics: [error("world_profile_invalid_parameters", "geography.parameters", "Arid dune profiles require only the version 1 dune parameters.")] };
+      return { ok: false, diagnostics: [error("world_profile_invalid_parameters", "geography.parameters", "Arid dune profiles require the version 1 dune parameters and an optional diversity record.")] };
     }
     const dunes = parameters.dunes;
     if (typeof dunes.duneScale !== "number" || !Number.isFinite(dunes.duneScale) || dunes.duneScale < 96 || dunes.duneScale > 600
@@ -65,8 +67,24 @@ export function validateCityWorldProfile(value: unknown): Result<CityWorldProfil
       || typeof dunes.orientationDeg !== "number" || !Number.isFinite(dunes.orientationDeg) || dunes.orientationDeg < -180 || dunes.orientationDeg > 180) {
       return { ok: false, diagnostics: [error("world_profile_parameter_out_of_range", "geography.parameters.dunes", "Dune parameters are outside the generator's supported bounds.")] };
     }
+    let diversity: Readonly<Record<string, number | string>> | undefined;
+    if (parameters.diversity !== undefined) {
+      if (!isObject(parameters.diversity)) {
+        return { ok: false, diagnostics: [error("world_profile_invalid_parameters", "geography.parameters.diversity", "Diversity parameters must be an object of capability-keyed values.")] };
+      }
+      if (Object.keys(parameters.diversity).some(key => ARID_DUNES_LEGACY_KEYS.includes(key))) {
+        return { ok: false, diagnostics: [error("world_profile_invalid_parameters", "geography.parameters.diversity", "Diversity must not restate the version 1 dune parameters.")] };
+      }
+      // 语义校验单一来源：能力目录声明字段与范围，这里只做身份与结构核对。
+      const checked = validateWorldParametersV1(ARID_DUNES_WORLD_V2, parameters.diversity);
+      if (!checked.ok) {
+        return { ok: false, diagnostics: checked.diagnostics.map(item => error(item.code, `geography.parameters.diversity.${item.path}`, item.message)) };
+      }
+      // 只持久化显式设置的键：默认值在构建期归一化，存储不钉死当前默认。
+      diversity = Object.freeze(Object.fromEntries(Object.entries(parameters.diversity).map(([key, val]) => [key, val as number | string])));
+    }
     profile = { schemaVersion: 1, id: value.id, version: value.version as number, biome: "arid",
-      geography: { generator: "arid-dunes-v1", parameters: { dunes: { duneScale: dunes.duneScale, duneAmplitude: dunes.duneAmplitude, orientationDeg: dunes.orientationDeg } } },
+      geography: { generator: "arid-dunes-v1", parameters: { dunes: { duneScale: dunes.duneScale, duneAmplitude: dunes.duneAmplitude, orientationDeg: dunes.orientationDeg }, ...(diversity ? { diversity } : {}) } },
       visuals: { themeId: value.visuals.themeId } };
   } else if (value.geography.generator === "coastal-islands-v1") {
     const parameters = value.geography.parameters;
@@ -104,7 +122,10 @@ export function validateCityWorldProfile(value: unknown): Result<CityWorldProfil
   } else {
     return { ok: false, diagnostics: [error("world_profile_generator_unsupported", "geography.generator", "The requested City geography generator is not registered.")] };
   }
-  if (profile.geography.generator === "arid-dunes-v1") Object.freeze(profile.geography.parameters.dunes);
+  if (profile.geography.generator === "arid-dunes-v1") {
+    Object.freeze(profile.geography.parameters.dunes);
+    if (profile.geography.parameters.diversity) Object.freeze(profile.geography.parameters.diversity);
+  }
   Object.freeze(profile.geography.parameters);
   Object.freeze(profile.geography);
   Object.freeze(profile.visuals);
