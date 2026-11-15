@@ -36,7 +36,9 @@ import type { PendingCreatorPlaytestV1 } from "./game/activity/creatorPlaytestPe
 import { loadWorldSceneModels } from "./game/activity/creatorSceneModels";
 import { resolveCityBoot } from "./game/activity/resolveCityBoot";
 import type { PlanPatchV1 } from "./engine/planPatch";
-import type { CreatorPublishedMiniGameV1 } from "./game/activity/creatorMiniGame";
+import { createCreatorMiniGamePlan, CreatorMiniGameRuntimeControllerV1, type CreatorPublishedMiniGameV1 } from "./game/activity/creatorMiniGame";
+import { playtestOutcome } from "./game/activity/playtestOutcome";
+import { m as worldUnits } from "./engine/worldScale";
 import { loadCreatorSceneModels } from "./game/activity/creatorSceneModels";
 import { createCreatorLayoutSnapshot } from "./engine/sdk/cityLayoutAdapter";
 import { useCityDrivingPlay } from "./game/useCityDrivingPlay";
@@ -324,6 +326,8 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
   busyRef.current = experience.busy;
   const drivingActive = useRef(false);
   const planRepairActive = useRef(false);
+  /** 飞行试玩的结局接线：每次试玩重建，会话只通过这个 ref 回调（不重建 GameSession）。 */
+  const flightOutcomeRef = useRef<((status: "success" | "failure" | "error", reason: string | null) => void) | null>(null);
   const game = useCityGame(engineRef, {
     cinemaActive: () => cinemaRef.current,
     filmActive: () => filmRef.current,
@@ -332,7 +336,7 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
     requestRefresh: () => setRefresh((value) => value + 1),
     locale: () => (language === "en" ? "en" : "zh-Hans"),
     activityCoordinator,
-  });
+  }, { onCreatorOutcome: (status, reason) => flightOutcomeRef.current?.(status, reason) });
   const gameRef = useRef(game);
   gameRef.current = game;
   const [finishRetry, setFinishRetry] = useState<Parameters<typeof finishCreatorPlaytest> | null>(null);
@@ -382,11 +386,27 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
   }, [creatorPlaytest, game.active, game.snapshot, finishPlaytest]);
   useEffect(() => {
     if (!creatorPlaytest || creatorPlaytest.gameType !== "flight" || !firstModelFrame || game.active || startedFlightPlaytest.current === creatorPlaytest.runId) return;
-    startedFlightPlaytest.current = creatorPlaytest.runId;
+    const runId = creatorPlaytest.runId;
+    const experience = creatorPlaytest.experiences[0];
+    const view = engineRef.current?.getCitySdkLayoutView();
+    if (!experience || !view) { void finishPlaytest(runId, "failed", undefined, "creator_playtest_experience_unavailable"); return; }
+    // 门与规则都来自发布快照：门 = mount 绑定的 fly 锚点（触发半径即环半径），
+    // 判定交给 SDK 共享规则执行器（与驾驶同一份），这里不重解释规则。
+    const plan = createCreatorMiniGamePlan(view, experience, { capability: "fly" });
+    if (!plan.ok) { void finishPlaytest(runId, "failed", undefined, plan.diagnostics[0]?.code ?? "creator_game_plan_invalid"); return; }
+    const controller = new CreatorMiniGameRuntimeControllerV1(plan.value, () => {});
+    const gates = Object.values(plan.value.zones).flat().map(zone => ({ x: worldUnits(zone.x), y: worldUnits(zone.y), z: worldUnits(zone.z), radius: worldUnits(zone.radius) }));
+    flightOutcomeRef.current = (status, reason) => {
+      flightOutcomeRef.current = null;
+      const outcome = playtestOutcome(status, reason);
+      void finishPlaytest(runId, outcome.status,
+        controller.visualEvidence(creatorPlaytest.releaseId, creatorPlaytest.revision, creatorPlaytest.snapshotDigest), outcome.failureCode);
+    };
+    startedFlightPlaytest.current = runId;
     // 飞行试玩飞 release 冻结的那台 profile（物理/相机/包围盒全部来自发布快照）；
     // 旧 release 没有载具 → undefined，退回默认飞机（与本次切片之前的行为一致）。
-    void game.enterRace(creatorPlaytest.vehicle);
-  }, [creatorPlaytest, firstModelFrame, game.active, game.enterRace]);
+    void game.enterRace(creatorPlaytest.vehicle, { controller, gates });
+  }, [creatorPlaytest, firstModelFrame, game.active, game.enterRace, finishPlaytest]);
   useEffect(() => () => { mechaActivityLease.current?.release(); mechaActivityLease.current = null; }, []);
   drivingActive.current = driving.active;
   // 规划修复（开发开关 ?cityPlan / cityPlanDev=1；未开启时 hook 什么都不做）。与游戏/航拍/导出/忙碌互斥。

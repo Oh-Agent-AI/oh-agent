@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import type { VehicleProfileV1 } from "@agent-vitals/city-sdk";
 import type { CityEngine } from "../engine/CityEngine";
-import { GameSession, type GameSessionSnapshot } from "./GameSession";
+import { GameSession, type CreatorFlightRunV1, type GameSessionSnapshot } from "./GameSession";
 import type { FlightInputState } from "./types";
 import type { CityActivityCoordinator, CityActivityLease } from "./activity/CityActivityCoordinator";
 import type { GameLocale } from "./gameCopy";
@@ -27,7 +27,8 @@ export type GameHostBridge = {
   activityCoordinator: CityActivityCoordinator;
 };
 
-export function useCityGame(engine: RefObject<CityEngine | null>, host: GameHostBridge, options: { persistProfile?: boolean } = {}) {
+export function useCityGame(engine: RefObject<CityEngine | null>, host: GameHostBridge,
+  options: { persistProfile?: boolean; onCreatorOutcome?: (status: "success" | "failure" | "error", reason: string | null) => void } = {}) {
   const persistProfile = options.persistProfile !== false;
   const [snapshot, setSnapshot] = useState<GameSessionSnapshot | null>(null);
   const [entryError, setEntryError] = useState<string | null>(null);
@@ -41,6 +42,9 @@ export function useCityGame(engine: RefObject<CityEngine | null>, host: GameHost
   const profileRef = useRef<FlightProfileV1>({ ...EMPTY_PROFILE });
   const hostRef = useRef(host);
   hostRef.current = host;
+  /** Creator 试玩结局回调：按会话最新一次 enter 的宿主接线，不随渲染重建会话。 */
+  const creatorOutcomeRef = useRef(options.onCreatorOutcome);
+  creatorOutcomeRef.current = options.onCreatorOutcome;
 
   // 卸载清理：本 hook 在引擎创建 effect 之前声明，因此先于 engine.dispose() 运行，
   // 游戏退出（归还相机/恢复视角）发生在引擎还活着的时候。
@@ -56,6 +60,7 @@ export function useCityGame(engine: RefObject<CityEngine | null>, host: GameHost
           engineInstance.setLabelsVisible(hostRef.current.labelsVisible());
           hostRef.current.requestRefresh();
         },
+        onCreatorOutcome: (status, reason) => creatorOutcomeRef.current?.(status, reason),
         onRecord: persistProfile ? (courseId, bestTimeMs, collisions) => {
           // 新最佳 → 合并档案并保存（失败不丢本次结果，HUD 标注未保存）。
           profileRef.current = mergeRecord(profileRef.current, { courseId, bestTimeMs, collisions });
@@ -87,7 +92,7 @@ export function useCityGame(engine: RefObject<CityEngine | null>, host: GameHost
   }, [persistProfile]);
 
   const enterGame = useCallback(async (mode: "practice" | "race", origin?: Readonly<{ x: number; y: number; z: number; heading: number }>,
-    vehicle?: VehicleProfileV1) => {
+    vehicle?: VehicleProfileV1, creator?: CreatorFlightRunV1) => {
     const session = getSession();
     const engineInstance = engine.current;
     if (!session || !engineInstance) return;
@@ -101,7 +106,7 @@ export function useCityGame(engine: RefObject<CityEngine | null>, host: GameHost
     setEntryError(null);
     const hostState = session.hostState(hostRef.current.cinemaActive(), hostRef.current.filmActive(), hostRef.current.busy());
     let result: Awaited<ReturnType<GameSession["enter"]>>;
-    try { result = await session.enter({ mode }, hostState, origin, vehicle); }
+    try { result = await session.enter({ mode }, hostState, origin, vehicle, creator); }
     catch (error) {
       admission.lease.release(); if (activityLeaseRef.current === admission.lease) activityLeaseRef.current = null;
       if (sessionRef.current === session && session.controller.snapshot.phase !== "data") {
@@ -190,8 +195,8 @@ export function useCityGame(engine: RefObject<CityEngine | null>, host: GameHost
     enterPracticeFrom: (origin: Readonly<{ x: number; y: number; z: number; heading: number }>) => enterGame("practice", origin),
     /** VehicleProfileV1 驱动的飞行（扑翼原型入口走这里；profile 已在 SDK 校验过的 preset）。 */
     enterVehiclePractice: (vehicle: VehicleProfileV1, origin?: Readonly<{ x: number; y: number; z: number; heading: number }>) => enterGame("practice", origin, vehicle),
-    /** 比赛入口可带冻结载具（Creator 飞行试玩飞发布的那台 profile；null = 默认飞机）。 */
-    enterRace: (vehicle?: VehicleProfileV1) => enterGame("race", undefined, vehicle),
+    /** 比赛入口可带冻结载具与 Creator 试玩会话（发布的门 + 共享规则执行器）。 */
+    enterRace: (vehicle?: VehicleProfileV1, creator?: CreatorFlightRunV1) => enterGame("race", undefined, vehicle, creator),
     enterUatRace: async () => {
       if (typeof __CITY_GAME_UAT__ === "undefined" || !__CITY_GAME_UAT__) return;
       pilotRef.current?.();
