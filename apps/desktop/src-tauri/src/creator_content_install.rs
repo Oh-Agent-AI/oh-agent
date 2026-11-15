@@ -16,6 +16,52 @@ use crate::creator_store::{bytes_digest, database, now_ms, valid_id};
 const PENDING_TTL: Duration = Duration::from_secs(600);
 const MAX_PENDING: usize = 8;
 
+struct ContentSnapshot {
+    home: PathBuf,
+    instance: String,
+    checked: crate::creator_content_v2::IntegrityCheckedWorldV2,
+    created: Instant,
+    last_access: Instant,
+}
+fn content_snapshots() -> &'static Mutex<HashMap<String, ContentSnapshot>> {
+    static SNAPSHOTS: OnceLock<Mutex<HashMap<String, ContentSnapshot>>> = OnceLock::new();
+    SNAPSHOTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub(crate) fn close_content_snapshot(home: &Path, instance: &str, id: &str) -> Result<Value, &'static str> {
+    let mut snapshots = content_snapshots().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !snapshots.get(id).is_some_and(|snapshot| snapshot.home == home && snapshot.instance == instance) { return Err("content_snapshot_expired"); }
+    snapshots.remove(id);
+    Ok(json!({"closed":true}))
+}
+
+pub(crate) fn open_content_snapshot(home: &Path, instance: &str, package_id: &str, version: &str) -> Result<Value, &'static str> {
+    if !valid_id(instance) { return Err("creator_request_invalid"); }
+    let checked = read_installed_world(home, package_id, version)?;
+    let id = crate::creator_store::new_id("content-snapshot-")?;
+    let manifest = checked.manifest.clone();
+    let mut snapshots = content_snapshots().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    snapshots.retain(|_, snapshot| snapshot.last_access.elapsed() <= Duration::from_secs(60) && snapshot.created.elapsed() <= Duration::from_secs(600));
+    if snapshots.len() >= 2 { return Err("content_snapshot_budget_exceeded"); }
+    let now = Instant::now();
+    snapshots.insert(id.clone(), ContentSnapshot { home: home.to_path_buf(), instance: instance.into(), checked, created: now, last_access: now });
+    Ok(json!({"snapshotId":id,"manifest":manifest}))
+}
+
+pub(crate) fn read_content_snapshot(home: &Path, instance: &str, id: &str, path: &str, offset: u64) -> Result<Value, &'static str> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let mut snapshots = content_snapshots().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    snapshots.retain(|_, snapshot| snapshot.last_access.elapsed() <= Duration::from_secs(60) && snapshot.created.elapsed() <= Duration::from_secs(600));
+    let snapshot = snapshots.get_mut(id).filter(|snapshot| snapshot.home == home && snapshot.instance == instance).ok_or("content_snapshot_expired")?;
+    let bytes = snapshot.checked.files.get(path).ok_or("content_file_not_found")?;
+    let start = usize::try_from(offset).map_err(|_| "creator_request_invalid")?;
+    if start > bytes.len() { return Err("creator_request_invalid"); }
+    // Base64 and the response envelope must fit the default 64 KiB budget.
+    let end = start.saturating_add(32 * 1024).min(bytes.len());
+    snapshot.last_access = Instant::now();
+    Ok(json!({"contentDigest":snapshot.checked.manifest["contentDigest"],"offset":start,"totalBytes":bytes.len(),"complete":end == bytes.len(),"data":STANDARD.encode(&bytes[start..end])}))
+}
+
 struct PendingInspection {
     home: PathBuf,
     instance: String,
@@ -90,6 +136,21 @@ fn existing_installation(db: &rusqlite::Connection, package_id: &str, version: &
         .optional().map_err(|_| "creator_store_unavailable")
 }
 
+/// Read an installed package using its database identity and recheck all bytes.
+/// The returned content is still untrusted and requires semantic validation.
+pub(crate) fn read_installed_world(home: &Path, package_id: &str, version: &str) -> Result<crate::creator_content_v2::IntegrityCheckedWorldV2, &'static str> {
+    if !valid_id(package_id) || !safe_component(version) { return Err("content_package_invalid"); }
+    let db = database(home)?;
+    let (digest, path, _) = existing_installation(&db, package_id, version)?.ok_or("content_package_not_found")?;
+    if path != format!("world/{package_id}/{version}/package.json") { return Err("content_store_unavailable"); }
+    let raw = crate::creator_content_v2::read_selected_world_file(&content_root(home).join(path)).map_err(|_| "content_store_unavailable")?;
+    let checked = inspect_world_integrity_v2(&raw).map_err(|_| "content_store_corrupt")?;
+    if checked.manifest["packageId"] != *package_id || checked.manifest["version"] != *version || checked.manifest["contentDigest"] != digest {
+        return Err("content_store_corrupt");
+    }
+    Ok(checked)
+}
+
 fn installation_json(manifest: &Value, byte_length: usize, installed_at_ms: u64, already_installed: bool) -> Value {
     json!({"packageId": manifest["packageId"], "version": manifest["version"], "contentDigest": manifest["contentDigest"],
         "fileCount": manifest["files"].as_array().map_or(0, Vec::len), "byteLength": byte_length,
@@ -110,8 +171,9 @@ pub(crate) fn install_inspected_world(home: &Path, raw: &[u8], expected_package:
     let db = database(home)?;
     if let Some((stored_digest, stored_path, installed_at)) = existing_installation(&db, package_id, version)? {
         if stored_digest != digest { return Err("content_package_conflict"); }
-        if content_root(home).join(&stored_path).is_file() { return Ok(installation_json(manifest, raw.len(), installed_at, true)); }
-        return Err("content_store_unavailable");
+        if stored_path != format!("world/{package_id}/{version}/package.json") { return Err("content_store_unavailable"); }
+        read_installed_world(home, package_id, version)?;
+        return Ok(installation_json(manifest, raw.len(), installed_at, true));
     }
     let root = content_root(home);
     std::fs::create_dir_all(&root).map_err(|_| "content_store_unavailable")?;
@@ -165,10 +227,13 @@ pub(crate) fn list_installed(home: &Path) -> Result<Value, &'static str> {
 
 pub(crate) fn uninstall(home: &Path, package_id: &str, version: &str) -> Result<Value, &'static str> {
     if !valid_id(package_id) || !safe_component(version) { return Err("content_package_invalid"); }
-    let db = database(home)?;
-    let path: Option<String> = db.query_row("SELECT package_path FROM creator_content_packages WHERE package_id=?1 AND version=?2",
+    let mut db = database(home)?;
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
+    let path: Option<String> = tx.query_row("SELECT package_path FROM creator_content_packages WHERE package_id=?1 AND version=?2",
         params![package_id, version], |row| row.get(0)).optional().map_err(|_| "creator_store_unavailable")?;
     let Some(path) = path else { return Err("content_package_not_found"); };
+    let referenced: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM creator_city_world_packages WHERE package_id=?1 AND version=?2)", params![package_id,version], |row| row.get(0)).map_err(|_| "creator_store_unavailable")?;
+    if referenced { return Err("content_package_in_use"); }
     if !path.starts_with("world/") || path.split('/').any(|part| part.is_empty() || part == "." || part == ".." || part.contains('\\')) {
         return Err("content_package_invalid");
     }
@@ -176,8 +241,9 @@ pub(crate) fn uninstall(home: &Path, package_id: &str, version: &str) -> Result<
     let dir = root.join(path).parent().map(Path::to_path_buf).ok_or("content_package_invalid")?;
     if !dir.starts_with(&root) { return Err("content_package_invalid"); }
     if dir.exists() { std::fs::remove_dir_all(&dir).map_err(|_| "content_store_unavailable")?; }
-    db.execute("DELETE FROM creator_content_packages WHERE package_id=?1 AND version=?2", params![package_id, version])
+    tx.execute("DELETE FROM creator_content_packages WHERE package_id=?1 AND version=?2", params![package_id, version])
         .map_err(|_| "creator_store_unavailable")?;
+    tx.commit().map_err(|_| "creator_store_unavailable")?;
     let _ = std::fs::remove_dir(root.join("world").join(package_id));
     Ok(json!({"packageId":package_id,"version":version,"removed":true}))
 }
@@ -206,6 +272,7 @@ mod tests {
         let second = install_inspected_world(&home, &raw, "example.desert", "1.0.0", "sha256:432a5a6173179521080db1ae9aa71a0d49e41d27681ed2b5ce0b62ba87383682").unwrap();
         assert_eq!(second["alreadyInstalled"], true);
         let listed = list_installed(&home).unwrap();
+        assert_eq!(read_installed_world(&home, "example.desert", "1.0.0").unwrap().manifest["contentDigest"], first["contentDigest"]);
         assert_eq!(listed["packages"].as_array().unwrap().len(), 1);
         assert_eq!(listed["packages"][0]["packageId"], "example.desert");
         let removed = uninstall(&home, "example.desert", "1.0.0").unwrap();
@@ -222,6 +289,57 @@ mod tests {
         assert_eq!(install_inspected_world(&home, &raw, "example.other", "1.0.0", "sha256:432a5a6173179521080db1ae9aa71a0d49e41d27681ed2b5ce0b62ba87383682").unwrap_err(), "content_file_changed");
         assert_eq!(install_inspected_world(&home, &raw, "example.desert", "2.0.0", "sha256:432a5a6173179521080db1ae9aa71a0d49e41d27681ed2b5ce0b62ba87383682").unwrap_err(), "content_file_changed");
         assert_eq!(list_installed(&home).unwrap()["packages"].as_array().unwrap().len(), 0);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn uninstall_rejects_a_world_referenced_by_a_city() {
+        let home = home();
+        let raw = fixture();
+        let digest = "sha256:432a5a6173179521080db1ae9aa71a0d49e41d27681ed2b5ce0b62ba87383682";
+        install_inspected_world(&home, &raw, "example.desert", "1.0.0", digest).unwrap();
+        let city = crate::creator_cities::create_city(&home, "owner", "operation-1", "Desert", 42, &json!({"id":"desert"})).unwrap();
+        let db = database(&home).unwrap();
+        db.execute("INSERT INTO creator_city_world_packages(city_id,package_id,version,content_digest,created_at_ms) VALUES(?1,?2,?3,?4,?5)",
+            params![city["cityId"].as_str().unwrap(), "example.desert", "1.0.0", digest, now_ms()]).unwrap();
+        assert_eq!(uninstall(&home, "example.desert", "1.0.0").unwrap_err(), "content_package_in_use");
+        assert_eq!(list_installed(&home).unwrap()["packages"].as_array().unwrap().len(), 1);
+        assert!(content_root(&home).join("world/example.desert/1.0.0/package.json").is_file());
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn reinstall_rejects_corrupted_stored_package() {
+        let home = home();
+        let raw = fixture();
+        let digest = "sha256:432a5a6173179521080db1ae9aa71a0d49e41d27681ed2b5ce0b62ba87383682";
+        install_inspected_world(&home, &raw, "example.desert", "1.0.0", digest).unwrap();
+        std::fs::write(content_root(&home).join("world/example.desert/1.0.0/package.json"), b"corrupted").unwrap();
+        assert_eq!(install_inspected_world(&home, &raw, "example.desert", "1.0.0", digest).unwrap_err(), "content_store_corrupt");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn snapshot_is_instance_scoped_and_pins_verified_bytes() {
+        let home = home();
+        let raw = fixture();
+        let digest = "sha256:432a5a6173179521080db1ae9aa71a0d49e41d27681ed2b5ce0b62ba87383682";
+        install_inspected_world(&home, &raw, "example.desert", "1.0.0", digest).unwrap();
+        let opened = open_content_snapshot(&home, "studio-1", "example.desert", "1.0.0").unwrap();
+        let id = opened["snapshotId"].as_str().unwrap();
+        assert_eq!(read_content_snapshot(&home, "studio-2", id, "world/profile.json", 0).unwrap_err(), "content_snapshot_expired");
+        std::fs::write(content_root(&home).join("world/example.desert/1.0.0/package.json"), b"corrupted").unwrap();
+        let part = read_content_snapshot(&home, "studio-1", id, "world/profile.json", 0).unwrap();
+        assert_eq!(part["contentDigest"], digest);
+        assert_eq!(part["data"], "e30=");
+        assert_eq!(read_content_snapshot(&home, "studio-1", id, "world/profile.json", 3).unwrap_err(), "creator_request_invalid");
+        content_snapshots().lock().unwrap().get_mut(id).unwrap().checked.files.insert("large.bin".into(), vec![7; 70_000]);
+        let large = read_content_snapshot(&home, "studio-1", id, "large.bin", 0).unwrap();
+        assert!(serde_json::to_vec(&large).unwrap().len() < 64 * 1024);
+        assert_eq!(large["complete"], false);
+        assert_eq!(close_content_snapshot(&home, "studio-2", id).unwrap_err(), "content_snapshot_expired");
+        assert_eq!(close_content_snapshot(&home, "studio-1", id).unwrap()["closed"], true);
+        assert_eq!(read_content_snapshot(&home, "studio-1", id, "world/profile.json", 0).unwrap_err(), "content_snapshot_expired");
         let _ = std::fs::remove_dir_all(home);
     }
 

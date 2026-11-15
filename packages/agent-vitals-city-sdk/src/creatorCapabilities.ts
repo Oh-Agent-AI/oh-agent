@@ -6,6 +6,7 @@
  * Rust（include_str!）与 MCP 消费生成产物；本文件是单一来源，改这里 + 重新生成，
  * 不改 Rust。`capabilityVersion` 变更时 preview/operation 记录随之可诊断版本偏斜。
  */
+import { ARID_DUNES_WORLD_V2, COASTAL_ISLANDS_WORLD_V1 } from "./worldParameters";
 
 export const CREATOR_CAPABILITY_SCHEMA_VERSION = 1;
 export const CREATOR_CAPABILITY_VERSION = "2026-11-12.2";
@@ -87,6 +88,41 @@ export const CREATOR_LIMITS_V1 = Object.freeze({
   maxActivePreviews: 128,
 });
 
+/** World-parameter edit budgets (CITY_WORLD_DIVERSIFICATION_SDK_SPEC_2026_11_15
+ * §5.2): per preview ≤16 operations, ≤32 distinct parameters and an 8 KiB
+ * operations payload. Rust keeps identical hard caps and clamps (guard tests
+ * pin the generated descriptor against them), so raising these numbers here
+ * alone can never widen the enforced limit. */
+export const CREATOR_WORLD_BUDGETS_V1 = Object.freeze({
+  maxOperationsPerPreview: 16,
+  maxParametersPerSet: 32,
+  maxRequestBytes: 8 * 1024,
+});
+
+/** Read-only projection of the registered world capability catalogs
+ * (`worldParameters.ts` is the single source; this re-exports their
+ * contractVersion/parameters/presets verbatim so capability discovery cannot
+ * drift from the SDK contract). Operation `world.set` is layout-affecting and
+ * always produces a new world revision; `style.set` is not cataloged yet and
+ * therefore not callable (spec §2.3). */
+export const CREATOR_WORLDS_V1 = Object.freeze({
+  schemaVersion: 1,
+  capabilityVersion: CREATOR_CAPABILITY_VERSION,
+  budgets: CREATOR_WORLD_BUDGETS_V1,
+  generators: Object.freeze({
+    "arid-dunes-v1": Object.freeze({
+      contractVersion: ARID_DUNES_WORLD_V2.contractVersion,
+      parameters: ARID_DUNES_WORLD_V2.parameters,
+      presets: ARID_DUNES_WORLD_V2.presets,
+    }),
+    "coastal-islands-v1": Object.freeze({
+      contractVersion: COASTAL_ISLANDS_WORLD_V1.contractVersion,
+      parameters: COASTAL_ISLANDS_WORLD_V1.parameters,
+      presets: COASTAL_ISLANDS_WORLD_V1.presets,
+    }),
+  }),
+});
+
 /** Additive game-type discovery for UI/Agent planning. Descriptors remain
  * data-only; adapters are app-side and `planned` entries are not registrable. */
 export type CreatorGameTypeStatusV1 = "builtin-adapter" | "prototype" | "planned";
@@ -128,6 +164,7 @@ export const CREATOR_CAPABILITIES_PROJECTION_V1: CreatorCapabilitiesProjection =
     project: { create: "creator.project.create", publish: "creator.project.publish",
       maxDocumentBytes: CREATOR_LIMITS_V1.maxProjectBytes, maxReleaseBytes: CREATOR_LIMITS_V1.maxReleaseBytes,
       templates: CREATOR_CONTENT_V1.templates },
+    worlds: { operation: "world.set", budgets: CREATOR_WORLD_BUDGETS_V1, generators: CREATOR_WORLDS_V1.generators },
     gameTypes: { status: "adapter-seam", types: CREATOR_GAME_TYPES_V1 },
   },
   preview: { ttlMs: CREATOR_LIMITS_V1.previewTtlMs, maxActive: CREATOR_LIMITS_V1.maxActivePreviews, singleUse: true, instanceBound: true },

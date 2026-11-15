@@ -1302,6 +1302,48 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
                 Err(code) => plugin_request_error(request.request_id, code, false),
             });
         }
+        if matches!(method.as_str(), "creator.content.snapshot.open" | "creator.content.snapshot.read" | "creator.content.snapshot.close") {
+            let Some(object) = payload.as_object() else { return Ok(plugin_request_error(request.request_id, "creator_request_invalid", false)); };
+            let _operation = state.1.lock().unwrap();
+            {
+                let host = state.0.lock().unwrap();
+                if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            let home = crate::overview::data_home();
+            let result = if method == "creator.content.snapshot.open" && object.len() == 2 {
+                match (object.get("packageId").and_then(Value::as_str), object.get("version").and_then(Value::as_str)) {
+                    (Some(id), Some(version)) => crate::creator_content_install::open_content_snapshot(&home, &request.instance_id, id, version),
+                    _ => Err("creator_request_invalid"),
+                }
+            } else if method == "creator.content.snapshot.read" && object.len() == 3 {
+                match (object.get("snapshotId").and_then(Value::as_str), object.get("path").and_then(Value::as_str), object.get("offset").and_then(Value::as_u64)) {
+                    (Some(id), Some(path), Some(offset)) => crate::creator_content_install::read_content_snapshot(&home, &request.instance_id, id, path, offset),
+                    _ => Err("creator_request_invalid"),
+                }
+            } else if method == "creator.content.snapshot.close" && object.len() == 1 {
+                match object.get("snapshotId").and_then(Value::as_str) {
+                    Some(id) => crate::creator_content_install::close_content_snapshot(&home, &request.instance_id, id),
+                    _ => Err("creator_request_invalid"),
+                }
+            } else { Err("creator_request_invalid") };
+            {
+                let host = state.0.lock().unwrap();
+                if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                    if method == "creator.content.snapshot.open" {
+                        if let Ok(value) = &result {
+                            if let Some(id) = value["snapshotId"].as_str() { let _ = crate::creator_content_install::close_content_snapshot(&home, &request.instance_id, id); }
+                        }
+                    }
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            return Ok(match result {
+                Ok(value) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(value), error: None },
+                Err(code) => plugin_request_error(request.request_id, code, false),
+            });
+        }
         if method == "creator.content.list" {
             if !payload.as_object().is_some_and(|object| object.is_empty()) { return Ok(plugin_request_error(request.request_id, "creator_request_invalid", false)); }
             let _operation = state.1.lock().unwrap();

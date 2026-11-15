@@ -17,6 +17,8 @@ import { projectionSessionRows, type CityViewportWindowDays } from "./projection
 import { readCityWindowDays } from "./windowPreference";
 import { createMoveGhost, type MoveGhost } from "./moveGhost";
 import { selectViewportPatch } from "./viewportPatch";
+import { loadWorldSceneModels } from "../game/activity/creatorSceneModels";
+import type { CityProjectAssetCatalogV1, SceneDraftV1 } from "@agent-vitals/city-sdk";
 import "../city.css";
 
 export type CityViewportProps = {
@@ -39,6 +41,7 @@ export type CityViewportProps = {
   isolatedDraft?: boolean;
   /** Explicitly city-scoped project patch; never read from the legacy store. */
   isolatedProjectPatch?: PlanPatchV1 | null;
+  worldScene?: { scene: SceneDraftV1; assets: CityProjectAssetCatalogV1; files: ReadonlyMap<string, Uint8Array> };
   /** Ephemeral preview only: overrides stores without writing to them. */
   previewPatch?: PlanPatchV1 | null;
   /** Only the primary viewport owns the local diagnostic probe. */
@@ -60,7 +63,7 @@ type ViewportLoadState = Readonly<{ stage: "data" | "model" | "planning" | "moun
  * 暂停/恢复沿用引擎已注册的宿主 __AV_PLUGIN_SUSPENDED__/RESUMED__ 事件与
  * visibilitychange，销毁入口就是组件卸载时的 engine.dispose()。
  */
-export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, editable = false, focusSignal = 0, projectPatch = null, isolatedDraft = false, isolatedProjectPatch = null, previewPatch, registerProbe = true, onViewportStatus, onPatchCommit }: CityViewportProps) {
+export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, editable = false, focusSignal = 0, projectPatch = null, isolatedDraft = false, isolatedProjectPatch = null, worldScene, previewPatch, registerProbe = true, onViewportStatus, onPatchCommit }: CityViewportProps) {
   const days = windowDays ?? readCityWindowDays();
   const language = useCityLanguage();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -74,15 +77,29 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
   const [sceneUnavailable, setSceneUnavailable] = useState(false);
   const [sceneFailureCode, setSceneFailureCode] = useState<string | undefined>();
   const [firstModelFrame, setFirstModelFrame] = useState(false);
+  const [worldSceneReady, setWorldSceneReady] = useState(false);
   const statusCallbackRef = useRef(onViewportStatus);
   statusCallbackRef.current = onViewportStatus;
   const [cityLoad, setCityLoad] = useState<ViewportLoadState>({ stage: "data", work: null });
   const [localPatch, setLocalPatch] = useState<PlanPatchV1 | null>(null);
   const [stalePatchCount, setStalePatchCount] = useState(0);
   const [appliedPreview, setAppliedPreview] = useState<PlanPatchV1 | null | undefined>(undefined);
-  useEffect(() => { statusCallbackRef.current?.(sceneUnavailable || ((isolatedDraft || previewPatch !== undefined) && stalePatchCount > 0) ? "failed" : firstModelFrame && (previewPatch === undefined || appliedPreview === previewPatch) ? "ready" : "loading", sceneFailureCode ?? ((isolatedDraft || previewPatch !== undefined) && stalePatchCount > 0 ? "city_patch_stale" : undefined)); }, [sceneUnavailable, firstModelFrame, sceneFailureCode, isolatedDraft, previewPatch, appliedPreview, stalePatchCount]);
+  useEffect(() => { statusCallbackRef.current?.(sceneUnavailable || ((isolatedDraft || previewPatch !== undefined) && stalePatchCount > 0) ? "failed" : firstModelFrame && (!worldScene || worldSceneReady) && (previewPatch === undefined || appliedPreview === previewPatch) ? "ready" : "loading", sceneFailureCode ?? ((isolatedDraft || previewPatch !== undefined) && stalePatchCount > 0 ? "city_patch_stale" : undefined)); }, [sceneUnavailable, firstModelFrame, sceneFailureCode, isolatedDraft, previewPatch, appliedPreview, stalePatchCount, worldScene, worldSceneReady]);
   // 选取与移动状态：editable 下点会话楼 → 聚焦 + 就近候选；移动经修复会话提交。
   const [engineState, setEngineState] = useState<CityEngine | null>(null);
+  useEffect(() => {
+    if (!engineState || !firstModelFrame || !worldScene) return;
+    setWorldSceneReady(false);
+    let cancelled = false;
+    let mounted: Awaited<ReturnType<typeof loadWorldSceneModels>> | null = null;
+    void loadWorldSceneModels(worldScene.scene, worldScene.assets, worldScene.files).then(result => {
+      if (cancelled) { result.dispose(); return; }
+      mounted = result;
+      engineState.addOverlay(result.group);
+      setWorldSceneReady(true);
+    }).catch(() => { if (!cancelled) { setSceneFailureCode("world_scene_load_failed"); setSceneUnavailable(true); } });
+    return () => { cancelled = true; if (mounted) { engineState.removeOverlay(mounted.group); mounted.dispose(); } };
+  }, [engineState, firstModelFrame, worldScene]);
   const [selection, setSelection] = useState<BuildingSelection | null>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
   const sessionRef = useRef<PlanRepairSession | null>(null);

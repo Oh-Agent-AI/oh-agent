@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import type { CreatorPublishedMiniGameV1 } from "./creatorMiniGame";
+import { inspectGlbBytes, type CityProjectAssetCatalogV1, type SceneDraftV1 } from "@agent-vitals/city-sdk";
 import { m, METER_MODEL_SCALE } from "../../engine/worldScale";
 
 const MAX_RUNTIME_MODELS = 512;
@@ -30,6 +31,46 @@ function disposeGltfCache(cache: ReadonlyMap<string, LoadedGltf>): void {
   textures.forEach(texture => texture.dispose());
   materials.forEach(material => material.dispose());
   geometries.forEach(geometry => geometry.dispose());
+}
+
+/** Materialize model objects from a previously verified world-package snapshot. */
+export async function loadWorldSceneModels(scene: SceneDraftV1, catalog: CityProjectAssetCatalogV1, files: ReadonlyMap<string, Uint8Array>): Promise<{ group: THREE.Group; dispose(): void }> {
+  const models = scene.objects.filter(object => object.kind === "model");
+  if (models.length > MAX_RUNTIME_MODELS) throw new Error("creator_scene_model_budget_exceeded");
+  const entries = new Map(catalog.entries.map(entry => [entry.assetId, entry]));
+  const needed = new Map<string, Uint8Array>();
+  for (const model of models) {
+    const entry = entries.get(model.asset.assetId);
+    const bytes = entry && files.get(entry.relativePath);
+    if (!entry || !bytes || entry.sha256 !== model.asset.digest || bytes.length !== entry.byteLength || !inspectGlbBytes(bytes).ok) throw new Error("creator_scene_asset_ref_invalid");
+    needed.set(entry.sha256, bytes);
+  }
+  if (needed.size > MAX_RUNTIME_ASSETS || [...needed.values()].reduce((sum, bytes) => sum + bytes.length, 0) > MAX_RUNTIME_ASSET_BYTES) throw new Error("creator_scene_asset_budget_exceeded");
+  const cache = new Map<string, LoadedGltf>();
+  const group = new THREE.Group();
+  group.name = "creator-world-scene-models";
+  try {
+    const loader = new GLTFLoader();
+    for (const [digest, bytes] of needed) {
+      const buffer = Uint8Array.from(bytes).buffer;
+      const actual = `sha256:${Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", buffer)), byte => byte.toString(16).padStart(2, "0")).join("")}`;
+      if (actual !== digest) throw new Error("creator_scene_asset_ref_invalid");
+      cache.set(digest, await loader.parseAsync(buffer, ""));
+    }
+    for (const model of models) {
+      const gltf = cache.get(model.asset.digest);
+      if (!gltf) throw new Error("creator_scene_asset_ref_invalid");
+      const instance = new THREE.Group();
+      instance.name = `creator-model-${model.id}`;
+      const { positionMeters, rotationRadians, scale } = model.transform;
+      instance.position.set(m(positionMeters.x), m(positionMeters.y), m(positionMeters.z));
+      instance.rotation.set(rotationRadians.x, rotationRadians.y, rotationRadians.z);
+      instance.scale.set(scale.x * METER_MODEL_SCALE, scale.y * METER_MODEL_SCALE, scale.z * METER_MODEL_SCALE);
+      instance.add(gltf.scene.clone(true));
+      group.add(instance);
+    }
+  } catch (error) { disposeGltfCache(cache); group.clear(); throw error; }
+  return { group, dispose() { disposeGltfCache(cache); group.clear(); } };
 }
 
 /** Loads only published, already-validated project assets through the local City-scoped protocol. */
