@@ -3,7 +3,7 @@ import { access, lstat, open, readFile, writeFile, mkdir, rename, realpath } fro
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { canonicalJson, inspectContentPackageV2, inspectGlbBytes, validateAssetRefs, validateCityContentPackage, validateCityLayout, validateCityProjectAssetCatalog, validateCityWorldProfile, hasDuplicateJsonKeys, validateContentPackageManifestV2, validateMiniGamePack, validateMount, validatePackageManifest, validateSceneDraft, runHeadless } from "../dist/index.js";
+import { canonicalJson, inspectContentArtifactV2, inspectContentPackageV2, inspectGlbBytes, validateAssetRefs, validateCityContentPackage, validateCityLayout, validateCityProjectAssetCatalog, validateCityWorldProfile, hasDuplicateJsonKeys, validateMiniGamePack, validateMount, validatePackageManifest, validateSceneDraft, runHeadless } from "../dist/index.js";
 
 const MAX_INPUT_BYTES = 2 * 1024 * 1024;
 const root = process.cwd();
@@ -585,20 +585,7 @@ async function verifyWorld(packageFile) {
   const artifactText = raw.toString("utf8");
   const artifact = JSON.parse(artifactText);
   if (hasDuplicateJsonKeys(artifactText)) throw new Error("World artifact contains duplicate JSON object keys.");
-  if (!artifact || typeof artifact !== "object" || Array.isArray(artifact) || Object.keys(artifact).sort().join(",") !== "files,format,manifest" || artifact.format !== "oh-agent-city-content-v2" || !artifact.files || typeof artifact.files !== "object" || Array.isArray(artifact.files)) throw new Error("World artifact shape is invalid.");
-  const shape = validateContentPackageManifestV2(artifact.manifest);
-  if (!shape.ok || shape.value.kind !== "city-world") throw new Error("World artifact manifest is invalid.");
-  const names = Object.keys(artifact.files).sort();
-  if (names.length !== shape.value.files.length || names.some((name, index) => name !== shape.value.files[index].path)) throw new Error("World artifact file set differs from its manifest.");
-  const content = new Map();
-  for (const declaration of shape.value.files) {
-    const name = declaration.path, encoded = artifact.files[name];
-    if (typeof encoded !== "string" || encoded.length !== Math.ceil(declaration.byteLength / 3) * 4 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) throw new Error("Artifact file encoding is invalid.");
-    const bytes = Buffer.from(encoded, "base64");
-    if (bytes.toString("base64") !== encoded) throw new Error("Artifact file encoding is not canonical.");
-    content.set(name, bytes);
-  }
-  const checked = await inspectContentPackageV2(artifact.manifest, content);
+  const checked = await inspectContentArtifactV2(artifact);
   if (!checked.ok || checked.value.manifest.kind !== "city-world") {
     output({ ok: false, diagnostics: checked.ok ? [{ code: "content_kind_invalid" }] : checked.diagnostics }); process.exitCode = 1; return;
   }

@@ -145,6 +145,12 @@ pub(crate) fn database(home: &Path) -> Result<Connection, &'static str> {
             content_digest TEXT NOT NULL, manifest_json TEXT NOT NULL, package_path TEXT NOT NULL,
             file_count INTEGER NOT NULL, byte_length INTEGER NOT NULL, installed_at_ms INTEGER NOT NULL,
             PRIMARY KEY(package_id, version)
+        );
+        CREATE TABLE IF NOT EXISTS creator_city_world_packages (
+            city_id TEXT PRIMARY KEY, package_id TEXT NOT NULL, version TEXT NOT NULL,
+            content_digest TEXT NOT NULL, created_at_ms INTEGER NOT NULL,
+            FOREIGN KEY(city_id) REFERENCES creator_cities(city_id),
+            FOREIGN KEY(package_id, version) REFERENCES creator_content_packages(package_id, version)
         );") .map_err(|error| map_sqlite_failure("migrate", &error))?;
     let columns = {
         let mut statement = db.prepare("PRAGMA table_info(creator_playtest_runs)").map_err(|error| map_sqlite_failure("migrate", &error))?;

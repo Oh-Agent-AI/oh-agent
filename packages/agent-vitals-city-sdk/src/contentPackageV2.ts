@@ -18,6 +18,30 @@ const fail = (code: string, path: string, message: string): Result<never> => ({ 
 const safePath = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= 240 && !v.startsWith("/") && !v.includes("\\")
   && v.split("/").every(part => /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(part) && part !== "." && part !== "..");
 
+/** Inspect an already parsed v2 artifact. The host must reject duplicate JSON keys
+ * before parsing untrusted bytes; this function independently checks integrity. */
+export async function inspectContentArtifactV2(input: unknown): Promise<Result<{ manifest: ContentPackageManifestV2; unchecked: readonly string[] }>> {
+  if (!record(input) || !keys(input, ["format", "manifest", "files"]) || input.format !== "oh-agent-city-content-v2" || !record(input.files))
+    return fail("content_artifact_invalid", "$", "Artifact shape is invalid.");
+  const shape = validateContentPackageManifestV2(input.manifest);
+  if (!shape.ok) return shape;
+  if (Object.keys(input.files).length !== shape.value.files.length)
+    return fail("content_file_set_mismatch", "files", "Files must match the manifest.");
+  const files = new Map<string, Uint8Array>();
+  for (const declaration of shape.value.files) {
+    const encoded = input.files[declaration.path];
+    if (typeof encoded !== "string" || encoded.length !== Math.ceil(declaration.byteLength / 3) * 4
+      || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded))
+      return fail("content_file_encoding_invalid", `files.${declaration.path}`, "File encoding is invalid.");
+    try {
+      const decoded = atob(encoded);
+      if (btoa(decoded) !== encoded) return fail("content_file_encoding_invalid", `files.${declaration.path}`, "File encoding is not canonical.");
+      files.set(declaration.path, Uint8Array.from(decoded, character => character.charCodeAt(0)));
+    } catch { return fail("content_file_encoding_invalid", `files.${declaration.path}`, "File encoding is invalid."); }
+  }
+  return inspectContentPackageV2(shape.value, files);
+}
+
 /** Validate only the v2 manifest. File bytes, digest and installation are separate gates. */
 export function validateContentPackageManifestV2(input: unknown): Result<ContentPackageManifestV2> {
   let value: unknown;

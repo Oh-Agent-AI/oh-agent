@@ -7,6 +7,7 @@ import { loadStudioAtStartup } from "./startupLoad";
 import { resolveProjectCity } from "./projectCityScope";
 import { formatWorldPackageInspection, parseWorldPackageInspection, type WorldPackageInspection } from "./contentPackageInspect";
 import { formatInstalledPackage, parseInstalledPackages, parseInstallResult, type InstalledContentPackage } from "./installedContent";
+import { inspectInstalledWorld, supportsInstalledWorldGenerator } from "./contentSnapshot";
 import { buildCitySourceExport, buildProjectSourceExport } from "./projectSourceExport";
 import { AgentApprovalGate, matchesPreviewBase, type AgentCommit } from "./agentApproval";
 // 视口与 City 插件共享同一份引擎与装配管线，保证 Studio 看到的是同一座城市。
@@ -74,6 +75,7 @@ function App() {
   const [project, setProject] = useState<Project | null>(null);
   const [projectCity, setProjectCity] = useState<{ key: string; city: CityInstanceV1 | null; error?: string } | null>(null);
   const [draftCityView, setDraftCityView] = useState<CityInstanceV1 | null>(null);
+  const [installedWorldView, setInstalledWorldView] = useState<Awaited<ReturnType<typeof inspectInstalledWorld>> | null>(null);
   const draftCityViewRef = useRef<CityInstanceV1 | null>(null);
   const cityOpenRequest = useRef(0);
   const draftEngineRef = useRef<CityEngine | null>(null);
@@ -274,6 +276,7 @@ function App() {
     setWorldRevision(current => layoutResponse.layouts.some(layout => layout.worldRevision === current) ? current : layoutResponse.layouts[0]?.worldRevision ?? "");
   }, []);
   const openCityView = async (cityId: string, revision: number) => {
+    setInstalledWorldView(null);
     if (typeof cityId !== "string" || !Number.isSafeInteger(revision) || revision < 0) throw new Error("creator_request_invalid");
     const request = ++cityOpenRequest.current;
     const document = await creatorRequest<unknown>("creator.city.read", { cityId });
@@ -571,6 +574,7 @@ function App() {
   }, []);
 
   const openProject = async (projectId: string, mode: "replace" | "preserve" = "replace") => {
+    setInstalledWorldView(null);
     setBusy(true); setMessage(""); setPreviewId(null); setPreviewKind(null); setPublishedReleaseId(null);
     try {
       const next = await creatorRequest<Project>("creator.project.read", { projectId });
@@ -664,16 +668,47 @@ function App() {
       await refreshInstalled();
       setMessage(result.alreadyInstalled ? `${result.packageId}@${result.version} 已在本机内容库中。`
         : `已安装 ${result.packageId}@${result.version} 到本机内容库（仅存储，尚不可运行）。`);
-    } catch (error) { setMessage(`内容包安装失败（${errorCode(error, "content_install_failed")}）。`); }
+    } catch (error) {
+      const code = errorCode(error, "content_install_failed");
+      setPackageInspection(null);
+      setMessage(code === "content_store_corrupt"
+        ? "本机已有的内容包已损坏，无法确认安装。请先卸载该版本，再重新选择内容包进行预检和安装。"
+        : `内容包安装失败（${code}）。请重新选择内容包进行预检。`);
+    }
     finally { setBusy(false); }
   };
   const uninstallInstalledPackage = async (item: InstalledContentPackage) => {
     setBusy(true); setMessage(""); setConfirmUninstall(null);
     try {
       await creatorRequest("creator.content.uninstall", { packageId: item.packageId, version: item.version });
+      if (installedWorldView?.manifest.packageId === item.packageId && installedWorldView.manifest.version === item.version) setInstalledWorldView(null);
       await refreshInstalled();
       setMessage(`已卸载 ${item.packageId}@${item.version}。`);
-    } catch (error) { setMessage(`内容包卸载失败（${errorCode(error, "content_uninstall_failed")}）。`); }
+    } catch (error) {
+      const code = errorCode(error, "content_uninstall_failed");
+      setMessage(code === "content_package_in_use" ? "该世界包仍被城市引用，无法卸载。" : `内容包卸载失败（${code}）。`);
+    }
+    finally { setBusy(false); }
+  };
+  const validateInstalledPackage = async (item: InstalledContentPackage) => {
+    setBusy(true); setMessage("");
+    try {
+      const world = await inspectInstalledWorld(creatorRequest, item);
+      setMessage(supportsInstalledWorldGenerator(world.manifest)
+        ? `${item.packageId}@${item.version} 内容和 SDK 语义检查通过，生成器版本匹配；其余运行时兼容性、来源与可运行性尚未验证。`
+        : `${item.packageId}@${item.version} 内容和 SDK 语义检查通过，但生成器版本与当前 City 不兼容。`);
+    } catch (error) { setMessage(`内容包检查失败（${errorCode(error, "content_validation_failed")}）。`); }
+    finally { setBusy(false); }
+  };
+  const previewInstalledPackage = async (item: InstalledContentPackage) => {
+    setBusy(true); setMessage("");
+    try {
+      const world = await inspectInstalledWorld(creatorRequest, item);
+      if (!supportsInstalledWorldGenerator(world.manifest)) throw new Error("content_generator_incompatible");
+      cityOpenRequest.current++; draftCityViewRef.current = null; setDraftCityView(null);
+      setInstalledWorldView(world);
+      setMessage("世界包只读预览正在加载；场景碰撞和玩法尚未启用。");
+    } catch (error) { setMessage(`无法预览世界包（${errorCode(error, "content_preview_failed")}）。`); }
     finally { setBusy(false); }
   };
   const importModel = async () => {
@@ -931,7 +966,7 @@ function App() {
       </nav>
       <section className="viewport" aria-label="City 实时视口">
         <div className="viewport-head"><div className="section-title">城市视图</div><span className="viewport-hint">点选建筑移动 · 拖动旋转 · 滚轮缩放</span><button className="secondary reset-view" onClick={() => setFocusSignal(value => value + 1)}>重置视角</button></div>
-        <div className="viewport-base">{draftCityView ? <div className="viewport-frame"><CityViewport key={`${draftCityView.cityId}:${draftCityView.revision}`} seed={draftCityView.seed} worldProfile={draftCityView.profile} isolatedDraft isolatedProjectPatch={(draftCityView.planPatch ?? null) as PlanPatchV1 | null} focusSignal={focusSignal}
+        <div className="viewport-base">{installedWorldView && "defaultSeed" in installedWorldView.manifest.entry ? <div className="viewport-frame"><CityViewport key={installedWorldView.manifest.contentDigest} seed={installedWorldView.manifest.entry.defaultSeed} worldProfile={installedWorldView.profile} isolatedDraft isolatedProjectPatch={installedWorldView.patch as PlanPatchV1 | null} worldScene={installedWorldView} registerProbe={false} onViewportStatus={(status, code) => { if (status === "ready") setMessage("世界包只读预览已加载；场景碰撞和玩法尚未启用。"); else if (status === "failed") setMessage(`世界包预览失败（${code ?? "content_preview_failed"}）。`); }} /><div className="viewport-savebar" role="status">世界包只读预览 · 场景碰撞和玩法未启用 <button onClick={() => setInstalledWorldView(null)}>返回项目视图</button></div></div> : draftCityView ? <div className="viewport-frame"><CityViewport key={`${draftCityView.cityId}:${draftCityView.revision}`} seed={draftCityView.seed} worldProfile={draftCityView.profile} isolatedDraft isolatedProjectPatch={(draftCityView.planPatch ?? null) as PlanPatchV1 | null} focusSignal={focusSignal}
           onEngineChange={engine => { if (draftCityViewRef.current === draftCityView) draftEngineRef.current = engine; }}
           onViewportStatus={(status, code) => { if (draftCityViewRef.current === draftCityView) {
             draftViewStatusRef.current = status; draftViewFailureRef.current = code;
@@ -994,9 +1029,9 @@ function App() {
           {browserPreview && <p className="muted">浏览器预览没有原生文件选择器，请在桌面应用中使用。</p>}
           {packageInspection && <code>{formatWorldPackageInspection(packageInspection)}</code>}
           {packageInspection && <div className="actions"><button disabled={busy} onClick={() => void installInspectedPackage()}>安装到本机内容库</button><span className="muted">仅本机存储，尚不可运行</span></div>}
-          {installedPackages.length > 0 && <div><div className="section-title">已安装内容包</div>{installedPackages.map(item => <div key={`${item.packageId}:${item.version}`} className="actions"><code>{formatInstalledPackage(item)}</code><button className="secondary" disabled={busy} onClick={() => { const key = `${item.packageId}:${item.version}`; if (confirmUninstall === key) void uninstallInstalledPackage(item); else setConfirmUninstall(key); }}>{confirmUninstall === `${item.packageId}:${item.version}` ? "确认卸载" : "卸载"}</button></div>)}</div>}</div>
+          {installedPackages.length > 0 && <div><div className="section-title">已安装内容包</div>{installedPackages.map(item => <div key={`${item.packageId}:${item.version}`} className="actions"><code>{formatInstalledPackage(item)}</code><button className="secondary" disabled={busy} onClick={() => void validateInstalledPackage(item)}>检查内容</button><button className="secondary" disabled={busy} onClick={() => void previewInstalledPackage(item)}>只读预览</button><button className="secondary" disabled={busy} onClick={() => { const key = `${item.packageId}:${item.version}`; if (confirmUninstall === key) void uninstallInstalledPackage(item); else setConfirmUninstall(key); }}>{confirmUninstall === `${item.packageId}:${item.version}` ? "确认卸载" : "卸载"}</button></div>)}</div>}</div>
           <div className="section-title">打开项目</div>
-          <div className="project-list">{projects.map(row => <button key={row.projectId} className={`project-row ${project?.projectId === row.projectId ? "selected" : ""}`} disabled={busy} onClick={() => { if (row.projectId !== project?.projectId) guardDrafts(row.projectId, () => void openProject(row.projectId)); else if (draftCityView) { cityOpenRequest.current++; draftCityViewRef.current = null; setDraftCityView(null); } }}><strong>{row.title}</strong><span>版本 {row.revision}{project?.projectId === row.projectId ? " · 当前项目" : switchConfirm === row.projectId ? " · 再次点击以丢弃草稿" : ""}</span></button>)}</div>
+          <div className="project-list">{projects.map(row => <button key={row.projectId} className={`project-row ${project?.projectId === row.projectId ? "selected" : ""}`} disabled={busy} onClick={() => { if (row.projectId !== project?.projectId) guardDrafts(row.projectId, () => void openProject(row.projectId)); else { setInstalledWorldView(null); if (draftCityView) { cityOpenRequest.current++; draftCityViewRef.current = null; setDraftCityView(null); } } }}><strong>{row.title}</strong><span>版本 {row.revision}{project?.projectId === row.projectId ? " · 当前项目" : switchConfirm === row.projectId ? " · 再次点击以丢弃草稿" : ""}</span></button>)}</div>
           <div><div className="section-title">创建新项目</div><p className="muted">选择玩法和 City 布局，创建独立的本地草稿。</p></div>
           <label>新建模板<select value={template} disabled={busy} onChange={event => setTemplate(event.target.value)}><option value="checkpoint-race">驾驶检查点竞速</option><option value="collect-one">驾驶区域收集</option><option value="ornithopter-flight">扑翼飞行检查点</option></select></label>
           <label>绑定 City 世界<select value={worldRevision} disabled={busy || layouts.length === 0} onChange={event => setWorldRevision(event.target.value)}>{layouts.map(layout => <option key={layout.worldRevision} value={layout.worldRevision}>{layout.layoutId} · seed {layout.seed} · {layout.anchorCount} 个锚点</option>)}</select></label>

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { canonicalJson } from "../src/package";
-import { validateContentPackageManifestV2, verifyContentPackageBytesV2, inspectContentPackageV2 } from "../src/contentPackageV2";
+import { validateContentPackageManifestV2, verifyContentPackageBytesV2, inspectContentPackageV2, inspectContentArtifactV2 } from "../src/contentPackageV2";
 
 const sha = `sha256:${"a".repeat(64)}`;
 const file = (path: string, mediaType = "application/json", byteLength = 10) => ({ path, mediaType, byteLength, sha256: sha });
@@ -75,6 +75,10 @@ test("world inspection validates semantic entries and rejects unresolved model r
   const valid = make({ schemaVersion: 1, objects: [] });
   const result = await inspectContentPackageV2(valid.manifest, valid.inputs);
   assert.equal(result.ok, true); if (result.ok) assert.ok(result.value.unchecked.includes("installation"));
+  const artifact = { format: "oh-agent-city-content-v2", manifest: valid.manifest, files: Object.fromEntries([...valid.inputs].map(([path, bytes]) => [path, Buffer.from(bytes).toString("base64")])) };
+  assert.equal((await inspectContentArtifactV2(artifact)).ok, true);
+  assert.equal((await inspectContentArtifactV2({ ...artifact, files: { ...artifact.files, "world/profile.json": "!" } })).ok, false);
+  assert.equal((await inspectContentArtifactV2({ ...artifact, files: { ...artifact.files, "extra.json": "" } })).ok, false);
   const badProfile = make({ schemaVersion: 1, objects: [] }, { ...profile, biome: "tropical" });
   const rejected = await inspectContentPackageV2(badProfile.manifest, badProfile.inputs);
   assert.equal(rejected.ok, false); if (!rejected.ok) assert.equal(rejected.diagnostics[0]?.code, "content_profile_invalid");
