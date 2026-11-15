@@ -108,7 +108,8 @@ App 侧注入点：
 - [CityApp.tsx](../apps/agent-city/ui/src/CityApp.tsx) 已用 refs 注入现有
   `useCityGame`、`useCityDrivingPlay`、`openMecha`、cinema helper，并实例化
   registry。**工具栏四类活动现在经 registry 启动/停止**；无 handle 时保留直接
-  退出 fallback。原型入口为 `Shift+O`（只在无活动/无航拍时触发）。
+  退出 fallback。原型入口为 City 右下角的「扑翼原型」按钮；点击画布聚焦后
+  `Shift+O` 也可触发（两者都只在无活动/无航拍时可用）。
 
 测试：app `verify:game-runtime-host`（6，含 entry/prototype/能力锁步）、runtime（11）。
 Miami 金样已在当前树重跑：

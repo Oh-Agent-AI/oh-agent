@@ -352,3 +352,22 @@
   .city-squad-feed, .city-squad-feed.is-open { left: 12px; right: 12px; width: auto; top: auto; bottom: 72px; max-height: 36%; }
   .city-squad-kill { top: auto; bottom: calc(72px + 36% + 8px); }
 }
+
+/* Phase-1 ornithopter prototype entry; it reuses the flight runtime and must not
+   be mistaken for the planned flapping game type. */
+.city-prototype-launch {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 30;
+  padding: 8px 14px;
+  border: 1px solid rgba(120, 220, 255, .45);
+  border-radius: 999px;
+  background: rgba(8, 24, 38, .86);
+  color: #bdefff;
+  font: 600 12px/1.2 ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: .04em;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+}
+.city-prototype-launch:hover { background: rgba(16, 52, 72, .92); }
