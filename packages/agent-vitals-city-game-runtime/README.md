@@ -24,6 +24,10 @@ separate from `@agent-vitals/city-sdk`:
   `BUILTIN_ACTIVITY_TEMPLATE_IDS`, and `planned` descriptors are rejected by
   the registry until their template lands.
 - `ORNITHOPTER_GAME_TYPE_V1`: the planned Creator flight game type.
+- `createMiamiLegacyRegistry(host)`: registers the four Miami activities as
+  host-driven adapters delegating to `MiamiLegacyActivityHostV1.enter`. The SDK
+  never double-steps them. The app-side host wiring and real Miami golden-script
+  regression are the next step.
 
 ## Not implemented yet
 

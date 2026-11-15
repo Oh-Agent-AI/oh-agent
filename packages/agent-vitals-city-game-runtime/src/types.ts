@@ -38,9 +38,13 @@ export type GameRuntimeContextV1 = Readonly<{
   activity: GameActivityPortV1;
 }>;
 
+export type GameRuntimeExecutionV1 = "fixed-step" | "host-driven";
+
 export type GameRuntimeHandleV1 = Readonly<{
   telemetry: () => GameRuntimeTelemetryV1;
-  fixedStep: () => void;
+  /** Present only for fixed-step runtimes; host-driven activities keep their
+   * existing frame hook and must not be double-stepped by the SDK. */
+  fixedStep?: () => void;
   dispose: () => void;
 }>;
 
@@ -48,6 +52,9 @@ export type GameRuntimeHandleV1 = Readonly<{
 export type GameRuntimeV1 = Readonly<{
   readonly type: string;
   readonly contractVersion: number;
+  /** `host-driven` adapters delegate lifecycle to an existing activity; the SDK
+   * never drives their simulation clock. */
+  readonly execution: GameRuntimeExecutionV1;
   prepare: (context: GameRuntimeContextV1) => Promise<GameRuntimeResultV1<GameRuntimeHandleV1>>;
 }>;
 

@@ -83,14 +83,25 @@ registry.descriptors();
 - `dispose` 必须释放 scene 附加物、输入/音频资源，不泄漏活动租约。
 - `GameRuntimeRegistryV1` 线程/实例安全由宿主保证；它本身是纯内存注册表。
 
+## 3.1 本轮 adapter 包装
+
+`city-game-runtime` 已新增 `createMiamiLegacyRegistry(host)` / `createMiamiLegacyRuntime`：
+
+- 四个 Miami 活动都通过 `MiamiLegacyActivityHostV1.enter(activity)` 委托给既有实现；
+- adapter `execution: "host-driven"`，`fixedStep` 不存在，SDK 不会二次驱动 Miami 的帧循环；
+- `dispose` 只调用 host handle 的 dispose；host 负责原有活动租约/相机/HUD；
+- descriptor→runtime 的 id/template 映射有 **golden 锁定测试**（flight/driving/mecha/cinema 的顺序、runtime id、contractVersion、template）。
+- 该层不修改 `GameSession`/`useCityGame`/`useCityDrivingPlay`/mecha/cinema 代码，也不改变 Miami 行为。
+
+仍缺：`MiamiLegacyActivityHostV1` 在 CityApp 中的实现（把现有 hook 的进入/退出/telemetry 接上），以及真正的 Miami 金样脚本在 adapter 路径上的回归。当前 registry 只在测试/宿主注入时使用，不改变 City 启动。
+
 ## 4. 迁移顺序（下一步）
 
-1. **包装现有实现**（不改行为）：
-   - flight：包装 `GameSession`；
-   - driving：先把 `useCityDrivingPlay` 引擎侧逻辑抽成 session，再包装；
-   - mecha：包装 `MechaModeRuntime`；
-   - cinema：包装航拍会话。
-   每步用 Miami 金样/回归锁行为，注册在 app 侧本地 registry，不进入 SDK 默认表。
+1. **宿主接线**（不改行为）：在 CityApp 实现 `MiamiLegacyActivityHostV1`，把现有
+   `useCityGame` / `useCityDrivingPlay` / mecha / cinema 的进入、退出和 telemetry
+   接到四个 host-driven adapter；用 Miami 现有金样脚本做真回归。
+2. **flight 直接包装**：在 host 内优先用 `GameSession` 实例实现 flight adapter，
+   验证 enter/exit 与 HUD 快照完全等价；driving/mecha/cinema 仍由 React 宿主驱动。
 2. **接入 Creator**：扑翼 adapter 注册为 `city-flight-ornithopter`；Studio 模板/
    capability 读取 `ORNITHOPTER_GAME_TYPE_V1`；发布/试玩按 `gameType +
    runtimeContractVersion` 冻结。

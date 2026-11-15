@@ -20,7 +20,7 @@ const descriptor = {
 
 function fakeRuntime(type = "test.flight", contractVersion = 3): GameRuntimeV1 {
   return {
-    type, contractVersion,
+    type, contractVersion, execution: "fixed-step",
     prepare: async (): Promise<{ ok: true; value: GameRuntimeHandleV1 }> => ({
       ok: true,
       value: { telemetry: () => ({ status: "ready", tick: 0, counters: {}, metrics: {}, reason: null }), fixedStep: () => {}, dispose: () => {} },
