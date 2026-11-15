@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MIAMI_ACTIVITY_CATALOG_V1, ORNITHOPTER_GAME_TYPE_V1 } from "../src/index.ts";
+import { MIAMI_ACTIVITY_CATALOG_V1, ORNITHOPTER_GAME_TYPE_V1, ORNITHOPTER_PROTOTYPE_GAME_TYPE_V1 } from "../src/index.ts";
 import { CREATOR_GAME_TYPES_V1 } from "../../agent-vitals-city-sdk/src/index";
 import { createMiamiLegacyRegistry, type MiamiActivityIdV1, type MiamiLegacyActivityHostV1 } from "../src/index.ts";
 
@@ -22,11 +22,12 @@ function host(): { host: MiamiLegacyActivityHostV1; calls: MiamiActivityIdV1[]; 
   };
 }
 
-test("registers exactly the four Miami activities as host-driven adapters", () => {
+test("registers the four Miami activities and the flight prototype as host-driven adapters", () => {
   const h = host();
   const registry = createMiamiLegacyRegistry(h.host);
   const descriptors = registry.descriptors();
-  assert.deepEqual(descriptors.map(item => item.id), ["miami.flight-v1", "miami.driving-v1", "miami.mecha-v1", "miami.cinema-v1"]);
+  assert.deepEqual(descriptors.map(item => item.id), ["miami.flight-v1", "miami.driving-v1", "miami.mecha-v1", "miami.cinema-v1",
+    "creator.flight-ornithopter-prototype-v1"]);
   for (const item of descriptors) {
     const runtime = registry.resolve(item.id, item.runtime.contractVersion);
     assert.equal(runtime.execution, "host-driven");
@@ -66,6 +67,7 @@ test("adapter mapping is golden-locked to the existing Miami activity order", ()
     { id: "miami.driving-v1", runtime: { id: "miami.driving", contractVersion: 1 }, templateCatalog: "builtin", template: "miami-driving" },
     { id: "miami.mecha-v1", runtime: { id: "miami.mecha", contractVersion: 1 }, templateCatalog: "builtin", template: "miami-mecha" },
     { id: "miami.cinema-v1", runtime: { id: "miami.cinema", contractVersion: 1 }, templateCatalog: "builtin", template: "miami-cinema" },
+    { id: "creator.flight-ornithopter-prototype-v1", runtime: { id: "miami.flight", contractVersion: 1 }, templateCatalog: "builtin", template: "miami-flight" },
   ]);
 });
 
@@ -81,7 +83,7 @@ test("legacy descriptors stay catalog-only and are not Creator capability claims
 });
 
 test("Miami/ornithopter descriptors stay lockstep with the Creator capability list", () => {
-  assert.deepEqual([...MIAMI_ACTIVITY_CATALOG_V1, ORNITHOPTER_GAME_TYPE_V1].map(item => ({
+  assert.deepEqual([...MIAMI_ACTIVITY_CATALOG_V1, ORNITHOPTER_PROTOTYPE_GAME_TYPE_V1, ORNITHOPTER_GAME_TYPE_V1].map(item => ({
     id: item.id, template: item.template, templateCatalog: item.templateCatalog, runtime: item.runtime,
   })), CREATOR_GAME_TYPES_V1.map(item => ({
     id: item.id, template: item.template, templateCatalog: item.templateCatalog, runtime: item.runtime,

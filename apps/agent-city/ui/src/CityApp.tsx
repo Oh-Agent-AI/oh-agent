@@ -41,7 +41,7 @@ import { createCreatorLayoutSnapshot } from "./engine/sdk/cityLayoutAdapter";
 import { useCityDrivingPlay } from "./game/useCityDrivingPlay";
 import { createMiamiActivityEntries } from "./game/runtime/miamiActivityEntries";
 import { createMiamiGameRuntimeRegistry } from "./game/runtime/miamiActivityHost";
-import type { GameRuntimeRegistryV1, GameRuntimeTelemetryV1 } from "../../../../packages/agent-vitals-city-game-runtime/src/index";
+import type { GameRuntimeHandleV1, GameRuntimeRegistryV1, GameRuntimeTelemetryV1, MiamiActivityIdV1 } from "../../../../packages/agent-vitals-city-game-runtime/src/index";
 import { DrivingHud } from "./game/DrivingHud";
 import type { PlayTarget } from "./engine/render/playableVehicles";
 import { useRoadAudit } from "./game/useRoadAudit";
@@ -290,6 +290,7 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
   cinemaRef.current = cinema;
   const mechaOpenRef = useRef(false);
   const miamiRuntimeRegistry = useRef<GameRuntimeRegistryV1 | null>(null);
+  const miamiHandles = useRef<Partial<Record<MiamiActivityIdV1, GameRuntimeHandleV1>>>({});
   const filmRef = useRef(!!experience.film);
   filmRef.current = !!experience.film;
   const busyRef = useRef(experience.busy);
@@ -867,7 +868,7 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
       case "city.labels": engine?.setLabelsVisible(!labels); setLabels(!labels); break;
       case "city.reset": engine?.resetView(); break;
       case "city.cinema":
-        if (cinema) exitMiamiCinema(); else enterMiamiCinema();
+        if (cinema) stopMiamiActivity("cinema"); else void startMiamiActivity("cinema");
         break;
       case "city.photo": void experience.photo(); break;
       case "city.film": void experience.exportFilm(); break;
@@ -880,17 +881,16 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
         if (planRepair.state.active) planRepair.exit(); else planRepair.enter();
         break;
       case "city.car":
-        if (driving.active) driving.exit();
-        else if (sceneReady) {
-          experience.setOptions(false); experience.clearSelection(); driving.enter();
-        }
+        if (driving.active) stopMiamiActivity("driving");
+        else if (sceneReady) void startMiamiActivity("driving");
         break;
       case "city.mecha":
-        if (!mechaEntryEnabled) throw new Error("mecha_unavailable");
-        openMecha(); break;
+        if (!mechaEntryEnabled && !mechaOpen) throw new Error("mecha_unavailable");
+        if (mechaOpen) stopMiamiActivity("mecha"); else void startMiamiActivity("mecha");
+        break;
       case "city.game":
-        if (game.active) game.exit();
-        else game.enterPractice();
+        if (game.active) stopMiamiActivity("flight");
+        else void startMiamiActivity("flight");
         break;
       default: throw new Error("command_unavailable");
     }
@@ -916,7 +916,8 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
           {}, { speed: snapshot?.telemetry?.speed ?? 0, altitude: snapshot?.telemetry?.altitude ?? 0 }); },
       },
       driving: {
-        enter: () => drivingRef.current.enter(), exit: () => drivingRef.current.exit(), active: () => drivingRef.current.active,
+        enter: () => { experience.setOptions(false); experience.clearSelection(); return drivingRef.current.enter(); },
+        exit: () => drivingRef.current.exit(), active: () => drivingRef.current.active,
         telemetry: () => telemetry(drivingRef.current.active ? "running" : "ready", null, { completed: drivingRef.current.race?.completed ?? 0 },
           { speed: drivingRef.current.race?.elapsedSeconds ?? 0 }),
       },
@@ -931,6 +932,50 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
     });
     miamiRuntimeRegistry.current = createMiamiGameRuntimeRegistry(entries);
   }
+
+  async function startMiamiActivity(activity: MiamiActivityIdV1, typeId = `miami.${activity}-v1`): Promise<void> {
+    const registry = miamiRuntimeRegistry.current;
+    if (!registry) { setStatus("游戏运行时尚未就绪。"); return; }
+    try {
+      const runtime = registry.resolve(typeId, 1);
+      const prepared = await runtime.prepare();
+      if (!prepared.ok) { setStatus(`无法进入${activity}：${prepared.failure.code}`); return; }
+      miamiHandles.current[activity] = prepared.value;
+      if (typeId.includes("-prototype-")) setStatus("已进入扑翼飞行原型（复用飞机逻辑）。");
+    } catch (error) {
+      setStatus(`无法进入${activity}：${error instanceof Error ? error.message : "unknown"}`);
+    }
+  }
+  function stopMiamiActivity(activity: MiamiActivityIdV1): void {
+    const handle = miamiHandles.current[activity];
+    if (handle) {
+      delete miamiHandles.current[activity];
+      handle.dispose();
+      return;
+    }
+    // Activities can be exited by Esc/retry panels before the registry handle
+    // is installed; keep the old direct exit as a safe fallback.
+    if (activity === "flight") gameRef.current.exit();
+    else if (activity === "driving") drivingRef.current.exit();
+    else if (activity === "mecha") exitMecha();
+    else exitMiamiCinema();
+  }
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!event.shiftKey || event.key.toLowerCase() !== "o" || event.repeat) return;
+      if (gameRef.current.active || drivingRef.current.active || mechaOpenRef.current || cinemaRef.current) return;
+      event.preventDefault();
+      void startMiamiActivity("flight", "creator.flight-ornithopter-prototype-v1");
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  useEffect(() => {
+    if (!game.active) delete miamiHandles.current.flight;
+    if (!driving.active) delete miamiHandles.current.driving;
+    if (!mechaOpen) delete miamiHandles.current.mecha;
+    if (!cinema) delete miamiHandles.current.cinema;
+  }, [game.active, driving.active, mechaOpen, cinema]);
 
   return cityView((
     <section className="city-app" aria-label="Agent City">

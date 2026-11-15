@@ -72,6 +72,17 @@
             "templateCatalog": "builtin"
           },
           {
+            "id": "creator.flight-ornithopter-prototype-v1",
+            "label": "扑翼飞行（飞行原型）",
+            "runtime": {
+              "contractVersion": 1,
+              "id": "miami.flight"
+            },
+            "status": "prototype",
+            "template": "miami-flight",
+            "templateCatalog": "builtin"
+          },
+          {
             "id": "creator.flight-ornithopter-v1",
             "label": "扑翼飞行",
             "runtime": {

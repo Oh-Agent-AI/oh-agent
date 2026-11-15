@@ -55,7 +55,9 @@ export type GameRuntimeV1 = Readonly<{
   /** `host-driven` adapters delegate lifecycle to an existing activity; the SDK
    * never drives their simulation clock. */
   readonly execution: GameRuntimeExecutionV1;
-  prepare: (context: GameRuntimeContextV1) => Promise<GameRuntimeResultV1<GameRuntimeHandleV1>>;
+  /** Host-driven adapters do not need content context; fixed-step runtimes
+   * should reject a missing context themselves. */
+  prepare: (context?: GameRuntimeContextV1) => Promise<GameRuntimeResultV1<GameRuntimeHandleV1>>;
 }>;
 
 export type RegisteredGameRuntimeV1 = Readonly<{

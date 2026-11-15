@@ -1,6 +1,6 @@
 import type { GameTypeDescriptorV1 } from "../../agent-vitals-city-sdk/src/index";
 import { createGameRuntimeRegistry, type GameRuntimeRegistryV1 } from "./registry";
-import { MIAMI_ACTIVITY_CATALOG_V1 } from "./builtin";
+import { MIAMI_ACTIVITY_CATALOG_V1, ORNITHOPTER_PROTOTYPE_GAME_TYPE_V1 } from "./builtin";
 import type { GameRuntimeResultV1, GameRuntimeTelemetryV1, GameRuntimeV1 } from "./types";
 
 /** The four existing Miami activities. They remain host-owned: the adapter
@@ -44,5 +44,8 @@ export function createMiamiLegacyRuntime(activity: MiamiActivityIdV1, host: Miam
 export function createMiamiLegacyRegistry(host: MiamiLegacyActivityHostV1): GameRuntimeRegistryV1 {
   const registry = createGameRuntimeRegistry();
   for (const activity of ACTIVITY_IDS) registry.register(descriptorFor(activity), createMiamiLegacyRuntime(activity, host));
+  // Phase-1 ornithopter prototype deliberately reuses the flight runtime; it
+  // is not the planned city-flight-ornithopter contract.
+  registry.register(ORNITHOPTER_PROTOTYPE_GAME_TYPE_V1, createMiamiLegacyRuntime("flight", host));
   return registry;
 }

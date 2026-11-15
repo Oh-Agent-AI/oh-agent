@@ -94,7 +94,8 @@ registry.descriptors();
 - 该层不修改 `GameSession`/`useCityGame`/`useCityDrivingPlay`/mecha/cinema 代码，也不改变 Miami 行为。
 
 App 侧 catalog：[gameTypeCatalog.ts](../apps/agent-city/ui/src/game/runtime/gameTypeCatalog.ts)
-列出四个 Miami adapter 目录 + 计划的 `creator.flight-ornithopter-v1`；
+列出四个 Miami adapter 目录 + 飞行原型 `creator.flight-ornithopter-prototype-v1`
++ 计划的 `creator.flight-ornithopter-v1`；
 `PLANNED_GAME_TYPE_IDS` 与 `gameTypeBlockReason()` 让 UI/Agent 能发现扑翼类型但
 不会误注册（registry 仍拒绝 `planned`）。
 
@@ -106,9 +107,10 @@ App 侧注入点：
   把四个活动的命令（enter/exit/active/telemetry）变成 host entries；
 - [CityApp.tsx](../apps/agent-city/ui/src/CityApp.tsx) 已用 refs 注入现有
   `useCityGame`、`useCityDrivingPlay`、`openMecha`、cinema helper，并实例化
-  registry；registry 目前**不接管** UI 启动路径，现有按钮仍走原逻辑，因此无行为变化。
+  registry。**工具栏四类活动现在经 registry 启动/停止**；无 handle 时保留直接
+  退出 fallback。原型入口为 `Shift+O`（只在无活动/无航拍时触发）。
 
-测试：app `verify:game-runtime-host`（4，含 entry 测试）、runtime（10）。
+测试：app `verify:game-runtime-host`（6，含 entry/prototype/能力锁步）、runtime（11）。
 Miami 金样已在当前树重跑：
 
 - flight：`verify-city-game-session`、`verify-city-game-flight`、
@@ -131,10 +133,12 @@ Miami 金样已在当前树重跑：
 
 ## 3.2 扑翼 descriptor 已进入 Creator 能力发现
 
-`CREATOR_CAPABILITIES_PROJECTION_V1.categories.gameTypes` 现在包含五项：
+`CREATOR_CAPABILITIES_PROJECTION_V1.categories.gameTypes` 现在包含六项：
 
 - `miami.flight-v1` / `miami.driving-v1` / `miami.mecha-v1` / `miami.cinema-v1`
   （`status:"builtin-adapter"`）；
+- `creator.flight-ornithopter-prototype-v1`（`status:"prototype"`，复用
+  `miami.flight` runtime 与 `miami-flight` template；Shift+O 可进入，明确不是扑翼物理）；
 - `creator.flight-ornithopter-v1`（`status:"planned"`，`templateCatalog:"planned"`）。
 
 这不是运行能力：`planned` descriptor 仍被 registry 拒绝注册，也没有 Creator

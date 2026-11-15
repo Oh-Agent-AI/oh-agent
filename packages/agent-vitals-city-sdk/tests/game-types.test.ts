@@ -40,3 +40,10 @@ test("rejects executable or unbounded game type claims", () => {
   assert.equal(validateGameTypeDescriptorV1({ ...descriptor, parameters: { flapPower: { min: 10, max: 1, default: 6 } } }).ok, false);
   assert.equal(validateGameTypeDescriptorV1({ ...descriptor, assetRoles: { vehicle: { kind: "model-glb", required: true, maxBytes: 1 } } }).ok, false);
 });
+
+test("accepts an asset role with nodeRoles and no maxBytes", () => {
+  const result = validateGameTypeDescriptorV1({ ...descriptor, assetRoles: {
+    vehicle: { kind: "model-glb", required: true, nodeRoles: ["wing.left", "wing.right"] },
+  } });
+  assert.equal(result.ok, true, JSON.stringify(result));
+});

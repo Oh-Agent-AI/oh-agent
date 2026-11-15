@@ -28,6 +28,19 @@ export const MIAMI_ACTIVITY_CATALOG_V1: readonly GameTypeDescriptorV1[] = Object
 
 /** First planned Creator flight game type; not registered until its runtime
  * adapter lands. Kept here so capability/editor work can consume the contract. */
+/** Phase-1 flight prototype: reuses the trusted Miami flight runtime and
+ * built-in flight template. It intentionally has no flap physics, wing
+ * animation or Creator flight template; those belong to the planned type. */
+export const ORNITHOPTER_PROTOTYPE_GAME_TYPE_V1 = Object.freeze({
+  schemaVersion: 1, id: "creator.flight-ornithopter-prototype-v1", version: 1,
+  label: "扑翼飞行（飞行原型）", templateCatalog: "builtin", template: BUILTIN_ACTIVITY_TEMPLATE_IDS.flight,
+  runtime: { id: "miami.flight", contractVersion: 1 },
+  slots: { gates: { kind: "route", min: 3, max: 12, requires: ["fly"], role: "gates" } },
+  parameters: { flapPower: { min: 1, max: 10, default: 6 } },
+  assetRoles: { vehicle: { kind: "model-glb", required: false, nodeRoles: ["leftWing", "rightWing"] } },
+  hud: "flight-hud",
+} as const) satisfies GameTypeDescriptorV1;
+
 export const ORNITHOPTER_GAME_TYPE_V1 = Object.freeze({
   schemaVersion: 1, id: "creator.flight-ornithopter-v1", version: 1, label: "扑翼飞行", templateCatalog: "planned", template: "ornithopter-flight",
   runtime: { id: "city-flight-ornithopter", contractVersion: 1 },
