@@ -1,4 +1,4 @@
-import type { AnchorCapability, AnchorFilterV1, AnchorKind, CityAnchorV1, CityAnchorLinkV1, CityGameMountV1, CityInstanceV1, CityLayoutSnapshotV1, CityLayoutSnapshotV2, CityLayoutV1, CityProjectAssetCatalogV1, CityProjectAssetEntryV1, CitySkinPackV1, CityWorldProfileV1, CoastalWorldParametersV1, ContentRef, DiagnosticV1, MiniGamePackV1, ModelAssetCatalogEntryV1, ModelAssetCatalogV1, ModelAssetFilterV1, ModelAssetRefV1, ResolvedModelAssetRefsV1, Result, SceneDraftV1, SceneObjectFilterV1, SceneObjectV1 } from "./types";
+import type { AnchorCapability, AnchorFilterV1, AnchorKind, CityAnchorV1, CityAnchorLinkV1, CityGameMountV1, CityInstanceV1, CityAnchorGeometryV1, CityLayoutSnapshotV1, CityLayoutSnapshotV2, CityLayoutSnapshotScoped, CityLayoutSnapshotV3, CityLayoutV1, CityProjectAssetCatalogV1, CityProjectAssetEntryV1, CitySkinPackV1, CityWorldProfileV1, CoastalWorldParametersV1, ContentRef, DiagnosticV1, MiniGamePackV1, ModelAssetCatalogEntryV1, ModelAssetCatalogV1, ModelAssetFilterV1, ModelAssetRefV1, ResolvedModelAssetRefsV1, Result, SceneDraftV1, SceneObjectFilterV1, SceneObjectV1 } from "./types";
 import { validateMiniGamePack } from "./content";
 import { validateWorldPlanPatch } from "./worldPlanPatch";
 import { ARID_DUNES_LEGACY_KEYS, ARID_DUNES_WORLD_V2, validateWorldParametersV1 } from "./worldParameters";
@@ -261,9 +261,75 @@ export function validateCityLayoutSnapshotV2(value: unknown): Result<CityLayoutS
     worldRevision: legacy.value.worldRevision, seed: legacy.value.seed, layout: legacy.value.layout }), diagnostics: [] };
 }
 
+/**
+ * v3：在 v2 之上序列化锚点几何（`geometry`）。只接受快照 anchors 真正引用到的 geometryRef，
+ * 且每条都必须有有限 positionMeters；activationRadiusMeters 可选但必须为正。
+ * 这条校验是"发布物能离开运行时被复现"的前提，因此比 v2 更严：多一条没用到的几何也不行
+ * （否则快照会悄悄膨胀，且让人以为门在那儿）。
+ */
+export function validateCityLayoutSnapshotV3(value: unknown): Result<CityLayoutSnapshotV3> {
+  if (!isObject(value) || !exactKeys(value, ["schemaVersion", "cityId", "cityRevision", "worldRevision", "seed", "layout", "geometry"])) {
+    return { ok: false, diagnostics: [error("layout_snapshot_invalid_shape", "$", "Version 3 layout snapshot requires its City identity, layout and anchor geometry.")] };
+  }
+  if (value.schemaVersion !== 3) {
+    return { ok: false, diagnostics: [error("layout_snapshot_invalid_shape", "schemaVersion", "Expected layout snapshot schema version 3.")] };
+  }
+  const legacy = validateCityLayoutSnapshot({ schemaVersion: 1, worldRevision: value.worldRevision, seed: value.seed, layout: value.layout });
+  if (!legacy.ok) return legacy;
+  const scoped = validateCityLayoutSnapshotV2({ schemaVersion: 2, cityId: value.cityId, cityRevision: value.cityRevision,
+    worldRevision: value.worldRevision, seed: value.seed, layout: value.layout });
+  if (!scoped.ok) return scoped;
+  if (!Array.isArray(value.geometry) || value.geometry.length > MAX_LAYOUT_ANCHORS) {
+    return { ok: false, diagnostics: [error("layout_snapshot_geometry_invalid", "geometry", "Anchor geometry must be a bounded array.")] };
+  }
+  const referenced = new Set(scoped.value.layout.anchors.map(anchor => anchor.geometryRef));
+  const geometry: Array<Readonly<{ geometryRef: string } & CityAnchorGeometryV1>> = [];
+  const seen = new Set<string>();
+  for (const [index, entry] of value.geometry.entries()) {
+    const path = `geometry[${index}]`;
+    if (!isObject(entry) || !exactKeys(entry, ["geometryRef", "positionMeters", "activationRadiusMeters", "facingRadians"])) {
+      return { ok: false, diagnostics: [error("layout_snapshot_geometry_invalid", path, "Anchor geometry must contain only geometryRef, positionMeters and optional radius/facing.")] };
+    }
+    const geometryRef = entry.geometryRef;
+    if (typeof geometryRef !== "string" || !identifier.test(geometryRef) || !referenced.has(geometryRef) || seen.has(geometryRef)) {
+      return { ok: false, diagnostics: [error("layout_snapshot_geometry_invalid", `${path}.geometryRef`, "Anchor geometry must reference exactly one snapshot anchor and appear once.")] };
+    }
+    const position = entry.positionMeters;
+    if (!isObject(position) || !exactKeys(position, ["x", "y", "z"])
+      || ![position.x, position.y, position.z].every(item => typeof item === "number" && Number.isFinite(item))) {
+      return { ok: false, diagnostics: [error("layout_snapshot_geometry_invalid", `${path}.positionMeters`, "Anchor geometry needs finite x/y/z metres.")] };
+    }
+    const radius = entry.activationRadiusMeters;
+    if (radius !== undefined && !(typeof radius === "number" && Number.isFinite(radius) && radius > 0)) {
+      return { ok: false, diagnostics: [error("layout_snapshot_geometry_invalid", `${path}.activationRadiusMeters`, "Activation radius must be a positive number of metres.")] };
+    }
+    const facing = entry.facingRadians;
+    if (facing !== undefined && !(typeof facing === "number" && Number.isFinite(facing))) {
+      return { ok: false, diagnostics: [error("layout_snapshot_geometry_invalid", `${path}.facingRadians`, "Facing must be a finite number of radians.")] };
+    }
+    seen.add(geometryRef);
+    geometry.push(Object.freeze({ geometryRef, positionMeters: Object.freeze({ x: position.x as number, y: position.y as number, z: position.z as number }),
+      ...(radius === undefined ? {} : { activationRadiusMeters: radius as number }), ...(facing === undefined ? {} : { facingRadians: facing as number }) }));
+  }
+  // 锚点引用的几何必须全部在场，否则发布物照样无法复现（宁可在发布时失败）。
+  const missing = [...referenced].filter(ref => !seen.has(ref));
+  if (missing.length) {
+    return { ok: false, diagnostics: [error("layout_snapshot_geometry_missing", "geometry", "Every snapshot anchor must have its geometry serialized.", missing[0])] };
+  }
+  return { ok: true, value: Object.freeze({ schemaVersion: 3, cityId: scoped.value.cityId, cityRevision: scoped.value.cityRevision as number,
+    worldRevision: scoped.value.worldRevision, seed: scoped.value.seed, layout: scoped.value.layout, geometry: Object.freeze(geometry) }), diagnostics: [] };
+}
+
+/** 读侧入口：v2（无几何，历史数据）与 v3 都接受。写侧必须显式产出 v3。 */
+export function validateCityLayoutSnapshotScoped(value: unknown): Result<CityLayoutSnapshotV2 | CityLayoutSnapshotV3> {
+  if (isObject(value) && value.schemaVersion === 3) return validateCityLayoutSnapshotV3(value);
+  return validateCityLayoutSnapshotV2(value);
+}
+
 /** Reject stale or cross-City bindings even when the seed or world revision matches. */
-export function validateCityLayoutScope(value: unknown, city: Pick<CityInstanceV1, "cityId" | "revision" | "seed">): Result<CityLayoutSnapshotV2> {
-  const snapshot = validateCityLayoutSnapshotV2(value);
+export function validateCityLayoutScope(value: unknown, city: Pick<CityInstanceV1, "cityId" | "revision" | "seed">): Result<CityLayoutSnapshotScoped> {
+  // 读侧同时接受 v2（历史数据）与 v3（带锚点几何）。
+  const snapshot = validateCityLayoutSnapshotScoped(value);
   if (!snapshot.ok) return snapshot;
   if (snapshot.value.cityId !== city.cityId || snapshot.value.cityRevision !== city.revision || snapshot.value.seed !== city.seed) {
     return { ok: false, diagnostics: [error("layout_snapshot_city_mismatch", "cityId", "Layout belongs to a different City, revision or seed.")] };

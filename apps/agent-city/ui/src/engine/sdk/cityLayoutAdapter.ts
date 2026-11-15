@@ -1,4 +1,4 @@
-import type { CityAnchorGeometryV1, CityLayoutSnapshotV1, CityLayoutV1 } from "@agent-vitals/city-sdk";
+import type { CityAnchorGeometryV1, CityLayoutSnapshotV1, CityLayoutSnapshotV3, CityLayoutV1 } from "@agent-vitals/city-sdk";
 import type { CityLayout, RoadEdge, RoadNode } from "../cityLayout";
 import { hashSeed } from "../../cityModel";
 import { toMeters } from "../worldScale";
@@ -175,6 +175,32 @@ export function createCreatorLayoutSnapshot(view: CityLayoutSdkViewV1, maxAnchor
   const links = (view.layout.links ?? []).filter(link => selected.has(link.fromAnchorId) && selected.has(link.toAnchorId));
   return Object.freeze({ schemaVersion: 1, worldRevision: view.worldRevision, seed: view.seed,
     layout: Object.freeze({ ...view.layout, anchors: Object.freeze(anchors) as unknown as CityLayoutV1["anchors"], links: Object.freeze(links) }) }) as unknown as CityLayoutSnapshotV1;
+}
+
+/**
+ * v3 作用域快照：v2 的身份 + **锚点几何**。
+ *
+ * 发布物必须能离开运行时被复现：锚点（尤其 Creator 加的空域门）只有 geometryRef，
+ * 几何留在本适配器里就永远拿不到位置。这里只序列化快照 anchors 真正引用到的几何
+ * （≤ anchors 数），不改锚点选择逻辑——v1/v2 的生产者仍保持逐字不变。
+ */
+export function createScopedCreatorLayoutSnapshot(view: CityLayoutSdkViewV1, cityId: string, cityRevision: number,
+  maxAnchors = 64): CityLayoutSnapshotV3 {
+  if (typeof cityId !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(cityId)) throw new Error("city-sdk-creator-city-invalid");
+  if (!Number.isSafeInteger(cityRevision) || cityRevision < 0) throw new Error("city-sdk-creator-city-revision-invalid");
+  const legacy = createCreatorLayoutSnapshot(view, maxAnchors);
+  const refs = [...new Set(legacy.layout.anchors.map(anchor => anchor.geometryRef))];
+  const geometry = refs.map(ref => {
+    const entry = view.geometry.get(ref);
+    if (!entry) throw new Error("city-sdk-creator-geometry-unavailable");
+    const { x, y, z } = entry.positionMeters;
+    if (![x, y, z].every(value => Number.isFinite(value))) throw new Error("city-sdk-creator-geometry-unavailable");
+    return Object.freeze({ geometryRef: ref, positionMeters: Object.freeze({ x, y, z }),
+      ...(entry.activationRadiusMeters === undefined ? {} : { activationRadiusMeters: entry.activationRadiusMeters }),
+      ...(entry.facingRadians === undefined ? {} : { facingRadians: entry.facingRadians }) });
+  });
+  return Object.freeze({ schemaVersion: 3, cityId, cityRevision, worldRevision: legacy.worldRevision, seed: legacy.seed,
+    layout: legacy.layout, geometry: Object.freeze(geometry) }) as unknown as CityLayoutSnapshotV3;
 }
 
 export type CityCheckpointRaceCourseV1 = Readonly<{

@@ -1,4 +1,4 @@
-import { validateCityInstance, validateCityLayoutSnapshotV2, type CityInstanceV1, type CityLayoutSnapshotV2, type SceneDraftV1, type CityProjectAssetCatalogV1 } from "@agent-vitals/city-sdk";
+import { validateCityInstance, validateCityLayoutSnapshotScoped, type CityInstanceV1, type CityLayoutSnapshotScoped, type SceneDraftV1, type CityProjectAssetCatalogV1 } from "@agent-vitals/city-sdk";
 
 export type CityWorldPackageRefV1 = Readonly<{ packageId: string; version: string; contentDigest: string }>;
 export type LoadedCityWorldSceneV1 = Readonly<{ scene: SceneDraftV1; assets: CityProjectAssetCatalogV1; files: ReadonlyMap<string, Uint8Array> }>;
@@ -6,7 +6,7 @@ export type LoadedCityWorldSceneV1 = Readonly<{ scene: SceneDraftV1; assets: Cit
 export type PendingCreatorPlaytestV1 =
   | Readonly<{ pending: false }>
   | Readonly<{ pending: true; runId: string; releaseId: string; projectId: string; revision: number; worldRevision: string;
-      city: CityInstanceV1; layout: CityLayoutSnapshotV2; worldPackage: CityWorldPackageRefV1 | null; worldScene?: LoadedCityWorldSceneV1 }>;
+      city: CityInstanceV1; layout: CityLayoutSnapshotScoped; worldPackage: CityWorldPackageRefV1 | null; worldScene?: LoadedCityWorldSceneV1 }>;
 
 /** Pure parser for the pre-claim descriptor. A release's city revision, layout
  * revision and world revision must agree before the runtime may load it. */
@@ -18,7 +18,7 @@ export function parsePendingCreatorPlaytest(raw: unknown): PendingCreatorPlaytes
   if (value.pending === false) return { pending: false };
   const city = validateCityInstance(value.city);
   if (!city.ok) throw new Error(city.diagnostics[0]?.code ?? "creator_playtest_city_invalid");
-  const layout = validateCityLayoutSnapshotV2(value.layout);
+  const layout = validateCityLayoutSnapshotScoped(value.layout);
   if (!layout.ok) throw new Error(layout.diagnostics[0]?.code ?? "creator_playtest_layout_invalid");
   let worldPackage: CityWorldPackageRefV1 | null = null;
   if (value.worldPackage != null) {

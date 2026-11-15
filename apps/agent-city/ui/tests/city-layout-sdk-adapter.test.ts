@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { listAnchors, validateCityLayoutScope } from "@agent-vitals/city-sdk";
-import { createCityLayoutSdkView, createCreatorLayoutSnapshot, createSdkViewForCityLayout, selectCheckpointRaceCourse } from "../src/engine/sdk/cityLayoutAdapter.ts";
+import { createCityLayoutSdkView, createCreatorLayoutSnapshot, createScopedCreatorLayoutSnapshot, createSdkViewForCityLayout, selectCheckpointRaceCourse } from "../src/engine/sdk/cityLayoutAdapter.ts";
 import { layoutCityForWorld } from "../src/engine/cityLayout.ts";
 import { applyCitySkinToWorldProfile, ARID_DUNES_CITY_WORLD_V1, BUILTIN_CITY_SKINS_V1, MIAMI_CITY_WORLD_V1 } from "../src/engine/cityWorldProfile.ts";
 import { buildCityModel } from "../src/cityModel.ts";
@@ -110,4 +110,25 @@ test("independent empty desert generates road anchors without personal session d
   assert.equal(model.buildings.length, 0);
   assert.ok(snapshot.layout.anchors.some(anchor => anchor.kind === "spawn"));
   assert.ok(snapshot.layout.anchors.some(anchor => anchor.kind === "zone"));
+});
+
+test("v3 scoped snapshots carry the geometry their anchors reference (and only those)", () => {
+  const adapted = view();
+  const scoped = createScopedCreatorLayoutSnapshot(adapted, "city-desert", 3);
+  assert.equal(scoped.schemaVersion, 3);
+  assert.equal(scoped.cityId, "city-desert");
+  assert.equal(scoped.cityRevision, 3);
+  // 每条锚点的 geometryRef 都有几何，且不含未被引用的 ref。
+  const refs = new Set(scoped.layout.anchors.map(anchor => anchor.geometryRef));
+  assert.deepEqual(scoped.geometry.map(entry => entry.geometryRef).sort(), [...refs].sort());
+  const checkpoint = adapted.layout.anchors.find(anchor => anchor.kind === "zone")!;
+  const entry = scoped.geometry.find(item => item.geometryRef === checkpoint.geometryRef)!;
+  assert.deepEqual(entry.positionMeters, { x: 10, y: 0, z: 0 });
+  assert.equal(entry.activationRadiusMeters, 8.8);
+  // 作用域仍可校验（v3 走 scope 读），跨城被拒。
+  assert.equal(validateCityLayoutScope(scoped, { cityId: "city-desert", revision: 3, seed: scoped.seed }).ok, true);
+  assert.equal(validateCityLayoutScope(scoped, { cityId: "city-miami", revision: 3, seed: scoped.seed }).ok, false);
+  // 身份不合法就不产出。
+  assert.throws(() => createScopedCreatorLayoutSnapshot(adapted, "../miami", 1), /city-sdk-creator-city-invalid/);
+  assert.throws(() => createScopedCreatorLayoutSnapshot(adapted, "city-desert", -1), /city-sdk-creator-city-revision-invalid/);
 });

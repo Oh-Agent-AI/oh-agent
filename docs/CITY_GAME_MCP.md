@@ -78,22 +78,25 @@ An MCP client entry (`<repo>` is this checkout):
 
 `dataHome` defaults to `$AV_DATA_HOME` or `~/.agent-vitals`.
 
-### Gate geometry is usually missing — by design, not by bug
+### Gate geometry: snapshot v3 serializes it
 
-The City adapter states it explicitly: *"geometry stays in the City adapter and is never
-serialized"*. Layout snapshots v1/v2 carry anchors + links but **no** `positionMeters` /
-`activationRadiusMeters`, and regenerating the city headlessly is **not** a substitute —
-road pruning depends on live session data, so the regenerated node set does not match the
-`geometryRef`s the snapshot recorded.
+Layout snapshots v1/v2 carry anchors + links but **no** `positionMeters` /
+`activationRadiusMeters` — geometry lived only in the City adapter, so a published release
+could not be replayed outside the runtime (and regenerating the city headlessly is **not** a
+substitute: road pruning depends on live session data, so the node set does not match the
+snapshot's `geometryRef`s).
+
+Snapshot **v3** fixes that: the Studio publishes `geometry: [{ geometryRef, positionMeters,
+activationRadiusMeters? }]` for exactly the anchors its snapshot references (≤64, bounded,
+validated by city-sdk and re-checked structurally by the host on every anchor edit).
 
 So the resolver never guesses:
 
-- snapshot carries `geometry: [{ geometryRef, positionMeters, activationRadiusMeters? }]`
-  (the shape a future snapshot version will serialize) → gates are resolved and
+- v3 snapshot → gates are resolved from the serialized geometry,
   `release.gateSource === "layout-geometry"`;
-- otherwise → `isError: gates_required` with `boundAnchors` (which anchor ids the mounts
-  bind) and `warnings: ["gate_geometry_not_serialized"]`; pass `gates` yourself in metres
-  and `release.gateSource === "caller"`.
+- v2 snapshot (releases frozen before v3) → `isError: gates_required` with `boundAnchors`
+  and `warnings: ["gate_geometry_not_serialized"]`; pass `gates` yourself in metres and
+  `release.gateSource === "caller"`. Re-publishing the release produces a v3 snapshot.
 
 A partially resolvable gate set is refused whole (`gate_anchor_not_found`,
 `gate_geometry_unresolved`, `gate_radius_missing`) — half a gate list silently moves the

@@ -173,7 +173,7 @@ function fixtureStore({ withGeometry }) {
     cityId: "city-fixture", cityRevision: 1 };
   db.prepare("INSERT INTO creator_releases VALUES (?,?,?,?,?,?,?,?)").run("release-fixture", "project-release", 1, "layout-1", "world-1",
     JSON.stringify(snapshot), `sha256:${"c".repeat(64)}`, 1);
-  const layout = { schemaVersion: 2, cityId: "city-fixture", cityRevision: 1, worldRevision: "world-1", seed: 42,
+  const layout = { schemaVersion: 3, cityId: "city-fixture", cityRevision: 1, worldRevision: "world-1", seed: 42,
     layout: { schemaVersion: 1, id: "layout-1", coordinateSystem: "city-local-m-v1",
       anchors: [{ id: "spawn", kind: "spawn", capabilities: ["fly"], geometryRef: "g:spawn" },
         { id: "gate-1", kind: "zone", capabilities: ["fly"], geometryRef: "g:gate-1" }], links: [] },

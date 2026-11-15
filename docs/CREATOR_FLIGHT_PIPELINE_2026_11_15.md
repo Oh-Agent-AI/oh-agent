@@ -66,6 +66,25 @@ Agent 用**同一套输入词表**无头跑 flight 与 driving：门由参数给
 1/60 s 步长、同参数同轨迹并带 `traceDigest`。它不读 release、不解析 City 布局、不写证据、
 不带城市碰撞——真机发布链路仍走 creator MCP。
 
+### 布局快照 v3：锚点几何随发布物序列化（2026-11-15）
+
+City 适配器原来的立场是「geometry stays in the City adapter and is never serialized」。
+代价是发布物离开运行时后无法复现：Creator 加的空域门只有 `geometryRef`，无头试玩 /
+Agent 测试只能让调用方手填坐标。
+
+v3 只多一个字段：`geometry: [{ geometryRef, positionMeters, activationRadiusMeters?, facingRadians? }]`，
+存**快照 anchors 真正引用到的**几何（≤64 条），并且：
+
+- city-sdk 严格校验（引用必须一一对应、位置有限、半径为正、不许多余键）；
+- 宿主（Rust）在每次存快照/改锚点时重新做同构结构校验，锚点增删**原样带走** geometry，
+  不会降级版本（快照体积上限 v3 = 64 KiB，v2 仍 32 KiB）；
+- 读侧（`validateCityLayoutSnapshotScoped` / `validateCityLayoutScope`）同时接受 v2 与 v3，
+  历史数据不受影响；
+- MCP 的 release 模式由此可以直接从库里解出闸门位置（v2 旧发布物仍如实要求显式 gates）。
+
+已有 v2 发布物要重新发布才能带上几何（快照写在 `creator_city_layouts_v2.snapshot_json`，
+重新保存布局即升级）。
+
 ### 阶段 2 补丁：让发布出来的空域门真的能玩（2026-11-15 复查）
 
 真机数据复查发现：`air-gate:0..2` 三道门**都没有 link**、入口锚点被绑成 `air-gate:0`（zone

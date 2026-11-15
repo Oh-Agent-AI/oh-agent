@@ -45,6 +45,25 @@ export interface CityLayoutSnapshotV2 {
   seed: number;
   layout: CityLayoutV1;
 }
+/**
+ * v3（2026-11-15）：把锚点引用的几何**随快照序列化**。
+ *
+ * 之前几何只存在于 City 适配器（"never serialized"），于是发布物里的锚点（例如 Creator
+ * 加的空域门）离开运行时就无法定位——无头试玩 / Agent 测试只能靠调用方手填坐标。v3 只存
+ * 快照 anchors 真正引用到的那几条几何，有界且不含地形：positionMeters 必填，
+ * activationRadiusMeters 在锚点本身没有实测半径时可以缺省（消费方按自己的规则补）。
+ */
+export interface CityLayoutSnapshotV3 {
+  schemaVersion: 3;
+  cityId: string;
+  cityRevision: number;
+  worldRevision: string;
+  seed: number;
+  layout: CityLayoutV1;
+  geometry: readonly Readonly<{ geometryRef: string } & CityAnchorGeometryV1>[];
+}
+/** 读侧可接受的快照版本：v2（历史数据，无几何）与 v3（带锚点几何）。 */
+export type CityLayoutSnapshotScoped = CityLayoutSnapshotV2 | CityLayoutSnapshotV3;
 export type CityGeographyGeneratorV1 = "coastal-islands-v1" | "arid-dunes-v1";
 export interface CoastalWorldParametersV1 {
   profile: "miami-coastal";

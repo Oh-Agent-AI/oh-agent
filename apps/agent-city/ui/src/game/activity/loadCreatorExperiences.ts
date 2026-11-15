@@ -1,5 +1,5 @@
 import { canonicalJson, inspectContentPackageV2, parseMiniGamePackJson, validateAssetRefs, validateCityProjectAssetCatalog,
-  validateCityLayoutSnapshotV2, validateContentPackageManifestV2, validateMount, validateSceneDraft, validateVehicleProfileV1, type CityGameMountV1,
+  validateCityLayoutSnapshotScoped, validateContentPackageManifestV2, validateMount, validateSceneDraft, validateVehicleProfileV1, type CityGameMountV1,
   type CityProjectAssetCatalogV1, type ContentRef, type MiniGamePackV1, type ModelAssetCatalogV1, type ModelAssetRefV1, type SceneDraftV1,
   type VehicleProfileV1, type VisualPlaytestEvidenceV1 } from "@agent-vitals/city-sdk";
 import { invokeHost } from "../../host";
@@ -152,7 +152,7 @@ export async function claimCreatorPlaytest(view: CityLayoutSdkViewV1, expectedRu
   // 只由路网生成；不并进来，validateMount 会以 anchor_not_found 拒绝整份发布物。
   let releaseView = view;
   if (handoff.layout != null) {
-    const frozen = validateCityLayoutSnapshotV2(handoff.layout);
+    const frozen = validateCityLayoutSnapshotScoped(handoff.layout);
     if (!frozen.ok) {
       await finishCreatorPlaytest(handoff.runId, "failed", undefined, "creator_playtest_layout_invalid");
       throw new Error("creator_playtest_layout_invalid");

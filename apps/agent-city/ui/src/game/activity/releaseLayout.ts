@@ -20,7 +20,7 @@
  * **显式、有名字的默认触发球**——它是玩法内容常量，不是物理推导；正式做法应是
  * 锚点创作时自带半径（见 docs/CITY_GAME_MCP.md 的 known gap）。
  */
-import type { CityLayoutSnapshotV2, DiagnosticV1 } from "@agent-vitals/city-sdk";
+import type { CityLayoutSnapshotScoped, DiagnosticV1 } from "@agent-vitals/city-sdk";
 import type { CityLayoutSdkViewV1 } from "../../engine/sdk/cityLayoutAdapter";
 
 /** 空域 zone 缺触发半径时的默认触发球（米）。固定 12 m ≈ 一座检查点门，
@@ -42,7 +42,7 @@ export type ReleaseAnchorMerge =
  * - 缺失几何的锚点：整份拒绝并列出 id——半份锚点等于把玩法挪了位置；
  * - 缺半径的 zone 锚点：记进 `defaultedRadiusRefs`，调用方应当如实告知用户。
  */
-export function mergeReleaseAnchors(view: CityLayoutSdkViewV1, snapshot: CityLayoutSnapshotV2 | null | undefined): ReleaseAnchorMerge {
+export function mergeReleaseAnchors(view: CityLayoutSdkViewV1, snapshot: CityLayoutSnapshotScoped | null | undefined): ReleaseAnchorMerge {
   if (!snapshot) return { ok: true, view, addedAnchorIds: [], defaultedRadiusRefs: [] };
   const live = new Map(view.layout.anchors.map(anchor => [anchor.id, anchor]));
   const added: Array<CityLayoutSdkViewV1["layout"]["anchors"][number]> = [];

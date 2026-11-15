@@ -13,7 +13,7 @@ import { buildCitySourceExport, buildProjectSourceExport } from "./projectSource
 import { AgentApprovalGate, matchesPreviewBase, type AgentCommit } from "./agentApproval";
 // 视口与 City 插件共享同一份引擎与装配管线，保证 Studio 看到的是同一座城市。
 import { CityViewport } from "../../../agent-city/ui/src/viewport/CityViewport";
-import { createCreatorLayoutSnapshot } from "../../../agent-city/ui/src/engine/sdk/cityLayoutAdapter";
+import { createCreatorLayoutSnapshot, createScopedCreatorLayoutSnapshot } from "../../../agent-city/ui/src/engine/sdk/cityLayoutAdapter";
 import { readCityAppearancePreference } from "../../../agent-city/ui/src/engine/cityWorldProfile";
 import type { CityEngine } from "../../../agent-city/ui/src/engine/CityEngine";
 import { CITY_GENERATOR_VERSION, type PlanPatchV1 } from "../../../agent-city/ui/src/engine/planPatch";
@@ -561,8 +561,9 @@ function App() {
       if (draftCityViewRef.current !== current || draftEngineRef.current !== engine || draftViewStatusRef.current !== "ready") throw new Error("creator_capture_unavailable");
       const view = engine.getCitySdkLayoutView();
       if (!view) throw new Error("creator_layout_not_ready");
+      // 发布快照带锚点几何（v3）：否则 Creator 加的空域门离开运行时就定位不到位置。
       const snapshot = createCreatorLayoutSnapshot(view);
-      const scoped = validateCityLayoutScope({ ...snapshot, schemaVersion: 2, cityId: current.cityId, cityRevision: current.revision }, current);
+      const scoped = validateCityLayoutScope(createScopedCreatorLayoutSnapshot(view, current.cityId, current.revision), current);
       if (!scoped.ok) throw new Error("creator_layout_scope_invalid");
       return scoped.value;
     };

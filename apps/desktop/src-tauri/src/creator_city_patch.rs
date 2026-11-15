@@ -90,18 +90,58 @@ pub fn publish_city_layout_snapshot(home: &Path, snapshot: &Value) -> Result<Val
     Ok(json!({"layoutId":layout_id,"worldRevision":world_revision,"anchorCount":snapshot["layout"]["anchors"].as_array().map_or(0, Vec::len)}))
 }
 
-/// Trusted Studio captures the snapshot from its live renderer and validates V2
+/// v3 的几何表结构校验：锚点引用的 geometryRef 必须逐条在场、只出现一次、数值有限。
+/// 语义（几何从哪来、是否可信）属于 City 适配器；宿主只核对"能复现"这件事的结构前提。
+fn validate_snapshot_geometry(geometry: &Value, anchors: &[Value]) -> Result<(), &'static str> {
+    let entries = geometry.as_array().filter(|items| items.len() <= 64).ok_or("creator_layout_snapshot_invalid")?;
+    let mut referenced = std::collections::HashSet::new();
+    for anchor in anchors {
+        if let Some(reference) = anchor["geometryRef"].as_str() { referenced.insert(reference); }
+    }
+    let mut seen = std::collections::HashSet::new();
+    for entry in entries {
+        let object = entry.as_object()
+            .filter(|object| (object.len() == 2 || object.len() == 3 || object.len() == 4)
+                && only_keys(object, &["geometryRef", "positionMeters", "activationRadiusMeters", "facingRadians"]))
+            .ok_or("creator_layout_snapshot_invalid")?;
+        let reference = object.get("geometryRef").and_then(Value::as_str).filter(|value| valid_id(value)).ok_or("creator_layout_snapshot_invalid")?;
+        if !referenced.contains(reference) || !seen.insert(reference.to_owned()) { return Err("creator_layout_snapshot_invalid"); }
+        let position = object.get("positionMeters").and_then(Value::as_object)
+            .filter(|position| position.len() == 3 && only_keys(position, &["x", "y", "z"]))
+            .ok_or("creator_layout_snapshot_invalid")?;
+        if !["x", "y", "z"].iter().all(|axis| position.get(*axis).and_then(Value::as_f64).is_some_and(f64::is_finite)) {
+            return Err("creator_layout_snapshot_invalid");
+        }
+        if let Some(radius) = object.get("activationRadiusMeters") {
+            if !radius.as_f64().is_some_and(|value| value.is_finite() && value > 0.0) { return Err("creator_layout_snapshot_invalid"); }
+        }
+        if let Some(facing) = object.get("facingRadians") {
+            if !facing.as_f64().is_some_and(f64::is_finite) { return Err("creator_layout_snapshot_invalid"); }
+        }
+    }
+    if seen.len() != referenced.len() { return Err("creator_layout_snapshot_invalid"); }
+    Ok(())
+}
+
+/// Trusted Studio captures the snapshot from its live renderer and validates V2/V3
 /// semantics. The host checks structure, identity, bounds and transactional scope.
 pub(crate) fn store_scoped_city_layout(home: &Path, snapshot: &Value) -> Result<Value, &'static str> {
-    let object = snapshot.as_object().filter(|o| o.len() == 6 && only_keys(o, &["schemaVersion", "cityId", "cityRevision", "worldRevision", "seed", "layout"]))
+    let object = snapshot.as_object().filter(|o| (o.len() == 6 || o.len() == 7)
+        && only_keys(o, &["schemaVersion", "cityId", "cityRevision", "worldRevision", "seed", "layout", "geometry"]))
         .ok_or("creator_layout_snapshot_invalid")?;
     let city_id = object.get("cityId").and_then(Value::as_str).filter(|v| valid_id(v)).ok_or("creator_layout_snapshot_invalid")?;
     let city_revision = object.get("cityRevision").and_then(Value::as_u64).filter(|v| *v <= i64::MAX as u64).ok_or("creator_layout_snapshot_invalid")?;
-    if object.get("schemaVersion").and_then(Value::as_u64) != Some(2) { return Err("creator_layout_snapshot_invalid"); }
+    let version = object.get("schemaVersion").and_then(Value::as_u64).ok_or("creator_layout_snapshot_invalid")?;
+    if version != 2 && version != 3 { return Err("creator_layout_snapshot_invalid"); }
+    if version == 3 {
+        let anchors = object.get("layout").and_then(|layout| layout.get("anchors")).and_then(Value::as_array).ok_or("creator_layout_snapshot_invalid")?;
+        validate_snapshot_geometry(object.get("geometry").ok_or("creator_layout_snapshot_invalid")?, anchors)?;
+    } else if object.contains_key("geometry") { return Err("creator_layout_snapshot_invalid"); }
     let legacy = json!({"schemaVersion":1,"worldRevision":snapshot["worldRevision"],"seed":snapshot["seed"],"layout":snapshot["layout"]});
     let (world_revision, layout_id) = validate_layout_snapshot(&legacy)?;
     let raw = canonical_json(snapshot).map_err(|_| "creator_layout_snapshot_invalid")?;
-    if raw.len() > 32 * 1024 { return Err("creator_layout_snapshot_too_large"); }
+    // v3 多了几何（≤64 条），预算相应放宽；v2 保持不变。
+    if raw.len() > (if version == 3 { 64 * 1024 } else { 32 * 1024 }) { return Err("creator_layout_snapshot_too_large"); }
     let hash = digest(&raw);
     let mut db = database(home)?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
@@ -468,9 +508,19 @@ pub(crate) fn mutate_city_anchors(home: &Path, actor: &str, city_id: &str, base_
     let mut document: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
     document["revision"] = json!(next);
     let serialized = canonical_json(&document).map_err(|_| "creator_city_invalid")?;
-    let snapshot = json!({"schemaVersion":2,"cityId":city_id,"cityRevision":next,"worldRevision":world_revision,"seed":layout["seed"],"layout":merged_layout});
+    // v3 快照的几何必须原样带走：锚点增删不改几何，丢了它发布物就再也定位不到门。
+    let version = layout["schemaVersion"].as_u64().unwrap_or(2);
+    let mut snapshot = json!({"schemaVersion":version,"cityId":city_id,"cityRevision":next,"worldRevision":world_revision,
+        "seed":layout["seed"],"layout":merged_layout});
+    if version == 3 {
+        let geometry = layout.get("geometry").cloned().ok_or("creator_layout_snapshot_invalid")?;
+        if let Some(anchors) = snapshot["layout"]["anchors"].as_array() {
+            validate_snapshot_geometry(&geometry, anchors)?;
+        }
+        snapshot["geometry"] = geometry;
+    }
     let snapshot_raw = canonical_json(&snapshot).map_err(|_| "creator_city_anchor_invalid")?;
-    if snapshot_raw.len() > 32 * 1024 { return Err("creator_city_anchor_budget_exceeded"); }
+    if snapshot_raw.len() > (if version == 3 { 64 * 1024 } else { 32 * 1024 }) { return Err("creator_city_anchor_budget_exceeded"); }
     let snapshot_digest = digest(&snapshot_raw);
     let now = now_ms();
     tx.execute("INSERT OR IGNORE INTO creator_city_revisions(city_id,revision,document_json,created_at_ms) SELECT city_id,revision,document_json,updated_at_ms FROM creator_cities WHERE city_id=?1 AND revision=?2",
@@ -538,6 +588,41 @@ mod airspace_tests {
         assert_eq!(removed["anchorCount"], 3);
         let old = list_city_anchors(&home, city_id, Some(0), None, None, 64).unwrap();
         assert_eq!(old["anchors"].as_array().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// v3 快照的几何必须原样跨越锚点编辑：加/删门只改 anchors/links，geometry 不能丢，
+    /// 否则发布物刚存下来就又变回"定位不到门"。
+    #[test]
+    fn v3_snapshot_geometry_survives_anchor_edits_and_is_strictly_validated() {
+        let home = home();
+        let created = crate::creator_cities::create_city(&home, "local-profile", "create-airspace-v3", "Airspace", 9, &json!({"schemaVersion":1})).unwrap();
+        let city_id = created["cityId"].as_str().unwrap();
+        let base = json!({"schemaVersion":3,"cityId":city_id,"cityRevision":0,"worldRevision":"world-airspace-v3","seed":9,
+            "layout":{"schemaVersion":1,"id":"layout-airspace-v3","coordinateSystem":"city-local-m-v1",
+                "anchors":[{"id":"road-spawn:a","kind":"spawn","capabilities":["drive"],"geometryRef":"city-road-node:a"}],"links":[]},
+            "geometry":[{"geometryRef":"city-road-node:a","positionMeters":{"x":1.5,"y":2.5,"z":3.5}}]});
+        store_scoped_city_layout(&home, &base).unwrap();
+        let added = json!([{"id":"spawn-air","kind":"spawn","capabilities":["fly"],"geometryRef":"city-road-node:a"},
+            {"id":"air-gate:a","kind":"zone","capabilities":["fly"],"geometryRef":"city-road-node:a"}]);
+        let mutated = mutate_city_anchors(&home, "local-profile", city_id, 0, &added, &[], "add-fly-v3").unwrap();
+        assert_eq!(mutated["revision"], 1);
+        let raw: String = {
+            let db = database(&home).unwrap();
+            db.query_row("SELECT snapshot_json FROM creator_city_layouts_v2 WHERE city_id=?1 AND city_revision=1", params![city_id], |row| row.get::<_, String>(0)).unwrap()
+        };
+        let snapshot: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(snapshot["schemaVersion"], 3, "anchor edits must not downgrade the snapshot version");
+        assert_eq!(snapshot["geometry"], json!([{"geometryRef":"city-road-node:a","positionMeters":{"x":1.5,"y":2.5,"z":3.5}}]));
+        // 少一条几何的 v3 直接拒绝（发布物无法复现）。
+        let mut broken = base.clone();
+        broken["geometry"] = json!([]);
+        assert_eq!(store_scoped_city_layout(&home, &broken).unwrap_err(), "creator_layout_snapshot_invalid");
+        // 引用不到的几何同样拒绝。
+        let mut extra = base.clone();
+        extra["geometry"] = json!([{"geometryRef":"city-road-node:a","positionMeters":{"x":0,"y":0,"z":0}},
+            {"geometryRef":"city-road-node:ghost","positionMeters":{"x":0,"y":0,"z":0}}]);
+        assert_eq!(store_scoped_city_layout(&home, &extra).unwrap_err(), "creator_layout_snapshot_invalid");
         let _ = std::fs::remove_dir_all(home);
     }
 
