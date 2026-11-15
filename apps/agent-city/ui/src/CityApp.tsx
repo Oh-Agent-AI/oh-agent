@@ -383,7 +383,9 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
   useEffect(() => {
     if (!creatorPlaytest || creatorPlaytest.gameType !== "flight" || !firstModelFrame || game.active || startedFlightPlaytest.current === creatorPlaytest.runId) return;
     startedFlightPlaytest.current = creatorPlaytest.runId;
-    void game.enterRace();
+    // 飞行试玩飞 release 冻结的那台 profile（物理/相机/包围盒全部来自发布快照）；
+    // 旧 release 没有载具 → undefined，退回默认飞机（与本次切片之前的行为一致）。
+    void game.enterRace(creatorPlaytest.vehicle);
   }, [creatorPlaytest, firstModelFrame, game.active, game.enterRace]);
   useEffect(() => () => { mechaActivityLease.current?.release(); mechaActivityLease.current = null; }, []);
   drivingActive.current = driving.active;

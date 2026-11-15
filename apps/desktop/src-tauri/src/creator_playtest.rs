@@ -165,8 +165,23 @@ pub(crate) fn claim_playtest(home: &Path, city_instance: &str, expected_run: Opt
     // City 侧 handoff 按 gameType 路由 flight/driver（飞行泛化切片）：容忍读 release
     // 冻结值，缺省 driving = 既有行为；driving 路径逐位不变。
     let game_type = resolve_playtest_game_type(None, &snapshot)?;
+    // 载具随 release 一起冻结（发布冻结阶段写入）：飞行试玩必须飞这一台 profile，而
+    // 不是默认飞机，否则「试玩」验证不到用户发布的那台飞行器。driving 的 release
+    // 没有该字段 → null，driving 路径逐位不变；飞行 release 缺载具（phase 4 之前
+    // 冻结的旧 release）容忍为空，City 侧退回默认飞机而不是让旧 release 无法试玩。
+    let vehicle = match snapshot.get("vehicle").filter(|value| !value.is_null()) {
+        None => Value::Null,
+        Some(vehicle) => {
+            let vehicle_id = vehicle.get("id").and_then(Value::as_str).filter(|id| !id.is_empty())
+                .ok_or("creator_release_vehicle_invalid")?;
+            if snapshot.get("vehicleId").and_then(Value::as_str) != Some(vehicle_id) {
+                return Err("creator_release_vehicle_invalid");
+            }
+            vehicle.clone()
+        }
+    };
     let mut response = json!({"runId":run_id,"releaseId":release_id,"projectId":project_id,"revision":revision,"snapshotDigest":snapshot_digest,"skinId":skin_id,
-        "gameType":game_type,
+        "gameType":game_type,"vehicle":vehicle,"vehicleId":snapshot.get("vehicleId").cloned().unwrap_or(Value::Null),
         "game":snapshot["game"],"mounts":snapshot["mounts"],
         "scene":snapshot.get("scene").cloned().unwrap_or_else(|| json!({"schemaVersion":1,"objects":[]})),
         "assets":snapshot.get("assets").cloned().unwrap_or_else(|| json!({"schemaVersion":1,"entries":[]})),
@@ -475,6 +490,15 @@ mod flight_handoff_tests {
         snapshot
     }
 
+    fn release_snapshot_with_vehicle(revision: u64, vehicle_id: &str) -> Value {
+        let mut snapshot = release_snapshot(revision, Some("flight"));
+        snapshot["vehicleId"] = json!(vehicle_id);
+        snapshot["vehicle"] = json!({"schemaVersion":1,"id":vehicle_id,"label":"Released flier","modelAssetId":null,"flightModel":"fixed-wing",
+            "physics":{"massKg":600,"wingAreaM2":12,"thrustN":9000,"maxSpeedMps":110,"dragCoefficient":0.3,"turnRateRps":1.1,"climbRateMps":20,"sinkRateMps":12},
+            "bounds":{"halfLengthM":4,"halfWidthM":5,"halfHeightM":1.5},"camera":{"followDistanceM":30,"heightOffsetM":13,"fovDeg":55}});
+        snapshot
+    }
+
     #[test]
     fn game_type_resolution_matches_release_freeze_and_validates_explicit_only() {
         // 纯函数语义：容忍读 + 显式仅校验。
@@ -551,4 +575,52 @@ mod flight_handoff_tests {
         assert_eq!(claimed["gameType"], "driving");
         let _ = std::fs::remove_dir_all(home);
     }
+    /// 飞行试玩必须把发布的载具 profile 交给 City：试玩验证的是用户发布的那台
+    /// 飞行器（物理参数/相机/包围盒），不是默认飞机。载具与 vehicleId 不一致的
+    /// 冻结快照按损坏拒绝，而不是悄悄退回默认飞机。
+    #[test]
+    fn claim_hands_the_frozen_vehicle_to_the_city_runtime() {
+        let home = home();
+        store_release(&home, "release-vehicle", 7, &release_snapshot_with_vehicle(7, "vehicle-release"));
+        let started = start_playtest(&home, "studio-instance", "release-vehicle", None, None).unwrap();
+        let claimed = claim_playtest(&home, "city-instance", Some(started["runId"].as_str().unwrap())).unwrap();
+        assert_eq!(claimed["gameType"], "flight");
+        assert_eq!(claimed["vehicle"]["id"], "vehicle-release");
+        assert_eq!(claimed["vehicle"]["physics"]["maxSpeedMps"], 110);
+        assert_eq!(claimed["vehicleId"], "vehicle-release");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn claim_rejects_a_vehicle_that_does_not_match_the_frozen_vehicle_id() {
+        let home = home();
+        let mut snapshot = release_snapshot_with_vehicle(8, "vehicle-a");
+        snapshot["vehicleId"] = json!("vehicle-b");
+        store_release(&home, "release-mismatch", 8, &snapshot);
+        let started = start_playtest(&home, "studio-instance", "release-mismatch", None, None).unwrap();
+        assert_eq!(claim_playtest(&home, "city-instance", Some(started["runId"].as_str().unwrap())).unwrap_err(),
+            "creator_release_vehicle_invalid");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// 旧 release（发布冻结之前）没有载具字段：容忍为空，City 侧退回默认飞机，
+    /// 而不是让它们无法试玩；driving release 同样恒为 null。
+    #[test]
+    fn claim_tolerates_releases_frozen_before_vehicles_and_keeps_driving_vehicle_free() {
+        let legacy_home = home();
+        let driving_home = home();
+        store_release(&legacy_home, "release-legacy", 9, &release_snapshot(9, Some("flight")));
+        let started = start_playtest(&legacy_home, "studio-instance", "release-legacy", None, None).unwrap();
+        let claimed = claim_playtest(&legacy_home, "city-instance", Some(started["runId"].as_str().unwrap())).unwrap();
+        assert_eq!(claimed["gameType"], "flight");
+        assert_eq!(claimed["vehicle"], Value::Null);
+        store_release(&driving_home, "release-driving", 10, &release_snapshot(10, Some("driving")));
+        let started = start_playtest(&driving_home, "studio-instance", "release-driving", None, None).unwrap();
+        let claimed = claim_playtest(&driving_home, "city-instance", Some(started["runId"].as_str().unwrap())).unwrap();
+        assert_eq!(claimed["gameType"], "driving");
+        assert_eq!(claimed["vehicle"], Value::Null);
+        let _ = std::fs::remove_dir_all(legacy_home);
+        let _ = std::fs::remove_dir_all(driving_home);
+    }
+
 }

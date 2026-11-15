@@ -190,7 +190,8 @@ export function useCityGame(engine: RefObject<CityEngine | null>, host: GameHost
     enterPracticeFrom: (origin: Readonly<{ x: number; y: number; z: number; heading: number }>) => enterGame("practice", origin),
     /** VehicleProfileV1 驱动的飞行（扑翼原型入口走这里；profile 已在 SDK 校验过的 preset）。 */
     enterVehiclePractice: (vehicle: VehicleProfileV1, origin?: Readonly<{ x: number; y: number; z: number; heading: number }>) => enterGame("practice", origin, vehicle),
-    enterRace: () => enterGame("race"),
+    /** 比赛入口可带冻结载具（Creator 飞行试玩飞发布的那台 profile；null = 默认飞机）。 */
+    enterRace: (vehicle?: VehicleProfileV1) => enterGame("race", undefined, vehicle),
     enterUatRace: async () => {
       if (typeof __CITY_GAME_UAT__ === "undefined" || !__CITY_GAME_UAT__) return;
       pilotRef.current?.();

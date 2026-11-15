@@ -1,6 +1,7 @@
 import { canonicalJson, inspectContentPackageV2, parseMiniGamePackJson, validateAssetRefs, validateCityProjectAssetCatalog,
-  validateContentPackageManifestV2, validateMount, validateSceneDraft, type CityGameMountV1, type CityProjectAssetCatalogV1, type ContentRef,
-  type MiniGamePackV1, type ModelAssetCatalogV1, type ModelAssetRefV1, type SceneDraftV1, type VisualPlaytestEvidenceV1 } from "@agent-vitals/city-sdk";
+  validateContentPackageManifestV2, validateMount, validateSceneDraft, validateVehicleProfileV1, type CityGameMountV1,
+  type CityProjectAssetCatalogV1, type ContentRef, type MiniGamePackV1, type ModelAssetCatalogV1, type ModelAssetRefV1, type SceneDraftV1,
+  type VehicleProfileV1, type VisualPlaytestEvidenceV1 } from "@agent-vitals/city-sdk";
 import { invokeHost } from "../../host";
 import { parsePendingCreatorPlaytest, type LoadedCityWorldSceneV1, type PendingCreatorPlaytestV1 } from "./creatorPlaytestPending";
 import type { CityLayoutSdkViewV1 } from "../../engine/sdk/cityLayoutAdapter";
@@ -10,7 +11,9 @@ import type { CreatorPublishedMiniGameV1 } from "./creatorMiniGame";
 type PluginResponse<T> = { version: number; requestId: string; ok: boolean; result?: T; error?: { code: string } };
 type ReleaseRow = { releaseId: string; title: string; mountCount: number };
 type ReleaseSceneFields = { scene?: unknown; assets?: unknown; assetRefs?: unknown };
-export type CreatorPlaytestHandoffV1 = Readonly<{ runId: string; projectId: string; revision: number; releaseId: string; snapshotDigest: string; skinId?: "miami-vice" | "desert-evening"; gameType: "driving" | "flight"; experiences: readonly CreatorPublishedMiniGameV1[] }>;
+export type CreatorPlaytestHandoffV1 = Readonly<{ runId: string; projectId: string; revision: number; releaseId: string; snapshotDigest: string; skinId?: "miami-vice" | "desert-evening"; gameType: "driving" | "flight";
+  /** 冻结的载具 profile（飞行 release 发布时写入；旧 release 可能没有 → undefined，退回默认飞机）。 */
+  vehicle?: VehicleProfileV1; experiences: readonly CreatorPublishedMiniGameV1[] }>;
 let requestSerial = 0;
 
 async function hostCall<T>(method: string, payload: Record<string, unknown>): Promise<T> {
@@ -30,8 +33,11 @@ async function sha256(value: unknown): Promise<string> {
   return `sha256:${Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
+/** `entryCapability` 决定入口锚点必须声明哪种能力：driving 恒为 "drive"（逐位不变）；
+ * flight 传 null = 接受任一可信出生几何——`fly` 是阶段 2 起新增的声明，阶段 1 之前
+ * 冻结的飞行 release 只声明了 drive，不能因此变成不可试玩。槽位能力由 mount 校验负责。 */
 async function validateRelease(view: CityLayoutSdkViewV1, release: { releaseId: string; title: string; skinId?: unknown; game: unknown; mounts: CityGameMountV1[] } & ReleaseSceneFields,
-  failureCodes?: string[]): Promise<readonly CreatorPublishedMiniGameV1[]> {
+  failureCodes?: string[], entryCapability: "drive" | null = "drive"): Promise<readonly CreatorPublishedMiniGameV1[]> {
   const fail = (code: string) => { failureCodes?.push(code); };
   if (!Array.isArray(release.mounts) || release.mounts.length > 16) { fail("creator_release_mounts_invalid"); return []; }
   if (!release.mounts.length) { fail("creator_release_mounts_empty"); return []; }
@@ -69,7 +75,7 @@ async function validateRelease(view: CityLayoutSdkViewV1, release: { releaseId: 
     if (!mountValidation.ok) { fail(mountValidation.diagnostics[0]?.code ?? "creator_release_mount_invalid"); continue; }
     const entry = view.layout.anchors.find(anchor => anchor.id === mount.entryAnchorId);
     const geometry = entry ? view.geometry.get(entry.geometryRef) : null;
-    if (!entry || entry.kind !== "spawn" || !entry.capabilities.includes("drive") || !geometry) { fail("creator_release_entry_geometry_unavailable"); continue; }
+    if (!entry || entry.kind !== "spawn" || (entryCapability !== null && !entry.capabilities.includes(entryCapability)) || !geometry) { fail("creator_release_entry_geometry_unavailable"); continue; }
     output.push(Object.freeze({ releaseId: release.releaseId, title: release.title, ...(release.skinId ? { skinId: release.skinId } : {}), game, mount, scenePackage,
       entryPositionWorld: Object.freeze({ x: worldUnits(geometry.positionMeters.x), z: worldUnits(geometry.positionMeters.z) }) }));
   }
@@ -131,26 +137,40 @@ async function loadPendingCityWorldScene(runId: string, expectedRef: { packageId
 
 /** Claims a Studio-initiated playtest only after a release is pinned to this live City revision. */
 export async function claimCreatorPlaytest(view: CityLayoutSdkViewV1, expectedRunId?: string): Promise<CreatorPlaytestHandoffV1 | null> {
-  let handoff: { runId: string; releaseId: string; projectId: string; revision: number; snapshotDigest: string; skinId?: unknown; gameType?: unknown; game: unknown; mounts: CityGameMountV1[] } & ReleaseSceneFields;
+  let handoff: { runId: string; releaseId: string; projectId: string; revision: number; snapshotDigest: string; skinId?: unknown; gameType?: unknown;
+    vehicle?: unknown; game: unknown; mounts: CityGameMountV1[] } & ReleaseSceneFields;
   try {
     handoff = await hostCall<typeof handoff>("city.creator.playtest.claim", expectedRunId ? { runId: expectedRunId } : {});
   } catch (error) {
     if (error instanceof Error && error.message === "creator_playtest_not_found") return null;
     throw error;
   }
+  // 路由值先解析：入口锚点能力与（飞行）载具校验都取决于它。
+  const gameType = handoff.gameType === "flight" ? "flight" : "driving";
   const failureCodes: string[] = [];
-  const experiences = await validateRelease(view, { ...handoff, title: "Creator Studio 试玩" }, failureCodes);
+  const experiences = await validateRelease(view, { ...handoff, title: "Creator Studio 试玩" }, failureCodes,
+    gameType === "flight" ? null : "drive");
   if (!experiences.length) {
     await finishCreatorPlaytest(handoff.runId, "failed", undefined, failureCodes[0] ?? "creator_playtest_release_incompatible");
     throw new Error("creator_playtest_release_incompatible");
   }
   if (!/^sha256:[0-9a-f]{64}$/.test(handoff.snapshotDigest)) throw new Error("creator_playtest_snapshot_digest_invalid");
+  // 冻结载具：试玩必须飞用户发布的那台 profile。不合法的载具按发布损坏收口（不静默退回
+  // 默认飞机——那会让用户以为验收通过了另一台飞行器）；旧 release 没有载具字段时容忍。
+  let vehicle: VehicleProfileV1 | undefined;
+  if (handoff.vehicle != null) {
+    const checked = validateVehicleProfileV1(handoff.vehicle);
+    if (!checked.ok) {
+      await finishCreatorPlaytest(handoff.runId, "failed", undefined, "creator_release_vehicle_invalid");
+      throw new Error("creator_release_vehicle_invalid");
+    }
+    vehicle = checked.value;
+  }
   const skinId = handoff.skinId === "miami-vice" || handoff.skinId === "desert-evening" ? handoff.skinId : undefined;
   // gameType（2026-11-15 飞行泛化切片）：release 冻结值经 Rust 容忍读回传；
   // 旧 release 无该字段 → 缺省 driving = 既有行为，driving 逐位不变。
-  const gameType = handoff.gameType === "flight" ? "flight" : "driving";
   return Object.freeze({ runId: handoff.runId, projectId: handoff.projectId, revision: handoff.revision, releaseId: handoff.releaseId,
-    snapshotDigest: handoff.snapshotDigest, ...(skinId ? { skinId } : {}), gameType, experiences });
+    snapshotDigest: handoff.snapshotDigest, ...(skinId ? { skinId } : {}), gameType, ...(vehicle ? { vehicle } : {}), experiences });
 }
 
 export async function finishCreatorPlaytest(runId: string, status: "completed" | "cancelled" | "failed", evidence?: VisualPlaytestEvidenceV1, failureCode?: string): Promise<void> {
