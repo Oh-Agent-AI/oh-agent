@@ -1198,6 +1198,38 @@ fn run_city_diagnostic_list(home: &Path, _owner: &str, _instance: &str, payload:
     crate::creator_cities::read_diagnostics(home, args_valid_id(payload, "cityId")?, args_u64(payload, "limit")?)
 }
 
+fn run_city_anchor_list(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_city_patch::list_city_anchors(home, args_valid_id(payload, "cityId")?,
+        payload.get("revision").and_then(Value::as_u64), payload.get("capability").and_then(Value::as_str),
+        payload.get("kind").and_then(Value::as_str), payload.get("limit").and_then(Value::as_u64).unwrap_or(256))
+}
+fn run_city_anchor_upsert(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_city_patch::mutate_city_anchors(home, owner, args_valid_id(payload, "cityId")?, args_u64(payload, "baseRevision")?,
+        payload.get("anchors").ok_or("creator_city_anchor_invalid")?, &[], args_valid_id(payload, "operationId")?)
+}
+fn run_city_anchor_remove(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    let ids = payload.get("anchorIds").and_then(Value::as_array).filter(|items| !items.is_empty() && items.len() <= 64)
+        .ok_or("creator_city_anchor_invalid")?.iter().map(|item| item.as_str().filter(|id| valid_id(id)).map(str::to_owned)
+            .ok_or("creator_city_anchor_invalid")).collect::<Result<Vec<_>, _>>()?;
+    crate::creator_city_patch::mutate_city_anchors(home, owner, args_valid_id(payload, "cityId")?, args_u64(payload, "baseRevision")?,
+        &json!([]), &ids, args_valid_id(payload, "operationId")?)
+}
+
+fn run_mount_bind_preview(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    preview_typed_mount(home, args_valid_id(payload, "projectId")?, args_u64(payload, "baseRevision")?, payload)
+}
+fn run_mount_bind(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    bind_typed_mount(home, owner, args_valid_id(payload, "projectId")?, args_u64(payload, "baseRevision")?,
+        payload, args_valid_id(payload, "operationId")?)
+}
+fn run_mount_unbind(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    unbind_typed_mount(home, owner, args_valid_id(payload, "projectId")?, args_u64(payload, "baseRevision")?,
+        args_valid_id(payload, "mountId")?, args_valid_id(payload, "operationId")?)
+}
+fn run_mount_list(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    list_typed_mounts(home, args_valid_id(payload, "projectId")?, payload.get("revision").and_then(Value::as_u64))
+}
+
 static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.capabilities.list", &[], &["category", "schemaVersion"], run_capabilities_list),
     creator_row!("creator.city.create", &["name", "seed", "profile", "operationId", "validation"], &[], run_city_create),
@@ -1208,6 +1240,13 @@ static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.city.edit.preview", &["cityId", "baseRevision", "validation"], &["name", "seed", "profile", "operations"], run_city_preview),
     creator_row!("creator.city.patch.preview", &["cityId", "baseRevision", "patch", "validation"], &[], run_city_patch_preview),
     creator_row!("creator.city.layout.store", &["snapshot"], &[], run_city_layout_store),
+    creator_row!("creator.city.anchor.list", &["cityId"], &["revision", "capability", "kind", "limit"], run_city_anchor_list),
+    creator_row!("creator.city.anchor.upsert", &["cityId", "baseRevision", "anchors", "operationId"], &[], run_city_anchor_upsert),
+    creator_row!("creator.city.anchor.remove", &["cityId", "baseRevision", "anchorIds", "operationId"], &[], run_city_anchor_remove),
+    creator_row!("creator.mount.bind", &["projectId", "baseRevision", "mountId", "entryAnchorId", "bindings", "operationId"], &["vehicleId", "parameterOverrides"], run_mount_bind),
+    creator_row!("creator.mount.unbind", &["projectId", "baseRevision", "mountId", "operationId"], &[], run_mount_unbind),
+    creator_row!("creator.mount.list", &["projectId"], &["revision"], run_mount_list),
+    creator_row!("creator.game.bind.preview", &["projectId", "baseRevision", "mountId", "entryAnchorId", "bindings"], &["vehicleId", "parameterOverrides"], run_mount_bind_preview),
     creator_row!("creator.city.list", &["limit"], &["cursor"], run_city_list),
     creator_row!("creator.city.read", &["cityId"], &["revision"], run_city_read),
     creator_row!("creator.city.world_package.read", &["cityId"], &[], run_city_world_package_read),
@@ -3089,6 +3128,293 @@ mod tests {
         assert_eq!(saved["revision"], 1);
         let again = commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", &project_id, &preview_id, 0, "retry-op").unwrap();
         assert_eq!(again, saved);
+        let _ = std::fs::remove_dir_all(home);
+    }
+}
+
+// ── Typed flight mounts (flight pipeline phase 3) ──
+// The host constructs the mount from the project's immutable layout/game refs,
+// validates slot counts and anchor capabilities (including fly), and never
+// accepts caller-supplied digests. Mount writes are revision-CAS + operationId
+// idempotent; preview performs the same checks without persisting.
+
+fn mount_anchor_map(document: &Value) -> Result<std::collections::HashMap<String, (String, std::collections::HashSet<String>)>, &'static str> {
+    let layout = document.get("cityLayout").filter(|value| !value.is_null()).ok_or("creator_layout_not_bound")?;
+    let anchors = layout.get("layout").and_then(|layout| layout.get("anchors")).and_then(Value::as_array).ok_or("creator_project_invalid")?;
+    let mut map = std::collections::HashMap::new();
+    for anchor in anchors {
+        let id = anchor.get("id").and_then(Value::as_str).ok_or("creator_project_invalid")?.to_owned();
+        let kind = anchor.get("kind").and_then(Value::as_str).ok_or("creator_project_invalid")?.to_owned();
+        let capabilities = anchor.get("capabilities").and_then(Value::as_array).ok_or("creator_project_invalid")?
+            .iter().filter_map(Value::as_str).map(str::to_owned).collect();
+        map.insert(id, (kind, capabilities));
+    }
+    Ok(map)
+}
+
+fn build_typed_mount(document: &Value, mount_id: &str, entry_anchor_id: &str, bindings: &Value, vehicle_id: Option<&str>, parameter_overrides: Option<&Value>) -> Result<(Value, Value), &'static str> {
+    let game = document.get("game").filter(|value| value.is_object()).ok_or("creator_game_invalid")?;
+    let slots = game.get("slots").and_then(Value::as_object).ok_or("creator_game_invalid")?;
+    let bindings = bindings.as_object().ok_or("creator_mount_invalid")?;
+    if bindings.len() != slots.len() || !bindings.keys().all(|slot| slots.contains_key(slot.as_str())) {
+        return Err("creator_mount_slot_mismatch");
+    }
+    let anchors = mount_anchor_map(document)?;
+    let (_, entry_capabilities) = anchors.get(entry_anchor_id).ok_or("creator_mount_anchor_not_found")?;
+    let entry = json!({"id":entry_anchor_id,"capabilities":entry_capabilities});
+    let mut coverage = Vec::new();
+    for (slot, raw_ids) in bindings {
+        let slot_spec = &slots[slot.as_str()];
+        let ids = raw_ids.as_array().ok_or("creator_mount_invalid")?;
+        let min = slot_spec.get("min").and_then(Value::as_u64).unwrap_or(0);
+        let max = slot_spec.get("max").and_then(Value::as_u64).unwrap_or(64);
+        if ids.len() < min as usize || ids.len() > max as usize { return Err("creator_mount_slot_count"); }
+        let requires: Vec<&str> = slot_spec.get("requires").and_then(Value::as_array)
+            .map(|items| items.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+        for id in ids {
+            let anchor_id = id.as_str().ok_or("creator_mount_invalid")?;
+            let (kind, capabilities) = anchors.get(anchor_id).ok_or("creator_mount_anchor_not_found")?;
+            if !requires.iter().all(|capability| capabilities.contains(*capability)) { return Err("creator_mount_capability_mismatch"); }
+            coverage.push(json!({"slot":slot,"anchorId":anchor_id,"kind":kind,"capabilities":capabilities}));
+        }
+    }
+    let layout = document.get("cityLayout").filter(|value| !value.is_null()).ok_or("creator_layout_not_bound")?;
+    let (world_revision, layout_id) = validate_layout_snapshot(layout)?;
+    let game_digest = digest(&canonical_json(game).map_err(|_| "creator_game_invalid")?);
+    let mount = json!({"schemaVersion":1,"mountId":mount_id,
+        "layout":{"kind":"city-layout","id":layout_id,"version":"1","digest":world_revision},
+        "game":{"kind":"city-minigame","id":game["id"],"version":"1","digest":game_digest},
+        "entryAnchorId":entry_anchor_id,"bindings":bindings,"parameterOverrides":parameter_overrides.cloned().unwrap_or_else(|| json!({}))});
+    structural_mount_check(&mount)?;
+    if let Some(vehicle_id) = vehicle_id {
+        find_project_vehicle(document, vehicle_id).ok_or("creator_vehicle_not_found")?;
+    }
+    let coverage = json!({"mountId":mount_id,"slots":slots.len(),"bound":coverage.len(),"anchors":coverage,"entry":entry,
+        "layoutId":layout_id,"worldRevision":world_revision,"gameId":game["id"],"vehicleId":vehicle_id});
+    Ok((mount, coverage))
+}
+
+fn typed_mount_inputs(payload: &Value) -> Result<(&str, &str, &Value, Option<&str>, Option<&Value>), &'static str> {
+    let mount_id = args_valid_id(payload, "mountId")?;
+    let entry = args_valid_id(payload, "entryAnchorId")?;
+    let bindings = payload.get("bindings").filter(|value| value.is_object()).ok_or("creator_mount_invalid")?;
+    let vehicle = if payload.get("vehicleId").is_some() { Some(args_valid_id(payload, "vehicleId")?) } else { None };
+    let overrides = payload.get("parameterOverrides").filter(|value| value.is_object());
+    Ok((mount_id, entry, bindings, vehicle, overrides))
+}
+
+fn preview_typed_mount(home: &Path, project_id: &str, base_revision: u64, payload: &Value) -> Result<Value, &'static str> {
+    let (mount_id, entry, bindings, vehicle, overrides) = typed_mount_inputs(payload)?;
+    let db = database(home)?;
+    let (revision, raw): (u64, String) = db.query_row("SELECT revision,document_json FROM creator_projects WHERE project_id=?1", [project_id],
+        |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_project_not_found")?;
+    if revision != base_revision { return Err("revision_conflict"); }
+    let document: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
+    let (mount, coverage) = build_typed_mount(&document, mount_id, entry, bindings, vehicle, overrides)?;
+    Ok(json!({"projectId":project_id,"baseRevision":base_revision,"mount":mount,"coverage":coverage,
+        "checks":{"slotCoverage":"passed","capability":"passed","reachability":"unchecked","visual":"unchecked"}}))
+}
+
+pub(crate) fn bind_typed_mount(home: &Path, owner: &str, project_id: &str, base_revision: u64, payload: &Value, operation_id: &str) -> Result<Value, &'static str> {
+    if !valid_id(operation_id) { return Err("creator_request_invalid"); }
+    let (mount_id, entry, bindings, vehicle, overrides) = typed_mount_inputs(payload)?;
+    let request_hash = digest(&canonical_json(&json!({"projectId":project_id,"baseRevision":base_revision,"mountId":mount_id,
+        "entryAnchorId":entry,"bindings":bindings,"vehicleId":vehicle,"parameterOverrides":overrides})).map_err(|_| "creator_mount_invalid")?);
+    let mut db = database(home)?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
+    if let Some((previous_hash, result)) = tx.query_row("SELECT operation_hash,result_json FROM creator_operations WHERE project_id=?1 AND actor_id=?2 AND operation_id=?3",
+        params![project_id,owner,operation_id], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?))).optional().map_err(|_| "creator_store_unavailable")? {
+        if previous_hash != request_hash { return Err("operation_id_conflict"); }
+        return serde_json::from_str(&result).map_err(|_| "creator_store_unavailable");
+    }
+    let (revision, raw): (u64, String) = tx.query_row("SELECT revision,document_json FROM creator_projects WHERE project_id=?1", [project_id],
+        |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_project_not_found")?;
+    if revision != base_revision { return Err("revision_conflict"); }
+    let mut document: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
+    let (mount, coverage) = build_typed_mount(&document, mount_id, entry, bindings, vehicle, overrides)?;
+    let mounts = document.as_object_mut().ok_or("creator_project_invalid")?.entry("mounts").or_insert_with(|| json!([]));
+    let mounts = mounts.as_array_mut().ok_or("creator_project_invalid")?;
+    if let Some(index) = mounts.iter().position(|item| item.get("mountId").and_then(Value::as_str) == Some(mount_id)) { mounts[index] = mount; }
+    else { if mounts.len() >= MAX_RELEASE_MOUNTS { return Err("creator_mount_budget_exceeded"); } mounts.push(mount); }
+    if let Some(vehicle) = vehicle { document["vehicleId"] = json!(vehicle); }
+    let next = revision.checked_add(1).ok_or("revision_exhausted")?;
+    document["revision"] = json!(next);
+    let serialized = document.to_string();
+    if serialized.len() > MAX_PROJECT_BYTES { return Err("creator_project_too_large"); }
+    let now = now_ms();
+    let updated = tx.execute("UPDATE creator_projects SET revision=?2,document_json=?3,updated_at_ms=?4 WHERE project_id=?1 AND revision=?5",
+        params![project_id,next,serialized,now,revision]).map_err(|_| "creator_store_unavailable")?;
+    if updated == 0 { return Err("revision_conflict"); }
+    tx.execute("INSERT INTO creator_changes(project_id,revision,actor_id,operation_id,operation_hash,document_json,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+        params![project_id,next,owner,operation_id,request_hash,serialized,now]).map_err(|_| "creator_store_unavailable")?;
+    let result = json!({"projectId":project_id,"revision":next,"mountId":mount_id,"vehicleId":vehicle,"coverage":coverage,
+        "documentDigest":digest(&serialized)});
+    tx.execute("INSERT INTO creator_operations(project_id,actor_id,operation_id,operation_hash,result_json,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6)",
+        params![project_id,owner,operation_id,request_hash,result.to_string(),now]).map_err(|_| "creator_store_unavailable")?;
+    tx.commit().map_err(|_| "creator_store_unavailable")?;
+    Ok(result)
+}
+
+fn unbind_typed_mount(home: &Path, owner: &str, project_id: &str, base_revision: u64, mount_id: &str, operation_id: &str) -> Result<Value, &'static str> {
+    let request_hash = digest(&format!("{project_id}:{base_revision}:{mount_id}"));
+    let mut db = database(home)?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
+    if let Some((previous_hash, result)) = tx.query_row("SELECT operation_hash,result_json FROM creator_operations WHERE project_id=?1 AND actor_id=?2 AND operation_id=?3",
+        params![project_id,owner,operation_id], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?))).optional().map_err(|_| "creator_store_unavailable")? {
+        if previous_hash != request_hash { return Err("operation_id_conflict"); }
+        return serde_json::from_str(&result).map_err(|_| "creator_store_unavailable");
+    }
+    let (revision, raw): (u64, String) = tx.query_row("SELECT revision,document_json FROM creator_projects WHERE project_id=?1", [project_id],
+        |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_project_not_found")?;
+    if revision != base_revision { return Err("revision_conflict"); }
+    let mut document: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
+    let mounts = document.get_mut("mounts").and_then(Value::as_array_mut).ok_or("creator_mount_not_found")?;
+    let index = mounts.iter().position(|item| item.get("mountId").and_then(Value::as_str) == Some(mount_id)).ok_or("creator_mount_not_found")?;
+    mounts.remove(index);
+    let next = revision.checked_add(1).ok_or("revision_exhausted")?;
+    document["revision"] = json!(next);
+    let serialized = document.to_string();
+    let now = now_ms();
+    tx.execute("UPDATE creator_projects SET revision=?2,document_json=?3,updated_at_ms=?4 WHERE project_id=?1 AND revision=?5",
+        params![project_id,next,serialized,now,revision]).map_err(|_| "creator_store_unavailable")?;
+    let result = json!({"projectId":project_id,"revision":next,"mountId":mount_id,"status":"removed"});
+    tx.execute("INSERT INTO creator_operations(project_id,actor_id,operation_id,operation_hash,result_json,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6)",
+        params![project_id,owner,operation_id,request_hash,result.to_string(),now]).map_err(|_| "creator_store_unavailable")?;
+    tx.commit().map_err(|_| "creator_store_unavailable")?;
+    Ok(result)
+}
+
+fn list_typed_mounts(home: &Path, project_id: &str, expected_revision: Option<u64>) -> Result<Value, &'static str> {
+    let db = database(home)?;
+    let (revision, raw): (u64, String) = db.query_row("SELECT revision,document_json FROM creator_projects WHERE project_id=?1", [project_id],
+        |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_project_not_found")?;
+    if expected_revision.is_some_and(|expected| expected != revision) { return Err("revision_conflict"); }
+    let document: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
+    Ok(json!({"projectId":project_id,"revision":revision,"gameType":game_type_for_document(&document),
+        "vehicleId":document.get("vehicleId").cloned().unwrap_or(Value::Null),
+        "mounts":document.get("mounts").cloned().unwrap_or_else(|| json!([]))}))
+}
+
+#[cfg(test)]
+mod typed_mount_tests {
+    use super::*;
+
+    fn project() -> Value {
+        json!({"schemaVersion":1,"projectId":"project-mount-test","revision":0,"title":"Flight","kind":"city-minigame-project","gameType":"flight",
+            "cityLayout":{"schemaVersion":1,"worldRevision":"world-mount","seed":7,"layout":{"schemaVersion":1,"id":"layout-mount","coordinateSystem":"city-local-m-v1",
+                "anchors":[{"id":"spawn-a","kind":"spawn","capabilities":["drive","fly"],"geometryRef":"g:spawn"},
+                    {"id":"gate-a","kind":"zone","capabilities":["fly"],"geometryRef":"g:a"},
+                    {"id":"gate-b","kind":"zone","capabilities":["fly"],"geometryRef":"g:b"},
+                    {"id":"gate-c","kind":"zone","capabilities":["fly"],"geometryRef":"g:c"}],"links":[]}},
+            "game":{"schemaVersion":1,"id":"creator.flight-checkpoint","rulesVersion":1,
+                "slots":{"gates":{"kind":"zone","min":3,"max":8,"requires":["fly"]}},"integerParameters":{},"rules":{"counters":{},"nodes":[]}},
+            "scene":{"schemaVersion":1,"objects":[]},"assets":{"schemaVersion":1,"entries":[]},"assetRefs":[],"mounts":[],
+            "vehicles":[{"id":"vehicle-a","label":"A","modelAssetId":null,"flightModel":"fixed-wing","physics":{"massKg":800,"wingAreaM2":8,"thrustN":4000,"maxSpeedMps":42,"dragCoefficient":0.4,"turnRateRps":2,"climbRateMps":8,"sinkRateMps":4},"bounds":{"halfLengthM":2,"halfWidthM":2,"halfHeightM":0.5},"camera":{"followDistanceM":8,"heightOffsetM":2,"fovDeg":60}}]})
+    }
+
+    #[test]
+    fn typed_mount_binds_fly_gates_and_never_accepts_wrong_capabilities() {
+        let document = project();
+        let bindings = json!({"gates":["gate-a","gate-b","gate-c"]});
+        let (mount, coverage) = build_typed_mount(&document, "mount-a", "spawn-a", &bindings, Some("vehicle-a"), None).unwrap();
+        assert_eq!(mount["game"]["digest"], digest(&canonical_json(&document["game"]).unwrap()));
+        assert_eq!(mount["layout"]["digest"], "world-mount");
+        assert_eq!(coverage["bound"], 3);
+        assert_eq!(coverage["vehicleId"], "vehicle-a");
+        let mut wrong = project();
+        wrong["cityLayout"]["layout"]["anchors"][1]["capabilities"] = json!(["drive"]);
+        assert_eq!(build_typed_mount(&wrong, "mount-a", "spawn-a", &bindings, None, None).unwrap_err(), "creator_mount_capability_mismatch");
+        let short = json!({"gates":["gate-a","gate-b"]});
+        assert_eq!(build_typed_mount(&document, "mount-a", "spawn-a", &short, None, None).unwrap_err(), "creator_mount_slot_count");
+        let missing = json!({"gates":["gate-a","gate-b","missing"]});
+        assert_eq!(build_typed_mount(&document, "mount-a", "spawn-a", &missing, None, None).unwrap_err(), "creator_mount_anchor_not_found");
+        assert_eq!(build_typed_mount(&document, "mount-a", "spawn-a", &bindings, Some("vehicle-missing"), None).unwrap_err(), "creator_vehicle_not_found");
+    }
+}
+
+#[cfg(test)]
+mod flight_release_tests {
+    use super::*;
+
+    fn flight_layout() -> Value {
+        json!({"schemaVersion":1,"worldRevision":"world-flight-release","seed":11,"layout":{
+            "schemaVersion":1,"id":"layout-flight-release","coordinateSystem":"city-local-m-v1","anchors":[
+                {"id":"spawn-a","kind":"spawn","capabilities":["drive","fly"],"geometryRef":"g:spawn"},
+                {"id":"gate-a","kind":"zone","capabilities":["fly"],"geometryRef":"g:a"},
+                {"id":"gate-b","kind":"zone","capabilities":["fly"],"geometryRef":"g:b"},
+                {"id":"gate-c","kind":"zone","capabilities":["fly"],"geometryRef":"g:c"}],"links":[]}})
+    }
+
+    #[test]
+    fn flight_publish_freezes_game_type_vehicle_and_runtime_contract() {
+        let home = std::env::temp_dir().join(format!("creator-flight-release-{}-{}", now_ms(), std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        publish_city_layout_snapshot(&home, &flight_layout()).unwrap();
+        let created = create_project_from_city_layout(&home, LOCAL_CREATOR_OWNER, "flight-checkpoint", "create-flight-release", "world-flight-release").unwrap();
+        let project_id = created["projectId"].as_str().unwrap();
+        let vehicle = json!({"schemaVersion":1,"id":"vehicle-release","label":"Release vehicle","modelAssetId":null,"flightModel":"fixed-wing",
+            "physics":{"massKg":800,"wingAreaM2":8,"thrustN":4000,"maxSpeedMps":42,"dragCoefficient":0.4,"turnRateRps":2,"climbRateMps":8,"sinkRateMps":4},
+            "bounds":{"halfLengthM":2,"halfWidthM":2,"halfHeightM":0.5},"camera":{"followDistanceM":8,"heightOffsetM":2,"fovDeg":60}});
+        let mut document = read_project(&home, project_id).unwrap();
+        document["vehicles"] = json!([vehicle]);
+        let bindings = json!({"gates":["gate-a","gate-b","gate-c"]});
+        let (mount, _) = build_typed_mount(&document, "mount-release", "spawn-a", &bindings, Some("vehicle-release"), None).unwrap();
+        document["mounts"] = json!([mount]);
+        document["vehicleId"] = json!("vehicle-release");
+        let db = database(&home).unwrap();
+        db.execute("UPDATE creator_projects SET document_json=?2 WHERE project_id=?1", params![project_id, document.to_string()]).unwrap();
+        let published = publish_project_release(&home, project_id, 0).unwrap();
+        assert_eq!(published["gameType"], "flight");
+        assert_eq!(published["vehicleId"], "vehicle-release");
+        assert_eq!(published["runtimeContractVersion"], 1);
+        let snapshot: String = db.query_row("SELECT snapshot_json FROM creator_releases WHERE release_id=?1", [published["releaseId"].as_str().unwrap()], |row| row.get(0)).unwrap();
+        let snapshot: Value = serde_json::from_str(&snapshot).unwrap();
+        assert_eq!(snapshot["gameType"], "flight");
+        assert_eq!(snapshot["vehicle"]["id"], "vehicle-release");
+        assert_eq!(snapshot["mounts"].as_array().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(home);
+    }
+}
+
+#[cfg(test)]
+mod flight_pipeline_tests {
+    use super::*;
+
+    #[test]
+    fn airspace_anchors_bind_publish_and_start_a_flight_playtest() {
+        let home = std::env::temp_dir().join(format!("creator-flight-pipeline-{}-{}", now_ms(), std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        let city = crate::creator_cities::create_city(&home, LOCAL_CREATOR_OWNER, "create-flight-city", "Flight City", 21, &json!({"schemaVersion":1})).unwrap();
+        let city_id = city["cityId"].as_str().unwrap();
+        let base_layout = json!({"schemaVersion":2,"cityId":city_id,"cityRevision":0,"worldRevision":"world-flight-pipeline","seed":21,
+            "layout":{"schemaVersion":1,"id":"layout-flight-pipeline","coordinateSystem":"city-local-m-v1","anchors":[
+                {"id":"spawn-a","kind":"spawn","capabilities":["drive"],"geometryRef":"g:spawn"}],"links":[]}});
+        crate::creator_city_patch::store_scoped_city_layout(&home, &base_layout).unwrap();
+        let air = json!([{"id":"gate-a","kind":"zone","capabilities":["fly"],"geometryRef":"g:spawn"},
+            {"id":"gate-b","kind":"zone","capabilities":["fly"],"geometryRef":"g:spawn"},
+            {"id":"gate-c","kind":"zone","capabilities":["fly"],"geometryRef":"g:spawn"},
+            {"id":"spawn-air","kind":"spawn","capabilities":["fly"],"geometryRef":"g:spawn"}]);
+        let anchors = crate::creator_city_patch::mutate_city_anchors(&home, LOCAL_CREATOR_OWNER, city_id, 0, &air, &[], "add-airspace").unwrap();
+        assert_eq!(anchors["revision"], 1);
+        let project = create_project_from_city_draft(&home, LOCAL_CREATOR_OWNER, "flight-checkpoint", "create-flight-project", "world-flight-pipeline", city_id).unwrap();
+        let project_id = project["projectId"].as_str().unwrap();
+        let mut document = read_project(&home, project_id).unwrap();
+        let vehicle = json!({"schemaVersion":1,"id":"vehicle-pipeline","label":"Pipeline","modelAssetId":null,"flightModel":"fixed-wing",
+            "physics":{"massKg":800,"wingAreaM2":8,"thrustN":4000,"maxSpeedMps":42,"dragCoefficient":0.4,"turnRateRps":2,"climbRateMps":8,"sinkRateMps":4},
+            "bounds":{"halfLengthM":2,"halfWidthM":2,"halfHeightM":0.5},"camera":{"followDistanceM":8,"heightOffsetM":2,"fovDeg":60}});
+        document["vehicles"] = json!([vehicle]);
+        document["vehicleId"] = json!("vehicle-pipeline");
+        let bindings = json!({"gates":["gate-a","gate-b","gate-c"]});
+        let (mount, coverage) = build_typed_mount(&document, "mount-pipeline", "spawn-air", &bindings, Some("vehicle-pipeline"), None).unwrap();
+        assert_eq!(coverage["bound"], 3);
+        document["mounts"] = json!([mount]);
+        let db = database(&home).unwrap();
+        db.execute("UPDATE creator_projects SET document_json=?2 WHERE project_id=?1", params![project_id, document.to_string()]).unwrap();
+        let release = publish_project_release(&home, project_id, 0).unwrap();
+        assert_eq!(release["gameType"], "flight");
+        assert_eq!(release["vehicleId"], "vehicle-pipeline");
+        let run = crate::creator_playtest::start_playtest_with_game_type(&home, "studio-flight", release["releaseId"].as_str().unwrap(), Some(project_id), Some(0), Some("flight")).unwrap();
+        assert_eq!(run["status"], "pending");
         let _ = std::fs::remove_dir_all(home);
     }
 }

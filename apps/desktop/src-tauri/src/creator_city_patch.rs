@@ -357,3 +357,163 @@ pub fn read_city_patch_for_seed(home: &Path, seed: u64) -> Result<Value, &'stati
     }
     Ok(json!({"projectId":null,"revision":null,"patch":null}))
 }
+
+// ── Fly airspace anchors (flight pipeline phase 2) ──
+// Anchors are added by creating a new immutable City revision and a scoped
+// layout snapshot for that revision. Existing geometry is reused by reference;
+// callers cannot introduce arbitrary coordinates. Old revisions stay readable.
+
+fn city_document_and_layout(home: &Path, city_id: &str, revision: Option<u64>) -> Result<(u64, Value, Value), &'static str> {
+    if !valid_id(city_id) { return Err("creator_city_invalid"); }
+    let db = database(home)?;
+    let (current, raw): (u64, String) = db.query_row("SELECT revision,document_json FROM creator_cities WHERE city_id=?1", [city_id],
+        |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_city_not_found")?;
+    let revision = revision.unwrap_or(current);
+    if revision > current { return Err("revision_conflict"); }
+    let page: Option<String> = db.query_row("SELECT document_json FROM creator_city_revisions WHERE city_id=?1 AND revision=?2", params![city_id,revision], |row| row.get(0))
+        .optional().map_err(|_| "creator_store_unavailable")?;
+    let document: Value = serde_json::from_str(&page.unwrap_or(raw)).map_err(|_| "creator_store_unavailable")?;
+    let layout_raw: String = db.query_row("SELECT snapshot_json FROM creator_city_layouts_v2 WHERE city_id=?1 AND city_revision=?2 ORDER BY created_at_ms DESC LIMIT 1",
+        params![city_id,revision], |row| row.get(0)).optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_layout_not_found")?;
+    let layout: Value = serde_json::from_str(&layout_raw).map_err(|_| "creator_store_unavailable")?;
+    Ok((revision, document, layout))
+}
+
+pub(crate) fn list_city_anchors(home: &Path, city_id: &str, revision: Option<u64>, capability: Option<&str>, kind: Option<&str>, limit: u64) -> Result<Value, &'static str> {
+    if capability.is_some_and(|value| !matches!(value, "drive" | "walk" | "fly")) || kind.is_some_and(|value| !matches!(value, "spawn" | "route" | "zone" | "object")) {
+        return Err("creator_request_invalid");
+    }
+    let (revision, _document, layout) = city_document_and_layout(home, city_id, revision)?;
+    let anchors = layout["layout"]["anchors"].as_array().ok_or("creator_layout_snapshot_invalid")?;
+    let anchors: Vec<Value> = anchors.iter().filter(|anchor| {
+        capability.is_none_or(|capability| anchor["capabilities"].as_array().is_some_and(|items| items.iter().any(|item| item.as_str() == Some(capability))))
+            && kind.is_none_or(|kind| anchor["kind"].as_str() == Some(kind))
+    }).take(limit.clamp(1, 256) as usize).cloned().collect();
+    Ok(json!({"cityId":city_id,"revision":revision,"worldRevision":layout["worldRevision"],"layoutId":layout["layout"]["id"],
+        "anchors":anchors,"total":anchors.len()}))
+}
+
+pub(crate) fn mutate_city_anchors(home: &Path, actor: &str, city_id: &str, base_revision: u64, anchors: &Value, remove_ids: &[String], operation_id: &str) -> Result<Value, &'static str> {
+    if !valid_id(actor) || !valid_id(operation_id) { return Err("creator_request_invalid"); }
+    let additions = anchors.as_array().filter(|items| items.len() <= 64).ok_or("creator_city_anchor_invalid")?;
+    if remove_ids.len() > 64 { return Err("creator_city_anchor_invalid"); }
+    let request_hash = digest(&canonical_json(&json!({"cityId":city_id,"baseRevision":base_revision,"anchors":additions,"remove":remove_ids}))
+        .map_err(|_| "creator_city_anchor_invalid")?);
+    let mut db = database(home)?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
+    if let Some((previous_hash, result)) = tx.query_row("SELECT operation_hash,result_json FROM creator_city_operations WHERE actor_id=?1 AND operation_id=?2",
+        params![actor,operation_id], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?))).optional().map_err(|_| "creator_store_unavailable")? {
+        if previous_hash != request_hash { return Err("operation_id_conflict"); }
+        return serde_json::from_str(&result).map_err(|_| "creator_store_unavailable");
+    }
+    let (current, raw): (u64, String) = tx.query_row("SELECT revision,document_json FROM creator_cities WHERE city_id=?1", [city_id],
+        |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_city_not_found")?;
+    if current != base_revision { return Err("revision_conflict"); }
+    let layout_raw: String = tx.query_row("SELECT snapshot_json FROM creator_city_layouts_v2 WHERE city_id=?1 AND city_revision=?2 ORDER BY created_at_ms DESC LIMIT 1",
+        params![city_id,current], |row| row.get(0)).optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_layout_not_found")?;
+    let layout: Value = serde_json::from_str(&layout_raw).map_err(|_| "creator_store_unavailable")?;
+    let world_revision = layout["worldRevision"].as_str().ok_or("creator_layout_snapshot_invalid")?.to_owned();
+    let layout_id = layout["layout"]["id"].as_str().ok_or("creator_layout_snapshot_invalid")?.to_owned();
+    let mut merged: Vec<Value> = layout["layout"]["anchors"].as_array().ok_or("creator_layout_snapshot_invalid")?.clone();
+    let allowed_geometry: std::collections::HashSet<String> = merged.iter().filter_map(|anchor| anchor["geometryRef"].as_str().map(str::to_owned)).collect();
+    for addition in additions {
+        let object = addition.as_object().filter(|object| object.len() == 4 && only_keys(object, &["id", "kind", "capabilities", "geometryRef"]))
+            .ok_or("creator_city_anchor_invalid")?;
+        let id = object.get("id").and_then(Value::as_str).filter(|id| valid_id(id)).ok_or("creator_city_anchor_invalid")?;
+        let geometry = object.get("geometryRef").and_then(Value::as_str).filter(|value| allowed_geometry.contains(*value)).ok_or("creator_city_anchor_geometry_unknown")?;
+        let capabilities = object.get("capabilities").and_then(Value::as_array).ok_or("creator_city_anchor_invalid")?;
+        if capabilities.is_empty() || capabilities.len() > 3
+            || capabilities.iter().any(|item| !matches!(item.as_str(), Some("drive" | "walk" | "fly")))
+            || capabilities.iter().enumerate().any(|(index, item)| capabilities[..index].contains(item))
+            || !capabilities.iter().any(|item| item.as_str() == Some("fly")) { return Err("creator_city_anchor_invalid"); }
+        let anchor = json!({"id":id,"kind":object["kind"],"capabilities":capabilities,"geometryRef":geometry});
+        merged.retain(|existing| existing["id"].as_str() != Some(id));
+        merged.push(anchor);
+    }
+    for id in remove_ids {
+        let before = merged.len();
+        merged.retain(|anchor| anchor["id"].as_str() != Some(id));
+        if merged.len() == before { return Err("creator_city_anchor_not_found"); }
+    }
+    let merged_layout = json!({"schemaVersion":1,"id":layout_id,"coordinateSystem":"city-local-m-v1","anchors":merged,
+        "links":layout["layout"].get("links").cloned().unwrap_or_else(|| json!([]))});
+    validate_layout_snapshot(&json!({"schemaVersion":1,"worldRevision":world_revision,"seed":layout["seed"],"layout":merged_layout}))?;
+    let next = current.checked_add(1).filter(|revision| *revision <= i64::MAX as u64).ok_or("creator_city_invalid")?;
+    let mut document: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
+    document["revision"] = json!(next);
+    let serialized = canonical_json(&document).map_err(|_| "creator_city_invalid")?;
+    let snapshot = json!({"schemaVersion":2,"cityId":city_id,"cityRevision":next,"worldRevision":world_revision,"seed":layout["seed"],"layout":merged_layout});
+    let snapshot_raw = canonical_json(&snapshot).map_err(|_| "creator_city_anchor_invalid")?;
+    if snapshot_raw.len() > 32 * 1024 { return Err("creator_city_anchor_budget_exceeded"); }
+    let snapshot_digest = digest(&snapshot_raw);
+    let now = now_ms();
+    tx.execute("INSERT OR IGNORE INTO creator_city_revisions(city_id,revision,document_json,created_at_ms) SELECT city_id,revision,document_json,updated_at_ms FROM creator_cities WHERE city_id=?1 AND revision=?2",
+        params![city_id,current]).map_err(|_| "creator_store_unavailable")?;
+    let updated = tx.execute("UPDATE creator_cities SET revision=?2,document_json=?3,updated_at_ms=?4 WHERE city_id=?1 AND revision=?5",
+        params![city_id,next,serialized,now,current]).map_err(|_| "creator_store_unavailable")?;
+    if updated != 1 { return Err("revision_conflict"); }
+    tx.execute("INSERT INTO creator_city_revisions(city_id,revision,document_json,created_at_ms) VALUES(?1,?2,?3,?4)",
+        params![city_id,next,serialized,now]).map_err(|_| "creator_store_unavailable")?;
+    tx.execute("INSERT INTO creator_city_layouts_v2(city_id,city_revision,world_revision,layout_id,snapshot_json,snapshot_digest,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+        params![city_id,next,world_revision,layout_id,snapshot_raw,snapshot_digest,now]).map_err(|_| "creator_store_unavailable")?;
+    let result = json!({"cityId":city_id,"revision":next,"worldRevision":world_revision,"layoutId":layout_id,
+        "anchorCount":snapshot["layout"]["anchors"].as_array().map_or(0,Vec::len),"snapshotDigest":snapshot_digest});
+    tx.execute("INSERT INTO creator_city_operations(actor_id,operation_id,operation_hash,city_id,result_json,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6)",
+        params![actor,operation_id,request_hash,city_id,result.to_string(),now]).map_err(|_| "creator_store_unavailable")?;
+    tx.commit().map_err(|_| "creator_store_unavailable")?;
+    Ok(result)
+}
+
+#[cfg(test)]
+mod airspace_tests {
+    use super::*;
+
+    fn home() -> std::path::PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let dir = std::env::temp_dir().join(format!("creator-airspace-test-{}-{}-{}", now_ms(), std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn fly_anchor_upsert_creates_a_new_city_revision_and_preserves_geometry() {
+        let home = home();
+        let created = crate::creator_cities::create_city(&home, "local-profile", "create-airspace-city", "Airspace", 7, &json!({"schemaVersion":1})).unwrap();
+        let city_id = created["cityId"].as_str().unwrap();
+        let base = json!({"schemaVersion":2,"cityId":city_id,"cityRevision":0,"worldRevision":"world-airspace","seed":7,
+            "layout":{"schemaVersion":1,"id":"layout-airspace","coordinateSystem":"city-local-m-v1",
+                "anchors":[{"id":"road-spawn:a","kind":"spawn","capabilities":["drive"],"geometryRef":"city-road-node:a"}],"links":[]}});
+        store_scoped_city_layout(&home, &base).unwrap();
+        let added = json!([{"id":"air-gate:a","kind":"zone","capabilities":["fly"],"geometryRef":"city-road-node:a"},
+            {"id":"air-gate:b","kind":"zone","capabilities":["fly"],"geometryRef":"city-road-node:a"}]);
+        let result = mutate_city_anchors(&home, "local-profile", city_id, 0, &added, &[], "add-fly-gates").unwrap();
+        assert_eq!(result["revision"], 1);
+        assert_eq!(result["anchorCount"], 3);
+        let listed = list_city_anchors(&home, city_id, Some(1), Some("fly"), Some("zone"), 64).unwrap();
+        assert_eq!(listed["anchors"].as_array().unwrap().len(), 2);
+        assert_eq!(listed["revision"], 1);
+        let removed = mutate_city_anchors(&home, "local-profile", city_id, 1, &json!([]), &["air-gate:a".to_owned()], "remove-one-gate").unwrap();
+        assert_eq!(removed["revision"], 2);
+        assert_eq!(removed["anchorCount"], 2);
+        let old = list_city_anchors(&home, city_id, Some(0), None, None, 64).unwrap();
+        assert_eq!(old["anchors"].as_array().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn unknown_geometry_and_duplicate_operation_are_rejected() {
+        let home = home();
+        let created = crate::creator_cities::create_city(&home, "local-profile", "create-airspace-city-2", "Airspace", 8, &json!({"schemaVersion":1})).unwrap();
+        let city_id = created["cityId"].as_str().unwrap();
+        store_scoped_city_layout(&home, &json!({"schemaVersion":2,"cityId":city_id,"cityRevision":0,"worldRevision":"world-airspace-2","seed":8,
+            "layout":{"schemaVersion":1,"id":"layout-airspace-2","coordinateSystem":"city-local-m-v1",
+                "anchors":[{"id":"road-spawn:a","kind":"spawn","capabilities":["drive"],"geometryRef":"city-road-node:a"}],"links":[]}})).unwrap();
+        let bad = json!([{"id":"air-gate:x","kind":"zone","capabilities":["fly"],"geometryRef":"made-up-geometry"}]);
+        assert_eq!(mutate_city_anchors(&home, "local-profile", city_id, 0, &bad, &[], "bad-geometry").unwrap_err(), "creator_city_anchor_geometry_unknown");
+        let good = json!([{"id":"air-gate:y","kind":"zone","capabilities":["fly"],"geometryRef":"city-road-node:a"}]);
+        mutate_city_anchors(&home, "local-profile", city_id, 0, &good, &[], "add-idempotent").unwrap();
+        assert_eq!(mutate_city_anchors(&home, "local-profile", city_id, 0, &good, &[], "add-idempotent").unwrap()["revision"], 1);
+        assert_eq!(mutate_city_anchors(&home, "local-profile", city_id, 0, &good, &[], "add-idempotent-other").unwrap_err(), "revision_conflict");
+        let _ = std::fs::remove_dir_all(home);
+    }
+}

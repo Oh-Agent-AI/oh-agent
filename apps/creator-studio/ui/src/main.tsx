@@ -531,6 +531,10 @@ function App() {
         bytes: Math.ceil(frame.dataUrl.length * 0.75), cityId: current.cityId, revision: current.revision,
         camera: camera ? { position: camera.position, target: camera.target } : null, capturedAtMs: Date.now() };
     };
+    for (const method of ["creator.city.anchor.list", "creator.city.anchor.upsert", "creator.city.anchor.remove",
+      "creator.mount.list", "creator.mount.bind", "creator.mount.unbind", "creator.game.bind.preview"]) {
+      (handlers as Record<string, (payload: Record<string, unknown>) => Promise<unknown>>)[method] = async payload => creatorRequest(method, payload);
+    }
     (handlers as Record<string, (payload: Record<string, unknown>) => Promise<unknown>>)["creator.city.layout.read"] = async payload => {
       const current = draftCityViewRef.current;
       const engine = draftEngineRef.current;

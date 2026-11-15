@@ -80,6 +80,9 @@ pub fn specs() -> Vec<ToolSpec> {
         spec("creator_city_capture", "Capture a bounded JPEG of a ready City draft viewport, bound to the current saved City revision. The image is exposed to the calling Agent.", json!({"cityId":project_id_prop(),"revision":revision_prop()}), &["cityId","revision"]),
         spec("creator_city_layout_read", "Read the currently rendered draft City's bounded road-anchor snapshot, scoped to its City ID, revision and seed. This does not persist it or bind a game project.", json!({"cityId":project_id_prop(),"revision":revision_prop()}), &["cityId","revision"]),
         spec("creator_city_layout_save", "Save the current rendered City's scoped road-anchor snapshot for later use. Caller cannot supply a layout; requires --allow-local-writes. This does not bind a game project.", json!({"cityId":project_id_prop(),"revision":revision_prop()}), &["cityId","revision"]),
+        spec("creator_city_anchor_list", "List anchors in a City revision, optionally filtered by capability (drive/walk/fly) and kind. Fly anchors added by creator_city_anchor_upsert are included; read-only and available while Studio is open.", json!({"cityId":project_id_prop(),"revision":revision_prop(),"capability":{"type":"string","enum":["drive","walk","fly"]},"kind":{"type":"string","enum":["spawn","route","zone","object"]},"limit":{"type":"integer","minimum":1,"maximum":256}}), &["cityId"]),
+        spec("creator_city_anchor_upsert", "Add or update fly airspace anchors in a new immutable City revision. Each anchor must reuse an existing geometryRef from that City (no arbitrary coordinates), declare unique capabilities including fly, and stay within the 64-anchor budget. Requires --allow-local-writes, Studio, revision CAS and operationId.", json!({"cityId":project_id_prop(),"baseRevision":revision_prop(),"anchors":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"object"}},"operationId":operation_id_prop()}), &["cityId","baseRevision","anchors","operationId"]),
+        spec("creator_city_anchor_remove", "Remove fly airspace anchors by creating a new immutable City revision. Requires --allow-local-writes, Studio, revision CAS and operationId.", json!({"cityId":project_id_prop(),"baseRevision":revision_prop(),"anchorIds":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"string"}},"operationId":operation_id_prop()}), &["cityId","baseRevision","anchorIds","operationId"]),
         spec("creator_layout_list", "List bounded, host-captured City layout snapshots available for new Creator projects. Layouts contain stable trusted anchor IDs and a world revision, not geometry or user analytics.", json!({"limit":{"type":"integer","minimum":1,"maximum":16}}), &[]),
         spec("creator_project_list", "List local Creator Studio projects. Requires the official Creator Studio plugin to be open.", json!({"limit":{"type":"integer","minimum":1,"maximum":100}}), &["limit"]),
         spec("creator_project_read", "Read a bounded UTF-8 byte chunk of a local Creator Studio project document. Reassemble chunks by nextOffset until complete=true; verify the shared documentDigest.", json!({"projectId":project_id_prop(),"offset":{"type":"integer","minimum":0},"maxBytes":{"type":"integer","minimum":1,"maximum":32768}}), &["projectId"]),
@@ -98,6 +101,10 @@ pub fn specs() -> Vec<ToolSpec> {
         spec("creator_scene_preview", "Preview up to 128 operations: scene.object.upsert/remove, anchor.upsert/remove, mount.bind {mount}, mount.remove {mountId}, skin.select {skinId}, city.patch.upsert {patch}, and city.patch.remove. City patches must match the project layout seed. The official Studio validates semantics (object kinds/fields, mount topology and reachability, skin vocabulary) via city-sdk and the host binds that verdict server-side: SDK-rejected previews cannot commit. Rust independently checks IDs, budgets, reference registration, asset bytes and revision integrity. City patch confirmation currently requires a single upsert, a matching base road layout, and a ready 3D preview with no stale entries. Requires the official Creator Studio plugin to be open.", json!({"projectId":project_id_prop(),"baseRevision":revision_prop(),"operations":{"type":"array","minItems":1,"maxItems":128,"items":{"type":"object"}}}), &["projectId","baseRevision","operations"]),
         spec("creator_project_commit", "Request confirmation of a previously previewed game, scene, mount, or skin edit. Requires `data-mcp serve --allow-local-writes`. Studio returns creator_confirmation_required while the user reviews it; query creator_operation_status with the same operationId after approval. The preview is instance-bound, revision-bound, short-lived, and single-use.", json!({"projectId":project_id_prop(),"previewId":{"type":"string","minLength":1,"maxLength":128},"expectedRevision":revision_prop(),"operationId":operation_id_prop()}), &["projectId","previewId","expectedRevision","operationId"]),
         spec("creator_project_publish", "Publish one saved Creator project revision as an immutable local City release. Requires `data-mcp serve --allow-local-writes`; the official Creator Studio plugin must be open and the project must contain a valid City mount.", json!({"projectId":project_id_prop(),"expectedRevision":revision_prop()}), &["projectId","expectedRevision"]),
+        spec("creator_mount_list", "List typed mounts bound to a Creator project and its frozen gameType/vehicleId. Read-only.", json!({"projectId":project_id_prop(),"revision":revision_prop()}), &["projectId"]),
+        spec("creator_mount_bind", "Bind a typed mount to a Creator project from the project's immutable layout/game refs. Slot counts and anchor capabilities (including fly) are checked; caller never supplies digests. Requires --allow-local-writes and Studio, revision CAS and operationId.", json!({"projectId":project_id_prop(),"baseRevision":revision_prop(),"mountId":operation_id_prop(),"entryAnchorId":{"type":"string","minLength":1,"maxLength":128},"bindings":{"type":"object"},"vehicleId":{"type":"string","minLength":1,"maxLength":128},"parameterOverrides":{"type":"object"},"operationId":operation_id_prop()}), &["projectId","baseRevision","mountId","entryAnchorId","bindings","operationId"]),
+        spec("creator_mount_unbind", "Remove a typed mount from a Creator project. Requires --allow-local-writes, Studio, revision CAS and operationId.", json!({"projectId":project_id_prop(),"baseRevision":revision_prop(),"mountId":{"type":"string","minLength":1,"maxLength":128},"operationId":operation_id_prop()}), &["projectId","baseRevision","mountId","operationId"]),
+        spec("creator_game_bind_preview", "Validate a typed mount against the current project layout/game without writing: slot counts, anchor existence and required capabilities (including fly). Reachability/visual checks that need the City runtime are reported as unchecked, never as passed.", json!({"projectId":project_id_prop(),"baseRevision":revision_prop(),"mountId":{"type":"string","minLength":1,"maxLength":128},"entryAnchorId":{"type":"string","minLength":1,"maxLength":128},"bindings":{"type":"object"},"vehicleId":{"type":"string","minLength":1,"maxLength":128},"parameterOverrides":{"type":"object"}}), &["projectId","baseRevision","mountId","entryAnchorId","bindings"]),
         spec("creator_vehicle_list", "List the built-in vehicle presets (flapping/fixed-wing) and the version-1 vehicle contract bounds for Creator flight projects. Static contract served without Studio; copy a preset's physics into creator_vehicle_define and adjust bounded parameters only.", json!({"limit":{"type":"integer","minimum":1,"maximum":50}}), &[]),
         spec("creator_vehicle_preview", "Dry-run one vehicle definition against a Creator project: the official Studio validates the full VehicleProfileV1 via city-sdk and the host binds that verdict server-side, returning diagnostics plus a deterministic estimatedPerformance projection. Returns a short-lived previewId bound to the active Studio instance and base revision; commit it with creator_project_commit, or define directly with creator_vehicle_define. `vehicle` accepts either the define-shaped object (vehicleId/label/flightModel/physics/bounds/modelAssetId) or a full profile with camera.", json!({"projectId":project_id_prop(),"baseRevision":revision_prop(),"vehicle":{"type":"object"},"operationId":operation_id_prop()}), &["projectId","baseRevision","vehicle"]),
         spec("creator_vehicle_define", "Define (upsert) one flight vehicle in a Creator project. `physics` keys/ranges and cross-field ratios come from creator_vehicle_list; `camera` is derived deterministically and never accepted. `modelAssetId` must be null (procedural placeholder) or a project asset id — local paths and raw file bytes are never accepted. Requires `data-mcp serve --allow-local-writes` and the official Creator Studio plugin to be open.", json!({"projectId":project_id_prop(),"baseRevision":revision_prop(),"vehicleId":{"type":"string","minLength":1,"maxLength":128},"label":{"type":"string","minLength":1,"maxLength":128},"flightModel":{"type":"string","enum":["fixed-wing","flapping","vtol"]},"physics":{"type":"object"},"bounds":{"type":"object","properties":{"halfLengthM":{"type":"number"},"halfWidthM":{"type":"number"},"halfHeightM":{"type":"number"}},"required":["halfLengthM","halfWidthM","halfHeightM"],"additionalProperties":false},"modelAssetId":{"type":["string","null"]},"operationId":operation_id_prop()}), &["projectId","baseRevision","vehicleId","label","flightModel","physics","bounds","operationId"]),
@@ -319,6 +326,28 @@ pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool)
             let limit = args.get("limit").and_then(Value::as_u64).filter(|value| (1..=100).contains(value)).ok_or_else(|| ToolError::new("invalid_argument", "`limit` must be in 1..=100"))?;
             call(data_home, "creator.city.diagnostic.list", &json!({"cityId":required_string(args,"cityId")?,"limit":limit}), 15_000)
         }
+        "creator_city_anchor_list" => {
+            let mut payload = json!({"cityId":required_string(args,"cityId")?});
+            if let Some(revision) = optional_u64(args, "revision")? { payload["revision"] = json!(revision); }
+            if let Some(capability) = optional_nonempty_string(args, "capability")? { payload["capability"] = json!(capability); }
+            if let Some(kind) = optional_nonempty_string(args, "kind")? { payload["kind"] = json!(kind); }
+            if let Some(limit) = optional_u64(args, "limit")? { payload["limit"] = json!(limit); }
+            call(data_home, "creator.city.anchor.list", &payload, 15_000)
+        }
+        "creator_city_anchor_upsert" => {
+            if !allow_local_writes { return Err(ToolError::new("permission_denied", "Saving City anchors requires `data-mcp serve --allow-local-writes`.")); }
+            let base_revision = args.get("baseRevision").and_then(Value::as_u64).ok_or_else(|| ToolError::new("invalid_argument", "`baseRevision` must be a non-negative integer"))?;
+            let anchors = args.get("anchors").and_then(Value::as_array).filter(|items| (1..=64).contains(&items.len()))
+                .ok_or_else(|| ToolError::new("invalid_argument", "`anchors` must contain 1..=64 objects"))?;
+            call(data_home, "creator.city.anchor.upsert", &json!({"cityId":required_string(args,"cityId")?,"baseRevision":base_revision,"anchors":anchors,"operationId":required_string(args,"operationId")?}), 15_000)
+        }
+        "creator_city_anchor_remove" => {
+            if !allow_local_writes { return Err(ToolError::new("permission_denied", "Removing City anchors requires `data-mcp serve --allow-local-writes`.")); }
+            let base_revision = args.get("baseRevision").and_then(Value::as_u64).ok_or_else(|| ToolError::new("invalid_argument", "`baseRevision` must be a non-negative integer"))?;
+            let ids = args.get("anchorIds").and_then(Value::as_array).filter(|items| (1..=64).contains(&items.len()))
+                .ok_or_else(|| ToolError::new("invalid_argument", "`anchorIds` must contain 1..=64 strings"))?;
+            call(data_home, "creator.city.anchor.remove", &json!({"cityId":required_string(args,"cityId")?,"baseRevision":base_revision,"anchorIds":ids,"operationId":required_string(args,"operationId")?}), 15_000)
+        }
         "creator_city_view" | "creator_city_view_status" | "creator_city_capture" | "creator_city_layout_read" | "creator_city_layout_save" => {
             if name == "creator_city_layout_save" && !allow_local_writes { return Err(ToolError::new("permission_denied", "Saving a City layout requires `data-mcp serve --allow-local-writes`.")); }
             let revision = args.get("revision").and_then(Value::as_u64).ok_or_else(|| ToolError::new("invalid_argument", "`revision` must be a non-negative integer"))?;
@@ -461,6 +490,30 @@ pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool)
             let project_id = required_string(args,"projectId")?;
             let revision = args.get("expectedRevision").and_then(Value::as_u64).ok_or_else(|| ToolError::new("invalid_argument", "`expectedRevision` must be a non-negative integer"))?;
             call(data_home, "creator.project.publish", &json!({"projectId":project_id,"expectedRevision":revision}), 15_000)
+        }
+        "creator_mount_list" => {
+            let mut payload = json!({"projectId":required_string(args,"projectId")?});
+            if let Some(revision) = optional_u64(args, "revision")? { payload["revision"] = json!(revision); }
+            call(data_home, "creator.mount.list", &payload, 15_000)
+        }
+        "creator_mount_bind" => {
+            if !allow_local_writes { return Err(ToolError::new("permission_denied", "Binding a mount requires `data-mcp serve --allow-local-writes`.")); }
+            let mut payload = json!({"projectId":required_string(args,"projectId")?,"baseRevision":args.get("baseRevision").and_then(Value::as_u64).ok_or_else(|| ToolError::new("invalid_argument","`baseRevision` must be a non-negative integer"))?,
+                "mountId":required_string(args,"mountId")?,"entryAnchorId":required_string(args,"entryAnchorId")?,"bindings":args.get("bindings").filter(|value| value.is_object()).ok_or_else(|| ToolError::new("invalid_argument","`bindings` must be an object"))?,
+                "operationId":required_string(args,"operationId")?});
+            for key in ["vehicleId", "parameterOverrides"] { if let Some(value) = args.get(key) { payload[key] = value.clone(); } }
+            call(data_home, "creator.mount.bind", &payload, 15_000)
+        }
+        "creator_mount_unbind" => {
+            if !allow_local_writes { return Err(ToolError::new("permission_denied", "Unbinding a mount requires `data-mcp serve --allow-local-writes`.")); }
+            call(data_home, "creator.mount.unbind", &json!({"projectId":required_string(args,"projectId")?,"baseRevision":args.get("baseRevision").and_then(Value::as_u64).ok_or_else(|| ToolError::new("invalid_argument","`baseRevision` must be a non-negative integer"))?,
+                "mountId":required_string(args,"mountId")?,"operationId":required_string(args,"operationId")?}), 15_000)
+        }
+        "creator_game_bind_preview" => {
+            let mut payload = json!({"projectId":required_string(args,"projectId")?,"baseRevision":args.get("baseRevision").and_then(Value::as_u64).ok_or_else(|| ToolError::new("invalid_argument","`baseRevision` must be a non-negative integer"))?,
+                "mountId":required_string(args,"mountId")?,"entryAnchorId":required_string(args,"entryAnchorId")?,"bindings":args.get("bindings").filter(|value| value.is_object()).ok_or_else(|| ToolError::new("invalid_argument","`bindings` must be an object"))?});
+            for key in ["vehicleId", "parameterOverrides"] { if let Some(value) = args.get(key) { payload[key] = value.clone(); } }
+            call(data_home, "creator.game.bind.preview", &payload, 15_000)
         }
         "creator_vehicle_list" => {
             // 静态契约发现：与 creator_capabilities_list 同样离线，Studio 关闭时可用。
