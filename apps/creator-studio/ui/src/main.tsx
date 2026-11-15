@@ -340,7 +340,9 @@ function App() {
       "creator.game.preview", "creator.asset.import", "creator.game.commit", "creator.scene.preview", "creator.scene.commit", "creator.project.commit", "creator.project.publish",
       "creator.project.playtest.start", "creator.project.playtest.result", "creator.project.playtest.cancel", "creator.project.playtest.return_context", "creator.project.playtest.history",
       "creator.scene.describe", "creator.scene.inspect", "creator.scene.validate", "creator.capabilities.list",
-      "creator.vehicle.preview", "creator.vehicle.define", "creator.vehicle.inspect"];
+      "creator.vehicle.preview", "creator.vehicle.define", "creator.vehicle.inspect",
+      "creator.city.anchor.list", "creator.city.anchor.upsert", "creator.city.anchor.remove",
+      "creator.mount.list", "creator.mount.bind", "creator.mount.unbind", "creator.game.bind.preview"];
     // 这些调用只能来自宿主/MCP 路由（UI 自己的请求直连宿主、不经此转发），
     // 所以这里的捕获天然就是「Agent 来源」的变更记录——设计 §7.3 的变更卡片数据源。
     const noteAgent = (method: string, payload: Record<string, unknown>, ok: boolean, result: unknown) => {

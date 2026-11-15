@@ -516,7 +516,14 @@
         "creator.capabilities.list",
         "creator.vehicle.preview",
         "creator.vehicle.define",
-        "creator.vehicle.inspect"
+        "creator.vehicle.inspect",
+        "creator.city.anchor.list",
+        "creator.city.anchor.upsert",
+        "creator.city.anchor.remove",
+        "creator.mount.list",
+        "creator.mount.bind",
+        "creator.mount.unbind",
+        "creator.game.bind.preview"
       ],
       "hostEvents": [
         "plugin.event"
