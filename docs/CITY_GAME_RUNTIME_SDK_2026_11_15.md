@@ -93,6 +93,11 @@ registry.descriptors();
 - descriptor→runtime 的 id/template 映射有 **golden 锁定测试**（flight/driving/mecha/cinema 的顺序、runtime id、contractVersion、template）。
 - 该层不修改 `GameSession`/`useCityGame`/`useCityDrivingPlay`/mecha/cinema 代码，也不改变 Miami 行为。
 
+App 侧 catalog：[gameTypeCatalog.ts](../apps/agent-city/ui/src/game/runtime/gameTypeCatalog.ts)
+列出四个 Miami adapter 目录 + 计划的 `creator.flight-ornithopter-v1`；
+`PLANNED_GAME_TYPE_IDS` 与 `gameTypeBlockReason()` 让 UI/Agent 能发现扑翼类型但
+不会误注册（registry 仍拒绝 `planned`）。
+
 App 侧注入点：
 
 - [miamiActivityHost.ts](../apps/agent-city/ui/src/game/runtime/miamiActivityHost.ts)

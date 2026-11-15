@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createMiamiGameRuntimeRegistry } from "../src/game/runtime/miamiActivityHost.ts";
 import type { MiamiActivityIdV1 } from "../src/game/runtime/miamiActivityHost.ts";
+import { CITY_GAME_TYPE_CATALOG, gameTypeBlockReason, PLANNED_GAME_TYPE_IDS } from "../src/game/runtime/gameTypeCatalog.ts";
 
 const ids: MiamiActivityIdV1[] = ["flight", "driving", "mecha", "cinema"];
 
@@ -25,4 +26,12 @@ test("app-side factory registers all four Miami adapters and delegates prepare",
     assert.equal(prepared.ok, true);
   }
   assert.deepEqual(calls, ["flight", "driving", "mecha", "cinema"]);
+});
+
+test("app catalog exposes the planned ornithopter descriptor but keeps it unregistrable", () => {
+  assert.equal(CITY_GAME_TYPE_CATALOG.length, 5);
+  assert.deepEqual(PLANNED_GAME_TYPE_IDS, ["creator.flight-ornithopter-v1"]);
+  assert.match(gameTypeBlockReason("creator.flight-ornithopter-v1") ?? "", /planned template/);
+  const registry = createMiamiGameRuntimeRegistry(entries([]));
+  assert.throws(() => registry.resolve("creator.flight-ornithopter-v1", 1));
 });
