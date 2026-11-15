@@ -572,7 +572,19 @@ function App() {
       const current = draftCityViewRef.current;
       try {
         const snapshot = await (handlers as Record<string, (payload: Record<string, unknown>) => Promise<unknown>>)["creator.city.layout.read"](payload);
-        const result = await creatorRequest("creator.city.layout.store", { snapshot });
+        // 先按整份快照存；若该 revision 已有快照而内容变了（典型：快照里还有 Creator 加的
+        // 空域门，而渲染器只能重新产出路网投影），退回到「只合并几何」——保住锚点，只补位置。
+        let result: unknown;
+        try {
+          result = await creatorRequest("creator.city.layout.store", { snapshot });
+        } catch (error) {
+          const code = error instanceof Error ? error.message : "";
+          if (code !== "creator_layout_revision_conflict") throw error;
+          const geometry = (snapshot as { geometry?: unknown }).geometry;
+          if (!Array.isArray(geometry)) throw error;
+          result = await creatorRequest("creator.city.layout.geometry",
+            { cityId: (payload as { cityId?: unknown }).cityId, baseRevision: (payload as { revision?: unknown }).revision, geometry });
+        }
         if (current) await recordCityDiagnostic(current, "layout_saved");
         window.dispatchEvent(new Event("__CREATOR_LAYOUT_CHANGED__"));
         return result;

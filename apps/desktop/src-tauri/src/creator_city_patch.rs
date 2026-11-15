@@ -123,6 +123,42 @@ fn validate_snapshot_geometry(geometry: &Value, anchors: &[Value]) -> Result<(),
     Ok(())
 }
 
+/// 把渲染器捕获到的锚点几何合并进**已存在**的快照（v2 → v3），保留快照里的锚点/连线。
+///
+/// 为什么不是重存整份布局：City 视图只能重新产出**路网**投影，而 Creator 加的空域门只
+/// 存在于快照里——整份覆盖会把它们删掉（这正是旧代码的 digest 守卫挡住的事）。
+/// 这里只改几何、不动锚点，因此已有发布物引用同一 (city, revision, worldRevision) 就能
+/// 直接拿到位置，不需要 bump revision、不需要重新发布。
+pub(crate) fn upgrade_city_layout_geometry(home: &Path, city_id: &str, base_revision: u64, geometry: &Value) -> Result<Value, &'static str> {
+    if !valid_id(city_id) { return Err("creator_request_invalid"); }
+    let mut db = database(home)?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
+    let current: Option<u64> = tx.query_row("SELECT revision FROM creator_cities WHERE city_id=?1", [city_id], |row| row.get(0))
+        .optional().map_err(|_| "creator_store_unavailable")?;
+    let current = current.ok_or("creator_city_not_found")?;
+    if current != base_revision { return Err("revision_conflict"); }
+    let (world_revision, layout_id, raw): (String, String, String) = tx.query_row(
+        "SELECT world_revision,layout_id,snapshot_json FROM creator_city_layouts_v2 WHERE city_id=?1 AND city_revision=?2 ORDER BY created_at_ms DESC LIMIT 1",
+        params![city_id, base_revision], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional().map_err(|_| "creator_store_unavailable")?
+        .ok_or("creator_layout_not_found")?;
+    let previous: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
+    let anchors = previous["layout"]["anchors"].as_array().ok_or("creator_layout_snapshot_invalid")?;
+    validate_snapshot_geometry(geometry, anchors)?;
+    let mut snapshot = previous.clone();
+    snapshot["schemaVersion"] = json!(3);
+    snapshot["geometry"] = geometry.clone();
+    let raw_next = canonical_json(&snapshot).map_err(|_| "creator_layout_snapshot_invalid")?;
+    if raw_next.len() > 64 * 1024 { return Err("creator_layout_snapshot_too_large"); }
+    let hash = digest(&raw_next);
+    tx.execute("UPDATE creator_city_layouts_v2 SET snapshot_json=?4,snapshot_digest=?5,created_at_ms=?6 WHERE city_id=?1 AND city_revision=?2 AND world_revision=?3",
+        params![city_id, base_revision, world_revision, raw_next, hash, now_ms()]).map_err(|_| "creator_store_unavailable")?;
+    tx.commit().map_err(|_| "creator_store_unavailable")?;
+    Ok(json!({"cityId":city_id,"cityRevision":base_revision,"worldRevision":world_revision,"layoutId":layout_id,
+        "snapshotDigest":hash,"upgradedFromV2":previous["schemaVersion"].as_u64() == Some(2),
+        "geometryCount":snapshot["geometry"].as_array().map_or(0, Vec::len),
+        "anchorCount":snapshot["layout"]["anchors"].as_array().map_or(0, Vec::len)}))
+}
+
 /// Trusted Studio captures the snapshot from its live renderer and validates V2/V3
 /// semantics. The host checks structure, identity, bounds and transactional scope.
 pub(crate) fn store_scoped_city_layout(home: &Path, snapshot: &Value) -> Result<Value, &'static str> {
@@ -610,6 +646,40 @@ mod airspace_tests {
         assert_eq!(removed["anchorCount"], 3);
         let old = list_city_anchors(&home, city_id, Some(0), None, None, 64).unwrap();
         assert_eq!(old["anchors"].as_array().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// 只合并几何的升级：保留快照里的锚点（含 Creator 加的空域门），只补位置。
+    /// 这是「重存布局」唯一正确的落法——整份覆盖会把空域门删掉（旧 digest 守卫挡住了它，
+    /// 但也顺带挡住了升级）。
+    #[test]
+    fn geometry_upgrade_keeps_creator_anchors_and_requires_full_coverage() {
+        let home = home();
+        let created = crate::creator_cities::create_city(&home, "local-profile", "create-geometry-upgrade", "Geo", 11, &json!({"schemaVersion":1})).unwrap();
+        let city_id = created["cityId"].as_str().unwrap();
+        let v2 = json!({"schemaVersion":2,"cityId":city_id,"cityRevision":0,"worldRevision":"world-geo","seed":11,
+            "layout":{"schemaVersion":1,"id":"layout-geo","coordinateSystem":"city-local-m-v1",
+                "anchors":[{"id":"spawn-air","kind":"spawn","capabilities":["fly"],"geometryRef":"city-road-node:a"},
+                    {"id":"air-gate:a","kind":"zone","capabilities":["fly"],"geometryRef":"city-road-node:b"}],
+                "links":[{"id":"air-link:a-b","fromAnchorId":"spawn-air","toAnchorId":"air-gate:a","capabilities":["fly"]}]}});
+        store_scoped_city_layout(&home, &v2).unwrap();
+        let geometry = json!([{"geometryRef":"city-road-node:a","positionMeters":{"x":0,"y":40,"z":0}},
+            {"geometryRef":"city-road-node:b","positionMeters":{"x":60,"y":40,"z":0},"activationRadiusMeters":12}]);
+        let upgraded = upgrade_city_layout_geometry(&home, city_id, 0, &geometry).unwrap();
+        assert_eq!(upgraded["upgradedFromV2"], true);
+        assert_eq!(upgraded["anchorCount"], 2, "creator anchors must survive the upgrade");
+        assert_eq!(upgraded["geometryCount"], 2);
+        let stored: Value = {
+            let db = database(&home).unwrap();
+            serde_json::from_str(&db.query_row("SELECT snapshot_json FROM creator_city_layouts_v2 WHERE city_id=?1 AND city_revision=0", params![city_id], |row| row.get::<_, String>(0)).unwrap()).unwrap()
+        };
+        assert_eq!(stored["schemaVersion"], 3);
+        assert_eq!(stored["layout"]["anchors"][1]["id"], "air-gate:a", "the air gate must still be in the snapshot");
+        assert_eq!(stored["geometry"].as_array().unwrap().len(), 2);
+        // 覆盖不全 → 拒绝（发布物照样无法复现）。
+        assert_eq!(upgrade_city_layout_geometry(&home, city_id, 0, &json!([geometry[0]]).clone()).unwrap_err(), "creator_layout_snapshot_invalid");
+        // revision CAS。
+        assert_eq!(upgrade_city_layout_geometry(&home, city_id, 1, &geometry).unwrap_err(), "revision_conflict");
         let _ = std::fs::remove_dir_all(home);
     }
 

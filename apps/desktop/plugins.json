@@ -482,6 +482,7 @@
         "creator.city.capture",
         "creator.city.layout.read",
         "creator.city.layout.store",
+        "creator.city.layout.geometry",
         "creator.city.layout.save",
         "creator.layout.list",
         "creator.project.list",

@@ -1159,6 +1159,11 @@ fn run_city_patch_preview(home: &Path, _owner: &str, instance: &str, payload: &V
     if validation.get("requestDigest").and_then(Value::as_str) != Some(expected.as_str()) { return Err("creator_validation_scope_mismatch"); }
     crate::creator_cities::preview_city_patch(home, instance, city_id, revision, patch)
 }
+fn run_city_layout_geometry(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_city_patch::upgrade_city_layout_geometry(home, args_valid_id(payload, "cityId")?,
+        args_u64(payload, "baseRevision")?, payload.get("geometry").ok_or("creator_request_invalid")?)
+}
+
 fn run_city_layout_store(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
     crate::creator_city_patch::store_scoped_city_layout(home, payload.get("snapshot").ok_or("creator_request_invalid")?)
 }
@@ -1214,6 +1219,8 @@ static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.city.edit.preview", &["cityId", "baseRevision", "validation"], &["name", "seed", "profile", "operations"], run_city_preview),
     creator_row!("creator.city.patch.preview", &["cityId", "baseRevision", "patch", "validation"], &[], run_city_patch_preview),
     creator_row!("creator.city.layout.store", &["snapshot"], &[], run_city_layout_store),
+    // 只合并几何、保留快照锚点（Creator 加的空域门只存在于快照里，整份重存会删掉它们）。
+    creator_row!("creator.city.layout.geometry", &["cityId", "baseRevision", "geometry"], &[], run_city_layout_geometry),
     creator_row!("creator.city.anchor.list", &["cityId"], &["revision", "capability", "kind", "limit"], run_city_anchor_list),
     creator_row!("creator.city.anchor.upsert", &["cityId", "baseRevision", "anchors", "operationId"], &[], run_city_anchor_upsert),
     creator_row!("creator.city.anchor.remove", &["cityId", "baseRevision", "anchorIds", "operationId"], &[], run_city_anchor_remove),
