@@ -1,7 +1,7 @@
 import type { CityGameMountV1, MiniGamePackV1, ContentRef, VisualPlaytestEvidenceV1, SceneDraftV1, CityProjectAssetCatalogV1, ModelAssetRefV1 } from "@agent-vitals/city-sdk";
 import { toMeters } from "../../engine/worldScale";
 import type { CheckpointRaceSnapshotV1 } from "./checkpointRace";
-import { createMountedMiniGamePlan, MountedMiniGameControllerV1, type MountedMiniGamePlanV1, type MountedMiniGameSnapshotV1 } from "./mountedMiniGame";
+import { createMountedMiniGamePlan, MountedMiniGameControllerV1, type MountedMiniGameCapability, type MountedMiniGamePlanV1, type MountedMiniGameSnapshotV1 } from "./mountedMiniGame";
 import type { CityLayoutSdkViewV1 } from "../../engine/sdk/cityLayoutAdapter";
 
 export type CreatorPublishedMiniGameV1 = Readonly<{
@@ -14,20 +14,25 @@ export type CreatorPublishedMiniGameV1 = Readonly<{
   entryPositionWorld?: Readonly<{ x: number; z: number }>;
 }>;
 
-export function createCreatorMiniGamePlan(view: CityLayoutSdkViewV1, experience: CreatorPublishedMiniGameV1): ReturnType<typeof createMountedMiniGamePlan> {
+export function createCreatorMiniGamePlan(view: CityLayoutSdkViewV1, experience: CreatorPublishedMiniGameV1,
+  options: Readonly<{ capability?: MountedMiniGameCapability }> = {}): ReturnType<typeof createMountedMiniGamePlan> {
+  const capability = options.capability ?? "drive";
+  const runtime = capability === "fly" ? "飞行" : "驾驶";
   const slots = Object.values(experience.game.slots);
-  if (slots.some(slot => slot.kind !== "zone" || slot.requires?.some(capability => capability !== "drive"))) {
-    return { ok: false, diagnostics: [{ code: "creator_game_capability_unsupported", severity: "error", path: "game.slots", message: "City 驾驶运行时目前只支持 drive 能力的 zone 槽位。" }] };
+  if (slots.some(slot => slot.kind !== "zone" || slot.requires?.some(required => required !== capability))) {
+    return { ok: false, diagnostics: [{ code: "creator_game_capability_unsupported", severity: "error", path: "game.slots", message: `City ${runtime}运行时只支持 ${capability} 能力的 zone 槽位。` }] };
   }
   if (experience.game.rules.nodes.some(node => !["run.started", "zone.entered", "timer.expired"].includes(node.on.type))) {
-    return { ok: false, diagnostics: [{ code: "creator_game_event_unsupported", severity: "error", path: "game.rules.nodes.on", message: "City 驾驶运行时目前只会产生小游戏启动、区域进入和计时器事件。" }] };
+    return { ok: false, diagnostics: [{ code: "creator_game_event_unsupported", severity: "error", path: "game.rules.nodes.on", message: `City ${runtime}运行时只会产生小游戏启动、区域进入和计时器事件。` }] };
   }
   return createMountedMiniGamePlan({ view, packageJson: JSON.stringify(experience.game), mount: experience.mount,
-    gameRef: experience.mount.game as ContentRef<"city-minigame">, seed: view.seed });
+    gameRef: experience.mount.game as ContentRef<"city-minigame">, seed: view.seed, capability });
 }
 
-/** Adapts the shared SDK runner to the existing City vehicle fixed-step path. */
-export class CreatorMiniGameDrivingControllerV1 {
+/** Adapts the shared SDK runner to a City vehicle fixed-step path. It is the same
+ * runner for driving and flying: the only per-capability choice is made when the
+ * plan is created (which anchor capability the entry/slots need), not here. */
+export class CreatorMiniGameRuntimeControllerV1 {
   private readonly controller: MountedMiniGameControllerV1;
   private snapshotValue: CheckpointRaceSnapshotV1;
   private readonly total: number;

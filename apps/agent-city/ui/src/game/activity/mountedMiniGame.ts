@@ -15,7 +15,12 @@ const diagnostic = (code: string, path: string, message: string, objectId?: stri
 });
 
 /** Loads declarative JSON content through the same validation path used by SDK tools. */
-export function createMountedMiniGamePlan(input: Readonly<{ view: CityLayoutSdkViewV1; packageJson: string; mount: CityGameMountV1; gameRef: ContentRef<"city-minigame">; seed: number }>): Result<MountedMiniGamePlanV1> {
+/** 入口锚点必须声明哪一种能力才能进入该小游戏：driving 用 "drive"（既有行为），
+ * flight 用 "fly"。两者共用同一套 zone 触发与规则执行，只有这个词不同。 */
+export type MountedMiniGameCapability = "drive" | "fly";
+
+export function createMountedMiniGamePlan(input: Readonly<{ view: CityLayoutSdkViewV1; packageJson: string; mount: CityGameMountV1; gameRef: ContentRef<"city-minigame">; seed: number;
+  capability?: MountedMiniGameCapability }>): Result<MountedMiniGamePlanV1> {
   if (!input.view.layout.links) return { ok: false, diagnostics: [diagnostic("layout_topology_unavailable", "layout.links", "The trusted City adapter did not provide traversal links for mounted-game validation.")] };
   const parsed = parseMiniGamePackJson(input.packageJson);
   if (!parsed.ok) return parsed;
@@ -31,8 +36,10 @@ export function createMountedMiniGamePlan(input: Readonly<{ view: CityLayoutSdkV
   if (!entryAnchor || !input.view.geometry.has(entryAnchor.geometryRef)) {
     return { ok: false, diagnostics: [diagnostic("entry_geometry_unavailable", "mount.entryAnchorId", "The City adapter cannot resolve trusted geometry for the game entry.", mounted.value.mount.entryAnchorId)] };
   }
-  if (!entryAnchor.capabilities.includes("drive")) {
-    return { ok: false, diagnostics: [diagnostic("entry_capability_unsupported", "mount.entryAnchorId", "The current City mini-game runtime requires a drive-capable entry.", entryAnchor.id)] };
+  const capability = input.capability ?? "drive";
+  if (!entryAnchor.capabilities.includes(capability)) {
+    return { ok: false, diagnostics: [diagnostic("entry_capability_unsupported", "mount.entryAnchorId",
+      `The City mini-game runtime requires a ${capability}-capable entry.`, entryAnchor.id)] };
   }
   const zones: Record<string, Readonly<{ x: number; y: number; z: number; radius: number }>[]> = {};
   for (const [slotName, slot] of Object.entries(parsed.value.slots)) {

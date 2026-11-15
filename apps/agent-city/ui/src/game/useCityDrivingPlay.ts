@@ -8,7 +8,7 @@ import type { CityActivityCoordinator } from "./activity/CityActivityCoordinator
 import { createCheckpointRacePlan, CheckpointRaceControllerV1, type CheckpointRaceSnapshotV1 } from "./activity/checkpointRace";
 import { CheckpointRaceVisuals } from "./activity/CheckpointRaceVisuals";
 import { createZoneCollectPlan, ZoneCollectControllerV1 } from "./activity/zoneCollect";
-import { createCreatorMiniGamePlan, CreatorMiniGameDrivingControllerV1, type CreatorPublishedMiniGameV1 } from "./activity/creatorMiniGame";
+import { createCreatorMiniGamePlan, CreatorMiniGameRuntimeControllerV1, type CreatorPublishedMiniGameV1 } from "./activity/creatorMiniGame";
 import { compileCreatorSceneColliders } from "./activity/creatorSceneColliders";
 import { CreatorColliderDebugVisuals } from "./activity/creatorColliderDebugVisuals";
 import type { SolidInput } from "./driving/CollisionIndex";
@@ -266,7 +266,7 @@ export function useCityDrivingPlay(engine: RefObject<CityEngine | null>, host: R
       failPlaytest("creator_skin_apply_failed"); setRaceEntryError("这个小游戏的皮肤无法应用到当前 City。"); setChoosingVehicle(true); return;
     }
     raceControllerRef.current?.dispose(); racePauseQueuedRef.current = false;
-    const controller = new CreatorMiniGameDrivingControllerV1(plan.value, setRace);
+    const controller = new CreatorMiniGameRuntimeControllerV1(plan.value, setRace);
     raceControllerRef.current = controller;
     if (pendingPlaytest) pendingPlaytest.controller = controller;
     creatorGameActiveRef.current = true;
