@@ -33,6 +33,35 @@
     "flapping",
     "vtol"
   ],
+  "performanceDerivation": {
+    "cruiseSpeedDivisor": 1.8
+  },
+  "performanceVectors": [
+    {
+      "estimate": {
+        "climbRateMps": 34,
+        "cruiseSpeedMps": 66.66666666666667,
+        "flapFrequencyHz": 2.4,
+        "maxSpeedMps": 120,
+        "thrustAccelMs2": 29.41176470588235,
+        "turnRateRps": 0.9,
+        "wingLoadingKgPerM2": 18.88888888888889
+      },
+      "id": "vehicle.ornithopter"
+    },
+    {
+      "estimate": {
+        "climbRateMps": 26,
+        "cruiseSpeedMps": 72.22222222222221,
+        "flapFrequencyHz": null,
+        "maxSpeedMps": 130,
+        "thrustAccelMs2": 14.516129032258064,
+        "turnRateRps": 1.05,
+        "wingLoadingKgPerM2": 38.75
+      },
+      "id": "vehicle.fixed-wing-light"
+    }
+  ],
   "physicsBounds": {
     "climbRateMps": [
       1,

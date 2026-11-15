@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { FIXED_WING_VEHICLE_PRESET_V1, ORNITHOPTER_VEHICLE_PRESET_V1, validateVehicleProfileV1 } from "@agent-vitals/city-sdk";
+import { estimateVehiclePerformanceV1, FIXED_WING_VEHICLE_PRESET_V1, ORNITHOPTER_VEHICLE_PRESET_V1, validateVehicleProfileV1 } from "@agent-vitals/city-sdk";
+import { METERS_PER_UNIT } from "../src/engine/worldScale.ts";
 import { FLIGHT_CHECKPOINT_GAME_TYPE_V1, validateTemplateLink } from "../../../../packages/agent-vitals-city-game-runtime/src/index.ts";
 import { CITY_GAME_TYPE_CATALOG } from "../src/game/runtime/gameTypeCatalog.ts";
 import { flightParamsFor, initialSimState, PHYSICS_VERSION, stepFlight, vehicleFlightParams, VEHICLE_PHYSICS_VERSION } from "../src/game/FlightSimulation.ts";
@@ -116,4 +117,32 @@ test("creator.flight-checkpoint-v1 stays registrable data while the app catalog 
   // App catalog adoption waits for the Creator capability projection (next slice):
   // the app-side lockstep test pins CITY_GAME_TYPE_CATALOG against CREATOR_GAME_TYPES_V1.
   assert.ok(!CITY_GAME_TYPE_CATALOG.some(item => item.id === FLIGHT_CHECKPOINT_GAME_TYPE_V1.id));
+});
+
+test("engine flight params consume the SDK performance estimate (unit conversion only)", () => {
+  // Creator 预览展示的 estimatedPerformance 与引擎的实际飞行参数必须同源：引擎只允许
+  // 两件事——米→世界单位换算（METERS_PER_UNIT）与操纵调校增益（accel×0.72 / brake×1.9
+  // 是引擎侧的杆量手感，不是物理推导）。任何一处再抄一份系数，这条测试就会红。
+  for (const preset of [ORNITHOPTER_VEHICLE_PRESET_V1, FIXED_WING_VEHICLE_PRESET_V1]) {
+    const estimate = estimateVehiclePerformanceV1(preset);
+    const params = vehicleFlightParams(preset);
+    const toUnits = (meters: number) => meters / METERS_PER_UNIT;
+    // 巡航速度：引擎按世界单位给出，换算回米制后必须与 SDK 推导逐位相等（预设都高于
+    // Math.max(6, …) 的最低巡航下限，所以这里没有下限截断）。
+    assert.equal(params.cruiseSpeed * METERS_PER_UNIT, estimate.cruiseSpeedMps, `${preset.id}: cruise speed`);
+    assert.equal(params.maxSpeed * METERS_PER_UNIT, estimate.maxSpeedMps, `${preset.id}: max speed`);
+    assert.equal(params.turnRate, estimate.turnRateRps, `${preset.id}: turn rate`);
+    assert.equal(params.climbRate * METERS_PER_UNIT, estimate.climbRateMps, `${preset.id}: climb rate`);
+    assert.equal(params.accel, toUnits(estimate.thrustAccelMs2) * 0.72, `${preset.id}: thrust accel × engine gain`);
+    assert.equal(params.flapFrequency, estimate.flapFrequencyHz ?? 0, `${preset.id}: flap frequency`);
+  }
+});
+
+test("the lowest-cruise floor is the only engine-side clamp on the SDK derivation", () => {
+  // Math.max(6, …) 是引擎的绝对下限（世界单位/秒）。它只能在推导值之下生效，否则
+  // 引擎就会和 Creator 预览报不同的巡航速度；预设值远高于下限，所以两者相等。
+  for (const preset of [ORNITHOPTER_VEHICLE_PRESET_V1, FIXED_WING_VEHICLE_PRESET_V1]) {
+    const derived = estimateVehiclePerformanceV1(preset).cruiseSpeedMps / METERS_PER_UNIT;
+    assert.ok(derived > 6, `${preset.id}: preset cruise ${derived} must sit above the engine floor`);
+  }
 });

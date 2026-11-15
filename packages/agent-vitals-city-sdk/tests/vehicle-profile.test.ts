@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { FIXED_WING_VEHICLE_PRESET_V1, ORNITHOPTER_VEHICLE_PRESET_V1, validateVehicleProfileV1,
+import { CREATOR_VEHICLE_CATALOG_V1, estimateVehiclePerformanceV1, FIXED_WING_VEHICLE_PRESET_V1, ORNITHOPTER_VEHICLE_PRESET_V1, validateVehicleProfileV1,
+  VEHICLE_PERFORMANCE_DERIVATION_V1,
   VEHICLE_BOUNDS_LIMITS_V1, VEHICLE_CAMERA_BOUNDS_V1, VEHICLE_PHYSICS_BOUNDS_V1, VEHICLE_PHYSICS_KEYS_V1, VEHICLE_PHYSICS_RATIOS_V1,
   type VehicleProfileV1 } from "../src/vehicleProfile";
 import { validateMiniGamePack } from "../src/content";
@@ -156,4 +157,24 @@ test("flight-checkpoint template lands in CREATOR_TEMPLATES_V1 with a validating
   assert.deepEqual(validateMiniGamePack(template.pack).diagnostics, []);
   // The flapping naming template stays as a deprecated alias (preset-backed).
   assert.ok(CREATOR_TEMPLATES_V1.find(item => item.id === "ornithopter-flight"), "ornithopter-flight alias retained");
+});
+
+test("performance estimates derive from the single-source cruise divisor", () => {
+  const flapping = estimateVehiclePerformanceV1(ORNITHOPTER_VEHICLE_PRESET_V1);
+  assert.equal(flapping.cruiseSpeedMps, ORNITHOPTER_VEHICLE_PRESET_V1.physics.maxSpeedMps / VEHICLE_PERFORMANCE_DERIVATION_V1.cruiseSpeedDivisor);
+  assert.equal(flapping.thrustAccelMs2, ORNITHOPTER_VEHICLE_PRESET_V1.physics.thrustN / ORNITHOPTER_VEHICLE_PRESET_V1.physics.massKg);
+  assert.equal(flapping.wingLoadingKgPerM2, ORNITHOPTER_VEHICLE_PRESET_V1.physics.massKg / ORNITHOPTER_VEHICLE_PRESET_V1.physics.wingAreaM2);
+  assert.equal(flapping.flapFrequencyHz, ORNITHOPTER_VEHICLE_PRESET_V1.physics.flapFrequencyHz);
+  const fixedWing = estimateVehiclePerformanceV1(FIXED_WING_VEHICLE_PRESET_V1);
+  assert.equal(fixedWing.flapFrequencyHz, null);
+});
+
+test("catalog embeds performance derivation and self-computed lockstep vectors", () => {
+  const derivation = CREATOR_VEHICLE_CATALOG_V1.performanceDerivation;
+  assert.equal(derivation.cruiseSpeedDivisor, 1.8);
+  for (const vector of CREATOR_VEHICLE_CATALOG_V1.performanceVectors) {
+    const preset = CREATOR_VEHICLE_CATALOG_V1.presets.find(item => item.id === vector.id);
+    assert.ok(preset, `vector ${vector.id} references a preset`);
+    assert.deepEqual(vector.estimate, estimateVehiclePerformanceV1(preset));
+  }
 });

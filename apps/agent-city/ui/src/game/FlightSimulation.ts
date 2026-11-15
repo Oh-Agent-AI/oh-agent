@@ -8,6 +8,7 @@
  * 本模块不依赖 three/DOM：同输入同输出，30/60/120 Hz 渲染帧率不影响轨迹（守卫脚本验证）。
  */
 import type { VehicleFlightModelV1, VehicleProfileV1 } from "@agent-vitals/city-sdk";
+import { VEHICLE_PERFORMANCE_DERIVATION_V1 } from "@agent-vitals/city-sdk";
 import type { FlightInputState } from "./types";
 import { DetMath as Math } from "../engine/detMath";
 import { METERS_PER_UNIT } from "../engine/worldScale";
@@ -83,7 +84,9 @@ export function vehicleFlightParams(profile: VehicleProfileV1): FlightParams {
   const thrustAccel = unit(physics.thrustN / physics.massKg);
   const flapping = profile.flightModel === "flapping";
   return {
-    cruiseSpeed: Math.max(6, maxSpeed / 1.8),
+    // 巡航分频单源于 SDK 的 VEHICLE_PERFORMANCE_DERIVATION_V1（=1.8）：Creator
+    // 预览的 estimatedPerformance 与本引擎共用同一推导，禁止两侧各自调参。
+    cruiseSpeed: Math.max(6, maxSpeed / VEHICLE_PERFORMANCE_DERIVATION_V1.cruiseSpeedDivisor),
     minSpeed: maxSpeed * 0.22,
     maxSpeed,
     accel: thrustAccel * 0.72,

@@ -295,10 +295,45 @@ export const FIXED_WING_VEHICLE_PRESET_V1: VehicleProfileV1 = Object.freeze({
 });
 
 /**
+ * 性能预估推导（单一来源）：巡航分频等物理域派生只在这里定义。引擎
+ * （FlightSimulation.vehicleFlightParams）与宿主预览（Rust 按生成产物里的
+ * performanceDerivation/向量执行）都消费本节，禁止在两侧重复实现启发式。
+ */
+export const VEHICLE_PERFORMANCE_DERIVATION_V1 = Object.freeze({ cruiseSpeedDivisor: 1.8 });
+
+export type VehiclePerformanceEstimateV1 = Readonly<{
+  cruiseSpeedMps: number;
+  maxSpeedMps: number;
+  thrustAccelMs2: number;
+  wingLoadingKgPerM2: number;
+  turnRateRps: number;
+  climbRateMps: number;
+  /** 扑翼专属；其它气动模型为 null（exact-keys 下扑翼必有该键）。 */
+  flapFrequencyHz: number | null;
+}>;
+
+/** 物理域（m/s、m/s²、kg/m²）性能预估：Creator 预览向调用方展示的唯一权威值。
+ * 引擎在单位换算与操纵调校（accel/brake 增益、平滑）之外不得另设启发式。 */
+export function estimateVehiclePerformanceV1(profile: VehicleProfileV1): VehiclePerformanceEstimateV1 {
+  const physics = profile.physics;
+  return Object.freeze({
+    cruiseSpeedMps: physics.maxSpeedMps / VEHICLE_PERFORMANCE_DERIVATION_V1.cruiseSpeedDivisor,
+    maxSpeedMps: physics.maxSpeedMps,
+    thrustAccelMs2: physics.thrustN / physics.massKg,
+    wingLoadingKgPerM2: physics.massKg / physics.wingAreaM2,
+    turnRateRps: physics.turnRateRps,
+    climbRateMps: physics.climbRateMps,
+    flapFrequencyHz: profile.flightModel === "flapping" ? (physics.flapFrequencyHz ?? 0) : null,
+  });
+}
+
+/**
  * 车辆目录投影（2026-11-15 泛化切片）：MCP `creator_vehicle_list` 与宿主结构上限
  * 的单一来源。preset 是完整可用的 VehicleProfileV1（含确定性默认相机）；bounds/
- * ratios 表与 validateVehicleProfileV1 逐字段同源（同一份常量）。由生成器导出到
- * assets/creator/vehicles.json；Rust include_str! 消费，不改内容。
+ * ratios 表与 validateVehicleProfileV1 逐字段同源（同一份常量）。performanceVectors
+ * 由本模块的 estimateVehiclePerformanceV1 对各 preset 计算得出——Rust 侧用同一份
+ * 向量做跨语言锁步（宿主推导与 SDK 逐位一致才允许发布预览展示性能）。
+ * 由生成器导出到 assets/creator/vehicles.json；Rust include_str! 消费，不改内容。
  */
 export const CREATOR_VEHICLE_CATALOG_V1 = Object.freeze({
   schemaVersion: 1 as const,
@@ -310,4 +345,9 @@ export const CREATOR_VEHICLE_CATALOG_V1 = Object.freeze({
   boundsLimits: VEHICLE_BOUNDS_LIMITS_V1,
   physicsRatios: VEHICLE_PHYSICS_RATIOS_V1,
   cameraDefaults: VEHICLE_CAMERA_DEFAULTS_V1,
+  performanceDerivation: VEHICLE_PERFORMANCE_DERIVATION_V1,
+  performanceVectors: Object.freeze([ORNITHOPTER_VEHICLE_PRESET_V1, FIXED_WING_VEHICLE_PRESET_V1].map(preset => Object.freeze({
+    id: preset.id,
+    estimate: estimateVehiclePerformanceV1(preset),
+  }))),
 });
