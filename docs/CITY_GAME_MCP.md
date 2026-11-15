@@ -96,7 +96,20 @@ So the resolver never guesses:
   `release.gateSource === "layout-geometry"`;
 - v2 snapshot (releases frozen before v3) → `isError: gates_required` with `boundAnchors`
   and `warnings: ["gate_geometry_not_serialized"]`; pass `gates` yourself in metres and
-  `release.gateSource === "caller"`. Re-publishing the release produces a v3 snapshot.
+  `release.gateSource === "caller"`, or upgrade the snapshot (below).
+
+### Upgrading an existing v2 release
+
+The release does **not** embed the layout: it references `(cityId, cityRevision,
+worldRevision, layoutId)`, and geometry is read from `creator_city_layouts_v2` at that key.
+So re-saving the layout once upgrades the row in place (v2 → v3, same revision, same
+layout bytes) and every existing release referencing it resolves gates immediately — no
+re-publish, no City revision bump. `creator_city_layout_save` reports `upgradedFromV2: true`.
+
+That call needs a live viewport (`creator_capture_unavailable` / `data_unavailable` when
+Studio is not open — verified against the real MCP server), because positions come from the
+Studio renderer. A layout-content change at the same revision, or a downgrade, still fails
+with `creator_layout_revision_conflict`.
 
 A partially resolvable gate set is refused whole (`gate_anchor_not_found`,
 `gate_geometry_unresolved`, `gate_radius_missing`) — half a gate list silently moves the

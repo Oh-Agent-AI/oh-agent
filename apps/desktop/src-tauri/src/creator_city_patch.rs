@@ -153,13 +153,35 @@ pub(crate) fn store_scoped_city_layout(home: &Path, snapshot: &Value) -> Result<
     if document["seed"].as_u64() != snapshot["seed"].as_u64() { return Err("creator_layout_scope_invalid"); }
     let existing: Option<String> = tx.query_row("SELECT snapshot_digest FROM creator_city_layouts_v2 WHERE city_id=?1 AND city_revision=?2 AND world_revision=?3",
         params![city_id,city_revision,world_revision], |row| row.get(0)).optional().map_err(|_| "creator_store_unavailable")?;
-    if existing.as_ref().is_some_and(|previous| previous != &hash) { return Err("creator_layout_revision_conflict"); }
-    if existing.is_none() {
+    // v2 → v3 原地升级：同一 (city, revision, worldRevision) 下布局本身逐字未变，只是把
+    // 锚点几何补进快照（v2 从不序列化几何）。发布物引用的是这个 key，升级后既有 release
+    // 立刻拿到几何——不需要重新发布，也不需要 bump City revision。反过来（v3→v2）与
+    // 「布局内容变了」仍然按冲突拒绝。
+    let upgrade_in_place = existing.as_ref().is_some_and(|previous| previous != &hash) && {
+        let previous_raw: String = tx.query_row("SELECT snapshot_json FROM creator_city_layouts_v2 WHERE city_id=?1 AND city_revision=?2 AND world_revision=?3",
+            params![city_id,city_revision,world_revision], |row| row.get(0)).map_err(|_| "creator_store_unavailable")?;
+        let previous: Value = serde_json::from_str(&previous_raw).map_err(|_| "creator_store_unavailable")?;
+        previous["schemaVersion"].as_u64() == Some(2)
+            && snapshot["schemaVersion"].as_u64() == Some(3)
+            && previous["cityId"] == snapshot["cityId"]
+            && previous["cityRevision"] == snapshot["cityRevision"]
+            && previous["worldRevision"] == snapshot["worldRevision"]
+            && previous["seed"] == snapshot["seed"]
+            && previous["layout"] == snapshot["layout"]
+    };
+    if existing.as_ref().is_some_and(|previous| previous != &hash) && !upgrade_in_place { return Err("creator_layout_revision_conflict"); }
+    if existing.is_some() {
+        if upgrade_in_place {
+            tx.execute("UPDATE creator_city_layouts_v2 SET snapshot_json=?4,snapshot_digest=?5,created_at_ms=?6 WHERE city_id=?1 AND city_revision=?2 AND world_revision=?3",
+                params![city_id,city_revision,world_revision,raw,hash,now_ms()]).map_err(|_| "creator_store_unavailable")?;
+        }
+    } else {
         tx.execute("INSERT INTO creator_city_layouts_v2(city_id,city_revision,world_revision,layout_id,snapshot_json,snapshot_digest,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)",
             params![city_id,city_revision,world_revision,layout_id,raw,hash,now_ms()]).map_err(|_| "creator_store_unavailable")?;
     }
     tx.commit().map_err(|_| "creator_store_unavailable")?;
-    Ok(json!({"cityId":city_id,"cityRevision":city_revision,"worldRevision":world_revision,"layoutId":layout_id,"snapshotDigest":hash}))
+    Ok(json!({"cityId":city_id,"cityRevision":city_revision,"worldRevision":world_revision,"layoutId":layout_id,
+        "snapshotDigest":hash,"upgradedFromV2":upgrade_in_place}))
 }
 
 pub fn list_city_layout_snapshots(home: &Path, limit: u64) -> Result<Value, &'static str> {
@@ -588,6 +610,42 @@ mod airspace_tests {
         assert_eq!(removed["anchorCount"], 3);
         let old = list_city_anchors(&home, city_id, Some(0), None, None, 64).unwrap();
         assert_eq!(old["anchors"].as_array().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// 重存一次布局应当**原地**把 v2 升级成 v3（补上锚点几何），而不是报 revision 冲突：
+    /// 发布物引用的是 (city, revision, worldRevision) 这个 key，升级后既有 release 立刻
+    /// 拿到几何，不需要重新发布。布局内容真的变了、或想降级回 v2，仍然拒绝。
+    #[test]
+    fn resaving_a_layout_upgrades_a_v2_snapshot_in_place_and_keeps_conflicts() {
+        let home = home();
+        let created = crate::creator_cities::create_city(&home, "local-profile", "create-airspace-upgrade", "Airspace", 10, &json!({"schemaVersion":1})).unwrap();
+        let city_id = created["cityId"].as_str().unwrap();
+        let layout = json!({"schemaVersion":1,"id":"layout-upgrade","coordinateSystem":"city-local-m-v1",
+            "anchors":[{"id":"spawn-air","kind":"spawn","capabilities":["fly"],"geometryRef":"city-road-node:a"},
+                {"id":"air-gate:a","kind":"zone","capabilities":["fly"],"geometryRef":"city-road-node:b"}],
+            "links":[{"id":"air-link:a-b","fromAnchorId":"spawn-air","toAnchorId":"air-gate:a","capabilities":["fly"]}]});
+        let v2 = json!({"schemaVersion":2,"cityId":city_id,"cityRevision":0,"worldRevision":"world-upgrade","seed":10,"layout":layout});
+        store_scoped_city_layout(&home, &v2).unwrap();
+        let v3 = json!({"schemaVersion":3,"cityId":city_id,"cityRevision":0,"worldRevision":"world-upgrade","seed":10,"layout":layout,
+            "geometry":[{"geometryRef":"city-road-node:a","positionMeters":{"x":0,"y":40,"z":0}},
+                {"geometryRef":"city-road-node:b","positionMeters":{"x":60,"y":40,"z":0},"activationRadiusMeters":12}]});
+        let upgraded = store_scoped_city_layout(&home, &v3).unwrap();
+        assert_eq!(upgraded["upgradedFromV2"], true);
+        let stored: String = {
+            let db = database(&home).unwrap();
+            db.query_row("SELECT snapshot_json FROM creator_city_layouts_v2 WHERE city_id=?1 AND city_revision=0", params![city_id], |row| row.get::<_, String>(0)).unwrap()
+        };
+        let stored: Value = serde_json::from_str(&stored).unwrap();
+        assert_eq!(stored["schemaVersion"], 3);
+        assert_eq!(stored["geometry"].as_array().unwrap().len(), 2);
+        // 布局内容变了 → 冲突（不是升级）。
+        let mut moved = v3.clone();
+        // 只改 link id：布局依然结构合法，但内容确实变了 → 必须冲突而不是升级。
+        moved["layout"]["links"][0]["id"] = json!("air-link:a-b-renamed");
+        assert_eq!(store_scoped_city_layout(&home, &moved).unwrap_err(), "creator_layout_revision_conflict");
+        // 降级回 v2 → 冲突。
+        assert_eq!(store_scoped_city_layout(&home, &v2).unwrap_err(), "creator_layout_revision_conflict");
         let _ = std::fs::remove_dir_all(home);
     }
 
