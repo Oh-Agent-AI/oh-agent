@@ -441,7 +441,13 @@ function App() {
       // 这份载荷为准。modelAssetId 只透传（null 或项目 assetId），本面不接本地路径。
       if (method === "creator.vehicle.preview" || method === "creator.vehicle.define") {
         const outcome = normalizeVehicleProfileInput(payload.vehicle ?? payload);
-        return { ...payload, vehicle: outcome.vehicle, validation: await buildVehicleValidation(String(payload.projectId ?? ""), Number(payload.baseRevision ?? 0), outcome) };
+        const validation = await buildVehicleValidation(String(payload.projectId ?? ""), Number(payload.baseRevision ?? 0), outcome);
+        // The host dispatch accepts exactly the preview/define contract keys; the
+        // flattened MCP arguments (label/physics/bounds/...) must not leak through.
+        return method === "creator.vehicle.define"
+          ? { projectId: payload.projectId, baseRevision: payload.baseRevision, vehicleId: payload.vehicleId,
+              vehicle: outcome.vehicle, operationId: payload.operationId, validation }
+          : { projectId: payload.projectId, baseRevision: payload.baseRevision, vehicle: outcome.vehicle, validation };
       }
       const projectId = String(payload.projectId ?? "");
       const baseRevision = Number(payload.baseRevision ?? 0);

@@ -175,7 +175,7 @@ fn call_error(code: &str) -> ToolError {
         "creator_vehicle_budget_exceeded" => ToolError::new("invalid_argument", "The project already holds 16 vehicles or the profile exceeds the 8 KiB budget."),
         "creator_vehicle_not_found" => ToolError::new("not_found", "The vehicleId is not a vehicle of this project; use creator_vehicle_inspect after defining, or creator_project_read to list vehicles."),
         "creator_vehicle_asset_not_found" => ToolError::new("invalid_argument", "`modelAssetId` does not reference a registered project asset; import it with the Studio asset picker first, or pass null for the procedural placeholder model."),
-        _ => ToolError::new("data_unavailable", "Creator Studio request failed."),
+        _ => ToolError::new("data_unavailable", format!("Creator Studio request failed ({code}).")),
     }
 }
 

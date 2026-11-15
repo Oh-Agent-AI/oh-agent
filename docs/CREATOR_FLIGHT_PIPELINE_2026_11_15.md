@@ -49,27 +49,47 @@ MCP：
   - airspace → project → vehicle → mount → publish → playtest 后端端到端。
 - Studio build/typecheck 通过。
 
-## MCP 真机端到端进度
+## MCP 真机端到端
 
-已完成：
+已完成完整最小链路：
 
-1. `creator_city_anchor_list` 读取 City 64 个锚点；
-2. `creator_city_anchor_remove` 释放 3 个锚点 → revision 1；
-3. `creator_city_anchor_upsert` 添加 3 个 fly gates → revision 2；
-4. `creator_project_create` 用 `flight-checkpoint` + cityId 创建项目
-   `project-976c1fce4eb6da4acb60c6dfb7c39e8f`。
+```text
+city       city-4375314413d0862154a055384c01c1d4
+layout     city-layout-v1:42:100:501b17412264f858145a94bbcefccb5a
+revision   2 (64 anchors，含 air-gate:0..2)
+project    project-bb75108542ab6a4e43ee0ddf4a462f44
+vehicles   vehicle-flap (flapping) / vehicle-fixed (fixed-wing)
+mounts     mount-flap / mount-fixed
+release 1  release-87b8775c6b8e5d52afa57a0cb49c2cb2 (vehicle-flap)
+release 2  release-d7fa8f5e3e4589d069fd2de4d2008b88 (vehicle-fixed)
+playtests  playtest-eb7c8664a453c7bd7ffdc6192aea2d0f
+           playtest-2e0fc87d22d0fb0317e023a85bdce37a
+```
 
-未完成：
+MCP 调用序列：
 
-5. `creator_vehicle_define` 返回 `data_unavailable`（Studio request failed），
-   两架飞行器未能通过 MCP 定义；
-6. 因此 typed mount、publish、两次 flight playtest 和轨迹分叉尚未通过 MCP 链路。
+1. `creator_city_anchor_list`；
+2. `creator_city_anchor_remove` 释放 3 个锚点；
+3. `creator_city_anchor_upsert` 加 3 个 fly gates；
+4. `creator_project_create`（`flight-checkpoint` + cityId）；
+5. `creator_vehicle_define` 两次；
+6. `creator_mount_bind` 两次（不同 vehicle）；
+7. `creator_project_publish` 两次（冻结 vehicle/gameType/runtime）；
+8. `creator_playtest_start` 两次，均为 `gameType:"flight"`。
 
-`data_unavailable` 不是 Rust 结构错误码；需要继续定位 Studio `creator.vehicle.*`
-handler 的异常。后端同路径已由 `flight_pipeline_tests` 证明可走通，所以问题在
-Studio/MCP 传输层，而不是锚点/绑定/发布逻辑。
+修复的真实传输 bug：Studio `vehicle.define/preview` handler 把展平的 MCP 字段
+（label/physics/bounds/...）原样回传，Rust dispatch 的 exact-key 校验因此返回
+`creator_request_invalid`。现在 handler 只回传宿主契约字段
+（projectId/baseRevision/vehicleId/vehicle/operationId/validation）。
+
+### 轨迹分叉
+
+SDK/运行时测试已证明两个 vehicle preset 在同一 420-tick 输入下轨迹分叉且重放
+一致（phase 1 的 vehicle-profile 测试）。本次 MCP 运行验证的是
+创建→绑定→发布→两次 flight 试玩启动；没有从 City 实机抓取两次完整飞行的
+telemetry 曲线，因此不把“实机轨迹分叉”作为本轮 MCP 证据。
 
 ## 结论
 
-阶段 2/3/4 的代码与后端测试已落地；MCP 最小双飞行器链路还差 vehicle define
-的 Studio 传输修复，不能宣称端到端完成。
+阶段 2/3/4 代码、后端测试和 MCP 最小双飞行器链路均已完成。剩余的非本阶段项是
+City 实机完整飞行 telemetry 采集与扑翼气动/动画深化。
