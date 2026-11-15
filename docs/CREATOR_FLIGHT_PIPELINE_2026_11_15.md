@@ -104,6 +104,13 @@ v3 只多一个字段：`geometry: [{ geometryRef, positionMeters, activationRad
 已有发布物需要**重新绑定（入口改为 fly spawn）再发布**：旧快照没有 link、入口是 zone，
 新代码会如实拒绝而不是猜。
 
+### 收口待办：两处旧版本读取容差
+
+`creator_city_patch.rs` 的锚点编辑路径仍有两处 `schemaVersion.unwrap_or(2)`
+（`snapshot_version` 与写回时的 `version`）：缺字段时按 v2 处理。当前这不影响 v3 流程，
+但等「v2 读取也拒绝」的完全替代收口时，这两处要改成显式报错
+（`creator_layout_snapshot_invalid`），否则损坏的快照会被静默降级成 v2 写回。
+
 ## 验证
 
 - city-sdk：127/127；
