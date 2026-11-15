@@ -54,9 +54,11 @@ test("coastFractal is consumed end to end", () => {
 });
 
 test("unimplemented diversity values fail closed instead of being ignored", () => {
-  assert.throws(() => validateGeographyBuildOptions("arid-dunes-v1", { ...V1, "shape.cores": 2 }), /city-world-options-invalid/);
+  // S2 解锁了 shape.*；本断言改用仍未实现的字段。逐字段实现后同步更新（S2b：water/landscape）。
   assert.throws(() => validateGeographyBuildOptions("arid-dunes-v1", { ...V1, "water.oasisCount": 1 }), /city-world-options-invalid/);
+  assert.throws(() => validateGeographyBuildOptions("arid-dunes-v1", { ...V1, "landform.duneFrequency": 1.5 }), /city-world-options-invalid/);
   assert.throws(() => validateGeographyBuildOptions("arid-dunes-v1", { ...V1, "shape.unknown": 1 }), /city-world-options-invalid/);
   // 显式设置默认值与省略等价：不算未实现消费。
-  assert.doesNotThrow(() => validateGeographyBuildOptions("arid-dunes-v1", { ...V1, "shape.cores": 1 }));
+  assert.doesNotThrow(() => validateGeographyBuildOptions("arid-dunes-v1", { ...V1, "water.oasisCount": 0 }));
+  assert.doesNotThrow(() => validateGeographyBuildOptions("arid-dunes-v1", { ...V1, "shape.family": "lobed" }));
 });

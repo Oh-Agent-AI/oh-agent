@@ -7,6 +7,7 @@
  */
 import { DetMath as Math } from "../detMath";
 import { ARID_DUNES_LEGACY_KEYS, ARID_DUNES_WORLD_V2, validateWorldParametersV1 } from "@agent-vitals/city-sdk";
+import { buildFootprintShape, type FootprintStatsV1 } from "./worldShape";
 import { hashSeed } from "../../cityModel";
 import { fbm, smoothstep } from "../cityNoise";
 import type { TerrainField, Vec2 } from "../cityLayout";
@@ -44,6 +45,8 @@ export type Geography = {
   /** 内水岸线（开湾时 = 海湾两岸 + 湾内岛轮廓；否则空）。路端离它 ≤ WATER_STOP_MARGIN 算合法的近水终止——
    *  外海岸（coast）与河道中线（river）认不到湾岸：湾半宽 100+，停在湾岸的主干道端头曾全被判成违规断头。 */
   waterEdges: Vec2[][];
+  /** S2 形状场统计（仅 arid 非 disc 家族）：紧凑度验收带 4πA/P² ∈ [0.25, 0.95]。 */
+  footprintStats?: FootprintStatsV1;
 };
 
 /** The terrain-facing contract shared by every world generator. Distances are
@@ -105,7 +108,7 @@ const ARID_OPTION_FIELDS: Record<string, string> = {
 /** 反向映射（裸字段名 → 能力键）：校验器对归一化形态幂等。 */
 const ARID_FIELD_TO_KEY: Record<string, string> = Object.fromEntries(Object.entries(ARID_OPTION_FIELDS).map(([key, field]) => [field, key]));
 /** S1 已实现消费的 diversity 字段（能力键）；其余字段必须保持目录默认。 */
-const ARID_CONSUMED_OPTION_KEYS = new Set(["shape.coastFractal"]);
+const ARID_CONSUMED_OPTION_KEYS = new Set(["shape.coastFractal", "shape.family", "shape.cores", "shape.aspectRatio", "shape.corridorPull"]);
 export type GeographyGeneratorOptions = {
   "coastal-islands-v1": { shape: Shape; bay?: BayOptions | null };
   "arid-dunes-v1": AridDunesOptionsV1;
@@ -402,12 +405,26 @@ function buildAridDunesGeography({ seed, radius: R, memoize = false, options }: 
   // S1 已消费的多样化参数：海岸分形幅度。默认值与能力目录一致（0.035 = 既有行为），
   // 校验器保证显式值已通过范围与消费守卫；类型层可选以兼容原始入口形态。
   const coastFractal = checked.coastFractal ?? 0.035;
-  const boundaryRadius = (angle: number) => R * (1 + coastFractal * fbm(Math.cos(angle) * 1.2, Math.sin(angle) * 1.2, seed + 311, 3));
+  // S2 形状场：disc 保持既有极坐标公式逐位不变；其余家族走多核心可达性
+  // 足迹（世界形状模块：面积归一化 + 形态学闭运算 + 距离网格）。
+  const shapeFamily = checked.shapeFamily ?? "disc";
+  let coastDistance: (x: number, z: number) => number;
+  let footprintStats: FootprintStatsV1 | undefined;
+  if (shapeFamily === "disc") {
+    const boundaryRadius = (angle: number) => R * (1 + coastFractal * fbm(Math.cos(angle) * 1.2, Math.sin(angle) * 1.2, seed + 311, 3));
+    coastDistance = field((x: number, z: number) => {
+      let angle = Math.atan2(z, x); if (angle < 0) angle += Math.PI * 2;
+      return (boundaryRadius(angle) - Math.hypot(x, z)) * 0.94;
+    });
+  } else {
+    const shape = buildFootprintShape({
+      seed, radiusMeters: R, family: shapeFamily, cores: checked.shapeCores ?? 1,
+      aspectRatio: checked.shapeAspectRatio ?? 1, corridorPull: checked.shapeCorridorPull ?? 0, coastFractal,
+    });
+    coastDistance = field((x: number, z: number) => shape.signedDistance(x, z));
+    footprintStats = shape.footprintStats;
+  }
   const bbox = { minX: -R * 1.04, maxX: R * 1.04, minZ: -R * 1.04, maxZ: R * 1.04 };
-  const coastDistance = field((x: number, z: number) => {
-    let angle = Math.atan2(z, x); if (angle < 0) angle += Math.PI * 2;
-    return (boundaryRadius(angle) - Math.hypot(x, z)) * 0.94;
-  });
   // These compatibility fields describe the playable boundary only. No fake
   // coastline/river arrays are returned and no caller should infer water from them.
   const landClearance = coastDistance;
@@ -470,6 +487,7 @@ function buildAridDunesGeography({ seed, radius: R, memoize = false, options }: 
   return {
     landform,
     features: { coastline: false, ocean: false, river: false, islets: false },
+    footprintStats,
     R,
     coast: [],
     bbox,
