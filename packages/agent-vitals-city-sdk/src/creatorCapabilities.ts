@@ -35,6 +35,8 @@ export type CreatorCapabilitiesDescriptor = {
   capabilityVersion: string;
   operations: readonly CreatorOperationDescriptor[];
   content: { templates: readonly string[]; skins: readonly string[] };
+  /** 稳定错误码 → 可执行恢复建议（诊断闭环单一来源，见 CREATOR_RECOVERIES_V1）。 */
+  recoveries?: readonly Readonly<{ code: string; tool: string; args: Record<string, unknown>; note: string }>[];
   budgets: {
     gameBytes: number;
     sceneObjects: number;
@@ -170,6 +172,22 @@ export const CREATOR_CAPABILITIES_PROJECTION_V1: CreatorCapabilitiesProjection =
   preview: { ttlMs: CREATOR_LIMITS_V1.previewTtlMs, maxActive: CREATOR_LIMITS_V1.maxActivePreviews, singleUse: true, instanceBound: true },
 });
 
+/** 恢复建议（Agent-first 诊断闭环，STUDIO_AGENT_FIRST_EDITOR_SPEC §3.3）：稳定错误码 →
+ * 可执行下一步（工具 + 参数模板）。由生成链导出，宿主/MCP 在错误响应的 `next` 字段
+ * 返回同一份建议；Agent 与 Studio UI 看到同一来源。工具名必须在已注册集合内。 */
+export const CREATOR_RECOVERIES_V1: ReadonlyArray<Readonly<{ code: string; tool: string; args: Record<string, unknown>; note: string }>> = Object.freeze([
+  Object.freeze({ code: "creator_layout_not_ready", tool: "creator_city_view_status", args: {}, note: "布局尚未生成完毕；轮询状态直到 ready 后再读取布局。" }),
+  Object.freeze({ code: "creator_layout_not_found", tool: "creator_city_layout_save", args: {}, note: "该版本尚无布局；先让城市视口 ready 再保存布局。" }),
+  Object.freeze({ code: "revision_conflict", tool: "creator_project_read", args: {}, note: "项目已被他人推进；重读最新 revision 后以新基线重开预览。" }),
+  Object.freeze({ code: "creator_city_revision_unavailable", tool: "creator_city_read", args: {}, note: "请求的历史版本已被覆盖；改读当前 revision。" }),
+  Object.freeze({ code: "preview_expired", tool: "creator_scene_preview", args: {}, note: "预览已过期；以当前 revision 重新发起预览后再提交。" }),
+  Object.freeze({ code: "operation_id_conflict", tool: "creator_operation_status", args: {}, note: "同一 operationId 被用于不同请求；换新 operationId，或先查询既有结果。" }),
+  Object.freeze({ code: "creator_playtest_not_claimed", tool: "creator_playtest_start", args: {}, note: "尚无活跃试玩；先 start 一次试玩再读取结果。" }),
+  Object.freeze({ code: "creator_playtest_instance_mismatch", tool: "creator_playtest_start", args: {}, note: "试玩被其他实例领取；重新 start 开启新的试玩。" }),
+  Object.freeze({ code: "creator_capture_unavailable", tool: "creator_city_view_status", args: {}, note: "视口不可用（未打开/无头）；等待视口 ready，或改用结构校验与无头规则试玩。" }),
+  Object.freeze({ code: "creator_validation_scope_mismatch", tool: "creator_project_read", args: {}, note: "信封作用域与请求不符；重读项目后让 Studio 重新附发信封。" }),
+]);
+
 export const CREATOR_CAPABILITIES_V1: CreatorCapabilitiesDescriptor = Object.freeze({
   schemaVersion: CREATOR_CAPABILITY_SCHEMA_VERSION,
   capabilityVersion: CREATOR_CAPABILITY_VERSION,
@@ -177,4 +195,5 @@ export const CREATOR_CAPABILITIES_V1: CreatorCapabilitiesDescriptor = Object.fre
   content: CREATOR_CONTENT_V1,
   budgets: CREATOR_BUDGETS_V1,
   capabilities: CREATOR_CAPABILITIES_PROJECTION_V1,
+  recoveries: CREATOR_RECOVERIES_V1,
 });
