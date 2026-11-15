@@ -94,7 +94,10 @@ export function validateGameTypeDescriptorV1(input: unknown): Result<GameTypeDes
   for (const [name, raw] of Object.entries(assetRoles)) {
     const path = `assetRoles.${name}`;
     if (!IDENTIFIER.test(name) || !object(raw)) { diagnostics.push(error("game_type_invalid", path, "Asset role must have a stable ID and object body.")); continue; }
-    if (!exactKeys(raw, ["kind", "required", "maxBytes", "nodeRoles"]) && !exactKeys(raw, ["kind", "required", "maxBytes"]) && !exactKeys(raw, ["kind", "required"])) diagnostics.push(error("game_type_invalid", path, "Asset role contains unsupported fields."));
+    if (!exactKeys(raw, ["kind", "required", "maxBytes", "nodeRoles"]) && !exactKeys(raw, ["kind", "required", "maxBytes"])
+      && !exactKeys(raw, ["kind", "required", "nodeRoles"]) && !exactKeys(raw, ["kind", "required"])) {
+      diagnostics.push(error("game_type_invalid", path, "Asset role contains unsupported fields."));
+    }
     if (typeof raw.kind !== "string" || !ASSET_KINDS.has(raw.kind)) diagnostics.push(error("game_type_invalid", `${path}.kind`, "Asset role kind must be model-glb."));
     if (typeof raw.required !== "boolean") diagnostics.push(error("game_type_invalid", `${path}.required`, "Asset role requires must be boolean."));
     if (raw.maxBytes !== undefined && (!integer(raw.maxBytes, 20, 64 * 1024 * 1024))) diagnostics.push(error("game_type_invalid", `${path}.maxBytes`, "Asset maxBytes must be between 20 bytes and 64 MiB."));

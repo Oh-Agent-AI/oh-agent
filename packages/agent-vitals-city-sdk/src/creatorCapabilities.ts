@@ -89,7 +89,7 @@ export const CREATOR_LIMITS_V1 = Object.freeze({
 
 /** Additive game-type discovery for UI/Agent planning. Descriptors remain
  * data-only; adapters are app-side and `planned` entries are not registrable. */
-export type CreatorGameTypeStatusV1 = "builtin-adapter" | "planned";
+export type CreatorGameTypeStatusV1 = "builtin-adapter" | "prototype" | "planned";
 export type CreatorGameTypeSummaryV1 = Readonly<{
   id: string; label: string; template: string; templateCatalog: "creator" | "builtin" | "planned";
   runtime: Readonly<{ id: string; contractVersion: number }>; status: CreatorGameTypeStatusV1;
@@ -103,6 +103,8 @@ export const CREATOR_GAME_TYPES_V1: readonly CreatorGameTypeSummaryV1[] = Object
     runtime: { id: "miami.mecha", contractVersion: 1 }, status: "builtin-adapter" },
   { id: "miami.cinema-v1", label: "航拍", template: "miami-cinema", templateCatalog: "builtin",
     runtime: { id: "miami.cinema", contractVersion: 1 }, status: "builtin-adapter" },
+  { id: "creator.flight-ornithopter-prototype-v1", label: "扑翼飞行（飞行原型）", template: "miami-flight", templateCatalog: "builtin",
+    runtime: { id: "miami.flight", contractVersion: 1 }, status: "prototype" },
   { id: "creator.flight-ornithopter-v1", label: "扑翼飞行", template: "ornithopter-flight", templateCatalog: "planned",
     runtime: { id: "city-flight-ornithopter", contractVersion: 1 }, status: "planned" },
 ]);

@@ -23,6 +23,9 @@ separate from `@agent-vitals/city-sdk`:
   `CREATOR_TEMPLATES_V1`, `builtin` templates must exist in
   `BUILTIN_ACTIVITY_TEMPLATE_IDS`, and `planned` descriptors are rejected by
   the registry until their template lands.
+- `ORNITHOPTER_PROTOTYPE_GAME_TYPE_V1`: Phase-1 flight prototype reusing the
+  mature `miami.flight` runtime/template. It has no flap physics; do not confuse
+  it with the planned `city-flight-ornithopter`.
 - `ORNITHOPTER_GAME_TYPE_V1`: the planned Creator flight game type.
 - `createMiamiLegacyRegistry(host)`: registers the four Miami activities as
   host-driven adapters delegating to `MiamiLegacyActivityHostV1.enter`. The SDK
