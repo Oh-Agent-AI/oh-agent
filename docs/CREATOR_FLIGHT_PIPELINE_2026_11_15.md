@@ -66,6 +66,25 @@ Agent 用**同一套输入词表**无头跑 flight 与 driving：门由参数给
 1/60 s 步长、同参数同轨迹并带 `traceDigest`。它不读 release、不解析 City 布局、不写证据、
 不带城市碰撞——真机发布链路仍走 creator MCP。
 
+### 阶段 2 补丁：让发布出来的空域门真的能玩（2026-11-15 复查）
+
+真机数据复查发现：`air-gate:0..2` 三道门**都没有 link**、入口锚点被绑成 `air-gate:0`（zone
+而非 spawn）、且都复用同一个没有触发半径的路网节点。结果是发布物在试玩 claim 阶段就会被
+`anchor_unreachable` / 入口几何检查拒绝——**发布成功但玩不了**。三处修正：
+
+1. **锚点 upsert 补星形 link**：新增 fly zone 时要求同一 City 已存在（或同批加入）一个
+   fly spawn，并从它补 `air-link:<spawn>:<gate>`；没有 fly spawn 直接拒绝
+   （`creator_city_anchor_fly_spawn_required`）——否则 mount 永远没有可到达的入口。
+2. **绑定入口必须是 spawn**：`creator_mount_bind` 对 zone 入口报 `creator_mount_entry_not_spawn`
+   （以前能绑成功、到试玩才失败）。
+3. **试玩视图合并发布锚点**：City 侧 `mergeReleaseAnchors` 把冻结快照里实机视图没有的
+   锚点**和它们之间的 link** 并进视图副本（`geometryRef` 必须在实机几何里存在，否则
+   `release_anchor_geometry_unavailable`），并给缺半径的 zone 一个**有名字的默认触发球**
+   `RELEASE_ZONE_DEFAULT_RADIUS_METERS = 12 m`（玩法内容常量；正式做法是锚点自带半径）。
+
+已有发布物需要**重新绑定（入口改为 fly spawn）再发布**：旧快照没有 link、入口是 zone，
+新代码会如实拒绝而不是猜。
+
 ## 验证
 
 - city-sdk：127/127；

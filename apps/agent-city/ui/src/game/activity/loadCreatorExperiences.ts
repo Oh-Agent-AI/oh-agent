@@ -1,8 +1,9 @@
 import { canonicalJson, inspectContentPackageV2, parseMiniGamePackJson, validateAssetRefs, validateCityProjectAssetCatalog,
-  validateContentPackageManifestV2, validateMount, validateSceneDraft, validateVehicleProfileV1, type CityGameMountV1,
+  validateCityLayoutSnapshotV2, validateContentPackageManifestV2, validateMount, validateSceneDraft, validateVehicleProfileV1, type CityGameMountV1,
   type CityProjectAssetCatalogV1, type ContentRef, type MiniGamePackV1, type ModelAssetCatalogV1, type ModelAssetRefV1, type SceneDraftV1,
   type VehicleProfileV1, type VisualPlaytestEvidenceV1 } from "@agent-vitals/city-sdk";
 import { invokeHost } from "../../host";
+import { mergeReleaseAnchors } from "./releaseLayout";
 import { parsePendingCreatorPlaytest, type LoadedCityWorldSceneV1, type PendingCreatorPlaytestV1 } from "./creatorPlaytestPending";
 import type { CityLayoutSdkViewV1 } from "../../engine/sdk/cityLayoutAdapter";
 import { m as worldUnits } from "../../engine/worldScale";
@@ -138,7 +139,7 @@ async function loadPendingCityWorldScene(runId: string, expectedRef: { packageId
 /** Claims a Studio-initiated playtest only after a release is pinned to this live City revision. */
 export async function claimCreatorPlaytest(view: CityLayoutSdkViewV1, expectedRunId?: string): Promise<CreatorPlaytestHandoffV1 | null> {
   let handoff: { runId: string; releaseId: string; projectId: string; revision: number; snapshotDigest: string; skinId?: unknown; gameType?: unknown;
-    vehicle?: unknown; game: unknown; mounts: CityGameMountV1[] } & ReleaseSceneFields;
+    vehicle?: unknown; layout?: unknown; game: unknown; mounts: CityGameMountV1[] } & ReleaseSceneFields;
   try {
     handoff = await hostCall<typeof handoff>("city.creator.playtest.claim", expectedRunId ? { runId: expectedRunId } : {});
   } catch (error) {
@@ -147,8 +148,25 @@ export async function claimCreatorPlaytest(view: CityLayoutSdkViewV1, expectedRu
   }
   // 路由值先解析：入口锚点能力与（飞行）载具校验都取决于它。
   const gameType = handoff.gameType === "flight" ? "flight" : "driving";
+  // 发布锚点并进实机视图：`air-gate:*` 这类 Creator 新增锚点只在冻结快照里，实机视图
+  // 只由路网生成；不并进来，validateMount 会以 anchor_not_found 拒绝整份发布物。
+  let releaseView = view;
+  if (handoff.layout != null) {
+    const frozen = validateCityLayoutSnapshotV2(handoff.layout);
+    if (!frozen.ok) {
+      await finishCreatorPlaytest(handoff.runId, "failed", undefined, "creator_playtest_layout_invalid");
+      throw new Error("creator_playtest_layout_invalid");
+    }
+    const merged = mergeReleaseAnchors(view, frozen.value);
+    if (!merged.ok) {
+      const code = merged.diagnostics[0]?.code ?? "release_anchor_geometry_unavailable";
+      await finishCreatorPlaytest(handoff.runId, "failed", undefined, code);
+      throw new Error(code);
+    }
+    releaseView = merged.view;
+  }
   const failureCodes: string[] = [];
-  const experiences = await validateRelease(view, { ...handoff, title: "Creator Studio 试玩" }, failureCodes,
+  const experiences = await validateRelease(releaseView, { ...handoff, title: "Creator Studio 试玩" }, failureCodes,
     gameType === "flight" ? null : "drive");
   if (!experiences.length) {
     await finishCreatorPlaytest(handoff.runId, "failed", undefined, failureCodes[0] ?? "creator_playtest_release_incompatible");

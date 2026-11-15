@@ -118,3 +118,45 @@ test("driving claims still require a drive-capable entry anchor", async () => {
   // SDK 的 mount 校验先一步拒绝（槽位要求 drive、锚点只有 fly），早于入口几何检查。
   assert.equal(finish!.payload.failureCode, "anchor_capability_missing");
 });
+
+// 发布锚点并回实机视图：`air-gate:*` 只在冻结快照里，实机视图由路网生成、看不到它。
+// 不并进来，validateMount 会以 anchor_not_found 拒绝整份发布物（flight 试玩根本没开始）。
+const releaseAnchorsGame = { schemaVersion: 1, id: "creator.flight-checkpoint", rulesVersion: 1, integerParameters: {},
+  slots: { gates: { kind: "zone", min: 1, max: 2, requires: ["fly"] } }, rules: { counters: {}, nodes: [] } };
+const releaseAnchorsDigest = `sha256:${createHash("sha256").update(canonicalJson(releaseAnchorsGame)).digest("hex")}`;
+const frozenLayout = (geometryRef: string) => ({ schemaVersion: 2, cityId: "fixture", cityRevision: 1, worldRevision: "r1", seed: 7,
+  layout: { schemaVersion: 1, id: "fixture", coordinateSystem: "city-local-m-v1", anchors: [
+    { id: "spawn-air", kind: "spawn", capabilities: ["fly"], geometryRef: "g:spawn-air" },
+    { id: "air-gate:0", kind: "zone", capabilities: ["fly"], geometryRef },
+  ], // 空域门必须能从入口沿 link 到达（validateMount 的 anchor_unreachable），
+     // 与 creator_city_anchor_upsert 现在自动补的星形 link 一致。
+  links: [{ id: "air-link-spawn-to-gate", fromAnchorId: "spawn-air", toAnchorId: "air-gate:0", capabilities: ["fly"] }] } });
+const releaseAnchorsHandoff = (layout: unknown) => ({ runId: "run-air", projectId: "project-1", revision: 1, releaseId: "release-air",
+  snapshotDigest: `sha256:${"e".repeat(64)}`, gameType: "flight", vehicle: null, layout, game: releaseAnchorsGame,
+  mounts: [{ schemaVersion: 1, mountId: "mount-air", layout: { kind: "city-layout", id: "fixture", version: "1", digest: "r1" },
+    game: { kind: "city-minigame", id: releaseAnchorsGame.id, version: "1", digest: releaseAnchorsDigest },
+    entryAnchorId: "spawn-air", bindings: { gates: ["air-gate:0"] }, parameterOverrides: {} }],
+  scene: { schemaVersion: 1, objects: [] }, assets: { schemaVersion: 1, entries: [] }, assetRefs: [] });
+const airView = { ...view, geometry: new Map([...view.geometry,
+  ["g:spawn-air", { positionMeters: { x: 0, y: 40, z: 0 } }],
+  ["g:gate", { positionMeters: { x: 0, y: 40, z: 400 } }]]) } as any;
+
+test("a published air gate that only exists in the frozen layout is merged before validation", async () => {
+  const calls: { method: string; payload: any }[] = [];
+  installHost(releaseAnchorsHandoff(frozenLayout("g:gate")), calls);
+  const { claimCreatorPlaytest } = await import("../src/game/activity/loadCreatorExperiences");
+  const result = await claimCreatorPlaytest(airView, "run-air");
+  assert.equal(result?.gameType, "flight");
+  assert.equal(result?.experiences.length, 1, JSON.stringify(calls.map(call => call.method)));
+  assert.equal(result?.experiences[0].mount.entryAnchorId, "spawn-air");
+});
+
+test("a published anchor whose City geometry is gone fails the run instead of guessing", async () => {
+  const calls: { method: string; payload: any }[] = [];
+  installHost(releaseAnchorsHandoff(frozenLayout("g:missing")), calls);
+  const { claimCreatorPlaytest } = await import("../src/game/activity/loadCreatorExperiences");
+  await assert.rejects(() => claimCreatorPlaytest(airView, "run-air"), /release_anchor_geometry_unavailable/);
+  const finish = calls.find(call => call.method === "city.creator.playtest.finish");
+  assert.equal(finish!.payload.status, "failed");
+  assert.equal(finish!.payload.failureCode, "release_anchor_geometry_unavailable");
+});

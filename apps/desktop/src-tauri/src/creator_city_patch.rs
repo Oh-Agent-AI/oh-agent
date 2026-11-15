@@ -436,9 +436,31 @@ pub(crate) fn mutate_city_anchors(home: &Path, actor: &str, city_id: &str, base_
         merged.retain(|anchor| anchor["id"].as_str() != Some(id));
         if merged.len() == before { return Err("creator_city_anchor_not_found"); }
     }
-    let links: Vec<Value> = layout["layout"].get("links").and_then(Value::as_array).map(|links| links.iter()
+    let mut links: Vec<Value> = layout["layout"].get("links").and_then(Value::as_array).map(|links| links.iter()
         .filter(|link| !link["fromAnchorId"].as_str().is_some_and(|id| removed.contains(id))
             && !link["toAnchorId"].as_str().is_some_and(|id| removed.contains(id))).cloned().collect()).unwrap_or_default();
+    // 空域锚点必须可被 mount 到达：validateMount 要求每个绑定槽从入口沿 link 可达，缺 link
+    // 的发布物会在试玩 claim 阶段以 anchor_unreachable 被整份拒绝（实测 2026-11-15 的
+    // 三个 air-gate 全无 link）。这里以**同一 City 的 fly spawn**为枢纽补星形 link，
+    // 并且拒绝「没有 fly spawn 就加 fly zone」——否则发布出来永远绑不上入口。
+    let added_fly_zones: Vec<String> = additions.iter().filter_map(|addition| {
+        let object = addition.as_object()?;
+        let is_fly = object.get("capabilities").and_then(Value::as_array).is_some_and(|items| items.iter().any(|item| item.as_str() == Some("fly")));
+        (is_fly && object.get("kind").and_then(Value::as_str) == Some("zone")).then(|| object.get("id").and_then(Value::as_str).map(str::to_owned))?
+    }).collect();
+    if !added_fly_zones.is_empty() {
+        let fly_spawn = merged.iter().find(|anchor| anchor["kind"].as_str() == Some("spawn")
+            && anchor["capabilities"].as_array().is_some_and(|items| items.iter().any(|item| item.as_str() == Some("fly"))))
+            .and_then(|anchor| anchor["id"].as_str().map(str::to_owned))
+            .ok_or("creator_city_anchor_fly_spawn_required")?;
+        for anchor_id in added_fly_zones {
+            let existing = links.iter().any(|link| link["fromAnchorId"].as_str() == Some(fly_spawn.as_str())
+                && link["toAnchorId"].as_str() == Some(anchor_id.as_str()));
+            if existing { continue; }
+            links.push(json!({"id": format!("air-link:{fly_spawn}:{anchor_id}"), "fromAnchorId": fly_spawn,
+                "toAnchorId": anchor_id, "capabilities": ["fly"]}));
+        }
+    }
     let merged_layout = json!({"schemaVersion":1,"id":layout_id,"coordinateSystem":"city-local-m-v1","anchors":merged,
         "links":links});
     validate_layout_snapshot(&json!({"schemaVersion":1,"worldRevision":world_revision,"seed":layout["seed"],"layout":merged_layout}))?;
@@ -488,17 +510,32 @@ mod airspace_tests {
             "layout":{"schemaVersion":1,"id":"layout-airspace","coordinateSystem":"city-local-m-v1",
                 "anchors":[{"id":"road-spawn:a","kind":"spawn","capabilities":["drive"],"geometryRef":"city-road-node:a"}],"links":[]}});
         store_scoped_city_layout(&home, &base).unwrap();
-        let added = json!([{"id":"air-gate:a","kind":"zone","capabilities":["fly"],"geometryRef":"city-road-node:a"},
+        // 没有 fly spawn 就先加 zone：必须被拒绝（否则发布物永远绑不上可到达的入口）。
+        let zones_only = json!([{"id":"air-gate:a","kind":"zone","capabilities":["fly"],"geometryRef":"city-road-node:a"}]);
+        assert_eq!(mutate_city_anchors(&home, "local-profile", city_id, 0, &zones_only, &[], "gates-without-spawn").unwrap_err(),
+            "creator_city_anchor_fly_spawn_required");
+        let added = json!([{"id":"spawn-air","kind":"spawn","capabilities":["fly"],"geometryRef":"city-road-node:a"},
+            {"id":"air-gate:a","kind":"zone","capabilities":["fly"],"geometryRef":"city-road-node:a"},
             {"id":"air-gate:b","kind":"zone","capabilities":["fly"],"geometryRef":"city-road-node:a"}]);
         let result = mutate_city_anchors(&home, "local-profile", city_id, 0, &added, &[], "add-fly-gates").unwrap();
         assert_eq!(result["revision"], 1);
-        assert_eq!(result["anchorCount"], 3);
+        assert_eq!(result["anchorCount"], 4);
+        // 星形 link：入口 → 每道门；门必须可从入口到达，否则 mount 校验 anchor_unreachable。
+        let layout: Value = serde_json::from_str(&{
+            let db = database(&home).unwrap();
+            db.query_row("SELECT snapshot_json FROM creator_city_layouts_v2 WHERE city_id=?1 AND city_revision=1", params![city_id], |row| row.get::<_, String>(0)).unwrap()
+        }).unwrap();
+        let links = layout["layout"]["links"].as_array().unwrap();
+        for gate in ["air-gate:a", "air-gate:b"] {
+            assert!(links.iter().any(|link| link["fromAnchorId"] == "spawn-air" && link["toAnchorId"] == gate
+                && link["capabilities"] == json!(["fly"])), "missing air link to {gate}");
+        }
         let listed = list_city_anchors(&home, city_id, Some(1), Some("fly"), Some("zone"), 64).unwrap();
         assert_eq!(listed["anchors"].as_array().unwrap().len(), 2);
         assert_eq!(listed["revision"], 1);
         let removed = mutate_city_anchors(&home, "local-profile", city_id, 1, &json!([]), &["air-gate:a".to_owned()], "remove-one-gate").unwrap();
         assert_eq!(removed["revision"], 2);
-        assert_eq!(removed["anchorCount"], 2);
+        assert_eq!(removed["anchorCount"], 3);
         let old = list_city_anchors(&home, city_id, Some(0), None, None, 64).unwrap();
         assert_eq!(old["anchors"].as_array().unwrap().len(), 1);
         let _ = std::fs::remove_dir_all(home);
@@ -514,7 +551,8 @@ mod airspace_tests {
                 "anchors":[{"id":"road-spawn:a","kind":"spawn","capabilities":["drive"],"geometryRef":"city-road-node:a"}],"links":[]}})).unwrap();
         let bad = json!([{"id":"air-gate:x","kind":"zone","capabilities":["fly"],"geometryRef":"made-up-geometry"}]);
         assert_eq!(mutate_city_anchors(&home, "local-profile", city_id, 0, &bad, &[], "bad-geometry").unwrap_err(), "creator_city_anchor_geometry_unknown");
-        let good = json!([{"id":"air-gate:y","kind":"zone","capabilities":["fly"],"geometryRef":"city-road-node:a"}]);
+        let good = json!([{"id":"spawn-air","kind":"spawn","capabilities":["fly"],"geometryRef":"city-road-node:a"},
+            {"id":"air-gate:y","kind":"zone","capabilities":["fly"],"geometryRef":"city-road-node:a"}]);
         mutate_city_anchors(&home, "local-profile", city_id, 0, &good, &[], "add-idempotent").unwrap();
         assert_eq!(mutate_city_anchors(&home, "local-profile", city_id, 0, &good, &[], "add-idempotent").unwrap()["revision"], 1);
         assert_eq!(mutate_city_anchors(&home, "local-profile", city_id, 0, &good, &[], "add-idempotent-other").unwrap_err(), "revision_conflict");

@@ -99,17 +99,22 @@ A partially resolvable gate set is refused whole (`gate_anchor_not_found`,
 `gate_geometry_unresolved`, `gate_radius_missing`) — half a gate list silently moves the
 game.
 
-### Known content gap
+### Known content gap (fixed for new content, 2026-11-15)
 
-`creator_city_anchor_upsert` only lets an anchor reuse an **existing** City geometryRef, so
-the flight gates in the current fixture store are all bound to one road node
-(`city-road-node:…`, identical for `air-gate:0..2`). Two consequences worth checking before
-trusting a flight playtest:
+`creator_city_anchor_upsert` only lets an anchor reuse an **existing** City geometryRef, so a
+flight gate is usually bound to a road node. Two consequences:
 
-1. three gates at one point (not a course);
-2. road-node anchors carry **no** activation radius, so `createMountedMiniGamePlan` would
-   reject them with `zone_geometry_unavailable` in the app — the release is published but
-   not playable.
+1. several gates can end up on one node (a point, not a course) — still a content mistake to
+   watch for;
+2. road-node anchors carry **no** activation radius → `createMountedMiniGamePlan` rejects
+   them with `zone_geometry_unavailable`.
+
+The app-side fixes now handle both: the anchor upsert requires a fly spawn and adds the
+reachability links, `creator_mount_bind` refuses a non-spawn entry, and the playtest view
+merge gives a radius-less fly zone the documented 12 m default
+(`RELEASE_ZONE_DEFAULT_RADIUS_METERS`). Releases frozen before that fix (no links, zone
+entry) must be re-bound and re-published — the resolver refuses them honestly rather than
+guessing.
 
 ## Rules are the real rules
 

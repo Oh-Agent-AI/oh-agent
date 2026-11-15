@@ -3122,7 +3122,10 @@ fn build_typed_mount(document: &Value, mount_id: &str, entry_anchor_id: &str, bi
         return Err("creator_mount_slot_mismatch");
     }
     let anchors = mount_anchor_map(document)?;
-    let (_, entry_capabilities) = anchors.get(entry_anchor_id).ok_or("creator_mount_anchor_not_found")?;
+    let (entry_kind, entry_capabilities) = anchors.get(entry_anchor_id).ok_or("creator_mount_anchor_not_found")?;
+    // 入口必须是可信出生点。zone 当入口会在 City 试玩 claim 时以 entry_geometry_unavailable
+    // 失败（真实发布物踩过：entryAnchorId = air-gate:0）——在绑定阶段就拒绝，别让它发布出去。
+    if entry_kind != "spawn" { return Err("creator_mount_entry_not_spawn"); }
     let entry = json!({"id":entry_anchor_id,"capabilities":entry_capabilities});
     let mut coverage = Vec::new();
     for (slot, raw_ids) in bindings {
