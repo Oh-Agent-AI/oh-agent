@@ -30,7 +30,7 @@ export function GameHud({ snapshot, actions, locale, persist }: { snapshot: Game
   const [helpOpen, setHelpOpen] = useState(false);
   const [soundOpen, setSoundOpen] = useState(false);
   const t = (text: string) => gameText(text, locale);
-  const { controller, telemetry, softOutside, mission, best } = snapshot;
+  const { controller, telemetry, softOutside, mission, best, creator } = snapshot;
   const phase = controller.phase;
   const paused = controller.paused;
   const error = controller.error;
@@ -52,6 +52,11 @@ export function GameHud({ snapshot, actions, locale, persist }: { snapshot: Game
         sfx: { enabled: snapshot.sfxEnabled, onToggle: actions.onToggleSfx }, music: { enabled: snapshot.musicEnabled, onToggle: actions.onToggleMusic } }} />
     </>}
     actions={[{ label: "继续", onAction: actions.onResume }, { label: "重新开始", onAction: actions.onRestart }, { label: "退出游戏", tone: "danger", onAction: actions.onExit}]} />;
+  else if (phase === "result" && creator) panel = <GameSessionPanel locale={locale} title={creator.status === "success" ? "试玩通过！" : "试玩未通过"}
+    description={t("结果由发布玩法自身的规则判定，已随证据一起回传给 Creator Studio。")}
+    children={<dl className="city-game-result-list"><dt>{t("通过")}</dt><dd>{creator.completed} / {creator.total}</dd>
+      {creator.reason && <><dt>{t("原因")}</dt><dd>{creator.reason}</dd></>}</dl>}
+    actions={[{ label: "退出游戏", tone: "danger", onAction: actions.onExit }]} />;
   else if (phase === "result" && mission?.result) panel = <GameSessionPanel locale={locale} title={mission.result.finished ? "完成！" : "超时"}
     children={<dl className="city-game-result-list"><dt>{t("用时")}</dt><dd>{clock(mission.result.finalMs)}</dd>
       {mission.result.penaltyMs > 0 && <><dt>{t("罚时")}</dt><dd>+{(mission.result.penaltyMs / 1000).toFixed(0)}s</dd></>}
@@ -62,7 +67,7 @@ export function GameHud({ snapshot, actions, locale, persist }: { snapshot: Game
     actions={[{ label: "重试", onAction: actions.onRestart }, { label: "换一条路线", onAction: actions.onNewCourse }, { label: "退出游戏", tone: "danger", onAction: actions.onExit}]} />;
 
   return cityView(<GameHudShell
-    title={<div className="city-game-chip"><strong>{t(racing ? "穿环挑战" : "自由练习")}</strong></div>}
+    title={<div className="city-game-chip"><strong>{t(creator ? "Creator 试玩" : racing ? "穿环挑战" : "自由练习")}</strong></div>}
     status={softOutside && !paused && !error ? <div className="city-game-chip city-game-warn" role="status">{t("已越过软边界，请返航")}</div> : undefined}
     telemetry={telemetry && phase !== "preparing" ? <TelemetryChip label={t("飞行遥测")}>
       <span>{t("速度")}</span><strong>{Math.round(telemetry.speed)}</strong><span>{t("高度")}</span><strong>{Math.round(telemetry.altitude)}</strong>

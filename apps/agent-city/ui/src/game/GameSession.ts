@@ -47,7 +47,9 @@ export type GameSessionEvents = {
 export type CreatorFlightRunV1 = Readonly<{
   controller: Readonly<{
     fixedStep(position: Readonly<{ x: number; y: number; z: number }>, heading?: number): void;
-    readonly snapshot: Readonly<{ status: "ready" | "running" | "success" | "failure" | "error"; reason: string | null }>;
+    readonly snapshot: Readonly<{ status: "ready" | "running" | "success" | "failure" | "error"; reason: string | null;
+      /** 已触发/总数（共享执行器的计数，来自发布玩法自己声明的槽位）。 */
+      completed?: number; total?: number }>;
     dispose(): void;
   }>;
   /** 门心（世界单位）与触发半径；与触发球同一几何，用来画可见的环。 */
@@ -66,6 +68,8 @@ export type GameSessionSnapshot = {
   best: RaceResult | null;
   /** 当前路线身份摘要（无业务标识几何摘要；测试与调试用）。 */
   courseId: string | null;
+  /** Creator 试玩进度（非 Creator 会话为 null）：计数与结局直接来自共享规则执行器。 */
+  creator: { status: "ready" | "running" | "success" | "failure" | "error"; completed: number; total: number; reason: string | null } | null;
   /** 当前路线变体（测试与调试用）。 */
   variant: number;
   /** 声音面板状态（HUD 三控件）。 */
@@ -518,6 +522,9 @@ export class GameSession {
       softOutside: this.softOutside,
       collisions: this.collisions,
       mission: this.mission?.snapshot() ?? null,
+      creator: this.creator ? { status: this.creator.controller.snapshot.status,
+        completed: this.creator.controller.snapshot.completed ?? 0, total: this.creator.controller.snapshot.total ?? 0,
+        reason: this.creator.controller.snapshot.reason } : null,
       best: this.course ? this.bestByCourse.get(this.course.courseId) ?? null : null,
       courseId: this.course?.courseId ?? null,
       variant: this.variant,
