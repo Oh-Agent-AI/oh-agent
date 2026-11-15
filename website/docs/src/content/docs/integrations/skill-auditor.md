@@ -1,5 +1,5 @@
 ---
-draft: true
+lastUpdated: 2026-11-15
 title: "Agent Vitals skill auditor: OpenClaw, Hermes and the DeepSeek Harness skill bundle"
 description: Before Agent City, Agent Vitals shipped a skill auditor for Claude Code, Codex, OpenClaw, Hermes, WorkBuddy and DSH. What it is, the dsh-agent-vitals bundle, and why OpenClaw has no city district.
 head:
@@ -23,12 +23,12 @@ Besides session data, Agent Vitals has a second, older kind of integration: a **
 
 ## Key facts
 
-- **As an agent skill:** `SKILL.md` at the repo root. It's packaged for ClawHub by `.github/workflows/package-clawhub.yml`, and `agents/openai.yaml` describes it for Codex.
+- **As an agent skill:** `SKILL.md` at the repo root. `agents/openai.yaml` describes it for Codex. This repo no longer packages the skill for ClawHub in CI: the `package-clawhub.yml` workflow was removed in October 2026.
 - **Inside DSH:** the `dsh-agent-vitals` bundle in `integrations/dsh/` adds the auditor as a skill.
 - **From the CLI:** `agent-vitals list`, `doctor`, `plan`, `explain`, `overlap`, `snapshot`, `diff`.
 - **OpenClaw adapter:** `crates/agent-vitals-harnesses/src/harnesses/openclaw/` has only `sources/skills.rs`, with no `sessions/`. It finds multiple instance folders and asks `openclaw skills list --eligible`. The same code also discovers Hermes.
 
-<!-- source: SKILL.md (frontmatter: "Claude Code, Codex, OpenClaw, Hermes, WorkBuddy, DeepSeek Harness"); .github/workflows/package-clawhub.yml; agents/openai.yaml -->
+<!-- source: SKILL.md (frontmatter: "Claude Code, Codex, OpenClaw, Hermes, WorkBuddy, DeepSeek Harness"); agents/openai.yaml; git 493ac71d (ci: drop ClawHub skill packaging workflow, 2026-10-21) -->
 <!-- source: crates/agent-vitals-harnesses/src/harnesses/openclaw/mod.rs ("OpenClaw（含 Hermes 的目录发现，两者共用一份解析代码）… Skill-Surface-only 执行环境 … 没有 sessions/") -->
 
 ## How do I install the DSH bundle?
@@ -37,11 +37,11 @@ Besides session data, Agent Vitals has a second, older kind of integration: a **
 dsh plugin --profile web add dsh-agent-vitals
 ```
 
-The bundle is deliberately thin: an npm prebuilt package with no build step and no install scripts. It ships instructions, not a copy of the scanner; the audit runs from the `agent-vitals` binary on your PATH.
+The bundle is deliberately thin: an npm-style prebuilt package with no build step and no install scripts. It ships instructions, not a copy of the scanner; the audit runs from the `agent-vitals` binary on your PATH.
 
-**TBD:** whether `dsh-agent-vitals` is actually published to npm, and at which version.
+The in-repo README documents the install command above, and `integrations/dsh/package.json` names the package `dsh-agent-vitals` at version 1.4.0. As of 2026-11-15 it is not on the public npm registry, so that command will not resolve from npm today. The bundle itself is in the repository at `integrations/dsh/`.
 
-<!-- source: integrations/dsh/README.md (Install; "npm prebuilt only, never git install"; "No scanner copy"; "No build step") -->
+<!-- source: integrations/dsh/README.md (Install; "npm prebuilt only, never git install"; "No scanner copy"; "No build step"); integrations/dsh/package.json (name dsh-agent-vitals, version 1.4.0, publishConfig.access public); registry.npmjs.org/dsh-agent-vitals HTTP 404 on 2026-11-15 -->
 
 ## How does the skill auditor judge "loaded"?
 

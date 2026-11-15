@@ -30,7 +30,7 @@ Oh Agent 构建在开源的 Agent Vitals 引擎之上，Agent City 是它的第�
 | [WorkBuddy](/docs/zh/data-sources/workbuddy) | 进 | 所有人 | 内置（用量；行为检查较少） |
 | 其他目录 | 进 | 日志放在别处的用户 | 桌面设置里，支持 Claude Code、Codex、DSH |
 | manifest 数据源 | 进 | 用暂不支持的 Agent 的用户 | 命令行和桌面；只支持本地导入，官方目录为空 |
-| Skill 体检 | 进（skills） | 想体检已装 Agent Skills 的用户 | Agent skill、DSH 插件包、命令行 |
+| [Skill 体检](/docs/zh/integrations/skill-auditor) | 进（skills） | 想体检已装 Agent Skills 的用户 | Agent skill、DSH 插件包、命令行 |
 | [Data MCP 服务](/docs/zh/vitals/mcp-tools) | 出 | 你本机的 AI Agent（stdio MCP 客户端） | `agent-vitals data-mcp serve` |
 | [内置插件](/docs/zh/vitals/app-sdk) | 出（应用内） | 开发 City 这类视图的贡献者 | 官方（Agent City、Creator Studio）、编译进应用；不支持第三方安装 |
 | 数据导出 | 出（文件） | 想备份或分析的用户 | `data-export-private` / `data-export-redacted`，每个数据源一个 `<harness>.jsonl` |
@@ -48,7 +48,7 @@ Oh Agent 构建在开源的 Agent Vitals 引擎之上，Agent City 是它的第�
 | `codex` | 有 | 有 | 有 | [Codex](/docs/zh/data-sources/codex) |
 | `dsh` | 有 | 有 | 有（按 agent/preset 作用域） | [DeepSeek Harness](/docs/zh/data-sources/deepseek-harness) |
 | `workbuddy` | 有 | 同步时不评估 | 有 | [WorkBuddy](/docs/zh/data-sources/workbuddy) |
-| `openclaw`（兼管 Hermes） | 无 | 无 | 有 | Skill 体检 |
+| `openclaw`（兼管 Hermes） | 无 | 无 | 有 | [Skill 体检](/docs/zh/integrations/skill-auditor) |
 | `generic`（manifest 数据源） | 只有用量 | 无 | 无 | manifest 数据源 |
 
 <!-- source: crates/agent-vitals-harnesses/src/harnesses/mod.rs; session_harnesses.rs; */skills; docs/HARNESS_ADAPTER_CONTRACT.md (observer table) -->
@@ -65,7 +65,7 @@ DSH 没有 `harnesses/dsh/skills/` 目录；它的 skill 作用域写在 `HARNES
 
 ## 仓库里还保留的旧集成
 
-在 Agent City 之前，项目做的是一个 skill 体检工具，现在仍在仓库里：一个 agent skill（`SKILL.md`，打包发布到 ClawHub）、一个 DSH 插件包（`integrations/dsh/`），以及一组命令行命令。OpenClaw 和 Hermes 只出现在这里。
+在 Agent City 之前，项目做的是一个 [skill 体检](/docs/zh/integrations/skill-auditor) 工具，现在仍在仓库里：一个 agent skill（`SKILL.md`；ClawHub 的 CI 打包已于 2026 年 10 月从本仓库移除）、一个 DSH 插件包（`integrations/dsh/`），以及一组命令行命令。OpenClaw 和 Hermes 只出现在这里。
 
 <!-- source: README.md ("The earlier Skill scanner, integrations and CLI remain in the repository, but are not the primary product story") -->
 

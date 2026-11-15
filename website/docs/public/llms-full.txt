@@ -891,7 +891,7 @@ Oh Agent is built on the open-source Agent Vitals engine, and Agent City is its 
 | [WorkBuddy](https://ohagent.ai/docs/data-sources/workbuddy) | In | Everyone | Built in (usage; fewer behaviour checks) |
 | Extra folders | In | Users with logs in other places | Desktop Settings, for Claude Code, Codex and DSH |
 | Manifest sources | In | Users of agents without built-in support | CLI and desktop; local import only, official catalog empty |
-| Skill auditor | In (skills) | Users auditing installed Agent Skills | Agent skill, DSH bundle, CLI |
+| [Skill auditor](https://ohagent.ai/docs/integrations/skill-auditor) | In (skills) | Users auditing installed Agent Skills | Agent skill, DSH bundle, CLI |
 | [Data MCP server](https://ohagent.ai/docs/vitals/mcp-tools) | Out | Your local AI agent (stdio MCP client) | `agent-vitals data-mcp serve` |
 | [Built-in plugins](https://ohagent.ai/docs/vitals/app-sdk) | Out (inside the app) | Contributors building views like City | Official (Agent City, Creator Studio), compiled in; no third-party install |
 | Data export | Out (files) | Users, for backup or analysis | `data-export-private` / `data-export-redacted` → one `<harness>.jsonl` per source |
@@ -907,7 +907,7 @@ Each folder in `crates/agent-vitals-harnesses/src/harnesses/` is one adapter:
 | `codex` | Yes | Yes | Yes | [Codex](https://ohagent.ai/docs/data-sources/codex) |
 | `dsh` | Yes | Yes | Yes (agent/preset scopes) | [DeepSeek Harness](https://ohagent.ai/docs/data-sources/deepseek-harness) |
 | `workbuddy` | Yes | Not during sync | Yes | [WorkBuddy](https://ohagent.ai/docs/data-sources/workbuddy) |
-| `openclaw` (also covers Hermes) | No | No | Yes | Skill auditor |
+| `openclaw` (also covers Hermes) | No | No | Yes | [Skill auditor](https://ohagent.ai/docs/integrations/skill-auditor) |
 | `generic` (manifest sources) | Yes, usage only | No | No | Manifest sources |
 
 DSH has no `harnesses/dsh/skills/` folder; its skill scopes are described in `HARNESS_ADAPTER_CONTRACT.md`.
@@ -922,7 +922,7 @@ DSH has no `harnesses/dsh/skills/` folder; its skill scopes are described in `HA
 
 ## Older integrations still in the repo
 
-Before Agent City, the project shipped a skill auditor, and it's still in the repo: an agent skill (`SKILL.md`, packaged for ClawHub), a DSH bundle (`integrations/dsh/`), and CLI commands. OpenClaw and Hermes appear only there.
+Before Agent City, the project shipped a [skill auditor](https://ohagent.ai/docs/integrations/skill-auditor), and it's still in the repo: an agent skill (`SKILL.md`; ClawHub CI packaging was removed in October 2026), a DSH bundle (`integrations/dsh/`), and CLI commands. OpenClaw and Hermes appear only there.
 
 ## Roadmap / 规划中
 
@@ -1040,6 +1040,40 @@ The desktop app does not have a local manifest import screen. Today it only has 
 
 - [Data pipeline](https://ohagent.ai/docs/architecture/data-pipeline)
 - [Integrations overview](https://ohagent.ai/docs/integrations)
+
+---
+
+# "Agent Vitals skill auditor: OpenClaw, Hermes and the DeepSeek Harness skill bundle"
+URL: https://ohagent.ai/docs/integrations/skill-auditor/
+
+Besides session data, Agent Vitals has a second, older kind of integration: a **skill auditor**. It checks which Agent Skills are installed for an agent, whether they actually load, what they cost in startup context, and where they conflict. It covers Claude Code, Codex, OpenClaw, Hermes, WorkBuddy and DeepSeek Harness. OpenClaw and Hermes are supported **only** here: they're skill sources, not session sources, so they don't appear in Agent City.
+
+## Key facts
+
+- **As an agent skill:** `SKILL.md` at the repo root. `agents/openai.yaml` describes it for Codex. This repo no longer packages the skill for ClawHub in CI: the `package-clawhub.yml` workflow was removed in October 2026.
+- **Inside DSH:** the `dsh-agent-vitals` bundle in `integrations/dsh/` adds the auditor as a skill.
+- **From the CLI:** `agent-vitals list`, `doctor`, `plan`, `explain`, `overlap`, `snapshot`, `diff`.
+- **OpenClaw adapter:** `crates/agent-vitals-harnesses/src/harnesses/openclaw/` has only `sources/skills.rs`, with no `sessions/`. It finds multiple instance folders and asks `openclaw skills list --eligible`. The same code also discovers Hermes.
+
+## How do I install the DSH bundle?
+
+```sh
+dsh plugin --profile web add dsh-agent-vitals
+```
+
+The bundle is deliberately thin: an npm-style prebuilt package with no build step and no install scripts. It ships instructions, not a copy of the scanner; the audit runs from the `agent-vitals` binary on your PATH.
+
+The in-repo README documents the install command above, and `integrations/dsh/package.json` names the package `dsh-agent-vitals` at version 1.4.0. As of 2026-11-15 it is not on the public npm registry, so that command will not resolve from npm today. The bundle itself is in the repository at `integrations/dsh/`.
+
+## How does the skill auditor judge "loaded"?
+
+It separates four stages (installed, discoverable, enabled, loaded) and never treats a `SKILL.md` on disk as proof that a skill is loaded. Anything it can't prove is reported as `unknown`, not `false`.
+
+## Related
+
+- [Integrations overview](https://ohagent.ai/docs/integrations)
+- [CLI](https://ohagent.ai/docs/vitals/cli)
+- [DeepSeek Harness data source](https://ohagent.ai/docs/data-sources/deepseek-harness)
 
 ---
 

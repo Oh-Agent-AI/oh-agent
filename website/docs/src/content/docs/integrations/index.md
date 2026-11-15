@@ -30,7 +30,7 @@ Oh Agent is built on the open-source Agent Vitals engine, and Agent City is its 
 | [WorkBuddy](/docs/data-sources/workbuddy) | In | Everyone | Built in (usage; fewer behaviour checks) |
 | Extra folders | In | Users with logs in other places | Desktop Settings, for Claude Code, Codex and DSH |
 | Manifest sources | In | Users of agents without built-in support | CLI and desktop; local import only, official catalog empty |
-| Skill auditor | In (skills) | Users auditing installed Agent Skills | Agent skill, DSH bundle, CLI |
+| [Skill auditor](/docs/integrations/skill-auditor) | In (skills) | Users auditing installed Agent Skills | Agent skill, DSH bundle, CLI |
 | [Data MCP server](/docs/vitals/mcp-tools) | Out | Your local AI agent (stdio MCP client) | `agent-vitals data-mcp serve` |
 | [Built-in plugins](/docs/vitals/app-sdk) | Out (inside the app) | Contributors building views like City | Official (Agent City, Creator Studio), compiled in; no third-party install |
 | Data export | Out (files) | Users, for backup or analysis | `data-export-private` / `data-export-redacted` → one `<harness>.jsonl` per source |
@@ -51,7 +51,7 @@ Each folder in `crates/agent-vitals-harnesses/src/harnesses/` is one adapter:
 | `codex` | Yes | Yes | Yes | [Codex](/docs/data-sources/codex) |
 | `dsh` | Yes | Yes | Yes (agent/preset scopes) | [DeepSeek Harness](/docs/data-sources/deepseek-harness) |
 | `workbuddy` | Yes | Not during sync | Yes | [WorkBuddy](/docs/data-sources/workbuddy) |
-| `openclaw` (also covers Hermes) | No | No | Yes | Skill auditor |
+| `openclaw` (also covers Hermes) | No | No | Yes | [Skill auditor](/docs/integrations/skill-auditor) |
 | `generic` (manifest sources) | Yes, usage only | No | No | Manifest sources |
 
 <!-- source: crates/agent-vitals-harnesses/src/harnesses/mod.rs (claude_code, codex, dsh, generic, openclaw, workbuddy); session_harnesses.rs (findings for claude-code, codex, dsh); claude_code/skills, codex/skills, workbuddy/sources/skills.rs, openclaw/sources/skills.rs; docs/HARNESS_ADAPTER_CONTRACT.md (observer table: dsh agent / preset scope) -->
@@ -68,7 +68,7 @@ DSH has no `harnesses/dsh/skills/` folder; its skill scopes are described in `HA
 
 ## Older integrations still in the repo
 
-Before Agent City, the project shipped a skill auditor, and it's still in the repo: an agent skill (`SKILL.md`, packaged for ClawHub), a DSH bundle (`integrations/dsh/`), and CLI commands. OpenClaw and Hermes appear only there.
+Before Agent City, the project shipped a [skill auditor](/docs/integrations/skill-auditor), and it's still in the repo: an agent skill (`SKILL.md`; ClawHub CI packaging was removed in October 2026), a DSH bundle (`integrations/dsh/`), and CLI commands. OpenClaw and Hermes appear only there.
 
 <!-- source: README.md ("The earlier Skill scanner, integrations and CLI remain in the repository, but are not the primary product story") -->
 

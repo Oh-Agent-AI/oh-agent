@@ -1,5 +1,5 @@
 ---
-draft: true
+lastUpdated: 2026-11-15
 title: Agent Vitals 的 Skill 体检：OpenClaw、Hermes 和 DeepSeek Harness 插件包
 description: 在 Agent City 之前，Agent Vitals 是一个 skill 体检工具，覆盖 Claude Code、Codex、OpenClaw、Hermes、WorkBuddy 和 DSH。它是什么、dsh-agent-vitals 插件包怎么装、为什么 OpenClaw 在城市里没有城区。
 head:
@@ -23,12 +23,12 @@ head:
 
 ## 关键事实
 
-- **作为 agent skill**：仓库根目录的 `SKILL.md`。由 `.github/workflows/package-clawhub.yml` 打包发布到 ClawHub，`agents/openai.yaml` 是给 Codex 的描述。
+- **作为 agent skill**：仓库根目录的 `SKILL.md`。`agents/openai.yaml` 是给 Codex 的描述。本仓库已不再用 CI 把该 skill 打包发布到 ClawHub：`package-clawhub.yml` 工作流已于 2026 年 10 月删除。
 - **在 DSH 里**：`integrations/dsh/` 的 `dsh-agent-vitals` 插件包把体检工具作为一个 skill 加进去。
 - **用命令行**：`agent-vitals list`、`doctor`、`plan`、`explain`、`overlap`、`snapshot`、`diff`。
 - **OpenClaw 适配器**：`crates/agent-vitals-harnesses/src/harnesses/openclaw/` 只有 `sources/skills.rs`，没有 `sessions/`。它会发现多个实例目录，并调用 `openclaw skills list --eligible`；同一份代码也负责发现 Hermes。
 
-<!-- source: SKILL.md; .github/workflows/package-clawhub.yml; agents/openai.yaml; crates/agent-vitals-harnesses/src/harnesses/openclaw/mod.rs -->
+<!-- source: SKILL.md; agents/openai.yaml; crates/agent-vitals-harnesses/src/harnesses/openclaw/mod.rs; git 493ac71d (ci: drop ClawHub skill packaging workflow, 2026-10-21) -->
 
 ## DSH 插件包怎么装？
 
@@ -36,11 +36,11 @@ head:
 dsh plugin --profile web add dsh-agent-vitals
 ```
 
-这个包刻意做得很薄：npm 预构建包，没有构建步骤，也没有安装脚本。它只带使用说明，不带扫描器副本；实际体检由 PATH 上的 `agent-vitals` 二进制完成。
+这个包刻意做得很薄：按 npm 预构建包来做，没有构建步骤，也没有安装脚本。它只带使用说明，不带扫描器副本；实际体检由 PATH 上的 `agent-vitals` 二进制完成。
 
-**待确认**：`dsh-agent-vitals` 是否真的发布到了 npm，版本是多少。
+仓库里的 README 写的就是上面这条安装命令，`integrations/dsh/package.json` 里的包名是 `dsh-agent-vitals`，版本记录为 1.4.0。截至 2026-11-15，它还没有发布到公共 npm 仓库，所以上面这条命令今天无法从 npm 解析到这个包。插件包本身在仓库的 `integrations/dsh/` 目录里。
 
-<!-- source: integrations/dsh/README.md -->
+<!-- source: integrations/dsh/README.md; integrations/dsh/package.json (name dsh-agent-vitals, version 1.4.0); registry.npmjs.org/dsh-agent-vitals HTTP 404 on 2026-11-15 -->
 
 ## 怎么判断 skill “已加载”？
 
