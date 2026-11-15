@@ -138,7 +138,8 @@ pub(crate) fn database(home: &Path) -> Result<Connection, &'static str> {
             revision INTEGER NOT NULL, studio_instance_id TEXT NOT NULL, city_instance_id TEXT,
             status TEXT NOT NULL, active_slot INTEGER UNIQUE, created_at_ms INTEGER NOT NULL,
             expires_at_ms INTEGER NOT NULL, finished_at_ms INTEGER, return_consumed INTEGER NOT NULL DEFAULT 0,
-            evidence_json TEXT, failure_code TEXT
+            evidence_json TEXT, failure_code TEXT,
+            studio_owner_retired INTEGER NOT NULL DEFAULT 0, studio_successor_id TEXT
         );
         CREATE TABLE IF NOT EXISTS creator_content_packages (
             package_id TEXT NOT NULL, version TEXT NOT NULL, kind TEXT NOT NULL,
@@ -162,6 +163,14 @@ pub(crate) fn database(home: &Path) -> Result<Connection, &'static str> {
     }
     if !columns.iter().any(|column| column == "failure_code") {
         db.execute("ALTER TABLE creator_playtest_runs ADD COLUMN failure_code TEXT", []).map_err(|error| map_sqlite_failure("migrate", &error))?;
+    }
+    // Studio 实例被换掉之后，取消权只交给宿主记下的继任实例，不交给任意后来者。
+    // 旧库没有这两列；缺了的话新实例的 cancel 会在读列时失败，槽位继续占着。
+    if !columns.iter().any(|column| column == "studio_owner_retired") {
+        db.execute("ALTER TABLE creator_playtest_runs ADD COLUMN studio_owner_retired INTEGER NOT NULL DEFAULT 0", []).map_err(|error| map_sqlite_failure("migrate", &error))?;
+    }
+    if !columns.iter().any(|column| column == "studio_successor_id") {
+        db.execute("ALTER TABLE creator_playtest_runs ADD COLUMN studio_successor_id TEXT", []).map_err(|error| map_sqlite_failure("migrate", &error))?;
     }
     // 版本偏斜审计（设计 §5.6）：operation 记录携带签发 preview 时的能力版本。
     let operation_columns = {

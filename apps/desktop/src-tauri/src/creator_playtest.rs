@@ -435,21 +435,62 @@ pub(crate) fn read_playtest_result(home: &Path, run_id: &str) -> Result<Value, &
         "evidenceSource":if evidence.is_null() { Value::Null } else { json!("city-client-reported") },"evidence":evidence,"failureCode":failure_code}))
 }
 
+/// City webview 被销毁（切走、关闭，不是 suspend）后，它认领过的槽位不会再收到
+/// finish。pending（还没被这座城认领）留给下一座 City 认领，不在这里收口。
+pub(crate) const PLAYTEST_CITY_CLOSED: &str = "creator_playtest_city_closed";
+
+fn close_claimed_playtests(home: &Path, predicate: &str, instance_id: &str) -> Result<bool, &'static str> {
+    if !valid_id(instance_id) { return Err("creator_request_invalid"); }
+    let mut db = database(home)?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
+    let now = now_ms();
+    // predicate 只来自本文件的两个调用点，拼进固定的 claimed 谓词，不接受外部 SQL。
+    let sql = format!("UPDATE creator_playtest_runs SET status='failed',active_slot=NULL,finished_at_ms=?1,failure_code=?2 WHERE active_slot=1 AND status='claimed' AND {predicate}");
+    let changed = tx.execute(&sql, params![now, PLAYTEST_CITY_CLOSED, instance_id]).map_err(|_| "creator_store_unavailable")?;
+    tx.commit().map_err(|_| "creator_store_unavailable")?;
+    if changed > 0 {
+        agent_vitals_runtime::logging::log_info("creator_playtest", &format!("city claim closed instance={instance_id} rows={changed} failure={PLAYTEST_CITY_CLOSED}"));
+    }
+    Ok(changed > 0)
+}
+
+pub(crate) fn finalize_retired_city_claim(home: &Path, retired_city_instance: &str) -> Result<bool, &'static str> {
+    close_claimed_playtests(home, "city_instance_id=?3", retired_city_instance)
+}
+
+/// 新 City 实例创建时，上一进程留下的 claimed 槽位已经没有活着的认领者。
+/// 不碰 pending：下一座城还可以认领尚未开跑的试玩。
+pub(crate) fn finalize_playtests_claimed_by_other_cities(home: &Path, live_city_instance: &str) -> Result<bool, &'static str> {
+    close_claimed_playtests(home, "city_instance_id IS NOT NULL AND city_instance_id<>?3", live_city_instance)
+}
+
+/// 新的官方 Studio webview 成为既有 run 的唯一继任者。主人 id 保持不变，
+/// 所以原实例仍能取消；第三套实例对不上继任者，取消继续被拒绝。
+pub(crate) fn note_current_studio_instance(home: &Path, studio_instance: &str) -> Result<(), &'static str> {
+    if !valid_id(studio_instance) { return Err("creator_request_invalid"); }
+    let db = database(home)?;
+    db.execute("UPDATE creator_playtest_runs SET studio_owner_retired=1, studio_successor_id=?1 WHERE studio_instance_id<>?1", [studio_instance])
+        .map_err(|_| "creator_store_unavailable")?;
+    Ok(())
+}
+
 /// 取消一次试玩：pending/claimed 都可以取消并释放活动槽位（claimed 时 City 的
-/// 下一次 finish 会得到干净的终态拒绝）；已终态的 run 幂等返回原状态，不重复取消。
+/// 下一次 finish 会得到干净的终态拒绝）；已终态的 run 对主人或继任者幂等返回，
+/// 不重复取消。主人 webview 被换掉之后，只有宿主记下的继任实例可以取消。
 pub(crate) fn cancel_playtest(home: &Path, studio_instance: &str, run_id: &str) -> Result<Value, &'static str> {
     if !valid_id(studio_instance) || !valid_id(run_id) { return Err("creator_request_invalid"); }
     let mut db = database(home)?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
     let now = now_ms();
     expire_playtests(&tx, now)?;
-    let row: Option<(String,String,u64,String)> = tx.query_row(
-        "SELECT status,studio_instance_id,revision,project_id FROM creator_playtest_runs WHERE run_id=?1", [run_id],
-        |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)))
+    let row: Option<(String,String,u64,String,i64,Option<String>)> = tx.query_row(
+        "SELECT status,studio_instance_id,revision,project_id,studio_owner_retired,studio_successor_id FROM creator_playtest_runs WHERE run_id=?1", [run_id],
+        |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?)))
         .optional().map_err(|_| "creator_store_unavailable")?;
-    let Some((status,owner,revision,project_id)) = row else { return Err("creator_playtest_not_found"); };
+    let Some((status,owner,revision,project_id,retired,successor)) = row else { return Err("creator_playtest_not_found"); };
     agent_vitals_runtime::logging::log_info("creator_playtest", &format!("cancel run={run_id} studio={studio_instance} status={status}"));
-    if owner != studio_instance { return Err("creator_playtest_instance_mismatch"); }
+    let successor_match = retired != 0 && successor.as_deref() == Some(studio_instance);
+    if owner != studio_instance && !successor_match { return Err("creator_playtest_instance_mismatch"); }
     if matches!(status.as_str(), "completed" | "cancelled" | "failed" | "expired") {
         return Ok(json!({"runId":run_id,"projectId":project_id,"revision":revision,"status":status,"cancelled":false}));
     }
@@ -622,6 +663,54 @@ mod flight_handoff_tests {
         assert_eq!(claimed["vehicle"], Value::Null);
         let _ = std::fs::remove_dir_all(legacy_home);
         let _ = std::fs::remove_dir_all(driving_home);
+    }
+
+    /// 切走 City 不能把 claimed 槽位留成永远占着的活动行。另一座还活着的 City
+    /// 仍然抢不走认领、也 finish 不了；销毁的是认领者自己时，行变成带原因的
+    /// failed，槽位放开。尚未认领的 pending 留给下一座城。Studio 换实例后只有
+    /// 记下的继任者能取消，第三套实例不行。
+    #[test]
+    fn replaced_city_claim_becomes_terminal_and_only_the_successor_studio_can_cancel() {
+        let home = home();
+        store_release(&home, "release-life", 3, &release_snapshot(3, Some("flight")));
+        let started = start_playtest(&home, "studio-a", "release-life", None, None).unwrap();
+        let run_id = started["runId"].as_str().unwrap().to_owned();
+        claim_playtest(&home, "city-a", Some(&run_id)).unwrap();
+        assert_eq!(claim_playtest(&home, "city-b", Some(&run_id)).unwrap_err(), "creator_playtest_claimed");
+        assert_eq!(finish_playtest(&home, "city-b", &run_id, "failed", None, Some(PLAYTEST_CITY_CLOSED)).unwrap_err(), "creator_playtest_instance_mismatch");
+        assert!(!finalize_retired_city_claim(&home, "city-b").unwrap());
+        assert_eq!(claim_playtest(&home, "city-b", Some(&run_id)).unwrap_err(), "creator_playtest_claimed");
+        assert!(finalize_retired_city_claim(&home, "city-a").unwrap());
+        let result = read_playtest_result(&home, &run_id).unwrap();
+        assert_eq!(result["status"], "failed");
+        assert_eq!(result["failureCode"], PLAYTEST_CITY_CLOSED);
+        assert!(result["finishedAtMs"].as_u64().is_some());
+        assert_eq!(finish_playtest(&home, "city-b", &run_id, "failed", None, Some(PLAYTEST_CITY_CLOSED)).unwrap_err(), "creator_playtest_instance_mismatch");
+        let idempotent = finish_playtest(&home, "city-a", &run_id, "failed", None, Some(PLAYTEST_CITY_CLOSED)).unwrap();
+        assert_eq!(idempotent["status"], "failed");
+        let again = start_playtest(&home, "studio-a", "release-life", None, None).unwrap();
+        let pending_id = again["runId"].as_str().unwrap().to_owned();
+        assert_ne!(pending_id, run_id);
+        assert!(!finalize_retired_city_claim(&home, "city-a").unwrap());
+        assert_eq!(read_playtest_result(&home, &pending_id).unwrap()["status"], "pending");
+        assert_eq!(cancel_playtest(&home, "studio-b", &pending_id).unwrap_err(), "creator_playtest_instance_mismatch");
+        note_current_studio_instance(&home, "studio-b").unwrap();
+        let cancelled = cancel_playtest(&home, "studio-b", &pending_id).unwrap();
+        assert_eq!(cancelled["status"], "cancelled");
+        assert_eq!(cancelled["cancelled"], true);
+        let repeated = cancel_playtest(&home, "studio-b", &pending_id).unwrap();
+        assert_eq!(repeated["cancelled"], false);
+        assert_eq!(cancel_playtest(&home, "studio-c", &pending_id).unwrap_err(), "creator_playtest_instance_mismatch");
+        let third = start_playtest(&home, "studio-a", "release-life", None, None).unwrap();
+        let third_id = third["runId"].as_str().unwrap().to_owned();
+        note_current_studio_instance(&home, "studio-b").unwrap();
+        assert_eq!(cancel_playtest(&home, "studio-c", &third_id).unwrap_err(), "creator_playtest_instance_mismatch");
+        claim_playtest(&home, "city-old", Some(&third_id)).unwrap();
+        assert!(finalize_playtests_claimed_by_other_cities(&home, "city-new").unwrap());
+        assert_eq!(read_playtest_result(&home, &third_id).unwrap()["failureCode"], PLAYTEST_CITY_CLOSED);
+        assert_eq!(claim_playtest(&home, "city-new", Some(&third_id)).unwrap_err(), "creator_playtest_not_found");
+        assert_eq!(finish_playtest(&home, "city-new", &third_id, "failed", None, Some(PLAYTEST_CITY_CLOSED)).unwrap_err(), "creator_playtest_instance_mismatch");
+        let _ = std::fs::remove_dir_all(home);
     }
 
 }

@@ -823,6 +823,9 @@ pub async fn plugin_open(app: tauri::AppHandle, webview: Webview, state: tauri::
             agent_vitals_runtime::logging::log_warn("plugin_host", &format!("view.close() [replace] id={}", old.id));
             let _ = view.close();
         }
+        // suspend 只是藏起 webview，实例 id 还在，试玩认领继续有效。真正拆掉
+        // 之后 City 不会再 finish，claimed 槽位必须在这里收成可恢复的终态。
+        settle_destroyed_playtest(&old.plugin_id, &old.id);
     }
     let id = {
         let mut host = state.0.lock().unwrap();
@@ -834,6 +837,7 @@ pub async fn plugin_open(app: tauri::AppHandle, webview: Webview, state: tauri::
         host.current = Some(current);
         id
     };
+    adopt_opened_playtest(&definition.id, &id);
     let initialization = format!("window.__AV_PLUGIN_INSTANCE__ = {}; window.__AV_PLUGIN_LOCALE__ = '{}';", serde_json::to_string(&id).unwrap(), locale);
     let allow_local_exports = definition.allow_local_exports;
     let builder = apply_plugin_webview_platform(&app, WebviewBuilder::new(&id, WebviewUrl::App(definition.entry.clone().into()))
@@ -985,8 +989,33 @@ pub async fn plugin_close(app: tauri::AppHandle, webview: Webview, state: tauri:
             agent_vitals_runtime::logging::log_warn("plugin_host", &format!("view.close() [plugin_close] id={}", old.id));
             view.close().map_err(|_| "plugin_close_failed")?;
         }
+        settle_destroyed_playtest(&old.plugin_id, &old.id);
     }
     Ok(())
+}
+
+/// 只在 webview 被销毁时调用。suspend 隐藏同一实例，认领仍然有效，不能在这里收口。
+fn settle_destroyed_playtest(plugin_id: &str, instance_id: &str) {
+    if plugin_id != "city" { return; }
+    let home = crate::overview::data_home();
+    if let Err(code) = crate::creator_playtest::finalize_retired_city_claim(&home, instance_id) {
+        agent_vitals_runtime::logging::log_warn("plugin_host", &format!("playtest retire city={instance_id} failed={code}"));
+    }
+}
+
+/// 新实例 id 分配之后：Studio 成为既有试玩的继任取消者；City 收掉上一进程留下的认领。
+fn adopt_opened_playtest(plugin_id: &str, instance_id: &str) {
+    let home = crate::overview::data_home();
+    let result = if plugin_id == "creator-studio" {
+        crate::creator_playtest::note_current_studio_instance(&home, instance_id).map(|_| ())
+    } else if plugin_id == "city" {
+        crate::creator_playtest::finalize_playtests_claimed_by_other_cities(&home, instance_id).map(|_| ())
+    } else {
+        return;
+    };
+    if let Err(code) = result {
+        agent_vitals_runtime::logging::log_warn("plugin_host", &format!("playtest adopt plugin={plugin_id} instance={instance_id} failed={code}"));
+    }
 }
 
 #[tauri::command]
@@ -1795,7 +1824,10 @@ mod tests {
         assert!(studio.local_calls.iter().any(|method| method == "creator.project.create"));
         assert!(studio.local_calls.iter().any(|method| method == "creator.project.publish"));
         assert!(studio.local_calls.iter().any(|method| method == "creator.project.playtest.start"));
+        assert!(studio.local_calls.iter().any(|method| method == "creator.project.playtest.result"));
+        assert!(studio.local_calls.iter().any(|method| method == "creator.project.playtest.cancel"));
         assert!(studio.local_calls.iter().any(|method| method == "creator.project.playtest.return_context"));
+        assert!(studio.local_calls.iter().any(|method| method == "creator.project.publication"));
     }
 
     #[test]
