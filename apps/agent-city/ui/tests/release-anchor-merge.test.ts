@@ -114,3 +114,49 @@ test("an anchor with neither live nor snapshot geometry is still refused", () =>
   assert.equal(merged.diagnostics[0]?.code, "release_anchor_geometry_unavailable");
   assert.equal(merged.diagnostics[0]?.objectId, "air-gate:ghost");
 });
+
+// claim → 建计划 → 跑一局的闭环：这是真机失败的下一步（claim 合并了视图，但建计划用
+// 实机视图 → anchor_not_found）。这里用「只在快照里」的空域门验证整条链路。
+test("a released air gate flows from the merged view into a runnable plan and a passed run", async () => {
+  const { createCreatorMiniGamePlan } = await import("../src/game/activity/creatorMiniGame");
+  const { MountedMiniGameControllerV1 } = await import("../src/game/activity/mountedMiniGame");
+  const game = { schemaVersion: 1, id: "creator.flight-checkpoint", rulesVersion: 1,
+    slots: { gates: { kind: "zone", min: 1, max: 3, requires: ["fly"] } },
+    rules: { counters: { next: { initial: 0, max: 3 } }, nodes: [
+      { id: "pass", on: { type: "zone.entered", slot: "gates" }, actions: [{ op: "counter.add", counter: "next", amount: 1 }] },
+      { id: "finish", on: { type: "zone.entered", slot: "gates" }, when: [{ op: "counter.eq", counter: "next", value: 3 }], actions: [{ op: "run.finish", outcome: "success" }] },
+    ] } };
+  const frozen = snapshot();
+  frozen.layout.anchors.push(
+    { id: "spawn-air:n", kind: "spawn", capabilities: ["fly"], geometryRef: "creator-air:spawn" },
+    { id: "air-gate:n1", kind: "zone", capabilities: ["fly"], geometryRef: "creator-air:g1" },
+    { id: "air-gate:n2", kind: "zone", capabilities: ["fly"], geometryRef: "creator-air:g2" },
+    { id: "air-gate:n3", kind: "zone", capabilities: ["fly"], geometryRef: "creator-air:g3" });
+  frozen.layout.links.push(
+    { id: "l1", fromAnchorId: "spawn-air:n", toAnchorId: "air-gate:n1", capabilities: ["fly"] },
+    { id: "l2", fromAnchorId: "spawn-air:n", toAnchorId: "air-gate:n2", capabilities: ["fly"] },
+    { id: "l3", fromAnchorId: "spawn-air:n", toAnchorId: "air-gate:n3", capabilities: ["fly"] });
+  frozen.geometry = [
+    { geometryRef: "creator-air:spawn", positionMeters: { x: 0, y: 40, z: 0 } },
+    { geometryRef: "creator-air:g1", positionMeters: { x: 150, y: 40, z: 0 }, activationRadiusMeters: 20 },
+    { geometryRef: "creator-air:g2", positionMeters: { x: 300, y: 40, z: 0 }, activationRadiusMeters: 20 },
+    { geometryRef: "creator-air:g3", positionMeters: { x: 450, y: 40, z: 0 }, activationRadiusMeters: 20 },
+  ];
+  const merged = mergeReleaseAnchors(liveView(), frozen);
+  assert.equal(merged.ok, true);
+  if (!merged.ok) return;
+  const experience = { releaseId: "release-air", title: "Air", game,
+    mount: { schemaVersion: 1, mountId: "mount-air", layout: { kind: "city-layout", id: "layout-1", version: "1", digest: "world-1" },
+      game: { kind: "city-minigame", id: game.id, version: "1", digest: "sha256:" + "a".repeat(64) },
+      entryAnchorId: "spawn-air:n", bindings: { gates: ["air-gate:n1", "air-gate:n2", "air-gate:n3"] }, parameterOverrides: {} },
+    entryPositionWorld: { x: 0, z: 0 } } as any;
+  const plan = createCreatorMiniGamePlan(merged.view, experience, { capability: "fly" });
+  assert.equal(plan.ok, true, plan.ok ? "" : JSON.stringify(plan.diagnostics));
+  if (!plan.ok) return;
+  let latest: any = null;
+  const controller = new MountedMiniGameControllerV1(plan.value, snapshot => { latest = snapshot; });
+  // 沿 +X 直线飞过两道门（40 m 高度、半径 20）。
+  for (const x of [0, 75, 150, 225, 300, 375, 450]) controller.fixedStep({ x, y: 40, z: 0 });
+  assert.equal(latest?.state.outcome, "success");
+  assert.equal(latest?.state.counters.next, 3);
+});
