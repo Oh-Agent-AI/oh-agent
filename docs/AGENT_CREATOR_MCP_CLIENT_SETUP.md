@@ -107,7 +107,7 @@ Claude Code（`claude mcp add` 或项目 `.mcp.json`，字段名以 Claude Code 
 > 面不接收 camera（确定性默认公式从 bounds 派生）；`modelAssetId` 只接受项目资产
 > 引用或 null（程序化占位模型），不接受本地路径或文件字节。车辆定义是项目内容，
 > 走 SDK 校验信封 + revision CAS + operationId 幂等；`creator_vehicle_preview`
-> 返回 previewId（可用 creator_project_commit 提交）与确定性 estimatedPerformance。
+> 返回 previewId（可用 creator_project_commit 提交）与确定性 estimatedPerformance——该投影由 Studio 用 city-sdk 的 `estimateVehiclePerformanceV1` 计算后注入（宿主不再推导）；`creator_vehicle_inspect` 只回事实，需要投影时调用方用同一函数自行计算。
 
 > **实验性边界（2026-11-14）**：`creator_city_*` 默认隐藏，需 `--enable-city-tools`。已覆盖：草稿创建/读取/列表、配置替换预览与提交、只读视口/截图、布局读取/保存；布局可通过 `creator_project_create` 的 `cityId` 绑定项目，发布快照会冻结 cityId/cityRevision/cityLayoutId。仍**未实现**：`creator_city_open`（切换活动 City）、`creator_city_operation_status`、按 `operations[]` 的编辑预览、完整城市隔离与旧迈阿密迁移；活动 City 的跨 generator 世界切换已被拒绝（`city_world_profile_city_mismatch`）。设计见 [自定义城市与 MCP 接口设计](CREATOR_STUDIO_CUSTOM_CITY_MCP_DESIGN_2026_11_14.md)。`creator_capabilities_list` 是静态契约，Studio 关闭时也可用；其余工具在 Studio 缺席时返回 `plugin_unavailable`。
 

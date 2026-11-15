@@ -332,37 +332,6 @@ fn structural_vehicle_check(vehicle: &Value) -> Result<String, &'static str> {
     Ok(serialized)
 }
 
-/// 确定性性能估计（纯函数，米制域）。**宿主不持有飞行启发式**：推导系数来自
-/// 生成产物 `performanceDerivation`（唯一来源是 city-sdk 的
-/// `VEHICLE_PERFORMANCE_DERIVATION_V1`），Rust 只是声明式求值器；碰撞球半径来自
-/// bounds，属于宿主结构域而非气动推导。与 SDK 的逐位锁步由
-/// `performanceVectors` 的共享向量测试钉住——新增推导键会先在那里失败。
-fn vehicle_estimated_performance(vehicle: &Value) -> Result<Value, &'static str> {
-    let catalog = creator_vehicle_catalog();
-    let cruise_divisor = catalog["performanceDerivation"]["cruiseSpeedDivisor"].as_f64()
-        .filter(|divisor| divisor.is_finite() && *divisor > 0.0).ok_or("creator_store_corrupt")?;
-    let physics = &vehicle["physics"];
-    let max_speed = physics["maxSpeedMps"].as_f64().unwrap_or(0.0);
-    let mass = physics["massKg"].as_f64().unwrap_or(1.0);
-    let collision_radius = ["halfLengthM", "halfWidthM", "halfHeightM"].iter()
-        .filter_map(|key| vehicle["bounds"].get(*key).and_then(Value::as_f64)).fold(0.0_f64, f64::max);
-    let mut performance = json!({
-        "cruiseSpeedMps": (max_speed / cruise_divisor).max(0.0),
-        "maxSpeedMps": max_speed,
-        "thrustAccelMs2": physics["thrustN"].as_f64().unwrap_or(0.0) / mass,
-        "wingLoadingKgPerM2": mass / physics["wingAreaM2"].as_f64().unwrap_or(1.0),
-        "turnRateRps": physics["turnRateRps"].as_f64().unwrap_or(0.0),
-        "climbRateMps": physics["climbRateMps"].as_f64().unwrap_or(0.0),
-        "sinkRateMps": physics["sinkRateMps"].as_f64().unwrap_or(0.0),
-        "collisionRadiusM": collision_radius,
-    });
-    if vehicle["flightModel"].as_str() == Some("flapping") {
-        performance["flapFrequencyHz"] = physics["flapFrequencyHz"].clone();
-        performance["flapAmplitudeRad"] = physics["flapAmplitudeRad"].clone();
-    }
-    Ok(performance)
-}
-
 /// modelAssetId 非空时必须是本项目的已登记资产引用（assetId）——MCP 面不接收
 /// 本地路径或任意文件字节；null 表示运行时程序化占位模型。
 fn verify_vehicle_asset_ref(document: &Value, vehicle: &Value) -> Result<(), &'static str> {
@@ -1613,7 +1582,6 @@ pub fn preview_replace_vehicle_validated(home: &Path, actor: &str, project_id: &
     Ok(json!({"previewId":preview_id,"projectId":project_id,"baseRevision":revision,"vehicleId":vehicle_id,"expiresInMs":PREVIEW_TTL.as_millis(),
         "validation":"sdk",
         "diagnostics":validation.and_then(|value| value.get("diagnostics")).cloned().unwrap_or(json!([])),
-        "estimatedPerformance":vehicle_estimated_performance(vehicle)?,
         "diff":{"path":"vehicles","beforeDigest":digest(&raw),"afterDigest":digest(&vehicle_json)}}))
 }
 
@@ -1686,8 +1654,9 @@ fn inspect_vehicle(home: &Path, project_id: &str, expected_revision: Option<u64>
         .filter(|mount_id| document.get("vehicleBindings").and_then(Value::as_object)
             .is_some_and(|bindings| bindings.get(*mount_id).and_then(Value::as_str) == Some(vehicle_id)))
         .collect();
+    // estimatedPerformance 不再由宿主推导：飞行语义归 city-sdk（estimateVehiclePerformanceV1），
+    // 调用方拿 `vehicle` 自行投影；宿主只回事实（profile + 绑定关系）。
     Ok(json!({"projectId":project_id,"revision":revision,"vehicleId":vehicle_id,"vehicle":vehicle,
-        "estimatedPerformance":vehicle_estimated_performance(vehicle)?,
         "boundMounts":bound_mounts,"source":"project"}))
 }
 
@@ -2243,7 +2212,10 @@ mod tests {
             &json!({"projectId":project_id,"vehicleId":"vehicle.flap-test","revision":2})).unwrap();
         assert_eq!(inspected["vehicle"]["flightModel"], "flapping");
         assert_eq!(inspected["boundMounts"], json!([]));
-        assert_eq!(inspected["estimatedPerformance"]["wingLoadingKgPerM2"], 21.0);
+        // 边界：宿主只回事实（profile + 绑定），不做飞行性能推导——那是 city-sdk 的
+        // estimateVehiclePerformanceV1（Creator 预览 / Agent 自行投影）。宿主那份推导
+        // 曾与引擎各写一遍（maxSpeed/1.8 vs Math.max(6, …)），已整条移除。
+        assert!(inspected.get("estimatedPerformance").is_none(), "inspect must report facts, not a derivation");
         assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.vehicle.inspect",
             &json!({"projectId":project_id,"vehicleId":"vehicle.flap-test","revision":1})).unwrap_err(), "revision_conflict");
         assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.vehicle.inspect",
@@ -2297,59 +2269,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(home);
     }
 
-    /// 性能估计是同输入同输出的纯函数：推导系数来自生成产物（SDK 单一来源），
-    /// 宿主只做声明式求值，供 Agent 在 commit 前比较 profile。
+    /// 车辆预览走既有 preview/commit 链：宿主签发 previewId + 结构核对结果，不推导性能
+    /// （性能投影由 Studio 用 SDK 补齐，见 sdkValidation.estimateVehiclePerformanceV1）。
     #[test]
-    fn vehicle_estimated_performance_is_deterministic() {
-        let divisor = creator_vehicle_catalog()["performanceDerivation"]["cruiseSpeedDivisor"].as_f64().unwrap();
-        let performance = vehicle_estimated_performance(&flight_vehicle_payload("vehicle.perf")).unwrap();
-        assert_eq!(performance["cruiseSpeedMps"], json!(110.0_f64 / divisor));
-        assert_eq!(performance["thrustAccelMs2"], json!(11000.0_f64 / 420.0));
-        assert_eq!(performance["flapFrequencyHz"], json!(2.2));
-        let fixed_wing = json!({"schemaVersion":1,"id":"v","label":"l","modelAssetId":null,"flightModel":"fixed-wing",
-            "physics":{"massKg":620,"wingAreaM2":16,"thrustN":9000,"maxSpeedMps":130,"dragCoefficient":0.06,"turnRateRps":1.05,"climbRateMps":26,"sinkRateMps":20},
-            "bounds":{"halfLengthM":4.5,"halfWidthM":5.5,"halfHeightM":1.5},
-            "camera":{"followDistanceM":35.75,"heightOffsetM":14.3,"fovDeg":55.0}});
-        let performance = vehicle_estimated_performance(&fixed_wing).unwrap();
-        assert!(performance.get("flapFrequencyHz").is_none(), "fixed-wing estimates must not carry flap keys");
-    }
-
-    /// 跨语言锁步：宿主对每个 SDK preset 的推导必须与生成产物 `performanceVectors`
-    /// 逐位一致（同一份 f64 运算、同一份系数）。键集合也钉住——SDK 新增推导键时这里
-    /// 先红，迫使宿主显式决定如何执行它，而不是悄悄少算一个字段（同一个教训的两次
-    /// 翻车：Rust 硬编码 `1.8` 与引擎 `Math.max(6, …)` 的第一天起就是两套推导）。
-    #[test]
-    fn vehicle_estimated_performance_matches_the_sdk_lockstep_vectors() {
-        let catalog = creator_vehicle_catalog();
-        let presets = catalog["presets"].as_array().expect("generated preset catalog");
-        let vectors = catalog["performanceVectors"].as_array().expect("generated lockstep vectors");
-        assert_eq!(vectors.len(), presets.len(), "every SDK preset must ship a lockstep vector");
-        let numeric_keys = ["cruiseSpeedMps", "maxSpeedMps", "thrustAccelMs2", "wingLoadingKgPerM2", "turnRateRps", "climbRateMps"];
-        let declared: std::collections::BTreeSet<&str> = numeric_keys.into_iter().chain(["flapFrequencyHz"]).collect();
-        for vector in vectors {
-            let id = vector["id"].as_str().expect("vector id");
-            let preset = presets.iter().find(|preset| preset["id"].as_str() == Some(id))
-                .expect("every vector references a generated preset");
-            let estimate = vector["estimate"].as_object().expect("vector estimate");
-            assert_eq!(estimate.keys().map(String::as_str).collect::<std::collections::BTreeSet<_>>(), declared,
-                "{id}: SDK estimate shape drifted out of the host's derivation vocabulary");
-            let actual = vehicle_estimated_performance(preset).unwrap();
-            for key in numeric_keys {
-                assert_eq!(actual[key].as_f64(), estimate[key].as_f64(), "{id}.{key} must match the SDK vector bit for bit");
-            }
-            // 扑翼必带扑动频率；fixed-wing 的 SDK 向量以 null 表达「不适用」，宿主按既有契约省略该键。
-            match estimate["flapFrequencyHz"].as_f64() {
-                Some(frequency) => assert_eq!(actual["flapFrequencyHz"].as_f64(), Some(frequency), "{id}.flapFrequencyHz"),
-                None => assert!(actual.get("flapFrequencyHz").is_none(), "{id}: fixed-wing estimates must not carry flap keys"),
-            }
-        }
-        // 系数必须来自产物：宿主源码里不再有飞行启发式字面量可对照。
-        assert!(catalog["performanceDerivation"]["cruiseSpeedDivisor"].as_f64().is_some_and(|divisor| divisor > 0.0));
-    }
-
-    /// 车辆预览走既有 preview/commit 链：签发带 estimatedPerformance，提交后写入项目。
-    #[test]
-    fn vehicle_preview_issues_committable_preview_with_performance() {
+    fn vehicle_preview_issues_a_committable_preview_without_a_host_derivation() {
         let home = home();
         publish_city_layout_snapshot(&home, &layout_snapshot()).unwrap();
         let created = create_project_from_city_layout(&home, LOCAL_CREATOR_OWNER, "flight-checkpoint", "create-vehicle-preview", "world-rev-test").unwrap();
@@ -2359,7 +2282,7 @@ mod tests {
             &json!({"projectId":project_id,"baseRevision":0,"vehicle":vehicle,"validation":vehicle_envelope(true, &project_id, 0, &vehicle)})).unwrap();
         assert_eq!(preview["vehicleId"], "vehicle.preview-test");
         assert_eq!(preview["validation"], "sdk");
-        assert_eq!(preview["estimatedPerformance"]["flapFrequencyHz"], json!(2.2));
+        assert!(preview.get("estimatedPerformance").is_none(), "preview must not fabricate a performance projection");
         assert_eq!(preview["diagnostics"], json!([]));
         let committed = commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", &project_id,
             preview["previewId"].as_str().unwrap(), 0, "commit-vehicle-preview").unwrap();

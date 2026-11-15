@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { connect, connectHostCalls, invokeHost, observeHealth, publishToolbar } from "@agent-vitals/app-sdk/ui-host";
-import { canonicalJson, defaultVehicleCameraV1, validateCityInstance, validateCityLayoutScope, validateCityLayoutSnapshot, validateMiniGamePack, validateMount, validateSceneDraft, validateVehicleProfileV1, validateWorldPlanPatch, type CityGameMountV1, type CityInstanceV1, type CityLayoutSnapshotV1, type CityWorldProfileV1, type VehicleProfileV1 } from "@agent-vitals/city-sdk";
+import { canonicalJson, defaultVehicleCameraV1, estimateVehiclePerformanceV1, validateCityInstance, validateCityLayoutScope, validateCityLayoutSnapshot, validateMiniGamePack, validateMount, validateSceneDraft, validateVehicleProfileV1, validateWorldPlanPatch, type CityGameMountV1, type CityInstanceV1, type CityLayoutSnapshotV1, type CityWorldProfileV1, type VehicleProfileV1 } from "@agent-vitals/city-sdk";
 import { applyCityWorldOperations } from "./cityWorldOperations";
 import { buildGameValidation, buildSceneValidation, buildVehicleValidation, normalizeVehicleProfileInput, scopeMismatchEnvelope } from "./sdkValidation";
 import { loadStudioAtStartup } from "./startupLoad";
@@ -484,6 +484,15 @@ function App() {
         }
         const checkedPayload = await attachValidation(method, payload);
         result = await creatorRequest(method, checkedPayload);
+        // 性能投影的归属是 city-sdk：宿主只回事实，Studio 在这里补上 Agent 看的
+        // `estimatedPerformance`（与引擎消费的是同一个 pure 函数，不是第三份公式）。
+        if (method === "creator.vehicle.preview" && result && typeof result === "object"
+          && checkedPayload && typeof checkedPayload === "object") {
+          const checkedVehicle = validateVehicleProfileV1((checkedPayload as Record<string, unknown>).vehicle);
+          if (checkedVehicle.ok) {
+            result = { ...(result as Record<string, unknown>), estimatedPerformance: estimateVehiclePerformanceV1(checkedVehicle.value) };
+          }
+        }
         if ((method === "creator.game.preview" || method === "creator.scene.preview") && result && typeof result === "object") {
           const preview = result as { previewId?: unknown; projectId?: unknown; baseRevision?: unknown; expiresInMs?: unknown; changedObjects?: unknown };
           const validation = checkedPayload.validation as { ok?: unknown } | undefined;
