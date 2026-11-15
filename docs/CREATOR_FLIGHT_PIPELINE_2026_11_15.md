@@ -1,4 +1,4 @@
-# Creator flight pipeline 阶段 2-4（2026-11-15）
+# Creator flight pipeline 阶段 2-5（2026-11-15）
 
 ## 已实现
 
@@ -36,6 +36,26 @@ MCP：
 - flight 发布要求唯一 vehicle（或显式 `vehicleId`）与至少一个 mount；
 - `creator_playtest_start` 支持可选 `gameType` 断言，路由权威仍是 release 冻结值；
 - City 插件已有 flight handoff（`creatorPlaytest.gameType === "flight"`）。
+
+### 阶段 5：飞行试玩的闸门与证据（2026-11-15 续）
+
+- 门来自 release：`createCreatorGateCourse` 按 mount 绑定的 fly 锚点生成环，
+  **可见环半径 = SDK 触发半径**（画得比判定大就是谎报"我穿过了"）；
+  内置生成路线与 `RaceMission` 在 Creator 试玩里不参与判定。
+- 判定复用共享规则执行器：`GameSession` 把飞行器的米制机位逐帧喂给
+  `CreatorMiniGameRuntimeControllerV1`（与驾驶同一份 SDK runner），结局只收敛一次
+  （相位/暂停/emit）后回调宿主。
+- 结果如实上报：试玩结束按 pack 规则给出 `completed`/`failed` 与
+  `VisualPlaytestEvidenceV1`（releaseId/revision/snapshotDigest/worldRevision/seed/
+  tick/counters/outcome/reasonCode），不再是"退出即 cancelled"；受理失败（计划不成立）
+  以计划诊断码收口，不占用唯一活跃试玩槽。
+- 能力不再写死 `drive`：plan 入口与槽位按 `drive`/`fly` 参数化，驾驶路径逐字不变。
+
+尚未验证 / 未做：
+
+- 未在真机 UI 里目检空域门环与 HUD 进度（本轮验证是 typecheck + 单测 + 构建）；
+- 飞行试玩仍用默认出生逻辑（首个门后方安全位），没有从 mount 的入口锚点起飞；
+- 没有采集两次试玩的 telemetry 曲线（轨迹分叉仍只由 preset 级测试证明）。
 
 ## 验证
 
