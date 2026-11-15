@@ -240,15 +240,32 @@ pub fn register_world_apply_job(data_home: &Path, city_id: Option<&str>, revisio
 }
 
 /// E2：试玩作业注册（creator_playtest_start 成功后由 dispatch 钩子调用）。
+///
+/// `creator_studio::run` 成功时交来的是 `{ok:true, data:{runId, releaseId, ...}}`。
+/// 只读顶层 `runId` 会把成功的 start 静默丢掉，会话和 job_list 就一直是空的。
+/// 同一 run 再注册一次不另开作业：幂等 start 回的是同一条试玩。
 pub fn register_playtest_job(data_home: &Path, response: &Value) {
-    let Some(run_id) = response.get("runId").and_then(Value::as_str) else { return };
+    if response.get("ok").is_some_and(|flag| flag != &Value::Bool(true)) { return; }
+    let body = response.get("data").filter(|value| value.is_object()).unwrap_or(response);
+    let Some(run_id) = body.get("runId").and_then(Value::as_str).filter(|run_id| valid_playtest_run_id(run_id)) else { return };
     let Ok(db) = open_db(&sessions_db(data_home).unwrap_or_else(|_| PathBuf::from("/dev/null")), false) else { return };
     if ensure_schema(&db).is_err() { return; }
+    let needle = format!("\"runId\":\"{run_id}\"");
+    let existing: i64 = db.query_row(
+        "SELECT COUNT(*) FROM creator_jobs WHERE kind='playtest' AND instr(subject_json, ?1) > 0",
+        [&needle], |row| row.get(0)).unwrap_or(0);
+    if existing > 0 { return; }
     let now = now_ms();
     let _ = db.execute(
         "INSERT INTO creator_jobs(job_id,kind,status,subject_json,progress_json,failure_json,cancel_requested,session_id,created_at_ms,updated_at_ms)
          VALUES(?1,'playtest','running',?2,'{\"stage\":\"playtest\"}','{}',0,NULL,?3,?3)",
-        rusqlite::params![new_id("cjob-"), json!({"runId":run_id,"releaseId":response.get("releaseId")}).to_string(), now]);
+        rusqlite::params![new_id("cjob-"), json!({"runId":run_id,"releaseId":body.get("releaseId")}).to_string(), now]);
+}
+
+fn valid_playtest_run_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty() && bytes.len() <= 128 && bytes[0].is_ascii_alphanumeric()
+        && bytes.iter().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
 }
 
 /// E2：world-apply 作业的活状态经宿主 view_status 解析（ready→ready、failed→failed、
@@ -516,6 +533,26 @@ mod tests {
         assert_eq!(closed_job["failure"]["code"], json!("creator_playtest_city_closed"));
         let live_job = jobs.iter().find(|item| item["subject"]["runId"] == "run-live").unwrap();
         assert_eq!(live_job["status"], json!("running"));
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// MCP 成功信封是 {ok:true, data:{runId}}。只读顶层 runId 时，start 已经
+    /// 成功也不会出现在 job_list。同一条 run 再记一次仍然只有一行。
+    #[test]
+    fn playtest_job_reads_the_mcp_success_envelope_once() {
+        let home = temp_home();
+        let envelope = json!({"ok":true,"data":{"runId":"playtest-envelope","releaseId":"release-9","status":"pending"}});
+        register_playtest_job(&home, &envelope);
+        register_playtest_job(&home, &envelope);
+        register_playtest_job(&home, &json!({"ok":false,"data":{"runId":"playtest-ignored","releaseId":"release-9"}}));
+        register_playtest_job(&home, &json!({"ok":true,"data":{"releaseId":"release-9"}}));
+        let list = job_list(&home, &json!({"sessionId":"csession-any"})).unwrap();
+        let jobs = list["data"]["jobs"].as_array().unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0]["kind"], json!("playtest"));
+        assert_eq!(jobs[0]["subject"]["runId"], json!("playtest-envelope"));
+        assert_eq!(jobs[0]["subject"]["releaseId"], json!("release-9"));
+        assert_eq!(jobs[0]["status"], json!("running"));
         std::fs::remove_dir_all(home).unwrap();
     }
 

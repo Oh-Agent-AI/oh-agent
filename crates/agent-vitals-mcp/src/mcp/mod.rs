@@ -275,6 +275,8 @@ pub fn dispatch_with_permissions_options(
         }
         "creator_playtest_start" => {
             // E2：试玩 start 成功即注册为 playtest 作业（统一作业面）。
+            // run() 的 Ok 是 {ok, data} 信封；register_playtest_job 从 data 取 runId。
+            // 邮箱超时不是 Ok，这里不会记账——宿主必须先把 mailbox 写成完成，本臂才跑得到。
             let result = creator_studio::run(name, args, data_home, allow_local_writes).map_err(attach_creator_recovery);
             if let Ok(value) = &result { creator_session::register_playtest_job(data_home, value); }
             result
