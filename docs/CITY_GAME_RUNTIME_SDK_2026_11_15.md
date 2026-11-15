@@ -93,12 +93,21 @@ registry.descriptors();
 - descriptor→runtime 的 id/template 映射有 **golden 锁定测试**（flight/driving/mecha/cinema 的顺序、runtime id、contractVersion、template）。
 - 该层不修改 `GameSession`/`useCityGame`/`useCityDrivingPlay`/mecha/cinema 代码，也不改变 Miami 行为。
 
-App 侧注入点：[miamiActivityHost.ts](../apps/agent-city/ui/src/game/runtime/miamiActivityHost.ts)
-的 `createMiamiGameRuntimeRegistry(entries)` 接收四个活动的 entry 回调并创建
-registry；`tests/game-runtime-host.test.ts` 已验证注册四个 adapter、resolve 与
-prepare 委托。入口仍未接到 `useCityGame`/`useCityDrivingPlay`/mecha/cinema：
-下一片是把现有进入/退出/telemetry 注入这些 entries，并跑 Miami 金样。当前 registry
-不在 City 启动路径上，不改变任何现有行为。
+App 侧注入点：
+
+- [miamiActivityHost.ts](../apps/agent-city/ui/src/game/runtime/miamiActivityHost.ts)
+  `createMiamiGameRuntimeRegistry(entries)`；
+- [miamiActivityEntries.ts](../apps/agent-city/ui/src/game/runtime/miamiActivityEntries.ts)
+  把四个活动的命令（enter/exit/active/telemetry）变成 host entries；
+- [CityApp.tsx](../apps/agent-city/ui/src/CityApp.tsx) 已用 refs 注入现有
+  `useCityGame`、`useCityDrivingPlay`、`openMecha`、cinema helper，并实例化
+  registry；registry 目前**不接管** UI 启动路径，现有按钮仍走原逻辑，因此无行为变化。
+
+测试：app `verify:game-runtime-host`（1）、entry 测试（3）、runtime（10）；
+已有 `verify-city-game-session`、`verify-city-game-flight`、`verify-city-driving-entry`
+通过。`verify-city-suite fast` 在 `verify-city-joint-site-road` 有一项既有失败
+（`registered-model-ground-invalid-context`，与本轮 registry/entry 改动无关），
+需要单独定位，不能算本轮通过。
 
 ## 4. 迁移顺序（下一步）
 

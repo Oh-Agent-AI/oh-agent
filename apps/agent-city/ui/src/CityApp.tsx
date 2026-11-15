@@ -39,6 +39,9 @@ import type { CreatorPublishedMiniGameV1 } from "./game/activity/creatorMiniGame
 import { loadCreatorSceneModels } from "./game/activity/creatorSceneModels";
 import { createCreatorLayoutSnapshot } from "./engine/sdk/cityLayoutAdapter";
 import { useCityDrivingPlay } from "./game/useCityDrivingPlay";
+import { createMiamiActivityEntries } from "./game/runtime/miamiActivityEntries";
+import { createMiamiGameRuntimeRegistry } from "./game/runtime/miamiActivityHost";
+import type { GameRuntimeRegistryV1, GameRuntimeTelemetryV1 } from "../../../../packages/agent-vitals-city-game-runtime/src/index";
 import { DrivingHud } from "./game/DrivingHud";
 import type { PlayTarget } from "./engine/render/playableVehicles";
 import { useRoadAudit } from "./game/useRoadAudit";
@@ -285,6 +288,8 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
   labelsRef.current = labels;
   const cinemaRef = useRef(cinema);
   cinemaRef.current = cinema;
+  const mechaOpenRef = useRef(false);
+  const miamiRuntimeRegistry = useRef<GameRuntimeRegistryV1 | null>(null);
   const filmRef = useRef(!!experience.film);
   filmRef.current = !!experience.film;
   const busyRef = useRef(experience.busy);
@@ -300,6 +305,8 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
     locale: () => (language === "en" ? "en" : "zh-Hans"),
     activityCoordinator,
   });
+  const gameRef = useRef(game);
+  gameRef.current = game;
   const [finishRetry, setFinishRetry] = useState<Parameters<typeof finishCreatorPlaytest> | null>(null);
   const finishPlaytest = useCallback(async (...args: Parameters<typeof finishCreatorPlaytest>) => {
     try {
@@ -320,6 +327,8 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
     activityCoordinator,
   }, { creatorExperiences, playtestContext: creatorPlaytest ? { runId: creatorPlaytest.runId, releaseId: creatorPlaytest.releaseId,
     projectId: creatorPlaytest.projectId, revision: creatorPlaytest.revision, snapshotDigest: creatorPlaytest.snapshotDigest } : undefined, finishPlaytest });
+  const drivingRef = useRef(driving);
+  drivingRef.current = driving;
   const startedCreatorPlaytest = useRef<string | null>(null);
   useEffect(() => {
     if (!creatorPlaytest || !firstModelFrame || driving.active || startedCreatorPlaytest.current === creatorPlaytest.runId) return;
@@ -345,6 +354,9 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
   cityWorldProfileApplyAllowed.current = !boot && !!engineRef.current && firstModelFrame && sceneActivityBlocker === null;
   // Require a modelled city: the board is a view of the current layout, not a game
   // that can start against a half-built scene.
+  const exitMecha = () => {
+    mechaActivityLease.current?.release(); mechaActivityLease.current = null; setMechaOpen(false);
+  };
   const openMecha = (encounter: MonsterEncounter | null = null) => {
     if (sceneActivityBlocker === "mecha") return;
     if (sceneActivityBlocker !== null) {
@@ -380,6 +392,19 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
     experience.setOptions(false);
     experience.clearSelection();
     setMechaOpen(true);
+  };
+  mechaOpenRef.current = mechaOpen;
+  const openMechaRef = useRef(openMecha);
+  openMechaRef.current = openMecha;
+  const enterMiamiCinema = () => {
+    const engine = engineRef.current;
+    experience.clearSelection(); experience.live();
+    if (!engine?.startCinematic(experience.cut)) throw new Error("cinema_unavailable");
+    setCinema(true);
+  };
+  const exitMiamiCinema = () => {
+    const engine = engineRef.current;
+    engine?.stopCinematic(); engine?.setLabelsVisible(labels); setCinema(false);
   };
   const playRef = useRef<(target: PlayTarget) => void>(() => {});
   playRef.current = (target) => {
@@ -842,8 +867,7 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
       case "city.labels": engine?.setLabelsVisible(!labels); setLabels(!labels); break;
       case "city.reset": engine?.resetView(); break;
       case "city.cinema":
-        if (cinema) { engine?.stopCinematic(); engine?.setLabelsVisible(labels); setCinema(false); }
-        else { experience.clearSelection(); experience.live(); if (!engine?.startCinematic(experience.cut)) throw new Error("cinema_unavailable"); setCinema(true); }
+        if (cinema) exitMiamiCinema(); else enterMiamiCinema();
         break;
       case "city.photo": void experience.photo(); break;
       case "city.film": void experience.exportFilm(); break;
@@ -882,6 +906,32 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
   useEffect(() => { if (toolbarReady) publishToolbar(tools); }, [language, toolbarReady, windowDays, quality, labels, cinema, mechaOpen, roadAuditOpen, sceneReady, sceneUnavailable, game.active, driving.active, planRepair.state.active, experience.busy, experience.film?.frame, experience.film?.total, mechaEntryEnabled]);
   const sceneMessage = sceneUnavailable ? "当前环境无法显示三维城市，仍可查看会话摘要。"
     : !boot && (!dataAvailable || projection.status === "empty") ? status : null;
+  if (!miamiRuntimeRegistry.current) {
+    const telemetry = (status: GameRuntimeTelemetryV1["status"], reason: string | null = null, counters: Readonly<Record<string, number>> = {}, metrics: Readonly<Record<string, number>> = {}): GameRuntimeTelemetryV1 =>
+      ({ status, tick: 0, counters, metrics, reason });
+    const entries = createMiamiActivityEntries({
+      flight: {
+        enter: () => gameRef.current.enterPractice(), exit: () => gameRef.current.exit(), active: () => gameRef.current.active,
+        telemetry: () => { const snapshot = gameRef.current.snapshot; return telemetry(gameRef.current.active ? "running" : "ready", snapshot?.controller.error ? "game_runtime_error" : null,
+          {}, { speed: snapshot?.telemetry?.speed ?? 0, altitude: snapshot?.telemetry?.altitude ?? 0 }); },
+      },
+      driving: {
+        enter: () => drivingRef.current.enter(), exit: () => drivingRef.current.exit(), active: () => drivingRef.current.active,
+        telemetry: () => telemetry(drivingRef.current.active ? "running" : "ready", null, { completed: drivingRef.current.race?.completed ?? 0 },
+          { speed: drivingRef.current.race?.elapsedSeconds ?? 0 }),
+      },
+      mecha: {
+        enter: () => openMechaRef.current(null), exit: () => exitMecha(), active: () => mechaOpenRef.current,
+        telemetry: () => telemetry(mechaOpenRef.current ? "running" : "ready"),
+      },
+      cinema: {
+        enter: () => enterMiamiCinema(), exit: () => exitMiamiCinema(), active: () => cinemaRef.current,
+        telemetry: () => telemetry(cinemaRef.current ? "running" : "ready"),
+      },
+    });
+    miamiRuntimeRegistry.current = createMiamiGameRuntimeRegistry(entries);
+  }
+
   return cityView((
     <section className="city-app" aria-label="Agent City">
       {playtestError && <div role="alert" className="city-playtest-error">{playtestError}</div>}
