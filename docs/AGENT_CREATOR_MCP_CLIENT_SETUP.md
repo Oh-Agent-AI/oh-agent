@@ -144,7 +144,7 @@ Claude Code（`claude mcp add` 或项目 `.mcp.json`，字段名以 Claude Code 
 - `creator_vehicle_preview` 的 `estimatedPerformance` 投影由 Studio 用 city-sdk 的 `estimateVehiclePerformanceV1` 计算后注入（宿主不自推导）；返回 previewId，可用 `creator_project_commit` 提交或直接 `creator_vehicle_define`。`vehicle` 接受 define 形状对象或带 camera 的完整画像。
 - `creator_vehicle_inspect` 只回白名单 VehicleProfileV1 事实；需要投影时调用方用同一 SDK 函数自行计算。
 
-**headless 分档现状（如实标注）**：当前实现中，本组只有 `creator_vehicle_list`（连同 `creator_capabilities_list`、§3.7/§3.8 全部工具）离线可用；`preview`/`define`/`inspect` 均经 Studio 信箱路由，Studio 关闭时约 15 秒后返回 `plugin_unavailable`。「Studio 关闭时返回结构校验子集（`validation:"structural"`）并标记 `commitBlocked:"deferred-semantic"`」的**无头分档尚未实现**——代码中没有该字段或分支（全仓 grep 无命中）；recoveries 为该形态预留了出口建议（§4 的 `creator_capture_unavailable`：等待视口 ready，或改用结构校验与无头规则试玩）。接入方不要依赖未实现的分档字段。
+**headless 分档现状（E5 首片已落地）**：`creator_vehicle_preview` 与 `creator_city_edit_preview`（operations 形态）在 Studio 信箱不可用（`plugin_unavailable`）时，退化为**本地结构子集校验**——数据源是嵌入产物 vehicles.json / worlds.json（键集合/范围/枚举/比值），通过后返回 `validation:"structural"` 并标记 `commitBlocked:"deferred-semantic"`，**绝不签发 previewId**（commit 必须等 Studio 补验信封）；vehicle 预估按 vehicles.json 的 `performanceDerivation`/`performanceVectors` 声明式计算。`creator.vehicle.define` 与 scene/game 语义校验**不在结构子集内**——仍需 Studio（维持 `plugin_unavailable` + §4 recoveries 建议）。本组离线/无头可用的还有 `creator_vehicle_list`、`creator_capabilities_list`、§3.7/§3.8 全部工具。实现见 creator_studio.rs 的 `headless_vehicle_structural` / `headless_world_operations`（E5 首片提交 `401bf6b8`）；city-sdk WASM 嵌入（完整语义进宿主）是后续单独立项。
 
 ### 3.5 锚点（creator_city_anchor_*，3 个，需 `--enable-city-tools`）
 
@@ -437,7 +437,7 @@ creator 域错误以 `tools/call` 结果的 `isError:true` + envelope 内稳定 
    - 跨 revision 用旧布局 → creator_layout_scope_invalid（布局与当前 City revision 不匹配）；
    - 同 revision 重存且布局未变 → v2 快照就地升级 v3，已发布 release 免重发布获得几何；
      布局内容变化或降版 → creator_layout_revision_conflict。
-   注：当前预览/提交响应中没有 `layoutInvalidation`/`commitBlocked` 字段；布局失效
+   注：world.set 的 headless 结构响应带 `commitBlocked:"deferred-semantic"` 与 `checks.layoutInvalidation:"new-world-revision"`；宿主签发的完整预览响应中没有 `layoutInvalidation`/`commitBlocked` 字段；布局失效
    是上面这套「revision 定界 + 重新捕获」的可观察语义（§3.4 的无头分档同样未实现）。
 
 4) 绑定到项目（可选）：creator_project_create {"template":"flight-checkpoint",
