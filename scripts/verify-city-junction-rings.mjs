@@ -54,7 +54,8 @@ const build = (w, radii, arterial = true) => runJunctionRing(w, { id: "0:0", x: 
   const far = [{ x: 100, z: 0 }, { x: -50, z: 86.6 }, { x: -50, z: -86.6 }];
   for (const p of far) addNetworkEdge(network, center, p, false);
   const world = { network, reservations: () => [], inRiver: () => false,
-    geo: { height: () => 1.2, buildable: () => true, terrain: { slope: () => 0 } } };
+    geo: { height: () => 1.2, elevation: () => 1.2, buildable: () => true, terrain: { slope: () => 0 },
+      landform: { elevation: () => 1.2, slope: () => 0, isBuildable: () => true } } };
   const paths = [[far[0], center, far[1]]];
   const options = { network, world, core: { x: -1000, z: -1000 }, random: () => 0, routes: [paths], pinned: new Set(["0:0"]) };
   assert.equal(buildJunctionRings(options).rings.length, 0, "a pinned owner junction cannot be replaced");

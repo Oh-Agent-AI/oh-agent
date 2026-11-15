@@ -64,7 +64,8 @@ for (const id of ["landmark:villa-complex", "villa:a", "villa:b", "villa:c", "vi
   for (const disposable of build.disposables) disposable.dispose();
 }
 assert(checkedMeshes > 1000, "actual renderer coverage cannot be vacuous");
-const context = site => ({ geo: { height: () => 1.2, coastDistance: () => 0, hasRiver: false },
+const context = site => ({ geo: { height: () => 1.2, elevation: () => 1.2, coastDistance: () => 0, hasRiver: false,
+    landform: { elevation: () => 1.2, slope: () => 0, isBuildable: () => true } },
   inRiver: () => false, ringRuns: [], publicSites: [], landmarks: [site], SHORE_SITE_KINDS: new Set([site.kind]),
   network: { edges: new Map([["road", { width: 12, points: [p(-100, 25), p(100, 25)] }]]) } });
 assert.equal(relocatedSitePositionFailure(context(owner), owner, p(0, 0), true), null);

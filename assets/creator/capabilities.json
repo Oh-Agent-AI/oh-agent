@@ -24,6 +24,66 @@
         "maxGameBytes": 262144,
         "preview": "creator.game.preview"
       },
+      "gameTypes": {
+        "status": "adapter-seam",
+        "types": [
+          {
+            "id": "miami.flight-v1",
+            "label": "驾驶飞机",
+            "runtime": {
+              "contractVersion": 1,
+              "id": "miami.flight"
+            },
+            "status": "builtin-adapter",
+            "template": "miami-flight",
+            "templateCatalog": "builtin"
+          },
+          {
+            "id": "miami.driving-v1",
+            "label": "驾车",
+            "runtime": {
+              "contractVersion": 1,
+              "id": "miami.driving"
+            },
+            "status": "builtin-adapter",
+            "template": "miami-driving",
+            "templateCatalog": "builtin"
+          },
+          {
+            "id": "miami.mecha-v1",
+            "label": "机甲战棋",
+            "runtime": {
+              "contractVersion": 1,
+              "id": "miami.mecha"
+            },
+            "status": "builtin-adapter",
+            "template": "miami-mecha",
+            "templateCatalog": "builtin"
+          },
+          {
+            "id": "miami.cinema-v1",
+            "label": "航拍",
+            "runtime": {
+              "contractVersion": 1,
+              "id": "miami.cinema"
+            },
+            "status": "builtin-adapter",
+            "template": "miami-cinema",
+            "templateCatalog": "builtin"
+          },
+          {
+            "id": "creator.flight-ornithopter-v1",
+            "label": "扑翼飞行",
+            "runtime": {
+              "contractVersion": 1,
+              "id": "city-flight-ornithopter"
+            },
+            "status": "planned",
+            "template": "ornithopter-flight",
+            "templateCatalog": "planned"
+          }
+        ]
+      },
       "mount": {
         "bind": "mount.bind",
         "maxReleaseMounts": 32,

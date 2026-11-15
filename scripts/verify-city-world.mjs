@@ -121,8 +121,10 @@ for (const domain of WORLD_VERSION_DOMAINS) {
 const p = (x, z) => ({ x, z });
 const context = () => ({
   network: emptyNetwork(), publicSites: [], landmarks: [], blocks: [], core: p(0, 0),
-  geo: { height: () => 1.2, buildable: () => true, terrain: { height: () => 1.2, slope: () => 0 }, river: null },
-  height: () => 1.2, inRiver: () => false, coast: [], seaside: null, coastRoadRuns: [], riverRoadRuns: [],
+  geo: { height: () => 1.2, elevation: () => 1.2, buildable: () => true,
+    terrain: { height: () => 1.2, elevation: () => 1.2, slope: () => 0 },
+    landform: { elevation: () => 1.2, slope: () => 0, isBuildable: () => true }, river: null },
+  height: () => 1.2, elevation: () => 1.2, inRiver: () => false, coast: [], seaside: null, coastRoadRuns: [], riverRoadRuns: [],
   coastRoadRunEnds: [], carPaths: [], bridges: [], connectionLog: [], SHORE_SITE_KINDS: new Set(), ringRuns: [], trunkRuns: [],
 });
 const contextBytes = ctx => JSON.stringify({ ...ctx, network: { ...ctx.network, nodes: [...ctx.network.nodes], edges: [...ctx.network.edges] } });
@@ -181,7 +183,7 @@ const joinDistricts = { name: "world-merge", constraint: "disconnectedComponents
     draft => { addNetworkEdge(draft.network, p(40, 0), p(400, 400), false); },
     draft => { draft.carPaths.push([p(40, 0), p(400, 400)]); },
     draft => { draft.blocks[0].parcels[0].width = NaN; },
-    draft => { draft.height = () => 99; },
+    draft => { draft.height = () => 99; draft.elevation = () => 99; draft.geo.landform.elevation = () => 99; },
     draft => { throw new Error("cancelled derived producer"); },
   ]) {
     const saved = contextBytes(ctx), authority = ctx.planningWorld;

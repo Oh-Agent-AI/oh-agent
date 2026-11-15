@@ -93,6 +93,11 @@ registry.descriptors();
 - descriptor→runtime 的 id/template 映射有 **golden 锁定测试**（flight/driving/mecha/cinema 的顺序、runtime id、contractVersion、template）。
 - 该层不修改 `GameSession`/`useCityGame`/`useCityDrivingPlay`/mecha/cinema 代码，也不改变 Miami 行为。
 
+App 侧 catalog：[gameTypeCatalog.ts](../apps/agent-city/ui/src/game/runtime/gameTypeCatalog.ts)
+列出四个 Miami adapter 目录 + 计划的 `creator.flight-ornithopter-v1`；
+`PLANNED_GAME_TYPE_IDS` 与 `gameTypeBlockReason()` 让 UI/Agent 能发现扑翼类型但
+不会误注册（registry 仍拒绝 `planned`）。
+
 App 侧注入点：
 
 - [miamiActivityHost.ts](../apps/agent-city/ui/src/game/runtime/miamiActivityHost.ts)
@@ -114,9 +119,34 @@ Miami 金样已在当前树重跑：
   `verify-city-driving-structure-world`、`verify-city-driving-release-graph`、
   `verify-city-driving-entry` 全部通过；
 - cinema：`verify-react-city-cinematic`（5 seeds）通过；
-- `verify-city-suite fast` 在 `verify-city-joint-site-road` 有一项既有失败
-  （`registered-model-ground-invalid-context`，与 registry/entry 改动无关），
-  需要单独定位，不能算本轮通过。
+- 快守卫里的陈旧 ground fixture 已修：`verify-city-joint-site-road`、
+  `verify-city-model-envelope`、`verify-city-model-ground`、
+  `verify-city-shore-plot-access`、`verify-city-joint-frontage`、
+  `verify-city-world` 分别通过；这些改动只补 `elevation/landform` 上下文，不改规划逻辑。
+- 继续补 `verify-city-endpoint-routing`、`verify-city-junction-rings`、
+  `verify-city-connect`、`verify-city-loop`、`verify-city-landing`、
+  `verify-city-repair-safety` 的 `elevation/landform` fixture 后，
+  **`verify-city-suite fast` 33/33 全部通过**（74.6s，2026-11-15）。
+  这些改动只补测试夹具的合成地形合同，不改生产生成器、Miami 启动路径或规划逻辑。
+
+## 3.2 扑翼 descriptor 已进入 Creator 能力发现
+
+`CREATOR_CAPABILITIES_PROJECTION_V1.categories.gameTypes` 现在包含五项：
+
+- `miami.flight-v1` / `miami.driving-v1` / `miami.mecha-v1` / `miami.cinema-v1`
+  （`status:"builtin-adapter"`）；
+- `creator.flight-ornithopter-v1`（`status:"planned"`，`templateCatalog:"planned"`）。
+
+这不是运行能力：`planned` descriptor 仍被 registry 拒绝注册，也没有 Creator
+template/运行时。它只是让 Studio/Agent 能发现“未来会有扑翼类型”，同时避免把
+descriptor 当作可玩游戏。
+
+锁步测试：
+
+- app catalog ↔ `CREATOR_GAME_TYPES_V1`；
+- runtime 四个 Miami descriptor + 扑翼 descriptor ↔ `CREATOR_GAME_TYPES_V1`；
+- 生成物 `assets/creator/capabilities.json` 由
+  `scripts/generate-creator-capabilities.mjs --check` 锁定。
 
 ## 4. 迁移顺序（下一步）
 

@@ -47,6 +47,8 @@ function makeWorld({ riverX = -400, riverWidth = 18, lake = null, slopeDisc = nu
     height, buildable,
     terrain: { height, slope: (x, z) => (inSlope(x, z) ? (slopeDisc?.value ?? 2) : 0.2), buildable, center: { x: 0, z: 0 }, radius: 1200, coastRadius: () => 1200, hasRiver: true },
   };
+  geo.landform = { elevation: (x, z) => geo.height(x, z), slope: (x, z) => geo.terrain.slope(x, z),
+    isBuildable: (x, z) => geo.buildable(x, z), waterClearance: (x, z) => geo.landClearance(x, z) };
   return { network: emptyNetwork(), geo, inRiver: (x, z) => Math.abs(x - riverX) < riverWidth, reservations: () => sites };
 }
 const snap = (n) => JSON.stringify({ v: n.version ?? 0, nodes: [...n.nodes], edges: [...n.edges] });

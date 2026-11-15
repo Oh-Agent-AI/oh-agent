@@ -57,14 +57,27 @@ for (const yaw of [0, Math.PI / 2, -0.73, 2.1]) {
   straddleSitesAcrossTrunk(world);
   assert.equal(arch.x, 0);
 }
-const context = () => ({
-  network: emptyNetwork(), publicSites: [], landmarks: [], blocks: [], core: p(0, 0),
-  geo: { height: () => 1.2, buildable: () => true, terrain: { height: () => 1.2, slope: () => 0 }, river: null },
-  inRiver: () => false, coast: [p(-100, 20), p(100, 20)], seaside: null,
-  height: () => 1.2,
-  coastRoadRuns: [], riverRoadRuns: [], coastRoadRunEnds: [], carPaths: [], bridges: [], connectionLog: [],
-  SHORE_SITE_KINDS: new Set(), ringRuns: [], trunkRuns: [],
-});
+const context = () => {
+  const ctx = {
+    network: emptyNetwork(), publicSites: [], landmarks: [], blocks: [], core: p(0, 0),
+    geo: { height: () => 1.2, buildable: () => true, landClearance: () => 1000, terrain: { height: () => 1.2, slope: () => 0 }, river: null },
+    inRiver: () => false, coast: [p(-100, 20), p(100, 20)], seaside: null,
+    height: () => 1.2,
+    coastRoadRuns: [], riverRoadRuns: [], coastRoadRunEnds: [], carPaths: [], bridges: [], connectionLog: [],
+    SHORE_SITE_KINDS: new Set(), ringRuns: [], trunkRuns: [],
+  };
+  // Keep the authoritative landform view in sync when individual cases
+  // replace the fixture's height, slope, buildable or clearance functions.
+  ctx.geo.landform = {
+    elevation: (x, z) => ctx.geo.height(x, z),
+    slope: (x, z) => ctx.geo.terrain.slope(x, z),
+    isBuildable: (x, z) => ctx.geo.buildable(x, z),
+    waterClearance: (x, z) => ctx.geo.landClearance?.(x, z) ?? NaN,
+  };
+  ctx.geo.elevation = (x, z) => ctx.geo.landform.elevation(x, z);
+  ctx.elevation = (x, z) => ctx.geo.landform.elevation(x, z);
+  return ctx;
+};
 const snapshot = (ctx) => JSON.stringify({ ...ctx, network: { ...ctx.network, nodes: [...ctx.network.nodes], edges: [...ctx.network.edges] } });
 const intentView = (ctx) => ({ roadNodes: [...ctx.network.nodes.values()], roadEdges: [...ctx.network.edges.values()],
   publicSites: ctx.publicSites, landmarks: ctx.landmarks, core: ctx.core, coast: ctx.coast, river: null,
@@ -157,7 +170,8 @@ for (const turns of [0, 1, 2, 3]) {
   const world = { core: p(0, 0), R: 1200, turn: 0, coast: [], trunkRuns: [[a, b]], ringRuns: [], bridges: [], placed: [],
     height: () => 1.2, inRiver: () => false, riverBank: () => false, coastDistance: () => 1000, landClearance: () => 1000,
     buildable: () => true, hasRiver: false, riverX: () => 9999, riverWidth: () => 0, hillDir: p(0, 1), hillLine: 9999, hillProj: () => 0 };
-  const connector = { network, geo: { height: world.height, buildable: world.buildable, terrain: { slope: () => 0 } },
+  const connector = { network, geo: { height: world.height, buildable: world.buildable, terrain: { slope: () => 0 },
+    landform: { elevation: world.height, isBuildable: world.buildable, slope: () => 0, waterClearance: world.landClearance } },
     inRiver: world.inRiver, reservations: () => [] };
   const spec = specByKind("station"), frozen = JSON.stringify([...network.edges]);
   {
