@@ -224,6 +224,32 @@ test("a release whose layout snapshot has no geometry is refused, not guessed", 
   } finally { client.close(); rmSync(dataHome, { recursive: true, force: true }); }
 });
 
+test("a gate whose City geometry has no measured radius gets the documented default, flagged", async () => {
+  // 空域门复用路网节点 → 几何没有半径。这里断言：不失败、用与 City 试玩同一份默认值、
+  // 并在 gate 上标注 radiusDefaulted + warning，调用方不会把它当测量值。
+  const dataHome = fixtureStore({ withGeometry: true });
+  // 把车间的半径去掉，模拟 road-node 几何。
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(join(dataHome, "state", "creator", "projects.sqlite"));
+  const row = db.prepare("SELECT snapshot_json FROM creator_city_layouts_v2").get();
+  const snapshot = JSON.parse(row.snapshot_json);
+  snapshot.geometry = snapshot.geometry.map(entry => entry.geometryRef === "g:gate-1" ? { geometryRef: entry.geometryRef, positionMeters: entry.positionMeters } : entry);
+  db.prepare("UPDATE creator_city_layouts_v2 SET snapshot_json=?").run(JSON.stringify(snapshot));
+  db.close();
+  const client = connect();
+  try {
+    const opened = await client.call("game_open", { releaseId: "release-fixture", dataHome });
+    assert.equal(opened.isError, false, JSON.stringify(opened));
+    assert.ok(opened.release.warnings.includes("gate_radius_defaulted"));
+    // 走到门附近仍然能触发（默认 12 m 触发球覆盖出生航线）。
+    let state = await client.call("game_step", { sessionId: opened.sessionId, ticks: 6, input: { throttleUp: true } });
+    for (let index = 0; index < 40 && state.phase === "running"; index += 1) {
+      state = await client.call("game_step", { sessionId: opened.sessionId, ticks: 6, input: { throttleUp: true } });
+    }
+    assert.equal(state.outcome, "success");
+  } finally { client.close(); rmSync(dataHome, { recursive: true, force: true }); }
+});
+
 test("release integrity failures are reported instead of opening a different game", async () => {
   const client = connect();
   try {

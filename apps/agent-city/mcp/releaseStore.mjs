@@ -13,6 +13,8 @@
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { canonicalJson } from "../../../packages/agent-vitals-city-sdk/src/package.ts";
+// 触发半径的默认值与 City 试玩路径同一份（空域门复用路网节点时没有实测半径）。
+import { RELEASE_ZONE_DEFAULT_RADIUS_METERS } from "../ui/src/game/activity/releaseLayout.ts";
 
 const MAX_ANCHORS = 64;
 
@@ -121,9 +123,12 @@ export function resolveRelease({ dataHome, releaseId }) {
           if (!anchor) throw fail("gate_anchor_not_found");
           const entry = geometry.get(anchor.geometryRef);
           if (!entry) throw fail("gate_geometry_unresolved");
-          // 没有触发半径的锚点（例如 road-node 参考）不能当 zone 用：宁可不给门，也不编一个半径。
-          if (entry.activationRadiusMeters === undefined) throw fail("gate_radius_missing");
-          resolved.push({ x: entry.positionMeters.x, y: entry.positionMeters.y, z: entry.positionMeters.z, radius: entry.activationRadiusMeters });
+          // 空域门复用路网节点时几何没有实测半径：用与 City 试玩同一份默认触发球，
+          // 并在 gate 上标注 radiusDefaulted，调用方不会以为这是测量值。
+          const radius = entry.activationRadiusMeters ?? RELEASE_ZONE_DEFAULT_RADIUS_METERS;
+          resolved.push({ x: entry.positionMeters.x, y: entry.positionMeters.y, z: entry.positionMeters.z, radius,
+            ...(entry.activationRadiusMeters === undefined ? { radiusDefaulted: true } : {}) });
+          if (entry.activationRadiusMeters === undefined && !warnings.includes("gate_radius_defaulted")) warnings.push("gate_radius_defaulted");
         }
       }
       gates = resolved;
