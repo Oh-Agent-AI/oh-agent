@@ -529,16 +529,49 @@ pub(crate) fn mutate_city_anchors(home: &Path, actor: &str, city_id: &str, base_
     let layout_id = layout["layout"]["id"].as_str().ok_or("creator_layout_snapshot_invalid")?.to_owned();
     let mut merged: Vec<Value> = layout["layout"]["anchors"].as_array().ok_or("creator_layout_snapshot_invalid")?.clone();
     let allowed_geometry: std::collections::HashSet<String> = merged.iter().filter_map(|anchor| anchor["geometryRef"].as_str().map(str::to_owned)).collect();
+    // v3 快照才带几何；「自带几何的空域锚点」需要把几何写进快照，所以要求已升级。
+    let snapshot_version = layout["schemaVersion"].as_u64().unwrap_or(2);
+    let mut extra_geometry: Vec<Value> = Vec::new();
     for addition in additions {
-        let object = addition.as_object().filter(|object| object.len() == 4 && only_keys(object, &["id", "kind", "capabilities", "geometryRef"]))
-            .ok_or("creator_city_anchor_invalid")?;
+        let object = addition.as_object().ok_or("creator_city_anchor_invalid")?;
         let id = object.get("id").and_then(Value::as_str).filter(|id| valid_id(id)).ok_or("creator_city_anchor_invalid")?;
-        let geometry = object.get("geometryRef").and_then(Value::as_str).filter(|value| allowed_geometry.contains(*value)).ok_or("creator_city_anchor_geometry_unknown")?;
         let capabilities = object.get("capabilities").and_then(Value::as_array).ok_or("creator_city_anchor_invalid")?;
         if capabilities.is_empty() || capabilities.len() > 3
             || capabilities.iter().any(|item| !matches!(item.as_str(), Some("drive" | "walk" | "fly")))
             || capabilities.iter().enumerate().any(|(index, item)| capabilities[..index].contains(item))
             || !capabilities.iter().any(|item| item.as_str() == Some("fly")) { return Err("creator_city_anchor_invalid"); }
+        let kind = object.get("kind").and_then(Value::as_str).unwrap_or("");
+        // 两种锚点：复用 City 已有几何（4 键），或自带空域几何（position[/radiusMeters]）。
+        let geometry = if object.len() == 4 && only_keys(object, &["id", "kind", "capabilities", "geometryRef"]) {
+            object.get("geometryRef").and_then(Value::as_str).filter(|value| allowed_geometry.contains(*value))
+                .ok_or("creator_city_anchor_geometry_unknown")?.to_owned()
+        } else if (object.len() == 4 || object.len() == 5)
+            && only_keys(object, &["id", "kind", "capabilities", "position", "radiusMeters"]) {
+            if snapshot_version != 3 { return Err("creator_city_layout_geometry_required"); }
+            let position = object.get("position").and_then(Value::as_object)
+                .filter(|position| position.len() == 3 && only_keys(position, &["x", "y", "z"]))
+                .ok_or("creator_city_anchor_invalid")?;
+            if !["x", "y", "z"].iter().all(|axis| position.get(*axis).and_then(Value::as_f64).is_some_and(f64::is_finite)) {
+                return Err("creator_city_anchor_invalid");
+            }
+            // zone/route 是触发区，必须有半径；spawn/object 不需要。
+            let radius = object.get("radiusMeters").and_then(Value::as_f64);
+            if matches!(kind, "zone" | "route") && !radius.is_some_and(|value| value.is_finite() && value > 0.0 && value <= 2_000.0) {
+                return Err("creator_city_anchor_radius_required");
+            }
+            if let Some(radius) = radius {
+                if !(radius.is_finite() && radius > 0.0 && radius <= 2_000.0) { return Err("creator_city_anchor_invalid"); }
+            }
+            let reference = format!("creator-air:{id}");
+            if !valid_id(&reference) { return Err("creator_city_anchor_invalid"); }
+            let mut entry = json!({"geometryRef":reference,
+                "positionMeters":{"x":position["x"],"y":position["y"],"z":position["z"]}});
+            if let Some(radius) = radius { entry["activationRadiusMeters"] = json!(radius); }
+            extra_geometry.push(entry);
+            reference
+        } else {
+            return Err("creator_city_anchor_invalid");
+        };
         let anchor = json!({"id":id,"kind":object["kind"],"capabilities":capabilities,"geometryRef":geometry});
         merged.retain(|existing| existing["id"].as_str() != Some(id));
         merged.push(anchor);
@@ -586,7 +619,18 @@ pub(crate) fn mutate_city_anchors(home: &Path, actor: &str, city_id: &str, base_
     let mut snapshot = json!({"schemaVersion":version,"cityId":city_id,"cityRevision":next,"worldRevision":world_revision,
         "seed":layout["seed"],"layout":merged_layout});
     if version == 3 {
-        let geometry = layout.get("geometry").cloned().ok_or("creator_layout_snapshot_invalid")?;
+        // 既有几何 ∪ 新增空域几何，再按锚点实际引用的 ref 过滤（删掉被移除锚点的几何、
+        // 也丢掉新锚点带来的重复项），最后要求全覆盖——v3 的"可复现"契约就靠这一步。
+        let mut entries: Vec<Value> = layout.get("geometry").and_then(Value::as_array).cloned().unwrap_or_default();
+        for entry in extra_geometry {
+            let reference = entry["geometryRef"].as_str().map(str::to_owned);
+            if let Some(reference) = reference { entries.retain(|existing| existing["geometryRef"].as_str() != Some(reference.as_str())); }
+            entries.push(entry);
+        }
+        let referenced: std::collections::HashSet<&str> = snapshot["layout"]["anchors"].as_array()
+            .map(|anchors| anchors.iter().filter_map(|anchor| anchor["geometryRef"].as_str()).collect()).unwrap_or_default();
+        entries.retain(|entry| entry["geometryRef"].as_str().is_some_and(|reference| referenced.contains(reference)));
+        let geometry = json!(entries);
         if let Some(anchors) = snapshot["layout"]["anchors"].as_array() {
             validate_snapshot_geometry(&geometry, anchors)?;
         }
@@ -661,6 +705,41 @@ mod airspace_tests {
         assert_eq!(removed["anchorCount"], 3);
         let old = list_city_anchors(&home, city_id, Some(0), None, None, 64).unwrap();
         assert_eq!(old["anchors"].as_array().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// 空域锚点自带几何：position(+radiusMeters) → `creator-air:<id>` 的几何条目写进 v3 快照。
+    /// 这是"用 MCP 布一条可飞的门道"的前提——复用路网节点只能拿到地面上的同一个点。
+    #[test]
+    fn airspace_anchors_can_carry_their_own_geometry() {
+        let home = home();
+        let created = crate::creator_cities::create_city(&home, "local-profile", "create-air-anchor", "Air", 12, &json!({"schemaVersion":1})).unwrap();
+        let city_id = created["cityId"].as_str().unwrap();
+        let base = json!({"schemaVersion":3,"cityId":city_id,"cityRevision":0,"worldRevision":"world-air","seed":12,
+            "layout":{"schemaVersion":1,"id":"layout-air","coordinateSystem":"city-local-m-v1",
+                "anchors":[{"id":"road-spawn:a","kind":"spawn","capabilities":["drive"],"geometryRef":"city-road-node:a"}],"links":[]},
+            "geometry":[{"geometryRef":"city-road-node:a","positionMeters":{"x":0,"y":0,"z":0}}]});
+        store_scoped_city_layout(&home, &base).unwrap();
+        let added = json!([
+            {"id":"spawn-air","kind":"spawn","capabilities":["fly"],"position":{"x":0,"y":60,"z":0}},
+            {"id":"gate-north","kind":"zone","capabilities":["fly"],"position":{"x":0,"y":70,"z":120},"radiusMeters":18},
+            {"id":"gate-east","kind":"zone","capabilities":["fly"],"position":{"x":120,"y":80,"z":120},"radiusMeters":24}]);
+        let result = mutate_city_anchors(&home, "local-profile", city_id, 0, &added, &[], "add-air-course").unwrap();
+        assert_eq!(result["revision"], 1);
+        let snapshot: Value = {
+            let db = database(&home).unwrap();
+            serde_json::from_str(&db.query_row("SELECT snapshot_json FROM creator_city_layouts_v2 WHERE city_id=?1 AND city_revision=1", params![city_id], |row| row.get::<_, String>(0)).unwrap()).unwrap()
+        };
+        let geometry = snapshot["geometry"].as_array().unwrap();
+        let north = geometry.iter().find(|entry| entry["geometryRef"] == "creator-air:gate-north").expect("air gate geometry");
+        assert_eq!(north["positionMeters"], json!({"x":0,"y":70,"z":120}));
+        assert_eq!(north["activationRadiusMeters"], json!(18.0));
+        // 路网锚点的几何原样保留（星形 link 仍然成立）。
+        assert!(geometry.iter().any(|entry| entry["geometryRef"] == "city-road-node:a"));
+        // zone 必须有半径；v2 快照不能带几何（先升级）。
+        let no_radius = json!([{"id":"gate-x","kind":"zone","capabilities":["fly"],"position":{"x":0,"y":1,"z":0}}]);
+        assert_eq!(mutate_city_anchors(&home, "local-profile", city_id, 1, &no_radius, &[], "no-radius").unwrap_err(),
+            "creator_city_anchor_radius_required");
         let _ = std::fs::remove_dir_all(home);
     }
 

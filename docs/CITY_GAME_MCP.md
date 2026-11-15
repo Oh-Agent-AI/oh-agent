@@ -132,6 +132,14 @@ merge gives a radius-less fly zone the documented 12 m default
 entry) must be re-bound and re-published — the resolver refuses them honestly rather than
 guessing.
 
+**Airspace anchors can now carry their own geometry.** `creator_city_anchor_upsert` accepts
+`{id, kind, capabilities, position:{x,y,z}, radiusMeters}` (metres; zone/route need a
+radius), stored as a `creator-air:<id>` entry in the snapshot's geometry. That is what makes
+a real flight course possible: reusing road nodes only ever yields one ground-level point.
+The City-side merge resolves such refs from the snapshot when the live road view has no
+geometry for them. Authoring explicit geometry requires a v3 snapshot
+(`creator_city_layout_save` first, which now upgrades in place).
+
 ## Rules are the real rules
 
 `game_open` with a `pack` synthesises a sandbox layout whose anchors are exactly the gates

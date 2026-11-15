@@ -11,8 +11,9 @@
  * `validateMount` 会以 `anchor_not_found` 拒绝「锚点在快照里」的发布物。这里把快照锚点
  * **连同它们之间的 link** 并进视图副本：`validateMount` 还要求每个绑定槽从入口沿 link
  * 可达（缺 link 是 `anchor_unreachable`，2026-11-15 的三个 air-gate 就是这个状态）。
- * `geometryRef` 必须在实机几何里存在（同 worldRevision 才成立，调用方已校验），否则如实
- * 报错，绝不把门放到猜出来的位置。
+ * 几何优先用实机（渲染器测得的），实机没有的 ref 回退到**快照 v3 里序列化的几何**——
+ * Creator 自己布的空域门（`creator-air:*`）本来就不在 City 路网里，只有快照知道它在哪。
+ * 两边都没有就如实报错，绝不把门放到猜出来的位置。
  *
  * 空域门还有一个几何缺口：它只能复用路网节点（`city-road-node:*`），而节点几何**没有**
  * 触发半径（只有路段中点有）。没有半径的 zone 会让 `createMountedMiniGamePlan` 直接
@@ -45,6 +46,12 @@ export type ReleaseAnchorMerge =
 export function mergeReleaseAnchors(view: CityLayoutSdkViewV1, snapshot: CityLayoutSnapshotScoped | null | undefined): ReleaseAnchorMerge {
   if (!snapshot) return { ok: true, view, addedAnchorIds: [], defaultedRadiusRefs: [] };
   const live = new Map(view.layout.anchors.map(anchor => [anchor.id, anchor]));
+  // 快照 v3 序列化的几何：空域门（creator-air:*）唯一的来源。
+  const frozenGeometry = new Map<string, Readonly<{ positionMeters: Readonly<{ x: number; y: number; z: number }>; activationRadiusMeters?: number; facingRadians?: number }>>();
+  for (const entry of (snapshot as { geometry?: readonly Readonly<{ geometryRef: string } & { positionMeters: Readonly<{ x: number; y: number; z: number }>; activationRadiusMeters?: number; facingRadians?: number }>[] }).geometry ?? []) {
+    frozenGeometry.set(entry.geometryRef, entry);
+  }
+  const geometryFor = (ref: string) => view.geometry.get(ref) ?? frozenGeometry.get(ref);
   const added: Array<CityLayoutSdkViewV1["layout"]["anchors"][number]> = [];
   const defaultedRadiusRefs: string[] = [];
   const missing: string[] = [];
@@ -55,10 +62,11 @@ export function mergeReleaseAnchors(view: CityLayoutSdkViewV1, snapshot: CityLay
       if (existing.geometryRef !== anchor.geometryRef) conflicts.push(anchor.id);
       continue;
     }
-    if (!view.geometry.has(anchor.geometryRef)) { missing.push(anchor.id); continue; }
+    const geometry = geometryFor(anchor.geometryRef);
+    if (!geometry) { missing.push(anchor.id); continue; }
     added.push(anchor as CityLayoutSdkViewV1["layout"]["anchors"][number]);
-    // zone 需要可信触发半径；只在发布作用域内补默认值，实机视图本身不动。
-    if (anchor.kind === "zone" && view.geometry.get(anchor.geometryRef)?.activationRadiusMeters === undefined) {
+    // zone 需要触发半径：实机/快照都没测到才补默认值，实机视图本身不动。
+    if (anchor.kind === "zone" && geometry.activationRadiusMeters === undefined) {
       defaultedRadiusRefs.push(anchor.geometryRef);
     }
   }
@@ -81,6 +89,15 @@ export function mergeReleaseAnchors(view: CityLayoutSdkViewV1, snapshot: CityLay
     && link.capabilities.every(capability => [...live.values(), ...added].some(anchor => anchor.id === link.fromAnchorId && anchor.capabilities.includes(capability))
       && [...live.values(), ...added].some(anchor => anchor.id === link.toAnchorId && anchor.capabilities.includes(capability))));
   const geometry = new Map(view.geometry);
+  // 实机没有的 ref（空域门）用快照几何补进副本，计划构建才能拿到它。
+  for (const anchor of added) {
+    if (geometry.has(anchor.geometryRef)) continue;
+    const entry = frozenGeometry.get(anchor.geometryRef);
+    // 视图的几何表存的是 CityAnchorGeometryV1（不含 geometryRef 自身），照此投影。
+    if (entry) geometry.set(anchor.geometryRef, { positionMeters: entry.positionMeters,
+      ...(entry.activationRadiusMeters === undefined ? {} : { activationRadiusMeters: entry.activationRadiusMeters }),
+      ...(entry.facingRadians === undefined ? {} : { facingRadians: entry.facingRadians }) });
+  }
   for (const ref of defaultedRadiusRefs) {
     const entry = geometry.get(ref);
     if (entry && entry.activationRadiusMeters === undefined) {

@@ -85,3 +85,32 @@ test("a release without a frozen layout leaves the view untouched", () => {
   assert.equal(merged.view, view);
   assert.deepEqual(merged.addedAnchorIds, []);
 });
+
+test("an airspace gate that only exists in the snapshot geometry is merged, radius and all", () => {
+  // Creator 自己布的空域门（creator-air:*）不在 City 路网里：实机几何没有它，
+  // 只有快照 v3 的 geometry 知道位置与半径。合并后必须能直接拿来做计划。
+  const withAir = snapshot();
+  withAir.layout.anchors.push({ id: "gate-air:1", kind: "zone", capabilities: ["fly"], geometryRef: "creator-air:gate-air:1" });
+  withAir.layout.links.push({ id: "air-link-to-air", fromAnchorId: "spawn-air", toAnchorId: "gate-air:1", capabilities: ["fly"] });
+  withAir.geometry = [
+    { geometryRef: "creator-air:gate-air:1", positionMeters: { x: 0, y: 80, z: 120 }, activationRadiusMeters: 18 },
+  ];
+  const merged = mergeReleaseAnchors(liveView(), withAir);
+  assert.equal(merged.ok, true);
+  if (!merged.ok) return;
+  assert.ok(merged.addedAnchorIds.includes("gate-air:1"));
+  assert.deepEqual(merged.view.geometry.get("creator-air:gate-air:1"), { positionMeters: { x: 0, y: 80, z: 120 }, activationRadiusMeters: 18 });
+  // 有实测半径 → 不需要默认值。
+  assert.deepEqual(merged.defaultedRadiusRefs, ["city-road-node:a"]);
+});
+
+test("an anchor with neither live nor snapshot geometry is still refused", () => {
+  const ghost = snapshot();
+  ghost.layout.anchors.push({ id: "air-gate:ghost", kind: "zone", capabilities: ["fly"], geometryRef: "creator-air:ghost" });
+  ghost.layout.links.push({ id: "air-link-ghost2", fromAnchorId: "spawn-air", toAnchorId: "air-gate:ghost", capabilities: ["fly"] });
+  const merged = mergeReleaseAnchors(liveView(), ghost);
+  assert.equal(merged.ok, false);
+  if (merged.ok) return;
+  assert.equal(merged.diagnostics[0]?.code, "release_anchor_geometry_unavailable");
+  assert.equal(merged.diagnostics[0]?.objectId, "air-gate:ghost");
+});
