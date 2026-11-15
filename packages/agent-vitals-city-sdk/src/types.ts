@@ -7,7 +7,7 @@ export type ContentRef<K extends ContentKind = ContentKind> = {
 };
 
 export type AnchorKind = "spawn" | "route" | "zone" | "object";
-export type AnchorCapability = "drive" | "walk";
+export type AnchorCapability = "drive" | "walk" | "fly";
 export interface CityAnchorV1 {
   id: string;
   kind: AnchorKind;

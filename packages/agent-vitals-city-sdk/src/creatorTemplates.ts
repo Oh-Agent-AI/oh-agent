@@ -47,6 +47,29 @@ export const CREATOR_TEMPLATES_V1: readonly CreatorTemplateV1[] = Object.freeze<
     },
   },
   {
+    id: "ornithopter-flight",
+    label: "扑翼飞行检查点",
+    pack: {
+      schemaVersion: 1,
+      id: "creator.ornithopter-flight",
+      rulesVersion: 1,
+      slots: { gates: { kind: "zone", min: 3, max: 8, requires: ["fly"] } },
+      integerParameters: {
+        timeLimitTicks: { min: 60, max: 36000, default: 3600 },
+        flapPower: { min: 1, max: 10, default: 6 },
+      },
+      rules: {
+        counters: { next: { initial: 0, max: 3 } },
+        nodes: [
+          { id: "start-timer", on: { type: "run.started" }, actions: [{ op: "timer.start", timerId: "timeout", durationTicks: { parameter: "timeLimitTicks" } }] },
+          { id: "advance", on: { type: "zone.entered", slot: "gates" }, when: [{ op: "counter.eqEventIndex", counter: "next" }], actions: [{ op: "counter.add", counter: "next", amount: 1 }] },
+          { id: "finish", on: { type: "zone.entered", slot: "gates" }, when: [{ op: "counter.eq", counter: "next", value: 3 }], actions: [{ op: "run.finish", outcome: "success" }] },
+          { id: "timeout", on: { type: "timer.expired", timerId: "timeout" }, actions: [{ op: "run.finish", outcome: "failure" }] },
+        ],
+      },
+    },
+  },
+  {
     id: "collect-one",
     label: "驾驶区域收集",
     pack: {

@@ -63,10 +63,12 @@ export type LandformQueriesV1 = {
 };
 
 /** Water is represented by deterministic boundaries and an optional centerline;
- * renderers can choose how to realize each body without inferring Miami rules. */
+ * renderers can choose how to realize each body without inferring Miami rules.
+ * `lake`/`oasis` are in-bounds arid waters (spec S2b): enclosed basins with no
+ * centerline — the shoreline is the only boundary a renderer needs. */
 export type WaterBodyBoundaryV1 = {
   id: string;
-  kind: "ocean" | "river" | "bay";
+  kind: "ocean" | "river" | "bay" | "lake" | "oasis";
   surfaceElevation: number;
   shorelines: Vec2[][];
   centerline?: Vec2[];
@@ -107,8 +109,15 @@ const ARID_OPTION_FIELDS: Record<string, string> = {
 };
 /** 反向映射（裸字段名 → 能力键）：校验器对归一化形态幂等。 */
 const ARID_FIELD_TO_KEY: Record<string, string> = Object.fromEntries(Object.entries(ARID_OPTION_FIELDS).map(([key, field]) => [field, key]));
-/** S1 已实现消费的 diversity 字段（能力键）；其余字段必须保持目录默认。 */
-const ARID_CONSUMED_OPTION_KEYS = new Set(["shape.coastFractal", "shape.family", "shape.cores", "shape.aspectRatio", "shape.corridorPull"]);
+/** S1/S2/S2b 已实现消费的 diversity 字段（能力键）；其余字段必须保持目录默认。
+ * S2b：界内地貌（岩台/干河/绿洲/湖泊/沙丘细化）。仍未消费：vegetation.*、
+ * landscape.ridge*（远景山脊，视觉级 §2.2）、skeleton.ringCount。 */
+const ARID_CONSUMED_OPTION_KEYS = new Set([
+  "shape.coastFractal", "shape.family", "shape.cores", "shape.aspectRatio", "shape.corridorPull",
+  "landform.duneFrequency", "landform.ridgeSecondary",
+  "water.oasisCount", "water.lakeCount", "water.lakeSizeM",
+  "landscape.rockOutcropDensity", "landscape.riverMeander", "landscape.riverWidthM",
+]);
 export type GeographyGeneratorOptions = {
   "coastal-islands-v1": { shape: Shape; bay?: BayOptions | null };
   "arid-dunes-v1": AridDunesOptionsV1;
@@ -391,7 +400,12 @@ function buildCoastalIslandGeography({ seed, radius: R, memoize = false, options
 }
 
 /** Deterministic dryland basin with broad, buildable dune fields. It has a
- * finite play-area boundary, but that boundary is not water or a shoreline. */
+ * finite play-area boundary, but that boundary is not water or a shoreline.
+ *
+ * S2b 界内地貌（CITY_WORLD_DIVERSIFICATION_SDK_SPEC §2.1）：岩台/干河/绿洲/湖泊与
+ * 沙丘场细化。每个特征都由「显式设置且非目录默认」的门控——缺省时连一次额外
+ * 运算都不做，输出与既有行为逐位一致（黄金哈希锁定）。全部随机性经 hashSeed
+ * 键控、位置落在足迹内、特征间互斥由确定性拒绝采样保证。 */
 function buildAridDunesGeography({ seed, radius: R, memoize = false, options }: GeographyBuildRequest<"arid-dunes-v1">): Geography {
   const checked = validateGeographyBuildOptions("arid-dunes-v1", options);
   const { duneScale, duneAmplitude, orientationDeg } = checked;
@@ -428,36 +442,183 @@ function buildAridDunesGeography({ seed, radius: R, memoize = false, options }: 
   // These compatibility fields describe the playable boundary only. No fake
   // coastline/river arrays are returned and no caller should infer water from them.
   const landClearance = coastDistance;
-  const riverShift = 0;
-  const riverX = (_z: number) => 0;
-  const riverWidth = (_z: number) => -1e6;
-  const slopeRaw = (x: number, z: number) => {
-    const h = (px: number, pz: number) => {
-      const boundary = coastDistance(px, pz);
-      if (boundary <= 0) return -3 - Math.min(6, -boundary * 0.12);
-      const axis = px * duneAxis.x + pz * duneAxis.z;
-      const warp = 0.28 * fbm(px * 0.0025, pz * 0.0025, seed + 73, 3);
-      const wave = 0.5 + 0.5 * Math.sin((axis / duneScale + warp) * Math.PI * 2);
-      const dune = duneAmplitude * Math.pow(wave, 1.45);
-      const broadRelief = 1.8 * fbm(px * 0.003, pz * 0.003, seed + 119, 3);
-      const edgeBlend = smoothstep(0, Math.min(48, R * 0.12), boundary);
-      return -3 + edgeBlend * (6 + dune + broadRelief);
-    };
-    return Math.hypot(h(x + 1, z) - h(x - 1, z), h(x, z + 1) - h(x, z - 1)) / 2;
+
+  // ── S2b 干河（wadi）：既有占位接口（riverWidth=-1e6 / hasRiver=false）的填充。
+  // 激活旋钮是 riverMeander>0（目录默认 0 = 既有禁用行为，显式默认与省略等价）；
+  // riverWidthM 缺省时取目录默认 40。干河是地貌凹陷 + 可建约束，不是水体：
+  // 它走 coastal 窄河的同一套河道接口（riverX/riverWidth/hasRiver → cityPlan 的
+  // inRiver/riverBank/桥跨），但不进 waterBodies、不真实化 waterClearance——
+  // 干涸河床没有水面语义，滨水分区/临水终止对它不成立。河宽随 z 缓变、蜿蜒幅度
+  // 与镜像随种子；meander 越小河道越直（河道存在性由 meander>0 激活，宽度由
+  // riverWidthM 承载）。
+  const meander = checked.riverMeander !== undefined && checked.riverMeander > 0 ? checked.riverMeander : 0;
+  const wadiActive = meander > 0;
+  const wadiWidth = checked.riverWidthM ?? 40;
+  const wadiPhase = random("wadiPhase") * 3;
+  const riverShift = wadiActive
+    ? (bbox.minX + bbox.maxX) / 2 + (random("wadiShift") - 0.5) * ((bbox.maxX - bbox.minX) / 2) * 0.5
+    : 0;
+  const wadiAmp = wadiActive ? meander * (0.05 + random("wadiAmp") * 0.06) * R * (random("wadiMirror") < 0.5 ? -1 : 1) : 0;
+  const riverXRaw = (z: number) => wadiActive
+    ? riverShift + wadiAmp * Math.sin(z * 0.006 + wadiPhase) + 0.03 * R * meander * Math.sin(z * 0.014)
+    : 0;
+  const riverWidthRaw = (z: number) => wadiActive ? wadiWidth * (1 + 0.12 * Math.sin(z * 0.008 + wadiPhase)) : -1e6;
+  // 河 X/河宽只依赖 z，却被高度/坡度/可建以同一 z 反复调用：单槽记忆与 coastal 生成器
+  // 同构（上次 z → 结果），命中即同一表达式上次算出的同一个数，逐位相同。
+  let riverXZ = NaN; let riverXV = 0;
+  const riverX = (z: number) => { if (z !== riverXZ) { riverXV = riverXRaw(z); riverXZ = z; } return riverXV; };
+  let riverWidthZ = NaN; let riverWidthV = 0;
+  const riverWidth = (z: number) => { if (z !== riverWidthZ) { riverWidthV = riverWidthRaw(z); riverWidthZ = z; } return riverWidthV; };
+  const river = wadiActive ? Array.from({ length: 121 }, (_, i) => { const z = bbox.minZ - 60 + i * ((bbox.maxZ - bbox.minZ + 120) / 120); return { x: riverX(z), z }; }) : [];
+  const wadiDepth = Math.min(7, 2.4 + wadiWidth * 0.09);
+
+  // ── S2b 岩台/孤丘（rock outcrop / inselberg）：seed 键控的平顶凸起，叠在地形
+  // 高度场上。密度 0–1 → 1–6 座；位置在足迹内拒绝采样（离边界 ≥ r+56、离干河
+  // ≥ r+30），16 次尝试放不下就跳过（如实缺一座，不放占位）。台顶平（坡度不
+  // 变）、裙坡陡（坡度超限不可建），台顶与上裙额外显式不可建（裸岩面）。
+  const rocks: Array<{ x: number; z: number; r: number; h: number }> = [];
+  const rockDensity = checked.rockOutcropDensity;
+  if (rockDensity !== undefined && rockDensity > 0) {
+    const rockCount = Math.max(1, Math.round(rockDensity * 6));
+    for (let i = 0; i < rockCount; i += 1) {
+      const r = 30 + random(`rock:${i}:size`) * 30;
+      const h = 7 + random(`rock:${i}:height`) * 9;
+      for (let attempt = 0; attempt < 16; attempt += 1) {
+        const angle = random(`rock:${i}:${attempt}:angle`) * Math.PI * 2;
+        const ring = (0.12 + random(`rock:${i}:${attempt}:ring`) * 0.6) * R;
+        const cx = Math.cos(angle) * ring; const cz = Math.sin(angle) * ring;
+        if (coastDistance(cx, cz) <= r + 56) continue;
+        if (Math.abs(cx - riverXRaw(cz)) - riverWidthRaw(cz) <= r + 30) continue;
+        rocks.push({ x: cx, z: cz, r, h });
+        break;
+      }
+    }
+  }
+  const rockLift = (x: number, z: number) => {
+    let best = 0;
+    for (const rock of rocks) {
+      const d = Math.hypot(x - rock.x, z - rock.z);
+      if (d < rock.r) { const lift = rock.h * smoothstep(rock.r, rock.r * 0.55, d); if (lift > best) best = lift; }
+    }
+    return best;
   };
-  const height = field((x: number, z: number) => {
-    const boundary = coastDistance(x, z);
-    if (boundary <= 0) return -3 - Math.min(6, -boundary * 0.12);
+
+  // ── S2b 沙丘场细化：duneFrequency 缩放主沙丘波的空间频率（1 = 既有波形逐位
+  // 不变：axis*1 与 axis 在 IEEE 乘法下恒等）；ridgeSecondary 叠加次级垄——
+  // 方位相对主轴偏 72°–162°（永不平行）、波长 0.62×duneScale、相位 seed 键控，
+  // 幅度按主沙丘的 0.6 倍封顶。
+  const duneFreq = checked.duneFrequency ?? 1;
+  const ridgeSecondary = checked.ridgeSecondary;
+  const ridgeActive = ridgeSecondary !== undefined && ridgeSecondary > 0;
+  const ridgeAngle = radians + (0.4 + random("ridgeAngle") * 0.5) * Math.PI;
+  const ridgeDir = { x: Math.cos(ridgeAngle), z: Math.sin(ridgeAngle) };
+  const ridgePhase = random("ridgePhase") * Math.PI * 2;
+  const ridgeAmp = ridgeActive ? ridgeSecondary * 0.6 * duneAmplitude : 0;
+  const duneWave = (x: number, z: number) => {
     const axis = x * duneAxis.x + z * duneAxis.z;
     const warp = 0.28 * fbm(x * 0.0025, z * 0.0025, seed + 73, 3);
-    const wave = 0.5 + 0.5 * Math.sin((axis / duneScale + warp) * Math.PI * 2);
-    const dune = duneAmplitude * Math.pow(wave, 1.45);
+    const wave = 0.5 + 0.5 * Math.sin((axis * duneFreq / duneScale + warp) * Math.PI * 2);
+    const primary = duneAmplitude * Math.pow(wave, 1.45);
+    if (!ridgeActive) return primary;
+    const axis2 = x * ridgeDir.x + z * ridgeDir.z;
+    const wave2 = 0.5 + 0.5 * Math.sin((axis2 / (duneScale * 0.62) + ridgePhase) * Math.PI * 2);
+    return primary + ridgeAmp * Math.pow(wave2, 1.45);
+  };
+
+  // 基础地形（不含界内水体开挖）：沙丘场 + 岩台 + 干河切割。缺省时与既有公式
+  // 逐位一致（原先 height 与 slopeRaw.h 的两份拷贝合并为单一来源，运算序不变）。
+  const baseHeightRaw = (x: number, z: number) => {
+    const boundary = coastDistance(x, z);
+    if (boundary <= 0) return -3 - Math.min(6, -boundary * 0.12);
+    const dune = duneWave(x, z);
     const broadRelief = 1.8 * fbm(x * 0.003, z * 0.003, seed + 119, 3);
     const edgeBlend = smoothstep(0, Math.min(48, R * 0.12), boundary);
-    return -3 + edgeBlend * (6 + dune + broadRelief);
-  });
-  const slope = field(slopeRaw);
-  const buildable = field((x: number, z: number) => coastDistance(x, z) > 24 && slope(x, z) < 0.42);
+    let h = -3 + edgeBlend * (6 + dune + broadRelief);
+    if (rocks.length) h += rockLift(x, z);
+    if (wadiActive) {
+      const bank = Math.abs(x - riverX(z)) - riverWidth(z);
+      h -= wadiDepth * (1 - smoothstep(-wadiWidth * 0.25, wadiWidth * 0.45, bank));
+    }
+    return h;
+  };
+
+  // ── S2b 绿洲/湖泊：真实水体（waterBodies + waterClearance 真实化）。椭圆形
+  // 水面（长短轴面积守恒、旋转与纵横比随种子），水下开挖成碗、水面低于四周
+  // 地面；位置在足迹内拒绝采样并避开干河/岩台/既有水体。数量 0–3 各自独立，
+  // 全部放不下就如实少放。lakeSizeM 缺省取目录默认 120（直径）；绿洲是 32–60 m
+  // 的小水塘。maxWaterSpan 只放开到窄河口径 140（>140 会误触 coastal 的开湾
+  // 分支：湾心选址/堤道，语义只对中央海湾成立），大湖是干道绕行的障碍物。
+  type AridWaterBody = { id: string; kind: "lake" | "oasis"; cx: number; cz: number; a: number; b: number;
+    rMax: number; rMin: number; cosRot: number; sinRot: number; ia: number; ib: number; surf: number; floor: number };
+  const aridWater: AridWaterBody[] = [];
+  // 带符号水净空（近似径向距）：界内为负、岸外为正、随距离增长。以短半轴缩放
+  // dNorm：长轴方向对真实岸距偏保守（低估），只影响水岸带宽度，不影响符号语义。
+  const bodySignedClearance = (body: AridWaterBody, x: number, z: number) => {
+    const dx = x - body.cx, dz = z - body.cz;
+    const ux = dx * body.cosRot + dz * body.sinRot;
+    const uz = -dx * body.sinRot + dz * body.cosRot;
+    return (Math.hypot(ux * body.ia, uz * body.ib) - 1) * body.rMin;
+  };
+  const placeWaterBody = (kind: "lake" | "oasis", index: number, nominalRadius: number) => {
+    const key = `${kind}:${index}`;
+    for (let attempt = 0; attempt < 16; attempt += 1) {
+      const angle = random(`${key}:${attempt}:angle`) * Math.PI * 2;
+      const ring = (0.1 + random(`${key}:${attempt}:ring`) * 0.6) * R;
+      const cx = Math.cos(angle) * ring; const cz = Math.sin(angle) * ring;
+      const aspect = 1 + 0.22 * (random(`${key}:${attempt}:aspect`) - 0.5);
+      const rot = random(`${key}:${attempt}:rot`) * Math.PI * 2;
+      const a = nominalRadius * aspect; const b = nominalRadius / aspect;
+      const rMax = Math.max(a, b); const rMin = Math.min(a, b);
+      if (coastDistance(cx, cz) <= rMax + 56) continue;
+      if (wadiActive && Math.abs(cx - riverXRaw(cz)) - riverWidthRaw(cz) <= rMax + 40) continue;
+      if (rocks.some((rock) => Math.hypot(cx - rock.x, cz - rock.z) <= rMax + rock.r + 36)) continue;
+      if (aridWater.some((body) => Math.hypot(cx - body.cx, cz - body.cz) <= rMax + body.rMax + 80)) continue;
+      // 水面取「放水体前」的四周地面：1.2 m 吃水 + 按短半轴加深的碗底。
+      const rim = baseHeightRaw(cx, cz);
+      const surf = rim - 1.2;
+      const floor = surf - (2.2 + rMin * 0.03);
+      aridWater.push({ id: `${kind}-${index}`, kind, cx, cz, a, b, rMax, rMin,
+        cosRot: Math.cos(rot), sinRot: Math.sin(rot), ia: 1 / a, ib: 1 / b, surf, floor });
+      return;
+    }
+  };
+  const lakeCount = checked.lakeCount;
+  const oasisCount = checked.oasisCount;
+  if (lakeCount !== undefined && lakeCount > 0) {
+    const lakeRadius = (checked.lakeSizeM ?? 120) / 2;
+    for (let i = 0; i < lakeCount; i += 1) placeWaterBody("lake", i, lakeRadius);
+  }
+  if (oasisCount !== undefined && oasisCount > 0) {
+    for (let i = 0; i < oasisCount; i += 1) placeWaterBody("oasis", i, 16 + random(`oasis:${i}:size`) * 14);
+  }
+  const waterClearance = aridWater.length === 0
+    ? (_x: number, _z: number) => Infinity
+    : (x: number, z: number) => {
+      let best = Infinity;
+      for (const body of aridWater) { const c = bodySignedClearance(body, x, z); if (c < best) best = c; }
+      return best;
+    };
+  const terrainHeightRaw = (x: number, z: number) => {
+    let h = baseHeightRaw(x, z);
+    if (aridWater.length) {
+      // 岸缘缓落（短半轴的 −0.12..0.3 带内渐变）：湖心整碗下沉，岸线外保持原地面。
+      for (const body of aridWater) {
+        const fall = 1 - smoothstep(-body.rMin * 0.12, body.rMin * 0.3, bodySignedClearance(body, x, z));
+        if (fall > 0) h += (body.floor - h) * fall;
+      }
+    }
+    return h;
+  };
+  const height = field(terrainHeightRaw);
+  const slope = field((x: number, z: number) =>
+    Math.hypot(terrainHeightRaw(x + 1, z) - terrainHeightRaw(x - 1, z), terrainHeightRaw(x, z + 1) - terrainHeightRaw(x, z - 1)) / 2);
+  // 可建 = 界内 24 + 坡度 0.42（既有口径），再叠加 S2b 地貌约束：干河河道 + 12 m
+  // 河岸退界、水体 + 12 m 水岸退界（湖心/绿洲不可建）、裸岩面（台顶与上裙）。
+  // 三个门在特征未启用时按常量真短路，缺省路径不产生任何额外求值。
+  const buildable = field((x: number, z: number) => coastDistance(x, z) > 24 && slope(x, z) < 0.42
+    && (!wadiActive || Math.abs(x - riverX(z)) - riverWidth(z) > 12)
+    && (aridWater.length === 0 || waterClearance(x, z) > 12)
+    && (rocks.length === 0 || rockLift(x, z) <= 2));
   const terrain: TerrainField = {
     height,
     slope,
@@ -465,7 +626,7 @@ function buildAridDunesGeography({ seed, radius: R, memoize = false, options }: 
     center: { x: 0, z: 0 },
     radius: R * 1.3,
     coastRadius: () => R,
-    hasRiver: false,
+    hasRiver: wadiActive,
   };
   const hillAngle = radians + Math.PI / 2;
   const hillDir = { x: Math.cos(hillAngle), z: Math.sin(hillAngle) };
@@ -473,12 +634,25 @@ function buildAridDunesGeography({ seed, radius: R, memoize = false, options }: 
   const hillProj = (x: number, z: number) => x * hillDir.x + z * hillDir.z;
   const islets: Geography["islets"] = [];
   const isletClearance = (_x: number, _z: number) => -Infinity;
+  // 水体契约与近水终止带：岸线多边形与 waterClearance 同一口径（dNorm=1 等值线），
+  // 渲染与规划都按它对齐。缺省（无水体）保持空数组。
   const waterBodies: WaterBodyBoundaryV1[] = [];
+  const waterEdges: Vec2[][] = [];
+  for (const body of aridWater) {
+    const ring: Vec2[] = [];
+    for (let k = 0; k < 40; k += 1) {
+      const t = (k / 40) * Math.PI * 2;
+      const cu = Math.cos(t) * body.a; const su = Math.sin(t) * body.b;
+      ring.push({ x: body.cx + cu * body.cosRot - su * body.sinRot, z: body.cz + cu * body.sinRot + su * body.cosRot });
+    }
+    waterBodies.push({ id: body.id, kind: body.kind, surfaceElevation: body.surf, shorelines: [ring] });
+    waterEdges.push(ring);
+  }
   const landform: LandformQueriesV1 = {
     version: 1,
     bounds: bbox,
     signedLandDistance: coastDistance,
-    waterClearance: (_x: number, _z: number) => Infinity,
+    waterClearance,
     elevation: height,
     slope,
     isBuildable: buildable,
@@ -486,13 +660,13 @@ function buildAridDunesGeography({ seed, radius: R, memoize = false, options }: 
   };
   return {
     landform,
-    features: { coastline: false, ocean: false, river: false, islets: false },
+    features: { coastline: false, ocean: false, river: wadiActive, islets: false },
     footprintStats,
     R,
     coast: [],
     bbox,
-    hasRiver: false,
-    river: [],
+    hasRiver: wadiActive,
+    river,
     riverShift,
     riverX,
     riverWidth,
@@ -505,10 +679,10 @@ function buildAridDunesGeography({ seed, radius: R, memoize = false, options }: 
     height,
     buildable,
     terrain,
-    maxWaterSpan: 0,
+    maxWaterSpan: wadiActive || aridWater.length > 0 ? 140 : 0,
     islets,
     isletClearance,
-    waterEdges: [],
+    waterEdges,
   };
 }
 

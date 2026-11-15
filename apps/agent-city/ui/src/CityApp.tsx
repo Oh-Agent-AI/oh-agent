@@ -1013,6 +1013,11 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
         mechaActivityLease.current?.release(); mechaActivityLease.current = null; setMechaOpen(false);
       }} onAvailability={reportMechaAvailability} />}
       {sceneActivityBlocker === null && sceneReady && <MonsterWorldMarkers engine={engineRef.current} encounters={encounterState.encounters} language={language} onEnter={openMecha} />}
+      {sceneReady && !boot && sceneActivityBlocker === null && (
+        <button type="button" className="city-prototype-launch" onClick={() => { void startMiamiActivity("flight", "creator.flight-ornithopter-prototype-v1"); }}>
+          扑翼原型
+        </button>
+      )}
       <CityMinimap engine={engineRef} language={language} driving={{ active: driving.active, pose: driving.pose }} encounters={encounterState}
         creatorGames={driving.creatorGames} onStartCreatorGame={driving.startCreatorGame}
         hidden={!sceneReady || cinema || game.active || mechaOpen || !!experience.film || driving.hud.phase === "preparing" || driving.hud.phase === "error"} />

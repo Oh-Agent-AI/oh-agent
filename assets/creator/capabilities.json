@@ -113,6 +113,7 @@
         "publish": "creator.project.publish",
         "templates": [
           "checkpoint-race",
+          "ornithopter-flight",
           "collect-one"
         ]
       },
@@ -417,6 +418,7 @@
     ],
     "templates": [
       "checkpoint-race",
+      "ornithopter-flight",
       "collect-one"
     ]
   },

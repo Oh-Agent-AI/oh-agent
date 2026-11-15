@@ -31,5 +31,5 @@ test("official identity stays reserved against the custom-world import path", as
 
 test("migration baseline pins the generator version recorded in design/migration-baseline.md", () => {
   // 生成器有意变更（递增 CITY_GENERATOR_VERSION）时，必须重新核对 worlds/miami 并更新基线。
-  assert.equal(CITY_GENERATOR_VERSION, 6);
+  assert.equal(CITY_GENERATOR_VERSION, 7);
 });
