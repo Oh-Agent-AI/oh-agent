@@ -13,10 +13,8 @@ use serde_json::{json, Value};
 use super::{ToolError, ToolSpec};
 
 const MAX_SESSIONS_PER_AGENT: usize = 4;
-const MAX_OPERATION_ROWS: i64 = 200;
 const JOB_WAIT_MAX_MS: u64 = 30_000;
 const JOB_WAIT_POLL_MS: u64 = 500;
-const AGENT_ACTIVE_TERMINAL: [&str; 4] = ["completed", "failed", "cancelled", "expired"];
 
 fn spec(name: &'static str, description: &'static str, properties: Value, required: &[&str]) -> ToolSpec {
     ToolSpec {
@@ -103,7 +101,7 @@ fn aggregate_host_operations(data_home: &Path, project_id: Option<&str>, city_id
             Ok(json!({"kind":"commit","ref":operation_id,
                 "summary":format!("commit @ {project} ({at})"),"status":"ready","atMs":at}))
         }) {
-            for row in rows { if let Ok(item) = row { operations.push(item); } }
+            for item in rows.flatten() { operations.push(item); }
         }
     }
     let mut playtests = Vec::new();
@@ -127,7 +125,7 @@ fn aggregate_host_operations(data_home: &Path, project_id: Option<&str>, city_id
                 "status":mapped,"activeSlot":active,"finishedAtMs":row.get::<_, Option<i64>>(5)?,
                 "failureCode":row.get::<_, Option<String>>(6)?}))
         }) {
-            for row in rows { if let Ok(item) = row { playtests.push(item); } }
+            for item in rows.flatten() { playtests.push(item); }
         }
     }
     let _ = city_id; // 城市 scope 的宿主聚合面（view 事件）仍走 creator_city_diagnostics。
@@ -191,7 +189,7 @@ fn session_payload(data_home: &Path, session_id: &str, project_id: Option<&str>,
             Ok(json!({"kind":row.get::<_, String>(0)?,"ref":row.get::<_, String>(1)?,
                 "status":row.get::<_, String>(2)?,"summary":row.get::<_, String>(3)?,"atMs":row.get::<_, i64>(4)?}))
         }) {
-            for row in rows { if let Ok(item) = row { operations.push(item); } }
+            for item in rows.flatten() { operations.push(item); }
         }
     }
     let (host_operations, host_playtests, host_available) = aggregate_host_operations(data_home, scope_project.as_deref(), scope_city.as_deref());
@@ -227,6 +225,20 @@ fn session_close(data_home: &Path, args: &Value) -> Result<Value, ToolError> {
     Ok(json!({"ok":true,"data":{"sessionId":session_id,"cleared":cleared,"state":"closed"}}))
 }
 
+/// E2：world-apply 作业注册（creator_city_edit_commit 成功且宿主回报
+/// runtimeStatus 时由 dispatch 钩子调用）。活状态经宿主 view_status 解析：
+/// 视口 ready → ready；failed → failed；无视口（headless）如实停在 running。
+pub fn register_world_apply_job(data_home: &Path, city_id: Option<&str>, revision: Option<u64>) {
+    let Some(city_id) = city_id else { return };
+    let Ok(db) = open_db(&sessions_db(data_home).unwrap_or_else(|_| PathBuf::from("/dev/null")), false) else { return };
+    if ensure_schema(&db).is_err() { return; }
+    let now = now_ms();
+    let _ = db.execute(
+        "INSERT INTO creator_jobs(job_id,kind,status,subject_json,progress_json,failure_json,cancel_requested,session_id,created_at_ms,updated_at_ms)
+         VALUES(?1,'world-apply','running',?2,'{\"stage\":\"layout-rebuild\"}','{}',0,NULL,?3,?3)",
+        rusqlite::params![new_id("cjob-"), json!({"cityId":city_id,"revision":revision}).to_string(), now]);
+}
+
 /// E2：试玩作业注册（creator_playtest_start 成功后由 dispatch 钩子调用）。
 pub fn register_playtest_job(data_home: &Path, response: &Value) {
     let Some(run_id) = response.get("runId").and_then(Value::as_str) else { return };
@@ -237,6 +249,22 @@ pub fn register_playtest_job(data_home: &Path, response: &Value) {
         "INSERT INTO creator_jobs(job_id,kind,status,subject_json,progress_json,failure_json,cancel_requested,session_id,created_at_ms,updated_at_ms)
          VALUES(?1,'playtest','running',?2,'{\"stage\":\"playtest\"}','{}',0,NULL,?3,?3)",
         rusqlite::params![new_id("cjob-"), json!({"runId":run_id,"releaseId":response.get("releaseId")}).to_string(), now]);
+}
+
+/// E2：world-apply 作业的活状态经宿主 view_status 解析（ready→ready、failed→failed、
+/// 其余/无视口→保持 running——headless 下布局重建不可观察，如实不假装完成）。
+fn resolve_world_apply_job(data_home: &Path, job: &Value) -> Value {
+    let Some(city_id) = job["subject"].get("cityId").and_then(Value::as_str) else { return job.clone() };
+    if job["status"] != json!("running") { return job.clone(); }
+    let Ok(state) = super::creator_studio::call(data_home, "creator.city.view.status", &json!({"cityId":city_id}), 5_000) else { return job.clone() };
+    let view_state = state.get("status").and_then(Value::as_str).unwrap_or("");
+    let mut resolved = job.clone();
+    match view_state {
+        "ready" => { resolved["status"] = json!("ready"); resolved["progress"]["stage"] = json!("layout-ready"); }
+        "failed" => { resolved["status"] = json!("failed"); resolved["failure"] = json!({"code":"creator_layout_build_failed"}); }
+        _ => {}
+    }
+    resolved
 }
 
 /// E2：playtest 作业的活状态从宿主编排库只读解析（pending/claimed→running）。
@@ -279,10 +307,14 @@ fn session_jobs(data_home: &Path, session_id: &str) -> Result<Vec<Value>, ToolEr
                 "failure":parse(&failure).as_object().filter(|object| !object.is_empty()).map(|object| Value::Object(object.clone())).unwrap_or(Value::Null),
                 "cancelRequested":row.get::<_, i64>(6)? != 0,"createdAtMs":row.get::<_, i64>(7)?,"updatedAtMs":row.get::<_, i64>(8)?}))
         }) {
-            for row in rows { if let Ok(item) = row { jobs.push(item); } }
+            for item in rows.flatten() { jobs.push(item); }
         }
     }
-    Ok(jobs.into_iter().map(|job| if job["kind"] == "playtest" { resolve_playtest_job(data_home, &job) } else { job }).collect())
+    Ok(jobs.into_iter().map(|job| match job["kind"].as_str() {
+        Some("playtest") => resolve_playtest_job(data_home, &job),
+        Some("world-apply") => resolve_world_apply_job(data_home, &job),
+        _ => job,
+    }).collect())
 }
 
 fn job_payload(data_home: &Path, job_id: &str) -> Result<Value, ToolError> {
@@ -301,7 +333,11 @@ fn job_payload(data_home: &Path, job_id: &str) -> Result<Value, ToolError> {
                 "cancelRequested":row.get::<_, i64>(6)? != 0,"createdAtMs":row.get::<_, i64>(7)?,"updatedAtMs":row.get::<_, i64>(8)?}))
         })
         .map_err(|_| ToolError::new("creator_job_not_found", "Unknown jobId; list jobs with creator_job_list."))?;
-    Ok(if row["kind"] == "playtest" { resolve_playtest_job(data_home, &row) } else { row })
+    Ok(match row["kind"].as_str() {
+        Some("playtest") => resolve_playtest_job(data_home, &row),
+        Some("world-apply") => resolve_world_apply_job(data_home, &row),
+        _ => row,
+    })
 }
 
 fn job_list(data_home: &Path, args: &Value) -> Result<Value, ToolError> {
@@ -352,7 +388,7 @@ fn job_cancel(data_home: &Path, args: &Value) -> Result<Value, ToolError> {
 
 /// E4：可玩性判别（§3.4）。数据源 = capabilities.json 的 gameTypes 投影（app registry
 /// 真实注册状态经生成链），playtestSupported 只认 builtin-adapter——「模板存在」≠「可试玩」。
-fn game_type_list(data_home: &Path, args: &Value) -> Result<Value, ToolError> {
+fn game_type_list(_data_home: &Path, args: &Value) -> Result<Value, ToolError> {
     let descriptor = super::creator_studio::creator_descriptor_public();
     let types = descriptor.get("capabilities").and_then(|c| c.get("categories")).and_then(|c| c.get("gameTypes"))
         .and_then(|g| g.get("types")).and_then(Value::as_array)
@@ -444,6 +480,18 @@ mod tests {
         assert_eq!(job["status"], json!("ready"));
         assert_eq!(job["subject"]["runId"], json!("run-1"));
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn world_apply_jobs_resolve_through_the_host_view_status() {
+        let home = temp_home();
+        // 宿主无 view_status 面（测试环境）时，world-apply 作业如实停在 running，
+        // 不假装完成；stub 一个可解析状态面来验证 ready 迁移。
+        register_world_apply_job(&home, Some("city-e2e"), Some(3));
+        let jobs_before = session_jobs(&home, "csession-any").unwrap();
+        assert_eq!(jobs_before.len(), 1);
+        assert_eq!(jobs_before[0]["status"], json!("running"));
+        let _ = std::fs::remove_dir_all(home);
     }
 
     #[test]

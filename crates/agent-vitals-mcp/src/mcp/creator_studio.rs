@@ -199,7 +199,7 @@ fn call_error(code: &str) -> ToolError {
     }
 }
 
-fn call(data_home: &Path, method: &str, payload: &Value, timeout_ms: u64) -> Result<Value, ToolError> {
+pub(crate) fn call(data_home: &Path, method: &str, payload: &Value, timeout_ms: u64) -> Result<Value, ToolError> {
     let response = agent_vitals_query::query::plugin_calls::call(data_home, "creator-studio", method, payload, timeout_ms).map_err(call_error)?;
     if response["ok"] != true {
         let code = response["error"]["code"].as_str().unwrap_or("creator_request_failed");
