@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MIAMI_ACTIVITY_CATALOG_V1 } from "../src/index.ts";
+import { MIAMI_ACTIVITY_CATALOG_V1, ORNITHOPTER_GAME_TYPE_V1 } from "../src/index.ts";
+import { CREATOR_GAME_TYPES_V1 } from "../../agent-vitals-city-sdk/src/index";
 import { createMiamiLegacyRegistry, type MiamiActivityIdV1, type MiamiLegacyActivityHostV1 } from "../src/index.ts";
 
 function host(): { host: MiamiLegacyActivityHostV1; calls: MiamiActivityIdV1[]; disposed: number } {
@@ -77,4 +78,12 @@ test("legacy descriptors stay catalog-only and are not Creator capability claims
   }
   // The planned ornithopter remains unregistrable until its adapter/template lands.
   assert.equal(MIAMI_ACTIVITY_CATALOG_V1.length, 4);
+});
+
+test("Miami/ornithopter descriptors stay lockstep with the Creator capability list", () => {
+  assert.deepEqual([...MIAMI_ACTIVITY_CATALOG_V1, ORNITHOPTER_GAME_TYPE_V1].map(item => ({
+    id: item.id, template: item.template, templateCatalog: item.templateCatalog, runtime: item.runtime,
+  })), CREATOR_GAME_TYPES_V1.map(item => ({
+    id: item.id, template: item.template, templateCatalog: item.templateCatalog, runtime: item.runtime,
+  })));
 });

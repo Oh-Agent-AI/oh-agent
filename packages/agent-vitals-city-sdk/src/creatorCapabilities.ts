@@ -87,6 +87,26 @@ export const CREATOR_LIMITS_V1 = Object.freeze({
   maxActivePreviews: 128,
 });
 
+/** Additive game-type discovery for UI/Agent planning. Descriptors remain
+ * data-only; adapters are app-side and `planned` entries are not registrable. */
+export type CreatorGameTypeStatusV1 = "builtin-adapter" | "planned";
+export type CreatorGameTypeSummaryV1 = Readonly<{
+  id: string; label: string; template: string; templateCatalog: "creator" | "builtin" | "planned";
+  runtime: Readonly<{ id: string; contractVersion: number }>; status: CreatorGameTypeStatusV1;
+}>;
+export const CREATOR_GAME_TYPES_V1: readonly CreatorGameTypeSummaryV1[] = Object.freeze<CreatorGameTypeSummaryV1[]>([
+  { id: "miami.flight-v1", label: "驾驶飞机", template: "miami-flight", templateCatalog: "builtin",
+    runtime: { id: "miami.flight", contractVersion: 1 }, status: "builtin-adapter" },
+  { id: "miami.driving-v1", label: "驾车", template: "miami-driving", templateCatalog: "builtin",
+    runtime: { id: "miami.driving", contractVersion: 1 }, status: "builtin-adapter" },
+  { id: "miami.mecha-v1", label: "机甲战棋", template: "miami-mecha", templateCatalog: "builtin",
+    runtime: { id: "miami.mecha", contractVersion: 1 }, status: "builtin-adapter" },
+  { id: "miami.cinema-v1", label: "航拍", template: "miami-cinema", templateCatalog: "builtin",
+    runtime: { id: "miami.cinema", contractVersion: 1 }, status: "builtin-adapter" },
+  { id: "creator.flight-ornithopter-v1", label: "扑翼飞行", template: "ornithopter-flight", templateCatalog: "planned",
+    runtime: { id: "city-flight-ornithopter", contractVersion: 1 }, status: "planned" },
+]);
+
 /** 公开能力目录：此前散落在 Rust 的 creator_capabilities()，现在由 SDK 声明。 */
 export const CREATOR_CAPABILITIES_PROJECTION_V1: CreatorCapabilitiesProjection = Object.freeze({
   schemaVersion: 1,
@@ -106,6 +126,7 @@ export const CREATOR_CAPABILITIES_PROJECTION_V1: CreatorCapabilitiesProjection =
     project: { create: "creator.project.create", publish: "creator.project.publish",
       maxDocumentBytes: CREATOR_LIMITS_V1.maxProjectBytes, maxReleaseBytes: CREATOR_LIMITS_V1.maxReleaseBytes,
       templates: CREATOR_CONTENT_V1.templates },
+    gameTypes: { status: "adapter-seam", types: CREATOR_GAME_TYPES_V1 },
   },
   preview: { ttlMs: CREATOR_LIMITS_V1.previewTtlMs, maxActive: CREATOR_LIMITS_V1.maxActivePreviews, singleUse: true, instanceBound: true },
 });

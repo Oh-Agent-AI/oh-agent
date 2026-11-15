@@ -126,6 +126,25 @@ Miami 金样已在当前树重跑：
 - `verify-city-suite fast` 在本地 10 分钟窗口内没有跑完（后续仍有重守卫），
   因此不宣称整套快守卫通过；adapter/entry 的 Miami 金样以已列出的单项脚本为准。
 
+## 3.2 扑翼 descriptor 已进入 Creator 能力发现
+
+`CREATOR_CAPABILITIES_PROJECTION_V1.categories.gameTypes` 现在包含五项：
+
+- `miami.flight-v1` / `miami.driving-v1` / `miami.mecha-v1` / `miami.cinema-v1`
+  （`status:"builtin-adapter"`）；
+- `creator.flight-ornithopter-v1`（`status:"planned"`，`templateCatalog:"planned"`）。
+
+这不是运行能力：`planned` descriptor 仍被 registry 拒绝注册，也没有 Creator
+template/运行时。它只是让 Studio/Agent 能发现“未来会有扑翼类型”，同时避免把
+descriptor 当作可玩游戏。
+
+锁步测试：
+
+- app catalog ↔ `CREATOR_GAME_TYPES_V1`；
+- runtime 四个 Miami descriptor + 扑翼 descriptor ↔ `CREATOR_GAME_TYPES_V1`；
+- 生成物 `assets/creator/capabilities.json` 由
+  `scripts/generate-creator-capabilities.mjs --check` 锁定。
+
 ## 4. 迁移顺序（下一步）
 
 1. **宿主接线**（不改行为）：在 CityApp 实现 `MiamiLegacyActivityHostV1`，把现有
