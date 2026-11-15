@@ -18,6 +18,7 @@ mod creator_projects;
 mod creator_cities;
 mod creator_assets;
 mod creator_city_patch;
+mod creator_city_host;
 mod creator_playtest;
 mod creator_store;
 pub mod creator_content_v2;

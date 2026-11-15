@@ -45,7 +45,7 @@ export function useCityDriving(engine: RefObject<CityEngine | null>, options: Re
   /** Remote visitors operate only their browser-local scene and must not call desktop host IPC. */
   notifyHostBusy?: boolean;
   /** Fixed-step position callback for SDK gameplay; receives simulation state, not rendered interpolation. */
-  onFixedStep?: (state: Readonly<Pick<DrivingState, "x" | "y" | "z">>) => void;
+  onFixedStep?: (state: Readonly<Pick<DrivingState, "x" | "y" | "z" | "heading">>) => void;
   /** Frozen, release-scoped geometry for a Creator minigame. Only free-drive entry consumes it. */
   additionalSolids?: () => Readonly<{ revision: string; solids: readonly SolidInput[] }> | null;
   activityCoordinator: CityActivityCoordinator;

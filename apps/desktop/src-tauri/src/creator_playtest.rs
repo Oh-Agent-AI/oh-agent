@@ -5,6 +5,8 @@
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
 use std::path::Path;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 use crate::creator_store::{database, digest, new_id, now_ms, only_keys, valid_id};
 use crate::creator_projects::valid_skin_id;
@@ -198,9 +200,73 @@ pub(crate) fn pending_playtest(home: &Path) -> Result<Value, &'static str> {
     if !has_city_scope(&snapshot) { return Ok(json!({"pending":false})); }
     agent_vitals_runtime::logging::log_info("creator_playtest", &format!("pending run={run_id} release={release_id} city={:?}", snapshot.get("cityId")));
     let (city, layout) = release_city_scope(home, &snapshot)?;
+    let world_package = crate::creator_cities::read_world_package_ref(home, city["cityId"].as_str().ok_or("creator_release_invalid")?)?["worldPackage"].clone();
     Ok(json!({"pending":true,"runId":run_id,"releaseId":release_id,"projectId":project_id,"revision":revision,
         "gameType":resolve_playtest_game_type(None, &snapshot)?,
-        "worldRevision":snapshot["worldRevision"],"city":city,"layout":layout}))
+        "worldRevision":snapshot["worldRevision"],"city":city,"layout":layout,"worldPackage":world_package}))
+}
+
+struct PlaytestWorldSnapshot { run_id: String, content_digest: String }
+fn playtest_world_snapshots() -> &'static Mutex<HashMap<String, PlaytestWorldSnapshot>> {
+    static SNAPSHOTS: OnceLock<Mutex<HashMap<String, PlaytestWorldSnapshot>>> = OnceLock::new();
+    SNAPSHOTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn active_playtest_city(home: &Path, run_id: &str) -> Result<(String, Value), &'static str> {
+    if !valid_id(run_id) { return Err("creator_request_invalid"); }
+    let db = database(home)?;
+    let row: Option<(String, String, String, u64, String, String)> = db.query_row(
+        "SELECT r.release_id,r.status,r.project_id,r.revision,c.snapshot_json,c.snapshot_digest FROM creator_playtest_runs r JOIN creator_releases c ON c.release_id=r.release_id WHERE r.active_slot=1 AND r.run_id=?1", [run_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))).optional().map_err(|_| "creator_store_unavailable")?;
+    let (_release_id, status, project_id, revision, raw, snapshot_digest) = row.ok_or("creator_playtest_not_found")?;
+    if status != "pending" { return Err("creator_playtest_not_pending"); }
+    if raw.len() > MAX_RELEASE_BYTES || digest(&raw) != snapshot_digest { return Err("creator_release_digest_mismatch"); }
+    let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
+    if snapshot.get("projectId").and_then(Value::as_str) != Some(&project_id)
+        || snapshot.get("revision").and_then(Value::as_u64) != Some(revision) { return Err("creator_release_invalid"); }
+    let (city, _) = release_city_scope(home, &snapshot)?;
+    Ok((city["cityId"].as_str().ok_or("creator_release_invalid")?.to_owned(), city))
+}
+
+/// Open the frozen city's installed world package for this pending run only.
+/// The package bytes remain inside the host snapshot service and are streamed
+/// by declared relative path; no filesystem path is returned to City.
+pub(crate) fn open_playtest_world_snapshot(home: &Path, instance: &str, run_id: &str) -> Result<Value, &'static str> {
+    let (city_id, _) = active_playtest_city(home, run_id)?;
+    let reference = crate::creator_cities::read_world_package_ref(home, &city_id)?["worldPackage"].clone();
+    if reference.is_null() { return Err("content_package_not_found"); }
+    let package_id = reference["packageId"].as_str().ok_or("content_store_corrupt")?;
+    let version = reference["version"].as_str().ok_or("content_store_corrupt")?;
+    let expected_digest = reference["contentDigest"].as_str().ok_or("content_store_corrupt")?;
+    let opened = crate::creator_content_install::open_content_snapshot(home, instance, package_id, version)?;
+    let snapshot_id = opened["snapshotId"].as_str().ok_or("content_snapshot_invalid")?;
+    if opened["manifest"]["contentDigest"].as_str() != Some(expected_digest) {
+        let _ = crate::creator_content_install::close_content_snapshot(home, instance, snapshot_id);
+        return Err("content_store_corrupt");
+    }
+    let mut snapshots = playtest_world_snapshots().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    snapshots.retain(|_, snapshot| snapshot.run_id == run_id);
+    snapshots.insert(snapshot_id.to_owned(), PlaytestWorldSnapshot { run_id: run_id.to_owned(), content_digest: expected_digest.to_owned() });
+    Ok(json!({"snapshotId":snapshot_id,"manifest":opened["manifest"],"worldPackage":reference}))
+}
+
+pub(crate) fn read_playtest_world_snapshot(home: &Path, instance: &str, run_id: &str, snapshot_id: &str, path: &str, offset: u64) -> Result<Value, &'static str> {
+    let (_, _) = active_playtest_city(home, run_id)?;
+    let expected_digest = {
+        let snapshots = playtest_world_snapshots().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let snapshot = snapshots.get(snapshot_id).filter(|snapshot| snapshot.run_id == run_id).ok_or("content_snapshot_expired")?;
+        snapshot.content_digest.clone()
+    };
+    let result = crate::creator_content_install::read_content_snapshot(home, instance, snapshot_id, path, offset)?;
+    if result["contentDigest"].as_str() != Some(expected_digest.as_str()) { return Err("content_store_corrupt"); }
+    Ok(result)
+}
+
+pub(crate) fn close_playtest_world_snapshot(home: &Path, instance: &str, run_id: &str, snapshot_id: &str) -> Result<Value, &'static str> {
+    let mut snapshots = playtest_world_snapshots().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !snapshots.get(snapshot_id).is_some_and(|snapshot| snapshot.run_id == run_id) { return Err("content_snapshot_expired"); }
+    snapshots.remove(snapshot_id);
+    crate::creator_content_install::close_content_snapshot(home, instance, snapshot_id)
 }
 
 fn validate_playtest_evidence(value: &Value, status: &str, release_id: &str, revision: u64, snapshot_digest: &str, snapshot: &Value) -> Result<String, &'static str> {

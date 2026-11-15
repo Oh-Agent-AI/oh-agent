@@ -1,6 +1,6 @@
 # 内容包本机安装（2026-11-14）
 
-状态：**本机安装已实现**；内容包仍不可运行为 City，也不代表来源可信或可分发。
+状态：**本机安装已实现**；当前源码另有“已安装世界包创建独立 City 草稿”路径，但 City runtime/活动切换未完成，包仍不代表来源可信或可分发。
 
 ## 1. 流程
 
@@ -35,6 +35,12 @@
 - 不校验来源/签名/许可证/运行时兼容；内容包仍是 unsigned。
 - 不把路径或文件字节返回给 Studio UI、Agent 或 MCP。
 - 没有磁盘配额/垃圾回收；内容库由用户显式卸载。
+
+## 2026-11-15 源码增量：包创建 City 草稿
+
+`creator_city_create_from_world` 选择已安装 `city-world` 的固定版本；Studio 重新读取并做 SDK 语义/当前生成器检查，Rust 再校验包摘要并在一个事务中创建 City、revision、operation 和 `creator_city_world_packages` 引用。Studio 重开草稿时按该引用加载包场景；后续 City revision 可独立修改 profile/seed，项目只读视口与试玩以 City revision 的生成参数配合来源包场景。布局保存后可从 `cityLayouts` 创建绑定该 `cityId` 的 Creator 项目。引用中的包不能卸载。
+
+这不会把内容包变为可执行插件，也不会启动活动 City runtime 或地图入口。另有一条仅限 Studio 发起的 pending playtest 路径，可由 release 冻结的 City 身份读取包场景，并在模型校验/挂载前阻止 claim；它不代表安装包自动启动或通用 City 切换。City/Studio typecheck、production build、世界模型加载与 pending 描述定向用例、Tauri `cargo check` 和 Rust pending-run 定向回归已通过；桌面 bundle/真机验收未做。
 
 ## 4. 测试
 

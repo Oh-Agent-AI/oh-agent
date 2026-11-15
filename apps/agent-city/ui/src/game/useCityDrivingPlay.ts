@@ -27,7 +27,7 @@ import { roadValidationReport, type RoadValidationReport } from "./roadValidatio
 import { m as worldUnits } from "../engine/worldScale";
 import type { VisualPlaytestEvidenceV1 } from "@agent-vitals/city-sdk";
 
-type DrivingMiniGameController = Readonly<{ snapshot: CheckpointRaceSnapshotV1; fixedStep(position: Readonly<{ x: number; y: number; z: number }>): void; dispose(): void;
+type DrivingMiniGameController = Readonly<{ snapshot: CheckpointRaceSnapshotV1; fixedStep(position: Readonly<{ x: number; y: number; z: number }>, headingRadians?: number): void; dispose(): void;
   visualEvidence?(releaseId: string, projectRevision: number, snapshotDigest: string): VisualPlaytestEvidenceV1 }>;
 type CreatorPlaytestContext = Readonly<{ runId: string; releaseId: string; projectId: string; revision: number; snapshotDigest: string }>;
 
@@ -87,10 +87,10 @@ export function useCityDrivingPlay(engine: RefObject<CityEngine | null>, host: R
     const evidence = includeEvidence && context ? current.controller?.visualEvidence?.(context.releaseId, context.revision, context.snapshotDigest) : undefined;
     void finishPlaytestRef.current?.(current.runId, status, evidence, failureCode).catch(() => {});
   }, []);
-  const onFixedStep = useCallback((position: Readonly<{ x: number; y: number; z: number }>) => {
+  const onFixedStep = useCallback((position: Readonly<{ x: number; y: number; z: number; heading: number }>) => {
     const controller = raceControllerRef.current;
     if (!controller) return;
-    controller.fixedStep(position);
+    controller.fixedStep(position, position.heading);
     raceVisualsRef.current?.setProgress(controller.snapshot.completed);
     if (["success", "failure", "error"].includes(controller.snapshot.status) && !racePauseQueuedRef.current) {
       racePauseQueuedRef.current = true;

@@ -98,6 +98,8 @@ MCP 工具面实测：默认 `tools/list` = 42，city 工具 0 个；
 `--enable-city-tools` = 53，city 工具 11 个；`creator_capabilities_list` 在 Studio 关闭时
 返回 `schemaVersion 1`（离线可用）。
 
+2026-11-15 源码增量：新增 `creator_city_create_from_world`，因此启用实验 City 工具后的目录预期为 54 个、其中 12 个 City 工具；默认目录仍不暴露它。此增量仅通过 MCP crate `cargo check`，尚未重新做 `tools/list` 实测。
+
 ## 6. 构建与运行（P0-0）
 
 - 已完成：重建 release CLI 与 `Oh Agent.app`，退出旧实例（pid 62451）并用

@@ -1165,7 +1165,7 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
     }
     let method = request.method.clone();
     let payload = request.payload.clone();
-    if method == "city.creator.layout.publish" {
+    if crate::creator_city_host::classify_local_call(&method) == Some(crate::creator_city_host::LocalCall::LayoutPublish) {
         let _operation = state.1.lock().unwrap();
         {
             let host = state.0.lock().unwrap();
@@ -1179,8 +1179,8 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
             Err(code) => plugin_request_error(request.request_id, code, matches!(code, "creator_store_unavailable")),
         });
     }
-    if matches!(method.as_str(), "city.creator.experiences.list" | "city.creator.experiences.read" | "city.creator.playtest.pending" | "city.creator.playtest.claim" | "city.creator.playtest.finish" | "city.creator.patch.publish" | "city.creator.patch.read") {
-        if method.starts_with("city.creator.playtest.") {
+    if crate::creator_city_host::classify_local_call(&method) == Some(crate::creator_city_host::LocalCall::Runtime) {
+        if crate::creator_city_host::is_playtest_call(&method) {
             agent_vitals_runtime::logging::log_info("creator_playtest", &format!("plugin_request method={method} instance={}", request.instance_id));
         }
         let _operation = state.1.lock().unwrap();
@@ -1193,7 +1193,7 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
         }
         let result = crate::creator_projects::dispatch_city_runtime(&crate::overview::data_home(), &request.instance_id, &method, &payload);
         drop(_operation);
-        if method == "city.creator.playtest.finish" {
+        if crate::creator_city_host::is_playtest_finish(&method) {
             if let Ok(value) = &result {
                 let _ = app.emit("app-event", json!({"type":"CreatorPlaytestReturnRequested","runId":value["runId"],
                     "projectId":value["projectId"],"revision":value["revision"],"status":value["status"],"failureCode":value["failureCode"]}));
@@ -1207,7 +1207,7 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
     if method.starts_with("creator.") {
         if plugin_id != "creator-studio" { return Ok(plugin_request_error(request.request_id, "permission_denied", false)); }
         if !local_calls.iter().any(|allowed| allowed == &method) { return Ok(plugin_request_error(request.request_id, "permission_denied", false)); }
-        if method == "creator.source.export" || method == "creator.city.source.export" {
+        if method == "creator.source.export" || crate::creator_city_host::classify_local_call(&method) == Some(crate::creator_city_host::LocalCall::SourceExport) {
             {
                 let host = state.0.lock().unwrap();
                 if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
@@ -1224,7 +1224,7 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
                     return Err("plugin_instance_mismatch".into());
                 }
             }
-            let result = if method == "creator.city.source.export" {
+            let result = if crate::creator_city_host::classify_local_call(&method) == Some(crate::creator_city_host::LocalCall::SourceExport) {
                 crate::creator_source_export::export_city_source(&crate::overview::data_home(), &parent, &payload)
             } else {
                 crate::creator_source_export::export_source(&crate::overview::data_home(), &parent, &payload)

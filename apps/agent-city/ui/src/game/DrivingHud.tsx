@@ -118,6 +118,10 @@ export function DrivingHud({ model, actions, locale, sound }: {
   const title = <>
     <div className="city-game-chip"><strong>{t(model.vtol ? "喷气飞车" : "自由驾驶")}</strong></div>
     {model.race && <div className="city-game-chip" role="status"><strong>{model.activityKind === "collect" ? "寻宝" : model.activityKind === "creator" ? model.activityTitle ?? "小游戏" : t("竞速")}</strong> · {model.race.completed}/{model.race.total} · {model.race.elapsedSeconds}s</div>}
+    {model.race?.nextCheckpoint && <div className="city-game-chip" role="status" aria-label={`${t("下一检查点")} · ${Math.round(model.race.nextCheckpoint.distanceMeters)} m`}>
+      <strong>{t("下一检查点")}</strong> · {Math.round(model.race.nextCheckpoint.distanceMeters)} m
+      <span aria-hidden="true" style={{ display: "inline-block", marginInlineStart: 6, transform: `rotate(${model.race.nextCheckpoint.relativeBearingDegrees}deg)` }}>↑</span>
+    </div>}
     {roadCheckChip(model.roadCheck, t)}
     {hud.phase === "running" && <button className="city-game-compact-action" type="button" onClick={() => { openUi(); actions.pause(); }}>{t("暂停")}</button>}
   </>;

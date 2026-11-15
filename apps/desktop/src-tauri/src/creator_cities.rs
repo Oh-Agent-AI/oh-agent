@@ -62,13 +62,20 @@ fn previews() -> &'static Mutex<HashMap<String, CityPreview>> {
 
 /// The profile must already have passed the SDK and runtime registration checks.
 pub(crate) fn create_city(home: &Path, actor: &str, operation_id: &str, name: &str, seed: u32, profile: &Value) -> Result<Value, &'static str> {
+    create_city_with_world_package(home, actor, operation_id, name, seed, profile, None)
+}
+
+pub(crate) fn create_city_with_world_package(home: &Path, actor: &str, operation_id: &str, name: &str, seed: u32, profile: &Value, world_package: Option<(&str, &str, &str)>) -> Result<Value, &'static str> {
     if !valid_id(actor) || !valid_id(operation_id) || name.trim() != name || name.is_empty()
         || name.chars().count() > 120 || name.chars().any(char::is_control) || !profile.is_object() {
         return Err("creator_city_invalid");
     }
     let profile_json = canonical_json(profile).map_err(|_| "creator_city_invalid")?;
     if profile_json.len() > MAX_PROFILE_BYTES { return Err("creator_city_invalid"); }
-    let request = json!({"name":name,"seed":seed,"profile":profile});
+    let mut request = json!({"name":name,"seed":seed,"profile":profile});
+    if let Some((package_id, version, content_digest)) = world_package {
+        request["worldPackage"] = json!({"packageId":package_id,"version":version,"contentDigest":content_digest});
+    }
     let request_hash = digest(&canonical_json(&request).map_err(|_| "creator_city_invalid")?);
     let mut db = database(home)?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
@@ -90,6 +97,12 @@ pub(crate) fn create_city(home: &Path, actor: &str, operation_id: &str, name: &s
         params![city_id, document_json, now]).map_err(|_| "creator_store_unavailable")?;
     tx.execute("INSERT INTO creator_city_revisions(city_id,revision,document_json,created_at_ms) VALUES(?1,0,?2,?3)",
         params![city_id, document_json, now]).map_err(|_| "creator_store_unavailable")?;
+    if let Some((package_id, version, content_digest)) = world_package {
+        let installed: Option<String> = tx.query_row("SELECT content_digest FROM creator_content_packages WHERE package_id=?1 AND version=?2 AND kind='city-world'", params![package_id,version], |row| row.get(0)).optional().map_err(|_| "creator_store_unavailable")?;
+        if installed.as_deref() != Some(content_digest) { return Err("content_package_not_found"); }
+        tx.execute("INSERT INTO creator_city_world_packages(city_id,package_id,version,content_digest,created_at_ms) VALUES(?1,?2,?3,?4,?5)",
+            params![city_id,package_id,version,content_digest,now]).map_err(|_| "creator_store_unavailable")?;
+    }
     tx.execute("INSERT INTO creator_city_operations(actor_id,operation_id,operation_hash,city_id,result_json,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6)",
         params![actor, operation_id, request_hash, city_id, result_json, now]).map_err(|_| "creator_store_unavailable")?;
     tx.commit().map_err(|_| "creator_store_unavailable")?;
@@ -102,6 +115,24 @@ pub(crate) fn read_city(home: &Path, city_id: &str) -> Result<Value, &'static st
     let raw: String = db.query_row("SELECT document_json FROM creator_cities WHERE city_id=?1", [city_id], |row| row.get(0))
         .optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_city_not_found")?;
     serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")
+}
+
+pub(crate) fn read_world_package_ref(home: &Path, city_id: &str) -> Result<Value, &'static str> {
+    if !valid_id(city_id) { return Err("creator_city_invalid"); }
+    let db = database(home)?;
+    let reference: Option<(String, String, String)> = db.query_row(
+        "SELECT package_id,version,content_digest FROM creator_city_world_packages WHERE city_id=?1",
+        params![city_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+    ).optional().map_err(|_| "creator_store_unavailable")?;
+    match reference {
+        Some((package_id,version,content_digest)) => {
+            let installed: Option<String> = db.query_row("SELECT content_digest FROM creator_content_packages WHERE package_id=?1 AND version=?2 AND kind='city-world'",
+                params![package_id,version], |row| row.get(0)).optional().map_err(|_| "creator_store_unavailable")?;
+            if installed.as_deref() != Some(content_digest.as_str()) { return Err("content_store_corrupt"); }
+            Ok(json!({"worldPackage":{"packageId":package_id,"version":version,"contentDigest":content_digest}}))
+        }
+        None => Ok(json!({"worldPackage":null})),
+    }
 }
 
 /// Read a pinned revision; legacy databases can only recover their current

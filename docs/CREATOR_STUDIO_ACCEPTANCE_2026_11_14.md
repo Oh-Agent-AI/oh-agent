@@ -3,6 +3,14 @@
 状态：**未通过发布验收**。本文件把「自动化通过」「桌面真机通过」「可安装/可试玩」分开记录，
 不再用测试绿灯替代发布结论。
 
+## 2026-11-15 合并后 P0 跟进（源码，未真机验收）
+
+- 新增 `creator_city_create_from_world`：从本机已安装的 `city-world` 包创建独立 City 草稿；宿主重新读取并校验已安装包，在单个 SQLite 事务中写入 City、revision、幂等记录和固定的 package digest 引用。
+- City 草稿重新打开时按固定引用加载包内场景和资产目录；City 自身 profile/seed 可按 revision 编辑，试玩使用冻结 City revision 的生成参数和固定来源包的场景资产。被引用包仍受卸载保护。已加载城市的引擎可捕获其布局，Studio 项目创建可选择 `cityLayouts` 并附带 `cityId`，项目视口恢复包场景。Studio 面板和 MCP 都有创建入口。
+- Studio TypeScript typecheck、桌面 Tauri `cargo check`（包含 MCP crate 依赖编译）已通过；未跑测试、未重新打包、未做桌面真机验收。
+- 随后补入 City 试玩的 pending-run 世界包快照通道：宿主从 release 冻结的 City 身份解析包引用，按 City 插件实例和 pending run 授权分块读取；City 在 SDK 校验、模型加载和挂载完成前不 claim。只覆盖 Studio 发起的试玩，不实现通用 City 活动切换或安装包自动启动。
+- 新增的 City/Creator Studio typecheck、production build、`verify:world-scene-models`、`creator-playtest-pending`、`checkpoint-race` 定向用例、Tauri `cargo check`、`verify-plugin-architecture`、Creator Studio production build，以及 Rust `routes_only_declared_builtin_city_calls` / `release_snapshot_carries_independent_city_identity` 定向回归通过。未重新打包或做桌面真机验收。整体仍不能宣称可发布：A5/A6/A7、包导出/可信分发、签名信任、通用城市切换和真实场景验收仍有缺口。
+
 ## 2026-11-15 接管验收记录
 
 ### 环境重置
@@ -23,8 +31,8 @@
 ### 真机未通过 / 测试环境阻断
 
 - **完整竞速 3/3 与成功结算仍未通过**：三次真机运行的最终证据都是 `failed / creator_minigame_failed / tick=2400 / next=0或1`；最好一次只到 1/3。
-- 阻断在测试环境：City 驾驶 HUD 不暴露下一检查点方向，`screencapture`/ScreenCaptureKit 无屏幕录制权限，无法用视觉闭环导航；只能盲开，不能据此验收成功结算。
-- 代码侧成功结算“成功却带 failureCode”的协议 bug 已修并有契约测试；仍需有导航信息时真机完成 3/3。
+- City 驾驶 HUD 现在显示下一检查点相对方向箭头与距离，定向规则测试通过；但当前测试环境仍无 `screencapture`/ScreenCaptureKit 屏幕录制权限，无法取得新的视觉闭环证据。
+- 代码侧成功结算“成功却带 failureCode”的协议 bug 已修并有契约测试；A5 仍需真机完成 3/3 并记录成功结算。
 - 3D 建筑移动确认：真机只验证了 skin.select 的确认/拒绝；城市补丁 3D 预览仍是合成浏览器测试，未做真实建筑移动。
 
 ## 后续修复记录：试玩启动门控
@@ -65,7 +73,7 @@ City 在创建引擎前确认 pending 试玩；独立城市使用 Studio 相同�
 | A2 | 玩家移动建筑，预览/校验/保存，重启后保持 | **未通过** | 引擎补丁回归通过；移动后保存、重启恢复的桌面端到端未跑完。 |
 | A3 | Agent 提议移动，3D 预览，用户确认后保存 | **部分** | 真机已跑通 Agent 提交确认/拒绝（skin.select：确认 revision 1→2，拒绝不变）；单个城市补丁使用独立只读视口，基准路网不匹配或失效项时禁止确认，合成浏览器覆盖道路宽度调整与取消不提交。**尚无真实建筑移动的三维桌面验收**；混合操作暂不能确认。 |
 | A4 | Agent 与玩家连续编辑，旧 revision 被拒且不覆盖 | **通过（自动化）** | CAS/revision 冲突拒绝；冲突后不再重试旧补丁；有回归测试。真机并发未复测。 |
-| A5 | 调整入口/检查点后完成一场竞速，取消/失败可返回 | **未通过** | 真机试玩能启动/领取/驾驶（约 74–82 km/h）并到达 1/3 检查点；取消返回与结果持久化已有证据。完整 3/3 与成功结算未通过（三次均 tick=2400 failed），导航 HUD/截图能力不足是测试阻断，不作为通过理由。 |
+| A5 | 调整入口/检查点后完成一场竞速，取消/失败可返回 | **未通过** | 真机试玩能启动/领取/驾驶（约 74–82 km/h）并到达 1/3 检查点；取消返回与结果持久化已有证据。新增 HUD 导航尚未真机验收；完整 3/3 与成功结算仍未通过（三次均 tick=2400 failed）。 |
 | A6 | 保存/无效位置/断连/试玩失败有可理解状态；崩溃后恢复完整 revision | **未通过** | 修复会话关闭会立即排队尚未写出的补丁，同一 WebView 内写入串行、合并其他种子并拒绝同种子冲突；存储读取或写入失败不会误报成功，可重试临时失败。关闭后写入失败的内存草稿尚无持久恢复，跨 WebView/进程仍无原子 CAS；冲突恢复和强杀恢复未验收，实例切换也需继续复测。 |
 | A7 | 旧 City 修复继续可用，旧补丁迁移；撤销栈仅本次会话 | **部分** | 旧补丁导入保留；撤销/重做写入项目未实现，旧修复会话历史未做迁移验收。 |
 
@@ -84,7 +92,7 @@ City 在创建引擎前确认 pending 试玩；独立城市使用 Studio 相同�
 | CS-09 独立沙丘 City 创建/预览/绑定/发布 | 部分 | 创建、只读视口、截图、布局保存、绑定项目和发布 release 已验证；真机试玩可驾驶到 1/3、取消返回可用；完整竞速与常驻城市切换仍不可用。 |
 | CS-11 源码目录导出 | 通过（真机） | 导出到 `/tmp/codex-source-export` 的完整目录，`validate-world` + `pack-world` + `verify-world` 回环通过；安装/运行仍不可用。 |
 | CS-12 Agent 提交确认/拒绝 | 通过（真机） | MCP 提交返回 `creator_confirmation_required`；Studio 确认后 revision 前进、取消后不变；操作状态可查询。 |
-| CS-10 世界内容包预检/本机安装 | 通过（仅本机安装） | 桌面真机已验证：原生选择器选包 → 完整性预检通过 → 安装 `arid-dunes@1` → 文件落 `state/creator/content/world/arid-dunes/1/package.json`、DB `creator_content_packages` 有行 → 列表显示 → 两段式卸载删除文件与行 → 重新安装成功。安装后仍不可运行/不可信分发，见 §5。 |
+| CS-10 世界内容包预检/本机安装 | 通过（仅本机安装） | 桌面真机已验证：原生选择器选包 → 完整性预检通过 → 安装 `arid-dunes@1` → 文件落 `state/creator/content/world/arid-dunes/1/package.json`、DB `creator_content_packages` 有行 → 列表显示 → 两段式卸载删除文件与行 → 重新安装成功。安装后仍未作为活动 City 运行/不可信分发；从包创建 City 草稿是源码新路径，尚未真机验收。 |
 
 ## 5. 未通过发布验收的阻塞项
 

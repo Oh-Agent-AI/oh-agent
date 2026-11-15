@@ -1,8 +1,10 @@
 # Creator Studio 自定义城市与 MCP 接口设计
 
-状态：设计提案，尚未实现或通过真机验收。日期：2026-11-14。
+状态：部分实施，尚未完成整体验收。日期：2026-11-14，2026-11-15 更新。
 
 实施进度：已接入独立 City 草稿的创建、读取、列表、配置替换预览与版本化提交、只读视口/状态/截图、布局保存；V2 布局绑定 City ID、修订和种子，并可通过 `creator_project_create` 的 `cityId` 绑定项目（项目与 release 快照冻结 cityId/cityRevision/cityLayoutId）。只读视口已有一次桌面真机加载和截图记录，但它不是 City 运行时切换；旧迈阿密尚未迁移，城市切换与全链路隔离尚未实现，活动 City 的跨 generator 世界切换已被拒绝（`city_world_profile_city_mismatch`）。因此这些接口仍不能作为独立城市验收通过的证据。
+
+2026-11-15 新增 `creator_city_create_from_world`：从已安装 world 包创建 City 草稿并 pin digest；重新打开时通过该引用恢复包场景。之后补入 City-scoped pending playtest 的快照接口：宿主从 release 冻结身份解析包引用，按 City 插件实例/run 校验后分块读取，SDK 和 GLB 校验、模型挂载成功前不 claim。竞速 HUD 也显示下一检查点的相对方向与距离。相关 City/Studio typecheck、build、快照路由/模型加载/导航定向用例通过；没有重新打包或桌面真机验收。以上仍不是 `creator_city_open`，也不表示安装包可独立启动或可分发。
 
 关联：[Creator Studio 架构](AGENT_CITY_CREATOR_STUDIO_CODE_ARCHITECTURE_2026_11_11.md)、[SDK 迁移现状](AGENT_CITY_SDK_MIGRATION_2026_11_10.md)、[沙海之门 SPEC](EGYPT_DESERT_CITY_SPEC_2026_11_14.md)。本方案细化城市身份与自定义风格，不改变仓库本地数据及远程访问政策。
 
@@ -32,6 +34,7 @@
 |---|---|
 | `creator_city_list` | `cursor?`, `limit` → 城市摘要、revision、状态、下一页；不返回会话分析数据 |
 | `creator_city_create` | `name`, `profile`, `seed`, `operationId` → `cityId`, `revision`；创建独立草稿，不修改或切换其他 City。profile 通过 SDK 与已注册能力校验 |
+| `creator_city_create_from_world` | `name`, `packageId`, `version`, `operationId` → `cityId`, `revision`；从已安装 world 包创建草稿并固定 digest；Studio SDK 语义检查失败或生成器不兼容时拒绝。不会启动活动 City runtime |
 | `creator_city_read` | `cityId`, `revision?` → 有界配置、style、layout 摘要；revision 不匹配返回冲突。大内容采用有界分页 |
 | `creator_city_open` | `cityId`, `expectedRevision` → 加载请求及状态；有活动冲突时返回 busy。仅在目标已渲染且布局就绪后切换活动 City，失败保留原活动 City；不修改已保存城市 |
 | `creator_city_edit_preview` | `cityId`, `baseRevision`, `operations[]` → `previewId`, 差异、诊断、过期时间、`checks`；只预览不保存。允许 `world.set`、`style.set`、`scene.object.upsert/remove`，枚举和预算由能力目录提供 |

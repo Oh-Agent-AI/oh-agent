@@ -359,6 +359,7 @@ const ENGLISH: Record<string, string> = {
   "开始驾驶": "Start driving",
   "检查点竞速": "Checkpoint race",
   "竞速": "Race",
+  "下一检查点": "Next checkpoint",
   "开始竞速": "Start race",
   "竞速准备就绪": "Race ready",
   "竞速完成": "Race complete",

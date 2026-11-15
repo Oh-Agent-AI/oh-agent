@@ -58,6 +58,7 @@ fn revision_prop() -> Value { json!({"type":"integer","minimum":0}) }
 pub fn specs() -> Vec<ToolSpec> {
     vec![
         spec("creator_city_create", "Create an independent saved City draft without changing the active City. The draft supports read-only Studio preview and project binding; an independent City runtime and installation are not yet available. Requires active Studio and --allow-local-writes.", json!({"name":{"type":"string","minLength":1,"maxLength":120},"seed":{"type":"integer","minimum":0,"maximum":u32::MAX},"profile":{"type":"object"},"operationId":operation_id_prop()}), &["name","seed","profile","operationId"]),
+        spec("creator_city_create_from_world", "Create an independent saved City draft from an installed city-world package and pin its exact package digest. This does not start an independent runtime; requires active Studio and --allow-local-writes.", json!({"name":{"type":"string","minLength":1,"maxLength":120},"packageId":project_id_prop(),"version":{"type":"string","minLength":1,"maxLength":64},"operationId":operation_id_prop()}), &["name","packageId","version","operationId"]),
         spec("creator_city_edit_preview", "Validate a City draft edit without writing or rendering it. Two mutually exclusive forms: (A) recipe replacement with name/seed/profile, or (B) an operations array of world.set steps ({op:\"world.set\", preset?, params?}) whose capability keys/ranges/presets come from creator_capabilities_list category `worlds`. world.set always invalidates the layout (new world revision); style.set is not cataloged and is rejected. Returns a short-lived instance- and revision-bound preview; commit with creator_city_edit_commit.", json!({"cityId":project_id_prop(),"baseRevision":revision_prop(),"name":{"type":"string","minLength":1,"maxLength":120},"seed":{"type":"integer","minimum":0,"maximum":u32::MAX},"profile":{"type":"object"},"operations":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"object","properties":{"op":{"type":"string","enum":["world.set"]},"preset":{"type":"string","minLength":1,"maxLength":64},"params":{"type":"object","description":"Capability-keyed world parameters, e.g. {\"shape.family\":\"lobed\"}; keys and ranges come from creator_capabilities_list category `worlds`."}},"required":["op"]}}}), &["cityId","baseRevision"]),
         spec("creator_city_patch_preview", "Preview an independent City's portable road/site/terrain patch, or null to clear it. Runtime geometry is unchecked; commit using creator_city_edit_commit.", json!({"cityId":project_id_prop(),"baseRevision":revision_prop(),"patch":{"type":["object","null"]}}), &["cityId","baseRevision","patch"]),
         spec("creator_city_edit_commit", "Save a previously validated City draft preview. Does not load or render the City. Requires --allow-local-writes.", json!({"cityId":project_id_prop(),"previewId":project_id_prop(),"expectedRevision":revision_prop(),"operationId":operation_id_prop()}), &["cityId","previewId","expectedRevision","operationId"]),
@@ -244,6 +245,14 @@ pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool)
             let seed = args.get("seed").and_then(Value::as_u64).filter(|seed| *seed <= u32::MAX as u64).ok_or_else(|| ToolError::new("invalid_argument", "`seed` must be a 32-bit unsigned integer"))?;
             let profile = args.get("profile").filter(|v| v.is_object() && v.to_string().len() <= 16 * 1024).ok_or_else(|| ToolError::new("invalid_argument", "`profile` must be a bounded object"))?;
             call(data_home, "creator.city.create", &json!({"name":name,"seed":seed,"profile":profile,"operationId":required_string(args,"operationId")?}), 15_000)
+        }
+        "creator_city_create_from_world" => {
+            if !allow_local_writes { return Err(ToolError::new("permission_denied", "City creation requires `data-mcp serve --allow-local-writes`.")); }
+            let name = required_string(args, "name")?;
+            let package_id = required_string(args, "packageId")?;
+            let version = required_string(args, "version")?;
+            let operation_id = required_string(args, "operationId")?;
+            call(data_home, "creator.city.create_from_world", &json!({"name":name,"packageId":package_id,"version":version,"operationId":operation_id}), 120_000)
         }
         "creator_city_edit_preview" => {
             let city_id = required_string(args,"cityId")?;

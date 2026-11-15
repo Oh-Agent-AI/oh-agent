@@ -914,10 +914,32 @@ fn run_city_create(home: &Path, owner: &str, _instance: &str, payload: &Value) -
     if validation.get("requestDigest").and_then(Value::as_str) != Some(expected.as_str()) { return Err("creator_validation_scope_mismatch"); }
     crate::creator_cities::create_city(home, owner, operation_id, name, seed as u32, profile)
 }
+fn run_city_create_from_world(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    let name = args_str(payload, "name")?;
+    let operation_id = args_valid_id(payload, "operationId")?;
+    let package_id = args_valid_id(payload, "packageId")?;
+    let version = args_str(payload, "version")?;
+    let checked = crate::creator_content_install::read_installed_world(home, package_id, version)?;
+    let manifest = &checked.manifest;
+    let seed = manifest["entry"]["defaultSeed"].as_u64().filter(|seed| *seed <= u32::MAX as u64).ok_or("content_invalid")?;
+    let profile_path = manifest["entry"]["profile"].as_str().ok_or("content_invalid")?;
+    let profile: Value = serde_json::from_slice(checked.files.get(profile_path).ok_or("content_invalid")?).map_err(|_| "content_invalid")?;
+    let content_digest = manifest["contentDigest"].as_str().ok_or("content_invalid")?;
+    let validation = payload.get("validation").and_then(Value::as_object).ok_or("creator_validation_required")?;
+    if validation.len() != 3 || validation.get("schemaVersion").and_then(Value::as_u64) != Some(1) || validation.get("ok").and_then(Value::as_bool) != Some(true) { return Err("creator_preview_invalid"); }
+    let request = json!({"name":name,"operationId":operation_id,"packageId":package_id,"version":version,"contentDigest":content_digest});
+    let expected = digest(&canonical_json(&request).map_err(|_| "creator_validation_invalid")?);
+    if validation.get("requestDigest").and_then(Value::as_str) != Some(expected.as_str()) { return Err("creator_validation_scope_mismatch"); }
+    crate::creator_cities::create_city_with_world_package(home, owner, operation_id, name, seed as u32, &profile,
+        Some((package_id, version, content_digest)))
+}
 fn run_city_read(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
     let city_id = args_valid_id(payload, "cityId")?;
     if payload.get("revision").is_some() { crate::creator_cities::read_city_revision(home, city_id, args_u64(payload, "revision")?) }
     else { crate::creator_cities::read_city(home, city_id) }
+}
+fn run_city_world_package_read(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_cities::read_world_package_ref(home, args_valid_id(payload, "cityId")?)
 }
 fn run_city_list(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
     let after = match payload.get("cursor") { None => "", Some(value) => value.as_str().ok_or("creator_city_invalid")? };
@@ -997,6 +1019,7 @@ fn run_city_diagnostic_list(home: &Path, _owner: &str, _instance: &str, payload:
 static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.capabilities.list", &[], &["category", "schemaVersion"], run_capabilities_list),
     creator_row!("creator.city.create", &["name", "seed", "profile", "operationId", "validation"], &[], run_city_create),
+    creator_row!("creator.city.create_from_world", &["name", "operationId", "packageId", "version", "validation"], &[], run_city_create_from_world),
     creator_row!("creator.city.diagnostic.list", &["cityId", "limit"], &[], run_city_diagnostic_list),
     creator_row!("creator.city.diagnostic.record", &["cityId", "revision", "correlationId", "event"], &["code", "elapsedMs"], run_city_diagnostic_record),
     creator_row!("creator.city.edit.commit", &["cityId", "previewId", "expectedRevision", "operationId"], &[], run_city_commit),
@@ -1005,6 +1028,7 @@ static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.city.layout.store", &["snapshot"], &[], run_city_layout_store),
     creator_row!("creator.city.list", &["limit"], &["cursor"], run_city_list),
     creator_row!("creator.city.read", &["cityId"], &["revision"], run_city_read),
+    creator_row!("creator.city.world_package.read", &["cityId"], &[], run_city_world_package_read),
     creator_row!("creator.game.commit", &["projectId", "previewId", "expectedRevision", "operationId"], &[], run_commit),
     creator_row!("creator.game.preview", &["projectId", "baseRevision", "game"], &["validation"], run_game_preview),
     creator_row!("creator.layout.list", &["limit"], &[], run_layout_list),
@@ -1052,6 +1076,16 @@ pub fn dispatch_city_runtime(home: &Path, city_instance: &str, method: &str, pay
         "city.creator.patch.read" if exact_payload(payload, &["seed"]) => read_city_patch_for_seed(home,
             payload["seed"].as_u64().filter(|seed| *seed <= u32::MAX as u64).ok_or("creator_request_invalid")?),
         "city.creator.playtest.pending" if exact_payload(payload, &[]) => crate::creator_playtest::pending_playtest(home),
+        "city.creator.world.package.snapshot.open" if exact_payload(payload, &["runId"]) => crate::creator_playtest::open_playtest_world_snapshot(home, city_instance,
+            payload["runId"].as_str().ok_or("creator_request_invalid")?),
+        "city.creator.world.package.snapshot.read" if exact_payload(payload, &["runId", "snapshotId", "path", "offset"]) => crate::creator_playtest::read_playtest_world_snapshot(home, city_instance,
+            payload["runId"].as_str().ok_or("creator_request_invalid")?,
+            payload["snapshotId"].as_str().ok_or("creator_request_invalid")?,
+            payload["path"].as_str().ok_or("creator_request_invalid")?,
+            payload["offset"].as_u64().ok_or("creator_request_invalid")?),
+        "city.creator.world.package.snapshot.close" if exact_payload(payload, &["runId", "snapshotId"]) => crate::creator_playtest::close_playtest_world_snapshot(home, city_instance,
+            payload["runId"].as_str().ok_or("creator_request_invalid")?,
+            payload["snapshotId"].as_str().ok_or("creator_request_invalid")?),
         "city.creator.playtest.claim" if exact_payload(payload, &[]) => claim_playtest(home, city_instance, None),
         "city.creator.playtest.claim" if exact_payload(payload, &["runId"]) => claim_playtest(home, city_instance, Some(payload.get("runId").and_then(Value::as_str).ok_or("creator_request_invalid")?)),
         "city.creator.playtest.finish" if exact_payload(payload, &["runId", "status", "evidence"])
@@ -2199,8 +2233,13 @@ mod tests {
         let home = home();
         let layout = layout_snapshot();
         let seed = layout["seed"].as_u64().unwrap() as u32;
-        let city = crate::creator_cities::create_city(&home, "owner", "create-release-city", "沙海之门", seed,
-            &json!({"schemaVersion":1,"id":"egypt-desert","version":1})).unwrap();
+        let raw_world = include_bytes!("../../../../fixtures/city-content-v2/integrity-vector.json");
+        let installed = crate::creator_content_install::install_inspected_world(&home, raw_world, "example.desert", "1.0.0",
+            "sha256:432a5a6173179521080db1ae9aa71a0d49e41d27681ed2b5ce0b62ba87383682").unwrap();
+        let content_digest = installed["contentDigest"].as_str().unwrap();
+        let profile = serde_json::from_slice(include_bytes!("../../../../apps/agent-city/worlds/miami/world/world.json")).unwrap();
+        let city = crate::creator_cities::create_city_with_world_package(&home, "owner", "create-release-city", "沙海之门", seed,
+            &profile, Some(("example.desert", "1.0.0", content_digest))).unwrap();
         let city_id = city["cityId"].as_str().unwrap();
         let scoped = json!({"schemaVersion":2,"cityId":city_id,"cityRevision":0,"worldRevision":"world-r1",
             "seed":layout["seed"],"layout":layout["layout"]});
@@ -2223,6 +2262,27 @@ mod tests {
         assert_eq!(pending["runId"], started["runId"]);
         assert_eq!(pending["city"]["cityId"], city_id);
         assert_eq!(pending["city"]["seed"], layout["seed"]);
+        assert_eq!(pending["worldPackage"]["packageId"], "example.desert");
+        assert_eq!(pending["worldPackage"]["contentDigest"], content_digest);
+        let world_snapshot = dispatch_city_runtime(&home, "city-instance", "city.creator.world.package.snapshot.open",
+            &json!({"runId":started["runId"]})).unwrap();
+        assert_eq!(world_snapshot["worldPackage"]["contentDigest"], content_digest);
+        let snapshot_id = world_snapshot["snapshotId"].as_str().unwrap();
+        let part = dispatch_city_runtime(&home, "city-instance", "city.creator.world.package.snapshot.read", &json!({
+            "runId":started["runId"],"snapshotId":snapshot_id,"path":"world/profile.json","offset":0,
+        })).unwrap();
+        assert_eq!(part["contentDigest"], content_digest);
+        assert_eq!(part["data"], "e30=");
+        assert_eq!(dispatch_city_runtime(&home, "city-instance", "city.creator.world.package.snapshot.read", &json!({
+            "runId":"other-run","snapshotId":snapshot_id,"path":"world/profile.json","offset":0,
+        })).unwrap_err(), "creator_playtest_not_found");
+        dispatch_city_runtime(&home, "city-instance", "city.creator.world.package.snapshot.close", &json!({
+            "runId":started["runId"],"snapshotId":snapshot_id,
+        })).unwrap();
+        assert_eq!(dispatch_city_runtime(&home, "city-instance", "city.creator.world.package.snapshot.open",
+            &json!({"runId":"other-run"})).unwrap_err(), "creator_playtest_not_found");
+        assert_eq!(dispatch_city_runtime(&home, "city-instance", "city.creator.world.package.snapshot.open",
+            &json!({"runId":"other-run"})).unwrap_err(), "creator_playtest_not_found");
         assert_eq!(pending["layout"]["layout"]["id"], layout["layout"]["id"]);
         assert_eq!(dispatch_city_runtime(&home, "city-instance", "city.creator.playtest.claim", &json!({})).unwrap_err(), "creator_playtest_run_required");
         assert_eq!(dispatch_city_runtime(&home, "city-instance", "city.creator.playtest.claim", &json!({"runId":"another-run"})).unwrap_err(), "creator_playtest_run_mismatch");

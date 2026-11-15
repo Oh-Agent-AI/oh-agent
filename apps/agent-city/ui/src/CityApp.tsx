@@ -33,6 +33,7 @@ import { prewarmAudioContext } from "./game/GameSfx";
 import { CityActivityCoordinator, type CityActivityLease } from "./game/activity/CityActivityCoordinator";
 import { claimCreatorPlaytest, finishCreatorPlaytest, loadCreatorPublishedMiniGames, pendingCreatorPlaytest, type CreatorPlaytestHandoffV1 } from "./game/activity/loadCreatorExperiences";
 import type { PendingCreatorPlaytestV1 } from "./game/activity/creatorPlaytestPending";
+import { loadWorldSceneModels } from "./game/activity/creatorSceneModels";
 import { resolveCityBoot } from "./game/activity/resolveCityBoot";
 import type { PlanPatchV1 } from "./engine/planPatch";
 import type { CreatorPublishedMiniGameV1 } from "./game/activity/creatorMiniGame";
@@ -173,9 +174,32 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
   const [creatorExperiences, setCreatorExperiences] = useState<readonly CreatorPublishedMiniGameV1[]>([]);
   const [creatorPlaytest, setCreatorPlaytest] = useState<CreatorPlaytestHandoffV1 | null>(null);
   const [playtestError, setPlaytestError] = useState<string | null>(null);
+  const [worldSceneReady, setWorldSceneReady] = useState(() => !boot?.worldPackage);
+  useEffect(() => {
+    if (!boot?.worldPackage) { setWorldSceneReady(true); return; }
+    setWorldSceneReady(false);
+    if (!firstModelFrame || !boot.worldScene || !engineRef.current) return;
+    const engine = engineRef.current;
+    let cancelled = false;
+    let mounted: Awaited<ReturnType<typeof loadWorldSceneModels>> | null = null;
+    void loadWorldSceneModels(boot.worldScene.scene, boot.worldScene.assets, boot.worldScene.files).then(runtime => {
+      if (cancelled || engineRef.current !== engine) { runtime.dispose(); return; }
+      mounted = runtime;
+      if (runtime.group.children.length) engine.addOverlay(runtime.group);
+      setWorldSceneReady(true);
+    }).catch(() => {
+      if (!cancelled) setPlaytestError("试玩城市资产加载失败。为保护发布版本，City 未启动该试玩。");
+    });
+    return () => {
+      cancelled = true;
+      if (!mounted) return;
+      engine.removeOverlay(mounted.group);
+      mounted.dispose();
+    };
+  }, [boot, firstModelFrame, worldProfile]);
   useEffect(() => {
     setCreatorExperiences([]); setCreatorPlaytest(null);
-    if (!firstModelFrame || !embedded()) return;
+    if (!firstModelFrame || !embedded() || (boot?.worldPackage && !worldSceneReady)) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let attempts = 0;
@@ -206,7 +230,7 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
     };
     void load();
     return () => { cancelled = true; if (timer) clearTimeout(timer); };
-  }, [firstModelFrame, experience.seed, worldProfile, boot]);
+  }, [firstModelFrame, experience.seed, worldProfile, boot, worldSceneReady]);
   useEffect(() => {
     const engine = engineRef.current;
     if (!engine || !firstModelFrame || !embedded() || !creatorExperiences.length) return;

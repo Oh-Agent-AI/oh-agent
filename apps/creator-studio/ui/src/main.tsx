@@ -20,14 +20,16 @@ import { CITY_GENERATOR_VERSION, type PlanPatchV1 } from "../../../agent-city/ui
 import "./style.css";
 
 type ProjectRow = { projectId: string; revision: number; title: string; updatedAtMs: number };
-type LayoutRow = { worldRevision: string; layoutId: string; seed: number; anchorCount: number; updatedAtMs: number };
+type LayoutRow = { worldRevision: string; layoutId: string; seed: number; anchorCount: number; updatedAtMs: number; cityId?: string; cityRevision?: number; source?: "legacy" | "cityDraft" };
 type CityRow = { cityId: string; revision: number; name: string };
+type CityWorldSnapshot = Awaited<ReturnType<typeof inspectInstalledWorld>>;
 type SceneDraft = { schemaVersion: 1; objects: Array<Record<string, unknown>> };
 // 试玩历史行（creator.project.playtest.history 返回的 runs 元素），状态沿用后端英文枚举不翻译。
 type PlaytestRun = { runId: string; releaseId: string; revision: number; status: "pending" | "claimed" | "completed" | "cancelled" | "failed" | "expired"; createdAtMs: number; finishedAtMs: number | null; evidenceSource: string | null; evidence: unknown; failureCode: string | null };
 type Project = { projectId: string; revision: number; title?: string; kind: string; game: unknown; cityId?: string; cityRevision?: number; cityLayout?: CityLayoutSnapshotV1 | null; cityPatch?: Record<string, unknown> | null; scene?: SceneDraft; assets?: { schemaVersion: 1; entries: Array<{ assetId: string; relativePath: string; sha256: string; byteLength: number; format: "glb-v2"; boundsMeters?: { x: number; y: number; z: number } }> }; assetRefs?: Array<Record<string, unknown>>; mounts: CityGameMountV1[]; skinId?: string };
 type PluginResponse<T> = { version: number; requestId: string; ok: boolean; result?: T; error?: { code: string } };
 let sequence = 0;
+const layoutSelectionKey = (layout: LayoutRow): string => layout.cityId ? `${layout.cityId}::${layout.worldRevision}` : layout.worldRevision;
 // 浏览器预览（ui-dev 工作台 iframe）：有插件实例但没有原生宿主，数据来自合成夹具。
 const browserPreview = typeof window !== "undefined" && window.parent !== window
   && !(window as Window & { __TAURI__?: { core?: { invoke?: unknown } } }).__TAURI__?.core?.invoke;
@@ -74,7 +76,7 @@ function App() {
   // 世界外观偏好与 City 同源（同源 WebView 共享 localStorage）；打开期间不追踪 City 侧更改。
   const [worldProfile] = useState(() => readCityAppearancePreference());
   const [project, setProject] = useState<Project | null>(null);
-  const [projectCity, setProjectCity] = useState<{ key: string; city: CityInstanceV1 | null; error?: string } | null>(null);
+  const [projectCity, setProjectCity] = useState<{ key: string; city: CityInstanceV1 | null; worldScene?: CityWorldSnapshot; error?: string } | null>(null);
   const [draftCityView, setDraftCityView] = useState<CityInstanceV1 | null>(null);
   const [installedWorldView, setInstalledWorldView] = useState<Awaited<ReturnType<typeof inspectInstalledWorld>> | null>(null);
   const draftCityViewRef = useRef<CityInstanceV1 | null>(null);
@@ -102,7 +104,7 @@ function App() {
   // 未打开项目时取「新建」里选中的布局版本。布局列表是有界目录（最多 8 条），
   // 选中的版本不在其中时诚实降级为提示，绝不回退到最新布局冒充当前城市。
   const viewportSeed: number | null =
-    project?.cityLayout?.seed ?? (worldRevision ? layouts.find(layout => layout.worldRevision === worldRevision)?.seed ?? null : null);
+    project?.cityLayout?.seed ?? (worldRevision ? layouts.find(layout => layoutSelectionKey(layout) === worldRevision)?.seed ?? null : null);
   const viewportUnavailable = project !== null && !project.cityLayout;
   const projectCityKey = project?.cityId ? `${project.cityId}:${project.cityRevision}` : null;
   const scopedProjectPatch = projectCity?.city ? project?.cityPatch ?? projectCity.city.planPatch : null;
@@ -115,7 +117,23 @@ function App() {
     void creatorRequest<unknown>("creator.city.read", { cityId: project.cityId, revision: project.cityRevision }).then(raw => {
       const city = resolveProjectCity(raw, { cityId: project.cityId!, cityRevision: project.cityRevision, seed: project.cityLayout?.seed });
       if (!city) throw new Error("creator_city_revision_unavailable");
-      if (!cancelled) setProjectCity({ key: projectCityKey, city });
+      const loadWorldScene = async (): Promise<CityWorldSnapshot | undefined> => {
+        const linked = await creatorRequest<unknown>("creator.city.world_package.read", { cityId: city.cityId });
+        if (!linked || typeof linked !== "object" || !Object.hasOwn(linked, "worldPackage") || Object.keys(linked).length !== 1) throw new Error("content_snapshot_invalid");
+        const reference = (linked as Record<string, unknown>).worldPackage;
+        if (reference === null) return undefined;
+        if (!reference || typeof reference !== "object" || Array.isArray(reference) || Object.keys(reference).length !== 3) throw new Error("content_snapshot_invalid");
+        const itemRef = reference as Record<string, unknown>;
+        if (typeof itemRef.packageId !== "string" || typeof itemRef.version !== "string" || typeof itemRef.contentDigest !== "string") throw new Error("content_snapshot_invalid");
+        const available = parseInstalledPackages(await creatorRequest<unknown>("creator.content.list", {})) ?? [];
+        const item = available.find(candidate => candidate.packageId === itemRef.packageId && candidate.version === itemRef.version && candidate.contentDigest === itemRef.contentDigest);
+        if (!item) throw new Error("content_package_not_found");
+        const world = await inspectInstalledWorld(creatorRequest, item);
+        if (!("defaultSeed" in world.manifest.entry) || !supportsInstalledWorldGenerator(world.manifest)) throw new Error("content_city_binding_mismatch");
+        return world;
+      };
+      void loadWorldScene().then(worldScene => { if (!cancelled) setProjectCity({ key: projectCityKey, city, ...(worldScene ? { worldScene } : {}) }); })
+        .catch(error => { if (!cancelled) setProjectCity({ key: projectCityKey, city, error: errorCode(error, "content_snapshot_invalid") }); });
     }).catch(() => { if (!cancelled) setProjectCity({ key: projectCityKey, city: null, error: "项目绑定的城市版本不可用，请重新生成并绑定对应布局。" }); });
     return () => { cancelled = true; };
   }, [projectCityKey, project?.cityId, project?.cityRevision, project?.cityLayout?.seed]);
@@ -270,11 +288,12 @@ function App() {
   const refresh = useCallback(async () => {
     const [response, layoutResponse] = await Promise.all([
       creatorRequest<{ projects: ProjectRow[] }>("creator.project.list", { limit: 50 }),
-      creatorRequest<{ layouts: LayoutRow[] }>("creator.layout.list", { limit: 8 }),
+      creatorRequest<{ layouts: LayoutRow[]; cityLayouts?: LayoutRow[] }>("creator.layout.list", { limit: 8 }),
     ]);
     setProjects(response.projects);
-    setLayouts(layoutResponse.layouts);
-    setWorldRevision(current => layoutResponse.layouts.some(layout => layout.worldRevision === current) ? current : layoutResponse.layouts[0]?.worldRevision ?? "");
+    const availableLayouts = [...layoutResponse.layouts, ...(layoutResponse.cityLayouts ?? [])];
+    setLayouts(availableLayouts);
+    setWorldRevision(current => availableLayouts.some(layout => layoutSelectionKey(layout) === current) ? current : availableLayouts[0] ? layoutSelectionKey(availableLayouts[0]) : "");
   }, []);
   const openCityView = async (cityId: string, revision: number) => {
     setInstalledWorldView(null);
@@ -286,6 +305,24 @@ function App() {
     if (!checked.ok) throw new Error("creator_city_invalid");
     if (checked.value.cityId !== cityId || checked.value.revision !== revision) throw new Error("revision_conflict");
     if (checked.value.planPatch && !validateWorldPlanPatch(checked.value.planPatch, checked.value.seed, CITY_GENERATOR_VERSION).ok) throw new Error("creator_city_patch_incompatible");
+    const linked = await creatorRequest<unknown>("creator.city.world_package.read", { cityId });
+    let linkedWorld: Awaited<ReturnType<typeof inspectInstalledWorld>> | null = null;
+    if (!linked || typeof linked !== "object" || !Object.hasOwn(linked, "worldPackage") || Object.keys(linked).length !== 1) throw new Error("content_snapshot_invalid");
+    const linkedRecord = linked as Record<string, unknown>;
+    if (linkedRecord.worldPackage !== null) {
+      if (!linkedRecord.worldPackage || typeof linkedRecord.worldPackage !== "object" || Array.isArray(linkedRecord.worldPackage)) throw new Error("content_snapshot_invalid");
+      const reference = linkedRecord.worldPackage as Record<string, unknown>;
+      if (Object.keys(reference).length !== 3) throw new Error("content_snapshot_invalid");
+      if (typeof reference.packageId !== "string" || typeof reference.version !== "string" || typeof reference.contentDigest !== "string") throw new Error("content_snapshot_invalid");
+      const available = parseInstalledPackages(await creatorRequest<unknown>("creator.content.list", {})) ?? [];
+      const item = available.find(candidate => candidate.packageId === reference.packageId && candidate.version === reference.version && candidate.contentDigest === reference.contentDigest);
+      if (!item) throw new Error("content_package_not_found");
+      const world = await inspectInstalledWorld(creatorRequest, item);
+      if (!("defaultSeed" in world.manifest.entry)) throw new Error("content_city_binding_mismatch");
+      if (!supportsInstalledWorldGenerator(world.manifest)) throw new Error("content_generator_incompatible");
+      linkedWorld = world;
+    }
+    if (request !== cityOpenRequest.current) throw new Error("creator_city_view_superseded");
     draftCityViewRef.current = checked.value;
     draftViewStatusRef.current = "loading";
     draftViewFailureRef.current = undefined;
@@ -293,12 +330,13 @@ function App() {
     draftDiagnosticsRef.current = { cityId: checked.value.cityId, revision: checked.value.revision, correlationId: `view:${crypto.randomUUID()}`, started: performance.now(), unavailable: false };
     await recordCityDiagnostic(checked.value, "view_started");
     if (request !== cityOpenRequest.current) throw new Error("creator_city_view_superseded");
+    setInstalledWorldView(linkedWorld);
     setDraftCityView(checked.value);
-    setMessage(`正在预览独立城市 ${checked.value.name}（版本 ${checked.value.revision}）；场景是否成功加载尚未确认。`);
+    setMessage(`正在预览独立城市 ${checked.value.name}（版本 ${checked.value.revision}）${linkedWorld ? "及其固定世界包场景" : ""}；场景是否成功加载尚未确认。`);
     return { cityId: checked.value.cityId, revision: checked.value.revision, status: "loading", mode: "read_only_preview" };
   };
   useEffect(() => {
-    const methods = ["creator.city.create", "creator.city.diagnostic.list", "creator.city.edit.preview", "creator.city.patch.preview", "creator.city.edit.commit", "creator.city.list", "creator.city.read", "creator.layout.list", "creator.project.list", "creator.project.read", "creator.project.read_chunk", "creator.operation.status", "creator.project.create",
+    const methods = ["creator.city.create", "creator.city.create_from_world", "creator.city.diagnostic.list", "creator.city.edit.preview", "creator.city.patch.preview", "creator.city.edit.commit", "creator.city.list", "creator.city.read", "creator.layout.list", "creator.project.list", "creator.project.read", "creator.project.read_chunk", "creator.operation.status", "creator.project.create",
       "creator.game.preview", "creator.asset.import", "creator.game.commit", "creator.scene.preview", "creator.scene.commit", "creator.project.commit", "creator.project.publish",
       "creator.project.playtest.start", "creator.project.playtest.result", "creator.project.playtest.cancel", "creator.project.playtest.return_context", "creator.project.playtest.history",
       "creator.scene.describe", "creator.scene.inspect", "creator.scene.validate", "creator.capabilities.list"];
@@ -337,6 +375,24 @@ function App() {
         const checked = validateCityInstance({ schemaVersion: 1, cityId: "city-validation", revision: 0,
           name: request.name, seed: request.seed, profile: request.profile });
         return { ...request, validation: { schemaVersion: 1, requestDigest: await digest(request), ok: checked.ok } };
+      }
+      if (method === "creator.city.create_from_world") {
+        const request = { name: payload.name, operationId: payload.operationId, packageId: payload.packageId, version: payload.version };
+        let ok = false;
+        try {
+          const available = parseInstalledPackages(await creatorRequest<unknown>("creator.content.list", {})) ?? [];
+          const item = available.find(candidate => candidate.packageId === request.packageId && candidate.version === request.version);
+          if (!item) throw new Error("content_package_not_found");
+          const world = await inspectInstalledWorld(creatorRequest, item);
+          if (!("defaultSeed" in world.manifest.entry)) throw new Error("content_snapshot_invalid");
+          const checked = validateCityInstance({ schemaVersion: 1, cityId: "city-validation", revision: 0,
+            name: request.name, seed: world.manifest.entry.defaultSeed, profile: world.profile });
+          const boundRequest = { ...request, contentDigest: item.contentDigest };
+          ok = supportsInstalledWorldGenerator(world.manifest) && checked.ok;
+          return { ...request, validation: { schemaVersion: 1, requestDigest: await digest(boundRequest), ok } };
+        } catch { /* Fail closed below with a validation bound to no usable package content. */ }
+        const boundRequest = { ...request, contentDigest: null };
+        return { ...request, validation: { schemaVersion: 1, requestDigest: await digest(boundRequest), ok } };
       }
       if (method === "creator.city.edit.preview") {
         // world.set 形态（世界多样化规格 §5.2）：operations 与 name/seed 配方替换
@@ -434,7 +490,7 @@ function App() {
         throw error;
       }
       if (method === "creator.project.create" || method.endsWith(".commit")) window.dispatchEvent(new Event("__CREATOR_PROJECT_CHANGED__"));
-      if (method === "creator.city.create" || method === "creator.city.edit.commit") window.dispatchEvent(new Event("__CREATOR_CITY_CHANGED__"));
+      if (method === "creator.city.create" || method === "creator.city.create_from_world" || method === "creator.city.edit.commit") window.dispatchEvent(new Event("__CREATOR_CITY_CHANGED__"));
       noteAgent(method, payload, true, result);
       return result;
     }]));
@@ -486,6 +542,7 @@ function App() {
         const snapshot = await (handlers as Record<string, (payload: Record<string, unknown>) => Promise<unknown>>)["creator.city.layout.read"](payload);
         const result = await creatorRequest("creator.city.layout.store", { snapshot });
         if (current) await recordCityDiagnostic(current, "layout_saved");
+        window.dispatchEvent(new Event("__CREATOR_LAYOUT_CHANGED__"));
         return result;
       } catch (error) {
         if (current) await recordCityDiagnostic(current, "layout_save_failed", "layout_store_failed");
@@ -569,7 +626,9 @@ function App() {
       }).catch(error => setMessage(error instanceof Error ? error.message : "creator_refresh_failed"));
     };
     window.addEventListener("__CREATOR_PROJECT_CHANGED__", changed);
-    return () => window.removeEventListener("__CREATOR_PROJECT_CHANGED__", changed);
+    const layoutsChanged = () => { void refresh().catch(error => setMessage(error instanceof Error ? error.message : "creator_refresh_failed")); };
+    window.addEventListener("__CREATOR_LAYOUT_CHANGED__", layoutsChanged);
+    return () => { window.removeEventListener("__CREATOR_PROJECT_CHANGED__", changed); window.removeEventListener("__CREATOR_LAYOUT_CHANGED__", layoutsChanged); };
   }, [project, refresh]);
   useEffect(() => {
     let cancelled = false;
@@ -616,7 +675,12 @@ function App() {
     const discardedDrafts = hasDrafts(project);
     try {
       if (!worldRevision) throw new Error("creator_layout_not_bound");
-      const created = await creatorRequest<{ projectId: string }>("creator.project.create", { template, worldRevision, operationId });
+      const selectedLayout = layouts.find(layout => layoutSelectionKey(layout) === worldRevision);
+      if (!selectedLayout) throw new Error("creator_layout_not_bound");
+      const created = await creatorRequest<{ projectId: string }>("creator.project.create", {
+        template, worldRevision: selectedLayout.worldRevision, operationId,
+        ...(selectedLayout.cityId ? { cityId: selectedLayout.cityId } : {}),
+      });
       setPendingCreateId(null);
       await refresh(); await openProject(created.projectId); setActivePanel("play");
       if (discardedDrafts) setMessage("已创建新项目；之前项目的未提交草稿已丢弃。");
@@ -732,6 +796,29 @@ function App() {
       setInstalledWorldView(world);
       setMessage("世界包只读预览正在加载；场景碰撞和玩法尚未启用。");
     } catch (error) { setMessage(`无法预览世界包（${errorCode(error, "content_preview_failed")}）。`); }
+    finally { setBusy(false); }
+  };
+  const createCityFromInstalledWorld = async (item: InstalledContentPackage) => {
+    const cityName = item.packageId;
+    setBusy(true); setMessage("");
+    try {
+      const world = await inspectInstalledWorld(creatorRequest, item);
+      if (!supportsInstalledWorldGenerator(world.manifest)) throw new Error("content_generator_incompatible");
+      if (!("defaultSeed" in world.manifest.entry)) throw new Error("content_snapshot_invalid");
+      const operationId = `world:${crypto.randomUUID()}`;
+      const request = { name: cityName, operationId, packageId: item.packageId, version: item.version,
+        seed: world.manifest.entry.defaultSeed, profile: world.profile };
+      const validation = validateCityInstance({ schemaVersion: 1, cityId: "city-validation", revision: 0,
+        name: request.name, seed: request.seed, profile: request.profile });
+      const result = await creatorRequest<{ cityId: string; revision: number }>("creator.city.create_from_world", {
+        name: request.name, operationId, packageId: item.packageId, version: item.version,
+        validation: { schemaVersion: 1, requestDigest: await digest({ name: request.name, operationId, packageId: item.packageId, version: item.version, contentDigest: item.contentDigest }), ok: validation.ok },
+      });
+      await loadCities();
+      setMessage(`已创建并保存独立城市「${cityName}」（版本 ${result.revision}），来源 ${item.packageId}@${item.version}。城市名称可随后编辑。正在加载只读预览。`);
+      try { await openCityView(result.cityId, result.revision); }
+      catch (error) { setMessage(`城市已保存，但预览加载失败（${errorCode(error, "creator_city_view_failed")}）。`); }
+    } catch (error) { setMessage(`无法从世界包创建城市（${errorCode(error, "creator_city_create_failed")}）。`); }
     finally { setBusy(false); }
   };
   const importModel = async () => {
@@ -989,7 +1076,15 @@ function App() {
       </nav>
       <section className="viewport" aria-label="City 实时视口">
         <div className="viewport-head"><div className="section-title">城市视图</div><span className="viewport-hint">点选建筑移动 · 拖动旋转 · 滚轮缩放</span><button className="secondary reset-view" onClick={() => setFocusSignal(value => value + 1)}>重置视角</button></div>
-        <div className="viewport-base">{installedWorldView && "defaultSeed" in installedWorldView.manifest.entry ? <div className="viewport-frame"><CityViewport key={installedWorldView.manifest.contentDigest} seed={installedWorldView.manifest.entry.defaultSeed} worldProfile={installedWorldView.profile} isolatedDraft isolatedProjectPatch={installedWorldView.patch as PlanPatchV1 | null} worldScene={installedWorldView} registerProbe={false} onViewportStatus={(status, code) => { if (status === "ready") setMessage("世界包只读预览已加载；场景碰撞和玩法尚未启用。"); else if (status === "failed") setMessage(`世界包预览失败（${code ?? "content_preview_failed"}）。`); }} /><div className="viewport-savebar" role="status">世界包只读预览 · 场景碰撞和玩法未启用 <button onClick={() => setInstalledWorldView(null)}>返回项目视图</button></div></div> : draftCityView ? <div className="viewport-frame"><CityViewport key={`${draftCityView.cityId}:${draftCityView.revision}`} seed={draftCityView.seed} worldProfile={draftCityView.profile} isolatedDraft isolatedProjectPatch={(draftCityView.planPatch ?? null) as PlanPatchV1 | null} focusSignal={focusSignal}
+        <div className="viewport-base">{installedWorldView && "defaultSeed" in installedWorldView.manifest.entry ? <div className="viewport-frame"><CityViewport key={draftCityView ? `${draftCityView.cityId}:${draftCityView.revision}:${installedWorldView.manifest.contentDigest}` : installedWorldView.manifest.contentDigest} seed={installedWorldView.manifest.entry.defaultSeed} worldProfile={installedWorldView.profile} isolatedDraft isolatedProjectPatch={installedWorldView.patch as PlanPatchV1 | null} worldScene={installedWorldView} registerProbe={false} onEngineChange={engine => { if (draftCityView && draftCityViewRef.current === draftCityView) draftEngineRef.current = engine; }} onViewportStatus={(status, code) => {
+          if (draftCityView) {
+            draftViewStatusRef.current = status; draftViewFailureRef.current = code;
+            void recordCityDiagnostic(draftCityView, status === "ready" ? "view_ready" : status === "failed" ? "view_failed" : "view_started", code);
+            if (status === "ready") setMessage(`独立城市 ${draftCityView.name} 的固定世界包场景已加载；场景碰撞和玩法尚未启用。`);
+            else if (status === "failed") setMessage(`独立城市世界包预览失败（${code ?? "content_preview_failed"}）。`);
+          } else if (status === "ready") setMessage("世界包只读预览已加载；场景碰撞和玩法尚未启用。");
+          else if (status === "failed") setMessage(`世界包预览失败（${code ?? "content_preview_failed"}）。`);
+        }} /><div className="viewport-savebar" role="status">{draftCityView ? `独立城市 ${draftCityView.name} · 固定世界包 · 只读预览` : "世界包只读预览"} · 场景碰撞和玩法未启用 <button onClick={() => setInstalledWorldView(null)}>返回项目视图</button></div></div> : draftCityView ? <div className="viewport-frame"><CityViewport key={`${draftCityView.cityId}:${draftCityView.revision}`} seed={draftCityView.seed} worldProfile={draftCityView.profile} isolatedDraft isolatedProjectPatch={(draftCityView.planPatch ?? null) as PlanPatchV1 | null} focusSignal={focusSignal}
           onEngineChange={engine => { if (draftCityViewRef.current === draftCityView) draftEngineRef.current = engine; }}
           onViewportStatus={(status, code) => { if (draftCityViewRef.current === draftCityView) {
             draftViewStatusRef.current = status; draftViewFailureRef.current = code;
@@ -1003,8 +1098,8 @@ function App() {
           : projectCityKey ? (projectCity?.key !== projectCityKey
             ? <div className="empty viewport-empty">正在读取项目绑定的城市…</div>
             : projectCity.city && isolatedPatchResult && !isolatedPatchResult.ok ? <div className="empty viewport-empty">城市编辑补丁无效或与当前生成器不兼容，无法安全预览。</div>
-            : projectCity.city ? <div className="viewport-frame"><CityViewport key={projectCityKey} seed={projectCity.city.seed} worldProfile={projectCity.city.profile} isolatedDraft isolatedProjectPatch={isolatedPatchResult?.ok ? isolatedPatchResult.value as unknown as PlanPatchV1 : null} focusSignal={focusSignal} onEngineChange={setBaseEngine} onViewportStatus={setBaseStatus} />
-              <div className="viewport-savebar" role="status">独立城市只读预览 · 城市编辑尚不可用</div></div>
+            : projectCity.city ? <div className="viewport-frame"><CityViewport key={`${projectCityKey}:${projectCity.worldScene?.manifest.contentDigest ?? "generated"}`} seed={projectCity.city.seed} worldProfile={projectCity.city.profile} isolatedDraft isolatedProjectPatch={projectCity.worldScene?.patch as PlanPatchV1 | null ?? (isolatedPatchResult?.ok ? isolatedPatchResult.value as unknown as PlanPatchV1 : null)} worldScene={projectCity.worldScene} focusSignal={focusSignal} onEngineChange={setBaseEngine} onViewportStatus={setBaseStatus} />
+              <div className="viewport-savebar" role="status">独立城市只读预览{projectCity.worldScene ? " · 已恢复固定世界包场景" : ""}{projectCity.error ? ` · 世界包场景不可用（${projectCity.error}）` : ""} · 城市编辑尚不可用</div></div>
             : <div className="empty viewport-empty">{projectCity.error}</div>)
           : viewportSeed !== null
           ? <div className="viewport-frame"><CityViewport seed={viewportSeed} worldProfile={worldProfile} editable={!!project} focusSignal={focusSignal}
@@ -1052,12 +1147,12 @@ function App() {
           {browserPreview && <p className="muted">浏览器预览没有原生文件选择器，请在桌面应用中使用。</p>}
           {packageInspection && <code>{formatWorldPackageInspection(packageInspection)}</code>}
           {packageInspection && <div className="actions"><button disabled={busy} onClick={() => void installInspectedPackage()}>安装到本机内容库</button><span className="muted">仅本机存储，尚不可运行</span></div>}
-          {installedPackages.length > 0 && <div><div className="section-title">已安装内容包</div>{installedPackages.map(item => <div key={`${item.packageId}:${item.version}`} className="actions"><code>{formatInstalledPackage(item)}</code><button className="secondary" disabled={busy} onClick={() => void validateInstalledPackage(item)}>检查内容</button><button className="secondary" disabled={busy} onClick={() => void previewInstalledPackage(item)}>只读预览</button><button className="secondary" disabled={busy} onClick={() => { const key = `${item.packageId}:${item.version}`; if (confirmUninstall === key) void uninstallInstalledPackage(item); else setConfirmUninstall(key); }}>{confirmUninstall === `${item.packageId}:${item.version}` ? "确认卸载" : "卸载"}</button></div>)}</div>}</div>
+          {installedPackages.length > 0 && <div><div className="section-title">已安装内容包</div>{installedPackages.map(item => <div key={`${item.packageId}:${item.version}`} className="actions"><code>{formatInstalledPackage(item)}</code><button className="secondary" disabled={busy} onClick={() => void validateInstalledPackage(item)}>检查内容</button><button className="secondary" disabled={busy} onClick={() => void previewInstalledPackage(item)}>只读预览</button><button disabled={busy} onClick={() => void createCityFromInstalledWorld(item)}>创建独立 City</button><button className="secondary" disabled={busy} onClick={() => { const key = `${item.packageId}:${item.version}`; if (confirmUninstall === key) void uninstallInstalledPackage(item); else setConfirmUninstall(key); }}>{confirmUninstall === `${item.packageId}:${item.version}` ? "确认卸载" : "卸载"}</button></div>)}</div>}</div>
           <div className="section-title">打开项目</div>
           <div className="project-list">{projects.map(row => <button key={row.projectId} className={`project-row ${project?.projectId === row.projectId ? "selected" : ""}`} disabled={busy} onClick={() => { if (row.projectId !== project?.projectId) guardDrafts(row.projectId, () => void openProject(row.projectId)); else { setInstalledWorldView(null); if (draftCityView) { cityOpenRequest.current++; draftCityViewRef.current = null; setDraftCityView(null); } } }}><strong>{row.title}</strong><span>版本 {row.revision}{project?.projectId === row.projectId ? " · 当前项目" : switchConfirm === row.projectId ? " · 再次点击以丢弃草稿" : ""}</span></button>)}</div>
           <div><div className="section-title">创建新项目</div><p className="muted">选择玩法和 City 布局，创建独立的本地草稿。</p></div>
           <label>新建模板<select value={template} disabled={busy} onChange={event => setTemplate(event.target.value)}><option value="checkpoint-race">驾驶检查点竞速</option><option value="collect-one">驾驶区域收集</option><option value="ornithopter-flight">扑翼飞行检查点</option></select></label>
-          <label>绑定 City 世界<select value={worldRevision} disabled={busy || layouts.length === 0} onChange={event => setWorldRevision(event.target.value)}>{layouts.map(layout => <option key={layout.worldRevision} value={layout.worldRevision}>{layout.layoutId} · seed {layout.seed} · {layout.anchorCount} 个锚点</option>)}</select></label>
+          <label>绑定 City 世界<select value={worldRevision} disabled={busy || layouts.length === 0} onChange={event => setWorldRevision(event.target.value)}>{layouts.map(layout => <option key={layoutSelectionKey(layout)} value={layoutSelectionKey(layout)}>{layout.cityId ? `${layout.cityId} · ` : "Miami · "}{layout.layoutId} · seed {layout.seed} · {layout.anchorCount} 个锚点</option>)}</select></label>
           <button disabled={busy || !worldRevision} onClick={() => guardDrafts("create", () => void createProject())}>{switchConfirm === "create" ? "确认丢弃草稿并新建" : "新建项目"}</button>
           {layouts.length === 0 && <p className="muted">尚无 City 布局快照。先打开 City 生成道路地图，再回到 Studio。</p>}
         </section>}

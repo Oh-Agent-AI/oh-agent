@@ -70,8 +70,8 @@ pub use crate::envelope::*;
 /// 当前构建注册的工具。传输层据此渲染 `tools/list` 并校验 `tools/call` 的名字。
 pub fn tool_specs() -> Vec<ToolSpec> { tool_specs_with_city(true) }
 
-/// 实验性独立 City 工具默认不对外暴露：它们只覆盖草稿/只读视口，尚不能
-/// 绑定项目/发布/切换城市。需要时用 `data-mcp serve --enable-city-tools` 显式开启。
+/// 实验性独立 City 工具默认不对外暴露：它们覆盖草稿、世界包引用和只读视口，
+/// 尚不能启动/切换独立 City runtime。需要时用 `data-mcp serve --enable-city-tools` 显式开启。
 pub fn tool_specs_with_city(include_city: bool) -> Vec<ToolSpec> {
     // `mut` 只在 `mcp-internal` 构建里用到（下方 push）；公开构建不加工具。
     #[cfg_attr(not(feature = "mcp-internal"), allow(unused_mut))]
@@ -245,7 +245,7 @@ pub fn dispatch_with_permissions_options(
         "set_building_model" => city_building::run_set(args, data_home, allow_local_writes),
         "reset_building" => city_building::run_reset(args, data_home, allow_local_writes),
         "im_publish" => city_im::run(args, data_home, allow_local_writes),
-        "creator_city_create" | "creator_city_edit_preview" | "creator_city_patch_preview" | "creator_city_edit_commit" | "creator_city_list" | "creator_city_read" | "creator_city_diagnostics" | "creator_city_view" | "creator_city_view_status" | "creator_city_capture" | "creator_city_layout_read" | "creator_city_layout_save" | "creator_layout_list" | "creator_project_list" | "creator_project_read" | "creator_operation_status" | "creator_playtest_history" | "creator_playtest_start" | "creator_playtest_result" | "creator_playtest_cancel" | "creator_project_create"
+        "creator_city_create" | "creator_city_create_from_world" | "creator_city_edit_preview" | "creator_city_patch_preview" | "creator_city_edit_commit" | "creator_city_list" | "creator_city_read" | "creator_city_diagnostics" | "creator_city_view" | "creator_city_view_status" | "creator_city_capture" | "creator_city_layout_read" | "creator_city_layout_save" | "creator_layout_list" | "creator_project_list" | "creator_project_read" | "creator_operation_status" | "creator_playtest_history" | "creator_playtest_start" | "creator_playtest_result" | "creator_playtest_cancel" | "creator_project_create"
         | "creator_game_preview" | "creator_scene_preview" | "creator_project_commit" | "creator_project_publish"
         | "creator_scene_describe" | "creator_scene_capture" | "creator_scene_inspect" | "creator_scene_validate" | "creator_capabilities_list" => creator_studio::run(name, args, data_home, allow_local_writes),
         "city_world_profile_preview" | "city_world_profile_apply" => city_world::run(name, args, data_home, allow_local_writes),

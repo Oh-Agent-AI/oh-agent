@@ -1,7 +1,8 @@
-import { canonicalJson, parseMiniGamePackJson, validateAssetRefs, validateCityProjectAssetCatalog, validateMount, validateSceneDraft,
-  type CityGameMountV1, type CityProjectAssetCatalogV1, type ContentRef, type MiniGamePackV1, type ModelAssetCatalogV1, type ModelAssetRefV1, type SceneDraftV1, type VisualPlaytestEvidenceV1 } from "@agent-vitals/city-sdk";
+import { canonicalJson, inspectContentPackageV2, parseMiniGamePackJson, validateAssetRefs, validateCityProjectAssetCatalog,
+  validateContentPackageManifestV2, validateMount, validateSceneDraft, type CityGameMountV1, type CityProjectAssetCatalogV1, type ContentRef,
+  type MiniGamePackV1, type ModelAssetCatalogV1, type ModelAssetRefV1, type SceneDraftV1, type VisualPlaytestEvidenceV1 } from "@agent-vitals/city-sdk";
 import { invokeHost } from "../../host";
-import { parsePendingCreatorPlaytest, type PendingCreatorPlaytestV1 } from "./creatorPlaytestPending";
+import { parsePendingCreatorPlaytest, type LoadedCityWorldSceneV1, type PendingCreatorPlaytestV1 } from "./creatorPlaytestPending";
 import type { CityLayoutSdkViewV1 } from "../../engine/sdk/cityLayoutAdapter";
 import { m as worldUnits } from "../../engine/worldScale";
 import type { CreatorPublishedMiniGameV1 } from "./creatorMiniGame";
@@ -78,7 +79,54 @@ async function validateRelease(view: CityLayoutSdkViewV1, release: { releaseId: 
 /** Reads a pending city-scoped playtest before claiming, so the City runtime can
  * load the release's frozen city revision without switching the active City. */
 export async function pendingCreatorPlaytest(): Promise<PendingCreatorPlaytestV1> {
-  return parsePendingCreatorPlaytest(await hostCall<unknown>("city.creator.playtest.pending", {}));
+  const pending = parsePendingCreatorPlaytest(await hostCall<unknown>("city.creator.playtest.pending", {}));
+  if (!pending.pending || !pending.worldPackage) return pending;
+  const worldScene = await loadPendingCityWorldScene(pending.runId, pending.worldPackage);
+  return Object.freeze({ ...pending, worldScene });
+}
+
+async function loadPendingCityWorldScene(runId: string, expectedRef: { packageId: string; version: string; contentDigest: string }): Promise<LoadedCityWorldSceneV1> {
+  const opened = await hostCall<unknown>("city.creator.world.package.snapshot.open", { runId });
+  if (!opened || typeof opened !== "object" || Array.isArray(opened)) throw new Error("content_snapshot_invalid");
+  const snapshot = opened as Record<string, unknown>;
+  const id = snapshot.snapshotId;
+  if (typeof id !== "string") throw new Error("content_snapshot_invalid");
+  try {
+    const ref = snapshot.worldPackage as Record<string, unknown> | undefined;
+    if (!ref || ref.packageId !== expectedRef.packageId || ref.version !== expectedRef.version || ref.contentDigest !== expectedRef.contentDigest) throw new Error("content_snapshot_invalid");
+    const checked = validateContentPackageManifestV2(snapshot.manifest);
+    if (!checked.ok || checked.value.kind !== "city-world" || checked.value.packageId !== expectedRef.packageId
+      || checked.value.version !== expectedRef.version || checked.value.contentDigest !== expectedRef.contentDigest) throw new Error("content_snapshot_invalid");
+    const files = new Map<string, Uint8Array>();
+    for (const file of checked.value.files) {
+      const bytes = new Uint8Array(file.byteLength);
+      let offset = 0;
+      do {
+        const part = await hostCall<unknown>("city.creator.world.package.snapshot.read", { runId, snapshotId: id, path: file.path, offset });
+        if (!part || typeof part !== "object" || Array.isArray(part)) throw new Error("content_snapshot_invalid");
+        const chunk = part as Record<string, unknown>;
+        if (chunk.contentDigest !== expectedRef.contentDigest || chunk.offset !== offset || chunk.totalBytes !== file.byteLength
+          || typeof chunk.data !== "string" || typeof chunk.complete !== "boolean" || chunk.data.length > 65536) throw new Error("content_snapshot_invalid");
+        let decoded: string;
+        try { decoded = atob(chunk.data); } catch { throw new Error("content_snapshot_invalid"); }
+        if (btoa(decoded) !== chunk.data || decoded.length > file.byteLength - offset || (!decoded.length && offset < file.byteLength)) throw new Error("content_snapshot_invalid");
+        for (let index = 0; index < decoded.length; index++) bytes[offset + index] = decoded.charCodeAt(index);
+        offset += decoded.length;
+        if (chunk.complete !== (offset === file.byteLength)) throw new Error("content_snapshot_invalid");
+      } while (offset < file.byteLength);
+      files.set(file.path, bytes);
+    }
+    const semantic = await inspectContentPackageV2(checked.value, files);
+    if (!semantic.ok || !("profile" in semantic.value.manifest.entry)) throw new Error("content_snapshot_invalid");
+    const entry = semantic.value.manifest.entry;
+    const parse = (path: string) => JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(files.get(path)!));
+    const scene = validateSceneDraft(parse(entry.scene));
+    const assets = validateCityProjectAssetCatalog(parse(entry.assets));
+    if (!scene.ok || !assets.ok) throw new Error("content_semantics_invalid");
+    return Object.freeze({ scene: scene.value, assets: assets.value, files });
+  } finally {
+    await hostCall("city.creator.world.package.snapshot.close", { runId, snapshotId: id }).catch(() => {});
+  }
 }
 
 /** Claims a Studio-initiated playtest only after a release is pinned to this live City revision. */

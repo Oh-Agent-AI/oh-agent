@@ -24,6 +24,25 @@ test("feeds fixed-step road-zone crossings through SDK rules to a race result", 
   race.dispose();
 });
 
+test("reports distance and relative bearing to the next checkpoint", () => {
+  const view = createCityLayoutSdkView({ layoutId: "race-guidance", worldRevision: "road-r1", seed: 70, preferredStart: { x: 0, z: 0 },
+    roadNodes: [{ id: "a", x: 0, z: 0 }, { id: "b", x: 50, z: 0 }, { id: "c", x: 100, z: 0 }, { id: "d", x: 150, z: 0 }],
+    roadEdges: [
+      { id: "ab", from: "a", to: "b", width: 8, kind: "local", points: [{ x: 0, z: 0 }, { x: 50, z: 0 }] },
+      { id: "bc", from: "b", to: "c", width: 8, kind: "local", points: [{ x: 50, z: 0 }, { x: 100, z: 0 }] },
+      { id: "cd", from: "c", to: "d", width: 8, kind: "local", points: [{ x: 100, z: 0 }, { x: 150, z: 0 }] },
+    ] });
+  const plan = createCheckpointRacePlan(view, 70);
+  assert.equal(plan.ok, true);
+  if (!plan.ok) return;
+  const target = plan.value.checkpointGeometry[0]!;
+  const race = new CheckpointRaceControllerV1(plan.value, () => {});
+  for (let frame = 0; frame < 12; frame++) race.fixedStep({ x: m(target.x - 100), y: m(target.y), z: m(target.z) }, 0);
+  assert.equal(race.snapshot.nextCheckpoint?.distanceMeters, 100);
+  assert.equal(race.snapshot.nextCheckpoint?.relativeBearingDegrees, 0);
+  race.dispose();
+});
+
 test("refuses to synthesize a course from disconnected streets", () => {
   const view = createCityLayoutSdkView({ layoutId: "isolated", worldRevision: "r", seed: 1,
     roadNodes: [{ id: "a", x: 0, z: 0 }, { id: "b", x: 40, z: 0 }, { id: "c", x: 200, z: 0 }, { id: "d", x: 240, z: 0 }],
