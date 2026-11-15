@@ -384,7 +384,8 @@ pub fn create_project_from_city_draft(home: &Path, actor: &str, template: &str, 
         .optional().map_err(|_| "creator_store_unavailable")?;
     let (layout_city_revision, layout_id, raw) = scoped.ok_or("creator_layout_not_found")?;
     let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
-    if snapshot["schemaVersion"].as_u64() != Some(2) || snapshot["cityId"].as_str() != Some(city_id)
+    // v2 与 v3 都可用来建项目：v3 只是多了锚点几何（项目只消费 layout/seed）。
+    if !matches!(snapshot["schemaVersion"].as_u64(), Some(2 | 3)) || snapshot["cityId"].as_str() != Some(city_id)
         || snapshot["worldRevision"].as_str() != Some(world_revision) {
         return Err("creator_layout_scope_mismatch");
     }
@@ -3166,7 +3167,9 @@ fn build_typed_mount(document: &Value, mount_id: &str, entry_anchor_id: &str, bi
     Ok((mount, coverage))
 }
 
-fn typed_mount_inputs(payload: &Value) -> Result<(&str, &str, &Value, Option<&str>, Option<&Value>), &'static str> {
+type TypedMountInputs<'a> = (&'a str, &'a str, &'a Value, Option<&'a str>, Option<&'a Value>);
+
+fn typed_mount_inputs(payload: &Value) -> Result<TypedMountInputs<'_>, &'static str> {
     let mount_id = args_valid_id(payload, "mountId")?;
     let entry = args_valid_id(payload, "entryAnchorId")?;
     let bindings = payload.get("bindings").filter(|value| value.is_object()).ok_or("creator_mount_invalid")?;

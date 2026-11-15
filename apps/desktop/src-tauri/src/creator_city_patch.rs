@@ -275,7 +275,7 @@ pub(crate) fn read_scoped_city_layout(home: &Path, city_id: &str, city_revision:
         params![city_id,city_revision,world_revision,layout_id], |row| row.get(0))
         .optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_layout_not_found")?;
     let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
-    if snapshot["schemaVersion"].as_u64() != Some(2) || snapshot["cityId"].as_str() != Some(city_id)
+    if !matches!(snapshot["schemaVersion"].as_u64(), Some(2 | 3)) || snapshot["cityId"].as_str() != Some(city_id)
         || snapshot["cityRevision"].as_u64() != Some(city_revision) || snapshot["worldRevision"].as_str() != Some(world_revision)
         || snapshot["layout"]["id"].as_str() != Some(layout_id) || !snapshot["layout"].is_object() {
         return Err("creator_layout_scope_mismatch");

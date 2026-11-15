@@ -28,14 +28,24 @@ pub const QUERY_SEMANTICS: &str = "2026-09-07";
 pub struct ToolError {
     pub code: &'static str,
     pub message: String,
+    /// 可执行恢复建议（工具名 + 参数模板）；无建议时为 None。
+    pub next: Option<Value>,
 }
 
 impl ToolError {
     pub fn new(code: &'static str, message: impl Into<String>) -> Self {
-        Self { code, message: message.into() }
+        Self { code, message: message.into(), next: None }
+    }
+    /// 附加可执行恢复建议（Agent-first 诊断闭环，STUDIO_AGENT_FIRST_EDITOR_SPEC §3.3）。
+    pub fn with_next(mut self, next: Value) -> Self {
+        self.next = Some(next);
+        self
     }
     pub fn to_json(&self) -> Value {
-        json!({ "code": self.code, "message": self.message })
+        match &self.next {
+            Some(next) => json!({ "code": self.code, "message": self.message, "next": next }),
+            None => json!({ "code": self.code, "message": self.message }),
+        }
     }
 }
 

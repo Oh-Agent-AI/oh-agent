@@ -36,6 +36,7 @@ mod workflow_summary;
 pub mod trust_profiles;
 mod city_building;
 mod city_im;
+mod creator_session;
 mod creator_studio;
 mod city_world;
 #[cfg(feature = "mcp-internal")]
@@ -100,6 +101,7 @@ pub fn tool_specs_with_city(include_city: bool) -> Vec<ToolSpec> {
         city_im::spec(),
     ];
     out.extend(creator_studio::specs());
+    out.extend(creator_session::specs());
     out.extend(city_world::specs());
     #[cfg(feature = "mcp-internal")]
     {
@@ -189,6 +191,14 @@ pub fn source_status_report(conn: &Connection) -> Result<Value, String> {
 
 /// `tools/call` 分发。`name` 已由传输层对 [`tool_specs`] 校验过。参数在这里
 /// 过一遍极简 schema 校验（spec §6.4 / M08：未知字段 → `invalid_argument`）。
+/// E3 诊断闭环：creator 域错误统一附加 recoveries 建议（同一份生成产物）。
+fn attach_creator_recovery(error: ToolError) -> ToolError {
+    match creator_studio::recovery_for(error.code) {
+        Some(next) => error.with_next(next),
+        None => error,
+    }
+}
+
 pub fn dispatch(name: &str, args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     dispatch_with_permissions(name, args, data_home, false)
 }
@@ -248,7 +258,18 @@ pub fn dispatch_with_permissions_options(
         "creator_city_create" | "creator_city_create_from_world" | "creator_city_edit_preview" | "creator_city_patch_preview" | "creator_city_edit_commit" | "creator_city_list" | "creator_city_read" | "creator_city_diagnostics" | "creator_city_view" | "creator_city_view_status" | "creator_city_capture" | "creator_city_layout_read" | "creator_city_layout_save" | "creator_city_anchor_list" | "creator_city_anchor_upsert" | "creator_city_anchor_remove" | "creator_mount_list" | "creator_mount_bind" | "creator_mount_unbind" | "creator_game_bind_preview" | "creator_layout_list" | "creator_project_list" | "creator_project_read" | "creator_operation_status" | "creator_playtest_history" | "creator_playtest_start" | "creator_playtest_result" | "creator_playtest_cancel" | "creator_project_create"
         | "creator_game_preview" | "creator_scene_preview" | "creator_project_commit" | "creator_project_publish"
         | "creator_scene_describe" | "creator_scene_capture" | "creator_scene_inspect" | "creator_scene_validate" | "creator_capabilities_list"
-        | "creator_vehicle_list" | "creator_vehicle_preview" | "creator_vehicle_define" | "creator_vehicle_inspect" => creator_studio::run(name, args, data_home, allow_local_writes),
+        | "creator_vehicle_list" | "creator_vehicle_preview" | "creator_vehicle_define" | "creator_vehicle_inspect" => {
+            creator_studio::run(name, args, data_home, allow_local_writes).map_err(attach_creator_recovery)
+        }
+        "creator_playtest_start" => {
+            // E2：试玩 start 成功即注册为 playtest 作业（统一作业面）。
+            let result = creator_studio::run(name, args, data_home, allow_local_writes).map_err(attach_creator_recovery);
+            if let Ok(value) = &result { creator_session::register_playtest_job(data_home, value); }
+            result
+        }
+        "creator_session_open" | "creator_session_status" | "creator_session_close"
+        | "creator_job_list" | "creator_job_status" | "creator_job_wait" | "creator_job_cancel"
+        | "creator_game_type_list" => creator_session::run(name, args, data_home, allow_local_writes),
         "city_world_profile_preview" | "city_world_profile_apply" => city_world::run(name, args, data_home, allow_local_writes),
         #[cfg(feature = "mcp-internal")]
         "query_sql_readonly" => query_sql_readonly::run(args, data_home),
