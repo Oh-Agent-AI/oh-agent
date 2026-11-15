@@ -1,6 +1,6 @@
 ---
 title: Oh Agent 是什么？开源的 AI Agent 行为数据分析平台，附带 Agent City
-lastUpdated: 2026-10-22
+lastUpdated: 2026-11-12
 description: Oh Agent 是免费开源的 AI Agent 行为数据分析平台，在你的电脑上本地运行。Agent Vitals 分析 Claude Code、Codex 等会话，Agent City 把它们变成一座 3D 城市，数据不上传。
 head:
   - tag: script
@@ -15,8 +15,8 @@ head:
         "inLanguage": "zh-CN",
         "applicationCategory": "DeveloperApplication",
         "operatingSystem": "macOS 11+（Apple Silicon）、Windows x64、Linux x64",
-        "softwareVersion": "1.0.0-beta.3",
-        "downloadUrl": "https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.3",
+        "softwareVersion": "1.0.0-beta.4",
+        "downloadUrl": "https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.4",
         "isAccessibleForFree": true,
         "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
         "license": "https://opensource.org/licenses/MIT",
@@ -50,15 +50,15 @@ Oh Agent 是一个免费开源的 AI Agent 行为数据分析平台。Agent 已�
 
 ## 关键事实
 
-- **版本**：1.0.0-beta.3，是 [GitHub](https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.3) 上的预发布版（Beta）。
-- **平台**：Apple Silicon Mac（已签名、已公证）、Windows x64 和 Linux x64（暂未代码签名）。Intel Mac 随后提供。详见[安装](/docs/zh/install)。
+- **版本**：1.0.0-beta.4，是 [GitHub](https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.4) 上的预发布版（Beta）。
+- **平台**：Apple Silicon Mac（已签名、已公证并装订票据）、Windows x64 和 Linux x64（暂未代码签名）。Intel Mac 随后提供。详见[安装](/docs/zh/install)。
 - **支持的 Agent**：Claude Code、Codex、DeepSeek Harness、WorkBuddy。
 - **一栋楼对应一次会话**，楼高按这次会话的 Token 数取对数后计算。
 - **本机运行**：不用注册账号，不用 API Key，会话不上传。
 - **许可**：MIT 开源，源码在 [github.com/Oh-Agent-AI/oh-agent](https://github.com/Oh-Agent-AI/oh-agent)。
 - **网页演示**：[ohagent.ai](https://ohagent.ai/) 上跑的是真实的城市前端，数据是 2000 条模拟会话，不会读取你电脑上的任何东西。
 
-<!-- source: apps/desktop/src-tauri/tauri.conf.json（version 1.0.0-beta.3，minimumSystemVersion 11.0）；GitHub release app-v1.0.0-beta.3（预发布，arm64 dmg 与 Windows/Linux x86_64 安装包） -->
+<!-- source: apps/desktop/src-tauri/tauri.conf.json（version 1.0.0-beta.4，minimumSystemVersion 11.0）；GitHub release app-v1.0.0-beta.4（预发布，arm64 dmg 与 Windows/Linux x86_64 安装包；由 main@974c2137 重新打包） -->
 <!-- source: crates/agent-vitals-query/src/sources/watch_topology.rs（四个数据源监听根） -->
 <!-- source: website/landing/README.md（演示 30 天 2000 条模拟会话）；LICENSE -->
 
@@ -90,7 +90,7 @@ Oh Agent 读取的是各个 Agent 自己写在用户目录里的会话日志。�
 
 ## 怎么安装？
 
-可以下载 1.0.0-beta.3，支持 Apple Silicon Mac、Windows 和 Linux。下载文件、各平台安装步骤和校验方法见[安装 Oh Agent](/docs/zh/install)。
+可以下载 1.0.0-beta.4，支持 Apple Silicon Mac、Windows 和 Linux。下载文件、各平台安装步骤和校验方法见[安装 Oh Agent](/docs/zh/install)。
 
 ## 更多
 
