@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { connect, connectHostCalls, invokeHost, observeHealth, publishToolbar } from "@agent-vitals/app-sdk/ui-host";
 import { canonicalJson, defaultVehicleCameraV1, estimateVehiclePerformanceV1, validateCityInstance, validateCityLayoutScope, validateCityLayoutSnapshot, validateMiniGamePack, validateMount, validateSceneDraft, validateVehicleProfileV1, validateWorldPlanPatch, type CityGameMountV1, type CityInstanceV1, type CityLayoutSnapshotV1, type CityWorldProfileV1, type VehicleProfileV1 } from "@agent-vitals/city-sdk";
 import { applyCityWorldOperations } from "./cityWorldOperations";
-import { buildGameValidation, buildSceneValidation, buildVehicleValidation, normalizeVehicleProfileInput, scopeMismatchEnvelope } from "./sdkValidation";
+import { buildGameValidation, buildSceneValidation, buildVehicleValidation, describeError, normalizeVehicleProfileInput, scopeMismatchEnvelope } from "./sdkValidation";
 import { loadStudioAtStartup } from "./startupLoad";
 import { resolveProjectCity } from "./projectCityScope";
 import { formatWorldPackageInspection, parseWorldPackageInspection, type WorldPackageInspection } from "./contentPackageInspect";
@@ -691,7 +691,7 @@ function App() {
   useEffect(() => {
     let cancelled = false;
     void loadStudioAtStartup(refresh, { isCancelled: () => cancelled, delay: ms => new Promise(resolve => window.setTimeout(resolve, ms)) })
-      .catch(error => { if (!cancelled) setMessage(errorCode(error, "creator_load_failed")); });
+      .catch(error => { if (!cancelled) setMessage(describeError(error, "creator_load_failed")); });
     return () => { cancelled = true; };
   }, [refresh]);
   useEffect(() => {
