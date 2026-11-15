@@ -29,8 +29,9 @@ for (const quarterTurns of [0, 1, 2, 3]) for (const shift of [0, 120]) {
   addNetworkEdge(network, transform(-90, -70), transform(-90, -35), true);
   const original = new Map([...network.edges].map(([id, edge]) => [id, JSON.stringify(edge)]));
   const sites = [{ ...transform(-33, -15), radius: 26 }, { ...transform(41, 62), radius: 46 }];
-  const world = { network, geo: { height: () => 1.2, buildable: () => true,
-    terrain: { slope: () => 0 } }, inRiver: () => false, reservations: () => sites };
+  const world = { network, geo: { height: () => 1.2, elevation: () => 1.2, buildable: () => true,
+    terrain: { slope: () => 0 }, landform: { elevation: () => 1.2, slope: () => 0, isBuildable: () => true } },
+    inRiver: () => false, reservations: () => sites };
   const target = transform(-90, -70);
   const request = { id: `capsule-endpoint:${quarterTurns}:${shift}`, source,
     target: { kind: "node", id: `${target.x}:${target.z}` }, purpose: "district-access",
