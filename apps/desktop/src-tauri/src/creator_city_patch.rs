@@ -430,13 +430,17 @@ pub(crate) fn mutate_city_anchors(home: &Path, actor: &str, city_id: &str, base_
         merged.retain(|existing| existing["id"].as_str() != Some(id));
         merged.push(anchor);
     }
+    let removed: std::collections::HashSet<&str> = remove_ids.iter().map(String::as_str).collect();
     for id in remove_ids {
         let before = merged.len();
         merged.retain(|anchor| anchor["id"].as_str() != Some(id));
         if merged.len() == before { return Err("creator_city_anchor_not_found"); }
     }
+    let links: Vec<Value> = layout["layout"].get("links").and_then(Value::as_array).map(|links| links.iter()
+        .filter(|link| !link["fromAnchorId"].as_str().is_some_and(|id| removed.contains(id))
+            && !link["toAnchorId"].as_str().is_some_and(|id| removed.contains(id))).cloned().collect()).unwrap_or_default();
     let merged_layout = json!({"schemaVersion":1,"id":layout_id,"coordinateSystem":"city-local-m-v1","anchors":merged,
-        "links":layout["layout"].get("links").cloned().unwrap_or_else(|| json!([]))});
+        "links":links});
     validate_layout_snapshot(&json!({"schemaVersion":1,"worldRevision":world_revision,"seed":layout["seed"],"layout":merged_layout}))?;
     let next = current.checked_add(1).filter(|revision| *revision <= i64::MAX as u64).ok_or("creator_city_invalid")?;
     let mut document: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
