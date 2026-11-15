@@ -13,7 +13,7 @@
 | 官方应用 | Agent City WebView + 引擎 + 玩法运行时 | `apps/agent-city/ui`（另有 `mcp/`、`relay/`） |
 | 世界配方权威 | `MIAMI_CITY_WORLD_V1`（`miami-islands` v1） | `apps/agent-city/ui/src/engine/cityWorldProfile.ts` |
 | 海湾地理参数 | `MIAMI_COASTAL`（`miami-coastal` 配方 v3） | `apps/agent-city/ui/src/engine/citySeaside.ts` |
-| 生成器版本 | `CITY_GENERATOR_VERSION = 6` | `apps/agent-city/ui/src/engine/generatorVersion.ts` |
+| 生成器版本 | `CITY_GENERATOR_VERSION = 7` | `apps/agent-city/ui/src/engine/generatorVersion.ts` |
 | 发行默认 seed | **74031**（`CityExperience` 初始值；用户偏好可覆盖——不把用户当前值当官方默认） | `apps/agent-city/ui/src/CityExperience.tsx` |
 | 皮肤目录 | `miami-vice`（themeId `miami`）、`desert-evening`（themeId `desert`） | `BUILTIN_CITY_SKINS_V1` + SDK 描述符锁步测试 |
 | SDK 内容模板 | `init --generator coastal-islands-v1` → `miami-islands` 配方 | `packages/agent-vitals-city-sdk/bin/oh-agent-sdk.mjs` |
@@ -37,7 +37,7 @@
   3. 内置 ID 经自定义导入路径被正确拒绝（`world_profile_reserved_id`）——官方内容只能
      走内置权威，不能被用户导入覆盖；
   4. `CITY_GENERATOR_VERSION === 6` 与本基线一致——生成器有意变更时必须重新核对本目录并更新基线。
-- 固定合成输入的布局对比由既有生成器基线（`scripts/verify-city-baseline.mjs`，版本 6）覆盖，
+- 固定合成输入的布局对比由既有生成器基线（`scripts/verify-city-baseline.mjs`，版本 7）覆盖，
   本目录不重复生成。
 
 ## 3. 缺口登记（规范要求：不能悄然丢弃）

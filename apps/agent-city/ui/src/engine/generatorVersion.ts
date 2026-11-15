@@ -19,4 +19,7 @@
 // 版本 4：长主干局部净距准入、修复后匝道选址。
 // 版本 5：匝道低段预留区（rampLowZone）、落地环出口钉住、snapJunctions 目标侧桥头、无街区时半径校准微调。
 // 版本 6：pruneShortSpurs 只保护「删后桥头无地面边」的链——桥头旁有其它引道时，贴桥头的断头残桩照删（7/2）。
-export const CITY_GENERATOR_VERSION = 6;
+// 版本 7：滨水分区泛化收口（ac64abc4 的配套基线递增）——waterfront 判定从 coastDistance 改为
+//         「有已声明地表水 && waterClearance < 90」，为无水世界（arid）铺路；blocks 分区随之重排，
+//         用户补丁引用的用地/街区 id 可能失配，编辑器按坐标锚点重定位。
+export const CITY_GENERATOR_VERSION = 7;
