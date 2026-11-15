@@ -103,11 +103,20 @@ App 侧注入点：
   `useCityGame`、`useCityDrivingPlay`、`openMecha`、cinema helper，并实例化
   registry；registry 目前**不接管** UI 启动路径，现有按钮仍走原逻辑，因此无行为变化。
 
-测试：app `verify:game-runtime-host`（1）、entry 测试（3）、runtime（10）；
-已有 `verify-city-game-session`、`verify-city-game-flight`、`verify-city-driving-entry`
-通过。`verify-city-suite fast` 在 `verify-city-joint-site-road` 有一项既有失败
-（`registered-model-ground-invalid-context`，与本轮 registry/entry 改动无关），
-需要单独定位，不能算本轮通过。
+测试：app `verify:game-runtime-host`（4，含 entry 测试）、runtime（10）。
+Miami 金样已在当前树重跑：
+
+- flight：`verify-city-game-session`、`verify-city-game-flight`、
+  `verify-city-game-controller`、`verify-city-game-world`、`verify-city-game-race`、
+  `verify-city-game-profile`、`verify-city-game-audio-service`、
+  `verify-city-game-scene-lease` 全部通过；
+- driving：`verify-city-driving`、`verify-city-driving-vtol`、
+  `verify-city-driving-structure-world`、`verify-city-driving-release-graph`、
+  `verify-city-driving-entry` 全部通过；
+- cinema：`verify-react-city-cinematic`（5 seeds）通过；
+- `verify-city-suite fast` 在 `verify-city-joint-site-road` 有一项既有失败
+  （`registered-model-ground-invalid-context`，与 registry/entry 改动无关），
+  需要单独定位，不能算本轮通过。
 
 ## 4. 迁移顺序（下一步）
 
