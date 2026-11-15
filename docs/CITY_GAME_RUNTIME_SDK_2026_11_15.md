@@ -123,12 +123,11 @@ Miami 金样已在当前树重跑：
   `verify-city-model-envelope`、`verify-city-model-ground`、
   `verify-city-shore-plot-access`、`verify-city-joint-frontage`、
   `verify-city-world` 分别通过；这些改动只补 `elevation/landform` 上下文，不改规划逻辑。
-- 继续补 `verify-city-endpoint-routing`、`verify-city-junction-rings` 的
-  `elevation/landform` fixture 后，它们也单项通过。
-- `verify-city-suite fast` 最新一次跑到 28/33，停在 `verify-city-connect`
-  （`verify-city-repair-safety.mjs` 的 wet-candidate fixture 与当前 ground/elevation
-  合同不一致）；该 fixture 未在本轮改完，因此不宣称整套快守卫通过。adapter/entry
-  的 Miami 金样以已列出的单项脚本为准。
+- 继续补 `verify-city-endpoint-routing`、`verify-city-junction-rings`、
+  `verify-city-connect`、`verify-city-loop`、`verify-city-landing`、
+  `verify-city-repair-safety` 的 `elevation/landform` fixture 后，
+  **`verify-city-suite fast` 33/33 全部通过**（74.6s，2026-11-15）。
+  这些改动只补测试夹具的合成地形合同，不改生产生成器、Miami 启动路径或规划逻辑。
 
 ## 3.2 扑翼 descriptor 已进入 Creator 能力发现
 
