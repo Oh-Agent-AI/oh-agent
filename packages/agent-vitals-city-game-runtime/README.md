@@ -19,6 +19,10 @@ separate from `@agent-vitals/city-sdk`:
 - `MIAMI_ACTIVITY_CATALOG_V1`: descriptors for the four built-in Miami
   activities (flight/driving/mecha/cinema). **Descriptors only** — existing
   app implementations must be wrapped as adapters before registration.
+- `templateCatalog` lockstep: `creator` templates must exist in
+  `CREATOR_TEMPLATES_V1`, `builtin` templates must exist in
+  `BUILTIN_ACTIVITY_TEMPLATE_IDS`, and `planned` descriptors are rejected by
+  the registry until their template lands.
 - `ORNITHOPTER_GAME_TYPE_V1`: the planned Creator flight game type.
 
 ## Not implemented yet

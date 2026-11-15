@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { validateGameTypeDescriptorV1 } from "@agent-vitals/city-sdk";
-import { createGameRuntimeRegistry, GameRuntimeError, MIAMI_ACTIVITY_CATALOG_V1, ORNITHOPTER_GAME_TYPE_V1 } from "../src/index.ts";
+import { createGameRuntimeRegistry, GameRuntimeError, MIAMI_ACTIVITY_CATALOG_V1, ORNITHOPTER_GAME_TYPE_V1, validateTemplateLink } from "../src/index.ts";
 import type { GameRuntimeHandleV1, GameRuntimeV1 } from "../src/index.ts";
 
 const descriptor = {
@@ -9,7 +9,8 @@ const descriptor = {
   id: "creator.test-flight-v1",
   version: 1,
   label: "Test flight",
-  template: "test-flight",
+  templateCatalog: "creator",
+  template: "checkpoint-race",
   runtime: { id: "test.flight", contractVersion: 3 },
   slots: { gates: { kind: "route", min: 1, max: 4, requires: ["fly"] } },
   parameters: { timeLimit: { min: 10, max: 100, default: 30 } },
@@ -34,6 +35,16 @@ test("registers and resolves a validated game type by exact contract version", (
   assert.equal(registry.descriptors().length, 1);
 });
 
+test("rejects planned templates and template ids outside their declared catalog", () => {
+  const registry = createGameRuntimeRegistry();
+  const planned = { ...descriptor, id: "creator.planned-v1", templateCatalog: "planned" };
+  assert.throws(() => registry.register(planned, fakeRuntime()), (error: unknown) => error instanceof GameRuntimeError && error.code === "game_type_template_mismatch");
+  const wrongCreator = { ...descriptor, id: "creator.wrong-v1", template: "not-a-creator-template" };
+  assert.throws(() => registry.register(wrongCreator, fakeRuntime()), (error: unknown) => error instanceof GameRuntimeError && error.code === "game_type_template_mismatch");
+  const wrongBuiltin = { ...descriptor, id: "miami.wrong-v1", templateCatalog: "builtin", template: "not-a-builtin-template" };
+  assert.throws(() => registry.register(wrongBuiltin, fakeRuntime()), (error: unknown) => error instanceof GameRuntimeError && error.code === "game_type_template_mismatch");
+});
+
 test("fails closed on duplicate ids, unknown types and contract drift", () => {
   const registry = createGameRuntimeRegistry();
   registry.register(descriptor, fakeRuntime());
@@ -54,5 +65,10 @@ test("built-in catalog and the planned ornithopter descriptor are valid data-onl
   for (const item of [...MIAMI_ACTIVITY_CATALOG_V1, ORNITHOPTER_GAME_TYPE_V1]) {
     assert.equal(validateGameTypeDescriptorV1(item).ok, true, item.id);
   }
-  assert.equal(ORNITHOPTER_GAME_TYPE_V1.runtime.id, "city-flight-ornithopter");
+  for (const item of MIAMI_ACTIVITY_CATALOG_V1) {
+    assert.equal(item.templateCatalog, "builtin");
+    assert.equal(validateTemplateLink(item), null);
+  }
+  assert.equal(ORNITHOPTER_GAME_TYPE_V1.templateCatalog, "planned");
+  assert.match(validateTemplateLink(ORNITHOPTER_GAME_TYPE_V1) ?? "", /planned template/);
 });

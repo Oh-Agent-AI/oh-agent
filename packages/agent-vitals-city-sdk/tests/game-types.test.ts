@@ -7,6 +7,7 @@ const descriptor = {
   id: "creator.flight-ornithopter-v1",
   version: 1,
   label: "扑翼飞行",
+  templateCatalog: "planned",
   template: "ornithopter-flight",
   runtime: { id: "city-flight-ornithopter", contractVersion: 1 },
   slots: {
@@ -33,6 +34,7 @@ test("accepts a bounded data-only game type descriptor and freezes it", () => {
 
 test("rejects executable or unbounded game type claims", () => {
   assert.equal(validateGameTypeDescriptorV1({ ...descriptor, code: "run()" }).ok, false);
+  assert.equal(validateGameTypeDescriptorV1({ ...descriptor, templateCatalog: "other" }).ok, false);
   assert.equal(validateGameTypeDescriptorV1({ ...descriptor, runtime: { id: "x" } }).ok, false);
   assert.equal(validateGameTypeDescriptorV1({ ...descriptor, slots: { gates: { kind: "route", min: 3, max: 3, requires: ["teleport"] } } }).ok, false);
   assert.equal(validateGameTypeDescriptorV1({ ...descriptor, parameters: { flapPower: { min: 10, max: 1, default: 6 } } }).ok, false);

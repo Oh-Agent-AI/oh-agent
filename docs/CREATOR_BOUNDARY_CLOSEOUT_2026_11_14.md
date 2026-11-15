@@ -117,5 +117,8 @@
    再谈 `creator_city_open` 与迁移；否则新工具无法产生可玩内容。
 2. 把 `BUILTIN_CITY_SKINS_V1` 上移 SDK 时，同时给 skin pack 增加
    `creatorSelectable: true|false`，避免“能渲染但不应被 Agent 选择”的目录混用。
-3. 在 CI 增加本文件 §3 的命令组合（生成物 check + 三套测试 + 两个 clippy），
-   防止下一轮再次出现“已实现但 DoD 未验证”。
+3. 在 CI 增加本文件 §3 的命令组合（生成物 check + 四套测试 + 两个 clippy），
+   防止下一轮再次出现“已实现但 DoD 未验证”。CI 新增独立 job
+   `city_game_runtime`（Node 22，链接 city-sdk 后跑 `npm test` 与 `typecheck`）；
+   完整组合见
+   [CITY_GAME_RUNTIME_SDK_2026_11_15.md §5](CITY_GAME_RUNTIME_SDK_2026_11_15.md#5-测试)。

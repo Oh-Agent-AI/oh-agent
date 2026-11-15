@@ -4,6 +4,7 @@ export type GameRuntimeErrorCodeV1 =
   | "game_type_duplicate"
   | "game_type_unknown"
   | "game_type_version_mismatch"
+  | "game_type_template_mismatch"
   | "game_runtime_invalid";
 
 export class GameRuntimeError extends Error {

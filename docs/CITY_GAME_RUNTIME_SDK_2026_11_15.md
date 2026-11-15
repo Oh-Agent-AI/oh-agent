@@ -39,6 +39,7 @@ type GameTypeDescriptorV1 = {
   id: string;
   version: number;
   label: string;
+  templateCatalog: "creator" | "builtin" | "planned";
   template: string;
   runtime: { id: string; contractVersion: number };
   slots: Record<string, { kind: "spawn"|"route"|"zone"|"object"; min: number; max: number;
@@ -50,7 +51,10 @@ type GameTypeDescriptorV1 = {
 ```
 
 `validateGameTypeDescriptorV1` 严格拒绝未知字段、越界参数、非 `model-glb` 资产、
-未知 capability 和不可执行字段。测试见 `tests/game-types.test.ts`。
+未知 capability 和不可执行字段。`templateCatalog` 明确 `template` 属于哪一本目录：
+`creator` 必须命中 `CREATOR_TEMPLATES_V1`，`builtin` 必须命中
+`BUILTIN_ACTIVITY_TEMPLATE_IDS`，`planned` 不可注册。测试见
+`tests/game-types.test.ts` 与 runtime 的 `registry.test.ts`。
 
 ### 2.2 `city-game-runtime` 注册表
 
@@ -62,7 +66,7 @@ registry.descriptors();
 ```
 
 错误码：`game_type_invalid`、`game_type_duplicate`、`game_type_unknown`、
-`game_type_version_mismatch`、`game_runtime_invalid`。
+`game_type_version_mismatch`、`game_type_template_mismatch`、`game_runtime_invalid`。
 
 ### 2.3 assets 目录中的 catalog
 
@@ -95,13 +99,37 @@ registry.descriptors();
 4. **能力发布**：把 `gameTypes` 加入 `creator_capabilities` 生成链路，Rust/MCP
    只读生成产物。
 
-## 5. 测试
+## 5. 测试与 CI 组合
 
 - `city-sdk`：descriptor 校验、预算、冻结、非法字段。
-- `city-game-runtime`：注册/解析/重复/未知/版本漂移/实现不匹配；四个 Miami
-  目录与扑翼 descriptor 均通过校验。
+- `city-game-runtime`：注册/解析/重复/未知/版本漂移/实现不匹配；template
+  catalog 锁步（`creator` 必须在 `CREATOR_TEMPLATES_V1`，`builtin` 必须在
+  `BUILTIN_ACTIVITY_TEMPLATE_IDS`，`planned` 不可注册）；四个 Miami 目录与
+  扑翼 descriptor 均通过校验。
 - 后续 adapter：Miami 行为 golden、确定性 fixed-step、dispose/租约泄漏、
   未知 gameType fail-closed。
+
+CI 专用 job `city_game_runtime`（Node 22）执行：
+
+```sh
+(cd packages/agent-vitals-city-sdk && npm ci && npm run build)
+mkdir -p packages/agent-vitals-city-game-runtime/node_modules/@agent-vitals
+ln -s ../../../agent-vitals-city-sdk \
+  packages/agent-vitals-city-game-runtime/node_modules/@agent-vitals/city-sdk
+npm test --prefix packages/agent-vitals-city-game-runtime
+npm run typecheck --prefix packages/agent-vitals-city-game-runtime
+node --experimental-transform-types scripts/generate-creator-capabilities.mjs --check
+npm test --prefix packages/agent-vitals-city-sdk
+npm test --prefix apps/creator-studio/ui
+npm run typecheck --prefix apps/creator-studio/ui
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+cargo test -p agent-vitals-mcp
+cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
+cargo clippy -p agent-vitals-mcp --all-targets -- -D warnings
+```
+
+本地若已有 `city-sdk/node_modules`，运行时包可直接复用其 `tsc`；CI 必须在
+`city-sdk` 安装后创建上述链接，运行时包不提交自己的 `node_modules`/lockfile。
 
 ## 6. 明确未实现
 

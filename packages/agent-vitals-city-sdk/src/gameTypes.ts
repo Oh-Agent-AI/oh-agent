@@ -21,6 +21,8 @@ export type GameTypeDescriptorV1 = Readonly<{
   id: string;
   version: number;
   label: string;
+  /** Where `template` is defined: Creator template catalog, built-in activity catalog, or a planned type not registrable yet. */
+  templateCatalog: "creator" | "builtin" | "planned";
   template: string;
   runtime: Readonly<{ id: string; contractVersion: number }>;
   slots: Readonly<Record<string, Readonly<{ kind: GameTypeSlotKindV1; min: number; max: number; requires: readonly GameTypeCapabilityV1[]; role?: string }>>>;
@@ -40,13 +42,16 @@ const text = (value: unknown, max: number) => typeof value === "string" && value
 export function validateGameTypeDescriptorV1(input: unknown): Result<GameTypeDescriptorV1> {
   const diagnostics: DiagnosticV1[] = [];
   if (!object(input)) return { ok: false, diagnostics: [error("game_type_invalid", "$", "Game type descriptor must be an object.")] };
-  if (!exactKeys(input, ["schemaVersion", "id", "version", "label", "template", "runtime", "slots", "parameters", "assetRoles", "hud"])) {
+  if (!exactKeys(input, ["schemaVersion", "id", "version", "label", "templateCatalog", "template", "runtime", "slots", "parameters", "assetRoles", "hud"])) {
     diagnostics.push(error("game_type_invalid", "$", "Game type descriptor contains missing or unsupported fields."));
   }
   if (input.schemaVersion !== 1) diagnostics.push(error("game_type_unsupported", "schemaVersion", "Only game type schema version 1 is supported."));
   if (typeof input.id !== "string" || !IDENTIFIER.test(input.id)) diagnostics.push(error("game_type_invalid", "id", "Game type ID must be a stable ASCII identifier."));
   if (!integer(input.version, 1, 2_147_483_647)) diagnostics.push(error("game_type_invalid", "version", "Game type version must be a positive integer."));
   if (!text(input.label, 128)) diagnostics.push(error("game_type_invalid", "label", "Label must be 1..128 characters."));
+  if (input.templateCatalog !== "creator" && input.templateCatalog !== "builtin" && input.templateCatalog !== "planned") {
+    diagnostics.push(error("game_type_invalid", "templateCatalog", "templateCatalog must be creator, builtin, or planned."));
+  }
   if (typeof input.template !== "string" || !IDENTIFIER.test(input.template)) diagnostics.push(error("game_type_invalid", "template", "Template must be a stable identifier."));
   if (!text(input.hud, 64)) diagnostics.push(error("game_type_invalid", "hud", "HUD profile must be a stable identifier."));
   if (!object(input.runtime) || !exactKeys(input.runtime, ["id", "contractVersion"])
