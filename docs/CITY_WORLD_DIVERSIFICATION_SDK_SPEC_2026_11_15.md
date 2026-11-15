@@ -69,9 +69,16 @@ worlds: {
 | landform | `landform.duneFrequency` | 0.5–2.0 | 1.0 |
 | landform | `landform.ridgeSecondary` | 0–1 | 0 |
 | water | `water.oasisCount` | 0–3 | 0 |
+| water | `water.lakeCount` / `water.lakeSizeM` | 0–3 / 40–400 | 0 / — |
 | vegetation | `vegetation.greenbeltWidth` | 0–80 m | 现行值 |
+| landscape | `landscape.rockOutcropDensity` | 0–1 | 0 |
+| landscape | `landscape.riverMeander` / `landscape.riverWidthM` | 0–1 / 10–60 | 0（arid 河流接口现为禁用占位 `riverWidth=-1e6`） |
 | skeleton | `skeleton.ringCount` | 1–3 | 现行值 |
 | skeleton | `skeleton.blockScale` | 0.8–1.25 | 1.0 |
+
+界内地貌（岩台、河流、湖泊）影响可建掩码与碰撞，属于布局级；远景山脊
+（`landscape.ridgeCount/heightM/distanceFactor`，置于可玩边界之外只改天际线剪影）
+与非碰撞植被参数属于视觉级（§2.2）。
 
 coastal-islands-v1 首批仅解冻已实现字段：`bayHalfWidth`、`bayShift`（`BayOptions` 已存在）。
 
@@ -82,13 +89,31 @@ style: {
   timeOfDay: "dawn" | "noon" | "dusk" | "night";   // 默认 dusk（现行）
   fogDensity: 0–0.5;  dustIntensity: 0–0.5;
   floraDensity: 0.5–2.0;  floraTintShift: -30..30 deg;
+  vegetation.forestPatchiness: 0–1;                // 林地斑块分布（树为非碰撞装饰时）
+  landscape.ridgeCount: 0–3;  ridgeHeightM: 20–120;  ridgeDistanceFactor: 1.2–2.5;
+                                                    // 远景山脊：可玩边界之外的天际线剪影
   waterTint: string;                               // 受限色板
   themeVariant: string;                            // 已注册变体，如 "miami-neon"
+  weather.preset: "clear" | "cloudy" | "overcast" | "rain" | "sandstorm" | "snow";
+  weather.intensity: 0–1;  windDirDeg: -180..180;  windStrength: 0–1;
 }
 ```
 
 皮肤兼容规则沿用自定义 City 设计：声明为不影响布局/碰撞的视觉参数不改变 worldRevision；
 `visuals.themeId` 语义不变。
+
+### 2.3 天气系统的架构边界
+
+1. **天气是表现层能力**（天空盒/粒子/音频/光照，复用 `citySky`/`cityAmbient`/
+   `cityLightBudget` 链路），归 `style.set`，永不影响碰撞与布局。
+2. **能力目录只列已实现的预设**：首期仅 `clear/cloudy/overcast`（复用现有雾与光照
+   预算，零新渲染能力）；`rain/sandstorm/snow` 粒子与 `windStrength` 对植被的摆动
+   属于新应用能力，逐一实现并注册后才可被调用——缺失能力明确报错，不静默替换。
+3. **影响物理的天气不属于本规格**：湿滑路面、沙暴减速等玩法效果必须走
+   `city-game-runtime` 运行时契约（作为环境输入 port 或 descriptor 字段），
+   单独立项决议；本规格不预留绕行路径。
+4. 确定性天气时间表（seed 键控的昼夜+天气循环，供回放与证据一致）为后续扩展，
+   实现前先冻结调度语义。
 
 ## 3. 形状算法（W1 的数学内核，供实现参考）
 
@@ -169,7 +194,8 @@ release 快照继续冻结完整 profile（含新参数）；`validateWorldPlanP
 | 切片 | 交付 | 验收 |
 |---|---|---|
 | S1 | SDK 契约：`WorldParameterDescriptorV1`、`validateWorldParameters`、预设与能力投影类型 | 严格校验测试；**无漂移锁步测试**（v2 全默认 == v1 现行为，多 seed 地理哈希一致） |
-| S2 | 生成器实现：形状场（§3）+ 距离网格替换 `boundaryRadius`；参数显式设置才生效 | `verify-city-baseline` 基线不漂移（默认行为）；形状参数扫描通过紧凑度验收带；确定性（同 seed 同参数哈希一致） |
+| S2 | 生成器实现：形状场（§3）+ 距离网格替换 `boundaryRadius`；参数显式设置才生效；界内地貌（岩台/干河/湖泊）随地形场实现 | `verify-city-baseline` 基线不漂移（默认行为）；形状参数扫描通过紧凑度验收带；确定性（同 seed 同参数哈希一致） |
+| S2.5 | 天气首期：`clear/cloudy/overcast` + intensity 接入现有雾/光照；远景山脊网格 | 只动表现层；切换预设不改 worldRevision、不改布局哈希；光照预算不超限 |
 | S3 | 能力生成链：`worlds` 段进 `creator_capabilities` 生成产物 + Rust 硬上限守卫 | 生成物 check；SDK 改数字后守卫拒绝虚报（皮肤锁步同模式） |
 | S4 | MCP：edit_preview 接受 `world.set`/`style.set`，diff 与失效报告；commit 联通 | MCP 契约测试（未知字段/越界/预算/幂等/过期）；独立草稿端到端预览→提交→新布局 |
 | S5 | 预设与样例：arid-dunes 内容源码项目收录预设；`validate-world` 覆盖新字段 | CLI 回环；样例打包 validate/pack/verify 通过 |
