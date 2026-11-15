@@ -93,7 +93,13 @@ pub fn publish_city_layout_snapshot(home: &Path, snapshot: &Value) -> Result<Val
 /// v3 的几何表结构校验：锚点引用的 geometryRef 必须逐条在场、只出现一次、数值有限。
 /// 语义（几何从哪来、是否可信）属于 City 适配器；宿主只核对"能复现"这件事的结构前提。
 fn validate_snapshot_geometry(geometry: &Value, anchors: &[Value]) -> Result<(), &'static str> {
-    let entries = geometry.as_array().filter(|items| items.len() <= 64).ok_or("creator_layout_snapshot_invalid")?;
+    validate_snapshot_geometry_with(geometry, anchors, false).map(|_ignored| ())
+}
+
+/// `allow_extras`：渲染器捕获的是**整张**几何表（它不知道该 revision 的快照里有哪些锚点），
+/// 合并时未引用的条目只是多余信息，丢弃即可；但要报告数量，别静默。
+fn validate_snapshot_geometry_with(geometry: &Value, anchors: &[Value], allow_extras: bool) -> Result<usize, &'static str> {
+    let entries = geometry.as_array().filter(|items| items.len() <= 512).ok_or("creator_layout_snapshot_invalid")?;
     let mut referenced = std::collections::HashSet::new();
     for anchor in anchors {
         if let Some(reference) = anchor["geometryRef"].as_str() { referenced.insert(reference); }
@@ -105,7 +111,11 @@ fn validate_snapshot_geometry(geometry: &Value, anchors: &[Value]) -> Result<(),
                 && only_keys(object, &["geometryRef", "positionMeters", "activationRadiusMeters", "facingRadians"]))
             .ok_or("creator_layout_snapshot_invalid")?;
         let reference = object.get("geometryRef").and_then(Value::as_str).filter(|value| valid_id(value)).ok_or("creator_layout_snapshot_invalid")?;
-        if !referenced.contains(reference) || !seen.insert(reference.to_owned()) { return Err("creator_layout_snapshot_invalid"); }
+        if !referenced.contains(reference) {
+            if allow_extras { continue; }
+            return Err("creator_layout_snapshot_invalid");
+        }
+        if !seen.insert(reference.to_owned()) { return Err("creator_layout_snapshot_invalid"); }
         let position = object.get("positionMeters").and_then(Value::as_object)
             .filter(|position| position.len() == 3 && only_keys(position, &["x", "y", "z"]))
             .ok_or("creator_layout_snapshot_invalid")?;
@@ -120,7 +130,7 @@ fn validate_snapshot_geometry(geometry: &Value, anchors: &[Value]) -> Result<(),
         }
     }
     if seen.len() != referenced.len() { return Err("creator_layout_snapshot_invalid"); }
-    Ok(())
+    Ok(entries.len() - seen.len())
 }
 
 /// 把渲染器捕获到的锚点几何合并进**已存在**的快照（v2 → v3），保留快照里的锚点/连线。
@@ -143,10 +153,14 @@ pub(crate) fn upgrade_city_layout_geometry(home: &Path, city_id: &str, base_revi
         .ok_or("creator_layout_not_found")?;
     let previous: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
     let anchors = previous["layout"]["anchors"].as_array().ok_or("creator_layout_snapshot_invalid")?;
-    validate_snapshot_geometry(geometry, anchors)?;
+    let ignored = validate_snapshot_geometry_with(geometry, anchors, true)?;
+    let referenced: std::collections::HashSet<&str> = anchors.iter().filter_map(|anchor| anchor["geometryRef"].as_str()).collect();
+    let kept: Vec<Value> = geometry.as_array().map(|items| items.iter()
+        .filter(|entry| entry["geometryRef"].as_str().is_some_and(|reference| referenced.contains(reference)))
+        .cloned().collect()).unwrap_or_default();
     let mut snapshot = previous.clone();
     snapshot["schemaVersion"] = json!(3);
-    snapshot["geometry"] = geometry.clone();
+    snapshot["geometry"] = json!(kept);
     let raw_next = canonical_json(&snapshot).map_err(|_| "creator_layout_snapshot_invalid")?;
     if raw_next.len() > 64 * 1024 { return Err("creator_layout_snapshot_too_large"); }
     let hash = digest(&raw_next);
@@ -156,6 +170,7 @@ pub(crate) fn upgrade_city_layout_geometry(home: &Path, city_id: &str, base_revi
     Ok(json!({"cityId":city_id,"cityRevision":base_revision,"worldRevision":world_revision,"layoutId":layout_id,
         "snapshotDigest":hash,"upgradedFromV2":previous["schemaVersion"].as_u64() == Some(2),
         "geometryCount":snapshot["geometry"].as_array().map_or(0, Vec::len),
+        "ignoredGeometryCount":ignored,
         "anchorCount":snapshot["layout"]["anchors"].as_array().map_or(0, Vec::len)}))
 }
 
@@ -665,7 +680,12 @@ mod airspace_tests {
         store_scoped_city_layout(&home, &v2).unwrap();
         let geometry = json!([{"geometryRef":"city-road-node:a","positionMeters":{"x":0,"y":40,"z":0}},
             {"geometryRef":"city-road-node:b","positionMeters":{"x":60,"y":40,"z":0},"activationRadiusMeters":12}]);
-        let upgraded = upgrade_city_layout_geometry(&home, city_id, 0, &geometry).unwrap();
+        // 渲染器提交的是整张几何表：未引用的条目丢弃并报告数量，被引用的必须齐全。
+        let superset = json!([geometry[0], geometry[1],
+            {"geometryRef":"city-road-node:other","positionMeters":{"x":1,"y":1,"z":1}}]);
+        let upgraded = upgrade_city_layout_geometry(&home, city_id, 0, &superset).unwrap();
+        assert_eq!(upgraded["ignoredGeometryCount"], 1);
+        assert_eq!(upgraded["geometryCount"], 2);
         assert_eq!(upgraded["upgradedFromV2"], true);
         assert_eq!(upgraded["anchorCount"], 2, "creator anchors must survive the upgrade");
         assert_eq!(upgraded["geometryCount"], 2);

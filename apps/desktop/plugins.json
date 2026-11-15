@@ -570,7 +570,10 @@
       "maxToolbarItems": 11,
       "performanceMetrics": [
         "scene",
-        "data-load"
+        "data-load",
+        "frame",
+        "stall",
+        "quality"
       ],
       "dataProjections": [
         "harnesses:v1"

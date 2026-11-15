@@ -164,10 +164,20 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
     setMechaAvailability((prev) => prev === next ? prev : next);
   }, []);
   const sceneStageReported = useRef(new Set<string>());
+  // 每个阶段结束时上报「距上一阶段」的耗时，同时带「距本次加载开始」的累计值。
+  // 旧实现直接传 performance.now()，字段名叫 elapsed_ms 实际却是页面绝对时间。
+  const stageStartedAt = useRef(performance.now());
+  const loadStartedAt = useRef(stageStartedAt.current);
   const reportSceneStage = useCallback((stage: "model" | "planning" | "mounting" | "rendering" | "first_frame", windowDays: WindowDays) => {
     if (sceneStageReported.current.has(stage)) return;
-    sceneStageReported.current.add(stage);
-    reportCityScene(stage, performance.now(), windowDays);
+    const now = performance.now();
+    const sinceLoad = Math.max(0, now - loadStartedAt.current);
+    const elapsed = Math.max(0, now - stageStartedAt.current);
+    stageStartedAt.current = now;
+    // 只有真正送达宿主才记为已上报；旧实现先 set 再发，早期阶段发送失败就永久丢失。
+    void reportCityScene(stage, elapsed, windowDays, sinceLoad).then((sent) => {
+      if (sent) sceneStageReported.current.add(stage);
+    });
   }, []);
   const mechaActive = useRef(false);
   mechaActive.current = mechaOpen;
@@ -602,6 +612,10 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
     if (boot) { setDataLoaded(true); return; }
     let active = true;
     const loading = new AbortController();
+    // 新窗口/刷新 = 新的一次加载：阶段集合与时间线都重新开始。
+    sceneStageReported.current.clear();
+    loadStartedAt.current = performance.now();
+    stageStartedAt.current = loadStartedAt.current;
     setStatus("正在更新 City 插槽数据…");
     const apply = (data: CityProjectionV1, paging = false) => {
       setProjection(data);

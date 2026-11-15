@@ -79,6 +79,33 @@ const CINEMATIC_HOUR_TO = 19.6;
 
 export type EngineQualityMode = "auto" | "high" | "eco";
 export type EngineStats = { fps: number; drawCalls: number; triangles: number; buildings: number; quality: QualityLevel; idle: boolean; geometries: number; textures: number };
+
+/** 运行期性能采样（15s 聚合一次）。只上报聚合值，不逐帧写日志。 */
+export type EngineFrameStats = {
+  fps: number;
+  p50Ms: number;
+  p95Ms: number;
+  maxMs: number;
+  drawCalls: number;
+  triangles: number;
+  quality: QualityLevel;
+  idle: boolean;
+  dpr: number;
+  geometries: number;
+  textures: number;
+};
+export type EngineFrameStall = {
+  ms: number;
+  phase: "surface" | "pick" | "replay" | "render";
+  quality: QualityLevel;
+  activity: "orbit" | "game" | "driving" | "replay" | "cinematic";
+  pointerMoved: boolean;
+};
+export type EngineQualityChange = {
+  from: QualityLevel;
+  to: QualityLevel;
+  reason: "user" | "auto-low" | "auto-high" | "capture";
+};
 export type CityDrivingWorldCapture = Exclude<CitySurfaceCapture, ReadyCitySurfaceCapture> | (ReadyCitySurfaceCapture & Readonly<{ release: () => void }>);
 export type PhotoView = { position: number[]; target: number[]; fov: number; elapsed: number; cursorMs: number | null };
 /** 相机所有权（游戏模式 §4）：同一帧只允许一个所有者推进相机。 */
@@ -123,6 +150,12 @@ export type CityEngineOptions = {
   onPlay?: (target: PlayTarget) => void;
   onOrbitLock?: (id: string | null) => void;
   onStats?: (stats: EngineStats) => void;
+  /** 15s 聚合帧时间（p50/p95/max、draw calls、quality），用于本地性能日志。 */
+  onFrameStats?: (stats: EngineFrameStats) => void;
+  /** 单帧超过 100ms 时立即上报（每秒最多一条）。 */
+  onStall?: (stall: EngineFrameStall) => void;
+  /** 自动/手动画质切换（含触发原因），用于区分「升级后卡」和「一直卡」。 */
+  onQualityChange?: (change: EngineQualityChange) => void;
   onTimeCursor?: (ms: number, live: boolean) => void;
   /** 航拍进度（秒）；ended=true 表示片子放完或被打断。 */
   onCinematic?: (elapsedSec: number, plan: CinematicPlan, ended: boolean) => void;
@@ -139,6 +172,9 @@ const pinsKey = (patch: PlanPatchV1 | null, seed: number): string => {
 
 const IDLE_AFTER_MS = 12_000;
 const IDLE_FRAME_INTERVAL_MS = 50;
+/** 帧时间聚合窗口。15s ≈ 900 个 60fps 样本，排序成本可忽略，日志量约 1.4MB/天。 */
+const FRAME_STATS_INTERVAL_MS = 15_000;
+const STALL_FRAME_MS = 100;
 
 export class CityEngine {
   private readonly renderer: THREE.WebGLRenderer;
@@ -241,6 +277,13 @@ export class CityEngine {
   private highFpsWindows = 0;
   private lastTierChangeAt = 0;
   private upgradeAfter = 0;
+
+  // 运行期性能采样：帧间隔只进环形缓冲，聚合后交给宿主写日志。
+  private lastFrameAt = 0;
+  private frameStatsStartedAt = 0;
+  private frameDurations: number[] = [];
+  private lastStallAt = 0;
+  private framePhase: EngineFrameStall["phase"] = "render";
 
   // 聚焦 tween。
   private tween: { fromPos: THREE.Vector3; toPos: THREE.Vector3; fromTarget: THREE.Vector3; toTarget: THREE.Vector3; start: number; duration: number } | null = null;
@@ -431,7 +474,7 @@ export class CityEngine {
       this.parts?.applyAssets(assets);
     });
 
-    this.applyQualityLevel(0);
+    this.applyQualityLevel(0, "user");
     this.upgradeAfter = performance.now() + 60_000;
 
     if (options.headless) return;
@@ -1489,15 +1532,19 @@ export class CityEngine {
     if (mode === this.qualityMode) return;
     this.qualityMode = mode;
     this.lowFpsWindows = this.highFpsWindows = 0;
-    if (mode === "high") this.applyQualityLevel(2);
-    else if (mode === "eco") this.applyQualityLevel(0);
-    else this.applyQualityLevel(0);
+    if (mode === "high") this.applyQualityLevel(2, "user");
+    else if (mode === "eco") this.applyQualityLevel(0, "user");
+    else this.applyQualityLevel(0, "user");
   }
 
-  private applyQualityLevel(level: QualityLevel): void {
+  private applyQualityLevel(level: QualityLevel, reason: EngineQualityChange["reason"]): void {
     if (this.quality === level && !this.exportSize) return;
+    const from = this.quality;
     this.quality = level;
     this.qualityDirty = this.surfaceDirty = true;
+    // 升档会重建 composer / 4096 阴影图并编译 shader，本身就是一次可见卡顿；
+    // 没有这条日志，「60 秒后突然顿一下」永远查不到原因。
+    if (!this.options.headless && from !== level) this.options.onQualityChange?.({ from, to: level, reason });
   }
 
   private flushSurface(): void {
@@ -1889,6 +1936,10 @@ export class CityEngine {
     // 首个统计窗口从现在起算，而不是从 epoch 起（否则第一次 fps 恒为 0，
     // 会把 auto 画质立刻错误降档）。
     this.lastStatsAt = 0;
+    // 新一轮渲染循环：丢弃上一轮的帧缓冲，避免把暂停/切页前的大间隔算进 p95。
+    this.lastFrameAt = 0;
+    this.frameDurations = [];
+    this.frameStatsStartedAt = performance.now();
     this.raf = requestAnimationFrame(this.tick);
   }
 
@@ -2026,6 +2077,8 @@ export class CityEngine {
     const idle = !this.drivingWorldFrame && this.cameraOwner !== "game" && now - this.lastActivityAt > IDLE_AFTER_MS && !this.tween && !this.playing;
     if (idle && !this.surfaceDirty && !this.qualityDirty && now - this.lastRenderAt < IDLE_FRAME_INTERVAL_MS) return;
 
+    // 这一帧的主要嫌疑：先于 updateScene 记录，pick 会把 pointerMoved 清掉。
+    this.framePhase = this.surfaceDirty ? "surface" : this.pointerMoved ? "pick" : this.playing ? "replay" : "render";
     this.updateScene(dt);
     this.renderFrame();
     this.lastRenderAt = now;
@@ -2127,7 +2180,7 @@ export class CityEngine {
     this.exportSize = { width: options.width, height: options.height };
     // Respect eco/adaptive quality during export; forcing expensive effects can starve
     // the plugin event loop on software GPUs even though the encoder is asynchronous.
-    this.applyQualityLevel(wasQuality);
+    this.applyQualityLevel(wasQuality, "capture");
     // 从固定状态开拍：时钟归零、所有随帧累加的动画回到起点、天空强制重算。
     // 曾接着实时循环的 elapsed 与累加状态开拍，两次导出同一座城从第 ~17 帧起逐像素不同。
     this.elapsed = 0;
@@ -2208,7 +2261,7 @@ export class CityEngine {
       this.exportSize = null;
       this.elapsed = savedElapsed;
       if (!this.disposed) {
-        this.applyQualityLevel(wasQuality);
+        this.applyQualityLevel(wasQuality, "capture");
         this.startLoop();
       }
     }
@@ -2229,7 +2282,7 @@ export class CityEngine {
     this.stopLoop();
     const restoreOverlays = this.parts.hideOverlaysForPhoto();
     this.exportSize = { width, height };
-    this.applyQualityLevel(this.softwareRenderer ? 0 : this.options.headless ? wasQuality : 2);
+    this.applyQualityLevel(this.softwareRenderer ? 0 : this.options.headless ? wasQuality : 2, "capture");
     try {
       if (this.options.headless) await new Promise((resolve) => setTimeout(resolve, 80));
       const started = performance.now();
@@ -2256,7 +2309,7 @@ export class CityEngine {
     } finally {
       restoreOverlays();
       this.exportSize = null;
-      this.applyQualityLevel(wasQuality);
+      this.applyQualityLevel(wasQuality, "capture");
       this.camera.aspect = aspect;
       this.camera.updateProjectionMatrix();
       this.startLoop();
@@ -2519,14 +2572,31 @@ export class CityEngine {
   }
 
   private accountFrame(now: number, idle: boolean): void {
+    // 帧间隔：只统计真正渲染出来的帧。切页/隐藏恢复后的第一个超大间隔
+    // 不是掉帧，丢弃并重置窗口，否则 p95 会被一次挂起永久污染。
+    if (this.lastFrameAt > 0) {
+      const frameMs = now - this.lastFrameAt;
+      if (frameMs > 0 && frameMs < 5_000) {
+        this.frameDurations.push(frameMs);
+        if (frameMs >= STALL_FRAME_MS && now - this.lastStallAt >= 1_000) {
+          this.lastStallAt = now;
+          this.options.onStall?.({
+            ms: Math.round(frameMs), phase: this.framePhase, quality: this.quality,
+            activity: this.frameActivity(), pointerMoved: this.pointerMoved,
+          });
+        }
+      } else if (frameMs >= 5_000) {
+        this.frameDurations = [];
+        this.frameStatsStartedAt = now;
+      }
+    }
+    this.lastFrameAt = now;
     this.frameCount += 1;
     // 帧率统计（以 stats 周期计算滑动平均）。
     if (this.lastStatsAt === 0) {
       this.lastStatsAt = now;
       this.frameCount = 0;
-      return;
-    }
-    if (now - this.lastStatsAt > 1_000) {
+    } else if (now - this.lastStatsAt > 1_000) {
       const measured = this.frameCount * 1000 / Math.max(1, now - this.lastStatsAt);
       this.fps = measured;
       this.frameCount = 0;
@@ -2543,6 +2613,36 @@ export class CityEngine {
       });
       this.maybeRetier(measured, idle);
     }
+    // 15s 聚合：平均 FPS 看不出顿挫，必须同时留 p50/p95/max。
+    if (this.frameDurations.length > 0 && now - this.frameStatsStartedAt >= FRAME_STATS_INTERVAL_MS) {
+      const sorted = [...this.frameDurations].sort((a, b) => a - b);
+      const count = sorted.length;
+      const percentile = (q: number) => sorted[Math.min(count - 1, Math.ceil(count * q) - 1)];
+      this.options.onFrameStats?.({
+        fps: Math.round(1_000 * count / Math.max(1, now - this.frameStatsStartedAt)),
+        p50Ms: Math.round(percentile(0.5)),
+        p95Ms: Math.round(percentile(0.95)),
+        maxMs: Math.round(sorted[count - 1]),
+        drawCalls: this.renderer.info.render.calls,
+        triangles: this.renderer.info.render.triangles,
+        quality: this.quality,
+        idle,
+        dpr: this.surfacePixelRatio,
+        // 几何/纹理计数是长会话泄漏的第一信号；hidden 在 accountFrame 里恒为 false（隐藏帧不渲染）。
+        geometries: this.renderer.info.memory.geometries,
+        textures: this.renderer.info.memory.textures,
+      });
+      this.frameDurations = [];
+      this.frameStatsStartedAt = now;
+    }
+  }
+
+  private frameActivity(): EngineFrameStall["activity"] {
+    if (this.drivingWorldFrame) return "driving";
+    if (this.cameraOwner === "game") return "game";
+    if (this.playing) return "replay";
+    if (this.cinematic) return "cinematic";
+    return "orbit";
   }
 
   private maybeRetier(fps: number, idle: boolean): void {
@@ -2555,10 +2655,10 @@ export class CityEngine {
     this.highFpsWindows = fps > 55 ? this.highFpsWindows + 1 : 0;
     if (now - this.lastTierChangeAt < 12_000) return;
     if (this.lowFpsWindows >= 3 && this.quality > 0) {
-      this.applyQualityLevel((this.quality - 1) as QualityLevel);
+      this.applyQualityLevel((this.quality - 1) as QualityLevel, "auto-low");
       this.upgradeAfter = now + 60_000;
     } else if (this.highFpsWindows >= 8 && now >= this.upgradeAfter && this.quality < 2) {
-      this.applyQualityLevel((this.quality + 1) as QualityLevel);
+      this.applyQualityLevel((this.quality + 1) as QualityLevel, "auto-high");
     } else return;
     this.lastTierChangeAt = now;
     this.lowFpsWindows = this.highFpsWindows = 0;

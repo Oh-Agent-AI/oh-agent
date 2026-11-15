@@ -1054,7 +1054,7 @@ fn apply_message(i: &mut Instance, sender: &str, message: Value) -> Result<(), S
         Some("plugin.performance") => {
             let fields = performance_fields(&i.performance_metrics, &message)?;
             i.pulse = Instant::now();
-            agent_vitals_runtime::logging::log_info("plugin_performance", &format!("plugin={} {fields}", i.plugin_id));
+            log_plugin_performance(&i.plugin_id, &fields);
         }
         Some("runtime.error") => {
             i.failed = Some("plugin_runtime_error");
@@ -1117,7 +1117,9 @@ fn performance_fields(allowed_metrics: &[String], message: &Value) -> Result<Str
         .ok_or("plugin_performance_invalid")?;
     let elapsed = object.get("elapsedMs").and_then(Value::as_u64).filter(|ms| *ms <= 86_400_000)
         .ok_or("plugin_performance_invalid")?;
-    let dimensions = object.get("dimensions").and_then(Value::as_object).filter(|dimensions| dimensions.len() <= 8)
+    // 12 个维度上限：frame 事件需要 fps/p50/p95/max/draw_calls/triangles/quality/idle/
+    // dpr/hidden/window_days/load_id 正好 12 个。多一个就拒绝，保持有界。
+    let dimensions = object.get("dimensions").and_then(Value::as_object).filter(|dimensions| dimensions.len() <= 12)
         .ok_or("plugin_performance_invalid")?;
     let mut safe_dimensions = serde_json::Map::new();
     for (key, value) in dimensions {
@@ -1133,6 +1135,22 @@ fn performance_fields(allowed_metrics: &[String], message: &Value) -> Result<Str
     }
     let dimensions = serde_json::to_string(&safe_dimensions).map_err(|_| "plugin_performance_invalid")?;
     Ok(format!("metric={metric} outcome={outcome} elapsed_ms={elapsed} dimensions={dimensions}"))
+}
+
+/// Unit tests call `apply_message` directly; before this guard those calls wrote
+/// synthetic `elapsed_ms=5678` scene records into the user's real `app.log`,
+/// where they were indistinguishable from production telemetry. Keep logging
+/// out of `cfg(test)` builds; the logger module has its own isolated tests.
+fn log_plugin_performance(plugin_id: &str, fields: &str) {
+    #[cfg(not(test))]
+    {
+        agent_vitals_runtime::logging::log_info(
+            "plugin_performance",
+            &format!("plugin={plugin_id} {fields}"),
+        );
+    }
+    #[cfg(test)]
+    let _ = (plugin_id, fields);
 }
 
 #[tauri::command]
@@ -2049,8 +2067,44 @@ mod tests {
         oversized["dimensions"]["large"] = json!(86_400_001_u64);
         assert_eq!(performance_fields(&metrics, &oversized), Err("plugin_performance_invalid"));
         let mut too_many = message.clone();
-        too_many["dimensions"] = json!({"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9});
+        too_many["dimensions"] = json!({"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9,"j":10,"k":11,"l":12,"m":13});
         assert_eq!(performance_fields(&metrics, &too_many), Err("plugin_performance_invalid"));
+    }
+
+    #[test]
+    fn performance_dimensions_reject_camel_case_keys() {
+        // 2026-11-15 之前 scene 用 `windowDays` 驼峰键，被这里静默拒绝，
+        // 前端又吞掉错误，于是 app.log 里从来没有真实 scene 记录。
+        let message = json!({
+            "version":1,"instanceId":"plugin-city-2","type":"plugin.performance",
+            "metric":"scene","outcome":"success","elapsedMs":1115,
+            "dimensions":{"stage":"model","windowDays":366}
+        });
+        assert_eq!(performance_fields(&["scene".to_owned()], &message), Err("plugin_performance_invalid"));
+
+        let mut lowercase = message;
+        lowercase["dimensions"] = json!({"stage":"model","window_days":366});
+        assert!(performance_fields(&["scene".to_owned()], &lowercase).is_ok());
+    }
+
+    #[test]
+    fn frame_metric_accepts_twelve_bounded_dimensions() {
+        let mut message = json!({
+            "version":1,"instanceId":"plugin-city-2","type":"plugin.performance",
+            "metric":"frame","outcome":"success","elapsedMs":21,
+            "dimensions":{
+                "fps":60,"p50":16,"p95":21,"max":120,"draw_calls":40,"triangles":900000,
+                "quality":2,"idle":false,"dpr":150,"geometries":120,"textures":40,"load_id":"L1abc"
+            }
+        });
+        let metrics = vec!["frame".to_owned()];
+        let fields = performance_fields(&metrics, &message).unwrap();
+        assert!(fields.contains("metric=frame"));
+        assert!(fields.contains("p95"));
+        assert!(fields.contains("load_id"));
+
+        message["dimensions"]["extra"] = json!(1);
+        assert_eq!(performance_fields(&metrics, &message), Err("plugin_performance_invalid"));
     }
 
     #[test]

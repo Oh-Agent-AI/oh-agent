@@ -2,9 +2,9 @@ import { sessionCostLabel } from "./data/sessionCostLabel";
 import { playableKind } from "./engine/render/playableVehicles";
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { CityModel } from "./cityModel";
-import { readCitySessionDetail, stableAssetRefsForProjection, type CityProjectionV1 } from "./data/provider";
+import { readCitySessionDetail, reportCityFrame, reportCityQuality, reportCityStall, stableAssetRefsForProjection, type CityProjectionV1 } from "./data/provider";
 import { citySeed, randomSeed } from "./data/seed";
-import type { CityEngine, EngineStats } from "./engine/CityEngine";
+import type { CityEngine, EngineFrameStall, EngineFrameStats, EngineQualityChange, EngineStats } from "./engine/CityEngine";
 import type { CityTheme } from "./engine/cityTheme";
 import type { CinematicCard, CinematicCut, CinematicPlan } from "./engine/cityCinematic";
 import { prepareCityWorldLayout, type BackdropMode } from "./engine/cityLayout";
@@ -146,6 +146,9 @@ export function useCityExperience(engine: RefObject<CityEngine | null>, projecti
       tooltip.style.transform = `translate(${Math.min(x + 14, Math.max(8, window.innerWidth - 270))}px, ${Math.min(y + 14, window.innerHeight - 60)}px)`;
     },
     onStats(value: EngineStats) { setStats(value); },
+    onFrameStats(value: EngineFrameStats) { reportCityFrame(value); },
+    onStall(value: EngineFrameStall) { reportCityStall(value); },
+    onQualityChange(value: EngineQualityChange) { reportCityQuality(value); },
     onTimeCursor(ms: number, live: boolean) {
       const now = performance.now();
       if (!live && now - lastCursor.current < 180) return;

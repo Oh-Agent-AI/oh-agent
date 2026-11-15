@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { estimateVehiclePerformanceV1, FIXED_WING_VEHICLE_PRESET_V1, ORNITHOPTER_VEHICLE_PRESET_V1, validateVehicleProfileV1 } from "@agent-vitals/city-sdk";
+import { estimateVehiclePerformanceV1, FIXED_WING_VEHICLE_PRESET_V1, ORNITHOPTER_VEHICLE_PRESET_V1, validateVehicleProfileV1,
+  VEHICLE_PERFORMANCE_DERIVATION_V1 } from "@agent-vitals/city-sdk";
 import { METERS_PER_UNIT } from "../src/engine/worldScale.ts";
 import { FLIGHT_CHECKPOINT_GAME_TYPE_V1, validateTemplateLink } from "../../../../packages/agent-vitals-city-game-runtime/src/index.ts";
 import { CITY_GAME_TYPE_CATALOG } from "../src/game/runtime/gameTypeCatalog.ts";
@@ -144,5 +145,18 @@ test("the lowest-cruise floor is the only engine-side clamp on the SDK derivatio
   for (const preset of [ORNITHOPTER_VEHICLE_PRESET_V1, FIXED_WING_VEHICLE_PRESET_V1]) {
     const derived = estimateVehiclePerformanceV1(preset).cruiseSpeedMps / METERS_PER_UNIT;
     assert.ok(derived > 6, `${preset.id}: preset cruise ${derived} must sit above the engine floor`);
+  }
+});
+
+test("engine cruise derivation stays lockstep with the SDK performance estimate", () => {
+  // 单源纪律：引擎巡航分频与 Creator 预览的 estimatedPerformance 消费同一个
+  // VEHICLE_PERFORMANCE_DERIVATION_V1 常量——两侧任一调参都会在此失败。
+  for (const profile of [ORNITHOPTER_VEHICLE_PRESET_V1, FIXED_WING_VEHICLE_PRESET_V1]) {
+    const estimate = estimateVehiclePerformanceV1(profile);
+    const params = vehicleFlightParams(profile);
+    assert.equal(params.cruiseSpeed,
+      Math.max(6, estimate.maxSpeedMps / METERS_PER_UNIT / VEHICLE_PERFORMANCE_DERIVATION_V1.cruiseSpeedDivisor));
+    assert.equal(params.turnRate, estimate.turnRateRps);
+    assert.equal(params.flapFrequency, estimate.flapFrequencyHz ?? 0);
   }
 });

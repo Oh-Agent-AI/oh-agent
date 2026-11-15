@@ -580,8 +580,16 @@ function App() {
         } catch (error) {
           const code = error instanceof Error ? error.message : "";
           if (code !== "creator_layout_revision_conflict") throw error;
-          const geometry = (snapshot as { geometry?: unknown }).geometry;
-          if (!Array.isArray(geometry)) throw error;
+          // 快照里的 anchors 才是权威（含 Creator 加的空域门），但渲染器只能捕获它自己
+          // 投影出的那批锚点；因此这里提交**整张**几何表，由宿主按快照引用的 ref 过滤。
+          const view = draftEngineRef.current?.getCitySdkLayoutView();
+          if (!view) throw error;
+          const geometry = [...view.geometry.entries()].slice(0, 512).map(([geometryRef, entry]) => ({
+            geometryRef,
+            positionMeters: { x: entry.positionMeters.x, y: entry.positionMeters.y, z: entry.positionMeters.z },
+            ...(entry.activationRadiusMeters === undefined ? {} : { activationRadiusMeters: entry.activationRadiusMeters }),
+            ...(entry.facingRadians === undefined ? {} : { facingRadians: entry.facingRadians }),
+          }));
           result = await creatorRequest("creator.city.layout.geometry",
             { cityId: (payload as { cityId?: unknown }).cityId, baseRevision: (payload as { revision?: unknown }).revision, geometry });
         }
