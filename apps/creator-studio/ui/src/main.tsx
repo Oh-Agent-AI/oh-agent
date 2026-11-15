@@ -5,6 +5,7 @@ import { canonicalJson, defaultVehicleCameraV1, estimateVehiclePerformanceV1, va
 import { applyCityWorldOperations } from "./cityWorldOperations";
 import { buildGameValidation, buildSceneValidation, buildVehicleValidation, describeError, normalizeVehicleProfileInput, scopeMismatchEnvelope } from "./sdkValidation";
 import { loadStudioAtStartup } from "./startupLoad";
+import { releaseIdForOpenRevision, resolveSceneCaptureRevision, type ProjectPublicationV1 } from "./publicationSync";
 import { resolveProjectCity } from "./projectCityScope";
 import { formatWorldPackageInspection, parseWorldPackageInspection, type WorldPackageInspection } from "./contentPackageInspect";
 import { formatInstalledPackage, parseInstalledPackages, parseInstallResult, type InstalledContentPackage } from "./installedContent";
@@ -207,12 +208,17 @@ function App() {
     };
   };
   const hasDrafts = (p: Project | null) => p !== null && Object.values(dirtyRegions(p)).some(Boolean);
+  const publicationEpoch = useRef(0);
+  const syncPublicationRef = useRef<(projectId: string, revision: number) => void>(() => {});
   const applyProject = (next: Project, mode: "preserve" | "replace", previous: Project | null) => {
     const sameProject = previous !== null && previous.projectId === next.projectId;
     const dirty = sameProject ? dirtyRegions(previous) : null;
     const saved = savedForms(next);
+    // 换了项目或修订先清掉上一份 release，避免试玩按钮指向别的版本；
+    // 同一修订保留，等下面的权威查询确认或补上已发布的 release。
     if (!sameProject || previous?.revision !== next.revision) setPublishedReleaseId(null);
     setProject(next);
+    syncPublicationRef.current(next.projectId, next.revision);
     setText(dirty?.game ? text : saved.game);
     setSceneText(dirty?.scene ? sceneText : saved.scene);
     setBindingsText(dirty?.mount ? bindingsText : saved.bindings);
@@ -240,6 +246,20 @@ function App() {
   };
   const projectRef = useRef<Project | null>(null);
   projectRef.current = project;
+  syncPublicationRef.current = (projectId, revision) => {
+    const epoch = ++publicationEpoch.current;
+    void creatorRequest<ProjectPublicationV1>("creator.project.publication", { projectId, revision }).then(publication => {
+      if (epoch !== publicationEpoch.current) return;
+      const current = projectRef.current;
+      if (current && (current.projectId !== projectId || current.revision !== revision)) return;
+      setPublishedReleaseId(releaseIdForOpenRevision(publication, projectId, revision));
+    }).catch(() => {
+      if (epoch !== publicationEpoch.current) return;
+      const current = projectRef.current;
+      if (current && (current.projectId !== projectId || current.revision !== revision)) return;
+      setPublishedReleaseId(null);
+    });
+  };
   // 发生版本冲突时保留本地状态并要求重新预览，不能用旧补丁覆盖新版本。
   const commitCityPatch = (patch: PlanPatchV1) => {
     void (async () => {
@@ -337,7 +357,7 @@ function App() {
   };
   useEffect(() => {
     const methods = ["creator.city.create", "creator.city.create_from_world", "creator.city.diagnostic.list", "creator.city.edit.preview", "creator.city.patch.preview", "creator.city.edit.commit", "creator.city.list", "creator.city.read", "creator.layout.list", "creator.project.list", "creator.project.read", "creator.project.read_chunk", "creator.operation.status", "creator.project.create",
-      "creator.game.preview", "creator.asset.import", "creator.game.commit", "creator.scene.preview", "creator.scene.commit", "creator.project.commit", "creator.project.publish",
+      "creator.game.preview", "creator.asset.import", "creator.game.commit", "creator.scene.preview", "creator.scene.commit", "creator.project.commit", "creator.project.publish", "creator.project.publication",
       "creator.project.playtest.start", "creator.project.playtest.result", "creator.project.playtest.cancel", "creator.project.playtest.return_context", "creator.project.playtest.history",
       "creator.scene.describe", "creator.scene.inspect", "creator.scene.validate", "creator.capabilities.list",
       "creator.vehicle.preview", "creator.vehicle.define", "creator.vehicle.inspect",
@@ -516,7 +536,7 @@ function App() {
         if (!(error instanceof Error && error.message === "creator_confirmation_required")) noteAgent(method, payload, false, null);
         throw error;
       }
-      if (method === "creator.project.create" || method.endsWith(".commit")) window.dispatchEvent(new Event("__CREATOR_PROJECT_CHANGED__"));
+      if (method === "creator.project.create" || method.endsWith(".commit") || method === "creator.vehicle.define" || method === "creator.project.publish") window.dispatchEvent(new Event("__CREATOR_PROJECT_CHANGED__"));
       if (method === "creator.city.create" || method === "creator.city.create_from_world" || method === "creator.city.edit.commit") window.dispatchEvent(new Event("__CREATOR_CITY_CHANGED__"));
       noteAgent(method, payload, true, result);
       return result;
@@ -607,24 +627,35 @@ function App() {
         throw error;
       }
     };
-    // creator.scene.capture 在 WebView 本地完成（渲染器在这里，图像不出本机）；
-    // describe/capabilities 走上面的转发、由 Rust 权威分发。projectRef 拿当前 revision。
+    // creator.scene.capture 在 WebView 本地完成（渲染器在这里，图像不出本机）。
+    // 修订以库里的项目为准：视口 projectRef 在 vehicle.define 之后会停在旧修订，
+    // 那不是 revision_conflict。库已经前进到别的修订时才拒绝。
     (handlers as Record<string, (payload: Record<string, unknown>) => Promise<unknown>>)["creator.scene.capture"] = async (payload: Record<string, unknown>) => {
       if (draftCityViewRef.current) throw new Error("creator_capture_unavailable");
       const engine = studioEngineRef.current;
       if (!engine) throw new Error("creator_capture_unavailable");
-      // 契约要求捕获绑定捕获时的 revision：没有打开的项目就没有可绑定的 revision
-      if (!projectRef.current) throw new Error("creator_capture_requires_project");
-      if (typeof payload.revision === "number" && payload.revision !== projectRef.current.revision) throw new Error("revision_conflict");
+      const open = projectRef.current;
+      const requestedId = typeof payload.projectId === "string" ? payload.projectId : open?.projectId;
+      if (!open || !requestedId || open.projectId !== requestedId) throw new Error("creator_capture_requires_project");
+      const document = await creatorRequest<Project>("creator.project.read", { projectId: requestedId });
+      const decision = resolveSceneCaptureRevision({
+        projectOpen: true,
+        projectMatches: document.projectId === requestedId,
+        requestedRevision: typeof payload.revision === "number" ? payload.revision : undefined,
+        authoritativeRevision: document.revision,
+        viewportRevision: open.revision,
+      });
+      if (!decision.ok) throw new Error(decision.code);
+      if (decision.refreshViewport) applyRef.current(document, "preserve", open);
       // 帧按描述符给 capture 的 mailbox 预算（512 KiB）与 MCP 帧上限（350K 字符）
       // 逐档降级；不可用与超预算由 captureFrame 返回不同 code，不能混成一句。
       const frame = engine.captureFrame();
       if (!frame.ok) throw new Error(frame.code);
       const camera = engine.inspectScene().camera as { position?: number[]; target?: number[] } | null;
       const result = { format: "image/jpeg", dataUrl: frame.dataUrl, width: frame.width, height: frame.height, downscaled: frame.downscaled,
-        bytes: Math.ceil(frame.dataUrl.length * 0.75), revision: projectRef.current.revision,
+        bytes: Math.ceil(frame.dataUrl.length * 0.75), revision: decision.revision,
         camera: camera ? { position: camera.position, target: camera.target } : null, capturedAtMs: Date.now() };
-      noteAgent("creator.scene.capture", payload, true, { revision: projectRef.current.revision });
+      noteAgent("creator.scene.capture", payload, true, { revision: decision.revision });
       return result;
     };
     // creator.scene.validate 由 Studio 合并三方结果（设计 §5.3）：Rust structure_check
@@ -715,7 +746,7 @@ function App() {
 
   const openProject = async (projectId: string, mode: "replace" | "preserve" = "replace") => {
     setInstalledWorldView(null);
-    setBusy(true); setMessage(""); setPreviewId(null); setPreviewKind(null); setPublishedReleaseId(null);
+    setBusy(true); setMessage(""); setPreviewId(null); setPreviewKind(null);
     try {
       const next = await creatorRequest<Project>("creator.project.read", { projectId });
       applyProject(next, mode, project);

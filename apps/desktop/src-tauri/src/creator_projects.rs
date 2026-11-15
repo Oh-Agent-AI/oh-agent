@@ -689,6 +689,20 @@ pub fn publish_project_release(home: &Path, project_id: &str, expected_revision:
         "gameType":game_type,"vehicleId":snapshot["vehicleId"],"runtimeContractVersion":1}))
 }
 
+/// 当前修订有没有不可变 release。UI 里的 publishedReleaseId 是会话内存，切页就丢；
+/// 这里只读 creator_releases，不返回快照正文。
+pub fn read_project_publication(home: &Path, project_id: &str, revision: Option<u64>) -> Result<Value, &'static str> {
+    if !valid_id(project_id) { return Err("creator_request_invalid"); }
+    let db = database(home)?;
+    let current: u64 = db.query_row("SELECT revision FROM creator_projects WHERE project_id=?1", [project_id], |row| row.get(0))
+        .optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_project_not_found")?;
+    let revision = revision.unwrap_or(current);
+    let release_id: Option<String> = db.query_row("SELECT release_id FROM creator_releases WHERE project_id=?1 AND revision=?2",
+        params![project_id, revision], |row| row.get(0)).optional().map_err(|_| "creator_store_unavailable")?;
+    let status = if release_id.is_some() { "published" } else { "unpublished" };
+    Ok(json!({"projectId":project_id,"revision":revision,"releaseId":release_id,"status":status}))
+}
+
 /// List only immutable releases compatible with the caller's current City layout.
 pub fn list_city_releases(home: &Path, layout_id: &str, world_revision: &str, limit: u64) -> Result<Value, &'static str> {
     require_catalog_layout(home, layout_id, world_revision)?;
@@ -991,6 +1005,10 @@ fn run_commit(home: &Path, owner: &str, instance: &str, payload: &Value) -> Resu
 fn run_project_publish(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
     publish_project_release(home, args_valid_id(payload, "projectId")?, args_u64(payload, "expectedRevision")?)
 }
+fn run_project_publication(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    let revision = if payload.get("revision").is_some() { Some(args_u64(payload, "revision")?) } else { None };
+    read_project_publication(home, args_valid_id(payload, "projectId")?, revision)
+}
 /// 试玩启动：releaseId 必填；projectId/expectedRevision/requestId 可选（MCP 契约 §6.3，
 /// 提供即校验归属）。requestId 原样回传，供调用方关联异步结果。
 fn run_playtest_start(home: &Path, _owner: &str, instance: &str, payload: &Value) -> Result<Value, &'static str> {
@@ -1247,6 +1265,7 @@ static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.project.playtest.return_context", &[], &[], run_playtest_return),
     creator_row!("creator.project.playtest.start", &["releaseId"], &["projectId", "expectedRevision", "requestId", "gameType"], run_playtest_start),
     creator_row!("creator.project.publish", &["projectId", "expectedRevision"], &[], run_project_publish),
+    creator_row!("creator.project.publication", &["projectId"], &["revision"], run_project_publication),
     creator_row!("creator.project.read", &["projectId"], &[], run_project_read),
     creator_row!("creator.project.read_chunk", &["projectId", "offset", "maxBytes"], &[], run_project_read_chunk),
     creator_row!("creator.scene.commit", &["projectId", "previewId", "expectedRevision", "operationId"], &[], run_commit),
@@ -1955,6 +1974,32 @@ mod tests {
         let migrated = database(&home).unwrap();
         let count: u64 = migrated.query_row("SELECT COUNT(*) FROM pragma_table_info('creator_playtest_runs') WHERE name='evidence_json'", [], |row| row.get(0)).unwrap();
         assert_eq!(count, 1);
+        let retired: u64 = migrated.query_row("SELECT COUNT(*) FROM pragma_table_info('creator_playtest_runs') WHERE name='studio_owner_retired'", [], |row| row.get(0)).unwrap();
+        let successor: u64 = migrated.query_row("SELECT COUNT(*) FROM pragma_table_info('creator_playtest_runs') WHERE name='studio_successor_id'", [], |row| row.get(0)).unwrap();
+        assert_eq!(retired, 1);
+        assert_eq!(successor, 1);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// 发布状态以 creator_releases 为准。当前修订没有 release 就是 unpublished；
+    /// 发布之后同一修订读到 releaseId。没发布过的旧修订保持 unpublished。
+    #[test]
+    fn project_publication_follows_the_release_row() {
+        let home = home();
+        let (project_id, revision) = publishable_project(&home);
+        let before = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.publication", &json!({"projectId":project_id})).unwrap();
+        assert_eq!(before["revision"], revision);
+        assert_eq!(before["status"], "unpublished");
+        assert!(before["releaseId"].is_null());
+        let published = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.publish",
+            &json!({"projectId":project_id,"expectedRevision":revision})).unwrap();
+        let after = read_project_publication(&home, &project_id, None).unwrap();
+        assert_eq!(after["status"], "published");
+        assert_eq!(after["releaseId"], published["releaseId"]);
+        assert_eq!(after["revision"], revision);
+        assert_eq!(read_project_publication(&home, &project_id, Some(0)).unwrap()["status"], "unpublished");
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.publication", &json!({"projectId":"project-missing"})).unwrap_err(), "creator_project_not_found");
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.publication", &json!({"projectId":project_id,"releaseId":"release-extra"})).unwrap_err(), "creator_request_invalid");
         let _ = std::fs::remove_dir_all(home);
     }
 

@@ -482,6 +482,43 @@ mod tests {
         std::fs::remove_dir_all(home).unwrap();
     }
 
+    /// City 被换掉后宿主把 claimed 收成 failed + creator_playtest_city_closed。
+    /// 会话和作业都读这一行：终态必须带着原因，活着的 claimed 仍是 running。
+    #[test]
+    fn city_closed_playtest_is_a_terminal_session_and_job() {
+        let home = temp_home();
+        let host = home.join("state/creator");
+        std::fs::create_dir_all(&host).unwrap();
+        let db = rusqlite::Connection::open(host.join("projects.sqlite")).unwrap();
+        db.execute_batch("CREATE TABLE creator_operations(operation_id TEXT, project_id TEXT, result_json TEXT, created_at_ms INTEGER);
+            CREATE TABLE creator_playtest_runs(run_id TEXT PRIMARY KEY, release_id TEXT NOT NULL, project_id TEXT NOT NULL, revision INTEGER NOT NULL, studio_instance_id TEXT NOT NULL, city_instance_id TEXT, status TEXT NOT NULL, active_slot INTEGER, created_at_ms INTEGER NOT NULL, expires_at_ms INTEGER NOT NULL, finished_at_ms INTEGER, return_consumed INTEGER NOT NULL DEFAULT 0, evidence_json TEXT, failure_code TEXT);
+            INSERT INTO creator_playtest_runs(run_id,release_id,project_id,revision,studio_instance_id,city_instance_id,status,active_slot,created_at_ms,expires_at_ms,finished_at_ms,return_consumed,failure_code)
+            VALUES('run-live','release-1','project-1',2,'studio-1','city-1','claimed',1,2,9000000000000,NULL,0,NULL),
+                   ('run-closed','release-1','project-1',2,'studio-1','city-1','failed',NULL,1,9000000000000,50,0,'creator_playtest_city_closed');").unwrap();
+        drop(db);
+        let opened = session_open(&home, &json!({"agentId":"agent-life","projectId":"project-1"})).unwrap();
+        let session_id = opened["data"]["sessionId"].as_str().unwrap().to_owned();
+        register_playtest_job(&home, &json!({"runId":"run-closed","releaseId":"release-1"}));
+        register_playtest_job(&home, &json!({"runId":"run-live","releaseId":"release-1"}));
+        let status = session_status(&home, &json!({"sessionId":session_id})).unwrap();
+        let operations = status["data"]["operations"].as_array().unwrap();
+        let closed = operations.iter().find(|item| item["ref"] == "run-closed").unwrap();
+        assert_eq!(closed["status"], json!("failed"));
+        assert_eq!(closed["failureCode"], json!("creator_playtest_city_closed"));
+        assert!(closed["activeSlot"].is_null());
+        assert_eq!(closed["finishedAtMs"], json!(50));
+        let live = operations.iter().find(|item| item["ref"] == "run-live").unwrap();
+        assert_eq!(live["status"], json!("running"));
+        assert_eq!(live["activeSlot"], json!(1));
+        let jobs = status["data"]["jobs"].as_array().unwrap();
+        let closed_job = jobs.iter().find(|item| item["subject"]["runId"] == "run-closed").unwrap();
+        assert_eq!(closed_job["status"], json!("failed"));
+        assert_eq!(closed_job["failure"]["code"], json!("creator_playtest_city_closed"));
+        let live_job = jobs.iter().find(|item| item["subject"]["runId"] == "run-live").unwrap();
+        assert_eq!(live_job["status"], json!("running"));
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
     #[test]
     fn world_apply_jobs_resolve_through_the_host_view_status() {
         let home = temp_home();

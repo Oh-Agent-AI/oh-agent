@@ -104,9 +104,14 @@ export function CityApp() {
       }).catch(() => { if (!cancelled) setError(true); });
     return () => { cancelled = true; if (timer) clearTimeout(timer); stopHealth(); };
   }, [attempt]);
-  if (!boot) return <section className="city-app"><div className="city-loading" role="status"><div className="city-loading-card">
-    <h2>{error ? "无法确认试玩状态" : "正在准备城市"}</h2>
+  // 试玩确认发生在投影之前，但这仍是第一帧。加载公告必须和数据读取
+  // 用同一套可感知状态（aria-live、标记、进度轨），不能换成另一块无公告的卡片。
+  if (!boot) return <section className="city-app"><div className="city-loading" role="status" aria-live="polite"><div className="city-loading-card">
+    <div className="city-loading-mark" aria-hidden="true"><span /><span /><span /><i /></div>
+    <p className="city-loading-kicker">AGENT CITY</p>
+    <h2>{error ? "无法确认试玩状态" : "读取城市数据"}</h2>
     <p>{error ? "无法连接城市服务，请重试。试玩不会使用其他城市继续。" : "正在确认城市与试玩状态…"}</p>
+    <div className="city-loading-track" aria-hidden="true"><span /></div>
     {error && <button onClick={() => { setError(false); setAttempt(value => value + 1); }}>重试</button>}
   </div></div></section>;
   return <CityAppRuntime key={boot.pending ? boot.runId : "player-city"} boot={boot.pending ? boot : null}
