@@ -2,6 +2,7 @@
   "schemaVersion": 1,
   "templates": [
     {
+      "gameType": "driving",
       "id": "checkpoint-race",
       "label": "驾驶检查点竞速",
       "pack": {
@@ -106,6 +107,7 @@
       }
     },
     {
+      "gameType": "flight",
       "id": "flight-checkpoint",
       "label": "飞行检查点",
       "pack": {
@@ -210,6 +212,7 @@
       }
     },
     {
+      "gameType": "flight",
       "id": "ornithopter-flight",
       "label": "扑翼飞行检查点",
       "pack": {
@@ -319,6 +322,7 @@
       }
     },
     {
+      "gameType": "driving",
       "id": "collect-one",
       "label": "驾驶区域收集",
       "pack": {

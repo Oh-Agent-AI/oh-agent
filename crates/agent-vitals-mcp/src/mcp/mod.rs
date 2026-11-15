@@ -247,7 +247,8 @@ pub fn dispatch_with_permissions_options(
         "im_publish" => city_im::run(args, data_home, allow_local_writes),
         "creator_city_create" | "creator_city_edit_preview" | "creator_city_patch_preview" | "creator_city_edit_commit" | "creator_city_list" | "creator_city_read" | "creator_city_diagnostics" | "creator_city_view" | "creator_city_view_status" | "creator_city_capture" | "creator_city_layout_read" | "creator_city_layout_save" | "creator_layout_list" | "creator_project_list" | "creator_project_read" | "creator_operation_status" | "creator_playtest_history" | "creator_playtest_start" | "creator_playtest_result" | "creator_playtest_cancel" | "creator_project_create"
         | "creator_game_preview" | "creator_scene_preview" | "creator_project_commit" | "creator_project_publish"
-        | "creator_scene_describe" | "creator_scene_capture" | "creator_scene_inspect" | "creator_scene_validate" | "creator_capabilities_list" => creator_studio::run(name, args, data_home, allow_local_writes),
+        | "creator_scene_describe" | "creator_scene_capture" | "creator_scene_inspect" | "creator_scene_validate" | "creator_capabilities_list"
+        | "creator_vehicle_list" | "creator_vehicle_preview" | "creator_vehicle_define" | "creator_vehicle_inspect" => creator_studio::run(name, args, data_home, allow_local_writes),
         "city_world_profile_preview" | "city_world_profile_apply" => city_world::run(name, args, data_home, allow_local_writes),
         #[cfg(feature = "mcp-internal")]
         "query_sql_readonly" => query_sql_readonly::run(args, data_home),
@@ -501,6 +502,34 @@ mod tests {
         let error = dispatch("city_world_profile_apply", &json!({"previewId":"cwp_preview0001","operationId":"op-1"}), Path::new("/unused"))
             .unwrap_err();
         assert_eq!(error.code, "permission_denied");
+    }
+
+    #[test]
+    fn creator_vehicle_tools_are_registered_bounded_and_offline_list_works() {
+        let names: Vec<_> = tool_specs().into_iter().map(|tool| tool.name).collect();
+        for name in ["creator_vehicle_list", "creator_vehicle_preview", "creator_vehicle_define", "creator_vehicle_inspect"] {
+            assert!(names.contains(&name), "Creator vehicle MCP tool missing: {name}");
+        }
+        // define 是写入工具：未带 --allow-local-writes 时在 MCP 侧拒绝，不转发插件。
+        let error = dispatch("creator_vehicle_define", &json!({"projectId":"project-1","baseRevision":0,"vehicleId":"vehicle.x",
+            "label":"扑翼机","flightModel":"flapping","physics":{},"bounds":{"halfLengthM":3.6,"halfWidthM":4.8,"halfHeightM":1.4},
+            "operationId":"op-1"}), Path::new("/unused")).unwrap_err();
+        assert_eq!(error.code, "permission_denied");
+        // 静态目录离线可用（与 capabilities 同策略）：无 Studio、无数据根也返回 preset。
+        let listed = dispatch("creator_vehicle_list", &json!({"limit":8}), Path::new("/unused")).expect("vehicle list must not require Studio");
+        let data = &listed["data"];
+        assert_eq!(data["schemaVersion"], 1);
+        assert_eq!(data["presetCount"], 2);
+        assert_eq!(data["presets"][0]["flightModel"], "flapping");
+        assert_eq!(data["presets"][1]["flightModel"], "fixed-wing");
+        // define 的 MCP 面不接收 camera：多余字段在参数校验阶段拒绝（M08）。
+        let error = dispatch("creator_vehicle_define", &json!({"projectId":"project-1","baseRevision":0,"vehicleId":"vehicle.x",
+            "label":"x","flightModel":"flapping","physics":{},"bounds":{"halfLengthM":1,"halfWidthM":1,"halfHeightM":1},
+            "camera":{},"operationId":"op-2"}), Path::new("/unused")).unwrap_err();
+        assert_eq!(error.code, "invalid_argument");
+        // inspect 缺 vehicleId 在参数校验阶段拒绝，不向插件转发。
+        let error = dispatch("creator_vehicle_inspect", &json!({"projectId":"project-1"}), Path::new("/unused")).unwrap_err();
+        assert_eq!(error.code, "invalid_argument");
     }
 
     #[test]

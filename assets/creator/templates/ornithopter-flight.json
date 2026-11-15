@@ -1,4 +1,5 @@
 {
+  "gameType": "flight",
   "label": "扑翼飞行检查点",
   "pack": {
     "id": "creator.ornithopter-flight",
