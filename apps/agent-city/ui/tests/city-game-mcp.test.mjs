@@ -133,3 +133,102 @@ test("bad arguments and budgets fail closed instead of inventing a run", async (
     assert.equal(stopped.tick, 10);
   } finally { client.close(); }
 });
+
+// ── release 模式 ───────────────────────────────────────────────────────────────
+// 用临时 Creator 库（与 Rust creator_store 同一 DDL）验证：载具/pack/门从发布快照来，
+// 快照没有几何时如实拒绝并要求显式 gates，而不是编造门的位置。
+import { DatabaseSync } from "node:sqlite";
+import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { canonicalJson } from "@agent-vitals/city-sdk";
+
+const gamePack = { schemaVersion: 1, id: "creator.gates", rulesVersion: 1,
+  slots: { gates: { kind: "zone", min: 1, max: 2, requires: ["fly"] } },
+  rules: { counters: { passed: { initial: 0, max: 1 } }, nodes: [
+    { id: "gate", on: { type: "zone.entered", slot: "gates" }, actions: [{ op: "counter.add", counter: "passed", amount: 1 }, { op: "run.finish", outcome: "success" }] },
+  ] } };
+const vehicle = { schemaVersion: 1, id: "vehicle-release", label: "Released flier", modelAssetId: null, flightModel: "fixed-wing",
+  physics: { massKg: 620, wingAreaM2: 16, thrustN: 9000, maxSpeedMps: 130, dragCoefficient: 0.06, turnRateRps: 1.05, climbRateMps: 26, sinkRateMps: 20 },
+  bounds: { halfLengthM: 4.5, halfWidthM: 5.5, halfHeightM: 1.5 }, camera: { followDistanceM: 35.75, heightOffsetM: 14.3, fovDeg: 55 } };
+
+function fixtureStore({ withGeometry }) {
+  const dataHome = mkdtempSync(join(tmpdir(), "city-game-mcp-"));
+  mkdirSync(join(dataHome, "state", "creator"), { recursive: true });
+  const db = new DatabaseSync(join(dataHome, "state", "creator", "projects.sqlite"));
+  db.exec(`CREATE TABLE creator_releases (
+      release_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, revision INTEGER NOT NULL,
+      layout_id TEXT NOT NULL, world_revision TEXT NOT NULL, snapshot_json TEXT NOT NULL,
+      snapshot_digest TEXT NOT NULL, created_at_ms INTEGER NOT NULL, UNIQUE(project_id, revision));
+    CREATE TABLE creator_city_layouts_v2 (
+      city_id TEXT NOT NULL, city_revision INTEGER NOT NULL, world_revision TEXT NOT NULL,
+      layout_id TEXT NOT NULL, snapshot_json TEXT NOT NULL, snapshot_digest TEXT NOT NULL,
+      created_at_ms INTEGER NOT NULL, PRIMARY KEY(city_id,city_revision,world_revision));`);
+  const digest = `sha256:${createHash("sha256").update(canonicalJson(gamePack)).digest("hex")}`;
+  const snapshot = { projectId: "project-release", revision: 1, title: "Release", gameType: "flight",
+    runtimeContractVersion: 1, vehicleId: "vehicle-release", vehicle, layoutId: "layout-1", worldRevision: "world-1",
+    game: gamePack, mounts: [{ schemaVersion: 1, mountId: "mount-1", layout: { kind: "city-layout", id: "layout-1", version: "1", digest: "world-1" },
+      game: { kind: "city-minigame", id: gamePack.id, version: "1", digest }, entryAnchorId: "spawn", bindings: { gates: ["gate-1"] }, parameterOverrides: {} }],
+    cityId: "city-fixture", cityRevision: 1 };
+  db.prepare("INSERT INTO creator_releases VALUES (?,?,?,?,?,?,?,?)").run("release-fixture", "project-release", 1, "layout-1", "world-1",
+    JSON.stringify(snapshot), `sha256:${"c".repeat(64)}`, 1);
+  const layout = { schemaVersion: 2, cityId: "city-fixture", cityRevision: 1, worldRevision: "world-1", seed: 42,
+    layout: { schemaVersion: 1, id: "layout-1", coordinateSystem: "city-local-m-v1",
+      anchors: [{ id: "spawn", kind: "spawn", capabilities: ["fly"], geometryRef: "g:spawn" },
+        { id: "gate-1", kind: "zone", capabilities: ["fly"], geometryRef: "g:gate-1" }], links: [] },
+    ...(withGeometry ? { geometry: [
+      { geometryRef: "g:spawn", positionMeters: { x: 0, y: 40, z: 0 } },
+      { geometryRef: "g:gate-1", positionMeters: { x: 60, y: 40, z: 0 }, activationRadiusMeters: 20 },
+    ] } : {}) };
+  db.prepare("INSERT INTO creator_city_layouts_v2 VALUES (?,?,?,?,?,?,?)").run("city-fixture", 1, "world-1", "layout-1",
+    JSON.stringify(layout), `sha256:${"d".repeat(64)}`, 1);
+  db.close();
+  return dataHome;
+}
+
+test("release mode opens the frozen vehicle and pack, resolving gates from layout geometry", async () => {
+  const dataHome = fixtureStore({ withGeometry: true });
+  const client = connect();
+  try {
+    const opened = await client.call("game_open", { releaseId: "release-fixture", dataHome });
+    assert.equal(opened.isError, false, JSON.stringify(opened));
+    assert.equal(opened.gameType, "flight");
+    assert.equal(opened.vehicle, "vehicle-release");
+    assert.equal(opened.release.gateSource, "layout-geometry");
+    assert.deepEqual(opened.release.boundAnchors, [{ mountId: "mount-1", slot: "gates", anchorIds: ["gate-1"] }]);
+    assert.equal(opened.gates.total, 1);
+    let state = opened;
+    for (let index = 0; index < 40 && state.phase === "running"; index += 1) {
+      state = await client.call("game_step", { sessionId: opened.sessionId, ticks: 6, input: { throttleUp: true } });
+    }
+    assert.equal(state.outcome, "success");
+    assert.equal(state.gates.passed, 1);
+  } finally { client.close(); rmSync(dataHome, { recursive: true, force: true }); }
+});
+
+test("a release whose layout snapshot has no geometry is refused, not guessed", async () => {
+  const dataHome = fixtureStore({ withGeometry: false });
+  const client = connect();
+  try {
+    const opened = await client.call("game_open", { releaseId: "release-fixture", dataHome });
+    assert.equal(opened.isError, true);
+    assert.match(opened.error, /gates_required/);
+    // 如实告诉 Agent 绑定了哪些锚点，它才能自己给坐标。
+    assert.deepEqual(opened.boundAnchors, [{ mountId: "mount-1", slot: "gates", anchorIds: ["gate-1"] }]);
+    assert.ok(opened.warnings.includes("gate_geometry_not_serialized"));
+    // 显式给门就能跑（大门放在出生航线上）。
+    const manual = await client.call("game_open", { releaseId: "release-fixture", dataHome, gates: [{ x: 60, y: 40, z: 0, radius: 20 }] });
+    assert.equal(manual.isError, false, JSON.stringify(manual));
+    assert.equal(manual.release.gateSource, "caller");
+  } finally { client.close(); rmSync(dataHome, { recursive: true, force: true }); }
+});
+
+test("release integrity failures are reported instead of opening a different game", async () => {
+  const client = connect();
+  try {
+    const missing = await client.call("game_open", { releaseId: "release-missing", dataHome: tmpdir() });
+    assert.equal(missing.isError, true);
+    assert.match(missing.error, /creator_store_unavailable|release_not_found/);
+  } finally { client.close(); }
+});

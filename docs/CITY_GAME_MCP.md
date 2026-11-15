@@ -50,7 +50,7 @@ An MCP client entry (`<repo>` is this checkout):
 | Tool | Purpose |
 |---|---|
 | `game_types` | Supported game types, vehicle presets, the shared input vocabulary and the determinism guarantee |
-| `game_open` | Open a session: `gameType` (`flight`/`driving`), optional `vehicle` (preset id or a full `VehicleProfileV1`), optional creator `pack` + `gates`, optional `spawn`/`seed`/`maxTicks` |
+| `game_open` | Open a session: `gameType` (`flight`/`driving`), optional `vehicle` (preset id or a full `VehicleProfileV1`), optional creator `pack` + `gates`, optional `spawn`/`seed`/`maxTicks`; or `releaseId` (+ `dataHome`) to take vehicle/pack/gates from a published release |
 | `game_step` | Advance N fixed ticks (≤600) holding one input; returns state, counters, gate count |
 | `game_script` | Run a whole script (`[{ticks, input}, …]`) in one call; returns `traceDigest` |
 | `game_state` | Read the authoritative state of a session |
@@ -65,6 +65,51 @@ An MCP client entry (`<repo>` is this checkout):
 - One input vocabulary for every game type: `throttleUp` / `throttleDown` / `turnLeft` /
   `turnRight` / `pitchUp` / `pitchDown`. Driving aliases `forward` / `backward` / `left` /
   `right` are accepted, so the same script runs against either game type.
+
+## Release mode (`releaseId`)
+
+`game_open({ releaseId, dataHome })` reads the Creator store
+`<data_home>/state/creator/projects.sqlite` (read-only) and takes:
+
+- **vehicle** — the profile frozen at publish (`snapshot.vehicle`, id checked against `vehicleId`);
+- **pack** — `snapshot.game`, with its digest recomputed as `sha256(canonicalJson(game))` and compared
+  to every mount's `game.digest` (a mismatch is a corrupt release, not a new game);
+- **gates** — `mount.bindings` → snapshot anchors → layout geometry.
+
+`dataHome` defaults to `$AV_DATA_HOME` or `~/.agent-vitals`.
+
+### Gate geometry is usually missing — by design, not by bug
+
+The City adapter states it explicitly: *"geometry stays in the City adapter and is never
+serialized"*. Layout snapshots v1/v2 carry anchors + links but **no** `positionMeters` /
+`activationRadiusMeters`, and regenerating the city headlessly is **not** a substitute —
+road pruning depends on live session data, so the regenerated node set does not match the
+`geometryRef`s the snapshot recorded.
+
+So the resolver never guesses:
+
+- snapshot carries `geometry: [{ geometryRef, positionMeters, activationRadiusMeters? }]`
+  (the shape a future snapshot version will serialize) → gates are resolved and
+  `release.gateSource === "layout-geometry"`;
+- otherwise → `isError: gates_required` with `boundAnchors` (which anchor ids the mounts
+  bind) and `warnings: ["gate_geometry_not_serialized"]`; pass `gates` yourself in metres
+  and `release.gateSource === "caller"`.
+
+A partially resolvable gate set is refused whole (`gate_anchor_not_found`,
+`gate_geometry_unresolved`, `gate_radius_missing`) — half a gate list silently moves the
+game.
+
+### Known content gap
+
+`creator_city_anchor_upsert` only lets an anchor reuse an **existing** City geometryRef, so
+the flight gates in the current fixture store are all bound to one road node
+(`city-road-node:…`, identical for `air-gate:0..2`). Two consequences worth checking before
+trusting a flight playtest:
+
+1. three gates at one point (not a course);
+2. road-node anchors carry **no** activation radius, so `createMountedMiniGamePlan` would
+   reject them with `zone_geometry_unavailable` in the app — the release is published but
+   not playable.
 
 ## Rules are the real rules
 

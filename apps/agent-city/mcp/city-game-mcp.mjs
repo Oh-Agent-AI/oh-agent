@@ -17,6 +17,7 @@ import { initialDrivingState, stepDriving } from "../ui/src/game/DrivingSimulati
 import { createMountedMiniGamePlan, MountedMiniGameControllerV1 } from "../ui/src/game/activity/mountedMiniGame.ts";
 import { EMPTY_INPUT } from "../ui/src/game/types.ts";
 import { m as worldUnits, toMeters } from "../ui/src/engine/worldScale.ts";
+import { resolveRelease } from "./releaseStore.mjs";
 
 const PROTOCOL = "2024-11-05";
 const DT_SECONDS = 1 / 60;
@@ -124,6 +125,7 @@ function summary(session) {
   const snapshot = session.controller?.snapshot ?? null;
   return {
     sessionId: session.id, gameType: session.gameType, tick: session.tick, phase: session.phase,
+    ...(session.release ? { release: session.release } : {}),
     vehicle: session.vehicleId, seed: session.seed, dtSeconds: DT_SECONDS, pose: poseOf(session),
     outcome: snapshot?.state?.outcome ?? null,
     counters: snapshot ? { ...snapshot.state.counters } : null,
@@ -163,8 +165,10 @@ const tools = [
   { name: "game_types", description: "List the game types this server can drive headlessly and the shared input vocabulary.",
     inputSchema: { type: "object", properties: {} } },
   { name: "game_open", description: "Open one headless game session from a game type, an optional vehicle profile/preset and an optional creator pack with explicit gates. Coordinates are metres.",
-    inputSchema: { type: "object", required: ["gameType"], properties: {
-      gameType: { type: "string", enum: ["flight", "driving"] },
+    inputSchema: { type: "object", properties: {
+      gameType: { type: "string", enum: ["flight", "driving"], description: "required unless releaseId is given (the release freezes it)" },
+      releaseId: { type: "string", description: "read a published release: vehicle, pack and gates come from the frozen snapshot" },
+      dataHome: { type: "string", description: "Creator store home (default $AV_DATA_HOME or ~/.agent-vitals)" },
       vehicle: { description: "flight only: preset id or a full VehicleProfileV1", oneOf: [{ type: "string", enum: ["ornithopter", "fixed-wing"] }, { type: "object" }] },
       pack: { type: "object", description: "optional creator mini-game pack (same JSON as the Studio game editor)" },
       gates: { type: "array", maxItems: 64, items: { type: "object", required: ["x", "z"], properties: {
@@ -185,15 +189,42 @@ const tools = [
   { name: "game_close", description: "Close a session and release its runner.", inputSchema: { type: "object", required: ["sessionId"], properties: { sessionId: { type: "string" } } } },
 ];
 
+/** release 模式：载具与 pack 来自发布快照（只读），门来自布局快照里的 geometry。
+ *  快照没有 geometry（v1/v2 的历史数据）时**不猜位置**，要求调用方显式给 gates。 */
+function resolveReleaseArgs(args) {
+  const dataHome = typeof args.dataHome === "string" && args.dataHome ? args.dataHome
+    : process.env.AV_DATA_HOME || `${process.env.HOME}/.agent-vitals`;
+  const release = resolveRelease({ dataHome, releaseId: args.releaseId });
+  if (args.gameType !== undefined && args.gameType !== release.gameType) throw new Error("release_game_type_mismatch");
+  if (!release.gates && !Array.isArray(args.gates)) {
+    // 把绑定了哪些锚点如实回给 Agent：它需要自己给出这些门的世界坐标（米）。
+    throw Object.assign(new Error("gates_required"), { detail: { boundAnchors: release.boundAnchors, warnings: release.warnings,
+      hint: "the release layout snapshot has no gate geometry; pass `gates` in metres (bound anchors listed in boundAnchors)" } });
+  }
+  return { release, gameType: release.gameType, vehicle: args.vehicle ?? release.vehicle ?? null,
+    pack: args.pack ?? release.game, gates: Array.isArray(args.gates) ? args.gates : release.gates };
+}
+
 function open(args) {
-  const gameType = args.gameType === "driving" ? "driving" : args.gameType === "flight" ? "flight" : null;
+  const fromRelease = typeof args.releaseId === "string" ? resolveReleaseArgs(args) : null;
+  const gameType = fromRelease ? fromRelease.gameType
+    : args.gameType === "driving" ? "driving" : args.gameType === "flight" ? "flight" : null;
   if (!gameType) throw new Error("game_type_invalid");
+  const vehicleInput = fromRelease ? fromRelease.vehicle : args.vehicle;
+  const packInput = fromRelease ? fromRelease.pack : args.pack;
+  const gatesInput = fromRelease ? fromRelease.gates : args.gates;
   const seed = clampInteger(args.seed ?? 7, 0, 2 ** 31 - 1);
   const session = { id: `game-${++nextSession}`, gameType, seed, tick: 0, phase: "running", reason: null,
     trace: [], maxTicks: clampInteger(args.maxTicks ?? 3600, 1, MAX_TICK_BUDGET), controller: null,
     gatesPassed: 0, gatesTotal: 0, pack: null, params: null, vehicleId: null, state: null };
+  if (fromRelease) {
+    session.release = { releaseId: fromRelease.release.releaseId, projectId: fromRelease.release.projectId,
+      revision: fromRelease.release.revision, gameType: fromRelease.release.gameType,
+      gateSource: Array.isArray(args.gates) ? "caller" : fromRelease.release.gateSource,
+      boundAnchors: fromRelease.release.boundAnchors, warnings: fromRelease.release.warnings };
+  }
   if (gameType === "flight") {
-    let profile = args.vehicle ?? "fixed-wing";
+    let profile = vehicleInput ?? "fixed-wing";
     if (typeof profile === "string") {
       const preset = PRESETS[profile];
       if (!preset) throw new Error("vehicle_preset_unknown");
@@ -212,9 +243,9 @@ function open(args) {
     const spawn = args.spawn ?? {};
     session.state = initialDrivingState(worldUnits(finite(spawn.x, 0)), worldUnits(finite(spawn.z, 0)), finite(spawn.heading, 0));
   }
-  if (args.pack) {
-    session.pack = args.pack;
-    const gates = (Array.isArray(args.gates) ? args.gates : []).map(gate => ({ x: finite(gate?.x, 0), y: finite(gate?.y, 0),
+  if (packInput) {
+    session.pack = packInput;
+    const gates = (Array.isArray(gatesInput) ? gatesInput : []).map(gate => ({ x: finite(gate?.x, 0), y: finite(gate?.y, 0),
       z: finite(gate?.z, 0), radius: Math.max(0.5, finite(gate?.radius, 8)) }));
     if (!gates.length) throw new Error("gates_required");
     session.controller = buildRules(session, gates, gameType === "flight" ? "fly" : "drive", args.bindings);
@@ -276,7 +307,7 @@ rl.on("line", line => {
     // 后者在客户端里和协议故障混在一起，测试脚本会分不清"参数不对"和"服务器坏了"。
     else if (message.method === "tools/call") {
       try { response = callTool(message.params?.name, message.params?.arguments ?? {}); }
-      catch (error) { response = fail(error.message); }
+      catch (error) { response = fail(error.message, error.detail ?? {}); }
     }
     else throw Object.assign(new Error("method_not_found"), { code: -32601 });
   } catch (error) {
