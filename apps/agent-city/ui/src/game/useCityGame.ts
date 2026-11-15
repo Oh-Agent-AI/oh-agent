@@ -4,6 +4,7 @@
  * Esc 走捕获阶段优先于既有面板链；WebGL 上下文丢失直接退出到数据模式（§8）。
  */
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import type { VehicleProfileV1 } from "@agent-vitals/city-sdk";
 import type { CityEngine } from "../engine/CityEngine";
 import { GameSession, type GameSessionSnapshot } from "./GameSession";
 import type { FlightInputState } from "./types";
@@ -85,7 +86,8 @@ export function useCityGame(engine: RefObject<CityEngine | null>, host: GameHost
     return () => { active = false; };
   }, [persistProfile]);
 
-  const enterGame = useCallback(async (mode: "practice" | "race", origin?: Readonly<{ x: number; y: number; z: number; heading: number }>) => {
+  const enterGame = useCallback(async (mode: "practice" | "race", origin?: Readonly<{ x: number; y: number; z: number; heading: number }>,
+    vehicle?: VehicleProfileV1) => {
     const session = getSession();
     const engineInstance = engine.current;
     if (!session || !engineInstance) return;
@@ -99,7 +101,7 @@ export function useCityGame(engine: RefObject<CityEngine | null>, host: GameHost
     setEntryError(null);
     const hostState = session.hostState(hostRef.current.cinemaActive(), hostRef.current.filmActive(), hostRef.current.busy());
     let result: Awaited<ReturnType<GameSession["enter"]>>;
-    try { result = await session.enter({ mode }, hostState, origin); }
+    try { result = await session.enter({ mode }, hostState, origin, vehicle); }
     catch (error) {
       admission.lease.release(); if (activityLeaseRef.current === admission.lease) activityLeaseRef.current = null;
       if (sessionRef.current === session && session.controller.snapshot.phase !== "data") {
@@ -186,6 +188,8 @@ export function useCityGame(engine: RefObject<CityEngine | null>, host: GameHost
     enterPractice: () => enterGame("practice"),
     /** 点了机场机坪上的飞机：练习模式，从跑道起飞。 */
     enterPracticeFrom: (origin: Readonly<{ x: number; y: number; z: number; heading: number }>) => enterGame("practice", origin),
+    /** VehicleProfileV1 驱动的飞行（扑翼原型入口走这里；profile 已在 SDK 校验过的 preset）。 */
+    enterVehiclePractice: (vehicle: VehicleProfileV1, origin?: Readonly<{ x: number; y: number; z: number; heading: number }>) => enterGame("practice", origin, vehicle),
     enterRace: () => enterGame("race"),
     enterUatRace: async () => {
       if (typeof __CITY_GAME_UAT__ === "undefined" || !__CITY_GAME_UAT__) return;

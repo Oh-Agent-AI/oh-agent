@@ -39,6 +39,7 @@ import type { CreatorPublishedMiniGameV1 } from "./game/activity/creatorMiniGame
 import { loadCreatorSceneModels } from "./game/activity/creatorSceneModels";
 import { createCreatorLayoutSnapshot } from "./engine/sdk/cityLayoutAdapter";
 import { useCityDrivingPlay } from "./game/useCityDrivingPlay";
+import { ORNITHOPTER_VEHICLE_PRESET_V1 } from "@agent-vitals/city-sdk";
 import { createMiamiActivityEntries } from "./game/runtime/miamiActivityEntries";
 import { createMiamiGameRuntimeRegistry } from "./game/runtime/miamiActivityHost";
 import type { GameRuntimeHandleV1, GameRuntimeRegistryV1, GameRuntimeTelemetryV1, MiamiActivityIdV1 } from "../../../../packages/agent-vitals-city-game-runtime/src/index";
@@ -291,6 +292,8 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
   const mechaOpenRef = useRef(false);
   const miamiRuntimeRegistry = useRef<GameRuntimeRegistryV1 | null>(null);
   const miamiHandles = useRef<Partial<Record<MiamiActivityIdV1, GameRuntimeHandleV1>>>({});
+  /** 扑翼原型入口的 typeId 传递（消费后即清空；见 flight command 的 enter）。 */
+  const requestedFlightTypeRef = useRef<string | null>(null);
   const filmRef = useRef(!!experience.film);
   filmRef.current = !!experience.film;
   const busyRef = useRef(experience.busy);
@@ -332,12 +335,32 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
   drivingRef.current = driving;
   const startedCreatorPlaytest = useRef<string | null>(null);
   useEffect(() => {
-    if (!creatorPlaytest || !firstModelFrame || driving.active || startedCreatorPlaytest.current === creatorPlaytest.runId) return;
+    if (!creatorPlaytest || creatorPlaytest.gameType === "flight" || !firstModelFrame || driving.active || startedCreatorPlaytest.current === creatorPlaytest.runId) return;
     const first = creatorPlaytest.experiences[0];
     if (!first) { void finishPlaytest(creatorPlaytest.runId, "failed", undefined, "creator_playtest_experience_unavailable"); return; }
     startedCreatorPlaytest.current = creatorPlaytest.runId;
     driving.startCreatorGame(first.releaseId, first.mount.mountId);
   }, [creatorPlaytest, firstModelFrame, driving.active, driving.startCreatorGame]);
+  // flight 试玩 handoff（2026-11-15 泛化切片）：按 gameType 路由到飞行会话；
+  // driving 分支完全不经过这里（逐位不变）。飞行试玩证据（visual evidence 与
+  // creator pack 规则的映射）属下一切片——本切片在飞行会话退出/失败时以
+  // cancelled 收口，避免占用唯一活跃试玩槽直到 TTL。
+  const startedFlightPlaytest = useRef<string | null>(null);
+  useEffect(() => {
+    if (!creatorPlaytest || creatorPlaytest.gameType !== "flight") return;
+    const runId = creatorPlaytest.runId;
+    if (game.active) { startedFlightPlaytest.current = runId; return; }
+    if (startedFlightPlaytest.current !== runId) return;
+    const phase = game.snapshot?.controller.phase;
+    if (phase === "preparing" && !game.snapshot?.controller.error) return;
+    startedFlightPlaytest.current = null;
+    void finishPlaytest(runId, "cancelled");
+  }, [creatorPlaytest, game.active, game.snapshot, finishPlaytest]);
+  useEffect(() => {
+    if (!creatorPlaytest || creatorPlaytest.gameType !== "flight" || !firstModelFrame || game.active || startedFlightPlaytest.current === creatorPlaytest.runId) return;
+    startedFlightPlaytest.current = creatorPlaytest.runId;
+    void game.enterRace();
+  }, [creatorPlaytest, firstModelFrame, game.active, game.enterRace]);
   useEffect(() => () => { mechaActivityLease.current?.release(); mechaActivityLease.current = null; }, []);
   drivingActive.current = driving.active;
   // 规划修复（开发开关 ?cityPlan / cityPlanDev=1；未开启时 hook 什么都不做）。与游戏/航拍/导出/忙碌互斥。
@@ -911,7 +934,17 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
       ({ status, tick: 0, counters, metrics, reason });
     const entries = createMiamiActivityEntries({
       flight: {
-        enter: () => gameRef.current.enterPractice(), exit: () => gameRef.current.exit(), active: () => gameRef.current.active,
+        enter: () => {
+          // 扑翼原型入口改由 VehicleProfileV1 preset 驱动（2026-11-15 泛化切片）：
+          // registry 的 flight entry 拿不到 typeId，CityApp 把本次请求放进 ref，
+          // 命令消费后立即清空；普通 miami.flight-v1 仍走 legacy 入口，行为逐位不变。
+          const requested = requestedFlightTypeRef.current;
+          requestedFlightTypeRef.current = null;
+          return requested?.includes("-prototype-")
+            ? gameRef.current.enterVehiclePractice(ORNITHOPTER_VEHICLE_PRESET_V1)
+            : gameRef.current.enterPractice();
+        },
+        exit: () => gameRef.current.exit(), active: () => gameRef.current.active,
         telemetry: () => { const snapshot = gameRef.current.snapshot; return telemetry(gameRef.current.active ? "running" : "ready", snapshot?.controller.error ? "game_runtime_error" : null,
           {}, { speed: snapshot?.telemetry?.speed ?? 0, altitude: snapshot?.telemetry?.altitude ?? 0 }); },
       },
@@ -937,12 +970,14 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
     const registry = miamiRuntimeRegistry.current;
     if (!registry) { setStatus("游戏运行时尚未就绪。"); return; }
     try {
+      if (typeId.includes("-prototype-")) requestedFlightTypeRef.current = typeId;
       const runtime = registry.resolve(typeId, 1);
       const prepared = await runtime.prepare();
       if (!prepared.ok) { setStatus(`无法进入${activity}：${prepared.failure.code}`); return; }
       miamiHandles.current[activity] = prepared.value;
-      if (typeId.includes("-prototype-")) setStatus("已进入扑翼飞行原型（复用飞机逻辑）。");
+      if (typeId.includes("-prototype-")) setStatus("已进入扑翼飞行原型（preset 驱动）。");
     } catch (error) {
+      requestedFlightTypeRef.current = null;
       setStatus(`无法进入${activity}：${error instanceof Error ? error.message : "unknown"}`);
     }
   }

@@ -14,11 +14,12 @@ export const ZOOM_MAX = 3.5;
 export class FlightCamera {
   private readonly core: VehicleChaseCamera;
 
-  constructor(camera: THREE.PerspectiveCamera, reducedMotion: boolean) {
+  constructor(camera: THREE.PerspectiveCamera, reducedMotion: boolean, fovBase = 52) {
     // 飞机参数锁定为旧版调优值；planeRadius 由 params 在 update 时传入，
     // 但阻尼/FOV/距离比例不随飞机尺寸变化——baseBack/baseHeight 由 GameSession
     // 用 params.planeRadius 计算后传入 reset/update。这里用固定默认值，核心
-    // 按绝对距离工作，不需要知道飞机半径。
+    // 按绝对距离工作，不需要知道飞机半径。VehicleProfileV1 相机参数（fovDeg）
+    // 通过 fovBase 注入；legacy 路径不传参，保持 52 不变。
     this.core = new VehicleChaseCamera(camera, {
       positionDamping: 4.2,
       dragPositionDamping: 14,
@@ -27,7 +28,7 @@ export class FlightCamera {
       baseHeight: 6,     // 2.4 × planeRadius(2.5)
       speedBackBoost: 0.35,
       lookAhead: 6,      // 2.4 × planeRadius(2.5)
-      fovBase: 52,
+      fovBase,
       fovSpeedSpan: 8,
       groundMargin: 2.25, // 0.9 × planeRadius(2.5)
       fovDamping: 3,
@@ -78,8 +79,9 @@ export class FlightCamera {
       // 距离拉远用 min→max（旧版 backDistance 公式），FOV 用 cruise→max（旧版 FOV 公式）。
       speedRatio: Math.max(0, Math.min(1, (sim.speed - params.minSpeed) / Math.max(1e-6, params.maxSpeed - params.minSpeed))),
       fovSpeedRatio: Math.max(0, Math.min(1, (sim.speed - params.cruiseSpeed) / Math.max(1e-6, params.maxSpeed - params.cruiseSpeed))),
-      backOverride: params.planeRadius * 5.2,
-      heightOverride: params.planeRadius * 2.4,
+      // VehicleProfileV1 相机 preset 优先；legacy 路径（字段缺省）保持 planeRadius 倍数公式不变。
+      backOverride: params.followDistance ?? params.planeRadius * 5.2,
+      heightOverride: params.heightOffset ?? params.planeRadius * 2.4,
       lookAheadOverride: params.planeRadius * 2.4,
     };
   }

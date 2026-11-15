@@ -15,6 +15,27 @@ const MAX_PLAYTEST_EVIDENCE_BYTES: usize = 8 * 1024;
 const MAX_PLAYTEST_COUNTERS: usize = 32;
 const MAX_PLAYTEST_TICKS: u64 = 2_000_000;
 
+/// 试玩 gameType 白名单（2026-11-15 飞行泛化切片）：driving 是既有行为，flight 由
+/// creator.flight-checkpoint-v1 / city-flight-generic 承接（运行时适配器属下一切片）。
+fn valid_playtest_game_type(value: &str) -> bool { matches!(value, "driving" | "flight") }
+
+/// 解析一次试玩的游戏类型（单一来源，start/claim/pending 共用）：
+/// - 省略（None）：容忍读 release 冻结的 `gameType`；release 快照现无该字段（或值不在
+///   白名单）则视为 `driving` = 既有行为。release 快照 schema 不变。
+/// - 显式传参只允许校验：值必须在白名单内；release 冻结值存在且与显式值不一致时
+///   fail closed（`creator_playtest_game_type_mismatch`）。显式值永不改写路由结果——
+///   路由权威始终是 release 冻结值（不可变的 release 是唯一事实来源）。
+fn resolve_playtest_game_type(explicit: Option<&str>, snapshot: &Value) -> Result<&'static str, &'static str> {
+    if let Some(game_type) = explicit {
+        if !valid_playtest_game_type(game_type) { return Err("creator_request_invalid"); }
+    }
+    let frozen = snapshot.get("gameType").and_then(Value::as_str).filter(|value| valid_playtest_game_type(value));
+    if let (Some(game_type), Some(frozen)) = (explicit, frozen) {
+        if game_type != frozen { return Err("creator_playtest_game_type_mismatch"); }
+    }
+    Ok(match frozen { Some("flight") => "flight", _ => "driving" })
+}
+
 /// playtest 行查询的投影元组（clippy type_complexity 别名；字段次序跟随各 SELECT）。
 type PlaytestClaimRow = (String, String, String, u64, String, Option<String>, String);
 type PlaytestResultRow = (String, Option<String>, String, String, u64, Option<u64>, u64, String, Option<String>, Option<String>);
@@ -47,6 +68,14 @@ fn expire_playtests(tx: &rusqlite::Transaction<'_>, now: u64) -> Result<(), &'st
 }
 
 pub(crate) fn start_playtest(home: &Path, studio_instance: &str, release_id: &str, expected_project: Option<&str>, expected_revision: Option<u64>) -> Result<Value, &'static str> {
+    start_playtest_with_game_type(home, studio_instance, release_id, expected_project, expected_revision, None)
+}
+
+/// 可选 `gameType` 的启动入口（2026-11-15）：省略 = 既有行为；显式传参只允许校验
+/// （白名单 + 与 release 冻结值一致性），不改写路由结果。桌面 dispatch 面
+/// （creator_projects.rs，并行切片领地）接线后，MCP 的 creator_playtest_start
+/// 即可透传该参数；当前直接调用方（本 crate 测试/后续 MCP 接线）使用本入口。
+pub(crate) fn start_playtest_with_game_type(home: &Path, studio_instance: &str, release_id: &str, expected_project: Option<&str>, expected_revision: Option<u64>, game_type: Option<&str>) -> Result<Value, &'static str> {
     if !valid_id(studio_instance) || !valid_id(release_id) { return Err("creator_request_invalid"); }
     let mut db = database(home)?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
@@ -80,8 +109,12 @@ pub(crate) fn start_playtest(home: &Path, studio_instance: &str, release_id: &st
         || !snapshot.get("game").is_some_and(Value::is_object)
         || !snapshot.get("mounts").is_some_and(Value::is_array) { return Err("creator_release_invalid"); }
     if has_city_scope(&snapshot) { release_city_scope(home, &snapshot)?; }
+    // 显式 gameType 只在这里做校验（白名单 + 冻结值一致性）；start 响应保持既有
+    // 形状（不新增字段，桌面 handoff 锁步测试逐字节断言），路由值由 claim/pending
+    // 响应携带——权威始终是 release 冻结值。
+    let resolved_game_type = resolve_playtest_game_type(game_type, &snapshot)?;
     let run_id = new_id("playtest-")?;
-    agent_vitals_runtime::logging::log_info("creator_playtest", &format!("start run={run_id} release={release_id} project={project_id} city={:?}", snapshot.get("cityId")));
+    agent_vitals_runtime::logging::log_info("creator_playtest", &format!("start run={run_id} release={release_id} project={project_id} gameType={resolved_game_type} city={:?}", snapshot.get("cityId")));
     tx.execute("INSERT INTO creator_playtest_runs(run_id,release_id,project_id,revision,studio_instance_id,status,active_slot,created_at_ms,expires_at_ms)
         VALUES(?1,?2,?3,?4,?5,'pending',1,?6,?7)", params![run_id,release_id,project_id,revision,studio_instance,now,now.saturating_add(PLAYTEST_TTL_MS)])
         .map_err(|_| "creator_store_unavailable")?;
@@ -127,7 +160,11 @@ pub(crate) fn claim_playtest(home: &Path, city_instance: &str, expected_run: Opt
     if has_city_scope(&snapshot) && expected_run.is_none() { return Err("creator_playtest_run_required"); }
     let city_scope = if has_city_scope(&snapshot) { Some(release_city_scope(home, &snapshot)?) } else { None };
     tx.commit().map_err(|_| "creator_store_unavailable")?;
+    // City 侧 handoff 按 gameType 路由 flight/driver（飞行泛化切片）：容忍读 release
+    // 冻结值，缺省 driving = 既有行为；driving 路径逐位不变。
+    let game_type = resolve_playtest_game_type(None, &snapshot)?;
     let mut response = json!({"runId":run_id,"releaseId":release_id,"projectId":project_id,"revision":revision,"snapshotDigest":snapshot_digest,"skinId":skin_id,
+        "gameType":game_type,
         "game":snapshot["game"],"mounts":snapshot["mounts"],
         "scene":snapshot.get("scene").cloned().unwrap_or_else(|| json!({"schemaVersion":1,"objects":[]})),
         "assets":snapshot.get("assets").cloned().unwrap_or_else(|| json!({"schemaVersion":1,"entries":[]})),
@@ -162,6 +199,7 @@ pub(crate) fn pending_playtest(home: &Path) -> Result<Value, &'static str> {
     agent_vitals_runtime::logging::log_info("creator_playtest", &format!("pending run={run_id} release={release_id} city={:?}", snapshot.get("cityId")));
     let (city, layout) = release_city_scope(home, &snapshot)?;
     Ok(json!({"pending":true,"runId":run_id,"releaseId":release_id,"projectId":project_id,"revision":revision,
+        "gameType":resolve_playtest_game_type(None, &snapshot)?,
         "worldRevision":snapshot["worldRevision"],"city":city,"layout":layout}))
 }
 
@@ -337,4 +375,114 @@ pub(crate) fn cancel_playtest(home: &Path, studio_instance: &str, run_id: &str) 
         .map_err(|_| "creator_store_unavailable")?;
     tx.commit().map_err(|_| "creator_store_unavailable")?;
     Ok(json!({"runId":run_id,"projectId":project_id,"revision":revision,"status":"cancelled","cancelled":true}))
+}
+
+#[cfg(test)]
+mod flight_handoff_tests {
+    use super::*;
+    use serde_json::json;
+    use std::path::PathBuf;
+
+    fn home() -> PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static SEQUENCE: AtomicU32 = AtomicU32::new(0);
+        let home = std::env::temp_dir().join(format!("creator-playtest-flight-{}-{}",
+            std::process::id(), SEQUENCE.fetch_add(1, Ordering::Relaxed)));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        home
+    }
+
+    /// 直接写入一条满足 start_playtest 校验的 release 行（走完整项目链路属于
+    /// creator_projects.rs 领地；这里只覆盖 playtest 层的 gameType 语义）。
+    fn store_release(home: &Path, release_id: &str, revision: u64, snapshot: &Value) {
+        let raw = serde_json::to_string(snapshot).unwrap();
+        let db = database(home).unwrap();
+        db.execute("INSERT INTO creator_releases(release_id,project_id,revision,layout_id,world_revision,snapshot_json,snapshot_digest,created_at_ms)
+            VALUES(?1,?2,?3,'layout-1','world-r1',?4,?5,1)", rusqlite::params![release_id, format!("project-{revision}"), revision, raw, digest(&raw)]).unwrap();
+    }
+
+    fn release_snapshot(revision: u64, game_type: Option<&str>) -> Value {
+        let mut snapshot = json!({"projectId":format!("project-{revision}"),"revision":revision,"game":{"id":"creator.checkpoint-race","version":"1","digest":"sha256:abc"},
+            "mounts":[{"mountId":"mount-1"}]});
+        if let Some(game_type) = game_type { snapshot["gameType"] = json!(game_type); }
+        snapshot
+    }
+
+    #[test]
+    fn game_type_resolution_matches_release_freeze_and_validates_explicit_only() {
+        // 纯函数语义：容忍读 + 显式仅校验。
+        assert_eq!(resolve_playtest_game_type(None, &release_snapshot(0, None)).unwrap(), "driving");
+        assert_eq!(resolve_playtest_game_type(None, &release_snapshot(0, Some("flight"))).unwrap(), "flight");
+        assert_eq!(resolve_playtest_game_type(None, &release_snapshot(0, Some("bogus"))).unwrap(), "driving");
+        assert_eq!(resolve_playtest_game_type(Some("flight"), &release_snapshot(0, None)).unwrap(), "driving");
+        assert_eq!(resolve_playtest_game_type(Some("driving"), &release_snapshot(0, Some("driving"))).unwrap(), "driving");
+        assert_eq!(resolve_playtest_game_type(Some("flight"), &release_snapshot(0, Some("flight"))).unwrap(), "flight");
+        assert_eq!(resolve_playtest_game_type(Some("driving"), &release_snapshot(0, Some("flight"))).unwrap_err(), "creator_playtest_game_type_mismatch");
+        assert_eq!(resolve_playtest_game_type(Some("flight"), &release_snapshot(0, Some("driving"))).unwrap_err(), "creator_playtest_game_type_mismatch");
+        assert_eq!(resolve_playtest_game_type(Some("bogus"), &release_snapshot(0, None)).unwrap_err(), "creator_request_invalid");
+    }
+
+    #[test]
+    fn start_accepts_validated_game_type_and_keeps_response_shape() {
+        let home = home();
+        store_release(&home, "release-flight", 1, &release_snapshot(1, None));
+        store_release(&home, "release-other", 6, &release_snapshot(6, None));
+        // 显式 gameType 通过校验，但 start 响应保持既有形状（路由值在 claim 响应上）。
+        let started = start_playtest_with_game_type(&home, "studio-instance", "release-flight", Some("project-1"), Some(1), Some("flight")).unwrap();
+        assert_eq!(started["gameType"], Value::Null);
+        // 幂等重入返回同一 run；槽位被占时同一 studio 换 release 必须拒绝（既有语义）。
+        let restarted = start_playtest(&home, "studio-instance", "release-flight", Some("project-1"), Some(1)).unwrap();
+        assert_eq!(restarted["runId"], started["runId"]);
+        assert_eq!(start_playtest(&home, "studio-instance", "release-other", None, None).unwrap_err(), "creator_playtest_active");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn start_rejects_unknown_game_type_before_touching_state() {
+        let home = home();
+        store_release(&home, "release-bogus", 2, &release_snapshot(2, None));
+        assert_eq!(start_playtest_with_game_type(&home, "studio-instance", "release-bogus", None, None, Some("bogus")).unwrap_err(), "creator_request_invalid");
+        let db = database(&home).unwrap();
+        let runs: i64 = db.query_row("SELECT COUNT(*) FROM creator_playtest_runs", [], |row| row.get(0)).unwrap();
+        assert_eq!(runs, 0);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn start_fails_closed_on_frozen_value_mismatch() {
+        let home = home();
+        store_release(&home, "release-frozen", 3, &release_snapshot(3, Some("flight")));
+        assert_eq!(start_playtest_with_game_type(&home, "studio-instance", "release-frozen", None, None, Some("driving")).unwrap_err(), "creator_playtest_game_type_mismatch");
+        // 校验通过后路由结果在 claim 响应上：release 冻结 flight → claim gameType flight。
+        let started = start_playtest_with_game_type(&home, "studio-instance", "release-frozen", None, None, Some("flight")).unwrap();
+        let claimed = claim_playtest(&home, "city-instance", Some(started["runId"].as_str().unwrap())).unwrap();
+        assert_eq!(claimed["gameType"], "flight");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn claim_surfaces_release_frozen_game_type() {
+        let home = home();
+        store_release(&home, "release-claim", 4, &release_snapshot(4, Some("flight")));
+        let started = start_playtest(&home, "studio-instance", "release-claim", None, None).unwrap();
+        // 非 city-scoped release 的 pending 载荷返回 pending:false（既有行为，城域载荷才
+        // 携带 pending 详情）；gameType 路由在 claim 响应上消费。
+        let pending = pending_playtest(&home).unwrap();
+        assert_eq!(pending["pending"], false);
+        // 非 city-scoped release 允许无 runId 认领（既有行为）。
+        let claimed = claim_playtest(&home, "city-instance", Some(started["runId"].as_str().unwrap())).unwrap();
+        assert_eq!(claimed["gameType"], "flight");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn claim_defaults_to_driving_when_release_has_no_frozen_game_type() {
+        let home = home();
+        store_release(&home, "release-driving", 5, &release_snapshot(5, None));
+        let started = start_playtest(&home, "studio-instance", "release-driving", None, None).unwrap();
+        let claimed = claim_playtest(&home, "city-instance", Some(started["runId"].as_str().unwrap())).unwrap();
+        assert_eq!(claimed["gameType"], "driving");
+        let _ = std::fs::remove_dir_all(home);
+    }
 }

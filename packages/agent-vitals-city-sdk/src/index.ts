@@ -15,3 +15,6 @@ export type { GlbModelInspectionV1 } from "./model";
 
 export { hasDuplicateJsonKeys } from "./jsonStrict";
 export { validateGameTypeDescriptorV1, type GameTypeCapabilityV1, type GameTypeDescriptorV1, type GameTypeSlotKindV1 } from "./gameTypes";
+export { FIXED_WING_VEHICLE_PRESET_V1, ORNITHOPTER_VEHICLE_PRESET_V1, validateVehicleProfileV1, VEHICLE_BOUNDS_LIMITS_V1, VEHICLE_CAMERA_BOUNDS_V1,
+  VEHICLE_PHYSICS_BOUNDS_V1, VEHICLE_PHYSICS_KEYS_V1, VEHICLE_PHYSICS_RATIOS_V1, VEHICLE_PROFILE_LIMITS_V1,
+  type VehicleFlightModelV1, type VehicleProfileBoundsV1, type VehicleProfileV1 } from "./vehicleProfile";

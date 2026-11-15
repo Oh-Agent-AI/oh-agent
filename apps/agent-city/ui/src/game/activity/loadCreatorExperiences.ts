@@ -9,7 +9,7 @@ import type { CreatorPublishedMiniGameV1 } from "./creatorMiniGame";
 type PluginResponse<T> = { version: number; requestId: string; ok: boolean; result?: T; error?: { code: string } };
 type ReleaseRow = { releaseId: string; title: string; mountCount: number };
 type ReleaseSceneFields = { scene?: unknown; assets?: unknown; assetRefs?: unknown };
-export type CreatorPlaytestHandoffV1 = Readonly<{ runId: string; projectId: string; revision: number; releaseId: string; snapshotDigest: string; skinId?: "miami-vice" | "desert-evening"; experiences: readonly CreatorPublishedMiniGameV1[] }>;
+export type CreatorPlaytestHandoffV1 = Readonly<{ runId: string; projectId: string; revision: number; releaseId: string; snapshotDigest: string; skinId?: "miami-vice" | "desert-evening"; gameType: "driving" | "flight"; experiences: readonly CreatorPublishedMiniGameV1[] }>;
 let requestSerial = 0;
 
 async function hostCall<T>(method: string, payload: Record<string, unknown>): Promise<T> {
@@ -83,7 +83,7 @@ export async function pendingCreatorPlaytest(): Promise<PendingCreatorPlaytestV1
 
 /** Claims a Studio-initiated playtest only after a release is pinned to this live City revision. */
 export async function claimCreatorPlaytest(view: CityLayoutSdkViewV1, expectedRunId?: string): Promise<CreatorPlaytestHandoffV1 | null> {
-  let handoff: { runId: string; releaseId: string; projectId: string; revision: number; snapshotDigest: string; skinId?: unknown; game: unknown; mounts: CityGameMountV1[] } & ReleaseSceneFields;
+  let handoff: { runId: string; releaseId: string; projectId: string; revision: number; snapshotDigest: string; skinId?: unknown; gameType?: unknown; game: unknown; mounts: CityGameMountV1[] } & ReleaseSceneFields;
   try {
     handoff = await hostCall<typeof handoff>("city.creator.playtest.claim", expectedRunId ? { runId: expectedRunId } : {});
   } catch (error) {
@@ -98,8 +98,11 @@ export async function claimCreatorPlaytest(view: CityLayoutSdkViewV1, expectedRu
   }
   if (!/^sha256:[0-9a-f]{64}$/.test(handoff.snapshotDigest)) throw new Error("creator_playtest_snapshot_digest_invalid");
   const skinId = handoff.skinId === "miami-vice" || handoff.skinId === "desert-evening" ? handoff.skinId : undefined;
+  // gameType（2026-11-15 飞行泛化切片）：release 冻结值经 Rust 容忍读回传；
+  // 旧 release 无该字段 → 缺省 driving = 既有行为，driving 逐位不变。
+  const gameType = handoff.gameType === "flight" ? "flight" : "driving";
   return Object.freeze({ runId: handoff.runId, projectId: handoff.projectId, revision: handoff.revision, releaseId: handoff.releaseId,
-    snapshotDigest: handoff.snapshotDigest, ...(skinId ? { skinId } : {}), experiences });
+    snapshotDigest: handoff.snapshotDigest, ...(skinId ? { skinId } : {}), gameType, experiences });
 }
 
 export async function finishCreatorPlaytest(runId: string, status: "completed" | "cancelled" | "failed", evidence?: VisualPlaytestEvidenceV1, failureCode?: string): Promise<void> {

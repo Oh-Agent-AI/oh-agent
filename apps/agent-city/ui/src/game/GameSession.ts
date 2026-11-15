@@ -11,13 +11,14 @@ import { FlightInput } from "./FlightInput";
 import { FlightCamera } from "./FlightCamera";
 import { FlightCameraControls } from "./FlightCameraControls";
 import { FlightVisuals } from "./FlightVisuals";
-import { initialSimState, flightParamsFor, stepFlight, lerpSim, PHYSICS_VERSION, type FlightParams, type FlightSimState } from "./FlightSimulation";
+import { initialSimState, flightParamsFor, vehicleFlightParams, stepFlight, lerpSim, PHYSICS_VERSION, VEHICLE_PHYSICS_VERSION, type FlightParams, type FlightSimState } from "./FlightSimulation";
 import { sweepFlight } from "./FlightCollision";
 import { generateRaceCourse, COURSE_VERSION, type RaceCourse } from "./RaceCourse";
 import { RaceMission, type RaceMissionSnapshot, type RaceResult } from "./RaceMission";
 import { GameAudio } from "./GameAudio";
 import { GameSfx, type SfxTelemetry } from "./GameSfx";
 import * as THREE from "three";
+import type { VehicleProfileV1 } from "@agent-vitals/city-sdk";
 import { GameRuntime } from "./runtime/GameRuntime";
 import { FlightAdapter } from "./runtime/FlightAdapter";
 import type { GameSceneLease } from "./runtime/GameScenePort";
@@ -118,9 +119,17 @@ export class GameSession {
 
   /** 练习从这里起飞（点了机坪上的飞机：跑道西端、顺跑道方向）；null = 按世界安全位挑出生点。 */
   private origin: Readonly<{ x: number; y: number; z: number; heading: number }> | null = null;
+  /** 本局载具 profile（VehicleProfileV1；null = legacy 固定翼参数族，逐位不变）。
+   *  经 validated 入口注入（preset 常量，不接任意输入）。 */
+  private vehicle: VehicleProfileV1 | null = null;
+  /** 与 this.vehicle.id 配对的物理参数缓存键：换载具即重建 params（世界在 exit 时已清空）。 */
+  private vehicleId: string | null = null;
 
-  async enter(kind: GameSelection, host: EnterHostState, origin?: Readonly<{ x: number; y: number; z: number; heading: number }>): Promise<{ ok: true } | { ok: false; reason: string }> {
+  async enter(kind: GameSelection, host: EnterHostState, origin?: Readonly<{ x: number; y: number; z: number; heading: number }>,
+    vehicle?: VehicleProfileV1): Promise<{ ok: true } | { ok: false; reason: string }> {
     this.origin = kind.mode === "practice" ? origin ?? null : null;
+    this.vehicle = vehicle ?? null;
+    if (this.vehicle?.id !== this.vehicleId) this.params = null;
     const attempt = this.controller.enter(kind, host);
     if (!attempt.ok) return { ok: false, reason: attempt.refusal };
     const runId = this.controller.snapshot.runId;
@@ -199,12 +208,17 @@ export class GameSession {
         solidCompilerVersion: compiled.compilerVersion, staticCoverage: compiled.coverage });
       this.staticWorldRevision = staticContentRevision;
       const diagonal = Math.hypot(layout.urbanBounds.right - layout.urbanBounds.left, layout.urbanBounds.south - layout.urbanBounds.north);
-      this.params = flightParamsFor(diagonal);
+      // 载具参数化点：profile 存在时走 VehicleProfileV1 → FlightParams 推导
+      // （质量/推力/翼面/maxSpeed/扑动参数/包围盒/相机），否则保持 legacy 对角线推导。
+      this.params = this.vehicle ? vehicleFlightParams(this.vehicle) : flightParamsFor(diagonal);
+      this.vehicleId = this.vehicle?.id ?? null;
     }
     if (kind.mode === "race") {
       if (!this.course) {
-        const course = this.courseFactory({ world: this.world, params: this.params, citySeed: this.citySeed, physicsVersion: PHYSICS_VERSION,
-          variant: this.variant, staticCollisionIdentity: `solid-v${this.world.solidCompilerVersion ?? 0}:${this.world.staticContentRevision ?? "legacy"}` });
+        const course = this.courseFactory({ world: this.world, params: this.params, citySeed: this.citySeed,
+          physicsVersion: this.vehicle ? VEHICLE_PHYSICS_VERSION : PHYSICS_VERSION,
+          variant: this.variant, staticCollisionIdentity: `solid-v${this.world.solidCompilerVersion ?? 0}:${this.world.staticContentRevision ?? "legacy"}`
+            + (this.vehicle ? `:vehicle=${this.vehicle.id}` : "") });
         if (!course) return { ok: false, reason: "no-course", message: "这条航线暂时无法生成安全路线，可重试或先自由练习。" };
         this.course = course;
       }
@@ -231,7 +245,7 @@ export class GameSession {
     if (!this.camera) {
       const reducedMotion = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
       this.cameraScratch = this.engine.renderCamera.clone();
-      this.camera = new FlightCamera(this.cameraScratch, reducedMotion);
+      this.camera = new FlightCamera(this.cameraScratch, reducedMotion, params.fovDeg ?? 52);
     }
     // 环绕/缩放输入：只在真实 DOM 画布上挂（Worker/OffscreenCanvas 与测试桩没有指针事件）。
     const canvas = this.engine.domCanvas;

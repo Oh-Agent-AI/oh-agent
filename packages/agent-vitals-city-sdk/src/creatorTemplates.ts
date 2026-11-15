@@ -47,6 +47,30 @@ export const CREATOR_TEMPLATES_V1: readonly CreatorTemplateV1[] = Object.freeze<
     },
   },
   {
+    id: "flight-checkpoint",
+    label: "飞行检查点",
+    pack: {
+      schemaVersion: 1,
+      id: "creator.flight-checkpoint",
+      rulesVersion: 1,
+      slots: { gates: { kind: "zone", min: 3, max: 8, requires: ["fly"] } },
+      integerParameters: { timeLimitTicks: { min: 60, max: 36000, default: 3600 } },
+      rules: {
+        counters: { next: { initial: 0, max: 3 } },
+        nodes: [
+          { id: "start-timer", on: { type: "run.started" }, actions: [{ op: "timer.start", timerId: "timeout", durationTicks: { parameter: "timeLimitTicks" } }] },
+          { id: "advance", on: { type: "zone.entered", slot: "gates" }, when: [{ op: "counter.eqEventIndex", counter: "next" }], actions: [{ op: "counter.add", counter: "next", amount: 1 }] },
+          { id: "finish", on: { type: "zone.entered", slot: "gates" }, when: [{ op: "counter.eq", counter: "next", value: 3 }], actions: [{ op: "run.finish", outcome: "success" }] },
+          { id: "timeout", on: { type: "timer.expired", timerId: "timeout" }, actions: [{ op: "run.finish", outcome: "failure" }] },
+        ],
+      },
+    },
+  },
+  {
+    // 兼容别名（2026-11-15 泛化切片）：`ornithopter-flight` 是扑翼命名检查点模板，
+    // 语义上被 preset 驱动的 `flight-checkpoint`（creator.flight-checkpoint）取代；
+    // 保留 id 与生成产物，等既有 Creator 工程迁移到 flight-checkpoint 后移除
+    // （迁移期间行为不变，rules 与扑翼 preset 解耦，物理来自 VehicleProfileV1）。
     id: "ornithopter-flight",
     label: "扑翼飞行检查点",
     pack: {

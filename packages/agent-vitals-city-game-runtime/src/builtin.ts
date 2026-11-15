@@ -58,3 +58,33 @@ export const ORNITHOPTER_GAME_TYPE_V1 = Object.freeze({
   assetRoles: { vehicle: { kind: "model-glb", required: true, maxBytes: 64 * 1024 * 1024, nodeRoles: ["wing.left", "wing.right"] } },
   hud: "flight-hud",
 } as const) satisfies GameTypeDescriptorV1;
+
+/** Deprecated preset-backed alias (2026-11-15 flight-generalization slice).
+ * `creator.flight-ornithopter-v1` predates the generic flight contract; it is
+ * superseded by FLIGHT_CHECKPOINT_GAME_TYPE_V1 (creator.flight-checkpoint-v1 /
+ * city-flight-generic) whose vehicle behavior comes from VehicleProfileV1
+ * presets instead of a dedicated template name. It stays exportable so the
+ * app prototype entry (creator.flight-ornithopter-prototype-v1 keeps reusing
+ * miami.flight) and catalog discovery do not break; `templateCatalog` stays
+ * "planned" so it can never be registered. Removal plan: delete this alias
+ * once Creator projects migrate to creator.flight-checkpoint-v1 and the
+ * prototype entry is preset-driven (see ORNITHOPTER_VEHICLE_PRESET_V1). */
+export const DEPRECATED_GAME_TYPE_IDS_V1 = Object.freeze({ flightOrnithopter: "creator.flight-ornithopter-v1" } as const);
+
+/** Generic Creator flight game type (2026-11-15): launch spawn + ordered gate
+ * zones, driven by the versioned `city-flight-generic` runtime contract and a
+ * VehicleProfileV1 preset (fixed-wing / flapping / vtol). Data-only descriptor;
+ * registration still requires an app-side adapter, and the app catalog adopts
+ * it together with the Creator capability projection (next slice). */
+export const FLIGHT_CHECKPOINT_GAME_TYPE_V1 = Object.freeze({
+  schemaVersion: 1, id: "creator.flight-checkpoint-v1", version: 1, label: "飞行检查点",
+  templateCatalog: "creator", template: "flight-checkpoint",
+  runtime: { id: "city-flight-generic", contractVersion: 1 },
+  slots: {
+    launch: { kind: "spawn", min: 1, max: 1, requires: ["fly"] },
+    gates: { kind: "zone", min: 3, max: 8, requires: ["fly"], role: "gate" },
+  },
+  parameters: { timeLimitTicks: { min: 60, max: 36000, default: 3600 } },
+  assetRoles: { vehicle: { kind: "model-glb", required: false, nodeRoles: ["leftWing", "rightWing"] } },
+  hud: "flight-hud",
+} as const) satisfies GameTypeDescriptorV1;
