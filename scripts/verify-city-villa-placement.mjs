@@ -14,12 +14,12 @@ const plan = createCityPlan(1703310796, 2, WITNESS, { legacyGridParcels: true })
 const before = createCityPlan(1703310796, 2, WITNESS, { skipSolve: true, legacyGridParcels: true });
 const beforeOwner = before.landmarks.find(site => site.id === "landmark:villa-complex");
 assert(beforeOwner, "the unrepaired witness must retain its owner");
-assert.equal(inspectModelGround(beforeOwner, { height: before.terrain.height, inRiver: () => false }).status, "violation",
+assert.equal(inspectModelGround(beforeOwner, { elevation: before.terrain.height, inRiver: () => false }).status, "violation",
   "the fixture must still exercise a real foundation failure, not an already-valid placement");
 const owner = plan.landmarks.find(site => site.id === "landmark:villa-complex");
 assert(owner, "required regression model cannot disappear");
 assert.equal(owner.radius, 34, "do not shrink the renderer or its plot");
-assert.equal(inspectModelGround(owner, { height: plan.terrain.height, inRiver: () => false }).status, "partial");
+assert.equal(inspectModelGround(owner, { elevation: plan.terrain.height, inRiver: () => false }).status, "partial");
 assert.equal(plan.planningOutcome.status, "degraded");
 assert.deepEqual(plan.planningOutcome.groundFailures, []);
 assert.deepEqual(diagnoseNetwork(plan).unmet, []);

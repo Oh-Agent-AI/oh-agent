@@ -104,10 +104,15 @@ for (const tier of [1, 5, 10]) {
   const inRiver = (x, z) => coastDistance(x, z) > 0 && Math.abs(x) < 18;
   const height = (x, z) => coastDistance(x, z) > 0 && !inRiver(x, z) ? 1.2 : -3;
   const buildable = (x, z) => coastDistance(x, z) > 12 && Math.abs(x) > 30;
-  const geo = { R, hasRiver: true, maxWaterSpan: 140, coastDistance, landClearance: (x, z) => Math.min(coastDistance(x, z), Math.abs(x) - 18),
+  const landClearance = (x, z) => Math.min(coastDistance(x, z), Math.abs(x) - 18);
+  const geo = { R, hasRiver: true, maxWaterSpan: 140, coastDistance, landClearance,
     coast: Array.from({ length: 96 }, (_, i) => ({ x: R * Math.cos(i / 96 * Math.PI * 2), z: R * Math.sin(i / 96 * Math.PI * 2) })),
     river: [], riverX: () => 0, riverWidth: () => 18, riverShift: 0,
     hillDir: { x: 0, z: 0 }, hillProj: () => 0, hillLine: 10000, height, buildable,
+    landform: { version: 1, bounds: { minX: -R, maxX: R, minZ: -R, maxZ: R }, signedLandDistance: coastDistance,
+      waterClearance: landClearance, elevation: height, slope: () => 0, isBuildable: buildable, waterBodies: [] },
+    features: { coastline: true, ocean: true, river: true, islets: false },
+    bbox: { minX: -R, maxX: R, minZ: -R, maxZ: R }, hillAngle: 0,
     terrain: { height, buildable, slope: () => 0 }, islets: [], waterEdges: [], isletClearance: () => -Infinity };
   const result = buildSkeleton({ geo, seed: 42, core: { x: -100, z: 0 }, publicSites: [], landmarks: [],
     shoreSiteKinds: new Set(), random: () => 0.5, network: emptyNetwork(), inRiver });
