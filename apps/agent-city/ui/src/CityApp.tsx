@@ -367,7 +367,8 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
     gameActive: () => game.active,
     busy: () => busyRef.current || filmRef.current || planRepairActive.current || mechaActive.current,
     activityCoordinator,
-  }, { creatorExperiences, playtestContext: creatorPlaytest ? { runId: creatorPlaytest.runId, releaseId: creatorPlaytest.releaseId,
+  }, { creatorExperiences, ...(creatorPlaytest?.view ? { playtestView: creatorPlaytest.view } : {}),
+    playtestContext: creatorPlaytest ? { runId: creatorPlaytest.runId, releaseId: creatorPlaytest.releaseId,
     projectId: creatorPlaytest.projectId, revision: creatorPlaytest.revision, snapshotDigest: creatorPlaytest.snapshotDigest } : undefined, finishPlaytest });
   const drivingRef = useRef(driving);
   drivingRef.current = driving;
@@ -398,7 +399,8 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
     if (!creatorPlaytest || creatorPlaytest.gameType !== "flight" || !firstModelFrame || game.active || startedFlightPlaytest.current === creatorPlaytest.runId) return;
     const runId = creatorPlaytest.runId;
     const experience = creatorPlaytest.experiences[0];
-    const view = engineRef.current?.getCitySdkLayoutView();
+    // 用 claim 合并过发布锚点的那份视图：实机视图只有路网锚点，建计划会 anchor_not_found。
+    const view = creatorPlaytest.view ?? engineRef.current?.getCitySdkLayoutView();
     if (!experience || !view) { void finishPlaytest(runId, "failed", undefined, "creator_playtest_experience_unavailable"); return; }
     // 门与规则都来自发布快照：门 = mount 绑定的 fly 锚点（触发半径即环半径），
     // 判定交给 SDK 共享规则执行器（与驾驶同一份），这里不重解释规则。

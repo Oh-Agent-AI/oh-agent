@@ -149,6 +149,10 @@ test("a published air gate that only exists in the frozen layout is merged befor
   assert.equal(result?.gameType, "flight");
   assert.equal(result?.experiences.length, 1, JSON.stringify(calls.map(call => call.method)));
   assert.equal(result?.experiences[0].mount.entryAnchorId, "spawn-air");
+  // handoff 必须带上合并后的视图：建计划/开局用它，用实机视图会 anchor_not_found。
+  assert.ok(result?.view, "handoff must carry the merged view");
+  assert.ok(result.view!.layout.anchors.some(anchor => anchor.id === "air-gate:0"), "merged view must contain the published air gate");
+  assert.ok(result.view!.geometry.has("g:gate"), "merged view must resolve the air gate geometry");
 });
 
 test("a published anchor whose City geometry is gone fails the run instead of guessing", async () => {

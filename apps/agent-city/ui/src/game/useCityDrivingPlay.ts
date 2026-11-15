@@ -4,6 +4,7 @@ import { spawnDistanceFailure } from "./runtime/spawnDistance";
  * road-wide audit/release evidence remains a separate system. */
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import type { CityEngine } from "../engine/CityEngine";
+import type { CityLayoutSdkViewV1 } from "../engine/sdk/cityLayoutAdapter";
 import type { CityActivityCoordinator } from "./activity/CityActivityCoordinator";
 import { createCheckpointRacePlan, CheckpointRaceControllerV1, type CheckpointRaceSnapshotV1 } from "./activity/checkpointRace";
 import { CheckpointRaceVisuals } from "./activity/CheckpointRaceVisuals";
@@ -33,7 +34,7 @@ type CreatorPlaytestContext = Readonly<{ runId: string; releaseId: string; proje
 
 export function useCityDrivingPlay(engine: RefObject<CityEngine | null>, host: Readonly<{
   cinemaActive(): boolean; gameActive(): boolean; busy(): boolean; activityCoordinator: CityActivityCoordinator;
-}>, options: Readonly<{ notifyHostBusy?: boolean; creatorExperiences?: readonly CreatorPublishedMiniGameV1[]; playtestContext?: CreatorPlaytestContext;
+}>, options: Readonly<{ notifyHostBusy?: boolean; creatorExperiences?: readonly CreatorPublishedMiniGameV1[]; playtestView?: CityLayoutSdkViewV1; playtestContext?: CreatorPlaytestContext;
   finishPlaytest?: (runId: string, status: "completed" | "cancelled" | "failed", evidence?: VisualPlaytestEvidenceV1, failureCode?: string) => Promise<void> }> = {}) {
   const visuals = useRef<CarVisuals | null>(null);
   const visualScene = useRef<CityCarSceneCapability | null>(null);
@@ -243,7 +244,8 @@ export function useCityDrivingPlay(engine: RefObject<CityEngine | null>, host: R
     if (pendingPlaytest && !pendingPlaytest.finishRequested) pendingPlaytest.started = true;
     const failPlaytest = (failureCode = "creator_playtest_start_failed") => { creatorGameActiveRef.current = false; creatorCollisionRef.current = null; removeCreatorColliderVisuals(); restoreCreatorSkin(); finishPlaytestOnce("failed", /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(failureCode) ? failureCode : "creator_playtest_start_failed", false); };
     const current = engine.current;
-    const view = current?.getCitySdkLayoutView();
+    // 试玩期间优先用 claim 合并过发布锚点的视图：实机视图只有路网锚点，建计划会 anchor_not_found。
+    const view = options.playtestView ?? current?.getCitySdkLayoutView();
     const experience = options.creatorExperiences?.find(item => item.releaseId === releaseId && item.mount.mountId === mountId);
     if (!current || !view || !experience) { failPlaytest("creator_playtest_experience_unavailable"); setRaceEntryError("这个已发布小游戏不在当前城市版本中，请重新打开 City。"); setChoosingVehicle(true); return; }
     const plan = createCreatorMiniGamePlan(view, experience);

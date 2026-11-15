@@ -15,7 +15,7 @@
  * Rust canonical_json 同规格；Rust 在签发时对收到的载荷重算并逐项匹配。
  */
 import { canonicalJson, validateMiniGamePack, validateSceneDraft, validateMount, validateVehicleProfileV1, type DiagnosticV1 } from "@agent-vitals/city-sdk";
-import { CREATOR_CAPABILITIES_V1, defaultVehicleCameraV1 } from "@agent-vitals/city-sdk";
+import { CREATOR_CAPABILITIES_V1, CREATOR_RECOVERIES_V1, defaultVehicleCameraV1 } from "@agent-vitals/city-sdk";
 
 export type ValidationEnvelope = {
   capabilityVersion: string;
@@ -155,4 +155,20 @@ function finish(diagnostics: DiagnosticV1[], projectId: string, baseRevision: nu
     ok: !truncated && !envelope.diagnostics.some(item => item.severity === "error"),
     ...(truncated ? { truncated: true } : {}),
   };
+}
+
+/** E3 诊断闭环（Agent-first 编辑器规格 §3.3）：稳定错误码 → 恢复建议（与 MCP `next`
+ * 字段同一份能力产物来源）。找不到时返回 null，调用方维持纯错误码行为。 */
+export function recoveryFor(code: string): { tool: string; note: string } | null {
+  const hit = CREATOR_RECOVERIES_V1.find(item => item.code === code);
+  return hit ? { tool: hit.tool, note: hit.note } : null;
+}
+
+/** 展示面专用：纯错误码 + 同源恢复建议的组合文案。需要按码分支的逻辑继续用
+ * `errorCode`（纯码），不要用本函数的返回值做比较。 */
+export function describeError(error: unknown, fallback: string): string {
+  const candidate = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  if (!/^[a-z][a-z0-9_]{0,63}$/.test(candidate)) return fallback;
+  const recovery = recoveryFor(candidate);
+  return recovery ? `${candidate} — ${recovery.note}（下一步：${recovery.tool}）` : candidate;
 }

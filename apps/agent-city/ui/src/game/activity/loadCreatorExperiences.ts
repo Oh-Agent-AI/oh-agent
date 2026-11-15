@@ -14,7 +14,12 @@ type ReleaseRow = { releaseId: string; title: string; mountCount: number };
 type ReleaseSceneFields = { scene?: unknown; assets?: unknown; assetRefs?: unknown };
 export type CreatorPlaytestHandoffV1 = Readonly<{ runId: string; projectId: string; revision: number; releaseId: string; snapshotDigest: string; skinId?: "miami-vice" | "desert-evening"; gameType: "driving" | "flight";
   /** 冻结的载具 profile（飞行 release 发布时写入；旧 release 可能没有 → undefined，退回默认飞机）。 */
-  vehicle?: VehicleProfileV1; experiences: readonly CreatorPublishedMiniGameV1[] }>;
+  vehicle?: VehicleProfileV1;
+  /** 已把发布锚点（含 `air-gate:*` / `creator-air:*`）并进实机视图的那份视图。
+   *  claim 用它校验，建计划/开局也必须用它——实机视图本身只由路网生成，用它会让
+   *  validateMount 以 anchor_not_found 拒绝（2026-11-15 真机失败即此）。 */
+  view?: CityLayoutSdkViewV1;
+  experiences: readonly CreatorPublishedMiniGameV1[] }>;
 let requestSerial = 0;
 
 async function hostCall<T>(method: string, payload: Record<string, unknown>): Promise<T> {
@@ -188,7 +193,8 @@ export async function claimCreatorPlaytest(view: CityLayoutSdkViewV1, expectedRu
   // gameType（2026-11-15 飞行泛化切片）：release 冻结值经 Rust 容忍读回传；
   // 旧 release 无该字段 → 缺省 driving = 既有行为，driving 逐位不变。
   return Object.freeze({ runId: handoff.runId, projectId: handoff.projectId, revision: handoff.revision, releaseId: handoff.releaseId,
-    snapshotDigest: handoff.snapshotDigest, ...(skinId ? { skinId } : {}), gameType, ...(vehicle ? { vehicle } : {}), experiences });
+    snapshotDigest: handoff.snapshotDigest, ...(skinId ? { skinId } : {}), gameType, ...(vehicle ? { vehicle } : {}),
+    ...(releaseView !== view ? { view: releaseView } : {}), experiences });
 }
 
 export async function finishCreatorPlaytest(runId: string, status: "completed" | "cancelled" | "failed", evidence?: VisualPlaytestEvidenceV1, failureCode?: string): Promise<void> {
