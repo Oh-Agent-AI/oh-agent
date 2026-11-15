@@ -245,6 +245,8 @@ queued → running → ready | failed | cancelled
 
 ## 9. 参考实现研究：T3 Code（pingdotgg/t3code，MIT）
 
+> 引用级逐维对比（含行号出处与判定汇总）见 [T3 Code 对比研究](STUDIO_AGENT_FIRST_T3CODE_COMPARISON_2026_11_15.md)；本节保留结论性映射。
+
 T3 Code 的定位是「coding agents 的开源控制平面」：不内嵌 agent，而是把机器上已有的多个 coding agent（Claude Code/Codex/Cursor/…，经 ACP 可插拔协议）统一驱动，一个 server、桌面/手机/网页三端同线程。它与 Studio 的方向同构——**agent 是主要工作者，编辑器是控制平面**——其开源架构是本规格最直接的外部参照。
 
 ### 9.1 模式映射（借用 → Studio 落点）
