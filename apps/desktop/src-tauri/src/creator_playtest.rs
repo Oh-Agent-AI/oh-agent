@@ -69,6 +69,7 @@ fn expire_playtests(tx: &rusqlite::Transaction<'_>, now: u64) -> Result<(), &'st
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn start_playtest(home: &Path, studio_instance: &str, release_id: &str, expected_project: Option<&str>, expected_revision: Option<u64>) -> Result<Value, &'static str> {
     start_playtest_with_game_type(home, studio_instance, release_id, expected_project, expected_revision, None)
 }

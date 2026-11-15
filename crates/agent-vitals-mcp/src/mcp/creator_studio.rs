@@ -517,7 +517,8 @@ pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool)
         }
         "creator_vehicle_list" => {
             // 静态契约发现：与 creator_capabilities_list 同样离线，Studio 关闭时可用。
-            let limit = args.get("limit").and_then(Value::as_u64).filter(|limit| (1..=50).contains(limit)).ok_or_else(|| ToolError::new("invalid_argument", "`limit` must be in 1..=50"))?;
+            // `limit` 在 schema 里是可选（presets 只有两个）：缺省 16，超出按上限截断而不是拒调用。
+            let limit = args.get("limit").and_then(Value::as_u64).map(|limit| limit.clamp(1, 50)).unwrap_or(16);
             let catalog = creator_vehicle_catalog();
             let presets = catalog.get("presets").and_then(Value::as_array)
                 .ok_or_else(|| ToolError::new("data_unavailable", "Creator vehicle catalog is unavailable."))?;

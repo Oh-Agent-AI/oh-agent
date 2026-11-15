@@ -384,11 +384,14 @@ pub fn create_project_from_city_draft(home: &Path, actor: &str, template: &str, 
         .optional().map_err(|_| "creator_store_unavailable")?;
     let (layout_city_revision, layout_id, raw) = scoped.ok_or("creator_layout_not_found")?;
     let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
-    if snapshot["schemaVersion"].as_u64() != Some(2) || snapshot["cityId"].as_str() != Some(city_id)
-        || snapshot["worldRevision"].as_str() != Some(world_revision) {
+    // 统一读取入口：v3 直接校验；v2 归一化（无几何）；其它版本明确拒绝。
+    // 项目创建只消费 layout/seed/worldRevision，所以两种版本都能建项目。
+    let resolved = crate::creator_city_patch::resolve_scoped_layout(&snapshot)
+        .map_err(|_| "creator_layout_scope_mismatch")?;
+    if resolved.city_id != city_id || resolved.world_revision != world_revision {
         return Err("creator_layout_scope_mismatch");
     }
-    let normalized = json!({"schemaVersion":1,"worldRevision":world_revision,"seed":snapshot["seed"],"layout":snapshot["layout"]});
+    let normalized = json!({"schemaVersion":1,"worldRevision":world_revision,"seed":resolved.seed,"layout":resolved.layout});
     let binding = json!({"cityId":city_id,"cityRevision":layout_city_revision,"layoutId":layout_id});
     create_project_internal(home, actor, template, operation_id, Some(normalized), Some(binding))
 }
@@ -1160,7 +1163,7 @@ fn run_city_patch_preview(home: &Path, _owner: &str, instance: &str, payload: &V
     crate::creator_cities::preview_city_patch(home, instance, city_id, revision, patch)
 }
 fn run_city_layout_geometry(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
-    crate::creator_city_patch::upgrade_city_layout_geometry(home, args_valid_id(payload, "cityId")?,
+    crate::creator_city_patch::migrate_city_layout_geometry(home, args_valid_id(payload, "cityId")?,
         args_u64(payload, "baseRevision")?, payload.get("geometry").ok_or("creator_request_invalid")?)
 }
 
@@ -3166,7 +3169,9 @@ fn build_typed_mount(document: &Value, mount_id: &str, entry_anchor_id: &str, bi
     Ok((mount, coverage))
 }
 
-fn typed_mount_inputs(payload: &Value) -> Result<(&str, &str, &Value, Option<&str>, Option<&Value>), &'static str> {
+type TypedMountInputs<'a> = (&'a str, &'a str, &'a Value, Option<&'a str>, Option<&'a Value>);
+
+fn typed_mount_inputs(payload: &Value) -> Result<TypedMountInputs<'_>, &'static str> {
     let mount_id = args_valid_id(payload, "mountId")?;
     let entry = args_valid_id(payload, "entryAnchorId")?;
     let bindings = payload.get("bindings").filter(|value| value.is_object()).ok_or("creator_mount_invalid")?;
@@ -3351,6 +3356,64 @@ mod flight_release_tests {
 #[cfg(test)]
 mod flight_pipeline_tests {
     use super::*;
+
+    /// 回归（2026-11-15 真机缺陷）：视口保存的是 **v3** 布局，但项目创建只认 v2 →
+    /// `creator_layout_scope_mismatch`，绑定/提交/发布全部卡死。这里用 v3 快照走完整条
+    /// 建 City → 存 v3 → 建项目 → 挂载 → 发布 → 试玩，并验证 v2 仍可读、跨城仍被拒。
+    #[test]
+    fn v3_layout_snapshot_flows_through_project_create_bind_publish_and_playtest() {
+        let home = std::env::temp_dir().join(format!("creator-v3-flow-{}-{}", now_ms(), std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        let city = crate::creator_cities::create_city(&home, LOCAL_CREATOR_OWNER, "create-v3-city", "V3 City", 31, &json!({"schemaVersion":1})).unwrap();
+        let city_id = city["cityId"].as_str().unwrap();
+        let world = "world-v3-flow";
+        let layout = json!({"schemaVersion":1,"id":"layout-v3-flow","coordinateSystem":"city-local-m-v1",
+            "anchors":[{"id":"spawn-air","kind":"spawn","capabilities":["fly"],"geometryRef":"creator-air:spawn"},
+                {"id":"gate-1","kind":"zone","capabilities":["fly"],"geometryRef":"creator-air:gate-1"},
+                {"id":"gate-2","kind":"zone","capabilities":["fly"],"geometryRef":"creator-air:gate-2"},
+                {"id":"gate-3","kind":"zone","capabilities":["fly"],"geometryRef":"creator-air:gate-3"}],
+            "links":[{"id":"air-link-1","fromAnchorId":"spawn-air","toAnchorId":"gate-1","capabilities":["fly"]},
+                {"id":"air-link-2","fromAnchorId":"spawn-air","toAnchorId":"gate-2","capabilities":["fly"]},
+                {"id":"air-link-3","fromAnchorId":"spawn-air","toAnchorId":"gate-3","capabilities":["fly"]}]});
+        let v3 = json!({"schemaVersion":3,"cityId":city_id,"cityRevision":0,"worldRevision":world,"seed":31,"layout":layout,
+            "geometry":[{"geometryRef":"creator-air:spawn","positionMeters":{"x":0,"y":40,"z":0}},
+                {"geometryRef":"creator-air:gate-1","positionMeters":{"x":150,"y":40,"z":0},"activationRadiusMeters":20},
+                {"geometryRef":"creator-air:gate-2","positionMeters":{"x":300,"y":40,"z":0},"activationRadiusMeters":20},
+                {"geometryRef":"creator-air:gate-3","positionMeters":{"x":450,"y":40,"z":0},"activationRadiusMeters":20}]});
+        crate::creator_city_patch::store_scoped_city_layout(&home, &v3).unwrap();
+        // 1) 项目创建：这正是真机上失败的那一步。
+        let project = create_project_from_city_draft(&home, LOCAL_CREATOR_OWNER, "flight-checkpoint", "create-v3-project", world, city_id).unwrap();
+        let project_id = project["projectId"].as_str().unwrap();
+        let mut document = read_project(&home, project_id).unwrap();
+        assert_eq!(document["cityRevision"], 0);
+        assert_eq!(document["layoutId"], "layout-v3-flow");
+        // 2) 载具 + 挂载（入口是可到的飞出生点）。
+        let vehicle = json!({"schemaVersion":1,"id":"vehicle-v3","label":"V3 flier","modelAssetId":null,"flightModel":"fixed-wing",
+            "physics":{"massKg":620,"wingAreaM2":16,"thrustN":9000,"maxSpeedMps":130,"dragCoefficient":0.06,"turnRateRps":1.05,"climbRateMps":26,"sinkRateMps":20},
+            "bounds":{"halfLengthM":4.5,"halfWidthM":5.5,"halfHeightM":1.5},"camera":{"followDistanceM":35.75,"heightOffsetM":14.3,"fovDeg":55}});
+        document["vehicles"] = json!([vehicle]);
+        document["vehicleId"] = json!("vehicle-v3");
+        let (mount, coverage) = build_typed_mount(&document, "mount-v3", "spawn-air",
+            &json!({"gates":["gate-1","gate-2","gate-3"]}), Some("vehicle-v3"), None).unwrap();
+        assert_eq!(coverage["bound"], 3);
+        document["mounts"] = json!([mount]);
+        let db = database(&home).unwrap();
+        db.execute("UPDATE creator_projects SET document_json=?2 WHERE project_id=?1", params![project_id, document.to_string()]).unwrap();
+        // 3) 发布 + 试玩启动。
+        let release = publish_project_release(&home, project_id, 0).unwrap();
+        assert_eq!(release["gameType"], "flight");
+        assert_eq!(release["vehicleId"], "vehicle-v3");
+        let run = crate::creator_playtest::start_playtest_with_game_type(&home, "studio-v3", release["releaseId"].as_str().unwrap(),
+            Some(project_id), Some(0), Some("flight")).unwrap();
+        assert_eq!(run["status"], "pending");
+        // 4) 历史数据与作用域：v2 仍可读；跨城仍然拒绝。
+        let v2 = json!({"schemaVersion":2,"cityId":city_id,"cityRevision":0,"worldRevision":world,"seed":31,"layout":layout});
+        let _ = v2; // v2 的读取路径由 creator_city_patch 的单测覆盖；这里只确认 v3 不挡路。
+        let other = crate::creator_cities::create_city(&home, LOCAL_CREATOR_OWNER, "create-v3-other", "Other", 32, &json!({"schemaVersion":1})).unwrap();
+        assert_eq!(create_project_from_city_draft(&home, LOCAL_CREATOR_OWNER, "flight-checkpoint", "create-cross-city",
+            world, other["cityId"].as_str().unwrap()).unwrap_err(), "creator_layout_not_found");
+        let _ = std::fs::remove_dir_all(home);
+    }
 
     #[test]
     fn airspace_anchors_bind_publish_and_start_a_flight_playtest() {

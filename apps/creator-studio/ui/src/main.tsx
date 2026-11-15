@@ -592,6 +592,12 @@ function App() {
           }));
           result = await creatorRequest("creator.city.layout.geometry",
             { cityId: (payload as { cityId?: unknown }).cityId, baseRevision: (payload as { revision?: unknown }).revision, geometry });
+          // 迁移产出的是**新 City revision**（历史快照不可变）：把草稿视图切到新版本，
+          // 之后的保存/建项目/绑定都对着同一个版本。
+          const migrated = result as { cityRevision?: unknown };
+          if (current && typeof migrated.cityRevision === "number") {
+            await openCityView(current.cityId, migrated.cityRevision);
+          }
         }
         if (current) await recordCityDiagnostic(current, "layout_saved");
         window.dispatchEvent(new Event("__CREATOR_LAYOUT_CHANGED__"));

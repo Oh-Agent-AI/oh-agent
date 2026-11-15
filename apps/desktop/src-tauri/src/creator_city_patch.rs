@@ -133,42 +133,118 @@ fn validate_snapshot_geometry_with(geometry: &Value, anchors: &[Value], allow_ex
     Ok(entries.len() - seen.len())
 }
 
-/// 把渲染器捕获到的锚点几何合并进**已存在**的快照（v2 → v3），保留快照里的锚点/连线。
+/// 作用域布局快照的**唯一解析入口**（v2/v3 → 一个内部形状）。
 ///
-/// 为什么不是重存整份布局：City 视图只能重新产出**路网**投影，而 Creator 加的空域门只
-/// 存在于快照里——整份覆盖会把它们删掉（这正是旧代码的 digest 守卫挡住的事）。
-/// 这里只改几何、不动锚点，因此已有发布物引用同一 (city, revision, worldRevision) 就能
-/// 直接拿到位置，不需要 bump revision、不需要重新发布。
-pub(crate) fn upgrade_city_layout_geometry(home: &Path, city_id: &str, base_revision: u64, geometry: &Value) -> Result<Value, &'static str> {
+/// 规则（2026-11-15 定）：
+/// - v3：结构 + 几何覆盖都严格校验（`geometry` 里出现的必须是快照锚点引用的 ref，且必须
+///   全覆盖）——这是发布物能离开运行时被复现的前提；
+/// - v2：结构校验后**归一化**（`geometry: None`），绝不凭空造几何；
+/// - 其它版本：明确拒绝（`creator_layout_snapshot_version_unsupported`），不做猜测。
+///
+/// 消费方只应通过这里拿 `layout`/`seed`/`geometry`，不要再各自比 `schemaVersion`。
+#[derive(Debug)]
+pub(crate) struct ScopedLayout {
+    pub city_id: String,
+    pub city_revision: u64,
+    pub world_revision: String,
+    pub layout_id: String,
+    pub seed: u64,
+    pub layout: Value,
+    /// `Some` = 该快照自带完整几何（v3）；`None` = 历史 v2，没有几何。
+    pub geometry: Option<Value>,
+    pub version: u64,
+}
+
+pub(crate) fn resolve_scoped_layout(snapshot: &Value) -> Result<ScopedLayout, &'static str> {
+    let version = snapshot["schemaVersion"].as_u64().ok_or("creator_layout_snapshot_invalid")?;
+    let object = snapshot.as_object().ok_or("creator_layout_snapshot_invalid")?;
+    match version {
+        2 | 3 => {}
+        _ => return Err("creator_layout_snapshot_version_unsupported"),
+    }
+    let expected = if version == 3 { 7 } else { 6 };
+    if object.len() != expected
+        || !only_keys(object, &["schemaVersion", "cityId", "cityRevision", "worldRevision", "seed", "layout", "geometry"]) {
+        return Err("creator_layout_snapshot_invalid");
+    }
+    if version == 2 && object.contains_key("geometry") { return Err("creator_layout_snapshot_invalid"); }
+    let city_id = object.get("cityId").and_then(Value::as_str).filter(|value| valid_id(value)).ok_or("creator_layout_snapshot_invalid")?;
+    let city_revision = object.get("cityRevision").and_then(Value::as_u64).filter(|value| *value <= i64::MAX as u64).ok_or("creator_layout_snapshot_invalid")?;
+    let world_revision = object.get("worldRevision").and_then(Value::as_str).ok_or("creator_layout_snapshot_invalid")?.to_owned();
+    let seed = object.get("seed").and_then(Value::as_u64).filter(|value| *value <= u32::MAX as u64).ok_or("creator_layout_snapshot_invalid")?;
+    let layout = object.get("layout").and_then(Value::as_object).ok_or("creator_layout_snapshot_invalid")?;
+    let layout_id = layout.get("id").and_then(Value::as_str).filter(|id| valid_id(id)).ok_or("creator_layout_snapshot_invalid")?.to_owned();
+    let layout_anchors = layout.get("anchors").and_then(Value::as_array).ok_or("creator_layout_snapshot_invalid")?.clone();
+    validate_layout_snapshot(&json!({"schemaVersion":1,"worldRevision":world_revision,"seed":seed,"layout":layout}))
+        .map_err(|_| "creator_layout_snapshot_invalid")?;
+    let geometry = if version == 3 {
+        let entries = object.get("geometry").ok_or("creator_layout_snapshot_invalid")?;
+        validate_snapshot_geometry(entries, &layout_anchors)?;
+        Some(entries.clone())
+    } else {
+        None
+    };
+    Ok(ScopedLayout { city_id: city_id.to_owned(), city_revision, world_revision, layout_id, seed,
+        layout: Value::Object(layout.clone()), geometry, version })
+}
+
+/// 迁移：把渲染器捕获到的锚点几何**并入一个新的 City revision**（v2/v3 → v3）。
+///
+/// 为什么不是原地改：同一 (city, revision, worldRevision) 的快照是历史事实，release 引用它，
+/// 改 digest 等于改写历史；而且 v2 从不序列化几何，原地补等于凭空造位置。所以迁移产出
+/// **新 revision**：锚点/连线逐字不动，只把几何补齐成 v3，旧行保持不可变。调用方拿新的
+/// revision 去建项目/绑定/发布。
+pub(crate) fn migrate_city_layout_geometry(home: &Path, city_id: &str, base_revision: u64, geometry: &Value) -> Result<Value, &'static str> {
     if !valid_id(city_id) { return Err("creator_request_invalid"); }
     let mut db = database(home)?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
-    let current: Option<u64> = tx.query_row("SELECT revision FROM creator_cities WHERE city_id=?1", [city_id], |row| row.get(0))
-        .optional().map_err(|_| "creator_store_unavailable")?;
-    let current = current.ok_or("creator_city_not_found")?;
+    let (current, document_raw): (u64, String) = tx.query_row("SELECT revision,document_json FROM creator_cities WHERE city_id=?1", [city_id],
+        |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_city_not_found")?;
     if current != base_revision { return Err("revision_conflict"); }
-    let (world_revision, layout_id, raw): (String, String, String) = tx.query_row(
+    let (world_revision, layout_id, previous_raw): (String, String, String) = tx.query_row(
         "SELECT world_revision,layout_id,snapshot_json FROM creator_city_layouts_v2 WHERE city_id=?1 AND city_revision=?2 ORDER BY created_at_ms DESC LIMIT 1",
         params![city_id, base_revision], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional().map_err(|_| "creator_store_unavailable")?
         .ok_or("creator_layout_not_found")?;
-    let previous: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
-    let anchors = previous["layout"]["anchors"].as_array().ok_or("creator_layout_snapshot_invalid")?;
-    let ignored = validate_snapshot_geometry_with(geometry, anchors, true)?;
+    let previous: Value = serde_json::from_str(&previous_raw).map_err(|_| "creator_store_unavailable")?;
+    let resolved = resolve_scoped_layout(&previous)?;
+    let anchors = resolved.layout["anchors"].as_array().ok_or("creator_layout_snapshot_invalid")?.clone();
+    let ignored = validate_snapshot_geometry_with(geometry, &anchors, true)?;
     let referenced: std::collections::HashSet<&str> = anchors.iter().filter_map(|anchor| anchor["geometryRef"].as_str()).collect();
-    let kept: Vec<Value> = geometry.as_array().map(|items| items.iter()
-        .filter(|entry| entry["geometryRef"].as_str().is_some_and(|reference| referenced.contains(reference)))
-        .cloned().collect()).unwrap_or_default();
-    let mut snapshot = previous.clone();
-    snapshot["schemaVersion"] = json!(3);
-    snapshot["geometry"] = json!(kept);
-    let raw_next = canonical_json(&snapshot).map_err(|_| "creator_layout_snapshot_invalid")?;
-    if raw_next.len() > 64 * 1024 { return Err("creator_layout_snapshot_too_large"); }
-    let hash = digest(&raw_next);
-    tx.execute("UPDATE creator_city_layouts_v2 SET snapshot_json=?4,snapshot_digest=?5,created_at_ms=?6 WHERE city_id=?1 AND city_revision=?2 AND world_revision=?3",
-        params![city_id, base_revision, world_revision, raw_next, hash, now_ms()]).map_err(|_| "creator_store_unavailable")?;
+    // 既有几何（v3 才有）∪ 新捕获的，再按锚点引用过滤 → 新快照必须全覆盖。
+    let mut entries: Vec<Value> = resolved.geometry.as_ref().and_then(Value::as_array).cloned().unwrap_or_default();
+    if let Some(items) = geometry.as_array() {
+        for entry in items {
+            let Some(reference) = entry["geometryRef"].as_str() else { continue };
+            if !referenced.contains(reference) { continue; }
+            entries.retain(|existing| existing["geometryRef"].as_str() != Some(reference));
+            entries.push(entry.clone());
+        }
+    }
+    entries.retain(|entry| entry["geometryRef"].as_str().is_some_and(|reference| referenced.contains(reference)));
+    let final_geometry = json!(entries);
+    validate_snapshot_geometry(&final_geometry, &anchors)?;
+    let next = current.checked_add(1).filter(|revision| *revision <= i64::MAX as u64).ok_or("creator_city_invalid")?;
+    let mut document: Value = serde_json::from_str(&document_raw).map_err(|_| "creator_store_unavailable")?;
+    document["revision"] = json!(next);
+    let serialized = canonical_json(&document).map_err(|_| "creator_city_invalid")?;
+    let snapshot = json!({"schemaVersion":3,"cityId":city_id,"cityRevision":next,"worldRevision":world_revision,
+        "seed":resolved.seed,"layout":resolved.layout,"geometry":final_geometry});
+    let snapshot_raw = canonical_json(&snapshot).map_err(|_| "creator_layout_snapshot_invalid")?;
+    if snapshot_raw.len() > 64 * 1024 { return Err("creator_layout_snapshot_too_large"); }
+    let snapshot_digest = digest(&snapshot_raw);
+    let now = now_ms();
+    tx.execute("INSERT OR IGNORE INTO creator_city_revisions(city_id,revision,document_json,created_at_ms) SELECT city_id,revision,document_json,updated_at_ms FROM creator_cities WHERE city_id=?1 AND revision=?2",
+        params![city_id,current]).map_err(|_| "creator_store_unavailable")?;
+    let updated = tx.execute("UPDATE creator_cities SET revision=?2,document_json=?3,updated_at_ms=?4 WHERE city_id=?1 AND revision=?5",
+        params![city_id,next,serialized,now,current]).map_err(|_| "creator_store_unavailable")?;
+    if updated != 1 { return Err("revision_conflict"); }
+    tx.execute("INSERT INTO creator_city_revisions(city_id,revision,document_json,created_at_ms) VALUES(?1,?2,?3,?4)",
+        params![city_id,next,serialized,now]).map_err(|_| "creator_store_unavailable")?;
+    tx.execute("INSERT INTO creator_city_layouts_v2(city_id,city_revision,world_revision,layout_id,snapshot_json,snapshot_digest,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+        params![city_id,next,world_revision,layout_id,snapshot_raw,snapshot_digest,now]).map_err(|_| "creator_store_unavailable")?;
     tx.commit().map_err(|_| "creator_store_unavailable")?;
-    Ok(json!({"cityId":city_id,"cityRevision":base_revision,"worldRevision":world_revision,"layoutId":layout_id,
-        "snapshotDigest":hash,"upgradedFromV2":previous["schemaVersion"].as_u64() == Some(2),
+    Ok(json!({"cityId":city_id,"previousRevision":base_revision,"cityRevision":next,"worldRevision":world_revision,
+        "layoutId":layout_id,"snapshotDigest":snapshot_digest,"schemaVersion":3,
         "geometryCount":snapshot["geometry"].as_array().map_or(0, Vec::len),
         "ignoredGeometryCount":ignored,
         "anchorCount":snapshot["layout"]["anchors"].as_array().map_or(0, Vec::len)}))
@@ -177,62 +253,32 @@ pub(crate) fn upgrade_city_layout_geometry(home: &Path, city_id: &str, base_revi
 /// Trusted Studio captures the snapshot from its live renderer and validates V2/V3
 /// semantics. The host checks structure, identity, bounds and transactional scope.
 pub(crate) fn store_scoped_city_layout(home: &Path, snapshot: &Value) -> Result<Value, &'static str> {
-    let object = snapshot.as_object().filter(|o| (o.len() == 6 || o.len() == 7)
-        && only_keys(o, &["schemaVersion", "cityId", "cityRevision", "worldRevision", "seed", "layout", "geometry"]))
-        .ok_or("creator_layout_snapshot_invalid")?;
-    let city_id = object.get("cityId").and_then(Value::as_str).filter(|v| valid_id(v)).ok_or("creator_layout_snapshot_invalid")?;
-    let city_revision = object.get("cityRevision").and_then(Value::as_u64).filter(|v| *v <= i64::MAX as u64).ok_or("creator_layout_snapshot_invalid")?;
-    let version = object.get("schemaVersion").and_then(Value::as_u64).ok_or("creator_layout_snapshot_invalid")?;
-    if version != 2 && version != 3 { return Err("creator_layout_snapshot_invalid"); }
-    if version == 3 {
-        let anchors = object.get("layout").and_then(|layout| layout.get("anchors")).and_then(Value::as_array).ok_or("creator_layout_snapshot_invalid")?;
-        validate_snapshot_geometry(object.get("geometry").ok_or("creator_layout_snapshot_invalid")?, anchors)?;
-    } else if object.contains_key("geometry") { return Err("creator_layout_snapshot_invalid"); }
-    let legacy = json!({"schemaVersion":1,"worldRevision":snapshot["worldRevision"],"seed":snapshot["seed"],"layout":snapshot["layout"]});
-    let (world_revision, layout_id) = validate_layout_snapshot(&legacy)?;
+    let resolved = resolve_scoped_layout(snapshot)?;
     let raw = canonical_json(snapshot).map_err(|_| "creator_layout_snapshot_invalid")?;
     // v3 多了几何（≤64 条），预算相应放宽；v2 保持不变。
-    if raw.len() > (if version == 3 { 64 * 1024 } else { 32 * 1024 }) { return Err("creator_layout_snapshot_too_large"); }
+    if raw.len() > (if resolved.version == 3 { 64 * 1024 } else { 32 * 1024 }) { return Err("creator_layout_snapshot_too_large"); }
     let hash = digest(&raw);
     let mut db = database(home)?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
-    let city: Option<(u64, String)> = tx.query_row("SELECT revision,document_json FROM creator_cities WHERE city_id=?1", [city_id], |row| Ok((row.get(0)?,row.get(1)?)))
+    let city: Option<(u64, String)> = tx.query_row("SELECT revision,document_json FROM creator_cities WHERE city_id=?1", [&resolved.city_id], |row| Ok((row.get(0)?,row.get(1)?)))
         .optional().map_err(|_| "creator_store_unavailable")?;
     let (current_revision, document) = city.ok_or("creator_city_not_found")?;
-    if current_revision != city_revision { return Err("revision_conflict"); }
+    if current_revision != resolved.city_revision { return Err("revision_conflict"); }
     let document: Value = serde_json::from_str(&document).map_err(|_| "creator_store_unavailable")?;
-    if document["seed"].as_u64() != snapshot["seed"].as_u64() { return Err("creator_layout_scope_invalid"); }
+    if document["seed"].as_u64() != Some(resolved.seed) { return Err("creator_layout_scope_invalid"); }
     let existing: Option<String> = tx.query_row("SELECT snapshot_digest FROM creator_city_layouts_v2 WHERE city_id=?1 AND city_revision=?2 AND world_revision=?3",
-        params![city_id,city_revision,world_revision], |row| row.get(0)).optional().map_err(|_| "creator_store_unavailable")?;
-    // v2 → v3 原地升级：同一 (city, revision, worldRevision) 下布局本身逐字未变，只是把
-    // 锚点几何补进快照（v2 从不序列化几何）。发布物引用的是这个 key，升级后既有 release
-    // 立刻拿到几何——不需要重新发布，也不需要 bump City revision。反过来（v3→v2）与
-    // 「布局内容变了」仍然按冲突拒绝。
-    let upgrade_in_place = existing.as_ref().is_some_and(|previous| previous != &hash) && {
-        let previous_raw: String = tx.query_row("SELECT snapshot_json FROM creator_city_layouts_v2 WHERE city_id=?1 AND city_revision=?2 AND world_revision=?3",
-            params![city_id,city_revision,world_revision], |row| row.get(0)).map_err(|_| "creator_store_unavailable")?;
-        let previous: Value = serde_json::from_str(&previous_raw).map_err(|_| "creator_store_unavailable")?;
-        previous["schemaVersion"].as_u64() == Some(2)
-            && snapshot["schemaVersion"].as_u64() == Some(3)
-            && previous["cityId"] == snapshot["cityId"]
-            && previous["cityRevision"] == snapshot["cityRevision"]
-            && previous["worldRevision"] == snapshot["worldRevision"]
-            && previous["seed"] == snapshot["seed"]
-            && previous["layout"] == snapshot["layout"]
-    };
-    if existing.as_ref().is_some_and(|previous| previous != &hash) && !upgrade_in_place { return Err("creator_layout_revision_conflict"); }
-    if existing.is_some() {
-        if upgrade_in_place {
-            tx.execute("UPDATE creator_city_layouts_v2 SET snapshot_json=?4,snapshot_digest=?5,created_at_ms=?6 WHERE city_id=?1 AND city_revision=?2 AND world_revision=?3",
-                params![city_id,city_revision,world_revision,raw,hash,now_ms()]).map_err(|_| "creator_store_unavailable")?;
-        }
-    } else {
+        params![resolved.city_id,resolved.city_revision,resolved.world_revision], |row| row.get(0)).optional().map_err(|_| "creator_store_unavailable")?;
+    // 同一 (city, revision, worldRevision) 的快照是**不可变**的：digest 变了就是冲突。
+    // 需要带几何的新版本请走 `migrate_city_layout_geometry`（产新 revision，旧行不动）。
+    if existing.as_ref().is_some_and(|previous| previous != &hash) { return Err("creator_layout_revision_conflict"); }
+    if existing.is_none() {
         tx.execute("INSERT INTO creator_city_layouts_v2(city_id,city_revision,world_revision,layout_id,snapshot_json,snapshot_digest,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-            params![city_id,city_revision,world_revision,layout_id,raw,hash,now_ms()]).map_err(|_| "creator_store_unavailable")?;
+            params![resolved.city_id,resolved.city_revision,resolved.world_revision,resolved.layout_id,raw,hash,now_ms()]).map_err(|_| "creator_store_unavailable")?;
     }
     tx.commit().map_err(|_| "creator_store_unavailable")?;
-    Ok(json!({"cityId":city_id,"cityRevision":city_revision,"worldRevision":world_revision,"layoutId":layout_id,
-        "snapshotDigest":hash,"upgradedFromV2":upgrade_in_place}))
+    Ok(json!({"cityId":resolved.city_id,"cityRevision":resolved.city_revision,"worldRevision":resolved.world_revision,
+        "layoutId":resolved.layout_id,"snapshotDigest":hash,"schemaVersion":resolved.version,
+        "geometryCount":resolved.geometry.as_ref().and_then(Value::as_array).map_or(0, Vec::len)}))
 }
 
 pub fn list_city_layout_snapshots(home: &Path, limit: u64) -> Result<Value, &'static str> {
@@ -275,9 +321,14 @@ pub(crate) fn read_scoped_city_layout(home: &Path, city_id: &str, city_revision:
         params![city_id,city_revision,world_revision,layout_id], |row| row.get(0))
         .optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_layout_not_found")?;
     let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
-    if snapshot["schemaVersion"].as_u64() != Some(2) || snapshot["cityId"].as_str() != Some(city_id)
-        || snapshot["cityRevision"].as_u64() != Some(city_revision) || snapshot["worldRevision"].as_str() != Some(world_revision)
-        || snapshot["layout"]["id"].as_str() != Some(layout_id) || !snapshot["layout"].is_object() {
+    // 统一读取入口：v3 严格校验；v2 归一化（无几何）；其它版本明确拒绝。
+    let resolved = match resolve_scoped_layout(&snapshot) {
+        Ok(resolved) => resolved,
+        Err("creator_layout_snapshot_version_unsupported") => return Err("creator_layout_snapshot_version_unsupported"),
+        Err(_) => return Err("creator_layout_scope_mismatch"),
+    };
+    if resolved.city_id != city_id || resolved.city_revision != city_revision || resolved.world_revision != world_revision
+        || resolved.layout_id != layout_id {
         return Err("creator_layout_scope_mismatch");
     }
     Ok(snapshot)
@@ -743,13 +794,43 @@ mod airspace_tests {
         let _ = std::fs::remove_dir_all(home);
     }
 
-    /// 只合并几何的升级：保留快照里的锚点（含 Creator 加的空域门），只补位置。
-    /// 这是「重存布局」唯一正确的落法——整份覆盖会把空域门删掉（旧 digest 守卫挡住了它，
-    /// 但也顺带挡住了升级）。
+    /// 同一 (city, revision, worldRevision) 的快照不可变：digest 变了就是冲突。
+    /// 带几何的新版本必须走迁移（新 revision），不能原地改写历史。
     #[test]
-    fn geometry_upgrade_keeps_creator_anchors_and_requires_full_coverage() {
+    fn resaving_a_layout_cannot_mutate_a_historical_snapshot() {
         let home = home();
-        let created = crate::creator_cities::create_city(&home, "local-profile", "create-geometry-upgrade", "Geo", 11, &json!({"schemaVersion":1})).unwrap();
+        let created = crate::creator_cities::create_city(&home, "local-profile", "create-airspace-immutable", "Airspace", 10, &json!({"schemaVersion":1})).unwrap();
+        let city_id = created["cityId"].as_str().unwrap();
+        let layout = json!({"schemaVersion":1,"id":"layout-immutable","coordinateSystem":"city-local-m-v1",
+            "anchors":[{"id":"spawn-air","kind":"spawn","capabilities":["fly"],"geometryRef":"city-road-node:a"}],"links":[]});
+        let v2 = json!({"schemaVersion":2,"cityId":city_id,"cityRevision":0,"worldRevision":"world-immutable","seed":10,"layout":layout});
+        store_scoped_city_layout(&home, &v2).unwrap();
+        let v3_same_layout = json!({"schemaVersion":3,"cityId":city_id,"cityRevision":0,"worldRevision":"world-immutable","seed":10,"layout":layout,
+            "geometry":[{"geometryRef":"city-road-node:a","positionMeters":{"x":0,"y":0,"z":0}}]});
+        // 原地升级被拒绝：历史快照的 digest 不能变。
+        assert_eq!(store_scoped_city_layout(&home, &v3_same_layout).unwrap_err(), "creator_layout_revision_conflict");
+        // 迁移才会产生新版本，旧行原样不动。
+        let migrated = migrate_city_layout_geometry(&home, city_id, 0, &json!([{"geometryRef":"city-road-node:a","positionMeters":{"x":0,"y":0,"z":0}}])).unwrap();
+        assert_eq!(migrated["cityRevision"], 1);
+        assert_eq!(migrated["previousRevision"], 0);
+        let rows: Vec<(u64, String)> = {
+            let db = database(&home).unwrap();
+            let mut statement = db.prepare("SELECT city_revision,snapshot_json FROM creator_city_layouts_v2 WHERE city_id=?1 ORDER BY city_revision").unwrap();
+            statement.query_map(params![city_id], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().map(|row| row.unwrap()).collect()
+        };
+        assert_eq!(rows.len(), 2, "migration must add a version, not overwrite");
+        let old: Value = serde_json::from_str(&rows[0].1).unwrap();
+        let new: Value = serde_json::from_str(&rows[1].1).unwrap();
+        assert_eq!(old["schemaVersion"], 2, "the historical snapshot stays v2");
+        assert_eq!(new["schemaVersion"], 3);
+        assert_eq!(new["cityRevision"], 1);
+    }
+
+    /// 迁移：保留锚点/连线，只补几何，产新 revision；覆盖不全就拒绝。
+    #[test]
+    fn migration_adds_geometry_in_a_new_revision_and_keeps_creator_anchors() {
+        let home = home();
+        let created = crate::creator_cities::create_city(&home, "local-profile", "create-geometry-migrate", "Geo", 11, &json!({"schemaVersion":1})).unwrap();
         let city_id = created["cityId"].as_str().unwrap();
         let v2 = json!({"schemaVersion":2,"cityId":city_id,"cityRevision":0,"worldRevision":"world-geo","seed":11,
             "layout":{"schemaVersion":1,"id":"layout-geo","coordinateSystem":"city-local-m-v1",
@@ -758,99 +839,51 @@ mod airspace_tests {
                 "links":[{"id":"air-link:a-b","fromAnchorId":"spawn-air","toAnchorId":"air-gate:a","capabilities":["fly"]}]}});
         store_scoped_city_layout(&home, &v2).unwrap();
         let geometry = json!([{"geometryRef":"city-road-node:a","positionMeters":{"x":0,"y":40,"z":0}},
-            {"geometryRef":"city-road-node:b","positionMeters":{"x":60,"y":40,"z":0},"activationRadiusMeters":12}]);
-        // 渲染器提交的是整张几何表：未引用的条目丢弃并报告数量，被引用的必须齐全。
-        let superset = json!([geometry[0], geometry[1],
-            {"geometryRef":"city-road-node:other","positionMeters":{"x":1,"y":1,"z":1}}]);
-        let upgraded = upgrade_city_layout_geometry(&home, city_id, 0, &superset).unwrap();
-        assert_eq!(upgraded["ignoredGeometryCount"], 1);
-        assert_eq!(upgraded["geometryCount"], 2);
-        assert_eq!(upgraded["upgradedFromV2"], true);
-        assert_eq!(upgraded["anchorCount"], 2, "creator anchors must survive the upgrade");
-        assert_eq!(upgraded["geometryCount"], 2);
+            {"geometryRef":"city-road-node:b","positionMeters":{"x":60,"y":40,"z":0},"activationRadiusMeters":12},
+            {"geometryRef":"city-road-node:unused","positionMeters":{"x":1,"y":1,"z":1}}]);
+        let migrated = migrate_city_layout_geometry(&home, city_id, 0, &geometry).unwrap();
+        assert_eq!(migrated["ignoredGeometryCount"], 1, "extra captures are dropped, not stored");
+        assert_eq!(migrated["geometryCount"], 2);
+        assert_eq!(migrated["anchorCount"], 2, "creator anchors must survive the migration");
         let stored: Value = {
             let db = database(&home).unwrap();
-            serde_json::from_str(&db.query_row("SELECT snapshot_json FROM creator_city_layouts_v2 WHERE city_id=?1 AND city_revision=0", params![city_id], |row| row.get::<_, String>(0)).unwrap()).unwrap()
+            serde_json::from_str(&db.query_row("SELECT snapshot_json FROM creator_city_layouts_v2 WHERE city_id=?1 AND city_revision=1", params![city_id], |row| row.get::<_, String>(0)).unwrap()).unwrap()
         };
-        assert_eq!(stored["schemaVersion"], 3);
-        assert_eq!(stored["layout"]["anchors"][1]["id"], "air-gate:a", "the air gate must still be in the snapshot");
+        assert_eq!(stored["layout"]["anchors"][1]["id"], "air-gate:a");
         assert_eq!(stored["geometry"].as_array().unwrap().len(), 2);
-        // 覆盖不全 → 拒绝（发布物照样无法复现）。
-        assert_eq!(upgrade_city_layout_geometry(&home, city_id, 0, &json!([geometry[0]]).clone()).unwrap_err(), "creator_layout_snapshot_invalid");
+        // 覆盖不全 → 拒绝（不凭空补造；此时城市已在 revision 1）。
+        assert_eq!(migrate_city_layout_geometry(&home, city_id, 1, &json!([{"geometryRef":"city-road-node:a","positionMeters":{"x":0,"y":0,"z":0}}])).unwrap_err(),
+            "creator_layout_snapshot_invalid");
         // revision CAS。
-        assert_eq!(upgrade_city_layout_geometry(&home, city_id, 1, &geometry).unwrap_err(), "revision_conflict");
+        assert_eq!(migrate_city_layout_geometry(&home, city_id, 9, &geometry).unwrap_err(), "revision_conflict");
         let _ = std::fs::remove_dir_all(home);
     }
 
-    /// 重存一次布局应当**原地**把 v2 升级成 v3（补上锚点几何），而不是报 revision 冲突：
-    /// 发布物引用的是 (city, revision, worldRevision) 这个 key，升级后既有 release 立刻
-    /// 拿到几何，不需要重新发布。布局内容真的变了、或想降级回 v2，仍然拒绝。
+    /// 统一读取入口：v2 归一化（无几何）、v3 严格校验、别的版本明确拒绝。
     #[test]
-    fn resaving_a_layout_upgrades_a_v2_snapshot_in_place_and_keeps_conflicts() {
-        let home = home();
-        let created = crate::creator_cities::create_city(&home, "local-profile", "create-airspace-upgrade", "Airspace", 10, &json!({"schemaVersion":1})).unwrap();
-        let city_id = created["cityId"].as_str().unwrap();
-        let layout = json!({"schemaVersion":1,"id":"layout-upgrade","coordinateSystem":"city-local-m-v1",
-            "anchors":[{"id":"spawn-air","kind":"spawn","capabilities":["fly"],"geometryRef":"city-road-node:a"},
-                {"id":"air-gate:a","kind":"zone","capabilities":["fly"],"geometryRef":"city-road-node:b"}],
-            "links":[{"id":"air-link:a-b","fromAnchorId":"spawn-air","toAnchorId":"air-gate:a","capabilities":["fly"]}]});
-        let v2 = json!({"schemaVersion":2,"cityId":city_id,"cityRevision":0,"worldRevision":"world-upgrade","seed":10,"layout":layout});
-        store_scoped_city_layout(&home, &v2).unwrap();
-        let v3 = json!({"schemaVersion":3,"cityId":city_id,"cityRevision":0,"worldRevision":"world-upgrade","seed":10,"layout":layout,
-            "geometry":[{"geometryRef":"city-road-node:a","positionMeters":{"x":0,"y":40,"z":0}},
-                {"geometryRef":"city-road-node:b","positionMeters":{"x":60,"y":40,"z":0},"activationRadiusMeters":12}]});
-        let upgraded = store_scoped_city_layout(&home, &v3).unwrap();
-        assert_eq!(upgraded["upgradedFromV2"], true);
-        let stored: String = {
-            let db = database(&home).unwrap();
-            db.query_row("SELECT snapshot_json FROM creator_city_layouts_v2 WHERE city_id=?1 AND city_revision=0", params![city_id], |row| row.get::<_, String>(0)).unwrap()
-        };
-        let stored: Value = serde_json::from_str(&stored).unwrap();
-        assert_eq!(stored["schemaVersion"], 3);
-        assert_eq!(stored["geometry"].as_array().unwrap().len(), 2);
-        // 布局内容变了 → 冲突（不是升级）。
-        let mut moved = v3.clone();
-        // 只改 link id：布局依然结构合法，但内容确实变了 → 必须冲突而不是升级。
-        moved["layout"]["links"][0]["id"] = json!("air-link:a-b-renamed");
-        assert_eq!(store_scoped_city_layout(&home, &moved).unwrap_err(), "creator_layout_revision_conflict");
-        // 降级回 v2 → 冲突。
-        assert_eq!(store_scoped_city_layout(&home, &v2).unwrap_err(), "creator_layout_revision_conflict");
-        let _ = std::fs::remove_dir_all(home);
-    }
-
-    /// v3 快照的几何必须原样跨越锚点编辑：加/删门只改 anchors/links，geometry 不能丢，
-    /// 否则发布物刚存下来就又变回"定位不到门"。
-    #[test]
-    fn v3_snapshot_geometry_survives_anchor_edits_and_is_strictly_validated() {
-        let home = home();
-        let created = crate::creator_cities::create_city(&home, "local-profile", "create-airspace-v3", "Airspace", 9, &json!({"schemaVersion":1})).unwrap();
-        let city_id = created["cityId"].as_str().unwrap();
-        let base = json!({"schemaVersion":3,"cityId":city_id,"cityRevision":0,"worldRevision":"world-airspace-v3","seed":9,
-            "layout":{"schemaVersion":1,"id":"layout-airspace-v3","coordinateSystem":"city-local-m-v1",
-                "anchors":[{"id":"road-spawn:a","kind":"spawn","capabilities":["drive"],"geometryRef":"city-road-node:a"}],"links":[]},
-            "geometry":[{"geometryRef":"city-road-node:a","positionMeters":{"x":1.5,"y":2.5,"z":3.5}}]});
-        store_scoped_city_layout(&home, &base).unwrap();
-        let added = json!([{"id":"spawn-air","kind":"spawn","capabilities":["fly"],"geometryRef":"city-road-node:a"},
-            {"id":"air-gate:a","kind":"zone","capabilities":["fly"],"geometryRef":"city-road-node:a"}]);
-        let mutated = mutate_city_anchors(&home, "local-profile", city_id, 0, &added, &[], "add-fly-v3").unwrap();
-        assert_eq!(mutated["revision"], 1);
-        let raw: String = {
-            let db = database(&home).unwrap();
-            db.query_row("SELECT snapshot_json FROM creator_city_layouts_v2 WHERE city_id=?1 AND city_revision=1", params![city_id], |row| row.get::<_, String>(0)).unwrap()
-        };
-        let snapshot: Value = serde_json::from_str(&raw).unwrap();
-        assert_eq!(snapshot["schemaVersion"], 3, "anchor edits must not downgrade the snapshot version");
-        assert_eq!(snapshot["geometry"], json!([{"geometryRef":"city-road-node:a","positionMeters":{"x":1.5,"y":2.5,"z":3.5}}]));
-        // 少一条几何的 v3 直接拒绝（发布物无法复现）。
-        let mut broken = base.clone();
-        broken["geometry"] = json!([]);
-        assert_eq!(store_scoped_city_layout(&home, &broken).unwrap_err(), "creator_layout_snapshot_invalid");
-        // 引用不到的几何同样拒绝。
-        let mut extra = base.clone();
-        extra["geometry"] = json!([{"geometryRef":"city-road-node:a","positionMeters":{"x":0,"y":0,"z":0}},
-            {"geometryRef":"city-road-node:ghost","positionMeters":{"x":0,"y":0,"z":0}}]);
-        assert_eq!(store_scoped_city_layout(&home, &extra).unwrap_err(), "creator_layout_snapshot_invalid");
-        let _ = std::fs::remove_dir_all(home);
+    fn resolve_scoped_layout_is_the_single_read_entry() {
+        let layout = json!({"schemaVersion":1,"id":"layout-r","coordinateSystem":"city-local-m-v1",
+            "anchors":[{"id":"a","kind":"spawn","capabilities":["fly"],"geometryRef":"g:1"}],"links":[]});
+        let v2 = json!({"schemaVersion":2,"cityId":"city-r","cityRevision":1,"worldRevision":"w","seed":7,"layout":layout});
+        let resolved = resolve_scoped_layout(&v2).unwrap();
+        assert_eq!(resolved.version, 2);
+        assert!(resolved.geometry.is_none(), "v2 has no geometry and none may be invented");
+        assert_eq!(resolved.layout_id, "layout-r");
+        let v3 = json!({"schemaVersion":3,"cityId":"city-r","cityRevision":1,"worldRevision":"w","seed":7,"layout":layout,
+            "geometry":[{"geometryRef":"g:1","positionMeters":{"x":0,"y":5,"z":0}}]});
+        let resolved = resolve_scoped_layout(&v3).unwrap();
+        assert_eq!(resolved.version, 3);
+        assert_eq!(resolved.geometry.as_ref().unwrap().as_array().unwrap().len(), 1);
+        // v3 少了锚点引用的几何 → 拒绝（不能声称可复现）。
+        let incomplete = json!({"schemaVersion":3,"cityId":"city-r","cityRevision":1,"worldRevision":"w","seed":7,"layout":layout,"geometry":[]});
+        assert_eq!(resolve_scoped_layout(&incomplete).unwrap_err(), "creator_layout_snapshot_invalid");
+        // 未知版本明确拒绝。
+        let v9 = json!({"schemaVersion":9,"cityId":"city-r","cityRevision":1,"worldRevision":"w","seed":7,"layout":layout});
+        assert_eq!(resolve_scoped_layout(&v9).unwrap_err(), "creator_layout_snapshot_version_unsupported");
+        // v2 带 geometry 字段是坏数据。
+        let mut tainted = v2.clone();
+        tainted["geometry"] = json!([]);
+        assert_eq!(resolve_scoped_layout(&tainted).unwrap_err(), "creator_layout_snapshot_invalid");
     }
 
     #[test]
