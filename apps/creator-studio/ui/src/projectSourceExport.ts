@@ -19,7 +19,7 @@ export function buildCitySourceExport(rawCity: unknown, generatorVersion: number
   if (patch != null && !validateWorldPlanPatch(patch, city.value.seed, generatorVersion).ok) return fail("creator_export_patch_not_portable");
   if (object(patch) && Array.isArray(patch.suppressedContext) && patch.suppressedContext.length) return fail("creator_export_patch_context_unresolved");
   const files: Record<string, string> = {
-    "README.md": `# City source export\n\nWorld seed: ${city.value.seed}. Generator version: ${generatorVersion}.\n\nThis is an unsigned source project, not an installable runtime package. No game or playtest results are included.\n`,
+    "README.md": `# City source export\n\nWorld seed: ${city.value.seed}. Generator version: ${generatorVersion}.\n\nThis source project includes the City's pinned world scene, planning patch, and verified model assets when present. An explicit City planning patch takes precedence over the pinned package patch. This is an unsigned source project, not an installable runtime package. No game or playtest results are included.\n`,
     ".gitignore": "dist/\n",
     "world/world.json": json(city.value.profile),
   };

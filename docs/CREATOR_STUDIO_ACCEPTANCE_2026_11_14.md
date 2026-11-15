@@ -10,6 +10,7 @@
 - Studio TypeScript typecheck、桌面 Tauri `cargo check`（包含 MCP crate 依赖编译）已通过；未跑测试、未重新打包、未做桌面真机验收。
 - 随后补入 City 试玩的 pending-run 世界包快照通道：宿主从 release 冻结的 City 身份解析包引用，按 City 插件实例和 pending run 授权分块读取；City 在 SDK 校验、模型加载和挂载完成前不 claim。只覆盖 Studio 发起的试玩，不实现通用 City 活动切换或安装包自动启动。
 - 新增的 City/Creator Studio typecheck、production build、`verify:world-scene-models`、`creator-playtest-pending`、`checkpoint-race` 定向用例、Tauri `cargo check`、`verify-plugin-architecture`、Creator Studio production build，以及 Rust `routes_only_declared_builtin_city_calls` / `release_snapshot_carries_independent_city_identity` 定向回归通过。未重新打包或做桌面真机验收。整体仍不能宣称可发布：A5/A6/A7、包导出/可信分发、签名信任、通用城市切换和真实场景验收仍有缺口。
+- 本轮补齐独立 City 源码目录的固定 world package 闭包：导出 scene、catalog、package patch 和摘要校验后的 GLB；City 显式 patch 优先。Creator Studio typecheck、production build、Tauri `creator_source_export` 定向测试（5 项）通过。测试证明目录复制与摘要拒绝，不证明 bundle/真机行为或正式安装能力；不改变 CS-11 历史项目源码导出的真机记录，也不改变整体发布状态。
 
 ## 2026-11-15 接管验收记录
 

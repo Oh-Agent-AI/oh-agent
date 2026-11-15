@@ -108,7 +108,7 @@ node packages/agent-vitals-city-sdk/bin/oh-agent-sdk.mjs verify-world <输出文
 以上命令验证当前开发格式和支持的内容，不代替发布者验证、正式安装、运行时兼容或真机试玩验收。
 `init city-project` 创建新源码目录，不会读取或导出 Studio 中已有的 City/游戏；小游戏示例使用合成布局，必须针对实际 City 重新绑定。
 
-Studio 项目面板可分页打开独立 City 的只读预览，预览提供“导出城市源码…”，无需先创建游戏；导出前校验当前城市 revision、可移植补丁并拒绝来源不明的 suppressed context。源码只包含世界配方和可移植补丁，不包含游戏、用户会话和试玩结果。
+Studio 项目面板可分页打开独立 City 的只读预览，预览提供“导出城市源码…”，无需先创建游戏；导出前校验当前城市 revision、可移植补丁并拒绝来源不明的 suppressed context。源码包含当前 City 世界配方，以及其 digest 固定的 world package 中的 scene、assets catalog、GLB 和 package patch；若 City 自身保存了显式 plan patch，则以 City patch 为准。不包含游戏、用户会话和试玩结果。宿主必须重新解析 City 的 package 引用并校验 package digest、资产摘要集合与 GLB 内容，不能依赖前端传入的包文件或路径。
 
 Studio 项目面板提供“导出源码目录…”：当前接受已保存、绑定独立 City、至多一个游戏挂载的项目；未绑定游戏可以导出源码，但配置挂载后才能验证和试玩。导出前校验城市 revision、布局、已有挂载和可移植补丁，带未区分来源的 suppressed context 时拒绝。桌面宿主通过原生目录选择器在用户选定位置新建目录，并验证项目 revision 和资产摘要；不会覆盖已有目录。游戏的场景与模型资产放入 `games/game/`，布局绑定是开发快照，生成新世界后需重新绑定。导出 README 记录 seed 与生成器版本；不凭空生成试玩 trace。该源码目录不是可安装的 world+game 复合包，不改变 SQLite 草稿权威，也不承诺导入后运行。
 

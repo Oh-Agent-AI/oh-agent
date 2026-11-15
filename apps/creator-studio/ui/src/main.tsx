@@ -1003,10 +1003,11 @@ function App() {
     setBusy(true); setMessage("");
     try {
       const source = buildCitySourceExport(city, CITY_GENERATOR_VERSION);
-      const result = await creatorRequest<{ directoryName: string; cityRevision: number }>("creator.city.source.export", {
-        cityId: city.cityId, revision: city.revision, ...source,
+      const assetDigests = installedWorldView?.assets.entries.map(entry => entry.sha256) ?? [];
+      const result = await creatorRequest<{ directoryName: string; cityRevision: number; assetCount: number }>("creator.city.source.export", {
+        cityId: city.cityId, revision: city.revision, ...source, assetDigests,
       });
-      if (!/^city-source-[a-f0-9]+$/.test(result.directoryName) || result.cityRevision !== city.revision) throw new Error("creator_export_invalid");
+      if (!/^city-source-[a-f0-9]+$/.test(result.directoryName) || result.cityRevision !== city.revision || result.assetCount !== assetDigests.length) throw new Error("creator_export_invalid");
       setMessage(`城市源码已导出至所选目录中的 ${result.directoryName}；这是未签名的源码项目。`);
     } catch (error) {
       const code = errorCode(error, "creator_export_failed");
