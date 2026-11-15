@@ -48,7 +48,8 @@ function fixture(half = 60) {
   const network = emptyNetwork(); addNetworkEdge(network, { x: target.x - half, z: target.z }, { x: target.x + half, z: target.z }, true, false, true);
   const road = [...network.edges.values()][0];
   return { network, primaryAnchorNodeId: road.from, publicSites: [], landmarks: [{ id: "landmark:joint-test", kind: "villa-complex", x: 0, z: 0, yaw: 0, radius: 34 }], blocks: [],
-    height, inRiver: () => false, geo: { terrain, height, buildable: terrain.buildable, coastDistance: () => 20, landClearance: () => 1000,
+    height, elevation: height, inRiver: () => false, geo: { terrain, height, elevation: height, buildable: terrain.buildable,
+      landform: { elevation: height, slope: terrain.slope, isBuildable: terrain.buildable }, coastDistance: () => 20, landClearance: () => 1000,
       hasRiver: false, river: null, riverX: () => 0, riverWidth: () => 0, hillLine: 1000, hillProj: () => 0 },
     ringRuns: [], coast: [], core: { x: 100, z: 0 }, trunkRuns: [road.points], carPaths: [road.points, [...road.points].reverse()],
     bridges: [], SHORE_SITE_KINDS: new Set(["villa-complex", "lighthouse"]), seaside: null, coastRoadRunEnds: [], coastRoadRuns: [], riverRoadRuns: [], connectionLog: [] };

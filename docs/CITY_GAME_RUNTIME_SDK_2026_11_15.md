@@ -114,9 +114,12 @@ Miami 金样已在当前树重跑：
   `verify-city-driving-structure-world`、`verify-city-driving-release-graph`、
   `verify-city-driving-entry` 全部通过；
 - cinema：`verify-react-city-cinematic`（5 seeds）通过；
-- `verify-city-suite fast` 在 `verify-city-joint-site-road` 有一项既有失败
-  （`registered-model-ground-invalid-context`，与 registry/entry 改动无关），
-  需要单独定位，不能算本轮通过。
+- 快守卫里的陈旧 ground fixture 已修：`verify-city-joint-site-road`、
+  `verify-city-model-envelope`、`verify-city-model-ground`、
+  `verify-city-shore-plot-access`、`verify-city-joint-frontage`、
+  `verify-city-world` 分别通过；这些改动只补 `elevation/landform` 上下文，不改规划逻辑。
+- `verify-city-suite fast` 在本地 10 分钟窗口内没有跑完（后续仍有重守卫），
+  因此不宣称整套快守卫通过；adapter/entry 的 Miami 金样以已列出的单项脚本为准。
 
 ## 4. 迁移顺序（下一步）
 
