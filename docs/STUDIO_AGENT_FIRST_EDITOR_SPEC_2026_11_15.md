@@ -61,6 +61,7 @@ type SessionOperationV1 = Readonly<{
 
 - 新工具 `creator_session_open`（operationId 幂等）/ `creator_session_status` / `creator_session_close`：打开时返回未决操作列表（活跃预览、进行中作业），Agent 断线重连**一次调用恢复全部上下文**。
 - 会话是**有界的视图记录**，不是权限容器：能力与授权仍按既有规则逐请求核对。会话不持久化任何用户数据新增面（摘要与 ID 仅此而已）。
+- 操作记录采用 **Activity 时间线语义**（借 T3 Code：工具动作、审批、失败都是时间线条目，不止消息）——Agent 与人在 UI 看到同一条时间线；`status: pending` 的条目允许「接受 ≠ 副作用完成」的异步 settle（对应 T3 的 turn/checkpoint 分离）。
 - 关闭语义：显式 close 淘汰未决预览（沿用 preview TTL 兜底）；宿主重启后会话按 agentId 重放未决引用。
 
 ### 3.2 统一作业面（Job）——消灭 G2/G7 的孤立查询
@@ -78,6 +79,7 @@ type CreatorJobV1 = Readonly<{
 - 布局生成/世界重建/试玩/捕获统一注册为作业；`creator_job_list { sessionId? }` / `creator_job_status { jobId }` / `creator_job_wait { jobId, timeoutMs? }`（阻塞等待完成，替代盲目轮询）。
 - 单活动试玩槽**维持不变**（City 是单实例状态机，这是既有设计）；并行的意义改为：**不同项目/城市的创作线可并行**（世界编辑作业与另一项目的试玩互不占用），同一城市的写入仍走串行 revision 链。
 - 长作业可取消（沿用试玩 cancel 的既有语义），取消是协作式——引擎在安全点检查取消位。
+- 命名对齐 T3 Code 的 command receipt 模式：`operationId` 回执即「命令接受 ≠ 副作用完成」的持久凭据，`creator_operation_status`/`creator_job_status` 是 receipt 查询面——既有实现已具备，本规格只是显式命名。
 
 ### 3.3 诊断闭环——每个错误码带「下一步」
 
@@ -130,6 +132,8 @@ type CreatorJobV1 = Readonly<{
 
 每切片记录构建版本、工具数量与验收证据；真机桌面验收与无头验收分别记录。E1–E4 纯接口/投影层可先行；E5 需要宿主服务改造；E6 在 E1–E5 之上执行。
 
+远景切片（借 T3 Code 模式，见 §9）：E7 多端监视与审批（桌面/手机/网页同为宿主瘦客户端，从手机批准一次 fly 试玩断点）；E8 Agent 交接摘要（结构化创作线交接，含 delta 语义）；E9 Creator MCP 工具面 evals（Agent 行为回归评测集，随工具演进）。
+
 ## 6. 明确不做
 
 - 不开放任意文件写入、shell、脚本执行、任意 geometry/坐标（维持全部既有禁令）。
@@ -141,3 +145,35 @@ type CreatorJobV1 = Readonly<{
 ## 7. 完成定义
 
 「Agent 优先的 Agent 编辑器」完成 = Agent 仅凭 MCP（无人在场、UI 关闭）完成一次完整创作闭环并把全部证据留在会话/作业记录中；人在 UI 上看到的是同一场工作的只读监视视图；每一步失败都有指向下一步的结构化建议。E1–E6 全部通过时达成。
+
+## 9. 参考实现研究：T3 Code（pingdotgg/t3code，MIT）
+
+T3 Code 的定位是「coding agents 的开源控制平面」：不内嵌 agent，而是把机器上已有的多个 coding agent（Claude Code/Codex/Cursor/…，经 ACP 可插拔协议）统一驱动，一个 server、桌面/手机/网页三端同线程。它与 Studio 的方向同构——**agent 是主要工作者，编辑器是控制平面**——其开源架构是本规格最直接的外部参照。
+
+### 9.1 模式映射（借用 → Studio 落点）
+
+| T3 Code 模式 | Studio 落点 | 取舍 |
+|---|---|---|
+| 「执行留在拥有 workspace 的环境；客户端永不替代环境的文件系统/凭据/机器状态」 | §1 宿主权威三面分离——既有 mailbox 架构正是此原则 | ✅ 已一致，引用为佐证 |
+| Thread 持久化（**agent 进程退出后线程仍在**） | §3.1 CreatorSessionV1 宿主重启重放 | ✅ E1 采纳，语义对齐 |
+| Turn / Checkpoint / Activity 时间线（接受 ≠ settle） | §3.1 Activity 语义 + `operation_status` receipt | ✅ 已吸收 |
+| Command receipt + Outbox effect（副作用随事件提交） | `operationId` 幂等回执（既有）；`creator_job_status` receipt 查询面 | ✅ E2 显式命名 |
+| 权限四模式（Supervised/Auto-accept/Auto/Full access，**per-thread**，管理员可封顶） | §3.6 候选：per-session 权限档——创作面默认自主，人可选 Supervised 逐步批准 | 🟡 远景（E7 一并） |
+| 每线程独立 git worktree + diff 审阅 + 一键 PR | preview→commit 两段式 + diff 报告已是同一语义（世界是单实例状态机，无 worktree 可开） | ✅ 已等价，无需新增 |
+| 桌面/手机/网页三端同线程 + 手机批准 | E7 多端监视与审批（远景） | 🟡 E7 |
+| ACP 可插拔 agent 协议；「Capabilities must describe what the provider can actually do」（能力边界拒绝越权操作，如 checkpoint 拒绝 revert 碰文件） | 能力目录只列已实现 + 缺失能力明确报错——同一原则，引用为外部先例 | ✅ 已一致 |
+| 订阅按需推送（看一个线程不付全部线程历史；socket 认证 ≠ 全方法授权） | 会话/作业查询有界返回（既有 exact_payload/预算模式） | ✅ 已一致 |
+| Context handoffs（provider 间/fork 交接的可移植文本摘要，240 字符压缩 + delta 语义） | E8 Agent 交接摘要（远景）：多 agent 接手同一条创作线时传递结构化摘要 | 🟡 E8 |
+| `evals/` 目录（agent 产品自带行为评测） | E9 Creator MCP 工具面 evals | 🟡 E9 |
+
+### 9.2 拒绝的模式（与既有边界冲突）
+
+- **多 provider 通用化**：T3 的价值在统一任意 agent；Studio 的权威宿主唯一（City 宿主服务），不存在「换一个 provider」的语义。agentId 保持声明式标识，不引入 provider 认证体系。
+- **通用 shell/文件系统暴露**：T3 的 Full access 模式允许任意命令与文件编辑；Studio 的全部写接口保持 typed/CAS/预算——数据政策与单写者边界不因控制平面化而放宽。
+- **客户端自带凭据/状态**：T3 明确禁止，Studio 同——引用为佐证。
+
+### 9.3 对既有切片的修正
+
+- §3.1 的 operations 语义升级为 Activity 时间线（已并入上文）。
+- §5 新增远景 E7/E8/E9（见上）；E1–E6 不变。
+- 参照 T3 的纪律：性能被视为产品特性（掉帧即 bug）——Studio 的 capture/视口预算分层（边界收口记录 §4）同理，预算数字变更必须走守卫测试。
