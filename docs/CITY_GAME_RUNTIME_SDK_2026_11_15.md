@@ -153,6 +153,33 @@ descriptor 当作可玩游戏。
 - 生成物 `assets/creator/capabilities.json` 由
   `scripts/generate-creator-capabilities.mjs --check` 锁定。
 
+## 3.3 正式扑翼 Creator 内容（2026-11-15）
+
+已将正式扑翼作为 Creator 模板接入：
+
+- `CREATOR_TEMPLATES_V1` 新增 `ornithopter-flight`；
+- pack id `creator.ornithopter-flight`，`gates` 槽要求 `fly`（3–8 个），
+  参数 `timeLimitTicks` / `flapPower`；
+- `AnchorCapability`、content-pack 校验与 Rust layout 快照均接受 `fly`；
+- Studio 新建项目模板下拉新增「扑翼飞行检查点」；
+- 生成物 `assets/creator/templates/ornithopter-flight.json` 与
+  `templates-index.json` / `capabilities.json` 已更新。
+
+通过 Creator Studio 实际创建：
+
+```text
+projectId: project-4567906979e08c193133142564f5663b
+title:     扑翼飞行检查点
+game.id:   creator.ornithopter-flight
+slots:     gates requires ["fly"]
+mounts:    0
+```
+
+**它不是可玩项目**：创建时的 City 布局只有 `drive` 锚点，没有 `fly` 空域锚点，
+因此无法绑定 `gates`；同时正式 `city-flight-ornithopter` runtime 还没有实现。
+下一片必须是空域锚点 + 正式 runtime + Creator 飞行试玩链路，不能把本模板当成
+已可运行。
+
 ## 4. 迁移顺序（下一步）
 
 1. **宿主接线**（不改行为）：在 CityApp 实现 `MiamiLegacyActivityHostV1`，把现有
