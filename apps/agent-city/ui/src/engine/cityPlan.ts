@@ -323,7 +323,14 @@ function buildPlan(seed: number, R: number, shape: Shape, biome: Biome, config: 
   const key = keyOf;
   const addEdge = (a0: Vec2, b0: Vec2, arterial: boolean, bridge = false, primary = false) => addNetworkEdge(network, a0, b0, arterial, bridge, primary);
   // 湾心小岛不是水面：穿岛堤道在岛上是一段地面路（两座桥之间），否则桥面压在岛上穿模（用户截图）。
-  const inRiver = (x: number, z: number) => hasRiver && coastDistance(x, z) > 0 && Math.abs(x - riverX(z)) < riverWidth(z) && !(geo.isletClearance(x, z) > 0);
+  // arid 界内水体（绿洲/湖泊，spec S2b）同属水面：水净空为负即在水里，与河道同一套
+  // 桥跨/占地/断面口径，主干道按 maxWaterSpan（窄河 140）跨小水面建桥。coastal 不走该
+  // 分支——它的水净空含外海与河道本身，并入会把入海的 trunk 射线当可桥水面（行为漂移）。
+  const inAridWater = geographyGenerator === "arid-dunes-v1"
+    ? (x: number, z: number) => geo.landform.waterClearance(x, z) < 0
+    : (_x: number, _z: number) => false;
+  const inRiver = (x: number, z: number) => inAridWater(x, z)
+    || (hasRiver && coastDistance(x, z) > 0 && Math.abs(x - riverX(z)) < riverWidth(z) && !(geo.isletClearance(x, z) > 0));
   // 占地谓词统一走 planner/footprint（V2 步 1）：此处只注入地理闭包；河岸带口径（不含 coastDistance）与
   // inRiver 不同，历史上就是两套判断，按原语义各自保留。
   const footprintGeo = { height, inRiver, riverBank: (x: number, z: number, bank: number) => hasRiver && Math.abs(x - riverX(z)) < riverWidth(z) + bank };
@@ -415,7 +422,7 @@ function buildPlan(seed: number, R: number, shape: Shape, biome: Biome, config: 
   // 分区判定 + 扇区街网（R5 步 6b：逐字迁至 planner/sectorBlocks.ts）：zoneFor 的惰性主干索引、街区网格、
   // 经 commitFixedLink 事务加街；网络原地改，blocks/parcelBuilders/frontNodes/roadGenerationDiagnostics 作返回值。
   const { zoneFor, blocks, roadGenerationDiagnostics, parcelBuilders, frontNodes } = buildSectorBlocks({ R, core, trunks, random, network,
-    connectorWorld, seaside, hasSurfaceWater: geo.features.ocean || geo.features.river,
+    connectorWorld, seaside, hasSurfaceWater: geo.features.ocean || geo.features.river || geo.landform.waterBodies.length > 0,
     waterClearance: geo.landform.waterClearance, buildable, reservations, key, trunkIndex, ringIndex, coastRoadIndex });
 
   // 街网缝合（R5 步 6s：逐字迁至 planner/streetStitch.ts）：沿海路断头互接 → 环岛路 T 接 → 中途节点切边 → 首排角点接主干道 → 大道端接入。

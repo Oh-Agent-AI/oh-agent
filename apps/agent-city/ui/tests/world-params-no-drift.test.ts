@@ -54,11 +54,33 @@ test("coastFractal is consumed end to end", () => {
 });
 
 test("unimplemented diversity values fail closed instead of being ignored", () => {
-  // S2 解锁了 shape.*；本断言改用仍未实现的字段。逐字段实现后同步更新（S2b：water/landscape）。
-  assert.throws(() => validateGeographyBuildOptions("arid-dunes-v1", { ...V1, "water.oasisCount": 1 }), /city-world-options-invalid/);
-  assert.throws(() => validateGeographyBuildOptions("arid-dunes-v1", { ...V1, "landform.duneFrequency": 1.5 }), /city-world-options-invalid/);
+  // S2 解锁了 shape.*，S2b 解锁了 landform 沙丘细化、water 绿洲/湖泊与 landscape
+  // 岩台/干河；本断言改用仍未实现的字段（视觉级植被/远景山脊 + skeleton）。
+  // 逐字段实现后同步更新。
+  assert.throws(() => validateGeographyBuildOptions("arid-dunes-v1", { ...V1, "vegetation.greenbeltWidth": 30 }), /city-world-options-invalid/);
+  assert.throws(() => validateGeographyBuildOptions("arid-dunes-v1", { ...V1, "vegetation.forestPatchiness": 0.5 }), /city-world-options-invalid/);
+  assert.throws(() => validateGeographyBuildOptions("arid-dunes-v1", { ...V1, "landscape.ridgeCount": 1 }), /city-world-options-invalid/);
+  assert.throws(() => validateGeographyBuildOptions("arid-dunes-v1", { ...V1, "landscape.ridgeHeightM": 120 }), /city-world-options-invalid/);
+  assert.throws(() => validateGeographyBuildOptions("arid-dunes-v1", { ...V1, "skeleton.ringCount": 3 }), /city-world-options-invalid/);
   assert.throws(() => validateGeographyBuildOptions("arid-dunes-v1", { ...V1, "shape.unknown": 1 }), /city-world-options-invalid/);
   // 显式设置默认值与省略等价：不算未实现消费。
   assert.doesNotThrow(() => validateGeographyBuildOptions("arid-dunes-v1", { ...V1, "water.oasisCount": 0 }));
   assert.doesNotThrow(() => validateGeographyBuildOptions("arid-dunes-v1", { ...V1, "shape.family": "lobed" }));
+});
+
+test("S2b landform fields are consumed end to end (guard handoff)", () => {
+  // 已实现字段接受非默认值（实现前会 fail-closed）；范围外仍被拒绝。
+  for (const diversity of [
+    { "landform.duneFrequency": 1.5 },
+    { "landform.ridgeSecondary": 0.5 },
+    { "water.oasisCount": 2 },
+    { "water.lakeCount": 1, "water.lakeSizeM": 200 },
+    { "landscape.rockOutcropDensity": 0.5 },
+    { "landscape.riverMeander": 0.5, "landscape.riverWidthM": 30 },
+  ]) {
+    assert.doesNotThrow(() => validateGeographyBuildOptions("arid-dunes-v1", { ...V1, ...diversity }), JSON.stringify(diversity));
+  }
+  assert.throws(() => validateGeographyBuildOptions("arid-dunes-v1", { ...V1, "landscape.riverWidthM": 5 }), /city-world-options-invalid/);
+  assert.throws(() => validateGeographyBuildOptions("arid-dunes-v1", { ...V1, "water.lakeCount": 4 }), /city-world-options-invalid/);
+  assert.throws(() => validateGeographyBuildOptions("arid-dunes-v1", { ...V1, "landform.duneFrequency": 2.5 }), /city-world-options-invalid/);
 });
