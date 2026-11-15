@@ -672,7 +672,7 @@ async function runPipeline({ options, binPath, dataHome }) {
       if (jobs.step.status === "pass" && !state.hostUnavailable && state.playtestRun && !playtestJob) {
         state.knownIssues.push({
           finding: "creator_playtest_start succeeded but no playtest job appears in creator_job_list.",
-          evidence: "the E2 dispatch arm for creator_playtest_start (register_playtest_job hook) is dead code: the tool name is already matched by the preceding creator_studio alternation in crates/agent-vitals-mcp/src/mcp/mod.rs (rustc unreachable_patterns warning confirms it)",
+          evidence: "creator_playtest_start has its own dispatch arm. register_playtest_job must read runId from the {ok:true,data} envelope, and the host must finish the Studio mailbox before opening City. A 15s plugin_unavailable means this hook never ran.",
         });
       }
       if (playtestJob?.jobId) {

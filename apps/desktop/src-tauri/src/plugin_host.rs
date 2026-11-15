@@ -1480,7 +1480,7 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
         }
         // Serialize authorization and SQLite commit against plugin_open/close. A
         // switch cannot revoke the instance between this check and the write.
-        let result = {
+        let (result, playtest_ack) = {
             let _operation = state.1.lock().unwrap();
             {
                 let host = state.0.lock().unwrap();
@@ -1489,11 +1489,35 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
                 }
             }
             let instance = request.instance_id.clone();
-            crate::creator_projects::dispatch_as(&crate::overview::data_home(), crate::creator_projects::LOCAL_CREATOR_OWNER, &instance, &method, &payload)
+            let home = crate::overview::data_home();
+            let result = crate::creator_projects::dispatch_as(&home, crate::creator_projects::LOCAL_CREATOR_OWNER, &instance, &method, &payload);
+            // 邮箱里的 start 必须在拆掉 Studio 之前写成完成。导航事件一发出，
+            // 当前 webview 就被换成 City，随后的 plugin.call.respond 不会再到达。
+            let playtest_ack = if method == "creator.project.playtest.start" {
+                if let Ok(value) = &result {
+                    let response_budget = definitions().iter().find(|plugin| plugin.id == "creator-studio")
+                        .map(|definition| transport_budget_for(definition, "creator.project.playtest.start").1)
+                        .unwrap_or(TRANSPORT_BUDGET_DEFAULT_BYTES);
+                    Some(settle_playtest_mailbox(&home, "creator-studio", &instance, &request.request_id, value, response_budget))
+                } else { None }
+            } else { None };
+            (result, playtest_ack)
         };
         if method == "creator.project.playtest.start" {
             if let Ok(value) = &result {
-                let _ = app.emit("app-event", json!({"type":"CreatorPlaytestOpenCityRequested","runId":value["runId"]}));
+                match &playtest_ack {
+                    Some(PlaytestMailboxAck::Committed) | Some(PlaytestMailboxAck::NotMailbox) => {
+                        emit_playtest_city_open(&app, &value["runId"]);
+                    }
+                    // 只有「本实例确有这条 playtest.start claim，但提前写入失败」才记住。
+                    // 别人的 claim、别的方法不能借这次成功去打开 City。
+                    Some(PlaytestMailboxAck::Uncommitted { call_id }) => {
+                        if let Some(run_id) = value["runId"].as_str() {
+                            note_unacked_playtest_open(call_id, run_id);
+                        }
+                    }
+                    Some(PlaytestMailboxAck::NotOwned) | None => {}
+                }
             }
         }
         return Ok(match result {
@@ -1622,6 +1646,14 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
         let result = agent_vitals_runtime::query::plugin_calls::respond_with_budget(
             &data_home, &plugin_id, &request.instance_id, &call_id, &response_value, response_budget,
         );
+        // 应答落盘后再放开实例锁，然后才导航。用的是 dispatch 记下的 runId。
+        let deferred_open = if result.is_ok() && response_value.get("ok") == Some(&Value::Bool(true)) {
+            take_unacked_playtest_open(&call_id)
+        } else { None };
+        drop(host);
+        if let Some(run_id) = deferred_open {
+            emit_playtest_city_open(&app, &json!(run_id));
+        }
         return Ok(match result {
             Ok(()) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(json!({"accepted":true})), error: None },
             Err(code) => plugin_request_error(request.request_id, code, matches!(code, "plugin_call_store_unavailable")),
@@ -1641,6 +1673,74 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
         }
     };
     Ok(response)
+}
+
+/// 邮箱调用的 requestId 由 app-sdk 固定成 `plugin-call-` + `pc_` + 32 位十六进制。
+/// 界面按钮走 `creator-ui:N`，不是邮箱。
+fn mailbox_playtest_call_id(request_id: &str) -> Option<&str> {
+    let call_id = request_id.strip_prefix("plugin-call-")?;
+    let rest = call_id.strip_prefix("pc_")?;
+    if rest.len() == 32 && rest.bytes().all(|byte| byte.is_ascii_hexdigit()) { Some(call_id) } else { None }
+}
+
+fn valid_playtest_run_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty() && bytes.len() <= 128 && bytes[0].is_ascii_alphanumeric()
+        && bytes.iter().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
+}
+
+#[derive(Debug)]
+enum PlaytestMailboxAck {
+    /// 不是邮箱请求。调用方可以马上导航，没有正在等的 MCP。
+    NotMailbox,
+    /// 本实例 claim 的 playtest.start 已经写成完成。MCP 不必再等 webview。
+    Committed,
+    /// 本实例拥有这条 playtest.start claim，但写入失败。调用还在，等 webview 再答一次。
+    Uncommitted { call_id: String },
+    /// 请求号像邮箱调用，但这条 claim 不是本实例的 playtest.start。不要导航，也不要记住。
+    NotOwned,
+}
+
+/// 把试玩 start 的宿主结果写入已经由本实例 claim 的那一通调用。
+/// 只接受方法恰好是 creator.project.playtest.start 的 claim，别的方法原样留着。
+fn settle_playtest_mailbox(home: &std::path::Path, plugin_id: &str, instance_id: &str, request_id: &str, result: &Value, response_budget: usize) -> PlaytestMailboxAck {
+    let Some(call_id) = mailbox_playtest_call_id(request_id) else { return PlaytestMailboxAck::NotMailbox };
+    let owned = agent_vitals_runtime::query::plugin_calls::claimed_call_method(home, plugin_id, instance_id, call_id)
+        .ok().flatten();
+    if owned.as_deref() != Some("creator.project.playtest.start") {
+        return PlaytestMailboxAck::NotOwned;
+    }
+    let response = json!({"ok": true, "result": result});
+    match agent_vitals_runtime::query::plugin_calls::respond_with_budget(
+        home, plugin_id, instance_id, call_id, &response, response_budget,
+    ) {
+        Ok(()) => PlaytestMailboxAck::Committed,
+        Err(_) => PlaytestMailboxAck::Uncommitted { call_id: call_id.to_owned() },
+    }
+}
+
+fn emit_playtest_city_open(app: &tauri::AppHandle, run_id: &Value) {
+    let Some(run_id) = run_id.as_str().filter(|id| valid_playtest_run_id(id)) else { return };
+    let _ = app.emit("app-event", json!({"type":"CreatorPlaytestOpenCityRequested","runId":run_id}));
+}
+
+fn pending_playtest_opens() -> &'static Mutex<std::collections::VecDeque<(String, String)>> {
+    static OPENS: OnceLock<Mutex<std::collections::VecDeque<(String, String)>>> = OnceLock::new();
+    OPENS.get_or_init(|| Mutex::new(std::collections::VecDeque::new()))
+}
+
+fn note_unacked_playtest_open(call_id: &str, run_id: &str) {
+    if mailbox_playtest_call_id(&format!("plugin-call-{call_id}")).is_none() || !valid_playtest_run_id(run_id) { return; }
+    let mut queue = pending_playtest_opens().lock().unwrap_or_else(|error| error.into_inner());
+    queue.retain(|(id, _)| id != call_id);
+    queue.push_back((call_id.to_owned(), run_id.to_owned()));
+    while queue.len() > 16 { queue.pop_front(); }
+}
+
+fn take_unacked_playtest_open(call_id: &str) -> Option<String> {
+    let mut queue = pending_playtest_opens().lock().unwrap_or_else(|error| error.into_inner());
+    let index = queue.iter().position(|(id, _)| id == call_id)?;
+    queue.remove(index).map(|(_, run_id)| run_id)
 }
 
 fn plugin_response_owner_active(host: &HostState, instance_id: &str, plugin_id: &str) -> bool {
@@ -1690,6 +1790,75 @@ mod plugin_request_tests {
     }
 
     use super::*;
+
+    /// 邮箱里的 start 在导航之前就要写成完成。界面按钮不是邮箱，不能把别人的
+    /// claim 关掉；别的方法、别的实例也写不进去。
+    #[test]
+    fn mailbox_playtest_start_is_acked_before_city_can_replace_studio() {
+        let home = std::env::temp_dir().join(format!("playtest-ack-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&home).unwrap();
+        let payload = json!({"releaseId":"release-1"});
+        let call_id = agent_vitals_runtime::query::plugin_calls::submit(
+            &home, "creator-studio", "creator.project.playtest.start", &payload, 60_000).unwrap();
+        let claimed = agent_vitals_runtime::query::plugin_calls::claim_pending(
+            &home, "creator-studio", "studio-1", &["creator.project.playtest.start".into()], 4).unwrap();
+        assert_eq!(claimed.len(), 1);
+        let result = json!({"runId":"playtest-1","releaseId":"release-1","status":"pending"});
+        let request_id = format!("plugin-call-{call_id}");
+        assert!(matches!(
+            settle_playtest_mailbox(&home, "creator-studio", "studio-1", &request_id, &result, 64 * 1024),
+            PlaytestMailboxAck::Committed));
+        let response = agent_vitals_runtime::query::plugin_calls::wait_response(&home, &call_id, 1_000).unwrap();
+        assert_eq!(response["ok"], json!(true));
+        assert_eq!(response["result"]["runId"], json!("playtest-1"));
+        assert_eq!(
+            agent_vitals_runtime::query::plugin_calls::respond(&home, "creator-studio", "studio-1", &call_id, &json!({"ok":true,"result":result.clone()})).unwrap_err(),
+            "plugin_call_unavailable");
+        let other = agent_vitals_runtime::query::plugin_calls::submit(
+            &home, "creator-studio", "creator.project.playtest.start", &payload, 60_000).unwrap();
+        agent_vitals_runtime::query::plugin_calls::claim_pending(
+            &home, "creator-studio", "studio-1", &["creator.project.playtest.start".into()], 4).unwrap();
+        assert!(matches!(
+            settle_playtest_mailbox(&home, "creator-studio", "studio-1", "creator-ui:7", &result, 64 * 1024),
+            PlaytestMailboxAck::NotMailbox));
+        assert_eq!(
+            agent_vitals_runtime::query::plugin_calls::claimed_call_method(&home, "creator-studio", "studio-1", &other).unwrap().as_deref(),
+            Some("creator.project.playtest.start"));
+        let other_request = format!("plugin-call-{other}");
+        assert!(matches!(
+            settle_playtest_mailbox(&home, "creator-studio", "studio-2", &other_request, &result, 64 * 1024),
+            PlaytestMailboxAck::NotOwned));
+        assert_eq!(
+            agent_vitals_runtime::query::plugin_calls::claimed_call_method(&home, "creator-studio", "studio-1", &other).unwrap().as_deref(),
+            Some("creator.project.playtest.start"));
+        // 过期后这条 claim 还在，但写不进去：只能记成未完成，不能当成别人的调用。
+        let calls_db = rusqlite::Connection::open(home.join("state/plugin-calls/calls.sqlite")).unwrap();
+        calls_db.execute("UPDATE plugin_calls SET expires_at_ms=0 WHERE call_id=?1", [&other]).unwrap();
+        drop(calls_db);
+        match settle_playtest_mailbox(&home, "creator-studio", "studio-1", &other_request, &result, 64 * 1024) {
+            PlaytestMailboxAck::Uncommitted { call_id } => assert_eq!(call_id, other),
+            other_ack => panic!("expected Uncommitted, got {other_ack:?}"),
+        }
+        assert_eq!(
+            agent_vitals_runtime::query::plugin_calls::claimed_call_method(&home, "creator-studio", "studio-1", &other).unwrap().as_deref(),
+            Some("creator.project.playtest.start"));
+        let read_id = agent_vitals_runtime::query::plugin_calls::submit(
+            &home, "creator-studio", "creator.project.read", &json!({"projectId":"project-1"}), 60_000).unwrap();
+        agent_vitals_runtime::query::plugin_calls::claim_pending(
+            &home, "creator-studio", "studio-1", &["creator.project.read".into()], 4).unwrap();
+        assert!(matches!(
+            settle_playtest_mailbox(&home, "creator-studio", "studio-1", &format!("plugin-call-{read_id}"), &result, 64 * 1024),
+            PlaytestMailboxAck::NotOwned));
+        assert_eq!(
+            agent_vitals_runtime::query::plugin_calls::claimed_call_method(&home, "creator-studio", "studio-1", &read_id).unwrap().as_deref(),
+            Some("creator.project.read"));
+        note_unacked_playtest_open(&call_id, "playtest-deferred");
+        assert_eq!(take_unacked_playtest_open(&call_id).as_deref(), Some("playtest-deferred"));
+        assert!(take_unacked_playtest_open(&call_id).is_none());
+        note_unacked_playtest_open(&call_id, "not a run id");
+        assert!(take_unacked_playtest_open(&call_id).is_none());
+        let _ = std::fs::remove_dir_all(&home);
+    }
 
     #[test]
     fn creator_assets_are_only_available_from_the_active_city_webview() {
