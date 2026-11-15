@@ -1,4 +1,4 @@
-import type { CityInstanceV1, DiagnosticV1, GameTypeDescriptorV1, MiniGamePackV1 } from "@agent-vitals/city-sdk";
+import type { CityInstanceV1, DiagnosticV1, GameTypeDescriptorV1, MiniGamePackV1 } from "../../agent-vitals-city-sdk/src/index";
 import type { GameActivityPortV1, GameAudioPortV1, GameClockPortV1, GameInputPortV1, GameScenePortV1 } from "./ports";
 import type { GameRuntimeErrorCodeV1 } from "./errors";
 

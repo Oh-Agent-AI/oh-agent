@@ -1,4 +1,4 @@
-import type { GameTypeDescriptorV1 } from "@agent-vitals/city-sdk";
+import type { GameTypeDescriptorV1 } from "../../agent-vitals-city-sdk/src/index";
 import { createGameRuntimeRegistry, type GameRuntimeRegistryV1 } from "./registry";
 import { MIAMI_ACTIVITY_CATALOG_V1 } from "./builtin";
 import type { GameRuntimeResultV1, GameRuntimeTelemetryV1, GameRuntimeV1 } from "./types";

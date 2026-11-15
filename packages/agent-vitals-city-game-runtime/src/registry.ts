@@ -1,4 +1,4 @@
-import { CREATOR_TEMPLATES_V1, validateGameTypeDescriptorV1, type GameTypeDescriptorV1 } from "@agent-vitals/city-sdk";
+import { CREATOR_TEMPLATES_V1, validateGameTypeDescriptorV1, type GameTypeDescriptorV1 } from "../../agent-vitals-city-sdk/src/index";
 import { GameRuntimeError } from "./errors";
 import { BUILTIN_ACTIVITY_TEMPLATE_IDS } from "./builtin";
 import type { GameRuntimeV1, RegisteredGameRuntimeV1 } from "./types";

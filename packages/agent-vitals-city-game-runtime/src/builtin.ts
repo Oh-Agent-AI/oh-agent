@@ -1,4 +1,4 @@
-import type { GameTypeDescriptorV1 } from "@agent-vitals/city-sdk";
+import type { GameTypeDescriptorV1 } from "../../agent-vitals-city-sdk/src/index";
 
 /** Single allowlist of built-in activity template IDs. Descriptors below use
  * these constants; neither the catalog nor a future capability projection may

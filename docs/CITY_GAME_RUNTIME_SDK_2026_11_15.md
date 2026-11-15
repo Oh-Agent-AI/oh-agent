@@ -93,7 +93,12 @@ registry.descriptors();
 - descriptor→runtime 的 id/template 映射有 **golden 锁定测试**（flight/driving/mecha/cinema 的顺序、runtime id、contractVersion、template）。
 - 该层不修改 `GameSession`/`useCityGame`/`useCityDrivingPlay`/mecha/cinema 代码，也不改变 Miami 行为。
 
-仍缺：`MiamiLegacyActivityHostV1` 在 CityApp 中的实现（把现有 hook 的进入/退出/telemetry 接上），以及真正的 Miami 金样脚本在 adapter 路径上的回归。当前 registry 只在测试/宿主注入时使用，不改变 City 启动。
+App 侧注入点：[miamiActivityHost.ts](../apps/agent-city/ui/src/game/runtime/miamiActivityHost.ts)
+的 `createMiamiGameRuntimeRegistry(entries)` 接收四个活动的 entry 回调并创建
+registry；`tests/game-runtime-host.test.ts` 已验证注册四个 adapter、resolve 与
+prepare 委托。入口仍未接到 `useCityGame`/`useCityDrivingPlay`/mecha/cinema：
+下一片是把现有进入/退出/telemetry 注入这些 entries，并跑 Miami 金样。当前 registry
+不在 City 启动路径上，不改变任何现有行为。
 
 ## 4. 迁移顺序（下一步）
 
