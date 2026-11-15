@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ARID_DUNES_WORLD_V2, ARID_DUNES_LEGACY_KEYS, COASTAL_ISLANDS_WORLD_V1, resolveWorldPresetV1, validateWorldCapabilityV1, validateWorldParametersV1 } from "../src/worldParameters";
+import { ARID_DUNES_WORLD_V2, ARID_DUNES_LEGACY_KEYS, COASTAL_ISLANDS_WORLD_V1, resolveWorldPresetV1, validateWorldCapabilityV1, validateWorldParametersV1, WORLD_PARAMETER_LIMITS } from "../src/worldParameters";
+import { CREATOR_WORLDS_V1, CREATOR_WORLD_BUDGETS_V1 } from "../src/creatorCapabilities";
 import { validateCityWorldProfile } from "../src/validate";
 
 const aridProfile = (diversity?: Record<string, number | string>) => ({
@@ -76,4 +77,29 @@ test("arid profiles carry an optional diversity record without restating v1 fiel
 test("legacy keys stay reserved and immutable in the catalog", () => {
   assert.deepEqual(ARID_DUNES_LEGACY_KEYS, ["landform.duneScale", "landform.duneAmplitude", "landform.orientationDeg"]);
   assert.throws(() => { (ARID_DUNES_WORLD_V2.parameters as unknown as string[]).push("x"); });
+});
+
+test("creator worlds projection stays lockstep with the registered catalogs", () => {
+  // 能力发现（S3）必须逐字投影内置目录：任何手抄漂移都会让 Agent 看到与
+  // SDK 契约不同的参数面。这里同时重跑 validateWorldCapabilityV1，保证过期
+  // 的投影目录 fail-closed（worldParameters 契约自校验）。
+  const expected: Record<string, unknown> = {
+    "arid-dunes-v1": { contractVersion: ARID_DUNES_WORLD_V2.contractVersion, parameters: ARID_DUNES_WORLD_V2.parameters, presets: ARID_DUNES_WORLD_V2.presets },
+    "coastal-islands-v1": { contractVersion: COASTAL_ISLANDS_WORLD_V1.contractVersion, parameters: COASTAL_ISLANDS_WORLD_V1.parameters, presets: COASTAL_ISLANDS_WORLD_V1.presets },
+  };
+  assert.deepEqual(CREATOR_WORLDS_V1.generators, expected);
+  assert.equal(Object.keys(CREATOR_WORLDS_V1.generators).length, 2);
+  for (const [generatorId, generator] of Object.entries(CREATOR_WORLDS_V1.generators)) {
+    // 投影键即 generatorId；消费方重组完整能力后必须能通过契约自校验。
+    const checked = validateWorldCapabilityV1({ generatorId, ...generator });
+    assert.equal(checked.ok, true, JSON.stringify("ok" in checked ? checked.diagnostics : []));
+  }
+});
+
+test("world edit budgets stay inside the SDK parameter limits", () => {
+  // 预算上限（§5.2）与 SDK 语义上限同源：单次 ≤16 operations、≤32 参数。
+  // maxParametersPerSet 钉住 validateWorldParametersV1 的每次入参规模。
+  assert.equal(CREATOR_WORLD_BUDGETS_V1.maxParametersPerSet, WORLD_PARAMETER_LIMITS.maxParameters);
+  assert.ok(CREATOR_WORLD_BUDGETS_V1.maxOperationsPerPreview >= 1);
+  assert.ok(CREATOR_WORLD_BUDGETS_V1.maxRequestBytes > 0);
 });

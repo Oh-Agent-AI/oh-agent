@@ -135,6 +135,271 @@
           "miami-vice",
           "desert-evening"
         ]
+      },
+      "worlds": {
+        "budgets": {
+          "maxOperationsPerPreview": 16,
+          "maxParametersPerSet": 32,
+          "maxRequestBytes": 8192
+        },
+        "generators": {
+          "arid-dunes-v1": {
+            "contractVersion": 2,
+            "parameters": [
+              {
+                "default": 190,
+                "group": "landform",
+                "id": "duneScale",
+                "kind": "number",
+                "max": 600,
+                "min": 96,
+                "unit": "m"
+              },
+              {
+                "default": 11,
+                "group": "landform",
+                "id": "duneAmplitude",
+                "kind": "number",
+                "max": 36,
+                "min": 1,
+                "unit": "m"
+              },
+              {
+                "default": 18,
+                "group": "landform",
+                "id": "orientationDeg",
+                "kind": "number",
+                "max": 180,
+                "min": -180,
+                "unit": "deg"
+              },
+              {
+                "default": "disc",
+                "group": "shape",
+                "id": "family",
+                "kind": "enum",
+                "values": [
+                  "disc",
+                  "lobed",
+                  "dumbbell",
+                  "coastal"
+                ]
+              },
+              {
+                "default": 1,
+                "group": "shape",
+                "id": "cores",
+                "kind": "integer",
+                "max": 3,
+                "min": 1
+              },
+              {
+                "default": 1,
+                "group": "shape",
+                "id": "aspectRatio",
+                "kind": "number",
+                "max": 1.8,
+                "min": 1
+              },
+              {
+                "default": 0,
+                "group": "shape",
+                "id": "corridorPull",
+                "kind": "number",
+                "max": 0.4,
+                "min": 0
+              },
+              {
+                "default": 0.035,
+                "group": "shape",
+                "id": "coastFractal",
+                "kind": "number",
+                "max": 0.25,
+                "min": 0
+              },
+              {
+                "default": "medium",
+                "group": "shape",
+                "id": "radiusClass",
+                "kind": "enum",
+                "values": [
+                  "small",
+                  "medium",
+                  "large"
+                ]
+              },
+              {
+                "default": 1,
+                "group": "landform",
+                "id": "duneFrequency",
+                "kind": "number",
+                "max": 2,
+                "min": 0.5
+              },
+              {
+                "default": 0,
+                "group": "landform",
+                "id": "ridgeSecondary",
+                "kind": "number",
+                "max": 1,
+                "min": 0
+              },
+              {
+                "default": 0,
+                "group": "water",
+                "id": "oasisCount",
+                "kind": "integer",
+                "max": 3,
+                "min": 0
+              },
+              {
+                "default": 0,
+                "group": "water",
+                "id": "lakeCount",
+                "kind": "integer",
+                "max": 3,
+                "min": 0
+              },
+              {
+                "default": 120,
+                "group": "water",
+                "id": "lakeSizeM",
+                "kind": "number",
+                "max": 400,
+                "min": 40,
+                "unit": "m"
+              },
+              {
+                "default": 0,
+                "group": "vegetation",
+                "id": "greenbeltWidth",
+                "kind": "number",
+                "max": 80,
+                "min": 0,
+                "unit": "m"
+              },
+              {
+                "default": 0,
+                "group": "vegetation",
+                "id": "forestPatchiness",
+                "kind": "number",
+                "max": 1,
+                "min": 0
+              },
+              {
+                "default": 0,
+                "group": "landscape",
+                "id": "rockOutcropDensity",
+                "kind": "number",
+                "max": 1,
+                "min": 0
+              },
+              {
+                "default": 0,
+                "group": "landscape",
+                "id": "riverMeander",
+                "kind": "number",
+                "max": 1,
+                "min": 0
+              },
+              {
+                "default": 40,
+                "group": "landscape",
+                "id": "riverWidthM",
+                "kind": "number",
+                "max": 60,
+                "min": 10,
+                "unit": "m"
+              },
+              {
+                "default": 0,
+                "group": "landscape",
+                "id": "ridgeCount",
+                "kind": "integer",
+                "max": 3,
+                "min": 0
+              },
+              {
+                "default": 60,
+                "group": "landscape",
+                "id": "ridgeHeightM",
+                "kind": "number",
+                "max": 120,
+                "min": 20,
+                "unit": "m"
+              },
+              {
+                "default": 2,
+                "group": "skeleton",
+                "id": "ringCount",
+                "kind": "integer",
+                "max": 3,
+                "min": 1
+              }
+            ],
+            "presets": [
+              {
+                "id": "disc",
+                "label": "圆盘沙海（现行默认）",
+                "parameters": {}
+              },
+              {
+                "id": "lobed",
+                "label": "多瓣沙海",
+                "parameters": {
+                  "shape.cores": 3,
+                  "shape.family": "lobed"
+                }
+              },
+              {
+                "id": "dumbbell",
+                "label": "双核哑铃",
+                "parameters": {
+                  "shape.cores": 2,
+                  "shape.corridorPull": 0.2,
+                  "shape.family": "dumbbell"
+                }
+              },
+              {
+                "id": "coastal",
+                "label": "沙海岸线",
+                "parameters": {
+                  "shape.coastFractal": 0.18,
+                  "shape.family": "coastal"
+                }
+              }
+            ]
+          },
+          "coastal-islands-v1": {
+            "contractVersion": 1,
+            "parameters": [
+              {
+                "default": 0.22,
+                "group": "shape",
+                "id": "bayHalfWidth",
+                "kind": "number",
+                "max": 0.5,
+                "min": 0.1
+              },
+              {
+                "default": 0.33,
+                "group": "shape",
+                "id": "bayShift",
+                "kind": "number",
+                "max": 0.5,
+                "min": -0.5
+              }
+            ],
+            "presets": [
+              {
+                "id": "vice-bay",
+                "label": "Vice City 海湾（现行默认）",
+                "parameters": {}
+              }
+            ]
+          }
+        },
+        "operation": "world.set"
       }
     },
     "preview": {

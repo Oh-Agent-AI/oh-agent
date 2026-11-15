@@ -4,11 +4,15 @@
 // Rust include_str! 与 MCP 消费生成产物，改内容只改 SDK 常量 + 重新生成。
 // --check：重新生成并与磁盘字节比较，不一致退出码 1（CI 锁步门禁）。
 // 运行：node --experimental-transform-types scripts/generate-creator-capabilities.mjs [--check]
+// SDK 源码内部使用无扩展名相对导入（tsc moduleResolution=Bundler），这里注册与
+// mecha-ts-register 相同的解析钩子后动态加载，保持 SDK 常量仍是唯一组合来源。
+import { register } from "node:module";
+register("./mecha-ts-hook.mjs", import.meta.url);
+const { CREATOR_CAPABILITIES_V1, CREATOR_WORLDS_V1 } = await import("../packages/agent-vitals-city-sdk/src/creatorCapabilities.ts");
+const { CREATOR_TEMPLATES_V1 } = await import("../packages/agent-vitals-city-sdk/src/creatorTemplates.ts");
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { CREATOR_CAPABILITIES_V1 } from "../packages/agent-vitals-city-sdk/src/creatorCapabilities.ts";
-import { CREATOR_TEMPLATES_V1 } from "../packages/agent-vitals-city-sdk/src/creatorTemplates.ts";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = path.join(root, "assets", "creator");
@@ -23,7 +27,10 @@ const canonical = (value) => {
 const render = (value) => JSON.stringify(canonical(value), null, 2) + "\n";
 
 const capabilities = render(CREATOR_CAPABILITIES_V1);
-const files = new Map([["capabilities.json", capabilities]]);
+// 世界参数目录（世界多样化规格 §2.1/§5.1）：同一生成链单独成文件，Rust 在
+// creator.city.edit.preview 的 world.set 结构校验里 include_str! 消费；
+// 生成物只读，语义校验仍以 city-sdk 的 validateWorldParametersV1 为准。
+const files = new Map([["capabilities.json", capabilities], ["worlds.json", render(CREATOR_WORLDS_V1)]]);
 for (const template of CREATOR_TEMPLATES_V1) {
   files.set(path.join("templates", `${template.id}.json`), render({ schemaVersion: 1, templateId: template.id, label: template.label, pack: template.pack }));
 }

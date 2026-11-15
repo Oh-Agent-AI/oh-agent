@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { validateMiniGamePack } from "../src/content";
-import { CREATOR_CAPABILITIES_V1, CREATOR_OPERATIONS_V1 } from "../src/creatorCapabilities";
+import { CREATOR_CAPABILITIES_V1, CREATOR_OPERATIONS_V1, CREATOR_WORLDS_V1 } from "../src/creatorCapabilities";
 import { CREATOR_TEMPLATES_V1 } from "../src/creatorTemplates";
 
 /**
@@ -69,4 +69,6 @@ test("generated assets on disk match the SDK constants (generator must have run)
       schemaVersion: 1, templateId: template.id, label: template.label, pack: template.pack
     }))), `templates/${template.id}.json drifted from CREATOR_TEMPLATES_V1`);
   }
+  const worlds = JSON.parse(fs.readFileSync(`${assetsDir}/worlds.json`, "utf8")) as Record<string, unknown>;
+  assert.deepEqual(worlds, JSON.parse(JSON.stringify(canonical(CREATOR_WORLDS_V1))), "worlds.json drifted from CREATOR_WORLDS_V1");
 });
