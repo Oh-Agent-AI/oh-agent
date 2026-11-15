@@ -90,8 +90,20 @@ Claude Code（`claude mcp add` 或项目 `.mcp.json`，字段名以 Claude Code 
 | creator_city_capture | cityId、revision | — | 只读（WebView 本地出帧） |
 | creator_city_layout_read | cityId、revision | — | 只读 |
 | creator_city_layout_save | cityId、revision | — | 写入 |
+| creator_vehicle_list | — | limit（1..=50，默认不限则截断标记 truncated）；静态车辆目录（preset/物理边界/相机默认公式），离线可用 | 只读 |
+| creator_vehicle_preview | projectId、baseRevision、vehicle | operationId | 预览（不落盘） |
+| creator_vehicle_define | projectId、baseRevision、vehicleId、label、flightModel、physics、bounds、operationId | modelAssetId（null=程序化占位模型，或项目 assetId） | 写入 |
+| creator_vehicle_inspect | projectId、vehicleId | revision（漂移校验） | 只读 |
 
-默认暴露的工具里需要 `--allow-local-writes` 的写入工具共 5 个：creator_playtest_start、creator_playtest_cancel、creator_project_create、creator_project_commit、creator_project_publish。开启 `--enable-city-tools` 后另有 3 个写入工具：creator_city_create、creator_city_edit_commit、creator_city_layout_save。除 `creator_capabilities_list` 外仍然要求 Studio 活动。
+默认暴露的工具里需要 `--allow-local-writes` 的写入工具共 5 个：creator_playtest_start、creator_playtest_cancel、creator_project_create、creator_project_commit、creator_project_publish。开启 `--enable-city-tools` 后另有 3 个写入工具：creator_city_create、creator_city_edit_commit、creator_city_layout_save。除 `creator_capabilities_list` 与 `creator_vehicle_list`（静态契约，离线可用）外仍然要求 Studio 活动。
+
+> **通用飞行器（2026-11-15 泛化切片）**：`creator_vehicle_*` 四个工具接入
+> `VehicleProfileV1` 契约（city-sdk）。物理参数键集合/范围/跨字段比值由生成目录
+> `assets/creator/vehicles.json` 锁定（`creator_vehicle_list` 离线可查）；define
+> 面不接收 camera（确定性默认公式从 bounds 派生）；`modelAssetId` 只接受项目资产
+> 引用或 null（程序化占位模型），不接受本地路径或文件字节。车辆定义是项目内容，
+> 走 SDK 校验信封 + revision CAS + operationId 幂等；`creator_vehicle_preview`
+> 返回 previewId（可用 creator_project_commit 提交）与确定性 estimatedPerformance。
 
 > **实验性边界（2026-11-14）**：`creator_city_*` 默认隐藏，需 `--enable-city-tools`。已覆盖：草稿创建/读取/列表、配置替换预览与提交、只读视口/截图、布局读取/保存；布局可通过 `creator_project_create` 的 `cityId` 绑定项目，发布快照会冻结 cityId/cityRevision/cityLayoutId。仍**未实现**：`creator_city_open`（切换活动 City）、`creator_city_operation_status`、按 `operations[]` 的编辑预览、完整城市隔离与旧迈阿密迁移；活动 City 的跨 generator 世界切换已被拒绝（`city_world_profile_city_mismatch`）。设计见 [自定义城市与 MCP 接口设计](CREATOR_STUDIO_CUSTOM_CITY_MCP_DESIGN_2026_11_14.md)。`creator_capabilities_list` 是静态契约，Studio 关闭时也可用；其余工具在 Studio 缺席时返回 `plugin_unavailable`。
 

@@ -7,6 +7,8 @@
 export type CreatorTemplateV1 = {
   id: string;
   label: string;
+  /** 冻结到 release 的游戏类型（2026-11-15 泛化切片）：模板 pack 是唯一判定来源。 */
+  gameType: "driving" | "flight";
   pack: {
     schemaVersion: 1;
     id: string;
@@ -29,6 +31,7 @@ export const CREATOR_TEMPLATES_V1: readonly CreatorTemplateV1[] = Object.freeze<
   {
     id: "checkpoint-race",
     label: "驾驶检查点竞速",
+    gameType: "driving",
     pack: {
       schemaVersion: 1,
       id: "creator.checkpoint-race",
@@ -49,6 +52,7 @@ export const CREATOR_TEMPLATES_V1: readonly CreatorTemplateV1[] = Object.freeze<
   {
     id: "flight-checkpoint",
     label: "飞行检查点",
+    gameType: "flight",
     pack: {
       schemaVersion: 1,
       id: "creator.flight-checkpoint",
@@ -73,6 +77,7 @@ export const CREATOR_TEMPLATES_V1: readonly CreatorTemplateV1[] = Object.freeze<
     // （迁移期间行为不变，rules 与扑翼 preset 解耦，物理来自 VehicleProfileV1）。
     id: "ornithopter-flight",
     label: "扑翼飞行检查点",
+    gameType: "flight",
     pack: {
       schemaVersion: 1,
       id: "creator.ornithopter-flight",
@@ -96,6 +101,7 @@ export const CREATOR_TEMPLATES_V1: readonly CreatorTemplateV1[] = Object.freeze<
   {
     id: "collect-one",
     label: "驾驶区域收集",
+    gameType: "driving",
     pack: {
       schemaVersion: 1,
       id: "creator.collect-one",

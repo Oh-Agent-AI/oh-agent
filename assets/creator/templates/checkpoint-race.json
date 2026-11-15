@@ -1,4 +1,5 @@
 {
+  "gameType": "driving",
   "label": "驾驶检查点竞速",
   "pack": {
     "id": "creator.checkpoint-race",

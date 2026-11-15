@@ -1,4 +1,5 @@
 {
+  "gameType": "driving",
   "label": "驾驶区域收集",
   "pack": {
     "id": "creator.collect-one",

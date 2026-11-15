@@ -9,7 +9,7 @@
 import { ARID_DUNES_WORLD_V2, COASTAL_ISLANDS_WORLD_V1 } from "./worldParameters";
 
 export const CREATOR_CAPABILITY_SCHEMA_VERSION = 1;
-export const CREATOR_CAPABILITY_VERSION = "2026-11-12.2";
+export const CREATOR_CAPABILITY_VERSION = "2026-11-15.1";
 
 /** 协议级操作类别：首版固定四种，新增内容不能增加 kind（§5.1.1）。 */
 export type CreatorOperationKind = "upsert" | "remove" | "bind" | "set";

@@ -7,7 +7,7 @@
     "sceneObjects": 10000
   },
   "capabilities": {
-    "capabilityVersion": "2026-11-12.2",
+    "capabilityVersion": "2026-11-15.1",
     "categories": {
       "assets": {
         "import": "creator.asset.import（桌面原生选择器，MCP 不接收路径）",
@@ -411,7 +411,7 @@
     },
     "schemaVersion": 1
   },
-  "capabilityVersion": "2026-11-12.2",
+  "capabilityVersion": "2026-11-15.1",
   "content": {
     "skins": [
       "miami-vice",

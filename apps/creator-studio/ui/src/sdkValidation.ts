@@ -14,8 +14,8 @@
  * 签发被预算拒绝。payloadDigest 是规范 JSON（键排序、紧凑）上的 sha256，与
  * Rust canonical_json 同规格；Rust 在签发时对收到的载荷重算并逐项匹配。
  */
-import { canonicalJson, validateMiniGamePack, validateSceneDraft, validateMount, type DiagnosticV1 } from "@agent-vitals/city-sdk";
-import { CREATOR_CAPABILITIES_V1 } from "@agent-vitals/city-sdk";
+import { canonicalJson, validateMiniGamePack, validateSceneDraft, validateMount, validateVehicleProfileV1, type DiagnosticV1 } from "@agent-vitals/city-sdk";
+import { CREATOR_CAPABILITIES_V1, defaultVehicleCameraV1 } from "@agent-vitals/city-sdk";
 
 export type ValidationEnvelope = {
   capabilityVersion: string;
@@ -94,9 +94,40 @@ export async function buildSceneValidation(project: SceneProjectSnapshot, projec
   return finish(diagnostics, projectId, baseRevision, payloadDigest);
 }
 
+/**
+ * Vehicle Profile 校验与归一化（2026-11-15 泛化切片）：MCP define 面发送展平字段、
+ * preview 面发送 `vehicle` 对象（两者都可能缺 camera）；适配器统一归一化为完整
+ * VehicleProfileV1（camera 缺省 = 确定性默认公式），用 city-sdk
+ * validateVehicleProfileV1 判定后按完整 profile 计算 payloadDigest——宿主侧的
+ * 结构硬闸与信封作用域核对都以这份载荷为准。
+ */
+export function normalizeVehicleProfileInput(raw: unknown): { ok: boolean; vehicle: Record<string, unknown>; diagnostics: DiagnosticV1[] } {
+  const source = (raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
+  const id = typeof source.id === "string" ? source.id : typeof source.vehicleId === "string" ? source.vehicleId : "";
+  const bounds = (source.bounds && typeof source.bounds === "object" && !Array.isArray(source.bounds) ? source.bounds : {}) as { halfLengthM: number; halfWidthM: number; halfHeightM: number };
+  const candidate = {
+    schemaVersion: 1,
+    id,
+    label: typeof source.label === "string" ? source.label : "",
+    modelAssetId: source.modelAssetId === undefined ? null : source.modelAssetId,
+    flightModel: source.flightModel,
+    physics: source.physics,
+    bounds: source.bounds,
+    camera: source.camera ?? defaultVehicleCameraV1(bounds),
+  };
+  const checked = validateVehicleProfileV1(candidate);
+  // 判负时仍回传候选对象：信封 payloadDigest 覆盖候选本身，宿主的 scope 核对与
+  // 判负闸门各自独立成立，Agent 拿到的是 SDK 诊断而不是 scope 错误。
+  return { ok: checked.ok, vehicle: candidate as Record<string, unknown>, diagnostics: checked.diagnostics };
+}
+
+export async function buildVehicleValidation(projectId: string, baseRevision: number, outcome: ReturnType<typeof normalizeVehicleProfileInput>): Promise<ValidationEnvelope> {
+  const payloadDigest = await sha256Of(canonicalJson(outcome.vehicle));
+  return finish(outcome.diagnostics, projectId, baseRevision, payloadDigest);
+}
+
 /** 目标项目/revision 无法核对时的判负信封：Rust 会以 scope 核对再次独立拒绝。 */
-export function scopeMismatchEnvelope(projectId: string, baseRevision: number, code: string, message: string): ValidationEnvelope {
-  return {
+export function scopeMismatchEnvelope(projectId: string, baseRevision: number, code: string, message: string): ValidationEnvelope {  return {
     capabilityVersion: CREATOR_CAPABILITIES_V1.capabilityVersion,
     validatorVersion: 1,
     projectId, baseRevision,

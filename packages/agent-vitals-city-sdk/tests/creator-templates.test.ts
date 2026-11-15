@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { validateMiniGamePack } from "../src/content";
 import { CREATOR_CAPABILITIES_V1, CREATOR_OPERATIONS_V1, CREATOR_WORLDS_V1 } from "../src/creatorCapabilities";
 import { CREATOR_TEMPLATES_V1 } from "../src/creatorTemplates";
+import { CREATOR_VEHICLE_CATALOG_V1 } from "../src/vehicleProfile";
 
 /**
  * Creator descriptor/template source-of-truth guards (design doc
@@ -66,9 +67,12 @@ test("generated assets on disk match the SDK constants (generator must have run)
   for (const template of CREATOR_TEMPLATES_V1) {
     const rendered = JSON.parse(fs.readFileSync(`${assetsDir}/templates/${template.id}.json`, "utf8")) as Record<string, unknown>;
     assert.deepEqual(rendered, JSON.parse(JSON.stringify(canonical({
-      schemaVersion: 1, templateId: template.id, label: template.label, pack: template.pack
+      schemaVersion: 1, templateId: template.id, label: template.label, gameType: template.gameType, pack: template.pack
     }))), `templates/${template.id}.json drifted from CREATOR_TEMPLATES_V1`);
   }
   const worlds = JSON.parse(fs.readFileSync(`${assetsDir}/worlds.json`, "utf8")) as Record<string, unknown>;
   assert.deepEqual(worlds, JSON.parse(JSON.stringify(canonical(CREATOR_WORLDS_V1))), "worlds.json drifted from CREATOR_WORLDS_V1");
+  // 车辆目录（2026-11-15 泛化切片）：生成产物与 SDK 常量逐字段同源。
+  const vehicles = JSON.parse(fs.readFileSync(`${assetsDir}/vehicles.json`, "utf8")) as Record<string, unknown>;
+  assert.deepEqual(vehicles, JSON.parse(JSON.stringify(canonical(CREATOR_VEHICLE_CATALOG_V1))), "vehicles.json drifted from CREATOR_VEHICLE_CATALOG_V1");
 });

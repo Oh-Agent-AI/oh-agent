@@ -215,6 +215,34 @@ function deepFreeze<T>(value: T): T {
 }
 
 /**
+ * `modelAssetId: null` 时运行时使用程序化占位模型；camera 未在 MCP define 面暴露，
+ * 由该确定性默认公式从 bounds 推导（宿主 Rust 与 Studio 适配器共用同一组常量，
+ * 常量经 scripts/generate-creator-capabilities.mjs 导出为 assets/creator/vehicles.json
+ * ——Rust 侧不硬编码公式，直接消费生成产物）。
+ */
+export const VEHICLE_CAMERA_DEFAULTS_V1 = Object.freeze({
+  followDistanceFactor: 6.5,
+  followDistanceMinM: 8,
+  followDistanceMaxM: 80,
+  heightOffsetFactor: 2.6,
+  heightOffsetMinM: 2,
+  heightOffsetMaxM: 40,
+  fovDeg: 55,
+} as const);
+
+const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
+
+/** bounds → 默认相机（MCP define/preview 面不接收 camera；派生是确定性的纯函数）。 */
+export function defaultVehicleCameraV1(bounds: VehicleProfileBoundsV1): Readonly<Record<string, number>> {
+  const maxHalf = Math.max(bounds.halfLengthM, bounds.halfWidthM, bounds.halfHeightM);
+  return Object.freeze({
+    followDistanceM: clamp(maxHalf * VEHICLE_CAMERA_DEFAULTS_V1.followDistanceFactor, VEHICLE_CAMERA_DEFAULTS_V1.followDistanceMinM, VEHICLE_CAMERA_DEFAULTS_V1.followDistanceMaxM),
+    heightOffsetM: clamp(maxHalf * VEHICLE_CAMERA_DEFAULTS_V1.heightOffsetFactor, VEHICLE_CAMERA_DEFAULTS_V1.heightOffsetMinM, VEHICLE_CAMERA_DEFAULTS_V1.heightOffsetMaxM),
+    fovDeg: VEHICLE_CAMERA_DEFAULTS_V1.fovDeg,
+  });
+}
+
+/**
  * 内置 preset：扑翼机（ornithopter）。扑翼降级为 preset 的锚点——飞行原型入口
  * （creator.flight-ornithopter-prototype-v1）由本 preset 驱动。
  *
@@ -264,4 +292,22 @@ export const FIXED_WING_VEHICLE_PRESET_V1: VehicleProfileV1 = Object.freeze({
   }),
   bounds: Object.freeze({ halfLengthM: 4.5, halfWidthM: 5.5, halfHeightM: 1.5 }),
   camera: Object.freeze({ followDistanceM: 30, heightOffsetM: 13, fovDeg: 55 }),
+});
+
+/**
+ * 车辆目录投影（2026-11-15 泛化切片）：MCP `creator_vehicle_list` 与宿主结构上限
+ * 的单一来源。preset 是完整可用的 VehicleProfileV1（含确定性默认相机）；bounds/
+ * ratios 表与 validateVehicleProfileV1 逐字段同源（同一份常量）。由生成器导出到
+ * assets/creator/vehicles.json；Rust include_str! 消费，不改内容。
+ */
+export const CREATOR_VEHICLE_CATALOG_V1 = Object.freeze({
+  schemaVersion: 1 as const,
+  presets: Object.freeze([ORNITHOPTER_VEHICLE_PRESET_V1, FIXED_WING_VEHICLE_PRESET_V1]),
+  flightModels: Object.freeze(["fixed-wing", "flapping", "vtol"] as const),
+  physicsKeys: VEHICLE_PHYSICS_KEYS_V1,
+  physicsBounds: VEHICLE_PHYSICS_BOUNDS_V1,
+  cameraBounds: VEHICLE_CAMERA_BOUNDS_V1,
+  boundsLimits: VEHICLE_BOUNDS_LIMITS_V1,
+  physicsRatios: VEHICLE_PHYSICS_RATIOS_V1,
+  cameraDefaults: VEHICLE_CAMERA_DEFAULTS_V1,
 });

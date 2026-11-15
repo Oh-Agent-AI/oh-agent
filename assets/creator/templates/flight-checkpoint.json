@@ -1,4 +1,5 @@
 {
+  "gameType": "flight",
   "label": "飞行检查点",
   "pack": {
     "id": "creator.flight-checkpoint",

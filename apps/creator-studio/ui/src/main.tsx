@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { connect, connectHostCalls, invokeHost, observeHealth, publishToolbar } from "@agent-vitals/app-sdk/ui-host";
-import { canonicalJson, validateCityInstance, validateCityLayoutScope, validateCityLayoutSnapshot, validateMiniGamePack, validateMount, validateSceneDraft, validateWorldPlanPatch, type CityGameMountV1, type CityInstanceV1, type CityLayoutSnapshotV1, type CityWorldProfileV1 } from "@agent-vitals/city-sdk";
+import { canonicalJson, defaultVehicleCameraV1, validateCityInstance, validateCityLayoutScope, validateCityLayoutSnapshot, validateMiniGamePack, validateMount, validateSceneDraft, validateVehicleProfileV1, validateWorldPlanPatch, type CityGameMountV1, type CityInstanceV1, type CityLayoutSnapshotV1, type CityWorldProfileV1, type VehicleProfileV1 } from "@agent-vitals/city-sdk";
 import { applyCityWorldOperations } from "./cityWorldOperations";
-import { buildGameValidation, buildSceneValidation, scopeMismatchEnvelope } from "./sdkValidation";
+import { buildGameValidation, buildSceneValidation, buildVehicleValidation, normalizeVehicleProfileInput, scopeMismatchEnvelope } from "./sdkValidation";
 import { loadStudioAtStartup } from "./startupLoad";
 import { resolveProjectCity } from "./projectCityScope";
 import { formatWorldPackageInspection, parseWorldPackageInspection, type WorldPackageInspection } from "./contentPackageInspect";
@@ -339,7 +339,8 @@ function App() {
     const methods = ["creator.city.create", "creator.city.create_from_world", "creator.city.diagnostic.list", "creator.city.edit.preview", "creator.city.patch.preview", "creator.city.edit.commit", "creator.city.list", "creator.city.read", "creator.layout.list", "creator.project.list", "creator.project.read", "creator.project.read_chunk", "creator.operation.status", "creator.project.create",
       "creator.game.preview", "creator.asset.import", "creator.game.commit", "creator.scene.preview", "creator.scene.commit", "creator.project.commit", "creator.project.publish",
       "creator.project.playtest.start", "creator.project.playtest.result", "creator.project.playtest.cancel", "creator.project.playtest.return_context", "creator.project.playtest.history",
-      "creator.scene.describe", "creator.scene.inspect", "creator.scene.validate", "creator.capabilities.list"];
+      "creator.scene.describe", "creator.scene.inspect", "creator.scene.validate", "creator.capabilities.list",
+      "creator.vehicle.preview", "creator.vehicle.define", "creator.vehicle.inspect"];
     // 这些调用只能来自宿主/MCP 路由（UI 自己的请求直连宿主、不经此转发），
     // 所以这里的捕获天然就是「Agent 来源」的变更记录——设计 §7.3 的变更卡片数据源。
     const noteAgent = (method: string, payload: Record<string, unknown>, ok: boolean, result: unknown) => {
@@ -349,6 +350,7 @@ function App() {
         "creator.project.publish": "发布到 City", "creator.project.playtest.start": "请求试玩",
         "creator.project.playtest.cancel": "取消试玩", "creator.asset.import": "导入模型",
         "creator.scene.capture": "视口捕获",
+        "creator.vehicle.preview": "飞行器预览", "creator.vehicle.define": "定义飞行器", "creator.vehicle.inspect": "检视飞行器",
       };
       const label = labels[method];
       if (!label) return;
@@ -430,6 +432,14 @@ function App() {
           ok = city.ok && city.value.revision === request.baseRevision && (request.patch === null || validateWorldPlanPatch(request.patch, city.value.seed, CITY_GENERATOR_VERSION).ok);
         } catch { ok = false; }
         return { ...request, validation: { schemaVersion: 1, requestDigest: await digest(request), ok } };
+      }
+      // 车辆定义/预览（2026-11-15 泛化切片）：define 面发送展平字段、preview 面发送
+      // `vehicle` 对象；统一归一化为完整 VehicleProfileV1（camera 缺省 = 确定性默认
+      // 公式），SDK 判定后按完整 profile 出信封——宿主 scope 核对与结构硬闸都以
+      // 这份载荷为准。modelAssetId 只透传（null 或项目 assetId），本面不接本地路径。
+      if (method === "creator.vehicle.preview" || method === "creator.vehicle.define") {
+        const outcome = normalizeVehicleProfileInput(payload.vehicle ?? payload);
+        return { ...payload, vehicle: outcome.vehicle, validation: await buildVehicleValidation(String(payload.projectId ?? ""), Number(payload.baseRevision ?? 0), outcome) };
       }
       const projectId = String(payload.projectId ?? "");
       const baseRevision = Number(payload.baseRevision ?? 0);

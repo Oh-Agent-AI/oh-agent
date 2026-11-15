@@ -1,0 +1,182 @@
+{
+  "boundsLimits": {
+    "halfExtentM": [
+      0.5,
+      20
+    ]
+  },
+  "cameraBounds": {
+    "followDistanceM": [
+      8,
+      80
+    ],
+    "fovDeg": [
+      40,
+      100
+    ],
+    "heightOffsetM": [
+      2,
+      40
+    ]
+  },
+  "cameraDefaults": {
+    "followDistanceFactor": 6.5,
+    "followDistanceMaxM": 80,
+    "followDistanceMinM": 8,
+    "fovDeg": 55,
+    "heightOffsetFactor": 2.6,
+    "heightOffsetMaxM": 40,
+    "heightOffsetMinM": 2
+  },
+  "flightModels": [
+    "fixed-wing",
+    "flapping",
+    "vtol"
+  ],
+  "physicsBounds": {
+    "climbRateMps": [
+      1,
+      40
+    ],
+    "dragCoefficient": [
+      0.01,
+      1.5
+    ],
+    "flapAmplitudeRad": [
+      0.15,
+      1.6
+    ],
+    "flapFrequencyHz": [
+      0.3,
+      8
+    ],
+    "hoverClimbRateMps": [
+      0.5,
+      30
+    ],
+    "massKg": [
+      40,
+      20000
+    ],
+    "maxSpeedMps": [
+      5,
+      160
+    ],
+    "sinkRateMps": [
+      0.5,
+      40
+    ],
+    "thrustN": [
+      80,
+      400000
+    ],
+    "turnRateRps": [
+      0.15,
+      2.5
+    ],
+    "wingAreaM2": [
+      0.5,
+      400
+    ]
+  },
+  "physicsKeys": {
+    "fixed-wing": [
+      "massKg",
+      "wingAreaM2",
+      "thrustN",
+      "maxSpeedMps",
+      "dragCoefficient",
+      "turnRateRps",
+      "climbRateMps",
+      "sinkRateMps"
+    ],
+    "flapping": [
+      "massKg",
+      "wingAreaM2",
+      "thrustN",
+      "maxSpeedMps",
+      "dragCoefficient",
+      "turnRateRps",
+      "climbRateMps",
+      "sinkRateMps",
+      "flapFrequencyHz",
+      "flapAmplitudeRad"
+    ],
+    "vtol": [
+      "massKg",
+      "wingAreaM2",
+      "thrustN",
+      "maxSpeedMps",
+      "dragCoefficient",
+      "turnRateRps",
+      "climbRateMps",
+      "sinkRateMps",
+      "hoverClimbRateMps"
+    ]
+  },
+  "physicsRatios": {
+    "maxThrustAccelMs2": 30,
+    "maxWingLoadingKgPerM2": 120,
+    "minThrustAccelMs2": 1,
+    "minWingLoadingKgPerM2": 1
+  },
+  "presets": [
+    {
+      "bounds": {
+        "halfHeightM": 1.4,
+        "halfLengthM": 3.6,
+        "halfWidthM": 4.8
+      },
+      "camera": {
+        "followDistanceM": 26,
+        "fovDeg": 52,
+        "heightOffsetM": 12
+      },
+      "flightModel": "flapping",
+      "id": "vehicle.ornithopter",
+      "label": "扑翼机",
+      "modelAssetId": null,
+      "physics": {
+        "climbRateMps": 34,
+        "dragCoefficient": 0.1,
+        "flapAmplitudeRad": 1.1,
+        "flapFrequencyHz": 2.4,
+        "massKg": 340,
+        "maxSpeedMps": 120,
+        "sinkRateMps": 26,
+        "thrustN": 10000,
+        "turnRateRps": 0.9,
+        "wingAreaM2": 18
+      },
+      "schemaVersion": 1
+    },
+    {
+      "bounds": {
+        "halfHeightM": 1.5,
+        "halfLengthM": 4.5,
+        "halfWidthM": 5.5
+      },
+      "camera": {
+        "followDistanceM": 30,
+        "fovDeg": 55,
+        "heightOffsetM": 13
+      },
+      "flightModel": "fixed-wing",
+      "id": "vehicle.fixed-wing-light",
+      "label": "固定翼轻型机",
+      "modelAssetId": null,
+      "physics": {
+        "climbRateMps": 26,
+        "dragCoefficient": 0.06,
+        "massKg": 620,
+        "maxSpeedMps": 130,
+        "sinkRateMps": 20,
+        "thrustN": 9000,
+        "turnRateRps": 1.05,
+        "wingAreaM2": 16
+      },
+      "schemaVersion": 1
+    }
+  ],
+  "schemaVersion": 1
+}

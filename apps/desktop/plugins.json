@@ -513,7 +513,10 @@
         "creator.scene.inspect",
         "creator.scene.validate",
         "creator.scene.structure_check",
-        "creator.capabilities.list"
+        "creator.capabilities.list",
+        "creator.vehicle.preview",
+        "creator.vehicle.define",
+        "creator.vehicle.inspect"
       ],
       "hostEvents": [
         "plugin.event"
