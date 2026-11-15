@@ -54,6 +54,10 @@ Claude Code（`claude mcp add` 或项目 `.mcp.json`，字段名以 Claude Code 
 - 若客户端支持 per-server 环境变量，需要非默认数据根时设置 `AGENT_VITALS_HOME`，并与桌面应用一致。
 - 不同客户端对 stdio MCP 的安装/连接方式可以不同，但不改变工具的业务含义（设计 §8.1）。
 
+> 想**直接操控一局游戏做测试**（喂输入、逐帧推进、读确定性与 trace），那不是这套
+> creator 面：另起一个 stdio MCP `city-game-control`
+> （`apps/agent-city/mcp/city-game-mcp.mjs`，见 `docs/CITY_GAME_MCP.md`）。两者可以同时接。
+
 ## 3. 工具面（与 creator_studio.rs specs() 一致）
 
 默认暴露 42 个工具；启动时加 `--enable-city-tools` 会再暴露 12 个独立 City 草稿实验工具（共 54 个）。以下工具名逐一核对自 crates/agent-vitals-mcp/src/mcp/creator_studio.rs 的 `specs()` 与 `run()`。协议为 JSON-RPC 2.0 行分隔帧；`initialize` 协议版本 `2025-06-18`，`serverInfo.name` 为 `Oh Agent MCP`。

@@ -55,7 +55,16 @@ MCP：
 
 - 未在真机 UI 里目检空域门环与 HUD 进度（本轮验证是 typecheck + 单测 + 构建）；
 - 飞行试玩仍用默认出生逻辑（首个门后方安全位），没有从 mount 的入口锚点起飞；
-- 没有采集两次试玩的 telemetry 曲线（轨迹分叉仍只由 preset 级测试证明）。
+- 真机试玩仍未采集 telemetry 曲线；**无头**的确定性 trace 已可用
+  （`docs/CITY_GAME_MCP.md` 的 `city-game-control` MCP，用显式门跑同一套规则执行器）。
+
+### 配套：通用游戏操控 MCP（2026-11-15）
+
+`apps/agent-city/mcp/city-game-mcp.mjs`（`game_open/step/script/state/trace/close`）让
+Agent 用**同一套输入词表**无头跑 flight 与 driving：门由参数给出，规则走
+`createMountedMiniGamePlan` + `MountedMiniGameControllerV1`（与 UI 试玩同一份），固定
+1/60 s 步长、同参数同轨迹并带 `traceDigest`。它不读 release、不解析 City 布局、不写证据、
+不带城市碰撞——真机发布链路仍走 creator MCP。
 
 ## 验证
 
