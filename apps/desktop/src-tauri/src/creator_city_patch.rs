@@ -576,12 +576,15 @@ pub(crate) fn mutate_city_anchors(home: &Path, actor: &str, city_id: &str, base_
     let layout_raw: String = tx.query_row("SELECT snapshot_json FROM creator_city_layouts_v2 WHERE city_id=?1 AND city_revision=?2 ORDER BY created_at_ms DESC LIMIT 1",
         params![city_id,current], |row| row.get(0)).optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_layout_not_found")?;
     let layout: Value = serde_json::from_str(&layout_raw).map_err(|_| "creator_store_unavailable")?;
-    let world_revision = layout["worldRevision"].as_str().ok_or("creator_layout_snapshot_invalid")?.to_owned();
-    let layout_id = layout["layout"]["id"].as_str().ok_or("creator_layout_snapshot_invalid")?.to_owned();
-    let mut merged: Vec<Value> = layout["layout"]["anchors"].as_array().ok_or("creator_layout_snapshot_invalid")?.clone();
+    // 统一读取入口（v2 归一化、v3 严格校验、其它版本拒绝）。缺 schemaVersion 的快照是损坏
+    // 数据，不再静默按 v2 处理——写回会把它降级。
+    let resolved = resolve_scoped_layout(&layout)?;
+    let world_revision = resolved.world_revision.clone();
+    let layout_id = resolved.layout_id.clone();
+    let mut merged: Vec<Value> = resolved.layout["anchors"].as_array().ok_or("creator_layout_snapshot_invalid")?.clone();
     let allowed_geometry: std::collections::HashSet<String> = merged.iter().filter_map(|anchor| anchor["geometryRef"].as_str().map(str::to_owned)).collect();
     // v3 快照才带几何；「自带几何的空域锚点」需要把几何写进快照，所以要求已升级。
-    let snapshot_version = layout["schemaVersion"].as_u64().unwrap_or(2);
+    let snapshot_version = resolved.version;
     let mut extra_geometry: Vec<Value> = Vec::new();
     for addition in additions {
         let object = addition.as_object().ok_or("creator_city_anchor_invalid")?;
@@ -666,7 +669,7 @@ pub(crate) fn mutate_city_anchors(home: &Path, actor: &str, city_id: &str, base_
     document["revision"] = json!(next);
     let serialized = canonical_json(&document).map_err(|_| "creator_city_invalid")?;
     // v3 快照的几何必须原样带走：锚点增删不改几何，丢了它发布物就再也定位不到门。
-    let version = layout["schemaVersion"].as_u64().unwrap_or(2);
+    let version = resolved.version;
     let mut snapshot = json!({"schemaVersion":version,"cityId":city_id,"cityRevision":next,"worldRevision":world_revision,
         "seed":layout["seed"],"layout":merged_layout});
     if version == 3 {
@@ -856,6 +859,30 @@ mod airspace_tests {
             "creator_layout_snapshot_invalid");
         // revision CAS。
         assert_eq!(migrate_city_layout_geometry(&home, city_id, 9, &geometry).unwrap_err(), "revision_conflict");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// 锚点编辑也必须经过统一入口：缺 schemaVersion 的快照是坏数据，不能静默按 v2 写回
+    /// （那会把一份损坏的 v3 降级成 v2，几何随之丢失）。
+    #[test]
+    fn anchor_edits_refuse_a_snapshot_without_a_schema_version() {
+        let home = home();
+        let created = crate::creator_cities::create_city(&home, "local-profile", "create-corrupt-snapshot", "Corrupt", 13, &json!({"schemaVersion":1})).unwrap();
+        let city_id = created["cityId"].as_str().unwrap();
+        let base = json!({"schemaVersion":2,"cityId":city_id,"cityRevision":0,"worldRevision":"world-corrupt","seed":13,
+            "layout":{"schemaVersion":1,"id":"layout-corrupt","coordinateSystem":"city-local-m-v1",
+                "anchors":[{"id":"road-spawn:a","kind":"spawn","capabilities":["drive"],"geometryRef":"city-road-node:a"}],"links":[]}});
+        store_scoped_city_layout(&home, &base).unwrap();
+        // 抹掉 schemaVersion（模拟损坏/旧写入）。
+        {
+            let db = database(&home).unwrap();
+            let mut corrupted = base.clone();
+            corrupted.as_object_mut().unwrap().remove("schemaVersion");
+            db.execute("UPDATE creator_city_layouts_v2 SET snapshot_json=?1 WHERE city_id=?2", params![corrupted.to_string(), city_id]).unwrap();
+        }
+        let addition = json!([{"id":"air-gate:z","kind":"zone","capabilities":["fly"],"geometryRef":"city-road-node:a"}]);
+        assert_eq!(mutate_city_anchors(&home, "local-profile", city_id, 0, &addition, &[], "corrupt-edit").unwrap_err(),
+            "creator_layout_snapshot_invalid");
         let _ = std::fs::remove_dir_all(home);
     }
 
