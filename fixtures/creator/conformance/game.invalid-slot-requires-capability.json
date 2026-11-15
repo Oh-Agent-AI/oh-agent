@@ -2,7 +2,7 @@
   "ruleFamily": "game",
   "case": "game.invalid-slot-requires-capability",
   "expectTs": "error:content_invalid_slot",
-  "rustNote": "Rust 同样拒绝：requires 仅允许 drive/walk 且 ≤2 项 → creator_game_invalid；两侧能力白名单一致。待 Rust 运行时验证。",
+  "rustNote": "Rust 同样拒绝：requires 仅允许 drive/walk/fly 且 ≤3 项 → creator_game_invalid；两侧能力白名单一致。待 Rust 运行时验证。",
   "input": {
     "schemaVersion": 1,
     "id": "relic-walk",
@@ -13,7 +13,7 @@
         "min": 1,
         "max": 6,
         "requires": [
-          "fly"
+          "teleport"
         ]
       }
     },

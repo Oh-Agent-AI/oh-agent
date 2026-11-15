@@ -9,7 +9,7 @@ const identifier = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/;
 const exactKeys = (value: Record<string, unknown>, keys: readonly string[]) => Object.keys(value).every(key => keys.includes(key));
 const hasOwn = (value: Record<string, unknown>, key: string) => Object.prototype.hasOwnProperty.call(value, key);
 const ANCHOR_KINDS = new Set<AnchorKind>(["spawn", "route", "zone", "object"]);
-const CAPABILITIES = new Set<AnchorCapability>(["drive", "walk"]);
+const CAPABILITIES = new Set<AnchorCapability>(["drive", "walk", "fly"]);
 const MAX_LAYOUT_ANCHORS = 20_000;
 const MAX_LAYOUT_LINKS = 100_000;
 
@@ -178,7 +178,7 @@ export function validateCityLayout(value: unknown): Result<CityLayoutV1> {
     else seen.add(raw.id);
     if (typeof raw.kind !== "string" || !ANCHOR_KINDS.has(raw.kind as AnchorKind)) diagnostics.push(error("layout_invalid_anchor_kind", `${path}.kind`, "Anchor kind is unsupported."));
     if (!Array.isArray(raw.capabilities) || raw.capabilities.length > CAPABILITIES.size || raw.capabilities.some(item => typeof item !== "string" || !CAPABILITIES.has(item as AnchorCapability)) || (Array.isArray(raw.capabilities) && new Set(raw.capabilities).size !== raw.capabilities.length)) {
-      diagnostics.push(error("layout_invalid_anchor_capabilities", `${path}.capabilities`, "Capabilities must be unique drive/walk values."));
+      diagnostics.push(error("layout_invalid_anchor_capabilities", `${path}.capabilities`, "Capabilities must be unique drive/walk/fly values."));
     }
     if (typeof raw.geometryRef !== "string" || !identifier.test(raw.geometryRef)) diagnostics.push(error("layout_invalid_geometry_ref", `${path}.geometryRef`, "Geometry reference must be a stable identifier."));
     if (typeof raw.id === "string" && identifier.test(raw.id) && typeof raw.kind === "string" && ANCHOR_KINDS.has(raw.kind as AnchorKind)
@@ -214,7 +214,7 @@ export function validateCityLayout(value: unknown): Result<CityLayoutV1> {
         if (!Array.isArray(raw.capabilities) || raw.capabilities.length === 0 || raw.capabilities.length > CAPABILITIES.size
           || raw.capabilities.some(item => typeof item !== "string" || !CAPABILITIES.has(item as AnchorCapability))
           || (Array.isArray(raw.capabilities) && new Set(raw.capabilities).size !== raw.capabilities.length)) {
-          diagnostics.push(error("layout_invalid_link_capabilities", `${path}.capabilities`, "Links require unique drive/walk traversal capabilities."));
+          diagnostics.push(error("layout_invalid_link_capabilities", `${path}.capabilities`, "Links require unique drive/walk/fly traversal capabilities."));
           continue;
         }
         for (const capability of raw.capabilities as AnchorCapability[]) {

@@ -59,7 +59,7 @@ export const CREATOR_OPERATIONS_V1: readonly CreatorOperationDescriptor[] = Obje
 
 /** 皮肤/模板目录：新增内容只改这里 + 重新生成资产，Rust 零改动（§1.3）。 */
 export const CREATOR_CONTENT_V1 = Object.freeze({
-  templates: ["checkpoint-race", "collect-one"],
+  templates: ["checkpoint-race", "ornithopter-flight", "collect-one"],
   skins: ["miami-vice", "desert-evening"],
 });
 

@@ -48,8 +48,8 @@ pub(crate) fn validate_layout_snapshot(value: &Value) -> Result<(&str, &str), &'
         if !seen.insert(id) { return Err("creator_layout_snapshot_invalid"); }
         if !matches!(anchor.get("kind").and_then(Value::as_str), Some("spawn" | "route" | "zone" | "object"))
             || !anchor.get("geometryRef").and_then(Value::as_str).is_some_and(valid_id) { return Err("creator_layout_snapshot_invalid"); }
-        let capabilities = anchor.get("capabilities").and_then(Value::as_array).filter(|items| items.len() <= 2).ok_or("creator_layout_snapshot_invalid")?;
-        if capabilities.iter().any(|item| !matches!(item.as_str(), Some("drive" | "walk")))
+        let capabilities = anchor.get("capabilities").and_then(Value::as_array).filter(|items| items.len() <= 3).ok_or("creator_layout_snapshot_invalid")?;
+        if capabilities.iter().any(|item| !matches!(item.as_str(), Some("drive" | "walk" | "fly")))
             || capabilities.iter().enumerate().any(|(index, item)| capabilities[..index].contains(item)) { return Err("creator_layout_snapshot_invalid"); }
         anchor_capabilities.insert(id, capabilities.iter().filter_map(Value::as_str).collect());
     }
@@ -65,8 +65,8 @@ pub(crate) fn validate_layout_snapshot(value: &Value) -> Result<(&str, &str), &'
             if !link_ids.insert(id) || from == to { return Err("creator_layout_snapshot_invalid"); }
             let from_capabilities = anchor_capabilities.get(from).ok_or("creator_layout_snapshot_invalid")?;
             let to_capabilities = anchor_capabilities.get(to).ok_or("creator_layout_snapshot_invalid")?;
-            let capabilities = link.get("capabilities").and_then(Value::as_array).filter(|items| !items.is_empty() && items.len() <= 2).ok_or("creator_layout_snapshot_invalid")?;
-            if capabilities.iter().any(|item| !matches!(item.as_str(), Some("drive" | "walk")))
+            let capabilities = link.get("capabilities").and_then(Value::as_array).filter(|items| !items.is_empty() && items.len() <= 3).ok_or("creator_layout_snapshot_invalid")?;
+            if capabilities.iter().any(|item| !matches!(item.as_str(), Some("drive" | "walk" | "fly")))
                 || capabilities.iter().enumerate().any(|(index, item)| capabilities[..index].contains(item)
                     || item.as_str().is_none_or(|capability| !from_capabilities.contains(capability) || !to_capabilities.contains(capability))) {
                 return Err("creator_layout_snapshot_invalid");
