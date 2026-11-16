@@ -146,3 +146,39 @@
 | D9 evals | 采纳（E9） | **部分落地**（evals/creator + E6） | bbed235f、SPEC §10 |
 | D12 验证器承载 | （未识别） | **新增：Studio 独有方向，spike 有条件可行** | 88fd5122 |
 | 其余 D1/D3/D4/D5/D7/D8/D10/D11 | — | 不变 | T3 与 dev 两侧均无架构级变化 |
+
+## 6. 源码级复刻完成度与优化空间（2026-11-17）
+
+方法：以 T3 源码子系统清单（`apps/server/src` 1454 文件、`packages` 1302 文件）为基准，逐模块映射 dev 实现物；只回答两个问题——核心设计是否已复刻、还有什么可吸收。
+
+### 6.1 复刻完成度矩阵
+
+| T3 子系统（源码位置） | dev 对应物 | 状态 |
+|---|---|---|
+| `orchestration-v2/`（85 个域文件：EventStore、ProjectionStore、Orchestrator、EffectOutbox） | creator dispatch（CAS + Immediate 事务）+ E2 统一 Job 面 | **形态等价，刻意不抄**：事件溯源为多线程编排服务；世界是单城状态机，CAS + revision 链是同语义的更小形态 |
+| `CommandReceiptStore.ts` + 幂等重试 | `creator_operations` + `creator_operation_status`（P2 起带 capabilityVersion 审计） | ✅ 已复刻（真机验证：重发逐字节相同） |
+| turn/settle 分离（overview「Turn completion and checkpoints」） | E2 Job 面 + preview TTL + `job_wait` | ✅ 已复刻（a1a74ac8） |
+| `checkpointing/`（hidden refs、Capture/Restore/Rollback 三服务） | preview TTL 隔离区 → commit CAS；`creator_changes` 全量审计 | ✅ 语义等价：隔离+审计有；Restore/Rollback 安全检查器无（见 6.2-O3） |
+| `packages/contracts`（2335 行 RPC 边界） | city-sdk（生成链 + include_str! + 跨语言向量） | ✅ 已复刻（同思想领域化） |
+| `provider-*` 13 包（ACP 适配、capability 诚实） | 唯一宿主；能力目录只列已实现 + E5 降级码 | ✅ 纪律已复刻；多 provider **刻意拒绝**（D7） |
+| `policy/`（per-thread 四模式 + ManagedPolicy 封顶） | `--allow-local-writes` + exact_payload + 逐请求授权 | 🟡 部分：数据边界等价；per-session 档在 E7 |
+| `relay/`、`peer/`、`ssh/`、`tailscale/`、`guest/`、`cloud/` | 无 | ⛔ **刻意不做**：数据政策「所有数据留本机」；多端在 E7 且只做瘦客户端 |
+| `worktreesDirectory.ts`、`git/`、`vcs/`、`source-control-*` 8 包 | preview 隔离区（世界非 git 仓库） | ✅ 形态等价（D4）；SCM 集成不适用 |
+| `evals/`（mcp-tool-use 12 个可重放 ndjson 域 + 分域 grading） | `evals/creator/`（5 个 markdown 事故用例 + run.mjs 判分） | 🟡 部分：用例=真实事故纪律已吸收；重放自动化差距见 6.2-O2 |
+| `mcp/`（T3 自暴露工具面：delegate_task 等 + McpToolAccess 竞态防护） | agent-vitals-mcp 50 工具 + mailbox 预算 + 宿主闸门 | ✅ 已复刻且更严（宿主闸门 + 描述符预算是 dev 独有加固） |
+| `ContextHandoffService.ts`（240/237 字符摘要 + delta） | E8 远景（纪律已照抄进 SPEC） | 🟡 远景未实现 |
+| `IdleCompactionService.ts`、`NotificationMailbox.ts`、`LiveStreamBudget.ts`、`DispatchModeLimit.ts` | 无对应（见 6.2） | ⛔ 未覆盖——优化空间主要来源 |
+
+**总结：控制平面的 8 个核心机制（receipt、settle 分离、隔离/审计、契约边界、能力诚实、授权粒度、工具面防护、evals 纪律）已全部在 dev 有对应实现或明确远景归属；未复刻的部分全部是「刻意拒绝」（多 provider、多端 relay、云、SCM）而非遗漏。**
+
+### 6.2 优化空间（T3 已解、dev 未解，按价值排序）
+
+- **O1 长期记录保留治理**（T3: `storageCleanup.ts` + `IdleCompactionService.ts`）。dev 的 `creator_changes`/`creator_operations` 行数无界：每次提交写全量 `document_json`，长期使用线性膨胀；mailbox 有 `MAX_CALL_RECORDS` 清理但 creator 表没有。建议：按项目保留最近 N 条 change + 旧 revision 摘要化（保留 revision/digest/actor，丢弃全量文档），配迁移测试。这是唯一可能影响长期用户的数据面问题。
+- **O2 evals 判分自动化**（T3: `evals/mcp-tool-use/cases/*.ndjson` 是可执行重放 + `device-grading.ts` 程序化判分）。dev 的 5 个用例是 markdown 事故记录，判分靠人按 E6 脚本走。建议：给每个 case 补 `evidence.json` 断言（revision 序列 + 诊断码集合），挂进 `run.mjs` metric 模式——SPEC §10.1 已预留接口。
+- **O3 restore/rollback 安全检查器**（T3: `CheckpointRestoreSafety.ts` + `CheckpointRollbackService.ts`——恢复前验证目标状态完整性、回滚有独立服务）。dev 的世界重建失败「保留可恢复的已保存版本」只有引用佐证，无显式安全检查（如恢复前 digest 验证、部分失败回滚）。建议：世界重建路径补 restore-safety 断言（目标快照 digest 核对 + 失败回写），体量小。
+- **O4 agent 活动卡的持久通知**（T3: `NotificationMailbox.ts`——通知不丢、不重复打扰、可重放）。dev 的 City Agent 变更卡片是 React 内存态 `slice(0, 6)`，重启即失；`plugin_events` 表其实已持久化了全部事件，只差 UI 重放。建议：活动卡从 `plugin_events` 尾页重建，零新数据面。
+- **O5 流式输出预算**（T3: `LiveStreamBudget.ts`——流式 backpressure 有专门机制）。dev 的 job/流式面（E2）预算在传输层，应用层 backpressure 未显式建模。建议：E2 Job 输出订阅加窗口上限，超限即暂停投递而非丢弃——量小，防患。
+
+### 6.3 结论
+
+核心设计**已复刻完成**：T3 控制平面的 8 个核心机制全部在 dev 有落地或明确远景归属，且 dev 在宿主闸门（描述符预算、commit 语义闸门、WASM 验证器承载方向）上做了 T3 没有的领域加固。未复刻部分均为有据可查的刻意拒绝。优化空间集中在**运维耐久性**（O1 保留治理最实质）与**判分自动化**（O2），均不触碰既有边界。
