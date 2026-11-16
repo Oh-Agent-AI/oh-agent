@@ -174,7 +174,7 @@
 ### 6.2 优化空间（T3 已解、dev 未解，按价值排序）
 
 - **O1 长期记录保留治理**（T3: `storageCleanup.ts` + `IdleCompactionService.ts`）。dev 的 `creator_changes`/`creator_operations` 行数无界：每次提交写全量 `document_json`，长期使用线性膨胀；mailbox 有 `MAX_CALL_RECORDS` 清理但 creator 表没有。建议：按项目保留最近 N 条 change + 旧 revision 摘要化（保留 revision/digest/actor，丢弃全量文档），配迁移测试。这是唯一可能影响长期用户的数据面问题。
-- **O2 evals 判分自动化**（T3: `evals/mcp-tool-use/cases/*.ndjson` 是可执行重放 + `device-grading.ts` 程序化判分）。dev 的 5 个用例是 markdown 事故记录，判分靠人按 E6 脚本走。建议：给每个 case 补 `evidence.json` 断言（revision 序列 + 诊断码集合），挂进 `run.mjs` metric 模式——SPEC §10.1 已预留接口。
+- ~~O2 evals 判分自动化~~ **已落地（2026-11-17 复核修正）**：`evals/creator/run.mjs` 是 1049 行确定性判分器，5 个 case 各嵌入结构化 rubric（25 个判分项，rubric 类型闭集），`--self-test` 正反例全过；`verify.yml` 新增 `creator_evals` job 把 self-test 挂进 CI。剩余缺口只是 run.mjs 自述的「model-driven replay 为后续扩展」——判分自动化本身不再是缺口。
 - **O3 restore/rollback 安全检查器**（T3: `CheckpointRestoreSafety.ts` + `CheckpointRollbackService.ts`——恢复前验证目标状态完整性、回滚有独立服务）。dev 的世界重建失败「保留可恢复的已保存版本」只有引用佐证，无显式安全检查（如恢复前 digest 验证、部分失败回滚）。建议：世界重建路径补 restore-safety 断言（目标快照 digest 核对 + 失败回写），体量小。
 - **O4 agent 活动卡的持久通知**（T3: `NotificationMailbox.ts`——通知不丢、不重复打扰、可重放）。dev 的 City Agent 变更卡片是 React 内存态 `slice(0, 6)`，重启即失；`plugin_events` 表其实已持久化了全部事件，只差 UI 重放。建议：活动卡从 `plugin_events` 尾页重建，零新数据面。
 - **O5 流式输出预算**（T3: `LiveStreamBudget.ts`——流式 backpressure 有专门机制）。dev 的 job/流式面（E2）预算在传输层，应用层 backpressure 未显式建模。建议：E2 Job 输出订阅加窗口上限，超限即暂停投递而非丢弃——量小，防患。

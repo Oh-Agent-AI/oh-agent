@@ -349,6 +349,22 @@ jobs:
           npm test --prefix packages/agent-vitals-city-game-runtime
           npm run typecheck --prefix packages/agent-vitals-city-game-runtime
 
+  creator_evals:
+    name: Creator tool-face evals (E9 self-test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # 确定性判分器自检（T3 对照 §6.2-O2 收尾）：rubric 劣化即红。
+      # 不需要 npm ci——run.mjs 只用 node:fs/node:path。
+      - name: E9 判分器自检
+        run: node evals/creator/run.mjs --self-test
+      - name: 用例清单完整性
+        run: node evals/creator/run.mjs --list
+
   city_typed_data:
     name: City typed data adapter tests
     runs-on: ubuntu-latest
