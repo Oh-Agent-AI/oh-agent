@@ -1114,8 +1114,8 @@ pub async fn plugin_close(app: tauri::AppHandle, webview: Webview, state: tauri:
         let generation = host.generation;
         if host.current.as_ref().is_some_and(|i| i.id == instance_id) { Some((host.current.take(), generation)) } else { None }
     };
-    if let Some((old, generation)) = old {
-        if let Some(old) = old {
+    if let Some((Some(old), generation)) = old {
+        {
             publish_presence(&presence_closed(&old, generation));
             crate::remote_gateway::close_sessions_for_instance(&app, &old.id);
             if let Some(view) = app.get_webview(&old.id) {
