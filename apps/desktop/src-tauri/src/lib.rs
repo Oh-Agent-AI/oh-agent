@@ -15,6 +15,7 @@ mod plugin_webview_layout;
 mod plugin_projections;
 mod plugin_state;
 mod creator_projects;
+mod embedded_city_sdk;
 mod creator_cities;
 mod creator_assets;
 mod creator_city_patch;
@@ -6112,6 +6113,9 @@ pub fn run() {
             // 让权威库 SQLite handle + page cache 在用户点会话/findings tab 之前
             // 就绪，避免首点 PRAGMA / planner 抖动（见 warm_authority_db 函数注释）。
             warm_authority_db(app.handle());
+            // E5 headless creator 语义闸：app 一启动就驱动 headless mailbox 臂
+            // （Studio 缺席时由宿主内嵌 city-sdk 闸作答窄名单方法，见 plugin_host.rs）。
+            crate::plugin_host::start_headless_creator_tick(app.handle().clone());
             Ok(())
         })
         .build(context)

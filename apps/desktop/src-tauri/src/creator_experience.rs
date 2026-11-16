@@ -123,7 +123,7 @@ pub(crate) fn build_experience(home: &Path, release_id: &str, version: &str) -> 
             "gameType": snapshot["gameType"], "vehicleId": snapshot["vehicleId"]},
         "assets": assets, "files": files,
     });
-    let content_digest = manifest_content_digest(&manifest).map_err(|code| cleanup(code))?;
+    let content_digest = manifest_content_digest(&manifest).map_err(&cleanup)?;
     manifest["contentDigest"] = json!(content_digest);
     let manifest_text = serde_json::to_string_pretty(&manifest).map_err(|_| cleanup("experience_manifest_invalid"))?;
     if std::fs::write(staging.join("manifest.json"), format!("{manifest_text}\n")).is_err() { return Err(cleanup("experience_store_unavailable")); }

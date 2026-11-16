@@ -215,6 +215,100 @@ fn bind_validation(validation: Option<&Value>) -> Result<ValidationBinding, &'st
     }
 }
 
+// ── 嵌入式语义闸信封（E5 全量，spec §8.4 路径 2）──
+// Studio webview 不可用时的同源权威回退：校验逻辑仍是 city-sdk（宿主内嵌 QuickJS
+// 执行 embeddedGate bundle，digest 锁文件钉住，锁步向量逐字节一致），宿主只是新
+// 运行时载体。信封形状与 Studio 信封完全一致（同一 validate_validation_envelope
+// 核对），来源由 preview/commit 响应的 validation 标记区分：studio-envelope |
+// embedded-sdk，两条路径互斥（同一 mailbox 调用只会被其中一方 claim 并作答）。
+
+/// Studio 适配器 bounded()/finish() 的宿主镜像：诊断裁剪到宿主信封预算
+/// （path ≤256、message ≤400、条数 ≤MAX_VALIDATION_DIAGNOSTICS，再整封逐条丢弃
+/// 直到 ≤30 KiB——与适配器常量一致，Rust 上限 32 KiB 留键开销余量）。返回
+/// (裁剪后诊断, 是否发生截断)。
+fn bounded_gate_diagnostics(diagnostics: Value) -> (Vec<Value>, bool) {
+    let raw = diagnostics.as_array().cloned().unwrap_or_default();
+    let bounded: Vec<Value> = raw.iter().map(|item| {
+        let mut entry = json!({
+            "code": item.get("code").cloned().unwrap_or(Value::Null),
+            "severity": if item.get("severity").and_then(Value::as_str) == Some("warning") { "warning" } else { "error" },
+            "path": item.get("path").and_then(Value::as_str).map(|path| path.chars().take(256).collect::<String>()).filter(|path| !path.is_empty()).unwrap_or_else(|| "$".into()),
+            "message": item.get("message").and_then(Value::as_str).map(|message| message.chars().take(400).collect::<String>()).unwrap_or_default(),
+        });
+        if let Some(object_id) = item.get("objectId") {
+            entry["objectId"] = json!(object_id.as_str().map(|id| id.chars().take(128).collect::<String>()).unwrap_or_default());
+        }
+        entry
+    }).collect();
+    let truncated_by_count = bounded.len() > MAX_VALIDATION_DIAGNOSTICS;
+    let mut kept: Vec<Value> = bounded.into_iter().take(MAX_VALIDATION_DIAGNOSTICS).collect();
+    while serde_json::to_string(&kept).map(|text| text.len() > 30_000).unwrap_or(true) && !kept.is_empty() {
+        let drop = (kept.len() / 4).max(1);
+        kept.truncate(kept.len() - drop);
+    }
+    (kept, truncated_by_count)
+}
+
+/// 组装嵌入式信封并过与 Studio 信封同一道形状/预算核对（自检：组装错误立即暴露，
+/// 不等到签发）。ok 语义与适配器 finish() 一致：截断或有 error 级诊断即判负。
+fn embedded_envelope(project_id: &str, base_revision: u64, payload: &Value, outcome: &Value) -> Result<Value, &'static str> {
+    let (diagnostics, truncated) = bounded_gate_diagnostics(outcome.get("diagnostics").cloned().unwrap_or(json!([])));
+    let canonical = canonical_json(payload).map_err(|_| "creator_validation_invalid")?;
+    let mut envelope = json!({
+        "capabilityVersion": creator_descriptor()["capabilityVersion"],
+        "validatorVersion": 1,
+        "projectId": project_id,
+        "baseRevision": base_revision,
+        "payloadDigest": digest(&canonical),
+        "ok": !truncated && diagnostics.iter().all(|item| item.get("severity").and_then(Value::as_str) != Some("error")),
+        "diagnostics": diagnostics,
+    });
+    if truncated { envelope["truncated"] = json!(true); }
+    validate_validation_envelope(&envelope)?;
+    Ok(envelope)
+}
+
+/// 嵌入式 vehicle 校验（vehicle.validate 入口 = Studio 适配器
+/// normalizeVehicleProfileInput 同一实现）：归一化（camera 缺省 = SDK 确定性默认
+/// 公式）+ city-sdk 全语义。返回 (归一化 profile, 信封)——payloadDigest 覆盖归一化
+/// 载荷，调用方必须以这份载荷走 preview/define（与 Studio 路径同契约）。
+pub(crate) fn embedded_vehicle_validation(project_id: &str, base_revision: u64, raw_vehicle: &Value) -> Result<(Value, Value), &'static str> {
+    let outcome = crate::embedded_city_sdk::invoke("vehicle.validate", &json!({ "raw": raw_vehicle }))
+        .map_err(|_| "embedded_gate_unavailable")?;
+    if outcome.get("vehicle").filter(|value| value.is_object()).is_none() { return Err("embedded_gate_unavailable"); }
+    let vehicle = outcome["vehicle"].clone();
+    let envelope = embedded_envelope(project_id, base_revision, &vehicle, &outcome)?;
+    Ok((vehicle, envelope))
+}
+
+/// 嵌入式 vehicle 性能预估（vehicle.estimate 入口 = city-sdk
+/// estimateVehiclePerformanceV1，与 Studio 预览注入同一函数）。画像无效时 Err。
+pub(crate) fn embedded_vehicle_estimate(raw_vehicle: &Value) -> Result<Value, &'static str> {
+    let outcome = crate::embedded_city_sdk::invoke("vehicle.estimate", &json!({ "raw": raw_vehicle }))
+        .map_err(|_| "embedded_gate_unavailable")?;
+    if outcome["ok"] == true { Ok(outcome.get("estimate").cloned().unwrap_or(Value::Null)) } else { Err("creator_vehicle_invalid") }
+}
+
+/// 嵌入式 world.set 合并 + 复验（city.world.apply 入口 = main.tsx attachValidation
+/// Form B 同一实现：validateCityInstance → revision 一致才合并 → validateCityWorldProfile
+/// 复验）。返回 (ok, 合并 profile 或 fallback)。requestDigest 由调用方按
+/// {cityId, baseRevision, profile, operations} 计算（canonical_json 与适配器同规格）。
+pub(crate) fn embedded_world_edit(city: &Value, base_revision: u64, operations: &Value) -> Result<(bool, Value), &'static str> {
+    let outcome = crate::embedded_city_sdk::invoke("city.world.apply", &json!({
+        "city": city, "baseRevision": base_revision, "operations": operations }))
+        .map_err(|_| "embedded_gate_unavailable")?;
+    let profile = outcome.get("profile").filter(|value| value.is_object()).ok_or("embedded_gate_unavailable")?;
+    Ok((outcome["ok"] == true, profile.clone()))
+}
+
+/// 嵌入式 city 创建校验（city.create.validate 入口 = main.tsx creator.city.create
+/// 分支同一实现）。返回 ok；诊断随调用方需要另行取用。
+pub(crate) fn embedded_city_create_validation(name: &str, seed: u64, profile: &Value) -> Result<bool, &'static str> {
+    let outcome = crate::embedded_city_sdk::invoke("city.create.validate", &json!({ "name": name, "seed": seed, "profile": profile }))
+        .map_err(|_| "embedded_gate_unavailable")?;
+    Ok(outcome["ok"] == true)
+}
+
 #[derive(Clone)]
 struct Preview {
     actor: String,
@@ -226,7 +320,16 @@ struct Preview {
     semantic_ok: Option<bool>,
     validation_digest: Option<String>,
     capability_version: Option<String>,
+    /// 语义来源（E5）：studio-envelope（Studio webview 附发信封）| embedded-sdk
+    /// （宿主内嵌 city-sdk 闸）。两条路径互斥（同一 mailbox 调用只被一方 claim），
+    /// preview/commit 响应的 validation 标记据此如实记录来源。
+    validation_source: &'static str,
 }
+
+/// Studio 信封路径的来源标记。
+pub(crate) const VALIDATION_SOURCE_STUDIO: &str = "studio-envelope";
+/// 嵌入式语义闸路径的来源标记（E5）。
+pub(crate) const VALIDATION_SOURCE_EMBEDDED: &str = "embedded-sdk";
 
 fn previews() -> &'static Mutex<HashMap<String, Preview>> {
     static PREVIEWS: OnceLock<Mutex<HashMap<String, Preview>>> = OnceLock::new();
@@ -1561,6 +1664,10 @@ fn preview_replace_game(home: &Path, actor: &str, project_id: &str, base_revisio
 }
 
 pub fn preview_replace_game_validated(home: &Path, actor: &str, project_id: &str, base_revision: u64, game: &Value, validation: Option<&Value>) -> Result<Value, &'static str> {
+    game_preview_inner(home, actor, project_id, base_revision, game, validation, VALIDATION_SOURCE_STUDIO)
+}
+
+fn game_preview_inner(home: &Path, actor: &str, project_id: &str, base_revision: u64, game: &Value, validation: Option<&Value>, source: &'static str) -> Result<Value, &'static str> {
     let (semantic_ok, validation_digest, capability_version) = bind_validation(validation)?;
     if actor.is_empty() || actor.len() > 128 || !valid_id(project_id) { return Err("creator_request_invalid"); }
     // 信封作用域核对：它必须证明校验的正是本次 projectId/revision/game 载荷。
@@ -1580,10 +1687,10 @@ pub fn preview_replace_game_validated(home: &Path, actor: &str, project_id: &str
     active_previews.retain(|_, item| item.created.elapsed().is_ok_and(|age| age <= PREVIEW_TTL));
     if active_previews.len() >= MAX_ACTIVE_PREVIEWS { return Err("creator_preview_budget_exceeded"); }
     active_previews.insert(preview_id.clone(), Preview { actor: actor.into(), project_id: project_id.into(), base_revision, operation_hash: digest(&normalized), document: document.to_string(), created: SystemTime::now(),
-        semantic_ok, validation_digest, capability_version });
+        semantic_ok, validation_digest, capability_version, validation_source: source });
     let game_id = game.get("id").and_then(Value::as_str).filter(|id| valid_id(id)).unwrap_or("game").to_owned();
     Ok(json!({"previewId":preview_id,"projectId":project_id,"baseRevision":revision,"expiresInMs":PREVIEW_TTL.as_millis(),
-        "validation":"sdk",
+        "validation":source,
         "diff":{"path":"game","beforeDigest":digest(&raw),"afterDigest":digest(&game_json)},
         "changedObjects":[{"id":game_id,"kind":"game","fields":["game"],"beforeDigest":digest(&raw),"afterDigest":digest(&game_json)}],
         "diagnostics":validation.and_then(|value| value.get("diagnostics")).cloned().unwrap_or(json!([]))}))
@@ -1594,6 +1701,17 @@ pub fn preview_replace_game_validated(home: &Path, actor: &str, project_id: &str
 /// 确定性性能估计后可用 creator.project.commit 提交，或直接用 creator.vehicle.define。
 /// 信封作用域绑定 projectId/baseRevision/vehicle 载荷；判定取自签发时原子绑定的记录。
 pub fn preview_replace_vehicle_validated(home: &Path, actor: &str, project_id: &str, base_revision: u64, vehicle: &Value, validation: Option<&Value>) -> Result<Value, &'static str> {
+    vehicle_preview_inner(home, actor, project_id, base_revision, vehicle, validation, VALIDATION_SOURCE_STUDIO)
+}
+
+/// 嵌入式语义闸的 vehicle 预览入口（E5）：信封由宿主内嵌 city-sdk 闸自签发，
+/// 来源标记 embedded-sdk。语义通过 → previewId 正常签发、commit 放行
+/// （响应 validation:"embedded-sdk"，不再 commitBlocked）。
+pub(crate) fn preview_replace_vehicle_embedded(home: &Path, actor: &str, project_id: &str, base_revision: u64, vehicle: &Value, envelope: &Value) -> Result<Value, &'static str> {
+    vehicle_preview_inner(home, actor, project_id, base_revision, vehicle, Some(envelope), VALIDATION_SOURCE_EMBEDDED)
+}
+
+fn vehicle_preview_inner(home: &Path, actor: &str, project_id: &str, base_revision: u64, vehicle: &Value, validation: Option<&Value>, source: &'static str) -> Result<Value, &'static str> {
     let (semantic_ok, validation_digest, capability_version) = bind_validation(validation)?;
     if actor.is_empty() || actor.len() > 128 || !valid_id(project_id) { return Err("creator_request_invalid"); }
     let vehicle_json = structural_vehicle_check(vehicle)?;
@@ -1623,10 +1741,10 @@ pub fn preview_replace_vehicle_validated(home: &Path, actor: &str, project_id: &
     active_previews.retain(|_, item| item.created.elapsed().is_ok_and(|age| age <= PREVIEW_TTL));
     if active_previews.len() >= MAX_ACTIVE_PREVIEWS { return Err("creator_preview_budget_exceeded"); }
     active_previews.insert(preview_id.clone(), Preview { actor: actor.into(), project_id: project_id.into(), base_revision, operation_hash: digest(&normalized), document: serialized, created: SystemTime::now(),
-        semantic_ok, validation_digest, capability_version });
+        semantic_ok, validation_digest, capability_version, validation_source: source });
     drop(active_previews);
     Ok(json!({"previewId":preview_id,"projectId":project_id,"baseRevision":revision,"vehicleId":vehicle_id,"expiresInMs":PREVIEW_TTL.as_millis(),
-        "validation":"sdk",
+        "validation":source,
         "diagnostics":validation.and_then(|value| value.get("diagnostics")).cloned().unwrap_or(json!([])),
         "diff":{"path":"vehicles","beforeDigest":digest(&raw),"afterDigest":digest(&vehicle_json)}}))
 }
@@ -1637,6 +1755,17 @@ pub fn preview_replace_vehicle_validated(home: &Path, actor: &str, project_id: &
 /// preview 面允许 Agent 带完整 profile（例如复制 preset 的相机）。无论哪条路，
 /// camera 都在信封 payloadDigest 覆盖范围内并通过 SDK 语义判定，宿主不改写。
 fn define_vehicle_validated(home: &Path, owner: &str, project_id: &str, base_revision: u64, vehicle: &Value, validation: Option<&Value>, operation_id: &str) -> Result<Value, &'static str> {
+    define_vehicle_inner(home, owner, project_id, base_revision, vehicle, validation, operation_id, VALIDATION_SOURCE_STUDIO)
+}
+
+/// 嵌入式语义闸的 vehicle define 入口（E5）：信封由宿主内嵌 city-sdk 闸自签发，
+/// 来源标记 embedded-sdk——headless define 成为可能（一次写入，无独立 commit 面）。
+pub(crate) fn define_vehicle_embedded(home: &Path, owner: &str, project_id: &str, base_revision: u64, vehicle: &Value, envelope: &Value, operation_id: &str) -> Result<Value, &'static str> {
+    define_vehicle_inner(home, owner, project_id, base_revision, vehicle, Some(envelope), operation_id, VALIDATION_SOURCE_EMBEDDED)
+}
+
+#[allow(clippy::too_many_arguments)] // 信封/来源标记与既有 define 面字段一一对应，非可合并参数。
+fn define_vehicle_inner(home: &Path, owner: &str, project_id: &str, base_revision: u64, vehicle: &Value, validation: Option<&Value>, operation_id: &str, source: &'static str) -> Result<Value, &'static str> {
     if owner.is_empty() || owner.len() > 128 { return Err("creator_request_invalid"); }
     let (semantic_ok, validation_digest, capability_version) = bind_validation(validation)?;
     let vehicle_json = structural_vehicle_check(vehicle)?;
@@ -1679,7 +1808,7 @@ fn define_vehicle_validated(home: &Path, owner: &str, project_id: &str, base_rev
     tx.execute("INSERT INTO creator_changes(project_id,revision,actor_id,operation_id,operation_hash,document_json,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)", params![project_id,next,owner,operation_id,digest(&vehicle_json),serialized,now]).map_err(|_| "creator_store_unavailable")?;
     let result = json!({"projectId":project_id,"revision":next,"operationId":operation_id,"vehicleId":vehicle_id,
         "action":action,"flightModel":vehicle["flightModel"],"documentDigest":digest(&serialized),
-        "validation":"sdk","validationDigest":validation_digest,"capabilityVersion":capability_version});
+        "validation":source,"validationDigest":validation_digest,"capabilityVersion":capability_version});
     tx.execute("INSERT INTO creator_operations(project_id,actor_id,operation_id,operation_hash,result_json,capability_version,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)",
         params![project_id,owner,operation_id,request_hash,result.to_string(),capability_version.unwrap_or_default(),now]).map_err(|_| "creator_store_unavailable")?;
     tx.commit().map_err(|_| "creator_store_unavailable")?;
@@ -1717,6 +1846,10 @@ fn preview_scene_operations(home: &Path, actor: &str, project_id: &str, base_rev
 }
 
 pub fn preview_scene_operations_validated(home: &Path, actor: &str, project_id: &str, base_revision: u64, operations: &Value, validation: Option<&Value>) -> Result<Value, &'static str> {
+    scene_preview_inner(home, actor, project_id, base_revision, operations, validation, VALIDATION_SOURCE_STUDIO)
+}
+
+fn scene_preview_inner(home: &Path, actor: &str, project_id: &str, base_revision: u64, operations: &Value, validation: Option<&Value>, source: &'static str) -> Result<Value, &'static str> {
     let (semantic_ok, validation_digest, capability_version) = bind_validation(validation)?;
     if actor.is_empty() || actor.len() > 128 || !valid_id(project_id) { return Err("creator_request_invalid"); }
     let normalized = serde_json::to_string(operations).map_err(|_| "creator_scene_ops_invalid")?;
@@ -1740,7 +1873,7 @@ pub fn preview_scene_operations_validated(home: &Path, actor: &str, project_id: 
     active_previews.retain(|_, item| item.created.elapsed().is_ok_and(|age| age <= PREVIEW_TTL));
     if active_previews.len() >= MAX_ACTIVE_PREVIEWS { return Err("creator_preview_budget_exceeded"); }
     active_previews.insert(preview_id.clone(), Preview { actor: actor.into(), project_id: project_id.into(), base_revision, operation_hash: digest(&normalized), document: serialized.clone(), created: SystemTime::now(),
-        semantic_ok, validation_digest, capability_version });
+        semantic_ok, validation_digest, capability_version, validation_source: source });
     let paths: Vec<&str> = touched.iter().map(|(path, _)| path.as_str()).collect();
     let changed_objects: Vec<Value> = touched.iter().map(|(path, action)| {
         // 稳定 id 可能含点（valid_id 允许 `.`）：只有 scene.objects. 前缀剥离，
@@ -1761,7 +1894,7 @@ pub fn preview_scene_operations_validated(home: &Path, actor: &str, project_id: 
         _ => (changed_objects, "host"),
     };
     Ok(json!({"previewId":preview_id,"projectId":project_id,"baseRevision":revision,"expiresInMs":PREVIEW_TTL.as_millis(),
-        "validation":"sdk",
+        "validation":source,
         "diff":{"paths":paths,"beforeDigest":digest(&raw),"afterDigest":digest(&serialized),"changedObjectsSource":diff_source},
         "changedObjects":changed_objects,
         "diagnostics":validation.and_then(|value| value.get("diagnostics")).cloned().unwrap_or(json!([]))}))
@@ -1813,7 +1946,7 @@ pub fn commit_preview_as(home: &Path, owner: &str, instance: &str, project_id: &
     if updated == 0 { return Err("revision_conflict"); }
     tx.execute("INSERT INTO creator_changes(project_id,revision,actor_id,operation_id,operation_hash,document_json,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)", params![project_id, next, owner, operation_id, preview.operation_hash, serialized, now]).map_err(|_| "creator_store_unavailable")?;
     let result = json!({"projectId":project_id,"revision":next,"operationId":operation_id,"documentDigest":digest(&serialized),
-        "validation":"sdk",
+        "validation":preview.validation_source,
         "validationDigest":preview.validation_digest.clone(),"capabilityVersion":preview.capability_version.clone()});
     tx.execute("INSERT INTO creator_operations(project_id,actor_id,operation_id,operation_hash,result_json,capability_version,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)", params![project_id, owner, operation_id, request_hash, result.to_string(), preview.capability_version.clone().unwrap_or_default(), now]).map_err(|_| "creator_store_unavailable")?;
     tx.commit().map_err(|_| "creator_store_unavailable")?;
@@ -2353,7 +2486,7 @@ mod tests {
         let preview = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.vehicle.preview",
             &json!({"projectId":project_id,"baseRevision":0,"vehicle":vehicle,"validation":vehicle_envelope(true, &project_id, 0, &vehicle)})).unwrap();
         assert_eq!(preview["vehicleId"], "vehicle.preview-test");
-        assert_eq!(preview["validation"], "sdk");
+        assert_eq!(preview["validation"], "studio-envelope");
         assert!(preview.get("estimatedPerformance").is_none(), "preview must not fabricate a performance projection");
         assert_eq!(preview["diagnostics"], json!([]));
         let committed = commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", &project_id,
@@ -2672,7 +2805,7 @@ mod tests {
         let operations = json!([{"op":"skin.select","skinId":"desert-evening"}]);
         // SDK 判负：preview 照常签发并回传诊断，但 commit 以 creator_preview_invalid 拒绝。
         let rejected = preview_scene_operations_validated(&home, "studio-instance", &project_id, 0, &operations, Some(&scene_envelope(false, &project_id, 0, &operations))).unwrap();
-        assert_eq!(rejected["validation"], "sdk");
+        assert_eq!(rejected["validation"], "studio-envelope");
         assert_eq!(rejected["diagnostics"][0]["code"], "anchor_unreachable");
         assert_eq!(commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", &project_id,
             rejected["previewId"].as_str().unwrap(), 0, "commit-rejected").unwrap_err(), "creator_preview_invalid");

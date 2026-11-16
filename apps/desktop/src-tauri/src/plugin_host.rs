@@ -804,6 +804,204 @@ fn poll_plugin_call_queue(app: &tauri::AppHandle) {
     }
 }
 
+// ── headless creator 语义闸（E5 全量，spec §8.4 路径 2 / §11.6）──
+// Studio webview 缺席时，宿主自己 claim 并作答一个**显式窄名单**内的 creator 方法：
+// 语义校验由宿主内嵌 city-sdk 闸（embedded_city_sdk，rquickjs/QuickJS，digest 锁步）
+// 完成，写路径经 dispatch_as 走与 Studio 完全相同的 preview/commit 管线。语义通过
+// → 正常签发 previewId / 落库（validation:"embedded-sdk"，可 commit）；语义失败 →
+// 同诊断拒绝。Studio 在场时本臂完全停用（互斥由 mailbox 原子 claim + ready 检查
+// 双重保证），信封路径不变（validation:"studio-envelope"）。
+
+/// headless 臂的 mailbox 实例标识（preview 的 instance 绑定与 commit 归属一致）。
+const HEADLESS_CREATOR_INSTANCE: &str = "host-headless";
+
+/// headless 臂可作答的方法窄名单：只包含「语义闸可覆盖 + 纯宿主本地」的方法。
+/// 视口/City 运行时依赖（layout.save、anchor、publish、playtest 等）**不在名单内**
+/// ——headless 绝不假装能做视口能力，让它们继续走 plugin_unavailable 的诚实延迟。
+fn headless_creator_methods() -> Vec<String> {
+    [
+        "creator.city.list",
+        "creator.city.read",
+        "creator.city.create",
+        "creator.city.edit.preview",
+        "creator.city.edit.commit",
+        "creator.vehicle.preview",
+        "creator.vehicle.define",
+        "creator.vehicle.inspect",
+        "creator.project.commit",
+    ].into_iter().map(str::to_owned).collect()
+}
+
+/// Studio webview 是否处于可作答状态（与 subscriber_view 同一判据）。
+/// 嵌入式 gate 产物完整性（fail closed）：启动后第一次使用前核对 bundle 实际摘要
+/// 与锁文件钉住值；不符则本进程内永久停用 headless 臂（语义闸退回诚实不可用），
+/// 绝不带着被篡改/漂移的产物放行写路径。核对结果只记稳定码，不落任何载荷。
+fn embedded_gate_integrity_ok() -> bool {
+    static VERDICT: OnceLock<bool> = OnceLock::new();
+    *VERDICT.get_or_init(|| {
+        let lock = crate::embedded_city_sdk::gate_lock();
+        let recorded = lock.get("bundleSha256").and_then(Value::as_str).unwrap_or_default();
+        let actual = crate::embedded_city_sdk::gate_bundle_digest();
+        let ok = recorded == actual;
+        if !ok { agent_vitals_runtime::logging::log_warn("plugin_host", "embedded city-sdk gate digest mismatch; headless arm disabled"); }
+        ok
+    })
+}
+
+fn studio_instance_ready(app: &tauri::AppHandle) -> bool {
+    let host = app.state::<PluginHost>();
+    let guard = host.0.lock().unwrap_or_else(|error| error.into_inner());
+    guard.current.as_ref().is_some_and(|instance| instance.plugin_id == "creator-studio"
+        && instance.ready && !instance.suspended && instance.failed.is_none())
+}
+
+/// headless 臂在 Studio 缺席时发布 ready presence：让 MCP 侧保持等待（不快速失败）
+/// 而本臂在 500ms 内作答。Studio webview 打开时其自身 presence 发布会覆盖本文件
+/// （每插件单文件设计），本函数检测到 Studio ready 即停写。
+fn publish_headless_presence_if_studio_absent(home: &std::path::Path, studio_ready: bool) {
+    if studio_ready { return; }
+    if let Ok(existing) = agent_vitals_runtime::query::plugin_calls::read_consumer(home, "creator-studio") {
+        if existing.as_ref().is_some_and(|presence| presence.instance_id == HEADLESS_CREATOR_INSTANCE
+            && presence.acceptance == "ready") { return; }
+    }
+    let presence = agent_vitals_runtime::query::plugin_calls::ConsumerPresence {
+        plugin_id: "creator-studio".into(), instance_id: HEADLESS_CREATOR_INSTANCE.into(), generation: 0,
+        acceptance: "ready".into(), fault: None, pulse_age_ms: 0, hidden: false, hidden_for_ms: 0,
+        in_flight: 0, ready: true, suspended: false,
+    };
+    if let Err(code) = agent_vitals_runtime::query::plugin_calls::publish_consumer(home, &presence) {
+        agent_vitals_runtime::logging::log_warn("plugin_host", &format!("headless presence not recorded code={code}"));
+    }
+}
+
+/// city.edit.preview Form B（world.set）的 headless 载荷转换：读权威 city 文档 →
+/// 嵌入式合并/复验 → requestDigest 信封（与 webview attachValidation 的 Form B
+/// 分支逐语义一致，digest 规格同 canonicalJson）。
+fn headless_world_edit_payload(home: &std::path::Path, payload: &Value) -> Result<Value, &'static str> {
+    let city_id = payload.get("cityId").and_then(Value::as_str).unwrap_or_default().to_owned();
+    let base_revision = payload.get("baseRevision").and_then(Value::as_u64).unwrap_or_default();
+    let city = crate::creator_cities::read_city(home, city_id.as_str())?;
+    let (ok, profile) = crate::creator_projects::embedded_world_edit(&city, base_revision, &payload["operations"])?;
+    let request = json!({"cityId": city_id, "baseRevision": base_revision, "profile": profile, "operations": payload["operations"]});
+    let request_digest = crate::creator_store::digest(&crate::creator_store::canonical_json(&request).map_err(|_| "creator_city_invalid")?);
+    Ok(json!({"cityId": city_id, "baseRevision": base_revision, "profile": profile,
+        "operations": payload["operations"],
+        "validation": {"schemaVersion": 1, "requestDigest": request_digest, "ok": ok}}))
+}
+
+/// creator.city.create 的 headless 载荷转换（与 webview attachValidation 的
+/// creator.city.create 分支一致：SDK 语义 + requestDigest over 请求本身）。
+fn headless_city_create_payload(home: &std::path::Path, payload: &Value) -> Result<Value, &'static str> {
+    let name = payload.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
+    let seed = payload.get("seed").and_then(Value::as_u64).unwrap_or_default();
+    let profile = payload.get("profile").cloned().unwrap_or(Value::Null);
+    let ok = crate::creator_projects::embedded_city_create_validation(&name, seed, &profile)?;
+    let request = json!({"name": name, "seed": seed, "profile": profile, "operationId": payload.get("operationId").cloned().unwrap_or(Value::Null)});
+    let request_digest = crate::creator_store::digest(&crate::creator_store::canonical_json(&request).map_err(|_| "creator_city_invalid")?);
+    let _ = home;
+    Ok(json!({"name": name, "seed": seed, "profile": request["profile"].clone(),
+        "operationId": request["operationId"].clone(),
+        "validation": {"schemaVersion": 1, "requestDigest": request_digest, "ok": ok}}))
+}
+
+/// headless creator 臂的轮询入口：lib.rs setup 起一个 500ms 循环驱动。
+pub(crate) fn poll_headless_creator_calls(app: &tauri::AppHandle) {
+    let home = crate::overview::data_home();
+    let studio_ready = studio_instance_ready(app);
+    publish_headless_presence_if_studio_absent(&home, studio_ready);
+    if studio_ready || !embedded_gate_integrity_ok() { return; }
+    let Ok(calls) = agent_vitals_runtime::query::plugin_calls::claim_pending(
+        &home, "creator-studio", HEADLESS_CREATOR_INSTANCE, &headless_creator_methods(), 4) else { return; };
+    if calls.is_empty() { return; }
+    let definition = definitions().iter().find(|plugin| plugin.id == "creator-studio");
+    for call in &calls {
+        let method = call["method"].as_str().unwrap_or_default().to_owned();
+        let Some(call_id) = call["callId"].as_str().map(str::to_owned) else { continue };
+        let payload: Value = serde_json::from_str(call["payload"].as_str().unwrap_or("{}")).unwrap_or(Value::Null);
+        let response_budget = definition.map(|definition| transport_budget_for(definition, &method).1)
+            .unwrap_or(TRANSPORT_BUDGET_DEFAULT_BYTES);
+        let result = answer_headless_call(&home, &method, &payload);
+        let response = match result {
+            Ok(value) => json!({"ok": true, "result": value}),
+            Err(code) => json!({"ok": false, "error": {"code": code}}),
+        };
+        if let Err(code) = agent_vitals_runtime::query::plugin_calls::respond_with_budget(
+            &home, "creator-studio", HEADLESS_CREATOR_INSTANCE, &call_id, &response, response_budget) {
+            agent_vitals_runtime::logging::log_warn("plugin_host", &format!("headless response not recorded code={code}"));
+        }
+    }
+}
+
+/// 单个 headless 调用的作答：vehicle 路径直连嵌入式变体（来源标记 embedded-sdk、
+/// 语义通过即签发 previewId/落库），city/world 走 dispatch 后注入来源标记，
+/// commit/只读方法与 Studio 在场时走同一宿主管线。
+fn answer_headless_call(home: &std::path::Path, method: &str, payload: &Value) -> Result<Value, &'static str> {
+    let project_id = payload.get("projectId").and_then(Value::as_str).unwrap_or_default().to_owned();
+    let base_revision = payload.get("baseRevision").and_then(Value::as_u64).unwrap_or_default();
+    match method {
+        "creator.vehicle.preview" => {
+            let raw_vehicle = if payload.get("vehicle").is_some() { payload["vehicle"].clone() }
+                else { flattened_vehicle_payload(payload) };
+            let (vehicle, envelope) = crate::creator_projects::embedded_vehicle_validation(&project_id, base_revision, &raw_vehicle)?;
+            let mut preview = crate::creator_projects::preview_replace_vehicle_embedded(
+                home, HEADLESS_CREATOR_INSTANCE, &project_id, base_revision, &vehicle, &envelope)?;
+            // 与 Studio 预览同源的确定性性能预估（city-sdk estimateVehiclePerformanceV1）。
+            if preview.get("previewId").is_some() {
+                if let Ok(estimate) = crate::creator_projects::embedded_vehicle_estimate(&vehicle) {
+                    preview["estimatedPerformance"] = estimate;
+                }
+            }
+            Ok(preview)
+        }
+        "creator.vehicle.define" => {
+            let raw_vehicle = if payload.get("vehicle").is_some() { payload["vehicle"].clone() }
+                else { flattened_vehicle_payload(payload) };
+            let (vehicle, envelope) = crate::creator_projects::embedded_vehicle_validation(&project_id, base_revision, &raw_vehicle)?;
+            let operation_id = payload.get("operationId").and_then(Value::as_str).unwrap_or_default();
+            crate::creator_projects::define_vehicle_embedded(home, crate::creator_projects::LOCAL_CREATOR_OWNER,
+                &project_id, base_revision, &vehicle, &envelope, operation_id)
+        }
+        "creator.city.create" | "creator.city.edit.preview" | "creator.city.edit.commit"
+        | "creator.city.list" | "creator.city.read" | "creator.vehicle.inspect"
+        | "creator.project.commit" => {
+            let transformed = match method {
+                "creator.city.edit.preview" => headless_world_edit_payload(home, payload)?,
+                "creator.city.create" => headless_city_create_payload(home, payload)?,
+                _ => payload.clone(),
+            };
+            let mut result = crate::creator_projects::dispatch_as(home, crate::creator_projects::LOCAL_CREATOR_OWNER,
+                HEADLESS_CREATOR_INSTANCE, method, &transformed)?;
+            // 来源记录（E5）：city edit preview/commit 响应显式标注 embedded-sdk；
+            // vehicle/game/scene 的标记由 preview/commit 管线自带。
+            if matches!(method, "creator.city.edit.preview" | "creator.city.edit.commit") {
+                result["validation"] = json!(crate::creator_projects::VALIDATION_SOURCE_EMBEDDED);
+            }
+            Ok(result)
+        }
+        _ => Err("creator_method_unavailable"),
+    }
+}
+
+/// MCP define 面的展平字段 → 完整 profile 候选（camera 交给闸的确定性默认公式）。
+fn flattened_vehicle_payload(payload: &Value) -> Value {
+    json!({"schemaVersion": 1, "id": payload.get("vehicleId").cloned().unwrap_or(Value::Null),
+        "label": payload.get("label").cloned().unwrap_or(Value::Null),
+        "modelAssetId": payload.get("modelAssetId").cloned().unwrap_or(Value::Null),
+        "flightModel": payload.get("flightModel").cloned().unwrap_or(Value::Null),
+        "physics": payload.get("physics").cloned().unwrap_or(Value::Null),
+        "bounds": payload.get("bounds").cloned().unwrap_or(Value::Null)})
+}
+
+/// lib.rs setup 驱动的 headless 臂循环。与 Studio 的 watchdog 相互独立：
+/// watchdog 只在有插件 webview 后启动，而本臂必须在「app 在跑、Studio 从未打开」
+/// 时就工作（这正是 headless 场景）。
+pub(crate) fn start_headless_creator_tick(app: tauri::AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(500));
+        poll_headless_creator_calls(&app);
+    });
+}
+
 fn start_watchdog(app: &tauri::AppHandle, state: &PluginHost) {
     let mut host = state.0.lock().unwrap();
     if host.watchdog_started { return; }
@@ -1114,16 +1312,14 @@ pub async fn plugin_close(app: tauri::AppHandle, webview: Webview, state: tauri:
         let generation = host.generation;
         if host.current.as_ref().is_some_and(|i| i.id == instance_id) { Some((host.current.take(), generation)) } else { None }
     };
-    if let Some((old, generation)) = old {
-        if let Some(old) = old {
-            publish_presence(&presence_closed(&old, generation));
-            crate::remote_gateway::close_sessions_for_instance(&app, &old.id);
-            if let Some(view) = app.get_webview(&old.id) {
-                agent_vitals_runtime::logging::log_warn("plugin_host", &format!("view.close() [plugin_close] id={} reason={reason}", old.id));
-                view.close().map_err(|_| "plugin_close_failed")?;
-            }
-            settle_destroyed_playtest(&old.plugin_id, &old.id);
+    if let Some((Some(old), generation)) = old {
+        publish_presence(&presence_closed(&old, generation));
+        crate::remote_gateway::close_sessions_for_instance(&app, &old.id);
+        if let Some(view) = app.get_webview(&old.id) {
+            agent_vitals_runtime::logging::log_warn("plugin_host", &format!("view.close() [plugin_close] id={} reason={reason}", old.id));
+            view.close().map_err(|_| "plugin_close_failed")?;
         }
+        settle_destroyed_playtest(&old.plugin_id, &old.id);
     }
     Ok(())
 }
@@ -2147,6 +2343,126 @@ mod plugin_request_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    fn headless_home() -> std::path::PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let dir = std::env::temp_dir().join(format!("headless-gate-test-{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn headless_layout_snapshot(world_revision: &str) -> Value {
+        json!({"schemaVersion": 1, "worldRevision": world_revision, "seed": 7, "layout": {
+            "schemaVersion": 1, "id": "city-layout-v1-headless", "coordinateSystem": "city-local-m-v1", "anchors": [
+                {"id": "road-spawn:a", "kind": "spawn", "capabilities": ["drive"], "geometryRef": "city-road-node:a"},
+                {"id": "road-checkpoint:ab", "kind": "zone", "capabilities": ["drive"], "geometryRef": "city-road-edge:ab:midpoint"},
+                {"id": "road-checkpoint:bc", "kind": "zone", "capabilities": ["drive"], "geometryRef": "city-road-edge:bc:midpoint"}
+            ], "links": [
+                {"id": "link-a", "fromAnchorId": "road-spawn:a", "toAnchorId": "road-checkpoint:ab", "capabilities": ["drive"]},
+                {"id": "link-b", "fromAnchorId": "road-checkpoint:ab", "toAnchorId": "road-checkpoint:bc", "capabilities": ["drive"]}
+            ]}})
+    }
+
+    fn dunes_profile() -> Value {
+        json!({"schemaVersion": 1, "id": "arid-dunes", "version": 1, "biome": "arid",
+            "geography": {"generator": "arid-dunes-v1", "parameters": {"dunes": {"duneScale": 190, "duneAmplitude": 11, "orientationDeg": 18}}},
+            "visuals": {"themeId": "desert"}})
+    }
+
+    fn valid_vehicle(id: &str) -> Value {
+        json!({"schemaVersion": 1, "id": id, "label": "E2E flapper", "modelAssetId": null, "flightModel": "flapping",
+            "physics": {"massKg": 300.0, "wingAreaM2": 18.0, "thrustN": 6000.0, "maxSpeedMps": 120.0, "dragCoefficient": 0.1,
+                "turnRateRps": 0.9, "climbRateMps": 34.0, "sinkRateMps": 26.0, "flapFrequencyHz": 2.4, "flapAmplitudeRad": 1.1},
+            "bounds": {"halfLengthM": 3.6, "halfWidthM": 4.8, "halfHeightM": 1.4}})
+    }
+
+    #[test]
+    fn headless_arm_creates_city_and_commits_world_edits_with_the_embedded_marker() {
+        let home = headless_home();
+        let created = answer_headless_call(&home, "creator.city.create",
+            &json!({"name": "无头城", "seed": 20261115, "profile": dunes_profile(), "operationId": "op-city-1"})).unwrap();
+        let city_id = created["cityId"].as_str().unwrap().to_owned();
+        let revision = created["revision"].as_u64().unwrap();
+        let preview = answer_headless_call(&home, "creator.city.edit.preview",
+            &json!({"cityId": city_id, "baseRevision": revision,
+                "operations": [{"op": "world.set", "params": {"shape.family": "lobed", "shape.cores": 3}}]})).unwrap();
+        // 语义通过 → 正常签发 previewId，且响应显式记录 embedded-sdk 来源（不再 commitBlocked）。
+        assert!(preview["previewId"].as_str().is_some(), "{preview}");
+        assert_eq!(preview["validation"], crate::creator_projects::VALIDATION_SOURCE_EMBEDDED);
+        let committed = answer_headless_call(&home, "creator.city.edit.commit",
+            &json!({"cityId": city_id, "previewId": preview["previewId"], "expectedRevision": revision, "operationId": "op-city-edit-1"})).unwrap();
+        assert_eq!(committed["revision"], revision + 1);
+        assert_eq!(committed["validation"], crate::creator_projects::VALIDATION_SOURCE_EMBEDDED);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn headless_arm_rejects_semantic_failures_with_the_same_diagnostics_shape() {
+        let home = headless_home();
+        let created = answer_headless_call(&home, "creator.city.create",
+            &json!({"name": "无头城", "seed": 20261115, "profile": dunes_profile(), "operationId": "op-city-1"})).unwrap();
+        let city_id = created["cityId"].as_str().unwrap().to_owned();
+        let revision = created["revision"].as_u64().unwrap();
+        let rejected = answer_headless_call(&home, "creator.city.edit.preview",
+            &json!({"cityId": city_id, "baseRevision": revision,
+                "operations": [{"op": "world.set", "params": {"shape.cores": 9}}]}));
+        // world.set 越界 → 宿主结构闸先行拒绝（world_params_out_of_range），不是静默放行。
+        assert_eq!(rejected.unwrap_err(), "world_params_out_of_range");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn headless_arm_defines_and_previews_vehicles_with_embedded_validation() {
+        let home = headless_home();
+        crate::creator_city_patch::publish_city_layout_snapshot(&home, &headless_layout_snapshot("world-rev-headless")).unwrap();
+        let project = crate::creator_projects::create_project_from_city_layout(&home,
+            crate::creator_projects::LOCAL_CREATOR_OWNER, "flight-checkpoint", "op-project-headless", "world-rev-headless").unwrap();
+        let project_id = project["projectId"].as_str().unwrap().to_owned();
+        let vehicle = valid_vehicle("vehicle-headless-1");
+        // define：嵌入式语义闸 + 一次性写入（headless define 成为可能）。
+        let defined = answer_headless_call(&home, "creator.vehicle.define", &json!({
+            "projectId": project_id, "baseRevision": 0, "vehicleId": "vehicle-headless-1",
+            "label": vehicle["label"], "flightModel": vehicle["flightModel"],
+            "physics": vehicle["physics"], "bounds": vehicle["bounds"], "modelAssetId": null,
+            "operationId": "op-vehicle-headless-1"})).unwrap();
+        assert_eq!(defined["validation"], crate::creator_projects::VALIDATION_SOURCE_EMBEDDED);
+        assert_eq!(defined["revision"], 1);
+        // preview：previewId 可签发、来源如实、性能预估与 Studio 同源注入。
+        let preview = answer_headless_call(&home, "creator.vehicle.preview", &json!({
+            "projectId": project_id, "baseRevision": 1, "vehicle": valid_vehicle("vehicle-headless-2")})).unwrap();
+        assert!(preview["previewId"].as_str().is_some(), "{preview}");
+        assert_eq!(preview["validation"], crate::creator_projects::VALIDATION_SOURCE_EMBEDDED);
+        assert!(preview.get("estimatedPerformance").is_some_and(|value| value.is_object()), "{preview}");
+        // preview 可以走 creator.project.commit 提交（headless commit 全链路）。
+        let committed = answer_headless_call(&home, "creator.project.commit", &json!({
+            "projectId": project_id, "previewId": preview["previewId"], "expectedRevision": 1,
+            "operationId": "op-vehicle-commit-headless"})).unwrap();
+        assert_eq!(committed["revision"], 2);
+        assert_eq!(committed["validation"], crate::creator_projects::VALIDATION_SOURCE_EMBEDDED);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn headless_arm_rejects_sdk_semantic_failures_after_the_structural_gate() {
+        let home = headless_home();
+        crate::creator_city_patch::publish_city_layout_snapshot(&home, &headless_layout_snapshot("world-rev-headless-b")).unwrap();
+        let project = crate::creator_projects::create_project_from_city_layout(&home,
+            crate::creator_projects::LOCAL_CREATOR_OWNER, "flight-checkpoint", "op-project-headless-b", "world-rev-headless-b").unwrap();
+        let project_id = project["projectId"].as_str().unwrap().to_owned();
+        // 结构硬闸不校验 label 词表——坏 label 必须由嵌入式语义闸（SDK 诊断）拒绝：
+        // 结构通过、语义判负 → 信封 ok=false → define 以 creator_preview_invalid 拒绝。
+        let mut bad_label = valid_vehicle("vehicle-bad");
+        bad_label["label"] = json!("<script>alert(1)</script>");
+        let error = answer_headless_call(&home, "creator.vehicle.define", &json!({
+            "projectId": project_id, "baseRevision": 0, "vehicleId": "vehicle-bad",
+            "label": bad_label["label"], "flightModel": bad_label["flightModel"],
+            "physics": bad_label["physics"], "bounds": bad_label["bounds"], "modelAssetId": null,
+            "operationId": "op-vehicle-bad"})).unwrap_err();
+        assert_eq!(error, "creator_preview_invalid");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     #[test]
     fn creator_studio_has_the_same_scoped_city_data_grants() {
         let studio = definitions().iter().find(|plugin| plugin.id == "creator-studio").expect("Creator Studio plugin");
