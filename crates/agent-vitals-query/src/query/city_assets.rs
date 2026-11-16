@@ -506,8 +506,12 @@ mod legacy_export_tests {
     use super::*;
 
     fn home() -> std::path::PathBuf {
+        // 并行测试里 nanos 会撞名（同一刻两次调用可能拿到相同值），撞上就两个测试互相踩
+        // 同一个目录，表现为随机失败。加进程内序号，与 crate 内其它 helper 保持一致。
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(1);
         let id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        std::env::temp_dir().join(format!("city-legacy-export-{id}"))
+        std::env::temp_dir().join(format!("city-legacy-export-{}-{id}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)))
     }
 
     #[test]
