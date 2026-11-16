@@ -9,6 +9,22 @@ never control one).
 No network, no Three.js, no DOM, no persistence between processes. Every session lives in
 memory for the lifetime of the server process.
 
+## 体验包模式（`game_open { experience }`，2026-11-16）
+
+发布物仍然引用 Creator 本机库。要把一个作品交到**干净客户端**（没有
+`state/creator/projects.sqlite`、没有项目资产目录）上，先用
+`scripts/build-experience-package.mjs` 把它打成自包含包（manifest + release.json +
+layout.json v3 + 资产字节），再把包目录传给 `game_open`：
+
+```jsonc
+{ "experience": "<client-home>/state/creator/content/experience/<id>/<version>" }
+```
+
+包在启动前逐字节校验（`contentDigest`、每个文件摘要、v3 几何）；坏包以
+`experience_digest_mismatch` / `experience_file_digest_mismatch` /
+`experience_layout_incomplete` 拒绝。格式、验收命令与未做项见
+`docs/CREATOR_EXPERIENCE_PACKAGE_2026_11_16.md`。
+
 ## Start
 
 From the repo root:

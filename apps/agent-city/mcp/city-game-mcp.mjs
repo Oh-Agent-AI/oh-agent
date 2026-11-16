@@ -18,6 +18,7 @@ import { createMountedMiniGamePlan, MountedMiniGameControllerV1 } from "../ui/sr
 import { EMPTY_INPUT } from "../ui/src/game/types.ts";
 import { m as worldUnits, toMeters } from "../ui/src/engine/worldScale.ts";
 import { resolveRelease } from "./releaseStore.mjs";
+import { resolveExperience } from "./experienceStore.mjs";
 
 const PROTOCOL = "2024-11-05";
 const DT_SECONDS = 1 / 60;
@@ -164,10 +165,11 @@ function advance(session, input) {
 const tools = [
   { name: "game_types", description: "List the game types this server can drive headlessly and the shared input vocabulary.",
     inputSchema: { type: "object", properties: {} } },
-  { name: "game_open", description: "Open one headless game session from a game type, an optional vehicle profile/preset and an optional creator pack with explicit gates. Coordinates are metres.",
+  { name: "game_open", description: "Open one headless game session from a game type, an optional vehicle profile/preset and an optional creator pack with explicit gates. Coordinates are metres. Pass `experience` to launch a self-contained experience package instead of reading a Creator store.",
     inputSchema: { type: "object", properties: {
       gameType: { type: "string", enum: ["flight", "driving"], description: "required unless releaseId is given (the release freezes it)" },
       releaseId: { type: "string", description: "read a published release: vehicle, pack and gates come from the frozen snapshot" },
+      experience: { type: "string", description: "city-experience package directory: self-contained release + v3 layout + assets, verified byte-for-byte; no Creator store needed (clean client)" },
       dataHome: { type: "string", description: "Creator store home (default $AV_DATA_HOME or ~/.agent-vitals)" },
       vehicle: { description: "flight only: preset id or a full VehicleProfileV1", oneOf: [{ type: "string", enum: ["ornithopter", "fixed-wing"] }, { type: "object" }] },
       pack: { type: "object", description: "optional creator mini-game pack (same JSON as the Studio game editor)" },
@@ -192,9 +194,10 @@ const tools = [
 /** release 模式：载具与 pack 来自发布快照（只读），门来自布局快照里的 geometry。
  *  快照没有 geometry（v1/v2 的历史数据）时**不猜位置**，要求调用方显式给 gates。 */
 function resolveReleaseArgs(args) {
-  const dataHome = typeof args.dataHome === "string" && args.dataHome ? args.dataHome
-    : process.env.AV_DATA_HOME || `${process.env.HOME}/.agent-vitals`;
-  const release = resolveRelease({ dataHome, releaseId: args.releaseId });
+  const release = typeof args.experience === "string" && args.experience
+    ? resolveExperience({ dir: args.experience })
+    : resolveRelease({ dataHome: (typeof args.dataHome === "string" && args.dataHome ? args.dataHome
+      : process.env.AV_DATA_HOME || `${process.env.HOME}/.agent-vitals`), releaseId: args.releaseId });
   if (args.gameType !== undefined && args.gameType !== release.gameType) throw new Error("release_game_type_mismatch");
   if (!release.gates && !Array.isArray(args.gates)) {
     // 把绑定了哪些锚点如实回给 Agent：它需要自己给出这些门的世界坐标（米）。
@@ -206,7 +209,7 @@ function resolveReleaseArgs(args) {
 }
 
 function open(args) {
-  const fromRelease = typeof args.releaseId === "string" ? resolveReleaseArgs(args) : null;
+  const fromRelease = typeof args.releaseId === "string" || typeof args.experience === "string" ? resolveReleaseArgs(args) : null;
   const gameType = fromRelease ? fromRelease.gameType
     : args.gameType === "driving" ? "driving" : args.gameType === "flight" ? "flight" : null;
   if (!gameType) throw new Error("game_type_invalid");
@@ -219,6 +222,8 @@ function open(args) {
     gatesPassed: 0, gatesTotal: 0, pack: null, params: null, vehicleId: null, state: null };
   if (fromRelease) {
     session.release = { releaseId: fromRelease.release.releaseId, projectId: fromRelease.release.projectId,
+      ...(fromRelease.release.experienceId ? { experienceId: fromRelease.release.experienceId, experienceVersion: fromRelease.release.version,
+        contentDigest: fromRelease.release.contentDigest } : {}),
       revision: fromRelease.release.revision, gameType: fromRelease.release.gameType,
       gateSource: Array.isArray(args.gates) ? "caller" : fromRelease.release.gateSource,
       boundAnchors: fromRelease.release.boundAnchors, warnings: fromRelease.release.warnings };

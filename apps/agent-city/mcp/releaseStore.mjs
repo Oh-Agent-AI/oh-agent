@@ -108,32 +108,10 @@ export function resolveRelease({ dataHome, releaseId }) {
     const warnings = [];
     const layoutSnapshot = readLayoutSnapshot(db, layout);
     if (!layoutSnapshot) warnings.push(layout?.cityId || layout?.worldRevision ? "layout_snapshot_missing" : "layout_scope_missing");
-    const geometry = layoutSnapshot ? geometryOf(layoutSnapshot) : null;
-    if (!geometry) warnings.push("gate_geometry_not_serialized");
-    const anchors = layoutSnapshot ? anchorsOf(layoutSnapshot) : new Map();
-
-    // 门：按 bindings 顺序取 geometry。任一条缺失就整份不给——半份门等于把玩法挪了位置。
-    let gates = null;
-    let gateSource = null;
-    if (geometry) {
-      const resolved = [];
-      for (const binding of boundAnchors) {
-        for (const anchorId of binding.anchorIds) {
-          const anchor = anchors.get(anchorId);
-          if (!anchor) throw fail("gate_anchor_not_found");
-          const entry = geometry.get(anchor.geometryRef);
-          if (!entry) throw fail("gate_geometry_unresolved");
-          // 空域门复用路网节点时几何没有实测半径：用与 City 试玩同一份默认触发球，
-          // 并在 gate 上标注 radiusDefaulted，调用方不会以为这是测量值。
-          const radius = entry.activationRadiusMeters ?? RELEASE_ZONE_DEFAULT_RADIUS_METERS;
-          resolved.push({ x: entry.positionMeters.x, y: entry.positionMeters.y, z: entry.positionMeters.z, radius,
-            ...(entry.activationRadiusMeters === undefined ? { radiusDefaulted: true } : {}) });
-          if (entry.activationRadiusMeters === undefined && !warnings.includes("gate_radius_defaulted")) warnings.push("gate_radius_defaulted");
-        }
-      }
-      gates = resolved;
-      gateSource = "layout-geometry";
-    }
+    const resolved = resolveGates({ boundAnchors, layoutSnapshot });
+    for (const warning of resolved.warnings) if (!warnings.includes(warning)) warnings.push(warning);
+    const gates = resolved.gates;
+    const gateSource = resolved.gateSource;
 
     return { releaseId: row.release_id, projectId: row.project_id, revision: row.revision, gameType,
       vehicleId: snapshot.vehicleId ?? null, vehicle, game: snapshot.game, mounts,
@@ -141,6 +119,41 @@ export function resolveRelease({ dataHome, releaseId }) {
   } finally {
     db.close();
   }
+}
+
+/**
+ * 从冻结快照的绑定点 + 布局快照解析门。发布模式与体验包模式共用这一份逻辑：
+ * 任一条几何缺失就整份不给——半份门等于把玩法挪了位置。
+ *
+ * @returns {{ gates: Array<{x:number,y:number,z:number,radius:number}> | null, gateSource: "layout-geometry" | null, warnings: string[] }}
+ */
+export function resolveGates({ boundAnchors, layoutSnapshot }) {
+  const warnings = [];
+  const geometry = layoutSnapshot ? geometryOf(layoutSnapshot) : null;
+  if (!geometry) warnings.push("gate_geometry_not_serialized");
+  const anchors = layoutSnapshot ? anchorsOf(layoutSnapshot) : new Map();
+  let gates = null;
+  let gateSource = null;
+  if (geometry) {
+    const resolved = [];
+    for (const binding of boundAnchors) {
+      for (const anchorId of binding.anchorIds) {
+        const anchor = anchors.get(anchorId);
+        if (!anchor) throw fail("gate_anchor_not_found");
+        const entry = geometry.get(anchor.geometryRef);
+        if (!entry) throw fail("gate_geometry_unresolved");
+        // 空域门复用路网节点时几何没有实测半径：用与 City 试玩同一份默认触发球，
+        // 并在 gate 上标注 radiusDefaulted，调用方不会以为这是测量值。
+        const radius = entry.activationRadiusMeters ?? RELEASE_ZONE_DEFAULT_RADIUS_METERS;
+        resolved.push({ x: entry.positionMeters.x, y: entry.positionMeters.y, z: entry.positionMeters.z, radius,
+          ...(entry.activationRadiusMeters === undefined ? { radiusDefaulted: true } : {}) });
+        if (entry.activationRadiusMeters === undefined && !warnings.includes("gate_radius_defaulted")) warnings.push("gate_radius_defaulted");
+      }
+    }
+    gates = resolved;
+    gateSource = "layout-geometry";
+  }
+  return { gates, gateSource, warnings };
 }
 
 /** 布局快照：先按 City 作用域（v2 表）找，再退回 legacy worldRevision 表。 */

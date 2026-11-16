@@ -258,3 +258,114 @@ test("release integrity failures are reported instead of opening a different gam
     assert.match(missing.error, /creator_store_unavailable|release_not_found/);
   } finally { client.close(); }
 });
+
+// ── 体验包模式（city-experience）：干净客户端只拿一个目录就能启动 ───────────────
+// 这里用合成包钉住形状：release.json（冻结快照）+ layout.json（v3，带锚点几何）。
+// 真实打包/安装流程见 scripts/build-experience-package.mjs 与
+// scripts/verify-experience-package.mjs；本测试只负责「服务器怎么读包、怎么拒坏包」。
+import { readFileSync, writeFileSync } from "node:fs";
+
+const digest = value => `sha256:${createHash("sha256").update(value).digest("hex")}`;
+
+function experienceFixture() {
+  const dir = mkdtempSync(join(tmpdir(), "mcp-experience-"));
+  mkdirSync(join(dir, "assets"), { recursive: true });
+  const game = { schemaVersion: 1, id: "creator.experience-test", rulesVersion: 1,
+    slots: { gates: { kind: "zone", min: 1, max: 3, requires: ["fly"] } },
+    rules: { counters: { next: { initial: 0, max: 3 } }, nodes: [
+      { id: "pass", on: { type: "zone.entered", slot: "gates" }, actions: [{ op: "counter.add", counter: "next", amount: 1 }] },
+      { id: "finish", on: { type: "zone.entered", slot: "gates" }, when: [{ op: "counter.eq", counter: "next", value: 3 }], actions: [{ op: "run.finish", outcome: "success" }] } ] } };
+  const gameDigest = digest(canonicalJson(game));
+  const layout = { schemaVersion: 3, cityId: "city-exp", cityRevision: 1, worldRevision: "world-exp", seed: 7,
+    layout: { schemaVersion: 1, id: "layout-exp", coordinateSystem: "city-local-m-v1",
+      anchors: [{ id: "spawn-air", kind: "spawn", capabilities: ["fly"], geometryRef: "creator-air:spawn" },
+        { id: "air-gate:1", kind: "zone", capabilities: ["fly"], geometryRef: "creator-air:g1" },
+        { id: "air-gate:2", kind: "zone", capabilities: ["fly"], geometryRef: "creator-air:g2" },
+        { id: "air-gate:3", kind: "zone", capabilities: ["fly"], geometryRef: "creator-air:g3" }],
+      links: [{ id: "l1", fromAnchorId: "spawn-air", toAnchorId: "air-gate:1", capabilities: ["fly"] },
+        { id: "l2", fromAnchorId: "spawn-air", toAnchorId: "air-gate:2", capabilities: ["fly"] },
+        { id: "l3", fromAnchorId: "spawn-air", toAnchorId: "air-gate:3", capabilities: ["fly"] }] },
+    geometry: [{ geometryRef: "creator-air:spawn", positionMeters: { x: 0, y: 40, z: 0 } },
+      { geometryRef: "creator-air:g1", positionMeters: { x: 150, y: 40, z: 0 }, activationRadiusMeters: 20 },
+      { geometryRef: "creator-air:g2", positionMeters: { x: 300, y: 40, z: 0 }, activationRadiusMeters: 20 },
+      { geometryRef: "creator-air:g3", positionMeters: { x: 450, y: 40, z: 0 }, activationRadiusMeters: 20 }] };
+  const release = { projectId: "project-exp", revision: 1, title: "Experience", gameType: "flight", vehicleId: "vehicle-exp",
+    vehicle: { schemaVersion: 1, id: "vehicle-exp", label: "Exp flier", modelAssetId: null, flightModel: "fixed-wing",
+      physics: { massKg: 620, wingAreaM2: 16, thrustN: 9000, maxSpeedMps: 130, dragCoefficient: 0.06, turnRateRps: 1.05, climbRateMps: 26, sinkRateMps: 20 },
+      bounds: { halfLengthM: 4.5, halfWidthM: 5.5, halfHeightM: 1.5 }, camera: { followDistanceM: 35.75, heightOffsetM: 14.3, fovDeg: 55 } },
+    skinId: "miami-vice", game, scene: { schemaVersion: 1, objects: [] }, assets: { schemaVersion: 1, entries: [] }, assetRefs: [],
+    layoutId: "layout-exp", worldRevision: "world-exp", cityId: "city-exp", cityRevision: 1, cityLayoutId: "layout-exp",
+    mounts: [{ schemaVersion: 1, mountId: "mount-exp", layout: { kind: "city-layout", id: "layout-exp", version: "1", digest: "world-exp" },
+      game: { kind: "city-minigame", id: game.id, version: "1", digest: gameDigest },
+      entryAnchorId: "spawn-air", bindings: { gates: ["air-gate:1", "air-gate:2", "air-gate:3"] }, parameterOverrides: {} }] };
+  const files = [];
+  const write = (name, value) => { const bytes = Buffer.from(JSON.stringify(value)); writeFileSync(join(dir, name), bytes); files.push({ path: name, digest: digest(bytes), byteLength: bytes.length }); return bytes; };
+  write("release.json", release);
+  write("layout.json", layout);
+  const manifest = { schemaVersion: 1, kind: "city-experience", experienceId: "experience-test", version: "1.0.0",
+    world: { cityId: "city-exp", cityRevision: 1, seed: 7, profile: "egypt-desert", worldRevision: "world-exp", layoutId: "layout-exp", layoutRevision: "layout-exp" },
+    release: { releaseId: "release-exp", projectId: "project-exp", revision: 1, gameType: "flight", vehicleId: "vehicle-exp" },
+    assets: [], files: files.slice() };
+  manifest.contentDigest = digest(canonicalJson(manifest));
+  writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
+  return { dir, manifest, release, layout, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+test("game_open launches a self-contained experience package without a Creator store", async () => {
+  const fixture = experienceFixture();
+  const mcp = connect();
+  try {
+    const opened = await mcp.call("game_open", { experience: fixture.dir });
+    assert.equal(opened.isError, false, JSON.stringify(opened.error));
+    assert.equal(opened.gates.total, 3);
+    assert.equal(opened.release.gateSource, "layout-geometry");
+    assert.deepEqual(opened.release.warnings, []);
+    const ran = await mcp.call("game_script", { sessionId: opened.sessionId, script: [{ ticks: 400, input: { throttleUp: true } }] });
+    assert.equal(ran.outcome, "success");
+    assert.equal(ran.gates.passed, 3);
+  } finally { mcp.close(); fixture.cleanup(); }
+});
+
+test("a tampered or incomplete experience package is rejected before it can run", async () => {
+  // 1) 字节被改：摘要必须发现（不是"重新算一遍摘要就算对"）。
+  {
+    const fixture = experienceFixture();
+    const mcp = connect();
+    try {
+      writeFileSync(join(fixture.dir, "layout.json"), readFileSync(join(fixture.dir, "layout.json")).subarray(0, -2));
+      const opened = await mcp.call("game_open", { experience: fixture.dir });
+      assert.equal(opened.isError, true);
+      assert.equal(opened.error, "experience_file_digest_mismatch");
+    } finally { mcp.close(); fixture.cleanup(); }
+  }
+  // 2) metadata 被改而 contentDigest 未重算：contentDigest 覆盖 manifest 全文。
+  {
+    const fixture = experienceFixture();
+    const mcp = connect();
+    try {
+      const manifest = { ...fixture.manifest, version: "9.9.9" };
+      writeFileSync(join(fixture.dir, "manifest.json"), JSON.stringify(manifest));
+      const opened = await mcp.call("game_open", { experience: fixture.dir });
+      assert.equal(opened.error, "experience_digest_mismatch");
+    } finally { mcp.close(); fixture.cleanup(); }
+  }
+  // 3) 布局是 v2（没有锚点几何）：包在干净客户端上无法定位门，必须拒绝而不是跑一局没有门的游戏。
+  {
+    const fixture = experienceFixture();
+    const mcp = connect();
+    try {
+      const v2 = { ...fixture.layout, schemaVersion: 2 };
+      delete v2.geometry;
+      const bytes = Buffer.from(JSON.stringify(v2));
+      writeFileSync(join(fixture.dir, "layout.json"), bytes);
+      const manifest = { ...fixture.manifest,
+        files: fixture.manifest.files.map(file => file.path === "layout.json"
+          ? { ...file, digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`, byteLength: bytes.length } : file) };
+      const { contentDigest: _ignored, ...rest } = manifest;
+      manifest.contentDigest = `sha256:${createHash("sha256").update(canonicalJson(rest)).digest("hex")}`;
+      writeFileSync(join(fixture.dir, "manifest.json"), JSON.stringify(manifest));
+      const opened = await mcp.call("game_open", { experience: fixture.dir });
+      assert.equal(opened.error, "experience_layout_incomplete");
+    } finally { mcp.close(); fixture.cleanup(); }
+  }
+});
