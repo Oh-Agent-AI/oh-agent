@@ -58,6 +58,10 @@ base64 = "0.22"
 flate2 = "1.1"
 # 应用内版本检查按 semver 优先级比较 app-v 标签（beta.10 > beta.9 > …，1.0.0 > 1.0.0-beta.N）。
 semver = "1"
+# E5 嵌入式语义闸（spec §8.4 路径 2 / §11）：宿主进程内的 Bellard QuickJS——与
+# W1 spike 验证过的引擎同族（quickjs-emscripten 是同引擎的 WASM 构建）。选 rquickjs
+# 而非 wasmtime+Javy 的依赖体积/确定性评估记录在 embedded_city_sdk.rs 模块头注释。
+rquickjs = "0.14"
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", features = ["fs"] }

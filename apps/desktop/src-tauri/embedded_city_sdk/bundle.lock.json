@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "bundle": "city-sdk-gate.iife.js",
+  "bundleSha256": "3da881ae65551ed65524c1bc73f2dc9a76784b97ca6c8d9b816cbbe96d1f52df",
+  "bundleBytes": 86025,
+  "gateVersion": 1,
+  "sdkPackage": "@agent-vitals/city-sdk",
+  "sdkVersion": "0.1.0",
+  "engine": "rquickjs (Bellard QuickJS, embedded in agent-vitals-menubar)",
+  "entrySources": {
+    "embeddedGate.ts": "6e5ebd40b45a2ce82dc3f2659daed78b0b22065ddd09aace5727347f07f1d6b5",
+    "sdkValidation.ts": "59220c48b93f20562d3a36720ac5c05aa75d12745b7ce746c63c414a891ac309",
+    "cityWorldOperations.ts": "21997366b59edc1bace1784664ad283a3f4366abc1fbf604368c5da2380df39d"
+  },
+  "regenerate": "node apps/desktop/src-tauri/embedded_city_sdk/build.mjs"
+}
