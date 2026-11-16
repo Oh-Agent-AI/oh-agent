@@ -131,7 +131,7 @@
 
 - 背景：本文件 D2/§9 的信任模型缺口——「WebView 返回值仍是宿主输入……语义校验需移到宿主可验证的进程/签名执行环境，或保留 Rust 权威校验；普通哈希不能证明验证器执行过」。T3 不需要解决这个问题：它驱动外部 agent，验证器在 agent 进程内跑，T3 靠 checkpoint diff 事后审计。
 - dev 侧实证：`88fd5122 spike(city-sdk): validate validators inside a WASM QuickJS runtime`（evals/wasm-spike/SPIKE_REPORT.md）——同一份 city-sdk TS 校验器经 quickjs-emscripten 与 Javy 两条 WASM 路径执行，6/6 验收向量与 Node 原生**逐字节相同**，唯一不兼容点（QuickJS 在 `u` 模式拒绝字符类内 `\-` 转义）以语法等价改写绕过并给出上游修复建议。spike 结论「有条件可行」。
-- 判定：**Studio 方向的独有深化**。它把「SDK verdict 只来自活动官方 Studio」从信任声明推进到可承载的技术路线（宿主控制的 WASM 运行时执行校验器），而不引入 T3 式的外部 agent 信任。若采纳，归属 SPEC §9 信任模型的后续切片（非远景 E7/E8/E9 之一，独立立项）。
+- 判定：**Studio 方向的独有深化**。它把「SDK verdict 只来自活动官方 Studio」从信任声明推进到可承载的技术路线（宿主控制的 WASM 运行时执行校验器），而不引入 T3 式的外部 agent 信任。落点：SPEC §11「W1 spike」——**spike 已完成**（2026-11-16，quickjs-emscripten/Javy 双路径 6/6 向量逐字节一致，结论有条件可行，见 [SPIKE_REPORT](../evals/wasm-spike/SPIKE_REPORT.md) 与 SPEC §11.4）；全量项目（宿主自签发信封）尚未立项。
 
 ### D10/D11/D7 在 50 工具面上延续
 

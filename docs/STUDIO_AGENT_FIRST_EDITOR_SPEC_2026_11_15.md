@@ -317,3 +317,12 @@ E9 evals 提供**事故回归用例**（防劣化）；本表提供**目标度�
 
 - 只编 `validateVehicleProfileV1` 单校验器（preset/越界/非物理比值至少各一例）跑通「TS 与 WASM 同输入同诊断」；通过后另立全量项目。
 - 产物体积与冷启动延迟如实记录；网络不可用时以 `quickjs-emscripten`（Node 侧 WASM QuickJS）证明「同一诊断在 WASM 承载的 JS 运行时中成立」，宿主侧 wasmtime 集成留作后续。
+
+### 11.4 spike 结果（2026-11-16，已完成——验收达成）
+
+[SPIKE_REPORT](../evals/wasm-spike/SPIKE_REPORT.md)：**有条件可行**。同一份 city-sdk 校验器（`validateVehicleProfileV1`）经 quickjs-emscripten 与 Javy 两条 WASM 承载路径执行，6/6 验收向量与 Node 原生**逐字节相同**（超过 11.3 的最低 3 例要求）；消费的是 dist 字节（不改 city-sdk 构建配置），dist 纯度核实通过。已识别约束如实记录：
+
+1. QuickJS 系引擎在 `u` 模式下拒绝字符类内 `\-` 转义——以语法等价的打包期改写绕过，上游修复建议已给出；
+2. 宿主侧 wasmtime 集成（Rust 进程内执行）留作后续——spike 在 Node 侧完成工具链证明。
+
+**后续状态：全量项目（全部校验器进宿主 WASM + 宿主自签发信封）尚未立项**；立项前 D12 的信任模型收益与 11.2 的独立性弱化声明需一并评估。另注意 `crates/agent-vitals-wasm` 与本节无关（那是浏览器行为审计的 wasm-pack 构建）。
