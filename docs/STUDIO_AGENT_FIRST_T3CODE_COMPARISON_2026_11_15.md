@@ -1,4 +1,4 @@
-# Studio Agent-first 设计 × T3 Code 设计思路对比（引用级，2026-11-15）
+# Studio Agent-first 设计 × T3 Code 设计思路对比（引用级，2026-11-15；增量更新 2026-11-17 见 §5）
 
 出处约定：
 
@@ -108,3 +108,41 @@
 - §3.2：显式命名 command receipt 对齐（已并入）。
 - §5：新增远景 E7/E8/E9（已并入）。
 - 本文件作为 §9 的引用级展开；两文档互链。
+
+## 5. 增量对比（2026-11-17）
+
+基线更新：T3 `70abb6c0 → origin/main`（两天，20+ 提交全部为 fix/refactor/ci，`docs/internals/*` 架构文档与 `packages/contracts` 零变化——**D1–D11 的 T3 侧判定基线不动**）；dev `f36d6e67（本文件落盘）→ 51738b08`（E2/E5/E6 落地、playtest 生命周期修复、host experience tools、50 工具面、wasm-spike）。以下只记录判定发生变化的维度。
+
+### D2 异步 settle 诚实状态：判定升级——统一 Job 面已落地
+
+- 原判定「已一致（纪律引用）」升级为「已一致且有实现承载」：`a1a74ac8 feat(mcp): world-apply jobs complete the E2 unified job surface` 把布局/世界/试玩/捕获统一注册为 Job，`6301c5cf` 让专用 playtest-start 臂注册会话作业——「提交成功 ≠ settle 完成」从原则变成了 Agent 可 `job_wait` 的类型化面。
+- 配套的实例替换语义同时落地：`c8c0d036`（City/Studio 被替换后恢复试玩 handoff）、`be44e2fc`（City 接管前 ack playtest start）、`35ef1c70`（handoff receipt 保留 + health-fault 显式关闭）——这组修复正是 D1「agent/宿主进程生命周期不对称」在试玩链路上的对称化实践。
+
+### D6 多端监视与审批：可行性证据增强
+
+- `1691ca77`/`a6f47866`：E5 headless 档第一切片——宿主服务在无 UI 下可用（能力降级报告）。D6 的前提「宿主是本地服务，多客户端天然可行」从论证变成了可运行形态；E7 多端监视的距离缩短为「瘦客户端 + 有画面能力的桌面绑定」。
+
+### D9 工具面 evals：从远景（E9）到部分落地
+
+- `evals/creator/`（`run.mjs` + `cases/`）与 `bbed235f` 的 E6 flight-pipeline 端到端验证脚本已存在；SPEC §10.1 把 E9 事故回归用例与 agent-friendliness 度量表挂到同一判分脚手架（按 E6 闭环脚本的 `evidence.json` 聚合）。
+- 「每个 case 复现一次 agent 真实犯过的错误」纪律已吸收进 SPEC §10；T3 侧对应物 `evals/mcp-tool-use` 的结构（fake thread 重放、廉价模型扮演 shell）仍是 E9 全量化的参照。
+
+### D12（新增维度）验证器执行的宿主侧可验证承载：Studio 独有，T3 无对应物
+
+- 背景：本文件 D2/§9 的信任模型缺口——「WebView 返回值仍是宿主输入……语义校验需移到宿主可验证的进程/签名执行环境，或保留 Rust 权威校验；普通哈希不能证明验证器执行过」。T3 不需要解决这个问题：它驱动外部 agent，验证器在 agent 进程内跑，T3 靠 checkpoint diff 事后审计。
+- dev 侧实证：`88fd5122 spike(city-sdk): validate validators inside a WASM QuickJS runtime`（evals/wasm-spike/SPIKE_REPORT.md）——同一份 city-sdk TS 校验器经 quickjs-emscripten 与 Javy 两条 WASM 路径执行，6/6 验收向量与 Node 原生**逐字节相同**，唯一不兼容点（QuickJS 在 `u` 模式拒绝字符类内 `\-` 转义）以语法等价改写绕过并给出上游修复建议。spike 结论「有条件可行」。
+- 判定：**Studio 方向的独有深化**。它把「SDK verdict 只来自活动官方 Studio」从信任声明推进到可承载的技术路线（宿主控制的 WASM 运行时执行校验器），而不引入 T3 式的外部 agent 信任。若采纳，归属 SPEC §9 信任模型的后续切片（非远景 E7/E8/E9 之一，独立立项）。
+
+### D10/D11/D7 在 50 工具面上延续
+
+- `0346c5bb`（host experience tools + 共享 content-library install）、`d17e2c20`（MCP 客户端指南同步 50 工具面）、`51738b08`（city-sdk 错误消息带 next 建议——E3 纪律实例）：新工具维持 exact_payload/有界返回/错误带可执行建议，D7 能力诚实、D10 粒度、D11 contracts 边界的判定不变。
+
+### 增量汇总
+
+| 维度 | 11-15 判定 | 11-17 判定 | 变化来源 |
+|---|---|---|---|
+| D2 settle 诚实 | 已一致（纪律） | 已一致（E2 Job 面落地） | a1a74ac8、6301c5cf |
+| D6 多端监视 | 采纳（E7） | 采纳（E7；E5 headless 已可运行） | a6f47866、1691ca77 |
+| D9 evals | 采纳（E9） | **部分落地**（evals/creator + E6） | bbed235f、SPEC §10 |
+| D12 验证器承载 | （未识别） | **新增：Studio 独有方向，spike 有条件可行** | 88fd5122 |
+| 其余 D1/D3/D4/D5/D7/D8/D10/D11 | — | 不变 | T3 与 dev 两侧均无架构级变化 |
