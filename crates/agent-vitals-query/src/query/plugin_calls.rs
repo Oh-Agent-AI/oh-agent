@@ -35,8 +35,15 @@ fn open(home: &Path) -> Result<Connection, &'static str> {
     let db = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE
         | OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(|_| "plugin_call_store_unavailable")?;
     db.busy_timeout(Duration::from_secs(2)).map_err(|_| "plugin_call_store_unavailable")?;
-    db.execute_batch("PRAGMA journal_mode=WAL;
-        CREATE TABLE IF NOT EXISTS plugin_calls(
+    // WAL 是**持久**设置：只要库已经切换过，后续连接无需（也不应）再执行这个 pragma。
+    // 并发打开时重复设置会返回 SQLITE_BUSY，而 `busy_timeout` 不覆盖该 pragma —— 并列的
+    // 第二个连接会直接失败成 plugin_call_store_unavailable（app 与 CLI/MCP 是两个进程，
+    // 这在真实使用里也会偶发）。先读一次当前模式，确实不是 WAL 时才尝试切换，失败就沿用
+    // 现有日志模式：功能不受影响，只是并发写退化为 rollback journal。
+    if let Ok(mode) = db.query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0)) {
+        if !mode.eq_ignore_ascii_case("wal") { let _ = db.execute_batch("PRAGMA journal_mode=WAL;"); }
+    }
+    db.execute_batch("CREATE TABLE IF NOT EXISTS plugin_calls(
             call_id TEXT PRIMARY KEY,
             plugin_id TEXT NOT NULL,
             method TEXT NOT NULL,
@@ -498,6 +505,27 @@ mod tests {
         let value = call(&home, "creator-studio", "creator.project.read", &json!({}), 2_000).unwrap();
         assert_eq!(value["receipt"], "handoff");
         assert!(started.elapsed() < Duration::from_millis(1_500));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// 并发打开同一个库（app 与 CLI/MCP 是两个进程）：重复设置 WAL 的 pragma 会返回
+    /// SQLITE_BUSY，而 busy_timeout 不覆盖它，后到的连接曾直接失败成
+    /// plugin_call_store_unavailable。四个线程各自反复 open/claim，全部必须成功。
+    #[test]
+    fn concurrent_store_opens_do_not_fail() {
+        let home = home();
+        let mut handles = Vec::new();
+        for index in 0..4u32 {
+            let home = home.clone();
+            handles.push(std::thread::spawn(move || {
+                for round in 0..8u32 {
+                    let page = claim_pending(&home, "creator-studio", &format!("plugin-concurrent-{index}-{round}"),
+                        &["creator.project.read".to_string()], 8).expect("concurrent open must not fail");
+                    assert!(page.is_empty(), "no calls were published");
+                }
+            }));
+        }
+        for handle in handles { handle.join().expect("concurrent opens must not panic"); }
         let _ = std::fs::remove_dir_all(&home);
     }
 
