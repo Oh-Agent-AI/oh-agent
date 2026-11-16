@@ -135,6 +135,13 @@ pub fn specs() -> Vec<ToolSpec> {
 fn call_error(code: &str) -> ToolError {
     match code {
         "plugin_call_timeout" | "plugin_call_expired" | "plugin_call_method_unavailable" | "plugin_unavailable" => ToolError::new("plugin_unavailable", "Open the official Creator Studio plugin and retry."),
+        "plugin_unresponsive" => ToolError::new("plugin_unresponsive", "Creator Studio stopped responding. Use Retry Creator Studio, then retry this request."),
+        "plugin_boot_timeout" => ToolError::new("plugin_boot_timeout", "Creator Studio did not finish opening. Use Retry Creator Studio, then retry this request."),
+        "plugin_command_timeout" => ToolError::new("plugin_command_timeout", "Creator Studio did not finish a toolbar command. Use Retry Creator Studio, then retry this request."),
+        "plugin_runtime_error" => ToolError::new("plugin_runtime_error", "Creator Studio reported a runtime fault. Use Retry Creator Studio, then retry this request."),
+        "plugin_command_rejected" => ToolError::new("plugin_command_rejected", "Creator Studio rejected its last toolbar command. Use Retry Creator Studio, then retry this request."),
+        "plugin_reloaded" => ToolError::new("plugin_reloaded", "Creator Studio reloaded and dropped its previous view. Retry this request against the new view."),
+        "plugin_suspended" => ToolError::new("plugin_suspended", "Creator Studio is not the active view. Switch back to Creator Studio and retry."),
         "plugin_call_capacity" => ToolError::new("busy", "Creator Studio local request capacity was reached."),
         "plugin_call_too_large" => ToolError::new("invalid_argument", "Creator request exceeded the local IPC payload limit."),
         "creator_project_not_found" => ToolError::new("not_found", "Creator project was not found."),

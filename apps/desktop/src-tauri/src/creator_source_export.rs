@@ -6,6 +6,13 @@ use std::{collections::HashSet, io::Write, path::Path};
 use crate::creator_store::{bytes_digest, new_id, valid_id};
 
 pub(crate) const REQUIRED: &[&str] = &["README.md", ".gitignore", "world/world.json", "games/game/game.json", "games/game/layout.json", "games/game/scene.json", "games/game/assets/catalog.json"];
+
+/// `selected` when a directory was chosen. `none` is only "no path came back".
+/// That covers a dismiss and a backend that returned empty. Elapsed time is
+/// logged beside it and is not treated as proof of which one happened.
+pub(crate) fn classify_folder_picker(selected: bool) -> &'static str {
+    if selected { "selected" } else { "none" }
+}
 const MAX_TEXT: usize = 4 * 1024 * 1024;
 const MAX_ASSETS: usize = 64;
 const MAX_ASSET_TOTAL: u64 = 128 * 1024 * 1024;
@@ -358,5 +365,10 @@ mod tests {
         let mut tampered = payload.clone(); tampered["assetDigests"] = json!([]);
         assert_eq!(export_city_source(&home, &destination, &tampered).unwrap_err(), "creator_export_asset_mismatch");
         let _ = std::fs::remove_dir_all(home);
+    }
+    #[test]
+    fn folder_picker_none_is_not_classified_by_elapsed_time() {
+        assert_eq!(classify_folder_picker(true), "selected");
+        assert_eq!(classify_folder_picker(false), "none");
     }
 }

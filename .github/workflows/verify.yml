@@ -261,6 +261,12 @@ jobs:
       - name: 术语与命名边界守卫
         working-directory: apps/desktop/ui-dev
         run: node ../../../scripts/verify-harness-terminology.mjs
+      # Studio 侧这两个守卫不加载城市，因此不在 city-kit 清单里；它们只用到本 job 已装好的
+      # esbuild，接在这里避免"只能人手跑"（PR #49 的导出点击与 Studio 重建行为）。
+      - name: Studio 守卫（导出点击 / Studio 重建）
+        run: |
+          node scripts/verify-export-click.mjs
+          node scripts/verify-studio-reload-project.mjs
 
   city_heavy_guards:
     name: City heavy guard (${{ matrix.guard }})

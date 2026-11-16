@@ -586,6 +586,88 @@ fn refresh_fault(i: &mut Instance) -> bool {
     false
 }
 
+fn presence_of(i: &Instance, generation: u64) -> agent_vitals_runtime::query::plugin_calls::ConsumerPresence {
+    let hidden_for = i.hidden_since.map(|since| since.elapsed().as_millis() as u64).unwrap_or(0);
+    let acceptance = if i.failed.is_some() { "failed" } else if i.suspended { "suspended" } else if i.ready { "ready" } else { "loading" };
+    agent_vitals_runtime::query::plugin_calls::ConsumerPresence {
+        plugin_id: i.plugin_id.clone(), instance_id: i.id.clone(), generation,
+        acceptance: acceptance.into(), fault: i.failed.map(str::to_string),
+        pulse_age_ms: i.pulse.elapsed().as_millis() as u64, hidden: i.page_hidden,
+        hidden_for_ms: if i.page_hidden { hidden_for } else { 0 },
+        in_flight: i.in_flight, ready: i.ready, suspended: i.suspended,
+    }
+}
+
+fn presence_closed(i: &Instance, generation: u64) -> agent_vitals_runtime::query::plugin_calls::ConsumerPresence {
+    let mut presence = presence_of(i, generation);
+    presence.acceptance = "closed".into();
+    presence.ready = false;
+    presence.suspended = false;
+    presence
+}
+
+fn publish_presence(presence: &agent_vitals_runtime::query::plugin_calls::ConsumerPresence) {
+    let home = crate::overview::data_home();
+    if let Err(code) = agent_vitals_runtime::query::plugin_calls::publish_consumer(&home, presence) {
+        agent_vitals_runtime::logging::log_warn("plugin_host", &format!("consumer presence not recorded code={code}"));
+    }
+}
+
+fn report_new_fault(presence: &agent_vitals_runtime::query::plugin_calls::ConsumerPresence) {
+    let line = agent_vitals_runtime::query::plugin_calls::format_fault_context(presence);
+    agent_vitals_runtime::logging::log_warn("plugin_host", &line);
+    retain_diagnostic(&line);
+    publish_presence(presence);
+}
+
+/// Append-only fault/close line under the data home. The temp diagnostics JSON
+/// is one current instance and is replaced by the next view; this file is not.
+fn retain_diagnostic(line: &str) {
+    #[cfg(not(test))]
+    {
+        let path = crate::overview::data_home().join("logs").join("plugin-faults.jsonl");
+        if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            use std::io::Write;
+            let _ = writeln!(file, "{line}");
+        }
+    }
+    #[cfg(test)]
+    let _ = line;
+}
+
+fn canonical_close_reason(reason: Option<&str>) -> &'static str {
+    match reason {
+        Some("snapshot-failed") => "snapshot-failed",
+        Some("snapshot-unavailable") => "snapshot-unavailable",
+        Some("startup-cancelled") => "startup-cancelled",
+        Some("tab-suspend") => "tab-suspend",
+        Some("user-close") => "user-close",
+        Some("user-leave") => "user-leave",
+        _ => "unspecified",
+    }
+}
+
+/// Suspend keeps a live instance and its playtest claim. A failed instance is
+/// destroyed instead, so leaving it frees the single slot and settles the claim.
+/// The health snapshot itself does not call close.
+fn close_keeps_instance(suspend: Option<bool>, failed: bool) -> bool {
+    suspend == Some(true) && !failed
+}
+
+#[cfg(test)]
+mod close_instance_tests {
+    use super::close_keeps_instance;
+
+    #[test]
+    fn a_failed_instance_is_destroyed_when_the_user_leaves() {
+        assert!(close_keeps_instance(Some(true), false), "a live tab suspend keeps the claim");
+        assert!(!close_keeps_instance(Some(true), true), "a health fault cannot stay suspended");
+        assert!(!close_keeps_instance(None, false));
+        assert!(!close_keeps_instance(Some(false), true));
+    }
+}
+
 fn begin_activity(host: &PluginHost, id: &str) {
     let mut guard = host.0.lock().unwrap();
     if let Some(i) = guard.current.as_mut().filter(|i| i.id == id) {
@@ -732,11 +814,13 @@ fn start_watchdog(app: &tauri::AppHandle, state: &PluginHost) {
         let faulted_instance = {
             let state = app.state::<PluginHost>();
             let mut host = state.0.lock().unwrap();
+            let generation = host.generation;
             if let Some(instance) = host.current.as_mut() {
-                if refresh_fault(instance) { Some(instance.id.clone()) } else { None }
+                if refresh_fault(instance) { Some((instance.id.clone(), presence_of(instance, generation))) } else { None }
             } else { None }
         };
-        if let Some(instance_id) = faulted_instance {
+        if let Some((instance_id, presence)) = faulted_instance {
+            report_new_fault(&presence);
             crate::remote_gateway::close_sessions_for_instance(&app, &instance_id);
             notify_host(&app);
         }
@@ -809,15 +893,26 @@ pub async fn plugin_open(app: tauri::AppHandle, webview: Webview, state: tauri::
             ensure_native_attachment(&app, &view)?;
             let _ = view.eval(format!("window.__AV_PLUGIN_LOCALE__ = '{}'; window.dispatchEvent(new Event('__AV_PLUGIN_LOCALE_CHANGED__'));", locale));
             let _ = view.eval("window.dispatchEvent(new Event('__AV_PLUGIN_RESUMED__'))");
-            if let Some(i) = state.0.lock().unwrap().current.as_mut() {
-                if i.suspended { i.suspended = false; i.pulse = Instant::now(); if !i.ready { i.started = Instant::now(); } note(i, "resumed"); }
-            }
+            let resumed = {
+                let mut host = state.0.lock().unwrap();
+                let generation = host.generation;
+                host.current.as_mut().filter(|i| i.id == id).map(|i| {
+                    if i.suspended { i.suspended = false; i.pulse = Instant::now(); if !i.ready { i.started = Instant::now(); } note(i, "resumed"); }
+                    presence_of(i, generation)
+                })
+            };
+            if let Some(presence) = resumed { publish_presence(&presence); }
             return Ok(id);
         }
     }
     if bounds_only { return Err("plugin_instance_unavailable".into()); }
-    let old = state.0.lock().unwrap().current.take();
+    let (old, old_generation) = {
+        let mut host = state.0.lock().unwrap();
+        let generation = host.generation;
+        (host.current.take(), generation)
+    };
     if let Some(old) = old {
+        publish_presence(&presence_closed(&old, old_generation));
         crate::remote_gateway::close_sessions_for_instance(&app, &old.id);
         if let Some(view) = app.get_webview(&old.id) {
             agent_vitals_runtime::logging::log_warn("plugin_host", &format!("view.close() [replace] id={}", old.id));
@@ -834,9 +929,12 @@ pub async fn plugin_open(app: tauri::AppHandle, webview: Webview, state: tauri::
         let mut current = Instance { id: id.clone(), plugin_id: definition.id.clone(), command_namespace: definition.command_namespace.clone(), max_toolbar_items: definition.max_toolbar_items, performance_metrics: definition.performance_metrics.clone(), started: Instant::now(), pulse: Instant::now(), ready: false, suspended: false,
             page_hidden: false, hidden_since: None, failed: None, revision: 0, items: Vec::new(), sequence: 0, pending: None, in_flight: 0, busy_until: None, events: Vec::new() };
         note(&mut current, "create_started");
+        let presence = presence_of(&current, host.generation);
         host.current = Some(current);
-        id
+        (id, presence)
     };
+    let (id, created) = id;
+    publish_presence(&created);
     adopt_opened_playtest(&definition.id, &id);
     let initialization = format!("window.__AV_PLUGIN_INSTANCE__ = {}; window.__AV_PLUGIN_LOCALE__ = '{}';", serde_json::to_string(&id).unwrap(), locale);
     let allow_local_exports = definition.allow_local_exports;
@@ -869,12 +967,17 @@ pub async fn plugin_open(app: tauri::AppHandle, webview: Webview, state: tauri::
         })
         .on_page_load(|view, payload| {
             let state = view.app_handle().state::<PluginHost>();
-            let mut host = state.0.lock().unwrap();
-            if let Some(i) = host.current.as_mut().filter(|i| i.id == view.label()) {
-                if payload.event() == tauri::webview::PageLoadEvent::Started && i.ready {
-                    i.failed = Some("plugin_reloaded"); note(i, "plugin_reloaded");
-                } else { note(i, "view_load"); }
-            }
+            let reloaded = {
+                let mut host = state.0.lock().unwrap();
+                let generation = host.generation;
+                if let Some(i) = host.current.as_mut().filter(|i| i.id == view.label()) {
+                    if payload.event() == tauri::webview::PageLoadEvent::Started && i.ready {
+                        i.failed = Some("plugin_reloaded"); note(i, "plugin_reloaded");
+                        Some(presence_of(i, generation))
+                    } else { note(i, "view_load"); None }
+                } else { None }
+            };
+            if let Some(presence) = reloaded { report_new_fault(&presence); }
         });
     #[cfg(all(feature = "plugin-isolation-probe", target_os = "macos"))]
     let builder = if std::env::args().any(|arg| arg == "--mecha-v15-local-test") {
@@ -910,10 +1013,16 @@ pub async fn plugin_open(app: tauri::AppHandle, webview: Webview, state: tauri::
         Err(error) => {
             let code = native_create_failure_code(&error);
             agent_vitals_runtime::logging::log_error("plugin_host", &format!("native child WebView creation failed ({code}): {error}"));
-            if let Some(current) = state.0.lock().unwrap().current.as_mut() {
-                current.failed = Some(code);
-                note(current, code);
-            }
+            let fault = {
+                let mut host = state.0.lock().unwrap();
+                let generation = host.generation;
+                if let Some(current) = host.current.as_mut() {
+                    current.failed = Some(code);
+                    note(current, code);
+                    Some(presence_of(current, generation))
+                } else { None }
+            };
+            if let Some(presence) = fault { report_new_fault(&presence); }
             return Err(code.into());
         }
     };
@@ -960,18 +1069,39 @@ pub fn plugin_set_bounds(
 }
 
 #[tauri::command]
-pub async fn plugin_close(app: tauri::AppHandle, webview: Webview, state: tauri::State<'_, PluginHost>, instance_id: String, suspend: Option<bool>) -> Result<(), String> {
+pub async fn plugin_close(app: tauri::AppHandle, webview: Webview, state: tauri::State<'_, PluginHost>, instance_id: String, suspend: Option<bool>, reason: Option<String>) -> Result<(), String> {
     host_only(&webview)?;
     let _operation = state.1.lock().unwrap();
-    agent_vitals_runtime::logging::log_info("plugin_host", &format!("plugin_close entry id={instance_id} suspend={suspend:?}"));
+    let reason = canonical_close_reason(reason.as_deref());
+    let entry = {
+        let host = state.0.lock().unwrap();
+        let generation = host.generation;
+        host.current.as_ref().filter(|i| i.id == instance_id).map(|i| presence_of(i, generation))
+    };
+    agent_vitals_runtime::logging::log_info("plugin_host", &format!(
+        "plugin_close entry id={instance_id} suspend={suspend:?} reason={reason} failed={} pulseAgeMs={} hidden={} generation={} ready={} inFlight={}",
+        entry.as_ref().and_then(|presence| presence.fault.as_deref()).unwrap_or("none"),
+        entry.as_ref().map(|presence| presence.pulse_age_ms).unwrap_or(0),
+        entry.as_ref().map(|presence| presence.hidden).unwrap_or(false),
+        entry.as_ref().map(|presence| presence.generation).unwrap_or(0),
+        entry.as_ref().map(|presence| presence.ready).unwrap_or(false),
+        entry.as_ref().map(|presence| presence.in_flight).unwrap_or(0),
+    ));
+    retain_diagnostic(&format!(
+        "plugin_close id={instance_id} suspend={suspend:?} reason={reason} failed={}",
+        entry.as_ref().and_then(|presence| presence.fault.as_deref()).unwrap_or("none"),
+    ));
     if suspend == Some(true) {
-        let valid = {
+        let suspended = {
             let mut host = state.0.lock().unwrap();
-            if let Some(i) = host.current.as_mut().filter(|i| i.id == instance_id && i.failed.is_none()) {
-                i.suspended = true; i.pending = None; note(i, "suspended"); true
-            } else { false }
+            let generation = host.generation;
+            if let Some(i) = host.current.as_mut().filter(|i| i.id == instance_id && close_keeps_instance(Some(true), i.failed.is_some())) {
+                i.suspended = true; i.pending = None; note(i, "suspended");
+                Some(presence_of(i, generation))
+            } else { None }
         };
-        if valid {
+        if let Some(presence) = suspended {
+            publish_presence(&presence);
             if let Some(view) = app.get_webview(&instance_id) {
                 let _ = view.eval("window.dispatchEvent(new Event('__AV_PLUGIN_SUSPENDED__'))");
                 view.hide().map_err(|_| "plugin_hide_failed")?;
@@ -981,15 +1111,19 @@ pub async fn plugin_close(app: tauri::AppHandle, webview: Webview, state: tauri:
     }
     let old = {
         let mut host = state.0.lock().unwrap();
-        if host.current.as_ref().is_some_and(|i| i.id == instance_id) { host.current.take() } else { None }
+        let generation = host.generation;
+        if host.current.as_ref().is_some_and(|i| i.id == instance_id) { Some((host.current.take(), generation)) } else { None }
     };
-    if let Some(old) = old {
-        crate::remote_gateway::close_sessions_for_instance(&app, &old.id);
-        if let Some(view) = app.get_webview(&old.id) {
-            agent_vitals_runtime::logging::log_warn("plugin_host", &format!("view.close() [plugin_close] id={}", old.id));
-            view.close().map_err(|_| "plugin_close_failed")?;
+    if let Some((old, generation)) = old {
+        if let Some(old) = old {
+            publish_presence(&presence_closed(&old, generation));
+            crate::remote_gateway::close_sessions_for_instance(&app, &old.id);
+            if let Some(view) = app.get_webview(&old.id) {
+                agent_vitals_runtime::logging::log_warn("plugin_host", &format!("view.close() [plugin_close] id={} reason={reason}", old.id));
+                view.close().map_err(|_| "plugin_close_failed")?;
+            }
+            settle_destroyed_playtest(&old.plugin_id, &old.id);
         }
-        settle_destroyed_playtest(&old.plugin_id, &old.id);
     }
     Ok(())
 }
@@ -1021,20 +1155,39 @@ fn adopt_opened_playtest(plugin_id: &str, instance_id: &str) {
 #[tauri::command]
 pub fn plugin_snapshot(webview: Webview, state: tauri::State<'_, PluginHost>) -> Result<Value, String> {
     host_only(&webview)?;
-    let mut host = state.0.lock().unwrap();
-    let Some(i) = host.current.as_mut() else { return Ok(Value::Null); };
-    refresh_fault(i);
-    Ok(json!({"pluginId": i.plugin_id, "instanceId": i.id, "status": if i.failed.is_some() { "failed" } else if i.ready { "ready" } else { "loading" },
-        "error": i.failed, "revision": i.revision, "items": i.items, "pending": i.pending.as_ref().map(|(id, _)| id), "events": i.events}))
+    let (body, fault) = {
+        let mut host = state.0.lock().unwrap();
+        let generation = host.generation;
+        let Some(i) = host.current.as_mut() else { return Ok(Value::Null); };
+        let became = refresh_fault(i);
+        let fault = if became { Some(presence_of(i, generation)) } else { None };
+        let body = json!({"pluginId": i.plugin_id, "instanceId": i.id, "status": if i.failed.is_some() { "failed" } else if i.ready { "ready" } else { "loading" },
+            "error": i.failed, "revision": i.revision, "items": i.items, "pending": i.pending.as_ref().map(|(id, _)| id), "events": i.events});
+        (body, fault)
+    };
+    if let Some(presence) = fault { report_new_fault(&presence); }
+    Ok(body)
 }
 
 #[tauri::command]
 pub fn plugin_message(app: tauri::AppHandle, webview: Webview, state: tauri::State<'_, PluginHost>, message: Value) -> Result<(), String> {
-    let changed = message["type"] != "heartbeat" && message["type"] != "plugin.performance";
-    let mut host = state.0.lock().unwrap();
-    let i = host.current.as_mut().ok_or("plugin_instance_unavailable")?;
-    let result = apply_message(i, webview.label(), message);
-    drop(host);
+    let kind = message["type"].as_str().unwrap_or("").to_string();
+    let hidden_declared = message.get("diagnostic").and_then(|diagnostic| diagnostic.get("hidden")).and_then(Value::as_bool).is_some();
+    let changed = kind != "heartbeat" && kind != "plugin.performance";
+    let (result, presence, faulted) = {
+        let mut host = state.0.lock().unwrap();
+        let generation = host.generation;
+        let i = host.current.as_mut().ok_or("plugin_instance_unavailable")?;
+        let failed_before = i.failed;
+        let result = apply_message(i, webview.label(), message);
+        let faulted = result.is_ok() && i.failed.is_some() && failed_before.is_none();
+        let publish = result.is_ok() && (faulted || kind == "toolbar.update" || (kind == "heartbeat" && hidden_declared));
+        let presence = if publish { Some(presence_of(i, generation)) } else { None };
+        (result, presence, faulted)
+    };
+    if let Some(presence) = presence {
+        if faulted { report_new_fault(&presence); } else { publish_presence(&presence); }
+    }
     if result.is_ok() && changed { notify_host(&app); }
     result
 }
@@ -1258,12 +1411,36 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
             {
                 let host = state.0.lock().unwrap();
                 if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                    agent_vitals_runtime::logging::log_warn("creator_export", &format!("request rejected method={method} instance={}", request.instance_id));
                     return Err("plugin_instance_mismatch".into());
                 }
             }
-            let selected = tauri::async_runtime::spawn_blocking(|| rfd::FileDialog::new().pick_folder())
-                .await.map_err(|_| "creator_export_picker_failed".to_string())?;
-            let Some(parent) = selected else { return Ok(plugin_request_error(request.request_id, "creator_export_cancelled", false)); };
+            // Logged before the dialog so a click that reaches the host is
+            // distinguishable from a click the page never sent. No path.
+            agent_vitals_runtime::logging::log_info("creator_export", &format!("request method={method} instance={}", request.instance_id));
+            let parent_window = app.get_window("workbench");
+            let started = std::time::Instant::now();
+            let selected = match tauri::async_runtime::spawn_blocking(move || {
+                let dialog = rfd::FileDialog::new().set_title("选择源码导出目录");
+                match parent_window {
+                    Some(window) => dialog.set_parent(&window).pick_folder(),
+                    None => dialog.pick_folder(),
+                }
+            }).await {
+                Ok(value) => value,
+                Err(_) => {
+                    agent_vitals_runtime::logging::log_warn("creator_export", &format!("picker method={method} result=unavailable elapsedMs={}", started.elapsed().as_millis()));
+                    return Ok(plugin_request_error(request.request_id, "creator_export_picker_unavailable", false));
+                }
+            };
+            let elapsed_ms = started.elapsed().as_millis();
+            let outcome = crate::creator_source_export::classify_folder_picker(selected.is_some());
+            // elapsedMs is a measurement. It does not decide cancel versus a
+            // missing dialog, and the line has no path.
+            agent_vitals_runtime::logging::log_info("creator_export", &format!("picker method={method} result={outcome} elapsedMs={elapsed_ms}"));
+            let Some(parent) = selected else {
+                return Ok(plugin_request_error(request.request_id, "creator_export_cancelled", false));
+            };
             let _operation = state.1.lock().unwrap();
             {
                 let host = state.0.lock().unwrap();

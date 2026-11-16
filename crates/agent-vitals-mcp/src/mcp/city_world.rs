@@ -29,7 +29,7 @@ pub fn specs() -> Vec<ToolSpec> {
 
 fn call_error(code: &str) -> ToolError {
     match code {
-        "plugin_call_timeout" | "plugin_call_expired" | "plugin_call_method_unavailable" | "plugin_unavailable" | "plugin_instance_unavailable" | "plugin_instance_mismatch" => ToolError::new("plugin_unavailable", "Open the official Agent City plugin and retry."),
+        "plugin_call_timeout" | "plugin_call_expired" | "plugin_call_method_unavailable" | "plugin_unavailable" | "plugin_instance_unavailable" | "plugin_instance_mismatch" | "plugin_unresponsive" | "plugin_boot_timeout" | "plugin_command_timeout" | "plugin_runtime_error" | "plugin_command_rejected" | "plugin_reloaded" | "plugin_suspended" => ToolError::new("plugin_unavailable", "Open the official Agent City plugin and retry."),
         "plugin_call_capacity" => ToolError::new("busy", "The City local request queue is busy."),
         "plugin_call_too_large" => ToolError::new("invalid_argument", "The world profile exceeds the local IPC payload limit."),
         "permission_denied" => ToolError::new("permission_denied", "The active City instance does not authorize world profile edits."),

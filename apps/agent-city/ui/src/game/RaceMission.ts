@@ -46,6 +46,21 @@ export type RaceMissionSnapshot = {
 
 type Vec3 = { x: number; y: number; z: number };
 
+/**
+ * Fixed-clock countdown for a flight that has no RaceMission.
+ * Creator playtests stay on this clock so the aircraft reaches racing and
+ * physics without constructing a race mission (that would score the same gates twice).
+ * Non-finite or non-positive dt does not finish the countdown.
+ */
+export function stepFixedCountdown(remainingMs: number, dtMs: number): { remainingMs: number; done: boolean } {
+  if (!Number.isFinite(remainingMs)) return { remainingMs, done: false };
+  if (remainingMs <= 0) return { remainingMs: 0, done: true };
+  if (!Number.isFinite(dtMs) || dtMs <= 0) return { remainingMs, done: false };
+  const next = remainingMs - dtMs;
+  if (next <= 0) return { remainingMs: 0, done: true };
+  return { remainingMs: next, done: false };
+}
+
 export class RaceMission {
   private status: RaceStatus = "countdown";
   private countdownRemainingMs = COUNTDOWN_MS;

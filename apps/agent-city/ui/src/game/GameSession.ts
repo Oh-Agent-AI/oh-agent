@@ -16,7 +16,7 @@ import { createCreatorGateCourse } from "./RaceCourse";
 import { toMeters } from "../engine/worldScale";
 import { sweepFlight } from "./FlightCollision";
 import { generateRaceCourse, COURSE_VERSION, type RaceCourse } from "./RaceCourse";
-import { RaceMission, type RaceMissionSnapshot, type RaceResult } from "./RaceMission";
+import { COUNTDOWN_MS, RaceMission, stepFixedCountdown, type RaceMissionSnapshot, type RaceResult } from "./RaceMission";
 import { GameAudio } from "./GameAudio";
 import { GameSfx, type SfxTelemetry } from "./GameSfx";
 import * as THREE from "three";
@@ -76,6 +76,8 @@ export type GameSessionSnapshot = {
   soundVolume: number;
   sfxEnabled: boolean;
   musicEnabled: boolean;
+  /** 倒计时剩余毫秒。挑战读 RaceMission；Creator 试玩没有任务实例，读同一固定时钟。 */
+  countdownRemainingMs: number | null;
 };
 
 export class GameSession {
@@ -149,6 +151,8 @@ export class GameSession {
    *  内置 RaceMission（生成路线 + 计时）不参与判定。 */
   private creator: CreatorFlightRunV1 | null = null;
   private creatorFinished = false;
+  /** Creator / 无 RaceMission 的倒计时。挑战仍走 mission.tickCountdown。 */
+  private idleCountdownRemainingMs: number | null = null;
 
   async enter(kind: GameSelection, host: EnterHostState, origin?: Readonly<{ x: number; y: number; z: number; heading: number }>,
     vehicle?: VehicleProfileV1, creator?: CreatorFlightRunV1 | null): Promise<{ ok: true } | { ok: false; reason: string }> {
@@ -303,6 +307,7 @@ export class GameSession {
     this.lastCountdownSec = null;
     this.resetToSpawn();
     this.controller.prepareDone();
+    this.idleCountdownRemainingMs = this.controller.snapshot.phase === "countdown" && !this.mission ? COUNTDOWN_MS : null;
     if (this.runtime.snapshot.phase === "idle" || this.runtime.snapshot.phase === "error") {
       const lease = this.sceneLease;
       if (!lease?.isCurrent()) return false;
@@ -531,6 +536,7 @@ export class GameSession {
       soundVolume: this.soundVolume,
       sfxEnabled: this.sfxEnabled,
       musicEnabled: this.musicEnabled,
+      countdownRemainingMs: this.mission?.snapshot().countdownRemainingMs ?? this.idleCountdownRemainingMs,
     };
   }
 
@@ -595,6 +601,17 @@ export class GameSession {
       }
       return true;
     }
+    // Creator flight enters countdown without a RaceMission. Advance the same
+    // fixed clock here; do not step physics or sample gates until racing.
+    if (phase === "countdown" && !this.mission) {
+      const step = stepFixedCountdown(this.idleCountdownRemainingMs ?? COUNTDOWN_MS, dt * 1000);
+      this.idleCountdownRemainingMs = step.remainingMs;
+      if (step.done) {
+        this.controller.countdownDone(); this.sfx.countdownBeep(true); this.emit(true);
+        return false;
+      }
+      return true;
+    }
     if (phase !== "practice" && phase !== "racing") return false;
     this.stepPhysics(input);
     return this.controller.simulating;
@@ -606,6 +623,9 @@ export class GameSession {
     this.renderSim = lerpSim(this.prevSim, this.sim, alpha);
     if (phase === "countdown" && this.mission) {
       const sec = Math.ceil(this.mission.snapshot().countdownRemainingMs / 1000);
+      if (sec !== this.lastCountdownSec) { this.lastCountdownSec = sec; if (sec > 0) this.sfx.countdownBeep(false); }
+    } else if (phase === "countdown" && this.idleCountdownRemainingMs != null) {
+      const sec = Math.ceil(this.idleCountdownRemainingMs / 1000);
       if (sec !== this.lastCountdownSec) { this.lastCountdownSec = sec; if (sec > 0) this.sfx.countdownBeep(false); }
     }
     this.visuals?.update(this.renderSim, dt);
