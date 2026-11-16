@@ -487,8 +487,8 @@
     {
       "args": {},
       "code": "creator_layout_not_found",
-      "note": "该版本尚无布局；先让城市视口 ready 再保存布局。",
-      "tool": "creator_city_layout_save"
+      "note": "该版本尚无布局；等待城市视口 ready（必要时用 creator_city_view 打开），布局由视口生成后再读取。",
+      "tool": "creator_city_view_status"
     },
     {
       "args": {},

@@ -177,7 +177,7 @@ export const CREATOR_CAPABILITIES_PROJECTION_V1: CreatorCapabilitiesProjection =
  * 返回同一份建议；Agent 与 Studio UI 看到同一来源。工具名必须在已注册集合内。 */
 export const CREATOR_RECOVERIES_V1: ReadonlyArray<Readonly<{ code: string; tool: string; args: Record<string, unknown>; note: string }>> = Object.freeze([
   Object.freeze({ code: "creator_layout_not_ready", tool: "creator_city_view_status", args: {}, note: "布局尚未生成完毕；轮询状态直到 ready 后再读取布局。" }),
-  Object.freeze({ code: "creator_layout_not_found", tool: "creator_city_layout_save", args: {}, note: "该版本尚无布局；先让城市视口 ready 再保存布局。" }),
+  Object.freeze({ code: "creator_layout_not_found", tool: "creator_city_view_status", args: {}, note: "该版本尚无布局；等待城市视口 ready（必要时用 creator_city_view 打开），布局由视口生成后再读取。" }),
   Object.freeze({ code: "revision_conflict", tool: "creator_project_read", args: {}, note: "项目已被他人推进；重读最新 revision 后以新基线重开预览。" }),
   Object.freeze({ code: "creator_city_revision_unavailable", tool: "creator_city_read", args: {}, note: "请求的历史版本已被覆盖；改读当前 revision。" }),
   Object.freeze({ code: "preview_expired", tool: "creator_scene_preview", args: {}, note: "预览已过期；以当前 revision 重新发起预览后再提交。" }),
