@@ -1,0 +1,18 @@
+{
+  "name": "@agent-vitals/eval-wasm-spike",
+  "private": true,
+  "type": "module",
+  "description": "W1 spike (spec 2026-11-15 section 11): run the city-sdk validateVehicleProfileV1 validator inside a WASM QuickJS runtime and prove byte-identical diagnostics against the Node-native execution of the same dist bundle.",
+  "scripts": {
+    "build": "node ./scripts/build-spike.mjs",
+    "test": "node --test ./wasm-spike.test.mjs ./bench.test.mjs",
+    "probe": "node ./probe.mjs",
+    "javy:input": "node ./scripts/build-javy-input.mjs",
+    "javy:run": "node ./scripts/run-javy.mjs"
+  },
+  "devDependencies": {
+    "@jitl/quickjs-ng-wasmfile-release-sync": "0.31.0",
+    "esbuild": "0.25.12",
+    "quickjs-emscripten": "0.31.0"
+  }
+}
