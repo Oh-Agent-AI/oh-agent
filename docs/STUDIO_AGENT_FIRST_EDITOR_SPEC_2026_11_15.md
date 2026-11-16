@@ -276,3 +276,44 @@ T3 Code 的定位是「coding agents 的开源控制平面」：不内嵌 agent�
 - §3.1 的 operations 语义升级为 Activity 时间线（已并入上文）。
 - §5 新增远景 E7/E8/E9（见上）；E1–E6 不变。
 - 参照 T3 的纪律：性能被视为产品特性（掉帧即 bug）——Studio 的 capture/视口预算分层（边界收口记录 §4）同理，预算数字变更必须走守卫测试。
+
+## 10. Agent-friendliness 度量与演进（2026-11-16，吸收外部评审）
+
+### 10.1 度量表（目标指标，非当前实测）
+
+E9 evals 提供**事故回归用例**（防劣化）；本表提供**目标度量**（测成功）——两者共用同一判分脚手架（`evals/creator/run.mjs`），metric 模式按 E6 闭环脚本的 `evidence.json` 聚合统计。
+
+| 指标 | 建议验收目标 |
+|---|---|
+| Agent 自主完成率 | 目标任务中 ≥90% 无需人工补操作 |
+| 错误自动恢复率 | 常见可恢复错误 ≥80% 经 recoveries 建议自主修复 |
+| 工具调用成功率 | 合法输入下 ≥95% |
+| 断线恢复 | 重连后一次调用找回全部未决任务 |
+| Headless 测试覆盖 | 全部声明可无头运行的游戏类型 |
+| 确定性重放 | 固定版本、输入与 seed，结果逐位一致 |
+| 人工审批次数 | 只在真实授权与敏感操作边界出现 |
+
+### 10.2 语义化世界模型与模块拆分（P1 演进项）
+
+- 建筑/道路/检查点/车辆/游戏实例应是带**稳定 ID、引用与 revision** 的语义实体——锚点/挂载/飞行器已类型化；会话建筑目前是渲染器内部对象 + descriptor 授权的 typed DTO 投影，语义化是下一层（沿用锚点接口的「可查询合法集合」模式，例如「列出合法 fly 检查点锚点」）。
+- CityEngine.ts（~145 KB）与 Studio main.tsx（~114 KB）按状态、命令处理、领域规则、UI 组合、生命周期分层拆分；每个模块配套 AGENTS.md 说明、最小运行示例与针对性验证命令。
+
+### 10.3 单一 Schema 派生补全
+
+生成链已覆盖 capabilities/worlds/vehicles/templates 四类产物 + 锁步守卫；**错误码表与 MCP 文档仍是手动同步**（已人工核对一次）。演进为从同一描述符生成错误码文档与 recoveries 速查表，消除第三处手动同步点。
+
+## 11. W1 spike：city-sdk WASM 语义闸进宿主（工具链验证）
+
+### 11.1 机制
+
+语义闸（city-sdk 纯校验器）目前物理运行在 Studio webview；headless 档只能走结构子集 + 延迟桥。WASM 嵌入把**同一份 TS 校验器**编译为 WASM 模块在宿主进程内执行：TS 源 → 打包（只含校验入口）→ JS-in-WASM 工具链（Javy 式：内嵌 QuickJS 编译为 .wasm，宿主经 wasmtime/wasmer 调用，JSON 进出）→ 宿主自签发与 Studio 同源的语义信封。
+
+### 11.2 信任模型声明（如实）
+
+- 语义**权威**是 city-sdk 的版本化产物（digest 钉进构建锁文件、可审计），不是 Studio 这个 app——把载体从 webview 换成宿主内 WASM 不改变校验逻辑本身。
+- 双门独立性从「跨进程」弱化为「同进程内两个独立校验器」；缓解 = 产物锁步（同一输入 TS 与 WASM 必须逐位同诊断）+ 产物 digest 钉住 + 宿主结构闸独立保留。
+
+### 11.3 spike 范围与验收
+
+- 只编 `validateVehicleProfileV1` 单校验器（preset/越界/非物理比值至少各一例）跑通「TS 与 WASM 同输入同诊断」；通过后另立全量项目。
+- 产物体积与冷启动延迟如实记录；网络不可用时以 `quickjs-emscripten`（Node 侧 WASM QuickJS）证明「同一诊断在 WASM 承载的 JS 运行时中成立」，宿主侧 wasmtime 集成留作后续。
