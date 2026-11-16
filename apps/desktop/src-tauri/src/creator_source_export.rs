@@ -330,7 +330,7 @@ mod tests {
         let home = fixture();
         let raw = package_with_empty_scene_and_catalog();
         let installed = crate::creator_content_install::install_inspected_world(&home, &raw, "example.desert", "1.0.0",
-            &serde_json::from_slice::<Value>(&raw).unwrap()["manifest"]["contentDigest"].as_str().unwrap()).unwrap();
+            serde_json::from_slice::<Value>(&raw).unwrap()["manifest"]["contentDigest"].as_str().unwrap()).unwrap();
         let digest = installed["contentDigest"].as_str().unwrap();
         let city = crate::creator_cities::create_city_with_world_package(&home, "owner", "city-source-pinned", "Desert", 42,
             &json!({"schemaVersion":1,"id":"desert"}), Some(("example.desert", "1.0.0", digest))).unwrap();
