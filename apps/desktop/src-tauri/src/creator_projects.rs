@@ -1816,6 +1816,8 @@ pub fn commit_preview_as(home: &Path, owner: &str, instance: &str, project_id: &
         "validation":"sdk",
         "validationDigest":preview.validation_digest.clone(),"capabilityVersion":preview.capability_version.clone()});
     tx.execute("INSERT INTO creator_operations(project_id,actor_id,operation_id,operation_hash,result_json,capability_version,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)", params![project_id, owner, operation_id, request_hash, result.to_string(), preview.capability_version.clone().unwrap_or_default(), now]).map_err(|_| "creator_store_unavailable")?;
+    // 历史保留治理（§6.2-O1）：容量有界化在提交事务内顺带完成；失败不阻断主语义。
+    let _ = crate::creator_store::prune_creator_history(&tx, project_id, owner);
     tx.commit().map_err(|_| "creator_store_unavailable")?;
     // Consumed only after a successful commit: the preview credential's
     // lifetime matches the transaction, not the attempt.
@@ -1828,6 +1830,52 @@ mod tests {
     use super::*;
     use crate::creator_city_patch::MAX_CITY_PATCH_OPS;
     use rusqlite::Connection;
+    // 保留治理（§6.2-O1）：历史有界化不破坏审计链、幂等回执窗口与当前文档。
+    #[test]
+    fn history_retention_prunes_documents_and_old_receipts() {
+        let home = home();
+        let project_id = {
+            std::fs::create_dir_all(home.join("state/creator")).unwrap();
+            let db = Connection::open(home.join("state/creator/projects.sqlite")).unwrap();
+            db.execute_batch("CREATE TABLE creator_projects(project_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, document_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+                CREATE TABLE creator_changes(project_id TEXT NOT NULL, revision INTEGER NOT NULL, actor_id TEXT NOT NULL, operation_id TEXT NOT NULL, operation_hash TEXT NOT NULL, document_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL, PRIMARY KEY(project_id, revision));
+                CREATE TABLE creator_operations(project_id TEXT NOT NULL, actor_id TEXT NOT NULL, operation_id TEXT NOT NULL, operation_hash TEXT NOT NULL, result_json TEXT NOT NULL, capability_version TEXT NOT NULL DEFAULT '', created_at_ms INTEGER NOT NULL, PRIMARY KEY(project_id, actor_id, operation_id));").unwrap();
+            db.execute("INSERT INTO creator_projects VALUES('p1', 0, '{}', 1, 1)", []).unwrap();
+            drop(db);
+            "p1".to_owned()
+        };
+        // 10 条 change + 70 条 receipt（都超过治理窗口 8 / 64）
+        {
+            let mut db = database(&home).unwrap();
+            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
+            for revision in 1..=10i64 {
+                tx.execute("INSERT INTO creator_changes VALUES('p1',?1,'a',?2,'h',?3,?4)",
+                    params![revision, format!("op-{revision}"), format!("{{\"revision\":{revision}}}"), 1000 + revision]).unwrap();
+            }
+            for index in 1..=70i64 {
+                tx.execute("INSERT INTO creator_operations VALUES('p1','a',?1,'h','{\"revision\":0}', '', ?2)",
+                    params![format!("op-{index}"), index]).unwrap();
+            }
+            crate::creator_store::prune_creator_history(&tx, &project_id, "a").unwrap();
+            tx.commit().unwrap();
+        }
+        let db = database(&home).unwrap();
+        // 审计链完整：10 行都在，最近 8 条全量，前 2 条摘要化
+        let (full, pruned): (i64, i64) = db.query_row(
+            "SELECT SUM(document_json != '{}'), SUM(document_json = '{}') FROM creator_changes WHERE project_id='p1'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        assert_eq!((full, pruned), (8, 2), "audit chain keeps every row; only old documents are stubbed");
+        let pruned_revision: i64 = db.query_row(
+            "SELECT MIN(revision) FROM creator_changes WHERE project_id='p1' AND document_json='{}'", [], |row| row.get(0)).unwrap();
+        assert_eq!(pruned_revision, 1, "oldest revisions get stubbed first");
+        // 幂等回执窗口：最新 64 条保留，最旧 6 条删除；新记录的回执可查
+        let receipts: i64 = db.query_row("SELECT count(*) FROM creator_operations WHERE project_id='p1'", [], |row| row.get(0)).unwrap();
+        assert_eq!(receipts, 64);
+        let oldest_kept: String = db.query_row(
+            "SELECT operation_id FROM creator_operations WHERE project_id='p1' ORDER BY created_at_ms ASC, operation_id ASC LIMIT 1", [], |row| row.get(0)).unwrap();
+        assert_eq!(oldest_kept, "op-7");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
     #[test]
     fn creator_content_digest_uses_sorted_canonical_json_keys() {
         let value = json!({"z":1,"a":{"b":2,"a":3}});
