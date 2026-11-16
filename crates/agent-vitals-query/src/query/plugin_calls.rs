@@ -370,7 +370,6 @@ fn call_plugin(home: &Path, plugin_id: &str, call_id: &str, timeout_ms: u64) -> 
 
 /// Submit then await one descriptor-authorized plugin method. Callers choose
 /// the registered plugin/method; the host remains the final authorization gate.
-
 pub fn call(home: &Path, plugin_id: &str, method: &str, payload: &Value, timeout_ms: u64) -> Result<Value, &'static str> {
     let call_id = submit(home, plugin_id, method, payload, timeout_ms)?;
     call_plugin(home, plugin_id, &call_id, timeout_ms)
