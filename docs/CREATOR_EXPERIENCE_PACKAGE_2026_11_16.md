@@ -102,6 +102,8 @@ verify-experience-package: ok (7 checks)
 `tick 270 / digest 401bdf3f02e035ee` 与发布库直读模式**逐位一致**——同一份冻结快照、同一套判定，
 包没有引入第二套玩法语义。
 
+（带 `--package <已有包>` 时是 7 项；上面的验收命令会先打包，因此多一项 build，共 8 项。）
+
 验收命令：
 
 ```bash
