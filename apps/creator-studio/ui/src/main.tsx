@@ -178,6 +178,36 @@ function App() {
   // Agent 活动卡片（设计 §7.3）：经活动 Studio 转发的 MCP 预览/提交/发布/试玩请求，
   // 新在前、有界保留；UI 自己的操作直连宿主、不出现在这里。
   const [agentActivity, setAgentActivity] = useState<ReadonlyArray<{ method: string; label: string; summary: string; ok: boolean; revision?: number; at: number }>>([]);
+  // 活动卡持久化（T3 对照 §6.2-O4，NotificationMailbox 语义：重要通知不丢）：
+  // 卡片写入插件私有 state（creator-agent-activity:v1，revision CAS），重启后重放。
+  // 失败的临时活动可丢；成功的 Agent 提交历史是必须存活的最低限度。
+  const agentActivityRef = useRef<ReadonlyArray<{ method: string; label: string; summary: string; ok: boolean; revision?: number; at: number }>>([]);
+  const agentActivityStateRevisionRef = useRef(0);
+  const persistAgentActivity = useCallback(() => {
+    const value = { items: agentActivityRef.current };
+    void (async () => {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          await creatorRequest("plugin.state.write", { key: "creator-agent-activity:v1", revision: agentActivityStateRevisionRef.current, value });
+          agentActivityStateRevisionRef.current += 1;
+          return;
+        } catch {
+          // CAS 冲突或瞬时失败：重读权威副本合并后重试一次；再失败静默（卡片是尽力而为的 UX）。
+          try {
+            const state = await creatorRequest<{ revision: number; value: { items?: typeof agentActivityRef.current } }>("plugin.state.read", { key: "creator-agent-activity:v1" });
+            agentActivityStateRevisionRef.current = state.revision;
+            agentActivityRef.current = state.value.items ?? agentActivityRef.current;
+          } catch { return; }
+        }
+      }
+    })();
+  }, []);
+  const recordAgentActivity = useCallback((item: { method: string; label: string; summary: string; ok: boolean; revision?: number; at: number }) => {
+    const list = [item, ...agentActivityRef.current].slice(0, 6);
+    agentActivityRef.current = list;
+    setAgentActivity(list);
+    persistAgentActivity();
+  }, [persistAgentActivity]);
   const approvalGate = useRef(new AgentApprovalGate());
   const [agentCommit, setAgentCommit] = useState<AgentCommit | null>(null);
   const [agentPreviewStatus, setAgentPreviewStatus] = useState<{ context: object; status: "loading" | "ready" | "failed"; code?: string } | null>(null);
@@ -389,7 +419,7 @@ function App() {
         summary = [...counts.entries()].map(([kind, count]) => `${kind}×${count}`).join("、");
       } else if (typeof payload.releaseId === "string") summary = payload.releaseId;
       const revision = (result as { revision?: number } | null)?.revision;
-      setAgentActivity(list => [{ method, label, summary, ok, revision, at: Date.now() }, ...list].slice(0, 6));
+      recordAgentActivity({ method, label, summary, ok, revision, at: Date.now() });
     };
     // P2 语义搬运（设计 §5.2）：Agent 来源的 preview 在转发前经 Studio 的 city-sdk
     // 校验并附加 validation 信封；Rust 签发时核对作用域（projectId/baseRevision/
@@ -698,6 +728,16 @@ function App() {
       const ok = !truncated && !items.some(entry => entry.severity === "error");
       return { projectId: document.projectId, revision: document.revision, ok, truncated, items, unchecked: structure.unchecked };
     };
+    // 重启重放（O4）：从插件私有 state 恢复上一会话的活动卡；读失败保持空态。
+    void (async () => {
+      try {
+        const state = await creatorRequest<{ revision: number; value: { items?: { method: string; label: string; summary: string; ok: boolean; revision?: number; at: number }[] } }>("plugin.state.read", { key: "creator-agent-activity:v1" });
+        agentActivityStateRevisionRef.current = state.revision;
+        const items = state.value.items ?? [];
+        agentActivityRef.current = items;
+        setAgentActivity(items);
+      } catch { /* 空态即可：state 缺失/损坏不阻塞 Studio 就绪 */ }
+    })();
     const disconnectHostCalls = connectHostCalls(handlers);
     const disconnectHealth = observeHealth();
     return () => { disconnectHostCalls(); disconnectHealth(); };

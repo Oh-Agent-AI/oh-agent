@@ -562,7 +562,10 @@
           "requestBytes": 8192,
           "responseBytes": 524288
         }
-      }
+      },
+      "stateKeys": [
+        "creator-agent-activity:v1"
+      ]
     },
     {
       "id": "city",
