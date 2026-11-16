@@ -35,7 +35,7 @@ export function GameHud({ snapshot, actions, locale, persist }: { snapshot: Game
   const paused = controller.paused;
   const error = controller.error;
   const racing = controller.selection?.mode === "race";
-  const countdown = phase === "countdown" && mission ? Math.ceil(mission.countdownRemainingMs / 1000) : null;
+  const countdown = phase === "countdown" && snapshot.countdownRemainingMs != null ? Math.ceil(snapshot.countdownRemainingMs / 1000) : null;
   const uiPanelOpen = () => actions.onPause?.();
   if (phase === "data" || phase === "exiting") return null;
 

@@ -446,4 +446,48 @@ function fakeEngine() {
   assert.ok(Math.hypot(px - 500, py - 120, pz - 500) > 50, "camera left the pre-click orbit pose");
   session.exit();
 }
+// Creator flight has no RaceMission. The fixed clock must still leave countdown
+// and only then sample gates. Physics stays put until that deadline.
+{
+  const { stepFixedCountdown, COUNTDOWN_MS } = load("game/RaceMission.ts", { window: windowShim, document: documentShim });
+  let remaining = COUNTDOWN_MS;
+  let done = false;
+  let steps = 0;
+  while (!done && steps < 200) {
+    const next = stepFixedCountdown(remaining, 1000 / 60);
+    remaining = next.remainingMs; done = next.done; steps += 1;
+  }
+  assert.ok(steps === 180 || steps === 181, `3s countdown finished at step ${steps}`);
+  remaining = COUNTDOWN_MS; done = false;
+  for (let step = 0; step < 179; step += 1) {
+    const next = stepFixedCountdown(remaining, 1000 / 60);
+    remaining = next.remainingMs; done = next.done;
+  }
+  assert.equal(done, false, "179 fixed steps do not finish a 3s countdown");
+  assert.equal(stepFixedCountdown(COUNTDOWN_MS, Number.NaN).done, false);
+  assert.equal(stepFixedCountdown(COUNTDOWN_MS, 0).done, false);
+  assert.equal(stepFixedCountdown(COUNTDOWN_MS, -1).done, false);
+  const engine = fakeEngine();
+  engine.currentLayout = layout; engine.currentModel = model;
+  const samples = [];
+  const creator = { controller: { fixedStep(position) { samples.push(position.x); }, snapshot: { status: "running", reason: null, completed: 0, total: 1 }, dispose() {} }, gates: [] };
+  const session = new GameSession(engine, { onState() {}, onExited() {} });
+  const entered = await session.enter({ mode: "race" }, { cityReady: true, cinemaActive: false, filmActive: false, busy: false }, undefined, undefined, creator);
+  assert.equal(entered.ok, true, entered.ok ? "" : entered.reason);
+  assert.equal(session.snapshot().mission, null, "creator flight does not construct RaceMission");
+  assert.equal(session.snapshot().controller.phase, "countdown");
+  assert.equal(session.snapshot().countdownRemainingMs, 3000);
+  const frozen = { x: session.sim.x, y: session.sim.y, z: session.sim.z };
+  for (let frame = 0; frame < 60; frame += 1) engine.frame(1 / 60);
+  assert.equal(session.snapshot().controller.phase, "countdown");
+  assert.equal(samples.length, 0, "gates are not sampled during countdown");
+  assert.equal(Math.hypot(session.sim.x - frozen.x, session.sim.y - frozen.y, session.sim.z - frozen.z), 0, "physics does not advance during countdown");
+  for (let frame = 0; frame < 150; frame += 1) engine.frame(1 / 60);
+  assert.equal(session.snapshot().controller.phase, "racing");
+  const sampled = samples.length;
+  engine.frame(1 / 60);
+  assert.ok(samples.length > sampled, "racing samples the creator controller");
+  assert.ok(Math.hypot(session.sim.x - frozen.x, session.sim.y - frozen.y, session.sim.z - frozen.z) > 0, "physics advances after countdown");
+  session.exit();
+}
 console.log("verify-city-game-session: ok");

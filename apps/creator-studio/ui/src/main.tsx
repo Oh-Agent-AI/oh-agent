@@ -5,12 +5,14 @@ import { canonicalJson, defaultVehicleCameraV1, estimateVehiclePerformanceV1, va
 import { applyCityWorldOperations } from "./cityWorldOperations";
 import { buildGameValidation, buildSceneValidation, buildVehicleValidation, describeError, normalizeVehicleProfileInput, scopeMismatchEnvelope } from "./sdkValidation";
 import { loadStudioAtStartup } from "./startupLoad";
+import { forgetStudioProject, projectIdAfterStudioReload, readStoredStudioProject, rememberStudioProject } from "./studioRestore";
 import { releaseIdForOpenRevision, resolveSceneCaptureRevision, type ProjectPublicationV1 } from "./publicationSync";
 import { resolveProjectCity } from "./projectCityScope";
 import { formatWorldPackageInspection, parseWorldPackageInspection, type WorldPackageInspection } from "./contentPackageInspect";
 import { formatInstalledPackage, parseInstalledPackages, parseInstallResult, type InstalledContentPackage } from "./installedContent";
 import { inspectInstalledWorld, supportsInstalledWorldGenerator } from "./contentSnapshot";
 import { buildCitySourceExport, buildProjectSourceExport } from "./projectSourceExport";
+import { exportBlockMessage, exportClickBlock } from "./exportClick";
 import { AgentApprovalGate, matchesPreviewBase, type AgentCommit } from "./agentApproval";
 // 视口与 City 插件共享同一份引擎与装配管线，保证 Studio 看到的是同一座城市。
 import { CityViewport } from "../../../agent-city/ui/src/viewport/CityViewport";
@@ -730,12 +732,19 @@ function App() {
     void loadStudioAtStartup(async () => {
       const context = await creatorRequest<{ runId: string; projectId: string; revision: number; status: "completed" | "cancelled" | "failed";
       evidence?: { tick: number; counters: Record<string, number>; outcome: "success" | "failure" | null } | null; failureCode?: string | null } | null>("creator.project.playtest.return_context", {});
-      if (!cancelled && context) {
+      if (cancelled) return;
+      const projectId = projectIdAfterStudioReload(context?.projectId, readStoredStudioProject(window.localStorage));
+      if (!projectId) return;
+      if (context) {
         const counters = context.evidence ? Object.entries(context.evidence.counters).map(([key, value]) => `${key}=${value}`).join(", ") : "";
         const result = context.evidence ? ` · tick ${context.evidence.tick} · ${context.evidence.outcome ?? "未完成"}${counters ? ` · ${counters}` : ""}` : context.failureCode ? ` · ${context.failureCode}` : "";
         const message = `City 试玩已返回：${context.status} · revision ${context.revision}${result} · ${context.runId}`;
         // PRD：试玩结束回到同一编辑上下文——保留未提交草稿，并回到全局视角。
-        void openProject(context.projectId, "preserve").then(() => { setFocusSignal(value => value + 1); setMessage(message); });
+        void openProject(projectId, "preserve").then(() => { setFocusSignal(value => value + 1); setMessage(message); });
+      } else {
+        // Retry rebuilt the WebView after the one-shot return was already consumed.
+        // Reopen the last project only. Do not start another playtest.
+        void openProject(projectId, "replace");
       }
     }, { isCancelled: () => cancelled, delay: ms => new Promise(resolve => window.setTimeout(resolve, ms)) }).catch(error => {
         const code = errorCode(error, "creator_playtest_return_failed");
@@ -749,10 +758,15 @@ function App() {
     setBusy(true); setMessage(""); setPreviewId(null); setPreviewKind(null);
     try {
       const next = await creatorRequest<Project>("creator.project.read", { projectId });
+      rememberStudioProject(window.localStorage, next.projectId);
       applyProject(next, mode, project);
       cityOpenRequest.current++; draftCityViewRef.current = null; setDraftCityView(null);
       setFocusSignal(value => value + 1);
-    } catch (error) { setMessage(error instanceof Error ? error.message : "creator_read_failed"); }
+    } catch (error) {
+      const code = errorCode(error, "creator_read_failed");
+      if (code === "creator_project_not_found" || code === "not_found") forgetStudioProject(window.localStorage);
+      setMessage(error instanceof Error ? error.message : "creator_read_failed");
+    }
     finally { setBusy(false); }
   };
   const createProject = async () => {
@@ -1088,8 +1102,11 @@ function App() {
 
   const exportCitySource = async () => {
     const city = draftCityView;
-    if (!city || busy || browserPreview) return;
-    setBusy(true); setMessage("");
+    if (browserPreview) { setMessage(exportBlockMessage("creator_export_browser_preview")); return; }
+    if (busy) { setMessage(exportBlockMessage("creator_export_busy")); return; }
+    if (!city) { setMessage("先打开要导出的城市。"); return; }
+    setBusy(true);
+    setMessage("正在打开目录选择…");
     try {
       const source = buildCitySourceExport(city, CITY_GENERATOR_VERSION);
       const assetDigests = installedWorldView?.assets.entries.map(entry => entry.sha256) ?? [];
@@ -1100,13 +1117,20 @@ function App() {
       setMessage(`城市源码已导出至所选目录中的 ${result.directoryName}；这是未签名的源码项目。`);
     } catch (error) {
       const code = errorCode(error, "creator_export_failed");
-      if (code !== "creator_export_cancelled") setMessage(`城市源码导出失败（${code}）。请检查城市版本和编辑内容。`);
+      setMessage(code === "creator_export_cancelled" ? "已取消目录选择，未写出源码。" : `城市源码导出失败（${code}）。请检查城市版本和编辑内容。`);
     } finally { setBusy(false); }
   };
 
   const exportSource = async () => {
-    if (!project || !projectCity?.city || projectCity.key !== projectCityKey || hasUncommittedProjectEdits || busy) return;
-    setBusy(true); setMessage("");
+    const block = exportClickBlock({
+      browserPreview, busy, hasProject: project !== null,
+      cityReady: project !== null && !!projectCity?.city && projectCity.key === projectCityKey,
+      unsaved: hasUncommittedProjectEdits, mountCount: project?.mounts.length ?? 0,
+    });
+    if (block) { setMessage(exportBlockMessage(block)); return; }
+    if (!project || !projectCity?.city) return;
+    setBusy(true);
+    setMessage("正在打开目录选择…");
     try {
       const source = await buildProjectSourceExport(project, projectCity.city, CITY_GENERATOR_VERSION);
       const result = await creatorRequest<{ directoryName: string; assetCount: number }>("creator.source.export", {
@@ -1116,7 +1140,7 @@ function App() {
       setMessage(`源码已导出至所选目录中的 ${result.directoryName}；${project.mounts.length ? "游戏布局为当前城市快照，换城市须重新绑定。" : "游戏尚未绑定场地，配置挂载后才能验证和试玩。"}`);
     } catch (error) {
       const code = errorCode(error, "creator_export_failed");
-      if (code !== "creator_export_cancelled") setMessage(`源码导出失败（${code}）。请检查项目版本、城市绑定及资产。`);
+      setMessage(code === "creator_export_cancelled" ? "已取消目录选择，未写出源码。" : `源码导出失败（${code}）。请检查项目版本、城市绑定及资产。`);
     } finally { setBusy(false); }
   };
 
@@ -1231,7 +1255,7 @@ function App() {
             <div className="actions"><button className="secondary" disabled={citiesLoading || busy} onClick={() => void loadCities()}>刷新城市列表</button>{citiesCursor && <button className="secondary" disabled={citiesLoading || busy} onClick={() => void loadCities(citiesCursor)}>加载更多</button>}</div>
           </div>
           <div><div className="section-title">导出源码项目</div><p className="muted">导出已保存的独立城市和小游戏；未绑定的游戏需配置场地后才能试玩。导出不包含用户会话或试玩结果。</p>
-            <button className="secondary" disabled={browserPreview || busy || !project || !projectCity?.city || projectCity.key !== projectCityKey || hasUncommittedProjectEdits || project.mounts.length > 1} onClick={() => void exportSource()}>导出源码目录…</button></div>
+            <button className="secondary" onClick={() => void exportSource()}>导出源码目录…</button></div>
           <div><div className="section-title">世界内容包预检</div><p className="muted">通过桌面原生选择器打开 unsigned 的 v2 世界包，核对清单、文件集合与摘要；校验后可显式安装到本机内容库。文件路径和字节不会传入 Agent/MCP。</p>
           <button className="secondary" disabled={busy || browserPreview} onClick={() => void inspectWorldPackage()}>选择并预检世界包…</button>
           {browserPreview && <p className="muted">浏览器预览没有原生文件选择器，请在桌面应用中使用。</p>}

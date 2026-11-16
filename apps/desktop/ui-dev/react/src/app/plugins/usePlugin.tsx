@@ -63,7 +63,7 @@ export function usePlugin(active: boolean, { id: pluginId, name }: PluginPresent
         currentId.current = id;
         opened.current = { pluginId, attempt };
         lastBounds = JSON.stringify(initialBounds);
-        if (cancelled) { await invoke("plugin_close", { instanceId: id }); return; }
+        if (cancelled) { await invoke("plugin_close", { instanceId: id, reason: "startup-cancelled" }); return; }
         // The inactive tab does not subscribe to authority invalidations.
         // Refresh the retained instance on resume without rebuilding its UI.
         if (!restart) await invoke("plugin_invalidate", { instanceId: id }).catch(() => {});
@@ -116,10 +116,15 @@ export function usePlugin(active: boolean, { id: pluginId, name }: PluginPresent
         if (cancelled || next?.instanceId !== id) return;
         setSnapshot(next);
         if (next.status === "failed") {
+          const code = next.error ?? "plugin_failed";
+          setError(code);
+          // A health flag is not an explicit close. Destroying the view here
+          // settles an active City playtest as creator_playtest_city_closed.
+          // Keep the view; Retry rebuilds it. Other failures still close.
+          if (code === "plugin_unresponsive" || code === "plugin_boot_timeout" || code === "plugin_command_timeout") return;
           observer?.disconnect();
           opened.current = { pluginId: "", attempt: -1 };
-          setError(next.error ?? "plugin_failed");
-          await invoke("plugin_close", { instanceId: id });
+          await invoke("plugin_close", { instanceId: id, reason: "snapshot-failed" });
           id = null;
         }
       } catch {
@@ -128,7 +133,7 @@ export function usePlugin(active: boolean, { id: pluginId, name }: PluginPresent
           opened.current = { pluginId: "", attempt: -1 };
           setError("plugin_status_unavailable");
           const target = id; id = null;
-          if (target) await invoke("plugin_close", { instanceId: target }).catch(() => {});
+          if (target) await invoke("plugin_close", { instanceId: target, reason: "snapshot-unavailable" }).catch(() => {});
         }
       }
       finally { ticking = false; }
@@ -141,7 +146,7 @@ export function usePlugin(active: boolean, { id: pluginId, name }: PluginPresent
       currentId.current = null;
       syncLayoutRef.current = null;
       window.removeEventListener("__AV_PLUGIN_STATUS__", onStatus);
-      if (id) lifecycle.current = invoke("plugin_close", { instanceId: id, suspend: true }).catch(() => {});
+      if (id) lifecycle.current = invoke("plugin_close", { instanceId: id, suspend: true, reason: "tab-suspend" }).catch(() => {});
     };
   }, [active, pluginId, attempt]);
   const execute = async (tool: Tool, value: string | null = null) => {

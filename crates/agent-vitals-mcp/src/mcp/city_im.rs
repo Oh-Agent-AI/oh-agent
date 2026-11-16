@@ -106,7 +106,7 @@ fn map_host_error(code: &str) -> ToolError {
         "invalid_actor" | "invalid_chat" | "invalid_payload" | "invalid_ttl" | "invalid_release" | "kind_forbidden" | "asset_mismatch" => {
             ToolError::new("invalid_argument", code)
         }
-        "plugin_call_timeout" | "plugin_call_expired" | "plugin_call_method_unavailable" => {
+        "plugin_call_timeout" | "plugin_call_expired" | "plugin_call_method_unavailable" | "plugin_unavailable" | "plugin_unresponsive" | "plugin_boot_timeout" | "plugin_command_timeout" | "plugin_runtime_error" | "plugin_command_rejected" | "plugin_reloaded" | "plugin_suspended" => {
             ToolError::new("plugin_unavailable", "Open the local Agent City window and retry the request")
         }
         _ => ToolError::new("data_unavailable", code),
