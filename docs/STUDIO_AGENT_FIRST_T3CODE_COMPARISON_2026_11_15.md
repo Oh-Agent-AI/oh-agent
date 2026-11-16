@@ -175,9 +175,9 @@
 
 - **O1 长期记录保留治理**（T3: `storageCleanup.ts` + `IdleCompactionService.ts`）。dev 的 `creator_changes`/`creator_operations` 行数无界：每次提交写全量 `document_json`，长期使用线性膨胀；mailbox 有 `MAX_CALL_RECORDS` 清理但 creator 表没有。建议：按项目保留最近 N 条 change + 旧 revision 摘要化（保留 revision/digest/actor，丢弃全量文档），配迁移测试。这是唯一可能影响长期用户的数据面问题。
 - ~~O2 evals 判分自动化~~ **已落地（2026-11-17 复核修正）**：`evals/creator/run.mjs` 是 1049 行确定性判分器，5 个 case 各嵌入结构化 rubric（25 个判分项，rubric 类型闭集），`--self-test` 正反例全过；`verify.yml` 新增 `creator_evals` job 把 self-test 挂进 CI。剩余缺口只是 run.mjs 自述的「model-driven replay 为后续扩展」——判分自动化本身不再是缺口。
-- **O3 restore/rollback 安全检查器**（T3: `CheckpointRestoreSafety.ts` + `CheckpointRollbackService.ts`——恢复前验证目标状态完整性、回滚有独立服务）。dev 的世界重建失败「保留可恢复的已保存版本」只有引用佐证，无显式安全检查（如恢复前 digest 验证、部分失败回滚）。建议：世界重建路径补 restore-safety 断言（目标快照 digest 核对 + 失败回写），体量小。
+- ~~O3 restore/rollback 安全检查器~~ **已覆盖（2026-11-17 复核修正）**：存档恢复路径的完整性验证已四层存在——`coerceStore`/`coercePlanPatch` 逐条验证、坏条目丢弃而非恢复进引擎（这正是 CheckpointRestoreSafety 的领域语义）；`readLocal` 全包 catch（曾修复"存档损坏带崩挂载"的真实事故）；`session.load` 空库诚实降级 + saveFailed 显式信号；viewport 受控失败态（world_scene_load_failed / engine_initialization_failed）。本轮补上的唯一残留是 `CityViewport` 对 `session.load()` 的防御性 `.catch`（恢复路径不允许 unhandled rejection 逃出挂载）。Rust 权威层 commit 本身事务性（全或无 + CAS），无需额外回滚服务。
 - **O4 agent 活动卡的持久通知**（T3: `NotificationMailbox.ts`——通知不丢、不重复打扰、可重放）。dev 的 City Agent 变更卡片是 React 内存态 `slice(0, 6)`，重启即失；`plugin_events` 表其实已持久化了全部事件，只差 UI 重放。建议：活动卡从 `plugin_events` 尾页重建，零新数据面。
-- **O5 流式输出预算**（T3: `LiveStreamBudget.ts`——流式 backpressure 有专门机制）。dev 的 job/流式面（E2）预算在传输层，应用层 backpressure 未显式建模。建议：E2 Job 输出订阅加窗口上限，超限即暂停投递而非丢弃——量小，防患。
+- ~~O5 流式输出预算~~ **不适用（2026-11-17 复核修正）**：dev 的 E2 Job 面是轮询拉取模型（`creator_job_wait` 阻塞至终态/30s 超时，返回有界 running 快照），不存在流式推送通道——T3 `LiveStreamBudget` 解决的是推送模型的 backpressure，在拉取模型下无此问题。等价防护已存在：progress_json 有界 + 响应预算。若未来引入推送订阅（E7 多端监视），届时再按 LiveStreamBudget 的窗口语义补。
 
 ### 6.3 结论
 

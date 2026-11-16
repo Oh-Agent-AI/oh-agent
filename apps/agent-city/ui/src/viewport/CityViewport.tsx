@@ -170,7 +170,10 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
       const status = session.status();
       setSaveState(status.saveFailed ? "failed" : status.savePending ? "pending" : "saved");
     };
-    void session.load(seed).then(() => { if (active) { const status = session.status(); setSaveState(status.saveFailed ? "failed" : status.savePending ? "pending" : "saved"); } });
+    // load 内部对存档读不到/损坏诚实降级（不抛）；catch 只兜 onSaveSettled 回调
+    // 的意外异常——恢复路径绝不允许 unhandled rejection 逃出视口挂载（§6.2-O3）。
+    void session.load(seed).then(() => { if (active) { const status = session.status(); setSaveState(status.saveFailed ? "failed" : status.savePending ? "pending" : "saved"); } })
+      .catch(() => { if (active) setSaveState("failed"); });
     return () => { active = false; session.dispose(); sessionRef.current = null; };
   }, [editable, isolatedDraft, engineState, seed]);
 
