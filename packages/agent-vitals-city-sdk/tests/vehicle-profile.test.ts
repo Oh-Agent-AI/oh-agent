@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { CREATOR_VEHICLE_CATALOG_V1, estimateVehiclePerformanceV1, FIXED_WING_VEHICLE_PRESET_V1, ORNITHOPTER_VEHICLE_PRESET_V1, validateVehicleProfileV1,
   VEHICLE_PERFORMANCE_DERIVATION_V1,
   VEHICLE_BOUNDS_LIMITS_V1, VEHICLE_CAMERA_BOUNDS_V1, VEHICLE_PHYSICS_BOUNDS_V1, VEHICLE_PHYSICS_KEYS_V1, VEHICLE_PHYSICS_RATIOS_V1,
@@ -84,6 +85,41 @@ test("rejects non-plain-text ids and labels (no script/injection surface)", () =
   const goodAsset = clone(ORNITHOPTER_VEHICLE_PRESET_V1);
   goodAsset.modelAssetId = "project-asset.ornithopter-v2";
   assert.equal(validateVehicleProfileV1(goodAsset).ok, true);
+});
+
+// QuickJS 兼容性（2026-11-16 E5 前置修复）：LABEL 不再携带字符类内 `\-` 转义。
+// QuickJS 系引擎在 u 模式下拒绝 `\-`（W1 spike 最大发现），V8 两者皆收。这里钉住
+// 三件事：① dist 产物（嵌入式语义闸/未来 WASM 载体的直接输入）里不再出现 `\-`
+// 类内转义——这条对整个 dist 生效，未来任何新增正则也必须过 QuickJS 探针；
+// ② 裸 `-` 与旧 `\-` 写法语义完全等价——同一语料在两种正则下接受/拒绝集合一致；
+// ③ 合法连字符画像（连字符在首字符之后）确实通过完整 profile 校验，首位连字符
+// 仍拒绝（首字符类不含 -）。
+test("label regex drops the `\\-` class escape without changing its language", () => {
+  // ① 语法面：dist 字节（本次 npm test 先跑 build，读到的就是当前源码的产物）。
+  const dist = readFileSync(new URL("../dist/index.js", import.meta.url), "utf8");
+  assert.ok(dist.includes("（）()-]"), "dist must carry the rewritten LABEL class");
+  assert.ok(!dist.includes("\\-"), "dist must not carry any QuickJS-incompatible `\\-` class escape");
+  // ② 语义面：同一语料，旧 `\-` 正则与裸 `-` 正则的判定逐条一致（直接构造两个
+  //    正则比对，等价证明独立于 LABEL 定义本身）。
+  const oldLabel = /^[\p{L}\p{N}][\p{L}\p{N} .·、（）()\-]{0,126}$/u; // 旧写法：V8 可编译，QuickJS 拒绝
+  const newLabel = /^[\p{L}\p{N}][\p{L}\p{N} .·、（）()-]{0,126}$/u;
+  const corpus = [
+    "扑翼机", "E2E flapper", "a-b", "-b", "ab-", "a--b", "x.y·z", "海（检）(wing)-原型",
+    "、。!", "Alpha 7", "①", "🛩️", "<script>", "a{b}", "a|b", "a$b", "a^b", "a[b", "a]b",
+    "a\\b", "a*b", "a+b", "a?b", "a#b", "a%b", "a@b", "a!b", "a~b", "a,b", "a;b", "a:b",
+    "a'b", '"a"', "a=b", "a&b", "a　b", "", " ", "a", ...Array.from({ length: 12 }, (_, i) => `机-${i}-${"甲".repeat(i)}`),
+  ];
+  for (const label of corpus) {
+    assert.equal(newLabel.test(label), oldLabel.test(label),
+      `label ${JSON.stringify(label)}: bare '-' must decide exactly like the old '\\-' escape`);
+  }
+  // ③ 行为面：完整 profile 校验。
+  const hyphenated = clone(ORNITHOPTER_VEHICLE_PRESET_V1);
+  hyphenated.label = "扑翼-原型机(wing)-01";
+  assert.equal(validateVehicleProfileV1(hyphenated).ok, true);
+  const leadingHyphen = clone(ORNITHOPTER_VEHICLE_PRESET_V1);
+  leadingHyphen.label = "-扑翼机";
+  assert.equal(firstCode(validateVehicleProfileV1(leadingHyphen)).code, "vehicle_profile_invalid");
 });
 
 test("rejects physics records that are not finite bounded numbers", () => {

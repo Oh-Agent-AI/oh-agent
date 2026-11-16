@@ -14,7 +14,13 @@
 import type { DiagnosticV1, Result } from "./types";
 
 const IDENTIFIER = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
-const LABEL = /^[\p{L}\p{N}][\p{L}\p{N} .·、（）()\-]{0,126}$/u;
+// LABEL 里的字面连字符必须裸写 `-`、不能写成 `\-`：QuickJS 系引擎（含宿主嵌入式
+// 语义闸与 W1 spike 验证过的 WASM 承载）在 `u` 模式下拒绝字符类内的 `\-` 转义，
+// 而 V8 两种写法都接受。字符类内 `\-` 与 `-` 是同一个字面连字符（ES 规范
+// ClassEscape :: - ），语义等价改写，`-` 位于 `]` 前无需转义。等价性由
+// tests/vehicle-profile.test.ts 的语义等价测试钉住；QuickJS 兼容性由嵌入式闸的
+// 锁步向量测试钉住（W1 spike evals/wasm-spike/SPIKE_REPORT.md §2）。
+const LABEL = /^[\p{L}\p{N}][\p{L}\p{N} .·、（）()-]{0,126}$/u;
 
 export type VehicleFlightModelV1 = "fixed-wing" | "flapping" | "vtol";
 
