@@ -170,6 +170,8 @@ const tools = [
       gameType: { type: "string", enum: ["flight", "driving"], description: "required unless releaseId is given (the release freezes it)" },
       releaseId: { type: "string", description: "read a published release: vehicle, pack and gates come from the frozen snapshot" },
       experience: { type: "string", description: "city-experience package directory: self-contained release + v3 layout + assets, verified byte-for-byte; no Creator store needed (clean client)" },
+      experienceId: { type: "string", description: "installed experience id: resolved to <dataHome>/state/creator/content/experience/<id>/<version>" },
+      experienceVersion: { type: "string", description: "installed experience version (required with experienceId)" },
       dataHome: { type: "string", description: "Creator store home (default $AV_DATA_HOME or ~/.agent-vitals)" },
       vehicle: { description: "flight only: preset id or a full VehicleProfileV1", oneOf: [{ type: "string", enum: ["ornithopter", "fixed-wing"] }, { type: "object" }] },
       pack: { type: "object", description: "optional creator mini-game pack (same JSON as the Studio game editor)" },
@@ -194,8 +196,13 @@ const tools = [
 /** release 模式：载具与 pack 来自发布快照（只读），门来自布局快照里的 geometry。
  *  快照没有 geometry（v1/v2 的历史数据）时**不猜位置**，要求调用方显式给 gates。 */
 function resolveReleaseArgs(args) {
-  const release = typeof args.experience === "string" && args.experience
-    ? resolveExperience({ dir: args.experience })
+  // 已安装的体验包：Agent 只拿 id+version（不暴露路径），按客户端的固定布局解析。
+  const experienceDir = typeof args.experience === "string" && args.experience ? args.experience
+    : typeof args.experienceId === "string" && typeof args.experienceVersion === "string"
+      ? `${(typeof args.dataHome === "string" && args.dataHome ? args.dataHome : process.env.AV_DATA_HOME || `${process.env.HOME}/.agent-vitals`)}/state/creator/content/experience/${args.experienceId}/${args.experienceVersion}`
+      : null;
+  const release = experienceDir
+    ? resolveExperience({ dir: experienceDir })
     : resolveRelease({ dataHome: (typeof args.dataHome === "string" && args.dataHome ? args.dataHome
       : process.env.AV_DATA_HOME || `${process.env.HOME}/.agent-vitals`), releaseId: args.releaseId });
   if (args.gameType !== undefined && args.gameType !== release.gameType) throw new Error("release_game_type_mismatch");
@@ -209,7 +216,7 @@ function resolveReleaseArgs(args) {
 }
 
 function open(args) {
-  const fromRelease = typeof args.releaseId === "string" || typeof args.experience === "string" ? resolveReleaseArgs(args) : null;
+  const fromRelease = typeof args.releaseId === "string" || typeof args.experience === "string" || typeof args.experienceId === "string" ? resolveReleaseArgs(args) : null;
   const gameType = fromRelease ? fromRelease.gameType
     : args.gameType === "driving" ? "driving" : args.gameType === "flight" ? "flight" : null;
   if (!gameType) throw new Error("game_type_invalid");

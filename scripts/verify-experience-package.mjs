@@ -61,6 +61,15 @@ check("published gates are flown from the package", ran.gates?.passed === ran.ga
   `passed ${ran.gates?.passed}/${ran.gates?.total}, outcome ${ran.outcome}, tick ${ran.tick}, digest ${ran.traceDigest}`);
 check("gate geometry came from the package layout", opened.release?.gateSource === "layout-geometry" && !opened.release?.warnings?.includes("gate_radius_defaulted"),
   JSON.stringify(opened.release?.warnings ?? []));
+// 已安装模式：Agent 只拿 id+version（不暴露路径），宿主按固定布局解析。
+const byId = await call("game_open", { experienceId: manifest.experienceId, experienceVersion: manifest.version, dataHome: clientHome });
+check("launch by installed id (no path in the call)", !byId.isError && byId.gates?.total === opened.gates?.total,
+  byId.isError ? JSON.stringify(byId.error) : `gates ${byId.gates?.total}`);
+if (!byId.isError) {
+  const runById = await call("game_script", { sessionId: byId.sessionId, script: [{ ticks: 400, input: { throttleUp: true } }] });
+  check("installed-id run matches the directory run", runById.outcome === ran.outcome && runById.traceDigest === ran.traceDigest && runById.gates.passed === ran.gates.passed,
+    `outcome ${runById.outcome}, digest ${runById.traceDigest}`);
+}
 child.kill();
 
 // 4) 反例：改字节 / 改 metadata 必须拒绝

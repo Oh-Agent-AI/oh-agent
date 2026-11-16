@@ -165,7 +165,23 @@ Claude Code（`claude mcp add` 或项目 `.mcp.json`，字段名以 Claude Code 
 | creator_mount_unbind | projectId、baseRevision、mountId、operationId | — | 写入 |
 | creator_game_bind_preview | projectId、baseRevision、mountId、entryAnchorId、bindings | vehicleId、parameterOverrides | 预览（不落盘）；槽位数、锚点存在性与必需能力（含 fly）；依赖 City runtime 的可达性/视觉检查一律报 `unchecked`，绝不报 passed |
 
-### 3.7 会话与作业（creator_session_* / creator_job_*，7 个，全部离线、无需任何开关）
+### 3.7 体验包（creator_experience_*，4 个）
+
+把已发布 release 组成可交付、可安装、可重建的作品（格式与验收见
+`docs/CREATOR_EXPERIENCE_PACKAGE_2026_11_16.md`）。四个工具都需要 Creator Studio 开放；
+build/install/uninstall 还要 `--allow-local-writes`。返回里**永远没有路径**。
+
+| MCP 工具 | 必需入参 | 可选入参 | 类别 |
+|---|---|---|---|
+| creator_experience_build | releaseId、version（x.y.z） | — | 写入；把冻结发布快照 + v3 布局（含锚点几何）+ 资产字节打成自包含包，逐字节校验；同 id+version 不同摘要拒绝（`experience_digest_conflict`） |
+| creator_experience_list | — | — | 只读；列出已构建的包及是否已装进共享内容库 |
+| creator_experience_install | experienceId、version | — | 写入；重新校验每个文件摘要后登记进 `creator_content_packages`（kind `city-experience`），幂等 |
+| creator_experience_uninstall | experienceId、version | — | 写入；删除内容库条目与目录 |
+
+启动已安装的体验包用游戏操控 MCP：`game_open { experienceId, experienceVersion }`（按
+`<data_home>/state/creator/content/experience/<id>/<version>` 解析，不传路径）。
+
+### 3.8 会话与作业（creator_session_* / creator_job_*，7 个，全部离线、无需任何开关）
 
 | MCP 工具 | 必需入参 | 可选入参 | 类别 |
 |---|---|---|---|
@@ -451,7 +467,7 @@ creator 域错误以 `tools/call` 结果的 `isError:true` + envelope 内稳定 
 
 1. **进程握手。** 启动 serve 后 stderr 出现 `data-mcp: serving on stdio (protocol 2025-06-18, data_home …)` 横幅。
 2. **initialize。** 返回 `protocolVersion: "2025-06-18"`、`capabilities.tools`、`serverInfo.name: "Oh Agent MCP"`。initialize 之前的请求被拒（JSON-RPC error `-32002`）。
-3. **tools/list。** 默认共 58 个工具，其中 creator_* 34 个（26 个 Studio 域：creator_layout_list、creator_project_list、creator_project_read、creator_operation_status、creator_playtest_history、creator_playtest_start、creator_playtest_result、creator_playtest_cancel、creator_project_create、creator_game_preview、creator_scene_preview、creator_project_commit、creator_project_publish、creator_scene_describe、creator_scene_capture、creator_capabilities_list、creator_scene_inspect、creator_scene_validate、creator_mount_list、creator_mount_bind、creator_mount_unbind、creator_game_bind_preview、creator_vehicle_list、creator_vehicle_preview、creator_vehicle_define、creator_vehicle_inspect；8 个会话域：creator_session_open、creator_session_status、creator_session_close、creator_job_list、creator_job_status、creator_job_wait、creator_job_cancel、creator_game_type_list）。加 `--enable-city-tools` 后共 74 个，creator_* 凑满 50 个，额外包含 16 个：creator_city_create、creator_city_create_from_world、creator_city_edit_preview、creator_city_patch_preview、creator_city_edit_commit、creator_city_list、creator_city_read、creator_city_diagnostics、creator_city_view、creator_city_view_status、creator_city_capture、creator_city_layout_read、creator_city_layout_save、creator_city_anchor_list、creator_city_anchor_upsert、creator_city_anchor_remove。
+3. **tools/list。** 默认共 62 个工具，其中 creator_* 38 个（30 个 Studio 域：creator_layout_list、creator_project_list、creator_project_read、creator_operation_status、creator_playtest_history、creator_playtest_start、creator_playtest_result、creator_playtest_cancel、creator_project_create、creator_game_preview、creator_scene_preview、creator_project_commit、creator_project_publish、creator_scene_describe、creator_scene_capture、creator_capabilities_list、creator_scene_inspect、creator_scene_validate、creator_mount_list、creator_mount_bind、creator_mount_unbind、creator_game_bind_preview、creator_vehicle_list、creator_vehicle_preview、creator_vehicle_define、creator_vehicle_inspect、creator_experience_build、creator_experience_list、creator_experience_install、creator_experience_uninstall；8 个会话域：creator_session_open、creator_session_status、creator_session_close、creator_job_list、creator_job_status、creator_job_wait、creator_job_cancel、creator_game_type_list）。加 `--enable-city-tools` 后共 78 个，creator_* 凑满 54 个，额外包含 16 个：creator_city_create、creator_city_create_from_world、creator_city_edit_preview、creator_city_patch_preview、creator_city_edit_commit、creator_city_list、creator_city_read、creator_city_diagnostics、creator_city_view、creator_city_view_status、creator_city_capture、creator_city_layout_read、creator_city_layout_save、creator_city_anchor_list、creator_city_anchor_upsert、creator_city_anchor_remove。
 4. **只读自检：creator_project_list。** 参数 `{"limit": 10}`。Studio 已打开：`ok:true` 与有界项目列表（没有项目时为空列表）；Studio 未打开：约 15 秒后 `plugin_unavailable`。
 5. **离线自检（无需 Studio）：creator_capabilities_list `{}`。** 预期 `ok:true`，schemaVersion=1，含 project/scene/worlds/gameTypes 等类别；再试 `creator_game_type_list {}`（6 个类型，builtin-adapter 4 个 playtestSupported=true）与 `creator_session_open {"agentId":"smoke"}`（返回 sessionId）。
 6. **写入开关自检（开关未开启时）。** 对 creator_project_create（或任一写入工具）发起调用，预期 `permission_denied`，消息明确要求 `data-mcp serve --allow-local-writes`。

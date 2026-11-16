@@ -967,6 +967,19 @@ fn args_valid_id<'a>(payload: &'a Value, key: &str) -> Result<&'a str, &'static 
     payload[key].as_str().filter(|id| valid_id(id)).ok_or("creator_request_invalid")
 }
 
+fn run_experience_build(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_experience::build_experience(home, args_valid_id(payload, "releaseId")?, args_str(payload, "version")?)
+}
+fn run_experience_list(home: &Path, _owner: &str, _instance: &str, _payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_experience::list_experiences(home)
+}
+fn run_experience_install(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_experience::install_experience(home, args_valid_id(payload, "experienceId")?, args_str(payload, "version")?)
+}
+fn run_experience_uninstall(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_experience::uninstall_experience(home, args_valid_id(payload, "experienceId")?, args_str(payload, "version")?)
+}
+
 fn run_layout_list(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
     list_city_layout_snapshots(home, args_u64(payload, "limit")?)
 }
@@ -1240,6 +1253,10 @@ static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.city.edit.preview", &["cityId", "baseRevision", "validation"], &["name", "seed", "profile", "operations"], run_city_preview),
     creator_row!("creator.city.patch.preview", &["cityId", "baseRevision", "patch", "validation"], &[], run_city_patch_preview),
     creator_row!("creator.city.layout.store", &["snapshot"], &[], run_city_layout_store),
+    creator_row!("creator.experience.build", &["releaseId", "version"], &[], run_experience_build),
+    creator_row!("creator.experience.list", &[], &[], run_experience_list),
+    creator_row!("creator.experience.install", &["experienceId", "version"], &[], run_experience_install),
+    creator_row!("creator.experience.uninstall", &["experienceId", "version"], &[], run_experience_uninstall),
     // 只合并几何、保留快照锚点（Creator 加的空域门只存在于快照里，整份重存会删掉它们）。
     creator_row!("creator.city.layout.geometry", &["cityId", "baseRevision", "geometry"], &[], run_city_layout_geometry),
     creator_row!("creator.city.anchor.list", &["cityId"], &["revision", "capability", "kind", "limit"], run_city_anchor_list),
