@@ -1117,7 +1117,7 @@ function App() {
       setMessage(`城市源码已导出至所选目录中的 ${result.directoryName}；这是未签名的源码项目。`);
     } catch (error) {
       const code = errorCode(error, "creator_export_failed");
-      setMessage(code === "creator_export_cancelled" ? "已取消目录选择，未写出源码。" : `城市源码导出失败（${code}）。请检查城市版本和编辑内容。`);
+      setMessage(code === "creator_export_cancelled" ? "没有选择目录，未写出源码。" : `城市源码导出失败（${code}）。请检查城市版本和编辑内容。`);
     } finally { setBusy(false); }
   };
 
@@ -1140,7 +1140,7 @@ function App() {
       setMessage(`源码已导出至所选目录中的 ${result.directoryName}；${project.mounts.length ? "游戏布局为当前城市快照，换城市须重新绑定。" : "游戏尚未绑定场地，配置挂载后才能验证和试玩。"}`);
     } catch (error) {
       const code = errorCode(error, "creator_export_failed");
-      setMessage(code === "creator_export_cancelled" ? "已取消目录选择，未写出源码。" : `源码导出失败（${code}）。请检查项目版本、城市绑定及资产。`);
+      setMessage(code === "creator_export_cancelled" ? "没有选择目录，未写出源码。" : `源码导出失败（${code}）。请检查项目版本、城市绑定及资产。`);
     } finally { setBusy(false); }
   };
 

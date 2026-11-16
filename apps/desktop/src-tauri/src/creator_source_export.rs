@@ -7,13 +7,11 @@ use crate::creator_store::{bytes_digest, new_id, valid_id};
 
 pub(crate) const REQUIRED: &[&str] = &["README.md", ".gitignore", "world/world.json", "games/game/game.json", "games/game/layout.json", "games/game/scene.json", "games/game/assets/catalog.json"];
 
-/// rfd's folder picker returns None both for a dismiss and for a backend that
-/// never opened a dialog. A return this fast did not wait for a person.
-/// Slower None stays a cancel. The code carries no path.
-pub(crate) fn classify_folder_picker(selected: bool, elapsed_ms: u128) -> &'static str {
-    if selected { "selected" }
-    else if elapsed_ms < 400 { "unavailable" }
-    else { "cancelled" }
+/// `selected` when a directory was chosen. `none` is only "no path came back".
+/// That covers a dismiss and a backend that returned empty. Elapsed time is
+/// logged beside it and is not treated as proof of which one happened.
+pub(crate) fn classify_folder_picker(selected: bool) -> &'static str {
+    if selected { "selected" } else { "none" }
 }
 const MAX_TEXT: usize = 4 * 1024 * 1024;
 const MAX_ASSETS: usize = 64;
@@ -369,11 +367,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(home);
     }
     #[test]
-    fn folder_picker_none_is_unavailable_only_when_it_returns_immediately() {
-        assert_eq!(classify_folder_picker(true, 0), "selected");
-        assert_eq!(classify_folder_picker(false, 0), "unavailable");
-        assert_eq!(classify_folder_picker(false, 399), "unavailable");
-        assert_eq!(classify_folder_picker(false, 400), "cancelled");
-        assert_eq!(classify_folder_picker(false, 5_000), "cancelled");
+    fn folder_picker_none_is_not_classified_by_elapsed_time() {
+        assert_eq!(classify_folder_picker(true), "selected");
+        assert_eq!(classify_folder_picker(false), "none");
     }
 }

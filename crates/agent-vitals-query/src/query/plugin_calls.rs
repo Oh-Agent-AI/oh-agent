@@ -324,9 +324,11 @@ pub fn consumer_block(presence: &ConsumerPresence) -> Option<&'static str> {
 fn fail_outstanding(home: &Path, call_id: &str, code: &str) -> Result<bool, &'static str> {
     let db = open(home)?;
     let response = json!({"ok": false, "error": {"code": code}}).to_string();
+    // Claimed rows belong to a view that may still write the handoff receipt.
+    // Completing them here would replace that receipt and block respond().
     let changed = db.execute(
         "UPDATE plugin_calls SET status='completed', response=?2
-         WHERE call_id=?1 AND status IN ('pending','claimed')",
+         WHERE call_id=?1 AND status='pending'",
         params![call_id, response],
     ).map_err(|_| "plugin_call_store_unavailable")?;
     Ok(changed > 0)
@@ -340,15 +342,16 @@ fn call_plugin(home: &Path, plugin_id: &str, call_id: &str, timeout_ms: u64) -> 
             if let Some(value) = read_response(&db, call_id)? { return Ok(value); }
         }
         if let Some(code) = read_consumer(home, plugin_id)?.as_ref().and_then(consumer_block) {
-            // Only a still-pending or claimed row is completed here. A response
-            // that landed first is left as the plugin wrote it, so a later view
-            // cannot run the side effect and a real answer is not replaced.
+            // Pending rows are completed so a later view cannot start the side
+            // effect. A claimed row is left alone: the view that accepted it
+            // can still write the receipt, and that receipt wins.
             let abandoned = fail_outstanding(home, call_id, code)?;
             let db = open(home)?;
             if let Some(value) = read_response(&db, call_id)? {
                 if !abandoned { return Ok(value); }
+                return Err(code);
             }
-            return Err(code);
+            if abandoned { return Err(code); }
         }
         if std::time::Instant::now() >= deadline {
             let db = open(home)?;
@@ -471,7 +474,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// A view that closes during the wait abandons the row so a later view cannot run it.
+    /// A claimed handoff can still commit its receipt after the consumer closes.
+    /// The fast-fail must not overwrite that row.
+    #[test]
+    fn claimed_receipt_survives_a_consumer_close() {
+        let home = home();
+        publish_consumer(&home, &presence("ready", None)).unwrap();
+        let home_for_view = home.clone();
+        std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            let claimed = loop {
+                let page = claim_pending(&home_for_view, "creator-studio", "plugin-creator-studio-3", &["creator.project.read".into()], 4).unwrap();
+                if !page.is_empty() { break page; }
+                if started.elapsed() > Duration::from_millis(1_000) { panic!("handoff call was not left claimable"); }
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            publish_consumer(&home_for_view, &presence("closed", None)).unwrap();
+            std::thread::sleep(Duration::from_millis(80));
+            let call_id = claimed[0]["callId"].as_str().unwrap();
+            respond(&home_for_view, "creator-studio", "plugin-creator-studio-3", call_id, &json!({"ok": true, "receipt": "handoff"})).unwrap();
+        });
+        let started = std::time::Instant::now();
+        let value = call(&home, "creator-studio", "creator.project.read", &json!({}), 2_000).unwrap();
+        assert_eq!(value["receipt"], "handoff");
+        assert!(started.elapsed() < Duration::from_millis(1_500));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A view that closes during the wait abandons an unclaimed row so a later view cannot run it.
     #[test]
     fn consumer_closing_during_the_wait_is_not_left_claimable() {
         let home = home();

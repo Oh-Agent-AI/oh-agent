@@ -5,6 +5,7 @@ import { pluginCreationCode, pluginCreationHelp } from "./pluginDiagnostics";
 
 type Tool = { id: string; commandId: string; label: string; kind: "button" | "select"; enabled: boolean; placement?: "primary" | "overflow"; value: string | null; options: Array<{ value: string; label: string }> };
 type Snapshot = { pluginId: string; instanceId: string; status: "loading" | "ready" | "failed"; error: string | null; items: Tool[]; pending: string | null; events: Array<{ atMs: number; code: string }> };
+const retainedHealthFault = (code: string) => code === "plugin_unresponsive" || code === "plugin_boot_timeout" || code === "plugin_command_timeout";
 
 export type PluginPresentation = { id: string; name: string };
 
@@ -23,6 +24,7 @@ export function usePlugin(active: boolean, { id: pluginId, name }: PluginPresent
   const locale = useLanguage();
   const localeRef = useRef(locale); localeRef.current = locale;
   const currentId = useRef<string | null>(null);
+  const healthFault = useRef(false);
   const syncLayoutRef = useRef<(() => void) | null>(null);
   // React layout changes (including position-only changes) should not wait for
   // a ResizeObserver plus another animation frame before moving the native view.
@@ -61,6 +63,7 @@ export function usePlugin(active: boolean, { id: pluginId, name }: PluginPresent
         const restart = opened.current.pluginId !== pluginId || opened.current.attempt !== attempt;
         id = await invoke<string>("plugin_open", { pluginId, bounds: initialBounds, restart, locale: localeRef.current });
         currentId.current = id;
+        healthFault.current = false;
         opened.current = { pluginId, attempt };
         lastBounds = JSON.stringify(initialBounds);
         if (cancelled) { await invoke("plugin_close", { instanceId: id, reason: "startup-cancelled" }); return; }
@@ -118,10 +121,11 @@ export function usePlugin(active: boolean, { id: pluginId, name }: PluginPresent
         if (next.status === "failed") {
           const code = next.error ?? "plugin_failed";
           setError(code);
-          // A health flag is not an explicit close. Destroying the view here
-          // settles an active City playtest as creator_playtest_city_closed.
-          // Keep the view; Retry rebuilds it. Other failures still close.
-          if (code === "plugin_unresponsive" || code === "plugin_boot_timeout" || code === "plugin_command_timeout") return;
+          // A health flag is not an explicit close. Keep the view so the
+          // playtest claim stays with this instance. Leave, Close, and Retry
+          // destroy it and free the slot.
+          if (retainedHealthFault(code)) { healthFault.current = true; return; }
+          healthFault.current = false;
           observer?.disconnect();
           opened.current = { pluginId: "", attempt: -1 };
           await invoke("plugin_close", { instanceId: id, reason: "snapshot-failed" });
@@ -146,7 +150,12 @@ export function usePlugin(active: boolean, { id: pluginId, name }: PluginPresent
       currentId.current = null;
       syncLayoutRef.current = null;
       window.removeEventListener("__AV_PLUGIN_STATUS__", onStatus);
-      if (id) lifecycle.current = invoke("plugin_close", { instanceId: id, suspend: true, reason: "tab-suspend" }).catch(() => {});
+      if (id) {
+        const faulted = healthFault.current;
+        lifecycle.current = invoke("plugin_close", {
+          instanceId: id, suspend: !faulted, reason: faulted ? "user-leave" : "tab-suspend",
+        }).catch(() => {});
+      }
     };
   }, [active, pluginId, attempt]);
   const execute = async (tool: Tool, value: string | null = null) => {
@@ -163,7 +172,14 @@ export function usePlugin(active: boolean, { id: pluginId, name }: PluginPresent
       ? <select key={tool.id} aria-label={tool.label} title={tool.label} value={tool.value ?? ""} disabled={disabled || !tool.enabled} onChange={(event) => void execute(tool, event.target.value)}>{tool.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
       : <button key={tool.id} className="button button-secondary" type="button" disabled={disabled || !tool.enabled} onClick={() => void execute(tool)}>{tool.label}</button>)}
     {snapshot?.items.some((tool) => tool.placement === "overflow") && <button className="button button-secondary" type="button" aria-expanded={moreOpen} onClick={() => setMoreOpen(!moreOpen)}>{message(moreOpen ? "plugin.less" : "plugin.more", locale)}</button>}
-    {error && <><span role="status">{error}</span><button className="button button-secondary" type="button" onClick={retry}>{message("plugin.retryNamed", locale, { name })}</button></>}
+    {error && <><span role="status">{error}</span>
+      {retainedHealthFault(error) && <button className="button button-secondary" type="button" onClick={() => {
+        const instanceId = snapshot?.instanceId ?? currentId.current;
+        if (!instanceId) return;
+        currentId.current = null;
+        void invoke("plugin_close", { instanceId, reason: "user-close" });
+      }}>{message("plugin.closeNamed", locale, { name })}</button>}
+      <button className="button button-secondary" type="button" onClick={retry}>{message("plugin.retryNamed", locale, { name })}</button></>}
   </div> : null;
   const content = <div className="native-plugin-slot" ref={slot} aria-label={message("plugin.content", locale, { name })}>
     {error ? <section className="plugin-fallback empty-state" role="alert"><h2>{message("plugin.failedTitle", locale, { name })}</h2><p>{error}</p><p>{pluginCreationHelp(error, locale === "en")}</p><button className="button button-secondary" onClick={retry}>{message("plugin.retryNamed", locale, { name })}</button><details><summary>{message("plugin.diagnostics", locale)}</summary><pre>{JSON.stringify({ pluginId, phase: snapshot ? "runtime" : "creation", code: error, instanceId: snapshot?.instanceId, events: snapshot?.events ?? [] }, null, 2)}</pre></details></section>

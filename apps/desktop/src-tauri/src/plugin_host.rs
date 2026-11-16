@@ -642,7 +642,29 @@ fn canonical_close_reason(reason: Option<&str>) -> &'static str {
         Some("snapshot-unavailable") => "snapshot-unavailable",
         Some("startup-cancelled") => "startup-cancelled",
         Some("tab-suspend") => "tab-suspend",
+        Some("user-close") => "user-close",
+        Some("user-leave") => "user-leave",
         _ => "unspecified",
+    }
+}
+
+/// Suspend keeps a live instance and its playtest claim. A failed instance is
+/// destroyed instead, so leaving it frees the single slot and settles the claim.
+/// The health snapshot itself does not call close.
+fn close_keeps_instance(suspend: Option<bool>, failed: bool) -> bool {
+    suspend == Some(true) && !failed
+}
+
+#[cfg(test)]
+mod close_instance_tests {
+    use super::close_keeps_instance;
+
+    #[test]
+    fn a_failed_instance_is_destroyed_when_the_user_leaves() {
+        assert!(close_keeps_instance(Some(true), false), "a live tab suspend keeps the claim");
+        assert!(!close_keeps_instance(Some(true), true), "a health fault cannot stay suspended");
+        assert!(!close_keeps_instance(None, false));
+        assert!(!close_keeps_instance(Some(false), true));
     }
 }
 
@@ -1073,7 +1095,7 @@ pub async fn plugin_close(app: tauri::AppHandle, webview: Webview, state: tauri:
         let suspended = {
             let mut host = state.0.lock().unwrap();
             let generation = host.generation;
-            if let Some(i) = host.current.as_mut().filter(|i| i.id == instance_id && i.failed.is_none()) {
+            if let Some(i) = host.current.as_mut().filter(|i| i.id == instance_id && close_keeps_instance(Some(true), i.failed.is_some())) {
                 i.suspended = true; i.pending = None; note(i, "suspended");
                 Some(presence_of(i, generation))
             } else { None }
@@ -1412,11 +1434,12 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
                 }
             };
             let elapsed_ms = started.elapsed().as_millis();
-            let outcome = crate::creator_source_export::classify_folder_picker(selected.is_some(), elapsed_ms);
+            let outcome = crate::creator_source_export::classify_folder_picker(selected.is_some());
+            // elapsedMs is a measurement. It does not decide cancel versus a
+            // missing dialog, and the line has no path.
             agent_vitals_runtime::logging::log_info("creator_export", &format!("picker method={method} result={outcome} elapsedMs={elapsed_ms}"));
-            let Some(parent) = selected.filter(|_| outcome == "selected") else {
-                let code = if outcome == "unavailable" { "creator_export_picker_unavailable" } else { "creator_export_cancelled" };
-                return Ok(plugin_request_error(request.request_id, code, false));
+            let Some(parent) = selected else {
+                return Ok(plugin_request_error(request.request_id, "creator_export_cancelled", false));
             };
             let _operation = state.1.lock().unwrap();
             {
