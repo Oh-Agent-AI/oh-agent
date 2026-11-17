@@ -59,7 +59,13 @@
     const counters = object(rules.counters) ? rules.counters : {};
     if (Object.keys(counters).length > 32) diagnostics.push(diagnostic("rule_budget_exceeded", "rules.counters", "A rule graph may declare at most 32 counters."));
     for (const [name, raw] of Object.entries(counters)) {
-      if (!id(name) || !object(raw) || !hasOnlyKeys(raw, ["initial", "max"]) || !integer(raw.initial, 0, 1e9) || !integer(raw.max, 0, 1e9) || raw.initial > raw.max) diagnostics.push(diagnostic("rule_invalid_counter", `rules.counters.${name}`, "Counter bounds must be non-negative integers; initial must not exceed max."));
+      if (!id(name) || !object(raw) || !hasOnlyKeys(raw, ["initial", "max"]) || !integer(raw.initial, 0, 1e9)) {
+        diagnostics.push(diagnostic("rule_invalid_counter", `rules.counters.${name}`, "Counter bounds must be non-negative integers; initial must not exceed max."));
+        continue;
+      }
+      const maxIsParameter = object(raw.max) && hasOnlyKeys(raw.max, ["parameter"]) && id(raw.max.parameter) && hasOwn(parameters, raw.max.parameter);
+      const maxLiteral = typeof raw.max === "number" ? raw.max : null;
+      if (!maxIsParameter && (maxLiteral === null || maxLiteral < 0 || maxLiteral > 1e9 || raw.initial > maxLiteral)) diagnostics.push(diagnostic("rule_invalid_counter", `rules.counters.${name}`, "Counter max must be a bounded integer (initial not exceeding it) or a declared parameter reference."));
     }
     if (!Array.isArray(rules.nodes)) diagnostics.push(diagnostic("rule_invalid_shape", "rules.nodes", "Rule nodes must be an array."));
     const nodes = Array.isArray(rules.nodes) ? rules.nodes : [];
@@ -93,7 +99,7 @@
       if (!eventValid) diagnostics.push(diagnostic("rule_invalid_event", `${path}.on`, "Rule event type or required event fields are invalid.", raw.id));
       if (raw.when !== void 0 && (!Array.isArray(raw.when) || raw.when.length > 8)) diagnostics.push(diagnostic("rule_budget_exceeded", `${path}.when`, "A rule may contain at most 8 guards.", raw.id));
       if (Array.isArray(raw.when)) for (const [guardIndex, guard] of raw.when.entries()) {
-        if (!object(guard) || !id(guard.counter) || !hasOwn(counters, guard.counter) || guard.op === "counter.eq" && !integer(guard.value, 0, 1e9) || guard.op !== "counter.eq" && guard.op !== "counter.eqEventIndex") diagnostics.push(diagnostic("rule_invalid_guard", `${path}.when[${guardIndex}]`, "Guard operation or counter reference is invalid.", raw.id));
+        if (!object(guard) || !id(guard.counter) || !hasOwn(counters, guard.counter) || guard.op === "counter.eq" && !(integer(guard.value, 0, 1e9) || object(guard.value) && hasOnlyKeys(guard.value, ["parameter"]) && id(guard.value.parameter) && hasOwn(parameters, guard.value.parameter)) || guard.op !== "counter.eq" && guard.op !== "counter.eqEventIndex") diagnostics.push(diagnostic("rule_invalid_guard", `${path}.when[${guardIndex}]`, "Guard operation or counter reference is invalid.", raw.id));
         if (object(guard) && guard.op === "counter.eqEventIndex" && object(event) && event.type !== "zone.entered" && event.type !== "item.collected") diagnostics.push(diagnostic("rule_invalid_guard", `${path}.when[${guardIndex}]`, "counter.eqEventIndex requires a player input event.", raw.id));
       }
       if (!Array.isArray(raw.actions) || raw.actions.length > 16) diagnostics.push(diagnostic("rule_budget_exceeded", `${path}.actions`, "A rule must contain at most 16 actions.", raw.id));
@@ -789,6 +795,23 @@
     Object.freeze({ code: "creator_capture_unavailable", tool: "creator_city_view_status", args: {}, note: "\u89C6\u53E3\u4E0D\u53EF\u7528\uFF08\u672A\u6253\u5F00/\u65E0\u5934\uFF09\uFF1B\u7B49\u5F85\u89C6\u53E3 ready\uFF0C\u6216\u6539\u7528\u7ED3\u6784\u6821\u9A8C\u4E0E\u65E0\u5934\u89C4\u5219\u8BD5\u73A9\u3002" }),
     Object.freeze({ code: "creator_validation_scope_mismatch", tool: "creator_project_read", args: {}, note: "\u4FE1\u5C01\u4F5C\u7528\u57DF\u4E0E\u8BF7\u6C42\u4E0D\u7B26\uFF1B\u91CD\u8BFB\u9879\u76EE\u540E\u8BA9 Studio \u91CD\u65B0\u9644\u53D1\u4FE1\u5C01\u3002" })
   ]);
+  var CREATOR_SEMANTIC_GATE_V1 = Object.freeze({
+    schemaVersion: 1,
+    studioEnvelope: true,
+    embeddedSdk: true,
+    embeddedSdkCoverage: ["vehicle.preview", "vehicle.define", "city.edit.preview(world.set)", "city.edit.commit", "city.create"],
+    requiresStudio: [
+      "scene.preview",
+      "game.preview",
+      "city.layout.save",
+      "city.anchor.upsert",
+      "city.patch.preview",
+      "project.create(cityId \u7ED1\u5B9A\u5E03\u5C40)",
+      "project.publish",
+      "playtest.start",
+      "viewport.capture"
+    ]
+  });
   var CREATOR_CAPABILITIES_V1 = Object.freeze({
     schemaVersion: CREATOR_CAPABILITY_SCHEMA_VERSION,
     capabilityVersion: CREATOR_CAPABILITY_VERSION,
@@ -796,7 +819,8 @@
     content: CREATOR_CONTENT_V1,
     budgets: CREATOR_BUDGETS_V1,
     capabilities: CREATOR_CAPABILITIES_PROJECTION_V1,
-    recoveries: CREATOR_RECOVERIES_V1
+    recoveries: CREATOR_RECOVERIES_V1,
+    semanticGate: CREATOR_SEMANTIC_GATE_V1
   });
   var CREATOR_TEMPLATES_V1 = Object.freeze([
     {
@@ -808,13 +832,13 @@
         id: "creator.checkpoint-race",
         rulesVersion: 1,
         slots: { points: { kind: "zone", min: 3, max: 8, requires: ["drive"] } },
-        integerParameters: { timeLimitTicks: { min: 60, max: 36e3, default: 2700 } },
+        integerParameters: { timeLimitTicks: { min: 60, max: 36e3, default: 2700 }, gateTarget: { min: 3, max: 8, default: 3 } },
         rules: {
-          counters: { next: { initial: 0, max: 3 } },
+          counters: { next: { initial: 0, max: { parameter: "gateTarget" } } },
           nodes: [
             { id: "start-timer", on: { type: "run.started" }, actions: [{ op: "timer.start", timerId: "timeout", durationTicks: { parameter: "timeLimitTicks" } }] },
             { id: "advance", on: { type: "zone.entered", slot: "points" }, when: [{ op: "counter.eqEventIndex", counter: "next" }], actions: [{ op: "counter.add", counter: "next", amount: 1 }] },
-            { id: "finish", on: { type: "zone.entered", slot: "points" }, when: [{ op: "counter.eq", counter: "next", value: 3 }], actions: [{ op: "run.finish", outcome: "success" }] },
+            { id: "finish", on: { type: "zone.entered", slot: "points" }, when: [{ op: "counter.eq", counter: "next", value: { parameter: "gateTarget" } }], actions: [{ op: "run.finish", outcome: "success" }] },
             { id: "timeout", on: { type: "timer.expired", timerId: "timeout" }, actions: [{ op: "run.finish", outcome: "failure" }] }
           ]
         }
@@ -829,13 +853,13 @@
         id: "creator.flight-checkpoint",
         rulesVersion: 1,
         slots: { gates: { kind: "zone", min: 3, max: 8, requires: ["fly"] } },
-        integerParameters: { timeLimitTicks: { min: 60, max: 36e3, default: 3600 } },
+        integerParameters: { timeLimitTicks: { min: 60, max: 36e3, default: 3600 }, gateTarget: { min: 3, max: 8, default: 3 } },
         rules: {
-          counters: { next: { initial: 0, max: 3 } },
+          counters: { next: { initial: 0, max: { parameter: "gateTarget" } } },
           nodes: [
             { id: "start-timer", on: { type: "run.started" }, actions: [{ op: "timer.start", timerId: "timeout", durationTicks: { parameter: "timeLimitTicks" } }] },
             { id: "advance", on: { type: "zone.entered", slot: "gates" }, when: [{ op: "counter.eqEventIndex", counter: "next" }], actions: [{ op: "counter.add", counter: "next", amount: 1 }] },
-            { id: "finish", on: { type: "zone.entered", slot: "gates" }, when: [{ op: "counter.eq", counter: "next", value: 3 }], actions: [{ op: "run.finish", outcome: "success" }] },
+            { id: "finish", on: { type: "zone.entered", slot: "gates" }, when: [{ op: "counter.eq", counter: "next", value: { parameter: "gateTarget" } }], actions: [{ op: "run.finish", outcome: "success" }] },
             { id: "timeout", on: { type: "timer.expired", timerId: "timeout" }, actions: [{ op: "run.finish", outcome: "failure" }] }
           ]
         }
