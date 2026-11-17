@@ -89,7 +89,10 @@ fn ensure_schema(db: &rusqlite::Connection) -> Result<(), ToolError> {
 /// 缺库/损坏时返回空聚合并在响应里如实标注，而不是让会话状态查询失败。
 fn aggregate_host_operations(data_home: &Path, project_id: Option<&str>, city_id: Option<&str>) -> (Vec<Value>, Vec<Value>, bool) {
     let host = data_home.join("state/creator/projects.sqlite");
-    let Ok(db) = open_db(&host, true) else { return (Vec::new(), Vec::new(), false) };
+    // 读连接必须是读写打开：WAL 库在「app 仍持有 writer 连接」时，read-only 连接拿不到
+    // shm 读标记，查询以 SQLITE_BUSY 失败（错误被下面的 if let Ok 吞掉，表现成「账本为空」）。
+    // W2 真机首次跑就撞上：commit 明明落库，会话时间线却报 kinds=[]。
+    let Ok(db) = open_db(&host, false) else { return (Vec::new(), Vec::new(), false) };
     let mut operations = Vec::new();
     if let Ok(mut statement) = db.prepare(
         "SELECT operation_id, project_id, result_json, created_at_ms FROM creator_operations
@@ -97,7 +100,7 @@ fn aggregate_host_operations(data_home: &Path, project_id: Option<&str>, city_id
         if let Ok(rows) = statement.query_map(rusqlite::params![project_id], |row| {
             let operation_id: String = row.get(0)?;
             let project: String = row.get(1)?;
-            let at: i64 = row.get(2)?;
+            let at: i64 = row.get(3)?;
             Ok(json!({"kind":"commit","ref":operation_id,
                 "summary":format!("commit @ {project} ({at})"),"status":"ready","atMs":at}))
         }) {
@@ -443,6 +446,31 @@ pub fn run(name: &str, args: &Value, data_home: &Path, _allow_local_writes: bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aggregate_host_operations_reads_commits_while_the_writer_is_open() {
+        let home = temp_home();
+        std::fs::create_dir_all(home.join("state/creator")).unwrap();
+        let path = home.join("state/creator/projects.sqlite");
+        let writer = open_db(&path, false).unwrap();
+        writer.execute_batch("PRAGMA journal_mode=WAL;
+            CREATE TABLE creator_operations (project_id TEXT NOT NULL, actor_id TEXT NOT NULL,
+                operation_id TEXT NOT NULL, operation_hash TEXT NOT NULL, result_json TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL, capability_version TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY(project_id, actor_id, operation_id));
+            CREATE TABLE creator_playtest_runs (run_id TEXT NOT NULL, release_id TEXT NOT NULL,
+                project_id TEXT NOT NULL, status TEXT NOT NULL, active_slot INTEGER,
+                finished_at_ms INTEGER, failure_code TEXT, created_at_ms INTEGER NOT NULL);
+            INSERT INTO creator_operations VALUES ('p1','owner','op1','h','{}',42,'2026-11-17.1');").unwrap();
+        // 应用运行期间就是「writer 开着、另一个连接读」——W2 的会话收尾面对的正是这个状态。
+        // 回归点：created_at_ms 是第 4 列（index 3）；早先把 result_json 当 i64 读，
+        // 每行都类型错误、又被 flatten() 吞掉，于是 commit 明明在库、时间线却是空的。
+        let (operations, _playtests, available) = aggregate_host_operations(&home, None, None);
+        assert!(available);
+        assert_eq!(operations.len(), 1, "operations={operations:?}");
+        assert_eq!(operations[0]["kind"], "commit");
+        drop(writer);
+    }
 
     fn temp_home() -> PathBuf {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
