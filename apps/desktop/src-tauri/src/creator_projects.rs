@@ -2645,18 +2645,23 @@ mod tests {
             let pack = entry["pack"].as_object().unwrap_or_else(|| panic!("template {id} pack object"));
             structural_game_check(&Value::Object(pack.clone())).unwrap_or_else(|error| panic!("template {id} pack must pass structural_game_check: {error}"));
         }
-        // checkpoint-race 完成条件不变量（自内联模板迁移时的历史教训）：points 下限
-        // 必须与计数器 next 上限及 finish 的 counter.eq 判定一致——绑较少检查点的
-        // 竞速永远无法完成（计数提前封顶，finish 条件够不着）。
+        // checkpoint-race 完成条件不变量（自内联模板迁移时的历史教训；2026-11-17 阈值
+        // 参数化后重写）：points 下限必须等于 gateTarget 的下限，计数器 next 上限与 finish
+        // 的 counter.eq 判定必须引用同一个参数——绑较少检查点的竞速才可能完成（计数提前
+        // 封顶、finish 够不着）。「绑定数 == 阈值」由 SDK validateMount 在绑定期守住。
         let race = game_template("checkpoint-race").unwrap();
         let slot_min = race["slots"]["points"]["min"].as_u64().unwrap();
-        let counter_max = race["rules"]["counters"]["next"]["max"].as_u64().unwrap();
+        let gate_target = race["integerParameters"]["gateTarget"].as_object()
+            .expect("checkpoint-race gateTarget parameter");
+        assert_eq!(gate_target["min"].as_u64(), Some(slot_min), "points slot minimum must match gateTarget minimum");
+        assert_eq!(race["rules"]["counters"]["next"]["max"]["parameter"].as_str(), Some("gateTarget"),
+            "counter ceiling must follow gateTarget");
         let finish_value = race["rules"]["nodes"].as_array().unwrap().iter()
             .find(|node| node["id"] == "finish").and_then(|node| node["when"].as_array())
             .and_then(|conditions| conditions.iter().find(|condition| condition["op"] == "counter.eq"))
-            .and_then(|condition| condition["value"].as_u64()).expect("checkpoint-race finish condition");
-        assert_eq!(slot_min, counter_max, "points slot minimum must match counter ceiling");
-        assert_eq!(slot_min, finish_value, "points slot minimum must match finish condition value");
+            .and_then(|condition| condition.get("value").cloned()).expect("checkpoint-race finish condition");
+        assert_eq!(finish_value["parameter"].as_str(), Some("gateTarget"),
+            "finish condition must follow gateTarget");
     }
 
     #[test]

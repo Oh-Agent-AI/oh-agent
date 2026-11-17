@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { connect, connectHostCalls, invokeHost, observeHealth, publishToolbar } from "@agent-vitals/app-sdk/ui-host";
-import { canonicalJson, defaultVehicleCameraV1, estimateVehiclePerformanceV1, validateCityInstance, validateCityLayoutScope, validateCityLayoutSnapshot, validateMiniGamePack, validateMount, validateSceneDraft, validateVehicleProfileV1, validateWorldPlanPatch, type CityGameMountV1, type CityInstanceV1, type CityLayoutSnapshotV1, type CityWorldProfileV1, type VehicleProfileV1 } from "@agent-vitals/city-sdk";
+import { canonicalJson, completionThresholdOverrides, defaultVehicleCameraV1, estimateVehiclePerformanceV1, validateCityInstance, validateCityLayoutScope, validateCityLayoutSnapshot, validateMiniGamePack, validateMount, validateSceneDraft, validateVehicleProfileV1, validateWorldPlanPatch, type CityGameMountV1, type CityInstanceV1, type CityLayoutSnapshotV1, type CityWorldProfileV1, type VehicleProfileV1 } from "@agent-vitals/city-sdk";
 import { applyCityWorldOperations } from "./cityWorldOperations";
 import { buildGameValidation, buildSceneValidation, buildVehicleValidation, describeError, normalizeVehicleProfileInput, scopeMismatchEnvelope } from "./sdkValidation";
 import { loadStudioAtStartup } from "./startupLoad";
@@ -1001,7 +1001,10 @@ function App() {
         schemaVersion: 1, mountId: project.mounts[0]?.mountId ?? "main-mount",
         layout: { kind: "city-layout", id: layout.id, version: "1", digest: layoutSnapshot.value.worldRevision },
         game: { kind: "city-minigame", id: gameResult.value.id, version: "1", digest: await digest(project.game) },
-        entryAnchorId, bindings, parameterOverrides: {},
+        entryAnchorId, bindings,
+        // 完成阈值参数必须与绑定数一致（检查点绑 5 门 → gateTarget=5）；留在 pack 默认值
+        // 会让第 4/5 门永远无效，且 validateMount 会以 parameter_binding_mismatch 拒绝。
+        parameterOverrides: completionThresholdOverrides(gameResult.value, bindings),
       };
       const mountResult = validateMount({ layout, game: gameResult.value, mount,
         resolvedRefs: { layout: { kind: "city-layout", id: layout.id, version: "1", digest: layoutSnapshot.value.worldRevision }, game: mount.game } });
