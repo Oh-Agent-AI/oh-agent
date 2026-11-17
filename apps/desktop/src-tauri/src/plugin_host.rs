@@ -908,8 +908,10 @@ fn headless_city_create_payload(home: &std::path::Path, payload: &Value) -> Resu
 pub(crate) fn poll_headless_creator_calls(app: &tauri::AppHandle) {
     let home = crate::overview::data_home();
     let studio_ready = studio_instance_ready(app);
-    publish_headless_presence_if_studio_absent(&home, studio_ready);
+    // 先验闸完整性再发布 ready presence：bundle digest 失配时本臂整个进程不再作答，
+    // 若仍发布 ready，MCP 调用方会等满信箱 TTL 才超时（明明立刻就知道不可用）。
     if studio_ready || !embedded_gate_integrity_ok() { return; }
+    publish_headless_presence_if_studio_absent(&home, studio_ready);
     let Ok(calls) = agent_vitals_runtime::query::plugin_calls::claim_pending(
         &home, "creator-studio", HEADLESS_CREATOR_INSTANCE, &headless_creator_methods(), 4) else { return; };
     if calls.is_empty() { return; }

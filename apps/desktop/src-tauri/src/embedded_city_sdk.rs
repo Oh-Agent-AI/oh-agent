@@ -253,8 +253,10 @@ fn debug_gate_vehicle_fixture() {
                 "turnRateRps":0.9,"climbRateMps":34.0,"sinkRateMps":26.0,"flapFrequencyHz":2.4,"flapAmplitudeRad":1.1},
             "bounds":{"halfLengthM":3.6,"halfWidthM":4.8,"halfHeightM":1.4}});
         let outcome = invoke("vehicle.validate", &serde_json::json!({"raw": raw})).unwrap();
-        println!("gate ok={} vehicle={}", outcome["ok"], outcome["vehicle"]);
-        let (vehicle, envelope) = crate::creator_projects::embedded_vehicle_validation("vehicle-preview-probe", 0, &raw).unwrap();
+        assert_eq!(outcome["ok"], true, "{outcome}");
+        let (_, envelope) = crate::creator_projects::embedded_vehicle_validation("vehicle-preview-probe", 0, &raw).unwrap();
+        // 宿主信封同样是语义通过（不是结构通过就签发 preview）。
+        assert_eq!(envelope["ok"], true, "{envelope}");
         println!("envelope={}", envelope);
         let _ = std::fs::remove_dir_all(&home);
     }
