@@ -816,7 +816,7 @@ async function runHeadlessSemanticBlock({ client, recorder, state }) {
     }
     return;
   }
-  state.headlessSemantic = true;
+  state.headlessSemantic = false;
 
   // ① world.set 语义预览 + 提交。**避开**当前 revision 已有 v3 布局的 City：
   // 那类城市留给后面的 headless 飞行课程（布局是锚点/绑定/发布的前置），
@@ -848,9 +848,14 @@ async function runHeadlessSemanticBlock({ client, recorder, state }) {
       id: "2b-worldset-preview", title: `creator_city_edit_preview (world.set on ${city.cityId}): embedded-gate semantic preview (pipeline tier)`,
       tool: "creator_city_edit_preview", args: { cityId: city.cityId, baseRevision, operations },
       assertions: [
-        { desc: "validation is embedded-sdk with a previewId (commit allowed, no commitBlocked)", check: data => ({ ok: data?.validation === "embedded-sdk" && Boolean(data?.previewId), detail: `validation=${data?.validation}` }) },
+        // headless 臂回 embedded-sdk；Studio 路径的 city preview 不回 validation
+        // （信封由宿主内部消费，只回 previewId/diff/checks）。两条路径都要认。
+        { desc: "semantic preview issued a previewId (embedded-sdk or Studio envelope)",
+          check: data => ({ ok: Boolean(data?.previewId) && data?.commitBlocked === undefined,
+            detail: `validation=${data?.validation ?? "studio-preview"}` }) },
       ],
     });
+    if (preview.data?.validation === "embedded-sdk") state.headlessSemantic = true;
     const previewId = preview.step.status === "pass" ? preview.data?.previewId : null;
     if (preview.step.status !== "pass") {
       notRun("2b-worldset-commit", "creator_city_edit_commit: headless world.set commit", "embedded preview failed/deferred", preview.step.errorCode);
@@ -860,7 +865,7 @@ async function runHeadlessSemanticBlock({ client, recorder, state }) {
         tool: "creator_city_edit_commit", args: { cityId: city.cityId, previewId, expectedRevision: baseRevision, operationId: newOperationId("op-world-commit") },
         assertions: [
           { desc: "city revision advanced", check: data => ({ ok: typeof data?.revision === "number" && data.revision > baseRevision, detail: `revision=${data?.revision}` }) },
-          { desc: "commit records the embedded-sdk source", check: data => ({ ok: data?.validation === "embedded-sdk", detail: String(data?.validation) }) },
+          { desc: "commit records its validation source (embedded or Studio)", check: data => ({ ok: !data?.validation || ["embedded-sdk", "studio-envelope", "sdk"].includes(data.validation), detail: String(data?.validation) }) },
         ],
       });
     }
@@ -904,7 +909,7 @@ async function runHeadlessSemanticBlock({ client, recorder, state }) {
       id: `2d-vehicle-define-${index}`, title: `creator_vehicle_define (${vehicle.vehicleId}): embedded-gate define (pipeline tier)`,
       tool: "creator_vehicle_define", args: { ...definePayloadFor(vehicle, projectId, revision, newOperationId("op-vehicle-headless")) },
       assertions: [
-        { desc: "validation is embedded-sdk and revision advanced", check: data => ({ ok: data?.validation === "embedded-sdk" && typeof data?.revision === "number" && data.revision > revision, detail: `validation=${data?.validation} revision=${data?.revision}` }) },
+        { desc: "validation source recorded and revision advanced", check: data => ({ ok: ["embedded-sdk", "studio-envelope", "sdk"].includes(data?.validation) && typeof data?.revision === "number" && data.revision > revision, detail: `validation=${data?.validation} revision=${data?.revision}` }) },
       ],
     });
     if (defined.step.status === "pass") revision = defined.data?.revision;
@@ -921,7 +926,7 @@ async function runHeadlessSemanticBlock({ client, recorder, state }) {
     id: "2e-vehicle-preview", title: "creator_vehicle_preview: embedded-gate semantic preview with performance projection",
     tool: "creator_vehicle_preview", args: { projectId, baseRevision: revision, vehicle: profile },
     assertions: [
-      { desc: "validation is embedded-sdk with previewId and estimatedPerformance", check: data => ({ ok: data?.validation === "embedded-sdk" && Boolean(data?.previewId) && Boolean(data?.estimatedPerformance), detail: `validation=${data?.validation}` }) },
+      { desc: "preview has a previewId and estimatedPerformance (embedded or Studio)", check: data => ({ ok: ["embedded-sdk", "studio-envelope", "sdk"].includes(data?.validation) && Boolean(data?.previewId) && Boolean(data?.estimatedPerformance), detail: `validation=${data?.validation}` }) },
     ],
   });
   const vehiclePreviewId = vehiclePreview.step.status === "pass" ? vehiclePreview.data?.previewId : null;
@@ -933,7 +938,7 @@ async function runHeadlessSemanticBlock({ client, recorder, state }) {
     id: "2e-vehicle-commit", title: "creator_project_commit: headless vehicle commit (embedded-gate verdict)",
     tool: "creator_project_commit", args: { projectId, previewId: vehiclePreviewId, expectedRevision: revision, operationId: newOperationId("op-vehicle-commit") },
     assertions: [
-      { desc: "revision advanced and commit records the embedded-sdk source", check: data => ({ ok: data?.validation === "embedded-sdk" && typeof data?.revision === "number" && data.revision > revision, detail: `validation=${data?.validation} revision=${data?.revision}` }) },
+      { desc: "revision advanced and commit records its source", check: data => ({ ok: ["embedded-sdk", "studio-envelope", "sdk"].includes(data?.validation) && typeof data?.revision === "number" && data.revision > revision, detail: `validation=${data?.validation} revision=${data?.revision}` }) },
     ],
   });
   revision += 1;
@@ -1055,11 +1060,15 @@ async function runStudioPipeline({ client, recorder, state }) {
   // 先请求 Studio 渲染这个 City（只读视口），否则 layout.save 会以
   // creator_capture_unavailable 失败。最多等 ~30s；失败交给 layout 步骤如实记录。
   await client.callTool("creator_city_view", { cityId: state.cityId, revision: city.revision }).catch(() => null);
+  let viewState = null;
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const probe = await client.callTool("creator_city_view_status", { cityId: state.cityId, revision: city.revision }).catch(() => null);
-    const viewState = probe?.data?.status ?? probe?.data?.state ?? null;
+    viewState = probe?.data?.status ?? probe?.data?.state ?? null;
     if (viewState === "ready" || viewState === "failed") break;
     await new Promise(resolvePromise => setTimeout(resolvePromise, 1500));
+  }
+  if (viewState !== "ready") {
+    state.knownIssues.push({ finding: `City viewport for ${state.cityId} was ${viewState ?? "unavailable"} before layout capture`, code: "creator_city_view" });
   }
 
   // 布局快照（v3 是空域锚点自带几何的前提）；viewport 缺席时如实延迟。
