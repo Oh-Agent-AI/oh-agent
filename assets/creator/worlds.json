@@ -4,7 +4,7 @@
     "maxParametersPerSet": 32,
     "maxRequestBytes": 8192
   },
-  "capabilityVersion": "2026-11-15.1",
+  "capabilityVersion": "2026-11-17.1",
   "generators": {
     "arid-dunes-v1": {
       "contractVersion": 2,

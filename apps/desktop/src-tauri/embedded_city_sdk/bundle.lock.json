@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "bundle": "city-sdk-gate.iife.js",
-  "bundleSha256": "2bba5dbaa17c625425032e6520c2bf79702e7d373f1940e3a6aea882d24d9d07",
+  "bundleSha256": "340956a2b49ce40ed841baab82351b72a2ad69344a22e8fdae8ab91614019d70",
   "bundleBytes": 87451,
   "gateVersion": 1,
   "sdkPackage": "@agent-vitals/city-sdk",

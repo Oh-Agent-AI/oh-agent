@@ -637,7 +637,7 @@
     return { ok: true, value: Object.freeze({ schemaVersion: 1, objects: Object.freeze(objects) }), diagnostics: [] };
   }
   var CREATOR_CAPABILITY_SCHEMA_VERSION = 1;
-  var CREATOR_CAPABILITY_VERSION = "2026-11-15.1";
+  var CREATOR_CAPABILITY_VERSION = "2026-11-17.1";
   var CREATOR_OPERATIONS_V1 = Object.freeze([
     { id: "scene.object.upsert", kind: "upsert", target: "scene.objects", idField: "id" },
     { id: "scene.object.remove", kind: "remove", target: "scene.objects", idField: "id" },

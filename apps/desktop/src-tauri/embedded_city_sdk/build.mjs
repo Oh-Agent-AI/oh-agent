@@ -10,9 +10,11 @@
 //   - gate 版本 / SDK 版本 / 入口源文件摘要；
 //   - 引擎标识（rquickjs / Bellard QuickJS）。
 //
-// 用法：node apps/desktop/src-tauri/embedded_city_sdk/build.mjs
+// 用法：
+//   node apps/desktop/src-tauri/embedded_city_sdk/build.mjs            # 重新生成并写盘
+//   node apps/desktop/src-tauri/embedded_city_sdk/build.mjs --check    # CI 锁步：与磁盘逐字节比较
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -28,6 +30,7 @@ const SDK_PACKAGE = resolve(REPO_ROOT, "packages/agent-vitals-city-sdk/package.j
 // 版本与 city-sdk 构建链一致，避免第二份构建器版本）。
 const require = createRequire(resolve(REPO_ROOT, "packages/agent-vitals-city-sdk/package.json"));
 const esbuild = require("esbuild");
+const check = process.argv.includes("--check");
 
 const sha256Hex = bytes => createHash("sha256").update(bytes).digest("hex");
 
@@ -40,6 +43,7 @@ const result = await esbuild.build({
   minify: false,
   legalComments: "none",
   outfile: OUT,
+  write: !check,
   logLevel: "warning",
 });
 
@@ -48,7 +52,7 @@ if (result.warnings.length > 0) {
   process.exit(1);
 }
 
-const bundle = readFileSync(OUT, "utf8");
+const bundle = check ? result.outputFiles[0].text : readFileSync(OUT, "utf8");
 for (const banned of ["require(", "process.", "Buffer", "__dirname"]) {
   if (bundle.includes(banned)) {
     console.error(`bundle carries Node-only marker "${banned}"; platform=neutral purity is broken.`);
@@ -78,7 +82,18 @@ const lock = {
   entrySources,
   regenerate: "node apps/desktop/src-tauri/embedded_city_sdk/build.mjs",
 };
+const lockBody = `${JSON.stringify(lock, null, 2)}\n`;
+if (check) {
+  const currentBundle = existsSync(OUT) ? readFileSync(OUT, "utf8") : "";
+  const currentLock = existsSync(LOCK) ? readFileSync(LOCK, "utf8") : "";
+  if (currentBundle !== bundle || currentLock !== lockBody) {
+    console.error("embedded gate bundle is stale: rerun `node apps/desktop/src-tauri/embedded_city_sdk/build.mjs` and commit the bundle + lockfile.");
+    process.exit(1);
+  }
+  console.log(`embedded gate bundle up to date (${lock.bundleBytes} B sha256:${lock.bundleSha256.slice(0, 12)}…)`);
+  process.exit(0);
+}
 mkdirSync(HERE, { recursive: true });
-writeFileSync(LOCK, `${JSON.stringify(lock, null, 2)}\n`);
+writeFileSync(LOCK, lockBody);
 console.log(`bundle ${lock.bundleBytes} B sha256:${lock.bundleSha256.slice(0, 12)}… → ${OUT}`);
 console.log(`lockfile → ${LOCK}`);

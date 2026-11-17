@@ -253,6 +253,10 @@ jobs:
       - name: 构建 City SDK（types + dist）
         working-directory: packages/agent-vitals-city-sdk
         run: npm run build
+      # 嵌入式语义闸 bundle 的输入是 city-sdk + Studio 适配器；SDK 改了却忘记重生成，
+      # bundle 会继续用旧校验器（lockfile 与 vectors 都拦不住——它们只证明"自洽"）。
+      - name: 嵌入式语义闸 bundle 锁步
+        run: node apps/desktop/src-tauri/embedded_city_sdk/build.mjs --check
       - name: City 专项守卫
         working-directory: apps/desktop/ui-dev
         run: node ../../../scripts/verify-city-suite.mjs fast
