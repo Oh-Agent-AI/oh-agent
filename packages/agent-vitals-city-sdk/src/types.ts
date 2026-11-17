@@ -244,8 +244,9 @@ export type RuleEventV1 =
   | { type: "zone.entered" | "item.collected"; tick: number; slot: string; index: number }
   | { type: "timer.expired"; tick: number; timerId: string };
 export type PlayerRuleInputV1 = Extract<RuleEventV1, { type: "zone.entered" | "item.collected" }>;
+export type RuleParameterValueV1 = number | { parameter: string };
 export type RuleGuardV1 =
-  | { op: "counter.eq"; counter: string; value: number }
+  | { op: "counter.eq"; counter: string; value: RuleParameterValueV1 }
   | { op: "counter.eqEventIndex"; counter: string };
 export type RuleActionV1 =
   | { op: "counter.add"; counter: string; amount: number }
@@ -253,7 +254,7 @@ export type RuleActionV1 =
   | { op: "hud.hint"; text: string }
   | { op: "run.finish"; outcome: "success" | "failure" };
 export interface RuleGraphV1 {
-  counters: Record<string, { initial: number; max: number }>;
+  counters: Record<string, { initial: number; max: RuleParameterValueV1 }>;
   nodes: Array<{
     id: string;
     on: { type: "run.started" } | { type: "zone.entered" | "item.collected"; slot: string } | { type: "timer.expired"; timerId: string };

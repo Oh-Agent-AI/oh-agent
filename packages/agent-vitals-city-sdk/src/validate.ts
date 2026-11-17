@@ -487,6 +487,31 @@ export function validateMount(input: { layout: unknown; game: unknown; mount: un
     if (!parameter) diagnostics.push(error("parameter_not_found", `mount.parameterOverrides.${name}`, "Game does not declare this parameter."));
     else if (!Number.isInteger(value) || value < parameter.min || value > parameter.max) diagnostics.push(error("parameter_out_of_range", `mount.parameterOverrides.${name}`, "Parameter value is outside its declared integer range."));
   }
+  // 检查点耦合修复（2026-11-17）：规则里以参数引用形式声明的完成阈值，必须在绑定
+  // 时显式给出且与该槽位绑定数一致——否则会出现「绑 5 门、过 3 门即结束」的静默截断。
+  const rulesGraph = (game as { rules?: { graph?: { nodes?: ReadonlyArray<Record<string, unknown>> } } }).rules?.graph;
+  for (const node of rulesGraph?.nodes ?? []) {
+    const slotName = (node.on as { slot?: string } | undefined)?.slot;
+    if (!slotName || !hasOwn(game.slots, slotName)) continue;
+    const boundCount = resolvedMount.bindings[slotName]?.length ?? 0;
+    for (const guard of (node.when ?? []) as Array<Record<string, unknown>>) {
+      const guardValue: unknown = guard.value;
+      if (guard.op !== "counter.eq" || !isObject(guardValue) || typeof guardValue.parameter !== "string" || !identifier.test(guardValue.parameter)) continue;
+      const parameterName = guardValue.parameter as string;
+      if (!hasOwn(game.integerParameters ?? {}, parameterName)) continue;
+      const overrideValue = (resolvedMount.parameterOverrides as Record<string, number>)[parameterName];
+      const packDefault = (game.integerParameters as Record<string, { default: number }> | undefined)?.[parameterName]?.default;
+      // 一致性（检查点耦合修复）：绑定数必须与阈值一致——显式 override 相等，或
+      // 无 override 时绑定数等于 pack 默认值。否则出现「绑 5 门、过 3 门即结束」的静默截断。
+      if (overrideValue !== undefined && overrideValue !== boundCount) {
+        diagnostics.push(error("parameter_binding_mismatch", `mount.bindings.${slotName}`,
+          `Parameter ${parameterName} (${overrideValue}) must equal the number of bound anchors (${boundCount}) for slot ${slotName}.`));
+      } else if (overrideValue === undefined && packDefault !== undefined && packDefault !== boundCount) {
+        diagnostics.push(error("parameter_binding_mismatch", `mount.bindings.${slotName}`,
+          `Parameter ${parameterName} defaults to ${packDefault} but ${boundCount} anchors are bound; set an explicit override.`));
+      }
+    }
+  }
   return diagnostics.length ? { ok: false, diagnostics } : { ok: true, value: { layout, game, mount: resolvedMount }, diagnostics };
 }
 

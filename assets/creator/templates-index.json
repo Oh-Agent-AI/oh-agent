@@ -8,6 +8,11 @@
       "pack": {
         "id": "creator.checkpoint-race",
         "integerParameters": {
+          "gateTarget": {
+            "default": 3,
+            "max": 8,
+            "min": 3
+          },
           "timeLimitTicks": {
             "default": 2700,
             "max": 36000,
@@ -18,7 +23,9 @@
           "counters": {
             "next": {
               "initial": 0,
-              "max": 3
+              "max": {
+                "parameter": "gateTarget"
+              }
             }
           },
           "nodes": [
@@ -73,7 +80,9 @@
                 {
                   "counter": "next",
                   "op": "counter.eq",
-                  "value": 3
+                  "value": {
+                    "parameter": "gateTarget"
+                  }
                 }
               ]
             },
@@ -113,6 +122,11 @@
       "pack": {
         "id": "creator.flight-checkpoint",
         "integerParameters": {
+          "gateTarget": {
+            "default": 3,
+            "max": 8,
+            "min": 3
+          },
           "timeLimitTicks": {
             "default": 3600,
             "max": 36000,
@@ -123,7 +137,9 @@
           "counters": {
             "next": {
               "initial": 0,
-              "max": 3
+              "max": {
+                "parameter": "gateTarget"
+              }
             }
           },
           "nodes": [
@@ -178,7 +194,9 @@
                 {
                   "counter": "next",
                   "op": "counter.eq",
-                  "value": 3
+                  "value": {
+                    "parameter": "gateTarget"
+                  }
                 }
               ]
             },

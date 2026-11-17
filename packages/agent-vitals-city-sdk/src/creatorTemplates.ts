@@ -16,11 +16,11 @@ export type CreatorTemplateV1 = {
     slots: Record<string, { kind: "zone"; min: number; max: number; requires: string[] }>;
     integerParameters: Record<string, { min: number; max: number; default: number }>;
     rules: {
-      counters: Record<string, { initial: number; max: number }>;
+      counters: Record<string, { initial: number; max: number | { parameter: string } }>;
       nodes: Array<{
         id: string;
         on: { type: string; slot?: string; timerId?: string };
-        when?: Array<{ op: string; counter?: string; value?: number }>;
+        when?: Array<{ op: string; counter?: string; value?: number | { parameter: string } }>;
         actions: Array<Record<string, unknown>>;
       }>;
     };
@@ -37,13 +37,13 @@ export const CREATOR_TEMPLATES_V1: readonly CreatorTemplateV1[] = Object.freeze<
       id: "creator.checkpoint-race",
       rulesVersion: 1,
       slots: { points: { kind: "zone", min: 3, max: 8, requires: ["drive"] } },
-      integerParameters: { timeLimitTicks: { min: 60, max: 36000, default: 2700 } },
+      integerParameters: { timeLimitTicks: { min: 60, max: 36000, default: 2700 }, gateTarget: { min: 3, max: 8, default: 3 } },
       rules: {
-        counters: { next: { initial: 0, max: 3 } },
+        counters: { next: { initial: 0, max: { parameter: "gateTarget" } } },
         nodes: [
           { id: "start-timer", on: { type: "run.started" }, actions: [{ op: "timer.start", timerId: "timeout", durationTicks: { parameter: "timeLimitTicks" } }] },
           { id: "advance", on: { type: "zone.entered", slot: "points" }, when: [{ op: "counter.eqEventIndex", counter: "next" }], actions: [{ op: "counter.add", counter: "next", amount: 1 }] },
-          { id: "finish", on: { type: "zone.entered", slot: "points" }, when: [{ op: "counter.eq", counter: "next", value: 3 }], actions: [{ op: "run.finish", outcome: "success" }] },
+          { id: "finish", on: { type: "zone.entered", slot: "points" }, when: [{ op: "counter.eq", counter: "next", value: { parameter: "gateTarget" } }], actions: [{ op: "run.finish", outcome: "success" }] },
           { id: "timeout", on: { type: "timer.expired", timerId: "timeout" }, actions: [{ op: "run.finish", outcome: "failure" }] },
         ],
       },
@@ -58,13 +58,13 @@ export const CREATOR_TEMPLATES_V1: readonly CreatorTemplateV1[] = Object.freeze<
       id: "creator.flight-checkpoint",
       rulesVersion: 1,
       slots: { gates: { kind: "zone", min: 3, max: 8, requires: ["fly"] } },
-      integerParameters: { timeLimitTicks: { min: 60, max: 36000, default: 3600 } },
+      integerParameters: { timeLimitTicks: { min: 60, max: 36000, default: 3600 }, gateTarget: { min: 3, max: 8, default: 3 } },
       rules: {
-        counters: { next: { initial: 0, max: 3 } },
+        counters: { next: { initial: 0, max: { parameter: "gateTarget" } } },
         nodes: [
           { id: "start-timer", on: { type: "run.started" }, actions: [{ op: "timer.start", timerId: "timeout", durationTicks: { parameter: "timeLimitTicks" } }] },
           { id: "advance", on: { type: "zone.entered", slot: "gates" }, when: [{ op: "counter.eqEventIndex", counter: "next" }], actions: [{ op: "counter.add", counter: "next", amount: 1 }] },
-          { id: "finish", on: { type: "zone.entered", slot: "gates" }, when: [{ op: "counter.eq", counter: "next", value: 3 }], actions: [{ op: "run.finish", outcome: "success" }] },
+          { id: "finish", on: { type: "zone.entered", slot: "gates" }, when: [{ op: "counter.eq", counter: "next", value: { parameter: "gateTarget" } }], actions: [{ op: "run.finish", outcome: "success" }] },
           { id: "timeout", on: { type: "timer.expired", timerId: "timeout" }, actions: [{ op: "run.finish", outcome: "failure" }] },
         ],
       },

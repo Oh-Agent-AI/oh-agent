@@ -23,7 +23,9 @@ export function compileRules(value: unknown): Result<CompiledRulesV1> {
   if (pack.schemaVersion !== 1 || pack.rulesVersion !== 1) diagnostics.push(diagnostic("schema_unsupported", "$", "Only City SDK rules version 1 is supported."));
   if (Object.keys(graph.counters).length > 32 || graph.nodes.length > 128) diagnostics.push(diagnostic("rule_budget_exceeded", "rules", "Rule graph exceeds the version 1 size budget."));
   for (const [name, counter] of Object.entries(graph.counters)) {
-    if (!name || !Number.isInteger(counter.initial) || !Number.isInteger(counter.max) || counter.max < 0 || counter.initial < 0 || counter.initial > counter.max) diagnostics.push(diagnostic("rule_invalid_counter", `rules.counters.${name}`, "Counter bounds must be non-negative integers and initial must not exceed max."));
+    // max 的参数引用形态在 run 时经 overrides 解析；这里只校验字面量形态与基本量。
+    if (!name || !Number.isInteger(counter.initial) || counter.initial < 0
+      || (typeof counter.max === "number" && (!Number.isInteger(counter.max) || counter.max < 0 || counter.initial > counter.max))) diagnostics.push(diagnostic("rule_invalid_counter", `rules.counters.${name}`, "Counter bounds must be non-negative integers and initial must not exceed max."));
   }
   const timers = new Set<string>();
   for (const [index, node] of graph.nodes.entries()) {
@@ -65,12 +67,20 @@ export function createRun(input: { rules: CompiledRulesV1; mount: { bindings: Re
       );
       if (!matches || outcome) continue;
       const guards = node.when ?? [];
-      if (!guards.every(guard => guard.op === "counter.eq" ? counters[guard.counter] === guard.value : event.type !== "run.started" && event.type !== "timer.expired" && counters[guard.counter] === event.index)) continue;
+      if (!guards.every(guard => {
+        if (guard.op !== "counter.eq") return event.type !== "run.started" && event.type !== "timer.expired" && counters[guard.counter] === event.index;
+        const target = typeof guard.value === "number" ? guard.value
+          : input.mount.parameterOverrides[guard.value.parameter] ?? input.rules.pack.integerParameters?.[guard.value.parameter]?.default;
+        return counters[guard.counter] === target;
+      })) continue;
       for (const action of node.actions) {
         if (action.op === "counter.add") {
           const counter = input.rules.graph.counters[action.counter];
+          // max 支持参数引用（与 timer.start 的 durationTicks 同构解析序：overrides → pack 默认）。
+          const ceiling = typeof counter.max === "number" ? counter.max
+            : input.mount.parameterOverrides[counter.max.parameter] ?? input.rules.pack.integerParameters?.[counter.max.parameter]?.default;
           const value = counters[action.counter] + action.amount;
-          if (value < 0 || value > counter.max) throw new Error(`rule counter budget exceeded: ${node.id}`);
+          if (!Number.isInteger(ceiling) || value < 0 || value > ceiling) throw new Error(`rule counter budget exceeded: ${node.id}`);
           counters[action.counter] = value;
         } else if (action.op === "timer.start") {
           const duration = typeof action.durationTicks === "number" ? action.durationTicks : input.mount.parameterOverrides[action.durationTicks.parameter] ?? input.rules.pack.integerParameters?.[action.durationTicks.parameter]?.default;
