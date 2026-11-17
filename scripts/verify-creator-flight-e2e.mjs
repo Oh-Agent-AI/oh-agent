@@ -647,7 +647,17 @@ async function runPipeline({ options, binPath, dataHome }) {
     await runHeadlessSemanticBlock({ client, recorder, state });
 
     if (!state.hostUnavailable) {
-      await runStudioPipeline({ client, recorder, state });
+      // 先试 headless 飞行课程：City 已有 v3 布局快照时，锚点/项目/绑定/发布
+      // 都是宿主本地 store 操作，不需要视口。视口档（layout.save/可视试玩）继续诚实延迟。
+      const course = await runHeadlessFlightCourse({ client, recorder, state });
+      if (course.started) {
+        for (const id of ["6-playtest", "7-result"]) {
+          recorder.record({ id, title: id === "6-playtest" ? "creator_playtest_start (visual)" : "creator_playtest_result + job timeline",
+            status: "not-run", reason: "可视试玩需要官方 Studio/City 运行时；headless 课程已覆盖 1–5", errorCode: "host-studio-required" });
+        }
+      } else {
+        await runStudioPipeline({ client, recorder, state });
+      }
     } else {
       for (const deferred of [
         { id: "3-anchors", title: "creator_city_anchor_upsert: 1 fly spawn + 3 fly gates with own airspace geometry" },
@@ -802,8 +812,19 @@ async function runHeadlessSemanticBlock({ client, recorder, state }) {
   }
   state.headlessSemantic = true;
 
-  // ① world.set 语义预览 + 提交（选第一个城市草稿；参数按其生成器选择合法键）。
-  const city = (state.cities ?? [])[0] ?? null;
+  // ① world.set 语义预览 + 提交。**避开**当前 revision 已有 v3 布局的 City：
+  // 那类城市留给后面的 headless 飞行课程（布局是锚点/绑定/发布的前置），
+  // world.set 会把它的 revision 推进到没有快照的下一代。
+  const cities = state.cities ?? [];
+  let city = cities[0] ?? null;
+  try {
+    const listed = await client.callTool("creator_layout_list", { limit: 16 });
+    const reserved = new Set((listed?.data?.cityLayouts ?? [])
+      .filter(item => item.schemaVersion === 3)
+      .map(item => `${item.cityId}:${item.cityRevision}`));
+    const spare = cities.find(item => !reserved.has(`${item.cityId}:${item.revision}`));
+    if (spare) city = spare;
+  } catch { /* layout list 不可用时退回第一个城市 */ }
   if (!city) {
     notRun("2b-worldset-preview", "creator_city_edit_preview (world.set): embedded-gate semantic preview", "no city draft in the data home");
     notRun("2b-worldset-commit", "creator_city_edit_commit: headless world.set commit", "no city draft in the data home");
@@ -911,6 +932,103 @@ async function runHeadlessSemanticBlock({ client, recorder, state }) {
   });
   revision += 1;
   state.projectId = state.projectId ?? projectId;
+}
+
+/**
+ * Headless 飞行课程（1–5）：City 当前 revision 已有 v3 布局快照时，全程不需要视口。
+ * 返回 { started }：没有匹配的 city+layout 时完全不动（交给 Studio pipeline）。
+ */
+async function runHeadlessFlightCourse({ client, recorder, state }) {
+  const cities = state.cities ?? [];
+  if (cities.length === 0) return { started: false };
+  let listed;
+  try { listed = await client.callTool("creator_layout_list", { limit: 16 }); } catch { return { started: false }; }
+  const cityLayouts = listed?.data?.cityLayouts ?? [];
+  const pair = cities
+    .map(city => ({ city, layout: cityLayouts.find(item => item.cityId === city.cityId && item.cityRevision === city.revision) }))
+    .find(item => item.layout && item.layout.schemaVersion === 3);
+  if (!pair) return { started: false };
+
+  const { city, layout } = pair;
+  state.cityId = city.cityId;
+  state.worldRevision = layout.worldRevision;
+  const anchorIds = ["e2e-air-spawn", "e2e-gate-1", "e2e-gate-2", "e2e-gate-3"];
+  const anchors = [
+    { id: "e2e-air-spawn", kind: "spawn", capabilities: ["fly"], position: { x: 0, y: 40, z: 0 } },
+    { id: "e2e-gate-1", kind: "zone", capabilities: ["fly"], position: { x: 200, y: 40, z: 0 }, radiusMeters: 20 },
+    { id: "e2e-gate-2", kind: "zone", capabilities: ["fly"], position: { x: 400, y: 40, z: 0 }, radiusMeters: 20 },
+    { id: "e2e-gate-3", kind: "zone", capabilities: ["fly"], position: { x: 600, y: 40, z: 0 }, radiusMeters: 20 },
+  ];
+
+  const notRunRest = (from, reason, code) => {
+    const all = ["3-anchors", "1-project", "2-define", "4-mount", "5-publish", "6-playtest", "7-result"];
+    for (const id of all.slice(all.indexOf(from) + 1)) {
+      recorder.record({ id, title: "downstream pipeline step", status: "not-run", reason, errorCode: code ?? null });
+    }
+  };
+
+  const upsert = await runToolStep(client, recorder, {
+    id: "3-anchors", title: "creator_city_anchor_upsert: fly spawn + 3 gates as a new City revision (headless: no viewport)",
+    tool: "creator_city_anchor_upsert", args: { cityId: city.cityId, baseRevision: city.revision, anchors, operationId: newOperationId("op-anchor") },
+    assertions: [
+      { desc: "new city revision created", check: data => ({ ok: typeof data?.revision === "number" && data.revision > city.revision, detail: `revision=${data?.revision}` }) },
+      { desc: "anchorCount grew", check: data => ({ ok: (data?.anchorCount ?? 0) >= 4, detail: String(data?.anchorCount) }) },
+    ],
+  });
+  if (upsert.step.status !== "pass") { notRunRest("3-anchors", "anchor upsert failed/deferred", upsert.step.errorCode); return { started: true }; }
+  state.cityRevision = upsert.data?.revision;
+  state.gateAnchors = anchorIds.slice(1);
+  state.entryAnchor = anchorIds[0];
+
+  const project = await runToolStep(client, recorder, {
+    id: "1-project", title: "creator_project_create: flight-checkpoint project bound to the City draft (headless)",
+    tool: "creator_project_create",
+    args: { template: "flight-checkpoint", worldRevision: layout.worldRevision, cityId: city.cityId, operationId: newOperationId("op-project") },
+    assertions: [
+      { desc: "projectId returned", check: data => ({ ok: Boolean(data?.projectId), detail: data?.projectId ?? null }) },
+      { desc: "project starts at revision 0", check: data => ({ ok: data?.revision === 0, detail: String(data?.revision) }) },
+    ],
+  });
+  if (project.step.status !== "pass") { notRunRest("1-project", "project create failed/deferred", project.step.errorCode); return { started: true }; }
+  state.projectId = project.data?.projectId;
+  let revision = project.data?.revision ?? 0;
+
+  for (const vehicle of state.vehicles ?? []) {
+    const step = await runToolStep(client, recorder, {
+      id: `2-define-${vehicle.vehicleId}`, title: `creator_vehicle_define: ${vehicle.vehicleId} (headless)`,
+      tool: "creator_vehicle_define", args: definePayloadFor(vehicle, state.projectId, revision, newOperationId("op-vehicle")),
+      assertions: [{ desc: "vehicle persisted and revision advanced", check: data => ({ ok: typeof data?.revision === "number" && data.revision > revision, detail: `revision=${data?.revision}` }) }],
+    });
+    if (step.step.status !== "pass") { notRunRest("2-define", "vehicle define failed/deferred", step.step.errorCode); return { started: true }; }
+    revision = step.data?.revision;
+  }
+
+  const mount = await runToolStep(client, recorder, {
+    id: "4-mount", title: "creator_mount_bind: typed mount (headless: no viewport)",
+    tool: "creator_mount_bind",
+    args: { projectId: state.projectId, baseRevision: revision, mountId: "mount-e2e-a", entryAnchorId: state.entryAnchor,
+      bindings: { gates: state.gateAnchors }, vehicleId: state.vehicles?.[0]?.vehicleId, operationId: newOperationId("op-mount") },
+    assertions: [
+      { desc: "mount bound and revision advanced", check: data => ({ ok: typeof data?.revision === "number" && data.revision > revision, detail: `revision=${data?.revision}` }) },
+      { desc: "all 3 gate anchors covered", check: data => ({ ok: data?.coverage?.bound === 3, detail: `bound=${data?.coverage?.bound}` }) },
+    ],
+  });
+  if (mount.step.status !== "pass") { notRunRest("4-mount", "mount bind failed/deferred", mount.step.errorCode); return { started: true }; }
+  revision = mount.data?.revision;
+
+  const publish = await runToolStep(client, recorder, {
+    id: "5-publish", title: "creator_project_publish: frozen release (headless: no viewport)",
+    tool: "creator_project_publish", args: { projectId: state.projectId, expectedRevision: revision },
+    assertions: [
+      { desc: "releaseId returned", check: data => ({ ok: Boolean(data?.releaseId), detail: data?.releaseId ?? null }) },
+      { desc: "gameType frozen to flight", check: data => ({ ok: data?.gameType === "flight", detail: String(data?.gameType) }) },
+      { desc: "runtimeContractVersion frozen to 1", check: data => ({ ok: data?.runtimeContractVersion === 1, detail: String(data?.runtimeContractVersion) }) },
+    ],
+  });
+  if (publish.step.status !== "pass") { notRunRest("5-publish", "publish failed/deferred", publish.step.errorCode); return { started: true }; }
+  state.releaseId = publish.data?.releaseId;
+  state.headlessCourse = true;
+  return { started: true };
 }
 
 /** Studio 可用时的完整七步闭环（① → ⑦）。任何一步失败/延迟都如实记录并继续或收敛。 */

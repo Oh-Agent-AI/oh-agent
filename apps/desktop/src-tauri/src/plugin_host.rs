@@ -833,6 +833,17 @@ fn headless_creator_methods() -> Vec<String> {
         // 是 headless 车辆编辑链的前置；缺了它们 W2 的 2c/2d/2e 根本走不到。
         "creator.layout.list",
         "creator.project.create",
+        // 纯本地 store 操作（不需要视口）：空域锚点、typed mount、发布冻结。
+        // 它们仍是「结构闸 + 宿主校验」；语义面由 gate 的 scene/game 校验与
+        // Studio 的 scene.preview 覆盖，headless 臂不冒充语义通过。
+        "creator.city.anchor.upsert",
+        "creator.city.anchor.remove",
+        "creator.mount.bind",
+        "creator.mount.unbind",
+        "creator.project.publish",
+        "creator.mount.list",
+        "creator.project.list",
+        "creator.operation.status",
     ].into_iter().map(str::to_owned).collect()
 }
 
@@ -972,7 +983,10 @@ fn answer_headless_call(home: &std::path::Path, method: &str, payload: &Value) -
         }
         "creator.city.create" | "creator.city.edit.preview" | "creator.city.edit.commit"
         | "creator.city.list" | "creator.city.read" | "creator.vehicle.inspect"
-        | "creator.project.commit" | "creator.project.create" | "creator.layout.list" => {
+        | "creator.project.commit" | "creator.project.create" | "creator.layout.list"
+        | "creator.city.anchor.upsert" | "creator.city.anchor.remove" | "creator.mount.bind"
+        | "creator.mount.unbind" | "creator.project.publish" | "creator.mount.list"
+        | "creator.project.list" | "creator.operation.status" => {
             let transformed = match method {
                 "creator.city.edit.preview" => headless_world_edit_payload(home, payload)?,
                 "creator.city.create" => headless_city_create_payload(home, payload)?,
@@ -2468,6 +2482,37 @@ mod tests {
             .expect("a semantic rejection must still produce an envelope");
         assert_eq!(envelope["ok"], false, "{envelope}");
         assert!(!envelope["diagnostics"].as_array().map(Vec::is_empty).unwrap_or(true), "{envelope}");
+    }
+
+    #[test]
+    fn headless_arm_binds_a_typed_mount_and_publishes_without_a_viewport() {
+        let home = headless_home();
+        let layout = json!({"schemaVersion": 1, "id": "bind-layout", "coordinateSystem": "city-local-m-v1",
+            "anchors": [
+                {"id": "spawn-a", "kind": "spawn", "capabilities": ["drive"], "geometryRef": "g:spawn"},
+                {"id": "cp-1", "kind": "zone", "capabilities": ["drive"], "geometryRef": "g:1"},
+                {"id": "cp-2", "kind": "zone", "capabilities": ["drive"], "geometryRef": "g:2"},
+                {"id": "cp-3", "kind": "zone", "capabilities": ["drive"], "geometryRef": "g:3"}
+            ],
+            "links": [
+                {"id": "l1", "fromAnchorId": "spawn-a", "toAnchorId": "cp-1", "capabilities": ["drive"]},
+                {"id": "l2", "fromAnchorId": "cp-1", "toAnchorId": "cp-2", "capabilities": ["drive"]},
+                {"id": "l3", "fromAnchorId": "cp-2", "toAnchorId": "cp-3", "capabilities": ["drive"]}
+            ]});
+        crate::creator_city_patch::publish_city_layout_snapshot(&home,
+            &json!({"schemaVersion": 1, "worldRevision": "world-rev-bind", "seed": 7, "layout": layout})).unwrap();
+        let project = crate::creator_projects::create_project_from_city_layout(&home,
+            crate::creator_projects::LOCAL_CREATOR_OWNER, "checkpoint-race", "op-bind-project", "world-rev-bind").unwrap();
+        let project_id = project["projectId"].as_str().unwrap().to_owned();
+        let bound = answer_headless_call(&home, "creator.mount.bind", &json!({
+            "projectId": project_id, "baseRevision": 0, "mountId": "mount-bind-1", "entryAnchorId": "spawn-a",
+            "bindings": {"points": ["cp-1", "cp-2", "cp-3"]}, "operationId": "op-bind-1"})).unwrap();
+        assert_eq!(bound["revision"], 1, "{bound}");
+        assert_eq!(bound["coverage"]["bound"], 3, "{bound}");
+        let published = answer_headless_call(&home, "creator.project.publish",
+            &json!({"projectId": project_id, "expectedRevision": 1})).unwrap();
+        assert!(published["releaseId"].as_str().is_some(), "{published}");
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

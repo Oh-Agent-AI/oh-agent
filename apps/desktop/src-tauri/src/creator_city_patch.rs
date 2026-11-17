@@ -304,7 +304,7 @@ pub fn list_city_layout_snapshots(home: &Path, limit: u64) -> Result<Value, &'st
         let (city_id, city_revision, world_revision, layout_id, raw, created_at_ms) = row.map_err(|_| "creator_store_unavailable")?;
         let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
         Ok(json!({"cityId":city_id,"cityRevision":city_revision,"worldRevision":world_revision,
-            "layoutId":layout_id,"seed":snapshot["seed"],
+            "layoutId":layout_id,"seed":snapshot["seed"],"schemaVersion":snapshot["schemaVersion"],
             "anchorCount":snapshot["layout"]["anchors"].as_array().map_or(0, Vec::len),
             "updatedAtMs":created_at_ms,"source":"cityDraft"}))
     }).collect::<Result<Vec<_>, &'static str>>()?;
@@ -661,6 +661,10 @@ pub(crate) fn mutate_city_anchors(home: &Path, actor: &str, city_id: &str, base_
                 "toAnchorId": anchor_id, "capabilities": ["fly"]}));
         }
     }
+    // 64 是布局快照的锚点硬上限：一张满员的道路 City 再加空域门会超限。
+    // 必须在合并后显式判定，否则会被下面的布局校验笼统报成 snapshot_invalid，
+    // 调用方看不出是预算问题（W2 首次 headless 飞行课程就撞在这）。
+    if merged.len() > 64 { return Err("creator_city_anchor_budget_exceeded"); }
     let merged_layout = json!({"schemaVersion":1,"id":layout_id,"coordinateSystem":"city-local-m-v1","anchors":merged,
         "links":links});
     validate_layout_snapshot(&json!({"schemaVersion":1,"worldRevision":world_revision,"seed":layout["seed"],"layout":merged_layout}))?;
