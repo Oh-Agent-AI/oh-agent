@@ -165,6 +165,12 @@ Claude Code（`claude mcp add` 或项目 `.mcp.json`，字段名以 Claude Code 
 | creator_mount_unbind | projectId、baseRevision、mountId、operationId | — | 写入 |
 | creator_game_bind_preview | projectId、baseRevision、mountId、entryAnchorId、bindings | vehicleId、parameterOverrides | 预览（不落盘）；槽位数、锚点存在性与必需能力（含 fly）；依赖 City runtime 的可达性/视觉检查一律报 `unchecked`，绝不报 passed |
 
+**完成阈值参数（检查点类模板）**：`creator.checkpoint-race` / `creator.flight-checkpoint`
+把完成阈值声明为整数参数 `gateTarget`（默认 3）。绑定 N 个锚点时
+`parameterOverrides.gateTarget` 必须等于 N——省略会退回默认 3，SDK `validateMount`
+以 `parameter_binding_mismatch` 拒绝（旧行为是静默在第 3 个门结束，绑 5 个门时后两个
+门永远无效）。Studio 本地绑定会按绑定数自动写入该值；经 MCP 绑定的客户端需显式传。
+
 ### 3.7 体验包（creator_experience_*，4 个）
 
 把已发布 release 组成可交付、可安装、可重建的作品（格式与验收见
