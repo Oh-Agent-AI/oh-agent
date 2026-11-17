@@ -73,3 +73,24 @@ node scripts/verify-creator-flight-e2e.mjs --out <目录>   # Studio 打开时�
 Studio 打开（或 headless 宿主面补齐 E5/E1 后）重跑同一脚本即得 pipeline-complete 全闭环证据；
 脚本的 deferred/not-run 判定只认稳定错误码（`plugin_unavailable` / `deferred-semantic` /
 viewport 类），不会把降级美化成成功。
+
+## Studio MCP 回归脚本（2026-11-18 增补）
+
+`scripts/verify-studio-mcp-loop.mjs`：Studio 路径（studio-envelope）的**回归断言**，与
+本文的 E6 验收记录器分工不同——后者按诚实阶梯记录 headless/deferred/pending，前者每一步
+都要求 Studio 真的作答，任何一步被 headless 臂接手（`validation: embedded-sdk`）或形状
+不符即失败。
+
+- 覆盖：session → city.create → city.view/status → layout.save → anchor.list/prune/upsert
+  → project.create → vehicle.list/define×2 → mount.bind → project.publish → playtest.start
+  → playtest.result（City 接走 run 后 result 可能不可读，脚本按 deferred 记录，不当作完成）。
+- 前置：Oh Agent 在跑，Creator Studio 是**当前活跃视图**（脚本读 presence，`hidden`/`suspended`
+  直接失败），`--data-home` 指向该 app 的数据根。
+- 副作用：会新建临时 City / flight-checkpoint 项目 / 两架载具 / 一个 release，并启动一次
+  playtest；App 没有删除 City/项目的 MCP 工具，脚本默认不清理，结束时打印全部 id。
+- CI 只跑 `--self-test`（helpers 与断言的自检）；live 模式需人工在桌面环境执行。
+
+```bash
+node scripts/verify-studio-mcp-loop.mjs --self-test
+node scripts/verify-studio-mcp-loop.mjs --bin ./target/release/agent-vitals --data-home ~/.agent-vitals
+```

@@ -257,6 +257,10 @@ jobs:
       # bundle 会继续用旧校验器（lockfile 与 vectors 都拦不住——它们只证明"自洽"）。
       - name: 嵌入式语义闸 bundle 锁步
         run: node apps/desktop/src-tauri/embedded_city_sdk/build.mjs --check
+      # 真机 Studio 回归脚本的自检（helper/断言语义）；live 模式需要桌面宿主 + 前台
+      # Creator Studio，不能在 CI 跑。
+      - name: Studio MCP 回归脚本自检
+        run: node scripts/verify-studio-mcp-loop.mjs --self-test
       - name: City 专项守卫
         working-directory: apps/desktop/ui-dev
         run: node ../../../scripts/verify-city-suite.mjs fast
