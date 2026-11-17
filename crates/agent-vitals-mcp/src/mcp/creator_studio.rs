@@ -151,6 +151,7 @@ fn call_error(code: &str) -> ToolError {
         "creator_project_not_found" => ToolError::new("not_found", "Creator project was not found."),
         "creator_city_not_found" => ToolError::new("not_found", "City draft was not found."),
         "creator_city_invalid" | "operation_id_conflict" => ToolError::new("invalid_argument", "City request is invalid or operationId was reused for different input."),
+        "planning_outcome_failed" => ToolError::new("invalid_argument", "This seed cannot be planned into a playable City at its initial scale tier; choose a different seed."),
         "world_params_unknown" => ToolError::new("invalid_argument", "Unknown world parameter key for this generator; list valid keys via creator_capabilities_list (category `worlds`)."),
         "world_params_out_of_range" => ToolError::new("invalid_argument", "A world parameter value is the wrong type or outside its declared range; check the capability descriptor."),
         "world_params_invalid" => ToolError::new("invalid_argument", "A world.set operation is structurally invalid; each operation needs op=world.set plus preset and/or params."),

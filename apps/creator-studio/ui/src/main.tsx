@@ -16,6 +16,9 @@ import { exportBlockMessage, exportClickBlock } from "./exportClick";
 import { AgentApprovalGate, matchesPreviewBase, type AgentCommit } from "./agentApproval";
 // 视口与 City 插件共享同一份引擎与装配管线，保证 Studio 看到的是同一座城市。
 import { CityViewport } from "../../../agent-city/ui/src/viewport/CityViewport";
+import { createCityShape } from "../../../agent-city/ui/src/engine/cityShape";
+import { cityWorldBuildConfig, coastalConfigForWorld } from "../../../agent-city/ui/src/engine/cityWorldProfile";
+import { ensureCityPlan } from "../../../agent-city/ui/src/engine/cityLayout";
 import { createCreatorLayoutSnapshot, createScopedCreatorLayoutSnapshot } from "../../../agent-city/ui/src/engine/sdk/cityLayoutAdapter";
 import { readCityAppearancePreference } from "../../../agent-city/ui/src/engine/cityWorldProfile";
 import type { CityEngine } from "../../../agent-city/ui/src/engine/CityEngine";
@@ -426,11 +429,30 @@ function App() {
     // payloadDigest）并原子绑定结论，commit 闸门据此放行。校验目标必须与请求的
     // projectId/baseRevision 一致（审查修复）：不是当前打开的项目时取权威文档，
     // 取不到或 revision 漂移按判负出信封。
+    // 新建 City 的规划预检：新 City 以 tier 1 规划；某些 seed 的“必需连接需求”修不齐
+    // 会在 planningOutcome.status 里记 failed，但创建本身仍会成功，直到打开视口才报
+    // layout-preparation:planning-outcome-failed——留下永远打不开的 City。这里在落库前
+    // 跑同一个 planner（ensureCityPlan 会复用这份 plan，不重复规划），失败即拒绝创建。
+    const assertCityPlanPlayable = (seed: unknown, profile: unknown) => {
+      if (!Number.isSafeInteger(seed) || typeof profile !== "object" || profile === null) throw new Error("planning_outcome_failed");
+      try {
+        const worldProfile = profile as CityWorldProfileV1;
+        const world = cityWorldBuildConfig(worldProfile, createCityShape(seed as number));
+        const plan = ensureCityPlan(seed as number, 1, coastalConfigForWorld(worldProfile),
+          world.geographyGenerator, world.geographyOptions, world.biome);
+        if (plan.planningOutcome.status === "failed") throw new Error("planning_outcome_failed");
+      } catch (error) {
+        if (error instanceof Error && error.message === "planning_outcome_failed") throw error;
+        throw new Error("planning_outcome_failed");
+      }
+    };
+
     const attachValidation = async (method: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> => {
       if (method === "creator.city.create") {
         const request = { name: payload.name, seed: payload.seed, profile: payload.profile, operationId: payload.operationId };
         const checked = validateCityInstance({ schemaVersion: 1, cityId: "city-validation", revision: 0,
           name: request.name, seed: request.seed, profile: request.profile });
+        if (checked.ok) assertCityPlanPlayable(request.seed, request.profile);
         return { ...request, validation: { schemaVersion: 1, requestDigest: await digest(request), ok: checked.ok } };
       }
       if (method === "creator.city.create_from_world") {
