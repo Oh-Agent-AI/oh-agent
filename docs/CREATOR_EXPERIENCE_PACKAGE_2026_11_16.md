@@ -11,9 +11,9 @@ P0 的目标是「把 World、Game、Mount、Assets 组合成可版本化、可�
 | 安装：把包放进客户端的内容目录 | ✅ 目录式安装（`state/creator/content/experience/<id>/<version>/`），无需 Creator 库 |
 | 启动：干净客户端无头跑完发布的门 | ✅ MCP `game_open { experience }`（`apps/agent-city/mcp/experienceStore.mjs`） |
 | 自校验：改字节 / 改 metadata / 缺几何 | ✅ 逐字节拒绝（`experience_file_digest_mismatch` / `experience_digest_mismatch` / `experience_layout_incomplete`） |
-| 干净客户端验收 | ✅ `scripts/verify-experience-package.mjs`（7 项检查，空 data home） |
+| 干净客户端验收 | ✅ `scripts/verify-experience-package.mjs`（10 项检查，空 data home，含已安装 id 启动与坏包拒绝） |
 | 宿主集成（MCP 工具 + 共享内容库） | ✅ `creator_experience_build/list/install/uninstall`（宿主 `creator.experience.*`，登记进 `creator_content_packages`） |
-| Studio 按钮 / 导出到用户选的目录 | ⬜ 见 §5 |
+| 导出到用户选的目录 | ✅ Studio「导出体验包目录…」：打包 → 原生目录选择器 → 复制到 `<id>-<version>/`（不覆盖已有目录，日志不含路径） |
 | 分发信任（签名 / 来源 / 许可 / 兼容区间） | ⬜ 包是 unsigned，签名不在本切片 |
 
 ## 2. 包格式（v1）
@@ -120,11 +120,11 @@ node --experimental-transform-types --import ./scripts/mecha-ts-register.mjs \
 
 ## 5. 仍未做（诚实边界）
 
-1. **宿主集成（已做一半）**：已有 `creator_experience_build/list/install/uninstall` MCP 工具、
-   宿主 `creator.experience.*` 方法，以及登记进 `creator_content_packages` 的共享内容库
-   （kind `city-experience`）。仍缺：Studio 的「导出体验包」按钮与导出到用户所选目录的
-   文件夹选择器（现有 `creator.content.*` 的导出只服务 `city-world`），所以「把包交给另一台
-   机器」目前还得手工拷 `state/creator/experience/<id>/<version>`。
+1. **宿主集成（已做）**：`creator_experience_build/list/install/uninstall` MCP 工具、宿主
+   `creator.experience.*` 方法、登记进 `creator_content_packages` 的共享内容库
+   （kind `city-experience`），以及 Studio 的「导出体验包目录…」按钮（打包 → 原生目录选择器
+   → 复制到 `<id>-<version>/`，不覆盖已有目录，`app.log` 只记 `request`/`picker result`/`elapsedMs`，
+   不含路径）。导出走 UI 而不是 MCP：它需要一个坐在机器前的人选目录。
 2. **驾驶体验**：包里带 `seed/profile/worldRevision`，City 世界可由它们确定性重建（2026-11-16
    已验证重生成的 `worldRevision` 与发布一致），但本版无头启动只走「布局快照里的门」，
    驾驶需要路网/出生轨迹的那条路径尚未接到包模式。

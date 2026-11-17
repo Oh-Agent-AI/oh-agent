@@ -1313,13 +1313,15 @@ pub async fn plugin_close(app: tauri::AppHandle, webview: Webview, state: tauri:
         if host.current.as_ref().is_some_and(|i| i.id == instance_id) { Some((host.current.take(), generation)) } else { None }
     };
     if let Some((Some(old), generation)) = old {
-        publish_presence(&presence_closed(&old, generation));
-        crate::remote_gateway::close_sessions_for_instance(&app, &old.id);
-        if let Some(view) = app.get_webview(&old.id) {
-            agent_vitals_runtime::logging::log_warn("plugin_host", &format!("view.close() [plugin_close] id={} reason={reason}", old.id));
-            view.close().map_err(|_| "plugin_close_failed")?;
+        {
+            publish_presence(&presence_closed(&old, generation));
+            crate::remote_gateway::close_sessions_for_instance(&app, &old.id);
+            if let Some(view) = app.get_webview(&old.id) {
+                agent_vitals_runtime::logging::log_warn("plugin_host", &format!("view.close() [plugin_close] id={} reason={reason}", old.id));
+                view.close().map_err(|_| "plugin_close_failed")?;
+            }
+            settle_destroyed_playtest(&old.plugin_id, &old.id);
         }
-        settle_destroyed_playtest(&old.plugin_id, &old.id);
     }
     Ok(())
 }
@@ -1603,7 +1605,8 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
     if method.starts_with("creator.") {
         if plugin_id != "creator-studio" { return Ok(plugin_request_error(request.request_id, "permission_denied", false)); }
         if !local_calls.iter().any(|allowed| allowed == &method) { return Ok(plugin_request_error(request.request_id, "permission_denied", false)); }
-        if method == "creator.source.export" || crate::creator_city_host::classify_local_call(&method) == Some(crate::creator_city_host::LocalCall::SourceExport) {
+        if method == "creator.source.export" || method == "creator.experience.export"
+            || crate::creator_city_host::classify_local_call(&method) == Some(crate::creator_city_host::LocalCall::SourceExport) {
             {
                 let host = state.0.lock().unwrap();
                 if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
@@ -1616,8 +1619,9 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
             agent_vitals_runtime::logging::log_info("creator_export", &format!("request method={method} instance={}", request.instance_id));
             let parent_window = app.get_window("workbench");
             let started = std::time::Instant::now();
+            let title = if method == "creator.experience.export" { "选择体验包导出目录" } else { "选择源码导出目录" };
             let selected = match tauri::async_runtime::spawn_blocking(move || {
-                let dialog = rfd::FileDialog::new().set_title("选择源码导出目录");
+                let dialog = rfd::FileDialog::new().set_title(title);
                 match parent_window {
                     Some(window) => dialog.set_parent(&window).pick_folder(),
                     None => dialog.pick_folder(),
@@ -1644,7 +1648,9 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
                     return Err("plugin_instance_mismatch".into());
                 }
             }
-            let result = if crate::creator_city_host::classify_local_call(&method) == Some(crate::creator_city_host::LocalCall::SourceExport) {
+            let result = if method == "creator.experience.export" {
+                crate::creator_experience::export_experience(&crate::overview::data_home(), &parent, &payload)
+            } else if crate::creator_city_host::classify_local_call(&method) == Some(crate::creator_city_host::LocalCall::SourceExport) {
                 crate::creator_source_export::export_city_source(&crate::overview::data_home(), &parent, &payload)
             } else {
                 crate::creator_source_export::export_source(&crate::overview::data_home(), &parent, &payload)

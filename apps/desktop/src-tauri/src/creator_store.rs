@@ -2,7 +2,7 @@
 //! creator projects/changes/operations/layouts/patches/releases/playtest runs,
 //! canonical JSON, digests and identifier helpers. Domain policy lives in the
 //! sibling creator_* modules; nothing here decides business behavior.
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -206,6 +206,42 @@ pub(crate) fn new_id(prefix: &str) -> Result<String, &'static str> {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).map_err(|_| "creator_id_unavailable")?;
     Ok(format!("{prefix}{}", bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>()))
+}
+
+// 历史保留治理（T3 对照 §6.2-O1：storageCleanup/IdleCompaction 的领域适配）。
+// creator_changes 的 document_json 只在提交时写入，无查询读方——当前文档在
+// creator_projects、已发布版本在 creator_releases，旧 revision 的全量文档属于
+// 可再生负担：审计链（revision/actor/operation_id/hash/时间）保留，内容摘要化。
+// creator_operations.result_json 是幂等重试的权威回执（重试必须命中同一结果），
+// 不能摘要化——只按窗口删最旧的行；64 条窗口远超现实重试场景（预览 TTL 仅 10 分钟）。
+pub(crate) const CHANGE_FULL_DOCUMENTS_PER_PROJECT: usize = 8;
+pub(crate) const OPERATION_RECEIPTS_PER_PROJECT_ACTOR: i64 = 64;
+/// 摘要化行的占位内容：仍满足 NOT NULL 与"结构可诊断"（§9：不自动修复脏数据，
+/// 这里是容量治理而非修复——digest 与幂等回执都在 creator_operations）。
+pub(crate) const CHANGE_PRUNED_DOCUMENT_JSON: &str = "{}";
+
+/// 在提交事务内顺带执行（零调度器）：commit 路径每次写历史后调用。
+/// 只做容量有界化；治理失败不阻断提交主语义——下轮 commit 再试。
+pub(crate) fn prune_creator_history(
+    tx: &rusqlite::Transaction<'_>,
+    project_id: &str,
+    actor_id: &str,
+) -> Result<(), &'static str> {
+    // creator_changes：同项目 revision 单调递增，保留最近 N 条全量，其余摘要化。
+    tx.execute(
+        "UPDATE creator_changes SET document_json=?3 WHERE project_id=?1 AND revision <= (
+            SELECT revision FROM creator_changes WHERE project_id=?1
+            ORDER BY revision DESC LIMIT 1 OFFSET ?2)",
+        params![project_id, CHANGE_FULL_DOCUMENTS_PER_PROJECT as i64, CHANGE_PRUNED_DOCUMENT_JSON],
+    ).map_err(|_| "creator_store_unavailable")?;
+    // creator_operations：按 (project_id, actor_id) 窗口删最旧的幂等回执。
+    tx.execute(
+        "DELETE FROM creator_operations WHERE project_id=?1 AND actor_id=?2 AND created_at_ms <= (
+            SELECT created_at_ms FROM creator_operations WHERE project_id=?1 AND actor_id=?2
+            ORDER BY created_at_ms DESC, operation_id DESC LIMIT 1 OFFSET ?3)",
+        params![project_id, actor_id, OPERATION_RECEIPTS_PER_PROJECT_ACTOR],
+    ).map_err(|_| "creator_store_unavailable")?;
+    Ok(())
 }
 
 #[cfg(test)]

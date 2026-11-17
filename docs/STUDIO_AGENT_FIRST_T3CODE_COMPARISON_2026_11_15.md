@@ -1,4 +1,4 @@
-# Studio Agent-first 设计 × T3 Code 设计思路对比（引用级，2026-11-15）
+# Studio Agent-first 设计 × T3 Code 设计思路对比（引用级，2026-11-15；增量更新 2026-11-17 见 §5）
 
 出处约定：
 
@@ -108,3 +108,77 @@
 - §3.2：显式命名 command receipt 对齐（已并入）。
 - §5：新增远景 E7/E8/E9（已并入）。
 - 本文件作为 §9 的引用级展开；两文档互链。
+
+## 5. 增量对比（2026-11-17）
+
+基线更新：T3 `70abb6c0 → origin/main`（两天，20+ 提交全部为 fix/refactor/ci，`docs/internals/*` 架构文档与 `packages/contracts` 零变化——**D1–D11 的 T3 侧判定基线不动**）；dev `f36d6e67（本文件落盘）→ 51738b08`（E2/E5/E6 落地、playtest 生命周期修复、host experience tools、50 工具面、wasm-spike）。以下只记录判定发生变化的维度。
+
+### D2 异步 settle 诚实状态：判定升级——统一 Job 面已落地
+
+- 原判定「已一致（纪律引用）」升级为「已一致且有实现承载」：`a1a74ac8 feat(mcp): world-apply jobs complete the E2 unified job surface` 把布局/世界/试玩/捕获统一注册为 Job，`6301c5cf` 让专用 playtest-start 臂注册会话作业——「提交成功 ≠ settle 完成」从原则变成了 Agent 可 `job_wait` 的类型化面。
+- 配套的实例替换语义同时落地：`c8c0d036`（City/Studio 被替换后恢复试玩 handoff）、`be44e2fc`（City 接管前 ack playtest start）、`35ef1c70`（handoff receipt 保留 + health-fault 显式关闭）——这组修复正是 D1「agent/宿主进程生命周期不对称」在试玩链路上的对称化实践。
+
+### D6 多端监视与审批：可行性证据增强
+
+- `1691ca77`/`a6f47866`：E5 headless 档第一切片——宿主服务在无 UI 下可用（能力降级报告）。D6 的前提「宿主是本地服务，多客户端天然可行」从论证变成了可运行形态；E7 多端监视的距离缩短为「瘦客户端 + 有画面能力的桌面绑定」。
+
+### D9 工具面 evals：从远景（E9）到部分落地
+
+- `evals/creator/`（`run.mjs` + `cases/`）与 `bbed235f` 的 E6 flight-pipeline 端到端验证脚本已存在；SPEC §10.1 把 E9 事故回归用例与 agent-friendliness 度量表挂到同一判分脚手架（按 E6 闭环脚本的 `evidence.json` 聚合）。
+- 「每个 case 复现一次 agent 真实犯过的错误」纪律已吸收进 SPEC §10；T3 侧对应物 `evals/mcp-tool-use` 的结构（fake thread 重放、廉价模型扮演 shell）仍是 E9 全量化的参照。
+
+### D12（新增维度）验证器执行的宿主侧可验证承载：Studio 独有，T3 无对应物
+
+- 背景：本文件 D2/§9 的信任模型缺口——「WebView 返回值仍是宿主输入……语义校验需移到宿主可验证的进程/签名执行环境，或保留 Rust 权威校验；普通哈希不能证明验证器执行过」。T3 不需要解决这个问题：它驱动外部 agent，验证器在 agent 进程内跑，T3 靠 checkpoint diff 事后审计。
+- dev 侧实证：`88fd5122 spike(city-sdk): validate validators inside a WASM QuickJS runtime`（evals/wasm-spike/SPIKE_REPORT.md）——同一份 city-sdk TS 校验器经 quickjs-emscripten 与 Javy 两条 WASM 路径执行，6/6 验收向量与 Node 原生**逐字节相同**，唯一不兼容点（QuickJS 在 `u` 模式拒绝字符类内 `\-` 转义）以语法等价改写绕过并给出上游修复建议。spike 结论「有条件可行」。
+- 判定：**Studio 方向的独有深化**。它把「SDK verdict 只来自活动官方 Studio」从信任声明推进到可承载的技术路线（宿主控制的 WASM 运行时执行校验器），而不引入 T3 式的外部 agent 信任。落点：SPEC §11「W1 spike」——**spike 已完成**（2026-11-16，quickjs-emscripten/Javy 双路径 6/6 向量逐字节一致，结论有条件可行，见 [SPIKE_REPORT](../evals/wasm-spike/SPIKE_REPORT.md) 与 SPEC §11.4）；全量项目（宿主自签发信封）尚未立项。
+
+### D10/D11/D7 在 50 工具面上延续
+
+- `0346c5bb`（host experience tools + 共享 content-library install）、`d17e2c20`（MCP 客户端指南同步 50 工具面）、`51738b08`（city-sdk 错误消息带 next 建议——E3 纪律实例）：新工具维持 exact_payload/有界返回/错误带可执行建议，D7 能力诚实、D10 粒度、D11 contracts 边界的判定不变。
+
+### 增量汇总
+
+| 维度 | 11-15 判定 | 11-17 判定 | 变化来源 |
+|---|---|---|---|
+| D2 settle 诚实 | 已一致（纪律） | 已一致（E2 Job 面落地） | a1a74ac8、6301c5cf |
+| D6 多端监视 | 采纳（E7） | 采纳（E7；E5 headless 已可运行） | a6f47866、1691ca77 |
+| D9 evals | 采纳（E9） | **部分落地**（evals/creator + E6） | bbed235f、SPEC §10 |
+| D12 验证器承载 | （未识别） | **新增：Studio 独有方向，spike 有条件可行** | 88fd5122 |
+| 其余 D1/D3/D4/D5/D7/D8/D10/D11 | — | 不变 | T3 与 dev 两侧均无架构级变化 |
+
+## 6. 源码级复刻完成度与优化空间（2026-11-17）
+
+方法：以 T3 源码子系统清单（`apps/server/src` 1454 文件、`packages` 1302 文件）为基准，逐模块映射 dev 实现物；只回答两个问题——核心设计是否已复刻、还有什么可吸收。
+
+### 6.1 复刻完成度矩阵
+
+| T3 子系统（源码位置） | dev 对应物 | 状态 |
+|---|---|---|
+| `orchestration-v2/`（85 个域文件：EventStore、ProjectionStore、Orchestrator、EffectOutbox） | creator dispatch（CAS + Immediate 事务）+ E2 统一 Job 面 | **形态等价，刻意不抄**：事件溯源为多线程编排服务；世界是单城状态机，CAS + revision 链是同语义的更小形态 |
+| `CommandReceiptStore.ts` + 幂等重试 | `creator_operations` + `creator_operation_status`（P2 起带 capabilityVersion 审计） | ✅ 已复刻（真机验证：重发逐字节相同） |
+| turn/settle 分离（overview「Turn completion and checkpoints」） | E2 Job 面 + preview TTL + `job_wait` | ✅ 已复刻（a1a74ac8） |
+| `checkpointing/`（hidden refs、Capture/Restore/Rollback 三服务） | preview TTL 隔离区 → commit CAS；`creator_changes` 全量审计 | ✅ 语义等价：隔离+审计有；Restore/Rollback 安全检查器无（见 6.2-O3） |
+| `packages/contracts`（2335 行 RPC 边界） | city-sdk（生成链 + include_str! + 跨语言向量） | ✅ 已复刻（同思想领域化） |
+| `provider-*` 13 包（ACP 适配、capability 诚实） | 唯一宿主；能力目录只列已实现 + E5 降级码 | ✅ 纪律已复刻；多 provider **刻意拒绝**（D7） |
+| `policy/`（per-thread 四模式 + ManagedPolicy 封顶） | `--allow-local-writes` + exact_payload + 逐请求授权 | 🟡 部分：数据边界等价；per-session 档在 E7 |
+| `relay/`、`peer/`、`ssh/`、`tailscale/`、`guest/`、`cloud/` | 无 | ⛔ **刻意不做**：数据政策「所有数据留本机」；多端在 E7 且只做瘦客户端 |
+| `worktreesDirectory.ts`、`git/`、`vcs/`、`source-control-*` 8 包 | preview 隔离区（世界非 git 仓库） | ✅ 形态等价（D4）；SCM 集成不适用 |
+| `evals/`（mcp-tool-use 12 个可重放 ndjson 域 + 分域 grading） | `evals/creator/`（5 个 markdown 事故用例 + run.mjs 判分） | 🟡 部分：用例=真实事故纪律已吸收；重放自动化差距见 6.2-O2 |
+| `mcp/`（T3 自暴露工具面：delegate_task 等 + McpToolAccess 竞态防护） | agent-vitals-mcp 50 工具 + mailbox 预算 + 宿主闸门 | ✅ 已复刻且更严（宿主闸门 + 描述符预算是 dev 独有加固） |
+| `ContextHandoffService.ts`（240/237 字符摘要 + delta） | E8 远景（纪律已照抄进 SPEC） | 🟡 远景未实现 |
+| `IdleCompactionService.ts`、`NotificationMailbox.ts`、`LiveStreamBudget.ts`、`DispatchModeLimit.ts` | 无对应（见 6.2） | ⛔ 未覆盖——优化空间主要来源 |
+
+**总结：控制平面的 8 个核心机制（receipt、settle 分离、隔离/审计、契约边界、能力诚实、授权粒度、工具面防护、evals 纪律）已全部在 dev 有对应实现或明确远景归属；未复刻的部分全部是「刻意拒绝」（多 provider、多端 relay、云、SCM）而非遗漏。**
+
+### 6.2 优化空间（T3 已解、dev 未解，按价值排序）
+
+- **O1 长期记录保留治理**（T3: `storageCleanup.ts` + `IdleCompactionService.ts`）。dev 的 `creator_changes`/`creator_operations` 行数无界：每次提交写全量 `document_json`，长期使用线性膨胀；mailbox 有 `MAX_CALL_RECORDS` 清理但 creator 表没有。建议：按项目保留最近 N 条 change + 旧 revision 摘要化（保留 revision/digest/actor，丢弃全量文档），配迁移测试。这是唯一可能影响长期用户的数据面问题。
+- ~~O2 evals 判分自动化~~ **已落地（2026-11-17 复核修正）**：`evals/creator/run.mjs` 是 1049 行确定性判分器，5 个 case 各嵌入结构化 rubric（25 个判分项，rubric 类型闭集），`--self-test` 正反例全过；`verify.yml` 新增 `creator_evals` job 把 self-test 挂进 CI。剩余缺口只是 run.mjs 自述的「model-driven replay 为后续扩展」——判分自动化本身不再是缺口。
+- ~~O3 restore/rollback 安全检查器~~ **已覆盖（2026-11-17 复核修正）**：存档恢复路径的完整性验证已四层存在——`coerceStore`/`coercePlanPatch` 逐条验证、坏条目丢弃而非恢复进引擎（这正是 CheckpointRestoreSafety 的领域语义）；`readLocal` 全包 catch（曾修复"存档损坏带崩挂载"的真实事故）；`session.load` 空库诚实降级 + saveFailed 显式信号；viewport 受控失败态（world_scene_load_failed / engine_initialization_failed）。本轮补上的唯一残留是 `CityViewport` 对 `session.load()` 的防御性 `.catch`（恢复路径不允许 unhandled rejection 逃出挂载）。Rust 权威层 commit 本身事务性（全或无 + CAS），无需额外回滚服务。
+- **O4 agent 活动卡的持久通知**（T3: `NotificationMailbox.ts`——通知不丢、不重复打扰、可重放）。dev 的 City Agent 变更卡片是 React 内存态 `slice(0, 6)`，重启即失；`plugin_events` 表其实已持久化了全部事件，只差 UI 重放。建议：活动卡从 `plugin_events` 尾页重建，零新数据面。
+- ~~O5 流式输出预算~~ **不适用（2026-11-17 复核修正）**：dev 的 E2 Job 面是轮询拉取模型（`creator_job_wait` 阻塞至终态/30s 超时，返回有界 running 快照），不存在流式推送通道——T3 `LiveStreamBudget` 解决的是推送模型的 backpressure，在拉取模型下无此问题。等价防护已存在：progress_json 有界 + 响应预算。若未来引入推送订阅（E7 多端监视），届时再按 LiveStreamBudget 的窗口语义补。
+
+### 6.3 结论
+
+核心设计**已复刻完成**：T3 控制平面的 8 个核心机制全部在 dev 有落地或明确远景归属，且 dev 在宿主闸门（描述符预算、commit 语义闸门、WASM 验证器承载方向）上做了 T3 没有的领域加固。未复刻部分均为有据可查的刻意拒绝。优化空间集中在**运维耐久性**（O1 保留治理最实质）与**判分自动化**（O2），均不触碰既有边界。

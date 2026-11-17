@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { connect, connectHostCalls, invokeHost, observeHealth, publishToolbar } from "@agent-vitals/app-sdk/ui-host";
-import { canonicalJson, defaultVehicleCameraV1, estimateVehiclePerformanceV1, validateCityInstance, validateCityLayoutScope, validateCityLayoutSnapshot, validateMiniGamePack, validateMount, validateSceneDraft, validateVehicleProfileV1, validateWorldPlanPatch, type CityGameMountV1, type CityInstanceV1, type CityLayoutSnapshotV1, type CityWorldProfileV1, type VehicleProfileV1 } from "@agent-vitals/city-sdk";
+import { canonicalJson, completionThresholdOverrides, defaultVehicleCameraV1, estimateVehiclePerformanceV1, validateCityInstance, validateCityLayoutScope, validateCityLayoutSnapshot, validateMiniGamePack, validateMount, validateSceneDraft, validateVehicleProfileV1, validateWorldPlanPatch, type CityGameMountV1, type CityInstanceV1, type CityLayoutSnapshotV1, type CityWorldProfileV1, type VehicleProfileV1 } from "@agent-vitals/city-sdk";
 import { applyCityWorldOperations } from "./cityWorldOperations";
 import { buildGameValidation, buildSceneValidation, buildVehicleValidation, describeError, normalizeVehicleProfileInput, scopeMismatchEnvelope } from "./sdkValidation";
 import { loadStudioAtStartup } from "./startupLoad";
@@ -178,6 +178,36 @@ function App() {
   // Agent 活动卡片（设计 §7.3）：经活动 Studio 转发的 MCP 预览/提交/发布/试玩请求，
   // 新在前、有界保留；UI 自己的操作直连宿主、不出现在这里。
   const [agentActivity, setAgentActivity] = useState<ReadonlyArray<{ method: string; label: string; summary: string; ok: boolean; revision?: number; at: number }>>([]);
+  // 活动卡持久化（T3 对照 §6.2-O4，NotificationMailbox 语义：重要通知不丢）：
+  // 卡片写入插件私有 state（creator-agent-activity:v1，revision CAS），重启后重放。
+  // 失败的临时活动可丢；成功的 Agent 提交历史是必须存活的最低限度。
+  const agentActivityRef = useRef<ReadonlyArray<{ method: string; label: string; summary: string; ok: boolean; revision?: number; at: number }>>([]);
+  const agentActivityStateRevisionRef = useRef(0);
+  const persistAgentActivity = useCallback(() => {
+    const value = { items: agentActivityRef.current };
+    void (async () => {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          await creatorRequest("plugin.state.write", { key: "creator-agent-activity:v1", revision: agentActivityStateRevisionRef.current, value });
+          agentActivityStateRevisionRef.current += 1;
+          return;
+        } catch {
+          // CAS 冲突或瞬时失败：重读权威副本合并后重试一次；再失败静默（卡片是尽力而为的 UX）。
+          try {
+            const state = await creatorRequest<{ revision: number; value: { items?: typeof agentActivityRef.current } }>("plugin.state.read", { key: "creator-agent-activity:v1" });
+            agentActivityStateRevisionRef.current = state.revision;
+            agentActivityRef.current = state.value.items ?? agentActivityRef.current;
+          } catch { return; }
+        }
+      }
+    })();
+  }, []);
+  const recordAgentActivity = useCallback((item: { method: string; label: string; summary: string; ok: boolean; revision?: number; at: number }) => {
+    const list = [item, ...agentActivityRef.current].slice(0, 6);
+    agentActivityRef.current = list;
+    setAgentActivity(list);
+    persistAgentActivity();
+  }, [persistAgentActivity]);
   const approvalGate = useRef(new AgentApprovalGate());
   const [agentCommit, setAgentCommit] = useState<AgentCommit | null>(null);
   const [agentPreviewStatus, setAgentPreviewStatus] = useState<{ context: object; status: "loading" | "ready" | "failed"; code?: string } | null>(null);
@@ -389,7 +419,7 @@ function App() {
         summary = [...counts.entries()].map(([kind, count]) => `${kind}×${count}`).join("、");
       } else if (typeof payload.releaseId === "string") summary = payload.releaseId;
       const revision = (result as { revision?: number } | null)?.revision;
-      setAgentActivity(list => [{ method, label, summary, ok, revision, at: Date.now() }, ...list].slice(0, 6));
+      recordAgentActivity({ method, label, summary, ok, revision, at: Date.now() });
     };
     // P2 语义搬运（设计 §5.2）：Agent 来源的 preview 在转发前经 Studio 的 city-sdk
     // 校验并附加 validation 信封；Rust 签发时核对作用域（projectId/baseRevision/
@@ -698,6 +728,16 @@ function App() {
       const ok = !truncated && !items.some(entry => entry.severity === "error");
       return { projectId: document.projectId, revision: document.revision, ok, truncated, items, unchecked: structure.unchecked };
     };
+    // 重启重放（O4）：从插件私有 state 恢复上一会话的活动卡；读失败保持空态。
+    void (async () => {
+      try {
+        const state = await creatorRequest<{ revision: number; value: { items?: { method: string; label: string; summary: string; ok: boolean; revision?: number; at: number }[] } }>("plugin.state.read", { key: "creator-agent-activity:v1" });
+        agentActivityStateRevisionRef.current = state.revision;
+        const items = state.value.items ?? [];
+        agentActivityRef.current = items;
+        setAgentActivity(items);
+      } catch { /* 空态即可：state 缺失/损坏不阻塞 Studio 就绪 */ }
+    })();
     const disconnectHostCalls = connectHostCalls(handlers);
     const disconnectHealth = observeHealth();
     return () => { disconnectHostCalls(); disconnectHealth(); };
@@ -961,7 +1001,10 @@ function App() {
         schemaVersion: 1, mountId: project.mounts[0]?.mountId ?? "main-mount",
         layout: { kind: "city-layout", id: layout.id, version: "1", digest: layoutSnapshot.value.worldRevision },
         game: { kind: "city-minigame", id: gameResult.value.id, version: "1", digest: await digest(project.game) },
-        entryAnchorId, bindings, parameterOverrides: {},
+        entryAnchorId, bindings,
+        // 完成阈值参数必须与绑定数一致（检查点绑 5 门 → gateTarget=5）；留在 pack 默认值
+        // 会让第 4/5 门永远无效，且 validateMount 会以 parameter_binding_mismatch 拒绝。
+        parameterOverrides: completionThresholdOverrides(gameResult.value, bindings),
       };
       const mountResult = validateMount({ layout, game: gameResult.value, mount,
         resolvedRefs: { layout: { kind: "city-layout", id: layout.id, version: "1", digest: layoutSnapshot.value.worldRevision }, game: mount.game } });
@@ -1145,6 +1188,33 @@ function App() {
     } finally { setBusy(false); }
   };
 
+  /** 体验包：把**已发布**版本打成自包含产物，再由用户选目录拷出。
+   *  与源码导出的区别是「可交付」：包里带冻结发布快照 + v3 布局几何 + 资产字节，
+   *  干净客户端不依赖 Creator 库即可安装并启动。 */
+  const exportExperience = async () => {
+    if (!project) { setMessage("先打开或创建项目"); return; }
+    if (!publishedReleaseId) { setMessage("发布后即可打包体验；产物只来自已发布版本。"); return; }
+    if (busy) return;
+    setBusy(true);
+    setMessage("正在打包体验包…");
+    try {
+      const built = await creatorRequest<{ experienceId: string; version: string; contentDigest: string; fileCount: number; byteLength: number }>(
+        "creator.experience.build", { releaseId: publishedReleaseId, version: "1.0.0" });
+      if (!/^experience-[a-f0-9]{16}$/.test(built.experienceId)) throw new Error("creator_experience_invalid");
+      setMessage("正在打开目录选择…");
+      const exported = await creatorRequest<{ exported: boolean; fileCount: number }>("creator.experience.export",
+        { experienceId: built.experienceId, version: built.version });
+      if (!exported.exported) throw new Error("creator_export_invalid");
+      setMessage(`体验包已导出（${built.experienceId}@${built.version}，${built.fileCount} 个文件，${Math.max(1, Math.round(built.byteLength / 1024))} KiB）。`);
+    } catch (error) {
+      const code = errorCode(error, "creator_experience_export_failed");
+      setMessage(code === "creator_export_cancelled" ? "没有选择目录，未写出体验包。"
+        : code === "experience_export_target_exists" ? "目标目录里已有同名体验包；换一个目录或先删除旧包。"
+        : code === "experience_layout_incomplete" ? "这份发布没有可交付的布局几何（v3），无法打包。"
+        : `体验包导出失败（${code}）。`);
+    } finally { setBusy(false); }
+  };
+
   let visualSlot: "points" | "targets" | null = null;
   let slotMinimum = 0;
   try {
@@ -1257,6 +1327,8 @@ function App() {
           </div>
           <div><div className="section-title">导出源码项目</div><p className="muted">导出已保存的独立城市和小游戏；未绑定的游戏需配置场地后才能试玩。导出不包含用户会话或试玩结果。</p>
             <button className="secondary" onClick={() => void exportSource()}>导出源码目录…</button></div>
+          <div><div className="section-title">导出体验包</div><p className="muted">把**已发布**版本打成自包含产物（冻结快照 + 布局几何 + 资产）；干净客户端装上即可启动，不依赖本机 Creator 库。</p>
+            <button className="secondary" onClick={() => void exportExperience()}>导出体验包目录…</button></div>
           <div><div className="section-title">世界内容包预检</div><p className="muted">通过桌面原生选择器打开 unsigned 的 v2 世界包，核对清单、文件集合与摘要；校验后可显式安装到本机内容库。文件路径和字节不会传入 Agent/MCP。</p>
           <button className="secondary" disabled={busy || browserPreview} onClick={() => void inspectWorldPackage()}>选择并预检世界包…</button>
           {browserPreview && <p className="muted">浏览器预览没有原生文件选择器，请在桌面应用中使用。</p>}

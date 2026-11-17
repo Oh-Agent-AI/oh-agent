@@ -487,9 +487,63 @@ export function validateMount(input: { layout: unknown; game: unknown; mount: un
     if (!parameter) diagnostics.push(error("parameter_not_found", `mount.parameterOverrides.${name}`, "Game does not declare this parameter."));
     else if (!Number.isInteger(value) || value < parameter.min || value > parameter.max) diagnostics.push(error("parameter_out_of_range", `mount.parameterOverrides.${name}`, "Parameter value is outside its declared integer range."));
   }
+  // 检查点耦合修复（2026-11-17）：以整数参数表达完成阈值的「完成守卫」，绑定数必须与阈值一致，
+  // 否则会出现「绑 5 门、过 3 门即结束」的静默截断（旧模板把阈值与 counter.max 都硬编码为 3）。
+  // 只对带 run.finish 的节点生效，避免把「收集 N 个里的 M 个」这类显式设计一并判死。
+  for (const [slotName, ids] of Object.entries(resolvedMount.bindings)) {
+    if (ids.length === 0 || !hasOwn(game.slots, slotName)) continue;
+    for (const parameterName of completionThresholdParameters(game, slotName)) {
+      const parameter = game.integerParameters![parameterName]!;
+      const overrideValue = resolvedMount.parameterOverrides[parameterName];
+      // 显式 override 必须等于绑定数；无 override 时 pack 默认值必须等于绑定数——
+      // 两者都不允许把阈值留在「比绑定数小」的静默截断状态，也不允许大到永远无法完成。
+      if (overrideValue !== undefined && overrideValue !== ids.length) {
+        diagnostics.push(error("parameter_binding_mismatch", `mount.bindings.${slotName}`,
+          `Parameter ${parameterName} (${overrideValue}) must equal the number of bound anchors (${ids.length}) for slot ${slotName}.`));
+      } else if (overrideValue === undefined && parameter.default !== ids.length) {
+        diagnostics.push(error("parameter_binding_mismatch", `mount.bindings.${slotName}`,
+          `Parameter ${parameterName} defaults to ${parameter.default} but ${ids.length} anchors are bound; set an explicit override.`));
+      }
+    }
+  }
   return diagnostics.length ? { ok: false, diagnostics } : { ok: true, value: { layout, game, mount: resolvedMount }, diagnostics };
 }
 
+
+/**
+ * 完成阈值参数（`counter.eq` 守卫引用、且该守卫所在节点带 `run.finish`）——这类参数与
+ * 槽位绑定数耦合，绑定期必须显式给出并等于绑定数。注意读的是 validateMiniGamePack
+ * 归一化后的 `game.rules.nodes`（不是 `rules.graph`——那是 CompiledRulesV1 的形状，
+ * 写错会让整段检查静默失效，2026-11-17 会话末段就踩过这个坑）。
+ */
+function completionThresholdParameters(game: MiniGamePackV1, slotName: string): Set<string> {
+  const parameters = new Set<string>();
+  for (const node of game.rules.nodes) {
+    if (!node.actions.some(action => action.op === "run.finish")) continue;
+    if (node.on.type !== "zone.entered" && node.on.type !== "item.collected") continue;
+    if (node.on.slot !== slotName) continue;
+    for (const guard of node.when ?? []) {
+      if (guard.op !== "counter.eq" || !isObject(guard.value)) continue;
+      const parameter = (guard.value as { parameter?: unknown }).parameter;
+      if (typeof parameter === "string" && identifier.test(parameter) && game.integerParameters?.[parameter]) parameters.add(parameter);
+    }
+  }
+  return parameters;
+}
+
+/**
+ * 绑定 N 个锚点时，完成阈值参数必须取 N——返回 mount 应携带的 `parameterOverrides`。
+ * 绑定界面用它把阈值显式化：旧行为是让阈值停在 pack 默认值（3），绑 5 个门时后两个门
+ * 永远无效且不报错。显式值也会让 validateMount 的 `parameter_binding_mismatch` 检查通过。
+ */
+export function completionThresholdOverrides(game: MiniGamePackV1, bindings: Record<string, readonly string[]>): Record<string, number> {
+  const overrides: Record<string, number> = {};
+  for (const [slotName, ids] of Object.entries(bindings)) {
+    if (!hasOwn(game.slots, slotName) || ids.length === 0) continue;
+    for (const parameterName of completionThresholdParameters(game, slotName)) overrides[parameterName] = ids.length;
+  }
+  return overrides;
+}
 
 export function listAnchors(layout: CityLayoutV1, filter: AnchorFilterV1 = {}): CityAnchorV1[] {
   return layout.anchors.filter(anchor =>

@@ -250,6 +250,28 @@ fn copy_dir(source: &Path, target: &Path) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// 把已构建（或已安装）的体验包复制到用户选择的目录。选择器在 `plugin_host` 里开，
+/// 这里只负责"从哪个目录复制、复制到哪、失败怎么收拾"——返回值不含路径。
+pub(crate) fn export_experience(home: &Path, parent: &Path, payload: &Value) -> Result<Value, &'static str> {
+    let experience_id = payload["experienceId"].as_str().filter(|id| valid_id(id)).ok_or("creator_experience_invalid")?;
+    let version = payload["version"].as_str().filter(|v| safe_component(v)).ok_or("creator_experience_invalid")?;
+    let built = experience_root(home).join(experience_id).join(version);
+    let installed = content_root(home).join("experience").join(experience_id).join(version);
+    let source = if built.join("manifest.json").exists() { built } else if installed.join("manifest.json").exists() { installed } else { return Err("experience_not_found"); };
+    let (manifest, byte_length) = verify_package(&source)?;
+    let content_digest = manifest["contentDigest"].as_str().unwrap_or_default().to_owned();
+    let file_count = manifest["files"].as_array().map_or(0, Vec::len) as u64;
+    let directory = parent.join(format!("{experience_id}-{version}"));
+    // 不覆盖用户已有的目录：导出是"给出一份新副本"，不是同步。
+    if directory.exists() { return Err("experience_export_target_exists"); }
+    let staging = parent.join(format!(".{experience_id}-{version}.{}.tmp", std::process::id()));
+    let _ = std::fs::remove_dir_all(&staging);
+    copy_dir(&source, &staging)?;
+    if std::fs::rename(&staging, &directory).is_err() { let _ = std::fs::remove_dir_all(&staging); return Err("experience_store_unavailable"); }
+    Ok(json!({"exported": true, "experienceId": experience_id, "version": version,
+        "contentDigest": content_digest, "fileCount": file_count, "byteLength": byte_length}))
+}
+
 pub(crate) fn uninstall_experience(home: &Path, experience_id: &str, version: &str) -> Result<Value, &'static str> {
     if !valid_id(experience_id) || !safe_component(version) { return Err("creator_experience_invalid"); }
     let db = database(home)?;
@@ -343,6 +365,25 @@ mod tests {
         let removed = uninstall_experience(&dir, &id, "1.0.0").unwrap();
         assert_eq!(removed["removed"], true);
         assert!(!dir.join("state/creator/content/experience").join(&id).join("1.0.0").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn exports_to_a_chosen_directory_without_overwriting() {
+        let dir = home();
+        let (_city, release_id) = seed_release(&dir, 3);
+        let built = build_experience(&dir, &release_id, "1.0.0").unwrap();
+        let id = built["experienceId"].as_str().unwrap().to_owned();
+        let destination = dir.join("export");
+        std::fs::create_dir_all(&destination).unwrap();
+        let exported = export_experience(&dir, &destination, &json!({"experienceId": id, "version": "1.0.0"})).unwrap();
+        assert_eq!(exported["exported"], true);
+        assert_eq!(exported["contentDigest"], built["contentDigest"]);
+        let copy = destination.join(format!("{id}-1.0.0"));
+        assert!(copy.join("manifest.json").exists() && copy.join("layout.json").exists());
+        assert!(!exported.to_string().contains(destination.to_string_lossy().as_ref()), "export must not leak the path");
+        assert_eq!(export_experience(&dir, &destination, &json!({"experienceId": id, "version": "1.0.0"})).unwrap_err(),
+            "experience_export_target_exists");
         let _ = std::fs::remove_dir_all(dir);
     }
 

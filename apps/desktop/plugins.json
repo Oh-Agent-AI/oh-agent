@@ -493,6 +493,7 @@
         "creator.game.preview",
         "creator.asset.import",
         "creator.source.export",
+        "creator.experience.export",
         "creator.city.source.export",
         "creator.content.inspect",
         "creator.content.snapshot.open",
@@ -562,7 +563,10 @@
           "requestBytes": 8192,
           "responseBytes": 524288
         }
-      }
+      },
+      "stateKeys": [
+        "creator-agent-activity:v1"
+      ]
     },
     {
       "id": "city",

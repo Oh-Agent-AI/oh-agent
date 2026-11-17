@@ -1949,6 +1949,8 @@ pub fn commit_preview_as(home: &Path, owner: &str, instance: &str, project_id: &
         "validation":preview.validation_source,
         "validationDigest":preview.validation_digest.clone(),"capabilityVersion":preview.capability_version.clone()});
     tx.execute("INSERT INTO creator_operations(project_id,actor_id,operation_id,operation_hash,result_json,capability_version,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)", params![project_id, owner, operation_id, request_hash, result.to_string(), preview.capability_version.clone().unwrap_or_default(), now]).map_err(|_| "creator_store_unavailable")?;
+    // 历史保留治理（§6.2-O1）：容量有界化在提交事务内顺带完成；失败不阻断主语义。
+    let _ = crate::creator_store::prune_creator_history(&tx, project_id, owner);
     tx.commit().map_err(|_| "creator_store_unavailable")?;
     // Consumed only after a successful commit: the preview credential's
     // lifetime matches the transaction, not the attempt.
@@ -1961,6 +1963,52 @@ mod tests {
     use super::*;
     use crate::creator_city_patch::MAX_CITY_PATCH_OPS;
     use rusqlite::Connection;
+    // 保留治理（§6.2-O1）：历史有界化不破坏审计链、幂等回执窗口与当前文档。
+    #[test]
+    fn history_retention_prunes_documents_and_old_receipts() {
+        let home = home();
+        let project_id = {
+            std::fs::create_dir_all(home.join("state/creator")).unwrap();
+            let db = Connection::open(home.join("state/creator/projects.sqlite")).unwrap();
+            db.execute_batch("CREATE TABLE creator_projects(project_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, document_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+                CREATE TABLE creator_changes(project_id TEXT NOT NULL, revision INTEGER NOT NULL, actor_id TEXT NOT NULL, operation_id TEXT NOT NULL, operation_hash TEXT NOT NULL, document_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL, PRIMARY KEY(project_id, revision));
+                CREATE TABLE creator_operations(project_id TEXT NOT NULL, actor_id TEXT NOT NULL, operation_id TEXT NOT NULL, operation_hash TEXT NOT NULL, result_json TEXT NOT NULL, capability_version TEXT NOT NULL DEFAULT '', created_at_ms INTEGER NOT NULL, PRIMARY KEY(project_id, actor_id, operation_id));").unwrap();
+            db.execute("INSERT INTO creator_projects VALUES('p1', 0, '{}', 1, 1)", []).unwrap();
+            drop(db);
+            "p1".to_owned()
+        };
+        // 10 条 change + 70 条 receipt（都超过治理窗口 8 / 64）
+        {
+            let mut db = database(&home).unwrap();
+            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
+            for revision in 1..=10i64 {
+                tx.execute("INSERT INTO creator_changes VALUES('p1',?1,'a',?2,'h',?3,?4)",
+                    params![revision, format!("op-{revision}"), format!("{{\"revision\":{revision}}}"), 1000 + revision]).unwrap();
+            }
+            for index in 1..=70i64 {
+                tx.execute("INSERT INTO creator_operations VALUES('p1','a',?1,'h','{\"revision\":0}', '', ?2)",
+                    params![format!("op-{index}"), index]).unwrap();
+            }
+            crate::creator_store::prune_creator_history(&tx, &project_id, "a").unwrap();
+            tx.commit().unwrap();
+        }
+        let db = database(&home).unwrap();
+        // 审计链完整：10 行都在，最近 8 条全量，前 2 条摘要化
+        let (full, pruned): (i64, i64) = db.query_row(
+            "SELECT SUM(document_json != '{}'), SUM(document_json = '{}') FROM creator_changes WHERE project_id='p1'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        assert_eq!((full, pruned), (8, 2), "audit chain keeps every row; only old documents are stubbed");
+        let pruned_revision: i64 = db.query_row(
+            "SELECT MIN(revision) FROM creator_changes WHERE project_id='p1' AND document_json='{}'", [], |row| row.get(0)).unwrap();
+        assert_eq!(pruned_revision, 1, "oldest revisions get stubbed first");
+        // 幂等回执窗口：最新 64 条保留，最旧 6 条删除；新记录的回执可查
+        let receipts: i64 = db.query_row("SELECT count(*) FROM creator_operations WHERE project_id='p1'", [], |row| row.get(0)).unwrap();
+        assert_eq!(receipts, 64);
+        let oldest_kept: String = db.query_row(
+            "SELECT operation_id FROM creator_operations WHERE project_id='p1' ORDER BY created_at_ms ASC, operation_id ASC LIMIT 1", [], |row| row.get(0)).unwrap();
+        assert_eq!(oldest_kept, "op-7");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
     #[test]
     fn creator_content_digest_uses_sorted_canonical_json_keys() {
         let value = json!({"z":1,"a":{"b":2,"a":3}});
@@ -2730,18 +2778,23 @@ mod tests {
             let pack = entry["pack"].as_object().unwrap_or_else(|| panic!("template {id} pack object"));
             structural_game_check(&Value::Object(pack.clone())).unwrap_or_else(|error| panic!("template {id} pack must pass structural_game_check: {error}"));
         }
-        // checkpoint-race 完成条件不变量（自内联模板迁移时的历史教训）：points 下限
-        // 必须与计数器 next 上限及 finish 的 counter.eq 判定一致——绑较少检查点的
-        // 竞速永远无法完成（计数提前封顶，finish 条件够不着）。
+        // checkpoint-race 完成条件不变量（自内联模板迁移时的历史教训；2026-11-17 阈值
+        // 参数化后重写）：points 下限必须等于 gateTarget 的下限，计数器 next 上限与 finish
+        // 的 counter.eq 判定必须引用同一个参数——绑较少检查点的竞速才可能完成（计数提前
+        // 封顶、finish 够不着）。「绑定数 == 阈值」由 SDK validateMount 在绑定期守住。
         let race = game_template("checkpoint-race").unwrap();
         let slot_min = race["slots"]["points"]["min"].as_u64().unwrap();
-        let counter_max = race["rules"]["counters"]["next"]["max"].as_u64().unwrap();
+        let gate_target = race["integerParameters"]["gateTarget"].as_object()
+            .expect("checkpoint-race gateTarget parameter");
+        assert_eq!(gate_target["min"].as_u64(), Some(slot_min), "points slot minimum must match gateTarget minimum");
+        assert_eq!(race["rules"]["counters"]["next"]["max"]["parameter"].as_str(), Some("gateTarget"),
+            "counter ceiling must follow gateTarget");
         let finish_value = race["rules"]["nodes"].as_array().unwrap().iter()
             .find(|node| node["id"] == "finish").and_then(|node| node["when"].as_array())
             .and_then(|conditions| conditions.iter().find(|condition| condition["op"] == "counter.eq"))
-            .and_then(|condition| condition["value"].as_u64()).expect("checkpoint-race finish condition");
-        assert_eq!(slot_min, counter_max, "points slot minimum must match counter ceiling");
-        assert_eq!(slot_min, finish_value, "points slot minimum must match finish condition value");
+            .and_then(|condition| condition.get("value").cloned()).expect("checkpoint-race finish condition");
+        assert_eq!(finish_value["parameter"].as_str(), Some("gateTarget"),
+            "finish condition must follow gateTarget");
     }
 
     #[test]
