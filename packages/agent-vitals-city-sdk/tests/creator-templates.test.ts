@@ -30,6 +30,13 @@ test("descriptor: schema/operation kinds stay within the protocol envelope", () 
   assert.equal(CREATOR_CAPABILITIES_V1.schemaVersion, 1);
   assert.equal(typeof CREATOR_CAPABILITIES_V1.capabilityVersion, "string");
   assert.ok(CREATOR_CAPABILITIES_V1.capabilityVersion.length > 0);
+  // E5 无头语义闸标注（生成链单一来源）：能力发现不得虚报，两条语义路径与
+  // 覆盖面/排除面必须同时声明（Rust 侧守卫测试把它与实际嵌入能力锁步）。
+  assert.equal(CREATOR_CAPABILITIES_V1.semanticGate.schemaVersion, 1);
+  assert.equal(CREATOR_CAPABILITIES_V1.semanticGate.studioEnvelope, true);
+  assert.equal(CREATOR_CAPABILITIES_V1.semanticGate.embeddedSdk, true);
+  assert.ok(CREATOR_CAPABILITIES_V1.semanticGate.embeddedSdkCoverage.includes("vehicle.define"));
+  assert.ok(CREATOR_CAPABILITIES_V1.semanticGate.requiresStudio.includes("scene.preview"));
   const allowedKinds = new Set(["upsert", "remove", "bind", "set"]);
   const allowedTargets = new Set(["scene.objects", "mounts", "skinId", "cityPatch"]);
   for (const operation of CREATOR_OPERATIONS_V1) {

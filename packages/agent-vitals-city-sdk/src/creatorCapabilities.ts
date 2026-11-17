@@ -30,6 +30,18 @@ export type CreatorCapabilitiesProjection = {
   preview: Record<string, unknown>;
 };
 
+export type CreatorSemanticGateV1 = Readonly<{
+  schemaVersion: 1;
+  /** 官方 Studio webview 附发信封的常规路径。 */
+  studioEnvelope: boolean;
+  /** 宿主内嵌 city-sdk 闸（E5，spec §8.4 路径 2）：Studio 缺席时的权威回退。 */
+  embeddedSdk: boolean;
+  /** embeddedSdk 覆盖的编辑面（headless 可 commit）。 */
+  embeddedSdkCoverage: readonly string[];
+  /** 仍需 Studio/视口/City 运行时、headless 如实不可用的编辑面。 */
+  requiresStudio: readonly string[];
+}>;
+
 export type CreatorCapabilitiesDescriptor = {
   schemaVersion: 1;
   capabilityVersion: string;
@@ -46,6 +58,9 @@ export type CreatorCapabilitiesDescriptor = {
   };
   /** 公开能力目录：宿主的 creator_capabilities() 与 MCP 的离线发现都直接返回这一份。 */
   capabilities: CreatorCapabilitiesProjection;
+  /** 无头语义校验可用性（E5）：能力发现不得虚报——宿主守卫测试钉住这里的声明
+   * 与实际嵌入能力（bundle digest 锁文件 + 锁步向量）一致。 */
+  semanticGate: CreatorSemanticGateV1;
 };
 
 export const CREATOR_OPERATIONS_V1: readonly CreatorOperationDescriptor[] = Object.freeze([
@@ -188,6 +203,15 @@ export const CREATOR_RECOVERIES_V1: ReadonlyArray<Readonly<{ code: string; tool:
   Object.freeze({ code: "creator_validation_scope_mismatch", tool: "creator_project_read", args: {}, note: "信封作用域与请求不符；重读项目后让 Studio 重新附发信封。" }),
 ]);
 
+export const CREATOR_SEMANTIC_GATE_V1: CreatorSemanticGateV1 = Object.freeze({
+  schemaVersion: 1,
+  studioEnvelope: true,
+  embeddedSdk: true,
+  embeddedSdkCoverage: ["vehicle.preview", "vehicle.define", "city.edit.preview(world.set)", "city.edit.commit", "city.create"],
+  requiresStudio: ["scene.preview", "game.preview", "city.layout.save", "city.anchor.upsert", "city.patch.preview",
+    "project.create(cityId 绑定布局)", "project.publish", "playtest.start", "viewport.capture"],
+});
+
 export const CREATOR_CAPABILITIES_V1: CreatorCapabilitiesDescriptor = Object.freeze({
   schemaVersion: CREATOR_CAPABILITY_SCHEMA_VERSION,
   capabilityVersion: CREATOR_CAPABILITY_VERSION,
@@ -196,4 +220,5 @@ export const CREATOR_CAPABILITIES_V1: CreatorCapabilitiesDescriptor = Object.fre
   budgets: CREATOR_BUDGETS_V1,
   capabilities: CREATOR_CAPABILITIES_PROJECTION_V1,
   recoveries: CREATOR_RECOVERIES_V1,
+  semanticGate: CREATOR_SEMANTIC_GATE_V1,
 });

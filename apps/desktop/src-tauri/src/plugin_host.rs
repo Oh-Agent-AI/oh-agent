@@ -841,8 +841,8 @@ fn embedded_gate_integrity_ok() -> bool {
     *VERDICT.get_or_init(|| {
         let lock = crate::embedded_city_sdk::gate_lock();
         let recorded = lock.get("bundleSha256").and_then(Value::as_str).unwrap_or_default();
-        let actual = crate::embedded_city_sdk::gate_bundle_digest();
-        let ok = recorded == actual;
+        let actual = crate::embedded_city_sdk::gate_bundle_digest().strip_prefix("sha256:").unwrap_or_default().to_owned();
+        let ok = !recorded.is_empty() && recorded == actual;
         if !ok { agent_vitals_runtime::logging::log_warn("plugin_host", "embedded city-sdk gate digest mismatch; headless arm disabled"); }
         ok
     })

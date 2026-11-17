@@ -95,7 +95,9 @@ export function parseToolResult(response) {
 /** 诚实分档（spec §8.4）：pass / deferred / failed。
  *  - 稳定的 plugin_unavailable = 宿主信箱或 Studio webview 缺席（预期内的延迟档）；
  *  - validation:"structural" + commitBlocked:"deferred-semantic" = E5 结构子集
- *    （即时反馈，不可提交，语义校验仍欠 Studio 补验）；
+ *    （即时反馈，不可提交，语义校验仍欠补验）；
+ *  - validation:"embedded-sdk" = E5 全量：宿主内嵌 city-sdk 闸签发的语义预览，
+ *    pipeline 级（可 commit）；
  *  - 其余错误一律 failed，不得美化。 */
 export function classifyOutcome(parsed) {
   if (parsed.ok) {
@@ -103,7 +105,8 @@ export function classifyOutcome(parsed) {
     if (data.validation === "structural" && data.commitBlocked === "deferred-semantic") {
       return { status: "deferred", tier: "structural-headless", code: "deferred-semantic" };
     }
-    return { status: "pass", tier: "semantic", code: null };
+    const tier = data.validation === "embedded-sdk" ? "embedded-sdk" : "semantic";
+    return { status: "pass", tier, code: null };
   }
   const code = parsed.error?.code ?? "unknown";
   if (code === "plugin_unavailable") return { status: "deferred", tier: "host-studio-required", code };
@@ -197,16 +200,34 @@ export function trajectoryConclusion(allRuns) {
   return result;
 }
 
-/** 汇总各步状态的计数与总判定。 */
+/** E5 headless 语义闸步骤（桌面宿主 + 内嵌 city-sdk 闸覆盖的 pipeline 级步骤）。
+ * 这些步骤必须全部 pass，verdict 才能升到 headless-semantic-complete。 */
+const SEMANTIC_GATE_STEP_IDS = new Set([
+  "2b-worldset-preview", "2b-worldset-commit", "2c-project", "2d-vehicle-define-0",
+  "2d-vehicle-define-1", "2e-vehicle-commit",
+]);
+
+/** 汇总各步状态的计数与总判定（诚实阶梯，spec §8.4）。
+ *  - pipeline-complete：全部步骤 pass（Studio 全链路在场）；
+ *  - headless-semantic-complete：语义闸步骤全 pass，其余仅有视口/宿主档的诚实延迟
+ *    （E5 全量的目标态：vehicle define/commit 与 world.set commit 达到 pipeline 级）；
+ *  - headless-partial：有步骤执行但语义闸链路未闭环；
+ *  - failed / not-verified 语义不变。 */
 export function summarizeSteps(steps) {
   const counts = { pass: 0, deferred: 0, failed: 0, "not-run": 0 };
   for (const step of steps) counts[step.status] = (counts[step.status] ?? 0) + 1;
+  const gateSteps = steps.filter(step => SEMANTIC_GATE_STEP_IDS.has(step.id));
+  const gateAllPass = gateSteps.length > 0 && gateSteps.every(step => step.status === "pass");
+  const deferrableTiers = new Set(["viewport-required", "structural-headless", "host-studio-required", "accepted-code"]);
+  const honestDeferralOnly = steps.every(step => step.status !== "deferred"
+    || deferrableTiers.has(step.tier ?? "") || SEMANTIC_GATE_STEP_IDS.has(step.id));
   let verdict;
   if (counts.failed > 0) verdict = "failed";
   else if (counts["not-run"] === 0 && counts.deferred === 0) verdict = "pipeline-complete";
   else if (counts["not-run"] === steps.length) verdict = "not-verified";
+  else if (gateAllPass && honestDeferralOnly) verdict = "headless-semantic-complete";
   else verdict = "headless-partial";
-  return { counts, verdict };
+  return { counts, verdict, semanticGate: { steps: gateSteps.length, allPass: gateAllPass } };
 }
 
 /** 用法文本（--help / --self-test 都覆盖到）。 */
@@ -620,6 +641,11 @@ async function runPipeline({ options, binPath, dataHome }) {
       state.cities = probe.data?.cities ?? [];
     }
 
+    // E5 全量：headless 语义闸块。桌面宿主在跑（mailbox 可答）而 Studio 视口缺席时，
+    // 宿主内嵌 city-sdk 闸覆盖的编辑面达到 pipeline 级：world.set 预览+提交、
+    // 项目创建、vehicle define/preview+commit。视口/发布/试玩类步骤继续诚实延迟。
+    await runHeadlessSemanticBlock({ client, recorder, state });
+
     if (!state.hostUnavailable) {
       await runStudioPipeline({ client, recorder, state });
     } else {
@@ -647,12 +673,20 @@ async function runPipeline({ options, binPath, dataHome }) {
             check: data => ({ ok: typeof data?.hostLedgerAvailable === "boolean", detail: String(data?.hostLedgerAvailable) }) },
           { desc: state.hostUnavailable
               ? "timeline honestly does NOT claim commits/playtests that never ran"
-              : "timeline contains this run's commits and playtest",
+              : state.headlessSemantic
+                ? "timeline records this run's headless commits and does not claim a playtest"
+                : "timeline contains this run's commits and playtest",
             check: data => {
               const kinds = (data?.operations ?? []).map(item => item?.kind);
               if (state.hostUnavailable) {
                 const claimsCommit = kinds.includes("commit") && (data?.scope?.projectId ?? null) !== null;
                 return { ok: true, detail: `kinds=[${kinds.join(",") || "empty"}]; no assertion (host unavailable)` };
+              }
+              if (state.headlessSemantic) {
+                // headless 模式：commit 已发生（embedded 闸放行），playtest 未运行——
+                // 时间线必须如实：有 commit、不虚报 playtest。
+                const honest = kinds.includes("commit") && !kinds.includes("playtest");
+                return { ok: honest, detail: `kinds=[${kinds.join(",")}] (headless-semantic)` };
               }
               return { ok: kinds.includes("commit") && kinds.includes("playtest"), detail: `kinds=[${kinds.join(",")}]` };
             } },
@@ -747,6 +781,136 @@ async function runPipeline({ options, binPath, dataHome }) {
     trajectory: state.trajectory ?? null,
     knownIssues: state.knownIssues,
   };
+}
+
+/** E5 headless 语义闸块（spec §8.4 路径 2）：桌面宿主在跑时，内嵌 city-sdk 闸把
+ * world.set 与 vehicle 编辑面推进到 pipeline 级（validation:"embedded-sdk" 且可
+ * commit）。任何前置缺失（无城市草稿/无已存布局）按 not-run 如实记录，不美化。 */
+async function runHeadlessSemanticBlock({ client, recorder, state }) {
+  const notRun = (id, title, reason, code) => recorder.record({ id, title, tool: null, status: "not-run", reason, errorCode: code ?? null });
+  if (state.hostUnavailable) {
+    for (const [id, title] of [
+      ["2b-worldset-preview", "creator_city_edit_preview (world.set): embedded-gate semantic preview"],
+      ["2b-worldset-commit", "creator_city_edit_commit: headless world.set commit"],
+      ["2c-project", "creator_project_create (stored layout): headless project for vehicle edits"],
+      ["2e-vehicle-commit", "creator_vehicle_preview + creator_project_commit: headless vehicle commit"],
+    ]) notRun(id, title, `desktop host unavailable (${state.hostUnavailable.code})`);
+    for (const vehicle of state.vehicles ?? []) {
+      notRun(`2d-vehicle-define-${state.vehicles.indexOf(vehicle)}`, `creator_vehicle_define (${vehicle.vehicleId}): embedded-gate define`, `desktop host unavailable (${state.hostUnavailable.code})`);
+    }
+    return;
+  }
+  state.headlessSemantic = true;
+
+  // ① world.set 语义预览 + 提交（选第一个城市草稿；参数按其生成器选择合法键）。
+  const city = (state.cities ?? [])[0] ?? null;
+  if (!city) {
+    notRun("2b-worldset-preview", "creator_city_edit_preview (world.set): embedded-gate semantic preview", "no city draft in the data home");
+    notRun("2b-worldset-commit", "creator_city_edit_commit: headless world.set commit", "no city draft in the data home");
+  } else {
+    let generator = null;
+    try {
+      const read = await client.callTool("creator_city_read", { cityId: city.cityId });
+      generator = read?.data?.profile?.geography?.generator ?? null;
+    } catch { generator = null; }
+    const operations = generator === "coastal-islands-v1"
+      ? [{ op: "world.set", params: { "shape.bayHalfWidth": 0.3, "shape.bayShift": 0.2 } }]
+      : [{ op: "world.set", params: { "shape.family": "lobed", "shape.cores": 3 } }];
+    const baseRevision = city.revision ?? 0;
+    const preview = await runToolStep(client, recorder, {
+      id: "2b-worldset-preview", title: `creator_city_edit_preview (world.set on ${city.cityId}): embedded-gate semantic preview (pipeline tier)`,
+      tool: "creator_city_edit_preview", args: { cityId: city.cityId, baseRevision, operations },
+      assertions: [
+        { desc: "validation is embedded-sdk with a previewId (commit allowed, no commitBlocked)", check: data => ({ ok: data?.validation === "embedded-sdk" && Boolean(data?.previewId), detail: `validation=${data?.validation}` }) },
+      ],
+    });
+    const previewId = preview.step.status === "pass" ? preview.data?.previewId : null;
+    if (preview.step.status !== "pass") {
+      notRun("2b-worldset-commit", "creator_city_edit_commit: headless world.set commit", "embedded preview failed/deferred", preview.step.errorCode);
+    } else {
+      await runToolStep(client, recorder, {
+        id: "2b-worldset-commit", title: "creator_city_edit_commit: headless world.set commit (embedded-gate verdict)",
+        tool: "creator_city_edit_commit", args: { cityId: city.cityId, previewId, expectedRevision: baseRevision, operationId: newOperationId("op-world-commit") },
+        assertions: [
+          { desc: "city revision advanced", check: data => ({ ok: typeof data?.revision === "number" && data.revision > baseRevision, detail: `revision=${data?.revision}` }) },
+          { desc: "commit records the embedded-sdk source", check: data => ({ ok: data?.validation === "embedded-sdk", detail: String(data?.validation) }) },
+        ],
+      });
+    }
+  }
+
+  // ② 项目（用已存布局：无视口依赖）。
+  let projectId = null;
+  let revision = 0;
+  const layouts = await runToolStep(client, recorder, {
+    id: "2c-layouts", title: "creator_layout_list: host-captured layouts available headlessly (read-only)",
+    tool: "creator_layout_list", args: { limit: 8 },
+    assertions: [{ desc: "at least one stored layout with a worldRevision", check: data => ({ ok: (data?.layouts?.length ?? 0) > 0 && Boolean(data.layouts[0]?.worldRevision), detail: `${data?.layouts?.length ?? 0} layouts` }) }],
+  });
+  const worldRevision = layouts.step.status === "pass" ? layouts.data?.layouts?.[0]?.worldRevision : null;
+  if (!worldRevision) {
+    notRun("2c-project", "creator_project_create (stored layout): headless project for vehicle edits", "no stored layout in the data home", layouts.step.errorCode);
+    for (const vehicle of state.vehicles ?? []) {
+      notRun(`2d-vehicle-define-${state.vehicles.indexOf(vehicle)}`, `creator_vehicle_define (${vehicle.vehicleId}): embedded-gate define`, "no project available (no stored layout)");
+    }
+    notRun("2e-vehicle-commit", "creator_vehicle_preview + creator_project_commit: headless vehicle commit", "no project available (no stored layout)");
+    return;
+  }
+  const project = await runToolStep(client, recorder, {
+    id: "2c-project", title: `creator_project_create (stored layout ${worldRevision}): headless project for vehicle edits`,
+    tool: "creator_project_create", args: { template: "flight-checkpoint", worldRevision, operationId: newOperationId("op-project-headless") },
+    assertions: [{ desc: "projectId returned at revision 0", check: data => ({ ok: Boolean(data?.projectId) && data?.revision === 0, detail: data?.projectId ?? null }) }],
+  });
+  projectId = project.step.status === "pass" ? project.data?.projectId : null;
+  revision = project.step.status === "pass" ? project.data?.revision ?? 0 : 0;
+  if (!projectId) {
+    for (const vehicle of state.vehicles ?? []) {
+      notRun(`2d-vehicle-define-${state.vehicles.indexOf(vehicle)}`, `creator_vehicle_define (${vehicle.vehicleId}): embedded-gate define`, "project create failed/deferred", project.step.errorCode);
+    }
+    notRun("2e-vehicle-commit", "creator_vehicle_preview + creator_project_commit: headless vehicle commit", "project create failed/deferred", project.step.errorCode);
+    return;
+  }
+
+  // ③ vehicle define ×2（嵌入式语义闸；headless define 成为可能）。
+  for (const [index, vehicle] of (state.vehicles ?? []).entries()) {
+    const defined = await runToolStep(client, recorder, {
+      id: `2d-vehicle-define-${index}`, title: `creator_vehicle_define (${vehicle.vehicleId}): embedded-gate define (pipeline tier)`,
+      tool: "creator_vehicle_define", args: { ...definePayloadFor(vehicle, projectId, revision, newOperationId("op-vehicle-headless")) },
+      assertions: [
+        { desc: "validation is embedded-sdk and revision advanced", check: data => ({ ok: data?.validation === "embedded-sdk" && typeof data?.revision === "number" && data.revision > revision, detail: `validation=${data?.validation} revision=${data?.revision}` }) },
+      ],
+    });
+    if (defined.step.status === "pass") revision = defined.data?.revision;
+  }
+
+  // ④ vehicle preview + creator_project_commit（预览/提交双步都记录 embedded-sdk）。
+  const previewVehicle = state.vehicles?.[0];
+  if (!previewVehicle) {
+    notRun("2e-vehicle-commit", "creator_vehicle_preview + creator_project_commit: headless vehicle commit", "vehicle profiles unavailable");
+    return;
+  }
+  const profile = { ...previewVehicle.profile, id: "vehicle-e2e-preview", label: "E2E preview commit" };
+  const vehiclePreview = await runToolStep(client, recorder, {
+    id: "2e-vehicle-preview", title: "creator_vehicle_preview: embedded-gate semantic preview with performance projection",
+    tool: "creator_vehicle_preview", args: { projectId, baseRevision: revision, vehicle: profile },
+    assertions: [
+      { desc: "validation is embedded-sdk with previewId and estimatedPerformance", check: data => ({ ok: data?.validation === "embedded-sdk" && Boolean(data?.previewId) && Boolean(data?.estimatedPerformance), detail: `validation=${data?.validation}` }) },
+    ],
+  });
+  const vehiclePreviewId = vehiclePreview.step.status === "pass" ? vehiclePreview.data?.previewId : null;
+  if (!vehiclePreviewId) {
+    notRun("2e-vehicle-commit", "creator_vehicle_preview + creator_project_commit: headless vehicle commit", "embedded vehicle preview failed/deferred", vehiclePreview.step.errorCode);
+    return;
+  }
+  await runToolStep(client, recorder, {
+    id: "2e-vehicle-commit", title: "creator_project_commit: headless vehicle commit (embedded-gate verdict)",
+    tool: "creator_project_commit", args: { projectId, previewId: vehiclePreviewId, expectedRevision: revision, operationId: newOperationId("op-vehicle-commit") },
+    assertions: [
+      { desc: "revision advanced and commit records the embedded-sdk source", check: data => ({ ok: data?.validation === "embedded-sdk" && typeof data?.revision === "number" && data.revision > revision, detail: `validation=${data?.validation} revision=${data?.revision}` }) },
+    ],
+  });
+  revision += 1;
+  state.projectId = state.projectId ?? projectId;
 }
 
 /** Studio 可用时的完整七步闭环（① → ⑦）。任何一步失败/延迟都如实记录并继续或收敛。 */
@@ -987,6 +1151,8 @@ export function selfTest() {
     assert(classifyOutcome({ ok: false, error: { code: "plugin_unavailable" } }).status === "deferred", "plugin_unavailable must defer");
     const structural = classifyOutcome({ ok: true, data: { validation: "structural", commitBlocked: "deferred-semantic" } });
     assert(structural.status === "deferred" && structural.tier === "structural-headless", JSON.stringify(structural));
+    const embedded = classifyOutcome({ ok: true, data: { validation: "embedded-sdk", previewId: "preview-1" } });
+    assert(embedded.status === "pass" && embedded.tier === "embedded-sdk", JSON.stringify(embedded));
     assert(classifyOutcome({ ok: true, data: { ok: true } }).status === "pass", "plain pass");
     assert(classifyOutcome({ ok: false, error: { code: "revision_conflict" } }).status === "failed", "unexpected must fail");
     assert(classifyOutcome({ ok: false, error: { code: "creator_capture_unavailable" } }).tier === "viewport-required", "viewport defers");
@@ -1047,6 +1213,21 @@ export function selfTest() {
     assert(summarizeSteps([{ status: "pass" }, { status: "deferred" }, { status: "not-run" }]).verdict === "headless-partial", "partial");
     assert(summarizeSteps([{ status: "not-run" }, { status: "not-run" }]).verdict === "not-verified", "nothing ran");
     assert(summarizeSteps([{ status: "pass" }, { status: "failed" }]).verdict === "failed", "failure dominates");
+  });
+
+  check("summarizeSteps upgrades to headless-semantic-complete only when the gate chain passed", () => {
+    const gate = id => ({ id, status: "pass", tier: "embedded-sdk" });
+    const gateIds = ["2b-worldset-preview", "2b-worldset-commit", "2c-project", "2d-vehicle-define-0", "2d-vehicle-define-1", "2e-vehicle-commit"];
+    const viewportDeferred = { id: "1-layout", status: "deferred", tier: "viewport-required" };
+    const upgraded = summarizeSteps([...gateIds.map(gate), viewportDeferred, { id: "0-session", status: "pass" }]);
+    assert(upgraded.verdict === "headless-semantic-complete", JSON.stringify(upgraded));
+    assert(upgraded.semanticGate.allPass === true, "gate summary must report allPass");
+    // 一个闸步骤失败/未跑 → 不得升级。
+    const withGateFail = summarizeSteps([...gateIds.map(gate).slice(1), { ...gate("2b-worldset-preview"), status: "not-run" }, viewportDeferred]);
+    assert(withGateFail.verdict === "headless-partial", JSON.stringify(withGateFail));
+    // 非预期档的 deferred（如 unexpected 工具错误）→ 不得升级。
+    const oddDefer = summarizeSteps([...gateIds.map(gate), { id: "x", status: "deferred", tier: "unexpected" }]);
+    assert(oddDefer.verdict === "headless-partial", JSON.stringify(oddDefer));
   });
 
   const failed = checks.filter(item => !item.ok);

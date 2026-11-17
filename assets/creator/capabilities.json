@@ -539,5 +539,28 @@
       "tool": "creator_project_read"
     }
   ],
-  "schemaVersion": 1
+  "schemaVersion": 1,
+  "semanticGate": {
+    "embeddedSdk": true,
+    "embeddedSdkCoverage": [
+      "vehicle.preview",
+      "vehicle.define",
+      "city.edit.preview(world.set)",
+      "city.edit.commit",
+      "city.create"
+    ],
+    "requiresStudio": [
+      "scene.preview",
+      "game.preview",
+      "city.layout.save",
+      "city.anchor.upsert",
+      "city.patch.preview",
+      "project.create(cityId 绑定布局)",
+      "project.publish",
+      "playtest.start",
+      "viewport.capture"
+    ],
+    "schemaVersion": 1,
+    "studioEnvelope": true
+  }
 }

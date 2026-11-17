@@ -702,7 +702,11 @@ pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool)
             let project_id = required_string(args,"projectId")?;
             let revision = args.get("baseRevision").and_then(Value::as_u64).ok_or_else(|| ToolError::new("invalid_argument", "`baseRevision` must be a non-negative integer"))?;
             let vehicle = args.get("vehicle").filter(|value| value.is_object()).ok_or_else(|| ToolError::new("invalid_argument", "`vehicle` must be an object"))?;
-            if vehicle.to_string().len() > 16 * 1024 { return Err(ToolError::new("invalid_argument", "Vehicle payload exceeds the 8 KiB profile budget.")); }
+            if vehicle.to_string().len() > 16 * 1024 {
+                // 分层预算（R1 修正）：这里是 MCP 侧的 16 KiB 传输预检；宿主的
+                // 画像业务预算是 8 KiB，超出时由宿主返回 creator_vehicle_budget_exceeded。
+                return Err(ToolError::new("invalid_argument", "Vehicle payload exceeds the 16 KiB transport precheck; the host profile budget is 8 KiB and rejects larger profiles with creator_vehicle_budget_exceeded."));
+            }
             let mut payload = json!({"projectId":project_id,"baseRevision":revision,"vehicle":vehicle});
             if let Some(operation_id) = optional_nonempty_string(args, "operationId")? { payload["operationId"] = json!(operation_id); }
             match call_with_budgets(data_home, "creator.vehicle.preview", &payload, 15_000, creator_budgets::PREVIEW_REQUEST_BYTES) {
@@ -734,7 +738,10 @@ pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool)
             let payload = json!({"projectId":project_id,"baseRevision":revision,"vehicleId":required_string(args,"vehicleId")?,
                 "label":label,"flightModel":flight_model,"physics":physics,"bounds":bounds,"modelAssetId":model_asset_id,
                 "operationId":required_string(args,"operationId")?});
-            if payload.to_string().len() > 16 * 1024 { return Err(ToolError::new("invalid_argument", "Vehicle definition exceeds the 8 KiB profile budget.")); }
+            if payload.to_string().len() > 16 * 1024 {
+                // 同上：16 KiB 传输预检在前，8 KiB 画像业务预算由宿主执行。
+                return Err(ToolError::new("invalid_argument", "Vehicle definition exceeds the 16 KiB transport precheck; the host profile budget is 8 KiB and rejects larger definitions with creator_vehicle_budget_exceeded."));
+            }
             call(data_home, "creator.vehicle.define", &payload, 15_000)
         }
         "creator_vehicle_inspect" => {

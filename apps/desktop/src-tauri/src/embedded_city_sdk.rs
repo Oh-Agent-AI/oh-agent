@@ -215,6 +215,50 @@ fn debug_gate_vehicle_fixture() {
     println!("envelope ok={} diag={}", envelope["ok"], envelope["diagnostics"]);
 }
 
+
+    /// 能力目录锁步守卫（E5）：描述符如实标注 headless 语义校验可用性——
+    /// `semanticGate.embeddedSdk: true` 的前提是嵌入产物真实存在（digest 与锁文件
+    /// 一致）且真的能出语义判定。声明与能力不一致时在这里失败，不允许能力发现虚报。
+    #[test]
+    fn capabilities_descriptor_matches_the_embedded_gate_reality() {
+        let claim = crate::creator_projects::creator_descriptor()["semanticGate"].clone();
+        assert_eq!(claim["schemaVersion"], 1);
+        assert_eq!(claim["studioEnvelope"], true);
+        assert_eq!(claim["embeddedSdk"], true);
+        let coverage = claim["embeddedSdkCoverage"].as_array().expect("coverage list");
+        for face in ["vehicle.preview", "vehicle.define", "city.edit.preview(world.set)", "city.edit.commit", "city.create"] {
+            assert!(coverage.iter().any(|item| item.as_str() == Some(face)), "coverage must name {face}");
+        }
+        assert!(!claim["requiresStudio"].as_array().unwrap_or(&Vec::new()).is_empty(), "viewport tiers must be excluded honestly");
+        assert_eq!(gate_lock()["bundleSha256"], gate_bundle_digest().strip_prefix("sha256:").unwrap_or_default());
+        // 用内置 preset 做一次真闸验证（不只查 digest：bundle 必须真的可执行）。
+        let preset = crate::creator_projects::creator_vehicle_catalog()["presets"][0].clone();
+        let verdict = invoke("vehicle.profile.validate", &json!({ "raw": preset })).unwrap();
+        assert_eq!(verdict["ok"], true, "{}", verdict);
+    }
+
+
+    #[test]
+    fn debug_headless_flow_pieces() {
+        let home = std::env::temp_dir().join(format!("gate-debug-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        // A: city.list dispatch
+        let listed = crate::creator_projects::dispatch_as(&home, crate::creator_projects::LOCAL_CREATOR_OWNER,
+            "host-headless", "creator.city.list", &serde_json::json!({"limit": 20}));
+        println!("city.list -> {:?}", listed.err());
+        // B: envelope self-check on the e2e-style probe vehicle
+        let raw = serde_json::json!({"schemaVersion":1,"id":"vehicle-e2e-flap","label":"E2E flapper","modelAssetId":null,"flightModel":"flapping",
+            "physics":{"massKg":300.0,"wingAreaM2":18.0,"thrustN":6000.0,"maxSpeedMps":120.0,"dragCoefficient":0.1,
+                "turnRateRps":0.9,"climbRateMps":34.0,"sinkRateMps":26.0,"flapFrequencyHz":2.4,"flapAmplitudeRad":1.1},
+            "bounds":{"halfLengthM":3.6,"halfWidthM":4.8,"halfHeightM":1.4}});
+        let outcome = invoke("vehicle.validate", &serde_json::json!({"raw": raw})).unwrap();
+        println!("gate ok={} vehicle={}", outcome["ok"], outcome["vehicle"]);
+        let (vehicle, envelope) = crate::creator_projects::embedded_vehicle_validation("vehicle-preview-probe", 0, &raw).unwrap();
+        println!("envelope={}", envelope);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     /// 未知入口与非法参数显式判负（桥协议自身的行为，不依赖具体校验器）。
     #[test]
     fn unknown_entry_and_invalid_args_fail_closed() {
