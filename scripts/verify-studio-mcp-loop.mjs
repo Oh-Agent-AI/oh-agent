@@ -12,8 +12,8 @@
 //     且响应形状符合当前契约；失败时打印第一处断言的 code/path，不做降级。
 //
 // 前置（脚本会自己检查，不满足直接失败，避免误测 headless 臂）：
-//   - Oh Agent 在跑，Creator Studio 是当前活跃视图（presence: ready / suspended=false /
-//     hidden=false）；
+//   - Oh Agent 在跑，Creator Studio 实例存在且 ready、未 suspended（hidden 允许：后台
+//     页的 mailbox 仍会被投递；本脚本通过响应里的 validation 断言确认是 Studio 作答）；
 //   - 传入 --data-home（或 AGENT_VITALS_HOME）指向该 app 正在用的数据根；
 //   - `data-mcp serve --enable-city-tools --allow-local-writes` 可用（--bin）。
 //
@@ -81,7 +81,8 @@ export function assertStudioActive(presence) {
   if (!presence) return { ok: false, code: "studio_presence_missing" };
   if (presence.acceptance !== "ready" || presence.ready !== true) return { ok: false, code: "studio_not_ready" };
   if (presence.suspended === true) return { ok: false, code: "studio_suspended" };
-  if (presence.hidden === true) return { ok: false, code: "studio_hidden" };
+  // hidden 不拒绝：Studio 页在后台时 mailbox 仍会投递（00:04 的 live 循环就是在
+  // hidden=true 下跑通的）；真正会让调用被 headless 臂接手的是 suspended/not-ready。
   return { ok: true, code: null };
 }
 
@@ -107,7 +108,7 @@ function selfTest() {
 
   check("studio presence must be active (hidden/suspended rejected)", () => {
     assert(assertStudioActive({ acceptance: "ready", ready: true, hidden: false, suspended: false }).ok, "active");
-    assert(!assertStudioActive({ acceptance: "ready", ready: true, hidden: true, suspended: false }).ok, "hidden");
+    assert(assertStudioActive({ acceptance: "ready", ready: true, hidden: true, suspended: false }).ok, "hidden is allowed");
     assert(!assertStudioActive({ acceptance: "ready", ready: true, hidden: false, suspended: true }).ok, "suspended");
     assert(!assertStudioActive(null).ok, "missing");
   });
@@ -192,7 +193,7 @@ async function main() {
     };
 
     const session = await step("session.open", "creator_session_open", { agentId }, data => { if (!data?.sessionId) throw new Error("sessionId missing"); });
-    const city = await step("city.create", "creator_city_create", { name: `Studio Regression ${new Date().toISOString().slice(11, 19)}`, seed: 20261118, profile: DUNES_PROFILE, operationId: op("op-city") }, data => { if (!data?.cityId) throw new Error("cityId missing"); });
+    const city = await step("city.create", "creator_city_create", { name: `Studio Regression ${new Date().toISOString().slice(11, 19)}`, seed: 20261117, profile: DUNES_PROFILE, operationId: op("op-city") }, data => { if (!data?.cityId) throw new Error("cityId missing"); });
 
     await step("city.view.request", "creator_city_view", { cityId: city.cityId, revision: city.revision }, data => { if (data?.status !== "loading") throw new Error(`unexpected view status ${data?.status}`); });
     let viewStatus = null;
