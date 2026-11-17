@@ -870,6 +870,15 @@ fn studio_instance_ready(app: &tauri::AppHandle) -> bool {
         && instance.ready && !instance.suspended && instance.failed.is_none())
 }
 
+/// Studio 实例是否存在（不管 ready/suspended）。preview 与 commit 都是实例绑定的：
+/// 只要 Studio 在，headless 臂就必须休眠，否则会出现「Studio 签发预览、headless 臂
+/// 认领提交」的跨实例配对，宿主只能报 preview_expired/permission_denied。
+fn studio_instance_present(app: &tauri::AppHandle) -> bool {
+    let host = app.state::<PluginHost>();
+    let guard = host.0.lock().unwrap_or_else(|error| error.into_inner());
+    guard.current.as_ref().is_some_and(|instance| instance.plugin_id == "creator-studio")
+}
+
 /// headless 臂在 Studio 缺席时发布 ready presence：让 MCP 侧保持等待（不快速失败）
 /// 而本臂在 500ms 内作答。Studio webview 打开时其自身 presence 发布会覆盖本文件
 /// （每插件单文件设计），本函数检测到 Studio ready 即停写。
@@ -923,9 +932,9 @@ fn headless_city_create_payload(home: &std::path::Path, payload: &Value) -> Resu
 pub(crate) fn poll_headless_creator_calls(app: &tauri::AppHandle) {
     let home = crate::overview::data_home();
     let studio_ready = studio_instance_ready(app);
-    // 先验闸完整性再发布 ready presence：bundle digest 失配时本臂整个进程不再作答，
-    // 若仍发布 ready，MCP 调用方会等满信箱 TTL 才超时（明明立刻就知道不可用）。
-    if studio_ready || !embedded_gate_integrity_ok() { return; }
+    // Studio 实例存在即休眠（不只是 ready）：实例绑定的 preview/commit 必须由同一方
+    // 完成，否则跨消费者提交会以 preview_expired 失败。
+    if studio_instance_present(app) || !embedded_gate_integrity_ok() { return; }
     publish_headless_presence_if_studio_absent(&home, studio_ready);
     let Ok(calls) = agent_vitals_runtime::query::plugin_calls::claim_pending(
         &home, "creator-studio", HEADLESS_CREATOR_INSTANCE, &headless_creator_methods(), 4) else { return; };
