@@ -181,6 +181,9 @@ build/install/uninstall 还要 `--allow-local-writes`。返回里**永远没有�
 启动已安装的体验包用游戏操控 MCP：`game_open { experienceId, experienceVersion }`（按
 `<data_home>/state/creator/content/experience/<id>/<version>` 解析，不传路径）。
 
+导出到用户选的目录（`creator.experience.export`）**只从 Studio UI 触发**，不暴露为 MCP 工具：
+它会在本机弹原生目录选择器，需要一个坐在机器前的人。
+
 ### 3.8 会话与作业（creator_session_* / creator_job_*，7 个，全部离线、无需任何开关）
 
 | MCP 工具 | 必需入参 | 可选入参 | 类别 |

@@ -1185,6 +1185,33 @@ function App() {
     } finally { setBusy(false); }
   };
 
+  /** 体验包：把**已发布**版本打成自包含产物，再由用户选目录拷出。
+   *  与源码导出的区别是「可交付」：包里带冻结发布快照 + v3 布局几何 + 资产字节，
+   *  干净客户端不依赖 Creator 库即可安装并启动。 */
+  const exportExperience = async () => {
+    if (!project) { setMessage("先打开或创建项目"); return; }
+    if (!publishedReleaseId) { setMessage("发布后即可打包体验；产物只来自已发布版本。"); return; }
+    if (busy) return;
+    setBusy(true);
+    setMessage("正在打包体验包…");
+    try {
+      const built = await creatorRequest<{ experienceId: string; version: string; contentDigest: string; fileCount: number; byteLength: number }>(
+        "creator.experience.build", { releaseId: publishedReleaseId, version: "1.0.0" });
+      if (!/^experience-[a-f0-9]{16}$/.test(built.experienceId)) throw new Error("creator_experience_invalid");
+      setMessage("正在打开目录选择…");
+      const exported = await creatorRequest<{ exported: boolean; fileCount: number }>("creator.experience.export",
+        { experienceId: built.experienceId, version: built.version });
+      if (!exported.exported) throw new Error("creator_export_invalid");
+      setMessage(`体验包已导出（${built.experienceId}@${built.version}，${built.fileCount} 个文件，${Math.max(1, Math.round(built.byteLength / 1024))} KiB）。`);
+    } catch (error) {
+      const code = errorCode(error, "creator_experience_export_failed");
+      setMessage(code === "creator_export_cancelled" ? "没有选择目录，未写出体验包。"
+        : code === "experience_export_target_exists" ? "目标目录里已有同名体验包；换一个目录或先删除旧包。"
+        : code === "experience_layout_incomplete" ? "这份发布没有可交付的布局几何（v3），无法打包。"
+        : `体验包导出失败（${code}）。`);
+    } finally { setBusy(false); }
+  };
+
   let visualSlot: "points" | "targets" | null = null;
   let slotMinimum = 0;
   try {
@@ -1297,6 +1324,8 @@ function App() {
           </div>
           <div><div className="section-title">导出源码项目</div><p className="muted">导出已保存的独立城市和小游戏；未绑定的游戏需配置场地后才能试玩。导出不包含用户会话或试玩结果。</p>
             <button className="secondary" onClick={() => void exportSource()}>导出源码目录…</button></div>
+          <div><div className="section-title">导出体验包</div><p className="muted">把**已发布**版本打成自包含产物（冻结快照 + 布局几何 + 资产）；干净客户端装上即可启动，不依赖本机 Creator 库。</p>
+            <button className="secondary" onClick={() => void exportExperience()}>导出体验包目录…</button></div>
           <div><div className="section-title">世界内容包预检</div><p className="muted">通过桌面原生选择器打开 unsigned 的 v2 世界包，核对清单、文件集合与摘要；校验后可显式安装到本机内容库。文件路径和字节不会传入 Agent/MCP。</p>
           <button className="secondary" disabled={busy || browserPreview} onClick={() => void inspectWorldPackage()}>选择并预检世界包…</button>
           {browserPreview && <p className="muted">浏览器预览没有原生文件选择器，请在桌面应用中使用。</p>}
