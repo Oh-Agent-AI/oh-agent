@@ -221,9 +221,15 @@ export function summarizeSteps(steps) {
   const deferrableTiers = new Set(["viewport-required", "structural-headless", "host-studio-required", "accepted-code"]);
   const honestDeferralOnly = steps.every(step => step.status !== "deferred"
     || deferrableTiers.has(step.tier ?? "") || SEMANTIC_GATE_STEP_IDS.has(step.id));
+  // playtest 请求已下发但 City 运行时从未认领/跑完：这不是「试玩完成」，
+  // 不能和 pipeline-complete 共用一个 verdict（W2 审查抓到的诚实性缺口）。
+  const pendingOnly = counts["not-run"] === 0 && counts.deferred === 1
+    && steps.some(step => step.id === "7-result" && step.status === "deferred" && step.errorCode === "playtest_pending")
+    && steps.every(step => step.status !== "deferred" || step.id === "7-result");
   let verdict;
   if (counts.failed > 0) verdict = "failed";
   else if (counts["not-run"] === 0 && counts.deferred === 0) verdict = "pipeline-complete";
+  else if (pendingOnly) verdict = "pipeline-complete-playtest-pending";
   else if (counts["not-run"] === steps.length) verdict = "not-verified";
   else if (gateAllPass && honestDeferralOnly) verdict = "headless-semantic-complete";
   else verdict = "headless-partial";
@@ -1046,6 +1052,16 @@ async function runStudioPipeline({ client, recorder, state }) {
   }
   state.cityId = city.cityId;
 
+  // 先请求 Studio 渲染这个 City（只读视口），否则 layout.save 会以
+  // creator_capture_unavailable 失败。最多等 ~30s；失败交给 layout 步骤如实记录。
+  await client.callTool("creator_city_view", { cityId: state.cityId, revision: city.revision }).catch(() => null);
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const probe = await client.callTool("creator_city_view_status", { cityId: state.cityId, revision: city.revision }).catch(() => null);
+    const viewState = probe?.data?.status ?? probe?.data?.state ?? null;
+    if (viewState === "ready" || viewState === "failed") break;
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 1500));
+  }
+
   // 布局快照（v3 是空域锚点自带几何的前提）；viewport 缺席时如实延迟。
   const layout = await runToolStep(client, recorder, {
     id: "1-layout", title: "creator_city_layout_save: capture/upgrade a v3 snapshot with anchor geometry (needs a loaded viewport)",
@@ -1212,11 +1228,15 @@ async function runStudioPipeline({ client, recorder, state }) {
   const terminal = lastResult?.status && !["pending", "claimed"].includes(lastResult.status);
   recorder.record({
     id: "7-result", title: "creator_playtest_result: bounded evidence summary of the flight run",
-    tool: "creator_playtest_result", status: "pass",
+    tool: "creator_playtest_result", status: terminal ? "pass" : "deferred",
+    ...(terminal ? {} : {
+      errorCode: "playtest_pending",
+      reason: `run ${runId} is ${lastResult?.status ?? "unreadable"}: no City runtime finished the visual run`,
+    }),
     assertions: [
       { desc: "run record readable", ok: Boolean(lastResult?.runId === runId), detail: `status=${lastResult?.status}` },
-      { desc: terminal ? "run reached a terminal state" : "run still pending/claimed — City runtime has not claimed it (recorded honestly, not awaited blindly)",
-        ok: true, detail: lastResult?.status ?? null },
+      { desc: terminal ? "run reached a terminal state" : "run still pending/claimed — recorded as deferred, never as a completed playtest",
+        ok: terminal, detail: lastResult?.status ?? null },
     ],
     responseSummary: summarize(lastResult),
   });
@@ -1331,6 +1351,19 @@ export function selfTest() {
     assert(summarizeSteps([{ status: "pass" }, { status: "deferred" }, { status: "not-run" }]).verdict === "headless-partial", "partial");
     assert(summarizeSteps([{ status: "not-run" }, { status: "not-run" }]).verdict === "not-verified", "nothing ran");
     assert(summarizeSteps([{ status: "pass" }, { status: "failed" }]).verdict === "failed", "failure dominates");
+  });
+
+  check("summarizeSteps: a pending playtest is never pipeline-complete", () => {
+    const pending = summarizeSteps([
+      { id: "0-protocol", status: "pass" },
+      { id: "5-publish", status: "pass" },
+      { id: "6-playtest", status: "pass" },
+      { id: "7-result", status: "deferred", errorCode: "playtest_pending" },
+    ]);
+    assert(pending.verdict === "pipeline-complete-playtest-pending", JSON.stringify(pending));
+    // 只有「试玩待运行」这一种 deferred 才配这个档；别的 deferred 不能蹭。
+    const wrongCode = summarizeSteps([{ id: "7-result", status: "deferred", errorCode: "plugin_unavailable" }]);
+    assert(wrongCode.verdict !== "pipeline-complete-playtest-pending", JSON.stringify(wrongCode));
   });
 
   check("summarizeSteps upgrades to headless-semantic-complete only when the gate chain passed", () => {
