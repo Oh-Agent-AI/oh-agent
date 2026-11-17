@@ -829,6 +829,10 @@ fn headless_creator_methods() -> Vec<String> {
         "creator.vehicle.define",
         "creator.vehicle.inspect",
         "creator.project.commit",
+        // 只读/纯本地写：布局目录与项目创建不依赖视口（项目来自已存布局），
+        // 是 headless 车辆编辑链的前置；缺了它们 W2 的 2c/2d/2e 根本走不到。
+        "creator.layout.list",
+        "creator.project.create",
     ].into_iter().map(str::to_owned).collect()
 }
 
@@ -919,7 +923,10 @@ pub(crate) fn poll_headless_creator_calls(app: &tauri::AppHandle) {
     for call in &calls {
         let method = call["method"].as_str().unwrap_or_default().to_owned();
         let Some(call_id) = call["callId"].as_str().map(str::to_owned) else { continue };
-        let payload: Value = serde_json::from_str(call["payload"].as_str().unwrap_or("{}")).unwrap_or(Value::Null);
+        // claim_pending 返回的 payload 已经是 Value（不是 JSON 字符串）：早先按 as_str()
+        // 解析会让每次 headless 调用都拿到空对象，dispatch 一律以 creator_request_invalid
+        // 拒绝——单测直接传 payload，所以只有真机 W2 才暴露。
+        let payload = call.get("payload").filter(|value| value.is_object()).cloned().unwrap_or_else(|| json!({}));
         let response_budget = definition.map(|definition| transport_budget_for(definition, &method).1)
             .unwrap_or(TRANSPORT_BUDGET_DEFAULT_BYTES);
         let result = answer_headless_call(&home, &method, &payload);
@@ -965,7 +972,7 @@ fn answer_headless_call(home: &std::path::Path, method: &str, payload: &Value) -
         }
         "creator.city.create" | "creator.city.edit.preview" | "creator.city.edit.commit"
         | "creator.city.list" | "creator.city.read" | "creator.vehicle.inspect"
-        | "creator.project.commit" => {
+        | "creator.project.commit" | "creator.project.create" | "creator.layout.list" => {
             let transformed = match method {
                 "creator.city.edit.preview" => headless_world_edit_payload(home, payload)?,
                 "creator.city.create" => headless_city_create_payload(home, payload)?,
@@ -2449,6 +2456,18 @@ mod tests {
         assert_eq!(committed["revision"], 2);
         assert_eq!(committed["validation"], crate::creator_projects::VALIDATION_SOURCE_EMBEDDED);
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn embedded_vehicle_validation_keeps_semantic_rejections_as_diagnostics() {
+        // 无效画像必须作为「语义判负 + 诊断」返回；若信封自检把诊断码/字段判成非法，
+        // 调用方会收到 creator_validation_invalid（"信封格式错误"），把真实原因吞掉。
+        let raw = json!({"schemaVersion": 1, "id": "vehicle-bad", "label": "", "modelAssetId": null,
+            "flightModel": "flapping", "physics": {}, "bounds": {}});
+        let (_, envelope) = crate::creator_projects::embedded_vehicle_validation("probe", 0, &raw)
+            .expect("a semantic rejection must still produce an envelope");
+        assert_eq!(envelope["ok"], false, "{envelope}");
+        assert!(!envelope["diagnostics"].as_array().map(Vec::is_empty).unwrap_or(true), "{envelope}");
     }
 
     #[test]
