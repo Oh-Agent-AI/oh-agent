@@ -8,3 +8,5 @@ export type {
   GameRuntimeResultV1, GameRuntimeStatusV1, GameRuntimeTelemetryV1, GameRuntimeV1,
   RegisteredGameRuntimeV1,
 } from "./types";
+export { InstalledGameRegistryV1, InteractionRouter, createAccessForManifest } from "./interaction";
+export type { GameLaunchAdapterV1, GameLaunchRequestV1, GameLaunchResultV1, InteractionRouterOptionsV1 } from "./interaction";

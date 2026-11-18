@@ -1,4 +1,4 @@
-# @agent-vitals/city-sdk
+# @oh-agent/city-sdk
 
 Version 0.1.0 is a pre-release SDK for data-only City mini-games. It provides
 versioned layout and mount contracts, validation diagnostics, deterministic
@@ -81,13 +81,22 @@ install them.
 
 ## Entry points
 
-- `@agent-vitals/city-sdk`: contracts, content parsing, layout/mount validation,
+- `@oh-agent/city-sdk`: contracts, content parsing, layout/mount validation,
   anchor, scene object, and validated asset catalog queries, asset reference
   checks, data-only City skin and world-profile validation, bounded in-memory GLB
   v2 inspection, package manifest validation and canonical JSON, rule
   compilation, and headless playtests.
-- `@agent-vitals/city-sdk/runtime`: rule compilation, run creation, and
-  headless playtests.
+- `@oh-agent/city-sdk/contracts`: shared world primitives, DTOs, capabilities,
+  revisions, time, interaction, and actor-intent types.
+- `@oh-agent/city-sdk/authoring`: `WorldPlanV1`, stable-ID helpers, seeded
+  randomness, and the deterministic World Compiler.
+- `@oh-agent/city-sdk/validate`: the legacy validators plus same-source JSON
+  Schema and runtime validation for shared world plans, snapshots, and compile
+  contexts.
+- `@oh-agent/city-sdk/testing`: deterministic world fixtures, collection-order
+  variation, and cross-run compiler evidence.
+- `@oh-agent/city-sdk/runtime`: the unchanged legacy rule compilation, run
+  creation, and headless playtests.
 
 The package is not yet published. Its API is pre-release and may change before
 the first public release. Package validation does not replace manifest digest

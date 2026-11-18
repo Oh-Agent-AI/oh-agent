@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { validateVehicleProfileV1, validateGameTypeDescriptorV1, FIXED_WING_VEHICLE_PRESET_V1, ORNITHOPTER_VEHICLE_PRESET_V1 } from "@agent-vitals/city-sdk";
+import { validateVehicleProfileV1, validateGameTypeDescriptorV1, FIXED_WING_VEHICLE_PRESET_V1, ORNITHOPTER_VEHICLE_PRESET_V1 } from "@oh-agent/city-sdk";
 import { createGameRuntimeRegistry, DEPRECATED_GAME_TYPE_IDS_V1, FLIGHT_CHECKPOINT_GAME_TYPE_V1, ORNITHOPTER_GAME_TYPE_V1,
   validateTemplateLink } from "../src/index.ts";
 import { GameRuntimeError } from "../src/errors.ts";

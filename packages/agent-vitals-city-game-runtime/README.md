@@ -1,7 +1,7 @@
 # @agent-vitals/city-game-runtime
 
 Runtime architecture for City game types. This package is intentionally
-separate from `@agent-vitals/city-sdk`:
+separate from `@oh-agent/city-sdk`:
 
 - `city-sdk` owns data-only content contracts and validation (`GameTypeDescriptorV1`,
   slots, parameters, rules, packages).

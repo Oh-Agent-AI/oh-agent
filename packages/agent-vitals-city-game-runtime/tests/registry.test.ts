@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { validateGameTypeDescriptorV1 } from "@agent-vitals/city-sdk";
+import { validateGameTypeDescriptorV1 } from "@oh-agent/city-sdk";
 import { createGameRuntimeRegistry, GameRuntimeError, MIAMI_ACTIVITY_CATALOG_V1, ORNITHOPTER_GAME_TYPE_V1, validateTemplateLink } from "../src/index.ts";
 import type { GameRuntimeHandleV1, GameRuntimeV1 } from "../src/index.ts";
 

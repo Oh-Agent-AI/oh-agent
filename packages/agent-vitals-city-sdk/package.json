@@ -1,5 +1,5 @@
 {
-  "name": "@agent-vitals/city-sdk",
+  "name": "@oh-agent/city-sdk",
   "version": "0.1.0",
   "type": "module",
   "sideEffects": false,
@@ -21,6 +21,22 @@
     "./runtime": {
       "types": "./dist/types/runtime.d.ts",
       "import": "./dist/runtime.js"
+    },
+    "./contracts": {
+      "types": "./dist/types/contracts.d.ts",
+      "import": "./dist/contracts.js"
+    },
+    "./authoring": {
+      "types": "./dist/types/authoring.d.ts",
+      "import": "./dist/authoring.js"
+    },
+    "./validate": {
+      "types": "./dist/types/validateEntry.d.ts",
+      "import": "./dist/validate.js"
+    },
+    "./testing": {
+      "types": "./dist/types/testing.d.ts",
+      "import": "./dist/testing.js"
     }
   },
   "scripts": {

@@ -17,7 +17,9 @@
     "pack:check": "npm pack --dry-run"
   },
   "dependencies": {
-    "@agent-vitals/city-sdk": "file:../agent-vitals-city-sdk"
+    "@oh-agent/city-sdk": "file:../agent-vitals-city-sdk",
+    "@oh-agent/city-game-sdk": "file:../city-game-sdk",
+    "@oh-agent/city-sdk": "file:../agent-vitals-city-sdk"
   },
   "devDependencies": {
     "typescript": "7.0.2"

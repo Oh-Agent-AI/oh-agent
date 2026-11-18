@@ -1,4 +1,26 @@
 export * from "./types";
+export * from "./contracts";
+export { canonicalDigest, sha256Bytes, sha256Text } from "./digest";
+export {
+  CityWorldCompileError, WORLD_COMPILER_V1, compileCityWorld, compileWorld, compileWorldResult,
+  createSeededRandomV1, createStableIdV1, createWorldCompiler, createWorldGeneratorContext,
+  defineCityWorld, defineWorldGenerator, defineWorldPlan, stableIdV1,
+  type CityWorldGeneratorContextV1, type CityWorldGeneratorDefinitionV1, type CityWorldGeneratorV1,
+} from "./authoring";
+export {
+  CITY_COMPILE_CONTEXT_V1_JSON_SCHEMA, CITY_SHARED_CONTRACT_SCHEMAS_V1,
+  CITY_WORLD_PLAN_V1_JSON_SCHEMA, CITY_WORLD_SNAPSHOT_V4_JSON_SCHEMA, type CityJsonSchemaV1,
+} from "./schema";
+export {
+  CITY_ROAD_ENDPOINT_TOLERANCE_METERS_V1, CITY_WORLD_FLOAT_SCALE_V1,
+  computeCityWorldDigests, validateCityJsonSchema, validateCityWorldSnapshot,
+  validateCompileContext, validateWorldPlan, type CityWorldDigestSetV1,
+} from "./sharedValidate";
+export { segmentCrossesWorldVolume, segmentIntersectsVolumeGeometry, sweepSegmentThroughVolumes } from "./worldVolumes";
+export {
+  compileWorldFixtureV1, createWorldCompilerFixtureV1, reverseWorldPlanCollections,
+  verifyWorldCompilerDeterminism, type WorldCompilerFixtureV1, type WorldDeterminismEvidenceV1,
+} from "./testing";
 export { completionThresholdOverrides, listAnchors, listAssets, listSceneObjects, validateAssetRefs, validateCityInstance, validateCityLayout, validateCityLayoutScope, validateCityLayoutSnapshot, validateCityLayoutSnapshotV2, validateCityLayoutSnapshotScoped, validateCityLayoutSnapshotV3, validateCityProjectAssetCatalog, validateCitySkinPack, validateCityWorldProfile, validateMount, validateSceneDraft } from "./validate";
 export { compileRules, createRun, runHeadless } from "./runtime";
 export type { CompiledRulesV1, RuleRunV1 } from "./runtime";
