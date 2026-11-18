@@ -1,4 +1,5 @@
 import { build, version as esbuildVersion } from "esbuild";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -83,6 +84,11 @@ export async function buildCodeGame(options: CodeGameBuildOptions): Promise<Code
         diagnostic("game_asset_invalid", `Declared asset "${asset.path}" is missing from the workspace.`),
       ),
     };
+  }
+
+  const typecheckDiagnostics = typecheckWorkspace(workspaceDir, options.sdkApiEntry ?? DEFAULT_SDK_ENTRY);
+  if (typecheckDiagnostics.length > 0) {
+    return { ok: false, buildId: null, diagnostics: typecheckDiagnostics };
   }
 
   const buildId = digestWorkspace(workspaceDir, manifest.value);
@@ -202,6 +208,76 @@ function writeAtomic(file: string, content: string): void {
   const temporary = `${file}.tmp`;
   fs.writeFileSync(temporary, content);
   fs.renameSync(temporary, file);
+}
+
+/**
+ * Type checking is a separate authority from bundling: esbuild strips types, so
+ * a bundle can succeed while `const hp: number = "many"` ships. The Agent's
+ * repair loop depends on these diagnostics (stage "typecheck"), and a missing
+ * compiler fails closed rather than silently skipping the gate.
+ */
+function typecheckWorkspace(workspaceDir: string, sdkApiEntry: string): readonly GameDiagnosticV1[] {
+  const tsc = path.join(packageRoot, "node_modules", "typescript", "bin", "tsc");
+  if (!fs.existsSync(tsc)) {
+    return [diagnostic("game_build_failed", "TypeScript is unavailable; the build cannot type-check the workspace.")];
+  }
+  const configPath = path.join(workspaceDir, ".code-game-tsconfig.json");
+  const relativeSdk = path.relative(workspaceDir, sdkApiEntry).split(path.sep).join("/");
+  const config = {
+    compilerOptions: {
+      target: "ES2022",
+      module: "ESNext",
+      moduleResolution: "Bundler",
+      strict: true,
+      noEmit: true,
+      skipLibCheck: true,
+      types: [],
+      allowImportingTsExtensions: true,
+      paths: { "@oh-agent/city-game-sdk": [relativeSdk.startsWith(".") ? relativeSdk : `./${relativeSdk}`] },
+    },
+    include: ["src/**/*.ts"],
+  };
+  fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+  try {
+    const result = spawnSync(process.execPath, [tsc, "-p", configPath, "--pretty", "false"], {
+      cwd: workspaceDir,
+      encoding: "utf8",
+    });
+    if (result.status === 0) return [];
+    const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+    const diagnostics: GameDiagnosticV1[] = [];
+    for (const line of output.split(/\r?\n/)) {
+      const withLocation = /^(.+?)\((\d+),(\d+)\): error (TS\d+): (.+)$/.exec(line.trim());
+      if (withLocation) {
+        const file = path.resolve(workspaceDir, withLocation[1]);
+        const relativePath = isInside(workspaceDir, file) ? path.relative(workspaceDir, file) : undefined;
+        diagnostics.push(
+          Object.freeze({
+            code: "game_typecheck_failed" as const,
+            severity: "error" as const,
+            stage: "typecheck" as const,
+            message: `${withLocation[4]}: ${withLocation[5]}`,
+            ...(relativePath !== undefined ? { relativePath } : {}),
+            line: Number(withLocation[2]),
+            column: Number(withLocation[3]),
+          }),
+        );
+      } else if (/^error TS\d+:/.test(line.trim())) {
+        diagnostics.push(
+          Object.freeze({
+            code: "game_typecheck_failed" as const,
+            severity: "error" as const,
+            stage: "typecheck" as const,
+            message: line.trim(),
+          }),
+        );
+      }
+    }
+    if (diagnostics.length > 0) return Object.freeze(diagnostics);
+    return [diagnostic("game_build_failed", "TypeScript exited non-zero without parseable diagnostics.")];
+  } finally {
+    fs.rmSync(configPath, { force: true });
+  }
 }
 
 function readManifest(

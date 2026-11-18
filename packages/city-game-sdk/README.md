@@ -77,7 +77,7 @@ Agent 可通过 MCP 完成 `create → 写/改 TS → 构建 → 读诊断 → �
 | `creator_code_project_create` | 从受信任模板建受控工作区，返回 `workspaceId/gameId/revision` |
 | `creator_code_workspace_info` | 工作区身份、revision、有界文件列表 |
 | `creator_code_file_read` / `creator_code_file_write` | 工作区相对路径读写；写带 `expectedRevision` 内容 CAS |
-| `creator_code_build` | 固定 Node/esbuild 构建；失败返回 `code/stage/relativePath/line/column` |
+| `creator_code_build` | 固定 Node 构建：先 `tsc --noEmit` 再 esbuild；失败返回 `code/stage/relativePath/line/column` |
 | `creator_code_preview` | 把构建产物/Manifest/资产放进 City public 目录，返回可直接打开的预览 URL（dev-only 桥） |
 | `creator_code_test` | 用同一 Host 无头跑固定 tick，返回 outcome/tick/entities/HUD |
 
