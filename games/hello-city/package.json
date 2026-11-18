@@ -1,0 +1,14 @@
+{
+  "name": "@oh-agent/hello-city",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "First vertical slice: one run-owned cube moving along the City's trusted route.",
+  "scripts": {
+    "build": "node --experimental-transform-types ../../packages/city-game-sdk/scripts/buildGame.ts --workspace . --out dist",
+    "test": "node --experimental-transform-types --import ../../scripts/mecha-ts-register.mjs --test tests/*.test.ts"
+  },
+  "dependencies": {
+    "@oh-agent/city-game-sdk": "file:../../packages/city-game-sdk"
+  }
+}

@@ -266,6 +266,12 @@ jobs:
         run: node ../../../scripts/verify-city-suite.mjs fast
       - name: City initial data-loading feedback
         run: node scripts/verify-city-initial-loading.mjs
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Code Game 渲染端口（Three）
+        working-directory: apps/agent-city/ui
+        run: node --experimental-transform-types --import ../../../scripts/mecha-ts-register.mjs --test tests/code-game-three-render.test.ts
       - name: 术语与命名边界守卫
         working-directory: apps/desktop/ui-dev
         run: node ../../../scripts/verify-harness-terminology.mjs
@@ -356,6 +362,37 @@ jobs:
         run: |
           npm test --prefix packages/agent-vitals-city-game-runtime
           npm run typecheck --prefix packages/agent-vitals-city-game-runtime
+
+  city_game_sdk:
+    name: City game SDK
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: packages/city-game-sdk/package-lock.json
+      - name: 安装 City Game SDK 依赖
+        working-directory: packages/city-game-sdk
+        run: npm ci
+      - name: 类型检查
+        working-directory: packages/city-game-sdk
+        run: npm run typecheck
+      - name: 契约测试与构建
+        working-directory: packages/city-game-sdk
+        run: |
+          npm test
+          npm run build
+      - name: hello-city 纵向切片（构建 + 无头运行）
+        run: node --experimental-transform-types --import ./scripts/mecha-ts-register.mjs --test games/hello-city/tests/hello-city.test.ts
+      - name: City layout → WorldSource 投影
+        run: node --experimental-transform-types --import ./scripts/mecha-ts-register.mjs --test apps/agent-city/ui/tests/code-game-world-source.test.ts
+      - name: Code Game 会话租约
+        run: node --experimental-transform-types --import ./scripts/mecha-ts-register.mjs --test apps/agent-city/ui/tests/code-game-session.test.ts
+      - name: 实时 City layout → WorldSource
+        run: node --experimental-transform-types --import ./scripts/mecha-ts-register.mjs --test apps/agent-city/ui/tests/code-game-engine-world-source.test.ts
 
   creator_evals:
     name: Creator tool-face evals (E9 self-test)

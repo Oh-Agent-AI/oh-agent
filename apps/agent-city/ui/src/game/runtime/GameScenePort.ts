@@ -1,7 +1,9 @@
 /** Host-internal capability contracts, NOT plugin IPC. One CityEngine owns one port. */
 export type GameSelection =
   | Readonly<{ vehicle: "plane"; activity: "practice" | "race" }>
-  | Readonly<{ vehicle: "car"; activity: "free" }>;
+  | Readonly<{ vehicle: "car"; activity: "free" }>
+  /** Code Game（Agent 写的 TS 游戏）。静态世界 + 场景独占 + 相机，不捕获车辆路面图。 */
+  | Readonly<{ vehicle: "game"; activity: "code" }>;
 export type CameraPose = Readonly<{
   position: readonly [number, number, number];
   target: readonly [number, number, number];

@@ -1,0 +1,161 @@
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import type { Object3D } from "three";
+import type { GameTelemetryV1 } from "../../../../../../packages/city-game-sdk/src/host/types";
+import { isGameDefinitionV1 } from "../../../../../../packages/city-game-sdk/src/api/defineGame";
+import type { CodeGameManifestV1 } from "../../../../../../packages/city-game-sdk/src/protocol/manifest";
+import { validateCodeGameManifestV1 } from "../../../../../../packages/city-game-sdk/src/protocol/manifest";
+import type { CityEngine } from "../../engine/CityEngine";
+import type { CityActivityCoordinator } from "../activity/CityActivityCoordinator";
+import { createCityEngineWorldSourceV1 } from "./cityEngineWorldSource";
+import { CodeGameRunV1 } from "./codeGameSession";
+import { createThreeCodeGameRender } from "./threeRenderPort";
+
+/**
+ * Dev preview entry: fetch a trusted build, import it from a Blob URL, and run
+ * it against the *live* City layout through the production session. This is the
+ * same path a Studio/MCP preview will use; only the bundle source differs.
+ *
+ * Trust level: P0 only. The bundle executes in the City WebView with full host
+ * privileges. It is never used for downloaded community code — that path must
+ * wait for the P2 sandbox, exactly as the PRD's two trust levels require.
+ */
+
+export type CodeGamePreviewStatus = "idle" | "starting" | "running" | "finished" | "error";
+
+export type CodeGamePreviewState = Readonly<{
+  status: CodeGamePreviewStatus;
+  runId: string | null;
+  reason: string | null;
+  error: string | null;
+  telemetry: GameTelemetryV1 | null;
+}>;
+
+export type CodeGamePreviewStartV1 = Readonly<{
+  bundleText: string;
+  manifest: unknown;
+  seed?: number;
+  cityId?: string;
+  cityRevision?: number;
+  /** Absolute directory the manifest's asset paths resolve against. */
+  assetBaseUrl?: string;
+  nowMs?: () => number;
+}>;
+
+const IDLE: CodeGamePreviewState = Object.freeze({
+  status: "idle",
+  runId: null,
+  reason: null,
+  error: null,
+  telemetry: null,
+});
+
+export type CodeGamePreviewV1 = Readonly<{
+  state: CodeGamePreviewState;
+  start(input: CodeGamePreviewStartV1): Promise<void>;
+  stop(): void;
+  status(): CodeGamePreviewStatus;
+  telemetry(): GameTelemetryV1 | null;
+  ready(): boolean;
+}>;
+
+export function useCodeGamePreview(options: Readonly<{
+  engineRef: RefObject<CityEngine | null>;
+  coordinator: CityActivityCoordinator;
+}>): CodeGamePreviewV1 {
+  const { engineRef, coordinator } = options;
+  const [state, setState] = useState<CodeGamePreviewState>(IDLE);
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const runRef = useRef<CodeGameRunV1<Object3D> | null>(null);
+
+  const start = useCallback(
+    async (input: CodeGamePreviewStartV1): Promise<void> => {
+      if (runRef.current) {
+        runRef.current.stop("stopped");
+        runRef.current = null;
+      }
+      setState({ status: "starting", runId: null, reason: null, error: null, telemetry: null });
+      try {
+        const parsed = validateCodeGameManifestV1(input.manifest);
+        if (!parsed.ok) {
+          const first = parsed.diagnostics[0];
+          throw new Error(first ? `${first.code}: ${first.message}` : "Invalid game manifest.");
+        }
+        const manifest: CodeGameManifestV1 = parsed.value;
+        const engine = engineRef.current;
+        if (!engine) throw new Error("City engine is not ready.");
+        const view = engine.getCitySdkLayoutView();
+        const layout = engine.currentLayout;
+        if (!view || !layout) throw new Error("City layout is not ready.");
+
+        const blobUrl = URL.createObjectURL(new Blob([input.bundleText], { type: "text/javascript" }));
+        let module: { default?: unknown };
+        try {
+          module = (await import(/* @vite-ignore */ blobUrl)) as { default?: unknown };
+        } finally {
+          URL.revokeObjectURL(blobUrl);
+        }
+        if (!isGameDefinitionV1(module.default)) {
+          throw new Error("Bundle must export default defineGame({...}).");
+        }
+
+        const world = createCityEngineWorldSourceV1({
+          cityId: input.cityId ?? "city:dev",
+          cityRevision: input.cityRevision ?? 0,
+          worldRevision: view.worldRevision,
+          layoutId: view.layout.id,
+          layout,
+        });
+        const run = await CodeGameRunV1.start({
+          definition: module.default,
+          manifest,
+          world,
+          seed: input.seed ?? view.seed,
+          scenePort: engine.gameScenePort,
+          coordinator,
+          createRender: (lease) =>
+            createThreeCodeGameRender(lease, {
+              assets: manifest.assets,
+              assetBaseUrl: input.assetBaseUrl ?? new URL(".", location.href).href,
+            }),
+          nowMs: input.nowMs ?? (() => performance.now()),
+          onStop: ({ reason, telemetry }) => {
+            runRef.current = null;
+            setState({ status: "finished", runId: telemetry.runId, reason, error: null, telemetry });
+          },
+        });
+        runRef.current = run;
+        setState({ status: "running", runId: run.host.runId, reason: null, error: null, telemetry: run.telemetry() });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setState({ status: "error", runId: null, reason: null, error: message, telemetry: null });
+        throw error;
+      }
+    },
+    [coordinator, engineRef],
+  );
+
+  const stop = useCallback((): void => {
+    const run = runRef.current;
+    if (!run) return;
+    run.stop("stopped");
+    runRef.current = null;
+  }, []);
+
+  const status = useCallback((): CodeGamePreviewStatus => stateRef.current.status, []);
+  const telemetry = useCallback((): GameTelemetryV1 | null => runRef.current?.telemetry() ?? stateRef.current.telemetry, []);
+  const ready = useCallback((): boolean => {
+    const engine = engineRef.current;
+    return !!(engine?.currentLayout && engine.getCitySdkLayoutView());
+  }, [engineRef]);
+
+  useEffect(
+    () => () => {
+      runRef.current?.stop("stopped");
+      runRef.current = null;
+    },
+    [],
+  );
+
+  return Object.freeze({ state, start, stop, status, telemetry, ready });
+}

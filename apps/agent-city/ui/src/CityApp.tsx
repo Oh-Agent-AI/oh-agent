@@ -31,6 +31,7 @@ import { encounterIsCurrent, type MonsterEncounter } from "./game/mecha/monsterE
 import { useMonsterEncounters } from "./game/mecha/useMonsterEncounters";
 import { prewarmAudioContext } from "./game/GameSfx";
 import { CityActivityCoordinator, type CityActivityLease } from "./game/activity/CityActivityCoordinator";
+import { useCodeGamePreview } from "./game/codeGameHost/useCodeGamePreview";
 import { claimCreatorPlaytest, finishCreatorPlaytest, loadCreatorPublishedMiniGames, pendingCreatorPlaytest, type CreatorPlaytestHandoffV1 } from "./game/activity/loadCreatorExperiences";
 import type { PendingCreatorPlaytestV1 } from "./game/activity/creatorPlaytestPending";
 import { loadWorldSceneModels } from "./game/activity/creatorSceneModels";
@@ -377,6 +378,61 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
     projectId: creatorPlaytest.projectId, revision: creatorPlaytest.revision, snapshotDigest: creatorPlaytest.snapshotDigest } : undefined, finishPlaytest });
   const drivingRef = useRef(driving);
   drivingRef.current = driving;
+  // Dev-only Code Game 预览入口：?codeGame=<bundle.js>&codeGameManifest=<manifest.json>。
+  // 走与 Studio/MCP 预览相同的 production 路径（会话/场景租约/实时世界投影）；
+  // 仅 P0 可信本地构建可用，绝不复用于社区下载代码。
+  const codeGamePreview = useCodeGamePreview({ engineRef, coordinator: activityCoordinator });
+  const codeGamePreviewRequested = useRef(false);
+  const startCodeGamePreview = codeGamePreview.start;
+  useEffect(() => {
+    if (!import.meta.env.DEV || codeGamePreviewRequested.current) return;
+    const params = new URLSearchParams(location.search);
+    const bundleUrl = params.get("codeGame");
+    const manifestUrl = params.get("codeGameManifest");
+    if (!bundleUrl || !manifestUrl) return;
+    codeGamePreviewRequested.current = true;
+    void (async () => {
+      // The URL param can arrive before the generator has produced a layout;
+      // wait for the engine instead of failing the first frame.
+      for (let attempt = 0; attempt < 240 && !codeGamePreview.ready(); attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      if (!codeGamePreview.ready()) throw new Error("City layout did not become ready for the code game preview");
+      const [bundleResponse, manifestResponse] = await Promise.all([fetch(bundleUrl), fetch(manifestUrl)]);
+      if (!bundleResponse.ok || !manifestResponse.ok) throw new Error("code game preview assets are unavailable");
+      await startCodeGamePreview({
+        bundleText: await bundleResponse.text(),
+        manifest: await manifestResponse.json(),
+        seed: 7,
+        assetBaseUrl: new URL(".", new URL(bundleUrl, location.href)).href,
+      });
+    })().catch((error) => {
+      codeGamePreviewRequested.current = false;
+      console.error("code game preview failed", error);
+    });
+  }, [codeGamePreview, startCodeGamePreview]);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const holder = window as unknown as { __ohAgentCodeGame?: unknown };
+    holder.__ohAgentCodeGame = {
+      start: codeGamePreview.start,
+      stop: codeGamePreview.stop,
+      status: codeGamePreview.status,
+      telemetry: codeGamePreview.telemetry,
+      ready: codeGamePreview.ready,
+      state: codeGamePreview.state,
+    };
+    return () => {
+      delete holder.__ohAgentCodeGame;
+    };
+  }, [
+    codeGamePreview.start,
+    codeGamePreview.stop,
+    codeGamePreview.status,
+    codeGamePreview.telemetry,
+    codeGamePreview.ready,
+    codeGamePreview.state,
+  ]);
   const startedCreatorPlaytest = useRef<string | null>(null);
   useEffect(() => {
     if (!creatorPlaytest || creatorPlaytest.gameType === "flight" || !firstModelFrame || driving.active || startedCreatorPlaytest.current === creatorPlaytest.runId) return;

@@ -1,0 +1,43 @@
+{
+  "name": "@oh-agent/city-game-sdk",
+  "version": "0.1.0",
+  "description": "Code-first City game framework: public game API, protocol, trusted host and headless test harness.",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/types/api/index.d.ts",
+      "import": "./dist/api/index.js"
+    },
+    "./host": {
+      "types": "./dist/types/host/index.d.ts",
+      "import": "./dist/host/index.js"
+    },
+    "./protocol": {
+      "types": "./dist/types/protocol/index.d.ts",
+      "import": "./dist/protocol/index.js"
+    },
+    "./testing": {
+      "types": "./dist/types/testing/index.d.ts",
+      "import": "./dist/testing/index.js"
+    }
+  },
+  "scripts": {
+    "clean": "node ./scripts/clean.mjs",
+    "build": "node ./scripts/build.mjs",
+    "typecheck": "node ./node_modules/typescript/bin/tsc -p tsconfig.build.json --noEmit",
+    "test": "node --experimental-transform-types --import ../../scripts/mecha-ts-register.mjs --test tests/*.test.ts",
+    "build:game": "node --experimental-transform-types ./scripts/buildGame.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12",
+    "typescript": "7.0.2"
+  }
+}

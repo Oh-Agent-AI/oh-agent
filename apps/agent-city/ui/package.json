@@ -29,6 +29,8 @@
     "mcp:mecha": "node --experimental-transform-types --import ../../../scripts/mecha-ts-register.mjs ../mcp/mecha-mcp.mjs",
     "mcp:game": "node --experimental-transform-types --import ../../../scripts/mecha-ts-register.mjs ../mcp/city-game-mcp.mjs",
     "verify:game-runtime-host": "node --experimental-transform-types --import ../../../scripts/mecha-ts-register.mjs --test tests/game-runtime-host.test.ts tests/game-runtime-entries.test.ts",
+    "preview:code-game": "node --experimental-transform-types --import ../../../scripts/mecha-ts-register.mjs ./scripts/prepare-code-game-preview.ts",
+    "verify:code-game-browser": "node tests/code-game-city.browser.mjs",
     "verify:world-scene-models": "node --experimental-transform-types --import ../../../scripts/mecha-ts-register.mjs --test tests/world-scene-models.test.ts"
   },
   "dependencies": {
