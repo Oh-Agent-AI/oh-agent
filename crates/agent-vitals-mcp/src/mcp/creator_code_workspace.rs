@@ -149,18 +149,18 @@ fn require_writes(allowed: bool, action: &str) -> Result<(), ToolError> {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct WorkspaceMeta {
+pub(crate) struct WorkspaceMeta {
     #[serde(rename = "workspaceId")]
-    workspace_id: String,
+    pub(crate) workspace_id: String,
     #[serde(rename = "projectId")]
-    project_id: String,
+    pub(crate) project_id: String,
     #[serde(rename = "gameId")]
-    game_id: String,
-    title: String,
-    template: String,
+    pub(crate) game_id: String,
+    pub(crate) title: String,
+    pub(crate) template: String,
     #[serde(rename = "createdAtMs")]
-    created_at_ms: u64,
-    revision: String,
+    pub(crate) created_at_ms: u64,
+    pub(crate) revision: String,
 }
 
 fn project_create(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
@@ -462,7 +462,7 @@ fn workspace_path(data_home: &Path, workspace_id: &str) -> Result<PathBuf, ToolE
     Ok(data_home.join("code-games").join("workspaces").join(workspace_id))
 }
 
-fn workspace_dir(data_home: &Path, workspace_id: &str) -> Result<PathBuf, ToolError> {
+pub(crate) fn workspace_dir(data_home: &Path, workspace_id: &str) -> Result<PathBuf, ToolError> {
     let directory = workspace_path(data_home, workspace_id)?;
     if !directory.is_dir() {
         return Err(ToolError::new("not_found", "No such Code Game workspace."));
@@ -511,7 +511,7 @@ fn is_writable_text_path(path: &str) -> bool {
     matches!(extension, "ts" | "tsx" | "js" | "mjs" | "json" | "md" | "txt" | "css" | "html")
 }
 
-fn read_meta(directory: &Path) -> Result<WorkspaceMeta, ToolError> {
+pub(crate) fn read_meta(directory: &Path) -> Result<WorkspaceMeta, ToolError> {
     let bytes = std::fs::read(directory.join(META_FILE))
         .map_err(|_| ToolError::new("not_found", "No such Code Game workspace."))?;
     serde_json::from_slice(&bytes).map_err(|_| ToolError::new("data_unavailable", "Workspace metadata is malformed."))

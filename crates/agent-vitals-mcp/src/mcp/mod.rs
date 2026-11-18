@@ -39,6 +39,7 @@ mod city_im;
 mod creator_session;
 mod creator_code;
 mod creator_code_workspace;
+mod creator_code_experience;
 mod creator_studio;
 mod city_world;
 #[cfg(feature = "mcp-internal")]
@@ -106,6 +107,7 @@ pub fn tool_specs_with_city(include_city: bool) -> Vec<ToolSpec> {
     out.extend(creator_session::specs());
     out.extend(creator_code::specs());
     out.extend(creator_code_workspace::specs());
+    out.extend(creator_code_experience::specs());
     out.extend(city_world::specs());
     #[cfg(feature = "mcp-internal")]
     {
@@ -293,6 +295,9 @@ pub fn dispatch_with_permissions_options(
         "creator_code_project_create" | "creator_code_workspace_info" | "creator_code_file_read"
         | "creator_code_file_write" | "creator_code_preview" | "creator_code_build" | "creator_code_test" =>
             creator_code_workspace::run(name, args, data_home, allow_local_writes),
+        "creator_code_publish" | "creator_code_experience_list" | "creator_code_experience_install"
+        | "creator_code_experience_uninstall" =>
+            creator_code_experience::run(name, args, data_home, allow_local_writes),
         "city_world_profile_preview" | "city_world_profile_apply" => city_world::run(name, args, data_home, allow_local_writes),
         #[cfg(feature = "mcp-internal")]
         "query_sql_readonly" => query_sql_readonly::run(args, data_home),
@@ -465,7 +470,7 @@ mod tests {
     #[test]
     fn code_game_status_tools_are_registered_and_read_only() {
         let names: Vec<_> = tool_specs().iter().map(|tool| tool.name).collect();
-        for name in ["creator_code_builds_list", "creator_code_build_status", "creator_code_preview_status", "creator_code_project_create", "creator_code_workspace_info", "creator_code_file_read", "creator_code_file_write", "creator_code_preview", "creator_code_build", "creator_code_test"] {
+        for name in ["creator_code_builds_list", "creator_code_build_status", "creator_code_preview_status", "creator_code_project_create", "creator_code_workspace_info", "creator_code_file_read", "creator_code_file_write", "creator_code_preview", "creator_code_build", "creator_code_test", "creator_code_publish", "creator_code_experience_list", "creator_code_experience_install", "creator_code_experience_uninstall"] {
             assert!(names.contains(&name), "Code Game MCP tool missing: {name}");
         }
         let missing = Path::new("/nonexistent-code-game-data-home");

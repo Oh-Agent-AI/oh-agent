@@ -20,7 +20,7 @@ import readline from "node:readline";
 const args = process.argv.slice(2);
 const command = args.shift();
 if (!command) {
-  console.error("usage: code-game-mcp-cli.mjs <create|info|read|write|build|test|preview|build-status|preview-status> [--flag value]");
+  console.error("usage: code-game-mcp-cli.mjs <create|info|read|write|build|test|preview|build-status|preview-status|publish|experiences|install|uninstall> [--flag value]");
   process.exit(2);
 }
 const flags = new Map();
@@ -135,6 +135,16 @@ async function main() {
     }],
     "build-status": () => ["creator_code_build_status", { buildId: required("build") }],
     "preview-status": () => ["creator_code_preview_status", {}],
+    publish: () => ["creator_code_publish", {
+      workspaceId: required("workspace"),
+      buildId: required("build"),
+      permissionsAccepted: true,
+      ...(flags.get("version") ? { version: flags.get("version") } : {}),
+      ...(flags.get("operation") ? { operationId: flags.get("operation") } : {}),
+    }],
+    experiences: () => ["creator_code_experience_list", {}],
+    install: () => ["creator_code_experience_install", { experienceId: required("experience"), version: required("version") }],
+    uninstall: () => ["creator_code_experience_uninstall", { experienceId: required("experience"), version: required("version") }],
   };
   const entry = calls[command];
   if (!entry) {

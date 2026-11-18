@@ -113,6 +113,27 @@ node scripts/verify-code-game-city-loop.mjs
 构建是固定脚本 + 固定参数（不是任意 shell）；Node/仓库脚本缺失时失败关闭。
 视觉 City 预览仍走 dev `?codeGame=` 入口，MCP 目前只自动验证无头运行。
 
+### Experience V2（本地 P1）
+
+`creator_code_publish` 把一个不可变 build 打成自包含包：
+
+```
+<data_home>/code-games/experiences/<experienceId>/<version>/
+├── manifest.json          # 文件清单 + contentDigest（canonical JSON）
+├── code/game.js           # 冻结产物
+├── assets/…               # manifest 声明的资产
+├── permissions.json
+├── world-binding.json
+└── provenance.json        # buildId / gameRevision / sdkVersion
+```
+
+`creator_code_experience_list/install/uninstall` 管理本地内容库；install 会重算
+`contentDigest` 并逐文件校验，任何字节被改 → `game_package_integrity_failed`。
+**装进库不等于允许执行**：执行仍受 P0 可信本地 / P2 沙箱约束。
+
+验证：`node scripts/verify-code-game-publish.mjs`
+（publish → list → install → 幂等 → uninstall → 篡改后拒绝安装）。
+
 ### MCP 状态面（只读）
 
 | 工具 | 读什么 |

@@ -132,6 +132,10 @@ jobs:
         env:
           AGENT_VITALS_BIN: ${{ github.workspace }}/target/release/agent-vitals
         run: node scripts/verify-code-game-loop.mjs
+      - name: Code Game 发布/安装（Experience V2）
+        env:
+          AGENT_VITALS_BIN: ${{ github.workspace }}/target/release/agent-vitals
+        run: node scripts/verify-code-game-publish.mjs
 
       # golden 是提交进仓库的快照。两个实现都必须与它逐字节一致 ——
       # 一致性是三方的，不是两两的：Python↔golden、Rust↔golden。
