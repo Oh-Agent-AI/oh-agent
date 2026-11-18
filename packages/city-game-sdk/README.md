@@ -8,7 +8,7 @@ Agent 写的 TypeScript 游戏（Code Game）的公共 API、协议与受信任�
 | 入口 | 用途 | 谁能 import |
 |---|---|---|
 | `.` | `defineGame()`、World/Entity/Input/UI/Clock/Random 类型 | 游戏工程 |
-| `./protocol` | `CodeGameManifestV1` 校验、权限词表、稳定诊断码 | 构建服务 / Host / MCP |
+| `./protocol` | Manifest V1/V2、Permission Request、Host Grant、InstalledGame、稳定诊断码 | 构建服务 / Host / MCP |
 | `./host` | `CodeGameHostV1`、`WorldSourceV1`、`RenderPortV1` | City 适配层（可信代码） |
 | `./testing` | `createGameTestWorld()` 无头测试床 | 测试与 Agent 自检 |
 
@@ -33,6 +33,37 @@ export default defineGame({
 });
 ```
 
+## Manifest V2 与不可变 Build
+
+`validateCodeGameManifestV2()` 校验独立的 City Capability 与 Game Permission Request，
+并检查 capability 映射、presentation 和唯一 `entries`。`resolveCodeGameEntryV2()` 只解析
+已登记入口；构建器还会用 esbuild metadata 验证入口 export 确实存在。
+`adaptCodeGameManifestV1ToV2()` 仅显式映射旧 `world.read`、`roads.read`、
+`terrain.sample`，原 V1 validator 与 Host 保持可用。
+
+`buildCodeGame()` 将以下内容写入 `<out>/<buildId>/`，先写临时目录再原子改名：
+
+```
+manifest.json       # 规范化、深冻结的 V1 或 V2 Manifest
+build.json          # BuildId、全部摘要、sourceRevision、SDK/工具链身份
+game.js + game.js.map
+assets/…            # Manifest 声明资产的原始相对路径与冻结字节
+```
+
+BuildId 同时绑定规范化 Manifest、bundle/source map、资产摘要、源修订、SDK 和固定
+工具链参数。`loadCodeGameBuildById()` 会复核所有文件与摘要；缺文件、篡改或符号链接
+逃逸均返回 `game_package_integrity_failed`。`createCodeGamePublishPayload()` 与 headless
+preview 都消费同一个已验证产物，不接收 workspace 路径：
+
+```bash
+node --experimental-transform-types --import ../../scripts/mecha-ts-register.mjs \
+  scripts/previewGame.ts --build <buildId> --builds-dir <out> --ticks 600
+```
+
+V2 目前覆盖协议、授权判定、安装读模型和构建产物；`CodeGameHostV1` 不假装执行 V2
+WorldAPI。Rust Creator/Runtime 的 test、preview、publish 工具仍需切换到上述 artifact
+reader；包内 helper 已就绪，旧 workspace 直读路径的 Runtime 改造属于后续集成。
+
 ## 宿主契约
 
 - 一个 Host 只拥有一个 run；`prepare()` 之后 `start()`，`step()` 是**一次**权威固定步。
@@ -41,8 +72,9 @@ export default defineGame({
   `dispose()` 幂等；`finished` 只表示结果已定，清理在同一个终止路径里完成。
 - 清理顺序：`onDispose` 回调 LIFO → `setup` 返回的 disposer 最后 → Host 销毁所有
   仍在场的实体（每个实体恰好一次 `render.destroy`）。
-- 权限在**每次调用**时复查；`manifest.permissions` 缺失即 `game_permission_denied`，
-  不依赖 TypeScript 类型。
+- V1 权限在**每次调用**时复查；`manifest.permissions` 缺失即 `game_permission_denied`，
+  不依赖 TypeScript 类型。V2 的 Capability / Permission Request / Host Grant 三轴判定
+  由 `protocol/access.ts` 提供，接入权威 Runtime 前不改变 V1 Host 行为。
 - 实体所有权是结构性的：实体表属于单个 Host，别的 run 的 id 在这里不存在。
 - `world.*` 的返回值按 run 缓存并深冻结；City revision 变化时适配层必须 `stop()`，
   Host 不轮询世界版本（那是租约的职责）。
@@ -53,7 +85,7 @@ export default defineGame({
 
 已实现（P0 切片）：Manifest 校验、公共 API 类型、Host 生命周期、固定步、
 实体预算与所有权、权限门、HUD、确定性随机、幂等清理、无头测试床；原型构建服务
-（`scripts/buildGame.ts`：Manifest 校验 → esbuild → 内容摘要 buildId）；`games/hello-city`
+（`scripts/buildGame.ts`：Manifest V1/V2 校验 → typecheck/esbuild → 自包含摘要产物）；`games/hello-city`
 模板与端到端无头运行；City v3 layout → `WorldSourceV1` 投影
 （`apps/agent-city/ui/src/game/codeGameHost/cityWorldSource.ts`）。
 
@@ -154,7 +186,7 @@ City 发布，浏览器 dev 下 `publish` 是 no-op。`stale=true` 表示写者�
 ```bash
 cd packages/city-game-sdk
 npm ci
-npm test          # 34 个契约测试，Node 直接跑 TS（无需先 build）
+npm test          # 49 个契约测试，Node 直接跑 TS（无需先 build）
 npm run typecheck # tsc --noEmit，lib 只有 ES2022（无 DOM）
 npm run build     # 声明 + esbuild 四入口
 ```

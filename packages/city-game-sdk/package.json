@@ -39,5 +39,8 @@
   "devDependencies": {
     "esbuild": "0.25.12",
     "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "@oh-agent/city-sdk": "file:../agent-vitals-city-sdk"
   }
 }

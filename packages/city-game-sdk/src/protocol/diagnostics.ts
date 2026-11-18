@@ -29,6 +29,11 @@ export const GAME_DIAGNOSTIC_CODES_V1 = [
   "game_ui_budget_exceeded",
   "game_build_failed",
   "game_typecheck_failed",
+  // V2 contract additions.
+  "game_world_capability_missing",
+  "game_run_cancelled",
+  "game_storage_revision_conflict",
+  "game_actor_remote_unavailable",
 ] as const;
 export type GameDiagnosticCodeV1 = (typeof GAME_DIAGNOSTIC_CODES_V1)[number];
 

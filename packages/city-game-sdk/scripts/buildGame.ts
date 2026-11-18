@@ -4,28 +4,36 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { CodeGameBuildV2 } from "../src/protocol/build.ts";
 import type { GameDiagnosticV1 } from "../src/protocol/diagnostics.ts";
-import { validateCodeGameManifestV1, type CodeGameManifestV1 } from "../src/protocol/manifest.ts";
+import {
+  validateCodeGameManifest,
+  type CodeGameManifest,
+} from "../src/protocol/manifestV2.ts";
+import {
+  canonicalJson,
+  createCodeGameBuildRecord,
+  loadCodeGameBuildArtifact,
+} from "./buildArtifact.ts";
 
 /**
  * P0 build service (prototype). It deliberately does three things only:
  *
  *   1. validate `game.manifest.json` with the same validator the host uses;
  *   2. bundle `entry` with a pinned toolchain and a trusted SDK alias;
- *   3. name the output by a content digest, so a `buildId` can never point at
- *      two different source trees.
+ *   3. seal the normalized manifest, bundle, source map and declared assets in
+ *      a digest-verified directory named by all build inputs.
  *
- * It does **not** typecheck (that is a separate `tsc --noEmit` step in the
- * Studio build job) and it does not run `vite.config.ts`, `postinstall` or any
- * workspace script: the only executable input is the entry graph. Vite remains
- * the Studio/City bundler; this service exists so the vertical slice can
- * produce a real ESM bundle with a reproducible identity before that pipeline
- * is wired into Rust.
+ * Type checking runs before bundling. The builder does not run `vite.config.ts`,
+ * `postinstall` or any workspace script: the only executable input is the entry
+ * graph. Test, preview and publish helpers load the sealed directory rather
+ * than consulting later workspace files.
  */
 
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 const packageJson = JSON.parse(fs.readFileSync(path.join(packageRoot, "package.json"), "utf8")) as {
   version: string;
+  devDependencies: { typescript: string };
 };
 const SDK_NAME = "@oh-agent/city-game-sdk";
 const DEFAULT_SDK_ENTRY = path.join(packageRoot, "src", "api", "index.ts");
@@ -38,6 +46,8 @@ export type CodeGameBuildOptions = Readonly<{
   dataHome?: string;
   /** Overridable for tests; production points at the packaged SDK entry. */
   sdkApiEntry?: string;
+  /** External workspace revision, or a deterministic workspace content digest. */
+  sourceRevision?: string;
 }>;
 
 export type CodeGameBuildSuccess = Readonly<{
@@ -45,7 +55,14 @@ export type CodeGameBuildSuccess = Readonly<{
   buildId: string;
   buildDir: string;
   bundlePath: string;
-  manifest: CodeGameManifestV1;
+  manifest: CodeGameManifest;
+  manifestDigest: string;
+  bundleDigest: string;
+  assetDigests: Readonly<Record<string, string>>;
+  contentDigest: string;
+  sourceRevision: string;
+  sdkVersion: string;
+  toolchainVersion: string;
   byteLength: number;
   warnings: readonly GameDiagnosticV1[];
 }>;
@@ -75,15 +92,13 @@ export async function buildCodeGame(options: CodeGameBuildOptions): Promise<Code
     return failure("game_entry_invalid", `Entry "${manifest.value.entry}" does not exist inside the workspace.`);
   }
 
-  const missingAssets = manifest.value.assets.filter((asset) => !fs.existsSync(path.join(workspaceDir, asset.path)));
-  if (missingAssets.length > 0) {
-    return {
-      ok: false,
-      buildId: null,
-      diagnostics: missingAssets.map((asset) =>
-        diagnostic("game_asset_invalid", `Declared asset "${asset.path}" is missing from the workspace.`),
-      ),
-    };
+  const assets = [];
+  for (const asset of manifest.value.assets) {
+    const assetPath = path.resolve(workspaceDir, asset.path);
+    if (!isInside(workspaceDir, assetPath) || !fs.existsSync(assetPath) || !fs.lstatSync(assetPath).isFile()) {
+      return failure("game_asset_invalid", `Declared asset "${asset.path}" is missing from the workspace.`);
+    }
+    assets.push({ path: asset.path, bytes: fs.readFileSync(assetPath) });
   }
 
   const typecheckDiagnostics = typecheckWorkspace(workspaceDir, options.sdkApiEntry ?? DEFAULT_SDK_ENTRY);
@@ -91,102 +106,117 @@ export async function buildCodeGame(options: CodeGameBuildOptions): Promise<Code
     return { ok: false, buildId: null, diagnostics: typecheckDiagnostics };
   }
 
-  const buildId = digestWorkspace(workspaceDir, manifest.value);
-  const buildDir = path.join(outDir, buildId);
-  const bundlePath = path.join(buildDir, "game.js");
-  fs.mkdirSync(buildDir, { recursive: true });
+  const sourceRevision = options.sourceRevision ?? `sha256:${digestWorkspace(workspaceDir, manifest.value)}`;
+  const bundler = `esbuild@${esbuildVersion}`;
+  const toolchainVersion = [
+    bundler,
+    `typescript@${packageJson.devDependencies.typescript}`,
+    "target=es2022",
+    "format=esm",
+    "platform=browser",
+  ].join(";");
+  fs.mkdirSync(outDir, { recursive: true });
+  const stagingDir = fs.mkdtempSync(path.join(outDir, ".code-game-"));
+  const stagingBundle = path.join(stagingDir, "game.js");
 
-  let output: Awaited<ReturnType<typeof build>>;
   try {
-    output = await build({
-      absWorkingDir: workspaceDir,
-      entryPoints: [manifest.value.entry],
-      outfile: bundlePath,
-      bundle: true,
-      format: "esm",
-      platform: "browser",
-      target: ["es2022"],
-      sourcemap: true,
-      logLevel: "silent",
-      alias: { [SDK_NAME]: options.sdkApiEntry ?? DEFAULT_SDK_ENTRY },
-      define: { "process.env.NODE_ENV": '"production"' },
+    let output: Awaited<ReturnType<typeof build>>;
+    try {
+      output = await build({
+        absWorkingDir: workspaceDir,
+        entryPoints: [manifest.value.entry],
+        outfile: stagingBundle,
+        bundle: true,
+        format: "esm",
+        platform: "browser",
+        target: ["es2022"],
+        sourcemap: true,
+        metafile: true,
+        logLevel: "silent",
+        alias: { [SDK_NAME]: options.sdkApiEntry ?? DEFAULT_SDK_ENTRY },
+        define: { "process.env.NODE_ENV": '"production"' },
+      });
+    } catch (error) {
+      const messages = (error as { errors?: readonly EsbuildMessage[] }).errors ?? [];
+      return {
+        ok: false,
+        buildId: null,
+        diagnostics:
+          messages.length > 0
+            ? messages.map((message) => fromEsbuildMessage(message, workspaceDir))
+            : [diagnostic("game_build_failed", "esbuild failed without a structured error.")],
+      };
+    }
+
+    if (manifest.value.schemaVersion === 2) {
+      const bundleOutput = Object.values(output.metafile.outputs).find((candidate) => candidate.entryPoint !== undefined);
+      const exported = new Set(bundleOutput?.exports ?? []);
+      const missing = manifest.value.entries.filter((entry) => !exported.has(entry.export));
+      if (missing.length > 0) {
+        return failure(
+          "game_entry_invalid",
+          `Registered entry export${missing.length === 1 ? "" : "s"} ${missing.map((entry) => `"${entry.export}"`).join(", ")} not found in the bundle.`,
+        );
+      }
+    }
+
+    const bundle = fs.readFileSync(stagingBundle);
+    if (bundle.byteLength === 0) return failure("game_build_failed", "esbuild produced an empty bundle.");
+    const sourceMap = fs.readFileSync(path.join(stagingDir, "game.js.map"));
+    const buildRecord = createCodeGameBuildRecord({
+      manifest: manifest.value,
+      sourceRevision,
+      sdkVersion: packageJson.version,
+      toolchainVersion,
+      bundler,
+      bundle,
+      sourceMap,
+      assets,
     });
-  } catch (error) {
-    const messages = (error as { errors?: readonly EsbuildMessage[] }).errors ?? [];
+    fs.writeFileSync(path.join(stagingDir, "manifest.json"), `${canonicalJson(manifest.value)}\n`);
+    fs.writeFileSync(path.join(stagingDir, "build.json"), `${JSON.stringify(buildRecord, null, 2)}\n`);
+    for (const asset of assets) {
+      const destination = path.join(stagingDir, ...asset.path.split("/"));
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      fs.writeFileSync(destination, asset.bytes);
+    }
+
+    const buildDir = path.join(outDir, buildRecord.buildId);
+    if (fs.existsSync(buildDir)) {
+      loadCodeGameBuildArtifact(buildDir);
+    } else {
+      fs.renameSync(stagingDir, buildDir);
+    }
+    const bundlePath = path.join(buildDir, "game.js");
+    const warnings = (output.warnings ?? []).map((message) => fromEsbuildMessage(message, workspaceDir, "warning"));
+    if (options.dataHome) writeBuildRecord(options.dataHome, { ...buildRecord, createdAtMs: Date.now() });
+
     return {
-      ok: false,
-      buildId: null,
-      diagnostics:
-        messages.length > 0
-          ? messages.map((message) => fromEsbuildMessage(message, workspaceDir))
-          : [diagnostic("game_build_failed", "esbuild failed without a structured error.")],
+      ok: true,
+      buildId: buildRecord.buildId,
+      buildDir,
+      bundlePath,
+      manifest: manifest.value,
+      manifestDigest: buildRecord.manifestDigest,
+      bundleDigest: buildRecord.bundleDigest,
+      assetDigests: buildRecord.assetDigests,
+      contentDigest: buildRecord.contentDigest,
+      sourceRevision: buildRecord.sourceRevision,
+      sdkVersion: buildRecord.sdkVersion,
+      toolchainVersion: buildRecord.toolchainVersion,
+      byteLength: buildRecord.byteLength,
+      warnings: Object.freeze(warnings),
     };
+  } finally {
+    fs.rmSync(stagingDir, { recursive: true, force: true });
   }
-
-  const stat = fs.statSync(bundlePath);
-  if (stat.size === 0) return failure("game_build_failed", "esbuild produced an empty bundle.");
-
-  const warnings = (output.warnings ?? []).map((message) => fromEsbuildMessage(message, workspaceDir, "warning"));
-  fs.writeFileSync(
-    path.join(buildDir, "build.json"),
-    `${JSON.stringify(
-      {
-        schemaVersion: 1,
-        kind: "code-game",
-        buildId,
-        gameId: manifest.value.gameId,
-        gameVersion: manifest.value.version,
-        sdk: manifest.value.sdk,
-        entry: manifest.value.entry,
-        bundle: "game.js",
-        byteLength: stat.size,
-        sdkVersion: packageJson.version,
-        bundler: `esbuild@${esbuildVersion}`,
-      },
-      null,
-      2,
-    )}\n`,
-  );
-
-  const record = {
-    buildId,
-    gameId: manifest.value.gameId,
-    gameVersion: manifest.value.version,
-    entry: manifest.value.entry,
-    bundle: "game.js",
-    byteLength: stat.size,
-    sdkVersion: packageJson.version,
-    bundler: `esbuild@${esbuildVersion}`,
-    createdAtMs: Date.now(),
-  };
-  if (options.dataHome) writeBuildRecord(options.dataHome, record);
-
-  return {
-    ok: true,
-    buildId,
-    buildDir,
-    bundlePath,
-    manifest: manifest.value,
-    byteLength: stat.size,
-    warnings: Object.freeze(warnings),
-  };
 }
 
 /** MCP reads this registry; it is a status index, not a build authority. The
  * bundle identity is always the content digest, never this file. */
 function writeBuildRecord(
   dataHome: string,
-  record: Readonly<{
-    buildId: string;
-    gameId: string;
-    gameVersion: string;
-    entry: string;
-    bundle: string;
-    byteLength: number;
-    sdkVersion: string;
-    bundler: string;
-    createdAtMs: number;
-  }>,
+  record: CodeGameBuildV2 & Readonly<{ createdAtMs: number }>,
 ): void {
   const root = path.join(dataHome, "state", "creator", "code-games");
   const builds = path.join(root, "builds");
@@ -233,7 +263,12 @@ function typecheckWorkspace(workspaceDir: string, sdkApiEntry: string): readonly
       skipLibCheck: true,
       types: [],
       allowImportingTsExtensions: true,
-      paths: { "@oh-agent/city-game-sdk": [relativeSdk.startsWith(".") ? relativeSdk : `./${relativeSdk}`] },
+      paths: {
+        "@oh-agent/city-game-sdk": [relativeSdk.startsWith(".") ? relativeSdk : `./${relativeSdk}`],
+        "@oh-agent/city-sdk": [path.join(packageRoot, "../agent-vitals-city-sdk/src/index.ts")],
+        "@oh-agent/city-sdk/contracts": [path.join(packageRoot, "../agent-vitals-city-sdk/src/contracts.ts")],
+        "@oh-agent/city-sdk/testing": [path.join(packageRoot, "../agent-vitals-city-sdk/src/testing.ts")],
+      },
     },
     include: ["src/**/*.ts"],
   };
@@ -282,7 +317,7 @@ function typecheckWorkspace(workspaceDir: string, sdkApiEntry: string): readonly
 
 function readManifest(
   workspaceDir: string,
-): { ok: true; value: CodeGameManifestV1 } | { ok: false; diagnostics: readonly GameDiagnosticV1[] } {
+): { ok: true; value: CodeGameManifest } | { ok: false; diagnostics: readonly GameDiagnosticV1[] } {
   const manifestPath = path.join(workspaceDir, "game.manifest.json");
   let raw: unknown;
   try {
@@ -293,14 +328,14 @@ function readManifest(
       diagnostics: [diagnostic("game_manifest_invalid", `Cannot read game.manifest.json: ${(error as Error).message}`)],
     };
   }
-  const parsed = validateCodeGameManifestV1(raw);
+  const parsed = validateCodeGameManifest(raw);
   if (!parsed.ok) return { ok: false, diagnostics: parsed.diagnostics };
   return { ok: true, value: parsed.value };
 }
 
 /** Content identity: every file that can change the bundle, sorted by relative
  * path, plus the toolchain versions. No timestamps, so a rebuild is identical. */
-function digestWorkspace(workspaceDir: string, manifest: CodeGameManifestV1): string {
+function digestWorkspace(workspaceDir: string, manifest: CodeGameManifest): string {
   const files: string[] = [];
   collectFiles(workspaceDir, files);
   files.sort((left, right) => left.localeCompare(right));

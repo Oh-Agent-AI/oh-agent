@@ -137,6 +137,10 @@ export class CodeGameHostV1 {
     return this.tickCount;
   }
 
+  get api(): GameContextV1 {
+    return this.context;
+  }
+
   get entityCount(): number {
     return this.entities.size;
   }

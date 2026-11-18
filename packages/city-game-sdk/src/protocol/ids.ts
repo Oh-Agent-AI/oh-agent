@@ -9,3 +9,5 @@ export type RunIdV1 = string;
 export type AssetIdV1 = string;
 export type RouteIdV1 = string;
 export type AnchorIdV1 = string;
+export type BuildId = string;
+export type DigestV1 = string;

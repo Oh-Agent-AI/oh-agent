@@ -5,4 +5,8 @@ export * from "./diagnostics";
 export * from "./errors";
 export * from "./result";
 export * from "./manifest";
+export * from "./manifestV2";
+export * from "./access";
+export * from "./installedGame";
+export * from "./build";
 export * from "./freeze";

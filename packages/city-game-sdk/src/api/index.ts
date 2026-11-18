@@ -1,4 +1,6 @@
 export { defineGame, isGameDefinitionV1 } from "./defineGame";
+export { defineGameV2 } from "./v2";
+export type * from "./v2";
 export type { GameDefinitionV1, GameSetupResultV1 } from "./defineGame";
 export type {
   AudioAPIV1,
