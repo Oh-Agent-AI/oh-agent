@@ -1,5 +1,5 @@
 import { canonicalDigest, compileWorld, stableIdV1 } from "@oh-agent/city-sdk";
-import type { CityWorldSnapshotV4, WorldPlanV1 } from "@oh-agent/city-sdk/contracts";
+import type { CityPlaceV1, CityResidentV1, CityWorldSnapshotV4, WorldPlanV1 } from "@oh-agent/city-sdk/contracts";
 import type { CityLayout, RoadEdge } from "../../engine/cityLayout";
 import type { CityLayoutSdkViewV1 } from "../../engine/sdk/cityLayoutAdapter";
 import { toMeters } from "../../engine/worldScale";
@@ -16,6 +16,7 @@ export type CitySnapshotOptionsV1 = Readonly<{
   appearanceRevision?: string;
   renderRevision?: string;
   clockRevision?: string;
+  content?: Readonly<{ places?: readonly CityPlaceV1[]; residents?: readonly CityResidentV1[] }>;
 }>;
 
 export function createCitySnapshotV4(options: CitySnapshotOptionsV1): CityWorldSnapshotV4 {
@@ -36,6 +37,39 @@ export function createCitySnapshotV4(options: CitySnapshotOptionsV1): CityWorldS
     travelModes: ["drive" as const],
     centerline: edge.points.map((point) => [toMeters(point.x), ground(point.x, point.z), toMeters(point.z)] as const),
   }));
+  const layoutAnchors = view.layout.anchors ?? [];
+  const zoneVolumes = layoutAnchors.filter((anchor) => anchor.kind === "zone").map((anchor) => {
+    const geometry = view.geometry.get(anchor.geometryRef);
+    const position = geometry?.positionMeters;
+    if (!position) throw new Error(`Zone anchor ${anchor.id} has no geometry.`);
+    const radius = Math.max(0.1, geometry.activationRadiusMeters ?? 4);
+    const facing = geometry.facingRadians ?? 0;
+    return {
+      id: stableIdV1("volume", anchor.id),
+      kind: "checkpoint" as const,
+      geometry: {
+        kind: "ring" as const,
+        center: [position.x, position.y, position.z] as const,
+        normal: [Math.sin(facing), 0, Math.cos(facing)] as const,
+        innerRadiusMeters: Math.max(0.05, radius * 0.8),
+        outerRadiusMeters: radius,
+        thicknessMeters: 1,
+      },
+      travelModes: anchor.capabilities,
+    };
+  });
+  const zoneAnchors = layoutAnchors.filter((anchor) => anchor.kind === "zone").map((anchor) => {
+    const geometry = view.geometry.get(anchor.geometryRef);
+    const position = geometry?.positionMeters;
+    if (!position) throw new Error(`Zone anchor ${anchor.id} has no geometry.`);
+    return {
+      id: stableIdV1("anchor", anchor.id),
+      kind: "checkpoint" as const,
+      position: [position.x, position.y, position.z] as const,
+      ...(geometry.activationRadiusMeters === undefined ? {} : { radiusMeters: geometry.activationRadiusMeters }),
+      travelModes: anchor.capabilities,
+    };
+  });
   const objects = (layout.blocks ?? []).map((block) => {
     const y = ground(block.x, block.z);
     const halfWidth = toMeters(block.width / 2);
@@ -62,10 +96,10 @@ export function createCitySnapshotV4(options: CitySnapshotOptionsV1): CityWorldS
     sites: [],
     routes,
     objects,
-    anchors,
-    volumes: [],
-    places: [],
-    residents: [],
+    anchors: [...anchors, ...zoneAnchors],
+    volumes: zoneVolumes,
+    places: options.content?.places ?? [],
+    residents: options.content?.residents ?? [],
   };
   const snapshot = compileWorld(plan, {
     cityId: options.cityId,
@@ -78,7 +112,7 @@ export function createCitySnapshotV4(options: CitySnapshotOptionsV1): CityWorldS
       codeDigest: CITY_GENERATOR_CODE_DIGEST,
     },
     assetsDigest: canonicalDigest({ roadRevision: view.worldRevision, objects: objects.map((object) => object.id), terrain: "live-field" }),
-    capabilities: ["world.snapshot", "roads.graph", "objects.indexed"],
+    capabilities: ["world.snapshot", "roads.graph", "objects.indexed", "volumes.indexed", "places.registry", "residents.registry"],
   });
   return Object.freeze({
     ...snapshot,

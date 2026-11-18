@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { compileWorldFixtureV1 } from "@oh-agent/city-sdk/testing";
+import { sha256Bytes } from "@oh-agent/city-sdk";
 import { CodeGameHostV2 } from "../src/host/codeGameHostV2";
 import { createSnapshotWorldAPIV2 } from "../src/host/snapshotWorld";
 import { createGameAccessV1, type HostGrantV1 } from "../src/protocol/access";
@@ -140,4 +141,42 @@ test("V2 supports the fixed-step V1-compatible path when no onStart is registere
   assert.equal(ticks, 2);
   await game.stop();
   assert.equal(game.status, "stopped");
+});
+
+test("a denied model open never invokes the asset source", async () => {
+  let opens = 0;
+  const bytes = new TextEncoder().encode("model");
+  const digest = `sha256:${Array.from(sha256Bytes(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+  const game = manifest(["world.read"]);
+  const grant: HostGrantV1 = Object.freeze({
+    installationId: "installation-v2",
+    runId: "run-v2",
+    grantedPermissions: ["ui.hud"],
+    status: "active",
+  });
+  const world = createSnapshotWorldAPIV2(compileWorldFixtureV1(), {
+    models: { [digest]: () => {
+      opens += 1;
+      return bytes;
+    } },
+  });
+  const gameHost = new CodeGameHostV2({
+    manifest: game,
+    world,
+    seed: 42,
+    runId: "run-v2",
+    access: createGameAccessV1(game, ["world.snapshot"], grant),
+    grant,
+    cleanupTimeoutMs: 2,
+  });
+  await gameHost.prepare({
+    id: "test.host-v2",
+    setup: (ctx) => {
+      ctx.onStart(async () => {
+        assert.throws(() => ctx.world.openModel(digest), /world access denied/);
+      });
+    },
+  });
+  await gameHost.start();
+  assert.equal(opens, 0);
 });

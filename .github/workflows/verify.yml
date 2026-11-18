@@ -367,7 +367,7 @@ jobs:
         run: npm run build
       - name: 链接游戏运行时 SDK 到 City SDK
         run: |
-          mkdir -p packages/agent-vitals-city-game-runtime/node_modules/@agent-vitals
+          mkdir -p packages/agent-vitals-city-game-runtime/node_modules/@oh-agent
           ln -s ../../../agent-vitals-city-sdk packages/agent-vitals-city-game-runtime/node_modules/@oh-agent/city-sdk
       - name: 游戏运行时 SDK 测试与类型检查
         run: |

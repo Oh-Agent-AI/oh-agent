@@ -236,8 +236,9 @@ function grantCheckedWorld(options: CodeGameHostOptionsV2): WorldAPIV2 {
     check(permission);
     return operation();
   };
-  const open = (permission: GamePermissionV2, operation: () => Promise<{ read(): Promise<Uint8Array> }>) =>
-    operation().then((reader) => {
+  const open = (permission: GamePermissionV2, operation: () => Promise<{ read(): Promise<Uint8Array> }>) => {
+    check(permission);
+    return operation().then((reader) => {
       check(permission);
       return Object.freeze({
         ...reader,
@@ -247,6 +248,7 @@ function grantCheckedWorld(options: CodeGameHostOptionsV2): WorldAPIV2 {
         },
       });
     });
+  };
   return Object.freeze({
     header: () => call("world.read", target.header),
     capabilities: () => call("world.read", target.capabilities),
