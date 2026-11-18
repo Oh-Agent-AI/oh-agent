@@ -193,6 +193,11 @@ async function main() {
     };
 
     const session = await step("session.open", "creator_session_open", { agentId }, data => { if (!data?.sessionId) throw new Error("sessionId missing"); });
+    // 预检回归：20261118 在 tier 1 稳定规划失败，create 必须在落库前拒绝（且不返回 cityId）。
+    const rejected = await client.call("creator_city_create", { name: "must be rejected", seed: 20261118, profile: DUNES_PROFILE, operationId: op("op-city-bad") });
+    if (rejected?.ok !== false) throw new Error("unplannable seed was accepted");
+    if (rejected.error?.code !== "invalid_argument") throw new Error(`unplannable seed rejected as ${rejected.error?.code}`);
+    record("city.create.preflight", { rejected: rejected.error.code, message: rejected.error.message });
     const city = await step("city.create", "creator_city_create", { name: `Studio Regression ${new Date().toISOString().slice(11, 19)}`, seed: 20261117, profile: DUNES_PROFILE, operationId: op("op-city") }, data => { if (!data?.cityId) throw new Error("cityId missing"); });
 
     await step("city.view.request", "creator_city_view", { cityId: city.cityId, revision: city.revision }, data => { if (data?.status !== "loading") throw new Error(`unexpected view status ${data?.status}`); });
