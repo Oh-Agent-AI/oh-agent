@@ -20,7 +20,7 @@ import { COUNTDOWN_MS, RaceMission, stepFixedCountdown, type RaceMissionSnapshot
 import { GameAudio } from "./GameAudio";
 import { GameSfx, type SfxTelemetry } from "./GameSfx";
 import * as THREE from "three";
-import type { VehicleProfileV1 } from "@agent-vitals/city-sdk";
+import type { VehicleProfileV1 } from "@oh-agent/city-sdk";
 import { GameRuntime } from "./runtime/GameRuntime";
 import { FlightAdapter } from "./runtime/FlightAdapter";
 import type { GameSceneLease } from "./runtime/GameScenePort";

@@ -9,7 +9,7 @@
  * `parameters.diversity` 且只持久化显式键（默认值在构建期归一化）；coastal 已
  * 解冻字段（shape.bayHalfWidth/bayShift）直接写入 `parameters.coastal`。
  */
-import { ARID_DUNES_LEGACY_KEYS, ARID_DUNES_WORLD_V2, COASTAL_ISLANDS_WORLD_V1, validateCityWorldProfile, validateWorldParametersV1, type CityWorldProfileV1, type WorldCapabilityV1 } from "@agent-vitals/city-sdk";
+import { ARID_DUNES_LEGACY_KEYS, ARID_DUNES_WORLD_V2, COASTAL_ISLANDS_WORLD_V1, validateCityWorldProfile, validateWorldParametersV1, type CityWorldProfileV1, type WorldCapabilityV1 } from "@oh-agent/city-sdk";
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 

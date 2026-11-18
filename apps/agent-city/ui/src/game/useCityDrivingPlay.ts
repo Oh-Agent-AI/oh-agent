@@ -26,7 +26,7 @@ import { closeOpenGameDisclosure } from "./ui/closeOpenDisclosure";
 import { noteBusy } from "../host";
 import { roadValidationReport, type RoadValidationReport } from "./roadValidation";
 import { m as worldUnits } from "../engine/worldScale";
-import type { VisualPlaytestEvidenceV1 } from "@agent-vitals/city-sdk";
+import type { VisualPlaytestEvidenceV1 } from "@oh-agent/city-sdk";
 
 type DrivingMiniGameController = Readonly<{ snapshot: CheckpointRaceSnapshotV1; fixedStep(position: Readonly<{ x: number; y: number; z: number }>, headingRadians?: number): void; dispose(): void;
   visualEvidence?(releaseId: string, projectRevision: number, snapshotDigest: string): VisualPlaytestEvidenceV1 }>;

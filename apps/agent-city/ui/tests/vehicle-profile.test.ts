@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { estimateVehiclePerformanceV1, FIXED_WING_VEHICLE_PRESET_V1, ORNITHOPTER_VEHICLE_PRESET_V1, validateVehicleProfileV1,
-  VEHICLE_PERFORMANCE_DERIVATION_V1 } from "@agent-vitals/city-sdk";
+  VEHICLE_PERFORMANCE_DERIVATION_V1 } from "@oh-agent/city-sdk";
 import { METERS_PER_UNIT } from "../src/engine/worldScale.ts";
 import { FLIGHT_CHECKPOINT_GAME_TYPE_V1, validateTemplateLink } from "../../../../packages/agent-vitals-city-game-runtime/src/index.ts";
 import { CITY_GAME_TYPE_CATALOG } from "../src/game/runtime/gameTypeCatalog.ts";

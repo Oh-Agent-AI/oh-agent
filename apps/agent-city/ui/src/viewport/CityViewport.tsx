@@ -18,7 +18,7 @@ import { readCityWindowDays } from "./windowPreference";
 import { createMoveGhost, type MoveGhost } from "./moveGhost";
 import { selectViewportPatch } from "./viewportPatch";
 import { loadWorldSceneModels } from "../game/activity/creatorSceneModels";
-import type { CityProjectAssetCatalogV1, SceneDraftV1 } from "@agent-vitals/city-sdk";
+import type { CityProjectAssetCatalogV1, SceneDraftV1 } from "@oh-agent/city-sdk";
 import "../city.css";
 
 export type CityViewportProps = {

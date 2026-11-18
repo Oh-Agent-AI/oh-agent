@@ -25,7 +25,7 @@ import { bulldozeForRoads } from "../engine/planBulldozer";
 import { nearestEdgeAt, roadRun, snapPoint, validateEdgeDrop, validateHighwayAdd, validateHighwayCut, validateNodeMove, validateRestyle, validateRoadAdd, type RoadVerdict, type SnapPoint } from "../engine/planRoadRules";
 import type { CityLayout, Parcel, Vec2 } from "../engine/cityLayout";
 import { cityPlanPatchStore, emptyPlanPatchStore, type PlanPatchStoreV1 } from "../data/planPatch";
-import { canonicalJson } from "@agent-vitals/city-sdk";
+import { canonicalJson } from "@oh-agent/city-sdk";
 
 /** 修复规划默认开启（2026-10-14 起去掉 ?cityPlan / cityPlanDev=1 开发开关）：城市设置里始终有入口，
  *  存档始终读取，引擎里 planPatch 随会话生效。函数保留是为了让 hook 的单一判断点不变。 */

@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { SceneBoxColliderObjectV1 } from "@agent-vitals/city-sdk";
+import type { SceneBoxColliderObjectV1 } from "@oh-agent/city-sdk";
 import type { SolidInput } from "../driving/CollisionIndex";
 import type { CreatorPublishedMiniGameV1 } from "./creatorMiniGame";
 import { m } from "../../engine/worldScale";

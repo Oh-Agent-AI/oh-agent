@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { applyCityWorldOperations } from "../src/cityWorldOperations";
-import { validateCityWorldProfile, type CityWorldProfileV1 } from "@agent-vitals/city-sdk";
+import { validateCityWorldProfile, type CityWorldProfileV1 } from "@oh-agent/city-sdk";
 
 /**
  * world.set 合并语义测试（世界多样化规格 §5.2，S4）：合并结果必须通过

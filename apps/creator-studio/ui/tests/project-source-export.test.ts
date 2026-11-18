@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import os from "node:os";
-import { canonicalJson } from "@agent-vitals/city-sdk";
+import { canonicalJson } from "@oh-agent/city-sdk";
 import { buildCitySourceExport, buildProjectSourceExport } from "../src/projectSourceExport.ts";
 
 Object.defineProperty(globalThis, "crypto", { value: webcrypto, configurable: true });

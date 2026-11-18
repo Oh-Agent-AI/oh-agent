@@ -4,7 +4,7 @@
   "bundleSha256": "340956a2b49ce40ed841baab82351b72a2ad69344a22e8fdae8ab91614019d70",
   "bundleBytes": 87451,
   "gateVersion": 1,
-  "sdkPackage": "@agent-vitals/city-sdk",
+  "sdkPackage": "@oh-agent/city-sdk",
   "sdkVersion": "0.1.0",
   "engine": "rquickjs (Bellard QuickJS, embedded in agent-vitals-menubar)",
   "entrySources": {

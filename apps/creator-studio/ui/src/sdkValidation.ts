@@ -14,8 +14,8 @@
  * 签发被预算拒绝。payloadDigest 是规范 JSON（键排序、紧凑）上的 sha256，与
  * Rust canonical_json 同规格；Rust 在签发时对收到的载荷重算并逐项匹配。
  */
-import { canonicalJson, validateMiniGamePack, validateSceneDraft, validateMount, validateVehicleProfileV1, type DiagnosticV1 } from "@agent-vitals/city-sdk";
-import { CREATOR_CAPABILITIES_V1, CREATOR_RECOVERIES_V1, defaultVehicleCameraV1 } from "@agent-vitals/city-sdk";
+import { canonicalJson, validateMiniGamePack, validateSceneDraft, validateMount, validateVehicleProfileV1, type DiagnosticV1 } from "@oh-agent/city-sdk";
+import { CREATOR_CAPABILITIES_V1, CREATOR_RECOVERIES_V1, defaultVehicleCameraV1 } from "@oh-agent/city-sdk";
 
 export type ValidationEnvelope = {
   capabilityVersion: string;

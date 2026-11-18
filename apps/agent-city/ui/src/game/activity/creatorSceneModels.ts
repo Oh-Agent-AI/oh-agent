@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import type { CreatorPublishedMiniGameV1 } from "./creatorMiniGame";
-import { inspectGlbBytes, type CityProjectAssetCatalogV1, type SceneDraftV1 } from "@agent-vitals/city-sdk";
+import { inspectGlbBytes, type CityProjectAssetCatalogV1, type SceneDraftV1 } from "@oh-agent/city-sdk";
 import { m, METER_MODEL_SCALE } from "../../engine/worldScale";
 
 const MAX_RUNTIME_MODELS = 512;

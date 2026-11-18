@@ -78,7 +78,7 @@ try {
   const base = `http://127.0.0.1:${port}`;
   await page.goto(`${base}${staged.cityUrl}`, { waitUntil: "load", timeout: 60000 });
   await page.waitForFunction(() => window.__ohAgentCodeGame !== undefined, null, { timeout: 60000 });
-  await page.waitForFunction(() => window.__ohAgentCodeGame.status() === "running", null, { timeout: 60000 });
+  await page.waitForFunction(() => ["running", "finished"].includes(window.__ohAgentCodeGame.status()), null, { timeout: 60000 });
   await page.screenshot({ path: "/tmp/code-game-agent-running.png" });
   await page.waitForFunction(() => ["finished", "error"].includes(window.__ohAgentCodeGame.status()), null, { timeout: 240000 });
   const final = await page.evaluate(() => ({ state: window.__ohAgentCodeGame.state, telemetry: window.__ohAgentCodeGame.telemetry() }));

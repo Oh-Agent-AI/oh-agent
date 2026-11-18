@@ -13,7 +13,7 @@
  * 每次调用一个全新 Runtime/Context，调用结束整体销毁，无跨调用句柄）。
  */
 import { estimateVehiclePerformanceV1, validateCityInstance, validateMiniGamePack, validateSceneDraft,
-  validateVehicleProfileV1, validateWorldParametersV1, type DiagnosticV1, type VehicleProfileV1 } from "@agent-vitals/city-sdk";
+  validateVehicleProfileV1, validateWorldParametersV1, type DiagnosticV1, type VehicleProfileV1 } from "@oh-agent/city-sdk";
 import { normalizeVehicleProfileInput } from "./sdkValidation";
 import { applyCityWorldOperations } from "./cityWorldOperations";
 

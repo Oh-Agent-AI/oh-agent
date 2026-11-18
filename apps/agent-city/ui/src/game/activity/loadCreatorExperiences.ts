@@ -1,7 +1,7 @@
 import { canonicalJson, inspectContentPackageV2, parseMiniGamePackJson, validateAssetRefs, validateCityProjectAssetCatalog,
   validateCityLayoutSnapshotScoped, validateContentPackageManifestV2, validateMount, validateSceneDraft, validateVehicleProfileV1, type CityGameMountV1,
   type CityProjectAssetCatalogV1, type ContentRef, type MiniGamePackV1, type ModelAssetCatalogV1, type ModelAssetRefV1, type SceneDraftV1,
-  type VehicleProfileV1, type VisualPlaytestEvidenceV1 } from "@agent-vitals/city-sdk";
+  type VehicleProfileV1, type VisualPlaytestEvidenceV1 } from "@oh-agent/city-sdk";
 import { invokeHost } from "../../host";
 import { mergeReleaseAnchors } from "./releaseLayout";
 import { parsePendingCreatorPlaytest, type LoadedCityWorldSceneV1, type PendingCreatorPlaytestV1 } from "./creatorPlaytestPending";

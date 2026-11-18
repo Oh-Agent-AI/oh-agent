@@ -1,4 +1,4 @@
-import { validateCityInstance, type CityInstanceV1 } from "@agent-vitals/city-sdk";
+import { validateCityInstance, type CityInstanceV1 } from "@oh-agent/city-sdk";
 
 /** Never substitute the active City or a newer draft for a pinned project. */
 export function resolveProjectCity(raw: unknown, binding: { cityId: string; cityRevision?: number; seed?: number }): CityInstanceV1 | null {

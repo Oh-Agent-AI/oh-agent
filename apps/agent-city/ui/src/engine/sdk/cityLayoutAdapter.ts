@@ -1,4 +1,4 @@
-import type { CityAnchorGeometryV1, CityLayoutSnapshotV1, CityLayoutSnapshotV3, CityLayoutV1 } from "@agent-vitals/city-sdk";
+import type { CityAnchorGeometryV1, CityLayoutSnapshotV1, CityLayoutSnapshotV3, CityLayoutV1 } from "@oh-agent/city-sdk";
 import type { CityLayout, RoadEdge, RoadNode } from "../cityLayout";
 import { hashSeed } from "../../cityModel";
 import { toMeters } from "../worldScale";

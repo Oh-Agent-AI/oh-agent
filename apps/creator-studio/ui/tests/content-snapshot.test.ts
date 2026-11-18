@@ -28,7 +28,7 @@ test("snapshot checking rejects inconsistent chunks and releases the snapshot", 
 
 test("snapshot checking accepts a valid world and releases the snapshot", async () => {
   const { createHash } = await import("node:crypto");
-  const { canonicalJson } = await import("@agent-vitals/city-sdk");
+  const { canonicalJson } = await import("@oh-agent/city-sdk");
   const hash = (value: Uint8Array | string) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
   const files: Record<string, string> = {
     "assets/catalog.json": JSON.stringify({ schemaVersion: 1, entries: [] }),

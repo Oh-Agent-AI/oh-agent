@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { validateCityWorldProfile } from "@agent-vitals/city-sdk";
+import { validateCityWorldProfile } from "@oh-agent/city-sdk";
 import { CITY_GENERATOR_VERSION } from "../src/engine/generatorVersion.ts";
 import { MIAMI_CITY_WORLD_V1, parseCityWorldProfileJson } from "../src/engine/cityWorldProfile.ts";
 

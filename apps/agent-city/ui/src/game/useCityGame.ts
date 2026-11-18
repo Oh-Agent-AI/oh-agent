@@ -4,7 +4,7 @@
  * Esc 走捕获阶段优先于既有面板链；WebGL 上下文丢失直接退出到数据模式（§8）。
  */
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
-import type { VehicleProfileV1 } from "@agent-vitals/city-sdk";
+import type { VehicleProfileV1 } from "@oh-agent/city-sdk";
 import type { CityEngine } from "../engine/CityEngine";
 import { GameSession, type CreatorFlightRunV1, type GameSessionSnapshot } from "./GameSession";
 import type { FlightInputState } from "./types";

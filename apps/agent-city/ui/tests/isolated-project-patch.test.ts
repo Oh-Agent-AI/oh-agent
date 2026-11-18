@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { validateWorldPlanPatch } from "@agent-vitals/city-sdk";
+import { validateWorldPlanPatch } from "@oh-agent/city-sdk";
 import { buildCityModel } from "../src/cityModel.ts";
 import { layoutCityForWorld } from "../src/engine/cityLayout.ts";
 import { ARID_DUNES_CITY_WORLD_V1, MIAMI_CITY_WORLD_V1 } from "../src/engine/cityWorldProfile.ts";

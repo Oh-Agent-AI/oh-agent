@@ -142,7 +142,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { canonicalJson } from "@agent-vitals/city-sdk";
+import { canonicalJson } from "@oh-agent/city-sdk";
 
 const gamePack = { schemaVersion: 1, id: "creator.gates", rulesVersion: 1,
   slots: { gates: { kind: "zone", min: 1, max: 2, requires: ["fly"] } },

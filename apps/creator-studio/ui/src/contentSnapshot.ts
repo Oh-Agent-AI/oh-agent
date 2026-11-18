@@ -1,4 +1,4 @@
-import { inspectContentPackageV2, validateContentPackageManifestV2, validateCityWorldProfile, validateCityProjectAssetCatalog, validateSceneDraft, validateWorldPlanPatch, type ContentPackageManifestV2, type CityWorldProfileV1, type SceneDraftV1, type CityProjectAssetCatalogV1 } from "@agent-vitals/city-sdk";
+import { inspectContentPackageV2, validateContentPackageManifestV2, validateCityWorldProfile, validateCityProjectAssetCatalog, validateSceneDraft, validateWorldPlanPatch, type ContentPackageManifestV2, type CityWorldProfileV1, type SceneDraftV1, type CityProjectAssetCatalogV1 } from "@oh-agent/city-sdk";
 import type { InstalledContentPackage } from "./installedContent";
 import { CITY_GENERATOR_VERSION } from "../../../agent-city/ui/src/engine/planPatch";
 

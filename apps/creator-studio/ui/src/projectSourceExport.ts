@@ -1,5 +1,5 @@
 import { canonicalJson, validateAssetRefs, validateCityInstance, validateCityLayoutScope, validateCityProjectAssetCatalog,
-  validateMiniGamePack, validateMount, validateSceneDraft, validateWorldPlanPatch } from "@agent-vitals/city-sdk";
+  validateMiniGamePack, validateMount, validateSceneDraft, validateWorldPlanPatch } from "@oh-agent/city-sdk";
 
 type Obj = Record<string, unknown>;
 const object = (value: unknown): value is Obj => !!value && typeof value === "object" && !Array.isArray(value);

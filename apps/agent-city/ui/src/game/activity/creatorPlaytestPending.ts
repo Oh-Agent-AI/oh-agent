@@ -1,4 +1,4 @@
-import { validateCityInstance, validateCityLayoutSnapshotScoped, type CityInstanceV1, type CityLayoutSnapshotScoped, type SceneDraftV1, type CityProjectAssetCatalogV1 } from "@agent-vitals/city-sdk";
+import { validateCityInstance, validateCityLayoutSnapshotScoped, type CityInstanceV1, type CityLayoutSnapshotScoped, type SceneDraftV1, type CityProjectAssetCatalogV1 } from "@oh-agent/city-sdk";
 
 export type CityWorldPackageRefV1 = Readonly<{ packageId: string; version: string; contentDigest: string }>;
 export type LoadedCityWorldSceneV1 = Readonly<{ scene: SceneDraftV1; assets: CityProjectAssetCatalogV1; files: ReadonlyMap<string, Uint8Array> }>;

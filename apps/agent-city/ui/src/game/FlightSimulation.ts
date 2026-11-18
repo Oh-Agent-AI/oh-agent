@@ -7,8 +7,8 @@
  * 保持既有 flightParamsFor(diagonal) 行为逐位不变。
  * 本模块不依赖 three/DOM：同输入同输出，30/60/120 Hz 渲染帧率不影响轨迹（守卫脚本验证）。
  */
-import type { VehicleFlightModelV1, VehicleProfileV1 } from "@agent-vitals/city-sdk";
-import { VEHICLE_PERFORMANCE_DERIVATION_V1 } from "@agent-vitals/city-sdk";
+import type { VehicleFlightModelV1, VehicleProfileV1 } from "@oh-agent/city-sdk";
+import { VEHICLE_PERFORMANCE_DERIVATION_V1 } from "@oh-agent/city-sdk";
 import type { FlightInputState } from "./types";
 import { DetMath as Math } from "../engine/detMath";
 import { METERS_PER_UNIT } from "../engine/worldScale";

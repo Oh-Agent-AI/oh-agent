@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createMiamiGameRuntimeRegistry } from "../src/game/runtime/miamiActivityHost.ts";
 import type { MiamiActivityIdV1 } from "../src/game/runtime/miamiActivityHost.ts";
 import { CITY_GAME_TYPE_CATALOG, gameTypeBlockReason, PLANNED_GAME_TYPE_IDS, PROTOTYPE_GAME_TYPE_IDS } from "../src/game/runtime/gameTypeCatalog.ts";
-import { CREATOR_GAME_TYPES_V1 } from "@agent-vitals/city-sdk";
+import { CREATOR_GAME_TYPES_V1 } from "@oh-agent/city-sdk";
 
 const ids: MiamiActivityIdV1[] = ["flight", "driving", "mecha", "cinema"];
 

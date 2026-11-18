@@ -1,6 +1,6 @@
 import { MIAMI_COASTAL, type CoastalConfig } from "./citySeaside";
 import type { Shape } from "./cityShape";
-import { validateCitySkinPack, validateCityWorldProfile, type CitySkinPackV1, type CityWorldProfileV1 } from "@agent-vitals/city-sdk";
+import { validateCitySkinPack, validateCityWorldProfile, type CitySkinPackV1, type CityWorldProfileV1 } from "@oh-agent/city-sdk";
 import {
   type AridDunesOptionsV1,
   type GeographyBuildOptions,

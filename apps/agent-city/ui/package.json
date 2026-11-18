@@ -3,8 +3,11 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "node ../../../scripts/generate-city-generator-identity.mjs --check",
     "dev": "vite --host 127.0.0.1",
+    "prebuild": "node ../../../scripts/generate-city-generator-identity.mjs --check",
     "build": "vite build",
+    "pretypecheck": "node ../../../scripts/generate-city-generator-identity.mjs --check",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "verify:remote-city-scene-browser": "node --experimental-strip-types --import ../../../scripts/mecha-ts-register.mjs tests/remote-city-scene.browser.mjs",
     "verify:dream-snapshot-codec": "node --experimental-strip-types --test tests/dream-snapshot-codec.test.ts",
@@ -31,11 +34,12 @@
     "verify:game-runtime-host": "node --experimental-transform-types --import ../../../scripts/mecha-ts-register.mjs --test tests/game-runtime-host.test.ts tests/game-runtime-entries.test.ts",
     "preview:code-game": "node --experimental-transform-types --import ../../../scripts/mecha-ts-register.mjs ./scripts/prepare-code-game-preview.ts",
     "verify:code-game-browser": "node tests/code-game-city.browser.mjs",
-    "verify:world-scene-models": "node --experimental-transform-types --import ../../../scripts/mecha-ts-register.mjs --test tests/world-scene-models.test.ts"
+    "verify:world-scene-models": "node --experimental-transform-types --import ../../../scripts/mecha-ts-register.mjs --test tests/world-scene-models.test.ts",
+    "generate:generator-identity": "node ../../../scripts/generate-city-generator-identity.mjs"
   },
   "dependencies": {
     "@agent-vitals/app-sdk": "file:../../../packages/agent-vitals-app-sdk",
-    "@agent-vitals/city-sdk": "file:../../../packages/agent-vitals-city-sdk",
+    "@oh-agent/city-sdk": "file:../../../packages/agent-vitals-city-sdk",
     "mp4-muxer": "5.2.2",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",

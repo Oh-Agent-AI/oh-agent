@@ -1,4 +1,4 @@
-import { compileRules, createRun, parseMiniGamePackJson, validateMount, type CityGameMountV1, type CityLayoutV1, type ContentRef, type MiniGamePackV1, type RuleRunV1, type RuleStateV1, type Result, type DiagnosticV1 } from "@agent-vitals/city-sdk";
+import { compileRules, createRun, parseMiniGamePackJson, validateMount, type CityGameMountV1, type CityLayoutV1, type ContentRef, type MiniGamePackV1, type RuleRunV1, type RuleStateV1, type Result, type DiagnosticV1 } from "@oh-agent/city-sdk";
 import type { CityLayoutSdkViewV1 } from "../../engine/sdk/cityLayoutAdapter";
 
 export type MountedMiniGamePlanV1 = Readonly<{

@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@agent-vitals/app-sdk": "file:../../../packages/agent-vitals-app-sdk",
-    "@agent-vitals/city-sdk": "file:../../../packages/agent-vitals-city-sdk",
+    "@oh-agent/city-sdk": "file:../../../packages/agent-vitals-city-sdk",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "three": "^0.186.1"

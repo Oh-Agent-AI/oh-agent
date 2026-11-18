@@ -21,7 +21,7 @@
  * **显式、有名字的默认触发球**——它是玩法内容常量，不是物理推导；正式做法应是
  * 锚点创作时自带半径（见 docs/CITY_GAME_MCP.md 的 known gap）。
  */
-import type { CityLayoutSnapshotScoped, DiagnosticV1 } from "@agent-vitals/city-sdk";
+import type { CityLayoutSnapshotScoped, DiagnosticV1 } from "@oh-agent/city-sdk";
 import type { CityLayoutSdkViewV1 } from "../../engine/sdk/cityLayoutAdapter";
 
 /** 空域 zone 缺触发半径时的默认触发球（米）。固定 12 m ≈ 一座检查点门，

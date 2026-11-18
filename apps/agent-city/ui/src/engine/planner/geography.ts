@@ -6,7 +6,7 @@
  * 后续阶段（skeleton/sites/network）只读本产物：coast/height/riverX 等闭包即 Geography 的字段。
  */
 import { DetMath as Math } from "../detMath";
-import { ARID_DUNES_LEGACY_KEYS, ARID_DUNES_WORLD_V2, validateWorldParametersV1 } from "@agent-vitals/city-sdk";
+import { ARID_DUNES_LEGACY_KEYS, ARID_DUNES_WORLD_V2, validateWorldParametersV1 } from "@oh-agent/city-sdk";
 import { buildFootprintShape, type FootprintStatsV1 } from "./worldShape";
 import { hashSeed } from "../../cityModel";
 import { fbm, smoothstep } from "../cityNoise";

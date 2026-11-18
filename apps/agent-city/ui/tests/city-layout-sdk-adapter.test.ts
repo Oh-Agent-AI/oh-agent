@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { listAnchors, validateCityLayoutScope } from "@agent-vitals/city-sdk";
+import { listAnchors, validateCityLayoutScope } from "@oh-agent/city-sdk";
 import { createCityLayoutSdkView, createCreatorLayoutSnapshot, createScopedCreatorLayoutSnapshot, createSdkViewForCityLayout, selectCheckpointRaceCourse } from "../src/engine/sdk/cityLayoutAdapter.ts";
 import { layoutCityForWorld } from "../src/engine/cityLayout.ts";
 import { applyCitySkinToWorldProfile, ARID_DUNES_CITY_WORLD_V1, BUILTIN_CITY_SKINS_V1, MIAMI_CITY_WORLD_V1 } from "../src/engine/cityWorldProfile.ts";

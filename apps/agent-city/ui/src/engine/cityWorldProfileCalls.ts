@@ -1,4 +1,4 @@
-import type { CityWorldProfileV1 } from "@agent-vitals/city-sdk";
+import type { CityWorldProfileV1 } from "@oh-agent/city-sdk";
 import {
   parseCityWorldProfileJson,
   readCityAppearancePreference,

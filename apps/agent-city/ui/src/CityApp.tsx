@@ -43,7 +43,7 @@ import { m as worldUnits } from "./engine/worldScale";
 import { loadCreatorSceneModels } from "./game/activity/creatorSceneModels";
 import { createCreatorLayoutSnapshot } from "./engine/sdk/cityLayoutAdapter";
 import { useCityDrivingPlay } from "./game/useCityDrivingPlay";
-import { ORNITHOPTER_VEHICLE_PRESET_V1 } from "@agent-vitals/city-sdk";
+import { ORNITHOPTER_VEHICLE_PRESET_V1 } from "@oh-agent/city-sdk";
 import { createMiamiActivityEntries } from "./game/runtime/miamiActivityEntries";
 import { createMiamiGameRuntimeRegistry } from "./game/runtime/miamiActivityHost";
 import type { GameRuntimeHandleV1, GameRuntimeRegistryV1, GameRuntimeTelemetryV1, MiamiActivityIdV1 } from "../../../../packages/agent-vitals-city-game-runtime/src/index";

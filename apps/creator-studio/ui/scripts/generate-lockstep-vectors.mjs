@@ -10,7 +10,7 @@
 //
 // 向量结构复用 W1 spike（evals/wasm-spike/vectors.mjs）的验收集，并扩展 S1 正则
 // 修复向量与 world/scene/game/worldParameters 直连入口。
-// （落位在 apps/creator-studio/ui/scripts/ 是为了让 @agent-vitals/city-sdk 沿
+// （落位在 apps/creator-studio/ui/scripts/ 是为了让 @oh-agent/city-sdk 沿
 // ui/node_modules 解析；桌面工程链上没有 node_modules。）
 //
 // 用法（仓库根或本目录均可）：
@@ -20,7 +20,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ARID_DUNES_WORLD_V2, CREATOR_TEMPLATES_V1, FIXED_WING_VEHICLE_PRESET_V1, ORNITHOPTER_VEHICLE_PRESET_V1 } from "@agent-vitals/city-sdk";
+import { ARID_DUNES_WORLD_V2, CREATOR_TEMPLATES_V1, FIXED_WING_VEHICLE_PRESET_V1, ORNITHOPTER_VEHICLE_PRESET_V1 } from "@oh-agent/city-sdk";
 import { citySdkGate } from "../src/embeddedGate.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
