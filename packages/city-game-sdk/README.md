@@ -81,6 +81,22 @@ Agent 可通过 MCP 完成 `create → 写/改 TS → 构建 → 读诊断 → �
 | `creator_code_preview` | 把构建产物/Manifest/资产放进 City public 目录，返回可直接打开的预览 URL（dev-only 桥） |
 | `creator_code_test` | 用同一 Host 无头跑固定 tick，返回 outcome/tick/entities/HUD |
 
+真实 Agent 实测记录（DSH subagent 自己写塔防、读 telemetry、修数值、City 跑通）：
+[`docs/CODE_GAME_AGENT_LOOP_2026_11_18.md`](../../docs/CODE_GAME_AGENT_LOOP_2026_11_18.md)。
+
+没有 MCP 客户端的 Agent 可以用 CLI 驱动同一组工具：
+
+```bash
+export AGENT_VITALS_HOME=/tmp/oh-code-game-agent
+node scripts/code-game-mcp-cli.mjs create --title "Tower Defense" --operation op-1
+node scripts/code-game-mcp-cli.mjs info   --workspace gws-…
+node scripts/code-game-mcp-cli.mjs read   --workspace gws-… --path src/index.ts --out /tmp/a.ts
+node scripts/code-game-mcp-cli.mjs write  --workspace gws-… --path src/index.ts --revision <rev> --file /tmp/a.ts
+node scripts/code-game-mcp-cli.mjs build  --workspace gws-… --revision <rev>
+node scripts/code-game-mcp-cli.mjs test   --workspace gws-… --build <buildId> --ticks 1800
+node scripts/code-game-mcp-cli.mjs preview --workspace gws-… --build <buildId>
+```
+
 验证脚本（需先 `cargo build -p agent-vitals`）：
 
 ```bash

@@ -393,7 +393,7 @@ jobs:
           npm test
           npm run build
       - name: hello-city 纵向切片（构建 + 无头运行）
-        run: node --experimental-transform-types --import ./scripts/mecha-ts-register.mjs --test games/hello-city/tests/hello-city.test.ts
+        run: node --experimental-transform-types --import ./scripts/mecha-ts-register.mjs --test games/hello-city/tests/hello-city.test.ts games/tower-defense/tests/tower-defense.test.ts games/tower-defense/tests/tower-defense.test.ts
       - name: City layout → WorldSource 投影
         run: node --experimental-transform-types --import ./scripts/mecha-ts-register.mjs --test apps/agent-city/ui/tests/code-game-world-source.test.ts
       - name: Code Game 会话租约
