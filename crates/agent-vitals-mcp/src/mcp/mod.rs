@@ -291,7 +291,7 @@ pub fn dispatch_with_permissions_options(
         "creator_code_builds_list" | "creator_code_build_status" | "creator_code_preview_status" =>
             creator_code::run(name, args, data_home),
         "creator_code_project_create" | "creator_code_workspace_info" | "creator_code_file_read"
-        | "creator_code_file_write" | "creator_code_build" | "creator_code_test" =>
+        | "creator_code_file_write" | "creator_code_preview" | "creator_code_build" | "creator_code_test" =>
             creator_code_workspace::run(name, args, data_home, allow_local_writes),
         "city_world_profile_preview" | "city_world_profile_apply" => city_world::run(name, args, data_home, allow_local_writes),
         #[cfg(feature = "mcp-internal")]
@@ -465,7 +465,7 @@ mod tests {
     #[test]
     fn code_game_status_tools_are_registered_and_read_only() {
         let names: Vec<_> = tool_specs().iter().map(|tool| tool.name).collect();
-        for name in ["creator_code_builds_list", "creator_code_build_status", "creator_code_preview_status", "creator_code_project_create", "creator_code_workspace_info", "creator_code_file_read", "creator_code_file_write", "creator_code_build", "creator_code_test"] {
+        for name in ["creator_code_builds_list", "creator_code_build_status", "creator_code_preview_status", "creator_code_project_create", "creator_code_workspace_info", "creator_code_file_read", "creator_code_file_write", "creator_code_preview", "creator_code_build", "creator_code_test"] {
             assert!(names.contains(&name), "Code Game MCP tool missing: {name}");
         }
         let missing = Path::new("/nonexistent-code-game-data-home");

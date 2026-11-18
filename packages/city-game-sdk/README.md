@@ -78,6 +78,7 @@ Agent 可通过 MCP 完成 `create → 写/改 TS → 构建 → 读诊断 → �
 | `creator_code_workspace_info` | 工作区身份、revision、有界文件列表 |
 | `creator_code_file_read` / `creator_code_file_write` | 工作区相对路径读写；写带 `expectedRevision` 内容 CAS |
 | `creator_code_build` | 固定 Node/esbuild 构建；失败返回 `code/stage/relativePath/line/column` |
+| `creator_code_preview` | 把构建产物/Manifest/资产放进 City public 目录，返回可直接打开的预览 URL（dev-only 桥） |
 | `creator_code_test` | 用同一 Host 无头跑固定 tick，返回 outcome/tick/entities/HUD |
 
 验证脚本（需先 `cargo build -p agent-vitals`）：
@@ -86,6 +87,10 @@ Agent 可通过 MCP 完成 `create → 写/改 TS → 构建 → 读诊断 → �
 node scripts/verify-code-game-loop.mjs
 # create → 写坏 TS → 构建失败(带行号) → 修复 → 构建成功
 # → 无头 success → 改速度 → 新 buildId → tick 120 → 40
+
+node scripts/verify-code-game-city-loop.mjs
+# create → build → preview → 真实 City 跑完（tick 261, success）
+# → 改速度 → 新 buildId → 再预览 → tick 94；两次实体都归零
 ```
 
 边界：工作区在 `<data_home>/code-games/workspaces/<id>/`，调用方永远只给 `workspaceId`；

@@ -77,6 +77,16 @@ pub fn specs() -> Vec<ToolSpec> {
             &["workspaceId", "relativePath", "content"],
         ),
         spec(
+            "creator_code_preview",
+            "Stage a built Code Game for the local City dev server and return the relative URLs to open. Dev-only bridge: it copies the immutable bundle, manifest and declared assets under the City public directory and returns `/code-games/preview/<buildId>/...`; it never starts a server itself. Requires `--allow-local-writes`.",
+            json!({
+                "workspaceId":{"type":"string","minLength":20,"maxLength":32},
+                "buildId":{"type":"string","minLength":64,"maxLength":64,"pattern":"^[0-9a-f]{64}$"},
+                "seed":{"type":"integer","minimum":0,"maximum":4294967295u32},
+            }),
+            &["workspaceId", "buildId"],
+        ),
+        spec(
             "creator_code_build",
             "Build a Code Game workspace with the pinned local toolchain. Success returns buildId + byte length; a compile failure returns status=failed with bounded diagnostics (code, stage, relative path, line, column) for the Agent to repair. Requires `--allow-local-writes`.",
             json!({
@@ -110,6 +120,10 @@ pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool)
         "creator_code_file_write" => {
             require_writes(allow_local_writes, "Writing a Code Game file")?;
             file_write(args, data_home)
+        }
+        "creator_code_preview" => {
+            require_writes(allow_local_writes, "Staging a Code Game preview")?;
+            stage_preview(args, data_home)
         }
         "creator_code_build" => {
             require_writes(allow_local_writes, "Building a Code Game workspace")?;
@@ -315,6 +329,70 @@ fn build(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
         })
     };
     Ok(json!({"ok":true,"data":data}))
+}
+
+/// Dev-only preview bridge. The packaged app will replace this with a command
+/// pushed to the City WebView; the tool contract (buildId in, preview out) is
+/// the same, so the Agent loop does not change.
+fn stage_preview(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
+    let workspace_id = workspace_id_arg(args)?;
+    let build_id = build_id_arg(args)?;
+    let seed = args.get("seed").and_then(Value::as_u64).unwrap_or(7);
+    let directory = workspace_dir(data_home, &workspace_id)?;
+    let meta = read_meta(&directory)?;
+    let build_dir = data_home.join("code-games").join("builds").join(&build_id);
+    if !build_dir.join("game.js").is_file() {
+        return Err(ToolError::new("not_found", "No built bundle for that buildId in this data home."));
+    }
+    let repo = repo_root()?;
+    let public_root = repo.join("apps/agent-city/ui/public/code-games/preview");
+    if !public_root.parent().is_some_and(Path::is_dir) {
+        return Err(ToolError::new("preview_unavailable", "The City dev server public directory is not available in this installation."));
+    }
+    let target = public_root.join(&build_id);
+    std::fs::create_dir_all(&target)
+        .map_err(|_| ToolError::new("storage_unavailable", "Cannot create the preview directory."))?;
+    std::fs::copy(build_dir.join("game.js"), target.join("game.js"))
+        .map_err(|_| ToolError::new("storage_unavailable", "Cannot copy the preview bundle."))?;
+    std::fs::copy(directory.join("game.manifest.json"), target.join("game.manifest.json"))
+        .map_err(|_| ToolError::new("storage_unavailable", "Cannot copy the preview manifest."))?;
+    let assets = directory.join("assets");
+    if assets.is_dir() {
+        copy_directory(&assets, &target.join("assets"))?;
+    }
+    let base = format!("/code-games/preview/{build_id}/");
+    Ok(json!({"ok":true,"data":{
+        "workspaceId": workspace_id,
+        "gameId": meta.game_id,
+        "buildId": build_id,
+        "seed": seed,
+        "bundleUrl": format!("{base}game.js"),
+        "manifestUrl": format!("{base}game.manifest.json"),
+        "assetBaseUrl": base,
+        "cityUrl": format!("/?codeGame={base}game.js&codeGameManifest={base}game.manifest.json"),
+    }}))
+}
+
+fn copy_directory(source: &Path, target: &Path) -> Result<(), ToolError> {
+    std::fs::create_dir_all(target).map_err(|_| ToolError::new("storage_unavailable", "Cannot create the preview assets directory."))?;
+    for entry in std::fs::read_dir(source).map_err(|_| ToolError::new("storage_unavailable", "Cannot read the workspace assets."))?.flatten() {
+        let from = entry.path();
+        let to = target.join(entry.file_name());
+        if from.is_dir() {
+            copy_directory(&from, &to)?;
+        } else if from.is_file() {
+            std::fs::copy(&from, &to).map_err(|_| ToolError::new("storage_unavailable", "Cannot copy a preview asset."))?;
+        }
+    }
+    Ok(())
+}
+
+fn build_id_arg(args: &Value) -> Result<String, ToolError> {
+    let value = required_str(args, "buildId", 64)?;
+    if value.len() != 64 || !value.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+        return Err(ToolError::new("invalid_argument", "`buildId` must be a 64-character lower-case hex digest"));
+    }
+    Ok(value)
 }
 
 fn code_test(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
