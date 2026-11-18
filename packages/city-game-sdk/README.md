@@ -68,6 +68,42 @@ City 侧已实现：v3 快照与实时 layout（arterial road edges + terrain fi
 `node tests/code-game-city.browser.mjs http://127.0.0.1:5199`。它会在真实 City 里跑完
 hello-city：实体存在 → tick 前进 → `route_complete` → 实体归零。
 
+### MCP 创作控制面（P0）
+
+Agent 可通过 MCP 完成 `create → 写/改 TS → 构建 → 读诊断 → 修复 → 无头运行`：
+
+| 工具 | 作用 |
+|---|---|
+| `creator_code_project_create` | 从受信任模板建受控工作区，返回 `workspaceId/gameId/revision` |
+| `creator_code_workspace_info` | 工作区身份、revision、有界文件列表 |
+| `creator_code_file_read` / `creator_code_file_write` | 工作区相对路径读写；写带 `expectedRevision` 内容 CAS |
+| `creator_code_build` | 固定 Node/esbuild 构建；失败返回 `code/stage/relativePath/line/column` |
+| `creator_code_test` | 用同一 Host 无头跑固定 tick，返回 outcome/tick/entities/HUD |
+
+验证脚本（需先 `cargo build -p agent-vitals`）：
+
+```bash
+node scripts/verify-code-game-loop.mjs
+# create → 写坏 TS → 构建失败(带行号) → 修复 → 构建成功
+# → 无头 success → 改速度 → 新 buildId → tick 120 → 40
+```
+
+边界：工作区在 `<data_home>/code-games/workspaces/<id>/`，调用方永远只给 `workspaceId`；
+构建是固定脚本 + 固定参数（不是任意 shell）；Node/仓库脚本缺失时失败关闭。
+视觉 City 预览仍走 dev `?codeGame=` 入口，MCP 目前只自动验证无头运行。
+
+### MCP 状态面（只读）
+
+| 工具 | 读什么 |
+|---|---|
+| `creator_code_builds_list` | `<data_home>/state/creator/code-games/index.json`（构建器写入，最多 50 条） |
+| `creator_code_build_status` | `builds/<buildId>.json`，64 位小写 hex 校验，不返回物理路径 |
+| `creator_code_preview_status` | `preview.json`（City 经 `plugin_message type=code-game.state` 写入桌面宿主） |
+
+构建器加 `--data-home`（或 `AGENT_VITALS_HOME`）才发布构建记录；预览状态只由桌面
+City 发布，浏览器 dev 下 `publish` 是 no-op。`stale=true` 表示写者超过 2 分钟没更新
+（崩溃/关窗），不代表游戏还在跑。
+
 未实现（后续切片）：真实 GLB 资源加载（当前是共享立方体占位）、Studio 受控构建作业
 （Vite/类型检查/产物索引）、Studio MCP 的 `creator_code_*` 工具、Experience V2 打包。
 

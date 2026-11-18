@@ -17,7 +17,8 @@ const gameDir = path.join(repoRoot, "games", "hello-city");
 const outDir = path.join(appRoot, "public", "code-games", "builds");
 const targetDir = path.join(appRoot, "public", "code-games");
 
-const result = await buildCodeGame({ workspaceDir: gameDir, outDir });
+const dataHome = process.env.AGENT_VITALS_HOME;
+const result = await buildCodeGame({ workspaceDir: gameDir, outDir, ...(dataHome ? { dataHome } : {}) });
 if (!result.ok) {
   console.error(JSON.stringify(result.diagnostics, null, 2));
   process.exit(1);

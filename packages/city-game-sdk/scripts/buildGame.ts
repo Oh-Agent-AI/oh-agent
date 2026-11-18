@@ -33,6 +33,8 @@ const SKIPPED_DIRECTORIES = new Set(["node_modules", "dist", ".git"]);
 export type CodeGameBuildOptions = Readonly<{
   workspaceDir: string;
   outDir: string;
+  /** When set, also publish a bounded build record for MCP status queries. */
+  dataHome?: string;
   /** Overridable for tests; production points at the packaged SDK entry. */
   sdkApiEntry?: string;
 }>;
@@ -140,6 +142,19 @@ export async function buildCodeGame(options: CodeGameBuildOptions): Promise<Code
     )}\n`,
   );
 
+  const record = {
+    buildId,
+    gameId: manifest.value.gameId,
+    gameVersion: manifest.value.version,
+    entry: manifest.value.entry,
+    bundle: "game.js",
+    byteLength: stat.size,
+    sdkVersion: packageJson.version,
+    bundler: `esbuild@${esbuildVersion}`,
+    createdAtMs: Date.now(),
+  };
+  if (options.dataHome) writeBuildRecord(options.dataHome, record);
+
   return {
     ok: true,
     buildId,
@@ -149,6 +164,44 @@ export async function buildCodeGame(options: CodeGameBuildOptions): Promise<Code
     byteLength: stat.size,
     warnings: Object.freeze(warnings),
   };
+}
+
+/** MCP reads this registry; it is a status index, not a build authority. The
+ * bundle identity is always the content digest, never this file. */
+function writeBuildRecord(
+  dataHome: string,
+  record: Readonly<{
+    buildId: string;
+    gameId: string;
+    gameVersion: string;
+    entry: string;
+    bundle: string;
+    byteLength: number;
+    sdkVersion: string;
+    bundler: string;
+    createdAtMs: number;
+  }>,
+): void {
+  const root = path.join(dataHome, "state", "creator", "code-games");
+  const builds = path.join(root, "builds");
+  fs.mkdirSync(builds, { recursive: true });
+  writeAtomic(path.join(builds, `${record.buildId}.json`), `${JSON.stringify(record, null, 2)}\n`);
+  const indexPath = path.join(root, "index.json");
+  let index: unknown[] = [];
+  try {
+    const parsed = JSON.parse(fs.readFileSync(indexPath, "utf8"));
+    if (Array.isArray(parsed)) index = parsed;
+  } catch {
+    index = [];
+  }
+  const next = [record, ...index.filter((item) => (item as { buildId?: unknown })?.buildId !== record.buildId)].slice(0, 50);
+  writeAtomic(indexPath, `${JSON.stringify(next, null, 2)}\n`);
+}
+
+function writeAtomic(file: string, content: string): void {
+  const temporary = `${file}.tmp`;
+  fs.writeFileSync(temporary, content);
+  fs.renameSync(temporary, file);
 }
 
 function readManifest(
@@ -240,10 +293,11 @@ async function main(argv: readonly string[]): Promise<void> {
   }
   const workspaceDir = args.get("workspace");
   const outDir = args.get("out");
+  const dataHome = args.get("data-home") ?? process.env.AGENT_VITALS_HOME;
   if (!workspaceDir || !outDir) {
     throw new Error("Usage: buildGame.ts --workspace <game dir> --out <builds dir>");
   }
-  const result = await buildCodeGame({ workspaceDir, outDir });
+  const result = await buildCodeGame({ workspaceDir, outDir, ...(dataHome ? { dataHome } : {}) });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   if (!result.ok) process.exitCode = 1;
 }

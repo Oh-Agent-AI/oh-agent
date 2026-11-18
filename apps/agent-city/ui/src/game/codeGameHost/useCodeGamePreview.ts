@@ -4,6 +4,7 @@ import type { GameTelemetryV1 } from "../../../../../../packages/city-game-sdk/s
 import { isGameDefinitionV1 } from "../../../../../../packages/city-game-sdk/src/api/defineGame";
 import type { CodeGameManifestV1 } from "../../../../../../packages/city-game-sdk/src/protocol/manifest";
 import { validateCodeGameManifestV1 } from "../../../../../../packages/city-game-sdk/src/protocol/manifest";
+import { publish } from "../../host";
 import type { CityEngine } from "../../engine/CityEngine";
 import type { CityActivityCoordinator } from "../activity/CityActivityCoordinator";
 import { createCityEngineWorldSourceV1 } from "./cityEngineWorldSource";
@@ -34,6 +35,8 @@ export type CodeGamePreviewStartV1 = Readonly<{
   bundleText: string;
   manifest: unknown;
   seed?: number;
+  /** Content buildId for MCP status correlation; optional in dev URLs. */
+  buildId?: string;
   cityId?: string;
   cityRevision?: number;
   /** Absolute directory the manifest's asset paths resolve against. */
@@ -88,6 +91,25 @@ export function useCodeGamePreview(options: Readonly<{
         const layout = engine.currentLayout;
         if (!view || !layout) throw new Error("City layout is not ready.");
 
+        const publishState = (
+          status: "starting" | "running" | "finished" | "error",
+          reason: string | null,
+          telemetry: GameTelemetryV1 | null,
+        ): void => {
+          // `publish` is a no-op outside the desktop host (browser dev), so this
+          // never becomes a hard dependency of the preview path.
+          void publish("code-game.state", {
+            state: {
+              status,
+              gameId: manifest.gameId,
+              ...(input.buildId ? { buildId: input.buildId } : {}),
+              ...(telemetry?.runId ? { runId: telemetry.runId } : {}),
+              ...(reason ? { reason } : {}),
+              ...(telemetry ? { tick: telemetry.tick, entities: telemetry.entities } : {}),
+            },
+          }).catch(() => {});
+        };
+
         const blobUrl = URL.createObjectURL(new Blob([input.bundleText], { type: "text/javascript" }));
         let module: { default?: unknown };
         try {
@@ -121,13 +143,18 @@ export function useCodeGamePreview(options: Readonly<{
           nowMs: input.nowMs ?? (() => performance.now()),
           onStop: ({ reason, telemetry }) => {
             runRef.current = null;
+            publishState("finished", reason, telemetry);
             setState({ status: "finished", runId: telemetry.runId, reason, error: null, telemetry });
           },
         });
         runRef.current = run;
+        publishState("running", null, run.telemetry());
         setState({ status: "running", runId: run.host.runId, reason: null, error: null, telemetry: run.telemetry() });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        void publish("code-game.state", {
+          state: { status: "error", gameId: input.manifest && typeof input.manifest === "object" ? (input.manifest as { gameId?: unknown }).gameId : undefined, reason: message.slice(0, 120) },
+        }).catch(() => {});
         setState({ status: "error", runId: null, reason: null, error: message, telemetry: null });
         throw error;
       }

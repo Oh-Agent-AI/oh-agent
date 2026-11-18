@@ -25,6 +25,7 @@ mod creator_store;
 pub mod creator_content_v2;
 mod creator_content_install;
 mod creator_experience;
+mod creator_code_game;
 mod creator_source_export;
 mod typed_data;
 mod typed_objects;
@@ -6019,6 +6020,7 @@ pub fn run() {
             clear_focus_target,
             focus_budget_from_notification,
             capture_workbench_screenshot,
+            creator_code_game::code_game_preview_state,
             ]);
             move |invoke: tauri::ipc::Invoke| {
                 // The official fixture plugin must not inherit authority/log APIs.

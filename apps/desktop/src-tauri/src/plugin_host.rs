@@ -1468,6 +1468,13 @@ fn apply_message(i: &mut Instance, sender: &str, message: Value) -> Result<(), S
             i.pulse = Instant::now();
             log_plugin_performance(&i.plugin_id, &fields);
         }
+        Some("code-game.state") => {
+            // City 预览状态：唯一落盘路径。字段白名单/范围在
+            // creator_code_game::record_preview_state 内校验，这里只做路由。
+            crate::creator_code_game::record_preview_state(&crate::overview::data_home(), &message["state"])
+                .map_err(|_| "code_game_state_invalid")?;
+            i.pulse = Instant::now();
+        }
         Some("runtime.error") => {
             i.failed = Some("plugin_runtime_error");
             // 受控错误码（诊断 serving-face 约束）：异常 message/stack 可能带本地

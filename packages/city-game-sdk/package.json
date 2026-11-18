@@ -31,7 +31,7 @@
     "build": "node ./scripts/build.mjs",
     "typecheck": "node ./node_modules/typescript/bin/tsc -p tsconfig.build.json --noEmit",
     "test": "node --experimental-transform-types --import ../../scripts/mecha-ts-register.mjs --test tests/*.test.ts",
-    "build:game": "node --experimental-transform-types ./scripts/buildGame.ts"
+    "build:game": "node --experimental-transform-types --import ../../scripts/mecha-ts-register.mjs ./scripts/buildGame.ts"
   },
   "engines": {
     "node": ">=20"

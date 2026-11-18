@@ -125,6 +125,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: 构建
         run: cargo build --release
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Code Game 创作闭环（真实 MCP stdio）
+        env:
+          AGENT_VITALS_BIN: ${{ github.workspace }}/target/release/agent-vitals
+        run: node scripts/verify-code-game-loop.mjs
 
       # golden 是提交进仓库的快照。两个实现都必须与它逐字节一致 ——
       # 一致性是三方的，不是两两的：Python↔golden、Rust↔golden。
