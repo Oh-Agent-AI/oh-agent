@@ -46,6 +46,7 @@ import { useCityDrivingPlay } from "./game/useCityDrivingPlay";
 import { ORNITHOPTER_VEHICLE_PRESET_V1 } from "@oh-agent/city-sdk";
 import { createMiamiActivityEntries } from "./game/runtime/miamiActivityEntries";
 import { createMiamiGameRuntimeRegistry } from "./game/runtime/miamiActivityHost";
+import { CityInteractionRuntime } from "./game/runtime/cityInteractionRuntime";
 import type { GameRuntimeHandleV1, GameRuntimeRegistryV1, GameRuntimeTelemetryV1, MiamiActivityIdV1 } from "../../../../packages/agent-vitals-city-game-runtime/src/index";
 import { DrivingHud } from "./game/DrivingHud";
 import type { PlayTarget } from "./engine/render/playableVehicles";
@@ -551,11 +552,20 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
   };
   const playRef = useRef<(target: PlayTarget) => void>(() => {});
   playRef.current = (target) => {
-    if (target.kind === "mecha") { openMecha(); return; }
+    if (target.kind === "mecha") { void startMiamiActivity("mecha"); return; }
     if (sceneActivityBlocker !== null) return;
     experience.setOptions(false); experience.clearSelection();
-    if (target.kind === "car") driving.enterAt(target);
-    else game.enterPracticeFrom(target);
+    if (target.kind === "car") {
+      if (engineRef.current) {
+        void cityInteractionRuntimeRef.current!.launch(engineRef.current, { typeId: "driving", presentation: "exclusive" });
+      }
+      driving.enterAt(target);
+    } else {
+      if (engineRef.current) {
+        void cityInteractionRuntimeRef.current!.launch(engineRef.current, { typeId: "flight", presentation: "exclusive" });
+      }
+      game.enterPracticeFrom(target);
+    }
   };
   planRepairActive.current = planRepair.state.active;
   const appliedWindow = useRef<number | null>(null);
@@ -1052,6 +1062,8 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
   useEffect(() => { if (toolbarReady) publishToolbar(tools); }, [language, toolbarReady, windowDays, quality, labels, cinema, mechaOpen, roadAuditOpen, sceneReady, sceneUnavailable, game.active, driving.active, planRepair.state.active, experience.busy, experience.film?.frame, experience.film?.total, mechaEntryEnabled]);
   const sceneMessage = sceneUnavailable ? "当前环境无法显示三维城市，仍可查看会话摘要。"
     : !boot && (!dataAvailable || projection.status === "empty") ? status : null;
+  const cityInteractionRuntimeRef = useRef<CityInteractionRuntime | null>(null);
+  if (!cityInteractionRuntimeRef.current) cityInteractionRuntimeRef.current = new CityInteractionRuntime();
   if (!miamiRuntimeRegistry.current) {
     const telemetry = (status: GameRuntimeTelemetryV1["status"], reason: string | null = null, counters: Readonly<Record<string, number>> = {}, metrics: Readonly<Record<string, number>> = {}): GameRuntimeTelemetryV1 =>
       ({ status, tick: 0, counters, metrics, reason });
@@ -1094,6 +1106,11 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
     if (!registry) { setStatus("游戏运行时尚未就绪。"); return; }
     try {
       if (typeId.includes("-prototype-")) requestedFlightTypeRef.current = typeId;
+      if (!engineRef.current) { setStatus("城市运行时尚未就绪。"); return; }
+      await cityInteractionRuntimeRef.current!.launch(engineRef.current, {
+        typeId,
+        presentation: "exclusive",
+      });
       const runtime = registry.resolve(typeId, 1);
       const prepared = await runtime.prepare();
       if (!prepared.ok) { setStatus(`无法进入${activity}：${prepared.failure.code}`); return; }
