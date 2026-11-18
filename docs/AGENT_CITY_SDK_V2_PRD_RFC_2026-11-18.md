@@ -3,6 +3,8 @@
 > 日期：2026-11-18
 > 文档修订：**v2.5（2026-11-18，对齐 Shared Contracts RFC v1）**
 > 状态：**产品与实施 RFC；公共契约由 Shared Contracts v1 冻结，本文件不另起或静默修改公共契约，不代表已经实现**
+> 实施状态：包级契约、V2 Host/Preview、Registry、Snapshot Headless、Story CAS/Outbox 与 macOS bundle Build/Test 已落地；完整 Narrative、全量旧入口 Router 和五环境验收未完成。
+
 > 审查分支：Oh-Agent-AI/oh-agent 的 dev（静态源码审查；未在本次环境执行 CI / Studio）
 > 新公开包名：**@oh-agent/city-sdk**
 > 旧包名：@agent-vitals/city-sdk（迁移期兼容，禁止双份核心实现）
@@ -307,6 +309,7 @@ export default defineWorldGenerator({
     return {
       schemaVersion: 1,
       terrain,
+      environment: { medium: "water", biome: "underwater" },
       sites,
       routes,
       objects,

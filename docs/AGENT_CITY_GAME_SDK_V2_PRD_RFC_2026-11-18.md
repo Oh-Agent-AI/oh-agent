@@ -3,6 +3,8 @@
 > 日期：2026-11-18
 > 文档修订：**v2.5（2026-11-18，对齐 Shared Contracts RFC v1）**
 > 状态：**产品与实施 RFC；公共契约由 Shared Contracts v1 冻结，本文件不另起或静默修改公共契约，不代表已经实现**
+> 实施状态：包级契约、V2 Host/Preview、Registry、Snapshot Headless、Story CAS/Outbox 与 macOS bundle Build/Test 已落地；完整 Narrative、全量旧入口 Router 和五环境验收未完成。
+
 > 审查对象：Oh-Agent-AI/oh-agent 的 dev（静态源码审查，未在本次环境执行真实 Studio）
 > 公开包：**@oh-agent/city-game-sdk**（沿用现有名称）
 > 基础世界包：**@oh-agent/city-sdk**（由 @agent-vitals/city-sdk 迁移）

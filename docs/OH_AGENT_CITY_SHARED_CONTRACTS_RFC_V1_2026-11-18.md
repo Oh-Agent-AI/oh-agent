@@ -1,10 +1,12 @@
 # Oh Agent City Shared Contracts RFC v1
 
-> 状态：**契约冻结；不是已实现 API**
+> 状态：**v1.1 契约冻结；不是已实现 API**
 > 日期：2026-11-18
 > 适用：`@oh-agent/city-sdk`、`@oh-agent/city-game-sdk`、City Runtime、Narrative Engine、Creator Studio、Creator MCP
+> 实施状态：包级契约、V2 Host/Preview、Registry、Snapshot Headless、Story CAS/Outbox 与 macOS bundle Build/Test 已落地；完整 Narrative、全量旧入口 Router 和五环境验收未完成。
+
 > 引用文档：`AGENT_CITY_SDK_V2_PRD_RFC_2026-11-18.md`、`AGENT_CITY_GAME_SDK_V2_PRD_RFC_2026-11-18.md`（v2.5）
-> 变更规则：兼容新增进入 v1.1；字段、语义、Token、Revision 或生命周期的破坏性变更进入 Shared Contracts v2 与兼容评审
+> 变更规则：后续兼容新增进入 v1.2；字段、语义、Token、Revision 或生命周期的破坏性变更进入 Shared Contracts v2 与兼容评审
 
 ## 0. 决策摘要
 
@@ -234,6 +236,10 @@ export interface RoutePlanV1 {
 export interface WorldPlanV1 {
   schemaVersion: 1;
   terrain: CityTerrainV1;
+  environment?: Readonly<{
+    medium: "air" | "water" | "vacuum" | "mixed";
+    biome: string;
+  }>; // v1.1 可选；缺省为 air/unknown，海底必须显式声明 water
   sites: readonly SiteDtoV2[];
   routes: readonly RoutePlanV1[];
   objects: readonly WorldObjectDtoV2[];
