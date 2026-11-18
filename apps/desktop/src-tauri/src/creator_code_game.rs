@@ -57,12 +57,12 @@ pub(crate) fn record_preview_state(home: &Path, state: &Value) -> Result<(), Str
     };
     let record = json!({
         "status": status,
-        "gameId": bounded(&state, "gameId", MAX_ID),
-        "buildId": bounded(&state, "buildId", 64),
-        "runId": bounded(&state, "runId", 64),
-        "reason": bounded(&state, "reason", MAX_REASON),
-        "tick": bounded_count(&state, "tick", MAX_TICK),
-        "entities": bounded_count(&state, "entities", MAX_ENTITIES),
+        "gameId": bounded(state, "gameId", MAX_ID),
+        "buildId": bounded(state, "buildId", 64),
+        "runId": bounded(state, "runId", 64),
+        "reason": bounded(state, "reason", MAX_REASON),
+        "tick": bounded_count(state, "tick", MAX_TICK),
+        "entities": bounded_count(state, "entities", MAX_ENTITIES),
         "updatedAtMs": now_ms(),
     });
     let root = code_games_root(home);
