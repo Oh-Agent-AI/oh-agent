@@ -354,9 +354,9 @@ fn stage_preview(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
         .map_err(|_| ToolError::new("storage_unavailable", "Cannot create the preview directory."))?;
     std::fs::copy(build_dir.join("game.js"), target.join("game.js"))
         .map_err(|_| ToolError::new("storage_unavailable", "Cannot copy the preview bundle."))?;
-    std::fs::copy(directory.join("game.manifest.json"), target.join("game.manifest.json"))
+    std::fs::copy(build_dir.join("manifest.json"), target.join("game.manifest.json"))
         .map_err(|_| ToolError::new("storage_unavailable", "Cannot copy the preview manifest."))?;
-    let assets = directory.join("assets");
+    let assets = build_dir.join("assets");
     if assets.is_dir() {
         copy_directory(&assets, &target.join("assets"))?;
     }
@@ -418,10 +418,10 @@ fn code_test(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
         &repo,
         "packages/city-game-sdk/scripts/previewGame.ts",
         &[
-            "--bundle".to_string(),
-            bundle.to_string_lossy().to_string(),
-            "--manifest".to_string(),
-            directory.join("game.manifest.json").to_string_lossy().to_string(),
+            "--build".to_string(),
+            build_id.to_string(),
+            "--builds-dir".to_string(),
+            data_home.join("code-games").join("builds").to_string_lossy().to_string(),
             "--seed".to_string(),
             seed.to_string(),
             "--ticks".to_string(),
@@ -628,6 +628,8 @@ fn rewrite_manifest(directory: &Path, game_id: &str, title: &str) -> Result<(), 
 fn repo_root() -> Result<PathBuf, ToolError> {
     let root = if let Ok(override_path) = std::env::var("AGENT_VITALS_REPO") {
         PathBuf::from(override_path)
+    } else if let Ok(bundled) = std::env::var("AGENT_VITALS_CODE_GAME_HOME") {
+        PathBuf::from(bundled)
     } else {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
     };
@@ -640,7 +642,11 @@ fn repo_root() -> Result<PathBuf, ToolError> {
 }
 
 fn run_node(repo: &Path, script: &str, args: &[String]) -> Result<std::process::Output, ToolError> {
-    let node = std::env::var("AGENT_VITALS_NODE").unwrap_or_else(|_| "node".to_string());
+    let node = std::env::var("AGENT_VITALS_NODE").ok().unwrap_or_else(|| {
+        std::env::var("AGENT_VITALS_CODE_GAME_HOME").ok()
+            .map(|home| Path::new(&home).join("bin").join(if cfg!(windows) { "node.exe" } else { "node" }).to_string_lossy().to_string())
+            .unwrap_or_else(|| "node".to_string())
+    });
     let output = Command::new(node)
         .arg("--experimental-transform-types")
         .arg("--import")
@@ -753,5 +759,19 @@ mod tests {
         std::fs::write(dir.join("src/index.ts"), "export default 2;\n").unwrap();
         assert_ne!(first, digest_workspace(&dir).unwrap());
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn bundled_builder_root_precedes_the_compile_time_repo() {
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap();
+        let root = std::env::temp_dir().join(format!("code-game-bundled-{}-{}", now_ms(), std::process::id()));
+        std::fs::create_dir_all(root.join("packages/city-game-sdk/scripts")).unwrap();
+        std::fs::write(root.join("packages/city-game-sdk/scripts/buildGame.ts"), "// builder").unwrap();
+        std::env::remove_var("AGENT_VITALS_REPO");
+        std::env::set_var("AGENT_VITALS_CODE_GAME_HOME", &root);
+        assert_eq!(repo_root().unwrap(), std::fs::canonicalize(&root).unwrap());
+        std::env::remove_var("AGENT_VITALS_CODE_GAME_HOME");
+        std::fs::remove_dir_all(root).ok();
     }
 }

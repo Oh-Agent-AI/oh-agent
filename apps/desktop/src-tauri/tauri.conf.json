@@ -43,7 +43,8 @@
       "dmg"
     ],
     "resources": {
-      "../../../target/release/agent-vitals": "bin/agent-vitals"
+      "../../../target/release/agent-vitals": "bin/agent-vitals",
+      "code-game": "code-game"
     },
     "icon": [
       "icons/32x32.png",

@@ -107,8 +107,9 @@ fn publish(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     }
     let directory = workspace_dir(data_home, &workspace_id)?;
     let meta = read_meta(&directory)?;
-    let game = read_json(&directory.join("game.manifest.json"))
-        .ok_or_else(|| ToolError::new("data_unavailable", "The workspace manifest is unavailable."))?;
+    let build_dir = data_home.join("code-games").join("builds").join(&build_id);
+    let game = read_json(&build_dir.join("manifest.json"))
+        .ok_or_else(|| ToolError::new("data_unavailable", "The sealed build manifest is unavailable."))?;
     let version = match args.get("version").and_then(Value::as_str) {
         Some(value) => checked_version(value)?,
         None => checked_version(game.get("version").and_then(Value::as_str).unwrap_or("0.1.0"))?,
@@ -138,7 +139,7 @@ fn publish(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
             if !is_safe_relative(relative) {
                 return Err(ToolError::new("invalid_argument", "The manifest contains an unsafe asset path."));
             }
-            let source = directory.join(relative);
+            let source = build_dir.join(relative);
             if !source.is_file() {
                 return Err(ToolError::new("game_asset_invalid", format!("Declared asset `{relative}` is missing.")));
             }
@@ -502,5 +503,79 @@ mod tests {
         for path in ["../x", "/etc/passwd", "a/../../b", "C:/x", "a\\b", ""] {
             assert!(!is_safe_relative(path), "{path}");
         }
+    }
+
+    /// Publish→install→tamper→uninstall 契约：发布只产出包；安装逐字节复核；
+    /// 任何字节被改都必须 `game_package_integrity_failed`；卸载只动库不动包。
+    #[test]
+    fn publish_install_tamper_and_uninstall_round_trip() {
+        let home = std::env::temp_dir().join(format!("code-game-exp-{}-{}", now_ms(), std::process::id()));
+        let workspace = home.join("code-games").join("workspaces").join("gws-0000000000000000");
+        std::fs::create_dir_all(workspace.join("assets")).unwrap();
+        write_json(&workspace.join("workspace.json"), &json!({
+            "workspaceId": "gws-0000000000000000", "projectId": "prj", "gameId": "community.contract-test",
+            "title": "Contract", "template": "checkpoint-race", "createdAtMs": 1, "revision": "r1",
+        })).unwrap();
+        write_json(&workspace.join("game.manifest.json"), &json!({
+            "version": "1.2.3",
+            "permissions": ["scene.read"],
+            "world": {"generator": "arid-dunes-v1"},
+            "assets": [{"id": "badge", "path": "assets/badge.json"}],
+            "sdk": {"apiMajor": 1},
+        })).unwrap();
+        std::fs::write(workspace.join("assets").join("badge.json"), b"{\"ok\":true}").unwrap();
+        let build_id = "a".repeat(64);
+        let build = home.join("code-games").join("builds").join(&build_id);
+        std::fs::create_dir_all(&build).unwrap();
+        std::fs::write(build.join("game.js"), b"export default {};").unwrap();
+        std::fs::create_dir_all(build.join("assets")).unwrap();
+        std::fs::copy(workspace.join("game.manifest.json"), build.join("manifest.json")).unwrap();
+        std::fs::copy(workspace.join("assets").join("badge.json"), build.join("assets").join("badge.json")).unwrap();
+        write_json(&build.join("build.json"), &json!({"sdkVersion": "1.0.0"})).unwrap();
+
+        // 发布：必须显式接受权限，且不落库。
+        let publish_denied = run("creator_code_publish", &json!({"workspaceId": "gws-0000000000000000", "buildId": build_id}), &home, true).unwrap_err();
+        assert_eq!(publish_denied.code, "invalid_argument");
+        let published = run("creator_code_publish", &json!({
+            "workspaceId": "gws-0000000000000000", "buildId": build_id, "permissionsAccepted": true,
+        }), &home, true).unwrap();
+        assert_eq!(published["data"]["version"], "1.2.3");
+        assert_eq!(published["data"]["installed"], false);
+        let digest = published["data"]["contentDigest"].as_str().unwrap().to_string();
+
+        // 安装 + 幂等重装（同摘要）。
+        let args = json!({"experienceId": "community.contract-test", "version": "1.2.3"});
+        let installed = run("creator_code_experience_install", &args, &home, true).unwrap();
+        assert_eq!(installed["data"]["alreadyInstalled"], false);
+        assert_eq!(run("creator_code_experience_install", &args, &home, true).unwrap()["data"]["alreadyInstalled"], true);
+        let listed = run("creator_code_experience_list", &json!({}), &home, true).unwrap();
+        assert_eq!(listed["data"]["installed"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["data"]["available"][0]["installed"], true);
+
+        // 卸载后篡改字节：重装必须按 per-file digest 拒绝。
+        run("creator_code_experience_uninstall", &args, &home, true).unwrap();
+        let package = home.join("code-games").join("experiences").join("community.contract-test").join("1.2.3");
+        assert!(package.join("manifest.json").is_file(), "uninstall must keep the immutable package");
+        std::fs::write(package.join("code").join("game.js"), b"export default 1;").unwrap();
+        let tampered = run("creator_code_experience_install", &args, &home, true).unwrap_err();
+        assert_eq!(tampered.code, "game_package_integrity_failed");
+
+        // 修复字节但篡改 contentDigest 本身也要被拒。
+        std::fs::write(package.join("code").join("game.js"), b"export default {};").unwrap();
+        let mut forged = read_json(&package.join("manifest.json")).unwrap();
+        forged["contentDigest"] = json!("f".repeat(64));
+        write_json(&package.join("manifest.json"), &forged).unwrap();
+        let forged_install = run("creator_code_experience_install", &args, &home, true).unwrap_err();
+        assert_eq!(forged_install.code, "game_package_integrity_failed");
+
+        // 同 id+version 换不同摘要的包必须拒绝，而不是静默替换。
+        let mut swap = read_json(&package.join("manifest.json")).unwrap();
+        swap["contentDigest"] = json!(digest);
+        swap["permissions"] = json!(["scene.write"]);
+        write_json(&package.join("manifest.json"), &swap).unwrap();
+        let conflict = run("creator_code_experience_install", &args, &home, true).unwrap_err();
+        assert_eq!(conflict.code, "game_package_integrity_failed");
+
+        std::fs::remove_dir_all(&home).ok();
     }
 }

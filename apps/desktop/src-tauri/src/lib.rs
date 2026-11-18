@@ -22,6 +22,7 @@ mod creator_city_patch;
 mod creator_city_host;
 mod creator_playtest;
 mod creator_store;
+mod story_store;
 pub mod creator_content_v2;
 mod creator_content_install;
 mod creator_experience;
@@ -6034,6 +6035,7 @@ pub fn run() {
         })
         .setup(|app| {
             let _ = BUNDLED_RESOURCE_DIR.set(app.path().resource_dir()?);
+            std::env::set_var("AGENT_VITALS_CODE_GAME_HOME", app.path().resource_dir()?.join("code-game"));
             if let Err(error) = agent_vitals_runtime::statistics_timezone::apply(
                 &overview::data_home(),
             ) {

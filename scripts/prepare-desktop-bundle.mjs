@@ -16,9 +16,9 @@ runNpm(["--prefix", "apps/desktop/ui-dev", "run", "build:react"], {
   stdio: "inherit",
 });
 
-// 官方插件（creator-studio）依赖 workspace 包 `@agent-vitals/city-sdk`，它的
+// 官方插件（creator-studio）依赖 workspace 包 `@oh-agent/city-sdk`，它的
 // `main` 指向 `dist/index.js`；不先构建会得到 Vite 的 "Failed to resolve entry
-// for package @agent-vitals/city-sdk"（Windows CI 实测）。这里在任何插件构建
+// for package @oh-agent/city-sdk"（Windows CI 实测）。这里在任何插件构建
 // 之前把 SDK 装好并构建，保证本地与 CI 同一条路径。
 {
   const citySdk = path.join(repo, "packages/agent-vitals-city-sdk");
@@ -43,6 +43,8 @@ runNpm(["--prefix", "apps/desktop/ui-dev", "run", "build:react"], {
   const probe = process.env.AGENT_VITALS_PLUGIN_ISOLATION_PROBE === "1";
   buildOfficialPlugins({ install: true, probe });
 }
+
+await import("./prepare-code-game-builder.mjs");
 
 execFileSync("cargo", ["build", "--release", "-p", "agent-vitals"], {
   cwd: repo,
