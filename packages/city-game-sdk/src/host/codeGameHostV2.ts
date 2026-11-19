@@ -2,7 +2,7 @@ import type {
   PlayerScopeV1,
   RoadEdgeDtoV2,
 } from "@oh-agent/city-sdk/contracts";
-import { defineGameV2, type GameAbortSignalV1, type GameContextV2, type GameDefinitionV2, type WorldAPIV2 } from "../api/v2";
+import { defineGameV2, type GameAbortSignalV1, type GameContextV2, type GameDefinitionV2, type StoryEventAPIV1, type WorldAPIV2 } from "../api/v2";
 import type { GameContextV1, WorldAnchorV1, WorldBoundsV1 } from "../api/types";
 import { evaluateGameInvocation, type GameAccessV1, type HostGrantV1 } from "../protocol/access";
 import { GameSdkError } from "../protocol/errors";
@@ -28,6 +28,7 @@ export type CodeGameHostOptionsV2 = Readonly<{
   render?: CodeGameHostOptionsV1["render"];
   hudByteLimit?: number;
   cleanupTimeoutMs?: number;
+  story?: StoryEventAPIV1;
 }>;
 
 export class CodeGameHostV2 {
@@ -136,6 +137,14 @@ export class CodeGameHostV2 {
     return Object.freeze({ ...this.inner.telemetry(), status: this.statusValue });
   }
 
+  private checkPermission(permission: GamePermissionV2): void {
+    const decision = evaluateGameInvocation(permission, {
+      runId: this.runId,
+      ...(this.options.playerScope ? { playerScope: this.options.playerScope } : {}),
+    }, this.options.access, this.options.grant);
+    if (!decision.ok) throw new GameSdkError("game_permission_denied", `V2 capability access denied: ${decision.reason}.`, "runtime");
+  }
+
   private async cleanup(): Promise<void> {
     if (this.cleanupPromise) return this.cleanupPromise;
     this.cleanupPromise = (async () => {
@@ -154,6 +163,25 @@ export class CodeGameHostV2 {
   private createContext(): GameContextV2 {
     const legacy = this.inner.api;
     const world = grantCheckedWorld(this.options);
+    const story = this.options.story;
+    const checkedStory: StoryEventAPIV1 | undefined = story ? {
+      resolveLocalTime: (input) => {
+        this.checkPermission("time.read");
+        return story.resolveLocalTime(input);
+      },
+      schedule: (rule, options) => {
+        this.checkPermission("story.schedule");
+        return story.schedule(rule, options);
+      },
+      cancel: (ruleId, options) => {
+        this.checkPermission("story.schedule");
+        return story.cancel(ruleId, options);
+      },
+      list: () => {
+        this.checkPermission("story.schedule");
+        return story.list();
+      },
+    } : undefined;
     return Object.freeze({
       ...legacy,
       world,
@@ -169,6 +197,7 @@ export class CodeGameHostV2 {
           if (index >= 0) this.disposers.splice(index, 1);
         };
       },
+      ...(checkedStory ? { story: checkedStory } : {}),
     }) as GameContextV2;
   }
 }

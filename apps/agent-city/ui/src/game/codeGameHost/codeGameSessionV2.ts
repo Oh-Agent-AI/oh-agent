@@ -18,6 +18,7 @@ export type CodeGameRunOptionsV2<Visual> = Readonly<{
   access: CodeGameHostOptionsV2["access"];
   grant: CodeGameHostOptionsV2["grant"];
   playerScope?: PlayerScopeV1;
+  story?: CodeGameHostOptionsV2["story"];
   scenePort: CodeGameScenePortV1<Visual>;
   coordinator: CodeGameActivityCoordinatorV1;
   createRender: CodeGameRenderFactoryV1<Visual>;
@@ -132,6 +133,7 @@ export class CodeGameRunV2<Visual> {
         access: options.access,
         grant: options.grant,
         ...(options.playerScope ? { playerScope: options.playerScope } : {}),
+        ...(options.story ? { story: options.story } : {}),
         render: render.port as CodeGameHostOptionsV2["render"],
         ...(options.fixedDtSeconds !== undefined ? { fixedDtSeconds: options.fixedDtSeconds } : {}),
         ...(options.nowMs !== undefined ? { nowMs: options.nowMs } : {}),

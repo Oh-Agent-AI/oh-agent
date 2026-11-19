@@ -12,6 +12,9 @@ pub(crate) fn migrate(db: &Connection) -> Result<(), &'static str> {
         simulation_utc_ms INTEGER NOT NULL, observed_utc_ms INTEGER NOT NULL,
         tick INTEGER NOT NULL, clock_revision TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS city_players (
+        profile_key TEXT PRIMARY KEY, player_id TEXT NOT NULL UNIQUE, created_at_ms INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS city_game_runs (
         run_id TEXT PRIMARY KEY, city_instance_id TEXT NOT NULL, city_id TEXT NOT NULL,
         game_id TEXT NOT NULL, player_id TEXT NOT NULL, build_id TEXT,
@@ -20,7 +23,7 @@ pub(crate) fn migrate(db: &Connection) -> Result<(), &'static str> {
     );").map_err(|_| "creator_store_unavailable")
 }
 
-fn valid_id(value: &str) -> bool {
+pub(crate) fn valid_id(value: &str) -> bool {
     !value.is_empty() && value.len() <= 128 && value.starts_with(|c: char| c.is_ascii_alphanumeric())
         && value.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '.' | '_' | '-'))
 }
@@ -35,7 +38,7 @@ fn expire_runs(db: &Connection, now: u64) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn read_clock_at(home: &Path, city_id: &str, now: u64) -> Result<Value, &'static str> {
+pub(crate) fn read_clock_at(home: &Path, city_id: &str, now: u64) -> Result<Value, &'static str> {
     if !valid_id(city_id) { return Err("game_argument_invalid"); }
     let db = database(home)?;
     migrate(&db)?;
@@ -70,6 +73,17 @@ pub(crate) fn read_clock(home: &Path, payload: &Value) -> Result<Value, &'static
     read_clock_at(home, required(payload, "cityId")?, now_ms())
 }
 
+fn local_player(db: &Connection, now: u64) -> Result<String, &'static str> {
+    if let Some(player_id) = db.query_row("SELECT player_id FROM city_players WHERE profile_key='local'", [], |row| row.get::<_, String>(0))
+        .optional().map_err(|_| "creator_store_unavailable")? {
+        return Ok(player_id);
+    }
+    let player_id = new_id("player")?;
+    db.execute("INSERT INTO city_players(profile_key,player_id,created_at_ms) VALUES ('local',?1,?2)", params![player_id,now])
+        .map_err(|_| "creator_store_unavailable")?;
+    Ok(player_id)
+}
+
 pub(crate) fn start_run(home: &Path, city_instance: &str, payload: &Value) -> Result<Value, &'static str> {
     start_run_at(home, city_instance, payload, now_ms())
 }
@@ -77,12 +91,12 @@ pub(crate) fn start_run(home: &Path, city_instance: &str, payload: &Value) -> Re
 fn start_run_at(home: &Path, city_instance: &str, payload: &Value, now: u64) -> Result<Value, &'static str> {
     let city_id = required(payload, "cityId")?;
     let game_id = required(payload, "gameId")?;
-    let player_id = required(payload, "playerId")?;
     let build_id = payload.get("buildId").and_then(Value::as_str).filter(|value| valid_id(value));
     if payload.get("buildId").is_some_and(|value| value.as_str().is_none_or(|id| !valid_id(id))) { return Err("game_argument_invalid"); }
     let db = database(home)?;
     migrate(&db)?;
     expire_runs(&db, now)?;
+    let player_id = local_player(&db, now)?;
     let run_id = new_id("game-run")?;
     db.execute("INSERT INTO city_game_runs(run_id,city_instance_id,city_id,game_id,player_id,build_id,status,active_slot,created_at_ms,expires_at_ms)
         VALUES (?1,?2,?3,?4,?5,?6,'active',?2,?7,?8)",
@@ -109,7 +123,7 @@ pub(crate) fn stop_run(home: &Path, city_instance: &str, payload: &Value) -> Res
     Ok(json!({"runId":run_id,"status":"stopped"}))
 }
 
-fn active_run(db: &Connection, city_instance: &str, run_id: &str, now: u64) -> Result<(String, String, String), &'static str> {
+pub(crate) fn active_run(db: &Connection, city_instance: &str, run_id: &str, now: u64) -> Result<(String, String, String), &'static str> {
     expire_runs(db, now)?;
     let row = db.query_row("SELECT city_instance_id,city_id,game_id,player_id,status FROM city_game_runs WHERE run_id=?1", [run_id],
         |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?)))
@@ -165,7 +179,7 @@ mod tests {
         std::env::temp_dir().join(format!("city-runtime-{}-{}", std::process::id(), NEXT_ID.fetch_add(1, Ordering::Relaxed)))
     }
     fn start(home: &Path, now: u64) -> Value {
-        start_run_at(home, "city-instance", &json!({"cityId":"city:one","gameId":"game.romance","playerId":"player-local"}), now).unwrap()
+        start_run_at(home, "city-instance", &json!({"cityId":"city:one","gameId":"game.romance"}), now).unwrap()
     }
     fn commit_payload(run: &Value, clock: &Value, story_revision: &str) -> Value {
         json!({"runId":run["runId"],"operationId":"operation-1","eventId":"event-1","residentId":"resident:xia",
@@ -177,23 +191,28 @@ mod tests {
     fn city_run_clock_and_rule_commit_form_one_local_host_path() {
         let home = home();
         let run = start(&home, 1_000);
+        assert!(run["playerScope"]["playerId"].as_str().unwrap().starts_with("player"));
         let clock = read_clock_at(&home, "city:one", 1_000).unwrap();
         let first = commit_at(&home, "city-instance", &commit_payload(&run, &clock, "0"), 1_000).unwrap();
         assert_eq!(first["status"], "committed");
-        let state = story_state(&home, "player-local", "city:one", "game.romance").unwrap();
+        let state = story_state(&home, run["playerScope"]["playerId"].as_str().unwrap(), "city:one", "game.romance").unwrap();
         assert_eq!(state["state"]["affection"], 1);
         assert_eq!(read_clock_at(&home, "city:one", 2_000).unwrap()["simulationUtcMs"], 2_000);
         assert_eq!(commit_at(&home, "another-city", &commit_payload(&run, &clock, "0"), 2_000).unwrap_err(), "game_run_mismatch");
         stop_run(&home, "city-instance", &json!({"runId":run["runId"]})).unwrap();
         assert_eq!(commit_at(&home, "city-instance", &commit_payload(&run, &clock, "0"), 2_000).unwrap_err(), "game_run_cancelled");
+        let restarted = start(&home, 3_000);
+        assert_eq!(restarted["playerScope"]["playerId"], run["playerScope"]["playerId"]);
         std::fs::remove_dir_all(home).ok();
     }
 
     #[test]
     fn city_dispatch_exposes_only_host_scoped_story_commands() {
         let home = home();
+        assert_eq!(crate::creator_projects::dispatch_city_runtime(&home, "city-instance", "city.game.run.start",
+            &json!({"cityId":"city:one","gameId":"game.romance","playerId":"forged-player"})).unwrap_err(), "creator_method_unavailable");
         let run = crate::creator_projects::dispatch_city_runtime(&home, "city-instance", "city.game.run.start",
-            &json!({"cityId":"city:one","gameId":"game.romance","playerId":"player-local"})).unwrap();
+            &json!({"cityId":"city:one","gameId":"game.romance"})).unwrap();
         let clock = crate::creator_projects::dispatch_city_runtime(&home, "city-instance", "city.time.read", &json!({"cityId":"city:one"})).unwrap();
         let payload = commit_payload(&run, &clock, "0");
         let mut forged = payload.clone();

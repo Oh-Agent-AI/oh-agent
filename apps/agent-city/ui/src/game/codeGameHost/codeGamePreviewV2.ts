@@ -2,7 +2,7 @@ import type { Object3D } from "three";
 import type { CodeGameManifestV2 } from "../../../../../../packages/city-game-sdk/src/protocol/manifestV2";
 import { createGameAccessV1, type HostGrantV1 } from "../../../../../../packages/city-game-sdk/src/protocol/access";
 import { createSnapshotWorldAPIV2 } from "../../../../../../packages/city-game-sdk/src/host/snapshotWorld";
-import { defineGameV2 } from "../../../../../../packages/city-game-sdk/src/api/v2";
+import { defineGameV2, type StoryEventAPIV1 } from "../../../../../../packages/city-game-sdk/src/api/v2";
 import type { CodeGameTelemetryV2 } from "./codeGameSessionV2";
 import { CodeGameRunV2 } from "./codeGameSessionV2";
 import { InstalledGameRegistryV1, InteractionRouter, type GameLaunchRequestV1 } from "../../../../../../packages/agent-vitals-city-game-runtime/src/interaction";
@@ -10,7 +10,7 @@ import { createCitySnapshotV4 } from "./citySnapshot";
 import { createThreeCodeGameRender } from "./threeRenderPort";
 import type { CityEngine } from "../../engine/CityEngine";
 import type { CityActivityCoordinator } from "../activity/CityActivityCoordinator";
-import { startCityGameRun, stopCityGameRun } from "./cityRuntimeCalls";
+import { cancelCityStory, listCityStory, readCityTime, scheduleCityStory, startCityGameRun, stopCityGameRun } from "./cityRuntimeCalls";
 
 export type CodeGamePreviewStartV2 = Readonly<{
   definition: unknown;
@@ -44,14 +44,26 @@ export async function startCodeGamePreviewV2(input: CodeGamePreviewStartV2): Pro
       walkable: layout.terrain.buildable(x, z),
     }),
   });
-  const playerScope = { playerId: `preview-${snapshot.header.cityId}`, kind: "local-profile" } as const;
   const hostRun = await startCityGameRun({
     cityId: snapshot.header.cityId,
     gameId: input.manifest.gameId,
-    playerId: playerScope.playerId,
     ...(input.buildId ? { buildId: input.buildId } : {}),
   });
+  const playerScope = hostRun?.playerScope ?? { playerId: `preview-${snapshot.header.cityId}`, kind: "local-profile" as const };
   const launchId = hostRun?.runId ?? (input.buildId ? `launch-${input.buildId}` : crypto.randomUUID());
+  const story: StoryEventAPIV1 | undefined = hostRun ? {
+    resolveLocalTime: async ({ localDate, localTime }) => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(localDate) || !/^\d{2}:\d{2}$/.test(localTime)) throw new Error("game_argument_invalid");
+      const atUtcMs = Date.parse(`${localDate}T${localTime}:00.000Z`);
+      if (!Number.isFinite(atUtcMs) || new Date(atUtcMs).toISOString().slice(0, 16) !== `${localDate}T${localTime}`) throw new Error("game_argument_invalid");
+      const clock = await readCityTime(snapshot.header.cityId);
+      if (!clock) throw new Error("city_time_unavailable");
+      return { atUtcMs, clockRevision: clock.clockRevision };
+    },
+    schedule: (rule, options) => scheduleCityStory(hostRun.runId, rule, options),
+    cancel: (ruleId, options) => cancelCityStory(hostRun.runId, ruleId, options),
+    list: () => listCityStory(hostRun.runId),
+  } : undefined;
   const grant: HostGrantV1<typeof playerScope> = {
     installationId: input.buildId ?? `preview-${launchId}`,
     runId: launchId,
@@ -114,6 +126,7 @@ export async function startCodeGamePreviewV2(input: CodeGamePreviewStartV2): Pro
         access: createGameAccessV1(input.manifest, snapshot.header.capabilities, grant),
         grant,
         playerScope,
+        ...(story ? { story } : {}),
         scenePort: input.engine.gameScenePort,
         coordinator: input.coordinator,
         createRender: (lease) => createThreeCodeGameRender(lease, {

@@ -180,3 +180,49 @@ test("a denied model open never invokes the asset source", async () => {
   await gameHost.start();
   assert.equal(opens, 0);
 });
+
+const storyRule = {
+  ruleId: "date-saturday",
+  version: 1,
+  trigger: { kind: "calendar", recurrence: "once", atUtcMs: 1_000 },
+  conditions: [],
+  action: { kind: "offer-dialogue", eventId: "date-reminder" },
+  missedPolicy: "persist",
+} as const;
+
+test("V2 story scheduling is host-mediated and permission checked", async () => {
+  let schedules = 0;
+  const story = {
+    resolveLocalTime: async () => ({ atUtcMs: 1_000, clockRevision: "clock-1" }),
+    schedule: async (rule: typeof storyRule, _options: { expectedStoryRevision: string; expectedClockRevision: string; operationId: string }) => {
+      schedules += 1;
+      return { ruleId: rule.ruleId, storyRevision: "0" };
+    },
+    cancel: async () => {},
+    list: async () => [],
+  };
+  const deniedManifest = manifest(["world.read"]);
+  const deniedGrant: HostGrantV1 = Object.freeze({ installationId: "installation-v2", runId: "run-v2", grantedPermissions: ["world.read"], status: "active" });
+  const denied = new CodeGameHostV2({ manifest: deniedManifest, world: createSnapshotWorldAPIV2(compileWorldFixtureV1()), seed: 42,
+    runId: "run-v2", access: createGameAccessV1(deniedManifest, ["world.snapshot"], deniedGrant), grant: deniedGrant, story });
+  await denied.prepare({ id: "test.host-v2", setup: (ctx) => {
+    ctx.onStart(async () => {
+      assert.throws(() => ctx.story?.schedule(storyRule, { expectedStoryRevision: "0", expectedClockRevision: "clock-1", operationId: "schedule-1" }), /access denied/);
+    });
+  } });
+  await denied.start();
+  assert.equal(schedules, 0);
+
+  const allowedManifest = manifest(["world.read", "story.schedule"]);
+  const allowedGrant: HostGrantV1 = Object.freeze({ installationId: "installation-v2", runId: "run-v2", grantedPermissions: ["world.read", "story.schedule"], status: "active" });
+  const allowed = new CodeGameHostV2({ manifest: allowedManifest, world: createSnapshotWorldAPIV2(compileWorldFixtureV1()), seed: 42,
+    runId: "run-v2", access: createGameAccessV1(allowedManifest, ["world.snapshot"], allowedGrant), grant: allowedGrant, story });
+  await allowed.prepare({ id: "test.host-v2", setup: (ctx) => {
+    ctx.onStart(async () => {
+      const result = await ctx.story?.schedule(storyRule, { expectedStoryRevision: "0", expectedClockRevision: "clock-1", operationId: "schedule-1" });
+      assert.equal(result?.ruleId, "date-saturday");
+    });
+  } });
+  await allowed.start();
+  assert.equal(schedules, 1);
+});

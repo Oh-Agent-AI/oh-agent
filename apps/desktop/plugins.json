@@ -1132,6 +1132,9 @@
         "city.game.run.stop",
         "city.story.read",
         "city.story.commit",
+        "city.story.schedule",
+        "city.story.cancel",
+        "city.story.list",
         "city.world.profile.preview",
         "city.world.profile.apply"
       ],

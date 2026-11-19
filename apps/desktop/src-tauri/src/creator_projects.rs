@@ -1441,12 +1441,15 @@ pub fn dispatch_city_runtime(home: &Path, city_instance: &str, method: &str, pay
             payload["status"].as_str().ok_or("creator_request_invalid")?, payload.get("evidence").filter(|value| !value.is_null()),
             payload.get("failureCode").and_then(Value::as_str)),
         "city.time.read" if exact_payload(payload, &["cityId"]) => crate::city_runtime::read_clock(home, payload),
-        "city.game.run.start" if exact_payload(payload, &["cityId", "gameId", "playerId"])
-            || exact_payload(payload, &["cityId", "gameId", "playerId", "buildId"]) => crate::city_runtime::start_run(home, city_instance, payload),
+        "city.game.run.start" if exact_payload(payload, &["cityId", "gameId"])
+            || exact_payload(payload, &["cityId", "gameId", "buildId"]) => crate::city_runtime::start_run(home, city_instance, payload),
         "city.game.run.stop" if exact_payload(payload, &["runId"]) => crate::city_runtime::stop_run(home, city_instance, payload),
         "city.story.read" if exact_payload(payload, &["runId"]) => crate::city_runtime::read_story(home, city_instance, payload),
         "city.story.commit" if exact_payload(payload, &["runId", "operationId", "eventId", "expectedStoryRevision", "expectedClockRevision", "intent"])
             || exact_payload(payload, &["runId", "operationId", "eventId", "residentId", "expectedStoryRevision", "expectedClockRevision", "intent"]) => crate::city_runtime::commit(home, city_instance, payload),
+        "city.story.schedule" if exact_payload(payload, &["runId", "rule", "options"]) => crate::city_scheduler::schedule(home, city_instance, payload),
+        "city.story.cancel" if exact_payload(payload, &["runId", "ruleId", "options"]) => crate::city_scheduler::cancel(home, city_instance, payload),
+        "city.story.list" if exact_payload(payload, &["runId"]) => crate::city_scheduler::list(home, city_instance, payload),
         _ => Err("creator_method_unavailable"),
     }
 }

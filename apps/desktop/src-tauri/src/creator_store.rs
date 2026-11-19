@@ -183,6 +183,7 @@ pub(crate) fn database(home: &Path) -> Result<Connection, &'static str> {
     }
     crate::story_store::migrate_story(&db)?;
     crate::city_runtime::migrate(&db)?;
+    crate::city_scheduler::migrate(&db)?;
     Ok(db)
 }
 

@@ -1,8 +1,9 @@
 import { invokeHost } from "../../host";
 import type { CityTemporalSnapshotV1 } from "@oh-agent/city-sdk/contracts";
+import type { StoryEventRuleV1 } from "../../../../../../packages/city-game-sdk/src/api/v2";
 
 type PluginResponse<T> = { version: number; requestId: string; ok: boolean; result?: T; error?: { code: string } };
-export type CityGameRunHandleV1 = Readonly<{ runId: string; cityId: string; gameId: string; status: "active" }>;
+export type CityGameRunHandleV1 = Readonly<{ runId: string; cityId: string; gameId: string; playerScope: Readonly<{ playerId: string; kind: "local-profile" }>; status: "active" }>;
 export type CityStoryReceiptV1 = Readonly<{ eventId: string; operationId: string; storyRevision: string; clockRevision: string; status: "committed" }>;
 
 function desktopAvailable(): boolean {
@@ -18,10 +19,10 @@ async function hostCall<T>(method: string, payload: Record<string, unknown>): Pr
   return response.result as T;
 }
 
-export async function startCityGameRun(input: Readonly<{ cityId: string; gameId: string; playerId: string; buildId?: string }>): Promise<CityGameRunHandleV1 | null> {
+export async function startCityGameRun(input: Readonly<{ cityId: string; gameId: string; buildId?: string }>): Promise<CityGameRunHandleV1 | null> {
   if (!desktopAvailable()) return null;
   return hostCall("city.game.run.start", {
-    cityId: input.cityId, gameId: input.gameId, playerId: input.playerId,
+    cityId: input.cityId, gameId: input.gameId,
     ...(input.buildId ? { buildId: input.buildId } : {}),
   });
 }
@@ -54,4 +55,24 @@ export async function commitCityStory(input: Readonly<{
     expectedStoryRevision: input.expectedStoryRevision, expectedClockRevision: input.expectedClockRevision,
     intent: input.intent,
   });
+}
+
+export async function scheduleCityStory(runId: string, rule: StoryEventRuleV1, options: Readonly<{
+  expectedStoryRevision: string;
+  expectedClockRevision: string;
+  operationId: string;
+}>): Promise<Readonly<{ ruleId: string; storyRevision: string; nextDueUtcMs?: number }>> {
+  return hostCall("city.story.schedule", { runId, rule, options });
+}
+
+export async function cancelCityStory(runId: string, ruleId: string, options: Readonly<{
+  expectedStoryRevision: string;
+  operationId: string;
+}>): Promise<void> {
+  await hostCall("city.story.cancel", { runId, ruleId, options });
+}
+
+export async function listCityStory(runId: string): Promise<readonly Readonly<{ ruleId: string; nextDueUtcMs?: number }>[]> {
+  const result = await hostCall<Readonly<{ rules: readonly Readonly<{ ruleId: string; nextDueUtcMs?: number }>[] }>>("city.story.list", { runId });
+  return result.rules;
 }
