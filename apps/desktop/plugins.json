@@ -1127,6 +1127,11 @@
         "city.creator.world.package.snapshot.close",
         "city.creator.playtest.claim",
         "city.creator.playtest.finish",
+        "city.time.read",
+        "city.game.run.start",
+        "city.game.run.stop",
+        "city.story.read",
+        "city.story.commit",
         "city.world.profile.preview",
         "city.world.profile.apply"
       ],

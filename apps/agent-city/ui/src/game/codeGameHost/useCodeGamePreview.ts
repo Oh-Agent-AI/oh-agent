@@ -77,7 +77,7 @@ export function useCodeGamePreview(options: Readonly<{
   const start = useCallback(
     async (input: CodeGamePreviewStartV1): Promise<void> => {
       if (runRef.current) {
-        void runRef.current.stop("stopped");
+        await runRef.current.stop("stopped");
         runRef.current = null;
       }
       const generation = ++generationRef.current;

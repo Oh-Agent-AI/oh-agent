@@ -20,6 +20,7 @@ mod creator_cities;
 mod creator_assets;
 mod creator_city_patch;
 mod creator_city_host;
+mod city_runtime;
 mod creator_playtest;
 mod creator_store;
 mod story_store;

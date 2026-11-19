@@ -10,6 +10,7 @@ import { createCitySnapshotV4 } from "./citySnapshot";
 import { createThreeCodeGameRender } from "./threeRenderPort";
 import type { CityEngine } from "../../engine/CityEngine";
 import type { CityActivityCoordinator } from "../activity/CityActivityCoordinator";
+import { startCityGameRun, stopCityGameRun } from "./cityRuntimeCalls";
 
 export type CodeGamePreviewStartV2 = Readonly<{
   definition: unknown;
@@ -43,8 +44,14 @@ export async function startCodeGamePreviewV2(input: CodeGamePreviewStartV2): Pro
       walkable: layout.terrain.buildable(x, z),
     }),
   });
-  const launchId = input.buildId ? `launch-${input.buildId}` : crypto.randomUUID();
   const playerScope = { playerId: `preview-${snapshot.header.cityId}`, kind: "local-profile" } as const;
+  const hostRun = await startCityGameRun({
+    cityId: snapshot.header.cityId,
+    gameId: input.manifest.gameId,
+    playerId: playerScope.playerId,
+    ...(input.buildId ? { buildId: input.buildId } : {}),
+  });
+  const launchId = hostRun?.runId ?? (input.buildId ? `launch-${input.buildId}` : crypto.randomUUID());
   const grant: HostGrantV1<typeof playerScope> = {
     installationId: input.buildId ?? `preview-${launchId}`,
     runId: launchId,
@@ -87,9 +94,14 @@ export async function startCodeGamePreviewV2(input: CodeGamePreviewStartV2): Pro
     presentation: input.manifest.presentation.default,
     playerScope,
   };
-  await router.launch(request, createGameAccessV1(input.manifest, snapshot.header.capabilities, grant), grant);
-  if (!launched) throw new Error("Code Game launch did not produce a run.");
-  return launched;
+  try {
+    await router.launch(request, createGameAccessV1(input.manifest, snapshot.header.capabilities, grant), grant);
+    if (!launched) throw new Error("Code Game launch did not produce a run.");
+    return launched;
+  } catch (error) {
+    if (hostRun) await stopCityGameRun(hostRun.runId).catch(() => undefined);
+    throw error;
+  }
 
   function start(request: GameLaunchRequestV1) {
     return (async () => {
@@ -109,7 +121,10 @@ export async function startCodeGamePreviewV2(input: CodeGamePreviewStartV2): Pro
           assetBaseUrl: input.assetBaseUrl ?? new URL(".", location.href).href,
         }),
         nowMs: input.nowMs ?? (() => performance.now()),
-        onStop: input.onStop,
+        onStop: (event) => {
+          if (hostRun) void stopCityGameRun(hostRun.runId).catch(() => undefined);
+          input.onStop(event);
+        },
       });
       return {
         launchId: request.launchId,

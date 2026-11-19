@@ -3,7 +3,7 @@
 > 状态：**v1.1 契约冻结；不是已实现 API**
 > 日期：2026-11-18
 > 适用：`@oh-agent/city-sdk`、`@oh-agent/city-game-sdk`、City Runtime、Narrative Engine、Creator Studio、Creator MCP
-> 实施状态：包级契约、V2 Host/Preview、Registry、Snapshot Headless、Story CAS/Outbox 与 macOS bundle Build/Test 已落地；完整 Narrative、全量旧入口 Router 和五环境验收未完成。
+> 实施状态：包级契约、V2 Host/Preview、Registry、Snapshot Headless、Story CAS/Outbox、持久 City Clock/Run 与内置 City 本地 Story commit 入口已落地；持久 Scheduler、Dialogue/PlayerScope 完整接线、完整 Narrative、全量旧入口 Router 和五环境验收未完成。Story 不开放 MCP 直写，也不接受调用方提交整份状态。
 
 > 引用文档：`AGENT_CITY_SDK_V2_PRD_RFC_2026-11-18.md`、`AGENT_CITY_GAME_SDK_V2_PRD_RFC_2026-11-18.md`（v2.5）
 > 变更规则：后续兼容新增进入 v1.2；字段、语义、Token、Revision 或生命周期的破坏性变更进入 Shared Contracts v2 与兼容评审

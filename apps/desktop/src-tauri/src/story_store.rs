@@ -13,6 +13,7 @@ use crate::creator_store::{canonical_json, database, digest, now_ms};
 pub(crate) struct StoryClockAuthorityV1 {
     pub revision: String,
     pub tick: u64,
+    pub simulation_utc_ms: u64,
 }
 
 pub(crate) struct StoryCommitCommandV1 {
@@ -25,9 +26,7 @@ pub(crate) struct StoryCommitCommandV1 {
     pub expected_story_revision: String,
     pub expected_clock_revision: String,
     pub intent: Value,
-    pub state: Value,
-    pub run_id: Option<String>,
-    pub run_active: bool,
+    pub run_id: String,
 }
 
 pub(crate) fn migrate_story(db: &Connection) -> Result<(), &'static str> {
@@ -60,41 +59,53 @@ pub(crate) fn migrate_story(db: &Connection) -> Result<(), &'static str> {
 
 fn validate_story_command(command: &StoryCommitCommandV1) -> Result<(), &'static str> {
     let kind = command.intent.get("kind").and_then(Value::as_str).ok_or("game_argument_invalid")?;
-    if !matches!(kind, "speak" | "move" | "interact" | "invite" | "join-game" | "offer-quest" | "suggest-meetup") {
-        return Err("game_actor_intent_denied");
-    }
-    if matches!(kind, "invite" | "offer-quest" | "suggest-meetup") {
-        if command.resident_id.as_deref().unwrap_or("").is_empty() || command.intent.get("targetId").and_then(Value::as_str).unwrap_or("").is_empty() {
-            return Err("game_argument_invalid");
+    match kind {
+        "invite" => {
+            if command.resident_id.as_deref().unwrap_or("").is_empty() || command.intent.get("targetId").and_then(Value::as_str).unwrap_or("").is_empty() {
+                return Err("game_argument_invalid");
+            }
         }
+        "speak" => {
+            let text = command.intent.get("text").and_then(Value::as_str).ok_or("game_argument_invalid")?;
+            if text.is_empty() || text.chars().count() > 2_000 { return Err("game_argument_invalid"); }
+        }
+        _ => return Err("game_actor_intent_denied"),
     }
-    if command.intent.get("__proto__").is_some() || command.intent.get("constructor").is_some() || command.intent.get("prototype").is_some()
-        || command.state.get("__proto__").is_some() || command.state.get("constructor").is_some() || command.state.get("prototype").is_some() {
+    if command.intent.get("__proto__").is_some() || command.intent.get("constructor").is_some() || command.intent.get("prototype").is_some() {
         return Err("game_argument_invalid");
-    }
-    if canonical_json(&command.state).map_err(|_| "game_argument_invalid")?.len() > 16_384 {
-        return Err("game_argument_invalid");
-    }
-    if let Some(affection) = command.state.get("affection").and_then(Value::as_i64) {
-        if affection < 0 { return Err("game_argument_invalid"); }
     }
     Ok(())
 }
 
+fn evaluate_story_state(command: &StoryCommitCommandV1, current: &Value) -> Result<Value, &'static str> {
+    let mut state = current.as_object().cloned().ok_or("creator_store_unavailable")?;
+    match command.intent.get("kind").and_then(Value::as_str) {
+        Some("speak") => {}
+        Some("invite") => {
+            let affection = state.get("affection").map(|value| value.as_i64().ok_or("game_story_state_invalid")).transpose()?.unwrap_or(0);
+            if !(0..100).contains(&affection) { return Err("game_story_rule_denied"); }
+            state.insert("affection".to_string(), json!(affection + 1));
+        }
+        _ => return Err("game_actor_intent_denied"),
+    }
+    let state = Value::Object(state);
+    if canonical_json(&state).map_err(|_| "game_argument_invalid")?.len() > 16_384 { return Err("game_argument_invalid"); }
+    Ok(state)
+}
+
 pub(crate) fn commit_story(home: &Path, command: StoryCommitCommandV1, clock: StoryClockAuthorityV1) -> Result<Value, &'static str> {
-    if !command.run_active { return Err("game_run_cancelled"); }
     if clock.revision != command.expected_clock_revision { return Err("city_time_revision_conflict"); }
     if clock.tick == 0 { return Err("game_time_domain_invalid"); }
     validate_story_command(&command)?;
     if command.operation_id.is_empty() || command.event_id.is_empty() || command.player_id.is_empty()
-        || command.city_id.is_empty() || command.game_id.is_empty() || !command.intent.is_object() || !command.state.is_object() {
+        || command.city_id.is_empty() || command.game_id.is_empty() || command.run_id.is_empty() || !command.intent.is_object() {
         return Err("game_argument_invalid");
     }
     let request_hash = digest(&canonical_json(&json!({
         "operationId":command.operation_id,"eventId":command.event_id,"playerId":command.player_id,
         "cityId":command.city_id,"gameId":command.game_id,"residentId":command.resident_id,
         "expectedStoryRevision":command.expected_story_revision,"expectedClockRevision":command.expected_clock_revision,
-        "intent":command.intent,"state":command.state,"runId":command.run_id,
+        "intent":command.intent,"runId":command.run_id,
     })).map_err(|_| "game_argument_invalid")?);
     let mut db = database(home)?;
     migrate_story(&db)?;
@@ -107,11 +118,15 @@ pub(crate) fn commit_story(home: &Path, command: StoryCommitCommandV1, clock: St
         if hash != request_hash { return Err("operation_id_conflict"); }
         return serde_json::from_str(&result).map_err(|_| "creator_store_unavailable");
     }
-    let current: String = tx.query_row(
-        "SELECT revision FROM story_states WHERE player_id=?1 AND city_id=?2 AND game_id=?3",
-        params![command.player_id,command.city_id,command.game_id], |row| row.get(0),
-    ).optional().map_err(|_| "creator_store_unavailable")?.unwrap_or_else(|| "0".to_string());
-    if current != command.expected_story_revision { return Err("game_storage_revision_conflict"); }
+    let current = tx.query_row(
+        "SELECT revision,document_json FROM story_states WHERE player_id=?1 AND city_id=?2 AND game_id=?3",
+        params![command.player_id,command.city_id,command.game_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    ).optional().map_err(|_| "creator_store_unavailable")?
+        .map(|(revision, document)| serde_json::from_str::<Value>(&document).map(|state| (revision, state)).map_err(|_| "creator_store_unavailable"))
+        .transpose()?.unwrap_or_else(|| ("0".to_string(), json!({})));
+    if current.0 != command.expected_story_revision { return Err("game_storage_revision_conflict"); }
+    let state = evaluate_story_state(&command, &current.1)?;
+    let current = current.0;
     let now = now_ms();
     let result = json!({
         "eventId":command.event_id,"operationId":command.operation_id,
@@ -120,10 +135,10 @@ pub(crate) fn commit_story(home: &Path, command: StoryCommitCommandV1, clock: St
     });
     tx.execute("INSERT INTO story_events(event_id,occurrence_id,player_id,city_id,game_id,rule_id,status,due_at_utc_ms,last_processed_tick,idempotency_key,story_revision,clock_revision,intent_json,created_at_ms) VALUES (?1,?2,?3,?4,?5,?6,'committed',?7,?8,?9,?10,?11,?12,?13)",
         params![command.event_id,command.event_id,command.player_id,command.city_id,command.game_id,command.event_id,
-            clock.tick,now,command.operation_id,result["storyRevision"].as_str().unwrap_or(""),command.expected_clock_revision,
+            clock.simulation_utc_ms,clock.tick,command.operation_id,result["storyRevision"].as_str().unwrap_or(""),command.expected_clock_revision,
             canonical_json(&command.intent).map_err(|_| "game_argument_invalid")?,now])
         .map_err(|_| "creator_store_unavailable")?;
-    let document = canonical_json(&command.state).map_err(|_| "game_argument_invalid")?;
+    let document = canonical_json(&state).map_err(|_| "game_argument_invalid")?;
     tx.execute("INSERT INTO story_states(player_id,city_id,game_id,revision,document_json,updated_at_ms) VALUES (?1,?2,?3,?4,?5,?6)
         ON CONFLICT(player_id,city_id,game_id) DO UPDATE SET revision=excluded.revision,document_json=excluded.document_json,updated_at_ms=excluded.updated_at_ms",
         params![command.player_id,command.city_id,command.game_id,result["storyRevision"].as_str().unwrap_or(""),document,now])
@@ -141,6 +156,17 @@ pub(crate) fn commit_story(home: &Path, command: StoryCommitCommandV1, clock: St
     Ok(json!({"eventId":command.event_id,"operationId":command.operation_id,
         "storyRevision":result["storyRevision"].as_str().unwrap_or(""),"clockRevision":command.expected_clock_revision,
         "status":"committed","outboxId":outbox_id,"alreadyCommitted":false}))
+}
+
+pub(crate) fn story_state(home: &Path, player_id: &str, city_id: &str, game_id: &str) -> Result<Value, &'static str> {
+    let db = database(home)?;
+    migrate_story(&db)?;
+    let current = db.query_row("SELECT revision,document_json FROM story_states WHERE player_id=?1 AND city_id=?2 AND game_id=?3",
+        params![player_id,city_id,game_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .optional().map_err(|_| "creator_store_unavailable")?;
+    let Some((revision, document)) = current else { return Ok(json!({"storyRevision":"0","state":{}})); };
+    let state = serde_json::from_str::<Value>(&document).map_err(|_| "creator_store_unavailable")?;
+    Ok(json!({"storyRevision":revision,"state":state}))
 }
 
 pub(crate) fn story_outbox(home: &Path, player_id: &str, city_id: &str, game_id: &str, limit: u32) -> Result<Vec<Value>, &'static str> {
@@ -176,7 +202,7 @@ mod tests {
     }
 
     fn clock() -> StoryClockAuthorityV1 {
-        StoryClockAuthorityV1 { revision: "clock-1".to_string(), tick: 1 }
+        StoryClockAuthorityV1 { revision: "clock-1".to_string(), tick: 1, simulation_utc_ms: 1_000 }
     }
 
     fn command(operation: &str, event: &str, revision: &str) -> StoryCommitCommandV1 {
@@ -184,8 +210,7 @@ mod tests {
             operation_id: operation.to_string(), event_id: event.to_string(), player_id: "player-1".to_string(),
             city_id: "city-1".to_string(), game_id: "game-1".to_string(), resident_id: Some("resident:linxia".to_string()),
             expected_story_revision: revision.to_string(), expected_clock_revision: "clock-1".to_string(),
-            intent: json!({"kind":"invite","targetId":"place:beach"}), state: json!({"affection":1}),
-            run_id: Some("run-1".to_string()), run_active: true,
+            intent: json!({"kind":"invite","targetId":"place:beach"}), run_id: "run-1".to_string(),
         }
     }
 
@@ -207,15 +232,21 @@ mod tests {
     }
 
     #[test]
-    fn story_commit_rejects_operation_reuse_and_late_runs() {
+    fn story_commit_rejects_operation_reuse_and_computes_rule_state() {
         let home = home();
         commit_story(&home, command("op-1", "event-1", "0"), clock()).unwrap();
+        assert_eq!(story_state(&home, "player-1", "city-1", "game-1").unwrap()["state"]["affection"], 1);
         let mut changed = command("op-1", "event-1", "0");
-        changed.state = json!({"affection":2});
+        changed.intent = json!({"kind":"invite","targetId":"place:cafe"});
         assert_eq!(commit_story(&home, changed, clock()).unwrap_err(), "operation_id_conflict");
-        let mut late = command("op-2", "event-2", "0");
-        late.run_active = false;
-        assert_eq!(commit_story(&home, late, clock()).unwrap_err(), "game_run_cancelled");
+        let second = command("op-2", "event-2", "0");
+        let revision = second.expected_story_revision.clone();
+        let current = commit_story(&home, command("op-2", "event-2", &revision), clock());
+        assert_eq!(current.unwrap_err(), "game_storage_revision_conflict");
+        let first_revision = story_outbox(&home, "player-1", "city-1", "game-1", 10).unwrap()[0]["payload"]["storyRevision"].as_str().unwrap().to_string();
+        let mut next = command("op-2", "event-2", &first_revision);
+        next.intent = json!({"kind":"speak","text":"See you Saturday."});
+        assert_eq!(commit_story(&home, next, clock()).unwrap()["status"], "committed");
         std::fs::remove_dir_all(home).ok();
     }
 
@@ -234,7 +265,7 @@ mod tests {
     #[test]
     fn story_clock_revision_and_intent_are_validated() {
         let home = home();
-        let mismatch = commit_story(&home, command("op-1", "event-1", "0"), StoryClockAuthorityV1 { revision: "clock-2".to_string(), tick: 2 }).unwrap_err();
+        let mismatch = commit_story(&home, command("op-1", "event-1", "0"), StoryClockAuthorityV1 { revision: "clock-2".to_string(), tick: 2, simulation_utc_ms: 2_000 }).unwrap_err();
         assert_eq!(mismatch, "city_time_revision_conflict");
         assert!(story_outbox(&home, "player-1", "city-1", "game-1", 10).unwrap().is_empty());
         let mut invalid = command("op-2", "event-2", "0");

@@ -16,7 +16,8 @@ pub(crate) fn classify_local_call(method: &str) -> Option<LocalCall> {
             | "city.creator.playtest.pending" | "city.creator.playtest.claim" | "city.creator.playtest.finish"
             | "city.creator.patch.publish" | "city.creator.patch.read"
             | "city.creator.world.package.snapshot.open" | "city.creator.world.package.snapshot.read"
-            | "city.creator.world.package.snapshot.close") { return Some(LocalCall::Runtime); }
+            | "city.creator.world.package.snapshot.close" | "city.time.read" | "city.game.run.start"
+            | "city.game.run.stop" | "city.story.read" | "city.story.commit") { return Some(LocalCall::Runtime); }
     None
 }
 
@@ -30,6 +31,9 @@ mod tests {
     #[test]
     fn routes_only_declared_builtin_city_calls() {
         assert_eq!(classify_local_call("city.creator.world.package.snapshot.open"), Some(LocalCall::Runtime));
+        assert_eq!(classify_local_call("city.time.read"), Some(LocalCall::Runtime));
+        assert_eq!(classify_local_call("city.game.run.start"), Some(LocalCall::Runtime));
+        assert_eq!(classify_local_call("city.story.commit"), Some(LocalCall::Runtime));
         assert_eq!(classify_local_call("city.creator.layout.publish"), Some(LocalCall::LayoutPublish));
         assert_eq!(classify_local_call("creator.city.source.export"), Some(LocalCall::SourceExport));
         assert_eq!(classify_local_call("creator.project.read"), None);

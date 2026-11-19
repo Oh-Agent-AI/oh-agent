@@ -182,6 +182,7 @@ pub(crate) fn database(home: &Path) -> Result<Connection, &'static str> {
         db.execute("ALTER TABLE creator_operations ADD COLUMN capability_version TEXT NOT NULL DEFAULT ''", []).map_err(|error| map_sqlite_failure("migrate", &error))?;
     }
     crate::story_store::migrate_story(&db)?;
+    crate::city_runtime::migrate(&db)?;
     Ok(db)
 }
 
