@@ -169,6 +169,18 @@ pub(crate) fn story_state(home: &Path, player_id: &str, city_id: &str, game_id: 
     Ok(json!({"storyRevision":revision,"state":state}))
 }
 
+pub(crate) fn story_dialogue(home: &Path, player_id: &str, city_id: &str, game_id: &str, limit: u32) -> Result<Vec<Value>, &'static str> {
+    let db = database(home)?;
+    migrate_story(&db)?;
+    let mut statement = db.prepare("SELECT event_id,intent_json,story_revision,created_at_ms FROM story_events WHERE player_id=?1 AND city_id=?2 AND game_id=?3 AND json_extract(intent_json,'$.kind')='speak' ORDER BY created_at_ms DESC,event_id DESC LIMIT ?4")
+        .map_err(|_| "creator_store_unavailable")?;
+    let rows = statement.query_map(params![player_id,city_id,game_id,limit.min(100)], |row| {
+        Ok(json!({"eventId":row.get::<_,String>(0)?,"intent":serde_json::from_str::<Value>(&row.get::<_,String>(1)?).unwrap_or(Value::Null),
+            "storyRevision":row.get::<_,String>(2)?,"createdAtMs":row.get::<_,u64>(3)?}))
+    }).map_err(|_| "creator_store_unavailable")?;
+    rows.collect::<Result<Vec<_>,_>>().map_err(|_| "creator_store_unavailable")
+}
+
 pub(crate) fn story_outbox(home: &Path, player_id: &str, city_id: &str, game_id: &str, limit: u32) -> Result<Vec<Value>, &'static str> {
     let db = database(home)?;
     migrate_story(&db)?;

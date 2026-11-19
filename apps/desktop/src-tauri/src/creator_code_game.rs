@@ -1,6 +1,6 @@
-//! Code Game 预览状态的唯一写入口。
+//! Code Game 预览的宿主状态、冻结产物与启停控制。
 //!
-//! City WebView 持有实时状态（tick/实体数/结束原因），但 MCP 是另一个进程；两边
+//! City WebView 持有实时状态（tick/实体数/结束原因），MCP 和 Studio 是其他进程；两边
 //! 只共享 `<data_home>/state/creator/code-games/preview.json`。这里把 WebView
 //! 上报的 DTO 收敛成**有界白名单**再落盘：状态词表、id 长度、计数值范围都在宿主
 //! 侧校验，MCP 读取时不需要信任调用方。
@@ -77,6 +77,7 @@ pub(crate) fn record_preview_state(home: &Path, state: &Value) -> Result<(), Str
     std::fs::write(&temporary, serde_json::to_vec(&record).map_err(|error| format!("code_game_state_invalid: {error}"))?)
         .map_err(|error| format!("code_game_state_unavailable: {error}"))?;
     std::fs::rename(&temporary, &target).map_err(|error| format!("code_game_state_unavailable: {error}"))?;
+    if matches!(status, "finished" | "error") { std::fs::remove_file(root.join("preview-control.json")).ok(); }
     Ok(())
 }
 
@@ -192,6 +193,22 @@ fn preview_snapshots() -> &'static Mutex<HashMap<String, PreviewSnapshot>> {
     SNAPSHOTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn take_preview_control(home: &Path) -> Result<Option<Value>, String> {
+    let path = home.join("state/creator/code-games/preview-control.json");
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err("code_game_state_unavailable".to_string()),
+    };
+    let request: Value = serde_json::from_slice(&bytes).map_err(|_| "code_game_preview_request_invalid".to_string())?;
+    if request.get("status").and_then(Value::as_str) != Some("stop_requested") { return Ok(None); }
+    let build_id = request_string(&request, "buildId", 64)?;
+    let run_id = request_string(&request, "runId", 64)?;
+    request_string(&request, "requestId", 128)?;
+    std::fs::remove_file(path).map_err(|_| "code_game_state_unavailable".to_string())?;
+    Ok(Some(json!({"control":"stop","buildId":build_id,"runId":run_id})))
+}
+
 pub(crate) fn next_preview(home: &Path, city_instance: &str) -> Result<Value, &'static str> {
     next_preview_result(home, city_instance).map_err(|code| match code.as_str() {
         "code_game_preview_request_invalid" => "code_game_preview_request_invalid",
@@ -203,6 +220,7 @@ pub(crate) fn next_preview(home: &Path, city_instance: &str) -> Result<Value, &'
 }
 
 fn next_preview_result(home: &Path, city_instance: &str) -> Result<Value, String> {
+    if let Some(control) = take_preview_control(home)? { return Ok(control); }
     let path = home.join("state/creator/code-games/preview-request.json");
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
@@ -248,6 +266,64 @@ pub(crate) fn close_preview(city_instance: &str, payload: &Value) -> Result<Valu
     if !snapshots.get(snapshot_id).is_some_and(|snapshot| snapshot.instance == city_instance) { return Err("content_snapshot_expired"); }
     snapshots.remove(snapshot_id);
     Ok(json!({"closed":true}))
+}
+
+pub(crate) fn studio_builds(home: &Path, limit: u64) -> Result<Value, &'static str> {
+    let path = home.join("state/creator/code-games/index.json");
+    let value = match std::fs::read(&path) {
+        Ok(bytes) if bytes.len() <= 256 * 1024 => serde_json::from_slice::<Value>(&bytes).map_err(|_| "creator_store_unavailable")?,
+        Ok(_) => return Err("creator_store_unavailable"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!([]),
+        Err(_) => return Err("creator_store_unavailable"),
+    };
+    let rows = value.as_array().ok_or("creator_store_unavailable")?.iter().take(limit.min(50) as usize).map(|row| {
+        Some(json!({"buildId":bounded(row,"buildId",64)?,"gameId":bounded(row,"gameId",128)?,
+            "gameVersion":bounded(row,"gameVersion",32),"byteLength":row.get("byteLength").and_then(Value::as_u64),
+            "createdAtMs":row.get("createdAtMs").and_then(Value::as_u64)}))
+    }).collect::<Option<Vec<_>>>().ok_or("creator_store_unavailable")?;
+    Ok(json!({"builds":rows}))
+}
+
+pub(crate) fn studio_preview(home: &Path, build_id: &str, seed: u64) -> Result<Value, &'static str> {
+    if build_id.len() != 64 || !build_id.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()) { return Err("game_argument_invalid"); }
+    load_sealed_preview(home, build_id).map_err(|_| "game_package_integrity_failed")?;
+    let root = home.join("state/creator/code-games");
+    std::fs::create_dir_all(&root).map_err(|_| "creator_store_unavailable")?;
+    let request_id = new_id("preview-request-")?;
+    let request = json!({"requestId":request_id,"buildId":build_id,"seed":seed,"status":"queued","createdAtMs":now_ms()});
+    let temporary = root.join("preview-request.json.tmp");
+    std::fs::write(&temporary, serde_json::to_vec(&request).map_err(|_| "game_argument_invalid")?).map_err(|_| "creator_store_unavailable")?;
+    std::fs::rename(temporary, root.join("preview-request.json")).map_err(|_| "creator_store_unavailable")?;
+    Ok(json!({"requestId":request_id,"buildId":build_id,"seed":seed,"status":"queued"}))
+}
+
+pub(crate) fn studio_status(home: &Path) -> Result<Value, &'static str> {
+    let path = home.join("state/creator/code-games/preview.json");
+    let value = match std::fs::read(&path) {
+        Ok(bytes) if bytes.len() <= 16 * 1024 => serde_json::from_slice::<Value>(&bytes).map_err(|_| "creator_store_unavailable")?,
+        Ok(_) => return Err("creator_store_unavailable"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(json!({"available":false,"status":"unavailable"})),
+        Err(_) => return Err("creator_store_unavailable"),
+    };
+    Ok(json!({"available":true,"status":bounded(&value,"status",32),"gameId":bounded(&value,"gameId",128),
+        "buildId":bounded(&value,"buildId",64),"runId":bounded(&value,"runId",64),"reason":bounded(&value,"reason",120),
+        "outcome":bounded(&value,"outcome",16),"tick":bounded_count(&value,"tick",MAX_TICK),
+        "entities":bounded_count(&value,"entities",MAX_ENTITIES),"updatedAtMs":bounded_count(&value,"updatedAtMs",u64::MAX)}))
+}
+
+pub(crate) fn studio_stop(home: &Path, build_id: &str, run_id: &str) -> Result<Value, &'static str> {
+    let status = studio_status(home)?;
+    if !matches!(status.get("status").and_then(Value::as_str), Some("starting" | "running"))
+        || status.get("buildId").and_then(Value::as_str) != Some(build_id) || status.get("runId").and_then(Value::as_str) != Some(run_id) {
+        return Err("game_run_not_found");
+    }
+    let root = home.join("state/creator/code-games");
+    let request_id = new_id("preview-stop-")?;
+    let request = json!({"requestId":request_id,"buildId":build_id,"runId":run_id,"status":"stop_requested","createdAtMs":now_ms()});
+    std::fs::write(root.join("preview-control.json.tmp"), serde_json::to_vec(&request).map_err(|_| "game_argument_invalid")?)
+        .and_then(|_| std::fs::rename(root.join("preview-control.json.tmp"), root.join("preview-control.json")))
+        .map_err(|_| "creator_store_unavailable")?;
+    Ok(json!({"requestId":request_id,"status":"stop_requested"}))
 }
 
 #[cfg(test)]
@@ -335,6 +411,20 @@ mod tests {
         close_preview("city-test", &json!({"snapshotId":loaded["snapshotId"]})).unwrap();
         assert_eq!(read_preview("city-test", &json!({"snapshotId":loaded["snapshotId"],"path":"game.js","offset":0})).unwrap_err(), "content_snapshot_expired");
         assert_eq!(next_preview(&home, "city-test").unwrap(), Value::Null);
+        std::fs::write(request_dir.join("index.json"), serde_json::to_vec(&json!([record])).unwrap()).unwrap();
+        let studio = "studio-test";
+        let listed = crate::creator_projects::dispatch_as(&home, "local-creator", studio, "creator.code.builds.list", &json!({"limit":20})).unwrap();
+        assert_eq!(listed["builds"].as_array().unwrap().len(), 1);
+        let queued = crate::creator_projects::dispatch_as(&home, "local-creator", studio, "creator.code.preview", &json!({"buildId":actual_id,"seed":7})).unwrap();
+        assert_eq!(queued["status"], "queued");
+        let claimed = next_preview(&home, "city-test").unwrap();
+        close_preview("city-test", &json!({"snapshotId":claimed["snapshotId"]})).unwrap();
+        record_preview_state(&home, &json!({"status":"running","gameId":"test.preview","buildId":actual_id,"runId":"run-7","tick":1,"entities":1})).unwrap();
+        let stopped = crate::creator_projects::dispatch_as(&home, "local-creator", studio, "creator.code.preview.stop", &json!({"buildId":actual_id,"runId":"run-7"})).unwrap();
+        assert_eq!(stopped["status"], "stop_requested");
+        assert_eq!(next_preview(&home, "city-test").unwrap()["control"], "stop");
+        record_preview_state(&home, &json!({"status":"finished","gameId":"test.preview","buildId":actual_id,"runId":"run-7","outcome":"success","tick":1,"entities":0})).unwrap();
+        assert!(!request_dir.join("preview-control.json").exists());
         std::fs::write(request_dir.join("preview-request.json"), serde_json::to_vec(&request).unwrap()).unwrap();
         std::fs::write(root.join("game.js"), b"export default { tampered: true }").unwrap();
         assert_eq!(next_preview(&home, "city-test").unwrap_err(), "game_package_integrity_failed");

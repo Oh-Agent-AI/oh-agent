@@ -27,7 +27,9 @@ export type CityCodePreviewEnvelopeV1 = Readonly<{
   snapshotId: string;
 }>;
 
-export async function takeCityCodePreview(): Promise<CityCodePreviewEnvelopeV1 | null> {
+export type CityCodePreviewControlV1 = Readonly<{ control: "stop"; buildId: string; runId: string }>;
+
+export async function takeCityCodePreview(): Promise<CityCodePreviewEnvelopeV1 | CityCodePreviewControlV1 | null> {
   if (!desktopAvailable()) return null;
   return hostCall("city.code.preview.next", {});
 }

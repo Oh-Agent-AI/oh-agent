@@ -82,6 +82,7 @@ export function useCodeGamePreview(options: Readonly<{
   stateRef.current = state;
   const runRef = useRef<CodeGameRunV1<Object3D> | CodeGameRunV2<Object3D> | null>(null);
   const generationRef = useRef(0);
+  const activeBuildIdRef = useRef<string | null>(null);
   const [dialogue, setDialogue] = useState<CodeGameDialogueStateV1 | null>(null);
   const dialogueRef = useRef(dialogue);
   dialogueRef.current = dialogue;
@@ -113,6 +114,7 @@ export function useCodeGamePreview(options: Readonly<{
   const start = useCallback(
     async (input: CodeGamePreviewStartV1): Promise<void> => {
       closeDialogue("game_run_cancelled");
+      activeBuildIdRef.current = null;
       if (runRef.current) {
         await runRef.current.stop("stopped");
         runRef.current = null;
@@ -180,6 +182,7 @@ export function useCodeGamePreview(options: Readonly<{
               if (generationRef.current !== generation) return;
               closeDialogue("game_run_cancelled");
               runRef.current = null;
+              activeBuildIdRef.current = null;
               publishState("finished", reason, telemetry);
               setState({ status: "finished", runId: telemetry.runId, reason, error: null, telemetry });
             },
@@ -189,6 +192,7 @@ export function useCodeGamePreview(options: Readonly<{
             return;
           }
           runRef.current = run.isDisposed ? null : run;
+          activeBuildIdRef.current = run.isDisposed ? null : input.buildId ?? null;
           publishState("running", null, run.telemetry());
           setState({ status: "running", runId: run.host.runId, reason: null, error: null, telemetry: run.telemetry() });
           return;
@@ -223,10 +227,12 @@ export function useCodeGamePreview(options: Readonly<{
           },
         });
         runRef.current = run;
+        activeBuildIdRef.current = input.buildId ?? null;
         publishState("running", null, run.telemetry());
         setState({ status: "running", runId: run.host.runId, reason: null, error: null, telemetry: run.telemetry() });
       } catch (error) {
         closeDialogue("game_run_cancelled");
+        activeBuildIdRef.current = null;
         const message = error instanceof Error ? error.message : String(error);
         void publish("code-game.state", {
           state: { status: "error", gameId: input.manifest && typeof input.manifest === "object" ? (input.manifest as { gameId?: unknown }).gameId : undefined, reason: message.slice(0, 120) },
@@ -246,6 +252,10 @@ export function useCodeGamePreview(options: Readonly<{
   const startNextPreview = useCallback(async (): Promise<boolean> => {
     const pending = await takeCityCodePreview();
     if (!pending) return false;
+    if ("control" in pending) {
+      if (activeBuildIdRef.current === pending.buildId && stateRef.current.runId === pending.runId) stop();
+      return true;
+    }
     try {
       for (let attempt = 0; attempt < 240 && !ready(); attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 250));
@@ -278,6 +288,7 @@ export function useCodeGamePreview(options: Readonly<{
     if (!run) return;
     closeDialogue("game_run_cancelled");
     void run.stop("stopped");
+    activeBuildIdRef.current = null;
     runRef.current = null;
   }, [closeDialogue]);
 

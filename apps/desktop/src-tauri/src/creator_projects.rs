@@ -1346,7 +1346,33 @@ fn run_mount_list(home: &Path, _owner: &str, _instance: &str, payload: &Value) -
     list_typed_mounts(home, args_valid_id(payload, "projectId")?, payload.get("revision").and_then(Value::as_u64))
 }
 
+fn run_code_builds(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    let limit = payload.get("limit").and_then(Value::as_u64).unwrap_or(20);
+    if !(1..=50).contains(&limit) { return Err("creator_request_invalid"); }
+    crate::creator_code_game::studio_builds(home, limit)
+}
+fn run_code_preview(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_code_game::studio_preview(home, args_valid_id(payload, "buildId")?, payload.get("seed").and_then(Value::as_u64).unwrap_or(7))
+}
+fn run_code_status(home: &Path, _owner: &str, _instance: &str, _payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_code_game::studio_status(home)
+}
+fn run_code_stop(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_code_game::studio_stop(home, args_valid_id(payload, "buildId")?, args_valid_id(payload, "runId")?)
+}
+
+fn run_code_story(home: &Path, _owner: &str, _instance: &str, _payload: &Value) -> Result<Value, &'static str> {
+    let preview = crate::creator_code_game::studio_status(home)?;
+    let Some(run_id) = preview.get("runId").and_then(Value::as_str) else { return Ok(json!({"available":false})); };
+    crate::city_runtime::story_evidence(home, run_id)
+}
+
 static DISPATCH_ROWS: &[CreatorMethodRow] = &[
+    creator_row!("creator.code.builds.list", &[], &["limit"], run_code_builds),
+    creator_row!("creator.code.preview", &["buildId"], &["seed"], run_code_preview),
+    creator_row!("creator.code.preview.status", &[], &[], run_code_status),
+    creator_row!("creator.code.preview.stop", &["buildId", "runId"], &[], run_code_stop),
+    creator_row!("creator.code.story", &[], &[], run_code_story),
     creator_row!("creator.capabilities.list", &[], &["category", "schemaVersion"], run_capabilities_list),
     creator_row!("creator.city.create", &["name", "seed", "profile", "operationId", "validation"], &[], run_city_create),
     creator_row!("creator.city.create_from_world", &["name", "operationId", "packageId", "version", "validation"], &[], run_city_create_from_world),

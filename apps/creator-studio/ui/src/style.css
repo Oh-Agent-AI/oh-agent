@@ -198,3 +198,12 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, summary:focu
 .agent-empty { display: grid; justify-items: center; text-align: center; gap: 10px; padding: 48px 18px; color: #d8e4e7; }
 .agent-empty-icon { display: grid; place-items: center; width: 46px; height: 46px; border-radius: 50%; background: #244a44; color: #86e7cf; font-size: 24px; }
 .agent-empty p { max-width: 240px; font-size: 13px; }
+
+.code-preview-panel select, .code-preview-panel label, .code-preview-panel code { width: 100%; min-width: 0; }
+.code-preview-panel code { overflow-wrap: anywhere; line-height: 1.5; }
+.code-preview-status { display: grid; gap: 8px; border-top: 1px solid #30464a; padding-top: 12px; }
+.code-preview-status p { margin: 0; }
+
+.code-story-evidence { display: grid; gap: 8px; border-top: 1px solid #30464a; padding-top: 12px; }
+.code-story-evidence p { margin: 0; }
+.code-dialogue-entry { max-height: 120px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: #d8e4e7; background: #142023; border-radius: 6px; padding: 8px; }

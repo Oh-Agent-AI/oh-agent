@@ -200,6 +200,17 @@ pub(crate) fn list(home: &Path, city_instance: &str, payload: &Value) -> Result<
     Ok(json!({"rules":rules,"clockRevision":clock["clockRevision"]}))
 }
 
+pub(crate) fn list_scope(home: &Path, player_id: &str, city_id: &str, game_id: &str) -> Result<Vec<Value>, &'static str> {
+    let db = database(home)?;
+    migrate(&db)?;
+    let mut statement = db.prepare("SELECT rule_id,next_due_utc_ms,status FROM city_story_rules WHERE player_id=?1 AND city_id=?2 AND game_id=?3 ORDER BY rule_id LIMIT 100")
+        .map_err(|_| "creator_store_unavailable")?;
+    let rules = statement.query_map(params![player_id,city_id,game_id], |row| {
+        Ok(json!({"ruleId":row.get::<_, String>(0)?,"nextDueUtcMs":row.get::<_, Option<u64>>(1)?,"status":row.get::<_, String>(2)?}))
+    }).map_err(|_| "creator_store_unavailable")?.collect::<Result<Vec<_>, _>>().map_err(|_| "creator_store_unavailable");
+    rules
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

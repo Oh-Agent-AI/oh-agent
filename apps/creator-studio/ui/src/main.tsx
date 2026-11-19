@@ -14,6 +14,7 @@ import { inspectInstalledWorld, supportsInstalledWorldGenerator } from "./conten
 import { buildCitySourceExport, buildProjectSourceExport } from "./projectSourceExport";
 import { exportBlockMessage, exportClickBlock } from "./exportClick";
 import { AgentApprovalGate, matchesPreviewBase, type AgentCommit } from "./agentApproval";
+import { CodeGamePreviewPanel } from "./CodeGamePreviewPanel";
 // 视口与 City 插件共享同一份引擎与装配管线，保证 Studio 看到的是同一座城市。
 import { CityViewport } from "../../../agent-city/ui/src/viewport/CityViewport";
 import { assertCityPlanPlayable } from "./cityPlanPreflight";
@@ -148,7 +149,7 @@ function App() {
   const [installedPackages, setInstalledPackages] = useState<ReadonlyArray<InstalledContentPackage>>([]);
   const [confirmUninstall, setConfirmUninstall] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [activePanel, setActivePanel] = useState<"play" | "agent" | "project">("agent");
+  const [activePanel, setActivePanel] = useState<"play" | "agent" | "project" | "code">("agent");
   const [message, setMessage] = useState("");
   const [cities, setCities] = useState<CityRow[]>([]);
   const [citiesCursor, setCitiesCursor] = useState<string | null>(null);
@@ -1300,10 +1301,11 @@ function App() {
           <div className="viewport-savebar" role="status">Agent 临时预览 · 不会保存到城市</div></div>}
       </section>
       <aside className="panel" aria-label="创作检查器">
-        <div className="inspector-heading"><div><span className="sidebar-kicker">INSPECTOR</span><h2>{activePanel === "agent" ? "City Agent" : activePanel === "project" ? "城市项目" : "玩法与场地"}</h2></div>{project && <span className="version-pill">版本 {project.revision}</span>}</div>
-        <nav className="inspector-tabs" aria-label="工作台面板"><button className={activePanel === "play" ? "active" : ""} aria-pressed={activePanel === "play"} onClick={() => setActivePanel("play")}>玩法</button><button className={activePanel === "agent" ? "active" : ""} aria-pressed={activePanel === "agent"} onClick={() => setActivePanel("agent")}>Agent</button><button className={activePanel === "project" ? "active" : ""} aria-pressed={activePanel === "project"} onClick={() => setActivePanel("project")}>项目</button></nav>
+        <div className="inspector-heading"><div><span className="sidebar-kicker">INSPECTOR</span><h2>{activePanel === "agent" ? "City Agent" : activePanel === "project" ? "城市项目" : activePanel === "code" ? "代码预览" : "玩法与场地"}</h2></div>{project && <span className="version-pill">版本 {project.revision}</span>}</div>
+        <nav className="inspector-tabs" aria-label="工作台面板"><button className={activePanel === "play" ? "active" : ""} aria-pressed={activePanel === "play"} onClick={() => setActivePanel("play")}>玩法</button><button className={activePanel === "agent" ? "active" : ""} aria-pressed={activePanel === "agent"} onClick={() => setActivePanel("agent")}>Agent</button><button className={activePanel === "project" ? "active" : ""} aria-pressed={activePanel === "project"} onClick={() => setActivePanel("project")}>项目</button><button className={activePanel === "code" ? "active" : ""} aria-pressed={activePanel === "code"} onClick={() => setActivePanel("code")}>代码预览</button></nav>
         {message && <p className="status status-banner" role="status">{message}</p>}
         <p className="readiness">{browserPreview ? "合成数据预览 · " : ""}{releaseHint}</p>
+        {activePanel === "code" && <CodeGamePreviewPanel request={creatorRequest} browserPreview={browserPreview} onMessage={setMessage} />}
         {activePanel === "agent" && <section className="agent-panel" aria-label="City Agent">
           {agentCommit && <div className="agent-card" role="group" aria-label="等待确认的 Agent 修改"><div className="agent-card-head"><span className="agent-label">等待确认</span><span className="agent-time">版本 {agentCommit.expectedRevision}</span></div>
             <p>{agentCommit.proposal.summary}</p>{agentCommit.proposal.details.length > 0 && <ul>{agentCommit.proposal.details.map((detail, index) => <li key={index}>{detail}</li>)}</ul>}<details><summary>查看完整修改内容</summary><pre className="agent-proposal-content">{agentCommit.proposal.changes}</pre></details><p className="muted">项目 {agentCommit.projectId}。{agentCommit.proposal.requiresCityPreview ? !agentCityPreview ? "无法显示该城市修改：请打开对应项目、等待基准布局就绪，并将单个城市补丁单独预览。" : agentPreviewStatus?.context !== agentCityPreview || agentPreviewStatus.status === "loading" ? "正在准备三维临时预览。" : agentPreviewStatus.status === "failed" ? "预览失败或包含失效项，不能保存。" : "基准路网已匹配，三维临时预览已显示；确认后才会保存。" : "此修改尚未提供三维预览，确认后才会保存。"}</p>

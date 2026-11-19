@@ -528,7 +528,12 @@
         "creator.mount.list",
         "creator.mount.bind",
         "creator.mount.unbind",
-        "creator.game.bind.preview"
+        "creator.game.bind.preview",
+        "creator.code.builds.list",
+        "creator.code.preview",
+        "creator.code.preview.status",
+        "creator.code.preview.stop",
+        "creator.code.story"
       ],
       "hostEvents": [
         "plugin.event"

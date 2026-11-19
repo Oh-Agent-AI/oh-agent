@@ -3,7 +3,7 @@
 > 状态：**v1.1 契约冻结；不是已实现 API**
 > 日期：2026-11-18
 > 适用：`@oh-agent/city-sdk`、`@oh-agent/city-game-sdk`、City Runtime、Narrative Engine、Creator Studio、Creator MCP
-> 实施状态：包级契约、V2 Host/Preview、Registry、Snapshot Headless、Story CAS/Outbox、持久 City Clock/Run、宿主签发 PlayerScope、Scheduler 规则持久化/取消/到期查询、Dialogue Host/UI 与不可变 Build 的宿主 Preview 请求/领取链路已落地；开发仓库、打包 CLI、非源码工作目录及无全局 Node 的 MCP Build/Test 已有实测。Scheduler 事件执行与离线结算、完整 Narrative、全量旧入口 Router、真实应用 Preview 已完成两轮成功/实体清理及加速对照实测。Scheduler 事件执行与离线结算、完整 Narrative 和全量旧入口 Router 仍未完成。Story 不开放 MCP 直写，也不接受调用方提交玩家身份或整份状态。
+> 实施状态：包级契约、V2 Host/Preview、Registry、Snapshot Headless、Story CAS/Outbox、持久 City Clock/Run、宿主签发 PlayerScope、Scheduler 规则持久化/取消/到期查询、Dialogue Host/UI 与不可变 Build 的宿主 Preview 请求/领取链路已落地；开发仓库、打包 CLI、非源码工作目录及无全局 Node 的 MCP Build/Test 已有实测。Scheduler 事件执行与离线结算、完整 Narrative、全量旧入口 Router、真实应用 Preview 已完成两轮成功/实体清理及加速对照实测。Studio 的不可变 Build 选择、Preview 启停、遥测与 Story/Dialogue 证据面板已接线。Scheduler 事件执行与离线结算、完整 Narrative 和全量旧入口 Router 仍未完成。Story 不开放 MCP 直写，也不接受调用方提交玩家身份或整份状态。
 
 > 引用文档：`AGENT_CITY_SDK_V2_PRD_RFC_2026-11-18.md`、`AGENT_CITY_GAME_SDK_V2_PRD_RFC_2026-11-18.md`（v2.5）
 > 变更规则：后续兼容新增进入 v1.2；字段、语义、Token、Revision 或生命周期的破坏性变更进入 Shared Contracts v2 与兼容评审

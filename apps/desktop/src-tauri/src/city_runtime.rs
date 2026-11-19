@@ -169,6 +169,23 @@ fn commit_at(home: &Path, city_instance: &str, payload: &Value, now: u64) -> Res
     })
 }
 
+pub(crate) fn story_evidence(home: &Path, run_id: &str) -> Result<Value, &'static str> {
+    if !valid_id(run_id) { return Err("game_argument_invalid"); }
+    let db = database(home)?;
+    migrate(&db)?;
+    let row = db.query_row("SELECT city_id,game_id,player_id FROM city_game_runs WHERE run_id=?1", [run_id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))
+        .optional().map_err(|_| "creator_store_unavailable")?.ok_or("game_run_not_found")?;
+    let state = story_state(home, &row.2, &row.0, &row.1)?;
+    let rules = crate::city_scheduler::list_scope(home, &row.2, &row.0, &row.1)?;
+    let dialogue = crate::story_store::story_dialogue(home, &row.2, &row.0, &row.1, 20)?.into_iter().filter_map(|entry| {
+        let intent = entry["intent"].clone();
+        let text = intent.get("text").and_then(Value::as_str)?;
+        Some(json!({"eventId":entry["eventId"],"text":text,"createdAtMs":entry["createdAtMs"],"storyRevision":entry["storyRevision"]}))
+    }).collect::<Vec<_>>();
+    Ok(json!({"available":true,"runId":run_id,"storyRevision":state["storyRevision"],"state":state["state"],"rules":rules,"dialogue":dialogue}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,6 +214,14 @@ mod tests {
         assert_eq!(first["status"], "committed");
         let state = story_state(&home, run["playerScope"]["playerId"].as_str().unwrap(), "city:one", "game.romance").unwrap();
         assert_eq!(state["state"]["affection"], 1);
+        let mut speak = commit_payload(&run, &clock, first["storyRevision"].as_str().unwrap());
+        speak["operationId"] = json!("operation-speak");
+        speak["eventId"] = json!("event-speak");
+        speak["intent"] = json!({"kind":"speak","text":"See you Saturday."});
+        commit_at(&home, "city-instance", &speak, 1_000).unwrap();
+        let evidence = story_evidence(&home, run["runId"].as_str().unwrap()).unwrap();
+        assert_eq!(evidence["state"]["affection"], 1);
+        assert_eq!(evidence["dialogue"][0]["text"], "See you Saturday.");
         assert_eq!(read_clock_at(&home, "city:one", 2_000).unwrap()["simulationUtcMs"], 2_000);
         assert_eq!(commit_at(&home, "another-city", &commit_payload(&run, &clock, "0"), 2_000).unwrap_err(), "game_run_mismatch");
         stop_run(&home, "city-instance", &json!({"runId":run["runId"]})).unwrap();
