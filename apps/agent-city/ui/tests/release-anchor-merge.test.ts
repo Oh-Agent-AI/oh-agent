@@ -138,9 +138,9 @@ test("a released air gate flows from the merged view into a runnable plan and a 
     { id: "l3", fromAnchorId: "spawn-air:n", toAnchorId: "air-gate:n3", capabilities: ["fly"] });
   frozen.geometry = [
     { geometryRef: "creator-air:spawn", positionMeters: { x: 0, y: 40, z: 0 } },
-    { geometryRef: "creator-air:g1", positionMeters: { x: 150, y: 40, z: 0 }, activationRadiusMeters: 20 },
-    { geometryRef: "creator-air:g2", positionMeters: { x: 300, y: 40, z: 0 }, activationRadiusMeters: 20 },
-    { geometryRef: "creator-air:g3", positionMeters: { x: 450, y: 40, z: 0 }, activationRadiusMeters: 20 },
+    { geometryRef: "creator-air:g1", positionMeters: { x: 150, y: 40, z: 0 }, activationRadiusMeters: 20, facingRadians: Math.PI / 2 },
+    { geometryRef: "creator-air:g2", positionMeters: { x: 300, y: 40, z: 0 }, activationRadiusMeters: 20, facingRadians: Math.PI / 2 },
+    { geometryRef: "creator-air:g3", positionMeters: { x: 450, y: 40, z: 0 }, activationRadiusMeters: 20, facingRadians: Math.PI / 2 },
   ];
   const merged = mergeReleaseAnchors(liveView(), frozen);
   assert.equal(merged.ok, true);

@@ -48,6 +48,13 @@ test("a single gate still yields a flyable ring with a deterministic fallback no
   assert.equal(course!.ringRadius, 5);
 });
 
+test("published ring normals override inferred course normals for matching visuals and triggers", () => {
+  const course = createCreatorGateCourse({ ...base, gates: [{ x: 0, y: 20, z: 0, radius: 4, nx: 1, ny: 0, nz: 0 }] });
+  assert.ok(course);
+  assert.deepEqual([course!.rings[0].nx, course!.rings[0].ny, course!.rings[0].nz], [1, 0, 0]);
+  assert.equal(createCreatorGateCourse({ ...base, gates: [{ x: 0, y: 20, z: 0, radius: 4, nx: 0 }] }), null);
+});
+
 test("unusable gate sets are rejected instead of drawing a wrong course", () => {
   assert.equal(createCreatorGateCourse({ ...base, gates: [] }), null);
   assert.equal(createCreatorGateCourse({ ...base, gates: Array.from({ length: 65 }, () => ({ x: 0, y: 0, z: 0, radius: 1 })) }), null);

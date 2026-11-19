@@ -16,7 +16,7 @@ export {
   computeCityWorldDigests, validateCityJsonSchema, validateCityWorldSnapshot,
   validateCompileContext, validateWorldPlan, type CityWorldDigestSetV1,
 } from "./sharedValidate";
-export { segmentCrossesWorldVolume, segmentIntersectsVolumeGeometry, sweepSegmentThroughVolumes } from "./worldVolumes";
+export { segmentCrossesWorldVolume, segmentIntersectsVolumeGeometry, segmentPassesRingGate, sweepSegmentThroughVolumes } from "./worldVolumes";
 export {
   compileWorldFixtureV1, createWorldCompilerFixtureV1, reverseWorldPlanCollections,
   verifyWorldCompilerDeterminism, type WorldCompilerFixtureV1, type WorldDeterminismEvidenceV1,

@@ -70,6 +70,18 @@ export function segmentCrossesWorldVolume(from: Vec3V1, to: Vec3V1, volume: Worl
   return segmentIntersectsVolumeGeometry(from, to, volume.geometry);
 }
 
+export function segmentPassesRingGate(from: Vec3V1, to: Vec3V1, volume: WorldVolumeDtoV1): boolean {
+  if (volume.geometry.kind !== "ring") return false;
+  const geometry = volume.geometry;
+  const delta = subtract(to, from);
+  const denominator = dot(delta, geometry.normal);
+  if (Math.abs(denominator) <= 1e-12) return false;
+  const time = dot(subtract(geometry.center, from), geometry.normal) / denominator;
+  if (time < 0 || time > 1) return false;
+  const crossing = at(from, delta, time);
+  return Math.hypot(...subtract(crossing, geometry.center)) <= geometry.innerRadiusMeters + 1e-9;
+}
+
 export function sweepSegmentThroughVolumes(from: Vec3V1, to: Vec3V1, volumes: readonly WorldVolumeDtoV1[]): readonly StableIdV1[] {
   return Object.freeze(volumes.filter(volume => segmentCrossesWorldVolume(from, to, volume)).map(volume => volume.id).sort());
 }

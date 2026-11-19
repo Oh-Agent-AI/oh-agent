@@ -1,5 +1,5 @@
 import { canonicalDigest, compileWorld, stableIdV1 } from "@oh-agent/city-sdk";
-import type { CityPlaceV1, CityResidentV1, CityWorldSnapshotV4, WorldPlanV1 } from "@oh-agent/city-sdk/contracts";
+import type { CityPlaceV1, CityResidentV1, CityWorldSnapshotV4, WorldPlanV1, WorldVolumeDtoV1 } from "@oh-agent/city-sdk/contracts";
 import type { CityLayout, RoadEdge } from "../../engine/cityLayout";
 import type { CityLayoutSdkViewV1 } from "../../engine/sdk/cityLayoutAdapter";
 import { toMeters } from "../../engine/worldScale";
@@ -38,26 +38,7 @@ export function createCitySnapshotV4(options: CitySnapshotOptionsV1): CityWorldS
     centerline: edge.points.map((point) => [toMeters(point.x), ground(point.x, point.z), toMeters(point.z)] as const),
   }));
   const layoutAnchors = view.layout.anchors ?? [];
-  const zoneVolumes = layoutAnchors.filter((anchor) => anchor.kind === "zone").map((anchor) => {
-    const geometry = view.geometry.get(anchor.geometryRef);
-    const position = geometry?.positionMeters;
-    if (!position) throw new Error(`Zone anchor ${anchor.id} has no geometry.`);
-    const radius = Math.max(0.1, geometry.activationRadiusMeters ?? 4);
-    const facing = geometry.facingRadians ?? 0;
-    return {
-      id: stableIdV1("volume", anchor.id),
-      kind: "checkpoint" as const,
-      geometry: {
-        kind: "ring" as const,
-        center: [position.x, position.y, position.z] as const,
-        normal: [Math.sin(facing), 0, Math.cos(facing)] as const,
-        innerRadiusMeters: Math.max(0.05, radius * 0.8),
-        outerRadiusMeters: radius,
-        thicknessMeters: 1,
-      },
-      travelModes: anchor.capabilities,
-    };
-  });
+  const zoneVolumes = createCityZoneVolumesV1(view);
   const zoneAnchors = layoutAnchors.filter((anchor) => anchor.kind === "zone").map((anchor) => {
     const geometry = view.geometry.get(anchor.geometryRef);
     const position = geometry?.positionMeters;
@@ -127,6 +108,31 @@ export function createCitySnapshotV4(options: CitySnapshotOptionsV1): CityWorldS
         ...(options.clockRevision ? { clockRevision: options.clockRevision } : {}),
       },
     },
+  });
+}
+
+export function createCityZoneVolumesV1(view: CityLayoutSdkViewV1): readonly WorldVolumeDtoV1[] {
+  return (view.layout.anchors ?? []).filter((anchor) => anchor.kind === "zone").map((anchor) => {
+    const geometry = view.geometry.get(anchor.geometryRef);
+    const position = geometry?.positionMeters;
+    const radius = geometry?.activationRadiusMeters;
+    if (!position || radius === undefined) throw new Error(`Zone anchor ${anchor.id} has no complete geometry.`);
+    const center = [position.x, position.y, position.z] as const;
+    return {
+      id: stableIdV1("volume", anchor.id),
+      kind: "checkpoint" as const,
+      geometry: geometry.facingRadians === undefined
+        ? { kind: "sphere" as const, center, radiusMeters: radius }
+        : {
+          kind: "ring" as const,
+          center,
+          normal: [Math.sin(geometry.facingRadians), 0, Math.cos(geometry.facingRadians)] as const,
+          innerRadiusMeters: radius,
+          outerRadiusMeters: radius * 1.1,
+          thicknessMeters: 1,
+        },
+      travelModes: anchor.capabilities,
+    };
   });
 }
 

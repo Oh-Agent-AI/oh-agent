@@ -2,7 +2,7 @@ import { compileWorld } from "./authoring";
 import type { CityWorldSnapshotV4, CompileContextV1, WorldPlanV1 } from "./contracts";
 import { canonicalJson } from "./package";
 
-export { segmentCrossesWorldVolume, segmentIntersectsVolumeGeometry, sweepSegmentThroughVolumes } from "./worldVolumes";
+export { segmentCrossesWorldVolume, segmentIntersectsVolumeGeometry, segmentPassesRingGate, sweepSegmentThroughVolumes } from "./worldVolumes";
 
 export interface WorldCompilerFixtureV1 {
   readonly plan: WorldPlanV1;

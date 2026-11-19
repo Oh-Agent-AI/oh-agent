@@ -52,8 +52,8 @@ export type CreatorFlightRunV1 = Readonly<{
       completed?: number; total?: number }>;
     dispose(): void;
   }>;
-  /** 门心（世界单位）与触发半径；与触发球同一几何，用来画可见的环。 */
-  gates?: readonly Readonly<{ x: number; y: number; z: number; radius: number }>[];
+  /** 发布门心（世界单位）与半径；可见环共享这些位置和尺寸。 */
+  gates?: readonly Readonly<{ x: number; y: number; z: number; radius: number; nx?: number; ny?: number; nz?: number }>[];
 }>;
 
 export type GameSessionSnapshot = {

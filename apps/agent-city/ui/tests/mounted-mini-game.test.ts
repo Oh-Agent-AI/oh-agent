@@ -123,7 +123,8 @@ test("flight mini-games plan against fly anchors and trigger on the aircraft's 3
   const plan = createMountedMiniGamePlan({ view: airView, packageJson: JSON.stringify(airGame), mount: airMount as any, gameRef: airMount.game as any, seed: 7, capability: "fly" });
   assert.equal(plan.ok, true);
   if (!plan.ok) return;
-  assert.deepEqual(plan.value.zones.gates, [{ x: 80, y: 55, z: 0, radius: 6 }]);
+  assert.deepEqual(plan.value.zones.gates.map(({ volume: _volume, ...zone }) => zone), [{ x: 80, y: 55, z: 0, radius: 6 }]);
+  assert.equal(plan.value.zones.gates[0]?.volume?.geometry.kind, "sphere");
   let latest = null;
   const controller = new MountedMiniGameControllerV1(plan.value, snapshot => { latest = snapshot; });
   // 地面上掠过同一个 x/z 不算进闸：高度必须也进触发球。
@@ -131,6 +132,35 @@ test("flight mini-games plan against fly anchors and trigger on the aircraft's 3
   assert.equal(latest?.state.counters.passed ?? 0, 0);
   controller.fixedStep({ x: 80, y: 54, z: 0 });
   assert.equal(latest?.state.counters.passed, 1);
+});
+
+test("oriented flight gates score only when the aircraft crosses the ring aperture", () => {
+  const orientedView: CityLayoutSdkViewV1 = {
+    ...airView,
+    geometry: new Map([...airView.geometry, ["g:gate-1", {
+      positionMeters: { x: 80, y: 55, z: 0 }, activationRadiusMeters: 6, facingRadians: 0,
+    }]]),
+  };
+  const plan = createMountedMiniGamePlan({ view: orientedView, packageJson: JSON.stringify(airGame), mount: airMount as any,
+    gameRef: airMount.game as any, seed: 7, capability: "fly" });
+  assert.equal(plan.ok, true);
+  if (!plan.ok) return;
+  const volume = plan.value.zones.gates[0]?.volume;
+  assert.equal(volume?.id, "volume:gate-1");
+  assert.equal(volume?.geometry.kind, "ring");
+  let latest = null;
+  const controller = new MountedMiniGameControllerV1(plan.value, snapshot => { latest = snapshot; });
+  controller.fixedStep({ x: 80, y: 55, z: -10 });
+  controller.fixedStep({ x: 80, y: 55, z: 10 });
+  assert.equal(latest?.state.counters.passed, 1);
+  const replay = new MountedMiniGameControllerV1(plan.value, () => {});
+  replay.fixedStep({ x: 80, y: 55, z: -10 });
+  replay.fixedStep({ x: 80, y: 55, z: 10 });
+  assert.deepEqual(replay.snapshot.state, controller.snapshot.state);
+  const rimController = new MountedMiniGameControllerV1(plan.value, () => {});
+  rimController.fixedStep({ x: 80, y: 61.5, z: -10 });
+  rimController.fixedStep({ x: 80, y: 61.5, z: 10 });
+  assert.equal(rimController.snapshot.state.counters.passed ?? 0, 0);
 });
 
 test("a fly mini-game refuses an entry anchor that does not declare fly", () => {

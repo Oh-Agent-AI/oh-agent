@@ -469,7 +469,10 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
     const plan = createCreatorMiniGamePlan(view, experience, { capability: "fly" });
     if (!plan.ok) { void finishPlaytest(runId, "failed", undefined, plan.diagnostics[0]?.code ?? "creator_game_plan_invalid"); return; }
     const controller = new CreatorMiniGameRuntimeControllerV1(plan.value, () => {});
-    const gates = Object.values(plan.value.zones).flat().map(zone => ({ x: worldUnits(zone.x), y: worldUnits(zone.y), z: worldUnits(zone.z), radius: worldUnits(zone.radius) }));
+    const gates = Object.values(plan.value.zones).flat().map(zone => ({
+      x: worldUnits(zone.x), y: worldUnits(zone.y), z: worldUnits(zone.z), radius: worldUnits(zone.radius),
+      ...(zone.volume?.geometry.kind === "ring" ? { nx: zone.volume.geometry.normal[0], ny: zone.volume.geometry.normal[1], nz: zone.volume.geometry.normal[2] } : {}),
+    }));
     flightOutcomeRef.current = (status, reason) => {
       flightOutcomeRef.current = null;
       const outcome = playtestOutcome(status, reason);

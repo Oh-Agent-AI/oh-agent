@@ -172,7 +172,7 @@ export interface WorldVolumeDtoV1 {
 }
 ```
 
-所有引用必须存在；Road 中心线不得自交为不可验证拓扑，Volume 半径/厚度必须为正，ring normal 必须归一化且 `0 < inner < outer`。P0 只要求静态 Volume 查询与线段/扫掠体穿越判定；完整二维/三维路径规划不属于 Volume 基础语义。
+所有引用必须存在；Road 中心线不得自交为不可验证拓扑，Volume 半径/厚度必须为正，ring normal 必须归一化且 `0 < inner < outer`。P0 只要求静态 Volume 查询与线段/扫掠体穿越判定；完整二维/三维路径规划不属于 Volume 基础语义。`segmentCrossesWorldVolume` 判定与环体相交，飞行计分必须使用 `segmentPassesRingGate` 判定穿过 `innerRadiusMeters` 环孔；缺少可信朝向的旧触发区保持 Sphere 兼容，不得虚构 Ring 法线。
 
 ### 2.3 公共 Place 与 Resident
 

@@ -13,7 +13,7 @@ import {
   compileWorldFixtureV1, createWorldCompilerFixtureV1, reverseWorldPlanCollections,
   verifyWorldCompilerDeterminism,
 } from "../src/testing";
-import { segmentCrossesWorldVolume, sweepSegmentThroughVolumes } from "../src/worldVolumes";
+import { segmentCrossesWorldVolume, segmentPassesRingGate, sweepSegmentThroughVolumes } from "../src/worldVolumes";
 import type { CityWorldSnapshotV4, WorldPlanV1 } from "../src/contracts";
 
 const mutable = <T>(value: T): T => structuredClone(value);
@@ -208,6 +208,10 @@ test("static volume crossings support water, convex prisms, and rings without cl
   assert.equal(segmentCrossesWorldVolume([0, 1, 0], [0, 2, 0], water), false);
   assert.equal(segmentCrossesWorldVolume([0, 2, 0], [10, 2, 0], ring), true);
   assert.equal(segmentCrossesWorldVolume([0, 5, 0], [10, 5, 0], ring), false);
+  assert.equal(segmentPassesRingGate([0, 1, 0], [10, 1, 0], ring), true);
+  assert.equal(segmentPassesRingGate([0, 2.5, 0], [10, 2.5, 0], ring), false);
+  assert.equal(segmentPassesRingGate([0, 5, 0], [10, 5, 0], ring), false);
+  assert.equal(segmentPassesRingGate([0, 1, 0], [0, 1, 10], ring), false);
   assert.deepEqual(sweepSegmentThroughVolumes([0, -1, 0], [10, -1, 0], snapshot.volumes), ["volume:harbor-ring", "volume:harbor-water"]);
 
   const prism = mutable(water);

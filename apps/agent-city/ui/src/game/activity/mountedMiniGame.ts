@@ -1,12 +1,13 @@
-import { compileRules, createRun, parseMiniGamePackJson, validateMount, type CityGameMountV1, type CityLayoutV1, type ContentRef, type MiniGamePackV1, type RuleRunV1, type RuleStateV1, type Result, type DiagnosticV1 } from "@oh-agent/city-sdk";
+import { compileRules, createRun, parseMiniGamePackJson, segmentCrossesWorldVolume, segmentPassesRingGate, stableIdV1, validateMount, type CityGameMountV1, type CityLayoutV1, type ContentRef, type MiniGamePackV1, type RuleRunV1, type RuleStateV1, type Result, type DiagnosticV1, type WorldVolumeDtoV1 } from "@oh-agent/city-sdk";
 import type { CityLayoutSdkViewV1 } from "../../engine/sdk/cityLayoutAdapter";
+import { createCityZoneVolumesV1 } from "../codeGameHost/citySnapshot";
 
 export type MountedMiniGamePlanV1 = Readonly<{
   layout: CityLayoutV1;
   game: MiniGamePackV1;
   mount: CityGameMountV1;
   seed: number;
-  zones: Readonly<Record<string, readonly Readonly<{ x: number; y: number; z: number; radius: number }>[]>>;
+  zones: Readonly<Record<string, readonly Readonly<{ x: number; y: number; z: number; radius: number; volume?: WorldVolumeDtoV1 }>[]>>;
 }>;
 export type MountedMiniGameSnapshotV1 = Readonly<{ status: "ready" | "running" | "success" | "failure" | "error"; state: RuleStateV1; reason: string | null }>;
 
@@ -41,13 +42,18 @@ export function createMountedMiniGamePlan(input: Readonly<{ view: CityLayoutSdkV
     return { ok: false, diagnostics: [diagnostic("entry_capability_unsupported", "mount.entryAnchorId",
       `The City mini-game runtime requires a ${capability}-capable entry.`, entryAnchor.id)] };
   }
-  const zones: Record<string, Readonly<{ x: number; y: number; z: number; radius: number }>[]> = {};
+  const zones: Record<string, Readonly<{ x: number; y: number; z: number; radius: number; volume?: WorldVolumeDtoV1 }>[]> = {};
+  const zoneVolumes = new Map((capability === "fly" ? createCityZoneVolumesV1(input.view) : []).map(volume => [volume.id, volume]));
   for (const [slotName, slot] of Object.entries(parsed.value.slots)) {
     if (slot.kind !== "zone") continue;
     const geometries = (mounted.value.mount.bindings[slotName] ?? []).map(anchorId => {
       const anchor = input.view.layout.anchors.find(item => item.id === anchorId);
       const geometry = anchor ? input.view.geometry.get(anchor.geometryRef) : null;
-      return geometry?.activationRadiusMeters === undefined ? null : { x: geometry.positionMeters.x, y: geometry.positionMeters.y, z: geometry.positionMeters.z, radius: geometry.activationRadiusMeters };
+      if (geometry?.activationRadiusMeters === undefined) return null;
+      const volume = zoneVolumes.get(stableIdV1("volume", anchorId));
+      if (capability === "fly" && !volume) return null;
+      return { x: geometry.positionMeters.x, y: geometry.positionMeters.y, z: geometry.positionMeters.z,
+        radius: geometry.activationRadiusMeters, ...(volume ? { volume } : {}) };
     });
     if (geometries.some(item => item === null)) return { ok: false, diagnostics: [diagnostic("zone_geometry_unavailable", `mount.bindings.${slotName}`, "A bound zone does not have a trusted activation radius.")] };
     zones[slotName] = geometries as NonNullable<(typeof geometries)[number]>[];
@@ -95,7 +101,12 @@ export class MountedMiniGameControllerV1 {
           if (Math.hypot(positionMeters.x - zone.x, positionMeters.y - zone.y, positionMeters.z - zone.z) > zone.radius * 1.25) this.triggeredZones.delete(key);
           continue;
         }
-        if (!pointInsideZone(this.previous, zone) && segmentIntersectsZone(this.previous, positionMeters, zone)) {
+        const from: [number, number, number] = [this.previous.x, this.previous.y, this.previous.z];
+        const to: [number, number, number] = [positionMeters.x, positionMeters.y, positionMeters.z];
+        const intersects = !zone.volume ? segmentIntersectsZone(this.previous, positionMeters, zone)
+          : zone.volume.geometry.kind === "ring" ? segmentPassesRingGate(from, to, zone.volume)
+          : segmentCrossesWorldVolume(from, to, zone.volume);
+        if (!pointInsideZone(this.previous, zone) && intersects) {
           inputs.push({ type: "zone.entered", tick: this.tick, slot, index });
           this.triggeredZones.add(key);
         }
