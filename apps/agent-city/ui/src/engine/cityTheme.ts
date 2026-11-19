@@ -4,7 +4,10 @@
  * 执行环境配色在两个主题里都必须互相可分辨（色相不同），因为楼的颜色承载「哪个执行环境」。
  */
 
-export type CityThemeName = "miami" | "desert";
+import type { CityThemeIdV1 } from "@oh-agent/city-sdk";
+
+/** 渲染层主题名与 SDK 主题注册表共用一套词汇（themes.ts 是唯一声明点）。 */
+export type CityThemeName = CityThemeIdV1;
 
 export type HarnessPaletteEntry = { wall: string; roof: string; accent: string; park: string };
 

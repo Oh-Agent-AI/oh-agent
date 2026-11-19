@@ -1,7 +1,8 @@
 import type { AnchorCapability, AnchorFilterV1, AnchorKind, CityAnchorV1, CityAnchorLinkV1, CityGameMountV1, CityInstanceV1, CityAnchorGeometryV1, CityLayoutSnapshotV1, CityLayoutSnapshotV2, CityLayoutSnapshotScoped, CityLayoutSnapshotV3, CityLayoutV1, CityProjectAssetCatalogV1, CityProjectAssetEntryV1, CitySkinPackV1, CityWorldProfileV1, CoastalWorldParametersV1, ContentRef, DiagnosticV1, MiniGamePackV1, ModelAssetCatalogEntryV1, ModelAssetCatalogV1, ModelAssetFilterV1, ModelAssetRefV1, ResolvedModelAssetRefsV1, Result, SceneDraftV1, SceneObjectFilterV1, SceneObjectV1 } from "./types";
 import { validateMiniGamePack } from "./content";
 import { validateWorldPlanPatch } from "./worldPlanPatch";
-import { ARID_DUNES_LEGACY_KEYS, ARID_DUNES_WORLD_V2, validateWorldParametersV1 } from "./worldParameters";
+import { isCityThemeIdV1 } from "./themes";
+import { ARID_DUNES_LEGACY_KEYS, ARID_DUNES_WORLD_V2, COASTAL_PROFILE_ID_V1, validateWorldParametersV1 } from "./worldParameters";
 
 const error = (code: string, path: string, message: string, objectId?: string): DiagnosticV1 => ({ code, severity: "error", path, message, ...(objectId ? { objectId } : {}) });
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -50,7 +51,7 @@ export function validateCityWorldProfile(value: unknown): Result<CityWorldProfil
   if (!isObject(value.geography) || !exactKeys(value.geography, ["generator", "parameters"]) || !isObject(value.geography.parameters)) {
     return { ok: false, diagnostics: [error("world_profile_invalid_geography", "geography", "Geography must declare a supported generator and its parameters.")] };
   }
-  if (!isObject(value.visuals) || !exactKeys(value.visuals, ["themeId"]) || (value.visuals.themeId !== "miami" && value.visuals.themeId !== "desert")) {
+  if (!isObject(value.visuals) || !exactKeys(value.visuals, ["themeId"]) || !isCityThemeIdV1(value.visuals.themeId)) {
     return { ok: false, diagnostics: [error("world_profile_invalid_visuals", "visuals", "World profile must reference a registered City visual theme.")] };
   }
   let profile: CityWorldProfileV1;
@@ -93,7 +94,7 @@ export function validateCityWorldProfile(value: unknown): Result<CityWorldProfil
     }
     const coastal = parameters.coastal;
     const coastalKeys = ["profile", "version", "biome", "preferredAzimuth", "azimuthTolerance", "segmentArc", "wetSandWidth", "drySandWidth", "promenadeOffset", "boulevardOffset", "hotelOffset", "bandOuter", "maxCoastalSlope", "maxCoastalHeight", "riverMargin", "siteMargin", "minValidRatio", "bayHalfWidth", "bayShift"];
-    if (!exactKeys(coastal, coastalKeys) || coastal.profile !== "miami-coastal" || coastal.biome !== "tropical"
+    if (!exactKeys(coastal, coastalKeys) || coastal.profile !== COASTAL_PROFILE_ID_V1 || coastal.biome !== "tropical"
       || !Number.isSafeInteger(coastal.version) || (coastal.version as number) < 1) {
       return { ok: false, diagnostics: [error("world_profile_invalid_parameters", "geography.parameters.coastal", "Coastal profile identity or fields are invalid.")] };
     }
@@ -145,8 +146,7 @@ export function validateCitySkinPack(value: unknown): Result<CitySkinPackV1> {
     || new Set(compatible).size !== compatible.length) {
     return { ok: false, diagnostics: [error("skin_invalid_compatibility", "compatibleGeographies", "Skin must declare one or more unique supported geography generators.")] };
   }
-  if (!isObject(value.visuals) || !exactKeys(value.visuals, ["themeId"])
-    || (value.visuals.themeId !== "miami" && value.visuals.themeId !== "desert")) {
+  if (!isObject(value.visuals) || !exactKeys(value.visuals, ["themeId"]) || !isCityThemeIdV1(value.visuals.themeId)) {
     return { ok: false, diagnostics: [error("skin_invalid_visuals", "visuals", "Skin must reference a registered City visual theme.")] };
   }
   const visuals = Object.freeze({ themeId: value.visuals.themeId });

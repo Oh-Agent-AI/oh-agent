@@ -29,6 +29,7 @@ import { CITY_DATA_PLACES, cityDataPlaceForDecor, type CityDataPlaceId } from ".
 import { gameText } from "./game/gameCopy";
 import { prewarmAudioContext } from "./game/GameSfx";
 import type { useCityGame } from "./game/useCityGame";
+import { CITY_SKIN_PACK_IDS_V1, citySkinPackForTheme } from "@oh-agent/city-sdk";
 
 declare const __CITY_GAME_UAT__: boolean;
 
@@ -281,7 +282,7 @@ export function useCityExperience(engine: RefObject<CityEngine | null>, projecti
   };
   return { modelRef, model, setModel, tooltipRef, callbacks, selected, setSelected, clearSelection, orbitLocked, releaseOrbitLock: () => engine.current?.releaseOrbitLock(), details, setDetails, options, setOptions, catalog, setCatalog,
     seed, seedDraft, setSeedDraft, seedBusy, confirmSeed, applySeed, reseed, cursor, playing, speed, setSpeed,
-    cut, setCut, backdrop, setBackdrop, loadTransientSeed, worldProfile, skinId: worldProfile.visuals.themeId === "desert" ? "desert-evening" : "miami-vice",
+    cut, setCut, backdrop, setBackdrop, loadTransientSeed, worldProfile, skinId: citySkinPackForTheme(worldProfile.visuals.themeId) ?? CITY_SKIN_PACK_IDS_V1[0],
     changeWorldProfile: (profileId: string) => { if (writeCityWorldProfilePreference(profileId)) window.location.reload(); },
     changeSkin: (skinId: string) => { if (writeCitySkinPreference(skinId)) window.location.reload(); }, film, photoBusy, busy, error, setError, stats, card, progress, seek, replay, live, previewRef,
     describe, photo, exportFilm, refreshSelection, openHostSession, projection,

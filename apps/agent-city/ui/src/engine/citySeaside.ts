@@ -12,11 +12,12 @@ import { DetMath as Math } from "./detMath"; // 跨引擎确定性：见 detMath
  * 酒店前排 → 带外缘。湿沙靠水、干沙靠内陆（修订设计纠正过的顺序）。
  */
 
+import { COASTAL_PROFILE_ID_V1 } from "@oh-agent/city-sdk";
 import { hashSeed } from "../cityModel";
 import type { Vec2 } from "./cityLayout";
 
 export type CoastalConfig = {
-  profile: "miami-coastal";
+  profile: typeof COASTAL_PROFILE_ID_V1;
   version: number;
   biome: "tropical";
   /** 段选择：期望朝向（段外法线方向，弧度）与偏好衰减角。 */
@@ -46,7 +47,7 @@ export type CoastalConfig = {
 };
 
 export const MIAMI_COASTAL: CoastalConfig = {
-  profile: "miami-coastal",
+  profile: COASTAL_PROFILE_ID_V1,
   version: 3,
   biome: "tropical",
   // 海滩朝 +x：开湾后 +x 一侧是窄的东岛，海滩铺在它背向海湾的外岸（Ocean Beach 的位置）。

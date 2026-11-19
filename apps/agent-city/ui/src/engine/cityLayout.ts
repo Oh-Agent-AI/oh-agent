@@ -28,6 +28,7 @@ import { inspectBlockPlacement, indexPlanRoads, indexRoadPolygons, type BlockPla
 import { compileGroundRoadSurface } from "./surface/groundRoadCompiler";
 import { groundRoadClearance } from "./surface/roadClearance";
 import { civicMinimumSize, civicEnvelopeSize, GARDEN_MINIMUM_SIZE, DISTRICT_LANDMARK_ENVELOPE } from "./models/layoutPlacementGeometry";
+import { COASTAL_PROFILE_ID_V1 } from "@oh-agent/city-sdk";
 
 /** Last layoutCity wall-clock phases (ms). Cheap always-on marks for the occupancy benchmark. */
 export type LayoutTimings = { wallMs: number; planCached: boolean; phases: Record<string, number> };
@@ -268,7 +269,7 @@ function warmOccupancyScratch(rawPlan: ReturnType<typeof createCityPlan>, seed: 
   }
   const core = plan.core ?? { x: 0, z: 0 };
   const coreRadius = plan.islandRadius * ((coastal?.bayHalfWidth ?? 0) > 0 ? 1.4 / 0.94 : 1);
-  const contextPool = scratch?.contextPool ?? (coastal?.profile === "miami-coastal"
+  const contextPool = scratch?.contextPool ?? (coastal?.profile === COASTAL_PROFILE_ID_V1
     ? plan.blocks.flatMap((block) => block.parcels).filter((parcel) => {
       const radius = Math.hypot(parcel.x - core.x, parcel.z - core.z);
       return radius <= coreRadius * 0.94
@@ -836,7 +837,7 @@ export function layoutCity(model: CityModel, previous?: CityLayout | null, seed 
   // 空白规划图。背景楼只从空置地块取址，避开数据楼/整块花园/市政设施/高架
   // /酒店海滨保留带；优先填充会话城区周围，再向城市核心扩散，不加入会话统计。
   const contextBuildings: ContextBuilding[] = [];
-  if (coastal?.profile === "miami-coastal" && backdrop !== "off") {
+  if (coastal?.profile === COASTAL_PROFILE_ID_V1 && backdrop !== "off") {
     const full = backdrop === "full";
     const reserved = new Set([...used, ...civics.map((civic) => civic.parcelId)]);
     // 开湾时岛形定向南北、长半轴 ≈ 1.25R，核心又贴着西岸：0.94R 的圈罩不住南北两端，「繁华」档背景楼只剩一半

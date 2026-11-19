@@ -6,6 +6,7 @@
  * Rust（include_str!）与 MCP 消费生成产物；本文件是单一来源，改这里 + 重新生成，
  * 不改 Rust。`capabilityVersion` 变更时 preview/operation 记录随之可诊断版本偏斜。
  */
+import { CITY_SKIN_PACK_IDS_V1 } from "./themes";
 import { ARID_DUNES_WORLD_V2, COASTAL_ISLANDS_WORLD_V1 } from "./worldParameters";
 
 export const CREATOR_CAPABILITY_SCHEMA_VERSION = 1;
@@ -75,10 +76,11 @@ export const CREATOR_OPERATIONS_V1: readonly CreatorOperationDescriptor[] = Obje
   { id: "city.patch.remove", kind: "remove", target: "cityPatch" },
 ]);
 
-/** 皮肤/模板目录：新增内容只改这里 + 重新生成资产，Rust 零改动（§1.3）。 */
+/** 皮肤/模板目录：新增内容只改这里 + 重新生成资产，Rust 零改动（§1.3）。
+ * 皮肤列表 re-export themes.ts 注册表（皮肤 id 与主题归属的唯一来源）。 */
 export const CREATOR_CONTENT_V1 = Object.freeze({
   templates: ["checkpoint-race", "flight-checkpoint", "ornithopter-flight", "collect-one"],
-  skins: ["miami-vice", "desert-evening"],
+  skins: CITY_SKIN_PACK_IDS_V1,
 });
 
 /** 内容预算：Rust 保留硬上限并 clamp（描述符不能把上限调高）。数值与

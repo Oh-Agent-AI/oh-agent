@@ -50,6 +50,7 @@ import type { CityBlock, CityLayout, Parcel, PublicSite, RoadEdge, RoadNode, Ter
 import { clearsHighways, polygonDistance, roadNodeId, SegmentIndex, segmentDistance } from "./roadGeometry";
 import { targetParcels } from "./scaleTier";
 import { createCityShape, type Shape } from "./cityShape";
+import { COASTAL_PROFILE_ID_V1 } from "@oh-agent/city-sdk";
 export { createCityShape } from "./cityShape";
 export type { Shape } from "./cityShape";
 export { clearsHighways, polygonDistance, roadNodeId, SegmentIndex, segmentDistance } from "./roadGeometry";
@@ -246,7 +247,7 @@ function buildPlan(seed: number, R: number, shape: Shape, biome: Biome, config: 
     // Vice City 的第一眼轮廓需要一座 downtown 高塔；若完全按抽签，某些种子会
     // 只抽到灯塔/摩天轮/低矮文化馆，低会话量时整座城就像空地块规划图。
     // 高塔属于固定城市地标，不代表会话、不进数据统计；具体造型仍由 seed 决定。
-    if (config?.profile === "miami-coastal") {
+    if (config?.profile === COASTAL_PROFILE_ID_V1) {
       const skylineKinds: LandmarkKind[] = ["twin-towers", "twist-tower"];
       const skylineKind = skylineKinds[Math.floor(random("miami-skyline") * skylineKinds.length)];
       const skylineIndex = pool.findIndex((candidate) => candidate.kind === skylineKind);
@@ -262,7 +263,7 @@ function buildPlan(seed: number, R: number, shape: Shape, biome: Biome, config: 
       }
     }
     // 摩天轮是海滨城的第二个固定标志（与高塔一样不代表会话），其余仍由种子抽选。
-    if (config?.profile === "miami-coastal") {
+    if (config?.profile === COASTAL_PROFILE_ID_V1) {
       // 地中海庄园与摩天轮一样是海滨城固定地标（用户：「没有看见这些城市地标建筑物」——抽签抽不到就永远看不见）。
       // 海滨城识别锚点不靠抽签（用户：「种子彩票」——小档位的抽签名额被固定地标挤占，灯塔/帆顶剧院可能永远看不到）：
       // 帆形歌剧院与灯塔也固定放置，和庄园、摩天轮同一模式。

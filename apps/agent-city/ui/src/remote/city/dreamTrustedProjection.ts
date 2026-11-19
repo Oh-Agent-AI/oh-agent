@@ -1,6 +1,7 @@
 import { encodeDreamSnapshot, type DreamSnapshotEnvelopeV1 } from "./dreamSnapshotCodec";
 import { parseDreamCitySnapshot, type DreamCitySnapshotV1 } from "./dreamSnapshotContract";
 import { GEOGRAPHY_GENERATOR_IDS, validateGeographyBuildOptions, type GeographyGeneratorId } from "../../engine/planner/geography";
+import { COASTAL_PROFILE_ID_V1 } from "@oh-agent/city-sdk";
 
 const MAX_PLAIN = 4 * 1024 * 1024;
 const MAX_ENVELOPE = 230 * 1024;
@@ -309,7 +310,7 @@ function validateFacilityReferences(data: any): void {
 function validConfig(config: any, key: any): boolean {
   if (config === null) return key === "none" || (str(key) && /^dream-publication-[a-f0-9]{32}$/.test(key));
   const fields = ["preferredAzimuth", "azimuthTolerance", "segmentArc", "wetSandWidth", "drySandWidth", "promenadeOffset", "boulevardOffset", "hotelOffset", "bandOuter", "maxCoastalSlope", "maxCoastalHeight", "riverMargin", "siteMargin", "minValidRatio", "bayHalfWidth", "bayShift"];
-  if (!exact(config, ["profile", "version", "biome", ...fields]) || config.profile !== "miami-coastal" || config.biome !== "tropical"
+  if (!exact(config, ["profile", "version", "biome", ...fields]) || config.profile !== COASTAL_PROFILE_ID_V1 || config.biome !== "tropical"
       || !Number.isInteger(config.version) || config.version < 1 || config.version > 100 || fields.some(field => !finite(config[field], -10_000, 10_000))
       || !finite(config.minValidRatio, 0, 1) || !finite(config.bayHalfWidth, 0, 1) || !finite(config.bayShift, -1, 1) || !str(key) || key.length > 512) return false;
   if (/^dream-publication-[a-f0-9]{32}$/.test(key)) return true;

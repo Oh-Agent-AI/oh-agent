@@ -21,6 +21,7 @@ import { GTAOPass } from "three/addons/postprocessing/GTAOPass.js";
 import { Reflector } from "three/addons/objects/Reflector.js";
 import { selectVisualHero, type CityModel } from "../cityModel";
 import { BIOME_GRADES, skyYawOf, themeFor, type CityTheme, type CityThemeName } from "./cityTheme";
+import { cityThemeForSkinPack, type CitySkinPackIdV1 } from "@oh-agent/city-sdk";
 import { loadCityAssets, type CityAssets } from "./cityAssets";
 import { loadBiomeFlora } from "./cityFlora";
 import { planCinematic, type CinematicCut, type CinematicPlan } from "./cityCinematic";
@@ -61,7 +62,7 @@ import type { CameraClearanceQuery, ChaseCameraSafety } from "../game/VehicleCha
 import type { GameSceneLease } from "../game/runtime/GameScenePort";
 import { createSdkViewForCityLayout, type CityLayoutSdkViewV1 } from "./sdk/cityLayoutAdapter";
 
-export type CityCreatorSkinId = "miami-vice" | "desert-evening";
+export type CityCreatorSkinId = CitySkinPackIdV1;
 /** 视口捕获结果：不可用与超预算必须可区分，调用方按 code 映射 MCP 错误。 */
 export type CaptureFrameResult =
   | { ok: true; dataUrl: string; width: number; height: number; downscaled: boolean }
@@ -768,14 +769,14 @@ export class CityEngine {
 
   /** Apply a built-in Creator release skin to this live City only; no preference or geography is persisted. */
   applyCreatorSkin(skinId: CityCreatorSkinId): CityCreatorSkinOverrideToken {
-    if (skinId !== "miami-vice" && skinId !== "desert-evening") throw new Error("city_creator_skin_not_found");
+    if (cityThemeForSkinPack(skinId) === undefined) throw new Error("city_creator_skin_not_found");
     if (this.disposed) throw new Error("city_engine_disposed");
     if (this.creatorSkinOverride) {
       if (this.creatorSkinOverride.skinId === skinId) return this.creatorSkinOverride;
       throw new Error("creator_skin_override_active");
     }
     this.assertCreatorSkinCanChange();
-    const nextTheme: CityThemeName = skinId === "miami-vice" ? "miami" : "desert";
+    const nextTheme: CityThemeName = cityThemeForSkinPack(skinId)!.id;
     const token: CityCreatorSkinOverrideToken = Object.freeze({ owner: this.creatorSkinOwner, serial: ++this.creatorSkinSerial,
       previousTheme: this.theme.name, skinId });
     this.creatorSkinOverride = token;

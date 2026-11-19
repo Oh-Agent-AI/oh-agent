@@ -18,7 +18,7 @@ fn spec(name: &'static str, description: &'static str, properties: Value, requir
 pub fn specs() -> Vec<ToolSpec> {
     vec![
         spec("city_world_profile_preview", "Validate a data-only CityWorldProfileV1 in the active official City plugin. Only registered geography generators and visual themes are accepted; this does not execute code or install assets.", json!({
-            "profile":{"type":"object","description":"CityWorldProfileV1 data recipe produced by @agent-vitals/city-sdk. Current runtime supports coastal-islands-v1 and arid-dunes-v1."}
+            "profile":{"type":"object","description":"CityWorldProfileV1 data recipe produced by @agent-vitals/city-sdk; only geography generators and visual themes registered in the SDK catalogs are accepted."}
         }), &["profile"]),
         spec("city_world_profile_apply", "Apply a City world profile previously previewed by city_world_profile_preview. Requires --allow-local-writes, the same active City plugin instance, and an idle, rendered City.", json!({
             "previewId":{"type":"string","minLength":1,"maxLength":128},

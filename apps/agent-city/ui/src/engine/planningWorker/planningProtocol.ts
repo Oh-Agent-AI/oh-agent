@@ -4,6 +4,7 @@ import type { TerrainField } from "../cityLayout";
 import { buildGeographyWithGenerator, validateGeographyBuildOptions, DEFAULT_GEOGRAPHY_GENERATOR, GEOGRAPHY_GENERATOR_IDS,
   type GeographyGeneratorId, type GeographyGeneratorOptions } from "../planner/geography";
 import { PLANNING_WORK_UNITS, type PlanningWorkCounts, type PlanningWorkSnapshot, type PlanningStop } from "../planner/operationBudget";
+import { COASTAL_PROFILE_ID_V1 } from "@oh-agent/city-sdk";
 
 export const PLANNING_PROTOCOL_VERSION = 2;
 export type GeneratedCityPlan = ReturnType<typeof createCityPlan>;
@@ -41,7 +42,7 @@ export function validPlanningParameters(value: unknown): value is PlanningParame
   if (!(GEOGRAPHY_GENERATOR_IDS as readonly string[]).includes(input.geographyGenerator)) return false;
   const coast = input.coastal;
   const coastalValid = coast === null || (!!coast && Object.hasOwn(coast, "profile") && Object.hasOwn(coast, "biome")
-    && coast.profile === "miami-coastal" && coast.biome === "tropical"
+    && coast.profile === COASTAL_PROFILE_ID_V1 && coast.biome === "tropical"
     && Object.keys(coast).length === coastalNumbers.length + 2
     && coastalNumbers.every(key => Object.hasOwn(coast, key) && Number.isFinite(coast[key]))
     && Number.isSafeInteger(coast.version) && coast.version >= 1 && coast.minValidRatio >= 0 && coast.minValidRatio <= 1);

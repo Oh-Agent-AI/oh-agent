@@ -30,8 +30,10 @@ export { CREATOR_TEMPLATES_V1, type CreatorTemplateV1 } from "./creatorTemplates
 export { canonicalJson, validateCityContentPackage, validatePackageManifest, PACKAGE_V1_LIMITS } from "./package";
 export { validateContentPackageManifestV2, verifyContentPackageBytesV2, inspectContentPackageV2, inspectContentArtifactV2, CONTENT_PACKAGE_V2_LIMITS } from "./contentPackageV2";
 export { validateWorldPlanPatch } from "./worldPlanPatch";
-export { ARID_DUNES_WORLD_V2, ARID_DUNES_LEGACY_KEYS, COASTAL_ISLANDS_WORLD_V1, resolveWorldPresetV1, validateWorldCapabilityV1, validateWorldParametersV1, WORLD_PARAMETER_LIMITS,
+export { ARID_DUNES_WORLD_V2, ARID_DUNES_LEGACY_KEYS, COASTAL_ISLANDS_WORLD_V1, COASTAL_PROFILE_ID_V1, resolveWorldPresetV1, validateWorldCapabilityV1, validateWorldParametersV1, WORLD_PARAMETER_LIMITS,
   type WorldCapabilityV1, type WorldParameterDescriptorV1, type WorldParameterGroupV1, type WorldParameterKeyV1, type WorldParameterKindV1, type WorldPresetV1 } from "./worldParameters";
+export { CITY_SKIN_PACK_IDS_V1, CITY_THEMES_V1, CITY_THEME_IDS_V1, citySkinPackForTheme, cityThemeForSkinPack, isCitySkinPackIdV1, isCityThemeIdV1,
+  type CitySkinPackIdV1, type CityThemeIdV1, type CityVisualThemeV1 } from "./themes";
 export { inspectGlbBytes } from "./model";
 export type { GlbModelInspectionV1 } from "./model";
 

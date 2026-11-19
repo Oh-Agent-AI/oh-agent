@@ -1,7 +1,7 @@
 import { canonicalJson, inspectContentPackageV2, parseMiniGamePackJson, validateAssetRefs, validateCityProjectAssetCatalog,
   validateCityLayoutSnapshotScoped, validateContentPackageManifestV2, validateMount, validateSceneDraft, validateVehicleProfileV1, type CityGameMountV1,
   type CityProjectAssetCatalogV1, type ContentRef, type MiniGamePackV1, type ModelAssetCatalogV1, type ModelAssetRefV1, type SceneDraftV1,
-  type VehicleProfileV1, type VisualPlaytestEvidenceV1 } from "@oh-agent/city-sdk";
+  type VehicleProfileV1, type VisualPlaytestEvidenceV1, isCitySkinPackIdV1, type CitySkinPackIdV1 } from "@oh-agent/city-sdk";
 import { invokeHost } from "../../host";
 import { mergeReleaseAnchors } from "./releaseLayout";
 import { parsePendingCreatorPlaytest, type LoadedCityWorldSceneV1, type PendingCreatorPlaytestV1 } from "./creatorPlaytestPending";
@@ -12,7 +12,7 @@ import type { CreatorPublishedMiniGameV1 } from "./creatorMiniGame";
 type PluginResponse<T> = { version: number; requestId: string; ok: boolean; result?: T; error?: { code: string } };
 type ReleaseRow = { releaseId: string; title: string; mountCount: number };
 type ReleaseSceneFields = { scene?: unknown; assets?: unknown; assetRefs?: unknown };
-export type CreatorPlaytestHandoffV1 = Readonly<{ runId: string; projectId: string; revision: number; releaseId: string; snapshotDigest: string; skinId?: "miami-vice" | "desert-evening"; gameType: "driving" | "flight";
+export type CreatorPlaytestHandoffV1 = Readonly<{ runId: string; projectId: string; revision: number; releaseId: string; snapshotDigest: string; skinId?: CitySkinPackIdV1; gameType: "driving" | "flight";
   /** 冻结的载具 profile（飞行 release 发布时写入；旧 release 可能没有 → undefined，退回默认飞机）。 */
   vehicle?: VehicleProfileV1;
   /** 已把发布锚点（含 `air-gate:*` / `creator-air:*`）并进实机视图的那份视图。
@@ -47,7 +47,10 @@ async function validateRelease(view: CityLayoutSdkViewV1, release: { releaseId: 
   const fail = (code: string) => { failureCodes?.push(code); };
   if (!Array.isArray(release.mounts) || release.mounts.length > 16) { fail("creator_release_mounts_invalid"); return []; }
   if (!release.mounts.length) { fail("creator_release_mounts_empty"); return []; }
-  if (release.skinId != null && release.skinId !== "miami-vice" && release.skinId !== "desert-evening") { fail("creator_release_skin_invalid"); return []; }
+  // release.skinId 是宿主读回的未信数据（unknown）；先 string 收窄再查注册表，
+  // 否则 `unknown != null` 只能收窄到 {}。注册表外皮肤 = 声明漂移，显式拒绝。
+  const releaseSkinId = isCitySkinPackIdV1(release.skinId) ? release.skinId : undefined;
+  if (release.skinId != null && releaseSkinId === undefined) { fail("creator_release_skin_invalid"); return []; }
   const gameJson = canonicalJson(release.game);
   const parsed = parseMiniGamePackJson(gameJson);
   if (!parsed.ok) { fail(parsed.diagnostics[0]?.code ?? "creator_release_game_invalid"); return []; }
@@ -82,7 +85,7 @@ async function validateRelease(view: CityLayoutSdkViewV1, release: { releaseId: 
     const entry = view.layout.anchors.find(anchor => anchor.id === mount.entryAnchorId);
     const geometry = entry ? view.geometry.get(entry.geometryRef) : null;
     if (!entry || entry.kind !== "spawn" || (entryCapability !== null && !entry.capabilities.includes(entryCapability)) || !geometry) { fail("creator_release_entry_geometry_unavailable"); continue; }
-    output.push(Object.freeze({ releaseId: release.releaseId, title: release.title, ...(release.skinId ? { skinId: release.skinId } : {}), game, mount, scenePackage,
+    output.push(Object.freeze({ releaseId: release.releaseId, title: release.title, ...(releaseSkinId ? { skinId: releaseSkinId } : {}), game, mount, scenePackage,
       entryPositionWorld: Object.freeze({ x: worldUnits(geometry.positionMeters.x), z: worldUnits(geometry.positionMeters.z) }) }));
   }
   return Object.freeze(output);
@@ -189,7 +192,7 @@ export async function claimCreatorPlaytest(view: CityLayoutSdkViewV1, expectedRu
     }
     vehicle = checked.value;
   }
-  const skinId = handoff.skinId === "miami-vice" || handoff.skinId === "desert-evening" ? handoff.skinId : undefined;
+  const skinId = isCitySkinPackIdV1(handoff.skinId) ? handoff.skinId : undefined;
   // gameType（2026-11-15 飞行泛化切片）：release 冻结值经 Rust 容忍读回传；
   // 旧 release 无该字段 → 缺省 driving = 既有行为，driving 逐位不变。
   return Object.freeze({ runId: handoff.runId, projectId: handoff.projectId, revision: handoff.revision, releaseId: handoff.releaseId,

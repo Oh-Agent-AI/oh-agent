@@ -229,6 +229,11 @@ export const ARID_DUNES_WORLD_V2: WorldCapabilityV1 = Object.freeze({
   ]),
 });
 
+/** Geography profile identity carried inside the coastal parameter record
+ * (`parameters.coastal.profile`); declared here so types/validate/City engine
+ * derive it instead of restating the literal. */
+export const COASTAL_PROFILE_ID_V1 = "miami-coastal";
+
 /** Registered coastal-islands capability: first batch only unfreezes the
  * already-implemented bay options; the remaining frozen MIAMI_COASTAL fields
  * join the catalog when the generator consumes them. */
