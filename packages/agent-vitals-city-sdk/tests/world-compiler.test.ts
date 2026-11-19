@@ -227,3 +227,14 @@ test("WorldPlan preserves an explicitly declared semantic environment", () => {
   assert.deepEqual(snapshot.environment, { medium: "water", biome: "underwater" });
   assert.notEqual(snapshot.header.revisions.environmentRevision, compileWorldFixtureV1().header.revisions.environmentRevision);
 });
+
+test("quantized ring normal normalization is idempotent across arbitrary headings", () => {
+  for (const angle of [0.3, 0.71, 1.234, 2.87, 3.11]) {
+    const fixture = createWorldCompilerFixtureV1();
+    const plan = mutable(fixture.plan);
+    const ring = plan.volumes.find(volume => volume.geometry.kind === "ring")!;
+    ring.geometry = { ...ring.geometry, normal: [Math.sin(angle), 0, Math.cos(angle)] };
+    const snapshot = compileWorld(plan, fixture.context);
+    assert.equal(validateCityWorldSnapshot(snapshot).ok, true, `angle ${angle}`);
+  }
+});

@@ -7,7 +7,9 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
-use crate::creator_store::{bytes_digest, canonical_json};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use crate::creator_store::{bytes_digest, canonical_json, new_id};
 
 const MAX_ID: usize = 128;
 const MAX_REASON: usize = 120;
@@ -109,7 +111,9 @@ fn record_text<'a>(record: &'a Value, key: &str) -> Result<&'a str, String> {
     record.get(key).and_then(Value::as_str).filter(|value| !value.is_empty()).ok_or_else(|| "game_package_integrity_failed".to_string())
 }
 
-fn load_sealed_preview(home: &Path, build_id: &str) -> Result<(Value, String, Vec<Value>), String> {
+type SealedPreview = (Value, Vec<u8>, Vec<(String, Vec<u8>)>);
+
+fn load_sealed_preview(home: &Path, build_id: &str) -> Result<SealedPreview, String> {
     if build_id.len() != 64 || !build_id.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()) {
         return Err("game_argument_invalid".to_string());
     }
@@ -124,7 +128,7 @@ fn load_sealed_preview(home: &Path, build_id: &str) -> Result<(Value, String, Ve
     }
     let bundle = sealed_file(&root, "game.js", 2_000_000)?;
     let source_map = sealed_file(&root, "game.js.map", 2_000_000)?;
-    let bundle_text = String::from_utf8(bundle.clone()).map_err(|_| "game_package_integrity_failed".to_string())?;
+    String::from_utf8(bundle.clone()).map_err(|_| "game_package_integrity_failed".to_string())?;
     let bundle_digest = bytes_digest(&bundle);
     let source_map_digest = bytes_digest(&source_map);
     let manifest_digest = bytes_digest(canonical_json(&manifest).map_err(|_| "game_package_integrity_failed".to_string())?.as_bytes());
@@ -147,7 +151,7 @@ fn load_sealed_preview(home: &Path, build_id: &str) -> Result<(Value, String, Ve
         let digest = bytes_digest(&bytes);
         if recorded_assets.get(path).and_then(Value::as_str) != Some(digest.as_str()) { return Err("game_package_integrity_failed".to_string()); }
         asset_digests.insert(path.to_string(), json!(digest));
-        assets.push(json!({"id":id,"base64":BASE64.encode(bytes)}));
+        assets.push((id.to_string(), bytes));
     }
     let content_digest = bytes_digest(canonical_json(&json!({"manifestDigest":manifest_digest,"bundleDigest":bundle_digest,
         "sourceMapDigest":source_map_digest,"assetDigests":Value::Object(asset_digests)})).map_err(|_| "game_package_integrity_failed".to_string())?.as_bytes());
@@ -160,11 +164,36 @@ fn load_sealed_preview(home: &Path, build_id: &str) -> Result<(Value, String, Ve
         || record.get("gameId") != manifest.get("gameId") || record.get("gameVersion") != manifest.get("version") {
         return Err("game_package_integrity_failed".to_string());
     }
-    Ok((manifest, bundle_text, assets))
+    Ok((manifest, bundle, assets))
 }
 
-pub(crate) fn next_preview(home: &Path) -> Result<Value, &'static str> {
-    next_preview_result(home).map_err(|code| match code.as_str() {
+pub(crate) fn request_city_open(home: &Path, now: u64) -> bool {
+    let path = home.join("state/creator/code-games/preview-request.json");
+    let Ok(bytes) = std::fs::read(&path) else { return false; };
+    if bytes.len() > MAX_PREVIEW_REQUEST_BYTES { return false; }
+    let Ok(mut request) = serde_json::from_slice::<Value>(&bytes) else { return false; };
+    if request.get("status").and_then(Value::as_str) != Some("queued") { return false; }
+    let last = request.get("cityOpenRequestedAtMs").and_then(Value::as_u64).unwrap_or(0);
+    if last != 0 && now.saturating_sub(last) < 10_000 { return false; }
+    request["cityOpenRequestedAtMs"] = json!(now);
+    let temporary = path.with_extension("json.tmp");
+    let Ok(encoded) = serde_json::to_vec(&request) else { return false; };
+    std::fs::write(&temporary, encoded).and_then(|_| std::fs::rename(&temporary, &path)).is_ok()
+}
+
+struct PreviewSnapshot {
+    instance: String,
+    bundle: Vec<u8>,
+    assets: Vec<(String, Vec<u8>)>,
+}
+
+fn preview_snapshots() -> &'static Mutex<HashMap<String, PreviewSnapshot>> {
+    static SNAPSHOTS: OnceLock<Mutex<HashMap<String, PreviewSnapshot>>> = OnceLock::new();
+    SNAPSHOTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub(crate) fn next_preview(home: &Path, city_instance: &str) -> Result<Value, &'static str> {
+    next_preview_result(home, city_instance).map_err(|code| match code.as_str() {
         "code_game_preview_request_invalid" => "code_game_preview_request_invalid",
         "game_argument_invalid" => "game_argument_invalid",
         "game_package_integrity_failed" => "game_package_integrity_failed",
@@ -173,7 +202,7 @@ pub(crate) fn next_preview(home: &Path) -> Result<Value, &'static str> {
     })
 }
 
-fn next_preview_result(home: &Path) -> Result<Value, String> {
+fn next_preview_result(home: &Path, city_instance: &str) -> Result<Value, String> {
     let path = home.join("state/creator/code-games/preview-request.json");
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
@@ -186,13 +215,39 @@ fn next_preview_result(home: &Path) -> Result<Value, String> {
     let request_id = request_string(&request, "requestId", 128)?;
     let build_id = request_string(&request, "buildId", 64)?;
     let seed = request.get("seed").and_then(Value::as_u64).ok_or_else(|| "code_game_preview_request_invalid".to_string())?;
-    let (manifest, bundle_text, assets) = load_sealed_preview(home, &build_id)?;
+    let (manifest, bundle, assets) = load_sealed_preview(home, &build_id)?;
     let claimed = json!({"requestId":request_id,"buildId":build_id,"seed":seed,"status":"claimed","claimedAtMs":now_ms()});
     let temporary = path.with_extension("json.tmp");
     std::fs::write(&temporary, serde_json::to_vec(&claimed).map_err(|_| "code_game_state_invalid".to_string())?)
         .map_err(|_| "code_game_state_unavailable".to_string())?;
     std::fs::rename(&temporary, &path).map_err(|_| "code_game_state_unavailable".to_string())?;
-    Ok(json!({"requestId":request_id,"buildId":build_id,"seed":seed,"manifest":manifest,"bundleText":bundle_text,"assets":assets}))
+    let snapshot_id = new_id("code-preview-")?;
+    let mut snapshots = preview_snapshots().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    snapshots.retain(|_, snapshot| snapshot.instance != city_instance);
+    snapshots.insert(snapshot_id.clone(), PreviewSnapshot { instance: city_instance.to_string(), bundle, assets });
+    drop(snapshots);
+    Ok(json!({"requestId":request_id,"buildId":build_id,"seed":seed,"manifest":manifest,"snapshotId":snapshot_id}))
+}
+
+pub(crate) fn read_preview(city_instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    let snapshot_id = payload.get("snapshotId").and_then(Value::as_str).ok_or("game_argument_invalid")?;
+    let path = payload.get("path").and_then(Value::as_str).ok_or("game_argument_invalid")?;
+    let offset = payload.get("offset").and_then(Value::as_u64).ok_or("game_argument_invalid")? as usize;
+    let snapshots = preview_snapshots().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let snapshot = snapshots.get(snapshot_id).filter(|snapshot| snapshot.instance == city_instance).ok_or("content_snapshot_expired")?;
+    let bytes = if path == "game.js" { &snapshot.bundle }
+        else { path.strip_prefix("asset:").and_then(|id| snapshot.assets.iter().find(|(asset, _)| asset == id).map(|(_, bytes)| bytes)).ok_or("game_asset_invalid")? };
+    if offset > bytes.len() { return Err("game_argument_invalid"); }
+    let end = offset.saturating_add(512 * 1024).min(bytes.len());
+    Ok(json!({"contentBase64":BASE64.encode(&bytes[offset..end]),"byteLength":bytes.len(),"nextOffset":end,"complete":end == bytes.len()}))
+}
+
+pub(crate) fn close_preview(city_instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    let snapshot_id = payload.get("snapshotId").and_then(Value::as_str).ok_or("game_argument_invalid")?;
+    let mut snapshots = preview_snapshots().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !snapshots.get(snapshot_id).is_some_and(|snapshot| snapshot.instance == city_instance) { return Err("content_snapshot_expired"); }
+    snapshots.remove(snapshot_id);
+    Ok(json!({"closed":true}))
 }
 
 #[cfg(test)]
@@ -236,14 +291,16 @@ mod tests {
         let manifest = json!({"schemaVersion":2,"kind":"code-game","gameId":"test.preview","displayName":"Preview","version":"1.0.0",
             "entry":"src/index.ts","sdk":{"name":"@oh-agent/city-game-sdk","apiMajor":2},"world":{"requiredCapabilities":[],"binding":"capability-based"},
             "render":{"compatibleProfiles":[]},"presentation":{"supported":["exclusive"],"default":"exclusive"},"permissions":[],
-            "entries":[{"id":"default","export":"default","presentation":["exclusive"]}],"limits":{"maxEntities":1,"maxProjectiles":0},"assets":[]});
+            "entries":[{"id":"default","export":"default","presentation":["exclusive"]}],"limits":{"maxEntities":1,"maxProjectiles":0},"assets":[{"id":"cube","path":"assets/cube.glb","type":"model/glb"}]});
         let bundle = b"export default {}";
         let map = b"{}";
+        let asset_bytes = vec![7_u8; 600_000];
+        let asset_digest = bytes_digest(&asset_bytes);
         let manifest_digest = bytes_digest(canonical_json(&manifest).unwrap().as_bytes());
         let bundle_digest = bytes_digest(bundle);
         let map_digest = bytes_digest(map);
         let content_digest = bytes_digest(canonical_json(&json!({"manifestDigest":manifest_digest,"bundleDigest":bundle_digest,
-            "sourceMapDigest":map_digest,"assetDigests":{}})).unwrap().as_bytes());
+            "sourceMapDigest":map_digest,"assetDigests":{"assets/cube.glb":asset_digest}})).unwrap().as_bytes());
         let identity = json!({"domain":"oh-agent-code-game-build-v2","gameId":"test.preview","gameVersion":"1.0.0",
             "manifestDigest":manifest_digest,"contentDigest":content_digest,"sourceRevision":"source","sdkVersion":"1","toolchainVersion":"tool"});
         let actual_id = bytes_digest(canonical_json(&identity).unwrap().as_bytes()).trim_start_matches("sha256:").to_string();
@@ -251,23 +308,36 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let record = json!({"schemaVersion":2,"kind":"code-game-build","buildId":actual_id,"gameId":"test.preview","gameVersion":"1.0.0",
             "manifestSchemaVersion":2,"sdk":manifest["sdk"],"entry":"src/index.ts","bundle":"game.js","byteLength":bundle.len(),
-            "bundleDigest":bundle_digest,"sourceMapDigest":map_digest,"manifestDigest":manifest_digest,"assetDigests":{},
+            "bundleDigest":bundle_digest,"sourceMapDigest":map_digest,"manifestDigest":manifest_digest,"assetDigests":{"assets/cube.glb":asset_digest},
             "contentDigest":content_digest,"sourceRevision":"source","sdkVersion":"1","toolchainVersion":"tool","bundler":"test"});
         std::fs::write(root.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
         std::fs::write(root.join("game.js"), bundle).unwrap();
         std::fs::write(root.join("game.js.map"), map).unwrap();
+        std::fs::create_dir_all(root.join("assets")).unwrap();
+        std::fs::write(root.join("assets/cube.glb"), &asset_bytes).unwrap();
         std::fs::write(root.join("build.json"), serde_json::to_vec(&record).unwrap()).unwrap();
         let request_dir = home.join("state/creator/code-games");
         std::fs::create_dir_all(&request_dir).unwrap();
         let request = json!({"requestId":"request-1","buildId":actual_id,"seed":7,"status":"queued","createdAtMs":1});
         std::fs::write(request_dir.join("preview-request.json"), serde_json::to_vec(&request).unwrap()).unwrap();
-        let loaded = next_preview(&home).unwrap();
+        assert!(request_city_open(&home, 2));
+        assert!(!request_city_open(&home, 3));
+        let loaded = next_preview(&home, "city-test").unwrap();
         assert_eq!(loaded["manifest"]["gameId"], "test.preview");
-        assert_eq!(loaded["bundleText"], "export default {}");
-        assert_eq!(next_preview(&home).unwrap(), Value::Null);
+        let read = read_preview("city-test", &json!({"snapshotId":loaded["snapshotId"],"path":"game.js","offset":0})).unwrap();
+        assert_eq!(BASE64.decode(read["contentBase64"].as_str().unwrap()).unwrap(), bundle);
+        assert_eq!(read["complete"], true);
+        let asset_first = read_preview("city-test", &json!({"snapshotId":loaded["snapshotId"],"path":"asset:cube","offset":0})).unwrap();
+        let asset_second = read_preview("city-test", &json!({"snapshotId":loaded["snapshotId"],"path":"asset:cube","offset":512 * 1024})).unwrap();
+        assert_eq!(asset_first["complete"], false);
+        assert_eq!(asset_second["complete"], true);
+        assert_eq!(BASE64.decode(asset_first["contentBase64"].as_str().unwrap()).unwrap().len() + BASE64.decode(asset_second["contentBase64"].as_str().unwrap()).unwrap().len(), asset_bytes.len());
+        close_preview("city-test", &json!({"snapshotId":loaded["snapshotId"]})).unwrap();
+        assert_eq!(read_preview("city-test", &json!({"snapshotId":loaded["snapshotId"],"path":"game.js","offset":0})).unwrap_err(), "content_snapshot_expired");
+        assert_eq!(next_preview(&home, "city-test").unwrap(), Value::Null);
         std::fs::write(request_dir.join("preview-request.json"), serde_json::to_vec(&request).unwrap()).unwrap();
         std::fs::write(root.join("game.js"), b"export default { tampered: true }").unwrap();
-        assert_eq!(next_preview(&home).unwrap_err(), "game_package_integrity_failed");
+        assert_eq!(next_preview(&home, "city-test").unwrap_err(), "game_package_integrity_failed");
         std::fs::remove_dir_all(home).ok();
     }
 }

@@ -1440,7 +1440,9 @@ pub fn dispatch_city_runtime(home: &Path, city_instance: &str, method: &str, pay
             payload["runId"].as_str().ok_or("creator_request_invalid")?,
             payload["status"].as_str().ok_or("creator_request_invalid")?, payload.get("evidence").filter(|value| !value.is_null()),
             payload.get("failureCode").and_then(Value::as_str)),
-        "city.code.preview.next" if exact_payload(payload, &[]) => crate::creator_code_game::next_preview(home),
+        "city.code.preview.next" if exact_payload(payload, &[]) => crate::creator_code_game::next_preview(home, city_instance),
+        "city.code.preview.read" if exact_payload(payload, &["snapshotId", "path", "offset"]) => crate::creator_code_game::read_preview(city_instance, payload),
+        "city.code.preview.close" if exact_payload(payload, &["snapshotId"]) => crate::creator_code_game::close_preview(city_instance, payload),
         "city.time.read" if exact_payload(payload, &["cityId"]) => crate::city_runtime::read_clock(home, payload),
         "city.game.run.start" if exact_payload(payload, &["cityId", "gameId"])
             || exact_payload(payload, &["cityId", "gameId", "buildId"]) => crate::city_runtime::start_run(home, city_instance, payload),

@@ -15,7 +15,7 @@ import type { DialogueAPIV1 } from "../../../../../../packages/city-game-sdk/src
 
 export type CodeGameDialogueStateV1 = Parameters<DialogueAPIV1["open"]>[0];
 import { createThreeCodeGameRender } from "./threeRenderPort";
-import { takeCityCodePreview } from "./cityRuntimeCalls";
+import { closeCityCodePreview, readCityCodePreviewBytes, takeCityCodePreview } from "./cityRuntimeCalls";
 
 /**
  * Dev preview entry: fetch a trusted build, import it from a Blob URL, and run
@@ -238,23 +238,40 @@ export function useCodeGamePreview(options: Readonly<{
     [closeDialogue, coordinator, engineRef, openDialogue],
   );
 
+  const ready = useCallback((): boolean => {
+    const engine = engineRef.current;
+    return !!(engine?.currentLayout && engine.getCitySdkLayoutView());
+  }, [engineRef]);
+
   const startNextPreview = useCallback(async (): Promise<boolean> => {
     const pending = await takeCityCodePreview();
     if (!pending) return false;
-    const assetBytes: Record<string, Uint8Array> = {};
-    for (const asset of pending.assets) {
-      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(asset.base64) || asset.base64.length % 4 !== 0) throw new Error("game_package_integrity_failed");
-      assetBytes[asset.id] = Uint8Array.from(atob(asset.base64), (character) => character.charCodeAt(0));
+    try {
+      for (let attempt = 0; attempt < 240 && !ready(); attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      if (!ready()) throw new Error("City layout did not become ready for the code game preview");
+      const bundleBytes = await readCityCodePreviewBytes(pending.snapshotId, "game.js");
+      const manifestAssets = (pending.manifest as { assets?: unknown }).assets;
+      if (!Array.isArray(manifestAssets)) throw new Error("game_package_integrity_failed");
+      const assetBytes: Record<string, Uint8Array> = {};
+      for (const asset of manifestAssets) {
+        const id = (asset as { id?: unknown }).id;
+        if (typeof id !== "string") throw new Error("game_package_integrity_failed");
+        assetBytes[id] = await readCityCodePreviewBytes(pending.snapshotId, `asset:${id}`);
+      }
+      await start({
+        bundleText: new TextDecoder("utf-8", { fatal: true }).decode(bundleBytes),
+        manifest: pending.manifest,
+        buildId: pending.buildId,
+        seed: pending.seed,
+        assetBytes,
+      });
+      return true;
+    } finally {
+      await closeCityCodePreview(pending.snapshotId).catch(() => undefined);
     }
-    await start({
-      bundleText: pending.bundleText,
-      manifest: pending.manifest,
-      buildId: pending.buildId,
-      seed: pending.seed,
-      assetBytes,
-    });
-    return true;
-  }, [start]);
+  }, [ready, start]);
 
   const stop = useCallback((): void => {
     const run = runRef.current;
@@ -266,10 +283,6 @@ export function useCodeGamePreview(options: Readonly<{
 
   const status = useCallback((): CodeGamePreviewStatus => stateRef.current.status, []);
   const telemetry = useCallback((): GameTelemetryV1 | CodeGameTelemetryV2 | null => runRef.current?.telemetry() ?? stateRef.current.telemetry, []);
-  const ready = useCallback((): boolean => {
-    const engine = engineRef.current;
-    return !!(engine?.currentLayout && engine.getCitySdkLayoutView());
-  }, [engineRef]);
 
   useEffect(
     () => () => {

@@ -24,13 +24,40 @@ export type CityCodePreviewEnvelopeV1 = Readonly<{
   buildId: string;
   seed: number;
   manifest: unknown;
-  bundleText: string;
-  assets: readonly Readonly<{ id: string; base64: string }>[];
+  snapshotId: string;
 }>;
 
 export async function takeCityCodePreview(): Promise<CityCodePreviewEnvelopeV1 | null> {
   if (!desktopAvailable()) return null;
   return hostCall("city.code.preview.next", {});
+}
+
+export async function readCityCodePreviewBytes(snapshotId: string, path: string): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  let offset = 0;
+  for (let count = 0; count < 64; count += 1) {
+    const chunk = await hostCall<Readonly<{ contentBase64: string; byteLength: number; nextOffset: number; complete: boolean }>>(
+      "city.code.preview.read", { snapshotId, path, offset },
+    );
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(chunk.contentBase64) || chunk.contentBase64.length % 4 !== 0 || chunk.nextOffset <= offset && !chunk.complete) {
+      throw new Error("game_package_integrity_failed");
+    }
+    const bytes = Uint8Array.from(atob(chunk.contentBase64), (character) => character.charCodeAt(0));
+    chunks.push(bytes);
+    offset = chunk.nextOffset;
+    if (chunk.complete) {
+      const result = new Uint8Array(chunk.byteLength);
+      let cursor = 0;
+      for (const part of chunks) { result.set(part, cursor); cursor += part.length; }
+      if (cursor !== result.length) throw new Error("game_package_integrity_failed");
+      return result;
+    }
+  }
+  throw new Error("game_package_integrity_failed");
+}
+
+export async function closeCityCodePreview(snapshotId: string): Promise<void> {
+  await hostCall("city.code.preview.close", { snapshotId });
 }
 
 export async function startCityGameRun(input: Readonly<{ cityId: string; gameId: string; buildId?: string }>): Promise<CityGameRunHandleV1 | null> {

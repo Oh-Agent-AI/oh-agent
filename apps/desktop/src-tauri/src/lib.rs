@@ -5813,6 +5813,16 @@ fn capture_workbench_screenshot(app: AppHandle) -> Result<(), String> {
     }
 }
 
+fn start_code_game_preview_tick(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if creator_code_game::request_city_open(&overview::data_home(), creator_store::now_ms()) {
+            let main = app.clone();
+            let _ = app.run_on_main_thread(move || focus_tab(&main, "city"));
+        }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let context = tauri::generate_context!();
@@ -6122,6 +6132,7 @@ pub fn run() {
             // E5 headless creator 语义闸：app 一启动就驱动 headless mailbox 臂
             // （Studio 缺席时由宿主内嵌 city-sdk 闸作答窄名单方法，见 plugin_host.rs）。
             crate::plugin_host::start_headless_creator_tick(app.handle().clone());
+            start_code_game_preview_tick(app.handle().clone());
             Ok(())
         })
         .build(context)
@@ -7774,8 +7785,9 @@ mod tests {
         ] {
             let (value, _) = read_from(target, root).unwrap();
             let resources = value["bundle"]["resources"].as_object().unwrap();
-            assert_eq!(resources.len(), 1);
+            assert_eq!(resources.len(), 2);
             assert_eq!(resources[source], destination);
+            assert_eq!(resources["code-game"], "code-game");
             let _: tauri::utils::config::Config = serde_json::from_value(value).unwrap();
         }
     }

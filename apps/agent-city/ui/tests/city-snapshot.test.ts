@@ -4,7 +4,7 @@ import { validateCityWorldSnapshot } from "@oh-agent/city-sdk";
 import { createCitySnapshotV4 } from "../src/game/codeGameHost/citySnapshot";
 import { createSnapshotWorldAPIV2 } from "../../../../packages/city-game-sdk/src/host/snapshotWorld";
 import type { CityLayout } from "../src/engine/cityLayout";
-import type { CityLayoutSdkViewV1 } from "../src/engine/sdk/cityLayoutAdapter";
+import { createCityLayoutSdkView, type CityLayoutSdkViewV1 } from "../src/engine/sdk/cityLayoutAdapter";
 
 const layout = {
   seed: 123,
@@ -95,4 +95,18 @@ test("the same live Snapshot drives bounded V2 queries and real terrain sampling
   assert.equal(world.roads({ limit: 1 }).items.length, 1);
   assert.equal(world.terrainSample(5, 2).height, 0.5);
   assert.equal(world.objects({ limit: 1 }).items[0]?.id, "object:block-1");
+});
+
+test("road checkpoints from the real SDK adapter preserve Snapshot digests", () => {
+  const roadView = createCityLayoutSdkView({
+    layoutId: "layout-real-roads",
+    worldRevision: "world-real-roads-1",
+    roadNodes: layout.roadNodes,
+    roadEdges: layout.roadEdges,
+    groundHeight: (x, z) => layout.terrain.height(x, z),
+    seed: layout.seed,
+  });
+  const snapshot = createCitySnapshotV4({ cityId: "city-real-roads", cityRevision: 1, layout, view: roadView });
+  const checked = validateCityWorldSnapshot(snapshot);
+  assert.equal(checked.ok, true, checked.ok ? "" : JSON.stringify(checked.diagnostics));
 });

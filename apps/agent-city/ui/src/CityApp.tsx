@@ -1172,6 +1172,7 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
   return cityView((
     <section className="city-app" aria-label="Agent City">
       {playtestError && <div role="alert" className="city-playtest-error">{playtestError}</div>}
+      {codeGamePreview.state.error && <div role="alert" className="city-playtest-error">Code Game: {codeGamePreview.state.error}</div>}
       {finishRetry && <div role="alert" className="city-playtest-error">试玩结果未保存。 <button onClick={() => { void finishPlaytest(...finishRetry); }}>重试保存</button></div>}
       <canvas className="city-canvas" ref={canvasRef} aria-label="Agent City 三维城市" style={{ visibility: sceneMessage && !game.active ? "hidden" : "visible" }} />
       {cityLoading && <div className="city-loading" role="status" aria-live="polite">

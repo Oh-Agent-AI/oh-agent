@@ -122,6 +122,7 @@ const quantize = (value: number): number => {
   return Object.is(result, -0) ? 0 : result;
 };
 const normalizeUnit = (values: number[]): number[] => {
+  if (values.every(value => quantize(value) === value) && validUnit(values)) return values;
   const length = Math.hypot(...values);
   return length > 0 && Number.isFinite(length) ? values.map(value => value / length) : values;
 };
