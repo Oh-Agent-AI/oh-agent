@@ -51,7 +51,6 @@ node scripts/verify-code-game-preview.mjs --workspace gws-… --build <buildId>
 
 ## 边界
 
-- 视觉预览仍是 dev-only 文件桥（写 City public + URL）；打包应用要换成宿主
-  向 City WebView 推送请求，工具签名不变。
+- 本次历史实测使用当时的 dev-only 文件桥。当前实现已改为 MCP 排队请求、桌面宿主按 BuildId 校验并读取冻结产物、City 主动领取；复现新版打包闭环使用 `scripts/verify-code-game-city-loop.mjs`，不要再以源码树 URL 作为验收依据。
 - Agent 只被要求用 CLI，没有被告知实现细节；它自己选了塔位、波次节奏并修了数值。
 - 发布 / Experience V2、Studio 面板仍未做。

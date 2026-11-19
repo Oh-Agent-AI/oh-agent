@@ -3,7 +3,7 @@
 > 日期：2026-11-18
 > 文档修订：**v2.5（2026-11-18，对齐 Shared Contracts RFC v1）**
 > 状态：**产品与实施 RFC；公共契约由 Shared Contracts v1 冻结，本文件不另起或静默修改公共契约，不代表已经实现**
-> 实施状态：包级契约、V2 Host/Preview、Registry、Snapshot Headless、Story CAS/Outbox 与 macOS bundle Build/Test 已落地；完整 Narrative、全量旧入口 Router 和五环境验收未完成。
+> 实施状态：包级契约、V2 Host/Preview、Registry、Snapshot Headless、Story CAS/Outbox、宿主 PlayerScope/Scheduler 规则、可取消 Dialogue 与不可变 Build 的宿主 Preview 请求/领取链路已落地；开发仓库、打包 CLI、非源码工作目录及无全局 Node 的 MCP Build/Test 已有实测。Scheduler 事件执行/离线结算、完整 Narrative、全量旧入口 Router、真实应用页面 Preview 与完整五环境验收未完成。
 
 > 审查对象：Oh-Agent-AI/oh-agent 的 dev（静态源码审查，未在本次环境执行真实 Studio）
 > 公开包：**@oh-agent/city-game-sdk**（沿用现有名称）

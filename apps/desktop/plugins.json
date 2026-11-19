@@ -1135,9 +1135,13 @@
         "city.story.schedule",
         "city.story.cancel",
         "city.story.list",
+        "city.code.preview.next",
         "city.world.profile.preview",
         "city.world.profile.apply"
       ],
+      "localCallBudgets": {
+        "city.code.preview.next": { "requestBytes": 4096, "responseBytes": 8000000 }
+      },
       "remoteCapabilities": [
         {
           "id": "mecha:v4",

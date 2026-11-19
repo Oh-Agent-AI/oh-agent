@@ -28,6 +28,8 @@ export type ThreeCodeGameRenderOptionsV1 = Readonly<{
   assets: readonly CodeGameAssetV1[];
   /** Absolute base URL; manifest asset paths are workspace-relative. */
   assetBaseUrl: string;
+  /** Sealed in-memory bytes keyed by manifest asset id; when supplied, no URL fallback is allowed. */
+  assetBytes?: Readonly<Record<string, Uint8Array>>;
   /** Test seam. Defaults to GLTFLoader over `assetBaseUrl`. */
   loadModel?: CodeGameAssetLoaderV1;
 }>;
@@ -43,7 +45,9 @@ export async function createThreeCodeGameRender(
     models.map(async (asset) => {
       const url = new URL(asset.path, options.assetBaseUrl).href;
       try {
-        templates.set(asset.id, await loader(url));
+        const bytes = options.assetBytes?.[asset.id];
+        if (options.assetBytes && !bytes) throw new Error("sealed asset bytes are missing");
+        templates.set(asset.id, bytes ? await loadGlbBytes(bytes) : await loader(url));
       } catch (error) {
         throw new GameSdkError(
           "game_asset_invalid",
@@ -140,6 +144,12 @@ export async function createThreeCodeGameRender(
 async function loadGlb(url: string): Promise<THREE.Object3D> {
   const { GLTFLoader } = await import("three/examples/jsm/loaders/GLTFLoader.js");
   const gltf = await new GLTFLoader().loadAsync(url);
+  return gltf.scene;
+}
+
+async function loadGlbBytes(bytes: Uint8Array): Promise<THREE.Object3D> {
+  const { GLTFLoader } = await import("three/examples/jsm/loaders/GLTFLoader.js");
+  const gltf = await new GLTFLoader().parseAsync(bytes.slice().buffer as ArrayBuffer, "");
   return gltf.scene;
 }
 

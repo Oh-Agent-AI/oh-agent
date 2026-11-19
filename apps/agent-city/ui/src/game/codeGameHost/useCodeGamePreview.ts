@@ -15,6 +15,7 @@ import type { DialogueAPIV1 } from "../../../../../../packages/city-game-sdk/src
 
 export type CodeGameDialogueStateV1 = Parameters<DialogueAPIV1["open"]>[0];
 import { createThreeCodeGameRender } from "./threeRenderPort";
+import { takeCityCodePreview } from "./cityRuntimeCalls";
 
 /**
  * Dev preview entry: fetch a trusted build, import it from a Blob URL, and run
@@ -46,6 +47,7 @@ export type CodeGamePreviewStartV1 = Readonly<{
   cityRevision?: number;
   /** Absolute directory the manifest's asset paths resolve against. */
   assetBaseUrl?: string;
+  assetBytes?: Readonly<Record<string, Uint8Array>>;
   nowMs?: () => number;
 }>;
 
@@ -60,6 +62,7 @@ const IDLE: CodeGamePreviewState = Object.freeze({
 export type CodeGamePreviewV1 = Readonly<{
   state: CodeGamePreviewState;
   start(input: CodeGamePreviewStartV1): Promise<void>;
+  startNextPreview(): Promise<boolean>;
   stop(): void;
   status(): CodeGamePreviewStatus;
   telemetry(): GameTelemetryV1 | CodeGameTelemetryV2 | null;
@@ -143,6 +146,7 @@ export function useCodeGamePreview(options: Readonly<{
               ...(input.buildId ? { buildId: input.buildId } : {}),
               ...(telemetry?.runId ? { runId: telemetry.runId } : {}),
               ...(reason ? { reason } : {}),
+              ...(telemetry?.outcome ? { outcome: telemetry.outcome } : {}),
               ...(telemetry ? { tick: telemetry.tick, entities: telemetry.entities } : {}),
             },
           }).catch(() => {});
@@ -208,6 +212,7 @@ export function useCodeGamePreview(options: Readonly<{
             createThreeCodeGameRender(lease, {
               assets: manifest.assets,
               assetBaseUrl: input.assetBaseUrl ?? new URL(".", location.href).href,
+              ...(input.assetBytes ? { assetBytes: input.assetBytes } : {}),
             }),
           nowMs: input.nowMs ?? (() => performance.now()),
           onStop: ({ reason, telemetry }) => {
@@ -232,6 +237,24 @@ export function useCodeGamePreview(options: Readonly<{
     },
     [closeDialogue, coordinator, engineRef, openDialogue],
   );
+
+  const startNextPreview = useCallback(async (): Promise<boolean> => {
+    const pending = await takeCityCodePreview();
+    if (!pending) return false;
+    const assetBytes: Record<string, Uint8Array> = {};
+    for (const asset of pending.assets) {
+      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(asset.base64) || asset.base64.length % 4 !== 0) throw new Error("game_package_integrity_failed");
+      assetBytes[asset.id] = Uint8Array.from(atob(asset.base64), (character) => character.charCodeAt(0));
+    }
+    await start({
+      bundleText: pending.bundleText,
+      manifest: pending.manifest,
+      buildId: pending.buildId,
+      seed: pending.seed,
+      assetBytes,
+    });
+    return true;
+  }, [start]);
 
   const stop = useCallback((): void => {
     const run = runRef.current;
@@ -258,5 +281,5 @@ export function useCodeGamePreview(options: Readonly<{
     [closeDialogue],
   );
 
-  return Object.freeze({ state, start, stop, status, telemetry, ready, dialogue, chooseDialogue, closeDialogue: () => closeDialogue() });
+  return Object.freeze({ state, start, startNextPreview, stop, status, telemetry, ready, dialogue, chooseDialogue, closeDialogue: () => closeDialogue() });
 }

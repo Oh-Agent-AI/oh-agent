@@ -19,6 +19,20 @@ async function hostCall<T>(method: string, payload: Record<string, unknown>): Pr
   return response.result as T;
 }
 
+export type CityCodePreviewEnvelopeV1 = Readonly<{
+  requestId: string;
+  buildId: string;
+  seed: number;
+  manifest: unknown;
+  bundleText: string;
+  assets: readonly Readonly<{ id: string; base64: string }>[];
+}>;
+
+export async function takeCityCodePreview(): Promise<CityCodePreviewEnvelopeV1 | null> {
+  if (!desktopAvailable()) return null;
+  return hostCall("city.code.preview.next", {});
+}
+
 export async function startCityGameRun(input: Readonly<{ cityId: string; gameId: string; buildId?: string }>): Promise<CityGameRunHandleV1 | null> {
   if (!desktopAvailable()) return null;
   return hostCall("city.game.run.start", {

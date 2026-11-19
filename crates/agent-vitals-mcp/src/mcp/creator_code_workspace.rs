@@ -78,7 +78,7 @@ pub fn specs() -> Vec<ToolSpec> {
         ),
         spec(
             "creator_code_preview",
-            "Stage a built Code Game for the local City dev server and return the relative URLs to open. Dev-only bridge: it copies the immutable bundle, manifest and declared assets under the City public directory and returns `/code-games/preview/<buildId>/...`; it never starts a server itself. Requires `--allow-local-writes`.",
+            "Queue an immutable Code Game build for the running local City. The desktop host verifies and serves the sealed build by buildId; no repository, dev-server public directory, physical path or global Node installation is used. Returns a requestId for correlation with creator_code_preview_status. Requires `--allow-local-writes`.",
             json!({
                 "workspaceId":{"type":"string","minLength":20,"maxLength":32},
                 "buildId":{"type":"string","minLength":64,"maxLength":64,"pattern":"^[0-9a-f]{64}$"},
@@ -331,9 +331,8 @@ fn build(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     Ok(json!({"ok":true,"data":data}))
 }
 
-/// Dev-only preview bridge. The packaged app will replace this with a command
-/// pushed to the City WebView; the tool contract (buildId in, preview out) is
-/// the same, so the Agent loop does not change.
+/// The MCP process and City WebView share only a bounded request document.
+/// Frozen build bytes stay in the data home and are verified by the desktop host.
 fn stage_preview(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     let workspace_id = workspace_id_arg(args)?;
     let build_id = build_id_arg(args)?;
@@ -341,50 +340,21 @@ fn stage_preview(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     let directory = workspace_dir(data_home, &workspace_id)?;
     let meta = read_meta(&directory)?;
     let build_dir = data_home.join("code-games").join("builds").join(&build_id);
-    if !build_dir.join("game.js").is_file() {
-        return Err(ToolError::new("not_found", "No built bundle for that buildId in this data home."));
+    if !build_dir.join("game.js").is_file() || !build_dir.join("manifest.json").is_file() || !build_dir.join("build.json").is_file() {
+        return Err(ToolError::new("not_found", "No sealed build for that buildId in this data home."));
     }
-    let repo = repo_root()?;
-    let public_root = repo.join("apps/agent-city/ui/public/code-games/preview");
-    if !public_root.parent().is_some_and(Path::is_dir) {
-        return Err(ToolError::new("preview_unavailable", "The City dev server public directory is not available in this installation."));
-    }
-    let target = public_root.join(&build_id);
-    std::fs::create_dir_all(&target)
-        .map_err(|_| ToolError::new("storage_unavailable", "Cannot create the preview directory."))?;
-    std::fs::copy(build_dir.join("game.js"), target.join("game.js"))
-        .map_err(|_| ToolError::new("storage_unavailable", "Cannot copy the preview bundle."))?;
-    std::fs::copy(build_dir.join("manifest.json"), target.join("game.manifest.json"))
-        .map_err(|_| ToolError::new("storage_unavailable", "Cannot copy the preview manifest."))?;
-    let assets = build_dir.join("assets");
-    if assets.is_dir() {
-        copy_directory(&assets, &target.join("assets"))?;
-    }
-    let base = format!("/code-games/preview/{build_id}/");
-    Ok(json!({"ok":true,"data":{
-        "workspaceId": workspace_id,
-        "gameId": meta.game_id,
-        "buildId": build_id,
-        "seed": seed,
-        "bundleUrl": format!("{base}game.js"),
-        "manifestUrl": format!("{base}game.manifest.json"),
-        "assetBaseUrl": base,
-        "cityUrl": format!("/?codeGame={base}game.js&codeGameManifest={base}game.manifest.json"),
-    }}))
-}
-
-fn copy_directory(source: &Path, target: &Path) -> Result<(), ToolError> {
-    std::fs::create_dir_all(target).map_err(|_| ToolError::new("storage_unavailable", "Cannot create the preview assets directory."))?;
-    for entry in std::fs::read_dir(source).map_err(|_| ToolError::new("storage_unavailable", "Cannot read the workspace assets."))?.flatten() {
-        let from = entry.path();
-        let to = target.join(entry.file_name());
-        if from.is_dir() {
-            copy_directory(&from, &to)?;
-        } else if from.is_file() {
-            std::fs::copy(&from, &to).map_err(|_| ToolError::new("storage_unavailable", "Cannot copy a preview asset."))?;
-        }
-    }
-    Ok(())
+    let root = data_home.join("state/creator/code-games");
+    std::fs::create_dir_all(&root).map_err(|_| ToolError::new("storage_unavailable", "Cannot create the preview request directory."))?;
+    let created = now_ms();
+    let request_id = format!("preview-{build_id}-{created}");
+    let request = json!({"requestId":request_id,"buildId":build_id,"seed":seed,"status":"queued","createdAtMs":created});
+    let temporary = root.join("preview-request.json.tmp");
+    let target = root.join("preview-request.json");
+    std::fs::write(&temporary, serde_json::to_vec(&request).map_err(|_| ToolError::new("internal_error", "Cannot encode the preview request."))?)
+        .map_err(|_| ToolError::new("storage_unavailable", "Cannot write the preview request."))?;
+    std::fs::rename(&temporary, &target).map_err(|_| ToolError::new("storage_unavailable", "Cannot publish the preview request."))?;
+    Ok(json!({"ok":true,"data":{"workspaceId":workspace_id,"gameId":meta.game_id,"buildId":build_id,"seed":seed,
+        "requestId":request_id,"status":"queued"}}))
 }
 
 fn build_id_arg(args: &Value) -> Result<String, ToolError> {
@@ -626,10 +596,19 @@ fn rewrite_manifest(directory: &Path, game_id: &str, title: &str) -> Result<(), 
 // ── process / identity helpers ─────────────────────────────────────
 
 fn repo_root() -> Result<PathBuf, ToolError> {
+    repo_root_from(std::env::current_exe().ok())
+}
+
+fn repo_root_from(current_exe: Option<PathBuf>) -> Result<PathBuf, ToolError> {
+    let packaged = current_exe.and_then(|exe| exe.parent().and_then(Path::parent).map(Path::to_path_buf))
+        .map(|resources| resources.join("code-game"))
+        .filter(|root| root.join("packages/city-game-sdk/scripts/buildGame.ts").is_file());
     let root = if let Ok(override_path) = std::env::var("AGENT_VITALS_REPO") {
         PathBuf::from(override_path)
     } else if let Ok(bundled) = std::env::var("AGENT_VITALS_CODE_GAME_HOME") {
         PathBuf::from(bundled)
+    } else if let Some(packaged) = packaged {
+        packaged
     } else {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
     };
@@ -643,9 +622,9 @@ fn repo_root() -> Result<PathBuf, ToolError> {
 
 fn run_node(repo: &Path, script: &str, args: &[String]) -> Result<std::process::Output, ToolError> {
     let node = std::env::var("AGENT_VITALS_NODE").ok().unwrap_or_else(|| {
-        std::env::var("AGENT_VITALS_CODE_GAME_HOME").ok()
-            .map(|home| Path::new(&home).join("bin").join(if cfg!(windows) { "node.exe" } else { "node" }).to_string_lossy().to_string())
-            .unwrap_or_else(|| "node".to_string())
+        let bundled = std::env::var("AGENT_VITALS_CODE_GAME_HOME").ok().map(PathBuf::from).unwrap_or_else(|| repo.to_path_buf())
+            .join("bin").join(if cfg!(windows) { "node.exe" } else { "node" });
+        if bundled.is_file() { bundled.to_string_lossy().to_string() } else { "node".to_string() }
     });
     let output = Command::new(node)
         .arg("--experimental-transform-types")
@@ -772,6 +751,11 @@ mod tests {
         std::env::set_var("AGENT_VITALS_CODE_GAME_HOME", &root);
         assert_eq!(repo_root().unwrap(), std::fs::canonicalize(&root).unwrap());
         std::env::remove_var("AGENT_VITALS_CODE_GAME_HOME");
+        let packaged = root.join("Oh Agent.app/Contents/Resources/code-game");
+        std::fs::create_dir_all(packaged.join("packages/city-game-sdk/scripts")).unwrap();
+        std::fs::write(packaged.join("packages/city-game-sdk/scripts/buildGame.ts"), "// packaged builder").unwrap();
+        let exe = root.join("Oh Agent.app/Contents/Resources/bin/agent-vitals");
+        assert_eq!(repo_root_from(Some(exe)).unwrap(), std::fs::canonicalize(&packaged).unwrap());
         std::fs::remove_dir_all(root).ok();
     }
 }

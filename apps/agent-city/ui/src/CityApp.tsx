@@ -414,6 +414,19 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
     });
   }, [codeGamePreview, startCodeGamePreview]);
   useEffect(() => {
+    if (!embedded()) return;
+    let active = true;
+    let busy = false;
+    const poll = async () => {
+      if (!active || busy) return;
+      busy = true;
+      try { await codeGamePreview.startNextPreview(); } catch { /* start() publishes bounded error state */ } finally { busy = false; }
+    };
+    void poll();
+    const timer = window.setInterval(() => { void poll(); }, 1_000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [codeGamePreview.startNextPreview]);
+  useEffect(() => {
     if (!import.meta.env.DEV) return;
     const holder = window as unknown as { __ohAgentCodeGame?: unknown };
     holder.__ohAgentCodeGame = {

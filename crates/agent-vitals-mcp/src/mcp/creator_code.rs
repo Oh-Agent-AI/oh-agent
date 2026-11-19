@@ -43,7 +43,7 @@ pub fn specs() -> Vec<ToolSpec> {
         ),
         spec(
             "creator_code_preview_status",
-            "Read the last Code Game preview state published by the running City (gameId, buildId, runId, status, tick, entities, reason, updatedAtMs). available=false means no preview has run since the state file was last cleared; stale=true means the writer stopped updating over two minutes ago (crash or closed window), not that the game is still running.",
+            "Read the last Code Game preview state published by the running City (gameId, buildId, runId, status, outcome, tick, entities, reason, updatedAtMs). available=false means no preview has run since the state file was last cleared; stale=true means the writer stopped updating over two minutes ago (crash or closed window), not that the game is still running.",
             json!({}),
             &[],
         ),
@@ -103,6 +103,7 @@ fn preview_status(root: &Path) -> Result<Value, ToolError> {
         "buildId": text(&value, "buildId", 64),
         "runId": text(&value, "runId", 64),
         "reason": text(&value, "reason", 120),
+        "outcome": text(&value, "outcome", 16),
         "tick": value.get("tick").and_then(Value::as_u64),
         "entities": value.get("entities").and_then(Value::as_u64),
         "updatedAtMs": if updated_at == 0 { Value::Null } else { json!(updated_at) },

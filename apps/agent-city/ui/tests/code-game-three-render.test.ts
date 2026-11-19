@@ -133,3 +133,15 @@ test("dispose detaches exactly once and ignores later calls", async () => {
   render.port.spawn(entity("e2", [0, 0, 0]));
   assert.equal(detached.length, 1, "a disposed renderer must not create new meshes");
 });
+
+test("sealed asset mode never falls back to a workspace URL", async () => {
+  const { lease } = createLease();
+  const loaded: string[] = [];
+  await assert.rejects(createThreeCodeGameRender(lease, {
+    assets: [{ id: "cube", path: "assets/cube.glb", type: "model/glb" }],
+    assetBaseUrl: "https://example.test/workspace/",
+    assetBytes: {},
+    loadModel: cubeLoader(loaded),
+  }), /sealed asset bytes are missing/);
+  assert.deepEqual(loaded, []);
+});

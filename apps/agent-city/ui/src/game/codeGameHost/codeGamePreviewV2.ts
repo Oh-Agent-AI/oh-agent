@@ -22,6 +22,7 @@ export type CodeGamePreviewStartV2 = Readonly<{
   cityId?: string;
   cityRevision?: number;
   assetBaseUrl?: string;
+  assetBytes?: Readonly<Record<string, Uint8Array>>;
   nowMs?: () => number;
   dialogue?: DialogueAPIV1;
   onStop: (event: Readonly<{ reason: string; telemetry: CodeGameTelemetryV2 }>) => void;
@@ -134,6 +135,7 @@ export async function startCodeGamePreviewV2(input: CodeGamePreviewStartV2): Pro
         createRender: (lease) => createThreeCodeGameRender(lease, {
           assets: input.manifest.assets,
           assetBaseUrl: input.assetBaseUrl ?? new URL(".", location.href).href,
+          ...(input.assetBytes ? { assetBytes: input.assetBytes } : {}),
         }),
         nowMs: input.nowMs ?? (() => performance.now()),
         onStop: (event) => {
