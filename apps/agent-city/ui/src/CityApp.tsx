@@ -32,6 +32,7 @@ import { useMonsterEncounters } from "./game/mecha/useMonsterEncounters";
 import { prewarmAudioContext } from "./game/GameSfx";
 import { CityActivityCoordinator, type CityActivityLease } from "./game/activity/CityActivityCoordinator";
 import { useCodeGamePreview } from "./game/codeGameHost/useCodeGamePreview";
+import { CodeGameDialogue } from "./game/codeGameHost/CodeGameDialogue";
 import { claimCreatorPlaytest, finishCreatorPlaytest, loadCreatorPublishedMiniGames, pendingCreatorPlaytest, type CreatorPlaytestHandoffV1 } from "./game/activity/loadCreatorExperiences";
 import type { PendingCreatorPlaytestV1 } from "./game/activity/creatorPlaytestPending";
 import { loadWorldSceneModels } from "./game/activity/creatorSceneModels";
@@ -1199,6 +1200,8 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
       <CityMinimap engine={engineRef} language={language} driving={{ active: driving.active, pose: driving.pose }} encounters={encounterState}
         creatorGames={driving.creatorGames} onStartCreatorGame={driving.startCreatorGame}
         hidden={!sceneReady || cinema || game.active || mechaOpen || !!experience.film || driving.hud.phase === "preparing" || driving.hud.phase === "error"} />
+      {codeGamePreview.dialogue && <CodeGameDialogue dialogue={codeGamePreview.dialogue} language={language === "en" ? "en" : "zh-Hans"}
+        onChoice={codeGamePreview.chooseDialogue} onClose={codeGamePreview.closeDialogue} />}
       <DrivingHud model={{ active: driving.active, choosingVehicle: driving.choosingVehicle, vtol: driving.vtol, activityKind: driving.activityKind, activityTitle: driving.activityTitle, creatorGames: driving.creatorGames, entryError: driving.entryError,
         race: driving.race, raceEntryError: driving.raceEntryError,
         initialPaused: driving.initialPaused, hud: driving.hud, preparationProgress: driving.preparationProgress, events: driving.events, diagnostics: driving.diagnostics(),

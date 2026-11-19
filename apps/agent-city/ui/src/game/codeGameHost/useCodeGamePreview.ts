@@ -11,6 +11,9 @@ import { createCityEngineWorldSourceV1 } from "./cityEngineWorldSource";
 import { CodeGameRunV1 } from "./codeGameSession";
 import { CodeGameRunV2, type CodeGameTelemetryV2 } from "./codeGameSessionV2";
 import { startCodeGamePreviewV2 } from "./codeGamePreviewV2";
+import type { DialogueAPIV1 } from "../../../../../../packages/city-game-sdk/src/api/v2";
+
+export type CodeGameDialogueStateV1 = Parameters<DialogueAPIV1["open"]>[0];
 import { createThreeCodeGameRender } from "./threeRenderPort";
 
 /**
@@ -61,6 +64,9 @@ export type CodeGamePreviewV1 = Readonly<{
   status(): CodeGamePreviewStatus;
   telemetry(): GameTelemetryV1 | CodeGameTelemetryV2 | null;
   ready(): boolean;
+  dialogue: CodeGameDialogueStateV1 | null;
+  chooseDialogue(choiceId: string): void;
+  closeDialogue(): void;
 }>;
 
 export function useCodeGamePreview(options: Readonly<{
@@ -73,9 +79,37 @@ export function useCodeGamePreview(options: Readonly<{
   stateRef.current = state;
   const runRef = useRef<CodeGameRunV1<Object3D> | CodeGameRunV2<Object3D> | null>(null);
   const generationRef = useRef(0);
+  const [dialogue, setDialogue] = useState<CodeGameDialogueStateV1 | null>(null);
+  const dialogueRef = useRef(dialogue);
+  dialogueRef.current = dialogue;
+  const dialoguePending = useRef<{
+    resolve: (result: { choiceId: string }) => void;
+    reject: (reason: Error) => void;
+  } | null>(null);
+
+  const closeDialogue = useCallback((reason = "game_dialogue_closed"): void => {
+    dialoguePending.current?.reject(new Error(reason));
+    dialoguePending.current = null;
+    setDialogue(null);
+  }, []);
+  const openDialogue = useCallback((input: CodeGameDialogueStateV1): Promise<{ choiceId: string }> => {
+    if (dialoguePending.current) return Promise.reject(new Error("game_dialogue_busy"));
+    return new Promise((resolve, reject) => {
+      dialoguePending.current = { resolve, reject };
+      setDialogue(input);
+    });
+  }, []);
+  const chooseDialogue = useCallback((choiceId: string): void => {
+    const choice = dialogueRef.current?.choices.find((item) => item.id === choiceId);
+    if (!choice || choice.enabled === false || !dialoguePending.current) return;
+    dialoguePending.current.resolve({ choiceId });
+    dialoguePending.current = null;
+    setDialogue(null);
+  }, []);
 
   const start = useCallback(
     async (input: CodeGamePreviewStartV1): Promise<void> => {
+      closeDialogue("game_run_cancelled");
       if (runRef.current) {
         await runRef.current.stop("stopped");
         runRef.current = null;
@@ -137,8 +171,10 @@ export function useCodeGamePreview(options: Readonly<{
             cityRevision: input.cityRevision,
             assetBaseUrl: input.assetBaseUrl,
             nowMs: input.nowMs,
+            dialogue: { open: openDialogue, close: () => closeDialogue() },
             onStop: ({ reason, telemetry }) => {
               if (generationRef.current !== generation) return;
+              closeDialogue("game_run_cancelled");
               runRef.current = null;
               publishState("finished", reason, telemetry);
               setState({ status: "finished", runId: telemetry.runId, reason, error: null, telemetry });
@@ -185,6 +221,7 @@ export function useCodeGamePreview(options: Readonly<{
         publishState("running", null, run.telemetry());
         setState({ status: "running", runId: run.host.runId, reason: null, error: null, telemetry: run.telemetry() });
       } catch (error) {
+        closeDialogue("game_run_cancelled");
         const message = error instanceof Error ? error.message : String(error);
         void publish("code-game.state", {
           state: { status: "error", gameId: input.manifest && typeof input.manifest === "object" ? (input.manifest as { gameId?: unknown }).gameId : undefined, reason: message.slice(0, 120) },
@@ -193,15 +230,16 @@ export function useCodeGamePreview(options: Readonly<{
         throw error;
       }
     },
-    [coordinator, engineRef],
+    [closeDialogue, coordinator, engineRef, openDialogue],
   );
 
   const stop = useCallback((): void => {
     const run = runRef.current;
     if (!run) return;
+    closeDialogue("game_run_cancelled");
     void run.stop("stopped");
     runRef.current = null;
-  }, []);
+  }, [closeDialogue]);
 
   const status = useCallback((): CodeGamePreviewStatus => stateRef.current.status, []);
   const telemetry = useCallback((): GameTelemetryV1 | CodeGameTelemetryV2 | null => runRef.current?.telemetry() ?? stateRef.current.telemetry, []);
@@ -212,12 +250,13 @@ export function useCodeGamePreview(options: Readonly<{
 
   useEffect(
     () => () => {
+      closeDialogue("game_run_cancelled");
       void runRef.current?.stop("stopped");
       generationRef.current += 1;
       runRef.current = null;
     },
-    [],
+    [closeDialogue],
   );
 
-  return Object.freeze({ state, start, stop, status, telemetry, ready });
+  return Object.freeze({ state, start, stop, status, telemetry, ready, dialogue, chooseDialogue, closeDialogue: () => closeDialogue() });
 }

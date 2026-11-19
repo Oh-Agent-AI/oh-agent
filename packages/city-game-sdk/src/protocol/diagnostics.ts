@@ -34,6 +34,8 @@ export const GAME_DIAGNOSTIC_CODES_V1 = [
   "game_run_cancelled",
   "game_storage_revision_conflict",
   "game_actor_remote_unavailable",
+  "game_dialogue_busy",
+  "game_dialogue_closed",
 ] as const;
 export type GameDiagnosticCodeV1 = (typeof GAME_DIAGNOSTIC_CODES_V1)[number];
 

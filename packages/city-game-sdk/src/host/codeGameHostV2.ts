@@ -2,7 +2,7 @@ import type {
   PlayerScopeV1,
   RoadEdgeDtoV2,
 } from "@oh-agent/city-sdk/contracts";
-import { defineGameV2, type GameAbortSignalV1, type GameContextV2, type GameDefinitionV2, type StoryEventAPIV1, type WorldAPIV2 } from "../api/v2";
+import { defineGameV2, type DialogueAPIV1, type GameAbortSignalV1, type GameContextV2, type GameDefinitionV2, type StoryEventAPIV1, type WorldAPIV2 } from "../api/v2";
 import type { GameContextV1, WorldAnchorV1, WorldBoundsV1 } from "../api/types";
 import { evaluateGameInvocation, type GameAccessV1, type HostGrantV1 } from "../protocol/access";
 import { GameSdkError } from "../protocol/errors";
@@ -29,6 +29,7 @@ export type CodeGameHostOptionsV2 = Readonly<{
   hudByteLimit?: number;
   cleanupTimeoutMs?: number;
   story?: StoryEventAPIV1;
+  dialogue?: DialogueAPIV1;
 }>;
 
 export class CodeGameHostV2 {
@@ -42,6 +43,7 @@ export class CodeGameHostV2 {
   private startHandler: ((context: { signal: GameAbortSignalV1 }) => Promise<void>) | null = null;
   private startPromise: Promise<void> | null = null;
   private cleanupPromise: Promise<void> | null = null;
+  private dialogueOpen = false;
   private statusValue: CodeGameHostStatusV2 = "created";
 
   constructor(options: CodeGameHostOptionsV2) {
@@ -155,6 +157,10 @@ export class CodeGameHostV2 {
           // Cleanup is best effort after cancellation; the inner host still releases its resources.
         }
       }
+      if (this.dialogueOpen) {
+        this.dialogueOpen = false;
+        try { this.options.dialogue?.close(); } catch { /* dialogue cleanup remains best effort */ }
+      }
       this.inner.dispose();
     })();
     return this.cleanupPromise;
@@ -164,6 +170,21 @@ export class CodeGameHostV2 {
     const legacy = this.inner.api;
     const world = grantCheckedWorld(this.options);
     const story = this.options.story;
+    const dialogue = this.options.dialogue;
+    const checkedDialogue: DialogueAPIV1 | undefined = dialogue ? {
+      open: async (input) => {
+        this.checkPermission("ui.dialogue");
+        validateDialogueInput(input);
+        if (this.dialogueOpen) throw new GameSdkError("game_dialogue_busy", "Only one dialogue may be open per run.", "runtime");
+        this.dialogueOpen = true;
+        try { return await dialogue.open(input); } finally { this.dialogueOpen = false; }
+      },
+      close: () => {
+        this.checkPermission("ui.dialogue");
+        this.dialogueOpen = false;
+        dialogue.close();
+      },
+    } : undefined;
     const checkedStory: StoryEventAPIV1 | undefined = story ? {
       resolveLocalTime: (input) => {
         this.checkPermission("time.read");
@@ -197,6 +218,7 @@ export class CodeGameHostV2 {
           if (index >= 0) this.disposers.splice(index, 1);
         };
       },
+      ...(checkedDialogue ? { dialogue: checkedDialogue } : {}),
       ...(checkedStory ? { story: checkedStory } : {}),
     }) as GameContextV2;
   }
@@ -249,6 +271,24 @@ async function settleWithTimeout(promise: Promise<unknown>, timeoutMs: number): 
     ]);
   } finally {
     if (timer !== undefined) hostTimers.clearTimeout(timer);
+  }
+}
+
+function validateDialogueInput(input: Parameters<DialogueAPIV1["open"]>[0]): void {
+  const validText = (value: string, max: number) => value.trim().length > 0 && [...value].length <= max;
+  if (!input || typeof input !== "object" || !input.speaker || !validText(input.speaker.displayName, 80) || !validText(input.text, 4_000)
+    || (input.speaker.residentId !== undefined && !validText(input.speaker.residentId, 128))
+    || (input.speaker.portraitAssetId !== undefined && !validText(input.speaker.portraitAssetId, 128))
+    || !Array.isArray(input.choices) || input.choices.length < 1 || input.choices.length > 8) {
+    throw new GameSdkError("game_argument_invalid", "Dialogue content is missing or exceeds its bounded contract.", "runtime");
+  }
+  const ids = new Set<string>();
+  for (const choice of input.choices) {
+    if (!choice || !validText(choice.id, 64) || !validText(choice.label, 160) || ids.has(choice.id)
+      || (choice.enabled !== undefined && typeof choice.enabled !== "boolean")) {
+      throw new GameSdkError("game_argument_invalid", "Dialogue choices must have unique IDs and bounded labels.", "runtime");
+    }
+    ids.add(choice.id);
   }
 }
 

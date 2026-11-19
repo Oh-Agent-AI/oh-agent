@@ -2,7 +2,7 @@ import type { Object3D } from "three";
 import type { CodeGameManifestV2 } from "../../../../../../packages/city-game-sdk/src/protocol/manifestV2";
 import { createGameAccessV1, type HostGrantV1 } from "../../../../../../packages/city-game-sdk/src/protocol/access";
 import { createSnapshotWorldAPIV2 } from "../../../../../../packages/city-game-sdk/src/host/snapshotWorld";
-import { defineGameV2, type StoryEventAPIV1 } from "../../../../../../packages/city-game-sdk/src/api/v2";
+import { defineGameV2, type DialogueAPIV1, type StoryEventAPIV1 } from "../../../../../../packages/city-game-sdk/src/api/v2";
 import type { CodeGameTelemetryV2 } from "./codeGameSessionV2";
 import { CodeGameRunV2 } from "./codeGameSessionV2";
 import { InstalledGameRegistryV1, InteractionRouter, type GameLaunchRequestV1 } from "../../../../../../packages/agent-vitals-city-game-runtime/src/interaction";
@@ -23,6 +23,7 @@ export type CodeGamePreviewStartV2 = Readonly<{
   cityRevision?: number;
   assetBaseUrl?: string;
   nowMs?: () => number;
+  dialogue?: DialogueAPIV1;
   onStop: (event: Readonly<{ reason: string; telemetry: CodeGameTelemetryV2 }>) => void;
 }>;
 
@@ -127,6 +128,7 @@ export async function startCodeGamePreviewV2(input: CodeGamePreviewStartV2): Pro
         grant,
         playerScope,
         ...(story ? { story } : {}),
+        ...(input.dialogue ? { dialogue: input.dialogue } : {}),
         scenePort: input.engine.gameScenePort,
         coordinator: input.coordinator,
         createRender: (lease) => createThreeCodeGameRender(lease, {

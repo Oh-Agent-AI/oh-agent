@@ -226,3 +226,50 @@ test("V2 story scheduling is host-mediated and permission checked", async () => 
   await allowed.start();
   assert.equal(schedules, 1);
 });
+
+const dialogueInput = {
+  speaker: { displayName: "Xia", residentId: "resident:xia" },
+  text: "Would you like to meet on Saturday?",
+  choices: [{ id: "yes", label: "Yes" }, { id: "no", label: "Not now" }],
+} as const;
+
+test("V2 dialogue is permission checked and pending opens are cancelled on stop", async () => {
+  let opens = 0;
+  let closes = 0;
+  let rejectOpen: ((reason: Error) => void) | null = null;
+  const dialogue = {
+    open: async (_input: typeof dialogueInput) => {
+      opens += 1;
+      return new Promise<{ choiceId: string }>((_resolve, reject) => { rejectOpen = reject; });
+    },
+    close: () => {
+      closes += 1;
+      rejectOpen?.(new Error("game_dialogue_closed"));
+      rejectOpen = null;
+    },
+  };
+  const deniedManifest = manifest(["world.read"]);
+  const deniedGrant: HostGrantV1 = Object.freeze({ installationId: "installation-v2", runId: "run-v2", grantedPermissions: ["world.read"], status: "active" });
+  const denied = new CodeGameHostV2({ manifest: deniedManifest, world: createSnapshotWorldAPIV2(compileWorldFixtureV1()), seed: 42,
+    runId: "run-v2", access: createGameAccessV1(deniedManifest, ["world.snapshot"], deniedGrant), grant: deniedGrant, dialogue });
+  await denied.prepare({ id: "test.host-v2", setup: (ctx) => {
+    ctx.onStart(async () => { await assert.rejects(() => ctx.dialogue!.open(dialogueInput), /access denied/); });
+  } });
+  await denied.start();
+  assert.equal(opens, 0);
+
+  const allowedManifest = manifest(["world.read", "ui.dialogue"]);
+  const allowedGrant: HostGrantV1 = Object.freeze({ installationId: "installation-v2", runId: "run-v2", grantedPermissions: ["world.read", "ui.dialogue"], status: "active" });
+  const allowed = new CodeGameHostV2({ manifest: allowedManifest, world: createSnapshotWorldAPIV2(compileWorldFixtureV1()), seed: 42,
+    runId: "run-v2", access: createGameAccessV1(allowedManifest, ["world.snapshot"], allowedGrant), grant: allowedGrant, dialogue });
+  await allowed.prepare({ id: "test.host-v2", setup: (ctx) => {
+    ctx.onStart(async () => { await ctx.dialogue?.open(dialogueInput); });
+  } });
+  const starting = allowed.start();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(opens, 1);
+  await allowed.stop();
+  await assert.rejects(starting, /game_dialogue_closed/);
+  assert.equal(closes, 1);
+  assert.equal(allowed.status, "cancelled");
+});
