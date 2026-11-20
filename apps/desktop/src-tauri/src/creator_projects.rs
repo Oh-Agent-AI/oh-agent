@@ -3483,6 +3483,20 @@ fn build_typed_mount(document: &Value, mount_id: &str, entry_anchor_id: &str, bi
     }
     let layout = document.get("cityLayout").filter(|value| !value.is_null()).ok_or("creator_layout_not_bound")?;
     let (world_revision, layout_id) = validate_layout_snapshot(layout)?;
+    // 参数覆盖必须命中已声明的 integerParameters 且落在声明范围内（V3 S-6a，RFC §1.1-5：
+    // 打包实测缺口——timeLimitTicks:59（声明 min 60）曾被接受并推进 revision）。
+    let declared = game.get("integerParameters").and_then(Value::as_object);
+    if let Some(overrides) = parameter_overrides.and_then(Value::as_object).filter(|object| !object.is_empty()) {
+        for (key, value) in overrides {
+            let spec = declared.and_then(|parameters| parameters.get(key.as_str())).and_then(Value::as_object)
+                .ok_or("creator_mount_parameter_unknown")?;
+            let number = value.as_i64().ok_or("creator_mount_parameter_invalid")?;
+            if spec.get("min").and_then(Value::as_i64).is_some_and(|min| number < min)
+                || spec.get("max").and_then(Value::as_i64).is_some_and(|max| number > max) {
+                return Err("creator_mount_parameter_range");
+            }
+        }
+    }
     let game_digest = digest(&canonical_json(game).map_err(|_| "creator_game_invalid")?);
     let mount = json!({"schemaVersion":1,"mountId":mount_id,
         "layout":{"kind":"city-layout","id":layout_id,"version":"1","digest":world_revision},
@@ -3634,6 +3648,30 @@ mod typed_mount_tests {
         let missing = json!({"gates":["gate-a","gate-b","missing"]});
         assert_eq!(build_typed_mount(&document, "mount-a", "spawn-a", &missing, None, None).unwrap_err(), "creator_mount_anchor_not_found");
         assert_eq!(build_typed_mount(&document, "mount-a", "spawn-a", &bindings, Some("vehicle-missing"), None).unwrap_err(), "creator_vehicle_not_found");
+    }
+
+    #[test]
+    fn typed_mount_parameter_overrides_are_range_checked_against_declared_parameters() {
+        // V3 S-6a 回归（RFC §1.1-5）：打包实测中 timeLimitTicks:59（声明 min 60）
+        // 曾被接受并推进 revision——覆盖必须命中声明且落在 [min,max]。
+        let mut document = project();
+        document["game"]["integerParameters"] = json!({
+            "timeLimitTicks":{"default":2700,"min":60,"max":36000},
+            "gateTarget":{"default":3,"min":3,"max":8}});
+        let bindings = json!({"gates":["gate-a","gate-b","gate-c"]});
+        let within = json!({"timeLimitTicks":2400,"gateTarget":3});
+        let (mount, _) = build_typed_mount(&document, "mount-p", "spawn-a", &bindings, None, Some(&within)).unwrap();
+        assert_eq!(mount["parameterOverrides"]["timeLimitTicks"], 2400);
+        let below_min = json!({"timeLimitTicks":59});
+        assert_eq!(build_typed_mount(&document, "mount-p", "spawn-a", &bindings, None, Some(&below_min)).unwrap_err(), "creator_mount_parameter_range");
+        let above_max = json!({"timeLimitTicks":36001});
+        assert_eq!(build_typed_mount(&document, "mount-p", "spawn-a", &bindings, None, Some(&above_max)).unwrap_err(), "creator_mount_parameter_range");
+        let unknown = json!({"nonexistentParameter":1});
+        assert_eq!(build_typed_mount(&document, "mount-p", "spawn-a", &bindings, None, Some(&unknown)).unwrap_err(), "creator_mount_parameter_unknown");
+        let non_numeric = json!({"timeLimitTicks":"fast"});
+        assert_eq!(build_typed_mount(&document, "mount-p", "spawn-a", &bindings, None, Some(&non_numeric)).unwrap_err(), "creator_mount_parameter_invalid");
+        let empty = json!({});
+        build_typed_mount(&document, "mount-p", "spawn-a", &bindings, None, Some(&empty)).unwrap();
     }
 }
 
