@@ -32,7 +32,7 @@ type CreatorHostBridgeOptions = Readonly<{
   restoreAgentActivity: () => Promise<void>;
   setAgentCommit: Dispatch<SetStateAction<AgentCommit | null>>;
   setMessage: Dispatch<SetStateAction<string>>;
-  setActivePanel: Dispatch<SetStateAction<StudioPanel>>;
+  setActivePanel: (panel: StudioPanel) => void;
 }>;
 
 export function useCreatorHostBridge(options: CreatorHostBridgeOptions) {

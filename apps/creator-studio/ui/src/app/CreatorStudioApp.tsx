@@ -24,6 +24,10 @@ import { CityGameLibraryPanel } from "../features/library/CityGameLibraryPanel";
 import { CityViewportPanel } from "../features/city/CityViewportPanel";
 import { GameEditorPanel } from "../features/project/GameEditorPanel";
 import { ProjectPanel } from "../features/project/ProjectPanel";
+import { ProjectsPage } from "../features/project/ProjectsPage";
+import { WorkbenchHome } from "../features/home/WorkbenchHome";
+import { StudioNavigation } from "./StudioNavigation";
+import { STUDIO_HOME_ROUTE, STUDIO_WORKSPACE_ROUTE, type StudioRoute } from "./studioRoute";
 import { readCityAppearancePreference } from "../../../../agent-city/ui/src/engine/cityWorldProfile";
 import type { CityEngine } from "../../../../agent-city/ui/src/engine/CityEngine";
 import { CITY_GENERATOR_VERSION, type PlanPatchV1 } from "../../../../agent-city/ui/src/engine/planPatch";
@@ -43,6 +47,8 @@ function bindingsMatch(text: string, saved: Record<string, string[]>): boolean {
 
 export function CreatorStudioApp() {
   const [projects, setProjects] = useState<ProjectRow[]>([]);
+  const [projectsLoading, setProjectsLoading] = useState(true);
+  const [projectsError, setProjectsError] = useState("");
   const [layouts, setLayouts] = useState<LayoutRow[]>([]);
   // 世界外观偏好与 City 同源（同源 WebView 共享 localStorage）；打开期间不追踪 City 侧更改。
   const [worldProfile] = useState(() => readCityAppearancePreference());
@@ -112,7 +118,9 @@ export function CreatorStudioApp() {
   const [installedPackages, setInstalledPackages] = useState<ReadonlyArray<InstalledContentPackage>>([]);
   const [confirmUninstall, setConfirmUninstall] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [activePanel, setActivePanel] = useState<StudioPanel>("library");
+  const [route, setRoute] = useState<StudioRoute>(STUDIO_HOME_ROUTE);
+  const [activePanel, setActivePanel] = useState<StudioPanel>("play");
+  const openWorkspacePanel = (panel: StudioPanel) => { setActivePanel(panel); setRoute(STUDIO_WORKSPACE_ROUTE); };
   const [codePreviewBuildId, setCodePreviewBuildId] = useState<string | undefined>(undefined);
   const [codePreviewSourceCityId, setCodePreviewSourceCityId] = useState<string | undefined>(undefined);
   const [message, setMessage] = useState("");
@@ -133,12 +141,12 @@ export function CreatorStudioApp() {
     finally { if (request === cityListRequest.current) setCitiesLoading(false); }
   };
   useEffect(() => {
-    if (activePanel !== "project") return;
+    if (route.section !== "projects" && (route.section !== "workspace" || activePanel !== "project")) return;
     void loadCities();
     const changed = () => void loadCities();
     window.addEventListener("__CREATOR_CITY_CHANGED__", changed);
     return () => { cityListRequest.current++; window.removeEventListener("__CREATOR_CITY_CHANGED__", changed); };
-  }, [activePanel]);
+  }, [activePanel, route.section]);
   // 未完成操作的幂等标识：结果确定前保留，响应失败时用于重试与状态查询。
   const [pendingEdit, setPendingEdit] = useState<{ projectId: string; operationId: string } | null>(null);
   const [pendingCreateId, setPendingCreateId] = useState<string | null>(null);
@@ -272,15 +280,37 @@ export function CreatorStudioApp() {
     window.clearTimeout(switchTimer.current);
     switchTimer.current = window.setTimeout(() => setSwitchConfirm(null), 5000);
   };
+  const openProjectInWorkspace = (projectId: string) => guardDrafts(projectId, () => {
+    openWorkspacePanel("play");
+    void openProject(projectId);
+  });
+  const openCityInWorkspace = (cityId: string, revision: number) => {
+    openWorkspacePanel("project");
+    setBusy(true);
+    void openCityView(cityId, revision).catch(error => {
+      const code = errorCode(error, "creator_city_view_failed");
+      setMessage(code === "revision_conflict" ? "城市版本已变化，请刷新列表后重新打开。" : `无法打开城市（${code}）。`);
+      void loadCities();
+    }).finally(() => setBusy(false));
+  };
+  const refreshProjectCatalog = () => {
+    void refresh().catch(error => setMessage(describeError(error, "creator_refresh_failed")));
+  };
   const refresh = useCallback(async () => {
-    const [response, layoutResponse] = await Promise.all([
-      creatorRequest<{ projects: ProjectRow[] }>("creator.project.list", { limit: 50 }),
-      creatorRequest<{ layouts: LayoutRow[]; cityLayouts?: LayoutRow[] }>("creator.layout.list", { limit: 8 }),
-    ]);
-    setProjects(response.projects);
-    const availableLayouts = [...layoutResponse.layouts, ...(layoutResponse.cityLayouts ?? [])];
-    setLayouts(availableLayouts);
-    setWorldRevision(current => availableLayouts.some(layout => layoutSelectionKey(layout) === current) ? current : availableLayouts[0] ? layoutSelectionKey(availableLayouts[0]) : "");
+    setProjectsLoading(true); setProjectsError("");
+    try {
+      const [response, layoutResponse] = await Promise.all([
+        creatorRequest<{ projects: ProjectRow[] }>("creator.project.list", { limit: 50 }),
+        creatorRequest<{ layouts: LayoutRow[]; cityLayouts?: LayoutRow[] }>("creator.layout.list", { limit: 8 }),
+      ]);
+      setProjects(response.projects);
+      const availableLayouts = [...layoutResponse.layouts, ...(layoutResponse.cityLayouts ?? [])];
+      setLayouts(availableLayouts);
+      setWorldRevision(current => availableLayouts.some(layout => layoutSelectionKey(layout) === current) ? current : availableLayouts[0] ? layoutSelectionKey(availableLayouts[0]) : "");
+    } catch (error) {
+      setProjectsError(describeError(error, "creator_load_failed"));
+      throw error;
+    } finally { setProjectsLoading(false); }
   }, []);
   const openCityView = async (cityId: string, revision: number): Promise<CityViewOpenResult> => {
     setInstalledWorldView(null);
@@ -324,7 +354,7 @@ export function CreatorStudioApp() {
   };
   useCreatorHostBridge({
     projectRef, applyRef, studioEngineRef, draftCityViewRef, draftEngineRef, draftViewStatusRef, draftViewFailureRef, draftDiagnosticsRef,
-    approvalGate, openCityView, recordCityDiagnostic, recordAgentActivity, restoreAgentActivity, setAgentCommit, setMessage, setActivePanel,
+    approvalGate, openCityView, recordCityDiagnostic, recordAgentActivity, restoreAgentActivity, setAgentCommit, setMessage, setActivePanel: openWorkspacePanel,
   });
 
   useEffect(() => {
@@ -366,6 +396,7 @@ export function CreatorStudioApp() {
         const result = context.evidence ? ` · tick ${context.evidence.tick} · ${context.evidence.outcome ?? "未完成"}${counters ? ` · ${counters}` : ""}` : context.failureCode ? ` · ${context.failureCode}` : "";
         const message = `City 试玩已返回：${context.status} · revision ${context.revision}${result} · ${context.runId}`;
         // PRD：试玩结束回到同一编辑上下文——保留未提交草稿，并回到全局视角。
+        openWorkspacePanel("play");
         void openProject(projectId, "preserve").then(() => { setFocusSignal(value => value + 1); setMessage(message); });
       } else {
         // Retry rebuilt the WebView after the one-shot return was already consumed.
@@ -411,7 +442,7 @@ export function CreatorStudioApp() {
         ...(selectedLayout.cityId ? { cityId: selectedLayout.cityId } : {}),
       });
       setPendingCreateId(null);
-      await refresh(); await openProject(created.projectId); setActivePanel("play");
+      await refresh(); await openProject(created.projectId); openWorkspacePanel("play");
       if (discardedDrafts) setMessage("已创建新项目；之前项目的未提交草稿已丢弃。");
     } catch (error) { setMessage(error instanceof Error ? error.message : "creator_create_failed"); }
     finally { setBusy(false); }
@@ -817,9 +848,9 @@ export function CreatorStudioApp() {
   const toolbarActionRef = useRef<(commandId: string, value?: string) => void>(() => {});
   toolbarActionRef.current = (commandId, value) => {
     if (commandId === "creator.project") {
-      if (value === "more") { setActivePanel("project"); return; }
+      if (value === "more") { openWorkspacePanel("project"); return; }
       const row = toolbarProjects[Number(value)];
-      if (row && row.projectId !== project?.projectId) guardDrafts(row.projectId, () => void openProject(row.projectId));
+      if (row && row.projectId !== project?.projectId) openProjectInWorkspace(row.projectId);
     } else if (commandId === "creator.playtest" && !busy && publishedReleaseId && !hasUncommittedProjectEdits) void startPlaytest();
     else if (commandId === "creator.publish" && !busy && project && !hasUncommittedProjectEdits && project.mounts?.length) void publish();
   };
@@ -839,14 +870,24 @@ export function CreatorStudioApp() {
   }, [projects, project, busy, publishedReleaseId, hasUncommittedProjectEdits]);
 
   return <main className="studio">
-    <div className="workspace">
-      <nav className="studio-rail" aria-label="创作模式">
-        <button className={activePanel === "library" ? "active" : ""} aria-pressed={activePanel === "library"} onClick={() => setActivePanel("library")}><span aria-hidden="true">▦</span>资源库</button>
-        <button className={activePanel === "project" ? "active" : ""} aria-pressed={activePanel === "project"} onClick={() => setActivePanel("project")}><span aria-hidden="true">▤</span>项目</button>
-        <button className={activePanel === "play" ? "active" : ""} aria-pressed={activePanel === "play"} onClick={() => setActivePanel("play")}><span aria-hidden="true">◇</span>玩法</button>
-        <button className={activePanel === "agent" ? "active" : ""} aria-pressed={activePanel === "agent"} onClick={() => setActivePanel("agent")}><span aria-hidden="true">✦</span>Agent</button>
-      </nav>
-      {activePanel === "library" ? <CityGameLibraryPanel request={creatorRequest} browserPreview={browserPreview} message={message} onMessage={setMessage} onOpenPreview={(buildId, source) => { setCodePreviewBuildId(buildId); setCodePreviewSourceCityId(source?.cityId); setActivePanel("code"); }} /> : <>
+    <StudioNavigation route={route} projectTitle={project?.title ?? project?.projectId} onNavigate={setRoute} />
+    {route.section === "home" && <div className="studio-route-content">
+      {message && <p className="status status-banner" role="status">{message}</p>}
+      <WorkbenchHome projects={projects} projectsLoading={projectsLoading} projectsError={projectsError} project={project} publishedReleaseId={publishedReleaseId}
+        hasPendingApproval={agentCommit !== null} busy={busy} onOpenProject={openProjectInWorkspace} onOpenTemplates={() => openWorkspacePanel("project")}
+        onOpenAgent={() => openWorkspacePanel("agent")} onRefreshProjects={refreshProjectCatalog} />
+    </div>}
+    {route.section === "projects" && <div className="studio-route-content">
+      {message && <p className="status status-banner" role="status">{message}</p>}
+      <ProjectsPage projects={projects} projectsLoading={projectsLoading} projectsError={projectsError} cities={cities} citiesLoading={citiesLoading} citiesError={citiesError} busy={busy}
+        onOpenProject={openProjectInWorkspace} onRefreshProjects={refreshProjectCatalog} onOpenCity={openCityInWorkspace}
+        onRefreshCities={() => void loadCities()} onCreateProject={() => openWorkspacePanel("project")} />
+    </div>}
+    {(route.section === "explore" || route.section === "releases") && <div className="studio-route-resource">
+      <CityGameLibraryPanel key={route.section} view={route.section} request={creatorRequest} browserPreview={browserPreview} message={message} onMessage={setMessage}
+        onOpenPreview={(buildId, source) => { setCodePreviewBuildId(buildId); setCodePreviewSourceCityId(source?.cityId); openWorkspacePanel("code"); }} />
+    </div>}
+    {route.section === "workspace" && <div className="workspace studio-workspace">
       <CityViewportPanel
         installedWorldView={installedWorldView} draftCityView={draftCityView} draftCityViewRef={draftCityViewRef} draftEngineRef={draftEngineRef}
         draftViewStatusRef={draftViewStatusRef} draftViewFailureRef={draftViewFailureRef} recordCityDiagnostic={recordCityDiagnostic}
@@ -855,13 +896,13 @@ export function CreatorStudioApp() {
         agentCityPreview={agentCityPreview} agentPreviewId={agentCommit?.previewId}
         onResetView={() => setFocusSignal(value => value + 1)} onCloseInstalledWorld={() => setInstalledWorldView(null)}
         onCloseDraftCity={() => { cityOpenRequest.current++; draftCityViewRef.current = null; setDraftCityView(null); }}
-        onOpenProject={() => setActivePanel("project")} onExportCitySource={() => void exportCitySource()} onMessage={setMessage}
+        onOpenProject={() => openWorkspacePanel("project")} onExportCitySource={() => void exportCitySource()} onMessage={setMessage}
         setBaseEngine={setBaseEngine} setBaseStatus={setBaseStatus} commitPatchRef={commitPatchRef}
         onAgentViewportStatus={(status, code) => setAgentPreviewStatus(previous => previous?.context === agentCityPreview && previous.status === status && previous.code === code ? previous : { context: agentCityPreview!, status, code })}
       />
       <aside className="panel" aria-label="创作检查器">
         <div className="inspector-heading"><div><span className="sidebar-kicker">INSPECTOR</span><h2>{activePanel === "agent" ? "City Agent" : activePanel === "project" ? openProjectWorkKind === "game" ? "模板 Game 项目" : "项目" : activePanel === "code" ? "代码预览" : "玩法与场地"}</h2></div>{project && <span className="version-pill">版本 {project.revision}</span>}</div>
-        <nav className="inspector-tabs" aria-label="工作台面板"><button className={activePanel === "play" ? "active" : ""} aria-pressed={activePanel === "play"} onClick={() => setActivePanel("play")}>玩法</button><button className={activePanel === "agent" ? "active" : ""} aria-pressed={activePanel === "agent"} onClick={() => setActivePanel("agent")}>Agent</button><button className={activePanel === "project" ? "active" : ""} aria-pressed={activePanel === "project"} onClick={() => setActivePanel("project")}>项目</button><button className={activePanel === "code" ? "active" : ""} aria-pressed={activePanel === "code"} onClick={() => setActivePanel("code")}>代码预览</button></nav>
+        <nav className="inspector-tabs" aria-label="作品工作区工具"><button className={activePanel === "play" ? "active" : ""} aria-pressed={activePanel === "play"} onClick={() => openWorkspacePanel("play")}>玩法</button><button className={activePanel === "agent" ? "active" : ""} aria-pressed={activePanel === "agent"} onClick={() => openWorkspacePanel("agent")}>Agent</button><button className={activePanel === "project" ? "active" : ""} aria-pressed={activePanel === "project"} onClick={() => openWorkspacePanel("project")}>项目设置</button><button className={activePanel === "code" ? "active" : ""} aria-pressed={activePanel === "code"} onClick={() => openWorkspacePanel("code")}>代码预览</button></nav>
         {message && <p className="status status-banner" role="status">{message}</p>}
         <p className="readiness">{browserPreview ? "合成数据预览 · " : ""}{releaseHint}</p>
         {activePanel === "code" && <CodeGamePreviewPanel request={creatorRequest} browserPreview={browserPreview} requestedBuildId={codePreviewBuildId} requestedSourceCityId={codePreviewSourceCityId} onMessage={setMessage} />}
@@ -871,9 +912,7 @@ export function CreatorStudioApp() {
           busy={busy} browserPreview={browserPreview} packageInspection={packageInspection} installedPackages={installedPackages}
           confirmUninstall={confirmUninstall} projects={projects} project={project} switchConfirm={switchConfirm}
           layouts={layouts} template={template} worldRevision={worldRevision} setTemplate={setTemplate} setWorldRevision={setWorldRevision} setConfirmUninstall={setConfirmUninstall}
-          onOpenCity={(cityId, revision) => {
-            setBusy(true); void openCityView(cityId, revision).catch(error => { const code = errorCode(error, "creator_city_view_failed"); setMessage(code === "revision_conflict" ? "城市版本已变化，请刷新列表后重新打开。" : `无法打开城市（${code}）。`); void loadCities(); }).finally(() => setBusy(false));
-          }}
+          onOpenCity={openCityInWorkspace}
           onLoadCities={cursor => void loadCities(cursor)} onExportSource={() => void exportSource()} onExportExperience={() => void exportExperience()}
           onInspectWorldPackage={() => void inspectWorldPackage()} onInstallInspectedPackage={() => void installInspectedPackage()}
           onValidateInstalledPackage={item => void validateInstalledPackage(item)} onPreviewInstalledPackage={item => void previewInstalledPackage(item)}
@@ -887,11 +926,10 @@ export function CreatorStudioApp() {
           setText={setText} setSceneText={setSceneText} setEntryAnchorId={setEntryAnchorId} setBindingsText={setBindingsText} setSkinId={setSkinId}
           setPreviewId={setPreviewId} setPreviewKind={setPreviewKind} onPreviewGame={() => void preview()} onPreviewScene={() => void previewScene()}
           onImportModel={() => void importModel()} onPreviewMount={() => void previewMount()} onPreviewSkin={value => void previewSkin(value)} onCommit={() => void commit()}
-          onOpenProject={() => setActivePanel("project")} onMessage={setMessage}
+          onOpenProject={() => openWorkspacePanel("project")} onMessage={setMessage}
         />}
       </aside>
-      </>}
-    </div>
-    <footer className="studio-status" role="status"><span>{activePanel === "library" ? "City 实例与 Game Build 分离管理；Story 待接入" : !project ? "未选择项目" : hasUncommittedProjectEdits ? "有未保存修改" : `项目版本 ${project.revision}`}</span><span>{activePanel === "library" ? "Story Project Registry 未接入；安装关系需单独确认" : browserPreview ? "合成数据预览" : releaseHint}</span></footer>
+    </div>}
+    <footer className="studio-status" role="status"><span>{route.section === "home" ? "从创作目标或真实最近项目开始" : route.section === "projects" ? "Creator Project 与 City Instance 分类管理" : route.section === "explore" ? "City 实例与 Game Build 分离管理；Story 待接入" : route.section === "releases" ? "真实 Build 与 Installation；候选发布后端待接入" : !project ? "未选择项目" : hasUncommittedProjectEdits ? "有未保存修改" : `项目版本 ${project.revision}`}</span><span>{route.section === "home" ? "复制目标不会创建或执行 Agent Task" : route.section === "projects" ? "打开最近项目会保留现有草稿状态" : route.section === "explore" ? "Story Project Registry 未接入；安装关系需单独确认" : route.section === "releases" ? "安装预检与更新确认门控保持不变" : browserPreview ? "合成数据预览" : releaseHint}</span></footer>
   </main>;
 }
