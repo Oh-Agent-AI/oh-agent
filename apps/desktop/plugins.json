@@ -536,13 +536,32 @@
         "creator.code.story",
         "creator.code.install.preview",
         "creator.code.install.commit",
-        "creator.code.install.list"
+        "creator.code.install.list",
+        "creator.story.project.create",
+        "creator.story.project.read",
+        "creator.story.projects.list",
+        "creator.story.install.preview",
+        "creator.story.install.commit",
+        "creator.story.install.list",
+        "creator.story.run.start",
+        "creator.story.run.stop",
+        "creator.story.run.reset",
+        "creator.story.resident.lease.acquire",
+        "creator.story.resident.lease.release"
       ],
       "hostEvents": [
         "plugin.event"
       ],
       "source": "apps/creator-studio/ui",
       "localCallBudgets": {
+        "creator.story.project.create": {
+          "requestBytes": 393216,
+          "responseBytes": 65536
+        },
+        "creator.story.project.read": {
+          "requestBytes": 8192,
+          "responseBytes": 393216
+        },
         "creator.city.read": {
           "requestBytes": 8192,
           "responseBytes": 393216

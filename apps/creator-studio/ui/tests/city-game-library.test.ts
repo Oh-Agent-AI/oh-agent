@@ -1,12 +1,31 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildInstallCommitRequest, buildInstallRequest, canCommitInstall, installedGamesForCity, isInstallPreviewAllowed, LIBRARY_RESOURCE_KINDS, parseCityListPage, parseInstallations, parseInstallPreview } from "../src/cityGameLibrary";
+import { buildInstallCommitRequest, buildInstallRequest, canCommitInstall, installedGamesForCity, isInstallPreviewAllowed, LIBRARY_RESOURCE_KINDS, parseCityListPage, parseInstallations, parseInstallPreview, parseStoryProjects } from "../src/cityGameLibrary";
 
-test("Studio library keeps Story unavailable until its project registry exists", () => {
+test("Studio library story tab reads the real host registry, not inferred projects", () => {
   assert.deepEqual(LIBRARY_RESOURCE_KINDS.map(kind => kind.id), ["city", "story", "game"]);
-  assert.deepEqual(LIBRARY_RESOURCE_KINDS.map(kind => kind.available), [true, false, true]);
-  assert.match(LIBRARY_RESOURCE_KINDS[1]?.description ?? "", /Story Project Registry 未接入/);
+  assert.deepEqual(LIBRARY_RESOURCE_KINDS.map(kind => kind.available), [true, true, true]);
+  assert.match(LIBRARY_RESOURCE_KINDS[1]?.description ?? "", /宿主 Registry/);
   assert.equal(new Set(LIBRARY_RESOURCE_KINDS.map(kind => kind.label)).size, 3);
+});
+
+test("Story project rows are a whitelist projection with honest unknowns", () => {
+  const rows = parseStoryProjects({ projects: [
+    { storyId: "story.detective", title: "侦探线", storyVersion: "1.0.0", revision: 2,
+      contentDigest: "sha256:" + "a".repeat(64), schemaVersion: 1, graphBytes: 1024, canonBytes: 256,
+      createdAtMs: 1700000000000, updatedAtMs: 1700000001000 },
+    { storyId: "story.minimal", title: "极简", storyVersion: "0.1.0", revision: 1, contentDigest: "sha256:" + "b".repeat(64) },
+  ] });
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0]?.contentDigest, "sha256:" + "a".repeat(64));
+  assert.equal(rows[0]?.schemaVersion, 1);
+  assert.equal(rows[1]?.graphBytes, null, "missing byte counts stay explicitly unknown");
+  assert.equal(rows[1]?.createdAtMs, null);
+  assert.equal("graph" in rows[0]!, false, "raw graph bodies never enter the list projection");
+  assert.throws(() => parseStoryProjects({}), /creator_story_projects_invalid/);
+  assert.throws(() => parseStoryProjects({ projects: [{ storyId: "s", title: "t", storyVersion: "v", contentDigest: null, revision: 1 }] }), /creator_story_projects_invalid/);
+  assert.throws(() => parseStoryProjects({ projects: [{ storyId: "s", title: "t", storyVersion: "v", contentDigest: "d", revision: -3 }] }), /creator_story_projects_invalid/);
+  assert.equal(parseStoryProjects({ projects: [] }).length, 0, "an empty registry is a truthful empty list");
 });
 
 test("City library preserves host capabilities and explicitly represents missing metadata", () => {

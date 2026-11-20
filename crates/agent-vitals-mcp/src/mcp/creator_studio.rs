@@ -126,6 +126,17 @@ pub fn specs() -> Vec<ToolSpec> {
         spec("creator_experience_list", "List built experience artifacts and whether each is installed in the shared content library. Read-only; no paths are returned.", json!({}), &[]),
         spec("creator_experience_install", "Install a built experience artifact into the shared content library (kind city-experience) after re-verifying every file digest. Idempotent; a different digest for the same id+version is refused. Requires --allow-local-writes.", json!({"experienceId":{"type":"string","minLength":1,"maxLength":128},"version":{"type":"string","minLength":1,"maxLength":32}}), &["experienceId","version"]),
         spec("creator_experience_uninstall", "Remove an installed experience artifact and its content-library entry. Requires --allow-local-writes.", json!({"experienceId":{"type":"string","minLength":1,"maxLength":128},"version":{"type":"string","minLength":1,"maxLength":32}}), &["experienceId","version"]),
+        spec("creator_story_project_create", "Create or CAS-update one Story Project in the host Story registry (RFC V3 §12, S-2): storyId is the stable content identity, graph/canon are structured JSON objects (graph ≤256 KiB, canon ≤64 KiB, canonical-byte budgets), and the returned contentDigest binds canonical(graph+canon+meta). Replaying identical content returns the existing row unchanged; changed content requires expectedStoryRevision. Requires --allow-local-writes and the official Creator Studio plugin to be open.", json!({"storyId":project_id_prop(),"title":{"type":"string","minLength":1,"maxLength":200},"schemaVersion":{"type":"integer","enum":[1]},"storyVersion":{"type":"string","minLength":1,"maxLength":64},"graph":{"type":"object"},"canon":{"type":"object"},"expectedStoryRevision":revision_prop()}), &["storyId","title","schemaVersion","storyVersion","graph","canon"]),
+        spec("creator_story_project_read", "Read one registered Story Project in full (graph and canon are bounded at write time, so the whole read is bounded). Read-only; story_project_not_found means the id is not registered — never infer projects from runtime data.", json!({"storyId":project_id_prop()}), &["storyId"]),
+        spec("creator_story_projects_list", "List registered Story Projects (bounded metadata: ids, versions, digests, sizes). Read-only; an empty list is a truthful empty registry, not a fallback.", json!({"limit":{"type":"integer","minimum":1,"maximum":100}}), &["limit"]),
+        spec("creator_story_install_preview", "Preview installing a registered Story Project into a City (RFC §12.3): City existence + expectedCityRevision CAS, existing-installation detection → requiresUpdateConfirmation with currentStoryVersion/currentPackageDigest and a pinned targetPackageDigest. When active StoryRuns exist, the update preview fails with the story_update_runs_require_reset diagnostic. Writes a short-lived preview row; requires --allow-local-writes and the official Creator Studio plugin to be open.", json!({"storyId":project_id_prop(),"targetCityId":project_id_prop(),"expectedCityRevision":revision_prop(),"operationId":operation_id_prop()}), &["storyId","targetCityId","expectedCityRevision","operationId"]),
+        spec("creator_story_install_commit", "Commit a previously previewed Story installation. Updates require an updateConfirmation binding all four values from the preview: currentStoryVersion → targetStoryVersion plus currentPackageDigest → targetPackageDigest; digest mismatch (same-version content swap or a target replaced after confirmation) is rejected with story_install_digest_conflict. Old StoryRuns are never silently rebound: active runs block the commit. Requires --allow-local-writes and the official Creator Studio plugin to be open.", json!({"previewId":project_id_prop(),"operationId":operation_id_prop(),"updateConfirmation":{"type":"object","properties":{"currentStoryVersion":{"type":"string"},"currentPackageDigest":{"type":"string"},"targetStoryVersion":{"type":"string"},"targetPackageDigest":{"type":"string"}},"required":["currentStoryVersion","currentPackageDigest","targetStoryVersion","targetPackageDigest"],"additionalProperties":false}}), &["previewId","operationId"]),
+        spec("creator_story_install_list", "List Story installations with optional cityId/storyId filters and limit. Read-only.", json!({"cityId":project_id_prop(),"storyId":project_id_prop(),"limit":{"type":"integer","minimum":1,"maximum":100}}), &[]),
+        spec("creator_story_run_start", "Start or restore the caller's StoryRun for player×city×story (RFC §12.1): restores the most recent active/paused run, otherwise creates a new run (resumedFrom points at the latest run of any status). Closing a view never stops a run; only run.stop/run.reset change lifecycle. The host pins the run to the local profile principal. Facts stay in the existing story store via explicit StoryStateScopeV1 scoped commits. Requires --allow-local-writes and the official Creator Studio plugin to be open.", json!({"cityId":project_id_prop(),"storyId":project_id_prop()}), &["cityId","storyId"]),
+        spec("creator_story_run_stop", "Explicitly stop one StoryRun (storyRunId). Idempotent: an already-stopped run returns alreadyStopped=true. Story facts recorded in the story store are never deleted. Requires --allow-local-writes and the official Creator Studio plugin to be open.", json!({"storyRunId":project_id_prop()}), &["storyRunId"]),
+        spec("creator_story_run_reset", "Start a new playthrough (新周目, RFC §12.1/§3.5): stops the latest run and creates a new storyRunId with resumedFrom pointing at it. Old-run events and memories stay in the story store but are invisible to the new run's scope — nothing is rewritten. Requires --allow-local-writes and the official Creator Studio plugin to be open.", json!({"cityId":project_id_prop(),"storyId":project_id_prop()}), &["cityId","storyId"]),
+        spec("creator_story_resident_lease_acquire", "Acquire the per-resident public activity lease (RFC §12.2 r3, ResidentActivityLeaseV1): one active lease per cityId+residentId, holderScope must be a story/game StateScopeV1 subset (public scopes cannot hold), bounded durationMs (default 60s, max 300s). Same-holder re-acquisition renews with the new traceId; a different holder gets acquired=false with reason resident_activity_busy plus the holder's holderTraceId/holderIntentId — busy is a structured result, not an error; retry with backoff. Expired leases are recycled lazily with audit rows, so a crashed holder never wedges the resident. Requires --allow-local-writes and the official Creator Studio plugin to be open.", json!({"cityId":project_id_prop(),"residentId":project_id_prop(),"holderScope":{"type":"object"},"holderIntentId":project_id_prop(),"traceId":project_id_prop(),"durationMs":{"type":"integer","minimum":1,"maximum":300000}}), &["cityId","residentId","holderScope","holderIntentId","traceId"]),
+        spec("creator_story_resident_lease_release", "Release one resident activity lease by traceId (all four release paths converge here; commit-time release calls the same host routine). Idempotent: no active lease or a foreign traceId returns released=false with a reason instead of an error. Requires --allow-local-writes and the official Creator Studio plugin to be open.", json!({"cityId":project_id_prop(),"residentId":project_id_prop(),"traceId":project_id_prop()}), &["cityId","residentId","traceId"]),
         spec("creator_mount_bind", "Bind a typed mount to a Creator project from the project's immutable layout/game refs. Slot counts and anchor capabilities (including fly) are checked; caller never supplies digests. Requires --allow-local-writes and Studio, revision CAS and operationId.", json!({"projectId":project_id_prop(),"baseRevision":revision_prop(),"mountId":operation_id_prop(),"entryAnchorId":{"type":"string","minLength":1,"maxLength":128},"bindings":{"type":"object"},"vehicleId":{"type":"string","minLength":1,"maxLength":128},"parameterOverrides":{"type":"object"},"operationId":operation_id_prop()}), &["projectId","baseRevision","mountId","entryAnchorId","bindings","operationId"]),
         spec("creator_mount_unbind", "Remove a typed mount from a Creator project. Requires --allow-local-writes, Studio, revision CAS and operationId.", json!({"projectId":project_id_prop(),"baseRevision":revision_prop(),"mountId":{"type":"string","minLength":1,"maxLength":128},"operationId":operation_id_prop()}), &["projectId","baseRevision","mountId","operationId"]),
         spec("creator_game_bind_preview", "Validate a typed mount against the current project layout/game without writing: slot counts, anchor existence and required capabilities (including fly). Reachability/visual checks that need the City runtime are reported as unchecked, never as passed.", json!({"projectId":project_id_prop(),"baseRevision":revision_prop(),"mountId":{"type":"string","minLength":1,"maxLength":128},"entryAnchorId":{"type":"string","minLength":1,"maxLength":128},"bindings":{"type":"object"},"vehicleId":{"type":"string","minLength":1,"maxLength":128},"parameterOverrides":{"type":"object"}}), &["projectId","baseRevision","mountId","entryAnchorId","bindings"]),
@@ -207,6 +218,18 @@ fn call_error(code: &str) -> ToolError {
         "creator_vehicle_budget_exceeded" => ToolError::new("invalid_argument", "The project already holds 16 vehicles or the profile exceeds the 8 KiB budget."),
         "creator_vehicle_not_found" => ToolError::new("not_found", "The vehicleId is not a vehicle of this project; use creator_vehicle_inspect after defining, or creator_project_read to list vehicles."),
         "creator_vehicle_asset_not_found" => ToolError::new("invalid_argument", "`modelAssetId` does not reference a registered project asset; import it with the Studio asset picker first, or pass null for the procedural placeholder model."),
+        // Story Project Registry（RFC V3 §12）：注册表稳定错误码 → 可执行建议。
+        "story_argument_invalid" => ToolError::new("invalid_argument", "Story request failed schema or budget validation; graph/canon must be structured JSON objects within their budgets."),
+        "story_project_budget_exceeded" => ToolError::new("invalid_argument", "The Story graph/canon exceeded its budget (graph ≤256 KiB, canon ≤64 KiB canonical bytes)."),
+        "story_project_not_found" | "story_installation_not_found" => ToolError::new("not_found", "The Story id is not registered in the host Story Project registry; register it with creator_story_project_create first."),
+        "story_run_not_found" => ToolError::new("not_found", "The StoryRun was not found; it may belong to a different scope or was never created."),
+        "story_project_revision_conflict" => ToolError::new("revision_conflict", "The Story Project moved on; read the current revision and re-apply with expectedStoryRevision."),
+        "story_install_revision_conflict" => ToolError::new("revision_conflict", "The target City revision changed; re-read the City and preview the installation again."),
+        "story_install_existing" => ToolError::new("invalid_argument", "A Story installation already exists for this City and Story; updates require the four-field updateConfirmation exactly as the preview returned it."),
+        "story_install_digest_conflict" => ToolError::new("invalid_argument", "The target Story content changed after the preview (digest mismatch); re-run creator_story_install_preview and confirm against the new digest."),
+        "story_install_incompatible" => ToolError::new("invalid_argument", "The preview does not allow installation; fix the diagnostics it returned and preview again."),
+        "story_not_installed" => ToolError::new("not_found", "The Story is not installed (or is disabled) in this City; install it with creator_story_install_preview/commit first."),
+        "story_update_run_migration_required" => ToolError::new("invalid_argument", "Active StoryRuns exist for this City and Story; explicitly stop or reset them (新周目) before updating the installation."),
         _ => ToolError::new("data_unavailable", format!("Creator Studio request failed ({code}).")),
     }
 }
@@ -657,6 +680,80 @@ pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool)
             &json!({"experienceId":required_string(args,"experienceId")?,"version":required_string(args,"version")?}), 60_000),
         "creator_experience_uninstall" => call(data_home, "creator.experience.uninstall",
             &json!({"experienceId":required_string(args,"experienceId")?,"version":required_string(args,"version")?}), 15_000),
+        // Story Project Registry（RFC V3 §12，S-2+S-3）：写工具全部要求 --allow-local-writes
+        // 与 Studio 在场（creator.code.install.* 同款）；graph/canon 结构预算在宿主权威执行，
+        // MCP 侧只保留传输预检。租约 busy 是结构化结果而非错误——语义写在工具描述里。
+        "creator_story_project_create" => {
+            if !allow_local_writes { return Err(ToolError::new("permission_denied", "Story project writes require `data-mcp serve --allow-local-writes`.")); }
+            let story_id = required_string(args,"storyId")?;
+            let graph = args.get("graph").filter(|value| value.is_object()).ok_or_else(|| ToolError::new("invalid_argument", "`graph` must be a structured JSON object"))?;
+            let canon = args.get("canon").filter(|value| value.is_object()).ok_or_else(|| ToolError::new("invalid_argument", "`canon` must be a structured JSON object"))?;
+            if graph.to_string().len() > 262144 { return Err(ToolError::new("invalid_argument", "`graph` exceeds the 256 KiB budget (story_project_budget_exceeded).")); }
+            if canon.to_string().len() > 65536 { return Err(ToolError::new("invalid_argument", "`canon` exceeds the 64 KiB budget (story_project_budget_exceeded).")); }
+            let mut payload = json!({"storyId":story_id,"title":required_string(args,"title")?,
+                "schemaVersion":args.get("schemaVersion").and_then(Value::as_u64).ok_or_else(|| ToolError::new("invalid_argument", "`schemaVersion` must be 1"))?,
+                "storyVersion":required_string(args,"storyVersion")?,"graph":graph,"canon":canon});
+            if let Some(revision) = optional_u64(args, "expectedStoryRevision")? { payload["expectedStoryRevision"] = json!(revision); }
+            call_with_budgets(data_home, "creator.story.project.create", &payload, 15_000, creator_budgets::PREVIEW_REQUEST_BYTES)
+        }
+        "creator_story_project_read" => call(data_home, "creator.story.project.read", &json!({"storyId":required_string(args,"storyId")?}), 15_000),
+        "creator_story_projects_list" => {
+            let limit = args.get("limit").and_then(Value::as_u64).filter(|limit| (1..=100).contains(limit)).ok_or_else(|| ToolError::new("invalid_argument", "`limit` must be in 1..=100"))?;
+            call(data_home, "creator.story.projects.list", &json!({"limit":limit}), 15_000)
+        }
+        "creator_story_install_preview" => {
+            if !allow_local_writes { return Err(ToolError::new("permission_denied", "Story install preview requires `data-mcp serve --allow-local-writes`.")); }
+            call(data_home, "creator.story.install.preview", &json!({"storyId":required_string(args,"storyId")?,
+                "targetCityId":required_string(args,"targetCityId")?,
+                "expectedCityRevision":args.get("expectedCityRevision").and_then(Value::as_u64).ok_or_else(|| ToolError::new("invalid_argument", "`expectedCityRevision` must be a non-negative integer"))?,
+                "operationId":required_string(args,"operationId")?}), 15_000)
+        }
+        "creator_story_install_commit" => {
+            if !allow_local_writes { return Err(ToolError::new("permission_denied", "Story install commit requires `data-mcp serve --allow-local-writes`.")); }
+            let mut payload = json!({"previewId":required_string(args,"previewId")?,"operationId":required_string(args,"operationId")?});
+            if let Some(confirmation) = args.get("updateConfirmation") {
+                if !confirmation.as_object().is_some_and(|object| object.len() == 4
+                    && ["currentStoryVersion", "currentPackageDigest", "targetStoryVersion", "targetPackageDigest"].iter().all(|key| object.contains_key(*key))) {
+                    return Err(ToolError::new("invalid_argument", "`updateConfirmation` must bind exactly currentStoryVersion/currentPackageDigest/targetStoryVersion/targetPackageDigest from the preview."));
+                }
+                payload["updateConfirmation"] = confirmation.clone();
+            }
+            call(data_home, "creator.story.install.commit", &payload, 15_000)
+        }
+        "creator_story_install_list" => {
+            let mut payload = json!({});
+            if let Some(city_id) = optional_nonempty_string(args, "cityId")? { payload["cityId"] = json!(city_id); }
+            if let Some(story_id) = optional_nonempty_string(args, "storyId")? { payload["storyId"] = json!(story_id); }
+            if let Some(limit) = optional_u64(args, "limit")? { payload["limit"] = json!(limit); }
+            call(data_home, "creator.story.install.list", &payload, 15_000)
+        }
+        "creator_story_run_start" => {
+            if !allow_local_writes { return Err(ToolError::new("permission_denied", "Starting a StoryRun requires `data-mcp serve --allow-local-writes`.")); }
+            call(data_home, "creator.story.run.start", &json!({"cityId":required_string(args,"cityId")?,"storyId":required_string(args,"storyId")?}), 15_000)
+        }
+        "creator_story_run_stop" => {
+            if !allow_local_writes { return Err(ToolError::new("permission_denied", "Stopping a StoryRun requires `data-mcp serve --allow-local-writes`.")); }
+            call(data_home, "creator.story.run.stop", &json!({"storyRunId":required_string(args,"storyRunId")?}), 15_000)
+        }
+        "creator_story_run_reset" => {
+            if !allow_local_writes { return Err(ToolError::new("permission_denied", "Resetting a StoryRun requires `data-mcp serve --allow-local-writes`.")); }
+            call(data_home, "creator.story.run.reset", &json!({"cityId":required_string(args,"cityId")?,"storyId":required_string(args,"storyId")?}), 15_000)
+        }
+        "creator_story_resident_lease_acquire" => {
+            if !allow_local_writes { return Err(ToolError::new("permission_denied", "Acquiring a resident activity lease requires `data-mcp serve --allow-local-writes`.")); }
+            let holder_scope = args.get("holderScope").filter(|value| value.is_object())
+                .ok_or_else(|| ToolError::new("invalid_argument", "`holderScope` must be a story/game StateScopeV1 object; public scopes cannot hold leases."))?;
+            let mut payload = json!({"cityId":required_string(args,"cityId")?,"residentId":required_string(args,"residentId")?,
+                "holderScope":holder_scope,"holderIntentId":required_string(args,"holderIntentId")?,
+                "traceId":required_string(args,"traceId")?});
+            if let Some(duration) = optional_u64(args, "durationMs")? { payload["durationMs"] = json!(duration); }
+            call(data_home, "creator.story.resident.lease.acquire", &payload, 15_000)
+        }
+        "creator_story_resident_lease_release" => {
+            if !allow_local_writes { return Err(ToolError::new("permission_denied", "Releasing a resident activity lease requires `data-mcp serve --allow-local-writes`.")); }
+            call(data_home, "creator.story.resident.lease.release", &json!({"cityId":required_string(args,"cityId")?,
+                "residentId":required_string(args,"residentId")?,"traceId":required_string(args,"traceId")?}), 15_000)
+        }
         "creator_mount_list" => {
             let mut payload = json!({"projectId":required_string(args,"projectId")?});
             if let Some(revision) = optional_u64(args, "revision")? { payload["revision"] = json!(revision); }
@@ -831,5 +928,81 @@ mod capture_tests {
         let oversize = json!({"dataUrl":format!("data:image/jpeg;base64,{}", "A".repeat(MAX_CAPTURE_ENCODED_CHARS + 1)),
             "bytes":MAX_CAPTURE_ENCODED_CHARS as u64 + 100});
         assert_eq!(capture_result_envelope(&oversize).unwrap_err().code, "creator_capture_budget_exceeded");
+    }
+
+    /// Story 注册表稳定错误码（RFC V3 §12）映射为可执行的 invalid_argument / not_found。
+    #[test]
+    fn story_error_codes_map_to_actionable_messages() {
+        let cases = [
+            ("story_argument_invalid", "structured JSON"),
+            ("story_project_budget_exceeded", "256 KiB"),
+            ("story_project_not_found", "creator_story_project_create"),
+            ("story_project_revision_conflict", "expectedStoryRevision"),
+            ("story_install_revision_conflict", "preview the installation again"),
+            ("story_install_existing", "updateConfirmation"),
+            ("story_install_digest_conflict", "digest mismatch"),
+            ("story_not_installed", "creator_story_install_preview"),
+            ("story_update_run_migration_required", "stop or reset"),
+        ];
+        for (code, needle) in cases {
+            let error = call_error(code);
+            assert!(matches!(error.code, "invalid_argument" | "not_found" | "revision_conflict"), "{code}");
+            assert!(error.message.contains(needle), "{code} => {}", error.message);
+        }
+        assert_eq!(call_error("story_run_not_found").code, "not_found");
+        assert_eq!(call_error("story_installation_not_found").code, "not_found");
+    }
+
+    /// Story 工具契约：schema 可发现、预算镜像宿主硬上限、租约 busy 是结构化结果。
+    #[test]
+    fn story_tool_specs_pin_registry_contract() {
+        let specs = specs();
+        let names = ["creator_story_project_create", "creator_story_project_read", "creator_story_projects_list",
+            "creator_story_install_preview", "creator_story_install_commit", "creator_story_install_list",
+            "creator_story_run_start", "creator_story_run_stop", "creator_story_run_reset",
+            "creator_story_resident_lease_acquire", "creator_story_resident_lease_release"];
+        for name in names {
+            let spec = specs.iter().find(|spec| spec.name == name).unwrap_or_else(|| panic!("{name} spec must exist"));
+            assert_eq!(spec.input_schema.get("additionalProperties"), Some(&Value::Bool(false)), "{name}");
+        }
+        let create = specs.iter().find(|spec| spec.name == "creator_story_project_create").expect("create spec");
+        let properties = create.input_schema.get("properties").and_then(Value::as_object).expect("properties");
+        assert!(properties.contains_key("graph") && properties.contains_key("canon"), "graph/canon are structured inputs");
+        let confirmation = specs.iter().find(|spec| spec.name == "creator_story_install_commit").expect("commit spec")
+            .input_schema.get("properties").and_then(Value::as_object).expect("properties")
+            .get("updateConfirmation").and_then(Value::as_object).expect("updateConfirmation schema");
+        let required = confirmation.get("required").and_then(Value::as_array).expect("required");
+        assert_eq!(required.len(), 4, "§12.3 r3: confirmation binds two versions and two package digests");
+        let acquire = specs.iter().find(|spec| spec.name == "creator_story_resident_lease_acquire").expect("acquire spec");
+        assert!(acquire.description.contains("resident_activity_busy") && acquire.description.contains("holderTraceId"),
+            "busy is a structured result carrying the holder trace, not an error");
+    }
+
+    /// 写工具闸（§6）：没有 --allow-local-writes 时稳定 permission_denied，先于任何邮箱调用。
+    #[test]
+    fn story_write_tools_require_allow_local_writes() {
+        let home = std::env::temp_dir().join(format!("mcp-story-gate-{}", std::process::id()));
+        let args = json!({"storyId":"story.a","title":"t","schemaVersion":1,"storyVersion":"1.0.0","graph":{},"canon":{}});
+        let error = run("creator_story_project_create", &args, &home, false).unwrap_err();
+        assert_eq!(error.code, "permission_denied");
+        assert!(error.message.contains("--allow-local-writes"));
+        for (name, args) in [
+            ("creator_story_install_preview", json!({"storyId":"story.a","targetCityId":"city-1","expectedCityRevision":1,"operationId":"op-1"})),
+            ("creator_story_install_commit", json!({"previewId":"p","operationId":"op"})),
+            ("creator_story_run_start", json!({"cityId":"city-1","storyId":"story.a"})),
+            ("creator_story_run_stop", json!({"storyRunId":"run-1"})),
+            ("creator_story_run_reset", json!({"cityId":"city-1","storyId":"story.a"})),
+            ("creator_story_resident_lease_acquire", json!({"cityId":"city-1","residentId":"r","holderScope":{},"holderIntentId":"i","traceId":"t"})),
+            ("creator_story_resident_lease_release", json!({"cityId":"city-1","residentId":"r","traceId":"t"})),
+        ] {
+            let error = run(name, &args, &home, false).unwrap_err();
+            assert_eq!(error.code, "permission_denied", "{name}");
+        }
+        // updateConfirmation 字段集不符在授权检查之后、邮箱之前就被拒绝。
+        let error = run("creator_story_install_commit", &json!({"previewId":"p","operationId":"op",
+            "updateConfirmation":{"currentStoryVersion":"1.0.0","targetStoryVersion":"2.0.0"}}), &home, true).unwrap_err();
+        assert_eq!(error.code, "invalid_argument");
+        assert!(error.message.contains("four-field") || error.message.contains("bind"));
+        std::fs::remove_dir_all(home).ok();
     }
 }

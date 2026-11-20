@@ -27,6 +27,7 @@ mod code_preview_window;
 mod creator_playtest;
 mod creator_store;
 mod story_store;
+mod story_registry;
 pub mod creator_content_v2;
 mod creator_content_install;
 mod creator_experience;

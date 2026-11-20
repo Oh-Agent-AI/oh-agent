@@ -402,7 +402,13 @@ function App() {
       "creator.vehicle.preview", "creator.vehicle.define", "creator.vehicle.inspect",
       "creator.city.anchor.list", "creator.city.anchor.upsert", "creator.city.anchor.remove",
       "creator.mount.list", "creator.mount.bind", "creator.mount.unbind", "creator.game.bind.preview",
-      "creator.experience.build", "creator.experience.list", "creator.experience.install", "creator.experience.uninstall"];
+      "creator.experience.build", "creator.experience.list", "creator.experience.install", "creator.experience.uninstall",
+      // Story Project Registry（RFC V3 §12，S-2+S-3）：MCP 的 story.* 调用经 Studio
+      // 透传到宿主 dispatch；写授权仍由宿主 dispatch 行与 MCP 闸各自执行。
+      "creator.story.project.create", "creator.story.project.read", "creator.story.projects.list",
+      "creator.story.install.preview", "creator.story.install.commit", "creator.story.install.list",
+      "creator.story.run.start", "creator.story.run.stop", "creator.story.run.reset",
+      "creator.story.resident.lease.acquire", "creator.story.resident.lease.release"];
     // 这些调用只能来自宿主/MCP 路由（UI 自己的请求直连宿主、不经此转发），
     // 所以这里的捕获天然就是「Agent 来源」的变更记录——设计 §7.3 的变更卡片数据源。
     const noteAgent = (method: string, payload: Record<string, unknown>, ok: boolean, result: unknown) => {

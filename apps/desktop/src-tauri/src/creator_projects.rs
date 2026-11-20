@@ -1394,6 +1394,43 @@ fn run_install_list(home: &Path, _owner: &str, _instance: &str, payload: &Value)
     crate::city_game_install::list(home, payload)
 }
 
+// Story Project Registry（RFC V3 §12，S-2+S-3）：事务形态照 city_game_install；
+// run 身份固定为稳定本地 principal（owner），不接受调用方自报 playerId——
+// 事实仍走 story_store 的显式 StoryStateScopeV1，本组方法只管注册表元数据。
+fn run_story_project_create(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::story_registry::project_create(home, payload)
+}
+fn run_story_project_read(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::story_registry::project_read(home, payload)
+}
+fn run_story_projects_list(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::story_registry::projects_list(home, payload)
+}
+fn run_story_install_preview(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::story_registry::install_preview(home, payload)
+}
+fn run_story_install_commit(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::story_registry::install_commit(home, payload)
+}
+fn run_story_install_list(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::story_registry::install_list(home, payload)
+}
+fn run_story_run_start(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::story_registry::run_start(home, owner, payload)
+}
+fn run_story_run_stop(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::story_registry::run_stop(home, payload)
+}
+fn run_story_run_reset(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::story_registry::run_reset(home, owner, payload)
+}
+fn run_story_lease_acquire(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::story_registry::lease_acquire(home, payload)
+}
+fn run_story_lease_release(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::story_registry::lease_release(home, payload)
+}
+
 static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.code.builds.list", &[], &["limit"], run_code_builds),
     creator_row!("creator.code.preview", &["buildId"], &["seed", "source"], run_code_preview),
@@ -1403,6 +1440,17 @@ static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.code.install.preview", &["buildId", "targetCityId", "expectedCityRevision", "operationId"], &["runAfterInstall", "replaceCurrentView", "allowOfficialStoryWrites"], run_install_preview),
     creator_row!("creator.code.install.commit", &["previewId", "operationId"], &["updateConfirmation"], run_install_commit),
     creator_row!("creator.code.install.list", &[], &["cityId", "gameId", "limit"], run_install_list),
+    creator_row!("creator.story.project.create", &["storyId", "title", "schemaVersion", "storyVersion", "graph", "canon"], &["expectedStoryRevision"], run_story_project_create),
+    creator_row!("creator.story.project.read", &["storyId"], &[], run_story_project_read),
+    creator_row!("creator.story.projects.list", &["limit"], &[], run_story_projects_list),
+    creator_row!("creator.story.install.preview", &["storyId", "targetCityId", "expectedCityRevision", "operationId"], &[], run_story_install_preview),
+    creator_row!("creator.story.install.commit", &["previewId", "operationId"], &["updateConfirmation"], run_story_install_commit),
+    creator_row!("creator.story.install.list", &[], &["cityId", "storyId", "limit"], run_story_install_list),
+    creator_row!("creator.story.run.start", &["cityId", "storyId"], &[], run_story_run_start),
+    creator_row!("creator.story.run.stop", &["storyRunId"], &[], run_story_run_stop),
+    creator_row!("creator.story.run.reset", &["cityId", "storyId"], &[], run_story_run_reset),
+    creator_row!("creator.story.resident.lease.acquire", &["cityId", "residentId", "holderScope", "holderIntentId", "traceId"], &["durationMs"], run_story_lease_acquire),
+    creator_row!("creator.story.resident.lease.release", &["cityId", "residentId", "traceId"], &[], run_story_lease_release),
     creator_row!("creator.capabilities.list", &[], &["category", "schemaVersion"], run_capabilities_list),
     creator_row!("creator.city.create", &["name", "seed", "profile", "operationId", "validation"], &[], run_city_create),
     creator_row!("creator.city.create_from_world", &["name", "operationId", "packageId", "version", "validation"], &[], run_city_create_from_world),
