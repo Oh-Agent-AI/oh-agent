@@ -1,5 +1,5 @@
 ---
-draft: true
+lastUpdated: 2026-11-20
 title: How do I add a new agent as a data source to Oh Agent?
 description: A contributor guide to adding a new agent to Agent Vitals, the data layer of Oh Agent, either with a no-code manifest or as a built-in Rust source with parser, registry entry, Python parity and golden tests.
 head:
@@ -85,7 +85,7 @@ These lists name every built-in source and are kept in sync by hand:
 
 <!-- source: fact_harnesses.rs ("trace_service::TRACE_HARNESSES / reimport_verify::HARNESSES / summary::WIRED_HARNESSES 与本表同步维护——加执行环境四处一起改"); trace_service.rs:40; summary/mod.rs:33; reimport_verify.rs:23; manifest.rs RESERVED_SLUGS; custom_sources.rs valid_harness; apps/desktop/src-tauri/src/lib.rs harness_display_name → agent_vitals_domain::harness_capability::harness_profile; watch_topology.rs (per-harness watch roots) -->
 
-**TBD:** the full list of places to touch. `docs/HARNESS_MANIFEST_DSL_SPEC.md` Appendix C lists 16 coupling points (CLI `--harness` enums, Python CLI choices, UI name maps, golden cases, downstream pricing/summary/export/MCP), but its file paths are older than the crate split. Re-audit with `rg` for an existing id such as `"workbuddy"` before opening a PR.
+The table above is the registry-adjacent list. `docs/HARNESS_MANIFEST_DSL_SPEC.md` Appendix C also lists further coupling points (CLI `--harness` enums, Python CLI choices, UI name maps, golden cases, downstream pricing/summary/export/MCP), but some of those file paths predate the crate split. Re-audit with `rg` for an existing id such as `"workbuddy"` before opening a PR.
 
 ### 4. Add the Python twin and golden tests
 
@@ -121,9 +121,9 @@ Never refresh golden files just to make a failure go away. Your PR should explai
 
 ## Will my new source show up in Agent City?
 
-Yes. City reads sources through a generic identity, not a fixed list, so a new source gets its own district. It uses a fallback colour unless a palette entry is added. **TBD:** where the per-source City palette lives (the fixture code mentions a fallback palette for unknown ids).
+Yes. City reads sources through a generic identity, not a fixed list, so a new source gets its own district. District colours come from `paletteFor` in `apps/agent-city/ui/src/engine/cityTextures.ts`, which looks up the harness id in the `harnesses` map in `apps/agent-city/ui/src/engine/cityTheme.ts` and uses that file's `fallback` entry when the id has no palette of its own. Built-in sources are keyed by bare id (for example `workbuddy`); manifest-installed hosts use a `harness:<slug>` key.
 
-<!-- source: docs/CITY_LOCAL_DATA_PROJECTION.md ("v2 使用通用 HarnessPublicIdentityV1，不再限制为四个内置来源"); apps/agent-city/ui/src/data/provider.ts ("与真实投影同名（连字符），否则落到兜底调色板") -->
+<!-- source: docs/CITY_LOCAL_DATA_PROJECTION.md ("v2 使用通用 HarnessPublicIdentityV1，不再限制为四个内置来源"); apps/agent-city/ui/src/engine/cityTextures.ts (paletteFor); apps/agent-city/ui/src/engine/cityTheme.ts (harnesses map + fallback); apps/agent-city/ui/src/data/provider.ts ("与真实投影同名（连字符），否则落到兜底调色板") -->
 
 ## Related
 

@@ -1,5 +1,5 @@
 ---
-draft: true
+lastUpdated: 2026-11-20
 title: 怎么给 Oh Agent 添加一个新的 Agent 数据源？
 description: 给 Oh Agent 的数据层 Agent Vitals 添加新 Agent 的贡献者指南：可以写 manifest 不用写代码，也可以用 Rust 做成内置数据源，包括解析器、注册表条目、Python 对等实现和 golden 测试。
 head:
@@ -85,7 +85,7 @@ head:
 
 <!-- source: fact_harnesses.rs ("…加执行环境四处一起改"); trace_service.rs:40; summary/mod.rs:33; reimport_verify.rs:23; manifest.rs RESERVED_SLUGS; custom_sources.rs valid_harness; apps/desktop/src-tauri/src/lib.rs harness_display_name; watch_topology.rs -->
 
-**待确认**：完整的改动清单。`docs/HARNESS_MANIFEST_DSL_SPEC.md` 附录 C 列了 16 个耦合点（命令行 `--harness` 枚举、Python 命令行选项、界面名称映射、golden 用例，以及下游的计价、汇总、导出和 MCP），但里面的文件路径早于 crate 拆分。提 PR 前，用 `rg` 搜一个现有 id（比如 `"workbuddy"`）重新核对一遍。
+上表是和注册表相邻的清单。`docs/HARNESS_MANIFEST_DSL_SPEC.md` 附录 C 还列了更多耦合点（命令行 `--harness` 枚举、Python 命令行选项、界面名称映射、golden 用例，以及下游的计价、汇总、导出和 MCP），但其中一些文件路径早于 crate 拆分。提 PR 前，用 `rg` 搜一个现有 id（比如 `"workbuddy"`）重新核对一遍。
 
 ### 4. 补 Python 对等实现和 golden 测试
 
@@ -121,9 +121,9 @@ AGENT_VITALS_BIN="$PWD/target/release/agent-vitals" python3 tests/golden_runner.
 
 ## 新数据源会出现在 Agent City 里吗？
 
-会。City 通过通用身份读取数据源，而不是固定列表，所以新数据源会有自己的城区。没有加调色板条目时用兜底颜色。**待确认**：每个数据源的 City 调色板放在哪里（fixture 代码提到未知 id 会用兜底调色板）。
+会。City 通过通用身份读取数据源，而不是固定列表，所以新数据源会有自己的城区。城区颜色由 `apps/agent-city/ui/src/engine/cityTextures.ts` 里的 `paletteFor` 决定：它在 `apps/agent-city/ui/src/engine/cityTheme.ts` 的 `harnesses` 表里按执行环境 id 查找，没有对应条目时使用该文件里的 `fallback`。内置数据源用裸 id（例如 `workbuddy`），manifest 安装的宿主用 `harness:<slug>` 键。
 
-<!-- source: docs/CITY_LOCAL_DATA_PROJECTION.md ("v2 使用通用 HarnessPublicIdentityV1，不再限制为四个内置来源"); apps/agent-city/ui/src/data/provider.ts -->
+<!-- source: docs/CITY_LOCAL_DATA_PROJECTION.md ("v2 使用通用 HarnessPublicIdentityV1，不再限制为四个内置来源"); apps/agent-city/ui/src/engine/cityTextures.ts (paletteFor); apps/agent-city/ui/src/engine/cityTheme.ts (harnesses map + fallback); apps/agent-city/ui/src/data/provider.ts -->
 
 ## 相关
 
