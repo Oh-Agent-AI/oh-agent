@@ -39,6 +39,19 @@ runNpm(["--prefix", "apps/desktop/ui-dev", "run", "build:react"], {
   }
 }
 
+// City 插件会把 packages/city-game-sdk 的源码编进 Vite（snapshotWorld.ts）。
+// Node 从该文件所在包向上解析 @oh-agent/city-sdk，不会进入
+// apps/agent-city/ui/node_modules。lockfile 把 file: 依赖装成符号链接，
+// 所以 city-sdk 必须已经构建。3fc7e243 的 CI Linux/Windows 包在身份检查
+// 通过后死在这里；同一 SHA 的本地正式包是因为打包前额外执行了
+// `npm ci --prefix packages/city-game-sdk` 才过的。
+{
+  const gameSdk = path.join(repo, "packages/city-game-sdk");
+  if (existsSync(path.join(gameSdk, "package.json"))) {
+    runNpm(["ci"], { cwd: gameSdk, stdio: "inherit" });
+  }
+}
+
 {
   const probe = process.env.AGENT_VITALS_PLUGIN_ISOLATION_PROBE === "1";
   buildOfficialPlugins({ install: true, probe });
