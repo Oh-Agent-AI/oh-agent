@@ -149,6 +149,18 @@ const parameterByKey = (capability: WorldCapabilityV1): Map<string, WorldParamet
   return map;
 };
 
+/** Inclusive [min, max] of one dotted capability key with a numeric kind, or
+ * undefined when the key is unknown or non-numeric (enum). Profile validators
+ * consume this so legacy parameter bounds have exactly one declaration point
+ * (the capability catalog) instead of a second inline copy. */
+export function worldParameterNumericRangeV1(capability: WorldCapabilityV1, dottedKey: string): readonly [number, number] | undefined {
+  const descriptor = parameterByKey(capability).get(dottedKey);
+  if (!descriptor || (descriptor.kind !== "number" && descriptor.kind !== "integer") || descriptor.min === undefined || descriptor.max === undefined) {
+    return undefined;
+  }
+  return Object.freeze([descriptor.min, descriptor.max]);
+}
+
 /** Strictly validate a partial parameter set against a capability and return
  * the complete record (input merged over declared defaults), frozen. Unknown
  * keys, wrong kinds, out-of-range values and oversized sets fail closed with
@@ -233,6 +245,37 @@ export const ARID_DUNES_WORLD_V2: WorldCapabilityV1 = Object.freeze({
  * (`parameters.coastal.profile`); declared here so types/validate/City engine
  * derive it instead of restating the literal. */
 export const COASTAL_PROFILE_ID_V1 = "miami-coastal";
+
+/** Profile-validation bounds for every numeric field the coastal-islands
+ * profile record carries (validate.ts consumes this table; the field names
+ * match the profile record). The capability catalog above is the deliberately
+ * smaller tunable subset — only fields the generator exposes as knobs join
+ * it — and tests/world-parameter-bounds.test.ts pins each knob's range inside
+ * its profile bound so the two layers cannot drift. */
+export const COASTAL_PROFILE_PARAMETER_BOUNDS_V1 = Object.freeze({
+  preferredAzimuth: Object.freeze([-Math.PI * 2, Math.PI * 2]),
+  azimuthTolerance: Object.freeze([0, Math.PI]),
+  segmentArc: Object.freeze([0.01, Math.PI * 2]),
+  wetSandWidth: Object.freeze([0, 500]),
+  drySandWidth: Object.freeze([0, 500]),
+  promenadeOffset: Object.freeze([0, 500]),
+  boulevardOffset: Object.freeze([0, 500]),
+  hotelOffset: Object.freeze([0, 500]),
+  bandOuter: Object.freeze([0, 500]),
+  maxCoastalSlope: Object.freeze([0, 10]),
+  maxCoastalHeight: Object.freeze([0, 100]),
+  riverMargin: Object.freeze([0, 500]),
+  siteMargin: Object.freeze([0, 500]),
+  minValidRatio: Object.freeze([0, 1]),
+  bayHalfWidth: Object.freeze([0, 0.5]),
+  bayShift: Object.freeze([-1, 1]),
+});
+
+/** Shoreline-to-inland progression the coastal validator enforces: each
+ * offset field must be ≤ the next one. Keys are profile record fields. */
+export const COASTAL_PROFILE_ORDER_CHAIN_V1 = Object.freeze([
+  "wetSandWidth", "drySandWidth", "promenadeOffset", "boulevardOffset", "hotelOffset", "bandOuter",
+] as const satisfies readonly (keyof typeof COASTAL_PROFILE_PARAMETER_BOUNDS_V1)[]);
 
 /** Registered coastal-islands capability: first batch only unfreezes the
  * already-implemented bay options; the remaining frozen MIAMI_COASTAL fields

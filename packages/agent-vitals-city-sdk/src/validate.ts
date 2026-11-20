@@ -2,7 +2,8 @@ import type { AnchorCapability, AnchorFilterV1, AnchorKind, CityAnchorV1, CityAn
 import { validateMiniGamePack } from "./content";
 import { validateWorldPlanPatch } from "./worldPlanPatch";
 import { isCityThemeIdV1 } from "./themes";
-import { ARID_DUNES_LEGACY_KEYS, ARID_DUNES_WORLD_V2, COASTAL_PROFILE_ID_V1, validateWorldParametersV1 } from "./worldParameters";
+import { ARID_DUNES_LEGACY_KEYS, ARID_DUNES_WORLD_V2, COASTAL_PROFILE_ID_V1, COASTAL_PROFILE_ORDER_CHAIN_V1,
+  COASTAL_PROFILE_PARAMETER_BOUNDS_V1, validateWorldParametersV1, worldParameterNumericRangeV1 } from "./worldParameters";
 
 const error = (code: string, path: string, message: string, objectId?: string): DiagnosticV1 => ({ code, severity: "error", path, message, ...(objectId ? { objectId } : {}) });
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -63,10 +64,15 @@ export function validateCityWorldProfile(value: unknown): Result<CityWorldProfil
       return { ok: false, diagnostics: [error("world_profile_invalid_parameters", "geography.parameters", "Arid dune profiles require the version 1 dune parameters and an optional diversity record.")] };
     }
     const dunes = parameters.dunes;
-    if (typeof dunes.duneScale !== "number" || !Number.isFinite(dunes.duneScale) || dunes.duneScale < 96 || dunes.duneScale > 600
-      || typeof dunes.duneAmplitude !== "number" || !Number.isFinite(dunes.duneAmplitude) || dunes.duneAmplitude < 1 || dunes.duneAmplitude > 36
-      || typeof dunes.orientationDeg !== "number" || !Number.isFinite(dunes.orientationDeg) || dunes.orientationDeg < -180 || dunes.orientationDeg > 180) {
-      return { ok: false, diagnostics: [error("world_profile_parameter_out_of_range", "geography.parameters.dunes", "Dune parameters are outside the generator's supported bounds.")] };
+    // Legacy dune-field bounds come from the capability catalog (single source).
+    // A missing numeric range means the catalog regressed — fail closed, never widen.
+    for (const key of ["landform.duneScale", "landform.duneAmplitude", "landform.orientationDeg"] as const) {
+      const range = worldParameterNumericRangeV1(ARID_DUNES_WORLD_V2, key);
+      const field = key.split(".")[1] as "duneScale" | "duneAmplitude" | "orientationDeg";
+      if (range === undefined || typeof dunes[field] !== "number" || !Number.isFinite(dunes[field])
+        || (dunes[field] as number) < range[0] || (dunes[field] as number) > range[1]) {
+        return { ok: false, diagnostics: [error("world_profile_parameter_out_of_range", "geography.parameters.dunes", "Dune parameters are outside the generator's supported bounds.")] };
+      }
     }
     let diversity: Readonly<Record<string, number | string>> | undefined;
     if (parameters.diversity !== undefined) {
@@ -84,8 +90,9 @@ export function validateCityWorldProfile(value: unknown): Result<CityWorldProfil
       // 只持久化显式设置的键：默认值在构建期归一化，存储不钉死当前默认。
       diversity = Object.freeze(Object.fromEntries(Object.entries(parameters.diversity).map(([key, val]) => [key, val as number | string])));
     }
+    const duneScale = dunes.duneScale as number, duneAmplitude = dunes.duneAmplitude as number, orientationDeg = dunes.orientationDeg as number;
     profile = { schemaVersion: 1, id: value.id, version: value.version as number, biome: "arid",
-      geography: { generator: "arid-dunes-v1", parameters: { dunes: { duneScale: dunes.duneScale, duneAmplitude: dunes.duneAmplitude, orientationDeg: dunes.orientationDeg }, ...(diversity ? { diversity } : {}) } },
+      geography: { generator: "arid-dunes-v1", parameters: { dunes: { duneScale, duneAmplitude, orientationDeg }, ...(diversity ? { diversity } : {}) } },
       visuals: { themeId: value.visuals.themeId } };
   } else if (value.geography.generator === "coastal-islands-v1") {
     const parameters = value.geography.parameters;
