@@ -33,6 +33,8 @@ groups.planning.push("verify-city-site-registry");
 groups.sites.push("verify-city-site-registry");
 groups.planning.push("verify-city-site-registry-scene");
 groups.sites.push("verify-city-site-registry-scene");
+synthetic.push("verify-city-empty-window");
+groups.display.push("verify-city-empty-window");
 groups.planning.push("verify-city-model-envelope");
 groups.sites.push("verify-city-model-envelope");
 groups.planning.push("verify-city-villa-placement");

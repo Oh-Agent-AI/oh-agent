@@ -22,6 +22,8 @@
 @media (prefers-reduced-motion: reduce) { .city-loading-card, .city-loading-mark span, .city-loading-mark i, .city-loading-track span, .city-preparation-track span { animation-duration: 8s; } }
 .city-detail-panel .city-camera-help { font-size: 12px; line-height: 1.5; }
 .city-app .city-scene-message { position: absolute; inset: 45% 36px auto; margin: 0; text-align: center; color: #aebdd0; font-size: 13px; }
+/* 空会话说明贴在角落，不占视口中心，也不作为藏画布的理由。 */
+.city-app .city-scene-note { position: absolute; z-index: 4; left: 16px; bottom: 16px; max-width: min(420px, calc(100% - 32px)); margin: 0; padding: 6px 10px; border-radius: 8px; color: #c5d2e2; background: rgba(8, 16, 28, .72); font-size: 12px; pointer-events: none; }
 .city-app .city-playtest-error { position: absolute; z-index: 10; top: 20px; left: 50%; transform: translateX(-50%); padding: 12px 16px; border: 1px solid #a87568; border-radius: 8px; background: #271b1a; color: #fff0e9; font-size: 13px; }
 .city-app .city-playtest-error button { margin-left: 8px; }
 .city-app .city-header { position: absolute; top: 30px; left: 36px; right: 36px; display: flex; justify-content: space-between; align-items: flex-start; pointer-events: none; }

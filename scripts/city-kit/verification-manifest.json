@@ -532,6 +532,12 @@
     "shared": false
   },
   {
+    "id": "verify-city-empty-window",
+    "file": "verify-city-empty-window.mjs",
+    "env": {},
+    "shared": false
+  },
+  {
     "id": "verify-city-driving",
     "file": "verify-city-driving.mjs"
   },

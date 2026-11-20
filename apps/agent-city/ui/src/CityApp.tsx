@@ -3,6 +3,7 @@ import { buildCityModel } from "./cityModel";
 import { buildIndependentCityModel } from "./viewport/independentCityModel";
 import { prepareCityWorldLayout } from "./engine/cityLayout";
 import { citySceneFailureMessage, classifyCitySceneFailure, type CitySceneFailure } from "./engine/sceneAvailability";
+import { cityScenePresentation } from "./cityScenePresentation";
 import { readCityAppearancePreference, type CityWorldProfileV1 } from "./engine/cityWorldProfile";
 import { createCityWorldProfileCallHandlers } from "./engine/cityWorldProfileCalls";
 import { CityEngine } from "./engine/CityEngine";
@@ -959,8 +960,16 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
     engineRef.current?.setQualityMode(quality);
   }, [projection, labels, quality, cinema, experience.busy, game.active, driving.active]);
 
-  const dataAvailable = projection !== null && projection.status !== "unavailable";
-  const sceneReady = (boot !== null || (dataAvailable && projection.status !== "empty")) && !sceneUnavailable && firstModelFrame;
+  // 空会话 / 空时间范围不再把城市判成「没场景」。画布、首帧和相机走 cityScenePresentation。
+  const presentation = cityScenePresentation({
+    boot: boot !== null,
+    dataLoaded,
+    status: projection?.status ?? null,
+    sceneUnavailable,
+    firstModelFrame,
+    gameActive: game.active,
+  });
+  const sceneReady = presentation.sceneReady;
   const dreamPreviewEnabled = dreamPublicationActive || (embedded() && projection?.source === "local" && sceneReady
     && sceneActivityBlocker === null);
   const openDreamPreview = async () => {
@@ -1017,7 +1026,7 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
   const encounterState = useMonsterEncounters(engineRef, sceneReady);
   // The host projection request precedes model/planning progress. Keep the same
   // loading shell visible from the first render, including a slow summary query.
-  const cityLoading = !sceneUnavailable && (boot ? !firstModelFrame : (!dataLoaded || (dataAvailable && projection?.status !== "empty" && !firstModelFrame)));
+  const cityLoading = presentation.awaitFirstFrame;
   const roadAuditEnabled = sceneReady && sceneActivityBlocker === null;
   const mechaEntryEnabled = sceneReady && sceneActivityBlocker === null && Boolean(experience.model) && mechaAvailability !== "empty";
   const roadAudit = useRoadAudit(engineRef, roadAuditEnabled && roadAuditOpen);
@@ -1092,8 +1101,9 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
   // Publishing the first toolbar acknowledges the responsive plugin shell, not
   // scene completion. Planning runs on a local worker while scene tools stay disabled.
   useEffect(() => { if (toolbarReady) publishToolbar(tools); }, [language, toolbarReady, windowDays, quality, labels, cinema, mechaOpen, roadAuditOpen, sceneReady, sceneUnavailable, game.active, driving.active, planRepair.state.active, experience.busy, experience.film?.frame, experience.film?.total, mechaEntryEnabled]);
-  const sceneMessage = sceneFailure ? citySceneFailureMessage(sceneFailure)
-    : !boot && (!dataAvailable || projection.status === "empty") ? status : null;
+  const sceneMessage = presentation.caption === "failure"
+    ? citySceneFailureMessage(sceneFailure ?? { surface: "webgl", code: "webgl_context_unavailable", summarySafe: true })
+    : presentation.caption === "data-unavailable" || presentation.caption === "empty-note" ? status : null;
   const cityInteractionRuntimeRef = useRef<CityInteractionRuntime | null>(null);
   if (!cityInteractionRuntimeRef.current) cityInteractionRuntimeRef.current = new CityInteractionRuntime();
   if (!miamiRuntimeRegistry.current) {
@@ -1189,7 +1199,7 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
       {playtestError && <div role="alert" className="city-playtest-error">{playtestError}</div>}
       {codeGamePreview.state.error && <div role="alert" className="city-playtest-error">Code Game: {codeGamePreview.state.error}</div>}
       {finishRetry && <div role="alert" className="city-playtest-error">试玩结果未保存。 <button onClick={() => { void finishPlaytest(...finishRetry); }}>重试保存</button></div>}
-      <canvas className="city-canvas" ref={canvasRef} aria-label="Agent City 三维城市" style={{ visibility: sceneMessage && !game.active ? "hidden" : "visible" }} />
+      <canvas className="city-canvas" ref={canvasRef} aria-label="Agent City 三维城市" style={{ visibility: presentation.hideCanvas ? "hidden" : "visible" }} />
       {cityLoading && <div className="city-loading" role="status" aria-live="polite">
         <div className="city-loading-card"><div className="city-loading-mark" aria-hidden="true"><span /><span /><span /><i /></div>
           <p className="city-loading-kicker">AGENT CITY</p>
@@ -1199,7 +1209,7 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
           <small>{cityLoad.stage === "planning" && cityLoad.work !== null ? "显示规划器实际完成的工作量，不代表百分比" : "复杂城市需要一些时间，请稍候"}</small>
         </div>
       </div>}
-      {sceneMessage && !cityLoading && !game.active && <p className="city-scene-message" role="status">{sceneMessage}{sceneFailure?.surface === "layout" ? <span>{` (${sceneFailure.code})`}</span> : null}</p>}
+      {sceneMessage && !cityLoading && !game.active && <p className={presentation.caption === "empty-note" ? "city-scene-note" : "city-scene-message"} role="status">{sceneMessage}{presentation.caption === "failure" && sceneFailure?.surface === "layout" ? <span>{` (${sceneFailure.code})`}</span> : null}</p>}
       {!embedded() && !mechaOpen && <header className="city-header" aria-hidden={experience.options || undefined}>
         <div className="city-local-toolbar">{tools.map((tool) => tool.kind === "select"
           ? <select key={tool.id} aria-label={tool.label} value={tool.value} disabled={!tool.enabled} onChange={(event) => execute(tool.commandId, event.target.value)}>{tool.options?.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
