@@ -202,7 +202,12 @@ def _random_salt():
 
 def _write_salt(path, salt):
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # Windows 的 os.open 默认文本模式：salt 里的 0x0A 会被写成 0x0D 0x0A。
+    # 文件不再是 32B，下一次 _read_salt 当成损坏并重新生成，session_ref 就换了。
+    # Verify run 44663410511（head e64e9cec）的 test_salt_file_round_trip
+    # 在 windows-latest 上因此失败；这次生成的 salt 恰好含 0x0A。Unix 无此翻译。
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
+    fd = os.open(path, flags, 0o600)
     try:
         os.write(fd, salt)
     finally:

@@ -2,6 +2,7 @@ import { atLeast } from "./roadStandard";
 import { DetMath as Math } from "./detMath"; // 跨引擎确定性：见 detMath.ts
 /** Geography and public planning are fixed; sessions occupy reserved parcels. */
 import { runPlanningJob, type PlanningWorkerPort } from "./planningWorker/planningJob";
+import { canReplayUnstartedPlanningWorker } from "./planningRecovery";
 import { hydratePlanningPlan, serializePlanningPlan, type PlanningParameters } from "./planningWorker/planningProtocol";
 import { deleteCityPlanSnapshot, readCityPlanSnapshot, writeCityPlanSnapshot } from "./planningWorker/cityPlanDiskCache";
 import type { PlanningWorkSnapshot } from "./planner/operationBudget";
@@ -179,7 +180,7 @@ const plans = new Map<string, ReturnType<typeof createCityPlan>>();
 export const CITY_PLAN_CACHE_CONFIG = { version: 1, maxEntries: 8 } as const;
 export const cityPlanCacheSize = () => plans.size;
 export function clearCityPlanCache(): void { plans.clear(); }
-export type PreparePlanSource = "memory" | "disk" | "compute";
+export type PreparePlanSource = "memory" | "disk" | "compute" | "caller-replay";
 let lastPrepareSource: PreparePlanSource | null = null;
 export function takePreparePlanSource(): PreparePlanSource | null {
   const source = lastPrepareSource;
@@ -368,8 +369,11 @@ function layoutPlanKey(seed: number, tier: number, coastal: CoastalConfig | null
 }
 
 /** Warm the exact layout plan on a local worker before mounting a large city.
- * Cancellation and worker failures never fall back to UI-thread planning. The
- * validated worker result shares the same bounded LRU as synchronous fixtures. */
+ * Cancellation, timeouts, and failures after the worker has started do not
+ * fall back to the caller. The one exception is a worker that never starts
+ * (constructor throw or an immediate script error, as on WebKitGTK module
+ * workers): `prepareCityLayout` then runs the same `createCityPlan`. That is
+ * not a software-GL switch. The validated plan shares the bounded LRU. */
 function layoutPopulation(model: CityModel): number {
   const planned = model.stats?.totalSessions;
   return Math.min(RENDER_CAP, Math.max(model.buildings.length, Number.isFinite(planned) ? planned : 0));
@@ -414,7 +418,25 @@ export async function prepareCityLayout(model: CityModel, seed: number, coastal:
   const { onPlanningProgress, ...workerOptions } = options;
   const result = await runPlanningJob(parameters, { ...workerOptions, onProgress: onPlanningProgress });
   if (options.signal.aborted || result.status === "cancelled") throw new Error("layout-preparation-cancelled");
-  if (result.status !== "computed") throw new Error(`layout-preparation:${result.reason}`);
+  if (result.status !== "computed") {
+    if (canReplayUnstartedPlanningWorker(result)) {
+      try {
+        const plan = createCityPlan(seed, tier, coastal, { geographyGenerator, geographyOptions, biome });
+        if (!plan.derivedFinalization.ok || !plan.capacity.satisfied || plan.planningOutcome.status === "failed") {
+          throw new Error("layout-preparation:planning-outcome-failed");
+        }
+        rememberPlan(key, plan, seed, coastal);
+        lastPrepareSource = "caller-replay";
+        try { await writeCityPlanSnapshot(parameters, serializePlanningPlan(plan, parameters)); }
+        catch { /* disk is an accelerator; the in-memory plan stands */ }
+        return;
+      } catch (error) {
+        if (error instanceof Error && error.message.startsWith("layout-preparation:")) throw error;
+        throw new Error("layout-preparation:caller-replay-failed");
+      }
+    }
+    throw new Error(`layout-preparation:${result.reason}`);
+  }
   rememberPlan(key, result.plan, seed, coastal);
   lastPrepareSource = "compute";
   try { await writeCityPlanSnapshot(parameters, serializePlanningPlan(result.plan, parameters)); }

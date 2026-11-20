@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { parseCodeBuilds, type CodeBuildRowV1 } from "./codeGamePreview";
 import { buildInstallCommitRequest, buildInstallRequest, canCommitInstall, installedGamesForCity, LIBRARY_RESOURCE_KINDS, parseCityListPage, parseInstallations, parseInstallPreview, type InstallPreview, type InstallRequest, type InstallationRow, type LibraryCityRow, type LibraryKind } from "./cityGameLibrary";
+import { loadStudioValueAtStartup } from "./startupLoad";
 
 type Request = <T>(method: string, payload: Record<string, unknown>) => Promise<T>;
 
@@ -48,7 +49,10 @@ export function CityGameLibrary(props: Readonly<{
     setCitiesLoading(true);
     setCitiesError("");
     try {
-      const page = parseCityListPage(await request("creator.city.list", { limit: 50, ...(cursor ? { cursor } : {}) }));
+      const page = parseCityListPage(await loadStudioValueAtStartup(
+        () => request("creator.city.list", { limit: 50, ...(cursor ? { cursor } : {}) }),
+        { isCancelled: () => requestNumber !== cityRequest.current, delay: (ms) => new Promise(resolve => setTimeout(resolve, ms)) },
+      ));
       if (requestNumber !== cityRequest.current) return;
       setCities(current => cursor ? [...current, ...page.cities.filter(city => !current.some(item => item.cityId === city.cityId))] : page.cities);
       setCitiesCursor(page.nextCursor);
@@ -64,7 +68,10 @@ export function CityGameLibrary(props: Readonly<{
     setBuildsLoading(true);
     setBuildsError("");
     try {
-      const rows = parseCodeBuilds(await request("creator.code.builds.list", { limit: 50 }));
+      const rows = parseCodeBuilds(await loadStudioValueAtStartup(
+        () => request("creator.code.builds.list", { limit: 50 }),
+        { isCancelled: () => requestNumber !== buildRequest.current, delay: (ms) => new Promise(resolve => setTimeout(resolve, ms)) },
+      ));
       if (requestNumber !== buildRequest.current) return;
       setBuilds(rows);
       setSelectedBuildId(current => rows.some(row => row.buildId === current) ? current : rows[0]?.buildId ?? "");
@@ -80,7 +87,10 @@ export function CityGameLibrary(props: Readonly<{
     setInstallationsLoading(true);
     setInstallationsError("");
     try {
-      const rows = parseInstallations(await request("creator.code.install.list", {}));
+      const rows = parseInstallations(await loadStudioValueAtStartup(
+        () => request("creator.code.install.list", {}),
+        { isCancelled: () => requestNumber !== installationRequest.current, delay: (ms) => new Promise(resolve => setTimeout(resolve, ms)) },
+      ));
       if (requestNumber === installationRequest.current) setInstallations(rows);
     } catch (cause) {
       if (requestNumber === installationRequest.current) setInstallationsError(errorMessage(cause, "creator_code_installations_unavailable"));

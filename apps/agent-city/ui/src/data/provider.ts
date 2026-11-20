@@ -768,6 +768,19 @@ export function reportCityScene(stage: "model" | "planning" | "mounting" | "rend
   });
 }
 
+/** A failed WebGL context or layout is a scene metric, not a silent overlay.
+ * `reason` is the stable code from `classifyCitySceneFailure`. */
+export function reportCitySceneFailure(failure: { surface: "webgl" | "layout"; code: string }, windowDays: WindowDays): void {
+  const reason = failure.code.replace(/[^a-z0-9_.:-]/gi, "").slice(0, 40);
+  if (!reason) return;
+  void sendPerformance("scene", 0, {
+    stage: failure.surface === "webgl" ? "rendering" : "planning",
+    window_days: windowDays,
+    reason,
+    ...(activeCityLoadId ? { load_id: activeCityLoadId } : {}),
+  }, "failed");
+}
+
 function reportCityLoad(outcome: "success" | "partial" | "cancelled" | "failed",
   started: number, windowDays: WindowDays, attempts: number, revisionRetries: number,
   fallback: "none", pageReturned?: number): void {

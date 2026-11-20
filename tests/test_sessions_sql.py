@@ -311,6 +311,21 @@ class SessionRefHmacTests(unittest.TestCase):
             s2 = sessions_sql.load_or_create_salt(home)
             self.assertEqual(s1, s2, "同一 home 必须读回同一 salt")
 
+    def test_salt_bytes_containing_newline_stay_32(self):
+        """Windows 文本模式会把 0x0A 扩成 CRLF，salt 文件超过 32B 后被当成损坏重生成。
+
+        run 44663410511 只在随机 salt 碰巧含 0x0A 时失败。这里固定写入含
+        0x0A 和 0x0D 的 32B，钉住落盘长度与读回字节。"""
+        salt = bytes([0x0A if i % 7 == 0 else 0x0D if i % 5 == 0 else i for i in range(32)])
+        self.assertEqual(len(salt), 32)
+        self.assertIn(0x0A, salt)
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            path = home / sessions_sql.SALT_FILE
+            sessions_sql._write_salt(path, salt)
+            self.assertEqual(path.stat().st_size, 32, "salt 必须原样 32B，不能被换行翻译扩长")
+            self.assertEqual(sessions_sql.load_or_create_salt(home), salt)
+
 
 # ────────────────────────────────────────────────────────────────────────
 # Cursor 解析 / 生成 — 与 Rust `parse_*_cursor`/`make_*_cursor` 逐字段对账

@@ -278,11 +278,16 @@ export function App() {
   };
 
   return <AppErrorBoundary><div className={`app-shell desktop-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${nativeMac ? "native-mac" : ""}`}>
-    <header className="desktop-toolbar" data-tauri-drag-region>
-      <button className="button button-secondary sidebar-toggle" type="button" aria-label={message(sidebarCollapsed ? "toolbar.expand" : "toolbar.collapse", language)} aria-expanded={!sidebarCollapsed} aria-controls="workbench-sidebar" onClick={toggleSidebar}><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="2" stroke="currentColor"/><path d="M6 3v10" stroke="currentColor"/></svg></button>
+    {/* 拖动只放在标题和空白条上。header 自己带 data-tauri-drag-region 时，
+        Tauri 2.11 把直接落在 header 上的按下当成窗口拖动（Linux 上是 GDK_FLEUR）。
+        侧栏收起后，这个开关是进入 Creator Studio / City 的唯一普通入口；
+        图标四周的 header 内边距会把点击吃成拖窗口。53468af5 的 Debian 验收
+        就是这个状态：开关附近出现移动光标，侧栏不展开。 */}
+    <header className="desktop-toolbar">
+      <button className="button button-secondary sidebar-toggle" type="button" data-tauri-drag-region="false" aria-label={message(sidebarCollapsed ? "toolbar.expand" : "toolbar.collapse", language)} aria-expanded={!sidebarCollapsed} aria-controls="workbench-sidebar" onClick={toggleSidebar}><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="2" stroke="currentColor"/><path d="M6 3v10" stroke="currentColor"/></svg></button>
       <span className="desktop-toolbar-title" data-tauri-drag-region>{pageName(navigation.find((item) => item.id === page))}</span>
       <span className="desktop-drag-space" data-tauri-drag-region />
-      <div id="desktop-toolbar-actions" className="desktop-toolbar-actions">
+      <div id="desktop-toolbar-actions" className="desktop-toolbar-actions" data-tauri-drag-region="false">
         {pluginSlot.toolbar}
         {page === "overview" && <div className="header-actions"><StatusPill tone={headerStatus.tone}>{headerStatus.label}</StatusPill><button className="button button-secondary" type="button" disabled={overviewRefreshing} onClick={() => setOverviewRefresh((value) => value + 1)}>{message(overviewRefreshing ? "action.refreshing" : "action.refresh", language)}</button></div>}
       </div>

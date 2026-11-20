@@ -7,12 +7,13 @@ import { Worker as NodeWorker } from "node:worker_threads";
 import { citySrc, loadCity, repo } from "./city-kit/index.mjs";
 const { runPlanningJob, executePlanningWorkerJob, hydratePlanningPlan, planningRequestKey, PLANNING_PROTOCOL_VERSION, createCityPlan, bayOf, createCityShape,
   MIAMI_COASTAL, PLANNING_WORK_UNITS, buildCityModel, layoutCity, cityPlanCacheSize, CITY_PLAN_CACHE_CONFIG, prepareCityLayout,
+  clearCityPlanCache, takePreparePlanSource,
   createPlanningWorkLedger, withPlanningWorkLedger } = await loadCity({
   "engine/planningWorker/planningJob.ts": ["runPlanningJob"],
   "engine/planningWorker/planningWorkerJob.ts": ["executePlanningWorkerJob"],
   "engine/planningWorker/planningProtocol.ts": ["hydratePlanningPlan", "planningRequestKey", "PLANNING_PROTOCOL_VERSION"],
   "engine/planner/operationBudget.ts": ["PLANNING_WORK_UNITS", "createPlanningWorkLedger", "withPlanningWorkLedger"],
-  "engine/cityLayout.ts": ["layoutCity", "cityPlanCacheSize", "CITY_PLAN_CACHE_CONFIG", "prepareCityLayout"], "cityModel.ts": ["buildCityModel"],
+  "engine/cityLayout.ts": ["layoutCity", "cityPlanCacheSize", "CITY_PLAN_CACHE_CONFIG", "prepareCityLayout", "clearCityPlanCache", "takePreparePlanSource"], "cityModel.ts": ["buildCityModel"],
   "engine/cityPlan.ts": ["createCityPlan", "bayOf"], "engine/cityShape.ts": ["createCityShape"], "engine/citySeaside.ts": ["MIAMI_COASTAL"],
 });
 // 规划协议现在要求完整的世界参数；与 createCityPlan 的默认路径保持一致
@@ -145,6 +146,30 @@ const workerFactory = () => {
   assert.ok(layout.workBudget && layout.workBudget.consumed.terrainSample > 0,
     "real layout consumes the verified worker plan and its work receipt");
   assert.equal(active, 0);
+}
+{
+  // A worker that never starts used to throw out of prepareCityLayout and the
+  // City page labeled that as "3D rendering is unavailable". Replay the same
+  // planner once. A worker that answers with a real failure still throws.
+  const model = buildCityModel({ rows: [], findings: [], windowStartMs: 0, windowEndMs: 86400000, windowLabel: "synthetic", totalSessions: 0, truncated: false, generatedAt: 1 });
+  clearCityPlanCache();
+  takePreparePlanSource();
+  const seed = input.seed + 17;
+  await prepareCityLayout(model, seed, MIAMI_COASTAL, {
+    signal: new AbortController().signal,
+    workerFactory: () => { throw new Error("module-worker-unavailable"); },
+  });
+  assert.equal(takePreparePlanSource(), "caller-replay");
+  clearCityPlanCache();
+  const failed = fakeWorker();
+  const pending = prepareCityLayout(model, seed + 1, MIAMI_COASTAL, {
+    signal: new AbortController().signal, workerFactory: () => failed.port,
+  });
+  for (let i = 0; i < 50 && !failed.message(); i += 1) await new Promise(resolve => setTimeout(resolve, 10));
+  const requestId = failed.message().requestId;
+  failed.reply({ version: PLANNING_PROTOCOL_VERSION, requestId, status: "failed", reason: "planning-outcome-failed" });
+  await assert.rejects(pending, /layout-preparation:planning-outcome-failed/);
+  assert.equal(takePreparePlanSource(), null);
 }
 await Promise.all(terminations);
 assert(workers.every(worker => worker.threadId === -1), "both workers actually exited, not merely received a stop request");

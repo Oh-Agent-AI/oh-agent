@@ -128,6 +128,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+      # 构建器是 packages/city-game-sdk/scripts/buildGame.ts，它直接 import esbuild。
+      # 干净检出没有这个 node_modules 时，进程在写出诊断前以空 stdout 退出，
+      # 宿主把它记成 game_build_failed，而不是「源码有类型错误」。
+      - name: 安装 Code Game 构建器依赖
+        run: |
+          npm ci --prefix packages/agent-vitals-city-sdk
+          npm run build --prefix packages/agent-vitals-city-sdk
+          npm ci --prefix packages/city-game-sdk
       - name: Code Game 创作闭环（真实 MCP stdio）
         env:
           AGENT_VITALS_BIN: ${{ github.workspace }}/target/release/agent-vitals
@@ -235,6 +243,7 @@ jobs:
           node scripts/verify-release-desktop-workflow.mjs
           node scripts/verify-desktop-platforms.mjs
           node scripts/test-run-npm.mjs
+          node scripts/test-city-sdk-link-prep.mjs
           node scripts/test-desktop-release-artifacts.mjs
           node scripts/test-macos-signature-contract.mjs
 
@@ -251,7 +260,9 @@ jobs:
           cache-dependency-path: |
             apps/desktop/ui-dev/package-lock.json
             apps/agent-city/ui/package-lock.json
+            apps/creator-studio/ui/package-lock.json
             packages/agent-vitals-city-sdk/package-lock.json
+            packages/city-game-sdk/package-lock.json
       - name: 安装守卫依赖
         working-directory: apps/desktop/ui-dev
         run: npm ci
@@ -264,6 +275,16 @@ jobs:
       - name: 构建 City SDK（types + dist）
         working-directory: packages/agent-vitals-city-sdk
         run: npm run build
+      # fast 套件的 typecheck 会跟进 city-game-sdk 源码。符号链接不在时，
+      # 348c2917 的 City 快速守卫在嵌入锁步通过后报 TS2307。
+      - name: 安装 City Game SDK 依赖
+        working-directory: packages/city-game-sdk
+        run: npm ci
+      # esbuild 从 creator-studio 源文件向上找 @oh-agent/city-sdk。本 job 只装了
+      # city-sdk 与 city 插件时，这条解析在进 bundle 字节比较之前就失败。
+      - name: 安装 Creator Studio 依赖
+        working-directory: apps/creator-studio/ui
+        run: npm ci
       # 嵌入式语义闸 bundle 的输入是 city-sdk + Studio 适配器；SDK 改了却忘记重生成，
       # bundle 会继续用旧校验器（lockfile 与 vectors 都拦不住——它们只证明"自洽"）。
       - name: 嵌入式语义闸 bundle 锁步
@@ -384,7 +405,17 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: packages/city-game-sdk/package-lock.json
+          cache-dependency-path: |
+            packages/city-game-sdk/package-lock.json
+            packages/agent-vitals-city-sdk/package-lock.json
+      # contracts 类型在 city-sdk 的 dist/types，dist 被 gitignore。file: 依赖是
+      # 符号链接；不先构建，tsc 报 TS2307，随后 WorldAPIV2 上的 roads/objects
+      # 等成员全部变成「不存在」。
+      - name: 安装并构建 City SDK
+        working-directory: packages/agent-vitals-city-sdk
+        run: |
+          npm ci
+          npm run build
       - name: 安装 City Game SDK 依赖
         working-directory: packages/city-game-sdk
         run: npm ci
@@ -475,6 +506,11 @@ jobs:
       - name: 构建 City SDK（types + dist）
         working-directory: packages/agent-vitals-city-sdk
         run: npm run build
+      # 与 prepare-desktop-bundle 同一条解析：snapshotWorld.ts 的
+      # @oh-agent/city-sdk 只从 city-game-sdk 自己的 node_modules 找到。
+      - name: 安装 City Game SDK 依赖
+        working-directory: packages/city-game-sdk
+        run: npm ci
       - name: 构建（确认 Worker chunk 能打包）
         working-directory: apps/agent-city/ui
         run: |
