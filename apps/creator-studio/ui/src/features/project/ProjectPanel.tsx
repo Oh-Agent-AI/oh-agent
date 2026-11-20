@@ -3,6 +3,8 @@ import type { CityInstanceV1 } from "@oh-agent/city-sdk";
 import { formatWorldPackageInspection, type WorldPackageInspection } from "../../contentPackageInspect";
 import { formatInstalledPackage, type InstalledContentPackage } from "../../installedContent";
 import { layoutSelectionKey, type CityRow, type LayoutRow, type Project, type ProjectRow } from "../../contracts/creatorStudio";
+import type { CityDraft } from "../../contracts/cityLifecycle";
+import { CityDraftPanel } from "../city/CityDraftPanel";
 
 export function ProjectPanel(props: Readonly<{
   cities: readonly CityRow[];
@@ -36,14 +38,20 @@ export function ProjectPanel(props: Readonly<{
   onUninstallInstalledPackage: (item: InstalledContentPackage) => void;
   onSelectProject: (row: ProjectRow) => void;
   onCreateProject: () => void;
+  cityDraft: CityDraft | null;
+  onCreateCityDraft: (name: string, seed: number) => void;
+  onCommitCityDraft: () => void;
+  onCancelCityDraft: () => void;
 }>) {
   const {
     cities, draftCityView, citiesLoading, citiesError, citiesCursor, busy, browserPreview, packageInspection, installedPackages,
     confirmUninstall, projects, project, switchConfirm, layouts, template, worldRevision, setTemplate, setWorldRevision, setConfirmUninstall,
     onOpenCity, onLoadCities, onExportSource, onExportExperience, onInspectWorldPackage, onInstallInspectedPackage,
     onValidateInstalledPackage, onPreviewInstalledPackage, onCreateCityFromInstalledWorld, onUninstallInstalledPackage, onSelectProject, onCreateProject,
+    cityDraft, onCreateCityDraft, onCommitCityDraft, onCancelCityDraft,
   } = props;
   return <section className="new-project">
+    <CityDraftPanel draft={cityDraft} busy={busy} browserPreview={browserPreview} onCreate={onCreateCityDraft} onCommit={onCommitCityDraft} onCancel={onCancelCityDraft} />
     <div><div className="section-title">独立城市</div><p className="muted">打开已保存的城市进行只读预览，或导出城市源码；不会切换玩家的当前 City。</p>
       <div className="project-list">{cities.map(city => <button key={city.cityId} className={`project-row ${draftCityView?.cityId === city.cityId ? "selected" : ""}`} disabled={busy || citiesLoading} onClick={() => onOpenCity(city.cityId, city.revision)}><strong>{city.name}</strong><span>版本 {city.revision}{draftCityView?.cityId === city.cityId ? " · 预览中" : ""}</span></button>)}</div>
       {citiesLoading && <p className="muted">正在读取城市…</p>}

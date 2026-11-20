@@ -1,5 +1,7 @@
 import type { CityRow, ProjectRow } from "../../contracts/creatorStudio";
 import { ProjectList } from "./ProjectList";
+import { CityArchivePanel } from "../city/CityArchivePanel";
+import type { ArchivedCity, CityArchivePreview } from "../../contracts/cityLifecycle";
 
 export function ProjectsPage(props: Readonly<{
   projects: readonly ProjectRow[];
@@ -9,15 +11,25 @@ export function ProjectsPage(props: Readonly<{
   citiesLoading: boolean;
   citiesError: boolean;
   busy: boolean;
+  browserPreview: boolean;
   onOpenProject: (projectId: string) => void;
   onRefreshProjects: () => void;
   onOpenCity: (cityId: string, revision: number) => void;
   onRefreshCities: () => void;
   onCreateProject: () => void;
+  archivedCities: readonly ArchivedCity[];
+  archivesLoading: boolean;
+  archivesError: string;
+  archivePreview: CityArchivePreview | null;
+  onPreviewCityArchive: (city: CityRow) => void;
+  onCommitCityArchive: () => void;
+  onCancelCityArchivePreview: () => void;
+  onRestoreCityArchive: (cityId: string) => void;
 }>) {
   const {
-    projects, projectsLoading, projectsError, cities, citiesLoading, citiesError, busy,
+    projects, projectsLoading, projectsError, cities, citiesLoading, citiesError, busy, browserPreview,
     onOpenProject, onRefreshProjects, onOpenCity, onRefreshCities, onCreateProject,
+    archivedCities, archivesLoading, archivesError, archivePreview, onPreviewCityArchive, onCommitCityArchive, onCancelCityArchivePreview, onRestoreCityArchive,
   } = props;
   return <div className="projects-page">
     <section aria-labelledby="creator-projects-title">
@@ -29,7 +41,8 @@ export function ProjectsPage(props: Readonly<{
       {citiesLoading && cities.length === 0 && <p className="muted">正在读取真实 City 实例…</p>}
       {citiesError && <p className="library-error" role="alert">City 列表读取失败，请重试。</p>}
       {!citiesLoading && !citiesError && cities.length === 0 && <p className="muted">还没有独立 City 实例。</p>}
-      <div className="creator-project-list">{cities.map(city => <button className="project-row" key={city.cityId} disabled={busy} onClick={() => onOpenCity(city.cityId, city.revision)}><strong>{city.name}</strong><span>City Instance · revision {city.revision} · 只读预览</span></button>)}</div>
+      <CityArchivePanel cities={cities} archivedCities={archivedCities} archivesLoading={archivesLoading} archivesError={archivesError} preview={archivePreview} busy={busy} browserPreview={browserPreview}
+        onOpenCity={onOpenCity} onPreview={onPreviewCityArchive} onCommit={onCommitCityArchive} onCancelPreview={onCancelCityArchivePreview} onRestore={onRestoreCityArchive} />
     </section>
   </div>;
 }

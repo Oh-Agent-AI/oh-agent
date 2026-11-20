@@ -1338,6 +1338,31 @@ fn run_city_create(home: &Path, owner: &str, _instance: &str, payload: &Value) -
     if validation.get("requestDigest").and_then(Value::as_str) != Some(expected.as_str()) { return Err("creator_validation_scope_mismatch"); }
     crate::creator_cities::create_city(home, owner, operation_id, name, seed as u32, profile)
 }
+fn run_city_draft_create(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_city_lifecycle::draft_create(home, owner, payload)
+}
+fn run_city_draft_read(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_city_lifecycle::draft_read(home, payload)
+}
+fn run_city_draft_cancel(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_city_lifecycle::draft_cancel(home, owner, payload)
+}
+fn run_city_draft_commit(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_city_lifecycle::draft_commit(home, owner, payload)
+}
+fn run_city_archive_preview(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_city_lifecycle::archive_preview(home, owner, payload)
+}
+fn run_city_archive_commit(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_city_lifecycle::archive_commit(home, owner, payload)
+}
+fn run_city_archive_list(home: &Path, _owner: &str, _instance: &str, _payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_city_lifecycle::archive_list(home)
+}
+fn run_city_archive_restore(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_city_lifecycle::archive_restore(home, owner, payload)
+}
+
 fn run_city_create_from_world(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
     let name = args_str(payload, "name")?;
     let operation_id = args_valid_id(payload, "operationId")?;
@@ -1536,6 +1561,14 @@ static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.code.install.list", &[], &["cityId", "gameId", "limit"], run_install_list),
     creator_row!("creator.capabilities.list", &[], &["category", "schemaVersion"], run_capabilities_list),
     creator_row!("creator.city.create", &["name", "seed", "profile", "operationId", "validation"], &[], run_city_create),
+    creator_row!("creator.city.draft.create", &["name", "seed", "profile", "operationId", "validation"], &[], run_city_draft_create),
+    creator_row!("creator.city.draft.read", &["draftId"], &[], run_city_draft_read),
+    creator_row!("creator.city.draft.cancel", &["draftId", "operationId"], &[], run_city_draft_cancel),
+    creator_row!("creator.city.draft.commit", &["draftId", "operationId", "validation"], &[], run_city_draft_commit),
+    creator_row!("creator.city.archive.preview", &["cityId", "expectedCityRevision", "operationId"], &[], run_city_archive_preview),
+    creator_row!("creator.city.archive.commit", &["previewId", "operationId", "dependencyDigest"], &[], run_city_archive_commit),
+    creator_row!("creator.city.archive.list", &[], &[], run_city_archive_list),
+    creator_row!("creator.city.archive.restore", &["cityId", "operationId"], &[], run_city_archive_restore),
     creator_row!("creator.city.create_from_world", &["name", "operationId", "packageId", "version", "validation"], &[], run_city_create_from_world),
     creator_row!("creator.city.diagnostic.list", &["cityId", "limit"], &[], run_city_diagnostic_list),
     creator_row!("creator.city.diagnostic.record", &["cityId", "revision", "correlationId", "event"], &["code", "elapsedMs"], run_city_diagnostic_record),

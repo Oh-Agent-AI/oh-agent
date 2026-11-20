@@ -140,6 +140,20 @@ pub(crate) fn database(home: &Path) -> Result<Connection, &'static str> {
             accepted_release_id TEXT, accepted_at_ms INTEGER,
             UNIQUE(project_id, revision)
         );
+        CREATE TABLE IF NOT EXISTS creator_city_drafts (
+            draft_id TEXT PRIMARY KEY, name TEXT NOT NULL, seed INTEGER NOT NULL,
+            profile_json TEXT NOT NULL, content_digest TEXT NOT NULL, status TEXT NOT NULL,
+            city_id TEXT, created_at_ms INTEGER NOT NULL, expires_at_ms INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS creator_city_archives (
+            city_id TEXT PRIMARY KEY, archived_at_ms INTEGER NOT NULL,
+            dependencies_json TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS creator_city_archive_previews (
+            preview_id TEXT PRIMARY KEY, city_id TEXT NOT NULL, expected_revision INTEGER NOT NULL,
+            dependencies_json TEXT NOT NULL, operation_id TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL, expires_at_ms INTEGER NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS creator_playtest_runs (
             run_id TEXT PRIMARY KEY, release_id TEXT NOT NULL, project_id TEXT NOT NULL,
             revision INTEGER NOT NULL, studio_instance_id TEXT NOT NULL, city_instance_id TEXT,

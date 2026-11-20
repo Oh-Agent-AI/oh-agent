@@ -66,6 +66,16 @@ pub(crate) fn create_city(home: &Path, actor: &str, operation_id: &str, name: &s
 }
 
 pub(crate) fn create_city_with_world_package(home: &Path, actor: &str, operation_id: &str, name: &str, seed: u32, profile: &Value, world_package: Option<(&str, &str, &str)>) -> Result<Value, &'static str> {
+    let mut db = database(home)?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
+    let result = create_city_in_transaction(&tx, actor, operation_id, name, seed, profile, world_package)?;
+    tx.commit().map_err(|_| "creator_store_unavailable")?;
+    Ok(result)
+}
+
+/// Shared by direct creation and the first save of a deferred draft. The caller
+/// owns the transaction so draft status can become committed atomically too.
+pub(crate) fn create_city_in_transaction(tx: &rusqlite::Transaction<'_>, actor: &str, operation_id: &str, name: &str, seed: u32, profile: &Value, world_package: Option<(&str, &str, &str)>) -> Result<Value, &'static str> {
     if !valid_id(actor) || !valid_id(operation_id) || name.trim() != name || name.is_empty()
         || name.chars().count() > 120 || name.chars().any(char::is_control) || !profile.is_object() {
         return Err("creator_city_invalid");
@@ -77,8 +87,6 @@ pub(crate) fn create_city_with_world_package(home: &Path, actor: &str, operation
         request["worldPackage"] = json!({"packageId":package_id,"version":version,"contentDigest":content_digest});
     }
     let request_hash = digest(&canonical_json(&request).map_err(|_| "creator_city_invalid")?);
-    let mut db = database(home)?;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
     let previous: Option<(String, String)> = tx.query_row(
         "SELECT operation_hash,result_json FROM creator_city_operations WHERE actor_id=?1 AND operation_id=?2",
         params![actor, operation_id], |row| Ok((row.get(0)?, row.get(1)?)),
@@ -105,7 +113,6 @@ pub(crate) fn create_city_with_world_package(home: &Path, actor: &str, operation
     }
     tx.execute("INSERT INTO creator_city_operations(actor_id,operation_id,operation_hash,city_id,result_json,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6)",
         params![actor, operation_id, request_hash, city_id, result_json, now]).map_err(|_| "creator_store_unavailable")?;
-    tx.commit().map_err(|_| "creator_store_unavailable")?;
     Ok(result)
 }
 
@@ -189,7 +196,7 @@ pub(crate) fn read_diagnostics(home: &Path, city_id: &str, limit: u64) -> Result
 pub(crate) fn list_cities(home: &Path, after: &str, limit: u64) -> Result<Value, &'static str> {
     if (!after.is_empty() && !valid_id(after)) || !(1..=50).contains(&limit) { return Err("creator_city_invalid"); }
     let db = database(home)?;
-    let mut statement = db.prepare("SELECT city_id,revision,document_json FROM creator_cities WHERE city_id>?1 ORDER BY city_id LIMIT ?2")
+    let mut statement = db.prepare("SELECT city_id,revision,document_json FROM creator_cities WHERE city_id>?1 AND NOT EXISTS(SELECT 1 FROM creator_city_archives WHERE city_id=creator_cities.city_id) ORDER BY city_id LIMIT ?2")
         .map_err(|_| "creator_store_unavailable")?;
     let rows = statement.query_map(params![after, limit + 1], |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?, row.get::<_, String>(2)?)))
         .map_err(|_| "creator_store_unavailable")?.collect::<Result<Vec<_>, _>>().map_err(|_| "creator_store_unavailable")?;

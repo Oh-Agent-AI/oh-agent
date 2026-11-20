@@ -42,7 +42,8 @@ export function useCreatorHostBridge(options: CreatorHostBridgeOptions) {
   } = options;
 
   useEffect(() => {
-    const methods = ["creator.city.create", "creator.city.create_from_world", "creator.city.diagnostic.list", "creator.city.edit.preview", "creator.city.patch.preview", "creator.city.edit.commit", "creator.city.list", "creator.city.read", "creator.layout.list", "creator.project.list", "creator.project.read", "creator.project.read_chunk", "creator.operation.status", "creator.project.create",
+    const methods = ["creator.city.create", "creator.city.create_from_world", "creator.city.draft.create", "creator.city.draft.read", "creator.city.draft.cancel", "creator.city.draft.commit",
+      "creator.city.archive.preview", "creator.city.archive.commit", "creator.city.archive.list", "creator.city.archive.restore", "creator.city.diagnostic.list", "creator.city.edit.preview", "creator.city.patch.preview", "creator.city.edit.commit", "creator.city.list", "creator.city.read", "creator.layout.list", "creator.project.list", "creator.project.read", "creator.project.read_chunk", "creator.operation.status", "creator.project.create",
       "creator.game.preview", "creator.asset.import", "creator.game.commit", "creator.scene.preview", "creator.scene.commit", "creator.project.commit", "creator.project.publish", "creator.project.publication",
       "creator.project.candidate.create", "creator.project.candidate.read", "creator.project.candidate.accept",
       "creator.project.playtest.start", "creator.project.playtest.result", "creator.project.playtest.cancel", "creator.project.playtest.return_context", "creator.project.playtest.history",
@@ -83,7 +84,7 @@ export function useCreatorHostBridge(options: CreatorHostBridgeOptions) {
     // projectId/baseRevision 一致（审查修复）：不是当前打开的项目时取权威文档，
     // 取不到或 revision 漂移按判负出信封。
     const attachValidation = async (method: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> => {
-      if (method === "creator.city.create") {
+      if (method === "creator.city.create" || method === "creator.city.draft.create" || method === "creator.city.draft.commit") {
         const request = { name: payload.name, seed: payload.seed, profile: payload.profile, operationId: payload.operationId };
         const checked = validateCityInstance({ schemaVersion: 1, cityId: "city-validation", revision: 0,
           name: request.name, seed: request.seed, profile: request.profile });

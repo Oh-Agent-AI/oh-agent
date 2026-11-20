@@ -22,6 +22,9 @@ import { browserPreview, creatorRequest } from "../adapters/creatorHost";
 import { digest, errorCode } from "../adapters/creatorHostUtils";
 import { CityGameLibraryPanel } from "../features/library/CityGameLibraryPanel";
 import { CityViewportPanel } from "../features/city/CityViewportPanel";
+import { CityDraftPanel } from "../features/city/CityDraftPanel";
+import { CityArchivePanel } from "../features/city/CityArchivePanel";
+import { canCommitArchive, cityDraftValidation, DRAFT_CITY_PROFILE, parseArchivePreview, parseArchivedCities, parseCityDraft, type ArchivedCity, type CityArchivePreview, type CityDraft } from "../contracts/cityLifecycle";
 import { GameEditorPanel } from "../features/project/GameEditorPanel";
 import { ProjectPanel } from "../features/project/ProjectPanel";
 import { ProjectsPage } from "../features/project/ProjectsPage";
@@ -131,7 +134,14 @@ export function CreatorStudioApp() {
   const [citiesCursor, setCitiesCursor] = useState<string | null>(null);
   const [citiesLoading, setCitiesLoading] = useState(false);
   const [citiesError, setCitiesError] = useState(false);
+  const [cityDraft, setCityDraft] = useState<CityDraft | null>(null);
+  const [cityDraftOperationId, setCityDraftOperationId] = useState<string | null>(null);
+  const [archivePreview, setArchivePreview] = useState<CityArchivePreview | null>(null);
+  const [archivedCities, setArchivedCities] = useState<readonly ArchivedCity[]>([]);
+  const [archivesLoading, setArchivesLoading] = useState(true);
+  const [archivesError, setArchivesError] = useState("");
   const cityListRequest = useRef(0);
+  const archiveListRequest = useRef(0);
   const loadCities = async (cursor?: string) => {
     const request = ++cityListRequest.current;
     setCitiesLoading(true); setCitiesError(false);
@@ -143,12 +153,23 @@ export function CreatorStudioApp() {
     } catch { if (request === cityListRequest.current) setCitiesError(true); }
     finally { if (request === cityListRequest.current) setCitiesLoading(false); }
   };
+  const loadArchivedCities = async () => {
+    const request = ++archiveListRequest.current;
+    setArchivesLoading(true); setArchivesError("");
+    try {
+      const cities = parseArchivedCities(await creatorRequest<unknown>("creator.city.archive.list", {}));
+      if (request === archiveListRequest.current) setArchivedCities(cities);
+    } catch (error) {
+      if (request === archiveListRequest.current) setArchivesError(errorCode(error, "creator_archive_list_unavailable"));
+    } finally { if (request === archiveListRequest.current) setArchivesLoading(false); }
+  };
   useEffect(() => {
     if (route.section !== "projects" && (route.section !== "workspace" || activePanel !== "project")) return;
     void loadCities();
-    const changed = () => void loadCities();
+    void loadArchivedCities();
+    const changed = () => { void loadCities(); void loadArchivedCities(); };
     window.addEventListener("__CREATOR_CITY_CHANGED__", changed);
-    return () => { cityListRequest.current++; window.removeEventListener("__CREATOR_CITY_CHANGED__", changed); };
+    return () => { cityListRequest.current++; archiveListRequest.current++; window.removeEventListener("__CREATOR_CITY_CHANGED__", changed); };
   }, [activePanel, route.section]);
   // 未完成操作的幂等标识：结果确定前保留，响应失败时用于重试与状态查询。
   const [pendingEdit, setPendingEdit] = useState<{ projectId: string; operationId: string } | null>(null);
@@ -339,6 +360,71 @@ export function CreatorStudioApp() {
       throw error;
     } finally { setProjectsLoading(false); }
   }, []);
+  const createCityDraft = async (name: string, seed: number) => {
+    setBusy(true); setMessage("");
+    const createOperationId = `city-draft-create:${crypto.randomUUID()}`;
+    try {
+      const validation = await cityDraftValidation(name, seed, createOperationId);
+      const draft = parseCityDraft(await creatorRequest<unknown>("creator.city.draft.create", { name, seed, profile: DRAFT_CITY_PROFILE, operationId: createOperationId, validation }));
+      setCityDraft(draft);
+      setCityDraftOperationId(`city-draft-commit:${crypto.randomUUID()}`);
+      setMessage("City 草稿已创建，尚未注册到正常 City 列表；首次保存才会注册。取消或过期不会留下 City。");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "creator_city_draft_create_failed"); }
+    finally { setBusy(false); }
+  };
+  const commitCityDraft = async () => {
+    if (!cityDraft || !cityDraftOperationId || cityDraft.status !== "pending") return;
+    setBusy(true); setMessage("");
+    try {
+      const validation = await cityDraftValidation(cityDraft.name, cityDraft.seed, cityDraftOperationId);
+      const registered = await creatorRequest<{ cityId: string; revision: number }>("creator.city.draft.commit", { draftId: cityDraft.draftId, operationId: cityDraftOperationId, validation });
+      setCityDraft(null); setCityDraftOperationId(null);
+      await Promise.all([loadCities(), loadArchivedCities()]);
+      await openCityView(registered.cityId, registered.revision);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "creator_city_draft_commit_failed"); }
+    finally { setBusy(false); }
+  };
+  const cancelCityDraft = async () => {
+    if (!cityDraft || cityDraft.status !== "pending") return;
+    setBusy(true); setMessage("");
+    try {
+      await creatorRequest("creator.city.draft.cancel", { draftId: cityDraft.draftId, operationId: `city-draft-cancel:${crypto.randomUUID()}` });
+      setCityDraft(null); setCityDraftOperationId(null);
+      setMessage("已取消 City 草稿；没有注册 City。");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "creator_city_draft_cancel_failed"); }
+    finally { setBusy(false); }
+  };
+  const previewCityArchive = async (city: CityRow) => {
+    setBusy(true); setMessage(""); setArchivePreview(null);
+    try {
+      const preview = parseArchivePreview(await creatorRequest<unknown>("creator.city.archive.preview", {
+        cityId: city.cityId, expectedCityRevision: city.revision, operationId: `city-archive-preview:${crypto.randomUUID()}`,
+      }));
+      setArchivePreview(preview);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "creator_archive_preview_failed"); }
+    finally { setBusy(false); }
+  };
+  const commitCityArchive = async () => {
+    if (!archivePreview || !canCommitArchive(archivePreview, true)) return;
+    setBusy(true); setMessage("");
+    try {
+      await creatorRequest("creator.city.archive.commit", { previewId: archivePreview.previewId, operationId: `city-archive-commit:${crypto.randomUUID()}`, dependencyDigest: archivePreview.dependencyDigest });
+      if (draftCityView?.cityId === archivePreview.cityId) { cityOpenRequest.current++; draftCityViewRef.current = null; setDraftCityView(null); }
+      setArchivePreview(null);
+      await Promise.all([loadCities(), loadArchivedCities()]);
+      setMessage("City 已归档；作品、安装关系、历史 Release/Candidate、Revision 和世界包均保留，可在归档列表恢复。");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "creator_archive_commit_failed"); }
+    finally { setBusy(false); }
+  };
+  const restoreCityArchive = async (cityId: string) => {
+    setBusy(true); setMessage("");
+    try {
+      await creatorRequest("creator.city.archive.restore", { cityId, operationId: `city-archive-restore:${crypto.randomUUID()}` });
+      await Promise.all([loadCities(), loadArchivedCities()]);
+      setMessage("City 已恢复到正常列表；原有作品和历史未改变。");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "creator_archive_restore_failed"); }
+    finally { setBusy(false); }
+  };
   const openCityView = async (cityId: string, revision: number): Promise<CityViewOpenResult> => {
     setInstalledWorldView(null);
     if (typeof cityId !== "string" || !Number.isSafeInteger(revision) || revision < 0) throw new Error("creator_request_invalid");
@@ -952,9 +1038,12 @@ export function CreatorStudioApp() {
     </div>}
     {route.section === "projects" && <div className="studio-route-content">
       {message && <p className="status status-banner" role="status">{message}</p>}
-      <ProjectsPage projects={projects} projectsLoading={projectsLoading} projectsError={projectsError} cities={cities} citiesLoading={citiesLoading} citiesError={citiesError} busy={busy}
+      <ProjectsPage projects={projects} projectsLoading={projectsLoading} projectsError={projectsError} cities={cities} citiesLoading={citiesLoading} citiesError={citiesError} busy={busy} browserPreview={browserPreview}
         onOpenProject={openProjectInWorkspace} onRefreshProjects={refreshProjectCatalog} onOpenCity={openCityInWorkspace}
-        onRefreshCities={() => void loadCities()} onCreateProject={() => openWorkspacePanel("project")} />
+        onRefreshCities={() => void loadCities()} onCreateProject={() => openWorkspacePanel("project")}
+        archivedCities={archivedCities} archivesLoading={archivesLoading} archivesError={archivesError} archivePreview={archivePreview}
+        onPreviewCityArchive={city => void previewCityArchive(city)} onCommitCityArchive={() => void commitCityArchive()}
+        onCancelCityArchivePreview={() => setArchivePreview(null)} onRestoreCityArchive={cityId => void restoreCityArchive(cityId)} />
     </div>}
     {(route.section === "explore" || route.section === "releases") && <div className={route.section === "releases" ? "studio-route-resource release-management" : "studio-route-resource"}>
       {route.section === "releases" && <div className="release-candidate">{candidatePanel}</div>}
@@ -994,6 +1083,7 @@ export function CreatorStudioApp() {
           onCreateCityFromInstalledWorld={item => void createCityFromInstalledWorld(item)} onUninstallInstalledPackage={item => void uninstallInstalledPackage(item)}
           onSelectProject={row => { if (row.projectId !== project?.projectId) guardDrafts(row.projectId, () => void openProject(row.projectId)); else { setInstalledWorldView(null); if (draftCityView) { cityOpenRequest.current++; draftCityViewRef.current = null; setDraftCityView(null); } } }}
           onCreateProject={() => guardDrafts("create", () => void createProject())}
+          cityDraft={cityDraft} onCreateCityDraft={(name, seed) => void createCityDraft(name, seed)} onCommitCityDraft={() => void commitCityDraft()} onCancelCityDraft={() => void cancelCityDraft()}
         />}
         {activePanel === "play" && <GameEditorPanel
           project={project} busy={busy} text={text} sceneText={sceneText} entryAnchorId={entryAnchorId} bindingsText={bindingsText} skinId={skinId}
