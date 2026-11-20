@@ -16,7 +16,8 @@ assert(manifest.some((s) => s.file === "verify-city-solve.mjs" && !s.shared));
 // 有意登记就同步改这里，并在下面断言它们确实挂进了 planning 组——否则登记了却不跑。
 // 88（驾驶线）+ 视觉风格线 3 个（junction-rings / highway-ramps / world-scale）+ 机甲 UX 守卫（verify-city-mecha-ux，挂在 game 组）。计数锁防的是悄悄增减，
 // 有意登记就同步改这里，并在下面断言它们确实挂进了 planning 组——否则登记了却不跑。
-assert.equal(manifest.length, 117);
+// 117 + verify-city-empty-window（空会话/空时间窗仍挂基础世界；挂 fast 与 display）。
+assert.equal(manifest.length, 118);
 assert(selectStages("module", "display").some(stage => stage.id === "verify-city-coastal-receivers"));
 for (const id of ["verify-city-road-audit-ui", "verify-city-road-audit-worker", "verify-city-road-audit-history"]) {
   assert(manifest.some((stage) => stage.id === id), `${id} must be registered`);
@@ -27,6 +28,9 @@ for (const id of ["verify-city-junction-rings", "verify-city-highway-ramps"])
   for (const mode of ["full", "fast", "module"]) assert(selectStages(mode, mode === "module" ? "planning" : undefined)
     .some(stage => stage.id === id));
 assert(selectStages("fast").some((stage) => stage.id === "verify-city-import-boundary"), "import boundary guard must run in fast mode");
+assert(selectStages("fast").some((stage) => stage.id === "verify-city-empty-window"), "empty-window city guard must run in fast mode");
+assert(selectStages("module", "display").some((stage) => stage.id === "verify-city-empty-window"));
+assert(selectStages("full").some((stage) => stage.id === "verify-city-empty-window"));
 assert(selectStages("module", "planning").some((stage) => stage.id === "verify-city-import-boundary"));
 for (const mode of ["full", "fast", "module"]) assert(selectStages(mode, mode === "module" ? "planning" : undefined)
   .some(stage => stage.id === "verify-city-planning-job"));
