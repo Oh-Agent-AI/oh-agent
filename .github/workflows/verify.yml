@@ -262,6 +262,7 @@ jobs:
             apps/agent-city/ui/package-lock.json
             apps/creator-studio/ui/package-lock.json
             packages/agent-vitals-city-sdk/package-lock.json
+            packages/city-game-sdk/package-lock.json
       - name: 安装守卫依赖
         working-directory: apps/desktop/ui-dev
         run: npm ci
@@ -274,6 +275,11 @@ jobs:
       - name: 构建 City SDK（types + dist）
         working-directory: packages/agent-vitals-city-sdk
         run: npm run build
+      # fast 套件的 typecheck 会跟进 city-game-sdk 源码。符号链接不在时，
+      # 348c2917 的 City 快速守卫在嵌入锁步通过后报 TS2307。
+      - name: 安装 City Game SDK 依赖
+        working-directory: packages/city-game-sdk
+        run: npm ci
       # esbuild 从 creator-studio 源文件向上找 @oh-agent/city-sdk。本 job 只装了
       # city-sdk 与 city 插件时，这条解析在进 bundle 字节比较之前就失败。
       - name: 安装 Creator Studio 依赖

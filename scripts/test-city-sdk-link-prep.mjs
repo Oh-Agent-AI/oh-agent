@@ -25,20 +25,17 @@ assert.ok(sdkBuild > 0 && gameSdk > sdkBuild && plugins > gameSdk, "city-game-sd
 const gameLock = JSON.parse(read("packages/city-game-sdk/package-lock.json"));
 assert.equal(gameLock.packages["node_modules/@oh-agent/city-sdk"].link, true, "city-game-sdk installs city-sdk as a symlink, so dist must exist before consumers resolve it");
 
-function packageJsonFrom(startFile, name) {
-  let dir = path.dirname(startFile);
-  for (;;) {
-    const candidate = path.join(dir, "node_modules", name, "package.json");
-    if (existsSync(candidate)) return candidate;
-    const parent = path.dirname(dir);
-    if (parent === dir) throw new Error(`${name} is not installed above ${startFile}`);
-    dir = parent;
-  }
+// 桌面发布契约 job 不做 npm ci。348c2917 的 run 44663023207 在 11 秒内
+// 失败，是因为这里要求 node_modules 已经存在；同一 job 里原有的发布契约
+// 脚本当时已经全部通过。安装是否落地由带 npm ci 的 job 验证，这里只钉源码契约。
+const snapshotWorld = read("packages/city-game-sdk/src/host/snapshotWorld.ts");
+assert.match(snapshotWorld, /from "@oh-agent\/city-sdk\/contracts"/);
+assert.match(snapshotWorld, /from "@oh-agent\/city-sdk"/);
+const linkedPackage = path.join(repo, "packages/city-game-sdk/node_modules/@oh-agent/city-sdk/package.json");
+if (existsSync(linkedPackage)) {
+  assert.equal(path.relative(repo, linkedPackage), path.join("packages/city-game-sdk/node_modules/@oh-agent/city-sdk/package.json"));
+  assert.match(read("packages/city-game-sdk/node_modules/@oh-agent/city-sdk/dist/types/contracts.d.ts"), /interface WorldQueryV1/);
 }
-const linked = packageJsonFrom(path.join(repo, "packages/city-game-sdk/src/host/snapshotWorld.ts"), "@oh-agent/city-sdk");
-assert.equal(path.relative(repo, linked), path.join("packages/city-game-sdk/node_modules/@oh-agent/city-sdk/package.json"));
-const contracts = path.join(path.dirname(linked), "dist/types/contracts.d.ts");
-assert.ok(readFileSync(contracts, "utf8").includes("interface WorldQueryV1"), "city-sdk dist types are required before City game SDK typecheck");
 
 const workflow = read(".github/workflows/verify.yml");
 function jobBody(name) {
@@ -54,6 +51,9 @@ assert.match(differential, /npm ci --prefix packages\/city-game-sdk/);
 assert.match(differential, /npm run build --prefix packages\/agent-vitals-city-sdk/);
 const cityGuards = jobBody("City 快速守卫");
 assert.match(cityGuards, /working-directory: apps\/creator-studio\/ui\n\s+run: npm ci/);
+const gameInstall = cityGuards.indexOf("working-directory: packages/city-game-sdk");
+const fastSuite = cityGuards.indexOf("verify-city-suite.mjs fast");
+assert.ok(gameInstall >= 0 && fastSuite > gameInstall, "City fast typecheck imports city-game-sdk and needs its city-sdk link installed first");
 const gameSdkJob = jobBody("City game SDK");
 assert.match(gameSdkJob, /working-directory: packages\/agent-vitals-city-sdk[\s\S]*npm run build/);
 const mecha = jobBody("Mecha 战棋守卫");
