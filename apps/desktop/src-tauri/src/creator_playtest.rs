@@ -8,7 +8,7 @@ use std::path::Path;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use crate::creator_store::{database, digest, new_id, now_ms, only_keys, valid_id};
+use crate::creator_store::{database, digest, new_id, now_ms, only_keys, read_creator_artifact, valid_id, CreatorArtifactKind};
 use crate::creator_projects::valid_skin_id;
 use crate::creator_projects::{MAX_RELEASE_BYTES, MAX_RELEASE_MOUNTS, PLAYTEST_TTL_MS};
 
@@ -20,6 +20,13 @@ const MAX_PLAYTEST_TICKS: u64 = 2_000_000;
 /// 试玩 gameType 白名单（2026-11-15 飞行泛化切片）：driving 是既有行为，flight 由
 /// creator.flight-checkpoint-v1 / city-flight-generic 承接（运行时适配器属下一切片）。
 fn valid_playtest_game_type(value: &str) -> bool { matches!(value, "driving" | "flight") }
+
+fn add_artifact_identity(response: &mut Value, artifact_id: &str, kind: CreatorArtifactKind) {
+    if kind == CreatorArtifactKind::Candidate {
+        response["artifactKind"] = json!(kind.as_str());
+        response["candidateId"] = json!(artifact_id);
+    }
+}
 
 /// 解析一次试玩的游戏类型（单一来源，start/claim/pending 共用）：
 /// - 省略（None）：容忍读 release 冻结的 `gameType`；release 快照现无该字段（或值不在
@@ -90,13 +97,21 @@ pub(crate) fn start_playtest_with_game_type(home: &Path, studio_instance: &str, 
         if active_release == release_id && active_studio == studio_instance {
             if expected_project.is_some_and(|expected| expected != active_project) { return Err("creator_release_project_mismatch"); }
             if expected_revision.is_some_and(|expected| expected != active_revision) { return Err("creator_release_revision_mismatch"); }
+            let artifact = read_creator_artifact(&tx, release_id)?;
+            let mut response = json!({"runId":run_id,"releaseId":release_id,"projectId":active_project,"revision":active_revision,"status":"pending"});
+            add_artifact_identity(&mut response, release_id, artifact.kind);
             tx.commit().map_err(|_| "creator_store_unavailable")?;
-            return Ok(json!({"runId":run_id,"releaseId":release_id,"projectId":active_project,"revision":active_revision,"status":"pending"}));
+            return Ok(response);
         }
         return Err("creator_playtest_active");
     }
-    let (project_id, revision, raw): (String, u64, String) = tx.query_row("SELECT project_id,revision,snapshot_json FROM creator_releases WHERE release_id=?1", [release_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_release_not_found")?;
+    let artifact = read_creator_artifact(&tx, release_id)?;
+    if artifact.kind == CreatorArtifactKind::Candidate {
+        let accepted: Option<String> = tx.query_row("SELECT accepted_release_id FROM creator_candidates WHERE candidate_id=?1", [release_id], |row| row.get::<_,Option<String>>(0))
+            .optional().map_err(|_| "creator_store_unavailable")?.flatten();
+        if accepted.is_some() { return Err("creator_candidate_already_accepted"); }
+    }
+    let (project_id, revision, raw) = (artifact.project_id, artifact.revision, artifact.snapshot_json);
     // MCP 契约（设计 §6.3）：调用方显式声明意图范围，归属不符直接拒绝——
     // 防止 releaseId 串项目，或对旧 revision 的 release 误启动试玩。
     if let Some(expected) = expected_project {
@@ -123,8 +138,10 @@ pub(crate) fn start_playtest_with_game_type(home: &Path, studio_instance: &str, 
         .map_err(|_| "creator_store_unavailable")?;
     tx.execute("DELETE FROM creator_playtest_runs WHERE active_slot IS NULL AND run_id NOT IN (SELECT run_id FROM creator_playtest_runs ORDER BY created_at_ms DESC LIMIT ?1)", [MAX_PLAYTEST_HISTORY])
         .map_err(|_| "creator_store_unavailable")?;
+    let mut response = json!({"runId":run_id,"releaseId":release_id,"projectId":project_id,"revision":revision,"status":"pending"});
+    add_artifact_identity(&mut response, release_id, artifact.kind);
     tx.commit().map_err(|_| "creator_store_unavailable")?;
-    Ok(json!({"runId":run_id,"releaseId":release_id,"projectId":project_id,"revision":revision,"status":"pending"}))
+    Ok(response)
 }
 
 pub(crate) fn claim_playtest(home: &Path, city_instance: &str, expected_run: Option<&str>) -> Result<Value, &'static str> {
@@ -147,8 +164,8 @@ pub(crate) fn claim_playtest(home: &Path, city_instance: &str, expected_run: Opt
         tx.execute("UPDATE creator_playtest_runs SET status='claimed',city_instance_id=?1 WHERE run_id=?2 AND status='pending'", params![city_instance,run_id])
             .map_err(|_| "creator_store_unavailable")?;
     }
-    let (raw, snapshot_digest): (String, String) = tx.query_row("SELECT snapshot_json,snapshot_digest FROM creator_releases WHERE release_id=?1", [&release_id], |row| Ok((row.get(0)?,row.get(1)?)))
-        .optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_release_not_found")?;
+    let artifact = read_creator_artifact(&tx, &release_id)?;
+    let (raw, snapshot_digest) = (artifact.snapshot_json, artifact.snapshot_digest);
     if raw.len() > MAX_RELEASE_BYTES { return Err("creator_release_invalid"); }
     if digest(&raw) != snapshot_digest { return Err("creator_release_digest_mismatch"); }
     let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
@@ -188,6 +205,7 @@ pub(crate) fn claim_playtest(home: &Path, city_instance: &str, expected_run: Opt
         "assets":snapshot.get("assets").cloned().unwrap_or_else(|| json!({"schemaVersion":1,"entries":[]})),
         "assetRefs":snapshot.get("assetRefs").cloned().unwrap_or_else(|| json!([])),
         "returnContext":{"projectId":project_id,"revision":revision}});
+    add_artifact_identity(&mut response, &release_id, artifact.kind);
     if let Some((city, layout)) = city_scope {
         response["city"] = city;
         response["layout"] = layout;
@@ -206,8 +224,8 @@ pub(crate) fn pending_playtest(home: &Path) -> Result<Value, &'static str> {
         "SELECT run_id,release_id,project_id,revision,status FROM creator_playtest_runs WHERE active_slot=1", [],
         |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))).optional().map_err(|_| "creator_store_unavailable")?;
     let Some((run_id, release_id, project_id, revision, _status)) = active else { return Ok(json!({"pending":false})) };
-    let (raw, snapshot_digest): (String, String) = db.query_row("SELECT snapshot_json,snapshot_digest FROM creator_releases WHERE release_id=?1", [&release_id],
-        |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_release_not_found")?;
+    let artifact = read_creator_artifact(&db, &release_id)?;
+    let (raw, snapshot_digest) = (artifact.snapshot_json, artifact.snapshot_digest);
     if raw.len() > MAX_RELEASE_BYTES || digest(&raw) != snapshot_digest { return Err("creator_release_digest_mismatch"); }
     let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
     if snapshot.get("projectId").and_then(Value::as_str) != Some(&project_id) || snapshot.get("revision").and_then(Value::as_u64) != Some(revision) {
@@ -217,9 +235,11 @@ pub(crate) fn pending_playtest(home: &Path) -> Result<Value, &'static str> {
     agent_vitals_runtime::logging::log_info("creator_playtest", &format!("pending run={run_id} release={release_id} city={:?}", snapshot.get("cityId")));
     let (city, layout) = release_city_scope(home, &snapshot)?;
     let world_package = crate::creator_cities::read_world_package_ref(home, city["cityId"].as_str().ok_or("creator_release_invalid")?)?["worldPackage"].clone();
-    Ok(json!({"pending":true,"runId":run_id,"releaseId":release_id,"projectId":project_id,"revision":revision,
+    let mut response = json!({"pending":true,"runId":run_id,"releaseId":release_id,"projectId":project_id,"revision":revision,
         "gameType":resolve_playtest_game_type(None, &snapshot)?,
-        "worldRevision":snapshot["worldRevision"],"city":city,"layout":layout,"worldPackage":world_package}))
+        "worldRevision":snapshot["worldRevision"],"city":city,"layout":layout,"worldPackage":world_package});
+    add_artifact_identity(&mut response, &release_id, artifact.kind);
+    Ok(response)
 }
 
 struct PlaytestWorldSnapshot { run_id: String, content_digest: String }
@@ -231,10 +251,12 @@ fn playtest_world_snapshots() -> &'static Mutex<HashMap<String, PlaytestWorldSna
 fn active_playtest_city(home: &Path, run_id: &str) -> Result<(String, Value), &'static str> {
     if !valid_id(run_id) { return Err("creator_request_invalid"); }
     let db = database(home)?;
-    let row: Option<(String, String, String, u64, String, String)> = db.query_row(
-        "SELECT r.release_id,r.status,r.project_id,r.revision,c.snapshot_json,c.snapshot_digest FROM creator_playtest_runs r JOIN creator_releases c ON c.release_id=r.release_id WHERE r.active_slot=1 AND r.run_id=?1", [run_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))).optional().map_err(|_| "creator_store_unavailable")?;
-    let (_release_id, status, project_id, revision, raw, snapshot_digest) = row.ok_or("creator_playtest_not_found")?;
+    let row: Option<(String, String, String, u64)> = db.query_row(
+        "SELECT release_id,status,project_id,revision FROM creator_playtest_runs WHERE active_slot=1 AND run_id=?1", [run_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional().map_err(|_| "creator_store_unavailable")?;
+    let (release_id, status, project_id, revision) = row.ok_or("creator_playtest_not_found")?;
+    let artifact = read_creator_artifact(&db, &release_id)?;
+    let (raw, snapshot_digest) = (artifact.snapshot_json, artifact.snapshot_digest);
     if status != "pending" { return Err("creator_playtest_not_pending"); }
     if raw.len() > MAX_RELEASE_BYTES || digest(&raw) != snapshot_digest { return Err("creator_release_digest_mismatch"); }
     let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
@@ -351,8 +373,8 @@ pub(crate) fn finish_playtest(home: &Path, city_instance: &str, run_id: &str, st
         if current != status { return Err("creator_playtest_terminal"); }
         if failure_code.is_some() && failure_code != existing_failure_code.as_deref() { return Err("creator_playtest_terminal"); }
         if let Some(value) = evidence {
-            let (raw, snapshot_digest): (String,String) = tx.query_row("SELECT snapshot_json,snapshot_digest FROM creator_releases WHERE release_id=?1", [&release_id], |row| Ok((row.get(0)?,row.get(1)?)))
-                .optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_release_not_found")?;
+            let artifact = read_creator_artifact(&tx, &release_id)?;
+            let (raw, snapshot_digest) = (artifact.snapshot_json, artifact.snapshot_digest);
             let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
             if Some(validate_playtest_evidence(value, status, &release_id, revision, &snapshot_digest, &snapshot)?.as_str()) != existing_evidence.as_deref() {
                 return Err("creator_playtest_terminal");
@@ -370,8 +392,8 @@ pub(crate) fn finish_playtest(home: &Path, city_instance: &str, run_id: &str, st
         return Err("creator_playtest_expired");
     }
     let evidence_json = if let Some(value) = evidence {
-        let (raw, snapshot_digest): (String,String) = tx.query_row("SELECT snapshot_json,snapshot_digest FROM creator_releases WHERE release_id=?1", [&release_id], |row| Ok((row.get(0)?,row.get(1)?)))
-            .optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_release_not_found")?;
+        let artifact = read_creator_artifact(&tx, &release_id)?;
+        let (raw, snapshot_digest) = (artifact.snapshot_json, artifact.snapshot_digest);
         let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
         Some(validate_playtest_evidence(value, status, &release_id, revision, &snapshot_digest, &snapshot)?)
     } else { None };

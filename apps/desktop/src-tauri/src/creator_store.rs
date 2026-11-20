@@ -2,7 +2,7 @@
 //! creator projects/changes/operations/layouts/patches/releases/playtest runs,
 //! canonical JSON, digests and identifier helpers. Domain policy lives in the
 //! sibling creator_* modules; nothing here decides business behavior.
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -133,6 +133,13 @@ pub(crate) fn database(home: &Path) -> Result<Connection, &'static str> {
             snapshot_digest TEXT NOT NULL, created_at_ms INTEGER NOT NULL,
             UNIQUE(project_id, revision)
         );
+        CREATE TABLE IF NOT EXISTS creator_candidates (
+            candidate_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, revision INTEGER NOT NULL,
+            layout_id TEXT NOT NULL, world_revision TEXT NOT NULL, snapshot_json TEXT NOT NULL,
+            snapshot_digest TEXT NOT NULL, created_at_ms INTEGER NOT NULL,
+            accepted_release_id TEXT, accepted_at_ms INTEGER,
+            UNIQUE(project_id, revision)
+        );
         CREATE TABLE IF NOT EXISTS creator_playtest_runs (
             run_id TEXT PRIMARY KEY, release_id TEXT NOT NULL, project_id TEXT NOT NULL,
             revision INTEGER NOT NULL, studio_instance_id TEXT NOT NULL, city_instance_id TEXT,
@@ -186,6 +193,39 @@ pub(crate) fn database(home: &Path) -> Result<Connection, &'static str> {
     crate::city_scheduler::migrate(&db)?;
     crate::city_game_install::migrate(&db)?;
     Ok(db)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CreatorArtifactKind { Release, Candidate }
+
+impl CreatorArtifactKind {
+    pub(crate) fn as_str(self) -> &'static str { match self { Self::Release => "release", Self::Candidate => "candidate" } }
+}
+
+pub(crate) struct CreatorArtifact {
+    pub(crate) project_id: String,
+    pub(crate) revision: u64,
+    pub(crate) snapshot_json: String,
+    pub(crate) snapshot_digest: String,
+    pub(crate) kind: CreatorArtifactKind,
+}
+
+/// Playtest and asset reads share the same immutable snapshot face. Candidate and
+/// Release storage remain distinct; the opaque artifact id never decides the kind.
+pub(crate) fn read_creator_artifact(db: &Connection, artifact_id: &str) -> Result<CreatorArtifact, &'static str> {
+    let release = db.query_row("SELECT project_id,revision,snapshot_json,snapshot_digest FROM creator_releases WHERE release_id=?1", [artifact_id],
+        |row| Ok((row.get::<_,String>(0)?,row.get::<_,u64>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?)))
+        .optional().map_err(|_| "creator_store_unavailable")?;
+    if let Some((project_id, revision, snapshot_json, snapshot_digest)) = release {
+        return Ok(CreatorArtifact { project_id, revision, snapshot_json, snapshot_digest, kind: CreatorArtifactKind::Release });
+    }
+    let candidate = db.query_row("SELECT project_id,revision,snapshot_json,snapshot_digest FROM creator_candidates WHERE candidate_id=?1", [artifact_id],
+        |row| Ok((row.get::<_,String>(0)?,row.get::<_,u64>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?)))
+        .optional().map_err(|_| "creator_store_unavailable")?;
+    if let Some((project_id, revision, snapshot_json, snapshot_digest)) = candidate {
+        return Ok(CreatorArtifact { project_id, revision, snapshot_json, snapshot_digest, kind: CreatorArtifactKind::Candidate });
+    }
+    Err("creator_release_not_found")
 }
 
 /// 启动/诊断用健康检查：只返回稳定状态，不把路径或 SQLite 原文带给调用方。

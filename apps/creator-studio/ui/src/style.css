@@ -357,3 +357,29 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, summary:focu
   .studio-workspace { display: flex; }
   .home-hero, .home-recent, .home-status, .projects-page > section { padding: 15px; }
 }
+
+/* ST-06: immutable Candidate test evidence before human Release acceptance. */
+.candidate-panel { display: grid; gap: 10px; padding: 13px; border: 1px solid #3a504d; border-radius: 10px; background: #142321; }
+.candidate-panel > .section-title { margin: 0; }
+.candidate-panel > .muted, .candidate-release-actions > .muted { line-height: 1.55; }
+.candidate-facts { display: grid; gap: 5px; }
+.candidate-facts code { color: #a8cfc2; overflow-wrap: anywhere; }
+.candidate-release-actions { padding-top: 10px; border-top: 1px solid #30464a; }
+.release-management { grid-template-rows: auto minmax(0, 1fr); overflow-y: auto; }
+.release-candidate { padding: 18px 24px; color: #dce9e5; background: #17252a; }
+.release-candidate .candidate-panel { max-width: 1200px; margin: 0 auto; }
+.release-management .city-game-library { min-height: 0; }
+@media (max-width: 700px) { .release-management { display: block; } .release-candidate { padding: 14px; } }
+
+/* ST-04: honest Agent workspace, without inferring an online task bridge. */
+.agent-workspace { gap: 14px; }
+.agent-workspace-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.agent-workspace-heading .section-title { margin: 0 0 5px; }
+.agent-connection { flex: 0 0 auto; padding: 4px 7px; color: #e2c794; background: #352d20; border: 1px solid #685335; border-radius: 6px; font-size: 10px; }
+.agent-connection-note { margin: 0; color: #b4c4c7; font-size: 12px; line-height: 1.6; }
+.goal-composer { display: grid; gap: 8px; }
+.goal-composer textarea { width: 100%; min-height: 92px; margin: 0; resize: vertical; }
+.goal-composer .actions { padding-top: 0; justify-content: flex-start; }
+.goal-composer .status { margin: 0; }
+.agent-decisions, .agent-evidence { display: grid; gap: 9px; padding-top: 12px; border-top: 1px solid #304044; }
+.agent-decisions > .section-title, .agent-evidence > .section-title { margin: 0; }

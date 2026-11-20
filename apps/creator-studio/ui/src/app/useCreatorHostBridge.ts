@@ -44,6 +44,7 @@ export function useCreatorHostBridge(options: CreatorHostBridgeOptions) {
   useEffect(() => {
     const methods = ["creator.city.create", "creator.city.create_from_world", "creator.city.diagnostic.list", "creator.city.edit.preview", "creator.city.patch.preview", "creator.city.edit.commit", "creator.city.list", "creator.city.read", "creator.layout.list", "creator.project.list", "creator.project.read", "creator.project.read_chunk", "creator.operation.status", "creator.project.create",
       "creator.game.preview", "creator.asset.import", "creator.game.commit", "creator.scene.preview", "creator.scene.commit", "creator.project.commit", "creator.project.publish", "creator.project.publication",
+      "creator.project.candidate.create", "creator.project.candidate.read", "creator.project.candidate.accept",
       "creator.project.playtest.start", "creator.project.playtest.result", "creator.project.playtest.cancel", "creator.project.playtest.return_context", "creator.project.playtest.history",
       "creator.scene.describe", "creator.scene.inspect", "creator.scene.validate", "creator.capabilities.list",
       "creator.vehicle.preview", "creator.vehicle.define", "creator.vehicle.inspect",
@@ -56,7 +57,7 @@ export function useCreatorHostBridge(options: CreatorHostBridgeOptions) {
       const labels: Record<string, string> = {
         "creator.project.create": "新建项目", "creator.game.preview": "规则预览", "creator.scene.preview": "场景预览",
         "creator.game.commit": "提交规则", "creator.scene.commit": "提交场景", "creator.project.commit": "Agent 提交",
-        "creator.project.publish": "发布到 City", "creator.project.playtest.start": "请求试玩",
+        "creator.project.publish": "发布到 City", "creator.project.candidate.create": "创建 Candidate", "creator.project.candidate.accept": "接受 Candidate 并发布", "creator.project.playtest.start": "请求试玩",
         "creator.project.playtest.cancel": "取消试玩", "creator.asset.import": "导入模型",
         "creator.scene.capture": "视口捕获",
         "creator.vehicle.preview": "飞行器预览", "creator.vehicle.define": "定义飞行器", "creator.vehicle.inspect": "检视飞行器",
@@ -72,6 +73,7 @@ export function useCreatorHostBridge(options: CreatorHostBridgeOptions) {
         }
         summary = [...counts.entries()].map(([kind, count]) => `${kind}×${count}`).join("、");
       } else if (typeof payload.releaseId === "string") summary = payload.releaseId;
+      else if (typeof payload.candidateId === "string") summary = `Candidate ${payload.candidateId}`;
       const revision = (result as { revision?: number } | null)?.revision;
       recordAgentActivity({ method, label, summary, ok, revision, at: Date.now() });
     };

@@ -13,7 +13,7 @@ import { buildCitySourceExport, buildProjectSourceExport } from "../projectSourc
 import { exportBlockMessage, exportClickBlock } from "../exportClick";
 import { AgentApprovalGate, matchesPreviewBase, type AgentCommit } from "../features/agent/agentApproval";
 import { useAgentActivity } from "../features/agent/useAgentActivity";
-import { AgentPanel } from "../features/agent/AgentPanel";
+import { AgentWorkspace } from "../features/agent/AgentWorkspace";
 import { useCreatorHostBridge } from "./useCreatorHostBridge";
 import { CodeGamePreviewPanel } from "../features/preview/CodeGamePreviewPanel";
 import { creatorWorkKindForProject, type ReleaseRef } from "../contracts/creatorProject";
@@ -26,6 +26,8 @@ import { GameEditorPanel } from "../features/project/GameEditorPanel";
 import { ProjectPanel } from "../features/project/ProjectPanel";
 import { ProjectsPage } from "../features/project/ProjectsPage";
 import { WorkbenchHome } from "../features/home/WorkbenchHome";
+import { CandidatePanel } from "../features/project/CandidatePanel";
+import { canAcceptCandidate, parseProjectCandidate, type ProjectCandidate } from "../contracts/candidate";
 import { StudioNavigation } from "./StudioNavigation";
 import { STUDIO_HOME_ROUTE, STUDIO_WORKSPACE_ROUTE, type StudioRoute } from "./studioRoute";
 import { readCityAppearancePreference } from "../../../../agent-city/ui/src/engine/cityWorldProfile";
@@ -114,6 +116,7 @@ export function CreatorStudioApp() {
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [previewKind, setPreviewKind] = useState<"game" | "scene" | "mount" | "skin" | null>(null);
   const [publishedReleaseId, setPublishedReleaseId] = useState<string | null>(null);
+  const [candidate, setCandidate] = useState<ProjectCandidate | null>(null);
   const [packageInspection, setPackageInspection] = useState<WorldPackageInspection | null>(null);
   const [installedPackages, setInstalledPackages] = useState<ReadonlyArray<InstalledContentPackage>>([]);
   const [confirmUninstall, setConfirmUninstall] = useState<string | null>(null);
@@ -184,16 +187,19 @@ export function CreatorStudioApp() {
   };
   const hasDrafts = (p: Project | null) => p !== null && Object.values(dirtyRegions(p)).some(Boolean);
   const publicationEpoch = useRef(0);
+  const candidateEpoch = useRef(0);
   const syncPublicationRef = useRef<(projectId: string, revision: number) => void>(() => {});
+  const syncCandidateRef = useRef<(projectId: string, revision: number) => void>(() => {});
   const applyProject = (next: Project, mode: "preserve" | "replace", previous: Project | null) => {
     const sameProject = previous !== null && previous.projectId === next.projectId;
     const dirty = sameProject ? dirtyRegions(previous) : null;
     const saved = savedForms(next);
     // 换了项目或修订先清掉上一份 release，避免试玩按钮指向别的版本；
     // 同一修订保留，等下面的权威查询确认或补上已发布的 release。
-    if (!sameProject || previous?.revision !== next.revision) setPublishedReleaseId(null);
+    if (!sameProject || previous?.revision !== next.revision) { setPublishedReleaseId(null); setCandidate(null); }
     setProject(next);
     syncPublicationRef.current(next.projectId, next.revision);
+    syncCandidateRef.current(next.projectId, next.revision);
     setText(dirty?.game ? text : saved.game);
     setSceneText(dirty?.scene ? sceneText : saved.scene);
     setBindingsText(dirty?.mount ? bindingsText : saved.bindings);
@@ -235,6 +241,27 @@ export function CreatorStudioApp() {
       setPublishedReleaseId(null);
     });
   };
+  syncCandidateRef.current = (projectId, revision) => {
+    const epoch = ++candidateEpoch.current;
+    void creatorRequest<unknown>("creator.project.candidate.read", { projectId, revision }).then(raw => {
+      if (epoch !== candidateEpoch.current) return;
+      const current = projectRef.current;
+      if (current && (current.projectId !== projectId || current.revision !== revision)) return;
+      const next = parseProjectCandidate(raw);
+      if (next && (next.projectId !== projectId || next.revision !== revision)) throw new Error("creator_candidate_scope_mismatch");
+      setCandidate(next);
+    }).catch(() => {
+      if (epoch !== candidateEpoch.current) return;
+      const current = projectRef.current;
+      if (current && (current.projectId !== projectId || current.revision !== revision)) return;
+      setCandidate(null);
+    });
+  };
+  useEffect(() => {
+    if (candidate?.status !== "testing") return;
+    const timer = window.setInterval(() => syncCandidateRef.current(candidate.projectId, candidate.revision), 2_000);
+    return () => window.clearInterval(timer);
+  }, [candidate?.status, candidate?.projectId, candidate?.revision]);
   // 发生版本冲突时保留本地状态并要求重新预览，不能用旧补丁覆盖新版本。
   const commitCityPatch = (patch: PlanPatchV1) => {
     void (async () => {
@@ -699,6 +726,43 @@ export function CreatorStudioApp() {
     } catch (error) { setMessage(error instanceof Error ? error.message : "creator_publish_failed"); }
     finally { setBusy(false); }
   };
+  const createCandidate = async () => {
+    if (!project || browserPreview || hasUncommittedProjectEdits || !project.mounts.length) return;
+    setBusy(true); setMessage("");
+    try {
+      const created = parseProjectCandidate(await creatorRequest<unknown>("creator.project.candidate.create", {
+        projectId: project.projectId, expectedRevision: project.revision,
+      }));
+      if (!created) throw new Error("creator_candidate_invalid");
+      setCandidate(created);
+      setMessage(`已创建不可变 Candidate（revision ${project.revision}）；它不是 Release。构建与校验已完成，但真实可玩性仍需 City 试玩证据。`);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "creator_candidate_create_failed"); }
+    finally { setBusy(false); }
+  };
+  const startCandidatePlaytest = async () => {
+    if (!project || !candidate || hasUncommittedProjectEdits || candidate.status === "testing" || candidate.status === "accepted" || candidate.status === "unknown") return;
+    setBusy(true); setMessage("");
+    try {
+      const started = await creatorRequest<{ runId: string }>("creator.project.playtest.start", {
+        candidateId: candidate.candidateId, projectId: project.projectId, expectedRevision: project.revision,
+      });
+      setCandidate(current => current?.candidateId === candidate.candidateId ? { ...current, status: "testing" } : current);
+      syncCandidateRef.current(project.projectId, project.revision);
+      setMessage(`正在切换到 Candidate 真实 City 试玩（${started.runId}）。证据将标记为 City 客户端回报，不是 Host 验证。`);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "creator_candidate_playtest_failed"); }
+    finally { setBusy(false); }
+  };
+  const acceptCandidate = async () => {
+    if (!project || hasUncommittedProjectEdits || !canAcceptCandidate(candidate)) return;
+    setBusy(true); setMessage("");
+    try {
+      const release = await creatorRequest<ReleaseRef & { revision: number }>("creator.project.candidate.accept", { candidateId: candidate.candidateId });
+      setPublishedReleaseId(release.releaseId);
+      syncCandidateRef.current(project.projectId, project.revision);
+      setMessage(`已人工接受 Candidate 并创建正式 Release（${release.releaseId}）。测试证据来源为 City 客户端回报，不是 Host 验证。`);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "creator_candidate_accept_failed"); }
+    finally { setBusy(false); }
+  };
   const startPlaytest = async () => {
     if (!project || !publishedReleaseId) return;
     setBusy(true); setMessage("");
@@ -851,7 +915,10 @@ export function CreatorStudioApp() {
       if (value === "more") { openWorkspacePanel("project"); return; }
       const row = toolbarProjects[Number(value)];
       if (row && row.projectId !== project?.projectId) openProjectInWorkspace(row.projectId);
-    } else if (commandId === "creator.playtest" && !busy && publishedReleaseId && !hasUncommittedProjectEdits) void startPlaytest();
+    } else if (commandId === "creator.candidate.create" && !browserPreview && !busy && !candidate && project && !hasUncommittedProjectEdits && project.mounts.length) void createCandidate();
+    else if (commandId === "creator.candidate.test" && !busy && candidate && candidate.status !== "testing" && candidate.status !== "accepted" && candidate.status !== "unknown" && !hasUncommittedProjectEdits) void startCandidatePlaytest();
+    else if (commandId === "creator.candidate.accept" && !busy && !hasUncommittedProjectEdits && canAcceptCandidate(candidate)) void acceptCandidate();
+    else if (commandId === "creator.playtest" && !busy && publishedReleaseId && !hasUncommittedProjectEdits) void startPlaytest();
     else if (commandId === "creator.publish" && !busy && project && !hasUncommittedProjectEdits && project.mounts?.length) void publish();
   };
   useEffect(() => connect(command => toolbarActionRef.current(command.commandId, command.value)), []);
@@ -864,10 +931,16 @@ export function CreatorStudioApp() {
           ...toolbarProjects.map((row, index) => ({ value: String(index), label: `${row.title} · 版本 ${row.revision}`.slice(0, 100) })),
           { value: "more", label: project ? "更多项目…" : "选择项目…" },
         ] },
-      { id: "playtest", commandId: "creator.playtest", label: "试玩", kind: "button", enabled: !browserPreview && !busy && !!publishedReleaseId && !hasUncommittedProjectEdits },
-      { id: "publish", commandId: "creator.publish", label: "发布", kind: "button", enabled: !busy && !!project && !hasUncommittedProjectEdits && !!project.mounts?.length },
+      { id: "candidate-create", commandId: "creator.candidate.create", label: "创建 Candidate", kind: "button", enabled: !browserPreview && !busy && !candidate && !!project && !hasUncommittedProjectEdits && !!project.mounts.length },
+      { id: "candidate-test", commandId: "creator.candidate.test", label: "试玩 Candidate", kind: "button", enabled: !browserPreview && !busy && !!candidate && candidate.status !== "testing" && candidate.status !== "accepted" && candidate.status !== "unknown" && !hasUncommittedProjectEdits },
+      { id: "candidate-accept", commandId: "creator.candidate.accept", label: "接受并发布", kind: "button", enabled: !busy && !hasUncommittedProjectEdits && canAcceptCandidate(candidate) },
+      { id: "playtest", commandId: "creator.playtest", label: "试玩 Release", kind: "button", enabled: !browserPreview && !busy && !!publishedReleaseId && !hasUncommittedProjectEdits },
+      { id: "publish", commandId: "creator.publish", label: "直接发布", kind: "button", enabled: !busy && !!project && !hasUncommittedProjectEdits && !!project.mounts?.length },
     ]);
-  }, [projects, project, busy, publishedReleaseId, hasUncommittedProjectEdits]);
+  }, [projects, project, busy, candidate, publishedReleaseId, hasUncommittedProjectEdits]);
+  const candidatePanel = <CandidatePanel candidate={candidate} busy={busy} browserPreview={browserPreview} hasUncommittedProjectEdits={hasUncommittedProjectEdits}
+    hasMounts={!!project?.mounts.length} publishedReleaseId={publishedReleaseId} onCreate={() => void createCandidate()} onTest={() => void startCandidatePlaytest()}
+    onAccept={() => void acceptCandidate()} onPlaytestRelease={() => void startPlaytest()} onDirectPublish={() => void publish()} />;
 
   return <main className="studio">
     <StudioNavigation route={route} projectTitle={project?.title ?? project?.projectId} onNavigate={setRoute} />
@@ -883,7 +956,8 @@ export function CreatorStudioApp() {
         onOpenProject={openProjectInWorkspace} onRefreshProjects={refreshProjectCatalog} onOpenCity={openCityInWorkspace}
         onRefreshCities={() => void loadCities()} onCreateProject={() => openWorkspacePanel("project")} />
     </div>}
-    {(route.section === "explore" || route.section === "releases") && <div className="studio-route-resource">
+    {(route.section === "explore" || route.section === "releases") && <div className={route.section === "releases" ? "studio-route-resource release-management" : "studio-route-resource"}>
+      {route.section === "releases" && <div className="release-candidate">{candidatePanel}</div>}
       <CityGameLibraryPanel key={route.section} view={route.section} request={creatorRequest} browserPreview={browserPreview} message={message} onMessage={setMessage}
         onOpenPreview={(buildId, source) => { setCodePreviewBuildId(buildId); setCodePreviewSourceCityId(source?.cityId); openWorkspacePanel("code"); }} />
     </div>}
@@ -905,8 +979,9 @@ export function CreatorStudioApp() {
         <nav className="inspector-tabs" aria-label="作品工作区工具"><button className={activePanel === "play" ? "active" : ""} aria-pressed={activePanel === "play"} onClick={() => openWorkspacePanel("play")}>玩法</button><button className={activePanel === "agent" ? "active" : ""} aria-pressed={activePanel === "agent"} onClick={() => openWorkspacePanel("agent")}>Agent</button><button className={activePanel === "project" ? "active" : ""} aria-pressed={activePanel === "project"} onClick={() => openWorkspacePanel("project")}>项目设置</button><button className={activePanel === "code" ? "active" : ""} aria-pressed={activePanel === "code"} onClick={() => openWorkspacePanel("code")}>代码预览</button></nav>
         {message && <p className="status status-banner" role="status">{message}</p>}
         <p className="readiness">{browserPreview ? "合成数据预览 · " : ""}{releaseHint}</p>
+        {(activePanel === "play" || activePanel === "project") && project && candidatePanel}
         {activePanel === "code" && <CodeGamePreviewPanel request={creatorRequest} browserPreview={browserPreview} requestedBuildId={codePreviewBuildId} requestedSourceCityId={codePreviewSourceCityId} onMessage={setMessage} />}
-        {activePanel === "agent" && <AgentPanel agentCommit={agentCommit} agentActivity={agentActivity} agentCityPreview={agentCityPreview} agentPreviewStatus={agentPreviewStatus} busy={busy} onResolve={resolveAgentCommit} />}
+        {activePanel === "agent" && <AgentWorkspace project={project} agentCommit={agentCommit} agentActivity={agentActivity} agentCityPreview={agentCityPreview} agentPreviewStatus={agentPreviewStatus} busy={busy} onResolve={resolveAgentCommit} />}
         {activePanel === "project" && <ProjectPanel
           cities={cities} draftCityView={draftCityView} citiesLoading={citiesLoading} citiesError={citiesError} citiesCursor={citiesCursor}
           busy={busy} browserPreview={browserPreview} packageInspection={packageInspection} installedPackages={installedPackages}

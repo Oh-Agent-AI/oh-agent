@@ -1,7 +1,7 @@
-import { useState } from "react";
 import type { Project, ProjectRow } from "../../contracts/creatorStudio";
 import { ProjectList } from "../project/ProjectList";
-import { creationGoalBrief, recentCreatorProjects } from "./workbenchModel";
+import { recentCreatorProjects } from "./workbenchModel";
+import { GoalBriefComposer } from "../agent/GoalBriefComposer";
 
 export function WorkbenchHome(props: Readonly<{
   projects: readonly ProjectRow[];
@@ -20,31 +20,11 @@ export function WorkbenchHome(props: Readonly<{
     projects, projectsLoading, projectsError, project, publishedReleaseId, hasPendingApproval, busy,
     onOpenProject, onOpenTemplates, onOpenAgent, onRefreshProjects,
   } = props;
-  const [goal, setGoal] = useState("");
-  const [copying, setCopying] = useState(false);
-  const [copyStatus, setCopyStatus] = useState("");
-  const brief = creationGoalBrief(goal);
-  const copyGoal = async () => {
-    if (!brief || copying) return;
-    if (!navigator.clipboard?.writeText) {
-      setCopyStatus("当前环境无法访问剪贴板；未复制，也未创建或执行 Agent Task。");
-      return;
-    }
-    setCopying(true); setCopyStatus("");
-    try {
-      await navigator.clipboard.writeText(brief);
-      setCopyStatus("任务说明已复制；未创建或执行 Agent Task。");
-    } catch {
-      setCopyStatus("复制失败；未创建或执行 Agent Task。请检查剪贴板权限后重试。");
-    } finally { setCopying(false); }
-  };
   return <div className="workbench-home">
     <section className="home-hero" aria-labelledby="home-goal-title">
       <span className="welcome-kicker">START CREATING</span><h2 id="home-goal-title">从一个创作目标开始</h2>
       <p>描述想制作的 City 或 Game。当前仅复制任务说明，不会自动受理或运行 Agent。</p>
-      <textarea aria-label="创作目标" value={goal} onChange={event => { setGoal(event.target.value); setCopyStatus(""); }} placeholder="例如：在海湾 City 中制作一个收集灯塔检查点的竞速游戏" />
-      <div className="actions"><button disabled={!brief || copying} onClick={() => void copyGoal()}>{copying ? "正在复制…" : "复制任务说明"}</button></div>
-      {copyStatus && <p className="status" role="status">{copyStatus}</p>}
+      <GoalBriefComposer />
     </section>
 
     <section className="home-template-grid" aria-label="创作模板入口">
