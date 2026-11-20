@@ -207,3 +207,103 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, summary:focu
 .code-story-evidence { display: grid; gap: 8px; border-top: 1px solid #30464a; padding-top: 12px; }
 .code-story-evidence p { margin: 0; }
 .code-dialogue-entry { max-height: 120px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: #d8e4e7; background: #142023; border-radius: 6px; padding: 8px; }
+
+/* Independent City/Game registries and their explicit installation relationship. */
+.city-game-library { grid-column: 2 / 4; min-width: 0; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 340px; overflow: hidden; background: #f2f6f3; color: #17332f; }
+.library-catalog { min-width: 0; min-height: 0; overflow-y: auto; padding: 26px 28px 34px; }
+.library-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.library-heading h2 { margin: 7px 0 6px; color: #17332f; font-size: 25px; letter-spacing: -.035em; }
+.library-heading p { margin: 0; color: #668079; font-size: 12px; line-height: 1.6; }
+.library-heading .welcome-kicker, .library-inspector .sidebar-kicker { color: #347768; }
+.library-heading > button { flex: 0 0 auto; color: #31554e; background: #fff; border-color: #c7d6d0; }
+.city-game-library .status-banner { color: #bcebdc; background: #173d35; border-color: #2d6658; }
+.library-type-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 22px 0 18px; }
+.library-type-tabs button { display: grid; gap: 5px; padding: 13px 15px; text-align: left; color: #49655f; background: #fff; border: 1px solid #d4e0db; border-radius: 10px; }
+.library-type-tabs button strong { font-size: 14px; }
+.library-type-tabs button span { color: #789089; font-size: 11px; font-weight: 400; }
+.library-type-tabs button.active { color: #e7fff6; background: #1d5749; border-color: #1d5749; box-shadow: 0 5px 16px #1d57491c; }
+.library-type-tabs button.active span { color: #b9d9ce; }
+.library-list { min-width: 0; }
+.library-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.library-card { min-width: 0; min-height: 196px; display: flex; flex-direction: column; gap: 9px; padding: 16px; color: #17332f; background: #fff; border: 1px solid #d8e3de; border-radius: 12px; box-shadow: 0 3px 12px #17332f08; }
+.library-card h3 { margin: 3px 0 0; font-size: 17px; line-height: 1.35; overflow-wrap: anywhere; }
+.library-card > code { color: #718a83; font-size: 11px; }
+.library-card-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.resource-kind { color: #347768; font-size: 9px; font-weight: 800; letter-spacing: .12em; }
+.compatibility, .validation { padding: 4px 7px; color: #397665; background: #e7f4ed; border-radius: 20px; font-size: 10px; font-weight: 500; }
+.compatibility.incompatible { color: #9b4c43; background: #faece8; }
+.validation { color: #796a48; background: #f5f0e3; }
+.library-card dl, .build-facts { display: grid; gap: 6px; margin: 2px 0 0; }
+.library-card dl > div, .build-facts > div { display: flex; justify-content: space-between; gap: 10px; font-size: 11px; }
+.library-card dt, .build-facts dt { color: #82958f; }
+.library-card dd, .build-facts dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+.capability-block { margin-top: auto; padding-top: 9px; border-top: 1px solid #edf1ef; }
+.capability-block > span { color: #82958f; font-size: 10px; }
+.capability-block p { margin: 5px 0 0; color: #8a9692; font-size: 11px; }
+.capability-list { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.capability-list code { padding: 3px 6px; color: #476c63; background: #eff5f2; border-radius: 4px; font-size: 10px; overflow-wrap: anywhere; }
+.game-card { text-align: left; font-weight: 400; cursor: pointer; }
+.game-card:hover { border-color: #83b4a4; }
+.game-card.selected { border-color: #3b8b76; box-shadow: 0 0 0 2px #3b8b7620; }
+.game-version { color: #6d837d; font-size: 12px; }
+.library-empty { min-height: 170px; padding: 24px; color: #71857f; border-color: #cbdad4; text-align: center; }
+.library-more { display: block; margin: 14px auto 0; color: #31554e; background: #fff; border-color: #c7d6d0; }
+.library-error { margin: 10px 0; padding: 9px 11px; color: #974d43; background: #fff0ec; border: 1px solid #e9c8bf; border-radius: 7px; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.installation-history { margin-top: 24px; padding-top: 18px; border-top: 1px solid #d6e1dc; }
+.installation-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.installation-heading .section-title { margin: 0; color: #26483f; }
+.installation-heading p { margin: 5px 0 0; color: #7a8f88; font-size: 11px; }
+.installation-heading button { padding: 6px 9px; color: #31554e; background: transparent; border-color: #c7d6d0; font-size: 11px; }
+.installation-history > .muted { color: #71857f; }
+.installation-list { display: grid; gap: 7px; margin-top: 12px; }
+.installation-list article { padding: 10px 12px; background: #fff; border: 1px solid #dce5e1; border-radius: 8px; }
+.installation-list strong { font-size: 12px; }
+.installation-list span { color: #52736a; font-size: 12px; }
+.installation-list code { display: block; margin-top: 5px; color: #7c918a; font-size: 10px; overflow-wrap: anywhere; }
+.installation-list p { margin: 5px 0 0; color: #6c847c; font-size: 10px; }
+.library-inspector { min-width: 0; min-height: 0; overflow-y: auto; padding: 26px 20px; background: #fff; border-left: 1px solid #d4e0db; }
+.library-inspector > h2 { margin: 7px 0 16px; color: #17332f; font-size: 20px; }
+.library-inspector > p { color: #6e837d; font-size: 12px; line-height: 1.65; }
+.library-inspector > button { width: 100%; margin: 20px 0 12px; color: #edfff8; background: #1d5749; border-color: #1d5749; }
+.build-identity { padding: 15px; color: #d9fff1; background: #163f37; border-radius: 10px; }
+.build-identity > span { color: #8bc7b4; font-size: 9px; font-weight: 800; letter-spacing: .12em; }
+.build-identity h3 { margin: 8px 0; font-size: 17px; overflow-wrap: anywhere; }
+.build-identity code { display: block; color: #a8cfc2; font-size: 10px; line-height: 1.55; overflow-wrap: anywhere; }
+.build-facts { margin: 16px 0; padding: 0 2px; }
+.build-facts > div { padding-bottom: 8px; border-bottom: 1px solid #edf1ef; font-size: 12px; }
+.library-note { display: grid; gap: 6px; margin-top: 20px; padding: 12px; color: #49665e; background: #edf5f1; border-radius: 8px; }
+.library-note strong { font-size: 12px; }
+.library-note span { font-size: 11px; line-height: 1.6; }
+.library-inspector .inspector-empty { color: #71857f; border-color: #d4e0db; }
+.install-dialog-backdrop { position: fixed; z-index: 30; inset: 0; display: grid; place-items: center; padding: 24px; background: #071610b8; }
+.install-dialog { width: min(680px, 100%); max-height: 92vh; overflow-y: auto; padding: 22px; color: #dce9e5; background: #17252a; border: 1px solid #42625a; border-radius: 14px; box-shadow: 0 24px 80px #0008; }
+.install-dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.install-dialog-heading h2 { margin: 6px 0 0; font-size: 22px; }
+.install-source { margin: 14px 0; color: #a9c1ba; font-size: 12px; overflow-wrap: anywhere; }
+.install-options { display: flex; flex-wrap: wrap; gap: 7px; padding: 12px; background: #1d3531; border: 1px solid #34564d; border-radius: 8px; }
+.install-options strong { flex-basis: 100%; color: #bcebdc; font-size: 12px; }
+.install-options span { padding: 4px 7px; color: #b1c7c0; background: #263f3a; border-radius: 4px; font-size: 10px; }
+.install-targets { display: grid; gap: 8px; min-width: 0; margin: 18px 0; padding: 0; border: 0; }
+.install-targets legend { margin-bottom: 10px; color: #e2efeb; font-size: 13px; font-weight: 700; }
+.install-target { display: flex; align-items: flex-start; gap: 10px; padding: 11px; color: #dce9e5; background: #1b2c30; border: 1px solid #354c50; border-radius: 8px; cursor: pointer; }
+.install-target.selected { background: #203c35; border-color: #68b7a0; }
+.install-target input { flex: 0 0 auto; width: 16px; height: 16px; margin: 2px 0 0; padding: 0; accent-color: #72c7ac; }
+.install-target > span { display: grid; gap: 4px; min-width: 0; }
+.install-target strong { font-size: 13px; }
+.install-target code, .install-target small { color: #99b2aa; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+.install-preview { padding-top: 4px; }
+.install-preview .section-title { color: #e2efeb; }
+.install-preview ul { display: grid; gap: 7px; max-height: 190px; overflow-y: auto; margin: 8px 0; padding: 0; list-style: none; }
+.diagnostic { display: grid; gap: 4px; padding: 9px 10px; background: #1b2b30; border-left: 3px solid #70878a; }
+.diagnostic.error { border-left-color: #db7c6c; }
+.diagnostic.warning { border-left-color: #e0b768; }
+.diagnostic.info { border-left-color: #69af9b; }
+.diagnostic strong { font-size: 11px; }
+.diagnostic span { color: #b4c6c1; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.diagnostic code { color: #8fa8a1; font-size: 10px; overflow-wrap: anywhere; }
+.install-ok { color: #9ce1c6; font-size: 12px; }
+.install-confirm { padding-top: 12px; border-top: 1px solid #35494d; }
+.install-confirm > p { color: #91aaa3; font-size: 11px; line-height: 1.5; }
+.install-dialog .actions button.secondary { color: #dce8e8; background: #1c2a2e; border-color: #486064; }
+@media (max-width: 1050px) { .city-game-library { grid-template-columns: minmax(0, 1fr) 300px; } .library-catalog { padding: 22px 18px; } .library-grid { grid-template-columns: 1fr; } }
+@media (max-width: 700px) { .city-game-library { display: block; overflow: visible; } .library-catalog, .library-inspector { overflow: visible; } .library-inspector { border-left: 0; border-top: 1px solid #d4e0db; } .library-type-tabs { grid-template-columns: 1fr; } .install-dialog-backdrop { padding: 10px; } }

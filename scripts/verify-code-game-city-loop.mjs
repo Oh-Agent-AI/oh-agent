@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Packaged-host loop: MCP creates/builds an immutable Code Game, queues it for
-// the already-running City, then reads the host-published terminal evidence.
+// Packaged-host loop: MCP creates/builds immutable Code Games, queues them for
+// independent Preview windows, then reads host-published terminal evidence.
 // Run the Oh Agent app with the same AGENT_VITALS_HOME before this script.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -83,6 +83,7 @@ try {
   assert.equal(firstBuild.status, "succeeded", JSON.stringify(firstBuild.diagnostics));
   const firstPreview = await call("creator_code_preview", { workspaceId, buildId: firstBuild.buildId, seed: 7 });
   assert.equal(firstPreview.status, "queued");
+  assert.ok(firstPreview.previewId);
   const firstTick = await waitForPreview(firstBuild.buildId);
 
   const entry = await call("creator_code_file_read", { workspaceId, relativePath: "src/index.ts" });
@@ -96,11 +97,13 @@ try {
   const secondBuild = await call("creator_code_build", { workspaceId, expectedRevision: faster.gameRevision });
   assert.equal(secondBuild.status, "succeeded", JSON.stringify(secondBuild.diagnostics));
   const secondPreview = await call("creator_code_preview", { workspaceId, buildId: secondBuild.buildId, seed: 7 });
+  assert.ok(secondPreview.previewId);
+  assert.notEqual(secondPreview.previewId, firstPreview.previewId);
   const secondTick = await waitForPreview(secondBuild.buildId);
   assert.ok(secondTick < firstTick, `expected a sooner finish: ${secondTick} !< ${firstTick}`);
   console.log(JSON.stringify({ ok: true, workspaceId, gameId: created.gameId,
     buildIds: [firstBuild.buildId, secondBuild.buildId], ticks: [firstTick, secondTick],
-    requestIds: [firstPreview.requestId, secondPreview.requestId] }, null, 2));
+    requestIds: [firstPreview.requestId, secondPreview.requestId], previewIds: [firstPreview.previewId, secondPreview.previewId] }, null, 2));
 } finally {
   child.stdin.end();
 }

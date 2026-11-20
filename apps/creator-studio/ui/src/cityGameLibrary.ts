@@ -1,0 +1,141 @@
+export const LIBRARY_RESOURCE_KINDS = Object.freeze([
+  Object.freeze({ id: "city", label: "City 项目库", description: "世界与能力" }),
+  Object.freeze({ id: "story", label: "AVG Story", description: "City 剧情模式" }),
+  Object.freeze({ id: "game", label: "游戏库", description: "游戏与 Build" }),
+] as const);
+
+export type LibraryKind = typeof LIBRARY_RESOURCE_KINDS[number]["id"];
+
+export type LibraryCityRow = Readonly<{
+  cityId: string;
+  revision: number;
+  name: string;
+  worldRevision: string | null;
+  capabilities: readonly string[] | null;
+  compatibility: string | null;
+  compatible: boolean | null;
+}>;
+
+export type CityListPage = Readonly<{
+  cities: readonly LibraryCityRow[];
+  nextCursor: string | null;
+}>;
+
+export type InstallationRow = Readonly<{
+  installationId: string;
+  cityId: string;
+  cityRevision: number | null;
+  gameId: string;
+  buildId: string;
+  status: "installed" | "disabled" | "update-available" | "unknown";
+  createdAtMs: number | null;
+}>;
+
+export type InstallDiagnostic = Readonly<{
+  code: string;
+  severity: "error" | "warning" | "info" | "unknown";
+  message: string;
+  path: string | null;
+}>;
+
+export type InstallPreview = Readonly<{
+  previewId: string | null;
+  ok: boolean | null;
+  canInstall: boolean | null;
+  requiresUpdateConfirmation: boolean;
+  currentBuildId: string | null;
+  diagnostics: readonly InstallDiagnostic[];
+}>;
+
+export type InstallRequest = Readonly<{
+  buildId: string;
+  targetCityId: string;
+  expectedCityRevision: number;
+  operationId: string;
+  runAfterInstall: false;
+  replaceCurrentView: false;
+  allowOfficialStoryWrites: false;
+}>;
+
+const text = (value: unknown, max: number): string | null => typeof value === "string" && value.length > 0 && value.length <= max ? value : null;
+const revision = (value: unknown): number | null => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+
+export function parseCityListPage(value: unknown): CityListPage {
+  if (!value || typeof value !== "object" || !Array.isArray((value as { cities?: unknown }).cities)) throw new Error("creator_city_list_invalid");
+  const raw = value as Record<string, unknown>;
+  const cities = (raw.cities as unknown[]).map(item => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("creator_city_list_invalid");
+    const row = item as Record<string, unknown>;
+    const cityId = text(row.cityId, 128);
+    const name = text(row.name, 160);
+    const cityRevision = revision(row.revision) ?? revision(row.cityRevision);
+    if (!cityId || !name || cityRevision === null) throw new Error("creator_city_list_invalid");
+    let capabilities: readonly string[] | null = null;
+    if (row.capabilities !== undefined) {
+      if (!Array.isArray(row.capabilities) || row.capabilities.length > 64) throw new Error("creator_city_list_invalid");
+      capabilities = Object.freeze(row.capabilities.map(capability => {
+        const parsed = text(capability, 128);
+        if (!parsed) throw new Error("creator_city_list_invalid");
+        return parsed;
+      }));
+    }
+    return Object.freeze({ cityId, name, revision: cityRevision, worldRevision: text(row.worldRevision, 128), capabilities,
+      compatibility: text(row.compatibilityStatus, 64) ?? text(row.compatibility, 64),
+      compatible: typeof row.compatible === "boolean" ? row.compatible : null });
+  });
+  return Object.freeze({ cities: Object.freeze(cities), nextCursor: text(raw.nextCursor, 256) });
+}
+
+export function parseInstallations(value: unknown): readonly InstallationRow[] {
+  if (!value || typeof value !== "object" || !Array.isArray((value as { installations?: unknown }).installations)) throw new Error("creator_code_installations_invalid");
+  return Object.freeze((value as { installations: unknown[] }).installations.map(item => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("creator_code_installations_invalid");
+    const row = item as Record<string, unknown>;
+    const installationId = text(row.installationId, 128);
+    const cityId = text(row.cityId, 128);
+    const gameId = text(row.gameId, 128);
+    const buildId = text(row.buildId, 128);
+    if (!installationId || !cityId || !gameId || !buildId) throw new Error("creator_code_installations_invalid");
+    const status = row.status === "installed" || row.status === "disabled" || row.status === "update-available" ? row.status : "unknown";
+    return Object.freeze({ installationId, cityId, gameId, buildId, status,
+      cityRevision: revision(row.cityRevision), createdAtMs: revision(row.createdAtMs) });
+  }));
+}
+
+export function installedGamesForCity(installations: readonly InstallationRow[], cityId: string): readonly InstallationRow[] {
+  return installations.filter(item => item.cityId === cityId && item.status === "installed");
+}
+
+export function parseInstallPreview(value: unknown): InstallPreview {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("creator_code_install_preview_invalid");
+  const raw = value as Record<string, unknown>;
+  if (raw.diagnostics !== undefined && !Array.isArray(raw.diagnostics)) throw new Error("creator_code_install_preview_invalid");
+  const diagnostics = (raw.diagnostics as unknown[] | undefined ?? []).map(item => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("creator_code_install_preview_invalid");
+    const row = item as Record<string, unknown>;
+    const severity = row.severity === "error" || row.severity === "warning" || row.severity === "info" ? row.severity : "unknown";
+    return Object.freeze({ code: text(row.code, 128) ?? "未知诊断", severity,
+      message: text(row.message, 1_000) ?? "宿主未提供诊断说明", path: text(row.path, 256) });
+  });
+  return Object.freeze({ previewId: text(raw.previewId, 128), ok: typeof raw.ok === "boolean" ? raw.ok : null,
+    canInstall: typeof raw.canInstall === "boolean" ? raw.canInstall : null,
+    requiresUpdateConfirmation: raw.requiresUpdateConfirmation === true,
+    currentBuildId: text(raw.currentBuildId, 128), diagnostics: Object.freeze(diagnostics) });
+}
+
+export function buildInstallRequest(buildId: string, targetCityId: string, expectedCityRevision: number, operationId: string): InstallRequest {
+  return Object.freeze({ buildId, targetCityId, expectedCityRevision, operationId,
+    runAfterInstall: false, replaceCurrentView: false, allowOfficialStoryWrites: false });
+}
+
+export function buildInstallCommitRequest(preview: InstallPreview, buildId: string, operationId: string): Record<string, unknown> {
+  if (!preview.previewId) throw new Error("creator_code_install_preview_invalid");
+  return { previewId: preview.previewId, operationId,
+    ...(preview.requiresUpdateConfirmation ? { updateConfirmation: { currentBuildId: preview.currentBuildId, buildId } } : {}) };
+}
+
+export function canCommitInstall(preview: InstallPreview | null, updateConfirmed = false): boolean {
+  return preview !== null && preview.ok !== false && preview.canInstall !== false
+    && !preview.diagnostics.some(diagnostic => diagnostic.severity === "error")
+    && (!preview.requiresUpdateConfirmation || (updateConfirmed && preview.currentBuildId !== null));
+}

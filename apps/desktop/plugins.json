@@ -533,7 +533,10 @@
         "creator.code.preview",
         "creator.code.preview.status",
         "creator.code.preview.stop",
-        "creator.code.story"
+        "creator.code.story",
+        "creator.code.install.preview",
+        "creator.code.install.commit",
+        "creator.code.install.list"
       ],
       "hostEvents": [
         "plugin.event"

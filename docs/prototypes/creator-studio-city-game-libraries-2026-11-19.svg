@@ -1,0 +1,191 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
+  <title id="title">Creator Studio City、Story 与 Game 三类资源库原型</title>
+  <desc id="desc">City 项目、City AVG Story 和 Game 构建分别管理，Game 可独立预览并安装到指定 City。</desc>
+  <defs>
+    <linearGradient id="submarine" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#163D53"/><stop offset="1" stop-color="#071E32"/></linearGradient>
+    <linearGradient id="romance" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#E7C7D8"/><stop offset="1" stop-color="#9B83B6"/></linearGradient>
+    <linearGradient id="flight" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#C6D9ED"/><stop offset="1" stop-color="#6B94BB"/></linearGradient>
+    <linearGradient id="race" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#263F52"/><stop offset="1" stop-color="#121F30"/></linearGradient>
+    <linearGradient id="primary" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#1B5147"/><stop offset="1" stop-color="#123A33"/></linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%"><feDropShadow dx="0" dy="5" stdDeviation="8" flood-color="#183B36" flood-opacity=".09"/></filter>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", sans-serif; }
+      .ink { fill: #172A27; } .muted { fill: #6B7D78; } .faint { fill: #91A09C; }
+      .label { font-size: 12px; font-weight: 600; } .small { font-size: 11px; }
+      .cardTitle { font-size: 16px; font-weight: 650; fill: #1B302C; }
+      .buttonText { font-size: 13px; font-weight: 600; text-anchor: middle; }
+      .section { font-size: 14px; font-weight: 650; fill: #29433D; }
+    </style>
+  </defs>
+  <rect width="1600" height="1000" fill="#F3F6F4"/>
+  <rect width="1600" height="72" fill="#FFFFFF"/>
+  <line x1="0" y1="72" x2="1600" y2="72" stroke="#DDE6E2"/>
+  <rect x="24" y="18" width="36" height="36" rx="10" fill="#173F38"/>
+  <text x="42" y="42" fill="#A4E9D4" font-size="14" font-weight="750" text-anchor="middle">OA</text>
+  <text x="72" y="34" class="ink" font-size="16" font-weight="700">Creator Studio</text>
+  <text x="72" y="52" class="muted" font-size="11">City、Story 与 Game 创作中心</text>
+  <rect x="1320" y="18" width="112" height="36" rx="9" fill="#F0F5F2" stroke="#D7E3DD"/>
+  <text x="1376" y="41" class="muted buttonText">导入内容</text>
+  <rect x="1444" y="18" width="110" height="36" rx="9" fill="#173F38"/>
+  <text x="1499" y="41" fill="#FFFFFF" class="buttonText">新建项目</text>
+
+  <rect x="0" y="72" width="220" height="928" fill="#FAFCFB"/>
+  <line x1="220" y1="72" x2="220" y2="1000" stroke="#DDE6E2"/>
+  <text x="24" y="112" class="faint label" letter-spacing="1">RESOURCE TYPES</text>
+  <rect x="14" y="132" width="192" height="48" rx="10" fill="#FFFFFF" stroke="#DCE6E1"/>
+  <rect x="27" y="146" width="17" height="17" rx="4" fill="none" stroke="#55756B" stroke-width="1.6"/>
+  <path d="M30 146v-4h11v4" fill="none" stroke="#55756B" stroke-width="1.6"/>
+  <text x="56" y="159" class="ink" font-size="14" font-weight="650">City 项目库</text>
+  <text x="184" y="159" class="muted small" text-anchor="end">6</text>
+  <text x="28" y="174" class="faint small">世界 · 地形 · 居民</text>
+  <rect x="14" y="190" width="192" height="48" rx="10" fill="#FFFFFF" stroke="#DCE6E1"/>
+  <path d="M29 204h14v14H29zM32 201h8v3" fill="none" stroke="#55756B" stroke-width="1.7"/>
+  <text x="56" y="212" class="ink" font-size="14" font-weight="650">AVG Story</text>
+  <text x="184" y="212" class="muted small" text-anchor="end">City</text>
+  <text x="28" y="226" class="faint small">角色 · 对白 · 分支</text>
+  <rect x="14" y="248" width="192" height="48" rx="10" fill="#DDF2E9"/>
+  <path d="M29 262h14v14H29zM32 259h8v3" fill="none" stroke="#24745F" stroke-width="1.7"/>
+  <text x="56" y="270" fill="#1D654F" font-size="14" font-weight="650">游戏库</text>
+  <text x="184" y="270" fill="#1D654F" class="small" text-anchor="end">4</text>
+  <text x="28" y="284" fill="#4D7E6D" class="small">规则 · Build · 权限</text>
+  <text x="30" y="336" class="muted" font-size="14">模板与资源</text>
+  <text x="30" y="378" class="muted" font-size="14">安装记录</text>
+  <line x1="20" y1="408" x2="200" y2="408" stroke="#E3EAE6"/>
+  <text x="30" y="443" class="muted" font-size="14">设置</text>
+  <rect x="18" y="846" width="184" height="114" rx="12" fill="#EFF5F1" stroke="#DCE8E1"/>
+  <text x="32" y="875" class="ink label">三类资源，独立管理</text>
+  <text x="32" y="900" class="muted small">City 世界 · Story 剧情</text>
+  <text x="32" y="922" class="muted small">Game 提供可验证玩法</text>
+  <text x="32" y="944" class="faint small">安装关系是多对多</text>
+
+  <text x="252" y="118" class="ink" font-size="28" font-weight="720">游戏库</text>
+  <text x="252" y="145" class="muted" font-size="13">独立开发、构建和预览游戏；确认安装后才加入指定 City。</text>
+  <rect x="662" y="104" width="280" height="38" rx="10" fill="#FFFFFF" stroke="#DCE5E0"/>
+  <circle cx="684" cy="122" r="6" fill="none" stroke="#7D918A" stroke-width="1.5"/>
+  <path d="M689 127l5 5" stroke="#7D918A" stroke-width="1.5"/>
+  <text x="704" y="127" class="faint" font-size="12">搜索游戏、版本或 BuildId</text>
+  <rect x="252" y="174" width="66" height="32" rx="16" fill="#173F38"/>
+  <text x="285" y="195" fill="#FFFFFF" class="label" text-anchor="middle">全部 4</text>
+  <rect x="328" y="174" width="82" height="32" rx="16" fill="#FFFFFF" stroke="#DDE6E2"/>
+  <text x="369" y="195" class="muted label" text-anchor="middle">已构建 3</text>
+  <rect x="420" y="174" width="82" height="32" rx="16" fill="#FFFFFF" stroke="#DDE6E2"/>
+  <text x="461" y="195" class="muted label" text-anchor="middle">已发布 2</text>
+  <rect x="512" y="174" width="82" height="32" rx="16" fill="#FFFFFF" stroke="#DDE6E2"/>
+  <text x="553" y="195" class="muted label" text-anchor="middle">待验证 1</text>
+  <text x="930" y="195" class="muted small" text-anchor="end">最近构建 ↓</text>
+
+  <!-- Game card: submarine -->
+  <g filter="url(#shadow)"><rect x="252" y="230" width="330" height="256" rx="14" fill="#FFFFFF" stroke="#2D9B78" stroke-width="2"/></g>
+  <rect x="254" y="232" width="326" height="128" rx="12" fill="url(#submarine)"/>
+  <g fill="none" stroke="#83D6E1" stroke-width="2"><circle cx="402" cy="286" r="30"/><circle cx="486" cy="286" r="30"/></g>
+  <path d="M373 321h107l20 10h-47l-20 10h-50z" fill="#65AEBD"/>
+  <circle cx="415" cy="326" r="4" fill="#B8F0E9"/>
+  <path d="M382 316l15-14h33l15 14" fill="#65AEBD"/>
+  <rect x="268" y="245" width="72" height="23" rx="11" fill="#C4F1E3"/>
+  <text x="304" y="261" fill="#17644D" class="small" text-anchor="middle">已验证</text>
+  <text x="270" y="389" class="cardTitle">潜艇穿越</text>
+  <text x="270" y="414" class="muted small">Game Project · v1.2 · 不可变 Build</text>
+  <text x="270" y="438" class="faint small">空间穿越 · 计分 · 固定步回放</text>
+  <rect x="268" y="452" width="90" height="22" rx="6" fill="#EDF4F0"/>
+  <text x="313" y="467" class="muted small" text-anchor="middle">1 个安装关系</text>
+  <text x="560" y="470" class="faint small" text-anchor="end">b1b63c4c…</text>
+
+  <!-- Game card: romance -->
+  <g filter="url(#shadow)"><rect x="600" y="230" width="330" height="256" rx="14" fill="#FFFFFF" stroke="#D8E4DE"/></g>
+  <rect x="602" y="232" width="326" height="128" rx="12" fill="url(#romance)"/>
+  <rect x="632" y="319" width="268" height="28" rx="10" fill="#FFFFFF" opacity=".9"/>
+  <circle cx="653" cy="270" r="20" fill="#FFFFFF" opacity=".85"/>
+  <text x="653" y="277" fill="#7A5E91" font-size="19" font-weight="700" text-anchor="middle">X</text>
+  <text x="649" y="339" fill="#665471" class="small">选择单位、行动与攻击目标</text>
+  <rect x="618" y="245" width="72" height="23" rx="11" fill="#FFF0F7"/>
+  <text x="654" y="261" fill="#925778" class="small" text-anchor="middle">已发布</text>
+  <text x="618" y="389" class="cardTitle">穹顶战棋</text>
+  <text x="618" y="414" class="muted small">Game Project · v0.8 · 回合规则</text>
+  <text x="618" y="438" class="faint small">行动点 · 战斗 · 胜负判定</text>
+  <rect x="616" y="452" width="90" height="22" rx="6" fill="#F3EDF5"/>
+  <text x="661" y="467" fill="#80678D" class="small" text-anchor="middle">2 个安装关系</text>
+  <text x="908" y="470" class="faint small" text-anchor="end">db006e9e…</text>
+
+  <!-- Game card: flight -->
+  <g filter="url(#shadow)"><rect x="252" y="510" width="330" height="256" rx="14" fill="#FFFFFF" stroke="#D8E4DE"/></g>
+  <rect x="254" y="512" width="326" height="128" rx="12" fill="url(#flight)"/>
+  <g fill="none" stroke="#F2F8FC" stroke-width="5"><ellipse cx="365" cy="570" rx="40" ry="50"/><ellipse cx="475" cy="570" rx="40" ry="50"/></g>
+  <path d="M303 585l25-9 20-22 20 22 25 9-25-2-20 11-20-11z" fill="#365C7D"/>
+  <rect x="268" y="525" width="72" height="23" rx="11" fill="#EEF6FC"/>
+  <text x="304" y="541" fill="#466D8C" class="small" text-anchor="middle">已构建</text>
+  <text x="270" y="669" class="cardTitle">飞行穿环</text>
+  <text x="270" y="694" class="muted small">Game Project · v1.0 · Headless 通过</text>
+  <text x="270" y="718" class="faint small">飞行 · Ring Volume · 计时</text>
+  <rect x="268" y="732" width="90" height="22" rx="6" fill="#EDF3F8"/>
+  <text x="313" y="747" fill="#5B7488" class="small" text-anchor="middle">尚未安装</text>
+
+  <!-- Game card: racing -->
+  <g filter="url(#shadow)"><rect x="600" y="510" width="330" height="256" rx="14" fill="#FFFFFF" stroke="#D8E4DE"/></g>
+  <rect x="602" y="512" width="326" height="128" rx="12" fill="url(#race)"/>
+  <path d="M632 606Q708 522 784 570T900 580" fill="none" stroke="#7091A8" stroke-width="8"/>
+  <path d="M720 588l18-13h27l18 13-6 11h-51z" fill="#E6BE7B"/>
+  <circle cx="738" cy="600" r="6" fill="#172B3B"/><circle cx="765" cy="600" r="6" fill="#172B3B"/>
+  <rect x="618" y="525" width="72" height="23" rx="11" fill="#FFF0D9"/>
+  <text x="654" y="541" fill="#936B35" class="small" text-anchor="middle">待验证</text>
+  <text x="618" y="669" class="cardTitle">霓虹竞速</text>
+  <text x="618" y="694" class="muted small">Game Project · v0.3 · 开发草稿</text>
+  <text x="618" y="718" class="faint small">道路 · 检查点 · 车辆控制</text>
+  <rect x="616" y="732" width="90" height="22" rx="6" fill="#F5F1E9"/>
+  <text x="661" y="747" fill="#85745A" class="small" text-anchor="middle">尚未发布</text>
+
+  <rect x="252" y="812" width="678" height="64" rx="12" fill="#E8F2ED" stroke="#D3E5DB"/>
+  <circle cx="276" cy="843" r="10" fill="#C4E5D5"/>
+  <path d="M272 843l3 3 6-7" fill="none" stroke="#23775B" stroke-width="2"/>
+  <text x="296" y="839" fill="#285F4C" class="label">先独立预览，再决定是否安装</text>
+  <text x="296" y="859" class="muted small">游戏预览使用独立窗口，不占用或替换当前 City WebView。</text>
+  <text x="252" y="930" class="faint small">Game 是规则与构建，不是 City 的附属文件</text>
+
+  <!-- Game inspector -->
+  <g filter="url(#shadow)"><rect x="968" y="96" width="604" height="856" rx="16" fill="#FFFFFF" stroke="#D8E4DE"/></g>
+  <text x="996" y="132" class="faint label" letter-spacing="1">GAME INSPECTOR</text>
+  <rect x="996" y="153" width="548" height="134" rx="13" fill="url(#submarine)"/>
+  <g fill="none" stroke="#83D6E1" stroke-width="2"><circle cx="1120" cy="211" r="34"/><circle cx="1220" cy="211" r="34"/></g>
+  <path d="M1084 248h128l24 11h-57l-23 11h-60z" fill="#65AEBD"/>
+  <path d="M1097 242l18-15h39l16 15" fill="#65AEBD"/>
+  <text x="1014" y="176" fill="#B9E8E4" class="small">IMMUTABLE GAME BUILD</text>
+  <text x="996" y="322" class="ink" font-size="23" font-weight="700">潜艇穿越</text>
+  <text x="996" y="348" class="muted" font-size="12">Game Project · v1.2 · 构建与测试均已通过</text>
+  <rect x="996" y="368" width="82" height="25" rx="12" fill="#DDF2E9"/>
+  <text x="1037" y="385" fill="#1D654F" class="label" text-anchor="middle">已验证</text>
+  <rect x="1088" y="368" width="118" height="25" rx="12" fill="#EFF3F5"/>
+  <text x="1147" y="385" class="muted label" text-anchor="middle">兼容 2 座 City</text>
+  <text x="996" y="426" class="section">Build 与权限</text>
+  <rect x="996" y="443" width="548" height="74" rx="9" fill="#F3F7F4"/>
+  <text x="1012" y="466" class="ink small">b1b63c4c3c67b25e33a52b67a7a946f4519b5289d09013d6ebf51ffe5a387b87</text>
+  <text x="1012" y="490" class="muted small">world.read · volumes.read · entities.write.owned</text>
+  <text x="1012" y="508" class="faint small">Bundle + Manifest + Assets 已绑定 · 无远程数据权限</text>
+  <rect x="996" y="535" width="264" height="42" rx="10" fill="url(#primary)"/>
+  <text x="1128" y="562" fill="#FFFFFF" class="buttonText">打开独立预览</text>
+  <rect x="1272" y="535" width="272" height="42" rx="10" fill="#FFFFFF" stroke="#2D8C70" stroke-width="1.4"/>
+  <text x="1408" y="562" fill="#1D654F" class="buttonText">安装到 City…</text>
+
+  <line x1="996" y1="603" x2="1544" y2="603" stroke="#E2EAE6"/>
+  <text x="996" y="634" class="section">可安装到 City</text>
+  <text x="1544" y="634" class="faint small" text-anchor="end">安装是 City ↔ Game 的独立关系</text>
+  <rect x="996" y="652" width="548" height="58" rx="10" fill="#EAF5EF" stroke="#B9DACB"/>
+  <circle cx="1018" cy="681" r="10" fill="#2D9B78"/>
+  <path d="M1014 681l3 3 6-7" fill="none" stroke="#FFFFFF" stroke-width="1.6"/>
+  <text x="1040" y="677" class="ink label">海底穹顶</text>
+  <text x="1040" y="697" class="muted small">水体 · 三维区域 · 潜艇 · 已安装 v1.1</text>
+  <rect x="1432" y="668" width="94" height="27" rx="7" fill="#FFFFFF" stroke="#90BDA9"/>
+  <text x="1479" y="686" fill="#1D654F" class="small" text-anchor="middle">更新到 v1.2</text>
+  <rect x="996" y="720" width="548" height="58" rx="10" fill="#F5F8F6" stroke="#DFE8E3"/>
+  <circle cx="1018" cy="749" r="10" fill="#FFFFFF" stroke="#7DA392"/>
+  <text x="1040" y="745" class="ink label">Miami 海湾</text>
+  <text x="1040" y="765" class="muted small">道路 · 飞行 · 可兼容 · 尚未安装</text>
+  <text x="1518" y="752" class="muted small" text-anchor="end">可安装</text>
+  <rect x="996" y="788" width="548" height="58" rx="10" fill="#F6F6F4"/>
+  <circle cx="1018" cy="817" r="10" fill="#E4E8E5"/>
+  <path d="M1014 813l8 8m0-8l-8 8" stroke="#8D9994" stroke-width="1.5"/>
+  <text x="1040" y="813" class="muted label">林间空地</text>
+  <text x="1040" y="833" class="faint small">缺少水下环境与潜艇导航 · 不可安装</text>
+  <text x="1518" y="820" class="faint small" text-anchor="end">不兼容</text>
+  <rect x="996" y="868" width="548" height="52" rx="10" fill="#F0F5F2"/>
+  <text x="1270" y="890" class="muted buttonText">安装只添加游戏入口，不替换 City 世界</text>
+  <text x="1270" y="910" class="faint small" text-anchor="middle">运行、替换当前视图、正式剧情写入需分别确认</text>
+</svg>

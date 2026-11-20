@@ -145,6 +145,7 @@ export function useCodeGamePreview(options: Readonly<{
             state: {
               status,
               gameId: manifest.gameId,
+              ...(window.__AV_CODE_PREVIEW_ID__ ? { previewId: window.__AV_CODE_PREVIEW_ID__ } : {}),
               ...(input.buildId ? { buildId: input.buildId } : {}),
               ...(telemetry?.runId ? { runId: telemetry.runId } : {}),
               ...(reason ? { reason } : {}),
@@ -235,7 +236,13 @@ export function useCodeGamePreview(options: Readonly<{
         activeBuildIdRef.current = null;
         const message = error instanceof Error ? error.message : String(error);
         void publish("code-game.state", {
-          state: { status: "error", gameId: input.manifest && typeof input.manifest === "object" ? (input.manifest as { gameId?: unknown }).gameId : undefined, reason: message.slice(0, 120) },
+          state: {
+            status: "error",
+            gameId: input.manifest && typeof input.manifest === "object" ? (input.manifest as { gameId?: unknown }).gameId : undefined,
+            reason: message.slice(0, 120),
+            ...(window.__AV_CODE_PREVIEW_ID__ ? { previewId: window.__AV_CODE_PREVIEW_ID__ } : {}),
+            ...(input.buildId ? { buildId: input.buildId } : {}),
+          },
         }).catch(() => {});
         setState({ status: "error", runId: null, reason: null, error: message, telemetry: null });
         throw error;
@@ -253,7 +260,8 @@ export function useCodeGamePreview(options: Readonly<{
     const pending = await takeCityCodePreview();
     if (!pending) return false;
     if ("control" in pending) {
-      if (activeBuildIdRef.current === pending.buildId && stateRef.current.runId === pending.runId) stop();
+      const previewMatches = !window.__AV_CODE_PREVIEW_ID__ || window.__AV_CODE_PREVIEW_ID__ === pending.previewId;
+      if (previewMatches && activeBuildIdRef.current === pending.buildId && stateRef.current.runId === pending.runId) stop();
       return true;
     }
     try {
@@ -275,6 +283,8 @@ export function useCodeGamePreview(options: Readonly<{
         manifest: pending.manifest,
         buildId: pending.buildId,
         seed: pending.seed,
+        cityId: pending.source.cityId,
+        ...(pending.source.cityRevision !== undefined ? { cityRevision: pending.source.cityRevision } : {}),
         assetBytes,
       });
       return true;

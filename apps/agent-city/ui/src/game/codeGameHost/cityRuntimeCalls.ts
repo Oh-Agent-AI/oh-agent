@@ -3,7 +3,7 @@ import type { CityTemporalSnapshotV1 } from "@oh-agent/city-sdk/contracts";
 import type { StoryEventRuleV1 } from "../../../../../../packages/city-game-sdk/src/api/v2";
 
 type PluginResponse<T> = { version: number; requestId: string; ok: boolean; result?: T; error?: { code: string } };
-export type CityGameRunHandleV1 = Readonly<{ runId: string; cityId: string; gameId: string; playerScope: Readonly<{ playerId: string; kind: "local-profile" }>; status: "active" }>;
+export type CityGameRunHandleV1 = Readonly<{ runId: string; cityId: string; gameId: string; playerScope: Readonly<{ playerId: string; kind: "local-profile" | "preview" }>; status: "active" }>;
 export type CityStoryReceiptV1 = Readonly<{ eventId: string; operationId: string; storyRevision: string; clockRevision: string; status: "committed" }>;
 
 function desktopAvailable(): boolean {
@@ -21,13 +21,15 @@ async function hostCall<T>(method: string, payload: Record<string, unknown>): Pr
 
 export type CityCodePreviewEnvelopeV1 = Readonly<{
   requestId: string;
+  previewId: string;
   buildId: string;
   seed: number;
+  source: Readonly<{ cityId: string; cityRevision?: number; synthetic?: boolean }>;
   manifest: unknown;
   snapshotId: string;
 }>;
 
-export type CityCodePreviewControlV1 = Readonly<{ control: "stop"; buildId: string; runId: string }>;
+export type CityCodePreviewControlV1 = Readonly<{ control: "stop"; previewId: string; buildId: string; runId: string }>;
 
 export async function takeCityCodePreview(): Promise<CityCodePreviewEnvelopeV1 | CityCodePreviewControlV1 | null> {
   if (!desktopAvailable()) return null;

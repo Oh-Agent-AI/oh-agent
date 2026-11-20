@@ -10,7 +10,7 @@ test("Studio accepts bounded immutable build rows", () => {
 });
 
 test("Studio Preview status is projected to known telemetry and stop states", () => {
-  const running = parseCodePreviewStatus({ available: true, status: "running", gameId: "community.demo", buildId: "b".repeat(64), runId: "run-1", tick: 12, entities: 1 });
+  const running = parseCodePreviewStatus({ available: true, status: "running", gameId: "community.demo", previewId: "preview-1", buildId: "b".repeat(64), runId: "run-1", tick: 12, entities: 1 });
   assert.equal(running.tick, 12);
   assert.equal(canStopCodePreview(running), true);
   const finished = parseCodePreviewStatus({ available: true, status: "finished", outcome: "success", tick: 120, entities: 0 });

@@ -1,0 +1,31 @@
+html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #080e18; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.code-preview, .code-preview * { box-sizing: border-box; }
+.code-preview { position: relative; width: 100%; height: 100%; overflow: hidden; color: #edf3fc; background: #080e18; }
+.code-preview > .city-viewport { position: absolute; inset: 0; }
+.code-preview-header { position: absolute; z-index: 12; top: 22px; left: 24px; right: 24px; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; pointer-events: none; }
+.code-preview-header p { margin: 0 0 5px; color: #b8c9dc; font-size: 10px; font-weight: 700; letter-spacing: .14em; }
+.code-preview-header h1 { margin: 0; font-size: 23px; font-weight: 600; letter-spacing: -.02em; text-shadow: 0 2px 12px #000a; }
+.code-preview-badge { flex-shrink: 0; padding: 7px 11px; border: 1px solid #7795b566; border-radius: 999px; color: #dbe8f5; background: #0d1a2be8; box-shadow: 0 5px 20px #0004; font-size: 11px; }
+.code-preview-badge.is-running { border-color: #71c6a080; color: #bcf2d7; }
+.code-preview-badge.is-finished { border-color: #e4bd7280; color: #ffe1a6; }
+.code-preview-badge.is-error { border-color: #d98a7880; color: #ffd0c5; }
+.code-preview-source { position: absolute; z-index: 12; top: 91px; left: 24px; display: flex; flex-wrap: wrap; gap: 7px 12px; max-width: calc(100% - 48px); color: #b5c6d9; font-size: 11px; pointer-events: none; text-shadow: 0 1px 8px #000; }
+.code-preview-source code { max-width: min(460px, 60vw); overflow: hidden; color: #e2ecf7; text-overflow: ellipsis; white-space: nowrap; }
+.code-preview-status { position: absolute; z-index: 12; left: 50%; bottom: 58px; width: min(480px, calc(100% - 40px)); padding: 15px 18px; transform: translateX(-50%); border: 1px solid #7795b566; border-radius: 12px; background: #0d1a2bef; box-shadow: 0 16px 50px #0007; text-align: center; pointer-events: none; }
+.code-preview-status strong { font-size: 14px; font-weight: 650; }
+.code-preview-status p { margin: 6px 0 0; color: #b8c9dc; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.code-preview-status code { display: block; margin-top: 8px; color: #8fa7bf; font-size: 10px; overflow-wrap: anywhere; }
+.code-preview-status.is-error { border-color: #d98a7880; background: #281a1bef; }
+.code-preview-status.is-error strong { color: #ffd0c5; }
+.code-preview-status.is-finished { border-color: #e4bd7280; }
+.code-preview-footer { position: absolute; z-index: 12; right: 20px; bottom: 17px; color: #91a5bb; font-size: 10px; pointer-events: none; text-shadow: 0 1px 8px #000; }
+.code-preview--unavailable { display: grid; place-items: center; }
+.code-preview--unavailable .code-preview-status { position: static; transform: none; pointer-events: auto; }
+@media (max-width: 640px) {
+  .code-preview-header { top: 16px; left: 16px; right: 16px; }
+  .code-preview-header h1 { font-size: 19px; }
+  .code-preview-source { top: 82px; left: 16px; max-width: calc(100% - 32px); }
+  .code-preview-footer { right: 16px; bottom: 12px; left: 16px; text-align: center; }
+  .code-preview-status { bottom: 46px; }
+}

@@ -22,6 +22,8 @@ mod creator_city_patch;
 mod creator_city_host;
 mod city_runtime;
 mod city_scheduler;
+mod city_game_install;
+mod code_preview_window;
 mod creator_playtest;
 mod creator_store;
 mod story_store;
@@ -5816,10 +5818,9 @@ fn capture_workbench_screenshot(app: AppHandle) -> Result<(), String> {
 fn start_code_game_preview_tick(app: AppHandle) {
     std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_millis(500));
-        if creator_code_game::request_city_open(&overview::data_home(), creator_store::now_ms()) {
-            let main = app.clone();
-            let _ = app.run_on_main_thread(move || focus_tab(&main, "city"));
-        }
+        let main = app.clone();
+        let now = creator_store::now_ms();
+        let _ = app.run_on_main_thread(move || code_preview_window::open_pending(&main, now));
     });
 }
 
@@ -5864,6 +5865,7 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let WindowEvent::Destroyed = event {
                 agent_vitals_runtime::logging::log_warn("workbench", &format!("window destroyed: {}", window.label()));
+                code_preview_window::close_for_window(window.label());
             }
             // 工作台 × 按钮 → 隐藏不销毁。config-created 窗口被 × 关掉会 destroy，
             // 之后 reopen 是 no-op（get_webview_window 返回 None）；hide 保状态——
@@ -6034,6 +6036,7 @@ pub fn run() {
             focus_budget_from_notification,
             capture_workbench_screenshot,
             creator_code_game::code_game_preview_state,
+            code_preview_window::code_game_preview_request,
             ]);
             move |invoke: tauri::ipc::Invoke| {
                 // The official fixture plugin must not inherit authority/log APIs.

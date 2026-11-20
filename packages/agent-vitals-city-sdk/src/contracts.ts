@@ -21,7 +21,7 @@ export type CityTargetRefV1 =
   | { readonly kind: "place"; readonly id: StableIdV1 };
 export interface PlayerScopeV1 {
   readonly playerId: string;
-  readonly kind: "local-profile" | "remote-guest";
+  readonly kind: "local-profile" | "remote-guest" | "preview";
 }
 
 export const TRAVEL_MODES_V1 = ["walk", "drive", "fly", "swim", "submersible"] as const;

@@ -100,6 +100,7 @@ fn preview_status(root: &Path) -> Result<Value, ToolError> {
         "available": true,
         "status": text(&value, "status", 32).unwrap_or_else(|| "unknown".to_string()),
         "gameId": text(&value, "gameId", 128),
+        "previewId": text(&value, "previewId", 128),
         "buildId": text(&value, "buildId", 64),
         "runId": text(&value, "runId", 64),
         "reason": text(&value, "reason", 120),

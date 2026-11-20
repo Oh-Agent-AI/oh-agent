@@ -78,11 +78,12 @@ pub fn specs() -> Vec<ToolSpec> {
         ),
         spec(
             "creator_code_preview",
-            "Queue an immutable Code Game build for the running local City. The desktop host verifies and serves the sealed build by buildId; no repository, dev-server public directory, physical path or global Node installation is used. Returns a requestId for correlation with creator_code_preview_status. Requires `--allow-local-writes`.",
+            "Queue an immutable Code Game build for an independent Preview window. The desktop host verifies and serves sealed bytes by buildId without opening or replacing the current City. Optional cityId selects a saved source City; absence uses a clearly marked synthetic fixture. Requires `--allow-local-writes`.",
             json!({
                 "workspaceId":{"type":"string","minLength":20,"maxLength":32},
                 "buildId":{"type":"string","minLength":64,"maxLength":64,"pattern":"^[0-9a-f]{64}$"},
                 "seed":{"type":"integer","minimum":0,"maximum":4294967295u32},
+                "cityId":{"type":"string","minLength":1,"maxLength":128},
             }),
             &["workspaceId", "buildId"],
         ),
@@ -344,17 +345,26 @@ fn stage_preview(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
         return Err(ToolError::new("not_found", "No sealed build for that buildId in this data home."));
     }
     let root = data_home.join("state/creator/code-games");
-    std::fs::create_dir_all(&root).map_err(|_| ToolError::new("storage_unavailable", "Cannot create the preview request directory."))?;
+    let previews = root.join("previews");
+    std::fs::create_dir_all(&previews).map_err(|_| ToolError::new("storage_unavailable", "Cannot create the preview request directory."))?;
     let created = now_ms();
     let request_id = format!("preview-{build_id}-{created}");
-    let request = json!({"requestId":request_id,"buildId":build_id,"seed":seed,"status":"queued","createdAtMs":created});
-    let temporary = root.join("preview-request.json.tmp");
-    let target = root.join("preview-request.json");
+    let preview_id = format!("preview-{}", random_hex(16));
+    let mut request = json!({"requestId":request_id,"previewId":preview_id,"buildId":build_id,"seed":seed,
+        "source":{"cityId":"city:preview-fixture","seed":7,"synthetic":true},"status":"queued","createdAtMs":created});
+    if let Some(city_id) = args.get("cityId").and_then(Value::as_str) {
+        if city_id.is_empty() || city_id.len() > 128 { return Err(ToolError::new("invalid_argument", "cityId is invalid")); }
+        request["source"] = json!({"cityId":city_id});
+    }
+    let directory = previews.join(&preview_id);
+    std::fs::create_dir(&directory).map_err(|_| ToolError::new("storage_unavailable", "Cannot allocate an independent preview request."))?;
+    let temporary = directory.join("request.json.tmp");
+    let target = directory.join("request.json");
     std::fs::write(&temporary, serde_json::to_vec(&request).map_err(|_| ToolError::new("internal_error", "Cannot encode the preview request."))?)
         .map_err(|_| ToolError::new("storage_unavailable", "Cannot write the preview request."))?;
     std::fs::rename(&temporary, &target).map_err(|_| ToolError::new("storage_unavailable", "Cannot publish the preview request."))?;
     Ok(json!({"ok":true,"data":{"workspaceId":workspace_id,"gameId":meta.game_id,"buildId":build_id,"seed":seed,
-        "requestId":request_id,"status":"queued"}}))
+        "requestId":request_id,"previewId":preview_id,"status":"queued"}}))
 }
 
 fn build_id_arg(args: &Value) -> Result<String, ToolError> {
@@ -738,6 +748,36 @@ mod tests {
         std::fs::write(dir.join("src/index.ts"), "export default 2;\n").unwrap();
         assert_ne!(first, digest_workspace(&dir).unwrap());
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn consecutive_preview_requests_have_independent_immutable_queue_entries() {
+        let home = std::env::temp_dir().join(format!("code-game-preview-queue-{}-{}", now_ms(), std::process::id()));
+        let workspace_id = "gws-0000000000000000";
+        let workspace = home.join("code-games/workspaces").join(workspace_id);
+        std::fs::create_dir_all(&workspace).unwrap();
+        write_meta(&workspace, &WorkspaceMeta {
+            workspace_id: workspace_id.to_string(), project_id: "project-test".to_string(), game_id: "community.test".to_string(),
+            title: "Test".to_string(), template: "hello-city".to_string(), created_at_ms: 1, revision: "sha256:test".to_string(),
+        }).unwrap();
+        let build_id = "a".repeat(64);
+        let build = home.join("code-games/builds").join(&build_id);
+        std::fs::create_dir_all(&build).unwrap();
+        for file in ["game.js", "manifest.json", "build.json"] { std::fs::write(build.join(file), b"{}").unwrap(); }
+        let request = json!({"workspaceId":workspace_id,"buildId":build_id,"seed":7});
+        let first = stage_preview(&request, &home).unwrap();
+        let second = stage_preview(&request, &home).unwrap();
+        let first_id = first["data"]["previewId"].as_str().unwrap();
+        let second_id = second["data"]["previewId"].as_str().unwrap();
+        assert_ne!(first_id, second_id);
+        for preview_id in [first_id, second_id] {
+            let queued: Value = serde_json::from_slice(&std::fs::read(home.join("state/creator/code-games/previews").join(preview_id).join("request.json")).unwrap()).unwrap();
+            assert_eq!(queued["status"], "queued");
+            assert_eq!(queued["previewId"], preview_id);
+            assert_eq!(queued["source"]["synthetic"], true);
+        }
+        assert!(!home.join("state/creator/code-games/preview-request.json").exists());
+        std::fs::remove_dir_all(home).ok();
     }
 
     #[test]

@@ -12,6 +12,11 @@ pub(crate) fn migrate(db: &Connection) -> Result<(), &'static str> {
         simulation_utc_ms INTEGER NOT NULL, observed_utc_ms INTEGER NOT NULL,
         tick INTEGER NOT NULL, clock_revision TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS city_preview_clocks (
+        preview_id TEXT PRIMARY KEY, city_id TEXT NOT NULL, clock_id TEXT NOT NULL UNIQUE,
+        simulation_utc_ms INTEGER NOT NULL, observed_utc_ms INTEGER NOT NULL,
+        tick INTEGER NOT NULL, clock_revision TEXT NOT NULL, base_clock_revision TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS city_players (
         profile_key TEXT PRIMARY KEY, player_id TEXT NOT NULL UNIQUE, created_at_ms INTEGER NOT NULL
     );
@@ -73,6 +78,62 @@ pub(crate) fn read_clock(home: &Path, payload: &Value) -> Result<Value, &'static
     read_clock_at(home, required(payload, "cityId")?, now_ms())
 }
 
+fn clock_snapshot(city_id: &str, clock_id: &str, simulation: u64, tick: u64, revision: &str, uncertain: bool) -> Value {
+    let mut snapshot = json!({"schemaVersion":1,"cityId":city_id,"clockId":clock_id,"simulationUtcMs":simulation,
+        "timeZoneId":"UTC","mode":"realtime","timeScale":1,"tick":tick,"clockRevision":revision});
+    if uncertain { snapshot["uncertainty"] = json!("clock_uncertain"); }
+    snapshot
+}
+
+/// Preview Clock Fork（隔离 Spec §7.3）：每个 Preview 从源 Clock 派生一份私有时间。
+/// 派生只读取正式 Clock 的当前值，不推进它；之后的每次推进只写
+/// `city_preview_clocks`，正式 `city_clocks` 不被任何 Preview 读路径触碰。
+pub(crate) fn read_preview_clock_at(home: &Path, preview_id: &str, city_id: &str, now: u64) -> Result<Value, &'static str> {
+    if !crate::creator_code_game::valid_preview_id(preview_id) || !valid_id(city_id) { return Err("game_argument_invalid"); }
+    let db = database(home)?;
+    migrate(&db)?;
+    let row = db.query_row("SELECT clock_id,simulation_utc_ms,observed_utc_ms,tick,clock_revision FROM city_preview_clocks WHERE preview_id=?1", [preview_id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?, row.get::<_, u64>(2)?, row.get::<_, u64>(3)?, row.get::<_, String>(4)?)))
+        .optional().map_err(|_| "creator_store_unavailable")?;
+    let (clock_id, simulation, tick, revision) = match row {
+        Some(row) => {
+            if now < row.2 { return Ok(clock_snapshot(city_id, &row.0, row.1, row.3, &row.4, true)); }
+            let simulation = row.1.saturating_add(now - row.2);
+            let tick = row.3.max(1 + simulation / 250);
+            db.execute("UPDATE city_preview_clocks SET simulation_utc_ms=?2,observed_utc_ms=?3,tick=?4 WHERE preview_id=?1",
+                params![preview_id,simulation,now,tick]).map_err(|_| "creator_store_unavailable")?;
+            (row.0, simulation, tick, row.4)
+        }
+        None => {
+            let formal = db.query_row("SELECT simulation_utc_ms,tick,clock_revision FROM city_clocks WHERE city_id=?1", [city_id],
+                |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?, row.get::<_, String>(2)?))).optional().map_err(|_| "creator_store_unavailable")?;
+            let clock_id = new_id("preview-clock")?;
+            let (simulation, tick) = match formal { Some((base, base_tick, _)) => (base, base_tick), None => (now, 1 + now / 250) };
+            let revision = digest(&format!("{clock_id}:preview:1"));
+            db.execute("INSERT INTO city_preview_clocks(preview_id,city_id,clock_id,simulation_utc_ms,observed_utc_ms,tick,clock_revision,base_clock_revision)
+                VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![preview_id,city_id,clock_id,simulation,now,tick,revision,
+                    formal.as_ref().map(|(_,_,revision)| revision.as_str()).unwrap_or("none")])
+                .map_err(|error| if matches!(error, rusqlite::Error::SqliteFailure(_, _)) { "game_activity_busy" } else { "creator_store_unavailable" })?;
+            (clock_id, simulation, tick, revision)
+        }
+    };
+    Ok(clock_snapshot(city_id, &clock_id, simulation, tick, &revision, false))
+}
+
+pub(crate) fn read_preview_clock(home: &Path, preview_id: &str, payload: &Value) -> Result<Value, &'static str> {
+    read_preview_clock_at(home, preview_id, required(payload, "cityId")?, now_ms())
+}
+
+/// Preview 终态（finished/error）与目录回收时调用；失败静默——幂等清理，
+/// 残留行只占主键空间，不影响正式 Clock。
+pub(crate) fn forget_preview_clock(home: &Path, preview_id: &str) {
+    if !crate::creator_code_game::valid_preview_id(preview_id) { return; }
+    if let Ok(db) = database(home) {
+        let _ = db.execute("DELETE FROM city_preview_clocks WHERE preview_id=?1", [preview_id]);
+    }
+}
+
 fn local_player(db: &Connection, now: u64) -> Result<String, &'static str> {
     if let Some(player_id) = db.query_row("SELECT player_id FROM city_players WHERE profile_key='local'", [], |row| row.get::<_, String>(0))
         .optional().map_err(|_| "creator_store_unavailable")? {
@@ -89,6 +150,15 @@ pub(crate) fn start_run(home: &Path, city_instance: &str, payload: &Value) -> Re
 }
 
 fn start_run_at(home: &Path, city_instance: &str, payload: &Value, now: u64) -> Result<Value, &'static str> {
+    start_scoped_run_at(home, city_instance, payload, now, None)
+}
+
+pub(crate) fn start_preview_run(home: &Path, preview_id: &str, payload: &Value) -> Result<Value, &'static str> {
+    let player_id = new_id("preview-player-")?;
+    start_scoped_run_at(home, preview_id, payload, now_ms(), Some(player_id))
+}
+
+fn start_scoped_run_at(home: &Path, city_instance: &str, payload: &Value, now: u64, preview_player: Option<String>) -> Result<Value, &'static str> {
     let city_id = required(payload, "cityId")?;
     let game_id = required(payload, "gameId")?;
     let build_id = payload.get("buildId").and_then(Value::as_str).filter(|value| valid_id(value));
@@ -96,14 +166,17 @@ fn start_run_at(home: &Path, city_instance: &str, payload: &Value, now: u64) -> 
     let db = database(home)?;
     migrate(&db)?;
     expire_runs(&db, now)?;
-    let player_id = local_player(&db, now)?;
+    let is_preview = preview_player.is_some();
+    let player_id = match preview_player { Some(player) => player, None => local_player(&db, now)? };
+    let player_kind = if is_preview { "preview" } else { "local-profile" };
     let run_id = new_id("game-run")?;
     db.execute("INSERT INTO city_game_runs(run_id,city_instance_id,city_id,game_id,player_id,build_id,status,active_slot,created_at_ms,expires_at_ms)
         VALUES (?1,?2,?3,?4,?5,?6,'active',?2,?7,?8)",
         params![run_id,city_instance,city_id,game_id,player_id,build_id,now,now + RUN_TTL_MS])
         .map_err(|error| if matches!(error, rusqlite::Error::SqliteFailure(_, _)) { "game_activity_busy" } else { "creator_store_unavailable" })?;
-    read_clock_at(home, city_id, now)?;
-    Ok(json!({"runId":run_id,"cityId":city_id,"gameId":game_id,"playerScope":{"playerId":player_id,"kind":"local-profile"},
+    // Preview 的 Run 起始时钟走 Preview Fork，正式 Clock 不被 Preview 启停推进。
+    if is_preview { read_preview_clock_at(home, city_instance, city_id, now)?; } else { read_clock_at(home, city_id, now)?; }
+    Ok(json!({"runId":run_id,"cityId":city_id,"gameId":game_id,"playerScope":{"playerId":player_id,"kind":player_kind},
         "status":"active","expiresAtMs":now + RUN_TTL_MS}))
 }
 
@@ -121,6 +194,18 @@ pub(crate) fn stop_run(home: &Path, city_instance: &str, payload: &Value) -> Res
     db.execute("UPDATE city_game_runs SET status='stopped',active_slot=NULL,finished_at_ms=?2 WHERE run_id=?1 AND status='active'",
         params![run_id,now]).map_err(|_| "creator_store_unavailable")?;
     Ok(json!({"runId":run_id,"status":"stopped"}))
+}
+
+pub(crate) fn stop_preview_runs(home: &Path, preview_id: &str) -> Result<u64, &'static str> {
+    if !crate::creator_code_game::valid_preview_id(preview_id) { return Err("game_argument_invalid"); }
+    let db = database(home)?;
+    migrate(&db)?;
+    let now = now_ms();
+    expire_runs(&db, now)?;
+    let stopped = db.execute("UPDATE city_game_runs SET status='stopped',active_slot=NULL,finished_at_ms=?2
+        WHERE city_instance_id=?1 AND status='active'", params![preview_id,now]).map_err(|_| "creator_store_unavailable")?;
+    forget_preview_clock(home, preview_id);
+    Ok(stopped as u64)
 }
 
 pub(crate) fn active_run(db: &Connection, city_instance: &str, run_id: &str, now: u64) -> Result<(String, String, String), &'static str> {
@@ -260,6 +345,54 @@ mod tests {
         assert_eq!(rolled_back["uncertainty"], "clock_uncertain");
         assert_eq!(rolled_back["tick"], first["tick"]);
         assert_eq!(rolled_back["simulationUtcMs"], first["simulationUtcMs"]);
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    fn formal_clock_row(home: &Path, city_id: &str) -> Option<(String, u64, u64, u64, String)> {
+        database(home).unwrap().query_row(
+            "SELECT clock_id,simulation_utc_ms,observed_utc_ms,tick,clock_revision FROM city_clocks WHERE city_id=?1", [city_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))).optional().unwrap()
+    }
+
+    fn preview_clock_row(home: &Path, preview_id: &str) -> Option<(String, u64, u64, u64, String)> {
+        database(home).unwrap().query_row(
+            "SELECT clock_id,simulation_utc_ms,observed_utc_ms,tick,clock_revision FROM city_preview_clocks WHERE preview_id=?1", [preview_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))).optional().unwrap()
+    }
+
+    #[test]
+    fn preview_clock_forks_from_source_and_never_advances_formal_city_clock() {
+        let home = home();
+        read_clock_at(&home, "city:one", 4_000).unwrap();
+        let formal_before = formal_clock_row(&home, "city:one").unwrap();
+        // 派生只读正式 Clock，不推进它。
+        let fork = read_preview_clock_at(&home, "preview-clock-a", "city:one", 4_000).unwrap();
+        assert!(fork["clockId"].as_str().unwrap().starts_with("preview-clock"));
+        assert_eq!(fork["cityId"], "city:one");
+        assert_eq!(formal_clock_row(&home, "city:one").unwrap(), formal_before);
+        // 推进只写 Preview 自己的行，正式行保持原值。
+        let advanced = read_preview_clock_at(&home, "preview-clock-a", "city:one", 6_000).unwrap();
+        assert_eq!(advanced["simulationUtcMs"], 6_000);
+        let forked_row = preview_clock_row(&home, "preview-clock-a").unwrap();
+        assert_eq!(forked_row.1, 6_000);
+        assert_eq!(forked_row.2, 6_000);
+        assert_eq!(formal_clock_row(&home, "city:one").unwrap(), formal_before);
+        // Run 起始走 Preview Fork：playerScope 是 preview 身份，正式行仍不变。
+        let run = start_preview_run(&home, "preview-clock-a", &json!({"cityId":"city:one","gameId":"game.romance"})).unwrap();
+        assert_eq!(run["playerScope"]["kind"], "preview");
+        assert!(run["playerScope"]["playerId"].as_str().unwrap().starts_with("preview-player-"));
+        assert_eq!(formal_clock_row(&home, "city:one").unwrap(), formal_before);
+        // 第二个 Preview 拥有独立 Fork；终态清理删除自己的 Fork，不影响另一个。
+        let _ = start_preview_run(&home, "preview-clock-b", &json!({"cityId":"city:one","gameId":"game.romance"})).unwrap();
+        let second = preview_clock_row(&home, "preview-clock-b");
+        assert!(second.is_some());
+        assert_ne!(fork["clockId"], second.unwrap().0);
+        crate::creator_code_game::record_preview_state(&home, &json!({"status":"finished","previewId":"preview-clock-a","gameId":"game.romance"})).unwrap();
+        assert!(preview_clock_row(&home, "preview-clock-a").is_none());
+        assert!(preview_clock_row(&home, "preview-clock-b").is_some());
+        // 正式面自始至终没有被 Preview 启停推进。
+        assert_eq!(formal_clock_row(&home, "city:one").unwrap(), formal_before);
+        assert_eq!(read_preview_clock_at(&home, "bad id!", "city:one", 1_000).unwrap_err(), "game_argument_invalid");
         std::fs::remove_dir_all(home).ok();
     }
 }

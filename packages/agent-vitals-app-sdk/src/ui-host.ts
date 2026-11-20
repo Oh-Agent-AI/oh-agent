@@ -2,6 +2,7 @@ export type Tool = { id: string; commandId: string; label: string; kind: "button
 export type Command = { version: number; instanceId: string; requestId: string; commandId: string; value?: string };
 declare global { interface Window {
   __AV_PLUGIN_INSTANCE__?: string;
+  __AV_CODE_PREVIEW_ID__?: string;
   __AV_PLUGIN_LOCALE__?: "en" | "zh-Hans";
   __TAURI__?: { core?: { invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>; }; };
 } }
@@ -46,6 +47,9 @@ export async function invokeHost<T>(command: string, args: Record<string, unknow
   if (!browserInstance) {
     const invoke = window.__TAURI__?.core?.invoke;
     if (!invoke) throw new Error("plugin_backend_unavailable");
+    if (window.__AV_CODE_PREVIEW_ID__) {
+      return invoke<T>("code_game_preview_request", { request: { previewId: window.__AV_CODE_PREVIEW_ID__, command, args } });
+    }
     return invoke<T>(command, args);
   }
   const requestId = `rpc-${++sequence}`;

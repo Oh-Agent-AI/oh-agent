@@ -15,6 +15,8 @@ import { buildCitySourceExport, buildProjectSourceExport } from "./projectSource
 import { exportBlockMessage, exportClickBlock } from "./exportClick";
 import { AgentApprovalGate, matchesPreviewBase, type AgentCommit } from "./agentApproval";
 import { CodeGamePreviewPanel } from "./CodeGamePreviewPanel";
+// @ts-expect-error Explicit .tsx disambiguates this component from cityGameLibrary.ts on case-insensitive filesystems.
+import { CityGameLibrary } from "./CityGameLibrary.tsx";
 // 视口与 City 插件共享同一份引擎与装配管线，保证 Studio 看到的是同一座城市。
 import { CityViewport } from "../../../agent-city/ui/src/viewport/CityViewport";
 import { assertCityPlanPlayable } from "./cityPlanPreflight";
@@ -149,7 +151,9 @@ function App() {
   const [installedPackages, setInstalledPackages] = useState<ReadonlyArray<InstalledContentPackage>>([]);
   const [confirmUninstall, setConfirmUninstall] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [activePanel, setActivePanel] = useState<"play" | "agent" | "project" | "code">("agent");
+  const [activePanel, setActivePanel] = useState<"play" | "agent" | "project" | "code" | "library">("library");
+  const [codePreviewBuildId, setCodePreviewBuildId] = useState<string | undefined>(undefined);
+  const [codePreviewSourceCityId, setCodePreviewSourceCityId] = useState<string | undefined>(undefined);
   const [message, setMessage] = useState("");
   const [cities, setCities] = useState<CityRow[]>([]);
   const [citiesCursor, setCitiesCursor] = useState<string | null>(null);
@@ -1258,10 +1262,12 @@ function App() {
   return <main className="studio">
     <div className="workspace">
       <nav className="studio-rail" aria-label="创作模式">
+        <button className={activePanel === "library" ? "active" : ""} aria-pressed={activePanel === "library"} onClick={() => setActivePanel("library")}><span aria-hidden="true">▦</span>资源库</button>
         <button className={activePanel === "project" ? "active" : ""} aria-pressed={activePanel === "project"} onClick={() => setActivePanel("project")}><span aria-hidden="true">▤</span>项目</button>
         <button className={activePanel === "play" ? "active" : ""} aria-pressed={activePanel === "play"} onClick={() => setActivePanel("play")}><span aria-hidden="true">◇</span>玩法</button>
         <button className={activePanel === "agent" ? "active" : ""} aria-pressed={activePanel === "agent"} onClick={() => setActivePanel("agent")}><span aria-hidden="true">✦</span>Agent</button>
       </nav>
+      {activePanel === "library" ? <CityGameLibrary request={creatorRequest} browserPreview={browserPreview} message={message} onMessage={setMessage} onOpenPreview={(buildId, source) => { setCodePreviewBuildId(buildId); setCodePreviewSourceCityId(source?.cityId); setActivePanel("code"); }} /> : <>
       <section className="viewport" aria-label="City 实时视口">
         <div className="viewport-head"><div className="section-title">城市视图</div><span className="viewport-hint">点选建筑移动 · 拖动旋转 · 滚轮缩放</span><button className="secondary reset-view" onClick={() => setFocusSignal(value => value + 1)}>重置视角</button></div>
         <div className="viewport-base">{installedWorldView && "defaultSeed" in installedWorldView.manifest.entry ? <div className="viewport-frame"><CityViewport key={draftCityView ? `${draftCityView.cityId}:${draftCityView.revision}:${installedWorldView.manifest.contentDigest}` : installedWorldView.manifest.contentDigest} seed={installedWorldView.manifest.entry.defaultSeed} worldProfile={installedWorldView.profile} isolatedDraft isolatedProjectPatch={installedWorldView.patch as PlanPatchV1 | null} worldScene={installedWorldView} registerProbe={false} onEngineChange={engine => { if (draftCityView && draftCityViewRef.current === draftCityView) draftEngineRef.current = engine; }} onViewportStatus={(status, code) => {
@@ -1305,7 +1311,7 @@ function App() {
         <nav className="inspector-tabs" aria-label="工作台面板"><button className={activePanel === "play" ? "active" : ""} aria-pressed={activePanel === "play"} onClick={() => setActivePanel("play")}>玩法</button><button className={activePanel === "agent" ? "active" : ""} aria-pressed={activePanel === "agent"} onClick={() => setActivePanel("agent")}>Agent</button><button className={activePanel === "project" ? "active" : ""} aria-pressed={activePanel === "project"} onClick={() => setActivePanel("project")}>项目</button><button className={activePanel === "code" ? "active" : ""} aria-pressed={activePanel === "code"} onClick={() => setActivePanel("code")}>代码预览</button></nav>
         {message && <p className="status status-banner" role="status">{message}</p>}
         <p className="readiness">{browserPreview ? "合成数据预览 · " : ""}{releaseHint}</p>
-        {activePanel === "code" && <CodeGamePreviewPanel request={creatorRequest} browserPreview={browserPreview} onMessage={setMessage} />}
+        {activePanel === "code" && <CodeGamePreviewPanel request={creatorRequest} browserPreview={browserPreview} requestedBuildId={codePreviewBuildId} requestedSourceCityId={codePreviewSourceCityId} onMessage={setMessage} />}
         {activePanel === "agent" && <section className="agent-panel" aria-label="City Agent">
           {agentCommit && <div className="agent-card" role="group" aria-label="等待确认的 Agent 修改"><div className="agent-card-head"><span className="agent-label">等待确认</span><span className="agent-time">版本 {agentCommit.expectedRevision}</span></div>
             <p>{agentCommit.proposal.summary}</p>{agentCommit.proposal.details.length > 0 && <ul>{agentCommit.proposal.details.map((detail, index) => <li key={index}>{detail}</li>)}</ul>}<details><summary>查看完整修改内容</summary><pre className="agent-proposal-content">{agentCommit.proposal.changes}</pre></details><p className="muted">项目 {agentCommit.projectId}。{agentCommit.proposal.requiresCityPreview ? !agentCityPreview ? "无法显示该城市修改：请打开对应项目、等待基准布局就绪，并将单个城市补丁单独预览。" : agentPreviewStatus?.context !== agentCityPreview || agentPreviewStatus.status === "loading" ? "正在准备三维临时预览。" : agentPreviewStatus.status === "failed" ? "预览失败或包含失效项，不能保存。" : "基准路网已匹配，三维临时预览已显示；确认后才会保存。" : "此修改尚未提供三维预览，确认后才会保存。"}</p>
@@ -1389,8 +1395,9 @@ function App() {
         </> : <div className="empty inspector-empty"><p>从项目列表或顶部选择器打开城市项目，开始编辑玩法。</p><button onClick={() => setActivePanel("project")}>创建项目</button></div>}
         </section>}
       </aside>
+      </>}
     </div>
-    <footer className="studio-status" role="status"><span>{!project ? "未选择项目" : hasUncommittedProjectEdits ? "有未保存修改" : `项目版本 ${project.revision}`}</span><span>{browserPreview ? "合成数据预览" : releaseHint}</span></footer>
+    <footer className="studio-status" role="status"><span>{activePanel === "library" ? "City / Story / Game 独立管理" : !project ? "未选择项目" : hasUncommittedProjectEdits ? "有未保存修改" : `项目版本 ${project.revision}`}</span><span>{activePanel === "library" ? "Story 管理 City AVG 剧情；安装关系需单独确认" : browserPreview ? "合成数据预览" : releaseHint}</span></footer>
   </main>;
 }
 

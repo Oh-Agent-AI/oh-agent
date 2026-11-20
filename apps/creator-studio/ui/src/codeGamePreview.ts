@@ -10,6 +10,7 @@ export type CodePreviewStatusV1 = Readonly<{
   available: boolean;
   status: "starting" | "running" | "finished" | "error" | "unavailable" | "unknown";
   gameId: string | null;
+  previewId: string | null;
   buildId: string | null;
   runId: string | null;
   outcome: "success" | "failure" | null;
@@ -40,7 +41,7 @@ export function parseCodePreviewStatus(value: unknown): CodePreviewStatusV1 {
   const raw = value as Record<string, unknown>;
   const status = ["starting","running","finished","error","unavailable"].includes(String(raw.status)) ? String(raw.status) as CodePreviewStatusV1["status"] : "unknown";
   const outcome = raw.outcome === "success" || raw.outcome === "failure" ? raw.outcome : null;
-  return Object.freeze({ available: raw.available as boolean, status, gameId: text(raw.gameId, 128), buildId: text(raw.buildId, 64),
+  return Object.freeze({ available: raw.available as boolean, status, gameId: text(raw.gameId, 128), previewId: text(raw.previewId, 128), buildId: text(raw.buildId, 64),
     runId: text(raw.runId, 64), outcome, reason: text(raw.reason, 120), tick: count(raw.tick), entities: count(raw.entities), updatedAtMs: count(raw.updatedAtMs) });
 }
 
@@ -78,5 +79,5 @@ export function parseCodeStoryEvidence(value: unknown): CodeStoryEvidenceV1 {
 }
 
 export function canStopCodePreview(status: CodePreviewStatusV1): boolean {
-  return (status.status === "starting" || status.status === "running") && !!status.buildId && !!status.runId;
+  return (status.status === "starting" || status.status === "running") && !!status.previewId && !!status.runId;
 }

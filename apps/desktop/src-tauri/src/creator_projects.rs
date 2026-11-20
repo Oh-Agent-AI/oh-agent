@@ -1352,27 +1352,57 @@ fn run_code_builds(home: &Path, _owner: &str, _instance: &str, payload: &Value) 
     crate::creator_code_game::studio_builds(home, limit)
 }
 fn run_code_preview(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
-    crate::creator_code_game::studio_preview(home, args_valid_id(payload, "buildId")?, payload.get("seed").and_then(Value::as_u64).unwrap_or(7))
+    // 显式来源（Spec §4.1.3）：未绑定来源时默认合成 Fixture，不猜测最新 City。
+    let source = match payload.get("source") {
+        None | Some(Value::Null) => None,
+        Some(source) => {
+            let object = source.as_object().filter(|object| object.len() == 2
+                && object.contains_key("cityId") && object.contains_key("cityRevision")).ok_or("creator_request_invalid")?;
+            let city_id = object.get("cityId").and_then(Value::as_str).filter(|id| valid_id(id)).ok_or("creator_request_invalid")?;
+            let revision = object.get("cityRevision").and_then(Value::as_u64).ok_or("creator_request_invalid")?;
+            Some(json!({"cityId":city_id,"cityRevision":revision}))
+        }
+    };
+    crate::creator_code_game::studio_preview(home, args_valid_id(payload, "buildId")?, payload.get("seed").and_then(Value::as_u64).unwrap_or(7), source)
 }
-fn run_code_status(home: &Path, _owner: &str, _instance: &str, _payload: &Value) -> Result<Value, &'static str> {
-    crate::creator_code_game::studio_status(home)
+fn run_code_status(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    match payload.get("previewId").and_then(Value::as_str) {
+        Some(preview_id) => crate::creator_code_game::studio_status_for(home, preview_id),
+        None => crate::creator_code_game::studio_status(home),
+    }
 }
 fn run_code_stop(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
-    crate::creator_code_game::studio_stop(home, args_valid_id(payload, "buildId")?, args_valid_id(payload, "runId")?)
+    crate::creator_code_game::studio_stop(home, args_valid_id(payload, "previewId")?)
 }
 
-fn run_code_story(home: &Path, _owner: &str, _instance: &str, _payload: &Value) -> Result<Value, &'static str> {
-    let preview = crate::creator_code_game::studio_status(home)?;
+fn run_code_story(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    let preview = match payload.get("previewId").and_then(Value::as_str) {
+        Some(preview_id) => crate::creator_code_game::studio_status_for(home, preview_id)?,
+        None => crate::creator_code_game::studio_status(home)?,
+    };
     let Some(run_id) = preview.get("runId").and_then(Value::as_str) else { return Ok(json!({"available":false})); };
     crate::city_runtime::story_evidence(home, run_id)
 }
 
+fn run_install_preview(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::city_game_install::preview(home, payload)
+}
+fn run_install_commit(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::city_game_install::commit(home, payload)
+}
+fn run_install_list(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::city_game_install::list(home, payload)
+}
+
 static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.code.builds.list", &[], &["limit"], run_code_builds),
-    creator_row!("creator.code.preview", &["buildId"], &["seed"], run_code_preview),
-    creator_row!("creator.code.preview.status", &[], &[], run_code_status),
-    creator_row!("creator.code.preview.stop", &["buildId", "runId"], &[], run_code_stop),
-    creator_row!("creator.code.story", &[], &[], run_code_story),
+    creator_row!("creator.code.preview", &["buildId"], &["seed", "source"], run_code_preview),
+    creator_row!("creator.code.preview.status", &[], &["previewId"], run_code_status),
+    creator_row!("creator.code.preview.stop", &["previewId"], &[], run_code_stop),
+    creator_row!("creator.code.story", &[], &["previewId"], run_code_story),
+    creator_row!("creator.code.install.preview", &["buildId", "targetCityId", "expectedCityRevision", "operationId"], &["runAfterInstall", "replaceCurrentView", "allowOfficialStoryWrites"], run_install_preview),
+    creator_row!("creator.code.install.commit", &["previewId", "operationId"], &["updateConfirmation"], run_install_commit),
+    creator_row!("creator.code.install.list", &[], &["cityId", "gameId", "limit"], run_install_list),
     creator_row!("creator.capabilities.list", &[], &["category", "schemaVersion"], run_capabilities_list),
     creator_row!("creator.city.create", &["name", "seed", "profile", "operationId", "validation"], &[], run_city_create),
     creator_row!("creator.city.create_from_world", &["name", "operationId", "packageId", "version", "validation"], &[], run_city_create_from_world),
