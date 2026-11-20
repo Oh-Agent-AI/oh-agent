@@ -296,6 +296,7 @@ mod tests {
         let request = install_request(&build_id, &city, "install-preview-1");
         let checked = crate::creator_projects::dispatch_as(&home, "local-profile-v1", "studio-test", "creator.code.install.preview", &request).unwrap();
         assert_eq!(checked["canInstall"], true);
+        assert!(checked.get("ok").is_none());
         assert_eq!(checked["requiresUpdateConfirmation"], false);
         assert_eq!(checked["currentBuildId"], Value::Null);
         let commit_request = json!({"previewId":checked["previewId"],"operationId":"install-commit-1"});

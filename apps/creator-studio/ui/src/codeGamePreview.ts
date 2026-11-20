@@ -1,5 +1,6 @@
-export type CodeBuildRowV1 = Readonly<{
-  buildId: string;
+import type { CandidateBuildRef } from "./contracts/creatorProject";
+
+export type CodeBuildRowV1 = Readonly<CandidateBuildRef & {
   gameId: string;
   gameVersion: string | null;
   byteLength: number | null;

@@ -1,14 +1,14 @@
+import type { CityInstanceRef, InstallationRef } from "./contracts/creatorProject";
+
 export const LIBRARY_RESOURCE_KINDS = Object.freeze([
-  Object.freeze({ id: "city", label: "City 项目库", description: "世界与能力" }),
-  Object.freeze({ id: "story", label: "AVG Story", description: "City 剧情模式" }),
-  Object.freeze({ id: "game", label: "游戏库", description: "游戏与 Build" }),
+  Object.freeze({ id: "city", label: "City 世界", description: "独立 City 实例", available: true }),
+  Object.freeze({ id: "story", label: "Story（待接入）", description: "Story Project Registry 未接入", available: false }),
+  Object.freeze({ id: "game", label: "Game Build", description: "不可变构建 · 仅测试与安装", available: true }),
 ] as const);
 
-export type LibraryKind = typeof LIBRARY_RESOURCE_KINDS[number]["id"];
+export type LibraryKind = "city" | "game";
 
-export type LibraryCityRow = Readonly<{
-  cityId: string;
-  revision: number;
+export type LibraryCityRow = Readonly<CityInstanceRef & {
   name: string;
   worldRevision: string | null;
   capabilities: readonly string[] | null;
@@ -21,12 +21,9 @@ export type CityListPage = Readonly<{
   nextCursor: string | null;
 }>;
 
-export type InstallationRow = Readonly<{
-  installationId: string;
-  cityId: string;
+export type InstallationRow = Readonly<InstallationRef & {
   cityRevision: number | null;
   gameId: string;
-  buildId: string;
   status: "installed" | "disabled" | "update-available" | "unknown";
   createdAtMs: number | null;
 }>;
@@ -134,8 +131,12 @@ export function buildInstallCommitRequest(preview: InstallPreview, buildId: stri
     ...(preview.requiresUpdateConfirmation ? { updateConfirmation: { currentBuildId: preview.currentBuildId, buildId } } : {}) };
 }
 
+export function isInstallPreviewAllowed(preview: InstallPreview | null): preview is InstallPreview & { previewId: string } {
+  return preview !== null && preview.previewId !== null && preview.ok !== false && preview.canInstall === true
+    && !preview.diagnostics.some(diagnostic => diagnostic.severity === "error");
+}
+
 export function canCommitInstall(preview: InstallPreview | null, updateConfirmed = false): boolean {
-  return preview !== null && preview.ok !== false && preview.canInstall !== false
-    && !preview.diagnostics.some(diagnostic => diagnostic.severity === "error")
+  return isInstallPreviewAllowed(preview)
     && (!preview.requiresUpdateConfirmation || (updateConfirmed && preview.currentBuildId !== null));
 }

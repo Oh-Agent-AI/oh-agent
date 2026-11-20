@@ -15,6 +15,7 @@ import { buildCitySourceExport, buildProjectSourceExport } from "./projectSource
 import { exportBlockMessage, exportClickBlock } from "./exportClick";
 import { AgentApprovalGate, matchesPreviewBase, type AgentCommit } from "./agentApproval";
 import { CodeGamePreviewPanel } from "./CodeGamePreviewPanel";
+import { creatorWorkKindForProject, type CityInstanceRef, type CreatorProjectRef, type ReleaseRef, type RunRef } from "./contracts/creatorProject";
 // @ts-expect-error Explicit .tsx disambiguates this component from cityGameLibrary.ts on case-insensitive filesystems.
 import { CityGameLibrary } from "./CityGameLibrary.tsx";
 // 视口与 City 插件共享同一份引擎与装配管线，保证 Studio 看到的是同一座城市。
@@ -26,14 +27,14 @@ import type { CityEngine } from "../../../agent-city/ui/src/engine/CityEngine";
 import { CITY_GENERATOR_VERSION, type PlanPatchV1 } from "../../../agent-city/ui/src/engine/planPatch";
 import "./style.css";
 
-type ProjectRow = { projectId: string; revision: number; title: string; updatedAtMs: number };
+type ProjectRow = CreatorProjectRef & { title: string; updatedAtMs: number };
 type LayoutRow = { worldRevision: string; layoutId: string; seed: number; anchorCount: number; updatedAtMs: number; cityId?: string; cityRevision?: number; source?: "legacy" | "cityDraft" };
-type CityRow = { cityId: string; revision: number; name: string };
+type CityRow = CityInstanceRef & { name: string };
 type CityWorldSnapshot = Awaited<ReturnType<typeof inspectInstalledWorld>>;
 type SceneDraft = { schemaVersion: 1; objects: Array<Record<string, unknown>> };
 // 试玩历史行（creator.project.playtest.history 返回的 runs 元素），状态沿用后端英文枚举不翻译。
-type PlaytestRun = { runId: string; releaseId: string; revision: number; status: "pending" | "claimed" | "completed" | "cancelled" | "failed" | "expired"; createdAtMs: number; finishedAtMs: number | null; evidenceSource: string | null; evidence: unknown; failureCode: string | null };
-type Project = { projectId: string; revision: number; title?: string; kind: string; game: unknown; cityId?: string; cityRevision?: number; cityLayout?: CityLayoutSnapshotV1 | null; cityPatch?: Record<string, unknown> | null; scene?: SceneDraft; assets?: { schemaVersion: 1; entries: Array<{ assetId: string; relativePath: string; sha256: string; byteLength: number; format: "glb-v2"; boundsMeters?: { x: number; y: number; z: number } }> }; assetRefs?: Array<Record<string, unknown>>; mounts: CityGameMountV1[]; skinId?: string };
+type PlaytestRun = RunRef & { revision: number; status: "pending" | "claimed" | "completed" | "cancelled" | "failed" | "expired"; createdAtMs: number; finishedAtMs: number | null; evidenceSource: string | null; evidence: unknown; failureCode: string | null };
+type Project = CreatorProjectRef & { title?: string; kind: string; game: unknown; cityId?: string; cityRevision?: number; cityLayout?: CityLayoutSnapshotV1 | null; cityPatch?: Record<string, unknown> | null; scene?: SceneDraft; assets?: { schemaVersion: 1; entries: Array<{ assetId: string; relativePath: string; sha256: string; byteLength: number; format: "glb-v2"; boundsMeters?: { x: number; y: number; z: number } }> }; assetRefs?: Array<Record<string, unknown>>; mounts: CityGameMountV1[]; skinId?: string };
 type PluginResponse<T> = { version: number; requestId: string; ok: boolean; result?: T; error?: { code: string } };
 let sequence = 0;
 const layoutSelectionKey = (layout: LayoutRow): string => layout.cityId ? `${layout.cityId}::${layout.worldRevision}` : layout.worldRevision;
@@ -1082,7 +1083,7 @@ function App() {
     if (!project) return;
     setBusy(true); setMessage("");
     try {
-      const release = await creatorRequest<{ releaseId: string; revision: number }>("creator.project.publish", {
+      const release = await creatorRequest<ReleaseRef & { revision: number }>("creator.project.publish", {
         projectId: project.projectId, expectedRevision: project.revision,
       });
       setPublishedReleaseId(release.releaseId);
@@ -1246,13 +1247,14 @@ function App() {
     else if (commandId === "creator.publish" && !busy && project && !hasUncommittedProjectEdits && project.mounts?.length) void publish();
   };
   useEffect(() => connect(command => toolbarActionRef.current(command.commandId, command.value)), []);
+  const openProjectWorkKind = project ? creatorWorkKindForProject(project.kind) : null;
   useEffect(() => {
     const selected = toolbarProjects.findIndex(row => row.projectId === project?.projectId);
     publishToolbar([
-      { id: "project", commandId: "creator.project", label: "选择城市项目", kind: "select", enabled: !busy,
+      { id: "project", commandId: "creator.project", label: openProjectWorkKind === "game" ? "选择模板 Game 项目" : "选择项目", kind: "select", enabled: !busy,
         value: selected < 0 ? "more" : String(selected), options: [
           ...toolbarProjects.map((row, index) => ({ value: String(index), label: `${row.title} · 版本 ${row.revision}`.slice(0, 100) })),
-          { value: "more", label: project ? "更多项目…" : "选择城市项目…" },
+          { value: "more", label: project ? "更多项目…" : "选择项目…" },
         ] },
       { id: "playtest", commandId: "creator.playtest", label: "试玩", kind: "button", enabled: !browserPreview && !busy && !!publishedReleaseId && !hasUncommittedProjectEdits },
       { id: "publish", commandId: "creator.publish", label: "发布", kind: "button", enabled: !busy && !!project && !hasUncommittedProjectEdits && !!project.mounts?.length },
@@ -1298,7 +1300,7 @@ function App() {
           : viewportSeed !== null
           ? <div className="viewport-frame"><CityViewport seed={viewportSeed} worldProfile={worldProfile} editable={!!project} focusSignal={focusSignal}
               projectPatch={(project?.cityPatch ?? null) as PlanPatchV1 | null} onPatchCommit={patch => commitPatchRef.current(patch)}
-              onEngineChange={setBaseEngine} onViewportStatus={setBaseStatus} />{!project && <div className="viewport-welcome"><div className="welcome-card"><span className="welcome-kicker">YOUR CITY, YOUR IDEAS</span><h2>从一座城市开始创作</h2><p>打开已有项目，或选择一个玩法模板创建新项目。</p><button onClick={() => setActivePanel("project")}>创建城市项目</button></div></div>}</div>
+              onEngineChange={setBaseEngine} onViewportStatus={setBaseStatus} />{!project && <div className="viewport-welcome"><div className="welcome-card"><span className="welcome-kicker">YOUR CITY, YOUR IDEAS</span><h2>从一座城市开始创作</h2><p>打开已有项目，或选择一个玩法模板创建新项目。</p><button onClick={() => setActivePanel("project")}>创建模板 Game 项目</button></div></div>}</div>
           : <div className="empty viewport-empty">{viewportUnavailable
             ? "当前项目没有绑定的 City 布局快照，视口无法恢复它编辑的城市。请在 City 中重新生成道路地图后新建项目。"
             : "先打开 City 生成道路地图，这里会显示同一座实时城市。"}</div>}</div>
@@ -1307,7 +1309,7 @@ function App() {
           <div className="viewport-savebar" role="status">Agent 临时预览 · 不会保存到城市</div></div>}
       </section>
       <aside className="panel" aria-label="创作检查器">
-        <div className="inspector-heading"><div><span className="sidebar-kicker">INSPECTOR</span><h2>{activePanel === "agent" ? "City Agent" : activePanel === "project" ? "城市项目" : activePanel === "code" ? "代码预览" : "玩法与场地"}</h2></div>{project && <span className="version-pill">版本 {project.revision}</span>}</div>
+        <div className="inspector-heading"><div><span className="sidebar-kicker">INSPECTOR</span><h2>{activePanel === "agent" ? "City Agent" : activePanel === "project" ? openProjectWorkKind === "game" ? "模板 Game 项目" : "项目" : activePanel === "code" ? "代码预览" : "玩法与场地"}</h2></div>{project && <span className="version-pill">版本 {project.revision}</span>}</div>
         <nav className="inspector-tabs" aria-label="工作台面板"><button className={activePanel === "play" ? "active" : ""} aria-pressed={activePanel === "play"} onClick={() => setActivePanel("play")}>玩法</button><button className={activePanel === "agent" ? "active" : ""} aria-pressed={activePanel === "agent"} onClick={() => setActivePanel("agent")}>Agent</button><button className={activePanel === "project" ? "active" : ""} aria-pressed={activePanel === "project"} onClick={() => setActivePanel("project")}>项目</button><button className={activePanel === "code" ? "active" : ""} aria-pressed={activePanel === "code"} onClick={() => setActivePanel("code")}>代码预览</button></nav>
         {message && <p className="status status-banner" role="status">{message}</p>}
         <p className="readiness">{browserPreview ? "合成数据预览 · " : ""}{releaseHint}</p>
@@ -1347,10 +1349,10 @@ function App() {
           {installedPackages.length > 0 && <div><div className="section-title">已安装内容包</div>{installedPackages.map(item => <div key={`${item.packageId}:${item.version}`} className="actions"><code>{formatInstalledPackage(item)}</code><button className="secondary" disabled={busy} onClick={() => void validateInstalledPackage(item)}>检查内容</button><button className="secondary" disabled={busy} onClick={() => void previewInstalledPackage(item)}>只读预览</button><button disabled={busy} onClick={() => void createCityFromInstalledWorld(item)}>创建独立 City</button><button className="secondary" disabled={busy} onClick={() => { const key = `${item.packageId}:${item.version}`; if (confirmUninstall === key) void uninstallInstalledPackage(item); else setConfirmUninstall(key); }}>{confirmUninstall === `${item.packageId}:${item.version}` ? "确认卸载" : "卸载"}</button></div>)}</div>}</div>
           <div className="section-title">打开项目</div>
           <div className="project-list">{projects.map(row => <button key={row.projectId} className={`project-row ${project?.projectId === row.projectId ? "selected" : ""}`} disabled={busy} onClick={() => { if (row.projectId !== project?.projectId) guardDrafts(row.projectId, () => void openProject(row.projectId)); else { setInstalledWorldView(null); if (draftCityView) { cityOpenRequest.current++; draftCityViewRef.current = null; setDraftCityView(null); } } }}><strong>{row.title}</strong><span>版本 {row.revision}{project?.projectId === row.projectId ? " · 当前项目" : switchConfirm === row.projectId ? " · 再次点击以丢弃草稿" : ""}</span></button>)}</div>
-          <div><div className="section-title">创建新项目</div><p className="muted">选择玩法和 City 布局，创建独立的本地草稿。</p></div>
+          <div><div className="section-title">创建模板 Game 项目</div><p className="muted">选择玩法和 City 布局，创建独立的本地 Creator Project 草稿。</p></div>
           <label>新建模板<select value={template} disabled={busy} onChange={event => setTemplate(event.target.value)}><option value="checkpoint-race">驾驶检查点竞速</option><option value="collect-one">驾驶区域收集</option><option value="ornithopter-flight">扑翼飞行检查点</option></select></label>
           <label>绑定 City 世界<select value={worldRevision} disabled={busy || layouts.length === 0} onChange={event => setWorldRevision(event.target.value)}>{layouts.map(layout => <option key={layoutSelectionKey(layout)} value={layoutSelectionKey(layout)}>{layout.cityId ? `${layout.cityId} · ` : "Miami · "}{layout.layoutId} · seed {layout.seed} · {layout.anchorCount} 个锚点</option>)}</select></label>
-          <button disabled={busy || !worldRevision} onClick={() => guardDrafts("create", () => void createProject())}>{switchConfirm === "create" ? "确认丢弃草稿并新建" : "新建项目"}</button>
+          <button disabled={busy || !worldRevision} onClick={() => guardDrafts("create", () => void createProject())}>{switchConfirm === "create" ? "确认丢弃草稿并新建" : "新建 Game 项目"}</button>
           {layouts.length === 0 && <p className="muted">尚无 City 布局快照。先打开 City 生成道路地图，再回到 Studio。</p>}
         </section>}
         {activePanel === "play" && <section className="editor">
@@ -1392,12 +1394,12 @@ function App() {
             </section>
           <p className="muted">试玩会临时应用发布版本的官方 City 皮肤，结束后恢复你的 City 外观与偏好。</p>
           </details>
-        </> : <div className="empty inspector-empty"><p>从项目列表或顶部选择器打开城市项目，开始编辑玩法。</p><button onClick={() => setActivePanel("project")}>创建项目</button></div>}
+        </> : <div className="empty inspector-empty"><p>从项目列表或顶部选择器打开项目，开始编辑玩法。</p><button onClick={() => setActivePanel("project")}>创建项目</button></div>}
         </section>}
       </aside>
       </>}
     </div>
-    <footer className="studio-status" role="status"><span>{activePanel === "library" ? "City / Story / Game 独立管理" : !project ? "未选择项目" : hasUncommittedProjectEdits ? "有未保存修改" : `项目版本 ${project.revision}`}</span><span>{activePanel === "library" ? "Story 管理 City AVG 剧情；安装关系需单独确认" : browserPreview ? "合成数据预览" : releaseHint}</span></footer>
+    <footer className="studio-status" role="status"><span>{activePanel === "library" ? "City 实例与 Game Build 分离管理；Story 待接入" : !project ? "未选择项目" : hasUncommittedProjectEdits ? "有未保存修改" : `项目版本 ${project.revision}`}</span><span>{activePanel === "library" ? "Story Project Registry 未接入；安装关系需单独确认" : browserPreview ? "合成数据预览" : releaseHint}</span></footer>
   </main>;
 }
 
