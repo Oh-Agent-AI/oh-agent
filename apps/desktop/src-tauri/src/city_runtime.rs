@@ -240,6 +240,9 @@ fn commit_at(home: &Path, city_instance: &str, payload: &Value, now: u64) -> Res
     let command = StoryCommitCommandV1 {
         operation_id: required(payload, "operationId")?.to_string(), event_id: required(payload, "eventId")?.to_string(),
         player_id, city_id, game_id,
+        // Runtime 的 commit/read 仍走 legacy 合成映射（每 gameId 一个合成 storyId），
+        // S-1 只改存储键，不改变既有 Runtime 语义。
+        story_scope: None,
         resident_id: payload.get("residentId").and_then(Value::as_str).filter(|value| valid_id(value)).map(str::to_string),
         expected_story_revision: required(payload, "expectedStoryRevision")?.to_string(),
         expected_clock_revision: required(payload, "expectedClockRevision")?.to_string(),
