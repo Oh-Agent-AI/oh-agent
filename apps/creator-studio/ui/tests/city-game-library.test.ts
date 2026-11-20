@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildInstallCommitRequest, buildInstallRequest, canCommitInstall, installedGamesForCity, isInstallPreviewAllowed, LIBRARY_RESOURCE_KINDS, parseCityListPage, parseInstallations, parseInstallPreview } from "../src/cityGameLibrary";
+import { buildInstallCommitRequest, buildInstallRequest, canCommitInstall, installedGamesForCity, isInstallPreviewAllowed, LIBRARY_RESOURCE_KINDS, parseCityListPage, parseInstallations, parseInstallPreview } from "../src/features/library/cityGameLibraryModel";
 
 test("Studio library keeps Story unavailable until its project registry exists", () => {
   assert.deepEqual(LIBRARY_RESOURCE_KINDS.map(kind => kind.id), ["city", "story", "game"]);

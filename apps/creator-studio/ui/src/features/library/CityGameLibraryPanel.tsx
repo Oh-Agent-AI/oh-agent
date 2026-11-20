@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { parseCodeBuilds, type CodeBuildRowV1 } from "./codeGamePreview";
-import { buildInstallCommitRequest, buildInstallRequest, canCommitInstall, installedGamesForCity, isInstallPreviewAllowed, LIBRARY_RESOURCE_KINDS, parseCityListPage, parseInstallations, parseInstallPreview, type InstallPreview, type InstallRequest, type InstallationRow, type LibraryCityRow, type LibraryKind } from "./cityGameLibrary";
-import { loadStudioValueAtStartup } from "./startupLoad";
+import { parseCodeBuilds, type CodeBuildRowV1 } from "../../codeGamePreview";
+import { buildInstallCommitRequest, buildInstallRequest, canCommitInstall, installedGamesForCity, isInstallPreviewAllowed, LIBRARY_RESOURCE_KINDS, parseCityListPage, parseInstallations, parseInstallPreview, type InstallPreview, type InstallRequest, type InstallationRow, type LibraryCityRow, type LibraryKind } from "./cityGameLibraryModel";
+import { loadStudioValueAtStartup } from "../../startupLoad";
 
 type Request = <T>(method: string, payload: Record<string, unknown>) => Promise<T>;
 
@@ -20,7 +20,7 @@ function compatibilityLabel(city: LibraryCityRow): string {
   return "兼容状态未知";
 }
 
-export function CityGameLibrary(props: Readonly<{
+export function CityGameLibraryPanel(props: Readonly<{
   request: Request;
   browserPreview: boolean;
   message: string;
