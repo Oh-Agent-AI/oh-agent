@@ -24,6 +24,9 @@ mod city_runtime;
 mod city_scheduler;
 mod city_game_install;
 mod code_preview_window;
+// 宿主侧规则复算器（City SDK V3 S-6b / V3-16）：镜像 city-sdk runtime.ts 子集，
+// 供 creator_playtest 的 finish 路径把结算证据升级为 host-verified。
+mod rule_replay;
 mod creator_playtest;
 mod creator_store;
 mod story_store;
