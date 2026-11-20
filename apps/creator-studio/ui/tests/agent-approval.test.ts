@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { AgentApprovalGate, matchesPreviewBase } from "../src/agentApproval.ts";
+import { AgentApprovalGate, matchesPreviewBase } from "../src/features/agent/agentApproval.ts";
 
 test("preview baseline is tied to the live seed and road revision and fails closed", () => {
   const live = { currentSeed: 42, getCitySdkLayoutView: () => ({ worldRevision: "road-v1" }) };

@@ -1,4 +1,4 @@
-import type { CityInstanceRef, InstallationRef } from "./contracts/creatorProject";
+import type { CityInstanceRef, InstallationRef } from "../../contracts/creatorProject";
 
 export const LIBRARY_RESOURCE_KINDS = Object.freeze([
   Object.freeze({ id: "city", label: "City 世界", description: "独立 City 实例", available: true }),

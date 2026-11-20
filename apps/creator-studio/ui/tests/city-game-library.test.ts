@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildInstallCommitRequest, buildInstallRequest, canCommitInstall, installedGamesForCity, isInstallPreviewAllowed, LIBRARY_RESOURCE_KINDS, parseCityListPage, parseInstallations, parseInstallPreview, parseStoryProjects } from "../src/cityGameLibrary";
+import { buildInstallCommitRequest, buildInstallRequest, canCommitInstall, installedGamesForCity, isInstallPreviewAllowed, LIBRARY_RESOURCE_KINDS, parseCityListPage, parseInstallations, parseInstallPreview, parseStoryProjects } from "../src/features/library/cityGameLibraryModel";
 
 test("Studio library story tab reads the real host registry, not inferred projects", () => {
   assert.deepEqual(LIBRARY_RESOURCE_KINDS.map(kind => kind.id), ["city", "story", "game"]);

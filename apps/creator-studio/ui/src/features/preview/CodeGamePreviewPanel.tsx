@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { canStopCodePreview, parseCodeBuilds, parseCodePreviewStatus, parseCodeStoryEvidence, type CodeBuildRowV1, type CodePreviewStatusV1, type CodeStoryEvidenceV1 } from "./codeGamePreview";
-import { parseCityListPage, type LibraryCityRow } from "./cityGameLibrary";
+import { canStopCodePreview, parseCodeBuilds, parseCodePreviewStatus, parseCodeStoryEvidence, type CodeBuildRowV1, type CodePreviewStatusV1, type CodeStoryEvidenceV1 } from "../../codeGamePreview";
+import { parseCityListPage, type LibraryCityRow } from "../library/cityGameLibraryModel";
 
 type Request = <T>(method: string, payload: Record<string, unknown>) => Promise<T>;
 

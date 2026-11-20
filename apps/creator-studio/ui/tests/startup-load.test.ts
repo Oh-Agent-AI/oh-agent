@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseCityListPage, parseInstallations } from "../src/cityGameLibrary.ts";
+import { parseCityListPage, parseInstallations } from "../src/features/library/cityGameLibraryModel.ts";
 import { loadStudioAtStartup, loadStudioValueAtStartup } from "../src/startupLoad.ts";
 
 test("startup retries the transient instance race and eventually loads", async () => {
