@@ -2,10 +2,11 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { buildCityModel } from "./cityModel";
 import { buildIndependentCityModel } from "./viewport/independentCityModel";
 import { prepareCityWorldLayout } from "./engine/cityLayout";
+import { citySceneFailureMessage, classifyCitySceneFailure, type CitySceneFailure } from "./engine/sceneAvailability";
 import { readCityAppearancePreference, type CityWorldProfileV1 } from "./engine/cityWorldProfile";
 import { createCityWorldProfileCallHandlers } from "./engine/cityWorldProfileCalls";
 import { CityEngine } from "./engine/CityEngine";
-import { tauriCityDataProvider, cityDataProtocol, readBuildingOverrides, stableAssetRefsForProjection, reportCityScene, type CityProjectionV1 } from "./data/provider";
+import { tauriCityDataProvider, cityDataProtocol, readBuildingOverrides, stableAssetRefsForProjection, reportCityScene, reportCitySceneFailure, type CityProjectionV1 } from "./data/provider";
 import { createCityBuildingCallHandlers } from "./data/cityBuildingCalls";
 import { createCitySquadCallHandlers, ensureCitySquadAssetCrosswalks, importLegacyCityClaimsFromTypedStore, readCitySquadSnapshot } from "./data/citySquadCalls";
 import { dispatchEntityChanged, ENTITY_CHANGED_EVENT, parseEntityChanged } from "./engine/entityEvents";
@@ -143,6 +144,7 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
   useEffect(() => { writeCityWindowDays(windowDays); }, [windowDays]);
   const [status, setStatus] = useState("正在载入 City 插槽数据…");
   const [sceneUnavailable, setSceneUnavailable] = useState(false);
+  const [sceneFailure, setSceneFailure] = useState<CitySceneFailure | null>(null);
   const [dataLoaded, setDataLoaded] = useState(false);
   const [firstModelFrame, setFirstModelFrame] = useState(false);
   const [cityLoad, setCityLoad] = useState<CityLoadState>({ stage: "data", work: null });
@@ -747,10 +749,15 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
         if (ended) { setCinema(false); }
       } });
       if (boot) engine.setSeed(boot.city.seed);
-    } catch {
+    } catch (error) {
+      const failure = classifyCitySceneFailure(error);
+      setSceneFailure(failure);
       setSceneUnavailable(true);
+      reportCitySceneFailure(failure, windowDays);
       return;
     }
+    setSceneFailure(null);
+    setSceneUnavailable(false);
     engineRef.current = engine;
     return () => {
       engine.dispose();
@@ -831,11 +838,19 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
         reportSceneStage("rendering", projection?.window.days ?? windowDays);
         // applyModel synchronously renders the first frame for this model before returning.
         setFirstModelFrame(true);
+        setSceneFailure(null);
+        setSceneUnavailable(false);
         appliedWindow.current = projection?.window.days ?? windowDays;
         fingerprint.current = signature;
         experience.refreshSelection();
-      }).catch(() => {
-        if (!preparation.signal.aborted) { setSceneUnavailable(true); setCityLoad({ stage: "data", work: null }); }
+      }).catch((error) => {
+        if (!preparation.signal.aborted) {
+          const failure = classifyCitySceneFailure(error);
+          setSceneFailure(failure);
+          setSceneUnavailable(true);
+          setCityLoad({ stage: "data", work: null });
+          reportCitySceneFailure(failure, projection?.window.days ?? windowDays);
+        }
       });
       experience.refreshSelection();
       return;
@@ -1077,7 +1092,7 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
   // Publishing the first toolbar acknowledges the responsive plugin shell, not
   // scene completion. Planning runs on a local worker while scene tools stay disabled.
   useEffect(() => { if (toolbarReady) publishToolbar(tools); }, [language, toolbarReady, windowDays, quality, labels, cinema, mechaOpen, roadAuditOpen, sceneReady, sceneUnavailable, game.active, driving.active, planRepair.state.active, experience.busy, experience.film?.frame, experience.film?.total, mechaEntryEnabled]);
-  const sceneMessage = sceneUnavailable ? "当前环境无法显示三维城市，仍可查看会话摘要。"
+  const sceneMessage = sceneFailure ? citySceneFailureMessage(sceneFailure)
     : !boot && (!dataAvailable || projection.status === "empty") ? status : null;
   const cityInteractionRuntimeRef = useRef<CityInteractionRuntime | null>(null);
   if (!cityInteractionRuntimeRef.current) cityInteractionRuntimeRef.current = new CityInteractionRuntime();
@@ -1184,7 +1199,7 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
           <small>{cityLoad.stage === "planning" && cityLoad.work !== null ? "显示规划器实际完成的工作量，不代表百分比" : "复杂城市需要一些时间，请稍候"}</small>
         </div>
       </div>}
-      {sceneMessage && !cityLoading && !game.active && <p className="city-scene-message" role="status">{sceneMessage}</p>}
+      {sceneMessage && !cityLoading && !game.active && <p className="city-scene-message" role="status">{sceneMessage}{sceneFailure?.surface === "layout" ? <span>{` (${sceneFailure.code})`}</span> : null}</p>}
       {!embedded() && !mechaOpen && <header className="city-header" aria-hidden={experience.options || undefined}>
         <div className="city-local-toolbar">{tools.map((tool) => tool.kind === "select"
           ? <select key={tool.id} aria-label={tool.label} value={tool.value} disabled={!tool.enabled} onChange={(event) => execute(tool.commandId, event.target.value)}>{tool.options?.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>

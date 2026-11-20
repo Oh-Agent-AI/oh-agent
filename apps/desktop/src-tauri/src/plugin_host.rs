@@ -1572,12 +1572,48 @@ fn log_plugin_performance(plugin_id: &str, fields: &str) {
     let _ = (plugin_id, fields);
 }
 
+/// Record a rejected plugin request without its payload. The 2026-11-20 Linux
+/// acceptance showed `plugin_instance_mismatch` in the Studio UI and nothing
+/// in app.log: the host returned the code and did not name the instance.
+fn log_plugin_request_rejected(plugin_id: &str, instance_id: &str, method: &str, request_id: &str, reason: &str) {
+    #[cfg(not(test))]
+    {
+        let safe = |value: &str| !value.is_empty() && value.len() <= 80
+            && value.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'));
+        if [plugin_id, instance_id, method, request_id, reason].iter().copied().all(safe) {
+            agent_vitals_runtime::logging::log_info(
+                "plugin_request",
+                &format!("plugin={plugin_id} instance={instance_id} method={method} request_id={request_id} reason={reason} code=plugin_instance_mismatch"),
+            );
+        }
+    }
+    #[cfg(test)]
+    let _ = (plugin_id, instance_id, method, request_id, reason);
+}
+
+/// Creator catalog reads run from the library effect before `toolbar.update`
+/// sets `ready`. A live Studio instance may dispatch those calls. Click-driven
+/// export, import, and content dialogs keep their own `ready` checks.
+fn studio_creator_dispatch_denial(current: Option<&Instance>, instance_id: &str) -> Option<&'static str> {
+    let Some(instance) = current else { return Some("missing"); };
+    if instance.plugin_id != "creator-studio" { return Some("plugin"); }
+    if instance.id != instance_id { return Some("instance"); }
+    if instance.suspended { return Some("suspended"); }
+    if instance.failed.is_some() { return Some("failed"); }
+    None
+}
+
 #[tauri::command]
 pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: tauri::State<'_, PluginHost>, request: PluginRequestV1) -> Result<PluginResponseV1, String> {
     let (allowed, navigation, state_keys, typed_data_grants, legacy_data_grants, object_grants, scope_grants, remote_capabilities, local_calls, plugin_id) = {
         let host = state.0.lock().unwrap();
         let i = host.current.as_ref().ok_or("plugin_instance_unavailable")?;
         if i.id != webview.label() || i.failed.is_some() || i.suspended || request.instance_id != i.id {
+            let reason = if i.id != webview.label() { "webview" }
+                else if i.failed.is_some() { "failed" }
+                else if i.suspended { "suspended" }
+                else { "instance" };
+            log_plugin_request_rejected(&i.plugin_id, &i.id, &request.method, &request.request_id, reason);
             return Err("plugin_instance_mismatch".into());
         }
         if let Err(code) = validate_plugin_request(&request) {
@@ -1898,11 +1934,14 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
         }
         // Serialize authorization and SQLite commit against plugin_open/close. A
         // switch cannot revoke the instance between this check and the write.
+        // `ready` is intentionally not required: the library panel reads the
+        // empty catalog before the first toolbar publication.
         let (result, playtest_ack) = {
             let _operation = state.1.lock().unwrap();
             {
                 let host = state.0.lock().unwrap();
-                if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                if let Some(reason) = studio_creator_dispatch_denial(host.current.as_ref(), &request.instance_id) {
+                    log_plugin_request_rejected("creator-studio", &request.instance_id, &method, &request.request_id, reason);
                     return Err("plugin_instance_mismatch".into());
                 }
             }
@@ -2208,6 +2247,34 @@ mod plugin_request_tests {
     }
 
     use super::*;
+
+    fn studio_instance(id: &str, ready: bool, suspended: bool, failed: Option<&'static str>) -> Instance {
+        let now = Instant::now();
+        Instance {
+            id: id.into(), plugin_id: "creator-studio".into(), command_namespace: "creator".into(),
+            max_toolbar_items: 8, performance_metrics: Vec::new(), started: now, pulse: now,
+            ready, suspended, page_hidden: false, hidden_since: None, failed, revision: 0,
+            items: Vec::new(), sequence: 0, pending: None, in_flight: 0, busy_until: None, events: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn studio_catalog_dispatch_allows_the_live_instance_before_toolbar_ready() {
+        let pending = studio_instance("plugin-creator-studio-1", false, false, None);
+        assert!(studio_creator_dispatch_denial(Some(&pending), "plugin-creator-studio-1").is_none(),
+            "the library effect reads the catalog before toolbar.update sets ready");
+        let ready = studio_instance("plugin-creator-studio-1", true, false, None);
+        assert!(studio_creator_dispatch_denial(Some(&ready), "plugin-creator-studio-1").is_none());
+        assert_eq!(studio_creator_dispatch_denial(None, "plugin-creator-studio-1"), Some("missing"));
+        assert_eq!(studio_creator_dispatch_denial(Some(&pending), "plugin-creator-studio-3"), Some("instance"));
+        let mut other = pending;
+        other.plugin_id = "city".into();
+        assert_eq!(studio_creator_dispatch_denial(Some(&other), "plugin-creator-studio-1"), Some("plugin"));
+        let suspended = studio_instance("plugin-creator-studio-1", true, true, None);
+        assert_eq!(studio_creator_dispatch_denial(Some(&suspended), "plugin-creator-studio-1"), Some("suspended"));
+        let failed = studio_instance("plugin-creator-studio-1", true, false, Some("plugin_command_rejected"));
+        assert_eq!(studio_creator_dispatch_denial(Some(&failed), "plugin-creator-studio-1"), Some("failed"));
+    }
 
     /// 邮箱里的 start 在导航之前就要写成完成。界面按钮不是邮箱，不能把别人的
     /// claim 关掉；别的方法、别的实例也写不进去。

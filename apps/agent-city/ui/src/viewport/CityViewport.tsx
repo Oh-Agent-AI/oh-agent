@@ -11,6 +11,7 @@ import { hashPlanPatch, type PlanPatchV1 } from "../engine/planPatch";
 import { PlanRepairSession, type RepairCandidate } from "../planRepair/session";
 import { noteBusy } from "../host";
 import { cityText, useCityLanguage } from "../i18n";
+import { citySceneFailureMessage, classifyCitySceneFailure, type CitySceneFailure } from "../engine/sceneAvailability";
 import { replayStartMs } from "../replayRange";
 import type { PlanningWorkSnapshot } from "../engine/planner/operationBudget";
 import { projectionSessionRows, type CityViewportWindowDays } from "./projectionRows";
@@ -75,6 +76,7 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
   const [dataErrorCode, setDataErrorCode] = useState<string | null>(null);
   const [dataRetry, setDataRetry] = useState(0);
   const [sceneUnavailable, setSceneUnavailable] = useState(false);
+  const [sceneFailure, setSceneFailure] = useState<CitySceneFailure | null>(null);
   const [sceneFailureCode, setSceneFailureCode] = useState<string | undefined>();
   const [firstModelFrame, setFirstModelFrame] = useState(false);
   const [worldSceneReady, setWorldSceneReady] = useState(false);
@@ -142,11 +144,15 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
       } });
       engine.setSeed(seed);
     } catch (error) {
+      const failure = classifyCitySceneFailure(error);
       const detail = error instanceof Error && /^[A-Za-z0-9_.:-]{1,100}$/.test(error.message) ? `:${error.message}` : "";
+      setSceneFailure(failure);
       setSceneFailureCode(`engine_initialization_failed${detail}`);
       setSceneUnavailable(true);
       return;
     }
+    setSceneFailure(null);
+    setSceneUnavailable(false);
     engineRef.current = engine;
     setEngineState(engine);
     onEngineChangeRef.current?.(engine);
@@ -329,10 +335,14 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
       setCityLoad({ stage: "rendering", work: null });
       // applyModel 在返回前同步渲染该模型的首帧。
       setFirstModelFrame(true);
+      setSceneFailure(null);
+      setSceneUnavailable(false);
       fingerprint.current = signature;
     }).catch((error) => {
       if (!preparation.signal.aborted) {
+        const failure = classifyCitySceneFailure(error);
         const detail = error instanceof Error && /^[A-Za-z0-9_.:-]{1,100}$/.test(error.message) ? `:${error.message}` : "";
+        setSceneFailure(failure);
         setSceneFailureCode(`layout_preparation_failed${detail}`);
         setSceneUnavailable(true); setCityLoad({ stage: "data", work: null });
       }
@@ -367,7 +377,7 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
     });
     return () => { delete (window as Window & { __CITY_VIEWPORT_PROBE__?: () => Record<string, unknown> }).__CITY_VIEWPORT_PROBE__; };
   });
-  const sceneMessage = sceneUnavailable ? cityText("当前环境无法显示三维城市，仍可查看会话摘要。", language)
+  const sceneMessage = sceneUnavailable ? `${cityText(citySceneFailureMessage(sceneFailure ?? { surface: "webgl", code: "webgl_context_unavailable", summarySafe: true }), language)}${sceneFailure?.surface === "layout" ? ` (${sceneFailure.code})` : ""}`
     : !isolatedDraft && dataLoaded && !dataAvailable ? cityText("City 数据暂不可用", language)
     : projection?.status === "empty" ? cityText("当前时间范围没有会话", language)
     : null;

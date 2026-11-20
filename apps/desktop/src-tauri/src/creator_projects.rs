@@ -2122,6 +2122,17 @@ mod tests {
         dir
     }
 
+    #[test]
+    fn empty_creator_home_lists_no_cities_or_installations() {
+        let home = home();
+        let cities = dispatch_as(&home, LOCAL_CREATOR_OWNER, "plugin-creator-studio-1", "creator.city.list", &json!({"limit": 50})).unwrap();
+        assert!(cities["cities"].as_array().unwrap().is_empty(), "a fresh home is an empty city catalog");
+        assert!(cities["nextCursor"].is_null());
+        let installations = dispatch_as(&home, LOCAL_CREATOR_OWNER, "plugin-creator-studio-1", "creator.code.install.list", &json!({})).unwrap();
+        assert!(installations["installations"].as_array().unwrap().is_empty(), "a fresh home has no City↔Game installations");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
     fn test_glb(external_uri: bool) -> Vec<u8> {
         let uri = if external_uri { ",\"uri\":\"model.bin\"" } else { "" };
         let json = format!("{{\"asset\":{{\"version\":\"2.0\"}},\"buffers\":[{{\"byteLength\":12{uri}}}],\"bufferViews\":[{{\"buffer\":0,\"byteLength\":12}}],\"accessors\":[{{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\",\"min\":[-1,0,-1],\"max\":[1,2,1]}}],\"meshes\":[{{\"primitives\":[{{\"attributes\":{{\"POSITION\":0}}}}]}}]}}");
