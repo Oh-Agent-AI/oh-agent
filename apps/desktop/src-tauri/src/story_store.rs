@@ -292,6 +292,67 @@ pub(crate) fn acknowledge_story_outbox(home: &Path, outbox_id: i64) -> Result<bo
     Ok(changed == 1)
 }
 
+// ---------------------------------------------------------------------------
+// Story Preview Fork（RFC §13.1 / Isolation Spec §7.3）fork 命名空间。
+// 一行 = 一个 Preview 窗口的私有 Story 快照（forkId = previewId）。copy-on-read：
+// 首次读从正式 story_states 派生基线快照入 fork_json，此后只读 Fork 行；正式行
+// 永不被 Fork 读写路径推进或修改。本期 Preview 内的 story 提交保持失败关闭
+// （RFC §13 第 3 条：PR-4 前不开放），fork_json 只承载快照级状态。
+
+/// Fork 的完整 §3.5 scope：基线派生地址与 Fork 行的 player/city/story/storyRun
+/// 四个维度（forkId = previewId 由表主键承担）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StoryForkScopeV1 {
+    pub player_id: String,
+    pub city_id: String,
+    pub story_id: String,
+    pub story_run_id: String,
+}
+
+pub(crate) fn migrate_story_forks(db: &Connection) -> Result<(), &'static str> {
+    db.execute_batch("CREATE TABLE IF NOT EXISTS story_preview_forks (
+        preview_id TEXT PRIMARY KEY, story_id TEXT NOT NULL, story_run_id TEXT NOT NULL,
+        base_story_revision TEXT NOT NULL, city_id TEXT NOT NULL, player_id TEXT NOT NULL,
+        fork_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL
+    );").map_err(|_| "creator_store_unavailable")
+}
+
+/// Fork 行的 (player_id, city_id, story_id, story_run_id, fork_json) 投影。
+pub(crate) type StoryForkRowV1 = (String, String, String, String, Value);
+
+/// 读取 Fork 行的 scope 绑定与快照；None = 该 Preview 尚未派生 Fork。
+pub(crate) fn story_fork(home: &Path, preview_id: &str) -> Result<Option<StoryForkRowV1>, &'static str> {
+    let db = database(home)?;
+    migrate_story_forks(&db)?;
+    let row = db.query_row("SELECT player_id,city_id,story_id,story_run_id,fork_json FROM story_preview_forks WHERE preview_id=?1", [preview_id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?)))
+        .optional().map_err(|_| "creator_store_unavailable")?;
+    row.map(|(player_id, city_id, story_id, story_run_id, json)|
+        serde_json::from_str::<Value>(&json).map(|snapshot| (player_id, city_id, story_id, story_run_id, snapshot))
+            .map_err(|_| "creator_store_unavailable"))
+        .transpose()
+}
+
+/// copy-on-read 首读：以正式 scope 的当前行派生基线快照并落 Fork 行。
+/// base_story_revision 记录派生时观察到的正式 revision；正式行缺席 = "0"
+/// （空基线）——即预览请求 source 无 Story 上下文时的当前形态，Story 上下文
+/// 注入是 PR 后续。并发首读的另一写方已落同一行时以已存在行为准（两方从同一
+/// 正式行派生，快照等价）。
+pub(crate) fn seed_story_fork(home: &Path, preview_id: &str, scope: &StoryForkScopeV1) -> Result<Value, &'static str> {
+    let derived = story_state_scoped(home, &scope.player_id, &scope.city_id, &scope.story_id, &scope.story_run_id)?;
+    let base_revision = derived["storyRevision"].as_str().ok_or("creator_store_unavailable")?.to_string();
+    let fork_json = canonical_json(&json!({"storyRevision":base_revision,"state":derived["state"]})).map_err(|_| "game_argument_invalid")?;
+    let db = database(home)?;
+    migrate_story_forks(&db)?;
+    match db.execute("INSERT INTO story_preview_forks(preview_id,story_id,story_run_id,base_story_revision,city_id,player_id,fork_json,created_at_ms)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        params![preview_id,scope.story_id,scope.story_run_id,base_revision,scope.city_id,scope.player_id,fork_json,now_ms()]) {
+        Ok(_) | Err(rusqlite::Error::SqliteFailure(_, _)) => {}
+        Err(_) => return Err("creator_store_unavailable"),
+    }
+    story_fork(home, preview_id)?.map(|row| row.4).ok_or("creator_store_unavailable")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -461,6 +522,29 @@ mod tests {
         assert!(story_outbox(&home, "player-1", "city-1", "game-1", 10).unwrap().is_empty());
         // 未知 storyRunId 返回空状态，不跨 run 泄漏。
         assert_eq!(story_state_scoped(&home, "player-1", "city-1", "story-alpha", "run-missing").unwrap()["storyRevision"], "0");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn story_fork_namespace_derives_from_formal_row_and_never_rewrites_it() {
+        let home = home();
+        commit_story(&home, command("op-1", "event-1", "0"), clock()).unwrap();
+        let scope = StoryForkScopeV1 { player_id: "player-1".to_string(), city_id: "city-1".to_string(),
+            story_id: "game-1".to_string(), story_run_id: "legacy-game-1".to_string() };
+        // 首读派生：快照与正式行一致，base 记录派生时的正式 revision。
+        let first = seed_story_fork(&home, "preview-x", &scope).unwrap();
+        assert_eq!(first["storyRevision"], story_state(&home, "player-1", "city-1", "game-1").unwrap()["storyRevision"]);
+        assert_eq!(first["state"]["affection"], 1);
+        // 并发首读的重复派生以已存在的 Fork 行为准（主键冲突回退读）。
+        let raced = seed_story_fork(&home, "preview-x", &scope).unwrap();
+        assert_eq!(raced, first);
+        // Fork 只读：正式侧推进后 Fork 行仍持 base 快照，且未回写正式行。
+        let revision = first["storyRevision"].as_str().unwrap().to_string();
+        commit_story(&home, command("op-2", "event-2", &revision), clock()).unwrap();
+        assert_eq!(story_fork(&home, "preview-x").unwrap().unwrap().4, first);
+        assert_eq!(story_state(&home, "player-1", "city-1", "game-1").unwrap()["state"]["affection"], 2);
+        // 未派生的 Preview 返回 None；另一 Preview 的 Fork 行互不可见。
+        assert!(story_fork(&home, "preview-y").unwrap().is_none());
         std::fs::remove_dir_all(home).ok();
     }
 }

@@ -93,6 +93,7 @@ fn ensure_preview_capacity(home: &Path) -> Result<(), String> {
     for (_, id) in terminal {
         std::fs::remove_dir_all(preview_dir(home, &id)?).map_err(|_| "code_game_state_unavailable".to_string())?;
         crate::city_runtime::forget_preview_clock(home, &id);
+        crate::city_runtime::forget_story_fork(home, &id);
         if preview_ids(home)?.len() < MAX_PREVIEW_RECORDS { return Ok(()); }
     }
     Err("game_activity_busy".to_string())
@@ -164,6 +165,7 @@ pub(crate) fn record_preview_state(home: &Path, state: &Value) -> Result<(), Str
         if matches!(status, "finished" | "error") {
             std::fs::remove_file(directory.join("control.json")).ok();
             crate::city_runtime::forget_preview_clock(home, &preview_id);
+            crate::city_runtime::forget_story_fork(home, &preview_id);
         }
     } else if matches!(status, "finished" | "error") {
         std::fs::remove_file(root.join("preview-control.json")).ok();
