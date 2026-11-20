@@ -236,7 +236,7 @@ pub fn dispatch_with_permissions_options(
     let spec = tool_specs()
         .into_iter()
         .find(|s| s.name == name)
-        .ok_or_else(|| ToolError::new("internal_error", format!("tool `{name}` registered but not wired")))?;
+        .ok_or_else(|| ToolError::new("not_found", format!("tool `{name}` is not registered on this MCP face")))?;
     validate_args(&spec, args)?;
     match name {
         "data_status" => data_status::run(args, data_home),
