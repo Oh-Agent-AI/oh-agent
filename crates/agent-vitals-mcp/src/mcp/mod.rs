@@ -270,7 +270,11 @@ pub fn dispatch_with_permissions_options(
         | "creator_story_project_create" | "creator_story_project_read" | "creator_story_projects_list"
         | "creator_story_install_preview" | "creator_story_install_commit" | "creator_story_install_list"
         | "creator_story_run_start" | "creator_story_run_stop" | "creator_story_run_reset"
-        | "creator_story_resident_lease_acquire" | "creator_story_resident_lease_release" => {
+        | "creator_story_resident_lease_acquire" | "creator_story_resident_lease_release"
+        // V3 PR-7 前半：Inspect 只读面（RFC §6 [r1] creator 域扩展）——同一模块、
+        // 同一错误映射，无本地写闸。
+        | "creator_game_rules_inspect" | "creator_story_graph_inspect"
+        | "creator_story_timeline_inspect" | "creator_game_intent_simulate" => {
             creator_studio::run(name, args, data_home, allow_local_writes).map_err(attach_creator_recovery)
         }
         "creator_city_edit_commit" => {

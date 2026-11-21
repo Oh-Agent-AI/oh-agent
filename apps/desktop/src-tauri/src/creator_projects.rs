@@ -1641,6 +1641,284 @@ fn run_story_lease_release(home: &Path, _owner: &str, _instance: &str, payload: 
     crate::story_registry::lease_release(home, payload)
 }
 
+// ── V3 PR-7 前半：Inspect 只读面（RFC §6 [r1] 落地形态：creator 域扩展）──
+// 四个方法全部只读：从 Story 注册表 / 项目文档 / release 快照 / 运行时表直读，
+// 不写任何表。game.intent.simulate 只做机械校验（schema/scope 形状、活跃 Run、
+// revision CAS 当前值、租约占用）——连租约的惰性回收与 Clock 的读时推进都不
+// 触发；knowledge/规则语义判定留给 PR-5 仲裁管线在提交路径裁决。
+
+fn run_game_rules_inspect(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    let project_id = args_valid_id(payload, "projectId")?;
+    let release_id = match payload.get("releaseId") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(value.as_str().filter(|id| valid_id(id)).ok_or("creator_request_invalid")?),
+    };
+    let (revision, game_type, game, source) = match release_id {
+        Some(release_id) => {
+            let db = database(home)?;
+            let (revision, raw, snapshot_digest): (u64, String, String) = db.query_row(
+                "SELECT revision,snapshot_json,snapshot_digest FROM creator_releases WHERE release_id=?1 AND project_id=?2",
+                params![release_id, project_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_release_not_found")?;
+            if digest(&raw) != snapshot_digest { return Err("creator_release_digest_mismatch"); }
+            let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
+            let game = snapshot.get("game").filter(|game| game.is_object()).ok_or("creator_release_invalid")?;
+            let game_type = snapshot.get("gameType").and_then(Value::as_str).unwrap_or("driving");
+            (revision, game_type.to_string(), game.clone(), json!({"kind":"release","releaseId":release_id}))
+        }
+        None => {
+            let document = read_project(home, project_id)?;
+            let revision = document.get("revision").and_then(Value::as_u64).ok_or("creator_project_invalid")?;
+            let game = document.get("game").filter(|game| game.is_object()).ok_or("creator_game_invalid")?;
+            (revision, game_type_for_document(&document).to_string(), game.clone(), json!({"kind":"project-draft"}))
+        }
+    };
+    // 白名单投影：只暴露规则面（节点/守卫/动作、参数声明、槽位），其余字段不外泄。
+    Ok(json!({"projectId":project_id,"revision":revision,"gameType":game_type,"source":source,
+        "game":{"schemaVersion":game.get("schemaVersion"),"id":game.get("id"),"rulesVersion":game.get("rulesVersion"),
+            "slots":game.get("slots").cloned().unwrap_or(Value::Null),
+            "integerParameters":game.get("integerParameters").cloned().unwrap_or(json!({})),
+            "rules":game.get("rules").cloned().unwrap_or(json!({}))}}))
+}
+
+/// story.graph.inspect 的宿主侧最小图分析（V3-11 的结构基础）：BFS 可达 +
+/// 无出边死节点 + 节点/边计数。≤60 行、零外部依赖；条件可达与知识校验归
+/// narrative-sdk/PR-6 管线，这里如实标注 not-evaluated（V3-12：失败显式，
+/// 绝不把空结果报告成 passed）。
+fn analyze_story_graph(graph: &Value) -> Result<Value, &'static str> {
+    const MAX_ECHO: usize = 512;
+    let empty = Vec::new();
+    let nodes = graph.get("nodes").and_then(Value::as_array).ok_or("story_argument_invalid")?;
+    let edges = graph.get("edges").and_then(Value::as_array).unwrap_or(&empty);
+    let mut ids: Vec<String> = Vec::new();
+    for node in nodes {
+        let id = node.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()).ok_or("story_argument_invalid")?;
+        if !ids.iter().any(|seen| seen == id) { ids.push(id.to_string()); }
+    }
+    let has_node = |id: &str| ids.iter().any(|seen| seen == id);
+    let mut outgoing: std::collections::BTreeMap<&str, std::collections::BTreeSet<String>> = std::collections::BTreeMap::new();
+    let mut incoming: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    let mut edge_list: Vec<Value> = Vec::new();
+    for edge in edges {
+        let (from, to) = match (edge.get("from").and_then(Value::as_str), edge.get("to").and_then(Value::as_str)) {
+            (Some(from), Some(to)) if has_node(from) && has_node(to) => (from, to),
+            _ => return Err("story_argument_invalid"),
+        };
+        outgoing.entry(from).or_default().insert(to.to_string());
+        incoming.insert(to);
+        edge_list.push(json!({"from":from,"to":to}));
+    }
+    let roots: Vec<String> = ids.iter().filter(|id| !incoming.contains(id.as_str())).cloned().collect();
+    // 纯环图没有无入边的根：退化为从全部节点出发（可达 = 环覆盖范围），不静默失败。
+    let seeds: Vec<String> = if roots.is_empty() { ids.clone() } else { roots.clone() };
+    let mut reachable: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut queue: std::collections::VecDeque<&str> = seeds.iter().map(String::as_str).collect();
+    while let Some(current) = queue.pop_front() {
+        if !reachable.insert(current.to_string()) { continue; }
+        if let Some(next) = outgoing.get(current) { queue.extend(next.iter().map(String::as_str)); }
+    }
+    let dead_ends: Vec<&str> = ids.iter().map(String::as_str).filter(|id| !outgoing.contains_key(*id)).collect();
+    let unreachable: Vec<&str> = ids.iter().map(String::as_str).filter(|id| !reachable.contains(*id)).collect();
+    let truncated = ids.len() > MAX_ECHO || edge_list.len() > MAX_ECHO;
+    let echo = |list: Vec<String>| list.iter().take(MAX_ECHO).cloned().collect::<Vec<_>>();
+    Ok(json!({"nodeCount":ids.len(),"edgeCount":edge_list.len(),"roots":roots,
+        "reachable":{"count":reachable.len(),"ids":echo(reachable.into_iter().collect())},
+        "unreachable":{"count":unreachable.len(),"ids":unreachable.into_iter().take(MAX_ECHO).collect::<Vec<_>>()},
+        "deadEnds":{"count":dead_ends.len(),"ids":dead_ends.into_iter().take(MAX_ECHO).collect::<Vec<_>>()},
+        "edges":{"count":edge_list.len(),"list":edge_list.into_iter().take(MAX_ECHO).collect::<Vec<_>>()},
+        "truncated":truncated,
+        "evaluated":["bfs-reachability","dead-ends","counts"],"notEvaluated":["conditional-reachability","knowledge-validation"]}))
+}
+
+fn run_story_graph_inspect(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    let story_id = args_valid_id(payload, "storyId")?;
+    let project = crate::story_registry::project_read(home, &json!({"storyId":story_id}))?;
+    let graph = project.get("graph").filter(|graph| graph.is_object()).ok_or("story_argument_invalid")?;
+    let analysis = analyze_story_graph(graph)?;
+    let nodes: Vec<Value> = graph.get("nodes").and_then(Value::as_array).map(|nodes| nodes.iter()
+        .filter_map(|node| node.get("id").and_then(Value::as_str).map(|id| json!({"id":id,"kind":node.get("kind")})))
+        .collect()).unwrap_or_default();
+    Ok(json!({"storyId":story_id,"title":project["title"],"storyVersion":project["storyVersion"],
+        "revision":project["revision"],"contentDigest":project["contentDigest"],"nodes":nodes,"analysis":analysis}))
+}
+
+fn run_story_timeline_inspect(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    let city_id = args_valid_id(payload, "cityId")?;
+    let story_id = args_valid_id(payload, "storyId")?;
+    let limit = payload.get("limit").and_then(Value::as_u64).unwrap_or(50);
+    if !(1..=100).contains(&limit) { return Err("creator_request_invalid"); }
+    let db = database(home)?;
+    crate::story_registry::migrate(&db)?;
+    // 注册表存在性：未注册的 Story 显式 not_found，不从运行时数据推断项目。
+    let title: Option<String> = db.query_row("SELECT title FROM story_projects WHERE story_id=?1", [story_id], |row| row.get(0))
+        .optional().map_err(|_| "creator_store_unavailable")?;
+    let Some(title) = title else { return Err("story_project_not_found") };
+    let story_run_id = match payload.get("storyRunId").and_then(Value::as_str) {
+        Some(story_run_id) => {
+            if !valid_id(story_run_id) { return Err("creator_request_invalid"); }
+            // scope 校验（V3-07/§3.5）：Run 必须属于本 principal × city × story；
+            // 跨 scope 的 RunId 一律按 not found 处理，不泄漏存在性。
+            let owned: Option<String> = db.query_row(
+                "SELECT story_run_id FROM story_runs WHERE story_run_id=?1 AND player_id=?2 AND city_id=?3 AND story_id=?4",
+                params![story_run_id, owner, city_id, story_id], |row| row.get(0))
+                .optional().map_err(|_| "creator_store_unavailable")?;
+            owned.ok_or("story_run_not_found")?
+        }
+        None => {
+            let latest = db.query_row(
+                "SELECT story_run_id FROM story_runs WHERE player_id=?1 AND city_id=?2 AND story_id=?3 AND status IN ('active','paused') ORDER BY updated_at_ms DESC,created_at_ms DESC,story_run_id DESC LIMIT 1",
+                params![owner, city_id, story_id], |row| row.get::<_, String>(0))
+                .optional().map_err(|_| "creator_store_unavailable")?;
+            match latest { Some(run_id) => run_id, None => db.query_row(
+                "SELECT story_run_id FROM story_runs WHERE player_id=?1 AND city_id=?2 AND story_id=?3 ORDER BY updated_at_ms DESC,created_at_ms DESC,story_run_id DESC LIMIT 1",
+                params![owner, city_id, story_id], |row| row.get::<_, String>(0))
+                .optional().map_err(|_| "creator_store_unavailable")?.ok_or("story_run_not_found")? }
+        }
+    };
+    // scope 掩码：事件信封按 owner 的 player 行投影——其他 player 的私有 claim
+    // 行在查询层面就不可见（§3.5 四元组隔离），不存在"过滤后可见"的降级路径。
+    let mut envelopes = crate::story_store::story_event_envelopes_scoped(home, owner, city_id, story_id, &story_run_id, limit as u32)?;
+    envelopes.sort_by(|left, right| left["simulationUtcMs"].as_u64().cmp(&right["simulationUtcMs"].as_u64())
+        .then_with(|| left["eventId"].as_str().unwrap_or_default().cmp(right["eventId"].as_str().unwrap_or_default())));
+    let count = envelopes.len();
+    Ok(json!({"available":true,"cityId":city_id,"storyId":story_id,"storyRunId":story_run_id,"title":title,
+        "scope":{"playerId":owner,"mask":"player-private-scope"},"sortedBy":["simulationUtcMs","eventId"],
+        "count":count,"truncated":count as u64 == limit,"limit":limit,"events":envelopes}))
+}
+
+/// intent.simulate 的单步诊断行（机械校验的面；每步都带稳定 code 便于审计关联）。
+fn simulate_step(steps: &mut Vec<Value>, allowed: &mut bool, step: &str, ok: bool, code: &str, detail: String) {
+    if !ok { *allowed = false; }
+    steps.push(json!({"step":step,"ok":ok,"code":code,"detail":detail}));
+}
+
+fn finish_simulate(mut response: Value, steps: Vec<Value>, allowed: bool) -> Result<Value, &'static str> {
+    response["steps"] = json!(steps);
+    response["allowed"] = json!(allowed);
+    Ok(response)
+}
+
+/// game.intent.simulate（机械版，RFC §6）：入参 intent + 定位字段，只做**不落盘**
+/// 校验：intent schema 形状（与 story_store 提交闸同语义）、活跃 Run、Story
+/// revision CAS 当前值、City Clock revision 当前值、Resident 公共活动租约占用。
+/// 全部只读：不触发 expire_runs / 惰性回收 / Clock 读时推进这些隐式写入。
+fn run_game_intent_simulate(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    let run_id = args_valid_id(payload, "runId")?;
+    let intent = payload.get("intent").filter(|intent| intent.is_object()).ok_or("creator_request_invalid")?;
+    let expected_story_revision = payload.get("expectedStoryRevision").and_then(Value::as_str).filter(|value| !value.is_empty());
+    let expected_clock_revision = payload.get("expectedClockRevision").and_then(Value::as_str).filter(|value| !value.is_empty());
+    let resident_id = payload.get("residentId").and_then(Value::as_str).filter(|id| !id.is_empty());
+    if payload.get("residentId").is_some() && resident_id.is_none() { return Err("creator_request_invalid"); }
+    let mut steps: Vec<Value> = Vec::new();
+    let mut allowed = true;
+    let mut response = json!({"simulatedOnly":true,"allowed":true,"runId":run_id,
+        "note":"机械只读模拟：knowledge/规则语义判定留给提交时的宿主规则管线（PR-5），本面绝不写任何表"});
+    let db = database(home)?;
+    crate::city_runtime::migrate(&db)?;
+    crate::story_registry::migrate(&db)?;
+    // 1) 活跃 Run（只读查询，不触发过期回收）：status 与 TTL 都按当前观察判定。
+    let run = db.query_row("SELECT city_id,game_id,player_id,status,expires_at_ms FROM city_game_runs WHERE run_id=?1", [run_id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, u64>(4)?)))
+        .optional().map_err(|_| "creator_store_unavailable")?;
+    let Some((city_id, game_id, player_id, status, expires_at_ms)) = run else {
+        simulate_step(&mut steps, &mut allowed, "run", false, "game_run_not_found", format!("runId {run_id} 不存在"));
+        return finish_simulate(response, steps, allowed);
+    };
+    if status != "active" {
+        simulate_step(&mut steps, &mut allowed, "run", false, "game_run_cancelled", format!("runId {run_id} 状态 {status}，仅活跃 Run 可提交 Intent"));
+        return finish_simulate(response, steps, allowed);
+    }
+    let now = now_ms();
+    if expires_at_ms <= now {
+        simulate_step(&mut steps, &mut allowed, "run", false, "game_run_expired",
+            format!("runId {run_id} 的 TTL 已于 {expires_at_ms} 过期（只读观察；正式提交路径会先惰性回收）"));
+        return finish_simulate(response, steps, allowed);
+    }
+    simulate_step(&mut steps, &mut allowed, "run", true, "ok", format!("runId {run_id} 活跃，city={city_id} game={game_id}"));
+    response["cityId"] = json!(&city_id);
+    response["gameId"] = json!(&game_id);
+    response["playerId"] = json!(&player_id);
+    // 2) intent schema 形状：与 story_store::validate_story_command 同语义的只读复刻。
+    let polluted = ["__proto__", "constructor", "prototype"].iter().any(|key| intent.get(*key).is_some());
+    let kind = intent.get("kind").and_then(Value::as_str);
+    let (intent_ok, intent_code, intent_detail) = if polluted {
+        (false, "game_argument_invalid", "intent 携带原型污染键".to_string())
+    } else {
+        match kind {
+            Some("speak") => match intent.get("text").and_then(Value::as_str) {
+                Some(text) if !text.is_empty() && text.chars().count() <= 2_000 => (true, "ok", "speak 形状合法".to_string()),
+                Some(_) => (false, "game_argument_invalid", "speak.text 为空或超过 2000 字符".to_string()),
+                None => (false, "game_argument_invalid", "speak 缺少 text".to_string()),
+            },
+            Some("invite") => {
+                let target_ok = intent.get("targetId").and_then(Value::as_str).is_some_and(|id| !id.is_empty());
+                match (resident_id, target_ok) {
+                    (Some(resident), true) => (true, "ok", format!("invite 形状合法，resident={resident}")),
+                    (_, false) => (false, "game_argument_invalid", "invite 缺少 targetId".to_string()),
+                    (None, _) => (false, "game_argument_invalid", "invite 缺少 payload.residentId".to_string()),
+                }
+            }
+            Some(other) => (false, "game_actor_intent_denied", format!("kind {other} 不在宿主提交闸词表（speak/invite）内")),
+            None => (false, "game_argument_invalid", "intent 缺少 kind".to_string()),
+        }
+    };
+    simulate_step(&mut steps, &mut allowed, "intent", intent_ok, intent_code, intent_detail);
+    if !intent_ok { return finish_simulate(response, steps, allowed); }
+    // 3) Story revision CAS 当前值（legacy 合成 scope 与提交路径同一寻址）。
+    let state = crate::story_store::story_state(home, &player_id, &city_id, &game_id)?;
+    let current_revision = state["storyRevision"].as_str().unwrap_or("0").to_string();
+    let revision_matches = expected_story_revision.is_none_or(|expected| expected == current_revision);
+    simulate_step(&mut steps, &mut allowed, "revision", revision_matches,
+        if revision_matches { "ok" } else { "game_storage_revision_conflict" },
+        format!("当前 storyRevision={current_revision}；expectedStoryRevision={}", expected_story_revision.unwrap_or("(未提供，仅报告当前值)")));
+    response["revision"] = json!({"current":current_revision,"expected":expected_story_revision,"matches":revision_matches});
+    // 4) City Clock revision 当前值（只读 SELECT，不做读时推进——推进是提交路径的写）。
+    let clock = db.query_row("SELECT clock_revision,tick,simulation_utc_ms FROM city_clocks WHERE city_id=?1", params![city_id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?, row.get::<_, u64>(2)?)))
+        .optional().map_err(|_| "creator_store_unavailable")?;
+    match clock {
+        Some((clock_revision, tick, simulation)) => {
+            let clock_ok = expected_clock_revision.is_none_or(|expected| expected == clock_revision);
+            simulate_step(&mut steps, &mut allowed, "clock", clock_ok,
+                if clock_ok { "ok" } else { "city_time_revision_conflict" },
+                format!("当前 clockRevision={clock_revision} tick={tick} simulationUtcMs={simulation}"));
+            response["clock"] = json!({"present":true,"clockRevision":clock_revision,"tick":tick,"simulationUtcMs":simulation});
+        }
+        None => {
+            simulate_step(&mut steps, &mut allowed, "clock", true, "clock_absent_initialized_on_commit",
+                "该 City 尚无 Clock 行；正式提交路径会先初始化，本模拟不代写".to_string());
+            response["clock"] = json!({"present":false});
+        }
+    }
+    // 5) Resident 公共活动租约占用（§12.2）：只读查询，不触发惰性回收。
+    if kind == Some("invite") {
+        let resident = resident_id.unwrap_or_default();
+        let lease = db.query_row("SELECT lease_id,holder_intent_id,trace_id,expires_at_ms FROM resident_activity_leases WHERE city_id=?1 AND resident_id=?2 AND status='active'",
+            params![city_id, resident], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, u64>(3)?)))
+            .optional().map_err(|_| "creator_store_unavailable")?;
+        match lease {
+            Some((lease_id, holder_intent, holder_trace, expires_at)) if expires_at > now => {
+                simulate_step(&mut steps, &mut allowed, "lease", false, "resident_activity_busy",
+                    format!("resident={resident} 正被 intent={holder_intent} trace={holder_trace} 持有至 {expires_at}（leaseId={lease_id}），可退避重试"));
+                response["lease"] = json!({"checked":true,"residentId":resident,"active":true,"busy":true,
+                    "holderIntentId":holder_intent,"holderTraceId":holder_trace,"expiresAtMs":expires_at});
+            }
+            Some((_, _, _, expires_at)) => {
+                simulate_step(&mut steps, &mut allowed, "lease", true, "lease_expired_recycled_on_arbitration",
+                    format!("resident={resident} 的租约已于 {expires_at} 过期；提交路径会惰性回收，本模拟不代回收"));
+                response["lease"] = json!({"checked":true,"residentId":resident,"active":true,"busy":false,"expiredPendingLazyRecycle":true});
+            }
+            None => {
+                simulate_step(&mut steps, &mut allowed, "lease", true, "ok", format!("resident={resident} 无活跃租约"));
+                response["lease"] = json!({"checked":true,"residentId":resident,"active":false,"busy":false});
+            }
+        }
+    } else {
+        response["lease"] = json!({"checked":false});
+    }
+    finish_simulate(response, steps, allowed)
+}
+
 static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.code.builds.list", &[], &["limit"], run_code_builds),
     creator_row!("creator.code.preview", &["buildId"], &["seed", "source"], run_code_preview),
@@ -1661,6 +1939,12 @@ static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.story.run.reset", &["cityId", "storyId"], &[], run_story_run_reset),
     creator_row!("creator.story.resident.lease.acquire", &["cityId", "residentId", "holderScope", "holderIntentId", "traceId"], &["durationMs"], run_story_lease_acquire),
     creator_row!("creator.story.resident.lease.release", &["cityId", "residentId", "traceId"], &[], run_story_lease_release),
+    // V3 PR-7 前半：Inspect 只读面（RFC §6 [r1] creator 域扩展）；全部只读，
+    // 不要求 --allow-local-writes（MCP 面），宿主侧也无任何写入路径。
+    creator_row!("creator.game.rules.inspect", &["projectId"], &["releaseId"], run_game_rules_inspect),
+    creator_row!("creator.story.graph.inspect", &["storyId"], &[], run_story_graph_inspect),
+    creator_row!("creator.story.timeline.inspect", &["cityId", "storyId"], &["storyRunId", "limit"], run_story_timeline_inspect),
+    creator_row!("creator.game.intent.simulate", &["runId", "intent"], &["expectedStoryRevision", "expectedClockRevision", "residentId"], run_game_intent_simulate),
     creator_row!("creator.capabilities.list", &[], &["category", "schemaVersion"], run_capabilities_list),
     creator_row!("creator.city.create", &["name", "seed", "profile", "operationId", "validation"], &[], run_city_create),
     creator_row!("creator.city.draft.create", &["name", "seed", "profile", "operationId", "validation"], &[], run_city_draft_create),
@@ -1794,6 +2078,11 @@ pub fn dispatch_city_runtime(home: &Path, city_instance: &str, method: &str, pay
         "city.story.schedule" if exact_payload(payload, &["runId", "rule", "options"]) => crate::city_scheduler::schedule(home, city_instance, payload),
         "city.story.cancel" if exact_payload(payload, &["runId", "ruleId", "options"]) => crate::city_scheduler::cancel(home, city_instance, payload),
         "city.story.list" if exact_payload(payload, &["runId"]) => crate::city_scheduler::list(home, city_instance, payload),
+        // Actor Intent 管线（RFC V3 §3.2/§12.2，PR-5）：City WebView 的统一 Intent
+        // 提交入口；scope 持有方由宿主落库裁定，不接受调用方自报 player。
+        "city.story.intent.submit" if exact_payload(payload, &["intentId", "actorId", "scope", "kind", "args", "expectedRevision"])
+            || exact_payload(payload, &["intentId", "actorId", "scope", "kind", "args", "expectedRevision", "sourceEventIds"])
+            => crate::city_runtime::submit_intent(home, payload),
         _ => Err("creator_method_unavailable"),
     }
 }
@@ -4258,5 +4547,259 @@ mod flight_pipeline_tests {
         let run = crate::creator_playtest::start_playtest_with_game_type(&home, "studio-flight", release["releaseId"].as_str().unwrap(), Some(project_id), Some(0), Some("flight")).unwrap();
         assert_eq!(run["status"], "pending");
         let _ = std::fs::remove_dir_all(home);
+    }
+}
+
+#[cfg(test)]
+mod city_sdk_v3_inspect_tests {
+    use super::*;
+    use crate::story_store::{commit_story, StoryClockAuthorityV1, StoryCommitCommandV1, StoryStateScopeV1};
+
+    fn home(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("creator-inspect-{tag}-{}-{}", now_ms(), std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn flight_layout(world_revision: &str) -> Value {
+        json!({"schemaVersion":1,"worldRevision":world_revision,"seed":11,"layout":{
+            "schemaVersion":1,"id":format!("layout-{world_revision}"),"coordinateSystem":"city-local-m-v1","anchors":[
+                {"id":"spawn-a","kind":"spawn","capabilities":["drive","fly"],"geometryRef":"g:spawn"},
+                {"id":"gate-a","kind":"zone","capabilities":["fly"],"geometryRef":"g:a"},
+                {"id":"gate-b","kind":"zone","capabilities":["fly"],"geometryRef":"g:b"},
+                {"id":"gate-c","kind":"zone","capabilities":["fly"],"geometryRef":"g:c"}],"links":[]}})
+    }
+
+    fn published_release(home: &Path, tag: &str, world_revision: &str) -> (String, Value) {
+        publish_city_layout_snapshot(home, &flight_layout(world_revision)).unwrap();
+        let created = create_project_from_city_layout(home, LOCAL_CREATOR_OWNER, "flight-checkpoint",
+            &format!("create-inspect-{tag}"), world_revision).unwrap();
+        let project_id = created["projectId"].as_str().unwrap().to_string();
+        let mut document = read_project(home, &project_id).unwrap();
+        document["vehicles"] = json!([{"schemaVersion":1,"id":"vehicle-inspect","label":"Inspect","modelAssetId":null,"flightModel":"fixed-wing",
+            "physics":{"massKg":800,"wingAreaM2":8,"thrustN":4000,"maxSpeedMps":42,"dragCoefficient":0.4,"turnRateRps":2,"climbRateMps":8,"sinkRateMps":4},
+            "bounds":{"halfLengthM":2,"halfWidthM":2,"halfHeightM":0.5},"camera":{"followDistanceM":8,"heightOffsetM":2,"fovDeg":60}}]);
+        document["vehicleId"] = json!("vehicle-inspect");
+        let (mount, _) = build_typed_mount(&document, "mount-inspect", "spawn-a",
+            &json!({"gates":["gate-a","gate-b","gate-c"]}), Some("vehicle-inspect"), None).unwrap();
+        document["mounts"] = json!([mount]);
+        let db = database(home).unwrap();
+        db.execute("UPDATE creator_projects SET document_json=?2 WHERE project_id=?1", params![project_id, document.to_string()]).unwrap();
+        let release = publish_project_release(home, &project_id, 0).unwrap();
+        (project_id, release)
+    }
+
+    #[test]
+    fn game_rules_inspect_reads_draft_and_frozen_release_rules() {
+        let home = home("rules");
+        let (project_id, release) = published_release(&home, "rules", "world-inspect-rules");
+        // 正 1：当前项目文档直读——规则面白名单 + gameType + 槽位。
+        let draft = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-test", "creator.game.rules.inspect",
+            &json!({"projectId":project_id})).unwrap();
+        assert_eq!(draft["source"]["kind"], "project-draft");
+        assert_eq!(draft["gameType"], "flight");
+        assert_eq!(draft["revision"], 0);
+        assert!(draft["game"]["rules"]["nodes"].as_array().is_some(), "{draft}");
+        assert!(draft["game"]["integerParameters"].is_object(), "{draft}");
+        assert!(draft["game"]["slots"].is_object(), "{draft}");
+        // 正 2：releaseId → 冻结快照直读；release 归属另一个项目时拒绝。
+        let frozen = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-test", "creator.game.rules.inspect",
+            &json!({"projectId":project_id,"releaseId":release["releaseId"]})).unwrap();
+        assert_eq!(frozen["source"]["kind"], "release");
+        assert_eq!(frozen["source"]["releaseId"], release["releaseId"]);
+        assert_eq!(frozen["gameType"], "flight");
+        assert_eq!(frozen["revision"], 0);
+        // 负：release 存在但归属别的项目 → not_found（不跨项目泄漏快照）。
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-test", "creator.game.rules.inspect",
+            &json!({"projectId":"project-other","releaseId":release["releaseId"]})).unwrap_err(), "creator_release_not_found");
+        // 负：未知项目 → not_found；非法 projectId → request_invalid。
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-test", "creator.game.rules.inspect",
+            &json!({"projectId":"project-missing"})).unwrap_err(), "creator_project_not_found");
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-test", "creator.game.rules.inspect",
+            &json!({"projectId":"bad id!"})).unwrap_err(), "creator_request_invalid");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn story_graph_inspect_reports_reachability_dead_ends_and_counts() {
+        let home = home("graph");
+        // 环 p↔q 从根 a 不可达；a 无出边 → 死节点。V3-11 的结构基础面。
+        crate::story_registry::project_create(&home, &json!({"storyId":"story.graph","title":"侦探线","schemaVersion":1,"storyVersion":"1.0.0",
+            "graph":{"nodes":[{"id":"a","kind":"beat"},{"id":"p","kind":"beat"},{"id":"q","kind":"beat"}],
+                "edges":[{"from":"p","to":"q"},{"from":"q","to":"p"}]},
+            "canon":{"characters":[]}})).unwrap();
+        let inspected = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-test", "creator.story.graph.inspect",
+            &json!({"storyId":"story.graph"})).unwrap();
+        let analysis = &inspected["analysis"];
+        assert_eq!(analysis["nodeCount"], 3);
+        assert_eq!(analysis["edgeCount"], 2);
+        assert_eq!(analysis["roots"], json!(["a"]));
+        assert_eq!(analysis["reachable"]["count"], 1);
+        assert_eq!(analysis["reachable"]["ids"], json!(["a"]));
+        assert_eq!(analysis["unreachable"]["ids"], json!(["p", "q"]));
+        assert_eq!(analysis["deadEnds"]["ids"], json!(["a"]));
+        assert_eq!(analysis["notEvaluated"], json!(["conditional-reachability", "knowledge-validation"]));
+        assert_eq!(inspected["title"], "侦探线");
+        assert!(inspected["contentDigest"].as_str().is_some());
+        // 负 1：未注册的 Story → not_found。
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-test", "creator.story.graph.inspect",
+            &json!({"storyId":"story.missing"})).unwrap_err(), "story_project_not_found");
+        // 负 2：悬空边（引用未知节点）→ 显式失败，绝不返回空成功报告（V3-12）。
+        crate::story_registry::project_create(&home, &json!({"storyId":"story.dangling","title":"坏图","schemaVersion":1,"storyVersion":"1.0.0",
+            "graph":{"nodes":[{"id":"a"}],"edges":[{"from":"a","to":"ghost"}]},"canon":{}})).unwrap();
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-test", "creator.story.graph.inspect",
+            &json!({"storyId":"story.dangling"})).unwrap_err(), "story_argument_invalid");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    fn installed_story(home: &Path) -> (String, String) {
+        let profile = json!({"schemaVersion":1,"id":"desert","version":1,"biome":"arid",
+            "geography":{"generator":"arid-dunes-v1","parameters":{"dunes":{"duneScale":190,"duneAmplitude":11,"orientationDeg":18}}},
+            "visuals":{"themeId":"desert"}});
+        let city = crate::creator_cities::create_city(home, LOCAL_CREATOR_OWNER, "city-inspect-story", "Inspect City", 42, &profile).unwrap();
+        let city_id = city["cityId"].as_str().unwrap().to_string();
+        crate::story_registry::project_create(home, &json!({"storyId":"story.detective","title":"侦探线","schemaVersion":1,"storyVersion":"1.0.0",
+            "graph":{"nodes":[{"id":"start"},{"id":"clue"}],"edges":[{"from":"start","to":"clue"}]},"canon":{"characters":[]}})).unwrap();
+        let checked = crate::story_registry::install_preview(home, &json!({"storyId":"story.detective","targetCityId":city_id,
+            "expectedCityRevision":city["revision"],"operationId":"inspect-install-preview"})).unwrap();
+        crate::story_registry::install_commit(home, &json!({"previewId":checked["previewId"],"operationId":"inspect-install-commit"})).unwrap();
+        let run = crate::story_registry::run_start(home, LOCAL_CREATOR_OWNER, &json!({"cityId":city_id,"storyId":"story.detective"})).unwrap();
+        (city_id, run["storyRunId"].as_str().unwrap().to_string())
+    }
+
+    fn story_commit(home: &Path, operation: &str, event: &str, player: &str, city_id: &str, story_run_id: &str, simulation: u64) -> Result<Value, &'static str> {
+        // 每次提交前读该 scope 的当前 revision，逐条链式 CAS（首条为 "0"）。
+        let current = crate::story_store::story_state_scoped(home, player, city_id, "story.detective", story_run_id)?;
+        let revision = current["storyRevision"].as_str().unwrap_or("0").to_string();
+        commit_story(home, StoryCommitCommandV1 {
+            operation_id: operation.to_string(), event_id: event.to_string(), player_id: player.to_string(),
+            city_id: city_id.to_string(), game_id: "game.any".to_string(),
+            story_scope: Some(StoryStateScopeV1 { story_id: "story.detective".to_string(), story_run_id: story_run_id.to_string() }),
+            resident_id: None, expected_story_revision: revision, expected_clock_revision: format!("clock-{simulation}"),
+            intent: json!({"kind":"speak","text":"事件文本"}), run_id: "timeline-run".to_string(),
+            rule_set_digest: None, causation_id: None, correlation_id: None,
+        }, StoryClockAuthorityV1 { revision: format!("clock-{simulation}"), tick: 1, simulation_utc_ms: simulation })
+    }
+
+    #[test]
+    fn story_timeline_inspect_sorts_by_simulation_time_and_masks_foreign_scopes() {
+        let home = home("timeline");
+        let (city_id, story_run_id) = installed_story(&home);
+        // 两条本 player 的提交（时间倒序写入，读面必须按 simulationUtcMs 升序）。
+        story_commit(&home, "op-1", "event-late", LOCAL_CREATOR_OWNER, &city_id, &story_run_id, 2_000).unwrap();
+        story_commit(&home, "op-2", "event-early", LOCAL_CREATOR_OWNER, &city_id, &story_run_id, 1_000).unwrap();
+        // 其他 player 的私有 claim 行：同 city/story/run 地址的另一玩家 scope，
+        // 时间线读面（owner scope）必须在查询层面就不可见（V3-07/§3.5 掩码）。
+        story_commit(&home, "op-3", "event-foreign", "player-foreign", &city_id, &story_run_id, 1_500).unwrap();
+        let timeline = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-test", "creator.story.timeline.inspect",
+            &json!({"cityId":city_id,"storyId":"story.detective"})).unwrap();
+        assert_eq!(timeline["available"], true, "{timeline}");
+        assert_eq!(timeline["storyRunId"], story_run_id);
+        assert_eq!(timeline["scope"]["playerId"], LOCAL_CREATOR_OWNER);
+        assert_eq!(timeline["scope"]["mask"], "player-private-scope");
+        let events = timeline["events"].as_array().unwrap();
+        assert_eq!(events.len(), 2, "foreign-player claim rows must be masked at query scope: {timeline}");
+        assert_eq!(events[0]["eventId"], "event-early");
+        assert_eq!(events[0]["simulationUtcMs"], 1_000);
+        assert_eq!(events[1]["eventId"], "event-late");
+        assert_eq!(events[1]["scope"]["kind"], "story");
+        assert_eq!(events[1]["scope"]["storyRunId"], story_run_id);
+        // 显式 storyRunId 命中同一地址；limit 截断如实标注。
+        let explicit = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-test", "creator.story.timeline.inspect",
+            &json!({"cityId":city_id,"storyId":"story.detective","storyRunId":story_run_id,"limit":1})).unwrap();
+        assert_eq!(explicit["count"], 1);
+        assert_eq!(explicit["truncated"], true);
+        // 负 1：未注册 Story → not_found。
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-test", "creator.story.timeline.inspect",
+            &json!({"cityId":city_id,"storyId":"story.missing"})).unwrap_err(), "story_project_not_found");
+        // 负 2：跨 scope 的 storyRunId（另一玩家的 RunId）按 not found 处理，不泄漏存在性。
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-test", "creator.story.timeline.inspect",
+            &json!({"cityId":city_id,"storyId":"story.detective","storyRunId":"story-run-foreign"})).unwrap_err(), "story_run_not_found");
+        // 负 3：limit 越界 → request_invalid。
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-test", "creator.story.timeline.inspect",
+            &json!({"cityId":city_id,"storyId":"story.detective","limit":101})).unwrap_err(), "creator_request_invalid");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn game_intent_simulate_checks_mechanics_without_writing_any_table() {
+        let home = home("simulate");
+        // 负 1：未知 Run → 结构化 denied，第一步即 game_run_not_found。
+        let missing = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-test", "creator.game.intent.simulate",
+            &json!({"runId":"game-run-missing","intent":{"kind":"speak","text":"hi"}})).unwrap();
+        assert_eq!(missing["allowed"], false);
+        assert_eq!(missing["steps"][0]["code"], "game_run_not_found");
+        // 正：活跃 Run + speak intent → allowed；Clock 已由 start_run 初始化并如实投影。
+        let run = crate::city_runtime::start_run(&home, "city-instance", &json!({"cityId":"city:one","gameId":"game.romance"})).unwrap();
+        let run_id = run["runId"].as_str().unwrap().to_string();
+        let ok = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-test", "creator.game.intent.simulate",
+            &json!({"runId":run_id,"intent":{"kind":"speak","text":"See you Saturday."}})).unwrap();
+        assert_eq!(ok["allowed"], true, "{ok}");
+        assert_eq!(ok["simulatedOnly"], true);
+        assert_eq!(ok["revision"]["current"], "0");
+        assert_eq!(ok["clock"]["present"], true);
+        let step_codes: Vec<&str> = ok["steps"].as_array().unwrap().iter().map(|step| step["code"].as_str().unwrap()).collect();
+        assert_eq!(step_codes, vec!["ok", "ok", "ok", "ok"]);
+        // 无 Clock 分支：手工取走该 City 的 Clock 行（测试装置）后模拟 →
+        // 如实报告"提交路径会初始化"，本面绝不代写。
+        let db = database(&home).unwrap();
+        db.execute("DELETE FROM city_clocks WHERE city_id='city:one'", []).unwrap();
+        drop(db);
+        let before = formal_fact_counts(&home);
+        let absent = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-test", "creator.game.intent.simulate",
+            &json!({"runId":run_id,"intent":{"kind":"speak","text":"See you Saturday."}})).unwrap();
+        assert_eq!(absent["allowed"], true, "{absent}");
+        assert_eq!(absent["clock"]["present"], false);
+        let step_codes: Vec<&str> = absent["steps"].as_array().unwrap().iter().map(|step| step["code"].as_str().unwrap()).collect();
+        assert_eq!(step_codes, vec!["ok", "ok", "ok", "clock_absent_initialized_on_commit"]);
+        // 模拟前后正式事实表零变化（含被取走的 Clock 行不被补写）——intent.simulate 绝不写表。
+        assert_eq!(formal_fact_counts(&home), before);
+        // 负 2：revision CAS——先提交一条事实推进 revision，再模拟期望旧值 → denied。
+        let clock = crate::city_runtime::read_clock_at(&home, "city:one", now_ms()).unwrap();
+        crate::city_runtime::commit(&home, "city-instance", &json!({"runId":run_id,"operationId":"op-1","eventId":"event-1",
+            "expectedStoryRevision":"0","expectedClockRevision":clock["clockRevision"],"intent":{"kind":"speak","text":"first"}})).unwrap();
+        let stale = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-test", "creator.game.intent.simulate",
+            &json!({"runId":run_id,"intent":{"kind":"speak","text":"again"},"expectedStoryRevision":"0"})).unwrap();
+        assert_eq!(stale["allowed"], false);
+        assert_eq!(stale["steps"].as_array().unwrap().iter().find(|step| step["step"] == "revision").unwrap()["code"], "game_storage_revision_conflict");
+        assert_ne!(stale["revision"]["current"], "0");
+        // 当前值期望 → revision 步恢复 ok。
+        let current = stale["revision"]["current"].as_str().unwrap().to_string();
+        let fresh = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-test", "creator.game.intent.simulate",
+            &json!({"runId":run_id,"intent":{"kind":"speak","text":"again"},"expectedStoryRevision":current})).unwrap();
+        assert_eq!(fresh["revision"]["matches"], true);
+        // 负 3：invite 租约占用 → resident_activity_busy（只读查询，不回收）。
+        let holder = json!({"kind":"story","playerId":LOCAL_CREATOR_OWNER,"cityId":"city:one","storyId":"story.detective","storyRunId":"run-holder"});
+        crate::story_registry::lease_acquire(&home, &json!({"cityId":"city:one","residentId":"resident:xia","holderScope":holder,
+            "holderIntentId":"intent-holder","traceId":"trace-holder"})).unwrap();
+        let busy = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-test", "creator.game.intent.simulate",
+            &json!({"runId":run_id,"intent":{"kind":"invite","targetId":"place:cafe"},"residentId":"resident:xia"})).unwrap();
+        assert_eq!(busy["allowed"], false);
+        let lease_step = busy["steps"].as_array().unwrap().iter().find(|step| step["step"] == "lease").unwrap();
+        assert_eq!(lease_step["code"], "resident_activity_busy");
+        assert_eq!(busy["lease"]["holderTraceId"], "trace-holder");
+        // 负 4：词表外 kind → 结构化 denied（game_actor_intent_denied 是诊断码，不是异常）。
+        let denied_kind = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-test", "creator.game.intent.simulate",
+            &json!({"runId":run_id,"intent":{"kind":"delete-city"}})).unwrap();
+        assert_eq!(denied_kind["allowed"], false);
+        assert_eq!(denied_kind["steps"].as_array().unwrap().iter().find(|step| step["step"] == "intent").unwrap()["code"], "game_actor_intent_denied");
+        // 负 5：已停止的 Run → game_run_cancelled。
+        crate::city_runtime::stop_run(&home, "city-instance", &json!({"runId":run_id})).unwrap();
+        let stopped = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-test", "creator.game.intent.simulate",
+            &json!({"runId":run_id,"intent":{"kind":"speak","text":"hi"}})).unwrap();
+        assert_eq!(stopped["allowed"], false);
+        assert_eq!(stopped["steps"][0]["code"], "game_run_cancelled");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// 正式事实面指纹（states/events/outbox/runs/leases 行数 + Clock 行）：
+    /// intent.simulate 前后必须逐字段一致——"绝不写表"的机械证据。
+    fn formal_fact_counts(home: &Path) -> Value {
+        let db = database(home).unwrap();
+        let count = |table: &str| -> u64 { db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get::<_, i64>(0)).unwrap_or(-1).max(0) as u64 };
+        json!({"story_states":count("story_states"),"story_events":count("story_events"),
+            "story_outbox":count("story_outbox"),"story_operations":count("story_operations"),
+            "city_game_runs":count("city_game_runs"),"resident_activity_leases":count("resident_activity_leases"),
+            "city_clocks":count("city_clocks")})
     }
 }

@@ -312,6 +312,13 @@ fn commit_at(home: &Path, city_instance: &str, payload: &Value, now: u64) -> Res
     })
 }
 
+/// Actor Intent 的 City Runtime 面（RFC §12.2：任何影响公共 NPC 状态的 Intent
+/// 进入 City Runtime 的单一 Intent 队列入口）：管线本体在 actor_intent，此处仅
+/// 面向 dispatch 的薄委托（`city.story.intent.submit`，payload 即 AgentIntentV1）。
+pub(crate) fn submit_intent(home: &Path, payload: &Value) -> Result<Value, &'static str> {
+    crate::actor_intent::submit_intent(home, payload)
+}
+
 pub(crate) fn story_evidence(home: &Path, run_id: &str) -> Result<Value, &'static str> {
     if !valid_id(run_id) { return Err("game_argument_invalid"); }
     let db = database(home)?;

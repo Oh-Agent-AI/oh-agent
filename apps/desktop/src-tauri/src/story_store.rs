@@ -151,6 +151,32 @@ fn validate_story_command(command: &StoryCommitCommandV1) -> Result<(), &'static
             let text = command.intent.get("text").and_then(Value::as_str).ok_or("game_argument_invalid")?;
             if text.is_empty() || text.chars().count() > 2_000 { return Err("game_argument_invalid"); }
         }
+        // Intent 管线（PR-5/S-5）放行的其余 AgentIntentV1 kinds：schema 字段在此
+        // 做非空第二道闸（第一道在 actor_intent 的 valid_id 级校验）；move 的
+        // 公共位置权威写入由仲裁层（city_resident_state + 租约）承担，事件行只
+        // 记录事实。
+        "move" => {
+            if command.intent.get("residentId").and_then(Value::as_str).unwrap_or("").is_empty()
+                || command.intent.get("locationRef").and_then(Value::as_str).unwrap_or("").is_empty() {
+                return Err("game_argument_invalid");
+            }
+        }
+        "interact" => {
+            if command.intent.get("targetId").and_then(Value::as_str).unwrap_or("").is_empty() {
+                return Err("game_argument_invalid");
+            }
+        }
+        "give" => {
+            if command.intent.get("targetId").and_then(Value::as_str).unwrap_or("").is_empty()
+                || command.intent.get("itemId").and_then(Value::as_str).unwrap_or("").is_empty() {
+                return Err("game_argument_invalid");
+            }
+        }
+        "quest.action" => {
+            if command.intent.get("actionId").and_then(Value::as_str).unwrap_or("").is_empty() {
+                return Err("game_argument_invalid");
+            }
+        }
         _ => return Err("game_actor_intent_denied"),
     }
     if command.intent.get("__proto__").is_some() || command.intent.get("constructor").is_some() || command.intent.get("prototype").is_some() {
@@ -168,6 +194,10 @@ fn evaluate_story_state(command: &StoryCommitCommandV1, current: &Value) -> Resu
             if !(0..100).contains(&affection) { return Err("game_story_rule_denied"); }
             state.insert("affection".to_string(), json!(affection + 1));
         }
+        // move/interact/give/quest.action：私有状态零变更——move 的公共位置权威
+        // 在 city_resident_state（§12.2 仲裁层）；其余 kinds 的事件行即事实记录，
+        // 声明式规则效果（RuleSetV2 AST）由 S-6 宿主侧裁决接入，不在提交层硬编码。
+        Some("move" | "interact" | "give" | "quest.action") => {}
         _ => return Err("game_actor_intent_denied"),
     }
     let state = Value::Object(state);
@@ -439,12 +469,19 @@ pub(crate) fn write_resident_state(home: &Path, scope: &Value, location_ref: &st
     let mut db = database(home)?;
     migrate_city_resident_state(&db)?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
-    let current = tx.query_row("SELECT revision FROM city_resident_state WHERE city_id=?1 AND resident_id=?2", params![city_id,resident_id],
-        |row| row.get::<_, String>(0)).optional().map_err(|_| "creator_store_unavailable")?
-        .unwrap_or_else(|| "0".to_string());
-    if current != expected_revision { return Err("game_storage_revision_conflict"); }
+    let current = tx.query_row("SELECT location_ref,revision,updated_at_ms FROM city_resident_state WHERE city_id=?1 AND resident_id=?2", params![city_id,resident_id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, u64>(2)?))).optional().map_err(|_| "creator_store_unavailable")?;
+    // 按值幂等（V3-09 重试/重放至多一次效果）：权威位置已等于目标时，任何 CAS
+    // 期望的写效果都等价于已达成——返回当前行，不推进 revision、不产生新事实。
+    if let Some((existing_location, existing_revision, existing_updated)) = current {
+        if existing_location == location_ref {
+            return Ok(json!({"cityId":city_id,"residentId":resident_id,"locationRef":existing_location,
+                "revision":existing_revision,"updatedAtMs":existing_updated}));
+        }
+        if existing_revision != expected_revision { return Err("game_storage_revision_conflict"); }
+    } else if expected_revision != "0" { return Err("game_storage_revision_conflict"); }
     let now = now_ms();
-    let revision = digest(&format!("{city_id}:{resident_id}:{current}:{location_ref}:{now}"));
+    let revision = digest(&format!("{city_id}:{resident_id}:{expected_revision}:{location_ref}:{now}"));
     tx.execute("INSERT INTO city_resident_state(city_id,resident_id,location_ref,revision,updated_at_ms) VALUES (?1,?2,?3,?4,?5)
         ON CONFLICT(city_id,resident_id) DO UPDATE SET location_ref=excluded.location_ref,revision=excluded.revision,updated_at_ms=excluded.updated_at_ms",
         params![city_id,resident_id,location_ref,revision,now]).map_err(|_| "creator_store_unavailable")?;

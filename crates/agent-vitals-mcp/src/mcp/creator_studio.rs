@@ -144,6 +144,12 @@ pub fn specs() -> Vec<ToolSpec> {
         spec("creator_vehicle_preview", "Dry-run one vehicle definition against a Creator project: the official Studio validates the full VehicleProfileV1 via city-sdk and the host binds that verdict server-side, returning diagnostics plus a deterministic estimatedPerformance projection computed by the official Studio from the city-sdk `estimateVehiclePerformanceV1` (the host itself does not derive it). Returns a short-lived previewId bound to the active Studio instance and base revision; commit it with creator_project_commit, or define directly with creator_vehicle_define. `vehicle` accepts either the define-shaped object (vehicleId/label/flightModel/physics/bounds/modelAssetId) or a full profile with camera.", json!({"projectId":project_id_prop(),"baseRevision":revision_prop(),"vehicle":{"type":"object"},"operationId":operation_id_prop()}), &["projectId","baseRevision","vehicle"]),
         spec("creator_vehicle_define", "Define (upsert) one flight vehicle in a Creator project. `physics` keys/ranges and cross-field ratios come from creator_vehicle_list; `camera` is derived deterministically and never accepted. `modelAssetId` must be null (procedural placeholder) or a project asset id — local paths and raw file bytes are never accepted. Requires `data-mcp serve --allow-local-writes` and the official Creator Studio plugin to be open.", json!({"projectId":project_id_prop(),"baseRevision":revision_prop(),"vehicleId":{"type":"string","minLength":1,"maxLength":128},"label":{"type":"string","minLength":1,"maxLength":128},"flightModel":{"type":"string","enum":["fixed-wing","flapping","vtol"]},"physics":{"type":"object"},"bounds":{"type":"object","properties":{"halfLengthM":{"type":"number"},"halfWidthM":{"type":"number"},"halfHeightM":{"type":"number"}},"required":["halfLengthM","halfWidthM","halfHeightM"],"additionalProperties":false},"modelAssetId":{"type":["string","null"]},"operationId":operation_id_prop()}), &["projectId","baseRevision","vehicleId","label","flightModel","physics","bounds","operationId"]),
         spec("creator_vehicle_inspect", "Inspect one vehicle defined in a Creator project at an explicit revision: the whitelist VehicleProfileV1 fields, the frozen bounds/camera and the mounts that bind it. The host reports facts only — no derived performance: project it yourself with the city-sdk `estimateVehiclePerformanceV1(profile)` when you need cruise speed / thrust-to-weight / wing loading (creator_vehicle_preview returns it for you, computed by Studio from the same SDK function). revision_conflict means the project moved on; creator_vehicle_not_found means the id is not a vehicle of this project.", json!({"projectId":project_id_prop(),"vehicleId":{"type":"string","minLength":1,"maxLength":128},"revision":revision_prop()}), &["projectId","vehicleId"]),
+        // V3 PR-7 前半（RFC §6 [r1] creator 域扩展）：Inspect 只读面 3+1。
+        // 全部只读、不要求 --allow-local-writes；宿主侧没有任何写入路径。
+        spec("creator_game_rules_inspect", "Read the declarative game rules of one Creator project (RFC §6 game.rules.inspect): rule nodes (on/when/actions), integer parameter declarations, slots and the frozen gameType. Defaults to the current draft document; pass releaseId to read the immutable published snapshot instead (a release bound to another project is refused). Whitelist projection only — never executable code, asset bytes or source paths. Read-only.", json!({"projectId":project_id_prop(),"releaseId":project_id_prop()}), &["projectId"]),
+        spec("creator_story_graph_inspect", "Read one registered Story Project's graph with a host-side minimal structural analysis (RFC §6 story.graph.inspect; the V3-11 basis): node/edge counts, BFS reachability from entry roots (nodes with no incoming edges; a pure cycle falls back to all nodes) and dead ends (nodes with no outgoing edges). Dangling edges are an explicit story_argument_invalid, never an empty success. Conditional reachability and knowledge validation are reported as notEvaluated — the narrative pipeline owns them. Read-only.", json!({"storyId":project_id_prop()}), &["storyId"]),
+        spec("creator_story_timeline_inspect", "Read the committed Story event timeline for cityId×storyId (RFC §6 story.timeline.inspect, the V3-07 read face): WorldEventEnvelopeV1 rows projected from the host story store and sorted ascending by simulationUtcMs then eventId. Scope is pinned to the local profile principal — private claim rows of other players are structurally invisible at query scope, not filtered afterward. storyRunId defaults to the principal's latest active/paused run (falls back to the latest run of any status); a runId from another scope is reported as story_run_not_found. Read-only.", json!({"cityId":project_id_prop(),"storyId":project_id_prop(),"storyRunId":project_id_prop(),"limit":{"type":"integer","minimum":1,"maximum":100}}), &["cityId","storyId"]),
+        spec("creator_game_intent_simulate", "Mechanically simulate whether one Agent intent would be accepted at commit time — without writing anything (RFC §6 game.intent.simulate): intent schema shape (same semantics as the host commit gate: speak/invite vocabulary, text limits, prototype-pollution keys), active run status and TTL, the current Story revision vs expectedStoryRevision (CAS baseline), the current City clock revision vs expectedClockRevision, and per-resident public activity lease occupancy. Expired leases and absent clocks are reported as commit-time behaviors, never repaired here. Returns allowed=true/false plus one diagnostic step with a stable code; knowledge and rule-semantics adjudication stays with the host rule pipeline at commit time and is not simulated. Read-only; does not require --allow-local-writes.", json!({"runId":project_id_prop(),"intent":{"type":"object"},"expectedStoryRevision":{"type":"string","minLength":1,"maxLength":128},"expectedClockRevision":{"type":"string","minLength":1,"maxLength":128},"residentId":project_id_prop()}), &["runId","intent"]),
     ]
 }
 
@@ -231,6 +237,8 @@ fn call_error(code: &str) -> ToolError {
         "story_install_incompatible" => ToolError::new("invalid_argument", "The preview does not allow installation; fix the diagnostics it returned and preview again."),
         "story_not_installed" => ToolError::new("not_found", "The Story is not installed (or is disabled) in this City; install it with creator_story_install_preview/commit first."),
         "story_update_run_migration_required" => ToolError::new("invalid_argument", "Active StoryRuns exist for this City and Story; explicitly stop or reset them (新周目) before updating the installation."),
+        // V3 PR-7 前半：Inspect 只读面的运行时错误码。
+        "game_run_not_found" => ToolError::new("not_found", "The game run was not found (or its TTL has expired); verify the runId with the City runtime before simulating again."),
         _ => ToolError::new("data_unavailable", format!("Creator Studio request failed ({code}).")),
     }
 }
@@ -755,6 +763,30 @@ pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool)
             call(data_home, "creator.story.resident.lease.release", &json!({"cityId":required_string(args,"cityId")?,
                 "residentId":required_string(args,"residentId")?,"traceId":required_string(args,"traceId")?}), 15_000)
         }
+        // V3 PR-7 前半：Inspect 只读面（RFC §6 [r1] creator 域扩展）。全部只读，
+        // 不设 --allow-local-writes 闸；宿主 dispatch 侧同样没有任何写入路径。
+        "creator_game_rules_inspect" => {
+            let mut payload = json!({"projectId":required_string(args,"projectId")?});
+            if let Some(release_id) = optional_nonempty_string(args, "releaseId")? { payload["releaseId"] = json!(release_id); }
+            call(data_home, "creator.game.rules.inspect", &payload, 15_000)
+        }
+        "creator_story_graph_inspect" =>
+            call(data_home, "creator.story.graph.inspect", &json!({"storyId":required_string(args,"storyId")?}), 15_000),
+        "creator_story_timeline_inspect" => {
+            let mut payload = json!({"cityId":required_string(args,"cityId")?,"storyId":required_string(args,"storyId")?});
+            if let Some(story_run_id) = optional_nonempty_string(args, "storyRunId")? { payload["storyRunId"] = json!(story_run_id); }
+            if let Some(limit) = optional_u64(args, "limit")? { payload["limit"] = json!(limit); }
+            call(data_home, "creator.story.timeline.inspect", &payload, 15_000)
+        }
+        "creator_game_intent_simulate" => {
+            let intent = args.get("intent").filter(|value| value.is_object())
+                .ok_or_else(|| ToolError::new("invalid_argument", "`intent` must be an object"))?;
+            let mut payload = json!({"runId":required_string(args,"runId")?,"intent":intent});
+            if let Some(expected) = optional_nonempty_string(args, "expectedStoryRevision")? { payload["expectedStoryRevision"] = json!(expected); }
+            if let Some(expected) = optional_nonempty_string(args, "expectedClockRevision")? { payload["expectedClockRevision"] = json!(expected); }
+            if let Some(resident) = optional_nonempty_string(args, "residentId")? { payload["residentId"] = json!(resident); }
+            call(data_home, "creator.game.intent.simulate", &payload, 15_000)
+        }
         "creator_mount_list" => {
             let mut payload = json!({"projectId":required_string(args,"projectId")?});
             if let Some(revision) = optional_u64(args, "revision")? { payload["revision"] = json!(revision); }
@@ -1004,6 +1036,42 @@ mod capture_tests {
             "updateConfirmation":{"currentStoryVersion":"1.0.0","targetStoryVersion":"2.0.0"}}), &home, true).unwrap_err();
         assert_eq!(error.code, "invalid_argument");
         assert!(error.message.contains("four-field") || error.message.contains("bind"));
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// V3 PR-7 前半（RFC §6 [r1] creator 域扩展）：Inspect 3+1 工具契约——
+    /// 只读、schema 封闭、必填参数先行校验；intent.simulate 不设
+    /// --allow-local-writes 闸（没有 Studio 时也走邮箱报 plugin_unavailable，
+    /// 绝不变成 permission_denied）。
+    #[test]
+    fn creator_v3_inspect_tools_are_registered_read_only_and_unauthorized_free() {
+        let specs = specs();
+        for name in ["creator_game_rules_inspect", "creator_story_graph_inspect", "creator_story_timeline_inspect", "creator_game_intent_simulate"] {
+            let spec = specs.iter().find(|spec| spec.name == name).unwrap_or_else(|| panic!("{name} spec must exist"));
+            assert_eq!(spec.input_schema.get("additionalProperties"), Some(&Value::Bool(false)), "{name}");
+            assert!(spec.description.contains("Read-only"), "{name} must declare read-only semantics");
+        }
+        let home = std::env::temp_dir().join(format!("mcp-inspect-gate-{}", std::process::id()));
+        std::fs::create_dir_all(&home).ok();
+        // 必填参数缺失在参数校验阶段拒绝，不向插件转发。
+        for (name, args) in [
+            ("creator_game_rules_inspect", json!({})),
+            ("creator_story_graph_inspect", json!({})),
+            ("creator_story_timeline_inspect", json!({"cityId":"city-1"})),
+            ("creator_game_intent_simulate", json!({"runId":"game-run-1"})),
+            ("creator_game_intent_simulate", json!({"runId":"game-run-1","intent":"not-an-object"})),
+        ] {
+            let error = run(name, &args, &home, false).unwrap_err();
+            assert_eq!(error.code, "invalid_argument", "{name} accepted {args}");
+        }
+        // intent.simulate 无 allow_local_writes 也不触发 permission_denied：
+        // 只读面直连邮箱（此处无 Studio → plugin_unavailable）。
+        let error = run("creator_game_intent_simulate",
+            &json!({"runId":"game-run-1","intent":{"kind":"speak","text":"hi"}}), &home, false).unwrap_err();
+        assert_eq!(error.code, "plugin_unavailable", "intent.simulate must not demand --allow-local-writes");
+        // 对照：同类写工具（story run.start）在无授权时仍是 permission_denied。
+        let error = run("creator_story_run_start", &json!({"cityId":"city-1","storyId":"story-1"}), &home, false).unwrap_err();
+        assert_eq!(error.code, "permission_denied");
         std::fs::remove_dir_all(home).ok();
     }
 }

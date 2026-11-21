@@ -685,4 +685,59 @@ mod tests {
         assert_eq!(studio_stop(&home, "bad id!").unwrap_err(), "game_argument_invalid");
         std::fs::remove_dir_all(home).ok();
     }
+
+    /// S-0 Top5-③（V3_S0_CI_AUDIT §3 P1-3a）：容量回收——32 上限时最旧终态
+    /// 优先驱逐（连同其 Clock Fork 行一并清理），全部非终态时显式 busy。
+    #[test]
+    fn preview_capacity_evicts_oldest_terminal_and_fails_busy_when_all_live() {
+        let home = std::env::temp_dir().join(format!("code-game-capacity-{}-{}", now_ms(), std::process::id()));
+        let mut ids: Vec<String> = (0..MAX_PREVIEW_RECORDS)
+            .map(|index| format!("preview-cap-{index:03}")).collect();
+        // updatedAtMs 递增 + id 字典序与时间序相反：驱逐必须由时间戳决定，不是目录名。
+        for (index, id) in ids.iter().enumerate() {
+            let directory = preview_dir(&home, id).unwrap();
+            std::fs::create_dir_all(&directory).unwrap();
+            write_json_atomic(&directory.join("state.json"), &json!({"status":"finished","previewId":id,
+                "gameId":"game.capacity","updatedAtMs":1_000 + index as u64 * 10})).unwrap();
+        }
+        ids.sort();
+        let oldest = ids[0].clone();
+        // 最旧终态 Preview 的 Clock Fork 行：驱逐时必须被 forget_preview_clock 清掉。
+        crate::city_runtime::read_preview_clock_at(&home, &oldest, "city:one", 1_000).unwrap();
+        let fork_rows = |preview_id: &str| database_fork_rows(&home, preview_id);
+        assert!(fork_rows(&oldest).is_some());
+        // 已到 32 上限：下一个入场（studio_preview 在创建目录前调用）触发一次驱逐，
+        // 且被驱逐的恰是 updatedAtMs 最旧的终态——不是字典序最靠后的。
+        ensure_preview_capacity(&home).unwrap();
+        assert!(!preview_dir(&home, &oldest).unwrap().exists(), "oldest terminal preview must be evicted");
+        assert!(fork_rows(&oldest).is_none(), "evicted preview's clock fork row must be forgotten");
+        assert_eq!(preview_ids(&home).unwrap().len(), MAX_PREVIEW_RECORDS - 1);
+        // 其余 31 个终态原样保留（只驱逐一个）。
+        for id in ids.iter().skip(1) {
+            assert!(preview_dir(&home, id).unwrap().exists(), "{id} must survive");
+        }
+        std::fs::remove_dir_all(home).ok();
+
+        // 全部 32 个非终态（running）：无终态可驱逐 → 显式 game_activity_busy。
+        let home = std::env::temp_dir().join(format!("code-game-capacity-live-{}-{}", now_ms(), std::process::id()));
+        for index in 0..MAX_PREVIEW_RECORDS {
+            let id = format!("preview-live-{index:03}");
+            let directory = preview_dir(&home, &id).unwrap();
+            std::fs::create_dir_all(&directory).unwrap();
+            write_json_atomic(&directory.join("state.json"), &json!({"status":"running","previewId":id,
+                "gameId":"game.capacity","updatedAtMs":2_000 + index as u64})).unwrap();
+        }
+        assert_eq!(ensure_preview_capacity(&home).unwrap_err(), "game_activity_busy");
+        // busy 拒绝不破坏现场：32 个 running 全部原样保留。
+        assert_eq!(preview_ids(&home).unwrap().len(), MAX_PREVIEW_RECORDS);
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// city_preview_clocks 行的直读探针（驱逐清理的断言面）。
+    fn database_fork_rows(home: &Path, preview_id: &str) -> Option<(String,)> {
+        use rusqlite::OptionalExtension;
+        let db = crate::creator_store::database(home).ok()?;
+        db.query_row("SELECT preview_id FROM city_preview_clocks WHERE preview_id=?1", [preview_id],
+            |row| row.get::<_, String>(0)).optional().ok().flatten().map(|id| (id,))
+    }
 }

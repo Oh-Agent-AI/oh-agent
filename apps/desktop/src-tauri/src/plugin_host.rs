@@ -844,6 +844,30 @@ fn headless_creator_methods() -> Vec<String> {
         "creator.mount.list",
         "creator.project.list",
         "creator.operation.status",
+        // V3 PR-7 前半（RFC §12 / §6 [r1] creator 域扩展）：Story 注册表 11 方法 +
+        // City Code 安装 3 方法 + Inspect 只读 4 方法。全部「纯宿主本地」：
+        // 不依赖视口；写路径经 dispatch_as 与 Studio 在场时走完全相同的
+        // preview/commit 管线（CAS、operationId 幂等、预算与错误码一致）；
+        // 运行身份固定为稳定本地 principal（LOCAL_CREATOR_OWNER，与 mailbox 臂
+        // 同款），绝不接受调用方自报 playerId/instance 归属。
+        "creator.code.install.preview",
+        "creator.code.install.commit",
+        "creator.code.install.list",
+        "creator.story.project.create",
+        "creator.story.project.read",
+        "creator.story.projects.list",
+        "creator.story.install.preview",
+        "creator.story.install.commit",
+        "creator.story.install.list",
+        "creator.story.run.start",
+        "creator.story.run.stop",
+        "creator.story.run.reset",
+        "creator.story.resident.lease.acquire",
+        "creator.story.resident.lease.release",
+        "creator.game.rules.inspect",
+        "creator.story.graph.inspect",
+        "creator.story.timeline.inspect",
+        "creator.game.intent.simulate",
     ].into_iter().map(str::to_owned).collect()
 }
 
@@ -995,7 +1019,16 @@ fn answer_headless_call(home: &std::path::Path, method: &str, payload: &Value) -
         | "creator.project.commit" | "creator.project.create" | "creator.layout.list"
         | "creator.city.anchor.upsert" | "creator.city.anchor.remove" | "creator.mount.bind"
         | "creator.mount.unbind" | "creator.project.publish" | "creator.mount.list"
-        | "creator.project.list" | "creator.operation.status" => {
+        | "creator.project.list" | "creator.operation.status"
+        // V3 PR-7 前半：Story 注册表 / City Code 安装 / Inspect 只读——全部直接
+        // 路由宿主 dispatch_as（与 Studio 在场时同一管线），无 headless 特例。
+        | "creator.code.install.preview" | "creator.code.install.commit" | "creator.code.install.list"
+        | "creator.story.project.create" | "creator.story.project.read" | "creator.story.projects.list"
+        | "creator.story.install.preview" | "creator.story.install.commit" | "creator.story.install.list"
+        | "creator.story.run.start" | "creator.story.run.stop" | "creator.story.run.reset"
+        | "creator.story.resident.lease.acquire" | "creator.story.resident.lease.release"
+        | "creator.game.rules.inspect" | "creator.story.graph.inspect"
+        | "creator.story.timeline.inspect" | "creator.game.intent.simulate" => {
             let transformed = match method {
                 "creator.city.edit.preview" => headless_world_edit_payload(home, payload)?,
                 "creator.city.create" => headless_city_create_payload(home, payload)?,
@@ -2598,9 +2631,83 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// V3 PR-7 前半：headless 臂的 Story 注册表 / City Code 安装 / Inspect 路由。
+    /// 语义：Studio 不在场时本臂直接路由宿主 dispatch_as——写路径与 mailbox 臂
+    /// 同一管线（CAS/幂等/预算），运行身份固定为 LOCAL_CREATOR_OWNER；名单外的
+    /// 视口方法绝不被本臂冒充。
     #[test]
-    fn headless_arm_rejects_sdk_semantic_failures_after_the_structural_gate() {
+    fn headless_arm_routes_story_registry_code_install_and_inspect_methods() {
         let home = headless_home();
+        // 名单：story.* 11 方法 + creator.code.install.* 3 方法 + inspect 4 方法。
+        let methods = headless_creator_methods();
+        for name in [
+            "creator.story.project.create", "creator.story.project.read", "creator.story.projects.list",
+            "creator.story.install.preview", "creator.story.install.commit", "creator.story.install.list",
+            "creator.story.run.start", "creator.story.run.stop", "creator.story.run.reset",
+            "creator.story.resident.lease.acquire", "creator.story.resident.lease.release",
+            "creator.code.install.preview", "creator.code.install.commit", "creator.code.install.list",
+            "creator.game.rules.inspect", "creator.story.graph.inspect",
+            "creator.story.timeline.inspect", "creator.game.intent.simulate",
+        ] {
+            assert!(methods.iter().any(|method| method == name), "headless arm must claim {name}");
+        }
+        // 名单外方法（视口依赖）绝不被 headless 臂认领。
+        assert!(!methods.iter().any(|method| method == "creator.city.layout.save"));
+        // Story 注册表全链路：create → read → install preview/commit → run start。
+        let created = answer_headless_call(&home, "creator.story.project.create", &json!({
+            "storyId": "story.headless", "title": "无头侦探", "schemaVersion": 1, "storyVersion": "1.0.0",
+            "graph": {"nodes": [{"id": "start", "kind": "beat"}, {"id": "clue", "kind": "beat"}],
+                "edges": [{"from": "start", "to": "clue"}]},
+            "canon": {"characters": []}})).unwrap();
+        assert_eq!(created["created"], true, "{created}");
+        let read = answer_headless_call(&home, "creator.story.project.read", &json!({"storyId": "story.headless"})).unwrap();
+        assert_eq!(read["title"], "无头侦探");
+        let city = answer_headless_call(&home, "creator.city.create",
+            &json!({"name": "无头城", "seed": 20261115, "profile": dunes_profile(), "operationId": "op-story-city"})).unwrap();
+        let city_id = city["cityId"].as_str().unwrap().to_owned();
+        let checked = answer_headless_call(&home, "creator.story.install.preview", &json!({
+            "storyId": "story.headless", "targetCityId": city_id,
+            "expectedCityRevision": city["revision"], "operationId": "op-story-install-preview"})).unwrap();
+        assert_eq!(checked["canInstall"], true, "{checked}");
+        let committed = answer_headless_call(&home, "creator.story.install.commit", &json!({
+            "previewId": checked["previewId"], "operationId": "op-story-install-commit"})).unwrap();
+        assert_eq!(committed["status"], "installed", "{committed}");
+        let run = answer_headless_call(&home, "creator.story.run.start", &json!({
+            "cityId": city_id, "storyId": "story.headless"})).unwrap();
+        // 运行身份固定为稳定本地 principal（与 mailbox 臂同款），不接受调用方自报。
+        assert_eq!(run["playerId"], crate::creator_projects::LOCAL_CREATOR_OWNER, "{run}");
+        assert_eq!(run["restored"], false);
+        // Inspect 只读面在 headless 臂可用：graph/timeline 直读注册表与运行时。
+        let graph = answer_headless_call(&home, "creator.story.graph.inspect", &json!({"storyId": "story.headless"})).unwrap();
+        // 可达/死节点集合按 BTreeSet 字典序输出（确定性），与插入顺序无关。
+        assert_eq!(graph["analysis"]["reachable"]["ids"], json!(["clue", "start"]), "{graph}");
+        assert_eq!(graph["analysis"]["deadEnds"]["ids"], json!(["clue"]));
+        let timeline = answer_headless_call(&home, "creator.story.timeline.inspect",
+            &json!({"cityId": city_id, "storyId": "story.headless"})).unwrap();
+        assert_eq!(timeline["available"], true, "{timeline}");
+        assert_eq!(timeline["count"], 0);
+        let simulate = answer_headless_call(&home, "creator.game.intent.simulate",
+            &json!({"runId": "game-run-missing", "intent": {"kind": "speak", "text": "hi"}})).unwrap();
+        assert_eq!(simulate["allowed"], false, "{simulate}");
+        assert_eq!(simulate["steps"][0]["code"], "game_run_not_found");
+        // 负：未注册项目 → 宿主管线的 not_found（不是 creator_method_unavailable）。
+        assert_eq!(answer_headless_call(&home, "creator.game.rules.inspect",
+            &json!({"projectId": "project-missing"})).unwrap_err(), "creator_project_not_found");
+        // City Code 安装 3 方法：list 直连宿主；形态合法但磁盘不存在的 buildId
+        // 带宿主完整性码（密封产物校验链先于安装预检）。
+        let listed = answer_headless_call(&home, "creator.code.install.list", &json!({})).unwrap();
+        assert_eq!(listed["installations"], json!([]), "{listed}");
+        assert_eq!(answer_headless_call(&home, "creator.code.install.preview",
+            &json!({"buildId": "0".repeat(64), "targetCityId": city_id, "expectedCityRevision": city["revision"],
+                "operationId": "op-code-install"})).unwrap_err(), "game_package_integrity_failed");
+        // Run 生命周期收尾：显式 stop 幂等，headless 臂同样可用。
+        let stopped = answer_headless_call(&home, "creator.story.run.stop", &json!({"storyRunId": run["storyRunId"]})).unwrap();
+        assert_eq!(stopped["status"], "stopped", "{stopped}");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn headless_arm_rejects_sdk_semantic_failures_after_the_structural_gate() {        let home = headless_home();
         crate::creator_city_patch::publish_city_layout_snapshot(&home, &headless_layout_snapshot("world-rev-headless-b")).unwrap();
         let project = crate::creator_projects::create_project_from_city_layout(&home,
             crate::creator_projects::LOCAL_CREATOR_OWNER, "flight-checkpoint", "op-project-headless-b", "world-rev-headless-b").unwrap();

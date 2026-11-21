@@ -55,24 +55,30 @@ fn open(app: &AppHandle, home: &Path, request: &Value) -> Result<(), &'static st
 
 #[tauri::command]
 pub async fn code_game_preview_request(window: WebviewWindow, request: Value) -> Result<Value, String> {
+    handle_preview_request(&crate::overview::data_home(), window.label(), &request)
+}
+
+/// 命令面守卫矩阵的同步形态（S-0 Top5-② 的可测面）：label↔previewId 配对、
+/// 顶层 command allowlist、method/type allowlist 与宿主派发全部在这一个函数里，
+/// async 命令入口只做 webview label 的接线，不承载任何判断。
+fn handle_preview_request(home: &Path, window_label: &str, request: &Value) -> Result<Value, String> {
     let preview_id = request.get("previewId").and_then(Value::as_str).ok_or("preview_request_invalid")?;
-    if window.label() != label(preview_id) { return Err("preview_instance_mismatch".into()); }
+    if window_label != label(preview_id) { return Err("preview_instance_mismatch".into()); }
     let command = request.get("command").and_then(Value::as_str).ok_or("preview_request_invalid")?;
     let args = request.get("args").cloned().unwrap_or_else(|| json!({}));
-    let home = crate::overview::data_home();
     match command {
         "plugin_request" => {
             let call = args.get("request").cloned().ok_or("preview_request_invalid")?;
             let method = call.get("method").and_then(Value::as_str).ok_or("preview_request_invalid")?;
             let payload = call.get("payload").cloned().unwrap_or_else(|| json!({}));
             let result = match method {
-                "city.game.run.start" => crate::city_runtime::start_preview_run(&home, preview_id, &payload),
-                "city.time.read" => crate::city_runtime::read_preview_clock(&home, preview_id, &payload),
+                "city.game.run.start" => crate::city_runtime::start_preview_run(home, preview_id, &payload),
+                "city.time.read" => crate::city_runtime::read_preview_clock(home, preview_id, &payload),
                 // Story 读走 Preview Fork（隔离 Spec §7.3）；preview 域不路由正式
                 // story 写入——RFC §13 第 3 条：PR-4 前保持失败关闭。
-                "city.story.read" => crate::city_runtime::read_preview_story(&home, preview_id, &payload),
+                "city.story.read" => crate::city_runtime::read_preview_story(home, preview_id, &payload),
                 "city.code.preview.next" | "city.code.preview.read" | "city.code.preview.close" | "city.game.run.stop" =>
-                    crate::creator_projects::dispatch_city_runtime(&home, preview_id, method, &payload),
+                    crate::creator_projects::dispatch_city_runtime(home, preview_id, method, &payload),
                 _ => Err("preview_method_unavailable"),
             };
             match result {
@@ -86,7 +92,7 @@ pub async fn code_game_preview_request(window: WebviewWindow, request: Value) ->
                 Some("code-game.state") => {
                     let mut state = message.get("state").cloned().ok_or("code_game_state_invalid")?;
                     state["previewId"] = json!(preview_id);
-                    crate::creator_code_game::record_preview_state(&home, &state).map_err(|_| "code_game_state_invalid".to_string())?;
+                    crate::creator_code_game::record_preview_state(home, &state).map_err(|_| "code_game_state_invalid".to_string())?;
                     Ok(json!({"ok":true}))
                 }
                 Some("plugin.performance") => Ok(json!({"ok":true})),
@@ -161,6 +167,60 @@ mod tests {
         let status: String = db.query_row("SELECT status FROM city_game_runs WHERE run_id=?1", [run["runId"].as_str().unwrap()], |row| row.get(0)).unwrap();
         assert_eq!(status, "stopped");
         assert_eq!(crate::creator_code_game::studio_status_for(&home, preview_id).unwrap()["status"], "finished");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// S-0 Top5-②（V3_S0_CI_AUDIT §2 P1-2a）：preview 实例配对守卫——请求携带的
+    /// previewId 必须与调用窗口 label 配对，跨窗口伪造一律 preview_instance_mismatch。
+    #[test]
+    fn preview_command_rejects_window_label_and_preview_id_mismatch() {
+        let home = home("mismatch");
+        let request = json!({"previewId":"preview-b","command":"plugin_request",
+            "args":{"request":{"requestId":"forged-1","method":"city.time.read","payload":{"cityId":"city:one"}}}});
+        // 窗口 A 提交 previewId=B 的请求：拒绝（隔离 Spec 的核心防线）。
+        assert_eq!(handle_preview_request(&home, "code-preview-a", &request).unwrap_err(), "preview_instance_mismatch");
+        // 合法配对（label = "code-preview-" + previewId，即 code-preview-preview-b）
+        // 不再报该错误，且请求真正到达宿主（预览时钟读面返回结构化结果）。
+        let paired = handle_preview_request(&home, "code-preview-preview-b", &request).unwrap();
+        assert_eq!(paired["ok"], true, "{paired}");
+        assert_eq!(paired["requestId"], "forged-1");
+        // 缺 previewId / 非字符串 → 形状拒绝。
+        assert_eq!(handle_preview_request(&home, "code-preview-a", &json!({"command":"plugin_request"})).unwrap_err(), "preview_request_invalid");
+        assert_eq!(handle_preview_request(&home, "code-preview-preview-b", &json!({"previewId":7,"command":"plugin_request"})).unwrap_err(), "preview_request_invalid");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// S-0 Top5-②（V3_S0_CI_AUDIT §2 P1-2b）：三层 allowlist 守卫矩阵——顶层
+    /// command、plugin_request 的 method、plugin_message 的 type 全部窄名单，
+    /// 伪造一律显式拒绝；正常路径回显 requestId 的信封形状保持不变。
+    #[test]
+    fn preview_plugin_surface_is_allowlisted_per_command_type_and_method() {
+        let home = home("allowlist");
+        // 顶层 command 不在名单 → preview_command_unavailable。
+        let unknown_command = json!({"previewId":"preview-a","command":"other","args":{}});
+        assert_eq!(handle_preview_request(&home, "code-preview-preview-a", &unknown_command).unwrap_err(), "preview_command_unavailable");
+        // method 不在名单 → ok:false 信封携带 preview_method_unavailable（伪造 story 写入）。
+        let forged_method = json!({"previewId":"preview-a","command":"plugin_request",
+            "args":{"request":{"requestId":"forged-2","method":"city.story.commit","payload":{"runId":"game-run-1"}}}});
+        let denied = handle_preview_request(&home, "code-preview-preview-a", &forged_method).unwrap();
+        assert_eq!(denied["ok"], false, "{denied}");
+        assert_eq!(denied["error"]["code"], "preview_method_unavailable");
+        assert_eq!(denied["requestId"], "forged-2");
+        // plugin_message type 不在名单 → preview_message_unavailable。
+        let forged_message = json!({"previewId":"preview-a","command":"plugin_message",
+            "args":{"message":{"type":"code-game.debug","state":{}}}});
+        assert_eq!(handle_preview_request(&home, "code-preview-preview-a", &forged_message).unwrap_err(), "preview_message_unavailable");
+        // 正常路径：plugin_request（city.time.read）回显 requestId 且信封形如宿主约定；
+        // plugin_message（plugin.performance）直接 ok:true。
+        let normal = handle_preview_request(&home, "code-preview-preview-a", &json!({"previewId":"preview-a","command":"plugin_request",
+            "args":{"request":{"requestId":"normal-1","method":"city.time.read","payload":{"cityId":"city:one"}}}})).unwrap();
+        assert_eq!(normal["version"], 1, "{normal}");
+        assert_eq!(normal["ok"], true);
+        assert_eq!(normal["requestId"], "normal-1");
+        assert_eq!(normal["result"]["cityId"], "city:one");
+        let performance = handle_preview_request(&home, "code-preview-preview-a", &json!({"previewId":"preview-a","command":"plugin_message",
+            "args":{"message":{"type":"plugin.performance"}}})).unwrap();
+        assert_eq!(performance["ok"], true);
         std::fs::remove_dir_all(home).ok();
     }
 }

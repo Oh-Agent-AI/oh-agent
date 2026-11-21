@@ -32,6 +32,9 @@ mod creator_playtest;
 mod creator_store;
 mod story_store;
 mod story_registry;
+// Actor Intent 管线（RFC V3 §3.2 统一执行链 + §12.2 公共仲裁，S-5/PR-5）：
+// Intent → 校验 → 租约 → CAS 提交 → 信封 → 租约闭环。dispatch 接线由主线集成。
+mod actor_intent;
 pub mod creator_content_v2;
 mod creator_content_install;
 mod creator_experience;

@@ -19,6 +19,7 @@ pub(crate) fn classify_local_call(method: &str) -> Option<LocalCall> {
             | "city.creator.world.package.snapshot.close" | "city.time.read" | "city.game.run.start"
             | "city.game.run.stop" | "city.story.read" | "city.story.commit"
             | "city.story.schedule" | "city.story.cancel" | "city.story.list"
+            | "city.story.intent.submit"
             | "city.code.preview.next" | "city.code.preview.read" | "city.code.preview.close") { return Some(LocalCall::Runtime); }
     None
 }
@@ -36,6 +37,7 @@ mod tests {
         assert_eq!(classify_local_call("city.time.read"), Some(LocalCall::Runtime));
         assert_eq!(classify_local_call("city.game.run.start"), Some(LocalCall::Runtime));
         assert_eq!(classify_local_call("city.story.commit"), Some(LocalCall::Runtime));
+        assert_eq!(classify_local_call("city.story.intent.submit"), Some(LocalCall::Runtime));
         assert_eq!(classify_local_call("city.creator.layout.publish"), Some(LocalCall::LayoutPublish));
         assert_eq!(classify_local_call("creator.city.source.export"), Some(LocalCall::SourceExport));
         assert_eq!(classify_local_call("creator.project.read"), None);

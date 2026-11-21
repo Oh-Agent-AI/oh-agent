@@ -528,6 +528,31 @@ fn validated_holder_scope<'a>(payload: &'a Value, city_id: &str) -> Result<(&'a 
     Ok((kind, canonical))
 }
 
+/// Intent 管线（actor_intent）的活跃 Run 校验（§12.2 单一 Intent 队列的前置闸）：
+/// scope 四元组必须精确命中一行 status ∈ ('active','paused') 的 Run——paused 仍算
+/// 活跃（§12.1：暂停只冻结 Scheduler，不冻结 Run 的剧情推进身份），与
+/// active_run_count 的「活跃」口径一致。错误码区分三种可解释拒绝。
+pub(crate) fn require_active_run(player_id: &str, city_id: &str, story_id: &str, story_run_id: &str, tx: &Connection) -> Result<(), &'static str> {
+    let row = tx.query_row("SELECT player_id,city_id,story_id,status FROM story_runs WHERE story_run_id=?1", [story_run_id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?)))
+        .optional().map_err(|_| "creator_store_unavailable")?;
+    let Some((row_player, row_city, row_story, status)) = row else { return Err("story_run_not_found"); };
+    if row_player != player_id || row_city != city_id || row_story != story_id { return Err("story_run_mismatch"); }
+    if status != "active" && status != "paused" { return Err("story_run_not_active"); }
+    Ok(())
+}
+
+/// Intent 管线读取当前 Story 内容摘要作为规则关联摘要（ruleSetDigest，RFC §3.2）：
+/// Story Graph/Canon 是该 Story 的规则集，content_digest 即「当前规则摘要」；
+/// 无项目行 → None（管线落 "none"，先于规则关联的事实）。
+pub(crate) fn project_content_digest(home: &Path, story_id: &str) -> Result<Option<String>, &'static str> {
+    if !valid_id(story_id) { return Err("story_argument_invalid"); }
+    let db = database(home)?;
+    migrate(&db)?;
+    db.query_row("SELECT content_digest FROM story_projects WHERE story_id=?1", [story_id],
+        |row| row.get::<_, String>(0)).optional().map_err(|_| "creator_store_unavailable")
+}
+
 pub(crate) fn lease_acquire(home: &Path, payload: &Value) -> Result<Value, &'static str> {
     let city_id = story_text(payload, "cityId")?;
     let resident_id = story_text(payload, "residentId")?;
