@@ -32,6 +32,7 @@ import { ProjectsPage } from "../features/project/ProjectsPage";
 import { WorkbenchHome } from "../features/home/WorkbenchHome";
 import { StoryEditorPanel } from "../features/story/StoryEditorPanel";
 import { EvidenceCenterPanel } from "../features/evidence/EvidenceCenterPanel";
+import { ExperienceDistributionPanel } from "../features/distribution/ExperienceDistributionPanel";
 import { CandidatePanel } from "../features/project/CandidatePanel";
 import { canAcceptCandidate, parseProjectCandidate, type ProjectCandidate } from "../contracts/candidate";
 import { StudioNavigation } from "./StudioNavigation";
@@ -1056,7 +1057,7 @@ export function CreatorStudioApp() {
     </div>}
     {route.section === "stories" && <div className="studio-route-content story-route-content"><StoryEditorPanel request={creatorRequest} browserPreview={browserPreview} /></div>}
     {(route.section === "explore" || route.section === "releases") && <div className={route.section === "releases" ? "studio-route-resource release-management" : "studio-route-resource"}>
-      {route.section === "releases" && <div className="release-candidate">{candidatePanel}</div>}
+      {route.section === "releases" && <div className="release-candidate">{candidatePanel}<ExperienceDistributionPanel request={creatorRequest} browserPreview={browserPreview} publishedReleaseId={publishedReleaseId} onMessage={setMessage} /></div>}
       <CityGameLibraryPanel key={route.section} view={route.section} request={creatorRequest} browserPreview={browserPreview} message={message} onMessage={setMessage}
         onOpenPreview={(buildId, source) => { setCodePreviewBuildId(buildId); setCodePreviewSourceCityId(source?.cityId); openWorkspacePanel("code"); }} />
     </div>}

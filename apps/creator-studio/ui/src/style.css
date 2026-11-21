@@ -470,3 +470,15 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, summary:focu
 .evidence-workspace .ground-pose-grid, .evidence-workspace .ground-wheel-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .evidence-workspace .home-section-heading { align-items: flex-start; }
 .evidence-workspace-layout .viewport { min-width: 0; }
+
+
+/* ST-12: local-only Experience packaging, distribution and trust disclosure. */
+.experience-distribution { display: grid; gap: 12px; margin-top: 16px; padding: 16px; border: 1px solid #3a504d; border-radius: 10px; background: #142321; }
+.experience-distribution .home-section-heading { margin: 0; }
+.distribution-build-form { display: grid; grid-template-columns: minmax(0, 1fr) 160px auto; align-items: end; gap: 10px; }
+.distribution-build-form input { width: 100%; min-width: 0; }
+.experience-package-list { display: grid; gap: 10px; }
+.experience-package-card { display: grid; gap: 8px; padding: 12px; border: 1px solid #35494d; border-radius: 8px; background: #17272a; }
+.experience-package-card > strong, .experience-package-card > code { overflow-wrap: anywhere; }
+.experience-package-card p { margin: 0; font-size: 12px; line-height: 1.5; }
+@media (max-width: 900px) { .distribution-build-form { grid-template-columns: 1fr; } }
