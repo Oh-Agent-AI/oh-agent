@@ -79,6 +79,21 @@ fn preview_ids(home: &Path) -> Result<Vec<String>, String> {
     Ok(ids)
 }
 
+pub(crate) fn active_previews_for_city(home: &Path, city_id: &str) -> Result<Vec<Value>, String> {
+    let mut active = Vec::new();
+    for preview_id in preview_ids(home)? {
+        let directory = preview_dir(home, &preview_id)?;
+        let Some(request) = read_json(&directory.join("request.json"), MAX_PREVIEW_REQUEST_BYTES)? else { continue; };
+        let state = read_json(&directory.join("state.json"), 16 * 1024)?;
+        let status = state.as_ref().and_then(|value| value.get("status")).or_else(|| request.get("status")).and_then(Value::as_str).unwrap_or("unknown");
+        if !matches!(status, "queued" | "starting" | "running" | "stop_requested") { continue; }
+        if request.get("source").and_then(|source| source.get("cityId")).and_then(Value::as_str) != Some(city_id) { continue; }
+        active.push(json!({"runId":state.as_ref().and_then(|value| value.get("runId")).and_then(Value::as_str),
+            "previewId":preview_id,"kind":"code-preview","status":status}));
+    }
+    Ok(active)
+}
+
 fn ensure_preview_capacity(home: &Path) -> Result<(), String> {
     let ids = preview_ids(home)?;
     if ids.len() < MAX_PREVIEW_RECORDS { return Ok(()); }
@@ -93,6 +108,7 @@ fn ensure_preview_capacity(home: &Path) -> Result<(), String> {
     for (_, id) in terminal {
         std::fs::remove_dir_all(preview_dir(home, &id)?).map_err(|_| "code_game_state_unavailable".to_string())?;
         crate::city_runtime::forget_preview_clock(home, &id);
+        crate::city_runtime::forget_story_fork(home, &id);
         if preview_ids(home)?.len() < MAX_PREVIEW_RECORDS { return Ok(()); }
     }
     Err("game_activity_busy".to_string())
@@ -164,6 +180,7 @@ pub(crate) fn record_preview_state(home: &Path, state: &Value) -> Result<(), Str
         if matches!(status, "finished" | "error") {
             std::fs::remove_file(directory.join("control.json")).ok();
             crate::city_runtime::forget_preview_clock(home, &preview_id);
+            crate::city_runtime::forget_story_fork(home, &preview_id);
         }
     } else if matches!(status, "finished" | "error") {
         std::fs::remove_file(root.join("preview-control.json")).ok();

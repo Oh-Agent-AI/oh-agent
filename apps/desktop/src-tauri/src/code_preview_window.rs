@@ -68,6 +68,9 @@ pub async fn code_game_preview_request(window: WebviewWindow, request: Value) ->
             let result = match method {
                 "city.game.run.start" => crate::city_runtime::start_preview_run(&home, preview_id, &payload),
                 "city.time.read" => crate::city_runtime::read_preview_clock(&home, preview_id, &payload),
+                // Story 读走 Preview Fork（隔离 Spec §7.3）；preview 域不路由正式
+                // story 写入——RFC §13 第 3 条：PR-4 前保持失败关闭。
+                "city.story.read" => crate::city_runtime::read_preview_story(&home, preview_id, &payload),
                 "city.code.preview.next" | "city.code.preview.read" | "city.code.preview.close" | "city.game.run.stop" =>
                     crate::creator_projects::dispatch_city_runtime(&home, preview_id, method, &payload),
                 _ => Err("preview_method_unavailable"),

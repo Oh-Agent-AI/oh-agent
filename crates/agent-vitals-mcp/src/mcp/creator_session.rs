@@ -6,9 +6,12 @@
 //!
 //! 全部工具天然 headless 可用（不依赖 Studio/City webview）。
 use std::path::{Path, PathBuf};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use super::{ToolError, ToolSpec};
 
@@ -30,10 +33,20 @@ pub fn specs() -> Vec<ToolSpec> {
         spec("creator_session_open", "Open (or resume) a Creator Agent session. Resuming an open session with the same agentId and scope returns the same sessionId plus every pending operation and job, so a reconnect restores full context in one call. Read-only bookkeeping; never grants capabilities.", json!({"agentId":{"type":"string","minLength":1,"maxLength":128},"projectId":{"type":"string","minLength":1,"maxLength":128},"cityId":{"type":"string","minLength":1,"maxLength":128}}), &["agentId"]),
         spec("creator_session_status", "Read one Creator Agent session: its state, the bounded operation timeline (commits and playtests observed in scope), and open jobs.", json!({"sessionId":{"type":"string","minLength":1,"maxLength":128}}), &["sessionId"]),
         spec("creator_session_close", "Close a Creator Agent session and report how many tracked operations were cleared. Closed sessions are retained for 7 days for auditing, then pruned.", json!({"sessionId":{"type":"string","minLength":1,"maxLength":128}}), &["sessionId"]),
-        spec("creator_job_list", "List Creator jobs (layout-build / world-apply / playtest / capture) for a session, optionally filtered by kind or terminal status.", json!({"sessionId":{"type":"string","minLength":1,"maxLength":128},"kind":{"type":"string","enum":["layout-build","world-apply","playtest","capture"]}}), &["sessionId"]),
+        spec("creator_job_list", "List Creator jobs (layout-build / world-apply / playtest / capture / studio-task) for a session, optionally filtered by kind or terminal status.", json!({"sessionId":{"type":"string","minLength":1,"maxLength":128},"kind":{"type":"string","enum":["layout-build","world-apply","playtest","capture","studio-task"]}}), &["sessionId"]),
         spec("creator_job_status", "Read one Creator job. Playtest jobs resolve their live status from the host playtest ledger.", json!({"jobId":{"type":"string","minLength":1,"maxLength":128}}), &["jobId"]),
         spec("creator_job_wait", "Block until a Creator job reaches a terminal state or the timeout expires (30 s cap). A timeout returns the running snapshot, not an error.", json!({"jobId":{"type":"string","minLength":1,"maxLength":128},"timeoutMs":{"type":"integer","minimum":100,"maximum":30000}}), &["jobId"]),
         spec("creator_job_cancel", "Request cooperative cancellation of a queued/running Creator job. Cancellation takes effect at the engine's next safe point; playtest jobs route to creator_playtest_cancel.", json!({"jobId":{"type":"string","minLength":1,"maxLength":128}}), &["jobId"]),
+        spec("creator_task_create", "Create a durable Studio goal and artifact in the shared Creator session/job ledger. This does not execute an Agent.", json!({"sessionId":{"type":"string"},"goal":{"type":"string"},"humanRequest":{"type":"string"},"artifact":{"type":"object"},"acceptanceCriteria":{"type":"array"},"operationId":{"type":"string"}}), &["sessionId","goal","humanRequest","artifact","acceptanceCriteria","operationId"]),
+        spec("creator_task_plan_submit", "Submit or revise a task plan with CAS-checked plan and artifact revisions.", json!({"taskId":{"type":"string"},"expectedPlanRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"steps":{"type":"array"},"operationId":{"type":"string"}}), &["taskId","expectedPlanRevision","expectedArtifactRevision","steps","operationId"]),
+        spec("creator_task_plan_approve", "Approve the current task plan; this records approval but never claims execution or completion.", json!({"taskId":{"type":"string"},"planRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"operationId":{"type":"string"}}), &["taskId","planRevision","expectedArtifactRevision","operationId"]),
+        spec("creator_task_status", "Read durable goal, plan, steps and evidence for a Studio task.", json!({"taskId":{"type":"string"}}), &["taskId"]),
+        spec("creator_task_execute", "Execute an approved task with the real Codex executor and a read-only Preview-only tool policy. Returns host-generated Preview evidence, never a saved-change claim.", json!({"taskId":{"type":"string"},"expectedPlanRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"operationId":{"type":"string"},"timeoutMs":{"type":"integer","minimum":100,"maximum":120000}}), &["taskId","expectedPlanRevision","expectedArtifactRevision","operationId"]),
+        spec("creator_task_evidence_append", "Append typed evidence with explicit trust level. Host verification cannot be self-declared.", json!({"taskId":{"type":"string"},"planRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"criterionId":{"type":"string"},"kind":{"type":"string"},"trustLevel":{"type":"string"},"summary":{"type":"string"},"operationId":{"type":"string"}}), &["taskId","planRevision","expectedArtifactRevision","criterionId","kind","trustLevel","summary","operationId"]),
+        spec("creator_task_evidence_list", "List durable evidence for a Studio task.", json!({"taskId":{"type":"string"}}), &["taskId"]),
+        spec("creator_task_review_accept", "Accept a task only after all acceptance criteria have real evidence and a human reviewer accepts it.", json!({"taskId":{"type":"string"},"planRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"reviewerNote":{"type":"string"},"operationId":{"type":"string"}}), &["taskId","planRevision","expectedArtifactRevision","reviewerNote","operationId"]),
+        spec("creator_task_review_reject", "Reject the current task plan during human review.", json!({"taskId":{"type":"string"},"planRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"reason":{"type":"string"},"operationId":{"type":"string"}}), &["taskId","planRevision","expectedArtifactRevision","reason","operationId"]),
+        spec("creator_task_cancel", "Cancel a non-terminal Studio task without deleting its goal, plan or evidence.", json!({"taskId":{"type":"string"},"operationId":{"type":"string"}}), &["taskId","operationId"]),
         spec("creator_game_type_list", "List registered game types with their runtime contract and whether each is actually playable (playtestSupported derives from the app adapter registry state, never from template existence). Read-only and offline.", json!({"status":{"type":"string","enum":["builtin-adapter","prototype","planned"]}}), &[]),
     ]
 }
@@ -81,7 +94,25 @@ fn ensure_schema(db: &rusqlite::Connection) -> Result<(), ToolError> {
             subject_json TEXT NOT NULL, progress_json TEXT NOT NULL, failure_json TEXT,
             cancel_requested INTEGER NOT NULL DEFAULT 0, session_id TEXT,
             created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
-        CREATE INDEX IF NOT EXISTS creator_jobs_session ON creator_jobs(session_id);",
+        CREATE INDEX IF NOT EXISTS creator_jobs_session ON creator_jobs(session_id);
+        CREATE TABLE IF NOT EXISTS creator_studio_tasks (
+            task_id TEXT PRIMARY KEY, goal_id TEXT NOT NULL, goal_revision INTEGER NOT NULL,
+            human_request TEXT NOT NULL, acceptance_json TEXT NOT NULL, artifact_json TEXT NOT NULL,
+            plan_revision INTEGER NOT NULL, step_ids_json TEXT NOT NULL, phase TEXT NOT NULL,
+            proposed_change_set_id TEXT, last_evidence_id TEXT,
+            created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS creator_studio_task_steps (
+            task_id TEXT NOT NULL, plan_revision INTEGER NOT NULL, step_id TEXT NOT NULL,
+            ordinal INTEGER NOT NULL, title TEXT NOT NULL, kind TEXT NOT NULL,
+            PRIMARY KEY(task_id, plan_revision, step_id));
+        CREATE TABLE IF NOT EXISTS creator_studio_task_evidence (
+            evidence_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, plan_revision INTEGER NOT NULL,
+            step_id TEXT, criterion_id TEXT NOT NULL, kind TEXT NOT NULL, trust_level TEXT NOT NULL,
+            summary TEXT NOT NULL, data_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
+        CREATE INDEX IF NOT EXISTS creator_studio_evidence_task ON creator_studio_task_evidence(task_id,created_at_ms);
+        CREATE TABLE IF NOT EXISTS creator_studio_task_receipts (
+            operation_id TEXT PRIMARY KEY, request_hash TEXT NOT NULL,
+            result_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL);",
     ).map_err(|error| ToolError::new("storage_unavailable", format!("sessions schema unavailable: {error}")))
 }
 
@@ -333,6 +364,7 @@ fn session_jobs(data_home: &Path, session_id: &str) -> Result<Vec<Value>, ToolEr
     Ok(jobs.into_iter().map(|job| match job["kind"].as_str() {
         Some("playtest") => resolve_playtest_job(data_home, &job),
         Some("world-apply") => resolve_world_apply_job(data_home, &job),
+        Some("studio-task") => task_payload(data_home, job["jobId"].as_str().unwrap_or_default()).unwrap_or(job),
         _ => job,
     }).collect())
 }
@@ -356,6 +388,7 @@ fn job_payload(data_home: &Path, job_id: &str) -> Result<Value, ToolError> {
     Ok(match row["kind"].as_str() {
         Some("playtest") => resolve_playtest_job(data_home, &row),
         Some("world-apply") => resolve_world_apply_job(data_home, &row),
+        Some("studio-task") => task_payload(data_home, row["jobId"].as_str().unwrap_or_default()).unwrap_or(row),
         _ => row,
     })
 }
@@ -379,9 +412,12 @@ fn job_wait(data_home: &Path, args: &Value) -> Result<Value, ToolError> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout);
     loop {
         let job = job_payload(data_home, job_id)?;
-        if matches!(job["status"].as_str(), Some("ready") | Some("failed") | Some("cancelled") | Some("expired")) {
-            return Ok(json!({"ok":true,"data":job}));
-        }
+        let terminal = if job["kind"] == "studio-task" {
+            matches!(job["status"].as_str(), Some("accepted") | Some("rejected") | Some("failed") | Some("cancelled"))
+        } else {
+            matches!(job["status"].as_str(), Some("ready") | Some("failed") | Some("cancelled") | Some("expired"))
+        };
+        if terminal { return Ok(json!({"ok":true,"data":job})); }
         if std::time::Instant::now() >= deadline {
             return Ok(json!({"ok":true,"data":{"job":job,"waitTimedOut":true}}));
         }
@@ -392,8 +428,14 @@ fn job_wait(data_home: &Path, args: &Value) -> Result<Value, ToolError> {
 fn job_cancel(data_home: &Path, args: &Value) -> Result<Value, ToolError> {
     let job_id = args.get("jobId").and_then(Value::as_str).ok_or_else(|| ToolError::new("invalid_argument", "jobId is required."))?;
     let job = job_payload(data_home, job_id)?;
-    if matches!(job["status"].as_str(), Some("ready") | Some("failed") | Some("cancelled") | Some("expired")) {
-        return Err(ToolError::new("creator_job_not_cancellable", format!("Job is already terminal ({}).", job["status"])));
+    let terminal = if job["kind"] == "studio-task" {
+        matches!(job["status"].as_str(), Some("accepted") | Some("rejected") | Some("failed") | Some("cancelled"))
+    } else {
+        matches!(job["status"].as_str(), Some("ready") | Some("failed") | Some("cancelled") | Some("expired"))
+    };
+    if terminal { return Err(ToolError::new("creator_job_not_cancellable", format!("Job is already terminal ({}).", job["status"]))); }
+    if job["kind"] == "studio-task" {
+        return task_cancel(data_home, &json!({"taskId":job_id,"operationId":new_id("task-cancel-")}));
     }
     if job["kind"] == "playtest" {
         // 试玩取消走宿主试玩取消工具（协作式取消位留给其余作业种类）。
@@ -429,6 +471,493 @@ fn game_type_list(_data_home: &Path, args: &Value) -> Result<Value, ToolError> {
     Ok(json!({"ok":true,"data":{"gameTypes":game_types}}))
 }
 
+
+fn task_id_arg(payload: &Value, key: &str) -> Result<String, ToolError> {
+    payload.get(key).and_then(Value::as_str).filter(|value| valid_playtest_run_id(value))
+        .map(str::to_owned).ok_or_else(|| ToolError::new("invalid_argument", format!("{key} must be a stable id.")))
+}
+fn task_text_arg(payload: &Value, key: &str, max: usize) -> Result<String, ToolError> {
+    let value = payload.get(key).and_then(Value::as_str).unwrap_or_default();
+    if value.trim().is_empty() || value.chars().count() > max || value.chars().any(char::is_control) {
+        return Err(ToolError::new("invalid_argument", format!("{key} must be non-empty, bounded text.")));
+    }
+    Ok(value.to_owned())
+}
+fn task_revision_arg(payload: &Value, key: &str) -> Result<u64, ToolError> {
+    payload.get(key).and_then(Value::as_u64).ok_or_else(|| ToolError::new("invalid_argument", format!("{key} must be a non-negative integer.")))
+}
+fn task_canonical_json(value: &Value) -> Result<String, ToolError> {
+    fn write(value: &Value, out: &mut String) {
+        match value {
+            Value::Object(object) => {
+                out.push('{');
+                let mut keys: Vec<&String> = object.keys().collect();
+                keys.sort();
+                for (index, key) in keys.iter().enumerate() {
+                    if index > 0 { out.push(','); }
+                    out.push_str(&serde_json::to_string(key).unwrap_or_else(|_| "\"\"".into()));
+                    out.push(':');
+                    write(&object[*key], out);
+                }
+                out.push('}');
+            }
+            Value::Array(items) => {
+                out.push('[');
+                for (index, item) in items.iter().enumerate() {
+                    if index > 0 { out.push(','); }
+                    write(item, out);
+                }
+                out.push(']');
+            }
+            _ => out.push_str(&serde_json::to_string(value).unwrap_or_else(|_| "null".into())),
+        }
+    }
+    let mut out = String::new();
+    write(value, &mut out);
+    Ok(out)
+}
+fn task_digest(text: &str) -> String { format!("sha256:{:x}", Sha256::digest(text.as_bytes())) }
+
+fn task_hash(payload: &Value) -> Result<String, ToolError> {
+    let canonical = task_canonical_json(payload)?;
+    Ok(task_digest(&canonical))
+}
+fn task_receipt(tx: &rusqlite::Transaction<'_>, operation_id: &str, hash: &str) -> Result<Option<Value>, ToolError> {
+    let previous: Option<(String,String)> = tx.query_row("SELECT request_hash,result_json FROM creator_studio_task_receipts WHERE operation_id=?1",
+        [operation_id], |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    match previous {
+        Some((existing, result)) if existing == hash => Ok(Some(serde_json::from_str(&result).map_err(|_| ToolError::new("storage_unavailable", "Task receipt is damaged."))?)),
+        Some(_) => Err(ToolError::new("operation_id_conflict", "operationId was already used for a different task request.")),
+        None => Ok(None),
+    }
+}
+fn task_save_receipt(tx: &rusqlite::Transaction<'_>, operation_id: &str, hash: &str, result: &Value) -> Result<(), ToolError> {
+    let canonical = task_canonical_json(result)?;
+    tx.execute("INSERT INTO creator_studio_task_receipts(operation_id,request_hash,result_json,created_at_ms) VALUES(?1,?2,?3,?4)",
+        rusqlite::params![operation_id,hash,canonical,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    Ok(())
+}
+fn task_artifact(payload: &Value) -> Result<Value, ToolError> {
+    let artifact = payload.get("artifact").and_then(Value::as_object).ok_or_else(|| ToolError::new("invalid_argument", "artifact is required."))?;
+    if artifact.len() != 3 || artifact.get("kind").and_then(Value::as_str) != Some("creator-project") {
+        return Err(ToolError::new("invalid_argument", "Only creator-project artifacts are supported."));
+    }
+    let project_id = artifact.get("projectId").and_then(Value::as_str).filter(|value| valid_playtest_run_id(value))
+        .ok_or_else(|| ToolError::new("invalid_argument", "artifact.projectId is invalid."))?;
+    let expected_revision = artifact.get("expectedRevision").and_then(Value::as_u64)
+        .ok_or_else(|| ToolError::new("invalid_argument", "artifact.expectedRevision is required."))?;
+    Ok(json!({"kind":"creator-project","projectId":project_id,"expectedRevision":expected_revision}))
+}
+fn task_check_artifact(data_home: &Path, artifact: &Value) -> Result<(), ToolError> {
+    let host = data_home.join("state/creator/projects.sqlite");
+    let db = open_db(&host, false)?;
+    let project_id = artifact["projectId"].as_str().unwrap_or_default();
+    let expected = artifact["expectedRevision"].as_u64().unwrap_or(u64::MAX);
+    let current: Option<u64> = db.query_row("SELECT revision FROM creator_projects WHERE project_id=?1", [project_id], |row| row.get(0))
+        .optional().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    if current != Some(expected) { return Err(ToolError::new("revision_conflict", "Task artifact revision does not match the authoritative project.")); }
+    Ok(())
+}
+
+fn task_criteria(payload: &Value) -> Result<Vec<Value>, ToolError> {
+    let criteria = payload.get("acceptanceCriteria").and_then(Value::as_array).filter(|items| (1..=16).contains(&items.len()))
+        .ok_or_else(|| ToolError::new("invalid_argument", "acceptanceCriteria must contain 1..=16 entries."))?;
+    criteria.iter().map(|criterion| {
+        let object = criterion.as_object().filter(|object| object.len() == 3).ok_or_else(|| ToolError::new("invalid_argument", "Each criterion needs criterionId, description and requiredEvidenceKind."))?;
+        let criterion_id = object.get("criterionId").and_then(Value::as_str).filter(|value| valid_playtest_run_id(value))
+            .ok_or_else(|| ToolError::new("invalid_argument", "criterionId is invalid."))?;
+        let description = object.get("description").and_then(Value::as_str).filter(|value| !value.trim().is_empty() && value.chars().count() <= 500)
+            .ok_or_else(|| ToolError::new("invalid_argument", "Criterion description is invalid."))?;
+        let kind = object.get("requiredEvidenceKind").and_then(Value::as_str).filter(|value| matches!(*value, "build" | "test" | "human-note" | "city-playtest" | "preview"))
+            .ok_or_else(|| ToolError::new("invalid_argument", "requiredEvidenceKind is unsupported."))?;
+        Ok(json!({"criterionId":criterion_id,"description":description,"requiredEvidenceKind":kind}))
+    }).collect()
+}
+fn task_steps(payload: &Value) -> Result<Vec<Value>, ToolError> {
+    let steps = payload.get("steps").and_then(Value::as_array).filter(|items| (1..=32).contains(&items.len()))
+        .ok_or_else(|| ToolError::new("invalid_argument", "steps must contain 1..=32 entries."))?;
+    steps.iter().enumerate().map(|(ordinal, step)| {
+        let object = step.as_object().filter(|object| object.len() == 3).ok_or_else(|| ToolError::new("invalid_argument", "Each step needs stepId, title and kind."))?;
+        let step_id = object.get("stepId").and_then(Value::as_str).filter(|value| valid_playtest_run_id(value))
+            .ok_or_else(|| ToolError::new("invalid_argument", "stepId is invalid."))?;
+        let title = object.get("title").and_then(Value::as_str).filter(|value| !value.trim().is_empty() && value.chars().count() <= 500)
+            .ok_or_else(|| ToolError::new("invalid_argument", "Step title is invalid."))?;
+        let kind = object.get("kind").and_then(Value::as_str).filter(|value| matches!(*value, "analysis" | "change" | "validation" | "review"))
+            .ok_or_else(|| ToolError::new("invalid_argument", "Step kind is unsupported."))?;
+        Ok(json!({"stepId":step_id,"ordinal":ordinal,"title":title,"kind":kind}))
+    }).collect()
+}
+fn task_row(db: &rusqlite::Connection, task_id: &str) -> Result<(Value, String, u64, String), ToolError> {
+    let row = db.query_row("SELECT t.goal_id,t.goal_revision,t.human_request,t.acceptance_json,t.artifact_json,t.plan_revision,t.step_ids_json,t.phase,t.proposed_change_set_id,t.last_evidence_id,t.created_at_ms,t.updated_at_ms,j.session_id
+        FROM creator_studio_tasks t JOIN creator_jobs j ON j.job_id=t.task_id WHERE t.task_id=?1", [task_id], |row| {
+        Ok((row.get::<_,String>(0)?,row.get::<_,u64>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,String>(4)?,
+            row.get::<_,u64>(5)?,row.get::<_,String>(6)?,row.get::<_,String>(7)?,row.get::<_,Option<String>>(8)?,row.get::<_,Option<String>>(9)?,
+            row.get::<_,u64>(10)?,row.get::<_,u64>(11)?,row.get::<_,Option<String>>(12)?))
+    }).optional().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?
+        .ok_or_else(|| ToolError::new("creator_task_not_found", "Unknown taskId."))?;
+    let (goal_id, goal_revision, human_request, acceptance, artifact, plan_revision, step_ids, phase, proposed, last_evidence, created, updated, session_id) = row;
+    let acceptance: Value = serde_json::from_str(&acceptance).map_err(|_| ToolError::new("storage_unavailable", "Task acceptance is damaged."))?;
+    let artifact: Value = serde_json::from_str(&artifact).map_err(|_| ToolError::new("storage_unavailable", "Task artifact is damaged."))?;
+    let step_ids: Value = serde_json::from_str(&step_ids).map_err(|_| ToolError::new("storage_unavailable", "Task steps are damaged."))?;
+    Ok((json!({"goalId":goal_id,"goalRevision":goal_revision,"humanRequest":human_request,"acceptanceCriteria":acceptance,
+        "artifact":artifact,"planRevision":plan_revision,"stepIds":step_ids,"phase":phase,"proposedChangeSetId":proposed,"lastEvidenceId":last_evidence,
+        "createdAtMs":created,"updatedAtMs":updated}), session_id.unwrap_or_default(), plan_revision, phase))
+}
+fn task_payload(data_home: &Path, task_id: &str) -> Result<Value, ToolError> {
+    let db = open_db(&sessions_db(data_home)?, false)?;
+    ensure_schema(&db)?;
+    let (task, session_id, _, _) = task_row(&db, task_id)?;
+    let plan_revision = task["planRevision"].as_u64().unwrap_or(0);
+    let mut statement = db.prepare("SELECT step_id,ordinal,title,kind FROM creator_studio_task_steps WHERE task_id=?1 AND plan_revision=?2 ORDER BY ordinal").map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let steps = statement.query_map(rusqlite::params![task_id,plan_revision], |row| {
+        Ok(json!({"stepId":row.get::<_,String>(0)?,"ordinal":row.get::<_,u64>(1)?,"title":row.get::<_,String>(2)?,"kind":row.get::<_,String>(3)?}))
+    }).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?.collect::<Result<Vec<_>,_>>().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let mut statement = db.prepare("SELECT evidence_id,plan_revision,step_id,criterion_id,kind,trust_level,summary,data_json,created_at_ms FROM creator_studio_task_evidence WHERE task_id=?1 ORDER BY created_at_ms DESC,evidence_id DESC LIMIT 50").map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let evidence = statement.query_map([task_id], |row| {
+        let data: String = row.get(7)?;
+        Ok(json!({"evidenceId":row.get::<_,String>(0)?,"planRevision":row.get::<_,u64>(1)?,"stepId":row.get::<_,Option<String>>(2)?,
+            "criterionId":row.get::<_,String>(3)?,"kind":row.get::<_,String>(4)?,"trustLevel":row.get::<_,String>(5)?,
+            "summary":row.get::<_,String>(6)?,"data":serde_json::from_str::<Value>(&data).unwrap_or(Value::Null),"createdAtMs":row.get::<_,u64>(8)?}))
+    }).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?.collect::<Result<Vec<_>,_>>().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let progress_json: Option<String> = db.query_row("SELECT progress_json FROM creator_jobs WHERE job_id=?1", [task_id], |row| row.get(0))
+        .optional().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let execution = progress_json.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()).and_then(|value| value.get("execution").cloned()).unwrap_or(Value::Null);
+    let failure_json: Option<String> = db.query_row("SELECT failure_json FROM creator_jobs WHERE job_id=?1", [task_id], |row| row.get(0))
+        .optional().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let failure = failure_json.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()).and_then(|value| value.as_object().filter(|object| !object.is_empty()).map(|object| Value::Object(object.clone()))).unwrap_or(Value::Null);
+    Ok(json!({"jobId":task_id,"taskId":task_id,"sessionId":session_id,"kind":"studio-task","status":task["phase"],
+        "subject":{"goalId":task["goalId"],"artifact":task["artifact"]},"progress":{"planRevision":task["planRevision"],"stepIds":task["stepIds"]},
+        "failure":failure,"cancelRequested":task["phase"] == json!("cancelled"),"createdAtMs":task["createdAtMs"],"updatedAtMs":task["updatedAtMs"],
+        "goalId":task["goalId"],"goalRevision":task["goalRevision"],"humanRequest":task["humanRequest"],"acceptanceCriteria":task["acceptanceCriteria"],
+        "artifact":task["artifact"],"planRevision":task["planRevision"],"stepIds":task["stepIds"],"phase":task["phase"],
+        "proposedChangeSetId":task["proposedChangeSetId"],"lastEvidenceId":task["lastEvidenceId"],"steps":steps,"evidence":evidence,"execution":execution}))
+}
+fn task_terminal(phase: &str) -> bool { matches!(phase, "accepted" | "rejected" | "failed" | "cancelled") }
+
+fn task_create(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
+    let session_id = task_id_arg(payload, "sessionId")?;
+    let goal = task_text_arg(payload, "goal", 4_000)?;
+    let human_request = task_text_arg(payload, "humanRequest", 4_000)?;
+    let artifact = task_artifact(payload)?;
+    task_check_artifact(data_home, &artifact)?;
+    let criteria = task_criteria(payload)?;
+    let operation_id = task_id_arg(payload, "operationId")?;
+    let hash = task_hash(payload)?;
+    let mut db = open_db(&sessions_db(data_home)?, false)?;
+    ensure_schema(&db)?;
+    let (_, _, _, state) = session_scope(&db, &session_id)?;
+    if state != "open" { return Err(ToolError::new("creator_session_closed", "Reopen the session before creating a task.")); }
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    if let Some(result) = task_receipt(&tx, &operation_id, &hash)? { return Ok(result); }
+    let task_id = new_id("studio-task-");
+    let goal_id = new_id("goal-");
+    let now = now_ms();
+    tx.execute("INSERT INTO creator_jobs(job_id,kind,status,subject_json,progress_json,failure_json,cancel_requested,session_id,created_at_ms,updated_at_ms)
+        VALUES(?1,'studio-task','planning',?2,'{}','{}',0,?3,?4,?4)", rusqlite::params![task_id,json!({"goalId":goal_id,"artifact":artifact}).to_string(),session_id,now])
+        .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    tx.execute("INSERT INTO creator_studio_tasks(task_id,goal_id,goal_revision,human_request,acceptance_json,artifact_json,plan_revision,step_ids_json,phase,created_at_ms,updated_at_ms)
+        VALUES(?1,?2,1,?3,?4,?5,0,'[]','planning',?6,?6)", rusqlite::params![task_id,goal_id,human_request,serde_json::to_string(&criteria).unwrap(),artifact.to_string(),now])
+        .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let result = json!({"taskId":task_id,"goalId":goal_id,"goal":goal,"phase":"planning"});
+    task_save_receipt(&tx, &operation_id, &hash, &result)?;
+    tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    task_payload(data_home, &task_id)
+}
+
+fn task_plan_submit(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
+    let task_id = task_id_arg(payload, "taskId")?;
+    let expected_revision = task_revision_arg(payload, "expectedPlanRevision")?;
+    let expected_artifact_revision = task_revision_arg(payload, "expectedArtifactRevision")?;
+    let steps = task_steps(payload)?;
+    let operation_id = task_id_arg(payload, "operationId")?;
+    let hash = task_hash(payload)?;
+    let mut db = open_db(&sessions_db(data_home)?, false)?;
+    ensure_schema(&db)?;
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    if let Some(result) = task_receipt(&tx, &operation_id, &hash)? { return Ok(result); }
+    let (task, _, plan_revision, phase) = task_row(&tx, &task_id)?;
+    if task["artifact"]["expectedRevision"].as_u64() != Some(expected_artifact_revision) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
+    task_check_artifact(data_home, &task["artifact"])?;
+    if plan_revision + 1 != expected_revision { return Err(ToolError::new("plan_revision_conflict", "expectedPlanRevision must be current + 1.")); }
+    if !matches!(phase.as_str(), "planning" | "ready" | "awaiting-review" | "rejected" | "failed" | "cancelled") {
+        return Err(ToolError::new("creator_task_invalid_transition", format!("Cannot submit a plan from {phase}.")));
+    }
+    let step_ids: Vec<String> = steps.iter().map(|step| step["stepId"].as_str().unwrap_or_default().to_owned()).collect();
+    for step in &steps {
+        tx.execute("INSERT INTO creator_studio_task_steps(task_id,plan_revision,step_id,ordinal,title,kind) VALUES(?1,?2,?3,?4,?5,?6)",
+            rusqlite::params![task_id,expected_revision,step["stepId"].as_str().unwrap_or_default(),step["ordinal"].as_u64().unwrap_or(0),step["title"].as_str().unwrap_or_default(),step["kind"].as_str().unwrap_or_default()])
+            .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    }
+    tx.execute("UPDATE creator_studio_tasks SET goal_revision=goal_revision+1,plan_revision=?2,step_ids_json=?3,phase='awaiting-plan-approval',updated_at_ms=?4 WHERE task_id=?1",
+        rusqlite::params![task_id,expected_revision,serde_json::to_string(&step_ids).unwrap(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    tx.execute("UPDATE creator_jobs SET status='awaiting-plan-approval',progress_json=?2,updated_at_ms=?3 WHERE job_id=?1",
+        rusqlite::params![task_id,json!({"planRevision":expected_revision,"stepIds":step_ids}).to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let result = json!({"taskId":task_id,"phase":"awaiting-plan-approval","planRevision":expected_revision});
+    task_save_receipt(&tx, &operation_id, &hash, &result)?;
+    tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    task_payload(data_home, &task_id)
+}
+
+fn task_plan_approve(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
+    let task_id = task_id_arg(payload, "taskId")?;
+    let plan_revision = task_revision_arg(payload, "planRevision")?;
+    let operation_id = task_id_arg(payload, "operationId")?;
+    let hash = task_hash(payload)?;
+    let mut db = open_db(&sessions_db(data_home)?, false)?;
+    ensure_schema(&db)?;
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    if let Some(result) = task_receipt(&tx, &operation_id, &hash)? { return Ok(result); }
+    let (task, _, current_revision, phase) = task_row(&tx, &task_id)?;
+    if phase != "awaiting-plan-approval" || current_revision != plan_revision { return Err(ToolError::new("plan_revision_conflict", "Plan approval is stale or not pending.")); }
+    if task["artifact"]["expectedRevision"].as_u64() != Some(task_revision_arg(payload, "expectedArtifactRevision")?) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
+    task_check_artifact(data_home, &task["artifact"])?;
+    tx.execute("UPDATE creator_studio_tasks SET phase='ready',updated_at_ms=?2 WHERE task_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    tx.execute("UPDATE creator_jobs SET status='ready',updated_at_ms=?2 WHERE job_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let result = json!({"taskId":task_id,"phase":"ready","planRevision":plan_revision});
+    task_save_receipt(&tx, &operation_id, &hash, &result)?;
+    tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    task_payload(data_home, &task_id)
+}
+
+fn task_evidence_append(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
+    let task_id = task_id_arg(payload, "taskId")?;
+    let plan_revision = task_revision_arg(payload, "planRevision")?;
+    let criterion_id = task_id_arg(payload, "criterionId")?;
+    let kind = task_id_arg(payload, "kind")?;
+    if !matches!(kind.as_str(), "build" | "test" | "human-note" | "city-playtest") { return Err(ToolError::new("invalid_argument", "Unsupported evidence kind.")); }
+    let trust_level = task_id_arg(payload, "trustLevel")?;
+    if !matches!(trust_level.as_str(), "city-client-reported" | "creator-declared") {
+        return Err(ToolError::new("invalid_argument", "Evidence trust must be city-client-reported or creator-declared; host verification cannot be self-declared."));
+    }
+    let summary = task_text_arg(payload, "summary", 2_000)?;
+    let step_id = payload.get("stepId").and_then(Value::as_str).map(str::to_owned);
+    let data = payload.get("data").cloned().unwrap_or(Value::Null);
+    if task_canonical_json(&data)?.len() > 8 * 1024 { return Err(ToolError::new("invalid_argument", "Evidence data exceeds 8 KiB.")); }
+    let operation_id = task_id_arg(payload, "operationId")?;
+    let hash = task_hash(payload)?;
+    let mut db = open_db(&sessions_db(data_home)?, false)?;
+    ensure_schema(&db)?;
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    if let Some(result) = task_receipt(&tx, &operation_id, &hash)? { return Ok(result); }
+    let (task, _, current_revision, phase) = task_row(&tx, &task_id)?;
+    if current_revision != plan_revision || !matches!(phase.as_str(), "ready" | "executing" | "validating" | "awaiting-review") {
+        return Err(ToolError::new("creator_task_invalid_transition", format!("Cannot append evidence from {phase}.")));
+    }
+    if task["artifact"]["expectedRevision"].as_u64() != Some(task_revision_arg(payload, "expectedArtifactRevision")?) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
+    task_check_artifact(data_home, &task["artifact"])?;
+    let criterion = task["acceptanceCriteria"].as_array().and_then(|criteria| criteria.iter().find(|criterion| criterion["criterionId"].as_str() == Some(&criterion_id)))
+        .ok_or_else(|| ToolError::new("invalid_argument", "criterionId is not part of this task."))?;
+    if criterion["requiredEvidenceKind"].as_str() != Some(&kind) { return Err(ToolError::new("invalid_argument", "Evidence kind does not satisfy this criterion.")); }
+    if let Some(step) = &step_id {
+        if !task["stepIds"].as_array().is_some_and(|steps| steps.iter().any(|id| id.as_str() == Some(step))) { return Err(ToolError::new("invalid_argument", "stepId is not in the approved plan.")); }
+    }
+    let evidence_id = new_id("evidence-");
+    tx.execute("INSERT INTO creator_studio_task_evidence(evidence_id,task_id,plan_revision,step_id,criterion_id,kind,trust_level,summary,data_json,created_at_ms)
+        VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", rusqlite::params![evidence_id,task_id,plan_revision,step_id,criterion_id,kind,trust_level,summary,data.to_string(),now_ms()])
+        .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let next_phase = if kind == "human-note" { "awaiting-review" } else { "validating" };
+    tx.execute("UPDATE creator_studio_tasks SET phase=?2,last_evidence_id=?3,proposed_change_set_id=COALESCE(?4,proposed_change_set_id),updated_at_ms=?5 WHERE task_id=?1",
+        rusqlite::params![task_id,next_phase,evidence_id,payload.get("proposedChangeSetId").and_then(Value::as_str),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    tx.execute("UPDATE creator_jobs SET status=?2,updated_at_ms=?3 WHERE job_id=?1", rusqlite::params![task_id,next_phase,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let result = json!({"taskId":task_id,"phase":next_phase,"lastEvidenceId":evidence_id,"trustLevel":trust_level});
+    task_save_receipt(&tx, &operation_id, &hash, &result)?;
+    tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    task_payload(data_home, &task_id)
+}
+
+fn execution_cancellations() -> &'static Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>> {
+    static CANCELLATIONS: OnceLock<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>> = OnceLock::new();
+    CANCELLATIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub fn task_execute_with_executor(data_home: &Path, payload: &Value, executor: &dyn super::creator_agent_executor::CreatorAgentExecutor) -> Result<Value, ToolError> {
+    let task_id = task_id_arg(payload, "taskId")?;
+    let expected_plan_revision = task_revision_arg(payload, "expectedPlanRevision")?;
+    let expected_artifact_revision = task_revision_arg(payload, "expectedArtifactRevision")?;
+    let operation_id = task_id_arg(payload, "operationId")?;
+    let timeout_ms = payload.get("timeoutMs").and_then(Value::as_u64).unwrap_or(90_000).clamp(100, 120_000);
+    let hash = task_hash(payload)?;
+    let mut db = open_db(&sessions_db(data_home)?, false)?;
+    ensure_schema(&db)?;
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    if task_receipt(&tx, &operation_id, &hash)?.is_some() { return task_payload(data_home, &task_id); }
+    let (task, _, plan_revision, phase) = task_row(&tx, &task_id)?;
+    if phase == "executing" { return task_payload(data_home, &task_id); }
+    if phase != "ready" { return Err(ToolError::new("creator_task_invalid_transition", format!("Cannot execute from {phase}."))); }
+    if plan_revision != expected_plan_revision { return Err(ToolError::new("plan_revision_conflict", "Execution plan revision is stale.")); }
+    if task["artifact"]["expectedRevision"].as_u64() != Some(expected_artifact_revision) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
+    task_check_artifact(data_home, &task["artifact"])?;
+    if !task["acceptanceCriteria"].as_array().is_some_and(|criteria| criteria.iter().any(|criterion| criterion["criterionId"].as_str() == Some("agent-preview") && criterion["requiredEvidenceKind"].as_str() == Some("preview"))) {
+        return Err(ToolError::new("creator_task_acceptance_missing", "Task requires an agent-preview acceptance criterion before execution."));
+    }
+    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    execution_cancellations().lock().unwrap_or_else(|error| error.into_inner()).insert(task_id.clone(), cancelled.clone());
+    tx.execute("UPDATE creator_studio_tasks SET phase='executing',updated_at_ms=?2 WHERE task_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    tx.execute("UPDATE creator_jobs SET status='executing',progress_json=?2,updated_at_ms=?3 WHERE job_id=?1",
+        rusqlite::params![task_id,json!({"execution":{"operationId":operation_id,"executor":"codex-cli","status":"executing"} }).to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let request = super::creator_agent_executor::AgentExecutionRequest {
+        data_home: data_home.to_path_buf(), goal: task["humanRequest"].as_str().unwrap_or_default().to_owned(),
+        human_request: task["humanRequest"].as_str().unwrap_or_default().to_owned(), artifact: task["artifact"].clone(),
+        plan_revision: expected_plan_revision, timeout: std::time::Duration::from_millis(timeout_ms),
+    };
+    let result = executor.execute(request, &cancelled);
+    execution_cancellations().lock().unwrap_or_else(|error| error.into_inner()).remove(&task_id);
+    let current_phase = task_row(&db, &task_id)?.3;
+    if cancelled.load(std::sync::atomic::Ordering::Relaxed) || current_phase == "cancelled" {
+        return Err(ToolError::new("codex_cancelled", "Task execution was cancelled."));
+    }
+    let result = match result {
+        Ok(success) => {
+            let preview_id = success.preview["previewId"].as_str().filter(|id| valid_playtest_run_id(id)).map(str::to_owned).ok_or_else(|| ToolError::new("preview_required", "Executor returned no valid Preview."))?;
+            if success.preview["baseRevision"].as_u64() != Some(expected_artifact_revision) {
+                Err(ToolError::new("preview_required", "Executor Preview revision does not match the task artifact."))
+            } else { Ok((success, preview_id)) }
+        }
+        Err(error) => Err(error),
+    };
+    match result {
+        Ok((success, preview_id)) => {
+            let mut db = open_db(&sessions_db(data_home)?, false)?;
+            let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            let evidence_id = new_id("evidence-");
+            tx.execute("INSERT INTO creator_studio_task_evidence(evidence_id,task_id,plan_revision,step_id,criterion_id,kind,trust_level,summary,data_json,created_at_ms)
+                VALUES(?1,?2,?3,'human-review','agent-preview','preview','host-observed',?4,?5,?6)",
+                rusqlite::params![evidence_id,task_id,expected_plan_revision,success.summary,success.preview.to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            tx.execute("UPDATE creator_studio_tasks SET phase='awaiting-review',last_evidence_id=?2,proposed_change_set_id=?3,updated_at_ms=?4 WHERE task_id=?1",
+                rusqlite::params![task_id,evidence_id,preview_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            tx.execute("UPDATE creator_jobs SET status='awaiting-review',progress_json=?2,updated_at_ms=?3 WHERE job_id=?1",
+                rusqlite::params![task_id,json!({"execution":{"operationId":operation_id,"executor":"codex-cli","status":"awaiting-review","previewId":preview_id} }).to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            let result = json!({"taskId":task_id,"phase":"awaiting-review","proposedChangeSetId":preview_id,"lastEvidenceId":evidence_id});
+            task_save_receipt(&tx, &operation_id, &hash, &result)?;
+            tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            task_payload(data_home, &task_id)
+        }
+        Err(error) => {
+            let mut db = open_db(&sessions_db(data_home)?, false)?;
+            let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            tx.execute("UPDATE creator_studio_tasks SET phase='failed',updated_at_ms=?2 WHERE task_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            tx.execute("UPDATE creator_jobs SET status='failed',progress_json=?2,failure_json=?3,updated_at_ms=?4 WHERE job_id=?1",
+                rusqlite::params![task_id,json!({"execution":{"operationId":operation_id,"executor":"codex-cli","status":"failed","code":error.code} }).to_string(),json!({"code":error.code}).to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            Err(error)
+        }
+    }
+}
+
+fn task_execute(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
+    task_execute_with_executor(data_home, payload, &super::creator_agent_executor::CodexCliAgentExecutor::new())
+}
+
+fn task_review_accept(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
+    let task_id = task_id_arg(payload, "taskId")?;
+    let plan_revision = task_revision_arg(payload, "planRevision")?;
+    let reviewer_note = task_text_arg(payload, "reviewerNote", 2_000)?;
+    let operation_id = task_id_arg(payload, "operationId")?;
+    let hash = task_hash(payload)?;
+    let mut db = open_db(&sessions_db(data_home)?, false)?;
+    ensure_schema(&db)?;
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    if let Some(result) = task_receipt(&tx, &operation_id, &hash)? { return Ok(result); }
+    let (task, _, current_revision, phase) = task_row(&tx, &task_id)?;
+    if phase != "awaiting-review" || current_revision != plan_revision { return Err(ToolError::new("creator_task_invalid_transition", "Task is not awaiting review with current evidence.")); }
+    if task["artifact"]["expectedRevision"].as_u64() != Some(task_revision_arg(payload, "expectedArtifactRevision")?) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
+    task_check_artifact(data_home, &task["artifact"])?;
+    let criteria = task["acceptanceCriteria"].as_array().ok_or_else(|| ToolError::new("storage_unavailable", "Task acceptance is damaged."))?;
+    for criterion in criteria {
+        let criterion_id = criterion["criterionId"].as_str().unwrap_or_default();
+        let kind = criterion["requiredEvidenceKind"].as_str().unwrap_or_default();
+        let count: i64 = tx.query_row("SELECT COUNT(*) FROM creator_studio_task_evidence WHERE task_id=?1 AND plan_revision=?2 AND criterion_id=?3 AND kind=?4",
+            rusqlite::params![task_id,plan_revision,criterion_id,kind], |row| row.get(0)).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+        if count == 0 { return Err(ToolError::new("creator_task_evidence_required", format!("Criterion {criterion_id} still lacks real {kind} evidence."))); }
+    }
+    tx.execute("UPDATE creator_studio_tasks SET phase='accepted',updated_at_ms=?2 WHERE task_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    tx.execute("UPDATE creator_jobs SET status='accepted',updated_at_ms=?2 WHERE job_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let result = json!({"taskId":task_id,"phase":"accepted","reviewerNote":reviewer_note});
+    task_save_receipt(&tx, &operation_id, &hash, &result)?;
+    tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    task_payload(data_home, &task_id)
+}
+
+fn task_review_reject(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
+    let task_id = task_id_arg(payload, "taskId")?;
+    let plan_revision = task_revision_arg(payload, "planRevision")?;
+    let reason = task_text_arg(payload, "reason", 2_000)?;
+    let operation_id = task_id_arg(payload, "operationId")?;
+    let hash = task_hash(payload)?;
+    let mut db = open_db(&sessions_db(data_home)?, false)?;
+    ensure_schema(&db)?;
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    if let Some(result) = task_receipt(&tx, &operation_id, &hash)? { return Ok(result); }
+    let (task, _, current_revision, phase) = task_row(&tx, &task_id)?;
+    if phase != "awaiting-review" || current_revision != plan_revision { return Err(ToolError::new("creator_task_invalid_transition", "Task is not awaiting review.")); }
+    if task["artifact"]["expectedRevision"].as_u64() != Some(task_revision_arg(payload, "expectedArtifactRevision")?) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
+    task_check_artifact(data_home, &task["artifact"])?;
+    tx.execute("UPDATE creator_studio_tasks SET phase='rejected',updated_at_ms=?2 WHERE task_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    tx.execute("UPDATE creator_jobs SET status='rejected',failure_json=?2,updated_at_ms=?3 WHERE job_id=?1", rusqlite::params![task_id,json!({"code":"human_rejected","reason":reason}).to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let result = json!({"taskId":task_id,"phase":"rejected","reason":reason});
+    task_save_receipt(&tx, &operation_id, &hash, &result)?;
+    tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    task_payload(data_home, &task_id)
+}
+
+fn task_cancel(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
+    let task_id = task_id_arg(payload, "taskId")?;
+    let operation_id = task_id_arg(payload, "operationId")?;
+    let hash = task_hash(payload)?;
+    if let Some(flag) = execution_cancellations().lock().unwrap_or_else(|error| error.into_inner()).get(&task_id) {
+        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    let mut db = open_db(&sessions_db(data_home)?, false)?;
+    ensure_schema(&db)?;
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    if let Some(result) = task_receipt(&tx, &operation_id, &hash)? { return Ok(result); }
+    let (_, _, _, phase) = task_row(&tx, &task_id)?;
+    if task_terminal(&phase) { return Err(ToolError::new("creator_task_invalid_transition", format!("Task is already {phase}."))); }
+    tx.execute("UPDATE creator_studio_tasks SET phase='cancelled',updated_at_ms=?2 WHERE task_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    tx.execute("UPDATE creator_jobs SET status='cancelled',cancel_requested=1,updated_at_ms=?2 WHERE job_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let result = json!({"taskId":task_id,"phase":"cancelled"});
+    task_save_receipt(&tx, &operation_id, &hash, &result)?;
+    tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    task_payload(data_home, &task_id)
+}
+
+/// Shared by Desktop creator.task.* and MCP creator_task_*: one state machine and
+/// one sessions.sqlite authority. No TypeScript lifecycle mirror is involved.
+pub fn task_dispatch(data_home: &Path, method: &str, payload: &Value) -> Result<Value, ToolError> {
+    match method {
+        "creator.task.create" => task_create(data_home, payload),
+        "creator.task.plan.submit" => task_plan_submit(data_home, payload),
+        "creator.task.plan.approve" => task_plan_approve(data_home, payload),
+        "creator.task.status" => task_payload(data_home, task_id_arg(payload, "taskId")?.as_str()),
+        "creator.task.execute" => task_execute(data_home, payload),
+        "creator.task.evidence.append" => task_evidence_append(data_home, payload),
+        "creator.task.evidence.list" => {
+            let task = task_payload(data_home, task_id_arg(payload, "taskId")?.as_str())?;
+            Ok(json!({"evidence":task["evidence"]}))
+        }
+        "creator.task.review.accept" => task_review_accept(data_home, payload),
+        "creator.task.review.reject" => task_review_reject(data_home, payload),
+        "creator.task.cancel" => task_cancel(data_home, payload),
+        _ => Err(ToolError::new("creator_method_unavailable", format!("Unknown task method {method}."))),
+    }
+}
+
+pub fn session_dispatch(data_home: &Path, method: &str, payload: &Value) -> Result<Value, ToolError> {
+    let result = match method {
+        "creator.session.open" => session_open(data_home, payload)?,
+        "creator.session.status" => session_status(data_home, payload)?,
+        "creator.session.close" => session_close(data_home, payload)?,
+        _ => return Err(ToolError::new("creator_method_unavailable", format!("Unknown session method {method}."))),
+    };
+    Ok(result["data"].clone())
+}
+
+fn task_mcp(data_home: &Path, method: &str, args: &Value) -> Result<Value, ToolError> {
+    let data = task_dispatch(data_home, method, args)?;
+    Ok(json!({"ok":true,"data":data}))
+}
+
 pub fn run(name: &str, args: &Value, data_home: &Path, _allow_local_writes: bool) -> Result<Value, ToolError> {
     match name {
         "creator_session_open" => session_open(data_home, args),
@@ -438,6 +967,16 @@ pub fn run(name: &str, args: &Value, data_home: &Path, _allow_local_writes: bool
         "creator_job_status" => job_status(data_home, args),
         "creator_job_wait" => job_wait(data_home, args),
         "creator_job_cancel" => job_cancel(data_home, args),
+        "creator_task_create" => task_mcp(data_home, "creator.task.create", args),
+        "creator_task_plan_submit" => task_mcp(data_home, "creator.task.plan.submit", args),
+        "creator_task_plan_approve" => task_mcp(data_home, "creator.task.plan.approve", args),
+        "creator_task_status" => task_mcp(data_home, "creator.task.status", args),
+        "creator_task_execute" => task_mcp(data_home, "creator.task.execute", args),
+        "creator_task_evidence_append" => task_mcp(data_home, "creator.task.evidence.append", args),
+        "creator_task_evidence_list" => task_mcp(data_home, "creator.task.evidence.list", args),
+        "creator_task_review_accept" => task_mcp(data_home, "creator.task.review.accept", args),
+        "creator_task_review_reject" => task_mcp(data_home, "creator.task.review.reject", args),
+        "creator_task_cancel" => task_mcp(data_home, "creator.task.cancel", args),
         "creator_game_type_list" => game_type_list(data_home, args),
         _ => Err(ToolError::new("internal_error", format!("tool `{name}` registered but not wired"))),
     }
@@ -594,6 +1133,159 @@ mod tests {
         assert_eq!(jobs_before.len(), 1);
         assert_eq!(jobs_before[0]["status"], json!("running"));
         let _ = std::fs::remove_dir_all(home);
+    }
+
+    fn prepare_artifact(home: &Path, project_id: &str, revision: u64) {
+        let db = rusqlite::Connection::open(home.join("state/creator/projects.sqlite")).unwrap();
+        db.execute_batch("CREATE TABLE creator_projects(project_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, document_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);").unwrap();
+        db.execute("INSERT INTO creator_projects(project_id,revision,document_json,created_at_ms,updated_at_ms) VALUES(?1,?2,'{}',1,1)", rusqlite::params![project_id,revision]).unwrap();
+    }
+
+    fn studio_goal(session_id: &str, operation_id: &str) -> Value {
+        json!({"sessionId":session_id,"goal":"Validate the current City game","humanRequest":"Review the saved game without executing an agent",
+            "artifact":{"kind":"creator-project","projectId":"project-1","expectedRevision":3},
+            "acceptanceCriteria":[{"criterionId":"manual-review","description":"A human reviews the result","requiredEvidenceKind":"human-note"}],"operationId":operation_id})
+    }
+    fn studio_plan(task_id: &str, revision: u64, operation_id: &str) -> Value {
+        json!({"taskId":task_id,"expectedPlanRevision":revision,"expectedArtifactRevision":3,"operationId":operation_id,
+            "steps":[{"stepId":"review-city","title":"Review in City","kind":"validation"}]})
+    }
+    fn studio_evidence(task_id: &str, operation_id: &str, trust: &str) -> Value {
+        json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"criterionId":"manual-review","kind":"human-note",
+            "trustLevel":trust,"summary":"Human reviewed the current saved revision","stepId":"review-city","operationId":operation_id})
+    }
+
+    #[test]
+    fn studio_task_recovers_goal_plan_evidence_and_enforces_cas() {
+        let home = temp_home();
+        let session = session_open(&home, &json!({"agentId":"studio-local","projectId":"project-1"})).unwrap();
+        let session_id = session["data"]["sessionId"].as_str().unwrap();
+        prepare_artifact(&home, "project-1", 3);
+        let created = task_dispatch(&home, "creator.task.create", &studio_goal(session_id, "goal-create")).unwrap();
+        let task_id = created["taskId"].as_str().unwrap();
+        let replay = task_dispatch(&home, "creator.task.create", &studio_goal(session_id, "goal-create")).unwrap();
+        assert_eq!(replay["taskId"], task_id);
+        assert_eq!(created["phase"], "planning");
+        assert_eq!(created["artifact"]["expectedRevision"], 3);
+        let submitted = task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 1, "plan-submit")).unwrap();
+        assert_eq!(submitted["phase"], "awaiting-plan-approval");
+        assert_eq!(submitted["steps"].as_array().unwrap().len(), 1);
+        assert_eq!(task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":2,"expectedArtifactRevision":3,"operationId":"plan-approve-stale"})).unwrap_err().code, "plan_revision_conflict");
+        let approved = task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"operationId":"plan-approve"})).unwrap();
+        assert_eq!(approved["phase"], "ready");
+        assert_eq!(task_dispatch(&home, "creator.task.review.accept", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"reviewerNote":"Looks complete","operationId":"review-early"})).unwrap_err().code, "creator_task_invalid_transition");
+        assert_eq!(task_dispatch(&home, "creator.task.evidence.append", &studio_evidence(task_id, "evidence-host", "host-verified")).unwrap_err().code, "invalid_argument");
+        let evidence = task_dispatch(&home, "creator.task.evidence.append", &studio_evidence(task_id, "evidence-manual", "creator-declared")).unwrap();
+        assert_eq!(evidence["phase"], "awaiting-review");
+        assert_eq!(evidence["lastEvidenceId"], evidence["evidence"][0]["evidenceId"]);
+        assert_eq!(task_dispatch(&home, "creator.task.review.accept", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":4,"reviewerNote":"Wrong artifact","operationId":"review-stale"})).unwrap_err().code, "revision_conflict");
+        let accepted = task_dispatch(&home, "creator.task.review.accept", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"reviewerNote":"Accepted manually","operationId":"review-accept"})).unwrap();
+        assert_eq!(accepted["phase"], "accepted");
+        drop(open_db(&sessions_db(&home).unwrap(), false).unwrap());
+        let recovered = task_dispatch(&home, "creator.task.status", &json!({"taskId":task_id})).unwrap();
+        assert_eq!(recovered["phase"], "accepted");
+        assert_eq!(recovered["goalRevision"], 2);
+        assert_eq!(recovered["evidence"].as_array().unwrap().len(), 1);
+        assert_eq!(recovered["evidence"][0]["trustLevel"], "creator-declared");
+        assert_eq!(task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 2, "plan-after-accepted")).unwrap_err().code, "creator_task_invalid_transition");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn studio_task_cancel_revise_reject_and_old_job_wait_remain_compatible() {
+        let home = temp_home();
+        let session = session_open(&home, &json!({"agentId":"studio-local","projectId":"project-1"})).unwrap();
+        let session_id = session["data"]["sessionId"].as_str().unwrap();
+        prepare_artifact(&home, "project-1", 3);
+        let created = task_dispatch(&home, "creator.task.create", &studio_goal(session_id, "goal-cancel-create")).unwrap();
+        let task_id = created["taskId"].as_str().unwrap();
+        task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 1, "plan-cancel-submit")).unwrap();
+        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"operationId":"plan-cancel-approve"})).unwrap();
+        let waiting = job_wait(&home, &json!({"jobId":task_id,"timeoutMs":100})).unwrap();
+        assert_eq!(waiting["data"]["waitTimedOut"], true);
+        assert_eq!(waiting["data"]["job"]["phase"], "ready");
+        let cancelled = job_cancel(&home, &json!({"jobId":task_id})).unwrap();
+        assert_eq!(cancelled["phase"], "cancelled");
+        assert_eq!(cancelled["phase"], "cancelled");
+        let revised = task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 2, "plan-revise")).unwrap();
+        assert_eq!(revised["phase"], "awaiting-plan-approval");
+        assert_eq!(revised["planRevision"], 2);
+        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":2,"expectedArtifactRevision":3,"operationId":"plan-revise-approve"})).unwrap();
+        task_dispatch(&home, "creator.task.evidence.append", &studio_evidence(task_id, "evidence-reject", "creator-declared")).unwrap_err();
+        let mut evidence = studio_evidence(task_id, "evidence-reject", "creator-declared");
+        evidence["planRevision"] = json!(2);
+        task_dispatch(&home, "creator.task.evidence.append", &evidence).unwrap();
+        let rejected = task_dispatch(&home, "creator.task.review.reject", &json!({"taskId":task_id,"planRevision":2,"expectedArtifactRevision":3,"reason":"Needs another pass","operationId":"review-reject"})).unwrap();
+        assert_eq!(rejected["phase"], "rejected");
+        assert_eq!(rejected["failure"]["code"], "human_rejected");
+        let jobs = session_jobs(&home, session_id).unwrap();
+        assert!(jobs.iter().any(|job| job["kind"] == "studio-task" && job["status"] == "rejected"));
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    fn studio_goal_with_preview(session_id: &str, operation_id: &str) -> Value {
+        let mut goal = studio_goal(session_id, operation_id);
+        goal["acceptanceCriteria"] = json!([
+            {"criterionId":"agent-preview","description":"Host generated Preview required","requiredEvidenceKind":"preview"},
+            {"criterionId":"manual-review","description":"A human reviews the result","requiredEvidenceKind":"human-note"}
+        ]);
+        goal
+    }
+
+    #[test]
+    fn studio_task_execute_returns_real_preview_and_awaits_human_acceptance() {
+        let home = temp_home();
+        let session = session_open(&home, &json!({"agentId":"studio-local","projectId":"project-1"})).unwrap();
+        let session_id = session["data"]["sessionId"].as_str().unwrap();
+        prepare_artifact(&home, "project-1", 3);
+        let created = task_dispatch(&home, "creator.task.create", &studio_goal_with_preview(session_id, "execute-goal")).unwrap();
+        let task_id = created["taskId"].as_str().unwrap();
+        task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 1, "execute-plan")).unwrap();
+        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"operationId":"execute-approve"})).unwrap();
+        let executor = crate::mcp::creator_agent_executor::tests::FakeExecutor::success();
+        let executed = task_execute_with_executor(&home, &json!({"taskId":task_id,"expectedPlanRevision":1,"expectedArtifactRevision":3,"operationId":"execute-run"}), &executor).unwrap();
+        assert_eq!(executed["phase"], "awaiting-review");
+        assert_eq!(executed["proposedChangeSetId"], "preview-fake");
+        assert_eq!(executed["execution"]["status"], "awaiting-review");
+        assert_eq!(executed["evidence"].as_array().unwrap().len(), 1);
+        assert_eq!(executed["evidence"][0]["trustLevel"], "host-observed");
+        let replay = task_execute_with_executor(&home, &json!({"taskId":task_id,"expectedPlanRevision":1,"expectedArtifactRevision":3,"operationId":"execute-run"}), &executor).unwrap();
+        assert_eq!(replay["evidence"].as_array().unwrap().len(), 1);
+        assert_eq!(task_dispatch(&home, "creator.task.review.accept", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"reviewerNote":"Accept","operationId":"execute-accept-early"})).unwrap_err().code, "creator_task_evidence_required");
+        task_dispatch(&home, "creator.task.evidence.append", &studio_evidence(task_id, "execute-manual", "creator-declared")).unwrap();
+        let accepted = task_dispatch(&home, "creator.task.review.accept", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"reviewerNote":"Accept after preview","operationId":"execute-accept"})).unwrap();
+        assert_eq!(accepted["phase"], "accepted");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn studio_task_execute_honors_revision_and_failure_modes() {
+        let home = temp_home();
+        let session = session_open(&home, &json!({"agentId":"studio-local","projectId":"project-1"})).unwrap();
+        let session_id = session["data"]["sessionId"].as_str().unwrap();
+        prepare_artifact(&home, "project-1", 3);
+        let created = task_dispatch(&home, "creator.task.create", &studio_goal_with_preview(session_id, "execute-goal-failure")).unwrap();
+        let task_id = created["taskId"].as_str().unwrap();
+        task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 1, "execute-plan-failure")).unwrap();
+        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"operationId":"execute-approve-failure"})).unwrap();
+        let executor = crate::mcp::creator_agent_executor::tests::FakeExecutor::success();
+        assert_eq!(task_execute_with_executor(&home, &json!({"taskId":task_id,"expectedPlanRevision":1,"expectedArtifactRevision":4,"operationId":"execute-stale"}), &executor).unwrap_err().code, "revision_conflict");
+        let timeout = crate::mcp::creator_agent_executor::tests::FakeExecutor::failure("codex_timeout");
+        let error = task_execute_with_executor(&home, &json!({"taskId":task_id,"expectedPlanRevision":1,"expectedArtifactRevision":3,"operationId":"execute-timeout"}), &timeout).unwrap_err();
+        assert_eq!(error.code, "codex_timeout");
+        let failed = task_dispatch(&home, "creator.task.status", &json!({"taskId":task_id})).unwrap();
+        assert_eq!(failed["phase"], "failed");
+        assert_eq!(failed["failure"]["code"], "codex_timeout");
+        task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 2, "execute-revise-failure")).unwrap();
+        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":2,"expectedArtifactRevision":3,"operationId":"execute-approve-retry"})).unwrap();
+        let cancelled = crate::mcp::creator_agent_executor::tests::FakeExecutor::failure("codex_cancelled");
+        assert_eq!(task_execute_with_executor(&home, &json!({"taskId":task_id,"expectedPlanRevision":2,"expectedArtifactRevision":3,"operationId":"execute-cancelled"}), &cancelled).unwrap_err().code, "codex_cancelled");
+        task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 3, "execute-revise-preview")).unwrap();
+        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":3,"expectedArtifactRevision":3,"operationId":"execute-approve-preview"})).unwrap();
+        let missing = crate::mcp::creator_agent_executor::tests::FakeExecutor::failure("preview_required");
+        assert_eq!(task_execute_with_executor(&home, &json!({"taskId":task_id,"expectedPlanRevision":3,"expectedArtifactRevision":3,"operationId":"execute-missing-preview"}), &missing).unwrap_err().code, "preview_required");
+        assert_eq!(task_dispatch(&home, "creator.task.status", &json!({"taskId":task_id})).unwrap()["phase"], "failed");
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

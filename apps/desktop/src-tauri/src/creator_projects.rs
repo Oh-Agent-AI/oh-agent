@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 use std::{collections::HashMap, path::Path, sync::{Mutex, OnceLock}, time::{Duration, SystemTime}};
 
 use crate::creator_assets::inspect_glb;
+use crate::resolve_binary;
 pub use crate::creator_assets::read_city_release_asset;
 use crate::creator_city_patch::{latest_city_patch, list_city_layout_snapshots, publish_city_patch, read_city_patch_for_seed, read_city_layout_snapshot, validate_city_patch, validate_layout_snapshot};
 pub use crate::creator_city_patch::publish_city_layout_snapshot;
@@ -690,13 +691,20 @@ fn require_catalog_layout(home: &Path, layout_id: &str, world_revision: &str) ->
     Ok(())
 }
 
-/// Freeze the current project revision as a local City release. The snapshot
-/// contains the declarative game, validated mounts and registered visual skin;
-/// project drafts, scene objects and analytical data never enter the runtime face.
-pub fn publish_project_release(home: &Path, project_id: &str, expected_revision: u64) -> Result<Value, &'static str> {
-    if !valid_id(project_id) { return Err("creator_request_invalid"); }
-    let mut db = database(home)?;
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
+struct FrozenProjectSnapshot {
+    revision: u64,
+    layout_id: String,
+    world_revision: String,
+    snapshot: Value,
+    snapshot_json: String,
+    snapshot_digest: String,
+    game_type: &'static str,
+    declared_vehicle_id: Value,
+}
+
+/// Freeze the current project revision as an immutable runtime artifact. Candidate
+/// and Release creation share these exact validation and snapshot semantics.
+fn freeze_project_snapshot(tx: &rusqlite::Transaction<'_>, home: &Path, project_id: &str, expected_revision: u64) -> Result<FrozenProjectSnapshot, &'static str> {
     let (revision, raw): (u64, String) = tx.query_row("SELECT revision,document_json FROM creator_projects WHERE project_id=?1", [project_id],
         |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_project_not_found")?;
     if revision != expected_revision { return Err("revision_conflict"); }
@@ -763,8 +771,6 @@ pub fn publish_project_release(home: &Path, project_id: &str, expected_revision:
         "gameType":game_type,"runtimeContractVersion":1,"vehicleId":vehicle.as_ref().and_then(|item| item.get("id").cloned()),
         "vehicle":vehicle,"layoutId":layout_id,"worldRevision":world_revision,"skinId":skin_id,"game":game,"mounts":mounts,
         "scene":scene,"assets":release_document["assets"],"assetRefs":release_document["assetRefs"]});
-    // 独立 City 项目：把城市身份连同不可变 release 一起冻结，运行时才能验证
-    // “这个 release 属于哪座城/哪个城市 revision”。
     if let Some(city_id) = document.get("cityId") {
         snapshot["cityId"] = city_id.clone();
         snapshot["cityRevision"] = document.get("cityRevision").cloned().unwrap_or(Value::Null);
@@ -773,23 +779,133 @@ pub fn publish_project_release(home: &Path, project_id: &str, expected_revision:
     let snapshot_json = serde_json::to_string(&snapshot).map_err(|_| "creator_release_invalid")?;
     if snapshot_json.len() > MAX_RELEASE_BYTES { return Err("creator_release_too_large"); }
     let snapshot_digest = digest(&snapshot_json);
+    let declared_vehicle_id = document.get("vehicleId").cloned().unwrap_or(Value::Null);
+    Ok(FrozenProjectSnapshot { revision, layout_id: layout_id.to_owned(), world_revision: world_revision.to_owned(), snapshot, snapshot_json, snapshot_digest, game_type, declared_vehicle_id })
+}
+
+fn insert_project_release(tx: &rusqlite::Transaction<'_>, frozen: &FrozenProjectSnapshot) -> Result<Value, &'static str> {
+    let project_id = frozen.snapshot["projectId"].as_str().ok_or("creator_release_invalid")?;
     let existing: Option<(String,String)> = tx.query_row("SELECT release_id,snapshot_digest FROM creator_releases WHERE project_id=?1 AND revision=?2",
-        params![project_id,revision], |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(|_| "creator_store_unavailable")?;
+        params![project_id,frozen.revision], |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(|_| "creator_store_unavailable")?;
     if let Some((release_id, existing_digest)) = existing {
-        if existing_digest != snapshot_digest { return Err("creator_release_conflict"); }
-        tx.commit().map_err(|_| "creator_store_unavailable")?;
-        return Ok(json!({"releaseId":release_id,"projectId":project_id,"revision":revision,"status":"published",
-            "gameType":game_type_for_document(&document),"vehicleId":document.get("vehicleId").cloned().unwrap_or(Value::Null),
-            "runtimeContractVersion":1}));
+        if existing_digest != frozen.snapshot_digest { return Err("creator_release_conflict"); }
+        return Ok(json!({"releaseId":release_id,"projectId":project_id,"revision":frozen.revision,"status":"published",
+            "gameType":frozen.game_type,"vehicleId":&frozen.declared_vehicle_id,"runtimeContractVersion":1}));
     }
     let release_id = new_id("release-")?;
     let created_at_ms = now_ms();
     tx.execute("INSERT INTO creator_releases(release_id,project_id,revision,layout_id,world_revision,snapshot_json,snapshot_digest,created_at_ms)
-        VALUES(?1,?2,?3,?4,?5,?6,?7,?8)", params![release_id,project_id,revision,layout_id,world_revision,snapshot_json,snapshot_digest,created_at_ms])
+        VALUES(?1,?2,?3,?4,?5,?6,?7,?8)", params![release_id,project_id,frozen.revision,&frozen.layout_id,&frozen.world_revision,&frozen.snapshot_json,&frozen.snapshot_digest,created_at_ms])
         .map_err(|_| "creator_store_unavailable")?;
+    Ok(json!({"releaseId":release_id,"projectId":project_id,"revision":frozen.revision,"status":"published",
+        "gameType":frozen.game_type,"vehicleId":frozen.snapshot["vehicleId"],"runtimeContractVersion":1}))
+}
+
+/// Direct Release creation remains available for compatibility. The Candidate flow
+/// uses the same frozen snapshot but does not call this path until human acceptance.
+pub fn publish_project_release(home: &Path, project_id: &str, expected_revision: u64) -> Result<Value, &'static str> {
+    if !valid_id(project_id) { return Err("creator_request_invalid"); }
+    let mut db = database(home)?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
+    let frozen = freeze_project_snapshot(&tx, home, project_id, expected_revision)?;
+    let result = insert_project_release(&tx, &frozen)?;
     tx.commit().map_err(|_| "creator_store_unavailable")?;
-    Ok(json!({"releaseId":release_id,"projectId":project_id,"revision":revision,"status":"published",
-        "gameType":game_type,"vehicleId":snapshot["vehicleId"],"runtimeContractVersion":1}))
+    Ok(result)
+}
+
+fn project_candidate_summary(db: &rusqlite::Connection, project_id: &str, revision: u64) -> Result<Value, &'static str> {
+    let row = db.query_row("SELECT candidate_id,snapshot_json,snapshot_digest,created_at_ms,accepted_release_id FROM creator_candidates WHERE project_id=?1 AND revision=?2",
+        params![project_id,revision], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,u64>(3)?,row.get::<_,Option<String>>(4)?)))
+        .optional().map_err(|_| "creator_store_unavailable")?;
+    let Some((candidate_id, raw, content_digest, created_at_ms, accepted_release_id)) = row else { return Ok(Value::Null) };
+    if raw.len() > MAX_RELEASE_BYTES || digest(&raw) != content_digest { return Err("creator_candidate_digest_mismatch"); }
+    let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
+    if snapshot["projectId"].as_str() != Some(project_id) || snapshot["revision"].as_u64() != Some(revision) { return Err("creator_candidate_invalid"); }
+    let latest = db.query_row("SELECT run_id,status,created_at_ms,finished_at_ms,evidence_json,failure_code FROM creator_playtest_runs WHERE release_id=?1 ORDER BY created_at_ms DESC,run_id ASC LIMIT 1",
+        [&candidate_id], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,u64>(2)?,row.get::<_,Option<u64>>(3)?,row.get::<_,Option<String>>(4)?,row.get::<_,Option<String>>(5)?)))
+        .optional().map_err(|_| "creator_store_unavailable")?;
+    let has_successful_evidence = latest.as_ref().is_some_and(|run| run.1 == "completed" && run.4.as_deref()
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .is_some_and(|evidence| evidence["snapshotDigest"].as_str() == Some(&content_digest) && evidence["outcome"].as_str() == Some("success")));
+    let status = if accepted_release_id.is_some() { "accepted" } else if has_successful_evidence { "tested" }
+        else if latest.as_ref().is_some_and(|run| matches!(run.1.as_str(), "pending" | "claimed")) { "testing" }
+        else if latest.is_some() { "test-failed" } else { "created" };
+    let latest_run = match latest {
+        Some((run_id, run_status, run_created_at, finished_at_ms, evidence_json, failure_code)) => {
+            let evidence = evidence_json.map(|raw| serde_json::from_str::<Value>(&raw).map_err(|_| "creator_store_unavailable")).transpose()?.unwrap_or(Value::Null);
+            json!({"runId":run_id,"status":run_status,"createdAtMs":run_created_at,"finishedAtMs":finished_at_ms,
+                "evidenceSource":if evidence.is_null() { Value::Null } else { json!("city-client-reported") },"evidence":evidence,"failureCode":failure_code})
+        }
+        None => Value::Null,
+    };
+    Ok(json!({"artifactKind":"candidate","candidateId":candidate_id,"projectId":project_id,"revision":revision,"contentDigest":content_digest,
+        "status":status,"createdAtMs":created_at_ms,"acceptedReleaseId":accepted_release_id,"latestRun":latest_run}))
+}
+
+pub fn create_project_candidate(home: &Path, project_id: &str, expected_revision: u64) -> Result<Value, &'static str> {
+    if !valid_id(project_id) { return Err("creator_request_invalid"); }
+    let mut db = database(home)?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
+    let frozen = freeze_project_snapshot(&tx, home, project_id, expected_revision)?;
+    let existing: Option<(String,String)> = tx.query_row("SELECT candidate_id,snapshot_digest FROM creator_candidates WHERE project_id=?1 AND revision=?2",
+        params![project_id,expected_revision], |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(|_| "creator_store_unavailable")?;
+    if let Some((_, existing_digest)) = existing {
+        if existing_digest != frozen.snapshot_digest { return Err("creator_candidate_conflict"); }
+    } else {
+        // Artifact ids stay compatible with the existing release-scoped asset URL face;
+        // storage and artifactKind, not the id prefix, distinguish Candidate from Release.
+        let candidate_id = new_id("release-")?;
+        tx.execute("INSERT INTO creator_candidates(candidate_id,project_id,revision,layout_id,world_revision,snapshot_json,snapshot_digest,created_at_ms)
+            VALUES(?1,?2,?3,?4,?5,?6,?7,?8)", params![candidate_id,project_id,expected_revision,frozen.layout_id,frozen.world_revision,frozen.snapshot_json,frozen.snapshot_digest,now_ms()])
+            .map_err(|_| "creator_store_unavailable")?;
+    }
+    tx.commit().map_err(|_| "creator_store_unavailable")?;
+    project_candidate_summary(&db, project_id, expected_revision)
+}
+
+pub fn read_project_candidate(home: &Path, project_id: &str, revision: Option<u64>) -> Result<Value, &'static str> {
+    if !valid_id(project_id) { return Err("creator_request_invalid"); }
+    let db = database(home)?;
+    let current: u64 = db.query_row("SELECT revision FROM creator_projects WHERE project_id=?1", [project_id], |row| row.get(0))
+        .optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_project_not_found")?;
+    project_candidate_summary(&db, project_id, revision.unwrap_or(current))
+}
+
+pub fn accept_project_candidate(home: &Path, candidate_id: &str) -> Result<Value, &'static str> {
+    if !valid_id(candidate_id) { return Err("creator_request_invalid"); }
+    let mut db = database(home)?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
+    let row = tx.query_row("SELECT project_id,revision,snapshot_json,snapshot_digest,accepted_release_id FROM creator_candidates WHERE candidate_id=?1", [candidate_id],
+        |row| Ok((row.get::<_,String>(0)?,row.get::<_,u64>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,Option<String>>(4)?)))
+        .optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_candidate_not_found")?;
+    let (project_id, revision, raw, content_digest, accepted_release_id) = row;
+    if raw.len() > MAX_RELEASE_BYTES || digest(&raw) != content_digest { return Err("creator_candidate_digest_mismatch"); }
+    if let Some(release_id) = accepted_release_id {
+        tx.commit().map_err(|_| "creator_store_unavailable")?;
+        return Ok(json!({"releaseId":release_id,"projectId":project_id,"revision":revision,"status":"published","candidateId":candidate_id,"evidenceSource":"city-client-reported"}));
+    }
+    let active: Option<String> = tx.query_row("SELECT run_id FROM creator_playtest_runs WHERE release_id=?1 AND active_slot=1", [candidate_id], |row| row.get(0))
+        .optional().map_err(|_| "creator_store_unavailable")?;
+    if active.is_some() { return Err("creator_candidate_test_active"); }
+    let latest = tx.query_row("SELECT status,evidence_json FROM creator_playtest_runs WHERE release_id=?1 ORDER BY created_at_ms DESC,run_id ASC LIMIT 1", [candidate_id],
+        |row| Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?))).optional().map_err(|_| "creator_store_unavailable")?
+        .ok_or("creator_candidate_test_required")?;
+    if latest.0 != "completed" { return Err("creator_candidate_test_required"); }
+    let evidence_raw = latest.1.ok_or("creator_candidate_test_required")?;
+    let evidence: Value = serde_json::from_str(&evidence_raw).map_err(|_| "creator_candidate_test_required")?;
+    if evidence["snapshotDigest"].as_str() != Some(&content_digest) || evidence["outcome"].as_str() != Some("success") {
+        return Err("creator_candidate_test_required");
+    }
+    let frozen = freeze_project_snapshot(&tx, home, &project_id, revision)?;
+    if frozen.snapshot_digest != content_digest { return Err("creator_candidate_revision_mismatch"); }
+    let mut result = insert_project_release(&tx, &frozen)?;
+    let release_id = result["releaseId"].as_str().ok_or("creator_release_invalid")?;
+    tx.execute("UPDATE creator_candidates SET accepted_release_id=?2,accepted_at_ms=?3 WHERE candidate_id=?1 AND accepted_release_id IS NULL",
+        params![candidate_id,release_id,now_ms()]).map_err(|_| "creator_store_unavailable")?;
+    tx.commit().map_err(|_| "creator_store_unavailable")?;
+    result["candidateId"] = json!(candidate_id);
+    result["evidenceSource"] = json!("city-client-reported");
+    Ok(result)
 }
 
 /// 当前修订有没有不可变 release。UI 里的 publishedReleaseId 是会话内存，切页就丢；
@@ -1125,17 +1241,43 @@ fn run_project_publication(home: &Path, _owner: &str, _instance: &str, payload: 
     let revision = if payload.get("revision").is_some() { Some(args_u64(payload, "revision")?) } else { None };
     read_project_publication(home, args_valid_id(payload, "projectId")?, revision)
 }
-/// 试玩启动：releaseId 必填；projectId/expectedRevision/requestId 可选（MCP 契约 §6.3，
-/// 提供即校验归属）。requestId 原样回传，供调用方关联异步结果。
+fn run_shared_session(home: &Path, _owner: &str, method: &str, payload: &Value) -> Result<Value, &'static str> {
+    agent_vitals_mcp::mcp::creator_session::session_dispatch(home, method, payload).map_err(|error| error.code)
+}
+fn run_shared_task(home: &Path, _owner: &str, method: &str, payload: &Value) -> Result<Value, &'static str> {
+    if method == "creator.task.execute" && std::env::var_os("AGENT_VITALS_BIN").is_none() {
+        if let Some(binary) = resolve_binary() { std::env::set_var("AGENT_VITALS_BIN", binary); }
+    }
+    agent_vitals_mcp::mcp::creator_session::task_dispatch(home, method, payload).map_err(|error| error.code)
+}
+
+fn run_candidate_create(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    create_project_candidate(home, args_valid_id(payload, "projectId")?, args_u64(payload, "expectedRevision")?)
+}
+fn run_candidate_read(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    let revision = if payload.get("revision").is_some() { Some(args_u64(payload, "revision")?) } else { None };
+    read_project_candidate(home, args_valid_id(payload, "projectId")?, revision)
+}
+fn run_candidate_accept(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    accept_project_candidate(home, args_valid_id(payload, "candidateId")?)
+}
+/// 试玩启动：releaseId 或 candidateId 恰好一个；projectId/expectedRevision/requestId
+/// 可选。两种 artifact 共用桌面 handoff，Candidate 不改变 publication。
 fn run_playtest_start(home: &Path, _owner: &str, instance: &str, payload: &Value) -> Result<Value, &'static str> {
-    let release_id = args_valid_id(payload, "releaseId")?;
+    let is_candidate = payload.get("candidateId").is_some();
+    if is_candidate == payload.get("releaseId").is_some() { return Err("creator_request_invalid"); }
+    let artifact_id = if is_candidate { args_valid_id(payload, "candidateId")? } else { args_valid_id(payload, "releaseId")? };
     let expected_project = if payload.get("projectId").is_some() { Some(args_valid_id(payload, "projectId")?) } else { None };
     let expected_revision = if payload.get("expectedRevision").is_some() { Some(args_u64(payload, "expectedRevision")?) } else { None };
     if payload.get("requestId").is_some_and(|value| !value.as_str().is_some_and(|id| !id.is_empty() && id.len() <= 128)) {
         return Err("creator_request_invalid");
     }
     let game_type = payload.get("gameType").and_then(Value::as_str);
-    let mut result = start_playtest_with_game_type(home, instance, release_id, expected_project, expected_revision, game_type)?;
+    let mut result = start_playtest_with_game_type(home, instance, artifact_id, expected_project, expected_revision, game_type)?;
+    if is_candidate {
+        result["artifactKind"] = json!("candidate");
+        result["candidateId"] = json!(artifact_id);
+    }
     if let Some(request_id) = payload.get("requestId").and_then(Value::as_str) { result["requestId"] = json!(request_id); }
     Ok(result)
 }
@@ -1207,6 +1349,31 @@ fn run_city_create(home: &Path, owner: &str, _instance: &str, payload: &Value) -
     if validation.get("requestDigest").and_then(Value::as_str) != Some(expected.as_str()) { return Err("creator_validation_scope_mismatch"); }
     crate::creator_cities::create_city(home, owner, operation_id, name, seed as u32, profile)
 }
+fn run_city_draft_create(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_city_lifecycle::draft_create(home, owner, payload)
+}
+fn run_city_draft_read(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_city_lifecycle::draft_read(home, payload)
+}
+fn run_city_draft_cancel(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_city_lifecycle::draft_cancel(home, owner, payload)
+}
+fn run_city_draft_commit(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_city_lifecycle::draft_commit(home, owner, payload)
+}
+fn run_city_archive_preview(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_city_lifecycle::archive_preview(home, owner, payload)
+}
+fn run_city_archive_commit(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_city_lifecycle::archive_commit(home, owner, payload)
+}
+fn run_city_archive_list(home: &Path, _owner: &str, _instance: &str, _payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_city_lifecycle::archive_list(home)
+}
+fn run_city_archive_restore(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_city_lifecycle::archive_restore(home, owner, payload)
+}
+
 fn run_city_create_from_world(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
     let name = args_str(payload, "name")?;
     let operation_id = args_valid_id(payload, "operationId")?;
@@ -1437,6 +1604,43 @@ fn run_install_list(home: &Path, _owner: &str, _instance: &str, payload: &Value)
     crate::city_game_install::list(home, payload)
 }
 
+// Story Project Registry（RFC V3 §12，S-2+S-3）：事务形态照 city_game_install；
+// run 身份固定为稳定本地 principal（owner），不接受调用方自报 playerId——
+// 事实仍走 story_store 的显式 StoryStateScopeV1，本组方法只管注册表元数据。
+fn run_story_project_create(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::story_registry::project_create(home, payload)
+}
+fn run_story_project_read(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::story_registry::project_read(home, payload)
+}
+fn run_story_projects_list(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::story_registry::projects_list(home, payload)
+}
+fn run_story_install_preview(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::story_registry::install_preview(home, payload)
+}
+fn run_story_install_commit(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::story_registry::install_commit(home, payload)
+}
+fn run_story_install_list(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::story_registry::install_list(home, payload)
+}
+fn run_story_run_start(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::story_registry::run_start(home, owner, payload)
+}
+fn run_story_run_stop(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::story_registry::run_stop(home, payload)
+}
+fn run_story_run_reset(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::story_registry::run_reset(home, owner, payload)
+}
+fn run_story_lease_acquire(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::story_registry::lease_acquire(home, payload)
+}
+fn run_story_lease_release(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::story_registry::lease_release(home, payload)
+}
+
 static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.code.builds.list", &[], &["limit"], run_code_builds),
     creator_row!("creator.code.preview", &["buildId"], &["seed", "source"], run_code_preview),
@@ -1446,8 +1650,27 @@ static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.code.install.preview", &["buildId", "targetCityId", "expectedCityRevision", "operationId"], &["runAfterInstall", "replaceCurrentView", "allowOfficialStoryWrites"], run_install_preview),
     creator_row!("creator.code.install.commit", &["previewId", "operationId"], &["updateConfirmation"], run_install_commit),
     creator_row!("creator.code.install.list", &[], &["cityId", "gameId", "limit"], run_install_list),
+    creator_row!("creator.story.project.create", &["storyId", "title", "schemaVersion", "storyVersion", "graph", "canon"], &["expectedStoryRevision"], run_story_project_create),
+    creator_row!("creator.story.project.read", &["storyId"], &[], run_story_project_read),
+    creator_row!("creator.story.projects.list", &["limit"], &[], run_story_projects_list),
+    creator_row!("creator.story.install.preview", &["storyId", "targetCityId", "expectedCityRevision", "operationId"], &[], run_story_install_preview),
+    creator_row!("creator.story.install.commit", &["previewId", "operationId"], &["updateConfirmation"], run_story_install_commit),
+    creator_row!("creator.story.install.list", &[], &["cityId", "storyId", "limit"], run_story_install_list),
+    creator_row!("creator.story.run.start", &["cityId", "storyId"], &[], run_story_run_start),
+    creator_row!("creator.story.run.stop", &["storyRunId"], &[], run_story_run_stop),
+    creator_row!("creator.story.run.reset", &["cityId", "storyId"], &[], run_story_run_reset),
+    creator_row!("creator.story.resident.lease.acquire", &["cityId", "residentId", "holderScope", "holderIntentId", "traceId"], &["durationMs"], run_story_lease_acquire),
+    creator_row!("creator.story.resident.lease.release", &["cityId", "residentId", "traceId"], &[], run_story_lease_release),
     creator_row!("creator.capabilities.list", &[], &["category", "schemaVersion"], run_capabilities_list),
     creator_row!("creator.city.create", &["name", "seed", "profile", "operationId", "validation"], &[], run_city_create),
+    creator_row!("creator.city.draft.create", &["name", "seed", "profile", "operationId", "validation"], &[], run_city_draft_create),
+    creator_row!("creator.city.draft.read", &["draftId"], &[], run_city_draft_read),
+    creator_row!("creator.city.draft.cancel", &["draftId", "operationId"], &[], run_city_draft_cancel),
+    creator_row!("creator.city.draft.commit", &["draftId", "operationId", "validation"], &[], run_city_draft_commit),
+    creator_row!("creator.city.archive.preview", &["cityId", "expectedCityRevision", "operationId"], &[], run_city_archive_preview),
+    creator_row!("creator.city.archive.commit", &["previewId", "operationId", "dependencyDigest"], &[], run_city_archive_commit),
+    creator_row!("creator.city.archive.list", &[], &[], run_city_archive_list),
+    creator_row!("creator.city.archive.restore", &["cityId", "operationId"], &[], run_city_archive_restore),
     creator_row!("creator.city.create_from_world", &["name", "operationId", "packageId", "version", "validation"], &[], run_city_create_from_world),
     creator_row!("creator.city.diagnostic.list", &["cityId", "limit"], &[], run_city_diagnostic_list),
     creator_row!("creator.city.diagnostic.record", &["cityId", "revision", "correlationId", "event"], &["code", "elapsedMs"], run_city_diagnostic_record),
@@ -1477,13 +1700,29 @@ static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.operation.status", &["projectId", "operationId"], &[], run_operation_status),
     creator_row!("creator.project.commit", &["projectId", "previewId", "expectedRevision", "operationId"], &[], run_commit),
     creator_row!("creator.project.remix", &["sourceReleaseId", "operationId"], &[], run_project_remix),
+    creator_row!("creator.session.open", &["agentId"], &["projectId", "cityId"], run_shared_session),
+    creator_row!("creator.session.status", &["sessionId"], &[], run_shared_session),
+    creator_row!("creator.session.close", &["sessionId"], &[], run_shared_session),
+    creator_row!("creator.task.create", &["sessionId", "goal", "humanRequest", "artifact", "acceptanceCriteria", "operationId"], &[], run_shared_task),
+    creator_row!("creator.task.plan.submit", &["taskId", "expectedPlanRevision", "expectedArtifactRevision", "steps", "operationId"], &[], run_shared_task),
+    creator_row!("creator.task.plan.approve", &["taskId", "planRevision", "expectedArtifactRevision", "operationId"], &[], run_shared_task),
+    creator_row!("creator.task.status", &["taskId"], &[], run_shared_task),
+    creator_row!("creator.task.execute", &["taskId", "expectedPlanRevision", "expectedArtifactRevision", "operationId"], &["timeoutMs"], run_shared_task),
+    creator_row!("creator.task.evidence.append", &["taskId", "planRevision", "expectedArtifactRevision", "criterionId", "kind", "trustLevel", "summary", "operationId"], &["stepId", "data", "proposedChangeSetId"], run_shared_task),
+    creator_row!("creator.task.evidence.list", &["taskId"], &[], run_shared_task),
+    creator_row!("creator.task.review.accept", &["taskId", "planRevision", "expectedArtifactRevision", "reviewerNote", "operationId"], &[], run_shared_task),
+    creator_row!("creator.task.review.reject", &["taskId", "planRevision", "expectedArtifactRevision", "reason", "operationId"], &[], run_shared_task),
+    creator_row!("creator.task.cancel", &["taskId", "operationId"], &[], run_shared_task),
+    creator_row!("creator.project.candidate.accept", &["candidateId"], &[], run_candidate_accept),
+    creator_row!("creator.project.candidate.create", &["projectId", "expectedRevision"], &[], run_candidate_create),
+    creator_row!("creator.project.candidate.read", &["projectId"], &["revision"], run_candidate_read),
     creator_row!("creator.project.create", &["template", "operationId", "worldRevision"], &["cityId"], run_project_create),
     creator_row!("creator.project.list", &["limit"], &[], run_project_list),
     creator_row!("creator.project.playtest.cancel", &["runId"], &[], run_playtest_cancel),
     creator_row!("creator.project.playtest.history", &["projectId", "limit"], &[], run_playtest_history),
     creator_row!("creator.project.playtest.result", &["runId"], &[], run_playtest_result),
     creator_row!("creator.project.playtest.return_context", &[], &[], run_playtest_return),
-    creator_row!("creator.project.playtest.start", &["releaseId"], &["projectId", "expectedRevision", "requestId", "gameType"], run_playtest_start),
+    creator_row!("creator.project.playtest.start", &[], &["releaseId", "candidateId", "projectId", "expectedRevision", "requestId", "gameType"], run_playtest_start),
     creator_row!("creator.project.publish", &["projectId", "expectedRevision"], &[], run_project_publish),
     creator_row!("creator.project.publication", &["projectId"], &["revision"], run_project_publication),
     creator_row!("creator.project.read", &["projectId"], &[], run_project_read),
@@ -1504,6 +1743,8 @@ static DISPATCH_ROWS: &[CreatorMethodRow] = &[
 pub fn dispatch_as(home: &Path, owner: &str, instance: &str, method: &str, payload: &Value) -> Result<Value, &'static str> {
     let row = DISPATCH_ROWS.iter().find(|row| row.method == method).ok_or("creator_method_unavailable")?;
     if !exact_payload_with_optional(payload, row.required, row.optional) { return Err("creator_request_invalid"); }
+    if method.starts_with("creator.task.") { return agent_vitals_mcp::mcp::creator_session::task_dispatch(home, method, payload).map_err(|error| error.code); }
+    if method.starts_with("creator.session.") { return agent_vitals_mcp::mcp::creator_session::session_dispatch(home, method, payload).map_err(|error| error.code); }
     (row.handler)(home, owner, instance, payload)
 }
 
@@ -2322,6 +2563,111 @@ mod tests {
         assert_eq!(read_project_publication(&home, &project_id, Some(0)).unwrap()["status"], "unpublished");
         assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.publication", &json!({"projectId":"project-missing"})).unwrap_err(), "creator_project_not_found");
         assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.publication", &json!({"projectId":project_id,"releaseId":"release-extra"})).unwrap_err(), "creator_request_invalid");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn candidate_playtest_accept_is_immutable_and_distinct_from_publication() {
+        let home = home();
+        let (project_id, revision) = publishable_project(&home);
+        let candidate = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.candidate.create",
+            &json!({"projectId":project_id,"expectedRevision":revision})).unwrap();
+        let candidate_id = candidate["candidateId"].as_str().unwrap();
+        assert_eq!(candidate["artifactKind"], "candidate");
+        assert_eq!(candidate["status"], "created");
+        assert_eq!(candidate["contentDigest"].as_str().unwrap().len(), 71);
+        assert_eq!(read_project_publication(&home, &project_id, None).unwrap()["status"], "unpublished");
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.candidate.accept",
+            &json!({"candidateId":candidate_id})).unwrap_err(), "creator_candidate_test_required");
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.candidate.create",
+            &json!({"projectId":project_id,"expectedRevision":revision})).unwrap()["candidateId"], candidate_id);
+
+        let started = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.playtest.start",
+            &json!({"candidateId":candidate_id,"projectId":project_id,"expectedRevision":revision})).unwrap();
+        assert_eq!(started["artifactKind"], "candidate");
+        assert_eq!(started["candidateId"], candidate_id);
+        assert_eq!(started["releaseId"], candidate_id);
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.candidate.accept",
+            &json!({"candidateId":candidate_id})).unwrap_err(), "creator_candidate_test_active");
+        let run_id = started["runId"].as_str().unwrap();
+        let claimed = dispatch_city_runtime(&home, "city-instance", "city.creator.playtest.claim", &json!({})).unwrap();
+        assert_eq!(claimed["artifactKind"], "candidate");
+        assert_eq!(claimed["candidateId"], candidate_id);
+        let game_ref = claimed["mounts"][0]["game"].clone();
+        let evidence = json!({"schemaVersion":1,"runtimeVersion":"city-mini-game-runtime-v1","releaseId":candidate_id,
+            "projectRevision":revision,"snapshotDigest":claimed["snapshotDigest"],"worldRevision":"world-rev-test","seed":7,
+            "game":{"id":game_ref["id"],"version":game_ref["version"],"digest":game_ref["digest"]},
+            "tick":812,"counters":{"next":3},"outcome":"success","reasonCode":null});
+        dispatch_city_runtime(&home, "city-instance", "city.creator.playtest.finish", &json!({"runId":run_id,"status":"completed","evidence":evidence})).unwrap();
+        let tested = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-resumed", "creator.project.candidate.read", &json!({"projectId":project_id})).unwrap();
+        assert_eq!(tested["status"], "tested");
+        assert_eq!(tested["latestRun"]["evidenceSource"], "city-client-reported");
+        assert_eq!(tested["latestRun"]["evidence"], evidence);
+        assert_eq!(read_project_publication(&home, &project_id, None).unwrap()["status"], "unpublished");
+
+        let accepted = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-resumed", "creator.project.candidate.accept", &json!({"candidateId":candidate_id})).unwrap();
+        assert_eq!(accepted["status"], "published");
+        assert_eq!(accepted["candidateId"], candidate_id);
+        assert_eq!(accepted["evidenceSource"], "city-client-reported");
+        assert_ne!(accepted["releaseId"], candidate_id);
+        assert_eq!(read_project_publication(&home, &project_id, None).unwrap()["releaseId"], accepted["releaseId"]);
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-resumed", "creator.project.candidate.accept",
+            &json!({"candidateId":candidate_id})).unwrap()["releaseId"], accepted["releaseId"]);
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-resumed", "creator.project.candidate.read",
+            &json!({"projectId":project_id})).unwrap()["status"], "accepted");
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-resumed", "creator.project.playtest.start",
+            &json!({"candidateId":candidate_id})).unwrap_err(), "creator_candidate_already_accepted");
+
+        let db = database(&home).unwrap();
+        db.execute("UPDATE creator_candidates SET snapshot_json='{}' WHERE candidate_id=?1", [candidate_id]).unwrap();
+        assert_eq!(read_project_candidate(&home, &project_id, None).unwrap_err(), "creator_candidate_digest_mismatch");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn candidate_failed_run_is_not_tested_or_acceptable() {
+        let home = home();
+        let (project_id, revision) = publishable_project(&home);
+        let candidate = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.candidate.create",
+            &json!({"projectId":project_id,"expectedRevision":revision})).unwrap();
+        let candidate_id = candidate["candidateId"].as_str().unwrap();
+        let started = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.playtest.start",
+            &json!({"candidateId":candidate_id,"projectId":project_id,"expectedRevision":revision})).unwrap();
+        let run_id = started["runId"].as_str().unwrap();
+        let claimed = dispatch_city_runtime(&home, "city-instance", "city.creator.playtest.claim", &json!({})).unwrap();
+        let game_ref = claimed["mounts"][0]["game"].clone();
+        let evidence = json!({"schemaVersion":1,"runtimeVersion":"city-mini-game-runtime-v1","releaseId":candidate_id,
+            "projectRevision":revision,"snapshotDigest":claimed["snapshotDigest"],"worldRevision":"world-rev-test","seed":7,
+            "game":{"id":game_ref["id"],"version":game_ref["version"],"digest":game_ref["digest"]},
+            "tick":812,"counters":{"next":0},"outcome":"failure","reasonCode":"test_failed"});
+        dispatch_city_runtime(&home, "city-instance", "city.creator.playtest.finish", &json!({"runId":run_id,"status":"failed","evidence":evidence,"failureCode":"test_failed"})).unwrap();
+        let failed = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.candidate.read", &json!({"projectId":project_id})).unwrap();
+        assert_eq!(failed["status"], "test-failed");
+        assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.candidate.accept",
+            &json!({"candidateId":candidate_id})).unwrap_err(), "creator_candidate_test_required");
+        assert_eq!(read_project_publication(&home, &project_id, None).unwrap()["status"], "unpublished");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn desktop_task_api_shares_the_creator_session_ledger() {
+        let home = home();
+        let session = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio", "creator.session.open", &json!({"agentId":"studio-local","projectId":"project-shared"})).unwrap();
+        let session_id = session["sessionId"].as_str().unwrap();
+        let db = database(&home).unwrap();
+        db.execute("INSERT INTO creator_projects(project_id,revision,document_json,created_at_ms,updated_at_ms) VALUES('project-shared',2,'{}',1,1)", []).unwrap();
+        let created = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio", "creator.task.create", &json!({"sessionId":session_id,"goal":"Shared task","humanRequest":"Review only",
+            "artifact":{"kind":"creator-project","projectId":"project-shared","expectedRevision":2},
+            "acceptanceCriteria":[{"criterionId":"manual","description":"Manual review","requiredEvidenceKind":"human-note"}],"operationId":"shared-goal"})).unwrap();
+        let task_id = created["taskId"].as_str().unwrap();
+        dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio", "creator.task.plan.submit", &json!({"taskId":task_id,"expectedPlanRevision":1,"expectedArtifactRevision":2,
+            "steps":[{"stepId":"review","title":"Review","kind":"review"}],"operationId":"shared-plan"})).unwrap();
+        let approved = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio", "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":2,"operationId":"shared-approve"})).unwrap();
+        assert_eq!(approved["phase"], "ready");
+        let cancelled = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio", "creator.task.cancel", &json!({"taskId":task_id,"operationId":"shared-cancel"})).unwrap();
+        assert_eq!(cancelled["phase"], "cancelled");
+        let status = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio", "creator.session.status", &json!({"sessionId":session_id})).unwrap();
+        assert!(status["jobs"].as_array().unwrap().iter().any(|job| job["kind"] == "studio-task" && job["status"] == "cancelled"));
         let _ = std::fs::remove_dir_all(home);
     }
 
@@ -3525,27 +3871,10 @@ fn build_typed_mount(document: &Value, mount_id: &str, entry_anchor_id: &str, bi
             coverage.push(json!({"slot":slot,"anchorId":anchor_id,"kind":kind,"capabilities":capabilities}));
         }
     }
-    // SDK validateMount 的参数覆盖校验（city-sdk validate.ts:494-516 的 Rust 侧移植）：
-    // 未声明键/越界值必须在绑定期拒绝——否则坏配置会冻结进 release，直到运行时才
-    // parameter_not_found 失败（2026-11-20 验收踩实过的链路）。
+    // SDK validateMount 的参数覆盖校验：宿主与 city-sdk validate.ts:494-516 共用同一
+    // 错误词表（unknown/invalid/range），见下方 V3 S-6a 校验块。
     let integer_parameters = game.get("integerParameters").and_then(Value::as_object);
     let overrides_object = parameter_overrides.and_then(Value::as_object);
-    if let Some(overrides) = overrides_object {
-        let integer_parameters = match integer_parameters {
-            Some(parameters) => parameters,
-            None if overrides.is_empty() => json!({}).as_object().unwrap(),
-            None => return Err("creator_mount_parameter_not_found"),
-        };
-        for (name, value) in overrides {
-            let parameter = integer_parameters.get(name.as_str()).ok_or("creator_mount_parameter_not_found")?;
-            let value = value.as_i64().ok_or("creator_mount_parameter_out_of_range")?;
-            let min = parameter.get("min").and_then(Value::as_i64);
-            let max = parameter.get("max").and_then(Value::as_i64);
-            if min.is_some_and(|min| value < min) || max.is_some_and(|max| value > max) {
-                return Err("creator_mount_parameter_out_of_range");
-            }
-        }
-    }
     // 完成阈值耦合（SDK parameter_binding_mismatch）：带 run.finish 完成守卫的槽位，
     // 其阈值参数必须等于绑定数（显式覆盖或声明默认）——防“绑 5 门、过 3 门即结束”。
     if let Some(slots_object) = game.get("slots").and_then(Value::as_object) {
@@ -3567,6 +3896,20 @@ fn build_typed_mount(document: &Value, mount_id: &str, entry_anchor_id: &str, bi
     }
     let layout = document.get("cityLayout").filter(|value| !value.is_null()).ok_or("creator_layout_not_bound")?;
     let (world_revision, layout_id) = validate_layout_snapshot(layout)?;
+    // 参数覆盖必须命中已声明的 integerParameters 且落在声明范围内（V3 S-6a，RFC §1.1-5：
+    // 打包实测缺口——timeLimitTicks:59（声明 min 60）曾被接受并推进 revision）。
+    let declared = game.get("integerParameters").and_then(Value::as_object);
+    if let Some(overrides) = parameter_overrides.and_then(Value::as_object).filter(|object| !object.is_empty()) {
+        for (key, value) in overrides {
+            let spec = declared.and_then(|parameters| parameters.get(key.as_str())).and_then(Value::as_object)
+                .ok_or("creator_mount_parameter_unknown")?;
+            let number = value.as_i64().ok_or("creator_mount_parameter_invalid")?;
+            if spec.get("min").and_then(Value::as_i64).is_some_and(|min| number < min)
+                || spec.get("max").and_then(Value::as_i64).is_some_and(|max| number > max) {
+                return Err("creator_mount_parameter_range");
+            }
+        }
+    }
     let game_digest = digest(&canonical_json(game).map_err(|_| "creator_game_invalid")?);
     let mount = json!({"schemaVersion":1,"mountId":mount_id,
         "layout":{"kind":"city-layout","id":layout_id,"version":"1","digest":world_revision},
@@ -3746,6 +4089,30 @@ mod typed_mount_tests {
         assert_eq!(build_typed_mount(&document, "mount-a", "spawn-a", &missing, None, None).unwrap_err(), "creator_mount_anchor_not_found");
         assert_eq!(build_typed_mount(&document, "mount-a", "spawn-a", &bindings, Some("vehicle-missing"), None).unwrap_err(), "creator_vehicle_not_found");
     }
+
+    #[test]
+    fn typed_mount_parameter_overrides_are_range_checked_against_declared_parameters() {
+        // V3 S-6a 回归（RFC §1.1-5）：打包实测中 timeLimitTicks:59（声明 min 60）
+        // 曾被接受并推进 revision——覆盖必须命中声明且落在 [min,max]。
+        let mut document = project();
+        document["game"]["integerParameters"] = json!({
+            "timeLimitTicks":{"default":2700,"min":60,"max":36000},
+            "gateTarget":{"default":3,"min":3,"max":8}});
+        let bindings = json!({"gates":["gate-a","gate-b","gate-c"]});
+        let within = json!({"timeLimitTicks":2400,"gateTarget":3});
+        let (mount, _) = build_typed_mount(&document, "mount-p", "spawn-a", &bindings, None, Some(&within)).unwrap();
+        assert_eq!(mount["parameterOverrides"]["timeLimitTicks"], 2400);
+        let below_min = json!({"timeLimitTicks":59});
+        assert_eq!(build_typed_mount(&document, "mount-p", "spawn-a", &bindings, None, Some(&below_min)).unwrap_err(), "creator_mount_parameter_range");
+        let above_max = json!({"timeLimitTicks":36001});
+        assert_eq!(build_typed_mount(&document, "mount-p", "spawn-a", &bindings, None, Some(&above_max)).unwrap_err(), "creator_mount_parameter_range");
+        let unknown = json!({"nonexistentParameter":1});
+        assert_eq!(build_typed_mount(&document, "mount-p", "spawn-a", &bindings, None, Some(&unknown)).unwrap_err(), "creator_mount_parameter_unknown");
+        let non_numeric = json!({"timeLimitTicks":"fast"});
+        assert_eq!(build_typed_mount(&document, "mount-p", "spawn-a", &bindings, None, Some(&non_numeric)).unwrap_err(), "creator_mount_parameter_invalid");
+        let empty = json!({});
+        build_typed_mount(&document, "mount-p", "spawn-a", &bindings, None, Some(&empty)).unwrap();
+    }
 }
 
 #[cfg(test)]
@@ -3788,6 +4155,7 @@ mod flight_release_tests {
         assert_eq!(snapshot["gameType"], "flight");
         assert_eq!(snapshot["vehicle"]["id"], "vehicle-release");
         assert_eq!(snapshot["mounts"].as_array().unwrap().len(), 1);
+        assert_eq!(publish_project_release(&home, project_id, 0).unwrap(), published);
         let _ = std::fs::remove_dir_all(home);
     }
 }

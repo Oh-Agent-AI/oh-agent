@@ -506,6 +506,30 @@
         "creator.scene.preview",
         "creator.scene.commit",
         "creator.project.commit",
+        "creator.project.candidate.accept",
+        "creator.project.candidate.create",
+        "creator.project.candidate.read",
+        "creator.city.draft.create",
+        "creator.city.draft.read",
+        "creator.city.draft.cancel",
+        "creator.city.draft.commit",
+        "creator.city.archive.preview",
+        "creator.city.archive.commit",
+        "creator.city.archive.list",
+        "creator.city.archive.restore",
+        "creator.session.open",
+        "creator.session.status",
+        "creator.session.close",
+        "creator.task.create",
+        "creator.task.plan.submit",
+        "creator.task.plan.approve",
+        "creator.task.status",
+        "creator.task.execute",
+        "creator.task.evidence.append",
+        "creator.task.evidence.list",
+        "creator.task.review.accept",
+        "creator.task.review.reject",
+        "creator.task.cancel",
         "creator.project.publish",
         "creator.project.publication",
         "creator.project.playtest.start",
@@ -536,13 +560,32 @@
         "creator.code.story",
         "creator.code.install.preview",
         "creator.code.install.commit",
-        "creator.code.install.list"
+        "creator.code.install.list",
+        "creator.story.project.create",
+        "creator.story.project.read",
+        "creator.story.projects.list",
+        "creator.story.install.preview",
+        "creator.story.install.commit",
+        "creator.story.install.list",
+        "creator.story.run.start",
+        "creator.story.run.stop",
+        "creator.story.run.reset",
+        "creator.story.resident.lease.acquire",
+        "creator.story.resident.lease.release"
       ],
       "hostEvents": [
         "plugin.event"
       ],
       "source": "apps/creator-studio/ui",
       "localCallBudgets": {
+        "creator.story.project.create": {
+          "requestBytes": 393216,
+          "responseBytes": 65536
+        },
+        "creator.story.project.read": {
+          "requestBytes": 8192,
+          "responseBytes": 393216
+        },
         "creator.city.read": {
           "requestBytes": 8192,
           "responseBytes": 393216

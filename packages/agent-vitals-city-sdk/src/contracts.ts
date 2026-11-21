@@ -24,6 +24,30 @@ export interface PlayerScopeV1 {
   readonly kind: "local-profile" | "remote-guest" | "preview";
 }
 
+// StateScopeV1 discriminated union (RFC §3.5.1): every DTO carries `kind`; runtimes
+// dispatch authorization per variant and fail closed on unknown variants.
+export interface GameStateScopeV1 {
+  readonly kind: "game";
+  readonly playerId: string;
+  readonly cityId: string;
+  readonly gameId: string;
+  readonly gameRunId?: string;
+}
+export interface StoryStateScopeV1 {
+  readonly kind: "story";
+  readonly playerId: string;
+  readonly cityId: string;
+  readonly storyId: string;
+  readonly storyRunId: string;
+  readonly residentId?: StableIdV1;
+}
+export interface CityResidentPublicScopeV1 {
+  readonly kind: "city-resident-public";
+  readonly cityId: string;
+  readonly residentId: StableIdV1;
+}
+export type StateScopeV1 = GameStateScopeV1 | StoryStateScopeV1 | CityResidentPublicScopeV1;
+
 export const TRAVEL_MODES_V1 = ["walk", "drive", "fly", "swim", "submersible"] as const;
 export type TravelModeV1 = typeof TRAVEL_MODES_V1[number];
 export const ANCHOR_KINDS_V2 = ["spawn", "route", "zone", "object", "checkpoint"] as const;
@@ -317,6 +341,7 @@ export interface StoryCommitCommandV1 {
   readonly playerScope: PlayerScopeV1;
   readonly cityId: string;
   readonly gameId: string;
+  readonly storyScope?: StoryStateScopeV1;
   readonly residentId?: StableIdV1;
   readonly expectedStoryRevision: RevisionIdV1;
   readonly expectedClockRevision: RevisionIdV1;

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { parseCodeBuilds, type CodeBuildRowV1 } from "../../codeGamePreview";
-import { buildInstallCommitRequest, buildInstallRequest, canCommitInstall, installedGamesForCity, isInstallPreviewAllowed, LIBRARY_RESOURCE_KINDS, parseCityListPage, parseInstallations, parseInstallPreview, type InstallPreview, type InstallRequest, type InstallationRow, type LibraryCityRow, type LibraryKind } from "./cityGameLibraryModel";
+import { buildInstallCommitRequest, buildInstallRequest, canCommitInstall, installedGamesForCity, isInstallPreviewAllowed, LIBRARY_RESOURCE_KINDS, parseCityListPage, parseInstallations, parseInstallPreview, parseStoryProjects, type InstallPreview, type InstallRequest, type InstallationRow, type LibraryCityRow, type LibraryKind, type StoryProjectRow } from "./cityGameLibraryModel";
 import { loadStudioValueAtStartup } from "../../startupLoad";
 
 type Request = <T>(method: string, payload: Record<string, unknown>) => Promise<T>;
@@ -26,9 +26,10 @@ export function CityGameLibraryPanel(props: Readonly<{
   message: string;
   onMessage: (message: string) => void;
   onOpenPreview: (buildId: string, source?: Readonly<{ cityId: string; cityRevision: number }>) => void;
+  view?: "explore" | "releases";
 }>) {
-  const { request, browserPreview, message, onMessage, onOpenPreview } = props;
-  const [kind, setKind] = useState<LibraryKind>("city");
+  const { request, browserPreview, message, onMessage, onOpenPreview, view = "explore" } = props;
+  const [kind, setKind] = useState<LibraryKind>(view === "releases" ? "game" : "city");
   const [cities, setCities] = useState<readonly LibraryCityRow[]>([]);
   const [citiesCursor, setCitiesCursor] = useState<string | null>(null);
   const [citiesLoading, setCitiesLoading] = useState(false);
@@ -40,9 +41,13 @@ export function CityGameLibraryPanel(props: Readonly<{
   const [installations, setInstallations] = useState<readonly InstallationRow[]>([]);
   const [installationsLoading, setInstallationsLoading] = useState(false);
   const [installationsError, setInstallationsError] = useState("");
+  const [stories, setStories] = useState<readonly StoryProjectRow[]>([]);
+  const [storiesLoading, setStoriesLoading] = useState(false);
+  const [storiesError, setStoriesError] = useState("");
   const cityRequest = useRef(0);
   const buildRequest = useRef(0);
   const installationRequest = useRef(0);
+  const storyRequest = useRef(0);
 
   const loadCities = useCallback(async (cursor?: string) => {
     const requestNumber = ++cityRequest.current;
@@ -99,12 +104,32 @@ export function CityGameLibraryPanel(props: Readonly<{
     }
   }, [request]);
 
+  // Story 标签读宿主 Story Project Registry（creator.story.projects.list）：只显示
+  // Registry 的真实注册项，绝不从 story_store 运行时数据推断项目（RFC §0.1）。
+  const loadStories = useCallback(async () => {
+    const requestNumber = ++storyRequest.current;
+    setStoriesLoading(true);
+    setStoriesError("");
+    try {
+      const rows = parseStoryProjects(await loadStudioValueAtStartup(
+        () => request("creator.story.projects.list", { limit: 100 }),
+        { isCancelled: () => requestNumber !== storyRequest.current, delay: (ms) => new Promise(resolve => setTimeout(resolve, ms)) },
+      ));
+      if (requestNumber === storyRequest.current) setStories(rows);
+    } catch (cause) {
+      if (requestNumber === storyRequest.current) setStoriesError(errorMessage(cause, "creator_story_projects_unavailable"));
+    } finally {
+      if (requestNumber === storyRequest.current) setStoriesLoading(false);
+    }
+  }, [request]);
+
   useEffect(() => {
     void loadCities();
     void loadBuilds();
     void loadInstallations();
-    return () => { cityRequest.current += 1; buildRequest.current += 1; installationRequest.current += 1; };
-  }, [loadBuilds, loadCities, loadInstallations]);
+    void loadStories();
+    return () => { cityRequest.current += 1; buildRequest.current += 1; installationRequest.current += 1; storyRequest.current += 1; };
+  }, [loadBuilds, loadCities, loadInstallations, loadStories]);
 
   const selectedBuild = builds.find(build => build.buildId === selectedBuildId) ?? null;
   const [installBuild, setInstallBuild] = useState<CodeBuildRowV1 | null>(null);
@@ -171,18 +196,18 @@ export function CityGameLibraryPanel(props: Readonly<{
     }
   };
 
-  return <section className="city-game-library" aria-label="City 实例与 Game Build">
+  return <section className="city-game-library" aria-label={view === "releases" ? "发布与安装管理" : "City 实例与 Game Build"}>
     <div className="library-catalog">
       <div className="library-heading">
-        <div><span className="welcome-kicker">CREATOR ENTITIES</span><h2>City 实例与 Game Build</h2><p>City 实例、可编辑 Project 和不可变 Build 使用不同身份；这里不把 Build 当作可编辑项目。</p></div>
-        <button className="secondary" disabled={kind === "city" ? citiesLoading : buildsLoading} onClick={() => void (kind === "city" ? loadCities() : loadBuilds())}>{`刷新${kind === "city" ? "City" : "Build"}`}</button>
+        <div><span className="welcome-kicker">{view === "releases" ? "BUILDS & INSTALLATIONS" : "CREATOR ENTITIES"}</span><h2>{view === "releases" ? "发布与安装管理" : "City 实例与 Game Build"}</h2><p>{view === "releases" ? "查看真实 Candidate Build 与 Installation；模板 Release 的候选发布后端尚未接入。" : "City 实例、可编辑 Project 和不可变 Build 使用不同身份；这里不把 Build 当作可编辑项目。"}</p></div>
+        <button className="secondary" disabled={kind === "city" ? citiesLoading : kind === "story" ? storiesLoading : buildsLoading} onClick={() => void (kind === "city" ? loadCities() : kind === "story" ? loadStories() : loadBuilds())}>{`刷新${kind === "city" ? "City" : kind === "story" ? "Story" : "Build"}`}</button>
       </div>
       {message && <p className="status status-banner" role="status">{message}</p>}
-      <div className="library-type-tabs" role="tablist" aria-label="资源类型">
-        {LIBRARY_RESOURCE_KINDS.map(resource => <button key={resource.id} role="tab" aria-selected={kind === resource.id} className={kind === resource.id ? "active" : ""} disabled={!resource.available} title={resource.available ? undefined : resource.description} onClick={() => { if (resource.id !== "story") setKind(resource.id); }}>
-          <strong>{resource.label}</strong><span>{resource.id === "city" ? `${resource.description} · ${cities.length} 项` : resource.id === "game" ? `${resource.description} · ${builds.length} 项` : resource.description}</span>
+      {view === "explore" ? <div className="library-type-tabs" role="tablist" aria-label="资源类型">
+        {LIBRARY_RESOURCE_KINDS.map(resource => <button key={resource.id} role="tab" aria-selected={kind === resource.id} className={kind === resource.id ? "active" : ""} disabled={!resource.available} title={resource.available ? undefined : resource.description} onClick={() => setKind(resource.id)}>
+          <strong>{resource.label}</strong><span>{resource.id === "city" ? `${resource.description} · ${cities.length} 项` : resource.id === "game" ? `${resource.description} · ${builds.length} 项` : `${resource.description} · ${stories.length} 项`}</span>
         </button>)}
-      </div>
+      </div> : <div className="library-note"><strong>Build 与 Installation 是真实记录</strong><span>这里不提供 ST-05 候选发布操作；安装仍使用同一预检和确认门控。</span></div>}
 
       {kind === "city" && <section className="library-list" aria-label="City 实例列表">
         {citiesLoading && cities.length === 0 && <div className="empty library-empty">正在读取真实 City 实例…</div>}
@@ -213,6 +238,19 @@ export function CityGameLibraryPanel(props: Readonly<{
         </button>)}</div>
       </section>}
 
+      {kind === "story" && <section className="library-list" aria-label="Story Project 注册表列表">
+        <div className="library-note"><strong>Story 是宿主 Registry 的注册项</strong><span>storyId 是稳定内容身份，安装/Run/租约生命周期由宿主权威管理；这里不从对话或运行时数据推断项目。</span></div>
+        {storiesLoading && stories.length === 0 && <div className="empty library-empty">正在读取宿主 Story Project 注册表…</div>}
+        {storiesError && <p className="library-error" role="alert">Story Project 读取失败（{storiesError}）。</p>}
+        {!storiesLoading && !storiesError && stories.length === 0 && <div className="empty library-empty">宿主 Story Project 注册表为空。注册 Story 请通过 Agent/MCP 的 creator_story_project_create 完成，这里保持真实空态。</div>}
+        <div className="library-grid">{stories.map(story => <article className="library-card" key={story.storyId}>
+          <div className="library-card-top"><span className="resource-kind">STORY PROJECT</span><span className="validation">Registry revision {story.revision}</span></div>
+          <h3>{story.title}</h3><code title={story.storyId}>{shortId(story.storyId)}</code>
+          <dl><div><dt>版本</dt><dd>{story.storyVersion}</dd></div><div><dt>内容摘要</dt><dd><code title={story.contentDigest}>{shortId(story.contentDigest)}</code></dd></div></dl>
+          <dl><div><dt>结构预算</dt><dd>{story.graphBytes === null ? "未知" : formatSize(story.graphBytes)} graph · {story.canonBytes === null ? "未知" : formatSize(story.canonBytes)} canon</dd></div><div><dt>更新时间</dt><dd>{formatDate(story.updatedAtMs)}</dd></div></dl>
+        </article>)}</div>
+      </section>}
+
       <section className="installation-history" aria-label="安装记录">
         <div className="installation-heading"><div><span className="section-title">City ↔ Game 安装记录</span><p>关系状态独立于 City 资源版本和 Game 构建。</p></div><button className="secondary" disabled={installationsLoading} onClick={() => void loadInstallations()}>刷新记录</button></div>
         {installationsLoading && installations.length === 0 && <p className="muted">正在读取安装记录…</p>}
@@ -227,9 +265,10 @@ export function CityGameLibraryPanel(props: Readonly<{
     </div>
 
     <aside className="library-inspector" aria-label="资源详情">
-      <span className="sidebar-kicker">{kind === "city" ? "CITY INSTANCE" : "IMMUTABLE GAME BUILD"}</span>
-      <h2>{kind === "city" ? "City 实例" : "Game Build（不可编辑）"}</h2>
+      <span className="sidebar-kicker">{kind === "city" ? "CITY INSTANCE" : kind === "story" ? "STORY PROJECT REGISTRY" : "IMMUTABLE GAME BUILD"}</span>
+      <h2>{kind === "city" ? "City 实例" : kind === "story" ? "Story Project（宿主 Registry）" : "Game Build（不可编辑）"}</h2>
       {kind === "city" ? <><p>这里只展示 Host 返回的 City 实例；cityId 和 City Revision 不会冒充 projectId 和项目 Revision。能力和兼容字段缺失时明确标记为不可用或未知。</p><div className="library-note"><strong>安装不是 City 内容替换</strong><span>安装 Game 只添加游戏入口，不替换地形、建筑、世界包或其他游戏。</span></div></>
+        : kind === "story" ? <><p>这里展示宿主 Story Project Registry 的真实注册项：storyId、不可变版本与内容摘要。安装（preview/commit）、StoryRun 与 NPC 公共活动租约由宿主权威管理，MCP 工具面见 creator_story_* 系列。</p><div className="library-note"><strong>空态是真实的</strong><span>注册表为空时这里不会显示推断出的项目；Story 事实（事件、状态）仍走既有 story store 的显式 scope 写入。</span></div></>
         : selectedBuild ? <><div className="build-identity"><span>CANDIDATE BUILD</span><h3>{selectedBuild.gameId}</h3><code>{selectedBuild.buildId}</code></div>
           <dl className="build-facts"><div><dt>游戏版本</dt><dd>{selectedBuild.gameVersion ?? "未知"}</dd></div><div><dt>验证信息</dt><dd>未知</dd></div><div><dt>构建大小</dt><dd>{formatSize(selectedBuild.byteLength)}</dd></div><div><dt>创建时间</dt><dd>{formatDate(selectedBuild.createdAtMs)}</dd></div></dl>
           <div className="actions"><button disabled={browserPreview} onClick={() => onOpenPreview(selectedBuild.buildId)}>打开独立 Preview</button>

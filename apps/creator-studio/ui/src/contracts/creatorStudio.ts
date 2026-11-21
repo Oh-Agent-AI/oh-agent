@@ -13,7 +13,7 @@ export type Project = CreatorProjectRef & { title?: string; kind: string; game: 
 export type ProjectCityState = { key: string; city: CityInstanceV1 | null; worldScene?: CityWorldSnapshot; error?: string };
 export type CityViewStatus = "loading" | "ready" | "failed";
 export type CityDiagnosticContext = { cityId: string; revision: number; correlationId: string; started: number; unavailable: boolean };
-export type StudioPanel = "play" | "agent" | "project" | "code" | "library";
+export type StudioPanel = "play" | "agent" | "project" | "code";
 export type CityViewOpenResult = { cityId: string; revision: number; status: "loading"; mode: "read_only_preview" };
 export type ApplyProject = (next: Project, mode: "preserve" | "replace", previous: Project | null) => { preservedDrafts: boolean };
 

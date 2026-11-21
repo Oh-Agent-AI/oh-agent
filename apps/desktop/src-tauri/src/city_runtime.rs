@@ -2,7 +2,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::path::Path;
 use crate::creator_store::{database, digest, new_id, now_ms};
-use crate::story_store::{commit_story, story_state, StoryClockAuthorityV1, StoryCommitCommandV1};
+use crate::story_store::{commit_story, legacy_story_scope, story_state, StoryClockAuthorityV1, StoryCommitCommandV1, StoryForkScopeV1};
 
 const RUN_TTL_MS: u64 = 30 * 60 * 1_000;
 
@@ -25,7 +25,9 @@ pub(crate) fn migrate(db: &Connection) -> Result<(), &'static str> {
         game_id TEXT NOT NULL, player_id TEXT NOT NULL, build_id TEXT,
         status TEXT NOT NULL, active_slot TEXT UNIQUE, created_at_ms INTEGER NOT NULL,
         expires_at_ms INTEGER NOT NULL, finished_at_ms INTEGER
-    );").map_err(|_| "creator_store_unavailable")
+    );").map_err(|_| "creator_store_unavailable")?;
+    // Story Fork 表（RFC §13.1）：与 city_preview_clocks 对称的 Story 侧私有命名空间。
+    crate::story_store::migrate_story_forks(db)
 }
 
 pub(crate) fn valid_id(value: &str) -> bool {
@@ -134,6 +136,51 @@ pub(crate) fn forget_preview_clock(home: &Path, preview_id: &str) {
     }
 }
 
+/// Story Preview Fork（RFC §13.1 / 隔离 Spec §7.3）：与 Clock Fork 对称的 Story
+/// 侧私有命名空间，forkId = previewId。首次读以 scope 的正式 story_states 行派生
+/// 基线快照（copy-on-read），之后只读 Fork 行——正式侧推进不进入 Fork，Fork 也
+/// 永不回写正式行。预览请求的 source 现阶段不带 Story 上下文，scope 由 Run 自身
+/// 的 preview 玩家 + 合成 Story 身份构成，基线因此恒为 "0" 空基线；Story 上下文
+/// 注入是 PR 后续（RFC §13 第 3 条：PR-4 前保持失败关闭）。
+pub(crate) fn read_story_fork(home: &Path, preview_id: &str, scope: &StoryForkScopeV1) -> Result<Value, &'static str> {
+    if !crate::creator_code_game::valid_preview_id(preview_id) { return Err("game_argument_invalid"); }
+    for id in [&scope.player_id, &scope.city_id, &scope.story_id, &scope.story_run_id] {
+        if !valid_id(id) { return Err("game_argument_invalid"); }
+    }
+    match crate::story_store::story_fork(home, preview_id)? {
+        // 已有 Fork 行：绑定 scope 一致才可读；崩溃残留的旧 Run Fork 失败关闭，
+        // 不把旧快照泄漏给新 Run，也不静默替换重派生。
+        Some(row) if row.0 == scope.player_id && row.1 == scope.city_id
+            && row.2 == scope.story_id && row.3 == scope.story_run_id => Ok(row.4),
+        Some(_) => Err("game_run_mismatch"),
+        None => crate::story_store::seed_story_fork(home, preview_id, scope),
+    }
+}
+
+/// Preview 域 `city.story.read` 的入口：payload.runId 必须绑定本 Preview 窗口的
+/// 活跃 Run（防串窗），且必须是 Preview Run——正式 Run 的玩家 scope 不进入 Fork。
+pub(crate) fn read_preview_story(home: &Path, preview_id: &str, payload: &Value) -> Result<Value, &'static str> {
+    if !crate::creator_code_game::valid_preview_id(preview_id) { return Err("game_argument_invalid"); }
+    let run_id = required(payload, "runId")?;
+    let db = database(home)?;
+    migrate(&db)?;
+    let (city_id, game_id, player_id) = active_run(&db, preview_id, run_id, now_ms())?;
+    // 只有 start_preview_run 生成 preview-player- 前缀；正式 Run 绑到 preview
+    // 实例名属异常路径，失败关闭（基线不得来自正式玩家 scope）。
+    if !player_id.starts_with("preview-player-") { return Err("game_run_mismatch"); }
+    let (story_id, story_run_id) = legacy_story_scope(&game_id);
+    read_story_fork(home, preview_id, &StoryForkScopeV1 { player_id, city_id, story_id, story_run_id })
+}
+
+/// Preview 终态（finished/error）、Run 停止与目录回收时调用；失败静默——幂等
+/// 清理，残留行只占主键空间，不参与任何正式读路径（与 forget_preview_clock 同型）。
+pub(crate) fn forget_story_fork(home: &Path, preview_id: &str) {
+    if !crate::creator_code_game::valid_preview_id(preview_id) { return; }
+    if let Ok(db) = database(home) {
+        let _ = db.execute("DELETE FROM story_preview_forks WHERE preview_id=?1", [preview_id]);
+    }
+}
+
 fn local_player(db: &Connection, now: u64) -> Result<String, &'static str> {
     if let Some(player_id) = db.query_row("SELECT player_id FROM city_players WHERE profile_key='local'", [], |row| row.get::<_, String>(0))
         .optional().map_err(|_| "creator_store_unavailable")? {
@@ -205,6 +252,7 @@ pub(crate) fn stop_preview_runs(home: &Path, preview_id: &str) -> Result<u64, &'
     let stopped = db.execute("UPDATE city_game_runs SET status='stopped',active_slot=NULL,finished_at_ms=?2
         WHERE city_instance_id=?1 AND status='active'", params![preview_id,now]).map_err(|_| "creator_store_unavailable")?;
     forget_preview_clock(home, preview_id);
+    forget_story_fork(home, preview_id);
     Ok(stopped as u64)
 }
 
@@ -240,6 +288,9 @@ fn commit_at(home: &Path, city_instance: &str, payload: &Value, now: u64) -> Res
     let command = StoryCommitCommandV1 {
         operation_id: required(payload, "operationId")?.to_string(), event_id: required(payload, "eventId")?.to_string(),
         player_id, city_id, game_id,
+        // Runtime 的 commit/read 仍走 legacy 合成映射（每 gameId 一个合成 storyId），
+        // S-1 只改存储键，不改变既有 Runtime 语义。
+        story_scope: None,
         resident_id: payload.get("residentId").and_then(Value::as_str).filter(|value| valid_id(value)).map(str::to_string),
         expected_story_revision: required(payload, "expectedStoryRevision")?.to_string(),
         expected_clock_revision: required(payload, "expectedClockRevision")?.to_string(),
@@ -393,6 +444,128 @@ mod tests {
         // 正式面自始至终没有被 Preview 启停推进。
         assert_eq!(formal_clock_row(&home, "city:one").unwrap(), formal_before);
         assert_eq!(read_preview_clock_at(&home, "bad id!", "city:one", 1_000).unwrap_err(), "game_argument_invalid");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    fn fork_clock() -> StoryClockAuthorityV1 {
+        StoryClockAuthorityV1 { revision: "fork-clock-1".to_string(), tick: 1, simulation_utc_ms: 1_000 }
+    }
+
+    fn fork_commit(player: &str, operation: &str, event: &str, revision: &str) -> StoryCommitCommandV1 {
+        StoryCommitCommandV1 {
+            operation_id: operation.to_string(), event_id: event.to_string(),
+            player_id: player.to_string(), city_id: "city:one".to_string(), game_id: "game.romance".to_string(),
+            story_scope: None, resident_id: Some("resident:xia".to_string()),
+            expected_story_revision: revision.to_string(), expected_clock_revision: "fork-clock-1".to_string(),
+            intent: json!({"kind":"invite","targetId":"place:cafe"}), run_id: "fork-run".to_string(),
+        }
+    }
+
+    /// 正式面的完整指纹：story_states / story_events / story_outbox 全部行 +
+    /// 正式 Clock 行。Fork 读写路径对它的任何改写都构成 V3-21 违例。
+    fn formal_story_snapshot(home: &Path) -> Value {
+        let db = database(home).unwrap();
+        let mut statement = db.prepare("SELECT player_id,city_id,story_id,story_run_id,revision,document_json FROM story_states ORDER BY player_id,city_id,story_id,story_run_id").unwrap();
+        let states: Vec<Value> = statement.query_map([], |row| Ok(json!({
+            "playerId":row.get::<_,String>(0)?,"cityId":row.get::<_,String>(1)?,"storyId":row.get::<_,String>(2)?,
+            "storyRunId":row.get::<_,String>(3)?,"revision":row.get::<_,String>(4)?,"document":row.get::<_,String>(5)?})))
+            .unwrap().map(|row| row.unwrap()).collect();
+        let mut statement = db.prepare("SELECT event_id,rule_id,status FROM story_events ORDER BY event_id").unwrap();
+        let events: Vec<Value> = statement.query_map([], |row| Ok(json!({
+            "eventId":row.get::<_,String>(0)?,"ruleId":row.get::<_,String>(1)?,"status":row.get::<_,String>(2)?})))
+            .unwrap().map(|row| row.unwrap()).collect();
+        let mut statement = db.prepare("SELECT event_id,operation_id,status FROM story_outbox ORDER BY id").unwrap();
+        let outbox: Vec<Value> = statement.query_map([], |row| Ok(json!({
+            "eventId":row.get::<_,String>(0)?,"operationId":row.get::<_,String>(1)?,"status":row.get::<_,String>(2)?})))
+            .unwrap().map(|row| row.unwrap()).collect();
+        json!({"states":states,"events":events,"outbox":outbox,"clock":formal_clock_row(home, "city:one")})
+    }
+
+    fn story_fork_row(home: &Path, preview_id: &str) -> Option<(String, String, String, String, String, String)> {
+        database(home).unwrap().query_row(
+            "SELECT story_id,story_run_id,base_story_revision,city_id,player_id,fork_json FROM story_preview_forks WHERE preview_id=?1", [preview_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))).optional().unwrap()
+    }
+
+    #[test]
+    fn story_fork_copies_on_read_holds_base_and_never_touches_formal_state() {
+        let home = home();
+        // 正式面基线：正式 Clock 行 + 本地玩家 Story 行 + 事件/Outbox。
+        read_clock_at(&home, "city:one", 1_000).unwrap();
+        commit_story(&home, fork_commit("player-local", "op-f1", "event-f1", "0"), fork_clock()).unwrap();
+        // Preview Run 与 Fork scope：preview 玩家的合成 Story 地址。
+        let run = start_preview_run(&home, "preview-fork-a", &json!({"cityId":"city:one","gameId":"game.romance"})).unwrap();
+        let player = run["playerScope"]["playerId"].as_str().unwrap().to_string();
+        // 正式侧在 Fork scope 已有状态（Story 上下文注入后正式行的形态）。
+        commit_story(&home, fork_commit(&player, "op-s1", "event-s1", "0"), fork_clock()).unwrap();
+        let formal = crate::story_store::story_state_scoped(&home, &player, "city:one", "game.romance", "legacy-game.romance").unwrap();
+        let formal_before = formal_story_snapshot(&home);
+        // 首读：copy-on-read 派生快照与正式一致，派生路径零写入正式面。
+        let first = read_preview_story(&home, "preview-fork-a", &json!({"runId":run["runId"]})).unwrap();
+        assert_eq!(first["storyRevision"], formal["storyRevision"]);
+        assert_eq!(first["state"]["affection"], 1);
+        assert_eq!(formal_story_snapshot(&home), formal_before);
+        let fork = story_fork_row(&home, "preview-fork-a").unwrap();
+        assert_eq!(fork.0, "game.romance");
+        assert_eq!(fork.1, "legacy-game.romance");
+        assert_eq!(fork.2, formal["storyRevision"].as_str().unwrap());
+        assert_eq!(fork.3, "city:one");
+        assert_eq!(fork.4, player);
+        assert_eq!(serde_json::from_str::<Value>(&fork.5).unwrap(), first);
+        // 二读：仍读 Fork 行，正式不动。
+        let second = read_preview_story(&home, "preview-fork-a", &json!({"runId":run["runId"]})).unwrap();
+        assert_eq!(second, first);
+        assert_eq!(formal_story_snapshot(&home), formal_before);
+        // 正式侧推进（同一 scope 的正式提交）：Fork 仍持 base 快照，不吸收正式推进。
+        let base_revision = formal["storyRevision"].as_str().unwrap().to_string();
+        commit_story(&home, fork_commit(&player, "op-s2", "event-s2", &base_revision), fork_clock()).unwrap();
+        assert_eq!(crate::story_store::story_state_scoped(&home, &player, "city:one", "game.romance", "legacy-game.romance").unwrap()["state"]["affection"], 2);
+        let formal_after_commits = formal_story_snapshot(&home);
+        let third = read_preview_story(&home, "preview-fork-a", &json!({"runId":run["runId"]})).unwrap();
+        assert_eq!(third["storyRevision"], first["storyRevision"]);
+        assert_eq!(third["state"]["affection"], 1);
+        assert_eq!(formal_story_snapshot(&home), formal_after_commits);
+        // 终态清理幂等：finished 上报删除 Fork 行，重复清理无副作用；
+        // 整个 Fork 生命周期前后正式 Story/Clock/Outbox 仅由显式正式提交改变。
+        crate::creator_code_game::record_preview_state(&home, &json!({"status":"finished","previewId":"preview-fork-a","gameId":"game.romance"})).unwrap();
+        assert!(story_fork_row(&home, "preview-fork-a").is_none());
+        forget_story_fork(&home, "preview-fork-a");
+        assert!(story_fork_row(&home, "preview-fork-a").is_none());
+        assert_eq!(formal_story_snapshot(&home), formal_after_commits);
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn story_fork_binding_is_per_preview_and_rejects_foreign_or_formal_runs() {
+        let home = home();
+        let run_a = start_preview_run(&home, "preview-fork-a", &json!({"cityId":"city:one","gameId":"game.romance"})).unwrap();
+        let run_b = start_preview_run(&home, "preview-fork-b", &json!({"cityId":"city:one","gameId":"game.romance"})).unwrap();
+        // 防串窗：runId 必须绑定本 Preview 的活跃 Run。
+        assert_eq!(read_preview_story(&home, "preview-fork-a", &json!({"runId":run_b["runId"]})).unwrap_err(), "game_run_mismatch");
+        assert_eq!(read_preview_story(&home, "preview-fork-a", &json!({"runId":"game-run-missing"})).unwrap_err(), "game_run_not_found");
+        assert_eq!(read_preview_story(&home, "preview-fork-a", &json!({})).unwrap_err(), "game_argument_invalid");
+        assert_eq!(read_preview_story(&home, "bad id!", &json!({"runId":run_a["runId"]})).unwrap_err(), "game_argument_invalid");
+        // 空基线：preview-b 的 scope 无正式行，基线为 "0"。
+        let empty = read_preview_story(&home, "preview-fork-b", &json!({"runId":run_b["runId"]})).unwrap();
+        assert_eq!(empty["storyRevision"], "0");
+        assert_eq!(empty["state"], json!({}));
+        assert_eq!(story_fork_row(&home, "preview-fork-b").unwrap().2, "0");
+        // 两个 Preview 各持独立 Fork 行，玩家 scope 互不重叠。
+        let own = read_preview_story(&home, "preview-fork-a", &json!({"runId":run_a["runId"]})).unwrap();
+        assert_eq!(own["storyRevision"], "0");
+        assert_ne!(story_fork_row(&home, "preview-fork-a").unwrap().4, story_fork_row(&home, "preview-fork-b").unwrap().4);
+        // 绑定校验（§13.1 三元）：残留 Fork 行与请求 scope 不一致时失败关闭。
+        let stale = StoryForkScopeV1 { player_id: "player-other".to_string(), city_id: "city:one".to_string(),
+            story_id: "game.romance".to_string(), story_run_id: "legacy-game.romance".to_string() };
+        assert_eq!(read_story_fork(&home, "preview-fork-b", &stale).unwrap_err(), "game_run_mismatch");
+        // 正式 Run 绑到 preview 实例名属异常路径：玩家 scope 非 preview 玩家即失败关闭。
+        stop_preview_runs(&home, "preview-fork-a").unwrap();
+        assert!(story_fork_row(&home, "preview-fork-a").is_none());
+        assert!(story_fork_row(&home, "preview-fork-b").is_some());
+        assert_eq!(read_preview_story(&home, "preview-fork-a", &json!({"runId":run_a["runId"]})).unwrap_err(), "game_run_cancelled");
+        let formal_run = start_run(&home, "preview-fork-a", &json!({"cityId":"city:one","gameId":"game.romance"})).unwrap();
+        assert_eq!(read_preview_story(&home, "preview-fork-a", &json!({"runId":formal_run["runId"]})).unwrap_err(), "game_run_mismatch");
+        assert!(story_fork_row(&home, "preview-fork-a").is_none());
         std::fs::remove_dir_all(home).ok();
     }
 }

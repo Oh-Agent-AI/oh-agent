@@ -17,6 +17,7 @@ mod plugin_state;
 mod creator_projects;
 mod embedded_city_sdk;
 mod creator_cities;
+mod creator_city_lifecycle;
 mod creator_assets;
 mod creator_city_patch;
 mod creator_city_host;
@@ -24,9 +25,13 @@ mod city_runtime;
 mod city_scheduler;
 mod city_game_install;
 mod code_preview_window;
+// 宿主侧规则复算器（City SDK V3 S-6b / V3-16）：镜像 city-sdk runtime.ts 子集，
+// 供 creator_playtest 的 finish 路径把结算证据升级为 host-verified。
+mod rule_replay;
 mod creator_playtest;
 mod creator_store;
 mod story_store;
+mod story_registry;
 pub mod creator_content_v2;
 mod creator_content_install;
 mod creator_experience;

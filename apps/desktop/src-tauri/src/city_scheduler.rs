@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use std::path::Path;
 use crate::city_runtime::{active_run, read_clock_at, valid_id};
 use crate::creator_store::{canonical_json, database, digest, now_ms};
-use crate::story_store::story_state;
+use crate::story_store::{legacy_story_scope, story_state};
 
 const DAY_MS: u64 = 86_400_000;
 const MAX_UTC_MS: u64 = 253_402_300_799_000;
@@ -92,8 +92,10 @@ fn validate_rule(rule: &Value, simulation: u64) -> Result<Option<u64>, &'static 
 }
 
 fn receipt(db: &Connection, scope: &(String, String, String), operation: &str, hash: &str) -> Result<Option<Value>, &'static str> {
-    let existing = db.query_row("SELECT request_hash,result_json FROM story_operations WHERE player_id=?1 AND city_id=?2 AND game_id=?3 AND operation_id=?4",
-        params![scope.2,scope.0,scope.1,operation], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+    // Scheduler 是 legacy 调用方：回执寻址走合成映射（每 gameId 一个合成 storyId）。
+    let (story_id, story_run_id) = legacy_story_scope(&scope.1);
+    let existing = db.query_row("SELECT request_hash,result_json FROM story_operations WHERE player_id=?1 AND city_id=?2 AND story_id=?3 AND story_run_id=?4 AND operation_id=?5",
+        params![scope.2,scope.0,story_id,story_run_id,operation], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
         .optional().map_err(|_| "creator_store_unavailable")?;
     match existing {
         Some((existing_hash, result)) if existing_hash == hash => Ok(Some(serde_json::from_str(&result).map_err(|_| "creator_store_unavailable")?)),
@@ -103,8 +105,9 @@ fn receipt(db: &Connection, scope: &(String, String, String), operation: &str, h
 }
 
 fn save_receipt(tx: &rusqlite::Transaction<'_>, scope: &(String, String, String), operation: &str, hash: &str, result: &Value, now: u64) -> Result<(), &'static str> {
-    tx.execute("INSERT INTO story_operations(player_id,city_id,game_id,operation_id,request_hash,result_json,created_at_ms) VALUES (?1,?2,?3,?4,?5,?6,?7)",
-        params![scope.2,scope.0,scope.1,operation,hash,canonical_json(result).map_err(|_| "game_argument_invalid")?,now])
+    let (story_id, story_run_id) = legacy_story_scope(&scope.1);
+    tx.execute("INSERT INTO story_operations(player_id,city_id,game_id,story_id,story_run_id,operation_id,request_hash,result_json,created_at_ms) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+        params![scope.2,scope.0,scope.1,story_id,story_run_id,operation,hash,canonical_json(result).map_err(|_| "game_argument_invalid")?,now])
         .map_err(|_| "creator_store_unavailable")?;
     Ok(())
 }
