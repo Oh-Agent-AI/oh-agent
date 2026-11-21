@@ -108,7 +108,8 @@ pub(crate) fn wait(home, principal: &Value, timeout_ms: u64) -> Result<Value, &'
 | D-3 | `creator_actor_turn_wait` 工具（外部会话长轮询）| actor_adapter.rs + creator_projects.rs + MCP + plugins.json |
 | D-4 | NPC 回复面（已有）：actor intent submit（speak）→ 玩家经 city.story.read / timeline 读到 | 无新增 |
 | D-5 | 测试：说话→投递→领取唤醒→intent 提交→confirm→玩家同 Run 可读 全链；TTL 过期；多 actor 隔离；幂等；重排队 | 各文件 tests |
-| D-6 | 回合确认状态机（pending→in_flight→confirmed）+ replyTTL 重排队 + `creator_actor_turn_confirm` 工具 | host_delivery.rs 增量 + MCP 面 |
+| D-6 ✅ | 回合确认状态机（pending→in_flight→confirmed）+ replyTTL 重排队 + `creator_actor_turn_confirm` 工具 | host_delivery.rs 增量 + MCP 面 |
+| D-7 | 玩家同 Run 读取接口（G-READ 缺口）：按 run 作用域读已提交回复（HB-08 前置） | story_store / city_runtime |
 
 ## 5. 验收标准
 
