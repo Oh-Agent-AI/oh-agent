@@ -17,6 +17,7 @@ mod plugin_state;
 mod creator_projects;
 mod embedded_city_sdk;
 mod creator_cities;
+mod creator_city_lifecycle;
 mod creator_assets;
 mod creator_city_patch;
 mod creator_city_host;

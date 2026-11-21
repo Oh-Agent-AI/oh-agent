@@ -3,11 +3,10 @@
 //! accepts (no external URIs, no extensions/skins/animations, bounded counts)
 //! and derives world-space bounds from POSITION accessors; release assets are
 //! only served after proving they are referenced by that immutable release.
-use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
 use std::path::Path;
 
-use crate::creator_store::{bytes_digest, database, digest, valid_id};
+use crate::creator_store::{bytes_digest, database, digest, read_creator_artifact, valid_id};
 use crate::creator_projects::{MAX_IMPORTED_MODEL_BYTES, MAX_RELEASE_BYTES};
 
 pub(crate) fn inspect_glb(bytes: &[u8]) -> Result<Value, &'static str> {
@@ -111,8 +110,8 @@ pub fn read_city_release_asset(home: &Path, release_id: &str, asset_digest: &str
         return Err("creator_asset_invalid");
     }
     let db = database(home)?;
-    let (raw, snapshot_digest): (String, String) = db.query_row("SELECT snapshot_json,snapshot_digest FROM creator_releases WHERE release_id=?1", [release_id], |row| Ok((row.get(0)?,row.get(1)?)))
-        .optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_release_not_found")?;
+    let artifact = read_creator_artifact(&db, release_id)?;
+    let (raw, snapshot_digest) = (artifact.snapshot_json, artifact.snapshot_digest);
     if raw.len() > MAX_RELEASE_BYTES { return Err("creator_release_invalid"); }
     if digest(&raw) != snapshot_digest { return Err("creator_release_digest_mismatch"); }
     let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;

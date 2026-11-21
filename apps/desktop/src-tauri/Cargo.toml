@@ -40,6 +40,8 @@ agent-vitals-domain = { path = "../../../crates/agent-vitals-domain" }
 # new 具体类型、不直读 state JSON（overview.rs 的既有直读是 v1.3 遗留，
 # spec §7 的目标态是"Tauri 只调 daily_summary/monthly_summary 等 API"）。
 agent-vitals-data = { path = "../../../crates/agent-vitals-data" }
+# Studio goal/plan/evidence：Desktop 与 data-mcp 共用同一 creator_session 状态机和 sessions.sqlite。
+agent-vitals-mcp = { path = "../../../crates/agent-vitals-mcp" }
 rusqlite = { version = "0.31", features = ["bundled"] }
 # P2 watcher（spec §9-P2，2026-09-22 方案 A）：桌面显式启用 notify 依赖——
 # CLI / wasm 的默认构建零该依赖（NoopWatcher，tick 周期兜底）。

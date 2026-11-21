@@ -103,6 +103,7 @@ dependencies = [
  "agent-vitals-data",
  "agent-vitals-domain",
  "agent-vitals-harnesses",
+ "agent-vitals-mcp",
  "agent-vitals-runtime",
  "base64 0.22.1",
  "flate2",

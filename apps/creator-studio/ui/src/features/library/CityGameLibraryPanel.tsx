@@ -26,9 +26,10 @@ export function CityGameLibraryPanel(props: Readonly<{
   message: string;
   onMessage: (message: string) => void;
   onOpenPreview: (buildId: string, source?: Readonly<{ cityId: string; cityRevision: number }>) => void;
+  view?: "explore" | "releases";
 }>) {
-  const { request, browserPreview, message, onMessage, onOpenPreview } = props;
-  const [kind, setKind] = useState<LibraryKind>("city");
+  const { request, browserPreview, message, onMessage, onOpenPreview, view = "explore" } = props;
+  const [kind, setKind] = useState<LibraryKind>(view === "releases" ? "game" : "city");
   const [cities, setCities] = useState<readonly LibraryCityRow[]>([]);
   const [citiesCursor, setCitiesCursor] = useState<string | null>(null);
   const [citiesLoading, setCitiesLoading] = useState(false);
@@ -195,18 +196,18 @@ export function CityGameLibraryPanel(props: Readonly<{
     }
   };
 
-  return <section className="city-game-library" aria-label="City 实例与 Game Build">
+  return <section className="city-game-library" aria-label={view === "releases" ? "发布与安装管理" : "City 实例与 Game Build"}>
     <div className="library-catalog">
       <div className="library-heading">
-        <div><span className="welcome-kicker">CREATOR ENTITIES</span><h2>City 实例与 Game Build</h2><p>City 实例、可编辑 Project 和不可变 Build 使用不同身份；这里不把 Build 当作可编辑项目。</p></div>
+        <div><span className="welcome-kicker">{view === "releases" ? "BUILDS & INSTALLATIONS" : "CREATOR ENTITIES"}</span><h2>{view === "releases" ? "发布与安装管理" : "City 实例与 Game Build"}</h2><p>{view === "releases" ? "查看真实 Candidate Build 与 Installation；模板 Release 的候选发布后端尚未接入。" : "City 实例、可编辑 Project 和不可变 Build 使用不同身份；这里不把 Build 当作可编辑项目。"}</p></div>
         <button className="secondary" disabled={kind === "city" ? citiesLoading : kind === "story" ? storiesLoading : buildsLoading} onClick={() => void (kind === "city" ? loadCities() : kind === "story" ? loadStories() : loadBuilds())}>{`刷新${kind === "city" ? "City" : kind === "story" ? "Story" : "Build"}`}</button>
       </div>
       {message && <p className="status status-banner" role="status">{message}</p>}
-      <div className="library-type-tabs" role="tablist" aria-label="资源类型">
+      {view === "explore" ? <div className="library-type-tabs" role="tablist" aria-label="资源类型">
         {LIBRARY_RESOURCE_KINDS.map(resource => <button key={resource.id} role="tab" aria-selected={kind === resource.id} className={kind === resource.id ? "active" : ""} disabled={!resource.available} title={resource.available ? undefined : resource.description} onClick={() => setKind(resource.id)}>
           <strong>{resource.label}</strong><span>{resource.id === "city" ? `${resource.description} · ${cities.length} 项` : resource.id === "game" ? `${resource.description} · ${builds.length} 项` : `${resource.description} · ${stories.length} 项`}</span>
         </button>)}
-      </div>
+      </div> : <div className="library-note"><strong>Build 与 Installation 是真实记录</strong><span>这里不提供 ST-05 候选发布操作；安装仍使用同一预检和确认门控。</span></div>}
 
       {kind === "city" && <section className="library-list" aria-label="City 实例列表">
         {citiesLoading && cities.length === 0 && <div className="empty library-empty">正在读取真实 City 实例…</div>}
