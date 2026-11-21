@@ -245,6 +245,9 @@ pub(crate) fn submit_intent(home: &Path, intent: &Value) -> Result<Value, &'stat
         rule_set_digest: Some(rule_set_digest),
         causation_id: source_event_ids.first().cloned(),
         correlation_id: Some(intent_id),
+        // Intent 管线（PR-5/S-5）不做叙事求值——legacy kind 规则保持不变；
+        // 求值器裁决效果只由 actor_turn 裁决链注入（N3）。
+        narrative_effects: None,
     };
     // CAS 提交（State+Event+Outbox+回执 一事务）。
     let commit = crate::story_store::commit_story(home, command, crate::story_store::StoryClockAuthorityV1 {

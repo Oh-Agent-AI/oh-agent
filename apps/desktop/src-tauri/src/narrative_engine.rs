@@ -9,10 +9,8 @@ use serde_json::{json, Value};
 
 use crate::creator_store::{database, digest};
 
-#[allow(dead_code)]
 const EVALUATOR_BUNDLE: &str = include_str!("../narrative_engine/narrative-evaluator.iife.js");
 
-#[allow(dead_code)]
 fn run_evaluator(entry: &str, args_json: &str) -> Result<String, &'static str> {
     let runtime = Runtime::new().map_err(|e| fail_stage("runtime", e))?;
     runtime.set_memory_limit(64 * 1024 * 1024);
@@ -27,7 +25,6 @@ fn run_evaluator(entry: &str, args_json: &str) -> Result<String, &'static str> {
     })
 }
 
-#[allow(dead_code)]
 fn fail_stage(stage: &str, error: impl std::fmt::Display) -> &'static str {
     // leak 用于一次性诊断；宿主启动路径不频繁调用（与 embedded_city_sdk 同模式）。
     Box::leak(format!("narrative evaluator {stage}: {error}").into_boxed_str())
@@ -36,7 +33,6 @@ fn fail_stage(stage: &str, error: impl std::fmt::Display) -> &'static str {
 
 
 /// 调用求值器并校验 nonce 关联（评审 S1：Host 只接受自己发起的求值结果）。
-#[allow(dead_code)]
 fn invoke(entry: &str, args: &Value) -> Result<(Value, String), &'static str> {
     let nonce = new_evaluation_nonce();
     let mut request = args.clone();
@@ -64,7 +60,7 @@ fn now_ms() -> u64 {
 }
 
 /// N2-b（G-READ 读面）：给定 storyRunId 一次拿到该 Run 的完整叙事快照
-/// （scope + contentDigest + stateVersion + cursor + committedEvents + flags + counters）。
+/// （scope + stateVersion + cursor + committedEvents + flags + counters）。
 /// 数据从宿主持有的 creator store 读取（同一 projects.sqlite，读写侧同库）。
 /// 无 story_events / story_states 行 → 诚实返回空快照（合法冷启动态）。
 #[allow(dead_code)]
@@ -75,7 +71,22 @@ pub(crate) fn narrative_snapshot(home: &Path, player_id: &str, city_id: &str,
     let scope = crate::city_runtime::active_story_scope(&db, player_id, city_id, run_id)
         .unwrap_or((game_id.to_owned(), format!("legacy-{game_id}"))); // 冷启动：无 Run 行时走 legacy 合成映射（诚实空态）
     let (story_id, story_run_id) = scope;
-    let state = crate::story_store::story_state_scoped(home, player_id, city_id, &story_id, &story_run_id)?;
+    snapshot_at_scope(&db, home, player_id, city_id, &story_id, &story_run_id)
+}
+
+/// N3（提案裁决读面）：显式作用域快照——作用域由回合投递绑定（Host 授权的
+/// player×city×story×run），不做派生、不做 legacy 回退；无状态行即冷启动空快照。
+pub(crate) fn narrative_snapshot_scoped(home: &Path, player_id: &str, city_id: &str,
+    story_id: &str, story_run_id: &str) -> Result<Value, &'static str> {
+    let db = database(home)?;
+    crate::story_store::migrate_story(&db)?;
+    snapshot_at_scope(&db, home, player_id, city_id, story_id, story_run_id)
+}
+
+/// 快照体：显式四元组的 state + committedEvents → NarrativeSnapshotV1 形状。
+fn snapshot_at_scope(db: &rusqlite::Connection, home: &Path, player_id: &str, city_id: &str,
+    story_id: &str, story_run_id: &str) -> Result<Value, &'static str> {
+    let state = crate::story_store::story_state_scoped(home, player_id, city_id, story_id, story_run_id)?;
     let committed: Vec<String> = {
         let mut st = db.prepare("SELECT DISTINCT event_id FROM story_events WHERE player_id=?1 AND city_id=?2 AND story_id=?3 AND story_run_id=?4 ORDER BY created_at_ms LIMIT 512")
             .map_err(|_| "creator_store_unavailable")?;
@@ -96,8 +107,21 @@ pub(crate) fn narrative_snapshot(home: &Path, player_id: &str, city_id: &str,
     }))
 }
 
+/// N3（裁决链入口）：提案求值——graph + snapshot + proposal → NarrativeDecisionV1
+/// 形状 Value。nonce 关联（评审 S1）；输出畸形/不匹配诚实报错，绝不猜测裁决。
+pub(crate) fn evaluate_proposal(graph: &Value, snapshot: &Value, proposal: &Value) -> Result<Value, &'static str> {
+    let (result, _nonce) = invoke("evaluate", &json!({"graph":graph,"snapshot":snapshot,"proposal":proposal}))?;
+    Ok(result)
+}
+
+/// N3：当前快照下的可走边菜单（前置已求值，形状 [{edgeId,to}]）——agent 据此
+/// 选 edgeId 提案；替代旧 eligibleBeats 的 "unevaluated" 占位。
+pub(crate) fn eligible_edges(graph: &Value, snapshot: &Value) -> Result<Value, &'static str> {
+    let (result, _nonce) = invoke("eligibleEdges", &json!({"graph":graph,"snapshot":snapshot}))?;
+    Ok(result)
+}
+
 /// 拆分 state document 为 flags（bool 值）和 counters（数字值）——求值器输入形状。
-#[allow(dead_code)]
 fn split_flags_counters(document: &Value) -> (Value, Value) {
     let mut flags = serde_json::Map::new();
     let mut counters = serde_json::Map::new();

@@ -1629,6 +1629,11 @@ fn run_actor_intent_submit(home: &Path, _owner: &str, _instance: &str, payload: 
     crate::actor_adapter::submit(home, payload)
 }
 
+/// Actor 回合提案（N3 闭环）：turnId 绑定被领取回合 → 求值器裁决 → CAS 提交。
+fn run_actor_propose(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::actor_turn::propose(home, payload)
+}
+
 // Story Project Registry（RFC V3 §12，S-2+S-3）：事务形态照 city_game_install；
 // run 身份固定为稳定本地 principal（owner），不接受调用方自报 playerId——
 // 事实仍走 story_store 的显式 StoryStateScopeV1，本组方法只管注册表元数据。
@@ -1956,6 +1961,7 @@ static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.actor.register", &["storyId", "characterId", "sessionIdentifier", "allowedKinds", "maxIntentsPerWindow", "operationId"], &["sessionLabel"], run_actor_register),
     creator_row!("creator.actor.turn.context", &["actorId", "scope"], &[], run_actor_turn_context),
     creator_row!("creator.actor.intent.submit", &["actorId", "intent"], &[], run_actor_intent_submit),
+    creator_row!("creator.actor.propose", &["actorId", "deliveryId", "proposal"], &[], run_actor_propose),
     creator_row!("creator.story.project.create", &["storyId", "title", "schemaVersion", "storyVersion", "graph", "canon"], &["expectedStoryRevision"], run_story_project_create),
     creator_row!("creator.story.project.read", &["storyId"], &[], run_story_project_read),
     creator_row!("creator.story.projects.list", &["limit"], &[], run_story_projects_list),
@@ -4710,7 +4716,7 @@ mod city_sdk_v3_inspect_tests {
             story_scope: Some(StoryStateScopeV1 { story_id: "story.detective".to_string(), story_run_id: story_run_id.to_string() }),
             resident_id: None, expected_story_revision: revision, expected_clock_revision: format!("clock-{simulation}"),
             intent: json!({"kind":"speak","text":"事件文本"}), run_id: "timeline-run".to_string(),
-            rule_set_digest: None, causation_id: None, correlation_id: None,
+            rule_set_digest: None, causation_id: None, correlation_id: None, narrative_effects: None,
         }, StoryClockAuthorityV1 { revision: format!("clock-{simulation}"), tick: 1, simulation_utc_ms: simulation })
     }
 
