@@ -1,10 +1,10 @@
 # Creator MCP 多客户端接入指南
 
-日期：2026-11-21（同步实时连接/事件能力：creator 域 107 个工具）
+日期：2026-11-21（同步实时连接/事件能力：creator 域 108 个工具）
 状态：接入文档；工具面、预算与错误码以代码为准
 关联文档：[Creator Agent 接入代码设计](AGENT_CREATOR_AGENT_INTEGRATION_CODE_DESIGN_2026_11_12.md)、[Studio Agent First 编辑器规格](STUDIO_AGENT_FIRST_EDITOR_SPEC_2026_11_15.md)、[自定义城市与 MCP 接口设计](CREATOR_STUDIO_CUSTOM_CITY_MCP_DESIGN_2026_11_14.md)、[Data MCP 规格](AGENT_VITALS_DATA_MCP_SPEC.md)
 
-结论先行：外部 MCP 客户端经本地 stdio（`agent-vitals data-mcp serve`）访问统一 Creator 工具面。creator 域共 **107 个工具**（creator_studio.rs 66 个 + creator_session.rs 27 个 + creator_code 系列 14 个），其中 16 个 `creator_city_*` 实验工具默认隐藏、需 `--enable-city-tools`。只读与预览工具不需要任何开关；16 个写入工具需要 `--allow-local-writes`。Studio 路由类工具要求活动的官方 Creator Studio WebView，Studio 未打开约 15 秒后返回 `plugin_unavailable`；会话/作业/连接/事件 27 个工具与两个静态契约工具（`creator_capabilities_list`、`creator_vehicle_list`）天然离线可用。creator 域错误响应自动附带 `next` 恢复建议（§4，与 Studio UI 同一来源）。实时协作是同一数据根下的本地连接注册、持久事件和 stdio 长轮询，不是网络服务，也不代表任意远程实时协作。
+结论先行：外部 MCP 客户端经本地 stdio（`agent-vitals data-mcp serve`）访问统一 Creator 工具面。creator 域共 **108 个工具**（creator_studio.rs 67 个 + creator_session.rs 27 个 + creator_code 系列 14 个），其中 16 个 `creator_city_*` 实验工具默认隐藏、需 `--enable-city-tools`。只读与预览工具不需要任何开关；17 个写入工具需要 `--allow-local-writes`。Studio 路由类工具要求活动的官方 Creator Studio WebView，Studio 未打开约 15 秒后返回 `plugin_unavailable`；会话/作业/连接/事件 27 个工具与两个静态契约工具（`creator_capabilities_list`、`creator_vehicle_list`）天然离线可用。creator 域错误响应自动附带 `next` 恢复建议（§4，与 Studio UI 同一来源）。实时协作是同一数据根下的本地连接注册、持久事件和 stdio 长轮询，不是网络服务，也不代表任意远程实时协作。
 
 ## 1. 前置条件
 
@@ -21,7 +21,7 @@ agent-vitals data-mcp serve [--allow-local-writes] [--enable-city-tools]
 
 - 子命令形式为 `data-mcp serve`；`--allow-local-writes` 与 `--enable-city-tools` 是 `serve` 仅有的两个参数（`DataMcpAction::Serve`，apps/cli/src/main.rs）。
 - 服务阻塞到 stdin 关闭，随后以退出码 0 结束；stdout 只出 JSON-RPC 帧，日志走 stderr（apps/cli/src/mcp.rs）。启动横幅：`data-mcp: serving on stdio (protocol 2025-06-18, data_home …)`。
-- 不带 `--allow-local-writes` 时：只读与预览工具可用，16 个写入工具返回 `permission_denied`。
+- 不带 `--allow-local-writes` 时：只读与预览工具可用，17 个写入工具返回 `permission_denied`。
 - 不带 `--enable-city-tools` 时：16 个 `creator_city_*` 工具不出现在 `tools/list`，直接调用返回 `invalid_argument`（§6.2）。
 
 ## 2. MCP 客户端配置示例
@@ -116,8 +116,8 @@ Agent 与宿主之间不再需要任何消息通道。push 与 pull 并存：`cr
 ### 3.0 总量与协议事实
 
 - 协议：JSON-RPC 2.0 行分隔帧；`initialize` 协议版本 `2025-06-18`，`serverInfo.name` 为 `Oh Agent MCP`（apps/cli/src/mcp.rs）。
-- `tools/list` 默认共 **115 个工具**，其中 creator 域 **91 个**（50 个 Studio 域 + 27 个会话/作业/连接/事件 + 14 个 creator_code 系列）；其余 24 个为数据/信任/城内工具（22 个基线 + 2 个 `city_world_*`）。
-- 加 `--enable-city-tools` 后共 **131 个工具**，creator 域凑满 **107 个**（补入 16 个 `creator_city_*`）。以上两组数量已由 release 二进制真实 stdio `tools/list` 核对。
+- `tools/list` 默认共 **116 个工具**，其中 creator 域 **92 个**（51 个 Studio 域 + 27 个会话/作业/连接/事件 + 14 个 creator_code 系列）；其余 24 个为数据/信任/城内工具（22 个基线 + 2 个 `city_world_*`）。
+- 加 `--enable-city-tools` 后共 **132 个工具**，creator 域凑满 **108 个**（补入 16 个 `creator_city_*`）。以上两组数量已由 release 二进制真实 stdio `tools/list` 核对。
 - `mcp-internal` cargo feature（默认不编译）会再追加 query_sql_readonly / billing_workflow / authority_audit 3 个工具，与本指南无关。
 - 工具名逐一核对自 crates/agent-vitals-mcp/src/mcp/creator_studio.rs 与 creator_session.rs 的 `specs()`；`mcp::tests::tool_specs_and_dispatch_agree` 逐工具断言「注册即可分发」。宿主插件方法（`creator.city.*` 等点号命名）是内部路由面，不作为 MCP 工具暴露。
 
@@ -527,7 +527,7 @@ creator 域错误以 `tools/call` 结果的 `isError:true` + envelope 内稳定 
 
 1. **进程握手。** 启动 serve 后 stderr 出现 `data-mcp: serving on stdio (protocol 2025-06-18, data_home …)` 横幅。
 2. **initialize。** 返回 `protocolVersion: "2025-06-18"`、`capabilities.tools`、`serverInfo.name: "Oh Agent MCP"`。initialize 之前的请求被拒（JSON-RPC error `-32002`）。
-3. **tools/list。** 默认共 115 个工具，其中 creator_* 91 个（creator_studio.rs 默认 50 个 + creator_session.rs 27 个 + creator_code 系列 14 个）。加 `--enable-city-tools` 后共 131 个，creator_* 凑满 107 个，额外包含 16 个 `creator_city_*`。实时接入至少确认 `creator_connection_heartbeat`、`creator_connection_status`、`creator_capabilities_status`、`creator_events_subscribe`、`creator_task_progress` 均可发现；精确名称以 `tools/list` 和 specs() 为准。
+3. **tools/list。** 默认共 116 个工具，其中 creator_* 92 个（creator_studio.rs 默认 51 个 + creator_session.rs 27 个 + creator_code 系列 14 个）。加 `--enable-city-tools` 后共 132 个，creator_* 凑满 108 个，额外包含 16 个 `creator_city_*`。实时接入至少确认 `creator_connection_heartbeat`、`creator_connection_status`、`creator_capabilities_status`、`creator_events_subscribe`、`creator_task_progress` 均可发现；精确名称以 `tools/list` 和 specs() 为准。
 4. **只读自检：creator_project_list。** 参数 `{"limit": 10}`。Studio 已打开：`ok:true` 与有界项目列表（没有项目时为空列表）；Studio 未打开：约 15 秒后 `plugin_unavailable`。
 5. **离线自检（无需 Studio）：creator_capabilities_list `{}`。** 预期 `ok:true`，schemaVersion=1，含 project/scene/worlds/gameTypes 等类别；再试 `creator_game_type_list {}`（6 个类型，builtin-adapter 4 个 playtestSupported=true）与 `creator_session_open {"agentId":"smoke"}`（返回 sessionId）。
 6. **写入开关自检（开关未开启时）。** 对 creator_project_create（或任一写入工具）发起调用，预期 `permission_denied`，消息明确要求 `data-mcp serve --allow-local-writes`。
@@ -544,7 +544,7 @@ creator 域错误以 `tools/call` 结果的 `isError:true` + envelope 内稳定 
 
 | # | 场景 | Rust 自动化覆盖 | 需真实客户端 | 需桌面 bundle |
 |---|---|---|---|---|
-| 1 | 工具发现 + 无开关拒绝写入 | `tool_specs_and_dispatch_agree`、`creator_publish_tool_requires_explicit_local_write_permission`、`tool_schemas_are_closed_objects`（crates/agent-vitals-mcp/src/mcp/mod.rs）。开关拒绝测试目前只钉了 publish，其余写入工具的开关拒绝在 creator_studio.rs `run()` 内实现但无独立测试 | 真实 stdio 已核对默认 115 / 开启后 131 个工具 | — |
+| 1 | 工具发现 + 无开关拒绝写入 | `tool_specs_and_dispatch_agree`、`creator_publish_tool_requires_explicit_local_write_permission`、`tool_schemas_are_closed_objects`（crates/agent-vitals-mcp/src/mcp/mod.rs）。开关拒绝测试目前只钉了 publish，其余写入工具的开关拒绝在 creator_studio.rs `run()` 内实现但无独立测试 | 真实 stdio 已核对默认 116 / 开启后 132 个工具 | — |
 | 2 | Studio 未打开/被替换/过期时失败不写入 | `committed_operation_survives_studio_instance_replacement_but_preview_does_not`（apps/desktop/src-tauri/src/creator_projects.rs）、`typed_object_response_is_dropped_after_owner_instance_replacement_or_failure`（apps/desktop/src-tauri/src/plugin_host.rs） | 验证 Studio 关闭 → `plugin_unavailable` | Studio 完全未打开的 15 秒超时路径依赖活动 WebView 缺席，自动化测试未覆盖 |
 | 3 | 创建→读 chunk→预览→UI 确认→提交→视口新 revision | 宿主侧：`project_preview_commit_revision_and_idempotency`（creator_projects.rs） | 端到端走通一次 | UI 确认卡片与 3D 视口刷新只能人工在 bundle 里确认 |
 | 4 | 无效对象/越界/超预算/额外字段被拒绝，revision 不变 | `dispatch_rejects_unknown_arguments`、`dispatch_rejects_non_object_arguments`（mod.rs）；`creator_scene_accepts_only_bounded_explicit_box_colliders`、`creator_mount_rejects_anchors_disconnected_in_the_pinned_city_topology`、`mount_skin_operations_preview_commit_and_enforce_game_bindings`、`creator_playtest_history_is_registered_and_limits_are_bounded`（creator_projects.rs） | — | — |
