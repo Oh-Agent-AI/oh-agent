@@ -1,4 +1,4 @@
-import { compileRules, createRun, parseMiniGamePackJson, segmentCrossesWorldVolume, segmentPassesRingGate, stableIdV1, validateMount, type CityGameMountV1, type CityLayoutV1, type ContentRef, type MiniGamePackV1, type RuleRunV1, type RuleStateV1, type Result, type DiagnosticV1, type WorldVolumeDtoV1 } from "@oh-agent/city-sdk";
+import { compileRules, createRun, parseMiniGamePackJson, segmentCrossesWorldVolume, segmentPassesRingGate, stableIdV1, validateMount, type CityGameMountV1, type CityLayoutV1, type ContentRef, type MiniGamePackV1, type RuleRunV1, type RuleStateV1, type Result, type DiagnosticV1, type VisualPlaytestTraceEventV1, type WorldVolumeDtoV1 } from "@oh-agent/city-sdk";
 import type { CityLayoutSdkViewV1 } from "../../engine/sdk/cityLayoutAdapter";
 import { createCityZoneVolumesV1 } from "../codeGameHost/citySnapshot";
 
@@ -80,6 +80,9 @@ export class MountedMiniGameControllerV1 {
   private readonly triggeredZones = new Set<string>();
   private stopped = false;
   private snapshotValue: MountedMiniGameSnapshotV1;
+  /** 规则 run 实际消费的 zone.entered 轨迹（V3 S-6b，供 evidence.trace / 宿主 rule_replay 复算）。
+   * 记录上限与宿主 rule_replay.rs 的 MAX_REPLAY_EVENTS 同源（TS step 的 inputs ≤ 64）。 */
+  private readonly traceEvents: VisualPlaytestTraceEventV1[] = [];
 
   constructor(private readonly plan: MountedMiniGamePlanV1, private readonly onChange: (snapshot: MountedMiniGameSnapshotV1) => void) {
     const compiled = compileRules(plan.game);
@@ -89,6 +92,9 @@ export class MountedMiniGameControllerV1 {
   }
 
   get snapshot(): MountedMiniGameSnapshotV1 { return this.snapshotValue; }
+
+  /** 已消费的输入轨迹快照（≤64 条副本；FIFO 超出丢最旧，与宿主 ≤64 对齐）。 */
+  get trace(): readonly VisualPlaytestTraceEventV1[] { return [...this.traceEvents]; }
 
   fixedStep(positionMeters: Readonly<{ x: number; y: number; z: number }>): void {
     if (this.stopped || this.snapshotValue.status === "success" || this.snapshotValue.status === "failure" || this.snapshotValue.status === "error") return;
@@ -114,6 +120,17 @@ export class MountedMiniGameControllerV1 {
     }
     const stepped = this.run.step(this.tick, inputs);
     if (!stepped.ok) { this.publish({ status: "error", state: this.run.snapshot(), reason: stepped.diagnostics[0]?.code ?? "mini-game-step-failed" }); return; }
+    // V3 S-6b：从 run 已有的事件面（RuleStepV1.emitted）摘取 zone.entered——只有 step 成功
+    // 才记录，失败步整步回滚、什么都没消费，轨迹恰好是客户端终态的忠实投影。eventIndex
+    // 取事件自身的 index（槽位绑定内的 zone 序号，0 起），与 runtime.ts counter.eqEventIndex
+    // 的比对语义一致；tick 按步递增、组内按分发序追加，atTick 天然非降序（宿主 parse_trace 的要求）。
+    // FIFO：超过 64 条丢最旧，保留最近窗口；被截断的轨迹无法重放出截断前的计数器状态，
+    // 宿主复算会对这类终局如实记 hostDisagreement（审计语义，不猜）。
+    for (const event of stepped.value.emitted) {
+      if (event.type !== "zone.entered") continue;
+      if (this.traceEvents.length >= 64) this.traceEvents.shift();
+      this.traceEvents.push({ kind: "zone.entered", slot: event.slot, eventIndex: event.index, atTick: event.tick });
+    }
     this.tick += 1;
     this.previous = { ...positionMeters };
     this.publish({ status: stepped.value.state.outcome ?? "running", state: stepped.value.state, reason: null });

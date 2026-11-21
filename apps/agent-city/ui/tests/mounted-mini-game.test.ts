@@ -192,3 +192,199 @@ test("creator plan keeps driving slots on drive and flight slots on fly", () => 
   assert.equal(driveOnFly.ok, false);
   if (!driveOnFly.ok) assert.equal(driveOnFly.diagnostics[0]?.code, "creator_game_capability_unsupported");
 });
+
+// —— V3 S-6b 宿主复算轨迹（evidence.trace）——
+// 与桌面 rule_replay.rs::tests / creator_playtest.rs::tests 逐字段对照：条目恒为
+// {kind, slot, eventIndex, atTick} 四键（camelCase）；eventIndex 是槽位绑定内的 zone 序号
+// （0 起，runtime.ts 的 counter.eqEventIndex 用它与计数器值比对——不是「第几次事件」，
+// 宿主 trace_fits_bindings 也按 bindings[slot].len() 越界校验同一语义）；atTick 由
+// runner 按步追加，天然非降序（宿主 parse_trace 的硬性要求）。
+const raceGame = { schemaVersion: 1, id: "creator.checkpoint-race", rulesVersion: 1,
+  slots: { points: { kind: "zone", min: 3, max: 8, requires: ["drive"] } },
+  integerParameters: { timeLimitTicks: { min: 60, max: 36000, default: 2700 }, gateTarget: { min: 3, max: 8, default: 3 } },
+  rules: {
+    counters: { next: { initial: 0, max: { parameter: "gateTarget" } } },
+    nodes: [
+      { id: "start-timer", on: { type: "run.started" }, actions: [{ op: "timer.start", timerId: "timeout", durationTicks: { parameter: "timeLimitTicks" } }] },
+      { id: "advance", on: { type: "zone.entered", slot: "points" }, when: [{ op: "counter.eqEventIndex", counter: "next" }], actions: [{ op: "counter.add", counter: "next", amount: 1 }] },
+      { id: "finish", on: { type: "zone.entered", slot: "points" }, when: [{ op: "counter.eq", counter: "next", value: { parameter: "gateTarget" } }], actions: [{ op: "run.finish", outcome: "success" }] },
+      { id: "timeout", on: { type: "timer.expired", timerId: "timeout" }, actions: [{ op: "run.finish", outcome: "failure" }] },
+    ],
+  } };
+const raceView: CityLayoutSdkViewV1 = {
+  layout: { schemaVersion: 1, id: "fixture-race", coordinateSystem: "city-local-m-v1", anchors: [
+    { id: "race-spawn", kind: "spawn", capabilities: ["drive"], geometryRef: "g:race-spawn" },
+    { id: "gate-0", kind: "zone", capabilities: ["drive"], geometryRef: "g:gate-0" },
+    { id: "gate-1", kind: "zone", capabilities: ["drive"], geometryRef: "g:gate-1" },
+    { id: "gate-2", kind: "zone", capabilities: ["drive"], geometryRef: "g:gate-2" },
+  ], links: [
+    { id: "race-link-0", fromAnchorId: "race-spawn", toAnchorId: "gate-0", capabilities: ["drive"] },
+    { id: "race-link-1", fromAnchorId: "gate-0", toAnchorId: "gate-1", capabilities: ["drive"] },
+    { id: "race-link-2", fromAnchorId: "gate-1", toAnchorId: "gate-2", capabilities: ["drive"] },
+  ] },
+  geometry: new Map([
+    ["g:race-spawn", { positionMeters: { x: 0, y: 0, z: 0 } }],
+    ["g:gate-0", { positionMeters: { x: 10, y: 0, z: 0 }, activationRadiusMeters: 1 }],
+    ["g:gate-1", { positionMeters: { x: 20, y: 0, z: 0 }, activationRadiusMeters: 1 }],
+    ["g:gate-2", { positionMeters: { x: 30, y: 0, z: 0 }, activationRadiusMeters: 1 }],
+  ]), roadSegments: [], preferredStartMeters: { x: 0, z: 0 }, seed: 7, worldRevision: "r1",
+};
+const raceMount = { schemaVersion: 1 as const, mountId: "mounted-race", layout: { kind: "city-layout" as const, id: "fixture-race", version: "1", digest: "r1" },
+  game: { kind: "city-minigame" as const, id: "creator.checkpoint-race", version: "1", digest: "local-test" },
+  entryAnchorId: "race-spawn", bindings: { points: ["gate-0", "gate-1", "gate-2"] }, parameterOverrides: {} };
+
+function raceController(): MountedMiniGameControllerV1 {
+  const plan = createMountedMiniGamePlan({ view: raceView, packageJson: JSON.stringify(raceGame), mount: raceMount, gameRef: raceMount.game, seed: 7 });
+  if (!plan.ok) throw new Error(plan.diagnostics[0]?.code ?? "race-plan-invalid");
+  return new MountedMiniGameControllerV1(plan.value, () => {});
+}
+
+test("consumed zone.entered events form a trace matching the host replay wire shape", () => {
+  // 对照宿主 creator_playtest.rs::verified_when_three_gates_trace_matches_client_report
+  // （gate_trace 助手的字面量形状）与 rule_replay.rs::three_gates_in_order_finish_success：
+  // 三门顺序通过 → success + next=3，轨迹逐条等于宿主复算期望的投影。
+  const controller = raceController();
+  for (const position of [0, 10, 12, 20, 22, 30]) controller.fixedStep({ x: position, y: 0, z: 0 });
+  assert.equal(controller.snapshot.status, "success");
+  assert.equal(controller.snapshot.state.counters.next, 3);
+  assert.equal(controller.snapshot.state.tick, 5);
+  assert.deepEqual(controller.trace, [
+    { kind: "zone.entered", slot: "points", eventIndex: 0, atTick: 1 },
+    { kind: "zone.entered", slot: "points", eventIndex: 1, atTick: 3 },
+    { kind: "zone.entered", slot: "points", eventIndex: 2, atTick: 5 },
+  ]);
+  const ticks = controller.trace.map(entry => entry.atTick);
+  assert.deepEqual([...ticks].sort((a, b) => a - b), ticks);
+});
+
+test("trace records each gate's binding index, so out-of-order entries keep eqEventIndex semantics", () => {
+  // 对照宿主 rule_replay.rs::out_of_order_gate_does_not_advance_until_its_index_matches：
+  // 乱序门（eventIndex 与计数器不匹配）不推进计数器；index 归位后继续推进并定格 success。
+  const controller = raceController();
+  for (const position of [15, 30, 28, 20, 18, 10, 12, 20, 22, 30]) controller.fixedStep({ x: position, y: 0, z: 0 });
+  assert.equal(controller.snapshot.status, "success");
+  assert.equal(controller.snapshot.state.counters.next, 3);
+  assert.deepEqual(controller.trace, [
+    { kind: "zone.entered", slot: "points", eventIndex: 1, atTick: 1 },
+    { kind: "zone.entered", slot: "points", eventIndex: 2, atTick: 1 },
+    { kind: "zone.entered", slot: "points", eventIndex: 1, atTick: 3 },
+    { kind: "zone.entered", slot: "points", eventIndex: 0, atTick: 5 },
+    { kind: "zone.entered", slot: "points", eventIndex: 1, atTick: 7 },
+    { kind: "zone.entered", slot: "points", eventIndex: 2, atTick: 9 },
+  ]);
+});
+
+const timeoutGame = { schemaVersion: 1, id: "creator.timeout-walk", rulesVersion: 1,
+  slots: { gates: { kind: "zone", min: 0, max: 2, requires: ["drive"] } },
+  rules: {
+    counters: { found: { initial: 0, max: 4 } },
+    nodes: [
+      { id: "start-timer", on: { type: "run.started" }, actions: [{ op: "timer.start", timerId: "timeout", durationTicks: 10 }] },
+      { id: "collect", on: { type: "zone.entered", slot: "gates" }, actions: [{ op: "counter.add", counter: "found", amount: 1 }] },
+      { id: "timeout", on: { type: "timer.expired", timerId: "timeout" }, actions: [{ op: "run.finish", outcome: "failure" }] },
+    ],
+  } };
+const timeoutMount = { ...mount, mountId: "mounted-timeout", game: { ...mount.game, id: "creator.timeout-walk" }, entryAnchorId: "spawn", bindings: { gates: ["target"] } };
+
+test("a timeout failure keeps the trace at the consumed prefix the host can replay", () => {
+  // 对照宿主 rule_replay.rs::partial_gates_then_timeout_fail_with_matching_counters /
+  // creator_playtest.rs::verified_when_timeout_failure_matches_partial_trace：轨迹耗尽后
+  // 剩余计时器触发 failure，客户端 outcome/counters 与轨迹复算逐项一致。
+  const plan = createMountedMiniGamePlan({ view, packageJson: JSON.stringify(timeoutGame), mount: timeoutMount, gameRef: timeoutMount.game, seed: 7 });
+  assert.equal(plan.ok, true);
+  if (!plan.ok) return;
+  const controller = new MountedMiniGameControllerV1(plan.value, () => {});
+  controller.fixedStep({ x: 0, y: 0, z: 0 });
+  controller.fixedStep({ x: 10, y: 0, z: 0 });
+  for (let index = 0; index < 9; index += 1) controller.fixedStep({ x: 12, y: 0, z: 0 });
+  assert.equal(controller.snapshot.status, "failure");
+  assert.equal(controller.snapshot.state.tick, 10);
+  assert.equal(controller.snapshot.state.counters.found, 1);
+  assert.deepEqual(controller.trace, [{ kind: "zone.entered", slot: "gates", eventIndex: 0, atTick: 1 }]);
+});
+
+const endlessGame = { schemaVersion: 1, id: "creator.endless-walk", rulesVersion: 1,
+  slots: { gates: { kind: "zone", min: 0, max: 2, requires: ["drive"] } },
+  rules: { counters: { found: { initial: 0, max: 1000 } }, nodes: [
+    { id: "collect", on: { type: "zone.entered", slot: "gates" }, actions: [{ op: "counter.add", counter: "found", amount: 1 }] } ] } };
+const endlessMount = { ...mount, mountId: "mounted-endless", game: { ...mount.game, id: "creator.endless-walk" }, entryAnchorId: "spawn", bindings: { gates: ["target"] } };
+
+function endlessController(): MountedMiniGameControllerV1 {
+  const plan = createMountedMiniGamePlan({ view, packageJson: JSON.stringify(endlessGame), mount: endlessMount, gameRef: endlessMount.game, seed: 7 });
+  if (!plan.ok) throw new Error(plan.diagnostics[0]?.code ?? "endless-plan-invalid");
+  const controller = new MountedMiniGameControllerV1(plan.value, () => {});
+  controller.fixedStep({ x: 0, y: 0, z: 0 });
+  return controller;
+}
+
+test("trace stays bounded at 64 entries, dropping the oldest when the run keeps going", () => {
+  // FIFO 丢最旧（与宿主 ≤64 对齐）：计数器仍如实反映全部 70 次进入，而被截掉的窗口外
+  // 事件让宿主复算无法重放出截断前的状态——这类终局宿主会如实记 hostDisagreement
+  // （审计语义，见 mountedMiniGame.ts 的记录层注释），测试断言的是记录层的窗口语义本身。
+  const controller = endlessController();
+  for (let index = 0; index < 70; index += 1) { controller.fixedStep({ x: 10, y: 0, z: 0 }); controller.fixedStep({ x: 13, y: 0, z: 0 }); }
+  assert.equal(controller.snapshot.state.counters.found, 70);
+  assert.equal(controller.trace.length, 64);
+  const ticks = controller.trace.map(entry => entry.atTick);
+  assert.equal(ticks[0], 13);
+  assert.equal(ticks[ticks.length - 1], 139);
+  assert.deepEqual([...ticks].sort((a, b) => a - b), ticks);
+  assert.ok(controller.trace.every(entry => entry.eventIndex === 0 && entry.slot === "gates" && entry.kind === "zone.entered"));
+});
+
+test("visualEvidence carries trace as the optional 13th key and omits it when no events were consumed", () => {
+  // 键集与宿主 creator_playtest.rs::validate_playtest_evidence 的 12/13 键白名单逐项对照；
+  // 无事件 → 12 键现状不变。轨迹内容与 runner 终态（counters/outcome/tick）一致。
+  const plan = createCreatorMiniGamePlan(raceView, { releaseId: "release-race", title: "Race", game: raceGame, mount: raceMount });
+  assert.equal(plan.ok, true);
+  if (!plan.ok) return;
+  const controller = new CreatorMiniGameRuntimeControllerV1(plan.value, () => {});
+  const empty = controller.visualEvidence("release-race", 1, "digest");
+  assert.deepEqual(Object.keys(empty).sort(), ["counters", "game", "outcome", "projectRevision", "reasonCode", "releaseId",
+    "runtimeVersion", "schemaVersion", "seed", "snapshotDigest", "tick", "worldRevision"]);
+  assert.equal("trace" in empty, false);
+  // Creator 控制器收世界单位（1 单位 = 2 米，worldScale.ts）：0/5/6/10/11/15 单位 = 0/10/12/20/22/30 米。
+  for (const position of [0, 5, 6, 10, 11, 15]) controller.fixedStep({ x: position, y: 0, z: 0 });
+  const evidence = controller.visualEvidence("release-race", 1, "digest");
+  assert.deepEqual(Object.keys(evidence).sort(), ["counters", "game", "outcome", "projectRevision", "reasonCode", "releaseId",
+    "runtimeVersion", "schemaVersion", "seed", "snapshotDigest", "tick", "trace", "worldRevision"]);
+  assert.deepEqual(evidence.trace, [
+    { kind: "zone.entered", slot: "points", eventIndex: 0, atTick: 1 },
+    { kind: "zone.entered", slot: "points", eventIndex: 1, atTick: 3 },
+    { kind: "zone.entered", slot: "points", eventIndex: 2, atTick: 5 },
+  ]);
+  assert.ok(evidence.trace!.length > 0 && evidence.trace!.length <= 64);
+  assert.ok(evidence.trace!.every(entry => Object.keys(entry).sort().join(",") === "atTick,eventIndex,kind,slot"
+    && entry.kind === "zone.entered" && entry.slot === "points"));
+  assert.equal(evidence.outcome, "success");
+  assert.deepEqual(evidence.counters, { next: 3 });
+  assert.equal(evidence.tick, 5);
+});
+
+const LONG_SLOT = `z${"s".repeat(127)}`;
+const longSlotGame = { schemaVersion: 1, id: "creator.long-slot", rulesVersion: 1,
+  slots: { [LONG_SLOT]: { kind: "zone", min: 0, max: 2, requires: ["drive"] } },
+  rules: { counters: { found: { initial: 0, max: 1000 } }, nodes: [
+    { id: "collect", on: { type: "zone.entered", slot: LONG_SLOT }, actions: [{ op: "counter.add", counter: "found", amount: 1 }] } ] } };
+const longSlotMount = { ...mount, mountId: "mounted-long-slot", game: { ...mount.game, id: "creator.long-slot" }, entryAnchorId: "spawn", bindings: { [LONG_SLOT]: ["target"] } };
+
+test("an over-budget trace degrades honestly: oldest entries drop before the whole key is omitted", () => {
+  // 字节护栏（creatorMiniGame.ts）：宿主整份证据预算 8 KiB，这里按 7 KiB 收口——
+  // 长槽位名 × 满窗口会超限，先丢最旧条目（余下仍非降序），仍超限才整体省略 trace。
+  const plan = createCreatorMiniGamePlan(view, { releaseId: "release-long", title: "Long", game: longSlotGame, mount: longSlotMount });
+  assert.equal(plan.ok, true);
+  if (!plan.ok) return;
+  const controller = new CreatorMiniGameRuntimeControllerV1(plan.value, () => {});
+  controller.fixedStep({ x: 0, y: 0, z: 0 });
+  // 世界单位 5 / 6.5 = 10 / 13 米：每次折返触发一次 zone.entered（view 的 target 在 10 米、半径 1）。
+  for (let index = 0; index < 70; index += 1) { controller.fixedStep({ x: 5, y: 0, z: 0 }); controller.fixedStep({ x: 6.5, y: 0, z: 0 }); }
+  const evidence = controller.visualEvidence("release-long", 1, "digest");
+  assert.ok(JSON.stringify(evidence).length <= 7 * 1024);
+  assert.ok(evidence.trace && evidence.trace.length > 0 && evidence.trace.length < 64);
+  // 仅 FIFO 时窗口首条是 tick 13（70 条丢前 6）；字节护栏再丢最旧 → 首条必晚于 13，
+  // 这行断言排除「护栏没生效、只靠 FIFO 碰巧 <64」的 vacuous 通过。
+  assert.ok(evidence.trace![0]!.atTick > 13);
+  const ticks = evidence.trace!.map(entry => entry.atTick);
+  assert.deepEqual([...ticks].sort((a, b) => a - b), ticks);
+  assert.ok(evidence.trace!.every(entry => entry.slot === LONG_SLOT && Object.keys(entry).length === 4));
+});

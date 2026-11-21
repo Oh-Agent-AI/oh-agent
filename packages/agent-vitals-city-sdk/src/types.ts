@@ -301,6 +301,17 @@ export interface PlaytestEvidenceV1 {
   failures: ReadonlyArray<DiagnosticV1>;
 }
 
+/** 宿主复算输入轨迹的单条事件（桌面 rule_replay.rs `ReplayEventV1` 的线格式）：
+ * 恰为 kind/slot/eventIndex/atTick 四键；`eventIndex` 是槽位绑定内的 zone 序号（0 起）——
+ * runtime.ts `counter.eqEventIndex` 用它与计数器值比对（`counters[c] === event.index`），
+ * 不是“第几次事件”；`atTick` 由运行按序追加，天然非降序。宿主限制：≤64 条、tick ≤ 2e6。 */
+export interface VisualPlaytestTraceEventV1 {
+  kind: "zone.entered";
+  slot: string;
+  eventIndex: number;
+  atTick: number;
+}
+
 /** Bounded local summary reported by the trusted City visual-playtest adapter. */
 export interface VisualPlaytestEvidenceV1 {
   schemaVersion: 1;
@@ -315,6 +326,10 @@ export interface VisualPlaytestEvidenceV1 {
   counters: Readonly<Record<string, number>>;
   outcome: "success" | "failure" | null;
   reasonCode: string | null;
+  /** 可选第 13 键（V3 S-6b）：规则 run 实际消费的 zone.entered 输入轨迹，供宿主
+   * rule_replay 独立复算 outcome/counters。缺省（无事件或超预算被截）= 12 键 evidence，
+   * 宿主维持 client-reported 现状；12 键既有消费方不受影响。 */
+  trace?: ReadonlyArray<VisualPlaytestTraceEventV1>;
 }
 
 export interface PackageFileV1 {
