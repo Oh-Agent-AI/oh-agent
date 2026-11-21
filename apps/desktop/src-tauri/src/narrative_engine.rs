@@ -76,11 +76,14 @@ pub(crate) fn narrative_snapshot(home: &Path, player_id: &str, city_id: &str,
 
 /// N3（提案裁决读面）：显式作用域快照——作用域由回合投递绑定（Host 授权的
 /// player×city×story×run），不做派生、不做 legacy 回退；无状态行即冷启动空快照。
+/// content_digest 由调用方从 Run 的钉定发布读取（SPEC §4：快照绑定发布摘要）。
 pub(crate) fn narrative_snapshot_scoped(home: &Path, player_id: &str, city_id: &str,
-    story_id: &str, story_run_id: &str) -> Result<Value, &'static str> {
+    story_id: &str, story_run_id: &str, content_digest: &str) -> Result<Value, &'static str> {
     let db = database(home)?;
     crate::story_store::migrate_story(&db)?;
-    snapshot_at_scope(&db, home, player_id, city_id, story_id, story_run_id)
+    let mut snapshot = snapshot_at_scope(&db, home, player_id, city_id, story_id, story_run_id)?;
+    snapshot["contentDigest"] = json!(content_digest);
+    Ok(snapshot)
 }
 
 /// 快照体：显式四元组的 state + committedEvents → NarrativeSnapshotV1 形状。

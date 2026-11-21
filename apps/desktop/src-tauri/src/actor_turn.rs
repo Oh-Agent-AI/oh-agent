@@ -135,21 +135,29 @@ pub(crate) fn propose(home: &Path, payload: &Value) -> Result<Value, &'static st
     let story_id = id_field(&turn, "storyId")?;
     let story_run_id = id_field(&turn, "storyRunId")?;
     let trigger_event = id_field(&turn, "eventId").ok();
-    // Run 仍活跃（投递到提交之间可能停止/过期）——宿主权威重校验。
-    {
+    // Run 仍活跃（投递到提交之间可能停止/过期）——宿主权威重校验；
+    // 同时读取 Run 钉定的发布摘要（SPEC §4：求值输入只认钉定发布）。
+    let pinned_digest = {
         let db = database(home)?;
         crate::story_registry::migrate(&db)?;
         crate::story_registry::require_active_run(&player_id, &city_id, &story_id, &story_run_id, &db)?;
-    }
+        crate::story_registry::pinned_run_digest(&db, &player_id, &city_id, &story_id, &story_run_id)?
+    };
     // 幂等重放：同 operationId 已提交 → 原回执（already_confirmed）。
     if let Some(receipt) = committed_receipt(home, &player_id, &city_id, &story_id, &story_run_id, &operation_id)? {
         return Ok(receipt);
     }
-    // 快照（显式作用域）+ 安装发布的图 → 求值器裁决（nonce 关联）。
+    // 快照（显式作用域 + 钉定摘要）+ 钉定发布的图 → 求值器裁决（nonce 关联）。
+    // 图与摘要同源（安装行），项目编辑不影响已授权 Run（评审修复 2）。
+    let release = {
+        let db = database(home)?;
+        crate::story_registry::release_graph(&db, &city_id, &story_id)?
+    };
+    let release_digest = release["contentDigest"].as_str().ok_or("story_release_unavailable")?;
+    if release_digest != pinned_digest { return Err("story_release_mismatch"); }
     let snapshot = crate::narrative_engine::narrative_snapshot_scoped(
-        home, &player_id, &city_id, &story_id, &story_run_id)?;
-    let project = crate::story_registry::project_read(home, &json!({"storyId":story_id}))?;
-    let graph = project.get("graph").cloned().unwrap_or(Value::Null);
+        home, &player_id, &city_id, &story_id, &story_run_id, release_digest)?;
+    let graph = release.get("graph").cloned().unwrap_or(Value::Null);
     if !graph.is_object() { return Err("story_graph_unavailable"); }
     let proposal_value = json!({"turnId":delivery_id,"operationId":operation_id,
         "edgeId":edge_id,"dialogue":dialogue});
@@ -181,7 +189,7 @@ pub(crate) fn propose(home: &Path, payload: &Value) -> Result<Value, &'static st
             .ok_or("creator_store_unavailable")?.to_string(),
         intent: json!({"kind":"speak","text":dialogue,"edgeId":edge_id}),
         run_id: story_run_id.clone(),
-        rule_set_digest: crate::story_registry::project_content_digest(home, &story_id)?,
+        rule_set_digest: Some(release_digest.to_string()),
         causation_id: trigger_event,
         correlation_id: Some(operation_id.clone()),
         narrative_effects: Some(effects),
@@ -389,8 +397,10 @@ mod tests {
         let other = register_actor(&home, "sess-n3-other");
         assert_eq!(propose(&home, &other, &delivery_id, "op-steal", "e-invite", "hi")
             .unwrap_err(), "actor_turn_not_claimed");
-        // 领取后本 actor 可提交。
-        assert_eq!(propose(&home, &actor_id, &delivery_id, "op-own", "e-invite", "在的").unwrap()["accepted"], true);
+        // 领取后本 actor 可提交（确认闸要求真实落库的回复事件）。
+        let own = propose(&home, &actor_id, &delivery_id, "op-own", "e-invite", "在的").unwrap();
+        assert_eq!(own["accepted"], true);
+        let committed_reply = own["committedEventIds"][0].as_str().unwrap().to_string();
         // 确认前回合仍在 in_flight（confirm 是显式终步）：新 operationId 的提案
         // 照常进入求值，被推进后的游标诚实拒绝（零写入）。
         let again = propose(&home, &actor_id, &delivery_id, "op-twice", "e-invite", "再发一次").unwrap();
@@ -398,9 +408,12 @@ mod tests {
         assert_eq!(again["code"], "narrative_rejected");
         assert!(again["diagnostics"].as_array().unwrap().iter().any(|d| d.as_str().unwrap().contains("cursor")),
             "cursor moved must be diagnosed: {again}");
+        // 凭空确认（未落库的"回复"）被拒（N3 修订：确认前验证落库）。
+        assert!(agent_vitals_mcp::mcp::host_delivery::confirm_turn(&home, &json!({"sessionIdentifier":"sess-n3-auth",
+            "deliveryId":delivery_id,"reply":{"eventId":"evt-fake-reply","storyRunId":story_run_id}})).is_err());
         // 确认后回合关闭 → 再提案拒绝（actor_turn_not_claimed）。
         agent_vitals_mcp::mcp::host_delivery::confirm_turn(&home, &json!({"sessionIdentifier":"sess-n3-auth",
-            "deliveryId":delivery_id,"reply":{"eventId":"evt-reply-auth","storyRunId":story_run_id}})).unwrap();
+            "deliveryId":delivery_id,"reply":{"eventId":committed_reply,"storyRunId":story_run_id}})).unwrap();
         assert_eq!(propose(&home, &actor_id, &delivery_id, "op-after", "e-invite", "晚了一步")
             .unwrap_err(), "actor_turn_not_claimed");
         // 全新 home（总线未初始化、actor 白盒登记）→ actor_turn_unavailable。
@@ -507,8 +520,9 @@ mod tests {
         let home = home();
         let (city_id, _game_run_id, story_run_id, player_id) = start_session(&home);
         seed_affection(&home, &city_id, &story_run_id, &player_id, 1);
+        let digest = crate::story_registry::project_content_digest(&home, "story.detective").unwrap().unwrap_or_default();
         let snapshot = crate::narrative_engine::narrative_snapshot_scoped(&home, &player_id,
-            &city_id, "story.detective", &story_run_id).unwrap();
+            &city_id, "story.detective", &story_run_id, &digest).unwrap();
         let clock = crate::city_runtime::read_clock_at(&home, &city_id, now_ms()).unwrap();
         let clock_revision = clock["clockRevision"].as_str().unwrap().to_string();
         // 版本推进者（另一 operation，CAS 在当前版本）。
@@ -546,6 +560,108 @@ mod tests {
             simulation_utc_ms: clock["simulationUtcMs"].as_u64().unwrap(),
         });
         assert_eq!(conflict.unwrap_err(), "game_storage_revision_conflict");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn evaluation_uses_the_pinned_release_not_the_edited_project() {
+        // 评审修复 2（SPEC §4）：Run 钉定其启动时安装的发布摘要——项目编辑
+        // 不影响已授权 Run 的求值输入；提交信封记录钉定摘要（非当前项目摘要）。
+        let home = home();
+        let (city_id, game_run_id, story_run_id, player_id) = start_session(&home);
+        seed_affection(&home, &city_id, &story_run_id, &player_id, 1);
+        let actor_id = register_actor(&home, "sess-n3-pin");
+        let pinned = crate::story_registry::project_content_digest(&home, "story.detective")
+            .unwrap().unwrap_or_default();
+        player_speak(&home, &city_id, &game_run_id, "op-player-pin", "在吗？");
+        let claimed = claim(&home, "sess-n3-pin");
+        let speak_delivery = claimed["deliveries"].as_array().unwrap().iter()
+            .find(|d| d["payload"]["eventId"] == json!("evt-op-player-pin")).unwrap();
+        let delivery_id = speak_delivery["deliveryId"].as_str().unwrap().to_string();
+        // 编辑项目（CAS 推进）：同一 e-invite 边的前置抬到 99——新图下提案必拒。
+        let edited_graph = json!({"start":"start","nodes":[{"id":"start","kind":"beat"},{"id":"cafe_reply","kind":"beat"}],
+            "edges":[{"id":"e-invite","from":"start","to":"cafe_reply",
+                "preconditions":[{"op":"counter.gte","key":"affection","value":99}],
+                "effects":[{"op":"counter.add","key":"affection","value":1},
+                    {"op":"event.append","eventId":"evt-invite-1","ruleId":"cafe-invite"},
+                    {"op":"cursor.advance","to":"cafe_reply"}],
+                "eventDependencies":[]}],
+            "seed":"seed-edited"});
+        let current_revision: u64 = {
+            let db = database(&home).unwrap();
+            db.query_row("SELECT revision FROM story_projects WHERE story_id='story.detective'", [], |r| r.get::<_, i64>(0)).unwrap() as u64
+        };
+        let edited = crate::story_registry::project_create(&home, &json!({"storyId":"story.detective","title":"侦探线",
+            "schemaVersion":1,"storyVersion":"1.1.0","graph":edited_graph,
+            "canon":{"characters":[{"id":"resident:linxia","name":"小夏"}]},
+            "expectedStoryRevision":current_revision})).unwrap();
+        assert_eq!(edited["changed"], json!(true), "{edited}");
+        let edited_digest = edited["contentDigest"].as_str().unwrap().to_string();
+        assert_ne!(edited_digest, pinned);
+        // 旧 Run 提案 → 仍按钉定旧图求值（好感度 1 ≥ 1 成立）→ 接受；
+        // 信封 rule_set_digest = 钉定摘要，而非编辑后的项目摘要。
+        let receipt = propose(&home, &actor_id, &delivery_id, "op-pinned-reply", "e-invite", "周六见").unwrap();
+        assert_eq!(receipt["accepted"], json!(true), "pinned graph must decide: {receipt}");
+        let db = database(&home).unwrap();
+        let envelope_digest: String = db.query_row("SELECT rule_set_digest FROM story_events WHERE event_id='evt-invite-1'",
+            [], |row| row.get(0)).unwrap();
+        assert_eq!(envelope_digest, pinned);
+        drop(db);
+        // reset 钉定的是「安装」的摘要——项目编辑未走安装管线前不生效（诚实语义）。
+        let reset = crate::story_registry::run_reset(&home, &player_id,
+            &json!({"cityId":city_id,"storyId":"story.detective"})).unwrap();
+        assert_eq!(reset["contentDigest"], json!(pinned), "reset pins the installed release, not the edited project");
+        let interim_run = reset["storyRunId"].as_str().unwrap().to_string();
+        // 安装更新需要无活跃/暂停 Run（V3-22）→ 先显式停止过渡 Run。
+        crate::story_registry::run_stop(&home, &json!({"storyRunId":interim_run})).unwrap();
+        let update_preview = crate::story_registry::install_preview(&home, &json!({"storyId":"story.detective",
+            "targetCityId":city_id,"expectedCityRevision":0,"operationId":"op-pin-update-preview"})).unwrap();
+        assert_eq!(update_preview["canInstall"], json!(true), "{update_preview}");
+        let current_version: String = {
+            let db = database(&home).unwrap();
+            db.query_row("SELECT story_version FROM story_installations WHERE city_id=?1 AND story_id='story.detective'",
+                [city_id.as_str()], |r| r.get(0)).unwrap()
+        };
+        crate::story_registry::install_commit(&home, &json!({"previewId":update_preview["previewId"],
+            "operationId":"op-pin-update-commit","updateConfirmation":{
+            "currentStoryVersion":current_version,"currentPackageDigest":pinned,
+            "targetStoryVersion":"1.1.0","targetPackageDigest":edited_digest}})).unwrap();
+        // 新周目钉定更新后的发布：同一提案在新图下诚实拒绝（前置 99）。
+        let reset2 = crate::story_registry::run_reset(&home, &player_id,
+            &json!({"cityId":city_id,"storyId":"story.detective"})).unwrap();
+        let new_run = reset2["storyRunId"].as_str().unwrap().to_string();
+        assert_eq!(reset2["contentDigest"], json!(edited_digest), "new playthrough pins the updated release");
+        seed_affection(&home, &city_id, &new_run, &player_id, 1);
+        player_speak(&home, &city_id, &game_run_id, "op-player-pin2", "再来一次？");
+        let claimed2 = claim(&home, "sess-n3-pin");
+        let new_delivery = claimed2["deliveries"].as_array().unwrap().iter()
+            .find(|d| d["payload"]["eventId"] == json!("evt-op-player-pin2")).unwrap();
+        let denied = propose(&home, &actor_id, new_delivery["deliveryId"].as_str().unwrap(),
+            "op-new-run-reply", "e-invite", "这次呢").unwrap();
+        assert_eq!(denied["accepted"], false, "new run evaluates the edited graph: {denied}");
+        assert_eq!(denied["code"], "narrative_rejected");
+        assert!(denied["diagnostics"].as_array().unwrap().iter().any(|d| d.as_str().unwrap().contains("preconditions")),
+            "{denied}");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn proposals_fail_closed_when_the_run_has_no_pinned_release() {
+        // 钉定机制前的旧行（content_digest NULL）→ 诚实拒绝，不退回可编辑项目。
+        let home = home();
+        let (city_id, game_run_id, story_run_id, player_id) = start_session(&home);
+        seed_affection(&home, &city_id, &story_run_id, &player_id, 1);
+        let actor_id = register_actor(&home, "sess-n3-legacy");
+        player_speak(&home, &city_id, &game_run_id, "op-player-legacy", "在吗？");
+        let claimed = claim(&home, "sess-n3-legacy");
+        let delivery_id = claimed["deliveries"][0]["deliveryId"].as_str().unwrap().to_string();
+        {
+            let db = database(&home).unwrap();
+            db.execute("UPDATE story_runs SET content_digest=NULL WHERE story_run_id=?1",
+                [story_run_id.as_str()]).unwrap();
+        }
+        assert_eq!(propose(&home, &actor_id, &delivery_id, "op-legacy", "e-invite", "hi")
+            .unwrap_err(), "story_run_not_pinned");
         std::fs::remove_dir_all(home).ok();
     }
 }
