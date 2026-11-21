@@ -274,6 +274,48 @@ pub(crate) fn read_story(home: &Path, city_instance: &str, payload: &Value) -> R
     story_state(home, &player_id, &city_id, &game_id)
 }
 
+/// 显式 Story Run 读取（N2 G-READ，OH_AGENT_NARRATIVE_ENGINE_SPEC §4/N2 验收）：
+/// 给定 runId 一次拿到该 Run 的状态 + 对白事件（含 Actor 已提交回复）。
+/// 读取走显式四元组（player/city/story/run），不经 legacy gameId 合成映射——
+/// 这是「玩家在原 Run 看到回复」的读取面（HB-08）。
+pub(crate) fn read_story_run(home: &Path, city_instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    let run_id = required(payload, "runId")?;
+    let dialogue_limit = payload.get("dialogueLimit").and_then(Value::as_u64).unwrap_or(50).clamp(1, 100) as u32;
+    let db = database(home)?;
+    migrate(&db)?;
+    // 读取是非破坏性操作：不调 active_run/expire_runs（写过期 + TTL 判定用墙钟
+    // 会在时钟域不同的调用里误杀活跃 Run——测试与离线读取的真实边界场景）。
+    // 只校验 run 存在且绑定本实例；已过期 Run 仍可读（事实不因 TTL 消失）。
+    let row: (String, String, String) = db.query_row(
+        "SELECT city_id,game_id,player_id FROM city_game_runs WHERE run_id=?1 AND city_instance_id=?2",
+        params![run_id,city_instance], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)))
+        .optional().map_err(|_| "creator_store_unavailable")?.ok_or("game_run_not_found")?;
+    let (city_id, game_id, player_id) = row;
+    let (story_id, story_run_id) = active_story_scope(&db, &player_id, &city_id, run_id)?;
+    let state = crate::story_store::story_state_scoped(home, &player_id, &city_id, &story_id, &story_run_id)?;
+    let dialogue = crate::story_store::story_dialogue_scoped(home, &player_id, &city_id, &story_id, &story_run_id, dialogue_limit)?;
+    Ok(json!({"runId":run_id,"storyId":story_id,"storyRunId":story_run_id,"playerId":player_id,
+        "cityId":city_id,"gameId":game_id,"storyRevision":state["storyRevision"],"state":state["state"],
+        "dialogue":dialogue}))
+}
+
+/// 活跃 Run 的显式 story 作用域派生（G-READ）：返回 (story_id, story_run_id)。
+/// 优先读 story_runs 表的显式注册（N2）；fallback 到 legacy 合成映射——commit
+/// 写入侧同样走 legacy（story_scope: None），两侧必须派生一致才能读到已提交事实。
+fn active_story_scope(db: &rusqlite::Connection, player_id: &str, city_id: &str, run_id: &str) -> Result<(String, String), &'static str> {
+    let explicit: Option<(String, String)> = db.query_row(
+        "SELECT story_id,story_run_id FROM story_runs WHERE story_run_id=?1 AND player_id=?2 AND city_id=?3",
+        params![run_id,player_id,city_id], |row| Ok((row.get(0)?,row.get(1)?)))
+        .optional().map_err(|_| "creator_store_unavailable")?;
+    if let Some(scope) = explicit { return Ok(scope); }
+    let game_id: String = db.query_row(
+        "SELECT game_id FROM city_game_runs WHERE run_id=?1 AND player_id=?2 AND city_id=?3",
+        params![run_id,player_id,city_id], |row| row.get(0))
+        .optional().map_err(|_| "creator_store_unavailable")?
+        .ok_or("game_run_not_found")?;
+    Ok(crate::story_store::legacy_story_scope(&game_id))
+}
+
 pub(crate) fn commit(home: &Path, city_instance: &str, payload: &Value) -> Result<Value, &'static str> {
     commit_at(home, city_instance, payload, now_ms())
 }
@@ -376,6 +418,58 @@ mod tests {
         json!({"runId":run["runId"],"operationId":"operation-1","eventId":"event-1","residentId":"resident:xia",
             "expectedStoryRevision":story_revision,"expectedClockRevision":clock["clockRevision"],
             "intent":{"kind":"invite","targetId":"place:cafe"}})
+    }
+
+    #[test]
+    fn run_scoped_read_returns_committed_dialogue_and_isolates_players() {
+        // N2 G-READ 验收（HB-08 前置）：玩家提交 → 经显式 run.read 读回对白；
+        // 第二玩家的 Run 读不到第一玩家的对白。
+        let home = home();
+        let run = start(&home, 1_000);
+        let clock = read_clock_at(&home, "city:one", 1_000).unwrap();
+        let mut speak = commit_payload(&run, &clock, "0");
+        speak["intent"] = json!({"kind":"speak","targetId":"resident:xia","text":"去咖啡馆吧？"});
+        speak["eventId"] = json!("event-speak-1");
+        let commit_result = commit_at(&home, "city-instance", &speak, 1_000).unwrap();
+        let _ = &commit_result;
+        // 显式 Run 读取（G-READ）：同一 Run 内读回状态与对白。
+        let run_id = run["runId"].as_str().unwrap();
+        let read = crate::creator_projects::dispatch_city_runtime(&home, "city-instance",
+            "city.story.run.read", &json!({"runId":run_id})).unwrap();
+        assert_eq!(read["runId"], json!(run_id));
+        let dialogue = read["dialogue"].as_array().unwrap();
+        assert_eq!(dialogue.len(), 1);
+        assert_eq!(dialogue[0]["eventId"], "event-speak-1");
+        // commit 的 storyRevision 是 sha256 摘要（digest(current:request_hash)），
+        // 非零即有已提交状态；dialogue[0] 已验 eventId。
+        assert!(read["storyRevision"].as_str().unwrap().starts_with("sha256:"));
+        // 跨玩家隔离：同键（player 不同）读取第二玩家的 Run——不经过 start_run_at
+        //（local_player 单例 + active_slot UNIQUE 使同 profile 无法双活跃 Run），
+        // 用显式 story_runs 注册 + 直接构造 city_game_runs 行模拟另一玩家的 Run。
+        {
+            let db = database(&home).unwrap();
+            db.execute("UPDATE city_game_runs SET active_slot=NULL WHERE run_id=?1", params![run_id]).unwrap();
+            db.execute("INSERT INTO city_game_runs(run_id,city_instance_id,city_id,game_id,player_id,build_id,status,active_slot,created_at_ms,expires_at_ms)
+                VALUES('game-run-other','city-instance','city:one','game.romance','player-2',NULL,'active','city-instance',1,99999999999999)", []).unwrap();
+            crate::story_registry::migrate(&db).unwrap();
+            db.execute("INSERT INTO city_game_runs(run_id,city_instance_id,city_id,game_id,player_id,build_id,status,active_slot,created_at_ms,expires_at_ms)
+                VALUES('run-p2','city-instance','city:one','game.romance','player-2',NULL,'active',NULL,1,99999999999999)", []).unwrap();
+            db.execute("INSERT OR IGNORE INTO story_runs(story_run_id,player_id,city_id,story_id,status,last_viewed_at_ms,created_at_ms,updated_at_ms)
+                VALUES('run-p2','player-2','city:one','story.detective','active',1,1,1)", []).unwrap();
+        }
+        let other = crate::creator_projects::dispatch_city_runtime(&home, "city-instance",
+            "city.story.run.read", &json!({"runId":"game-run-other"})).unwrap();
+        assert_eq!(other["dialogue"].as_array().unwrap().len(), 0);
+        // player-2 的显式 story_runs 注册行（story.detective）没有已提交事件——
+        // 即使 story 同名也不会读到 player-1 的对白（作用域四元组隔离）。
+        let other_explicit = crate::creator_projects::dispatch_city_runtime(&home, "city-instance",
+            "city.story.run.read", &json!({"runId":"run-p2"})).unwrap();
+        assert_eq!(other_explicit["dialogue"].as_array().unwrap().len(), 0);
+        // 原玩家仍可读自己的对白（读取非破坏性、TTL 过期后事实仍在）。
+        let own = crate::creator_projects::dispatch_city_runtime(&home, "city-instance",
+            "city.story.run.read", &json!({"runId":run_id})).unwrap();
+        assert_eq!(own["dialogue"].as_array().unwrap().len(), 1);
+        std::fs::remove_dir_all(home).ok();
     }
 
     #[test]
