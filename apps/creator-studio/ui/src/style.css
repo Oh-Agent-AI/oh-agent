@@ -396,3 +396,18 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, summary:focu
 .archive-preview > code { overflow-wrap: anywhere; font-size: 10px; }
 .archive-list { display: grid; gap: 8px; padding-top: 12px; border-top: 1px solid #405055; }
 .studio-route-content .city-draft-panel, .studio-route-content .city-archive-panel { color: #dce9e5; }
+
+/* ST-07: durable goal/plan/evidence, distinct from the disconnected executor. */
+.studio-task-panel { display: grid; gap: 12px; padding: 12px; border: 1px solid #3a504d; border-radius: 10px; background: #142321; }
+.studio-task-panel textarea { width: 100%; min-height: 76px; margin: 0; }
+.studio-task-steps { display: grid; gap: 6px; }
+.studio-task-steps > div { display: grid; gap: 3px; padding: 8px; border-left: 2px solid #4d7d6c; background: #182a26; }
+.studio-task-steps strong { font-size: 12px; }
+.studio-task-steps span { font-size: 10px; }
+.studio-evidence-form, .studio-review-form { display: grid; gap: 8px; padding-top: 10px; border-top: 1px solid #30464a; }
+.studio-evidence-list { display: grid; gap: 7px; padding-top: 10px; border-top: 1px solid #30464a; }
+.studio-evidence-list .section-title { margin: 0; }
+.studio-evidence-list article { padding: 8px; background: #182a26; border-radius: 6px; }
+.studio-evidence-list article strong { font-size: 11px; }
+.studio-evidence-list article p { margin: 5px 0; font-size: 12px; line-height: 1.5; }
+.studio-evidence-list article code { font-size: 10px; overflow-wrap: anywhere; }

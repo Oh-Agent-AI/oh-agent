@@ -1240,6 +1240,13 @@ fn run_project_publication(home: &Path, _owner: &str, _instance: &str, payload: 
     let revision = if payload.get("revision").is_some() { Some(args_u64(payload, "revision")?) } else { None };
     read_project_publication(home, args_valid_id(payload, "projectId")?, revision)
 }
+fn run_shared_session(home: &Path, _owner: &str, method: &str, payload: &Value) -> Result<Value, &'static str> {
+    agent_vitals_mcp::mcp::creator_session::session_dispatch(home, method, payload).map_err(|error| error.code)
+}
+fn run_shared_task(home: &Path, _owner: &str, method: &str, payload: &Value) -> Result<Value, &'static str> {
+    agent_vitals_mcp::mcp::creator_session::task_dispatch(home, method, payload).map_err(|error| error.code)
+}
+
 fn run_candidate_create(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
     create_project_candidate(home, args_valid_id(payload, "projectId")?, args_u64(payload, "expectedRevision")?)
 }
@@ -1597,6 +1604,18 @@ static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.layout.list", &["limit"], &[], run_layout_list),
     creator_row!("creator.operation.status", &["projectId", "operationId"], &[], run_operation_status),
     creator_row!("creator.project.commit", &["projectId", "previewId", "expectedRevision", "operationId"], &[], run_commit),
+    creator_row!("creator.session.open", &["agentId"], &["projectId", "cityId"], run_shared_session),
+    creator_row!("creator.session.status", &["sessionId"], &[], run_shared_session),
+    creator_row!("creator.session.close", &["sessionId"], &[], run_shared_session),
+    creator_row!("creator.task.create", &["sessionId", "goal", "humanRequest", "artifact", "acceptanceCriteria", "operationId"], &[], run_shared_task),
+    creator_row!("creator.task.plan.submit", &["taskId", "expectedPlanRevision", "expectedArtifactRevision", "steps", "operationId"], &[], run_shared_task),
+    creator_row!("creator.task.plan.approve", &["taskId", "planRevision", "expectedArtifactRevision", "operationId"], &[], run_shared_task),
+    creator_row!("creator.task.status", &["taskId"], &[], run_shared_task),
+    creator_row!("creator.task.evidence.append", &["taskId", "planRevision", "expectedArtifactRevision", "criterionId", "kind", "trustLevel", "summary", "operationId"], &["stepId", "data", "proposedChangeSetId"], run_shared_task),
+    creator_row!("creator.task.evidence.list", &["taskId"], &[], run_shared_task),
+    creator_row!("creator.task.review.accept", &["taskId", "planRevision", "expectedArtifactRevision", "reviewerNote", "operationId"], &[], run_shared_task),
+    creator_row!("creator.task.review.reject", &["taskId", "planRevision", "expectedArtifactRevision", "reason", "operationId"], &[], run_shared_task),
+    creator_row!("creator.task.cancel", &["taskId", "operationId"], &[], run_shared_task),
     creator_row!("creator.project.candidate.accept", &["candidateId"], &[], run_candidate_accept),
     creator_row!("creator.project.candidate.create", &["projectId", "expectedRevision"], &[], run_candidate_create),
     creator_row!("creator.project.candidate.read", &["projectId"], &["revision"], run_candidate_read),
@@ -1627,6 +1646,8 @@ static DISPATCH_ROWS: &[CreatorMethodRow] = &[
 pub fn dispatch_as(home: &Path, owner: &str, instance: &str, method: &str, payload: &Value) -> Result<Value, &'static str> {
     let row = DISPATCH_ROWS.iter().find(|row| row.method == method).ok_or("creator_method_unavailable")?;
     if !exact_payload_with_optional(payload, row.required, row.optional) { return Err("creator_request_invalid"); }
+    if method.starts_with("creator.task.") { return agent_vitals_mcp::mcp::creator_session::task_dispatch(home, method, payload).map_err(|error| error.code); }
+    if method.starts_with("creator.session.") { return agent_vitals_mcp::mcp::creator_session::session_dispatch(home, method, payload).map_err(|error| error.code); }
     (row.handler)(home, owner, instance, payload)
 }
 
@@ -2528,6 +2549,28 @@ mod tests {
         assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.candidate.accept",
             &json!({"candidateId":candidate_id})).unwrap_err(), "creator_candidate_test_required");
         assert_eq!(read_project_publication(&home, &project_id, None).unwrap()["status"], "unpublished");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn desktop_task_api_shares_the_creator_session_ledger() {
+        let home = home();
+        let session = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio", "creator.session.open", &json!({"agentId":"studio-local","projectId":"project-shared"})).unwrap();
+        let session_id = session["sessionId"].as_str().unwrap();
+        let db = database(&home).unwrap();
+        db.execute("INSERT INTO creator_projects(project_id,revision,document_json,created_at_ms,updated_at_ms) VALUES('project-shared',2,'{}',1,1)", []).unwrap();
+        let created = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio", "creator.task.create", &json!({"sessionId":session_id,"goal":"Shared task","humanRequest":"Review only",
+            "artifact":{"kind":"creator-project","projectId":"project-shared","expectedRevision":2},
+            "acceptanceCriteria":[{"criterionId":"manual","description":"Manual review","requiredEvidenceKind":"human-note"}],"operationId":"shared-goal"})).unwrap();
+        let task_id = created["taskId"].as_str().unwrap();
+        dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio", "creator.task.plan.submit", &json!({"taskId":task_id,"expectedPlanRevision":1,"expectedArtifactRevision":2,
+            "steps":[{"stepId":"review","title":"Review","kind":"review"}],"operationId":"shared-plan"})).unwrap();
+        let approved = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio", "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":2,"operationId":"shared-approve"})).unwrap();
+        assert_eq!(approved["phase"], "ready");
+        let cancelled = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio", "creator.task.cancel", &json!({"taskId":task_id,"operationId":"shared-cancel"})).unwrap();
+        assert_eq!(cancelled["phase"], "cancelled");
+        let status = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio", "creator.session.status", &json!({"sessionId":session_id})).unwrap();
+        assert!(status["jobs"].as_array().unwrap().iter().any(|job| job["kind"] == "studio-task" && job["status"] == "cancelled"));
         let _ = std::fs::remove_dir_all(home);
     }
 

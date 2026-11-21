@@ -14,6 +14,7 @@ import { exportBlockMessage, exportClickBlock } from "../exportClick";
 import { AgentApprovalGate, matchesPreviewBase, type AgentCommit } from "../features/agent/agentApproval";
 import { useAgentActivity } from "../features/agent/useAgentActivity";
 import { AgentWorkspace } from "../features/agent/AgentWorkspace";
+import { useStudioTasks } from "../features/agent/useStudioTasks";
 import { useCreatorHostBridge } from "./useCreatorHostBridge";
 import { CodeGamePreviewPanel } from "../features/preview/CodeGamePreviewPanel";
 import { creatorWorkKindForProject, type ReleaseRef } from "../contracts/creatorProject";
@@ -175,6 +176,7 @@ export function CreatorStudioApp() {
   const [pendingEdit, setPendingEdit] = useState<{ projectId: string; operationId: string } | null>(null);
   const [pendingCreateId, setPendingCreateId] = useState<string | null>(null);
   const { agentActivity, recordAgentActivity, restoreAgentActivity } = useAgentActivity(creatorRequest);
+  const studioTasks = useStudioTasks(creatorRequest, project);
   const approvalGate = useRef(new AgentApprovalGate());
   const [agentCommit, setAgentCommit] = useState<AgentCommit | null>(null);
   const [agentPreviewStatus, setAgentPreviewStatus] = useState<{ context: object; status: "loading" | "ready" | "failed"; code?: string } | null>(null);
@@ -1070,7 +1072,7 @@ export function CreatorStudioApp() {
         <p className="readiness">{browserPreview ? "合成数据预览 · " : ""}{releaseHint}</p>
         {(activePanel === "play" || activePanel === "project") && project && candidatePanel}
         {activePanel === "code" && <CodeGamePreviewPanel request={creatorRequest} browserPreview={browserPreview} requestedBuildId={codePreviewBuildId} requestedSourceCityId={codePreviewSourceCityId} onMessage={setMessage} />}
-        {activePanel === "agent" && <AgentWorkspace project={project} agentCommit={agentCommit} agentActivity={agentActivity} agentCityPreview={agentCityPreview} agentPreviewStatus={agentPreviewStatus} busy={busy} onResolve={resolveAgentCommit} />}
+        {activePanel === "agent" && <AgentWorkspace project={project} taskController={studioTasks} agentCommit={agentCommit} agentActivity={agentActivity} agentCityPreview={agentCityPreview} agentPreviewStatus={agentPreviewStatus} busy={busy} onResolve={resolveAgentCommit} />}
         {activePanel === "project" && <ProjectPanel
           cities={cities} draftCityView={draftCityView} citiesLoading={citiesLoading} citiesError={citiesError} citiesCursor={citiesCursor}
           busy={busy} browserPreview={browserPreview} packageInspection={packageInspection} installedPackages={installedPackages}

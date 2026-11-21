@@ -1,11 +1,14 @@
 import type { AgentCommit } from "./agentApproval";
 import type { AgentActivityItem } from "./useAgentActivity";
 import { GoalBriefComposer } from "./GoalBriefComposer";
+import { StudioTaskPanel } from "./StudioTaskPanel";
+import type { StudioTaskController } from "./useStudioTasks";
 
 export type AgentPreviewStatus = { context: object; status: "loading" | "ready" | "failed"; code?: string };
 
 export function AgentWorkspace(props: Readonly<{
   project: Readonly<{ projectId: string; title?: string; revision: number }> | null;
+  taskController: StudioTaskController;
   agentCommit: AgentCommit | null;
   agentActivity: readonly AgentActivityItem[];
   agentCityPreview: object | null;
@@ -13,11 +16,12 @@ export function AgentWorkspace(props: Readonly<{
   busy: boolean;
   onResolve: (approve: boolean) => void;
 }>) {
-  const { project, agentCommit, agentActivity, agentCityPreview, agentPreviewStatus, busy, onResolve } = props;
+  const { project, taskController, agentCommit, agentActivity, agentCityPreview, agentPreviewStatus, busy, onResolve } = props;
   const scope = project ? `${project.title ?? project.projectId}（${project.projectId}，revision ${project.revision}）` : "尚未选择 Creator Project";
   return <section className="agent-panel agent-workspace" aria-label="Agent Workspace">
-    <div className="agent-workspace-heading"><div><span className="section-title">Agent Workspace</span><p className="muted">目标与范围：{scope}</p></div><span className="agent-connection">未连接 Agent Task Bridge</span></div>
-    <p className="agent-connection-note">当前仅可复制任务说明，不能创建或执行 Agent Task。已有 Host 活动不代表 Agent 在线，也不用于推断连接状态。</p>
+    <div className="agent-workspace-heading"><div><span className="section-title">Agent Workspace</span><p className="muted">目标与范围：{scope}</p></div><span className="agent-connection">本地任务账本 · Agent 执行未连接</span></div>
+    <p className="agent-connection-note">本地任务账本可持久化目标、计划和证据；Agent 执行未连接。已有 Host 活动不代表 Agent 在线，也不用于推断连接状态。</p>
+    <StudioTaskPanel controller={taskController} />
     <GoalBriefComposer scope={scope} />
 
     <section className="agent-decisions" aria-label="需要人工的决策">
