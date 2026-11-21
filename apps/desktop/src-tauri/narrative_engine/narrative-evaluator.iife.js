@@ -79,7 +79,8 @@ var narrativeEngine = (function () {
       return JSON.stringify(decision);
     }
     if (entry === "eligibleEdges") {
-      var edges = eligibleEdges(JSON.parse(args.graph), JSON.parse(args.snapshot));
+      // graph/snapshot 由宿主以 JSON 对象传入（与 evaluate 同形状），不再二次 parse。
+      var edges = eligibleEdges(args.graph, args.snapshot);
       return JSON.stringify({ edges: edges, evaluationNonce: args.evaluationNonce });
     }
     return JSON.stringify({ error: "unknown narrative entry " + entry });

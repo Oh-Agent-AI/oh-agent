@@ -182,12 +182,14 @@ pub(crate) fn forget_story_fork(home: &Path, preview_id: &str) {
 }
 
 fn local_player(db: &Connection, now: u64) -> Result<String, &'static str> {
-    if let Some(player_id) = db.query_row("SELECT player_id FROM city_players WHERE profile_key='local'", [], |row| row.get::<_, String>(0))
-        .optional().map_err(|_| "creator_store_unavailable")? {
-        return Ok(player_id);
-    }
-    let player_id = new_id("player")?;
-    db.execute("INSERT INTO city_players(profile_key,player_id,created_at_ms) VALUES ('local',?1,?2)", params![player_id,now])
+    // N3（主体统一）：City Runtime 的本地玩家收敛到 Story Registry 的稳定本地
+    // 主体（LOCAL_CREATOR_OWNER）——story run（owner 钉定）与 city game run 必须
+    // 共享同一 player 身份，提交边界的显式 Story Run 绑定才能成立（HB-08）。
+    // 既有行迁移到稳定主体：历史 run 行保留行内 player_id，寻址不受影响。
+    let player_id = crate::creator_projects::LOCAL_CREATOR_OWNER.to_string();
+    db.execute("INSERT INTO city_players(profile_key,player_id,created_at_ms) VALUES ('local',?1,?2)
+        ON CONFLICT(profile_key) DO UPDATE SET player_id=excluded.player_id",
+        params![player_id,now as i64])
         .map_err(|_| "creator_store_unavailable")?;
     Ok(player_id)
 }
@@ -504,7 +506,8 @@ mod tests {
     fn city_run_clock_and_rule_commit_form_one_local_host_path() {
         let home = home();
         let run = start(&home, 1_000);
-        assert!(run["playerScope"]["playerId"].as_str().unwrap().starts_with("player"));
+        // 主体统一（N3）：本地玩家 = 稳定本地主体（story run owner 同一身份）。
+        assert_eq!(run["playerScope"]["playerId"], json!(crate::creator_projects::LOCAL_CREATOR_OWNER));
         let clock = read_clock_at(&home, "city:one", 1_000).unwrap();
         let first = commit_at(&home, "city-instance", &commit_payload(&run, &clock, "0"), 1_000).unwrap();
         assert_eq!(first["status"], "committed");
