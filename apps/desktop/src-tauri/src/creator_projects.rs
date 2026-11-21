@@ -1604,6 +1604,16 @@ fn run_install_list(home: &Path, _owner: &str, _instance: &str, payload: &Value)
     crate::city_game_install::list(home, payload)
 }
 
+fn run_actor_register(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::actor_adapter::register(home, payload)
+}
+fn run_actor_turn_context(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::actor_adapter::turn_context(home, payload)
+}
+fn run_actor_intent_submit(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::actor_adapter::submit(home, payload)
+}
+
 // Story Project Registry（RFC V3 §12，S-2+S-3）：事务形态照 city_game_install；
 // run 身份固定为稳定本地 principal（owner），不接受调用方自报 playerId——
 // 事实仍走 story_store 的显式 StoryStateScopeV1，本组方法只管注册表元数据。
@@ -1928,6 +1938,9 @@ static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.code.install.preview", &["buildId", "targetCityId", "expectedCityRevision", "operationId"], &["runAfterInstall", "replaceCurrentView", "allowOfficialStoryWrites"], run_install_preview),
     creator_row!("creator.code.install.commit", &["previewId", "operationId"], &["updateConfirmation"], run_install_commit),
     creator_row!("creator.code.install.list", &[], &["cityId", "gameId", "limit"], run_install_list),
+    creator_row!("creator.actor.register", &["storyId", "characterId", "sessionIdentifier", "allowedKinds", "maxIntentsPerWindow", "operationId"], &["sessionLabel"], run_actor_register),
+    creator_row!("creator.actor.turn.context", &["actorId"], &[], run_actor_turn_context),
+    creator_row!("creator.actor.intent.submit", &["actorId", "intent"], &[], run_actor_intent_submit),
     creator_row!("creator.story.project.create", &["storyId", "title", "schemaVersion", "storyVersion", "graph", "canon"], &["expectedStoryRevision"], run_story_project_create),
     creator_row!("creator.story.project.read", &["storyId"], &[], run_story_project_read),
     creator_row!("creator.story.projects.list", &["limit"], &[], run_story_projects_list),

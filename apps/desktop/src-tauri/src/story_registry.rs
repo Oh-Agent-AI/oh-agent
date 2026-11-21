@@ -553,12 +553,32 @@ pub(crate) fn project_content_digest(home: &Path, story_id: &str) -> Result<Opti
         |row| row.get::<_, String>(0)).optional().map_err(|_| "creator_store_unavailable")
 }
 
+/// Actor 适配器读面（spec §4.2）：canon_json 原样返回（创作者有界对象）。
+pub(crate) fn project_canon(home: &Path, story_id: &str) -> Result<Option<Value>, &'static str> {
+    if !valid_id(story_id) { return Err("story_argument_invalid"); }
+    let db = database(home)?;
+    migrate(&db)?;
+    let raw: Option<String> = db.query_row("SELECT canon_json FROM story_projects WHERE story_id=?1", [story_id],
+        |row| row.get::<_, String>(0)).optional().map_err(|_| "creator_store_unavailable")?;
+    raw.map(|text| serde_json::from_str(&text).map_err(|_| "creator_store_unavailable")).transpose()
+}
+
 pub(crate) fn lease_acquire(home: &Path, payload: &Value) -> Result<Value, &'static str> {
     let city_id = story_text(payload, "cityId")?;
     let resident_id = story_text(payload, "residentId")?;
     let holder_intent_id = story_text(payload, "holderIntentId")?;
     let trace_id = story_text(payload, "traceId")?;
-    let (_kind, holder_scope_json) = validated_holder_scope(payload, city_id)?;
+    // Actor 持有扩展（ADR-03 输入，spec §8）：holderActorId 存在时持有方记录
+    // {"kind":"actor","actorId":...}——租约内部标记，不是 StateScopeV1 扩展
+    // （状态 scope 仍只允许私有子集）。同 actor 重取 = 续期（holder_scope_json
+    // 逐字节一致），异 holder busy 语义不变。
+    let holder_scope_json = match payload.get("holderActorId").and_then(Value::as_str) {
+        Some(holder_actor) if valid_id(holder_actor) => {
+            canonical_json(&json!({"actorId":holder_actor,"kind":"actor"})).map_err(|_| "story_argument_invalid")?
+        }
+        Some(_) => return Err("story_argument_invalid"),
+        None => validated_holder_scope(payload, city_id)?.1,
+    };
     let duration = payload.get("durationMs").and_then(Value::as_u64).unwrap_or(LEASE_DEFAULT_TTL_MS);
     if !(1..=LEASE_MAX_TTL_MS).contains(&duration) { return Err("story_argument_invalid"); }
     let now = now_ms();

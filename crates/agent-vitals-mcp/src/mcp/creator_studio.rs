@@ -150,6 +150,9 @@ pub fn specs() -> Vec<ToolSpec> {
         spec("creator_story_graph_inspect", "Read one registered Story Project's graph with a host-side minimal structural analysis (RFC §6 story.graph.inspect; the V3-11 basis): node/edge counts, BFS reachability from entry roots (nodes with no incoming edges; a pure cycle falls back to all nodes) and dead ends (nodes with no outgoing edges). Dangling edges are an explicit story_argument_invalid, never an empty success. Conditional reachability and knowledge validation are reported as notEvaluated — the narrative pipeline owns them. Read-only.", json!({"storyId":project_id_prop()}), &["storyId"]),
         spec("creator_story_timeline_inspect", "Read the committed Story event timeline for cityId×storyId (RFC §6 story.timeline.inspect, the V3-07 read face): WorldEventEnvelopeV1 rows projected from the host story store and sorted ascending by simulationUtcMs then eventId. Scope is pinned to the local profile principal — private claim rows of other players are structurally invisible at query scope, not filtered afterward. storyRunId defaults to the principal's latest active/paused run (falls back to the latest run of any status); a runId from another scope is reported as story_run_not_found. Read-only.", json!({"cityId":project_id_prop(),"storyId":project_id_prop(),"storyRunId":project_id_prop(),"limit":{"type":"integer","minimum":1,"maximum":100}}), &["cityId","storyId"]),
         spec("creator_game_intent_simulate", "Mechanically simulate whether one Agent intent would be accepted at commit time — without writing anything (RFC §6 game.intent.simulate): intent schema shape (same semantics as the host commit gate: speak/invite vocabulary, text limits, prototype-pollution keys), active run status and TTL, the current Story revision vs expectedStoryRevision (CAS baseline), the current City clock revision vs expectedClockRevision, and per-resident public activity lease occupancy. Expired leases and absent clocks are reported as commit-time behaviors, never repaired here. Returns allowed=true/false plus one diagnostic step with a stable code; knowledge and rule-semantics adjudication stays with the host rule pipeline at commit time and is not simulated. Read-only; does not require --allow-local-writes.", json!({"runId":project_id_prop(),"intent":{"type":"object"},"expectedStoryRevision":{"type":"string","minLength":1,"maxLength":128},"expectedClockRevision":{"type":"string","minLength":1,"maxLength":128},"residentId":project_id_prop()}), &["runId","intent"]),
+        spec("creator_actor_register", "Mint a host-side actor identity bound to one story character (RFC V3 /actors; user directive 2026-11-21: the host keeps almost no actor data - identity + budget + last decision only; conversation memory, goals and tasks belong to the external coding agent host). Canon-first: the character must exist in the story canon. sessionIdentifier is a required opaque external-session key whose charset excludes filesystem paths; re-registering the same (story, session, character) returns the existing actor with its budget intact. Returns the deterministic sessionPrompt - the first message for the external agent session. Requires --allow-local-writes.", json!({"storyId":project_id_prop(),"characterId":project_id_prop(),"sessionIdentifier":{"type":"string","minLength":1,"maxLength":128},"allowedKinds":{"type":"array","maxItems":6,"items":{"type":"string","enum":["speak","move","interact","invite","give","quest.action"]}},"maxIntentsPerWindow":{"type":"integer","minimum":1,"maximum":200},"sessionLabel":{"type":"string","minLength":1,"maxLength":128},"operationId":operation_id_prop()}), &["storyId","characterId","sessionIdentifier","allowedKinds","maxIntentsPerWindow","operationId"]),
+        spec("creator_actor_turn_context", "Read the actor fact-grounding projection (read-only): budget state, character canon slice, active and paused player runs, recently committed events, eligible story beats (graph reachability plus causal dependency status), and the deterministic sessionPrompt. This is how a new external session aligns with authoritative facts - it is not conversation memory; the external agent host owns conversation context.", json!({"actorId":project_id_prop()}), &["actorId"]),
+        spec("creator_actor_intent_submit", "Submit one agent intent through the host pipeline (RFC 3.2): budget gate, kind allowlist, scope dispatch (private kinds commit into the target player active run via the deterministic CAS pipeline with envelope fields; public move acquires the resident activity lease held by the actor and writes authoritative resident state). Idempotent by intentId. Returns accepted flag with optional code, traceId and intentsUsed. Requires --allow-local-writes.", json!({"actorId":project_id_prop(),"intent":{"type":"object"}}), &["actorId","intent"]),
     ]
 }
 
@@ -214,6 +217,14 @@ fn call_error(code: &str) -> ToolError {
         "creator_method_unavailable" | "plugin_call_invalid" => ToolError::new("plugin_unavailable", "Creator Studio does not expose this operation in the current build."),
         "creator_store_unavailable" | "plugin_call_store_unavailable" => ToolError::new("data_unavailable", "Local Creator Studio storage is unavailable."),
         "creator_store_unwritable" => ToolError::new("data_unavailable", "Creator storage is not writable. Check the data directory permissions (or launch Oh Agent outside a restricted sandbox), then retry."),
+        "actor_not_found" => ToolError::new("not_found", "No actor with that actorId in this data home; re-register if the actor was evicted."),
+        "actor_budget_exhausted" => ToolError::new("busy", "The actor's intent budget for this window is exhausted; retry after the window resets."),
+        "story_canon_character_missing" => ToolError::new("invalid_argument", "The story canon does not define that character; add the character to the story canon first."),
+        "story_binding_mismatch" => ToolError::new("invalid_argument", "The intent scope targets a different story than the actor's binding."),
+        "intent_kind_not_allowed" => ToolError::new("invalid_argument", "That intent kind is not in the actor's allowedKinds."),
+        "intent_scope_invalid" => ToolError::new("invalid_argument", "The intent scope kind must be a story run (private kinds) or city-resident-public (move)."),
+        "story_beat_not_found" => ToolError::new("invalid_argument", "That beatId is not in the story graph."),
+        "story_beat_dependency_missing" => ToolError::new("failed_precondition", "The proposed story beat is missing committed causal dependencies; the host lists them in the message."),
         "creator_store_locked" => ToolError::new("busy", "Creator storage is locked by another process; retry after the current write finishes."),
         "creator_store_corrupt" => ToolError::new("data_unavailable", "Creator storage failed its integrity check. Back up state/creator and rebuild it from facts."),
         "creator_store_migration_failed" => ToolError::new("data_unavailable", "Creator storage schema migration failed; check the local app log for the failing stage."),
@@ -778,7 +789,27 @@ pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool)
             if let Some(limit) = optional_u64(args, "limit")? { payload["limit"] = json!(limit); }
             call(data_home, "creator.story.timeline.inspect", &payload, 15_000)
         }
-        "creator_game_intent_simulate" => {
+        "creator_actor_register" => {
+            if !allow_local_writes { return Err(ToolError::new("permission_denied", "Registering an actor requires `data-mcp serve --allow-local-writes`.")); }
+            let mut payload = json!({"storyId":required_string(args,"storyId")?,"characterId":required_string(args,"characterId")?,
+                "sessionIdentifier":required_string(args,"sessionIdentifier")?,"allowedKinds":args.get("allowedKinds")
+                .filter(|value| value.is_array()).ok_or_else(|| ToolError::new("invalid_argument","`allowedKinds` must be an array"))?,
+                "maxIntentsPerWindow":args.get("maxIntentsPerWindow").and_then(Value::as_u64)
+                .ok_or_else(|| ToolError::new("invalid_argument","`maxIntentsPerWindow` must be an integer"))?,
+                "operationId":required_string(args,"operationId")?});
+            if let Some(label) = args.get("sessionLabel") { payload["sessionLabel"] = label.clone(); }
+            call(data_home, "creator.actor.register", &payload, 15_000)
+        }
+        "creator_actor_turn_context" => {
+            call(data_home, "creator.actor.turn.context", &json!({"actorId":required_string(args,"actorId")?}), 15_000)
+        }
+        "creator_actor_intent_submit" => {
+            if !allow_local_writes { return Err(ToolError::new("permission_denied", "Submitting an actor intent requires `data-mcp serve --allow-local-writes`.")); }
+            call(data_home, "creator.actor.intent.submit", &json!({"actorId":required_string(args,"actorId")?,
+                "intent":args.get("intent").filter(|value| value.is_object())
+                .ok_or_else(|| ToolError::new("invalid_argument","`intent` must be an object"))?}), 15_000)
+        }
+                "creator_game_intent_simulate" => {
             let intent = args.get("intent").filter(|value| value.is_object())
                 .ok_or_else(|| ToolError::new("invalid_argument", "`intent` must be an object"))?;
             let mut payload = json!({"runId":required_string(args,"runId")?,"intent":intent});

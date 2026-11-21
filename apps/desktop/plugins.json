@@ -575,6 +575,9 @@
         "creator.game.rules.inspect",
         "creator.story.graph.inspect",
         "creator.story.timeline.inspect",
+        "creator.actor.register",
+        "creator.actor.turn.context",
+        "creator.actor.intent.submit",
         "creator.game.intent.simulate"
       ],
       "hostEvents": [

@@ -856,6 +856,9 @@ fn headless_creator_methods() -> Vec<String> {
         "creator.story.project.create",
         "creator.story.project.read",
         "creator.story.projects.list",
+        "creator.actor.register",
+        "creator.actor.turn.context",
+        "creator.actor.intent.submit",
         "creator.story.install.preview",
         "creator.story.install.commit",
         "creator.story.install.list",
@@ -1024,6 +1027,7 @@ fn answer_headless_call(home: &std::path::Path, method: &str, payload: &Value) -
         // 路由宿主 dispatch_as（与 Studio 在场时同一管线），无 headless 特例。
         | "creator.code.install.preview" | "creator.code.install.commit" | "creator.code.install.list"
         | "creator.story.project.create" | "creator.story.project.read" | "creator.story.projects.list"
+        | "creator.actor.register" | "creator.actor.turn.context" | "creator.actor.intent.submit"
         | "creator.story.install.preview" | "creator.story.install.commit" | "creator.story.install.list"
         | "creator.story.run.start" | "creator.story.run.stop" | "creator.story.run.reset"
         | "creator.story.resident.lease.acquire" | "creator.story.resident.lease.release"
@@ -2648,6 +2652,7 @@ mod tests {
             "creator.code.install.preview", "creator.code.install.commit", "creator.code.install.list",
             "creator.game.rules.inspect", "creator.story.graph.inspect",
             "creator.story.timeline.inspect", "creator.game.intent.simulate",
+            "creator.actor.register", "creator.actor.turn.context", "creator.actor.intent.submit",
         ] {
             assert!(methods.iter().any(|method| method == name), "headless arm must claim {name}");
         }
@@ -2674,6 +2679,35 @@ mod tests {
         assert_eq!(committed["status"], "installed", "{committed}");
         let run = answer_headless_call(&home, "creator.story.run.start", &json!({
             "cityId": city_id, "storyId": "story.headless"})).unwrap();
+        // Actor 适配器全链路（headless）：register → turn.context → intent.submit。
+        // canon 无角色 → 注册拒绝（Canon 先行）；补 canon 后注册成功并出 sessionPrompt。
+        let ghost = answer_headless_call(&home, "creator.actor.register", &json!({
+            "storyId": "story.headless", "characterId": "resident:ghost", "sessionIdentifier": "codex-ghost",
+            "allowedKinds": ["speak"], "maxIntentsPerWindow": 2, "operationId": "op-actor-ghost"}))
+            .unwrap_err();
+        assert_eq!(ghost, "story_canon_character_missing");
+        // canon 更新走 CAS（expectedStoryRevision）；为 actor 注册补齐角色 Canon。
+        let canon_write = answer_headless_call(&home, "creator.story.project.create", &json!({
+            "storyId": "story.headless", "title": "无头侦探", "schemaVersion": 1, "storyVersion": "1.0.0",
+            "expectedStoryRevision": created["revision"],
+            "graph": {"nodes": [{"id": "start", "kind": "beat"}, {"id": "clue", "kind": "beat"}],
+                "edges": [{"from": "start", "to": "clue"}]},
+            "canon": {"characters": [{"id": "resident:linxia", "name": "小夏"}]}})).unwrap();
+        let _ = canon_write;
+        let registered = answer_headless_call(&home, "creator.actor.register", &json!({
+            "storyId": "story.headless", "characterId": "resident:linxia", "sessionIdentifier": "codex-actor-1",
+            "allowedKinds": ["speak", "move"], "maxIntentsPerWindow": 3, "operationId": "op-actor-reg"})).unwrap();
+        let actor_id = registered["actorId"].as_str().unwrap().to_owned();
+        assert!(actor_id.starts_with("actor-"), "{registered}");
+        let context = answer_headless_call(&home, "creator.actor.turn.context", &json!({"actorId": actor_id})).unwrap();
+        assert_eq!(context["budget"]["max"], 3, "{context}");
+        assert!(context["sessionPrompt"].as_str().unwrap().contains("resident:linxia"));
+        let submitted = answer_headless_call(&home, "creator.actor.intent.submit", &json!({
+            "actorId": actor_id, "intent": {"intentId": "intent-1", "actorId": actor_id,
+            "scope": {"kind": "story", "playerId": "local-profile-v1", "cityId": city_id,
+            "storyId": "story.headless", "storyRunId": run["storyRunId"]}, "kind": "speak",
+            "args": {"text": "你好"}, "expectedRevision": "0"}})).unwrap();
+        assert_eq!(submitted["accepted"], true, "{submitted}");
         // 运行身份固定为稳定本地 principal（与 mailbox 臂同款），不接受调用方自报。
         assert_eq!(run["playerId"], crate::creator_projects::LOCAL_CREATOR_OWNER, "{run}");
         assert_eq!(run["restored"], false);
@@ -2685,7 +2719,8 @@ mod tests {
         let timeline = answer_headless_call(&home, "creator.story.timeline.inspect",
             &json!({"cityId": city_id, "storyId": "story.headless"})).unwrap();
         assert_eq!(timeline["available"], true, "{timeline}");
-        assert_eq!(timeline["count"], 0);
+        // actor intent 提交的 speak 事件已入时间线（宿主复算/审计的数据面）。
+        assert_eq!(timeline["count"], 1, "{timeline}");
         let simulate = answer_headless_call(&home, "creator.game.intent.simulate",
             &json!({"runId": "game-run-missing", "intent": {"kind": "speak", "text": "hi"}})).unwrap();
         assert_eq!(simulate["allowed"], false, "{simulate}");
