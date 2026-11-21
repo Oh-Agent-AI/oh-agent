@@ -11,3 +11,6 @@ export type { CharacterCanonGrowthEdgeV1, CharacterCanonV1, CharacterCanonValida
 export { KNOWLEDGE_CONTENT_MAX_BYTES_V1, KNOWLEDGE_VISIBILITY_V1 } from "./contracts/knowledge";
 export type { KnowledgeClaimV1, KnowledgeVisibilityV1, NarrativeSummaryV1 } from "./contracts/knowledge";
 export { checkCausalDependency, markStaleSummaries, validateKnowledgeClaims } from "./validate/knowledge";
+export { NARRATIVE_CANON_MAX_BYTES, NARRATIVE_DIALOGUE_MAX_BYTES, NARRATIVE_GRAPH_MAX_BYTES, NARRATIVE_MAX_CONDITIONS, NARRATIVE_MAX_EFFECTS, } from "./contracts/engine";
+export type { ActorProposalV1, NarrativeCommitReceiptV1, NarrativeConditionV1, NarrativeDecisionV1, NarrativeEffectV1, NarrativeScopeV1, NarrativeSnapshotV1, } from "./contracts/engine";
+export { eligibleEdges, evaluateProposal } from "./runtime/evaluate";
