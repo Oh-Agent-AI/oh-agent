@@ -994,10 +994,41 @@ pub fn task_submit_result(data_home: &Path, payload: &Value) -> Result<Value, To
     let preview_id = task_id_arg(payload, "previewId")?;
     let operation_id = task_id_arg(payload, "operationId")?;
     let hash = task_hash(payload)?;
+    // 评审 P2：宿主复核是最长 15s 的 broker 往返，必须在任务库写事务之外完成——
+    // BEGIN IMMEDIATE 期间持有写锁会阻塞同库其他写入（含 task.cancel）。三段式：
+    // (A) 短事务校验并释放写锁 → (B) 事务外宿主复核 → (C) 短事务复查（捕获期间的
+    // 取消/变更/换领人）+ 落盘证据与回执。
+    let project_id = {
+        let mut db = open_db(&sessions_db(data_home)?, false)?;
+        ensure_schema(&db)?;
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+        if let Some(result) = task_receipt(&tx, &operation_id, &hash)? { return Ok(result); }
+        let (task, _, current_revision, phase) = task_row(&tx, &task_id)?;
+        if phase != "executing" || current_revision != plan_revision { return Err(ToolError::new("creator_task_invalid_transition", format!("Cannot submit from {phase} with plan revision {plan_revision}."))); }
+        let claimant = task_claim_row(&tx, &task_id)?;
+        if claimant.as_ref().map(|(owner,_)| owner.as_str()) != Some(agent_id.as_str()) {
+            return Err(ToolError::new("creator_task_claim_mismatch", "Only the claiming agent may submit the result."));
+        }
+        if task["artifact"]["expectedRevision"].as_u64() != Some(expected_artifact_revision) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
+        task_check_artifact(data_home, &task["artifact"])?;
+        let project_id = task["artifact"]["projectId"].as_str()
+            .ok_or_else(|| ToolError::new("creator_task_artifact_invalid", "Task artifact does not carry a projectId."))?.to_owned();
+        tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+        project_id
+    };
+    // 服务端复核（诚实闸的核心）：预览由宿主进程持有（内存、TTL 600s），submit 经
+    // broker 回宿主确认「存在、绑定本 artifact、baseRevision 匹配、未过期」。复用
+    // Studio 域错误码映射；宿主不在场时诚实报 plugin_unavailable，绝不降级采信。
+    let verified = super::creator_studio::call(data_home, "creator.task.preview.verify",
+        &json!({"projectId":project_id,"previewId":preview_id}), 15_000)?;
+    let verified = verified.get("data").cloned().unwrap_or(verified);
+    if verified["projectId"].as_str() != Some(project_id.as_str()) || verified["baseRevision"].as_u64() != Some(expected_artifact_revision) {
+        return Err(ToolError::new("preview_required", "Submitted preview does not match the task artifact (project or base revision)."));
+    }
+    // (C) 复查：复核等待期间任务可能已被取消/换领人/推进——全部以当前行状态裁决。
     let mut db = open_db(&sessions_db(data_home)?, false)?;
     ensure_schema(&db)?;
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
-    if let Some(result) = task_receipt(&tx, &operation_id, &hash)? { return Ok(result); }
     let (task, _, current_revision, phase) = task_row(&tx, &task_id)?;
     if phase != "executing" || current_revision != plan_revision { return Err(ToolError::new("creator_task_invalid_transition", format!("Cannot submit from {phase} with plan revision {plan_revision}."))); }
     let claimant = task_claim_row(&tx, &task_id)?;
@@ -1005,18 +1036,6 @@ pub fn task_submit_result(data_home: &Path, payload: &Value) -> Result<Value, To
         return Err(ToolError::new("creator_task_claim_mismatch", "Only the claiming agent may submit the result."));
     }
     if task["artifact"]["expectedRevision"].as_u64() != Some(expected_artifact_revision) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
-    task_check_artifact(data_home, &task["artifact"])?;
-    let project_id = task["artifact"]["projectId"].as_str()
-        .ok_or_else(|| ToolError::new("creator_task_artifact_invalid", "Task artifact does not carry a projectId."))?;
-    // 服务端复核（诚实闸的核心）：预览由宿主进程持有（内存、TTL 600s），submit 经
-    // broker 回宿主确认「存在、绑定本 artifact、baseRevision 匹配、未过期」。复用
-    // Studio 域错误码映射；宿主不在场时诚实报 plugin_unavailable，绝不降级采信。
-    let verified = super::creator_studio::call(data_home, "creator.task.preview.verify",
-        &json!({"projectId":project_id,"previewId":preview_id}), 15_000)?;
-    let verified = verified.get("data").cloned().unwrap_or(verified);
-    if verified["projectId"].as_str() != Some(project_id) || verified["baseRevision"].as_u64() != Some(expected_artifact_revision) {
-        return Err(ToolError::new("preview_required", "Submitted preview does not match the task artifact (project or base revision)."));
-    }
     let criteria = task["acceptanceCriteria"].as_array().ok_or_else(|| ToolError::new("storage_unavailable", "Task acceptance is damaged."))?;
     let now = now_ms();
     let mut last_evidence_id = String::new();

@@ -1954,7 +1954,7 @@ static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.code.install.commit", &["previewId", "operationId"], &["updateConfirmation"], run_install_commit),
     creator_row!("creator.code.install.list", &[], &["cityId", "gameId", "limit"], run_install_list),
     creator_row!("creator.actor.register", &["storyId", "characterId", "sessionIdentifier", "allowedKinds", "maxIntentsPerWindow", "operationId"], &["sessionLabel"], run_actor_register),
-    creator_row!("creator.actor.turn.context", &["actorId"], &[], run_actor_turn_context),
+    creator_row!("creator.actor.turn.context", &["actorId", "scope"], &[], run_actor_turn_context),
     creator_row!("creator.actor.intent.submit", &["actorId", "intent"], &[], run_actor_intent_submit),
     creator_row!("creator.story.project.create", &["storyId", "title", "schemaVersion", "storyVersion", "graph", "canon"], &["expectedStoryRevision"], run_story_project_create),
     creator_row!("creator.story.project.read", &["storyId"], &[], run_story_project_read),

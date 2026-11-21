@@ -15,7 +15,6 @@ use crate::creator_store::{canonical_json, database, new_id, now_ms, valid_id};
 
 const BUDGET_WINDOW_MS: u64 = 3_600_000;
 const ACTOR_KINDS_V1: [&str; 6] = ["speak", "move", "interact", "invite", "give", "quest.action"];
-const MAX_RUN_SUMMARIES: usize = 32;
 const MAX_RECENT_EVENTS: usize = 16;
 const SESSION_PROMPT_MAX_BYTES: usize = 8 * 1024;
 const CANON_SLICE_MAX_BYTES: usize = 4 * 1024;
@@ -147,6 +146,16 @@ pub(crate) fn register(home: &Path, payload: &Value) -> Result<Value, &'static s
 /// 确定性 sessionPrompt。只读；新 thread 冷启动对齐用，不是对话记忆。
 pub(crate) fn turn_context(home: &Path, payload: &Value) -> Result<Value, &'static str> {
     let actor_id = payload.get("actorId").and_then(Value::as_str).filter(|id| valid_id(id)).ok_or("story_argument_invalid")?;
+    // 评审 P1-b：三类事实查询必须绑定 Host 授权的运行作用域（player/run），
+    // 否则同 Story 多玩家/多周目的事件互相污染 eligibleBeats 依赖判定。
+    // 作用域由 Host 对 story_runs 行校验授权（player 匹配 + 属于本 story + 活跃），
+    // 不采信调用方自报的归属。
+    let scope = payload.get("scope").and_then(Value::as_object)
+        .ok_or("actor_context_scope_required")?;
+    let scope_player = scope.get("playerId").and_then(Value::as_str).filter(|id| valid_id(id))
+        .ok_or("actor_context_scope_invalid")?;
+    let scope_run = scope.get("storyRunId").and_then(Value::as_str).filter(|id| valid_id(id))
+        .ok_or("actor_context_scope_invalid")?;
     let now = now_ms();
     let window_started = row_window_started(home, actor_id)?;
     {
@@ -159,16 +168,25 @@ pub(crate) fn turn_context(home: &Path, payload: &Value) -> Result<Value, &'stat
     let story = crate::story_registry::project_read(home, &json!({"storyId":row.story_id}))?;
     let canon = story.get("canon").cloned().unwrap_or(Value::Null);
     let canon_slice = truncate_json(&canon, CANON_SLICE_MAX_BYTES);
-    let committed = committed_event_ids(home, &row.story_id)?;
+    let db = database(home)?;
+    let run_row: (String, String, String) = db.query_row(
+        "SELECT player_id,status,city_id FROM story_runs WHERE story_run_id=?1 AND story_id=?2 AND player_id=?3 AND status IN ('active','paused')",
+        params![scope_run,row.story_id,scope_player], |row|
+        Ok((row.get(0)?,row.get(1)?,row.get(2)?)))
+        .optional().map_err(|_| "creator_store_unavailable")?
+        .ok_or("story_run_not_found")?;
+    let (run_player, run_status, run_city) = run_row;
+    let committed = committed_event_ids(home, &row.story_id, &run_player, scope_run, &run_city)?;
     let graph = story.get("graph").cloned().unwrap_or(Value::Null);
     let eligible = eligible_beats(&graph, &committed);
-    let runs = active_run_summaries(home, &row.story_id)?;
-    let recent = recent_events(home, &row.story_id)?;
+    let runs = run_summaries(home, &row.story_id, &run_player, scope_run)?;
+    let recent = recent_events(home, &row.story_id, &run_player, scope_run)?;
     let allowed = allowed_kinds_of(&row)?;
     let budget = json!({"used":used,"max":max,"windowResetsAtMs":window_started + BUDGET_WINDOW_MS as i64});
     let prompt = session_prompt(&canon_slice, &row.character_id, &allowed, max as u64, used as u64, &eligible);
     Ok(json!({"actorId":actor_id,"storyId":row.story_id,"characterId":row.character_id,
         "sessionIdentifier":row.session_identifier,"budget":budget,
+        "scope":{"playerId":run_player,"cityId":run_city,"storyRunId":scope_run,"runStatus":run_status},
         "canon":canon_slice,"runs":runs,"recentEvents":recent,"eligibleBeats":eligible,
         "sessionPrompt":prompt}))
 }
@@ -202,9 +220,17 @@ pub(crate) fn submit(home: &Path, payload: &Value) -> Result<Value, &'static str
                 "story" => {
                     let scope_story = scope.get("storyId").and_then(Value::as_str).unwrap_or("");
                     if scope_story != row.story_id { Err("story_binding_mismatch".to_string()) }
-                    else { crate::actor_intent::submit_intent(home, intent)
-                        .map(|receipt| json!({"committed":receipt}))
-                        .map_err(|code| code.to_string()) }
+                    else {
+                        // 底层双层契约（V3-09）：语义仲裁拒绝走 Ok({accepted:false,code})。
+                        // 适配器必须保留裁决——不得把业务拒绝报告为 accepted（评审 P1-a）。
+                        crate::actor_intent::submit_intent(home, intent)
+                            .map_err(|code| code.to_string())
+                            .and_then(|receipt| {
+                                if receipt.get("accepted").and_then(Value::as_bool) == Some(false) {
+                                    Err(receipt.get("code").and_then(Value::as_str).unwrap_or("story_rejected").to_string())
+                                } else { Ok(json!({"committed":receipt})) }
+                            })
+                    }
                 }
                 // 公共 move：租约（actor 持有，ADR-03 扩展）→ write_resident_state。
                 // 本期不落 story_events（边界如实，见报告）。
@@ -271,21 +297,21 @@ fn resident_state_revision(home: &Path, city_id: &str, resident_id: &str) -> Res
 }
 
 
-fn committed_event_ids(home: &Path, story_id: &str) -> Result<Vec<String>, &'static str> {
+fn committed_event_ids(home: &Path, story_id: &str, player_id: &str, story_run_id: &str, city_id: &str) -> Result<Vec<String>, &'static str> {
     let db = database(home)?;
-    let mut statement = db.prepare("SELECT DISTINCT event_id FROM story_events WHERE story_id=?1 LIMIT 512")
+    let mut statement = db.prepare("SELECT DISTINCT event_id FROM story_events WHERE story_id=?1 AND player_id=?2 AND story_run_id=?3 AND city_id=?4 LIMIT 512")
         .map_err(|_| "creator_store_unavailable")?;
-    let rows = statement.query_map(params![story_id], |row| row.get::<_, String>(0))
+    let rows = statement.query_map(params![story_id,player_id,story_run_id,city_id], |row| row.get::<_, String>(0))
         .map_err(|_| "creator_store_unavailable")?;
     rows.collect::<Result<Vec<_>, _>>().map_err(|_| "creator_store_unavailable")
 }
 
-fn active_run_summaries(home: &Path, story_id: &str) -> Result<Value, &'static str> {
+fn run_summaries(home: &Path, story_id: &str, player_id: &str, story_run_id: &str) -> Result<Value, &'static str> {
     let db = database(home)?;
     crate::story_registry::migrate(&db)?;
-    let mut statement = db.prepare("SELECT story_run_id,player_id,status,last_viewed_at_ms FROM story_runs WHERE story_id=?1 AND status IN ('active','paused') ORDER BY updated_at_ms DESC LIMIT ?2")
+    let mut statement = db.prepare("SELECT story_run_id,player_id,status,last_viewed_at_ms FROM story_runs WHERE story_id=?1 AND player_id=?2 AND story_run_id=?3 AND status IN ('active','paused')")
         .map_err(|_| "creator_store_unavailable")?;
-    let rows = statement.query_map(params![story_id, MAX_RUN_SUMMARIES as i64], |row|
+    let rows = statement.query_map(params![story_id,player_id,story_run_id], |row|
         Ok(json!({"storyRunId":row.get::<_, String>(0)?,"playerId":row.get::<_, String>(1)?,
             "status":row.get::<_, String>(2)?,"lastViewedAtMs":row.get::<_, Option<i64>>(3)?})))
         .map_err(|_| "creator_store_unavailable")?;
@@ -293,11 +319,11 @@ fn active_run_summaries(home: &Path, story_id: &str) -> Result<Value, &'static s
     Ok(Value::Array(runs))
 }
 
-fn recent_events(home: &Path, story_id: &str) -> Result<Value, &'static str> {
+fn recent_events(home: &Path, story_id: &str, player_id: &str, story_run_id: &str) -> Result<Value, &'static str> {
     let db = database(home)?;
-    let mut statement = db.prepare("SELECT event_id,rule_id,created_at_ms FROM story_events WHERE story_id=?1 ORDER BY created_at_ms DESC LIMIT ?2")
+    let mut statement = db.prepare("SELECT event_id,rule_id,created_at_ms FROM story_events WHERE story_id=?1 AND player_id=?2 AND story_run_id=?3 ORDER BY created_at_ms DESC LIMIT ?4")
         .map_err(|_| "creator_store_unavailable")?;
-    let rows = statement.query_map(params![story_id, MAX_RECENT_EVENTS as i64], |row|
+    let rows = statement.query_map(params![story_id,player_id,story_run_id, MAX_RECENT_EVENTS as i64], |row|
         Ok(json!({"eventId":row.get::<_, String>(0)?,"ruleId":row.get::<_, String>(1)?,
             "createdAtMs":row.get::<_, i64>(2)?})))
         .map_err(|_| "creator_store_unavailable")?;
@@ -396,6 +422,21 @@ mod tests {
     }
 
     /// 注册一个绑定 story 的 actor（story 项目含 canon 角色 resident:linxia）。
+    fn insert_run(home: &Path, run_id: &str, player_id: &str, story_id: &str) {
+        let db = database(home).unwrap();
+        crate::story_registry::migrate(&db).unwrap();
+        db.execute("INSERT INTO story_runs(story_run_id,player_id,city_id,story_id,status,last_viewed_at_ms,created_at_ms,updated_at_ms)
+            VALUES(?1,?2,'city-1',?3,'active',1,1,1)", params![run_id,player_id,story_id]).unwrap();
+    }
+
+    fn seed_story_event(home: &Path, story_id: &str, player_id: &str, run_id: &str, event_id: &str) {
+        let db = database(home).unwrap();
+        crate::story_registry::migrate(&db).unwrap();
+        db.execute("INSERT INTO story_events(event_id,occurrence_id,player_id,city_id,game_id,story_id,story_run_id,rule_id,status,due_at_utc_ms,last_processed_tick,idempotency_key,story_revision,clock_revision,intent_json,created_at_ms)
+            VALUES(?1,'occ',?2,'city-1','game-1',?3,?4,'rule','scheduled',0,0,?5,'0','0','{}',1)",
+            params![event_id,player_id,story_id,run_id,format!("idem-{event_id}")]).unwrap();
+    }
+
     fn setup_story(home: &Path) -> Value {
         crate::story_registry::project_create(home, &json!({"storyId":"story.detective","title":"侦探线",
             "schemaVersion":1,"storyVersion":"1.0.0",
@@ -441,17 +482,55 @@ mod tests {
         setup_story(&home);
         let actor = register_actor(&home, "codex-thread-ctx", "op-ctx");
         let actor_id = actor["actorId"].as_str().unwrap();
-        let ctx = turn_context(&home, &json!({"actorId":actor_id})).unwrap();
+        insert_run(&home, "story-run-ctx", "player-1", "story.detective");
+        // 评审 P1-b：缺 scope fail-closed（不采信无作用域的事实聚合）。
+        assert_eq!(turn_context(&home, &json!({"actorId":actor_id})).unwrap_err(), "actor_context_scope_required");
+        let ctx = turn_context(&home, &json!({"actorId":actor_id,
+            "scope":{"playerId":"player-1","storyRunId":"story-run-ctx"}})).unwrap();
         assert_eq!(ctx["budget"]["used"], 0);
         assert_eq!(ctx["budget"]["max"], 3);
         assert_eq!(ctx["canon"]["characters"][0]["id"], "resident:linxia");
         assert_eq!(ctx["eligibleBeats"]["start"], "start");
         assert_eq!(ctx["eligibleBeats"]["beats"][0]["missingDependencies"][0], "evt-date");
+        assert_eq!(ctx["scope"]["playerId"], "player-1");
         // sessionPrompt 确定性：两次合成逐字节一致。
-        let again = turn_context(&home, &json!({"actorId":actor_id})).unwrap();
+        let again = turn_context(&home, &json!({"actorId":actor_id,
+            "scope":{"playerId":"player-1","storyRunId":"story-run-ctx"}})).unwrap();
         assert_eq!(ctx["sessionPrompt"], again["sessionPrompt"]);
         // 未知 actor 拒绝。
-        assert_eq!(turn_context(&home, &json!({"actorId":"actor-missing"})).unwrap_err(), "actor_not_found");
+        assert_eq!(turn_context(&home, &json!({"actorId":"actor-missing",
+            "scope":{"playerId":"player-1","storyRunId":"story-run-ctx"}})).unwrap_err(), "actor_not_found");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn turn_context_scope_is_host_authorized_and_player_isolated() {
+        let home = home();
+        setup_story(&home);
+        let actor = register_actor(&home, "codex-thread-iso", "op-iso");
+        let actor_id = actor["actorId"].as_str().unwrap();
+        insert_run(&home, "story-run-p1", "player-1", "story.detective");
+        insert_run(&home, "story-run-p2", "player-2", "story.detective");
+        // 他人 Run 的作用域被 Host 拒绝（player 不匹配 run 行——Host 授权不采信自报）。
+        assert_eq!(turn_context(&home, &json!({"actorId":actor_id,
+            "scope":{"playerId":"player-2","storyRunId":"story-run-p1"}})).unwrap_err(), "story_run_not_found");
+        // 未知 Run 拒绝。
+        assert_eq!(turn_context(&home, &json!({"actorId":actor_id,
+            "scope":{"playerId":"player-1","storyRunId":"story-run-none"}})).unwrap_err(), "story_run_not_found");
+        // 玩家 B 的事实不得进入玩家 A 的上下文（跨玩家隔离，评审 P1-b）。
+        seed_story_event(&home, "story.detective", "player-2", "story-run-p2", "evt-b");
+        let ctx = turn_context(&home, &json!({"actorId":actor_id,
+            "scope":{"playerId":"player-1","storyRunId":"story-run-p1"}})).unwrap();
+        let committed_view = ctx["eligibleBeats"].to_string();
+        assert!(!committed_view.contains("evt-b"), "player-2 事件泄漏进 player-1 上下文: {committed_view}");
+        let recent_view = ctx["recentEvents"].to_string();
+        assert!(!recent_view.contains("evt-b"), "player-2 事件泄漏进 recentEvents: {recent_view}");
+        // 玩家自己的事实可见（recentEvents 直接列出事件 id）。
+        seed_story_event(&home, "story.detective", "player-1", "story-run-p1", "evt-a");
+        let ctx_own = turn_context(&home, &json!({"actorId":actor_id,
+            "scope":{"playerId":"player-1","storyRunId":"story-run-p1"}})).unwrap();
+        assert!(ctx_own["recentEvents"].to_string().contains("evt-a"));
+        assert!(!ctx_own["recentEvents"].to_string().contains("evt-b"));
         std::fs::remove_dir_all(home).ok();
     }
 
