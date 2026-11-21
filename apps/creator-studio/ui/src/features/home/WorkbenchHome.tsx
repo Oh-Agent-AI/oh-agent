@@ -11,20 +11,22 @@ export function WorkbenchHome(props: Readonly<{
   publishedReleaseId: string | null;
   hasPendingApproval: boolean;
   busy: boolean;
+  goal: string;
+  onGoalChange: (goal: string) => void;
   onOpenProject: (projectId: string) => void;
   onOpenTemplates: (kind: "city" | "game" | "story") => void;
   onOpenAgent: () => void;
   onRefreshProjects: () => void;
 }>) {
   const {
-    projects, projectsLoading, projectsError, project, publishedReleaseId, hasPendingApproval, busy,
+    projects, projectsLoading, projectsError, project, publishedReleaseId, hasPendingApproval, busy, goal, onGoalChange,
     onOpenProject, onOpenTemplates, onOpenAgent, onRefreshProjects,
   } = props;
   return <div className="workbench-home">
     <section className="home-hero" aria-labelledby="home-goal-title">
       <span className="welcome-kicker">START CREATING</span><h2 id="home-goal-title">从一个创作目标开始</h2>
       <p>描述想制作的 City 或 Game。当前仅复制任务说明，不会自动受理或运行 Agent。</p>
-      <GoalBriefComposer />
+      <GoalBriefComposer goal={goal} onGoalChange={onGoalChange} />
     </section>
 
     <section className="home-template-grid" aria-label="创作模板入口">
@@ -41,7 +43,7 @@ export function WorkbenchHome(props: Readonly<{
       <section className="home-status" aria-label="等待、执行与测试状态">
         <div className="home-section-heading"><span className="section-title">当前状态</span></div>
         <article><strong>等待确认</strong>{hasPendingApproval ? <><p>有 1 个真实 Agent 修改等待你确认。</p><button className="secondary" onClick={onOpenAgent}>检查 Agent 修改</button></> : <p>当前没有等待确认的 Agent 修改。</p>}</article>
-        <article><strong>执行信息</strong><p>Agent Task 执行队列尚未接入（ST-04）；这里不显示虚构的等待或运行任务。</p></article>
+        <article><strong>执行信息</strong><p>可在项目的 Agent 工作区创建持久任务；执行前必须提交并批准计划，结果仍需人工审核。</p></article>
         <article><strong>测试与试玩</strong>{project ? <p>{publishedReleaseId ? `当前项目 ${project.title ?? project.projectId} 已有确认的发布版本，可在作品工作区试玩。` : "当前项目暂无已确认的发布试玩版本；请打开作品工作区检查真实发布状态。"}</p> : <p>选择最近项目后，可读取其真实发布试玩状态。</p>}</article>
       </section>
     </div>

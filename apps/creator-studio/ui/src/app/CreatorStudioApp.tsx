@@ -134,6 +134,7 @@ export function CreatorStudioApp() {
   const [codePreviewBuildId, setCodePreviewBuildId] = useState<string | undefined>(undefined);
   const [codePreviewSourceCityId, setCodePreviewSourceCityId] = useState<string | undefined>(undefined);
   const [message, setMessage] = useState("");
+  const [goalDraft, setGoalDraft] = useState("");
   const [cities, setCities] = useState<CityRow[]>([]);
   const [citiesCursor, setCitiesCursor] = useState<string | null>(null);
   const [citiesLoading, setCitiesLoading] = useState(false);
@@ -1043,7 +1044,7 @@ export function CreatorStudioApp() {
     {route.section === "home" && <div className="studio-route-content">
       {message && <p className="status status-banner" role="status">{message}</p>}
       <WorkbenchHome projects={projects} projectsLoading={projectsLoading} projectsError={projectsError} project={project} publishedReleaseId={publishedReleaseId}
-        hasPendingApproval={agentCommit !== null} busy={busy} onOpenProject={openProjectInWorkspace} onOpenTemplates={kind => { if (kind === "story") setRoute({ section: "stories" }); else openWorkspacePanel("project"); }}
+        hasPendingApproval={agentCommit !== null} busy={busy} goal={goalDraft} onGoalChange={setGoalDraft} onOpenProject={openProjectInWorkspace} onOpenTemplates={kind => { if (kind === "story") setRoute({ section: "stories" }); else openWorkspacePanel("project"); }}
         onOpenAgent={() => openWorkspacePanel("agent")} onRefreshProjects={refreshProjectCatalog} />
     </div>}
     {route.section === "projects" && <div className="studio-route-content">
@@ -1081,7 +1082,7 @@ export function CreatorStudioApp() {
         <p className="readiness">{browserPreview ? "合成数据预览 · " : ""}{releaseHint}</p>
         {(activePanel === "play" || activePanel === "project") && project && candidatePanel}
         {activePanel === "code" && <CodeGamePreviewPanel request={creatorRequest} browserPreview={browserPreview} requestedBuildId={codePreviewBuildId} requestedSourceCityId={codePreviewSourceCityId} onMessage={setMessage} />}
-        {activePanel === "agent" && <AgentWorkspace project={project} taskController={studioTasks} agentCommit={agentCommit} agentActivity={agentActivity} agentCityPreview={agentCityPreview} agentPreviewStatus={agentPreviewStatus} busy={busy} onResolve={resolveAgentCommit} />}
+        {activePanel === "agent" && <AgentWorkspace project={project} taskController={studioTasks} agentCommit={agentCommit} agentActivity={agentActivity} agentCityPreview={agentCityPreview} agentPreviewStatus={agentPreviewStatus} busy={busy} goal={goalDraft} onGoalChange={setGoalDraft} onResolve={resolveAgentCommit} />}
         {activePanel === "project" && <ProjectPanel
           cities={cities} draftCityView={draftCityView} citiesLoading={citiesLoading} citiesError={citiesError} citiesCursor={citiesCursor}
           busy={busy} browserPreview={browserPreview} packageInspection={packageInspection} installedPackages={installedPackages}

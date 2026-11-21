@@ -1,9 +1,8 @@
 import { useState } from "react";
 import { creationGoalBrief } from "../home/workbenchModel";
 
-export function GoalBriefComposer(props: Readonly<{ scope?: string }>) {
-  const { scope } = props;
-  const [goal, setGoal] = useState("");
+export function GoalBriefComposer(props: Readonly<{ goal: string; onGoalChange: (goal: string) => void; scope?: string }>) {
+  const { goal, onGoalChange, scope } = props;
   const [copying, setCopying] = useState(false);
   const [copyStatus, setCopyStatus] = useState("");
   const base = creationGoalBrief(goal);
@@ -23,7 +22,7 @@ export function GoalBriefComposer(props: Readonly<{ scope?: string }>) {
     } finally { setCopying(false); }
   };
   return <div className="goal-composer">
-    <textarea aria-label="创作目标" value={goal} onChange={event => { setGoal(event.target.value); setCopyStatus(""); }} placeholder="描述希望 Agent 协助的创作目标；当前仅复制，不会执行" />
+    <textarea aria-label="创作目标" value={goal} onChange={event => { onGoalChange(event.target.value); setCopyStatus(""); }} placeholder="描述希望 Agent 协助的创作目标；当前仅复制，不会执行" />
     <div className="actions"><button disabled={!brief || copying} onClick={() => void copyGoal()}>{copying ? "正在复制…" : "复制任务说明"}</button></div>
     {copyStatus && <p className="status" role="status">{copyStatus}</p>}
   </div>;
