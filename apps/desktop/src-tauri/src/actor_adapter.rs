@@ -54,16 +54,16 @@ fn canon_contains_character(canon: &Value, character_id: &str) -> bool {
     }
 }
 
-struct ActorRow {
-    story_id: String,
-    character_id: String,
-    session_identifier: String,
-    allowed_kinds: String,
-    max_intents_per_window: i64,
-    intents_used: i64,
+pub(crate) struct ActorRow {
+    pub(crate) story_id: String,
+    pub(crate) character_id: String,
+    pub(crate) session_identifier: String,
+    pub(crate) allowed_kinds: String,
+    pub(crate) max_intents_per_window: i64,
+    pub(crate) intents_used: i64,
 }
 
-fn actor_row(home: &Path, actor_id: &str) -> Result<Option<ActorRow>, &'static str> {
+pub(crate) fn actor_row(home: &Path, actor_id: &str) -> Result<Option<ActorRow>, &'static str> {
     if !valid_id(actor_id) { return Err("story_argument_invalid"); }
     let db = database(home)?;
     migrate(&db)?;
@@ -78,7 +78,7 @@ fn actor_row(home: &Path, actor_id: &str) -> Result<Option<ActorRow>, &'static s
 }
 
 /// 窗口滚动：now 越过窗口起点 + 1h → 重置计数（确定性、测试可用任意 now）。
-fn roll_budget_window(db: &Connection, actor_id: &str, window_started_ms: i64, now: u64) -> Result<bool, &'static str> {
+pub(crate) fn roll_budget_window(db: &Connection, actor_id: &str, window_started_ms: i64, now: u64) -> Result<bool, &'static str> {
     if (now as i64).saturating_sub(window_started_ms) < BUDGET_WINDOW_MS as i64 { return Ok(false); }
     let changed = db.execute("UPDATE actors SET intents_used=0,window_started_ms=?2,updated_at_ms=?2 WHERE actor_id=?1 AND window_started_ms=?3",
         params![actor_id,now as i64,window_started_ms]).map_err(|_| "creator_store_unavailable")?;
@@ -183,11 +183,22 @@ pub(crate) fn turn_context(home: &Path, payload: &Value) -> Result<Value, &'stat
     let recent = recent_events(home, &row.story_id, &run_player, scope_run)?;
     let allowed = allowed_kinds_of(&row)?;
     let budget = json!({"used":used,"max":max,"windowResetsAtMs":window_started + BUDGET_WINDOW_MS as i64});
-    let prompt = session_prompt(&canon_slice, &row.character_id, &allowed, max as u64, used as u64, &eligible);
+    // N3：求值器菜单（前置已求值，当前快照下可走边，[{edgeId,to}]）——结构菜单
+    // 保留（可达性 + 因果依赖状态），求值器不可用时 evaluatedEdges 如实为 null
+    // （不猜测前置结果）。sessionPrompt 携带已求值菜单（agent 据此选 edgeId）。
+    let evaluated = if graph.is_object() {
+        crate::narrative_engine::narrative_snapshot_scoped(home, &run_player, &run_city, &row.story_id, scope_run)
+            .ok()
+            .and_then(|snapshot| crate::narrative_engine::eligible_edges(&graph, &snapshot).ok())
+            .unwrap_or(Value::Null)
+    } else { Value::Null };
+    let prompt = session_prompt(&canon_slice, &row.character_id, &allowed, max as u64, used as u64,
+        if evaluated.is_null() { &eligible } else { &evaluated });
     Ok(json!({"actorId":actor_id,"storyId":row.story_id,"characterId":row.character_id,
         "sessionIdentifier":row.session_identifier,"budget":budget,
         "scope":{"playerId":run_player,"cityId":run_city,"storyRunId":scope_run,"runStatus":run_status},
         "canon":canon_slice,"runs":runs,"recentEvents":recent,"eligibleBeats":eligible,
+        "evaluatedEdges":evaluated,
         "sessionPrompt":prompt}))
 }
 

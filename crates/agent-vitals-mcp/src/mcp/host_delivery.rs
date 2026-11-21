@@ -123,10 +123,20 @@ fn new_delivery_id() -> String {
 pub fn post_actor_turn_for_commit(data_home: &Path, turn: &ActorTurnContext<'_>) -> Result<Value, ToolError> {
     let mut db = open_db(data_home)?;
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
-    let run: Option<(String, String)> = tx.query_row(
-        "SELECT story_run_id,story_id FROM story_runs WHERE player_id=?1 AND city_id=?2 AND status='active' ORDER BY updated_at_ms DESC LIMIT 1",
-        params![turn.player_id, turn.city_id], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)))
-        .optional().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    // N3：优先采用提交边界绑定的显式 Story 作用域（与本次事实同库同源，读取侧
+    // 不二次解析）；仍校验 Run 行活跃（投递到路由之间可能已停止）。无绑定 →
+    // 保留原解析（玩家在该 City 的活跃 Run）。
+    let run: Option<(String, String)> = match turn.story_scope {
+        Some((story_id, story_run_id)) => tx.query_row(
+            "SELECT story_run_id,story_id FROM story_runs WHERE story_run_id=?1 AND story_id=?2 AND player_id=?3 AND city_id=?4 AND status='active'",
+            params![story_run_id,story_id,turn.player_id,turn.city_id], |row|
+            Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)))
+            .optional().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?,
+        None => tx.query_row(
+            "SELECT story_run_id,story_id FROM story_runs WHERE player_id=?1 AND city_id=?2 AND status='active' ORDER BY updated_at_ms DESC LIMIT 1",
+            params![turn.player_id, turn.city_id], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)))
+            .optional().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?,
+    };
     let Some((story_run_id, story_id)) = run else {
         tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
         return Ok(json!({"deliveryId":null,"bound":false,"routed":false,"droppedOldest":0}));
@@ -290,7 +300,9 @@ pub fn confirm_turn(data_home: &Path, payload: &Value) -> Result<Value, ToolErro
 
 /// Outbox 泵（评审 4）：从已提交事实（story_outbox）可重试地派生 actor.turn——
 /// commit 时投递失败只记日志的场景由此补齐。幂等：host_deliveries 的 dedupe
-/// 键跨状态查重，同一 event_id 永不重复成回合。只处理绑定了 actor 的 resident。
+/// 键跨状态查重，同一 event_id 永不重复成回合。N3 回路防护：与 D-2 同款绑定
+/// 条件——只泵「事实落到本 actor 绑定 resident」的行（story_events intent 带
+/// residentId=character_id）。Actor 自己的回复（无 residentId）不会泵成新回合。
 fn pump_outbox_turns(tx: &rusqlite::Transaction, actor_ids: &[String]) -> Result<(), ToolError> {
     for actor_id in actor_ids {
         let story_and_character: Option<(String, String)> = tx.query_row(
@@ -298,11 +310,21 @@ fn pump_outbox_turns(tx: &rusqlite::Transaction, actor_ids: &[String]) -> Result
             |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)))
             .optional().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
         let Some((story_id, character_id)) = story_and_character else { continue; };
+        // 事实表守卫：story_events 由宿主 story store 建（纯 bus 库无此表）——
+        // 无事实表即无可泵事实，诚实返回（不猜测、不建宿主表）。
+        let events_present: i64 = tx.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='story_events'",
+            [], |row| row.get(0)).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+        if events_present == 0 { continue; }
         let outbox: Vec<(String, String, String, String, String)> = tx.prepare(
-            "SELECT event_id,operation_id,player_id,city_id,story_run_id FROM story_outbox
-             WHERE story_id=?1 AND status='pending' ORDER BY id LIMIT 32")
+            "SELECT o.event_id,o.operation_id,o.player_id,o.city_id,o.story_run_id FROM story_outbox o \
+             JOIN story_events e ON e.event_id=o.event_id AND e.story_id=o.story_id AND e.story_run_id=o.story_run_id \
+             AND e.player_id=o.player_id AND e.city_id=o.city_id \
+             WHERE o.story_id=?1 AND o.status='pending' \
+               AND json_extract(e.intent_json,'$.residentId')=?2 \
+             ORDER BY o.id LIMIT 32")
             .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?
-            .query_map(params![story_id], |row|
+            .query_map(params![story_id,character_id], |row|
                 Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,String>(4)?)))
             .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?
             .collect::<Result<Vec<_>,_>>().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
@@ -341,10 +363,12 @@ fn expire_stale(tx: &rusqlite::Transaction, now: i64) -> Result<(), ToolError> {
     Ok(())
 }
 
-/// D-2 生产者上下文。
+/// D-2 生产者上下文。story_scope（N3）：提交边界绑定的显式 Story 作用域
+/// （story_id, story_run_id）——携带时投递使用它（校验行活跃）；None 走原解析。
 pub struct ActorTurnContext<'a> {
     pub player_id: &'a str, pub city_id: &'a str, pub game_id: &'a str,
     pub run_id: &'a str, pub resident_id: &'a str, pub event_id: &'a str, pub operation_id: &'a str,
+    pub story_scope: Option<(&'a str, &'a str)>,
 }#[cfg(test)]
 pub mod tests {
     use super::*;
@@ -368,6 +392,11 @@ pub mod tests {
         db.execute_batch("CREATE TABLE IF NOT EXISTS story_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL, operation_id TEXT NOT NULL, player_id TEXT NOT NULL, city_id TEXT NOT NULL, game_id TEXT NOT NULL, story_id TEXT NOT NULL, story_run_id TEXT NOT NULL, payload_json TEXT NOT NULL, status TEXT NOT NULL, created_at_ms INTEGER NOT NULL, acknowledged_at_ms INTEGER, UNIQUE(event_id,operation_id,story_id,story_run_id));").unwrap();
         db.execute("INSERT INTO story_outbox(event_id,operation_id,player_id,city_id,game_id,story_id,story_run_id,payload_json,status,created_at_ms)
             VALUES(?1,'op',?2,?3,'game-1',?4,?5,'{}','pending',1)", params![event_id,player,city,story,run]).unwrap();
+        // N3 泵绑定条件：事实必须落到绑定 resident（intent 带 residentId）才成回合。
+        db.execute_batch("CREATE TABLE IF NOT EXISTS story_events (event_id TEXT NOT NULL, occurrence_id TEXT NOT NULL, player_id TEXT NOT NULL, city_id TEXT NOT NULL, game_id TEXT NOT NULL, story_id TEXT NOT NULL, story_run_id TEXT NOT NULL, rule_id TEXT NOT NULL, status TEXT NOT NULL, due_at_utc_ms INTEGER NOT NULL, last_processed_tick INTEGER NOT NULL, idempotency_key TEXT NOT NULL, story_revision TEXT NOT NULL, clock_revision TEXT NOT NULL, intent_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL, PRIMARY KEY(player_id,city_id,story_id,story_run_id,event_id));").unwrap();
+        db.execute("INSERT INTO story_events(event_id,occurrence_id,player_id,city_id,game_id,story_id,story_run_id,rule_id,status,due_at_utc_ms,last_processed_tick,idempotency_key,story_revision,clock_revision,intent_json,created_at_ms)
+            VALUES(?1,'occ',?2,?3,'game-1',?4,?5,'rule','committed',0,0,'idem','0','0','{\"kind\":\"speak\",\"text\":\"在吗\",\"residentId\":\"resident:linxia\"}',1)",
+            params![event_id,player,city,story,run]).unwrap();
     }
 
     fn run_row(home: &Path, run_id: &str, player: &str, story: &str) {
@@ -478,6 +507,49 @@ pub mod tests {
         }
         let got2 = claim(&home, "sess-a");
         assert_eq!(got2["deliveredCount"], 0);
+    }
+
+    /// N3 回路防护：Actor 自己的回复事实（intent 无 residentId）不得泵成新回合
+    /// ——否则回复 → 新回合 → 再回复，无界循环。
+    #[test]
+    fn actor_reply_facts_never_pump_into_new_turns() {
+        let home = temp_home("loop");
+        bind_actor(&home, "sess-a", "actor-a", "story.detective", "resident:linxia");
+        run_row(&home, "run-p1", "player-1", "story.detective");
+        seed_actor_reply(&home, "evt-reply", "story.detective", "player-1", "city-1", "run-p1");
+        {
+            let mut db = open_db(&home).unwrap();
+            let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
+            pump_outbox_turns(&tx, &["actor-a".to_string()]).unwrap();
+            tx.commit().unwrap();
+        }
+        assert_eq!(claim(&home, "sess-a")["deliveredCount"], 0);
+    }
+
+    /// 无事实表（纯 bus 库）时泵诚实空转，不报错、不建宿主表。
+    #[test]
+    fn pump_without_facts_table_is_a_no_op() {
+        let home = temp_home("nofacts");
+        bind_actor(&home, "sess-a", "actor-a", "story.detective", "resident:linxia");
+        {
+            let mut db = open_db(&home).unwrap();
+            let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).unwrap();
+            pump_outbox_turns(&tx, &["actor-a".to_string()]).unwrap();
+            tx.commit().unwrap();
+        }
+        assert_eq!(claim(&home, "sess-a")["deliveredCount"], 0);
+    }
+
+    /// Actor 回复事实种子：outbox 行 + intent_json 无 residentId 的事件行。
+    fn seed_actor_reply(home: &Path, event_id: &str, story: &str, player: &str, city: &str, run: &str) {
+        let db = open_db(home).unwrap();
+        db.execute_batch("CREATE TABLE IF NOT EXISTS story_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL, operation_id TEXT NOT NULL, player_id TEXT NOT NULL, city_id TEXT NOT NULL, game_id TEXT NOT NULL, story_id TEXT NOT NULL, story_run_id TEXT NOT NULL, payload_json TEXT NOT NULL, status TEXT NOT NULL, created_at_ms INTEGER NOT NULL, acknowledged_at_ms INTEGER, UNIQUE(event_id,operation_id,story_id,story_run_id));
+        CREATE TABLE IF NOT EXISTS story_events (event_id TEXT NOT NULL, occurrence_id TEXT NOT NULL, player_id TEXT NOT NULL, city_id TEXT NOT NULL, game_id TEXT NOT NULL, story_id TEXT NOT NULL, story_run_id TEXT NOT NULL, rule_id TEXT NOT NULL, status TEXT NOT NULL, due_at_utc_ms INTEGER NOT NULL, last_processed_tick INTEGER NOT NULL, idempotency_key TEXT NOT NULL, story_revision TEXT NOT NULL, clock_revision TEXT NOT NULL, intent_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL, PRIMARY KEY(player_id,city_id,story_id,story_run_id,event_id));").unwrap();
+        db.execute("INSERT INTO story_outbox(event_id,operation_id,player_id,city_id,game_id,story_id,story_run_id,payload_json,status,created_at_ms)
+            VALUES(?1,'op-reply',?2,?3,'story.detective',?4,?5,'{}','pending',1)", params![event_id,player,city,story,run]).unwrap();
+        db.execute("INSERT INTO story_events(event_id,occurrence_id,player_id,city_id,game_id,story_id,story_run_id,rule_id,status,due_at_utc_ms,last_processed_tick,idempotency_key,story_revision,clock_revision,intent_json,created_at_ms)
+            VALUES(?1,'occ',?2,?3,'story.detective',?4,?5,'cafe-invite','committed',0,0,'idem','0','0','{\"kind\":\"speak\",\"text\":\"周六见\"}',1)",
+            params![event_id,player,city,story,run]).unwrap();
     }
 
     #[test]

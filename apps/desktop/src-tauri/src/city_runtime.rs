@@ -2,7 +2,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::path::Path;
 use crate::creator_store::{database, digest, new_id, now_ms};
-use crate::story_store::{commit_story, legacy_story_scope, story_state, StoryClockAuthorityV1, StoryCommitCommandV1, StoryForkScopeV1};
+use crate::story_store::{commit_story, legacy_story_scope, story_state, StoryClockAuthorityV1, StoryCommitCommandV1, StoryForkScopeV1, StoryStateScopeV1};
 
 const RUN_TTL_MS: u64 = 30 * 60 * 1_000;
 
@@ -303,10 +303,18 @@ pub(crate) fn read_story_run(home: &Path, city_instance: &str, payload: &Value) 
 /// 优先读 story_runs 表的显式注册（N2）；fallback 到 legacy 合成映射——commit
 /// 写入侧同样走 legacy（story_scope: None），两侧必须派生一致才能读到已提交事实。
 pub(crate) fn active_story_scope(db: &rusqlite::Connection, player_id: &str, city_id: &str, run_id: &str) -> Result<(String, String), &'static str> {
-    let explicit: Option<(String, String)> = db.query_row(
-        "SELECT story_id,story_run_id FROM story_runs WHERE story_run_id=?1 AND player_id=?2 AND city_id=?3",
-        params![run_id,player_id,city_id], |row| Ok((row.get(0)?,row.get(1)?)))
-        .optional().map_err(|_| "creator_store_unavailable")?;
+    // N3：显式 Story Run 按 player×city 解析——story run 生命周期独立于 city
+    // game run（ViewSession 关闭后 Run 仍继续，spec §4），读取用 city run id
+    // 定位会话，用玩家当前 Story Run 定位进度。表未迁移（纯 game 流程）→ 跳过。
+    let explicit: Option<(String, String)> = {
+        let present: i64 = db.query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='story_runs'",
+            [], |row| row.get(0)).map_err(|_| "creator_store_unavailable")?;
+        if present == 0 { None } else {
+            db.query_row("SELECT story_id,story_run_id FROM story_runs WHERE player_id=?1 AND city_id=?2 AND status IN ('active','paused') ORDER BY updated_at_ms DESC LIMIT 1",
+                params![player_id,city_id], |row| Ok((row.get(0)?,row.get(1)?)))
+                .optional().map_err(|_| "creator_store_unavailable")?
+        }
+    };
     if let Some(scope) = explicit { return Ok(scope); }
     let game_id: String = db.query_row(
         "SELECT game_id FROM city_game_runs WHERE run_id=?1 AND player_id=?2 AND city_id=?3",
@@ -332,12 +340,27 @@ fn commit_at(home: &Path, city_instance: &str, payload: &Value, now: u64) -> Res
     let turn_resident = payload.get("residentId").and_then(Value::as_str).map(str::to_string);
     let turn_event = payload.get("eventId").and_then(Value::as_str).map(str::to_string).unwrap_or_default();
     let turn_operation = payload.get("operationId").and_then(Value::as_str).map(str::to_string).unwrap_or_default();
+    // N3（显式 Story Run 绑定，OH_AGENT_NARRATIVE_ENGINE_SPEC §4）：玩家在该 City
+    // 的活跃 Story Run 存在时，玩家提交绑定其显式作用域——玩家命令与 Actor 回复
+    // 落同一 Run（HB-08 的读写对齐前提）。无注册行（纯 game 流程）或 registry
+    // 未迁移 → 维持 legacy 合成映射，既有 Runtime 语义零变化。
+    let bound_story: Option<(String, String)> = {
+        let present: i64 = db.query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='story_runs'",
+            [], |row| row.get(0)).map_err(|_| "creator_store_unavailable")?;
+        if present == 0 { None } else {
+            db.query_row("SELECT story_id,story_run_id FROM story_runs WHERE player_id=?1 AND city_id=?2 AND status IN ('active','paused') ORDER BY updated_at_ms DESC LIMIT 1",
+                params![turn_player,turn_city], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+                .optional().map_err(|_| "creator_store_unavailable")?
+        }
+    };
     let command = StoryCommitCommandV1 {
         operation_id: required(payload, "operationId")?.to_string(), event_id: required(payload, "eventId")?.to_string(),
         player_id, city_id, game_id,
         // Runtime 的 commit/read 仍走 legacy 合成映射（每 gameId 一个合成 storyId），
-        // S-1 只改存储键，不改变既有 Runtime 语义。
-        story_scope: None,
+        // S-1 只改存储键；显式绑定仅在活跃 Story Run 存在时生效（N3，与投递、
+        // G-READ 共用同一解析）。
+        story_scope: bound_story.as_ref().map(|(story_id, story_run_id)|
+            StoryStateScopeV1 { story_id: story_id.clone(), story_run_id: story_run_id.clone() }),
         resident_id: payload.get("residentId").and_then(Value::as_str).filter(|value| valid_id(value)).map(str::to_string),
         expected_story_revision: required(payload, "expectedStoryRevision")?.to_string(),
         expected_clock_revision: required(payload, "expectedClockRevision")?.to_string(),
@@ -347,6 +370,8 @@ fn commit_at(home: &Path, city_instance: &str, payload: &Value, now: u64) -> Res
         rule_set_digest: payload.get("ruleSetDigest").and_then(Value::as_str).filter(|value| valid_id(value)).map(str::to_string),
         causation_id: payload.get("causationId").and_then(Value::as_str).filter(|value| valid_id(value)).map(str::to_string),
         correlation_id: payload.get("correlationId").and_then(Value::as_str).filter(|value| valid_id(value)).map(str::to_string),
+        // 玩家路径无求值器效果（叙事语义归 actor_turn 裁决链，N3）。
+        narrative_effects: None,
     };
     if payload.get("residentId").is_some() && command.resident_id.is_none() { return Err("game_argument_invalid"); }
     for key in ["ruleSetDigest", "causationId", "correlationId"] {
@@ -363,8 +388,11 @@ fn commit_at(home: &Path, city_instance: &str, payload: &Value, now: u64) -> Res
     if let Some(resident_id) = turn_resident.as_deref() {
         let turn = agent_vitals_mcp::mcp::host_delivery::ActorTurnContext {
             player_id: &turn_player, city_id: &turn_city, game_id: &turn_game,
-            run_id, resident_id, event_id: &turn_event, operation_id: &turn_operation };
-        match agent_vitals_mcp::mcp::host_delivery::post_actor_turn_for_commit(home, &turn) {
+            run_id, resident_id, event_id: &turn_event, operation_id: &turn_operation,
+            // N3：投递携带本次提交绑定的显式 Story 作用域（与事实同库同源）——
+            // 领取方拿到的 storyRunId 即回复提交的作用域，读取侧不二次解析。
+            story_scope: bound_story.as_ref().map(|(s, r)| (s.as_str(), r.as_str())),
+        };        match agent_vitals_mcp::mcp::host_delivery::post_actor_turn_for_commit(home, &turn) {
             Ok(delivery) => { if delivery["droppedOldest"].as_i64().unwrap_or(0) > 0 {
                 agent_vitals_runtime::logging::log_warn("host_delivery", &format!(
                     "actor.turn delivered with droppedOldest={} (resident={resident_id}, event={})", delivery["droppedOldest"], turn_event)); }
@@ -631,7 +659,7 @@ mod tests {
             story_scope: None, resident_id: Some("resident:xia".to_string()),
             expected_story_revision: revision.to_string(), expected_clock_revision: "fork-clock-1".to_string(),
             intent: json!({"kind":"invite","targetId":"place:cafe"}), run_id: "fork-run".to_string(),
-            rule_set_digest: None, causation_id: None, correlation_id: None,
+            rule_set_digest: None, causation_id: None, correlation_id: None, narrative_effects: None,
         }
     }
 

@@ -859,6 +859,7 @@ fn headless_creator_methods() -> Vec<String> {
         "creator.actor.register",
         "creator.actor.turn.context",
         "creator.actor.intent.submit",
+        "creator.actor.propose",
         "creator.story.install.preview",
         "creator.story.install.commit",
         "creator.story.install.list",
@@ -1030,7 +1031,7 @@ fn answer_headless_call(home: &std::path::Path, method: &str, payload: &Value) -
         // 路由宿主 dispatch_as（与 Studio 在场时同一管线），无 headless 特例。
         | "creator.code.install.preview" | "creator.code.install.commit" | "creator.code.install.list"
         | "creator.story.project.create" | "creator.story.project.read" | "creator.story.projects.list"
-        | "creator.actor.register" | "creator.actor.turn.context" | "creator.actor.intent.submit"
+        | "creator.actor.register" | "creator.actor.turn.context" | "creator.actor.intent.submit" | "creator.actor.propose"
         | "creator.story.install.preview" | "creator.story.install.commit" | "creator.story.install.list"
         | "creator.story.run.start" | "creator.story.run.stop" | "creator.story.run.reset"
         | "creator.story.resident.lease.acquire" | "creator.story.resident.lease.release"
@@ -2656,7 +2657,7 @@ mod tests {
             "creator.code.install.preview", "creator.code.install.commit", "creator.code.install.list",
             "creator.game.rules.inspect", "creator.story.graph.inspect",
             "creator.story.timeline.inspect", "creator.game.intent.simulate",
-            "creator.actor.register", "creator.actor.turn.context", "creator.actor.intent.submit",
+            "creator.actor.register", "creator.actor.turn.context", "creator.actor.intent.submit", "creator.actor.propose",
         ] {
             assert!(methods.iter().any(|method| method == name), "headless arm must claim {name}");
         }
