@@ -118,7 +118,7 @@ pub(crate) fn evaluate_proposal(graph: &Value, snapshot: &Value, proposal: &Valu
 /// 选 edgeId 提案；替代旧 eligibleBeats 的 "unevaluated" 占位。
 pub(crate) fn eligible_edges(graph: &Value, snapshot: &Value) -> Result<Value, &'static str> {
     let (result, _nonce) = invoke("eligibleEdges", &json!({"graph":graph,"snapshot":snapshot}))?;
-    Ok(result)
+    Ok(result.get("edges").cloned().unwrap_or(Value::Null))
 }
 
 /// 拆分 state document 为 flags（bool 值）和 counters（数字值）——求值器输入形状。
