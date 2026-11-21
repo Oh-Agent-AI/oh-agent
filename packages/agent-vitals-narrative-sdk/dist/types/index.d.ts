@@ -6,3 +6,8 @@ export type { StoryGraphAdjacencyV1 } from "./graph/validate";
 export { conditionalReachability, reachability } from "./graph/reachability";
 export { stronglyConnectedComponents } from "./graph/scc";
 export { deadEnds, islands } from "./graph/topology";
+export { CANON_BACKSTORY_MAX_BYTES_V1, validateCharacterCanonV1 } from "./contracts/canon";
+export type { CharacterCanonGrowthEdgeV1, CharacterCanonV1, CharacterCanonValidationContextV1, } from "./contracts/canon";
+export { KNOWLEDGE_CONTENT_MAX_BYTES_V1, KNOWLEDGE_VISIBILITY_V1 } from "./contracts/knowledge";
+export type { KnowledgeClaimV1, KnowledgeVisibilityV1, NarrativeSummaryV1 } from "./contracts/knowledge";
+export { checkCausalDependency, markStaleSummaries, validateKnowledgeClaims } from "./validate/knowledge";
