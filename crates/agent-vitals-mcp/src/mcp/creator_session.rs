@@ -899,7 +899,10 @@ fn task_steps(payload: &Value) -> Result<Vec<Value>, ToolError> {
     let steps = payload.get("steps").and_then(Value::as_array).filter(|items| (1..=32).contains(&items.len()))
         .ok_or_else(|| ToolError::new("invalid_argument", "steps must contain 1..=32 entries."))?;
     steps.iter().enumerate().map(|(ordinal, step)| {
-        let object = step.as_object().filter(|object| object.len() == 3).ok_or_else(|| ToolError::new("invalid_argument", "Each step needs stepId, title and kind."))?;
+        let object = step.as_object().filter(|object| object.len() == 3 || object.len() == 4).ok_or_else(|| ToolError::new("invalid_argument", "Each step needs stepId, title and kind, with an optional ordinal."))?;
+        if object.get("ordinal").is_some_and(|value| value.as_u64() != Some(ordinal as u64)) {
+            return Err(ToolError::new("invalid_argument", "Step ordinal must match its zero-based position."));
+        }
         let step_id = object.get("stepId").and_then(Value::as_str).filter(|value| valid_playtest_run_id(value))
             .ok_or_else(|| ToolError::new("invalid_argument", "stepId is invalid."))?;
         let title = object.get("title").and_then(Value::as_str).filter(|value| !value.trim().is_empty() && value.chars().count() <= 500)
@@ -1779,6 +1782,19 @@ mod tests {
     fn studio_evidence(task_id: &str, operation_id: &str, trust: &str) -> Value {
         json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"criterionId":"manual-review","kind":"human-note",
             "trustLevel":trust,"summary":"Human reviewed the current saved revision","stepId":"review-city","operationId":operation_id})
+    }
+
+    #[test]
+    fn studio_plan_accepts_ui_ordinals_and_rejects_mismatches() {
+        let mut payload = json!({"steps":[
+            {"stepId":"review-goal","ordinal":0,"title":"Review the goal","kind":"analysis"},
+            {"stepId":"validate-city","ordinal":1,"title":"Validate the City","kind":"validation"}
+        ]});
+        let steps = task_steps(&payload).unwrap();
+        assert_eq!(steps[0]["ordinal"], 0);
+        assert_eq!(steps[1]["ordinal"], 1);
+        payload["steps"][1]["ordinal"] = json!(0);
+        assert_eq!(task_steps(&payload).unwrap_err().code, "invalid_argument");
     }
 
     #[test]
