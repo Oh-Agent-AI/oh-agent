@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { canApproveTaskPlan, canCancelTask, canReviewTask, canReviseTaskPlan, studioPhaseLabel, type StudioTaskPhase } from "../../contracts/studioTask";
+import { canApproveTaskPlan, canCancelTask, canExecuteTask, canReviewTask, canReviseTaskPlan, studioPhaseLabel, type StudioTaskPhase } from "../../contracts/studioTask";
 import type { StudioTaskController } from "./useStudioTasks";
 
 export function StudioTaskPanel({ controller }: Readonly<{ controller: StudioTaskController }>) {
-  const { task, sessionStatus, busy, error, createGoal, approvePlan, revisePlan, appendEvidence, acceptReview, rejectReview, cancelTask, refreshTask } = controller;
+  const { task, sessionStatus, busy, error, createGoal, approvePlan, revisePlan, executeTask, appendEvidence, acceptReview, rejectReview, cancelTask, refreshTask } = controller;
   const [goal, setGoal] = useState("");
   const [evidence, setEvidence] = useState("");
   const [reviewNote, setReviewNote] = useState("");
@@ -18,8 +18,11 @@ export function StudioTaskPanel({ controller }: Readonly<{ controller: StudioTas
     </> : <>
       <div className="candidate-facts"><strong>{studioPhaseLabel(task.phase as StudioTaskPhase)}</strong><code>{task.goalId} · goalRevision {task.goalRevision} · planRevision {task.planRevision}</code><span className="muted">artifact {task.artifact.projectId} · expectedRevision {task.artifact.expectedRevision}</span></div>
       <p className="muted">{task.humanRequest}</p>
+      {task.execution && <p className="muted">真实执行状态：{task.execution.status}{task.execution.previewId ? ` · Preview ${task.execution.previewId}` : ""}</p>}
+      {task.proposedChangeSetId && <p className="muted">提议变更仅由 Preview 承载，尚未保存。ChangeSet {task.proposedChangeSetId}</p>}
       <div className="studio-task-steps">{task.steps.map(step => <div key={step.stepId}><strong>{step.ordinal + 1}. {step.title}</strong><span className="muted">{step.kind} · {step.stepId}</span></div>)}</div>
       <div className="actions">
+        {canExecuteTask(task) && <button disabled={busy} onClick={() => void executeTask()}>执行 Codex 并生成 Preview</button>}
         {canApproveTaskPlan(task) && <button disabled={busy} onClick={() => void approvePlan()}>批准当前计划</button>}
         {canReviseTaskPlan(task) && <button className="secondary" disabled={busy} onClick={() => void revisePlan()}>退回并修订计划</button>}
         {canCancelTask(task) && <button className="secondary" disabled={busy} onClick={() => void cancelTask()}>取消任务</button>}

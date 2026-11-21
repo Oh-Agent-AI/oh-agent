@@ -524,6 +524,7 @@
         "creator.task.plan.submit",
         "creator.task.plan.approve",
         "creator.task.status",
+        "creator.task.execute",
         "creator.task.evidence.append",
         "creator.task.evidence.list",
         "creator.task.review.accept",

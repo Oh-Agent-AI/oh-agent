@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { canApproveTaskPlan, canCancelTask, canReviewTask, canReviseTaskPlan, defaultStudioPlanSteps, parseStudioTask, studioPhaseLabel } from "../src/contracts/studioTask.ts";
+import { canApproveTaskPlan, canCancelTask, canExecuteTask, canReviewTask, canReviseTaskPlan, defaultStudioPlanSteps, parseStudioTask, studioPhaseLabel } from "../src/contracts/studioTask.ts";
 
 const task = {
   taskId: "studio-task-1", sessionId: "session-1", goalId: "goal-1", goalRevision: 2, humanRequest: "Validate the saved game",
@@ -17,6 +17,8 @@ test("Studio task projection restores goal plan steps and evidence", () => {
   assert.equal(checked.steps[0]?.kind, "review");
   assert.equal(checked.evidence[0]?.trustLevel, "creator-declared");
   assert.equal(canReviewTask(checked), true);
+  assert.equal(canExecuteTask(checked), false);
+  assert.equal(canExecuteTask(parseStudioTask({ ...task, phase: "ready" })), true);
   assert.equal(canApproveTaskPlan(checked), false);
   assert.equal(canReviseTaskPlan(checked), true);
   assert.equal(canCancelTask(checked), true);

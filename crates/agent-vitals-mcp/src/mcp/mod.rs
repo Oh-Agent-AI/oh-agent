@@ -37,6 +37,7 @@ pub mod trust_profiles;
 mod city_building;
 mod city_im;
 pub mod creator_session;
+pub mod creator_agent_executor;
 mod creator_code;
 mod creator_code_workspace;
 mod creator_code_experience;
@@ -289,7 +290,7 @@ pub fn dispatch_with_permissions_options(
         }
         "creator_session_open" | "creator_session_status" | "creator_session_close"
         | "creator_job_list" | "creator_job_status" | "creator_job_wait" | "creator_job_cancel"
-        | "creator_game_type_list" | "creator_task_create" | "creator_task_plan_submit" | "creator_task_plan_approve" | "creator_task_status"
+        | "creator_game_type_list" | "creator_task_create" | "creator_task_plan_submit" | "creator_task_plan_approve" | "creator_task_status" | "creator_task_execute"
         | "creator_task_evidence_append" | "creator_task_evidence_list" | "creator_task_review_accept" | "creator_task_review_reject" | "creator_task_cancel" => creator_session::run(name, args, data_home, allow_local_writes),
         "creator_code_builds_list" | "creator_code_build_status" | "creator_code_preview_status" =>
             creator_code::run(name, args, data_home),

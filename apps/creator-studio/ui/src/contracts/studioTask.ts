@@ -13,6 +13,7 @@ export type StudioTask = Readonly<{
   phase: StudioTaskPhase;
   proposedChangeSetId: string | null;
   lastEvidenceId: string | null;
+  execution: Readonly<{ status: string; previewId?: string }> | null;
   steps: readonly StudioTaskStep[];
   evidence: readonly StudioTaskEvidence[];
 }>;
@@ -56,9 +57,11 @@ export function parseStudioTask(value: unknown): StudioTask {
     if (!entry || !evidenceId || planRevision === null || !criterionId || !kind || !trustLevel || !summary || createdAtMs === null) throw new Error("creator_task_invalid");
     return Object.freeze({ evidenceId, planRevision, stepId: text(entry.stepId), criterionId, kind, trustLevel, summary, data: entry.data ?? null, createdAtMs });
   }) : [];
+  const execution = object(row.execution);
   return Object.freeze({ taskId, sessionId: text(row.sessionId) ?? "", goalId, goalRevision, humanRequest,
     artifact: Object.freeze({ kind: "creator-project", projectId, expectedRevision }), planRevision, stepIds: Object.freeze(stepIds), phase,
-    proposedChangeSetId: text(row.proposedChangeSetId), lastEvidenceId: text(row.lastEvidenceId), steps: Object.freeze(steps), evidence: Object.freeze(evidence) });
+    proposedChangeSetId: text(row.proposedChangeSetId), lastEvidenceId: text(row.lastEvidenceId), steps: Object.freeze(steps), evidence: Object.freeze(evidence),
+    execution: execution ? Object.freeze({ status: text(execution.status) ?? "unknown", ...(text(execution.previewId) ? { previewId: text(execution.previewId)! } : {}) }) : null });
 }
 
 export function defaultStudioPlanSteps(): readonly StudioTaskStep[] {
@@ -67,6 +70,10 @@ export function defaultStudioPlanSteps(): readonly StudioTaskStep[] {
     { stepId: "validate-city", ordinal: 1, title: "在真实 City 中验证当前已保存 revision", kind: "validation" },
     { stepId: "human-review", ordinal: 2, title: "人工审阅证据并决定是否接受", kind: "review" },
   ];
+}
+
+export function canExecuteTask(task: StudioTask | null): boolean {
+  return task?.phase === "ready";
 }
 
 export function canApproveTaskPlan(task: StudioTask | null): boolean {

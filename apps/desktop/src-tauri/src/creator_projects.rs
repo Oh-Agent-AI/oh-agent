@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 use std::{collections::HashMap, path::Path, sync::{Mutex, OnceLock}, time::{Duration, SystemTime}};
 
 use crate::creator_assets::inspect_glb;
+use crate::resolve_binary;
 pub use crate::creator_assets::read_city_release_asset;
 use crate::creator_city_patch::{latest_city_patch, list_city_layout_snapshots, publish_city_patch, read_city_patch_for_seed, read_city_layout_snapshot, validate_city_patch, validate_layout_snapshot};
 pub use crate::creator_city_patch::publish_city_layout_snapshot;
@@ -1244,6 +1245,9 @@ fn run_shared_session(home: &Path, _owner: &str, method: &str, payload: &Value) 
     agent_vitals_mcp::mcp::creator_session::session_dispatch(home, method, payload).map_err(|error| error.code)
 }
 fn run_shared_task(home: &Path, _owner: &str, method: &str, payload: &Value) -> Result<Value, &'static str> {
+    if method == "creator.task.execute" && std::env::var_os("AGENT_VITALS_BIN").is_none() {
+        if let Some(binary) = resolve_binary() { std::env::set_var("AGENT_VITALS_BIN", binary); }
+    }
     agent_vitals_mcp::mcp::creator_session::task_dispatch(home, method, payload).map_err(|error| error.code)
 }
 
@@ -1611,6 +1615,7 @@ static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.task.plan.submit", &["taskId", "expectedPlanRevision", "expectedArtifactRevision", "steps", "operationId"], &[], run_shared_task),
     creator_row!("creator.task.plan.approve", &["taskId", "planRevision", "expectedArtifactRevision", "operationId"], &[], run_shared_task),
     creator_row!("creator.task.status", &["taskId"], &[], run_shared_task),
+    creator_row!("creator.task.execute", &["taskId", "expectedPlanRevision", "expectedArtifactRevision", "operationId"], &["timeoutMs"], run_shared_task),
     creator_row!("creator.task.evidence.append", &["taskId", "planRevision", "expectedArtifactRevision", "criterionId", "kind", "trustLevel", "summary", "operationId"], &["stepId", "data", "proposedChangeSetId"], run_shared_task),
     creator_row!("creator.task.evidence.list", &["taskId"], &[], run_shared_task),
     creator_row!("creator.task.review.accept", &["taskId", "planRevision", "expectedArtifactRevision", "reviewerNote", "operationId"], &[], run_shared_task),

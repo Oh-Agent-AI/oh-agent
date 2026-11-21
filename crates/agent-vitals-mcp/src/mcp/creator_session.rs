@@ -6,6 +6,8 @@
 //!
 //! 全部工具天然 headless 可用（不依赖 Studio/City webview）。
 use std::path::{Path, PathBuf};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
@@ -39,6 +41,7 @@ pub fn specs() -> Vec<ToolSpec> {
         spec("creator_task_plan_submit", "Submit or revise a task plan with CAS-checked plan and artifact revisions.", json!({"taskId":{"type":"string"},"expectedPlanRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"steps":{"type":"array"},"operationId":{"type":"string"}}), &["taskId","expectedPlanRevision","expectedArtifactRevision","steps","operationId"]),
         spec("creator_task_plan_approve", "Approve the current task plan; this records approval but never claims execution or completion.", json!({"taskId":{"type":"string"},"planRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"operationId":{"type":"string"}}), &["taskId","planRevision","expectedArtifactRevision","operationId"]),
         spec("creator_task_status", "Read durable goal, plan, steps and evidence for a Studio task.", json!({"taskId":{"type":"string"}}), &["taskId"]),
+        spec("creator_task_execute", "Execute an approved task with the real Codex executor and a read-only Preview-only tool policy. Returns host-generated Preview evidence, never a saved-change claim.", json!({"taskId":{"type":"string"},"expectedPlanRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"operationId":{"type":"string"},"timeoutMs":{"type":"integer","minimum":100,"maximum":120000}}), &["taskId","expectedPlanRevision","expectedArtifactRevision","operationId"]),
         spec("creator_task_evidence_append", "Append typed evidence with explicit trust level. Host verification cannot be self-declared.", json!({"taskId":{"type":"string"},"planRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"criterionId":{"type":"string"},"kind":{"type":"string"},"trustLevel":{"type":"string"},"summary":{"type":"string"},"operationId":{"type":"string"}}), &["taskId","planRevision","expectedArtifactRevision","criterionId","kind","trustLevel","summary","operationId"]),
         spec("creator_task_evidence_list", "List durable evidence for a Studio task.", json!({"taskId":{"type":"string"}}), &["taskId"]),
         spec("creator_task_review_accept", "Accept a task only after all acceptance criteria have real evidence and a human reviewer accepts it.", json!({"taskId":{"type":"string"},"planRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"reviewerNote":{"type":"string"},"operationId":{"type":"string"}}), &["taskId","planRevision","expectedArtifactRevision","reviewerNote","operationId"]),
@@ -565,7 +568,7 @@ fn task_criteria(payload: &Value) -> Result<Vec<Value>, ToolError> {
             .ok_or_else(|| ToolError::new("invalid_argument", "criterionId is invalid."))?;
         let description = object.get("description").and_then(Value::as_str).filter(|value| !value.trim().is_empty() && value.chars().count() <= 500)
             .ok_or_else(|| ToolError::new("invalid_argument", "Criterion description is invalid."))?;
-        let kind = object.get("requiredEvidenceKind").and_then(Value::as_str).filter(|value| matches!(*value, "build" | "test" | "human-note" | "city-playtest"))
+        let kind = object.get("requiredEvidenceKind").and_then(Value::as_str).filter(|value| matches!(*value, "build" | "test" | "human-note" | "city-playtest" | "preview"))
             .ok_or_else(|| ToolError::new("invalid_argument", "requiredEvidenceKind is unsupported."))?;
         Ok(json!({"criterionId":criterion_id,"description":description,"requiredEvidenceKind":kind}))
     }).collect()
@@ -616,6 +619,9 @@ fn task_payload(data_home: &Path, task_id: &str) -> Result<Value, ToolError> {
             "criterionId":row.get::<_,String>(3)?,"kind":row.get::<_,String>(4)?,"trustLevel":row.get::<_,String>(5)?,
             "summary":row.get::<_,String>(6)?,"data":serde_json::from_str::<Value>(&data).unwrap_or(Value::Null),"createdAtMs":row.get::<_,u64>(8)?}))
     }).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?.collect::<Result<Vec<_>,_>>().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let progress_json: Option<String> = db.query_row("SELECT progress_json FROM creator_jobs WHERE job_id=?1", [task_id], |row| row.get(0))
+        .optional().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let execution = progress_json.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()).and_then(|value| value.get("execution").cloned()).unwrap_or(Value::Null);
     let failure_json: Option<String> = db.query_row("SELECT failure_json FROM creator_jobs WHERE job_id=?1", [task_id], |row| row.get(0))
         .optional().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     let failure = failure_json.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()).and_then(|value| value.as_object().filter(|object| !object.is_empty()).map(|object| Value::Object(object.clone()))).unwrap_or(Value::Null);
@@ -624,7 +630,7 @@ fn task_payload(data_home: &Path, task_id: &str) -> Result<Value, ToolError> {
         "failure":failure,"cancelRequested":task["phase"] == json!("cancelled"),"createdAtMs":task["createdAtMs"],"updatedAtMs":task["updatedAtMs"],
         "goalId":task["goalId"],"goalRevision":task["goalRevision"],"humanRequest":task["humanRequest"],"acceptanceCriteria":task["acceptanceCriteria"],
         "artifact":task["artifact"],"planRevision":task["planRevision"],"stepIds":task["stepIds"],"phase":task["phase"],
-        "proposedChangeSetId":task["proposedChangeSetId"],"lastEvidenceId":task["lastEvidenceId"],"steps":steps,"evidence":evidence}))
+        "proposedChangeSetId":task["proposedChangeSetId"],"lastEvidenceId":task["lastEvidenceId"],"steps":steps,"evidence":evidence,"execution":execution}))
 }
 fn task_terminal(phase: &str) -> bool { matches!(phase, "accepted" | "rejected" | "failed" | "cancelled") }
 
@@ -759,6 +765,90 @@ fn task_evidence_append(data_home: &Path, payload: &Value) -> Result<Value, Tool
     task_payload(data_home, &task_id)
 }
 
+fn execution_cancellations() -> &'static Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>> {
+    static CANCELLATIONS: OnceLock<Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>> = OnceLock::new();
+    CANCELLATIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub fn task_execute_with_executor(data_home: &Path, payload: &Value, executor: &dyn super::creator_agent_executor::CreatorAgentExecutor) -> Result<Value, ToolError> {
+    let task_id = task_id_arg(payload, "taskId")?;
+    let expected_plan_revision = task_revision_arg(payload, "expectedPlanRevision")?;
+    let expected_artifact_revision = task_revision_arg(payload, "expectedArtifactRevision")?;
+    let operation_id = task_id_arg(payload, "operationId")?;
+    let timeout_ms = payload.get("timeoutMs").and_then(Value::as_u64).unwrap_or(90_000).clamp(100, 120_000);
+    let hash = task_hash(payload)?;
+    let mut db = open_db(&sessions_db(data_home)?, false)?;
+    ensure_schema(&db)?;
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    if task_receipt(&tx, &operation_id, &hash)?.is_some() { return task_payload(data_home, &task_id); }
+    let (task, _, plan_revision, phase) = task_row(&tx, &task_id)?;
+    if phase == "executing" { return task_payload(data_home, &task_id); }
+    if phase != "ready" { return Err(ToolError::new("creator_task_invalid_transition", format!("Cannot execute from {phase}."))); }
+    if plan_revision != expected_plan_revision { return Err(ToolError::new("plan_revision_conflict", "Execution plan revision is stale.")); }
+    if task["artifact"]["expectedRevision"].as_u64() != Some(expected_artifact_revision) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
+    task_check_artifact(data_home, &task["artifact"])?;
+    if !task["acceptanceCriteria"].as_array().is_some_and(|criteria| criteria.iter().any(|criterion| criterion["criterionId"].as_str() == Some("agent-preview") && criterion["requiredEvidenceKind"].as_str() == Some("preview"))) {
+        return Err(ToolError::new("creator_task_acceptance_missing", "Task requires an agent-preview acceptance criterion before execution."));
+    }
+    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    execution_cancellations().lock().unwrap_or_else(|error| error.into_inner()).insert(task_id.clone(), cancelled.clone());
+    tx.execute("UPDATE creator_studio_tasks SET phase='executing',updated_at_ms=?2 WHERE task_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    tx.execute("UPDATE creator_jobs SET status='executing',progress_json=?2,updated_at_ms=?3 WHERE job_id=?1",
+        rusqlite::params![task_id,json!({"execution":{"operationId":operation_id,"executor":"codex-cli","status":"executing"} }).to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let request = super::creator_agent_executor::AgentExecutionRequest {
+        data_home: data_home.to_path_buf(), goal: task["humanRequest"].as_str().unwrap_or_default().to_owned(),
+        human_request: task["humanRequest"].as_str().unwrap_or_default().to_owned(), artifact: task["artifact"].clone(),
+        plan_revision: expected_plan_revision, timeout: std::time::Duration::from_millis(timeout_ms),
+    };
+    let result = executor.execute(request, &cancelled);
+    execution_cancellations().lock().unwrap_or_else(|error| error.into_inner()).remove(&task_id);
+    let current_phase = task_row(&db, &task_id)?.3;
+    if cancelled.load(std::sync::atomic::Ordering::Relaxed) || current_phase == "cancelled" {
+        return Err(ToolError::new("codex_cancelled", "Task execution was cancelled."));
+    }
+    let result = match result {
+        Ok(success) => {
+            let preview_id = success.preview["previewId"].as_str().filter(|id| valid_playtest_run_id(id)).map(str::to_owned).ok_or_else(|| ToolError::new("preview_required", "Executor returned no valid Preview."))?;
+            if success.preview["baseRevision"].as_u64() != Some(expected_artifact_revision) {
+                Err(ToolError::new("preview_required", "Executor Preview revision does not match the task artifact."))
+            } else { Ok((success, preview_id)) }
+        }
+        Err(error) => Err(error),
+    };
+    match result {
+        Ok((success, preview_id)) => {
+            let mut db = open_db(&sessions_db(data_home)?, false)?;
+            let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            let evidence_id = new_id("evidence-");
+            tx.execute("INSERT INTO creator_studio_task_evidence(evidence_id,task_id,plan_revision,step_id,criterion_id,kind,trust_level,summary,data_json,created_at_ms)
+                VALUES(?1,?2,?3,'human-review','agent-preview','preview','host-observed',?4,?5,?6)",
+                rusqlite::params![evidence_id,task_id,expected_plan_revision,success.summary,success.preview.to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            tx.execute("UPDATE creator_studio_tasks SET phase='awaiting-review',last_evidence_id=?2,proposed_change_set_id=?3,updated_at_ms=?4 WHERE task_id=?1",
+                rusqlite::params![task_id,evidence_id,preview_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            tx.execute("UPDATE creator_jobs SET status='awaiting-review',progress_json=?2,updated_at_ms=?3 WHERE job_id=?1",
+                rusqlite::params![task_id,json!({"execution":{"operationId":operation_id,"executor":"codex-cli","status":"awaiting-review","previewId":preview_id} }).to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            let result = json!({"taskId":task_id,"phase":"awaiting-review","proposedChangeSetId":preview_id,"lastEvidenceId":evidence_id});
+            task_save_receipt(&tx, &operation_id, &hash, &result)?;
+            tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            task_payload(data_home, &task_id)
+        }
+        Err(error) => {
+            let mut db = open_db(&sessions_db(data_home)?, false)?;
+            let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            tx.execute("UPDATE creator_studio_tasks SET phase='failed',updated_at_ms=?2 WHERE task_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            tx.execute("UPDATE creator_jobs SET status='failed',progress_json=?2,failure_json=?3,updated_at_ms=?4 WHERE job_id=?1",
+                rusqlite::params![task_id,json!({"execution":{"operationId":operation_id,"executor":"codex-cli","status":"failed","code":error.code} }).to_string(),json!({"code":error.code}).to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            Err(error)
+        }
+    }
+}
+
+fn task_execute(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
+    task_execute_with_executor(data_home, payload, &super::creator_agent_executor::CodexCliAgentExecutor::new())
+}
+
 fn task_review_accept(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
     let task_id = task_id_arg(payload, "taskId")?;
     let plan_revision = task_revision_arg(payload, "planRevision")?;
@@ -815,6 +905,9 @@ fn task_cancel(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
     let task_id = task_id_arg(payload, "taskId")?;
     let operation_id = task_id_arg(payload, "operationId")?;
     let hash = task_hash(payload)?;
+    if let Some(flag) = execution_cancellations().lock().unwrap_or_else(|error| error.into_inner()).get(&task_id) {
+        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     let mut db = open_db(&sessions_db(data_home)?, false)?;
     ensure_schema(&db)?;
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
@@ -837,6 +930,7 @@ pub fn task_dispatch(data_home: &Path, method: &str, payload: &Value) -> Result<
         "creator.task.plan.submit" => task_plan_submit(data_home, payload),
         "creator.task.plan.approve" => task_plan_approve(data_home, payload),
         "creator.task.status" => task_payload(data_home, task_id_arg(payload, "taskId")?.as_str()),
+        "creator.task.execute" => task_execute(data_home, payload),
         "creator.task.evidence.append" => task_evidence_append(data_home, payload),
         "creator.task.evidence.list" => {
             let task = task_payload(data_home, task_id_arg(payload, "taskId")?.as_str())?;
@@ -877,6 +971,7 @@ pub fn run(name: &str, args: &Value, data_home: &Path, _allow_local_writes: bool
         "creator_task_plan_submit" => task_mcp(data_home, "creator.task.plan.submit", args),
         "creator_task_plan_approve" => task_mcp(data_home, "creator.task.plan.approve", args),
         "creator_task_status" => task_mcp(data_home, "creator.task.status", args),
+        "creator_task_execute" => task_mcp(data_home, "creator.task.execute", args),
         "creator_task_evidence_append" => task_mcp(data_home, "creator.task.evidence.append", args),
         "creator_task_evidence_list" => task_mcp(data_home, "creator.task.evidence.list", args),
         "creator_task_review_accept" => task_mcp(data_home, "creator.task.review.accept", args),
@@ -1125,6 +1220,71 @@ mod tests {
         assert_eq!(rejected["failure"]["code"], "human_rejected");
         let jobs = session_jobs(&home, session_id).unwrap();
         assert!(jobs.iter().any(|job| job["kind"] == "studio-task" && job["status"] == "rejected"));
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    fn studio_goal_with_preview(session_id: &str, operation_id: &str) -> Value {
+        let mut goal = studio_goal(session_id, operation_id);
+        goal["acceptanceCriteria"] = json!([
+            {"criterionId":"agent-preview","description":"Host generated Preview required","requiredEvidenceKind":"preview"},
+            {"criterionId":"manual-review","description":"A human reviews the result","requiredEvidenceKind":"human-note"}
+        ]);
+        goal
+    }
+
+    #[test]
+    fn studio_task_execute_returns_real_preview_and_awaits_human_acceptance() {
+        let home = temp_home();
+        let session = session_open(&home, &json!({"agentId":"studio-local","projectId":"project-1"})).unwrap();
+        let session_id = session["data"]["sessionId"].as_str().unwrap();
+        prepare_artifact(&home, "project-1", 3);
+        let created = task_dispatch(&home, "creator.task.create", &studio_goal_with_preview(session_id, "execute-goal")).unwrap();
+        let task_id = created["taskId"].as_str().unwrap();
+        task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 1, "execute-plan")).unwrap();
+        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"operationId":"execute-approve"})).unwrap();
+        let executor = crate::mcp::creator_agent_executor::tests::FakeExecutor::success();
+        let executed = task_execute_with_executor(&home, &json!({"taskId":task_id,"expectedPlanRevision":1,"expectedArtifactRevision":3,"operationId":"execute-run"}), &executor).unwrap();
+        assert_eq!(executed["phase"], "awaiting-review");
+        assert_eq!(executed["proposedChangeSetId"], "preview-fake");
+        assert_eq!(executed["execution"]["status"], "awaiting-review");
+        assert_eq!(executed["evidence"].as_array().unwrap().len(), 1);
+        assert_eq!(executed["evidence"][0]["trustLevel"], "host-observed");
+        let replay = task_execute_with_executor(&home, &json!({"taskId":task_id,"expectedPlanRevision":1,"expectedArtifactRevision":3,"operationId":"execute-run"}), &executor).unwrap();
+        assert_eq!(replay["evidence"].as_array().unwrap().len(), 1);
+        assert_eq!(task_dispatch(&home, "creator.task.review.accept", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"reviewerNote":"Accept","operationId":"execute-accept-early"})).unwrap_err().code, "creator_task_evidence_required");
+        task_dispatch(&home, "creator.task.evidence.append", &studio_evidence(task_id, "execute-manual", "creator-declared")).unwrap();
+        let accepted = task_dispatch(&home, "creator.task.review.accept", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"reviewerNote":"Accept after preview","operationId":"execute-accept"})).unwrap();
+        assert_eq!(accepted["phase"], "accepted");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn studio_task_execute_honors_revision_and_failure_modes() {
+        let home = temp_home();
+        let session = session_open(&home, &json!({"agentId":"studio-local","projectId":"project-1"})).unwrap();
+        let session_id = session["data"]["sessionId"].as_str().unwrap();
+        prepare_artifact(&home, "project-1", 3);
+        let created = task_dispatch(&home, "creator.task.create", &studio_goal_with_preview(session_id, "execute-goal-failure")).unwrap();
+        let task_id = created["taskId"].as_str().unwrap();
+        task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 1, "execute-plan-failure")).unwrap();
+        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"operationId":"execute-approve-failure"})).unwrap();
+        let executor = crate::mcp::creator_agent_executor::tests::FakeExecutor::success();
+        assert_eq!(task_execute_with_executor(&home, &json!({"taskId":task_id,"expectedPlanRevision":1,"expectedArtifactRevision":4,"operationId":"execute-stale"}), &executor).unwrap_err().code, "revision_conflict");
+        let timeout = crate::mcp::creator_agent_executor::tests::FakeExecutor::failure("codex_timeout");
+        let error = task_execute_with_executor(&home, &json!({"taskId":task_id,"expectedPlanRevision":1,"expectedArtifactRevision":3,"operationId":"execute-timeout"}), &timeout).unwrap_err();
+        assert_eq!(error.code, "codex_timeout");
+        let failed = task_dispatch(&home, "creator.task.status", &json!({"taskId":task_id})).unwrap();
+        assert_eq!(failed["phase"], "failed");
+        assert_eq!(failed["failure"]["code"], "codex_timeout");
+        task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 2, "execute-revise-failure")).unwrap();
+        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":2,"expectedArtifactRevision":3,"operationId":"execute-approve-retry"})).unwrap();
+        let cancelled = crate::mcp::creator_agent_executor::tests::FakeExecutor::failure("codex_cancelled");
+        assert_eq!(task_execute_with_executor(&home, &json!({"taskId":task_id,"expectedPlanRevision":2,"expectedArtifactRevision":3,"operationId":"execute-cancelled"}), &cancelled).unwrap_err().code, "codex_cancelled");
+        task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 3, "execute-revise-preview")).unwrap();
+        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":3,"expectedArtifactRevision":3,"operationId":"execute-approve-preview"})).unwrap();
+        let missing = crate::mcp::creator_agent_executor::tests::FakeExecutor::failure("preview_required");
+        assert_eq!(task_execute_with_executor(&home, &json!({"taskId":task_id,"expectedPlanRevision":3,"expectedArtifactRevision":3,"operationId":"execute-missing-preview"}), &missing).unwrap_err().code, "preview_required");
+        assert_eq!(task_dispatch(&home, "creator.task.status", &json!({"taskId":task_id})).unwrap()["phase"], "failed");
         std::fs::remove_dir_all(home).unwrap();
     }
 
