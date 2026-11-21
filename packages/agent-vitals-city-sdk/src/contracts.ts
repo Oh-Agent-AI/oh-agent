@@ -48,6 +48,23 @@ export interface CityResidentPublicScopeV1 {
 }
 export type StateScopeV1 = GameStateScopeV1 | StoryStateScopeV1 | CityResidentPublicScopeV1;
 
+// WorldEventEnvelopeV1 (RFC §3.2): the committed-fact shape every runtime read
+// face projects event rows into. `causationId`/`correlationId` stay optional and
+// are omitted when the producer did not record them; every other field is part
+// of the envelope contract and the additions are fully backward compatible.
+export interface WorldEventEnvelopeV1 {
+  readonly eventId: string;
+  readonly type: string;
+  readonly scope: StateScopeV1;
+  readonly actorId: string;
+  readonly simulationUtcMs: number;
+  readonly causationId?: string;
+  readonly correlationId?: string;
+  readonly expectedRevision: string;
+  readonly ruleSetDigest: string;
+  readonly payload: Readonly<Record<string, unknown>>;
+}
+
 export const TRAVEL_MODES_V1 = ["walk", "drive", "fly", "swim", "submersible"] as const;
 export type TravelModeV1 = typeof TRAVEL_MODES_V1[number];
 export const ANCHOR_KINDS_V2 = ["spawn", "route", "zone", "object", "checkpoint"] as const;

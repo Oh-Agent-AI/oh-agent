@@ -4,7 +4,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   ACTOR_INTENT_KINDS_V1, TRAVEL_MODES_V1, WORLD_CAPABILITIES_V2,
-  type ActorIntentV1,
+  type ActorIntentV1, type StateScopeV1, type WorldEventEnvelopeV1,
 } from "../src/contracts";
 import {
   CITY_WORLD_PLAN_V1_JSON_SCHEMA, CITY_WORLD_SNAPSHOT_V4_JSON_SCHEMA,
@@ -116,4 +116,30 @@ test("package lock identity follows package.json without dependency changes", ()
   };
   assert.equal(lock.name, packageJson.name);
   assert.equal(lock.packages[""]?.name, packageJson.name);
+});
+
+test("WorldEventEnvelopeV1 carries the RFC §3.2 field set across every StateScopeV1 subset", () => {
+  const scopes: StateScopeV1[] = [
+    { kind: "game", playerId: "player-1", cityId: "city:one", gameId: "game.romance" },
+    { kind: "story", playerId: "player-1", cityId: "city:one", storyId: "story-alpha", storyRunId: "run-alpha" },
+    { kind: "city-resident-public", cityId: "city:one", residentId: "resident:xia" },
+  ];
+  for (const scope of scopes) {
+    const envelope: WorldEventEnvelopeV1 = {
+      eventId: "event-1", type: "speak", scope, actorId: "player-1", simulationUtcMs: 1_000,
+      expectedRevision: "rev-1", ruleSetDigest: "ruleset:digest-1", payload: { text: "hello" },
+    };
+    assert.deepEqual(Object.keys(envelope).sort(),
+      ["actorId", "eventId", "expectedRevision", "payload", "ruleSetDigest", "scope", "simulationUtcMs", "type"]);
+    assert.equal(typeof envelope.simulationUtcMs, "number");
+    // causationId/correlationId are optional and stay absent when the producer did not record them.
+    envelope.causationId = "event-cause-0";
+    envelope.correlationId = "trace-corr-1";
+    assert.equal(envelope.causationId, "event-cause-0");
+    assert.equal(envelope.correlationId, "trace-corr-1");
+    delete envelope.causationId;
+    delete envelope.correlationId;
+    assert.equal("causationId" in envelope, false);
+    assert.equal("correlationId" in envelope, false);
+  }
 });

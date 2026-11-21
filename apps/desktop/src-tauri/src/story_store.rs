@@ -6,7 +6,7 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::Path;
-use crate::creator_store::{canonical_json, database, digest, now_ms};
+use crate::creator_store::{canonical_json, database, digest, now_ms, valid_id};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,6 +30,11 @@ pub(crate) struct StoryCommitCommandV1 {
     pub expected_clock_revision: String,
     pub intent: Value,
     pub run_id: String,
+    /// WorldEventEnvelopeV1 信封字段（RFC §3.2，PR-4 信封化）：全部可缺省，
+    /// None 落库 NULL——旧行与既有调用点的语义零变化；缺省不进请求哈希。
+    pub rule_set_digest: Option<String>,
+    pub causation_id: Option<String>,
+    pub correlation_id: Option<String>,
 }
 
 /// Story 状态作用域的存储增量（RFC §3.5）：storyId = 内容身份，storyRunId = 玩家长期进度身份。
@@ -76,7 +81,7 @@ fn rebuild_legacy_story_tables(db: &Connection) -> Result<(), &'static str> {
         "CREATE TABLE story_states_v2 (player_id TEXT NOT NULL, city_id TEXT NOT NULL, game_id TEXT NOT NULL, story_id TEXT NOT NULL, story_run_id TEXT NOT NULL, revision TEXT NOT NULL, document_json TEXT NOT NULL, updated_at_ms INTEGER NOT NULL, PRIMARY KEY(player_id,city_id,story_id,story_run_id))",
         "INSERT INTO story_states_v2(player_id,city_id,game_id,story_id,story_run_id,revision,document_json,updated_at_ms) SELECT player_id,city_id,game_id,game_id,'legacy-'||game_id,revision,document_json,updated_at_ms FROM story_states")
         .and_then(|_| rebuild("story_events",
-            "CREATE TABLE story_events_v2 (event_id TEXT NOT NULL, occurrence_id TEXT NOT NULL, player_id TEXT NOT NULL, city_id TEXT NOT NULL, game_id TEXT NOT NULL, story_id TEXT NOT NULL, story_run_id TEXT NOT NULL, rule_id TEXT NOT NULL, status TEXT NOT NULL, due_at_utc_ms INTEGER NOT NULL, last_processed_tick INTEGER NOT NULL, idempotency_key TEXT NOT NULL, story_revision TEXT NOT NULL, clock_revision TEXT NOT NULL, intent_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL, PRIMARY KEY(player_id,city_id,story_id,story_run_id,event_id))",
+            "CREATE TABLE story_events_v2 (event_id TEXT NOT NULL, occurrence_id TEXT NOT NULL, player_id TEXT NOT NULL, city_id TEXT NOT NULL, game_id TEXT NOT NULL, story_id TEXT NOT NULL, story_run_id TEXT NOT NULL, rule_id TEXT NOT NULL, status TEXT NOT NULL, due_at_utc_ms INTEGER NOT NULL, last_processed_tick INTEGER NOT NULL, idempotency_key TEXT NOT NULL, story_revision TEXT NOT NULL, clock_revision TEXT NOT NULL, intent_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL, rule_set_digest TEXT, causation_id TEXT, correlation_id TEXT, PRIMARY KEY(player_id,city_id,story_id,story_run_id,event_id))",
             "INSERT INTO story_events_v2(event_id,occurrence_id,player_id,city_id,game_id,story_id,story_run_id,rule_id,status,due_at_utc_ms,last_processed_tick,idempotency_key,story_revision,clock_revision,intent_json,created_at_ms) SELECT event_id,occurrence_id,player_id,city_id,game_id,game_id,'legacy-'||game_id,rule_id,status,due_at_utc_ms,last_processed_tick,idempotency_key,story_revision,clock_revision,intent_json,created_at_ms FROM story_events"))
         .and_then(|_| rebuild("story_outbox",
             "CREATE TABLE story_outbox_v2 (id INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL, operation_id TEXT NOT NULL, player_id TEXT NOT NULL, city_id TEXT NOT NULL, game_id TEXT NOT NULL, story_id TEXT NOT NULL, story_run_id TEXT NOT NULL, payload_json TEXT NOT NULL, status TEXT NOT NULL, created_at_ms INTEGER NOT NULL, acknowledged_at_ms INTEGER, UNIQUE(event_id,operation_id,story_id,story_run_id))",
@@ -104,6 +109,7 @@ pub(crate) fn migrate_story(db: &Connection) -> Result<(), &'static str> {
         status TEXT NOT NULL, due_at_utc_ms INTEGER NOT NULL, last_processed_tick INTEGER NOT NULL,
         idempotency_key TEXT NOT NULL, story_revision TEXT NOT NULL, clock_revision TEXT NOT NULL,
         intent_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL,
+        rule_set_digest TEXT, causation_id TEXT, correlation_id TEXT,
         PRIMARY KEY(player_id,city_id,story_id,story_run_id,event_id)
     );
     CREATE TABLE IF NOT EXISTS story_outbox (
@@ -118,7 +124,18 @@ pub(crate) fn migrate_story(db: &Connection) -> Result<(), &'static str> {
         story_id TEXT NOT NULL, story_run_id TEXT NOT NULL,
         operation_id TEXT NOT NULL, request_hash TEXT NOT NULL, result_json TEXT NOT NULL,
         created_at_ms INTEGER NOT NULL, PRIMARY KEY(player_id,city_id,story_id,story_run_id,operation_id)
-    );").map_err(|_| "creator_store_unavailable")
+    );").map_err(|_| "creator_store_unavailable")?;
+    // 信封列迁移（RFC §3.2，PR-4）：信封化之前已建库的 story_events 缺列时
+    // ALTER 补齐；列为可空 TEXT，旧行一律 NULL，不做破坏性迁移。
+    if story_table_exists(db, "story_events")? {
+        for column in ["rule_set_digest", "causation_id", "correlation_id"] {
+            if !story_table_has_column(db, "story_events", column)? {
+                db.execute_batch(&format!("ALTER TABLE story_events ADD COLUMN {column} TEXT;"))
+                    .map_err(|_| "creator_store_unavailable")?;
+            }
+        }
+    }
+    Ok(())
 }
 
 
@@ -169,18 +186,28 @@ pub(crate) fn commit_story(home: &Path, command: StoryCommitCommandV1, clock: St
     if command.story_scope.as_ref().is_some_and(|scope| scope.story_id.is_empty() || scope.story_run_id.is_empty()) {
         return Err("game_argument_invalid");
     }
+    if [&command.rule_set_digest, &command.causation_id, &command.correlation_id]
+        .into_iter().any(|field| field.as_deref().is_some_and(str::is_empty)) {
+        return Err("game_argument_invalid");
+    }
     // 请求哈希只含逻辑载荷；story_scope 是寻址而非载荷（RFC §3.5），显式与合成
-    // 同址的哈希保持一致，legacy 回执哈希经迁移后仍可命中。
+    // 同址的哈希保持一致，legacy 回执哈希经迁移后仍可命中。信封字段（RFC §3.2）
+    // 是事件事实的载荷增量：缺省（None）不进哈希——既有请求哈希逐字节不变；
+    // 携带信封的提交把三个字段纳入哈希，同 operationId 换信封载荷仍被冲突检测拦截。
     let (story_id, story_run_id) = match command.story_scope.as_ref() {
         Some(scope) => (scope.story_id.clone(), scope.story_run_id.clone()),
         None => legacy_story_scope(&command.game_id),
     };
-    let request_hash = digest(&canonical_json(&json!({
+    let mut request_payload = json!({
         "operationId":command.operation_id,"eventId":command.event_id,"playerId":command.player_id,
         "cityId":command.city_id,"gameId":command.game_id,"residentId":command.resident_id,
         "expectedStoryRevision":command.expected_story_revision,"expectedClockRevision":command.expected_clock_revision,
         "intent":command.intent,"runId":command.run_id,
-    })).map_err(|_| "game_argument_invalid")?);
+    });
+    if command.rule_set_digest.is_some() { request_payload["ruleSetDigest"] = json!(command.rule_set_digest); }
+    if command.causation_id.is_some() { request_payload["causationId"] = json!(command.causation_id); }
+    if command.correlation_id.is_some() { request_payload["correlationId"] = json!(command.correlation_id); }
+    let request_hash = digest(&canonical_json(&request_payload).map_err(|_| "game_argument_invalid")?);
     let mut db = database(home)?;
     migrate_story(&db)?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
@@ -207,10 +234,10 @@ pub(crate) fn commit_story(home: &Path, command: StoryCommitCommandV1, clock: St
         "storyRevision":digest(&format!("{current}:{request_hash}")),
         "clockRevision":command.expected_clock_revision,"status":"committed",
     });
-    tx.execute("INSERT INTO story_events(event_id,occurrence_id,player_id,city_id,game_id,story_id,story_run_id,rule_id,status,due_at_utc_ms,last_processed_tick,idempotency_key,story_revision,clock_revision,intent_json,created_at_ms) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'committed',?9,?10,?11,?12,?13,?14,?15)",
+    tx.execute("INSERT INTO story_events(event_id,occurrence_id,player_id,city_id,game_id,story_id,story_run_id,rule_id,status,due_at_utc_ms,last_processed_tick,idempotency_key,story_revision,clock_revision,intent_json,rule_set_digest,causation_id,correlation_id,created_at_ms) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'committed',?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
         params![command.event_id,command.event_id,command.player_id,command.city_id,command.game_id,story_id,story_run_id,command.event_id,
             clock.simulation_utc_ms,clock.tick,command.operation_id,result["storyRevision"].as_str().unwrap_or(""),command.expected_clock_revision,
-            canonical_json(&command.intent).map_err(|_| "game_argument_invalid")?,now])
+            canonical_json(&command.intent).map_err(|_| "game_argument_invalid")?,command.rule_set_digest,command.causation_id,command.correlation_id,now])
         .map_err(|_| "creator_store_unavailable")?;
     let document = canonical_json(&state).map_err(|_| "game_argument_invalid")?;
     tx.execute("INSERT INTO story_states(player_id,city_id,game_id,story_id,story_run_id,revision,document_json,updated_at_ms) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
@@ -290,6 +317,139 @@ pub(crate) fn acknowledge_story_outbox(home: &Path, outbox_id: i64) -> Result<bo
     let changed = db.execute("UPDATE story_outbox SET status='acknowledged',acknowledged_at_ms=?2 WHERE id=?1 AND status='pending'",
         params![outbox_id,now_ms()]).map_err(|_| "creator_store_unavailable")?;
     Ok(changed == 1)
+}
+
+// ---------------------------------------------------------------------------
+// 读投影（RFC §3.2）：事件行 → WorldEventEnvelopeV1 形状的有界读面。行内可得
+// 字段逐一映射：type 取 intent.kind（提交校验仅放行 speak/invite）；actorId 取
+// 提交玩家；simulationUtcMs 取落库的时钟模拟时间；expectedRevision 取行内权威
+// story_revision（读侧下一次 CAS 的期望基线；提交前 revision 的持久化随 PR-5
+// 仲裁链路落库）；scope 按 legacy 合成映射的行内自描述性判别子集（§3.5.1）；
+// NULL 信封字段按可选语义省略（旧行 = 先于规则摘要关联的事实）。
+
+pub(crate) fn story_event_envelopes(home: &Path, player_id: &str, city_id: &str, game_id: &str, limit: u32) -> Result<Vec<Value>, &'static str> {
+    let (story_id, story_run_id) = legacy_story_scope(game_id);
+    story_event_envelopes_scoped(home, player_id, city_id, &story_id, &story_run_id, limit)
+}
+
+pub(crate) fn story_event_envelopes_scoped(home: &Path, player_id: &str, city_id: &str, story_id: &str, story_run_id: &str, limit: u32) -> Result<Vec<Value>, &'static str> {
+    let db = database(home)?;
+    migrate_story(&db)?;
+    let mut statement = db.prepare("SELECT event_id,game_id,story_run_id,story_revision,due_at_utc_ms,intent_json,rule_set_digest,causation_id,correlation_id FROM story_events WHERE player_id=?1 AND city_id=?2 AND story_id=?3 AND story_run_id=?4 ORDER BY created_at_ms DESC,event_id DESC LIMIT ?5")
+        .map_err(|_| "creator_store_unavailable")?;
+    let rows = statement.query_map(params![player_id,city_id,story_id,story_run_id,limit.min(100)], |row| {
+        let event_id: String = row.get(0)?;
+        let row_game_id: String = row.get(1)?;
+        let row_story_run_id: String = row.get(2)?;
+        let story_revision: String = row.get(3)?;
+        let simulation_utc_ms: u64 = row.get(4)?;
+        let intent: Value = serde_json::from_str(&row.get::<_, String>(5)?).unwrap_or(Value::Null);
+        let rule_set_digest: Option<String> = row.get(6)?;
+        let causation_id: Option<String> = row.get(7)?;
+        let correlation_id: Option<String> = row.get(8)?;
+        let scope = if row_story_run_id == legacy_story_scope(&row_game_id).1 {
+            json!({"kind":"game","playerId":player_id,"cityId":city_id,"gameId":row_game_id})
+        } else {
+            json!({"kind":"story","playerId":player_id,"cityId":city_id,"storyId":story_id,"storyRunId":row_story_run_id})
+        };
+        let mut envelope = json!({
+            "eventId":event_id,"type":intent.get("kind").and_then(Value::as_str).unwrap_or(""),
+            "scope":scope,"actorId":player_id,"simulationUtcMs":simulation_utc_ms,
+            "expectedRevision":story_revision,"payload":intent,
+        });
+        if let Some(digest) = rule_set_digest { envelope["ruleSetDigest"] = json!(digest); }
+        if let Some(id) = causation_id { envelope["causationId"] = json!(id); }
+        if let Some(id) = correlation_id { envelope["correlationId"] = json!(id); }
+        Ok(envelope)
+    }).map_err(|_| "creator_store_unavailable")?;
+    rows.collect::<Result<Vec<_>,_>>().map_err(|_| "creator_store_unavailable")
+}
+
+// ---------------------------------------------------------------------------
+// 公共 City scope 存储（RFC §3.5.1 / §12.2）：city_resident_state 是
+// CityResidentPublicScopeV1（cityId × residentId）的权威行——location_ref、
+// revision CAS、updated_at_ms。本期只做存储与校验：写必须携带公共 scope，
+// 私有子集与未知 kind 一律失败关闭；租约仲裁排队（§12.2）在 PR-5 接入。
+
+/// StateScopeV1（RFC §3.5.1 Shared Contracts 判别联合）的宿主侧解析形态；
+/// kind 判别逐一匹配子集，未知 kind 在解析处失败关闭。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StateScopeV1 {
+    Game { player_id: String, city_id: String, game_id: String, game_run_id: Option<String> },
+    Story { player_id: String, city_id: String, story_id: String, story_run_id: String, resident_id: Option<String> },
+    CityResidentPublic { city_id: String, resident_id: String },
+}
+
+fn scope_text(value: &Value, key: &str) -> Result<String, &'static str> {
+    value.get(key).and_then(Value::as_str).filter(|id| valid_id(id)).map(str::to_string).ok_or("game_argument_invalid")
+}
+
+fn scope_optional_text(value: &Value, key: &str) -> Result<Option<String>, &'static str> {
+    match value.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(id) => Ok(Some(id.as_str().filter(|id| valid_id(id)).map(str::to_string).ok_or("game_argument_invalid")?)),
+    }
+}
+
+pub(crate) fn parse_state_scope(value: &Value) -> Result<StateScopeV1, &'static str> {
+    match value.get("kind").and_then(Value::as_str) {
+        Some("game") => Ok(StateScopeV1::Game {
+            player_id: scope_text(value, "playerId")?, city_id: scope_text(value, "cityId")?,
+            game_id: scope_text(value, "gameId")?, game_run_id: scope_optional_text(value, "gameRunId")? }),
+        Some("story") => Ok(StateScopeV1::Story {
+            player_id: scope_text(value, "playerId")?, city_id: scope_text(value, "cityId")?,
+            story_id: scope_text(value, "storyId")?, story_run_id: scope_text(value, "storyRunId")?,
+            resident_id: scope_optional_text(value, "residentId")? }),
+        Some("city-resident-public") => Ok(StateScopeV1::CityResidentPublic {
+            city_id: scope_text(value, "cityId")?, resident_id: scope_text(value, "residentId")? }),
+        _ => Err("game_argument_invalid"),
+    }
+}
+
+pub(crate) fn migrate_city_resident_state(db: &Connection) -> Result<(), &'static str> {
+    db.execute_batch("CREATE TABLE IF NOT EXISTS city_resident_state (
+        city_id TEXT NOT NULL, resident_id TEXT NOT NULL,
+        location_ref TEXT NOT NULL, revision TEXT NOT NULL,
+        updated_at_ms INTEGER NOT NULL, PRIMARY KEY(city_id,resident_id)
+    );").map_err(|_| "creator_store_unavailable")
+}
+
+pub(crate) fn read_resident_state(home: &Path, city_id: &str, resident_id: &str) -> Result<Value, &'static str> {
+    if !valid_id(city_id) || !valid_id(resident_id) { return Err("game_argument_invalid"); }
+    let db = database(home)?;
+    migrate_city_resident_state(&db)?;
+    let row = db.query_row("SELECT location_ref,revision,updated_at_ms FROM city_resident_state WHERE city_id=?1 AND resident_id=?2",
+        params![city_id,resident_id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, u64>(2)?)))
+        .optional().map_err(|_| "creator_store_unavailable")?;
+    Ok(match row {
+        Some((location_ref, revision, updated_at_ms)) => json!({"cityId":city_id,"residentId":resident_id,
+            "locationRef":location_ref,"revision":revision,"updatedAtMs":updated_at_ms}),
+        None => json!({"cityId":city_id,"residentId":resident_id,"revision":"0"}),
+    })
+}
+
+pub(crate) fn write_resident_state(home: &Path, scope: &Value, location_ref: &str, expected_revision: &str) -> Result<Value, &'static str> {
+    // 解析失败关闭（未知 kind、缺字段、非法字符）；随后只放行公共子集——私有
+    // 子集（game/story）不得写公共 NPC 存储（§3.5.1：公共子集仅 City Runtime
+    // 仲裁可写，本表是它的存储面）。
+    let parsed = parse_state_scope(scope)?;
+    let StateScopeV1::CityResidentPublic { city_id, resident_id } = parsed else { return Err("game_actor_intent_denied"); };
+    if !valid_id(location_ref) || expected_revision.is_empty() { return Err("game_argument_invalid"); }
+    let mut db = database(home)?;
+    migrate_city_resident_state(&db)?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
+    let current = tx.query_row("SELECT revision FROM city_resident_state WHERE city_id=?1 AND resident_id=?2", params![city_id,resident_id],
+        |row| row.get::<_, String>(0)).optional().map_err(|_| "creator_store_unavailable")?
+        .unwrap_or_else(|| "0".to_string());
+    if current != expected_revision { return Err("game_storage_revision_conflict"); }
+    let now = now_ms();
+    let revision = digest(&format!("{city_id}:{resident_id}:{current}:{location_ref}:{now}"));
+    tx.execute("INSERT INTO city_resident_state(city_id,resident_id,location_ref,revision,updated_at_ms) VALUES (?1,?2,?3,?4,?5)
+        ON CONFLICT(city_id,resident_id) DO UPDATE SET location_ref=excluded.location_ref,revision=excluded.revision,updated_at_ms=excluded.updated_at_ms",
+        params![city_id,resident_id,location_ref,revision,now]).map_err(|_| "creator_store_unavailable")?;
+    tx.commit().map_err(|_| "creator_store_unavailable")?;
+    Ok(json!({"cityId":city_id,"residentId":resident_id,"locationRef":location_ref,"revision":revision,"updatedAtMs":now}))
 }
 
 // ---------------------------------------------------------------------------
@@ -375,6 +535,7 @@ mod tests {
             story_scope: None, resident_id: Some("resident:linxia".to_string()),
             expected_story_revision: revision.to_string(), expected_clock_revision: "clock-1".to_string(),
             intent: json!({"kind":"invite","targetId":"place:beach"}), run_id: "run-1".to_string(),
+            rule_set_digest: None, causation_id: None, correlation_id: None,
         }
     }
 
@@ -522,6 +683,134 @@ mod tests {
         assert!(story_outbox(&home, "player-1", "city-1", "game-1", 10).unwrap().is_empty());
         // 未知 storyRunId 返回空状态，不跨 run 泄漏。
         assert_eq!(story_state_scoped(&home, "player-1", "city-1", "story-alpha", "run-missing").unwrap()["storyRevision"], "0");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn commit_story_envelope_fields_persist_and_project_as_world_event_envelopes() {
+        let home = home();
+        let envelope_command = |operation: &str, event: &str| {
+            let mut command = command(operation, event, "0");
+            command.rule_set_digest = Some("ruleset:digest-1".to_string());
+            command.causation_id = Some("event-cause-0".to_string());
+            command.correlation_id = Some("trace-corr-1".to_string());
+            command
+        };
+        let first = commit_story(&home, envelope_command("op-1", "event-1"), clock()).unwrap();
+        // 同 operationId + 同信封载荷的重试命中回执（信封字段已纳入请求哈希）。
+        let retry = commit_story(&home, envelope_command("op-1", "event-1"), clock()).unwrap();
+        assert_eq!(retry["storyRevision"], first["storyRevision"]);
+        // 读投影：信封字段逐一落库读回（legacy 行投影为 game 子集 scope）。
+        let envelopes = story_event_envelopes(&home, "player-1", "city-1", "game-1", 10).unwrap();
+        assert_eq!(envelopes.len(), 1);
+        assert_eq!(envelopes[0]["eventId"], "event-1");
+        assert_eq!(envelopes[0]["type"], "invite");
+        assert_eq!(envelopes[0]["scope"]["kind"], "game");
+        assert_eq!(envelopes[0]["scope"]["gameId"], "game-1");
+        assert_eq!(envelopes[0]["actorId"], "player-1");
+        assert_eq!(envelopes[0]["simulationUtcMs"], 1_000);
+        assert_eq!(envelopes[0]["ruleSetDigest"], "ruleset:digest-1");
+        assert_eq!(envelopes[0]["causationId"], "event-cause-0");
+        assert_eq!(envelopes[0]["correlationId"], "trace-corr-1");
+        assert_eq!(envelopes[0]["payload"]["kind"], "invite");
+        assert!(!envelopes[0]["expectedRevision"].as_str().unwrap().is_empty());
+        // 未携带信封的提交（缺省 NULL）：投影按可选语义省略信封字段。
+        let revision = first["storyRevision"].as_str().unwrap().to_string();
+        commit_story(&home, command("op-2", "event-2", &revision), clock()).unwrap();
+        let envelopes = story_event_envelopes(&home, "player-1", "city-1", "game-1", 10).unwrap();
+        let plain = envelopes.iter().find(|envelope| envelope["eventId"] == "event-2").unwrap();
+        assert!(plain.get("ruleSetDigest").is_none());
+        assert!(plain.get("causationId").is_none());
+        assert!(plain.get("correlationId").is_none());
+        // 同 operationId 换信封载荷的变体重试被冲突检测拦截。
+        let mut changed = envelope_command("op-1", "event-1");
+        changed.rule_set_digest = Some("ruleset:digest-2".to_string());
+        assert_eq!(commit_story(&home, changed, clock()).unwrap_err(), "operation_id_conflict");
+        // 显式 Story scope 行投影为 story 子集 scope。
+        let mut scoped = scoped_command("op-s", "event-s", "0", "story-alpha", "run-alpha");
+        scoped.rule_set_digest = Some("ruleset:digest-s".to_string());
+        commit_story(&home, scoped, clock()).unwrap();
+        let scoped_envelopes = story_event_envelopes_scoped(&home, "player-1", "city-1", "story-alpha", "run-alpha", 10).unwrap();
+        assert_eq!(scoped_envelopes[0]["scope"]["kind"], "story");
+        assert_eq!(scoped_envelopes[0]["scope"]["storyId"], "story-alpha");
+        assert_eq!(scoped_envelopes[0]["scope"]["storyRunId"], "run-alpha");
+        assert_eq!(scoped_envelopes[0]["ruleSetDigest"], "ruleset:digest-s");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn story_event_envelope_columns_migrate_existing_rows_to_null() {
+        let home = home();
+        {
+            // 绕开 database()（它一打开就会建新 schema）：手工造一个"信封化之前"
+            // 的已迁移库——story 主键已就位但 story_events 缺信封列；迁移路径 =
+            // ALTER TABLE ADD COLUMN，旧行信封字段落 NULL，不做破坏性迁移。
+            let directory = home.join("state/creator");
+            std::fs::create_dir_all(&directory).unwrap();
+            let db = Connection::open(directory.join("projects.sqlite")).unwrap();
+            db.execute_batch("CREATE TABLE story_events (
+                event_id TEXT NOT NULL, occurrence_id TEXT NOT NULL, player_id TEXT NOT NULL,
+                city_id TEXT NOT NULL, game_id TEXT NOT NULL, story_id TEXT NOT NULL, story_run_id TEXT NOT NULL,
+                rule_id TEXT NOT NULL, status TEXT NOT NULL, due_at_utc_ms INTEGER NOT NULL,
+                last_processed_tick INTEGER NOT NULL, idempotency_key TEXT NOT NULL,
+                story_revision TEXT NOT NULL, clock_revision TEXT NOT NULL, intent_json TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL, PRIMARY KEY(player_id,city_id,story_id,story_run_id,event_id)
+            );
+            INSERT INTO story_events VALUES ('event-old','event-old','player-1','city-1','game-1','game-1','legacy-game-1',
+                'event-old','committed',1000,4,'op-old','rev-old','clock-1','{\"kind\":\"speak\",\"text\":\"legacy\"}',1);").unwrap();
+        }
+        // 读路径触发迁移：旧行读回为 NULL 信封字段 → 投影省略可选信封字段。
+        let envelopes = story_event_envelopes(&home, "player-1", "city-1", "game-1", 10).unwrap();
+        assert_eq!(envelopes.len(), 1);
+        assert_eq!(envelopes[0]["eventId"], "event-old");
+        assert_eq!(envelopes[0]["type"], "speak");
+        assert!(envelopes[0].get("ruleSetDigest").is_none());
+        assert!(envelopes[0].get("causationId").is_none());
+        assert!(envelopes[0].get("correlationId").is_none());
+        // 迁移后三列存在且旧行均为 NULL；续写不冲突。
+        let db = database(&home).unwrap();
+        for column in ["rule_set_digest", "causation_id", "correlation_id"] {
+            let value: Option<String> = db.query_row(&format!("SELECT {column} FROM story_events WHERE event_id='event-old'"), [],
+                |row| row.get(0)).unwrap();
+            assert_eq!(value, None);
+        }
+        assert_eq!(commit_story(&home, command("op-2", "event-2", "0"), clock()).unwrap()["status"], "committed");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn resident_state_writes_require_public_scope_and_cas_revision() {
+        let home = home();
+        let public_scope = json!({"kind":"city-resident-public","cityId":"city:one","residentId":"resident:xia"});
+        // 首写（revision "0" = create）落权威行并读回。
+        let first = write_resident_state(&home, &public_scope, "place:beach", "0").unwrap();
+        assert!(!first["revision"].as_str().unwrap().is_empty());
+        let read = read_resident_state(&home, "city:one", "resident:xia").unwrap();
+        assert_eq!(read["locationRef"], "place:beach");
+        assert_eq!(read["revision"], first["revision"]);
+        assert!(read["updatedAtMs"].as_u64().is_some());
+        // CAS 冲突：携带过期 revision 拒绝；携带当前 revision 推进且 revision 变化。
+        assert_eq!(write_resident_state(&home, &public_scope, "place:cafe", "0").unwrap_err(), "game_storage_revision_conflict");
+        let second = write_resident_state(&home, &public_scope, "place:cafe", first["revision"].as_str().unwrap()).unwrap();
+        assert_ne!(second["revision"], first["revision"]);
+        assert_eq!(read_resident_state(&home, "city:one", "resident:xia").unwrap()["locationRef"], "place:cafe");
+        // 私有子集 fail-closed：game/story scope 不得写公共 NPC 存储。
+        for private_scope in [
+            json!({"kind":"game","playerId":"player-1","cityId":"city:one","gameId":"game-1"}),
+            json!({"kind":"story","playerId":"player-1","cityId":"city:one","storyId":"story-alpha","storyRunId":"run-alpha"}),
+        ] {
+            assert_eq!(write_resident_state(&home, &private_scope, "place:beach", "0").unwrap_err(), "game_actor_intent_denied");
+        }
+        assert_eq!(read_resident_state(&home, "city:one", "resident:xia").unwrap()["locationRef"], "place:cafe");
+        // 未知 kind、缺 kind、非法 scope 字段解析失败关闭；非法 locationRef / 空 revision 拒绝。
+        assert_eq!(write_resident_state(&home, &json!({"kind":"city-resident-v2","cityId":"city:one","residentId":"resident:xia"}), "place:beach", "0").unwrap_err(), "game_argument_invalid");
+        assert_eq!(write_resident_state(&home, &json!({"cityId":"city:one","residentId":"resident:xia"}), "place:beach", "0").unwrap_err(), "game_argument_invalid");
+        assert_eq!(write_resident_state(&home, &json!({"kind":"city-resident-public","cityId":"city:one","residentId":"bad id!"}), "place:beach", "0").unwrap_err(), "game_argument_invalid");
+        assert_eq!(write_resident_state(&home, &public_scope, "../escape", "0").unwrap_err(), "game_argument_invalid");
+        assert_eq!(write_resident_state(&home, &public_scope, "place:beach", "").unwrap_err(), "game_argument_invalid");
+        // 未知 resident / 跨 city 读回空基线（revision "0"），互不泄漏。
+        assert_eq!(read_resident_state(&home, "city:one", "resident:missing").unwrap()["revision"], "0");
+        assert_eq!(read_resident_state(&home, "city:two", "resident:xia").unwrap()["revision"], "0");
         std::fs::remove_dir_all(home).ok();
     }
 

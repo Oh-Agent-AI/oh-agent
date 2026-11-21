@@ -296,8 +296,15 @@ fn commit_at(home: &Path, city_instance: &str, payload: &Value, now: u64) -> Res
         expected_clock_revision: required(payload, "expectedClockRevision")?.to_string(),
         intent: payload.get("intent").filter(|value| value.is_object()).cloned().ok_or("game_argument_invalid")?,
         run_id: run_id.to_string(),
+        // WorldEventEnvelopeV1 信封字段（RFC §3.2）：可选透传，缺省 None 落库 NULL。
+        rule_set_digest: payload.get("ruleSetDigest").and_then(Value::as_str).filter(|value| valid_id(value)).map(str::to_string),
+        causation_id: payload.get("causationId").and_then(Value::as_str).filter(|value| valid_id(value)).map(str::to_string),
+        correlation_id: payload.get("correlationId").and_then(Value::as_str).filter(|value| valid_id(value)).map(str::to_string),
     };
     if payload.get("residentId").is_some() && command.resident_id.is_none() { return Err("game_argument_invalid"); }
+    for key in ["ruleSetDigest", "causationId", "correlationId"] {
+        if payload.get(key).is_some_and(|value| value.as_str().filter(|id| valid_id(id)).is_none()) { return Err("game_argument_invalid"); }
+    }
     commit_story(home, command, StoryClockAuthorityV1 {
         revision: clock["clockRevision"].as_str().ok_or("creator_store_unavailable")?.to_string(),
         tick: clock["tick"].as_u64().ok_or("creator_store_unavailable")?,
@@ -319,7 +326,9 @@ pub(crate) fn story_evidence(home: &Path, run_id: &str) -> Result<Value, &'stati
         let text = intent.get("text").and_then(Value::as_str)?;
         Some(json!({"eventId":entry["eventId"],"text":text,"createdAtMs":entry["createdAtMs"],"storyRevision":entry["storyRevision"]}))
     }).collect::<Vec<_>>();
-    Ok(json!({"available":true,"runId":run_id,"storyRevision":state["storyRevision"],"state":state["state"],"rules":rules,"dialogue":dialogue}))
+    // 读投影（RFC §3.2）：事件行以 WorldEventEnvelopeV1 形状（有界字段）随证据面输出。
+    let events = crate::story_store::story_event_envelopes(home, &row.2, &row.0, &row.1, 20)?;
+    Ok(json!({"available":true,"runId":run_id,"storyRevision":state["storyRevision"],"state":state["state"],"rules":rules,"dialogue":dialogue,"events":events}))
 }
 
 #[cfg(test)]
@@ -385,6 +394,47 @@ mod tests {
         let state = crate::creator_projects::dispatch_city_runtime(&home, "city-instance", "city.story.read", &json!({"runId":run["runId"]})).unwrap();
         assert_eq!(state["state"]["affection"], 1);
         assert_eq!(crate::creator_projects::dispatch_city_runtime(&home, "city-instance", "city.story.delete", &json!({"runId":run["runId"]})).unwrap_err(), "creator_method_unavailable");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn story_evidence_projects_committed_events_as_world_event_envelopes() {
+        let home = home();
+        let run = start(&home, 1_000);
+        let clock = read_clock_at(&home, "city:one", 1_000).unwrap();
+        // 非法信封字段（含空格）在 Runtime 入口即拒绝，不产生事件行。
+        let mut invalid = commit_payload(&run, &clock, "0");
+        invalid["ruleSetDigest"] = json!("bad id!");
+        assert_eq!(commit_at(&home, "city-instance", &invalid, 1_000).unwrap_err(), "game_argument_invalid");
+        // 携带信封字段的提交经读投影读回（legacy 行投影为 game 子集 scope）。
+        let mut payload = commit_payload(&run, &clock, "0");
+        payload["ruleSetDigest"] = json!("ruleset:digest-1");
+        payload["causationId"] = json!("event-cause-0");
+        payload["correlationId"] = json!("trace-corr-1");
+        commit_at(&home, "city-instance", &payload, 1_000).unwrap();
+        let evidence = story_evidence(&home, run["runId"].as_str().unwrap()).unwrap();
+        let events = evidence["events"].as_array().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["eventId"], "event-1");
+        assert_eq!(events[0]["type"], "invite");
+        assert_eq!(events[0]["scope"]["kind"], "game");
+        assert_eq!(events[0]["scope"]["gameId"], "game.romance");
+        assert_eq!(events[0]["actorId"], run["playerScope"]["playerId"]);
+        assert_eq!(events[0]["simulationUtcMs"], 1_000);
+        assert_eq!(events[0]["ruleSetDigest"], "ruleset:digest-1");
+        assert_eq!(events[0]["causationId"], "event-cause-0");
+        assert_eq!(events[0]["correlationId"], "trace-corr-1");
+        assert_eq!(events[0]["payload"]["kind"], "invite");
+        // 信封的 expectedRevision 是行内权威 revision：作为下一次 CAS 的期望基线。
+        let mut plain = commit_payload(&run, &clock, events[0]["expectedRevision"].as_str().unwrap());
+        plain["operationId"] = json!("operation-plain");
+        plain["eventId"] = json!("event-plain");
+        commit_at(&home, "city-instance", &plain, 1_000).unwrap();
+        let evidence = story_evidence(&home, run["runId"].as_str().unwrap()).unwrap();
+        let plain_event = evidence["events"].as_array().unwrap().iter().find(|envelope| envelope["eventId"] == "event-plain").unwrap();
+        assert!(plain_event.get("ruleSetDigest").is_none());
+        assert!(plain_event.get("causationId").is_none());
+        assert!(plain_event.get("correlationId").is_none());
         std::fs::remove_dir_all(home).ok();
     }
 
@@ -458,6 +508,7 @@ mod tests {
             story_scope: None, resident_id: Some("resident:xia".to_string()),
             expected_story_revision: revision.to_string(), expected_clock_revision: "fork-clock-1".to_string(),
             intent: json!({"kind":"invite","targetId":"place:cafe"}), run_id: "fork-run".to_string(),
+            rule_set_digest: None, causation_id: None, correlation_id: None,
         }
     }
 
