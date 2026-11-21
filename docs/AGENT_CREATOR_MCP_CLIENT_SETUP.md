@@ -55,6 +55,31 @@ Claude Code（`claude mcp add` 或项目 `.mcp.json`，字段名以 Claude Code 
 - 若客户端支持 per-server 环境变量，需要非默认数据根时设置 `AGENT_VITALS_HOME`，并与桌面应用一致。
 - 不同客户端对 stdio MCP 的安装/连接方式可以不同，但不改变工具的业务含义。
 
+### 2.1 Pull 模式：任务认领与提交（通用接入，2026-11-21）
+
+除宿主主动 spawn 的 push 执行器（`creator_task_execute`，目前为 Codex CLI）外，
+creator 会话面提供 **pull 模式**：任何已接入本 MCP 的桌面 Agent / CLI / 交互式
+会话，用同一个 `agentId` 即可认领并完成 Studio 任务，**不需要宿主逐家适配启动
+参数**。三个新工具（§3.8 同域，全部离线可发现）：
+
+| MCP 工具 | 语义 | 前置 |
+|---|---|---|
+| `creator_task_list_open` | 列出 phase=ready 的已批准任务（诚实空队列） | 无 |
+| `creator_task_claim` | 认领：phase=ready → executing，绑定 claimant；同 agentId 幂等，他人认领后返回 `creator_task_already_claimed` | 任务须含 `agent-preview` 判据 |
+| `creator_task_submit_result` | 提交结果：宿主经 broker **服务端复核** preview（存在、绑定 artifact 项目与 baseRevision、未过期）后记录 `host-observed` 证据，任务进入 awaiting-review | 需先 `claim`，且 previewId 在 10 分钟 TTL 内 |
+
+诚实闸与 push 执行器路径完全一致：手工面不能伪造 `preview` 类证据（append 面
+只允许 build/test/human-note/city-playtest）、不能自封 host-verified；submit 的
+复核由宿主进程完成（`creator.task.preview.verify`，内部路由面，不作为 MCP 工具
+暴露，headless 臂可应答——Studio 未打开时提交依然可用，前提是该 preview 属于
+headless 可校验的类型，如 vehicle/game/city）。人工复核仍走
+`creator_task_review_accept` / `creator_task_review_reject`。
+
+**对用户的接入手续**：给桌面 Agent 配置本 MCP（§2 任意一种），然后在 Agent
+输入框说一句「用 agent-vitals MCP 认领 Creator Studio 的待办任务并完成它」即可；
+Agent 与宿主之间不再需要任何消息通道。push 与 pull 并存：`creator_task_execute`
+保持不变，作为无人值守派发路径。
+
 > 想**直接操控一局游戏做测试**（喂输入、逐帧推进、读确定性与 trace），那不是这套
 > creator 面：另起一个 stdio MCP `city-game-control`
 > （`apps/agent-city/mcp/city-game-mcp.mjs`，见 `docs/CITY_GAME_MCP.md`）。两者可以同时接。
