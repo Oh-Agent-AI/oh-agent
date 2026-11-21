@@ -56,7 +56,24 @@ pub(crate) fn migrate(db: &Connection) -> Result<(), &'static str> {
         event_id TEXT PRIMARY KEY, city_id TEXT NOT NULL, resident_id TEXT NOT NULL, lease_id TEXT NOT NULL,
         holder_scope_json TEXT NOT NULL, holder_intent_id TEXT NOT NULL, trace_id TEXT NOT NULL,
         kind TEXT NOT NULL, created_at_ms INTEGER NOT NULL
-    );").map_err(|_| "creator_store_unavailable")
+    );").map_err(|_| "creator_store_unavailable")?;
+    // 发布内容钉定（N3 修订）：安装行携带不可变发布内容（图 + Canon）——
+    // 项目编辑不再影响已授权 Run 的求值输入（SPEC §4：Run 固定其发布摘要）。
+    // story_runs 钉定其启动时安装的发布摘要；旧行 NULL = 未钉定（fail-closed）。
+    for (table, column) in [("story_installations", "graph_json"), ("story_installations", "canon_json"), ("story_runs", "content_digest")] {
+        if !table_has_column(db, table, column)? {
+            db.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} TEXT;"), [])
+                .map_err(|_| "creator_store_unavailable")?;
+        }
+    }
+    Ok(())
+}
+
+fn table_has_column(db: &Connection, table: &str, column: &str) -> Result<bool, &'static str> {
+    let present = db.prepare(&format!("PRAGMA table_info({table})")).map_err(|_| "creator_store_unavailable")?
+        .query_map([], |row| row.get::<_, String>(1)).map_err(|_| "creator_store_unavailable")?
+        .collect::<Result<Vec<String>, _>>().map_err(|_| "creator_store_unavailable")?;
+    Ok(present.iter().any(|name| name == column))
 }
 
 fn story_text<'a>(value: &'a Value, key: &str) -> Result<&'a str, &'static str> {
@@ -322,9 +339,12 @@ pub(crate) fn install_commit(home: &Path, payload: &Value) -> Result<Value, &'st
             require_update_confirmation(payload, &current_version, &current_digest, &story_version, &target_digest)?;
             // V3-22 语义复核（预检已有诊断，此处为事务内的第二道闸）：活跃 Run 存在即拒绝。
             if active_run_count(&tx, &city_id, &story_id)? > 0 { return Err("story_update_run_migration_required"); }
-            let changed = tx.execute("UPDATE story_installations SET story_version=?2,content_digest=?3,city_revision=?4,status='installed',updated_at_ms=?5
+            let release_graph = project.3.clone();
+            let release_canon = project.4.clone();
+            let changed = tx.execute("UPDATE story_installations SET story_version=?2,content_digest=?3,city_revision=?4,status='installed',updated_at_ms=?5,graph_json=?8,canon_json=?9
                 WHERE installation_id=?1 AND story_version=?6 AND content_digest=?7",
-                params![installation_id,story_version,target_digest,expected_revision,now,current_version,current_digest])
+                params![installation_id,story_version,target_digest,expected_revision,now,current_version,current_digest,
+                    release_graph,release_canon])
                 .map_err(|_| "creator_store_unavailable")?;
             if changed != 1 { return Err("story_install_existing"); }
             installation_id
@@ -332,9 +352,14 @@ pub(crate) fn install_commit(home: &Path, payload: &Value) -> Result<Value, &'st
         None => {
             if payload.get("updateConfirmation").is_some() { return Err("story_argument_invalid"); }
             let installation_id = new_id("story-installation-")?;
-            tx.execute("INSERT INTO story_installations(installation_id,city_id,story_id,story_version,content_digest,city_revision,status,installed_at_ms,updated_at_ms)
-                VALUES (?1,?2,?3,?4,?5,?6,'installed',?7,?7)",
-                params![installation_id,city_id,story_id,story_version,target_digest,expected_revision,now])
+            // 发布内容钉定：project 已在上方通过 verified_digest 校验（== target_digest），
+            // 图与 Canon 随安装落为不可变发布内容（行内存的是创建时的 canonical JSON）。
+            let release_graph = project.3.clone();
+            let release_canon = project.4.clone();
+            tx.execute("INSERT INTO story_installations(installation_id,city_id,story_id,story_version,content_digest,city_revision,status,graph_json,canon_json,installed_at_ms,updated_at_ms)
+                VALUES (?1,?2,?3,?4,?5,?6,'installed',?7,?8,?9,?9)",
+                params![installation_id,city_id,story_id,story_version,target_digest,expected_revision,
+                    release_graph,release_canon,now])
                 .map_err(|_| "creator_store_unavailable")?;
             installation_id
         }
@@ -371,11 +396,35 @@ pub(crate) fn install_list(home: &Path, payload: &Value) -> Result<Value, &'stat
 /// 不落库，start 顺带记 last_viewed_at_ms。重开默认恢复最近（active/paused），
 /// 只有显式 reset（新周目）才新建并让旧 Run 停止；旧 Run 的事实留在 story_store，
 /// 新 RunId 寻址不可见——本模块从不触碰 story_store 行。
-fn require_installed(tx: &Connection, city_id: &str, story_id: &str) -> Result<(), &'static str> {
-    let status: String = tx.query_row("SELECT status FROM story_installations WHERE city_id=?1 AND story_id=?2", [city_id,story_id],
-        |row| row.get(0)).optional().map_err(|_| "creator_store_unavailable")?.ok_or("story_not_installed")?;
+/// 安装校验并返回发布摘要（N3 修订）：Run 钉定其启动时安装的发布摘要——
+/// 求值输入只认钉定发布，项目编辑不影响已授权 Run（SPEC §4）。
+fn require_installed(tx: &Connection, city_id: &str, story_id: &str) -> Result<String, &'static str> {
+    let (status, digest): (String, String) = tx.query_row("SELECT status,content_digest FROM story_installations WHERE city_id=?1 AND story_id=?2", [city_id,story_id],
+        |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(|_| "creator_store_unavailable")?.ok_or("story_not_installed")?;
     if status != "installed" { return Err("story_not_installed"); }
-    Ok(())
+    Ok(digest)
+}
+
+/// Run 的钉定发布摘要：NULL（钉定机制前的旧行）→ fail-closed，不猜测。
+pub(crate) fn pinned_run_digest(db: &Connection, player_id: &str, city_id: &str, story_id: &str,
+    story_run_id: &str) -> Result<String, &'static str> {
+    db.query_row("SELECT content_digest FROM story_runs WHERE story_run_id=?1 AND player_id=?2 AND city_id=?3 AND story_id=?4 AND status IN ('active','paused')",
+        params![story_run_id,player_id,city_id,story_id], |row| row.get::<_, Option<String>>(0))
+        .optional().map_err(|_| "creator_store_unavailable")?
+        .ok_or("story_run_not_found")?
+        .ok_or("story_run_not_pinned")
+}
+
+/// 安装的不可变发布内容（图）：安装行未携带内容（钉定机制前的旧行）→
+/// 诚实报 story_release_unavailable，不退回可编辑项目（评审修复 2）。
+pub(crate) fn release_graph(db: &Connection, city_id: &str, story_id: &str) -> Result<Value, &'static str> {
+    let row: Option<(String, Option<String>)> = db.query_row(
+        "SELECT content_digest,graph_json FROM story_installations WHERE city_id=?1 AND story_id=?2 AND status='installed'",
+        [city_id,story_id], |row| Ok((row.get(0)?, row.get(1)?)))
+        .optional().map_err(|_| "creator_store_unavailable")?;
+    let Some((digest, Some(graph_json))) = row else { return Err("story_release_unavailable"); };
+    let graph: Value = serde_json::from_str(&graph_json).map_err(|_| "creator_store_corrupt")?;
+    Ok(json!({"contentDigest":digest,"graph":graph}))
 }
 
 fn latest_run_id(tx: &Connection, player_id: &str, city_id: &str, story_id: &str, include_stopped: bool) -> Result<Option<String>, &'static str> {
@@ -396,7 +445,7 @@ pub(crate) fn run_start(home: &Path, player_id: &str, payload: &Value) -> Result
     let mut db = database(home)?;
     migrate(&db)?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
-    require_installed(&tx, city_id, story_id)?;
+    let release_digest = require_installed(&tx, city_id, story_id)?;
     let restored = latest_run_id(&tx, player_id, city_id, story_id, false)?;
     let (story_run_id, resumed_from, was_restored) = match restored {
         Some(story_run_id) => {
@@ -409,15 +458,16 @@ pub(crate) fn run_start(home: &Path, player_id: &str, payload: &Value) -> Result
         None => {
             let resumed_from = latest_run_id(&tx, player_id, city_id, story_id, true)?;
             let story_run_id = new_id("story-run-")?;
-            tx.execute("INSERT INTO story_runs(story_run_id,player_id,city_id,story_id,status,last_viewed_at_ms,resumed_from,created_at_ms,updated_at_ms)
-                VALUES (?1,?2,?3,?4,'active',?5,?6,?5,?5)", params![story_run_id,player_id,city_id,story_id,now,resumed_from])
+            tx.execute("INSERT INTO story_runs(story_run_id,player_id,city_id,story_id,status,last_viewed_at_ms,resumed_from,content_digest,created_at_ms,updated_at_ms)
+                VALUES (?1,?2,?3,?4,'active',?5,?6,?7,?5,?5)", params![story_run_id,player_id,city_id,story_id,now,resumed_from,release_digest])
                 .map_err(|_| "creator_store_unavailable")?;
             (story_run_id, resumed_from, false)
         }
     };
     tx.commit().map_err(|_| "creator_store_unavailable")?;
     Ok(json!({"storyRunId":story_run_id,"playerId":player_id,"cityId":city_id,"storyId":story_id,
-        "status":"active","restored":was_restored,"resumedFrom":resumed_from,"lastViewedAtMs":now}))
+        "status":"active","restored":was_restored,"resumedFrom":resumed_from,"lastViewedAtMs":now,
+        "contentDigest":release_digest}))
 }
 
 pub(crate) fn run_stop(home: &Path, payload: &Value) -> Result<Value, &'static str> {
@@ -450,13 +500,16 @@ pub(crate) fn run_reset(home: &Path, player_id: &str, payload: &Value) -> Result
         tx.execute("UPDATE story_runs SET status='stopped',updated_at_ms=?2 WHERE story_run_id=?1 AND status IN ('active','paused')",
             params![previous_id,now]).map_err(|_| "creator_store_unavailable")?;
     }
+    // reset 同样钉定当前安装的发布摘要（新周目从当前发布起跑）。
+    let release_digest = require_installed(&tx, city_id, story_id)?;
     let story_run_id = new_id("story-run-")?;
-    tx.execute("INSERT INTO story_runs(story_run_id,player_id,city_id,story_id,status,last_viewed_at_ms,resumed_from,created_at_ms,updated_at_ms)
-        VALUES (?1,?2,?3,?4,'active',?5,?6,?5,?5)", params![story_run_id,player_id,city_id,story_id,now,previous])
+    tx.execute("INSERT INTO story_runs(story_run_id,player_id,city_id,story_id,status,last_viewed_at_ms,resumed_from,content_digest,created_at_ms,updated_at_ms)
+        VALUES (?1,?2,?3,?4,'active',?5,?6,?7,?5,?5)", params![story_run_id,player_id,city_id,story_id,now,previous,release_digest])
         .map_err(|_| "creator_store_unavailable")?;
     tx.commit().map_err(|_| "creator_store_unavailable")?;
     Ok(json!({"storyRunId":story_run_id,"playerId":player_id,"cityId":city_id,"storyId":story_id,
-        "status":"active","restored":false,"resumedFrom":previous,"lastViewedAtMs":now}))
+        "status":"active","restored":false,"resumedFrom":previous,"lastViewedAtMs":now,
+        "contentDigest":release_digest}))
 }
 
 /// 租约审计事件的持有方快照（写审计行用，避免超参函数）。
@@ -1112,6 +1165,45 @@ mod tests {
             .query_map([], |row| row.get(1)).unwrap().collect::<Result<_,_>>().unwrap();
         for column in ["holder_scope_json", "holder_intent_id", "trace_id", "acquired_at_ms", "expires_at_ms", "status"] {
             assert!(lease_columns.contains(&column.to_string()), "leases must pin {column}");
+        }
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn release_pinning_is_fail_closed_for_legacy_rows() {
+        // 钉定机制前的旧行（安装无内容列 / Run 无摘要列）→ 诚实拒绝，不退回可编辑项目。
+        let home = std::env::temp_dir().join(format!("story-pin-legacy-{}-{}",
+            std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&home).unwrap();
+        let city = crate::creator_cities::create_city(&home, "local", "pin-city", "Pin City", 42,
+            &json!({"schemaVersion":1,"id":"desert","version":1,"biome":"arid",
+            "geography":{"generator":"arid-dunes-v1","parameters":{"dunes":{"duneScale":190,"duneAmplitude":11,"orientationDeg":18}}},
+            "visuals":{"themeId":"desert"}})).unwrap();
+        project_create(&home, &json!({"storyId":"story.detective","title":"侦探线","schemaVersion":1,"storyVersion":"1.0.0",
+            "graph":{"start":"start","nodes":[]},"canon":{"characters":[]}})).unwrap();
+        let checked = install_preview(&home, &json!({"storyId":"story.detective","targetCityId":city["cityId"],
+            "expectedCityRevision":city["revision"],"operationId":"pin-preview"})).unwrap();
+        install_commit(&home, &json!({"previewId":checked["previewId"],"operationId":"pin-commit"})).unwrap();
+        let run = run_start(&home, "local-profile-v1", &json!({"cityId":city["cityId"],"storyId":"story.detective"})).unwrap();
+        let digest = run["contentDigest"].as_str().unwrap().to_string();
+        // 新安装携带不可变发布内容；新 Run 钉定摘要。
+        {
+            let db = database(&home).unwrap();
+            let release = release_graph(&db, city["cityId"].as_str().unwrap(), "story.detective").unwrap();
+            assert_eq!(release["contentDigest"], json!(digest));
+            let pinned = pinned_run_digest(&db, "local-profile-v1", city["cityId"].as_str().unwrap(),
+                "story.detective", run["storyRunId"].as_str().unwrap()).unwrap();
+            assert_eq!(pinned, digest);
+            // 白盒退行：安装内容缺失 / Run 未钉定 → fail-closed 码。
+            db.execute("UPDATE story_installations SET graph_json=NULL WHERE city_id=?1", [city["cityId"].as_str().unwrap()]).unwrap();
+            db.execute("UPDATE story_runs SET content_digest=NULL WHERE story_run_id=?1",
+                [run["storyRunId"].as_str().unwrap()]).unwrap();
+        }
+        {
+            let db = database(&home).unwrap();
+            assert_eq!(release_graph(&db, city["cityId"].as_str().unwrap(), "story.detective").unwrap_err(), "story_release_unavailable");
+            assert_eq!(pinned_run_digest(&db, "local-profile-v1", city["cityId"].as_str().unwrap(),
+                "story.detective", run["storyRunId"].as_str().unwrap()).unwrap_err(), "story_run_not_pinned");
         }
         std::fs::remove_dir_all(home).ok();
     }

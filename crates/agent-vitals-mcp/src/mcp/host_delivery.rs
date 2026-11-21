@@ -292,6 +292,30 @@ pub fn confirm_turn(data_home: &Path, payload: &Value) -> Result<Value, ToolErro
     let payload: Value = serde_json::from_str(&payload_json).unwrap_or(Value::Null);
     let turn_run = payload.get("storyRunId").and_then(Value::as_str).unwrap_or_default();
     if turn_run != reply_run { return Err(ToolError::new("invalid_argument", "Reply storyRunId does not match the turn's run.")); }
+    // N3 修订（评审）：确认前验证回复确实落库——reply.eventId 必须是该 Run
+    // 作用域内已提交的事实（story_events 行），且不得是触发事件本身。仅匹配
+    // Run ID 的确认允许凭空确认一个未提交的"回复"。
+    let facts_present: i64 = tx.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='story_events'",
+        [], |row| row.get(0)).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    if facts_present == 0 {
+        return Err(ToolError::new("storage_unavailable", "Story facts store unavailable; the reply cannot be verified against committed facts."));
+    }
+    let turn_player = payload.get("playerId").and_then(Value::as_str).unwrap_or_default();
+    let turn_city = payload.get("cityId").and_then(Value::as_str).unwrap_or_default();
+    let turn_story = payload.get("storyId").and_then(Value::as_str).unwrap_or_default();
+    let trigger_event = payload.get("eventId").and_then(Value::as_str).unwrap_or_default();
+    if !reply_event.is_empty() && reply_event == trigger_event {
+        return Err(ToolError::new("invalid_argument", "Reply eventId must be a new committed fact, not the turn's trigger event."));
+    }
+    let committed: i64 = tx.query_row(
+        "SELECT count(*) FROM story_events WHERE event_id=?1 AND story_run_id=?2 AND player_id=?3 AND city_id=?4 AND story_id=?5 AND status='committed'",
+        params![reply_event,turn_run,turn_player,turn_city,turn_story],
+        |row| row.get(0)).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    if committed == 0 {
+        return Err(ToolError::new("invalid_argument",
+            "Reply eventId is not a committed fact of this run; commit the reply (creator_actor_propose) before confirming."));
+    }
     tx.execute("UPDATE host_deliveries SET status='confirmed' WHERE delivery_id=?1", params![delivery_id])
         .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
@@ -431,18 +455,36 @@ pub mod tests {
         assert_eq!(status, "in_flight");
     }
 
+    /// 种一条该 Run 作用域内已提交的事实（确认落库校验的查询对象）。
+    fn seed_committed_event(home: &Path, event_id: &str, player: &str, city: &str, story: &str, run: &str) {
+        let db = open_db(home).unwrap();
+        db.execute_batch("CREATE TABLE IF NOT EXISTS story_events (event_id TEXT NOT NULL, occurrence_id TEXT NOT NULL, player_id TEXT NOT NULL, city_id TEXT NOT NULL, game_id TEXT NOT NULL, story_id TEXT NOT NULL, story_run_id TEXT NOT NULL, rule_id TEXT NOT NULL, status TEXT NOT NULL, due_at_utc_ms INTEGER NOT NULL, last_processed_tick INTEGER NOT NULL, idempotency_key TEXT NOT NULL, story_revision TEXT NOT NULL, clock_revision TEXT NOT NULL, intent_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL, PRIMARY KEY(player_id,city_id,story_id,story_run_id,event_id));").unwrap();
+        db.execute("INSERT INTO story_events(event_id,occurrence_id,player_id,city_id,game_id,story_id,story_run_id,rule_id,status,due_at_utc_ms,last_processed_tick,idempotency_key,story_revision,clock_revision,intent_json,created_at_ms)
+            VALUES(?1,'occ',?2,?3,'game-1',?4,?5,'rule','committed',0,0,'idem','0','0','{}',1)",
+            params![event_id,player,city,story,run]).unwrap();
+    }
+
     #[test]
     fn confirm_requires_reply_bound_to_same_run() {
         let home = temp_home("cf");
         bind_actor(&home, "sess-a", "actor-a", "story.detective", "resident:linxia");
         post(&json!({"deliveryDb":home.to_string_lossy(),"principalKind":"actor","principalId":"actor-a",
-            "kind":"actor.turn","payload":{"storyRunId":"run-1"},"dedupeKey":"evt-1"})).unwrap();
+            "kind":"actor.turn","payload":{"storyRunId":"run-1","playerId":"player-1","cityId":"city-1",
+            "storyId":"story.detective","eventId":"evt-trigger"},"dedupeKey":"evt-1"})).unwrap();
         claim(&home, "sess-a");
         // Run 不匹配的确认被拒（HB-07：回复必须绑定同 Run）。
         assert!(confirm_turn(&home, &json!({"sessionIdentifier":"sess-a","deliveryId":claim_id(&home,"evt-1"),
-            "reply":{"eventId":"reply-1","storyRunId":"run-OTHER"}})).is_err());
+            "reply":{"eventId":"evt-reply-1","storyRunId":"run-OTHER"}})).is_err());
+        // N3 修订（评审）：凭空确认被拒——回复事件未落库。
+        assert!(confirm_turn(&home, &json!({"sessionIdentifier":"sess-a","deliveryId":claim_id(&home,"evt-1"),
+            "reply":{"eventId":"evt-reply-1","storyRunId":"run-1"}})).is_err());
+        // 触发事件不能冒充回复。
+        assert!(confirm_turn(&home, &json!({"sessionIdentifier":"sess-a","deliveryId":claim_id(&home,"evt-1"),
+            "reply":{"eventId":"evt-trigger","storyRunId":"run-1"}})).is_err());
+        // 已提交的回复事实 → confirmed。
+        seed_committed_event(&home, "evt-reply-1", "player-1", "city-1", "story.detective", "run-1");
         let confirmed = confirm_turn(&home, &json!({"sessionIdentifier":"sess-a","deliveryId":claim_id(&home,"evt-1"),
-            "reply":{"eventId":"reply-1","storyRunId":"run-1"}})).unwrap();
+            "reply":{"eventId":"evt-reply-1","storyRunId":"run-1"}})).unwrap();
         assert_eq!(confirmed["status"], "confirmed");
     }
 

@@ -184,11 +184,15 @@ pub(crate) fn turn_context(home: &Path, payload: &Value) -> Result<Value, &'stat
     let allowed = allowed_kinds_of(&row)?;
     let budget = json!({"used":used,"max":max,"windowResetsAtMs":window_started + BUDGET_WINDOW_MS as i64});
     // N3：求值器菜单（前置已求值，当前快照下可走边，[{edgeId,to}]）——结构菜单
-    // 保留（可达性 + 因果依赖状态），求值器不可用时 evaluatedEdges 如实为 null
-    // （不猜测前置结果）。sessionPrompt 携带已求值菜单（agent 据此选 edgeId）。
+    // 保留（可达性 + 因果依赖状态）。快照绑定 Run 钉定发布摘要（评审修复 2）；
+    // 未钉定/求值器不可用时 evaluatedEdges 如实为 null（不猜测前置结果）。
     let evaluated = if graph.is_object() {
-        crate::narrative_engine::narrative_snapshot_scoped(home, &run_player, &run_city, &row.story_id, scope_run)
-            .ok()
+        let digest = {
+            let db = database(home)?;
+            crate::story_registry::pinned_run_digest(&db, &run_player, &run_city, &row.story_id, scope_run).ok()
+        };
+        digest.and_then(|digest| crate::narrative_engine::narrative_snapshot_scoped(
+                home, &run_player, &run_city, &row.story_id, scope_run, &digest).ok())
             .and_then(|snapshot| crate::narrative_engine::eligible_edges(&graph, &snapshot).ok())
             .unwrap_or(Value::Null)
     } else { Value::Null };
