@@ -406,7 +406,7 @@ mod tests {
     }
 
     fn register_actor(home: &Path, session: &str, operation: &str) -> Value {
-        super::register(&home, &json!({"storyId":"story.detective","characterId":"resident:linxia",
+        super::register(home, &json!({"storyId":"story.detective","characterId":"resident:linxia",
             "sessionIdentifier":session,"allowedKinds":["speak","invite","move"],
             "maxIntentsPerWindow":3,"sessionLabel":"小夏驱动会话","operationId":operation})).unwrap()
     }
@@ -498,7 +498,7 @@ mod tests {
             "operationId":"actor-city-preview"})).unwrap();
         crate::story_registry::install_commit(&home, &json!({"previewId":checked["previewId"],
             "operationId":"actor-city-commit"})).unwrap();
-        let run = crate::story_registry::run_start(&home, "local-profile-v1", &json!({"cityId":city["cityId"],
+        crate::story_registry::run_start(&home, "local-profile-v1", &json!({"cityId":city["cityId"],
             "storyId":"story.detective"})).unwrap();
         let actor = register_actor(&home, "codex-thread-bind", "op-bind");
         let actor_id = actor["actorId"].as_str().unwrap();
