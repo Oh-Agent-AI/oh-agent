@@ -2012,19 +2012,25 @@ static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.operation.status", &["projectId", "operationId"], &[], run_operation_status),
     creator_row!("creator.project.commit", &["projectId", "previewId", "expectedRevision", "operationId"], &[], run_commit),
     creator_row!("creator.project.remix", &["sourceReleaseId", "operationId"], &[], run_project_remix),
-    creator_row!("creator.session.open", &["agentId"], &["projectId", "cityId"], run_shared_session),
+    creator_row!("creator.session.open", &["agentId"], &["projectId", "cityId", "executor", "transport", "capabilities"], run_shared_session),
     creator_row!("creator.session.status", &["sessionId"], &[], run_shared_session),
     creator_row!("creator.session.close", &["sessionId"], &[], run_shared_session),
+    creator_row!("creator.connection.heartbeat", &["agentId", "sessionId"], &["executor", "transport", "state", "capabilities", "lastStableError"], run_shared_session),
+    creator_row!("creator.connection.disconnect", &["agentId", "sessionId"], &[], run_shared_session),
+    creator_row!("creator.connection.status", &[], &["agentId", "sessionId"], run_shared_session),
+    creator_row!("creator.capabilities.status", &[], &[], run_shared_session),
+    creator_row!("creator.events.subscribe", &["taskId"], &["afterEventId", "limit", "timeoutMs"], run_shared_session),
     creator_row!("creator.task.create", &["sessionId", "goal", "humanRequest", "artifact", "acceptanceCriteria", "operationId"], &[], run_shared_task),
     creator_row!("creator.task.plan.submit", &["taskId", "expectedPlanRevision", "expectedArtifactRevision", "steps", "operationId"], &[], run_shared_task),
     creator_row!("creator.task.plan.approve", &["taskId", "planRevision", "expectedArtifactRevision", "operationId"], &[], run_shared_task),
     creator_row!("creator.task.status", &["taskId"], &[], run_shared_task),
-    creator_row!("creator.task.execute", &["taskId", "expectedPlanRevision", "expectedArtifactRevision", "operationId"], &["timeoutMs"], run_shared_task),
+    creator_row!("creator.task.execute", &["taskId", "expectedPlanRevision", "expectedArtifactRevision", "operationId"], &["timeoutMs", "executor"], run_shared_task),
     creator_row!("creator.task.evidence.append", &["taskId", "planRevision", "expectedArtifactRevision", "criterionId", "kind", "trustLevel", "summary", "operationId"], &["stepId", "data", "proposedChangeSetId"], run_shared_task),
     creator_row!("creator.task.evidence.list", &["taskId"], &[], run_shared_task),
     creator_row!("creator.task.review.accept", &["taskId", "planRevision", "expectedArtifactRevision", "reviewerNote", "operationId"], &[], run_shared_task),
     creator_row!("creator.task.review.reject", &["taskId", "planRevision", "expectedArtifactRevision", "reason", "operationId"], &[], run_shared_task),
     creator_row!("creator.task.cancel", &["taskId", "operationId"], &[], run_shared_task),
+    creator_row!("creator.task.progress", &["taskId", "agentId", "planRevision", "kind", "code", "operationId"], &["stepId", "percent"], run_shared_task),
     creator_row!("creator.task.preview.verify", &["previewId"], &["projectId"], run_task_preview_verify),
     creator_row!("creator.project.candidate.accept", &["candidateId"], &[], run_candidate_accept),
     creator_row!("creator.project.candidate.create", &["projectId", "expectedRevision"], &[], run_candidate_create),
@@ -2059,7 +2065,10 @@ pub fn dispatch_as(home: &Path, owner: &str, instance: &str, method: &str, paylo
     // creator.task.preview.verify 是宿主本地检查（内存 preview 表），不是任务台账
     // 方法——必须走本 crate 的 handler，不能被 task_dispatch 劫持。
     if method.starts_with("creator.task.") && method != "creator.task.preview.verify" { return agent_vitals_mcp::mcp::creator_session::task_dispatch(home, method, payload).map_err(|error| error.code); }
-    if method.starts_with("creator.session.") { return agent_vitals_mcp::mcp::creator_session::session_dispatch(home, method, payload).map_err(|error| error.code); }
+    if method.starts_with("creator.session.") || method.starts_with("creator.connection.")
+        || method == "creator.capabilities.status" || method == "creator.events.subscribe" {
+        return agent_vitals_mcp::mcp::creator_session::session_dispatch(home, method, payload).map_err(|error| error.code);
+    }
     (row.handler)(home, owner, instance, payload)
 }
 
@@ -2972,7 +2981,7 @@ mod tests {
     #[test]
     fn desktop_task_api_shares_the_creator_session_ledger() {
         let home = home();
-        let session = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio", "creator.session.open", &json!({"agentId":"studio-local","projectId":"project-shared"})).unwrap();
+        let session = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio", "creator.session.open", &json!({"agentId":"studio-local","projectId":"project-shared","executor":"studio","transport":"studio-webview","capabilities":["studio.webview"]})).unwrap();
         let session_id = session["sessionId"].as_str().unwrap();
         let db = database(&home).unwrap();
         db.execute("INSERT INTO creator_projects(project_id,revision,document_json,created_at_ms,updated_at_ms) VALUES('project-shared',2,'{}',1,1)", []).unwrap();
@@ -2988,6 +2997,17 @@ mod tests {
         assert_eq!(cancelled["phase"], "cancelled");
         let status = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio", "creator.session.status", &json!({"sessionId":session_id})).unwrap();
         assert!(status["jobs"].as_array().unwrap().iter().any(|job| job["kind"] == "studio-task" && job["status"] == "cancelled"));
+        let events = dispatch_as(&home,LOCAL_CREATOR_OWNER,"studio","creator.events.subscribe",&json!({"taskId":task_id,"afterEventId":0,"limit":10,"timeoutMs":0})).unwrap();
+        assert_eq!(events["events"].as_array().unwrap().len(),4);
+        assert_eq!(events["events"][3]["kind"],"cancel");
+        assert_eq!(events["waitTimedOut"],false);
+        let capabilities = dispatch_as(&home,LOCAL_CREATOR_OWNER,"studio","creator.capabilities.status",&json!({})).unwrap();
+        assert_eq!(capabilities["studioOnline"],true);
+        dispatch_as(&home,LOCAL_CREATOR_OWNER,"studio","creator.connection.heartbeat",&json!({"agentId":"studio-local","sessionId":session_id,"state":"busy","lastStableError":null})).unwrap();
+        let connections = dispatch_as(&home,LOCAL_CREATOR_OWNER,"studio","creator.connection.status",&json!({"agentId":"studio-local"})).unwrap();
+        assert_eq!(connections["connections"][0]["state"],"busy");
+        dispatch_as(&home,LOCAL_CREATOR_OWNER,"studio","creator.connection.disconnect",&json!({"agentId":"studio-local","sessionId":session_id})).unwrap();
+        assert_eq!(dispatch_as(&home,LOCAL_CREATOR_OWNER,"studio","creator.events.subscribe",&json!({"taskId":task_id,"limit":0})).unwrap_err(),"invalid_argument");
         let _ = std::fs::remove_dir_all(home);
     }
 

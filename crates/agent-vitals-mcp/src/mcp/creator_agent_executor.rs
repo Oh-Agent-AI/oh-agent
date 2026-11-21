@@ -4,6 +4,7 @@ use std::io::{BufRead, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::{ToolError};
@@ -27,8 +28,26 @@ pub struct AgentExecutionSuccess {
     pub preview: Value,
 }
 
+#[derive(Clone, Debug)]
+pub struct AgentExecutionProgress {
+    pub kind: String,
+    pub summary: String,
+    pub data: Value,
+}
+
+pub type AgentProgressCallback = Arc<dyn Fn(AgentExecutionProgress) + Send + Sync>;
+
+fn progress(callback: &AgentProgressCallback, kind: &str, summary: &str, data: Value) {
+    callback(AgentExecutionProgress { kind: kind.into(), summary: summary.into(), data });
+}
+
+fn noop_progress_callback() -> AgentProgressCallback { Arc::new(|_| {}) }
+
 pub trait CreatorAgentExecutor: Send + Sync {
     fn execute(&self, request: AgentExecutionRequest, cancelled: &AtomicBool) -> Result<AgentExecutionSuccess, ToolError>;
+    fn execute_with_progress(&self, request: AgentExecutionRequest, cancelled: &AtomicBool, _callback: &AgentProgressCallback) -> Result<AgentExecutionSuccess, ToolError> {
+        self.execute(request,cancelled)
+    }
 }
 
 pub fn execution_prompt(request: &AgentExecutionRequest) -> String {
@@ -68,7 +87,7 @@ impl Default for CodexCliAgentExecutor {
 impl CodexCliAgentExecutor {
     pub fn new() -> Self { Self { program: OsString::from("codex") } }
 
-    fn run_codex(&self, request: &AgentExecutionRequest, cancelled: &AtomicBool) -> Result<Value, ToolError> {
+    fn run_codex_with_progress(&self, request: &AgentExecutionRequest, cancelled: &AtomicBool, callback: &AgentProgressCallback) -> Result<Value, ToolError> {
         let mut command = Command::new(&self.program);
         command.arg("exec").arg("--sandbox").arg("read-only").arg("--ephemeral").arg("--json")
             .args(mcp_config_args(&request.data_home))
@@ -80,9 +99,11 @@ impl CodexCliAgentExecutor {
         }
         command.env("AGENT_VITALS_HOME", &request.data_home);
         let mut child = command.spawn().map_err(|_| ToolError::new("codex_unavailable", "Codex CLI is unavailable."))?;
+        progress(callback,"plan","Codex 已接收执行请求",json!({"transport":"codex-jsonl"}));
         let stdout = child.stdout.take().ok_or_else(|| ToolError::new("codex_output_invalid", "Codex stdout is unavailable."))?;
         let stderr = child.stderr.take().ok_or_else(|| ToolError::new("codex_output_invalid", "Codex stderr is unavailable."))?;
-        let stdout_thread = std::thread::spawn(move || read_bounded(stdout));
+        let output_callback = callback.clone();
+        let stdout_thread = std::thread::spawn(move || read_codex_output(std::io::BufReader::new(stdout),&output_callback));
         let stderr_thread = std::thread::spawn(move || read_bounded(stderr));
         let started = Instant::now();
         let status = loop {
@@ -120,7 +141,11 @@ impl CodexCliAgentExecutor {
 
 impl CreatorAgentExecutor for CodexCliAgentExecutor {
     fn execute(&self, request: AgentExecutionRequest, cancelled: &AtomicBool) -> Result<AgentExecutionSuccess, ToolError> {
-        let proposal = self.run_codex(&request, cancelled)?;
+        self.execute_with_progress(request,cancelled,&noop_progress_callback())
+    }
+    fn execute_with_progress(&self, request: AgentExecutionRequest, cancelled: &AtomicBool, callback: &AgentProgressCallback) -> Result<AgentExecutionSuccess, ToolError> {
+        let proposal = self.run_codex_with_progress(&request, cancelled, callback)?;
+        progress(callback,"progress","Codex 提案已完成，等待 Host Preview",json!({"stage":"host-preview"}));
         finish_with_host_preview(request, proposal)
     }
 }
@@ -181,7 +206,7 @@ impl AcpAgentExecutor {
     /// 期间应答 `session/request_permission`（一律拒绝/取消——analyze-only 策略），
     /// 拒绝 fs/terminal/elicitation 客户端方法（Agent 应回退到 MCP 只读工具），
     /// 收集 `agent_message_chunk` 文本作为最终提案。
-    fn run_acp(&self, request: &AgentExecutionRequest, cancelled: &AtomicBool) -> Result<Value, ToolError> {
+    fn run_acp_with_progress(&self, request: &AgentExecutionRequest, cancelled: &AtomicBool, callback: &AgentProgressCallback) -> Result<Value, ToolError> {
         let mut command = Command::new(&self.program);
         command.args(&self.args)
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -213,7 +238,7 @@ impl AcpAgentExecutor {
             }
         });
         let deadline = Instant::now() + request.timeout;
-        let result = self.drive(&mut stdin, &receiver, request, cancelled, deadline);
+        let result = self.drive(&mut stdin, &receiver, request, cancelled, deadline, callback);
         let _ = child.kill();
         let _ = child.wait();
         let _ = reader.join();
@@ -251,13 +276,14 @@ impl AcpAgentExecutor {
     }
 
     fn drive(&self, stdin: &mut impl std::io::Write, receiver: &std::sync::mpsc::Receiver<String>,
-        request: &AgentExecutionRequest, cancelled: &AtomicBool, deadline: Instant) -> Result<Value, ToolError> {
+        request: &AgentExecutionRequest, cancelled: &AtomicBool, deadline: Instant, callback: &AgentProgressCallback) -> Result<Value, ToolError> {
         let mut next_id = 0u64;
         let initialized = Self::request(stdin, receiver, &mut next_id, "initialize", json!({
             "protocolVersion": ACP_PROTOCOL_VERSION,
             "clientCapabilities": {"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false},
             "clientInfo": {"name": "oh-agent-creator", "title": "Oh Agent Creator", "version": "1.0.0"},
         }), cancelled, deadline)?;
+        progress(callback,"plan","ACP initialize 已完成",json!({"protocolVersion":ACP_PROTOCOL_VERSION}));
         let auth_methods = initialized["authMethods"].as_array().cloned().unwrap_or_default();
         if let Some(method) = auth_methods.first().and_then(|entry| entry["id"].as_str().map(str::to_owned)) {
             Self::request(stdin, receiver, &mut next_id, "authenticate", json!({"methodId": method}), cancelled, deadline)
@@ -271,11 +297,14 @@ impl AcpAgentExecutor {
                 "env": [{"name": "AGENT_VITALS_HOME", "value": request.data_home.to_string_lossy()}]}],
         }), cancelled, deadline)?;
         let session_id = session["sessionId"].as_str().ok_or_else(|| ToolError::new("acp_failed", "ACP agent returned no sessionId."))?.to_owned();
+        progress(callback,"plan","ACP 会话已建立",json!({"transport":"acp-stdio"}));
         next_id += 1;
         let prompt_id = next_id;
         Self::send(stdin, &json!({"jsonrpc":"2.0","id":prompt_id,"method":"session/prompt",
             "params":{"sessionId":session_id,"prompt":[{"type":"text","text":execution_prompt(request)}]}}))?;
+        progress(callback,"progress","ACP prompt 已发送，等待流式更新",json!({"stage":"prompt-sent"}));
         let mut message_text = String::new();
+        let mut update_counts = std::collections::HashMap::<String,u64>::new();
         loop {
             if cancelled.load(Ordering::Relaxed) {
                 let _ = Self::send(stdin, &json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":session_id}}));
@@ -290,8 +319,25 @@ impl AcpAgentExecutor {
             let message: Value = match serde_json::from_str(&line) { Ok(value) => value, Err(_) => continue };
             if message["method"] == json!("session/update") {
                 let update = &message["params"]["update"];
+                let update_kind = update["sessionUpdate"].as_str().unwrap_or("unknown").to_owned();
+                let count = update_counts.entry(update_kind.clone()).or_default();
+                *count += 1;
+                if *count == 1 || *count % 10 == 0 {
+                    match update_kind.as_str() {
+                        "agent_message_chunk" => progress(callback,"executor-output","ACP 已返回 Agent 消息片段",json!({"channel":"agent-message","chunkCount":*count})),
+                        "agent_thought_chunk" => progress(callback,"progress","ACP 已返回推理进度片段",json!({"channel":"agent-thought","chunkCount":*count})),
+                        "plan" => progress(callback,"plan","ACP 已更新执行计划",json!({"update":"plan","updateCount":*count})),
+                        "tool_call" | "tool_call_update" => progress(callback,"executor-output","ACP 工具调用状态已更新",json!({"update":"tool-call","updateCount":*count})),
+                        _ => {}
+                    }
+                }
                 if update["sessionUpdate"] == json!("agent_message_chunk") {
-                    if let Some(text) = update["content"]["text"].as_str() { message_text.push_str(text); }
+                    if let Some(text) = update["content"]["text"].as_str() {
+                        for character in text.chars() {
+                            if message_text.len() + character.len_utf8() > MAX_OUTPUT_BYTES { break; }
+                            message_text.push(character);
+                        }
+                    }
                 }
             } else if message["method"] == json!("session/request_permission") {
                 let request_id = message["id"].as_u64().unwrap_or(0);
@@ -318,7 +364,11 @@ impl AcpAgentExecutor {
 
 impl CreatorAgentExecutor for AcpAgentExecutor {
     fn execute(&self, request: AgentExecutionRequest, cancelled: &AtomicBool) -> Result<AgentExecutionSuccess, ToolError> {
-        let proposal = self.run_acp(&request, cancelled)?;
+        self.execute_with_progress(request,cancelled,&noop_progress_callback())
+    }
+    fn execute_with_progress(&self, request: AgentExecutionRequest, cancelled: &AtomicBool, callback: &AgentProgressCallback) -> Result<AgentExecutionSuccess, ToolError> {
+        let proposal = self.run_acp_with_progress(&request, cancelled, callback)?;
+        progress(callback,"progress","ACP 提案已完成，等待 Host Preview",json!({"stage":"host-preview"}));
         finish_with_host_preview(request, proposal)
     }
 }
@@ -339,6 +389,44 @@ fn read_bounded<R: Read>(mut reader: R) -> Vec<u8> {
         }
     }
     bytes
+}
+
+fn read_codex_output<R: BufRead>(mut reader: R, callback: &AgentProgressCallback) -> Vec<u8> {
+    let mut output = Vec::new();
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match reader.read_until(b'\n',&mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                if output.len() < MAX_OUTPUT_BYTES {
+                    let remaining = MAX_OUTPUT_BYTES-output.len();
+                    output.extend_from_slice(&line[..line.len().min(remaining)]);
+                }
+                if line.len() > 64 * 1024 { continue; }
+                let Ok(value) = serde_json::from_slice::<Value>(&line) else { continue };
+                let event_type = value["type"].as_str().unwrap_or_default();
+                let item_type = value["item"]["type"].as_str().unwrap_or_default();
+                match (event_type,item_type) {
+                    ("turn.started",_) => progress(callback,"progress","Codex turn 已开始",json!({"eventType":"turn-started"})),
+                    ("item.started","reasoning") => progress(callback,"progress","Codex 正在分析任务",json!({"itemType":"reasoning","state":"started"})),
+                    ("item.completed","reasoning") => progress(callback,"progress","Codex 分析阶段已更新",json!({"itemType":"reasoning","state":"completed"})),
+                    ("item.started","mcp_tool_call") | ("item.completed","mcp_tool_call") | ("item.started","command_execution") | ("item.completed","command_execution") => {
+                        let state = if event_type == "item.started" { "started" } else { "completed" };
+                        let kind = if item_type == "mcp_tool_call" { "mcp-tool-call" } else { "command-execution" };
+                        progress(callback,"executor-output","Codex 工具调用状态已更新",json!({"itemType":kind,"state":state}));
+                    }
+                    ("agent_message",_) | ("item.completed","agent_message") | ("response.completed",_) => {
+                        progress(callback,"executor-output","Codex 已返回最终 Agent 消息",json!({"channel":"agent-message"}));
+                    }
+                    ("turn.completed",_) => progress(callback,"progress","Codex turn 已结束",json!({"eventType":"turn-completed"})),
+                    _ => {}
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    output
 }
 
 fn extract_agent_text(bytes: &[u8]) -> Result<String, ToolError> {
@@ -422,7 +510,7 @@ done
         std::fs::create_dir_all(&home).unwrap();
         let stub = write_stub_agent(&home, r#"{"summary":"Stub proposal","operations":[{"op":"skin.select","skinId":"miami-vice"}]}"#);
         let executor = AcpAgentExecutor { program: stub.into_os_string(), args: Vec::new() };
-        let proposal = executor.run_acp(&acp_request(&home), &AtomicBool::new(false)).unwrap();
+        let proposal = executor.run_acp_with_progress(&acp_request(&home), &AtomicBool::new(false), &noop_progress_callback()).unwrap();
         assert_eq!(proposal["summary"], "Stub proposal");
         assert_eq!(proposal["operations"].as_array().unwrap().len(), 1);
     }
@@ -434,8 +522,48 @@ done
         std::fs::create_dir_all(&home).unwrap();
         let stub = write_stub_agent(&home, "plain prose without a proposal");
         let executor = AcpAgentExecutor { program: stub.into_os_string(), args: Vec::new() };
-        let error = executor.run_acp(&acp_request(&home), &AtomicBool::new(false)).unwrap_err();
+        let error = executor.run_acp_with_progress(&acp_request(&home), &AtomicBool::new(false), &noop_progress_callback()).unwrap_err();
         assert_eq!(error.code, "acp_output_invalid");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn acp_stdio_streams_bounded_typed_progress_without_agent_text() {
+        let home = std::env::temp_dir().join(format!("acp-progress-{}-{}",std::process::id(),line!()));
+        std::fs::create_dir_all(&home).unwrap();
+        let stub = write_stub_agent(&home,r#"{"summary":"private proposal /tmp/secret","operations":[{"op":"skin.select","skinId":"miami-vice"}]}"#);
+        let executor = AcpAgentExecutor { program:stub.into_os_string(),args:Vec::new() };
+        let updates = Arc::new(Mutex::new(Vec::new()));
+        let captured = updates.clone();
+        let callback: AgentProgressCallback = Arc::new(move |update| captured.lock().unwrap().push(update));
+        let proposal = executor.run_acp_with_progress(&acp_request(&home),&AtomicBool::new(false),&callback).unwrap();
+        assert_eq!(proposal["summary"],"private proposal /tmp/secret");
+        let updates = updates.lock().unwrap();
+        assert!(updates.iter().any(|update| update.kind == "plan"));
+        assert!(updates.iter().any(|update| update.kind == "progress"));
+        assert!(updates.iter().any(|update| update.kind == "executor-output"));
+        let serialized = serde_json::to_string(&updates.iter().map(|update| json!({"kind":update.kind,"summary":update.summary,"data":update.data})).collect::<Vec<_>>()).unwrap();
+        assert!(!serialized.contains("private proposal"));
+        assert!(!serialized.contains("/tmp/secret"));
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn codex_jsonl_progress_is_typed_and_excludes_message_content() {
+        let updates = Arc::new(Mutex::new(Vec::new()));
+        let captured = updates.clone();
+        let callback: AgentProgressCallback = Arc::new(move |update| captured.lock().unwrap().push(update));
+        let input = concat!(
+            "{\"type\":\"turn.started\"}\n",
+            "{\"type\":\"item.completed\",\"item\":{\"type\":\"mcp_tool_call\",\"arguments\":\"/private/path\"}}\n",
+            "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"{\\\"summary\\\":\\\"private\\\",\\\"operations\\\":[]}\"}}\n"
+        );
+        let output = read_codex_output(std::io::BufReader::new(input.as_bytes()),&callback);
+        assert!(extract_agent_text(&output).unwrap().contains("private"));
+        let serialized = serde_json::to_string(&updates.lock().unwrap().iter().map(|update| json!({"kind":update.kind,"summary":update.summary,"data":update.data})).collect::<Vec<_>>()).unwrap();
+        assert!(!serialized.contains("private"));
+        assert!(!serialized.contains("/private/path"));
+        assert!(serialized.contains("mcp-tool-call"));
     }
 
     #[test]
@@ -479,6 +607,10 @@ done
             assert_eq!(request.artifact["expectedRevision"], 3);
             if cancelled.load(Ordering::Relaxed) { return Err(ToolError::new("codex_cancelled", "Cancelled by test.")); }
             self.response.lock().unwrap().take().unwrap()
+        }
+        fn execute_with_progress(&self, request: AgentExecutionRequest, cancelled: &AtomicBool, callback: &AgentProgressCallback) -> Result<AgentExecutionSuccess, ToolError> {
+            progress(callback,"progress","Fake executor 已报告进度",json!({"code":"other","percent":50}));
+            self.execute(request,cancelled)
         }
     }
 }

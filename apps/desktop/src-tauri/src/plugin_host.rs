@@ -1973,6 +1973,30 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
                 Err(code) => plugin_request_error(request.request_id, code, matches!(code, "creator_store_unavailable")),
             });
         }
+        let realtime_projection = method == "creator.session.status" || method == "creator.connection.status"
+            || matches!(method.as_str(),"creator.capabilities.status" | "creator.events.subscribe"
+                | "creator.task.status" | "creator.task.evidence.list" | "creator.task.execute");
+        if realtime_projection {
+            {
+                let host = state.0.lock().unwrap();
+                if let Some(reason) = studio_creator_dispatch_denial(host.current.as_ref(), &request.instance_id) {
+                    log_plugin_request_rejected("creator-studio", &request.instance_id, &method, &request.request_id, reason);
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            let result = crate::creator_projects::dispatch_as(&crate::overview::data_home(),crate::creator_projects::LOCAL_CREATOR_OWNER,
+                &request.instance_id,&method,&payload);
+            {
+                let host = state.0.lock().unwrap();
+                if studio_creator_dispatch_denial(host.current.as_ref(), &request.instance_id).is_some() {
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            return Ok(match result {
+                Ok(value) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(value), error: None },
+                Err(code) => plugin_request_error(request.request_id, code, matches!(code,"storage_unavailable")),
+            });
+        }
         // Serialize authorization and SQLite commit against plugin_open/close. A
         // switch cannot revoke the instance between this check and the write.
         // `ready` is intentionally not required: the library panel reads the

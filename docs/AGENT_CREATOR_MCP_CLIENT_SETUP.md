@@ -1,14 +1,14 @@
 # Creator MCP 多客户端接入指南
 
-日期：2026-11-16（全量同步到当前工具面：creator 域 50 个工具）
+日期：2026-11-21（同步实时连接/事件能力：creator 域 105 个工具）
 状态：接入文档；工具面、预算与错误码以代码为准
 关联文档：[Creator Agent 接入代码设计](AGENT_CREATOR_AGENT_INTEGRATION_CODE_DESIGN_2026_11_12.md)、[Studio Agent First 编辑器规格](STUDIO_AGENT_FIRST_EDITOR_SPEC_2026_11_15.md)、[自定义城市与 MCP 接口设计](CREATOR_STUDIO_CUSTOM_CITY_MCP_DESIGN_2026_11_14.md)、[Data MCP 规格](AGENT_VITALS_DATA_MCP_SPEC.md)
 
-结论先行：外部 MCP 客户端经本地 stdio（`agent-vitals data-mcp serve`）访问统一 Creator 工具面。creator 域共 **50 个工具**（creator_studio.rs 42 个 + creator_session.rs 8 个），其中 16 个 `creator_city_*` 实验工具默认隐藏、需 `--enable-city-tools`。只读与预览工具不需要任何开关；14 个写入工具需要 `--allow-local-writes`。Studio 路由类工具要求活动的官方 Creator Studio WebView，Studio 未打开约 15 秒后返回 `plugin_unavailable`；会话/作业/判别 8 个工具与两个静态契约工具（`creator_capabilities_list`、`creator_vehicle_list`）天然离线可用。creator 域错误响应自动附带 `next` 恢复建议（§4，与 Studio UI 同一来源）。
+结论先行：外部 MCP 客户端经本地 stdio（`agent-vitals data-mcp serve`）访问统一 Creator 工具面。creator 域共 **105 个工具**（creator_studio.rs 64 个 + creator_session.rs 27 个 + creator_code 系列 14 个），其中 16 个 `creator_city_*` 实验工具默认隐藏、需 `--enable-city-tools`。只读与预览工具不需要任何开关；14 个写入工具需要 `--allow-local-writes`。Studio 路由类工具要求活动的官方 Creator Studio WebView，Studio 未打开约 15 秒后返回 `plugin_unavailable`；会话/作业/连接/事件 27 个工具与两个静态契约工具（`creator_capabilities_list`、`creator_vehicle_list`）天然离线可用。creator 域错误响应自动附带 `next` 恢复建议（§4，与 Studio UI 同一来源）。实时协作是同一数据根下的本地连接注册、持久事件和 stdio 长轮询，不是网络服务，也不代表任意远程实时协作。
 
 ## 1. 前置条件
 
-1. **桌面应用已安装并运行。** Creator 请求由桌面应用的 PluginHost 路由到 Creator Studio WebView；纯 CLI 进程不承载 Studio。桌面包按仓库规约经 bundle 构建：`cd apps/desktop/src-tauri && cargo tauri build --bundles app`，然后打开 `target/release/bundle/macos/Oh Agent.app`。会话/作业/判别 8 个工具（§3.7、§3.8）不依赖 Studio。
+1. **桌面应用已安装并运行。** Creator 请求由桌面应用的 PluginHost 路由到 Creator Studio WebView；纯 CLI 进程不承载 Studio。桌面包按仓库规约经 bundle 构建：`cd apps/desktop/src-tauri && cargo tauri build --bundles app`，然后打开 `target/release/bundle/macos/Oh Agent.app`。会话/作业/连接/事件 27 个工具（§3.7、§3.8）不依赖 Studio。
 2. **官方 Creator Studio 插件已打开。** 这是全部 Studio 路由类 creator 工具的前置条件；Studio 关闭时调用等待约 15 秒后返回 `plugin_unavailable`（crates/agent-vitals-mcp/src/mcp/creator_studio.rs 的 `call_error` 映射）。
 3. **CLI 二进制可用。** `cargo build --release` 产出 `target/release/agent-vitals`（仓库根目录相对）。
 4. **同一数据根。** 数据根解析为 `AGENT_VITALS_HOME` → `SKILL_VITALS_HOME` → `~/.agent-vitals`（存在旧 `~/.skill-vitals` 时兼容沿用，见 crates/agent-vitals-runtime-core/src/core/home.rs）。CLI 与桌面应用按进程各自解析；若设置 `AGENT_VITALS_HOME`，两边进程都要一致设置，否则插件调用信箱（`state/plugin-calls`）对不上。
@@ -84,13 +84,39 @@ Agent 与宿主之间不再需要任何消息通道。push 与 pull 并存：`cr
 > creator 面：另起一个 stdio MCP `city-game-control`
 > （`apps/agent-city/mcp/city-game-mcp.mjs`，见 `docs/CITY_GAME_MCP.md`）。两者可以同时接。
 
+### 2.2 本地实时连接、进度事件与能力查询（2026-11-21）
+
+实时面复用 `state/creator/sessions.sqlite` 和现有 job/task 状态机，没有第二个任务权威，也没有网络监听端口。MCP 使用下划线工具名；官方 Studio 的对应本地方法分别是 `creator.connection.*`、`creator.capabilities.status`、`creator.events.subscribe` 和 `creator.task.progress`。
+
+| MCP 工具 | 语义 | 边界 |
+|---|---|---|
+| `creator_connection_heartbeat` | 以 `agentId + sessionId` 注册/刷新 executor、transport、state、capabilities 和最近稳定错误码 | 15 秒未心跳即在读取时投影为 offline；不同 Agent/会话使用不同主键 |
+| `creator_connection_disconnect` | 显式把一个连接标为 offline | 不取消、不完成、不修改任何 job/task |
+| `creator_connection_status` | 读取连接及 `lastSeenMs/expiresAtMs/ttlMs` | TTL 到期不依赖后台清扫才生效 |
+| `creator_capabilities_status` | 返回真实连接、`studioOnline` 和 preview/operation/execution 能力矩阵 | 不把 headless 结构预检冒充可提交 Preview |
+| `creator_events_subscribe` | 按 `taskId + afterEventId + limit + timeoutMs` 读取增量事件，最长等待 30 秒 | 返回 `nextAfterEventId/hasMore/waitTimedOut`；游标必须属于该 taskId |
+| `creator_task_progress` | pull claimant 写入 plan/progress/executor-output 投影 | 仅接受阶段码、已批准 stepId、0..100 percent 和 operationId；同 operationId 幂等 |
+
+**连接模型。** `creator_session_open` 会登记真实连接，可额外传 `executor`、`transport`、`capabilities`。push 执行器在启动时登记 busy、流式更新 lastSeen，结束后登记 offline；pull claim/progress/submit 更新对应 claimant。`state` 为 online/busy/degraded/offline；前三种心跳未过期状态都表示 Studio 在线。`lastStableError` 只保存稳定错误码，不保存 stderr 或自由文本。连接记录不是任务状态权威。`creator_task_cancel` 通过任务账本的 `cancel_requested` 跨进程通知 push 执行器；执行中的 Studio 也可直接取消，无需等待本轮执行超时。
+
+**事件模型。** 每条事件有数据库自增 `eventId`、任务内连续 `seq`、`kind`、`source`、`trustLevel`、有界摘要、类型化 data 和 `createdAtMs`。kind 覆盖 accepted/plan/progress/executor-output/preview/evidence/failure/cancel/review。Codex JSONL、ACP `session/update`、pull claim/progress/submit 和 Studio 人工操作写同一事件流；Preview 与证据仍由 Host 复核。信任级明确区分 `host-observed`、`agent-reported`、`creator-declared`，没有由 Agent 自封的 host-verified。
+
+- 首次 `afterEventId=0` 是有界历史恢复；之后必须传最后确认的 `nextAfterEventId`，只返回 `eventId > cursor` 的本任务事件。`hasMore=true` 时立即取下一页，不能用全量重放或重复事件冒充推送。
+- 同一 Desktop 进程内，事务提交通过条件变量唤醒长轮询；其他 stdio 进程写库时，等待方每 250ms 做一次有界 SQLite 增量检查。它是本地长轮询唤醒/恢复机制，不是网络 pub/sub。
+- 单个 stdio MCP 服务顺序处理请求；需要同时订阅和执行其他调用的客户端应使用独立 stdio 连接，并保证相同 `AGENT_VITALS_HOME`。
+- Studio 每 5 秒心跳，按 eventId 去重并保留游标；订阅错误显示 reconnecting，1 秒后从原游标续传。重启后重新 open/status 并恢复持久事件，不把 accepted/ready 当作实际执行进度。
+
+**headless 不是“所有任务都可离线完成”。** `task.ledger`、`task.pull`、`preview.host-verification` 和人工 `operation.review` 不要求 Studio WebView；pull submit 仍要求有效且能由 Host 复核的 Preview。Desktop Host 的内嵌 city-sdk 还支持 `preview.vehicle/city-world` 以及显式授权后的 `operation.project-commit/publish`，这些路径仍受既有写入开关、实例和 revision 约束，实时事件不会自动执行它们。`preview.scene/game`、Codex/ACP 的完整 scene 执行和 capture 要求官方 Studio WebView。Codex CLI 或 ACP agent 是否安装/可用只在真实执行时确认。一次性 push 进程结束即 offline；Host 崩溃不会伪造任务完成，恢复后须重读权威状态并人工决定修订或重试。
+
+**安全与审核。** 事件不接收原始 prompt、API Key、绝对路径、工具参数、原始 executor output 或无关日志。ACP/Codex 只投影阶段、消息计数和工具状态。事件只是进度投影，不能改变 job/task 权威状态，不能自动 commit、accept 或 publish；Host 证据复核与人工 review 保持原闸门。旧 playtest/world-apply 会登记增量事件，事件表出现之前的旧 job 仍可订阅并诚实返回空增量。
+
 ## 3. 工具面（与 creator_studio.rs / creator_session.rs 的 specs() 一致）
 
 ### 3.0 总量与协议事实
 
 - 协议：JSON-RPC 2.0 行分隔帧；`initialize` 协议版本 `2025-06-18`，`serverInfo.name` 为 `Oh Agent MCP`（apps/cli/src/mcp.rs）。
-- `tools/list` 默认共 **58 个工具**，其中 creator 域 **34 个**（26 个 Studio 域 + 8 个会话/作业/判别）；其余 24 个为数据/信任/城内工具（22 个基线 + 2 个 `city_world_*`）。
-- 加 `--enable-city-tools` 后共 **74 个工具**，creator 域凑满 **50 个**（补入 16 个 `creator_city_*`）。
+- `tools/list` 默认共 **113 个工具**，其中 creator 域 **89 个**（48 个 Studio 域 + 27 个会话/作业/连接/事件 + 14 个 creator_code 系列）；其余 24 个为数据/信任/城内工具（22 个基线 + 2 个 `city_world_*`）。
+- 加 `--enable-city-tools` 后共 **129 个工具**，creator 域凑满 **105 个**（补入 16 个 `creator_city_*`）。以上两组数量已由 release 二进制真实 stdio `tools/list` 核对。
 - `mcp-internal` cargo feature（默认不编译）会再追加 query_sql_readonly / billing_workflow / authority_audit 3 个工具，与本指南无关。
 - 工具名逐一核对自 crates/agent-vitals-mcp/src/mcp/creator_studio.rs 与 creator_session.rs 的 `specs()`；`mcp::tests::tool_specs_and_dispatch_agree` 逐工具断言「注册即可分发」。宿主插件方法（`creator.city.*` 等点号命名）是内部路由面，不作为 MCP 工具暴露。
 
@@ -169,7 +195,7 @@ Agent 与宿主之间不再需要任何消息通道。push 与 pull 并存：`cr
 - `creator_vehicle_preview` 的 `estimatedPerformance` 投影由 Studio 用 city-sdk 的 `estimateVehiclePerformanceV1` 计算后注入（宿主不自推导）；返回 previewId，可用 `creator_project_commit` 提交或直接 `creator_vehicle_define`。`vehicle` 接受 define 形状对象或带 camera 的完整画像。
 - `creator_vehicle_inspect` 只回白名单 VehicleProfileV1 事实；需要投影时调用方用同一 SDK 函数自行计算。
 
-**headless 分档现状（E5 首片已落地）**：`creator_vehicle_preview` 与 `creator_city_edit_preview`（operations 形态）在 Studio 信箱不可用（`plugin_unavailable`）时，退化为**本地结构子集校验**——数据源是嵌入产物 vehicles.json / worlds.json（键集合/范围/枚举/比值），通过后返回 `validation:"structural"` 并标记 `commitBlocked:"deferred-semantic"`，**绝不签发 previewId**（commit 必须等 Studio 补验信封）；vehicle 预估按 vehicles.json 的 `performanceDerivation`/`performanceVectors` 声明式计算。`creator.vehicle.define` 与 scene/game 语义校验**不在结构子集内**——仍需 Studio（维持 `plugin_unavailable` + §4 recoveries 建议）。本组离线/无头可用的还有 `creator_vehicle_list`、`creator_capabilities_list`、§3.7/§3.8 全部工具。实现见 creator_studio.rs 的 `headless_vehicle_structural` / `headless_world_operations`（E5 首片提交 `401bf6b8`）；city-sdk WASM 嵌入（完整语义进宿主）是后续单独立项。
+**headless 分档现状（E5 内嵌语义闸）**：Studio WebView 缺席时，Desktop Host 的窄名单 headless 臂由内嵌 city-sdk（QuickJS，摘要锁步）完成 vehicle 与 city/world 语义校验；通过后签发正常 `previewId` 并标记 `validation:"embedded-sdk"`，可在同一 Host 管线 commit。vehicle define、city edit commit、project commit 与既有发布冻结也在显式窄名单内，仍要求 `--allow-local-writes`、实例绑定和 revision CAS。scene/game Preview、视口 capture、布局捕获和运行时可达性/视觉检查不在该 headless 能力内，仍诚实返回 `plugin_unavailable` 或 `unchecked`，绝不冒充 Studio 证据。本组离线/无头可用的还有 `creator_vehicle_list`、`creator_capabilities_list` 与 §3.7/§3.8 的本地账本工具。实现见 `apps/desktop/src-tauri/src/plugin_host.rs` 的 `headless_creator_methods` / `answer_headless_call` 和 `embedded_city_sdk.rs`。
 
 ### 3.5 锚点（creator_city_anchor_*，3 个，需 `--enable-city-tools`）
 
@@ -487,8 +513,7 @@ creator 域错误以 `tools/call` 结果的 `isError:true` + envelope 内稳定 
    - 跨 revision 用旧布局 → creator_layout_scope_invalid（布局与当前 City revision 不匹配）；
    - 同 revision 重存且布局未变 → v2 快照就地升级 v3，已发布 release 免重发布获得几何；
      布局内容变化或降版 → creator_layout_revision_conflict。
-   注：world.set 的 headless 结构响应带 `commitBlocked:"deferred-semantic"` 与 `checks.layoutInvalidation:"new-world-revision"`；宿主签发的完整预览响应中没有 `layoutInvalidation`/`commitBlocked` 字段；布局失效
-   是上面这套「revision 定界 + 重新捕获」的可观察语义（§3.4 的无头分档同样未实现）。
+   注：headless world.set 由内嵌 city-sdk 校验并标记 `validation:"embedded-sdk"`；布局失效仍通过上面的「revision 定界 + 重新捕获」表达，不把结构预检或旧 revision 快照当作新布局。
 
 4) 绑定到项目（可选）：creator_project_create {"template":"flight-checkpoint",
    "worldRevision":"…","cityId":"city-…","operationId":"op-proj-1"}
@@ -501,7 +526,7 @@ creator 域错误以 `tools/call` 结果的 `isError:true` + envelope 内稳定 
 
 1. **进程握手。** 启动 serve 后 stderr 出现 `data-mcp: serving on stdio (protocol 2025-06-18, data_home …)` 横幅。
 2. **initialize。** 返回 `protocolVersion: "2025-06-18"`、`capabilities.tools`、`serverInfo.name: "Oh Agent MCP"`。initialize 之前的请求被拒（JSON-RPC error `-32002`）。
-3. **tools/list。** 默认共 62 个工具，其中 creator_* 38 个（30 个 Studio 域：creator_layout_list、creator_project_list、creator_project_read、creator_operation_status、creator_playtest_history、creator_playtest_start、creator_playtest_result、creator_playtest_cancel、creator_project_create、creator_game_preview、creator_scene_preview、creator_project_commit、creator_project_publish、creator_scene_describe、creator_scene_capture、creator_capabilities_list、creator_scene_inspect、creator_scene_validate、creator_mount_list、creator_mount_bind、creator_mount_unbind、creator_game_bind_preview、creator_vehicle_list、creator_vehicle_preview、creator_vehicle_define、creator_vehicle_inspect、creator_experience_build、creator_experience_list、creator_experience_install、creator_experience_uninstall；8 个会话域：creator_session_open、creator_session_status、creator_session_close、creator_job_list、creator_job_status、creator_job_wait、creator_job_cancel、creator_game_type_list）。加 `--enable-city-tools` 后共 78 个，creator_* 凑满 54 个，额外包含 16 个：creator_city_create、creator_city_create_from_world、creator_city_edit_preview、creator_city_patch_preview、creator_city_edit_commit、creator_city_list、creator_city_read、creator_city_diagnostics、creator_city_view、creator_city_view_status、creator_city_capture、creator_city_layout_read、creator_city_layout_save、creator_city_anchor_list、creator_city_anchor_upsert、creator_city_anchor_remove。
+3. **tools/list。** 默认共 113 个工具，其中 creator_* 89 个（creator_studio.rs 默认 48 个 + creator_session.rs 27 个 + creator_code 系列 14 个）。加 `--enable-city-tools` 后共 129 个，creator_* 凑满 105 个，额外包含 16 个 `creator_city_*`。实时接入至少确认 `creator_connection_heartbeat`、`creator_connection_status`、`creator_capabilities_status`、`creator_events_subscribe`、`creator_task_progress` 均可发现；精确名称以 `tools/list` 和 specs() 为准。
 4. **只读自检：creator_project_list。** 参数 `{"limit": 10}`。Studio 已打开：`ok:true` 与有界项目列表（没有项目时为空列表）；Studio 未打开：约 15 秒后 `plugin_unavailable`。
 5. **离线自检（无需 Studio）：creator_capabilities_list `{}`。** 预期 `ok:true`，schemaVersion=1，含 project/scene/worlds/gameTypes 等类别；再试 `creator_game_type_list {}`（6 个类型，builtin-adapter 4 个 playtestSupported=true）与 `creator_session_open {"agentId":"smoke"}`（返回 sessionId）。
 6. **写入开关自检（开关未开启时）。** 对 creator_project_create（或任一写入工具）发起调用，预期 `permission_denied`，消息明确要求 `data-mcp serve --allow-local-writes`。
@@ -518,7 +543,7 @@ creator 域错误以 `tools/call` 结果的 `isError:true` + envelope 内稳定 
 
 | # | 场景 | Rust 自动化覆盖 | 需真实客户端 | 需桌面 bundle |
 |---|---|---|---|---|
-| 1 | 工具发现 + 无开关拒绝写入 | `tool_specs_and_dispatch_agree`、`creator_publish_tool_requires_explicit_local_write_permission`、`tool_schemas_are_closed_objects`（crates/agent-vitals-mcp/src/mcp/mod.rs）。开关拒绝测试目前只钉了 publish，其余写入工具的开关拒绝在 creator_studio.rs `run()` 内实现但无独立测试 | 用真实客户端验证默认 58 / 开启后 74 个工具 | — |
+| 1 | 工具发现 + 无开关拒绝写入 | `tool_specs_and_dispatch_agree`、`creator_publish_tool_requires_explicit_local_write_permission`、`tool_schemas_are_closed_objects`（crates/agent-vitals-mcp/src/mcp/mod.rs）。开关拒绝测试目前只钉了 publish，其余写入工具的开关拒绝在 creator_studio.rs `run()` 内实现但无独立测试 | 真实 stdio 已核对默认 113 / 开启后 129 个工具 | — |
 | 2 | Studio 未打开/被替换/过期时失败不写入 | `committed_operation_survives_studio_instance_replacement_but_preview_does_not`（apps/desktop/src-tauri/src/creator_projects.rs）、`typed_object_response_is_dropped_after_owner_instance_replacement_or_failure`（apps/desktop/src-tauri/src/plugin_host.rs） | 验证 Studio 关闭 → `plugin_unavailable` | Studio 完全未打开的 15 秒超时路径依赖活动 WebView 缺席，自动化测试未覆盖 |
 | 3 | 创建→读 chunk→预览→UI 确认→提交→视口新 revision | 宿主侧：`project_preview_commit_revision_and_idempotency`（creator_projects.rs） | 端到端走通一次 | UI 确认卡片与 3D 视口刷新只能人工在 bundle 里确认 |
 | 4 | 无效对象/越界/超预算/额外字段被拒绝，revision 不变 | `dispatch_rejects_unknown_arguments`、`dispatch_rejects_non_object_arguments`（mod.rs）；`creator_scene_accepts_only_bounded_explicit_box_colliders`、`creator_mount_rejects_anchors_disconnected_in_the_pinned_city_topology`、`mount_skin_operations_preview_commit_and_enforce_game_bindings`、`creator_playtest_history_is_registered_and_limits_are_bounded`（creator_projects.rs） | — | — |

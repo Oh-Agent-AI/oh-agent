@@ -7,7 +7,7 @@
 //! 全部工具天然 headless 可用（不依赖 Studio/City webview）。
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
 use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
@@ -18,6 +18,10 @@ use super::{ToolError, ToolSpec};
 const MAX_SESSIONS_PER_AGENT: usize = 4;
 const JOB_WAIT_MAX_MS: u64 = 30_000;
 const JOB_WAIT_POLL_MS: u64 = 500;
+const CONNECTION_TTL_MS: u64 = 15_000;
+const EVENT_WAIT_MAX_MS: u64 = 30_000;
+const EVENT_WAIT_SLICE_MS: u64 = 250;
+const EVENT_LIMIT_MAX: u64 = 100;
 
 fn spec(name: &'static str, description: &'static str, properties: Value, required: &[&str]) -> ToolSpec {
     ToolSpec {
@@ -30,9 +34,14 @@ fn spec(name: &'static str, description: &'static str, properties: Value, requir
 
 pub fn specs() -> Vec<ToolSpec> {
     vec![
-        spec("creator_session_open", "Open (or resume) a Creator Agent session. Resuming an open session with the same agentId and scope returns the same sessionId plus every pending operation and job, so a reconnect restores full context in one call. Read-only bookkeeping; never grants capabilities.", json!({"agentId":{"type":"string","minLength":1,"maxLength":128},"projectId":{"type":"string","minLength":1,"maxLength":128},"cityId":{"type":"string","minLength":1,"maxLength":128}}), &["agentId"]),
+        spec("creator_session_open", "Open (or resume) a Creator Agent session. Resuming an open session with the same agentId and scope returns the same sessionId plus every pending operation and job, so a reconnect restores full context in one call. Read-only bookkeeping; never grants capabilities.", json!({"agentId":{"type":"string","minLength":1,"maxLength":128},"projectId":{"type":"string","minLength":1,"maxLength":128},"cityId":{"type":"string","minLength":1,"maxLength":128},"executor":{"type":"string","enum":["unknown","studio","codex-cli","acp","pull"]},"transport":{"type":"string","enum":["unknown","mcp-stdio","acp-stdio","studio-webview"]},"capabilities":{"type":"array","maxItems":16}}), &["agentId"]),
         spec("creator_session_status", "Read one Creator Agent session: its state, the bounded operation timeline (commits and playtests observed in scope), and open jobs.", json!({"sessionId":{"type":"string","minLength":1,"maxLength":128}}), &["sessionId"]),
         spec("creator_session_close", "Close a Creator Agent session and report how many tracked operations were cleared. Closed sessions are retained for 7 days for auditing, then pruned.", json!({"sessionId":{"type":"string","minLength":1,"maxLength":128}}), &["sessionId"]),
+        spec("creator_connection_heartbeat", "Register or refresh one agent connection in the shared local ledger. Connections are scoped by agentId+sessionId and expire offline after 15 seconds without a heartbeat.", json!({"agentId":{"type":"string"},"sessionId":{"type":"string"},"executor":{"type":"string","enum":["unknown","studio","codex-cli","acp","pull"]},"transport":{"type":"string","enum":["unknown","mcp-stdio","acp-stdio","studio-webview"]},"state":{"type":"string","enum":["online","busy","degraded"]},"capabilities":{"type":"array","maxItems":16},"lastStableError":{"type":["string","null"],"maxLength":128}}), &["agentId","sessionId"]),
+        spec("creator_connection_disconnect", "Mark one agent connection offline without changing any job or task authority.", json!({"agentId":{"type":"string"},"sessionId":{"type":"string"}}), &["agentId","sessionId"]),
+        spec("creator_connection_status", "List live and recently disconnected agent connections, with TTL computed at read time.", json!({"agentId":{"type":"string"},"sessionId":{"type":"string"}}), &[]),
+        spec("creator_capabilities_status", "Query the actual headless/Studio capability matrix and current connection availability. This never implies arbitrary remote collaboration.", json!({}), &[]),
+        spec("creator_events_subscribe", "Read durable ordered task events after a global event cursor. Waits up to 30 seconds for new events and returns hasMore/waitTimedOut for bounded reconnectable delivery.", json!({"taskId":{"type":"string"},"afterEventId":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":100},"timeoutMs":{"type":"integer","minimum":0,"maximum":30000}}), &["taskId"]),
         spec("creator_job_list", "List Creator jobs (layout-build / world-apply / playtest / capture / studio-task) for a session, optionally filtered by kind or terminal status.", json!({"sessionId":{"type":"string","minLength":1,"maxLength":128},"kind":{"type":"string","enum":["layout-build","world-apply","playtest","capture","studio-task"]}}), &["sessionId"]),
         spec("creator_job_status", "Read one Creator job. Playtest jobs resolve their live status from the host playtest ledger.", json!({"jobId":{"type":"string","minLength":1,"maxLength":128}}), &["jobId"]),
         spec("creator_job_wait", "Block until a Creator job reaches a terminal state or the timeout expires (30 s cap). A timeout returns the running snapshot, not an error.", json!({"jobId":{"type":"string","minLength":1,"maxLength":128},"timeoutMs":{"type":"integer","minimum":100,"maximum":30000}}), &["jobId"]),
@@ -50,6 +59,7 @@ pub fn specs() -> Vec<ToolSpec> {
         spec("creator_task_list_open", "List approved Studio tasks that are ready to be claimed (pull mode). Read-only; an empty list is a truthful empty queue.", json!({"limit":{"type":"integer","minimum":1,"maximum":50}}), &[]),
         spec("creator_task_claim", "Claim an approved task (pull mode) with a plain agentId: no per-CLI spawn adapter is needed, any MCP-capable desktop agent participates. First claim sets phase=executing and binds the claimant; re-claim by the same agentId is idempotent.", json!({"taskId":{"type":"string"},"agentId":{"type":"string","minLength":1,"maxLength":128},"expectedPlanRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"operationId":{"type":"string"}}), &["taskId","agentId","expectedPlanRevision","expectedArtifactRevision","operationId"]),
         spec("creator_task_submit_result", "Submit the claimed task's result: the host re-verifies the submitted preview server-side (exists, bound to the artifact project and revision, unexpired) before recording host-observed evidence and moving the task to human review. Self-declared completion is never accepted.", json!({"taskId":{"type":"string"},"agentId":{"type":"string","minLength":1,"maxLength":128},"planRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"summary":{"type":"string","minLength":1,"maxLength":2000},"previewId":{"type":"string"},"operationId":{"type":"string"}}), &["taskId","agentId","planRevision","expectedArtifactRevision","summary","previewId","operationId"]),
+        spec("creator_task_progress", "Append a bounded typed progress projection for a claimed pull task. Only stage codes, step ids and optional percent are accepted; raw prompts, paths, logs and executor output text are not event fields.", json!({"taskId":{"type":"string"},"agentId":{"type":"string"},"planRevision":{"type":"integer"},"kind":{"type":"string","enum":["plan","progress","executor-output"]},"code":{"type":"string","enum":["analysis-started","artifact-read","operations-proposed","preview-requested","preview-ready","validation-started","validation-completed","waiting-host","other"]},"stepId":{"type":"string"},"percent":{"type":"integer","minimum":0,"maximum":100},"operationId":{"type":"string"}}), &["taskId","agentId","planRevision","kind","code","operationId"]),
         spec("creator_game_type_list", "List registered game types with their runtime contract and whether each is actually playable (playtestSupported derives from the app adapter registry state, never from template existence). Read-only and offline.", json!({"status":{"type":"string","enum":["builtin-adapter","prototype","planned"]}}), &[]),
     ]
 }
@@ -77,8 +87,11 @@ fn open_db(path: &Path, read_only: bool) -> Result<rusqlite::Connection, ToolErr
     } else {
         rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_CREATE
     };
-    rusqlite::Connection::open_with_flags(path, flags)
-        .map_err(|error| ToolError::new("storage_unavailable", format!("sessions store unavailable: {error}")))
+    let db = rusqlite::Connection::open_with_flags(path, flags)
+        .map_err(|error| ToolError::new("storage_unavailable", format!("sessions store unavailable: {error}")))?;
+    db.busy_timeout(std::time::Duration::from_millis(5_000))
+        .map_err(|error| ToolError::new("storage_unavailable", format!("sessions store busy timeout unavailable: {error}")))?;
+    Ok(db)
 }
 
 fn ensure_schema(db: &rusqlite::Connection) -> Result<(), ToolError> {
@@ -117,8 +130,285 @@ fn ensure_schema(db: &rusqlite::Connection) -> Result<(), ToolError> {
             task_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, claimed_at_ms INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS creator_studio_task_receipts (
             operation_id TEXT PRIMARY KEY, request_hash TEXT NOT NULL,
-            result_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL);",
+            result_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS creator_agent_connections (
+            agent_id TEXT NOT NULL, session_id TEXT NOT NULL,
+            executor TEXT NOT NULL, transport TEXT NOT NULL,
+            last_seen_ms INTEGER NOT NULL, state TEXT NOT NULL,
+            capabilities_json TEXT NOT NULL, last_stable_error TEXT,
+            created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
+            PRIMARY KEY(agent_id, session_id));
+        CREATE INDEX IF NOT EXISTS creator_agent_connections_seen ON creator_agent_connections(last_seen_ms);
+        CREATE TABLE IF NOT EXISTS creator_task_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL, seq INTEGER NOT NULL,
+            kind TEXT NOT NULL, source TEXT NOT NULL, trust_level TEXT NOT NULL,
+            summary TEXT NOT NULL, data_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL,
+            UNIQUE(task_id, seq));
+        CREATE INDEX IF NOT EXISTS creator_task_events_cursor ON creator_task_events(task_id,event_id);",
     ).map_err(|error| ToolError::new("storage_unavailable", format!("sessions schema unavailable: {error}")))
+}
+
+fn connection_capabilities(payload: &Value) -> Result<Option<Vec<String>>, ToolError> {
+    let Some(values) = payload.get("capabilities") else { return Ok(None) };
+    let values = values.as_array().filter(|items| items.len() <= 16)
+        .ok_or_else(|| ToolError::new("invalid_argument", "capabilities must contain at most 16 stable ids."))?;
+    values.iter().map(|value| value.as_str().filter(|id| valid_playtest_run_id(id)).map(str::to_owned)
+        .ok_or_else(|| ToolError::new("invalid_argument", "capabilities must contain stable ids.")))
+        .collect::<Result<Vec<_>,_>>().map(Some)
+}
+
+fn valid_connection_error(value: &str) -> bool {
+    matches!(value,"codex_unavailable" | "codex_output_invalid" | "codex_cancelled" | "codex_timeout" | "codex_failed"
+        | "acp_unavailable" | "acp_failed" | "acp_auth_required" | "acp_cancelled" | "acp_timeout" | "acp_output_invalid"
+        | "preview_required" | "preview_expired" | "plugin_unavailable" | "storage_unavailable" | "revision_conflict"
+        | "creator_task_invalid_transition" | "creator_task_claim_mismatch" | "creator_task_already_claimed"
+        | "creator_preview_not_found" | "creator_preview_project_mismatch" | "permission_denied" | "invalid_argument"
+        | "busy" | "data_unavailable" | "executor_failed" | "agent_disconnected" | "agent_crashed" | "agent_timeout" | "authentication_required" | "transport_closed")
+}
+
+struct ConnectionUpdate<'a> {
+    executor: Option<&'a str>,
+    transport: Option<&'a str>,
+    state: &'a str,
+    capabilities: Option<Vec<String>>,
+    stable_error: Option<Option<&'a str>>,
+    at_ms: u64,
+}
+
+fn connection_upsert(db: &rusqlite::Connection, agent_id: &str, session_id: &str, update: ConnectionUpdate<'_>) -> Result<(), ToolError> {
+    let ConnectionUpdate { executor,transport,state,capabilities,stable_error,at_ms } = update;
+    if !matches!(state, "online" | "busy" | "degraded" | "offline")
+        || executor.is_some_and(|value| !matches!(value, "unknown" | "studio" | "codex-cli" | "acp" | "pull"))
+        || transport.is_some_and(|value| !matches!(value, "unknown" | "mcp-stdio" | "acp-stdio" | "studio-webview"))
+        || stable_error.flatten().is_some_and(|value| !valid_connection_error(value)) {
+        return Err(ToolError::new("invalid_argument", "Connection metadata is invalid."));
+    }
+    let capabilities = capabilities.map(|values| serde_json::to_string(&values).unwrap_or_else(|_| "[]".into()));
+    let stable_error = stable_error.map(|value| value.unwrap_or_default());
+    db.execute("INSERT INTO creator_agent_connections(agent_id,session_id,executor,transport,last_seen_ms,state,capabilities_json,last_stable_error,created_at_ms,updated_at_ms)
+        VALUES(?1,?2,COALESCE(?3,'unknown'),COALESCE(?4,'unknown'),?5,?6,COALESCE(?7,'[]'),NULLIF(?8,''),?5,?5)
+        ON CONFLICT(agent_id,session_id) DO UPDATE SET
+            executor=COALESCE(?3,creator_agent_connections.executor),
+            transport=COALESCE(?4,creator_agent_connections.transport),
+            last_seen_ms=?5,state=?6,capabilities_json=COALESCE(?7,creator_agent_connections.capabilities_json),
+            last_stable_error=CASE WHEN ?8 IS NULL THEN creator_agent_connections.last_stable_error ELSE NULLIF(?8,'') END,
+            updated_at_ms=?5",
+        rusqlite::params![agent_id,session_id,executor,transport,at_ms,state,capabilities,stable_error])
+        .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    Ok(())
+}
+
+fn connection_rows(db: &rusqlite::Connection, agent_id: Option<&str>, session_id: Option<&str>) -> Result<Vec<Value>, ToolError> {
+    let now = now_ms();
+    let mut statement = db.prepare("SELECT agent_id,session_id,executor,transport,last_seen_ms,state,capabilities_json,last_stable_error,created_at_ms,updated_at_ms
+        FROM creator_agent_connections WHERE (?1 IS NULL OR agent_id=?1) AND (?2 IS NULL OR session_id=?2)
+        ORDER BY updated_at_ms DESC,agent_id,session_id LIMIT 100")
+        .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let rows = statement.query_map(rusqlite::params![agent_id,session_id], |row| {
+        let last_seen = row.get::<_,u64>(4)?;
+        let stored = row.get::<_,String>(5)?;
+        let expired = stored != "offline" && now.saturating_sub(last_seen) >= CONNECTION_TTL_MS;
+        let capabilities: String = row.get(6)?;
+        Ok(json!({"agentId":row.get::<_,String>(0)?,"sessionId":row.get::<_,String>(1)?,
+            "executor":row.get::<_,String>(2)?,"transport":row.get::<_,String>(3)?,
+            "lastSeenMs":last_seen,"state":if expired { "offline" } else { stored.as_str() },
+            "expiresAtMs":last_seen.saturating_add(CONNECTION_TTL_MS),"ttlMs":CONNECTION_TTL_MS,
+            "capabilities":serde_json::from_str::<Value>(&capabilities).unwrap_or(json!([])),
+            "lastStableError":row.get::<_,Option<String>>(7)?,"createdAtMs":row.get::<_,u64>(8)?,"updatedAtMs":row.get::<_,u64>(9)?}))
+    }).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?
+        .collect::<Result<Vec<_>,_>>().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    Ok(rows)
+}
+
+fn connection_status(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
+    let agent_id = payload.get("agentId").and_then(Value::as_str);
+    let session_id = payload.get("sessionId").and_then(Value::as_str);
+    if payload.get("agentId").is_some() && agent_id.is_none() || payload.get("sessionId").is_some() && session_id.is_none() {
+        return Err(ToolError::new("invalid_argument", "agentId and sessionId must be strings."));
+    }
+    let db = open_db(&sessions_db(data_home)?, false)?;
+    ensure_schema(&db)?;
+    Ok(json!({"connections":connection_rows(&db,agent_id,session_id)?,"serverTimeMs":now_ms(),"ttlMs":CONNECTION_TTL_MS}))
+}
+
+fn connection_heartbeat(data_home: &Path, payload: &Value, disconnect: bool) -> Result<Value, ToolError> {
+    let agent_id = task_id_arg(payload,"agentId")?;
+    let session_id = task_id_arg(payload,"sessionId")?;
+    let capabilities = connection_capabilities(payload)?;
+    let executor = payload.get("executor").and_then(Value::as_str);
+    let transport = payload.get("transport").and_then(Value::as_str);
+    if payload.get("executor").is_some() && executor.is_none() || payload.get("transport").is_some() && transport.is_none() {
+        return Err(ToolError::new("invalid_argument", "executor and transport must be supported strings."));
+    }
+    let state = if disconnect { "offline" } else { payload.get("state").and_then(Value::as_str).unwrap_or("online") };
+    if payload.get("state").is_some() && payload.get("state").and_then(Value::as_str).is_none() {
+        return Err(ToolError::new("invalid_argument", "state must be a supported string."));
+    }
+    let stable_error = if payload.as_object().is_some_and(|object| object.contains_key("lastStableError")) {
+        Some(payload.get("lastStableError").and_then(Value::as_str))
+    } else { None };
+    if payload.get("lastStableError").is_some_and(|value| !value.is_string() && !value.is_null()) {
+        return Err(ToolError::new("invalid_argument", "lastStableError must be a stable code or null."));
+    }
+    let mut db = open_db(&sessions_db(data_home)?, false)?;
+    ensure_schema(&db)?;
+    let (owner,_,_,session_state) = session_scope(&db,&session_id)?;
+    if owner != agent_id {
+        let claimant: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM creator_studio_task_claims c JOIN creator_jobs j ON j.job_id=c.task_id WHERE c.agent_id=?1 AND j.session_id=?2)",
+            rusqlite::params![agent_id,session_id],|row| row.get(0)).map_err(|error| ToolError::new("storage_unavailable",format!("{error}")))?;
+        if !claimant { return Err(ToolError::new("permission_denied", "sessionId belongs to a different agentId and has no task claimed by it.")); }
+    }
+    if session_state != "open" && !disconnect { return Err(ToolError::new("creator_session_closed", "Cannot heartbeat a closed session.")); }
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    connection_upsert(&tx,&agent_id,&session_id,ConnectionUpdate { executor,transport,state,capabilities,stable_error,at_ms:now_ms() })?;
+    tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let db = open_db(&sessions_db(data_home)?, false)?;
+    let connection = connection_rows(&db,Some(&agent_id),Some(&session_id))?.into_iter().next()
+        .ok_or_else(|| ToolError::new("storage_unavailable", "Connection update was not readable."))?;
+    Ok(json!({"connection":connection,"serverTimeMs":now_ms()}))
+}
+
+fn capability_matrix() -> Vec<Value> {
+    [
+        ("task.ledger",true,false,"会话、任务状态、证据和事件投影使用本地 sessions.sqlite。"),
+        ("task.pull",true,false,"可 headless 认领与报告进度；提交仍需 Host 可复核的有效 Preview。"),
+        ("execution.codex",false,true,"完整执行需要 Codex CLI 和官方 Studio WebView 的语义 Preview；CLI 可用性在执行时确认。"),
+        ("execution.acp",false,true,"完整执行需要 ACP agent 和官方 Studio WebView 的语义 Preview；agent 可用性在执行时确认。"),
+        ("preview.scene",false,true,"scene 语义校验与 Preview 签发需要官方 Studio WebView。"),
+        ("preview.game",false,true,"game 语义校验与 Preview 签发需要官方 Studio WebView。"),
+        ("preview.vehicle",true,false,"Desktop Host 的内嵌 city-sdk 可签发 revision 绑定的 vehicle Preview；不需要 Studio WebView。"),
+        ("preview.city-world",true,false,"Desktop Host 的内嵌 city-sdk 可校验 world 编辑并签发 Preview；视口诊断仍需 Studio。"),
+        ("preview.host-verification",true,false,"Desktop Host 可独立复核仍有效的 Host Preview；不需要 Studio WebView。"),
+        ("operation.review",true,false,"人工可通过 MCP 审核已有 Host 证据；不会自动接受或发布。"),
+        ("operation.project-commit",true,false,"显式开启本地写权限后，Host 可提交与其内嵌 Preview 同实例、同 revision 的变更；实时事件不会自动提交。"),
+        ("operation.publish",true,false,"显式开启本地写权限后可走既有 Host 发布冻结；实时协作不自动发布。"),
+        ("operation.capture",false,true,"画面捕获需要官方 Studio WebView 和 ready 视口。"),
+    ].into_iter().map(|(id,headless,studio,note)| json!({"id":id,"headless":headless,
+        "requiresStudioWebView":studio,"note":note})).collect()
+}
+
+fn capabilities_status(data_home: &Path) -> Result<Value, ToolError> {
+    let db = open_db(&sessions_db(data_home)?, false)?;
+    ensure_schema(&db)?;
+    let connections = connection_rows(&db,None,None)?;
+    let studio_online = connections.iter().any(|connection| matches!(connection["state"].as_str(),Some("online" | "busy" | "degraded"))
+        && connection["transport"] == "studio-webview");
+    Ok(json!({"schemaVersion":1,"studioOnline":studio_online,"connections":connections,
+        "capabilities":capability_matrix(),"serverTimeMs":now_ms(),
+        "boundary":"本地 stdio/Desktop 协作；不是任意远程实时协作，不自动提交、验收或发布。"}))
+}
+
+fn event_notifications() -> &'static (Mutex<u64>, Condvar) {
+    static NOTIFY: OnceLock<(Mutex<u64>,Condvar)> = OnceLock::new();
+    NOTIFY.get_or_init(|| (Mutex::new(0),Condvar::new()))
+}
+
+fn notify_event_subscribers() {
+    let (lock,condition) = event_notifications();
+    let mut generation = lock.lock().unwrap_or_else(|error| error.into_inner());
+    *generation = generation.saturating_add(1);
+    condition.notify_all();
+}
+
+fn append_event(tx: &rusqlite::Transaction<'_>, task_id: &str, kind: &str, source: &str,
+    trust_level: &str, summary: &str, data: &Value) -> Result<Value, ToolError> {
+    if !matches!(kind,"accepted" | "plan" | "progress" | "executor-output" | "preview" | "evidence" | "failure" | "cancel" | "review")
+        || summary.is_empty() || summary.chars().count() > 240 || task_canonical_json(data)?.len() > 4 * 1024 {
+        return Err(ToolError::new("invalid_argument", "Event type, summary or payload is outside the bounded contract."));
+    }
+    let seq: u64 = tx.query_row("SELECT COALESCE(MAX(seq),0)+1 FROM creator_task_events WHERE task_id=?1",[task_id],|row| row.get(0))
+        .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let created = now_ms();
+    tx.execute("INSERT INTO creator_task_events(task_id,seq,kind,source,trust_level,summary,data_json,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+        rusqlite::params![task_id,seq,kind,source,trust_level,summary,task_canonical_json(data)?,created])
+        .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let event_id: u64 = tx.query_row("SELECT last_insert_rowid()",[],|row| row.get(0))
+        .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    Ok(json!({"eventId":event_id,"taskId":task_id,"seq":seq,"kind":kind,"source":source,
+        "trustLevel":trust_level,"summary":summary,"data":data,"createdAtMs":created}))
+}
+
+fn append_event_db(data_home: &Path, task_id: &str, kind: &str, source: &str,
+    trust_level: &str, summary: &str, data: &Value) -> Result<Value, ToolError> {
+    let mut db = open_db(&sessions_db(data_home)?, false)?;
+    ensure_schema(&db)?;
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let event = append_event(&tx,task_id,kind,source,trust_level,summary,data)?;
+    tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    notify_event_subscribers();
+    Ok(event)
+}
+
+fn read_events(db: &rusqlite::Connection, task_id: &str, after_event_id: u64, limit: u64) -> Result<(Vec<Value>,bool), ToolError> {
+    let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM creator_jobs WHERE job_id=?1)",[task_id],|row| row.get(0))
+        .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    if !exists { return Err(ToolError::new("creator_task_not_found", "Unknown taskId or jobId.")); }
+    if after_event_id > 0 {
+        let owner: Option<String> = db.query_row("SELECT task_id FROM creator_task_events WHERE event_id=?1",[after_event_id],|row| row.get(0))
+            .optional().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+        if owner.as_deref() != Some(task_id) { return Err(ToolError::new("invalid_argument", "afterEventId does not belong to this taskId.")); }
+    }
+    let mut statement = db.prepare("SELECT event_id,seq,kind,source,trust_level,summary,data_json,created_at_ms FROM creator_task_events
+        WHERE task_id=?1 AND event_id>?2 ORDER BY event_id LIMIT ?3")
+        .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let mut events = statement.query_map(rusqlite::params![task_id,after_event_id,limit+1],|row| {
+        let data: String = row.get(6)?;
+        Ok(json!({"eventId":row.get::<_,u64>(0)?,"taskId":task_id,"seq":row.get::<_,u64>(1)?,
+            "kind":row.get::<_,String>(2)?,"source":row.get::<_,String>(3)?,"trustLevel":row.get::<_,String>(4)?,
+            "summary":row.get::<_,String>(5)?,"data":serde_json::from_str::<Value>(&data).unwrap_or(Value::Null),
+            "createdAtMs":row.get::<_,u64>(7)?}))
+    }).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?
+        .collect::<Result<Vec<_>,_>>().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let has_more = events.len() as u64 > limit;
+    if has_more { events.pop(); }
+    Ok((events,has_more))
+}
+
+fn events_subscribe(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
+    let task_id = task_id_arg(payload,"taskId")?;
+    let after = payload.get("afterEventId").and_then(Value::as_u64).unwrap_or(0);
+    let limit = payload.get("limit").and_then(Value::as_u64).unwrap_or(50);
+    let timeout = payload.get("timeoutMs").and_then(Value::as_u64).unwrap_or(0);
+    if payload.get("afterEventId").is_some() && payload.get("afterEventId").and_then(Value::as_u64).is_none()
+        || !(1..=EVENT_LIMIT_MAX).contains(&limit) || timeout > EVENT_WAIT_MAX_MS
+        || payload.get("timeoutMs").is_some() && payload.get("timeoutMs").and_then(Value::as_u64).is_none() {
+        return Err(ToolError::new("invalid_argument", "afterEventId, limit (1..=100) or timeoutMs (0..=30000) is invalid."));
+    }
+    let db = open_db(&sessions_db(data_home)?, false)?;
+    ensure_schema(&db)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout);
+    loop {
+        let (events,has_more) = read_events(&db,&task_id,after,limit)?;
+        if !events.is_empty() || has_more {
+            let cursor = events.last().and_then(|event| event["eventId"].as_u64()).unwrap_or(after);
+            return Ok(json!({"taskId":task_id,"events":events,"nextAfterEventId":cursor,"hasMore":has_more,"waitTimedOut":false}));
+        }
+        if timeout == 0 || std::time::Instant::now() >= deadline {
+            return Ok(json!({"taskId":task_id,"events":[],"nextAfterEventId":after,"hasMore":false,"waitTimedOut":timeout > 0}));
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let slice = remaining.min(std::time::Duration::from_millis(EVENT_WAIT_SLICE_MS));
+        let (lock,condition) = event_notifications();
+        let generation = lock.lock().unwrap_or_else(|error| error.into_inner());
+        let (guard,_) = condition.wait_timeout(generation,slice).unwrap_or_else(|error| error.into_inner());
+        drop(guard);
+    }
+}
+
+fn record_legacy_job_projection(data_home: &Path, job: &Value) {
+    let Some(job_id) = job["jobId"].as_str() else { return };
+    let stage = job["progress"]["stage"].as_str().unwrap_or("unknown");
+    let status = job["status"].as_str().unwrap_or("unknown");
+    let Ok(db) = open_db(&sessions_db(data_home).unwrap_or_else(|_| PathBuf::from("/dev/null")),false) else { return };
+    if ensure_schema(&db).is_err() { return; }
+    let previous: Option<String> = db.query_row("SELECT data_json FROM creator_task_events WHERE task_id=?1 ORDER BY seq DESC LIMIT 1",[job_id],|row| row.get(0))
+        .optional().ok().flatten();
+    let projection = json!({"status":status,"stage":stage});
+    if previous.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()).is_some_and(|data| data == projection) { return; }
+    let kind = if status == "failed" { "failure" } else if status == "cancelled" { "cancel" } else { "progress" };
+    drop(db);
+    let _ = append_event_db(data_home,job_id,kind,"legacy-job","host-observed","旧作业状态已投影",&projection);
 }
 
 /// 宿主编排库只读聚合：commits（creator_operations）与试玩（creator_playtest_runs）。
@@ -214,6 +504,11 @@ fn session_open(data_home: &Path, args: &Value) -> Result<Value, ToolError> {
             session_id
         }
     };
+    let capabilities = connection_capabilities(args)?;
+    connection_upsert(&db,agent_id,&session_id,ConnectionUpdate {
+        executor:Some(args.get("executor").and_then(Value::as_str).unwrap_or("unknown")),
+        transport:Some(args.get("transport").and_then(Value::as_str).unwrap_or("mcp-stdio")),
+        state:"online",capabilities,stable_error:Some(None),at_ms:now })?;
     session_payload(data_home, &session_id, project_id, city_id)
 }
 
@@ -261,6 +556,8 @@ fn session_close(data_home: &Path, args: &Value) -> Result<Value, ToolError> {
     let now = now_ms();
     db.execute("UPDATE creator_sessions SET state='closed', updated_at_ms=?1 WHERE session_id=?2", rusqlite::params![now, session_id])
         .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let (agent_id,_,_,_) = session_scope(&db,session_id)?;
+    connection_upsert(&db,&agent_id,session_id,ConnectionUpdate { executor:None,transport:None,state:"offline",capabilities:None,stable_error:None,at_ms:now })?;
     Ok(json!({"ok":true,"data":{"sessionId":session_id,"cleared":cleared,"state":"closed"}}))
 }
 
@@ -272,10 +569,16 @@ pub fn register_world_apply_job(data_home: &Path, city_id: Option<&str>, revisio
     let Ok(db) = open_db(&sessions_db(data_home).unwrap_or_else(|_| PathBuf::from("/dev/null")), false) else { return };
     if ensure_schema(&db).is_err() { return; }
     let now = now_ms();
-    let _ = db.execute(
+    let job_id = new_id("cjob-");
+    let inserted = db.execute(
         "INSERT INTO creator_jobs(job_id,kind,status,subject_json,progress_json,failure_json,cancel_requested,session_id,created_at_ms,updated_at_ms)
          VALUES(?1,'world-apply','running',?2,'{\"stage\":\"layout-rebuild\"}','{}',0,NULL,?3,?3)",
-        rusqlite::params![new_id("cjob-"), json!({"cityId":city_id,"revision":revision}).to_string(), now]);
+        rusqlite::params![job_id, json!({"cityId":city_id,"revision":revision}).to_string(), now]);
+    drop(db);
+    if inserted.is_ok() {
+        let _ = append_event_db(data_home,&job_id,"accepted","legacy-job","host-observed","旧 world-apply 作业已登记",&json!({"kind":"world-apply"}));
+        let _ = append_event_db(data_home,&job_id,"progress","legacy-job","host-observed","等待布局重建",&json!({"status":"running","stage":"layout-rebuild"}));
+    }
 }
 
 /// E2：试玩作业注册（creator_playtest_start 成功后由 dispatch 钩子调用）。
@@ -295,10 +598,16 @@ pub fn register_playtest_job(data_home: &Path, response: &Value) {
         [&needle], |row| row.get(0)).unwrap_or(0);
     if existing > 0 { return; }
     let now = now_ms();
-    let _ = db.execute(
+    let job_id = new_id("cjob-");
+    let inserted = db.execute(
         "INSERT INTO creator_jobs(job_id,kind,status,subject_json,progress_json,failure_json,cancel_requested,session_id,created_at_ms,updated_at_ms)
          VALUES(?1,'playtest','running',?2,'{\"stage\":\"playtest\"}','{}',0,NULL,?3,?3)",
-        rusqlite::params![new_id("cjob-"), json!({"runId":run_id,"releaseId":body.get("releaseId")}).to_string(), now]);
+        rusqlite::params![job_id, json!({"runId":run_id,"releaseId":body.get("releaseId")}).to_string(), now]);
+    drop(db);
+    if inserted.is_ok() {
+        let _ = append_event_db(data_home,&job_id,"accepted","legacy-job","host-observed","旧 playtest 作业已登记",&json!({"kind":"playtest","runId":run_id}));
+        let _ = append_event_db(data_home,&job_id,"progress","legacy-job","host-observed","等待试玩结果",&json!({"status":"running","stage":"playtest"}));
+    }
 }
 
 fn valid_playtest_run_id(value: &str) -> bool {
@@ -366,12 +675,16 @@ fn session_jobs(data_home: &Path, session_id: &str) -> Result<Vec<Value>, ToolEr
             for item in rows.flatten() { jobs.push(item); }
         }
     }
-    Ok(jobs.into_iter().map(|job| match job["kind"].as_str() {
+    let jobs: Vec<Value> = jobs.into_iter().map(|job| match job["kind"].as_str() {
         Some("playtest") => resolve_playtest_job(data_home, &job),
         Some("world-apply") => resolve_world_apply_job(data_home, &job),
         Some("studio-task") => task_payload(data_home, job["jobId"].as_str().unwrap_or_default()).unwrap_or(job),
         _ => job,
-    }).collect())
+    }).collect();
+    for job in jobs.iter().filter(|job| matches!(job["kind"].as_str(),Some("playtest") | Some("world-apply"))) {
+        record_legacy_job_projection(data_home,job);
+    }
+    Ok(jobs)
 }
 
 fn job_payload(data_home: &Path, job_id: &str) -> Result<Value, ToolError> {
@@ -390,12 +703,14 @@ fn job_payload(data_home: &Path, job_id: &str) -> Result<Value, ToolError> {
                 "cancelRequested":row.get::<_, i64>(6)? != 0,"createdAtMs":row.get::<_, i64>(7)?,"updatedAtMs":row.get::<_, i64>(8)?}))
         })
         .map_err(|_| ToolError::new("creator_job_not_found", "Unknown jobId; list jobs with creator_job_list."))?;
-    Ok(match row["kind"].as_str() {
+    let job = match row["kind"].as_str() {
         Some("playtest") => resolve_playtest_job(data_home, &row),
         Some("world-apply") => resolve_world_apply_job(data_home, &row),
         Some("studio-task") => task_payload(data_home, row["jobId"].as_str().unwrap_or_default()).unwrap_or(row),
         _ => row,
-    })
+    };
+    if matches!(job["kind"].as_str(),Some("playtest") | Some("world-apply")) { record_legacy_job_projection(data_home,&job); }
+    Ok(job)
 }
 
 fn job_list(data_home: &Path, args: &Value) -> Result<Value, ToolError> {
@@ -450,6 +765,8 @@ fn job_cancel(data_home: &Path, args: &Value) -> Result<Value, ToolError> {
     let db = open_db(&sessions_db(data_home)?, false)?;
     db.execute("UPDATE creator_jobs SET cancel_requested=1, updated_at_ms=?1 WHERE job_id=?2", rusqlite::params![now_ms(), job_id])
         .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    drop(db);
+    let _ = append_event_db(data_home,job_id,"cancel","studio","creator-declared","已请求协作式取消",&json!({"cancelRequested":true}));
     Ok(json!({"ok":true,"data":{"jobId":job_id,"cancelRequested":true}}))
 }
 
@@ -664,8 +981,10 @@ fn task_create(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
         VALUES(?1,?2,1,?3,?4,?5,0,'[]','planning',?6,?6)", rusqlite::params![task_id,goal_id,human_request,serde_json::to_string(&criteria).unwrap(),artifact.to_string(),now])
         .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     let result = json!({"taskId":task_id,"goalId":goal_id,"goal":goal,"phase":"planning"});
+    append_event(&tx,&task_id,"accepted","studio","creator-declared","持久任务已受理",&json!({"goalId":goal_id,"phase":"planning"}))?;
     task_save_receipt(&tx, &operation_id, &hash, &result)?;
     tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    notify_event_subscribers();
     task_payload(data_home, &task_id)
 }
 
@@ -698,8 +1017,10 @@ fn task_plan_submit(data_home: &Path, payload: &Value) -> Result<Value, ToolErro
     tx.execute("UPDATE creator_jobs SET status='awaiting-plan-approval',progress_json=?2,updated_at_ms=?3 WHERE job_id=?1",
         rusqlite::params![task_id,json!({"planRevision":expected_revision,"stepIds":step_ids}).to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     let result = json!({"taskId":task_id,"phase":"awaiting-plan-approval","planRevision":expected_revision});
+    append_event(&tx,&task_id,"plan","studio","creator-declared","任务计划已提交",&json!({"planRevision":expected_revision,"stepCount":steps.len(),"phase":"awaiting-plan-approval"}))?;
     task_save_receipt(&tx, &operation_id, &hash, &result)?;
     tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    notify_event_subscribers();
     task_payload(data_home, &task_id)
 }
 
@@ -719,8 +1040,10 @@ fn task_plan_approve(data_home: &Path, payload: &Value) -> Result<Value, ToolErr
     tx.execute("UPDATE creator_studio_tasks SET phase='ready',updated_at_ms=?2 WHERE task_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     tx.execute("UPDATE creator_jobs SET status='ready',updated_at_ms=?2 WHERE job_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     let result = json!({"taskId":task_id,"phase":"ready","planRevision":plan_revision});
+    append_event(&tx,&task_id,"plan","studio","creator-declared","任务计划已获人工批准",&json!({"planRevision":plan_revision,"phase":"ready"}))?;
     task_save_receipt(&tx, &operation_id, &hash, &result)?;
     tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    notify_event_subscribers();
     task_payload(data_home, &task_id)
 }
 
@@ -765,8 +1088,10 @@ fn task_evidence_append(data_home: &Path, payload: &Value) -> Result<Value, Tool
         rusqlite::params![task_id,next_phase,evidence_id,payload.get("proposedChangeSetId").and_then(Value::as_str),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     tx.execute("UPDATE creator_jobs SET status=?2,updated_at_ms=?3 WHERE job_id=?1", rusqlite::params![task_id,next_phase,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     let result = json!({"taskId":task_id,"phase":next_phase,"lastEvidenceId":evidence_id,"trustLevel":trust_level});
+    append_event(&tx,&task_id,"evidence","studio",&trust_level,"人工证据已追加",&json!({"evidenceId":evidence_id,"kind":kind,"criterionId":criterion_id,"phase":next_phase}))?;
     task_save_receipt(&tx, &operation_id, &hash, &result)?;
     tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    notify_event_subscribers();
     task_payload(data_home, &task_id)
 }
 
@@ -781,12 +1106,13 @@ pub fn task_execute_with_executor(data_home: &Path, payload: &Value, executor: &
     let expected_artifact_revision = task_revision_arg(payload, "expectedArtifactRevision")?;
     let operation_id = task_id_arg(payload, "operationId")?;
     let timeout_ms = payload.get("timeoutMs").and_then(Value::as_u64).unwrap_or(90_000).clamp(100, 120_000);
+    let executor_name = if payload.get("executor").and_then(Value::as_str) == Some("acp") { "acp" } else { "codex-cli" };
     let hash = task_hash(payload)?;
     let mut db = open_db(&sessions_db(data_home)?, false)?;
     ensure_schema(&db)?;
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     if task_receipt(&tx, &operation_id, &hash)?.is_some() { return task_payload(data_home, &task_id); }
-    let (task, _, plan_revision, phase) = task_row(&tx, &task_id)?;
+    let (task, session_id, plan_revision, phase) = task_row(&tx, &task_id)?;
     if phase == "executing" { return task_payload(data_home, &task_id); }
     if phase != "ready" { return Err(ToolError::new("creator_task_invalid_transition", format!("Cannot execute from {phase}."))); }
     if plan_revision != expected_plan_revision { return Err(ToolError::new("plan_revision_conflict", "Execution plan revision is stale.")); }
@@ -799,17 +1125,62 @@ pub fn task_execute_with_executor(data_home: &Path, payload: &Value, executor: &
     execution_cancellations().lock().unwrap_or_else(|error| error.into_inner()).insert(task_id.clone(), cancelled.clone());
     tx.execute("UPDATE creator_studio_tasks SET phase='executing',updated_at_ms=?2 WHERE task_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     tx.execute("UPDATE creator_jobs SET status='executing',progress_json=?2,updated_at_ms=?3 WHERE job_id=?1",
-        rusqlite::params![task_id,json!({"execution":{"operationId":operation_id,"executor":"codex-cli","status":"executing"} }).to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+        rusqlite::params![task_id,json!({"execution":{"operationId":operation_id,"executor":executor_name,"status":"executing"} }).to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let push_agent_id = format!("{executor_name}:{task_id}");
+    connection_upsert(&db,&push_agent_id,&session_id,ConnectionUpdate { executor:Some(executor_name),transport:Some(if executor_name == "acp" { "acp-stdio" } else { "mcp-stdio" }),state:"busy",capabilities:Some(vec!["task.execute".into(),"events.publish".into()]),stable_error:None,at_ms:now_ms() })?;
+    let _ = append_event_db(data_home,&task_id,"progress",executor_name,"host-observed","执行器进程已启动",&json!({"executor":executor_name,"phase":"executing"}));
+    let progress_home = data_home.to_path_buf();
+    let progress_task = task_id.clone();
+    let progress_session = session_id.clone();
+    let progress_agent = push_agent_id.clone();
+    let progress_executor = executor_name.to_owned();
+    let progress_callback: super::creator_agent_executor::AgentProgressCallback = Arc::new(move |update| {
+        let result = append_event_db(&progress_home,&progress_task,&update.kind,&progress_executor,"agent-reported",&update.summary,&update.data);
+        let state = if result.is_ok() { "busy" } else { "degraded" };
+        if let Ok(db) = open_db(&sessions_db(&progress_home).unwrap_or_else(|_| PathBuf::from("/dev/null")),false) {
+            let _ = connection_upsert(&db,&progress_agent,&progress_session,ConnectionUpdate { executor:Some(&progress_executor),transport:None,state,capabilities:None,stable_error:None,at_ms:now_ms() });
+        }
+    });
     let request = super::creator_agent_executor::AgentExecutionRequest {
         data_home: data_home.to_path_buf(), goal: task["humanRequest"].as_str().unwrap_or_default().to_owned(),
         human_request: task["humanRequest"].as_str().unwrap_or_default().to_owned(), artifact: task["artifact"].clone(),
         plan_revision: expected_plan_revision, timeout: std::time::Duration::from_millis(timeout_ms),
     };
-    let result = executor.execute(request, &cancelled);
+    let heartbeat_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let heartbeat_home = data_home.to_path_buf();
+    let heartbeat_agent = push_agent_id.clone();
+    let heartbeat_session = session_id.clone();
+    let heartbeat_executor = executor_name.to_owned();
+    let heartbeat_task = task_id.clone();
+    let heartbeat_cancelled = cancelled.clone();
+    let heartbeat_flag = heartbeat_stop.clone();
+    let heartbeat_thread = std::thread::spawn(move || {
+        while !heartbeat_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            for step in 0..50 {
+                if heartbeat_flag.load(std::sync::atomic::Ordering::Relaxed) { break; }
+                if step % 5 == 0 {
+                    if let Ok(db) = open_db(&sessions_db(&heartbeat_home).unwrap_or_else(|_| PathBuf::from("/dev/null")),false) {
+                        let requested = db.query_row("SELECT cancel_requested FROM creator_jobs WHERE job_id=?1",[&heartbeat_task],|row| row.get::<_,i64>(0)).unwrap_or(0);
+                        if requested != 0 { heartbeat_cancelled.store(true,std::sync::atomic::Ordering::Relaxed); }
+                    }
+                }
+                if heartbeat_cancelled.load(std::sync::atomic::Ordering::Relaxed) { break; }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            if heartbeat_flag.load(std::sync::atomic::Ordering::Relaxed) || heartbeat_cancelled.load(std::sync::atomic::Ordering::Relaxed) { break; }
+            if let Ok(db) = open_db(&sessions_db(&heartbeat_home).unwrap_or_else(|_| PathBuf::from("/dev/null")),false) {
+                let _ = connection_upsert(&db,&heartbeat_agent,&heartbeat_session,ConnectionUpdate { executor:Some(&heartbeat_executor),transport:None,state:"busy",capabilities:None,stable_error:None,at_ms:now_ms() });
+            }
+        }
+    });
+    let result = executor.execute_with_progress(request, &cancelled, &progress_callback);
+    heartbeat_stop.store(true,std::sync::atomic::Ordering::Relaxed);
+    let _ = heartbeat_thread.join();
     execution_cancellations().lock().unwrap_or_else(|error| error.into_inner()).remove(&task_id);
     let current_phase = task_row(&db, &task_id)?.3;
     if cancelled.load(std::sync::atomic::Ordering::Relaxed) || current_phase == "cancelled" {
+        connection_upsert(&db,&push_agent_id,&session_id,ConnectionUpdate { executor:None,transport:None,state:"offline",capabilities:None,stable_error:Some(Some("codex_cancelled")),at_ms:now_ms() })?;
         return Err(ToolError::new("codex_cancelled", "Task execution was cancelled."));
     }
     let result = match result {
@@ -829,13 +1200,17 @@ pub fn task_execute_with_executor(data_home: &Path, payload: &Value, executor: &
             tx.execute("INSERT INTO creator_studio_task_evidence(evidence_id,task_id,plan_revision,step_id,criterion_id,kind,trust_level,summary,data_json,created_at_ms)
                 VALUES(?1,?2,?3,'human-review','agent-preview','preview','host-observed',?4,?5,?6)",
                 rusqlite::params![evidence_id,task_id,expected_plan_revision,success.summary,success.preview.to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            append_event(&tx,&task_id,"preview",executor_name,"host-observed","Host 已生成并校验执行器 Preview",&json!({"previewId":preview_id,"baseRevision":expected_artifact_revision,"executor":executor_name}))?;
+            append_event(&tx,&task_id,"evidence","host","host-observed","Host Preview 证据已记录",&json!({"evidenceId":evidence_id,"criterionId":"agent-preview","kind":"preview","trustLevel":"host-observed"}))?;
             tx.execute("UPDATE creator_studio_tasks SET phase='awaiting-review',last_evidence_id=?2,proposed_change_set_id=?3,updated_at_ms=?4 WHERE task_id=?1",
                 rusqlite::params![task_id,evidence_id,preview_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
             tx.execute("UPDATE creator_jobs SET status='awaiting-review',progress_json=?2,updated_at_ms=?3 WHERE job_id=?1",
-                rusqlite::params![task_id,json!({"execution":{"operationId":operation_id,"executor":"codex-cli","status":"awaiting-review","previewId":preview_id} }).to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+                rusqlite::params![task_id,json!({"execution":{"operationId":operation_id,"executor":executor_name,"status":"awaiting-review","previewId":preview_id} }).to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
             let result = json!({"taskId":task_id,"phase":"awaiting-review","proposedChangeSetId":preview_id,"lastEvidenceId":evidence_id});
             task_save_receipt(&tx, &operation_id, &hash, &result)?;
             tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            connection_upsert(&db,&push_agent_id,&session_id,ConnectionUpdate { executor:None,transport:None,state:"offline",capabilities:None,stable_error:Some(None),at_ms:now_ms() })?;
+            notify_event_subscribers();
             task_payload(data_home, &task_id)
         }
         Err(error) => {
@@ -843,8 +1218,11 @@ pub fn task_execute_with_executor(data_home: &Path, payload: &Value, executor: &
             let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
             tx.execute("UPDATE creator_studio_tasks SET phase='failed',updated_at_ms=?2 WHERE task_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
             tx.execute("UPDATE creator_jobs SET status='failed',progress_json=?2,failure_json=?3,updated_at_ms=?4 WHERE job_id=?1",
-                rusqlite::params![task_id,json!({"execution":{"operationId":operation_id,"executor":"codex-cli","status":"failed","code":error.code} }).to_string(),json!({"code":error.code}).to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+                rusqlite::params![task_id,json!({"execution":{"operationId":operation_id,"executor":executor_name,"status":"failed","code":error.code} }).to_string(),json!({"code":error.code}).to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            append_event(&tx,&task_id,"failure","host","host-observed","执行器运行失败",&json!({"code":error.code,"executor":executor_name,"phase":"failed"}))?;
             tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            connection_upsert(&db,&push_agent_id,&session_id,ConnectionUpdate { executor:None,transport:None,state:"offline",capabilities:None,stable_error:Some(Some(if valid_connection_error(error.code) { error.code } else { "executor_failed" })),at_ms:now_ms() })?;
+            notify_event_subscribers();
             Err(error)
         }
     }
@@ -880,8 +1258,10 @@ fn task_review_accept(data_home: &Path, payload: &Value) -> Result<Value, ToolEr
     tx.execute("UPDATE creator_studio_tasks SET phase='accepted',updated_at_ms=?2 WHERE task_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     tx.execute("UPDATE creator_jobs SET status='accepted',updated_at_ms=?2 WHERE job_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     let result = json!({"taskId":task_id,"phase":"accepted","reviewerNote":reviewer_note});
+    append_event(&tx,&task_id,"review","studio","creator-declared","人工验收已接受任务",&json!({"decision":"accepted","planRevision":plan_revision}))?;
     task_save_receipt(&tx, &operation_id, &hash, &result)?;
     tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    notify_event_subscribers();
     task_payload(data_home, &task_id)
 }
 
@@ -902,8 +1282,10 @@ fn task_review_reject(data_home: &Path, payload: &Value) -> Result<Value, ToolEr
     tx.execute("UPDATE creator_studio_tasks SET phase='rejected',updated_at_ms=?2 WHERE task_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     tx.execute("UPDATE creator_jobs SET status='rejected',failure_json=?2,updated_at_ms=?3 WHERE job_id=?1", rusqlite::params![task_id,json!({"code":"human_rejected","reason":reason}).to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     let result = json!({"taskId":task_id,"phase":"rejected","reason":reason});
+    append_event(&tx,&task_id,"review","studio","creator-declared","人工验收已退回任务",&json!({"decision":"rejected","planRevision":plan_revision}))?;
     task_save_receipt(&tx, &operation_id, &hash, &result)?;
     tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    notify_event_subscribers();
     task_payload(data_home, &task_id)
 }
 
@@ -947,13 +1329,14 @@ pub fn task_claim(data_home: &Path, payload: &Value) -> Result<Value, ToolError>
     ensure_schema(&db)?;
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     if let Some(result) = task_receipt(&tx, &operation_id, &hash)? { return Ok(result); }
-    let (task, _, current_revision, phase) = task_row(&tx, &task_id)?;
+    let (task, session_id, current_revision, phase) = task_row(&tx, &task_id)?;
     if current_revision != plan_revision { return Err(ToolError::new("plan_revision_conflict", "Task plan moved on; re-read the task and claim the current revision.")); }
     if task["artifact"]["expectedRevision"].as_u64() != Some(expected_artifact_revision) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
     let existing_claim = task_claim_row(&tx, &task_id)?;
     match phase.as_str() {
         "ready" => {}
         "executing" if existing_claim.as_ref().is_some_and(|(owner,_)| owner == &agent_id) => {
+            connection_upsert(&tx,&agent_id,&session_id,ConnectionUpdate { executor:Some("pull"),transport:Some("mcp-stdio"),state:"busy",capabilities:Some(vec!["task.pull".into(),"events.subscribe".into()]),stable_error:None,at_ms:now_ms() })?;
             let result = task_payload(data_home, &task_id)?;
             task_save_receipt(&tx, &operation_id, &hash, &json!({"taskId":task_id,"phase":"executing","claimant":agent_id,"reclaimed":true}))?;
             tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
@@ -973,8 +1356,11 @@ pub fn task_claim(data_home: &Path, payload: &Value) -> Result<Value, ToolError>
         .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     tx.execute("UPDATE creator_jobs SET status='executing',updated_at_ms=?2 WHERE job_id=?1", rusqlite::params![task_id,now])
         .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    connection_upsert(&tx,&agent_id,&session_id,ConnectionUpdate { executor:Some("pull"),transport:Some("mcp-stdio"),state:"busy",capabilities:Some(vec!["task.pull".into(),"events.subscribe".into()]),stable_error:None,at_ms:now })?;
+    append_event(&tx,&task_id,"progress","pull-agent","agent-reported","Pull Agent 已认领任务",&json!({"agentId":agent_id,"phase":"executing","planRevision":plan_revision}))?;
     task_save_receipt(&tx, &operation_id, &hash, &json!({"taskId":task_id,"phase":"executing","claimant":agent_id}))?;
     tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    notify_event_subscribers();
     let mut result = task_payload(data_home, &task_id)?;
     result["claimant"] = json!(agent_id);
     result["next"] = json!({"steps":[
@@ -982,6 +1368,53 @@ pub fn task_claim(data_home: &Path, payload: &Value) -> Result<Value, ToolError>
         "Create one host preview bound to the artifact: creator_vehicle_preview / creator_game_preview / creator_city_edit_preview, or creator_scene_preview with Studio open.",
         "Call creator_task_submit_result with that previewId within its 10-minute TTL."],
         "note":"Submit re-verifies the preview server-side; the host records the evidence and moves the task to human review."});
+    Ok(result)
+}
+
+fn task_progress(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
+    let task_id = task_id_arg(payload,"taskId")?;
+    let agent_id = task_id_arg(payload,"agentId")?;
+    let plan_revision = task_revision_arg(payload,"planRevision")?;
+    let kind = task_id_arg(payload,"kind")?;
+    if !matches!(kind.as_str(),"plan" | "progress" | "executor-output") {
+        return Err(ToolError::new("invalid_argument","Pull progress kind is unsupported."));
+    }
+    let code = task_id_arg(payload,"code")?;
+    if !matches!(code.as_str(),"analysis-started" | "artifact-read" | "operations-proposed" | "preview-requested" | "preview-ready" | "validation-started" | "validation-completed" | "waiting-host" | "other") {
+        return Err(ToolError::new("invalid_argument","Pull progress code is unsupported."));
+    }
+    let percent = payload.get("percent").and_then(Value::as_u64);
+    if percent.is_some_and(|value| value > 100) || payload.get("percent").is_some() && percent.is_none() {
+        return Err(ToolError::new("invalid_argument","percent must be an integer from 0 to 100."));
+    }
+    let step_id = payload.get("stepId").and_then(Value::as_str);
+    if payload.get("stepId").is_some() && step_id.is_none() { return Err(ToolError::new("invalid_argument","stepId must be a stable id.")); }
+    let operation_id = task_id_arg(payload,"operationId")?;
+    let hash = task_hash(payload)?;
+    let mut db = open_db(&sessions_db(data_home)?,false)?;
+    ensure_schema(&db)?;
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable",format!("{error}")))?;
+    if let Some(result) = task_receipt(&tx,&operation_id,&hash)? { return Ok(result); }
+    let (task,session_id,current_revision,phase) = task_row(&tx,&task_id)?;
+    if phase != "executing" || current_revision != plan_revision {
+        return Err(ToolError::new("creator_task_invalid_transition","Only the current executing plan can report progress."));
+    }
+    if task_claim_row(&tx,&task_id)?.as_ref().map(|(owner,_)| owner.as_str()) != Some(agent_id.as_str()) {
+        return Err(ToolError::new("creator_task_claim_mismatch","Only the claiming agent may report progress."));
+    }
+    if let Some(step) = step_id {
+        if !task["stepIds"].as_array().is_some_and(|steps| steps.iter().any(|id| id.as_str() == Some(step))) {
+            return Err(ToolError::new("invalid_argument","stepId is not in the approved plan."));
+        }
+    }
+    let now = now_ms();
+    connection_upsert(&tx,&agent_id,&session_id,ConnectionUpdate { executor:Some("pull"),transport:Some("mcp-stdio"),state:"busy",capabilities:Some(vec!["task.pull".into(),"events.subscribe".into()]),stable_error:None,at_ms:now })?;
+    let data = json!({"code":code,"stepId":step_id,"percent":percent,"planRevision":plan_revision});
+    let event = append_event(&tx,&task_id,&kind,"pull-agent","agent-reported","Pull Agent 已报告类型化进度",&data)?;
+    let result = json!({"taskId":task_id,"event":event});
+    task_save_receipt(&tx,&operation_id,&hash,&result)?;
+    tx.commit().map_err(|error| ToolError::new("storage_unavailable",format!("{error}")))?;
+    notify_event_subscribers();
     Ok(result)
 }
 
@@ -998,7 +1431,7 @@ pub fn task_submit_result(data_home: &Path, payload: &Value) -> Result<Value, To
     ensure_schema(&db)?;
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     if let Some(result) = task_receipt(&tx, &operation_id, &hash)? { return Ok(result); }
-    let (task, _, current_revision, phase) = task_row(&tx, &task_id)?;
+    let (task, session_id, current_revision, phase) = task_row(&tx, &task_id)?;
     if phase != "executing" || current_revision != plan_revision { return Err(ToolError::new("creator_task_invalid_transition", format!("Cannot submit from {phase} with plan revision {plan_revision}."))); }
     let claimant = task_claim_row(&tx, &task_id)?;
     if claimant.as_ref().map(|(owner,_)| owner.as_str()) != Some(agent_id.as_str()) {
@@ -1011,14 +1444,25 @@ pub fn task_submit_result(data_home: &Path, payload: &Value) -> Result<Value, To
     // 服务端复核（诚实闸的核心）：预览由宿主进程持有（内存、TTL 600s），submit 经
     // broker 回宿主确认「存在、绑定本 artifact、baseRevision 匹配、未过期」。复用
     // Studio 域错误码映射；宿主不在场时诚实报 plugin_unavailable，绝不降级采信。
-    let verified = super::creator_studio::call(data_home, "creator.task.preview.verify",
-        &json!({"projectId":project_id,"previewId":preview_id}), 15_000)?;
+    let verified = match super::creator_studio::call(data_home, "creator.task.preview.verify",
+        &json!({"projectId":project_id,"previewId":preview_id}), 15_000) {
+        Ok(value) => value,
+        Err(error) => {
+            connection_upsert(&tx,&agent_id,&session_id,ConnectionUpdate { executor:Some("pull"),transport:Some("mcp-stdio"),state:"degraded",capabilities:None,stable_error:Some(Some(if valid_connection_error(error.code) { error.code } else { "executor_failed" })),at_ms:now_ms() })?;
+            append_event(&tx,&task_id,"failure","host","host-observed","Pull 提交的 Preview 复核失败",&json!({"code":error.code,"phase":"executing"}))?;
+            tx.commit().map_err(|commit_error| ToolError::new("storage_unavailable",format!("{commit_error}")))?;
+            notify_event_subscribers();
+            return Err(error);
+        }
+    };
     let verified = verified.get("data").cloned().unwrap_or(verified);
     if verified["projectId"].as_str() != Some(project_id) || verified["baseRevision"].as_u64() != Some(expected_artifact_revision) {
         return Err(ToolError::new("preview_required", "Submitted preview does not match the task artifact (project or base revision)."));
     }
     let criteria = task["acceptanceCriteria"].as_array().ok_or_else(|| ToolError::new("storage_unavailable", "Task acceptance is damaged."))?;
     let now = now_ms();
+    connection_upsert(&tx,&agent_id,&session_id,ConnectionUpdate { executor:Some("pull"),transport:Some("mcp-stdio"),state:"online",capabilities:None,stable_error:Some(None),at_ms:now })?;
+    append_event(&tx,&task_id,"preview","host","host-observed","Host 已复核 Pull 提交的 Preview",&json!({"previewId":preview_id,"projectId":project_id,"baseRevision":expected_artifact_revision}))?;
     let mut last_evidence_id = String::new();
     for criterion in criteria.iter().filter(|criterion| criterion["requiredEvidenceKind"].as_str() == Some("preview")) {
         let criterion_id = criterion["criterionId"].as_str().unwrap_or_default().to_owned();
@@ -1027,6 +1471,7 @@ pub fn task_submit_result(data_home: &Path, payload: &Value) -> Result<Value, To
             VALUES(?1,?2,?3,NULL,?4,'preview','host-observed',?5,?6,?7)",
             rusqlite::params![evidence_id,task_id,plan_revision,criterion_id,summary,verified.to_string(),now])
             .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+        append_event(&tx,&task_id,"evidence","host","host-observed","Host Preview 证据已记录",&json!({"evidenceId":evidence_id.clone(),"criterionId":criterion_id,"kind":"preview","trustLevel":"host-observed"}))?;
         last_evidence_id = evidence_id;
     }
     if last_evidence_id.is_empty() { return Err(ToolError::new("creator_task_acceptance_missing", "Task has no preview acceptance criterion to satisfy.")); }
@@ -1036,6 +1481,7 @@ pub fn task_submit_result(data_home: &Path, payload: &Value) -> Result<Value, To
         .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     task_save_receipt(&tx, &operation_id, &hash, &json!({"taskId":task_id,"phase":"awaiting-review","previewId":preview_id}))?;
     tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    notify_event_subscribers();
     let mut result = task_payload(data_home, &task_id)?;
     result["next"] = json!({"tool":"creator_task_review_accept","note":"A human reviewer accepts or rejects; review evidence stays host-observed."});
     Ok(result)
@@ -1057,8 +1503,10 @@ fn task_cancel(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
     tx.execute("UPDATE creator_studio_tasks SET phase='cancelled',updated_at_ms=?2 WHERE task_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     tx.execute("UPDATE creator_jobs SET status='cancelled',cancel_requested=1,updated_at_ms=?2 WHERE job_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     let result = json!({"taskId":task_id,"phase":"cancelled"});
+    append_event(&tx,&task_id,"cancel","studio","creator-declared","任务已取消",&json!({"phase":"cancelled"}))?;
     task_save_receipt(&tx, &operation_id, &hash, &result)?;
     tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    notify_event_subscribers();
     task_payload(data_home, &task_id)
 }
 
@@ -1082,6 +1530,7 @@ pub fn task_dispatch(data_home: &Path, method: &str, payload: &Value) -> Result<
         "creator.task.list_open" => task_list_open(data_home, payload),
         "creator.task.claim" => task_claim(data_home, payload),
         "creator.task.submit_result" => task_submit_result(data_home, payload),
+        "creator.task.progress" => task_progress(data_home, payload),
         _ => Err(ToolError::new("creator_method_unavailable", format!("Unknown task method {method}."))),
     }
 }
@@ -1091,6 +1540,11 @@ pub fn session_dispatch(data_home: &Path, method: &str, payload: &Value) -> Resu
         "creator.session.open" => session_open(data_home, payload)?,
         "creator.session.status" => session_status(data_home, payload)?,
         "creator.session.close" => session_close(data_home, payload)?,
+        "creator.connection.heartbeat" => return connection_heartbeat(data_home,payload,false),
+        "creator.connection.disconnect" => return connection_heartbeat(data_home,payload,true),
+        "creator.connection.status" => return connection_status(data_home,payload),
+        "creator.capabilities.status" => return capabilities_status(data_home),
+        "creator.events.subscribe" => return events_subscribe(data_home,payload),
         _ => return Err(ToolError::new("creator_method_unavailable", format!("Unknown session method {method}."))),
     };
     Ok(result["data"].clone())
@@ -1106,6 +1560,11 @@ pub fn run(name: &str, args: &Value, data_home: &Path, _allow_local_writes: bool
         "creator_session_open" => session_open(data_home, args),
         "creator_session_status" => session_status(data_home, args),
         "creator_session_close" => session_close(data_home, args),
+        "creator_connection_heartbeat" => connection_heartbeat(data_home,args,false).map(|data| json!({"ok":true,"data":data})),
+        "creator_connection_disconnect" => connection_heartbeat(data_home,args,true).map(|data| json!({"ok":true,"data":data})),
+        "creator_connection_status" => connection_status(data_home,args).map(|data| json!({"ok":true,"data":data})),
+        "creator_capabilities_status" => capabilities_status(data_home).map(|data| json!({"ok":true,"data":data})),
+        "creator_events_subscribe" => events_subscribe(data_home,args).map(|data| json!({"ok":true,"data":data})),
         "creator_job_list" => job_list(data_home, args),
         "creator_job_status" => job_status(data_home, args),
         "creator_job_wait" => job_wait(data_home, args),
@@ -1123,6 +1582,7 @@ pub fn run(name: &str, args: &Value, data_home: &Path, _allow_local_writes: bool
         "creator_task_list_open" => task_list_open(data_home, args),
         "creator_task_claim" => task_claim(data_home, args),
         "creator_task_submit_result" => task_submit_result(data_home, args),
+        "creator_task_progress" => task_progress(data_home,args).map(|data| json!({"ok":true,"data":data})),
         "creator_game_type_list" => game_type_list(data_home, args),
         _ => Err(ToolError::new("internal_error", format!("tool `{name}` registered but not wired"))),
     }
@@ -1429,6 +1889,12 @@ mod tests {
         assert_eq!(executed["execution"]["status"], "awaiting-review");
         assert_eq!(executed["evidence"].as_array().unwrap().len(), 1);
         assert_eq!(executed["evidence"][0]["trustLevel"], "host-observed");
+        let events = events_subscribe(&home,&json!({"taskId":task_id,"limit":100})).unwrap();
+        let kinds: Vec<&str> = events["events"].as_array().unwrap().iter().filter_map(|event| event["kind"].as_str()).collect();
+        assert!(kinds.contains(&"progress") && kinds.contains(&"preview") && kinds.contains(&"evidence"),"kinds={kinds:?}");
+        let serialized = serde_json::to_string(&events).unwrap();
+        assert!(!serialized.contains("Review the saved game without executing an agent"));
+        assert!(!serialized.contains(home.to_string_lossy().as_ref()));
         let replay = task_execute_with_executor(&home, &json!({"taskId":task_id,"expectedPlanRevision":1,"expectedArtifactRevision":3,"operationId":"execute-run"}), &executor).unwrap();
         assert_eq!(replay["evidence"].as_array().unwrap().len(), 1);
         assert_eq!(task_dispatch(&home, "creator.task.review.accept", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"reviewerNote":"Accept","operationId":"execute-accept-early"})).unwrap_err().code, "creator_task_evidence_required");
@@ -1465,6 +1931,240 @@ mod tests {
         let missing = crate::mcp::creator_agent_executor::tests::FakeExecutor::failure("preview_required");
         assert_eq!(task_execute_with_executor(&home, &json!({"taskId":task_id,"expectedPlanRevision":3,"expectedArtifactRevision":3,"operationId":"execute-missing-preview"}), &missing).unwrap_err().code, "preview_required");
         assert_eq!(task_dispatch(&home, "creator.task.status", &json!({"taskId":task_id})).unwrap()["phase"], "failed");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn connections_expire_independently_and_disconnect_without_touching_tasks() {
+        let home = temp_home();
+        let first = session_open(&home,&json!({"agentId":"agent-a","executor":"acp","transport":"acp-stdio","capabilities":["task.pull"]})).unwrap();
+        let second = session_open(&home,&json!({"agentId":"agent-b","projectId":"project-1"})).unwrap();
+        let first_id = first["data"]["sessionId"].as_str().unwrap();
+        let second_id = second["data"]["sessionId"].as_str().unwrap();
+        connection_heartbeat(&home,&json!({"agentId":"agent-a","sessionId":first_id,"state":"busy","lastStableError":"acp_timeout"}),false).unwrap();
+        let status = connection_status(&home,&json!({})).unwrap();
+        assert_eq!(status["connections"].as_array().unwrap().len(),2);
+        assert!(status["connections"].as_array().unwrap().iter().all(|connection| connection["state"] != "offline"));
+        let db = open_db(&sessions_db(&home).unwrap(),false).unwrap();
+        db.execute("UPDATE creator_agent_connections SET last_seen_ms=1 WHERE agent_id='agent-a'",[]).unwrap();
+        drop(db);
+        let status = connection_status(&home,&json!({})).unwrap();
+        let a = status["connections"].as_array().unwrap().iter().find(|connection| connection["agentId"] == "agent-a").unwrap();
+        let b = status["connections"].as_array().unwrap().iter().find(|connection| connection["agentId"] == "agent-b").unwrap();
+        assert_eq!(a["state"],"offline");
+        assert_eq!(a["lastStableError"],"acp_timeout");
+        assert_eq!(b["state"],"online");
+        connection_heartbeat(&home,&json!({"agentId":"agent-b","sessionId":second_id}),true).unwrap();
+        assert_eq!(connection_status(&home,&json!({"agentId":"agent-b"})).unwrap()["connections"][0]["state"],"offline");
+        assert_eq!(connection_heartbeat(&home,&json!({"agentId":"agent-b","sessionId":first_id}),false).unwrap_err().code,"permission_denied");
+        assert_eq!(connection_heartbeat(&home,&json!({"agentId":"agent-a","sessionId":first_id,"capabilities":["bad capability"]}),false).unwrap_err().code,"invalid_argument");
+        assert_eq!(connection_heartbeat(&home,&json!({"agentId":"agent-a","sessionId":first_id,"lastStableError":"sk-live-secret-token"}),false).unwrap_err().code,"invalid_argument");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn event_cursor_resumes_in_order_without_duplicates_or_cross_task_cursors() {
+        let home = temp_home();
+        let session = session_open(&home,&json!({"agentId":"studio-local","projectId":"project-1"})).unwrap();
+        let session_id = session["data"]["sessionId"].as_str().unwrap();
+        prepare_artifact(&home,"project-1",3);
+        let created = task_create(&home,&studio_goal(session_id,"events-create")).unwrap();
+        let task_id = created["taskId"].as_str().unwrap();
+        task_plan_submit(&home,&studio_plan(task_id,1,"events-plan")).unwrap();
+        task_plan_approve(&home,&json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"operationId":"events-approve"})).unwrap();
+        let first = events_subscribe(&home,&json!({"taskId":task_id,"limit":2})).unwrap();
+        assert_eq!(first["events"].as_array().unwrap().len(),2);
+        assert_eq!(first["hasMore"],true);
+        assert_eq!(first["events"][0]["seq"],1);
+        assert_eq!(first["events"][1]["seq"],2);
+        let cursor = first["nextAfterEventId"].as_u64().unwrap();
+        let second = events_subscribe(&home,&json!({"taskId":task_id,"afterEventId":cursor,"limit":2})).unwrap();
+        assert_eq!(second["events"].as_array().unwrap().len(),1);
+        assert_eq!(second["events"][0]["seq"],3);
+        assert_eq!(second["events"][0]["kind"],"plan");
+        assert_ne!(second["events"][0]["eventId"],json!(cursor));
+        drop(open_db(&sessions_db(&home).unwrap(),false).unwrap());
+        let recovered = events_subscribe(&home,&json!({"taskId":task_id,"afterEventId":second["nextAfterEventId"],"timeoutMs":0})).unwrap();
+        assert_eq!(recovered["events"].as_array().unwrap().len(),0);
+        assert_eq!(recovered["waitTimedOut"],false);
+        let other = task_create(&home,&studio_goal(session_id,"events-other")).unwrap();
+        let other_id = other["taskId"].as_str().unwrap();
+        let foreign = events_subscribe(&home,&json!({"taskId":other_id,"limit":1})).unwrap()["events"][0]["eventId"].as_u64().unwrap();
+        assert_eq!(events_subscribe(&home,&json!({"taskId":task_id,"afterEventId":foreign})).unwrap_err().code,"invalid_argument");
+        assert_eq!(events_subscribe(&home,&json!({"taskId":task_id,"limit":0})).unwrap_err().code,"invalid_argument");
+        assert_eq!(events_subscribe(&home,&json!({"taskId":task_id,"timeoutMs":30001})).unwrap_err().code,"invalid_argument");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn event_long_poll_wakes_on_commit_and_survives_restart_cursor() {
+        let home = temp_home();
+        let session = session_open(&home,&json!({"agentId":"studio-local","projectId":"project-1"})).unwrap();
+        let session_id = session["data"]["sessionId"].as_str().unwrap();
+        prepare_artifact(&home,"project-1",3);
+        let created = task_create(&home,&studio_goal(session_id,"wake-create")).unwrap();
+        let task_id = created["taskId"].as_str().unwrap().to_owned();
+        let accepted = events_subscribe(&home,&json!({"taskId":task_id,"limit":1})).unwrap()["events"][0]["eventId"].as_u64().unwrap();
+        let wait_home = home.clone();
+        let wait_task = task_id.clone();
+        let started = std::time::Instant::now();
+        let waiting = std::thread::spawn(move || events_subscribe(&wait_home,&json!({"taskId":wait_task,"afterEventId":accepted,"timeoutMs":5000,"limit":10})).unwrap());
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        task_plan_submit(&home,&studio_plan(&task_id,1,"wake-plan")).unwrap();
+        let update = waiting.join().unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert_eq!(update["events"].as_array().unwrap().len(),1);
+        assert_eq!(update["events"][0]["kind"],"plan");
+        let timed_out = events_subscribe(&home,&json!({"taskId":task_id,"afterEventId":update["nextAfterEventId"],"timeoutMs":100})).unwrap();
+        assert_eq!(timed_out["waitTimedOut"],true);
+        assert_eq!(timed_out["events"].as_array().unwrap().len(),0);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn pull_progress_is_bounded_idempotent_and_claim_scoped() {
+        let home = temp_home();
+        let session = session_open(&home,&json!({"agentId":"studio-local","projectId":"project-1"})).unwrap();
+        let session_id = session["data"]["sessionId"].as_str().unwrap();
+        prepare_artifact(&home,"project-1",3);
+        let created = task_create(&home,&studio_goal_with_preview(session_id,"progress-create")).unwrap();
+        let task_id = created["taskId"].as_str().unwrap();
+        task_plan_submit(&home,&studio_plan(task_id,1,"progress-plan")).unwrap();
+        task_plan_approve(&home,&json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"operationId":"progress-approve"})).unwrap();
+        task_claim(&home,&json!({"taskId":task_id,"agentId":"agent-a","expectedPlanRevision":1,"expectedArtifactRevision":3,"operationId":"progress-claim"})).unwrap();
+        connection_heartbeat(&home,&json!({"agentId":"agent-a","sessionId":session_id,"state":"busy"}),false).unwrap();
+        assert_eq!(connection_heartbeat(&home,&json!({"agentId":"agent-b","sessionId":session_id}),false).unwrap_err().code,"permission_denied");
+        let progress = json!({"taskId":task_id,"agentId":"agent-a","planRevision":1,"kind":"progress","code":"artifact-read","stepId":"review-city","percent":40,"operationId":"progress-report"});
+        let first = task_progress(&home,&progress).unwrap();
+        assert_eq!(task_progress(&home,&progress).unwrap(),first);
+        let events = events_subscribe(&home,&json!({"taskId":task_id,"limit":100})).unwrap();
+        assert_eq!(events["events"].as_array().unwrap().iter().filter(|event| event["data"]["code"] == "artifact-read").count(),1);
+        assert_eq!(task_progress(&home,&json!({"taskId":task_id,"agentId":"agent-b","planRevision":1,"kind":"progress","code":"other","operationId":"progress-other"})).unwrap_err().code,"creator_task_claim_mismatch");
+        assert_eq!(task_progress(&home,&json!({"taskId":task_id,"agentId":"agent-a","planRevision":1,"kind":"progress","code":"raw-log","operationId":"progress-invalid"})).unwrap_err().code,"invalid_argument");
+        assert_eq!(task_progress(&home,&json!({"taskId":task_id,"agentId":"agent-a","planRevision":1,"kind":"progress","code":"other","percent":101,"operationId":"progress-percent"})).unwrap_err().code,"invalid_argument");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn capability_matrix_uses_real_studio_connections_and_preserves_headless_boundaries() {
+        let home = temp_home();
+        assert_eq!(capabilities_status(&home).unwrap()["studioOnline"],false);
+        let studio = session_open(&home,&json!({"agentId":"studio-ui","executor":"studio","transport":"studio-webview","capabilities":["preview.scene"]})).unwrap();
+        let studio_session = studio["data"]["sessionId"].as_str().unwrap();
+        let status = capabilities_status(&home).unwrap();
+        assert_eq!(status["studioOnline"],true);
+        let capabilities = status["capabilities"].as_array().unwrap();
+        assert_eq!(capabilities.iter().find(|item| item["id"] == "task.pull").unwrap()["headless"],true);
+        for id in ["preview.scene","preview.game","execution.codex","execution.acp","operation.capture"] {
+            let entry = capabilities.iter().find(|item| item["id"] == id).unwrap();
+            assert_eq!(entry["headless"],false,"{id}");
+            assert_eq!(entry["requiresStudioWebView"],true,"{id}");
+        }
+        for id in ["preview.vehicle","preview.city-world","operation.review","operation.project-commit","operation.publish"] {
+            assert_eq!(capabilities.iter().find(|item| item["id"] == id).unwrap()["headless"],true,"{id}");
+        }
+        for state in ["busy","degraded"] {
+            connection_heartbeat(&home,&json!({"agentId":"studio-ui","sessionId":studio_session,"state":state}),false).unwrap();
+            assert_eq!(capabilities_status(&home).unwrap()["studioOnline"],true,"{state}");
+        }
+        connection_heartbeat(&home,&json!({"agentId":"studio-ui","sessionId":studio_session}),true).unwrap();
+        assert_eq!(capabilities_status(&home).unwrap()["studioOnline"],false);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn legacy_jobs_have_incremental_events_and_pre_event_rows_remain_readable() {
+        let home = temp_home();
+        register_playtest_job(&home,&json!({"ok":true,"data":{"runId":"legacy-run","releaseId":"release-1"}}));
+        let jobs = session_jobs(&home,"session-any").unwrap();
+        let job_id = jobs[0]["jobId"].as_str().unwrap();
+        let events = events_subscribe(&home,&json!({"taskId":job_id,"limit":1})).unwrap();
+        assert_eq!(events["events"][0]["kind"],"accepted");
+        assert_eq!(events["hasMore"],true);
+        let db = open_db(&sessions_db(&home).unwrap(),false).unwrap();
+        db.execute("INSERT INTO creator_jobs(job_id,kind,status,subject_json,progress_json,failure_json,cancel_requested,session_id,created_at_ms,updated_at_ms)
+            VALUES('old-job','capture','running','{}','{}','{}',0,NULL,1,1)",[]).unwrap();
+        drop(db);
+        let old = events_subscribe(&home,&json!({"taskId":"old-job","timeoutMs":0})).unwrap();
+        assert_eq!(old["events"].as_array().unwrap().len(),0);
+        assert_eq!(old["nextAfterEventId"],0);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn external_cancel_stops_push_executor_without_creating_success_evidence() {
+        struct WaitingExecutor;
+        impl super::super::creator_agent_executor::CreatorAgentExecutor for WaitingExecutor {
+            fn execute(&self, _request: super::super::creator_agent_executor::AgentExecutionRequest, cancelled: &std::sync::atomic::AtomicBool)
+                -> Result<super::super::creator_agent_executor::AgentExecutionSuccess,ToolError> {
+                while !cancelled.load(std::sync::atomic::Ordering::Relaxed) { std::thread::sleep(std::time::Duration::from_millis(20)); }
+                Err(ToolError::new("codex_cancelled","Cancelled by the host ledger."))
+            }
+        }
+        let home = temp_home();
+        let session = session_open(&home,&json!({"agentId":"studio-local","projectId":"project-1"})).unwrap();
+        let session_id = session["data"]["sessionId"].as_str().unwrap();
+        prepare_artifact(&home,"project-1",3);
+        let created = task_create(&home,&studio_goal_with_preview(session_id,"external-cancel-create")).unwrap();
+        let task_id = created["taskId"].as_str().unwrap();
+        task_plan_submit(&home,&studio_plan(task_id,1,"external-cancel-plan")).unwrap();
+        task_plan_approve(&home,&json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"operationId":"external-cancel-approve"})).unwrap();
+        let execute_home = home.clone();
+        let execute_task = task_id.to_owned();
+        let started = std::time::Instant::now();
+        let running = std::thread::spawn(move || task_execute_with_executor(&execute_home,&json!({"taskId":execute_task,"expectedPlanRevision":1,"expectedArtifactRevision":3,"operationId":"external-cancel-execute"}),&WaitingExecutor));
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let db = open_db(&sessions_db(&home).unwrap(),false).unwrap();
+        db.execute("UPDATE creator_studio_tasks SET phase='cancelled' WHERE task_id=?1",[task_id]).unwrap();
+        db.execute("UPDATE creator_jobs SET status='cancelled',cancel_requested=1 WHERE job_id=?1",[task_id]).unwrap();
+        drop(db);
+        let error = running.join().unwrap().unwrap_err();
+        assert_eq!(error.code,"codex_cancelled");
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+        let status = task_payload(&home,task_id).unwrap();
+        assert_eq!(status["phase"],"cancelled");
+        assert!(status["evidence"].as_array().unwrap().is_empty());
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn silent_push_executor_heartbeat_prevents_false_ttl_offline() {
+        struct SilentExecutor { finish: Arc<std::sync::atomic::AtomicBool> }
+        impl super::super::creator_agent_executor::CreatorAgentExecutor for SilentExecutor {
+            fn execute(&self, request: super::super::creator_agent_executor::AgentExecutionRequest, _cancelled: &std::sync::atomic::AtomicBool)
+                -> Result<super::super::creator_agent_executor::AgentExecutionSuccess,ToolError> {
+                let started = std::time::Instant::now();
+                while !self.finish.load(std::sync::atomic::Ordering::Relaxed) && started.elapsed() < std::time::Duration::from_secs(10) {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Ok(super::super::creator_agent_executor::AgentExecutionSuccess { summary:"Silent preview".into(),
+                    preview:json!({"previewId":"silent-preview","baseRevision":request.artifact["expectedRevision"]}) })
+            }
+        }
+        let home = temp_home();
+        let session = session_open(&home,&json!({"agentId":"studio-local","projectId":"project-1"})).unwrap();
+        let session_id = session["data"]["sessionId"].as_str().unwrap();
+        prepare_artifact(&home,"project-1",3);
+        let created = task_create(&home,&studio_goal_with_preview(session_id,"silent-create")).unwrap();
+        let task_id = created["taskId"].as_str().unwrap();
+        task_plan_submit(&home,&studio_plan(task_id,1,"silent-plan")).unwrap();
+        task_plan_approve(&home,&json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"operationId":"silent-approve"})).unwrap();
+        let finish = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let executor = SilentExecutor { finish:finish.clone() };
+        let execute_home = home.clone();
+        let execute_task = task_id.to_owned();
+        let running = std::thread::spawn(move || task_execute_with_executor(&execute_home,&json!({"taskId":execute_task,"expectedPlanRevision":1,"expectedArtifactRevision":3,"operationId":"silent-execute"}),&executor).unwrap());
+        std::thread::sleep(std::time::Duration::from_millis(2_000));
+        let agent_id = format!("codex-cli:{task_id}");
+        let db = open_db(&sessions_db(&home).unwrap(),false).unwrap();
+        db.execute("UPDATE creator_agent_connections SET last_seen_ms=1 WHERE agent_id=?1",[&agent_id]).unwrap();
+        drop(db);
+        std::thread::sleep(std::time::Duration::from_millis(4_000));
+        let state = connection_status(&home,&json!({"agentId":agent_id})).unwrap()["connections"][0]["state"].clone();
+        finish.store(true,std::sync::atomic::Ordering::Relaxed);
+        running.join().unwrap();
+        assert_eq!(state,"busy","heartbeat must refresh even without executor output");
+        assert_eq!(connection_status(&home,&json!({"agentId":agent_id})).unwrap()["connections"][0]["state"],"offline");
         std::fs::remove_dir_all(home).unwrap();
     }
 

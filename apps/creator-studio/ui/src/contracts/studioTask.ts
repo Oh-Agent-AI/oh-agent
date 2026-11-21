@@ -64,6 +64,70 @@ export function parseStudioTask(value: unknown): StudioTask {
     execution: execution ? Object.freeze({ status: text(execution.status) ?? "unknown", ...(text(execution.previewId) ? { previewId: text(execution.previewId)! } : {}) }) : null });
 }
 
+export type StudioConnectionState = "online" | "busy" | "degraded" | "offline";
+export type StudioConnection = Readonly<{
+  agentId: string; sessionId: string; executor: string; transport: string;
+  state: StudioConnectionState; lastSeenMs: number; expiresAtMs: number;
+  capabilities: readonly string[]; lastStableError: string | null;
+}>;
+export type StudioTaskEvent = Readonly<{
+  eventId: number; taskId: string; seq: number;
+  kind: "accepted" | "plan" | "progress" | "executor-output" | "preview" | "evidence" | "failure" | "cancel" | "review";
+  source: string; trustLevel: string; summary: string; data: unknown; createdAtMs: number;
+}>;
+export type StudioEventBatch = Readonly<{ events: readonly StudioTaskEvent[]; nextAfterEventId: number; hasMore: boolean; waitTimedOut: boolean }>;
+export type StudioCapability = Readonly<{ id: string; headless: boolean; requiresStudioWebView: boolean; note: string }>;
+export type StudioCapabilityStatus = Readonly<{ studioOnline: boolean; connections: readonly StudioConnection[]; capabilities: readonly StudioCapability[] }>;
+
+const connectionState = (value: unknown): StudioConnectionState => value === "online" || value === "busy" || value === "degraded" || value === "offline" ? value : "offline";
+function parseConnection(value: unknown): StudioConnection {
+  const row = object(value);
+  const agentId = text(row?.agentId); const sessionId = text(row?.sessionId);
+  const lastSeenMs = count(row?.lastSeenMs); const expiresAtMs = count(row?.expiresAtMs);
+  if (!row || !agentId || !sessionId || lastSeenMs === null || expiresAtMs === null) throw new Error("creator_connection_invalid");
+  return Object.freeze({ agentId, sessionId, executor: text(row.executor) ?? "unknown", transport: text(row.transport) ?? "unknown",
+    state: connectionState(row.state), lastSeenMs, expiresAtMs,
+    capabilities: Object.freeze(Array.isArray(row.capabilities) ? row.capabilities.filter((item): item is string => typeof item === "string") : []),
+    lastStableError: text(row.lastStableError) });
+}
+
+export function parseStudioConnections(value: unknown): readonly StudioConnection[] {
+  const rows = object(value)?.connections;
+  if (!Array.isArray(rows)) throw new Error("creator_connection_invalid");
+  return Object.freeze(rows.map(parseConnection));
+}
+
+export function parseStudioEventBatch(value: unknown): StudioEventBatch {
+  const row = object(value); const events = row?.events;
+  const nextAfterEventId = count(row?.nextAfterEventId);
+  if (!row || !Array.isArray(events) || nextAfterEventId === null || typeof row.hasMore !== "boolean" || typeof row.waitTimedOut !== "boolean") throw new Error("creator_event_invalid");
+  const kinds = ["accepted", "plan", "progress", "executor-output", "preview", "evidence", "failure", "cancel", "review"];
+  const checked = events.map(item => {
+    const event = object(item); const eventId = count(event?.eventId); const taskId = text(event?.taskId); const seq = count(event?.seq);
+    const summary = text(event?.summary); const source = text(event?.source); const trustLevel = text(event?.trustLevel); const createdAtMs = count(event?.createdAtMs);
+    if (!event || eventId === null || !taskId || seq === null || !summary || !source || !trustLevel || createdAtMs === null || !kinds.includes(String(event.kind))) throw new Error("creator_event_invalid");
+    return Object.freeze({ eventId, taskId, seq, kind: String(event.kind) as StudioTaskEvent["kind"], source, trustLevel, summary, data: event.data ?? null, createdAtMs });
+  });
+  return Object.freeze({ events: Object.freeze(checked), nextAfterEventId, hasMore: row.hasMore, waitTimedOut: row.waitTimedOut });
+}
+
+export function mergeStudioEvents(current: readonly StudioTaskEvent[], incoming: readonly StudioTaskEvent[]): readonly StudioTaskEvent[] {
+  const byId = new Map(current.map(event => [event.eventId, event]));
+  for (const event of incoming) if (!byId.has(event.eventId)) byId.set(event.eventId, event);
+  return Object.freeze([...byId.values()].sort((a, b) => a.seq - b.seq).slice(-200));
+}
+
+export function parseStudioCapabilityStatus(value: unknown): StudioCapabilityStatus {
+  const row = object(value); const capabilities = row?.capabilities;
+  if (!row || typeof row.studioOnline !== "boolean" || !Array.isArray(capabilities)) throw new Error("creator_capability_invalid");
+  const checked = capabilities.map(item => {
+    const capability = object(item); const id = text(capability?.id); const note = text(capability?.note);
+    if (!capability || !id || !note || typeof capability.headless !== "boolean" || typeof capability.requiresStudioWebView !== "boolean") throw new Error("creator_capability_invalid");
+    return Object.freeze({ id, note, headless: capability.headless, requiresStudioWebView: capability.requiresStudioWebView });
+  });
+  return Object.freeze({ studioOnline: row.studioOnline, connections: parseStudioConnections(row), capabilities: Object.freeze(checked) });
+}
+
 export function defaultStudioPlanSteps(): readonly StudioTaskStep[] {
   return [
     { stepId: "review-goal", ordinal: 0, title: "核对目标、项目范围与验收标准", kind: "analysis" },
@@ -91,7 +155,7 @@ export function canReviseTaskPlan(task: StudioTask | null): boolean {
 
 export function studioPhaseLabel(phase: StudioTaskPhase): string {
   return ({
-    planning: "规划中", "awaiting-plan-approval": "等待计划批准", ready: "计划已批准，执行器未连接", executing: "执行中",
+    planning: "规划中", "awaiting-plan-approval": "等待计划批准", ready: "计划已批准，可执行", executing: "执行中",
     validating: "验证中", "awaiting-review": "等待人工验收", accepted: "已接受", rejected: "已退回", failed: "失败", cancelled: "已取消", unknown: "状态未知",
   })[phase];
 }

@@ -18,9 +18,11 @@ export function AgentWorkspace(props: Readonly<{
 }>) {
   const { project, taskController, agentCommit, agentActivity, agentCityPreview, agentPreviewStatus, busy, onResolve } = props;
   const scope = project ? `${project.title ?? project.projectId}（${project.projectId}，revision ${project.revision}）` : "尚未选择 Creator Project";
+  const online = taskController.connections.filter(connection => connection.state !== "offline");
+  const studioOnline = taskController.capabilities?.studioOnline === true;
   return <section className="agent-panel agent-workspace" aria-label="Agent Workspace">
-    <div className="agent-workspace-heading"><div><span className="section-title">Agent Workspace</span><p className="muted">目标与范围：{scope}</p></div><span className="agent-connection">本地任务账本 · Agent 执行未连接</span></div>
-    <p className="agent-connection-note">本地任务账本可持久化目标、计划和证据；Agent 执行未连接。已有 Host 活动不代表 Agent 在线，也不用于推断连接状态。</p>
+    <div className="agent-workspace-heading"><div><span className="section-title">Agent Workspace</span><p className="muted">目标与范围：{scope}</p></div><span className="agent-connection">Studio {studioOnline ? "在线" : "离线"} · {online.length} 个 Agent 连接</span></div>
+    <p className="agent-connection-note">连接状态来自心跳与 15 秒 TTL，任务进度来自持久事件流；Host 活动不会冒充 Agent 在线。{taskController.connectionError ? ` 心跳异常：${taskController.connectionError}。` : ""}</p>
     <StudioTaskPanel controller={taskController} />
     <GoalBriefComposer scope={scope} />
 
