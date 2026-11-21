@@ -13,7 +13,8 @@ import { NARRATIVE_MAX_CONDITIONS, NARRATIVE_MAX_EFFECTS } from "../contracts/en
 import type { StoryEdgeV2, StoryGraphV1 } from "../graph/types";
 
 /** 单个条件的确定性求值。未知 op 返回 false（fail-closed：条件不满足）。 */
-function evalCondition(condition: NarrativeConditionV1, snapshot: NarrativeSnapshotV1): boolean {
+function evalCondition(condition: NarrativeConditionV1, snapshot: NarrativeSnapshotV1, depth = 0): boolean {
+  if (!condition || typeof condition !== "object" || depth > NARRATIVE_MAX_CONDITIONS) return false;
   switch (condition.op) {
     case "flag":
       return (snapshot.flags[condition.key] ?? false) === condition.expected;
@@ -24,18 +25,35 @@ function evalCondition(condition: NarrativeConditionV1, snapshot: NarrativeSnaps
     case "event.exists":
       return snapshot.committedEvents.includes(condition.eventId);
     case "all":
-      return condition.of.every(nested => evalCondition(nested, snapshot));
+      return Array.isArray(condition.of) && condition.of.every(nested => evalCondition(nested, snapshot, depth + 1));
     default:
       return false;
   }
 }
 
-/** 求值一条边的所有前置条件。空 conditions 恒通过。 */
+function conditionCount(condition: NarrativeConditionV1): number {
+  let count = 0;
+  const pending = [condition];
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    if (!current || typeof current !== "object") return NARRATIVE_MAX_CONDITIONS + 1;
+    count += 1;
+    if (count > NARRATIVE_MAX_CONDITIONS) return count;
+    if (current.op === "all") {
+      if (!Array.isArray(current.of)) return NARRATIVE_MAX_CONDITIONS + 1;
+      pending.push(...current.of);
+    }
+  }
+  return count;
+}
+
+/** 求值一条边的所有前置条件。空对象与空 conditions 恒通过。 */
 function evalEdgePreconditions(edge: StoryEdgeV2, snapshot: NarrativeSnapshotV1): boolean {
-  const conditions = edge.preconditions as unknown as NarrativeConditionV1[] | undefined;
-  if (!conditions || !Array.isArray(conditions)) return true;
-  if (conditions.length > NARRATIVE_MAX_CONDITIONS) return false;
-  return conditions.every(condition => evalCondition(condition, snapshot));
+  const conditions = edge.preconditions as unknown as NarrativeConditionV1 | NarrativeConditionV1[] | undefined;
+  if (!conditions || (typeof conditions === "object" && !Array.isArray(conditions) && Object.keys(conditions).length === 0)) return true;
+  const list = Array.isArray(conditions) ? conditions : [conditions];
+  if (list.length > NARRATIVE_MAX_CONDITIONS || list.reduce((count, condition) => count + conditionCount(condition), 0) > NARRATIVE_MAX_CONDITIONS) return false;
+  return list.every(condition => evalCondition(condition, snapshot));
 }
 
 /** 求值一条边的效果列表。未知 op 返回空列表（fail-closed：不产效果）。 */

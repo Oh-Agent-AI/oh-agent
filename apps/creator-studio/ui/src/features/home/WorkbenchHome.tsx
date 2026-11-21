@@ -12,7 +12,7 @@ export function WorkbenchHome(props: Readonly<{
   hasPendingApproval: boolean;
   busy: boolean;
   onOpenProject: (projectId: string) => void;
-  onOpenTemplates: (kind: "city" | "game") => void;
+  onOpenTemplates: (kind: "city" | "game" | "story") => void;
   onOpenAgent: () => void;
   onRefreshProjects: () => void;
 }>) {
@@ -30,7 +30,7 @@ export function WorkbenchHome(props: Readonly<{
     <section className="home-template-grid" aria-label="创作模板入口">
       <button className="home-template-card" onClick={() => onOpenTemplates("city")}><span className="resource-kind">CITY</span><strong>创建或打开 City 世界</strong><span>使用真实 City 布局、世界包和独立实例。</span></button>
       <button className="home-template-card" onClick={() => onOpenTemplates("game")}><span className="resource-kind">GAME</span><strong>从模板 Game 开始</strong><span>选择真实玩法模板和 City 布局，建立可编辑 Creator Project。</span></button>
-      <button className="home-template-card" disabled title="Story Project Registry 未接入"><span className="resource-kind">STORY</span><strong>Story（待接入）</strong><span>Story Project Registry 未接入，不从 Build 或运行状态推导 Story。</span></button>
+      <button className="home-template-card" onClick={() => onOpenTemplates("story")}><span className="resource-kind">STORY</span><strong>创作独立 Story</strong><span>编辑 Graph、角色 Canon 与条件；显式保存到真实 Story Registry。</span></button>
     </section>
 
     <div className="home-columns">

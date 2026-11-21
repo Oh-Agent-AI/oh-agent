@@ -667,7 +667,8 @@ var NARRATIVE_MAX_CONDITIONS = 8;
 var NARRATIVE_MAX_EFFECTS = 4;
 
 // src/runtime/evaluate.ts
-function evalCondition(condition, snapshot) {
+function evalCondition(condition, snapshot, depth = 0) {
+  if (!condition || typeof condition !== "object" || depth > NARRATIVE_MAX_CONDITIONS) return false;
   switch (condition.op) {
     case "flag":
       return (snapshot.flags[condition.key] ?? false) === condition.expected;
@@ -678,16 +679,32 @@ function evalCondition(condition, snapshot) {
     case "event.exists":
       return snapshot.committedEvents.includes(condition.eventId);
     case "all":
-      return condition.of.every((nested) => evalCondition(nested, snapshot));
+      return Array.isArray(condition.of) && condition.of.every((nested) => evalCondition(nested, snapshot, depth + 1));
     default:
       return false;
   }
 }
+function conditionCount(condition) {
+  let count = 0;
+  const pending = [condition];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current || typeof current !== "object") return NARRATIVE_MAX_CONDITIONS + 1;
+    count += 1;
+    if (count > NARRATIVE_MAX_CONDITIONS) return count;
+    if (current.op === "all") {
+      if (!Array.isArray(current.of)) return NARRATIVE_MAX_CONDITIONS + 1;
+      pending.push(...current.of);
+    }
+  }
+  return count;
+}
 function evalEdgePreconditions(edge, snapshot) {
   const conditions = edge.preconditions;
-  if (!conditions || !Array.isArray(conditions)) return true;
-  if (conditions.length > NARRATIVE_MAX_CONDITIONS) return false;
-  return conditions.every((condition) => evalCondition(condition, snapshot));
+  if (!conditions || typeof conditions === "object" && !Array.isArray(conditions) && Object.keys(conditions).length === 0) return true;
+  const list = Array.isArray(conditions) ? conditions : [conditions];
+  if (list.length > NARRATIVE_MAX_CONDITIONS || list.reduce((count, condition) => count + conditionCount(condition), 0) > NARRATIVE_MAX_CONDITIONS) return false;
+  return list.every((condition) => evalCondition(condition, snapshot));
 }
 function evalEdgeEffects(edge, snapshot) {
   const effects = edge.effects;

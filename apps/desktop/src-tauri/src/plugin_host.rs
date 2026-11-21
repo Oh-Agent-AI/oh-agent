@@ -1497,6 +1497,7 @@ fn apply_message(i: &mut Instance, sender: &str, message: Value) -> Result<(), S
             let items: Vec<Tool> = serde_json::from_value(message["items"].clone()).map_err(|_| "plugin_toolbar_invalid")?;
             if !valid_tools(&i.command_namespace, i.max_toolbar_items, &items) { return Err("plugin_toolbar_invalid".into()); }
             i.items = items; i.revision = revision; i.ready = true; i.pulse = Instant::now();
+            if i.failed == Some("plugin_boot_timeout") { i.failed = None; }
             note(i, "toolbar_updated");
         }
         Some("command.result") => {
@@ -3185,6 +3186,21 @@ mod tests {
         assert!(!valid_tools("metrics", 10, &other));
         assert!(valid_tools("metrics", 11, &other));
     }
+    #[test]
+    fn creator_toolbar_budget_and_late_ready_recover_the_real_studio_lifecycle() {
+        let studio = definitions().iter().find(|plugin| plugin.id == "creator-studio").unwrap();
+        let tools: Vec<Tool> = (0..6).map(|n| serde_json::from_value(json!({
+            "id":format!("tool-{n}"),"commandId":format!("creator.tool-{n}"),
+            "label":"Tool","kind":"button","enabled":true
+        })).unwrap()).collect();
+        assert!(valid_tools("creator",studio.max_toolbar_items,&tools));
+        let mut instance = instance();
+        instance.id = "plugin-creator-studio-1".into(); instance.command_namespace = "creator".into(); instance.failed = Some("plugin_boot_timeout");
+        assert!(apply_message(&mut instance,"plugin-creator-studio-1",json!({"version":1,"instanceId":"plugin-creator-studio-1","type":"toolbar.update","revision":1,"items":tools})).is_ok());
+        assert!(instance.ready);
+        assert_eq!(instance.failed,None);
+    }
+
     #[test]
     fn namespace_validation_is_not_specific_to_the_first_plugin() {
         let tools: Vec<Tool> = serde_json::from_value(json!([{"id":"refresh","commandId":"metrics.refresh","label":"Refresh","kind":"button","enabled":true}])).unwrap();

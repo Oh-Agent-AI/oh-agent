@@ -242,7 +242,7 @@ export function CityGameLibraryPanel(props: Readonly<{
         <div className="library-note"><strong>Story 是宿主 Registry 的注册项</strong><span>storyId 是稳定内容身份，安装/Run/租约生命周期由宿主权威管理；这里不从对话或运行时数据推断项目。</span></div>
         {storiesLoading && stories.length === 0 && <div className="empty library-empty">正在读取宿主 Story Project 注册表…</div>}
         {storiesError && <p className="library-error" role="alert">Story Project 读取失败（{storiesError}）。</p>}
-        {!storiesLoading && !storiesError && stories.length === 0 && <div className="empty library-empty">宿主 Story Project 注册表为空。注册 Story 请通过 Agent/MCP 的 creator_story_project_create 完成，这里保持真实空态。</div>}
+        {!storiesLoading && !storiesError && stories.length === 0 && <div className="empty library-empty">宿主 Story Project 注册表为空。可在 Story Editor 新建，或通过 Agent/MCP 的 creator_story_project_create 注册；这里保持真实空态。</div>}
         <div className="library-grid">{stories.map(story => <article className="library-card" key={story.storyId}>
           <div className="library-card-top"><span className="resource-kind">STORY PROJECT</span><span className="validation">Registry revision {story.revision}</span></div>
           <h3>{story.title}</h3><code title={story.storyId}>{shortId(story.storyId)}</code>

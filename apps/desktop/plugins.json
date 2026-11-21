@@ -461,7 +461,7 @@
           "maxMembers": 20
         }
       },
-      "maxToolbarItems": 4,
+      "maxToolbarItems": 6,
       "performanceMetrics": [],
       "dataProjections": [
         "harnesses:v1"

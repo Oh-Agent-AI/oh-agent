@@ -185,6 +185,24 @@ mod tests {
     }
 
     #[test]
+    fn object_conditions_match_the_typescript_evaluator() {
+        let mut graph = cafe_graph();
+        graph["edges"][0]["preconditions"] = json!({"op":"all","of":[
+            {"op":"counter.gte","key":"affection","value":1},
+            {"op":"flag","key":"invited","expected":true}
+        ]});
+        let mut snapshot = json!({"scope":{"playerId":"player-1","cityId":"city-1","storyId":"story.detective","storyRunId":"run-1"},
+            "stateVersion":"v1","cursor":"start","committedEvents":[],"flags":{"invited":true},"counters":{"affection":1},"clockTick":42});
+        let proposal = json!({"turnId":"turn-1","operationId":"op-1","edgeId":"e-invite"});
+        let accepted = evaluate_proposal(&graph,&snapshot,&proposal).unwrap();
+        assert_eq!(accepted["accepted"],json!(true));
+        snapshot["flags"]["invited"] = json!(false);
+        assert_eq!(evaluate_proposal(&graph,&snapshot,&proposal).unwrap()["accepted"],json!(false));
+        graph["edges"][0]["preconditions"] = json!({"op":"all","of":null});
+        assert_eq!(eligible_edges(&graph,&snapshot).unwrap(),json!([]));
+    }
+
+    #[test]
     fn evaluator_nonce_mismatch_is_detectable() {
         // 直接构造缺 nonce / 错 nonce 的结果，验证 Host 侧比对逻辑可检测。
         let result = json!({"accepted":true,"evaluationNonce":"wrong-nonce"});

@@ -155,6 +155,21 @@ test("eligibleEdges reflects current snapshot", () => {
   assert.ok(!aff0.some(e => e.edgeId === "e-invite"));
 });
 
+test("object-form all conditions are evaluated and malformed nesting fails closed", () => {
+  const edge: StoryEdgeV2 = {
+    ...EDGE_INVITE,
+    preconditions: { op: "all", of: [
+      { op: "counter.gte", key: "affection", value: 1 },
+      { op: "flag", key: "invited", expected: true },
+    ] },
+  };
+  const graph: StoryGraphV1 = { ...CAFE_GRAPH, edges: [edge] };
+  assert.deepEqual(eligibleEdges(graph, makeSnapshot({ flags: { invited: true } })), [{ edgeId: "e-invite", to: "cafe_reply" }]);
+  assert.deepEqual(eligibleEdges(graph, makeSnapshot({ flags: { invited: false } })), []);
+  const malformed: StoryGraphV1 = { ...CAFE_GRAPH, edges: [{ ...edge, preconditions: { op: "all", of: null } as never }] };
+  assert.deepEqual(eligibleEdges(malformed, makeSnapshot()), []);
+});
+
 // ── 状态版本绑定：旧裁决在新版本下拒绝 ─────────────────────────────────
 
 test("decision carries evaluatedAtVersion for CAS check", () => {

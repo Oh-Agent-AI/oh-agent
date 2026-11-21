@@ -8,7 +8,9 @@
 var narrativeEngine = (function () {
   "use strict";
 
-  function evalCondition(condition, snapshot) {
+  function evalCondition(condition, snapshot, depth) {
+    depth = depth || 0;
+    if (!condition || typeof condition !== "object" || depth > 8) return false;
     switch (condition.op) {
       case "flag":
         return (snapshot.flags[condition.key] ?? false) === condition.expected;
@@ -19,17 +21,34 @@ var narrativeEngine = (function () {
       case "event.exists":
         return snapshot.committedEvents.includes(condition.eventId);
       case "all":
-        return condition.of.every(function (nested) { return evalCondition(nested, snapshot); });
+        return Array.isArray(condition.of) && condition.of.every(function (nested) { return evalCondition(nested, snapshot, depth + 1); });
       default:
         return false;
     }
   }
 
+  function conditionCount(condition) {
+    var count = 0;
+    var pending = [condition];
+    while (pending.length > 0) {
+      var current = pending.pop();
+      if (!current || typeof current !== "object") return 9;
+      count += 1;
+      if (count > 8) return count;
+      if (current.op === "all") {
+        if (!Array.isArray(current.of)) return 9;
+        pending.push.apply(pending, current.of);
+      }
+    }
+    return count;
+  }
+
   function evalEdgePreconditions(edge, snapshot) {
     var conditions = edge.preconditions;
-    if (!conditions || !Array.isArray(conditions)) return true;
-    if (conditions.length > 8) return false;
-    return conditions.every(function (c) { return evalCondition(c, snapshot); });
+    if (!conditions || (typeof conditions === "object" && !Array.isArray(conditions) && Object.keys(conditions).length === 0)) return true;
+    var list = Array.isArray(conditions) ? conditions : [conditions];
+    if (list.length > 8 || list.reduce(function (count, condition) { return count + conditionCount(condition); }, 0) > 8) return false;
+    return list.every(function (c) { return evalCondition(c, snapshot, 0); });
   }
 
   function evalEdgeEffects(edge, snapshot) {

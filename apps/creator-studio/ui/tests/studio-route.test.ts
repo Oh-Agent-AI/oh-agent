@@ -3,12 +3,13 @@ import assert from "node:assert/strict";
 import { STUDIO_HOME_ROUTE, STUDIO_NAVIGATION, STUDIO_WORKSPACE_ROUTE, studioRouteTitle } from "../src/app/studioRoute.ts";
 import { creationGoalBrief, recentCreatorProjects } from "../src/features/home/workbenchModel.ts";
 
-test("Studio starts at the workbench and exposes four top-level destinations", () => {
+test("Studio starts at the workbench and exposes five top-level destinations including Story Editor", () => {
   assert.deepEqual(STUDIO_HOME_ROUTE, { section: "home" });
   assert.deepEqual(STUDIO_NAVIGATION.map(item => [item.route.section, item.label]), [
-    ["home", "工作台"], ["projects", "我的项目"], ["explore", "探索与素材"], ["releases", "发布管理"],
+    ["home", "工作台"], ["projects", "我的项目"], ["stories", "Story 编辑"], ["explore", "探索与素材"], ["releases", "发布管理"],
   ]);
   assert.equal(studioRouteTitle(STUDIO_WORKSPACE_ROUTE), "作品工作区");
+  assert.equal(studioRouteTitle({ section: "stories" }), "Story Editor");
   assert.equal(STUDIO_NAVIGATION.some(item => item.route.section === "workspace"), false);
 });
 
