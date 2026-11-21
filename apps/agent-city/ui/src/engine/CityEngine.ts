@@ -61,6 +61,9 @@ import type { GameSceneSnapshot } from "../game/runtime/GameSceneSnapshot";
 import type { CameraClearanceQuery, ChaseCameraSafety } from "../game/VehicleChaseCamera";
 import type { GameSceneLease } from "../game/runtime/GameScenePort";
 import { createSdkViewForCityLayout, type CityLayoutSdkViewV1 } from "./sdk/cityLayoutAdapter";
+import { buildSurfaceIndex } from "./surface/SurfaceIndex";
+import { buildSurfaceRegions } from "./surface/surfaceRegions";
+import { footprintSupport } from "../game/driving/surfaceFootprint";
 
 export type CityCreatorSkinId = CitySkinPackIdV1;
 /** 视口捕获结果：不可用与超预算必须可区分，调用方按 code 映射 MCP 错误。 */
@@ -1962,6 +1965,34 @@ export class CityEngine {
         sessionId: visual.sessionId, assetRef: visual.assetRef, kind: visual.kind, eventId: visual.eventId,
       })),
       claims: this.parts?.claimSnapshot() ?? [] };
+  }
+
+  async inspectGroundContact(input: Readonly<{ x: number; z: number; heading: number; regionId?: string }>) {
+    if (![input.x,input.z,input.heading].every(Number.isFinite)) throw new Error("ground_pose_invalid");
+    const parts = this.parts;
+    if (!parts || this.disposed) throw new Error("ground_inspection_unavailable");
+    const frozen = parts.acquireStaticSceneSource();
+    let capture: CitySurfaceCapture;
+    try { capture = await this.surfacePort.capture(frozen.drivingSource); }
+    catch { frozen.release(); throw new Error("ground_inspection_unavailable"); }
+    if (capture.status !== "ready") { frozen.release(); throw new Error(`ground_${capture.status}`); }
+    try {
+      const surface = capture.read();
+      if (!surface || !capture.verifyCurrent()) throw new Error("ground_stale");
+      const regions = buildSurfaceRegions(surface,buildSurfaceIndex(surface));
+      if (regions.status !== "ready") throw new Error(`ground_${regions.reason}`);
+      const classified = regions.classify(input.x,input.z,"ground");
+      const regionId = input.regionId ?? (classified.status === "drivable" ? classified.regionId : "");
+      if (!regionId) return { status:"unsupported",code:classified.status === "blocked" ? classified.cause : "region_required" };
+      const support = footprintSupport(regions,input,regionId);
+      if (!support.ok) return { status:"unsupported",code:support.reason,reason:support.detail,regionId,
+        worldRevision:capture.worldRevision,surfaceRevision:capture.revision };
+      return { status:"ready",regionId,layerId:support.layerId,y:support.y,pitch:support.pitch,roll:support.roll,
+        wheels:support.wheels,normal:support.normal,worldRevision:capture.worldRevision,surfaceRevision:capture.revision };
+    } finally {
+      this.surfacePort.releaseFrozenSource(frozen.drivingSource);
+      frozen.release();
+    }
   }
 
   applyBuildingChanged(raw: unknown, animate: boolean): OverlayDecision | null {

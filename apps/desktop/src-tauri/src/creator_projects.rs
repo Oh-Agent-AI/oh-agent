@@ -834,7 +834,7 @@ fn project_candidate_summary(db: &rusqlite::Connection, project_id: &str, revisi
         Some((run_id, run_status, run_created_at, finished_at_ms, evidence_json, failure_code)) => {
             let evidence = evidence_json.map(|raw| serde_json::from_str::<Value>(&raw).map_err(|_| "creator_store_unavailable")).transpose()?.unwrap_or(Value::Null);
             json!({"runId":run_id,"status":run_status,"createdAtMs":run_created_at,"finishedAtMs":finished_at_ms,
-                "evidenceSource":if evidence.is_null() { Value::Null } else { json!("city-client-reported") },"evidence":evidence,"failureCode":failure_code})
+                "evidenceSource":crate::creator_playtest::evidence_source(&evidence),"evidence":evidence,"failureCode":failure_code})
         }
         None => Value::Null,
     };
@@ -881,8 +881,11 @@ pub fn accept_project_candidate(home: &Path, candidate_id: &str) -> Result<Value
     let (project_id, revision, raw, content_digest, accepted_release_id) = row;
     if raw.len() > MAX_RELEASE_BYTES || digest(&raw) != content_digest { return Err("creator_candidate_digest_mismatch"); }
     if let Some(release_id) = accepted_release_id {
+        let evidence: Value = tx.query_row("SELECT evidence_json FROM creator_playtest_runs WHERE release_id=?1 ORDER BY created_at_ms DESC,run_id ASC LIMIT 1", [candidate_id],
+            |row| row.get::<_,Option<String>>(0)).optional().map_err(|_| "creator_store_unavailable")?
+            .flatten().and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or(Value::Null);
         tx.commit().map_err(|_| "creator_store_unavailable")?;
-        return Ok(json!({"releaseId":release_id,"projectId":project_id,"revision":revision,"status":"published","candidateId":candidate_id,"evidenceSource":"city-client-reported"}));
+        return Ok(json!({"releaseId":release_id,"projectId":project_id,"revision":revision,"status":"published","candidateId":candidate_id,"evidenceSource":crate::creator_playtest::evidence_source(&evidence)}));
     }
     let active: Option<String> = tx.query_row("SELECT run_id FROM creator_playtest_runs WHERE release_id=?1 AND active_slot=1", [candidate_id], |row| row.get(0))
         .optional().map_err(|_| "creator_store_unavailable")?;
@@ -904,7 +907,7 @@ pub fn accept_project_candidate(home: &Path, candidate_id: &str) -> Result<Value
         params![candidate_id,release_id,now_ms()]).map_err(|_| "creator_store_unavailable")?;
     tx.commit().map_err(|_| "creator_store_unavailable")?;
     result["candidateId"] = json!(candidate_id);
-    result["evidenceSource"] = json!("city-client-reported");
+    result["evidenceSource"] = crate::creator_playtest::evidence_source(&evidence);
     Ok(result)
 }
 
@@ -2956,6 +2959,11 @@ mod tests {
             &json!({"candidateId":candidate_id})).unwrap_err(), "creator_candidate_already_accepted");
 
         let db = database(&home).unwrap();
+        let verified = json!({"evidenceSource":"host-verified","outcome":"success","snapshotDigest":tested["contentDigest"]}).to_string();
+        db.execute("UPDATE creator_playtest_runs SET evidence_json=?2 WHERE run_id=?1", params![run_id,verified]).unwrap();
+        assert_eq!(read_project_candidate(&home,&project_id,None).unwrap()["latestRun"]["evidenceSource"],"host-verified");
+        assert_eq!(dispatch_as(&home,LOCAL_CREATOR_OWNER,"studio-resumed","creator.project.candidate.accept",
+            &json!({"candidateId":candidate_id})).unwrap()["evidenceSource"],"host-verified");
         db.execute("UPDATE creator_candidates SET snapshot_json='{}' WHERE candidate_id=?1", [candidate_id]).unwrap();
         assert_eq!(read_project_candidate(&home, &project_id, None).unwrap_err(), "creator_candidate_digest_mismatch");
         let _ = std::fs::remove_dir_all(home);

@@ -9,13 +9,13 @@ const tested = {
     evidenceSource: "city-client-reported", evidence: { tick: 20, outcome: "success", snapshotDigest: `sha256:${"a".repeat(64)}` }, failureCode: null },
 };
 
-test("candidate acceptance requires real completed client-reported evidence", () => {
+test("candidate acceptance requires completed evidence with a recognized trust level", () => {
   const candidate = parseProjectCandidate(tested)!;
   assert.equal(canAcceptCandidate(candidate), true);
   assert.equal(candidateEvidenceTrust(candidate), "City 客户端回报（非 Host 验证）");
   assert.equal(canAcceptCandidate(parseProjectCandidate({ ...tested, status: "created", latestRun: null })), false);
   assert.equal(canAcceptCandidate(parseProjectCandidate({ ...tested, status: "testing", latestRun: { ...tested.latestRun, status: "claimed", evidenceSource: null, evidence: null } })), false);
-  assert.equal(canAcceptCandidate(parseProjectCandidate({ ...tested, latestRun: { ...tested.latestRun, evidenceSource: "host-verified" } })), false);
+  assert.equal(canAcceptCandidate(parseProjectCandidate({ ...tested, latestRun: { ...tested.latestRun, evidenceSource: "host-verified" } })), true);
   assert.equal(canAcceptCandidate(parseProjectCandidate({ ...tested, latestRun: { ...tested.latestRun, evidence: { outcome: "failure", snapshotDigest: `sha256:${"a".repeat(64)}` } } })), false);
   assert.equal(canAcceptCandidate(parseProjectCandidate({ ...tested, latestRun: { ...tested.latestRun, evidence: { outcome: "success", snapshotDigest: `sha256:${"b".repeat(64)}` } } })), false);
   assert.equal(canAcceptCandidate(parseProjectCandidate({ ...tested, status: "accepted", acceptedReleaseId: "release-formal" })), false);

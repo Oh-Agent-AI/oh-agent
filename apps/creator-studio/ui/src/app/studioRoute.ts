@@ -1,5 +1,5 @@
 export type StudioRoute = Readonly<{
-  section: "home" | "projects" | "stories" | "explore" | "releases" | "workspace";
+  section: "home" | "projects" | "stories" | "explore" | "releases" | "evidence" | "workspace";
 }>;
 
 export const STUDIO_HOME_ROUTE: StudioRoute = Object.freeze({ section: "home" });
@@ -11,6 +11,7 @@ export const STUDIO_NAVIGATION = Object.freeze([
   Object.freeze({ route: Object.freeze({ section: "stories" }) as StudioRoute, label: "Story 编辑" }),
   Object.freeze({ route: Object.freeze({ section: "explore" }) as StudioRoute, label: "探索与素材" }),
   Object.freeze({ route: Object.freeze({ section: "releases" }) as StudioRoute, label: "发布管理" }),
+  Object.freeze({ route: Object.freeze({ section: "evidence" }) as StudioRoute, label: "证据中心" }),
 ] as const);
 
 export function studioRouteTitle(route: StudioRoute): string {
@@ -19,5 +20,6 @@ export function studioRouteTitle(route: StudioRoute): string {
   if (route.section === "stories") return "Story Editor";
   if (route.section === "explore") return "探索与素材";
   if (route.section === "releases") return "发布管理";
+  if (route.section === "evidence") return "证据中心";
   return "作品工作区";
 }

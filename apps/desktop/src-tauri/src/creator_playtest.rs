@@ -439,7 +439,7 @@ fn evidence_client_view(stored: &str) -> String {
 
 /// 读取面的 evidenceSource 分支（V3-16）：落盘 evidence 带 host-verified 注记 → 宿主
 /// 裁决；其余非空证据维持 client-reported 自报语义；无证据 → null（现状不变）。
-fn evidence_source(evidence: &Value) -> Value {
+pub(crate) fn evidence_source(evidence: &Value) -> Value {
     if evidence.is_null() { return Value::Null; }
     if evidence.get("evidenceSource").and_then(Value::as_str) == Some("host-verified") { json!("host-verified") } else { json!("city-client-reported") }
 }

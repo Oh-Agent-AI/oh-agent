@@ -441,3 +441,32 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, summary:focu
 .story-save-actions { position: sticky; bottom: 0; padding: 12px; background: rgba(16, 24, 27, .96); border: 1px solid #30464a; border-radius: 9px; }
 @media (max-width: 900px) { .story-editor-page { grid-template-columns: 210px minmax(0, 1fr); } .story-node-row { grid-template-columns: 1fr 120px; } }
 @media (max-width: 700px) { .story-route-content { overflow: visible; } .story-editor-page { display: flex; flex-direction: column; } .story-registry-sidebar { max-height: 300px; border-right: 0; border-bottom: 1px solid #304044; } .story-meta-grid, .story-condition-grid, .story-edge-grid { grid-template-columns: 1fr; } }
+
+
+/* ST-11: shared evidence projections and real rendered-surface contact diagnostics. */
+.evidence-route-content { overflow-y: auto; padding: 20px 24px 32px; }
+.evidence-center { display: grid; gap: 16px; }
+.evidence-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; }
+.evidence-section { min-width: 0; display: grid; gap: 10px; padding: 15px; border: 1px solid #30464a; border-radius: 10px; background: #142023; }
+.evidence-section > .section-title { margin: 0; }
+.evidence-section article { min-width: 0; padding: 10px; border-radius: 7px; background: #18282b; }
+.evidence-section article p { margin: 6px 0 0; font-size: 12px; line-height: 1.5; }
+.evidence-section article code { overflow-wrap: anywhere; }
+.evidence-run-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.evidence-run-heading strong { overflow-wrap: anywhere; }
+.ground-debug-section { grid-column: 1 / -1; }
+.ground-pose-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.ground-pose-grid input { width: 100%; min-width: 0; }
+.ground-result { display: grid; gap: 8px; padding: 12px; border: 1px solid #3a504d; border-radius: 8px; background: #172824; }
+.ground-result > code { overflow-wrap: anywhere; }
+.ground-wheel-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.ground-wheel-grid > span { display: grid; gap: 4px; color: #a9bdbe; font-size: 11px; }
+.ground-wheel-grid code { color: #e0f0e9; font-size: 14px; }
+@media (max-width: 900px) { .evidence-grid { grid-template-columns: 1fr; } .ground-debug-section { grid-column: auto; } .ground-pose-grid, .ground-wheel-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+.evidence-workspace { padding: 14px 12px; }
+.evidence-workspace .evidence-grid { grid-template-columns: 1fr; }
+.evidence-workspace .ground-debug-section { grid-column: auto; }
+.evidence-workspace .ground-pose-grid, .evidence-workspace .ground-wheel-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.evidence-workspace .home-section-heading { align-items: flex-start; }
+.evidence-workspace-layout .viewport { min-width: 0; }

@@ -31,6 +31,7 @@ import { ProjectPanel } from "../features/project/ProjectPanel";
 import { ProjectsPage } from "../features/project/ProjectsPage";
 import { WorkbenchHome } from "../features/home/WorkbenchHome";
 import { StoryEditorPanel } from "../features/story/StoryEditorPanel";
+import { EvidenceCenterPanel } from "../features/evidence/EvidenceCenterPanel";
 import { CandidatePanel } from "../features/project/CandidatePanel";
 import { canAcceptCandidate, parseProjectCandidate, type ProjectCandidate } from "../contracts/candidate";
 import { StudioNavigation } from "./StudioNavigation";
@@ -1030,6 +1031,11 @@ export function CreatorStudioApp() {
   const candidatePanel = <CandidatePanel candidate={candidate} busy={busy} browserPreview={browserPreview} hasUncommittedProjectEdits={hasUncommittedProjectEdits}
     hasMounts={!!project?.mounts.length} publishedReleaseId={publishedReleaseId} onCreate={() => void createCandidate()} onTest={() => void startCandidatePlaytest()}
     onAccept={() => void acceptCandidate()} onPlaytestRelease={() => void startPlaytest()} onDirectPublish={() => void publish()} />;
+  const inspectGroundContact = async (input: { x: number; z: number; heading: number; regionId?: string }) => {
+    const city = draftCityViewRef.current; const engine = draftEngineRef.current;
+    if (!city || !engine || draftViewStatusRef.current !== "ready") throw new Error("ground_inspection_requires_city");
+    return engine.inspectGroundContact(input);
+  };
 
   return <main className="studio">
     <StudioNavigation route={route} projectTitle={project?.title ?? project?.projectId} onNavigate={setRoute} />
@@ -1054,7 +1060,7 @@ export function CreatorStudioApp() {
       <CityGameLibraryPanel key={route.section} view={route.section} request={creatorRequest} browserPreview={browserPreview} message={message} onMessage={setMessage}
         onOpenPreview={(buildId, source) => { setCodePreviewBuildId(buildId); setCodePreviewSourceCityId(source?.cityId); openWorkspacePanel("code"); }} />
     </div>}
-    {route.section === "workspace" && <div className="workspace studio-workspace">
+    {(route.section === "workspace" || route.section === "evidence") && <div className={route.section === "evidence" ? "workspace studio-workspace evidence-workspace-layout" : "workspace studio-workspace"}>
       <CityViewportPanel
         installedWorldView={installedWorldView} draftCityView={draftCityView} draftCityViewRef={draftCityViewRef} draftEngineRef={draftEngineRef}
         draftViewStatusRef={draftViewStatusRef} draftViewFailureRef={draftViewFailureRef} recordCityDiagnostic={recordCityDiagnostic}
@@ -1067,7 +1073,7 @@ export function CreatorStudioApp() {
         setBaseEngine={setBaseEngine} setBaseStatus={setBaseStatus} commitPatchRef={commitPatchRef}
         onAgentViewportStatus={(status, code) => setAgentPreviewStatus(previous => previous?.context === agentCityPreview && previous.status === status && previous.code === code ? previous : { context: agentCityPreview!, status, code })}
       />
-      <aside className="panel" aria-label="创作检查器">
+      {route.section === "workspace" && <aside className="panel" aria-label="创作检查器">
         <div className="inspector-heading"><div><span className="sidebar-kicker">INSPECTOR</span><h2>{activePanel === "agent" ? "City Agent" : activePanel === "project" ? openProjectWorkKind === "game" ? "模板 Game 项目" : "项目" : activePanel === "code" ? "代码预览" : "玩法与场地"}</h2></div>{project && <span className="version-pill">版本 {project.revision}</span>}</div>
         <nav className="inspector-tabs" aria-label="作品工作区工具"><button className={activePanel === "play" ? "active" : ""} aria-pressed={activePanel === "play"} onClick={() => openWorkspacePanel("play")}>玩法</button><button className={activePanel === "agent" ? "active" : ""} aria-pressed={activePanel === "agent"} onClick={() => openWorkspacePanel("agent")}>Agent</button><button className={activePanel === "project" ? "active" : ""} aria-pressed={activePanel === "project"} onClick={() => openWorkspacePanel("project")}>项目设置</button><button className={activePanel === "code" ? "active" : ""} aria-pressed={activePanel === "code"} onClick={() => openWorkspacePanel("code")}>代码预览</button></nav>
         {message && <p className="status status-banner" role="status">{message}</p>}
@@ -1097,8 +1103,9 @@ export function CreatorStudioApp() {
           onImportModel={() => void importModel()} onPreviewMount={() => void previewMount()} onPreviewSkin={value => void previewSkin(value)} onCommit={() => void commit()}
           onOpenProject={() => openWorkspacePanel("project")} onMessage={setMessage}
         />}
-      </aside>
+      </aside>}
+      {route.section === "evidence" && <aside className="panel evidence-workspace" aria-label="证据中心工作区"><EvidenceCenterPanel request={creatorRequest} browserPreview={browserPreview} activeCity={draftCityView} inspectGround={inspectGroundContact} /></aside>}
     </div>}
-    <footer className="studio-status" role="status"><span>{route.section === "home" ? "从创作目标或真实最近项目开始" : route.section === "projects" ? "Creator Project 与 City Instance 分类管理" : route.section === "stories" ? "独立 Story 草稿；保存不影响已安装 Run" : route.section === "explore" ? "City 实例与 Game Build 分离管理；Story 可在 Story Editor 创作" : route.section === "releases" ? "真实 Build 与 Installation；候选发布后端待接入" : !project ? "未选择项目" : hasUncommittedProjectEdits ? "有未保存修改" : `项目版本 ${project.revision}`}</span><span>{route.section === "home" ? "复制目标不会创建或执行 Agent Task" : route.section === "projects" ? "打开最近项目会保留现有草稿状态" : route.section === "stories" ? "Graph/Canon 校验与条件测试不等于 City Run 证据" : route.section === "explore" ? "Story Registry 已接入；安装关系需单独确认" : route.section === "releases" ? "安装预检与更新确认门控保持不变" : browserPreview ? "合成数据预览" : releaseHint}</span></footer>
+    <footer className="studio-status" role="status"><span>{route.section === "home" ? "从创作目标或真实最近项目开始" : route.section === "projects" ? "Creator Project 与 City Instance 分类管理" : route.section === "stories" ? "独立 Story 草稿；保存不影响已安装 Run" : route.section === "evidence" ? "真实 Candidate / Build / Run / Trace / Ground 证据" : route.section === "explore" ? "City 实例与 Game Build 分离管理；Story 可在 Story Editor 创作" : route.section === "releases" ? "真实 Build 与 Installation；候选发布后端待接入" : !project ? "未选择项目" : hasUncommittedProjectEdits ? "有未保存修改" : `项目版本 ${project.revision}`}</span><span>{route.section === "home" ? "复制目标不会创建或执行 Agent Task" : route.section === "projects" ? "打开最近项目会保留现有草稿状态" : route.section === "stories" ? "Graph/Canon 校验与条件测试不等于 City Run 证据" : route.section === "evidence" ? "信任级与 Host 分歧必须可见；本地 Ground 查询不写 Run" : route.section === "explore" ? "Story Registry 已接入；安装关系需单独确认" : route.section === "releases" ? "安装预检与更新确认门控保持不变" : browserPreview ? "合成数据预览" : releaseHint}</span></footer>
   </main>;
 }
