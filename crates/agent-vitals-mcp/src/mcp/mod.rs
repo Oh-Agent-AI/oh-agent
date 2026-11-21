@@ -38,6 +38,7 @@ mod city_building;
 mod city_im;
 pub mod creator_session;
 pub mod creator_agent_executor;
+pub mod host_delivery;
 mod creator_code;
 mod creator_code_workspace;
 mod creator_code_experience;
@@ -275,7 +276,7 @@ pub fn dispatch_with_permissions_options(
         // 同一错误映射，无本地写闸。
         | "creator_game_rules_inspect" | "creator_story_graph_inspect"
         | "creator_story_timeline_inspect" | "creator_game_intent_simulate"
-            | "creator_actor_register" | "creator_actor_turn_context" | "creator_actor_intent_submit" => {
+            | "creator_actor_register" | "creator_actor_turn_context" | "creator_actor_intent_submit" | "creator_actor_propose" => {
             creator_studio::run(name, args, data_home, allow_local_writes).map_err(attach_creator_recovery)
         }
         "creator_city_edit_commit" => {
@@ -305,6 +306,20 @@ pub fn dispatch_with_permissions_options(
         | "creator_task_list_open" | "creator_task_claim" | "creator_task_submit_result" | "creator_task_progress"
         | "creator_connection_heartbeat" | "creator_connection_disconnect" | "creator_connection_status"
         | "creator_capabilities_status" | "creator_events_subscribe" => creator_session::run(name, args, data_home, allow_local_writes),
+        "creator_actor_turn_wait" => {
+            // 领取（评审 1）：收件主体由 sessionIdentifier 经 actors 绑定表派生，
+            // 不接受调用方自报 principalId；actor.turn → in_flight（等确认）。
+            if !allow_local_writes { return Err(ToolError::new("permission_denied",
+                "creator_actor_turn_wait consumes deliveries; restart data-mcp serve with --allow-local-writes.")); }
+            host_delivery::claim_wait(data_home, args).map_err(attach_creator_recovery)
+        }
+        "creator_actor_turn_confirm" => {
+            // 回合确认（D-6/HB-07）：reply 绑定同 Run + 触发事件提交成功后，
+            // in_flight → confirmed；未确认超 replyTTL 重排队。
+            if !allow_local_writes { return Err(ToolError::new("permission_denied",
+                "creator_actor_turn_confirm confirms deliveries; restart data-mcp serve with --allow-local-writes.")); }
+            host_delivery::confirm_turn(data_home, args).map_err(attach_creator_recovery)
+        }
         "creator_code_builds_list" | "creator_code_build_status" | "creator_code_preview_status" =>
             creator_code::run(name, args, data_home),
         "creator_code_project_create" | "creator_code_workspace_info" | "creator_code_file_read"

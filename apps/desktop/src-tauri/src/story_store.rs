@@ -35,6 +35,12 @@ pub(crate) struct StoryCommitCommandV1 {
     pub rule_set_digest: Option<String>,
     pub causation_id: Option<String>,
     pub correlation_id: Option<String>,
+    /// Narrative 求值器裁决效果（N3，OH_AGENT_NARRATIVE_ENGINE_SPEC §4 白名单：
+    /// flag.set / counter.add / event.append / cursor.advance）。**只由宿主裁决链
+    /// （actor_turn 求值 → 裁决注入）设置**，绝不从调用方 payload 透传——伪造
+    /// 效果 = 越权写状态。Some 时提交层按效果应用状态、event.append 效果提供
+    /// 事件身份（event_id/rule_id），不再走 legacy kind 规则（invite+1）。
+    pub narrative_effects: Option<Value>,
 }
 
 /// Story 状态作用域的存储增量（RFC §3.5）：storyId = 内容身份，storyRunId = 玩家长期进度身份。
@@ -185,8 +191,63 @@ fn validate_story_command(command: &StoryCommitCommandV1) -> Result<(), &'static
     Ok(())
 }
 
+/// Narrative 效果应用（N3 白名单子集，OH_AGENT_NARRATIVE_ENGINE_SPEC §4）：
+/// flag.set / counter.add / cursor.advance 直接改状态文档；event.append 由提交层
+/// 落事件行承载（此处只校验身份字段）。未知 op / 非法字段 fail-closed 拒绝——
+/// 求值器产出的白名单之外内容一律不落盘（N-02 事实可信）。
+fn apply_narrative_effects(effects: &Value, state: &mut serde_json::Map<String, Value>) -> Result<(), &'static str> {
+    let items = effects.as_array().ok_or("game_argument_invalid")?;
+    if items.len() > 8 { return Err("game_argument_invalid"); }
+    for effect in items {
+        match effect.get("op").and_then(Value::as_str) {
+            Some("flag.set") => {
+                let key = effect.get("key").and_then(Value::as_str).filter(|id| valid_id(id)).ok_or("game_argument_invalid")?;
+                let value = effect.get("value").and_then(Value::as_bool).ok_or("game_argument_invalid")?;
+                state.insert(key.to_string(), json!(value));
+            }
+            Some("counter.add") => {
+                let key = effect.get("key").and_then(Value::as_str).filter(|id| valid_id(id)).ok_or("game_argument_invalid")?;
+                let delta = effect.get("value").and_then(Value::as_i64).ok_or("game_argument_invalid")?;
+                if delta.abs() > 1_000_000 { return Err("game_argument_invalid"); }
+                let current = state.get(key).and_then(Value::as_i64).unwrap_or(0);
+                // 计数器契约：非负（N1 contracts/engine.ts）。饱和截断，不回绕。
+                state.insert(key.to_string(), json!((current + delta).clamp(0, i64::MAX)));
+            }
+            Some("cursor.advance") => {
+                let to = effect.get("to").and_then(Value::as_str).filter(|id| valid_id(id)).ok_or("game_argument_invalid")?;
+                state.insert("cursor".to_string(), json!(to));
+            }
+            Some("event.append") => {
+                // 事件身份校验：提交层用它落事件行（event_id/rule_id）。
+                effect.get("eventId").and_then(Value::as_str).filter(|id| valid_id(id)).ok_or("game_argument_invalid")?;
+                effect.get("ruleId").and_then(Value::as_str).filter(|id| valid_id(id)).ok_or("game_argument_invalid")?;
+            }
+            _ => return Err("game_story_rule_denied"),
+        }
+    }
+    Ok(())
+}
+
+/// event.append 效果的事件身份（N3）： eventId 与 ruleId 直接来自 Story 内容包
+/// （求值器裁决），事件依赖图（eventDependencies）与已提交事件可对齐。
+fn narrative_event_identity(effects: &Value) -> (Option<String>, Option<String>) {
+    let Some(item) = effects.as_array().and_then(|items| items.iter().find(|effect|
+        effect.get("op").and_then(Value::as_str) == Some("event.append"))) else { return (None, None); };
+    let event_id = item.get("eventId").and_then(Value::as_str).filter(|id| valid_id(id)).map(str::to_string);
+    let rule_id = item.get("ruleId").and_then(Value::as_str).filter(|id| valid_id(id)).map(str::to_string);
+    (event_id, rule_id)
+}
+
 fn evaluate_story_state(command: &StoryCommitCommandV1, current: &Value) -> Result<Value, &'static str> {
     let mut state = current.as_object().cloned().ok_or("creator_store_unavailable")?;
+    // N3：求值器裁决效果优先——宿主只做白名单应用与事务，叙事语义归可信
+    // TS 求值器（spec §2：把叙事语义移至求值器与内容包，Rust 保留边界与事务）。
+    if let Some(effects) = command.narrative_effects.as_ref() {
+        apply_narrative_effects(effects, &mut state)?;
+        let state = Value::Object(state);
+        if canonical_json(&state).map_err(|_| "game_argument_invalid")?.len() > 16_384 { return Err("game_argument_invalid"); }
+        return Ok(state);
+    }
     match command.intent.get("kind").and_then(Value::as_str) {
         Some("speak") => {}
         Some("invite") => {
@@ -238,6 +299,12 @@ pub(crate) fn commit_story(home: &Path, command: StoryCommitCommandV1, clock: St
     if command.causation_id.is_some() { request_payload["causationId"] = json!(command.causation_id); }
     if command.correlation_id.is_some() { request_payload["correlationId"] = json!(command.correlation_id); }
     let request_hash = digest(&canonical_json(&request_payload).map_err(|_| "game_argument_invalid")?);
+    // N3：叙事提交的规则身份——event.append 效果携带内容包的 ruleId（事件行
+    // rule_id 列如实记录规则来源）；无 event.append 效果时维持 event_id 惯例。
+    // 效果白名单在 evaluate_story_state 内前置校验（先于任何写入，fail-closed）。
+    let rule_id = command.narrative_effects.as_ref()
+        .and_then(|effects| narrative_event_identity(effects).1)
+        .unwrap_or_else(|| command.event_id.clone());
     let mut db = database(home)?;
     migrate_story(&db)?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
@@ -265,7 +332,7 @@ pub(crate) fn commit_story(home: &Path, command: StoryCommitCommandV1, clock: St
         "clockRevision":command.expected_clock_revision,"status":"committed",
     });
     tx.execute("INSERT INTO story_events(event_id,occurrence_id,player_id,city_id,game_id,story_id,story_run_id,rule_id,status,due_at_utc_ms,last_processed_tick,idempotency_key,story_revision,clock_revision,intent_json,rule_set_digest,causation_id,correlation_id,created_at_ms) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'committed',?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
-        params![command.event_id,command.event_id,command.player_id,command.city_id,command.game_id,story_id,story_run_id,command.event_id,
+        params![command.event_id,command.event_id,command.player_id,command.city_id,command.game_id,story_id,story_run_id,rule_id,
             clock.simulation_utc_ms,clock.tick,command.operation_id,result["storyRevision"].as_str().unwrap_or(""),command.expected_clock_revision,
             canonical_json(&command.intent).map_err(|_| "game_argument_invalid")?,command.rule_set_digest,command.causation_id,command.correlation_id,now])
         .map_err(|_| "creator_store_unavailable")?;
@@ -572,7 +639,7 @@ mod tests {
             story_scope: None, resident_id: Some("resident:linxia".to_string()),
             expected_story_revision: revision.to_string(), expected_clock_revision: "clock-1".to_string(),
             intent: json!({"kind":"invite","targetId":"place:beach"}), run_id: "run-1".to_string(),
-            rule_set_digest: None, causation_id: None, correlation_id: None,
+            rule_set_digest: None, causation_id: None, correlation_id: None, narrative_effects: None,
         }
     }
 

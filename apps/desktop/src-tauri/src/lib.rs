@@ -15,6 +15,9 @@ mod plugin_webview_layout;
 mod plugin_projections;
 mod plugin_state;
 mod creator_projects;
+/// 真机/本地验收走查的 City face 外部入口（本地进程限定）：玩家面方法经与
+/// City UI 相同的 dispatch_city_runtime 管线。MCP/邮箱面不暴露此入口。
+pub use creator_projects::dispatch_city_runtime;
 mod embedded_city_sdk;
 mod creator_cities;
 mod creator_city_lifecycle;
@@ -36,6 +39,8 @@ mod story_registry;
 // Intent → 校验 → 租约 → CAS 提交 → 信封 → 租约闭环。dispatch 接线由主线集成。
 mod actor_intent;
 mod actor_adapter;
+mod actor_turn;
+mod narrative_engine;
 pub mod creator_content_v2;
 mod creator_content_install;
 mod creator_experience;

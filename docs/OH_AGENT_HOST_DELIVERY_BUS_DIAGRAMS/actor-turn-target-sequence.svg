@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1360" height="620" viewBox="0 0 1360 620" font-family="PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif">
+<defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>
+<rect width="1360" height="620" fill="white"/>
+<text x="680.0" y="34" text-anchor="middle" font-size="18" font-weight="700" fill="#111">actor.turn 目标时序（W7：at-least-once + 回合确认）— 设计目标，D-6 未实现</text>
+<text x="680.0" y="56" text-anchor="middle" font-size="12" fill="#b45f06">现状基线 = at-most-once（fetch 即 delivered）；本图是评审修订后的目标语义</text>
+<rect x="30" y="90" width="200" height="84" rx="8" fill="#f2fbf4" stroke="#1a7f37" stroke-width="1.6" stroke-dasharray="6,4"/>
+<text x="130.0" y="110" text-anchor="middle" font-size="14" font-weight="600" fill="#1a7f37">1. 玩家提交输入</text>
+<text x="130.0" y="130" text-anchor="middle" font-size="11.5" fill="#333">City WebView：说话/动作</text>
+<text x="130.0" y="147" text-anchor="middle" font-size="11.5" fill="#333">city.story.commit</text>
+<rect x="262" y="90" width="200" height="84" rx="8" fill="#f2fbf4" stroke="#1a7f37" stroke-width="1.6" stroke-dasharray="6,4"/>
+<text x="362.0" y="110" text-anchor="middle" font-size="14" font-weight="600" fill="#1a7f37">2. Host 原子记录事实+待处理回合</text>
+<text x="362.0" y="130" text-anchor="middle" font-size="11.5" fill="#333">story_events 落库（权威）+ post(actor.turn)</text>
+<text x="362.0" y="147" text-anchor="middle" font-size="11.5" fill="#333">dedupeKey=eventId · 满箱丢最旧+标注</text>
+<rect x="494" y="90" width="200" height="84" rx="8" fill="#f2fbf4" stroke="#1a7f37" stroke-width="1.6" stroke-dasharray="6,4"/>
+<text x="594.0" y="110" text-anchor="middle" font-size="14" font-weight="600" fill="#1a7f37">3. Actor 领取回合</text>
+<text x="594.0" y="130" text-anchor="middle" font-size="11.5" fill="#333">claim_wait：fetch+in_flight 同事务</text>
+<text x="594.0" y="147" text-anchor="middle" font-size="11.5" fill="#333">at-least-once：断线→replyTTL 后重排队</text>
+<rect x="726" y="90" width="200" height="84" rx="8" fill="#f2fbf4" stroke="#1a7f37" stroke-width="1.6" stroke-dasharray="6,4"/>
+<text x="826.0" y="110" text-anchor="middle" font-size="14" font-weight="600" fill="#1a7f37">4. 提交绑定回复</text>
+<text x="826.0" y="130" text-anchor="middle" font-size="11.5" fill="#333">intent.speak 绑定同 storyRunId</text>
+<text x="826.0" y="147" text-anchor="middle" font-size="11.5" fill="#333">+ 触发 eventId（幂等去重）</text>
+<rect x="958" y="90" width="200" height="84" rx="8" fill="#f2fbf4" stroke="#1a7f37" stroke-width="1.6" stroke-dasharray="6,4"/>
+<text x="1058.0" y="110" text-anchor="middle" font-size="14" font-weight="600" fill="#1a7f37">5. 确认回合</text>
+<text x="1058.0" y="130" text-anchor="middle" font-size="11.5" fill="#333">commit 成功 → confirmed</text>
+<text x="1058.0" y="147" text-anchor="middle" font-size="11.5" fill="#333">replyTTL 超时未确认 → 重排队</text>
+<rect x="1150" y="90" width="200" height="84" rx="8" fill="#f2fbf4" stroke="#1a7f37" stroke-width="1.6" stroke-dasharray="6,4"/>
+<text x="1250.0" y="110" text-anchor="middle" font-size="14" font-weight="600" fill="#1a7f37">6. City 读取回复</text>
+<text x="1250.0" y="130" text-anchor="middle" font-size="11.5" fill="#333">同 Run 读取接口（缺口 G-READ）</text>
+<text x="1250.0" y="147" text-anchor="middle" font-size="11.5" fill="#333">legacy read 按 gameId 映射，需新面</text>
+<line x1="230" y1="132" x2="262" y2="132" stroke="#1a7f37" stroke-width="1.6" stroke-dasharray="6,4" marker-end="url(#arr)"/>
+<text x="246.0" y="126.0" text-anchor="middle" font-size="11" fill="#1a7f37"></text>
+<line x1="462" y1="132" x2="494" y2="132" stroke="#1a7f37" stroke-width="1.6" stroke-dasharray="6,4" marker-end="url(#arr)"/>
+<text x="478.0" y="126.0" text-anchor="middle" font-size="11" fill="#1a7f37"></text>
+<line x1="694" y1="132" x2="726" y2="132" stroke="#1a7f37" stroke-width="1.6" stroke-dasharray="6,4" marker-end="url(#arr)"/>
+<text x="710.0" y="126.0" text-anchor="middle" font-size="11" fill="#1a7f37"></text>
+<line x1="926" y1="132" x2="958" y2="132" stroke="#1a7f37" stroke-width="1.6" stroke-dasharray="6,4" marker-end="url(#arr)"/>
+<text x="942.0" y="126.0" text-anchor="middle" font-size="11" fill="#1a7f37"></text>
+<line x1="1158" y1="132" x2="1150" y2="132" stroke="#1a7f37" stroke-width="1.6" stroke-dasharray="6,4" marker-end="url(#arr)"/>
+<text x="1154.0" y="126.0" text-anchor="middle" font-size="11" fill="#1a7f37"></text>
+<rect x="262" y="260" width="200" height="66" rx="8" fill="#f7f7f9" stroke="#b45f06" stroke-width="1.6"/>
+<text x="362.0" y="280" text-anchor="middle" font-size="14" font-weight="600" fill="#b45f06">重排队路径</text>
+<text x="362.0" y="300" text-anchor="middle" font-size="11.5" fill="#333">in_flight 超 replyTTL → 回 pending（redelivered 标注）</text>
+<rect x="726" y="260" width="200" height="66" rx="8" fill="#f7f7f9" stroke="#b45f06" stroke-width="1.6"/>
+<text x="826.0" y="280" text-anchor="middle" font-size="14" font-weight="600" fill="#b45f06">幂等责任对称</text>
+<text x="826.0" y="300" text-anchor="middle" font-size="11.5" fill="#333">Agent 按 eventId 去重；Host 按 operationId 幂等</text>
+<line x1="362" y1="174" x2="362" y2="258" stroke="#b45f06" stroke-width="1.6" marker-end="url(#arr)"/>
+<text x="362.0" y="210.0" text-anchor="middle" font-size="11" fill="#b45f06"></text>
+<line x1="362" y1="326" x2="362" y2="362" stroke="#b45f06" stroke-width="1.6" marker-end="url(#arr)"/>
+<text x="362.0" y="338.0" text-anchor="middle" font-size="11" fill="#b45f06"></text>
+<line x1="462" y1="293" x2="726" y2="293" stroke="#b45f06" stroke-width="1.6" marker-end="url(#arr)"/>
+<text x="594.0" y="287.0" text-anchor="middle" font-size="11" fill="#b45f06"></text>
+<line x1="826" y1="174" x2="826" y2="258" stroke="#b45f06" stroke-width="1.6" marker-end="url(#arr)"/>
+<text x="826.0" y="210.0" text-anchor="middle" font-size="11" fill="#b45f06"></text>
+<line x1="826" y1="326" x2="826" y2="362" stroke="#b45f06" stroke-width="1.6" marker-end="url(#arr)"/>
+<text x="826.0" y="338.0" text-anchor="middle" font-size="11" fill="#b45f06"></text>
+<line x1="926" y1="293" x2="958" y2="240" stroke="#b45f06" stroke-width="1.6" marker-end="url(#arr)"/>
+<text x="942.0" y="260.5" text-anchor="middle" font-size="11" fill="#b45f06"></text>
+<rect x="30" y="380" width="1300" height="200" rx="12" fill="#b45f06" stroke="#b45f06" stroke-opacity="0.35" stroke-width="1.2"/>
+<text x="44" y="404" font-size="13.5" font-weight="700" fill="#b45f06">实现状态与缺口（评审登记）</text>
+<rect x="50" y="420" width="390" height="130" rx="8" fill="#f7f7f9" stroke="#444" stroke-width="1.6"/>
+<text x="245.0" y="440" text-anchor="middle" font-size="14" font-weight="600" fill="#444">已实现（at-most-once 基线，feature 分支）</text>
+<text x="245.0" y="460" text-anchor="middle" font-size="11.5" fill="#333">host_deliveries 表 + post/wait + 惰性过期</text>
+<text x="245.0" y="477" text-anchor="middle" font-size="11.5" fill="#333">满箱丢最旧 + droppedOldest 标注</text>
+<text x="245.0" y="494" text-anchor="middle" font-size="11.5" fill="#333">dedupe 幂等 · 多主体隔离 · fetch+ack 事务</text>
+<rect x="470" y="420" width="400" height="130" rx="8" fill="#f2fbf4" stroke="#1a7f37" stroke-width="1.6" stroke-dasharray="6,4"/>
+<text x="670.0" y="440" text-anchor="middle" font-size="14" font-weight="600" fill="#1a7f37">W7 增量 D-6（未实现）</text>
+<text x="670.0" y="460" text-anchor="middle" font-size="11.5" fill="#333">in_flight 状态 + creator_actor_turn_confirm</text>
+<text x="670.0" y="477" text-anchor="middle" font-size="11.5" fill="#333">replyTTL 重排队（redelivered 标注）</text>
+<text x="670.0" y="494" text-anchor="middle" font-size="11.5" fill="#333">Agent 侧 eventId 去重</text>
+<rect x="900" y="420" width="410" height="130" rx="8" fill="#f7f7f9" stroke="#b45f06" stroke-width="1.6"/>
+<text x="1105.0" y="440" text-anchor="middle" font-size="14" font-weight="600" fill="#b45f06">前置缺口 G-READ（必须先落地）</text>
+<text x="1105.0" y="460" text-anchor="middle" font-size="11.5" fill="#333">city.story.read 现走 legacy gameId 映射</text>
+<text x="1105.0" y="477" text-anchor="middle" font-size="11.5" fill="#333">玩家看回复需要同 Run 作用域读取面</text>
+<text x="1105.0" y="494" text-anchor="middle" font-size="11.5" fill="#333">HB-08 端到端验收依赖它</text>
+<text x="680.0" y="606" text-anchor="middle" font-size="12" fill="#444">来源：OH_AGENT_HOST_DELIVERY_BUS_SPEC_2026-11-21 §2.4（评审修订版）· HB-02/06/07/08 · 图为设计评审用，实现以代码为准</text>
+</svg>

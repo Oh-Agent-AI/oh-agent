@@ -2,7 +2,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::path::Path;
 use crate::creator_store::{database, digest, new_id, now_ms};
-use crate::story_store::{commit_story, legacy_story_scope, story_state, StoryClockAuthorityV1, StoryCommitCommandV1, StoryForkScopeV1};
+use crate::story_store::{commit_story, legacy_story_scope, story_state, StoryClockAuthorityV1, StoryCommitCommandV1, StoryForkScopeV1, StoryStateScopeV1};
 
 const RUN_TTL_MS: u64 = 30 * 60 * 1_000;
 
@@ -182,12 +182,14 @@ pub(crate) fn forget_story_fork(home: &Path, preview_id: &str) {
 }
 
 fn local_player(db: &Connection, now: u64) -> Result<String, &'static str> {
-    if let Some(player_id) = db.query_row("SELECT player_id FROM city_players WHERE profile_key='local'", [], |row| row.get::<_, String>(0))
-        .optional().map_err(|_| "creator_store_unavailable")? {
-        return Ok(player_id);
-    }
-    let player_id = new_id("player")?;
-    db.execute("INSERT INTO city_players(profile_key,player_id,created_at_ms) VALUES ('local',?1,?2)", params![player_id,now])
+    // N3（主体统一）：City Runtime 的本地玩家收敛到 Story Registry 的稳定本地
+    // 主体（LOCAL_CREATOR_OWNER）——story run（owner 钉定）与 city game run 必须
+    // 共享同一 player 身份，提交边界的显式 Story Run 绑定才能成立（HB-08）。
+    // 既有行迁移到稳定主体：历史 run 行保留行内 player_id，寻址不受影响。
+    let player_id = crate::creator_projects::LOCAL_CREATOR_OWNER.to_string();
+    db.execute("INSERT INTO city_players(profile_key,player_id,created_at_ms) VALUES ('local',?1,?2)
+        ON CONFLICT(profile_key) DO UPDATE SET player_id=excluded.player_id",
+        params![player_id,now as i64])
         .map_err(|_| "creator_store_unavailable")?;
     Ok(player_id)
 }
@@ -274,6 +276,56 @@ pub(crate) fn read_story(home: &Path, city_instance: &str, payload: &Value) -> R
     story_state(home, &player_id, &city_id, &game_id)
 }
 
+/// 显式 Story Run 读取（N2 G-READ，OH_AGENT_NARRATIVE_ENGINE_SPEC §4/N2 验收）：
+/// 给定 runId 一次拿到该 Run 的状态 + 对白事件（含 Actor 已提交回复）。
+/// 读取走显式四元组（player/city/story/run），不经 legacy gameId 合成映射——
+/// 这是「玩家在原 Run 看到回复」的读取面（HB-08）。
+pub(crate) fn read_story_run(home: &Path, city_instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    let run_id = required(payload, "runId")?;
+    let dialogue_limit = payload.get("dialogueLimit").and_then(Value::as_u64).unwrap_or(50).clamp(1, 100) as u32;
+    let db = database(home)?;
+    migrate(&db)?;
+    // 读取是非破坏性操作：不调 active_run/expire_runs（写过期 + TTL 判定用墙钟
+    // 会在时钟域不同的调用里误杀活跃 Run——测试与离线读取的真实边界场景）。
+    // 只校验 run 存在且绑定本实例；已过期 Run 仍可读（事实不因 TTL 消失）。
+    let row: (String, String, String) = db.query_row(
+        "SELECT city_id,game_id,player_id FROM city_game_runs WHERE run_id=?1 AND city_instance_id=?2",
+        params![run_id,city_instance], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)))
+        .optional().map_err(|_| "creator_store_unavailable")?.ok_or("game_run_not_found")?;
+    let (city_id, game_id, player_id) = row;
+    let (story_id, story_run_id) = active_story_scope(&db, &player_id, &city_id, run_id)?;
+    let state = crate::story_store::story_state_scoped(home, &player_id, &city_id, &story_id, &story_run_id)?;
+    let dialogue = crate::story_store::story_dialogue_scoped(home, &player_id, &city_id, &story_id, &story_run_id, dialogue_limit)?;
+    Ok(json!({"runId":run_id,"storyId":story_id,"storyRunId":story_run_id,"playerId":player_id,
+        "cityId":city_id,"gameId":game_id,"storyRevision":state["storyRevision"],"state":state["state"],
+        "dialogue":dialogue}))
+}
+
+/// 活跃 Run 的显式 story 作用域派生（G-READ）：返回 (story_id, story_run_id)。
+/// 优先读 story_runs 表的显式注册（N2）；fallback 到 legacy 合成映射——commit
+/// 写入侧同样走 legacy（story_scope: None），两侧必须派生一致才能读到已提交事实。
+pub(crate) fn active_story_scope(db: &rusqlite::Connection, player_id: &str, city_id: &str, run_id: &str) -> Result<(String, String), &'static str> {
+    // N3：显式 Story Run 按 player×city 解析——story run 生命周期独立于 city
+    // game run（ViewSession 关闭后 Run 仍继续，spec §4），读取用 city run id
+    // 定位会话，用玩家当前 Story Run 定位进度。表未迁移（纯 game 流程）→ 跳过。
+    let explicit: Option<(String, String)> = {
+        let present: i64 = db.query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='story_runs'",
+            [], |row| row.get(0)).map_err(|_| "creator_store_unavailable")?;
+        if present == 0 { None } else {
+            db.query_row("SELECT story_id,story_run_id FROM story_runs WHERE player_id=?1 AND city_id=?2 AND status IN ('active','paused') ORDER BY updated_at_ms DESC LIMIT 1",
+                params![player_id,city_id], |row| Ok((row.get(0)?,row.get(1)?)))
+                .optional().map_err(|_| "creator_store_unavailable")?
+        }
+    };
+    if let Some(scope) = explicit { return Ok(scope); }
+    let game_id: String = db.query_row(
+        "SELECT game_id FROM city_game_runs WHERE run_id=?1 AND player_id=?2 AND city_id=?3",
+        params![run_id,player_id,city_id], |row| row.get(0))
+        .optional().map_err(|_| "creator_store_unavailable")?
+        .ok_or("game_run_not_found")?;
+    Ok(crate::story_store::legacy_story_scope(&game_id))
+}
+
 pub(crate) fn commit(home: &Path, city_instance: &str, payload: &Value) -> Result<Value, &'static str> {
     commit_at(home, city_instance, payload, now_ms())
 }
@@ -285,12 +337,32 @@ fn commit_at(home: &Path, city_instance: &str, payload: &Value, now: u64) -> Res
     let (city_id, game_id, player_id) = active_run(&db, city_instance, run_id, now)?;
     let clock = read_clock_at(home, &city_id, now)?;
     if clock.get("uncertainty").is_some() { return Err("city_time_uncertain"); }
+    // D-2 投递上下文在 command 被移动前捕获（投递发生在 commit 成功之后）。
+    let turn_player = player_id.clone(); let turn_city = city_id.clone(); let turn_game = game_id.clone();
+    let turn_resident = payload.get("residentId").and_then(Value::as_str).map(str::to_string);
+    let turn_event = payload.get("eventId").and_then(Value::as_str).map(str::to_string).unwrap_or_default();
+    let turn_operation = payload.get("operationId").and_then(Value::as_str).map(str::to_string).unwrap_or_default();
+    // N3（显式 Story Run 绑定，OH_AGENT_NARRATIVE_ENGINE_SPEC §4）：玩家在该 City
+    // 的活跃 Story Run 存在时，玩家提交绑定其显式作用域——玩家命令与 Actor 回复
+    // 落同一 Run（HB-08 的读写对齐前提）。无注册行（纯 game 流程）或 registry
+    // 未迁移 → 维持 legacy 合成映射，既有 Runtime 语义零变化。
+    let bound_story: Option<(String, String)> = {
+        let present: i64 = db.query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='story_runs'",
+            [], |row| row.get(0)).map_err(|_| "creator_store_unavailable")?;
+        if present == 0 { None } else {
+            db.query_row("SELECT story_id,story_run_id FROM story_runs WHERE player_id=?1 AND city_id=?2 AND status IN ('active','paused') ORDER BY updated_at_ms DESC LIMIT 1",
+                params![turn_player,turn_city], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+                .optional().map_err(|_| "creator_store_unavailable")?
+        }
+    };
     let command = StoryCommitCommandV1 {
         operation_id: required(payload, "operationId")?.to_string(), event_id: required(payload, "eventId")?.to_string(),
         player_id, city_id, game_id,
         // Runtime 的 commit/read 仍走 legacy 合成映射（每 gameId 一个合成 storyId），
-        // S-1 只改存储键，不改变既有 Runtime 语义。
-        story_scope: None,
+        // S-1 只改存储键；显式绑定仅在活跃 Story Run 存在时生效（N3，与投递、
+        // G-READ 共用同一解析）。
+        story_scope: bound_story.as_ref().map(|(story_id, story_run_id)|
+            StoryStateScopeV1 { story_id: story_id.clone(), story_run_id: story_run_id.clone() }),
         resident_id: payload.get("residentId").and_then(Value::as_str).filter(|value| valid_id(value)).map(str::to_string),
         expected_story_revision: required(payload, "expectedStoryRevision")?.to_string(),
         expected_clock_revision: required(payload, "expectedClockRevision")?.to_string(),
@@ -300,16 +372,38 @@ fn commit_at(home: &Path, city_instance: &str, payload: &Value, now: u64) -> Res
         rule_set_digest: payload.get("ruleSetDigest").and_then(Value::as_str).filter(|value| valid_id(value)).map(str::to_string),
         causation_id: payload.get("causationId").and_then(Value::as_str).filter(|value| valid_id(value)).map(str::to_string),
         correlation_id: payload.get("correlationId").and_then(Value::as_str).filter(|value| valid_id(value)).map(str::to_string),
+        // 玩家路径无求值器效果（叙事语义归 actor_turn 裁决链，N3）。
+        narrative_effects: None,
     };
     if payload.get("residentId").is_some() && command.resident_id.is_none() { return Err("game_argument_invalid"); }
     for key in ["ruleSetDigest", "causationId", "correlationId"] {
         if payload.get(key).is_some_and(|value| value.as_str().filter(|id| valid_id(id)).is_none()) { return Err("game_argument_invalid"); }
     }
-    commit_story(home, command, StoryClockAuthorityV1 {
+    let result = commit_story(home, command, StoryClockAuthorityV1 {
         revision: clock["clockRevision"].as_str().ok_or("creator_store_unavailable")?.to_string(),
         tick: clock["tick"].as_u64().ok_or("creator_store_unavailable")?,
         simulation_utc_ms: clock["simulationUtcMs"].as_u64().ok_or("creator_store_unavailable")?,
-    })
+    })?;
+    // D-2（Delivery Bus）：玩家事实落到绑定 resident 时投递 actor.turn。事实已
+    // 提交，投递失败只记日志不改 commit 语义——Actor 可从 timeline 拉取（推-拉互补）；
+    // dedupe_key=event_id 保证重试幂等（spec HB-06）。
+    if let Some(resident_id) = turn_resident.as_deref() {
+        let turn = agent_vitals_mcp::mcp::host_delivery::ActorTurnContext {
+            player_id: &turn_player, city_id: &turn_city, game_id: &turn_game,
+            run_id, resident_id, event_id: &turn_event, operation_id: &turn_operation,
+            // N3：投递携带本次提交绑定的显式 Story 作用域（与事实同库同源）——
+            // 领取方拿到的 storyRunId 即回复提交的作用域，读取侧不二次解析。
+            story_scope: bound_story.as_ref().map(|(s, r)| (s.as_str(), r.as_str())),
+        };        match agent_vitals_mcp::mcp::host_delivery::post_actor_turn_for_commit(home, &turn) {
+            Ok(delivery) => { if delivery["droppedOldest"].as_i64().unwrap_or(0) > 0 {
+                agent_vitals_runtime::logging::log_warn("host_delivery", &format!(
+                    "actor.turn delivered with droppedOldest={} (resident={resident_id}, event={})", delivery["droppedOldest"], turn_event)); }
+            }
+            Err(error) => agent_vitals_runtime::logging::log_warn("host_delivery", &format!(
+                "actor.turn post failed after committed fact (resident={resident_id}, event={}): {} — actor catches up via timeline", turn_event, error.message)),
+        }
+    }
+    Ok(result)
 }
 
 /// Actor Intent 的 City Runtime 面（RFC §12.2：任何影响公共 NPC 状态的 Intent
@@ -357,10 +451,63 @@ mod tests {
     }
 
     #[test]
+    fn run_scoped_read_returns_committed_dialogue_and_isolates_players() {
+        // N2 G-READ 验收（HB-08 前置）：玩家提交 → 经显式 run.read 读回对白；
+        // 第二玩家的 Run 读不到第一玩家的对白。
+        let home = home();
+        let run = start(&home, 1_000);
+        let clock = read_clock_at(&home, "city:one", 1_000).unwrap();
+        let mut speak = commit_payload(&run, &clock, "0");
+        speak["intent"] = json!({"kind":"speak","targetId":"resident:xia","text":"去咖啡馆吧？"});
+        speak["eventId"] = json!("event-speak-1");
+        let commit_result = commit_at(&home, "city-instance", &speak, 1_000).unwrap();
+        let _ = &commit_result;
+        // 显式 Run 读取（G-READ）：同一 Run 内读回状态与对白。
+        let run_id = run["runId"].as_str().unwrap();
+        let read = crate::creator_projects::dispatch_city_runtime(&home, "city-instance",
+            "city.story.run.read", &json!({"runId":run_id})).unwrap();
+        assert_eq!(read["runId"], json!(run_id));
+        let dialogue = read["dialogue"].as_array().unwrap();
+        assert_eq!(dialogue.len(), 1);
+        assert_eq!(dialogue[0]["eventId"], "event-speak-1");
+        // commit 的 storyRevision 是 sha256 摘要（digest(current:request_hash)），
+        // 非零即有已提交状态；dialogue[0] 已验 eventId。
+        assert!(read["storyRevision"].as_str().unwrap().starts_with("sha256:"));
+        // 跨玩家隔离：同键（player 不同）读取第二玩家的 Run——不经过 start_run_at
+        //（local_player 单例 + active_slot UNIQUE 使同 profile 无法双活跃 Run），
+        // 用显式 story_runs 注册 + 直接构造 city_game_runs 行模拟另一玩家的 Run。
+        {
+            let db = database(&home).unwrap();
+            db.execute("UPDATE city_game_runs SET active_slot=NULL WHERE run_id=?1", params![run_id]).unwrap();
+            db.execute("INSERT INTO city_game_runs(run_id,city_instance_id,city_id,game_id,player_id,build_id,status,active_slot,created_at_ms,expires_at_ms)
+                VALUES('game-run-other','city-instance','city:one','game.romance','player-2',NULL,'active','city-instance',1,99999999999999)", []).unwrap();
+            crate::story_registry::migrate(&db).unwrap();
+            db.execute("INSERT INTO city_game_runs(run_id,city_instance_id,city_id,game_id,player_id,build_id,status,active_slot,created_at_ms,expires_at_ms)
+                VALUES('run-p2','city-instance','city:one','game.romance','player-2',NULL,'active',NULL,1,99999999999999)", []).unwrap();
+            db.execute("INSERT OR IGNORE INTO story_runs(story_run_id,player_id,city_id,story_id,status,last_viewed_at_ms,created_at_ms,updated_at_ms)
+                VALUES('run-p2','player-2','city:one','story.detective','active',1,1,1)", []).unwrap();
+        }
+        let other = crate::creator_projects::dispatch_city_runtime(&home, "city-instance",
+            "city.story.run.read", &json!({"runId":"game-run-other"})).unwrap();
+        assert_eq!(other["dialogue"].as_array().unwrap().len(), 0);
+        // player-2 的显式 story_runs 注册行（story.detective）没有已提交事件——
+        // 即使 story 同名也不会读到 player-1 的对白（作用域四元组隔离）。
+        let other_explicit = crate::creator_projects::dispatch_city_runtime(&home, "city-instance",
+            "city.story.run.read", &json!({"runId":"run-p2"})).unwrap();
+        assert_eq!(other_explicit["dialogue"].as_array().unwrap().len(), 0);
+        // 原玩家仍可读自己的对白（读取非破坏性、TTL 过期后事实仍在）。
+        let own = crate::creator_projects::dispatch_city_runtime(&home, "city-instance",
+            "city.story.run.read", &json!({"runId":run_id})).unwrap();
+        assert_eq!(own["dialogue"].as_array().unwrap().len(), 1);
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
     fn city_run_clock_and_rule_commit_form_one_local_host_path() {
         let home = home();
         let run = start(&home, 1_000);
-        assert!(run["playerScope"]["playerId"].as_str().unwrap().starts_with("player"));
+        // 主体统一（N3）：本地玩家 = 稳定本地主体（story run owner 同一身份）。
+        assert_eq!(run["playerScope"]["playerId"], json!(crate::creator_projects::LOCAL_CREATOR_OWNER));
         let clock = read_clock_at(&home, "city:one", 1_000).unwrap();
         let first = commit_at(&home, "city-instance", &commit_payload(&run, &clock, "0"), 1_000).unwrap();
         assert_eq!(first["status"], "committed");
@@ -515,7 +662,7 @@ mod tests {
             story_scope: None, resident_id: Some("resident:xia".to_string()),
             expected_story_revision: revision.to_string(), expected_clock_revision: "fork-clock-1".to_string(),
             intent: json!({"kind":"invite","targetId":"place:cafe"}), run_id: "fork-run".to_string(),
-            rule_set_digest: None, causation_id: None, correlation_id: None,
+            rule_set_digest: None, causation_id: None, correlation_id: None, narrative_effects: None,
         }
     }
 

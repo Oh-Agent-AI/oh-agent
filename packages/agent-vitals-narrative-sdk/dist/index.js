@@ -658,16 +658,101 @@ function checkCausalDependency(newEventDependencies, committedEventIds) {
   if (diagnostics.length > 0) return narrativeFailureV1(diagnostics);
   return { ok: true, value: [...satisfied].sort(compareText4), diagnostics: [] };
 }
+
+// src/contracts/engine.ts
+var NARRATIVE_GRAPH_MAX_BYTES = 256 * 1024;
+var NARRATIVE_CANON_MAX_BYTES = 64 * 1024;
+var NARRATIVE_DIALOGUE_MAX_BYTES = 4 * 1024;
+var NARRATIVE_MAX_CONDITIONS = 8;
+var NARRATIVE_MAX_EFFECTS = 4;
+
+// src/runtime/evaluate.ts
+function evalCondition(condition, snapshot) {
+  switch (condition.op) {
+    case "flag":
+      return (snapshot.flags[condition.key] ?? false) === condition.expected;
+    case "counter.gte":
+      return (snapshot.counters[condition.key] ?? 0) >= condition.value;
+    case "counter.lte":
+      return (snapshot.counters[condition.key] ?? 0) <= condition.value;
+    case "event.exists":
+      return snapshot.committedEvents.includes(condition.eventId);
+    case "all":
+      return condition.of.every((nested) => evalCondition(nested, snapshot));
+    default:
+      return false;
+  }
+}
+function evalEdgePreconditions(edge, snapshot) {
+  const conditions = edge.preconditions;
+  if (!conditions || !Array.isArray(conditions)) return true;
+  if (conditions.length > NARRATIVE_MAX_CONDITIONS) return false;
+  return conditions.every((condition) => evalCondition(condition, snapshot));
+}
+function evalEdgeEffects(edge, snapshot) {
+  const effects = edge.effects;
+  if (!effects || !Array.isArray(effects)) return [];
+  if (effects.length > NARRATIVE_MAX_EFFECTS) return [];
+  return effects.filter((effect) => {
+    switch (effect.op) {
+      case "flag.set":
+      case "counter.add":
+      case "event.append":
+      case "cursor.advance":
+        return true;
+      default:
+        return false;
+    }
+  });
+}
+function evaluateProposal(graph, snapshot, proposal) {
+  const diagnostics = [];
+  const edge = graph.edges.find((e) => e.id === proposal.edgeId);
+  if (!edge) {
+    diagnostics.push(`edge ${proposal.edgeId} not found in graph`);
+    return { accepted: false, diagnostics, evaluatedAtVersion: snapshot.stateVersion, effects: [], newCursor: snapshot.cursor };
+  }
+  if (edge.from !== snapshot.cursor) {
+    diagnostics.push(`edge ${proposal.edgeId} starts at ${edge.from} but cursor is ${snapshot.cursor}`);
+    return { accepted: false, diagnostics, evaluatedAtVersion: snapshot.stateVersion, effects: [], newCursor: snapshot.cursor };
+  }
+  if (!evalEdgePreconditions(edge, snapshot)) {
+    diagnostics.push(`edge ${proposal.edgeId} preconditions not satisfied at current snapshot`);
+    return { accepted: false, diagnostics, evaluatedAtVersion: snapshot.stateVersion, effects: [], newCursor: snapshot.cursor };
+  }
+  const effects = evalEdgeEffects(edge, snapshot);
+  if (effects.length === 0 && edge.effects?.length) {
+    diagnostics.push(`edge ${proposal.edgeId} effects contain unknown ops; nothing will be applied`);
+    return { accepted: false, diagnostics, evaluatedAtVersion: snapshot.stateVersion, effects: [], newCursor: snapshot.cursor };
+  }
+  return {
+    accepted: true,
+    diagnostics: [],
+    evaluatedAtVersion: snapshot.stateVersion,
+    effects,
+    newCursor: edge.to
+  };
+}
+function eligibleEdges(graph, snapshot) {
+  return graph.edges.filter((e) => e.from === snapshot.cursor && evalEdgePreconditions(e, snapshot)).map((e) => ({ edgeId: e.id, to: e.to }));
+}
 export {
   CANON_BACKSTORY_MAX_BYTES_V1,
   KNOWLEDGE_CONTENT_MAX_BYTES_V1,
   KNOWLEDGE_VISIBILITY_V1,
+  NARRATIVE_CANON_MAX_BYTES,
+  NARRATIVE_DIALOGUE_MAX_BYTES,
+  NARRATIVE_GRAPH_MAX_BYTES,
+  NARRATIVE_MAX_CONDITIONS,
+  NARRATIVE_MAX_EFFECTS,
   STORY_GRAPH_CHECK_STATUSES_V1,
   StoryGraphStructureErrorV1,
   buildStoryGraphAdjacencyV1,
   checkCausalDependency,
   conditionalReachability,
   deadEnds,
+  eligibleEdges,
+  evaluateProposal,
   islands,
   markStaleSummaries,
   narrativeErrorV1,
