@@ -110,7 +110,8 @@ function buildRules(session, gates, capability, slotsHint) {
     geometry, roadSegments: [], preferredStartMeters: { x: 0, z: 0 }, seed: session.seed, worldRevision: "mcp-sandbox" };
   const mount = { schemaVersion: 1, mountId: "mcp-sandbox", layout: { kind: "city-layout", id: "mcp-sandbox", version: "1", digest: "mcp-sandbox" },
     game: { kind: "city-minigame", id: pack.id, version: "1", digest: "mcp-sandbox" }, entryAnchorId: "spawn",
-    bindings: Object.fromEntries(slotNames.map(name => [name, bindings[name].map(index => `gate-${index}`)])), parameterOverrides: {} };
+    bindings: Object.fromEntries(slotNames.map(name => [name, bindings[name].map(index => `gate-${index}`)])),
+    parameterOverrides: fromRelease ? (fromRelease.parameterOverrides ?? {}) : {} };
   const plan = createMountedMiniGamePlan({ view, packageJson: JSON.stringify(pack), mount, gameRef: mount.game, seed: session.seed, capability });
   if (!plan.ok) throw new Error(plan.diagnostics[0]?.code ?? "mini_game_plan_invalid");
   return new MountedMiniGameControllerV1(plan.value, () => {});
@@ -211,8 +212,12 @@ function resolveReleaseArgs(args) {
     throw Object.assign(new Error("gates_required"), { detail: { boundAnchors: release.boundAnchors, warnings: release.warnings,
       hint: "the release layout snapshot has no gate geometry; pass `gates` in metres (bound anchors listed in boundAnchors)" } });
   }
+  // mount.parameterOverrides 必须随发布物一起带回（SDK createRun 按
+  // overrides[param] ?? pack 默认 解析参数引用；丢掉它 = 覆盖静默失效）。
+  const overrides = release.mounts?.[0]?.parameterOverrides;
   return { release, gameType: release.gameType, vehicle: args.vehicle ?? release.vehicle ?? null,
-    pack: args.pack ?? release.game, gates: Array.isArray(args.gates) ? args.gates : release.gates };
+    pack: args.pack ?? release.game, gates: Array.isArray(args.gates) ? args.gates : release.gates,
+    parameterOverrides: overrides && typeof overrides === "object" ? overrides : {} };
 }
 
 function open(args) {

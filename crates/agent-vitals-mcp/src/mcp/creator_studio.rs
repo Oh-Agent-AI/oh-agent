@@ -200,6 +200,7 @@ fn call_error(code: &str) -> ToolError {
         "creator_store_locked" => ToolError::new("busy", "Creator storage is locked by another process; retry after the current write finishes."),
         "creator_store_corrupt" => ToolError::new("data_unavailable", "Creator storage failed its integrity check. Back up state/creator and rebuild it from facts."),
         "creator_store_migration_failed" => ToolError::new("data_unavailable", "Creator storage schema migration failed; check the local app log for the failing stage."),
+        "creator_mount_parameter_not_found" | "creator_mount_parameter_out_of_range" | "creator_mount_parameter_binding_mismatch" => ToolError::new("invalid_argument", value),
         value if value.starts_with("creator_scene_") || value.starts_with("creator_mount_") || value == "creator_skin_not_found" || value == "creator_game_invalid" || value == "creator_game_operation_unsupported" => ToolError::new("invalid_argument", "Creator payload failed schema or budget validation."),
         "creator_vehicle_invalid" => ToolError::new("invalid_argument", "Vehicle profile failed structural validation; physics keys must match the declared flight model (see creator_vehicle_list) and camera is never accepted on define."),
         "creator_vehicle_out_of_bounds" => ToolError::new("invalid_argument", "A vehicle physics/camera/bounds value is outside the version-1 contract range; check creator_vehicle_list physicsBounds/cameraBounds/boundsLimits."),

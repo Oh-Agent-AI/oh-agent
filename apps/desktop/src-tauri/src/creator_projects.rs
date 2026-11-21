@@ -1346,6 +1346,49 @@ fn run_mount_list(home: &Path, _owner: &str, _instance: &str, payload: &Value) -
     list_typed_mounts(home, args_valid_id(payload, "projectId")?, payload.get("revision").and_then(Value::as_u64))
 }
 
+/// 复制已发布作品为新草稿（再创作入口，isolation spec ⑤-1）：以冻结 release 快照为
+/// 蓝本整份克隆，换新 projectId、revision 归零，`remixSource` 保留来源标注；原作与
+/// 其它 release 不受影响。
+fn run_project_remix(home: &Path, owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    let source_release = args_valid_id(payload, "sourceReleaseId")?;
+    let operation_id = args_valid_id(payload, "operationId")?;
+    let mut db = database(home)?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
+    let existing: Option<(String, String)> = tx.query_row(
+        "SELECT operation_hash,result_json FROM creator_operations WHERE project_id='new' AND actor_id=?1 AND operation_id=?2",
+        params![owner, operation_id], |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(|_| "creator_store_unavailable")?;
+    if let Some((_hash, result)) = existing {
+        tx.commit().map_err(|_| "creator_store_unavailable")?;
+        return serde_json::from_str(&result).map_err(|_| "creator_store_unavailable");
+    }
+    let (source_project_id, source_revision, snapshot_json): (String, u64, String) = tx.query_row(
+        "SELECT project_id,revision,snapshot_json FROM creator_releases WHERE release_id=?1", [source_release],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional().map_err(|_| "creator_store_unavailable")?
+        .ok_or("creator_release_not_found")?;
+    let mut document: Value = serde_json::from_str(&snapshot_json).map_err(|_| "creator_store_unavailable")?;
+    let object = document.as_object_mut().ok_or("creator_release_invalid")?;
+    if object.get("kind").and_then(Value::as_str) != Some("city-minigame-project")
+        || !object.get("game").is_some_and(Value::is_object) {
+        return Err("creator_release_invalid");
+    }
+    let project_id = new_id("project-")?;
+    object.insert("projectId".into(), json!(project_id));
+    object.insert("revision".into(), json!(0));
+    object.insert("remixSource".into(), json!({"releaseId":source_release,"projectId":source_project_id,"revision":source_revision}));
+    let document_string = serde_json::to_string(&document).map_err(|_| "creator_store_unavailable")?;
+    let document_digest = digest(&document_string);
+    let now = now_ms();
+    tx.execute("INSERT INTO creator_projects(project_id,revision,document_json,created_at_ms,updated_at_ms) VALUES(?1,0,?2,?3,?3)",
+        params![project_id, document_string, now]).map_err(|_| "creator_store_unavailable")?;
+    tx.execute("INSERT INTO creator_changes(project_id,revision,actor_id,operation_id,operation_hash,document_json,created_at_ms) VALUES(?1,0,?2,?3,?4,?5,?6)",
+        params![project_id, owner, operation_id, document_digest, document_string, now]).map_err(|_| "creator_store_unavailable")?;
+    let result = json!({"projectId":project_id,"revision":0,"remixSource":{"releaseId":source_release,"projectId":source_project_id,"revision":source_revision}});
+    tx.execute("INSERT INTO creator_operations(project_id,actor_id,operation_id,operation_hash,result_json,created_at_ms) VALUES('new',?1,?2,?3,?4,?5)",
+        params![owner, operation_id, document_digest, result.to_string(), now]).map_err(|_| "creator_store_unavailable")?;
+    tx.commit().map_err(|_| "creator_store_unavailable")?;
+    Ok(result)
+}
+
 fn run_code_builds(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
     let limit = payload.get("limit").and_then(Value::as_u64).unwrap_or(20);
     if !(1..=50).contains(&limit) { return Err("creator_request_invalid"); }
@@ -1433,6 +1476,7 @@ static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.layout.list", &["limit"], &[], run_layout_list),
     creator_row!("creator.operation.status", &["projectId", "operationId"], &[], run_operation_status),
     creator_row!("creator.project.commit", &["projectId", "previewId", "expectedRevision", "operationId"], &[], run_commit),
+    creator_row!("creator.project.remix", &["sourceReleaseId", "operationId"], &[], run_project_remix),
     creator_row!("creator.project.create", &["template", "operationId", "worldRevision"], &["cityId"], run_project_create),
     creator_row!("creator.project.list", &["limit"], &[], run_project_list),
     creator_row!("creator.project.playtest.cancel", &["runId"], &[], run_playtest_cancel),
@@ -3481,6 +3525,46 @@ fn build_typed_mount(document: &Value, mount_id: &str, entry_anchor_id: &str, bi
             coverage.push(json!({"slot":slot,"anchorId":anchor_id,"kind":kind,"capabilities":capabilities}));
         }
     }
+    // SDK validateMount 的参数覆盖校验（city-sdk validate.ts:494-516 的 Rust 侧移植）：
+    // 未声明键/越界值必须在绑定期拒绝——否则坏配置会冻结进 release，直到运行时才
+    // parameter_not_found 失败（2026-11-20 验收踩实过的链路）。
+    let integer_parameters = game.get("integerParameters").and_then(Value::as_object);
+    let overrides_object = parameter_overrides.and_then(Value::as_object);
+    if let Some(overrides) = overrides_object {
+        let integer_parameters = match integer_parameters {
+            Some(parameters) => parameters,
+            None if overrides.is_empty() => json!({}).as_object().unwrap(),
+            None => return Err("creator_mount_parameter_not_found"),
+        };
+        for (name, value) in overrides {
+            let parameter = integer_parameters.get(name.as_str()).ok_or("creator_mount_parameter_not_found")?;
+            let value = value.as_i64().ok_or("creator_mount_parameter_out_of_range")?;
+            let min = parameter.get("min").and_then(Value::as_i64);
+            let max = parameter.get("max").and_then(Value::as_i64);
+            if min.is_some_and(|min| value < min) || max.is_some_and(|max| value > max) {
+                return Err("creator_mount_parameter_out_of_range");
+            }
+        }
+    }
+    // 完成阈值耦合（SDK parameter_binding_mismatch）：带 run.finish 完成守卫的槽位，
+    // 其阈值参数必须等于绑定数（显式覆盖或声明默认）——防“绑 5 门、过 3 门即结束”。
+    if let Some(slots_object) = game.get("slots").and_then(Value::as_object) {
+        let empty = serde_json::Map::new();
+        let integer_parameters = integer_parameters.unwrap_or(&empty);
+        let overrides_map = overrides_object.unwrap_or(&empty);
+        for (slot, raw_ids) in bindings {
+            let count = raw_ids.as_array().ok_or("creator_mount_invalid")?.len() as i64;
+            if !slots_object.contains_key(slot.as_str()) { continue; }
+            for parameter in completion_threshold_parameters(game, slot) {
+                let declared = integer_parameters.get(parameter.as_str())
+                    .ok_or("creator_mount_parameter_not_found")?;
+                let expected = overrides_map.get(parameter.as_str()).and_then(Value::as_i64)
+                    .or_else(|| declared.get("default").and_then(Value::as_i64))
+                    .ok_or("creator_mount_parameter_binding_mismatch")?;
+                if expected != count { return Err("creator_mount_parameter_binding_mismatch"); }
+            }
+        }
+    }
     let layout = document.get("cityLayout").filter(|value| !value.is_null()).ok_or("creator_layout_not_bound")?;
     let (world_revision, layout_id) = validate_layout_snapshot(layout)?;
     let game_digest = digest(&canonical_json(game).map_err(|_| "creator_game_invalid")?);
@@ -3495,6 +3579,33 @@ fn build_typed_mount(document: &Value, mount_id: &str, entry_anchor_id: &str, bi
     let coverage = json!({"mountId":mount_id,"slots":slots.len(),"bound":coverage.len(),"anchors":coverage,"entry":entry,
         "layoutId":layout_id,"worldRevision":world_revision,"gameId":game["id"],"vehicleId":vehicle_id});
     Ok((mount, coverage))
+}
+
+/// 完成阈值参数（SDK completionThresholdParameters 移植）：`counter.eq` 守卫引用、
+/// 且该守卫所在节点带 `run.finish` 并监听此槽位——这类参数与槽位绑定数耦合。
+fn completion_threshold_parameters(game: &Value, slot: &str) -> Vec<String> {
+    let mut parameters = Vec::new();
+    let nodes = game.get("rules").and_then(|rules| rules.get("nodes")).and_then(Value::as_array);
+    for node in nodes.into_iter().flatten() {
+        let on = node.get("on");
+        let node_type = on.and_then(|on| on.get("type")).and_then(Value::as_str);
+        if node_type != Some("zone.entered") && node_type != Some("item.collected") { continue; }
+        if on.and_then(|on| on.get("slot")).and_then(Value::as_str) != Some(slot) { continue; }
+        let has_finish = node.get("actions").and_then(Value::as_array).is_some_and(|actions|
+            actions.iter().any(|action| action.get("op").and_then(Value::as_str) == Some("run.finish")));
+        if !has_finish { continue; }
+        for guard in node.get("when").and_then(Value::as_array).into_iter().flatten() {
+            if guard.get("op").and_then(Value::as_str) != Some("counter.eq") { continue; }
+            if let Some(parameter) = guard.get("value").and_then(|value| value.get("parameter")).and_then(Value::as_str) {
+                if game.get("integerParameters").and_then(|p| p.get(parameter)).is_some() {
+                    parameters.push(parameter.to_string());
+                }
+            }
+        }
+    }
+    parameters.sort();
+    parameters.dedup();
+    parameters
 }
 
 type TypedMountInputs<'a> = (&'a str, &'a str, &'a Value, Option<&'a str>, Option<&'a Value>);
