@@ -107,18 +107,21 @@ pub(crate) fn wait(home, principal: &Value, timeout_ms: u64) -> Result<Value, &'
 | D-2 | City 说话面挂接：commit_story 命中 residentId 且存在绑定 actor → post(actor.turn) | story_store.rs 最小增量 |
 | D-3 | `creator_actor_turn_wait` 工具（外部会话长轮询）| actor_adapter.rs + creator_projects.rs + MCP + plugins.json |
 | D-4 | NPC 回复面（已有）：actor intent submit（speak）→ 玩家经 city.story.read / timeline 读到 | 无新增 |
-| D-5 | 测试：说话→投递→wait 唤醒→intent 提交→timeline 可读 全链；TTL 过期；多 actor 隔离；幂等 | 各文件 tests |
+| D-5 | 测试：说话→投递→领取唤醒→intent 提交→confirm→玩家同 Run 可读 全链；TTL 过期；多 actor 隔离；幂等；重排队 | 各文件 tests |
+| D-6 | 回合确认状态机（pending→in_flight→confirmed）+ replyTTL 重排队 + `creator_actor_turn_confirm` 工具 | host_delivery.rs 增量 + MCP 面 |
 
 ## 5. 验收标准
 
 | ID | 场景 | 必须成立 |
 |---|---|---|
 | HB-01 | 玩家对绑定 NPC 说话 | 投递行落库（principal=绑定 actor，kind=actor.turn） |
-| HB-02 | 外部会话 wait | 阻塞至投递出现或超时；取走即 delivered（不重复投递） |
+| HB-02 | 外部会话领取 | 阻塞至投递出现或超时；领取即 in_flight（并发不重复领取） |
 | HB-03 | 多 actor 隔离 | 各收件箱互不可见；未绑定 NPC 的说话不产生投递 |
 | HB-04 | TTL | 过期投递惰性回收（照 expire_runs 模式），不复活 |
 | HB-05 | Studio 关闭 | wait/headless 全链不受 Studio 在场影响（headless 臂语义） |
-| HB-06 | 幂等 | 同 dedupe_key 重放只产生一行 |
+| HB-06 | 幂等 | 同 dedupe_key 重放只产生一行；同 delivery_id 重投由 Agent 按 eventId 去重 |
+| HB-07 | 回合确认 | Actor 回复绑定同 storyRunId + 触发 eventId 并 commit 成功后回合才 confirmed；replyTTL 超时未确认 → 重排队（redelivered 标注），不静默丢失 |
+| HB-08 | 玩家可见回复 | 玩家经同 Run 读取接口看到 Actor 已提交回复（当前缺口：city.story.read 走 legacy gameId 映射，需新增按 run 作用域的读取面——实施 HB-08 前必须先落地） |
 
 ## 6. 非目标
 
