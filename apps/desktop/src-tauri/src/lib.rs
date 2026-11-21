@@ -36,6 +36,7 @@ mod story_registry;
 // Intent → 校验 → 租约 → CAS 提交 → 信封 → 租约闭环。dispatch 接线由主线集成。
 mod actor_intent;
 mod actor_adapter;
+mod narrative_engine;
 pub mod creator_content_v2;
 mod creator_content_install;
 mod creator_experience;

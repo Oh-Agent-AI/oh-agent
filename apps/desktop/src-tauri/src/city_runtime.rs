@@ -302,7 +302,7 @@ pub(crate) fn read_story_run(home: &Path, city_instance: &str, payload: &Value) 
 /// 活跃 Run 的显式 story 作用域派生（G-READ）：返回 (story_id, story_run_id)。
 /// 优先读 story_runs 表的显式注册（N2）；fallback 到 legacy 合成映射——commit
 /// 写入侧同样走 legacy（story_scope: None），两侧必须派生一致才能读到已提交事实。
-fn active_story_scope(db: &rusqlite::Connection, player_id: &str, city_id: &str, run_id: &str) -> Result<(String, String), &'static str> {
+pub(crate) fn active_story_scope(db: &rusqlite::Connection, player_id: &str, city_id: &str, run_id: &str) -> Result<(String, String), &'static str> {
     let explicit: Option<(String, String)> = db.query_row(
         "SELECT story_id,story_run_id FROM story_runs WHERE story_run_id=?1 AND player_id=?2 AND city_id=?3",
         params![run_id,player_id,city_id], |row| Ok((row.get(0)?,row.get(1)?)))
