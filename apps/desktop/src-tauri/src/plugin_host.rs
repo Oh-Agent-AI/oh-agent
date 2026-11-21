@@ -2703,7 +2703,8 @@ mod tests {
             "allowedKinds": ["speak", "move"], "maxIntentsPerWindow": 3, "operationId": "op-actor-reg"})).unwrap();
         let actor_id = registered["actorId"].as_str().unwrap().to_owned();
         assert!(actor_id.starts_with("actor-"), "{registered}");
-        let context = answer_headless_call(&home, "creator.actor.turn.context", &json!({"actorId": actor_id})).unwrap();
+        let context = answer_headless_call(&home, "creator.actor.turn.context", &json!({"actorId": actor_id,
+            "scope": {"playerId": "local-profile-v1", "storyRunId": run["storyRunId"]}})).unwrap();
         assert_eq!(context["budget"]["max"], 3, "{context}");
         assert!(context["sessionPrompt"].as_str().unwrap().contains("resident:linxia"));
         let submitted = answer_headless_call(&home, "creator.actor.intent.submit", &json!({
