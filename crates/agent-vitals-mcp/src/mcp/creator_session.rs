@@ -41,7 +41,7 @@ pub fn specs() -> Vec<ToolSpec> {
         spec("creator_task_plan_submit", "Submit or revise a task plan with CAS-checked plan and artifact revisions.", json!({"taskId":{"type":"string"},"expectedPlanRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"steps":{"type":"array"},"operationId":{"type":"string"}}), &["taskId","expectedPlanRevision","expectedArtifactRevision","steps","operationId"]),
         spec("creator_task_plan_approve", "Approve the current task plan; this records approval but never claims execution or completion.", json!({"taskId":{"type":"string"},"planRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"operationId":{"type":"string"}}), &["taskId","planRevision","expectedArtifactRevision","operationId"]),
         spec("creator_task_status", "Read durable goal, plan, steps and evidence for a Studio task.", json!({"taskId":{"type":"string"}}), &["taskId"]),
-        spec("creator_task_execute", "Execute an approved task with the real Codex executor and a read-only Preview-only tool policy. Returns host-generated Preview evidence, never a saved-change claim.", json!({"taskId":{"type":"string"},"expectedPlanRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"operationId":{"type":"string"},"timeoutMs":{"type":"integer","minimum":100,"maximum":120000}}), &["taskId","expectedPlanRevision","expectedArtifactRevision","operationId"]),
+        spec("creator_task_execute", "Execute an approved task with a real push executor (default Codex CLI; \"acp\" drives any Agent Client Protocol agent) and a read-only Preview-only tool policy. Returns host-generated Preview evidence, never a saved-change claim.", json!({"taskId":{"type":"string"},"expectedPlanRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"operationId":{"type":"string"},"timeoutMs":{"type":"integer","minimum":100,"maximum":120000},"executor":{"type":"string","enum":["codex","acp"]}}), &["taskId","expectedPlanRevision","expectedArtifactRevision","operationId"]),
         spec("creator_task_evidence_append", "Append typed evidence with explicit trust level. Host verification cannot be self-declared.", json!({"taskId":{"type":"string"},"planRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"criterionId":{"type":"string"},"kind":{"type":"string"},"trustLevel":{"type":"string"},"summary":{"type":"string"},"operationId":{"type":"string"}}), &["taskId","planRevision","expectedArtifactRevision","criterionId","kind","trustLevel","summary","operationId"]),
         spec("creator_task_evidence_list", "List durable evidence for a Studio task.", json!({"taskId":{"type":"string"}}), &["taskId"]),
         spec("creator_task_review_accept", "Accept a task only after all acceptance criteria have real evidence and a human reviewer accepts it.", json!({"taskId":{"type":"string"},"planRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"reviewerNote":{"type":"string"},"operationId":{"type":"string"}}), &["taskId","planRevision","expectedArtifactRevision","reviewerNote","operationId"]),
@@ -851,7 +851,8 @@ pub fn task_execute_with_executor(data_home: &Path, payload: &Value, executor: &
 }
 
 fn task_execute(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
-    task_execute_with_executor(data_home, payload, &super::creator_agent_executor::CodexCliAgentExecutor::new())
+    let executor = super::creator_agent_executor::select_executor(payload)?;
+    task_execute_with_executor(data_home, payload, executor.as_ref())
 }
 
 fn task_review_accept(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
