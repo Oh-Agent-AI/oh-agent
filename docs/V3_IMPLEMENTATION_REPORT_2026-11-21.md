@@ -16,6 +16,15 @@ W4/W5 追加（2026-11-21）：
 | 517a4fe7 | feat(v3): TS trace 产出——host-verified 实链打通（S-6b 产出端） |
 | 98369ef8 | feat(v3): PR-5 Intent 管线 + PR-7 Inspect 工具×4 + headless 臂 + Top5-②③ |
 
+## 一·b、W6 追加（2026-11-21）：Actor 适配器
+
+| commit | 内容 |
+|---|---|
+| 8edc1b86 | docs: Actor Adapter Spec（四条用户设计修正：数据最小化/session_identifier 唯一/sessionPrompt 确定性/三层剧情触发裁决） |
+| e4adfbe7 | feat(v3): actor_adapter.rs（register 双幂等 + turn.context 事实投影 + eligibleBeats 菜单 + intent.submit 预算闸/租约 actor 持有）+ MCP 三工具 + headless 臂 |
+
+设计要点（用户定调）：**Actor = 会话第一句话的提示词 + 预算闸 + 事实落地**；宿主数据最小化（无 turn_log 表——last-decision 单行覆盖；无对话/Prompt/LLM 原文/目标/任务持久化）；会话记忆、目标管理、任务拆解归外部 coding agent 宿主自持；`session_identifier` 唯一键堵重注册刷预算；剧情触发三层（宿主资格菜单 → LLM 语义提案 → 宿主因果重验，V3-04）。
+
 ## 一·a、原 W1~W3 commit（11 个）
 
 | commit | 内容 |
