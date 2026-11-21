@@ -49,14 +49,17 @@ CREATE TABLE host_deliveries (
 CREATE INDEX host_deliveries_inbox ON host_deliveries(principal_kind, principal_id, status, created_at_ms);
 ```
 
-每个 (principal_kind, principal_id) 收件箱**按需有界**（每主体 pending ≤16，超出拒收或丢最旧按 kind 定义）。
+每个 (principal_kind, principal_id) 收件箱**按需有界**（每主体 pending ≤16）。满箱策略按 kind 定死（2026-11-21 评审 G1，实施前不得留白）：
+
+- `actor.turn`：**一律拒收**——生产动作收到 `host_delivery_backpressure` 错误原样上抛（玩家说话可重试）。承载玩家发言的投递绝不静默丢弃；
+- 通知类（`studio.task.update` / `story.beat.ready`）：**丢最旧**——通知可由账本/事件面重新推导，丢弃不损事实。
 
 ### 2.3 投递类型（kind 词表，首期）
 
 | kind | 生产者 | 消费者 | 语义 |
 |---|---|---|---|
 | `actor.turn` | City Runtime（玩家对绑定 NPC 说话/动作时） | 外部 Actor 会话 | 唤醒回合：含触发来源、residentId、bound run 摘要 |
-| `studio.task.update` | 任务账本（ST-07 已有 creator_job） | Studio / Agent | 任务状态变化通知（先投影，账本仍是权威） |
+| `studio.task.update` | 任务账本（ST-07 已有 creator_job） | Studio / Agent | 任务状态变化的**推送投影**（账本仍是权威）；认领/提交仍走 pull 面（`creator_task_claim` / `creator_task_submit_result`，2026-11-21 已并 dev）——通知与认领互补，不重叠 |
 | `story.beat.ready` | 宿主（因果就绪判定） | Actor 会话 | eligibleBeats 变化推送（每轮拉取的补充） |
 
 首期只实现 `actor.turn`（W7 核心需求）；词表开放注册，新 kind 需登记生产者与消费者契约。
@@ -70,11 +73,20 @@ pub(crate) fn wait(home, principal: &Value, timeout_ms: u64) -> Result<Value, &'
 
 - 骑在**调用方自己的既有连接**上（data-mcp stdio / City WebView / Studio 信箱）——**零新传输**；
 - 超时返回空数组（不挂死）；断线重连后重新 wait 即可（投递行在 SQLite，不丢）；
+- **取走即确认的原子性**（评审 G3）：「读 pending + 标记 delivered」必须在同一个 `IMMEDIATE` 事务内完成（照 `claim_pending` 模式）——两个并发 wait 同主体不重复投递；
 - 实现限制：等待期间持锁不可接受——用有界轮询循环（200ms 间隔 + 超时上限 30s），不做真正的跨线程唤醒（SQLite 面的既有纪律）。
 
 ### 2.5 统一预算（预留面）
 
 首期不合并 Actor 预算与信箱字节预算（语义不同：次数 vs 字节）；只统一**表达**——预算违规错误码与 `next` 恢复建议走同一映射。合并留后续 ADR。
+
+## 2.6 终局关系：统一的是「投递类」，RPC 类不迁移（评审 G2）
+
+`plugin_calls` 信箱的语义是 **request/response（RPC）**——调用方等待某个方法的应答；`host_deliveries` 的语义是**单向投递**——事实通知，无应答。两者是不同语义类，不属于碎片化：本 spec 统一的对象是后者。因此：
+
+- Studio 信箱（RPC 类）**不迁移**，继续承载 creator 方法的调用-应答；
+- `host_deliveries` 是「宿主→会话」**投递类**的终局通道：今后新的投递需求一律入队登记 kind，不再新造第四种投递形态；
+- `preview-control.json`（Isolation Spec 专用）与 story_outbox 事件的迁移与否，W8 后按同一判据评估。
 
 ## 3. 传输面纪律：协议复用、传输分层（维持既有隔离）
 
