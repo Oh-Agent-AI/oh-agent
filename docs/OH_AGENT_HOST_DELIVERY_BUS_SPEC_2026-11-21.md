@@ -120,8 +120,8 @@ pub(crate) fn wait(home, principal: &Value, timeout_ms: u64) -> Result<Value, &'
 | HB-04 | TTL | 过期投递惰性回收（照 expire_runs 模式），不复活 |
 | HB-05 | Studio 关闭 | wait/headless 全链不受 Studio 在场影响（headless 臂语义） |
 | HB-06 | 幂等 | 同 dedupe_key 重放只产生一行；同 delivery_id 重投由 Agent 按 eventId 去重 |
-| HB-07 | 回合确认 | Actor 回复绑定同 storyRunId + 触发 eventId 并 commit 成功后回合才 confirmed；replyTTL 超时未确认 → 重排队（redelivered 标注），不静默丢失 |
-| HB-08 | 玩家可见回复 | 玩家经同 Run 读取接口看到 Actor 已提交回复（当前缺口：city.story.read 走 legacy gameId 映射，需新增按 run 作用域的读取面——实施 HB-08 前必须先落地） |
+| HB-07 | 回合确认 | Actor 回复绑定同 storyRunId + 触发 eventId 并 commit 成功后回合才 confirmed；**剧情拒绝（accepted:false，如 Run/版本/租约冲突）不得确认回合**；replyTTL 超时未确认 → 重排队（redelivered 标注），不静默丢失 |
+| HB-08 | 玩家可见回复 | 玩家经同 Run 读取接口看到 Actor 已提交回复（当前缺口：city.story.read 走 legacy gameId 映射，需新增按 run 作用域的读取面——实施 HB-08 前必须先落地）；**另一个玩家的 Run 不会收到该回复**（turn_context 已按 player/run 作用域隔离，2026-11-21 评审 P1-b 修复） |
 
 ## 6. 非目标
 
