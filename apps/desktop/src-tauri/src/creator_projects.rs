@@ -1251,6 +1251,21 @@ fn run_shared_task(home: &Path, _owner: &str, method: &str, payload: &Value) -> 
     agent_vitals_mcp::mcp::creator_session::task_dispatch(home, method, payload).map_err(|error| error.code)
 }
 
+/// pull 模式 submit 的服务端复核（creator_task_submit_result 经 broker 调用）：
+/// 只读回答「preview 存在、绑定本 project、未过期」，不消费 preview。预览在创建时
+/// 已过结构闸 + city-sdk 语义闸；baseRevision 与任务 artifact 的匹配由调用方比对。
+fn run_task_preview_verify(_home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    let preview_id = args_valid_id(payload, "previewId")?;
+    let mut previews = previews().lock().unwrap_or_else(|p| p.into_inner());
+    previews.retain(|_, item| item.created.elapsed().is_ok_and(|age| age <= PREVIEW_TTL));
+    let preview = previews.get(preview_id).ok_or("creator_preview_not_found")?;
+    if let Some(project) = payload.get("projectId").and_then(Value::as_str) {
+        if preview.project_id != project { return Err("creator_preview_project_mismatch"); }
+    }
+    Ok(json!({"previewId":preview_id,"projectId":preview.project_id,"baseRevision":preview.base_revision,
+        "operationHash":preview.operation_hash}))
+}
+
 fn run_candidate_create(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
     create_project_candidate(home, args_valid_id(payload, "projectId")?, args_u64(payload, "expectedRevision")?)
 }
@@ -2010,6 +2025,7 @@ static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.task.review.accept", &["taskId", "planRevision", "expectedArtifactRevision", "reviewerNote", "operationId"], &[], run_shared_task),
     creator_row!("creator.task.review.reject", &["taskId", "planRevision", "expectedArtifactRevision", "reason", "operationId"], &[], run_shared_task),
     creator_row!("creator.task.cancel", &["taskId", "operationId"], &[], run_shared_task),
+    creator_row!("creator.task.preview.verify", &["previewId"], &["projectId"], run_task_preview_verify),
     creator_row!("creator.project.candidate.accept", &["candidateId"], &[], run_candidate_accept),
     creator_row!("creator.project.candidate.create", &["projectId", "expectedRevision"], &[], run_candidate_create),
     creator_row!("creator.project.candidate.read", &["projectId"], &["revision"], run_candidate_read),
@@ -2040,7 +2056,9 @@ static DISPATCH_ROWS: &[CreatorMethodRow] = &[
 pub fn dispatch_as(home: &Path, owner: &str, instance: &str, method: &str, payload: &Value) -> Result<Value, &'static str> {
     let row = DISPATCH_ROWS.iter().find(|row| row.method == method).ok_or("creator_method_unavailable")?;
     if !exact_payload_with_optional(payload, row.required, row.optional) { return Err("creator_request_invalid"); }
-    if method.starts_with("creator.task.") { return agent_vitals_mcp::mcp::creator_session::task_dispatch(home, method, payload).map_err(|error| error.code); }
+    // creator.task.preview.verify 是宿主本地检查（内存 preview 表），不是任务台账
+    // 方法——必须走本 crate 的 handler，不能被 task_dispatch 劫持。
+    if method.starts_with("creator.task.") && method != "creator.task.preview.verify" { return agent_vitals_mcp::mcp::creator_session::task_dispatch(home, method, payload).map_err(|error| error.code); }
     if method.starts_with("creator.session.") { return agent_vitals_mcp::mcp::creator_session::session_dispatch(home, method, payload).map_err(|error| error.code); }
     (row.handler)(home, owner, instance, payload)
 }

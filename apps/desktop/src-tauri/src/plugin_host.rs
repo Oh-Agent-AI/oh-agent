@@ -871,6 +871,9 @@ fn headless_creator_methods() -> Vec<String> {
         "creator.story.graph.inspect",
         "creator.story.timeline.inspect",
         "creator.game.intent.simulate",
+        // pull 模式 submit 的服务端复核：纯宿主本地检查（内存 preview 表），
+        // Studio 不在场时也必须可作答，否则任何 Agent 的提交都会 15s 超时。
+        "creator.task.preview.verify",
     ].into_iter().map(str::to_owned).collect()
 }
 
@@ -1032,7 +1035,8 @@ fn answer_headless_call(home: &std::path::Path, method: &str, payload: &Value) -
         | "creator.story.run.start" | "creator.story.run.stop" | "creator.story.run.reset"
         | "creator.story.resident.lease.acquire" | "creator.story.resident.lease.release"
         | "creator.game.rules.inspect" | "creator.story.graph.inspect"
-        | "creator.story.timeline.inspect" | "creator.game.intent.simulate" => {
+        | "creator.story.timeline.inspect" | "creator.game.intent.simulate"
+        | "creator.task.preview.verify" => {
             let transformed = match method {
                 "creator.city.edit.preview" => headless_world_edit_payload(home, payload)?,
                 "creator.city.create" => headless_city_create_payload(home, payload)?,
