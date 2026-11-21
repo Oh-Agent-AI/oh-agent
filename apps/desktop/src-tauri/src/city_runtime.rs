@@ -285,6 +285,11 @@ fn commit_at(home: &Path, city_instance: &str, payload: &Value, now: u64) -> Res
     let (city_id, game_id, player_id) = active_run(&db, city_instance, run_id, now)?;
     let clock = read_clock_at(home, &city_id, now)?;
     if clock.get("uncertainty").is_some() { return Err("city_time_uncertain"); }
+    // D-2 投递上下文在 command 被移动前捕获（投递发生在 commit 成功之后）。
+    let turn_player = player_id.clone(); let turn_city = city_id.clone(); let turn_game = game_id.clone();
+    let turn_resident = payload.get("residentId").and_then(Value::as_str).map(str::to_string);
+    let turn_event = payload.get("eventId").and_then(Value::as_str).map(str::to_string).unwrap_or_default();
+    let turn_operation = payload.get("operationId").and_then(Value::as_str).map(str::to_string).unwrap_or_default();
     let command = StoryCommitCommandV1 {
         operation_id: required(payload, "operationId")?.to_string(), event_id: required(payload, "eventId")?.to_string(),
         player_id, city_id, game_id,
@@ -305,11 +310,28 @@ fn commit_at(home: &Path, city_instance: &str, payload: &Value, now: u64) -> Res
     for key in ["ruleSetDigest", "causationId", "correlationId"] {
         if payload.get(key).is_some_and(|value| value.as_str().filter(|id| valid_id(id)).is_none()) { return Err("game_argument_invalid"); }
     }
-    commit_story(home, command, StoryClockAuthorityV1 {
+    let result = commit_story(home, command, StoryClockAuthorityV1 {
         revision: clock["clockRevision"].as_str().ok_or("creator_store_unavailable")?.to_string(),
         tick: clock["tick"].as_u64().ok_or("creator_store_unavailable")?,
         simulation_utc_ms: clock["simulationUtcMs"].as_u64().ok_or("creator_store_unavailable")?,
-    })
+    })?;
+    // D-2（Delivery Bus）：玩家事实落到绑定 resident 时投递 actor.turn。事实已
+    // 提交，投递失败只记日志不改 commit 语义——Actor 可从 timeline 拉取（推-拉互补）；
+    // dedupe_key=event_id 保证重试幂等（spec HB-06）。
+    if let Some(resident_id) = turn_resident.as_deref() {
+        let turn = agent_vitals_mcp::mcp::host_delivery::ActorTurnContext {
+            player_id: &turn_player, city_id: &turn_city, game_id: &turn_game,
+            run_id, resident_id, event_id: &turn_event, operation_id: &turn_operation };
+        match agent_vitals_mcp::mcp::host_delivery::post_actor_turn_for_commit(home, &turn) {
+            Ok(delivery) => { if delivery["droppedOldest"].as_i64().unwrap_or(0) > 0 {
+                agent_vitals_runtime::logging::log_warn("host_delivery", &format!(
+                    "actor.turn delivered with droppedOldest={} (resident={resident_id}, event={})", delivery["droppedOldest"], turn_event)); }
+            }
+            Err(error) => agent_vitals_runtime::logging::log_warn("host_delivery", &format!(
+                "actor.turn post failed after committed fact (resident={resident_id}, event={}): {} — actor catches up via timeline", turn_event, error.message)),
+        }
+    }
+    Ok(result)
 }
 
 /// Actor Intent 的 City Runtime 面（RFC §12.2：任何影响公共 NPC 状态的 Intent

@@ -38,6 +38,7 @@ mod city_building;
 mod city_im;
 pub mod creator_session;
 pub mod creator_agent_executor;
+pub mod host_delivery;
 mod creator_code;
 mod creator_code_workspace;
 mod creator_code_experience;
@@ -303,6 +304,20 @@ pub fn dispatch_with_permissions_options(
         | "creator_game_type_list" | "creator_task_create" | "creator_task_plan_submit" | "creator_task_plan_approve" | "creator_task_status" | "creator_task_execute"
         | "creator_task_evidence_append" | "creator_task_evidence_list" | "creator_task_review_accept" | "creator_task_review_reject" | "creator_task_cancel"
         | "creator_task_list_open" | "creator_task_claim" | "creator_task_submit_result" => creator_session::run(name, args, data_home, allow_local_writes),
+        "creator_actor_turn_wait" => {
+            // 领取（评审 1）：收件主体由 sessionIdentifier 经 actors 绑定表派生，
+            // 不接受调用方自报 principalId；actor.turn → in_flight（等确认）。
+            if !allow_local_writes { return Err(ToolError::new("permission_denied",
+                "creator_actor_turn_wait consumes deliveries; restart data-mcp serve with --allow-local-writes.")); }
+            host_delivery::claim_wait(data_home, args).map_err(attach_creator_recovery)
+        }
+        "creator_actor_turn_confirm" => {
+            // 回合确认（D-6/HB-07）：reply 绑定同 Run + 触发事件提交成功后，
+            // in_flight → confirmed；未确认超 replyTTL 重排队。
+            if !allow_local_writes { return Err(ToolError::new("permission_denied",
+                "creator_actor_turn_confirm confirms deliveries; restart data-mcp serve with --allow-local-writes.")); }
+            host_delivery::confirm_turn(data_home, args).map_err(attach_creator_recovery)
+        }
         "creator_code_builds_list" | "creator_code_build_status" | "creator_code_preview_status" =>
             creator_code::run(name, args, data_home),
         "creator_code_project_create" | "creator_code_workspace_info" | "creator_code_file_read"
