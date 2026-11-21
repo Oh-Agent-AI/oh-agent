@@ -2104,6 +2104,8 @@ pub fn dispatch_city_runtime(home: &Path, city_instance: &str, method: &str, pay
             || exact_payload(payload, &["cityId", "gameId", "buildId"]) => crate::city_runtime::start_run(home, city_instance, payload),
         "city.game.run.stop" if exact_payload(payload, &["runId"]) => crate::city_runtime::stop_run(home, city_instance, payload),
         "city.story.read" if exact_payload(payload, &["runId"]) => crate::city_runtime::read_story(home, city_instance, payload),
+        "city.story.run.read" if payload.get("runId").is_some()
+            && payload.get("dialogueLimit").is_none_or(|v| v.is_u64()) => crate::city_runtime::read_story_run(home, city_instance, payload),
         "city.story.commit" if exact_payload(payload, &["runId", "operationId", "eventId", "expectedStoryRevision", "expectedClockRevision", "intent"])
             || exact_payload(payload, &["runId", "operationId", "eventId", "residentId", "expectedStoryRevision", "expectedClockRevision", "intent"]) => crate::city_runtime::commit(home, city_instance, payload),
         "city.story.schedule" if exact_payload(payload, &["runId", "rule", "options"]) => crate::city_scheduler::schedule(home, city_instance, payload),
