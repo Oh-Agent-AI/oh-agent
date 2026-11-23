@@ -33,10 +33,10 @@ const intro = `# Oh Agent
 
 > Oh Agent is a free, open-source (MIT) platform for analyzing AI agent behavior data. It is built on the local-first Agent Vitals engine, which reads the session logs of Claude Code, Codex, DeepSeek Harness and WorkBuddy into a local database on your machine (no server, no upload, no account). Agent City, its first app, is a data-visualization open-world game: a 3D city where every building is one agent session.
 
-Current release: 1.0.0-beta.3 (pre-release), https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.3
-- macOS Apple Silicon: oh-agent-1.0.0-beta.3-arm64.dmg (Developer ID signed and notarized)
-- Windows x64: oh-agent-1.0.0-beta.3-windows-x86_64-setup.exe (not code-signed yet)
-- Linux x64: oh-agent-1.0.0-beta.3-linux-x86_64.deb and oh-agent-1.0.0-beta.3-linux-x86_64.AppImage (not signed yet)
+Current release: 1.0.0-beta.4 (pre-release), https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.4
+- macOS Apple Silicon: oh-agent-1.0.0-beta.4-arm64.dmg (Developer ID signed, notarized and stapled)
+- Windows x64: oh-agent-1.0.0-beta.4-windows-x86_64-setup.exe (not code-signed yet)
+- Linux x64: oh-agent-1.0.0-beta.4-linux-x86_64.deb and oh-agent-1.0.0-beta.4-linux-x86_64.AppImage (not signed yet)
 - Checksums: SHA256SUMS. Intel Mac: coming later.
 The web demo at https://ohagent.ai/ runs the real City frontend on synthetic sessions and does not read local data.
 `;
@@ -51,7 +51,7 @@ const clean = (body) => body
   .replace(/\]\((\/[^)]*)\)/g, '](https://ohagent.ai$1)')
   .replace(/\n{3,}/g, '\n\n').trim();
 
-const full = ['# Oh Agent: full documentation (plain text)', '', 'Source: https://ohagent.ai/docs/ (published pages only). Version described: 1.0.0-beta.3 (pre-release).', '',
+const full = ['# Oh Agent: full documentation (plain text)', '', 'Source: https://ohagent.ai/docs/ (published pages only). Version described: 1.0.0-beta.4 (pre-release).', '',
   ...pages.flatMap((p) => ['---', '', `# ${p.title}`, `URL: ${url(p.slug)}`, '', clean(p.body), ''])].join('\n');
 
 writeFileSync(join(here, 'public/llms.txt'), llms);

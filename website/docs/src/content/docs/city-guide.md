@@ -1,6 +1,6 @@
 ---
 title: What does each building in Agent City mean? How is height calculated?
-lastUpdated: 2026-10-22
+lastUpdated: 2026-11-12
 description: In Agent City each session building is one agent session, and its height follows the session's total tokens on a log curve. What every building means.
 head:
   - tag: script
@@ -114,6 +114,10 @@ Yes. The desktop app replays activity within the loaded window, with adjustable 
 No. The city is a visual interpretation of recorded activity, not a productivity score. Building growth does not prove a task succeeded, and repetition alone does not prove wasted work. A building's details show an estimated cost, but cost never changes its height, and an estimate isn't a bill.
 
 <!-- source: README.md ("not a productivity score"); website/landing/i18n.js (faq.6: city not connected to cost data) -->
+
+## Can I change a session building?
+
+On the desktop app, MCP can preview, set, or reset a single session building, with a ghost preview and a fail flash. See [Agent Vitals MCP tools](/docs/vitals/mcp-tools). This is not full-city editing, and it does not mean agents can already build the city autonomously.
 
 ## Related
 

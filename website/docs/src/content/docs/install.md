@@ -1,7 +1,7 @@
 ---
 title: How do I install Oh Agent? Downloads for macOS, Windows and Linux
-description: Download Oh Agent 1.0.0-beta.3 (pre-release) for Apple Silicon Mac, Windows x64 or Linux x64. Install steps per platform, checksum verification, signing status and first run.
-lastUpdated: 2026-10-22
+description: Download Oh Agent 1.0.0-beta.4 (pre-release) for Apple Silicon Mac, Windows x64 or Linux x64. Install steps per platform, checksum verification, signing status and first run.
+lastUpdated: 2026-11-12
 head:
   - tag: script
     attrs:
@@ -18,19 +18,19 @@ head:
       }
 ---
 
-Oh Agent **1.0.0-beta.3** is the current release. It is a **pre-release (beta)** published on [GitHub](https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.3) with installers for **Apple Silicon Mac, Windows x64 and Linux x64**. An Intel Mac build is coming later.
+Oh Agent **1.0.0-beta.4** is the current release. It is a **pre-release (beta)** published on [GitHub](https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.4) with installers for **Apple Silicon Mac, Windows x64 and Linux x64**. An Intel Mac build is coming later.
 
 :::note[Beta]
-1.0.0-beta.3 is a beta. The Apple Silicon build is Developer ID signed and Apple notarized. The Windows and Linux builds are **not code-signed yet**, so your system may show a warning. The release notes list the known issues.
+1.0.0-beta.4 is a beta. The Apple Silicon build is Developer ID signed, Apple notarized and stapled. The Windows and Linux builds are **not code-signed yet**, so your system may show a warning.
 :::
 
-<!-- source: GitHub release app-v1.0.0-beta.3 (prerelease: true, published 2026-10-22, assets + release notes); apps/desktop/src-tauri/tauri.conf.json (version 1.0.0-beta.3, productName Oh Agent, identifier ai.ohagent.desktop, minimumSystemVersion 11.0) -->
+<!-- source: GitHub release app-v1.0.0-beta.4 (prerelease: true, published 2026-11-11 15:17 UTC / 23:17 Asia/Shanghai, assets + SHA256SUMS verified 2026-11-12; built from main@974c2137; assets repacked 2026-11-12); apps/desktop/src-tauri/tauri.conf.json (version 1.0.0-beta.4, productName Oh Agent, identifier ai.ohagent.desktop, minimumSystemVersion 11.0) -->
 
 ## Key facts
 
-- **Version:** 1.0.0-beta.3, marked *Pre-release* on GitHub.
+- **Version:** 1.0.0-beta.4, marked *Pre-release* on GitHub.
 - **Price:** free and open source (MIT).
-- **macOS:** Apple Silicon (arm64), macOS 11.0 or later. Signed and notarized.
+- **macOS:** Apple Silicon (arm64), macOS 11.0 or later. Signed, notarized and stapled.
 - **Windows:** x64 setup installer. Not code-signed yet.
 - **Linux:** x64 `.deb` (Debian / Ubuntu) and `.AppImage`. Not signed yet.
 - **Intel Mac:** not in this release; coming later.
@@ -38,19 +38,19 @@ Oh Agent **1.0.0-beta.3** is the current release. It is a **pre-release (beta)**
 
 ## Which file do I download?
 
-| Platform | File |
-| --- | --- |
-| macOS, Apple Silicon | [`oh-agent-1.0.0-beta.3-arm64.dmg`](https://github.com/Oh-Agent-AI/oh-agent/releases/download/app-v1.0.0-beta.3/oh-agent-1.0.0-beta.3-arm64.dmg) |
-| Windows x64 | [`oh-agent-1.0.0-beta.3-windows-x86_64-setup.exe`](https://github.com/Oh-Agent-AI/oh-agent/releases/download/app-v1.0.0-beta.3/oh-agent-1.0.0-beta.3-windows-x86_64-setup.exe) |
-| Linux x64 (Debian / Ubuntu) | [`oh-agent-1.0.0-beta.3-linux-x86_64.deb`](https://github.com/Oh-Agent-AI/oh-agent/releases/download/app-v1.0.0-beta.3/oh-agent-1.0.0-beta.3-linux-x86_64.deb) |
-| Linux x64 (portable) | [`oh-agent-1.0.0-beta.3-linux-x86_64.AppImage`](https://github.com/Oh-Agent-AI/oh-agent/releases/download/app-v1.0.0-beta.3/oh-agent-1.0.0-beta.3-linux-x86_64.AppImage) |
-| All | [`SHA256SUMS`](https://github.com/Oh-Agent-AI/oh-agent/releases/download/app-v1.0.0-beta.3/SHA256SUMS) |
+| Platform | File | SHA-256 |
+| --- | --- | --- |
+| macOS, Apple Silicon | [`oh-agent-1.0.0-beta.4-arm64.dmg`](https://github.com/Oh-Agent-AI/oh-agent/releases/download/app-v1.0.0-beta.4/oh-agent-1.0.0-beta.4-arm64.dmg) | `d1b6a42a8a08c83fa9391c037e17e3daeb5e88a5aaa65c7eab1b46b259da268b` |
+| Windows x64 | [`oh-agent-1.0.0-beta.4-windows-x86_64-setup.exe`](https://github.com/Oh-Agent-AI/oh-agent/releases/download/app-v1.0.0-beta.4/oh-agent-1.0.0-beta.4-windows-x86_64-setup.exe) | `5d8253f91fdc900083d9be442816a1dbaefb9dbeab9de63b26bb4909ecb63bcc` |
+| Linux x64 (Debian / Ubuntu) | [`oh-agent-1.0.0-beta.4-linux-x86_64.deb`](https://github.com/Oh-Agent-AI/oh-agent/releases/download/app-v1.0.0-beta.4/oh-agent-1.0.0-beta.4-linux-x86_64.deb) | `f2d80bc7c8f169f14de8de286a7d0a1a3cc9613ca46e550dd1264dbba5c099e2` |
+| Linux x64 (portable) | [`oh-agent-1.0.0-beta.4-linux-x86_64.AppImage`](https://github.com/Oh-Agent-AI/oh-agent/releases/download/app-v1.0.0-beta.4/oh-agent-1.0.0-beta.4-linux-x86_64.AppImage) | `86a55b747933dea37dcb988e505379d689171da9945f9e413f4e80970c4abbc8` |
+| All | [`SHA256SUMS`](https://github.com/Oh-Agent-AI/oh-agent/releases/download/app-v1.0.0-beta.4/SHA256SUMS) | — |
 
-All files are also listed on the [1.0.0-beta.3 release page](https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.3). Because this is a pre-release, GitHub's "latest release" shortcut does not point to it; use the links above.
+All files are also listed on the [1.0.0-beta.4 release page](https://github.com/Oh-Agent-AI/oh-agent/releases/tag/app-v1.0.0-beta.4). Because this is a pre-release, GitHub's "latest release" shortcut does not point to it; use the links above.
 
 ## How do I install it on macOS?
 
-1. Download `oh-agent-1.0.0-beta.3-arm64.dmg`.
+1. Download `oh-agent-1.0.0-beta.4-arm64.dmg`.
 2. Open the DMG and drag **Oh Agent** to **Applications**.
 3. Open Oh Agent from Applications.
 
@@ -58,7 +58,7 @@ The installed app is `Oh Agent.app` (bundle identifier `ai.ohagent.desktop`). It
 
 ## How do I install it on Windows?
 
-1. Download `oh-agent-1.0.0-beta.3-windows-x86_64-setup.exe`.
+1. Download `oh-agent-1.0.0-beta.4-windows-x86_64-setup.exe`.
 2. Run the installer.
 
 The installer is not Authenticode-signed yet, so Windows may show an "unknown publisher" or SmartScreen warning. Check the file against `SHA256SUMS` (below) before you choose to run it anyway.
@@ -68,17 +68,17 @@ The installer is not Authenticode-signed yet, so Windows may show an "unknown pu
 On Debian or Ubuntu, install the `.deb`:
 
 ```sh
-sudo apt install ./oh-agent-1.0.0-beta.3-linux-x86_64.deb
+sudo apt install ./oh-agent-1.0.0-beta.4-linux-x86_64.deb
 ```
 
 Or run the portable AppImage:
 
 ```sh
-chmod +x oh-agent-1.0.0-beta.3-linux-x86_64.AppImage
-./oh-agent-1.0.0-beta.3-linux-x86_64.AppImage
+chmod +x oh-agent-1.0.0-beta.4-linux-x86_64.AppImage
+./oh-agent-1.0.0-beta.4-linux-x86_64.AppImage
 ```
 
-Whether the AppImage runs depends on your distribution's runtime and FUSE support. Neither package is signed yet.
+Whether the AppImage runs depends on your distribution's runtime and FUSE support. Neither package is signed yet. Both were built by GitHub Actions on Ubuntu 22.04.
 
 ## How do I verify the download?
 
@@ -86,7 +86,7 @@ Download `SHA256SUMS` into the same folder as the installer, then compare:
 
 ```sh
 # macOS: compare the output with the matching line in SHA256SUMS
-shasum -a 256 oh-agent-1.0.0-beta.3-arm64.dmg
+shasum -a 256 oh-agent-1.0.0-beta.4-arm64.dmg
 
 # Linux: checks every file in SHA256SUMS that you downloaded
 sha256sum -c SHA256SUMS --ignore-missing
@@ -94,17 +94,17 @@ sha256sum -c SHA256SUMS --ignore-missing
 
 ```powershell
 # Windows (PowerShell): compare the output with the line in SHA256SUMS
-Get-FileHash .\oh-agent-1.0.0-beta.3-windows-x86_64-setup.exe -Algorithm SHA256
+Get-FileHash .\oh-agent-1.0.0-beta.4-windows-x86_64-setup.exe -Algorithm SHA256
 ```
 
 ## What is tested in this beta?
 
-From the release notes:
+From the 1.0.0-beta.4 release notes and signing state:
 
-- **macOS Apple Silicon:** signed, notarized and stapled.
-- **Windows:** silent installation, installed product identity and the bundled command-line tool were checked in CI. Interactive use has not been manually accepted yet.
-- **Linux:** `.deb` extraction, the desktop entry and the bundled command-line tool were checked in CI; the AppImage was generated. Interactive use has not been manually accepted yet.
-- **Known issues:** two Agent City checks did not pass at publication (a road-terrain regression check and a ground-surface geometry baseline), so road passability in City is not fully certified. Full CI and long-duration driving acceptance were not complete.
+- **macOS Apple Silicon:** signed, notarized and stapled. Hands-on testing has focused on this platform.
+- **Windows:** the installer is unsigned (built by GitHub Actions). Interactive gameplay has not been manually accepted yet.
+- **Linux:** `.deb` and `.AppImage` built by GitHub Actions on Ubuntu 22.04, unsigned. Interactive gameplay has not been manually accepted yet.
+- **Intel Mac:** not in this release; coming later.
 
 ## What happens after I open it?
 
