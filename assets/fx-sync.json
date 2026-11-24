@@ -2,8 +2,8 @@
   "schema_version": 1,
   "kind": "fx_reference_rates",
   "base": "USD",
-  "rate_date": "2026-11-20",
-  "captured_at": "2026-11-21T11:08:24Z",
+  "rate_date": "2026-11-23",
+  "captured_at": "2026-11-24T13:47:20Z",
   "meaning": "1 USD = rate × 目标币种。公开参考汇率（欧央行参考价），不是银行结算汇率，也不是用户实际支付汇率。",
   "policy": "两个独立公开 JSON 源一致（相对差 ≤0.5%）才采用；不一致或仅单源的币种不发布；相对上一份已发布快照偏差 >25% 或日期倒退时整份不发布。",
   "sources": [
@@ -20,127 +20,140 @@
   ],
   "rates": {
     "AUD": {
-      "rate": "1.5002",
-      "cross_check": 0
-    },
-    "BRL": {
-      "rate": "5.938",
+      "rate": "1.5113",
       "cross_check": 0
     },
     "CAD": {
-      "rate": "1.4307",
+      "rate": "1.4362",
       "cross_check": 0
     },
     "CHF": {
-      "rate": "0.83922",
+      "rate": "0.83975",
       "cross_check": 0
     },
     "CNY": {
-      "rate": "6.6777",
-      "cross_check": 0
-    },
-    "CZK": {
-      "rate": "22.265",
-      "cross_check": 0
-    },
-    "DKK": {
-      "rate": "6.8013",
-      "cross_check": 0
-    },
-    "EUR": {
-      "rate": "0.90992",
+      "rate": "6.6647",
       "cross_check": 0
     },
     "GBP": {
-      "rate": "0.76192",
+      "rate": "0.76491",
       "cross_check": 0
     },
     "HKD": {
-      "rate": "7.8389",
-      "cross_check": 0
-    },
-    "HUF": {
-      "rate": "339.9",
+      "rate": "7.8409",
       "cross_check": 0
     },
     "IDR": {
-      "rate": "18263.0",
+      "rate": "18222.0",
       "cross_check": 0
     },
     "INR": {
-      "rate": "92.68",
-      "cross_check": 0
-    },
-    "ISK": {
-      "rate": "124.84",
+      "rate": "92.92",
       "cross_check": 0
     },
     "JPY": {
-      "rate": "158.64",
+      "rate": "159.07",
       "cross_check": 0
     },
     "KRW": {
-      "rate": "1339.44",
-      "cross_check": 0
-    },
-    "MXN": {
-      "rate": "19.0673",
+      "rate": "1348.85",
       "cross_check": 0
     },
     "MYR": {
-      "rate": "4.1125",
-      "cross_check": 0
-    },
-    "NOK": {
-      "rate": "9.7525",
-      "cross_check": 0
-    },
-    "NZD": {
-      "rate": "1.8169",
+      "rate": "4.123",
       "cross_check": 0
     },
     "PHP": {
-      "rate": "63.777",
-      "cross_check": 0
-    },
-    "PLN": {
-      "rate": "4.0567",
-      "cross_check": 0
-    },
-    "RON": {
-      "rate": "4.8674",
-      "cross_check": 0
-    },
-    "SEK": {
-      "rate": "10.2025",
+      "rate": "63.855",
       "cross_check": 0
     },
     "SGD": {
-      "rate": "1.2884",
+      "rate": "1.2912",
       "cross_check": 0
     },
     "THB": {
-      "rate": "33.905",
+      "rate": "34.045",
       "cross_check": 0
     },
     "TRY": {
-      "rate": "50.572",
+      "rate": "50.59",
       "cross_check": 0
     },
     "USD": {
       "rate": "1",
       "cross_check": 0
-    },
-    "ZAR": {
-      "rate": "17.4692",
-      "cross_check": 0
     }
   },
   "rejected": {
-    "ILS": {
-      "ecb": 3.3428,
-      "fawaz": 3.32417616,
+    "BRL": {
+      "ecb": 5.9979,
+      "fawaz": 5.95275113,
+      "relative_diff": 0.0075
+    },
+    "CZK": {
+      "ecb": 22.356,
+      "fawaz": 22.23653441,
+      "relative_diff": 0.0053
+    },
+    "DKK": {
+      "ecb": 6.833,
+      "fawaz": 6.79453416,
       "relative_diff": 0.0056
+    },
+    "EUR": {
+      "ecb": 0.91416,
+      "fawaz": 0.90902884,
+      "relative_diff": 0.0056
+    },
+    "HUF": {
+      "ecb": 340.32,
+      "fawaz": 337.97918963,
+      "relative_diff": 0.0069
+    },
+    "ILS": {
+      "ecb": 3.3498,
+      "fawaz": 3.327544,
+      "relative_diff": 0.0066
+    },
+    "ISK": {
+      "ecb": 125.42,
+      "fawaz": 124.72734073,
+      "relative_diff": 0.0055
+    },
+    "MXN": {
+      "ecb": 19.2458,
+      "fawaz": 19.09029787,
+      "relative_diff": 0.0081
+    },
+    "NOK": {
+      "ecb": 9.8076,
+      "fawaz": 9.72282264,
+      "relative_diff": 0.0086
+    },
+    "NZD": {
+      "ecb": 1.8355,
+      "fawaz": 1.82557597,
+      "relative_diff": 0.0054
+    },
+    "PLN": {
+      "ecb": 4.0761,
+      "fawaz": 4.04612973,
+      "relative_diff": 0.0074
+    },
+    "RON": {
+      "ecb": 4.8892,
+      "fawaz": 4.86346059,
+      "relative_diff": 0.0053
+    },
+    "SEK": {
+      "ecb": 10.2729,
+      "fawaz": 10.19342195,
+      "relative_diff": 0.0077
+    },
+    "ZAR": {
+      "ecb": 17.5074,
+      "fawaz": 17.40792968,
+      "relative_diff": 0.0057
     }
   }
 }
