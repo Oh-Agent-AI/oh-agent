@@ -17,6 +17,7 @@ import { AgentApprovalGate, matchesPreviewBase, type AgentCommit } from "../feat
 import { useAgentActivity } from "../features/agent/useAgentActivity";
 import { AgentWorkspace } from "../features/agent/AgentWorkspace";
 import { useStudioTasks } from "../features/agent/useStudioTasks";
+import { useWorkspaceFocusCycling } from "../features/workspace/workspaceFocus";
 import { taskCommitBlockedReason, taskHasSceneObjectPreview } from "../features/agent/taskCommit";
 import { useCreatorHostBridge } from "./useCreatorHostBridge";
 import { CodeGamePreviewPanel } from "../features/preview/CodeGamePreviewPanel";
@@ -261,6 +262,8 @@ export function CreatorStudioApp() {
   // 三栏宽度按 Project/City 记住（设计基线 §1）：布局是本机偏好，不进 Host 会话档案。
   const workspaceRef = useRef<HTMLDivElement | null>(null);
   const workspaceLayout = useWorkspaceLayout(workspaceRef, draftCityView?.cityId ?? project?.projectId ?? "");
+  // F6 / Shift+F6 在 Sessions、Preview、Agent 三个命名区域间循环焦点。
+  useWorkspaceFocusCycling();
   useEffect(() => {
     if (!activeSessionId || !studioTasks.task) return;
     void studioSessions.refresh().catch(() => undefined);
@@ -1081,7 +1084,43 @@ export function CreatorStudioApp() {
     return { patch: raw as PlanPatchV1, seed: viewportSeed, worldRevision: project.cityLayout.worldRevision, baseEngine: baseViewport.engine, isolated: !!projectCityKey,
       profile: projectCityKey ? projectCity!.city!.profile : worldProfile };
   }, [activePreview, agentScenePreview.plan, agentScenePreview.state, agentCommit, project, hasUncommittedProjectEdits, draftCityView, viewportSeed, projectCityKey, projectCity, worldProfile, baseViewport]);
+  // R2 诊断：sceneOperations 预览未就绪时，给出具体卡住的门控（与上方 memo 同条件）。
+  const scenePreviewGateReason = useMemo<string | null>(() => {
+    if (!activePreview?.sceneOperations) return null;
+    if (!project) return "未打开项目";
+    if (hasUncommittedProjectEdits) return "存在未提交草稿";
+    if (draftCityView) return "City 只读预览占用视口";
+    if (viewportSeed === null) return "基线视口尚未生成";
+    if (baseViewport.status !== "ready") return "基线视口尚未就绪";
+    if (baseViewport.engine !== studioEngineRef.current) return "基线引擎不匹配";
+    if (!project.cityLayout?.worldRevision) return "项目未绑定 City 布局";
+    if (!matchesPreviewBase(baseViewport.engine, viewportSeed, project.cityLayout.worldRevision)) return "基线种子与布局不一致";
+    if (activePreview.projectId !== project.projectId) return "预览属于其他项目";
+    if (activePreview.revision !== project.revision) return `预览基线 ${activePreview.revision} ≠ 当前 ${project.revision}`;
+    const plan = agentScenePreview.plan;
+    const loaded = agentScenePreview.state;
+    if (!plan) return "提案无法构成有效场景草稿";
+    if (loaded?.context !== plan) return "资产加载上下文过期";
+    if (loaded.status === "loading") return "正在加载项目资产";
+    if (loaded.status === "failed") return `项目资产加载失败（${loaded.code ?? "未知"}）`;
+    if (!loaded.assets || !loaded.files) return "资产快照不完整";
+    if (projectCityKey && !projectCity?.city) return "项目 City 实例尚未加载";
+    return null;
+  }, [activePreview, agentScenePreview.plan, agentScenePreview.state, project, hasUncommittedProjectEdits, draftCityView, viewportSeed, projectCityKey, projectCity, baseViewport]);
   const agentViewportPreviewId = activePreview?.sceneOperations ? activePreview.previewId : agentCommit?.previewId;
+  // 预览就绪后自动把镜头带到第一个改动对象；同一 Preview 只定位一次（手动“查看改动”仍可重定位）。
+  const autoFocusPreviewRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!activePreview?.sceneOperations || !agentCityPreview || agentPreviewStatus?.context !== agentCityPreview
+      || agentPreviewStatus.status !== "ready" || !agentPreviewEngineRef.current) return;
+    if (autoFocusPreviewRef.current === activePreview.previewId) return;
+    autoFocusPreviewRef.current = activePreview.previewId;
+    const evidence = studioTasks.task?.evidence.find(item => item.kind === "preview" && item.trustLevel === "host-observed"
+      && (item.data as { previewId?: unknown } | null)?.previewId === activePreview.previewId);
+    const changed = (evidence?.data as { changedObjects?: unknown } | null)?.changedObjects;
+    const entityId = Array.isArray(changed) ? changed.find(item => typeof (item as { id?: unknown })?.id === "string") : null;
+    if (entityId) agentPreviewEngineRef.current.focusEntity(String((entityId as { id: string }).id));
+  }, [activePreview, agentCityPreview, agentPreviewStatus, studioTasks.task]);
 
   const resolveAgentCommit = async (approve: boolean) => {    const pending = agentCommit;
     if (!pending || busy) return;
@@ -1396,7 +1435,7 @@ export function CreatorStudioApp() {
   const diagnostics = <EvidenceCenterPanel request={creatorRequest} browserPreview={browserPreview} activeCity={draftCityView} inspectGround={inspectGroundContact} />;
   const viewport = <CityViewportPanel
     agentFeedback={task?.phase === "executing" || task?.phase === "validating" ? "Agent 正在生成改动"
-      : activePreview?.sceneOperations ? agentCityPreview && agentPreviewStatus?.context === agentCityPreview && agentPreviewStatus.status === "ready" ? "完整场景预览已显示 · 等待确认" : "正在准备完整场景预览 · 尚未就绪"
+      : activePreview?.sceneOperations ? agentCityPreview && agentPreviewStatus?.context === agentCityPreview && agentPreviewStatus.status === "ready" ? "完整场景预览已显示 · 等待确认" : `正在准备完整场景预览 · ${scenePreviewGateReason ?? "尚未就绪"}`
       : visibleColliderPreview ? "碰撞体预览已显示 · 等待确认"
       : activePreview?.boxes.length ? "碰撞体待确认 · 当前场景无法定位预览"
       : task?.phase === "awaiting-review" ? "变更待确认 · 在右侧查看详情"

@@ -28,6 +28,8 @@ export type StudioTask = Readonly<{
 const text = (value: unknown, maxLength = 512): string | null => typeof value === "string" && value.length > 0 && value.length <= maxLength ? value : null;
 const count = (value: unknown): number | null => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 const object = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+const TASK_PHASES = ["planning", "awaiting-plan-approval", "ready", "executing", "validating", "awaiting-review", "accepted", "rejected", "failed", "cancelled"];
+const taskPhase = (value: unknown): StudioTaskPhase => TASK_PHASES.includes(String(value)) ? String(value) as StudioTaskPhase : "unknown";
 
 export function parseStudioTask(value: unknown): StudioTask {
   const row = object(value);
@@ -44,8 +46,7 @@ export function parseStudioTask(value: unknown): StudioTask {
   const planRevision = count(row?.planRevision);
   const goalRevision = count(row?.goalRevision);
   if (!row || !taskId || !goalId || !humanRequest || !scopeId || expectedRevision === null || planRevision === null || goalRevision === null) throw new Error("creator_task_invalid");
-  const phases = ["planning", "awaiting-plan-approval", "ready", "executing", "validating", "awaiting-review", "accepted", "rejected", "failed", "cancelled"];
-  const phase = phases.includes(String(row.phase)) ? String(row.phase) as StudioTaskPhase : "unknown";
+  const phase = taskPhase(row.phase);
   const stepIds = Array.isArray(row.stepIds) ? row.stepIds.filter((id): id is string => typeof id === "string") : [];
   const steps = Array.isArray(row.steps) ? row.steps.map(item => {
     const step = object(item);
@@ -197,3 +198,53 @@ export function studioPhaseLabel(phase: StudioTaskPhase): string {
     validating: "验证中", "awaiting-review": "等待人工验收", accepted: "已接受", rejected: "已退回", failed: "失败", cancelled: "已取消", unknown: "状态未知",
   })[phase];
 }
+
+/** 会话任务历史（宿主 creator.session.open/status 的 tasks 数组；newest-first、上限 30）。 */
+export type StudioSessionTask = Readonly<{
+  taskId: string;
+  phase: StudioTaskPhase;
+  humanRequest: string;
+  artifactKind: string;
+  expectedRevision: number | null;
+  updatedAtMs: number | null;
+}>;
+export type StudioSessionHistory = Readonly<{ tasks: readonly StudioSessionTask[]; truncated: boolean }>;
+
+export function parseStudioSessionHistory(value: unknown): StudioSessionHistory {
+  const row = object(value);
+  // tasks 可选（旧宿主无此字段）：缺省按空历史处理，UI 不因宿主旧版而失败。
+  const tasks = Array.isArray(row?.tasks) ? row.tasks.map(item => {
+    const task = object(item);
+    const taskId = text(task?.taskId);
+    const humanRequest = text(task?.humanRequest, 4_000);
+    if (!task || !taskId || !humanRequest) throw new Error("creator_session_invalid");
+    return Object.freeze({
+      taskId, phase: taskPhase(task.phase), humanRequest,
+      artifactKind: text(task.artifactKind) ?? "unknown",
+      expectedRevision: count(task.expectedRevision),
+      updatedAtMs: count(task.updatedAtMs),
+    });
+  }) : [];
+  return Object.freeze({ tasks: Object.freeze(tasks), truncated: row?.tasksTruncated === true });
+}
+
+/** 把活动任务折算成历史条目（本会话内连续创作时落史；重开由宿主水合）。 */
+export function studioSessionTaskFromTask(task: Pick<StudioTask, "taskId" | "phase" | "humanRequest" | "artifact">): StudioSessionTask {
+  return Object.freeze({ taskId: task.taskId, phase: task.phase, humanRequest: task.humanRequest,
+    artifactKind: task.artifact.kind, expectedRevision: task.artifact.expectedRevision, updatedAtMs: Date.now() });
+}
+
+/** 会话侧栏状态（T3 Sidebar.logic 优先级语义：待确认 > 失败 > 进行中 > 已结束 > 空闲）。 */
+export type SessionRowStatus = "awaiting-confirmation" | "failed" | "working" | "settled" | "idle";
+export function resolveSessionStatus(latestTask: Readonly<{ phase: string }> | null | undefined): SessionRowStatus {
+  switch (latestTask?.phase) {
+    case "awaiting-review": return "awaiting-confirmation";
+    case "failed": return "failed";
+    case "planning": case "awaiting-plan-approval": case "ready": case "executing": case "validating": return "working";
+    case "accepted": case "rejected": case "cancelled": return "settled";
+    default: return "idle";
+  }
+}
+export const sessionStatusLabel: Record<SessionRowStatus, string> = {
+  "awaiting-confirmation": "等待确认", failed: "失败", working: "进行中", settled: "已结束", idle: "空闲",
+};

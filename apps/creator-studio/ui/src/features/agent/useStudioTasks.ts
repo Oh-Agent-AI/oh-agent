@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { CreatorRequest } from "../../adapters/creatorHost";
 import {
-  defaultStudioPlanSteps, mergeStudioEvents, normalizeStudioGoal, parseStudioCapabilityStatus, parseStudioConnections, parseStudioEventBatch, parseStudioTask,
-  type StudioCapabilityStatus, type StudioConnection, type StudioTask, type StudioTaskEvent,
+  defaultStudioPlanSteps, mergeStudioEvents, normalizeStudioGoal, parseStudioCapabilityStatus, parseStudioConnections, parseStudioEventBatch, parseStudioSessionHistory,
+  parseStudioTask, studioSessionTaskFromTask,
+  type StudioCapabilityStatus, type StudioConnection, type StudioSessionHistory, type StudioTask, type StudioTaskEvent,
 } from "../../contracts/studioTask";
 
 type TaskScope = Readonly<{ kind: "creator-project"; projectId: string; revision: number } | { kind: "creator-city"; cityId: string; revision: number } | { kind: "creator-story"; storyId: string; revision: number }> | null;
@@ -15,6 +16,7 @@ export function useStudioTasks(request: CreatorRequest, scope: TaskScope, enable
   const [connections, setConnections] = useState<readonly StudioConnection[]>([]);
   const [capabilities, setCapabilities] = useState<StudioCapabilityStatus | null>(null);
   const [events, setEvents] = useState<readonly StudioTaskEvent[]>([]);
+  const [history, setHistory] = useState<StudioSessionHistory>({ tasks: [], truncated: false });
   const [subscriptionStatus, setSubscriptionStatus] = useState<StudioSubscriptionStatus>("idle");
   const [subscriptionError, setSubscriptionError] = useState("");
   const [connectionError, setConnectionError] = useState("");
@@ -34,9 +36,24 @@ export function useStudioTasks(request: CreatorRequest, scope: TaskScope, enable
   const generationRef = useRef(0);
   const eventCursorRef = useRef(0);
   const operation = (kind: string) => `${kind}:${crypto.randomUUID()}`;
+  const taskRef = useRef<StudioTask | null>(null);
   const applyTask = (next: StudioTask) => {
-    if (taskIdRef.current !== next.taskId) { eventCursorRef.current = 0; setEvents([]); }
-    taskIdRef.current = next.taskId; setTask(next);
+    if (taskIdRef.current !== next.taskId) {
+      eventCursorRef.current = 0; setEvents([]);
+      // 上一条任务落史：本会话内连续创作不断线；重开会话时由宿主历史水合。
+      const previous = taskRef.current;
+      if (previous) {
+        setHistory(current => ({ ...current,
+          tasks: [studioSessionTaskFromTask(previous), ...current.tasks.filter(item => item.taskId !== previous.taskId)] }));
+      }
+    }
+    taskIdRef.current = next.taskId;
+    taskRef.current = next;
+    setTask(next);
+    // 历史中的同名条目跟随相位推进（时间线徽标与当前状态一致）。
+    setHistory(current => current.tasks.some(item => item.taskId === next.taskId)
+      ? { ...current, tasks: current.tasks.map(item => item.taskId === next.taskId ? { ...item, phase: next.phase } : item) }
+      : current);
   };
   const refreshTask = async () => {
     const taskId = taskIdRef.current;
@@ -49,7 +66,9 @@ export function useStudioTasks(request: CreatorRequest, scope: TaskScope, enable
   useEffect(() => {
     const generation = ++generationRef.current;
     sessionIdRef.current = null; taskIdRef.current = null; eventCursorRef.current = 0;
+    taskRef.current = null;
     setTask(null); setEvents([]); setError(""); setConnectionError(""); setConnections([]); setCapabilities(null);
+    setHistory({ tasks: [], truncated: false });
     if (!enabled || !scope) { setSessionStatus("unavailable"); return; }
     setSessionStatus("loading");
     let heartbeat: number | undefined;
@@ -74,6 +93,8 @@ export function useStudioTasks(request: CreatorRequest, scope: TaskScope, enable
         sessionIdRef.current = opened.sessionId;
         const existing = (opened.jobs ?? []).find(job => job && typeof job === "object" && (job as { kind?: unknown }).kind === "studio-task");
         if (existing) applyTask(parseStudioTask(existing));
+        // 会话任务历史水合（S1 时间线；旧宿主无 tasks 字段时按空历史处理）。
+        setHistory(parseStudioSessionHistory(opened));
         await refreshConnections(opened.sessionId);
         if (generation !== generationRef.current) return;
         setSessionStatus("available");
@@ -266,7 +287,7 @@ export function useStudioTasks(request: CreatorRequest, scope: TaskScope, enable
     finally { setCancelling(false); }
   };
 
-  return { task, saved, sessionStatus, connections, capabilities, events, subscriptionStatus, subscriptionError, connectionError,
+  return { task, saved, history, sessionStatus, connections, capabilities, events, subscriptionStatus, subscriptionError, connectionError,
     viewportAttachmentScope: hasIsolatedViewport && scope
       ? JSON.stringify(scope) : null,
     busy, cancelling, error, executor, setExecutor: chooseExecutor, applyPreferredExecutor: setPreferredExecutor,

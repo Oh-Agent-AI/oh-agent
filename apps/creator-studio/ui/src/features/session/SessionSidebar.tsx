@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { resolveSessionStatus } from "../../contracts/studioTask";
+import { workspaceAreaProps } from "../workspace/workspaceFocus";
 import type { StudioSessionSummary } from "./studioSessions";
 
 const phaseLabel = (phase: string) => ({
@@ -28,11 +30,17 @@ export function SessionSidebar(props: Readonly<{
   const [editing, setEditing] = useState<Readonly<{ sessionId: string; value: string }> | null>(null);
   // 归档不可撤销地占掉一个名额，所以第一下只"上膛"，第二下才真的关。
   const [armedArchive, setArmedArchive] = useState<string | null>(null);
+  // T3 侧栏语义：失败点持续到该行被看过；当前激活会话的失败视为已读。
+  const [seenFailures, setSeenFailures] = useState<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    if (!props.activeSessionId) return;
+    setSeenFailures(current => current.has(props.activeSessionId!) ? current : new Set([...current, props.activeSessionId!]));
+  }, [props.activeSessionId]);
   const submitRename = async () => {
     if (!editing) return;
     if (await props.onRename(editing.sessionId, editing.value)) setEditing(null);
   };
-  return <aside className="session-sidebar" aria-label="创作 Sessions">
+  return <aside className="session-sidebar" {...workspaceAreaProps("sessions", 0, "创作 Sessions")}>
     <div className="session-sidebar-heading"><div><span>OH AGENT STUDIO</span><h2>Sessions</h2></div>
       <button type="button" aria-label="新建 Session" disabled={props.creating} onClick={props.onCreate}>＋</button></div>
     <div className="session-project-scope"><strong>{props.scopeTitle}</strong><span>当前 Project 的创作会话</span>
@@ -54,6 +62,11 @@ export function SessionSidebar(props: Readonly<{
         const editingThis = editing?.sessionId === session.sessionId;
         // 执行中/校验中的任务还在往这个会话写证据，归档会把它从当前视图里摘掉。
         const live = session.latestTask?.phase === "executing" || session.latestTask?.phase === "validating";
+        // 状态点优先级：待确认 > 失败（未看过）> 进行中；纯视觉提示，文字标签仍可读。
+        const status = resolveSessionStatus(session.latestTask);
+        const failedUnseen = status === "failed" && !seenFailures.has(session.sessionId);
+        const dot = session.state === "open" && (status === "awaiting-confirmation" || status === "working" || failedUnseen)
+          ? status : "";
         return <div key={session.sessionId} className={`session-row ${active ? "active" : ""} ${session.state === "closed" ? "closed" : ""}`}>
           {editingThis ? <div className="session-rename">
             <input aria-label="Session 名称" autoFocus maxLength={80} value={editing.value}
@@ -62,7 +75,9 @@ export function SessionSidebar(props: Readonly<{
             <button type="button" className="secondary" onClick={() => void submitRename()}>保存名称</button>
             <button type="button" className="secondary" onClick={() => setEditing(null)}>取消</button>
           </div> : <button type="button" className="session-row-main" aria-pressed={active} onClick={() => props.onSelect(session.sessionId)}>
-            <span className="session-row-heading"><strong>{session.label}</strong><small>{phaseLabel(session.latestTask?.phase ?? "")}</small></span>
+            <span className="session-row-heading"><strong>{session.label}</strong>
+              {dot && <span className={`session-dot is-${dot}`} aria-hidden="true" data-title={dot} />}
+              <small>{phaseLabel(session.latestTask?.phase ?? "")}</small></span>
             <span className="session-row-summary">{session.latestTask?.humanRequest ?? "开始一个新的创作任务"}</span>
             <span className="session-row-meta">{session.state === "closed" ? "历史会话 · " : ""}{session.latestTask?.expectedRevision !== null && session.latestTask?.expectedRevision !== undefined
               ? `基于 revision ${session.latestTask.expectedRevision} · ` : ""}{new Date(session.updatedAtMs).toLocaleDateString()}</span>

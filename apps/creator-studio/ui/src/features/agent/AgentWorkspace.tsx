@@ -8,6 +8,7 @@ import { GoalBriefComposer } from "./GoalBriefComposer";
 import { StudioTaskPanel } from "./StudioTaskPanel";
 import type { StudioTaskController } from "./useStudioTasks";
 import type { PreviewEntityReferenceStatus, StudioEntityTarget } from "../../contracts/previewContext";
+import { workspaceAreaProps } from "../workspace/workspaceFocus";
 
 export type AgentPreviewStatus = { context: object; status: "loading" | "ready" | "failed"; code?: string };
 
@@ -36,7 +37,7 @@ export function AgentWorkspace(props: Readonly<{
 }>) {
   const { project, taskController, browserPreview, agentCommit, agentActivity, agentCityPreview, agentPreviewStatus, busy, goal, onGoalChange, onResolve, commitBlockedReason, scopeReady } = props;
   const [demoAgent, setDemoAgent] = useState("Codex ACP");
-  if (browserPreview) return <section className="agent-panel agent-workspace" aria-label="Agent 创作伙伴">
+  if (browserPreview) return <section className="agent-panel agent-workspace" {...workspaceAreaProps("agent", 2, "Agent 创作伙伴")}>
     <label className="agent-executor">选择 Agent（演示）
       <select aria-label="选择 Agent（演示）" value={demoAgent} onChange={event => setDemoAgent(event.target.value)}>
         {["Codex ACP", "Kimi Code", "DeepSeek Harness"].map(name => <option key={name}>{name}</option>)}
@@ -51,7 +52,7 @@ export function AgentWorkspace(props: Readonly<{
   const selected = taskController.capabilities?.executors.find(item => item.id === taskController.executor);
   const connectionLabel = !taskController.capabilities ? "正在检查连接" : !taskController.capabilities.studioOnline ? "Studio 离线"
     : selected?.available && selected.modes.some(mode => mode.restricted) ? "可用于创作" : "请选择可用 Agent";
-  return <section className="agent-panel agent-workspace" aria-label="Agent Workspace">
+  return <section className="agent-panel agent-workspace" {...workspaceAreaProps("agent", 2, "Agent 面板")}>
     <AgentSelector controller={taskController} />
     <div className="agent-workspace-heading"><div><span className="section-title">当前作品</span><p className="muted">{scope}</p></div><span className="agent-connection">{connectionLabel}</span></div>
     <StudioTaskPanel target={props.target} targetReference={props.targetReference} targetReferenceStatus={props.targetReferenceStatus} onClearTarget={props.onClearTarget} onViewChanges={props.onViewChanges} controller={taskController} goal={goal} onGoalChange={onGoalChange} projectReady={(scopeReady ?? (!!project && !busy))} commitBlockedReason={commitBlockedReason} tools={<>
