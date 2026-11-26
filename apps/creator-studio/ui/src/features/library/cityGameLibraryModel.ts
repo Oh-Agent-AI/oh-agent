@@ -103,6 +103,32 @@ export function installedGamesForCity(installations: readonly InstallationRow[],
   return installations.filter(item => item.cityId === cityId && item.status === "installed");
 }
 
+export function parseInstallationPage(value: unknown) {
+  const installations = parseInstallations(value);
+  return { installations, installedCount: revision((value as { installedCount?: unknown }).installedCount) };
+}
+
+export type StoryInstallationRow = Readonly<{
+  installationId: string; cityId: string; storyId: string; storyVersion: string; contentDigest: string;
+}>;
+
+export function parseInstalledStories(value: unknown): readonly StoryInstallationRow[] {
+  const installations = (value as { installations?: unknown } | null)?.installations;
+  if (!Array.isArray(installations)) throw new Error("creator_story_installations_invalid");
+  return installations.flatMap(item => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("creator_story_installations_invalid");
+    const row = item as Record<string, unknown>;
+    if (row.status !== "installed") return [];
+    const installationId = text(row.installationId, 128);
+    const cityId = text(row.cityId, 128);
+    const storyId = text(row.storyId, 128);
+    const storyVersion = text(row.storyVersion, 64);
+    const contentDigest = text(row.contentDigest, 96);
+    if (!installationId || !cityId || !storyId || !storyVersion || !contentDigest) throw new Error("creator_story_installations_invalid");
+    return [{ installationId, cityId, storyId, storyVersion, contentDigest }];
+  });
+}
+
 export type StoryProjectRow = Readonly<{
   storyId: string;
   title: string;
@@ -112,6 +138,7 @@ export type StoryProjectRow = Readonly<{
   schemaVersion: number | null;
   graphBytes: number | null;
   canonBytes: number | null;
+  nodeCount: number | null;
   createdAtMs: number | null;
   updatedAtMs: number | null;
 }>;
@@ -128,7 +155,7 @@ export function parseStoryProjects(value: unknown): readonly StoryProjectRow[] {
     const storyRevision = revision(row.revision);
     if (!storyId || !title || !storyVersion || digest === null || storyRevision === null) throw new Error("creator_story_projects_invalid");
     return Object.freeze({ storyId, title, storyVersion, revision: storyRevision, contentDigest: digest,
-      schemaVersion: revision(row.schemaVersion), graphBytes: revision(row.graphBytes), canonBytes: revision(row.canonBytes),
+      schemaVersion: revision(row.schemaVersion), graphBytes: revision(row.graphBytes), canonBytes: revision(row.canonBytes), nodeCount: revision(row.nodeCount),
       createdAtMs: revision(row.createdAtMs), updatedAtMs: revision(row.updatedAtMs) });
   }));
 }

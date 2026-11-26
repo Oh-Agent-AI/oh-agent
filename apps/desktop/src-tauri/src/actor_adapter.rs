@@ -93,6 +93,10 @@ fn allowed_kinds_of(row: &ActorRow) -> Result<Vec<String>, &'static str> {
 /// 身份幂等：同 (story,session,character) 返回既有 actor 行，预算/窗口延续
 /// （堵"重注册 = 刷预算"）。Canon 先行：canon 缺该角色拒绝（story_canon_character_missing）。
 pub(crate) fn register(home: &Path, payload: &Value) -> Result<Value, &'static str> {
+    register_with_canon(home, payload, None)
+}
+
+pub(crate) fn register_with_canon(home: &Path, payload: &Value, pinned_canon: Option<&Value>) -> Result<Value, &'static str> {
     let story_id = payload.get("storyId").and_then(Value::as_str).filter(|id| valid_id(id)).ok_or("story_argument_invalid")?;
     let character_id = payload.get("characterId").and_then(Value::as_str).filter(|id| valid_id(id)).ok_or("story_argument_invalid")?;
     let session_identifier = payload.get("sessionIdentifier").and_then(Value::as_str).filter(|id| valid_session_identifier(id)).ok_or("story_argument_invalid")?;
@@ -124,8 +128,10 @@ pub(crate) fn register(home: &Path, payload: &Value) -> Result<Value, &'static s
             "budget":{"used":used,"max":max,"windowResetsAtMs":window_started.saturating_add(BUDGET_WINDOW_MS as i64)}}));
     }
     let _ = operation_id;
-    let canon = crate::story_registry::project_canon(home, story_id)?;
-    let canon = canon.ok_or("story_project_not_found")?;
+    let canon = match pinned_canon {
+        Some(canon) => canon.clone(),
+        None => crate::story_registry::project_canon(home, story_id)?.ok_or("story_project_not_found")?,
+    };
     if !canon_contains_character(&canon, character_id) { return Err("story_canon_character_missing"); }
     let actor_id = new_id("actor-")?;
     let kinds_json = canonical_json(&Value::Array(allowed_kinds.clone())).map_err(|_| "story_argument_invalid")?;
@@ -183,19 +189,27 @@ pub(crate) fn turn_context(home: &Path, payload: &Value) -> Result<Value, &'stat
     let recent = recent_events(home, &row.story_id, &run_player, scope_run)?;
     let allowed = allowed_kinds_of(&row)?;
     let budget = json!({"used":used,"max":max,"windowResetsAtMs":window_started + BUDGET_WINDOW_MS as i64});
-    // N3：求值器菜单（前置已求值，当前快照下可走边，[{edgeId,to}]）——结构菜单
-    // 保留（可达性 + 因果依赖状态）。快照绑定 Run 钉定发布摘要（评审修复 2）；
-    // 未钉定/求值器不可用时 evaluatedEdges 如实为 null（不猜测前置结果）。
-    let evaluated = if graph.is_object() {
-        let digest = {
-            let db = database(home)?;
-            crate::story_registry::pinned_run_digest(&db, &run_player, &run_city, &row.story_id, scope_run).ok()
-        };
-        digest.and_then(|digest| crate::narrative_engine::narrative_snapshot_scoped(
-                home, &run_player, &run_city, &row.story_id, scope_run, &digest).ok())
-            .and_then(|snapshot| crate::narrative_engine::eligible_edges(&graph, &snapshot).ok())
-            .unwrap_or(Value::Null)
-    } else { Value::Null };
+    // 选项及其说明来自本次 Run 钉定的安装版本。缺少发布内容或求值失败时返回 null。
+    let evaluated = (|| {
+        let digest = crate::story_registry::pinned_run_digest(&db, &run_player, &run_city, &row.story_id, scope_run).ok()?;
+        let release = crate::story_registry::release_graph(&db, &run_city, &row.story_id).ok()?;
+        if release["contentDigest"] != digest { return None; }
+        let snapshot = crate::narrative_engine::narrative_snapshot_scoped(
+            home, &run_player, &run_city, &row.story_id, scope_run, &digest).ok()?;
+        let graph = &release["graph"];
+        let edges = crate::narrative_engine::eligible_edges(graph, &snapshot).ok()?;
+        let nodes = graph["nodes"].as_array()?;
+        let choices: Vec<Value> = edges.as_array()?.iter().filter_map(|edge| {
+            let to = edge["to"].as_str()?;
+            let node = nodes.iter().find(|node| node["id"] == to)?;
+            let title: String = node["title"].as_str().filter(|title| !title.trim().is_empty())
+                .unwrap_or(to).chars().take(120).collect();
+            let description: String = node["meta"]["description"].as_str()
+                .unwrap_or("").chars().take(320).collect();
+            Some(json!({"edgeId":edge["edgeId"],"to":to,"title":title,"description":description}))
+        }).collect();
+        Some(json!(choices))
+    })().unwrap_or(Value::Null);
     let prompt = session_prompt(&canon_slice, &row.character_id, &allowed, max as u64, used as u64,
         if evaluated.is_null() { &eligible } else { &evaluated });
     Ok(json!({"actorId":actor_id,"storyId":row.story_id,"characterId":row.character_id,

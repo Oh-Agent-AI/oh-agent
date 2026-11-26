@@ -1,0 +1,53 @@
+.panel > div:not([hidden]):has(> .agent-workspace) { display: flex; flex-direction: column; flex: 1 0 auto; }
+.panel .agent-workspace { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.panel .agent-workspace .studio-task-panel { display: flex; flex: 1; flex-direction: column; gap: 12px; background: transparent; border: 0; padding: 0; }
+.agent-user-message { margin-left: 12%; align-self: end; padding: 10px 14px; background: #e6f2ed; color: #183b32; border-radius: 14px 14px 4px 14px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.panel .agent-compose, .panel .agent-workspace > .goal-composer { position: sticky; bottom: 0; margin-top: auto; display: grid; gap: 8px; padding: 10px; border: 1px solid #b9cbc3; border-radius: 14px; background: #fff; color: #25473a; box-shadow: 0 2px 8px #23443612; }
+.panel .agent-compose:focus-within { border-color: #36785e; }
+.panel .agent-compose textarea, .panel .agent-workspace > .goal-composer textarea { border: 0; width: 100%; min-height: 76px; margin: 0; padding: 6px; background: transparent; color: #19352d; font: inherit; resize: vertical; }
+.agent-compose-tools { display: flex; align-items: end; justify-content: space-between; gap: 8px; }
+.agent-compose-tools label { min-width: 0; flex: 1; }
+.agent-compose-tools select { max-width: 100%; }
+.agent-compose-tools button { white-space: nowrap; }
+.agent-demo-intro p { color: #587065; line-height: 1.6; }
+
+/* Only the timeline scrolls. The Agent picker and composer stay in the panel flow. */
+.panel > div:not([hidden]):has(> .agent-workspace) { flex: 1 1 auto; min-height: 0; }
+.studio-workspace > .panel > div:not([hidden]):has(> .agent-workspace) { flex-shrink: 1; }
+.panel .agent-workspace { min-height: 0; font-size: 14px; line-height: 1.5; }
+.panel .agent-workspace .studio-task-panel { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-height: 0; }
+.agent-timeline { display: flex; flex-direction: column; gap: 10px; overflow: auto; overscroll-behavior: contain; padding: 2px 4px 8px 0; overflow-wrap: anywhere; }
+.agent-timeline > * { flex-shrink: 0; }
+.agent-timeline p, .agent-workspace-heading p { margin: 0; }
+.agent-timeline [role="status"] { font-size: 13px; }
+.agent-timeline .agent-evidence, .agent-secondary-tools { font-size: 12px; color: #506b61; }
+.agent-timeline .studio-evidence-list article { padding: 8px; }
+.agent-latest-event { color: #506b61; font-size: 13px; }
+.panel .agent-compose { position: static; margin-top: 0; }
+.panel .agent-compose textarea { font-size: 14px; line-height: 1.5; min-height: 60px; resize: none; }
+.agent-compose-tools { justify-content: flex-end; }
+@media (max-width: 700px) {
+  .agent-timeline { max-height: 50vh; }
+}
+
+.agent-decision-card {
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+  color: #19352d;
+  background: #f3f8f5;
+  border: 1px solid #cfdfd6;
+  border-left: 3px solid #43866c;
+  border-radius: 10px;
+  font-size: 14px;
+}
+.agent-decision-card[data-tone="error"] { background: #fff6f2; border-color: #e8c1b6; border-left-color: #a84937; }
+.agent-decision-card h3 { font-size: 14px; line-height: 1.4; margin: 0; }
+.agent-decision-card ol, .agent-decision-card ul { margin: 0; padding-inline-start: 20px; }
+.agent-decision-card .actions { padding: 0; flex-wrap: wrap; }
+.agent-decision-card textarea { display: block; min-height: 64px; }
+.agent-decision-card summary { cursor: pointer; }
+
+.agent-result-state { display: flex; flex-wrap: wrap; gap: 5px; }
+.agent-result-state span { padding: 4px 7px; color: #63748a; background: #f2f6f3; border: 1px solid #d8e3de; border-radius: 99px; font-size: 10px; }
+.agent-result-state span.active { color: #17483b; background: #e8f4ed; border-color: #77a993; }

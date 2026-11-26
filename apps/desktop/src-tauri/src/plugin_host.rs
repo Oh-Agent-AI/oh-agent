@@ -298,7 +298,7 @@ fn definitions() -> &'static [PluginDefinition] {
                 assert!(grant.validate_for(scope_type, &plugin.object_grants).is_ok(), "invalid trusted typed-object scope grant");
             }
             let mut local_call_methods = std::collections::BTreeSet::new();
-            assert!(plugin.local_calls.len() <= 128 && plugin.local_calls.iter().all(|method| {
+            assert!(plugin.local_calls.len() <= agent_vitals_runtime::query::plugin_calls::MAX_LOCAL_CALL_METHODS && plugin.local_calls.iter().all(|method| {
                 !method.is_empty() && method.len() <= 96
                     && method.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'_' | b'-' | b'.'))
                     && local_call_methods.insert(method)
@@ -555,15 +555,24 @@ fn persist_diagnostics(instance: &Instance) {
     }
 }
 
+fn valid_toolbar_search(value: &str) -> bool {
+    value.len() <= 256 && value.encode_utf16().count() <= 80 && !value.chars().any(char::is_control)
+}
+
 fn valid_tools(namespace: &str, max_items: usize, items: &[Tool]) -> bool {
     let mut ids = std::collections::BTreeSet::new();
     items.len() <= max_items && items.iter().all(|item| {
         !item.id.is_empty() && item.id.len() <= 64 && ids.insert(&item.id)
             && item.command_id.starts_with(&format!("{namespace}.")) && item.command_id.len() <= 64
             && !item.label.is_empty() && item.label.len() <= 100
-            && (item.kind == "button" || (item.kind == "select" && !item.options.is_empty()
-                && item.options.len() <= 8 && item.options.iter().all(|o| o.value.len() <= 32 && o.label.len() <= 100)
-                && item.options.iter().any(|o| Some(&o.value) == item.value.as_ref())))
+            && match item.kind.as_str() {
+                "button" => true,
+                "select" => !item.options.is_empty() && item.options.len() <= 8
+                    && item.options.iter().all(|o| o.value.len() <= 32 && o.label.len() <= 100)
+                    && item.options.iter().any(|o| Some(&o.value) == item.value.as_ref()),
+                "search" => item.options.is_empty() && item.value.as_deref().is_some_and(valid_toolbar_search),
+                _ => false,
+            }
     })
 }
 
@@ -813,7 +822,7 @@ fn poll_plugin_call_queue(app: &tauri::AppHandle) {
 // 双重保证），信封路径不变（validation:"studio-envelope"）。
 
 /// headless 臂的 mailbox 实例标识（preview 的 instance 绑定与 commit 归属一致）。
-const HEADLESS_CREATOR_INSTANCE: &str = "host-headless";
+pub(crate) const HEADLESS_CREATOR_INSTANCE: &str = "host-headless";
 
 /// headless 臂可作答的方法窄名单：只包含「语义闸可覆盖 + 纯宿主本地」的方法。
 /// 视口/City 运行时依赖（layout.save、anchor、publish、playtest 等）**不在名单内**
@@ -825,6 +834,7 @@ fn headless_creator_methods() -> Vec<String> {
         "creator.city.create",
         "creator.city.edit.preview",
         "creator.city.edit.commit",
+        "creator.scene.preview",
         "creator.vehicle.preview",
         "creator.vehicle.define",
         "creator.vehicle.inspect",
@@ -854,6 +864,7 @@ fn headless_creator_methods() -> Vec<String> {
         "creator.code.install.commit",
         "creator.code.install.list",
         "creator.story.project.create",
+        "creator.story.project.preview",
         "creator.story.project.read",
         "creator.story.projects.list",
         "creator.actor.register",
@@ -932,7 +943,7 @@ fn publish_headless_presence_if_studio_absent(home: &std::path::Path, studio_rea
 /// city.edit.preview Form B（world.set）的 headless 载荷转换：读权威 city 文档 →
 /// 嵌入式合并/复验 → requestDigest 信封（与 webview attachValidation 的 Form B
 /// 分支逐语义一致，digest 规格同 canonicalJson）。
-fn headless_world_edit_payload(home: &std::path::Path, payload: &Value) -> Result<Value, &'static str> {
+pub(crate) fn headless_world_edit_payload(home: &std::path::Path, payload: &Value) -> Result<Value, &'static str> {
     let city_id = payload.get("cityId").and_then(Value::as_str).unwrap_or_default().to_owned();
     let base_revision = payload.get("baseRevision").and_then(Value::as_u64).unwrap_or_default();
     let city = crate::creator_cities::read_city(home, city_id.as_str())?;
@@ -957,6 +968,24 @@ fn headless_city_create_payload(home: &std::path::Path, payload: &Value) -> Resu
     Ok(json!({"name": name, "seed": seed, "profile": request["profile"].clone(),
         "operationId": request["operationId"].clone(),
         "validation": {"schemaVersion": 1, "requestDigest": request_digest, "ok": ok}}))
+}
+
+/// creator.scene.preview 的 headless 载荷转换：读权威项目文档 → 嵌入式单对象
+/// 场景校验（与 webview buildSceneValidation 同语义）→ requestDigest 信封
+/// （digest over canonical(operations)，与 webview payloadDigest 同规格）。
+pub(crate) fn headless_scene_preview_payload(home: &std::path::Path, payload: &Value) -> Result<Value, &'static str> {
+    let project_id = payload.get("projectId").and_then(Value::as_str).unwrap_or_default().to_owned();
+    let base_revision = payload.get("baseRevision").and_then(Value::as_u64).unwrap_or_default();
+    let (revision, raw): (u64, String) = crate::creator_projects::project_snapshot(home, &project_id)?;
+    if revision != base_revision { return Err("revision_conflict"); }
+    let _ = raw; // 单对象校验不读文档；读取仅为 revision CAS 与项目存在性
+    let (ok, diagnostics) = crate::creator_projects::embedded_scene_preview(&payload["operations"])?;
+    let request_digest = crate::creator_store::digest(&crate::creator_store::canonical_json(&payload["operations"]).map_err(|_| "creator_scene_ops_invalid")?);
+    Ok(json!({"projectId": project_id, "baseRevision": base_revision, "operations": payload["operations"],
+        "validation": {"ok": ok,
+            "capabilityVersion": crate::creator_projects::creator_capability_version(),
+            "validatorVersion": 1, "projectId": project_id, "baseRevision": base_revision,
+            "payloadDigest": request_digest, "diagnostics": diagnostics}}))
 }
 
 /// headless creator 臂的轮询入口：lib.rs setup 起一个 500ms 循环驱动。
@@ -1030,7 +1059,7 @@ fn answer_headless_call(home: &std::path::Path, method: &str, payload: &Value) -
         // V3 PR-7 前半：Story 注册表 / City Code 安装 / Inspect 只读——全部直接
         // 路由宿主 dispatch_as（与 Studio 在场时同一管线），无 headless 特例。
         | "creator.code.install.preview" | "creator.code.install.commit" | "creator.code.install.list"
-        | "creator.story.project.create" | "creator.story.project.read" | "creator.story.projects.list"
+        | "creator.story.project.create" | "creator.story.project.preview" | "creator.story.project.read" | "creator.story.projects.list"
         | "creator.actor.register" | "creator.actor.turn.context" | "creator.actor.intent.submit" | "creator.actor.propose"
         | "creator.story.install.preview" | "creator.story.install.commit" | "creator.story.install.list"
         | "creator.story.run.start" | "creator.story.run.stop" | "creator.story.run.reset"
@@ -1041,6 +1070,7 @@ fn answer_headless_call(home: &std::path::Path, method: &str, payload: &Value) -
             let transformed = match method {
                 "creator.city.edit.preview" => headless_world_edit_payload(home, payload)?,
                 "creator.city.create" => headless_city_create_payload(home, payload)?,
+                "creator.scene.preview" => headless_scene_preview_payload(home, payload)?,
                 _ => payload.clone(),
             };
             let mut result = crate::creator_projects::dispatch_as(home, crate::creator_projects::LOCAL_CREATOR_OWNER,
@@ -1546,6 +1576,7 @@ pub fn plugin_command(app: tauri::AppHandle, webview: Webview, state: tauri::Sta
         if i.id != instance_id || !i.ready || i.suspended || i.failed.is_some() || i.pending.is_some() { return Err("plugin_command_unavailable".into()); }
         let tool = i.items.iter().find(|t| t.command_id == command_id && t.enabled).ok_or("plugin_command_unavailable")?;
         if tool.kind == "select" && !tool.options.iter().any(|o| Some(&o.value) == value.as_ref()) { return Err("plugin_value_invalid".into()); }
+        if tool.kind == "search" && !value.as_deref().is_some_and(valid_toolbar_search) { return Err("plugin_value_invalid".into()); }
         i.sequence += 1;
         let request = format!("request-{}", i.sequence);
         i.pending = Some((request.clone(), Instant::now())); note(i, "command_started");
@@ -1888,6 +1919,50 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
                 Err(code) => plugin_request_error(request.request_id, code, false),
             });
         }
+        if matches!(method.as_str(), "creator.asset.snapshot.open" | "creator.asset.snapshot.read" | "creator.asset.snapshot.close") {
+            let Some(object) = payload.as_object() else { return Ok(plugin_request_error(request.request_id, "creator_request_invalid", false)); };
+            let _operation = state.1.lock().unwrap();
+            {
+                let host = state.0.lock().unwrap();
+                if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            let home = crate::overview::data_home();
+            let result = if method == "creator.asset.snapshot.open" && object.len() == 4 {
+                match (object.get("projectId").and_then(Value::as_str), object.get("revision").and_then(Value::as_u64),
+                    object.get("assetId").and_then(Value::as_str), object.get("digest").and_then(Value::as_str)) {
+                    (Some(project_id), Some(revision), Some(asset_id), Some(digest)) => crate::creator_assets::open_project_asset_snapshot(
+                        &home, &request.instance_id, project_id, revision, asset_id, digest),
+                    _ => Err("creator_request_invalid"),
+                }
+            } else if method == "creator.asset.snapshot.read" && object.len() == 2 {
+                match (object.get("snapshotId").and_then(Value::as_str), object.get("offset").and_then(Value::as_u64)) {
+                    (Some(id), Some(offset)) => crate::creator_assets::read_project_asset_snapshot(&home, &request.instance_id, id, offset),
+                    _ => Err("creator_request_invalid"),
+                }
+            } else if method == "creator.asset.snapshot.close" && object.len() == 1 {
+                match object.get("snapshotId").and_then(Value::as_str) {
+                    Some(id) => crate::creator_assets::close_project_asset_snapshot(&home, &request.instance_id, id),
+                    _ => Err("creator_request_invalid"),
+                }
+            } else { Err("creator_request_invalid") };
+            {
+                let host = state.0.lock().unwrap();
+                if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                    if method == "creator.asset.snapshot.open" {
+                        if let Ok(value) = &result {
+                            if let Some(id) = value["snapshotId"].as_str() { let _ = crate::creator_assets::close_project_asset_snapshot(&home, &request.instance_id, id); }
+                        }
+                    }
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            return Ok(match result {
+                Ok(value) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(value), error: None },
+                Err(code) => plugin_request_error(request.request_id, code, false),
+            });
+        }
         if method == "creator.content.list" {
             if !payload.as_object().is_some_and(|object| object.is_empty()) { return Ok(plugin_request_error(request.request_id, "creator_request_invalid", false)); }
             let _operation = state.1.lock().unwrap();
@@ -1986,8 +2061,11 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
                     return Err("plugin_instance_mismatch".into());
                 }
             }
-            let result = crate::creator_projects::dispatch_as(&crate::overview::data_home(),crate::creator_projects::LOCAL_CREATOR_OWNER,
-                &request.instance_id,&method,&payload);
+            let instance = request.instance_id.clone();
+            let result = tauri::async_runtime::spawn_blocking(move || {
+                crate::creator_projects::dispatch_as(&crate::overview::data_home(),
+                    crate::creator_projects::LOCAL_CREATOR_OWNER, &instance, &method, &payload)
+            }).await.map_err(|_| "creator_request_failed".to_owned())?;
             {
                 let host = state.0.lock().unwrap();
                 if studio_creator_dispatch_denial(host.current.as_ref(), &request.instance_id).is_some() {
@@ -3169,6 +3247,18 @@ mod tests {
         tools.pop(); tools[0].value = Some("14".into()); assert!(!valid_tools("city", 11, &tools));
     }
     #[test]
+    fn toolbar_search_accepts_empty_and_multilingual_queries_with_bounds() {
+        let mut tools: Vec<Tool> = serde_json::from_value(json!([{"id":"search","commandId":"creator.project.search","label":"搜索名称","kind":"search","enabled":true,"value":""}])).unwrap();
+        assert!(valid_tools("creator", 6, &tools));
+        tools[0].value = Some("验收湾 🚕".into());
+        assert!(valid_tools("creator", 6, &tools));
+        assert!(!valid_tools("city", 6, &tools));
+        assert!(!valid_toolbar_search(&"湾".repeat(81)));
+        assert!(!valid_toolbar_search("first\nsecond"));
+        tools[0].value = None;
+        assert!(!valid_tools("creator", 6, &tools));
+    }
+    #[test]
     fn descriptor_toolbar_limit_allows_game_entry_without_namespace_special_cases() {
         let tools: Vec<Tool> = (0..11).map(|n| serde_json::from_value(json!({
             "id": format!("tool-{n}"), "commandId": format!("city.tool-{n}"),
@@ -3210,6 +3300,24 @@ mod tests {
         assert!(!registry.is_empty());
         let city = registry.iter().find(|plugin| plugin.id == "city").unwrap();
         assert_eq!(city.host_events, vec!["plugin.event".to_owned()]);
+    }
+
+    /// Agent 路径的场景预览：嵌入式 scene.draft 闸给合法对象签发 ok，对非法对象判负。
+    #[test]
+    fn headless_scene_preview_validates_operations_through_the_embedded_gate() {
+        let legal_object = json!({"id": "crate-1", "kind": "collider", "shape": "box",
+            "sizeMeters": {"x": 4.0, "y": 2.0, "z": 3.0},
+            "transform": {"positionMeters": {"x": 0.0, "y": 0.0, "z": 0.0},
+                "rotationRadians": {"x": 0.0, "y": 0.0, "z": 0.0}, "scale": {"x": 1.0, "y": 1.0, "z": 1.0}}});
+        let gate_ok = crate::creator_projects::embedded_scene_preview(
+            &json!([{"op": "scene.object.upsert", "object": legal_object}])).unwrap();
+        assert_eq!(gate_ok.0, true, "legal collider must pass: {:?}", gate_ok.1);
+        let illegal = crate::creator_projects::embedded_scene_preview(
+            &json!([{"op": "scene.object.upsert", "object": {"id": "bad", "kind": "model"}}])).unwrap();
+        assert_eq!(illegal.0, false, "model without asset must fail");
+        let mount = crate::creator_projects::embedded_scene_preview(
+            &json!([{"op": "mount.bind", "mount": {"mountId": "m1"}}])).unwrap();
+        assert_eq!(mount.0, false, "mount must fail with actionable diagnostics");
     }
 
     #[test]
@@ -3263,18 +3371,8 @@ mod tests {
             crate::creator_projects::dispatch_city_runtime(&home, "city-instance", method, &payload);
 
         // 1. 创作侧（MCP 工具回执）：café Story 项目 → City → 安装发布。
-        let graph = json!({"start":"start","nodes":[{"id":"start","kind":"beat"},{"id":"cafe_reply","kind":"beat"}],
-            "edges":[{"id":"e-invite","from":"start","to":"cafe_reply",
-                "preconditions":[{"op":"counter.gte","key":"affection","value":1}],
-                "effects":[{"op":"counter.add","key":"affection","value":1},
-                    {"op":"flag.set","key":"date_planned","value":true},
-                    {"op":"event.append","eventId":"evt-invite-1","ruleId":"cafe-invite"},
-                    {"op":"cursor.advance","to":"cafe_reply"}],
-                "eventDependencies":[]}],
-            "seed":"seed-journey"});
-        let canon = json!({"characters":[{"id":"resident:linxia","name":"小夏"}]});
-        mcp("creator_story_project_create", json!({"storyId":"story.detective","title":"侦探线",
-            "schemaVersion":1,"storyVersion":"1.0.0","graph":graph,"canon":canon})).unwrap();
+        let story = serde_json::from_str(include_str!("../tests/fixtures/story-missing-painter-synthetic.json")).unwrap();
+        mcp("creator_story_project_create", story).unwrap();
         let city_created = mcp("creator_city_create", json!({"name":"旅程之城","seed":20261121,
             "profile":{"schemaVersion":1,"id":"desert","version":1,"biome":"arid",
             "geography":{"generator":"arid-dunes-v1","parameters":{"dunes":{"duneScale":190,"duneAmplitude":11,"orientationDeg":18}}},
@@ -3289,12 +3387,34 @@ mod tests {
             "operationId":"journey-install-commit"})).unwrap();
 
         // 2. 玩家侧（City face）：游戏会话 Run + Story Run（统一本地主体）。
-        let game_run = city("city.game.run.start", json!({"cityId":city_id,"gameId":"game.romance"})).unwrap();
-        let game_run_id = game_run["runId"].as_str().unwrap().to_string();
-        assert_eq!(game_run["playerScope"]["playerId"], json!(crate::creator_projects::LOCAL_CREATOR_OWNER));
-        let story_run = mcp("creator_story_run_start", json!({"cityId":city_id,"storyId":"story.detective"})).unwrap();
-        let story_run_id = story_run["data"]["storyRunId"].as_str().unwrap().to_string();
         let player_id = crate::creator_projects::LOCAL_CREATOR_OWNER.to_string();
+        let studio = |method: &str, payload: Value|
+            crate::creator_projects::dispatch_as(&home, &player_id, "story-studio", method, &payload);
+        let story_scope = json!({"cityId":city_id,"storyId":"story.detective"});
+        assert_eq!(studio("creator.story.run.status", story_scope.clone()).unwrap()["run"], Value::Null);
+        let mut start_request = story_scope.clone();
+        start_request["expectedContentDigest"] = json!("sha256:stale");
+        assert_eq!(studio("creator.story.run.start", start_request.clone()).unwrap_err(), "story_install_digest_conflict");
+        assert_eq!(studio("creator.story.run.status", story_scope.clone()).unwrap()["run"], Value::Null);
+        start_request["expectedContentDigest"] = preview["data"]["targetPackageDigest"].clone();
+        let story_run = studio("creator.story.run.start", start_request).unwrap();
+        let story_run_id = story_run["storyRunId"].as_str().unwrap().to_string();
+        assert_eq!(studio("creator.story.run.status", story_scope.clone()).unwrap()["run"]["storyRunId"], story_run_id);
+        assert_eq!(city("city.game.run.start", json!({"cityId":city_id,"gameId":"story.detective",
+            "storyRunId":"another-run"})).unwrap_err(), "story_run_not_active");
+        let game_run = city("city.game.run.start", json!({"cityId":city_id,"gameId":"story.detective","storyRunId":story_run_id})).unwrap();
+        let game_run_id = game_run["runId"].as_str().unwrap().to_string();
+        assert_eq!(game_run["playerScope"]["playerId"], player_id);
+        assert_eq!(game_run["storyRunId"], story_run_id);
+        let prepared = city("city.story.prepared.list", json!({})).unwrap();
+        assert_eq!(prepared["runs"][0]["storyRunId"], story_run_id);
+        assert_eq!(prepared["runs"][0]["cityName"], "旅程之城");
+        let opening = city("city.story.run.read", json!({"runId":game_run_id})).unwrap();
+        assert_eq!(opening["presentation"]["beat"]["title"], "遇见小夏");
+        assert_eq!(opening["presentation"]["characters"][0], json!({"id":"resident:linxia","name":"小夏"}));
+        assert!(opening["presentation"].get("canon").is_none());
+
+        assert_eq!(city("city.story.playtest.complete", json!({"runId":game_run_id,"action":"restart"})).unwrap_err(), "story_ending_required");
 
         // 3. Agent 侧注册（MCP）：会话绑定角色。
         let actor = mcp("creator_actor_register", json!({"storyId":"story.detective",
@@ -3303,19 +3423,13 @@ mod tests {
             "sessionLabel":"N-07 验收会话","operationId":"journey-actor"})).unwrap();
         let actor_id = actor["data"]["actorId"].as_str().unwrap().to_string();
 
-        // 4. 玩家事实（City face）：invite（legacy 规则好感度 +1）→ speak（触发 D-2）。
+        // 4. 玩家首句（City face）：和实际对白面板一样从冷启动直接提交 speak。
         let clock = crate::city_runtime::read_clock_at(&home, &city_id,
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64).unwrap();
         let clock_revision = clock["clockRevision"].as_str().unwrap().to_string();
-        let invite = city("city.story.commit", json!({"runId":game_run_id,
-            "operationId":"journey-invite","eventId":"evt-journey-invite",
-            "residentId":"resident:linxia","expectedStoryRevision":"0",
-            "expectedClockRevision":clock_revision,
-            "intent":{"kind":"invite","residentId":"resident:linxia","targetId":"place:cafe"}})).unwrap();
-        let invite_revision = invite["storyRevision"].as_str().unwrap().to_string();
         let speak = city("city.story.commit", json!({"runId":game_run_id,
             "operationId":"journey-speak","eventId":"evt-journey-speak",
-            "residentId":"resident:linxia","expectedStoryRevision":invite_revision,
+            "residentId":"resident:linxia","expectedStoryRevision":opening["storyRevision"],
             "expectedClockRevision":clock_revision,
             "intent":{"kind":"speak","text":"去咖啡馆吧？","residentId":"resident:linxia"}})).unwrap();
         let speak_revision = speak["storyRevision"].as_str().unwrap().to_string();
@@ -3325,10 +3439,8 @@ mod tests {
             "timeoutMs":2000,"maxRows":4})).unwrap();
         let claimed_data = claimed.get("data").cloned().unwrap_or_else(|| claimed.clone());
         let deliveries = claimed_data["deliveries"].as_array().unwrap();
-        // invite 与 speak 两次玩家事实都命中绑定 resident，各成一个回合（各确认一次）。
-        assert_eq!(deliveries.len(), 2, "claim must see both player turns: {claimed}");
+        assert_eq!(deliveries.len(), 1, "claim must see the player turn: {claimed}");
         assert_eq!(deliveries[0]["payload"]["storyRunId"], json!(story_run_id));
-        // 对话触发（speak）回合上提案；invite 回合留待其自己的确认周期。
         let speak_delivery = deliveries.iter().find(|d| d["payload"]["eventId"] == json!("evt-journey-speak")).unwrap();
         let delivery_id = speak_delivery["deliveryId"].as_str().unwrap().to_string();
         let context = mcp("creator_actor_turn_context", json!({"actorId":actor_id,
@@ -3337,12 +3449,35 @@ mod tests {
             "turn context must project the authorized run: {context}");
         let evaluated = context["data"]["evaluatedEdges"].as_array()
             .unwrap_or_else(|| panic!("evaluator menu must be present: {context}"));
-        assert_eq!(evaluated.len(), 1, "evaluator menu must show the invite edge: {context}");
+        let edge_ids = |choices: &[Value]| choices.iter().map(|edge| edge["edgeId"].to_string()).collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(edge_ids(evaluated), edge_ids(&[json!({"edgeId":"e-invite"}),json!({"edgeId":"e-verify-intent"}),json!({"edgeId":"e-decline"})]), "{context}");
 
+        // Optionally supply real Actor replies through a persistent test driver. Only
+        // the synthetic player text, character canon and evaluated choices enter the driver.
+        use std::io::{BufRead, Write};
+        let mut actor_driver = std::env::var_os("OH_STORY_TEST_ACTOR_DRIVER").map(|program| {
+            crate::cli_process::cli_command(program).stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped()).spawn().expect("start live Actor driver")
+        });
+        let mut actor_output = actor_driver.as_mut().map(|child| std::io::BufReader::new(child.stdout.take().unwrap()));
+        let mut actor_reply = |player_line: &str, context: &Value, default_edge: &str, default_line: &str| {
+            if let (Some(driver), Some(output)) = (&mut actor_driver, &mut actor_output) {
+                writeln!(driver.stdin.as_mut().unwrap(), "{}", json!({"playerLine":player_line,"canon":context["canon"],"evaluatedEdges":context["evaluatedEdges"]})).unwrap();
+                let mut reply = String::new();
+                assert!(output.read_line(&mut reply).unwrap() > 0, "live Actor driver closed before replying");
+                let reply: Value = serde_json::from_str(&reply).unwrap();
+                assert_eq!(reply["edgeId"], default_edge);
+                let line = reply["dialogue"].as_str().filter(|line| !line.trim().is_empty()).unwrap();
+                eprintln!("玩家 {player_line} / Actor {line}");
+                return line.to_owned();
+            }
+            default_line.to_owned()
+        };
+        let first_reply = actor_reply("去咖啡馆吧？", &context["data"], "e-invite", "好啊，周六下午两点，老地方见！");
         // 6. 提案（MCP）→ 求值器接受 → 提交 → 确认。
         let receipt = mcp("creator_actor_propose", json!({"actorId":actor_id,"deliveryId":delivery_id,
             "proposal":{"operationId":"journey-reply","edgeId":"e-invite",
-            "dialogue":"好啊，周六下午两点，老地方见！"}})).unwrap();
+            "dialogue":first_reply}})).unwrap();
         // 邮箱面工具带 {ok,data} 信封；总线本地工具（wait/confirm）为裸响应。
         let receipt_data = receipt.get("data").cloned().unwrap_or_else(|| receipt.clone());
         assert_eq!(receipt_data["turnStatus"], "confirmed", "{receipt}");
@@ -3355,11 +3490,11 @@ mod tests {
         // 7. 玩家读回（City face，G-READ）：原 Run 可见回复 + 效果状态。
         let read = city("city.story.run.read", json!({"runId":game_run_id})).unwrap();
         assert_eq!(read["storyRunId"], json!(story_run_id));
-        assert_eq!(read["state"]["affection"], json!(2), "invite(+1) + evaluator effect(+1)");
+        assert_eq!(read["state"]["affection"], json!(1), "one evaluator effect");
         assert_eq!(read["state"]["cursor"], "cafe_reply");
         let texts: Vec<String> = read["dialogue"].as_array().unwrap().iter()
             .filter_map(|entry| entry["intent"]["text"].as_str().map(str::to_string)).collect();
-        assert!(texts.iter().any(|t| t == "好啊，周六下午两点，老地方见！"), "reply visible: {read}");
+        assert!(texts.iter().any(|t| t == &first_reply), "reply visible: {read}");
         assert!(texts.iter().any(|t| t == "去咖啡馆吧？"), "player line visible: {read}");
 
         // 8. 分层证据：队列行（in_flight → confirmed，无重投）+ actor 记账 + 快照版本推进。
@@ -3369,12 +3504,6 @@ mod tests {
                 "SELECT status,redelivered FROM host_deliveries WHERE delivery_id=?1",
                 [delivery_id.as_str()], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
             assert_eq!((status.as_str(), redelivered), ("confirmed", 0));
-            // invite 回合仍 in_flight（各自独立确认，at-least-once 语义）。
-            let invite_delivery = deliveries.iter().find(|d| d["payload"]["eventId"] == json!("evt-journey-invite")).unwrap();
-            let invite_status: String = db.query_row(
-                "SELECT status FROM host_deliveries WHERE delivery_id=?1",
-                [invite_delivery["deliveryId"].as_str().unwrap()], |row| row.get(0)).unwrap();
-            assert_eq!(invite_status, "in_flight");
             let decision: String = db.query_row("SELECT last_decision FROM actors WHERE actor_id=?1",
                 [actor_id.as_str()], |row| row.get(0)).unwrap();
             assert_eq!(decision, "accepted");
@@ -3383,6 +3512,93 @@ mod tests {
             assert_eq!(used, 1);
         }
         assert_ne!(read["storyRevision"].as_str().unwrap(), speak_revision, "reply advanced the run");
+        // 9. 同一 Story Run 与 Actor 会话接下一条玩家消息，走到显式结局。
+        let player_line = "你还记得失踪的画家最后去了哪里吗？";
+        city("city.story.commit", json!({"runId":game_run_id,"residentId":"resident:linxia",
+            "operationId":"journey-ask-clue","eventId":"evt-journey-ask-clue",
+            "expectedStoryRevision":read["storyRevision"],"expectedClockRevision":clock_revision,
+            "intent":{"kind":"speak","text":player_line,"residentId":"resident:linxia"}})).unwrap();
+        let next = mcp("creator_actor_turn_wait", json!({"sessionIdentifier":"journey-sess",
+            "timeoutMs":2000,"maxRows":4})).unwrap();
+        let next = next.get("data").unwrap_or(&next);
+        let next_delivery = next["deliveries"].as_array().unwrap().iter()
+            .find(|entry| entry["payload"]["eventId"] == "evt-journey-ask-clue").unwrap();
+        assert_eq!(next_delivery["payload"]["storyRunId"], story_run_id);
+        let next_context = mcp("creator_actor_turn_context", json!({"actorId":actor_id,
+            "scope":{"playerId":player_id,"storyRunId":story_run_id}})).unwrap();
+        let choices = &next_context["data"]["evaluatedEdges"];
+        assert_eq!(edge_ids(choices.as_array().unwrap()), edge_ids(&[json!({"edgeId":"e-find-clue"}),json!({"edgeId":"e-protect-clue"}),json!({"edgeId":"e-back-off"})]), "{next_context}");
+        let final_reply = actor_reply(player_line, &next_context["data"], "e-find-clue", "他把最后一幅画留在了老灯塔。");
+        assert!(final_reply.contains("灯塔"), "Actor must reveal the canon clue");
+        let final_receipt = mcp("creator_actor_propose", json!({"actorId":actor_id,"deliveryId":next_delivery["deliveryId"],
+            "proposal":{"operationId":"journey-clue-reply","edgeId":"e-find-clue","dialogue":final_reply}})).unwrap();
+        assert_eq!(final_receipt["data"]["turnStatus"], "confirmed", "{final_receipt}");
+        let ending = city("city.story.run.read", json!({"runId":game_run_id})).unwrap();
+        assert_eq!(ending["state"]["clue_found"], true);
+        assert_eq!(ending["state"]["cursor"], "ending");
+        assert_eq!(ending["presentation"]["beat"]["kind"], "ending");
+        assert_eq!(ending["presentation"]["beat"]["title"], "老灯塔的线索");
+        let dialogue = ending["dialogue"].as_array().unwrap();
+        assert!(dialogue.iter().any(|entry| entry["replyToEventId"] == "evt-journey-ask-clue"));
+        for expected in ["去咖啡馆吧？", first_reply.as_str(), player_line, final_reply.as_str()] {
+            assert!(dialogue.iter().any(|entry| entry["intent"]["text"] == expected), "missing dialogue: {expected}");
+        }
+        let ending_context = mcp("creator_actor_turn_context", json!({"actorId":actor_id,
+            "scope":{"playerId":player_id,"storyRunId":story_run_id}})).unwrap();
+        assert_eq!(ending_context["data"]["evaluatedEdges"], json!([]));
+        assert_eq!(ending_context["data"]["scope"]["runStatus"], "active", "the ending beat does not stop the run");
+        let restart_request = json!({"runId":game_run_id,"action":"restart"});
+        assert_eq!(crate::creator_projects::dispatch_city_runtime(&home, "another-city",
+            "city.story.playtest.complete", &restart_request).unwrap_err(), "story_playtest_run_mismatch");
+        let restarted = city("city.story.playtest.complete", restart_request.clone()).unwrap();
+        assert_eq!(city("city.story.playtest.complete", restart_request).unwrap(), restarted, "retry preserves both new run IDs");
+        assert_eq!(city("city.story.playtest.complete", json!({"runId":game_run_id,"action":"finish"})).unwrap_err(), "story_playtest_already_completed");
+        assert_ne!(restarted["storyRunId"], story_run_id);
+        assert_ne!(restarted["runId"], game_run_id);
+        assert_eq!(studio("creator.story.run.status", story_scope.clone()).unwrap()["run"]["storyRunId"], restarted["storyRunId"]);
+        let replay = city("city.story.run.read", json!({"runId":restarted["runId"]})).unwrap();
+        assert_eq!(replay["storyRevision"], "0");
+        assert_eq!(replay["presentation"]["beat"]["title"], "遇见小夏");
+        assert_eq!(replay["dialogue"], json!([]));
+        assert_eq!(city("city.story.run.read", json!({"runId":game_run_id})).unwrap()["dialogue"], ending["dialogue"]);
+        assert_eq!(city("city.story.commit", json!({"runId":game_run_id,"residentId":"resident:linxia",
+            "operationId":"journey-after-stop","eventId":"evt-journey-after-stop",
+            "expectedStoryRevision":ending["storyRevision"],"expectedClockRevision":clock_revision,
+            "intent":{"kind":"speak","text":"再见","residentId":"resident:linxia"}})).unwrap_err(), "game_run_cancelled");
+
+        let late_actor = crate::story_store::StoryCommitCommandV1 {
+            operation_id: "journey-late-actor".into(), event_id: "evt-journey-late-actor".into(),
+            player_id: player_id.clone(), city_id: city_id.clone(), game_id: "story.detective".into(),
+            story_scope: Some(crate::story_store::StoryStateScopeV1 {
+                story_id: "story.detective".into(), story_run_id: story_run_id.clone(),
+            }),
+            resident_id: None, expected_story_revision: ending["storyRevision"].as_str().unwrap().into(),
+            expected_clock_revision: clock_revision.clone(), intent: json!({"kind":"speak","text":"迟到的回复"}),
+            run_id: story_run_id.clone(), rule_set_digest: None, causation_id: None, correlation_id: None,
+            narrative_effects: Some(json!([])),
+        };
+        assert_eq!(crate::story_store::commit_story(&home, late_actor, crate::story_store::StoryClockAuthorityV1 {
+            revision: clock_revision, tick: clock["tick"].as_u64().unwrap(),
+            simulation_utc_ms: clock["simulationUtcMs"].as_u64().unwrap(),
+        }).unwrap_err(), "story_run_not_active");
+
+        // Seed the replay's terminal state to exercise the separate finish button
+        // without relying on another model call. The previous run reached it normally.
+        let db = crate::creator_store::database(&home).unwrap();
+        db.execute(
+            "INSERT INTO story_states(player_id,city_id,game_id,story_id,story_run_id,revision,document_json,updated_at_ms)
+             SELECT player_id,city_id,game_id,story_id,?1,revision,document_json,updated_at_ms FROM story_states WHERE story_run_id=?2",
+            rusqlite::params![restarted["storyRunId"].as_str().unwrap(),story_run_id],
+        ).unwrap();
+        let finish_request = json!({"runId":restarted["runId"],"action":"finish"});
+        let finished = city("city.story.playtest.complete", finish_request.clone()).unwrap();
+        assert_eq!(finished["action"], "finish");
+        assert_eq!(city("city.story.playtest.complete", finish_request).unwrap(), finished);
+        assert_eq!(studio("creator.story.run.status", story_scope).unwrap()["run"], Value::Null);
+        if let Some(mut driver) = actor_driver {
+            drop(driver.stdin.take());
+            assert!(driver.wait().unwrap().success());
+        }
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
         pump.join().unwrap();
         std::fs::remove_dir_all(&home).ok();

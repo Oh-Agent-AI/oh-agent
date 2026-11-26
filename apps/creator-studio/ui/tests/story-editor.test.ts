@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  newStoryDocument, parseStoryDocument, storyDocumentDiagnostics, storySavePayload, testStoryConditions,
+  newStoryDocument, parseStoryDocument, storyDocumentDiagnostics, storyReadonlyContent, storySavePayload, testStoryConditions,
   type StoryDocument,
 } from "../src/features/story/storyEditorModel.ts";
 
@@ -60,4 +60,24 @@ test("Story Host DTO parsing fails closed on malformed identity or content", () 
   assert.equal(parsed.storyId, "story.detective");
   assert.throws(() => parseStoryDocument({ ...story, revision: 0, contentDigest: "digest-1" }), /creator_story_project_invalid/);
   assert.throws(() => parseStoryDocument({ ...story, revision: 1, contentDigest: "digest-1", canon: [] }), /creator_story_project_invalid/);
+});
+
+
+test("Story readonly preview projects real graph text, links and canon without editable controls", () => {
+  const story = storyWithEdge();
+  const withDescription = {
+    ...story,
+    graph: {
+      ...story.graph,
+      nodes: [{ ...story.graph.nodes[0], title: "海滨咖啡馆", meta: { description: "画家留下了一张明信片。" } }, story.graph.nodes[1]],
+    },
+  };
+  assert.deepEqual(storyReadonlyContent(withDescription), {
+    nodes: [
+      { id: "start", title: "海滨咖啡馆", kind: "beat", description: "画家留下了一张明信片。" },
+      { id: "reply", title: "节点 2", kind: "beat", description: "" },
+    ],
+    edges: [{ id: "invite", from: "海滨咖啡馆", to: "节点 2" }],
+    characters: ["小夏"],
+  });
 });

@@ -51,6 +51,8 @@ export type GroundInspection = Readonly<{
   roll: number | null;
   wheels: readonly number[];
   worldRevision: string | null;
+  layerId: string | null;
+  surfaceRevision: number | null;
 }>;
 export function parseGroundInspection(value: unknown): GroundInspection {
   const row = object(value);
@@ -60,5 +62,6 @@ export function parseGroundInspection(value: unknown): GroundInspection {
   if (status === "ready" && (wheels.length !== 4 || wheels.some(value => value === null))) throw new Error("ground_inspection_invalid");
   return Object.freeze({ status, regionId: text(row.regionId), code: text(row.code), reason: text(row.reason, 256),
     y: number(row.y), pitch: number(row.pitch), roll: number(row.roll),
-    wheels: Object.freeze(wheels.filter((value): value is number => value !== null)), worldRevision: text(row.worldRevision, 256) });
+    wheels: Object.freeze(wheels.filter((value): value is number => value !== null)), worldRevision: text(row.worldRevision, 256),
+    layerId: text(row.layerId, 256), surfaceRevision: number(row.surfaceRevision) });
 }

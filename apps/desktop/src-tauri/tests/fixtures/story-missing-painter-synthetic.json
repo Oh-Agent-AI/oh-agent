@@ -1,0 +1,123 @@
+{
+  "storyId": "story.detective",
+  "title": "失踪的画家",
+  "schemaVersion": 1,
+  "storyVersion": "1.0.0",
+  "graph": {
+    "start": "start",
+    "nodes": [
+      { "id": "start", "kind": "beat", "title": "遇见小夏" },
+      { "id": "cafe_reply", "kind": "beat", "title": "到咖啡馆谈谈", "meta": { "description": "接受友善、没有逼迫的邀请，先和对方私下聊聊。此时保留行踪。" } },
+      { "id": "verify", "kind": "beat", "title": "确认来意", "meta": { "description": "对方打听画家的行踪，但来意或关系还不清楚。追问原因，或请对方说出画家留下的可核实信息。" } },
+      { "id": "ending", "kind": "ending", "title": "老灯塔的线索", "meta": { "description": "基于前面的对话，判断对方真心寻人、愿意保护隐私。私下透露角色掌握的去向。" } },
+      { "id": "leads", "kind": "ending", "title": "先核实画作", "meta": { "description": "对方有善意但信任仍不足。建议去看咖啡馆展示的旧画签，提供可核实的下一步，保留行踪。" } },
+      { "id": "refused", "kind": "ending", "title": "拒绝协助", "meta": { "description": "对方施压、威胁、要公开行踪或拒绝尊重隐私。终止谈话，不透露去向或暗示地点。" } }
+    ],
+    "edges": [
+      {
+        "id": "e-invite",
+        "from": "start",
+        "to": "cafe_reply",
+        "preconditions": { "op": "all", "of": [] },
+        "effects": [
+          { "op": "counter.add", "key": "affection", "value": 1 },
+          { "op": "flag.set", "key": "date_planned", "value": true },
+          { "op": "event.append", "eventId": "evt-invite-1", "ruleId": "cafe-invite" },
+          { "op": "cursor.advance", "to": "cafe_reply" }
+        ],
+        "eventDependencies": [],
+        "scope": "story"
+      },
+      {
+        "id": "e-verify-intent",
+        "from": "start",
+        "to": "verify",
+        "preconditions": { "op": "all", "of": [] },
+        "effects": [{ "op": "cursor.advance", "to": "verify" }],
+        "eventDependencies": [],
+        "scope": "story"
+      },
+      {
+        "id": "e-decline",
+        "from": "start",
+        "to": "refused",
+        "preconditions": { "op": "all", "of": [] },
+        "effects": [{ "op": "cursor.advance", "to": "refused" }],
+        "eventDependencies": [],
+        "scope": "story"
+      },
+      {
+        "id": "e-find-clue",
+        "from": "cafe_reply",
+        "to": "ending",
+        "preconditions": { "op": "flag", "key": "date_planned", "expected": true },
+        "effects": [
+          { "op": "flag.set", "key": "clue_found", "value": true },
+          { "op": "cursor.advance", "to": "ending" }
+        ],
+        "eventDependencies": [],
+        "scope": "story"
+      },
+      {
+        "id": "e-protect-clue",
+        "from": "cafe_reply",
+        "to": "leads",
+        "preconditions": { "op": "all", "of": [] },
+        "effects": [{ "op": "cursor.advance", "to": "leads" }],
+        "eventDependencies": [],
+        "scope": "story"
+      },
+      {
+        "id": "e-back-off",
+        "from": "cafe_reply",
+        "to": "refused",
+        "preconditions": { "op": "all", "of": [] },
+        "effects": [{ "op": "cursor.advance", "to": "refused" }],
+        "eventDependencies": [],
+        "scope": "story"
+      },
+      {
+        "id": "e-verify-share",
+        "from": "verify",
+        "to": "ending",
+        "preconditions": { "op": "all", "of": [] },
+        "effects": [
+          { "op": "flag.set", "key": "clue_found", "value": true },
+          { "op": "cursor.advance", "to": "ending" }
+        ],
+        "eventDependencies": [],
+        "scope": "story"
+      },
+      {
+        "id": "e-verify-protect",
+        "from": "verify",
+        "to": "leads",
+        "preconditions": { "op": "all", "of": [] },
+        "effects": [{ "op": "cursor.advance", "to": "leads" }],
+        "eventDependencies": [],
+        "scope": "story"
+      },
+      {
+        "id": "e-verify-decline",
+        "from": "verify",
+        "to": "refused",
+        "preconditions": { "op": "all", "of": [] },
+        "effects": [{ "op": "cursor.advance", "to": "refused" }],
+        "eventDependencies": [],
+        "scope": "story"
+      }
+    ]
+  },
+  "canon": {
+    "characters": [
+      {
+        "storyId": "story.detective",
+        "characterId": "resident:linxia",
+        "displayName": "小夏",
+        "backstory": "你是咖啡馆的店主小夏。失踪的画家最后去了老灯塔。他请求你保护他的隐私。你乐意接受友善的邀约，也愿意帮助真心关心他安危并尊重隐私的人。你亲眼见过他把最后一封未寄出的信托付给同行的好友，信封里夹着半张蓝色船票。这件事只有你们三人知道，能准确说出这段经历的人有可信的来意。仅凭自称好友无法建立信任；对方有善意但缺少可信根据时，你愿意给一个可以核实的下一步。受到施压或对方要公开他的地址时，你会结束谈话。",
+        "version": 1,
+        "growthEdges": [{ "from": "guarded", "to": "trusting", "requireEvent": "evt-invite-1" }]
+      }
+    ]
+  }
+}

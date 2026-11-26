@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
-use super::creator_code_workspace::{read_meta, workspace_dir};
+use super::creator_code_workspace::{build_workspace_revision, read_meta, workspace_dir};
 use super::{ToolError, ToolSpec};
 
 const MAX_VERSION: usize = 32;
@@ -107,6 +107,7 @@ fn publish(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     }
     let directory = workspace_dir(data_home, &workspace_id)?;
     let meta = read_meta(&directory)?;
+    let game_revision = build_workspace_revision(data_home, &build_id, &meta)?;
     let build_dir = data_home.join("code-games").join("builds").join(&build_id);
     let game = read_json(&build_dir.join("manifest.json"))
         .ok_or_else(|| ToolError::new("data_unavailable", "The sealed build manifest is unavailable."))?;
@@ -169,7 +170,7 @@ fn publish(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
         &package.join("provenance.json"),
         &json!({
             "buildId": build_id,
-            "gameRevision": meta.revision,
+            "gameRevision": game_revision,
             "sdkVersion": sdk_version,
             "producedBy": "creator_code_publish",
             "createdAtMs": now_ms(),
@@ -531,7 +532,11 @@ mod tests {
         std::fs::create_dir_all(build.join("assets")).unwrap();
         std::fs::copy(workspace.join("game.manifest.json"), build.join("manifest.json")).unwrap();
         std::fs::copy(workspace.join("assets").join("badge.json"), build.join("assets").join("badge.json")).unwrap();
-        write_json(&build.join("build.json"), &json!({"sdkVersion": "1.0.0"})).unwrap();
+        let revision = "b".repeat(64);
+        write_json(&build.join("build.json"), &json!({
+            "sdkVersion":"1.0.0","buildId":build_id,"gameId":"community.contract-test",
+            "sourceRevision":format!("workspace:gws-0000000000000000:{revision}"),
+        })).unwrap();
 
         // 发布：必须显式接受权限，且不落库。
         let publish_denied = run("creator_code_publish", &json!({"workspaceId": "gws-0000000000000000", "buildId": build_id}), &home, true).unwrap_err();
@@ -556,6 +561,7 @@ mod tests {
         run("creator_code_experience_uninstall", &args, &home, true).unwrap();
         let package = home.join("code-games").join("experiences").join("community.contract-test").join("1.2.3");
         assert!(package.join("manifest.json").is_file(), "uninstall must keep the immutable package");
+        assert_eq!(read_json(&package.join("provenance.json")).unwrap()["gameRevision"], revision);
         std::fs::write(package.join("code").join("game.js"), b"export default 1;").unwrap();
         let tampered = run("creator_code_experience_install", &args, &home, true).unwrap_err();
         assert_eq!(tampered.code, "game_package_integrity_failed");

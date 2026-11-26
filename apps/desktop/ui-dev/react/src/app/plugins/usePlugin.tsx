@@ -3,11 +3,31 @@ import { invoke, listenAppEvents } from "../../lib/tauri";
 import { message, useLanguage } from "../../lib/i18n";
 import { pluginCreationCode, pluginCreationHelp } from "./pluginDiagnostics";
 
-type Tool = { id: string; commandId: string; label: string; kind: "button" | "select"; enabled: boolean; placement?: "primary" | "overflow"; value: string | null; options: Array<{ value: string; label: string }> };
+type Tool = { id: string; commandId: string; label: string; kind: "button" | "select" | "search"; enabled: boolean; placement?: "primary" | "overflow"; value: string | null; options: Array<{ value: string; label: string }> };
 type Snapshot = { pluginId: string; instanceId: string; status: "loading" | "ready" | "failed"; error: string | null; items: Tool[]; pending: string | null; events: Array<{ atMs: number; code: string }> };
 const retainedHealthFault = (code: string) => code === "plugin_unresponsive" || code === "plugin_boot_timeout" || code === "plugin_command_timeout";
 
 export type PluginPresentation = { id: string; name: string };
+
+function ToolbarSearch({ label, value, disabled, onSearch }: {
+  label: string; value: string; disabled: boolean; onSearch: (query: string) => void;
+}) {
+  const locale = useLanguage();
+  const [draft, setDraft] = useState(value);
+  useEffect(() => { setDraft(value); }, [value]);
+  return <form className="plugin-toolbar-search" role="search" onSubmit={(event) => {
+    event.preventDefault();
+    if (!disabled) {
+      const query = draft.trim();
+      setDraft(query);
+      if (query !== value) onSearch(query);
+    }
+  }}>
+    <input type="search" aria-label={label} placeholder={label} value={draft} maxLength={80}
+      onChange={(event) => setDraft(event.target.value.replace(/[\u0000-\u001f\u007f-\u009f]/gu, ""))} />
+    <button className="button button-secondary" type="submit" disabled={disabled}>{message("plugin.search", locale)}</button>
+  </form>;
+}
 
 /** Host-owned single-slot lifecycle/presentation; plugin names and tools are data.
  * The native adapter currently registers one official plugin, not a package registry.
@@ -168,9 +188,17 @@ export function usePlugin(active: boolean, { id: pluginId, name }: PluginPresent
   const retry = () => setAttempt((value) => value + 1);
   const disabled = busy || !!snapshot?.pending || snapshot?.status !== "ready" || !!error;
   const toolbar = active ? <div className="plugin-toolbar" aria-label={message("plugin.toolbar", locale, { name })} aria-busy={busy || !!snapshot?.pending}>
-    {snapshot?.items.filter((tool) => tool.placement !== "overflow" || moreOpen).map((tool) => tool.kind === "select"
-      ? <select key={tool.id} aria-label={tool.label} title={tool.label} value={tool.value ?? ""} disabled={disabled || !tool.enabled} onChange={(event) => void execute(tool, event.target.value)}>{tool.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
-      : <button key={tool.id} className="button button-secondary" type="button" disabled={disabled || !tool.enabled} onClick={() => void execute(tool)}>{tool.label}</button>)}
+    {snapshot?.items.filter((tool) => tool.placement !== "overflow" || moreOpen).map((tool) => {
+      if (tool.kind === "search") return <ToolbarSearch key={`${snapshot.instanceId}:${tool.id}`} label={tool.label} value={tool.value ?? ""}
+        disabled={disabled || !tool.enabled} onSearch={(query) => void execute(tool, query)} />;
+      if (tool.kind === "select") return <select key={tool.id} aria-label={tool.label} title={tool.label} value={tool.value ?? ""}
+        disabled={disabled || !tool.enabled} onChange={(event) => {
+          if (tool.placement === "overflow") setMoreOpen(false);
+          void execute(tool, event.target.value);
+        }}>{tool.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>;
+      return <button key={tool.id} className="button button-secondary" type="button" disabled={disabled || !tool.enabled}
+        onClick={() => void execute(tool)}>{tool.label}</button>;
+    })}
     {snapshot?.items.some((tool) => tool.placement === "overflow") && <button className="button button-secondary" type="button" aria-expanded={moreOpen} onClick={() => setMoreOpen(!moreOpen)}>{message(moreOpen ? "plugin.less" : "plugin.more", locale)}</button>}
     {error && <><span role="status">{error}</span>
       {retainedHealthFault(error) && <button className="button button-secondary" type="button" onClick={() => {

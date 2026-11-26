@@ -37,6 +37,7 @@ import { CodeGameDialogue } from "./game/codeGameHost/CodeGameDialogue";
 import { claimCreatorPlaytest, finishCreatorPlaytest, loadCreatorPublishedMiniGames, pendingCreatorPlaytest, type CreatorPlaytestHandoffV1 } from "./game/activity/loadCreatorExperiences";
 import type { PendingCreatorPlaytestV1 } from "./game/activity/creatorPlaytestPending";
 import { loadWorldSceneModels } from "./game/activity/creatorSceneModels";
+import { CityStoryPanel } from "./game/story/CityStoryPanel";
 import { resolveCityBoot } from "./game/activity/resolveCityBoot";
 import type { PlanPatchV1 } from "./engine/planPatch";
 import { createCreatorMiniGamePlan, CreatorMiniGameRuntimeControllerV1, type CreatorPublishedMiniGameV1 } from "./game/activity/creatorMiniGame";
@@ -123,6 +124,7 @@ export function CityApp() {
 }
 
 function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; onPlaytestFinished: () => void }) {
+  const [storyPanelOpen, setStoryPanelOpen] = useState(false);
   const language = useCityLanguage();
   const [worldProfile, setWorldProfile] = useState<CityWorldProfileV1>(() => boot?.city.profile ?? readCityAppearancePreference());
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -1186,6 +1188,9 @@ function CityAppRuntime({ boot, onPlaytestFinished }: { boot: CityBoot | null; o
 
   return cityView((
     <section className="city-app" aria-label="Agent City">
+      {!boot && embedded() && !storyPanelOpen && !cinema && !game.active && !driving.active && !mechaOpen
+        && <button type="button" className="city-story-entry" onClick={() => setStoryPanelOpen(true)}>Story 试玩</button>}
+      {storyPanelOpen && <CityStoryPanel onClose={() => setStoryPanelOpen(false)} />}
       {playtestError && <div role="alert" className="city-playtest-error">{playtestError}</div>}
       {codeGamePreview.state.error && <div role="alert" className="city-playtest-error">Code Game: {codeGamePreview.state.error}</div>}
       {finishRetry && <div role="alert" className="city-playtest-error">试玩结果未保存。 <button onClick={() => { void finishPlaytest(...finishRetry); }}>重试保存</button></div>}

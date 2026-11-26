@@ -68,10 +68,14 @@ function expectIntegrity(error: unknown): boolean {
   return true;
 }
 
-test("a build seals deterministic manifest, bundle, source map and declared asset bytes", async (t) => {
+test("a build seals deterministic artifacts and indexes the manifest display name", async (t) => {
   const { workspace, outDir } = fixture(t);
   const first = await built(workspace, outDir);
-  const second = await built(workspace, outDir);
+  const second = await buildCodeGame({ workspaceDir: workspace, outDir, dataHome: workspace });
+  assert.equal(second.ok, true);
+  if (!second.ok) throw new Error("could not index built package");
+  const index = JSON.parse(fs.readFileSync(path.join(workspace, "state", "creator", "code-games", "index.json"), "utf8"));
+  assert.equal(index[0].displayName, first.manifest.displayName);
   assert.equal(second.buildId, first.buildId);
   const loaded = loadCodeGameBuildById(outDir, first.buildId);
   assert.equal(loaded.build.manifestDigest, first.manifestDigest);

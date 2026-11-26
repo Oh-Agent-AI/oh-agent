@@ -26,6 +26,7 @@ const MAX_FILE_BYTES: usize = 64 * 1024;
 const MAX_WRITE_BYTES: usize = 256 * 1024;
 const MAX_PATH: usize = 200;
 const MAX_TICKS: u64 = 3_600;
+const MAX_SNAPSHOT_BYTES: u64 = 64 * 1024 * 1024;
 const TEMPLATE: &str = "hello-city";
 const META_FILE: &str = "workspace.json";
 
@@ -253,10 +254,17 @@ fn file_write(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     if content.len() > MAX_WRITE_BYTES {
         return Err(ToolError::new("invalid_argument", "Content exceeds the 256 KiB write budget."));
     }
-    if relative == META_FILE {
+    if relative.split('/').any(|part| matches!(part, "dist" | "node_modules" | ".git" | META_FILE | ".code-game-tsconfig.json")) {
         return Err(ToolError::new("invalid_argument", "Workspace metadata is host-owned and cannot be written."));
     }
     let directory = workspace_dir(data_home, &workspace_id)?;
+    // Serialize the compare-and-write across independent MCP processes.
+    let locks = data_home.join("code-games").join("workspace-write-locks");
+    std::fs::create_dir_all(&locks).map_err(|_| ToolError::new("storage_unavailable", "Cannot open the workspace write lock."))?;
+    let mut lock = rusqlite::Connection::open(locks.join(format!("{workspace_id}.sqlite")))
+        .map_err(|_| ToolError::new("storage_unavailable", "Cannot open the workspace write lock."))?;
+    let _write_lock = lock.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|_| ToolError::new("busy", "Another write is in progress for this workspace."))?;
     let mut meta = read_meta(&directory)?;
     if let Some(expected) = args.get("expectedRevision").and_then(Value::as_str) {
         if expected != meta.revision {
@@ -267,11 +275,23 @@ fn file_write(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
         }
     }
     let path = resolve_inside(&directory, &relative)?;
+    let files = list_files(&directory)?;
+    let existing_size = files.iter().find(|(name, _)| name == &relative).map(|(_, size)| *size);
+    if existing_size.is_none() && files.len() >= MAX_FILES {
+        return Err(ToolError::new("invalid_argument", "The Code Game workspace exceeds the file count budget."));
+    }
+    let new_size = files.iter().map(|(_, size)| *size).sum::<u64>() - existing_size.unwrap_or(0) + content.len() as u64;
+    if new_size > MAX_SNAPSHOT_BYTES {
+        return Err(ToolError::new("invalid_argument", "The Code Game workspace exceeds the build input byte budget."));
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|_| ToolError::new("storage_unavailable", "Cannot create the target directory."))?;
     }
-    std::fs::write(&path, content.as_bytes())
+    let staged_file = locks.join(format!("{workspace_id}.pending"));
+    std::fs::write(&staged_file, content.as_bytes())
+        .map_err(|_| ToolError::new("storage_unavailable", "Cannot stage the workspace file."))?;
+    std::fs::rename(&staged_file, &path)
         .map_err(|_| ToolError::new("storage_unavailable", "Cannot write the workspace file."))?;
     meta.revision = digest_workspace(&directory)?;
     write_meta(&directory, &meta)?;
@@ -295,6 +315,7 @@ fn build(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
             ));
         }
     }
+    let snapshot = WorkspaceBuildSnapshot::capture(&directory, &meta.revision)?;
     let repo = repo_root()?;
     let out_dir = data_home.join("code-games").join("builds");
     let output = run_node(
@@ -302,7 +323,11 @@ fn build(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
         "packages/city-game-sdk/scripts/buildGame.ts",
         &[
             "--workspace".to_string(),
-            directory.to_string_lossy().to_string(),
+            snapshot.path.to_string_lossy().to_string(),
+            "--workspace-id".to_string(),
+            meta.workspace_id.clone(),
+            "--source-revision".to_string(),
+            meta.revision.clone(),
             "--out".to_string(),
             out_dir.to_string_lossy().to_string(),
             "--data-home".to_string(),
@@ -312,11 +337,16 @@ fn build(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     let parsed: Value = serde_json::from_slice(&output.stdout)
         .map_err(|_| ToolError::new("data_unavailable", "The build runner returned no JSON result."))?;
     let data = if parsed.get("ok").and_then(Value::as_bool) == Some(true) {
+        let build_id = build_id_arg(&parsed)?;
+        let revision = build_workspace_revision(data_home, &build_id, &meta)?;
+        if revision != meta.revision {
+            return Err(ToolError::new("workspace_revision_conflict", "The sealed build does not match the requested source revision."));
+        }
         json!({
             "status": "succeeded",
             "workspaceId": workspace_id,
             "gameRevision": meta.revision,
-            "buildId": parsed.get("buildId").cloned().unwrap_or(Value::Null),
+            "buildId": build_id,
             "byteLength": parsed.get("byteLength").cloned().unwrap_or(Value::Null),
             "diagnostics": parsed.get("warnings").cloned().unwrap_or_else(|| json!([])),
         })
@@ -340,10 +370,7 @@ fn stage_preview(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     let seed = args.get("seed").and_then(Value::as_u64).unwrap_or(7);
     let directory = workspace_dir(data_home, &workspace_id)?;
     let meta = read_meta(&directory)?;
-    let build_dir = data_home.join("code-games").join("builds").join(&build_id);
-    if !build_dir.join("game.js").is_file() || !build_dir.join("manifest.json").is_file() || !build_dir.join("build.json").is_file() {
-        return Err(ToolError::new("not_found", "No sealed build for that buildId in this data home."));
-    }
+    let revision = build_workspace_revision(data_home, &build_id, &meta)?;
     let root = data_home.join("state/creator/code-games");
     let previews = root.join("previews");
     std::fs::create_dir_all(&previews).map_err(|_| ToolError::new("storage_unavailable", "Cannot create the preview request directory."))?;
@@ -364,7 +391,7 @@ fn stage_preview(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
         .map_err(|_| ToolError::new("storage_unavailable", "Cannot write the preview request."))?;
     std::fs::rename(&temporary, &target).map_err(|_| ToolError::new("storage_unavailable", "Cannot publish the preview request."))?;
     Ok(json!({"ok":true,"data":{"workspaceId":workspace_id,"gameId":meta.game_id,"buildId":build_id,"seed":seed,
-        "requestId":request_id,"previewId":preview_id,"status":"queued"}}))
+        "requestId":request_id,"previewId":preview_id,"gameRevision":revision,"status":"queued"}}))
 }
 
 fn build_id_arg(args: &Value) -> Result<String, ToolError> {
@@ -375,13 +402,80 @@ fn build_id_arg(args: &Value) -> Result<String, ToolError> {
     Ok(value)
 }
 
+/// The builder seals sourceRevision into the immutable build ID. Workspace-scoped
+/// consumers accept an older revision of the same workspace for reproducible tests.
+pub(crate) fn build_workspace_revision(data_home: &Path, build_id: &str, meta: &WorkspaceMeta) -> Result<String, ToolError> {
+    use std::io::Read;
+    let directory = data_home.join("code-games").join("builds").join(build_id);
+    if !directory.join("game.js").is_file() || !directory.join("manifest.json").is_file() {
+        return Err(ToolError::new("not_found", "No sealed build for that buildId in this data home."));
+    }
+    let file = std::fs::File::open(directory.join("build.json"))
+        .map_err(|_| ToolError::new("not_found", "The sealed build record is unavailable."))?;
+    let mut bytes = Vec::new();
+    file.take(MAX_FILE_BYTES as u64 + 1).read_to_end(&mut bytes)
+        .map_err(|_| ToolError::new("game_build_failed", "Cannot read the sealed build record."))?;
+    let record: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| ToolError::new("game_build_failed", "The sealed build record is malformed."))?;
+    let prefix = format!("workspace:{}:", meta.workspace_id);
+    let revision = record["sourceRevision"].as_str()
+        .and_then(|source| source.strip_prefix(&prefix))
+        .filter(|value| value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+    if let Some(revision) = revision {
+        if bytes.len() <= MAX_FILE_BYTES && record["buildId"] == build_id && record["gameId"] == meta.game_id {
+            return Ok(revision.to_owned());
+        }
+    }
+    Err(ToolError::new("workspace_build_mismatch", "This build is not attributed to this workspace. Build the workspace again and use the returned buildId."))
+}
+
+struct WorkspaceBuildSnapshot {
+    path: PathBuf,
+}
+
+impl WorkspaceBuildSnapshot {
+    fn capture(directory: &Path, revision: &str) -> Result<Self, ToolError> {
+        let files = list_files(directory)?;
+        let total_bytes = files.iter().map(|(_, bytes)| *bytes).sum::<u64>();
+        if total_bytes > MAX_SNAPSHOT_BYTES {
+            return Err(ToolError::new("invalid_argument", "The Code Game workspace exceeds the build input byte budget."));
+        }
+        let path = std::env::temp_dir().join(format!("oh-code-build-{}", random_hex(32)));
+        let mut directory_builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            directory_builder.mode(0o700);
+        }
+        directory_builder.create(&path)
+            .map_err(|_| ToolError::new("storage_unavailable", "Cannot create the Code Game build input."))?;
+        let snapshot = Self { path };
+        for (relative, _) in files {
+            let source = resolve_inside(directory, &relative)?;
+            let target = snapshot.path.join(relative);
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|_| ToolError::new("storage_unavailable", "Cannot stage a Code Game build input."))?;
+            }
+            std::fs::copy(source, target)
+                .map_err(|_| ToolError::new("storage_unavailable", "Cannot stage a Code Game build input."))?;
+        }
+        if digest_workspace(&snapshot.path)? != revision {
+            return Err(ToolError::new("workspace_revision_conflict", "Code Game source changed before the build. Refresh the workspace revision and retry."));
+        }
+        Ok(snapshot)
+    }
+}
+
+impl Drop for WorkspaceBuildSnapshot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
 fn code_test(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     let workspace_id = workspace_id_arg(args)?;
-    let build_id = args.get("buildId").and_then(Value::as_str)
-        .ok_or_else(|| ToolError::new("invalid_argument", "`buildId` is required"))?;
-    if build_id.len() != 64 || !build_id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
-        return Err(ToolError::new("invalid_argument", "`buildId` must be a 64-character lower-case hex digest"));
-    }
+    let build_id = build_id_arg(args)?;
     let seed = args.get("seed").and_then(Value::as_u64).unwrap_or(7);
     let ticks = args.get("ticks").and_then(Value::as_u64).unwrap_or(600);
     if ticks == 0 || ticks > MAX_TICKS {
@@ -389,10 +483,7 @@ fn code_test(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     }
     let directory = workspace_dir(data_home, &workspace_id)?;
     let meta = read_meta(&directory)?;
-    let bundle = data_home.join("code-games").join("builds").join(build_id).join("game.js");
-    if !bundle.is_file() {
-        return Err(ToolError::new("not_found", "No built bundle for that buildId in this data home."));
-    }
+    let revision = build_workspace_revision(data_home, &build_id, &meta)?;
     let repo = repo_root()?;
     let output = run_node(
         &repo,
@@ -426,6 +517,8 @@ fn code_test(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
         "workspaceId": workspace_id,
         "gameId": meta.game_id,
         "buildId": build_id,
+        "gameRevision": revision,
+        "synthetic": true,
         "telemetry": parsed.get("telemetry").cloned().unwrap_or(Value::Null),
     }}))
 }
@@ -494,7 +587,10 @@ fn is_writable_text_path(path: &str) -> bool {
 pub(crate) fn read_meta(directory: &Path) -> Result<WorkspaceMeta, ToolError> {
     let bytes = std::fs::read(directory.join(META_FILE))
         .map_err(|_| ToolError::new("not_found", "No such Code Game workspace."))?;
-    serde_json::from_slice(&bytes).map_err(|_| ToolError::new("data_unavailable", "Workspace metadata is malformed."))
+    let mut meta: WorkspaceMeta = serde_json::from_slice(&bytes)
+        .map_err(|_| ToolError::new("data_unavailable", "Workspace metadata is malformed."))?;
+    meta.revision = digest_workspace(directory)?;
+    Ok(meta)
 }
 
 fn write_meta(directory: &Path, meta: &WorkspaceMeta) -> Result<(), ToolError> {
@@ -509,29 +605,30 @@ fn list_files(directory: &Path) -> Result<Vec<(String, u64)>, ToolError> {
     let mut files = Vec::new();
     collect_files(directory, directory, &mut files)?;
     files.sort_by(|left, right| left.0.cmp(&right.0));
-    files.truncate(MAX_FILES);
     Ok(files)
 }
 
 fn collect_files(root: &Path, current: &Path, out: &mut Vec<(String, u64)>) -> Result<(), ToolError> {
-    if out.len() >= MAX_FILES {
-        return Ok(());
-    }
     let entries = std::fs::read_dir(current).map_err(|_| ToolError::new("storage_unavailable", "Cannot read the workspace."))?;
-    for entry in entries.flatten() {
-        if out.len() >= MAX_FILES {
-            break;
-        }
+    for entry in entries {
+        let entry = entry.map_err(|_| ToolError::new("storage_unavailable", "Cannot read a workspace entry."))?;
         let name = entry.file_name().to_string_lossy().to_string();
-        if name == "dist" || name == "node_modules" || name == ".git" {
+        if matches!(name.as_str(), "dist" | "node_modules" | ".git" | "workspace.json.tmp" | ".code-game-tsconfig.json") {
             continue;
         }
         let path = entry.path();
-        if path.is_dir() {
+        let kind = entry.file_type().map_err(|_| ToolError::new("storage_unavailable", "Cannot inspect a workspace entry."))?;
+        if kind.is_symlink() {
+            return Err(ToolError::new("invalid_argument", "Symbolic links are not supported in Code Game workspaces."));
+        }
+        if kind.is_dir() {
             collect_files(root, &path, out)?;
-        } else if path.is_file() && name != META_FILE {
+        } else if kind.is_file() && name != META_FILE {
+            if out.len() >= MAX_FILES {
+                return Err(ToolError::new("invalid_argument", "The Code Game workspace exceeds the file count budget."));
+            }
             if let Ok(relative) = path.strip_prefix(root) {
-                let size = entry.metadata().map(|value| value.len()).unwrap_or(0);
+                let size = entry.metadata().map_err(|_| ToolError::new("storage_unavailable", "Cannot inspect a workspace file."))?.len();
                 out.push((relative.to_string_lossy().replace('\\', "/"), size));
             }
         }
@@ -541,14 +638,18 @@ fn collect_files(root: &Path, current: &Path, out: &mut Vec<(String, u64)>) -> R
 
 fn digest_workspace(directory: &Path) -> Result<String, ToolError> {
     let files = list_files(directory)?;
+    if files.iter().map(|(_, bytes)| *bytes).sum::<u64>() > MAX_SNAPSHOT_BYTES {
+        return Err(ToolError::new("invalid_argument", "The Code Game workspace exceeds the build input byte budget."));
+    }
     let mut hasher = Sha256::new();
+    hasher.update(b"oh-agent-code-workspace-v2");
     for (relative, _) in files {
         let bytes = std::fs::read(directory.join(&relative))
             .map_err(|_| ToolError::new("storage_unavailable", "Cannot read a workspace file."))?;
+        hasher.update((relative.len() as u64).to_be_bytes());
         hasher.update(relative.as_bytes());
-        hasher.update([0u8]);
+        hasher.update((bytes.len() as u64).to_be_bytes());
         hasher.update(&bytes);
-        hasher.update([0u8]);
     }
     Ok(hex(&hasher.finalize()))
 }
@@ -751,6 +852,36 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_writes_from_one_revision_do_not_overwrite_each_other() {
+        let home = std::env::temp_dir().join(format!("code-game-write-test-{}", random_hex(16)));
+        let workspace_id = "gws-0000000000000000";
+        let workspace = home.join("code-games/workspaces").join(workspace_id);
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        std::fs::write(workspace.join("src/index.ts"), "export default 0;").unwrap();
+        let revision = digest_workspace(&workspace).unwrap();
+        write_meta(&workspace, &WorkspaceMeta {
+            workspace_id: workspace_id.into(), project_id: "project-test".into(), game_id: "community.test".into(),
+            title: "Test".into(), template: "hello-city".into(), created_at_ms: 1, revision: revision.clone(),
+        }).unwrap();
+
+        let results = std::thread::scope(|scope| {
+            let write = |content: &str| file_write(&json!({
+                "workspaceId":workspace_id,"relativePath":"src/index.ts","expectedRevision":revision,"content":content,
+            }), &home);
+            let first = scope.spawn(move || write("export default 1;"));
+            let second = scope.spawn(move || write("export default 2;"));
+            [first.join().unwrap(), second.join().unwrap()]
+        });
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        let failure = results.iter().find_map(|result| result.as_ref().err()).unwrap();
+        assert_eq!(failure.code, "workspace_revision_conflict");
+        let winner = results.iter().find_map(|result| result.as_ref().ok()).unwrap();
+        let actual = std::fs::read(workspace.join("src/index.ts")).unwrap();
+        assert_eq!(winner["data"]["sha256"], sha256_hex(&actual));
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
     fn consecutive_preview_requests_have_independent_immutable_queue_entries() {
         let home = std::env::temp_dir().join(format!("code-game-preview-queue-{}-{}", now_ms(), std::process::id()));
         let workspace_id = "gws-0000000000000000";
@@ -763,13 +894,21 @@ mod tests {
         let build_id = "a".repeat(64);
         let build = home.join("code-games/builds").join(&build_id);
         std::fs::create_dir_all(&build).unwrap();
-        for file in ["game.js", "manifest.json", "build.json"] { std::fs::write(build.join(file), b"{}").unwrap(); }
+        for file in ["game.js", "manifest.json"] { std::fs::write(build.join(file), b"{}").unwrap(); }
+        let source_revision = "b".repeat(64);
+        std::fs::write(build.join("build.json"), json!({
+            "buildId":build_id,"gameId":"community.test","sourceRevision":format!("workspace:{workspace_id}:{source_revision}"),
+        }).to_string()).unwrap();
         let request = json!({"workspaceId":workspace_id,"buildId":build_id,"seed":7});
         let first = stage_preview(&request, &home).unwrap();
         let second = stage_preview(&request, &home).unwrap();
         let first_id = first["data"]["previewId"].as_str().unwrap();
         let second_id = second["data"]["previewId"].as_str().unwrap();
         assert_ne!(first_id, second_id);
+        assert_eq!(first["data"]["gameRevision"], source_revision);
+        let meta = read_meta(&workspace).unwrap();
+        let another_workspace = WorkspaceMeta { workspace_id: "gws-1111111111111111".into(), ..meta };
+        assert_eq!(build_workspace_revision(&home, &build_id, &another_workspace).unwrap_err().code, "workspace_build_mismatch");
         for preview_id in [first_id, second_id] {
             let queued: Value = serde_json::from_slice(&std::fs::read(home.join("state/creator/code-games/previews").join(preview_id).join("request.json")).unwrap()).unwrap();
             assert_eq!(queued["status"], "queued");

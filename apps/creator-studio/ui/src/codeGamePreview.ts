@@ -2,6 +2,7 @@ import type { CandidateBuildRef } from "./contracts/creatorProject";
 
 export type CodeBuildRowV1 = Readonly<CandidateBuildRef & {
   gameId: string;
+  displayName: string | null;
   gameVersion: string | null;
   byteLength: number | null;
   createdAtMs: number | null;
@@ -32,7 +33,7 @@ export function parseCodeBuilds(value: unknown): readonly CodeBuildRowV1[] {
     const buildId = text(row.buildId, 64);
     const gameId = text(row.gameId, 128);
     if (!buildId || !/^[a-f0-9]{64}$/.test(buildId) || !gameId) throw new Error("creator_code_builds_invalid");
-    return Object.freeze({ buildId, gameId, gameVersion: text(row.gameVersion, 32),
+    return Object.freeze({ buildId, gameId, displayName: text(row.displayName, 80), gameVersion: text(row.gameVersion, 32),
       byteLength: count(row.byteLength), createdAtMs: count(row.createdAtMs) });
   });
 }

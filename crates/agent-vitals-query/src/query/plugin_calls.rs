@@ -17,6 +17,7 @@ const MAX_CALL_RECORDS_PER_PLUGIN: i64 = 256;
 const MAX_CALL_RECORDS_TOTAL: i64 = 4096;
 const MAX_TTL_MS: u64 = 120_000;
 const MAX_PAGE: usize = 16;
+pub const MAX_LOCAL_CALL_METHODS: usize = 160;
 
 fn valid_token(value: &str, max: usize) -> bool {
     !value.is_empty() && value.len() <= max && value.bytes().all(|byte| byte.is_ascii_alphanumeric()
@@ -112,7 +113,7 @@ pub fn submit_with_budget(home: &Path, plugin_id: &str, method: &str, payload: &
 /// Claim a bounded page of pending calls using only methods authorized by the
 /// active descriptor. Claiming is atomic so two host pollers cannot duplicate work.
 pub fn claim_pending(home: &Path, plugin_id: &str, instance_id: &str, allowed_methods: &[String], limit: usize) -> Result<Vec<Value>, &'static str> {
-    if !valid_token(plugin_id, 64) || !valid_token(instance_id, 128) || allowed_methods.len() > 128
+    if !valid_token(plugin_id, 64) || !valid_token(instance_id, 128) || allowed_methods.len() > MAX_LOCAL_CALL_METHODS
         || !(1..=MAX_PAGE).contains(&limit) { return Err("plugin_call_invalid"); }
     if allowed_methods.iter().any(|method| !valid_token(method, 96)) { return Err("plugin_call_invalid"); }
     let now = now_ms()?;

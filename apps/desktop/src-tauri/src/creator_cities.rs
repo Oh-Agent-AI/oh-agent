@@ -205,7 +205,8 @@ pub(crate) fn list_cities(home: &Path, after: &str, limit: u64) -> Result<Value,
     for (city_id, revision, raw) in rows.iter().take(limit as usize) {
         let doc: Value = serde_json::from_str(raw).map_err(|_| "creator_store_unavailable")?;
         let name = doc.get("name").and_then(Value::as_str).ok_or("creator_store_unavailable")?;
-        cities.push(json!({"cityId":city_id,"revision":revision,"name":name}));
+        let biome = doc.pointer("/profile/biome").and_then(Value::as_str).filter(|biome| matches!(*biome, "tropical" | "arid"));
+        cities.push(json!({"cityId":city_id,"revision":revision,"name":name,"biome":biome}));
     }
     let next = if has_more { cities.last().and_then(|city| city["cityId"].as_str()).map(str::to_owned) } else { None };
     Ok(json!({"cities":cities,"nextCursor":next}))
@@ -231,6 +232,12 @@ pub(crate) fn preview_city(home: &Path, instance: &str, city_id: &str, base_revi
 }
 
 /// Shared transient-preview slot: TTL sweep + instance/revision binding (city recipe and patch previews share this envelope).
+/// R1 确认编排：查创建该 city preview 的 instance（commit 按 instance 校验归属）。
+pub(crate) fn city_preview_actor(preview_id: &str) -> Option<String> {
+    previews().lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(preview_id).map(|preview| preview.instance.clone())
+}
+
 fn insert_preview(home: &Path, instance: &str, city_id: &str, base_revision: u64, document: Value) -> Result<String, &'static str> {
     let preview_id = new_id("city-preview-")?;
     let mut entries = previews().lock().unwrap_or_else(|poisoned| poisoned.into_inner());

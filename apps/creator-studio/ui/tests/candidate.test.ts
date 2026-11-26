@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { canAcceptCandidate, candidateEvidenceTrust, parseProjectCandidate } from "../src/contracts/candidate.ts";
+import { workspaceNextStep } from "../src/features/preview/workspaceNextStep.ts";
 
 const tested = {
   artifactKind: "candidate", candidateId: "release-candidate", projectId: "project-1", revision: 3,
@@ -27,4 +28,19 @@ test("candidate parsing is bounded and fails closed on malformed artifacts", () 
   assert.equal(canAcceptCandidate(parseProjectCandidate({ ...tested, status: "future-status" })), false);
   assert.throws(() => parseProjectCandidate({ ...tested, artifactKind: "release" }), /creator_candidate_invalid/);
   assert.throws(() => parseProjectCandidate({ ...tested, contentDigest: "not-a-digest" }), /creator_candidate_invalid/);
+});
+
+test("workspace next step respects draft, read-only, browser and evidence gates", () => {
+  const context = { readOnly: false, hasProject: true, hasLayout: true, dirty: false, hasMounts: true, browserPreview: false,
+    candidateRead: "ready" as const, published: false, candidate: null };
+  assert.equal(workspaceNextStep(context).action, "create");
+  assert.equal(workspaceNextStep({ ...context, hasMounts: false }).action, "mount");
+  assert.equal(workspaceNextStep({ ...context, dirty: true }).action, "draft");
+  assert.equal(workspaceNextStep({ ...context, candidateRead: "unavailable" }).action, "refresh");
+  assert.equal(workspaceNextStep({ ...context, published: true }).action, "release");
+  assert.equal(workspaceNextStep({ ...context, readOnly: true, published: true }).action, undefined);
+  assert.equal(workspaceNextStep({ ...context, browserPreview: true, published: true }).action, "details");
+  assert.equal(workspaceNextStep({ ...context, candidate: parseProjectCandidate({ ...tested, status: "created" }) }).action, "test");
+  assert.equal(workspaceNextStep({ ...context, candidate: parseProjectCandidate(tested) }).status, "试玩完成 · 待复核");
+  assert.equal(workspaceNextStep({ ...context, candidate: parseProjectCandidate({ ...tested, latestRun: null }) }).status, "已有试玩结果");
 });

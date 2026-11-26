@@ -3,6 +3,7 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import type { CreatorPublishedMiniGameV1 } from "./creatorMiniGame";
 import { inspectGlbBytes, type CityProjectAssetCatalogV1, type SceneDraftV1 } from "@oh-agent/city-sdk";
 import { m, METER_MODEL_SCALE } from "../../engine/worldScale";
+import { markPreviewEntityObject } from "../../engine/previewEntityRegistry";
 
 const MAX_RUNTIME_MODELS = 512;
 const MAX_RUNTIME_ASSETS = 32;
@@ -62,6 +63,7 @@ export async function loadWorldSceneModels(scene: SceneDraftV1, catalog: CityPro
       if (!gltf) throw new Error("creator_scene_asset_ref_invalid");
       const instance = new THREE.Group();
       instance.name = `creator-model-${model.id}`;
+      markPreviewEntityObject(instance, { entityId: model.id, label: model.id, kind: "scene-model" });
       const { positionMeters, rotationRadians, scale } = model.transform;
       instance.position.set(m(positionMeters.x), m(positionMeters.y), m(positionMeters.z));
       instance.rotation.set(rotationRadians.x, rotationRadians.y, rotationRadians.z);
@@ -71,6 +73,39 @@ export async function loadWorldSceneModels(scene: SceneDraftV1, catalog: CityPro
     }
   } catch (error) { disposeGltfCache(cache); group.clear(); throw error; }
   return { group, dispose() { disposeGltfCache(cache); group.clear(); } };
+}
+
+/** Materialize the complete editable scene, including non-model authoring objects. */
+export async function loadWorldScenePreview(scene: SceneDraftV1, catalog: CityProjectAssetCatalogV1, files: ReadonlyMap<string, Uint8Array>): Promise<{ group: THREE.Group; dispose(): void }> {
+  const loaded = await loadWorldSceneModels(scene, catalog, files);
+  const boxGeometry = new THREE.BoxGeometry(1, 1, 1);
+  const anchorGeometry = new THREE.OctahedronGeometry(m(1));
+  const colliderMaterial = new THREE.MeshBasicMaterial({ color: 0x32edb4, wireframe: true, transparent: true, opacity: 0.8 });
+  const anchorMaterial = new THREE.MeshBasicMaterial({ color: 0xf4c95d });
+  try {
+    for (const object of scene.objects) {
+      if (object.kind === "model") continue;
+      const mesh = new THREE.Mesh(object.kind === "collider" ? boxGeometry : anchorGeometry,
+        object.kind === "collider" ? colliderMaterial : anchorMaterial);
+      mesh.name = `creator-${object.kind}-${object.id}`;
+      const { positionMeters, rotationRadians, scale } = object.transform;
+      mesh.position.set(m(positionMeters.x), m(positionMeters.y), m(positionMeters.z));
+      mesh.rotation.set(rotationRadians.x, rotationRadians.y, rotationRadians.z);
+      if (object.kind === "collider") mesh.scale.set(m(object.sizeMeters.x * scale.x), m(object.sizeMeters.y * scale.y), m(object.sizeMeters.z * scale.z));
+      else mesh.scale.set(scale.x, scale.y, scale.z);
+      markPreviewEntityObject(mesh, { entityId: object.id, label: object.id,
+        kind: object.kind === "collider" ? "scene-collider" : "scene-anchor" });
+      loaded.group.add(mesh);
+    }
+  } catch (error) {
+    loaded.dispose();
+    boxGeometry.dispose(); anchorGeometry.dispose(); colliderMaterial.dispose(); anchorMaterial.dispose();
+    throw error;
+  }
+  return { group: loaded.group, dispose() {
+    loaded.dispose();
+    boxGeometry.dispose(); anchorGeometry.dispose(); colliderMaterial.dispose(); anchorMaterial.dispose();
+  } };
 }
 
 /** Loads only published, already-validated project assets through the local City-scoped protocol. */
@@ -121,6 +156,7 @@ export async function loadCreatorSceneModels(experiences: readonly CreatorPublis
     }
     const instance = new THREE.Group();
     instance.name = `creator-model-${item.model.id}`;
+    markPreviewEntityObject(instance, { entityId: item.model.id, label: item.model.id, kind: "scene-model" });
     const { positionMeters, rotationRadians, scale } = item.model.transform;
     instance.position.set(m(positionMeters.x), m(positionMeters.y), m(positionMeters.z));
     instance.rotation.set(rotationRadians.x, rotationRadians.y, rotationRadians.z);

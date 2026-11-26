@@ -34,7 +34,9 @@ fn spec(name: &'static str, description: &'static str, properties: Value, requir
 
 pub fn specs() -> Vec<ToolSpec> {
     vec![
-        spec("creator_session_open", "Open (or resume) a Creator Agent session. Resuming an open session with the same agentId and scope returns the same sessionId plus every pending operation and job, so a reconnect restores full context in one call. Read-only bookkeeping; never grants capabilities.", json!({"agentId":{"type":"string","minLength":1,"maxLength":128},"projectId":{"type":"string","minLength":1,"maxLength":128},"cityId":{"type":"string","minLength":1,"maxLength":128},"executor":{"type":"string","enum":["unknown","studio","codex-cli","acp","pull"]},"transport":{"type":"string","enum":["unknown","mcp-stdio","acp-stdio","studio-webview"]},"capabilities":{"type":"array","maxItems":16}}), &["agentId"]),
+        spec("creator_session_open", "Open (or resume) a Creator Agent session. Resuming an open session with the same agentId and scope returns the same sessionId plus every pending operation and job, so a reconnect restores full context in one call. Read-only bookkeeping; never grants capabilities.", json!({"agentId":{"type":"string","minLength":1,"maxLength":128},"sessionId":{"type":"string","minLength":1,"maxLength":128},"createNew":{"type":"boolean"},"label":{"type":"string","minLength":1,"maxLength":80},"projectId":{"type":"string","minLength":1,"maxLength":128},"cityId":{"type":"string","minLength":1,"maxLength":128},"executor":{"type":"string","enum":["unknown","studio","codex-cli","acp","pull"]},"transport":{"type":"string","enum":["unknown","mcp-stdio","acp-stdio","studio-webview"]},"capabilities":{"type":"array","maxItems":16}}), &["agentId"]),
+        spec("creator_session_list", "List Creator Agent sessions for one agent and exact Project/City scope, including restorable closed sessions and their local Studio profile.", json!({"agentId":{"type":"string","minLength":1,"maxLength":128},"projectId":{"type":"string","minLength":1,"maxLength":128},"cityId":{"type":"string","minLength":1,"maxLength":128},"limit":{"type":"integer","minimum":1,"maximum":50}}), &["agentId"]),
+        spec("creator_session_update", "Update the local Studio profile for one owned session: display label, unsent composer draft or preferred executor. Task and evidence authority are unchanged.", json!({"agentId":{"type":"string","minLength":1,"maxLength":128},"sessionId":{"type":"string","minLength":1,"maxLength":128},"label":{"type":"string","minLength":1,"maxLength":80},"draft":{"type":"string","maxLength":16000},"preferredExecutor":{"type":"string","maxLength":128}}), &["agentId","sessionId"]),
         spec("creator_session_status", "Read one Creator Agent session: its state, the bounded operation timeline (commits and playtests observed in scope), and open jobs.", json!({"sessionId":{"type":"string","minLength":1,"maxLength":128}}), &["sessionId"]),
         spec("creator_session_close", "Close a Creator Agent session and report how many tracked operations were cleared. Closed sessions are retained for 7 days for auditing, then pruned.", json!({"sessionId":{"type":"string","minLength":1,"maxLength":128}}), &["sessionId"]),
         spec("creator_connection_heartbeat", "Register or refresh one agent connection in the shared local ledger. Connections are scoped by agentId+sessionId and expire offline after 15 seconds without a heartbeat.", json!({"agentId":{"type":"string"},"sessionId":{"type":"string"},"executor":{"type":"string","enum":["unknown","studio","codex-cli","acp","pull"]},"transport":{"type":"string","enum":["unknown","mcp-stdio","acp-stdio","studio-webview"]},"state":{"type":"string","enum":["online","busy","degraded"]},"capabilities":{"type":"array","maxItems":16},"lastStableError":{"type":["string","null"],"maxLength":128}}), &["agentId","sessionId"]),
@@ -50,7 +52,7 @@ pub fn specs() -> Vec<ToolSpec> {
         spec("creator_task_plan_submit", "Submit or revise a task plan with CAS-checked plan and artifact revisions.", json!({"taskId":{"type":"string"},"expectedPlanRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"steps":{"type":"array"},"operationId":{"type":"string"}}), &["taskId","expectedPlanRevision","expectedArtifactRevision","steps","operationId"]),
         spec("creator_task_plan_approve", "Approve the current task plan; this records approval but never claims execution or completion.", json!({"taskId":{"type":"string"},"planRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"operationId":{"type":"string"}}), &["taskId","planRevision","expectedArtifactRevision","operationId"]),
         spec("creator_task_status", "Read durable goal, plan, steps and evidence for a Studio task.", json!({"taskId":{"type":"string"}}), &["taskId"]),
-        spec("creator_task_execute", "Execute an approved task with a real push executor (default Codex CLI; \"acp\" drives any Agent Client Protocol agent) and a read-only Preview-only tool policy. Returns host-generated Preview evidence, never a saved-change claim.", json!({"taskId":{"type":"string"},"expectedPlanRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"operationId":{"type":"string"},"timeoutMs":{"type":"integer","minimum":100,"maximum":120000},"executor":{"type":"string","enum":["codex","acp"]}}), &["taskId","expectedPlanRevision","expectedArtifactRevision","operationId"]),
+        spec("creator_task_execute", "Execute an approved task with a real push executor (default Codex CLI; \"acp\" drives the configured ACP agent, \"acp:<agentId>\" picks one from the acp-agents.json registry) and a read-only Preview-only tool policy. Returns host-generated Preview evidence, never a saved-change claim.", json!({"taskId":{"type":"string"},"expectedPlanRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"operationId":{"type":"string"},"mode":{"type":"string","enum":["restricted","full-access"],"description":"Execution mode; defaults to restricted (ACP agents switch to a restricted proposal mode and codex exec rejects restricted requests; request full-access explicitly to bypass the gate)."},"timeoutMs":{"type":"integer","minimum":100,"maximum":600000},"executor":{"type":"string","description":"codex (default), acp (configured default) or acp:<agentId> from the registry"}}), &["taskId","expectedPlanRevision","expectedArtifactRevision","operationId"]),
         spec("creator_task_evidence_append", "Append typed evidence with explicit trust level. Host verification cannot be self-declared.", json!({"taskId":{"type":"string"},"planRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"criterionId":{"type":"string"},"kind":{"type":"string"},"trustLevel":{"type":"string"},"summary":{"type":"string"},"operationId":{"type":"string"}}), &["taskId","planRevision","expectedArtifactRevision","criterionId","kind","trustLevel","summary","operationId"]),
         spec("creator_task_evidence_list", "List durable evidence for a Studio task.", json!({"taskId":{"type":"string"}}), &["taskId"]),
         spec("creator_task_review_accept", "Accept a task only after all acceptance criteria have real evidence and a human reviewer accepts it.", json!({"taskId":{"type":"string"},"planRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"reviewerNote":{"type":"string"},"operationId":{"type":"string"}}), &["taskId","planRevision","expectedArtifactRevision","reviewerNote","operationId"]),
@@ -100,6 +102,9 @@ fn ensure_schema(db: &rusqlite::Connection) -> Result<(), ToolError> {
             session_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL,
             scope_project_id TEXT, scope_city_id TEXT,
             state TEXT NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS creator_studio_session_profiles (
+            session_id TEXT PRIMARY KEY, label TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS creator_session_operations (
             session_id TEXT NOT NULL, seq INTEGER NOT NULL,
             kind TEXT NOT NULL, ref TEXT NOT NULL, status TEXT NOT NULL,
@@ -131,6 +136,13 @@ fn ensure_schema(db: &rusqlite::Connection) -> Result<(), ToolError> {
         CREATE TABLE IF NOT EXISTS creator_studio_task_receipts (
             operation_id TEXT PRIMARY KEY, request_hash TEXT NOT NULL,
             result_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
+        -- R1 确认意图：作品提交前登记（第 1 步），提交后置 committed（第 3 步）。
+        -- 进程在第 2 步后退出时，重试凭本表与领域回执完成账本收尾。
+        CREATE TABLE IF NOT EXISTS creator_studio_task_confirm_intents (
+            operation_id TEXT PRIMARY KEY, task_id TEXT NOT NULL,
+            plan_revision INTEGER NOT NULL, preview_id TEXT NOT NULL,
+            expected_revision INTEGER NOT NULL, artifact_kind TEXT NOT NULL,
+            state TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS creator_agent_connections (
             agent_id TEXT NOT NULL, session_id TEXT NOT NULL,
             executor TEXT NOT NULL, transport TEXT NOT NULL,
@@ -146,7 +158,16 @@ fn ensure_schema(db: &rusqlite::Connection) -> Result<(), ToolError> {
             summary TEXT NOT NULL, data_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL,
             UNIQUE(task_id, seq));
         CREATE INDEX IF NOT EXISTS creator_task_events_cursor ON creator_task_events(task_id,event_id);",
-    ).map_err(|error| ToolError::new("storage_unavailable", format!("sessions schema unavailable: {error}")))
+    ).map_err(|error| ToolError::new("storage_unavailable", format!("sessions schema unavailable: {error}")))?;
+    for (column, definition) in [("draft", "TEXT NOT NULL DEFAULT ''"), ("preferred_executor", "TEXT NOT NULL DEFAULT ''")] {
+        let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('creator_studio_session_profiles') WHERE name=?1)",
+            [column], |row| row.get(0)).map_err(|error| ToolError::new("storage_unavailable", format!("sessions schema unavailable: {error}")))?;
+        if !exists {
+            db.execute(&format!("ALTER TABLE creator_studio_session_profiles ADD COLUMN {column} {definition}"), [])
+                .map_err(|error| ToolError::new("storage_unavailable", format!("sessions schema unavailable: {error}")))?;
+        }
+    }
+    Ok(())
 }
 
 fn connection_capabilities(payload: &Value) -> Result<Option<Vec<String>>, ToolError> {
@@ -161,6 +182,7 @@ fn connection_capabilities(payload: &Value) -> Result<Option<Vec<String>>, ToolE
 fn valid_connection_error(value: &str) -> bool {
     matches!(value,"codex_unavailable" | "codex_output_invalid" | "codex_cancelled" | "codex_timeout" | "codex_failed"
         | "acp_unavailable" | "acp_failed" | "acp_auth_required" | "acp_cancelled" | "acp_timeout" | "acp_output_invalid"
+        | "acp_image_unsupported" | "creator_capture_unavailable" | "creator_capture_budget_exceeded"
         | "preview_required" | "preview_expired" | "plugin_unavailable" | "storage_unavailable" | "revision_conflict"
         | "creator_task_invalid_transition" | "creator_task_claim_mismatch" | "creator_task_already_claimed"
         | "creator_preview_not_found" | "creator_preview_project_mismatch" | "permission_denied" | "invalid_argument"
@@ -296,6 +318,8 @@ fn capabilities_status(data_home: &Path) -> Result<Value, ToolError> {
         && connection["transport"] == "studio-webview");
     Ok(json!({"schemaVersion":1,"studioOnline":studio_online,"connections":connections,
         "capabilities":capability_matrix(),"serverTimeMs":now_ms(),
+        "acpAgents":super::creator_agent_executor::acp_registry_summary(data_home),
+        "executors":super::creator_agent_executor::probe_executors(data_home),
         "boundary":"本地 stdio/Desktop 协作；不是任意远程实时协作，不自动提交、验收或发布。"}))
 }
 
@@ -470,20 +494,48 @@ fn session_scope(db: &rusqlite::Connection, session_id: &str) -> Result<SessionS
         .map_err(|_| ToolError::new("creator_session_not_found", "Unknown sessionId; open a session first (creator_session_open)."))
 }
 
-/// E1：打开或恢复会话。同 agentId + 同 scope 的 open 会话直接返回（重连恢复）。
+/// E1：打开或恢复会话。默认同 agentId + 同 scope 恢复；Studio 可用
+/// createNew 建立独立会话，或按 sessionId 精确恢复，避免多会话互相覆盖。
 fn session_open(data_home: &Path, args: &Value) -> Result<Value, ToolError> {
     let agent_id = args.get("agentId").and_then(Value::as_str).ok_or_else(|| ToolError::new("invalid_argument", "agentId is required."))?;
     let project_id = args.get("projectId").and_then(Value::as_str);
     let city_id = args.get("cityId").and_then(Value::as_str);
+    let requested_session = args.get("sessionId").map(|_| task_id_arg(args, "sessionId")).transpose()?;
+    let create_new = match args.get("createNew") { None => false, Some(Value::Bool(value)) => *value,
+        _ => return Err(ToolError::new("invalid_argument", "createNew must be boolean.")) };
+    let label = match args.get("label") {
+        None => None,
+        Some(Value::String(value)) if !value.trim().is_empty() && value.chars().count() <= 80 && !value.chars().any(char::is_control) => Some(value.trim()),
+        _ => return Err(ToolError::new("invalid_argument", "label must be non-empty, bounded text.")),
+    };
     let db = open_db(&sessions_db(data_home)?, false)?;
     ensure_schema(&db)?;
     let now = now_ms();
-    let existing: Option<String> = db.query_row(
+    let existing: Option<String> = if requested_session.is_some() || create_new { None } else { db.query_row(
         "SELECT session_id FROM creator_sessions WHERE agent_id=?1 AND state='open'
          AND scope_project_id IS ?2 AND scope_city_id IS ?3 ORDER BY updated_at_ms DESC LIMIT 1",
         rusqlite::params![agent_id, project_id, city_id],
-        |row| row.get(0)).optional().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
-    let session_id = match existing {
+        |row| row.get(0)).optional().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))? };
+    let session_id = if let Some(session_id) = requested_session {
+        let (owner, scope_project, scope_city, state) = session_scope(&db, &session_id)?;
+        if owner != agent_id || scope_project.as_deref() != project_id || scope_city.as_deref() != city_id {
+            return Err(ToolError::new("creator_session_scope_mismatch", "Session does not belong to this agent and scope."));
+        }
+        // 恢复历史会话等于重新占用一个 open 名额：闭会话不计入 open_count，
+        // 若这里不补同一道闸，归档/恢复就把会话上限变成了摆设。
+        if state != "open" {
+            let open_count: i64 = db.query_row("SELECT COUNT(*) FROM creator_sessions WHERE agent_id=?1 AND state='open'",
+                [agent_id], |row| row.get(0)).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            if open_count as usize >= MAX_SESSIONS_PER_AGENT {
+                return Err(ToolError::new("creator_session_limit_exceeded",
+                    format!("Agent already has {open_count} open sessions (max {MAX_SESSIONS_PER_AGENT}); close one before restoring another."))
+                    .with_next(json!({"tool":"creator_session_list","args":{"agentId":agent_id},"note":"归档一个 open 会话后再恢复。"})));
+            }
+        }
+        db.execute("UPDATE creator_sessions SET state='open',updated_at_ms=?1 WHERE session_id=?2", rusqlite::params![now, session_id])
+            .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+        session_id
+    } else { match existing {
         Some(session_id) => {
             db.execute("UPDATE creator_sessions SET updated_at_ms=?1 WHERE session_id=?2", rusqlite::params![now, session_id])
                 .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
@@ -503,13 +555,93 @@ fn session_open(data_home: &Path, args: &Value) -> Result<Value, ToolError> {
                 .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
             session_id
         }
-    };
+    } };
+    if let Some(label) = label {
+        db.execute("INSERT INTO creator_studio_session_profiles(session_id,label,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,?3)
+            ON CONFLICT(session_id) DO UPDATE SET label=excluded.label,updated_at_ms=excluded.updated_at_ms",
+            rusqlite::params![session_id, label, now])
+            .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    }
     let capabilities = connection_capabilities(args)?;
     connection_upsert(&db,agent_id,&session_id,ConnectionUpdate {
         executor:Some(args.get("executor").and_then(Value::as_str).unwrap_or("unknown")),
         transport:Some(args.get("transport").and_then(Value::as_str).unwrap_or("mcp-stdio")),
         state:"online",capabilities,stable_error:Some(None),at_ms:now })?;
     session_payload(data_home, &session_id, project_id, city_id)
+}
+
+fn session_update(data_home: &Path, args: &Value) -> Result<Value, ToolError> {
+    let agent_id = task_id_arg(args, "agentId")?;
+    let session_id = task_id_arg(args, "sessionId")?;
+    let label = match args.get("label") {
+        None => None,
+        Some(Value::String(value)) if !value.trim().is_empty() && value.chars().count() <= 80 && !value.chars().any(char::is_control) => Some(value.trim().to_owned()),
+        _ => return Err(ToolError::new("invalid_argument", "label must be non-empty, bounded text.")),
+    };
+    let draft = match args.get("draft") {
+        None => None,
+        Some(Value::String(value)) if value.chars().count() <= 4_000 && !value.chars().any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t')) => Some(value.clone()),
+        _ => return Err(ToolError::new("invalid_argument", "draft must be bounded text.")),
+    };
+    let preferred_executor = match args.get("preferredExecutor") {
+        None => None,
+        Some(Value::String(value)) if value.is_empty() || valid_playtest_run_id(value) => Some(value.clone()),
+        _ => return Err(ToolError::new("invalid_argument", "preferredExecutor must be a stable id or empty.")),
+    };
+    if label.is_none() && draft.is_none() && preferred_executor.is_none() {
+        return Err(ToolError::new("invalid_argument", "A Session profile field is required."));
+    }
+    let db = open_db(&sessions_db(data_home)?, false)?;
+    ensure_schema(&db)?;
+    let (owner, _, _, _) = session_scope(&db, &session_id)?;
+    if owner != agent_id { return Err(ToolError::new("creator_session_scope_mismatch", "Session does not belong to this agent.")); }
+    let now = now_ms();
+    // 只动档案时间戳，不动 creator_sessions.updated_at_ms：列表按会话活跃度排序，
+    // 每敲一个字都刷新排序会让侧栏在输入时上下乱跳。
+    db.execute("INSERT INTO creator_studio_session_profiles(session_id,label,draft,preferred_executor,created_at_ms,updated_at_ms)
+        VALUES(?1,COALESCE(?2,'创作会话'),COALESCE(?3,''),COALESCE(?4,''),?5,?5)
+        ON CONFLICT(session_id) DO UPDATE SET label=COALESCE(?2,creator_studio_session_profiles.label),
+            draft=COALESCE(?3,creator_studio_session_profiles.draft),
+            preferred_executor=COALESCE(?4,creator_studio_session_profiles.preferred_executor),updated_at_ms=?5",
+        rusqlite::params![session_id,label,draft,preferred_executor,now])
+        .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    Ok(json!({"ok":true,"data":{"sessionId":session_id,"updated":true}}))
+}
+
+fn session_list(data_home: &Path, args: &Value) -> Result<Value, ToolError> {
+    let agent_id = task_id_arg(args, "agentId")?;
+    let project_id = args.get("projectId").and_then(Value::as_str);
+    let city_id = args.get("cityId").and_then(Value::as_str);
+    let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(50).clamp(1, 50);
+    let db = open_db(&sessions_db(data_home)?, false)?;
+    ensure_schema(&db)?;
+    let mut statement = db.prepare(
+        "SELECT s.session_id,s.state,s.created_at_ms,s.updated_at_ms,COALESCE(p.label,'创作会话'),
+                COALESCE(p.draft,''),COALESCE(p.preferred_executor,'')
+         FROM creator_sessions s LEFT JOIN creator_studio_session_profiles p ON p.session_id=s.session_id
+         WHERE s.agent_id=?1 AND s.scope_project_id IS ?2 AND s.scope_city_id IS ?3
+         ORDER BY s.updated_at_ms DESC LIMIT ?4") .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let rows = statement.query_map(rusqlite::params![agent_id, project_id, city_id, limit], |row| {
+        Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,i64>(2)?,row.get::<_,i64>(3)?,row.get::<_,String>(4)?,
+            row.get::<_,String>(5)?,row.get::<_,String>(6)?))
+    }).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let mut sessions = Vec::new();
+    for row in rows {
+        let (session_id, state, created_at_ms, updated_at_ms, label, draft, preferred_executor) = row.map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+        let latest_task = db.query_row(
+            "SELECT j.job_id,j.status,t.human_request,t.artifact_json FROM creator_jobs j
+             JOIN creator_studio_tasks t ON t.task_id=j.job_id WHERE j.session_id=?1 AND j.kind='studio-task'
+             ORDER BY j.updated_at_ms DESC LIMIT 1", [&session_id], |row| {
+                let artifact: String = row.get(3)?;
+                Ok(json!({"taskId":row.get::<_,String>(0)?,"phase":row.get::<_,String>(1)?,
+                    "humanRequest":row.get::<_,String>(2)?,"expectedRevision":serde_json::from_str::<Value>(&artifact).ok()
+                        .and_then(|value| value.get("expectedRevision").and_then(Value::as_u64))}))
+            }).optional().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+        sessions.push(json!({"sessionId":session_id,"label":label,"state":state,
+            "createdAtMs":created_at_ms,"updatedAtMs":updated_at_ms,"latestTask":latest_task,
+            "draft":draft,"preferredExecutor":preferred_executor}));
+    }
+    Ok(json!({"ok":true,"data":{"sessions":sessions}}))
 }
 
 fn session_payload(data_home: &Path, session_id: &str, project_id: Option<&str>, city_id: Option<&str>) -> Result<Value, ToolError> {
@@ -861,23 +993,39 @@ fn task_save_receipt(tx: &rusqlite::Transaction<'_>, operation_id: &str, hash: &
 }
 fn task_artifact(payload: &Value) -> Result<Value, ToolError> {
     let artifact = payload.get("artifact").and_then(Value::as_object).ok_or_else(|| ToolError::new("invalid_argument", "artifact is required."))?;
-    if artifact.len() != 3 || artifact.get("kind").and_then(Value::as_str) != Some("creator-project") {
-        return Err(ToolError::new("invalid_argument", "Only creator-project artifacts are supported."));
-    }
-    let project_id = artifact.get("projectId").and_then(Value::as_str).filter(|value| valid_playtest_run_id(value))
-        .ok_or_else(|| ToolError::new("invalid_argument", "artifact.projectId is invalid."))?;
+    let kind = artifact.get("kind").and_then(Value::as_str).ok_or_else(|| ToolError::new("invalid_argument", "artifact.kind is required."))?;
+    let id_key = match kind {
+        "creator-project" => "projectId",
+        "creator-city" => "cityId",
+        "creator-story" => "storyId",
+        _ => return Err(ToolError::new("invalid_argument", "artifact.kind must be creator-project, creator-city or creator-story.")),
+    };
+    if artifact.len() != 3 { return Err(ToolError::new("invalid_argument", "artifact must contain exactly kind, the scope id and expectedRevision.")); }
+    let scope_id = artifact.get(id_key).and_then(Value::as_str).filter(|value| valid_playtest_run_id(value))
+        .ok_or_else(|| ToolError::new("invalid_argument", format!("artifact.{id_key} is invalid.")))?;
     let expected_revision = artifact.get("expectedRevision").and_then(Value::as_u64)
         .ok_or_else(|| ToolError::new("invalid_argument", "artifact.expectedRevision is required."))?;
-    Ok(json!({"kind":"creator-project","projectId":project_id,"expectedRevision":expected_revision}))
+    let mut normalized = serde_json::Map::new();
+    normalized.insert("kind".into(), json!(kind));
+    normalized.insert(id_key.to_string(), json!(scope_id));
+    normalized.insert("expectedRevision".into(), json!(expected_revision));
+    Ok(Value::Object(normalized))
 }
 fn task_check_artifact(data_home: &Path, artifact: &Value) -> Result<(), ToolError> {
     let host = data_home.join("state/creator/projects.sqlite");
     let db = open_db(&host, false)?;
-    let project_id = artifact["projectId"].as_str().unwrap_or_default();
+    let scope_id = artifact["projectId"].as_str()
+        .or_else(|| artifact["cityId"].as_str())
+        .or_else(|| artifact["storyId"].as_str()).unwrap_or_default();
     let expected = artifact["expectedRevision"].as_u64().unwrap_or(u64::MAX);
-    let current: Option<u64> = db.query_row("SELECT revision FROM creator_projects WHERE project_id=?1", [project_id], |row| row.get(0))
+    let (table, column) = match artifact["kind"].as_str().unwrap_or("creator-project") {
+        "creator-city" => ("creator_cities", "city_id"),
+        "creator-story" => ("story_projects", "story_id"),
+        _ => ("creator_projects", "project_id"),
+    };
+    let current: Option<u64> = db.query_row(&format!("SELECT revision FROM {table} WHERE {column}=?1"), [scope_id], |row| row.get(0))
         .optional().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
-    if current != Some(expected) { return Err(ToolError::new("revision_conflict", "Task artifact revision does not match the authoritative project.")); }
+    if current != Some(expected) { return Err(ToolError::new("revision_conflict", "Task artifact revision does not match the authoritative scope.")); }
     Ok(())
 }
 
@@ -1002,6 +1150,7 @@ fn task_plan_submit(data_home: &Path, payload: &Value) -> Result<Value, ToolErro
     ensure_schema(&db)?;
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     if let Some(result) = task_receipt(&tx, &operation_id, &hash)? { return Ok(result); }
+    task_require_no_pending_confirm(&tx, &task_id)?;
     let (task, _, plan_revision, phase) = task_row(&tx, &task_id)?;
     if task["artifact"]["expectedRevision"].as_u64() != Some(expected_artifact_revision) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
     task_check_artifact(data_home, &task["artifact"])?;
@@ -1108,8 +1257,21 @@ pub fn task_execute_with_executor(data_home: &Path, payload: &Value, executor: &
     let expected_plan_revision = task_revision_arg(payload, "expectedPlanRevision")?;
     let expected_artifact_revision = task_revision_arg(payload, "expectedArtifactRevision")?;
     let operation_id = task_id_arg(payload, "operationId")?;
-    let timeout_ms = payload.get("timeoutMs").and_then(Value::as_u64).unwrap_or(90_000).clamp(100, 120_000);
-    let executor_name = if payload.get("executor").and_then(Value::as_str) == Some("acp") { "acp" } else { "codex-cli" };
+    let include_viewport = match payload.get("includeViewport") {
+        None => false,
+        Some(Value::Bool(value)) => *value,
+        _ => return Err(ToolError::new("invalid_argument", "includeViewport must be a boolean.")),
+    };
+    // 会话化执行器（ACP）的回合含多轮工具调用，上限放宽到 10 分钟；任务仍可随时取消。
+    let timeout_ms = payload.get("timeoutMs").and_then(Value::as_u64).unwrap_or(90_000).clamp(100, 600_000);
+    // executor 参数形态："codex" | "acp"（默认通道）| "acp:<agentId>"（注册表条目）。
+    let requested_executor = payload.get("executor").and_then(Value::as_str).unwrap_or("codex");
+    let executor_name: String = match requested_executor {
+        "codex" => "codex-cli".to_owned(),
+        other => other.to_owned(),
+    };
+    let executor_name = executor_name.as_str();
+    let connection_executor = if executor_name == "codex-cli" { "codex-cli" } else { "acp" };
     let hash = task_hash(payload)?;
     let mut db = open_db(&sessions_db(data_home)?, false)?;
     ensure_schema(&db)?;
@@ -1125,13 +1287,13 @@ pub fn task_execute_with_executor(data_home: &Path, payload: &Value, executor: &
         return Err(ToolError::new("creator_task_acceptance_missing", "Task requires an agent-preview acceptance criterion before execution."));
     }
     let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    execution_cancellations().lock().unwrap_or_else(|error| error.into_inner()).insert(task_id.clone(), cancelled.clone());
     tx.execute("UPDATE creator_studio_tasks SET phase='executing',updated_at_ms=?2 WHERE task_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     tx.execute("UPDATE creator_jobs SET status='executing',progress_json=?2,updated_at_ms=?3 WHERE job_id=?1",
         rusqlite::params![task_id,json!({"execution":{"operationId":operation_id,"executor":executor_name,"status":"executing"} }).to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
-    tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     let push_agent_id = format!("{executor_name}:{task_id}");
-    connection_upsert(&db,&push_agent_id,&session_id,ConnectionUpdate { executor:Some(executor_name),transport:Some(if executor_name == "acp" { "acp-stdio" } else { "mcp-stdio" }),state:"busy",capabilities:Some(vec!["task.execute".into(),"events.publish".into()]),stable_error:None,at_ms:now_ms() })?;
+    connection_upsert(&tx,&push_agent_id,&session_id,ConnectionUpdate { executor:Some(connection_executor),transport:Some(if executor_name.starts_with("acp") { "acp-stdio" } else { "mcp-stdio" }),state:"busy",capabilities:Some(vec!["task.execute".into(),"events.publish".into()]),stable_error:None,at_ms:now_ms() })?;
+    tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    execution_cancellations().lock().unwrap_or_else(|error| error.into_inner()).insert(task_id.clone(), cancelled.clone());
     let _ = append_event_db(data_home,&task_id,"progress",executor_name,"host-observed","执行器进程已启动",&json!({"executor":executor_name,"phase":"executing"}));
     let progress_home = data_home.to_path_buf();
     let progress_task = task_id.clone();
@@ -1142,19 +1304,18 @@ pub fn task_execute_with_executor(data_home: &Path, payload: &Value, executor: &
         let result = append_event_db(&progress_home,&progress_task,&update.kind,&progress_executor,"agent-reported",&update.summary,&update.data);
         let state = if result.is_ok() { "busy" } else { "degraded" };
         if let Ok(db) = open_db(&sessions_db(&progress_home).unwrap_or_else(|_| PathBuf::from("/dev/null")),false) {
-            let _ = connection_upsert(&db,&progress_agent,&progress_session,ConnectionUpdate { executor:Some(&progress_executor),transport:None,state,capabilities:None,stable_error:None,at_ms:now_ms() });
+            let _ = connection_upsert(&db,&progress_agent,&progress_session,ConnectionUpdate { executor:Some(connection_executor),transport:None,state,capabilities:None,stable_error:None,at_ms:now_ms() });
         }
     });
     let request = super::creator_agent_executor::AgentExecutionRequest {
         data_home: data_home.to_path_buf(), goal: task["humanRequest"].as_str().unwrap_or_default().to_owned(),
         human_request: task["humanRequest"].as_str().unwrap_or_default().to_owned(), artifact: task["artifact"].clone(),
-        plan_revision: expected_plan_revision, timeout: std::time::Duration::from_millis(timeout_ms),
+        plan_revision: expected_plan_revision, timeout: std::time::Duration::from_millis(timeout_ms), include_viewport,
     };
     let heartbeat_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let heartbeat_home = data_home.to_path_buf();
     let heartbeat_agent = push_agent_id.clone();
     let heartbeat_session = session_id.clone();
-    let heartbeat_executor = executor_name.to_owned();
     let heartbeat_task = task_id.clone();
     let heartbeat_cancelled = cancelled.clone();
     let heartbeat_flag = heartbeat_stop.clone();
@@ -1173,7 +1334,7 @@ pub fn task_execute_with_executor(data_home: &Path, payload: &Value, executor: &
             }
             if heartbeat_flag.load(std::sync::atomic::Ordering::Relaxed) || heartbeat_cancelled.load(std::sync::atomic::Ordering::Relaxed) { break; }
             if let Ok(db) = open_db(&sessions_db(&heartbeat_home).unwrap_or_else(|_| PathBuf::from("/dev/null")),false) {
-                let _ = connection_upsert(&db,&heartbeat_agent,&heartbeat_session,ConnectionUpdate { executor:Some(&heartbeat_executor),transport:None,state:"busy",capabilities:None,stable_error:None,at_ms:now_ms() });
+                let _ = connection_upsert(&db,&heartbeat_agent,&heartbeat_session,ConnectionUpdate { executor:Some(connection_executor),transport:None,state:"busy",capabilities:None,stable_error:None,at_ms:now_ms() });
             }
         }
     });
@@ -1181,24 +1342,28 @@ pub fn task_execute_with_executor(data_home: &Path, payload: &Value, executor: &
     heartbeat_stop.store(true,std::sync::atomic::Ordering::Relaxed);
     let _ = heartbeat_thread.join();
     execution_cancellations().lock().unwrap_or_else(|error| error.into_inner()).remove(&task_id);
-    let current_phase = task_row(&db, &task_id)?.3;
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", error.to_string()))?;
+    let (_, _, current_plan, current_phase) = task_row(&tx, &task_id)?;
     if cancelled.load(std::sync::atomic::Ordering::Relaxed) || current_phase == "cancelled" {
-        connection_upsert(&db,&push_agent_id,&session_id,ConnectionUpdate { executor:None,transport:None,state:"offline",capabilities:None,stable_error:Some(Some("codex_cancelled")),at_ms:now_ms() })?;
+        connection_upsert(&tx,&push_agent_id,&session_id,ConnectionUpdate { executor:None,transport:None,state:"offline",capabilities:None,stable_error:Some(Some("codex_cancelled")),at_ms:now_ms() })?;
+        tx.commit().map_err(|error| ToolError::new("storage_unavailable", error.to_string()))?;
         return Err(ToolError::new("codex_cancelled", "Task execution was cancelled."));
+    }
+    if current_phase != "executing" || current_plan != expected_plan_revision {
+        return Err(ToolError::new("creator_task_invalid_transition", "The task changed while the executor was running."));
     }
     let result = match result {
         Ok(success) => {
-            let preview_id = success.preview["previewId"].as_str().filter(|id| valid_playtest_run_id(id)).map(str::to_owned).ok_or_else(|| ToolError::new("preview_required", "Executor returned no valid Preview."))?;
-            if success.preview["baseRevision"].as_u64() != Some(expected_artifact_revision) {
-                Err(ToolError::new("preview_required", "Executor Preview revision does not match the task artifact."))
-            } else { Ok((success, preview_id)) }
+            let preview_id = success.preview["previewId"].as_str().filter(|id| valid_playtest_run_id(id)).map(str::to_owned);
+            match preview_id {
+                Some(id) if success.preview["baseRevision"].as_u64() == Some(expected_artifact_revision) => Ok((success, id)),
+                _ => Err(ToolError::new("preview_required", "Executor did not produce a preview for the task revision.")),
+            }
         }
         Err(error) => Err(error),
     };
     match result {
         Ok((success, preview_id)) => {
-            let mut db = open_db(&sessions_db(data_home)?, false)?;
-            let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
             let evidence_id = new_id("evidence-");
             tx.execute("INSERT INTO creator_studio_task_evidence(evidence_id,task_id,plan_revision,step_id,criterion_id,kind,trust_level,summary,data_json,created_at_ms)
                 VALUES(?1,?2,?3,'human-review','agent-preview','preview','host-observed',?4,?5,?6)",
@@ -1217,12 +1382,10 @@ pub fn task_execute_with_executor(data_home: &Path, payload: &Value, executor: &
             task_payload(data_home, &task_id)
         }
         Err(error) => {
-            let mut db = open_db(&sessions_db(data_home)?, false)?;
-            let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
             tx.execute("UPDATE creator_studio_tasks SET phase='failed',updated_at_ms=?2 WHERE task_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
             tx.execute("UPDATE creator_jobs SET status='failed',progress_json=?2,failure_json=?3,updated_at_ms=?4 WHERE job_id=?1",
                 rusqlite::params![task_id,json!({"execution":{"operationId":operation_id,"executor":executor_name,"status":"failed","code":error.code} }).to_string(),json!({"code":error.code}).to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
-            append_event(&tx,&task_id,"failure","host","host-observed","执行器运行失败",&json!({"code":error.code,"executor":executor_name,"phase":"failed"}))?;
+            append_event(&tx,&task_id,"failure","host","host-observed","执行器运行失败",&json!({"code":error.code,"message":error.message.chars().take(400).collect::<String>(),"executor":executor_name,"phase":"failed"}))?;
             tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
             connection_upsert(&db,&push_agent_id,&session_id,ConnectionUpdate { executor:None,transport:None,state:"offline",capabilities:None,stable_error:Some(Some(if valid_connection_error(error.code) { error.code } else { "executor_failed" })),at_ms:now_ms() })?;
             notify_event_subscribers();
@@ -1231,13 +1394,142 @@ pub fn task_execute_with_executor(data_home: &Path, payload: &Value, executor: &
     }
 }
 
-fn task_execute(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
-    let executor = super::creator_agent_executor::select_executor(payload)?;
+fn task_execute(data_home: &Path, payload: &Value, creator_binary: Option<&std::path::Path>) -> Result<Value, ToolError> {
+    // Keep the execution mode in the request identity and default to restricted.
+    let mode = match payload.get("mode") {
+        None => "restricted",
+        Some(value) if value == "restricted" => "restricted",
+        Some(value) if value == "full-access" => "full-access",
+        _ => return Err(ToolError::new("invalid_argument", "Unsupported execution mode.")),
+    };
+    let executor = super::creator_agent_executor::select_executor(payload, data_home, creator_binary, mode)?;
     task_execute_with_executor(data_home, payload, executor.as_ref())
 }
 
-fn task_review_accept(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
+/// Coordinates the task ledger with a trusted Host's idempotent artifact commit.
+pub fn confirm_task_save(
+    data_home: &Path,
+    payload: &Value,
+    commit: impl FnOnce(&Value) -> Result<u64, &'static str>,
+) -> Result<Value, ToolError> {
     let task_id = task_id_arg(payload, "taskId")?;
+    let plan_revision = task_revision_arg(payload, "planRevision")?;
+    let preview_id = task_id_arg(payload, "previewId")?;
+    let expected_revision = task_revision_arg(payload, "expectedArtifactRevision")?;
+    let operation_id = task_id_arg(payload, "operationId")?;
+    let reviewer_note = task_text_arg(payload, "reviewerNote", 2_000).unwrap_or_default();
+    let hash = task_hash(payload)?;
+    let storage_error = |error: rusqlite::Error| ToolError::new("storage_unavailable", error.to_string());
+    let mut db = open_db(&sessions_db(data_home)?, false)?;
+    ensure_schema(&db)?;
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(storage_error)?;
+    if let Some(mut receipt) = task_receipt(&tx, &operation_id, &hash)? {
+        tx.commit().map_err(storage_error)?;
+        receipt["recoveredFromReceipt"] = json!(true);
+        let mut result = task_payload(data_home, &task_id)?;
+        result["confirm"] = receipt;
+        return Ok(result);
+    }
+    let (task, _, current_revision, phase) = task_row(&tx, &task_id)?;
+    if phase != "awaiting-review" || current_revision != plan_revision {
+        return Err(ToolError::new("creator_task_invalid_transition", "Task is not awaiting confirmation for this plan."));
+    }
+    let artifact = &task["artifact"];
+    if artifact["expectedRevision"].as_u64() != Some(expected_revision) {
+        return Err(ToolError::new("revision_conflict", "Task artifact revision changed."));
+    }
+    let kind = artifact["kind"].as_str().unwrap_or("creator-project");
+    let intent = tx.query_row(
+        "SELECT task_id,plan_revision,preview_id,expected_revision,artifact_kind,state FROM creator_studio_task_confirm_intents WHERE operation_id=?1",
+        [&operation_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?, row.get::<_, String>(2)?,
+            row.get::<_, u64>(3)?, row.get::<_, String>(4)?, row.get::<_, String>(5)?)),
+    ).optional().map_err(storage_error)?;
+    if let Some((bound_task, bound_plan, bound_preview, bound_revision, bound_kind, state)) = &intent {
+        if bound_task != &task_id || *bound_plan != plan_revision || bound_preview != &preview_id
+            || *bound_revision != expected_revision || bound_kind != kind || state != "pending" {
+            return Err(ToolError::new("operation_id_conflict", "Confirmation operation belongs to a different request."));
+        }
+    } else {
+        task_require_no_pending_confirm(&tx, &task_id)?;
+        tx.execute("INSERT INTO creator_studio_task_confirm_intents(operation_id,task_id,plan_revision,preview_id,expected_revision,artifact_kind,state,created_at_ms)
+            VALUES(?1,?2,?3,?4,?5,?6,'pending',?7)",
+            rusqlite::params![operation_id,task_id,plan_revision,preview_id,expected_revision,kind,now_ms()]).map_err(storage_error)?;
+    }
+    let raw: String = tx.query_row(
+        "SELECT data_json FROM creator_studio_task_evidence WHERE task_id=?1 AND plan_revision=?2 AND kind='preview' AND trust_level='host-observed' ORDER BY created_at_ms DESC LIMIT 1",
+        rusqlite::params![task_id,plan_revision], |row| row.get(0),
+    ).optional().map_err(storage_error)?
+        .ok_or_else(|| ToolError::new("preview_required", "No Host preview exists for this plan."))?;
+    let preview: Value = serde_json::from_str(&raw).map_err(|error| ToolError::new("storage_unavailable", error.to_string()))?;
+    if preview["previewId"].as_str() != Some(preview_id.as_str()) {
+        return Err(ToolError::new("creator_task_preview_mismatch", "The requested preview does not match the reviewed evidence."));
+    }
+    if preview["baseRevision"].as_u64() != Some(expected_revision) {
+        return Err(ToolError::new("revision_conflict", "The reviewed preview is bound to a different baseline."));
+    }
+    tx.commit().map_err(storage_error)?;
+
+    let commit_revision = match commit(&json!({"artifact":artifact,"preview":preview})) {
+        Ok(revision) => revision,
+        Err(code) => {
+            // Domain CAS and preview errors establish that this commit did not land.
+            if matches!(code, "preview_expired" | "revision_conflict" | "story_project_revision_conflict"
+                | "creator_task_preview_mismatch" | "operation_id_conflict" | "creator_preview_not_found"
+                | "creator_project_not_found" | "creator_city_not_found" | "story_project_not_found"
+                | "creator_preview_invalid" | "creator_validation_required" | "creator_capability_version_mismatch"
+                | "story_argument_invalid" | "creator_request_invalid" | "permission_denied" | "revision_exhausted") {
+                db.execute("DELETE FROM creator_studio_task_confirm_intents WHERE operation_id=?1 AND state='pending'",
+                    [&operation_id]).map_err(storage_error)?;
+            }
+            return Err(ToolError::new(code, "The Host could not complete the artifact commit."));
+        }
+    };
+
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(storage_error)?;
+    if let Some(mut receipt) = task_receipt(&tx, &operation_id, &hash)? {
+        tx.commit().map_err(storage_error)?;
+        receipt["recoveredFromReceipt"] = json!(true);
+        let mut result = task_payload(data_home, &task_id)?;
+        result["confirm"] = receipt;
+        return Ok(result);
+    }
+    let (_, _, current_revision, phase) = task_row(&tx, &task_id)?;
+    if phase != "awaiting-review" || current_revision != plan_revision {
+        return Err(ToolError::new("creator_task_invalid_transition", "The task changed during confirmation."));
+    }
+    let evidence_id = new_id("evidence-");
+    tx.execute("INSERT INTO creator_studio_task_evidence(evidence_id,task_id,plan_revision,step_id,criterion_id,kind,trust_level,summary,data_json,created_at_ms)
+        VALUES(?1,?2,?3,'human-review','manual-review','human-note','creator-declared',?4,?5,?6)",
+        rusqlite::params![evidence_id,task_id,plan_revision,
+            format!("人工确认保存预览，作品版本 {commit_revision}。{reviewer_note}"),
+            json!({"confirmedPreviewId":preview_id,"committedRevision":commit_revision}).to_string(),now_ms()]).map_err(storage_error)?;
+    tx.execute("UPDATE creator_studio_tasks SET phase='accepted',last_evidence_id=?2,proposed_change_set_id=?3,updated_at_ms=?4 WHERE task_id=?1",
+        rusqlite::params![task_id,evidence_id,preview_id,now_ms()]).map_err(storage_error)?;
+    tx.execute("UPDATE creator_jobs SET status='accepted',updated_at_ms=?2 WHERE job_id=?1",
+        rusqlite::params![task_id,now_ms()]).map_err(storage_error)?;
+    tx.execute("UPDATE creator_studio_task_confirm_intents SET state='committed' WHERE operation_id=?1", [&operation_id]).map_err(storage_error)?;
+    append_event(&tx,&task_id,"review","studio","creator-declared","人工确认保存并完成任务",
+        &json!({"decision":"accepted","planRevision":plan_revision,"previewId":preview_id,"committedRevision":commit_revision}))?;
+    let receipt = json!({"taskId":task_id,"previewId":preview_id,"committedRevision":commit_revision,
+        "operationId":operation_id,"taskStatus":"accepted","recoveredFromReceipt":intent.is_some()});
+    task_save_receipt(&tx, &operation_id, &hash, &receipt)?;
+    tx.commit().map_err(storage_error)?;
+    notify_event_subscribers();
+    let mut result = task_payload(data_home, &task_id)?;
+    result["confirm"] = receipt;
+    Ok(result)
+}
+
+fn task_require_no_pending_confirm(tx: &rusqlite::Transaction<'_>, task_id: &str) -> Result<(), ToolError> {
+    let pending = tx.query_row("SELECT EXISTS(SELECT 1 FROM creator_studio_task_confirm_intents WHERE task_id=?1 AND state='pending')",
+        [task_id], |row| row.get::<_, bool>(0)).map_err(|error| ToolError::new("storage_unavailable", error.to_string()))?;
+    if pending {
+        return Err(ToolError::new("creator_task_confirmation_pending", "Retry the pending confirmation before changing the task."));
+    }
+    Ok(())
+}
+
+fn task_review_accept(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {    let task_id = task_id_arg(payload, "taskId")?;
     let plan_revision = task_revision_arg(payload, "planRevision")?;
     let reviewer_note = task_text_arg(payload, "reviewerNote", 2_000)?;
     let operation_id = task_id_arg(payload, "operationId")?;
@@ -1246,6 +1538,7 @@ fn task_review_accept(data_home: &Path, payload: &Value) -> Result<Value, ToolEr
     ensure_schema(&db)?;
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     if let Some(result) = task_receipt(&tx, &operation_id, &hash)? { return Ok(result); }
+    task_require_no_pending_confirm(&tx, &task_id)?;
     let (task, _, current_revision, phase) = task_row(&tx, &task_id)?;
     if phase != "awaiting-review" || current_revision != plan_revision { return Err(ToolError::new("creator_task_invalid_transition", "Task is not awaiting review with current evidence.")); }
     if task["artifact"]["expectedRevision"].as_u64() != Some(task_revision_arg(payload, "expectedArtifactRevision")?) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
@@ -1278,6 +1571,7 @@ fn task_review_reject(data_home: &Path, payload: &Value) -> Result<Value, ToolEr
     ensure_schema(&db)?;
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     if let Some(result) = task_receipt(&tx, &operation_id, &hash)? { return Ok(result); }
+    task_require_no_pending_confirm(&tx, &task_id)?;
     let (task, _, current_revision, phase) = task_row(&tx, &task_id)?;
     if phase != "awaiting-review" || current_revision != plan_revision { return Err(ToolError::new("creator_task_invalid_transition", "Task is not awaiting review.")); }
     if task["artifact"]["expectedRevision"].as_u64() != Some(task_revision_arg(payload, "expectedArtifactRevision")?) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
@@ -1447,8 +1741,11 @@ pub fn task_submit_result(data_home: &Path, payload: &Value) -> Result<Value, To
         }
         if task["artifact"]["expectedRevision"].as_u64() != Some(expected_artifact_revision) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
         task_check_artifact(data_home, &task["artifact"])?;
+        // Pull 模式的预览复核 broker 只覆盖宿主持有的 project 场景预览；
+        // City/Story 的预览校验在 push 执行器里完成，pull 提交明确拒绝。
         let project_id = task["artifact"]["projectId"].as_str()
-            .ok_or_else(|| ToolError::new("creator_task_artifact_invalid", "Task artifact does not carry a projectId."))?.to_owned();
+            .filter(|_| task["artifact"]["kind"].as_str().unwrap_or("creator-project") == "creator-project")
+            .ok_or_else(|| ToolError::new("pull_result_scope_unsupported", "Pull submissions support creator-project artifacts; City and Story tasks submit through the Studio push executor."))?.to_owned();
         tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
         (project_id,session_id)
     };
@@ -1521,6 +1818,7 @@ fn task_cancel(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
     ensure_schema(&db)?;
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     if let Some(result) = task_receipt(&tx, &operation_id, &hash)? { return Ok(result); }
+    task_require_no_pending_confirm(&tx, &task_id)?;
     let (_, _, _, phase) = task_row(&tx, &task_id)?;
     if task_terminal(&phase) { return Err(ToolError::new("creator_task_invalid_transition", format!("Task is already {phase}."))); }
     tx.execute("UPDATE creator_studio_tasks SET phase='cancelled',updated_at_ms=?2 WHERE task_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
@@ -1535,13 +1833,13 @@ fn task_cancel(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
 
 /// Shared by Desktop creator.task.* and MCP creator_task_*: one state machine and
 /// one sessions.sqlite authority. No TypeScript lifecycle mirror is involved.
-pub fn task_dispatch(data_home: &Path, method: &str, payload: &Value) -> Result<Value, ToolError> {
+pub fn task_dispatch(data_home: &Path, method: &str, payload: &Value, creator_binary: Option<&std::path::Path>) -> Result<Value, ToolError> {
     match method {
         "creator.task.create" => task_create(data_home, payload),
         "creator.task.plan.submit" => task_plan_submit(data_home, payload),
         "creator.task.plan.approve" => task_plan_approve(data_home, payload),
         "creator.task.status" => task_payload(data_home, task_id_arg(payload, "taskId")?.as_str()),
-        "creator.task.execute" => task_execute(data_home, payload),
+        "creator.task.execute" => task_execute(data_home, payload, creator_binary),
         "creator.task.evidence.append" => task_evidence_append(data_home, payload),
         "creator.task.evidence.list" => {
             let task = task_payload(data_home, task_id_arg(payload, "taskId")?.as_str())?;
@@ -1561,6 +1859,8 @@ pub fn task_dispatch(data_home: &Path, method: &str, payload: &Value) -> Result<
 pub fn session_dispatch(data_home: &Path, method: &str, payload: &Value) -> Result<Value, ToolError> {
     let result = match method {
         "creator.session.open" => session_open(data_home, payload)?,
+        "creator.session.list" => session_list(data_home, payload)?,
+        "creator.session.update" => session_update(data_home, payload)?,
         "creator.session.status" => session_status(data_home, payload)?,
         "creator.session.close" => session_close(data_home, payload)?,
         "creator.connection.heartbeat" => return connection_heartbeat(data_home,payload,false),
@@ -1574,13 +1874,18 @@ pub fn session_dispatch(data_home: &Path, method: &str, payload: &Value) -> Resu
 }
 
 fn task_mcp(data_home: &Path, method: &str, args: &Value) -> Result<Value, ToolError> {
-    let data = task_dispatch(data_home, method, args)?;
+    if method == "creator.task.execute" && args.get("includeViewport").is_some() {
+        return Err(ToolError::new("permission_denied", "Select the viewport attachment in Creator Studio."));
+    }
+    let data = task_dispatch(data_home, method, args, None)?;
     Ok(json!({"ok":true,"data":data}))
 }
 
 pub fn run(name: &str, args: &Value, data_home: &Path, _allow_local_writes: bool) -> Result<Value, ToolError> {
     match name {
         "creator_session_open" => session_open(data_home, args),
+        "creator_session_list" => session_list(data_home, args),
+        "creator_session_update" => session_update(data_home, args),
         "creator_session_status" => session_status(data_home, args),
         "creator_session_close" => session_close(data_home, args),
         "creator_connection_heartbeat" => connection_heartbeat(data_home,args,false).map(|data| json!({"ok":true,"data":data})),
@@ -1648,6 +1953,40 @@ mod tests {
         dir
     }
 
+    /// 三类构件归一化：kind 决定 id 键，形状固定三键；未知 kind 拒绝。
+    #[test]
+    fn task_artifacts_normalize_project_city_and_story_scopes() {
+        let project = task_artifact(&json!({"artifact":{"kind":"creator-project","projectId":"project-1","expectedRevision":3}})).unwrap();
+        assert_eq!(project, json!({"kind":"creator-project","projectId":"project-1","expectedRevision":3}));
+        let city = task_artifact(&json!({"artifact":{"kind":"creator-city","cityId":"city-1","expectedRevision":0}})).unwrap();
+        assert_eq!(city, json!({"kind":"creator-city","cityId":"city-1","expectedRevision":0}));
+        let story = task_artifact(&json!({"artifact":{"kind":"creator-story","storyId":"story-1","expectedRevision":2}})).unwrap();
+        assert_eq!(story, json!({"kind":"creator-story","storyId":"story-1","expectedRevision":2}));
+        assert_eq!(task_artifact(&json!({"artifact":{"kind":"creator-story","projectId":"x","expectedRevision":1}})).unwrap_err().code, "invalid_argument");
+        assert_eq!(task_artifact(&json!({"artifact":{"kind":"creator-world","worldId":"w","expectedRevision":1}})).unwrap_err().code, "invalid_argument");
+    }
+
+    /// 构件校验按 kind 查权威表：city/story 的 revision CAS 与 project 同语义。
+    #[test]
+    fn task_check_artifact_reads_the_scope_table_for_each_kind() {
+        let home = temp_home();
+        let host = home.join("state/creator");
+        std::fs::create_dir_all(&host).unwrap();
+        let db = open_db(&host.join("projects.sqlite"), false).unwrap();
+        db.execute_batch("CREATE TABLE creator_projects(project_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, document_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+            CREATE TABLE creator_cities(city_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, document_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+            CREATE TABLE story_projects(story_id TEXT PRIMARY KEY, title TEXT NOT NULL, schema_version INTEGER NOT NULL, story_version TEXT NOT NULL, graph_json TEXT NOT NULL, canon_json TEXT NOT NULL, content_digest TEXT NOT NULL, revision INTEGER NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+            INSERT INTO creator_projects VALUES('project-1',3,'{}',1,1);
+            INSERT INTO creator_cities VALUES('city-1',7,'{}',1,1);
+            INSERT INTO story_projects VALUES('story-1','侦探线',1,'1.0.0','{}','{}','digest',4,1,1);").unwrap();
+        task_check_artifact(&home, &json!({"kind":"creator-project","projectId":"project-1","expectedRevision":3})).unwrap();
+        task_check_artifact(&home, &json!({"kind":"creator-city","cityId":"city-1","expectedRevision":7})).unwrap();
+        task_check_artifact(&home, &json!({"kind":"creator-story","storyId":"story-1","expectedRevision":4})).unwrap();
+        assert_eq!(task_check_artifact(&home, &json!({"kind":"creator-city","cityId":"city-1","expectedRevision":8})).unwrap_err().code, "revision_conflict");
+        assert_eq!(task_check_artifact(&home, &json!({"kind":"creator-story","storyId":"story-missing","expectedRevision":1})).unwrap_err().code, "revision_conflict");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
     #[test]
     fn sessions_replay_and_close() {
         let home = temp_home();
@@ -1671,6 +2010,88 @@ mod tests {
         // 关闭后再 status：会话仍在（审计窗口），state=closed。
         let status = session_status(&home, &json!({"sessionId":session_id})).unwrap();
         assert_eq!(status["data"]["state"], json!("closed"));
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn studio_sessions_create_list_and_restore_exact_project_context() {
+        let home = temp_home();
+        let first = session_open(&home, &json!({"agentId":"studio-local","projectId":"project-a","createNew":true,"label":"城市布局"})).unwrap();
+        let first_id = first["data"]["sessionId"].as_str().unwrap();
+        let second = session_open(&home, &json!({"agentId":"studio-local","projectId":"project-a","createNew":true,"label":"侦探剧情"})).unwrap();
+        let second_id = second["data"]["sessionId"].as_str().unwrap();
+        assert_ne!(first_id, second_id);
+        let _ = session_open(&home, &json!({"agentId":"studio-local","projectId":"project-b","createNew":true,"label":"其他项目"})).unwrap();
+        let listed = session_list(&home, &json!({"agentId":"studio-local","projectId":"project-a"})).unwrap();
+        let sessions = listed["data"]["sessions"].as_array().unwrap();
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0]["label"], json!("侦探剧情"));
+        assert_eq!(sessions[1]["label"], json!("城市布局"));
+        let restored = session_open(&home, &json!({"agentId":"studio-local","projectId":"project-a","sessionId":first_id})).unwrap();
+        assert_eq!(restored["data"]["sessionId"], json!(first_id));
+        assert_eq!(session_open(&home, &json!({"agentId":"studio-local","projectId":"project-b","sessionId":first_id})).unwrap_err().code,
+            "creator_session_scope_mismatch");
+        let _ = session_close(&home, &json!({"sessionId":first_id})).unwrap();
+        let reopened = session_open(&home, &json!({"agentId":"studio-local","projectId":"project-a","sessionId":first_id})).unwrap();
+        assert_eq!(reopened["data"]["state"], json!("open"));
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn studio_session_profile_keeps_draft_and_executor_per_session() {
+        let home = temp_home();
+        let first = session_open(&home, &json!({"agentId":"studio-local","projectId":"project-a","createNew":true,"label":"城市布局"})).unwrap();
+        let first_id = first["data"]["sessionId"].as_str().unwrap().to_owned();
+        let second = session_open(&home, &json!({"agentId":"studio-local","projectId":"project-a","createNew":true,"label":"侦探剧情"})).unwrap();
+        let second_id = second["data"]["sessionId"].as_str().unwrap().to_owned();
+        session_update(&home, &json!({"agentId":"studio-local","sessionId":first_id,"draft":"把黄色出租车移到桥上","preferredExecutor":"acp:claude"})).unwrap();
+        session_update(&home, &json!({"agentId":"studio-local","sessionId":second_id,"draft":"第二幕加一个侦探"})).unwrap();
+        let listed = session_list(&home, &json!({"agentId":"studio-local","projectId":"project-a"})).unwrap();
+        let row_of = |id: &str| listed["data"]["sessions"].as_array().unwrap().iter()
+            .find(|row| row["sessionId"] == json!(id)).cloned().unwrap();
+        assert_eq!(row_of(&first_id)["draft"], json!("把黄色出租车移到桥上"));
+        assert_eq!(row_of(&first_id)["preferredExecutor"], json!("acp:claude"));
+        assert_eq!(row_of(&first_id)["label"], json!("城市布局"));
+        assert_eq!(row_of(&second_id)["draft"], json!("第二幕加一个侦探"));
+        assert_eq!(row_of(&second_id)["preferredExecutor"], json!(""));
+        // 只改标签不动草稿；显式空草稿是「清空」，不能当成「没提供」。
+        session_update(&home, &json!({"agentId":"studio-local","sessionId":first_id,"label":"出租车过桥"})).unwrap();
+        session_update(&home, &json!({"agentId":"studio-local","sessionId":first_id,"draft":""})).unwrap();
+        let listed = session_list(&home, &json!({"agentId":"studio-local","projectId":"project-a"})).unwrap();
+        let row = listed["data"]["sessions"].as_array().unwrap().iter()
+            .find(|row| row["sessionId"] == json!(first_id)).cloned().unwrap();
+        assert_eq!(row["label"], json!("出租车过桥"));
+        assert_eq!(row["draft"], json!(""));
+        assert_eq!(row["preferredExecutor"], json!("acp:claude"));
+        // 归属与参数校验：剧本只能改自己的会话，空更新是调用错误而不是静默成功。
+        assert_eq!(session_update(&home, &json!({"agentId":"other-agent","sessionId":first_id,"label":"劫持"})).unwrap_err().code,
+            "creator_session_scope_mismatch");
+        assert_eq!(session_update(&home, &json!({"agentId":"studio-local","sessionId":first_id})).unwrap_err().code, "invalid_argument");
+        assert_eq!(session_update(&home, &json!({"agentId":"studio-local","sessionId":"csession-missing","label":"x"})).unwrap_err().code,
+            "creator_session_not_found");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// 恢复历史会话等于重新占用一个 open 名额：闭会话不计入 open_count，
+    /// 若恢复路径不补同一道闸，归档/恢复就把会话上限变成了摆设。
+    #[test]
+    fn restoring_a_closed_session_still_respects_the_open_session_cap() {
+        let home = temp_home();
+        let ids: Vec<String> = (0..MAX_SESSIONS_PER_AGENT).map(|index|
+            session_open(&home, &json!({"agentId":"cap","projectId":format!("p{index}")})).unwrap()["data"]["sessionId"]
+                .as_str().unwrap().to_owned()).collect();
+        session_close(&home, &json!({"sessionId":ids[0]})).unwrap();
+        session_close(&home, &json!({"sessionId":ids[1]})).unwrap();
+        session_open(&home, &json!({"agentId":"cap","projectId":"p4"})).unwrap();
+        session_open(&home, &json!({"agentId":"cap","projectId":"p5"})).unwrap();
+        assert_eq!(session_open(&home, &json!({"agentId":"cap","projectId":"p0","sessionId":ids[0]})).unwrap_err().code,
+            "creator_session_limit_exceeded");
+        session_close(&home, &json!({"sessionId":ids[2]})).unwrap();
+        let restored = session_open(&home, &json!({"agentId":"cap","projectId":"p0","sessionId":ids[0]})).unwrap();
+        assert_eq!(restored["data"]["state"], json!("open"));
+        // 已 open 的会话按 sessionId 重进是幂等重放，不占新名额。
+        let resumed = session_open(&home, &json!({"agentId":"cap","projectId":"p3","sessionId":ids[3]})).unwrap();
+        assert_eq!(resumed["data"]["sessionId"], json!(ids[3]));
         std::fs::remove_dir_all(home).unwrap();
     }
 
@@ -1803,33 +2224,69 @@ mod tests {
         let session = session_open(&home, &json!({"agentId":"studio-local","projectId":"project-1"})).unwrap();
         let session_id = session["data"]["sessionId"].as_str().unwrap();
         prepare_artifact(&home, "project-1", 3);
-        let created = task_dispatch(&home, "creator.task.create", &studio_goal(session_id, "goal-create")).unwrap();
+        let created = task_dispatch(&home, "creator.task.create", &studio_goal(session_id, "goal-create"), None).unwrap();
         let task_id = created["taskId"].as_str().unwrap();
-        let replay = task_dispatch(&home, "creator.task.create", &studio_goal(session_id, "goal-create")).unwrap();
+        let replay = task_dispatch(&home, "creator.task.create", &studio_goal(session_id, "goal-create"), None).unwrap();
         assert_eq!(replay["taskId"], task_id);
         assert_eq!(created["phase"], "planning");
         assert_eq!(created["artifact"]["expectedRevision"], 3);
-        let submitted = task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 1, "plan-submit")).unwrap();
+        let submitted = task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 1, "plan-submit"), None).unwrap();
         assert_eq!(submitted["phase"], "awaiting-plan-approval");
         assert_eq!(submitted["steps"].as_array().unwrap().len(), 1);
-        assert_eq!(task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":2,"expectedArtifactRevision":3,"operationId":"plan-approve-stale"})).unwrap_err().code, "plan_revision_conflict");
-        let approved = task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"operationId":"plan-approve"})).unwrap();
+        assert_eq!(task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":2,"expectedArtifactRevision":3,"operationId":"plan-approve-stale"}), None).unwrap_err().code, "plan_revision_conflict");
+        let approved = task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"operationId":"plan-approve"}), None).unwrap();
         assert_eq!(approved["phase"], "ready");
-        assert_eq!(task_dispatch(&home, "creator.task.review.accept", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"reviewerNote":"Looks complete","operationId":"review-early"})).unwrap_err().code, "creator_task_invalid_transition");
-        assert_eq!(task_dispatch(&home, "creator.task.evidence.append", &studio_evidence(task_id, "evidence-host", "host-verified")).unwrap_err().code, "invalid_argument");
-        let evidence = task_dispatch(&home, "creator.task.evidence.append", &studio_evidence(task_id, "evidence-manual", "creator-declared")).unwrap();
+        assert_eq!(task_dispatch(&home, "creator.task.review.accept", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"reviewerNote":"Looks complete","operationId":"review-early"}), None).unwrap_err().code, "creator_task_invalid_transition");
+        assert_eq!(task_dispatch(&home, "creator.task.evidence.append", &studio_evidence(task_id, "evidence-host", "host-verified"), None).unwrap_err().code, "invalid_argument");
+        let evidence = task_dispatch(&home, "creator.task.evidence.append", &studio_evidence(task_id, "evidence-manual", "creator-declared"), None).unwrap();
         assert_eq!(evidence["phase"], "awaiting-review");
         assert_eq!(evidence["lastEvidenceId"], evidence["evidence"][0]["evidenceId"]);
-        assert_eq!(task_dispatch(&home, "creator.task.review.accept", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":4,"reviewerNote":"Wrong artifact","operationId":"review-stale"})).unwrap_err().code, "revision_conflict");
-        let accepted = task_dispatch(&home, "creator.task.review.accept", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"reviewerNote":"Accepted manually","operationId":"review-accept"})).unwrap();
+        assert_eq!(task_dispatch(&home, "creator.task.review.accept", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":4,"reviewerNote":"Wrong artifact","operationId":"review-stale"}), None).unwrap_err().code, "revision_conflict");
+        let accepted = task_dispatch(&home, "creator.task.review.accept", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"reviewerNote":"Accepted manually","operationId":"review-accept"}), None).unwrap();
         assert_eq!(accepted["phase"], "accepted");
         drop(open_db(&sessions_db(&home).unwrap(), false).unwrap());
-        let recovered = task_dispatch(&home, "creator.task.status", &json!({"taskId":task_id})).unwrap();
+        let recovered = task_dispatch(&home, "creator.task.status", &json!({"taskId":task_id}), None).unwrap();
         assert_eq!(recovered["phase"], "accepted");
         assert_eq!(recovered["goalRevision"], 2);
         assert_eq!(recovered["evidence"].as_array().unwrap().len(), 1);
         assert_eq!(recovered["evidence"][0]["trustLevel"], "creator-declared");
-        assert_eq!(task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 2, "plan-after-accepted")).unwrap_err().code, "creator_task_invalid_transition");
+        assert_eq!(task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 2, "plan-after-accepted"), None).unwrap_err().code, "creator_task_invalid_transition");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn task_confirm_requires_preview_and_recovers_a_pending_commit() {
+        let home = temp_home();
+        let session = session_open(&home, &json!({"agentId":"studio-local","projectId":"project-1"})).unwrap();
+        let session_id = session["data"]["sessionId"].as_str().unwrap();
+        prepare_artifact(&home, "project-1", 3);
+        let created = task_dispatch(&home, "creator.task.create", &studio_goal_with_preview(session_id, "goal-confirm"), None).unwrap();
+        let task_id = created["taskId"].as_str().unwrap();
+        task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 1, "confirm-plan-submit"), None).unwrap();
+        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"operationId":"confirm-plan-approve"}), None).unwrap();
+        let execute = json!({"taskId":task_id,"expectedPlanRevision":1,"expectedArtifactRevision":3,"operationId":"confirm-execute","executor":"acp:fixture"});
+        let executor = super::super::creator_agent_executor::tests::FakeExecutor::success();
+        task_execute_with_executor(&home, &execute, &executor).unwrap();
+        let mut confirm = json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"previewId":"other-preview","operationId":"confirm-op"});
+        assert_eq!(confirm_task_save(&home, &confirm, |_| panic!("mismatched preview")).unwrap_err().code, "creator_task_preview_mismatch");
+        confirm["previewId"] = json!("preview-fake");
+        let interrupted = confirm_task_save(&home, &confirm, |_| {
+            let cancel = json!({"taskId":task_id,"operationId":"cancel-during-confirm"});
+            assert_eq!(task_cancel(&home, &cancel).unwrap_err().code, "creator_task_confirmation_pending");
+            Err("creator_store_unavailable")
+        }).unwrap_err();
+        assert_eq!(interrupted.code, "creator_store_unavailable");
+        assert_eq!(task_payload(&home, task_id).unwrap()["phase"], "awaiting-review");
+        let finished = confirm_task_save(&home, &confirm, |context| {
+            assert_eq!(context["artifact"]["projectId"], "project-1");
+            assert_eq!(context["preview"]["previewId"], "preview-fake");
+            Ok(4)
+        }).unwrap();
+        assert_eq!(finished["phase"], "accepted");
+        assert_eq!(finished["confirm"]["committedRevision"], 4);
+        assert_eq!(finished["confirm"]["recoveredFromReceipt"], true);
+        let replay = confirm_task_save(&home, &confirm, |_| panic!("receipt should skip the commit")).unwrap();
+        assert_eq!(replay["confirm"], finished["confirm"]);
         std::fs::remove_dir_all(home).unwrap();
     }
 
@@ -1839,25 +2296,25 @@ mod tests {
         let session = session_open(&home, &json!({"agentId":"studio-local","projectId":"project-1"})).unwrap();
         let session_id = session["data"]["sessionId"].as_str().unwrap();
         prepare_artifact(&home, "project-1", 3);
-        let created = task_dispatch(&home, "creator.task.create", &studio_goal(session_id, "goal-cancel-create")).unwrap();
+        let created = task_dispatch(&home, "creator.task.create", &studio_goal(session_id, "goal-cancel-create"), None).unwrap();
         let task_id = created["taskId"].as_str().unwrap();
-        task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 1, "plan-cancel-submit")).unwrap();
-        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"operationId":"plan-cancel-approve"})).unwrap();
+        task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 1, "plan-cancel-submit"), None).unwrap();
+        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"operationId":"plan-cancel-approve"}), None).unwrap();
         let waiting = job_wait(&home, &json!({"jobId":task_id,"timeoutMs":100})).unwrap();
         assert_eq!(waiting["data"]["waitTimedOut"], true);
         assert_eq!(waiting["data"]["job"]["phase"], "ready");
         let cancelled = job_cancel(&home, &json!({"jobId":task_id})).unwrap();
         assert_eq!(cancelled["phase"], "cancelled");
         assert_eq!(cancelled["phase"], "cancelled");
-        let revised = task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 2, "plan-revise")).unwrap();
+        let revised = task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 2, "plan-revise"), None).unwrap();
         assert_eq!(revised["phase"], "awaiting-plan-approval");
         assert_eq!(revised["planRevision"], 2);
-        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":2,"expectedArtifactRevision":3,"operationId":"plan-revise-approve"})).unwrap();
-        task_dispatch(&home, "creator.task.evidence.append", &studio_evidence(task_id, "evidence-reject", "creator-declared")).unwrap_err();
+        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":2,"expectedArtifactRevision":3,"operationId":"plan-revise-approve"}), None).unwrap();
+        task_dispatch(&home, "creator.task.evidence.append", &studio_evidence(task_id, "evidence-reject", "creator-declared"), None).unwrap_err();
         let mut evidence = studio_evidence(task_id, "evidence-reject", "creator-declared");
         evidence["planRevision"] = json!(2);
-        task_dispatch(&home, "creator.task.evidence.append", &evidence).unwrap();
-        let rejected = task_dispatch(&home, "creator.task.review.reject", &json!({"taskId":task_id,"planRevision":2,"expectedArtifactRevision":3,"reason":"Needs another pass","operationId":"review-reject"})).unwrap();
+        task_dispatch(&home, "creator.task.evidence.append", &evidence, None).unwrap();
+        let rejected = task_dispatch(&home, "creator.task.review.reject", &json!({"taskId":task_id,"planRevision":2,"expectedArtifactRevision":3,"reason":"Needs another pass","operationId":"review-reject"}), None).unwrap();
         assert_eq!(rejected["phase"], "rejected");
         assert_eq!(rejected["failure"]["code"], "human_rejected");
         let jobs = session_jobs(&home, session_id).unwrap();
@@ -1880,31 +2337,31 @@ mod tests {
         let session = session_open(&home, &json!({"agentId":"studio-local","projectId":"project-1"})).unwrap();
         let session_id = session["data"]["sessionId"].as_str().unwrap();
         prepare_artifact(&home, "project-1", 3);
-        let created = task_dispatch(&home, "creator.task.create", &studio_goal_with_preview(session_id, "pull-goal")).unwrap();
+        let created = task_dispatch(&home, "creator.task.create", &studio_goal_with_preview(session_id, "pull-goal"), None).unwrap();
         let task_id = created["taskId"].as_str().unwrap();
-        task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 1, "pull-plan")).unwrap();
-        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"operationId":"pull-approve"})).unwrap();
+        task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 1, "pull-plan"), None).unwrap();
+        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"operationId":"pull-approve"}), None).unwrap();
         // 认领前 list_open 必须能看到该任务
-        let open = task_dispatch(&home, "creator.task.list_open", &json!({})).unwrap();
+        let open = task_dispatch(&home, "creator.task.list_open", &json!({}), None).unwrap();
         assert!(open["tasks"].as_array().unwrap().iter().any(|task| task["taskId"] == task_id));
         // 无 agent-preview 判据的任务不可认领
-        let plain = task_dispatch(&home, "creator.task.create", &studio_goal(session_id, "pull-goal-plain")).unwrap();
+        let plain = task_dispatch(&home, "creator.task.create", &studio_goal(session_id, "pull-goal-plain"), None).unwrap();
         let plain_id = plain["taskId"].as_str().unwrap();
-        task_dispatch(&home, "creator.task.plan.submit", &studio_plan(plain_id, 1, "pull-plan-plain")).unwrap();
-        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":plain_id,"planRevision":1,"expectedArtifactRevision":3,"operationId":"pull-approve-plain"})).unwrap();
-        assert_eq!(task_dispatch(&home, "creator.task.claim", &json!({"taskId":plain_id,"agentId":"agent-a","expectedPlanRevision":1,"expectedArtifactRevision":3,"operationId":"pull-claim-plain"})).unwrap_err().code, "creator_task_acceptance_missing");
-        let claimed = task_dispatch(&home, "creator.task.claim", &json!({"taskId":task_id,"agentId":"agent-a","expectedPlanRevision":1,"expectedArtifactRevision":3,"operationId":"pull-claim-a"})).unwrap();
+        task_dispatch(&home, "creator.task.plan.submit", &studio_plan(plain_id, 1, "pull-plan-plain"), None).unwrap();
+        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":plain_id,"planRevision":1,"expectedArtifactRevision":3,"operationId":"pull-approve-plain"}), None).unwrap();
+        assert_eq!(task_dispatch(&home, "creator.task.claim", &json!({"taskId":plain_id,"agentId":"agent-a","expectedPlanRevision":1,"expectedArtifactRevision":3,"operationId":"pull-claim-plain"}), None).unwrap_err().code, "creator_task_acceptance_missing");
+        let claimed = task_dispatch(&home, "creator.task.claim", &json!({"taskId":task_id,"agentId":"agent-a","expectedPlanRevision":1,"expectedArtifactRevision":3,"operationId":"pull-claim-a"}), None).unwrap();
         assert_eq!(claimed["phase"], "executing");
         assert_eq!(claimed["claimant"], "agent-a");
         // 第二个 Agent 认领被拒；同一 Agent 幂等
-        assert_eq!(task_dispatch(&home, "creator.task.claim", &json!({"taskId":task_id,"agentId":"agent-b","expectedPlanRevision":1,"expectedArtifactRevision":3,"operationId":"pull-claim-b"})).unwrap_err().code, "creator_task_already_claimed");
-        let reclaimed = task_dispatch(&home, "creator.task.claim", &json!({"taskId":task_id,"agentId":"agent-a","expectedPlanRevision":1,"expectedArtifactRevision":3,"operationId":"pull-claim-a2"})).unwrap();
+        assert_eq!(task_dispatch(&home, "creator.task.claim", &json!({"taskId":task_id,"agentId":"agent-b","expectedPlanRevision":1,"expectedArtifactRevision":3,"operationId":"pull-claim-b"}), None).unwrap_err().code, "creator_task_already_claimed");
+        let reclaimed = task_dispatch(&home, "creator.task.claim", &json!({"taskId":task_id,"agentId":"agent-a","expectedPlanRevision":1,"expectedArtifactRevision":3,"operationId":"pull-claim-a2"}), None).unwrap();
         assert_eq!(reclaimed["phase"], "executing");
         // 非认领者提交被拒；认领者提交时宿主不在场 → 诚实 plugin_unavailable
-        assert_eq!(task_dispatch(&home, "creator.task.submit_result", &json!({"taskId":task_id,"agentId":"agent-b","planRevision":1,"expectedArtifactRevision":3,"summary":"x","previewId":"preview-1","operationId":"pull-submit-b"})).unwrap_err().code, "creator_task_claim_mismatch");
-        assert_eq!(task_dispatch(&home, "creator.task.submit_result", &json!({"taskId":task_id,"agentId":"agent-a","planRevision":1,"expectedArtifactRevision":3,"summary":"x","previewId":"preview-1","operationId":"pull-submit-a"})).unwrap_err().code, "plugin_unavailable");
+        assert_eq!(task_dispatch(&home, "creator.task.submit_result", &json!({"taskId":task_id,"agentId":"agent-b","planRevision":1,"expectedArtifactRevision":3,"summary":"x","previewId":"preview-1","operationId":"pull-submit-b"}), None).unwrap_err().code, "creator_task_claim_mismatch");
+        assert_eq!(task_dispatch(&home, "creator.task.submit_result", &json!({"taskId":task_id,"agentId":"agent-a","planRevision":1,"expectedArtifactRevision":3,"summary":"x","previewId":"preview-1","operationId":"pull-submit-a"}), None).unwrap_err().code, "plugin_unavailable");
         // list_open 不再包含 executing 任务
-        let open_after = task_dispatch(&home, "creator.task.list_open", &json!({})).unwrap();
+        let open_after = task_dispatch(&home, "creator.task.list_open", &json!({}), None).unwrap();
         assert!(!open_after["tasks"].as_array().unwrap().iter().any(|task| task["taskId"] == task_id));
     }
 
@@ -1914,10 +2371,10 @@ mod tests {
         let session = session_open(&home, &json!({"agentId":"studio-local","projectId":"project-1"})).unwrap();
         let session_id = session["data"]["sessionId"].as_str().unwrap();
         prepare_artifact(&home, "project-1", 3);
-        let created = task_dispatch(&home, "creator.task.create", &studio_goal_with_preview(session_id, "execute-goal")).unwrap();
+        let created = task_dispatch(&home, "creator.task.create", &studio_goal_with_preview(session_id, "execute-goal"), None).unwrap();
         let task_id = created["taskId"].as_str().unwrap();
-        task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 1, "execute-plan")).unwrap();
-        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"operationId":"execute-approve"})).unwrap();
+        task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 1, "execute-plan"), None).unwrap();
+        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"operationId":"execute-approve"}), None).unwrap();
         let executor = crate::mcp::creator_agent_executor::tests::FakeExecutor::success();
         let executed = task_execute_with_executor(&home, &json!({"taskId":task_id,"expectedPlanRevision":1,"expectedArtifactRevision":3,"operationId":"execute-run"}), &executor).unwrap();
         assert_eq!(executed["phase"], "awaiting-review");
@@ -1933,9 +2390,9 @@ mod tests {
         assert!(!serialized.contains(home.to_string_lossy().as_ref()));
         let replay = task_execute_with_executor(&home, &json!({"taskId":task_id,"expectedPlanRevision":1,"expectedArtifactRevision":3,"operationId":"execute-run"}), &executor).unwrap();
         assert_eq!(replay["evidence"].as_array().unwrap().len(), 1);
-        assert_eq!(task_dispatch(&home, "creator.task.review.accept", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"reviewerNote":"Accept","operationId":"execute-accept-early"})).unwrap_err().code, "creator_task_evidence_required");
-        task_dispatch(&home, "creator.task.evidence.append", &studio_evidence(task_id, "execute-manual", "creator-declared")).unwrap();
-        let accepted = task_dispatch(&home, "creator.task.review.accept", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"reviewerNote":"Accept after preview","operationId":"execute-accept"})).unwrap();
+        assert_eq!(task_dispatch(&home, "creator.task.review.accept", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"reviewerNote":"Accept","operationId":"execute-accept-early"}), None).unwrap_err().code, "creator_task_evidence_required");
+        task_dispatch(&home, "creator.task.evidence.append", &studio_evidence(task_id, "execute-manual", "creator-declared"), None).unwrap();
+        let accepted = task_dispatch(&home, "creator.task.review.accept", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"reviewerNote":"Accept after preview","operationId":"execute-accept"}), None).unwrap();
         assert_eq!(accepted["phase"], "accepted");
         std::fs::remove_dir_all(home).unwrap();
     }
@@ -1946,27 +2403,27 @@ mod tests {
         let session = session_open(&home, &json!({"agentId":"studio-local","projectId":"project-1"})).unwrap();
         let session_id = session["data"]["sessionId"].as_str().unwrap();
         prepare_artifact(&home, "project-1", 3);
-        let created = task_dispatch(&home, "creator.task.create", &studio_goal_with_preview(session_id, "execute-goal-failure")).unwrap();
+        let created = task_dispatch(&home, "creator.task.create", &studio_goal_with_preview(session_id, "execute-goal-failure"), None).unwrap();
         let task_id = created["taskId"].as_str().unwrap();
-        task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 1, "execute-plan-failure")).unwrap();
-        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"operationId":"execute-approve-failure"})).unwrap();
+        task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 1, "execute-plan-failure"), None).unwrap();
+        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"operationId":"execute-approve-failure"}), None).unwrap();
         let executor = crate::mcp::creator_agent_executor::tests::FakeExecutor::success();
         assert_eq!(task_execute_with_executor(&home, &json!({"taskId":task_id,"expectedPlanRevision":1,"expectedArtifactRevision":4,"operationId":"execute-stale"}), &executor).unwrap_err().code, "revision_conflict");
         let timeout = crate::mcp::creator_agent_executor::tests::FakeExecutor::failure("codex_timeout");
         let error = task_execute_with_executor(&home, &json!({"taskId":task_id,"expectedPlanRevision":1,"expectedArtifactRevision":3,"operationId":"execute-timeout"}), &timeout).unwrap_err();
         assert_eq!(error.code, "codex_timeout");
-        let failed = task_dispatch(&home, "creator.task.status", &json!({"taskId":task_id})).unwrap();
+        let failed = task_dispatch(&home, "creator.task.status", &json!({"taskId":task_id}), None).unwrap();
         assert_eq!(failed["phase"], "failed");
         assert_eq!(failed["failure"]["code"], "codex_timeout");
-        task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 2, "execute-revise-failure")).unwrap();
-        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":2,"expectedArtifactRevision":3,"operationId":"execute-approve-retry"})).unwrap();
+        task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 2, "execute-revise-failure"), None).unwrap();
+        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":2,"expectedArtifactRevision":3,"operationId":"execute-approve-retry"}), None).unwrap();
         let cancelled = crate::mcp::creator_agent_executor::tests::FakeExecutor::failure("codex_cancelled");
         assert_eq!(task_execute_with_executor(&home, &json!({"taskId":task_id,"expectedPlanRevision":2,"expectedArtifactRevision":3,"operationId":"execute-cancelled"}), &cancelled).unwrap_err().code, "codex_cancelled");
-        task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 3, "execute-revise-preview")).unwrap();
-        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":3,"expectedArtifactRevision":3,"operationId":"execute-approve-preview"})).unwrap();
+        task_dispatch(&home, "creator.task.plan.submit", &studio_plan(task_id, 3, "execute-revise-preview"), None).unwrap();
+        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":3,"expectedArtifactRevision":3,"operationId":"execute-approve-preview"}), None).unwrap();
         let missing = crate::mcp::creator_agent_executor::tests::FakeExecutor::failure("preview_required");
         assert_eq!(task_execute_with_executor(&home, &json!({"taskId":task_id,"expectedPlanRevision":3,"expectedArtifactRevision":3,"operationId":"execute-missing-preview"}), &missing).unwrap_err().code, "preview_required");
-        assert_eq!(task_dispatch(&home, "creator.task.status", &json!({"taskId":task_id})).unwrap()["phase"], "failed");
+        assert_eq!(task_dispatch(&home, "creator.task.status", &json!({"taskId":task_id}), None).unwrap()["phase"], "failed");
         std::fs::remove_dir_all(home).unwrap();
     }
 

@@ -16,6 +16,8 @@
   const send = (type, payload = {}) => frame?.contentWindow?.postMessage({
     channel: "av-plugin-rpc", version: 1, instanceId: current?.instanceId, type, ...payload,
   }, location.origin);
+  const validSearch = (value) => typeof value === "string" && value.length <= 80
+    && new TextEncoder().encode(value).length <= 256 && !/[\u0000-\u001f\u007f-\u009f]/u.test(value);
   const pluginMessage = (message) => {
     if (!current || message.version !== 1 || message.instanceId !== current.instanceId) throw new Error("stale_instance");
     if (current.status === "failed") throw new Error("plugin_failed");
@@ -24,7 +26,8 @@
       const text = (value, limit, nonempty = false) => typeof value === "string" && value.length <= limit && (!nonempty || value.length > 0);
       if (!Array.isArray(message.items) || message.items.length > current.maxToolbarItems || message.items.some((item) =>
         !item || !text(item.id, 64, true) || !text(item.label, 100, true) || typeof item.enabled !== "boolean"
-        || !text(item.commandId, 64, true) || !item.commandId.startsWith(`${current.commandNamespace}.`) || !["button", "select"].includes(item.kind)
+        || !text(item.commandId, 64, true) || !item.commandId.startsWith(`${current.commandNamespace}.`) || !["button", "select", "search"].includes(item.kind)
+        || (item.kind === "search" && (!validSearch(item.value) || (item.options !== undefined && (!Array.isArray(item.options) || item.options.length !== 0))))
         || (item.kind === "select" && (!Array.isArray(item.options) || item.options.length < 1 || item.options.length > 8
           || item.options.some((option) => !option || !text(option.value, 32) || !text(option.label, 100))
           || !item.options.some((option) => option.value === item.value))))
@@ -144,6 +147,7 @@
     if (command === "plugin_command") {
       const tool = current.items.find((item) => item.commandId === args.commandId);
       if (!tool?.enabled || current.pending || (tool.kind === "select" && !tool.options?.some((option) => option.value === args.value))) throw new Error("plugin_command_rejected");
+      if (tool.kind === "search" && !validSearch(args.value)) throw new Error("plugin_command_rejected");
       const requestId = `request-${++sequence}`;
       current.pending = requestId; current.pendingAt = Date.now(); note("command_sent", requestId);
       send("command", { command: { version: 1, instanceId: current.instanceId, requestId, commandId: args.commandId, value: args.value } });

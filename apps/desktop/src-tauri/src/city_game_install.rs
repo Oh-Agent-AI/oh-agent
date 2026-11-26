@@ -213,17 +213,21 @@ pub(crate) fn list(home: &Path, payload: &Value) -> Result<Value, &'static str> 
     let city = payload.get("cityId").and_then(Value::as_str);
     let game = payload.get("gameId").and_then(Value::as_str);
     if city.is_some_and(|value| !valid_id(value)) || game.is_some_and(|value| !valid_id(value)) { return Err("game_argument_invalid"); }
-    let db = database(home)?;
+    let mut db = database(home)?;
     migrate(&db)?;
+    let tx = db.transaction().map_err(|_| "creator_store_unavailable")?;
+    let installed_count: u64 = tx.query_row("SELECT COUNT(*) FROM city_game_installations
+        WHERE (?1 IS NULL OR city_id=?1) AND (?2 IS NULL OR game_id=?2) AND status='installed'", params![city,game], |row| row.get(0))
+        .map_err(|_| "creator_store_unavailable")?;
     let sql = "SELECT installation_id,city_id,game_id,build_id,COALESCE(city_revision,0),status,installed_at_ms,updated_at_ms FROM city_game_installations
         WHERE (?1 IS NULL OR city_id=?1) AND (?2 IS NULL OR game_id=?2) ORDER BY updated_at_ms DESC,installation_id LIMIT ?3";
-    let mut statement = db.prepare(sql).map_err(|_| "creator_store_unavailable")?;
+    let mut statement = tx.prepare(sql).map_err(|_| "creator_store_unavailable")?;
     let rows = statement.query_map(params![city,game,limit], |row| Ok(json!({"installationId":row.get::<_,String>(0)?,
         "cityId":row.get::<_,String>(1)?,"gameId":row.get::<_,String>(2)?,"buildId":row.get::<_,String>(3)?,
         "cityRevision":row.get::<_,u64>(4)?,"status":row.get::<_,String>(5)?,"createdAtMs":row.get::<_,u64>(6)?,
         "installedAtMs":row.get::<_,u64>(6)?,"updatedAtMs":row.get::<_,u64>(7)?})))
         .map_err(|_| "creator_store_unavailable")?.collect::<Result<Vec<_>,_>>().map_err(|_| "creator_store_unavailable")?;
-    Ok(json!({"installations":rows}))
+    Ok(json!({"installations":rows,"installedCount":installed_count}))
 }
 
 #[cfg(test)]
@@ -456,14 +460,18 @@ mod tests {
                 VALUES (?1,?2,?3,?4,?5,'disabled',?6,?6)",
                 params![format!("installation-{index}"),city_id,format!("community.game-{index}"),format!("build-{index}"),revision,index]).unwrap();
         }
+        db.execute("UPDATE city_game_installations SET status='installed' WHERE game_id IN ('community.game-1','community.game-2')", []).unwrap();
         drop(db);
-        assert_eq!(list(&home, &json!({"limit":1})).unwrap()["installations"].as_array().unwrap().len(), 1);
+        let first = list(&home, &json!({"cityId":city_id,"limit":1})).unwrap();
+        assert_eq!(first["installations"].as_array().unwrap().len(), 1);
+        assert_eq!(first["installedCount"], 2);
         let bounded = list(&home, &json!({"limit":1000})).unwrap();
         assert_eq!(bounded["installations"].as_array().unwrap().len(), 100);
         let filtered = list(&home, &json!({"cityId":city_id,"gameId":"community.game-7"})).unwrap();
         assert_eq!(filtered["installations"].as_array().unwrap().len(), 1);
         assert_eq!(filtered["installations"][0]["cityRevision"], revision);
         assert_eq!(filtered["installations"][0]["status"], "disabled");
+        assert_eq!(filtered["installedCount"], 0);
         std::fs::remove_dir_all(home).ok();
     }
 

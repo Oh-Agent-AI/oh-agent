@@ -242,11 +242,13 @@ build/install/uninstall 还要 `--allow-local-writes`。返回里**永远没有�
 导出到用户选的目录（`creator.experience.export`）**只从 Studio UI 触发**，不暴露为 MCP 工具：
 它会在本机弹原生目录选择器，需要一个坐在机器前的人。
 
-### 3.8 会话与作业（creator_session_* / creator_job_*，7 个，全部离线、无需任何开关）
+### 3.8 会话与作业（creator_session_* / creator_job_*，9 个，全部离线、无需任何开关）
 
 | MCP 工具 | 必需入参 | 可选入参 | 类别 |
 |---|---|---|---|
-| creator_session_open | agentId（≤128） | projectId、cityId（各 ≤128，共同构成 scope） | 本地簿记（写 sessions.sqlite，不属本地写权限面） |
+| creator_session_open | agentId（≤128） | projectId、cityId（各 ≤128，共同构成 scope）、sessionId（精确恢复）、createNew、label（≤80） | 本地簿记（写 sessions.sqlite，不属本地写权限面） |
+| creator_session_list | agentId | projectId、cityId、limit（1..=50） | 本地簿记；含历史（closed）会话与 Studio 本地档案 |
+| creator_session_update | agentId、sessionId | label（≤80）、draft（≤4000）、preferredExecutor（稳定 id 或空串） | 本地簿记；只改 Studio 本地档案（名称/草稿/首选执行器），任务与证据权威不变 |
 | creator_session_status | sessionId | — | 本地簿记 |
 | creator_session_close | sessionId | — | 本地簿记 |
 | creator_job_list | sessionId | kind（`layout-build`/`world-apply`/`playtest`/`capture`） | 本地簿记 |
@@ -257,8 +259,9 @@ build/install/uninstall 还要 `--allow-local-writes`。返回里**永远没有�
 **断线重连 = 一次 open/status 恢复全部上下文**：
 
 - `creator_session_open` 以 `agentId + scope(projectId, cityId)` 为身份：对已 open 的同身份会话**幂等重放**——返回同一 `sessionId` 加全部未决操作与作业。Agent 进程崩溃或断线后，重新 open 一次即恢复完整现场；也可以用 `creator_session_status` 按 sessionId 读取同一份视图（状态、有界操作时间线、开放作业）。
+- **多会话是 Studio 的用法**：`createNew` 在同 scope 下另起一个会话，`sessionId` 按 id 精确恢复（Studio 重启后不会把两个创作会话合成一个）；`creator_session_list` 返回该 scope 的全部会话（含 closed）与 Studio 本地档案（`label`/`draft`/`preferredExecutor`/`latestTask`），`creator_session_update` 只改这份档案，不改任务与证据权威。
 - 时间线聚合宿主编排库（只读）：commits 来自 `creator_operations`、试玩来自 `creator_playtest_runs`（各限 20 条、时间线合计 50 行），宿主库缺席时如实标注 `hostLedgerAvailable:false` 而不是失败。
-- 每 agent 最多 4 个 open 会话（同 scope 重放不占名额），超限返回 `creator_session_limit_exceeded`（附 next → `creator_session_status`）。关闭的会话保留 7 天供审计，之后清理；关闭后 `creator_session_status` 仍可读（state=closed）。
+- 每 agent 最多 4 个 open 会话（同 scope 重放不占名额）；**恢复历史会话同样要占名额**，满额时返回 `creator_session_limit_exceeded`（附 next → `creator_session_list`）。关闭的会话保留 7 天供审计，之后清理；关闭后 `creator_session_status` 仍可读（state=closed）。
 - **作业统一面**：`creator_playtest_start` 成功即注册为 playtest 作业（kind=`playtest`，注册时不归属会话，对所有会话可见）；playtest 作业的活状态从宿主试玩账本实时解析（pending/claimed→running、completed→ready、failed/cancelled/expired 原样）。其余 kind（layout-build / world-apply / capture）为宿主长作业预留。
 - **`creator_job_wait` 30 秒上限**：阻塞至作业终态（ready/failed/cancelled/expired）或超时；超时**不是错误**——返回 `ok:true` + 运行中快照 + `waitTimedOut:true`，调用方稍后重试 wait 或改用 `creator_job_status`。
 - 取消是协作式的（置 `cancelRequested`，引擎在下个安全点生效）；对 playtest 作业调用 `creator_job_cancel` 返回 `creator_job_not_cancellable` 并附 next → `creator_playtest_cancel`（携带 runId）——试玩取消走宿主试玩生命周期。
@@ -527,14 +530,15 @@ creator 域错误以 `tools/call` 结果的 `isError:true` + envelope 内稳定 
 
 1. **进程握手。** 启动 serve 后 stderr 出现 `data-mcp: serving on stdio (protocol 2025-06-18, data_home …)` 横幅。
 2. **initialize。** 返回 `protocolVersion: "2025-06-18"`、`capabilities.tools`、`serverInfo.name: "Oh Agent MCP"`。initialize 之前的请求被拒（JSON-RPC error `-32002`）。
-3. **tools/list。** 默认共 116 个工具，其中 creator_* 92 个（creator_studio.rs 默认 51 个 + creator_session.rs 27 个 + creator_code 系列 14 个）。加 `--enable-city-tools` 后共 132 个，creator_* 凑满 108 个，额外包含 16 个 `creator_city_*`。实时接入至少确认 `creator_connection_heartbeat`、`creator_connection_status`、`creator_capabilities_status`、`creator_events_subscribe`、`creator_task_progress` 均可发现；精确名称以 `tools/list` 和 specs() 为准。
+3. **tools/list。** 默认共 119 个工具，其中 creator_* 95 个（会话面 5 个：`creator_session_open/list/update/status/close`）。加 `--enable-city-tools` 后共 135 个，creator_* 凑满 111 个，额外包含 16 个 `creator_city_*`。实时接入至少确认 `creator_connection_heartbeat`、`creator_connection_status`、`creator_capabilities_status`、`creator_events_subscribe`、`creator_task_progress` 均可发现；精确名称以 `tools/list` 和 specs() 为准。
 4. **只读自检：creator_project_list。** 参数 `{"limit": 10}`。Studio 已打开：`ok:true` 与有界项目列表（没有项目时为空列表）；Studio 未打开：约 15 秒后 `plugin_unavailable`。
 5. **离线自检（无需 Studio）：creator_capabilities_list `{}`。** 预期 `ok:true`，schemaVersion=1，含 project/scene/worlds/gameTypes 等类别；再试 `creator_game_type_list {}`（6 个类型，builtin-adapter 4 个 playtestSupported=true）与 `creator_session_open {"agentId":"smoke"}`（返回 sessionId）。
 6. **写入开关自检（开关未开启时）。** 对 creator_project_create（或任一写入工具）发起调用，预期 `permission_denied`，消息明确要求 `data-mcp serve --allow-local-writes`。
 7. **城市域开关自检（开关未开启时）。** 调 creator_city_list，预期不在 tools/list 且调用返回 `invalid_argument`（文案指引用 `--enable-city-tools`）。
 8. **Studio 缺席自检。** 关闭 Creator Studio 后调用任一 Studio 路由工具（例如 creator_project_list），预期 `plugin_unavailable`，项目不发生任何写入。
 9. **recoveries 自检。** 制造一次 `revision_conflict`（用过期 expectedRevision 提交），预期错误 envelope 携带 `next`：`{"tool":"creator_project_read","args":{},"note":…}`（§4）。
-10. **项目服务可用性。** 创建项目或预览失败时按 §5 错误码处理：`revision_conflict` 重读重预览、`preview_expired` 重新预览、`not_found` 重新列项目、`busy` 保留原 operationId 退避重试、`invalid_argument` 修正字段后重试。
+10. **打包后的会话面冒烟。** `AGENT_VITALS_BIN="<...>/Oh Agent.app/Contents/Resources/bin/agent-vitals" node scripts/verify-creator-session-tools.mjs`：断言五个会话工具可发现、`label/draft/preferredExecutor` 能写进 Host 并读回、越权更新得到 `creator_session_scope_mismatch`、恢复历史会话仍受 open 名额约束（`creator_session_limit_exceeded`）。这条只对打包产物跑——单测证明函数，只有真二进制能证明接线与开关没被漏掉。
+11. **项目服务可用性。** 创建项目或预览失败时按 §5 错误码处理：`revision_conflict` 重读重预览、`preview_expired` 重新预览、`not_found` 重新列项目、`busy` 保留原 operationId 退避重试、`invalid_argument` 修正字段后重试。
 
 自检通过后，创作流程：list → read → preview → 用户在 Studio 确认 → commit；超时先查 creator_operation_status 或用同一 operationId 重试。多轮编辑建议全程挂一个 `creator_session_open` 会话，断线后按 §7.1 恢复。
 

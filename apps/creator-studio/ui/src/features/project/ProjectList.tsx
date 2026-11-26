@@ -16,6 +16,8 @@ export function ProjectList(props: Readonly<{
     {loading && projects.length === 0 && <p className="muted">正在读取真实 Creator Project…</p>}
     {error && <div className="library-error" role="alert"><span>项目列表不可用（{error}）。</span><button className="secondary" disabled={loading} onClick={onRefresh}>重试</button></div>}
     {!loading && !error && projects.length === 0 && <p className="muted">{emptyMessage}</p>}
-    {projects.map(row => <button className="project-row" key={row.projectId} disabled={busy} onClick={() => onOpenProject(row.projectId)}><strong>{row.title}</strong><span>Creator Project · revision {row.revision} · 更新于 {formatDate(row.updatedAtMs)}</span></button>)}
+    {projects.map(row => <button className="project-row" key={row.projectId} disabled={busy} onClick={() => onOpenProject(row.projectId)}>
+      <strong>{row.title}</strong>{row.updatedAtMs > 0 && <span>更新于 {formatDate(row.updatedAtMs)}</span>}
+    </button>)}
   </div>;
 }

@@ -4,7 +4,7 @@
 //! and derives world-space bounds from POSITION accessors; release assets are
 //! only served after proving they are referenced by that immutable release.
 use serde_json::{json, Value};
-use std::path::Path;
+use std::{collections::HashMap, path::{Path, PathBuf}, sync::{Mutex, OnceLock}, time::{Duration, Instant}};
 
 use crate::creator_store::{bytes_digest, database, digest, read_creator_artifact, valid_id};
 use crate::creator_projects::{MAX_IMPORTED_MODEL_BYTES, MAX_RELEASE_BYTES};
@@ -101,6 +101,97 @@ pub(crate) fn inspect_glb(bytes: &[u8]) -> Result<Value, &'static str> {
     let dimensions = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
     if dimensions.iter().any(|value| !value.is_finite() || *value <= 0.0 || *value > 10_000.0) { return Err("creator_asset_bounds_invalid"); }
     Ok(json!({"x":dimensions[0],"y":dimensions[1],"z":dimensions[2]}))
+}
+
+struct ProjectAssetSnapshot {
+    home: PathBuf,
+    instance: String,
+    project_id: String,
+    revision: u64,
+    asset_id: String,
+    digest: String,
+    bytes: Vec<u8>,
+    created: Instant,
+    last_access: Instant,
+}
+
+fn project_asset_snapshots() -> &'static Mutex<HashMap<String, ProjectAssetSnapshot>> {
+    static SNAPSHOTS: OnceLock<Mutex<HashMap<String, ProjectAssetSnapshot>>> = OnceLock::new();
+    SNAPSHOTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn valid_asset_digest(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|hash| hash.len() == 64
+        && hash.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()))
+}
+
+pub(crate) fn open_project_asset_snapshot(home: &Path, instance: &str, project_id: &str, revision: u64,
+    asset_id: &str, asset_digest: &str) -> Result<Value, &'static str> {
+    if !valid_id(instance) || !valid_id(project_id) || !valid_id(asset_id) || !valid_asset_digest(asset_digest) {
+        return Err("creator_request_invalid");
+    }
+    let document = crate::creator_projects::read_project(home, project_id)?;
+    if document.get("revision").and_then(Value::as_u64) != Some(revision) { return Err("revision_conflict"); }
+    let entries = document.get("assets").and_then(|assets| assets.get("entries")).and_then(Value::as_array)
+        .ok_or("creator_project_asset_not_found")?;
+    let expected_path = format!("assets/{}.glb", &asset_digest[7..]);
+    let byte_length = entries.iter().find(|entry| entry.get("assetId").and_then(Value::as_str) == Some(asset_id)
+        && entry.get("sha256").and_then(Value::as_str) == Some(asset_digest)
+        && entry.get("relativePath").and_then(Value::as_str) == Some(&expected_path)
+        && entry.get("format").and_then(Value::as_str) == Some("glb-v2"))
+        .and_then(|entry| entry.get("byteLength")).and_then(Value::as_u64)
+        .filter(|length| *length <= MAX_IMPORTED_MODEL_BYTES).ok_or("creator_project_asset_not_found")?;
+    let referenced = document.get("assetRefs").and_then(Value::as_array).is_some_and(|refs| refs.iter()
+        .any(|reference| reference.get("assetId").and_then(Value::as_str) == Some(asset_id)
+            && reference.get("digest").and_then(Value::as_str) == Some(asset_digest)));
+    if !referenced { return Err("creator_project_asset_not_found"); }
+    let path = home.join("state/creator/projects").join(project_id).join("assets").join(format!("{}.glb", &asset_digest[7..]));
+    let metadata = std::fs::symlink_metadata(&path).map_err(|_| "creator_asset_missing")?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() || metadata.len() != byte_length {
+        return Err("creator_asset_invalid");
+    }
+    let bytes = std::fs::read(path).map_err(|_| "creator_asset_missing")?;
+    if bytes_digest(&bytes) != asset_digest { return Err("creator_asset_digest_mismatch"); }
+    inspect_glb(&bytes)?;
+    let id = crate::creator_store::new_id("project-asset-snapshot-")?;
+    let mut snapshots = project_asset_snapshots().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    snapshots.retain(|_, snapshot| snapshot.last_access.elapsed() <= Duration::from_secs(60)
+        && snapshot.created.elapsed() <= Duration::from_secs(600));
+    let retained_bytes = snapshots.values().map(|snapshot| snapshot.bytes.len()).sum::<usize>();
+    if snapshots.len() >= 8 || retained_bytes.saturating_add(bytes.len()) > 128 * 1024 * 1024 {
+        return Err("creator_asset_snapshot_budget_exceeded");
+    }
+    let now = Instant::now();
+    snapshots.insert(id.clone(), ProjectAssetSnapshot { home: home.to_path_buf(), instance: instance.into(),
+        project_id: project_id.into(), revision, asset_id: asset_id.into(), digest: asset_digest.into(),
+        bytes, created: now, last_access: now });
+    Ok(json!({"snapshotId":id,"projectId":project_id,"revision":revision,"assetId":asset_id,
+        "digest":asset_digest,"byteLength":byte_length}))
+}
+
+pub(crate) fn read_project_asset_snapshot(home: &Path, instance: &str, id: &str, offset: u64) -> Result<Value, &'static str> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let mut snapshots = project_asset_snapshots().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    snapshots.retain(|_, snapshot| snapshot.last_access.elapsed() <= Duration::from_secs(60)
+        && snapshot.created.elapsed() <= Duration::from_secs(600));
+    let snapshot = snapshots.get_mut(id).filter(|snapshot| snapshot.home == home && snapshot.instance == instance)
+        .ok_or("creator_asset_snapshot_expired")?;
+    let start = usize::try_from(offset).map_err(|_| "creator_request_invalid")?;
+    if start > snapshot.bytes.len() { return Err("creator_request_invalid"); }
+    let end = start.saturating_add(32 * 1024).min(snapshot.bytes.len());
+    snapshot.last_access = Instant::now();
+    Ok(json!({"projectId":snapshot.project_id,"revision":snapshot.revision,"assetId":snapshot.asset_id,
+        "digest":snapshot.digest,"offset":start,"totalBytes":snapshot.bytes.len(),"complete":end == snapshot.bytes.len(),
+        "data":STANDARD.encode(&snapshot.bytes[start..end])}))
+}
+
+pub(crate) fn close_project_asset_snapshot(home: &Path, instance: &str, id: &str) -> Result<Value, &'static str> {
+    let mut snapshots = project_asset_snapshots().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !snapshots.get(id).is_some_and(|snapshot| snapshot.home == home && snapshot.instance == instance) {
+        return Err("creator_asset_snapshot_expired");
+    }
+    snapshots.remove(id);
+    Ok(json!({"closed":true}))
 }
 
 /// Read one immutable release asset only after proving it is referenced by that

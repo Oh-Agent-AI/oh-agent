@@ -53,6 +53,10 @@ fn open_db(data_home: &Path) -> Result<rusqlite::Connection, ToolError> {
 }
 
 fn ensure_schema(db: &rusqlite::Connection) -> Result<(), ToolError> {
+    db.execute_batch("CREATE TABLE IF NOT EXISTS managed_actor_runs (
+        actor_id TEXT PRIMARY KEY, story_run_id TEXT NOT NULL, character_id TEXT NOT NULL,
+        UNIQUE(story_run_id,character_id)
+    );").map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     // 投递行是易逝通知（非事实），但模式升级需要显式版本标记：
     // bus_schema_version != 2 → 重建表（旧 at-most-once 行不迁移，评审 3 基线重置）。
     db.execute_batch("CREATE TABLE IF NOT EXISTS host_deliveries_meta (version INTEGER NOT NULL);")
@@ -115,6 +119,31 @@ fn new_delivery_id() -> String {
     format!("delivery-{:x}-{:04x}", now_ms(), seq & 0xffff)
 }
 
+pub fn managed_actor_role(data_home: &Path, story_run_id: &str) -> Result<Option<String>, ToolError> {
+    let db = open_db(data_home)?;
+    db.query_row("SELECT character_id FROM managed_actor_runs WHERE story_run_id=?1", [story_run_id], |row| row.get(0))
+        .optional().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))
+}
+
+/// Same-host binding used by the managed Actor worker. Not an MCP operation.
+pub fn bind_managed_actor(data_home: &Path, actor_id: &str, story_run_id: &str, character_id: &str) -> Result<(), ToolError> {
+    let db = open_db(data_home)?;
+    db.execute("INSERT INTO managed_actor_runs(actor_id,story_run_id,character_id) VALUES(?1,?2,?3)
+        ON CONFLICT(story_run_id,character_id) DO UPDATE SET actor_id=excluded.actor_id",
+        params![actor_id,story_run_id,character_id])
+        .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    Ok(())
+}
+
+pub fn release_managed_turn(data_home: &Path, actor_id: &str, delivery_id: &str) -> Result<(), ToolError> {
+    let db = open_db(data_home)?;
+    db.execute("UPDATE host_deliveries SET status='pending',in_flight_until_ms=NULL,redelivered=1
+        WHERE delivery_id=?1 AND principal_kind='actor' AND principal_id=?2 AND kind='actor.turn'
+        AND status='in_flight' AND EXISTS (SELECT 1 FROM managed_actor_runs WHERE actor_id=?2)",
+        params![delivery_id,actor_id]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    Ok(())
+}
+
 /// D-2 生产者：玩家事实命中绑定 resident 时投递 actor.turn。路由顺序（评审 2）：
 /// 先解析玩家在该 City 的活跃 Story Run（storyRunId + storyId），再按该 Run 的
 /// story 绑定 actor——两个 Story 复用同一 resident 不会串线。无活跃 Run 或无
@@ -142,8 +171,10 @@ pub fn post_actor_turn_for_commit(data_home: &Path, turn: &ActorTurnContext<'_>)
         return Ok(json!({"deliveryId":null,"bound":false,"routed":false,"droppedOldest":0}));
     };
     let actor_id: Option<String> = tx.query_row(
-        "SELECT actor_id FROM actors WHERE story_id=?1 AND character_id=?2 ORDER BY created_at_ms DESC LIMIT 1",
-        params![story_id, turn.resident_id], |row| row.get(0))
+        "SELECT a.actor_id FROM actors a LEFT JOIN managed_actor_runs m ON m.actor_id=a.actor_id
+         WHERE a.story_id=?1 AND a.character_id=?2 AND (m.story_run_id IS NULL OR m.story_run_id=?3)
+         ORDER BY (m.story_run_id IS NOT NULL) DESC,a.created_at_ms DESC LIMIT 1",
+        params![story_id, turn.resident_id, story_run_id], |row| row.get(0))
         .optional().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     let Some(actor_id) = actor_id else { return Ok(json!({"deliveryId":null,"bound":false,"routed":true,"droppedOldest":0})); };
@@ -346,9 +377,11 @@ fn pump_outbox_turns(tx: &rusqlite::Transaction, actor_ids: &[String]) -> Result
              AND e.player_id=o.player_id AND e.city_id=o.city_id \
              WHERE o.story_id=?1 AND o.status='pending' \
                AND json_extract(e.intent_json,'$.residentId')=?2 \
+               AND (EXISTS (SELECT 1 FROM managed_actor_runs m WHERE m.actor_id=?3 AND m.story_run_id=o.story_run_id) \
+                 OR NOT EXISTS (SELECT 1 FROM managed_actor_runs m WHERE m.actor_id=?3 OR (m.story_run_id=o.story_run_id AND m.character_id=?2))) \
              ORDER BY o.id LIMIT 32")
             .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?
-            .query_map(params![story_id,character_id], |row|
+            .query_map(params![story_id,character_id,actor_id], |row|
                 Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,String>(4)?)))
             .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?
             .collect::<Result<Vec<_>,_>>().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
@@ -521,6 +554,27 @@ pub mod tests {
             "kind":"actor.turn","payload":{},"dedupeKey":"evt-1"})).unwrap();
         assert_eq!(retry["deduped"], json!(true));
         assert_eq!(claim(&home, "sess-a")["deliveredCount"], 0);
+    }
+
+    #[test]
+    fn managed_actor_only_receives_its_bound_run() {
+        let home = temp_home("managed-scope");
+        bind_actor(&home, "sess-external", "actor-external", "story.detective", "resident:linxia");
+        bind_actor(&home, "sess-managed", "actor-managed", "story.detective", "resident:linxia");
+        run_row(&home, "run-old", "player-1", "story.detective");
+        run_row(&home, "run-managed", "player-1", "story.detective");
+        bind_managed_actor(&home, "actor-managed", "run-managed", "resident:linxia").unwrap();
+        seed_outbox(&home, "evt-old", "story.detective", "player-1", "city-1", "run-old");
+        seed_outbox(&home, "evt-managed", "story.detective", "player-1", "city-1", "run-managed");
+        let external = claim(&home, "sess-external");
+        assert_eq!(external["deliveredCount"], 1);
+        assert_eq!(external["deliveries"][0]["payload"]["storyRunId"], "run-old");
+        let managed = claim(&home, "sess-managed");
+        assert_eq!(managed["deliveredCount"], 1);
+        assert_eq!(managed["deliveries"][0]["payload"]["storyRunId"], "run-managed");
+        release_managed_turn(&home, "actor-managed", managed["deliveries"][0]["deliveryId"].as_str().unwrap()).unwrap();
+        assert_eq!(claim(&home, "sess-managed")["deliveries"][0]["redelivered"], true);
+        std::fs::remove_dir_all(home).ok();
     }
 
     #[test]

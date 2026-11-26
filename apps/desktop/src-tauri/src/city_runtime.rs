@@ -4,7 +4,7 @@ use std::path::Path;
 use crate::creator_store::{database, digest, new_id, now_ms};
 use crate::story_store::{commit_story, legacy_story_scope, story_state, StoryClockAuthorityV1, StoryCommitCommandV1, StoryForkScopeV1, StoryStateScopeV1};
 
-const RUN_TTL_MS: u64 = 30 * 60 * 1_000;
+pub(crate) const RUN_TTL_MS: u64 = 30 * 60 * 1_000;
 
 pub(crate) fn migrate(db: &Connection) -> Result<(), &'static str> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS city_clocks (
@@ -25,6 +25,12 @@ pub(crate) fn migrate(db: &Connection) -> Result<(), &'static str> {
         game_id TEXT NOT NULL, player_id TEXT NOT NULL, build_id TEXT,
         status TEXT NOT NULL, active_slot TEXT UNIQUE, created_at_ms INTEGER NOT NULL,
         expires_at_ms INTEGER NOT NULL, finished_at_ms INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS city_game_story_bindings (
+        run_id TEXT PRIMARY KEY, story_id TEXT NOT NULL, story_run_id TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS city_story_playtest_completions (
+        run_id TEXT PRIMARY KEY, action TEXT NOT NULL, result_json TEXT NOT NULL
     );").map_err(|_| "creator_store_unavailable")?;
     // Story Fork 表（RFC §13.1）：与 city_preview_clocks 对称的 Story 侧私有命名空间。
     crate::story_store::migrate_story_forks(db)
@@ -212,21 +218,41 @@ fn start_scoped_run_at(home: &Path, city_instance: &str, payload: &Value, now: u
     let game_id = required(payload, "gameId")?;
     let build_id = payload.get("buildId").and_then(Value::as_str).filter(|value| valid_id(value));
     if payload.get("buildId").is_some_and(|value| value.as_str().is_none_or(|id| !valid_id(id))) { return Err("game_argument_invalid"); }
-    let db = database(home)?;
+    let story_run_id = payload.get("storyRunId").map(|_| required(payload, "storyRunId")).transpose()?;
+    let mut db = database(home)?;
     migrate(&db)?;
+    if story_run_id.is_some() { crate::story_registry::migrate(&db)?; }
     expire_runs(&db, now)?;
     let is_preview = preview_player.is_some();
     let player_id = match preview_player { Some(player) => player, None => local_player(&db, now)? };
     let player_kind = if is_preview { "preview" } else { "local-profile" };
     let run_id = new_id("game-run")?;
-    db.execute("INSERT INTO city_game_runs(run_id,city_instance_id,city_id,game_id,player_id,build_id,status,active_slot,created_at_ms,expires_at_ms)
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
+    let story_binding = if let Some(story_run_id) = story_run_id {
+        let story_id: String = tx.query_row(
+            "SELECT story_id FROM story_runs WHERE story_run_id=?1 AND player_id=?2 AND city_id=?3 AND status='active'",
+            params![story_run_id,player_id,city_id], |row| row.get(0),
+        ).optional().map_err(|_| "creator_store_unavailable")?.ok_or("story_run_not_active")?;
+        Some((story_id, story_run_id))
+    } else { None };
+    tx.execute("INSERT INTO city_game_runs(run_id,city_instance_id,city_id,game_id,player_id,build_id,status,active_slot,created_at_ms,expires_at_ms)
         VALUES (?1,?2,?3,?4,?5,?6,'active',?2,?7,?8)",
         params![run_id,city_instance,city_id,game_id,player_id,build_id,now,now + RUN_TTL_MS])
         .map_err(|error| if matches!(error, rusqlite::Error::SqliteFailure(_, _)) { "game_activity_busy" } else { "creator_store_unavailable" })?;
+    if let Some((story_id, story_run_id)) = &story_binding {
+        tx.execute("INSERT INTO city_game_story_bindings(run_id,story_id,story_run_id) VALUES (?1,?2,?3)",
+            params![run_id,story_id,story_run_id]).map_err(|_| "creator_store_unavailable")?;
+    }
+    tx.commit().map_err(|_| "creator_store_unavailable")?;
     // Preview 的 Run 起始时钟走 Preview Fork，正式 Clock 不被 Preview 启停推进。
     if is_preview { read_preview_clock_at(home, city_instance, city_id, now)?; } else { read_clock_at(home, city_id, now)?; }
-    Ok(json!({"runId":run_id,"cityId":city_id,"gameId":game_id,"playerScope":{"playerId":player_id,"kind":player_kind},
-        "status":"active","expiresAtMs":now + RUN_TTL_MS}))
+    let mut result = json!({"runId":run_id,"cityId":city_id,"gameId":game_id,"playerScope":{"playerId":player_id,"kind":player_kind},
+        "status":"active","expiresAtMs":now + RUN_TTL_MS});
+    if let Some((story_id, story_run_id)) = story_binding {
+        result["storyId"] = json!(story_id);
+        result["storyRunId"] = json!(story_run_id);
+    }
+    Ok(result)
 }
 
 pub(crate) fn stop_run(home: &Path, city_instance: &str, payload: &Value) -> Result<Value, &'static str> {
@@ -296,15 +322,29 @@ pub(crate) fn read_story_run(home: &Path, city_instance: &str, payload: &Value) 
     let (story_id, story_run_id) = active_story_scope(&db, &player_id, &city_id, run_id)?;
     let state = crate::story_store::story_state_scoped(home, &player_id, &city_id, &story_id, &story_run_id)?;
     let dialogue = crate::story_store::story_dialogue_scoped(home, &player_id, &city_id, &story_id, &story_run_id, dialogue_limit)?;
-    Ok(json!({"runId":run_id,"storyId":story_id,"storyRunId":story_run_id,"playerId":player_id,
+    let mut result = json!({"runId":run_id,"storyId":story_id,"storyRunId":story_run_id,"playerId":player_id,
         "cityId":city_id,"gameId":game_id,"storyRevision":state["storyRevision"],"state":state["state"],
-        "dialogue":dialogue}))
+        "dialogue":dialogue});
+    if pinned_story_scope(&db, run_id)?.is_some() {
+        result["presentation"] = crate::story_registry::player_story_presentation(&db, &city_id, &story_id, &story_run_id, state["state"]["cursor"].as_str())?;
+    }
+    Ok(result)
 }
 
 /// 活跃 Run 的显式 story 作用域派生（G-READ）：返回 (story_id, story_run_id)。
 /// 优先读 story_runs 表的显式注册（N2）；fallback 到 legacy 合成映射——commit
 /// 写入侧同样走 legacy（story_scope: None），两侧必须派生一致才能读到已提交事实。
+pub(crate) fn pinned_story_scope(db: &Connection, run_id: &str) -> Result<Option<(String, String)>, &'static str> {
+    db.query_row("SELECT story_id,story_run_id FROM city_game_story_bindings WHERE run_id=?1", [run_id],
+        |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(|_| "creator_store_unavailable")
+}
+
 pub(crate) fn active_story_scope(db: &rusqlite::Connection, player_id: &str, city_id: &str, run_id: &str) -> Result<(String, String), &'static str> {
+    let has_bindings: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='city_game_story_bindings')",
+        [], |row| row.get(0)).map_err(|_| "creator_store_unavailable")?;
+    if has_bindings {
+        if let Some(scope) = pinned_story_scope(db, run_id)? { return Ok(scope); }
+    }
     // N3：显式 Story Run 按 player×city 解析——story run 生命周期独立于 city
     // game run（ViewSession 关闭后 Run 仍继续，spec §4），读取用 city run id
     // 定位会话，用玩家当前 Story Run 定位进度。表未迁移（纯 game 流程）→ 跳过。
@@ -346,7 +386,9 @@ fn commit_at(home: &Path, city_instance: &str, payload: &Value, now: u64) -> Res
     // 的活跃 Story Run 存在时，玩家提交绑定其显式作用域——玩家命令与 Actor 回复
     // 落同一 Run（HB-08 的读写对齐前提）。无注册行（纯 game 流程）或 registry
     // 未迁移 → 维持 legacy 合成映射，既有 Runtime 语义零变化。
-    let bound_story: Option<(String, String)> = {
+    let bound_story: Option<(String, String)> = if let Some(scope) = pinned_story_scope(&db, run_id)? {
+        Some(scope)
+    } else {
         let present: i64 = db.query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='story_runs'",
             [], |row| row.get(0)).map_err(|_| "creator_store_unavailable")?;
         if present == 0 { None } else {

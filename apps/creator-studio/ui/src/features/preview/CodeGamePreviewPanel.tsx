@@ -24,10 +24,11 @@ export function CodeGamePreviewPanel(props: Readonly<{
     try {
       const rows = parseCodeBuilds(await request("creator.code.builds.list", { limit: 50 }));
       setBuilds(rows);
-      setBuildId(current => rows.some(row => row.buildId === current) ? current : rows[0]?.buildId ?? "");
+      setBuildId(current => rows.some(row => row.buildId === current) || current === requestedBuildId
+        ? current : requestedBuildId ?? rows[0]?.buildId ?? "");
       setError("");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "creator_code_builds_invalid"); }
-  }, [request]);
+  }, [request, requestedBuildId]);
   const loadCities = useCallback(async () => {
     try {
       const page = parseCityListPage(await request("creator.city.list", { limit: 50 }));
@@ -95,8 +96,10 @@ export function CodeGamePreviewPanel(props: Readonly<{
   return <section className="composition code-preview-panel" aria-label="代码游戏预览">
     <div className="section-title">不可变代码构建</div>
     <p className="muted">BuildId 绑定 Bundle、Manifest 与资产。独立 Preview 使用冻结来源，不占用或替换主 City。</p>
-    <label>选择构建<select aria-label="代码构建" value={buildId} disabled={busy || builds.length === 0} onChange={event => setBuildId(event.target.value)}>
-      {builds.map(row => <option key={row.buildId} value={row.buildId}>{row.gameId} · {row.gameVersion ?? "未知版本"} · {row.buildId.slice(0, 12)}</option>)}
+    <label>选择构建<select aria-label="代码构建" value={buildId} disabled={busy || (!requestedBuildId && builds.length === 0)} onChange={event => setBuildId(event.target.value)}>
+      {requestedBuildId && !builds.some(row => row.buildId === requestedBuildId) &&
+        <option value={requestedBuildId}>所选已安装构建 · {requestedBuildId.slice(0, 12)}</option>}
+      {builds.map(row => <option key={row.buildId} value={row.buildId}>{row.displayName ?? row.gameId} · {row.gameVersion ?? "未知版本"} · {row.buildId.slice(0, 12)}</option>)}
     </select></label>
     <label>Preview 世界来源<select aria-label="Preview 世界来源" value={sourceCityId} disabled={busy} onChange={event => setSourceCityId(event.target.value)}>
       <option value="">请显式选择来源</option>

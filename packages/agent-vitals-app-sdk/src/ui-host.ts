@@ -1,4 +1,4 @@
-export type Tool = { id: string; commandId: string; label: string; kind: "button" | "select"; enabled: boolean; placement?: "primary" | "overflow"; value?: string; options?: Array<{ value: string; label: string }> };
+export type Tool = { id: string; commandId: string; label: string; kind: "button" | "select" | "search"; enabled: boolean; placement?: "primary" | "overflow"; value?: string; options?: Array<{ value: string; label: string }> };
 export type Command = { version: number; instanceId: string; requestId: string; commandId: string; value?: string };
 declare global { interface Window {
   __AV_PLUGIN_INSTANCE__?: string;

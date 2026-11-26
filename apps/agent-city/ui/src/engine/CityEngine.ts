@@ -64,6 +64,14 @@ import { createSdkViewForCityLayout, type CityLayoutSdkViewV1 } from "./sdk/city
 import { buildSurfaceIndex } from "./surface/SurfaceIndex";
 import { buildSurfaceRegions } from "./surface/surfaceRegions";
 import { footprintSupport } from "../game/driving/surfaceFootprint";
+import { PreviewDecorRegistry, PreviewEntityRegistry } from "./previewEntityRegistry";
+
+export type CityEntitySelection = Readonly<{
+  entityId: string;
+  label: string;
+  kind: "scene-model" | "scene-collider" | "scene-anchor" | "city-building" | "city-decor";
+  pose: Readonly<{ x: number; y: number; z: number; heading: number }>;
+}>;
 
 export type CityCreatorSkinId = CitySkinPackIdV1;
 /** 视口捕获结果：不可用与超预算必须可区分，调用方按 code 映射 MCP 错误。 */
@@ -150,6 +158,7 @@ export type CityEngineOptions = {
   headless?: boolean;
   onHover?: (id: string | null, clientX: number, clientY: number) => void;
   onSelect?: (id: string | null) => void;
+  onEntitySelect?: (selection: CityEntitySelection | null) => void;
   /** 点到可开的载具（地标停车场的车 / 机坪的飞机）：宿主据此进入开车或开飞机，不走选中流程。 */
   onPlay?: (target: PlayTarget) => void;
   onOrbitLock?: (id: string | null) => void;
@@ -192,6 +201,8 @@ export class CityEngine {
   private readonly raycaster = new THREE.Raycaster();
   private readonly pointer = new THREE.Vector2();
   private readonly encounterTargets = new Map<THREE.Object3D, () => void>();
+  private readonly previewEntities = new PreviewEntityRegistry();
+  private previewEntityHighlight: THREE.Box3Helper | null = null;
   private parts: CityParts | null = null;
   /** Last applyModel path: mount rebuilds CityParts; append keeps the scene and adds occupants. */
   lastApplyMode: "mount" | "append" = "mount";
@@ -301,6 +312,7 @@ export class CityEngine {
   private orbitLockedId: string | null = null;
   private orbitLockedPoint: THREE.Vector3 | null = null;
   private pickedDecor: { id: string; point: THREE.Vector3 } | null = null;
+  private readonly decorEntities = new PreviewDecorRegistry();
   private attracted = true;
   private boundsRadius = 150;
   private cityCenter = { x: 0, z: 0 };
@@ -1108,6 +1120,8 @@ export class CityEngine {
       this.parts = null;
     }
     this.baseLayout = base;
+    this.decorEntities.clear();
+    this.pickedDecor = null;
     this.planResult = planResult;
     this.layout = layout;
     this.parts = new CityParts(model, layout, previousDisplays, this.theme);
@@ -1392,9 +1406,20 @@ export class CityEngine {
     return best;
   }
 
+  /** Keep the orbit framing when comparing two renderers of the same scene. */
+  copyOrbitViewFrom(source: CityEngine): void {
+    if (source === this || this.gameSceneToken || source.gameSceneToken) return;
+    this.releaseOrbitLock();
+    this.tween = null;
+    this.camera.position.copy(source.camera.position);
+    this.camera.up.copy(source.camera.up);
+    this.controls.target.copy(source.controls.target);
+    this.camera.lookAt(this.controls.target);
+    this.noteActivity();
+  }
+
   resetView(): void {
-    const home = this.homeView();
-    const damaged = ![...this.camera.position.toArray(), ...this.controls.target.toArray(), ...this.camera.quaternion.toArray()].every(Number.isFinite);
+    const home = this.homeView();    const damaged = ![...this.camera.position.toArray(), ...this.controls.target.toArray(), ...this.camera.quaternion.toArray()].every(Number.isFinite);
     if (damaged) {
       // NaN cannot be lerped away. Repair the endpoints before touching OrbitControls.
       this.tween = null;
@@ -1408,8 +1433,83 @@ export class CityEngine {
     }
     this.releaseOrbitLock();
     this.setSelected(null);
+    this.clearPreviewEntityHighlight();
     this.flyTo(home, { ...this.cityCenter, y: 6 }, 900);
     this.options.onSelect?.(null);
+    this.options.onEntitySelect?.(null);
+  }
+
+  inspectEntity(id: string): CityEntitySelection | null {
+    const object = this.previewEntities.get(id);
+    if (object) {
+      const metadata = this.previewEntities.metadataFor(object);
+      if (!metadata) return null;
+      object.updateWorldMatrix(true, true);
+      const position = object.getWorldPosition(new THREE.Vector3());
+      const direction = new THREE.Vector3(0, 0, 1).transformDirection(object.matrixWorld);
+      if (![...position.toArray(), direction.x, direction.z].every(Number.isFinite)) return null;
+      return { entityId: id, label: metadata.label, kind: metadata.kind,
+        pose: { x: position.x, y: position.y, z: position.z, heading: Math.atan2(direction.z, direction.x) } };
+    }
+    const resolved = this.parts?.sessionIdForAsset(id) ?? id;
+    const anchor = this.parts?.focusAnchorFor(resolved);
+    if (anchor) return { entityId: resolved, label: resolved, kind: "city-building",
+      pose: { x: anchor.x, y: anchor.ground, z: anchor.z, heading: 0 } };
+    const point = id.startsWith("decor:") ? this.decorEntities.get(id) : null;
+    if (point) return { entityId: id, label: id, kind: "city-decor", pose: { x: point.x, y: point.y, z: point.z, heading: 0 } };
+    return null;
+  }
+
+  focusEntity(id: string): boolean {
+    const object = this.previewEntities.get(id);
+    if (!object) {
+      const selection = this.inspectEntity(id);
+      if (selection?.kind === "city-decor") { this.focusPoint(selection.pose.x, selection.pose.z); return true; }
+      return this.focusBuilding(id);
+    }
+    object.updateWorldMatrix(true, true);
+    const bounds = new THREE.Box3().setFromObject(object);
+    const target = bounds.getCenter(new THREE.Vector3());
+    const size = bounds.getSize(new THREE.Vector3());
+    if (bounds.isEmpty() || ![...target.toArray(), ...size.toArray()].every(Number.isFinite)) return false;
+    if (this.cinematic) this.stopCinematic();
+    this.releaseOrbitLock();
+    this.setSelected(null);
+    this.highlightPreviewEntity(object);
+    this.attracted = false;
+    this.controls.autoRotate = false;
+    const direction = new THREE.Vector3().subVectors(this.camera.position, this.controls.target).setY(0).normalize();
+    if (direction.lengthSq() < 0.01) direction.set(0.8, 0, 0.6).normalize();
+    const distance = Math.max(8, size.length() * 2.4);
+    const position = target.clone().addScaledVector(direction, distance).add(new THREE.Vector3(0, distance * 0.65, 0));
+    this.controls.enablePan = true;
+    this.controls.minDistance = Math.max(2, size.length() * 0.5);
+    this.controls.maxDistance = Math.max(this.boundsRadius * 4.5, distance * 3);
+    this.flyTo(position, target, 550);
+    return true;
+  }
+
+  private highlightPreviewEntity(object: THREE.Object3D | null): void {
+    this.clearPreviewEntityHighlight();
+    if (!object) return;
+    const bounds = new THREE.Box3().setFromObject(object);
+    if (bounds.isEmpty()) return;
+    const highlight = new THREE.Box3Helper(bounds, new THREE.Color(0x86e7cf));
+    highlight.renderOrder = 1000;
+    this.previewEntityHighlight = highlight;
+    this.scene.add(highlight);
+    this.surfaceDirty = true;
+  }
+
+  private clearPreviewEntityHighlight(): void {
+    const highlight = this.previewEntityHighlight;
+    if (!highlight) return;
+    this.scene.remove(highlight);
+    highlight.geometry.dispose();
+    const materials = Array.isArray(highlight.material) ? highlight.material : [highlight.material];
+    materials.forEach(material => material.dispose());
+    this.previewEntityHighlight = null;
+    this.surfaceDirty = true;
   }
 
   focusBuilding(id: string): boolean {
@@ -1620,12 +1720,15 @@ export class CityEngine {
   }
 
   /** 叠加层（候选地块高亮等）：直接挂在场景根上，不随 CityParts 重建而销毁。 */
-  addOverlay(object: THREE.Object3D): void {
+  addOverlay(object: THREE.Object3D, options?: Readonly<{ previewEntities?: boolean }>): void {
+    if (options?.previewEntities) this.previewEntities.register(object);
     this.scene.add(object);
     this.noteActivity();
   }
 
   removeOverlay(object: THREE.Object3D): void {
+    if (this.previewEntities.pickableRoots().includes(object)) this.clearPreviewEntityHighlight();
+    this.previewEntities.unregister(object);
     this.scene.remove(object);
     this.noteActivity();
   }
@@ -1724,6 +1827,24 @@ export class CityEngine {
     this.flyTo({ x: x + d * 0.8, y: y + d * 0.55, z: z + d * 0.8 }, { x, y, z }, 900);
   }
 
+  private pickPreviewEntity(): CityEntitySelection | null {
+    const roots = this.previewEntities.pickableRoots();
+    if (!roots.length || !this.parts || !this.pointerClient) return null;
+    this.raycaster.setFromCamera(this.pointer, this.camera);
+    const hits = this.raycaster.intersectObjects([...roots], true);
+    const obstacle = this.raycaster.intersectObjects([...this.parts.raycastTargets, ...this.parts.decorTargets], false)
+      .find(hit => Number.isFinite(hit.distance) && hit.distance >= this.camera.near && hit.point.toArray().every(Number.isFinite));
+    for (const hit of hits) {
+      if (!Number.isFinite(hit.distance) || hit.distance < this.camera.near || !hit.point.toArray().every(Number.isFinite)) continue;
+      if (obstacle && obstacle.distance < hit.distance) return null;
+      const object = this.previewEntities.resolve(hit.object);
+      if (!object) continue;
+      const entityId = this.previewEntities.entityIdFor(object);
+      return entityId ? this.inspectEntity(entityId) : null;
+    }
+    return null;
+  }
+
   private handleClick(): void {
     if (this.drivingWorldFrame) return;
     if (!this.parts) return;
@@ -1746,19 +1867,33 @@ export class CityEngine {
         if (onClick) { onClick(); return; }
       }
     }
+    const entity = this.pickPreviewEntity();
+    if (entity) {
+      this.setSelected(null);
+      this.highlightPreviewEntity(this.previewEntities.get(entity.entityId));
+      this.options.onSelect?.(null);
+      this.options.onEntitySelect?.(entity);
+      return;
+    }
     const id = this.pick();
     const play = playableKind(id) ? this.playableAt(id!) : null;
     if (play) { this.options.onPlay?.(play); return; }
     if (id && id.startsWith("decor:")) {
       // Decorations share orbit locking, but not session-only selection rings.
+      this.clearPreviewEntityHighlight();
       this.lockSelection(id);
       this.options.onSelect?.(id);
+      this.options.onEntitySelect?.(this.inspectEntity(id));
     } else if (id) {
+      this.clearPreviewEntityHighlight();
       this.lockSelection(id);
       this.options.onSelect?.(id);
+      this.options.onEntitySelect?.(this.inspectEntity(id));
     } else {
+      this.clearPreviewEntityHighlight();
       this.setSelected(null);
       this.options.onSelect?.(null);
+      this.options.onEntitySelect?.(null);
     }
   }
 
@@ -1805,6 +1940,7 @@ export class CityEngine {
       if (decor) {
         // Merged/procedural decoration bounds can cover many objects; use the visible hit.
         this.pickedDecor = { id: decor, point: hit.point.clone() };
+        this.decorEntities.remember(decor, hit.point);
         chosen = decor;
         chosenHit = hit;
         break;
@@ -2787,6 +2923,9 @@ export class CityEngine {
     this.rain = null;
     this.rainbow?.dispose();
     this.rainbow = null;
+    this.clearPreviewEntityHighlight();
+    this.previewEntities.clear();
+    this.decorEntities.clear();
     this.disposablesSky.forEach((disposable) => disposable.dispose());
     this.renderer.dispose();
   }

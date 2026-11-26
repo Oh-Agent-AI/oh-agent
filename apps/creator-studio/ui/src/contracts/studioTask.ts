@@ -1,13 +1,20 @@
 export type StudioTaskPhase = "planning" | "awaiting-plan-approval" | "ready" | "executing" | "validating" | "awaiting-review" | "accepted" | "rejected" | "failed" | "cancelled" | "unknown";
+
+export function normalizeStudioGoal(value: string) {
+  return value.replace(/\p{Cc}+/gu, " ").trim();
+}
 export type StudioTaskStep = Readonly<{ stepId: string; ordinal: number; title: string; kind: "analysis" | "change" | "validation" | "review" }>;
 export type StudioTaskEvidence = Readonly<{ evidenceId: string; planRevision: number; stepId: string | null; criterionId: string; kind: string; trustLevel: string; summary: string; data: unknown; createdAtMs: number }>;
+export function studioTaskScopeId(task: Pick<StudioTask, "artifact">): string {
+  return task.artifact.projectId ?? task.artifact.cityId ?? task.artifact.storyId ?? "";
+}
 export type StudioTask = Readonly<{
   taskId: string;
   sessionId: string;
   goalId: string;
   goalRevision: number;
   humanRequest: string;
-  artifact: Readonly<{ kind: "creator-project"; projectId: string; expectedRevision: number }>;
+  artifact: Readonly<{ kind: "creator-project" | "creator-city" | "creator-story"; projectId?: string; cityId?: string; storyId?: string; expectedRevision: number }>;
   planRevision: number;
   stepIds: readonly string[];
   phase: StudioTaskPhase;
@@ -18,7 +25,7 @@ export type StudioTask = Readonly<{
   evidence: readonly StudioTaskEvidence[];
 }>;
 
-const text = (value: unknown): string | null => typeof value === "string" && value.length > 0 && value.length <= 512 ? value : null;
+const text = (value: unknown, maxLength = 512): string | null => typeof value === "string" && value.length > 0 && value.length <= maxLength ? value : null;
 const count = (value: unknown): number | null => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 const object = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 
@@ -26,13 +33,17 @@ export function parseStudioTask(value: unknown): StudioTask {
   const row = object(value);
   const taskId = text(row?.taskId);
   const goalId = text(row?.goalId);
-  const humanRequest = text(row?.humanRequest);
+  const humanRequest = text(row?.humanRequest, 4_000);
   const artifact = object(row?.artifact);
-  const projectId = text(artifact?.projectId);
+  if (!artifact || (artifact.kind !== "creator-project" && artifact.kind !== "creator-city" && artifact.kind !== "creator-story")) throw new Error("creator_task_invalid");
+  if (Object.keys(artifact).length !== 3) throw new Error("creator_task_invalid");
+  const kind = artifact.kind;
+  const idKey = kind === "creator-city" ? "cityId" : kind === "creator-story" ? "storyId" : "projectId";
+  const scopeId = text(artifact[idKey]);
   const expectedRevision = count(artifact?.expectedRevision);
   const planRevision = count(row?.planRevision);
   const goalRevision = count(row?.goalRevision);
-  if (!row || !taskId || !goalId || !humanRequest || artifact?.kind !== "creator-project" || !projectId || expectedRevision === null || planRevision === null || goalRevision === null) throw new Error("creator_task_invalid");
+  if (!row || !taskId || !goalId || !humanRequest || !scopeId || expectedRevision === null || planRevision === null || goalRevision === null) throw new Error("creator_task_invalid");
   const phases = ["planning", "awaiting-plan-approval", "ready", "executing", "validating", "awaiting-review", "accepted", "rejected", "failed", "cancelled"];
   const phase = phases.includes(String(row.phase)) ? String(row.phase) as StudioTaskPhase : "unknown";
   const stepIds = Array.isArray(row.stepIds) ? row.stepIds.filter((id): id is string => typeof id === "string") : [];
@@ -59,7 +70,7 @@ export function parseStudioTask(value: unknown): StudioTask {
   }) : [];
   const execution = object(row.execution);
   return Object.freeze({ taskId, sessionId: text(row.sessionId) ?? "", goalId, goalRevision, humanRequest,
-    artifact: Object.freeze({ kind: "creator-project", projectId, expectedRevision }), planRevision, stepIds: Object.freeze(stepIds), phase,
+    artifact: Object.freeze({ kind, [idKey]: scopeId, expectedRevision }), planRevision, stepIds: Object.freeze(stepIds), phase,
     proposedChangeSetId: text(row.proposedChangeSetId), lastEvidenceId: text(row.lastEvidenceId), steps: Object.freeze(steps), evidence: Object.freeze(evidence),
     execution: execution ? Object.freeze({ status: text(execution.status) ?? "unknown", ...(text(execution.previewId) ? { previewId: text(execution.previewId)! } : {}) }) : null });
 }
@@ -77,7 +88,10 @@ export type StudioTaskEvent = Readonly<{
 }>;
 export type StudioEventBatch = Readonly<{ events: readonly StudioTaskEvent[]; nextAfterEventId: number; hasMore: boolean; waitTimedOut: boolean }>;
 export type StudioCapability = Readonly<{ id: string; headless: boolean; requiresStudioWebView: boolean; note: string }>;
-export type StudioCapabilityStatus = Readonly<{ studioOnline: boolean; connections: readonly StudioConnection[]; capabilities: readonly StudioCapability[] }>;
+export type StudioAcpAgent = Readonly<{ id: string; name: string }>;
+export type StudioExecutorMode = Readonly<{ id: string; restricted: boolean; label: string; current?: boolean }>;
+export type StudioExecutorStatus = Readonly<{ id: string; name: string; available: boolean; modes: readonly StudioExecutorMode[]; detail?: string }>;
+export type StudioCapabilityStatus = Readonly<{ studioOnline: boolean; acpAgents: readonly StudioAcpAgent[]; executors: readonly StudioExecutorStatus[]; connections: readonly StudioConnection[]; capabilities: readonly StudioCapability[] }>;
 
 const connectionState = (value: unknown): StudioConnectionState => value === "online" || value === "busy" || value === "degraded" || value === "offline" ? value : "offline";
 function parseConnection(value: unknown): StudioConnection {
@@ -125,7 +139,24 @@ export function parseStudioCapabilityStatus(value: unknown): StudioCapabilitySta
     if (!capability || !id || !note || typeof capability.headless !== "boolean" || typeof capability.requiresStudioWebView !== "boolean") throw new Error("creator_capability_invalid");
     return Object.freeze({ id, note, headless: capability.headless, requiresStudioWebView: capability.requiresStudioWebView });
   });
-  return Object.freeze({ studioOnline: row.studioOnline, connections: parseStudioConnections(row), capabilities: Object.freeze(checked) });
+  // acpAgents 可选（旧宿主无此字段）：执行器下拉的注册表条目。
+  const acpAgents = Array.isArray(row.acpAgents) ? row.acpAgents.map(item => {
+    const agent = object(item); const agentId = text(agent?.id);
+    if (!agent || !agentId) throw new Error("creator_capability_invalid");
+    return Object.freeze({ id: agentId, name: text(agent.name) ?? agentId });
+  }) : [];
+  // executors 可选（旧宿主无此字段）：探测到的执行器可用性与权限模式。
+  const executors = Array.isArray(row.executors) ? row.executors.map(item => {
+    const executor = object(item); const executorId = text(executor?.id);
+    if (!executor || !executorId || typeof executor.available !== "boolean") throw new Error("creator_capability_invalid");
+    const modes = Array.isArray(executor.modes) ? executor.modes.map(mode => {
+      const parsed = object(mode); const modeId = text(parsed?.id);
+      if (!parsed || !modeId || typeof parsed.restricted !== "boolean") throw new Error("creator_capability_invalid");
+      return Object.freeze({ id: modeId, restricted: parsed.restricted, label: text(parsed.label) ?? modeId, ...(parsed.current === true ? { current: true } : {}) });
+    }) : [];
+    return Object.freeze({ id: executorId, name: text(executor.name) ?? executorId, available: executor.available, modes: Object.freeze(modes), ...(text(executor.detail) ? { detail: text(executor.detail)! } : {}) });
+  }) : [];
+  return Object.freeze({ studioOnline: row.studioOnline, acpAgents: Object.freeze(acpAgents), executors: Object.freeze(executors), connections: parseStudioConnections(row), capabilities: Object.freeze(checked) });
 }
 
 export function defaultStudioPlanSteps(): readonly StudioTaskStep[] {
@@ -134,6 +165,13 @@ export function defaultStudioPlanSteps(): readonly StudioTaskStep[] {
     { stepId: "validate-city", ordinal: 1, title: "在真实 City 中验证当前已保存 revision", kind: "validation" },
     { stepId: "human-review", ordinal: 2, title: "人工审阅证据并决定是否接受", kind: "review" },
   ];
+}
+
+/** 默认模板计划不携带信息：快速通道自动批准，只有非默认计划（外部/agent 提议）才停闸。 */
+export function isDefaultStudioPlan(task: Pick<StudioTask, "steps">): boolean {
+  const defaults = defaultStudioPlanSteps();
+  return task.steps.length === defaults.length
+    && task.steps.every((step, index) => step.stepId === defaults[index]?.stepId && step.kind === defaults[index]?.kind);
 }
 
 export function canExecuteTask(task: StudioTask | null): boolean {

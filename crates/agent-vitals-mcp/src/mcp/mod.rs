@@ -269,6 +269,7 @@ pub fn dispatch_with_permissions_options(
         | "creator_vehicle_list" | "creator_vehicle_preview" | "creator_vehicle_define" | "creator_vehicle_inspect"
         // Story Project Registry（RFC V3 §12，S-2+S-3）：路由进 creator_studio 的同一写闸。
         | "creator_story_project_create" | "creator_story_project_read" | "creator_story_projects_list"
+        | "creator_story_preview"
         | "creator_story_install_preview" | "creator_story_install_commit" | "creator_story_install_list"
         | "creator_story_run_start" | "creator_story_run_stop" | "creator_story_run_reset"
         | "creator_story_resident_lease_acquire" | "creator_story_resident_lease_release"
@@ -299,7 +300,8 @@ pub fn dispatch_with_permissions_options(
             if let Ok(value) = &result { creator_session::register_playtest_job(data_home, value); }
             result
         }
-        "creator_session_open" | "creator_session_status" | "creator_session_close"
+        "creator_session_open" | "creator_session_list" | "creator_session_update"
+        | "creator_session_status" | "creator_session_close"
         | "creator_job_list" | "creator_job_status" | "creator_job_wait" | "creator_job_cancel"
         | "creator_game_type_list" | "creator_task_create" | "creator_task_plan_submit" | "creator_task_plan_approve" | "creator_task_status" | "creator_task_execute"
         | "creator_task_evidence_append" | "creator_task_evidence_list" | "creator_task_review_accept" | "creator_task_review_reject" | "creator_task_cancel"

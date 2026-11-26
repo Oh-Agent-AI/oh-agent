@@ -1,0 +1,14 @@
+.city-story-entry { position: absolute; z-index: 6; right: 18px; bottom: 18px; }
+.city-story-panel::backdrop { background: #102522a8; }
+.city-story-panel { width: min(560px, calc(100% - 32px)); max-height: calc(100% - 32px); margin: auto; overflow: auto; padding: 20px; border: 1px solid #508079; border-radius: 14px; background: #172c29; color: #eefbf8; box-shadow: 0 16px 50px #0005; }
+.city-story-panel header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.city-story-panel h2 { margin: 0 0 6px; font-size: 1.25rem; }
+.city-story-panel p { margin: 8px 0; }
+.city-story-panel form, .city-story-list { display: grid; gap: 10px; }
+.city-story-panel label { display: grid; gap: 4px; }
+.city-story-panel textarea { width: 100%; resize: vertical; }
+.city-story-list button { display: flex; justify-content: space-between; gap: 10px; text-align: start; }
+.city-story-dialogue { list-style: none; padding: 0; display: grid; gap: 8px; max-height: 30vh; overflow: auto; }
+.city-story-dialogue li { border-radius: 8px; background: #23443e; padding: 8px 10px; overflow-wrap: anywhere; }
+.city-story-dialogue strong, .city-story-ending { color: #9ee6d8; }
+.city-story-actions { display: flex; flex-wrap: wrap; gap: 8px; }

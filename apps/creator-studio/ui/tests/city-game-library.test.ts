@@ -12,13 +12,15 @@ test("Studio library story tab reads the real host registry, not inferred projec
 test("Story project rows are a whitelist projection with honest unknowns", () => {
   const rows = parseStoryProjects({ projects: [
     { storyId: "story.detective", title: "侦探线", storyVersion: "1.0.0", revision: 2,
-      contentDigest: "sha256:" + "a".repeat(64), schemaVersion: 1, graphBytes: 1024, canonBytes: 256,
+      contentDigest: "sha256:" + "a".repeat(64), schemaVersion: 1, graphBytes: 1024, canonBytes: 256, nodeCount: 3,
       createdAtMs: 1700000000000, updatedAtMs: 1700000001000 },
     { storyId: "story.minimal", title: "极简", storyVersion: "0.1.0", revision: 1, contentDigest: "sha256:" + "b".repeat(64) },
   ] });
   assert.equal(rows.length, 2);
   assert.equal(rows[0]?.contentDigest, "sha256:" + "a".repeat(64));
   assert.equal(rows[0]?.schemaVersion, 1);
+  assert.equal(rows[0]?.nodeCount, 3);
+  assert.equal(rows[1]?.nodeCount, null);
   assert.equal(rows[1]?.graphBytes, null, "missing byte counts stay explicitly unknown");
   assert.equal(rows[1]?.createdAtMs, null);
   assert.equal("graph" in rows[0]!, false, "raw graph bodies never enter the list projection");

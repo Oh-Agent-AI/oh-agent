@@ -6,6 +6,8 @@ import { inspectInstalledWorld, supportsInstalledWorldGenerator } from "../conte
 import { parseInstalledPackages } from "../installedContent";
 import { resolveSceneCaptureRevision } from "../publicationSync";
 import { buildGameValidation, buildSceneValidation, buildVehicleValidation, normalizeVehicleProfileInput, scopeMismatchEnvelope } from "../sdkValidation";
+import { colliderPreviewOperations, type AgentColliderPreview } from "../features/preview/sceneColliderPreview";
+import { isSceneObjectPreviewOperations } from "../features/preview/scenePreview";
 import { creatorRequest } from "../adapters/creatorHost";
 import { digest } from "../adapters/creatorHostUtils";
 import type { AgentActivityItem } from "../features/agent/useAgentActivity";
@@ -20,6 +22,8 @@ type CreatorHostBridgeOptions = Readonly<{
   projectRef: RefObject<Project | null>;
   applyRef: RefObject<ApplyProject>;
   studioEngineRef: RefObject<CityEngine | null>;
+  isolatedProjectEngineRef: RefObject<CityEngine | null>;
+  baseViewportStatusRef: RefObject<CityViewStatus>;
   draftCityViewRef: RefObject<CityInstanceV1 | null>;
   draftEngineRef: RefObject<CityEngine | null>;
   draftViewStatusRef: RefObject<CityViewStatus>;
@@ -30,6 +34,7 @@ type CreatorHostBridgeOptions = Readonly<{
   recordCityDiagnostic: (city: CityInstanceV1, event: string, code?: string) => Promise<void>;
   recordAgentActivity: (item: AgentActivityItem) => void;
   restoreAgentActivity: () => Promise<void>;
+  rememberColliderPreview: (preview: AgentColliderPreview) => void;
   setAgentCommit: Dispatch<SetStateAction<AgentCommit | null>>;
   setMessage: Dispatch<SetStateAction<string>>;
   setActivePanel: (panel: StudioPanel) => void;
@@ -37,8 +42,8 @@ type CreatorHostBridgeOptions = Readonly<{
 
 export function useCreatorHostBridge(options: CreatorHostBridgeOptions) {
   const {
-    projectRef, applyRef, studioEngineRef, draftCityViewRef, draftEngineRef, draftViewStatusRef, draftViewFailureRef, draftDiagnosticsRef,
-    approvalGate, openCityView, recordCityDiagnostic, recordAgentActivity, restoreAgentActivity, setAgentCommit, setMessage, setActivePanel,
+    projectRef, applyRef, studioEngineRef, isolatedProjectEngineRef, baseViewportStatusRef, draftCityViewRef, draftEngineRef, draftViewStatusRef, draftViewFailureRef, draftDiagnosticsRef,
+    approvalGate, openCityView, recordCityDiagnostic, recordAgentActivity, restoreAgentActivity, rememberColliderPreview, setAgentCommit, setMessage, setActivePanel,
   } = options;
 
   useEffect(() => {
@@ -54,7 +59,7 @@ export function useCreatorHostBridge(options: CreatorHostBridgeOptions) {
       "creator.experience.build", "creator.experience.list", "creator.experience.install", "creator.experience.uninstall",
       // Story Project Registry（RFC V3 §12，S-2+S-3）：MCP 的 story.* 调用经 Studio
       // 透传到宿主 dispatch；写授权仍由宿主 dispatch 行与 MCP 闸各自执行。
-      "creator.story.project.create", "creator.story.project.read", "creator.story.projects.list",
+      "creator.story.project.create", "creator.story.project.read", "creator.story.project.preview", "creator.story.projects.list",
       "creator.story.install.preview", "creator.story.install.commit", "creator.story.install.list",
       "creator.story.run.start", "creator.story.run.stop", "creator.story.run.reset",
       "creator.story.resident.lease.acquire", "creator.story.resident.lease.release"];
@@ -223,6 +228,13 @@ export function useCreatorHostBridge(options: CreatorHostBridgeOptions) {
             }) : [];
             const cityOperations = Array.isArray(payload.operations) ? payload.operations.filter(item => item && typeof item === "object" && (item.op === "city.patch.upsert" || item.op === "city.patch.remove")) : [];
             const singleCityPatch = cityOperations.length === 1 && operations === 1 && cityOperations[0].op === "city.patch.upsert" ? cityOperations[0].patch : undefined;
+            if (method === "creator.scene.preview" && preview.projectId === projectRef.current?.projectId) {
+              const colliders = colliderPreviewOperations(payload.operations);
+              if (colliders) rememberColliderPreview({ ...colliders,
+                ...(isSceneObjectPreviewOperations(payload.operations) ? { sceneOperations: payload.operations as Record<string, unknown>[] } : {}),
+                previewId: preview.previewId, projectId: preview.projectId,
+                revision: preview.baseRevision, expiresAt: Date.now() + Math.min(preview.expiresInMs, 600_000) });
+            }
             approvalGate.current.remember({ previewId: preview.previewId, projectId: preview.projectId, revision: preview.baseRevision,
               kind: method === "creator.game.preview" ? "game" : "scene", summary: method === "creator.game.preview" ? "玩法规则修改" : `场景修改（${operations} 项操作）`,
               details, changes: JSON.stringify(method === "creator.game.preview" ? payload.game : payload.operations, null, 2),
@@ -324,7 +336,7 @@ export function useCreatorHostBridge(options: CreatorHostBridgeOptions) {
         throw error;
       }
     };
-    // creator.scene.capture 在 WebView 本地完成（渲染器在这里，图像不出本机）。
+    // creator.scene.capture 在 WebView 采集，由调用方决定如何使用图像。
     // 修订以库里的项目为准：视口 projectRef 在 vehicle.define 之后会停在旧修订，
     // 那不是 revision_conflict。库已经前进到别的修订时才拒绝。
     (handlers as Record<string, (payload: Record<string, unknown>) => Promise<unknown>>)["creator.scene.capture"] = async (payload: Record<string, unknown>) => {
@@ -343,6 +355,7 @@ export function useCreatorHostBridge(options: CreatorHostBridgeOptions) {
         viewportRevision: open.revision,
       });
       if (!decision.ok) throw new Error(decision.code);
+      if (projectRef.current !== open || studioEngineRef.current !== engine || draftCityViewRef.current) throw new Error("creator_capture_unavailable");
       if (decision.refreshViewport) applyRef.current(document, "preserve", open);
       // 帧按描述符给 capture 的 mailbox 预算（512 KiB）与 MCP 帧上限（350K 字符）
       // 逐档降级；不可用与超预算由 captureFrame 返回不同 code，不能混成一句。
@@ -350,7 +363,8 @@ export function useCreatorHostBridge(options: CreatorHostBridgeOptions) {
       if (!frame.ok) throw new Error(frame.code);
       const camera = engine.inspectScene().camera as { position?: number[]; target?: number[] } | null;
       const result = { format: "image/jpeg", dataUrl: frame.dataUrl, width: frame.width, height: frame.height, downscaled: frame.downscaled,
-        bytes: Math.ceil(frame.dataUrl.length * 0.75), revision: decision.revision,
+        bytes: Math.ceil(frame.dataUrl.length * 0.75), projectId: open.projectId, revision: decision.revision, viewportRevision: open.revision,
+        isolatedViewport: isolatedProjectEngineRef.current === engine && baseViewportStatusRef.current === "ready",
         camera: camera ? { position: camera.position, target: camera.target } : null, capturedAtMs: Date.now() };
       noteAgent("creator.scene.capture", payload, true, { revision: decision.revision });
       return result;

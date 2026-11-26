@@ -38,6 +38,9 @@ pub(crate) fn migrate(db: &Connection) -> Result<(), &'static str> {
         status TEXT NOT NULL, current_story_version TEXT, current_package_digest TEXT,
         created_at_ms INTEGER NOT NULL, expires_at_ms INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS story_project_commit_receipts (
+        operation_id TEXT PRIMARY KEY, request_hash TEXT NOT NULL, result_json TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS story_install_receipts (
         operation_id TEXT PRIMARY KEY, request_hash TEXT NOT NULL, result_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL
     );
@@ -159,6 +162,18 @@ fn verified_digest(story_id: &str, row: &ProjectRow) -> Result<String, &'static 
 }
 
 pub(crate) fn project_create(home: &Path, payload: &Value) -> Result<Value, &'static str> {
+    write_project(home, payload, None)
+}
+
+pub(crate) fn commit_project_preview(home: &Path, story_id: &str, preview_id: &str, expected: u64, operation_id: &str, document: &Value) -> Result<Value, &'static str> {
+    let mut payload = document.clone();
+    let object = payload.as_object_mut().ok_or("creator_task_preview_mismatch")?;
+    object.insert("storyId".into(), json!(story_id));
+    object.insert("expectedStoryRevision".into(), json!(expected));
+    write_project(home, &payload, Some((preview_id, operation_id)))
+}
+
+fn write_project(home: &Path, payload: &Value, confirmation: Option<(&str, &str)>) -> Result<Value, &'static str> {
     let story_id = story_text(payload, "storyId")?;
     let title = bounded_title(payload)?.to_string();
     let schema_version = payload.get("schemaVersion").and_then(Value::as_u64).filter(|version| *version == 1)
@@ -174,9 +189,22 @@ pub(crate) fn project_create(home: &Path, payload: &Value) -> Result<Value, &'st
     let mut db = database(home)?;
     migrate(&db)?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
-    // 无 receipts：CAS revision + 同内容幂等返回覆盖重试语义（创建不是安装事务，
-    // 内容一致的重放不应制造冲突码）。
     let existing = read_project(&tx, story_id)?;
+    if let Some((preview_id, operation_id)) = confirmation {
+        let expected = expected_revision.ok_or("creator_task_preview_mismatch")?;
+        if project_preview_id(story_id, expected, &content_digest)? != preview_id {
+            return Err("creator_task_preview_mismatch");
+        }
+        let stored = tx.query_row("SELECT request_hash,result_json FROM story_project_commit_receipts WHERE operation_id=?1",
+            [operation_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .optional().map_err(|_| "creator_store_unavailable")?;
+        if let Some((hash, result)) = stored {
+            if hash != preview_id { return Err("operation_id_conflict"); }
+            return serde_json::from_str(&result).map_err(|_| "creator_store_unavailable");
+        }
+        let current = existing.as_ref().map(|row| row.6 as u64).ok_or("story_project_not_found")?;
+        if expected_revision != Some(current) { return Err("story_project_revision_conflict"); }
+    }
     let result = match existing {
         Some(row) => {
             let revision = row.6 as u64;
@@ -207,8 +235,48 @@ pub(crate) fn project_create(home: &Path, payload: &Value) -> Result<Value, &'st
                 "createdAtMs":now,"updatedAtMs":now})
         }
     };
+    if let Some((preview_id, operation_id)) = confirmation {
+        let serialized = canonical_json(&result).map_err(|_| "story_argument_invalid")?;
+        tx.execute("INSERT INTO story_project_commit_receipts(operation_id,request_hash,result_json) VALUES(?1,?2,?3)",
+            params![operation_id,preview_id,serialized]).map_err(|_| "creator_store_unavailable")?;
+    }
     tx.commit().map_err(|_| "creator_store_unavailable")?;
     Ok(result)
+}
+
+fn project_preview_id(story_id: &str, base_revision: u64, content_digest: &str) -> Result<String, &'static str> {
+    let identity = canonical_json(&json!({
+        "kind":"story-preview-v1","storyId":story_id,"baseRevision":base_revision,"contentDigest":content_digest,
+    })).map_err(|_| "story_argument_invalid")?;
+    Ok(format!("story-preview-{}", &digest(&identity)[..40]))
+}
+
+/// Story 草稿校验预览（validate-only）：与 project_create 同一校验面（有界字段、
+/// canonical_json、摘要），并核对当前 revision；不写库。previewId 由
+/// (storyId, baseRevision, contentDigest) 派生，同输入同 ID；保存仍由
+/// project_create 的 revision CAS 把关，预览不承载写入授权。
+pub(crate) fn project_preview(home: &Path, payload: &Value) -> Result<Value, &'static str> {
+    let story_id = story_text(payload, "storyId")?;
+    let title = bounded_title(payload)?.to_string();
+    let schema_version = payload.get("schemaVersion").and_then(Value::as_u64).filter(|version| *version == 1)
+        .ok_or("story_argument_invalid")?;
+    let story_version = bounded_version(payload, "storyVersion")?.to_string();
+    let graph = bounded_object(payload, "graph", GRAPH_BUDGET_BYTES)?;
+    let canon = bounded_object(payload, "canon", CANON_BUDGET_BYTES)?;
+    let content_digest = package_digest(story_id, &story_version, &title, graph, canon)?;
+    let db = database(home)?;
+    migrate(&db)?;
+    let row = read_project(&db, story_id)?;
+    let base_revision = row.as_ref().map(|project| project.6 as u64).ok_or("story_project_not_found")?;
+    let unchanged = row.as_ref().is_some_and(|project| project.5 == content_digest);
+    let preview_id = project_preview_id(story_id, base_revision, &content_digest)?;
+    Ok(json!({"previewId":preview_id,"storyId":story_id,"baseRevision":base_revision,
+        "contentDigest":content_digest,"changed":!unchanged,
+        // 回显完整提案：证据链要携带可落盘的 document（保存仍走 project_create 的
+        // revision CAS，预览不承载写入授权）。
+        "document": {"title":title,"schemaVersion":schema_version,"storyVersion":story_version,"graph":graph,"canon":canon},
+        "changedFields": if unchanged { Vec::<String>::new() } else { vec!["title".into(),"storyVersion".into(),"graph".into(),"canon".into()] },
+        "expiresInMs":300_000,"checks":{"static":"passed","runtime":"unchecked"}}))
 }
 
 /// 整读有界（chunk 语义后置）：写入侧已按预算封顶，读侧整读即是安全上界。
@@ -229,12 +297,13 @@ pub(crate) fn projects_list(home: &Path, payload: &Value) -> Result<Value, &'sta
         .ok_or("story_argument_invalid")?;
     let db = database(home)?;
     migrate(&db)?;
-    let mut statement = db.prepare("SELECT story_id,title,schema_version,story_version,content_digest,revision,created_at_ms,updated_at_ms,LENGTH(graph_json),LENGTH(canon_json) FROM story_projects
+    let mut statement = db.prepare("SELECT story_id,title,schema_version,story_version,content_digest,revision,created_at_ms,updated_at_ms,LENGTH(graph_json),LENGTH(canon_json),
+        CASE WHEN json_valid(graph_json) THEN json_array_length(graph_json,'$.nodes') END FROM story_projects
         ORDER BY updated_at_ms DESC,story_id LIMIT ?1").map_err(|_| "creator_store_unavailable")?;
     let rows = statement.query_map(params![limit], |row| Ok(json!({"storyId":row.get::<_,String>(0)?,"title":row.get::<_,String>(1)?,
         "schemaVersion":row.get::<_,i64>(2)?,"storyVersion":row.get::<_,String>(3)?,"contentDigest":row.get::<_,String>(4)?,
         "revision":row.get::<_,i64>(5)?,"createdAtMs":row.get::<_,i64>(6)?,"updatedAtMs":row.get::<_,i64>(7)?,
-        "graphBytes":row.get::<_,i64>(8)?,"canonBytes":row.get::<_,i64>(9)?})))
+        "graphBytes":row.get::<_,i64>(8)?,"canonBytes":row.get::<_,i64>(9)?,"nodeCount":row.get::<_,Option<u64>>(10)?})))
         .map_err(|_| "creator_store_unavailable")?.collect::<Result<Vec<_>,_>>().map_err(|_| "creator_store_unavailable")?;
     Ok(json!({"projects":rows}))
 }
@@ -437,6 +506,64 @@ fn latest_run_id(tx: &Connection, player_id: &str, city_id: &str, story_id: &str
         .optional().map_err(|_| "creator_store_unavailable")
 }
 
+/// Local City catalogue. Lists only the local player's prepared, pinned runs.
+pub(crate) fn prepared_story_runs(home: &Path, player_id: &str) -> Result<Value, &'static str> {
+    let db = database(home)?;
+    migrate(&db)?;
+    let mut select = db.prepare(
+        "SELECT r.story_run_id,r.city_id,r.story_id,p.title,i.story_version,c.document_json
+         FROM story_runs r JOIN story_installations i ON i.city_id=r.city_id AND i.story_id=r.story_id AND i.content_digest=r.content_digest
+         JOIN story_projects p ON p.story_id=r.story_id
+         JOIN creator_cities c ON c.city_id=r.city_id
+         WHERE r.player_id=?1 AND r.status='active' AND i.status='installed'
+           AND NOT EXISTS (SELECT 1 FROM creator_city_archives a WHERE a.city_id=r.city_id)
+         ORDER BY r.last_viewed_at_ms DESC,r.story_run_id LIMIT 50",
+    ).map_err(|_| "creator_store_unavailable")?;
+    let rows = select.query_map([player_id], |row| {
+        let city: Value = serde_json::from_str(&row.get::<_, String>(5)?).unwrap_or(Value::Null);
+        Ok(json!({"storyRunId":row.get::<_,String>(0)?,"cityId":row.get::<_,String>(1)?,"storyId":row.get::<_,String>(2)?,
+            "title":row.get::<_,String>(3)?,"storyVersion":row.get::<_,String>(4)?,"cityName":city["name"]}))
+    }).map_err(|_| "creator_store_unavailable")?.collect::<Result<Vec<_>,_>>().map_err(|_| "creator_store_unavailable")?;
+    Ok(json!({"runs":rows}))
+}
+
+/// Only reveal character names and the current beat. Never return the Canon or future graph to the player.
+pub(crate) fn player_story_presentation(db: &Connection, city_id: &str, story_id: &str, story_run_id: &str, cursor: Option<&str>) -> Result<Value, &'static str> {
+    let row: Option<(Option<String>, Option<String>)> = db.query_row(
+        "SELECT i.graph_json,i.canon_json FROM story_installations i JOIN story_runs r
+         ON r.city_id=i.city_id AND r.story_id=i.story_id AND r.content_digest=i.content_digest
+         WHERE i.city_id=?1 AND i.story_id=?2 AND r.story_run_id=?3 AND i.status='installed'",
+        params![city_id, story_id, story_run_id], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).optional().map_err(|_| "creator_store_unavailable")?;
+    let Some((Some(graph), Some(canon))) = row else { return Ok(Value::Null); };
+    let graph: Value = serde_json::from_str(&graph).map_err(|_| "creator_store_corrupt")?;
+    let canon: Value = serde_json::from_str(&canon).map_err(|_| "creator_store_corrupt")?;
+    let cursor = cursor.or_else(|| graph["start"].as_str());
+    let node = graph["nodes"].as_array().and_then(|nodes| nodes.iter().find(|node| node["id"].as_str() == cursor));
+    let beat = node.map(|node| json!({"title":node["title"],"kind":node["kind"]}));
+    let characters: Vec<Value> = canon["characters"].as_array().into_iter().flatten().filter_map(|character| {
+        let id = character["characterId"].as_str().or_else(|| character["id"].as_str()).filter(|id| valid_id(id))?;
+        let name = character["displayName"].as_str().or_else(|| character["name"].as_str()).unwrap_or(id);
+        Some(json!({"id":id,"name":name.chars().take(120).collect::<String>()}))
+    }).take(32).collect();
+    Ok(json!({"beat":beat,"characters":characters}))
+}
+
+pub(crate) fn run_status(home: &Path, player_id: &str, payload: &Value) -> Result<Value, &'static str> {
+    if !valid_id(player_id) { return Err("story_argument_invalid"); }
+    let city_id = story_text(payload, "cityId")?;
+    let story_id = story_text(payload, "storyId")?;
+    let db = database(home)?;
+    migrate(&db)?;
+    let run = db.query_row(
+        "SELECT story_run_id,status FROM story_runs WHERE player_id=?1 AND city_id=?2 AND story_id=?3
+         AND status IN ('active','paused') ORDER BY updated_at_ms DESC,created_at_ms DESC,story_run_id DESC LIMIT 1",
+        params![player_id,city_id,story_id],
+        |row| Ok(json!({"storyRunId":row.get::<_,String>(0)?,"status":row.get::<_,String>(1)?})),
+    ).optional().map_err(|_| "creator_store_unavailable")?;
+    Ok(json!({"storyId":story_id,"cityId":city_id,"run":run}))
+}
+
 pub(crate) fn run_start(home: &Path, player_id: &str, payload: &Value) -> Result<Value, &'static str> {
     if !valid_id(player_id) { return Err("story_argument_invalid"); }
     let city_id = story_text(payload, "cityId")?;
@@ -446,6 +573,11 @@ pub(crate) fn run_start(home: &Path, player_id: &str, payload: &Value) -> Result
     migrate(&db)?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
     let release_digest = require_installed(&tx, city_id, story_id)?;
+    if let Some(expected) = payload.get("expectedContentDigest") {
+        if expected.as_str() != Some(release_digest.as_str()) {
+            return Err("story_install_digest_conflict");
+        }
+    }
     let restored = latest_run_id(&tx, player_id, city_id, story_id, false)?;
     let (story_run_id, resumed_from, was_restored) = match restored {
         Some(story_run_id) => {
@@ -457,10 +589,7 @@ pub(crate) fn run_start(home: &Path, player_id: &str, payload: &Value) -> Result
         }
         None => {
             let resumed_from = latest_run_id(&tx, player_id, city_id, story_id, true)?;
-            let story_run_id = new_id("story-run-")?;
-            tx.execute("INSERT INTO story_runs(story_run_id,player_id,city_id,story_id,status,last_viewed_at_ms,resumed_from,content_digest,created_at_ms,updated_at_ms)
-                VALUES (?1,?2,?3,?4,'active',?5,?6,?7,?5,?5)", params![story_run_id,player_id,city_id,story_id,now,resumed_from,release_digest])
-                .map_err(|_| "creator_store_unavailable")?;
+            let story_run_id = insert_story_run(&tx, player_id, city_id, story_id, resumed_from.as_deref(), &release_digest, now)?;
             (story_run_id, resumed_from, false)
         }
     };
@@ -481,7 +610,17 @@ pub(crate) fn run_stop(home: &Path, payload: &Value) -> Result<Value, &'static s
     let status: String = tx.query_row("SELECT status FROM story_runs WHERE story_run_id=?1", [story_run_id],
         |row| row.get(0)).optional().map_err(|_| "creator_store_unavailable")?.ok_or("story_run_not_found")?;
     tx.commit().map_err(|_| "creator_store_unavailable")?;
+    crate::story_actor_worker::cancel(home, story_run_id);
     Ok(json!({"storyRunId":story_run_id,"status":"stopped","alreadyStopped":changed == 0 && status == "stopped"}))
+}
+
+pub(crate) fn insert_story_run(tx: &Connection, player_id: &str, city_id: &str, story_id: &str,
+    previous: Option<&str>, digest: &str, now: u64) -> Result<String, &'static str> {
+    let story_run_id = new_id("story-run-")?;
+    tx.execute("INSERT INTO story_runs(story_run_id,player_id,city_id,story_id,status,last_viewed_at_ms,resumed_from,content_digest,created_at_ms,updated_at_ms)
+        VALUES (?1,?2,?3,?4,'active',?5,?6,?7,?5,?5)", params![story_run_id,player_id,city_id,story_id,now,previous,digest])
+        .map_err(|_| "creator_store_unavailable")?;
+    Ok(story_run_id)
 }
 
 pub(crate) fn run_reset(home: &Path, player_id: &str, payload: &Value) -> Result<Value, &'static str> {
@@ -492,7 +631,7 @@ pub(crate) fn run_reset(home: &Path, player_id: &str, payload: &Value) -> Result
     let mut db = database(home)?;
     migrate(&db)?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
-    require_installed(&tx, city_id, story_id)?;
+    let release_digest = require_installed(&tx, city_id, story_id)?;
     let previous = latest_run_id(&tx, player_id, city_id, story_id, true)?;
     if let Some(previous_id) = previous.as_deref() {
         // 旧 Run 显式停止（reset 即显式生命周期变更）；其事件/记忆原样保留在
@@ -500,13 +639,9 @@ pub(crate) fn run_reset(home: &Path, player_id: &str, payload: &Value) -> Result
         tx.execute("UPDATE story_runs SET status='stopped',updated_at_ms=?2 WHERE story_run_id=?1 AND status IN ('active','paused')",
             params![previous_id,now]).map_err(|_| "creator_store_unavailable")?;
     }
-    // reset 同样钉定当前安装的发布摘要（新周目从当前发布起跑）。
-    let release_digest = require_installed(&tx, city_id, story_id)?;
-    let story_run_id = new_id("story-run-")?;
-    tx.execute("INSERT INTO story_runs(story_run_id,player_id,city_id,story_id,status,last_viewed_at_ms,resumed_from,content_digest,created_at_ms,updated_at_ms)
-        VALUES (?1,?2,?3,?4,'active',?5,?6,?7,?5,?5)", params![story_run_id,player_id,city_id,story_id,now,previous,release_digest])
-        .map_err(|_| "creator_store_unavailable")?;
+    let story_run_id = insert_story_run(&tx, player_id, city_id, story_id, previous.as_deref(), &release_digest, now)?;
     tx.commit().map_err(|_| "creator_store_unavailable")?;
+    if let Some(previous) = previous.as_deref() { crate::story_actor_worker::cancel(home, previous); }
     Ok(json!({"storyRunId":story_run_id,"playerId":player_id,"cityId":city_id,"storyId":story_id,
         "status":"active","restored":false,"resumedFrom":previous,"lastViewedAtMs":now,
         "contentDigest":release_digest}))
@@ -784,6 +919,8 @@ mod tests {
         assert_eq!(project_read(&home, &json!({"storyId":"story.missing"})).unwrap_err(), "story_project_not_found");
         let listed = projects_list(&home, &json!({"limit":10})).unwrap();
         assert_eq!(listed["projects"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["projects"][0]["nodeCount"], 1);
+        assert!(listed["projects"][0].get("graph").is_none());
         std::fs::remove_dir_all(home).ok();
     }
 

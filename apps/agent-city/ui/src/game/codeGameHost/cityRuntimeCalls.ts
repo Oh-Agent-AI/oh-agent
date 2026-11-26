@@ -3,7 +3,7 @@ import type { CityTemporalSnapshotV1 } from "@oh-agent/city-sdk/contracts";
 import type { StoryEventRuleV1 } from "../../../../../../packages/city-game-sdk/src/api/v2";
 
 type PluginResponse<T> = { version: number; requestId: string; ok: boolean; result?: T; error?: { code: string } };
-export type CityGameRunHandleV1 = Readonly<{ runId: string; cityId: string; gameId: string; playerScope: Readonly<{ playerId: string; kind: "local-profile" | "preview" }>; status: "active" }>;
+export type CityGameRunHandleV1 = Readonly<{ runId: string; cityId: string; gameId: string; storyId?: string; storyRunId?: string; playerScope: Readonly<{ playerId: string; kind: "local-profile" | "preview" }>; status: "active" }>;
 export type CityStoryReceiptV1 = Readonly<{ eventId: string; operationId: string; storyRevision: string; clockRevision: string; status: "committed" }>;
 
 function desktopAvailable(): boolean {
@@ -64,11 +64,12 @@ export async function closeCityCodePreview(snapshotId: string): Promise<void> {
   await hostCall("city.code.preview.close", { snapshotId });
 }
 
-export async function startCityGameRun(input: Readonly<{ cityId: string; gameId: string; buildId?: string }>): Promise<CityGameRunHandleV1 | null> {
+export async function startCityGameRun(input: Readonly<{ cityId: string; gameId: string; buildId?: string; storyRunId?: string }>): Promise<CityGameRunHandleV1 | null> {
   if (!desktopAvailable()) return null;
   return hostCall("city.game.run.start", {
     cityId: input.cityId, gameId: input.gameId,
     ...(input.buildId ? { buildId: input.buildId } : {}),
+    ...(input.storyRunId ? { storyRunId: input.storyRunId } : {}),
   });
 }
 
@@ -79,6 +80,36 @@ export async function stopCityGameRun(runId: string): Promise<void> {
 export async function readCityTime(cityId: string): Promise<CityTemporalSnapshotV1 | null> {
   if (!desktopAvailable()) return null;
   return hostCall("city.time.read", { cityId });
+}
+
+export type PreparedCityStory = Readonly<{
+  storyRunId: string; storyId: string; cityId: string; cityName: string; title: string; storyVersion: string;
+}>;
+
+export type CityStoryRunView = Readonly<{
+  storyRunId: string; storyRevision: string;
+  dialogue: readonly Readonly<{ eventId: string; intent: { text?: string; edgeId?: string }; replyToEventId: string | null }>[];
+  presentation: Readonly<{
+    beat: Readonly<{ title?: string; kind: string }> | null;
+    characters: readonly Readonly<{ id: string; name: string }>[];
+  }> | null;
+}>;
+
+export async function listPreparedCityStories(): Promise<readonly PreparedCityStory[]> {
+  const result = await hostCall<Readonly<{ runs: readonly PreparedCityStory[] }>>("city.story.prepared.list", {});
+  return result.runs;
+}
+
+export type CityStoryCompletionAction = "finish" | "restart";
+
+export function completeCityStory(runId: string, action: CityStoryCompletionAction): Promise<Readonly<{
+  action: CityStoryCompletionAction; runId: string; storyRunId: string;
+}>> {
+  return hostCall("city.story.playtest.complete", { runId, action });
+}
+
+export function readCityStoryRun(runId: string): Promise<CityStoryRunView> {
+  return hostCall("city.story.run.read", { runId });
 }
 
 export async function readCityStory(runId: string): Promise<Readonly<{ storyRevision: string; state: Record<string, unknown> }>> {

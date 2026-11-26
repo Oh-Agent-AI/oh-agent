@@ -1,3 +1,5 @@
+import { useColliderViewport } from "../features/preview/useColliderViewport";
+import type { AgentColliderPreview } from "../features/preview/sceneColliderPreview";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { connect, publishToolbar } from "@agent-vitals/app-sdk/ui-host";
 import { canonicalJson, completionThresholdOverrides, validateCityInstance, validateCityLayoutSnapshot, validateMiniGamePack, validateMount, validateWorldPlanPatch, type CityGameMountV1, type CityInstanceV1 } from "@oh-agent/city-sdk";
@@ -15,19 +17,26 @@ import { AgentApprovalGate, matchesPreviewBase, type AgentCommit } from "../feat
 import { useAgentActivity } from "../features/agent/useAgentActivity";
 import { AgentWorkspace } from "../features/agent/AgentWorkspace";
 import { useStudioTasks } from "../features/agent/useStudioTasks";
+import { taskCommitBlockedReason, taskHasSceneObjectPreview } from "../features/agent/taskCommit";
 import { useCreatorHostBridge } from "./useCreatorHostBridge";
 import { CodeGamePreviewPanel } from "../features/preview/CodeGamePreviewPanel";
-import { creatorWorkKindForProject, type ReleaseRef } from "../contracts/creatorProject";
+import { mountChoices, mountSlotLabel } from "../features/project/mountEditorModel";
+import { WorkspaceContentDrawer } from "../features/preview/WorkspaceContentDrawer";
+import { WorkspacePreview } from "../features/preview/WorkspacePreview";
+import { workspaceNextStep, type WorkspaceAction } from "../features/preview/workspaceNextStep";
+import type { ReleaseRef } from "../contracts/creatorProject";
 import { layoutSelectionKey, type CityDiagnosticContext, type CityRow, type CityViewOpenResult, type CityViewStatus, type CityWorldSnapshot, type LayoutRow, type Project, type ProjectCityState, type ProjectRow, type SceneDraft, type StudioPanel } from "../contracts/creatorStudio";
 import { browserPreview, creatorRequest } from "../adapters/creatorHost";
 import { digest, errorCode } from "../adapters/creatorHostUtils";
 import { CityGameLibraryPanel } from "../features/library/CityGameLibraryPanel";
-import { CityViewportPanel } from "../features/city/CityViewportPanel";
+import { CityViewportPanel, type PreviewViewportSource } from "../features/city/CityViewportPanel";
 import { CityDraftPanel } from "../features/city/CityDraftPanel";
 import { CityArchivePanel } from "../features/city/CityArchivePanel";
 import { canCommitArchive, cityDraftValidation, DRAFT_CITY_PROFILE, parseArchivePreview, parseArchivedCities, parseCityDraft, type ArchivedCity, type CityArchivePreview, type CityDraft } from "../contracts/cityLifecycle";
-import { GameEditorPanel } from "../features/project/GameEditorPanel";
+import { GameEditorPanel, type EditorFocusTarget } from "../features/project/GameEditorPanel";
 import { ProjectPanel } from "../features/project/ProjectPanel";
+import { CatalogStart, type CatalogStartMode } from "../features/project/CatalogStart";
+import { GameStartForm } from "../features/project/GameStartForm";
 import { ProjectsPage } from "../features/project/ProjectsPage";
 import { WorkbenchHome } from "../features/home/WorkbenchHome";
 import { StoryEditorPanel } from "../features/story/StoryEditorPanel";
@@ -35,11 +44,22 @@ import { EvidenceCenterPanel } from "../features/evidence/EvidenceCenterPanel";
 import { ExperienceDistributionPanel } from "../features/distribution/ExperienceDistributionPanel";
 import { CandidatePanel } from "../features/project/CandidatePanel";
 import { canAcceptCandidate, parseProjectCandidate, type ProjectCandidate } from "../contracts/candidate";
-import { StudioNavigation } from "./StudioNavigation";
-import { STUDIO_HOME_ROUTE, STUDIO_WORKSPACE_ROUTE, type StudioRoute } from "./studioRoute";
+import { normalizeStudioGoal } from "../contracts/studioTask";
+import { STUDIO_NAVIGATION, STUDIO_PROJECTS_ROUTE, STUDIO_WORKSPACE_ROUTE, studioRouteTitle, type StudioRoute } from "./studioRoute";
 import { readCityAppearancePreference } from "../../../../agent-city/ui/src/engine/cityWorldProfile";
-import type { CityEngine } from "../../../../agent-city/ui/src/engine/CityEngine";
+import type { CityEngine, CityEntitySelection } from "../../../../agent-city/ui/src/engine/CityEngine";
+import { attachPreviewEntitySupport, hasVerifiedEntityEvidence, parsePreviewEntityReference, previewEntityReferenceStatus, type PreviewEntityReference, type PreviewEntityScope } from "../contracts/previewContext";
+import { parseGroundInspection } from "../features/evidence/evidenceCenterModel";
+import { idlePreviewEntityDiagnostic, type PreviewEntityDiagnosticState } from "../features/preview/PreviewEntityContext";
+import { useProjectSceneAssets } from "../features/preview/useProjectSceneAssets";
+import { useAgentScenePreview } from "../features/preview/useAgentScenePreview";
+import { composeProjectSceneView } from "../features/preview/projectSceneView";
 import { CITY_GENERATOR_VERSION, type PlanPatchV1 } from "../../../../agent-city/ui/src/engine/planPatch";
+import { SessionSidebar } from "../features/session/SessionSidebar";
+import { useStudioSessions } from "../features/session/useStudioSessions";
+import { useWorkspaceLayout } from "../features/workspace/useWorkspaceLayout";
+import { WorkspaceSplitter } from "../features/workspace/WorkspaceSplitter";
+import { WORKSPACE_MIN_AGENT, WORKSPACE_MIN_SESSIONS } from "../features/workspace/workspaceLayout";
 
 function bindingsMatch(text: string, saved: Record<string, string[]>): boolean {
   try {
@@ -124,17 +144,44 @@ export function CreatorStudioApp() {
   const [previewKind, setPreviewKind] = useState<"game" | "scene" | "mount" | "skin" | null>(null);
   const [publishedReleaseId, setPublishedReleaseId] = useState<string | null>(null);
   const [candidate, setCandidate] = useState<ProjectCandidate | null>(null);
+  const [candidateRead, setCandidateRead] = useState<"loading" | "ready" | "unavailable">("loading");
+  const [editorFocus, setEditorFocus] = useState<EditorFocusTarget | null>(null);
   const [packageInspection, setPackageInspection] = useState<WorldPackageInspection | null>(null);
   const [installedPackages, setInstalledPackages] = useState<ReadonlyArray<InstalledContentPackage>>([]);
   const [confirmUninstall, setConfirmUninstall] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [route, setRoute] = useState<StudioRoute>(STUDIO_HOME_ROUTE);
-  const [activePanel, setActivePanel] = useState<StudioPanel>("play");
-  const openWorkspacePanel = (panel: StudioPanel) => { setActivePanel(panel); setRoute(STUDIO_WORKSPACE_ROUTE); };
+  const [route, setRoute] = useState<StudioRoute>(STUDIO_PROJECTS_ROUTE);
+  const [catalogSearch, setCatalogSearch] = useState("");
+  const [catalogStartMode, setCatalogStartMode] = useState<CatalogStartMode>(null);
+  const [activePanel, setActivePanel] = useState<StudioPanel>("agent");
+  const [contentOpen, setContentOpen] = useState(false);
+  const openWorkspacePanel = (panel: StudioPanel) => {
+    setActivePanel(panel);
+    setContentOpen(panel !== "agent");
+    setRoute(STUDIO_WORKSPACE_ROUTE);
+  };
+  const [storyTool, setStoryTool] = useState<{ storyId?: string } | null>(null);
+  const [storyHasDraft, setStoryHasDraft] = useState(false);
+  const [storyAgentSlot, setStoryAgentSlot] = useState<HTMLDivElement | null>(null);
+  const openStoryTool = (storyId?: string) => {
+    setStoryTool(current => storyId === undefined ? current ?? {} : { storyId });
+    openWorkspacePanel("story");
+  };
   const [codePreviewBuildId, setCodePreviewBuildId] = useState<string | undefined>(undefined);
   const [codePreviewSourceCityId, setCodePreviewSourceCityId] = useState<string | undefined>(undefined);
+  const openCodeGamePreview = (buildId: string, cityId?: string) => {
+    setCodePreviewBuildId(buildId);
+    setCodePreviewSourceCityId(cityId);
+    openWorkspacePanel("code");
+  };
   const [message, setMessage] = useState("");
   const [goalDraft, setGoalDraft] = useState("");
+  const [projectGoals, setProjectGoals] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const updateProjectGoal = (projectId: string, goal: string) =>
+    setProjectGoals(current => new Map(current).set(projectId, goal));
+  const [cityGoals, setCityGoals] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const updateCityGoal = (cityId: string, goal: string) =>
+    setCityGoals(current => new Map(current).set(cityId, goal));
   const [cities, setCities] = useState<CityRow[]>([]);
   const [citiesCursor, setCitiesCursor] = useState<string | null>(null);
   const [citiesLoading, setCitiesLoading] = useState(false);
@@ -180,10 +227,48 @@ export function CreatorStudioApp() {
   const [pendingEdit, setPendingEdit] = useState<{ projectId: string; operationId: string } | null>(null);
   const [pendingCreateId, setPendingCreateId] = useState<string | null>(null);
   const { agentActivity, recordAgentActivity, restoreAgentActivity } = useAgentActivity(creatorRequest);
-  const studioTasks = useStudioTasks(creatorRequest, project);
+  const projectTaskScope = project ? { kind: "creator-project" as const, projectId: project.projectId, revision: project.revision } : null;
+  // 任务构件跟随当前打开的对象：独立 City 只读预览打开时，Agent 任务针对 City。
+  const cityTaskScope = draftCityView ? { kind: "creator-city" as const, cityId: draftCityView.cityId, revision: draftCityView.revision } : null;
+  const taskScope = cityTaskScope ?? projectTaskScope;
+  const sessionScope = taskScope?.kind === "creator-project" ? { kind: "creator-project" as const, projectId: taskScope.projectId }
+    : taskScope?.kind === "creator-city" ? { kind: "creator-city" as const, cityId: taskScope.cityId } : null;
+  const studioSessions = useStudioSessions(creatorRequest, sessionScope, !browserPreview);
+  const activeSessionId = studioSessions.activeSessionId;
+  const previewResetScope = JSON.stringify([taskScope, projectCityKey]);
+  const selectionScope = taskScope ? JSON.stringify([taskScope, projectCityKey, activeSessionId]) : "";
+  const [selection, setSelection] = useState<{ scope: string; target: string; reference?: PreviewEntityReference } | null>(null);
+  const selectionRef = useRef(selection);
+  selectionRef.current = selection;
+  const selectedEntitySource = useRef<PreviewViewportSource>("base");
+  const [entityDiagnostic, setEntityDiagnostic] = useState<PreviewEntityDiagnosticState>(idlePreviewEntityDiagnostic);
+  const agentPreviewEngineRef = useRef<CityEngine | null>(null);
+  const selectedEntity = selection?.scope === selectionScope ? selection.reference ?? null : null;
+  useEffect(() => { setSelection(null); setEntityDiagnostic(idlePreviewEntityDiagnostic); }, [selectionScope, route.section, installedWorldView]);
+  const studioTasks = useStudioTasks(creatorRequest, taskScope, !browserPreview && !!activeSessionId, !!(draftCityView || projectCityKey), activeSessionId,
+    executor => { void studioSessions.savePreferredExecutor(executor); });
+  // 会话档案里的首选执行器只在"切进这个会话"时回填一次；回填不写回 Host，
+  // 否则每次切换都会把默认值当成用户偏好存下来。
+  const appliedExecutorSession = useRef<string | null>(null);
+  useEffect(() => {
+    if (!activeSessionId) { appliedExecutorSession.current = null; return; }
+    if (appliedExecutorSession.current === activeSessionId || !studioTasks.capabilities) return;
+    appliedExecutorSession.current = activeSessionId;
+    const preferred = studioSessions.activeSession?.preferredExecutor ?? "";
+    const usable = studioTasks.capabilities.executors.filter(item => item.available && item.modes.some(mode => mode.restricted));
+    studioTasks.applyPreferredExecutor(preferred && usable.some(item => item.id === preferred) ? preferred : "");
+  }, [activeSessionId, studioSessions.activeSession?.preferredExecutor, studioTasks.capabilities]);
+  // 三栏宽度按 Project/City 记住（设计基线 §1）：布局是本机偏好，不进 Host 会话档案。
+  const workspaceRef = useRef<HTMLDivElement | null>(null);
+  const workspaceLayout = useWorkspaceLayout(workspaceRef, draftCityView?.cityId ?? project?.projectId ?? "");
+  useEffect(() => {
+    if (!activeSessionId || !studioTasks.task) return;
+    void studioSessions.refresh().catch(() => undefined);
+  }, [activeSessionId, studioTasks.task?.taskId, studioTasks.task?.phase, studioSessions.refresh]);
   const approvalGate = useRef(new AgentApprovalGate());
   const [agentCommit, setAgentCommit] = useState<AgentCommit | null>(null);
   const [agentPreviewStatus, setAgentPreviewStatus] = useState<{ context: object; status: "loading" | "ready" | "failed"; code?: string } | null>(null);
+  const [agentRevealSignal, setAgentRevealSignal] = useState(0);
   useEffect(() => {
     if (!agentCommit) return;
     const timer = window.setTimeout(() => {
@@ -200,7 +285,7 @@ export function CreatorStudioApp() {
     game: JSON.stringify(p.game, null, 2),
     scene: JSON.stringify(p.scene ?? { schemaVersion: 1, objects: [] }, null, 2),
     bindings: JSON.stringify(p.mounts?.[0]?.bindings ?? {}, null, 2),
-    entry: p.mounts?.[0]?.entryAnchorId ?? p.cityLayout?.layout.anchors.find(anchor => anchor.kind === "spawn")?.id ?? "",
+    entry: p.mounts?.[0]?.entryAnchorId ?? mountChoices(p.cityLayout?.layout, p.game).entries[0]?.id ?? "",
     skin: p.skinId ?? "miami-vice",
   });
   const dirtyRegions = (p: Project) => {
@@ -223,7 +308,7 @@ export function CreatorStudioApp() {
     const saved = savedForms(next);
     // 换了项目或修订先清掉上一份 release，避免试玩按钮指向别的版本；
     // 同一修订保留，等下面的权威查询确认或补上已发布的 release。
-    if (!sameProject || previous?.revision !== next.revision) { setPublishedReleaseId(null); setCandidate(null); }
+    if (!sameProject || previous?.revision !== next.revision) { setPublishedReleaseId(null); setCandidate(null); setCandidateRead("loading"); }
     setProject(next);
     syncPublicationRef.current(next.projectId, next.revision);
     syncCandidateRef.current(next.projectId, next.revision);
@@ -244,11 +329,16 @@ export function CreatorStudioApp() {
   // 处理器读取当前 revision（handlers effect 的闭包是空依赖，拿不到新 state）。
   const studioEngineRef = useRef<CityEngine | null>(null);
   const [baseViewport, setBaseViewport] = useState<{ engine: CityEngine | null; status: "loading" | "ready" | "failed" }>({ engine: null, status: "loading" });
-  const setBaseEngine = (engine: CityEngine | null) => {
+  const isolatedProjectEngineRef = useRef<CityEngine | null>(null);
+  const baseViewportStatusRef = useRef<"loading" | "ready" | "failed">("loading");
+  const setBaseEngine = (engine: CityEngine | null, isolated = false) => {
+    isolatedProjectEngineRef.current = isolated ? engine : null;
+    baseViewportStatusRef.current = "loading";
     studioEngineRef.current = engine;
     setBaseViewport({ engine, status: "loading" });
   };
   const setBaseStatus = (status: "loading" | "ready" | "failed") => {
+    baseViewportStatusRef.current = status;
     const engine = studioEngineRef.current;
     setBaseViewport(previous => previous.engine === engine && previous.status === status ? previous : { engine, status });
   };
@@ -277,11 +367,13 @@ export function CreatorStudioApp() {
       const next = parseProjectCandidate(raw);
       if (next && (next.projectId !== projectId || next.revision !== revision)) throw new Error("creator_candidate_scope_mismatch");
       setCandidate(next);
+      setCandidateRead("ready");
     }).catch(() => {
       if (epoch !== candidateEpoch.current) return;
       const current = projectRef.current;
       if (current && (current.projectId !== projectId || current.revision !== revision)) return;
       setCandidate(null);
+      setCandidateRead("unavailable");
     });
   };
   useEffect(() => {
@@ -334,18 +426,37 @@ export function CreatorStudioApp() {
     window.clearTimeout(switchTimer.current);
     switchTimer.current = window.setTimeout(() => setSwitchConfirm(null), 5000);
   };
-  const openProjectInWorkspace = (projectId: string) => guardDrafts(projectId, () => {
-    openWorkspacePanel("play");
-    void openProject(projectId);
-  });
+  const openProjectInWorkspace = (projectId: string, goal?: string, focus?: "mount") => {
+    const enter = () => {
+      if (goal !== undefined) updateProjectGoal(projectId, goal);
+      setCatalogStartMode(null);
+      if (focus) setEditorFocus(focus);
+      openWorkspacePanel(focus ? "play" : "agent");
+    };
+    if (project?.projectId === projectId && !draftCityView && !installedWorldView) {
+      enter();
+      return;
+    }
+    guardDrafts(projectId, () => {
+      void openProject(projectId).then(opened => { if (opened) enter(); });
+    });
+  };
+  const openAgentProjectFromCatalog = (projectId: string) => {
+    if (normalizeStudioGoal(goalDraft)) openProjectInWorkspace(projectId, goalDraft);
+  };
   const openCityInWorkspace = (cityId: string, revision: number) => {
-    openWorkspacePanel("project");
-    setBusy(true);
-    void openCityView(cityId, revision).catch(error => {
-      const code = errorCode(error, "creator_city_view_failed");
-      setMessage(code === "revision_conflict" ? "城市版本已变化，请刷新列表后重新打开。" : `无法打开城市（${code}）。`);
-      void loadCities();
-    }).finally(() => setBusy(false));
+    const open = () => {
+      setBusy(true); setMessage("");
+      void openCityView(cityId, revision).then(() => {
+        setProject(null); setProjectCity(null);
+        openWorkspacePanel("agent");
+      }).catch(error => {
+        const code = errorCode(error, "creator_city_view_failed");
+        setMessage(code === "revision_conflict" ? "城市版本已变化，请刷新列表后重新打开。" : `无法打开城市（${code}）。`);
+        void loadCities();
+      }).finally(() => setBusy(false));
+    };
+    guardDrafts(`city:${cityId}`, open);
   };
   const refreshProjectCatalog = () => {
     void refresh().catch(error => setMessage(describeError(error, "creator_refresh_failed")));
@@ -432,7 +543,7 @@ export function CreatorStudioApp() {
     finally { setBusy(false); }
   };
   const openCityView = async (cityId: string, revision: number): Promise<CityViewOpenResult> => {
-    setInstalledWorldView(null);
+    setInstalledWorldView(null); setDraftCityView(null);
     if (typeof cityId !== "string" || !Number.isSafeInteger(revision) || revision < 0) throw new Error("creator_request_invalid");
     const request = ++cityOpenRequest.current;
     const document = await creatorRequest<unknown>("creator.city.read", { cityId });
@@ -471,9 +582,75 @@ export function CreatorStudioApp() {
     setMessage(`正在预览独立城市 ${checked.value.name}（版本 ${checked.value.revision}）${linkedWorld ? "及其固定世界包场景" : ""}；场景是否成功加载尚未确认。`);
     return { cityId: checked.value.cityId, revision: checked.value.revision, status: "loading", mode: "read_only_preview" };
   };
+  useEffect(() => {
+    const saved = studioTasks.saved;
+    if (!saved) return;
+    if (saved.artifact.kind === "creator-city") {
+      const { cityId } = saved.artifact;
+      if (cityId && draftCityViewRef.current?.cityId === cityId) {
+        void openCityView(cityId, saved.revision).catch(cause => {
+          setMessage(describeError(cause, "creator_city_view_failed"));
+        });
+      }
+      void loadCities();
+      return;
+    }
+    if (saved.artifact.kind !== "creator-project") return;
+    const { projectId } = saved.artifact;
+    if (!projectId || projectRef.current?.projectId !== projectId) return;
+    let active = true;
+    void creatorRequest<Project>("creator.project.read", { projectId }).then(latest => {
+      const current = projectRef.current;
+      if (active && current && current.projectId === projectId && latest.revision >= current.revision) {
+        applyRef.current(latest, "preserve", current);
+      }
+    }).catch(cause => {
+      if (active) setMessage(describeError(cause, "creator_refresh_failed"));
+    });
+    return () => { active = false; };
+  }, [studioTasks.saved, creatorRequest]);
+  const [colliderPreviews, setColliderPreviews] = useState<readonly AgentColliderPreview[]>([]);
+  const rememberColliderPreview = (preview: AgentColliderPreview) => {
+    setColliderPreviews(current => [...current.filter(item => item.previewId !== preview.previewId), preview].slice(-8));
+  };
+  const [expiredPreviewId, setExpiredPreviewId] = useState<string>();
+  const task = studioTasks.task;
+  const scenePreviewRequired = task ? taskHasSceneObjectPreview(task) : false;
+  const taskPreview = task?.phase === "awaiting-review" && task.proposedChangeSetId && !hasDrafts(project) && task.evidence.some(evidence =>
+    evidence.kind === "preview" && evidence.trustLevel === "host-observed" && evidence.planRevision === task.planRevision &&
+    (evidence.data as { previewId?: unknown } | null)?.previewId === task.proposedChangeSetId)
+    ? colliderPreviews.find(item => item.previewId === task.proposedChangeSetId && item.projectId === project?.projectId &&
+        item.revision === project.revision && item.expiresAt > Date.now() && item.previewId !== expiredPreviewId) ?? null : null;
+  const [lockedPreview, setLockedPreview] = useState<AgentColliderPreview | null>(null);
+  const activePreview = lockedPreview ?? taskPreview;
+  const previewLocked = lockedPreview !== null;
+  useEffect(() => { setLockedPreview(null); }, [previewResetScope]);
+  useEffect(() => {
+    if (lockedPreview && taskPreview && lockedPreview.previewId !== taskPreview.previewId) setMessage("Agent 已生成新改动；Preview 当前已锁定，解锁并查看对应预览后才能保存。");
+  }, [lockedPreview, taskPreview]);
+  const togglePreviewLock = () => {
+    if (lockedPreview) { setLockedPreview(null); setMessage("Preview 已解锁，画面将跟随当前任务。"); }
+    else if (taskPreview) { setLockedPreview(taskPreview); setMessage("Preview 已锁定；其他 Session 的新任务不会自动替换当前画面。"); }
+  };
+  const agentScenePreview = useAgentScenePreview(creatorRequest, activePreview, project);
+  useEffect(() => {
+    if (!activePreview) return;
+    const timeout = window.setTimeout(() => {
+      setLockedPreview(current => current?.previewId === activePreview.previewId ? null : current);
+      setExpiredPreviewId(activePreview.previewId);
+    }, Math.max(0, activePreview.expiresAt - Date.now()));
+    return () => window.clearTimeout(timeout);
+  }, [activePreview]);
+  const colliderEngine = route.section === "workspace" && !draftCityView && !installedWorldView && project?.cityLayout &&
+    baseViewport.status === "ready" && matchesPreviewBase(baseViewport.engine, project.cityLayout.seed, project.cityLayout.worldRevision)
+    ? baseViewport.engine : null;
+  const visibleColliderPreview = colliderEngine && activePreview && !activePreview.sceneOperations &&
+    (activePreview.boxes.length || activePreview.removed.some(id => project?.scene?.objects.some(object => object.id === id && object.kind === "collider")))
+    ? activePreview : null;
+  useColliderViewport(colliderEngine, project?.scene, visibleColliderPreview);
   useCreatorHostBridge({
-    projectRef, applyRef, studioEngineRef, draftCityViewRef, draftEngineRef, draftViewStatusRef, draftViewFailureRef, draftDiagnosticsRef,
-    approvalGate, openCityView, recordCityDiagnostic, recordAgentActivity, restoreAgentActivity, setAgentCommit, setMessage, setActivePanel: openWorkspacePanel,
+    projectRef, applyRef, studioEngineRef, isolatedProjectEngineRef, baseViewportStatusRef, draftCityViewRef, draftEngineRef, draftViewStatusRef, draftViewFailureRef, draftDiagnosticsRef,
+    approvalGate, openCityView, recordCityDiagnostic, recordAgentActivity, restoreAgentActivity, rememberColliderPreview, setAgentCommit, setMessage, setActivePanel: openWorkspacePanel,
   });
 
   useEffect(() => {
@@ -515,7 +692,7 @@ export function CreatorStudioApp() {
         const result = context.evidence ? ` · tick ${context.evidence.tick} · ${context.evidence.outcome ?? "未完成"}${counters ? ` · ${counters}` : ""}` : context.failureCode ? ` · ${context.failureCode}` : "";
         const message = `City 试玩已返回：${context.status} · revision ${context.revision}${result} · ${context.runId}`;
         // PRD：试玩结束回到同一编辑上下文——保留未提交草稿，并回到全局视角。
-        openWorkspacePanel("play");
+        openWorkspacePanel("agent");
         void openProject(projectId, "preserve").then(() => { setFocusSignal(value => value + 1); setMessage(message); });
       } else {
         // Retry rebuilt the WebView after the one-shot return was already consumed.
@@ -538,14 +715,16 @@ export function CreatorStudioApp() {
       applyProject(next, mode, project);
       cityOpenRequest.current++; draftCityViewRef.current = null; setDraftCityView(null);
       setFocusSignal(value => value + 1);
+      return true;
     } catch (error) {
       const code = errorCode(error, "creator_read_failed");
       if (code === "creator_project_not_found" || code === "not_found") forgetStudioProject(window.localStorage);
       setMessage(error instanceof Error ? error.message : "creator_read_failed");
+      return false;
     }
     finally { setBusy(false); }
   };
-  const createProject = async () => {
+  const createProject = async (destination: StudioPanel = "agent") => {
     setBusy(true); setMessage("");
     // 创建同样幂等：结果确定前保留同一 operationId，响应失败后重试命中服务端
     // 记录而不是重复建项目。
@@ -560,8 +739,12 @@ export function CreatorStudioApp() {
         template, worldRevision: selectedLayout.worldRevision, operationId,
         ...(selectedLayout.cityId ? { cityId: selectedLayout.cityId } : {}),
       });
+      await refresh().catch(() => {});
+      if (!await openProject(created.projectId)) return;
+      if (destination === "agent") updateProjectGoal(created.projectId, goalDraft);
       setPendingCreateId(null);
-      await refresh(); await openProject(created.projectId); openWorkspacePanel("play");
+      setCatalogStartMode(null);
+      openWorkspacePanel(destination);
       if (discardedDrafts) setMessage("已创建新项目；之前项目的未提交草稿已丢弃。");
     } catch (error) { setMessage(error instanceof Error ? error.message : "creator_create_failed"); }
     finally { setBusy(false); }
@@ -749,7 +932,7 @@ export function CreatorStudioApp() {
           const slot = diagnostic.path.split(".").pop() ?? "";
           const spec = gameResult.value.slots[slot];
           const count = Array.isArray(bindings[slot]) ? bindings[slot].length : 0;
-          if (spec) throw new Error(`“${slot === "points" ? "检查点" : slot === "targets" ? "收集目标" : slot}”需要 ${spec.min} 至 ${spec.max} 个，当前已选 ${count} 个。`);
+          if (spec) throw new Error(`“${mountSlotLabel(slot)}”需要 ${spec.min} 至 ${spec.max} 个，当前已选 ${count} 个。`);
         }
         throw new Error(diagnostic?.message ?? "场地校验失败，请检查入口和目标。");
       }
@@ -864,29 +1047,43 @@ export function CreatorStudioApp() {
     } catch (error) { setMessage(error instanceof Error ? error.message : "creator_playtest_start_failed"); }
     finally { setBusy(false); }
   };
-  const hasUncommittedProjectEdits = !!project && (
-    text !== JSON.stringify(project.game, null, 2)
-    || sceneText !== JSON.stringify(project.scene ?? { schemaVersion: 1, objects: [] }, null, 2)
-    || !bindingsMatch(bindingsText, project.mounts?.[0]?.bindings ?? {})
-    || entryAnchorId !== (project.mounts?.[0]?.entryAnchorId ?? project.cityLayout?.layout.anchors.find(anchor => anchor.kind === "spawn")?.id ?? "")
-    || skinId !== (project.skinId ?? "miami-vice")
-  );
+  const hasUncommittedProjectEdits = hasDrafts(project);
+  const loadedProjectScene = useProjectSceneAssets(creatorRequest, project);
+  const projectSceneView = useMemo(() => {
+    const loaded = loadedProjectScene.state;
+    if (!project || loadedProjectScene.key !== `${project.projectId}:${project.revision}` || loaded?.key !== loadedProjectScene.key
+      || loaded.status !== "ready" || !loaded.scene || !loaded.assets || !loaded.files) return null;
+    return composeProjectSceneView(projectCity?.worldScene, { scene: loaded.scene, assets: loaded.assets, files: loaded.files });
+  }, [project, projectCity?.worldScene, loadedProjectScene.key, loadedProjectScene.state]);
 
   // A second, read-only renderer keeps the original edit session and its pending saves alive.
-  // Only a single complete patch can be shown faithfully; mixed operations stay blocked.
+  // Task scene previews replay the complete saved scene; city patches still require one complete patch.
   const agentCityPreview = useMemo(() => {
+    if (!project || hasUncommittedProjectEdits || draftCityView || viewportSeed === null || !project.cityLayout?.worldRevision
+      || baseViewport.status !== "ready" || baseViewport.engine !== studioEngineRef.current
+      || !matchesPreviewBase(baseViewport.engine, viewportSeed, project.cityLayout.worldRevision)) return null;
+    if (activePreview?.sceneOperations) {
+      const plan = agentScenePreview.plan;
+      const loaded = agentScenePreview.state;
+      if (activePreview.projectId !== project.projectId || activePreview.revision !== project.revision || !plan
+        || loaded?.context !== plan || loaded.status !== "ready" || !loaded.assets || !loaded.files) return null;
+      if (projectCityKey && !projectCity?.city) return null;
+      const worldScene = composeProjectSceneView(projectCity?.worldScene, { scene: plan.scene, assets: loaded.assets, files: loaded.files });
+      if (!worldScene) return null;
+      return { patch: null, worldScene, worldScenePreview: true, seed: viewportSeed, worldRevision: project.cityLayout.worldRevision,
+        baseEngine: baseViewport.engine, isolated: !!projectCityKey, profile: projectCityKey ? projectCity!.city!.profile : worldProfile };
+    }
     const raw = agentCommit?.proposal.cityPatch;
     if (!agentCommit?.proposal.requiresCityPreview || !raw || typeof raw !== "object" || Array.isArray(raw)
-      || !project || project.projectId !== agentCommit.projectId || project.revision !== agentCommit.expectedRevision
-      || hasUncommittedProjectEdits || draftCityView || viewportSeed === null || !project.cityLayout?.worldRevision || (raw as { seed?: unknown }).seed !== viewportSeed) return null;
-    if (baseViewport.status !== "ready" || baseViewport.engine !== studioEngineRef.current || !matchesPreviewBase(baseViewport.engine, viewportSeed, project.cityLayout.worldRevision)) return null;
+      || project.projectId !== agentCommit.projectId || project.revision !== agentCommit.expectedRevision
+      || (raw as { seed?: unknown }).seed !== viewportSeed) return null;
     if (projectCityKey && (!projectCity?.city || projectCity.key !== projectCityKey || !validateWorldPlanPatch(raw, viewportSeed, CITY_GENERATOR_VERSION).ok)) return null;
     return { patch: raw as PlanPatchV1, seed: viewportSeed, worldRevision: project.cityLayout.worldRevision, baseEngine: baseViewport.engine, isolated: !!projectCityKey,
       profile: projectCityKey ? projectCity!.city!.profile : worldProfile };
-  }, [agentCommit, project, hasUncommittedProjectEdits, draftCityView, viewportSeed, projectCityKey, projectCity, worldProfile, baseViewport]);
+  }, [activePreview, agentScenePreview.plan, agentScenePreview.state, agentCommit, project, hasUncommittedProjectEdits, draftCityView, viewportSeed, projectCityKey, projectCity, worldProfile, baseViewport]);
+  const agentViewportPreviewId = activePreview?.sceneOperations ? activePreview.previewId : agentCommit?.previewId;
 
-  const resolveAgentCommit = async (approve: boolean) => {
-    const pending = agentCommit;
+  const resolveAgentCommit = async (approve: boolean) => {    const pending = agentCommit;
     if (!pending || busy) return;
     if (!approve) { approvalGate.current.clear(pending); setAgentCommit(null); setMessage("已取消待处理的 Agent 请求；如此前提交结果未确认，请查询操作状态。"); return; }
     if (!project || project.projectId !== pending.projectId || project.revision !== pending.expectedRevision || hasUncommittedProjectEdits) {
@@ -987,127 +1184,360 @@ export function CreatorStudioApp() {
     } finally { setBusy(false); }
   };
 
-  let visualSlot: "points" | "targets" | null = null;
-  let slotMinimum = 0;
-  try {
-    const slots = JSON.parse(text)?.slots;
-    if (slots && Object.keys(slots).length === 1 && ("points" in slots || "targets" in slots)) visualSlot = "points" in slots ? "points" : "targets";
-    if (visualSlot && Number.isInteger(slots[visualSlot]?.min)) slotMinimum = slots[visualSlot].min;
-  } catch { /* 高级规则无效时不猜测绑定方式 */ }
-  const releaseHint = browserPreview && publishedReleaseId && !hasUncommittedProjectEdits ? "浏览器预览不支持试玩，请在桌面应用中试玩" : !project ? "先打开或创建项目" : hasUncommittedProjectEdits ? "请先保存未提交的修改" : !project.mounts?.length ? "请先配置并保存玩法场地" : !publishedReleaseId ? "发布后即可试玩当前版本" : "已发布版本可供试玩";
+  const readOnlyScene = !!(draftCityView || installedWorldView);
+  const editingGame = !!project && !readOnlyScene;
+  const toggleWorkspaceContent = () => {
+    if (contentOpen) { setContentOpen(false); return; }
+    if (activePanel === "agent") openWorkspacePanel(editingGame ? "play" : "project");
+    else setContentOpen(true);
+  };
+  const nextStep = workspaceNextStep({ readOnly: readOnlyScene, hasProject: editingGame, hasLayout: !!project?.cityLayout,
+    dirty: hasUncommittedProjectEdits, hasMounts: !!project?.mounts.length, browserPreview,
+    candidate, candidateRead, published: !!publishedReleaseId });
+  const handleWorkspaceAction = (action: Exclude<WorkspaceAction, "details">) => {
+    switch (action) {
+      case "mount": setEditorFocus("mount"); openWorkspacePanel("play"); return;
+      case "draft": {
+        if (!project) return;
+        const pending = dirtyRegions(project);
+        setEditorFocus(pending.game ? "game" : pending.scene ? "scene" : pending.mount ? "mount" : "skin");
+        openWorkspacePanel("play");
+        return;
+      }
+      case "settings": openWorkspacePanel("project"); return;
+      case "create": void createCandidate(); return;
+      case "test": void startCandidatePlaytest(); return;
+      case "release": void startPlaytest(); return;
+      case "refresh":
+        if (project) {
+          setCandidateRead("loading");
+          syncCandidateRef.current(project.projectId, project.revision);
+          syncPublicationRef.current(project.projectId, project.revision);
+        }
+    }
+  };
 
-  // 宿主工具栏选项限制为 8 项、值不超过 32 字节；用索引作为短值，
-  // 超出的项目仍可在项目面板中访问，避免向宿主泄漏或截断项目 ID。
-  const toolbarProjects = project && !projects.slice(0, 6).some(row => row.projectId === project.projectId)
-    ? [projects.find(row => row.projectId === project.projectId), ...projects.slice(0, 6)].filter((row): row is ProjectRow => !!row)
-    : projects.slice(0, 7);
+  const [releaseRequest, setReleaseRequest] = useState(0);
   const toolbarActionRef = useRef<(commandId: string, value?: string) => void>(() => {});
   toolbarActionRef.current = (commandId, value) => {
-    if (commandId === "creator.project") {
-      if (value === "more") { openWorkspacePanel("project"); return; }
-      const row = toolbarProjects[Number(value)];
-      if (row && row.projectId !== project?.projectId) openProjectInWorkspace(row.projectId);
-    } else if (commandId === "creator.candidate.create" && !browserPreview && !busy && !candidate && project && !hasUncommittedProjectEdits && project.mounts.length) void createCandidate();
-    else if (commandId === "creator.candidate.test" && !busy && candidate && candidate.status !== "testing" && candidate.status !== "accepted" && candidate.status !== "unknown" && !hasUncommittedProjectEdits) void startCandidatePlaytest();
-    else if (commandId === "creator.candidate.accept" && !busy && !hasUncommittedProjectEdits && canAcceptCandidate(candidate)) void acceptCandidate();
-    else if (commandId === "creator.playtest" && !busy && publishedReleaseId && !hasUncommittedProjectEdits) void startPlaytest();
-    else if (commandId === "creator.publish" && !busy && project && !hasUncommittedProjectEdits && project.mounts?.length) void publish();
+    if (busy) return;
+    if (storyHasDraft && (commandId === "creator.project.back" || commandId === "creator.navigate")) {
+      setMessage("Story 有未保存的草稿。请切回 Story 工具并保存后再离开工作区。");
+      return;
+    }
+    if (commandId === "creator.project.back") setRoute(STUDIO_PROJECTS_ROUTE);
+    else if (commandId === "creator.navigate") {
+      const destination = STUDIO_NAVIGATION.find(item => item.route.section === value)?.route;
+      if (destination) setRoute(destination);
+    } else if (commandId === "creator.project.search" && route.section === "projects") {
+      setCatalogSearch(value?.trim() ?? "");
+    } else if (commandId === "creator.project.new" && route.section === "projects") {
+      setCatalogStartMode("new");
+    } else if (route.section === "workspace" && commandId === "creator.workspace.content") {
+      toggleWorkspaceContent();
+    } else if (route.section === "workspace" && editingGame && activePanel !== "story" && commandId === "creator.workspace.release") {
+      setContentOpen(false); setReleaseRequest(previous => previous + 1);
+    }
   };
   useEffect(() => connect(command => toolbarActionRef.current(command.commandId, command.value)), []);
-  const openProjectWorkKind = project ? creatorWorkKindForProject(project.kind) : null;
   useEffect(() => {
-    const selected = toolbarProjects.findIndex(row => row.projectId === project?.projectId);
     publishToolbar([
-      { id: "project", commandId: "creator.project", label: openProjectWorkKind === "game" ? "选择模板 Game 项目" : "选择项目", kind: "select", enabled: !busy,
-        value: selected < 0 ? "more" : String(selected), options: [
-          ...toolbarProjects.map((row, index) => ({ value: String(index), label: `${row.title} · 版本 ${row.revision}`.slice(0, 100) })),
-          { value: "more", label: project ? "更多项目…" : "选择项目…" },
+      ...(route.section === "projects" ? [
+        { id: "search", commandId: "creator.project.search", label: "搜索名称", kind: "search" as const, enabled: !busy, value: catalogSearch },
+        { id: "new-project", commandId: "creator.project.new", label: "新建 Game 项目", kind: "button" as const, enabled: !busy },
+      ] : [{ id: "back-to-projects", commandId: "creator.project.back", label: "返回项目库", kind: "button" as const, enabled: !busy }]),
+      ...(route.section === "workspace" ? [
+        { id: "content", commandId: "creator.workspace.content", label: "内容", kind: "button" as const, enabled: !busy },
+        ...(editingGame && activePanel !== "story" ? [{ id: "release", commandId: "creator.workspace.release", label: "发布", kind: "button" as const, enabled: !busy }] : []),
+      ] : []),
+      { id: "page", commandId: "creator.navigate", label: "Studio 页面", kind: "select", placement: "overflow", enabled: !busy, value: route.section,
+        options: [
+          ...STUDIO_NAVIGATION.map(({ route, label }) => ({ value: route.section, label })),
+          ...(route.section === "workspace" ? [{ value: route.section, label: studioRouteTitle(route) }] : []),
         ] },
-      { id: "candidate-create", commandId: "creator.candidate.create", label: "创建 Candidate", kind: "button", enabled: !browserPreview && !busy && !candidate && !!project && !hasUncommittedProjectEdits && !!project.mounts.length },
-      { id: "candidate-test", commandId: "creator.candidate.test", label: "试玩 Candidate", kind: "button", enabled: !browserPreview && !busy && !!candidate && candidate.status !== "testing" && candidate.status !== "accepted" && candidate.status !== "unknown" && !hasUncommittedProjectEdits },
-      { id: "candidate-accept", commandId: "creator.candidate.accept", label: "接受并发布", kind: "button", enabled: !busy && !hasUncommittedProjectEdits && canAcceptCandidate(candidate) },
-      { id: "playtest", commandId: "creator.playtest", label: "试玩 Release", kind: "button", enabled: !browserPreview && !busy && !!publishedReleaseId && !hasUncommittedProjectEdits },
-      { id: "publish", commandId: "creator.publish", label: "直接发布", kind: "button", enabled: !busy && !!project && !hasUncommittedProjectEdits && !!project.mounts?.length },
     ]);
-  }, [projects, project, busy, candidate, publishedReleaseId, hasUncommittedProjectEdits]);
+  }, [route.section, editingGame, activePanel, busy, catalogSearch]);
+  const venueMap = useMemo(() => {
+    if (activePanel !== "play" || !project?.cityLayout || baseViewport.status !== "ready") return null;
+    const view = baseViewport.engine?.getCitySdkLayoutView();
+    if (!view || view.worldRevision !== project.cityLayout.worldRevision || view.seed !== project.cityLayout.seed) return null;
+    const anchors = new Map(view.layout.anchors.map(anchor => [anchor.id, view.geometry.get(anchor.geometryRef)?.positionMeters]));
+    const roads = view.roadSegments.flatMap(segment => {
+      const from = anchors.get(segment.fromAnchorId);
+      const middle = anchors.get(segment.checkpointAnchorId);
+      const to = anchors.get(segment.toAnchorId);
+      return from && middle && to ? [[from, middle, to]] : [];
+    });
+    return { geometry: view.geometry, roads };
+  }, [activePanel, project?.cityLayout, baseViewport]);
   const candidatePanel = <CandidatePanel candidate={candidate} busy={busy} browserPreview={browserPreview} hasUncommittedProjectEdits={hasUncommittedProjectEdits}
     hasMounts={!!project?.mounts.length} publishedReleaseId={publishedReleaseId} onCreate={() => void createCandidate()} onTest={() => void startCandidatePlaytest()}
     onAccept={() => void acceptCandidate()} onPlaytestRelease={() => void startPlaytest()} onDirectPublish={() => void publish()} />;
+  const entityEngineFor = (source: PreviewViewportSource): CityEngine | null => source === "agent" ? agentPreviewEngineRef.current : source === "draft" ? draftEngineRef.current : studioEngineRef.current;
+  const entityScopeFor = (source: PreviewViewportSource): PreviewEntityScope | null => {
+    const current = projectRef.current;
+    if (!current?.cityId || current.cityRevision === undefined) return null;
+    if (source === "draft" && (draftCityViewRef.current?.cityId !== current.cityId || draftCityViewRef.current.revision !== current.cityRevision)) return null;
+    if (source === "agent") {
+      const taskPreviewMatches = !!activePreview?.sceneOperations && activePreview.projectId === current.projectId && activePreview.revision === current.revision;
+      const commitPreviewMatches = agentCommit?.projectId === current.projectId && agentCommit.expectedRevision === current.revision;
+      if (!taskPreviewMatches && !commitPreviewMatches) return null;
+    }
+    const worldRevision = entityEngineFor(source)?.getCitySdkLayoutView()?.worldRevision
+      ?? (source === "base" ? current.cityLayout?.worldRevision : undefined);
+    return worldRevision ? { projectId: current.projectId, cityId: current.cityId, projectRevision: current.revision,
+      cityRevision: current.cityRevision, worldRevision } : null;
+  };
+  const selectedEntityScope = selectedEntity ? entityScopeFor(selectedEntitySource.current) : null;
+  const selectedEntityStatus = selectedEntity ? previewEntityReferenceStatus(selectedEntity, selectedEntityScope) : "wrong-project" as const;
+  const selectedEntityVerified = selectedEntity ? hasVerifiedEntityEvidence(studioTasks.task?.evidence ?? [], selectedEntity) : false;
+  const selectPreviewEntity = (picked: CityEntitySelection | null, source: PreviewViewportSource) => {
+    if (!picked) {
+      if (selectedEntitySource.current === source) { setSelection(null); setEntityDiagnostic(idlePreviewEntityDiagnostic); }
+      return;
+    }
+    const current = projectRef.current;
+    if (!current?.cityId || current.cityRevision === undefined) {
+      if (source === "draft" && draftCityViewRef.current) {
+        selectedEntitySource.current = source;
+        setSelection({ scope: selectionScope, target: picked.label });
+        setEntityDiagnostic(idlePreviewEntityDiagnostic);
+        openWorkspacePanel("agent");
+        setMessage(`已关联独立 City 对象「${picked.label}」；未绑定 Project，因此不会伪造稳定实体引用。`);
+      } else setMessage("当前 Project 未绑定独立 City 版本，不能创建稳定的 Preview 对象引用。");
+      return;
+    }
+    if (source === "draft" && (draftCityViewRef.current?.cityId !== current.cityId || draftCityViewRef.current.revision !== current.cityRevision)) {
+      setMessage("独立城市预览不属于当前 Project 的绑定版本，请返回项目视图后重新选择对象。"); return;
+    }
+    let previewId: string | undefined;
+    if (source === "agent") {
+      if (activePreview?.sceneOperations && activePreview.projectId === current.projectId && activePreview.revision === current.revision) previewId = activePreview.previewId;
+      else if (agentCommit?.projectId === current.projectId && agentCommit.expectedRevision === current.revision) previewId = agentCommit.previewId;
+      if (!previewId) { setMessage("Agent Preview 已过期，请重新生成预览并选择对象。"); return; }
+    }
+    const worldRevision = entityEngineFor(source)?.getCitySdkLayoutView()?.worldRevision;
+    if (!worldRevision) { setMessage("当前 Preview 的 World Revision 尚未就绪，请稍后重新选择对象。"); return; }
+    try {
+      const reference = parsePreviewEntityReference({
+        schemaVersion: 1, projectId: current.projectId, cityId: current.cityId,
+        entityId: picked.entityId, label: picked.label, entityKind: picked.kind,
+        projectRevision: current.revision, cityRevision: current.cityRevision, worldRevision,
+        ...(previewId ? { previewId } : {}), pose: picked.pose,
+      });
+      selectedEntitySource.current = source;
+      setSelection({ scope: selectionScope, target: reference.label, reference });
+      setEntityDiagnostic(idlePreviewEntityDiagnostic);
+      openWorkspacePanel("agent");
+      setMessage(`已将「${reference.label}」带入 Agent Chat（${reference.entityId} · World ${reference.worldRevision}）。`);
+    } catch { setMessage("对象引用无效，请重新选择。"); }
+  };
+  const focusSelectedEntity = () => {
+    if (!selectedEntity || selectedEntityStatus !== "current") { setMessage("对象版本已变化，请在 Preview 重新选择。"); return; }
+    const engine = entityEngineFor(selectedEntitySource.current);
+    if (!engine?.focusEntity(selectedEntity.entityId)) setMessage("当前 Preview 中找不到这个 entityId；不会改选同名对象，请重新选择。");
+  };
+  const inspectSelectedEntity = async () => {
+    const reference = selectedEntity;
+    const source = selectedEntitySource.current;
+    if (!reference || previewEntityReferenceStatus(reference, entityScopeFor(source)) !== "current") { setMessage("对象版本已变化，请重新选择后再诊断。"); return; }
+    const engine = entityEngineFor(source);
+    if (!engine) { setMessage("当前 Preview 引擎不可用，无法诊断。"); return; }
+    setEntityDiagnostic({ status: "loading" });
+    try {
+      const inspection = parseGroundInspection(await engine.inspectGroundContact({
+        x: reference.pose.x, z: reference.pose.z, heading: reference.pose.heading,
+        ...(reference.support?.regionId ? { regionId: reference.support.regionId } : {}),
+      }));
+      if (engine.getCitySdkLayoutView()?.worldRevision !== reference.worldRevision) throw new Error("revision_conflict");
+      const current = projectRef.current;
+      if (!current || current.projectId !== reference.projectId || current.revision !== reference.projectRevision) throw new Error("preview_entity_reference_stale");
+      if (selectionRef.current?.reference !== reference) return;
+      if (inspection.status === "ready") {
+        const supported = attachPreviewEntitySupport(reference, {
+          ...(inspection.regionId ? { regionId: inspection.regionId } : {}), ...(inspection.layerId ? { surfaceId: inspection.layerId } : {}),
+        });
+        setSelection(value => value?.reference === reference ? { ...value, reference: supported } : value);
+      }
+      setEntityDiagnostic({ status: inspection.status, inspection, persisted: false });
+      setMessage("真实接地诊断已返回，但未写入 Task Ledger；结果保留在当前 Preview，不标记为已验证。");
+    } catch (error) {
+      if (selectionRef.current?.reference !== reference) return;
+      const code = errorCode(error, "ground_inspection_unavailable");
+      setEntityDiagnostic({ status: "failed", error: code === "revision_conflict" || code === "preview_entity_reference_stale" ? "诊断期间世界版本已变化，请重新选择对象。" : code });
+      setMessage(code === "revision_conflict" ? "诊断证据的 World Revision 与对象引用不一致，已丢弃。" : `接地诊断不可用（${code}）。`);
+    }
+  };
+  const viewAgentChanges = () => {
+    if (previewLocked && taskPreview?.previewId !== activePreview?.previewId) { setMessage("Preview 已锁定；未切换画面。解锁后再次点击“查看改动”。"); return; }
+    const evidence = studioTasks.task?.evidence.find(item => item.kind === "preview" && item.trustLevel === "host-observed"
+      && (item.data as { previewId?: unknown } | null)?.previewId === studioTasks.task?.proposedChangeSetId);
+    const changed = (evidence?.data as { changedObjects?: unknown } | null)?.changedObjects;
+    const ids = Array.isArray(changed) ? changed.flatMap(item => item && typeof item === "object" && typeof (item as { id?: unknown }).id === "string" ? [String((item as { id: string }).id)] : []) : [];
+    const entityId = selectedEntity && ids.includes(selectedEntity.entityId) ? selectedEntity.entityId : ids[0];
+    if (!entityId) { setMessage("当前结果没有可定位的实体 ID，请查看原始差异。"); return; }
+    setAgentRevealSignal(value => value + 1);
+    if (agentCityPreview) {
+      if (agentPreviewStatus?.context !== agentCityPreview || agentPreviewStatus.status !== "ready") { setMessage("Agent 三维 Preview 尚未就绪，就绪后再定位改动。"); return; }
+      if (!agentPreviewEngineRef.current?.focusEntity(entityId)) setMessage("Preview 中没有这个 entityId，请重新选择对象；未按名称替换目标。");
+      return;
+    }
+    if (activePreview?.sceneOperations) { setMessage("完整场景 Preview 尚未就绪，不能定位或保存。"); return; }
+    if (studioEngineRef.current?.focusEntity(entityId)) setMessage("已定位当前已保存版本中的实体；临时碰撞体差异请结合结果卡查看。");
+    else setMessage("当前已保存版本中不存在这个 entityId；新增或删除对象需等待可渲染 Preview。");
+  };
+
   const inspectGroundContact = async (input: { x: number; z: number; heading: number; regionId?: string }) => {
     const city = draftCityViewRef.current; const engine = draftEngineRef.current;
     if (!city || !engine || draftViewStatusRef.current !== "ready") throw new Error("ground_inspection_requires_city");
     return engine.inspectGroundContact(input);
   };
 
-  return <main className="studio">
-    <StudioNavigation route={route} projectTitle={project?.title ?? project?.projectId} onNavigate={setRoute} />
+  const diagnostics = <EvidenceCenterPanel request={creatorRequest} browserPreview={browserPreview} activeCity={draftCityView} inspectGround={inspectGroundContact} />;
+  const viewport = <CityViewportPanel
+    agentFeedback={task?.phase === "executing" || task?.phase === "validating" ? "Agent 正在生成改动"
+      : activePreview?.sceneOperations ? agentCityPreview && agentPreviewStatus?.context === agentCityPreview && agentPreviewStatus.status === "ready" ? "完整场景预览已显示 · 等待确认" : "正在准备完整场景预览 · 尚未就绪"
+      : visibleColliderPreview ? "碰撞体预览已显示 · 等待确认"
+      : activePreview?.boxes.length ? "碰撞体待确认 · 当前场景无法定位预览"
+      : task?.phase === "awaiting-review" ? "变更待确认 · 在右侧查看详情"
+      : task?.phase === "failed" ? "本次任务未生成可预览的改动" : null}
+    selectionScope={activePanel === "story" ? "" : selectionScope} getProjectEngine={() => baseViewportStatusRef.current === "ready" ? isolatedProjectEngineRef.current : null}
+    onSelectTarget={target => { setSelection({ scope: selectionScope, target }); setEntityDiagnostic(idlePreviewEntityDiagnostic); openWorkspacePanel("agent"); }}
+    onEntitySelect={selectPreviewEntity} selectedEntity={selectedEntity} selectedEntityStatus={selectedEntityStatus} selectedEntityVerified={selectedEntityVerified}
+    entityDiagnostic={entityDiagnostic} onFocusEntity={focusSelectedEntity} onInspectEntity={() => void inspectSelectedEntity()} projectSceneView={projectSceneView}
+    installedWorldView={installedWorldView} draftCityView={draftCityView} draftCityViewRef={draftCityViewRef} draftEngineRef={draftEngineRef}
+    draftViewStatusRef={draftViewStatusRef} draftViewFailureRef={draftViewFailureRef} recordCityDiagnostic={recordCityDiagnostic}
+    projectCityKey={projectCityKey} projectCity={projectCity} project={project} viewportSeed={viewportSeed} viewportUnavailable={viewportUnavailable}
+    worldProfile={worldProfile} focusSignal={focusSignal} busy={busy} browserPreview={browserPreview}
+    agentCityPreview={agentCityPreview} agentPreviewId={agentViewportPreviewId} agentRevealSignal={agentRevealSignal}
+    onResetView={() => setFocusSignal(value => value + 1)} previewLocked={previewLocked} canLockPreview={!!taskPreview} onTogglePreviewLock={togglePreviewLock} onCloseInstalledWorld={() => setInstalledWorldView(null)}
+    onCloseDraftCity={() => { cityOpenRequest.current++; draftCityViewRef.current = null; setDraftCityView(null); }}
+    onOpenProject={() => openWorkspacePanel("project")} onExportCitySource={() => void exportCitySource()} onMessage={setMessage}
+    setBaseEngine={setBaseEngine} setAgentEngine={engine => { agentPreviewEngineRef.current = engine; }} setBaseStatus={setBaseStatus} commitPatchRef={commitPatchRef}
+    onAgentViewportStatus={(status, code) => setAgentPreviewStatus(previous => previous?.context === agentCityPreview && previous.status === status && previous.code === code ? previous : { context: agentCityPreview!, status, code })}
+  />;
+  return <main className="studio" aria-label={studioRouteTitle(route)}>
     {route.section === "home" && <div className="studio-route-content">
       {message && <p className="status status-banner" role="status">{message}</p>}
       <WorkbenchHome projects={projects} projectsLoading={projectsLoading} projectsError={projectsError} project={project} publishedReleaseId={publishedReleaseId}
-        hasPendingApproval={agentCommit !== null} busy={busy} goal={goalDraft} onGoalChange={setGoalDraft} onOpenProject={openProjectInWorkspace} onOpenTemplates={kind => { if (kind === "story") setRoute({ section: "stories" }); else openWorkspacePanel("project"); }}
+        hasPendingApproval={agentCommit !== null} busy={busy} goal={goalDraft} onGoalChange={setGoalDraft} onOpenProject={openProjectInWorkspace} onOpenTemplates={kind => { if (kind === "story") openStoryTool(); else {
+          setCatalogStartMode("new"); setRoute(STUDIO_PROJECTS_ROUTE);
+        } }}
         onOpenAgent={() => openWorkspacePanel("agent")} onRefreshProjects={refreshProjectCatalog} />
     </div>}
     {route.section === "projects" && <div className="studio-route-content">
       {message && <p className="status status-banner" role="status">{message}</p>}
-      <ProjectsPage projects={projects} projectsLoading={projectsLoading} projectsError={projectsError} cities={cities} citiesLoading={citiesLoading} citiesError={citiesError} busy={busy} browserPreview={browserPreview}
+      <ProjectsPage request={creatorRequest} projects={projects} projectsLoading={projectsLoading} projectsError={projectsError} cities={cities} layouts={layouts} citiesLoading={citiesLoading} citiesError={citiesError} busy={busy} browserPreview={browserPreview}
+        search={catalogSearch} onSearchChange={setCatalogSearch} onCreateGame={() => setCatalogStartMode("new")} onOpenStoryTool={() => openStoryTool()}
+        start={<CatalogStart mode={catalogStartMode} projects={projects} busy={busy} goal={goalDraft}
+          onGoalChange={setGoalDraft} onModeChange={setCatalogStartMode} onOpen={openAgentProjectFromCatalog}
+          gameForm={<GameStartForm cities={cities} layouts={layouts} template={template} worldRevision={worldRevision}
+            busy={busy || (catalogStartMode === "agent-new" && !normalizeStudioGoal(goalDraft))}
+            submitLabel={switchConfirm === "create" ? "确认丢弃草稿并新建" : catalogStartMode === "agent-new" ? "创建并带目标进入编辑器" : "创建项目"}
+            onTemplateChange={setTemplate} onLayoutChange={setWorldRevision}
+            onSubmit={() => guardDrafts("create", () => void createProject("agent"))} />} />}
         onOpenProject={openProjectInWorkspace} onRefreshProjects={refreshProjectCatalog} onOpenCity={openCityInWorkspace}
-        onRefreshCities={() => void loadCities()} onCreateProject={() => openWorkspacePanel("project")}
+        onConfigureGame={id => openProjectInWorkspace(id, undefined, "mount")}
+        onOpenGamePreview={openCodeGamePreview}
+        onOpenStory={openStoryTool}
+        onRefreshCities={() => void loadCities()}
         archivedCities={archivedCities} archivesLoading={archivesLoading} archivesError={archivesError} archivePreview={archivePreview}
         onPreviewCityArchive={city => void previewCityArchive(city)} onCommitCityArchive={() => void commitCityArchive()}
         onCancelCityArchivePreview={() => setArchivePreview(null)} onRestoreCityArchive={cityId => void restoreCityArchive(cityId)} />
     </div>}
-    {route.section === "stories" && <div className="studio-route-content story-route-content"><StoryEditorPanel request={creatorRequest} browserPreview={browserPreview} /></div>}
     {(route.section === "explore" || route.section === "releases") && <div className={route.section === "releases" ? "studio-route-resource release-management" : "studio-route-resource"}>
       {route.section === "releases" && <div className="release-candidate">{candidatePanel}<ExperienceDistributionPanel request={creatorRequest} browserPreview={browserPreview} publishedReleaseId={publishedReleaseId} onMessage={setMessage} /></div>}
       <CityGameLibraryPanel key={route.section} view={route.section} request={creatorRequest} browserPreview={browserPreview} message={message} onMessage={setMessage}
-        onOpenPreview={(buildId, source) => { setCodePreviewBuildId(buildId); setCodePreviewSourceCityId(source?.cityId); openWorkspacePanel("code"); }} />
+        onOpenPreview={(buildId, source) => openCodeGamePreview(buildId, source?.cityId)} />
     </div>}
-    {(route.section === "workspace" || route.section === "evidence") && <div className={route.section === "evidence" ? "workspace studio-workspace evidence-workspace-layout" : "workspace studio-workspace"}>
-      <CityViewportPanel
-        installedWorldView={installedWorldView} draftCityView={draftCityView} draftCityViewRef={draftCityViewRef} draftEngineRef={draftEngineRef}
-        draftViewStatusRef={draftViewStatusRef} draftViewFailureRef={draftViewFailureRef} recordCityDiagnostic={recordCityDiagnostic}
-        projectCityKey={projectCityKey} projectCity={projectCity} project={project} viewportSeed={viewportSeed} viewportUnavailable={viewportUnavailable}
-        worldProfile={worldProfile} focusSignal={focusSignal} busy={busy} browserPreview={browserPreview}
-        agentCityPreview={agentCityPreview} agentPreviewId={agentCommit?.previewId}
-        onResetView={() => setFocusSignal(value => value + 1)} onCloseInstalledWorld={() => setInstalledWorldView(null)}
-        onCloseDraftCity={() => { cityOpenRequest.current++; draftCityViewRef.current = null; setDraftCityView(null); }}
-        onOpenProject={() => openWorkspacePanel("project")} onExportCitySource={() => void exportCitySource()} onMessage={setMessage}
-        setBaseEngine={setBaseEngine} setBaseStatus={setBaseStatus} commitPatchRef={commitPatchRef}
-        onAgentViewportStatus={(status, code) => setAgentPreviewStatus(previous => previous?.context === agentCityPreview && previous.status === status && previous.code === code ? previous : { context: agentCityPreview!, status, code })}
-      />
-      {route.section === "workspace" && <aside className="panel" aria-label="创作检查器">
-        <div className="inspector-heading"><div><span className="sidebar-kicker">INSPECTOR</span><h2>{activePanel === "agent" ? "City Agent" : activePanel === "project" ? openProjectWorkKind === "game" ? "模板 Game 项目" : "项目" : activePanel === "code" ? "代码预览" : "玩法与场地"}</h2></div>{project && <span className="version-pill">版本 {project.revision}</span>}</div>
-        <nav className="inspector-tabs" aria-label="作品工作区工具"><button className={activePanel === "play" ? "active" : ""} aria-pressed={activePanel === "play"} onClick={() => openWorkspacePanel("play")}>玩法</button><button className={activePanel === "agent" ? "active" : ""} aria-pressed={activePanel === "agent"} onClick={() => openWorkspacePanel("agent")}>Agent</button><button className={activePanel === "project" ? "active" : ""} aria-pressed={activePanel === "project"} onClick={() => openWorkspacePanel("project")}>项目设置</button><button className={activePanel === "code" ? "active" : ""} aria-pressed={activePanel === "code"} onClick={() => openWorkspacePanel("code")}>代码预览</button></nav>
-        {message && <p className="status status-banner" role="status">{message}</p>}
-        <p className="readiness">{browserPreview ? "合成数据预览 · " : ""}{releaseHint}</p>
-        {(activePanel === "play" || activePanel === "project") && project && candidatePanel}
+    {(route.section === "workspace" || route.section === "evidence") && <div ref={workspaceRef} style={route.section === "workspace" ? workspaceLayout.style : undefined}
+      data-focus={route.section === "workspace" ? workspaceLayout.focus : undefined}
+      className={route.section === "evidence" ? "workspace studio-workspace evidence-workspace-layout" : "workspace studio-workspace session-centric-workspace"}>
+      {route.section === "workspace" && <SessionSidebar scopeTitle={draftCityView?.name ?? project?.title ?? "未选择 Project"}
+        projectRevision={taskScope?.revision ?? null} worldRevision={baseViewport.engine?.getCitySdkLayoutView()?.worldRevision ?? project?.cityLayout?.worldRevision ?? null}
+        sessions={studioSessions.sessions} activeSessionId={activeSessionId} loading={studioSessions.loading} creating={studioSessions.creating}
+        saving={studioSessions.saving} query={studioSessions.query} onQueryChange={studioSessions.setQuery}
+        error={studioSessions.error} previewLocked={previewLocked} onSelect={sessionId => { studioSessions.selectSession(sessionId); openWorkspacePanel("agent"); }}
+        onCreate={() => { void studioSessions.createSession().then(sessionId => { if (sessionId) openWorkspacePanel("agent"); }); }}
+        onRename={(sessionId, label) => studioSessions.renameSession(sessionId, label)}
+        onArchive={sessionId => { void studioSessions.archiveSession(sessionId); }}
+        onRestore={sessionId => { void studioSessions.restoreSession(sessionId).then(restored => { if (restored) openWorkspacePanel("agent"); }); }} />}
+      {route.section === "workspace" && <WorkspaceSplitter kind="sessions" label="调整 Sessions 栏宽" dragging={workspaceLayout.dragging === "sessions"}
+        width={workspaceLayout.widths?.sessions ?? 0} min={WORKSPACE_MIN_SESSIONS} max={4000}
+        onPointerDown={workspaceLayout.startDrag("sessions")} onPointerMove={workspaceLayout.moveDrag} onPointerUp={workspaceLayout.endDrag}
+        onReset={workspaceLayout.reset} onNudge={delta => workspaceLayout.nudge("sessions", delta)} />}
+      {route.section === "workspace" ? <WorkspacePreview
+        title={draftCityView?.name ?? (installedWorldView ? "世界包预览" : project?.title ?? "城市场景")}
+        saveStatus={editingGame ? hasUncommittedProjectEdits ? "未保存" : "草稿已保存" : null}
+        step={activePanel === "story" ? { status: "剧情创作" } : nextStep} hasProject={editingGame && activePanel !== "story"} busy={busy} browserPreview={browserPreview}
+        contentOpen={contentOpen} onCloseContent={() => setContentOpen(false)} onOpenStory={() => openStoryTool()} onOpenCity={() => openWorkspacePanel("agent")} storyActive={activePanel === "story" && contentOpen}
+        toolPanel={<WorkspaceContentDrawer open={contentOpen} panel={activePanel} onClose={() => setContentOpen(false)}
+          onSelect={tool => tool === "story" ? openStoryTool() : openWorkspacePanel(tool)}>
+
         {activePanel === "code" && <CodeGamePreviewPanel request={creatorRequest} browserPreview={browserPreview} requestedBuildId={codePreviewBuildId} requestedSourceCityId={codePreviewSourceCityId} onMessage={setMessage} />}
-        {activePanel === "agent" && <AgentWorkspace project={project} taskController={studioTasks} agentCommit={agentCommit} agentActivity={agentActivity} agentCityPreview={agentCityPreview} agentPreviewStatus={agentPreviewStatus} busy={busy} goal={goalDraft} onGoalChange={setGoalDraft} onResolve={resolveAgentCommit} />}
         {activePanel === "project" && <ProjectPanel
           cities={cities} draftCityView={draftCityView} citiesLoading={citiesLoading} citiesError={citiesError} citiesCursor={citiesCursor}
           busy={busy} browserPreview={browserPreview} packageInspection={packageInspection} installedPackages={installedPackages}
-          confirmUninstall={confirmUninstall} projects={projects} project={project} switchConfirm={switchConfirm}
-          layouts={layouts} template={template} worldRevision={worldRevision} setTemplate={setTemplate} setWorldRevision={setWorldRevision} setConfirmUninstall={setConfirmUninstall}
+          confirmUninstall={confirmUninstall} setConfirmUninstall={setConfirmUninstall}
           onOpenCity={openCityInWorkspace}
           onLoadCities={cursor => void loadCities(cursor)} onExportSource={() => void exportSource()} onExportExperience={() => void exportExperience()}
           onInspectWorldPackage={() => void inspectWorldPackage()} onInstallInspectedPackage={() => void installInspectedPackage()}
           onValidateInstalledPackage={item => void validateInstalledPackage(item)} onPreviewInstalledPackage={item => void previewInstalledPackage(item)}
           onCreateCityFromInstalledWorld={item => void createCityFromInstalledWorld(item)} onUninstallInstalledPackage={item => void uninstallInstalledPackage(item)}
-          onSelectProject={row => { if (row.projectId !== project?.projectId) guardDrafts(row.projectId, () => void openProject(row.projectId)); else { setInstalledWorldView(null); if (draftCityView) { cityOpenRequest.current++; draftCityViewRef.current = null; setDraftCityView(null); } } }}
-          onCreateProject={() => guardDrafts("create", () => void createProject())}
           cityDraft={cityDraft} onCreateCityDraft={(name, seed) => void createCityDraft(name, seed)} onCommitCityDraft={() => void commitCityDraft()} onCancelCityDraft={() => void cancelCityDraft()}
         />}
-        {activePanel === "play" && <GameEditorPanel
+        {activePanel === "play" && <>
+          {!editingGame && <div className="workspace-game-picker">
+            <p>从项目库打开或新建 Game 后，可以在这里配置场地和规则。</p>
+            <button type="button" className="secondary" onClick={() => {
+              if (storyHasDraft) { setMessage("请先保存或放弃 Story 的未保存编辑。"); return; }
+              setRoute(STUDIO_PROJECTS_ROUTE);
+            }}>返回项目库</button>
+          </div>}
+          {editingGame && <GameEditorPanel
+          venueGeometry={venueMap?.geometry ?? null} venueRoads={venueMap?.roads ?? []}
           project={project} busy={busy} text={text} sceneText={sceneText} entryAnchorId={entryAnchorId} bindingsText={bindingsText} skinId={skinId}
-          previewId={previewId} previewKind={previewKind} hasUncommittedProjectEdits={hasUncommittedProjectEdits} visualSlot={visualSlot} slotMinimum={slotMinimum}
+          previewId={previewId} previewKind={previewKind} hasUncommittedProjectEdits={hasUncommittedProjectEdits}
+          focusTarget={editorFocus} onFocusHandled={() => setEditorFocus(null)}
           setText={setText} setSceneText={setSceneText} setEntryAnchorId={setEntryAnchorId} setBindingsText={setBindingsText} setSkinId={setSkinId}
           setPreviewId={setPreviewId} setPreviewKind={setPreviewKind} onPreviewGame={() => void preview()} onPreviewScene={() => void previewScene()}
           onImportModel={() => void importModel()} onPreviewMount={() => void previewMount()} onPreviewSkin={value => void previewSkin(value)} onCommit={() => void commit()}
           onOpenProject={() => openWorkspacePanel("project")} onMessage={setMessage}
-        />}
+        />}</>}
+          {storyTool && <div hidden={activePanel !== "story"} className="workspace-story-tool">
+            <StoryEditorPanel request={creatorRequest} browserPreview={browserPreview} initialStoryId={storyTool.storyId} agentSlot={storyAgentSlot} onDraftStateChange={setStoryHasDraft} />
+          </div>}
+        </WorkspaceContentDrawer>}
+        releaseRequest={releaseRequest} onAction={handleWorkspaceAction} playtest={candidatePanel} diagnostics={diagnostics}
+        focus={workspaceLayout.focus} onToggleFocus={workspaceLayout.toggleFocus}>{viewport}</WorkspacePreview> : viewport}
+      {route.section === "workspace" && <WorkspaceSplitter kind="agent" label="调整对话栏宽" dragging={workspaceLayout.dragging === "agent"}
+        width={workspaceLayout.widths?.agent ?? 0} min={WORKSPACE_MIN_AGENT} max={4000}
+        onPointerDown={workspaceLayout.startDrag("agent")} onPointerMove={workspaceLayout.moveDrag} onPointerUp={workspaceLayout.endDrag}
+        onReset={workspaceLayout.reset} onNudge={delta => workspaceLayout.nudge("agent", delta)} />}
+      {route.section === "workspace" && <aside className="panel" aria-label="Agent 创作伙伴">
+        <div className="inspector-heading"><h2>Agent 创作伙伴</h2></div>
+        {message && <p className="status status-banner" role="status">{message}</p>}
+
+        <div hidden={activePanel === "story"}><AgentWorkspace project={project} taskController={studioTasks} browserPreview={browserPreview} agentCommit={agentCommit} agentActivity={agentActivity} agentCityPreview={agentCityPreview} agentPreviewStatus={agentPreviewStatus} busy={busy}
+          goal={activeSessionId ? studioSessions.draft : draftCityView?.cityId ? cityGoals.get(draftCityView.cityId) ?? "" : project ? projectGoals.get(project.projectId) ?? "" : ""}
+          onGoalChange={goal => { if (activeSessionId) studioSessions.setDraft(goal); else if (draftCityView) updateCityGoal(draftCityView.cityId, goal); else if (project) updateProjectGoal(project.projectId, goal); }} onResolve={resolveAgentCommit}
+          commitBlockedReason={studioTasks.task ? taskCommitBlockedReason(studioTasks.task, taskScope ? ("projectId" in taskScope ? taskScope.projectId : taskScope.cityId) : null, taskScope?.revision ?? null, hasUncommittedProjectEdits)
+            ?? (scenePreviewRequired
+              ? !taskPreview ? "场景 Preview 已过期或本地预览记录不可用；请重新生成 Preview。"
+                : previewLocked && taskPreview.previewId !== activePreview?.previewId ? "Preview 已锁定；解锁并查看本次改动后才能确认保存。"
+                : !taskPreview.sceneOperations ? "本次修改包含无法完整显示的混合操作；请拆分为场景对象修改后重新预览。"
+                : !agentCityPreview || agentPreviewStatus?.context !== agentCityPreview || agentPreviewStatus.status !== "ready"
+                  ? "完整场景 Preview 尚未就绪或加载失败；确认保存前必须看到真实改动。" : null
+              : null) : null}
+          target={selection?.scope === selectionScope ? selection.target : undefined}
+          targetReference={selectedEntity ? { kind: "city", reference: selectedEntity } : undefined} targetReferenceStatus={selectedEntityStatus}
+          onClearTarget={() => { setSelection(null); setEntityDiagnostic(idlePreviewEntityDiagnostic); }} onViewChanges={viewAgentChanges}
+          scopeTitle={draftCityView?.name} scopeReady={!!taskScope && !busy} /></div>
+        <div ref={setStoryAgentSlot} hidden={activePanel !== "story"} className="story-agent-slot" />
+
       </aside>}
-      {route.section === "evidence" && <aside className="panel evidence-workspace" aria-label="证据中心工作区"><EvidenceCenterPanel request={creatorRequest} browserPreview={browserPreview} activeCity={draftCityView} inspectGround={inspectGroundContact} /></aside>}
+      {route.section === "evidence" && <aside className="panel evidence-workspace" aria-label="证据中心工作区">{diagnostics}</aside>}
     </div>}
-    <footer className="studio-status" role="status"><span>{route.section === "home" ? "从创作目标或真实最近项目开始" : route.section === "projects" ? "Creator Project 与 City Instance 分类管理" : route.section === "stories" ? "独立 Story 草稿；保存不影响已安装 Run" : route.section === "evidence" ? "真实 Candidate / Build / Run / Trace / Ground 证据" : route.section === "explore" ? "City 实例与 Game Build 分离管理；Story 可在 Story Editor 创作" : route.section === "releases" ? "真实 Build 与 Installation；候选发布后端待接入" : !project ? "未选择项目" : hasUncommittedProjectEdits ? "有未保存修改" : `项目版本 ${project.revision}`}</span><span>{route.section === "home" ? "复制目标不会创建或执行 Agent Task" : route.section === "projects" ? "打开最近项目会保留现有草稿状态" : route.section === "stories" ? "Graph/Canon 校验与条件测试不等于 City Run 证据" : route.section === "evidence" ? "信任级与 Host 分歧必须可见；本地 Ground 查询不写 Run" : route.section === "explore" ? "Story Registry 已接入；安装关系需单独确认" : route.section === "releases" ? "安装预检与更新确认门控保持不变" : browserPreview ? "合成数据预览" : releaseHint}</span></footer>
+    {route.section !== "projects" && route.section !== "workspace" && <footer className="studio-status" role="status"><span>{route.section === "home" ? "从创作目标或真实最近项目开始" : route.section === "evidence" ? "真实 Candidate / Build / Run / Trace / Ground 证据" : route.section === "explore" ? "City 实例与 Game Build 分离管理；Story 可在工作区创作" : route.section === "releases" ? "真实 Build 与 Installation；候选发布后端待接入" : ""}</span><span>{route.section === "home" ? "复制目标不会创建或执行 Agent Task" : route.section === "evidence" ? "信任级与 Host 分歧必须可见；本地 Ground 查询不写 Run" : route.section === "explore" ? "Story Registry 已接入；安装关系需单独确认" : route.section === "releases" ? "安装预检与更新确认门控保持不变" : ""}</span></footer>}
   </main>;
 }

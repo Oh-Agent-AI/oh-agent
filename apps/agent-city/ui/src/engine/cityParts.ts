@@ -53,6 +53,7 @@ export type CityStaticSceneSource = Readonly<{ layout: CityLayout; rendered: Ren
 import { artDecoTowerGeometry, BOX, CYLINDER, EXPRESSWAY_DECK_THICKNESS, EXPRESSWAY_DECK_WIDTH, baseSpeedOf, expresswayDeckHeights, mergeGeometries, originOf, samplePolyline, selfLitMaterial } from "./render/shared";
 import type { BuildingRuntime, Car, CarPath, NightLights, QualityLevel } from "./render/types";
 export type { QualityLevel };
+import { cloneCityObjectView } from "./cityObjectView";
 import { FACADE_GRIDS, facadeMaterial, type FacadeUniforms } from "./render/facadeMaterial";
 import { appendRuntimes, applyConstruction, applyCraneArm, buildAnomalyMarkers, buildHeroCrown, buildMassing, buildRoadsideSigns, buildRuntimes, buildUrbanContext, facadeFor, hideAll, occupantsCanAppend, percentileOf, placeHeroCrown, roofKindFor, updateContext, writeContext, type BuildingSystemHost } from "./systems/buildingSystem";
 export { occupantsCanAppend };
@@ -68,7 +69,8 @@ export type OccupancySnapshot = {
 };
 
 /** 静态城（只依赖 seed 的部分：地形/基建/高架/公共设施/地标/远山/树/水面/
- *  车/船/云/花园）。模块级缓存——数据刷新重建时整段复用，重建成本只剩建筑层；
+ *  车/船/云/花园）。模块级缓存共享几何与材质，每个视口持有独立节点树；
+ *  数据刷新重建时不必重传静态资源，重建成本主要剩建筑层；
  *  只保留最近一个 seed（换岛时旧静态城整体释放）。 */
 
 type StaticCity = {
@@ -121,6 +123,7 @@ export class CityParts {
   private drivingDeferredSnap: boolean | null = null;
   private drivingDeferredReset = false;
   readonly group = new THREE.Group();
+  private staticViewGroup: THREE.Group | null = null;
   readonly raycastTargets: THREE.Object3D[] = [];
   readonly water: THREE.Mesh | null;
   private readonly runtimes: BuildingRuntime[] = [];
@@ -310,33 +313,36 @@ export class CityParts {
       (this.group as THREE.Group) = new THREE.Group();
       (this.disposables as Array<{ dispose: () => void }>) = [];
     }
-    this.group.add(staticCity.group);
-    this.drivingRoots = staticCity.drivingRoots.slice();
+    const view = staticCity.group.parent ? cloneCityObjectView(staticCity.group) : null;
+    const object = <T extends THREE.Object3D>(value: T): T => view ? view.resolve(value) : value;
+    this.staticViewGroup = view?.root ?? staticCity.group;
+    this.group.add(this.staticViewGroup);
+    this.drivingRoots = staticCity.drivingRoots.map(root => ({ object: object(root.object), role: root.role }));
     // The legacy surface-only port carries the compiled road/structure geometry.
     // Scene proxies belong to captureDrivingWorld(), where they are sampled under
     // the explicit display-freeze lease below.
     this.staticSource = Object.freeze({ layout: staticCity.layout, ground: staticCity.groundRoadSurface });
-    this.water = staticCity.water;
-    this.treeMesh = staticCity.treeMesh;
-    this.carMesh = staticCity.carMesh;
-    this.boatMesh = staticCity.boatMesh;
-    this.cloudMesh = staticCity.cloudMesh;
+    this.water = staticCity.water ? object(staticCity.water) : null;
+    this.treeMesh = object(staticCity.treeMesh);
+    this.carMesh = object(staticCity.carMesh);
+    this.boatMesh = object(staticCity.boatMesh);
+    this.cloudMesh = object(staticCity.cloudMesh);
     this.cars = staticCity.cars;
     this.boats = staticCity.boats;
     this.clouds = staticCity.clouds;
-    this.wakeMesh = staticCity.wakeMesh;
+    this.wakeMesh = object(staticCity.wakeMesh);
     this.wakes = staticCity.wakes;
     this.terrainUniforms = staticCity.terrainUniforms;
     this.flagTime = staticCity.flagTime;
     this.waterAssetUniforms = staticCity.waterAssetUniforms;
-    this.landmarkSpinners = staticCity.landmarkSpinners;
+    this.landmarkSpinners = staticCity.landmarkSpinners.map(spinner => ({ ...spinner, object: object(spinner.object) }));
     this.nightLights = staticCity.nightLights;
-    this.context = staticCity.context;
+    this.context = staticCity.context ? { ...staticCity.context, bodies: object(staticCity.context.bodies), crowns: object(staticCity.context.crowns) } : null;
     // 夜间材质随静态城一起复用：曾只缓存网格不缓存这两个引用，缓存命中后救生塔灯与地标亮窗夜里不再亮。
     this.landmarkWindows = staticCity.landmarkWindows;
     this.lifeguardGlowMaterial = staticCity.lifeguardGlowMaterial;
     this.civicPieces = staticCity.civics.pieces;
-    this.civicMeshes = staticCity.civics.meshes;
+    this.civicMeshes = staticCity.civics.meshes.map(mesh => object(mesh));
     this.civicProgress = staticCity.civics.progress;
     this.civicTarget = staticCity.civics.target;
     this.captureAnimationOrigin();
@@ -1397,11 +1403,12 @@ export class CityParts {
   dispose(): void {
     this.drivingDisposed = true;
     for (const release of this.drivingModelHolds.splice(0)) release();
-    // 只拆动态层：静态城（地形/基建/车船云）留在模块级缓存，同一 seed 的下一次
+    // 只拆动态层与当前视口的静态节点：几何/材质留在模块级缓存，同一 seed 的下一次
     // 重建直接复用；换 seed 时由构造函数统一释放旧缓存。
     this.group.removeFromParent();
-    if (staticCityCache && staticCityCache.seed === this.layout.seed) {
-      this.group.remove(staticCityCache.group);
+    if (this.staticViewGroup) {
+      this.group.remove(this.staticViewGroup);
+      this.staticViewGroup = null;
     }
     for (const kit of this.kitBySession.values()) disposeKitRuntime(kit);
     this.kitBySession.clear();

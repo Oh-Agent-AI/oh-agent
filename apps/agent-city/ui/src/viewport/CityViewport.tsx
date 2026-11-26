@@ -3,7 +3,7 @@ import { buildCityModel } from "../cityModel";
 import { buildIndependentCityModel } from "./independentCityModel";
 import { prepareCityWorldLayout } from "../engine/cityLayout";
 import { readCityAppearancePreference, type CityWorldProfileV1 } from "../engine/cityWorldProfile";
-import { CityEngine } from "../engine/CityEngine";
+import { CityEngine, type CityEntitySelection } from "../engine/CityEngine";
 import { tauriCityDataProvider, type CityProjectionV1 } from "../data/provider";
 import { cityPlanPatchStore } from "../data/planPatch";
 import { cityProjectionErrorCode } from "../data/projectionRetry";
@@ -18,7 +18,7 @@ import { projectionSessionRows, type CityViewportWindowDays } from "./projection
 import { readCityWindowDays } from "./windowPreference";
 import { createMoveGhost, type MoveGhost } from "./moveGhost";
 import { selectViewportPatch } from "./viewportPatch";
-import { loadWorldSceneModels } from "../game/activity/creatorSceneModels";
+import { loadWorldSceneModels, loadWorldScenePreview } from "../game/activity/creatorSceneModels";
 import type { CityProjectAssetCatalogV1, SceneDraftV1 } from "@oh-agent/city-sdk";
 import "../city.css";
 
@@ -43,11 +43,13 @@ export type CityViewportProps = {
   /** Explicitly city-scoped project patch; never read from the legacy store. */
   isolatedProjectPatch?: PlanPatchV1 | null;
   worldScene?: { scene: SceneDraftV1; assets: CityProjectAssetCatalogV1; files: ReadonlyMap<string, Uint8Array> };
+  worldScenePreview?: boolean;
   /** Ephemeral preview only: overrides stores without writing to them. */
   previewPatch?: PlanPatchV1 | null;
   /** Only the primary viewport owns the local diagnostic probe. */
   registerProbe?: boolean;
   onViewportStatus?: (status: "loading" | "ready" | "failed", failureCode?: string) => void;
+  onEntitySelect?: (selection: CityEntitySelection | null) => void;
   /** 视口内移动成功后回调：父页面经 preview→commit 把补丁写通到项目 revision
    *  （与 Agent/MCP 共用同一草稿）。本地存档写入由 PlanRepairSession 负责，不在这里。 */
   onPatchCommit?: (patch: PlanPatchV1) => void;
@@ -64,7 +66,7 @@ type ViewportLoadState = Readonly<{ stage: "data" | "model" | "planning" | "moun
  * 暂停/恢复沿用引擎已注册的宿主 __AV_PLUGIN_SUSPENDED__/RESUMED__ 事件与
  * visibilitychange，销毁入口就是组件卸载时的 engine.dispose()。
  */
-export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, editable = false, focusSignal = 0, projectPatch = null, isolatedDraft = false, isolatedProjectPatch = null, worldScene, previewPatch, registerProbe = true, onViewportStatus, onPatchCommit }: CityViewportProps) {
+export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, editable = false, focusSignal = 0, projectPatch = null, isolatedDraft = false, isolatedProjectPatch = null, worldScene, worldScenePreview = false, previewPatch, registerProbe = true, onViewportStatus, onEntitySelect, onPatchCommit }: CityViewportProps) {
   const days = windowDays ?? readCityWindowDays();
   const language = useCityLanguage();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -82,6 +84,8 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
   const [worldSceneReady, setWorldSceneReady] = useState(false);
   const statusCallbackRef = useRef(onViewportStatus);
   statusCallbackRef.current = onViewportStatus;
+  const entitySelectRef = useRef(onEntitySelect);
+  entitySelectRef.current = onEntitySelect;
   const [cityLoad, setCityLoad] = useState<ViewportLoadState>({ stage: "data", work: null });
   const [localPatch, setLocalPatch] = useState<PlanPatchV1 | null>(null);
   const [stalePatchCount, setStalePatchCount] = useState(0);
@@ -94,14 +98,14 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
     setWorldSceneReady(false);
     let cancelled = false;
     let mounted: Awaited<ReturnType<typeof loadWorldSceneModels>> | null = null;
-    void loadWorldSceneModels(worldScene.scene, worldScene.assets, worldScene.files).then(result => {
+    void (worldScenePreview ? loadWorldScenePreview : loadWorldSceneModels)(worldScene.scene, worldScene.assets, worldScene.files).then(result => {
       if (cancelled) { result.dispose(); return; }
       mounted = result;
-      engineState.addOverlay(result.group);
+      engineState.addOverlay(result.group, { previewEntities: true });
       setWorldSceneReady(true);
     }).catch(() => { if (!cancelled) { setSceneFailureCode("world_scene_load_failed"); setSceneUnavailable(true); } });
     return () => { cancelled = true; if (mounted) { engineState.removeOverlay(mounted.group); mounted.dispose(); } };
-  }, [engineState, firstModelFrame, worldScene]);
+  }, [engineState, firstModelFrame, worldScene, worldScenePreview]);
   const [selection, setSelection] = useState<BuildingSelection | null>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
   const sessionRef = useRef<PlanRepairSession | null>(null);
@@ -138,7 +142,7 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
     if (!canvas) return;
     let engine: CityEngine;
     try {
-      engine = new CityEngine({ canvas, worldProfile: profile, onFirstFrame: () => setFirstModelFrame(true), onSelect: (id) => {
+      engine = new CityEngine({ canvas, worldProfile: profile, onFirstFrame: () => setFirstModelFrame(true), onEntitySelect: selection => entitySelectRef.current?.(selection), onSelect: (id) => {
         if (!editableRef.current || !id) { setSelection(null); return; }
         selectRef.current(id);
       } });

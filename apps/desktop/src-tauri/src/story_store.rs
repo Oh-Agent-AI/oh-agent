@@ -316,6 +316,15 @@ pub(crate) fn commit_story(home: &Path, command: StoryCommitCommandV1, clock: St
         if hash != request_hash { return Err("operation_id_conflict"); }
         return serde_json::from_str(&result).map_err(|_| "creator_store_unavailable");
     }
+    if command.narrative_effects.is_some() && command.run_id == story_run_id {
+        crate::story_registry::require_active_run(&command.player_id, &command.city_id, &story_id, &story_run_id, &tx)?;
+    }
+    if command.story_scope.is_some() && story_table_exists(&tx, "city_game_story_bindings")? {
+        if let Some(binding) = crate::city_runtime::pinned_story_scope(&tx, &command.run_id)? {
+            if binding.0 != story_id || binding.1 != story_run_id { return Err("story_run_mismatch"); }
+            crate::story_registry::require_active_run(&command.player_id, &command.city_id, &story_id, &story_run_id, &tx)?;
+        }
+    }
     let current = tx.query_row(
         "SELECT revision,document_json FROM story_states WHERE player_id=?1 AND city_id=?2 AND story_id=?3 AND story_run_id=?4",
         params![command.player_id,command.city_id,story_id,story_run_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
@@ -381,11 +390,11 @@ pub(crate) fn story_dialogue(home: &Path, player_id: &str, city_id: &str, game_i
 pub(crate) fn story_dialogue_scoped(home: &Path, player_id: &str, city_id: &str, story_id: &str, story_run_id: &str, limit: u32) -> Result<Vec<Value>, &'static str> {
     let db = database(home)?;
     migrate_story(&db)?;
-    let mut statement = db.prepare("SELECT event_id,intent_json,story_revision,created_at_ms FROM story_events WHERE player_id=?1 AND city_id=?2 AND story_id=?3 AND story_run_id=?4 AND json_extract(intent_json,'$.kind')='speak' ORDER BY created_at_ms DESC,event_id DESC LIMIT ?5")
+    let mut statement = db.prepare("SELECT event_id,intent_json,story_revision,created_at_ms,causation_id FROM story_events WHERE player_id=?1 AND city_id=?2 AND story_id=?3 AND story_run_id=?4 AND json_extract(intent_json,'$.kind')='speak' ORDER BY created_at_ms DESC,event_id DESC LIMIT ?5")
         .map_err(|_| "creator_store_unavailable")?;
     let rows = statement.query_map(params![player_id,city_id,story_id,story_run_id,limit.min(100)], |row| {
         Ok(json!({"eventId":row.get::<_,String>(0)?,"intent":serde_json::from_str::<Value>(&row.get::<_,String>(1)?).unwrap_or(Value::Null),
-            "storyRevision":row.get::<_,String>(2)?,"createdAtMs":row.get::<_,u64>(3)?}))
+            "storyRevision":row.get::<_,String>(2)?,"createdAtMs":row.get::<_,u64>(3)?,"replyToEventId":row.get::<_,Option<String>>(4)?}))
     }).map_err(|_| "creator_store_unavailable")?;
     rows.collect::<Result<Vec<_>,_>>().map_err(|_| "creator_store_unavailable")
 }

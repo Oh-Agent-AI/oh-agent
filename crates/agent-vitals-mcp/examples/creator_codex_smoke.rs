@@ -24,7 +24,7 @@ fn main() {
                 {"criterionId":"agent-preview","description":"Host generated Preview required","requiredEvidenceKind":"preview"},
                 {"criterionId":"manual-review","description":"Human acceptance required","requiredEvidenceKind":"human-note"}
             ],"operationId":operation("goal"),
-        })).map_err(|error| error.code.to_owned())?;
+        }), None).map_err(|error| error.code.to_owned())?;
         let task_id = created["taskId"].as_str().ok_or("taskId missing")?;
         agent_vitals_mcp::mcp::creator_session::task_dispatch(&home, "creator.task.plan.submit", &json!({
             "taskId":task_id,"expectedPlanRevision":1,"expectedArtifactRevision":expected_revision,
@@ -33,14 +33,14 @@ fn main() {
                 {"stepId":"validate-preview","title":"Generate a real Preview","kind":"validation"},
                 {"stepId":"human-review","title":"Human review","kind":"review"}
             ],"operationId":operation("plan"),
-        })).map_err(|error| error.code.to_owned())?;
+        }), None).map_err(|error| error.code.to_owned())?;
         agent_vitals_mcp::mcp::creator_session::task_dispatch(&home, "creator.task.plan.approve", &json!({
             "taskId":task_id,"planRevision":1,"expectedArtifactRevision":expected_revision,"operationId":operation("approve"),
-        })).map_err(|error| error.code.to_owned())?;
+        }), None).map_err(|error| error.code.to_owned())?;
         agent_vitals_mcp::mcp::creator_session::task_dispatch(&home, "creator.task.execute", &json!({
             "taskId":task_id,"expectedPlanRevision":1,"expectedArtifactRevision":expected_revision,
             "operationId":operation("execute"),"timeoutMs":120_000,
-        })).map_err(|error| error.code.to_owned())
+        }), None).map_err(|error| error.code.to_owned())
     })();
     match result {
         Ok(value) => println!("{}", json!({"phase":value["phase"],"taskId":value["taskId"],"proposedChangeSetId":value["proposedChangeSetId"]})),

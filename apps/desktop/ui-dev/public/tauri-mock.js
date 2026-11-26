@@ -1316,7 +1316,7 @@
       let sequence = 0;
       const nextId = (prefix) => `${prefix}-preview-${String(++sequence).padStart(3, "0")}`;
       const clone = (value) => JSON.parse(JSON.stringify(value));
-      const row = (document) => ({ projectId: document.projectId, revision: document.revision, title: document.title, updatedAtMs: 0 });
+      const row = (document) => ({ projectId: document.projectId, revision: document.revision, title: document.title, updatedAtMs: 0, gameDefinitionId: document.game.id });
       const makeDocument = (template, worldRevision) => {
         const game = gameTemplates[template];
         if (!game) throw new Error("creator_template_not_found");
@@ -1328,6 +1328,25 @@
         return document;
       };
       makeDocument("checkpoint-race", world.worldRevision);
+      makeDocument("collect-one", world.worldRevision);
+      const previewStory = {
+        storyId: "story.preview-missing-painter", title: "失踪的画家（预览夹具）", storyVersion: "1.0.0", revision: 1,
+        schemaVersion: 1, contentDigest: "preview-story-missing-painter",
+        graph: { start: "start", nodes: [
+          { id: "start", kind: "beat", title: "海滨咖啡馆",
+            meta: { description: "画家失踪后，海滨咖啡馆的老板发现一张未寄出的明信片。沿着画中的灯塔和码头，找到他最后去过的地方。" } },
+          { id: "lighthouse", kind: "beat", title: "灯塔下的速写" },
+          { id: "pier", kind: "ending", title: "最后一班渡轮" },
+        ], edges: [
+          { id: "look-at-sketch", from: "start", to: "lighthouse", preconditions: { op: "all", of: [] }, effects: [], eventDependencies: [], scope: "story" },
+          { id: "follow-the-ferry", from: "lighthouse", to: "pier", preconditions: { op: "all", of: [] }, effects: [], eventDependencies: [], scope: "story" },
+        ] },
+        canon: { characters: [] },
+      };
+      const previewBuilds = [
+        { gameId: "desert-racing", buildId: "a".repeat(64), gameVersion: "1.2.0", displayName: "沙丘竞速" },
+        { gameId: "dune-exploration", buildId: "b".repeat(64), gameVersion: "0.8.0", displayName: "荒漠探路" },
+      ];
       const project = (payload) => documents.get(String(payload.projectId)) || (() => { throw new Error("creator_project_not_found"); })();
       const checkRevision = (document, payload) => {
         if (payload.baseRevision !== undefined && payload.baseRevision !== document.revision) throw new Error("revision_conflict");
@@ -1498,10 +1517,35 @@
         if (request.method === "data.read") return cityPreviewProvider(request);
         switch (request.method) {
           case "creator.city.list":
-            return { cities: payload.cursor ? [] : [{ cityId: previewCity.cityId, revision: previewCity.revision, name: previewCity.name }], nextCursor: null };
+            return { cities: payload.cursor ? [] : [{ cityId: previewCity.cityId, revision: previewCity.revision, name: previewCity.name, biome: previewCity.profile.biome }], nextCursor: null };
           case "creator.city.read":
             if (payload.cityId !== previewCity.cityId || (payload.revision !== undefined && payload.revision !== previewCity.revision)) throw new Error("creator_city_not_found");
             return clone(previewCity);
+          case "creator.city.world_package.read":
+            if (payload.cityId !== previewCity.cityId) throw new Error("creator_city_not_found");
+            return { worldPackage: null };
+          case "creator.code.builds.list":
+            return { builds: previewBuilds };
+          case "creator.code.install.list": {
+            const matches = !payload.cityId || payload.cityId === previewCity.cityId ? previewBuilds
+              .filter(row => !payload.gameId || row.gameId === payload.gameId).map(row => ({
+                installationId: `install-preview-${row.gameId}`, cityId: previewCity.cityId, cityRevision: previewCity.revision,
+                gameId: row.gameId, buildId: row.buildId, status: "installed",
+              })) : [];
+            return { installations: matches.slice(0, payload.limit ?? 50), installedCount: matches.length };
+          }
+          case "creator.story.install.list":
+            return { installations: payload.cityId === previewCity.cityId ? [{
+              installationId: "install-preview-story", cityId: previewCity.cityId, storyId: previewStory.storyId,
+              storyVersion: previewStory.storyVersion, contentDigest: previewStory.contentDigest, status: "installed",
+            }] : [] };
+          case "creator.story.projects.list": {
+            const { storyId, title, storyVersion, revision, schemaVersion, contentDigest } = previewStory;
+            return { projects: [{ storyId, title, storyVersion, revision, schemaVersion, contentDigest, nodeCount: previewStory.graph.nodes.length }] };
+          }
+          case "creator.story.project.read":
+            if (payload.storyId !== previewStory.storyId) throw new Error("creator_story_not_found");
+            return clone(previewStory);
           case "creator.layout.list":
             return { layouts: [{ worldRevision: world.worldRevision, layoutId: world.layout.id,
               seed: world.seed, anchorCount: world.layout.anchors.length, updatedAtMs: 0 }] };

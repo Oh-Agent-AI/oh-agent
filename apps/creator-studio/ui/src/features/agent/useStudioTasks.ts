@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import type { CreatorRequest } from "../../adapters/creatorHost";
 import {
-  defaultStudioPlanSteps, mergeStudioEvents, parseStudioCapabilityStatus, parseStudioConnections, parseStudioEventBatch, parseStudioTask,
+  defaultStudioPlanSteps, mergeStudioEvents, normalizeStudioGoal, parseStudioCapabilityStatus, parseStudioConnections, parseStudioEventBatch, parseStudioTask,
   type StudioCapabilityStatus, type StudioConnection, type StudioTask, type StudioTaskEvent,
 } from "../../contracts/studioTask";
 
-type TaskProject = Readonly<{ projectId: string; revision: number }> | null;
+type TaskScope = Readonly<{ kind: "creator-project"; projectId: string; revision: number } | { kind: "creator-city"; cityId: string; revision: number } | { kind: "creator-story"; storyId: string; revision: number }> | null;
 export type StudioSubscriptionStatus = "idle" | "connecting" | "live" | "reconnecting";
 
-export function useStudioTasks(request: CreatorRequest, project: TaskProject) {
+export function useStudioTasks(request: CreatorRequest, scope: TaskScope, enabled = true, hasIsolatedViewport = false, sessionId: string | null = null,
+  onExecutorSelected?: (executor: string) => void) {
   const [task, setTask] = useState<StudioTask | null>(null);
   const [sessionStatus, setSessionStatus] = useState<"loading" | "available" | "unavailable">("loading");
   const [connections, setConnections] = useState<readonly StudioConnection[]>([]);
@@ -20,6 +21,14 @@ export function useStudioTasks(request: CreatorRequest, project: TaskProject) {
   const [busy, setBusy] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState("");
+  const [preferredExecutor, setPreferredExecutor] = useState("");
+  const usableExecutors = (capabilities?.executors ?? []).filter(item =>
+    item.available && item.modes.some(mode => mode.restricted));
+  const executor = preferredExecutor || usableExecutors[0]?.id || "";
+  // 用户在选择器里点的那一次＝要写进 Session 档案的偏好；从档案回填时走
+  // applyPreferredExecutor，否则每次切换会话都会把"回填"再当成一次用户选择写回去。
+  const chooseExecutor = (value: string) => { setPreferredExecutor(value); onExecutorSelected?.(value); };
+  const [saved, setSaved] = useState<{ artifact: StudioTask["artifact"]; revision: number } | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const taskIdRef = useRef<string | null>(null);
   const generationRef = useRef(0);
@@ -30,17 +39,21 @@ export function useStudioTasks(request: CreatorRequest, project: TaskProject) {
     taskIdRef.current = next.taskId; setTask(next);
   };
   const refreshTask = async () => {
-    if (!taskIdRef.current) return;
-    applyTask(parseStudioTask(await request("creator.task.status", { taskId: taskIdRef.current })));
+    const taskId = taskIdRef.current;
+    const generation = generationRef.current;
+    if (!taskId) return;
+    const next = parseStudioTask(await request("creator.task.status", { taskId }));
+    if (generation === generationRef.current && taskIdRef.current === taskId) applyTask(next);
   };
 
   useEffect(() => {
     const generation = ++generationRef.current;
     sessionIdRef.current = null; taskIdRef.current = null; eventCursorRef.current = 0;
     setTask(null); setEvents([]); setError(""); setConnectionError(""); setConnections([]); setCapabilities(null);
-    if (!project) { setSessionStatus("unavailable"); return; }
+    if (!enabled || !scope) { setSessionStatus("unavailable"); return; }
     setSessionStatus("loading");
     let heartbeat: number | undefined;
+    const scopeId = scope.kind === "creator-city" ? scope.cityId : scope.kind === "creator-story" ? scope.storyId : scope.projectId;
     const refreshConnections = async (sessionId: string) => {
       const [connectionRows, capabilityRows] = await Promise.all([
         request("creator.connection.status", {}), request("creator.capabilities.status", {}),
@@ -53,7 +66,7 @@ export function useStudioTasks(request: CreatorRequest, project: TaskProject) {
     void (async () => {
       try {
         const opened = await request<{ sessionId: string; jobs?: unknown[] }>("creator.session.open", {
-          agentId: "creator-studio-local", projectId: project.projectId,
+          agentId: "creator-studio-local", ...(scope.kind === "creator-city" ? { cityId: scopeId } : { projectId: scopeId }), ...(sessionId ? { sessionId } : {}),
           executor: "studio", transport: "studio-webview",
           capabilities: ["studio.webview", "preview.scene", "preview.game", "operation.review"],
         });
@@ -84,7 +97,7 @@ export function useStudioTasks(request: CreatorRequest, project: TaskProject) {
       }
     })();
     return () => { generationRef.current += 1; if (heartbeat !== undefined) window.clearInterval(heartbeat); };
-  }, [project?.projectId, request]);
+  }, [enabled, scope?.kind, scope && ("projectId" in scope ? scope.projectId : "cityId" in scope ? scope.cityId : scope.storyId), sessionId, request]);
 
   useEffect(() => {
     const taskId = task?.taskId;
@@ -123,21 +136,49 @@ export function useStudioTasks(request: CreatorRequest, project: TaskProject) {
     catch (cause) { setError(cause instanceof Error ? cause.message : "creator_task_failed"); }
     finally { setBusy(false); }
   };
-  const createGoal = async (goal: string) => run(async () => {
-    if (!project || !sessionIdRef.current || !goal.trim()) return;
-    const artifact = { kind: "creator-project", projectId: project.projectId, expectedRevision: project.revision };
+  /** 目标 → 建任务 + 提交默认计划；返回已提交的任务供快速通道继续批准/执行。 */
+  const planSubmit = async (goal: string): Promise<StudioTask> => {
+    const requestText = normalizeStudioGoal(goal);
+    const generation = generationRef.current;
+    if (!scope || !sessionIdRef.current || !requestText) throw new Error("creator_task_scope_unavailable");
+    const scopeId = scope.kind === "creator-city" ? scope.cityId : scope.kind === "creator-story" ? scope.storyId : scope.projectId;
+    const artifact = { kind: scope.kind, [scope.kind === "creator-city" ? "cityId" : scope.kind === "creator-story" ? "storyId" : "projectId"]: scopeId, expectedRevision: scope.revision };
     const created = parseStudioTask(await request("creator.task.create", {
-      sessionId: sessionIdRef.current, goal: goal.trim(), humanRequest: goal.trim(), artifact,
+      sessionId: sessionIdRef.current, goal: requestText, humanRequest: requestText, artifact,
       acceptanceCriteria: [
         { criterionId: "agent-preview", description: "必须生成真实 Preview 证据", requiredEvidenceKind: "preview" },
         { criterionId: "manual-review", description: "人工审阅真实证据并确认结果", requiredEvidenceKind: "human-note" },
       ], operationId: operation("goal-create"),
     }));
-    applyTask(created);
-    applyTask(parseStudioTask(await request("creator.task.plan.submit", {
-      taskId: created.taskId, expectedPlanRevision: 1, expectedArtifactRevision: project.revision,
+    if (generation === generationRef.current) applyTask(created);
+    return parseStudioTask(await request("creator.task.plan.submit", {
+      taskId: created.taskId, expectedPlanRevision: 1, expectedArtifactRevision: scope.revision,
       steps: defaultStudioPlanSteps(), operationId: operation("plan-submit"),
-    })));
+    }));
+  };
+  const createGoal = async (goal: string) => run(async () => {
+    applyTask(await planSubmit(goal));
+  });
+  /** 快速通道：默认计划不携带信息，提交即批准并执行；配额同意就是这一次点击。 */
+  const startTask = async (goal: string, selected: string, includeViewport = false) => run(async () => {
+    if (!usableExecutors.some(item => item.id === selected) || selected !== executor) throw new Error("请选择支持受限提案的 Agent。");
+    const generation = generationRef.current;
+    const submitted = await planSubmit(goal);
+    const approved = parseStudioTask(await request("creator.task.plan.approve", {
+      taskId: submitted.taskId, planRevision: submitted.planRevision, expectedArtifactRevision: submitted.artifact.expectedRevision, operationId: operation("plan-approve"),
+    }));
+    if (generation !== generationRef.current) return;
+    applyTask(approved);
+    try {
+      const executed = parseStudioTask(await request("creator.task.execute", {
+        taskId: approved.taskId, expectedPlanRevision: approved.planRevision, expectedArtifactRevision: approved.artifact.expectedRevision,
+        operationId: operation("task-execute"), timeoutMs: 300_000, executor: selected, mode: "restricted", includeViewport: includeViewport && hasIsolatedViewport,
+      }));
+      if (generation === generationRef.current) applyTask(executed);
+    } catch (error) {
+      await refreshTask();
+      throw error;
+    }
   });
   const approvePlan = async () => run(async () => {
     if (!task) return;
@@ -152,18 +193,52 @@ export function useStudioTasks(request: CreatorRequest, project: TaskProject) {
       steps: defaultStudioPlanSteps(), operationId: operation("plan-revise"),
     })));
   });
-  const executeTask = async () => run(async () => {
-    if (!task) return;
+  const executeTask = async (selected: string, includeViewport = false) => run(async () => {
+    if (!task || !usableExecutors.some(item => item.id === selected) || selected !== executor) return;
+    const generation = generationRef.current;
     try {
-      applyTask(parseStudioTask(await request("creator.task.execute", {
+      const executed = parseStudioTask(await request("creator.task.execute", {
         taskId: task.taskId, expectedPlanRevision: task.planRevision, expectedArtifactRevision: task.artifact.expectedRevision,
-        operationId: operation("task-execute"), timeoutMs: 90_000,
-      })));
+        operationId: operation("task-execute"), timeoutMs: 90_000, executor: selected, mode: "restricted", includeViewport: includeViewport && hasIsolatedViewport,
+      }));
+      if (generation === generationRef.current) applyTask(executed);
     } catch (error) {
       await refreshTask();
       throw error;
     }
   });
+  /** R1 统一确认：UI 只传标识；Host 完成预览核对、作品提交、证据与任务终态。
+   *  不走 run() 吞错：失败原样返回给变更卡，重试复用同一 operationId（Host 回执幂等）。 */
+  const confirmSave = async (previewId: string, reviewerNote: string): Promise<{ ok: boolean; committedRevision?: number; error?: string }> => {
+    if (!task) return { ok: false, error: "no task" };
+    setBusy(true); setError("");
+    try {
+      const generation = generationRef.current;
+      const raw = await request<Record<string, unknown>>("creator.task.confirm_save", {
+        taskId: task.taskId, planRevision: task.planRevision, previewId,
+        expectedArtifactRevision: task.artifact.expectedRevision,
+        operationId: `confirm:${task.taskId}:${task.planRevision}`, reviewerNote,
+      });
+      const confirm = raw.confirm as { committedRevision?: unknown; taskId?: unknown; previewId?: unknown } | undefined;
+      const revision = confirm?.committedRevision;
+      const next = parseStudioTask(raw);
+      if (next.taskId !== task.taskId || next.phase !== "accepted"
+        || confirm?.taskId !== task.taskId || confirm?.previewId !== previewId
+        || typeof revision !== "number" || !Number.isSafeInteger(revision)) {
+        throw new Error("creator_task_confirm_receipt_invalid");
+      }
+      if (generation === generationRef.current && taskIdRef.current === task.taskId) {
+        applyTask(next);
+        setSaved({ artifact: task.artifact, revision });
+      }
+      return { ok: true, committedRevision: revision };
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : "creator_task_confirm_failed";
+      setError(message);
+      try { await refreshTask(); } catch { /* 刷新失败不掩盖原始错误 */ }
+      return { ok: false, error: message };
+    } finally { setBusy(false); }
+  };
   const appendEvidence = async (summary: string) => run(async () => {
     if (!task || !summary.trim()) return;
     applyTask(parseStudioTask(await request("creator.task.evidence.append", {
@@ -191,8 +266,11 @@ export function useStudioTasks(request: CreatorRequest, project: TaskProject) {
     finally { setCancelling(false); }
   };
 
-  return { task, sessionStatus, connections, capabilities, events, subscriptionStatus, subscriptionError, connectionError,
-    busy, cancelling, error, createGoal, approvePlan, revisePlan, executeTask, appendEvidence, acceptReview, rejectReview, cancelTask, refreshTask };
+  return { task, saved, sessionStatus, connections, capabilities, events, subscriptionStatus, subscriptionError, connectionError,
+    viewportAttachmentScope: hasIsolatedViewport && scope
+      ? JSON.stringify(scope) : null,
+    busy, cancelling, error, executor, setExecutor: chooseExecutor, applyPreferredExecutor: setPreferredExecutor,
+    createGoal, startTask, approvePlan, revisePlan, executeTask, confirmSave, appendEvidence, acceptReview, rejectReview, cancelTask, refreshTask };
 }
 
 export type StudioTaskController = ReturnType<typeof useStudioTasks>;

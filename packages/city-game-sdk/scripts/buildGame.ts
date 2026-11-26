@@ -162,7 +162,12 @@ export async function buildCodeGame(options: CodeGameBuildOptions): Promise<Code
 
     const bundle = fs.readFileSync(stagingBundle);
     if (bundle.byteLength === 0) return failure("game_build_failed", "esbuild produced an empty bundle.");
-    const sourceMap = fs.readFileSync(path.join(stagingDir, "game.js.map"));
+    const sourceMapPath = path.join(stagingDir, "game.js.map");
+    const sourceMap = options.sourceRevision?.startsWith("workspace:")
+      ? normalizeWorkspaceSourceMap(sourceMapPath, workspaceDir)
+      : fs.readFileSync(sourceMapPath);
+    if (!sourceMap) return failure("game_build_failed", "Build sources must come from the workspace or City SDK.");
+    fs.writeFileSync(sourceMapPath, sourceMap);
     const buildRecord = createCodeGameBuildRecord({
       manifest: manifest.value,
       sourceRevision,
@@ -189,7 +194,7 @@ export async function buildCodeGame(options: CodeGameBuildOptions): Promise<Code
     }
     const bundlePath = path.join(buildDir, "game.js");
     const warnings = (output.warnings ?? []).map((message) => fromEsbuildMessage(message, workspaceDir, "warning"));
-    if (options.dataHome) writeBuildRecord(options.dataHome, { ...buildRecord, createdAtMs: Date.now() });
+    if (options.dataHome) writeBuildRecord(options.dataHome, { ...buildRecord, createdAtMs: Date.now() }, manifest.value.displayName);
 
     return {
       ok: true,
@@ -217,6 +222,7 @@ export async function buildCodeGame(options: CodeGameBuildOptions): Promise<Code
 function writeBuildRecord(
   dataHome: string,
   record: CodeGameBuildV2 & Readonly<{ createdAtMs: number }>,
+  displayName: string,
 ): void {
   const root = path.join(dataHome, "state", "creator", "code-games");
   const builds = path.join(root, "builds");
@@ -230,7 +236,7 @@ function writeBuildRecord(
   } catch {
     index = [];
   }
-  const next = [record, ...index.filter((item) => (item as { buildId?: unknown })?.buildId !== record.buildId)].slice(0, 50);
+  const next = [{ ...record, displayName }, ...index.filter((item) => (item as { buildId?: unknown })?.buildId !== record.buildId)].slice(0, 50);
   writeAtomic(indexPath, `${JSON.stringify(next, null, 2)}\n`);
 }
 
@@ -246,6 +252,24 @@ function writeAtomic(file: string, content: string): void {
  * repair loop depends on these diagnostics (stage "typecheck"), and a missing
  * compiler fails closed rather than silently skipping the gate.
  */
+/** Keep temporary snapshot paths out of artifacts and their content identity. */
+function normalizeWorkspaceSourceMap(mapPath: string, workspaceDir: string): Buffer | null {
+  const map = JSON.parse(fs.readFileSync(mapPath, "utf8")) as { sources: string[] };
+  const roots = [
+    { path: workspaceDir, prefix: "workspace" },
+    { path: packageRoot, prefix: "city-game-sdk" },
+    { path: path.resolve(packageRoot, "../agent-vitals-city-sdk"), prefix: "city-sdk" },
+  ].map(root => ({ ...root, path: fs.realpathSync(root.path) }));
+  const sources: string[] = [];
+  for (const source of map.sources) {
+    const absolute = fs.realpathSync(path.resolve(path.dirname(mapPath), source));
+    const root = roots.find(candidate => isInside(candidate.path, absolute));
+    if (!root) return null;
+    sources.push(`${root.prefix}/${path.relative(root.path, absolute).split(path.sep).join("/")}`);
+  }
+  return Buffer.from(JSON.stringify({ ...map, sources }));
+}
+
 function typecheckWorkspace(workspaceDir: string, sdkApiEntry: string): readonly GameDiagnosticV1[] {
   const tsc = path.join(packageRoot, "node_modules", "typescript", "bin", "tsc");
   if (!fs.existsSync(tsc)) {
@@ -408,7 +432,17 @@ async function main(argv: readonly string[]): Promise<void> {
   if (!workspaceDir || !outDir) {
     throw new Error("Usage: buildGame.ts --workspace <game dir> --out <builds dir>");
   }
-  const result = await buildCodeGame({ workspaceDir, outDir, ...(dataHome ? { dataHome } : {}) });
+  const workspaceId = args.get("workspace-id");
+  const revision = args.get("source-revision");
+  if ((workspaceId || revision) && (!/^gws-[a-f0-9]{16}$/.test(workspaceId ?? "") || !/^[a-f0-9]{64}$/.test(revision ?? ""))) {
+    throw new Error("Workspace builds require a valid workspace ID and source revision.");
+  }
+  const result = await buildCodeGame({
+    workspaceDir,
+    outDir,
+    ...(dataHome ? { dataHome } : {}),
+    ...(workspaceId && revision ? { sourceRevision: `workspace:${workspaceId}:${revision}` } : {}),
+  });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   if (!result.ok) process.exitCode = 1;
 }

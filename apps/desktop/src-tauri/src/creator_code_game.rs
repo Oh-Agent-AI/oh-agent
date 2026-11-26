@@ -433,7 +433,8 @@ pub(crate) fn studio_builds(home: &Path, limit: u64) -> Result<Value, &'static s
     };
     let rows = value.as_array().ok_or("creator_store_unavailable")?.iter().take(limit.min(50) as usize).map(|row| {
         Some(json!({"buildId":bounded(row,"buildId",64)?,"gameId":bounded(row,"gameId",128)?,
-            "gameVersion":bounded(row,"gameVersion",32),"byteLength":row.get("byteLength").and_then(Value::as_u64),
+            "gameVersion":bounded(row,"gameVersion",32),"displayName":bounded(row,"displayName",320).filter(|name| name.chars().count() <= 80),
+            "byteLength":row.get("byteLength").and_then(Value::as_u64),
             "createdAtMs":row.get("createdAtMs").and_then(Value::as_u64)}))
     }).collect::<Option<Vec<_>>>().ok_or("creator_store_unavailable")?;
     Ok(json!({"builds":rows}))

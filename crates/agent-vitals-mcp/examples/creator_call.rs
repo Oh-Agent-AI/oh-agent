@@ -28,7 +28,7 @@ fn main() {
         "creator_task_submit_result" => "creator.task.submit_result",
         other => other,
     };
-    agent_vitals_mcp::mcp::creator_session::task_dispatch(&home, dotted, &payload)
+    agent_vitals_mcp::mcp::creator_session::task_dispatch(&home, dotted, &payload, None)
         } else {
             agent_vitals_mcp::mcp::creator_session::session_dispatch(&home, &method, &payload)
         }

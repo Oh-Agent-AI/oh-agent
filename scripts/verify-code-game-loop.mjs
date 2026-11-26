@@ -99,10 +99,22 @@ const fixed = await call("creator_code_file_write", {
   expectedRevision: broken.gameRevision,
 });
 const firstBuild = await call("creator_code_build", { workspaceId, expectedRevision: fixed.gameRevision });
-assert.equal(firstBuild.status, "succeeded");
+assert.equal(firstBuild.status, "succeeded", JSON.stringify(firstBuild.diagnostics));
+const repeated = await call("creator_code_build", { workspaceId, expectedRevision: fixed.gameRevision });
+assert.equal(repeated.buildId, firstBuild.buildId, "the build ID must not depend on the temporary snapshot path");
+const another = await call("creator_code_project_create", { title: "Other workspace", operationId: "op-other" });
+for (const method of ["creator_code_test", "creator_code_preview"]) {
+  await assert.rejects(call(method, { workspaceId: another.workspaceId, buildId: firstBuild.buildId }),
+    (error) => error.code === "workspace_build_mismatch");
+}
+await assert.rejects(call("creator_code_publish", {
+  workspaceId: another.workspaceId, buildId: firstBuild.buildId, permissionsAccepted: true,
+}), (error) => error.code === "workspace_build_mismatch");
 const firstRun = await call("creator_code_test", { workspaceId, buildId: firstBuild.buildId, seed: 7, ticks: 900 });
 assert.equal(firstRun.telemetry.outcome, "success");
 assert.equal(firstRun.telemetry.entities, 0);
+assert.equal(firstRun.gameRevision, fixed.gameRevision);
+assert.equal(firstRun.synthetic, true);
 
 const faster = await call("creator_code_file_write", {
   workspaceId,
@@ -114,6 +126,10 @@ const secondBuild = await call("creator_code_build", { workspaceId, expectedRevi
 assert.notEqual(secondBuild.buildId, firstBuild.buildId);
 const secondRun = await call("creator_code_test", { workspaceId, buildId: secondBuild.buildId, seed: 7, ticks: 900 });
 assert.ok(secondRun.telemetry.tick < firstRun.telemetry.tick, `${secondRun.telemetry.tick} !< ${firstRun.telemetry.tick}`);
+
+const previous = await call("creator_code_test", { workspaceId, buildId: firstBuild.buildId, seed: 7, ticks: 900 });
+assert.equal(previous.gameRevision, fixed.gameRevision);
+assert.equal(previous.telemetry.tick, firstRun.telemetry.tick);
 
 const status = await call("creator_code_build_status", { buildId: secondBuild.buildId });
 assert.equal(status.buildId, secondBuild.buildId);

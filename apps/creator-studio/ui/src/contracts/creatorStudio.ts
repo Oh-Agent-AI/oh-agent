@@ -2,9 +2,9 @@ import type { CityGameMountV1, CityInstanceV1, CityLayoutSnapshotV1 } from "@oh-
 import type { inspectInstalledWorld } from "../contentSnapshot";
 import type { CityInstanceRef, CreatorProjectRef, RunRef } from "./creatorProject";
 
-export type ProjectRow = CreatorProjectRef & { title: string; updatedAtMs: number };
+export type ProjectRow = CreatorProjectRef & { title: string; updatedAtMs: number; gameDefinitionId?: string | null };
 export type LayoutRow = { worldRevision: string; layoutId: string; seed: number; anchorCount: number; updatedAtMs: number; cityId?: string; cityRevision?: number; source?: "legacy" | "cityDraft" };
-export type CityRow = CityInstanceRef & { name: string };
+export type CityRow = CityInstanceRef & { name: string; biome?: CityInstanceV1["profile"]["biome"] | null };
 export type CityWorldSnapshot = Awaited<ReturnType<typeof inspectInstalledWorld>>;
 export type SceneDraft = { schemaVersion: 1; objects: Array<Record<string, unknown>> };
 // 试玩历史行（creator.project.playtest.history 返回的 runs 元素），状态沿用后端英文枚举不翻译。
@@ -13,7 +13,7 @@ export type Project = CreatorProjectRef & { title?: string; kind: string; game: 
 export type ProjectCityState = { key: string; city: CityInstanceV1 | null; worldScene?: CityWorldSnapshot; error?: string };
 export type CityViewStatus = "loading" | "ready" | "failed";
 export type CityDiagnosticContext = { cityId: string; revision: number; correlationId: string; started: number; unavailable: boolean };
-export type StudioPanel = "play" | "agent" | "project" | "code";
+export type StudioPanel = "play" | "agent" | "project" | "code" | "story";
 export type CityViewOpenResult = { cityId: string; revision: number; status: "loading"; mode: "read_only_preview" };
 export type ApplyProject = (next: Project, mode: "preserve" | "replace", previous: Project | null) => { preservedDrafts: boolean };
 

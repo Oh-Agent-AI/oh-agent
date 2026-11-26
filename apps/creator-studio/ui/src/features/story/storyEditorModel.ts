@@ -15,6 +15,39 @@ export type StoryDocument = Readonly<{
   contentDigest: string;
 }>;
 
+export type StoryReadonlyContent = Readonly<{
+  nodes: readonly Readonly<{ id: string; title: string; kind: string; description: string }>[];
+  edges: readonly Readonly<{ id: string; from: string; to: string }>[];
+  characters: readonly string[];
+}>;
+
+export function storyReadonlyContent(document: StoryDocument): StoryReadonlyContent {
+  const rawNodes = Array.isArray(document.graph.nodes) ? document.graph.nodes : [];
+  const nodes = rawNodes.map((node, index) => {
+    const value = record(node);
+    const id = text(value?.id, 128) ?? "";
+    return Object.freeze({ id,
+      title: text(value?.title, 200) ?? `节点 ${index + 1}`,
+      kind: text(value?.kind, 32) ?? "unknown",
+      description: text(record(value?.meta)?.description, 2000) ?? "" });
+  });
+  const titles = new Map(nodes.filter(node => node.id).map(node => [node.id, node.title]));
+  const rawEdges = Array.isArray(document.graph.edges) ? document.graph.edges : [];
+  const edges = rawEdges.map((edge, index) => {
+    const value = record(edge);
+    const from = text(value?.from, 128) ?? "";
+    const to = text(value?.to, 128) ?? "";
+    return Object.freeze({ id: text(value?.id, 128) ?? `edge-${index + 1}`,
+      from: titles.get(from) ?? (from || "未知起点"), to: titles.get(to) ?? (to || "未知终点") });
+  });
+  const rawCharacters = Array.isArray(document.canon.characters) ? document.canon.characters : [];
+  const characters = rawCharacters.map((character, index) => {
+    const value = record(character);
+    return text(value?.displayName, 200) ?? text(value?.characterId, 128) ?? `角色 ${index + 1}`;
+  });
+  return Object.freeze({ nodes: Object.freeze(nodes), edges: Object.freeze(edges), characters: Object.freeze(characters) });
+}
+
 const record = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 const text = (value: unknown, max: number): string | null => typeof value === "string" && value.length > 0 && value.length <= max ? value : null;
 
@@ -98,4 +131,12 @@ export function testStoryConditions(document: StoryDocument, input: StoryConditi
     flags: input.flags, counters: input.counters, clockTick: 0,
   };
   return Object.freeze(eligibleEdges(document.graph, snapshot));
+}
+
+export function storyCharacterOptions(canon: StoryDocument["canon"]) {
+  return Array.isArray(canon.characters) ? canon.characters.flatMap(character => {
+    const id = character?.characterId ?? character?.id;
+    const name = character?.displayName ?? character?.name ?? id;
+    return typeof id === "string" && typeof name === "string" ? [{ id, name }] : [];
+  }) : [];
 }
