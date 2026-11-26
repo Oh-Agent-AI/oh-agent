@@ -180,7 +180,10 @@ export type CityTypedModelUsageReader = (input: {
   dataRevision?: number;
 }) => Promise<TypedModelUsageV1>;
 
-const PAGE_SIZE = 500;
+// 每页 500 行会随会话积累超过宿主 typed_data 的 256 KiB 单页预算
+//（typed_data_too_large），导致整个 City 投影失败。缩小页大小保持
+// webview 数据边界不变，分页循环自动补齐余数。
+const PAGE_SIZE = 50;
 const MAX_SESSIONS = 4_000;
 
 function timestamp(value: number | null | undefined, required: boolean): string | null {
