@@ -988,6 +988,11 @@ enum DataMcpAction {
         /// filesystem writes remain unavailable.
         #[arg(long)]
         allow_local_writes: bool,
+        /// Expose the experimental independent-City draft tools
+        /// (`creator_city_*`). They are hidden by default because the flow
+        /// cannot yet bind projects, publish or switch the active City.
+        #[arg(long)]
+        enable_city_tools: bool,
     },
 }
 
@@ -1856,7 +1861,7 @@ fn main() {
     // 之前短路——它不碰 skill 扫描，只对 SQL 权威库做只读查询。
     if let Some(Cmd::DataMcp { action }) = &args.cmd {
         match action {
-            DataMcpAction::Serve { allow_local_writes } => mcp::serve(*allow_local_writes),
+            DataMcpAction::Serve { allow_local_writes, enable_city_tools } => mcp::serve(*allow_local_writes, *enable_city_tools),
         }
     }
 

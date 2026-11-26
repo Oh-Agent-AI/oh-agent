@@ -2,7 +2,7 @@
 import { runNpm } from "./run-npm.mjs";
 
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { buildOfficialPlugins } from "./official-plugins.mjs";
 import path from "node:path";
 
@@ -16,10 +16,48 @@ runNpm(["--prefix", "apps/desktop/ui-dev", "run", "build:react"], {
   stdio: "inherit",
 });
 
+// 官方插件（creator-studio）依赖 workspace 包 `@oh-agent/city-sdk`，它的
+// `main` 指向 `dist/index.js`；不先构建会得到 Vite 的 "Failed to resolve entry
+// for package @oh-agent/city-sdk"（Windows CI 实测）。这里在任何插件构建
+// 之前把 SDK 装好并构建，保证本地与 CI 同一条路径。
+{
+  const citySdk = path.join(repo, "packages/agent-vitals-city-sdk");
+  if (existsSync(path.join(citySdk, "package.json"))) {
+    runNpm(["ci"], { cwd: citySdk, stdio: "inherit" });
+    runNpm(["run", "build"], { cwd: citySdk, stdio: "inherit" });
+  }
+}
+
+// creator-studio 直接引用 agent-city 的视口源码，Rollup 会从源文件目录
+// （apps/agent-city/ui）向上解析依赖。CI 的 fresh checkout 里那里没有
+// node_modules，于是 three / mp4-muxer 等逐个解析失败。先把 city 的依赖装好，
+// 后续插件构建共享这棵树；buildOfficialPlugins 仍会各自 npm ci。
+{
+  const cityUi = path.join(repo, "apps/agent-city/ui");
+  if (existsSync(path.join(cityUi, "package.json"))) {
+    runNpm(["ci"], { cwd: cityUi, stdio: "inherit" });
+  }
+}
+
+// City 插件会把 packages/city-game-sdk 的源码编进 Vite（snapshotWorld.ts）。
+// Node 从该文件所在包向上解析 @oh-agent/city-sdk，不会进入
+// apps/agent-city/ui/node_modules。lockfile 把 file: 依赖装成符号链接，
+// 所以 city-sdk 必须已经构建。3fc7e243 的 CI Linux/Windows 包在身份检查
+// 通过后死在这里；同一 SHA 的本地正式包是因为打包前额外执行了
+// `npm ci --prefix packages/city-game-sdk` 才过的。
+{
+  const gameSdk = path.join(repo, "packages/city-game-sdk");
+  if (existsSync(path.join(gameSdk, "package.json"))) {
+    runNpm(["ci"], { cwd: gameSdk, stdio: "inherit" });
+  }
+}
+
 {
   const probe = process.env.AGENT_VITALS_PLUGIN_ISOLATION_PROBE === "1";
   buildOfficialPlugins({ install: true, probe });
 }
+
+await import("./prepare-code-game-builder.mjs");
 
 execFileSync("cargo", ["build", "--release", "-p", "agent-vitals"], {
   cwd: repo,

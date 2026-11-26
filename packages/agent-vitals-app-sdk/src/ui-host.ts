@@ -1,7 +1,8 @@
-export type Tool = { id: string; commandId: string; label: string; kind: "button" | "select"; enabled: boolean; placement?: "primary" | "overflow"; value?: string; options?: Array<{ value: string; label: string }> };
+export type Tool = { id: string; commandId: string; label: string; kind: "button" | "select" | "search"; enabled: boolean; placement?: "primary" | "overflow"; value?: string; options?: Array<{ value: string; label: string }> };
 export type Command = { version: number; instanceId: string; requestId: string; commandId: string; value?: string };
 declare global { interface Window {
   __AV_PLUGIN_INSTANCE__?: string;
+  __AV_CODE_PREVIEW_ID__?: string;
   __AV_PLUGIN_LOCALE__?: "en" | "zh-Hans";
   __TAURI__?: { core?: { invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>; }; };
 } }
@@ -46,6 +47,9 @@ export async function invokeHost<T>(command: string, args: Record<string, unknow
   if (!browserInstance) {
     const invoke = window.__TAURI__?.core?.invoke;
     if (!invoke) throw new Error("plugin_backend_unavailable");
+    if (window.__AV_CODE_PREVIEW_ID__) {
+      return invoke<T>("code_game_preview_request", { request: { previewId: window.__AV_CODE_PREVIEW_ID__, command, args } });
+    }
     return invoke<T>(command, args);
   }
   const requestId = `rpc-${++sequence}`;
@@ -117,6 +121,14 @@ export async function noteBusy(budgetMs = 8_000) {
   await publish("heartbeat", { diagnostic: { busyMs } });
 }
 export function observeHealth(state?: () => Record<string, number | boolean>) {
+  const reportError = (error: unknown) => {
+    const value = error instanceof Error ? error : new Error(String(error));
+    // Controlled error codes only: exception messages and stacks can carry
+    // local paths and project content. The host's diagnostics log stores
+    // bounded technical state, so only the conservatively validated error
+    // identifier is reported; message/stack never leave the webview.
+    void publish("runtime.error", { error: { name: value.name.slice(0, 120) } }).catch(() => {});
+  };
   const fault = (event: Event) => {
     // Chromium reports a deferred ResizeObserver delivery as a window error.
     // It is a non-fatal layout diagnostic, not an uncaught plugin exception;
@@ -125,7 +137,9 @@ export function observeHealth(state?: () => Record<string, number | boolean>) {
       "ResizeObserver loop completed with undelivered notifications.",
       "ResizeObserver loop limit exceeded",
     ].includes(event.message)) return;
-    void publish("runtime.error").catch(() => {});
+    if (event instanceof ErrorEvent) reportError(event.error ?? event.message);
+    else if (event instanceof PromiseRejectionEvent) reportError(event.reason);
+    else reportError("Unhandled plugin runtime error");
   };
   let pulses = 0;
   const timer = window.setInterval(() => {

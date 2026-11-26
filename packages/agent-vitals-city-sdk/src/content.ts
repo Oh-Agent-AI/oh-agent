@@ -2,7 +2,7 @@ import type { AnchorCapability, AnchorKind, DiagnosticV1, MiniGamePackV1, Result
 
 const IDENTIFIER = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/;
 const ANCHOR_KINDS = new Set<AnchorKind>(["spawn", "route", "zone", "object"]);
-const CAPABILITIES = new Set<AnchorCapability>(["drive", "walk"]);
+const CAPABILITIES = new Set<AnchorCapability>(["drive", "walk", "fly"]);
 const MAX_PACK_JSON_BYTES = 256 * 1024;
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -47,7 +47,7 @@ export function validateMiniGamePack(value: unknown): Result<MiniGamePackV1> {
     if (!hasOnlyKeys(raw, ["kind", "min", "max", "requires"])) diagnostics.push(diagnostic("content_field_unsupported", path, "Slot contains unsupported fields."));
     if (typeof raw.kind !== "string" || !ANCHOR_KINDS.has(raw.kind as AnchorKind)) diagnostics.push(diagnostic("content_invalid_slot", `${path}.kind`, "Slot kind is unsupported."));
     if (!integer(raw.min, 0, 64) || !integer(raw.max, 0, 64) || (integer(raw.min, 0, 64) && integer(raw.max, 0, 64) && raw.min > raw.max)) diagnostics.push(diagnostic("content_invalid_slot", path, "Slot min/max must be integers from 0 to 64, with min no greater than max."));
-    if (raw.requires !== undefined && (!Array.isArray(raw.requires) || raw.requires.some(capability => typeof capability !== "string" || !CAPABILITIES.has(capability as AnchorCapability)))) diagnostics.push(diagnostic("content_invalid_slot", `${path}.requires`, "Slot capabilities must be drive or walk."));
+    if (raw.requires !== undefined && (!Array.isArray(raw.requires) || raw.requires.some(capability => typeof capability !== "string" || !CAPABILITIES.has(capability as AnchorCapability)))) diagnostics.push(diagnostic("content_invalid_slot", `${path}.requires`, "Slot capabilities must be drive, walk or fly."));
   }
   let parameters: Record<string, unknown> = {};
   if (value.integerParameters !== undefined) {
@@ -67,7 +67,15 @@ export function validateMiniGamePack(value: unknown): Result<MiniGamePackV1> {
   const counters = object(rules.counters) ? rules.counters : {};
   if (Object.keys(counters).length > 32) diagnostics.push(diagnostic("rule_budget_exceeded", "rules.counters", "A rule graph may declare at most 32 counters."));
   for (const [name, raw] of Object.entries(counters)) {
-    if (!id(name) || !object(raw) || !hasOnlyKeys(raw, ["initial", "max"]) || !integer(raw.initial, 0, 1_000_000_000) || !integer(raw.max, 0, 1_000_000_000) || raw.initial > raw.max) diagnostics.push(diagnostic("rule_invalid_counter", `rules.counters.${name}`, "Counter bounds must be non-negative integers; initial must not exceed max."));
+    if (!id(name) || !object(raw) || !hasOnlyKeys(raw, ["initial", "max"]) || !integer(raw.initial, 0, 1_000_000_000)) {
+      diagnostics.push(diagnostic("rule_invalid_counter", `rules.counters.${name}`, "Counter bounds must be non-negative integers; initial must not exceed max."));
+      continue;
+    }
+    // max 支持字面量或参数引用（与 timer.start 的 durationTicks 参数形态同构）；
+    // 引用必须指向已声明的整数参数——绑定时的实际值由 mount.parameterOverrides 提供。
+    const maxIsParameter = object(raw.max) && hasOnlyKeys(raw.max, ["parameter"]) && id(raw.max.parameter) && hasOwn(parameters, raw.max.parameter);
+    const maxLiteral = typeof raw.max === "number" ? raw.max : null;
+    if (!maxIsParameter && (maxLiteral === null || maxLiteral < 0 || maxLiteral > 1_000_000_000 || raw.initial > maxLiteral)) diagnostics.push(diagnostic("rule_invalid_counter", `rules.counters.${name}`, "Counter max must be a bounded integer (initial not exceeding it) or a declared parameter reference."));
   }
   if (!Array.isArray(rules.nodes)) diagnostics.push(diagnostic("rule_invalid_shape", "rules.nodes", "Rule nodes must be an array."));
   const nodes = Array.isArray(rules.nodes) ? rules.nodes : [];
@@ -96,7 +104,7 @@ export function validateMiniGamePack(value: unknown): Result<MiniGamePackV1> {
     if (raw.when !== undefined && (!Array.isArray(raw.when) || raw.when.length > 8)) diagnostics.push(diagnostic("rule_budget_exceeded", `${path}.when`, "A rule may contain at most 8 guards.", raw.id));
     if (Array.isArray(raw.when)) for (const [guardIndex, guard] of raw.when.entries()) {
       if (!object(guard) || !id(guard.counter) || !hasOwn(counters, guard.counter) ||
-        (guard.op === "counter.eq" && !integer(guard.value, 0, 1_000_000_000)) ||
+        (guard.op === "counter.eq" && !(integer(guard.value, 0, 1_000_000_000) || (object(guard.value) && hasOnlyKeys(guard.value, ["parameter"]) && id(guard.value.parameter) && hasOwn(parameters, guard.value.parameter)))) ||
         (guard.op !== "counter.eq" && guard.op !== "counter.eqEventIndex")) diagnostics.push(diagnostic("rule_invalid_guard", `${path}.when[${guardIndex}]`, "Guard operation or counter reference is invalid.", raw.id));
       if (object(guard) && guard.op === "counter.eqEventIndex" && object(event) && event.type !== "zone.entered" && event.type !== "item.collected") diagnostics.push(diagnostic("rule_invalid_guard", `${path}.when[${guardIndex}]`, "counter.eqEventIndex requires a player input event.", raw.id));
     }

@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "kind": "code-game",
+  "gameId": "community.tower-defense",
+  "displayName": "City Tower Defense",
+  "version": "0.1.0",
+  "entry": "src/index.ts",
+  "sdk": {
+    "name": "@oh-agent/city-game-sdk",
+    "apiMajor": 1
+  },
+  "world": {
+    "requiredCapabilities": [
+      "world.read",
+      "roads.read"
+    ]
+  },
+  "permissions": [
+    "world.read",
+    "roads.read",
+    "entities.write.owned",
+    "ui.hud"
+  ],
+  "limits": {
+    "maxEntities": 16,
+    "maxProjectiles": 0
+  },
+  "assets": [
+    {
+      "id": "cube",
+      "path": "assets/cube.glb",
+      "type": "model/glb"
+    }
+  ]
+}

@@ -172,7 +172,7 @@ fn map_host_error(code: &str) -> ToolError {
     match code {
         "session_unavailable" => ToolError::new("not_found", "the session is not available in the open Agent City window"),
         "invalid_payload" => ToolError::new("invalid_argument", "the building request is invalid"),
-        "plugin_call_timeout" | "plugin_call_expired" | "plugin_call_method_unavailable" => {
+        "plugin_call_timeout" | "plugin_call_expired" | "plugin_call_method_unavailable" | "plugin_unavailable" | "plugin_unresponsive" | "plugin_boot_timeout" | "plugin_command_timeout" | "plugin_runtime_error" | "plugin_command_rejected" | "plugin_reloaded" | "plugin_suspended" => {
             ToolError::new("plugin_unavailable", "Open the local Agent City window and retry the request")
         }
         _ => ToolError::new("data_unavailable", code),

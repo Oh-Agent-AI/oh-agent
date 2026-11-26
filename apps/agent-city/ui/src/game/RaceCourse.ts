@@ -81,6 +81,37 @@ export function generateRaceCourse(request: CourseRequest): RaceCourse | null {
 }
 
 /**
+ * Creator 打法门（2026-11-15 飞行管线）：环来自 release 绑定的 fly 锚点，而不是城市
+ * 障碍扫描。位置是世界单位下的门心（调用方把锚点几何的米制坐标换算过来），环半径等于
+ * 环孔半径——看得见的环与共享 Volume 判定使用同一位置和尺寸。发布几何以携带法线时
+ * 直接复用；旧的无法线内容保留相邻门弦方向兜底。
+ *
+ * 路线只用于呈现与计量（时长上限），胜负仍由共享规则执行器判定；因此这里不做走廊
+ * 验证——门的净空是发布时 mount 校验与 City 拓扑的职责，重跑生成器不该改写它。
+ */
+export function createCreatorGateCourse(request: CourseRequest & Readonly<{ gates: readonly Readonly<{ x: number; y: number; z: number; radius: number; nx?: number; ny?: number; nz?: number }>[] }>): RaceCourse | null {
+  const { gates, params } = request;
+  if (!gates.length || gates.length > 64) return null;
+  if (gates.some(gate => ![gate.x, gate.y, gate.z, gate.radius].every(value => Number.isFinite(value)) || gate.radius <= 0)) return null;
+  if (gates.some(gate => {
+    const normal = [gate.nx, gate.ny, gate.nz];
+    return normal.some(value => value !== undefined) && (!normal.every(value => typeof value === "number" && Number.isFinite(value)) || Math.hypot(gate.nx ?? 0, gate.ny ?? 0, gate.nz ?? 0) < 1e-6);
+  })) return null;
+  const count = gates.length;
+  const rings: CourseRing[] = gates.map((gate, index) => {
+    const previous = gates[(index - 1 + count) % count];
+    const next = gates[(index + 1) % count];
+    // 单门（或首尾重合）时用门心指向城市的水平方向兜底，保证法线非零。
+    let nx = gate.nx ?? next.x - previous.x, ny = gate.ny ?? next.y - previous.y, nz = gate.nz ?? next.z - previous.z;
+    if (Math.hypot(nx, ny, nz) < 1e-6) { nx = 0; ny = 0; nz = 1; }
+    const length = Math.hypot(nx, ny, nz);
+    return { x: gate.x, y: gate.y, z: gate.z, nx: nx / length, ny: ny / length, nz: nz / length, radius: gate.radius };
+  });
+  const staticCollisionIdentity = request.staticCollisionIdentity ?? "legacy-no-static-snapshot";
+  return finalize(request.citySeed, request.physicsVersion, request.variant, rings, params, "generated", staticCollisionIdentity);
+}
+
+/**
  * 从城市内部障碍盒中选取路径点：沿方位角扫描，每个扇区取最高的障碍附近放一个
  * 路径点（在障碍侧方 clearance 距离处，高度=障碍顶+ringRadius）。蛇形穿越。
  */

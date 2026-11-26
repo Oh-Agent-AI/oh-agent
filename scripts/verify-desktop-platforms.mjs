@@ -23,9 +23,13 @@ for (const platform of ['windows', 'linux']) {
   assert.equal(config.mainBinaryName, 'agent-vitals-menubar');
   assert.equal(config.app.windows[0].title, 'Oh Agent 工作台');
   assert.deepEqual(config.bundle.targets, windows ? ['nsis'] : ['deb', 'appimage']);
+  // code-game ships in the base manifest. Windows deletes only the Unix
+  // agent-vitals binary and adds the .exe; both platforms keep code-game.
+  // The Tauri parser test resolve_binary_platform_config_matches_packaged_resource
+  // already expects that pair.
   assert.deepEqual(config.bundle.resources, windows
-    ? { '../../../target/release/agent-vitals.exe': 'bin/agent-vitals.exe' }
-    : { '../../../target/release/agent-vitals': 'bin/agent-vitals' });
+    ? { '../../../target/release/agent-vitals.exe': 'bin/agent-vitals.exe', 'code-game': 'code-game' }
+    : { '../../../target/release/agent-vitals': 'bin/agent-vitals', 'code-game': 'code-game' });
 }
 console.log('Windows/Linux bundle config contracts: OK');
 

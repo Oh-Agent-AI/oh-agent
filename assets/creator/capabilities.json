@@ -1,0 +1,566 @@
+{
+  "budgets": {
+    "cityPatchBytes": 262144,
+    "gameBytes": 262144,
+    "mountBindings": 32,
+    "sceneColliders": 256,
+    "sceneObjects": 10000
+  },
+  "capabilities": {
+    "capabilityVersion": "2026-11-17.1",
+    "categories": {
+      "assets": {
+        "import": "creator.asset.import（桌面原生选择器，MCP 不接收路径）",
+        "maxAssets": 4096,
+        "maxImportedModelBytes": 67108864
+      },
+      "cityPatch": {
+        "maxBytes": 262144,
+        "remove": "city.patch.remove",
+        "upsert": "city.patch.upsert"
+      },
+      "game": {
+        "commit": "creator.project.commit",
+        "maxGameBytes": 262144,
+        "preview": "creator.game.preview"
+      },
+      "gameTypes": {
+        "status": "adapter-seam",
+        "types": [
+          {
+            "id": "miami.flight-v1",
+            "label": "驾驶飞机",
+            "runtime": {
+              "contractVersion": 1,
+              "id": "miami.flight"
+            },
+            "status": "builtin-adapter",
+            "template": "miami-flight",
+            "templateCatalog": "builtin"
+          },
+          {
+            "id": "miami.driving-v1",
+            "label": "驾车",
+            "runtime": {
+              "contractVersion": 1,
+              "id": "miami.driving"
+            },
+            "status": "builtin-adapter",
+            "template": "miami-driving",
+            "templateCatalog": "builtin"
+          },
+          {
+            "id": "miami.mecha-v1",
+            "label": "机甲战棋",
+            "runtime": {
+              "contractVersion": 1,
+              "id": "miami.mecha"
+            },
+            "status": "builtin-adapter",
+            "template": "miami-mecha",
+            "templateCatalog": "builtin"
+          },
+          {
+            "id": "miami.cinema-v1",
+            "label": "航拍",
+            "runtime": {
+              "contractVersion": 1,
+              "id": "miami.cinema"
+            },
+            "status": "builtin-adapter",
+            "template": "miami-cinema",
+            "templateCatalog": "builtin"
+          },
+          {
+            "id": "creator.flight-ornithopter-prototype-v1",
+            "label": "扑翼飞行（飞行原型）",
+            "runtime": {
+              "contractVersion": 1,
+              "id": "miami.flight"
+            },
+            "status": "prototype",
+            "template": "miami-flight",
+            "templateCatalog": "builtin"
+          },
+          {
+            "id": "creator.flight-ornithopter-v1",
+            "label": "扑翼飞行",
+            "runtime": {
+              "contractVersion": 1,
+              "id": "city-flight-ornithopter"
+            },
+            "status": "planned",
+            "template": "ornithopter-flight",
+            "templateCatalog": "planned"
+          }
+        ]
+      },
+      "mount": {
+        "bind": "mount.bind",
+        "maxReleaseMounts": 32,
+        "remove": "mount.remove"
+      },
+      "playtest": {
+        "cancel": "creator.project.playtest.cancel",
+        "result": "creator.project.playtest.result",
+        "start": "creator.project.playtest.start",
+        "ttlMs": 1800000
+      },
+      "project": {
+        "create": "creator.project.create",
+        "maxDocumentBytes": 2097152,
+        "maxReleaseBytes": 524288,
+        "publish": "creator.project.publish",
+        "templates": [
+          "checkpoint-race",
+          "flight-checkpoint",
+          "ornithopter-flight",
+          "collect-one"
+        ]
+      },
+      "scene": {
+        "commit": "creator.scene.commit",
+        "maxColliders": 256,
+        "maxObjects": 10000,
+        "maxOperationsPerPreview": 128,
+        "objectKinds": [
+          "model",
+          "anchor",
+          "collider"
+        ],
+        "preview": "creator.scene.preview"
+      },
+      "skin": {
+        "select": "skin.select",
+        "skins": [
+          "miami-vice",
+          "desert-evening"
+        ]
+      },
+      "worlds": {
+        "budgets": {
+          "maxOperationsPerPreview": 16,
+          "maxParametersPerSet": 32,
+          "maxRequestBytes": 8192
+        },
+        "generators": {
+          "arid-dunes-v1": {
+            "contractVersion": 2,
+            "parameters": [
+              {
+                "default": 190,
+                "group": "landform",
+                "id": "duneScale",
+                "kind": "number",
+                "max": 600,
+                "min": 96,
+                "unit": "m"
+              },
+              {
+                "default": 11,
+                "group": "landform",
+                "id": "duneAmplitude",
+                "kind": "number",
+                "max": 36,
+                "min": 1,
+                "unit": "m"
+              },
+              {
+                "default": 18,
+                "group": "landform",
+                "id": "orientationDeg",
+                "kind": "number",
+                "max": 180,
+                "min": -180,
+                "unit": "deg"
+              },
+              {
+                "default": "disc",
+                "group": "shape",
+                "id": "family",
+                "kind": "enum",
+                "values": [
+                  "disc",
+                  "lobed",
+                  "dumbbell",
+                  "coastal"
+                ]
+              },
+              {
+                "default": 1,
+                "group": "shape",
+                "id": "cores",
+                "kind": "integer",
+                "max": 3,
+                "min": 1
+              },
+              {
+                "default": 1,
+                "group": "shape",
+                "id": "aspectRatio",
+                "kind": "number",
+                "max": 1.8,
+                "min": 1
+              },
+              {
+                "default": 0,
+                "group": "shape",
+                "id": "corridorPull",
+                "kind": "number",
+                "max": 0.4,
+                "min": 0
+              },
+              {
+                "default": 0.035,
+                "group": "shape",
+                "id": "coastFractal",
+                "kind": "number",
+                "max": 0.25,
+                "min": 0
+              },
+              {
+                "default": "medium",
+                "group": "shape",
+                "id": "radiusClass",
+                "kind": "enum",
+                "values": [
+                  "small",
+                  "medium",
+                  "large"
+                ]
+              },
+              {
+                "default": 1,
+                "group": "landform",
+                "id": "duneFrequency",
+                "kind": "number",
+                "max": 2,
+                "min": 0.5
+              },
+              {
+                "default": 0,
+                "group": "landform",
+                "id": "ridgeSecondary",
+                "kind": "number",
+                "max": 1,
+                "min": 0
+              },
+              {
+                "default": 0,
+                "group": "water",
+                "id": "oasisCount",
+                "kind": "integer",
+                "max": 3,
+                "min": 0
+              },
+              {
+                "default": 0,
+                "group": "water",
+                "id": "lakeCount",
+                "kind": "integer",
+                "max": 3,
+                "min": 0
+              },
+              {
+                "default": 120,
+                "group": "water",
+                "id": "lakeSizeM",
+                "kind": "number",
+                "max": 400,
+                "min": 40,
+                "unit": "m"
+              },
+              {
+                "default": 0,
+                "group": "vegetation",
+                "id": "greenbeltWidth",
+                "kind": "number",
+                "max": 80,
+                "min": 0,
+                "unit": "m"
+              },
+              {
+                "default": 0,
+                "group": "vegetation",
+                "id": "forestPatchiness",
+                "kind": "number",
+                "max": 1,
+                "min": 0
+              },
+              {
+                "default": 0,
+                "group": "landscape",
+                "id": "rockOutcropDensity",
+                "kind": "number",
+                "max": 1,
+                "min": 0
+              },
+              {
+                "default": 0,
+                "group": "landscape",
+                "id": "riverMeander",
+                "kind": "number",
+                "max": 1,
+                "min": 0
+              },
+              {
+                "default": 40,
+                "group": "landscape",
+                "id": "riverWidthM",
+                "kind": "number",
+                "max": 60,
+                "min": 10,
+                "unit": "m"
+              },
+              {
+                "default": 0,
+                "group": "landscape",
+                "id": "ridgeCount",
+                "kind": "integer",
+                "max": 3,
+                "min": 0
+              },
+              {
+                "default": 60,
+                "group": "landscape",
+                "id": "ridgeHeightM",
+                "kind": "number",
+                "max": 120,
+                "min": 20,
+                "unit": "m"
+              },
+              {
+                "default": 2,
+                "group": "skeleton",
+                "id": "ringCount",
+                "kind": "integer",
+                "max": 3,
+                "min": 1
+              }
+            ],
+            "presets": [
+              {
+                "id": "disc",
+                "label": "圆盘沙海（现行默认）",
+                "parameters": {}
+              },
+              {
+                "id": "lobed",
+                "label": "多瓣沙海",
+                "parameters": {
+                  "shape.cores": 3,
+                  "shape.family": "lobed"
+                }
+              },
+              {
+                "id": "dumbbell",
+                "label": "双核哑铃",
+                "parameters": {
+                  "shape.cores": 2,
+                  "shape.corridorPull": 0.2,
+                  "shape.family": "dumbbell"
+                }
+              },
+              {
+                "id": "coastal",
+                "label": "沙海岸线",
+                "parameters": {
+                  "shape.coastFractal": 0.18,
+                  "shape.family": "coastal"
+                }
+              }
+            ]
+          },
+          "coastal-islands-v1": {
+            "contractVersion": 1,
+            "parameters": [
+              {
+                "default": 0.22,
+                "group": "shape",
+                "id": "bayHalfWidth",
+                "kind": "number",
+                "max": 0.5,
+                "min": 0.1
+              },
+              {
+                "default": 0.33,
+                "group": "shape",
+                "id": "bayShift",
+                "kind": "number",
+                "max": 0.5,
+                "min": -0.5
+              }
+            ],
+            "presets": [
+              {
+                "id": "vice-bay",
+                "label": "Vice City 海湾（现行默认）",
+                "parameters": {}
+              }
+            ]
+          }
+        },
+        "operation": "world.set"
+      }
+    },
+    "preview": {
+      "instanceBound": true,
+      "maxActive": 128,
+      "singleUse": true,
+      "ttlMs": 600000
+    },
+    "schemaVersion": 1
+  },
+  "capabilityVersion": "2026-11-17.1",
+  "content": {
+    "skins": [
+      "miami-vice",
+      "desert-evening"
+    ],
+    "templates": [
+      "checkpoint-race",
+      "flight-checkpoint",
+      "ornithopter-flight",
+      "collect-one"
+    ]
+  },
+  "operations": [
+    {
+      "id": "scene.object.upsert",
+      "idField": "id",
+      "kind": "upsert",
+      "target": "scene.objects"
+    },
+    {
+      "id": "scene.object.remove",
+      "idField": "id",
+      "kind": "remove",
+      "target": "scene.objects"
+    },
+    {
+      "id": "anchor.upsert",
+      "idField": "id",
+      "kind": "upsert",
+      "target": "scene.objects"
+    },
+    {
+      "id": "anchor.remove",
+      "idField": "id",
+      "kind": "remove",
+      "target": "scene.objects"
+    },
+    {
+      "id": "mount.bind",
+      "idField": "mountId",
+      "kind": "bind",
+      "target": "mounts"
+    },
+    {
+      "id": "mount.remove",
+      "idField": "mountId",
+      "kind": "remove",
+      "target": "mounts"
+    },
+    {
+      "id": "skin.select",
+      "kind": "set",
+      "target": "skinId"
+    },
+    {
+      "id": "city.patch.upsert",
+      "kind": "set",
+      "target": "cityPatch"
+    },
+    {
+      "id": "city.patch.remove",
+      "kind": "remove",
+      "target": "cityPatch"
+    }
+  ],
+  "recoveries": [
+    {
+      "args": {},
+      "code": "creator_layout_not_ready",
+      "note": "布局尚未生成完毕；轮询状态直到 ready 后再读取布局。",
+      "tool": "creator_city_view_status"
+    },
+    {
+      "args": {},
+      "code": "creator_layout_not_found",
+      "note": "该版本尚无布局；等待城市视口 ready（必要时用 creator_city_view 打开），布局由视口生成后再读取。",
+      "tool": "creator_city_view_status"
+    },
+    {
+      "args": {},
+      "code": "revision_conflict",
+      "note": "项目已被他人推进；重读最新 revision 后以新基线重开预览。",
+      "tool": "creator_project_read"
+    },
+    {
+      "args": {},
+      "code": "creator_city_revision_unavailable",
+      "note": "请求的历史版本已被覆盖；改读当前 revision。",
+      "tool": "creator_city_read"
+    },
+    {
+      "args": {},
+      "code": "preview_expired",
+      "note": "预览已过期；以当前 revision 重新发起预览后再提交。",
+      "tool": "creator_scene_preview"
+    },
+    {
+      "args": {},
+      "code": "operation_id_conflict",
+      "note": "同一 operationId 被用于不同请求；换新 operationId，或先查询既有结果。",
+      "tool": "creator_operation_status"
+    },
+    {
+      "args": {},
+      "code": "creator_playtest_not_claimed",
+      "note": "尚无活跃试玩；先 start 一次试玩再读取结果。",
+      "tool": "creator_playtest_start"
+    },
+    {
+      "args": {},
+      "code": "creator_playtest_instance_mismatch",
+      "note": "试玩被其他实例领取；重新 start 开启新的试玩。",
+      "tool": "creator_playtest_start"
+    },
+    {
+      "args": {},
+      "code": "creator_capture_unavailable",
+      "note": "视口不可用（未打开/无头）；等待视口 ready，或改用结构校验与无头规则试玩。",
+      "tool": "creator_city_view_status"
+    },
+    {
+      "args": {},
+      "code": "creator_validation_scope_mismatch",
+      "note": "信封作用域与请求不符；重读项目后让 Studio 重新附发信封。",
+      "tool": "creator_project_read"
+    }
+  ],
+  "schemaVersion": 1,
+  "semanticGate": {
+    "embeddedSdk": true,
+    "embeddedSdkCoverage": [
+      "vehicle.preview",
+      "vehicle.define",
+      "city.edit.preview(world.set)",
+      "city.edit.commit",
+      "city.create"
+    ],
+    "requiresStudio": [
+      "scene.preview",
+      "game.preview",
+      "city.layout.save",
+      "city.anchor.upsert",
+      "city.patch.preview",
+      "project.create(cityId 绑定布局)",
+      "project.publish",
+      "playtest.start",
+      "viewport.capture"
+    ],
+    "schemaVersion": 1,
+    "studioEnvelope": true
+  }
+}

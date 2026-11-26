@@ -1,17 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { buildCityModel } from "../cityModel";
+import { buildIndependentCityModel } from "./independentCityModel";
 import { prepareCityWorldLayout } from "../engine/cityLayout";
 import { readCityAppearancePreference, type CityWorldProfileV1 } from "../engine/cityWorldProfile";
-import { CityEngine } from "../engine/CityEngine";
+import { CityEngine, type CityEntitySelection } from "../engine/CityEngine";
 import { tauriCityDataProvider, type CityProjectionV1 } from "../data/provider";
 import { cityPlanPatchStore } from "../data/planPatch";
-import type { PlanPatchV1 } from "../engine/planPatch";
+import { cityProjectionErrorCode } from "../data/projectionRetry";
+import { hashPlanPatch, type PlanPatchV1 } from "../engine/planPatch";
+import { PlanRepairSession, type RepairCandidate } from "../planRepair/session";
 import { noteBusy } from "../host";
 import { cityText, useCityLanguage } from "../i18n";
+import { citySceneFailureMessage, classifyCitySceneFailure, type CitySceneFailure } from "../engine/sceneAvailability";
 import { replayStartMs } from "../replayRange";
 import type { PlanningWorkSnapshot } from "../engine/planner/operationBudget";
 import { projectionSessionRows, type CityViewportWindowDays } from "./projectionRows";
 import { readCityWindowDays } from "./windowPreference";
+import { createMoveGhost, type MoveGhost } from "./moveGhost";
+import { selectViewportPatch } from "./viewportPatch";
+import { loadWorldSceneModels, loadWorldScenePreview } from "../game/activity/creatorSceneModels";
+import type { CityProjectAssetCatalogV1, SceneDraftV1 } from "@oh-agent/city-sdk";
 import "../city.css";
 
 export type CityViewportProps = {
@@ -22,7 +30,32 @@ export type CityViewportProps = {
   worldProfile?: CityWorldProfileV1;
   /** 引擎创建/销毁回调；父页面需要引擎实例（如后续编辑操作）时使用。 */
   onEngineChange?: (engine: CityEngine | null) => void;
+  /** 允许在视口里选取会话楼并移动到就近地块：复用现有修复会话的校验/存档机器。
+   *  目标候选先由用户手选；Agent 提案经 MCP 接入后走同一 moveBuilding 入口。 */
+  editable?: boolean;
+  /** 递增信号：父页面（打开/切回项目、试玩返回）触发视口回到全局视角。 */
+  focusSignal?: number;
+  /** 项目文档里的城市补丁（creator.cityPatch）。与本地存档按 updatedAt 取较新者：
+   *  项目补丁代表 Agent/MCP 已确认的修改，本地存档代表 City 修复模式的修改。 */
+  projectPatch?: PlanPatchV1 | null;
+  /** Independent draft preview: never read or write the legacy seed-keyed City patch store. */
+  isolatedDraft?: boolean;
+  /** Explicitly city-scoped project patch; never read from the legacy store. */
+  isolatedProjectPatch?: PlanPatchV1 | null;
+  worldScene?: { scene: SceneDraftV1; assets: CityProjectAssetCatalogV1; files: ReadonlyMap<string, Uint8Array> };
+  worldScenePreview?: boolean;
+  /** Ephemeral preview only: overrides stores without writing to them. */
+  previewPatch?: PlanPatchV1 | null;
+  /** Only the primary viewport owns the local diagnostic probe. */
+  registerProbe?: boolean;
+  onViewportStatus?: (status: "loading" | "ready" | "failed", failureCode?: string) => void;
+  onEntitySelect?: (selection: CityEntitySelection | null) => void;
+  /** 视口内移动成功后回调：父页面经 preview→commit 把补丁写通到项目 revision
+   *  （与 Agent/MCP 共用同一草稿）。本地存档写入由 PlanRepairSession 负责，不在这里。 */
+  onPatchCommit?: (patch: PlanPatchV1) => void;
 };
+
+type BuildingSelection = { id: string; candidates: RepairCandidate[] };
 
 type ViewportLoadState = Readonly<{ stage: "data" | "model" | "planning" | "mounting" | "rendering"; work: number | null }>;
 
@@ -33,7 +66,7 @@ type ViewportLoadState = Readonly<{ stage: "data" | "model" | "planning" | "moun
  * 暂停/恢复沿用引擎已注册的宿主 __AV_PLUGIN_SUSPENDED__/RESUMED__ 事件与
  * visibilitychange，销毁入口就是组件卸载时的 engine.dispose()。
  */
-export function CityViewport({ seed, windowDays, worldProfile, onEngineChange }: CityViewportProps) {
+export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, editable = false, focusSignal = 0, projectPatch = null, isolatedDraft = false, isolatedProjectPatch = null, worldScene, worldScenePreview = false, previewPatch, registerProbe = true, onViewportStatus, onEntitySelect, onPatchCommit }: CityViewportProps) {
   const days = windowDays ?? readCityWindowDays();
   const language = useCityLanguage();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -42,36 +75,166 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange }:
   onEngineChangeRef.current = onEngineChange;
   const [projection, setProjection] = useState<CityProjectionV1 | null>(null);
   const [dataLoaded, setDataLoaded] = useState(false);
+  const [dataErrorCode, setDataErrorCode] = useState<string | null>(null);
+  const [dataRetry, setDataRetry] = useState(0);
   const [sceneUnavailable, setSceneUnavailable] = useState(false);
+  const [sceneFailure, setSceneFailure] = useState<CitySceneFailure | null>(null);
+  const [sceneFailureCode, setSceneFailureCode] = useState<string | undefined>();
   const [firstModelFrame, setFirstModelFrame] = useState(false);
+  const [worldSceneReady, setWorldSceneReady] = useState(false);
+  const statusCallbackRef = useRef(onViewportStatus);
+  statusCallbackRef.current = onViewportStatus;
+  const entitySelectRef = useRef(onEntitySelect);
+  entitySelectRef.current = onEntitySelect;
   const [cityLoad, setCityLoad] = useState<ViewportLoadState>({ stage: "data", work: null });
-  const [patch, setPatch] = useState<PlanPatchV1 | null>(null);
+  const [localPatch, setLocalPatch] = useState<PlanPatchV1 | null>(null);
+  const [stalePatchCount, setStalePatchCount] = useState(0);
+  const [appliedPreview, setAppliedPreview] = useState<PlanPatchV1 | null | undefined>(undefined);
+  useEffect(() => { statusCallbackRef.current?.(sceneUnavailable || ((isolatedDraft || previewPatch !== undefined) && stalePatchCount > 0) ? "failed" : firstModelFrame && (!worldScene || worldSceneReady) && (previewPatch === undefined || appliedPreview === previewPatch) ? "ready" : "loading", sceneFailureCode ?? ((isolatedDraft || previewPatch !== undefined) && stalePatchCount > 0 ? "city_patch_stale" : undefined)); }, [sceneUnavailable, firstModelFrame, sceneFailureCode, isolatedDraft, previewPatch, appliedPreview, stalePatchCount, worldScene, worldSceneReady]);
+  // 选取与移动状态：editable 下点会话楼 → 聚焦 + 就近候选；移动经修复会话提交。
+  const [engineState, setEngineState] = useState<CityEngine | null>(null);
+  useEffect(() => {
+    if (!engineState || !firstModelFrame || !worldScene) return;
+    setWorldSceneReady(false);
+    let cancelled = false;
+    let mounted: Awaited<ReturnType<typeof loadWorldSceneModels>> | null = null;
+    void (worldScenePreview ? loadWorldScenePreview : loadWorldSceneModels)(worldScene.scene, worldScene.assets, worldScene.files).then(result => {
+      if (cancelled) { result.dispose(); return; }
+      mounted = result;
+      engineState.addOverlay(result.group, { previewEntities: true });
+      setWorldSceneReady(true);
+    }).catch(() => { if (!cancelled) { setSceneFailureCode("world_scene_load_failed"); setSceneUnavailable(true); } });
+    return () => { cancelled = true; if (mounted) { engineState.removeOverlay(mounted.group); mounted.dispose(); } };
+  }, [engineState, firstModelFrame, worldScene, worldScenePreview]);
+  const [selection, setSelection] = useState<BuildingSelection | null>(null);
+  const [moveError, setMoveError] = useState<string | null>(null);
+  const sessionRef = useRef<PlanRepairSession | null>(null);
+  // 候选 ghost 的当前实例：卡片按钮 hover 时经它高亮场景里的对应盒体（见 moveGhost.ts）。
+  const ghostRef = useRef<MoveGhost | null>(null);
+  const editableRef = useRef(editable);
+  editableRef.current = editable && !isolatedDraft;
   // 未显式传外观时与 City 同源读取偏好；useMemo 保持引用稳定，引擎不会因渲染重建。
   const profile = useMemo(() => worldProfile ?? readCityAppearancePreference(), [worldProfile]);
+  // 选取入口：点击回调用它，window 调试/自动化钩子（同 CityApp __AV_CITY_SELECT__ 先例）也用它。
+  const selectBuilding = (id: string | null) => {
+    if (!id) { setSelection(null); return; }
+    const session = sessionRef.current;
+    const engine = engineRef.current;
+    if (!session || !engine) return;
+    // 只有能移动的会话楼进入选中态；背景楼/地块装饰点了不算。
+    const candidates = session.candidates(id, 5);
+    if (!candidates.length) { setSelection(null); return; }
+    engine.focusBuilding(id);
+    setMoveError(null);
+    setSelection({ id, candidates });
+  };
+  const selectRef = useRef(selectBuilding);
+  selectRef.current = selectBuilding;
+  // 写通回调同样经 ref 取最新实现（移动成功时父页面的 project.revision 可能已推进）。
+  const onPatchCommitRef = useRef(onPatchCommit);
+  onPatchCommitRef.current = onPatchCommit;
 
   // 引擎创建/销毁必须先于装配 effect 声明：同一次提交里先建引擎，装配才能拿到实例。
+  // setSeed 必须在装配前完成——engine.seed 为 null 时 applyModel 会静默早退，
+  // 场景只剩天空（曾让 Studio 视口一片素色）。
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     let engine: CityEngine;
     try {
-      engine = new CityEngine({ canvas, worldProfile: profile, onFirstFrame: () => setFirstModelFrame(true) });
-    } catch {
+      engine = new CityEngine({ canvas, worldProfile: profile, onFirstFrame: () => setFirstModelFrame(true), onEntitySelect: selection => entitySelectRef.current?.(selection), onSelect: (id) => {
+        if (!editableRef.current || !id) { setSelection(null); return; }
+        selectRef.current(id);
+      } });
+      engine.setSeed(seed);
+    } catch (error) {
+      const failure = classifyCitySceneFailure(error);
+      const detail = error instanceof Error && /^[A-Za-z0-9_.:-]{1,100}$/.test(error.message) ? `:${error.message}` : "";
+      setSceneFailure(failure);
+      setSceneFailureCode(`engine_initialization_failed${detail}`);
       setSceneUnavailable(true);
       return;
     }
+    setSceneFailure(null);
+    setSceneUnavailable(false);
     engineRef.current = engine;
+    setEngineState(engine);
     onEngineChangeRef.current?.(engine);
     return () => {
       engine.dispose();
       engineRef.current = null;
+      setEngineState(null);
       onEngineChangeRef.current?.(null);
     };
-  }, [profile]);
+  }, [profile, seed]);
+
+  // 修复会话跟随当前引擎（引擎重建时旧会话必须作废）：存档读写与移动校验都在
+  // PlanRepairSession 内，视口只发起操作、展示候选与结果；存档状态经底部状态条持续可见。
+  const [saveState, setSaveState] = useState<"saved" | "pending" | "failed" | null>(null);
+  useEffect(() => {
+    if (!editable || isolatedDraft || !engineState) return;
+    const session = new PlanRepairSession(engineState);
+    let active = true;
+    sessionRef.current = session;
+    session.onSaveSettled = () => {
+      const status = session.status();
+      setSaveState(status.saveFailed ? "failed" : status.savePending ? "pending" : "saved");
+    };
+    // load 内部对存档读不到/损坏诚实降级（不抛）；catch 只兜 onSaveSettled 回调
+    // 的意外异常——恢复路径绝不允许 unhandled rejection 逃出视口挂载（§6.2-O3）。
+    void session.load(seed).then(() => { if (active) { const status = session.status(); setSaveState(status.saveFailed ? "failed" : status.savePending ? "pending" : "saved"); } })
+      .catch(() => { if (active) setSaveState("failed"); });
+    return () => { active = false; session.dispose(); sessionRef.current = null; };
+  }, [editable, isolatedDraft, engineState, seed]);
+
+  // 移动候选 ghost：选中时把每个候选地块画成半透明盒体挂到场景根（CityEngine.addOverlay），
+  // 让用户在地图上直接比较候选位置，而不仅靠卡片文字。依赖 engineState（引擎实例）而非
+  // engineRef：引擎因 worldProfile/seed 重建时依赖变化会先走清理——从旧引擎摘下并 dispose
+  // 旧 group，再在新引擎上重挂，与上面会话跟随引擎的守卫思路一致。applyModel 重建 CityParts
+  // 不影响它（叠加层本来就挂在 parts 之外的场景根上）。
+  useEffect(() => {
+    if (!engineState) return;
+    const engine = engineState;
+    const ghost = selection && selection.candidates.length ? createMoveGhost(selection.candidates) : null;
+    if (!ghost) return;
+    ghostRef.current = ghost;
+    engine.addOverlay(ghost.group);
+    return () => {
+      // 卸载顺序先摘后释放：引擎 dispose 先于本清理执行时，removeOverlay 在已停渲染的场景根上
+      // 只是把对象摘出场景，仍然安全（与 CityApp 卸载 creator 模型叠加层同款顺序）。
+      engine.removeOverlay(ghost.group);
+      ghost.dispose();
+      if (ghostRef.current === ghost) ghostRef.current = null;
+    };
+  }, [engineState, selection]);
+
+  // 父页面信号：打开/切回项目、试玩返回后回到全局视角。
+  useEffect(() => { if (focusSignal > 0) engineRef.current?.resetView(); }, [focusSignal]);
+
+  const applyMove = (parcelId: string) => {
+    const session = sessionRef.current;
+    if (!session || !selection) return;
+    const result = session.moveBuilding(selection.id, parcelId);
+    if (result.ok) {
+      setSelection(null); setMoveError(null);
+      // 本地补丁 state 同步回写：否则 Agent 推进 projectPatch 后 memo 按较新者
+      // 取补丁时，会把刚做的本地移动覆盖回退（存档还在，但视口回到旧位置）。
+      setLocalPatch(result.patch);
+      // 写通到项目草稿（preview→commit，与 Agent/MCP 共用）；本地存档写入已由会话完成。
+      onPatchCommitRef.current?.(result.patch);
+    }
+    else setMoveError(result.reason === "blocked" ? `无法移动：${(result.blockers ?? []).join("、")}` : result.reason);
+  };
+  const [editTick, setEditTick] = useState(0);
+  const bumpEdit = () => setEditTick((value) => value + 1);
+  const sessionStatus = editable && sessionRef.current ? sessionRef.current.status() : null;
+  void editTick;
 
   useEffect(() => {
+    if (isolatedDraft) { setProjection(null); setDataLoaded(true); setCityLoad({ stage: "model", work: null }); return; }
     let active = true;
     const loading = new AbortController();
+    setDataLoaded(false); setDataErrorCode(null); setProjection(null);
     setCityLoad({ stage: "data", work: null });
     // 与 CityApp 同一份投影提供方；数据授权按活动插件描述符在宿主侧逐请求校验。
     tauriCityDataProvider.getProjection({ windowDays: days, signal: loading.signal }).then((data) => {
@@ -79,24 +242,30 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange }:
       setProjection(data);
       setDataLoaded(true);
       setCityLoad({ stage: "model", work: null });
-    }).catch(() => {
+    }).catch((error) => {
       if (!active) return;
       setDataLoaded(true);
+      setDataErrorCode(cityProjectionErrorCode(error));
       setCityLoad({ stage: "data", work: null });
     });
     return () => { active = false; loading.abort(); };
-  }, [days]);
+  }, [days, isolatedDraft, dataRetry]);
 
-  // 修复补丁与 City 同源读取（宿主投影未注册时回落同源 localStorage，见 data/planPatch.ts）。
-  // 不套补丁的话，用户搬过的楼、修过的路在 Studio 里会恢复成生成时的样子。
+  // 修复补丁双源合并：本地存档（City 修复模式写入）与项目 cityPatch（Agent/MCP/
+  // Studio 写通）按 updatedAt 取较新者——两边都是同一座城的合法编辑来源，
+  // last-writer-wins 是迁移期的诚实规则；不比较就叠加会互相覆盖。
+  const patch = useMemo(() => {
+    return selectViewportPatch(isolatedDraft, seed, localPatch, projectPatch, isolatedProjectPatch, previewPatch);
+  }, [localPatch, projectPatch, isolatedProjectPatch, previewPatch, seed, isolatedDraft]);
   useEffect(() => {
+    if (isolatedDraft) { setLocalPatch(null); return; }
     let active = true;
     void cityPlanPatchStore("read").then((store) => {
       if (!active) return;
-      setPatch(store?.patches[String(seed)] ?? null);
-    }).catch(() => { if (active) setPatch(null); });
+      setLocalPatch(store?.patches[String(seed)] ?? null);
+    }).catch(() => { if (active) setLocalPatch(null); });
     return () => { active = false; };
-  }, [seed]);
+  }, [seed, isolatedDraft]);
 
   useEffect(() => {
     if (!firstModelFrame) return;
@@ -110,37 +279,37 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange }:
   useEffect(() => () => { geographyAbort.current?.abort(); }, []);
   useEffect(() => {
     const engine = engineRef.current;
-    if (!projection || !engine) return;
+    if ((!projection && !isolatedDraft) || !engine) return;
     const patchForSeed = patch?.seed === seed ? patch : null;
-    const patchKey = patchForSeed
-      ? `${patchForSeed.updatedAt}:${Object.keys(patchForSeed.buildingMoves).length}:${patchForSeed.roadOps.length}:${patchForSeed.highwayOps?.length ?? 0}:${patchForSeed.siteOps.length}`
-      : "";
-    const model = buildCityModel({
-      harnessNames: Object.fromEntries(projection.harnesses.map((h) => [h.id, h.display_name])),
-      rows: projectionSessionRows(projection),
-      findings: projection.findings.map((finding) => ({
+    const patchKey = patchForSeed ? hashPlanPatch(patchForSeed) : "";
+    const model = isolatedDraft ? buildIndependentCityModel() : buildCityModel({
+      harnessNames: Object.fromEntries(projection!.harnesses.map((h) => [h.id, h.display_name])),
+      rows: projectionSessionRows(projection!),
+      findings: projection!.findings.map((finding) => ({
         harness: finding.harness,
         rule: "harness_summary",
         severity: finding.severity,
         status_rollup: { open: finding.count, later: 0 },
       })),
-      windowStartMs: replayStartMs(projection.sessions, Date.parse(projection.window.from), Date.parse(projection.window.to)),
-      windowEndMs: Date.parse(projection.window.to),
-      windowLabel: projection.window.label,
-      totalSessions: projection.coverage.total,
-      truncated: projection.coverage.truncated,
-      generatedAt: Date.parse(projection.generated_at ?? new Date().toISOString()),
+      windowStartMs: replayStartMs(projection!.sessions, Date.parse(projection!.window.from), Date.parse(projection!.window.to)),
+      windowEndMs: Date.parse(projection!.window.to),
+      windowLabel: projection!.window.label,
+      totalSessions: projection!.coverage.total,
+      truncated: projection!.coverage.truncated,
+      generatedAt: Date.parse(projection!.generated_at ?? new Date().toISOString()),
     });
     // 地理键由窗口 + 种子 + 规模决定；键不变时不重排全城，只走增量挂载——
     // 与 CityApp 的装配管线一致，避免两边对同一投影做出不同重建。
-    const planned = Math.min(4000, Math.max(projection.sessions.length, projection.coverage.total));
-    const geography = JSON.stringify([projection.window, seed, planned]);
-    const occupants = projection.sessions.map((session) => session.id).join("\0");
-    const signature = `${geography}|${occupants}|${JSON.stringify(projection.findings)}`;
+    const planned = isolatedDraft ? 0 : Math.min(4000, Math.max(projection!.sessions.length, projection!.coverage.total));
+    const geography = JSON.stringify([isolatedDraft ? "independent-empty-city" : projection!.window, seed, planned]);
+    const occupants = isolatedDraft ? "" : projection!.sessions.map((session) => session.id).join("\0");
+    const signature = `${geography}|${occupants}|${JSON.stringify(isolatedDraft ? [] : projection!.findings)}`;
     if (signature === fingerprint.current) {
-      if (patchKey === patchFingerprint.current) return;
+      if (patchKey === patchFingerprint.current) { if (previewPatch !== undefined) setAppliedPreview(previewPatch); return; }
       // 只有补丁变了：引擎按移楼钉子对比走快路径（缓存的底层布局上重套补丁），与 City 的 setPlanPatch 一致。
       engine.setPlanPatch(patchForSeed);
+      setStalePatchCount(engine.planPatched?.stale.length ?? 0);
+      if (previewPatch !== undefined) setAppliedPreview(previewPatch);
       patchFingerprint.current = patchKey;
       return;
     }
@@ -165,20 +334,55 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange }:
       engine.setPlanPatch(patchForSeed);
       patchFingerprint.current = patchKey;
       engine.applyModel(model, false);
+      setStalePatchCount(engine.planPatched?.stale.length ?? 0);
+      if (previewPatch !== undefined) setAppliedPreview(previewPatch);
       setCityLoad({ stage: "rendering", work: null });
       // applyModel 在返回前同步渲染该模型的首帧。
       setFirstModelFrame(true);
+      setSceneFailure(null);
+      setSceneUnavailable(false);
       fingerprint.current = signature;
-    }).catch(() => {
-      if (!preparation.signal.aborted) { setSceneUnavailable(true); setCityLoad({ stage: "data", work: null }); }
+    }).catch((error) => {
+      if (!preparation.signal.aborted) {
+        const failure = classifyCitySceneFailure(error);
+        const detail = error instanceof Error && /^[A-Za-z0-9_.:-]{1,100}$/.test(error.message) ? `:${error.message}` : "";
+        setSceneFailure(failure);
+        setSceneFailureCode(`layout_preparation_failed${detail}`);
+        setSceneUnavailable(true); setCityLoad({ stage: "data", work: null });
+      }
     });
     return () => preparation.abort();
-  }, [projection, seed, profile, patch]);
+  }, [projection, seed, profile, patch, isolatedDraft]);
 
   const dataAvailable = projection !== null && projection.status !== "unavailable";
-  const cityLoading = !sceneUnavailable && (!dataLoaded || (dataAvailable && projection.status !== "empty" && !firstModelFrame));
-  const sceneMessage = sceneUnavailable ? cityText("当前环境无法显示三维城市，仍可查看会话摘要。", language)
-    : dataLoaded && !dataAvailable ? cityText("City 数据暂不可用", language)
+  const cityLoading = !sceneUnavailable && (!dataLoaded || (isolatedDraft ? !firstModelFrame : dataAvailable && projection.status !== "empty" && !firstModelFrame));
+  // 与 CityApp 的 __AV_CITY_PROBE__ 同款轻量调试口：工作台/自动化用它读视口装配状态。
+  useEffect(() => {
+    if (!registerProbe) return;
+    (window as Window & { __CITY_VIEWPORT_PROBE__?: () => Record<string, unknown> }).__CITY_VIEWPORT_PROBE__ = () => ({
+      seed, engine: engineRef.current?.diagnosticState() ?? null, projection: projection?.status ?? null,
+      worldRevision: engineRef.current?.getCitySdkLayoutView()?.worldRevision ?? null,
+      roadCandidate: import.meta.env.DEV ? (() => {
+        const edge = engineRef.current?.currentLayout?.roadEdges.find(item => !item.bridge && item.structure !== "deck" && [5, 8, 12].includes(item.width));
+        return edge ? { id: edge.id, width: edge.width } : null;
+      })() : null,
+      cityLoad, firstModelFrame, sceneUnavailable, editable,
+      selection: selection ? { id: selection.id, candidates: selection.candidates.length } : null,
+      moveError,
+      sessionReady: !!sessionRef.current,
+      districtSlots: engineRef.current?.currentLayout?.districts.flatMap((district) => [...district.slots.keys()]).slice(0, 8) ?? null,
+      probeCandidates: (id: string) => sessionRef.current?.candidates(id, 5) ?? null,
+      select: (id: string | null) => selectRef.current(id),
+      scene: (() => {
+        const inspected = engineRef.current?.inspectScene();
+        return inspected ? { occupantCount: inspected.occupantCount, camera: inspected.camera, lastApplyMode: inspected.lastApplyMode, scaleTier: inspected.scaleTier,
+          kits: (inspected.kits ?? []).map((kit) => kit.sessionId) } : null;
+      })(),
+    });
+    return () => { delete (window as Window & { __CITY_VIEWPORT_PROBE__?: () => Record<string, unknown> }).__CITY_VIEWPORT_PROBE__; };
+  });
+  const sceneMessage = sceneUnavailable ? `${cityText(citySceneFailureMessage(sceneFailure ?? { surface: "webgl", code: "webgl_context_unavailable", summarySafe: true }), language)}${sceneFailure?.surface === "layout" ? ` (${sceneFailure.code})` : ""}`
+    : !isolatedDraft && dataLoaded && !dataAvailable ? cityText("City 数据暂不可用", language)
     : projection?.status === "empty" ? cityText("当前时间范围没有会话", language)
     : null;
   return (
@@ -193,7 +397,29 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange }:
           <small>{cityLoad.stage === "planning" && cityLoad.work !== null ? "显示规划器实际完成的工作量，不代表百分比" : "复杂城市需要一些时间，请稍候"}</small>
         </div>
       </div>}
-      {sceneMessage && !cityLoading && <p className="city-scene-message" role="status">{sceneMessage}</p>}
+      {sceneMessage && !cityLoading && <div className="city-scene-message" role="status">{sceneMessage}{!isolatedDraft && dataErrorCode && <><span>（{dataErrorCode}）</span> <button onClick={() => setDataRetry(value => value + 1)}>重试</button></>}</div>}
+      {isolatedDraft && !cityLoading && stalePatchCount > 0 && <div className="city-scene-message" role="status">{stalePatchCount} 项城市编辑未能应用，请检查布局和生成器版本。</div>}
+      {editable && saveState && <div className="viewport-savebar" role="status">{saveState === "pending" ? "城市视图修改保存中…"
+        : saveState === "failed" ? <>城市视图存储不可用或存在冲突，修改可能仅在当前视图生效。 <button onClick={() => {
+          const session = sessionRef.current;
+          if (!session) return;
+          setSaveState("pending");
+          if (!session.retrySave()) void session.load(seed).then(() => { const status = session.status(); setSaveState(status.saveFailed ? "failed" : status.savePending ? "pending" : "saved"); });
+        }}>重试</button></> : "城市视图修改已保存"}</div>}
+      {editable && selection && <div className="selection-card" role="dialog" aria-label="选中建筑">
+        <div className="selection-head"><strong>选中建筑</strong><code>{selection.id}</code><button className="secondary" onClick={() => setSelection(null)}>关闭</button></div>
+        <p className="selection-hint">就近可移动地块（按距离，移动即保存到草稿）：</p>
+        {selection.candidates.map((candidate, index) => <button key={candidate.parcelId} className="candidate" onClick={() => applyMove(candidate.parcelId)}
+          onMouseEnter={() => ghostRef.current?.setHighlighted(index)}
+          onMouseLeave={() => ghostRef.current?.setHighlighted(null)}>
+          移到 {candidate.parcelId.length > 20 ? `${candidate.parcelId.slice(0, 20)}…` : candidate.parcelId} · {candidate.distance}m{candidate.warnings.length ? ` · ${candidate.warnings.join("、")}` : ""}
+        </button>)}
+        <div className="selection-foot">
+          <button className="secondary" disabled={!(sessionStatus?.canUndo)} onClick={() => { sessionRef.current?.undo(); bumpEdit(); }}>撤销</button>
+          <button className="secondary" disabled={!(sessionStatus?.canRedo)} onClick={() => { sessionRef.current?.redo(); bumpEdit(); }}>重做</button>
+        </div>
+        {moveError && <p className="status" role="status">{moveError}</p>}
+      </div>}
     </section>
   );
 }

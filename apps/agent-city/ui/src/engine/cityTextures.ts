@@ -15,6 +15,7 @@ import { cornerArc, renderRoadEdges, roadJunctionPlan, SIDEWALK_BAND, taperOutli
 import { polygonDistance } from "./cityPlan";
 import { subtractBlockSurfaceExclusions, traceBlockSurface } from "./blockSurface";
 import { createRenderCanvas, renderContext2D, type RenderCanvas, type RenderContext2D } from "./renderCanvas";
+import { COASTAL_PROFILE_ID_V1 } from "@oh-agent/city-sdk";
 
 export type DistrictPalette = {
   /** 楼身 tint（乘在近白色立面纹理上）。 */
@@ -171,7 +172,7 @@ export function makeCityTexture(layout: CityLayout, theme: CityTheme = activeThe
   const mixRgb = (a0: number[], b0: number[], t: number) => a0.map((v, i) => v + (b0[i] - v) * t);
   const paving = toHex(mixRgb([197, 192, 179], groundColors.sand, 0.45));
   const lawnTint = toHex(mixRgb([145, 165, 127], groundColors.lawn, 0.6));
-  const viceMiami = layout.coastalConfig?.profile === "miami-coastal";
+  const viceMiami = layout.coastalConfig?.profile === COASTAL_PROFILE_ID_V1;
   const viceBlockPaving: Record<string, string> = {
     downtown: "#d8c0b5",
     commercial: "#c8d3cc",

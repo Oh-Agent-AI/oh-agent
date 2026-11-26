@@ -25,6 +25,7 @@ import { bulldozeForRoads } from "../engine/planBulldozer";
 import { nearestEdgeAt, roadRun, snapPoint, validateEdgeDrop, validateHighwayAdd, validateHighwayCut, validateNodeMove, validateRestyle, validateRoadAdd, type RoadVerdict, type SnapPoint } from "../engine/planRoadRules";
 import type { CityLayout, Parcel, Vec2 } from "../engine/cityLayout";
 import { cityPlanPatchStore, emptyPlanPatchStore, type PlanPatchStoreV1 } from "../data/planPatch";
+import { canonicalJson } from "@oh-agent/city-sdk";
 
 /** 修复规划默认开启（2026-10-14 起去掉 ?cityPlan / cityPlanDev=1 开发开关）：城市设置里始终有入口，
  *  存档始终读取，引擎里 planPatch 随会话生效。函数保留是为了让 hook 的单一判断点不变。 */
@@ -62,15 +63,23 @@ export type NodeHandle = { id: string; x: number; z: number; locked: boolean; ed
 
 const UNDO_LIMIT = 100;
 const SAVE_DEBOUNCE_MS = 400;
+// A newly mounted session must not read before a disposed session's last write.
+// This orders sessions in this WebView; it is not a cross-process CAS.
+let pendingPlanWrites: Promise<void> = Promise.resolve();
 
 export class PlanRepairSession {
   private store: PlanPatchStoreV1 = emptyPlanPatchStore();
   private loaded = false;
+  private loadedSeed: number | null = null;
   private undoStack: Array<PlanPatchV1 | null> = [];
   private redoStack: Array<PlanPatchV1 | null> = [];
   private saveTimer: ReturnType<typeof setTimeout> | undefined;
   private saveFailed = false;
   private savePending = false;
+  private saveGeneration = 0;
+  private hasUnsaved = false;
+  private saveSeed: string | null = null;
+  private savedBySeed = new Map<string, PlanPatchV1 | null>();
   /** 存档写完（成功或失败）后回调：面板据此把「保存中」换成「已保存 / 仅临时」。 */
   onSaveSettled: (() => void) | null = null;
   private loadTicket = 0;
@@ -78,17 +87,32 @@ export class PlanRepairSession {
   /** 最近一次跨档重定位的报告（面板横幅读它；用户点「知道了」清掉）。 */
   private lastRemap: RemapReport | null = null;
 
-  constructor(private readonly engine: CityEngine) {}
+  constructor(private readonly engine: CityEngine, private readonly persistence: typeof cityPlanPatchStore = cityPlanPatchStore) {}
 
   /** 读存档并把该种子的补丁交给引擎。存档读不到/损坏 → 空库（诚实降级，不抛）。 */
   async load(seed: number): Promise<void> {
     // 序号守卫：初始种子与存档种子会连发两次 load，读存档是异步的，乱序返回时旧的不能覆盖新的。
     const ticket = ++this.loadTicket;
-    let store: PlanPatchStoreV1;
-    try { store = (await cityPlanPatchStore("read")) ?? emptyPlanPatchStore(); } catch { store = emptyPlanPatchStore(); }
+    const wasLoaded = this.loaded;
+    const hadPendingSave = this.savePending;
+    if (this.saveFailed && !hadPendingSave && this.hasUnsaved) { this.onSaveSettled?.(); return; }
+    this.loaded = false;
+    if (this.saveTimer !== undefined && this.saveSeed !== null) {
+      clearTimeout(this.saveTimer);
+      this.flushSave(this.saveGeneration, this.saveSeed);
+    }
+    await pendingPlanWrites;
     if (ticket !== this.loadTicket) return;
+    if (hadPendingSave && this.saveFailed) { this.loaded = wasLoaded; this.onSaveSettled?.(); return; }
+    let store: PlanPatchStoreV1 | null;
+    try { store = await this.persistence("read"); } catch { store = null; }
+    if (ticket !== this.loadTicket) return;
+    if (!store) { this.loaded = false; this.saveFailed = true; this.onSaveSettled?.(); return; }
     this.store = store;
+    this.savedBySeed.set(String(seed), structuredClone(store.patches[String(seed)] ?? null));
     this.loaded = true;
+    this.loadedSeed = seed;
+    this.saveFailed = false;
     this.undoStack = []; this.redoStack = [];
     this.engine.setPlanPatch(this.store.patches[String(seed)] ?? null);
   }
@@ -99,8 +123,10 @@ export class PlanRepairSession {
 
   /** 当前补丁；没有则按当前档位建一份空的。档位对不上（城市已扩容）→ 不静默覆盖旧补丁，要求先 reset。 */
   private working(): { ok: true; patch: PlanPatchV1 } | { ok: false; reason: string } {
+    if (!this.loaded) return { ok: false, reason: "storage-unavailable" };
     const layout = this.engine.currentLayout;
     if (!layout || !this.engine.currentModel) return { ok: false, reason: "city-not-ready" };
+    if (layout.seed !== this.loadedSeed) return { ok: false, reason: "storage-seed-mismatch" };
     const existing = this.engine.planPatch;
     // 岛半径随补丁记下（跨档重定位的缩放比，路线图 SPEC P0-2）；旧补丁在同档的下一次编辑时补上。
     if (!existing) return { ok: true, patch: { ...emptyPlanPatch(layout.seed, layout.scaleTier), islandRadius: layout.islandRadius } };
@@ -123,18 +149,53 @@ export class PlanRepairSession {
     const seed = this.seed;
     if (seed === null) return;
     if (patch) this.store.patches[String(seed)] = patch; else delete this.store.patches[String(seed)];
-    this.scheduleSave();
+    this.scheduleSave(String(seed));
   }
 
-  private scheduleSave(): void {
+  private scheduleSave(seed: string): void {
     if (!this.loaded) return; // 没读过存档就写会覆盖其它种子的补丁
     clearTimeout(this.saveTimer);
     this.savePending = true;
-    this.saveTimer = setTimeout(() => {
-      this.savePending = true;
-      void cityPlanPatchStore("write", this.store).then((result) => { this.saveFailed = result === null; }).catch(() => { this.saveFailed = true; })
-        .finally(() => { this.savePending = false; this.onSaveSettled?.(); });
-    }, SAVE_DEBOUNCE_MS);
+    this.hasUnsaved = true;
+    this.saveSeed = seed;
+    const generation = ++this.saveGeneration;
+    this.saveTimer = setTimeout(() => this.flushSave(generation, seed), SAVE_DEBOUNCE_MS);
+  }
+
+  private flushSave(generation: number, seed: string): void {
+    this.saveTimer = undefined;
+    const snapshot = structuredClone(this.store);
+    pendingPlanWrites = pendingPlanWrites.catch(() => {}).then(async () => {
+      let failed = false;
+      try {
+        const latest = await this.persistence("read");
+        const expected = this.savedBySeed.get(seed) ?? null;
+        if (!latest || canonicalJson(latest.patches[seed] ?? null) !== canonicalJson(expected)) failed = true;
+        else {
+          const merged = structuredClone(latest);
+          if (snapshot.patches[seed]) merged.patches[seed] = snapshot.patches[seed]; else delete merged.patches[seed];
+          if (snapshot.archive?.[seed]) merged.archive = { ...merged.archive, [seed]: { ...merged.archive?.[seed], ...snapshot.archive[seed] } };
+          const written = await this.persistence("write", merged);
+          failed = written === null || canonicalJson(written.patches[seed] ?? null) !== canonicalJson(snapshot.patches[seed] ?? null)
+            || Object.entries(snapshot.archive?.[seed] ?? {}).some(([key, value]) => canonicalJson(written?.archive?.[seed]?.[key] ?? null) !== canonicalJson(value));
+          if (!failed) this.savedBySeed.set(seed, structuredClone(snapshot.patches[seed] ?? null));
+        }
+      } catch { failed = true; }
+      if (generation === this.saveGeneration) {
+        this.saveFailed = failed;
+        this.hasUnsaved = failed;
+        this.savePending = false;
+        try { this.onSaveSettled?.(); } catch { /* A UI callback must not poison the write queue. */ }
+      }
+    });
+  }
+
+  /** Retry the same local snapshot; a concurrent same-seed change still fails closed. */
+  retrySave(): boolean {
+    if (!this.loaded || !this.saveFailed || !this.hasUnsaved || this.saveSeed === null) return false;
+    this.scheduleSave(this.saveSeed);
+    this.onSaveSettled?.();
+    return true;
   }
 
   /** 搬一栋会话楼到另一个地块。硬阻止（压路/重叠/被占/坡地/不可建/高架）直接拒绝并给出原因。 */
@@ -552,6 +613,7 @@ export class PlanRepairSession {
    * 归档键带上旧版本（`<档>@g<版本>`），不覆盖同档的跨档归档。
    */
   remapForTier(): RemapReport | null {
+    if (!this.loaded || this.seed !== this.loadedSeed) return null;
     const patch = this.engine.planPatch; const layout = this.engine.generatedLayout; const model = this.engine.currentModel;
     if (!patch || !layout || !model || patch.seed !== layout.seed || patchMatchesLayout(patch, layout.scaleTier)) return null;
     const { patch: next, report } = remapPlanPatch(layout, model, patch);
@@ -572,6 +634,7 @@ export class PlanRepairSession {
 
   /** 清除失效修改（含跨档整份失效）。可撤销。 */
   pruneStale(): boolean {
+    if (!this.loaded || this.seed !== this.loadedSeed) return false;
     const patch = this.engine.planPatch; const stale = this.engine.planPatched?.stale ?? [];
     if (!patch || !stale.length) return false;
     this.commit(pruneStalePatch(patch, stale));
@@ -579,14 +642,14 @@ export class PlanRepairSession {
   }
 
   undo(): boolean {
-    if (!this.undoStack.length) return false;
+    if (!this.loaded || this.seed !== this.loadedSeed || !this.undoStack.length) return false;
     this.redoStack.push(this.engine.planPatch);
     this.apply(this.undoStack.pop() ?? null);
     return true;
   }
 
   redo(): boolean {
-    if (!this.redoStack.length) return false;
+    if (!this.loaded || this.seed !== this.loadedSeed || !this.redoStack.length) return false;
     this.undoStack.push(this.engine.planPatch);
     this.apply(this.redoStack.pop() ?? null);
     return true;
@@ -594,7 +657,7 @@ export class PlanRepairSession {
 
   /** 恢复生成：清掉当前种子的全部补丁（可撤销）。 */
   reset(): void {
-    if (this.engine.planPatch) this.commit(null);
+    if (this.loaded && this.seed === this.loadedSeed && this.engine.planPatch) this.commit(null);
   }
 
   /** 离某栋楼最近的、可以搬过去的空地块（试搬用）。按距离从近到远逐个校验，凑够 limit 个就停——
@@ -704,7 +767,12 @@ export class PlanRepairSession {
   }
 
   dispose(): void {
-    clearTimeout(this.saveTimer);
+    this.loadTicket++;
+    this.onSaveSettled = null;
+    if (this.saveTimer !== undefined && this.saveSeed !== null) {
+      clearTimeout(this.saveTimer);
+      this.flushSave(this.saveGeneration, this.saveSeed);
+    }
   }
 }
 

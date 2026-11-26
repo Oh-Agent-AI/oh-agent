@@ -14,7 +14,9 @@ export type PlanningWorkerPort = {
 };
 let sequence = 0;
 /** A dedicated worker is terminated on abort, including during a synchronous
- * planning loop. No unsafe main-thread fallback or partial-plan publication. */
+ * planning loop. This function never hides unavailability: a worker that does
+ * not start returns `unsupported` / `planning-worker-failed`. The one caller
+ * replay lives in `prepareCityLayout` and only runs for that unstarted case. */
 export function runPlanningJob(parameters: PlanningParameters, options: { signal: AbortSignal;
   workerFactory?: () => PlanningWorkerPort; onProgress?: (snapshot: PlanningWorkSnapshot) => void;
   heartbeatTimeoutMs?: number }): Promise<PlanningJobResult> {
@@ -26,7 +28,11 @@ export function runPlanningJob(parameters: PlanningParameters, options: { signal
   const requestKey = planningRequestKey(captured), requestId = `city-plan:${++sequence}`;
   return new Promise(resolve => {
     let worker: PlanningWorkerPort;
-    try { worker = options.workerFactory?.() ?? new Worker(new URL("./planning.worker.ts", import.meta.url), { type: "module" }) as unknown as PlanningWorkerPort; }
+    // Classic worker, not `{ type: "module" }`. WebKitGTK fetches a module
+    // worker from the Tauri asset host and fails before the script runs; that
+    // was reported as "3D rendering is unavailable". Vite emits one IIFE for a
+    // classic worker. This does not force software GL on machines with a GPU.
+    try { worker = options.workerFactory?.() ?? new Worker(new URL("./planning.worker.ts", import.meta.url)) as unknown as PlanningWorkerPort; }
     catch { resolve({ status: "unsupported", reason: "planning-worker-unavailable" }); return; }
     let settled = false;
     let lastPulse = performance.now(), lastCheckpoint: PlanningWorkSnapshot | undefined;

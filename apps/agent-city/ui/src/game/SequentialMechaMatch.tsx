@@ -112,7 +112,7 @@ export function SequentialMechaMatch({ engine, site, locale, onClose, requestClo
   }, []);
   const [recovery, setRecovery] = useState<{ backend: CheckpointBackend; version: number; pending: boolean; restored: Awaited<ReturnType<typeof restoreSequentialReplayBundle>> | null } | null>(null);
   const [recoveryError, setRecoveryError] = useState(false);
-  const requestClose = () => { if (!handedOff && !archiveBusy && state.persistence !== "saving" && window.confirm(t("退出当前对局？", "Exit the current match?"))) onClose(); };
+  const requestClose = () => { if (!handedOff && !archiveBusy && state.persistence !== "saving") onClose(); };
   useEffect(() => { requestCloseRef.current = requestClose; return () => { requestCloseRef.current = null; }; }, [requestCloseRef, onClose, locale, handedOff, archiveBusy, state.persistence]);
   useEffect(() => {
     let active = true;

@@ -1,4 +1,4 @@
-import { type CityGameMountV1, type MiniGamePackV1, type Result, type DiagnosticV1 } from "@agent-vitals/city-sdk";
+import { type CityGameMountV1, type MiniGamePackV1, type Result, type DiagnosticV1 } from "@oh-agent/city-sdk";
 import { selectCheckpointRaceCourse, type CityCheckpointRaceCourseV1, type CityLayoutSdkViewV1 } from "../../engine/sdk/cityLayoutAdapter";
 import { toMeters } from "../../engine/worldScale";
 import { createMountedMiniGamePlan, MountedMiniGameControllerV1, type MountedMiniGamePlanV1 } from "./mountedMiniGame";
@@ -20,6 +20,7 @@ export type CheckpointRaceSnapshotV1 = Readonly<{
   total: number;
   elapsedSeconds: number;
   reason: string | null;
+  nextCheckpoint?: Readonly<{ distanceMeters: number; relativeBearingDegrees: number }> | null;
 }>;
 
 function diagnostic(code: string, path: string, message: string): DiagnosticV1 {
@@ -69,19 +70,31 @@ export function createCheckpointRacePlan(view: CityLayoutSdkViewV1, seed: number
 
 export class CheckpointRaceControllerV1 {
   private readonly activity: MountedMiniGameControllerV1;
-  private snapshotValue: CheckpointRaceSnapshotV1 = Object.freeze({ status: "ready", completed: 0, total: CHECKPOINT_COUNT, elapsedSeconds: 0, reason: null });
+  private snapshotValue: CheckpointRaceSnapshotV1 = Object.freeze({ status: "ready", completed: 0, total: CHECKPOINT_COUNT, elapsedSeconds: 0, reason: null, nextCheckpoint: null });
+  private directionUpdates = 0;
 
   constructor(private readonly plan: CheckpointRacePlanV1, private readonly onChange: (snapshot: CheckpointRaceSnapshotV1) => void) {
     this.activity = new MountedMiniGameControllerV1(plan.mounted, snapshot => {
       this.publish({ status: snapshot.status, completed: snapshot.state.counters.next ?? 0, total: CHECKPOINT_COUNT,
-        elapsedSeconds: Math.floor((snapshot.state.tick + 1) / 60), reason: snapshot.reason });
+        elapsedSeconds: Math.floor((snapshot.state.tick + 1) / 60), reason: snapshot.reason, nextCheckpoint: this.snapshotValue.nextCheckpoint });
     });
   }
 
   get snapshot(): CheckpointRaceSnapshotV1 { return this.snapshotValue; }
 
-  fixedStep(positionWorld: Readonly<{ x: number; y: number; z: number }>): void {
+  fixedStep(positionWorld: Readonly<{ x: number; y: number; z: number }>, headingRadians = 0): void {
     this.activity.fixedStep({ x: toMeters(positionWorld.x), y: toMeters(positionWorld.y), z: toMeters(positionWorld.z) });
+    this.directionUpdates += 1;
+    if (this.directionUpdates % 12 !== 0) return;
+    const target = this.plan.checkpointGeometry[this.snapshotValue.completed];
+    if (!target || !Number.isFinite(headingRadians)) {
+      if (this.snapshotValue.nextCheckpoint) this.publish({ ...this.snapshotValue, nextCheckpoint: null });
+      return;
+    }
+    const dx = target.x - toMeters(positionWorld.x), dz = target.z - toMeters(positionWorld.z);
+    let relative = Math.atan2(dz, dx) - headingRadians;
+    relative = ((relative + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+    this.publish({ ...this.snapshotValue, nextCheckpoint: Object.freeze({ distanceMeters: Math.hypot(dx, dz), relativeBearingDegrees: relative * 180 / Math.PI }) });
   }
 
   dispose(): void { this.activity.stop(); }

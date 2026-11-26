@@ -1,12 +1,13 @@
-import { compileRules, createRun, parseMiniGamePackJson, validateMount, type CityGameMountV1, type CityLayoutV1, type ContentRef, type MiniGamePackV1, type RuleRunV1, type RuleStateV1, type Result, type DiagnosticV1 } from "@agent-vitals/city-sdk";
+import { compileRules, createRun, parseMiniGamePackJson, segmentCrossesWorldVolume, segmentPassesRingGate, stableIdV1, validateMount, type CityGameMountV1, type CityLayoutV1, type ContentRef, type MiniGamePackV1, type RuleRunV1, type RuleStateV1, type Result, type DiagnosticV1, type VisualPlaytestTraceEventV1, type WorldVolumeDtoV1 } from "@oh-agent/city-sdk";
 import type { CityLayoutSdkViewV1 } from "../../engine/sdk/cityLayoutAdapter";
+import { createCityZoneVolumesV1 } from "../codeGameHost/citySnapshot";
 
 export type MountedMiniGamePlanV1 = Readonly<{
   layout: CityLayoutV1;
   game: MiniGamePackV1;
   mount: CityGameMountV1;
   seed: number;
-  zones: Readonly<Record<string, readonly Readonly<{ x: number; y: number; z: number; radius: number }>[]>>;
+  zones: Readonly<Record<string, readonly Readonly<{ x: number; y: number; z: number; radius: number; volume?: WorldVolumeDtoV1 }>[]>>;
 }>;
 export type MountedMiniGameSnapshotV1 = Readonly<{ status: "ready" | "running" | "success" | "failure" | "error"; state: RuleStateV1; reason: string | null }>;
 
@@ -15,7 +16,12 @@ const diagnostic = (code: string, path: string, message: string, objectId?: stri
 });
 
 /** Loads declarative JSON content through the same validation path used by SDK tools. */
-export function createMountedMiniGamePlan(input: Readonly<{ view: CityLayoutSdkViewV1; packageJson: string; mount: CityGameMountV1; gameRef: ContentRef<"city-minigame">; seed: number }>): Result<MountedMiniGamePlanV1> {
+/** 入口锚点必须声明哪一种能力才能进入该小游戏：driving 用 "drive"（既有行为），
+ * flight 用 "fly"。两者共用同一套 zone 触发与规则执行，只有这个词不同。 */
+export type MountedMiniGameCapability = "drive" | "fly";
+
+export function createMountedMiniGamePlan(input: Readonly<{ view: CityLayoutSdkViewV1; packageJson: string; mount: CityGameMountV1; gameRef: ContentRef<"city-minigame">; seed: number;
+  capability?: MountedMiniGameCapability }>): Result<MountedMiniGamePlanV1> {
   if (!input.view.layout.links) return { ok: false, diagnostics: [diagnostic("layout_topology_unavailable", "layout.links", "The trusted City adapter did not provide traversal links for mounted-game validation.")] };
   const parsed = parseMiniGamePackJson(input.packageJson);
   if (!parsed.ok) return parsed;
@@ -31,16 +37,23 @@ export function createMountedMiniGamePlan(input: Readonly<{ view: CityLayoutSdkV
   if (!entryAnchor || !input.view.geometry.has(entryAnchor.geometryRef)) {
     return { ok: false, diagnostics: [diagnostic("entry_geometry_unavailable", "mount.entryAnchorId", "The City adapter cannot resolve trusted geometry for the game entry.", mounted.value.mount.entryAnchorId)] };
   }
-  if (!entryAnchor.capabilities.includes("drive")) {
-    return { ok: false, diagnostics: [diagnostic("entry_capability_unsupported", "mount.entryAnchorId", "The current City mini-game runtime requires a drive-capable entry.", entryAnchor.id)] };
+  const capability = input.capability ?? "drive";
+  if (!entryAnchor.capabilities.includes(capability)) {
+    return { ok: false, diagnostics: [diagnostic("entry_capability_unsupported", "mount.entryAnchorId",
+      `The City mini-game runtime requires a ${capability}-capable entry.`, entryAnchor.id)] };
   }
-  const zones: Record<string, Readonly<{ x: number; y: number; z: number; radius: number }>[]> = {};
+  const zones: Record<string, Readonly<{ x: number; y: number; z: number; radius: number; volume?: WorldVolumeDtoV1 }>[]> = {};
+  const zoneVolumes = new Map((capability === "fly" ? createCityZoneVolumesV1(input.view) : []).map(volume => [volume.id, volume]));
   for (const [slotName, slot] of Object.entries(parsed.value.slots)) {
     if (slot.kind !== "zone") continue;
     const geometries = (mounted.value.mount.bindings[slotName] ?? []).map(anchorId => {
       const anchor = input.view.layout.anchors.find(item => item.id === anchorId);
       const geometry = anchor ? input.view.geometry.get(anchor.geometryRef) : null;
-      return geometry?.activationRadiusMeters === undefined ? null : { x: geometry.positionMeters.x, y: geometry.positionMeters.y, z: geometry.positionMeters.z, radius: geometry.activationRadiusMeters };
+      if (geometry?.activationRadiusMeters === undefined) return null;
+      const volume = zoneVolumes.get(stableIdV1("volume", anchorId));
+      if (capability === "fly" && !volume) return null;
+      return { x: geometry.positionMeters.x, y: geometry.positionMeters.y, z: geometry.positionMeters.z,
+        radius: geometry.activationRadiusMeters, ...(volume ? { volume } : {}) };
     });
     if (geometries.some(item => item === null)) return { ok: false, diagnostics: [diagnostic("zone_geometry_unavailable", `mount.bindings.${slotName}`, "A bound zone does not have a trusted activation radius.")] };
     zones[slotName] = geometries as NonNullable<(typeof geometries)[number]>[];
@@ -67,6 +80,9 @@ export class MountedMiniGameControllerV1 {
   private readonly triggeredZones = new Set<string>();
   private stopped = false;
   private snapshotValue: MountedMiniGameSnapshotV1;
+  /** 规则 run 实际消费的 zone.entered 轨迹（V3 S-6b，供 evidence.trace / 宿主 rule_replay 复算）。
+   * 记录上限与宿主 rule_replay.rs 的 MAX_REPLAY_EVENTS 同源（TS step 的 inputs ≤ 64）。 */
+  private readonly traceEvents: VisualPlaytestTraceEventV1[] = [];
 
   constructor(private readonly plan: MountedMiniGamePlanV1, private readonly onChange: (snapshot: MountedMiniGameSnapshotV1) => void) {
     const compiled = compileRules(plan.game);
@@ -76,6 +92,9 @@ export class MountedMiniGameControllerV1 {
   }
 
   get snapshot(): MountedMiniGameSnapshotV1 { return this.snapshotValue; }
+
+  /** 已消费的输入轨迹快照（≤64 条副本；FIFO 超出丢最旧，与宿主 ≤64 对齐）。 */
+  get trace(): readonly VisualPlaytestTraceEventV1[] { return [...this.traceEvents]; }
 
   fixedStep(positionMeters: Readonly<{ x: number; y: number; z: number }>): void {
     if (this.stopped || this.snapshotValue.status === "success" || this.snapshotValue.status === "failure" || this.snapshotValue.status === "error") return;
@@ -88,7 +107,12 @@ export class MountedMiniGameControllerV1 {
           if (Math.hypot(positionMeters.x - zone.x, positionMeters.y - zone.y, positionMeters.z - zone.z) > zone.radius * 1.25) this.triggeredZones.delete(key);
           continue;
         }
-        if (!pointInsideZone(this.previous, zone) && segmentIntersectsZone(this.previous, positionMeters, zone)) {
+        const from: [number, number, number] = [this.previous.x, this.previous.y, this.previous.z];
+        const to: [number, number, number] = [positionMeters.x, positionMeters.y, positionMeters.z];
+        const intersects = !zone.volume ? segmentIntersectsZone(this.previous, positionMeters, zone)
+          : zone.volume.geometry.kind === "ring" ? segmentPassesRingGate(from, to, zone.volume)
+          : segmentCrossesWorldVolume(from, to, zone.volume);
+        if (!pointInsideZone(this.previous, zone) && intersects) {
           inputs.push({ type: "zone.entered", tick: this.tick, slot, index });
           this.triggeredZones.add(key);
         }
@@ -96,6 +120,17 @@ export class MountedMiniGameControllerV1 {
     }
     const stepped = this.run.step(this.tick, inputs);
     if (!stepped.ok) { this.publish({ status: "error", state: this.run.snapshot(), reason: stepped.diagnostics[0]?.code ?? "mini-game-step-failed" }); return; }
+    // V3 S-6b：从 run 已有的事件面（RuleStepV1.emitted）摘取 zone.entered——只有 step 成功
+    // 才记录，失败步整步回滚、什么都没消费，轨迹恰好是客户端终态的忠实投影。eventIndex
+    // 取事件自身的 index（槽位绑定内的 zone 序号，0 起），与 runtime.ts counter.eqEventIndex
+    // 的比对语义一致；tick 按步递增、组内按分发序追加，atTick 天然非降序（宿主 parse_trace 的要求）。
+    // FIFO：超过 64 条丢最旧，保留最近窗口；被截断的轨迹无法重放出截断前的计数器状态，
+    // 宿主复算会对这类终局如实记 hostDisagreement（审计语义，不猜）。
+    for (const event of stepped.value.emitted) {
+      if (event.type !== "zone.entered") continue;
+      if (this.traceEvents.length >= 64) this.traceEvents.shift();
+      this.traceEvents.push({ kind: "zone.entered", slot: event.slot, eventIndex: event.index, atTick: event.tick });
+    }
     this.tick += 1;
     this.previous = { ...positionMeters };
     this.publish({ status: stepped.value.state.outcome ?? "running", state: stepped.value.state, reason: null });

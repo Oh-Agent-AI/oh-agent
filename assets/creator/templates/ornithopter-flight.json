@@ -1,0 +1,111 @@
+{
+  "gameType": "flight",
+  "label": "扑翼飞行检查点",
+  "pack": {
+    "id": "creator.ornithopter-flight",
+    "integerParameters": {
+      "flapPower": {
+        "default": 6,
+        "max": 10,
+        "min": 1
+      },
+      "timeLimitTicks": {
+        "default": 3600,
+        "max": 36000,
+        "min": 60
+      }
+    },
+    "rules": {
+      "counters": {
+        "next": {
+          "initial": 0,
+          "max": 3
+        }
+      },
+      "nodes": [
+        {
+          "actions": [
+            {
+              "durationTicks": {
+                "parameter": "timeLimitTicks"
+              },
+              "op": "timer.start",
+              "timerId": "timeout"
+            }
+          ],
+          "id": "start-timer",
+          "on": {
+            "type": "run.started"
+          }
+        },
+        {
+          "actions": [
+            {
+              "amount": 1,
+              "counter": "next",
+              "op": "counter.add"
+            }
+          ],
+          "id": "advance",
+          "on": {
+            "slot": "gates",
+            "type": "zone.entered"
+          },
+          "when": [
+            {
+              "counter": "next",
+              "op": "counter.eqEventIndex"
+            }
+          ]
+        },
+        {
+          "actions": [
+            {
+              "op": "run.finish",
+              "outcome": "success"
+            }
+          ],
+          "id": "finish",
+          "on": {
+            "slot": "gates",
+            "type": "zone.entered"
+          },
+          "when": [
+            {
+              "counter": "next",
+              "op": "counter.eq",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "actions": [
+            {
+              "op": "run.finish",
+              "outcome": "failure"
+            }
+          ],
+          "id": "timeout",
+          "on": {
+            "timerId": "timeout",
+            "type": "timer.expired"
+          }
+        }
+      ]
+    },
+    "rulesVersion": 1,
+    "schemaVersion": 1,
+    "slots": {
+      "gates": {
+        "kind": "zone",
+        "max": 8,
+        "min": 3,
+        "requires": [
+          "fly"
+        ]
+      }
+    }
+  },
+  "schemaVersion": 1,
+  "templateId": "ornithopter-flight"
+}

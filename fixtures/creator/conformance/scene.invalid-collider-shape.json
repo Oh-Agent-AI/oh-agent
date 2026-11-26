@@ -1,0 +1,38 @@
+{
+  "ruleFamily": "scene",
+  "case": "scene.invalid-collider-shape",
+  "expectTs": "error:scene_collider_invalid",
+  "rustNote": "Rust 同样拒绝：仅接受 box 且尺寸 0.1..100 → creator_scene_collider_invalid；两侧约束一致。待 Rust 运行时验证。",
+  "input": {
+    "schemaVersion": 1,
+    "objects": [
+      {
+        "id": "villa-hedge",
+        "kind": "collider",
+        "shape": "sphere",
+        "sizeMeters": {
+          "x": 2,
+          "y": 2,
+          "z": 2
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      }
+    ]
+  }
+}

@@ -1,4 +1,7 @@
-export type ContentKind = "city-layout" | "city-skin" | "city-minigame";
+import type { CityThemeIdV1 } from "./themes";
+import type { COASTAL_PROFILE_ID_V1 } from "./worldParameters";
+
+export type ContentKind = "city-layout" | "city-skin" | "city-minigame" | "city-world";
 export type ContentRef<K extends ContentKind = ContentKind> = {
   kind: K;
   id: string;
@@ -7,7 +10,7 @@ export type ContentRef<K extends ContentKind = ContentKind> = {
 };
 
 export type AnchorKind = "spawn" | "route" | "zone" | "object";
-export type AnchorCapability = "drive" | "walk";
+export type AnchorCapability = "drive" | "walk" | "fly";
 export interface CityAnchorV1 {
   id: string;
   kind: AnchorKind;
@@ -36,9 +39,37 @@ export interface CityLayoutSnapshotV1 {
   seed: number;
   layout: CityLayoutV1;
 }
+/** Multi-City snapshot: world revisions and anchors are scoped to one City revision. */
+export interface CityLayoutSnapshotV2 {
+  schemaVersion: 2;
+  cityId: string;
+  cityRevision: number;
+  worldRevision: string;
+  seed: number;
+  layout: CityLayoutV1;
+}
+/**
+ * v3（2026-11-15）：把锚点引用的几何**随快照序列化**。
+ *
+ * 之前几何只存在于 City 适配器（"never serialized"），于是发布物里的锚点（例如 Creator
+ * 加的空域门）离开运行时就无法定位——无头试玩 / Agent 测试只能靠调用方手填坐标。v3 只存
+ * 快照 anchors 真正引用到的那几条几何，有界且不含地形：positionMeters 必填，
+ * activationRadiusMeters 在锚点本身没有实测半径时可以缺省（消费方按自己的规则补）。
+ */
+export interface CityLayoutSnapshotV3 {
+  schemaVersion: 3;
+  cityId: string;
+  cityRevision: number;
+  worldRevision: string;
+  seed: number;
+  layout: CityLayoutV1;
+  geometry: readonly Readonly<{ geometryRef: string } & CityAnchorGeometryV1>[];
+}
+/** 读侧可接受的快照版本：v2（历史数据，无几何）与 v3（带锚点几何）。 */
+export type CityLayoutSnapshotScoped = CityLayoutSnapshotV2 | CityLayoutSnapshotV3;
 export type CityGeographyGeneratorV1 = "coastal-islands-v1" | "arid-dunes-v1";
 export interface CoastalWorldParametersV1 {
-  profile: "miami-coastal";
+  profile: typeof COASTAL_PROFILE_ID_V1;
   version: number;
   biome: "tropical";
   preferredAzimuth: number;
@@ -69,15 +100,29 @@ export interface CityWorldProfileBaseV1 {
   version: number;
 }
 export type CityWorldProfileV1 = CityWorldProfileBaseV1 & (
-  | { biome: "tropical"; geography: { generator: "coastal-islands-v1"; parameters: { coastal: CoastalWorldParametersV1 } }; visuals: { themeId: "miami" | "desert" } }
-  | { biome: "arid"; geography: { generator: "arid-dunes-v1"; parameters: { dunes: AridDunesWorldParametersV1 } }; visuals: { themeId: "miami" | "desert" } }
+  | { biome: "tropical"; geography: { generator: "coastal-islands-v1"; parameters: { coastal: CoastalWorldParametersV1 } }; visuals: { themeId: CityThemeIdV1 } }
+  | { biome: "arid"; geography: { generator: "arid-dunes-v1"; parameters: { dunes: AridDunesWorldParametersV1;
+      /** Optional diversification record (CITY_WORLD_DIVERSIFICATION_SDK_SPEC §2): capability-keyed
+       * world parameters; must not restate the version 1 dune fields. Absence preserves the
+       * pre-catalog world byte-for-byte. */
+      diversity?: Readonly<Record<string, number | string>> } }; visuals: { themeId: CityThemeIdV1 } }
 );
+/** Persisted identity of an independently authored City, not a plugin instance or a world profile ID. */
+export interface CityInstanceV1 {
+  schemaVersion: 1;
+  cityId: string;
+  revision: number;
+  name: string;
+  seed: number;
+  profile: CityWorldProfileV1;
+  planPatch?: Readonly<Record<string, unknown>>;
+}
 export interface CitySkinPackV1 {
   schemaVersion: 1;
   id: string;
   renderContract: "city-render-v1";
   compatibleGeographies: CityGeographyGeneratorV1[];
-  visuals: { themeId: "miami" | "desert" };
+  visuals: { themeId: CityThemeIdV1 };
 }
 export interface AnchorFilterV1 {
   kind?: AnchorKind;
@@ -202,8 +247,9 @@ export type RuleEventV1 =
   | { type: "zone.entered" | "item.collected"; tick: number; slot: string; index: number }
   | { type: "timer.expired"; tick: number; timerId: string };
 export type PlayerRuleInputV1 = Extract<RuleEventV1, { type: "zone.entered" | "item.collected" }>;
+export type RuleParameterValueV1 = number | { parameter: string };
 export type RuleGuardV1 =
-  | { op: "counter.eq"; counter: string; value: number }
+  | { op: "counter.eq"; counter: string; value: RuleParameterValueV1 }
   | { op: "counter.eqEventIndex"; counter: string };
 export type RuleActionV1 =
   | { op: "counter.add"; counter: string; amount: number }
@@ -211,7 +257,7 @@ export type RuleActionV1 =
   | { op: "hud.hint"; text: string }
   | { op: "run.finish"; outcome: "success" | "failure" };
 export interface RuleGraphV1 {
-  counters: Record<string, { initial: number; max: number }>;
+  counters: Record<string, { initial: number; max: RuleParameterValueV1 }>;
   nodes: Array<{
     id: string;
     on: { type: "run.started" } | { type: "zone.entered" | "item.collected"; slot: string } | { type: "timer.expired"; timerId: string };
@@ -255,6 +301,17 @@ export interface PlaytestEvidenceV1 {
   failures: ReadonlyArray<DiagnosticV1>;
 }
 
+/** 宿主复算输入轨迹的单条事件（桌面 rule_replay.rs `ReplayEventV1` 的线格式）：
+ * 恰为 kind/slot/eventIndex/atTick 四键；`eventIndex` 是槽位绑定内的 zone 序号（0 起）——
+ * runtime.ts `counter.eqEventIndex` 用它与计数器值比对（`counters[c] === event.index`），
+ * 不是“第几次事件”；`atTick` 由运行按序追加，天然非降序。宿主限制：≤64 条、tick ≤ 2e6。 */
+export interface VisualPlaytestTraceEventV1 {
+  kind: "zone.entered";
+  slot: string;
+  eventIndex: number;
+  atTick: number;
+}
+
 /** Bounded local summary reported by the trusted City visual-playtest adapter. */
 export interface VisualPlaytestEvidenceV1 {
   schemaVersion: 1;
@@ -269,6 +326,10 @@ export interface VisualPlaytestEvidenceV1 {
   counters: Readonly<Record<string, number>>;
   outcome: "success" | "failure" | null;
   reasonCode: string | null;
+  /** 可选第 13 键（V3 S-6b）：规则 run 实际消费的 zone.entered 输入轨迹，供宿主
+   * rule_replay 独立复算 outcome/counters。缺省（无事件或超预算被截）= 12 键 evidence，
+   * 宿主维持 client-reported 现状；12 键既有消费方不受影响。 */
+  trace?: ReadonlyArray<VisualPlaytestTraceEventV1>;
 }
 
 export interface PackageFileV1 {
@@ -289,4 +350,17 @@ export interface CityContentPackageV1 {
   format: "oh-agent-city-package-v1";
   manifest: PackageManifestV1;
   files: Readonly<Record<string, unknown>>;
+}
+
+/** Data-only v2 content manifest. This is not an installation authorization. */
+export interface ContentPackageManifestV2 {
+  formatVersion: 2;
+  kind: "city-world" | "city-minigame";
+  packageId: string;
+  version: string;
+  sdkContractVersion: string;
+  minCityRuntimeVersion: string;
+  entry: { profile: string; scene: string; assets: string; generatorVersion: number; defaultSeed: number; patch?: string } | { game: string; assets: string };
+  files: ReadonlyArray<{ path: string; mediaType: "application/json" | "model/gltf-binary" | "image/png" | "image/jpeg"; byteLength: number; sha256: string }>;
+  contentDigest: string;
 }

@@ -18,6 +18,7 @@ export default defineConfig(({ mode }) => ({
       input: {
         index: path.join(here, "index.html"),
         remote: path.join(here, "remote.html"),
+        preview: path.join(here, "preview.html"),
       },
     },
   },

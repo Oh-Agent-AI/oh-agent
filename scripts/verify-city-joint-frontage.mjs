@@ -25,7 +25,8 @@ for (const turns of [0, 1, 2, 3]) {
     height: () => 1.2, inRiver: () => false, riverBank: () => false, coastDistance: () => 1000,
     landClearance: () => 1000, buildable, hasRiver: false, riverX: () => 9999, riverWidth: () => 0,
     hillDir: p(0, 1), hillLine: 9999, hillProj: () => 0 };
-  const connector = { network, geo: { height: world.height, buildable, terrain: { slope: () => 0 } },
+  const connector = { network, geo: { height: world.height, elevation: world.height, buildable,
+    terrain: { slope: () => 0 }, landform: { elevation: world.height, slope: () => 0, isBuildable: buildable } },
     inRiver: world.inRiver, reservations: () => [] };
   const anchor = transform(-100, 0), desired = transform(0, 32), gate = transform(0, 4);
   const before = JSON.stringify({ nodes: [...network.nodes], edges: [...network.edges] });

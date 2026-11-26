@@ -13,7 +13,8 @@ function installStorage(initial: Record<string, string> = {}) {
 }
 
 test("world profile MCP applies a validated profile only after explicit preview and is idempotent", async () => {
-  const values = installStorage();
+  // 初始世界必须是同一 generator：跨 generator 的应用会被隔离守卫拒绝。
+  const values = installStorage({ "city.world-profile.v1": ARID_DUNES_CITY_WORLD_V1.id });
   let applied: unknown = null;
   let now = 100;
   let allowed = true;
@@ -23,7 +24,7 @@ test("world profile MCP applies a validated profile only after explicit preview 
   });
   const preview = await handlers["city.world.profile.preview"]({ profile: customDunes as unknown as Record<string, unknown> }) as Record<string, unknown>;
   assert.equal((preview.proposedWorld as Record<string, unknown>).generator, "arid-dunes-v1");
-  assert.equal(readCityWorldProfilePreference().id, MIAMI_CITY_WORLD_V1.id);
+  assert.equal(readCityWorldProfilePreference().id, ARID_DUNES_CITY_WORLD_V1.id);
   const request = { previewId: "cwp_preview0001", operationId: "op-world-1" };
   const result = await handlers["city.world.profile.apply"](request) as Record<string, unknown>;
   assert.equal(result.applied, true);
@@ -31,6 +32,20 @@ test("world profile MCP applies a validated profile only after explicit preview 
   assert.equal((applied as typeof customDunes).id, customDunes.id);
   assert.deepEqual(await handlers["city.world.profile.apply"](request), result);
   assert.equal(values.get("city.world-profile.v1"), JSON.stringify(customDunes));
+});
+
+test("world profile MCP refuses to switch the active City to another generator", async () => {
+  // 迈阿密当前世界为 coastal-islands-v1；沙漠 profile 必须走独立 City 草稿，
+  // 不能在隔离完成前改写用户现有城市。
+  installStorage();
+  let sequence = 0;
+  const handlers = createCityWorldProfileCallHandlers({
+    instanceId: () => "city-instance-1", canApply: () => true, onApplied: () => {},
+    createPreviewId: () => `cwp_preview${String(++sequence).padStart(4, "0")}`,
+  });
+  const preview = await handlers["city.world.profile.preview"]({ profile: customDunes as unknown as Record<string, unknown> }) as { previewId: string };
+  assert.throws(() => handlers["city.world.profile.apply"]({ previewId: preview.previewId, operationId: "op-cross-city" }), /city_world_profile_city_mismatch/);
+  assert.equal(readCityWorldProfilePreference().id, MIAMI_CITY_WORLD_V1.id);
 });
 
 test("world profile MCP refuses stale, busy, expired, and cross-instance commits", async () => {
@@ -43,7 +58,10 @@ test("world profile MCP refuses stale, busy, expired, and cross-instance commits
     instanceId: () => instanceId, canApply: () => allowed, onApplied: () => {}, now: () => now,
     createPreviewId: () => `cwp_preview${String(++sequence).padStart(4, "0")}`,
   });
-  const makePreview = () => handlers["city.world.profile.preview"]({ profile: customDunes as unknown as Record<string, unknown> });
+  // 同一 generator 内的配置变更才能走到 busy/instance/expiry 分支；跨 generator
+  // 的应用由隔离守卫在更早阶段拒绝（见上一个用例）。
+  const sameGenerator = { ...MIAMI_CITY_WORLD_V1, id: "other-coast" };
+  const makePreview = () => handlers["city.world.profile.preview"]({ profile: sameGenerator as unknown as Record<string, unknown> });
   const first = await makePreview() as { previewId: string };
   assert.throws(() => handlers["city.world.profile.apply"]({ previewId: first.previewId, operationId: "op-busy" }), /city_world_busy/);
   allowed = true;

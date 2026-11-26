@@ -59,12 +59,13 @@ assert.equal(frames[0].style.width, "646px", "resumed layout accepts a new seque
 await pluginRequest({ version: 1, instanceId: id, requestId: "data-1", method: "data.read", payload: { projection: "city" } });
 assert.equal(JSON.stringify(replies.at(-1).result), JSON.stringify({ version: 1, requestId: "data-1", ok: false, result: null, error: { code: "provider_unavailable", retryable: true } }));
 await pluginRequest({ version: 1, instanceId: "stale", requestId: "data-stale", method: "data.read", payload: {} });
-assert.equal(replies.at(-1).error, "preview_request_rejected");
+// The adapter exposes bounded diagnostic codes; verify the precise failure as well as rejection.
+assert.equal(replies.at(-1).error, "invalid_plugin_request");
 await message("toolbar.update", { revision: 2, items: [{ ...tools[0], label: {}, options: null }] });
-assert.equal(replies.at(-1).error, "preview_request_rejected");
+assert.equal(replies.at(-1).error, "invalid_tools");
 assert.equal((await invoke("plugin_snapshot")).revision, 1);
 await message("toolbar.update", { revision: 1, items: tools });
-assert.equal(replies.at(-1).error, "preview_request_rejected");
+assert.equal(replies.at(-1).error, "stale_revision");
 const before = replies.length;
 await message("runtime.error", {}, { origin: "https://untrusted.invalid" });
 await message("runtime.error", {}, { source: {} });
@@ -107,7 +108,7 @@ const metricsMessage = (type, payload = {}) => listeners.get("message")({
 await metricsMessage("toolbar.update", { revision: 1, items: [{ id: "refresh", label: "Refresh", commandId: "metrics.refresh", kind: "button", enabled: true }] });
 assert.equal((await invoke("plugin_snapshot")).status, "ready");
 await metricsMessage("toolbar.update", { revision: 2, items: tools });
-assert.equal(replies.at(-1).error, "preview_request_rejected", "cross-plugin command namespaces are rejected");
+assert.equal(replies.at(-1).error, "invalid_tools", "cross-plugin command namespaces are rejected");
 let forwarded;
 window.__AV_BROWSER_PROVIDERS__ = { metrics: async (request) => { forwarded = request; return { count: 42 }; } };
 await listeners.get("message")({ origin: location.origin, source: frames.at(-1).contentWindow,

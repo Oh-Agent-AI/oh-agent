@@ -45,7 +45,7 @@ export function useCityDriving(engine: RefObject<CityEngine | null>, options: Re
   /** Remote visitors operate only their browser-local scene and must not call desktop host IPC. */
   notifyHostBusy?: boolean;
   /** Fixed-step position callback for SDK gameplay; receives simulation state, not rendered interpolation. */
-  onFixedStep?: (state: Readonly<Pick<DrivingState, "x" | "y" | "z">>) => void;
+  onFixedStep?: (state: Readonly<Pick<DrivingState, "x" | "y" | "z" | "heading">>) => void;
   /** Frozen, release-scoped geometry for a Creator minigame. Only free-drive entry consumes it. */
   additionalSolids?: () => Readonly<{ revision: string; solids: readonly SolidInput[] }> | null;
   activityCoordinator: CityActivityCoordinator;
@@ -59,6 +59,7 @@ export function useCityDriving(engine: RefObject<CityEngine | null>, options: Re
   const eventLog = useRef<DrivingEventLog | null>(null);
   if (!eventLog.current) eventLog.current = new DrivingEventLog();
   const runtimeRef = useRef<GameRuntime<DrivingInputState> | null>(null);
+  const spawnPoseRef = useRef<Readonly<{ x: number; z: number }> | null>(null);
   const activityLeaseRef = useRef<CityActivityLease | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const preparing = useRef(false);
@@ -107,6 +108,7 @@ export function useCityDriving(engine: RefObject<CityEngine | null>, options: Re
 
   const start = useCallback(async (mode: "formal" | "free-drive" | "diagnostic", vehicle?: Readonly<{ vtol: boolean }>, near?: Readonly<{ x: number; z: number }>): Promise<boolean> => {
     lastEntryFailure.current = null;
+    spawnPoseRef.current = null;
     const host = engine.current;
     if (!host || runtimeRef.current) return false;
     if (optionsRef.current.cinemaActive() || optionsRef.current.gameActive() || optionsRef.current.busy()) {
@@ -184,6 +186,8 @@ export function useCityDriving(engine: RefObject<CityEngine | null>, options: Re
       if (!admission.lease.activate()) { runtime.dispose(); runtimeRef.current = null; preparing.current = false;
         admission.lease.release(); if (activityLeaseRef.current === admission.lease) activityLeaseRef.current = null;
         setEntryError("驾驶活动已失效，请重新进入。"); publish(); return false; }
+      const spawn = entry.adapter.snapshot;
+      spawnPoseRef.current = Object.freeze({ x: spawn.x, z: spawn.z });
       latest.current.coverage = entry.coverage; publish(); return true;
     } catch (error) {
       runtime.dispose();
@@ -213,7 +217,8 @@ export function useCityDriving(engine: RefObject<CityEngine | null>, options: Re
   const invalidateSpawn = useCallback((reason?: string) => { if (optionsRef.current.confirmationEnabled !== false) confirmationStore.invalidate(reason); }, [confirmationStore]);
   const diagnostics = useCallback((): RuntimeDiagnosticSnapshot | null => runtimeRef.current?.diagnostics ?? null, []);
   const getLastEntryFailure = useCallback(() => lastEntryFailure.current, []);
+  const getSpawnPose = useCallback(() => spawnPoseRef.current, []);
   return { hud, entryError, preparationProgress, events, clearEntryError: () => setEntryError(null), spawnConfirmation,
-    deriveSpawnCandidates, validateSpawnCandidate, confirmSpawn, cancelSpawn, invalidateSpawn, getLastEntryFailure,
+    deriveSpawnCandidates, validateSpawnCandidate, confirmSpawn, cancelSpawn, invalidateSpawn, getLastEntryFailure, getSpawnPose,
     enter: () => start("formal"), enterFreeDrive: (vehicle?: Readonly<{ vtol: boolean }>, near?: Readonly<{ x: number; z: number }>) => start("free-drive", vehicle, near), enterDiagnostic: () => start("diagnostic"), exit, pause, resume, toggle, setInput, diagnostics, physicsStep: DRIVING_DT };
 }

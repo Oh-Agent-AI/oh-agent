@@ -5,11 +5,6 @@ not create a new host channel: lifecycle notifications use the existing
 `/ui-host` bridge, and local state goes through the descriptor-authorized
 `plugin_request` methods `plugin.state.read` and `plugin.state.write`.
 
-The package allowlist includes only `src/` and this README, so `npm pack` can
-produce a bounded local tarball for an independent consumer check. The package
-is still marked private and is not published; official plugin registration,
-grants, signing, and installation remain desktop-host responsibilities.
-
 ```ts
 import { connectAppGame, createAppHostClient } from "@agent-vitals/app-sdk";
 

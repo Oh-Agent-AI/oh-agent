@@ -476,3 +476,73 @@
 .mecha-remote-dialog-actions p { flex: 1 1 100%; margin: 4px 0 0; }
 .mecha-remote-dialog-actions label { flex: 1 1 100%; display: grid; gap: 6px; min-width: 0; }
 .mecha-remote-dialog-actions input { width: 100%; min-width: 0; }
+
+.code-game-dialogue-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 32px 20px;
+  background: linear-gradient(transparent 45%, #07111dcc);
+  pointer-events: auto;
+}
+.code-game-dialogue {
+  position: relative;
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  gap: 16px;
+  width: min(680px, 100%);
+  padding: 24px;
+  border: 1px solid #a9c6df55;
+  border-radius: 18px;
+  background: #0b1726f2;
+  color: #e9f3fb;
+  box-shadow: 0 18px 60px #0009;
+}
+.code-game-dialogue-close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  width: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #c8d8e6;
+  font-size: 24px;
+}
+.code-game-dialogue-avatar {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: #315979;
+  color: #fff;
+  font-size: 24px;
+  font-weight: 700;
+}
+.code-game-dialogue-content { min-width: 0; }
+.code-game-dialogue-speaker { margin: 0 32px 10px 0; color: #a9c6df; font-weight: 700; }
+.code-game-dialogue-text { margin: 0 0 20px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.code-game-dialogue-choices { display: flex; flex-wrap: wrap; gap: 10px; }
+.code-game-dialogue-choices button {
+  width: auto;
+  min-height: 40px;
+  padding: 8px 16px;
+  border: 1px solid #87b7d988;
+  border-radius: 10px;
+  background: #17344d;
+  color: #eff8ff;
+}
+.code-game-dialogue-choices button:hover:not(:disabled) { background: #245472; }
+.code-game-dialogue-choices button:disabled { opacity: 0.45; }
+@media (max-width: 600px) {
+  .code-game-dialogue-backdrop { padding: 16px 12px; }
+  .code-game-dialogue { grid-template-columns: 40px minmax(0, 1fr); gap: 12px; padding: 18px 14px; }
+  .code-game-dialogue-avatar { width: 40px; height: 40px; font-size: 18px; }
+  .code-game-dialogue-choices { display: grid; }
+}

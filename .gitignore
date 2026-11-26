@@ -66,3 +66,6 @@ docs/ATTRIBUTABLE_WASTE_副本.md
 /artifacts/city-v3-linux-clickthrough/native-fix/pkg/
 /artifacts/city-v3-linux-clickthrough/native-release/pkg/
 /artifacts/city-v3-linux-clickthrough/video/
+
+# Packaged Code Game builder resources are generated per platform.
+apps/desktop/src-tauri/code-game/

@@ -11,6 +11,8 @@ import type { RemoteCityDisplay } from "../../remote/city/cityDisplayProjection"
 import type { CityMechaSite } from "./citySite";
 import { prepareRemoteCityDisplay } from "../../remote/city/trustedRemoteCityDisplay";
 
+const DEFAULT_RELAY_URL = "https://relay.ohagent.ai";
+
 /** Desktop handoff for the v1.5 command stream; it never routes the host back to classic. */
 export function SequentialRemoteControls({ locale, evidence, cityScene, site, disabled, onActive, onRecovered, onClose }: {
   locale: "zh-Hans" | "en";
@@ -23,7 +25,7 @@ export function SequentialRemoteControls({ locale, evidence, cityScene, site, di
   onClose: () => void;
 }) {
   const zh = locale !== "en";
-  const [relay, setRelay] = useState(() => sessionStorage.getItem("agent-city-relay") ?? "");
+  const [relay, setRelay] = useState(() => sessionStorage.getItem("agent-city-relay") ?? DEFAULT_RELAY_URL);
   const [link, setLink] = useState("");
   const [matchId, setMatchId] = useState("");
   const [status, setStatus] = useState<"idle" | "starting" | "active" | "stopping">("idle");
@@ -70,7 +72,7 @@ export function SequentialRemoteControls({ locale, evidence, cityScene, site, di
   return <section className="mecha-remote-panel" aria-label={zh ? "远程控制" : "Remote control"}>
     <header className="mecha-remote-dialog-head"><strong>{zh ? "手机续玩（1.5）" : "Continue on phone (1.5)"}</strong><button type="button" onClick={onClose}>{zh ? "关闭" : "Close"}</button></header>
     <div className="mecha-remote-dialog-actions">
-      <label>{zh ? "中继服务地址" : "Relay service URL"}<input type="url" value={relay} disabled={status !== "idle"} onChange={event => setRelay(event.currentTarget.value)} placeholder="https://" autoComplete="url" /></label>
+      <label>{zh ? "中继服务地址" : "Relay service URL"}<input type="url" value={relay} disabled={status !== "idle"} onChange={event => setRelay(event.currentTarget.value)} placeholder={DEFAULT_RELAY_URL} autoComplete="url" /></label>
       {status !== "active" ? <button type="button" disabled={!evidence || !cityScene || evidence.enemyPolicy !== "baup" || disabled || !validRelay || status !== "idle"} onClick={() => void start()}>{status === "starting" ? (zh ? "正在生成…" : "Creating…") : (zh ? "生成手机链接" : "Create phone link")}</button>
         : <><a href={link} target="_blank" rel="noreferrer">{zh ? "打开手机链接" : "Open phone link"}</a><button type="button" onClick={() => void stop()}>{zh ? "停止远程" : "Stop remote"}</button></>}
       {error && <p role="alert">{error}</p>}

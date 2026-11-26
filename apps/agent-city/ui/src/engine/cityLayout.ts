@@ -2,6 +2,7 @@ import { atLeast } from "./roadStandard";
 import { DetMath as Math } from "./detMath"; // 跨引擎确定性：见 detMath.ts
 /** Geography and public planning are fixed; sessions occupy reserved parcels. */
 import { runPlanningJob, type PlanningWorkerPort } from "./planningWorker/planningJob";
+import { canReplayUnstartedPlanningWorker } from "./planningRecovery";
 import { hydratePlanningPlan, serializePlanningPlan, type PlanningParameters } from "./planningWorker/planningProtocol";
 import { deleteCityPlanSnapshot, readCityPlanSnapshot, writeCityPlanSnapshot } from "./planningWorker/cityPlanDiskCache";
 import type { PlanningWorkSnapshot } from "./planner/operationBudget";
@@ -28,6 +29,7 @@ import { inspectBlockPlacement, indexPlanRoads, indexRoadPolygons, type BlockPla
 import { compileGroundRoadSurface } from "./surface/groundRoadCompiler";
 import { groundRoadClearance } from "./surface/roadClearance";
 import { civicMinimumSize, civicEnvelopeSize, GARDEN_MINIMUM_SIZE, DISTRICT_LANDMARK_ENVELOPE } from "./models/layoutPlacementGeometry";
+import { COASTAL_PROFILE_ID_V1 } from "@oh-agent/city-sdk";
 
 /** Last layoutCity wall-clock phases (ms). Cheap always-on marks for the occupancy benchmark. */
 export type LayoutTimings = { wallMs: number; planCached: boolean; phases: Record<string, number> };
@@ -178,7 +180,7 @@ const plans = new Map<string, ReturnType<typeof createCityPlan>>();
 export const CITY_PLAN_CACHE_CONFIG = { version: 1, maxEntries: 8 } as const;
 export const cityPlanCacheSize = () => plans.size;
 export function clearCityPlanCache(): void { plans.clear(); }
-export type PreparePlanSource = "memory" | "disk" | "compute";
+export type PreparePlanSource = "memory" | "disk" | "compute" | "caller-replay";
 let lastPrepareSource: PreparePlanSource | null = null;
 export function takePreparePlanSource(): PreparePlanSource | null {
   const source = lastPrepareSource;
@@ -268,7 +270,7 @@ function warmOccupancyScratch(rawPlan: ReturnType<typeof createCityPlan>, seed: 
   }
   const core = plan.core ?? { x: 0, z: 0 };
   const coreRadius = plan.islandRadius * ((coastal?.bayHalfWidth ?? 0) > 0 ? 1.4 / 0.94 : 1);
-  const contextPool = scratch?.contextPool ?? (coastal?.profile === "miami-coastal"
+  const contextPool = scratch?.contextPool ?? (coastal?.profile === COASTAL_PROFILE_ID_V1
     ? plan.blocks.flatMap((block) => block.parcels).filter((parcel) => {
       const radius = Math.hypot(parcel.x - core.x, parcel.z - core.z);
       return radius <= coreRadius * 0.94
@@ -367,8 +369,11 @@ function layoutPlanKey(seed: number, tier: number, coastal: CoastalConfig | null
 }
 
 /** Warm the exact layout plan on a local worker before mounting a large city.
- * Cancellation and worker failures never fall back to UI-thread planning. The
- * validated worker result shares the same bounded LRU as synchronous fixtures. */
+ * Cancellation, timeouts, and failures after the worker has started do not
+ * fall back to the caller. The one exception is a worker that never starts
+ * (constructor throw or an immediate script error, as on WebKitGTK module
+ * workers): `prepareCityLayout` then runs the same `createCityPlan`. That is
+ * not a software-GL switch. The validated plan shares the bounded LRU. */
 function layoutPopulation(model: CityModel): number {
   const planned = model.stats?.totalSessions;
   return Math.min(RENDER_CAP, Math.max(model.buildings.length, Number.isFinite(planned) ? planned : 0));
@@ -413,7 +418,25 @@ export async function prepareCityLayout(model: CityModel, seed: number, coastal:
   const { onPlanningProgress, ...workerOptions } = options;
   const result = await runPlanningJob(parameters, { ...workerOptions, onProgress: onPlanningProgress });
   if (options.signal.aborted || result.status === "cancelled") throw new Error("layout-preparation-cancelled");
-  if (result.status !== "computed") throw new Error(`layout-preparation:${result.reason}`);
+  if (result.status !== "computed") {
+    if (canReplayUnstartedPlanningWorker(result)) {
+      try {
+        const plan = createCityPlan(seed, tier, coastal, { geographyGenerator, geographyOptions, biome });
+        if (!plan.derivedFinalization.ok || !plan.capacity.satisfied || plan.planningOutcome.status === "failed") {
+          throw new Error("layout-preparation:planning-outcome-failed");
+        }
+        rememberPlan(key, plan, seed, coastal);
+        lastPrepareSource = "caller-replay";
+        try { await writeCityPlanSnapshot(parameters, serializePlanningPlan(plan, parameters)); }
+        catch { /* disk is an accelerator; the in-memory plan stands */ }
+        return;
+      } catch (error) {
+        if (error instanceof Error && error.message.startsWith("layout-preparation:")) throw error;
+        throw new Error("layout-preparation:caller-replay-failed");
+      }
+    }
+    throw new Error(`layout-preparation:${result.reason}`);
+  }
   rememberPlan(key, result.plan, seed, coastal);
   lastPrepareSource = "compute";
   try { await writeCityPlanSnapshot(parameters, serializePlanningPlan(result.plan, parameters)); }
@@ -836,7 +859,7 @@ export function layoutCity(model: CityModel, previous?: CityLayout | null, seed 
   // 空白规划图。背景楼只从空置地块取址，避开数据楼/整块花园/市政设施/高架
   // /酒店海滨保留带；优先填充会话城区周围，再向城市核心扩散，不加入会话统计。
   const contextBuildings: ContextBuilding[] = [];
-  if (coastal?.profile === "miami-coastal" && backdrop !== "off") {
+  if (coastal?.profile === COASTAL_PROFILE_ID_V1 && backdrop !== "off") {
     const full = backdrop === "full";
     const reserved = new Set([...used, ...civics.map((civic) => civic.parcelId)]);
     // 开湾时岛形定向南北、长半轴 ≈ 1.25R，核心又贴着西岸：0.94R 的圈罩不住南北两端，「繁华」档背景楼只剩一半

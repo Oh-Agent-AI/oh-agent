@@ -4,7 +4,7 @@
  * and asynchronous scene preparation: ownership is granted synchronously,
  * before an activity awaits City resources.
  */
-export type CityActivityId = "flight" | "driving" | "mecha" | "cinema" | "film" | "repair";
+export type CityActivityId = "flight" | "driving" | "mecha" | "cinema" | "film" | "repair" | "code-game";
 export type CityActivityPhase = "preparing" | "running";
 export type CityActivitySnapshot = Readonly<{
   activityId: CityActivityId;

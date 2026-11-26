@@ -1,0 +1,23 @@
+.workspace-preview { display: flex; flex-direction: column; min-width: 0; min-height: 0; color: #16382f; background: #eff5f1; }
+.workspace-preview-heading, .workspace-preview-dock { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 9px 14px; background: #fff; }
+.workspace-preview-heading { border-bottom: 1px solid #d6e4dc; }
+.workspace-preview-identity { display: flex; flex: 1 1 190px; flex-wrap: wrap; gap: 5px 8px; align-items: center; min-width: 0; }
+.workspace-preview-identity strong { overflow-wrap: anywhere; }
+.workspace-preview-heading .workspace-next-action { margin-inline-start: auto; }
+.workspace-preview-heading .workspace-focus-toggle { padding: 5px 10px; color: #254c40; background: #fff; border: 1px solid #c7dad0; border-radius: 6px; font-size: 12px; cursor: pointer; }
+.workspace-preview-heading .workspace-focus-toggle[aria-pressed="true"] { color: #fff; background: #17483b; border-color: #17483b; }
+.workspace-preview-heading span { padding: 4px 8px; border-radius: 20px; background: #e6f2eb; font-size: 12px; }
+.workspace-preview-canvas { display: flex; flex: 1; min-height: 0; }
+.workspace-preview-canvas > .viewport { width: 100%; }
+.workspace-preview-dock { border-top: 1px solid #d6e4dc; }
+.workspace-preview-dock button { color: #254c40; background: #fff; border-color: #c7dad0; font-size: 12px; padding: 6px 10px; }
+.workspace-preview-dock button[aria-expanded="true"] { color: #fff; background: #17483b; border-color: #17483b; }
+.workspace-preview-dock span { margin-left: auto; color: #506b61; font-size: 12px; }
+.workspace-preview-details { max-height: 40%; overflow: auto; padding: 12px; color: #dce9e5; background: #152123; }
+.workspace-preview-details .evidence-grid { grid-template-columns: 1fr; }
+.workspace-preview-details .ground-debug-section { grid-column: auto; }
+[data-editor-section]:focus-visible, .workspace-preview-details:focus-visible { outline: 2px solid #287f64; outline-offset: -2px; }
+@media (max-width: 700px) {
+  .workspace-preview { min-height: 440px; }
+  .workspace-preview-details { max-height: 330px; }
+}

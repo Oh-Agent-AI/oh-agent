@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "egypt-desert",
+  "version": 1,
+  "biome": "arid",
+  "geography": {
+    "generator": "arid-dunes-v1",
+    "parameters": {
+      "dunes": {
+        "duneScale": 190,
+        "duneAmplitude": 11,
+        "orientationDeg": 18
+      }
+    }
+  },
+  "visuals": {
+    "themeId": "desert"
+  }
+}

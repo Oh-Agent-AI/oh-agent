@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { compileRules, createRun, runHeadless } from "../src/runtime";
 import { parseMiniGamePackJson, validateMiniGamePack } from "../src/content";
-import { validateCityLayoutSnapshot, validateCitySkinPack, validateMount } from "../src/validate";
+import { validateCityLayoutScope, validateCityLayoutSnapshot, validateCityLayoutSnapshotScoped, validateCityLayoutSnapshotV2, validateCityLayoutSnapshotV3, validateCitySkinPack, validateMount } from "../src/validate";
 import type { CityGameMountV1, CityLayoutV1, MiniGamePackV1 } from "../src/types";
 
 const layout: CityLayoutV1 = { schemaVersion: 1, id: "fixture", coordinateSystem: "city-local-m-v1", anchors: [
@@ -33,6 +33,19 @@ test("validates and freezes host-captured City layout snapshots", () => {
   }
   assert.equal(validateCityLayoutSnapshot({ schemaVersion: 1, worldRevision: "", seed: 7, layout }).ok, false);
   assert.equal(validateCityLayoutSnapshot({ schemaVersion: 1, worldRevision: "r", seed: -1, layout }).ok, false);
+});
+test("multi-City layout scope rejects cross-City and stale bindings even with matching world revisions", () => {
+  const snapshot = { schemaVersion: 2, cityId: "city-desert", cityRevision: 3, worldRevision: "world-r7", seed: 7, layout };
+  const city = { cityId: "city-desert", revision: 3, seed: 7 };
+  const result = validateCityLayoutScope(snapshot, city);
+  assert.equal(result.ok, true);
+  if (result.ok) assert.equal(Object.isFrozen(result.value.layout.anchors), true);
+  assert.equal(validateCityLayoutScope(snapshot, { ...city, cityId: "city-miami" }).ok, false);
+  assert.equal(validateCityLayoutScope(snapshot, { ...city, revision: 4 }).ok, false);
+  assert.equal(validateCityLayoutScope(snapshot, { ...city, seed: 8 }).ok, false);
+  assert.equal(validateCityLayoutSnapshotV2({ ...snapshot, cityId: "../miami" }).ok, false);
+  assert.equal(validateCityLayoutSnapshotV2({ ...snapshot, extra: true }).ok, false);
+  assert.equal(validateCityLayoutSnapshotV2({ schemaVersion: 1, worldRevision: "world-r7", seed: 7, layout }).ok, false);
 });
 const mount: CityGameMountV1 = { schemaVersion: 1, mountId: "race-1", layout: { kind: "city-layout", id: layout.id, version: "1", digest: "fixture" }, game: { kind: "city-minigame", id: game.id, version: "1", digest: "fixture" }, entryAnchorId: "start", bindings: { points: ["cp-1", "cp-2"] }, parameterOverrides: {} };
 
@@ -184,4 +197,48 @@ test("caps per-step inputs and retained hints", () => {
   const result = run.step(1, excessiveInputs);
   assert.equal(result.ok, false);
   if (!result.ok) assert.equal(result.diagnostics[0]?.code, "rule_budget_exceeded");
+});
+
+// v3：锚点几何随快照序列化（否则发布物里的空域门离开运行时就定位不到）。
+const snapshotV3 = () => ({ schemaVersion: 3, cityId: "city-desert", cityRevision: 3, worldRevision: "world-r7", seed: 7, layout,
+  geometry: [
+    { geometryRef: "g:start", positionMeters: { x: 1, y: 2, z: 3 } },
+    { geometryRef: "g:1", positionMeters: { x: 10, y: 40, z: 3 }, activationRadiusMeters: 12 },
+    { geometryRef: "g:2", positionMeters: { x: 20, y: 40, z: 3 }, activationRadiusMeters: 12, facingRadians: 0.5 },
+  ] });
+
+test("v3 snapshots must serialize exactly the geometry their anchors reference", () => {
+  const result = validateCityLayoutSnapshotV3(snapshotV3());
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.value.schemaVersion, 3);
+    assert.equal(result.value.geometry.length, layout.anchors.length);
+    assert.equal(Object.isFrozen(result.value.geometry), true);
+  }
+  // 少一条几何 → 发布物仍无法复现，必须拒绝
+  const missing = snapshotV3();
+  missing.geometry = missing.geometry.filter(entry => entry.geometryRef !== "g:2");
+  assert.equal(validateCityLayoutSnapshotV3(missing).ok, false);
+  // 引用不到的几何 → 快照悄悄膨胀且误导读方
+  const extra = snapshotV3();
+  extra.geometry = [...extra.geometry, { geometryRef: "g:ghost", positionMeters: { x: 0, y: 0, z: 0 } }];
+  assert.equal(validateCityLayoutSnapshotV3(extra).ok, false);
+  // 重复 / 非有限 / 非法半径 / 额外键
+  assert.equal(validateCityLayoutSnapshotV3({ ...snapshotV3(), geometry: [snapshotV3().geometry[0], snapshotV3().geometry[0]] }).ok, false);
+  assert.equal(validateCityLayoutSnapshotV3({ ...snapshotV3(), geometry: snapshotV3().geometry.map(entry => entry.geometryRef === "g:start"
+    ? { ...entry, positionMeters: { x: Number.NaN, y: 0, z: 0 } } : entry) }).ok, false);
+  assert.equal(validateCityLayoutSnapshotV3({ ...snapshotV3(), geometry: snapshotV3().geometry.map(entry => entry.geometryRef === "g:1"
+    ? { ...entry, activationRadiusMeters: 0 } : entry) }).ok, false);
+  assert.equal(validateCityLayoutSnapshotV3({ ...snapshotV3(), geometry: snapshotV3().geometry.map(entry => ({ ...entry, sneaky: 1 })) }).ok, false);
+  // v3 身份仍要合法（跨城 / 版本号）
+  assert.equal(validateCityLayoutSnapshotV3({ ...snapshotV3(), cityId: "../miami" }).ok, false);
+  assert.equal(validateCityLayoutSnapshotV3({ ...snapshotV3(), schemaVersion: 2 }).ok, false);
+});
+
+test("the scoped reader accepts legacy v2 and v3, the writer-only validator does not", () => {
+  const v2 = { schemaVersion: 2, cityId: "city-desert", cityRevision: 3, worldRevision: "world-r7", seed: 7, layout };
+  assert.equal(validateCityLayoutSnapshotScoped(v2).ok, true);
+  assert.equal(validateCityLayoutSnapshotScoped(snapshotV3()).ok, true);
+  assert.equal(validateCityLayoutSnapshotV3(v2).ok, false);
+  assert.equal(validateCityLayoutSnapshotScoped({ ...snapshotV3(), geometry: [] }).ok, false);
 });

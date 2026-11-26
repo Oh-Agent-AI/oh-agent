@@ -1,4 +1,4 @@
-# @agent-vitals/city-sdk
+# @oh-agent/city-sdk
 
 Version 0.1.0 is a pre-release SDK for data-only City mini-games. It provides
 versioned layout and mount contracts, validation diagnostics, deterministic
@@ -38,6 +38,9 @@ oh-agent-sdk pack ./my-city-game --out ./my-city-game.ohcity.json
 oh-agent-sdk verify ./my-city-game.ohcity.json
 oh-agent-sdk init city-world ./my-world --generator arid-dunes
 oh-agent-sdk validate-world ./my-world
+oh-agent-sdk init city-project ./my-city --generator arid-dunes
+oh-agent-sdk init city-minigame ./my-city/games/my-game
+oh-agent-sdk validate-world ./my-city/world
 oh-agent-sdk asset inspect ./models/bridge.glb
 oh-agent-sdk asset import ./my-city-game ./models/bridge.glb --asset-id bridge
 oh-agent-sdk asset verify ./my-city-game
@@ -61,6 +64,12 @@ cannot be installed or published. The CLI never loads executable content and
 does not connect to the desktop host.
 `city-world` scaffolds and validates the public world profile contract only; it
 does not run the City generator or create an installable world package.
+`city-project` creates a new source root with `world/`, `games/`, `design/`,
+and `tests/`, following the City project directory convention. It refuses an
+existing directory. Mini-games are independent projects inside `games/`;
+the starter game uses a synthetic layout and must be rebound to a real City.
+This scaffold does not export Studio's existing SQLite projects, install a
+world, or create a City instance.
 `asset inspect` reads one explicitly named local GLB of at most 64 MiB, runs the
 bounded in-memory structural inspector, and computes a SHA-256 digest of the
 bytes it read. `asset import` adds a checked GLB to a project-local,
@@ -72,13 +81,22 @@ install them.
 
 ## Entry points
 
-- `@agent-vitals/city-sdk`: contracts, content parsing, layout/mount validation,
+- `@oh-agent/city-sdk`: contracts, content parsing, layout/mount validation,
   anchor, scene object, and validated asset catalog queries, asset reference
   checks, data-only City skin and world-profile validation, bounded in-memory GLB
   v2 inspection, package manifest validation and canonical JSON, rule
   compilation, and headless playtests.
-- `@agent-vitals/city-sdk/runtime`: rule compilation, run creation, and
-  headless playtests.
+- `@oh-agent/city-sdk/contracts`: shared world primitives, DTOs, capabilities,
+  revisions, time, interaction, and actor-intent types.
+- `@oh-agent/city-sdk/authoring`: `WorldPlanV1`, stable-ID helpers, seeded
+  randomness, and the deterministic World Compiler.
+- `@oh-agent/city-sdk/validate`: the legacy validators plus same-source JSON
+  Schema and runtime validation for shared world plans, snapshots, and compile
+  contexts.
+- `@oh-agent/city-sdk/testing`: deterministic world fixtures, collection-order
+  variation, and cross-run compiler evidence.
+- `@oh-agent/city-sdk/runtime`: the unchanged legacy rule compilation, run
+  creation, and headless playtests.
 
 The package is not yet published. Its API is pre-release and may change before
 the first public release. Package validation does not replace manifest digest

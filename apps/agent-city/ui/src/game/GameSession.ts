@@ -11,13 +11,16 @@ import { FlightInput } from "./FlightInput";
 import { FlightCamera } from "./FlightCamera";
 import { FlightCameraControls } from "./FlightCameraControls";
 import { FlightVisuals } from "./FlightVisuals";
-import { initialSimState, flightParamsFor, stepFlight, lerpSim, PHYSICS_VERSION, type FlightParams, type FlightSimState } from "./FlightSimulation";
+import { initialSimState, flightParamsFor, vehicleFlightParams, stepFlight, lerpSim, PHYSICS_VERSION, VEHICLE_PHYSICS_VERSION, type FlightParams, type FlightSimState } from "./FlightSimulation";
+import { createCreatorGateCourse } from "./RaceCourse";
+import { toMeters } from "../engine/worldScale";
 import { sweepFlight } from "./FlightCollision";
 import { generateRaceCourse, COURSE_VERSION, type RaceCourse } from "./RaceCourse";
-import { RaceMission, type RaceMissionSnapshot, type RaceResult } from "./RaceMission";
+import { COUNTDOWN_MS, RaceMission, stepFixedCountdown, type RaceMissionSnapshot, type RaceResult } from "./RaceMission";
 import { GameAudio } from "./GameAudio";
 import { GameSfx, type SfxTelemetry } from "./GameSfx";
 import * as THREE from "three";
+import type { VehicleProfileV1 } from "@oh-agent/city-sdk";
 import { GameRuntime } from "./runtime/GameRuntime";
 import { FlightAdapter } from "./runtime/FlightAdapter";
 import type { GameSceneLease } from "./runtime/GameScenePort";
@@ -35,7 +38,23 @@ export type GameSessionEvents = {
   onExited: () => void;
   /** 新最佳成绩（React 层负责档案持久化，§9）。 */
   onRecord?: (courseId: string, bestTimeMs: number, collisions: number) => void;
+  /** Creator 试玩：共享规则执行器判定出结局（success/failure/error）时回调一次。 */
+  onCreatorOutcome?: (status: "success" | "failure" | "error", reason: string | null) => void;
 };
+
+/** Creator 飞行试玩：门与规则来自发布快照，不由 FlightWorld 生成。
+ *  controller 是 SDK 共享规则执行器（与驾驶同一份），这里只负责逐帧喂机位。 */
+export type CreatorFlightRunV1 = Readonly<{
+  controller: Readonly<{
+    fixedStep(position: Readonly<{ x: number; y: number; z: number }>, heading?: number): void;
+    readonly snapshot: Readonly<{ status: "ready" | "running" | "success" | "failure" | "error"; reason: string | null;
+      /** 已触发/总数（共享执行器的计数，来自发布玩法自己声明的槽位）。 */
+      completed?: number; total?: number }>;
+    dispose(): void;
+  }>;
+  /** 发布门心（世界单位）与半径；可见环共享这些位置和尺寸。 */
+  gates?: readonly Readonly<{ x: number; y: number; z: number; radius: number; nx?: number; ny?: number; nz?: number }>[];
+}>;
 
 export type GameSessionSnapshot = {
   controller: GameSnapshot;
@@ -49,12 +68,16 @@ export type GameSessionSnapshot = {
   best: RaceResult | null;
   /** 当前路线身份摘要（无业务标识几何摘要；测试与调试用）。 */
   courseId: string | null;
+  /** Creator 试玩进度（非 Creator 会话为 null）：计数与结局直接来自共享规则执行器。 */
+  creator: { status: "ready" | "running" | "success" | "failure" | "error"; completed: number; total: number; reason: string | null } | null;
   /** 当前路线变体（测试与调试用）。 */
   variant: number;
   /** 声音面板状态（HUD 三控件）。 */
   soundVolume: number;
   sfxEnabled: boolean;
   musicEnabled: boolean;
+  /** 倒计时剩余毫秒。挑战读 RaceMission；Creator 试玩没有任务实例，读同一固定时钟。 */
+  countdownRemainingMs: number | null;
 };
 
 export class GameSession {
@@ -118,9 +141,26 @@ export class GameSession {
 
   /** 练习从这里起飞（点了机坪上的飞机：跑道西端、顺跑道方向）；null = 按世界安全位挑出生点。 */
   private origin: Readonly<{ x: number; y: number; z: number; heading: number }> | null = null;
+  /** 本局载具 profile（VehicleProfileV1；null = legacy 固定翼参数族，逐位不变）。
+   *  经 validated 入口注入（preset 常量，不接任意输入）。 */
+  private vehicle: VehicleProfileV1 | null = null;
+  /** 与 this.vehicle.id 配对的物理参数缓存键：换载具即重建 params（世界在 exit 时已清空）。 */
+  private vehicleId: string | null = null;
 
-  async enter(kind: GameSelection, host: EnterHostState, origin?: Readonly<{ x: number; y: number; z: number; heading: number }>): Promise<{ ok: true } | { ok: false; reason: string }> {
+  /** Creator 试玩会话：非 null 时路线来自发布的门、规则交给共享执行器，
+   *  内置 RaceMission（生成路线 + 计时）不参与判定。 */
+  private creator: CreatorFlightRunV1 | null = null;
+  private creatorFinished = false;
+  /** Creator / 无 RaceMission 的倒计时。挑战仍走 mission.tickCountdown。 */
+  private idleCountdownRemainingMs: number | null = null;
+
+  async enter(kind: GameSelection, host: EnterHostState, origin?: Readonly<{ x: number; y: number; z: number; heading: number }>,
+    vehicle?: VehicleProfileV1, creator?: CreatorFlightRunV1 | null): Promise<{ ok: true } | { ok: false; reason: string }> {
     this.origin = kind.mode === "practice" ? origin ?? null : null;
+    this.vehicle = vehicle ?? null;
+    this.creator = creator ?? null;
+    this.creatorFinished = false;
+    if (this.vehicle?.id !== this.vehicleId) this.params = null;
     const attempt = this.controller.enter(kind, host);
     if (!attempt.ok) return { ok: false, reason: attempt.refusal };
     const runId = this.controller.snapshot.runId;
@@ -199,12 +239,23 @@ export class GameSession {
         solidCompilerVersion: compiled.compilerVersion, staticCoverage: compiled.coverage });
       this.staticWorldRevision = staticContentRevision;
       const diagonal = Math.hypot(layout.urbanBounds.right - layout.urbanBounds.left, layout.urbanBounds.south - layout.urbanBounds.north);
-      this.params = flightParamsFor(diagonal);
+      // 载具参数化点：profile 存在时走 VehicleProfileV1 → FlightParams 推导
+      // （质量/推力/翼面/maxSpeed/扑动参数/包围盒/相机），否则保持 legacy 对角线推导。
+      this.params = this.vehicle ? vehicleFlightParams(this.vehicle) : flightParamsFor(diagonal);
+      this.vehicleId = this.vehicle?.id ?? null;
     }
-    if (kind.mode === "race") {
+    if (this.creator) {
+      // Creator 试玩：环 = 发布的门（世界单位），没有门就不画环；内置任务不挂。
+      this.course = this.creator.gates?.length ? createCreatorGateCourse({ world: this.world!, params: this.params!,
+        citySeed: this.citySeed, physicsVersion: this.vehicle ? VEHICLE_PHYSICS_VERSION : PHYSICS_VERSION, variant: this.variant,
+        staticCollisionIdentity: `creator:${this.staticWorldRevision ?? "legacy"}`
+          + (this.vehicle ? `:vehicle=${this.vehicle.id}` : ""), gates: this.creator.gates }) : null;
+    } else if (kind.mode === "race") {
       if (!this.course) {
-        const course = this.courseFactory({ world: this.world, params: this.params, citySeed: this.citySeed, physicsVersion: PHYSICS_VERSION,
-          variant: this.variant, staticCollisionIdentity: `solid-v${this.world.solidCompilerVersion ?? 0}:${this.world.staticContentRevision ?? "legacy"}` });
+        const course = this.courseFactory({ world: this.world, params: this.params, citySeed: this.citySeed,
+          physicsVersion: this.vehicle ? VEHICLE_PHYSICS_VERSION : PHYSICS_VERSION,
+          variant: this.variant, staticCollisionIdentity: `solid-v${this.world.solidCompilerVersion ?? 0}:${this.world.staticContentRevision ?? "legacy"}`
+            + (this.vehicle ? `:vehicle=${this.vehicle.id}` : "") });
         if (!course) return { ok: false, reason: "no-course", message: "这条航线暂时无法生成安全路线，可重试或先自由练习。" };
         this.course = course;
       }
@@ -227,11 +278,11 @@ export class GameSession {
     }
     if (this.course) this.visuals.setRings(this.course.rings);
     else this.visuals.clearRings();
-    this.mission = this.course ? new RaceMission(this.course, params) : null;
+    this.mission = this.course && !this.creator ? new RaceMission(this.course, params) : null;
     if (!this.camera) {
       const reducedMotion = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
       this.cameraScratch = this.engine.renderCamera.clone();
-      this.camera = new FlightCamera(this.cameraScratch, reducedMotion);
+      this.camera = new FlightCamera(this.cameraScratch, reducedMotion, params.fovDeg ?? 52);
     }
     // 环绕/缩放输入：只在真实 DOM 画布上挂（Worker/OffscreenCanvas 与测试桩没有指针事件）。
     const canvas = this.engine.domCanvas;
@@ -256,6 +307,7 @@ export class GameSession {
     this.lastCountdownSec = null;
     this.resetToSpawn();
     this.controller.prepareDone();
+    this.idleCountdownRemainingMs = this.controller.snapshot.phase === "countdown" && !this.mission ? COUNTDOWN_MS : null;
     if (this.runtime.snapshot.phase === "idle" || this.runtime.snapshot.phase === "error") {
       const lease = this.sceneLease;
       if (!lease?.isCurrent()) return false;
@@ -436,6 +488,7 @@ export class GameSession {
   }
 
   private releaseRunObjects(): void {
+    this.creator?.controller.dispose(); this.creator = null; this.creatorFinished = false;
     this.mission?.abort(); this.input?.detach(); this.input = null;
     this.touchInput = { ...EMPTY_INPUT };
     this.audio.stop(); this.sfx.stop();
@@ -474,12 +527,16 @@ export class GameSession {
       softOutside: this.softOutside,
       collisions: this.collisions,
       mission: this.mission?.snapshot() ?? null,
+      creator: this.creator ? { status: this.creator.controller.snapshot.status,
+        completed: this.creator.controller.snapshot.completed ?? 0, total: this.creator.controller.snapshot.total ?? 0,
+        reason: this.creator.controller.snapshot.reason } : null,
       best: this.course ? this.bestByCourse.get(this.course.courseId) ?? null : null,
       courseId: this.course?.courseId ?? null,
       variant: this.variant,
       soundVolume: this.soundVolume,
       sfxEnabled: this.sfxEnabled,
       musicEnabled: this.musicEnabled,
+      countdownRemainingMs: this.mission?.snapshot().countdownRemainingMs ?? this.idleCountdownRemainingMs,
     };
   }
 
@@ -544,6 +601,17 @@ export class GameSession {
       }
       return true;
     }
+    // Creator flight enters countdown without a RaceMission. Advance the same
+    // fixed clock here; do not step physics or sample gates until racing.
+    if (phase === "countdown" && !this.mission) {
+      const step = stepFixedCountdown(this.idleCountdownRemainingMs ?? COUNTDOWN_MS, dt * 1000);
+      this.idleCountdownRemainingMs = step.remainingMs;
+      if (step.done) {
+        this.controller.countdownDone(); this.sfx.countdownBeep(true); this.emit(true);
+        return false;
+      }
+      return true;
+    }
     if (phase !== "practice" && phase !== "racing") return false;
     this.stepPhysics(input);
     return this.controller.simulating;
@@ -555,6 +623,9 @@ export class GameSession {
     this.renderSim = lerpSim(this.prevSim, this.sim, alpha);
     if (phase === "countdown" && this.mission) {
       const sec = Math.ceil(this.mission.snapshot().countdownRemainingMs / 1000);
+      if (sec !== this.lastCountdownSec) { this.lastCountdownSec = sec; if (sec > 0) this.sfx.countdownBeep(false); }
+    } else if (phase === "countdown" && this.idleCountdownRemainingMs != null) {
+      const sec = Math.ceil(this.idleCountdownRemainingMs / 1000);
       if (sec !== this.lastCountdownSec) { this.lastCountdownSec = sec; if (sec > 0) this.sfx.countdownBeep(false); }
     }
     this.visuals?.update(this.renderSim, dt);
@@ -647,6 +718,27 @@ export class GameSession {
         }
       }
     }
+    if (this.creator && !this.creatorFinished) {
+      // 门触发用的是米制世界的真实航迹（含高度），与驾驶同一条共享触发路径。
+      const controller = this.creator.controller;
+      controller.fixedStep({ x: toMeters(this.sim.x), y: toMeters(this.sim.y), z: toMeters(this.sim.z) }, this.sim.heading);
+      const status = controller.snapshot.status;
+      if (status === "success" || status === "failure" || status === "error") {
+        this.finishCreator(status, controller.snapshot.reason);
+      }
+    }
+  }
+
+  /** Creator 结局：与比赛结算同一条收敛路径（相位/暂停/音效/一次 emit），
+   *  判定本身来自共享规则执行器，这里不重新解释规则。 */
+  private finishCreator(status: "success" | "failure" | "error", reason: string | null): void {
+    if (this.creatorFinished) return;
+    this.creatorFinished = true;
+    this.controller.raceFinished();
+    this.runtime.pause("activity-result");
+    this.sfx.suspend();
+    this.emit(true);
+    this.events.onCreatorOutcome?.(status, reason);
   }
 
   private finishRace(result: RaceResult): void {

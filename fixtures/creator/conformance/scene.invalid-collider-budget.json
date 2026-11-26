@@ -1,0 +1,6950 @@
+{
+  "ruleFamily": "scene",
+  "case": "scene.invalid-collider-budget",
+  "expectTs": "error:scene_collider_budget_exceeded",
+  "rustNote": "阈值一致但执行时机不同：TS 单次 validateSceneDraft 即拒绝第 257 个 collider（scene_collider_budget_exceeded）；Rust MAX_SCENE_COLLIDERS=256 在 apply_scene_operations 层强制（creator_scene_collider_budget_exceeded），validate_scene_object 本身不计数。待 Rust 运行时验证。",
+  "input": {
+    "schemaVersion": 1,
+    "objects": [
+      {
+        "id": "collider-001",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-002",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-003",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-004",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-005",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-006",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-007",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-008",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-009",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-010",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-011",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-012",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-013",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-014",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-015",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-016",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-017",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-018",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-019",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-020",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-021",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-022",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-023",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-024",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-025",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-026",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-027",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-028",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-029",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-030",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-031",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-032",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-033",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-034",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-035",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-036",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-037",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-038",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-039",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-040",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-041",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-042",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-043",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-044",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-045",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-046",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-047",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-048",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-049",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-050",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-051",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-052",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-053",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-054",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-055",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-056",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-057",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-058",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-059",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-060",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-061",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-062",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-063",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-064",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-065",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-066",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-067",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-068",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-069",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-070",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-071",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-072",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-073",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-074",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-075",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-076",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-077",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-078",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-079",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-080",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-081",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-082",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-083",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-084",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-085",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-086",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-087",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-088",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-089",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-090",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-091",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-092",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-093",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-094",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-095",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-096",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-097",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-098",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-099",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-100",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-101",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-102",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-103",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-104",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-105",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-106",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-107",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-108",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-109",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-110",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-111",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-112",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-113",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-114",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-115",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-116",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-117",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-118",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-119",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-120",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-121",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-122",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-123",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-124",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-125",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-126",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-127",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-128",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-129",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-130",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-131",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-132",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-133",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-134",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-135",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-136",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-137",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-138",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-139",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-140",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-141",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-142",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-143",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-144",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-145",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-146",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-147",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-148",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-149",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-150",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-151",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-152",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-153",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-154",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-155",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-156",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-157",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-158",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-159",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-160",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-161",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-162",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-163",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-164",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-165",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-166",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-167",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-168",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-169",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-170",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-171",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-172",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-173",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-174",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-175",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-176",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-177",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-178",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-179",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-180",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-181",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-182",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-183",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-184",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-185",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-186",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-187",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-188",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-189",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-190",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-191",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-192",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-193",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-194",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-195",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-196",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-197",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-198",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-199",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-200",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-201",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-202",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-203",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-204",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-205",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-206",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-207",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-208",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-209",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-210",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-211",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-212",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-213",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-214",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-215",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-216",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-217",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-218",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-219",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-220",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-221",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-222",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-223",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-224",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-225",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-226",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-227",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-228",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-229",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-230",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-231",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-232",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-233",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-234",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-235",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-236",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-237",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-238",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-239",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-240",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-241",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-242",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-243",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-244",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-245",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-246",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-247",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-248",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-249",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-250",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-251",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-252",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-253",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-254",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-255",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-256",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "collider-257",
+        "kind": "collider",
+        "shape": "box",
+        "sizeMeters": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      }
+    ]
+  }
+}

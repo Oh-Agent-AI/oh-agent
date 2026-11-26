@@ -2,6 +2,10 @@
 
 版本：1.2 · 日期：2026-10-31 · 状态：P0 数据门槛通过；P1 暂不实施，场景首帧作为独立优化跟踪。验收证据见 `CITY_OVERVIEW_LOADING_PERFORMANCE_ACCEPTANCE_20261031.md`。
 
+> 2026-11-15 更新：实际落盘事件名不是本文写的 `city_*`，而是 `plugin_performance`
+> 目标下的 `metric=scene|data-load|frame|stall|quality`。运行期帧日志（p50/p95/
+> 卡顿/画质切换/load_id）见 [CITY_RUNTIME_PERFORMANCE_LOGGING_2026_11_15.md](CITY_RUNTIME_PERFORMANCE_LOGGING_2026_11_15.md)。
+
 ## 1. 背景与目标
 
 用户进入 City 后，界面长时间停留在“正在读取全窗口统计…”。本规格针对 **数据读取阶段**，不把后续的 City 场景规划、资源加载或渲染耗时算作同一问题。后者需单独计时和优化。

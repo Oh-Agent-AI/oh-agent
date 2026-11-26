@@ -1557,10 +1557,14 @@ mod tests {
     }
 
     fn seed() -> (std::path::PathBuf, AuthorityDb, String) {
+        // 同上：nanos + pid 在并行测试里仍可能撞名（同刻两次调用），加进程内序号兜底。
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(1);
         let home = std::env::temp_dir().join(format!(
-            "av-city-bldg-{}-{}",
+            "av-city-bldg-{}-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&home).unwrap();
         let db = AuthorityDb::open(&default_authority_path(&home), 1_700_000_000_000).unwrap();

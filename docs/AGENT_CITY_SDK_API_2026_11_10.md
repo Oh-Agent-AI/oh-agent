@@ -257,7 +257,7 @@ type RuleEventV1 =
 
 type PlayerRuleInputV1 = Extract<RuleEventV1, { type: "zone.entered" | "item.collected" }>;
 type RuleGuardV1 =
-  | { op: "counter.eq"; counter: string; value: number }
+  | { op: "counter.eq"; counter: string; value: number | { parameter: string } }
   | { op: "counter.eqEventIndex"; counter: string };
 type RuleActionV1 =
   | { op: "counter.add"; counter: string; amount: number }
@@ -266,7 +266,7 @@ type RuleActionV1 =
   | { op: "run.finish"; outcome: "success" | "failure" };
 
 interface RuleGraphV1 {
-  counters: Record<string, { initial: number; max: number }>;
+  counters: Record<string, { initial: number; max: number | { parameter: string } }>;
   nodes: Array<{
     id: string;
     on: { type: "run.started" }
@@ -293,6 +293,8 @@ interface RuleRunV1 {
 declare function runHeadless(input: HeadlessRunInputV1): Result<PlaytestEvidenceV1>;
 ```
 
+`{ parameter }` 引用在运行时按「`mount.parameterOverrides` → `pack.integerParameters` 默认值」解析，计时时长、计数器上限与 `counter.eq` 阈值使用同一解析序。以参数表达的**完成阈值**与槽位绑定数耦合：`validateMount` 要求该参数等于此槽位绑定的锚点数（显式 override 必须相等；未给出时 pack 默认值必须相等），否则以 `parameter_binding_mismatch` 拒绝——这是为了堵住「绑 5 个门、过 3 个门就结束」的静默截断。绑定界面应把阈值写成绑定数（Studio 本地绑定由 `completionThresholdOverrides` 自动填充，经 MCP 绑定需显式传 `parameterOverrides`）。
+
 由可信运行器生成开始与计时事件，外部 trace 只提交模拟区域或拾取输入。规则步使用连续整数 tick，从 0 开始，输入 tick 必须等于当前步。首步先发开始事件，其余步先处理到期计时，同一 tick 的计时按 ID 排序，再按输入顺序处理区域和拾取事件。同一个事件按规则声明顺序匹配，守卫全部满足时依序执行动作，前一条的状态更新对后一条可见，进入终态立即停止。编译时拒绝未知参数、计数器、槽位和不适用的守卫。计数溢出作为运行错误，计时只安排未来 tick，重复启动同 ID 计时会替换原期限。原语、图大小、步数、状态和运行时长均使用版本化预算。预算耗尽返回规则节点和事件序号。
 
 竞速模板示例定义如下。三个检查点的实际位置由挂载提供。
@@ -300,7 +302,7 @@ declare function runHeadless(input: HeadlessRunInputV1): Result<PlaytestEvidence
 ```text
 run.started             → 启动限时计时（next 初始为 0）
 zone.entered(points[i]) → 若 i == next，则 next += 1
-                         若 next == 3，则结算成功
+                         若 next == gateTarget（默认 3），则结算成功
 timer.expired(limit)    → 若尚未结算，则结算超时
 ```
 
@@ -347,7 +349,7 @@ City 当前只运行带 `drive` 能力的 `zone` 槽位，事件源限于 `run.s
 
 后续完整编辑操作还需覆盖 `rule.upsert`、`rule.remove`、`mount.bind`、`mount.remove` 和 `skin.select`。预览绑定调用者、项目和基线。宿主事务持久化成功的幂等结果，原请求在超时后用相同 operationId 重试或重新授权查询。冲突返回当前 revision。`operation_status` 的未找到只表示没有可见的已提交记录。可视试玩由玩家在 Studio 发起，切换到 City 时锁定版本并交给玩家控制。
 
-诊断码应稳定，首轮至少覆盖 `schema_unsupported`、`missing_dependency`、`anchor_not_found`、`anchor_capability_missing`、`anchor_unreachable`、`revision_conflict`、`preview_expired`、`permission_denied` 和 `rule_budget_exceeded`。错误文本面向玩家，Agent 用 code、path 和对象 ID 决定下一步。
+诊断码应稳定，首轮至少覆盖 `schema_unsupported`、`missing_dependency`、`anchor_not_found`、`anchor_capability_missing`、`anchor_unreachable`、`parameter_binding_mismatch`、`revision_conflict`、`preview_expired`、`permission_denied` 和 `rule_budget_exceeded`。错误文本面向玩家，Agent 用 code、path 和对象 ID 决定下一步。
 
 ## 6. 第一轮验收顺序
 

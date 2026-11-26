@@ -1,0 +1,102 @@
+{
+  "ruleFamily": "game",
+  "case": "game.invalid-node-missing-actions",
+  "expectTs": "error:rule_budget_exceeded",
+  "rustNote": "两侧都拒绝但分类不同：TS 因 actions 非数组走 rule_budget_exceeded；Rust actions 缺失 → creator_game_invalid（结构非法）。已知诊断分类差异。待 Rust 运行时验证。",
+  "input": {
+    "schemaVersion": 1,
+    "id": "relic-walk",
+    "rulesVersion": 1,
+    "slots": {
+      "relics": {
+        "kind": "object",
+        "min": 1,
+        "max": 6,
+        "requires": [
+          "walk"
+        ]
+      }
+    },
+    "integerParameters": {
+      "pace": {
+        "min": 1,
+        "max": 120,
+        "default": 60
+      }
+    },
+    "rules": {
+      "counters": {
+        "found": {
+          "initial": 0,
+          "max": 99
+        }
+      },
+      "nodes": [
+        {
+          "id": "on-start",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "timer.start",
+              "timerId": "round",
+              "durationTicks": 600
+            },
+            {
+              "op": "hud.hint",
+              "text": "Collect the relic before the round timer ends."
+            }
+          ]
+        },
+        {
+          "id": "on-relic",
+          "on": {
+            "type": "item.collected",
+            "slot": "relics"
+          },
+          "when": [
+            {
+              "op": "counter.eq",
+              "counter": "found",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "id": "on-timeout",
+          "on": {
+            "type": "timer.expired",
+            "timerId": "round"
+          },
+          "actions": [
+            {
+              "op": "run.finish",
+              "outcome": "failure"
+            }
+          ]
+        },
+        {
+          "id": "on-success",
+          "on": {
+            "type": "item.collected",
+            "slot": "relics"
+          },
+          "when": [
+            {
+              "op": "counter.eq",
+              "counter": "found",
+              "value": 1
+            }
+          ],
+          "actions": [
+            {
+              "op": "run.finish",
+              "outcome": "success"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

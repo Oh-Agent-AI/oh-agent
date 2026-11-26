@@ -2,9 +2,9 @@ import { sessionCostLabel } from "./data/sessionCostLabel";
 import { playableKind } from "./engine/render/playableVehicles";
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { CityModel } from "./cityModel";
-import { readCitySessionDetail, stableAssetRefsForProjection, type CityProjectionV1 } from "./data/provider";
+import { readCitySessionDetail, reportCityFrame, reportCityQuality, reportCityStall, stableAssetRefsForProjection, type CityProjectionV1 } from "./data/provider";
 import { citySeed, randomSeed } from "./data/seed";
-import type { CityEngine, EngineStats } from "./engine/CityEngine";
+import type { CityEngine, EngineFrameStall, EngineFrameStats, EngineQualityChange, EngineStats } from "./engine/CityEngine";
 import type { CityTheme } from "./engine/cityTheme";
 import type { CinematicCard, CinematicCut, CinematicPlan } from "./engine/cityCinematic";
 import { prepareCityWorldLayout, type BackdropMode } from "./engine/cityLayout";
@@ -29,6 +29,7 @@ import { CITY_DATA_PLACES, cityDataPlaceForDecor, type CityDataPlaceId } from ".
 import { gameText } from "./game/gameCopy";
 import { prewarmAudioContext } from "./game/GameSfx";
 import type { useCityGame } from "./game/useCityGame";
+import { CITY_SKIN_PACK_IDS_V1, citySkinPackForTheme } from "@oh-agent/city-sdk";
 
 declare const __CITY_GAME_UAT__: boolean;
 
@@ -48,7 +49,7 @@ function download(blob: Blob, name: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
-export function useCityExperience(engine: RefObject<CityEngine | null>, projection: CityProjectionV1 | null, worldProfile: CityWorldProfileV1) {
+export function useCityExperience(engine: RefObject<CityEngine | null>, projection: CityProjectionV1 | null, worldProfile: CityWorldProfileV1, playtestSeed?: number) {
   const modelRef = useRef<CityModel | null>(null);
   const [model, setModel] = useState<CityModel | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
@@ -101,10 +102,10 @@ export function useCityExperience(engine: RefObject<CityEngine | null>, projecti
     let active = true;
     void (async () => {
       try {
-        const saved = await citySeed("read");
-        const value = saved ?? randomSeed();
+        const saved = playtestSeed === undefined ? await citySeed("read") : null;
+        const value = playtestSeed ?? saved ?? randomSeed();
         if (!active) return;
-        if (saved === null) await citySeed("write", value);
+        if (playtestSeed === undefined && saved === null) await citySeed("write", value);
         if (!active) return;
         engine.current?.setBackdrop(backdrop); // 首次布局前就用已存档位，避免先按 auto 排一遍再换
         engine.current?.setSeed(value); setSeed(value); setSeedDraft(String(value));
@@ -146,6 +147,9 @@ export function useCityExperience(engine: RefObject<CityEngine | null>, projecti
       tooltip.style.transform = `translate(${Math.min(x + 14, Math.max(8, window.innerWidth - 270))}px, ${Math.min(y + 14, window.innerHeight - 60)}px)`;
     },
     onStats(value: EngineStats) { setStats(value); },
+    onFrameStats(value: EngineFrameStats) { reportCityFrame(value); },
+    onStall(value: EngineFrameStall) { reportCityStall(value); },
+    onQualityChange(value: EngineQualityChange) { reportCityQuality(value); },
     onTimeCursor(ms: number, live: boolean) {
       const now = performance.now();
       if (!live && now - lastCursor.current < 180) return;
@@ -196,6 +200,16 @@ export function useCityExperience(engine: RefObject<CityEngine | null>, projecti
       if (seedPreparation.current === preparation) seedPreparation.current = null;
       if (mounted.current) setSeedBusy(false);
     }
+  };
+  /** Loads an explicit seed without persisting it. Used only for a City-scoped
+   * Creator playtest: the release's city revision is temporary and the player's
+   * saved seed must be restored when the run ends. */
+  const loadTransientSeed = (value: number) => {
+    seedPreparation.current?.abort();
+    seedPreparation.current = null;
+    setSeedBusy(false);
+    engine.current?.setSeed(value);
+    setSeed(value); setSeedDraft(String(value)); clearSelection();
   };
   const reseed = () => {
     if (!confirmSeed) { setConfirmSeed(true); seedTimer.current = window.setTimeout(() => setConfirmSeed(false), 4000); return; }
@@ -268,7 +282,7 @@ export function useCityExperience(engine: RefObject<CityEngine | null>, projecti
   };
   return { modelRef, model, setModel, tooltipRef, callbacks, selected, setSelected, clearSelection, orbitLocked, releaseOrbitLock: () => engine.current?.releaseOrbitLock(), details, setDetails, options, setOptions, catalog, setCatalog,
     seed, seedDraft, setSeedDraft, seedBusy, confirmSeed, applySeed, reseed, cursor, playing, speed, setSpeed,
-    cut, setCut, backdrop, setBackdrop, worldProfile, skinId: worldProfile.visuals.themeId === "desert" ? "desert-evening" : "miami-vice",
+    cut, setCut, backdrop, setBackdrop, loadTransientSeed, worldProfile, skinId: citySkinPackForTheme(worldProfile.visuals.themeId) ?? CITY_SKIN_PACK_IDS_V1[0],
     changeWorldProfile: (profileId: string) => { if (writeCityWorldProfilePreference(profileId)) window.location.reload(); },
     changeSkin: (skinId: string) => { if (writeCitySkinPreference(skinId)) window.location.reload(); }, film, photoBusy, busy, error, setError, stats, card, progress, seek, replay, live, previewRef,
     describe, photo, exportFilm, refreshSelection, openHostSession, projection,

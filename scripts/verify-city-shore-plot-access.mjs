@@ -30,7 +30,8 @@ for (const turns of [0, 1, 2, 3]) {
   addNetworkEdge(network, a, b, true, false, true);
   network.version = 17;
   const owner = { id: "fixed-plot", kind: "renamed-shore-model", x: 0, z: 0, radius: 37, yaw: turns };
-  const world = { network, geo: { height: () => 1.2, buildable: () => true, terrain: { slope: () => 0 } },
+  const world = { network, geo: { height: () => 1.2, elevation: () => 1.2, buildable: () => true,
+    terrain: { slope: () => 0 }, landform: { elevation: () => 1.2, slope: () => 0, isBuildable: () => true } },
     inRiver: () => false, reservations: () => [owner] };
   const spec = { ...specByKind("harbor"), kind: owner.kind }, anchor = `${a.x}:${a.z}`;
   const before = snapshot(world, owner), result = proposeShorePlotAccess(world, owner, spec, anchor);
@@ -62,7 +63,8 @@ for (const turns of [0, 1, 2, 3]) {
     addNetworkEdge(network, { x, z: -100 }, { x, z: 100 }, true);
     if (i) addNetworkEdge(network, { x: x - 10, z: -100 }, { x, z: -100 }, true);
   }
-  const world = { network, geo: { height: () => 1.2, buildable: () => true, terrain: { slope: () => 0 } },
+  const world = { network, geo: { height: () => 1.2, elevation: () => 1.2, buildable: () => true,
+    terrain: { slope: () => 0 }, landform: { elevation: () => 1.2, slope: () => 0, isBuildable: () => true } },
     inRiver: () => false, reservations: () => [owner] };
   const before = snapshot(world, owner);
   const denied = proposeShorePlotAccess(world, owner, { ...specByKind("harbor"), kind: owner.kind }, "100:-100", () => "deny all proposals");

@@ -55,7 +55,7 @@ function stableRefPage(offset: number, rows: TypedSessionResponseV4["sessions"],
   return {
     schema: "harness-sessions:v4", dataRevision: revision, harnessId: null, windowDays: 30,
     window: { fromMs: toMs - 30 * 86_400_000, toMs }, fields: [...CITY_TYPED_STABLE_REF_FIELDS],
-    pagination: { offset, limit: 500 },
+    pagination: { offset, limit: 50 },
     coverage: { total, returned: rows.length, truncated: total > offset + rows.length },
     sessions: rows,
   };
@@ -83,7 +83,7 @@ function page(offset: number, rows: TypedSessionRowV3[], total: number, revision
   return {
     schema: "harness-sessions:v3", dataRevision: revision, harnessId: null, windowDays: 30,
     window: { fromMs: toMs - 30 * 86_400_000, toMs },
-    pagination: { offset, limit: 500 },
+    pagination: { offset, limit: 50 },
     coverage: { total, returned: rows.length, truncated: total > offset + rows.length },
     sessions: rows,
   };

@@ -1,0 +1,214 @@
+{
+  "ruleFamily": "mount",
+  "case": "mount.valid-resolved-route",
+  "expectTs": "ok",
+  "rustNote": "Rust 同构输入为 project document（cityLayout 快照包裹同一 layout + document.game）+ mount；静态阅读同样接受：引用 id 匹配、mount.layout.digest == worldRevision（Rust 的 digest 语义）、按 capability BFS 可达、槽位基数/参数范围一致。注意两侧 digest 检查形态不同：TS 用 resolvedRefs 精确匹配内容版本，Rust 把 layout digest 绑定到快照 worldRevision 且不比对 game digest——本样例按各自规则均通过。待 Rust 运行时验证。",
+  "input": {
+    "layout": {
+      "schemaVersion": 1,
+      "id": "loop-layout",
+      "coordinateSystem": "city-local-m-v1",
+      "anchors": [
+        {
+          "id": "spawn-a",
+          "kind": "spawn",
+          "capabilities": [
+            "drive",
+            "walk"
+          ],
+          "geometryRef": "geom-spawn-a"
+        },
+        {
+          "id": "zone-b",
+          "kind": "zone",
+          "capabilities": [
+            "drive",
+            "walk"
+          ],
+          "geometryRef": "geom-zone-b"
+        },
+        {
+          "id": "route-c",
+          "kind": "route",
+          "capabilities": [
+            "drive"
+          ],
+          "geometryRef": "geom-route-c"
+        },
+        {
+          "id": "pad-d",
+          "kind": "object",
+          "capabilities": [
+            "drive"
+          ],
+          "geometryRef": "geom-pad-d"
+        }
+      ],
+      "links": [
+        {
+          "id": "link-1",
+          "fromAnchorId": "spawn-a",
+          "toAnchorId": "zone-b",
+          "capabilities": [
+            "drive",
+            "walk"
+          ]
+        },
+        {
+          "id": "link-2",
+          "fromAnchorId": "zone-b",
+          "toAnchorId": "route-c",
+          "capabilities": [
+            "drive"
+          ]
+        },
+        {
+          "id": "link-3",
+          "fromAnchorId": "spawn-a",
+          "toAnchorId": "pad-d",
+          "capabilities": [
+            "drive"
+          ]
+        }
+      ]
+    },
+    "game": {
+      "schemaVersion": 1,
+      "id": "loop-sprint",
+      "rulesVersion": 1,
+      "slots": {
+        "gates": {
+          "kind": "zone",
+          "min": 1,
+          "max": 2,
+          "requires": [
+            "drive"
+          ]
+        },
+        "waypoints": {
+          "kind": "route",
+          "min": 1,
+          "max": 4
+        }
+      },
+      "integerParameters": {
+        "laps": {
+          "min": 1,
+          "max": 3,
+          "default": 2
+        }
+      },
+      "rules": {
+        "counters": {
+          "done": {
+            "initial": 0,
+            "max": 99
+          }
+        },
+        "nodes": [
+          {
+            "id": "on-start",
+            "on": {
+              "type": "run.started"
+            },
+            "actions": [
+              {
+                "op": "timer.start",
+                "timerId": "countdown",
+                "durationTicks": {
+                  "parameter": "laps"
+                }
+              },
+              {
+                "op": "hud.hint",
+                "text": "Reach the gate then finish the loop."
+              }
+            ]
+          },
+          {
+            "id": "on-gate",
+            "on": {
+              "type": "zone.entered",
+              "slot": "gates"
+            },
+            "when": [
+              {
+                "op": "counter.eqEventIndex",
+                "counter": "done"
+              }
+            ],
+            "actions": [
+              {
+                "op": "counter.add",
+                "counter": "done",
+                "amount": 1
+              }
+            ]
+          },
+          {
+            "id": "on-lap",
+            "on": {
+              "type": "zone.entered",
+              "slot": "gates"
+            },
+            "when": [
+              {
+                "op": "counter.eq",
+                "counter": "done",
+                "value": 2
+              }
+            ],
+            "actions": [
+              {
+                "op": "run.finish",
+                "outcome": "success"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "mount": {
+      "schemaVersion": 1,
+      "mountId": "loop-mount-01",
+      "layout": {
+        "kind": "city-layout",
+        "id": "loop-layout",
+        "version": "1.0.0",
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "game": {
+        "kind": "city-minigame",
+        "id": "loop-sprint",
+        "version": "1.0.0",
+        "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "entryAnchorId": "spawn-a",
+      "bindings": {
+        "gates": [
+          "zone-b"
+        ],
+        "waypoints": [
+          "route-c"
+        ]
+      },
+      "parameterOverrides": {
+        "laps": 2
+      }
+    },
+    "resolvedRefs": {
+      "layout": {
+        "kind": "city-layout",
+        "id": "loop-layout",
+        "version": "1.0.0",
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "game": {
+        "kind": "city-minigame",
+        "id": "loop-sprint",
+        "version": "1.0.0",
+        "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    }
+  }
+}

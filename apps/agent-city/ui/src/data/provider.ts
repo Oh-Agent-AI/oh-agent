@@ -18,6 +18,7 @@ import {
   type CityTypedSessionDetail,
 } from "./typedCitySessionAdapter";
 import { readLegacyCityAssetCrosswalk, readLegacyCityStoreSnapshot } from "./cityLegacyStore";
+import { cityProjectionDelay, cityProjectionErrorCode, retryCityProjection } from "./projectionRetry";
 import { importLegacyBuildingOverride, listCityBuildingObjectsByStableRef, readCityBuildingObject,
   type CityBuildingObjectClient, type CityBuildingObjectSnapshot, type CityBuildingStoredObject } from "./cityBuildingObjects";
 
@@ -35,6 +36,28 @@ type WindowDays = 7 | 30 | 90 | 366;
 
 function monotonicNow(): number {
   return typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+}
+
+/** 一次 City 加载的短生命周期关联号。只用于把 data-load / scene / frame 串起来，
+ *  不含 session、路径或插件实例身份。宿主维度值只允许 [A-Za-z0-9._:-]，故用 base36。 */
+let activeCityLoadId = "";
+let cityLoadSequence = 0;
+function beginCityLoad(): void {
+  cityLoadSequence += 1;
+  activeCityLoadId = `L${Date.now().toString(36)}${cityLoadSequence.toString(36)}`;
+}
+
+/** 宿主 `performance_fields` 只接受小写维度键和有限值；所有上报都经这里收口。 */
+function sendPerformance(metric: string, elapsedMs: number,
+  dimensions: Record<string, string | number | boolean>,
+  outcome: "success" | "partial" | "failed" | "cancelled" = "success"): Promise<boolean> {
+  if (!embedded() || !window.__AV_PLUGIN_INSTANCE__) return Promise.resolve(false);
+  return invokeHost("plugin_message", { message: {
+    version: 1, instanceId: window.__AV_PLUGIN_INSTANCE__, type: "plugin.performance",
+    metric, outcome,
+    elapsedMs: Math.max(0, Math.min(86_400_000, Math.round(elapsedMs))),
+    dimensions,
+  } }).then(() => true).catch(() => false);
 }
 
 export interface CityDataProvider {
@@ -731,50 +754,106 @@ async function readTypedProjectionWithLegacyMigration(windowDays: 7 | 30 | 90 | 
   return projection;
 }
 
+/** 上报一个场景阶段。`elapsedMs` 是本阶段耗时；`sinceLoadMs` 是从本次加载开始
+ *  的累计时间，两者一起才能在日志里既看阶段占比又看整体时间线。
+ *  返回是否真正送达宿主——只有成功才允许调用方记为「已上报」。
+ *  注意维度键必须小写：宿主 `valid_performance_metric` 拒绝大写，
+ *  历史 `windowDays` 就是 scene 永远进不了 app.log 的原因。 */
 export function reportCityScene(stage: "model" | "planning" | "mounting" | "rendering" | "first_frame",
-  elapsedMs: number, windowDays: WindowDays): void {
-  if (!embedded() || !window.__AV_PLUGIN_INSTANCE__) return;
-  void invokeHost("plugin_message", { message: {
-    version: 1, instanceId: window.__AV_PLUGIN_INSTANCE__, type: "plugin.performance",
-    metric: "scene", outcome: "success", elapsedMs: Math.max(0, Math.round(elapsedMs)),
-    dimensions: { stage, windowDays },
-  } }).catch(() => {});
+  elapsedMs: number, windowDays: WindowDays, sinceLoadMs?: number): Promise<boolean> {
+  return sendPerformance("scene", elapsedMs, {
+    stage, window_days: windowDays,
+    ...(activeCityLoadId ? { load_id: activeCityLoadId } : {}),
+    ...(typeof sinceLoadMs === "number" ? { since_load_ms: Math.max(0, Math.round(sinceLoadMs)) } : {}),
+  });
+}
+
+/** A failed WebGL context or layout is a scene metric, not a silent overlay.
+ * `reason` is the stable code from `classifyCitySceneFailure`. */
+export function reportCitySceneFailure(failure: { surface: "webgl" | "layout"; code: string }, windowDays: WindowDays): void {
+  const reason = failure.code.replace(/[^a-z0-9_.:-]/gi, "").slice(0, 40);
+  if (!reason) return;
+  void sendPerformance("scene", 0, {
+    stage: failure.surface === "webgl" ? "rendering" : "planning",
+    window_days: windowDays,
+    reason,
+    ...(activeCityLoadId ? { load_id: activeCityLoadId } : {}),
+  }, "failed");
 }
 
 function reportCityLoad(outcome: "success" | "partial" | "cancelled" | "failed",
   started: number, windowDays: WindowDays, attempts: number, revisionRetries: number,
   fallback: "none", pageReturned?: number): void {
-  if (!embedded() || !window.__AV_PLUGIN_INSTANCE__) return;
-  void invokeHost("plugin_message", { message: {
-    version: 1, instanceId: window.__AV_PLUGIN_INSTANCE__, type: "plugin.performance",
-    metric: "data-load", outcome, elapsedMs: Math.max(0, Math.round(monotonicNow() - started)),
-    dimensions: { attempt_count: attempts, revision_retry_count: revisionRetries, fallback, window_days: windowDays,
-      ...(typeof pageReturned === "number" ? { page_returned: pageReturned } : {}) },
-  } }).catch(() => {});
+  void sendPerformance("data-load", monotonicNow() - started, {
+    attempt_count: attempts, revision_retry_count: revisionRetries, fallback, window_days: windowDays,
+    ...(activeCityLoadId ? { load_id: activeCityLoadId } : {}),
+    ...(typeof pageReturned === "number" ? { page_returned: pageReturned } : {}),
+  }, outcome);
+}
+
+/** 运行期 15s 聚合帧统计。p95 作为 elapsed_ms，其余进维度。 */
+export function reportCityFrame(stats: { fps: number; p50Ms: number; p95Ms: number; maxMs: number;
+  drawCalls: number; triangles: number; quality: number; idle: boolean; dpr: number;
+  geometries: number; textures: number }): void {
+  void sendPerformance("frame", stats.p95Ms, {
+    fps: stats.fps, p50: stats.p50Ms, p95: stats.p95Ms, max: stats.maxMs,
+    draw_calls: stats.drawCalls, triangles: stats.triangles, quality: stats.quality,
+    idle: stats.idle, dpr: Math.round(stats.dpr * 100),
+    geometries: stats.geometries, textures: stats.textures,
+    ...(activeCityLoadId ? { load_id: activeCityLoadId } : {}),
+  });
+}
+
+/** 单帧 >100ms 的卡顿。phase 让日志能区分阴影重建、拾取、回放和普通渲染。 */
+export function reportCityStall(stall: { ms: number; phase: string; quality: number;
+  activity: string; pointerMoved: boolean }): void {
+  void sendPerformance("stall", stall.ms, {
+    phase: stall.phase, quality: stall.quality, activity: stall.activity,
+    pointer: stall.pointerMoved,
+    ...(activeCityLoadId ? { load_id: activeCityLoadId } : {}),
+  });
+}
+
+/** 自动/手动画质切换；capture（导出/拍照的临时档位）不进日志。 */
+export function reportCityQuality(change: { from: number; to: number; reason: string }): void {
+  if (change.reason === "capture") return;
+  void sendPerformance("quality", 0, {
+    from: change.from, to: change.to, reason: change.reason,
+    ...(activeCityLoadId ? { load_id: activeCityLoadId } : {}),
+  });
 }
 
 export const tauriCityDataProvider: CityDataProvider = {
   async getProjection({ windowDays, signal, onStage, onPartial }) {
     const standalone = !window.__AV_PLUGIN_INSTANCE__;
     if (standalone && new URLSearchParams(location.search).get("demo") === "1") return completeFixture(demoCityProjection(windowDays));
+    // 浏览器预览（ui-dev 工作台 iframe）：有插件实例但没有原生宿主，typed 链与
+    // legacy 桥都无法满足。按数据政策走合成夹具（界面如实标注「合成 fixture」），
+    // 与独立页同一条路径，绝不把预览请求伪装成本机数据。
+    if (!standalone && window.parent !== window && !(window as Window & { __TAURI__?: { core?: { invoke?: unknown } } }).__TAURI__?.core?.invoke) {
+      return completeFixture(fixtureProjection(windowDays));
+    }
     if (standalone || window.__CITY_ISOLATION_FIXTURE__) return completeFixture(fixtureProjection(windowDays));
+    beginCityLoad();
     const started = monotonicNow();
+    let attempts = 0, revisionRetries = 0;
     try {
-      const projection = await readTypedProjectionWithLegacyMigration(windowDays, signal, onStage);
+      const projection = await retryCityProjection(() => readTypedProjectionWithLegacyMigration(windowDays, signal, onStage), {
+        signal, delay: cityProjectionDelay, onAttempt: (count, code) => { attempts = count; if (code === "revision_changed") revisionRetries++; },
+      });
       if (signal?.aborted) throw new Error("city_request_cancelled");
       onPartial?.(projection);
-      reportCityLoad("success", started, windowDays, 1, 0, "none", projection.coverage.returned);
+      reportCityLoad("success", started, windowDays, attempts, revisionRetries, "none", projection.coverage.returned);
       return projection;
     } catch (error) {
       if (signal?.aborted || (error instanceof Error && error.message === "city_request_cancelled")) {
-        reportCityLoad("cancelled", started, windowDays, 1, 0, "none");
+        reportCityLoad("cancelled", started, windowDays, attempts, revisionRetries, "none");
       } else {
-        const reason = error instanceof Error && /^[a-z0-9_:-]{1,80}$/i.test(error.message)
-          ? error.message : "typed_city_projection_unavailable";
+        const reason = cityProjectionErrorCode(error);
         (window as Window & { __CITY_TYPED_SESSION_ROLLOUT__?: unknown }).__CITY_TYPED_SESSION_ROLLOUT__ = {
           source: "typed", status: "unavailable", reason,
         };
-        reportCityLoad("failed", started, windowDays, 1, 0, "none");
+        reportCityLoad("failed", started, windowDays, attempts, revisionRetries, "none");
       }
       throw error;
     }

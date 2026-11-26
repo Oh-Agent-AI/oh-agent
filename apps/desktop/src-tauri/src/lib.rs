@@ -11,9 +11,43 @@ mod budget_alerts;
 // Claude Pro 的额度窗口提醒：与预算提醒共用投递账本，但键按窗口取。
 mod quota_alerts;
 mod plugin_host;
+mod plugin_webview_layout;
 mod plugin_projections;
 mod plugin_state;
 mod creator_projects;
+/// 真机/本地验收走查的 City face 外部入口（本地进程限定）：玩家面方法经与
+/// City UI 相同的 dispatch_city_runtime 管线。MCP/邮箱面不暴露此入口。
+pub use creator_projects::dispatch_city_runtime;
+mod embedded_city_sdk;
+mod creator_cities;
+mod creator_city_lifecycle;
+mod creator_assets;
+mod creator_city_patch;
+mod creator_city_host;
+mod city_runtime;
+mod city_story_playtest;
+mod city_scheduler;
+mod city_game_install;
+mod code_preview_window;
+// 宿主侧规则复算器（City SDK V3 S-6b / V3-16）：镜像 city-sdk runtime.ts 子集，
+// 供 creator_playtest 的 finish 路径把结算证据升级为 host-verified。
+mod rule_replay;
+mod creator_playtest;
+mod creator_store;
+mod story_store;
+mod story_registry;
+// Actor Intent 管线（RFC V3 §3.2 统一执行链 + §12.2 公共仲裁，S-5/PR-5）：
+// Intent → 校验 → 租约 → CAS 提交 → 信封 → 租约闭环。dispatch 接线由主线集成。
+mod actor_intent;
+mod actor_adapter;
+mod actor_turn;
+mod story_actor_worker;
+mod narrative_engine;
+pub mod creator_content_v2;
+mod creator_content_install;
+mod creator_experience;
+mod creator_code_game;
+mod creator_source_export;
 mod typed_data;
 mod typed_objects;
 // Retained only as a test baseline for the TS City projection migration.
@@ -5797,6 +5831,15 @@ fn capture_workbench_screenshot(app: AppHandle) -> Result<(), String> {
     }
 }
 
+fn start_code_game_preview_tick(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let main = app.clone();
+        let now = creator_store::now_ms();
+        let _ = app.run_on_main_thread(move || code_preview_window::open_pending(&main, now));
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let context = tauri::generate_context!();
@@ -5838,6 +5881,7 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let WindowEvent::Destroyed = event {
                 agent_vitals_runtime::logging::log_warn("workbench", &format!("window destroyed: {}", window.label()));
+                code_preview_window::close_for_window(window.label());
             }
             // 工作台 × 按钮 → 隐藏不销毁。config-created 窗口被 × 关掉会 destroy，
             // 之后 reopen 是 no-op（get_webview_window 返回 None）；hide 保状态——
@@ -6007,6 +6051,8 @@ pub fn run() {
             clear_focus_target,
             focus_budget_from_notification,
             capture_workbench_screenshot,
+            creator_code_game::code_game_preview_state,
+            code_preview_window::code_game_preview_request,
             ]);
             move |invoke: tauri::ipc::Invoke| {
                 // The official fixture plugin must not inherit authority/log APIs.
@@ -6020,10 +6066,17 @@ pub fn run() {
         })
         .setup(|app| {
             let _ = BUNDLED_RESOURCE_DIR.set(app.path().resource_dir()?);
+            std::env::set_var("AGENT_VITALS_CODE_GAME_HOME", app.path().resource_dir()?.join("code-game"));
             if let Err(error) = agent_vitals_runtime::statistics_timezone::apply(
                 &overview::data_home(),
             ) {
                 agent_vitals_runtime::logging::log_warn("timezone", &format!("unavailable: {error}"));
+            }
+            // Creator 存储启动自检：失败只记稳定码（不写路径），让“所有 Creator 工具都报
+            // storage unavailable”在日志里可区分是权限/锁定/损坏/迁移。
+            let creator_health = crate::creator_store::health(&overview::data_home());
+            if creator_health["status"] != "ok" {
+                agent_vitals_runtime::logging::log_warn("creator_store", &format!("startup health: {creator_health}"));
             }
             // 记下系统区域：CLI / MCP 不读系统偏好，靠这份提示算出与 app 相同的默认报告币种
             // （并列报价的「默认假设」据此挑套）。
@@ -6095,6 +6148,10 @@ pub fn run() {
             // 让权威库 SQLite handle + page cache 在用户点会话/findings tab 之前
             // 就绪，避免首点 PRAGMA / planner 抖动（见 warm_authority_db 函数注释）。
             warm_authority_db(app.handle());
+            // E5 headless creator 语义闸：app 一启动就驱动 headless mailbox 臂
+            // （Studio 缺席时由宿主内嵌 city-sdk 闸作答窄名单方法，见 plugin_host.rs）。
+            crate::plugin_host::start_headless_creator_tick(app.handle().clone());
+            start_code_game_preview_tick(app.handle().clone());
             Ok(())
         })
         .build(context)
@@ -7747,8 +7804,9 @@ mod tests {
         ] {
             let (value, _) = read_from(target, root).unwrap();
             let resources = value["bundle"]["resources"].as_object().unwrap();
-            assert_eq!(resources.len(), 1);
+            assert_eq!(resources.len(), 2);
             assert_eq!(resources[source], destination);
+            assert_eq!(resources["code-game"], "code-game");
             let _: tauri::utils::config::Config = serde_json::from_value(value).unwrap();
         }
     }

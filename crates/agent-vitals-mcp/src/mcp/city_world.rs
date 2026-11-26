@@ -18,7 +18,7 @@ fn spec(name: &'static str, description: &'static str, properties: Value, requir
 pub fn specs() -> Vec<ToolSpec> {
     vec![
         spec("city_world_profile_preview", "Validate a data-only CityWorldProfileV1 in the active official City plugin. Only registered geography generators and visual themes are accepted; this does not execute code or install assets.", json!({
-            "profile":{"type":"object","description":"CityWorldProfileV1 data recipe produced by @agent-vitals/city-sdk. Current runtime supports coastal-islands-v1 and arid-dunes-v1."}
+            "profile":{"type":"object","description":"CityWorldProfileV1 data recipe produced by @agent-vitals/city-sdk; only geography generators and visual themes registered in the SDK catalogs are accepted."}
         }), &["profile"]),
         spec("city_world_profile_apply", "Apply a City world profile previously previewed by city_world_profile_preview. Requires --allow-local-writes, the same active City plugin instance, and an idle, rendered City.", json!({
             "previewId":{"type":"string","minLength":1,"maxLength":128},
@@ -29,13 +29,14 @@ pub fn specs() -> Vec<ToolSpec> {
 
 fn call_error(code: &str) -> ToolError {
     match code {
-        "plugin_call_timeout" | "plugin_call_expired" | "plugin_call_method_unavailable" | "plugin_unavailable" | "plugin_instance_unavailable" | "plugin_instance_mismatch" => ToolError::new("plugin_unavailable", "Open the official Agent City plugin and retry."),
+        "plugin_call_timeout" | "plugin_call_expired" | "plugin_call_method_unavailable" | "plugin_unavailable" | "plugin_instance_unavailable" | "plugin_instance_mismatch" | "plugin_unresponsive" | "plugin_boot_timeout" | "plugin_command_timeout" | "plugin_runtime_error" | "plugin_command_rejected" | "plugin_reloaded" | "plugin_suspended" => ToolError::new("plugin_unavailable", "Open the official Agent City plugin and retry."),
         "plugin_call_capacity" => ToolError::new("busy", "The City local request queue is busy."),
         "plugin_call_too_large" => ToolError::new("invalid_argument", "The world profile exceeds the local IPC payload limit."),
         "permission_denied" => ToolError::new("permission_denied", "The active City instance does not authorize world profile edits."),
         "preview_expired" => ToolError::new("preview_expired", "The preview expired or was already applied; create a new preview."),
         "revision_conflict" => ToolError::new("revision_conflict", "The current City world changed after preview; preview the profile again."),
         "city_world_busy" => ToolError::new("busy", "City is running another activity. Stop it, then apply the world profile."),
+        "city_world_profile_city_mismatch" => ToolError::new("invalid_argument", "This profile targets a different City. Create an independent City draft instead of changing the active City."),
         "operation_id_conflict" => ToolError::new("invalid_argument", "This operationId was already used for a different preview."),
         value if value.starts_with("world_profile_") || value.starts_with("city_world_") => ToolError::new("invalid_argument", "The City world profile failed schema, runtime registration, or size validation."),
         _ => ToolError::new("data_unavailable", "The City world profile request failed."),

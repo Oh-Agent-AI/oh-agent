@@ -17,7 +17,7 @@ const { inspectModelGround, MODEL_GROUND_CONFIG, GROUND_MODEL_FACTORIES, resolve
   "engine/planner/constraints.ts": ["CONSTRAINTS"],
 });
 const owner = { id: "landmark:villa-complex", kind: "villa-complex", x: 3, z: -9, yaw: 0.7, radius: 34 };
-const flat = { height: () => 1.2, inRiver: () => false };
+const flat = { height: () => 1.2, elevation: () => 1.2, inRiver: () => false };
 const before = JSON.stringify(owner), result = inspectModelGround(owner, flat);
 assert.equal(result.status, "partial"); assert.equal(result.wholeModelReady, false);
 assert.equal(result.evidence.supportSamples, 1441); assert.equal(result.evidence.heightQueries, 1442);
@@ -36,27 +36,28 @@ finally { delete GROUND_MODEL_FACTORIES["renamed-villa"]; }
 for (const instance of [{ ...owner, kind: "unknown-model" }, { ...owner, kind: "suspension-bridge", radius: 0 },
   { ...owner, kind: "constructor" }, { ...owner, radius: 11 }]) {
   let queries = 0;
-  const denied = inspectModelGround(instance, { height: () => { queries += 1; return 1.2; }, inRiver: () => false });
+  const denied = inspectModelGround(instance, { height: () => { queries += 1; return 1.2; }, elevation: () => 1.2, inRiver: () => false });
   assert.equal(denied.status, "unsupported"); assert.equal(denied.wholeModelReady, false); assert.equal(queries, 0);
 }
 for (const budget of [0, 1, 10, 1441, 4097, NaN]) {
   let queries = 0;
-  const denied = inspectModelGround(owner, { height: () => { queries += 1; return 1.2; }, inRiver: () => false }, { maxHeightQueries: budget });
+  const denied = inspectModelGround(owner, { height: () => { queries += 1; return 1.2; }, elevation: () => 1.2, inRiver: () => false }, { maxHeightQueries: budget });
   assert.equal(denied.status, "unsupported"); assert.equal(denied.reasonCode, "budget-exhausted"); assert.equal(queries, 0,
     "insufficient declared sampling coverage cannot publish a misleading partial-safe result");
 }
 for (const malformed of [{ ...owner, yaw: NaN }, { ...owner, x: Infinity }]) assert.equal(inspectModelGround(malformed, flat).status, "unsupported");
-for (const badGeo of [{ height: () => NaN, inRiver: () => false }, { height: () => 1.2, inRiver: () => "no" },
-  { height: () => { throw new Error("source expired"); }, inRiver: () => false }]) {
+for (const badGeo of [{ height: () => NaN, elevation: () => NaN, inRiver: () => false },
+  { height: () => 1.2, elevation: () => 1.2, inRiver: () => "no" },
+  { height: () => { throw new Error("source expired"); }, elevation: () => { throw new Error("source expired"); }, inRiver: () => false }]) {
   const denied = inspectModelGround(owner, badGeo);
   assert.equal(denied.status, "unsupported"); assert.equal(denied.reasonCode, "invalid-context");
 }
 for (const [kind, geo] of [
-  ["water", { height: () => -2, inRiver: () => false }],
-  ["river", { height: () => 1.2, inRiver: () => true }],
-  ["gap", { height: (x, z) => x === owner.x && z === owner.z ? 1.2 : 0.7, inRiver: () => false }],
-  ["embed", { height: (x, z) => x === owner.x && z === owner.z ? 1.2 : 2.2, inRiver: () => false }],
-  ["relief", { height: x => x < owner.x ? 0.7 : 2.2, inRiver: () => false }],
+  ["water", { height: () => -2, elevation: () => -2, inRiver: () => false }],
+  ["river", { height: () => 1.2, elevation: () => 1.2, inRiver: () => true }],
+  ["gap", { height: (x, z) => x === owner.x && z === owner.z ? 1.2 : 0.7, elevation: (x, z) => x === owner.x && z === owner.z ? 1.2 : 0.7, inRiver: () => false }],
+  ["embed", { height: (x, z) => x === owner.x && z === owner.z ? 1.2 : 2.2, elevation: (x, z) => x === owner.x && z === owner.z ? 1.2 : 2.2, inRiver: () => false }],
+  ["relief", { height: x => x < owner.x ? 0.7 : 2.2, elevation: x => x < owner.x ? 0.7 : 2.2, inRiver: () => false }],
 ]) {
   const inspected = inspectModelGround(owner, geo);
   assert.equal(inspected.status, "violation", kind); assert.equal(inspected.wholeModelReady, false);
@@ -77,7 +78,7 @@ GROUND_MODEL_FACTORIES["synthetic-ground"] = () => ({ status: "partial", declara
 try {
   for (const yaw of [0, Math.PI / 2, -Math.PI / 2, 0.73]) {
     const seen = [], instance = { id: "synthetic-owner", kind: "synthetic-ground", x: 11, z: -13, yaw, radius: 1 };
-    const inspected = inspectModelGround(instance, { height: (x, z) => { seen.push({ x, z }); return 1.2; }, inRiver: () => false });
+    const inspected = inspectModelGround(instance, { height: (x, z) => { seen.push({ x, z }); return 1.2; }, elevation: () => 1.2, inRiver: () => false });
     assert.equal(inspected.status, "partial"); assert.equal(inspected.wholeModelReady, false);
     for (const point of seen.slice(1)) {
       const dx = point.x - instance.x, dz = point.z - instance.z;
@@ -100,7 +101,7 @@ const shape = {
 };
 const geography = buildGeography(seed, R, shape);
 const failingOwner = { ...owner, x: 356.6787732260374, z: -295.7379451603026, yaw: 2.420430145796707 };
-const actual = inspectModelGround(failingOwner, { height: geography.height, inRiver: (x, z) => geography.hasRiver && Math.abs(x - geography.riverX(z)) < geography.riverWidth(z) });
+const actual = inspectModelGround(failingOwner, { height: geography.height, elevation: geography.height, inRiver: (x, z) => geography.hasRiver && Math.abs(x - geography.riverX(z)) < geography.riverWidth(z) });
 assert.equal(actual.status, "violation"); assert.ok(actual.findings.some(finding => finding.code === "foundation-water"));
 assert.ok(actual.findings.some(finding => finding.code === "foundation-gap" && finding.observed > 6));
 assert.equal(actual.evidence.belowRendererSeaLevel, 479, "actual deck478 + second step1 samples lie below real sea level, using shared support dimensions");
@@ -113,7 +114,7 @@ assert.equal(JSON.stringify(owner), before, "all accepted/refused inspections pr
 // must trigger registered admission independently of the legacy wetCount.
 const narrowWater = (x, z) => x > 28 && x < 31 && Math.abs(z) < 2 ? -2 : 1.2;
 const circleDryOwner = { ...owner, x: 0, z: 0, yaw: 0 };
-const hiddenGeo = { height: narrowWater, inRiver: () => false };
+const hiddenGeo = { height: narrowWater, elevation: narrowWater, inRiver: () => false };
 assert.equal(wetCount(hiddenGeo, circleDryOwner, 34), 0);
 assert.equal(inspectModelGround(circleDryOwner, hiddenGeo).status, "violation");
 const shoreCtx = { publicSites: [], landmarks: [{ ...circleDryOwner }], core: { x: 0, z: 0 }, coast: [{ x: 0, z: -100 }],
@@ -128,7 +129,8 @@ assert.equal(JSON.stringify(blockedShore.landmarks), blockedBytes, "registered u
 
 const ctx = { network: emptyNetwork(), publicSites: [], landmarks: [{ ...circleDryOwner },
   { id: "unknown-decoration", kind: "unknown-zero-model", x: 0, z: 0, yaw: 0, radius: 0 }], blocks: [], core: { x: 0, z: 0 },
-  geo: { ...hiddenGeo, buildable: () => true, coastDistance: () => 1000, terrain: { ...hiddenGeo, slope: () => 0 }, river: null },
+  geo: { ...hiddenGeo, buildable: () => true, coastDistance: () => 1000, terrain: { ...hiddenGeo, slope: () => 0 },
+    landform: { elevation: hiddenGeo.elevation, slope: () => 0, isBuildable: () => true }, river: null },
   ...hiddenGeo, coast: [], seaside: null, coastRoadRuns: [], riverRoadRuns: [], coastRoadRunEnds: [], carPaths: [], bridges: [], connectionLog: [],
   SHORE_SITE_KINDS: new Set(["villa-complex"]), ringRuns: [], trunkRuns: [], primaryAnchorNodeId: "-100:50" };
 const corners = [{ x: -100, z: 50 }, { x: 100, z: 50 }, { x: 100, z: 100 }, { x: -100, z: 100 }];

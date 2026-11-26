@@ -22,6 +22,7 @@ const geo = {
   riverX: () => 0, riverWidth: () => -1e6, coastDistance: () => 500, landClearance: () => 500, hillAngle: 0, hillDir: { x: 0, z: 1 },
   hillLine: 5000, hillProj: () => -1, height, buildable: () => true,
   terrain: { height, slope: () => 0.2, buildable: () => true, center: { x: 0, z: 0 }, radius: 1200, coastRadius: () => 1200, hasRiver: false },
+  landform: { elevation: height, slope: () => 0.2, isBuildable: () => true, waterClearance: () => 500 },
 };
 const world = (network) => ({ network, geo, inRiver: () => false, sites: () => [] });
 const snap = (n) => JSON.stringify({ v: n.version ?? 0, nodes: [...n.nodes], edges: [...n.edges] });

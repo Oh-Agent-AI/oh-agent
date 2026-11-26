@@ -1,0 +1,71 @@
+{
+  "ruleFamily": "scene",
+  "case": "scene.valid-dotted-id",
+  "expectTs": "ok",
+  "rustNote": "重点场景：Rust valid_id 同样允许点号（首字符字母数字，其余 [alnum._:-]，≤128），预期同样接受——这是两侧 ID 词法对等的关键样例。待 Rust 运行时验证。",
+  "input": {
+    "schemaVersion": 1,
+    "objects": [
+      {
+        "id": "villa.01",
+        "kind": "model",
+        "asset": {
+          "package": {
+            "kind": "city-layout",
+            "id": "riviera.grid",
+            "version": "1.0.0",
+            "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          },
+          "assetId": "villa.shell:mesh",
+          "digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      {
+        "id": "villa.02",
+        "kind": "anchor",
+        "anchor": {
+          "id": "villa.02",
+          "kind": "zone",
+          "capabilities": [
+            "walk"
+          ],
+          "geometryRef": "geom.villa-02:zone"
+        },
+        "transform": {
+          "positionMeters": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotationRadians": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      }
+    ]
+  }
+}

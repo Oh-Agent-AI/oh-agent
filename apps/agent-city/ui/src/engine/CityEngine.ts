@@ -21,6 +21,7 @@ import { GTAOPass } from "three/addons/postprocessing/GTAOPass.js";
 import { Reflector } from "three/addons/objects/Reflector.js";
 import { selectVisualHero, type CityModel } from "../cityModel";
 import { BIOME_GRADES, skyYawOf, themeFor, type CityTheme, type CityThemeName } from "./cityTheme";
+import { cityThemeForSkinPack, type CitySkinPackIdV1 } from "@oh-agent/city-sdk";
 import { loadCityAssets, type CityAssets } from "./cityAssets";
 import { loadBiomeFlora } from "./cityFlora";
 import { planCinematic, type CinematicCut, type CinematicPlan } from "./cityCinematic";
@@ -60,8 +61,23 @@ import type { GameSceneSnapshot } from "../game/runtime/GameSceneSnapshot";
 import type { CameraClearanceQuery, ChaseCameraSafety } from "../game/VehicleChaseCamera";
 import type { GameSceneLease } from "../game/runtime/GameScenePort";
 import { createSdkViewForCityLayout, type CityLayoutSdkViewV1 } from "./sdk/cityLayoutAdapter";
+import { buildSurfaceIndex } from "./surface/SurfaceIndex";
+import { buildSurfaceRegions } from "./surface/surfaceRegions";
+import { footprintSupport } from "../game/driving/surfaceFootprint";
+import { PreviewDecorRegistry, PreviewEntityRegistry } from "./previewEntityRegistry";
 
-export type CityCreatorSkinId = "miami-vice" | "desert-evening";
+export type CityEntitySelection = Readonly<{
+  entityId: string;
+  label: string;
+  kind: "scene-model" | "scene-collider" | "scene-anchor" | "city-building" | "city-decor";
+  pose: Readonly<{ x: number; y: number; z: number; heading: number }>;
+}>;
+
+export type CityCreatorSkinId = CitySkinPackIdV1;
+/** 视口捕获结果：不可用与超预算必须可区分，调用方按 code 映射 MCP 错误。 */
+export type CaptureFrameResult =
+  | { ok: true; dataUrl: string; width: number; height: number; downscaled: boolean }
+  | { ok: false; code: "creator_capture_unavailable" | "creator_capture_budget_exceeded" };
 export type CityCreatorSkinOverrideToken = Readonly<{
   owner: symbol;
   serial: number;
@@ -75,6 +91,33 @@ const CINEMATIC_HOUR_TO = 19.6;
 
 export type EngineQualityMode = "auto" | "high" | "eco";
 export type EngineStats = { fps: number; drawCalls: number; triangles: number; buildings: number; quality: QualityLevel; idle: boolean; geometries: number; textures: number };
+
+/** 运行期性能采样（15s 聚合一次）。只上报聚合值，不逐帧写日志。 */
+export type EngineFrameStats = {
+  fps: number;
+  p50Ms: number;
+  p95Ms: number;
+  maxMs: number;
+  drawCalls: number;
+  triangles: number;
+  quality: QualityLevel;
+  idle: boolean;
+  dpr: number;
+  geometries: number;
+  textures: number;
+};
+export type EngineFrameStall = {
+  ms: number;
+  phase: "surface" | "pick" | "replay" | "render";
+  quality: QualityLevel;
+  activity: "orbit" | "game" | "driving" | "replay" | "cinematic";
+  pointerMoved: boolean;
+};
+export type EngineQualityChange = {
+  from: QualityLevel;
+  to: QualityLevel;
+  reason: "user" | "auto-low" | "auto-high" | "capture";
+};
 export type CityDrivingWorldCapture = Exclude<CitySurfaceCapture, ReadyCitySurfaceCapture> | (ReadyCitySurfaceCapture & Readonly<{ release: () => void }>);
 export type PhotoView = { position: number[]; target: number[]; fov: number; elapsed: number; cursorMs: number | null };
 /** 相机所有权（游戏模式 §4）：同一帧只允许一个所有者推进相机。 */
@@ -115,10 +158,17 @@ export type CityEngineOptions = {
   headless?: boolean;
   onHover?: (id: string | null, clientX: number, clientY: number) => void;
   onSelect?: (id: string | null) => void;
+  onEntitySelect?: (selection: CityEntitySelection | null) => void;
   /** 点到可开的载具（地标停车场的车 / 机坪的飞机）：宿主据此进入开车或开飞机，不走选中流程。 */
   onPlay?: (target: PlayTarget) => void;
   onOrbitLock?: (id: string | null) => void;
   onStats?: (stats: EngineStats) => void;
+  /** 15s 聚合帧时间（p50/p95/max、draw calls、quality），用于本地性能日志。 */
+  onFrameStats?: (stats: EngineFrameStats) => void;
+  /** 单帧超过 100ms 时立即上报（每秒最多一条）。 */
+  onStall?: (stall: EngineFrameStall) => void;
+  /** 自动/手动画质切换（含触发原因），用于区分「升级后卡」和「一直卡」。 */
+  onQualityChange?: (change: EngineQualityChange) => void;
   onTimeCursor?: (ms: number, live: boolean) => void;
   /** 航拍进度（秒）；ended=true 表示片子放完或被打断。 */
   onCinematic?: (elapsedSec: number, plan: CinematicPlan, ended: boolean) => void;
@@ -135,6 +185,9 @@ const pinsKey = (patch: PlanPatchV1 | null, seed: number): string => {
 
 const IDLE_AFTER_MS = 12_000;
 const IDLE_FRAME_INTERVAL_MS = 50;
+/** 帧时间聚合窗口。15s ≈ 900 个 60fps 样本，排序成本可忽略，日志量约 1.4MB/天。 */
+const FRAME_STATS_INTERVAL_MS = 15_000;
+const STALL_FRAME_MS = 100;
 
 export class CityEngine {
   private readonly renderer: THREE.WebGLRenderer;
@@ -148,6 +201,8 @@ export class CityEngine {
   private readonly raycaster = new THREE.Raycaster();
   private readonly pointer = new THREE.Vector2();
   private readonly encounterTargets = new Map<THREE.Object3D, () => void>();
+  private readonly previewEntities = new PreviewEntityRegistry();
+  private previewEntityHighlight: THREE.Box3Helper | null = null;
   private parts: CityParts | null = null;
   /** Last applyModel path: mount rebuilds CityParts; append keeps the scene and adds occupants. */
   lastApplyMode: "mount" | "append" = "mount";
@@ -238,6 +293,13 @@ export class CityEngine {
   private lastTierChangeAt = 0;
   private upgradeAfter = 0;
 
+  // 运行期性能采样：帧间隔只进环形缓冲，聚合后交给宿主写日志。
+  private lastFrameAt = 0;
+  private frameStatsStartedAt = 0;
+  private frameDurations: number[] = [];
+  private lastStallAt = 0;
+  private framePhase: EngineFrameStall["phase"] = "render";
+
   // 聚焦 tween。
   private tween: { fromPos: THREE.Vector3; toPos: THREE.Vector3; fromTarget: THREE.Vector3; toTarget: THREE.Vector3; start: number; duration: number } | null = null;
 
@@ -250,6 +312,7 @@ export class CityEngine {
   private orbitLockedId: string | null = null;
   private orbitLockedPoint: THREE.Vector3 | null = null;
   private pickedDecor: { id: string; point: THREE.Vector3 } | null = null;
+  private readonly decorEntities = new PreviewDecorRegistry();
   private attracted = true;
   private boundsRadius = 150;
   private cityCenter = { x: 0, z: 0 };
@@ -427,7 +490,7 @@ export class CityEngine {
       this.parts?.applyAssets(assets);
     });
 
-    this.applyQualityLevel(0);
+    this.applyQualityLevel(0, "user");
     this.upgradeAfter = performance.now() + 60_000;
 
     if (options.headless) return;
@@ -721,14 +784,14 @@ export class CityEngine {
 
   /** Apply a built-in Creator release skin to this live City only; no preference or geography is persisted. */
   applyCreatorSkin(skinId: CityCreatorSkinId): CityCreatorSkinOverrideToken {
-    if (skinId !== "miami-vice" && skinId !== "desert-evening") throw new Error("city_creator_skin_not_found");
+    if (cityThemeForSkinPack(skinId) === undefined) throw new Error("city_creator_skin_not_found");
     if (this.disposed) throw new Error("city_engine_disposed");
     if (this.creatorSkinOverride) {
       if (this.creatorSkinOverride.skinId === skinId) return this.creatorSkinOverride;
       throw new Error("creator_skin_override_active");
     }
     this.assertCreatorSkinCanChange();
-    const nextTheme: CityThemeName = skinId === "miami-vice" ? "miami" : "desert";
+    const nextTheme: CityThemeName = cityThemeForSkinPack(skinId)!.id;
     const token: CityCreatorSkinOverrideToken = Object.freeze({ owner: this.creatorSkinOwner, serial: ++this.creatorSkinSerial,
       previousTheme: this.theme.name, skinId });
     this.creatorSkinOverride = token;
@@ -1057,6 +1120,8 @@ export class CityEngine {
       this.parts = null;
     }
     this.baseLayout = base;
+    this.decorEntities.clear();
+    this.pickedDecor = null;
     this.planResult = planResult;
     this.layout = layout;
     this.parts = new CityParts(model, layout, previousDisplays, this.theme);
@@ -1150,6 +1215,44 @@ export class CityEngine {
 
   private sunDistance(): number {
     return Math.max(900, this.boundsRadius * 2.2);
+  }
+
+  /** 当前画布 JPEG 数据 URL（Studio 的 creator.scene.capture / creator.city.capture 用）：
+   *  先渲染一帧确保内容最新。编码预算 330K 字符：插件描述符给 capture 的 mailbox
+   *  响应预算是 512 KiB，MCP 侧另有 350K 字符的帧安全上限，330K 留出 JSON 信封余量。
+   *  质量从 0.72 逐档降到 0.3，仍超则按 0.75× 降采样重绘再压；全部档位用尽才返回
+   *  budget 失败。视口不可用（headless/上下文丢失/已销毁）与超预算用不同 code
+   *  返回，调用方不得把二者混成一句“unavailable”。 */
+  captureFrame(maxChars = 330_000): CaptureFrameResult {
+    if (this.options.headless || this.disposed || this.contextLost) return { ok: false, code: "creator_capture_unavailable" };
+    const encode = (canvas: HTMLCanvasElement, quality: number) => {
+      const dataUrl = canvas.toDataURL("image/jpeg", quality);
+      return dataUrl.startsWith("data:image/jpeg") ? dataUrl : null;
+    };
+    this.renderFrame();
+    const source = this.renderer.domElement;
+    for (const quality of [0.72, 0.5, 0.35]) {
+      const dataUrl = encode(source, quality);
+      if (dataUrl && dataUrl.length <= maxChars) return { ok: true, dataUrl, width: source.width, height: source.height, downscaled: false };
+    }
+    // 原尺寸压不进预算：离屏画布降采样重绘（最远降到 0.35 质量 + 0.4× 尺寸）。
+    let scale = 0.75;
+    while (scale >= 0.4) {
+      const offscreen = document.createElement("canvas");
+      offscreen.width = Math.max(1, Math.round(source.width * scale));
+      offscreen.height = Math.max(1, Math.round(source.height * scale));
+      const context = offscreen.getContext("2d");
+      if (!context) return { ok: false, code: "creator_capture_unavailable" };
+      context.drawImage(source, 0, 0, offscreen.width, offscreen.height);
+      for (const quality of [0.6, 0.4]) {
+        const dataUrl = encode(offscreen, quality);
+        if (dataUrl && dataUrl.length <= maxChars) {
+          return { ok: true, dataUrl, width: offscreen.width, height: offscreen.height, downscaled: true };
+        }
+      }
+      scale -= 0.15;
+    }
+    return { ok: false, code: "creator_capture_budget_exceeded" };
   }
 
   /** 按主题的方位/高度角放太阳。曾放在城市中心正上方约 bounds 高、水平只偏 139 处——
@@ -1303,9 +1406,20 @@ export class CityEngine {
     return best;
   }
 
+  /** Keep the orbit framing when comparing two renderers of the same scene. */
+  copyOrbitViewFrom(source: CityEngine): void {
+    if (source === this || this.gameSceneToken || source.gameSceneToken) return;
+    this.releaseOrbitLock();
+    this.tween = null;
+    this.camera.position.copy(source.camera.position);
+    this.camera.up.copy(source.camera.up);
+    this.controls.target.copy(source.controls.target);
+    this.camera.lookAt(this.controls.target);
+    this.noteActivity();
+  }
+
   resetView(): void {
-    const home = this.homeView();
-    const damaged = ![...this.camera.position.toArray(), ...this.controls.target.toArray(), ...this.camera.quaternion.toArray()].every(Number.isFinite);
+    const home = this.homeView();    const damaged = ![...this.camera.position.toArray(), ...this.controls.target.toArray(), ...this.camera.quaternion.toArray()].every(Number.isFinite);
     if (damaged) {
       // NaN cannot be lerped away. Repair the endpoints before touching OrbitControls.
       this.tween = null;
@@ -1319,8 +1433,83 @@ export class CityEngine {
     }
     this.releaseOrbitLock();
     this.setSelected(null);
+    this.clearPreviewEntityHighlight();
     this.flyTo(home, { ...this.cityCenter, y: 6 }, 900);
     this.options.onSelect?.(null);
+    this.options.onEntitySelect?.(null);
+  }
+
+  inspectEntity(id: string): CityEntitySelection | null {
+    const object = this.previewEntities.get(id);
+    if (object) {
+      const metadata = this.previewEntities.metadataFor(object);
+      if (!metadata) return null;
+      object.updateWorldMatrix(true, true);
+      const position = object.getWorldPosition(new THREE.Vector3());
+      const direction = new THREE.Vector3(0, 0, 1).transformDirection(object.matrixWorld);
+      if (![...position.toArray(), direction.x, direction.z].every(Number.isFinite)) return null;
+      return { entityId: id, label: metadata.label, kind: metadata.kind,
+        pose: { x: position.x, y: position.y, z: position.z, heading: Math.atan2(direction.z, direction.x) } };
+    }
+    const resolved = this.parts?.sessionIdForAsset(id) ?? id;
+    const anchor = this.parts?.focusAnchorFor(resolved);
+    if (anchor) return { entityId: resolved, label: resolved, kind: "city-building",
+      pose: { x: anchor.x, y: anchor.ground, z: anchor.z, heading: 0 } };
+    const point = id.startsWith("decor:") ? this.decorEntities.get(id) : null;
+    if (point) return { entityId: id, label: id, kind: "city-decor", pose: { x: point.x, y: point.y, z: point.z, heading: 0 } };
+    return null;
+  }
+
+  focusEntity(id: string): boolean {
+    const object = this.previewEntities.get(id);
+    if (!object) {
+      const selection = this.inspectEntity(id);
+      if (selection?.kind === "city-decor") { this.focusPoint(selection.pose.x, selection.pose.z); return true; }
+      return this.focusBuilding(id);
+    }
+    object.updateWorldMatrix(true, true);
+    const bounds = new THREE.Box3().setFromObject(object);
+    const target = bounds.getCenter(new THREE.Vector3());
+    const size = bounds.getSize(new THREE.Vector3());
+    if (bounds.isEmpty() || ![...target.toArray(), ...size.toArray()].every(Number.isFinite)) return false;
+    if (this.cinematic) this.stopCinematic();
+    this.releaseOrbitLock();
+    this.setSelected(null);
+    this.highlightPreviewEntity(object);
+    this.attracted = false;
+    this.controls.autoRotate = false;
+    const direction = new THREE.Vector3().subVectors(this.camera.position, this.controls.target).setY(0).normalize();
+    if (direction.lengthSq() < 0.01) direction.set(0.8, 0, 0.6).normalize();
+    const distance = Math.max(8, size.length() * 2.4);
+    const position = target.clone().addScaledVector(direction, distance).add(new THREE.Vector3(0, distance * 0.65, 0));
+    this.controls.enablePan = true;
+    this.controls.minDistance = Math.max(2, size.length() * 0.5);
+    this.controls.maxDistance = Math.max(this.boundsRadius * 4.5, distance * 3);
+    this.flyTo(position, target, 550);
+    return true;
+  }
+
+  private highlightPreviewEntity(object: THREE.Object3D | null): void {
+    this.clearPreviewEntityHighlight();
+    if (!object) return;
+    const bounds = new THREE.Box3().setFromObject(object);
+    if (bounds.isEmpty()) return;
+    const highlight = new THREE.Box3Helper(bounds, new THREE.Color(0x86e7cf));
+    highlight.renderOrder = 1000;
+    this.previewEntityHighlight = highlight;
+    this.scene.add(highlight);
+    this.surfaceDirty = true;
+  }
+
+  private clearPreviewEntityHighlight(): void {
+    const highlight = this.previewEntityHighlight;
+    if (!highlight) return;
+    this.scene.remove(highlight);
+    highlight.geometry.dispose();
+    const materials = Array.isArray(highlight.material) ? highlight.material : [highlight.material];
+    materials.forEach(material => material.dispose());
+    this.previewEntityHighlight = null;
+    this.surfaceDirty = true;
   }
 
   focusBuilding(id: string): boolean {
@@ -1447,15 +1636,19 @@ export class CityEngine {
     if (mode === this.qualityMode) return;
     this.qualityMode = mode;
     this.lowFpsWindows = this.highFpsWindows = 0;
-    if (mode === "high") this.applyQualityLevel(2);
-    else if (mode === "eco") this.applyQualityLevel(0);
-    else this.applyQualityLevel(0);
+    if (mode === "high") this.applyQualityLevel(2, "user");
+    else if (mode === "eco") this.applyQualityLevel(0, "user");
+    else this.applyQualityLevel(0, "user");
   }
 
-  private applyQualityLevel(level: QualityLevel): void {
+  private applyQualityLevel(level: QualityLevel, reason: EngineQualityChange["reason"]): void {
     if (this.quality === level && !this.exportSize) return;
+    const from = this.quality;
     this.quality = level;
     this.qualityDirty = this.surfaceDirty = true;
+    // 升档会重建 composer / 4096 阴影图并编译 shader，本身就是一次可见卡顿；
+    // 没有这条日志，「60 秒后突然顿一下」永远查不到原因。
+    if (!this.options.headless && from !== level) this.options.onQualityChange?.({ from, to: level, reason });
   }
 
   private flushSurface(): void {
@@ -1527,12 +1720,15 @@ export class CityEngine {
   }
 
   /** 叠加层（候选地块高亮等）：直接挂在场景根上，不随 CityParts 重建而销毁。 */
-  addOverlay(object: THREE.Object3D): void {
+  addOverlay(object: THREE.Object3D, options?: Readonly<{ previewEntities?: boolean }>): void {
+    if (options?.previewEntities) this.previewEntities.register(object);
     this.scene.add(object);
     this.noteActivity();
   }
 
   removeOverlay(object: THREE.Object3D): void {
+    if (this.previewEntities.pickableRoots().includes(object)) this.clearPreviewEntityHighlight();
+    this.previewEntities.unregister(object);
     this.scene.remove(object);
     this.noteActivity();
   }
@@ -1631,6 +1827,24 @@ export class CityEngine {
     this.flyTo({ x: x + d * 0.8, y: y + d * 0.55, z: z + d * 0.8 }, { x, y, z }, 900);
   }
 
+  private pickPreviewEntity(): CityEntitySelection | null {
+    const roots = this.previewEntities.pickableRoots();
+    if (!roots.length || !this.parts || !this.pointerClient) return null;
+    this.raycaster.setFromCamera(this.pointer, this.camera);
+    const hits = this.raycaster.intersectObjects([...roots], true);
+    const obstacle = this.raycaster.intersectObjects([...this.parts.raycastTargets, ...this.parts.decorTargets], false)
+      .find(hit => Number.isFinite(hit.distance) && hit.distance >= this.camera.near && hit.point.toArray().every(Number.isFinite));
+    for (const hit of hits) {
+      if (!Number.isFinite(hit.distance) || hit.distance < this.camera.near || !hit.point.toArray().every(Number.isFinite)) continue;
+      if (obstacle && obstacle.distance < hit.distance) return null;
+      const object = this.previewEntities.resolve(hit.object);
+      if (!object) continue;
+      const entityId = this.previewEntities.entityIdFor(object);
+      return entityId ? this.inspectEntity(entityId) : null;
+    }
+    return null;
+  }
+
   private handleClick(): void {
     if (this.drivingWorldFrame) return;
     if (!this.parts) return;
@@ -1653,19 +1867,33 @@ export class CityEngine {
         if (onClick) { onClick(); return; }
       }
     }
+    const entity = this.pickPreviewEntity();
+    if (entity) {
+      this.setSelected(null);
+      this.highlightPreviewEntity(this.previewEntities.get(entity.entityId));
+      this.options.onSelect?.(null);
+      this.options.onEntitySelect?.(entity);
+      return;
+    }
     const id = this.pick();
     const play = playableKind(id) ? this.playableAt(id!) : null;
     if (play) { this.options.onPlay?.(play); return; }
     if (id && id.startsWith("decor:")) {
       // Decorations share orbit locking, but not session-only selection rings.
+      this.clearPreviewEntityHighlight();
       this.lockSelection(id);
       this.options.onSelect?.(id);
+      this.options.onEntitySelect?.(this.inspectEntity(id));
     } else if (id) {
+      this.clearPreviewEntityHighlight();
       this.lockSelection(id);
       this.options.onSelect?.(id);
+      this.options.onEntitySelect?.(this.inspectEntity(id));
     } else {
+      this.clearPreviewEntityHighlight();
       this.setSelected(null);
       this.options.onSelect?.(null);
+      this.options.onEntitySelect?.(null);
     }
   }
 
@@ -1712,6 +1940,7 @@ export class CityEngine {
       if (decor) {
         // Merged/procedural decoration bounds can cover many objects; use the visible hit.
         this.pickedDecor = { id: decor, point: hit.point.clone() };
+        this.decorEntities.remember(decor, hit.point);
         chosen = decor;
         chosenHit = hit;
         break;
@@ -1847,6 +2076,10 @@ export class CityEngine {
     // 首个统计窗口从现在起算，而不是从 epoch 起（否则第一次 fps 恒为 0，
     // 会把 auto 画质立刻错误降档）。
     this.lastStatsAt = 0;
+    // 新一轮渲染循环：丢弃上一轮的帧缓冲，避免把暂停/切页前的大间隔算进 p95。
+    this.lastFrameAt = 0;
+    this.frameDurations = [];
+    this.frameStatsStartedAt = performance.now();
     this.raf = requestAnimationFrame(this.tick);
   }
 
@@ -1868,6 +2101,34 @@ export class CityEngine {
         sessionId: visual.sessionId, assetRef: visual.assetRef, kind: visual.kind, eventId: visual.eventId,
       })),
       claims: this.parts?.claimSnapshot() ?? [] };
+  }
+
+  async inspectGroundContact(input: Readonly<{ x: number; z: number; heading: number; regionId?: string }>) {
+    if (![input.x,input.z,input.heading].every(Number.isFinite)) throw new Error("ground_pose_invalid");
+    const parts = this.parts;
+    if (!parts || this.disposed) throw new Error("ground_inspection_unavailable");
+    const frozen = parts.acquireStaticSceneSource();
+    let capture: CitySurfaceCapture;
+    try { capture = await this.surfacePort.capture(frozen.drivingSource); }
+    catch { frozen.release(); throw new Error("ground_inspection_unavailable"); }
+    if (capture.status !== "ready") { frozen.release(); throw new Error(`ground_${capture.status}`); }
+    try {
+      const surface = capture.read();
+      if (!surface || !capture.verifyCurrent()) throw new Error("ground_stale");
+      const regions = buildSurfaceRegions(surface,buildSurfaceIndex(surface));
+      if (regions.status !== "ready") throw new Error(`ground_${regions.reason}`);
+      const classified = regions.classify(input.x,input.z,"ground");
+      const regionId = input.regionId ?? (classified.status === "drivable" ? classified.regionId : "");
+      if (!regionId) return { status:"unsupported",code:classified.status === "blocked" ? classified.cause : "region_required" };
+      const support = footprintSupport(regions,input,regionId);
+      if (!support.ok) return { status:"unsupported",code:support.reason,reason:support.detail,regionId,
+        worldRevision:capture.worldRevision,surfaceRevision:capture.revision };
+      return { status:"ready",regionId,layerId:support.layerId,y:support.y,pitch:support.pitch,roll:support.roll,
+        wheels:support.wheels,normal:support.normal,worldRevision:capture.worldRevision,surfaceRevision:capture.revision };
+    } finally {
+      this.surfacePort.releaseFrozenSource(frozen.drivingSource);
+      frozen.release();
+    }
   }
 
   applyBuildingChanged(raw: unknown, animate: boolean): OverlayDecision | null {
@@ -1984,6 +2245,8 @@ export class CityEngine {
     const idle = !this.drivingWorldFrame && this.cameraOwner !== "game" && now - this.lastActivityAt > IDLE_AFTER_MS && !this.tween && !this.playing;
     if (idle && !this.surfaceDirty && !this.qualityDirty && now - this.lastRenderAt < IDLE_FRAME_INTERVAL_MS) return;
 
+    // 这一帧的主要嫌疑：先于 updateScene 记录，pick 会把 pointerMoved 清掉。
+    this.framePhase = this.surfaceDirty ? "surface" : this.pointerMoved ? "pick" : this.playing ? "replay" : "render";
     this.updateScene(dt);
     this.renderFrame();
     this.lastRenderAt = now;
@@ -2085,7 +2348,7 @@ export class CityEngine {
     this.exportSize = { width: options.width, height: options.height };
     // Respect eco/adaptive quality during export; forcing expensive effects can starve
     // the plugin event loop on software GPUs even though the encoder is asynchronous.
-    this.applyQualityLevel(wasQuality);
+    this.applyQualityLevel(wasQuality, "capture");
     // 从固定状态开拍：时钟归零、所有随帧累加的动画回到起点、天空强制重算。
     // 曾接着实时循环的 elapsed 与累加状态开拍，两次导出同一座城从第 ~17 帧起逐像素不同。
     this.elapsed = 0;
@@ -2166,7 +2429,7 @@ export class CityEngine {
       this.exportSize = null;
       this.elapsed = savedElapsed;
       if (!this.disposed) {
-        this.applyQualityLevel(wasQuality);
+        this.applyQualityLevel(wasQuality, "capture");
         this.startLoop();
       }
     }
@@ -2187,7 +2450,7 @@ export class CityEngine {
     this.stopLoop();
     const restoreOverlays = this.parts.hideOverlaysForPhoto();
     this.exportSize = { width, height };
-    this.applyQualityLevel(this.softwareRenderer ? 0 : this.options.headless ? wasQuality : 2);
+    this.applyQualityLevel(this.softwareRenderer ? 0 : this.options.headless ? wasQuality : 2, "capture");
     try {
       if (this.options.headless) await new Promise((resolve) => setTimeout(resolve, 80));
       const started = performance.now();
@@ -2214,7 +2477,7 @@ export class CityEngine {
     } finally {
       restoreOverlays();
       this.exportSize = null;
-      this.applyQualityLevel(wasQuality);
+      this.applyQualityLevel(wasQuality, "capture");
       this.camera.aspect = aspect;
       this.camera.updateProjectionMatrix();
       this.startLoop();
@@ -2477,14 +2740,31 @@ export class CityEngine {
   }
 
   private accountFrame(now: number, idle: boolean): void {
+    // 帧间隔：只统计真正渲染出来的帧。切页/隐藏恢复后的第一个超大间隔
+    // 不是掉帧，丢弃并重置窗口，否则 p95 会被一次挂起永久污染。
+    if (this.lastFrameAt > 0) {
+      const frameMs = now - this.lastFrameAt;
+      if (frameMs > 0 && frameMs < 5_000) {
+        this.frameDurations.push(frameMs);
+        if (frameMs >= STALL_FRAME_MS && now - this.lastStallAt >= 1_000) {
+          this.lastStallAt = now;
+          this.options.onStall?.({
+            ms: Math.round(frameMs), phase: this.framePhase, quality: this.quality,
+            activity: this.frameActivity(), pointerMoved: this.pointerMoved,
+          });
+        }
+      } else if (frameMs >= 5_000) {
+        this.frameDurations = [];
+        this.frameStatsStartedAt = now;
+      }
+    }
+    this.lastFrameAt = now;
     this.frameCount += 1;
     // 帧率统计（以 stats 周期计算滑动平均）。
     if (this.lastStatsAt === 0) {
       this.lastStatsAt = now;
       this.frameCount = 0;
-      return;
-    }
-    if (now - this.lastStatsAt > 1_000) {
+    } else if (now - this.lastStatsAt > 1_000) {
       const measured = this.frameCount * 1000 / Math.max(1, now - this.lastStatsAt);
       this.fps = measured;
       this.frameCount = 0;
@@ -2501,6 +2781,36 @@ export class CityEngine {
       });
       this.maybeRetier(measured, idle);
     }
+    // 15s 聚合：平均 FPS 看不出顿挫，必须同时留 p50/p95/max。
+    if (this.frameDurations.length > 0 && now - this.frameStatsStartedAt >= FRAME_STATS_INTERVAL_MS) {
+      const sorted = [...this.frameDurations].sort((a, b) => a - b);
+      const count = sorted.length;
+      const percentile = (q: number) => sorted[Math.min(count - 1, Math.ceil(count * q) - 1)];
+      this.options.onFrameStats?.({
+        fps: Math.round(1_000 * count / Math.max(1, now - this.frameStatsStartedAt)),
+        p50Ms: Math.round(percentile(0.5)),
+        p95Ms: Math.round(percentile(0.95)),
+        maxMs: Math.round(sorted[count - 1]),
+        drawCalls: this.renderer.info.render.calls,
+        triangles: this.renderer.info.render.triangles,
+        quality: this.quality,
+        idle,
+        dpr: this.surfacePixelRatio,
+        // 几何/纹理计数是长会话泄漏的第一信号；hidden 在 accountFrame 里恒为 false（隐藏帧不渲染）。
+        geometries: this.renderer.info.memory.geometries,
+        textures: this.renderer.info.memory.textures,
+      });
+      this.frameDurations = [];
+      this.frameStatsStartedAt = now;
+    }
+  }
+
+  private frameActivity(): EngineFrameStall["activity"] {
+    if (this.drivingWorldFrame) return "driving";
+    if (this.cameraOwner === "game") return "game";
+    if (this.playing) return "replay";
+    if (this.cinematic) return "cinematic";
+    return "orbit";
   }
 
   private maybeRetier(fps: number, idle: boolean): void {
@@ -2513,10 +2823,10 @@ export class CityEngine {
     this.highFpsWindows = fps > 55 ? this.highFpsWindows + 1 : 0;
     if (now - this.lastTierChangeAt < 12_000) return;
     if (this.lowFpsWindows >= 3 && this.quality > 0) {
-      this.applyQualityLevel((this.quality - 1) as QualityLevel);
+      this.applyQualityLevel((this.quality - 1) as QualityLevel, "auto-low");
       this.upgradeAfter = now + 60_000;
     } else if (this.highFpsWindows >= 8 && now >= this.upgradeAfter && this.quality < 2) {
-      this.applyQualityLevel((this.quality + 1) as QualityLevel);
+      this.applyQualityLevel((this.quality + 1) as QualityLevel, "auto-high");
     } else return;
     this.lastTierChangeAt = now;
     this.lowFpsWindows = this.highFpsWindows = 0;
@@ -2613,6 +2923,9 @@ export class CityEngine {
     this.rain = null;
     this.rainbow?.dispose();
     this.rainbow = null;
+    this.clearPreviewEntityHighlight();
+    this.previewEntities.clear();
+    this.decorEntities.clear();
     this.disposablesSky.forEach((disposable) => disposable.dispose());
     this.renderer.dispose();
   }

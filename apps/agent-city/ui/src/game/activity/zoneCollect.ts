@@ -1,4 +1,4 @@
-import type { CityGameMountV1, MiniGamePackV1, Result, DiagnosticV1 } from "@agent-vitals/city-sdk";
+import type { CityGameMountV1, MiniGamePackV1, Result, DiagnosticV1 } from "@oh-agent/city-sdk";
 import { selectCheckpointRaceCourse, type CityLayoutSdkViewV1 } from "../../engine/sdk/cityLayoutAdapter";
 import { toMeters } from "../../engine/worldScale";
 import { createMountedMiniGamePlan, MountedMiniGameControllerV1, type MountedMiniGamePlanV1 } from "./mountedMiniGame";

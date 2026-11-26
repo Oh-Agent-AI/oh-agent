@@ -123,6 +123,12 @@ struct Instance {
     pulse: Instant,
     ready: bool,
     suspended: bool,
+    /// The frontend reports visibility with its diagnostic heartbeat. The view's
+    /// health timer keeps running while hidden (background throttling disabled),
+    /// so a live hidden page keeps re-declaring; `hidden_since` bounds how long
+    /// a hidden declaration may suppress the watchdog after declarations stop.
+    page_hidden: bool,
+    hidden_since: Option<Instant>,
     failed: Option<&'static str>,
     revision: u64,
     items: Vec<Tool>,
@@ -158,7 +164,34 @@ struct PluginDefinition { id: String, name: String, entry: String, command_names
     #[serde(default)] host_events: Vec<String>,
     /// 本机 request/reply 能力白名单。Host 只转发 opaque payload，不解释业务字段。
     #[serde(default)] local_calls: Vec<String>,
+    /// 按方法传输预算（设计 §5.5）：宿主校验描述符声明后统一执行到投递与响应
+    /// 路径；未声明的方法保持 64 KiB 默认。描述符是唯一配置点，调用方传入的
+    /// 预算只是提示，不是授权。
+    #[serde(default)] local_call_budgets: std::collections::BTreeMap<String, TransportBudget>,
     #[serde(default)] remote_capabilities: Vec<crate::remote_protocol::RemoteCapability> }
+
+#[derive(Clone, Copy, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct TransportBudget {
+    pub request_bytes: u64,
+    pub response_bytes: u64,
+}
+
+/// 绝对上限（§5.5）：描述符不能把预算调到 IPC 安全上限之上；下限拒绝无效声明。
+const TRANSPORT_BUDGET_MIN_BYTES: u64 = 1024;
+const TRANSPORT_BUDGET_MAX_BYTES: u64 = 1024 * 1024;
+const TRANSPORT_BUDGET_DEFAULT_BYTES: usize = 64 * 1024;
+/// plugin.call.request 信封（kind/callId/method 包装）开销余量。
+const CALL_ENVELOPE_SLACK_BYTES: usize = 4 * 1024;
+
+fn transport_budget_for(definition: &PluginDefinition, method: &str) -> (usize, usize) {
+    let declared = definition.local_call_budgets.get(method);
+    let clamp = |bytes: u64| bytes.clamp(TRANSPORT_BUDGET_MIN_BYTES, TRANSPORT_BUDGET_MAX_BYTES) as usize;
+    match declared {
+        Some(budget) => (clamp(budget.request_bytes), clamp(budget.response_bytes)),
+        None => (TRANSPORT_BUDGET_DEFAULT_BYTES, TRANSPORT_BUDGET_DEFAULT_BYTES),
+    }
+}
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -265,11 +298,18 @@ fn definitions() -> &'static [PluginDefinition] {
                 assert!(grant.validate_for(scope_type, &plugin.object_grants).is_ok(), "invalid trusted typed-object scope grant");
             }
             let mut local_call_methods = std::collections::BTreeSet::new();
-            assert!(plugin.local_calls.len() <= 128 && plugin.local_calls.iter().all(|method| {
+            assert!(plugin.local_calls.len() <= agent_vitals_runtime::query::plugin_calls::MAX_LOCAL_CALL_METHODS && plugin.local_calls.iter().all(|method| {
                 !method.is_empty() && method.len() <= 96
                     && method.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'_' | b'-' | b'.'))
                     && local_call_methods.insert(method)
             }), "invalid trusted local-call grant");
+            // 按方法传输预算（§5.5）：只允许指向已授予的方法，且不超过 IPC 安全上限。
+            for (method, budget) in &plugin.local_call_budgets {
+                assert!(local_call_methods.contains(method), "transport budget must target a granted local call: {method}");
+                assert!((TRANSPORT_BUDGET_MIN_BYTES..=TRANSPORT_BUDGET_MAX_BYTES).contains(&budget.request_bytes)
+                    && (TRANSPORT_BUDGET_MIN_BYTES..=TRANSPORT_BUDGET_MAX_BYTES).contains(&budget.response_bytes),
+                    "transport budget for {method} exceeds the IPC safety cap");
+            }
         }
         registry
     }).plugins
@@ -380,6 +420,16 @@ pub(crate) fn apply_plugin_webview_platform(app: &tauri::AppHandle, builder: Web
 }
 
 fn set_plugin_bounds(view: &Webview, bounds: &Bounds) -> Result<(), String> {
+    // Linux: wry ignores set_bounds for GtkBox-packed children; place the
+    // view in the host overlay instead (see plugin_webview_layout).
+    #[cfg(target_os = "linux")]
+    {
+        let geometry = crate::plugin_webview_layout::overlay_child_geometry(bounds.x, bounds.y, bounds.width, bounds.height);
+        crate::plugin_webview_layout::linux::set_bounds(view, geometry).inspect_err(|error| {
+            agent_vitals_runtime::logging::log_error("plugin_host", &format!("set_bounds failed: {error}"));
+        }).map_err(|_| "plugin_layout_failed".into())
+    }
+    #[cfg(not(target_os = "linux"))]
     view.set_bounds(tauri::Rect {
         position: tauri::LogicalPosition::new(bounds.x, bounds.y).into(),
         size: tauri::LogicalSize::new(bounds.width, bounds.height).into(),
@@ -505,20 +555,35 @@ fn persist_diagnostics(instance: &Instance) {
     }
 }
 
+fn valid_toolbar_search(value: &str) -> bool {
+    value.len() <= 256 && value.encode_utf16().count() <= 80 && !value.chars().any(char::is_control)
+}
+
 fn valid_tools(namespace: &str, max_items: usize, items: &[Tool]) -> bool {
     let mut ids = std::collections::BTreeSet::new();
     items.len() <= max_items && items.iter().all(|item| {
         !item.id.is_empty() && item.id.len() <= 64 && ids.insert(&item.id)
             && item.command_id.starts_with(&format!("{namespace}.")) && item.command_id.len() <= 64
             && !item.label.is_empty() && item.label.len() <= 100
-            && (item.kind == "button" || (item.kind == "select" && !item.options.is_empty()
-                && item.options.len() <= 8 && item.options.iter().all(|o| o.value.len() <= 32 && o.label.len() <= 100)
-                && item.options.iter().any(|o| Some(&o.value) == item.value.as_ref())))
+            && match item.kind.as_str() {
+                "button" => true,
+                "select" => !item.options.is_empty() && item.options.len() <= 8
+                    && item.options.iter().all(|o| o.value.len() <= 32 && o.label.len() <= 100)
+                    && item.options.iter().any(|o| Some(&o.value) == item.value.as_ref()),
+                "search" => item.options.is_empty() && item.value.as_deref().is_some_and(valid_toolbar_search),
+                _ => false,
+            }
     })
 }
 
 fn refresh_fault(i: &mut Instance) -> bool {
     if i.suspended { return false; }
+    // A hidden retained view must not fail just for being hidden — but its
+    // health timer keeps running while hidden, so the hidden declaration is
+    // refreshed every couple of seconds. A stale declaration means the page
+    // died while hidden; stop suppressing so the normal checks below fire
+    // instead of staying blind forever.
+    if i.page_hidden && i.hidden_since.is_some_and(|since| since.elapsed() <= Duration::from_secs(30)) { return false; }
     if i.failed.is_some() { return false; }
     if i.in_flight > 0 { return false; }
     if i.busy_until.is_some_and(|until| Instant::now() < until) { return false; }
@@ -528,6 +593,88 @@ fn refresh_fault(i: &mut Instance) -> bool {
         else { None };
     if let Some(code) = fault { i.failed = Some(code); note(i, code); return true; }
     false
+}
+
+fn presence_of(i: &Instance, generation: u64) -> agent_vitals_runtime::query::plugin_calls::ConsumerPresence {
+    let hidden_for = i.hidden_since.map(|since| since.elapsed().as_millis() as u64).unwrap_or(0);
+    let acceptance = if i.failed.is_some() { "failed" } else if i.suspended { "suspended" } else if i.ready { "ready" } else { "loading" };
+    agent_vitals_runtime::query::plugin_calls::ConsumerPresence {
+        plugin_id: i.plugin_id.clone(), instance_id: i.id.clone(), generation,
+        acceptance: acceptance.into(), fault: i.failed.map(str::to_string),
+        pulse_age_ms: i.pulse.elapsed().as_millis() as u64, hidden: i.page_hidden,
+        hidden_for_ms: if i.page_hidden { hidden_for } else { 0 },
+        in_flight: i.in_flight, ready: i.ready, suspended: i.suspended,
+    }
+}
+
+fn presence_closed(i: &Instance, generation: u64) -> agent_vitals_runtime::query::plugin_calls::ConsumerPresence {
+    let mut presence = presence_of(i, generation);
+    presence.acceptance = "closed".into();
+    presence.ready = false;
+    presence.suspended = false;
+    presence
+}
+
+fn publish_presence(presence: &agent_vitals_runtime::query::plugin_calls::ConsumerPresence) {
+    let home = crate::overview::data_home();
+    if let Err(code) = agent_vitals_runtime::query::plugin_calls::publish_consumer(&home, presence) {
+        agent_vitals_runtime::logging::log_warn("plugin_host", &format!("consumer presence not recorded code={code}"));
+    }
+}
+
+fn report_new_fault(presence: &agent_vitals_runtime::query::plugin_calls::ConsumerPresence) {
+    let line = agent_vitals_runtime::query::plugin_calls::format_fault_context(presence);
+    agent_vitals_runtime::logging::log_warn("plugin_host", &line);
+    retain_diagnostic(&line);
+    publish_presence(presence);
+}
+
+/// Append-only fault/close line under the data home. The temp diagnostics JSON
+/// is one current instance and is replaced by the next view; this file is not.
+fn retain_diagnostic(line: &str) {
+    #[cfg(not(test))]
+    {
+        let path = crate::overview::data_home().join("logs").join("plugin-faults.jsonl");
+        if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            use std::io::Write;
+            let _ = writeln!(file, "{line}");
+        }
+    }
+    #[cfg(test)]
+    let _ = line;
+}
+
+fn canonical_close_reason(reason: Option<&str>) -> &'static str {
+    match reason {
+        Some("snapshot-failed") => "snapshot-failed",
+        Some("snapshot-unavailable") => "snapshot-unavailable",
+        Some("startup-cancelled") => "startup-cancelled",
+        Some("tab-suspend") => "tab-suspend",
+        Some("user-close") => "user-close",
+        Some("user-leave") => "user-leave",
+        _ => "unspecified",
+    }
+}
+
+/// Suspend keeps a live instance and its playtest claim. A failed instance is
+/// destroyed instead, so leaving it frees the single slot and settles the claim.
+/// The health snapshot itself does not call close.
+fn close_keeps_instance(suspend: Option<bool>, failed: bool) -> bool {
+    suspend == Some(true) && !failed
+}
+
+#[cfg(test)]
+mod close_instance_tests {
+    use super::close_keeps_instance;
+
+    #[test]
+    fn a_failed_instance_is_destroyed_when_the_user_leaves() {
+        assert!(close_keeps_instance(Some(true), false), "a live tab suspend keeps the claim");
+        assert!(!close_keeps_instance(Some(true), true), "a health fault cannot stay suspended");
+        assert!(!close_keeps_instance(None, false));
+        assert!(!close_keeps_instance(Some(false), true));
+    }
 }
 
 fn begin_activity(host: &PluginHost, id: &str) {
@@ -572,10 +719,16 @@ fn subscriber_view(app: &tauri::AppHandle, event: &str) -> Option<(String, Strin
 }
 
 fn deliver_host_payload(app: &tauri::AppHandle, expected_plugin_id: &str, payload: &serde_json::Value) -> bool {
+    deliver_host_payload_capped(app, expected_plugin_id, payload, HOST_EVENT_MAX_BYTES)
+}
+
+/// `max_bytes`：通用宿主事件保持 64 KiB 安全上限；plugin.call.request 由宿主按
+/// 描述符的方法请求预算放宽（§5.5）。
+fn deliver_host_payload_capped(app: &tauri::AppHandle, expected_plugin_id: &str, payload: &serde_json::Value, max_bytes: usize) -> bool {
     if !payload.is_object() { return false; }
     let envelope = serde_json::json!({"version":1,"source":"host","payload":payload});
     let Ok(bytes) = serde_json::to_vec(&envelope) else { return false; };
-    if bytes.len() > HOST_EVENT_MAX_BYTES { return false; }
+    if bytes.len() > max_bytes { return false; }
     let digest = {
         use sha2::Digest;
         let mut hasher = sha2::Sha256::new();
@@ -633,15 +786,324 @@ fn poll_plugin_call_queue(app: &tauri::AppHandle) {
         &home, &plugin_id, &instance_id, &definition.local_calls, 8,
     ) else { return; };
     for (index, call) in calls.iter().enumerate() {
-        if !deliver_host_payload(app, &plugin_id, &json!({"kind":"plugin.call.request", "call":call})) {
-            for pending in &calls[index..] {
-                if let Some(call_id) = pending["callId"].as_str() {
-                    let _ = agent_vitals_runtime::query::plugin_calls::release_claim(&home, &plugin_id, &instance_id, call_id);
-                }
+        // 方法请求预算（§5.5）：宿主按描述符执行；信封包装开销单独留余量。
+        let method = call["method"].as_str().unwrap_or_default().to_owned();
+        let (request_budget, response_budget) = transport_budget_for(definition, &method);
+        let envelope = json!({"kind":"plugin.call.request", "call":call});
+        let delivery_limit = request_budget.saturating_add(CALL_ENVELOPE_SLACK_BYTES);
+        if deliver_host_payload_capped(app, &plugin_id, &envelope, delivery_limit) { continue; }
+        // 超预算的调用必须立即终结而不是释放回队列让调用方干等：写入小错误响应，
+        // wait_response 马上拿到 plugin_call_too_large 终态（不得遗留 pending/claimed）。
+        let oversize = serde_json::to_vec(&envelope).map(|bytes| bytes.len() > delivery_limit).unwrap_or(true);
+        if oversize {
+            if let Some(call_id) = call["callId"].as_str() {
+                let _ = agent_vitals_runtime::query::plugin_calls::respond_with_budget(
+                    &home, &plugin_id, &instance_id, call_id,
+                    &json!({"error":{"code":"plugin_call_too_large"}}), response_budget);
             }
-            break;
+            continue;
+        }
+        // 其余投递失败（无订阅 WebView 等）：保持既有语义——释放回队列等后续 poll。
+        for pending in &calls[index..] {
+            if let Some(call_id) = pending["callId"].as_str() {
+                let _ = agent_vitals_runtime::query::plugin_calls::release_claim(&home, &plugin_id, &instance_id, call_id);
+            }
+        }
+        break;
+    }
+}
+
+// ── headless creator 语义闸（E5 全量，spec §8.4 路径 2 / §11.6）──
+// Studio webview 缺席时，宿主自己 claim 并作答一个**显式窄名单**内的 creator 方法：
+// 语义校验由宿主内嵌 city-sdk 闸（embedded_city_sdk，rquickjs/QuickJS，digest 锁步）
+// 完成，写路径经 dispatch_as 走与 Studio 完全相同的 preview/commit 管线。语义通过
+// → 正常签发 previewId / 落库（validation:"embedded-sdk"，可 commit）；语义失败 →
+// 同诊断拒绝。Studio 在场时本臂完全停用（互斥由 mailbox 原子 claim + ready 检查
+// 双重保证），信封路径不变（validation:"studio-envelope"）。
+
+/// headless 臂的 mailbox 实例标识（preview 的 instance 绑定与 commit 归属一致）。
+pub(crate) const HEADLESS_CREATOR_INSTANCE: &str = "host-headless";
+
+/// headless 臂可作答的方法窄名单：只包含「语义闸可覆盖 + 纯宿主本地」的方法。
+/// 视口/City 运行时依赖（layout.save、anchor、publish、playtest 等）**不在名单内**
+/// ——headless 绝不假装能做视口能力，让它们继续走 plugin_unavailable 的诚实延迟。
+fn headless_creator_methods() -> Vec<String> {
+    [
+        "creator.city.list",
+        "creator.city.read",
+        "creator.city.create",
+        "creator.city.edit.preview",
+        "creator.city.edit.commit",
+        "creator.scene.preview",
+        "creator.vehicle.preview",
+        "creator.vehicle.define",
+        "creator.vehicle.inspect",
+        "creator.project.commit",
+        // 只读/纯本地写：布局目录与项目创建不依赖视口（项目来自已存布局），
+        // 是 headless 车辆编辑链的前置；缺了它们 W2 的 2c/2d/2e 根本走不到。
+        "creator.layout.list",
+        "creator.project.create",
+        // 纯本地 store 操作（不需要视口）：空域锚点、typed mount、发布冻结。
+        // 它们仍是「结构闸 + 宿主校验」；语义面由 gate 的 scene/game 校验与
+        // Studio 的 scene.preview 覆盖，headless 臂不冒充语义通过。
+        "creator.city.anchor.upsert",
+        "creator.city.anchor.remove",
+        "creator.mount.bind",
+        "creator.mount.unbind",
+        "creator.project.publish",
+        "creator.mount.list",
+        "creator.project.list",
+        "creator.operation.status",
+        // V3 PR-7 前半（RFC §12 / §6 [r1] creator 域扩展）：Story 注册表 11 方法 +
+        // City Code 安装 3 方法 + Inspect 只读 4 方法。全部「纯宿主本地」：
+        // 不依赖视口；写路径经 dispatch_as 与 Studio 在场时走完全相同的
+        // preview/commit 管线（CAS、operationId 幂等、预算与错误码一致）；
+        // 运行身份固定为稳定本地 principal（LOCAL_CREATOR_OWNER，与 mailbox 臂
+        // 同款），绝不接受调用方自报 playerId/instance 归属。
+        "creator.code.install.preview",
+        "creator.code.install.commit",
+        "creator.code.install.list",
+        "creator.story.project.create",
+        "creator.story.project.preview",
+        "creator.story.project.read",
+        "creator.story.projects.list",
+        "creator.actor.register",
+        "creator.actor.turn.context",
+        "creator.actor.intent.submit",
+        "creator.actor.propose",
+        "creator.story.install.preview",
+        "creator.story.install.commit",
+        "creator.story.install.list",
+        "creator.story.run.start",
+        "creator.story.run.stop",
+        "creator.story.run.reset",
+        "creator.story.resident.lease.acquire",
+        "creator.story.resident.lease.release",
+        "creator.game.rules.inspect",
+        "creator.story.graph.inspect",
+        "creator.story.timeline.inspect",
+        "creator.game.intent.simulate",
+        // pull 模式 submit 的服务端复核：纯宿主本地检查（内存 preview 表），
+        // Studio 不在场时也必须可作答，否则任何 Agent 的提交都会 15s 超时。
+        "creator.task.preview.verify",
+    ].into_iter().map(str::to_owned).collect()
+}
+
+/// Studio webview 是否处于可作答状态（与 subscriber_view 同一判据）。
+/// 嵌入式 gate 产物完整性（fail closed）：启动后第一次使用前核对 bundle 实际摘要
+/// 与锁文件钉住值；不符则本进程内永久停用 headless 臂（语义闸退回诚实不可用），
+/// 绝不带着被篡改/漂移的产物放行写路径。核对结果只记稳定码，不落任何载荷。
+fn embedded_gate_integrity_ok() -> bool {
+    static VERDICT: OnceLock<bool> = OnceLock::new();
+    *VERDICT.get_or_init(|| {
+        let lock = crate::embedded_city_sdk::gate_lock();
+        let recorded = lock.get("bundleSha256").and_then(Value::as_str).unwrap_or_default();
+        let actual = crate::embedded_city_sdk::gate_bundle_digest().strip_prefix("sha256:").unwrap_or_default().to_owned();
+        let ok = !recorded.is_empty() && recorded == actual;
+        if !ok { agent_vitals_runtime::logging::log_warn("plugin_host", "embedded city-sdk gate digest mismatch; headless arm disabled"); }
+        ok
+    })
+}
+
+fn studio_instance_ready(app: &tauri::AppHandle) -> bool {
+    let host = app.state::<PluginHost>();
+    let guard = host.0.lock().unwrap_or_else(|error| error.into_inner());
+    guard.current.as_ref().is_some_and(|instance| instance.plugin_id == "creator-studio"
+        && instance.ready && !instance.suspended && instance.failed.is_none())
+}
+
+/// Studio 实例是否存在（不管 ready/suspended）。preview 与 commit 都是实例绑定的：
+/// 只要 Studio 在，headless 臂就必须休眠，否则会出现「Studio 签发预览、headless 臂
+/// 认领提交」的跨实例配对，宿主只能报 preview_expired/permission_denied。
+fn studio_instance_present(app: &tauri::AppHandle) -> bool {
+    let host = app.state::<PluginHost>();
+    let guard = host.0.lock().unwrap_or_else(|error| error.into_inner());
+    guard.current.as_ref().is_some_and(|instance| instance.plugin_id == "creator-studio")
+}
+
+/// headless 臂在 Studio 缺席时发布 ready presence：让 MCP 侧保持等待（不快速失败）
+/// 而本臂在 500ms 内作答。Studio webview 打开时其自身 presence 发布会覆盖本文件
+/// （每插件单文件设计），本函数检测到 Studio ready 即停写。
+fn publish_headless_presence_if_studio_absent(home: &std::path::Path, studio_ready: bool) {
+    if studio_ready { return; }
+    if let Ok(existing) = agent_vitals_runtime::query::plugin_calls::read_consumer(home, "creator-studio") {
+        if existing.as_ref().is_some_and(|presence| presence.instance_id == HEADLESS_CREATOR_INSTANCE
+            && presence.acceptance == "ready") { return; }
+    }
+    let presence = agent_vitals_runtime::query::plugin_calls::ConsumerPresence {
+        plugin_id: "creator-studio".into(), instance_id: HEADLESS_CREATOR_INSTANCE.into(), generation: 0,
+        acceptance: "ready".into(), fault: None, pulse_age_ms: 0, hidden: false, hidden_for_ms: 0,
+        in_flight: 0, ready: true, suspended: false,
+    };
+    if let Err(code) = agent_vitals_runtime::query::plugin_calls::publish_consumer(home, &presence) {
+        agent_vitals_runtime::logging::log_warn("plugin_host", &format!("headless presence not recorded code={code}"));
+    }
+}
+
+/// city.edit.preview Form B（world.set）的 headless 载荷转换：读权威 city 文档 →
+/// 嵌入式合并/复验 → requestDigest 信封（与 webview attachValidation 的 Form B
+/// 分支逐语义一致，digest 规格同 canonicalJson）。
+pub(crate) fn headless_world_edit_payload(home: &std::path::Path, payload: &Value) -> Result<Value, &'static str> {
+    let city_id = payload.get("cityId").and_then(Value::as_str).unwrap_or_default().to_owned();
+    let base_revision = payload.get("baseRevision").and_then(Value::as_u64).unwrap_or_default();
+    let city = crate::creator_cities::read_city(home, city_id.as_str())?;
+    let (ok, profile) = crate::creator_projects::embedded_world_edit(&city, base_revision, &payload["operations"])?;
+    let request = json!({"cityId": city_id, "baseRevision": base_revision, "profile": profile, "operations": payload["operations"]});
+    let request_digest = crate::creator_store::digest(&crate::creator_store::canonical_json(&request).map_err(|_| "creator_city_invalid")?);
+    Ok(json!({"cityId": city_id, "baseRevision": base_revision, "profile": profile,
+        "operations": payload["operations"],
+        "validation": {"schemaVersion": 1, "requestDigest": request_digest, "ok": ok}}))
+}
+
+/// creator.city.create 的 headless 载荷转换（与 webview attachValidation 的
+/// creator.city.create 分支一致：SDK 语义 + requestDigest over 请求本身）。
+fn headless_city_create_payload(home: &std::path::Path, payload: &Value) -> Result<Value, &'static str> {
+    let name = payload.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
+    let seed = payload.get("seed").and_then(Value::as_u64).unwrap_or_default();
+    let profile = payload.get("profile").cloned().unwrap_or(Value::Null);
+    let ok = crate::creator_projects::embedded_city_create_validation(&name, seed, &profile)?;
+    let request = json!({"name": name, "seed": seed, "profile": profile, "operationId": payload.get("operationId").cloned().unwrap_or(Value::Null)});
+    let request_digest = crate::creator_store::digest(&crate::creator_store::canonical_json(&request).map_err(|_| "creator_city_invalid")?);
+    let _ = home;
+    Ok(json!({"name": name, "seed": seed, "profile": request["profile"].clone(),
+        "operationId": request["operationId"].clone(),
+        "validation": {"schemaVersion": 1, "requestDigest": request_digest, "ok": ok}}))
+}
+
+/// creator.scene.preview 的 headless 载荷转换：读权威项目文档 → 嵌入式单对象
+/// 场景校验（与 webview buildSceneValidation 同语义）→ requestDigest 信封
+/// （digest over canonical(operations)，与 webview payloadDigest 同规格）。
+pub(crate) fn headless_scene_preview_payload(home: &std::path::Path, payload: &Value) -> Result<Value, &'static str> {
+    let project_id = payload.get("projectId").and_then(Value::as_str).unwrap_or_default().to_owned();
+    let base_revision = payload.get("baseRevision").and_then(Value::as_u64).unwrap_or_default();
+    let (revision, raw): (u64, String) = crate::creator_projects::project_snapshot(home, &project_id)?;
+    if revision != base_revision { return Err("revision_conflict"); }
+    let _ = raw; // 单对象校验不读文档；读取仅为 revision CAS 与项目存在性
+    let (ok, diagnostics) = crate::creator_projects::embedded_scene_preview(&payload["operations"])?;
+    let request_digest = crate::creator_store::digest(&crate::creator_store::canonical_json(&payload["operations"]).map_err(|_| "creator_scene_ops_invalid")?);
+    Ok(json!({"projectId": project_id, "baseRevision": base_revision, "operations": payload["operations"],
+        "validation": {"ok": ok,
+            "capabilityVersion": crate::creator_projects::creator_capability_version(),
+            "validatorVersion": 1, "projectId": project_id, "baseRevision": base_revision,
+            "payloadDigest": request_digest, "diagnostics": diagnostics}}))
+}
+
+/// headless creator 臂的轮询入口：lib.rs setup 起一个 500ms 循环驱动。
+pub(crate) fn poll_headless_creator_calls(app: &tauri::AppHandle) {
+    let home = crate::overview::data_home();
+    let studio_ready = studio_instance_ready(app);
+    // Studio 实例存在即休眠（不只是 ready）：实例绑定的 preview/commit 必须由同一方
+    // 完成，否则跨消费者提交会以 preview_expired 失败。
+    if studio_instance_present(app) || !embedded_gate_integrity_ok() { return; }
+    publish_headless_presence_if_studio_absent(&home, studio_ready);
+    let Ok(calls) = agent_vitals_runtime::query::plugin_calls::claim_pending(
+        &home, "creator-studio", HEADLESS_CREATOR_INSTANCE, &headless_creator_methods(), 4) else { return; };
+    if calls.is_empty() { return; }
+    let definition = definitions().iter().find(|plugin| plugin.id == "creator-studio");
+    for call in &calls {
+        let method = call["method"].as_str().unwrap_or_default().to_owned();
+        let Some(call_id) = call["callId"].as_str().map(str::to_owned) else { continue };
+        // claim_pending 返回的 payload 已经是 Value（不是 JSON 字符串）：早先按 as_str()
+        // 解析会让每次 headless 调用都拿到空对象，dispatch 一律以 creator_request_invalid
+        // 拒绝——单测直接传 payload，所以只有真机 W2 才暴露。
+        let payload = call.get("payload").filter(|value| value.is_object()).cloned().unwrap_or_else(|| json!({}));
+        let response_budget = definition.map(|definition| transport_budget_for(definition, &method).1)
+            .unwrap_or(TRANSPORT_BUDGET_DEFAULT_BYTES);
+        let result = answer_headless_call(&home, &method, &payload);
+        let response = match result {
+            Ok(value) => json!({"ok": true, "result": value}),
+            Err(code) => json!({"ok": false, "error": {"code": code}}),
+        };
+        if let Err(code) = agent_vitals_runtime::query::plugin_calls::respond_with_budget(
+            &home, "creator-studio", HEADLESS_CREATOR_INSTANCE, &call_id, &response, response_budget) {
+            agent_vitals_runtime::logging::log_warn("plugin_host", &format!("headless response not recorded code={code}"));
         }
     }
+}
+
+/// 单个 headless 调用的作答：vehicle 路径直连嵌入式变体（来源标记 embedded-sdk、
+/// 语义通过即签发 previewId/落库），city/world 走 dispatch 后注入来源标记，
+/// commit/只读方法与 Studio 在场时走同一宿主管线。
+fn answer_headless_call(home: &std::path::Path, method: &str, payload: &Value) -> Result<Value, &'static str> {
+    let project_id = payload.get("projectId").and_then(Value::as_str).unwrap_or_default().to_owned();
+    let base_revision = payload.get("baseRevision").and_then(Value::as_u64).unwrap_or_default();
+    match method {
+        "creator.vehicle.preview" => {
+            let raw_vehicle = if payload.get("vehicle").is_some() { payload["vehicle"].clone() }
+                else { flattened_vehicle_payload(payload) };
+            let (vehicle, envelope) = crate::creator_projects::embedded_vehicle_validation(&project_id, base_revision, &raw_vehicle)?;
+            let mut preview = crate::creator_projects::preview_replace_vehicle_embedded(
+                home, HEADLESS_CREATOR_INSTANCE, &project_id, base_revision, &vehicle, &envelope)?;
+            // 与 Studio 预览同源的确定性性能预估（city-sdk estimateVehiclePerformanceV1）。
+            if preview.get("previewId").is_some() {
+                if let Ok(estimate) = crate::creator_projects::embedded_vehicle_estimate(&vehicle) {
+                    preview["estimatedPerformance"] = estimate;
+                }
+            }
+            Ok(preview)
+        }
+        "creator.vehicle.define" => {
+            let raw_vehicle = if payload.get("vehicle").is_some() { payload["vehicle"].clone() }
+                else { flattened_vehicle_payload(payload) };
+            let (vehicle, envelope) = crate::creator_projects::embedded_vehicle_validation(&project_id, base_revision, &raw_vehicle)?;
+            let operation_id = payload.get("operationId").and_then(Value::as_str).unwrap_or_default();
+            crate::creator_projects::define_vehicle_embedded(home, crate::creator_projects::LOCAL_CREATOR_OWNER,
+                &project_id, base_revision, &vehicle, &envelope, operation_id)
+        }
+        "creator.city.create" | "creator.city.edit.preview" | "creator.city.edit.commit"
+        | "creator.city.list" | "creator.city.read" | "creator.vehicle.inspect"
+        | "creator.project.commit" | "creator.project.create" | "creator.layout.list"
+        | "creator.city.anchor.upsert" | "creator.city.anchor.remove" | "creator.mount.bind"
+        | "creator.mount.unbind" | "creator.project.publish" | "creator.mount.list"
+        | "creator.project.list" | "creator.operation.status"
+        // V3 PR-7 前半：Story 注册表 / City Code 安装 / Inspect 只读——全部直接
+        // 路由宿主 dispatch_as（与 Studio 在场时同一管线），无 headless 特例。
+        | "creator.code.install.preview" | "creator.code.install.commit" | "creator.code.install.list"
+        | "creator.story.project.create" | "creator.story.project.preview" | "creator.story.project.read" | "creator.story.projects.list"
+        | "creator.actor.register" | "creator.actor.turn.context" | "creator.actor.intent.submit" | "creator.actor.propose"
+        | "creator.story.install.preview" | "creator.story.install.commit" | "creator.story.install.list"
+        | "creator.story.run.start" | "creator.story.run.stop" | "creator.story.run.reset"
+        | "creator.story.resident.lease.acquire" | "creator.story.resident.lease.release"
+        | "creator.game.rules.inspect" | "creator.story.graph.inspect"
+        | "creator.story.timeline.inspect" | "creator.game.intent.simulate"
+        | "creator.task.preview.verify" => {
+            let transformed = match method {
+                "creator.city.edit.preview" => headless_world_edit_payload(home, payload)?,
+                "creator.city.create" => headless_city_create_payload(home, payload)?,
+                "creator.scene.preview" => headless_scene_preview_payload(home, payload)?,
+                _ => payload.clone(),
+            };
+            let mut result = crate::creator_projects::dispatch_as(home, crate::creator_projects::LOCAL_CREATOR_OWNER,
+                HEADLESS_CREATOR_INSTANCE, method, &transformed)?;
+            // 来源记录（E5）：city edit preview/commit 响应显式标注 embedded-sdk；
+            // vehicle/game/scene 的标记由 preview/commit 管线自带。
+            if matches!(method, "creator.city.edit.preview" | "creator.city.edit.commit") {
+                result["validation"] = json!(crate::creator_projects::VALIDATION_SOURCE_EMBEDDED);
+            }
+            Ok(result)
+        }
+        _ => Err("creator_method_unavailable"),
+    }
+}
+
+/// MCP define 面的展平字段 → 完整 profile 候选（camera 交给闸的确定性默认公式）。
+fn flattened_vehicle_payload(payload: &Value) -> Value {
+    json!({"schemaVersion": 1, "id": payload.get("vehicleId").cloned().unwrap_or(Value::Null),
+        "label": payload.get("label").cloned().unwrap_or(Value::Null),
+        "modelAssetId": payload.get("modelAssetId").cloned().unwrap_or(Value::Null),
+        "flightModel": payload.get("flightModel").cloned().unwrap_or(Value::Null),
+        "physics": payload.get("physics").cloned().unwrap_or(Value::Null),
+        "bounds": payload.get("bounds").cloned().unwrap_or(Value::Null)})
+}
+
+/// lib.rs setup 驱动的 headless 臂循环。与 Studio 的 watchdog 相互独立：
+/// watchdog 只在有插件 webview 后启动，而本臂必须在「app 在跑、Studio 从未打开」
+/// 时就工作（这正是 headless 场景）。
+pub(crate) fn start_headless_creator_tick(app: tauri::AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(500));
+        poll_headless_creator_calls(&app);
+    });
 }
 
 fn start_watchdog(app: &tauri::AppHandle, state: &PluginHost) {
@@ -654,11 +1116,13 @@ fn start_watchdog(app: &tauri::AppHandle, state: &PluginHost) {
         let faulted_instance = {
             let state = app.state::<PluginHost>();
             let mut host = state.0.lock().unwrap();
+            let generation = host.generation;
             if let Some(instance) = host.current.as_mut() {
-                if refresh_fault(instance) { Some(instance.id.clone()) } else { None }
+                if refresh_fault(instance) { Some((instance.id.clone(), presence_of(instance, generation))) } else { None }
             } else { None }
         };
-        if let Some(instance_id) = faulted_instance {
+        if let Some((instance_id, presence)) = faulted_instance {
+            report_new_fault(&presence);
             crate::remote_gateway::close_sessions_for_instance(&app, &instance_id);
             notify_host(&app);
         }
@@ -731,31 +1195,49 @@ pub async fn plugin_open(app: tauri::AppHandle, webview: Webview, state: tauri::
             ensure_native_attachment(&app, &view)?;
             let _ = view.eval(format!("window.__AV_PLUGIN_LOCALE__ = '{}'; window.dispatchEvent(new Event('__AV_PLUGIN_LOCALE_CHANGED__'));", locale));
             let _ = view.eval("window.dispatchEvent(new Event('__AV_PLUGIN_RESUMED__'))");
-            if let Some(i) = state.0.lock().unwrap().current.as_mut() {
-                if i.suspended { i.suspended = false; i.pulse = Instant::now(); if !i.ready { i.started = Instant::now(); } note(i, "resumed"); }
-            }
+            let resumed = {
+                let mut host = state.0.lock().unwrap();
+                let generation = host.generation;
+                host.current.as_mut().filter(|i| i.id == id).map(|i| {
+                    if i.suspended { i.suspended = false; i.pulse = Instant::now(); if !i.ready { i.started = Instant::now(); } note(i, "resumed"); }
+                    presence_of(i, generation)
+                })
+            };
+            if let Some(presence) = resumed { publish_presence(&presence); }
             return Ok(id);
         }
     }
     if bounds_only { return Err("plugin_instance_unavailable".into()); }
-    let old = state.0.lock().unwrap().current.take();
+    let (old, old_generation) = {
+        let mut host = state.0.lock().unwrap();
+        let generation = host.generation;
+        (host.current.take(), generation)
+    };
     if let Some(old) = old {
+        publish_presence(&presence_closed(&old, old_generation));
         crate::remote_gateway::close_sessions_for_instance(&app, &old.id);
         if let Some(view) = app.get_webview(&old.id) {
             agent_vitals_runtime::logging::log_warn("plugin_host", &format!("view.close() [replace] id={}", old.id));
             let _ = view.close();
         }
+        // suspend 只是藏起 webview，实例 id 还在，试玩认领继续有效。真正拆掉
+        // 之后 City 不会再 finish，claimed 槽位必须在这里收成可恢复的终态。
+        settle_destroyed_playtest(&old.plugin_id, &old.id);
     }
     let id = {
         let mut host = state.0.lock().unwrap();
         host.generation += 1;
         let id = format!("plugin-{}-{}", definition.id, host.generation);
         let mut current = Instance { id: id.clone(), plugin_id: definition.id.clone(), command_namespace: definition.command_namespace.clone(), max_toolbar_items: definition.max_toolbar_items, performance_metrics: definition.performance_metrics.clone(), started: Instant::now(), pulse: Instant::now(), ready: false, suspended: false,
-            failed: None, revision: 0, items: Vec::new(), sequence: 0, pending: None, in_flight: 0, busy_until: None, events: Vec::new() };
+            page_hidden: false, hidden_since: None, failed: None, revision: 0, items: Vec::new(), sequence: 0, pending: None, in_flight: 0, busy_until: None, events: Vec::new() };
         note(&mut current, "create_started");
+        let presence = presence_of(&current, host.generation);
         host.current = Some(current);
-        id
+        (id, presence)
     };
+    let (id, created) = id;
+    publish_presence(&created);
+    adopt_opened_playtest(&definition.id, &id);
     let initialization = format!("window.__AV_PLUGIN_INSTANCE__ = {}; window.__AV_PLUGIN_LOCALE__ = '{}';", serde_json::to_string(&id).unwrap(), locale);
     let allow_local_exports = definition.allow_local_exports;
     let builder = apply_plugin_webview_platform(&app, WebviewBuilder::new(&id, WebviewUrl::App(definition.entry.clone().into()))
@@ -787,12 +1269,17 @@ pub async fn plugin_open(app: tauri::AppHandle, webview: Webview, state: tauri::
         })
         .on_page_load(|view, payload| {
             let state = view.app_handle().state::<PluginHost>();
-            let mut host = state.0.lock().unwrap();
-            if let Some(i) = host.current.as_mut().filter(|i| i.id == view.label()) {
-                if payload.event() == tauri::webview::PageLoadEvent::Started && i.ready {
-                    i.failed = Some("plugin_reloaded"); note(i, "plugin_reloaded");
-                } else { note(i, "view_load"); }
-            }
+            let reloaded = {
+                let mut host = state.0.lock().unwrap();
+                let generation = host.generation;
+                if let Some(i) = host.current.as_mut().filter(|i| i.id == view.label()) {
+                    if payload.event() == tauri::webview::PageLoadEvent::Started && i.ready {
+                        i.failed = Some("plugin_reloaded"); note(i, "plugin_reloaded");
+                        Some(presence_of(i, generation))
+                    } else { note(i, "view_load"); None }
+                } else { None }
+            };
+            if let Some(presence) = reloaded { report_new_fault(&presence); }
         });
     #[cfg(all(feature = "plugin-isolation-probe", target_os = "macos"))]
     let builder = if std::env::args().any(|arg| arg == "--mecha-v15-local-test") {
@@ -828,13 +1315,23 @@ pub async fn plugin_open(app: tauri::AppHandle, webview: Webview, state: tauri::
         Err(error) => {
             let code = native_create_failure_code(&error);
             agent_vitals_runtime::logging::log_error("plugin_host", &format!("native child WebView creation failed ({code}): {error}"));
-            if let Some(current) = state.0.lock().unwrap().current.as_mut() {
-                current.failed = Some(code);
-                note(current, code);
-            }
+            let fault = {
+                let mut host = state.0.lock().unwrap();
+                let generation = host.generation;
+                if let Some(current) = host.current.as_mut() {
+                    current.failed = Some(code);
+                    note(current, code);
+                    Some(presence_of(current, generation))
+                } else { None }
+            };
+            if let Some(presence) = fault { report_new_fault(&presence); }
             return Err(code.into());
         }
     };
+    // Linux: add_child packs the view into the window's vertical GtkBox
+    // beside the host; move it into the host overlay at the requested bounds.
+    #[cfg(target_os = "linux")]
+    crate::plugin_webview_layout::linux::adopt(&view, crate::plugin_webview_layout::overlay_child_geometry(bounds.x, bounds.y, bounds.width, bounds.height))?;
     ensure_native_attachment(&app, &view)?;
     let _ = view.set_focus();
     Ok(id)
@@ -874,18 +1371,39 @@ pub fn plugin_set_bounds(
 }
 
 #[tauri::command]
-pub async fn plugin_close(app: tauri::AppHandle, webview: Webview, state: tauri::State<'_, PluginHost>, instance_id: String, suspend: Option<bool>) -> Result<(), String> {
+pub async fn plugin_close(app: tauri::AppHandle, webview: Webview, state: tauri::State<'_, PluginHost>, instance_id: String, suspend: Option<bool>, reason: Option<String>) -> Result<(), String> {
     host_only(&webview)?;
     let _operation = state.1.lock().unwrap();
-    agent_vitals_runtime::logging::log_info("plugin_host", &format!("plugin_close entry id={instance_id} suspend={suspend:?}"));
+    let reason = canonical_close_reason(reason.as_deref());
+    let entry = {
+        let host = state.0.lock().unwrap();
+        let generation = host.generation;
+        host.current.as_ref().filter(|i| i.id == instance_id).map(|i| presence_of(i, generation))
+    };
+    agent_vitals_runtime::logging::log_info("plugin_host", &format!(
+        "plugin_close entry id={instance_id} suspend={suspend:?} reason={reason} failed={} pulseAgeMs={} hidden={} generation={} ready={} inFlight={}",
+        entry.as_ref().and_then(|presence| presence.fault.as_deref()).unwrap_or("none"),
+        entry.as_ref().map(|presence| presence.pulse_age_ms).unwrap_or(0),
+        entry.as_ref().map(|presence| presence.hidden).unwrap_or(false),
+        entry.as_ref().map(|presence| presence.generation).unwrap_or(0),
+        entry.as_ref().map(|presence| presence.ready).unwrap_or(false),
+        entry.as_ref().map(|presence| presence.in_flight).unwrap_or(0),
+    ));
+    retain_diagnostic(&format!(
+        "plugin_close id={instance_id} suspend={suspend:?} reason={reason} failed={}",
+        entry.as_ref().and_then(|presence| presence.fault.as_deref()).unwrap_or("none"),
+    ));
     if suspend == Some(true) {
-        let valid = {
+        let suspended = {
             let mut host = state.0.lock().unwrap();
-            if let Some(i) = host.current.as_mut().filter(|i| i.id == instance_id && i.failed.is_none()) {
-                i.suspended = true; i.pending = None; note(i, "suspended"); true
-            } else { false }
+            let generation = host.generation;
+            if let Some(i) = host.current.as_mut().filter(|i| i.id == instance_id && close_keeps_instance(Some(true), i.failed.is_some())) {
+                i.suspended = true; i.pending = None; note(i, "suspended");
+                Some(presence_of(i, generation))
+            } else { None }
         };
-        if valid {
+        if let Some(presence) = suspended {
+            publish_presence(&presence);
             if let Some(view) = app.get_webview(&instance_id) {
                 let _ = view.eval("window.dispatchEvent(new Event('__AV_PLUGIN_SUSPENDED__'))");
                 view.hide().map_err(|_| "plugin_hide_failed")?;
@@ -895,35 +1413,83 @@ pub async fn plugin_close(app: tauri::AppHandle, webview: Webview, state: tauri:
     }
     let old = {
         let mut host = state.0.lock().unwrap();
-        if host.current.as_ref().is_some_and(|i| i.id == instance_id) { host.current.take() } else { None }
+        let generation = host.generation;
+        if host.current.as_ref().is_some_and(|i| i.id == instance_id) { Some((host.current.take(), generation)) } else { None }
     };
-    if let Some(old) = old {
-        crate::remote_gateway::close_sessions_for_instance(&app, &old.id);
-        if let Some(view) = app.get_webview(&old.id) {
-            agent_vitals_runtime::logging::log_warn("plugin_host", &format!("view.close() [plugin_close] id={}", old.id));
-            view.close().map_err(|_| "plugin_close_failed")?;
+    if let Some((Some(old), generation)) = old {
+        {
+            publish_presence(&presence_closed(&old, generation));
+            crate::remote_gateway::close_sessions_for_instance(&app, &old.id);
+            if let Some(view) = app.get_webview(&old.id) {
+                agent_vitals_runtime::logging::log_warn("plugin_host", &format!("view.close() [plugin_close] id={} reason={reason}", old.id));
+                view.close().map_err(|_| "plugin_close_failed")?;
+            }
+            settle_destroyed_playtest(&old.plugin_id, &old.id);
         }
     }
     Ok(())
 }
 
+/// 只在 webview 被销毁时调用。suspend 隐藏同一实例，认领仍然有效，不能在这里收口。
+fn settle_destroyed_playtest(plugin_id: &str, instance_id: &str) {
+    if plugin_id != "city" { return; }
+    let home = crate::overview::data_home();
+    if let Err(code) = crate::creator_playtest::finalize_retired_city_claim(&home, instance_id) {
+        agent_vitals_runtime::logging::log_warn("plugin_host", &format!("playtest retire city={instance_id} failed={code}"));
+    }
+}
+
+/// 新实例 id 分配之后：Studio 成为既有试玩的继任取消者；City 收掉上一进程留下的认领。
+fn adopt_opened_playtest(plugin_id: &str, instance_id: &str) {
+    let home = crate::overview::data_home();
+    let result = if plugin_id == "creator-studio" {
+        crate::creator_playtest::note_current_studio_instance(&home, instance_id).map(|_| ())
+    } else if plugin_id == "city" {
+        crate::creator_playtest::finalize_playtests_claimed_by_other_cities(&home, instance_id).map(|_| ())
+    } else {
+        return;
+    };
+    if let Err(code) = result {
+        agent_vitals_runtime::logging::log_warn("plugin_host", &format!("playtest adopt plugin={plugin_id} instance={instance_id} failed={code}"));
+    }
+}
+
 #[tauri::command]
 pub fn plugin_snapshot(webview: Webview, state: tauri::State<'_, PluginHost>) -> Result<Value, String> {
     host_only(&webview)?;
-    let mut host = state.0.lock().unwrap();
-    let Some(i) = host.current.as_mut() else { return Ok(Value::Null); };
-    refresh_fault(i);
-    Ok(json!({"pluginId": i.plugin_id, "instanceId": i.id, "status": if i.failed.is_some() { "failed" } else if i.ready { "ready" } else { "loading" },
-        "error": i.failed, "revision": i.revision, "items": i.items, "pending": i.pending.as_ref().map(|(id, _)| id), "events": i.events}))
+    let (body, fault) = {
+        let mut host = state.0.lock().unwrap();
+        let generation = host.generation;
+        let Some(i) = host.current.as_mut() else { return Ok(Value::Null); };
+        let became = refresh_fault(i);
+        let fault = if became { Some(presence_of(i, generation)) } else { None };
+        let body = json!({"pluginId": i.plugin_id, "instanceId": i.id, "status": if i.failed.is_some() { "failed" } else if i.ready { "ready" } else { "loading" },
+            "error": i.failed, "revision": i.revision, "items": i.items, "pending": i.pending.as_ref().map(|(id, _)| id), "events": i.events});
+        (body, fault)
+    };
+    if let Some(presence) = fault { report_new_fault(&presence); }
+    Ok(body)
 }
 
 #[tauri::command]
 pub fn plugin_message(app: tauri::AppHandle, webview: Webview, state: tauri::State<'_, PluginHost>, message: Value) -> Result<(), String> {
-    let changed = message["type"] != "heartbeat" && message["type"] != "plugin.performance";
-    let mut host = state.0.lock().unwrap();
-    let i = host.current.as_mut().ok_or("plugin_instance_unavailable")?;
-    let result = apply_message(i, webview.label(), message);
-    drop(host);
+    let kind = message["type"].as_str().unwrap_or("").to_string();
+    let hidden_declared = message.get("diagnostic").and_then(|diagnostic| diagnostic.get("hidden")).and_then(Value::as_bool).is_some();
+    let changed = kind != "heartbeat" && kind != "plugin.performance";
+    let (result, presence, faulted) = {
+        let mut host = state.0.lock().unwrap();
+        let generation = host.generation;
+        let i = host.current.as_mut().ok_or("plugin_instance_unavailable")?;
+        let failed_before = i.failed;
+        let result = apply_message(i, webview.label(), message);
+        let faulted = result.is_ok() && i.failed.is_some() && failed_before.is_none();
+        let publish = result.is_ok() && (faulted || kind == "toolbar.update" || (kind == "heartbeat" && hidden_declared));
+        let presence = if publish { Some(presence_of(i, generation)) } else { None };
+        (result, presence, faulted)
+    };
+    if let Some(presence) = presence {
+        if faulted { report_new_fault(&presence); } else { publish_presence(&presence); }
+    }
     if result.is_ok() && changed { notify_host(&app); }
     result
 }
@@ -934,6 +1500,12 @@ fn apply_message(i: &mut Instance, sender: &str, message: Value) -> Result<(), S
         Some("heartbeat") => {
             i.pulse = Instant::now();
             if let Some(source) = message["diagnostic"].as_object() {
+                    if let Some(hidden) = source.get("hidden").and_then(Value::as_bool) {
+                        i.page_hidden = hidden;
+                        // Re-arm/clear with every declaration so the watchdog can
+                        // tell a live hidden page from a stale hidden flag.
+                        i.hidden_since = if hidden { Some(Instant::now()) } else { None };
+                    }
                 let mut fields = serde_json::Map::new();
                 for key in ["hidden", "focused", "firstFrame", "contextLost", "loopScheduled", "modelApplied", "engineMissing", "frameAgeMs", "width", "height", "busyMs"] {
                     if let Some(value) = source.get(key).filter(|v| v.is_boolean() || v.as_u64().is_some_and(|n| n <= 86_400_000)) {
@@ -955,6 +1527,7 @@ fn apply_message(i: &mut Instance, sender: &str, message: Value) -> Result<(), S
             let items: Vec<Tool> = serde_json::from_value(message["items"].clone()).map_err(|_| "plugin_toolbar_invalid")?;
             if !valid_tools(&i.command_namespace, i.max_toolbar_items, &items) { return Err("plugin_toolbar_invalid".into()); }
             i.items = items; i.revision = revision; i.ready = true; i.pulse = Instant::now();
+            if i.failed == Some("plugin_boot_timeout") { i.failed = None; }
             note(i, "toolbar_updated");
         }
         Some("command.result") => {
@@ -966,9 +1539,29 @@ fn apply_message(i: &mut Instance, sender: &str, message: Value) -> Result<(), S
         Some("plugin.performance") => {
             let fields = performance_fields(&i.performance_metrics, &message)?;
             i.pulse = Instant::now();
-            agent_vitals_runtime::logging::log_info("plugin_performance", &format!("plugin={} {fields}", i.plugin_id));
+            log_plugin_performance(&i.plugin_id, &fields);
         }
-        Some("runtime.error") => { i.failed = Some("plugin_runtime_error"); note(i, "plugin_runtime_error"); }
+        Some("code-game.state") => {
+            // City 预览状态：唯一落盘路径。字段白名单/范围在
+            // creator_code_game::record_preview_state 内校验，这里只做路由。
+            crate::creator_code_game::record_preview_state(&crate::overview::data_home(), &message["state"])
+                .map_err(|_| "code_game_state_invalid")?;
+            i.pulse = Instant::now();
+        }
+        Some("runtime.error") => {
+            i.failed = Some("plugin_runtime_error");
+            // 受控错误码（诊断 serving-face 约束）：异常 message/stack 可能带本地
+            // 路径、项目内容等用户数据，不落诊断文件。只收保守字符集限定的错误
+            // 标识符；其余字段丢弃，而不是截断后入库。
+            let name = message["error"]["name"].as_str()
+                .filter(|name| !name.is_empty() && name.len() <= 120
+                    && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '.' | '_' | '-' | ':' | '#')))
+                .map(str::to_owned);
+            let detail = name.map_or_else(|| json!({}), |name| json!({ "name": name }));
+            if i.events.len() == 100 { i.events.remove(0); }
+            i.events.push(json!({"atMs": i.started.elapsed().as_millis() as u64, "code": "plugin_runtime_error", "error": detail}));
+            persist_diagnostics(i);
+        }
         _ => return Err("plugin_message_unavailable".into()),
     }
     Ok(())
@@ -983,6 +1576,7 @@ pub fn plugin_command(app: tauri::AppHandle, webview: Webview, state: tauri::Sta
         if i.id != instance_id || !i.ready || i.suspended || i.failed.is_some() || i.pending.is_some() { return Err("plugin_command_unavailable".into()); }
         let tool = i.items.iter().find(|t| t.command_id == command_id && t.enabled).ok_or("plugin_command_unavailable")?;
         if tool.kind == "select" && !tool.options.iter().any(|o| Some(&o.value) == value.as_ref()) { return Err("plugin_value_invalid".into()); }
+        if tool.kind == "search" && !value.as_deref().is_some_and(valid_toolbar_search) { return Err("plugin_value_invalid".into()); }
         i.sequence += 1;
         let request = format!("request-{}", i.sequence);
         i.pending = Some((request.clone(), Instant::now())); note(i, "command_started");
@@ -1016,7 +1610,9 @@ fn performance_fields(allowed_metrics: &[String], message: &Value) -> Result<Str
         .ok_or("plugin_performance_invalid")?;
     let elapsed = object.get("elapsedMs").and_then(Value::as_u64).filter(|ms| *ms <= 86_400_000)
         .ok_or("plugin_performance_invalid")?;
-    let dimensions = object.get("dimensions").and_then(Value::as_object).filter(|dimensions| dimensions.len() <= 8)
+    // 12 个维度上限：frame 事件需要 fps/p50/p95/max/draw_calls/triangles/quality/idle/
+    // dpr/hidden/window_days/load_id 正好 12 个。多一个就拒绝，保持有界。
+    let dimensions = object.get("dimensions").and_then(Value::as_object).filter(|dimensions| dimensions.len() <= 12)
         .ok_or("plugin_performance_invalid")?;
     let mut safe_dimensions = serde_json::Map::new();
     for (key, value) in dimensions {
@@ -1034,12 +1630,64 @@ fn performance_fields(allowed_metrics: &[String], message: &Value) -> Result<Str
     Ok(format!("metric={metric} outcome={outcome} elapsed_ms={elapsed} dimensions={dimensions}"))
 }
 
+/// Unit tests call `apply_message` directly; before this guard those calls wrote
+/// synthetic `elapsed_ms=5678` scene records into the user's real `app.log`,
+/// where they were indistinguishable from production telemetry. Keep logging
+/// out of `cfg(test)` builds; the logger module has its own isolated tests.
+fn log_plugin_performance(plugin_id: &str, fields: &str) {
+    #[cfg(not(test))]
+    {
+        agent_vitals_runtime::logging::log_info(
+            "plugin_performance",
+            &format!("plugin={plugin_id} {fields}"),
+        );
+    }
+    #[cfg(test)]
+    let _ = (plugin_id, fields);
+}
+
+/// Record a rejected plugin request without its payload. The 2026-11-20 Linux
+/// acceptance showed `plugin_instance_mismatch` in the Studio UI and nothing
+/// in app.log: the host returned the code and did not name the instance.
+fn log_plugin_request_rejected(plugin_id: &str, instance_id: &str, method: &str, request_id: &str, reason: &str) {
+    #[cfg(not(test))]
+    {
+        let safe = |value: &str| !value.is_empty() && value.len() <= 80
+            && value.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'));
+        if [plugin_id, instance_id, method, request_id, reason].iter().copied().all(safe) {
+            agent_vitals_runtime::logging::log_info(
+                "plugin_request",
+                &format!("plugin={plugin_id} instance={instance_id} method={method} request_id={request_id} reason={reason} code=plugin_instance_mismatch"),
+            );
+        }
+    }
+    #[cfg(test)]
+    let _ = (plugin_id, instance_id, method, request_id, reason);
+}
+
+/// Creator catalog reads run from the library effect before `toolbar.update`
+/// sets `ready`. A live Studio instance may dispatch those calls. Click-driven
+/// export, import, and content dialogs keep their own `ready` checks.
+fn studio_creator_dispatch_denial(current: Option<&Instance>, instance_id: &str) -> Option<&'static str> {
+    let Some(instance) = current else { return Some("missing"); };
+    if instance.plugin_id != "creator-studio" { return Some("plugin"); }
+    if instance.id != instance_id { return Some("instance"); }
+    if instance.suspended { return Some("suspended"); }
+    if instance.failed.is_some() { return Some("failed"); }
+    None
+}
+
 #[tauri::command]
 pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: tauri::State<'_, PluginHost>, request: PluginRequestV1) -> Result<PluginResponseV1, String> {
     let (allowed, navigation, state_keys, typed_data_grants, legacy_data_grants, object_grants, scope_grants, remote_capabilities, local_calls, plugin_id) = {
         let host = state.0.lock().unwrap();
         let i = host.current.as_ref().ok_or("plugin_instance_unavailable")?;
         if i.id != webview.label() || i.failed.is_some() || i.suspended || request.instance_id != i.id {
+            let reason = if i.id != webview.label() { "webview" }
+                else if i.failed.is_some() { "failed" }
+                else if i.suspended { "suspended" }
+                else { "instance" };
+            log_plugin_request_rejected(&i.plugin_id, &i.id, &request.method, &request.request_id, reason);
             return Err("plugin_instance_mismatch".into());
         }
         if let Err(code) = validate_plugin_request(&request) {
@@ -1064,7 +1712,7 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
     }
     let method = request.method.clone();
     let payload = request.payload.clone();
-    if method == "city.creator.layout.publish" {
+    if crate::creator_city_host::classify_local_call(&method) == Some(crate::creator_city_host::LocalCall::LayoutPublish) {
         let _operation = state.1.lock().unwrap();
         {
             let host = state.0.lock().unwrap();
@@ -1078,17 +1726,21 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
             Err(code) => plugin_request_error(request.request_id, code, matches!(code, "creator_store_unavailable")),
         });
     }
-    if matches!(method.as_str(), "city.creator.experiences.list" | "city.creator.experiences.read" | "city.creator.playtest.claim" | "city.creator.playtest.finish" | "city.creator.patch.publish" | "city.creator.patch.read") {
+    if crate::creator_city_host::classify_local_call(&method) == Some(crate::creator_city_host::LocalCall::Runtime) {
+        if crate::creator_city_host::is_playtest_call(&method) {
+            agent_vitals_runtime::logging::log_info("creator_playtest", &format!("plugin_request method={method} instance={}", request.instance_id));
+        }
         let _operation = state.1.lock().unwrap();
         {
             let host = state.0.lock().unwrap();
             if !city_creator_runtime_authorized(&host, &plugin_id, &request.instance_id, &local_calls, &method) {
+                agent_vitals_runtime::logging::log_warn("creator_playtest", &format!("authorization_denied method={method} instance={}", request.instance_id));
                 return Err("plugin_instance_mismatch".into());
             }
         }
         let result = crate::creator_projects::dispatch_city_runtime(&crate::overview::data_home(), &request.instance_id, &method, &payload);
         drop(_operation);
-        if method == "city.creator.playtest.finish" {
+        if crate::creator_city_host::is_playtest_finish(&method) {
             if let Ok(value) = &result {
                 let _ = app.emit("app-event", json!({"type":"CreatorPlaytestReturnRequested","runId":value["runId"],
                     "projectId":value["projectId"],"revision":value["revision"],"status":value["status"],"failureCode":value["failureCode"]}));
@@ -1102,6 +1754,256 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
     if method.starts_with("creator.") {
         if plugin_id != "creator-studio" { return Ok(plugin_request_error(request.request_id, "permission_denied", false)); }
         if !local_calls.iter().any(|allowed| allowed == &method) { return Ok(plugin_request_error(request.request_id, "permission_denied", false)); }
+        if method == "creator.source.export" || method == "creator.experience.export"
+            || crate::creator_city_host::classify_local_call(&method) == Some(crate::creator_city_host::LocalCall::SourceExport) {
+            {
+                let host = state.0.lock().unwrap();
+                if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                    agent_vitals_runtime::logging::log_warn("creator_export", &format!("request rejected method={method} instance={}", request.instance_id));
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            // Logged before the dialog so a click that reaches the host is
+            // distinguishable from a click the page never sent. No path.
+            agent_vitals_runtime::logging::log_info("creator_export", &format!("request method={method} instance={}", request.instance_id));
+            let parent_window = app.get_window("workbench");
+            let started = std::time::Instant::now();
+            let title = if method == "creator.experience.export" { "选择体验包导出目录" } else { "选择源码导出目录" };
+            let selected = match tauri::async_runtime::spawn_blocking(move || {
+                let dialog = rfd::FileDialog::new().set_title(title);
+                match parent_window {
+                    Some(window) => dialog.set_parent(&window).pick_folder(),
+                    None => dialog.pick_folder(),
+                }
+            }).await {
+                Ok(value) => value,
+                Err(_) => {
+                    agent_vitals_runtime::logging::log_warn("creator_export", &format!("picker method={method} result=unavailable elapsedMs={}", started.elapsed().as_millis()));
+                    return Ok(plugin_request_error(request.request_id, "creator_export_picker_unavailable", false));
+                }
+            };
+            let elapsed_ms = started.elapsed().as_millis();
+            let outcome = crate::creator_source_export::classify_folder_picker(selected.is_some());
+            // elapsedMs is a measurement. It does not decide cancel versus a
+            // missing dialog, and the line has no path.
+            agent_vitals_runtime::logging::log_info("creator_export", &format!("picker method={method} result={outcome} elapsedMs={elapsed_ms}"));
+            let Some(parent) = selected else {
+                return Ok(plugin_request_error(request.request_id, "creator_export_cancelled", false));
+            };
+            let _operation = state.1.lock().unwrap();
+            {
+                let host = state.0.lock().unwrap();
+                if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            let result = if method == "creator.experience.export" {
+                crate::creator_experience::export_experience(&crate::overview::data_home(), &parent, &payload)
+            } else if crate::creator_city_host::classify_local_call(&method) == Some(crate::creator_city_host::LocalCall::SourceExport) {
+                crate::creator_source_export::export_city_source(&crate::overview::data_home(), &parent, &payload)
+            } else {
+                crate::creator_source_export::export_source(&crate::overview::data_home(), &parent, &payload)
+            };
+            {
+                let host = state.0.lock().unwrap();
+                if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            return Ok(match result {
+                Ok(value) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(value), error: None },
+                Err(code) => plugin_request_error(request.request_id, code, matches!(code, "creator_store_unavailable")),
+            });
+        }
+        if method == "creator.content.inspect" {
+            if !payload.as_object().is_some_and(|object| object.is_empty()) { return Ok(plugin_request_error(request.request_id, "creator_request_invalid", false)); }
+            {
+                let host = state.0.lock().unwrap();
+                if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            let selected = tauri::async_runtime::spawn_blocking(|| rfd::FileDialog::new()
+                .add_filter("City 内容包", &["json"]).pick_file()).await.map_err(|_| "content_picker_failed".to_string())?;
+            let Some(source) = selected else { return Ok(plugin_request_error(request.request_id, "content_picker_cancelled", false)); };
+            let source_for_remember = source.clone();
+            let result = tauri::async_runtime::spawn_blocking(move || crate::creator_content_v2::inspect_selected_world_file(&source))
+                .await.map_err(|_| "content_inspection_failed".to_string())?;
+            {
+                let host = state.0.lock().unwrap();
+                if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            return Ok(match result {
+                Ok(mut value) => {
+                    let Some(package_id) = value["packageId"].as_str().map(str::to_owned) else { return Ok(plugin_request_error(request.request_id, "content_inspect_invalid", false)); };
+                    let Some(version) = value["version"].as_str().map(str::to_owned) else { return Ok(plugin_request_error(request.request_id, "content_inspect_invalid", false)); };
+                    let Some(digest) = value["contentDigest"].as_str().map(str::to_owned) else { return Ok(plugin_request_error(request.request_id, "content_inspect_invalid", false)); };
+                    match crate::creator_content_install::remember_inspection(&crate::overview::data_home(), &request.instance_id, &source_for_remember, &package_id, &version, &digest) {
+                        Ok(token) => { value["inspectionId"] = json!(token);
+                            PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(value), error: None } }
+                        Err(code) => plugin_request_error(request.request_id, code, false),
+                    }
+                }
+                Err(code) => plugin_request_error(request.request_id, code, false),
+            });
+        }
+        if method == "creator.content.install" {
+            let Some(object) = payload.as_object().filter(|object| object.len() == 1
+                && object.keys().all(|key| key == "inspectionId")) else {
+                return Ok(plugin_request_error(request.request_id, "creator_request_invalid", false));
+            };
+            let Some(inspection_id) = object.get("inspectionId").and_then(Value::as_str) else {
+                return Ok(plugin_request_error(request.request_id, "creator_request_invalid", false));
+            };
+            let _operation = state.1.lock().unwrap();
+            {
+                let host = state.0.lock().unwrap();
+                if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            let home = crate::overview::data_home();
+            let claimed = match crate::creator_content_install::claim_inspection(&home, &request.instance_id, inspection_id) {
+                Ok(claimed) => claimed,
+                Err(code) => return Ok(plugin_request_error(request.request_id, code, false)),
+            };
+            let result = crate::creator_content_v2::read_selected_world_file(&claimed.source)
+                .and_then(|raw| crate::creator_content_install::install_inspected_world(&home, &raw, &claimed.package_id, &claimed.version, &claimed.digest));
+            drop(_operation);
+            return Ok(match result {
+                Ok(value) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(value), error: None },
+                Err(code) => plugin_request_error(request.request_id, code, false),
+            });
+        }
+        if matches!(method.as_str(), "creator.content.snapshot.open" | "creator.content.snapshot.read" | "creator.content.snapshot.close") {
+            let Some(object) = payload.as_object() else { return Ok(plugin_request_error(request.request_id, "creator_request_invalid", false)); };
+            let _operation = state.1.lock().unwrap();
+            {
+                let host = state.0.lock().unwrap();
+                if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            let home = crate::overview::data_home();
+            let result = if method == "creator.content.snapshot.open" && object.len() == 2 {
+                match (object.get("packageId").and_then(Value::as_str), object.get("version").and_then(Value::as_str)) {
+                    (Some(id), Some(version)) => crate::creator_content_install::open_content_snapshot(&home, &request.instance_id, id, version),
+                    _ => Err("creator_request_invalid"),
+                }
+            } else if method == "creator.content.snapshot.read" && object.len() == 3 {
+                match (object.get("snapshotId").and_then(Value::as_str), object.get("path").and_then(Value::as_str), object.get("offset").and_then(Value::as_u64)) {
+                    (Some(id), Some(path), Some(offset)) => crate::creator_content_install::read_content_snapshot(&home, &request.instance_id, id, path, offset),
+                    _ => Err("creator_request_invalid"),
+                }
+            } else if method == "creator.content.snapshot.close" && object.len() == 1 {
+                match object.get("snapshotId").and_then(Value::as_str) {
+                    Some(id) => crate::creator_content_install::close_content_snapshot(&home, &request.instance_id, id),
+                    _ => Err("creator_request_invalid"),
+                }
+            } else { Err("creator_request_invalid") };
+            {
+                let host = state.0.lock().unwrap();
+                if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                    if method == "creator.content.snapshot.open" {
+                        if let Ok(value) = &result {
+                            if let Some(id) = value["snapshotId"].as_str() { let _ = crate::creator_content_install::close_content_snapshot(&home, &request.instance_id, id); }
+                        }
+                    }
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            return Ok(match result {
+                Ok(value) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(value), error: None },
+                Err(code) => plugin_request_error(request.request_id, code, false),
+            });
+        }
+        if matches!(method.as_str(), "creator.asset.snapshot.open" | "creator.asset.snapshot.read" | "creator.asset.snapshot.close") {
+            let Some(object) = payload.as_object() else { return Ok(plugin_request_error(request.request_id, "creator_request_invalid", false)); };
+            let _operation = state.1.lock().unwrap();
+            {
+                let host = state.0.lock().unwrap();
+                if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            let home = crate::overview::data_home();
+            let result = if method == "creator.asset.snapshot.open" && object.len() == 4 {
+                match (object.get("projectId").and_then(Value::as_str), object.get("revision").and_then(Value::as_u64),
+                    object.get("assetId").and_then(Value::as_str), object.get("digest").and_then(Value::as_str)) {
+                    (Some(project_id), Some(revision), Some(asset_id), Some(digest)) => crate::creator_assets::open_project_asset_snapshot(
+                        &home, &request.instance_id, project_id, revision, asset_id, digest),
+                    _ => Err("creator_request_invalid"),
+                }
+            } else if method == "creator.asset.snapshot.read" && object.len() == 2 {
+                match (object.get("snapshotId").and_then(Value::as_str), object.get("offset").and_then(Value::as_u64)) {
+                    (Some(id), Some(offset)) => crate::creator_assets::read_project_asset_snapshot(&home, &request.instance_id, id, offset),
+                    _ => Err("creator_request_invalid"),
+                }
+            } else if method == "creator.asset.snapshot.close" && object.len() == 1 {
+                match object.get("snapshotId").and_then(Value::as_str) {
+                    Some(id) => crate::creator_assets::close_project_asset_snapshot(&home, &request.instance_id, id),
+                    _ => Err("creator_request_invalid"),
+                }
+            } else { Err("creator_request_invalid") };
+            {
+                let host = state.0.lock().unwrap();
+                if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                    if method == "creator.asset.snapshot.open" {
+                        if let Ok(value) = &result {
+                            if let Some(id) = value["snapshotId"].as_str() { let _ = crate::creator_assets::close_project_asset_snapshot(&home, &request.instance_id, id); }
+                        }
+                    }
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            return Ok(match result {
+                Ok(value) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(value), error: None },
+                Err(code) => plugin_request_error(request.request_id, code, false),
+            });
+        }
+        if method == "creator.content.list" {
+            if !payload.as_object().is_some_and(|object| object.is_empty()) { return Ok(plugin_request_error(request.request_id, "creator_request_invalid", false)); }
+            let _operation = state.1.lock().unwrap();
+            {
+                let host = state.0.lock().unwrap();
+                if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            let result = crate::creator_content_install::list_installed(&crate::overview::data_home());
+            drop(_operation);
+            return Ok(match result {
+                Ok(value) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(value), error: None },
+                Err(code) => plugin_request_error(request.request_id, code, false),
+            });
+        }
+        if method == "creator.content.uninstall" {
+            let Some(object) = payload.as_object().filter(|object| object.len() == 2
+                && object.keys().all(|key| matches!(key.as_str(), "packageId" | "version"))) else {
+                return Ok(plugin_request_error(request.request_id, "creator_request_invalid", false));
+            };
+            let Some(package_id) = object.get("packageId").and_then(Value::as_str) else {
+                return Ok(plugin_request_error(request.request_id, "creator_request_invalid", false));
+            };
+            let Some(version) = object.get("version").and_then(Value::as_str) else {
+                return Ok(plugin_request_error(request.request_id, "creator_request_invalid", false));
+            };
+            let _operation = state.1.lock().unwrap();
+            {
+                let host = state.0.lock().unwrap();
+                if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            let result = crate::creator_content_install::uninstall(&crate::overview::data_home(), package_id, version);
+            drop(_operation);
+            return Ok(match result {
+                Ok(value) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(value), error: None },
+                Err(code) => plugin_request_error(request.request_id, code, false),
+            });
+        }
         if method == "creator.asset.import" {
             let Some(object) = payload.as_object().filter(|object| object.len() == 3
                 && object.keys().all(|key| matches!(key.as_str(), "projectId" | "expectedRevision" | "operationId"))) else {
@@ -1148,22 +2050,76 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
                 Err(code) => plugin_request_error(request.request_id, code, matches!(code, "creator_store_unavailable")),
             });
         }
-        // Serialize authorization and SQLite commit against plugin_open/close. A
-        // switch cannot revoke the instance between this check and the write.
-        let result = {
-            let _operation = state.1.lock().unwrap();
+        let realtime_projection = method == "creator.session.status" || method == "creator.connection.status"
+            || matches!(method.as_str(),"creator.capabilities.status" | "creator.events.subscribe"
+                | "creator.task.status" | "creator.task.evidence.list" | "creator.task.execute");
+        if realtime_projection {
             {
                 let host = state.0.lock().unwrap();
-                if !host.current.as_ref().is_some_and(|instance| instance.id == request.instance_id && instance.plugin_id == "creator-studio" && instance.ready && !instance.suspended && instance.failed.is_none()) {
+                if let Some(reason) = studio_creator_dispatch_denial(host.current.as_ref(), &request.instance_id) {
+                    log_plugin_request_rejected("creator-studio", &request.instance_id, &method, &request.request_id, reason);
                     return Err("plugin_instance_mismatch".into());
                 }
             }
             let instance = request.instance_id.clone();
-            crate::creator_projects::dispatch_as(&crate::overview::data_home(), crate::creator_projects::LOCAL_CREATOR_OWNER, &instance, &method, &payload)
+            let result = tauri::async_runtime::spawn_blocking(move || {
+                crate::creator_projects::dispatch_as(&crate::overview::data_home(),
+                    crate::creator_projects::LOCAL_CREATOR_OWNER, &instance, &method, &payload)
+            }).await.map_err(|_| "creator_request_failed".to_owned())?;
+            {
+                let host = state.0.lock().unwrap();
+                if studio_creator_dispatch_denial(host.current.as_ref(), &request.instance_id).is_some() {
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            return Ok(match result {
+                Ok(value) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(value), error: None },
+                Err(code) => plugin_request_error(request.request_id, code, matches!(code,"storage_unavailable")),
+            });
+        }
+        // Serialize authorization and SQLite commit against plugin_open/close. A
+        // switch cannot revoke the instance between this check and the write.
+        // `ready` is intentionally not required: the library panel reads the
+        // empty catalog before the first toolbar publication.
+        let (result, playtest_ack) = {
+            let _operation = state.1.lock().unwrap();
+            {
+                let host = state.0.lock().unwrap();
+                if let Some(reason) = studio_creator_dispatch_denial(host.current.as_ref(), &request.instance_id) {
+                    log_plugin_request_rejected("creator-studio", &request.instance_id, &method, &request.request_id, reason);
+                    return Err("plugin_instance_mismatch".into());
+                }
+            }
+            let instance = request.instance_id.clone();
+            let home = crate::overview::data_home();
+            let result = crate::creator_projects::dispatch_as(&home, crate::creator_projects::LOCAL_CREATOR_OWNER, &instance, &method, &payload);
+            // 邮箱里的 start 必须在拆掉 Studio 之前写成完成。导航事件一发出，
+            // 当前 webview 就被换成 City，随后的 plugin.call.respond 不会再到达。
+            let playtest_ack = if method == "creator.project.playtest.start" {
+                if let Ok(value) = &result {
+                    let response_budget = definitions().iter().find(|plugin| plugin.id == "creator-studio")
+                        .map(|definition| transport_budget_for(definition, "creator.project.playtest.start").1)
+                        .unwrap_or(TRANSPORT_BUDGET_DEFAULT_BYTES);
+                    Some(settle_playtest_mailbox(&home, "creator-studio", &instance, &request.request_id, value, response_budget))
+                } else { None }
+            } else { None };
+            (result, playtest_ack)
         };
         if method == "creator.project.playtest.start" {
             if let Ok(value) = &result {
-                let _ = app.emit("app-event", json!({"type":"CreatorPlaytestOpenCityRequested","runId":value["runId"]}));
+                match &playtest_ack {
+                    Some(PlaytestMailboxAck::Committed) | Some(PlaytestMailboxAck::NotMailbox) => {
+                        emit_playtest_city_open(&app, &value["runId"]);
+                    }
+                    // 只有「本实例确有这条 playtest.start claim，但提前写入失败」才记住。
+                    // 别人的 claim、别的方法不能借这次成功去打开 City。
+                    Some(PlaytestMailboxAck::Uncommitted { call_id }) => {
+                        if let Some(run_id) = value["runId"].as_str() {
+                            note_unacked_playtest_open(call_id, run_id);
+                        }
+                    }
+                    Some(PlaytestMailboxAck::NotOwned) | None => {}
+                }
             }
         }
         return Ok(match result {
@@ -1275,11 +2231,31 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
         if !plugin_response_owner_active(&host, &request.instance_id, &plugin_id) {
             return Err("plugin_instance_mismatch".into());
         }
+        // 响应预算（§5.5）由宿主按描述符的 claimed 方法执行，而不是固定 64 KiB；
+        // 超预算时 respond_with_budget 写入小错误响应终结调用。
+        let data_home = crate::overview::data_home();
+        let claimed_method = agent_vitals_runtime::query::plugin_calls::claimed_call_method(
+            &data_home, &plugin_id, &request.instance_id, &call_id).ok().flatten().unwrap_or_default();
+        let (_request_budget, response_budget) = {
+            let definition = definitions().iter().find(|plugin| plugin.id == plugin_id);
+            match definition {
+                Some(definition) => transport_budget_for(definition, &claimed_method),
+                None => (TRANSPORT_BUDGET_DEFAULT_BYTES, TRANSPORT_BUDGET_DEFAULT_BYTES),
+            }
+        };
         // Keep the instance lock across the bounded local DB response commit:
         // plugin_open/close cannot replace this owner between validation and delivery.
-        let result = agent_vitals_runtime::query::plugin_calls::respond(
-            &crate::overview::data_home(), &plugin_id, &request.instance_id, &call_id, &response_value,
+        let result = agent_vitals_runtime::query::plugin_calls::respond_with_budget(
+            &data_home, &plugin_id, &request.instance_id, &call_id, &response_value, response_budget,
         );
+        // 应答落盘后再放开实例锁，然后才导航。用的是 dispatch 记下的 runId。
+        let deferred_open = if result.is_ok() && response_value.get("ok") == Some(&Value::Bool(true)) {
+            take_unacked_playtest_open(&call_id)
+        } else { None };
+        drop(host);
+        if let Some(run_id) = deferred_open {
+            emit_playtest_city_open(&app, &json!(run_id));
+        }
         return Ok(match result {
             Ok(()) => PluginResponseV1 { version: 1, request_id: request.request_id, ok: true, result: Some(json!({"accepted":true})), error: None },
             Err(code) => plugin_request_error(request.request_id, code, matches!(code, "plugin_call_store_unavailable")),
@@ -1301,6 +2277,74 @@ pub async fn plugin_request(app: tauri::AppHandle, webview: Webview, state: taur
     Ok(response)
 }
 
+/// 邮箱调用的 requestId 由 app-sdk 固定成 `plugin-call-` + `pc_` + 32 位十六进制。
+/// 界面按钮走 `creator-ui:N`，不是邮箱。
+fn mailbox_playtest_call_id(request_id: &str) -> Option<&str> {
+    let call_id = request_id.strip_prefix("plugin-call-")?;
+    let rest = call_id.strip_prefix("pc_")?;
+    if rest.len() == 32 && rest.bytes().all(|byte| byte.is_ascii_hexdigit()) { Some(call_id) } else { None }
+}
+
+fn valid_playtest_run_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty() && bytes.len() <= 128 && bytes[0].is_ascii_alphanumeric()
+        && bytes.iter().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
+}
+
+#[derive(Debug)]
+enum PlaytestMailboxAck {
+    /// 不是邮箱请求。调用方可以马上导航，没有正在等的 MCP。
+    NotMailbox,
+    /// 本实例 claim 的 playtest.start 已经写成完成。MCP 不必再等 webview。
+    Committed,
+    /// 本实例拥有这条 playtest.start claim，但写入失败。调用还在，等 webview 再答一次。
+    Uncommitted { call_id: String },
+    /// 请求号像邮箱调用，但这条 claim 不是本实例的 playtest.start。不要导航，也不要记住。
+    NotOwned,
+}
+
+/// 把试玩 start 的宿主结果写入已经由本实例 claim 的那一通调用。
+/// 只接受方法恰好是 creator.project.playtest.start 的 claim，别的方法原样留着。
+fn settle_playtest_mailbox(home: &std::path::Path, plugin_id: &str, instance_id: &str, request_id: &str, result: &Value, response_budget: usize) -> PlaytestMailboxAck {
+    let Some(call_id) = mailbox_playtest_call_id(request_id) else { return PlaytestMailboxAck::NotMailbox };
+    let owned = agent_vitals_runtime::query::plugin_calls::claimed_call_method(home, plugin_id, instance_id, call_id)
+        .ok().flatten();
+    if owned.as_deref() != Some("creator.project.playtest.start") {
+        return PlaytestMailboxAck::NotOwned;
+    }
+    let response = json!({"ok": true, "result": result});
+    match agent_vitals_runtime::query::plugin_calls::respond_with_budget(
+        home, plugin_id, instance_id, call_id, &response, response_budget,
+    ) {
+        Ok(()) => PlaytestMailboxAck::Committed,
+        Err(_) => PlaytestMailboxAck::Uncommitted { call_id: call_id.to_owned() },
+    }
+}
+
+fn emit_playtest_city_open(app: &tauri::AppHandle, run_id: &Value) {
+    let Some(run_id) = run_id.as_str().filter(|id| valid_playtest_run_id(id)) else { return };
+    let _ = app.emit("app-event", json!({"type":"CreatorPlaytestOpenCityRequested","runId":run_id}));
+}
+
+fn pending_playtest_opens() -> &'static Mutex<std::collections::VecDeque<(String, String)>> {
+    static OPENS: OnceLock<Mutex<std::collections::VecDeque<(String, String)>>> = OnceLock::new();
+    OPENS.get_or_init(|| Mutex::new(std::collections::VecDeque::new()))
+}
+
+fn note_unacked_playtest_open(call_id: &str, run_id: &str) {
+    if mailbox_playtest_call_id(&format!("plugin-call-{call_id}")).is_none() || !valid_playtest_run_id(run_id) { return; }
+    let mut queue = pending_playtest_opens().lock().unwrap_or_else(|error| error.into_inner());
+    queue.retain(|(id, _)| id != call_id);
+    queue.push_back((call_id.to_owned(), run_id.to_owned()));
+    while queue.len() > 16 { queue.pop_front(); }
+}
+
+fn take_unacked_playtest_open(call_id: &str) -> Option<String> {
+    let mut queue = pending_playtest_opens().lock().unwrap_or_else(|error| error.into_inner());
+    let index = queue.iter().position(|(id, _)| id == call_id)?;
+    queue.remove(index).map(|(_, run_id)| run_id)
+}
+
 fn plugin_response_owner_active(host: &HostState, instance_id: &str, plugin_id: &str) -> bool {
     host.current.as_ref().is_some_and(|instance| instance.id == instance_id && instance.plugin_id == plugin_id
         && instance.failed.is_none() && !instance.suspended)
@@ -1314,14 +2358,144 @@ fn city_creator_runtime_authorized(host: &HostState, plugin_id: &str, instance_i
 
 #[cfg(test)]
 mod plugin_request_tests {
+    // 按方法传输预算（§5.5）：描述符是唯一配置点，宿主启动即校验并 clamp 到
+    // IPC 安全上限；未声明的方法保持 64 KiB 默认。
+    #[test]
+    fn transport_budgets_default_clamp_and_validate() {
+        let parse = |json: &str| -> Result<PluginRegistry, _> { serde_json::from_str(json) };
+        let base = |budgets: &str| format!(r#"{{
+            "version": 1,
+            "plugins": [{{
+                "id": "creator-studio", "name": "Creator Studio",
+                "entry": "plugins/CreatorStudio.plugin/ui/index.html",
+                "commandNamespace": "creator", "maxToolbarItems": 4,
+                "localCalls": ["creator.scene.preview"],
+                "localCallBudgets": {budgets}
+            }}]
+        }}"#);
+        // 合法声明：方向、上限内
+        let ok = parse(&base(r#"{"creator.scene.preview": {"requestBytes": 393216, "responseBytes": 65536}}"#)).unwrap();
+        let (request, response) = transport_budget_for(ok.plugins.first().unwrap(), "creator.scene.preview");
+        assert_eq!((request, response), (393216, 65536));
+        // 未声明方法回落默认 64 KiB
+        let (request, response) = transport_budget_for(ok.plugins.first().unwrap(), "creator.project.read");
+        assert_eq!((request, response), (TRANSPORT_BUDGET_DEFAULT_BYTES, TRANSPORT_BUDGET_DEFAULT_BYTES));
+        // 超上限：启动校验拒绝（definitions 的 assert 路径不可直调，这里验证解析产物被 clamp）
+        let over = parse(&base(r#"{"creator.scene.preview": {"requestBytes": 2097152, "responseBytes": 65536}}"#)).unwrap();
+        let (request, _response) = transport_budget_for(over.plugins.first().unwrap(), "creator.scene.preview");
+        assert_eq!(request, TRANSPORT_BUDGET_MAX_BYTES as usize, "descriptor values are clamped, trusted only after validation");
+        // 未知字段：严格拒绝，防止拼写错误静默失效
+        assert!(parse(&base(r#"{"creator.scene.preview": {"requestBytes": 65536, "responsBytes": 65536}}"#)).is_err());
+        // budget 指向未授予方法：definitions 校验会拒绝（这里只验证解析层接受、校验层字段存在）
+        let stray = parse(&base(r#"{"creator.project.read": {"requestBytes": 65536, "responseBytes": 65536}}"#)).unwrap();
+        assert!(stray.plugins.first().unwrap().local_call_budgets.contains_key("creator.project.read"));
+    }
+
     use super::*;
+
+    fn studio_instance(id: &str, ready: bool, suspended: bool, failed: Option<&'static str>) -> Instance {
+        let now = Instant::now();
+        Instance {
+            id: id.into(), plugin_id: "creator-studio".into(), command_namespace: "creator".into(),
+            max_toolbar_items: 8, performance_metrics: Vec::new(), started: now, pulse: now,
+            ready, suspended, page_hidden: false, hidden_since: None, failed, revision: 0,
+            items: Vec::new(), sequence: 0, pending: None, in_flight: 0, busy_until: None, events: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn studio_catalog_dispatch_allows_the_live_instance_before_toolbar_ready() {
+        let pending = studio_instance("plugin-creator-studio-1", false, false, None);
+        assert!(studio_creator_dispatch_denial(Some(&pending), "plugin-creator-studio-1").is_none(),
+            "the library effect reads the catalog before toolbar.update sets ready");
+        let ready = studio_instance("plugin-creator-studio-1", true, false, None);
+        assert!(studio_creator_dispatch_denial(Some(&ready), "plugin-creator-studio-1").is_none());
+        assert_eq!(studio_creator_dispatch_denial(None, "plugin-creator-studio-1"), Some("missing"));
+        assert_eq!(studio_creator_dispatch_denial(Some(&pending), "plugin-creator-studio-3"), Some("instance"));
+        let mut other = pending;
+        other.plugin_id = "city".into();
+        assert_eq!(studio_creator_dispatch_denial(Some(&other), "plugin-creator-studio-1"), Some("plugin"));
+        let suspended = studio_instance("plugin-creator-studio-1", true, true, None);
+        assert_eq!(studio_creator_dispatch_denial(Some(&suspended), "plugin-creator-studio-1"), Some("suspended"));
+        let failed = studio_instance("plugin-creator-studio-1", true, false, Some("plugin_command_rejected"));
+        assert_eq!(studio_creator_dispatch_denial(Some(&failed), "plugin-creator-studio-1"), Some("failed"));
+    }
+
+    /// 邮箱里的 start 在导航之前就要写成完成。界面按钮不是邮箱，不能把别人的
+    /// claim 关掉；别的方法、别的实例也写不进去。
+    #[test]
+    fn mailbox_playtest_start_is_acked_before_city_can_replace_studio() {
+        let home = std::env::temp_dir().join(format!("playtest-ack-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&home).unwrap();
+        let payload = json!({"releaseId":"release-1"});
+        let call_id = agent_vitals_runtime::query::plugin_calls::submit(
+            &home, "creator-studio", "creator.project.playtest.start", &payload, 60_000).unwrap();
+        let claimed = agent_vitals_runtime::query::plugin_calls::claim_pending(
+            &home, "creator-studio", "studio-1", &["creator.project.playtest.start".into()], 4).unwrap();
+        assert_eq!(claimed.len(), 1);
+        let result = json!({"runId":"playtest-1","releaseId":"release-1","status":"pending"});
+        let request_id = format!("plugin-call-{call_id}");
+        assert!(matches!(
+            settle_playtest_mailbox(&home, "creator-studio", "studio-1", &request_id, &result, 64 * 1024),
+            PlaytestMailboxAck::Committed));
+        let response = agent_vitals_runtime::query::plugin_calls::wait_response(&home, &call_id, 1_000).unwrap();
+        assert_eq!(response["ok"], json!(true));
+        assert_eq!(response["result"]["runId"], json!("playtest-1"));
+        assert_eq!(
+            agent_vitals_runtime::query::plugin_calls::respond(&home, "creator-studio", "studio-1", &call_id, &json!({"ok":true,"result":result.clone()})).unwrap_err(),
+            "plugin_call_unavailable");
+        let other = agent_vitals_runtime::query::plugin_calls::submit(
+            &home, "creator-studio", "creator.project.playtest.start", &payload, 60_000).unwrap();
+        agent_vitals_runtime::query::plugin_calls::claim_pending(
+            &home, "creator-studio", "studio-1", &["creator.project.playtest.start".into()], 4).unwrap();
+        assert!(matches!(
+            settle_playtest_mailbox(&home, "creator-studio", "studio-1", "creator-ui:7", &result, 64 * 1024),
+            PlaytestMailboxAck::NotMailbox));
+        assert_eq!(
+            agent_vitals_runtime::query::plugin_calls::claimed_call_method(&home, "creator-studio", "studio-1", &other).unwrap().as_deref(),
+            Some("creator.project.playtest.start"));
+        let other_request = format!("plugin-call-{other}");
+        assert!(matches!(
+            settle_playtest_mailbox(&home, "creator-studio", "studio-2", &other_request, &result, 64 * 1024),
+            PlaytestMailboxAck::NotOwned));
+        assert_eq!(
+            agent_vitals_runtime::query::plugin_calls::claimed_call_method(&home, "creator-studio", "studio-1", &other).unwrap().as_deref(),
+            Some("creator.project.playtest.start"));
+        // 过期后这条 claim 还在，但写不进去：只能记成未完成，不能当成别人的调用。
+        let calls_db = rusqlite::Connection::open(home.join("state/plugin-calls/calls.sqlite")).unwrap();
+        calls_db.execute("UPDATE plugin_calls SET expires_at_ms=0 WHERE call_id=?1", [&other]).unwrap();
+        drop(calls_db);
+        match settle_playtest_mailbox(&home, "creator-studio", "studio-1", &other_request, &result, 64 * 1024) {
+            PlaytestMailboxAck::Uncommitted { call_id } => assert_eq!(call_id, other),
+            other_ack => panic!("expected Uncommitted, got {other_ack:?}"),
+        }
+        assert_eq!(
+            agent_vitals_runtime::query::plugin_calls::claimed_call_method(&home, "creator-studio", "studio-1", &other).unwrap().as_deref(),
+            Some("creator.project.playtest.start"));
+        let read_id = agent_vitals_runtime::query::plugin_calls::submit(
+            &home, "creator-studio", "creator.project.read", &json!({"projectId":"project-1"}), 60_000).unwrap();
+        agent_vitals_runtime::query::plugin_calls::claim_pending(
+            &home, "creator-studio", "studio-1", &["creator.project.read".into()], 4).unwrap();
+        assert!(matches!(
+            settle_playtest_mailbox(&home, "creator-studio", "studio-1", &format!("plugin-call-{read_id}"), &result, 64 * 1024),
+            PlaytestMailboxAck::NotOwned));
+        assert_eq!(
+            agent_vitals_runtime::query::plugin_calls::claimed_call_method(&home, "creator-studio", "studio-1", &read_id).unwrap().as_deref(),
+            Some("creator.project.read"));
+        note_unacked_playtest_open(&call_id, "playtest-deferred");
+        assert_eq!(take_unacked_playtest_open(&call_id).as_deref(), Some("playtest-deferred"));
+        assert!(take_unacked_playtest_open(&call_id).is_none());
+        note_unacked_playtest_open(&call_id, "not a run id");
+        assert!(take_unacked_playtest_open(&call_id).is_none());
+        let _ = std::fs::remove_dir_all(&home);
+    }
 
     #[test]
     fn creator_assets_are_only_available_from_the_active_city_webview() {
         let host = HostState { current: Some(Instance {
             id:"plugin-city-7".into(),plugin_id:"city".into(),command_namespace:"city".into(),
             max_toolbar_items:11,performance_metrics:Vec::new(),started:Instant::now(),pulse:Instant::now(),
-            ready:true,suspended:false,failed:None,revision:0,items:Vec::new(),sequence:0,pending:None,
+            ready:true,suspended:false,page_hidden:false,hidden_since:None,failed:None,revision:0,items:Vec::new(),sequence:0,pending:None,
             in_flight:0,busy_until:None,events:Vec::new(),
         }), ..HostState::default() };
         assert!(city_asset_webview_authorized(&host, "plugin-city-7"));
@@ -1390,7 +2564,7 @@ mod plugin_request_tests {
             id:"plugin-city-new".into(),plugin_id:"city".into(),command_namespace:"city".into(),
             max_toolbar_items:11,
             performance_metrics:vec!["scene".into(),"data-load".into()],
-            started:Instant::now(),pulse:Instant::now(),ready:true,suspended:false,failed:None,revision:0,
+            started:Instant::now(),pulse:Instant::now(),ready:true,suspended:false,page_hidden:false,hidden_since:None,failed:None,revision:0,
             items:Vec::new(),sequence:0,pending:None,in_flight:0,busy_until:None,events:Vec::new(),
         }), ..HostState::default() };
         assert!(plugin_response_owner_active(&host,"plugin-city-new","city"));
@@ -1408,7 +2582,7 @@ mod plugin_request_tests {
         let host = HostState { current: Some(Instance {
             id:"plugin-city-1".into(),plugin_id:"city".into(),command_namespace:"city".into(),
             max_toolbar_items:11,performance_metrics:Vec::new(),started:Instant::now(),pulse:Instant::now(),
-            ready:true,suspended:false,failed:None,revision:0,items:Vec::new(),sequence:0,pending:None,
+            ready:true,suspended:false,page_hidden:false,hidden_since:None,failed:None,revision:0,items:Vec::new(),sequence:0,pending:None,
             in_flight:0,busy_until:None,events:Vec::new(),
         }), ..HostState::default() };
         let calls = vec!["city.creator.experiences.list".to_owned(), "city.creator.playtest.claim".to_owned()];
@@ -1426,14 +2600,284 @@ mod plugin_request_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    fn headless_home() -> std::path::PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let dir = std::env::temp_dir().join(format!("headless-gate-test-{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn headless_layout_snapshot(world_revision: &str) -> Value {
+        json!({"schemaVersion": 1, "worldRevision": world_revision, "seed": 7, "layout": {
+            "schemaVersion": 1, "id": "city-layout-v1-headless", "coordinateSystem": "city-local-m-v1", "anchors": [
+                {"id": "road-spawn:a", "kind": "spawn", "capabilities": ["drive"], "geometryRef": "city-road-node:a"},
+                {"id": "road-checkpoint:ab", "kind": "zone", "capabilities": ["drive"], "geometryRef": "city-road-edge:ab:midpoint"},
+                {"id": "road-checkpoint:bc", "kind": "zone", "capabilities": ["drive"], "geometryRef": "city-road-edge:bc:midpoint"}
+            ], "links": [
+                {"id": "link-a", "fromAnchorId": "road-spawn:a", "toAnchorId": "road-checkpoint:ab", "capabilities": ["drive"]},
+                {"id": "link-b", "fromAnchorId": "road-checkpoint:ab", "toAnchorId": "road-checkpoint:bc", "capabilities": ["drive"]}
+            ]}})
+    }
+
+    fn dunes_profile() -> Value {
+        json!({"schemaVersion": 1, "id": "arid-dunes", "version": 1, "biome": "arid",
+            "geography": {"generator": "arid-dunes-v1", "parameters": {"dunes": {"duneScale": 190, "duneAmplitude": 11, "orientationDeg": 18}}},
+            "visuals": {"themeId": "desert"}})
+    }
+
+    fn valid_vehicle(id: &str) -> Value {
+        json!({"schemaVersion": 1, "id": id, "label": "E2E flapper", "modelAssetId": null, "flightModel": "flapping",
+            "physics": {"massKg": 300.0, "wingAreaM2": 18.0, "thrustN": 6000.0, "maxSpeedMps": 120.0, "dragCoefficient": 0.1,
+                "turnRateRps": 0.9, "climbRateMps": 34.0, "sinkRateMps": 26.0, "flapFrequencyHz": 2.4, "flapAmplitudeRad": 1.1},
+            "bounds": {"halfLengthM": 3.6, "halfWidthM": 4.8, "halfHeightM": 1.4}})
+    }
+
     #[test]
-    fn creator_studio_is_a_registered_first_party_app_without_data_projection_grants() {
+    fn headless_arm_creates_city_and_commits_world_edits_with_the_embedded_marker() {
+        let home = headless_home();
+        let created = answer_headless_call(&home, "creator.city.create",
+            &json!({"name": "无头城", "seed": 20261115, "profile": dunes_profile(), "operationId": "op-city-1"})).unwrap();
+        let city_id = created["cityId"].as_str().unwrap().to_owned();
+        let revision = created["revision"].as_u64().unwrap();
+        let preview = answer_headless_call(&home, "creator.city.edit.preview",
+            &json!({"cityId": city_id, "baseRevision": revision,
+                "operations": [{"op": "world.set", "params": {"shape.family": "lobed", "shape.cores": 3}}]})).unwrap();
+        // 语义通过 → 正常签发 previewId，且响应显式记录 embedded-sdk 来源（不再 commitBlocked）。
+        assert!(preview["previewId"].as_str().is_some(), "{preview}");
+        assert_eq!(preview["validation"], crate::creator_projects::VALIDATION_SOURCE_EMBEDDED);
+        let committed = answer_headless_call(&home, "creator.city.edit.commit",
+            &json!({"cityId": city_id, "previewId": preview["previewId"], "expectedRevision": revision, "operationId": "op-city-edit-1"})).unwrap();
+        assert_eq!(committed["revision"], revision + 1);
+        assert_eq!(committed["validation"], crate::creator_projects::VALIDATION_SOURCE_EMBEDDED);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn headless_arm_rejects_semantic_failures_with_the_same_diagnostics_shape() {
+        let home = headless_home();
+        let created = answer_headless_call(&home, "creator.city.create",
+            &json!({"name": "无头城", "seed": 20261115, "profile": dunes_profile(), "operationId": "op-city-1"})).unwrap();
+        let city_id = created["cityId"].as_str().unwrap().to_owned();
+        let revision = created["revision"].as_u64().unwrap();
+        let rejected = answer_headless_call(&home, "creator.city.edit.preview",
+            &json!({"cityId": city_id, "baseRevision": revision,
+                "operations": [{"op": "world.set", "params": {"shape.cores": 9}}]}));
+        // world.set 越界 → 宿主结构闸先行拒绝（world_params_out_of_range），不是静默放行。
+        assert_eq!(rejected.unwrap_err(), "world_params_out_of_range");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn headless_arm_defines_and_previews_vehicles_with_embedded_validation() {
+        let home = headless_home();
+        crate::creator_city_patch::publish_city_layout_snapshot(&home, &headless_layout_snapshot("world-rev-headless")).unwrap();
+        let project = crate::creator_projects::create_project_from_city_layout(&home,
+            crate::creator_projects::LOCAL_CREATOR_OWNER, "flight-checkpoint", "op-project-headless", "world-rev-headless").unwrap();
+        let project_id = project["projectId"].as_str().unwrap().to_owned();
+        let vehicle = valid_vehicle("vehicle-headless-1");
+        // define：嵌入式语义闸 + 一次性写入（headless define 成为可能）。
+        let defined = answer_headless_call(&home, "creator.vehicle.define", &json!({
+            "projectId": project_id, "baseRevision": 0, "vehicleId": "vehicle-headless-1",
+            "label": vehicle["label"], "flightModel": vehicle["flightModel"],
+            "physics": vehicle["physics"], "bounds": vehicle["bounds"], "modelAssetId": null,
+            "operationId": "op-vehicle-headless-1"})).unwrap();
+        assert_eq!(defined["validation"], crate::creator_projects::VALIDATION_SOURCE_EMBEDDED);
+        assert_eq!(defined["revision"], 1);
+        // preview：previewId 可签发、来源如实、性能预估与 Studio 同源注入。
+        let preview = answer_headless_call(&home, "creator.vehicle.preview", &json!({
+            "projectId": project_id, "baseRevision": 1, "vehicle": valid_vehicle("vehicle-headless-2")})).unwrap();
+        assert!(preview["previewId"].as_str().is_some(), "{preview}");
+        assert_eq!(preview["validation"], crate::creator_projects::VALIDATION_SOURCE_EMBEDDED);
+        assert!(preview.get("estimatedPerformance").is_some_and(|value| value.is_object()), "{preview}");
+        // preview 可以走 creator.project.commit 提交（headless commit 全链路）。
+        let committed = answer_headless_call(&home, "creator.project.commit", &json!({
+            "projectId": project_id, "previewId": preview["previewId"], "expectedRevision": 1,
+            "operationId": "op-vehicle-commit-headless"})).unwrap();
+        assert_eq!(committed["revision"], 2);
+        assert_eq!(committed["validation"], crate::creator_projects::VALIDATION_SOURCE_EMBEDDED);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn embedded_vehicle_validation_keeps_semantic_rejections_as_diagnostics() {
+        // 无效画像必须作为「语义判负 + 诊断」返回；若信封自检把诊断码/字段判成非法，
+        // 调用方会收到 creator_validation_invalid（"信封格式错误"），把真实原因吞掉。
+        let raw = json!({"schemaVersion": 1, "id": "vehicle-bad", "label": "", "modelAssetId": null,
+            "flightModel": "flapping", "physics": {}, "bounds": {}});
+        let (_, envelope) = crate::creator_projects::embedded_vehicle_validation("probe", 0, &raw)
+            .expect("a semantic rejection must still produce an envelope");
+        assert_eq!(envelope["ok"], false, "{envelope}");
+        assert!(!envelope["diagnostics"].as_array().map(Vec::is_empty).unwrap_or(true), "{envelope}");
+    }
+
+    #[test]
+    fn headless_arm_binds_a_typed_mount_and_publishes_without_a_viewport() {
+        let home = headless_home();
+        let layout = json!({"schemaVersion": 1, "id": "bind-layout", "coordinateSystem": "city-local-m-v1",
+            "anchors": [
+                {"id": "spawn-a", "kind": "spawn", "capabilities": ["drive"], "geometryRef": "g:spawn"},
+                {"id": "cp-1", "kind": "zone", "capabilities": ["drive"], "geometryRef": "g:1"},
+                {"id": "cp-2", "kind": "zone", "capabilities": ["drive"], "geometryRef": "g:2"},
+                {"id": "cp-3", "kind": "zone", "capabilities": ["drive"], "geometryRef": "g:3"}
+            ],
+            "links": [
+                {"id": "l1", "fromAnchorId": "spawn-a", "toAnchorId": "cp-1", "capabilities": ["drive"]},
+                {"id": "l2", "fromAnchorId": "cp-1", "toAnchorId": "cp-2", "capabilities": ["drive"]},
+                {"id": "l3", "fromAnchorId": "cp-2", "toAnchorId": "cp-3", "capabilities": ["drive"]}
+            ]});
+        crate::creator_city_patch::publish_city_layout_snapshot(&home,
+            &json!({"schemaVersion": 1, "worldRevision": "world-rev-bind", "seed": 7, "layout": layout})).unwrap();
+        let project = crate::creator_projects::create_project_from_city_layout(&home,
+            crate::creator_projects::LOCAL_CREATOR_OWNER, "checkpoint-race", "op-bind-project", "world-rev-bind").unwrap();
+        let project_id = project["projectId"].as_str().unwrap().to_owned();
+        let bound = answer_headless_call(&home, "creator.mount.bind", &json!({
+            "projectId": project_id, "baseRevision": 0, "mountId": "mount-bind-1", "entryAnchorId": "spawn-a",
+            "bindings": {"points": ["cp-1", "cp-2", "cp-3"]}, "operationId": "op-bind-1"})).unwrap();
+        assert_eq!(bound["revision"], 1, "{bound}");
+        assert_eq!(bound["coverage"]["bound"], 3, "{bound}");
+        let published = answer_headless_call(&home, "creator.project.publish",
+            &json!({"projectId": project_id, "expectedRevision": 1})).unwrap();
+        assert!(published["releaseId"].as_str().is_some(), "{published}");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// V3 PR-7 前半：headless 臂的 Story 注册表 / City Code 安装 / Inspect 路由。
+    /// 语义：Studio 不在场时本臂直接路由宿主 dispatch_as——写路径与 mailbox 臂
+    /// 同一管线（CAS/幂等/预算），运行身份固定为 LOCAL_CREATOR_OWNER；名单外的
+    /// 视口方法绝不被本臂冒充。
+    #[test]
+    fn headless_arm_routes_story_registry_code_install_and_inspect_methods() {
+        let home = headless_home();
+        // 名单：story.* 11 方法 + creator.code.install.* 3 方法 + inspect 4 方法。
+        let methods = headless_creator_methods();
+        for name in [
+            "creator.story.project.create", "creator.story.project.read", "creator.story.projects.list",
+            "creator.story.install.preview", "creator.story.install.commit", "creator.story.install.list",
+            "creator.story.run.start", "creator.story.run.stop", "creator.story.run.reset",
+            "creator.story.resident.lease.acquire", "creator.story.resident.lease.release",
+            "creator.code.install.preview", "creator.code.install.commit", "creator.code.install.list",
+            "creator.game.rules.inspect", "creator.story.graph.inspect",
+            "creator.story.timeline.inspect", "creator.game.intent.simulate",
+            "creator.actor.register", "creator.actor.turn.context", "creator.actor.intent.submit", "creator.actor.propose",
+        ] {
+            assert!(methods.iter().any(|method| method == name), "headless arm must claim {name}");
+        }
+        // 名单外方法（视口依赖）绝不被 headless 臂认领。
+        assert!(!methods.iter().any(|method| method == "creator.city.layout.save"));
+        // Story 注册表全链路：create → read → install preview/commit → run start。
+        let created = answer_headless_call(&home, "creator.story.project.create", &json!({
+            "storyId": "story.headless", "title": "无头侦探", "schemaVersion": 1, "storyVersion": "1.0.0",
+            "graph": {"nodes": [{"id": "start", "kind": "beat"}, {"id": "clue", "kind": "beat"}],
+                "edges": [{"from": "start", "to": "clue"}]},
+            "canon": {"characters": []}})).unwrap();
+        assert_eq!(created["created"], true, "{created}");
+        let read = answer_headless_call(&home, "creator.story.project.read", &json!({"storyId": "story.headless"})).unwrap();
+        assert_eq!(read["title"], "无头侦探");
+        let city = answer_headless_call(&home, "creator.city.create",
+            &json!({"name": "无头城", "seed": 20261115, "profile": dunes_profile(), "operationId": "op-story-city"})).unwrap();
+        let city_id = city["cityId"].as_str().unwrap().to_owned();
+        let checked = answer_headless_call(&home, "creator.story.install.preview", &json!({
+            "storyId": "story.headless", "targetCityId": city_id,
+            "expectedCityRevision": city["revision"], "operationId": "op-story-install-preview"})).unwrap();
+        assert_eq!(checked["canInstall"], true, "{checked}");
+        let committed = answer_headless_call(&home, "creator.story.install.commit", &json!({
+            "previewId": checked["previewId"], "operationId": "op-story-install-commit"})).unwrap();
+        assert_eq!(committed["status"], "installed", "{committed}");
+        let run = answer_headless_call(&home, "creator.story.run.start", &json!({
+            "cityId": city_id, "storyId": "story.headless"})).unwrap();
+        // Actor 适配器全链路（headless）：register → turn.context → intent.submit。
+        // canon 无角色 → 注册拒绝（Canon 先行）；补 canon 后注册成功并出 sessionPrompt。
+        let ghost = answer_headless_call(&home, "creator.actor.register", &json!({
+            "storyId": "story.headless", "characterId": "resident:ghost", "sessionIdentifier": "codex-ghost",
+            "allowedKinds": ["speak"], "maxIntentsPerWindow": 2, "operationId": "op-actor-ghost"}))
+            .unwrap_err();
+        assert_eq!(ghost, "story_canon_character_missing");
+        // canon 更新走 CAS（expectedStoryRevision）；为 actor 注册补齐角色 Canon。
+        let canon_write = answer_headless_call(&home, "creator.story.project.create", &json!({
+            "storyId": "story.headless", "title": "无头侦探", "schemaVersion": 1, "storyVersion": "1.0.0",
+            "expectedStoryRevision": created["revision"],
+            "graph": {"nodes": [{"id": "start", "kind": "beat"}, {"id": "clue", "kind": "beat"}],
+                "edges": [{"from": "start", "to": "clue"}]},
+            "canon": {"characters": [{"id": "resident:linxia", "name": "小夏"}]}})).unwrap();
+        let _ = canon_write;
+        let registered = answer_headless_call(&home, "creator.actor.register", &json!({
+            "storyId": "story.headless", "characterId": "resident:linxia", "sessionIdentifier": "codex-actor-1",
+            "allowedKinds": ["speak", "move"], "maxIntentsPerWindow": 3, "operationId": "op-actor-reg"})).unwrap();
+        let actor_id = registered["actorId"].as_str().unwrap().to_owned();
+        assert!(actor_id.starts_with("actor-"), "{registered}");
+        let context = answer_headless_call(&home, "creator.actor.turn.context", &json!({"actorId": actor_id,
+            "scope": {"playerId": "local-profile-v1", "storyRunId": run["storyRunId"]}})).unwrap();
+        assert_eq!(context["budget"]["max"], 3, "{context}");
+        assert!(context["sessionPrompt"].as_str().unwrap().contains("resident:linxia"));
+        let submitted = answer_headless_call(&home, "creator.actor.intent.submit", &json!({
+            "actorId": actor_id, "intent": {"intentId": "intent-1", "actorId": actor_id,
+            "scope": {"kind": "story", "playerId": "local-profile-v1", "cityId": city_id,
+            "storyId": "story.headless", "storyRunId": run["storyRunId"]}, "kind": "speak",
+            "args": {"text": "你好"}, "expectedRevision": "0"}})).unwrap();
+        assert_eq!(submitted["accepted"], true, "{submitted}");
+        // 运行身份固定为稳定本地 principal（与 mailbox 臂同款），不接受调用方自报。
+        assert_eq!(run["playerId"], crate::creator_projects::LOCAL_CREATOR_OWNER, "{run}");
+        assert_eq!(run["restored"], false);
+        // Inspect 只读面在 headless 臂可用：graph/timeline 直读注册表与运行时。
+        let graph = answer_headless_call(&home, "creator.story.graph.inspect", &json!({"storyId": "story.headless"})).unwrap();
+        // 可达/死节点集合按 BTreeSet 字典序输出（确定性），与插入顺序无关。
+        assert_eq!(graph["analysis"]["reachable"]["ids"], json!(["clue", "start"]), "{graph}");
+        assert_eq!(graph["analysis"]["deadEnds"]["ids"], json!(["clue"]));
+        let timeline = answer_headless_call(&home, "creator.story.timeline.inspect",
+            &json!({"cityId": city_id, "storyId": "story.headless"})).unwrap();
+        assert_eq!(timeline["available"], true, "{timeline}");
+        // actor intent 提交的 speak 事件已入时间线（宿主复算/审计的数据面）。
+        assert_eq!(timeline["count"], 1, "{timeline}");
+        let simulate = answer_headless_call(&home, "creator.game.intent.simulate",
+            &json!({"runId": "game-run-missing", "intent": {"kind": "speak", "text": "hi"}})).unwrap();
+        assert_eq!(simulate["allowed"], false, "{simulate}");
+        assert_eq!(simulate["steps"][0]["code"], "game_run_not_found");
+        // 负：未注册项目 → 宿主管线的 not_found（不是 creator_method_unavailable）。
+        assert_eq!(answer_headless_call(&home, "creator.game.rules.inspect",
+            &json!({"projectId": "project-missing"})).unwrap_err(), "creator_project_not_found");
+        // City Code 安装 3 方法：list 直连宿主；形态合法但磁盘不存在的 buildId
+        // 带宿主完整性码（密封产物校验链先于安装预检）。
+        let listed = answer_headless_call(&home, "creator.code.install.list", &json!({})).unwrap();
+        assert_eq!(listed["installations"], json!([]), "{listed}");
+        assert_eq!(answer_headless_call(&home, "creator.code.install.preview",
+            &json!({"buildId": "0".repeat(64), "targetCityId": city_id, "expectedCityRevision": city["revision"],
+                "operationId": "op-code-install"})).unwrap_err(), "game_package_integrity_failed");
+        // Run 生命周期收尾：显式 stop 幂等，headless 臂同样可用。
+        let stopped = answer_headless_call(&home, "creator.story.run.stop", &json!({"storyRunId": run["storyRunId"]})).unwrap();
+        assert_eq!(stopped["status"], "stopped", "{stopped}");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn headless_arm_rejects_sdk_semantic_failures_after_the_structural_gate() {        let home = headless_home();
+        crate::creator_city_patch::publish_city_layout_snapshot(&home, &headless_layout_snapshot("world-rev-headless-b")).unwrap();
+        let project = crate::creator_projects::create_project_from_city_layout(&home,
+            crate::creator_projects::LOCAL_CREATOR_OWNER, "flight-checkpoint", "op-project-headless-b", "world-rev-headless-b").unwrap();
+        let project_id = project["projectId"].as_str().unwrap().to_owned();
+        // 结构硬闸不校验 label 词表——坏 label 必须由嵌入式语义闸（SDK 诊断）拒绝：
+        // 结构通过、语义判负 → 信封 ok=false → define 以 creator_preview_invalid 拒绝。
+        let mut bad_label = valid_vehicle("vehicle-bad");
+        bad_label["label"] = json!("<script>alert(1)</script>");
+        let error = answer_headless_call(&home, "creator.vehicle.define", &json!({
+            "projectId": project_id, "baseRevision": 0, "vehicleId": "vehicle-bad",
+            "label": bad_label["label"], "flightModel": bad_label["flightModel"],
+            "physics": bad_label["physics"], "bounds": bad_label["bounds"], "modelAssetId": null,
+            "operationId": "op-vehicle-bad"})).unwrap_err();
+        assert_eq!(error, "creator_preview_invalid");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn creator_studio_has_the_same_scoped_city_data_grants() {
         let studio = definitions().iter().find(|plugin| plugin.id == "creator-studio").expect("Creator Studio plugin");
         assert_eq!(studio.entry, "plugins/CreatorStudio.plugin/ui/index.html");
-        assert!(studio.data_projections.is_empty());
         // 视口复用 City 的同一批有界数据集授权（官方内置插件、描述符声明、宿主逐请求校验），
-        // 业务投影授权保持为空。数据授权必须与 city 一致，两边才渲染同一座城市。
+        // 只允许共享的 harnesses 列表，不能恢复已退役的 City 业务投影。
         let city = definitions().iter().find(|plugin| plugin.id == "city").expect("city plugin");
+        assert_eq!(studio.data_projections, vec!["harnesses:v1"]);
+        assert_eq!(studio.data_projections, city.data_projections);
         assert_eq!(studio.typed_data_grants.keys().collect::<Vec<_>>(), city.typed_data_grants.keys().collect::<Vec<_>>());
         for (dataset, grant) in &studio.typed_data_grants {
             assert!(grant.is_valid(dataset), "Studio typed-data grant must be valid for {dataset}");
@@ -1448,7 +2892,10 @@ mod tests {
         assert!(studio.local_calls.iter().any(|method| method == "creator.project.create"));
         assert!(studio.local_calls.iter().any(|method| method == "creator.project.publish"));
         assert!(studio.local_calls.iter().any(|method| method == "creator.project.playtest.start"));
+        assert!(studio.local_calls.iter().any(|method| method == "creator.project.playtest.result"));
+        assert!(studio.local_calls.iter().any(|method| method == "creator.project.playtest.cancel"));
         assert!(studio.local_calls.iter().any(|method| method == "creator.project.playtest.return_context"));
+        assert!(studio.local_calls.iter().any(|method| method == "creator.project.publication"));
     }
 
     #[test]
@@ -1600,7 +3047,7 @@ mod tests {
 
     fn instance() -> Instance {
         Instance { id: "plugin-city-2".into(), plugin_id: "city".into(), command_namespace: "city".into(), max_toolbar_items:11, performance_metrics:vec!["scene".into(),"data-load".into()], started: Instant::now(), pulse: Instant::now(), ready: false, suspended: false,
-            failed: None, revision: 0, items: Vec::new(), sequence: 0, pending: None, in_flight: 0, busy_until: None, events: Vec::new() }
+            page_hidden: false, hidden_since: None, failed: None, revision: 0, items: Vec::new(), sequence: 0, pending: None, in_flight: 0, busy_until: None, events: Vec::new() }
     }
     #[test]
     fn fault_deadlines_are_independent_of_frontend_polling_and_sticky() {
@@ -1646,6 +3093,48 @@ mod tests {
         assert!(!refresh_fault(&mut loading), "boot timeout waits while the plugin is inside a host request");
     }
     #[test]
+    fn hidden_plugin_does_not_trip_watchdog_and_visible_heartbeat_resumes_checks() {
+        let mut i = instance();
+        i.ready = true;
+        i.page_hidden = true;
+        i.hidden_since = Some(Instant::now());
+        i.pulse = Instant::now() - Duration::from_secs(60);
+        assert!(!refresh_fault(&mut i), "background timer throttling must not mark the plugin failed");
+        assert!(i.failed.is_none());
+
+        let message = json!({"version":1,"instanceId":"plugin-city-2","type":"heartbeat","diagnostic":{"hidden":false}});
+        assert!(apply_message(&mut i, "plugin-city-2", message).is_ok());
+        assert!(!i.page_hidden);
+        i.pulse = Instant::now() - Duration::from_secs(6);
+        assert!(refresh_fault(&mut i), "a visible plugin with a stale pulse must still fail");
+    }
+    #[test]
+    fn stale_hidden_declaration_stops_suppressing_the_watchdog() {
+        let mut i = instance();
+        i.ready = true;
+        i.page_hidden = true;
+        i.hidden_since = Some(Instant::now() - Duration::from_secs(60));
+        i.pulse = Instant::now() - Duration::from_secs(10);
+        assert!(refresh_fault(&mut i), "a hidden flag that stopped being refreshed must not blind the watchdog forever");
+        assert_eq!(i.failed, Some("plugin_unresponsive"));
+    }
+    #[test]
+    fn runtime_error_keeps_controlled_identifier_only() {
+        let mut i = instance();
+        let message = json!({"version":1,"instanceId":"plugin-city-2","type":"runtime.error","error":{
+            "name":"TypeError","message":"cannot read C:\\Users\\me\\secret","stack":"at CityApp (app://city/src/CityApp.tsx:42:7)"
+        }});
+        assert!(apply_message(&mut i, "plugin-city-2", message).is_ok());
+        assert_eq!(i.failed, Some("plugin_runtime_error"));
+        // 只有保守字符集限定的错误标识符入库；message/stack 原文永不持久化。
+        assert_eq!(i.events.last().unwrap()["error"], json!({"name":"TypeError"}));
+        let hostile = json!({"version":1,"instanceId":"plugin-city-2","type":"runtime.error","error":{
+            "name":"bad name with 中文 and {braces}"
+        }});
+        assert!(apply_message(&mut i, "plugin-city-2", hostile).is_ok());
+        assert_eq!(i.events.last().unwrap()["error"], json!({}));
+    }
+    #[test]
     fn heartbeat_busy_ms_is_capped_and_refreshes_pulse() {
         let mut i = instance();
         i.ready = true;
@@ -1678,8 +3167,44 @@ mod tests {
         oversized["dimensions"]["large"] = json!(86_400_001_u64);
         assert_eq!(performance_fields(&metrics, &oversized), Err("plugin_performance_invalid"));
         let mut too_many = message.clone();
-        too_many["dimensions"] = json!({"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9});
+        too_many["dimensions"] = json!({"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9,"j":10,"k":11,"l":12,"m":13});
         assert_eq!(performance_fields(&metrics, &too_many), Err("plugin_performance_invalid"));
+    }
+
+    #[test]
+    fn performance_dimensions_reject_camel_case_keys() {
+        // 2026-11-15 之前 scene 用 `windowDays` 驼峰键，被这里静默拒绝，
+        // 前端又吞掉错误，于是 app.log 里从来没有真实 scene 记录。
+        let message = json!({
+            "version":1,"instanceId":"plugin-city-2","type":"plugin.performance",
+            "metric":"scene","outcome":"success","elapsedMs":1115,
+            "dimensions":{"stage":"model","windowDays":366}
+        });
+        assert_eq!(performance_fields(&["scene".to_owned()], &message), Err("plugin_performance_invalid"));
+
+        let mut lowercase = message;
+        lowercase["dimensions"] = json!({"stage":"model","window_days":366});
+        assert!(performance_fields(&["scene".to_owned()], &lowercase).is_ok());
+    }
+
+    #[test]
+    fn frame_metric_accepts_twelve_bounded_dimensions() {
+        let mut message = json!({
+            "version":1,"instanceId":"plugin-city-2","type":"plugin.performance",
+            "metric":"frame","outcome":"success","elapsedMs":21,
+            "dimensions":{
+                "fps":60,"p50":16,"p95":21,"max":120,"draw_calls":40,"triangles":900000,
+                "quality":2,"idle":false,"dpr":150,"geometries":120,"textures":40,"load_id":"L1abc"
+            }
+        });
+        let metrics = vec!["frame".to_owned()];
+        let fields = performance_fields(&metrics, &message).unwrap();
+        assert!(fields.contains("metric=frame"));
+        assert!(fields.contains("p95"));
+        assert!(fields.contains("load_id"));
+
+        message["dimensions"]["extra"] = json!(1);
+        assert_eq!(performance_fields(&metrics, &message), Err("plugin_performance_invalid"));
     }
 
     #[test]
@@ -1722,6 +3247,18 @@ mod tests {
         tools.pop(); tools[0].value = Some("14".into()); assert!(!valid_tools("city", 11, &tools));
     }
     #[test]
+    fn toolbar_search_accepts_empty_and_multilingual_queries_with_bounds() {
+        let mut tools: Vec<Tool> = serde_json::from_value(json!([{"id":"search","commandId":"creator.project.search","label":"搜索名称","kind":"search","enabled":true,"value":""}])).unwrap();
+        assert!(valid_tools("creator", 6, &tools));
+        tools[0].value = Some("验收湾 🚕".into());
+        assert!(valid_tools("creator", 6, &tools));
+        assert!(!valid_tools("city", 6, &tools));
+        assert!(!valid_toolbar_search(&"湾".repeat(81)));
+        assert!(!valid_toolbar_search("first\nsecond"));
+        tools[0].value = None;
+        assert!(!valid_tools("creator", 6, &tools));
+    }
+    #[test]
     fn descriptor_toolbar_limit_allows_game_entry_without_namespace_special_cases() {
         let tools: Vec<Tool> = (0..11).map(|n| serde_json::from_value(json!({
             "id": format!("tool-{n}"), "commandId": format!("city.tool-{n}"),
@@ -1740,6 +3277,21 @@ mod tests {
         assert!(valid_tools("metrics", 11, &other));
     }
     #[test]
+    fn creator_toolbar_budget_and_late_ready_recover_the_real_studio_lifecycle() {
+        let studio = definitions().iter().find(|plugin| plugin.id == "creator-studio").unwrap();
+        let tools: Vec<Tool> = (0..6).map(|n| serde_json::from_value(json!({
+            "id":format!("tool-{n}"),"commandId":format!("creator.tool-{n}"),
+            "label":"Tool","kind":"button","enabled":true
+        })).unwrap()).collect();
+        assert!(valid_tools("creator",studio.max_toolbar_items,&tools));
+        let mut instance = instance();
+        instance.id = "plugin-creator-studio-1".into(); instance.command_namespace = "creator".into(); instance.failed = Some("plugin_boot_timeout");
+        assert!(apply_message(&mut instance,"plugin-creator-studio-1",json!({"version":1,"instanceId":"plugin-creator-studio-1","type":"toolbar.update","revision":1,"items":tools})).is_ok());
+        assert!(instance.ready);
+        assert_eq!(instance.failed,None);
+    }
+
+    #[test]
     fn namespace_validation_is_not_specific_to_the_first_plugin() {
         let tools: Vec<Tool> = serde_json::from_value(json!([{"id":"refresh","commandId":"metrics.refresh","label":"Refresh","kind":"button","enabled":true}])).unwrap();
         assert!(valid_tools("metrics", 10, &tools));
@@ -1748,6 +3300,24 @@ mod tests {
         assert!(!registry.is_empty());
         let city = registry.iter().find(|plugin| plugin.id == "city").unwrap();
         assert_eq!(city.host_events, vec!["plugin.event".to_owned()]);
+    }
+
+    /// Agent 路径的场景预览：嵌入式 scene.draft 闸给合法对象签发 ok，对非法对象判负。
+    #[test]
+    fn headless_scene_preview_validates_operations_through_the_embedded_gate() {
+        let legal_object = json!({"id": "crate-1", "kind": "collider", "shape": "box",
+            "sizeMeters": {"x": 4.0, "y": 2.0, "z": 3.0},
+            "transform": {"positionMeters": {"x": 0.0, "y": 0.0, "z": 0.0},
+                "rotationRadians": {"x": 0.0, "y": 0.0, "z": 0.0}, "scale": {"x": 1.0, "y": 1.0, "z": 1.0}}});
+        let gate_ok = crate::creator_projects::embedded_scene_preview(
+            &json!([{"op": "scene.object.upsert", "object": legal_object}])).unwrap();
+        assert_eq!(gate_ok.0, true, "legal collider must pass: {:?}", gate_ok.1);
+        let illegal = crate::creator_projects::embedded_scene_preview(
+            &json!([{"op": "scene.object.upsert", "object": {"id": "bad", "kind": "model"}}])).unwrap();
+        assert_eq!(illegal.0, false, "model without asset must fail");
+        let mount = crate::creator_projects::embedded_scene_preview(
+            &json!([{"op": "mount.bind", "mount": {"mountId": "m1"}}])).unwrap();
+        assert_eq!(mount.0, false, "mount must fail with actionable diagnostics");
     }
 
     #[test]
@@ -1759,5 +3329,278 @@ mod tests {
         let private = tauri::Error::Io(std::io::Error::other("/Users/private/secret"));
         assert_eq!(native_create_failure_code(&private), "plugin_create_failed");
         assert!(!native_create_failure_code(&private).contains("/Users"));
+    }
+
+    /// N-07 分层回传验收（N3，OH_AGENT_NARRATIVE_ENGINE_SPEC §8）：真实工具面走
+    /// 完整 café 闭环。Agent 侧走 MCP 工具（邮箱经 headless 臂应答），City 侧走
+    /// dispatch_city_runtime（玩家面）；队列行 + actor 记账 + G-READ 作为分层证据。
+    #[test]
+    fn narrative_actor_turn_tool_journey_carries_layered_evidence() {
+        let home = headless_home();
+        // 邮箱泵线程：与 poll_headless_creator_calls 同三步（claim → answer → respond）。
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let pump_stop = stop.clone();
+        let pump_home = home.clone();
+        let pump = std::thread::spawn(move || {
+            while !pump_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let Ok(calls) = agent_vitals_runtime::query::plugin_calls::claim_pending(
+                    &pump_home, "creator-studio", HEADLESS_CREATOR_INSTANCE, &headless_creator_methods(), 8) else {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    continue;
+                };
+                for call in &calls {
+                    let method = call["method"].as_str().unwrap_or_default().to_owned();
+                    let Some(call_id) = call["callId"].as_str().map(str::to_owned) else { continue };
+                    let payload = call.get("payload").filter(|value| value.is_object())
+                        .cloned().unwrap_or_else(|| json!({}));
+                    let result = answer_headless_call(&pump_home, &method, &payload);
+                    let response = match result {
+                        Ok(value) => json!({"ok": true, "result": value}),
+                        Err(code) => json!({"ok": false, "error": {"code": code}}),
+                    };
+                    let _ = agent_vitals_runtime::query::plugin_calls::respond_with_budget(
+                        &pump_home, "creator-studio", HEADLESS_CREATOR_INSTANCE, &call_id, &response,
+                        TRANSPORT_BUDGET_DEFAULT_BYTES);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        });
+        let mcp = |method: &str, payload: serde_json::Value|
+            agent_vitals_mcp::mcp::dispatch_with_permissions(method, &payload, &home, true);
+        let city = |method: &str, payload: serde_json::Value|
+            crate::creator_projects::dispatch_city_runtime(&home, "city-instance", method, &payload);
+
+        // 1. 创作侧（MCP 工具回执）：café Story 项目 → City → 安装发布。
+        let story = serde_json::from_str(include_str!("../tests/fixtures/story-missing-painter-synthetic.json")).unwrap();
+        mcp("creator_story_project_create", story).unwrap();
+        let city_created = mcp("creator_city_create", json!({"name":"旅程之城","seed":20261121,
+            "profile":{"schemaVersion":1,"id":"desert","version":1,"biome":"arid",
+            "geography":{"generator":"arid-dunes-v1","parameters":{"dunes":{"duneScale":190,"duneAmplitude":11,"orientationDeg":18}}},
+            "visuals":{"themeId":"desert"}},"operationId":"journey-city"})).unwrap();
+        let city_id = city_created["data"]["cityId"].as_str().unwrap().to_string();
+        let city_revision = city_created["data"]["revision"].as_u64().unwrap();
+        let preview = mcp("creator_story_install_preview", json!({"storyId":"story.detective",
+            "targetCityId":city_id,"expectedCityRevision":city_revision,
+            "operationId":"journey-install-preview"})).unwrap();
+        assert_eq!(preview["data"]["canInstall"], json!(true), "{preview}");
+        mcp("creator_story_install_commit", json!({"previewId":preview["data"]["previewId"],
+            "operationId":"journey-install-commit"})).unwrap();
+
+        // 2. 玩家侧（City face）：游戏会话 Run + Story Run（统一本地主体）。
+        let player_id = crate::creator_projects::LOCAL_CREATOR_OWNER.to_string();
+        let studio = |method: &str, payload: Value|
+            crate::creator_projects::dispatch_as(&home, &player_id, "story-studio", method, &payload);
+        let story_scope = json!({"cityId":city_id,"storyId":"story.detective"});
+        assert_eq!(studio("creator.story.run.status", story_scope.clone()).unwrap()["run"], Value::Null);
+        let mut start_request = story_scope.clone();
+        start_request["expectedContentDigest"] = json!("sha256:stale");
+        assert_eq!(studio("creator.story.run.start", start_request.clone()).unwrap_err(), "story_install_digest_conflict");
+        assert_eq!(studio("creator.story.run.status", story_scope.clone()).unwrap()["run"], Value::Null);
+        start_request["expectedContentDigest"] = preview["data"]["targetPackageDigest"].clone();
+        let story_run = studio("creator.story.run.start", start_request).unwrap();
+        let story_run_id = story_run["storyRunId"].as_str().unwrap().to_string();
+        assert_eq!(studio("creator.story.run.status", story_scope.clone()).unwrap()["run"]["storyRunId"], story_run_id);
+        assert_eq!(city("city.game.run.start", json!({"cityId":city_id,"gameId":"story.detective",
+            "storyRunId":"another-run"})).unwrap_err(), "story_run_not_active");
+        let game_run = city("city.game.run.start", json!({"cityId":city_id,"gameId":"story.detective","storyRunId":story_run_id})).unwrap();
+        let game_run_id = game_run["runId"].as_str().unwrap().to_string();
+        assert_eq!(game_run["playerScope"]["playerId"], player_id);
+        assert_eq!(game_run["storyRunId"], story_run_id);
+        let prepared = city("city.story.prepared.list", json!({})).unwrap();
+        assert_eq!(prepared["runs"][0]["storyRunId"], story_run_id);
+        assert_eq!(prepared["runs"][0]["cityName"], "旅程之城");
+        let opening = city("city.story.run.read", json!({"runId":game_run_id})).unwrap();
+        assert_eq!(opening["presentation"]["beat"]["title"], "遇见小夏");
+        assert_eq!(opening["presentation"]["characters"][0], json!({"id":"resident:linxia","name":"小夏"}));
+        assert!(opening["presentation"].get("canon").is_none());
+
+        assert_eq!(city("city.story.playtest.complete", json!({"runId":game_run_id,"action":"restart"})).unwrap_err(), "story_ending_required");
+
+        // 3. Agent 侧注册（MCP）：会话绑定角色。
+        let actor = mcp("creator_actor_register", json!({"storyId":"story.detective",
+            "characterId":"resident:linxia","sessionIdentifier":"journey-sess",
+            "allowedKinds":["speak","invite"],"maxIntentsPerWindow":5,
+            "sessionLabel":"N-07 验收会话","operationId":"journey-actor"})).unwrap();
+        let actor_id = actor["data"]["actorId"].as_str().unwrap().to_string();
+
+        // 4. 玩家首句（City face）：和实际对白面板一样从冷启动直接提交 speak。
+        let clock = crate::city_runtime::read_clock_at(&home, &city_id,
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64).unwrap();
+        let clock_revision = clock["clockRevision"].as_str().unwrap().to_string();
+        let speak = city("city.story.commit", json!({"runId":game_run_id,
+            "operationId":"journey-speak","eventId":"evt-journey-speak",
+            "residentId":"resident:linxia","expectedStoryRevision":opening["storyRevision"],
+            "expectedClockRevision":clock_revision,
+            "intent":{"kind":"speak","text":"去咖啡馆吧？","residentId":"resident:linxia"}})).unwrap();
+        let speak_revision = speak["storyRevision"].as_str().unwrap().to_string();
+
+        // 5. Agent 领取（MCP，会话派生身份）→ 上下文（作用域来自投递）。
+        let claimed = mcp("creator_actor_turn_wait", json!({"sessionIdentifier":"journey-sess",
+            "timeoutMs":2000,"maxRows":4})).unwrap();
+        let claimed_data = claimed.get("data").cloned().unwrap_or_else(|| claimed.clone());
+        let deliveries = claimed_data["deliveries"].as_array().unwrap();
+        assert_eq!(deliveries.len(), 1, "claim must see the player turn: {claimed}");
+        assert_eq!(deliveries[0]["payload"]["storyRunId"], json!(story_run_id));
+        let speak_delivery = deliveries.iter().find(|d| d["payload"]["eventId"] == json!("evt-journey-speak")).unwrap();
+        let delivery_id = speak_delivery["deliveryId"].as_str().unwrap().to_string();
+        let context = mcp("creator_actor_turn_context", json!({"actorId":actor_id,
+            "scope":{"playerId":player_id,"storyRunId":story_run_id}})).unwrap();
+        assert_eq!(context["data"]["scope"]["storyRunId"], json!(story_run_id),
+            "turn context must project the authorized run: {context}");
+        let evaluated = context["data"]["evaluatedEdges"].as_array()
+            .unwrap_or_else(|| panic!("evaluator menu must be present: {context}"));
+        let edge_ids = |choices: &[Value]| choices.iter().map(|edge| edge["edgeId"].to_string()).collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(edge_ids(evaluated), edge_ids(&[json!({"edgeId":"e-invite"}),json!({"edgeId":"e-verify-intent"}),json!({"edgeId":"e-decline"})]), "{context}");
+
+        // Optionally supply real Actor replies through a persistent test driver. Only
+        // the synthetic player text, character canon and evaluated choices enter the driver.
+        use std::io::{BufRead, Write};
+        let mut actor_driver = std::env::var_os("OH_STORY_TEST_ACTOR_DRIVER").map(|program| {
+            crate::cli_process::cli_command(program).stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped()).spawn().expect("start live Actor driver")
+        });
+        let mut actor_output = actor_driver.as_mut().map(|child| std::io::BufReader::new(child.stdout.take().unwrap()));
+        let mut actor_reply = |player_line: &str, context: &Value, default_edge: &str, default_line: &str| {
+            if let (Some(driver), Some(output)) = (&mut actor_driver, &mut actor_output) {
+                writeln!(driver.stdin.as_mut().unwrap(), "{}", json!({"playerLine":player_line,"canon":context["canon"],"evaluatedEdges":context["evaluatedEdges"]})).unwrap();
+                let mut reply = String::new();
+                assert!(output.read_line(&mut reply).unwrap() > 0, "live Actor driver closed before replying");
+                let reply: Value = serde_json::from_str(&reply).unwrap();
+                assert_eq!(reply["edgeId"], default_edge);
+                let line = reply["dialogue"].as_str().filter(|line| !line.trim().is_empty()).unwrap();
+                eprintln!("玩家 {player_line} / Actor {line}");
+                return line.to_owned();
+            }
+            default_line.to_owned()
+        };
+        let first_reply = actor_reply("去咖啡馆吧？", &context["data"], "e-invite", "好啊，周六下午两点，老地方见！");
+        // 6. 提案（MCP）→ 求值器接受 → 提交 → 确认。
+        let receipt = mcp("creator_actor_propose", json!({"actorId":actor_id,"deliveryId":delivery_id,
+            "proposal":{"operationId":"journey-reply","edgeId":"e-invite",
+            "dialogue":first_reply}})).unwrap();
+        // 邮箱面工具带 {ok,data} 信封；总线本地工具（wait/confirm）为裸响应。
+        let receipt_data = receipt.get("data").cloned().unwrap_or_else(|| receipt.clone());
+        assert_eq!(receipt_data["turnStatus"], "confirmed", "{receipt}");
+        let reply_event = receipt_data["committedEventIds"][0].as_str().unwrap().to_string();
+        let confirmed = mcp("creator_actor_turn_confirm", json!({"sessionIdentifier":"journey-sess",
+            "deliveryId":delivery_id,"reply":{"eventId":reply_event,"storyRunId":story_run_id}})).unwrap();
+        let confirmed_data = confirmed.get("data").cloned().unwrap_or_else(|| confirmed.clone());
+        assert_eq!(confirmed_data["status"], "confirmed", "{confirmed}");
+
+        // 7. 玩家读回（City face，G-READ）：原 Run 可见回复 + 效果状态。
+        let read = city("city.story.run.read", json!({"runId":game_run_id})).unwrap();
+        assert_eq!(read["storyRunId"], json!(story_run_id));
+        assert_eq!(read["state"]["affection"], json!(1), "one evaluator effect");
+        assert_eq!(read["state"]["cursor"], "cafe_reply");
+        let texts: Vec<String> = read["dialogue"].as_array().unwrap().iter()
+            .filter_map(|entry| entry["intent"]["text"].as_str().map(str::to_string)).collect();
+        assert!(texts.iter().any(|t| t == &first_reply), "reply visible: {read}");
+        assert!(texts.iter().any(|t| t == "去咖啡馆吧？"), "player line visible: {read}");
+
+        // 8. 分层证据：队列行（in_flight → confirmed，无重投）+ actor 记账 + 快照版本推进。
+        {
+            let db = crate::creator_store::database(&home).unwrap();
+            let (status, redelivered): (String, i64) = db.query_row(
+                "SELECT status,redelivered FROM host_deliveries WHERE delivery_id=?1",
+                [delivery_id.as_str()], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+            assert_eq!((status.as_str(), redelivered), ("confirmed", 0));
+            let decision: String = db.query_row("SELECT last_decision FROM actors WHERE actor_id=?1",
+                [actor_id.as_str()], |row| row.get(0)).unwrap();
+            assert_eq!(decision, "accepted");
+            let used: i64 = db.query_row("SELECT intents_used FROM actors WHERE actor_id=?1",
+                [actor_id.as_str()], |row| row.get(0)).unwrap();
+            assert_eq!(used, 1);
+        }
+        assert_ne!(read["storyRevision"].as_str().unwrap(), speak_revision, "reply advanced the run");
+        // 9. 同一 Story Run 与 Actor 会话接下一条玩家消息，走到显式结局。
+        let player_line = "你还记得失踪的画家最后去了哪里吗？";
+        city("city.story.commit", json!({"runId":game_run_id,"residentId":"resident:linxia",
+            "operationId":"journey-ask-clue","eventId":"evt-journey-ask-clue",
+            "expectedStoryRevision":read["storyRevision"],"expectedClockRevision":clock_revision,
+            "intent":{"kind":"speak","text":player_line,"residentId":"resident:linxia"}})).unwrap();
+        let next = mcp("creator_actor_turn_wait", json!({"sessionIdentifier":"journey-sess",
+            "timeoutMs":2000,"maxRows":4})).unwrap();
+        let next = next.get("data").unwrap_or(&next);
+        let next_delivery = next["deliveries"].as_array().unwrap().iter()
+            .find(|entry| entry["payload"]["eventId"] == "evt-journey-ask-clue").unwrap();
+        assert_eq!(next_delivery["payload"]["storyRunId"], story_run_id);
+        let next_context = mcp("creator_actor_turn_context", json!({"actorId":actor_id,
+            "scope":{"playerId":player_id,"storyRunId":story_run_id}})).unwrap();
+        let choices = &next_context["data"]["evaluatedEdges"];
+        assert_eq!(edge_ids(choices.as_array().unwrap()), edge_ids(&[json!({"edgeId":"e-find-clue"}),json!({"edgeId":"e-protect-clue"}),json!({"edgeId":"e-back-off"})]), "{next_context}");
+        let final_reply = actor_reply(player_line, &next_context["data"], "e-find-clue", "他把最后一幅画留在了老灯塔。");
+        assert!(final_reply.contains("灯塔"), "Actor must reveal the canon clue");
+        let final_receipt = mcp("creator_actor_propose", json!({"actorId":actor_id,"deliveryId":next_delivery["deliveryId"],
+            "proposal":{"operationId":"journey-clue-reply","edgeId":"e-find-clue","dialogue":final_reply}})).unwrap();
+        assert_eq!(final_receipt["data"]["turnStatus"], "confirmed", "{final_receipt}");
+        let ending = city("city.story.run.read", json!({"runId":game_run_id})).unwrap();
+        assert_eq!(ending["state"]["clue_found"], true);
+        assert_eq!(ending["state"]["cursor"], "ending");
+        assert_eq!(ending["presentation"]["beat"]["kind"], "ending");
+        assert_eq!(ending["presentation"]["beat"]["title"], "老灯塔的线索");
+        let dialogue = ending["dialogue"].as_array().unwrap();
+        assert!(dialogue.iter().any(|entry| entry["replyToEventId"] == "evt-journey-ask-clue"));
+        for expected in ["去咖啡馆吧？", first_reply.as_str(), player_line, final_reply.as_str()] {
+            assert!(dialogue.iter().any(|entry| entry["intent"]["text"] == expected), "missing dialogue: {expected}");
+        }
+        let ending_context = mcp("creator_actor_turn_context", json!({"actorId":actor_id,
+            "scope":{"playerId":player_id,"storyRunId":story_run_id}})).unwrap();
+        assert_eq!(ending_context["data"]["evaluatedEdges"], json!([]));
+        assert_eq!(ending_context["data"]["scope"]["runStatus"], "active", "the ending beat does not stop the run");
+        let restart_request = json!({"runId":game_run_id,"action":"restart"});
+        assert_eq!(crate::creator_projects::dispatch_city_runtime(&home, "another-city",
+            "city.story.playtest.complete", &restart_request).unwrap_err(), "story_playtest_run_mismatch");
+        let restarted = city("city.story.playtest.complete", restart_request.clone()).unwrap();
+        assert_eq!(city("city.story.playtest.complete", restart_request).unwrap(), restarted, "retry preserves both new run IDs");
+        assert_eq!(city("city.story.playtest.complete", json!({"runId":game_run_id,"action":"finish"})).unwrap_err(), "story_playtest_already_completed");
+        assert_ne!(restarted["storyRunId"], story_run_id);
+        assert_ne!(restarted["runId"], game_run_id);
+        assert_eq!(studio("creator.story.run.status", story_scope.clone()).unwrap()["run"]["storyRunId"], restarted["storyRunId"]);
+        let replay = city("city.story.run.read", json!({"runId":restarted["runId"]})).unwrap();
+        assert_eq!(replay["storyRevision"], "0");
+        assert_eq!(replay["presentation"]["beat"]["title"], "遇见小夏");
+        assert_eq!(replay["dialogue"], json!([]));
+        assert_eq!(city("city.story.run.read", json!({"runId":game_run_id})).unwrap()["dialogue"], ending["dialogue"]);
+        assert_eq!(city("city.story.commit", json!({"runId":game_run_id,"residentId":"resident:linxia",
+            "operationId":"journey-after-stop","eventId":"evt-journey-after-stop",
+            "expectedStoryRevision":ending["storyRevision"],"expectedClockRevision":clock_revision,
+            "intent":{"kind":"speak","text":"再见","residentId":"resident:linxia"}})).unwrap_err(), "game_run_cancelled");
+
+        let late_actor = crate::story_store::StoryCommitCommandV1 {
+            operation_id: "journey-late-actor".into(), event_id: "evt-journey-late-actor".into(),
+            player_id: player_id.clone(), city_id: city_id.clone(), game_id: "story.detective".into(),
+            story_scope: Some(crate::story_store::StoryStateScopeV1 {
+                story_id: "story.detective".into(), story_run_id: story_run_id.clone(),
+            }),
+            resident_id: None, expected_story_revision: ending["storyRevision"].as_str().unwrap().into(),
+            expected_clock_revision: clock_revision.clone(), intent: json!({"kind":"speak","text":"迟到的回复"}),
+            run_id: story_run_id.clone(), rule_set_digest: None, causation_id: None, correlation_id: None,
+            narrative_effects: Some(json!([])),
+        };
+        assert_eq!(crate::story_store::commit_story(&home, late_actor, crate::story_store::StoryClockAuthorityV1 {
+            revision: clock_revision, tick: clock["tick"].as_u64().unwrap(),
+            simulation_utc_ms: clock["simulationUtcMs"].as_u64().unwrap(),
+        }).unwrap_err(), "story_run_not_active");
+
+        // Seed the replay's terminal state to exercise the separate finish button
+        // without relying on another model call. The previous run reached it normally.
+        let db = crate::creator_store::database(&home).unwrap();
+        db.execute(
+            "INSERT INTO story_states(player_id,city_id,game_id,story_id,story_run_id,revision,document_json,updated_at_ms)
+             SELECT player_id,city_id,game_id,story_id,?1,revision,document_json,updated_at_ms FROM story_states WHERE story_run_id=?2",
+            rusqlite::params![restarted["storyRunId"].as_str().unwrap(),story_run_id],
+        ).unwrap();
+        let finish_request = json!({"runId":restarted["runId"],"action":"finish"});
+        let finished = city("city.story.playtest.complete", finish_request.clone()).unwrap();
+        assert_eq!(finished["action"], "finish");
+        assert_eq!(city("city.story.playtest.complete", finish_request).unwrap(), finished);
+        assert_eq!(studio("creator.story.run.status", story_scope).unwrap()["run"], Value::Null);
+        if let Some(mut driver) = actor_driver {
+            drop(driver.stdin.take());
+            assert!(driver.wait().unwrap().success());
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        pump.join().unwrap();
+        std::fs::remove_dir_all(&home).ok();
     }
 }

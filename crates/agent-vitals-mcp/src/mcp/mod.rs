@@ -36,6 +36,12 @@ mod workflow_summary;
 pub mod trust_profiles;
 mod city_building;
 mod city_im;
+pub mod creator_session;
+pub mod creator_agent_executor;
+pub mod host_delivery;
+mod creator_code;
+mod creator_code_workspace;
+mod creator_code_experience;
 mod creator_studio;
 mod city_world;
 #[cfg(feature = "mcp-internal")]
@@ -68,7 +74,11 @@ pub use crate::envelope::*;
 // ─────────────────────────── 工具注册表 ───────────────────────────
 
 /// 当前构建注册的工具。传输层据此渲染 `tools/list` 并校验 `tools/call` 的名字。
-pub fn tool_specs() -> Vec<ToolSpec> {
+pub fn tool_specs() -> Vec<ToolSpec> { tool_specs_with_city(true) }
+
+/// 实验性独立 City 工具默认不对外暴露：它们覆盖草稿、世界包引用和只读视口，
+/// 尚不能启动/切换独立 City runtime。需要时用 `data-mcp serve --enable-city-tools` 显式开启。
+pub fn tool_specs_with_city(include_city: bool) -> Vec<ToolSpec> {
     // `mut` 只在 `mcp-internal` 构建里用到（下方 push）；公开构建不加工具。
     #[cfg_attr(not(feature = "mcp-internal"), allow(unused_mut))]
     let mut out = vec![
@@ -96,12 +106,19 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         city_im::spec(),
     ];
     out.extend(creator_studio::specs());
+    out.extend(creator_session::specs());
+    out.extend(creator_code::specs());
+    out.extend(creator_code_workspace::specs());
+    out.extend(creator_code_experience::specs());
     out.extend(city_world::specs());
     #[cfg(feature = "mcp-internal")]
     {
         out.push(query_sql_readonly::spec());
         out.push(billing_workflow::spec());
         out.push(authority_audit::spec());
+    }
+    if !include_city {
+        out.retain(|tool| !tool.name.starts_with("creator_city_"));
     }
     out
 }
@@ -182,6 +199,14 @@ pub fn source_status_report(conn: &Connection) -> Result<Value, String> {
 
 /// `tools/call` 分发。`name` 已由传输层对 [`tool_specs`] 校验过。参数在这里
 /// 过一遍极简 schema 校验（spec §6.4 / M08：未知字段 → `invalid_argument`）。
+/// E3 诊断闭环：creator 域错误统一附加 recoveries 建议（同一份生成产物）。
+fn attach_creator_recovery(error: ToolError) -> ToolError {
+    match creator_studio::recovery_for(error.code) {
+        Some(next) => error.with_next(next),
+        None => error,
+    }
+}
+
 pub fn dispatch(name: &str, args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     dispatch_with_permissions(name, args, data_home, false)
 }
@@ -194,12 +219,26 @@ pub fn dispatch_with_permissions(
     data_home: &Path,
     allow_local_writes: bool,
 ) -> Result<Value, ToolError> {
+    dispatch_with_permissions_options(name, args, data_home, allow_local_writes, true)
+}
+
+pub fn dispatch_with_permissions_options(
+    name: &str,
+    args: &Value,
+    data_home: &Path,
+    allow_local_writes: bool,
+    include_city: bool,
+) -> Result<Value, ToolError> {
+    if !include_city && name.starts_with("creator_city_") {
+        return Err(ToolError::new("invalid_argument",
+            "Independent City tools are experimental and disabled. Start `data-mcp serve --enable-city-tools` to use them."));
+    }
     #[cfg(not(feature = "mcp-internal"))]
     let _ = allow_local_writes;
     let spec = tool_specs()
         .into_iter()
         .find(|s| s.name == name)
-        .ok_or_else(|| ToolError::new("internal_error", format!("tool `{name}` registered but not wired")))?;
+        .ok_or_else(|| ToolError::new("not_found", format!("tool `{name}` is not registered on this MCP face")))?;
     validate_args(&spec, args)?;
     match name {
         "data_status" => data_status::run(args, data_home),
@@ -224,8 +263,73 @@ pub fn dispatch_with_permissions(
         "set_building_model" => city_building::run_set(args, data_home, allow_local_writes),
         "reset_building" => city_building::run_reset(args, data_home, allow_local_writes),
         "im_publish" => city_im::run(args, data_home, allow_local_writes),
-        "creator_layout_list" | "creator_project_list" | "creator_project_read" | "creator_operation_status" | "creator_playtest_history" | "creator_project_create"
-        | "creator_game_preview" | "creator_scene_preview" | "creator_project_commit" | "creator_project_publish" => creator_studio::run(name, args, data_home, allow_local_writes),
+        "creator_city_create" | "creator_city_create_from_world" | "creator_city_edit_preview" | "creator_city_patch_preview" | "creator_city_list" | "creator_city_read" | "creator_city_diagnostics" | "creator_city_view" | "creator_city_view_status" | "creator_city_capture" | "creator_city_layout_read" | "creator_city_layout_save" | "creator_city_anchor_list" | "creator_city_anchor_upsert" | "creator_city_anchor_remove" | "creator_mount_list" | "creator_mount_bind" | "creator_mount_unbind" | "creator_game_bind_preview" | "creator_experience_build" | "creator_experience_list" | "creator_experience_install" | "creator_experience_uninstall" | "creator_layout_list" | "creator_project_list" | "creator_project_read" | "creator_operation_status" | "creator_playtest_history" | "creator_playtest_result" | "creator_playtest_cancel" | "creator_project_create"
+        | "creator_game_preview" | "creator_scene_preview" | "creator_project_commit" | "creator_project_publish"
+        | "creator_scene_describe" | "creator_scene_capture" | "creator_scene_inspect" | "creator_scene_validate" | "creator_capabilities_list"
+        | "creator_vehicle_list" | "creator_vehicle_preview" | "creator_vehicle_define" | "creator_vehicle_inspect"
+        // Story Project Registry（RFC V3 §12，S-2+S-3）：路由进 creator_studio 的同一写闸。
+        | "creator_story_project_create" | "creator_story_project_read" | "creator_story_projects_list"
+        | "creator_story_preview"
+        | "creator_story_install_preview" | "creator_story_install_commit" | "creator_story_install_list"
+        | "creator_story_run_start" | "creator_story_run_stop" | "creator_story_run_reset"
+        | "creator_story_resident_lease_acquire" | "creator_story_resident_lease_release"
+        // V3 PR-7 前半：Inspect 只读面（RFC §6 [r1] creator 域扩展）——同一模块、
+        // 同一错误映射，无本地写闸。
+        | "creator_game_rules_inspect" | "creator_story_graph_inspect"
+        | "creator_story_timeline_inspect" | "creator_game_intent_simulate"
+            | "creator_actor_register" | "creator_actor_turn_context" | "creator_actor_intent_submit" | "creator_actor_propose" => {
+            creator_studio::run(name, args, data_home, allow_local_writes).map_err(attach_creator_recovery)
+        }
+        "creator_city_edit_commit" => {
+            let result = creator_studio::run(name, args, data_home, allow_local_writes).map_err(attach_creator_recovery);
+            if let Ok(value) = &result {
+                // E2：world.set 提交成功 → 布局重建作业（活状态经 creator_city_view_status 解析）。
+                if value.get("runtimeStatus").is_some() {
+                    creator_session::register_world_apply_job(data_home,
+                        value.get("cityId").and_then(Value::as_str),
+                        value.get("revision").and_then(Value::as_u64));
+                }
+            }
+            result
+        }
+        "creator_playtest_start" => {
+            // E2：试玩 start 成功即注册为 playtest 作业（统一作业面）。
+            // run() 的 Ok 是 {ok, data} 信封；register_playtest_job 从 data 取 runId。
+            // 邮箱超时不是 Ok，这里不会记账——宿主必须先把 mailbox 写成完成，本臂才跑得到。
+            let result = creator_studio::run(name, args, data_home, allow_local_writes).map_err(attach_creator_recovery);
+            if let Ok(value) = &result { creator_session::register_playtest_job(data_home, value); }
+            result
+        }
+        "creator_session_open" | "creator_session_list" | "creator_session_update"
+        | "creator_session_status" | "creator_session_close"
+        | "creator_job_list" | "creator_job_status" | "creator_job_wait" | "creator_job_cancel"
+        | "creator_game_type_list" | "creator_task_create" | "creator_task_plan_submit" | "creator_task_plan_approve" | "creator_task_status" | "creator_task_execute"
+        | "creator_task_evidence_append" | "creator_task_evidence_list" | "creator_task_review_accept" | "creator_task_review_reject" | "creator_task_cancel"
+        | "creator_task_list_open" | "creator_task_claim" | "creator_task_submit_result" | "creator_task_progress"
+        | "creator_connection_heartbeat" | "creator_connection_disconnect" | "creator_connection_status"
+        | "creator_capabilities_status" | "creator_events_subscribe" => creator_session::run(name, args, data_home, allow_local_writes),
+        "creator_actor_turn_wait" => {
+            // 领取（评审 1）：收件主体由 sessionIdentifier 经 actors 绑定表派生，
+            // 不接受调用方自报 principalId；actor.turn → in_flight（等确认）。
+            if !allow_local_writes { return Err(ToolError::new("permission_denied",
+                "creator_actor_turn_wait consumes deliveries; restart data-mcp serve with --allow-local-writes.")); }
+            host_delivery::claim_wait(data_home, args).map_err(attach_creator_recovery)
+        }
+        "creator_actor_turn_confirm" => {
+            // 回合确认（D-6/HB-07）：reply 绑定同 Run + 触发事件提交成功后，
+            // in_flight → confirmed；未确认超 replyTTL 重排队。
+            if !allow_local_writes { return Err(ToolError::new("permission_denied",
+                "creator_actor_turn_confirm confirms deliveries; restart data-mcp serve with --allow-local-writes.")); }
+            host_delivery::confirm_turn(data_home, args).map_err(attach_creator_recovery)
+        }
+        "creator_code_builds_list" | "creator_code_build_status" | "creator_code_preview_status" =>
+            creator_code::run(name, args, data_home),
+        "creator_code_project_create" | "creator_code_workspace_info" | "creator_code_file_read"
+        | "creator_code_file_write" | "creator_code_preview" | "creator_code_build" | "creator_code_test" =>
+            creator_code_workspace::run(name, args, data_home, allow_local_writes),
+        "creator_code_publish" | "creator_code_experience_list" | "creator_code_experience_install"
+        | "creator_code_experience_uninstall" =>
+            creator_code_experience::run(name, args, data_home, allow_local_writes),
         "city_world_profile_preview" | "city_world_profile_apply" => city_world::run(name, args, data_home, allow_local_writes),
         #[cfg(feature = "mcp-internal")]
         "query_sql_readonly" => query_sql_readonly::run(args, data_home),
@@ -396,11 +500,94 @@ mod tests {
     }
 
     #[test]
+    fn code_game_status_tools_are_registered_and_read_only() {
+        let names: Vec<_> = tool_specs().iter().map(|tool| tool.name).collect();
+        for name in ["creator_code_builds_list", "creator_code_build_status", "creator_code_preview_status", "creator_code_project_create", "creator_code_workspace_info", "creator_code_file_read", "creator_code_file_write", "creator_code_preview", "creator_code_build", "creator_code_test", "creator_code_publish", "creator_code_experience_list", "creator_code_experience_install", "creator_code_experience_uninstall"] {
+            assert!(names.contains(&name), "Code Game MCP tool missing: {name}");
+        }
+        let missing = Path::new("/nonexistent-code-game-data-home");
+        let listed = dispatch("creator_code_builds_list", &json!({"limit": 5}), missing).unwrap();
+        assert_eq!(listed["data"]["builds"].as_array().map(Vec::len), Some(0));
+        let preview = dispatch("creator_code_preview_status", &json!({}), missing).unwrap();
+        assert_eq!(preview["data"]["available"], false);
+        let error = dispatch("creator_code_build_status", &json!({"buildId": "not-hex"}), missing).unwrap_err();
+        assert_eq!(error.code, "invalid_argument");
+    }
+
+    #[test]
     fn creator_playtest_history_is_registered_and_limits_are_bounded() {
         assert!(tool_specs().iter().any(|tool| tool.name == "creator_playtest_history"));
         let error = dispatch("creator_playtest_history", &json!({"projectId":"project-1","limit":0}), Path::new("/unused"))
             .unwrap_err();
         assert_eq!(error.code, "invalid_argument");
+    }
+
+    #[test]
+    fn creator_scene_tools_are_registered_and_require_project_id() {
+        let names: Vec<_> = tool_specs().iter().map(|tool| tool.name).collect();
+        for name in ["creator_scene_describe", "creator_scene_capture", "creator_scene_inspect", "creator_scene_validate", "creator_capabilities_list"] {
+            assert!(names.contains(&name), "Creator scene MCP tool missing: {name}");
+        }
+        // 只读入口：缺少 projectId 时在参数校验阶段拒绝，不会向插件转发。
+        for name in ["creator_scene_describe", "creator_scene_capture", "creator_scene_validate"] {
+            let error = dispatch(name, &json!({}), Path::new("/unused")).unwrap_err();
+            assert_eq!(error.code, "invalid_argument", "{name} accepted a missing projectId");
+        }
+        let error = dispatch("creator_scene_describe", &json!({"projectId":"project-1"}), Path::new("/unused")).unwrap_err();
+        assert_ne!(error.code, "internal_error");
+        // P1：inspect 缺 objectId 在参数校验阶段拒绝，不向插件转发。
+        let error = dispatch("creator_scene_inspect", &json!({"projectId":"project-1","revision":1}), Path::new("/unused")).unwrap_err();
+        assert_eq!(error.code, "invalid_argument");
+    }
+
+    #[test]
+    fn independent_city_tools_are_hidden_unless_explicitly_enabled() {
+        let default_names: Vec<_> = tool_specs_with_city(false).into_iter().map(|tool| tool.name).collect();
+        assert!(!default_names.iter().any(|name| name.starts_with("creator_city_")), "experimental city tools must be hidden by default");
+        assert!(default_names.contains(&"creator_project_create"));
+        let enabled: Vec<_> = tool_specs_with_city(true).into_iter().map(|tool| tool.name).collect();
+        assert!(enabled.contains(&"creator_city_create"));
+        let disabled = dispatch_with_permissions_options("creator_city_list", &json!({"limit":5}), Path::new("/unused"), false, false).unwrap_err();
+        assert_eq!(disabled.code, "invalid_argument");
+        let enabled_error = dispatch_with_permissions_options("creator_city_list", &json!({"limit":5}), Path::new("/unused"), false, true).unwrap_err();
+        assert_ne!(enabled_error.code, "internal_error");
+    }
+
+    /// 能力发现是静态契约：没有活动 Studio 也必须可用（DoD §10）。
+    #[test]
+    fn creator_capabilities_are_served_without_studio() {
+        let full = dispatch("creator_capabilities_list", &json!({}), Path::new("/unused")).expect("capabilities must not require Studio");
+        let data = &full["data"];
+        assert_eq!(data["schemaVersion"], 1);
+        assert_eq!(data["categories"]["scene"]["maxObjects"], 10_000);
+        assert_eq!(data["categories"]["project"]["templates"][0], "checkpoint-race");
+
+        let filtered = dispatch("creator_capabilities_list", &json!({"category":"scene","schemaVersion":1}), Path::new("/unused")).expect("filtered capabilities");
+        assert_eq!(filtered["data"]["category"], "scene");
+        assert_eq!(filtered["data"]["capabilities"]["maxColliders"], 256);
+        assert!(filtered["data"]["supportedCategories"].as_array().unwrap().iter().any(|value| value == "project"));
+
+        let unknown = dispatch("creator_capabilities_list", &json!({"category":"physics-sim"}), Path::new("/unused")).unwrap_err();
+        assert_eq!(unknown.code, "invalid_argument");
+        let bad_version = dispatch("creator_capabilities_list", &json!({"schemaVersion":2}), Path::new("/unused")).unwrap_err();
+        assert_eq!(bad_version.code, "invalid_argument");
+    }
+
+    /// 审查 P1-2：可选字段类型错误必须显式拒绝——静默丢弃会让调用方误以为
+    /// revision 约束/归属校验仍然生效（例如字符串形式的 revision）。
+    #[test]
+    fn optional_fields_with_wrong_types_are_rejected() {
+        for (name, args) in [
+            ("creator_playtest_start", json!({"releaseId":"release-1","expectedRevision":"3"})),
+            ("creator_playtest_start", json!({"releaseId":"release-1","projectId":7})),
+            ("creator_scene_describe", json!({"projectId":"project-1","revision":"3"})),
+            ("creator_scene_capture", json!({"projectId":"project-1","revision":"3"})),
+            ("creator_scene_validate", json!({"projectId":"project-1","validationProfile":7})),
+            ("creator_capabilities_list", json!({"schemaVersion":"1"})),
+        ] {
+            let error = dispatch(name, &args, Path::new("/unused")).unwrap_err();
+            assert_eq!(error.code, "invalid_argument", "{name} accepted a mistyped optional field: {args}");
+        }
     }
 
     #[test]
@@ -410,6 +597,53 @@ mod tests {
         assert!(names.contains(&"city_world_profile_apply"));
         let error = dispatch("city_world_profile_apply", &json!({"previewId":"cwp_preview0001","operationId":"op-1"}), Path::new("/unused"))
             .unwrap_err();
+        assert_eq!(error.code, "permission_denied");
+    }
+
+    #[test]
+    fn creator_vehicle_tools_are_registered_bounded_and_offline_list_works() {
+        let names: Vec<_> = tool_specs().into_iter().map(|tool| tool.name).collect();
+        for name in ["creator_vehicle_list", "creator_vehicle_preview", "creator_vehicle_define", "creator_vehicle_inspect"] {
+            assert!(names.contains(&name), "Creator vehicle MCP tool missing: {name}");
+        }
+        // define 是写入工具：未带 --allow-local-writes 时在 MCP 侧拒绝，不转发插件。
+        let error = dispatch("creator_vehicle_define", &json!({"projectId":"project-1","baseRevision":0,"vehicleId":"vehicle.x",
+            "label":"扑翼机","flightModel":"flapping","physics":{},"bounds":{"halfLengthM":3.6,"halfWidthM":4.8,"halfHeightM":1.4},
+            "operationId":"op-1"}), Path::new("/unused")).unwrap_err();
+        assert_eq!(error.code, "permission_denied");
+        // 静态目录离线可用（与 capabilities 同策略）：无 Studio、无数据根也返回 preset。
+        let listed = dispatch("creator_vehicle_list", &json!({"limit":8}), Path::new("/unused")).expect("vehicle list must not require Studio");
+        let data = &listed["data"];
+        assert_eq!(data["schemaVersion"], 1);
+        assert_eq!(data["presetCount"], 2);
+        assert_eq!(data["presets"][0]["flightModel"], "flapping");
+        assert_eq!(data["presets"][1]["flightModel"], "fixed-wing");
+        // define 的 MCP 面不接收 camera：多余字段在参数校验阶段拒绝（M08）。
+        let error = dispatch("creator_vehicle_define", &json!({"projectId":"project-1","baseRevision":0,"vehicleId":"vehicle.x",
+            "label":"x","flightModel":"flapping","physics":{},"bounds":{"halfLengthM":1,"halfWidthM":1,"halfHeightM":1},
+            "camera":{},"operationId":"op-2"}), Path::new("/unused")).unwrap_err();
+        assert_eq!(error.code, "invalid_argument");
+        // inspect 缺 vehicleId 在参数校验阶段拒绝，不向插件转发。
+        let error = dispatch("creator_vehicle_inspect", &json!({"projectId":"project-1"}), Path::new("/unused")).unwrap_err();
+        assert_eq!(error.code, "invalid_argument");
+    }
+
+    #[test]
+    fn creator_city_create_is_registered_and_requires_local_write_permission() {
+        let names: Vec<_> = tool_specs().into_iter().map(|tool| tool.name).collect();
+        assert!(names.contains(&"creator_city_create"));
+        assert!(names.contains(&"creator_city_edit_preview"));
+        assert!(names.contains(&"creator_city_patch_preview"));
+        assert!(names.contains(&"creator_city_edit_commit"));
+        assert!(names.contains(&"creator_city_list"));
+        assert!(names.contains(&"creator_city_read"));
+        let error = dispatch("creator_city_create", &json!({"name":"Desert","seed":42,"profile":{},"operationId":"op-1"}), Path::new("/unused")).unwrap_err();
+        assert_eq!(error.code, "permission_denied");
+        let error = dispatch_with_permissions_options("creator_city_patch_preview", &json!({"cityId":"city-1","baseRevision":0,"patch":"bad"}), Path::new("/unused"), false, true).unwrap_err();
+        assert_eq!(error.code, "invalid_argument");
+        let error = dispatch("creator_city_edit_commit", &json!({"cityId":"city-1","previewId":"preview-1","expectedRevision":0,"operationId":"op-2"}), Path::new("/unused")).unwrap_err();
+        assert_eq!(error.code, "permission_denied");
+        let error = dispatch("creator_city_layout_save", &json!({"cityId":"city-1","revision":0}), Path::new("/unused")).unwrap_err();
         assert_eq!(error.code, "permission_denied");
     }
 

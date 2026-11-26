@@ -1,0 +1,26 @@
+{
+  "name": "@agent-vitals/city-game-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "node ../agent-vitals-city-sdk/node_modules/typescript/bin/tsc -p tsconfig.json --noEmit",
+    "test": "node --experimental-transform-types --import ../../scripts/mecha-ts-register.mjs --test tests/*.test.ts",
+    "pack:check": "npm pack --dry-run"
+  },
+  "dependencies": {
+    "@oh-agent/city-game-sdk": "file:../city-game-sdk",
+    "@oh-agent/city-sdk": "file:../agent-vitals-city-sdk"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  }
+}

@@ -1,0 +1,1586 @@
+{
+  "ruleFamily": "game",
+  "case": "game.invalid-node-budget",
+  "expectTs": "error:rule_budget_exceeded",
+  "rustNote": "Rust 同样拒绝：nodes > 128 → creator_game_budget_exceeded；阈值一致（128），错误族命名不同（TS rule_budget_exceeded）。待 Rust 运行时验证。",
+  "input": {
+    "schemaVersion": 1,
+    "id": "relic-walk",
+    "rulesVersion": 1,
+    "slots": {
+      "relics": {
+        "kind": "object",
+        "min": 1,
+        "max": 6,
+        "requires": [
+          "walk"
+        ]
+      }
+    },
+    "integerParameters": {
+      "pace": {
+        "min": 1,
+        "max": 120,
+        "default": 60
+      }
+    },
+    "rules": {
+      "counters": {
+        "found": {
+          "initial": 0,
+          "max": 99
+        }
+      },
+      "nodes": [
+        {
+          "id": "fill-000",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-001",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-002",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-003",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-004",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-005",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-006",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-007",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-008",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-009",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-010",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-011",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-012",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-013",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-014",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-015",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-016",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-017",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-018",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-019",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-020",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-021",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-022",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-023",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-024",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-025",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-026",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-027",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-028",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-029",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-030",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-031",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-032",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-033",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-034",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-035",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-036",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-037",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-038",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-039",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-040",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-041",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-042",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-043",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-044",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-045",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-046",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-047",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-048",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-049",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-050",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-051",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-052",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-053",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-054",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-055",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-056",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-057",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-058",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-059",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-060",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-061",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-062",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-063",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-064",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-065",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-066",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-067",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-068",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-069",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-070",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-071",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-072",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-073",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-074",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-075",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-076",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-077",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-078",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-079",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-080",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-081",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-082",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-083",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-084",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-085",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-086",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-087",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-088",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-089",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-090",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-091",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-092",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-093",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-094",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-095",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-096",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-097",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-098",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-099",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-100",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-101",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-102",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-103",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-104",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-105",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-106",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-107",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-108",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-109",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-110",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-111",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-112",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-113",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-114",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-115",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-116",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-117",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-118",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-119",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-120",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-121",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-122",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-123",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-124",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-125",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-126",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-127",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        },
+        {
+          "id": "fill-128",
+          "on": {
+            "type": "run.started"
+          },
+          "actions": [
+            {
+              "op": "hud.hint",
+              "text": "standby"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

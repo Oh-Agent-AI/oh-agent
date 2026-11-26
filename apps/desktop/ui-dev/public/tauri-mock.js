@@ -1240,9 +1240,8 @@
   const cityHarnessId = (harness) => (harness === "plugin:zcode" ? "harness:zcode" : harness);
   const cityHarnessNames = { codex: "Codex", "claude-code": "Claude Code", "harness:zcode": "ZCode", dsh: "DeepSeek Harness" };
   // 显式注入的测试/预览 provider 优先，默认演示数据不能覆盖调用方。
-  window.__AV_BROWSER_PROVIDERS__ = Object.assign({
-    city: async (request) => {
-      const payload = request.payload || {};
+  const cityPreviewProvider = async (request) => {
+    const payload = request.payload || {};
       if (request.method !== "data.read") throw new Error("unsupported_method");
       if (payload.projection === "city-settings") {
         // 预览默认固定一个有河的岛（没有种子时插件会随机抽，约 18% 的种子设计上无河，
@@ -1274,6 +1273,402 @@
         status: sessions.length ? "ready" : "empty", sessions,
         findings: [{ harness: "codex", severity: "warning", count: 3 }, { harness: "claude-code", severity: "info", count: 2 }],
       };
-    },
+  };
+
+  window.__AV_BROWSER_PROVIDERS__ = Object.assign({
+    // Creator Studio 的浏览器预览数据源（browser-plugin-host.js 转发 plugin_request）。
+    // 合成数据只活在本页内存，刷新即重置；布局快照复用上面 city-settings 的默认种子，
+    // Studio 视口与 City 预览显示同一座岛。方法语义镜像 creator_projects.rs 的有界
+    // 行为（revision CAS、预览凭据、operation 幂等），只服务设计预览，不是权威实现。
+    "creator-studio": (() => {
+      const SEED = 1703294958;
+      const previewCity = { schemaVersion: 1, cityId: "city-preview-desert", revision: 0, name: "沙漠城市（预览夹具）", seed: 42,
+        profile: { schemaVersion: 1, id: "arid-dunes", version: 1, biome: "arid", geography: { generator: "arid-dunes-v1", parameters: { dunes: { duneScale: 190, duneAmplitude: 11, orientationDeg: 18 } } }, visuals: { themeId: "desert" } } };
+      const world = {
+        schemaVersion: 1, worldRevision: "preview-world-rev-1", seed: SEED,
+        layout: { schemaVersion: 1, id: "preview-layout-1", coordinateSystem: "city-local-m-v1",
+          anchors: [
+            { id: "road-spawn:a", kind: "spawn", capabilities: ["drive"], geometryRef: "preview-node:a" },
+            { id: "road-checkpoint:ab", kind: "zone", capabilities: ["drive"], geometryRef: "preview-edge:ab" },
+            { id: "road-checkpoint:bc", kind: "zone", capabilities: ["drive"], geometryRef: "preview-edge:bc" },
+          ],
+          links: [{ id: "preview-link-1", fromAnchorId: "road-spawn:a", toAnchorId: "road-checkpoint:ab", capabilities: ["drive"] }] },
+      };
+      const gameTemplates = {
+        "checkpoint-race": { schemaVersion: 1, id: "creator.checkpoint-race", rulesVersion: 1,
+          // points 下限与完成条件一致（计数器与 finish 判定固定 3，见 creator_projects.rs）。
+          slots: { points: { kind: "zone", min: 3, max: 8, requires: ["drive"] } },
+          integerParameters: { timeLimitTicks: { min: 60, max: 36000, default: 2700 } },
+          rules: { counters: { next: { initial: 0, max: 3 } }, nodes: [
+            { id: "start-timer", on: { type: "run.started" }, actions: [{ op: "timer.start", timerId: "timeout", durationTicks: { parameter: "timeLimitTicks" } }] },
+            { id: "advance", on: { type: "zone.entered", slot: "points" }, when: [{ op: "counter.eqEventIndex", counter: "next" }], actions: [{ op: "counter.add", counter: "next", amount: 1 }] },
+            { id: "finish", on: { type: "zone.entered", slot: "points" }, when: [{ op: "counter.eq", counter: "next", value: 3 }], actions: [{ op: "run.finish", outcome: "success" }] },
+            { id: "timeout", on: { type: "timer.expired", timerId: "timeout" }, actions: [{ op: "run.finish", outcome: "failure" }] }] } },
+        "collect-one": { schemaVersion: 1, id: "creator.collect-one", rulesVersion: 1,
+          slots: { targets: { kind: "zone", min: 1, max: 1, requires: ["drive"] } },
+          rules: { counters: { found: { initial: 0, max: 1 } }, nodes: [
+            { id: "collect", on: { type: "zone.entered", slot: "targets" }, actions: [{ op: "counter.add", counter: "found", amount: 1 }] },
+            { id: "finish", on: { type: "zone.entered", slot: "targets" }, when: [{ op: "counter.eq", counter: "found", value: 1 }], actions: [{ op: "run.finish", outcome: "success" }] }] } },
+      };
+      const documents = new Map();
+      const previews = new Map();
+      const operations = new Map();
+      let sequence = 0;
+      const nextId = (prefix) => `${prefix}-preview-${String(++sequence).padStart(3, "0")}`;
+      const clone = (value) => JSON.parse(JSON.stringify(value));
+      const row = (document) => ({ projectId: document.projectId, revision: document.revision, title: document.title, updatedAtMs: 0, gameDefinitionId: document.game.id });
+      const makeDocument = (template, worldRevision) => {
+        const game = gameTemplates[template];
+        if (!game) throw new Error("creator_template_not_found");
+        if (worldRevision !== world.worldRevision) throw new Error("creator_layout_not_found");
+        const document = { schemaVersion: 1, projectId: nextId("project"), revision: 0, kind: "city-minigame-project",
+          title: template === "checkpoint-race" ? "驾驶检查点竞速（预览夹具）" : "驾驶区域收集（预览夹具）",
+          cityLayout: clone(world), game: clone(game), scene: { schemaVersion: 1, objects: [] }, mounts: [] };
+        documents.set(document.projectId, document);
+        return document;
+      };
+      makeDocument("checkpoint-race", world.worldRevision);
+      makeDocument("collect-one", world.worldRevision);
+      const previewStory = {
+        storyId: "story.preview-missing-painter", title: "失踪的画家（预览夹具）", storyVersion: "1.0.0", revision: 1,
+        schemaVersion: 1, contentDigest: "preview-story-missing-painter",
+        graph: { start: "start", nodes: [
+          { id: "start", kind: "beat", title: "海滨咖啡馆",
+            meta: { description: "画家失踪后，海滨咖啡馆的老板发现一张未寄出的明信片。沿着画中的灯塔和码头，找到他最后去过的地方。" } },
+          { id: "lighthouse", kind: "beat", title: "灯塔下的速写" },
+          { id: "pier", kind: "ending", title: "最后一班渡轮" },
+        ], edges: [
+          { id: "look-at-sketch", from: "start", to: "lighthouse", preconditions: { op: "all", of: [] }, effects: [], eventDependencies: [], scope: "story" },
+          { id: "follow-the-ferry", from: "lighthouse", to: "pier", preconditions: { op: "all", of: [] }, effects: [], eventDependencies: [], scope: "story" },
+        ] },
+        canon: { characters: [] },
+      };
+      const previewBuilds = [
+        { gameId: "desert-racing", buildId: "a".repeat(64), gameVersion: "1.2.0", displayName: "沙丘竞速" },
+        { gameId: "dune-exploration", buildId: "b".repeat(64), gameVersion: "0.8.0", displayName: "荒漠探路" },
+      ];
+      const project = (payload) => documents.get(String(payload.projectId)) || (() => { throw new Error("creator_project_not_found"); })();
+      const checkRevision = (document, payload) => {
+        if (payload.baseRevision !== undefined && payload.baseRevision !== document.revision) throw new Error("revision_conflict");
+        if (payload.expectedRevision !== undefined && payload.expectedRevision !== document.revision) throw new Error("revision_conflict");
+      };
+      const applyOperations = (document, operations) => {
+        for (const operation of operations) {
+          const kind = operation && operation.op;
+          if (kind === "scene.object.upsert" || kind === "anchor.upsert") {
+            const object = operation.object;
+            const index = document.scene.objects.findIndex((existing) => existing.id === object.id);
+            if (index >= 0) document.scene.objects[index] = object; else document.scene.objects.push(object);
+          } else if (kind === "scene.object.remove" || kind === "anchor.remove") {
+            const index = document.scene.objects.findIndex((existing) => existing.id === operation.objectId);
+            if (index < 0) throw new Error("creator_scene_object_not_found");
+            document.scene.objects.splice(index, 1);
+          } else if (kind === "mount.bind") {
+            const index = document.mounts.findIndex((existing) => existing.mountId === operation.mount.mountId);
+            if (index >= 0) document.mounts[index] = operation.mount; else document.mounts.push(operation.mount);
+          } else if (kind === "mount.remove") {
+            document.mounts = document.mounts.filter((existing) => existing.mountId !== operation.mountId);
+          } else if (kind === "skin.select") {
+            if (!["miami-vice", "desert-evening"].includes(operation.skinId)) throw new Error("creator_skin_not_found");
+            document.skinId = operation.skinId;
+          } else if (kind === "city.patch.upsert") {
+            if (document.cityLayout.seed !== operation.patch.seed) throw new Error("creator_city_patch_seed_mismatch");
+            document.cityPatch = operation.patch;
+          } else if (kind === "city.patch.remove") {
+            delete document.cityPatch;
+          } else throw new Error("creator_scene_operation_unsupported");
+        }
+      };
+      // 形状来源：creator_projects.rs::describe_scene / creator_capabilities /
+      // preview_replace_game / preview_scene_operations（2026-11-12 的 MCP P0 实现）。
+      // 只镜像有界字段，不是权威实现；权威校验仍在 Rust。
+      const digestOf = (value) => {
+        let hash = 0;
+        for (const char of JSON.stringify(value)) hash = (hash * 31 + char.codePointAt(0)) >>> 0;
+        return `preview-digest-${hash.toString(16).padStart(8, "0")}`;
+      };
+      const describeScene = (document, payload) => {
+        if (payload.revision !== undefined && payload.revision !== document.revision) throw new Error("revision_conflict");
+        const objectCounts = {};
+        for (const object of document.scene.objects) {
+          const kind = object.kind || "unknown";
+          objectCounts[kind] = (objectCounts[kind] || 0) + 1;
+        }
+        const selected = payload.selectedObjectId
+          ? (() => {
+              const object = document.scene.objects.find((item) => item.id === payload.selectedObjectId);
+              return object ? { id: object.id, kind: object.kind, transform: object.transform ?? null } : null;
+            })()
+          : null;
+        return {
+          projectId: document.projectId,
+          revision: document.revision,
+          title: document.title,
+          cityLayout: {
+            worldRevision: document.cityLayout.worldRevision,
+            seed: document.cityLayout.seed,
+            anchorCount: document.cityLayout.layout.anchors.length,
+          },
+          objectCounts,
+          mounts: (document.mounts || []).map((mount) => ({
+            mountId: mount.mountId,
+            entryAnchorId: mount.entryAnchorId,
+            slotCount: mount.bindings ? Object.keys(mount.bindings).length : 0,
+          })),
+          skinId: document.skinId ?? null,
+          cityPatchBuildingMoves: document.cityPatch?.buildingMoves ? Object.keys(document.cityPatch.buildingMoves).length : 0,
+          assetCount: document.assets?.entries?.length ?? 0,
+          selected,
+          editableCategories: ["game", "scene", "mount", "skin", "cityPatch"],
+          generatedAtMs: Date.now(),
+        };
+      };
+      const capabilities = (category) => {
+        const all = {
+          schemaVersion: 1,
+          categories: {
+            game: { preview: "creator.game.preview", commit: "creator.project.commit", maxGameBytes: 262144 },
+            scene: { preview: "creator.scene.preview", commit: "creator.scene.commit",
+              objectKinds: ["model", "anchor", "collider"], maxObjects: 10000,
+              maxColliders: 256, maxOperationsPerPreview: 128 },
+            mount: { bind: "mount.bind", remove: "mount.remove", maxReleaseMounts: 32 },
+            skin: { select: "skin.select", skins: ["miami-vice", "desert-evening"] },
+            cityPatch: { upsert: "city.patch.upsert", remove: "city.patch.remove", maxBytes: 262144 },
+            assets: { import: "creator.asset.import（桌面原生选择器，MCP 不接收路径）", maxImportedModelBytes: 67108864, maxAssets: 4096 },
+            playtest: { start: "creator.project.playtest.start", result: "creator.project.playtest.result", cancel: "creator.project.playtest.cancel", ttlMs: 1800000 },
+            project: { create: "creator.project.create", publish: "creator.project.publish", maxDocumentBytes: 2097152, maxReleaseBytes: 524288 },
+          },
+          preview: { ttlMs: 600000, maxActive: 128, singleUse: true, instanceBound: true },
+        };
+        // category 过滤与 Rust 侧语义一致：未知类别显式拒绝，已知类别只返回该类别
+        if (!category) return all;
+        const entry = all.categories[category];
+        if (!entry) throw new Error("creator_capability_unknown");
+        return { schemaVersion: 1, category, capabilities: entry, preview: all.preview, supportedCategories: Object.keys(all.categories) };
+      };
+      // MCP P1（镜像 creator_projects.rs 的 inspect_scene_object/validate_scene）：
+      // 白名单字段、静态检查逐项报告、运行时检查如实标注未运行。
+      const inspectObject = (document, objectId) => {
+        const object = (document.scene?.objects ?? []).find(candidate => candidate.id === objectId);
+        if (object) {
+          const entry = { id: object.id, kind: object.kind, transform: object.transform ?? null,
+            editableVia: ["scene.object.upsert", "scene.object.remove"], requiresPreview: true };
+          if (object.kind === "model") { entry.assetRef = object.asset ?? null; entry.constraints = { assetMustReferenceBoundLayout: true }; }
+          return { projectId: document.projectId, revision: document.revision, object: entry, source: "scene" };
+        }
+        const mount = (document.mounts ?? []).find(candidate => candidate.mountId === objectId);
+        if (mount) {
+          return { projectId: document.projectId, revision: document.revision, object: {
+            id: mount.mountId, kind: "mount", entryAnchorId: mount.entryAnchorId, bindings: mount.bindings,
+            layout: mount.layout, game: mount.game, editableVia: ["mount.bind", "mount.remove"], requiresPreview: true }, source: "mount" };
+        }
+        const anchor = (document.cityLayout?.layout?.anchors ?? []).find(candidate => candidate.id === objectId);
+        if (anchor) {
+          return { projectId: document.projectId, revision: document.revision, object: {
+            id: anchor.id, kind: anchor.kind, capabilities: anchor.capabilities, geometryRef: anchor.geometryRef,
+            editable: false, constraint: "只读锚点：来自 City 布局快照，仅可作为挂载绑定或检查点引用" }, source: "cityLayout" };
+        }
+        throw new Error("creator_object_not_found");
+      };
+      // structure_check（§5.3）：只做结构侧事实；语义诊断由 Studio 的 city-sdk 合并。
+      const structureCheck = (document) => {
+        const items = [];
+        const push = (code, severity, source, objectId, message) =>
+          items.push({ code, severity, source, objectId: objectId ?? null, message });
+        const seen = new Set();
+        let colliders = 0;
+        for (const object of document.scene?.objects ?? []) {
+          if (seen.has(object.id)) { push("creator_scene_duplicate_id", "error", "structure", object.id, "对象 ID 重复"); continue; }
+          seen.add(object.id);
+          if (object.kind === "collider") colliders += 1;
+        }
+        if (colliders > 256) push("creator_scene_collider_budget_exceeded", "error", "structure", null, "碰撞代理数量超出预算");
+        const unchecked = [
+          { check: "drive_reachability", reason: "requires_city_runtime" },
+          { check: "collision_overlap", reason: "requires_city_runtime" },
+          { check: "visual_review", reason: "requires_human_or_renderer" }];
+        return { projectId: document.projectId, revision: document.revision, ok: items.every(item => item.severity !== "error"),
+          truncated: false, items, unchecked };
+      };
+      // path + action 与 Rust apply_scene_operations 的返回对齐（action ∈ added/updated/removed）。
+      const sceneChanges = (document, operations) => operations.map((operation) => {
+        const op = String(operation?.op || "");
+        const mounts = document.mounts || [];
+        if (op === "city.patch.upsert") return { path: "cityPatch", action: document.cityPatch ? "updated" : "added" };
+        if (op === "city.patch.remove") return { path: "cityPatch", action: "removed" };
+        if (op === "scene.object.upsert" || op === "anchor.upsert") {
+          const id = operation.object?.id;
+          const exists = document.scene.objects.some((object) => object.id === id);
+          return { path: `scene.objects.${id}`, action: exists ? "updated" : "added" };
+        }
+        if (op === "scene.object.remove" || op === "anchor.remove") return { path: `scene.objects.${operation.objectId}`, action: "removed" };
+        if (op === "mount.bind") {
+          const exists = mounts.some((mount) => mount.mountId === operation.mount?.mountId);
+          return { path: `mounts.${operation.mount?.mountId}`, action: exists ? "updated" : "added" };
+        }
+        if (op === "mount.remove") return { path: `mounts.${operation.mountId}`, action: "removed" };
+        if (op === "skin.select") return { path: "skinId", action: document.skinId ? "updated" : "added" };
+        throw new Error("creator_scene_operation_unsupported");
+      });
+
+      return async (request) => {
+        const payload = request.payload || {};
+        // 视口复用 City 的数据通道（data.read 全部投影）：城市数据与 City 预览同源同种子。
+        if (request.method === "data.read") return cityPreviewProvider(request);
+        switch (request.method) {
+          case "creator.city.list":
+            return { cities: payload.cursor ? [] : [{ cityId: previewCity.cityId, revision: previewCity.revision, name: previewCity.name, biome: previewCity.profile.biome }], nextCursor: null };
+          case "creator.city.read":
+            if (payload.cityId !== previewCity.cityId || (payload.revision !== undefined && payload.revision !== previewCity.revision)) throw new Error("creator_city_not_found");
+            return clone(previewCity);
+          case "creator.city.world_package.read":
+            if (payload.cityId !== previewCity.cityId) throw new Error("creator_city_not_found");
+            return { worldPackage: null };
+          case "creator.code.builds.list":
+            return { builds: previewBuilds };
+          case "creator.code.install.list": {
+            const matches = !payload.cityId || payload.cityId === previewCity.cityId ? previewBuilds
+              .filter(row => !payload.gameId || row.gameId === payload.gameId).map(row => ({
+                installationId: `install-preview-${row.gameId}`, cityId: previewCity.cityId, cityRevision: previewCity.revision,
+                gameId: row.gameId, buildId: row.buildId, status: "installed",
+              })) : [];
+            return { installations: matches.slice(0, payload.limit ?? 50), installedCount: matches.length };
+          }
+          case "creator.story.install.list":
+            return { installations: payload.cityId === previewCity.cityId ? [{
+              installationId: "install-preview-story", cityId: previewCity.cityId, storyId: previewStory.storyId,
+              storyVersion: previewStory.storyVersion, contentDigest: previewStory.contentDigest, status: "installed",
+            }] : [] };
+          case "creator.story.projects.list": {
+            const { storyId, title, storyVersion, revision, schemaVersion, contentDigest } = previewStory;
+            return { projects: [{ storyId, title, storyVersion, revision, schemaVersion, contentDigest, nodeCount: previewStory.graph.nodes.length }] };
+          }
+          case "creator.story.project.read":
+            if (payload.storyId !== previewStory.storyId) throw new Error("creator_story_not_found");
+            return clone(previewStory);
+          case "creator.layout.list":
+            return { layouts: [{ worldRevision: world.worldRevision, layoutId: world.layout.id,
+              seed: world.seed, anchorCount: world.layout.anchors.length, updatedAtMs: 0 }] };
+          case "creator.project.list":
+            return { projects: [...documents.values()].map(row) };
+          case "creator.project.read":
+            return clone(project(payload));
+          case "creator.project.read_chunk": {
+            const raw = JSON.stringify(project(payload));
+            const offset = Number(payload.offset) || 0;
+            return { total: raw.length, offset, chunk: raw.slice(offset, offset + (Number(payload.maxBytes) || 65536)) };
+          }
+          case "creator.project.create": {
+            const hash = `create:${payload.template}:${payload.worldRevision}`;
+            const key = `new:${payload.operationId}`;
+            const existing = operations.get(key);
+            if (existing) {
+              if (existing.hash !== hash) throw new Error("operation_id_conflict");
+              return clone(existing.result);
+            }
+            const document = makeDocument(String(payload.template), String(payload.worldRevision));
+            const result = { projectId: document.projectId, revision: 0 };
+            operations.set(key, { hash, result });
+            return result;
+          }
+          case "creator.game.preview": {
+            const document = project(payload);
+            checkRevision(document, payload);
+            const previewId = nextId("preview");
+            previews.set(previewId, { projectId: document.projectId, baseRevision: document.revision, kind: "game", game: clone(payload.game) });
+            const beforeDigest = digestOf(document.game);
+            const afterDigest = digestOf(payload.game);
+            return { previewId, projectId: document.projectId, baseRevision: document.revision, expiresInMs: 600000,
+              validation: payload.validation ? "sdk" : "legacy",
+              diff: { path: "game", beforeDigest, afterDigest },
+              changedObjects: [{ id: payload.game?.id || "game", kind: "game", action: "updated", fields: ["game"], beforeDigest, afterDigest }],
+              diagnostics: payload.validation?.diagnostics ?? [] };
+          }
+          case "creator.scene.preview": {
+            const document = project(payload);
+            checkRevision(document, payload);
+            if (!Array.isArray(payload.operations) || !payload.operations.length || payload.operations.length > 128) throw new Error("creator_scene_ops_invalid");
+            const previewId = nextId("preview");
+            const operations = clone(payload.operations);
+            // 在副本上套用一次，既得到 afterDigest，也让非法操作/引用在预览期就被拒绝。
+            const next = clone(document);
+            applyOperations(next, operations);
+            previews.set(previewId, { projectId: document.projectId, baseRevision: document.revision, kind: "scene", operations,
+              semanticOk: payload.validation ? payload.validation.ok === true : null });
+            const changes = sceneChanges(document, operations);
+            const changedObjects = changes.map(({ path, action }) => ({
+              // 稳定 id 可能含点（scene.objects.villa.01）：只剥 scene.objects. 前缀，
+              // 其余路径整段保留——与 Rust 侧 strip_prefix 语义一致。
+              id: path.startsWith("scene.objects.") ? path.slice("scene.objects.".length) : path,
+              path,
+              kind: path === "cityPatch" ? "cityPatch" : path.startsWith("mounts") ? "mount" : path === "skinId" ? "skin" : "sceneObject",
+              action,
+            }));
+            const sdkObjects = payload.validation?.diff?.changedObjects;
+            return { previewId, projectId: document.projectId, baseRevision: document.revision, expiresInMs: 600000,
+              validation: payload.validation ? "sdk" : "legacy",
+              diff: { paths: changes.map(({ path }) => path), beforeDigest: digestOf(document), afterDigest: digestOf(next),
+                changedObjectsSource: Array.isArray(sdkObjects) && sdkObjects.length ? "sdk" : "host" },
+              changedObjects: Array.isArray(sdkObjects) && sdkObjects.length ? sdkObjects : changedObjects,
+              diagnostics: payload.validation?.diagnostics ?? [] };
+          }
+          case "creator.scene.describe":
+            return describeScene(project(payload), payload);
+          case "creator.capabilities.list":
+            // category/schemaVersion 过滤与 Rust 侧语义一致：未知类别显式拒绝
+            if (payload.category) return capabilities(payload.category);
+            if (payload.schemaVersion && payload.schemaVersion !== 1) throw new Error("creator_capability_version_unsupported");
+            return capabilities();
+          case "creator.scene.inspect":
+            return inspectObject(project(payload), payload);
+          case "creator.scene.structure_check":
+            return structureCheck(project(payload));
+          case "creator.game.commit":
+          case "creator.scene.commit":
+          case "creator.project.commit": {
+            const document = project(payload);
+            const key = `${document.projectId}:${payload.operationId}`;
+            const hash = `${payload.previewId}:${payload.expectedRevision}`;
+            const existing = operations.get(key);
+            if (existing) {
+              if (existing.hash !== hash) throw new Error("operation_id_conflict");
+              return clone(existing.result);
+            }
+            const preview = previews.get(String(payload.previewId));
+            if (!preview) throw new Error("preview_expired");
+            if (preview.projectId !== document.projectId) throw new Error("permission_denied");
+            checkRevision(document, payload);
+            if (preview.baseRevision !== document.revision) throw new Error("revision_conflict");
+            // 与 Rust commit 闸门一致：SDK 判负的 preview 签发但不落盘。
+            if (preview.semanticOk === false) throw new Error("creator_preview_invalid");
+            if (preview.kind === "game") document.game = preview.game;
+            else applyOperations(document, preview.operations || []);
+            document.revision += 1;
+            previews.delete(String(payload.previewId));
+            const result = { projectId: document.projectId, revision: document.revision, operationId: payload.operationId };
+            operations.set(key, { hash, result });
+            return clone(result);
+          }
+          case "creator.operation.status": {
+            const existing = operations.get(`${payload.projectId}:${payload.operationId}`);
+            return existing ? { status: "committed", result: clone(existing.result) } : { status: "not_found" };
+          }
+          case "creator.project.publish": {
+            const document = project(payload);
+            checkRevision(document, payload);
+            return { releaseId: nextId("release"), revision: document.revision };
+          }
+          case "creator.project.playtest.start":
+            throw new Error("creator_playtest_unavailable_in_preview");
+          case "creator.project.playtest.return_context":
+            return null;
+          case "creator.asset.import":
+            throw new Error("creator_asset_import_unavailable_in_preview");
+          default:
+            throw new Error("creator_method_unavailable");
+        }
+      };
+    })(),
+    city: cityPreviewProvider,
   }, window.__AV_BROWSER_PROVIDERS__ || {});
 })();

@@ -1,6 +1,6 @@
 import { MIAMI_COASTAL, type CoastalConfig } from "./citySeaside";
 import type { Shape } from "./cityShape";
-import { validateCitySkinPack, validateCityWorldProfile, type CitySkinPackV1, type CityWorldProfileV1 } from "@agent-vitals/city-sdk";
+import { COASTAL_PROFILE_ID_V1, isCityThemeIdV1, validateCitySkinPack, validateCityWorldProfile, type CitySkinPackV1, type CityThemeIdV1, type CityWorldProfileV1 } from "@oh-agent/city-sdk";
 import {
   type AridDunesOptionsV1,
   type GeographyBuildOptions,
@@ -152,11 +152,11 @@ function assertSupportedProfile(profile: CityWorldProfileV1): void {
   }
   switch (profile.geography.generator) {
     case "coastal-islands-v1":
-      if (profile.visuals.themeId !== "miami" && profile.visuals.themeId !== "desert") throw new Error("city-world-theme-unsupported");
-      if (profile.biome !== "tropical" || profile.geography.parameters.coastal.profile !== "miami-coastal") throw new Error("city-world-generator-unsupported");
+      if (!isCityThemeIdV1(profile.visuals.themeId)) throw new Error("city-world-theme-unsupported");
+      if (profile.biome !== "tropical" || profile.geography.parameters.coastal.profile !== COASTAL_PROFILE_ID_V1) throw new Error("city-world-generator-unsupported");
       return;
     case "arid-dunes-v1":
-      if (profile.visuals.themeId !== "miami" && profile.visuals.themeId !== "desert") throw new Error("city-world-theme-unsupported");
+      if (!isCityThemeIdV1(profile.visuals.themeId)) throw new Error("city-world-theme-unsupported");
       if (profile.biome !== "arid") throw new Error("city-world-generator-unsupported");
       validateGeographyBuildOptions("arid-dunes-v1", profile.geography.parameters.dunes);
       return;
@@ -184,7 +184,9 @@ export function geographyBuildOptionsForWorld(profile: CityWorldProfileV1, seedS
       : null;
     return validateGeographyBuildOptions("coastal-islands-v1", { shape: seedShape, bay });
   }
-  return validateGeographyBuildOptions("arid-dunes-v1", profile.geography.parameters.dunes);
+  // 词汇合并：legacy 扁平三参数 + 能力键 diversity。layoutPlanKey/worldRevision 对该
+  // 原始形态哈希——无 diversity 时必须与既有世界逐字节一致（不得在此回填默认值）。
+  return validateGeographyBuildOptions("arid-dunes-v1", { ...profile.geography.parameters.dunes, ...profile.geography.parameters.diversity });
 }
 
 export function biomeForWorld(profile: CityWorldProfileV1): CityWorldBiomeV1 {
@@ -194,8 +196,8 @@ export function biomeForWorld(profile: CityWorldProfileV1): CityWorldBiomeV1 {
 
 /** Correlated configuration result so callers can dispatch without casts. */
 export type CityWorldBuildConfigV1 =
-  | { geographyGenerator: "coastal-islands-v1"; geographyOptions: GeographyGeneratorOptions["coastal-islands-v1"]; biome: "tropical"; themeId: "miami" | "desert" }
-  | { geographyGenerator: "arid-dunes-v1"; geographyOptions: GeographyGeneratorOptions["arid-dunes-v1"]; biome: "arid"; themeId: "miami" | "desert" };
+  | { geographyGenerator: "coastal-islands-v1"; geographyOptions: GeographyGeneratorOptions["coastal-islands-v1"]; biome: "tropical"; themeId: CityThemeIdV1 }
+  | { geographyGenerator: "arid-dunes-v1"; geographyOptions: GeographyGeneratorOptions["arid-dunes-v1"]; biome: "arid"; themeId: CityThemeIdV1 };
 
 /** One validated composition result for synchronous, worker and remote callers. */
 export function cityWorldBuildConfig(profile: CityWorldProfileV1, seedShape: Shape): CityWorldBuildConfigV1 {

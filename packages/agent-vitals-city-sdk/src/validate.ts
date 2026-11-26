@@ -1,5 +1,9 @@
-import type { AnchorCapability, AnchorFilterV1, AnchorKind, CityAnchorV1, CityAnchorLinkV1, CityGameMountV1, CityLayoutSnapshotV1, CityLayoutV1, CityProjectAssetCatalogV1, CityProjectAssetEntryV1, CitySkinPackV1, CityWorldProfileV1, CoastalWorldParametersV1, ContentRef, DiagnosticV1, MiniGamePackV1, ModelAssetCatalogEntryV1, ModelAssetCatalogV1, ModelAssetFilterV1, ModelAssetRefV1, ResolvedModelAssetRefsV1, Result, SceneDraftV1, SceneObjectFilterV1, SceneObjectV1 } from "./types";
+import type { AnchorCapability, AnchorFilterV1, AnchorKind, CityAnchorV1, CityAnchorLinkV1, CityGameMountV1, CityInstanceV1, CityAnchorGeometryV1, CityLayoutSnapshotV1, CityLayoutSnapshotV2, CityLayoutSnapshotScoped, CityLayoutSnapshotV3, CityLayoutV1, CityProjectAssetCatalogV1, CityProjectAssetEntryV1, CitySkinPackV1, CityWorldProfileV1, CoastalWorldParametersV1, ContentRef, DiagnosticV1, MiniGamePackV1, ModelAssetCatalogEntryV1, ModelAssetCatalogV1, ModelAssetFilterV1, ModelAssetRefV1, ResolvedModelAssetRefsV1, Result, SceneDraftV1, SceneObjectFilterV1, SceneObjectV1 } from "./types";
 import { validateMiniGamePack } from "./content";
+import { validateWorldPlanPatch } from "./worldPlanPatch";
+import { isCityThemeIdV1 } from "./themes";
+import { ARID_DUNES_LEGACY_KEYS, ARID_DUNES_WORLD_V2, COASTAL_PROFILE_ID_V1, COASTAL_PROFILE_ORDER_CHAIN_V1,
+  COASTAL_PROFILE_PARAMETER_BOUNDS_V1, validateWorldParametersV1, worldParameterNumericRangeV1 } from "./worldParameters";
 
 const error = (code: string, path: string, message: string, objectId?: string): DiagnosticV1 => ({ code, severity: "error", path, message, ...(objectId ? { objectId } : {}) });
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -7,9 +11,34 @@ const identifier = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/;
 const exactKeys = (value: Record<string, unknown>, keys: readonly string[]) => Object.keys(value).every(key => keys.includes(key));
 const hasOwn = (value: Record<string, unknown>, key: string) => Object.prototype.hasOwnProperty.call(value, key);
 const ANCHOR_KINDS = new Set<AnchorKind>(["spawn", "route", "zone", "object"]);
-const CAPABILITIES = new Set<AnchorCapability>(["drive", "walk"]);
+const CAPABILITIES = new Set<AnchorCapability>(["drive", "walk", "fly"]);
 const MAX_LAYOUT_ANCHORS = 20_000;
 const MAX_LAYOUT_LINKS = 100_000;
+
+/** Validate and detach the persisted City identity and its world recipe. */
+export function validateCityInstance(value: unknown): Result<CityInstanceV1> {
+  if (!isObject(value) || !exactKeys(value, ["schemaVersion", "cityId", "revision", "name", "seed", "profile", "planPatch"])) {
+    return { ok: false, diagnostics: [error("city_instance_invalid_shape", "$", "City must contain only the version 1 instance fields.")] };
+  }
+  if (value.schemaVersion !== 1 || typeof value.cityId !== "string" || !identifier.test(value.cityId)
+    || !Number.isSafeInteger(value.revision) || (value.revision as number) < 0
+    || typeof value.name !== "string" || value.name.trim() !== value.name || [...value.name].length < 1 || [...value.name].length > 120
+    || /\p{Cc}/u.test(value.name)
+    || !Number.isSafeInteger(value.seed) || (value.seed as number) < 0 || (value.seed as number) > 0xffffffff) {
+    return { ok: false, diagnostics: [error("city_instance_invalid_identity", "$", "City identity, name, revision or seed is invalid.")] };
+  }
+  const profile = validateCityWorldProfile(value.profile);
+  if (!profile.ok) return { ok: false, diagnostics: profile.diagnostics.map(item => ({ ...item, path: `profile.${item.path}` })) };
+  let planPatch: Readonly<Record<string, unknown>> | undefined;
+  if (value.planPatch !== undefined) {
+    const version = isObject(value.planPatch) ? value.planPatch.generatorVersion ?? 1 : 0;
+    const checked = validateWorldPlanPatch(value.planPatch, value.seed as number, version as number);
+    if (!checked.ok) return checked;
+    planPatch = checked.value;
+  }
+  return { ok: true, value: Object.freeze({ schemaVersion: 1, cityId: value.cityId, revision: value.revision as number,
+    name: value.name, seed: value.seed as number, profile: profile.value, ...(planPatch ? { planPatch } : {}) }), diagnostics: [] };
+}
 
 /** Validate a data-only, versioned world recipe. Generator execution stays in City. */
 export function validateCityWorldProfile(value: unknown): Result<CityWorldProfileV1> {
@@ -23,24 +52,47 @@ export function validateCityWorldProfile(value: unknown): Result<CityWorldProfil
   if (!isObject(value.geography) || !exactKeys(value.geography, ["generator", "parameters"]) || !isObject(value.geography.parameters)) {
     return { ok: false, diagnostics: [error("world_profile_invalid_geography", "geography", "Geography must declare a supported generator and its parameters.")] };
   }
-  if (!isObject(value.visuals) || !exactKeys(value.visuals, ["themeId"]) || (value.visuals.themeId !== "miami" && value.visuals.themeId !== "desert")) {
+  if (!isObject(value.visuals) || !exactKeys(value.visuals, ["themeId"]) || !isCityThemeIdV1(value.visuals.themeId)) {
     return { ok: false, diagnostics: [error("world_profile_invalid_visuals", "visuals", "World profile must reference a registered City visual theme.")] };
   }
   let profile: CityWorldProfileV1;
   if (value.geography.generator === "arid-dunes-v1") {
     const parameters = value.geography.parameters;
-    if (value.biome !== "arid" || !exactKeys(parameters, ["dunes"]) || !isObject(parameters.dunes)
+    if (value.biome !== "arid" || !isObject(parameters) || !hasOwn(parameters, "dunes")
+      || Object.keys(parameters).some(key => key !== "dunes" && key !== "diversity") || !isObject(parameters.dunes)
       || !exactKeys(parameters.dunes, ["duneScale", "duneAmplitude", "orientationDeg"])) {
-      return { ok: false, diagnostics: [error("world_profile_invalid_parameters", "geography.parameters", "Arid dune profiles require only the version 1 dune parameters.")] };
+      return { ok: false, diagnostics: [error("world_profile_invalid_parameters", "geography.parameters", "Arid dune profiles require the version 1 dune parameters and an optional diversity record.")] };
     }
     const dunes = parameters.dunes;
-    if (typeof dunes.duneScale !== "number" || !Number.isFinite(dunes.duneScale) || dunes.duneScale < 96 || dunes.duneScale > 600
-      || typeof dunes.duneAmplitude !== "number" || !Number.isFinite(dunes.duneAmplitude) || dunes.duneAmplitude < 1 || dunes.duneAmplitude > 36
-      || typeof dunes.orientationDeg !== "number" || !Number.isFinite(dunes.orientationDeg) || dunes.orientationDeg < -180 || dunes.orientationDeg > 180) {
-      return { ok: false, diagnostics: [error("world_profile_parameter_out_of_range", "geography.parameters.dunes", "Dune parameters are outside the generator's supported bounds.")] };
+    // Legacy dune-field bounds come from the capability catalog (single source).
+    // A missing numeric range means the catalog regressed — fail closed, never widen.
+    for (const key of ["landform.duneScale", "landform.duneAmplitude", "landform.orientationDeg"] as const) {
+      const range = worldParameterNumericRangeV1(ARID_DUNES_WORLD_V2, key);
+      const field = key.split(".")[1] as "duneScale" | "duneAmplitude" | "orientationDeg";
+      if (range === undefined || typeof dunes[field] !== "number" || !Number.isFinite(dunes[field])
+        || (dunes[field] as number) < range[0] || (dunes[field] as number) > range[1]) {
+        return { ok: false, diagnostics: [error("world_profile_parameter_out_of_range", "geography.parameters.dunes", "Dune parameters are outside the generator's supported bounds.")] };
+      }
     }
+    let diversity: Readonly<Record<string, number | string>> | undefined;
+    if (parameters.diversity !== undefined) {
+      if (!isObject(parameters.diversity)) {
+        return { ok: false, diagnostics: [error("world_profile_invalid_parameters", "geography.parameters.diversity", "Diversity parameters must be an object of capability-keyed values.")] };
+      }
+      if (Object.keys(parameters.diversity).some(key => ARID_DUNES_LEGACY_KEYS.includes(key))) {
+        return { ok: false, diagnostics: [error("world_profile_invalid_parameters", "geography.parameters.diversity", "Diversity must not restate the version 1 dune parameters.")] };
+      }
+      // 语义校验单一来源：能力目录声明字段与范围，这里只做身份与结构核对。
+      const checked = validateWorldParametersV1(ARID_DUNES_WORLD_V2, parameters.diversity);
+      if (!checked.ok) {
+        return { ok: false, diagnostics: checked.diagnostics.map(item => error(item.code, `geography.parameters.diversity.${item.path}`, item.message)) };
+      }
+      // 只持久化显式设置的键：默认值在构建期归一化，存储不钉死当前默认。
+      diversity = Object.freeze(Object.fromEntries(Object.entries(parameters.diversity).map(([key, val]) => [key, val as number | string])));
+    }
+    const duneScale = dunes.duneScale as number, duneAmplitude = dunes.duneAmplitude as number, orientationDeg = dunes.orientationDeg as number;
     profile = { schemaVersion: 1, id: value.id, version: value.version as number, biome: "arid",
-      geography: { generator: "arid-dunes-v1", parameters: { dunes: { duneScale: dunes.duneScale, duneAmplitude: dunes.duneAmplitude, orientationDeg: dunes.orientationDeg } } },
+      geography: { generator: "arid-dunes-v1", parameters: { dunes: { duneScale, duneAmplitude, orientationDeg }, ...(diversity ? { diversity } : {}) } },
       visuals: { themeId: value.visuals.themeId } };
   } else if (value.geography.generator === "coastal-islands-v1") {
     const parameters = value.geography.parameters;
@@ -49,7 +101,7 @@ export function validateCityWorldProfile(value: unknown): Result<CityWorldProfil
     }
     const coastal = parameters.coastal;
     const coastalKeys = ["profile", "version", "biome", "preferredAzimuth", "azimuthTolerance", "segmentArc", "wetSandWidth", "drySandWidth", "promenadeOffset", "boulevardOffset", "hotelOffset", "bandOuter", "maxCoastalSlope", "maxCoastalHeight", "riverMargin", "siteMargin", "minValidRatio", "bayHalfWidth", "bayShift"];
-    if (!exactKeys(coastal, coastalKeys) || coastal.profile !== "miami-coastal" || coastal.biome !== "tropical"
+    if (!exactKeys(coastal, coastalKeys) || coastal.profile !== COASTAL_PROFILE_ID_V1 || coastal.biome !== "tropical"
       || !Number.isSafeInteger(coastal.version) || (coastal.version as number) < 1) {
       return { ok: false, diagnostics: [error("world_profile_invalid_parameters", "geography.parameters.coastal", "Coastal profile identity or fields are invalid.")] };
     }
@@ -78,7 +130,10 @@ export function validateCityWorldProfile(value: unknown): Result<CityWorldProfil
   } else {
     return { ok: false, diagnostics: [error("world_profile_generator_unsupported", "geography.generator", "The requested City geography generator is not registered.")] };
   }
-  if (profile.geography.generator === "arid-dunes-v1") Object.freeze(profile.geography.parameters.dunes);
+  if (profile.geography.generator === "arid-dunes-v1") {
+    Object.freeze(profile.geography.parameters.dunes);
+    if (profile.geography.parameters.diversity) Object.freeze(profile.geography.parameters.diversity);
+  }
   Object.freeze(profile.geography.parameters);
   Object.freeze(profile.geography);
   Object.freeze(profile.visuals);
@@ -98,8 +153,7 @@ export function validateCitySkinPack(value: unknown): Result<CitySkinPackV1> {
     || new Set(compatible).size !== compatible.length) {
     return { ok: false, diagnostics: [error("skin_invalid_compatibility", "compatibleGeographies", "Skin must declare one or more unique supported geography generators.")] };
   }
-  if (!isObject(value.visuals) || !exactKeys(value.visuals, ["themeId"])
-    || (value.visuals.themeId !== "miami" && value.visuals.themeId !== "desert")) {
+  if (!isObject(value.visuals) || !exactKeys(value.visuals, ["themeId"]) || !isCityThemeIdV1(value.visuals.themeId)) {
     return { ok: false, diagnostics: [error("skin_invalid_visuals", "visuals", "Skin must reference a registered City visual theme.")] };
   }
   const visuals = Object.freeze({ themeId: value.visuals.themeId });
@@ -131,7 +185,7 @@ export function validateCityLayout(value: unknown): Result<CityLayoutV1> {
     else seen.add(raw.id);
     if (typeof raw.kind !== "string" || !ANCHOR_KINDS.has(raw.kind as AnchorKind)) diagnostics.push(error("layout_invalid_anchor_kind", `${path}.kind`, "Anchor kind is unsupported."));
     if (!Array.isArray(raw.capabilities) || raw.capabilities.length > CAPABILITIES.size || raw.capabilities.some(item => typeof item !== "string" || !CAPABILITIES.has(item as AnchorCapability)) || (Array.isArray(raw.capabilities) && new Set(raw.capabilities).size !== raw.capabilities.length)) {
-      diagnostics.push(error("layout_invalid_anchor_capabilities", `${path}.capabilities`, "Capabilities must be unique drive/walk values."));
+      diagnostics.push(error("layout_invalid_anchor_capabilities", `${path}.capabilities`, "Capabilities must be unique drive/walk/fly values."));
     }
     if (typeof raw.geometryRef !== "string" || !identifier.test(raw.geometryRef)) diagnostics.push(error("layout_invalid_geometry_ref", `${path}.geometryRef`, "Geometry reference must be a stable identifier."));
     if (typeof raw.id === "string" && identifier.test(raw.id) && typeof raw.kind === "string" && ANCHOR_KINDS.has(raw.kind as AnchorKind)
@@ -167,7 +221,7 @@ export function validateCityLayout(value: unknown): Result<CityLayoutV1> {
         if (!Array.isArray(raw.capabilities) || raw.capabilities.length === 0 || raw.capabilities.length > CAPABILITIES.size
           || raw.capabilities.some(item => typeof item !== "string" || !CAPABILITIES.has(item as AnchorCapability))
           || (Array.isArray(raw.capabilities) && new Set(raw.capabilities).size !== raw.capabilities.length)) {
-          diagnostics.push(error("layout_invalid_link_capabilities", `${path}.capabilities`, "Links require unique drive/walk traversal capabilities."));
+          diagnostics.push(error("layout_invalid_link_capabilities", `${path}.capabilities`, "Links require unique drive/walk/fly traversal capabilities."));
           continue;
         }
         for (const capability of raw.capabilities as AnchorCapability[]) {
@@ -199,6 +253,97 @@ export function validateCityLayoutSnapshot(value: unknown): Result<CityLayoutSna
   return { ok: true, value: Object.freeze({ schemaVersion: 1, worldRevision: value.worldRevision, seed: value.seed as number, layout: layout.value }), diagnostics: [] };
 }
 
+/** Validates a multi-City layout without treating legacy worldRevision as a global city identity. */
+export function validateCityLayoutSnapshotV2(value: unknown): Result<CityLayoutSnapshotV2> {
+  if (!isObject(value) || !exactKeys(value, ["schemaVersion", "cityId", "cityRevision", "worldRevision", "seed", "layout"])) {
+    return { ok: false, diagnostics: [error("layout_snapshot_invalid_shape", "$", "Version 2 layout snapshot requires its City identity and revision.")] };
+  }
+  if (value.schemaVersion !== 2 || typeof value.cityId !== "string" || !identifier.test(value.cityId)
+    || !Number.isSafeInteger(value.cityRevision) || (value.cityRevision as number) < 0) {
+    return { ok: false, diagnostics: [error("layout_snapshot_invalid_city", "cityId", "Layout must identify a valid City and its revision.")] };
+  }
+  const legacy = validateCityLayoutSnapshot({ schemaVersion: 1, worldRevision: value.worldRevision, seed: value.seed, layout: value.layout });
+  if (!legacy.ok) return legacy;
+  return { ok: true, value: Object.freeze({ schemaVersion: 2, cityId: value.cityId, cityRevision: value.cityRevision as number,
+    worldRevision: legacy.value.worldRevision, seed: legacy.value.seed, layout: legacy.value.layout }), diagnostics: [] };
+}
+
+/**
+ * v3：在 v2 之上序列化锚点几何（`geometry`）。只接受快照 anchors 真正引用到的 geometryRef，
+ * 且每条都必须有有限 positionMeters；activationRadiusMeters 可选但必须为正。
+ * 这条校验是"发布物能离开运行时被复现"的前提，因此比 v2 更严：多一条没用到的几何也不行
+ * （否则快照会悄悄膨胀，且让人以为门在那儿）。
+ */
+export function validateCityLayoutSnapshotV3(value: unknown): Result<CityLayoutSnapshotV3> {
+  if (!isObject(value) || !exactKeys(value, ["schemaVersion", "cityId", "cityRevision", "worldRevision", "seed", "layout", "geometry"])) {
+    return { ok: false, diagnostics: [error("layout_snapshot_invalid_shape", "$", "Version 3 layout snapshot requires its City identity, layout and anchor geometry.")] };
+  }
+  if (value.schemaVersion !== 3) {
+    return { ok: false, diagnostics: [error("layout_snapshot_invalid_shape", "schemaVersion", "Expected layout snapshot schema version 3.")] };
+  }
+  const legacy = validateCityLayoutSnapshot({ schemaVersion: 1, worldRevision: value.worldRevision, seed: value.seed, layout: value.layout });
+  if (!legacy.ok) return legacy;
+  const scoped = validateCityLayoutSnapshotV2({ schemaVersion: 2, cityId: value.cityId, cityRevision: value.cityRevision,
+    worldRevision: value.worldRevision, seed: value.seed, layout: value.layout });
+  if (!scoped.ok) return scoped;
+  if (!Array.isArray(value.geometry) || value.geometry.length > MAX_LAYOUT_ANCHORS) {
+    return { ok: false, diagnostics: [error("layout_snapshot_geometry_invalid", "geometry", "Anchor geometry must be a bounded array.")] };
+  }
+  const referenced = new Set(scoped.value.layout.anchors.map(anchor => anchor.geometryRef));
+  const geometry: Array<Readonly<{ geometryRef: string } & CityAnchorGeometryV1>> = [];
+  const seen = new Set<string>();
+  for (const [index, entry] of value.geometry.entries()) {
+    const path = `geometry[${index}]`;
+    if (!isObject(entry) || !exactKeys(entry, ["geometryRef", "positionMeters", "activationRadiusMeters", "facingRadians"])) {
+      return { ok: false, diagnostics: [error("layout_snapshot_geometry_invalid", path, "Anchor geometry must contain only geometryRef, positionMeters and optional radius/facing.")] };
+    }
+    const geometryRef = entry.geometryRef;
+    if (typeof geometryRef !== "string" || !identifier.test(geometryRef) || !referenced.has(geometryRef) || seen.has(geometryRef)) {
+      return { ok: false, diagnostics: [error("layout_snapshot_geometry_invalid", `${path}.geometryRef`, "Anchor geometry must reference exactly one snapshot anchor and appear once.")] };
+    }
+    const position = entry.positionMeters;
+    if (!isObject(position) || !exactKeys(position, ["x", "y", "z"])
+      || ![position.x, position.y, position.z].every(item => typeof item === "number" && Number.isFinite(item))) {
+      return { ok: false, diagnostics: [error("layout_snapshot_geometry_invalid", `${path}.positionMeters`, "Anchor geometry needs finite x/y/z metres.")] };
+    }
+    const radius = entry.activationRadiusMeters;
+    if (radius !== undefined && !(typeof radius === "number" && Number.isFinite(radius) && radius > 0)) {
+      return { ok: false, diagnostics: [error("layout_snapshot_geometry_invalid", `${path}.activationRadiusMeters`, "Activation radius must be a positive number of metres.")] };
+    }
+    const facing = entry.facingRadians;
+    if (facing !== undefined && !(typeof facing === "number" && Number.isFinite(facing))) {
+      return { ok: false, diagnostics: [error("layout_snapshot_geometry_invalid", `${path}.facingRadians`, "Facing must be a finite number of radians.")] };
+    }
+    seen.add(geometryRef);
+    geometry.push(Object.freeze({ geometryRef, positionMeters: Object.freeze({ x: position.x as number, y: position.y as number, z: position.z as number }),
+      ...(radius === undefined ? {} : { activationRadiusMeters: radius as number }), ...(facing === undefined ? {} : { facingRadians: facing as number }) }));
+  }
+  // 锚点引用的几何必须全部在场，否则发布物照样无法复现（宁可在发布时失败）。
+  const missing = [...referenced].filter(ref => !seen.has(ref));
+  if (missing.length) {
+    return { ok: false, diagnostics: [error("layout_snapshot_geometry_missing", "geometry", "Every snapshot anchor must have its geometry serialized.", missing[0])] };
+  }
+  return { ok: true, value: Object.freeze({ schemaVersion: 3, cityId: scoped.value.cityId, cityRevision: scoped.value.cityRevision as number,
+    worldRevision: scoped.value.worldRevision, seed: scoped.value.seed, layout: scoped.value.layout, geometry: Object.freeze(geometry) }), diagnostics: [] };
+}
+
+/** 读侧入口：v2（无几何，历史数据）与 v3 都接受。写侧必须显式产出 v3。 */
+export function validateCityLayoutSnapshotScoped(value: unknown): Result<CityLayoutSnapshotV2 | CityLayoutSnapshotV3> {
+  if (isObject(value) && value.schemaVersion === 3) return validateCityLayoutSnapshotV3(value);
+  return validateCityLayoutSnapshotV2(value);
+}
+
+/** Reject stale or cross-City bindings even when the seed or world revision matches. */
+export function validateCityLayoutScope(value: unknown, city: Pick<CityInstanceV1, "cityId" | "revision" | "seed">): Result<CityLayoutSnapshotScoped> {
+  // 读侧同时接受 v2（历史数据）与 v3（带锚点几何）。
+  const snapshot = validateCityLayoutSnapshotScoped(value);
+  if (!snapshot.ok) return snapshot;
+  if (snapshot.value.cityId !== city.cityId || snapshot.value.cityRevision !== city.revision || snapshot.value.seed !== city.seed) {
+    return { ok: false, diagnostics: [error("layout_snapshot_city_mismatch", "cityId", "Layout belongs to a different City, revision or seed.")] };
+  }
+  return snapshot;
+}
+
 /** Validate a bounded, data-only scene draft. Asset existence is checked separately with validateAssetRefs. */
 export function validateSceneDraft(value: unknown): Result<SceneDraftV1> {
   if (!isObject(value) || !exactKeys(value, ["schemaVersion", "objects"]) || value.schemaVersion !== 1 || !Array.isArray(value.objects)) {
@@ -213,7 +358,7 @@ export function validateSceneDraft(value: unknown): Result<SceneDraftV1> {
     isObject(raw) && exactKeys(raw, ["x", "y", "z"]) && [raw.x, raw.y, raw.z].every(number => typeof number === "number" && Number.isFinite(number) && number >= bounds[0] && number <= bounds[1]);
   const validRef = (raw: unknown): raw is ModelAssetRefV1 => isObject(raw) && exactKeys(raw, ["package", "assetId", "digest"])
     && isObject(raw.package) && exactKeys(raw.package, ["kind", "id", "version", "digest"])
-    && typeof raw.package.kind === "string" && ["city-layout", "city-skin", "city-minigame"].includes(raw.package.kind)
+    && typeof raw.package.kind === "string" && ["city-layout", "city-skin", "city-minigame", "city-world"].includes(raw.package.kind)
     && typeof raw.package.id === "string" && identifier.test(raw.package.id)
     && typeof raw.package.version === "string" && raw.package.version.length > 0 && raw.package.version.length <= 64
     && typeof raw.package.digest === "string" && raw.package.digest.length > 0 && raw.package.digest.length <= 256
@@ -349,9 +494,63 @@ export function validateMount(input: { layout: unknown; game: unknown; mount: un
     if (!parameter) diagnostics.push(error("parameter_not_found", `mount.parameterOverrides.${name}`, "Game does not declare this parameter."));
     else if (!Number.isInteger(value) || value < parameter.min || value > parameter.max) diagnostics.push(error("parameter_out_of_range", `mount.parameterOverrides.${name}`, "Parameter value is outside its declared integer range."));
   }
+  // 检查点耦合修复（2026-11-17）：以整数参数表达完成阈值的「完成守卫」，绑定数必须与阈值一致，
+  // 否则会出现「绑 5 门、过 3 门即结束」的静默截断（旧模板把阈值与 counter.max 都硬编码为 3）。
+  // 只对带 run.finish 的节点生效，避免把「收集 N 个里的 M 个」这类显式设计一并判死。
+  for (const [slotName, ids] of Object.entries(resolvedMount.bindings)) {
+    if (ids.length === 0 || !hasOwn(game.slots, slotName)) continue;
+    for (const parameterName of completionThresholdParameters(game, slotName)) {
+      const parameter = game.integerParameters![parameterName]!;
+      const overrideValue = resolvedMount.parameterOverrides[parameterName];
+      // 显式 override 必须等于绑定数；无 override 时 pack 默认值必须等于绑定数——
+      // 两者都不允许把阈值留在「比绑定数小」的静默截断状态，也不允许大到永远无法完成。
+      if (overrideValue !== undefined && overrideValue !== ids.length) {
+        diagnostics.push(error("parameter_binding_mismatch", `mount.bindings.${slotName}`,
+          `Parameter ${parameterName} (${overrideValue}) must equal the number of bound anchors (${ids.length}) for slot ${slotName}.`));
+      } else if (overrideValue === undefined && parameter.default !== ids.length) {
+        diagnostics.push(error("parameter_binding_mismatch", `mount.bindings.${slotName}`,
+          `Parameter ${parameterName} defaults to ${parameter.default} but ${ids.length} anchors are bound; set an explicit override.`));
+      }
+    }
+  }
   return diagnostics.length ? { ok: false, diagnostics } : { ok: true, value: { layout, game, mount: resolvedMount }, diagnostics };
 }
 
+
+/**
+ * 完成阈值参数（`counter.eq` 守卫引用、且该守卫所在节点带 `run.finish`）——这类参数与
+ * 槽位绑定数耦合，绑定期必须显式给出并等于绑定数。注意读的是 validateMiniGamePack
+ * 归一化后的 `game.rules.nodes`（不是 `rules.graph`——那是 CompiledRulesV1 的形状，
+ * 写错会让整段检查静默失效，2026-11-17 会话末段就踩过这个坑）。
+ */
+function completionThresholdParameters(game: MiniGamePackV1, slotName: string): Set<string> {
+  const parameters = new Set<string>();
+  for (const node of game.rules.nodes) {
+    if (!node.actions.some(action => action.op === "run.finish")) continue;
+    if (node.on.type !== "zone.entered" && node.on.type !== "item.collected") continue;
+    if (node.on.slot !== slotName) continue;
+    for (const guard of node.when ?? []) {
+      if (guard.op !== "counter.eq" || !isObject(guard.value)) continue;
+      const parameter = (guard.value as { parameter?: unknown }).parameter;
+      if (typeof parameter === "string" && identifier.test(parameter) && game.integerParameters?.[parameter]) parameters.add(parameter);
+    }
+  }
+  return parameters;
+}
+
+/**
+ * 绑定 N 个锚点时，完成阈值参数必须取 N——返回 mount 应携带的 `parameterOverrides`。
+ * 绑定界面用它把阈值显式化：旧行为是让阈值停在 pack 默认值（3），绑 5 个门时后两个门
+ * 永远无效且不报错。显式值也会让 validateMount 的 `parameter_binding_mismatch` 检查通过。
+ */
+export function completionThresholdOverrides(game: MiniGamePackV1, bindings: Record<string, readonly string[]>): Record<string, number> {
+  const overrides: Record<string, number> = {};
+  for (const [slotName, ids] of Object.entries(bindings)) {
+    if (!hasOwn(game.slots, slotName) || ids.length === 0) continue;
+    for (const parameterName of completionThresholdParameters(game, slotName)) overrides[parameterName] = ids.length;
+  }
+  return overrides;
+}
 
 export function listAnchors(layout: CityLayoutV1, filter: AnchorFilterV1 = {}): CityAnchorV1[] {
   return layout.anchors.filter(anchor =>
@@ -435,7 +634,7 @@ export function validateAssetRefs(input: unknown): Result<ResolvedModelAssetRefs
   const fail = (code: string, path: string, message: string, objectId?: string) => diagnostics.push(error(code, path, message, objectId));
   const validPackageRef = (value: unknown): value is ContentRef => isObject(value)
     && exactKeys(value, ["kind", "id", "version", "digest"])
-    && typeof value.kind === "string" && ["city-layout", "city-skin", "city-minigame"].includes(value.kind)
+    && typeof value.kind === "string" && ["city-layout", "city-skin", "city-minigame", "city-world"].includes(value.kind)
     && typeof value.id === "string" && identifier.test(value.id)
     && typeof value.version === "string" && value.version.length > 0 && value.version.length <= 64
     && typeof value.digest === "string" && value.digest.length > 0 && value.digest.length <= 256;

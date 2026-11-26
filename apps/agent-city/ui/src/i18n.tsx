@@ -182,6 +182,7 @@ const english: Record<string, string> = {
   "航拍导出预览": "Aerial export preview", "后台实际生成的航拍画面": "Actual background-rendered aerial frame", "航拍导出 ": "Aerial export ", "% · 关闭设置不取消导出": "% · Closing settings does not cancel export",
   " · 软件渲染": " · Software rendering", "实际生成帧 · 预览最多 2 FPS，成片 30 FPS": "Actual output frames · Preview up to 2 FPS; video 30 FPS", "关闭提示": "Dismiss",
   "Agent City 三维城市": "Agent City 3D scene", "当前环境无法显示三维城市，仍可查看会话摘要。": "3D rendering is unavailable; session summaries remain accessible.",
+  "城市布局未能生成，三维场景暂未装配；会话摘要仍可查看。": "The city layout was not produced, so the 3D scene is not mounted; session summaries remain accessible.",
   "正在载入 City 插槽数据…": "Loading City data…", "正在更新 City 插槽数据…": "Updating City data…", "City 数据暂不可用": "City data temporarily unavailable",
   "当前时间范围没有会话": "No sessions in this time range", "数据可能已过期": "Data may be stale", "City 数据不可用": "City data unavailable",
   "合成 fixture · 尚未接入真实数据源": "Synthetic fixture · No real data source", "Agent Vitals City 模块 · ": "Agent Vitals City · ",

@@ -1,0 +1,1256 @@
+{
+  "schemaVersion": 1,
+  "authority": "node-v8 (SDK-TS native path via the Studio adapter import chain)",
+  "note": "expected strings are the EXACT citySdkGate.invoke() outputs under Node/V8; the QuickJS side must reproduce them byte for byte",
+  "regenerate": "node --experimental-transform-types --import scripts/mecha-ts-register.mjs apps/creator-studio/ui/scripts/generate-lockstep-vectors.mjs",
+  "vectors": [
+    {
+      "id": "vehicle-ok",
+      "entry": "vehicle.profile.validate",
+      "args": {
+        "raw": {
+          "schemaVersion": 1,
+          "id": "vehicle.ornithopter",
+          "label": "扑翼机",
+          "modelAssetId": null,
+          "flightModel": "flapping",
+          "physics": {
+            "massKg": 340,
+            "wingAreaM2": 18,
+            "thrustN": 10000,
+            "maxSpeedMps": 120,
+            "dragCoefficient": 0.1,
+            "turnRateRps": 0.9,
+            "climbRateMps": 34,
+            "sinkRateMps": 26,
+            "flapFrequencyHz": 2.4,
+            "flapAmplitudeRad": 1.1
+          },
+          "bounds": {
+            "halfLengthM": 3.6,
+            "halfWidthM": 4.8,
+            "halfHeightM": 1.4
+          },
+          "camera": {
+            "followDistanceM": 26,
+            "heightOffsetM": 12,
+            "fovDeg": 52
+          }
+        }
+      },
+      "expected": "{\"ok\":true,\"diagnostics\":[]}"
+    },
+    {
+      "id": "vehicle-fixed-ok",
+      "entry": "vehicle.profile.validate",
+      "args": {
+        "raw": {
+          "schemaVersion": 1,
+          "id": "vehicle.fixed-wing-light",
+          "label": "固定翼轻型机",
+          "modelAssetId": null,
+          "flightModel": "fixed-wing",
+          "physics": {
+            "massKg": 620,
+            "wingAreaM2": 16,
+            "thrustN": 9000,
+            "maxSpeedMps": 130,
+            "dragCoefficient": 0.06,
+            "turnRateRps": 1.05,
+            "climbRateMps": 26,
+            "sinkRateMps": 20
+          },
+          "bounds": {
+            "halfLengthM": 4.5,
+            "halfWidthM": 5.5,
+            "halfHeightM": 1.5
+          },
+          "camera": {
+            "followDistanceM": 30,
+            "heightOffsetM": 13,
+            "fovDeg": 55
+          }
+        }
+      },
+      "expected": "{\"ok\":true,\"diagnostics\":[]}"
+    },
+    {
+      "id": "vehicle-out-of-bounds",
+      "entry": "vehicle.profile.validate",
+      "args": {
+        "raw": {
+          "schemaVersion": 1,
+          "id": "vehicle.ornithopter",
+          "label": "扑翼机",
+          "modelAssetId": null,
+          "flightModel": "flapping",
+          "physics": {
+            "massKg": 340,
+            "wingAreaM2": 18,
+            "thrustN": 10000,
+            "maxSpeedMps": 999,
+            "dragCoefficient": 0.1,
+            "turnRateRps": 0.9,
+            "climbRateMps": 34,
+            "sinkRateMps": 26,
+            "flapFrequencyHz": 2.4,
+            "flapAmplitudeRad": 1.1
+          },
+          "bounds": {
+            "halfLengthM": 3.6,
+            "halfWidthM": 4.8,
+            "halfHeightM": 1.4
+          },
+          "camera": {
+            "followDistanceM": 26,
+            "heightOffsetM": 12,
+            "fovDeg": 52
+          }
+        }
+      },
+      "expected": "{\"ok\":false,\"diagnostics\":[{\"code\":\"vehicle_profile_out_of_bounds\",\"severity\":\"error\",\"path\":\"physics.maxSpeedMps\",\"message\":\"Must be a finite number in [5, 160].\"}]}"
+    },
+    {
+      "id": "vehicle-unphysical",
+      "entry": "vehicle.profile.validate",
+      "args": {
+        "raw": {
+          "schemaVersion": 1,
+          "id": "vehicle.ornithopter",
+          "label": "扑翼机",
+          "modelAssetId": null,
+          "flightModel": "flapping",
+          "physics": {
+            "massKg": 340,
+            "wingAreaM2": 2,
+            "thrustN": 10000,
+            "maxSpeedMps": 120,
+            "dragCoefficient": 0.1,
+            "turnRateRps": 0.9,
+            "climbRateMps": 34,
+            "sinkRateMps": 26,
+            "flapFrequencyHz": 2.4,
+            "flapAmplitudeRad": 1.1
+          },
+          "bounds": {
+            "halfLengthM": 3.6,
+            "halfWidthM": 4.8,
+            "halfHeightM": 1.4
+          },
+          "camera": {
+            "followDistanceM": 26,
+            "heightOffsetM": 12,
+            "fovDeg": 52
+          }
+        }
+      },
+      "expected": "{\"ok\":false,\"diagnostics\":[{\"code\":\"vehicle_profile_unphysical\",\"severity\":\"error\",\"path\":\"physics.wingAreaM2\",\"message\":\"Wing loading 170.000 kg/m² is outside [1, 120].\"}]}"
+    },
+    {
+      "id": "vehicle-unknown-key",
+      "entry": "vehicle.profile.validate",
+      "args": {
+        "raw": {
+          "schemaVersion": 1,
+          "id": "vehicle.ornithopter",
+          "label": "扑翼机",
+          "modelAssetId": null,
+          "flightModel": "flapping",
+          "physics": {
+            "massKg": 340,
+            "wingAreaM2": 18,
+            "thrustN": 10000,
+            "maxSpeedMps": 120,
+            "dragCoefficient": 0.1,
+            "turnRateRps": 0.9,
+            "climbRateMps": 34,
+            "sinkRateMps": 26,
+            "flapFrequencyHz": 2.4,
+            "flapAmplitudeRad": 1.1
+          },
+          "bounds": {
+            "halfLengthM": 3.6,
+            "halfWidthM": 4.8,
+            "halfHeightM": 1.4
+          },
+          "camera": {
+            "followDistanceM": 26,
+            "heightOffsetM": 12,
+            "fovDeg": 52
+          },
+          "extra": 1
+        }
+      },
+      "expected": "{\"ok\":false,\"diagnostics\":[{\"code\":\"vehicle_profile_invalid\",\"severity\":\"error\",\"path\":\"$\",\"message\":\"Vehicle profile contains missing or unsupported fields.\"}]}"
+    },
+    {
+      "id": "vehicle-non-object",
+      "entry": "vehicle.profile.validate",
+      "args": {
+        "raw": 42
+      },
+      "expected": "{\"ok\":false,\"diagnostics\":[{\"code\":\"vehicle_profile_invalid\",\"severity\":\"error\",\"path\":\"$\",\"message\":\"Vehicle profile must be an object.\"}]}"
+    },
+    {
+      "id": "vehicle-schema2",
+      "entry": "vehicle.profile.validate",
+      "args": {
+        "raw": {
+          "schemaVersion": 2,
+          "id": "vehicle.ornithopter",
+          "label": "扑翼机",
+          "modelAssetId": null,
+          "flightModel": "flapping",
+          "physics": {
+            "massKg": 340,
+            "wingAreaM2": 18,
+            "thrustN": 10000,
+            "maxSpeedMps": 120,
+            "dragCoefficient": 0.1,
+            "turnRateRps": 0.9,
+            "climbRateMps": 34,
+            "sinkRateMps": 26,
+            "flapFrequencyHz": 2.4,
+            "flapAmplitudeRad": 1.1
+          },
+          "bounds": {
+            "halfLengthM": 3.6,
+            "halfWidthM": 4.8,
+            "halfHeightM": 1.4
+          },
+          "camera": {
+            "followDistanceM": 26,
+            "heightOffsetM": 12,
+            "fovDeg": 52
+          }
+        }
+      },
+      "expected": "{\"ok\":false,\"diagnostics\":[{\"code\":\"vehicle_profile_unsupported\",\"severity\":\"error\",\"path\":\"schemaVersion\",\"message\":\"Only vehicle profile schema version 1 is supported.\"}]}"
+    },
+    {
+      "id": "vehicle-hyphen-label",
+      "entry": "vehicle.profile.validate",
+      "args": {
+        "raw": {
+          "schemaVersion": 1,
+          "id": "vehicle.ornithopter",
+          "label": "扑翼-原型机(wing)-01",
+          "modelAssetId": null,
+          "flightModel": "flapping",
+          "physics": {
+            "massKg": 340,
+            "wingAreaM2": 18,
+            "thrustN": 10000,
+            "maxSpeedMps": 120,
+            "dragCoefficient": 0.1,
+            "turnRateRps": 0.9,
+            "climbRateMps": 34,
+            "sinkRateMps": 26,
+            "flapFrequencyHz": 2.4,
+            "flapAmplitudeRad": 1.1
+          },
+          "bounds": {
+            "halfLengthM": 3.6,
+            "halfWidthM": 4.8,
+            "halfHeightM": 1.4
+          },
+          "camera": {
+            "followDistanceM": 26,
+            "heightOffsetM": 12,
+            "fovDeg": 52
+          }
+        }
+      },
+      "expected": "{\"ok\":true,\"diagnostics\":[]}"
+    },
+    {
+      "id": "vehicle-normalize-ok",
+      "entry": "vehicle.validate",
+      "args": {
+        "raw": {
+          "id": "vehicle-e2e-flap",
+          "label": "E2E flapper",
+          "flightModel": "flapping",
+          "physics": {
+            "massKg": 340,
+            "wingAreaM2": 18,
+            "thrustN": 10000,
+            "maxSpeedMps": 120,
+            "dragCoefficient": 0.1,
+            "turnRateRps": 0.9,
+            "climbRateMps": 34,
+            "sinkRateMps": 26,
+            "flapFrequencyHz": 2.4,
+            "flapAmplitudeRad": 1.1
+          },
+          "bounds": {
+            "halfLengthM": 3.6,
+            "halfWidthM": 4.8,
+            "halfHeightM": 1.4
+          },
+          "modelAssetId": null
+        }
+      },
+      "expected": "{\"ok\":true,\"vehicle\":{\"schemaVersion\":1,\"id\":\"vehicle-e2e-flap\",\"label\":\"E2E flapper\",\"modelAssetId\":null,\"flightModel\":\"flapping\",\"physics\":{\"massKg\":340,\"wingAreaM2\":18,\"thrustN\":10000,\"maxSpeedMps\":120,\"dragCoefficient\":0.1,\"turnRateRps\":0.9,\"climbRateMps\":34,\"sinkRateMps\":26,\"flapFrequencyHz\":2.4,\"flapAmplitudeRad\":1.1},\"bounds\":{\"halfLengthM\":3.6,\"halfWidthM\":4.8,\"halfHeightM\":1.4},\"camera\":{\"followDistanceM\":31.2,\"heightOffsetM\":12.48,\"fovDeg\":55}},\"diagnostics\":[]}"
+    },
+    {
+      "id": "vehicle-estimate-ok",
+      "entry": "vehicle.estimate",
+      "args": {
+        "raw": {
+          "schemaVersion": 1,
+          "id": "vehicle.ornithopter",
+          "label": "扑翼机",
+          "modelAssetId": null,
+          "flightModel": "flapping",
+          "physics": {
+            "massKg": 340,
+            "wingAreaM2": 18,
+            "thrustN": 10000,
+            "maxSpeedMps": 120,
+            "dragCoefficient": 0.1,
+            "turnRateRps": 0.9,
+            "climbRateMps": 34,
+            "sinkRateMps": 26,
+            "flapFrequencyHz": 2.4,
+            "flapAmplitudeRad": 1.1
+          },
+          "bounds": {
+            "halfLengthM": 3.6,
+            "halfWidthM": 4.8,
+            "halfHeightM": 1.4
+          },
+          "camera": {
+            "followDistanceM": 26,
+            "heightOffsetM": 12,
+            "fovDeg": 52
+          }
+        }
+      },
+      "expected": "{\"ok\":true,\"vehicle\":{\"schemaVersion\":1,\"id\":\"vehicle.ornithopter\",\"label\":\"扑翼机\",\"modelAssetId\":null,\"flightModel\":\"flapping\",\"physics\":{\"massKg\":340,\"wingAreaM2\":18,\"thrustN\":10000,\"maxSpeedMps\":120,\"dragCoefficient\":0.1,\"turnRateRps\":0.9,\"climbRateMps\":34,\"sinkRateMps\":26,\"flapFrequencyHz\":2.4,\"flapAmplitudeRad\":1.1},\"bounds\":{\"halfLengthM\":3.6,\"halfWidthM\":4.8,\"halfHeightM\":1.4},\"camera\":{\"followDistanceM\":26,\"heightOffsetM\":12,\"fovDeg\":52}},\"estimate\":{\"cruiseSpeedMps\":66.66666666666667,\"maxSpeedMps\":120,\"thrustAccelMs2\":29.41176470588235,\"wingLoadingKgPerM2\":18.88888888888889,\"turnRateRps\":0.9,\"climbRateMps\":34,\"flapFrequencyHz\":2.4}}"
+    },
+    {
+      "id": "world-apply-ok",
+      "entry": "city.world.apply",
+      "args": {
+        "city": {
+          "schemaVersion": 1,
+          "cityId": "city-lockstep",
+          "revision": 3,
+          "name": "锁步城",
+          "seed": 20261115,
+          "profile": {
+            "schemaVersion": 1,
+            "id": "arid-dunes",
+            "version": 1,
+            "biome": "arid",
+            "geography": {
+              "generator": "arid-dunes-v1",
+              "parameters": {
+                "dunes": {
+                  "duneScale": 190,
+                  "duneAmplitude": 11,
+                  "orientationDeg": 18
+                }
+              }
+            },
+            "visuals": {
+              "themeId": "desert"
+            }
+          }
+        },
+        "baseRevision": 3,
+        "operations": [
+          {
+            "op": "world.set",
+            "params": {
+              "shape.family": "lobed",
+              "shape.cores": 3
+            }
+          }
+        ]
+      },
+      "expected": "{\"ok\":true,\"profile\":{\"schemaVersion\":1,\"id\":\"arid-dunes\",\"version\":1,\"biome\":\"arid\",\"geography\":{\"generator\":\"arid-dunes-v1\",\"parameters\":{\"dunes\":{\"duneScale\":190,\"duneAmplitude\":11,\"orientationDeg\":18},\"diversity\":{\"shape.family\":\"lobed\",\"shape.cores\":3}}},\"visuals\":{\"themeId\":\"desert\"}}}"
+    },
+    {
+      "id": "world-apply-revision-mismatch",
+      "entry": "city.world.apply",
+      "args": {
+        "city": {
+          "schemaVersion": 1,
+          "cityId": "city-lockstep",
+          "revision": 3,
+          "name": "锁步城",
+          "seed": 20261115,
+          "profile": {
+            "schemaVersion": 1,
+            "id": "arid-dunes",
+            "version": 1,
+            "biome": "arid",
+            "geography": {
+              "generator": "arid-dunes-v1",
+              "parameters": {
+                "dunes": {
+                  "duneScale": 190,
+                  "duneAmplitude": 11,
+                  "orientationDeg": 18
+                }
+              }
+            },
+            "visuals": {
+              "themeId": "desert"
+            }
+          }
+        },
+        "baseRevision": 2,
+        "operations": [
+          {
+            "op": "world.set",
+            "params": {
+              "shape.family": "lobed"
+            }
+          }
+        ]
+      },
+      "expected": "{\"ok\":false,\"profile\":{\"schemaVersion\":1,\"id\":\"arid-dunes\",\"version\":1,\"biome\":\"arid\",\"geography\":{\"generator\":\"arid-dunes-v1\",\"parameters\":{\"dunes\":{\"duneScale\":190,\"duneAmplitude\":11,\"orientationDeg\":18}}},\"visuals\":{\"themeId\":\"desert\"}},\"diagnostics\":[{\"code\":\"creator_validation_scope_mismatch\",\"severity\":\"error\",\"path\":\"baseRevision\",\"message\":\"The preview baseRevision does not match the city draft revision.\"}]}"
+    },
+    {
+      "id": "world-apply-unknown-key",
+      "entry": "city.world.apply",
+      "args": {
+        "city": {
+          "schemaVersion": 1,
+          "cityId": "city-lockstep",
+          "revision": 3,
+          "name": "锁步城",
+          "seed": 20261115,
+          "profile": {
+            "schemaVersion": 1,
+            "id": "arid-dunes",
+            "version": 1,
+            "biome": "arid",
+            "geography": {
+              "generator": "arid-dunes-v1",
+              "parameters": {
+                "dunes": {
+                  "duneScale": 190,
+                  "duneAmplitude": 11,
+                  "orientationDeg": 18
+                }
+              }
+            },
+            "visuals": {
+              "themeId": "desert"
+            }
+          }
+        },
+        "baseRevision": 3,
+        "operations": [
+          {
+            "op": "world.set",
+            "params": {
+              "shape.unknown": 1
+            }
+          }
+        ]
+      },
+      "expected": "{\"ok\":false,\"profile\":{\"schemaVersion\":1,\"id\":\"arid-dunes\",\"version\":1,\"biome\":\"arid\",\"geography\":{\"generator\":\"arid-dunes-v1\",\"parameters\":{\"dunes\":{\"duneScale\":190,\"duneAmplitude\":11,\"orientationDeg\":18}}},\"visuals\":{\"themeId\":\"desert\"}}}"
+    },
+    {
+      "id": "world-apply-out-of-range",
+      "entry": "city.world.apply",
+      "args": {
+        "city": {
+          "schemaVersion": 1,
+          "cityId": "city-lockstep",
+          "revision": 3,
+          "name": "锁步城",
+          "seed": 20261115,
+          "profile": {
+            "schemaVersion": 1,
+            "id": "arid-dunes",
+            "version": 1,
+            "biome": "arid",
+            "geography": {
+              "generator": "arid-dunes-v1",
+              "parameters": {
+                "dunes": {
+                  "duneScale": 190,
+                  "duneAmplitude": 11,
+                  "orientationDeg": 18
+                }
+              }
+            },
+            "visuals": {
+              "themeId": "desert"
+            }
+          }
+        },
+        "baseRevision": 3,
+        "operations": [
+          {
+            "op": "world.set",
+            "params": {
+              "shape.cores": 9
+            }
+          }
+        ]
+      },
+      "expected": "{\"ok\":false,\"profile\":{\"schemaVersion\":1,\"id\":\"arid-dunes\",\"version\":1,\"biome\":\"arid\",\"geography\":{\"generator\":\"arid-dunes-v1\",\"parameters\":{\"dunes\":{\"duneScale\":190,\"duneAmplitude\":11,\"orientationDeg\":18}}},\"visuals\":{\"themeId\":\"desert\"}}}"
+    },
+    {
+      "id": "city-create-ok",
+      "entry": "city.create.validate",
+      "args": {
+        "name": "锁步城",
+        "seed": 20261115,
+        "profile": {
+          "schemaVersion": 1,
+          "id": "arid-dunes",
+          "version": 1,
+          "biome": "arid",
+          "geography": {
+            "generator": "arid-dunes-v1",
+            "parameters": {
+              "dunes": {
+                "duneScale": 190,
+                "duneAmplitude": 11,
+                "orientationDeg": 18
+              }
+            }
+          },
+          "visuals": {
+            "themeId": "desert"
+          }
+        }
+      },
+      "expected": "{\"ok\":true,\"diagnostics\":[]}"
+    },
+    {
+      "id": "city-create-bad-seed",
+      "entry": "city.create.validate",
+      "args": {
+        "name": "锁步城",
+        "seed": -1,
+        "profile": {
+          "schemaVersion": 1,
+          "id": "arid-dunes",
+          "version": 1,
+          "biome": "arid",
+          "geography": {
+            "generator": "arid-dunes-v1",
+            "parameters": {
+              "dunes": {
+                "duneScale": 190,
+                "duneAmplitude": 11,
+                "orientationDeg": 18
+              }
+            }
+          },
+          "visuals": {
+            "themeId": "desert"
+          }
+        }
+      },
+      "expected": "{\"ok\":false,\"diagnostics\":[{\"code\":\"city_instance_invalid_identity\",\"severity\":\"error\",\"path\":\"$\",\"message\":\"City identity, name, revision or seed is invalid.\"}]}"
+    },
+    {
+      "id": "scene-draft-invalid",
+      "entry": "scene.draft.validate",
+      "args": {
+        "raw": {
+          "schemaVersion": 1,
+          "objects": [
+            {
+              "id": "obj-1",
+              "kind": "not-a-kind"
+            }
+          ]
+        }
+      },
+      "expected": "{\"ok\":false,\"diagnostics\":[{\"code\":\"scene_transform_invalid\",\"severity\":\"error\",\"path\":\"objects[0].transform\",\"message\":\"Transform must use bounded meter position, radian rotation and positive scale vectors.\",\"objectId\":\"obj-1\"}]}"
+    },
+    {
+      "id": "game-pack-ok",
+      "entry": "game.pack.validate",
+      "args": {
+        "raw": {
+          "schemaVersion": 1,
+          "id": "creator.flight-checkpoint",
+          "rulesVersion": 1,
+          "slots": {
+            "gates": {
+              "kind": "zone",
+              "min": 3,
+              "max": 8,
+              "requires": [
+                "fly"
+              ]
+            }
+          },
+          "integerParameters": {
+            "timeLimitTicks": {
+              "min": 60,
+              "max": 36000,
+              "default": 3600
+            }
+          },
+          "rules": {
+            "counters": {
+              "next": {
+                "initial": 0,
+                "max": 3
+              }
+            },
+            "nodes": [
+              {
+                "id": "start-timer",
+                "on": {
+                  "type": "run.started"
+                },
+                "actions": [
+                  {
+                    "op": "timer.start",
+                    "timerId": "timeout",
+                    "durationTicks": {
+                      "parameter": "timeLimitTicks"
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "advance",
+                "on": {
+                  "type": "zone.entered",
+                  "slot": "gates"
+                },
+                "when": [
+                  {
+                    "op": "counter.eqEventIndex",
+                    "counter": "next"
+                  }
+                ],
+                "actions": [
+                  {
+                    "op": "counter.add",
+                    "counter": "next",
+                    "amount": 1
+                  }
+                ]
+              },
+              {
+                "id": "finish",
+                "on": {
+                  "type": "zone.entered",
+                  "slot": "gates"
+                },
+                "when": [
+                  {
+                    "op": "counter.eq",
+                    "counter": "next",
+                    "value": 3
+                  }
+                ],
+                "actions": [
+                  {
+                    "op": "run.finish",
+                    "outcome": "success"
+                  }
+                ]
+              },
+              {
+                "id": "timeout",
+                "on": {
+                  "type": "timer.expired",
+                  "timerId": "timeout"
+                },
+                "actions": [
+                  {
+                    "op": "run.finish",
+                    "outcome": "failure"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "expected": "{\"ok\":true,\"diagnostics\":[]}"
+    },
+    {
+      "id": "game-pack-invalid",
+      "entry": "game.pack.validate",
+      "args": {
+        "raw": {
+          "schemaVersion": 1,
+          "id": "creator.flight-checkpoint",
+          "rulesVersion": 1,
+          "slots": {},
+          "integerParameters": {
+            "timeLimitTicks": {
+              "min": 60,
+              "max": 36000,
+              "default": 3600
+            }
+          },
+          "rules": {
+            "counters": {
+              "next": {
+                "initial": 0,
+                "max": 3
+              }
+            },
+            "nodes": [
+              {
+                "id": "start-timer",
+                "on": {
+                  "type": "run.started"
+                },
+                "actions": [
+                  {
+                    "op": "timer.start",
+                    "timerId": "timeout",
+                    "durationTicks": {
+                      "parameter": "timeLimitTicks"
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "advance",
+                "on": {
+                  "type": "zone.entered",
+                  "slot": "gates"
+                },
+                "when": [
+                  {
+                    "op": "counter.eqEventIndex",
+                    "counter": "next"
+                  }
+                ],
+                "actions": [
+                  {
+                    "op": "counter.add",
+                    "counter": "next",
+                    "amount": 1
+                  }
+                ]
+              },
+              {
+                "id": "finish",
+                "on": {
+                  "type": "zone.entered",
+                  "slot": "gates"
+                },
+                "when": [
+                  {
+                    "op": "counter.eq",
+                    "counter": "next",
+                    "value": 3
+                  }
+                ],
+                "actions": [
+                  {
+                    "op": "run.finish",
+                    "outcome": "success"
+                  }
+                ]
+              },
+              {
+                "id": "timeout",
+                "on": {
+                  "type": "timer.expired",
+                  "timerId": "timeout"
+                },
+                "actions": [
+                  {
+                    "op": "run.finish",
+                    "outcome": "failure"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "expected": "{\"ok\":false,\"diagnostics\":[{\"code\":\"rule_slot_not_found\",\"severity\":\"error\",\"path\":\"rules.nodes[1].on.slot\",\"message\":\"Rule references an undeclared slot.\",\"objectId\":\"advance\"},{\"code\":\"rule_invalid_event\",\"severity\":\"error\",\"path\":\"rules.nodes[1].on\",\"message\":\"Rule event type or required event fields are invalid.\",\"objectId\":\"advance\"},{\"code\":\"rule_slot_not_found\",\"severity\":\"error\",\"path\":\"rules.nodes[2].on.slot\",\"message\":\"Rule references an undeclared slot.\",\"objectId\":\"finish\"},{\"code\":\"rule_invalid_event\",\"severity\":\"error\",\"path\":\"rules.nodes[2].on\",\"message\":\"Rule event type or required event fields are invalid.\",\"objectId\":\"finish\"}]}"
+    },
+    {
+      "id": "world-parameters-direct-ok",
+      "entry": "world.parameters.validate",
+      "args": {
+        "capability": {
+          "generatorId": "arid-dunes-v1",
+          "contractVersion": 2,
+          "parameters": [
+            {
+              "group": "landform",
+              "id": "duneScale",
+              "kind": "number",
+              "min": 96,
+              "max": 600,
+              "default": 190,
+              "unit": "m"
+            },
+            {
+              "group": "landform",
+              "id": "duneAmplitude",
+              "kind": "number",
+              "min": 1,
+              "max": 36,
+              "default": 11,
+              "unit": "m"
+            },
+            {
+              "group": "landform",
+              "id": "orientationDeg",
+              "kind": "number",
+              "min": -180,
+              "max": 180,
+              "default": 18,
+              "unit": "deg"
+            },
+            {
+              "group": "shape",
+              "id": "family",
+              "kind": "enum",
+              "values": [
+                "disc",
+                "lobed",
+                "dumbbell",
+                "coastal"
+              ],
+              "default": "disc"
+            },
+            {
+              "group": "shape",
+              "id": "cores",
+              "kind": "integer",
+              "min": 1,
+              "max": 3,
+              "default": 1
+            },
+            {
+              "group": "shape",
+              "id": "aspectRatio",
+              "kind": "number",
+              "min": 1,
+              "max": 1.8,
+              "default": 1
+            },
+            {
+              "group": "shape",
+              "id": "corridorPull",
+              "kind": "number",
+              "min": 0,
+              "max": 0.4,
+              "default": 0
+            },
+            {
+              "group": "shape",
+              "id": "coastFractal",
+              "kind": "number",
+              "min": 0,
+              "max": 0.25,
+              "default": 0.035
+            },
+            {
+              "group": "shape",
+              "id": "radiusClass",
+              "kind": "enum",
+              "values": [
+                "small",
+                "medium",
+                "large"
+              ],
+              "default": "medium"
+            },
+            {
+              "group": "landform",
+              "id": "duneFrequency",
+              "kind": "number",
+              "min": 0.5,
+              "max": 2,
+              "default": 1
+            },
+            {
+              "group": "landform",
+              "id": "ridgeSecondary",
+              "kind": "number",
+              "min": 0,
+              "max": 1,
+              "default": 0
+            },
+            {
+              "group": "water",
+              "id": "oasisCount",
+              "kind": "integer",
+              "min": 0,
+              "max": 3,
+              "default": 0
+            },
+            {
+              "group": "water",
+              "id": "lakeCount",
+              "kind": "integer",
+              "min": 0,
+              "max": 3,
+              "default": 0
+            },
+            {
+              "group": "water",
+              "id": "lakeSizeM",
+              "kind": "number",
+              "min": 40,
+              "max": 400,
+              "default": 120,
+              "unit": "m"
+            },
+            {
+              "group": "vegetation",
+              "id": "greenbeltWidth",
+              "kind": "number",
+              "min": 0,
+              "max": 80,
+              "default": 0,
+              "unit": "m"
+            },
+            {
+              "group": "vegetation",
+              "id": "forestPatchiness",
+              "kind": "number",
+              "min": 0,
+              "max": 1,
+              "default": 0
+            },
+            {
+              "group": "landscape",
+              "id": "rockOutcropDensity",
+              "kind": "number",
+              "min": 0,
+              "max": 1,
+              "default": 0
+            },
+            {
+              "group": "landscape",
+              "id": "riverMeander",
+              "kind": "number",
+              "min": 0,
+              "max": 1,
+              "default": 0
+            },
+            {
+              "group": "landscape",
+              "id": "riverWidthM",
+              "kind": "number",
+              "min": 10,
+              "max": 60,
+              "default": 40,
+              "unit": "m"
+            },
+            {
+              "group": "landscape",
+              "id": "ridgeCount",
+              "kind": "integer",
+              "min": 0,
+              "max": 3,
+              "default": 0
+            },
+            {
+              "group": "landscape",
+              "id": "ridgeHeightM",
+              "kind": "number",
+              "min": 20,
+              "max": 120,
+              "default": 60,
+              "unit": "m"
+            },
+            {
+              "group": "skeleton",
+              "id": "ringCount",
+              "kind": "integer",
+              "min": 1,
+              "max": 3,
+              "default": 2
+            }
+          ],
+          "presets": [
+            {
+              "id": "disc",
+              "label": "圆盘沙海（现行默认）",
+              "parameters": {}
+            },
+            {
+              "id": "lobed",
+              "label": "多瓣沙海",
+              "parameters": {
+                "shape.family": "lobed",
+                "shape.cores": 3
+              }
+            },
+            {
+              "id": "dumbbell",
+              "label": "双核哑铃",
+              "parameters": {
+                "shape.family": "dumbbell",
+                "shape.cores": 2,
+                "shape.corridorPull": 0.2
+              }
+            },
+            {
+              "id": "coastal",
+              "label": "沙海岸线",
+              "parameters": {
+                "shape.family": "coastal",
+                "shape.coastFractal": 0.18
+              }
+            }
+          ]
+        },
+        "input": {
+          "shape.family": "lobed",
+          "shape.cores": 3
+        }
+      },
+      "expected": "{\"ok\":true,\"value\":{\"landform.duneScale\":190,\"landform.duneAmplitude\":11,\"landform.orientationDeg\":18,\"shape.family\":\"lobed\",\"shape.cores\":3,\"shape.aspectRatio\":1,\"shape.corridorPull\":0,\"shape.coastFractal\":0.035,\"shape.radiusClass\":\"medium\",\"landform.duneFrequency\":1,\"landform.ridgeSecondary\":0,\"water.oasisCount\":0,\"water.lakeCount\":0,\"water.lakeSizeM\":120,\"vegetation.greenbeltWidth\":0,\"vegetation.forestPatchiness\":0,\"landscape.rockOutcropDensity\":0,\"landscape.riverMeander\":0,\"landscape.riverWidthM\":40,\"landscape.ridgeCount\":0,\"landscape.ridgeHeightM\":60,\"skeleton.ringCount\":2},\"diagnostics\":[]}"
+    },
+    {
+      "id": "world-parameters-direct-out-of-range",
+      "entry": "world.parameters.validate",
+      "args": {
+        "capability": {
+          "generatorId": "arid-dunes-v1",
+          "contractVersion": 2,
+          "parameters": [
+            {
+              "group": "landform",
+              "id": "duneScale",
+              "kind": "number",
+              "min": 96,
+              "max": 600,
+              "default": 190,
+              "unit": "m"
+            },
+            {
+              "group": "landform",
+              "id": "duneAmplitude",
+              "kind": "number",
+              "min": 1,
+              "max": 36,
+              "default": 11,
+              "unit": "m"
+            },
+            {
+              "group": "landform",
+              "id": "orientationDeg",
+              "kind": "number",
+              "min": -180,
+              "max": 180,
+              "default": 18,
+              "unit": "deg"
+            },
+            {
+              "group": "shape",
+              "id": "family",
+              "kind": "enum",
+              "values": [
+                "disc",
+                "lobed",
+                "dumbbell",
+                "coastal"
+              ],
+              "default": "disc"
+            },
+            {
+              "group": "shape",
+              "id": "cores",
+              "kind": "integer",
+              "min": 1,
+              "max": 3,
+              "default": 1
+            },
+            {
+              "group": "shape",
+              "id": "aspectRatio",
+              "kind": "number",
+              "min": 1,
+              "max": 1.8,
+              "default": 1
+            },
+            {
+              "group": "shape",
+              "id": "corridorPull",
+              "kind": "number",
+              "min": 0,
+              "max": 0.4,
+              "default": 0
+            },
+            {
+              "group": "shape",
+              "id": "coastFractal",
+              "kind": "number",
+              "min": 0,
+              "max": 0.25,
+              "default": 0.035
+            },
+            {
+              "group": "shape",
+              "id": "radiusClass",
+              "kind": "enum",
+              "values": [
+                "small",
+                "medium",
+                "large"
+              ],
+              "default": "medium"
+            },
+            {
+              "group": "landform",
+              "id": "duneFrequency",
+              "kind": "number",
+              "min": 0.5,
+              "max": 2,
+              "default": 1
+            },
+            {
+              "group": "landform",
+              "id": "ridgeSecondary",
+              "kind": "number",
+              "min": 0,
+              "max": 1,
+              "default": 0
+            },
+            {
+              "group": "water",
+              "id": "oasisCount",
+              "kind": "integer",
+              "min": 0,
+              "max": 3,
+              "default": 0
+            },
+            {
+              "group": "water",
+              "id": "lakeCount",
+              "kind": "integer",
+              "min": 0,
+              "max": 3,
+              "default": 0
+            },
+            {
+              "group": "water",
+              "id": "lakeSizeM",
+              "kind": "number",
+              "min": 40,
+              "max": 400,
+              "default": 120,
+              "unit": "m"
+            },
+            {
+              "group": "vegetation",
+              "id": "greenbeltWidth",
+              "kind": "number",
+              "min": 0,
+              "max": 80,
+              "default": 0,
+              "unit": "m"
+            },
+            {
+              "group": "vegetation",
+              "id": "forestPatchiness",
+              "kind": "number",
+              "min": 0,
+              "max": 1,
+              "default": 0
+            },
+            {
+              "group": "landscape",
+              "id": "rockOutcropDensity",
+              "kind": "number",
+              "min": 0,
+              "max": 1,
+              "default": 0
+            },
+            {
+              "group": "landscape",
+              "id": "riverMeander",
+              "kind": "number",
+              "min": 0,
+              "max": 1,
+              "default": 0
+            },
+            {
+              "group": "landscape",
+              "id": "riverWidthM",
+              "kind": "number",
+              "min": 10,
+              "max": 60,
+              "default": 40,
+              "unit": "m"
+            },
+            {
+              "group": "landscape",
+              "id": "ridgeCount",
+              "kind": "integer",
+              "min": 0,
+              "max": 3,
+              "default": 0
+            },
+            {
+              "group": "landscape",
+              "id": "ridgeHeightM",
+              "kind": "number",
+              "min": 20,
+              "max": 120,
+              "default": 60,
+              "unit": "m"
+            },
+            {
+              "group": "skeleton",
+              "id": "ringCount",
+              "kind": "integer",
+              "min": 1,
+              "max": 3,
+              "default": 2
+            }
+          ],
+          "presets": [
+            {
+              "id": "disc",
+              "label": "圆盘沙海（现行默认）",
+              "parameters": {}
+            },
+            {
+              "id": "lobed",
+              "label": "多瓣沙海",
+              "parameters": {
+                "shape.family": "lobed",
+                "shape.cores": 3
+              }
+            },
+            {
+              "id": "dumbbell",
+              "label": "双核哑铃",
+              "parameters": {
+                "shape.family": "dumbbell",
+                "shape.cores": 2,
+                "shape.corridorPull": 0.2
+              }
+            },
+            {
+              "id": "coastal",
+              "label": "沙海岸线",
+              "parameters": {
+                "shape.family": "coastal",
+                "shape.coastFractal": 0.18
+              }
+            }
+          ]
+        },
+        "input": {
+          "shape.cores": 9
+        }
+      },
+      "expected": "{\"ok\":false,\"value\":null,\"diagnostics\":[{\"code\":\"world_params_out_of_range\",\"severity\":\"error\",\"path\":\"shape.cores\",\"message\":\"Value must be within 1..3.\"}]}"
+    }
+  ]
+}

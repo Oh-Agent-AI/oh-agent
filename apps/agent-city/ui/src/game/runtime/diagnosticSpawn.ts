@@ -20,7 +20,11 @@ const SPAWN_PROBE_DISTANCE = 6;
 const DIAGNOSTIC_SPAWN_CANDIDATE_LIMIT = 512;
 
 type Near = Readonly<{ x: number; z: number }>;
-const patchCentre = (v: ArrayLike<number>) => { let x = 0, z = 0; const n = v.length / 3; for (let i = 0; i < v.length; i += 3) { x += v[i]; z += v[i + 2]; } return { x: x / n, z: z / n }; };
+const patchDistance = (v: ArrayLike<number>, near: Near) => {
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (let i = 0; i < v.length; i += 3) { minX = Math.min(minX, v[i]); maxX = Math.max(maxX, v[i]); minZ = Math.min(minZ, v[i + 2]); maxZ = Math.max(maxZ, v[i + 2]); }
+  return Math.hypot(Math.max(minX - near.x, 0, near.x - maxX), Math.max(minZ - near.z, 0, near.z - maxZ));
+};
 
 function* diagnosticSpawnSteps(surface: CompiledCitySurface, regions: Extract<SurfaceRegionsBuild, { status: "ready" }>,
   environment: SpawnEnvironment, near?: Near): Generator<SpawnStep, DrivingState | null, DrivingMoveResult | undefined> {
@@ -52,7 +56,7 @@ function* diagnosticSpawnSteps(surface: CompiledCitySurface, regions: Extract<Su
   // near（从地标停车场出发）：先试离出发点最近的路面——候选与校验一条不少，只是顺序换成由近到远，
   // 512 个候选的预算先花在地标门口，而不是全城第一块路面上（那样车会出生在城另一头）。
   const ordered = near ? surface.patches.filter((p) => p.kind === "carriageway" && p.vertices.length >= 9)
-    .map((patch) => { const c = patchCentre(patch.vertices); return { patch, d: Math.hypot(c.x - near.x, c.z - near.z) }; })
+    .map((patch) => ({ patch, d: patchDistance(patch.vertices, near) }))
     .sort((a, b) => a.d - b.d).map((item) => item.patch) : surface.patches;
   for (const patch of ordered) {
     if (patch.kind !== "carriageway") continue;
@@ -79,7 +83,8 @@ function* diagnosticSpawnSteps(surface: CompiledCitySurface, regions: Extract<Su
     // Test several points along long strips. Static placement checks the full
     // body; continuous 2.5-unit sweeps verify support and collision both ways.
     const spans = maxAlong - minAlong;
-    const positions: ReadonlyArray<readonly [number, number]> = [[meanX, meanZ], ...[0, 0.3, -0.3].map((fraction) => {
+    const nearestAlong = near ? Math.max(minAlong, Math.min(maxAlong, (near.x - meanX) * axisX + (near.z - meanZ) * axisZ)) : null;
+    const positions: ReadonlyArray<readonly [number, number]> = [...(nearestAlong === null ? [] : [[meanX + axisX * nearestAlong, meanZ + axisZ * nearestAlong] as const]), [meanX, meanZ], ...[0, 0.3, -0.3].map((fraction) => {
       const along = (minAlong + maxAlong) * 0.5 + spans * fraction;
       return [meanX + axisX * along, meanZ + axisZ * along] as const;
     })];

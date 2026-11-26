@@ -1,0 +1,25 @@
+{
+  "ruleFamily": "scene",
+  "case": "scene.invalid-transform-missing",
+  "expectTs": "error:scene_transform_invalid",
+  "rustNote": "Rust 同样拒绝：valid_transform 要求恰好 positionMeters/rotationRadians/scale 三键 → creator_scene_transform_invalid；两侧结构约束一致。待 Rust 运行时验证。",
+  "input": {
+    "schemaVersion": 1,
+    "objects": [
+      {
+        "id": "tree-x",
+        "kind": "model",
+        "asset": {
+          "package": {
+            "kind": "city-minigame",
+            "id": "loop-sprint",
+            "version": "1.0.0",
+            "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          },
+          "assetId": "villa-shell-mesh",
+          "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      }
+    ]
+  }
+}

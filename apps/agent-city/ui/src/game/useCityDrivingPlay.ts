@@ -1,12 +1,15 @@
+import { playtestOutcome } from "./activity/playtestOutcome";
+import { spawnDistanceFailure } from "./runtime/spawnDistance";
 /** Player-facing free-drive UI. The session chooses a safe local spawn, while
  * road-wide audit/release evidence remains a separate system. */
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import type { CityEngine } from "../engine/CityEngine";
+import type { CityLayoutSdkViewV1 } from "../engine/sdk/cityLayoutAdapter";
 import type { CityActivityCoordinator } from "./activity/CityActivityCoordinator";
 import { createCheckpointRacePlan, CheckpointRaceControllerV1, type CheckpointRaceSnapshotV1 } from "./activity/checkpointRace";
 import { CheckpointRaceVisuals } from "./activity/CheckpointRaceVisuals";
 import { createZoneCollectPlan, ZoneCollectControllerV1 } from "./activity/zoneCollect";
-import { createCreatorMiniGamePlan, CreatorMiniGameDrivingControllerV1, type CreatorPublishedMiniGameV1 } from "./activity/creatorMiniGame";
+import { createCreatorMiniGamePlan, CreatorMiniGameRuntimeControllerV1, type CreatorPublishedMiniGameV1 } from "./activity/creatorMiniGame";
 import { compileCreatorSceneColliders } from "./activity/creatorSceneColliders";
 import { CreatorColliderDebugVisuals } from "./activity/creatorColliderDebugVisuals";
 import type { SolidInput } from "./driving/CollisionIndex";
@@ -23,15 +26,15 @@ import { closeOpenGameDisclosure } from "./ui/closeOpenDisclosure";
 import { noteBusy } from "../host";
 import { roadValidationReport, type RoadValidationReport } from "./roadValidation";
 import { m as worldUnits } from "../engine/worldScale";
-import type { VisualPlaytestEvidenceV1 } from "@agent-vitals/city-sdk";
+import type { VisualPlaytestEvidenceV1 } from "@oh-agent/city-sdk";
 
-type DrivingMiniGameController = Readonly<{ snapshot: CheckpointRaceSnapshotV1; fixedStep(position: Readonly<{ x: number; y: number; z: number }>): void; dispose(): void;
+type DrivingMiniGameController = Readonly<{ snapshot: CheckpointRaceSnapshotV1; fixedStep(position: Readonly<{ x: number; y: number; z: number }>, headingRadians?: number): void; dispose(): void;
   visualEvidence?(releaseId: string, projectRevision: number, snapshotDigest: string): VisualPlaytestEvidenceV1 }>;
 type CreatorPlaytestContext = Readonly<{ runId: string; releaseId: string; projectId: string; revision: number; snapshotDigest: string }>;
 
 export function useCityDrivingPlay(engine: RefObject<CityEngine | null>, host: Readonly<{
   cinemaActive(): boolean; gameActive(): boolean; busy(): boolean; activityCoordinator: CityActivityCoordinator;
-}>, options: Readonly<{ notifyHostBusy?: boolean; creatorExperiences?: readonly CreatorPublishedMiniGameV1[]; playtestContext?: CreatorPlaytestContext;
+}>, options: Readonly<{ notifyHostBusy?: boolean; creatorExperiences?: readonly CreatorPublishedMiniGameV1[]; playtestView?: CityLayoutSdkViewV1; playtestContext?: CreatorPlaytestContext;
   finishPlaytest?: (runId: string, status: "completed" | "cancelled" | "failed", evidence?: VisualPlaytestEvidenceV1, failureCode?: string) => Promise<void> }> = {}) {
   const visuals = useRef<CarVisuals | null>(null);
   const visualScene = useRef<CityCarSceneCapability | null>(null);
@@ -85,10 +88,10 @@ export function useCityDrivingPlay(engine: RefObject<CityEngine | null>, host: R
     const evidence = includeEvidence && context ? current.controller?.visualEvidence?.(context.releaseId, context.revision, context.snapshotDigest) : undefined;
     void finishPlaytestRef.current?.(current.runId, status, evidence, failureCode).catch(() => {});
   }, []);
-  const onFixedStep = useCallback((position: Readonly<{ x: number; y: number; z: number }>) => {
+  const onFixedStep = useCallback((position: Readonly<{ x: number; y: number; z: number; heading: number }>) => {
     const controller = raceControllerRef.current;
     if (!controller) return;
-    controller.fixedStep(position);
+    controller.fixedStep(position, position.heading);
     raceVisualsRef.current?.setProgress(controller.snapshot.completed);
     if (["success", "failure", "error"].includes(controller.snapshot.status) && !racePauseQueuedRef.current) {
       racePauseQueuedRef.current = true;
@@ -101,7 +104,8 @@ export function useCityDrivingPlay(engine: RefObject<CityEngine | null>, host: R
             removeCreatorColliderVisuals();
             exitCarRef.current?.();
             restoreCreatorSkin();
-            finishPlaytestOnce(controller.snapshot.status === "success" ? "completed" : "failed", controller.snapshot.reason ?? "creator_minigame_failed");
+            const outcome = playtestOutcome(controller.snapshot.status as "success" | "failure" | "error", controller.snapshot.reason);
+            finishPlaytestOnce(outcome.status, outcome.failureCode);
           }
         }
         racePauseRef.current?.("race-finished");
@@ -190,8 +194,8 @@ export function useCityDrivingPlay(engine: RefObject<CityEngine | null>, host: R
     const startPosition = { x: worldUnits(plan.value.course.startPositionMeters.x), z: worldUnits(plan.value.course.startPositionMeters.z) };
     void car.enterFreeDrive({ vtol: false }, startPosition).then(ready => {
       if (ready) {
-        const actualSpawn = poseRef.current;
-        if (!actualSpawn || Math.hypot(actualSpawn.x - startPosition.x, actualSpawn.z - startPosition.z) > 40) {
+        const actualSpawn = car.getSpawnPose();
+        if (spawnDistanceFailure(actualSpawn, startPosition)) {
           car.exit(); controller.dispose(); if (raceControllerRef.current === controller) raceControllerRef.current = null; setRace(null);
           if (raceVisualsRef.current) raceVisualSceneRef.current?.detach([raceVisualsRef.current.root]);
           raceVisualsRef.current?.dispose(); raceVisualsRef.current = null; raceVisualSceneRef.current = null;
@@ -222,8 +226,8 @@ export function useCityDrivingPlay(engine: RefObject<CityEngine | null>, host: R
     const startPosition = { x: worldUnits(plan.value.course.startPositionMeters.x), z: worldUnits(plan.value.course.startPositionMeters.z) };
     void car.enterFreeDrive({ vtol: false }, startPosition).then(ready => {
       if (ready) {
-        const actualSpawn = poseRef.current;
-        if (!actualSpawn || Math.hypot(actualSpawn.x - startPosition.x, actualSpawn.z - startPosition.z) > 40) {
+        const actualSpawn = car.getSpawnPose();
+        if (spawnDistanceFailure(actualSpawn, startPosition)) {
           car.exit(); controller.dispose(); if (raceControllerRef.current === controller) raceControllerRef.current = null; setRace(null); setActivityKind(null);
           raceVisualsRef.current?.dispose(); raceVisualsRef.current = null; raceVisualSceneRef.current = null;
           setRaceEntryError("安全出生点离寻宝起点太远，未开始寻宝。"); setChoosingVehicle(true); return;
@@ -240,7 +244,8 @@ export function useCityDrivingPlay(engine: RefObject<CityEngine | null>, host: R
     if (pendingPlaytest && !pendingPlaytest.finishRequested) pendingPlaytest.started = true;
     const failPlaytest = (failureCode = "creator_playtest_start_failed") => { creatorGameActiveRef.current = false; creatorCollisionRef.current = null; removeCreatorColliderVisuals(); restoreCreatorSkin(); finishPlaytestOnce("failed", /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(failureCode) ? failureCode : "creator_playtest_start_failed", false); };
     const current = engine.current;
-    const view = current?.getCitySdkLayoutView();
+    // 试玩期间优先用 claim 合并过发布锚点的视图：实机视图只有路网锚点，建计划会 anchor_not_found。
+    const view = options.playtestView ?? current?.getCitySdkLayoutView();
     const experience = options.creatorExperiences?.find(item => item.releaseId === releaseId && item.mount.mountId === mountId);
     if (!current || !view || !experience) { failPlaytest("creator_playtest_experience_unavailable"); setRaceEntryError("这个已发布小游戏不在当前城市版本中，请重新打开 City。"); setChoosingVehicle(true); return; }
     const plan = createCreatorMiniGamePlan(view, experience);
@@ -263,7 +268,7 @@ export function useCityDrivingPlay(engine: RefObject<CityEngine | null>, host: R
       failPlaytest("creator_skin_apply_failed"); setRaceEntryError("这个小游戏的皮肤无法应用到当前 City。"); setChoosingVehicle(true); return;
     }
     raceControllerRef.current?.dispose(); racePauseQueuedRef.current = false;
-    const controller = new CreatorMiniGameDrivingControllerV1(plan.value, setRace);
+    const controller = new CreatorMiniGameRuntimeControllerV1(plan.value, setRace);
     raceControllerRef.current = controller;
     if (pendingPlaytest) pendingPlaytest.controller = controller;
     creatorGameActiveRef.current = true;
@@ -274,10 +279,11 @@ export function useCityDrivingPlay(engine: RefObject<CityEngine | null>, host: R
     const startPosition = { x: worldUnits(entryGeometry.positionMeters.x), z: worldUnits(entryGeometry.positionMeters.z) };
     void car.enterFreeDrive({ vtol: false }, startPosition).then(ready => {
       if (ready) {
-        const actualSpawn = poseRef.current;
-        if (!actualSpawn || Math.hypot(actualSpawn.x - startPosition.x, actualSpawn.z - startPosition.z) > 40) {
+        const actualSpawn = car.getSpawnPose();
+        const spawnFailure = spawnDistanceFailure(actualSpawn, startPosition);
+        if (spawnFailure) {
           car.exit(); controller.dispose(); if (raceControllerRef.current === controller) raceControllerRef.current = null;
-          failPlaytest("creator_spawn_distance_exceeded");
+          failPlaytest(spawnFailure === "too-far" ? "creator_spawn_distance_exceeded" : "creator_spawn_pose_unavailable");
           setRace(null); setActivityKind(null); setActivityTitle(null); raceVisualsRef.current?.dispose(); raceVisualsRef.current = null; raceVisualSceneRef.current = null;
           setRaceEntryError("安全出生点离小游戏入口太远，未开始游戏。"); setChoosingVehicle(true); return;
         }

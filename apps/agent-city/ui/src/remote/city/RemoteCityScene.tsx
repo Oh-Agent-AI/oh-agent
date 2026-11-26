@@ -110,7 +110,7 @@ function RemoteCitySceneContent({ snapshot, battle, palettes, heroBuildingId, di
     </aside>}
     {standalone && snapshot && !game.active && !driving.active && !mechaOpen && !error && <nav className="remote-city-game-entry" aria-label="访客本地游戏">
       <button type="button" disabled={!worldEngine} onClick={game.enterPractice}>自由飞行</button>
-      <button type="button" disabled={!worldEngine} onClick={game.enterRace}>穿环挑战</button>
+      <button type="button" disabled={!worldEngine} onClick={() => { void game.enterRace(); }}>穿环挑战</button>
       <button type="button" disabled={!worldEngine} onClick={driving.enter}>驾驶</button>
       <button type="button" disabled={!worldEngine} onClick={() => setMechaOpen(true)}>机甲战棋</button>
       {game.entryError && <span role="status">{game.entryError}</span>}

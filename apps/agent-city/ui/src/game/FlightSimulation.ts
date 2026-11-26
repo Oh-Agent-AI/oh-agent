@@ -2,13 +2,24 @@
  * FlightSimulation（§6.1/§6.2）：城市 XZ 平面（Y 向上）的固定步长纯运动更新。
  * 状态 = position + heading + speed + verticalSpeed + bank（倾斜仅视觉）；不做失速/升力仿真。
  * 参数由城市包围盒对角线 D 推导（版本化配置 flightParamsV1），禁止直接搬上游球面速度。
+ * 2026-11-15 泛化：VehicleProfileV1（质量/推力/翼面积/maxSpeed/扑动参数/包围盒/相机）
+ * 驱动 `vehicleFlightParams`，fixed-wing 与 flapping 走不同气动分支；无 profile 时
+ * 保持既有 flightParamsFor(diagonal) 行为逐位不变。
  * 本模块不依赖 three/DOM：同输入同输出，30/60/120 Hz 渲染帧率不影响轨迹（守卫脚本验证）。
  */
+import type { VehicleFlightModelV1, VehicleProfileV1 } from "@oh-agent/city-sdk";
+import { VEHICLE_PERFORMANCE_DERIVATION_V1 } from "@oh-agent/city-sdk";
 import type { FlightInputState } from "./types";
 import { DetMath as Math } from "../engine/detMath";
+import { METERS_PER_UNIT } from "../engine/worldScale";
 
 /** 版本化首轮参数（§6.1）：以布局对角线 D 为尺度；试飞校准前不得静默改值。 */
 export const PHYSICS_VERSION = 1;
+
+/** VehicleProfileV1 驱动路线/成绩的独立物理代际（= 2）：与 legacy PHYSICS_VERSION(1)
+ * 分开，让 profile 课程身份不会和 legacy 课程身份碰撞（courseId 含 physicsVersion，
+ * 另有 `:vehicle=<id>` 后缀区分不同 preset）。 */
+export const VEHICLE_PHYSICS_VERSION = 2;
 
 export type FlightParams = {
   /** 巡航速度（单位/秒）≈ D/35。 */
@@ -29,6 +40,16 @@ export type FlightParams = {
   bankMax: number;
   /** 飞机包围球半径（碰撞用）。 */
   planeRadius: number;
+  /** ── 以下为 VehicleProfileV1 驱动字段（legacy 路径缺省 = 既有行为）── */
+  /** 气动分支：缺省视为 legacy 固定翼参数族。 */
+  flightModel?: VehicleFlightModelV1;
+  /** 扑动频率（Hz）/幅度（rad）：仅 flapping > 0；来自 preset physics。 */
+  flapFrequency?: number;
+  flapAmplitude?: number;
+  /** 追尾距离/高度（世界单位）与基础 FOV（度）：来自 preset camera；缺省沿用 planeRadius 倍数公式。 */
+  followDistance?: number;
+  heightOffset?: number;
+  fovDeg?: number;
 };
 
 export function flightParamsFor(diagonal: number): FlightParams {
@@ -46,6 +67,43 @@ export function flightParamsFor(diagonal: number): FlightParams {
     climbSmoothing: 6,
     bankMax: 25 * Math.PI / 180,
     planeRadius: Math.max(2.2, Math.min(5, diagonal * 0.004)),
+  };
+}
+
+/**
+ * VehicleProfileV1 → FlightParams（单一物理参数化点）。
+ * 质量与推力决定加/减速（推重比 × 推进效率，米制 → 世界单位），maxSpeed 决定速度带，
+ * 翼载荷通过 profile 校验保证物理可行后由 climb/sink/转向显式给出；包围盒半尺寸决定
+ * 碰撞球半径（= 程序化占位模型的缩放），相机 preset 决定追尾距离/高度/FOV。
+ * flapping 附加扑动参数；fixed-wing/vtol 不携带扑动键（profile 校验的 exact-keys）。
+ */
+export function vehicleFlightParams(profile: VehicleProfileV1): FlightParams {
+  const physics = profile.physics;
+  const unit = (meters: number): number => meters / METERS_PER_UNIT;
+  const maxSpeed = unit(physics.maxSpeedMps);
+  const thrustAccel = unit(physics.thrustN / physics.massKg);
+  const flapping = profile.flightModel === "flapping";
+  return {
+    // 巡航分频单源于 SDK 的 VEHICLE_PERFORMANCE_DERIVATION_V1（=1.8）：Creator
+    // 预览的 estimatedPerformance 与本引擎共用同一推导，禁止两侧各自调参。
+    cruiseSpeed: Math.max(6, maxSpeed / VEHICLE_PERFORMANCE_DERIVATION_V1.cruiseSpeedDivisor),
+    minSpeed: maxSpeed * 0.22,
+    maxSpeed,
+    accel: thrustAccel * 0.72,
+    brake: thrustAccel * 1.9,
+    turnRate: physics.turnRateRps,
+    turnSmoothing: 8,
+    climbRate: unit(physics.climbRateMps),
+    sinkRate: unit(physics.sinkRateMps),
+    climbSmoothing: 6,
+    bankMax: 25 * Math.PI / 180,
+    planeRadius: Math.max(1.2, unit(Math.max(profile.bounds.halfLengthM, profile.bounds.halfWidthM, profile.bounds.halfHeightM))),
+    flightModel: profile.flightModel,
+    flapFrequency: flapping ? physics.flapFrequencyHz : 0,
+    flapAmplitude: flapping ? physics.flapAmplitudeRad : 0,
+    followDistance: unit(profile.camera.followDistanceM),
+    heightOffset: unit(profile.camera.heightOffsetM),
+    fovDeg: profile.camera.fovDeg,
   };
 }
 
@@ -80,9 +138,16 @@ const smooth = (current: number, target: number, smoothing: number, dt: number) 
 
 /** 单个固定步长（dt 秒，调用方保证固定；渲染层插值不进本函数）。 */
 export function stepFlight(state: FlightSimState, input: FlightInputState, dt: number, params: FlightParams): FlightSimState {
-  // 油门：W 加速 / S 减速；松开趋向巡航。
+  // 扑翼气动分支（仅 flapping）：推力随扑动相位确定性调制。频率×幅度来自
+  // VehicleProfileV1 preset，相位由固定步长的 simTime 决定——无随机性、逐 tick 可复算；
+  // fixed-wing/vtol 走恒定推力分支（与 legacy 行为一致）。
+  const flapThrustFactor = params.flightModel === "flapping"
+    ? 1 + (params.flapAmplitude ?? 0) * 0.6 * Math.sin(state.simTime * (params.flapFrequency ?? 0) * 6.283185307179586)
+    : 1;
+  // 油门：W 加速 / S 减速；松开趋向巡航。扑翼调制只作用于推力（加速）路径；
+  // 减速是阻力主导，不随扑动相位波动。
   const targetSpeed = input.throttleUp ? params.maxSpeed : input.throttleDown ? params.minSpeed : params.cruiseSpeed;
-  const rate = targetSpeed < state.speed ? params.brake : params.accel;
+  const rate = targetSpeed < state.speed ? params.brake : params.accel * flapThrustFactor;
   const speed = approach(state.speed, targetSpeed, rate, dt);
 
   // 转向：A 左 / D 右，指数平滑；机翼倾斜随当前转向比例（纯视觉）。
@@ -94,9 +159,11 @@ export function stepFlight(state: FlightSimState, input: FlightInputState, dt: n
   const heading = state.heading + turnRate * dt;
   const bank = smooth(state.bank, (turnRate / params.turnRate) * params.bankMax, 6, dt);
 
-  // 升降：↑ 爬升 / ↓ 下降（City 新增），松开衰减到 0。
+  // 升降：↑ 爬升 / ↓ 下降（City 新增），松开衰减到 0。扑翼的爬升效率随扑动相位
+  // 同步起伏（上挥损失升力、下扑收获升力），同样由 preset 参数驱动。
   const climbInput = (input.pitchUp ? 1 : 0) - (input.pitchDown ? 1 : 0);
-  const climbTarget = climbInput > 0 ? params.climbRate : climbInput < 0 ? -params.sinkRate : 0;
+  const climbEfficiency = params.flightModel === "flapping" ? 0.55 + 0.45 * flapThrustFactor : 1;
+  const climbTarget = climbInput > 0 ? params.climbRate * climbEfficiency : climbInput < 0 ? -params.sinkRate : 0;
   const verticalSpeed = smooth(state.verticalSpeed, climbTarget, params.climbSmoothing, dt);
 
   const next: FlightSimState = {

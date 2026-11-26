@@ -1,0 +1,67 @@
+{
+  "layout": {
+    "schemaVersion": 1,
+    "id": "sprint-layout",
+    "coordinateSystem": "city-local-m-v1",
+    "anchors": [
+      { "id": "spawn-a", "kind": "spawn", "capabilities": ["drive", "walk"], "geometryRef": "geom-spawn-a" },
+      { "id": "zone-b", "kind": "zone", "capabilities": ["drive", "walk"], "geometryRef": "geom-zone-b" },
+      { "id": "pad-c", "kind": "object", "capabilities": ["drive"], "geometryRef": "geom-pad-c" },
+      { "id": "walk-d", "kind": "object", "capabilities": ["walk"], "geometryRef": "geom-walk-d" }
+    ],
+    "links": [
+      { "id": "link-1", "fromAnchorId": "spawn-a", "toAnchorId": "zone-b", "capabilities": ["drive", "walk"] },
+      { "id": "link-2", "fromAnchorId": "spawn-a", "toAnchorId": "pad-c", "capabilities": ["drive"] },
+      { "id": "link-3", "fromAnchorId": "zone-b", "toAnchorId": "walk-d", "capabilities": ["walk"] }
+    ]
+  },
+  "game": {
+    "schemaVersion": 1,
+    "id": "checkpoint-sprint",
+    "rulesVersion": 1,
+    "slots": {
+      "checkpoints": { "kind": "zone", "min": 1, "max": 8 },
+      "boostPads": { "kind": "object", "min": 0, "max": 4, "requires": ["drive"] }
+    },
+    "integerParameters": {
+      "timeLimitTicks": { "min": 1, "max": 600, "default": 300 }
+    },
+    "rules": {
+      "counters": { "collected": { "initial": 0, "max": 999 } },
+      "nodes": [
+        {
+          "id": "on-start",
+          "on": { "type": "run.started" },
+          "actions": [
+            { "op": "timer.start", "timerId": "countdown", "durationTicks": { "parameter": "timeLimitTicks" } },
+            { "op": "hud.hint", "text": "Collect every checkpoint before the timer runs out." }
+          ]
+        },
+        {
+          "id": "on-zone",
+          "on": { "type": "zone.entered", "slot": "checkpoints" },
+          "when": [ { "op": "counter.eqEventIndex", "counter": "collected" } ],
+          "actions": [ { "op": "counter.add", "counter": "collected", "amount": 1 } ]
+        },
+        {
+          "id": "on-timer",
+          "on": { "type": "timer.expired", "timerId": "countdown" },
+          "when": [ { "op": "counter.eq", "counter": "collected", "value": 0 } ],
+          "actions": [ { "op": "run.finish", "outcome": "failure" } ]
+        }
+      ]
+    }
+  },
+  "mount": {
+    "schemaVersion": 1,
+    "mountId": "sprint-mount-01",
+    "layout": { "kind": "city-layout", "id": "sprint-layout", "version": "1.0.0", "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+    "game": { "kind": "city-minigame", "id": "checkpoint-sprint", "version": "1.0.0", "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+    "entryAnchorId": "spawn-a",
+    "bindings": {
+      "checkpoints": ["zone-b"],
+      "boostPads": ["walk-d"]
+    },
+    "parameterOverrides": { "timeLimitTicks": 300 }
+  }
+}

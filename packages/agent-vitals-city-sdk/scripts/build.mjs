@@ -13,7 +13,10 @@ if (declarations.status !== 0) process.exit(declarations.status ?? 1);
 
 await build({
   absWorkingDir: packageRoot,
-  entryPoints: { index: "src/index.ts", runtime: "src/runtime.ts" },
+  entryPoints: {
+    index: "src/index.ts", runtime: "src/runtime.ts", contracts: "src/contracts.ts",
+    authoring: "src/authoring.ts", validate: "src/validateEntry.ts", testing: "src/testing.ts",
+  },
   outdir: "dist",
   bundle: true,
   format: "esm",
