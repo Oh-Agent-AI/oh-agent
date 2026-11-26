@@ -1,4 +1,4 @@
-# Studio：Agent 优先的 Agent 编辑器规格（2026-11-15）
+# Studio：Agent 优先的 Agent 编辑器规格（2026-11-15；修订 2026-11-26）
 
 状态：设计提案，待实施与验收；2026-11-15。本文定义 Creator Studio 向「Agent 是第一公民创作者」演进的目标形态、差距与切片。文中「现状」以 dev（fc2734d7，42 个 creator MCP 工具）实测为准，标注为目标的条目不代表已实现。
 
@@ -106,6 +106,7 @@ type CreatorJobV1 = Readonly<{
 
 - 人的 UI 增加的不是「批准按钮墙」，而是**会话监视器**：看 Agent 会话的操作流、作业状态、诊断与建议；接管 = 用 UI 做同样的编辑操作（同一服务）。
 - 需要人审批的仍只有数据政策边界内的动作（安装/下载/数据授权）——创作闭环内 Agent 自主。
+- 执行模式分档（2026-11-26 落地，借 T3 权限档纪律）：`creator_task_execute` 带 `mode ∈ {restricted, full-access}`，默认 `restricted`（默认值钉死，`creator_session.rs`）；`full-access` 仅限已声明能力的执行器，codex 执行器因自带 sandbox 绕过被拒入 `restricted`（`creator_agent_executor.rs`）。档位只调节执行面，永不解锁新能力面；per-session 持久权限档（Supervised 逐步批准）仍属 E7 远景。
 
 ## 4. 与通用 Agent 环境（ZCode 类）的关系——借用模式，不做通用化
 
@@ -132,14 +133,14 @@ type CreatorJobV1 = Readonly<{
 
 每切片记录构建版本、工具数量与验收证据；真机桌面验收与无头验收分别记录。E1–E4 纯接口/投影层可先行；E5 需要宿主服务改造；E6 在 E1–E5 之上执行。
 
-远景切片（借 T3 Code 模式，见 §9）：E7 多端监视与审批（桌面/手机/网页同为宿主瘦客户端，从手机批准一次 fly 试玩断点）；E8 Agent 交接摘要（结构化创作线交接，含 delta 语义）；E9 Creator MCP 工具面 evals（Agent 行为回归评测集，随工具演进）。
+远景切片（借 T3 Code 模式，见 §9）：E7 多端监视与审批（**多 agent 端已落地**——外部 Codex/ACP 执行器经 stdio 驱动宿主；余下为多 UI 瘦客户端：桌面/手机/网页同为宿主瘦客户端，从手机批准一次 fly 试玩断点）；E8 Agent 交接摘要（结构化创作线交接，含 delta 语义；现状起点是 `creator_actor_turn_context` 事实投影）；E9 Creator MCP 工具面 evals（Agent 行为回归评测集，随工具演进；现有 5 case + `run.mjs` 确定性判分，model-driven replay 与增量事故入册待做）。执行器可插拔（codex/ACP）已不属于远景，见 §6 修订与 §9.2。
 
 ## 6. 明确不做
 
 - 不开放任意文件写入、shell、脚本执行、任意 geometry/坐标（维持全部既有禁令）。
 - 不做同一 City 的并发写入或多写者（单写者权威 + 串行 revision 是正确性边界）。
 - 不做云同步、遥测、payload 上报（数据政策不变）。
-- 不做第三方 Agent 身份体系（agentId 是声明式标识，不是认证）——授权仍按既有宿主规则。
+- 不做第三方 Agent 身份体系（agentId 仍是声明式标识，不是认证）——授权仍按既有宿主规则。**修订（2026-11-26）**：执行器可插拔已落地（默认 `codex`，或经 `acp-agents.json` 注册表的 `acp:<agentId>`）；外部 agent 只提案 `{summary, operations}`，宿主独立校验并签发 revision 绑定预览（`finish_with_host_preview`），fs/terminal capability 声明为无——「宿主唯一权威」不变，插拔的只是提案来源（见 §9.2）。
 - 不承诺跨 Agent 的冲突合并（同城并发写入以 CAS 拒绝并要求重读，不做 OTA 合并）。
 
 ## 7. 完成定义
@@ -202,7 +203,7 @@ CREATE TABLE IF NOT EXISTS creator_jobs (
 现状：语义校验信封来自 Studio webview（TS）；无 webview 时宿主只有结构硬闸。三条路径：
 
 1. **结构完备子集（首选首片）**：vehicle/world/anchor 的语义已完全可由生成产物表达（键/范围/枚举）——这些方法 headless 直接可用（`validation: "structural"` 标记）。scene/game（SceneDraft/MiniGamePack 语义）不在此列。
-2. **city-sdk WASM 嵌入（目标态）**：仓库已有 `crates/agent-vitals-wasm`（wasm-pack 产物就绪）。把 city-sdk 校验器编译进宿主可执行 WASM，headless 下运行完整语义校验——校验逻辑仍单源 city-sdk，宿主只是新运行时载体。需先验证 wasm 产物的确定性与体积预算。
+2. **city-sdk WASM 嵌入（目标态）**：仓库已有 `crates/agent-vitals-wasm`（wasm-pack 产物就绪）。把 city-sdk 校验器编译进宿主可执行 WASM，headless 下运行完整语义校验——校验逻辑仍单源 city-sdk，宿主只是新运行时载体。需先验证 wasm 产物的确定性与体积预算。（2026-11-26 注：宿主侧嵌入式 JS 载体已在叙事域生产验证——rquickjs + nonce，见 §11.4 路线更新；本条目标态不变，载体可在 WASM 与嵌入式 JS 间按域选择。）
 3. **延迟语义校验（过渡）**：headless 接受载荷但标记 `semantic: "deferred"`，**不可 commit**；Studio 打开后补验通过才放行 commit。仅作为 1→2 的过渡桥，不得长期存在。
 
 ### 8.5 MCP 工具 schema（冻结草案，7 个新工具；additionalProperties:false 全程）
@@ -257,17 +258,17 @@ T3 Code 的定位是「coding agents 的开源控制平面」：不内嵌 agent�
 | Thread 持久化（**agent 进程退出后线程仍在**） | §3.1 CreatorSessionV1 宿主重启重放 | ✅ E1 采纳，语义对齐 |
 | Turn / Checkpoint / Activity 时间线（接受 ≠ settle） | §3.1 Activity 语义 + `operation_status` receipt | ✅ 已吸收 |
 | Command receipt + Outbox effect（副作用随事件提交） | `operationId` 幂等回执（既有）；`creator_job_status` receipt 查询面 | ✅ E2 显式命名 |
-| 权限四模式（Supervised/Auto-accept/Auto/Full access，**per-thread**，管理员可封顶） | §3.6 候选：per-session 权限档——创作面默认自主，人可选 Supervised 逐步批准 | 🟡 远景（E7 一并） |
+| 权限四模式（Supervised/Auto-accept/Auto/Full access，**per-thread**，管理员可封顶） | per-call 两档 `restricted/full-access` 已落地（默认 restricted，§3.6）；per-session 持久权限档（Supervised 逐步批准）仍候选 | 🟡 部分落地（per-session 档维持 E7） |
 | 每线程独立 git worktree + diff 审阅 + 一键 PR | preview→commit 两段式 + diff 报告已是同一语义（世界是单实例状态机，无 worktree 可开） | ✅ 已等价，无需新增 |
 | 桌面/手机/网页三端同线程 + 手机批准 | E7 多端监视与审批（远景） | 🟡 E7 |
-| ACP 可插拔 agent 协议；「Capabilities must describe what the provider can actually do」（能力边界拒绝越权操作，如 checkpoint 拒绝 revert 碰文件） | 能力目录只列已实现 + 缺失能力明确报错——同一原则，引用为外部先例 | ✅ 已一致 |
+| ACP 可插拔 agent 协议；「Capabilities must describe what the provider can actually do」（能力边界拒绝越权操作，如 checkpoint 拒绝 revert 碰文件） | 能力目录只列已实现 + 缺失能力明确报错；**2026-11-26 起宿主自身实现 ACP v1 客户端驱动外部执行器**（fs/terminal capability 声明为无、`session/request_permission` 一律 reject，见 §9.2 修订） | ✅ 已一致且双向：借协议，不借信任模型 |
 | 订阅按需推送（看一个线程不付全部线程历史；socket 认证 ≠ 全方法授权） | 会话/作业查询有界返回（既有 exact_payload/预算模式） | ✅ 已一致 |
 | Context handoffs（provider 间/fork 交接的可移植文本摘要，240 字符压缩 + delta 语义） | E8 Agent 交接摘要（远景）：多 agent 接手同一条创作线时传递结构化摘要 | 🟡 E8 |
 | `evals/` 目录（agent 产品自带行为评测） | E9 Creator MCP 工具面 evals | 🟡 E9 |
 
 ### 9.2 拒绝的模式（与既有边界冲突）
 
-- **多 provider 通用化**：T3 的价值在统一任意 agent；Studio 的权威宿主唯一（City 宿主服务），不存在「换一个 provider」的语义。agentId 保持声明式标识，不引入 provider 认证体系。
+- **多 provider 通用化**（修订 2026-11-26）：T3 的价值在统一任意 agent；Studio 的权威宿主唯一（City 宿主服务）——这一半维持：不存在「换一个权威」的语义，agentId 保持声明式标识，不引入 provider 认证体系。另一半已翻转：**执行器可插拔**（`5f1b7562` codex、`a7f994da` ACP v1，注册表含 kimi-code/deepseek-harness）——外部 agent 只提案 `{summary, operations}`，宿主校验签发，`session/request_permission` 一律 reject；信任模型不随执行器转移（判定演化见对比文档 §7-D7）。
 - **通用 shell/文件系统暴露**：T3 的 Full access 模式允许任意命令与文件编辑；Studio 的全部写接口保持 typed/CAS/预算——数据政策与单写者边界不因控制平面化而放宽。
 - **客户端自带凭据/状态**：T3 明确禁止，Studio 同——引用为佐证。
 
@@ -275,6 +276,7 @@ T3 Code 的定位是「coding agents 的开源控制平面」：不内嵌 agent�
 
 - §3.1 的 operations 语义升级为 Activity 时间线（已并入上文）。
 - §5 新增远景 E7/E8/E9（见上）；E1–E6 不变。
+- §3.6/§6/§9.1 修订（2026-11-26）：执行器可插拔（codex/ACP）与 per-call 执行模式已并入——宿主唯一权威不变，插拔的只是提案来源；判定演化全程见对比文档 §7。
 - 参照 T3 的纪律：性能被视为产品特性（掉帧即 bug）——Studio 的 capture/视口预算分层（边界收口记录 §4）同理，预算数字变更必须走守卫测试。
 
 ## 10. Agent-friendliness 度量与演进（2026-11-16，吸收外部评审）
@@ -326,3 +328,5 @@ E9 evals 提供**事故回归用例**（防劣化）；本表提供**目标度�
 2. 宿主侧 wasmtime 集成（Rust 进程内执行）留作后续——spike 在 Node 侧完成工具链证明。
 
 **后续状态：全量项目（全部校验器进宿主 WASM + 宿主自签发信封）尚未立项**；立项前 D12 的信任模型收益与 11.2 的独立性弱化声明需一并评估。另注意 `crates/agent-vitals-wasm` 与本节无关（那是浏览器行为审计的 wasm-pack 构建）。
+
+**路线更新（2026-11-26）**：宿主侧承载已有生产实例，但换了载体——叙事域评估器以 **rquickjs 嵌入式 JS** 落地（候选 B；`7ee328ab` 起见 `apps/desktop/src-tauri/src/narrative_engine.rs`：IIFE `include_str!` 进宿主、每次调用独立 Runtime（64MB 内存/1MB 栈限额）、64-bit nonce 宿主铸造且结果不匹配即拒、语义与 `narrative-sdk runtime/evaluate.ts` lockstep）；`ea00848e` 宿主规则复算输出 `host-verified`/`hostDisagreement` 双向诚实标记。city-sdk 校验器全量进宿主的 W1 全量项目仍未立项；立项时载体决策从「WASM 或放弃」扩展为「按域选 rquickjs 嵌入式 JS 或 WASM」，11.2 的独立性弱化声明同样适用于 rquickjs 路线（同进程双校验器 + 产物 lockstep + 宿主结构闸缓解）。判定演化全程见对比文档 §7-D12。

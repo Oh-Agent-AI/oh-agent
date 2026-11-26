@@ -1,4 +1,4 @@
-# Studio Agent-first 设计 × T3 Code 设计思路对比（引用级，2026-11-15；增量更新 2026-11-17 见 §5）
+# Studio Agent-first 设计 × T3 Code 设计思路对比（引用级，2026-11-15；增量更新 2026-11-17 见 §5、2026-11-26 见 §7）
 
 出处约定：
 
@@ -173,12 +173,81 @@
 
 ### 6.2 优化空间（T3 已解、dev 未解，按价值排序）
 
-- **O1 长期记录保留治理**（T3: `storageCleanup.ts` + `IdleCompactionService.ts`）。dev 的 `creator_changes`/`creator_operations` 行数无界：每次提交写全量 `document_json`，长期使用线性膨胀；mailbox 有 `MAX_CALL_RECORDS` 清理但 creator 表没有。建议：按项目保留最近 N 条 change + 旧 revision 摘要化（保留 revision/digest/actor，丢弃全量文档），配迁移测试。这是唯一可能影响长期用户的数据面问题。
+- ~~O1 长期记录保留治理~~ **已落地（2026-11-26 复核修正）**：`b5761d1b`（2026-11-17，提交信息直接引用本条）——`prune_creator_history`：每项目保留 8 份全量 `document_json`（旧行置 `"{}"`，revision/digest/actor 审计列保留），`creator_operations` 每 (project,actor) 保留 64 条后 DELETE；在 commit 事务内联执行、零调度器，与「保留审计列、丢弃全量文档」的建议语义一致。
 - ~~O2 evals 判分自动化~~ **已落地（2026-11-17 复核修正）**：`evals/creator/run.mjs` 是 1049 行确定性判分器，5 个 case 各嵌入结构化 rubric（25 个判分项，rubric 类型闭集），`--self-test` 正反例全过；`verify.yml` 新增 `creator_evals` job 把 self-test 挂进 CI。剩余缺口只是 run.mjs 自述的「model-driven replay 为后续扩展」——判分自动化本身不再是缺口。
 - ~~O3 restore/rollback 安全检查器~~ **已覆盖（2026-11-17 复核修正）**：存档恢复路径的完整性验证已四层存在——`coerceStore`/`coercePlanPatch` 逐条验证、坏条目丢弃而非恢复进引擎（这正是 CheckpointRestoreSafety 的领域语义）；`readLocal` 全包 catch（曾修复"存档损坏带崩挂载"的真实事故）；`session.load` 空库诚实降级 + saveFailed 显式信号；viewport 受控失败态（world_scene_load_failed / engine_initialization_failed）。本轮补上的唯一残留是 `CityViewport` 对 `session.load()` 的防御性 `.catch`（恢复路径不允许 unhandled rejection 逃出挂载）。Rust 权威层 commit 本身事务性（全或无 + CAS），无需额外回滚服务。
-- **O4 agent 活动卡的持久通知**（T3: `NotificationMailbox.ts`——通知不丢、不重复打扰、可重放）。dev 的 City Agent 变更卡片是 React 内存态 `slice(0, 6)`，重启即失；`plugin_events` 表其实已持久化了全部事件，只差 UI 重放。建议：活动卡从 `plugin_events` 尾页重建，零新数据面。
+- ~~O4 agent 活动卡的持久通知~~ **已落地（2026-11-26 复核修正，路线不同）**：`6f50fafd`——活动卡经 `plugin.state.write` 写插件私有状态 `creator-agent-activity:v1`（revision CAS），启动时重放，`slice(0, 6)` 上限保留。未走原建议的 `plugin_events` 尾页重建，持久化与重启重放语义等价。
 - ~~O5 流式输出预算~~ **不适用（2026-11-17 复核修正）**：dev 的 E2 Job 面是轮询拉取模型（`creator_job_wait` 阻塞至终态/30s 超时，返回有界 running 快照），不存在流式推送通道——T3 `LiveStreamBudget` 解决的是推送模型的 backpressure，在拉取模型下无此问题。等价防护已存在：progress_json 有界 + 响应预算。若未来引入推送订阅（E7 多端监视），届时再按 LiveStreamBudget 的窗口语义补。
 
 ### 6.3 结论
 
 核心设计**已复刻完成**：T3 控制平面的 8 个核心机制全部在 dev 有落地或明确远景归属，且 dev 在宿主闸门（描述符预算、commit 语义闸门、WASM 验证器承载方向）上做了 T3 没有的领域加固。未复刻部分均为有据可查的刻意拒绝。优化空间集中在**运维耐久性**（O1 保留治理最实质）与**判分自动化**（O2），均不触碰既有边界。
+
+## 7. 增量对比（2026-11-26）
+
+基线更新：T3 `70abb6c0 → origin/main`（`ca432d7e`；上游 50 个提交全部为 fix/refactor/CI/mobile/voice，`docs/internals` 仅 `mobile-navigation.md` 7 行微调，`packages/contracts` 62 行特性级增量——**D1–D11 的 T3 侧判定基线不动**）；dev `51738b08（§5/§6 落盘时基线）→ 66b0d9cb`（134 个提交：City SDK V3 与叙事引擎 N1–N3、Actor 适配器 W6、宿主交付总线 W7、Studio Agent 集成面（codex/ACP 双执行器）、ST-02–13 与会话中心工作区）。§6.2 的 O1/O4 于落盘当日即已修复（`b5761d1b`、`6f50fafd`，提交信息直接引用本文件条目号），条目已就地标注；本节记录其余判定变化。
+
+### D7 可插拔 agent 协议：判定修订——从「拒绝多 provider」到「领域化吸收执行器可插拔」
+
+- 原判定（11-15）：拒绝多 provider 化，宿主唯一；agentId 是声明式标识（SPEC §6/§9.2）。
+- dev 侧实证：`5f1b7562`（ST-08 codex preview executor）与 `a7f994da`（ACP push executor）——`creator_task_execute` 新增 `executor` 字段：默认 `codex`，或 `acp`/`acp:<agentId>`，来自 `acp-agents.json` 注册表（已登记 kimi-code、deepseek-harness；`crates/agent-vitals-mcp/src/mcp/creator_agent_executor.rs`）。宿主自行实现 Agent Client Protocol v1（stdio JSON-RPC：`initialize`/`authenticate`/`session/new`/`session/prompt`），并在 `session/new` 时把 creator MCP server 注入外部 agent。
+- 信任边界**反向收紧**（与 T3 的关键差异保持）：外部 agent 只提案 `{summary, operations}`，两个执行器共用 `finish_with_host_preview` 由宿主独立校验并签发 revision 绑定预览；`session/request_permission` 一律 reject；client capabilities 声明无 fs/terminal（越权请求返回 `-32601`），结构性 analyze-only；`session/new` 默认 `restricted`。
+- 判定修订：**宿主仍是唯一权威，执行器可插拔**。T3「drive the agents you are already signed in to」的核心模式被领域化吸收，「授权按宿主规则」不变；SPEC §6/§9.2 已按此修订（2026-11-26）。Actor 适配器（`e4adfbe7`）同向：外部 coding agent（Codex/Claude Code 会话）驱动剧情角色，宿主零模型调用，只管身份铸造/预算闸/事实复算（V3-04）——与 T3「不转售 token、驱动已登录的 agent」同一立场。
+
+### D5 权限模式：从「E7 远景」到「部分落地（per-call 两档）」
+
+- `creator_task_execute` 带 `mode ∈ {restricted, full-access}`，默认 restricted 且默认值钉死（`crates/agent-vitals-mcp/src/mcp/creator_session.rs`）；codex 执行器因自带 `--dangerously-bypass-approvals-and-sandbox` 被拒入 restricted——「权限档只调节执行面、永不解锁新能力面」以执行器闸门形式落地。
+- 与 T3 的 per-thread 四模式（Supervised/Auto-accept/Auto/Full access + 管理员封顶）相比：粒度更细（每次调用）、档位更少（两档）。**per-session 持久权限档（Supervised 逐步批准）仍不存在**，维持 E7 远景。
+
+### D1 会话持久性：实质达成
+
+- `creator_sessions` 表落宿主 sessions.sqlite；共享任务账本接受多 agent 并发连接（transports：`mcp-stdio`/`acp-stdio`/`studio-webview`），per-agent 开放会话限额——会话不再依赖任何单一 agent 进程存活，T3「Thread survives provider process exits」的领域形态成立。
+- UI 侧 `66b0d9cb` 重建为 session-centric 三栏（Sessions｜Agent Chat｜Live Preview；设计见 [工作区信息架构](CREATOR_STUDIO_WORKSPACE_INFORMATION_ARCHITECTURE_2026-11-25.md)）；goal drafts 跨路由保留（`3335ff01`）。
+- 残余：设计稿自述「现有 Task ledger 不等于可恢复的用户会话」——切换 Session 时完整恢复 Agent/harness、对话、当前 Task、草稿输入与预览指向的验收未闭环（剩余差距 R3）。
+
+### D3 receipt / outbox：投递原语落地（事件溯源维持刻意不抄）
+
+- `773c7490`（W7 D-1/D-2/D-3/D-5）宿主交付总线：`host_deliveries` 表（`dedupe_key` 使重放跨 pending/in_flight/confirmed 幂等、TTL 惰性过期、fetch-and-ack 单事务）+ `claim_wait` 长轮询 + 10 分钟 `REPLY_TTL` 的 in_flight/confirm 重投语义（`crates/agent-vitals-mcp/src/mcp/host_delivery.rs`）。Outbox 与 wait 两个 T3 编排原语有了领域承载。
+- 全仓库无 `EventStore`/`ProjectionStore`/`Orchestrator` 类型——§6.1「CAS + 事务，刻意不抄事件溯源」判定维持：交付总线是**有界收件箱队列**，不是事件溯源编排器，时间线仍为拉取可恢复模型。
+
+### D12 验证器承载：从 spike 到落地，路线变更（WASM → 嵌入式 JS）
+
+- WASM spike（quickjs-emscripten/Javy，有条件可行）的宿主侧路线被**候选 B 取代**：`rquickjs = "0.14"` 嵌入式 JS（`apps/desktop/src-tauri/Cargo.toml`，决策记录见 `embedded_city_sdk.rs`）。`7ee328ab`（N2-b）起叙事评估器以 IIFE 形式 `include_str!` 进宿主（`apps/desktop/src-tauri/src/narrative_engine.rs`）：每次调用独立 Runtime（64MB 内存/1MB 栈限额），64-bit nonce 宿主铸造、结果不匹配即拒，语义与 `narrative-sdk runtime/evaluate.ts` lockstep。
+- `ea00848e`（S-6b/V3-16）宿主规则复算输出 `host-verified` / `hostDisagreement` 双向诚实标记——「SDK verdict 只来自宿主可验证执行」从信任声明变成运行机制。
+- 判定升级：**Studio 独有方向已从 spike 进入生产承载（叙事域）**。city-sdk 校验器全量进宿主（SPEC §11 原目标）仍未立项；立项时载体决策从「WASM 或放弃」扩展为「按域选 rquickjs 嵌入式 JS 或 WASM」，§11.2 的独立性弱化声明同样适用。
+
+### D6 多端监视与审批：多 agent 端落地，多 UI 端未动
+
+- 已落地的是**多 agent 端**：外部 Codex/ACP agent 经 stdio headless 驱动宿主（capability matrix 明列 headless 臂）；交付总线经 WAL 由桌面与 MCP 进程共享。E5 headless（`a6f47866`/`1691ca77`）之上，外部 agent 成为与桌面 webview 平级的会话主体。
+- 未落地：第二 UI 瘦客户端——无 HTTP 服务器（仅测试用 loopback `TcpListener`）。T3 hero 场景「手机批准下一步」对应的**多 UI 端维持 E7 远景**，其前提（宿主本地服务 + durable sessions + headless 臂）已全部就位。
+
+### 维持不变的判定
+
+- D2（settle 诚实）、D4（隔离与 diff 审阅）、D10/D11（授权粒度、contracts 边界）：实现物继续在位，无变化。
+- D8（E8 交接摘要）：仍不存在。最接近的 `creator_actor_turn_context` 是外部会话冷启动的**事实投影**，自述「不是对话记忆；会话上下文归外部 agent 宿主自持」——领域变体有了，agent-to-agent 摘要（240/237 字符纪律）仍是远景。
+- D9（E9 evals）：仍 5 个 case + `run.mjs` 确定性判分 + CI job；model-driven replay 未实现（`run.mjs` 自述后续扩展），且基线后 ST/ACP/N 系列开发事故尚未沉淀为新 case——「每个 case 复现一次真实错误」的用例增长停滞。
+
+### 增量汇总
+
+| 维度 | 11-17 判定 | 11-26 判定 | 变化来源 |
+|---|---|---|---|
+| D7 多 provider | 拒绝（宿主唯一） | **修订：宿主唯一权威 + 执行器可插拔** | 5f1b7562、a7f994da、e4adfbe7 |
+| D5 权限档 | 采纳（E7 远景） | **部分落地**（per-call 两档；per-session 档仍 E7） | creator_task_execute mode |
+| D1 会话持久对称化 | 采纳（语义补句） | **实质达成**（durable sessions + 多 agent 并发；恢复完整性待验收） | creator_sessions、66b0d9cb |
+| D3 receipt/outbox | 已一致（形态等价） | 已一致（outbox/wait 原语落地；事件溯源维持刻意不抄） | 773c7490 |
+| D12 验证器承载 | spike 有条件可行 | **落地（叙事域，rquickjs 路线）** | 7ee328ab、ea00848e |
+| D6 多端监视 | 采纳（E7；E5 可运行） | 多 agent 端落地；多 UI 端维持 E7 | 5f1b7562、a7f994da |
+| O1 保留治理 | 缺口 | ✅ 落地（就地标注） | b5761d1b |
+| O4 活动卡持久 | 缺口 | ✅ 落地（plugin state 路线，就地标注） | 6f50fafd |
+| D2/D4/D8/D9/D10/D11 | — | 不变 | — |
+
+### 剩余差距（按价值排序）
+
+1. **R1 SPEC 漂移**——本次已闭合：D7 修订与 D5 per-call mode 已回写 SPEC §3.6/§5/§6/§9/§11；后续实现漂移按本节模式随增量收口。
+2. **R2 E9 evals 持续运营**：近两周事故未入册（ST 系列半截实现、ACP 会话生命周期、N 系列裁决链）；model-driven replay（T3 `evals/mcp-tool-use` 的廉价模型扮演 shell 重放）仍是 E9 全量化的唯一手段缺口。
+3. **R3 会话恢复完整性**：durable sessions 已有；「切换 Session 恢复 Agent/harness、对话、当前 Task、草稿输入与预览指向」（工作区信息架构 2026-11-25 的设计承诺）待实现与验收——D1 的最后一公里。
+4. **R4 E8 交接摘要**：维持远景；`turn.context` 事实投影可作起点，240/237 字符纪律照抄。
+5. **R5 多 UI 瘦客户端（E7）**：仍无；宿主服务形态（WAL 共享 + headless 臂 + durable sessions）已具备前提。
+6. **R6 预览批注能力**：批注点/冻结帧拾取/随图对象引用均为待实现（现有能力仅视口截图附件，StudioTaskPanel）——T3 无此需求，dev 独有方向。
+
+净结论：§6「8 项核心机制已复刻」升级为「9 项」（新增 outbox/wait 投递原语承载）；唯一被否定的判定（D7 拒绝）翻转为领域化吸收且信任边界不放宽；剩余差距集中在 evals 持续运营（R2）、会话恢复最后一公里（R3）与两个远景切片（R4/R5），无新架构缺口。
