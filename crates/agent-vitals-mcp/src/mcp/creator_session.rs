@@ -19,6 +19,9 @@ const MAX_SESSIONS_PER_AGENT: usize = 4;
 const JOB_WAIT_MAX_MS: u64 = 30_000;
 const JOB_WAIT_POLL_MS: u64 = 500;
 const CONNECTION_TTL_MS: u64 = 15_000;
+/// executor_lost 判定的心跳缺失阈值：执行线程每 ~5s 一跳，6 跳缺席即判死；
+/// 远大于正常节拍，也远小于任何合法执行的 600s 硬上限。
+const EXECUTOR_LOST_AFTER_MS: u64 = 30_000;
 const EVENT_WAIT_MAX_MS: u64 = 30_000;
 const EVENT_WAIT_SLICE_MS: u64 = 250;
 const EVENT_LIMIT_MAX: u64 = 100;
@@ -684,6 +687,13 @@ fn session_payload(data_home: &Path, session_id: &str, project_id: Option<&str>,
         }
     }
     if tasks.len() > 30 { tasks_truncated = true; tasks.truncate(30); }
+    // 宿主重启的 executing 残任务在水合前惰性收尾：UI 直接看到终态而非卡死的「执行中」。
+    for task in tasks.iter_mut() {
+        if task["phase"] == json!("executing") {
+            let task_id = task["taskId"].as_str().unwrap_or_default().to_owned();
+            if !task_id.is_empty() && finalize_executor_lost(&db, &task_id) { task["phase"] = json!("failed"); }
+        }
+    }
     Ok(json!({"ok":true,"data":{"sessionId":session_id,"agentId":agent_id,"state":state,
         "scope":{"projectId":scope_project,"cityId":scope_city},
         "operations":operations,"jobs":jobs,
@@ -1102,6 +1112,7 @@ fn task_row(db: &rusqlite::Connection, task_id: &str) -> Result<(Value, String, 
 fn task_payload(data_home: &Path, task_id: &str) -> Result<Value, ToolError> {
     let db = open_db(&sessions_db(data_home)?, false)?;
     ensure_schema(&db)?;
+    let _ = finalize_executor_lost(&db, task_id);
     let (task, session_id, _, _) = task_row(&db, task_id)?;
     let plan_revision = task["planRevision"].as_u64().unwrap_or(0);
     let mut statement = db.prepare("SELECT step_id,ordinal,title,kind FROM creator_studio_task_steps WHERE task_id=?1 AND plan_revision=?2 ORDER BY ordinal").map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
@@ -1268,6 +1279,42 @@ fn task_evidence_append(data_home: &Path, payload: &Value) -> Result<Value, Tool
     tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     notify_event_subscribers();
     task_payload(data_home, &task_id)
+}
+
+/// P0（重设计文档 §六）：宿主重启后 `executing` 任务惰性收尾。执行线程每
+/// ~5s 心跳其 `{executor}:{task_id}` 推送连接；心跳缺失超过 30s 且本进程没
+/// 有登记活跃执行，说明执行器进程已死（合法执行有 600s 硬上限并自带终态
+/// 迁移，不会误伤）。收尾为 failed + `executor_lost` 失败事件，供 UI 的
+/// 「恢复原指令」路径复用；重复读取以 phase 守卫保证幂等。尽力而为：读路径
+/// 不得因收尾失败而失败。返回是否发生了收尾。
+fn finalize_executor_lost(db: &rusqlite::Connection, task_id: &str) -> bool {
+    if execution_cancellations().lock().unwrap_or_else(|error| error.into_inner()).contains_key(task_id) { return false; }
+    let Ok((kind, status, progress_json)) = db.query_row(
+        "SELECT kind, status, progress_json FROM creator_jobs WHERE job_id=?1", [task_id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?))) else { return false; };
+    if kind != "studio-task" || status != "executing" { return false; }
+    // 只收尾 push 执行（task_execute 写入 progress_json.execution）。pull 认领
+    // 任务的存活由 claim 租约与认领 agent 心跳负责，不在本收尾管辖内。
+    let Some(executor) = progress_json.as_deref()
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .and_then(|value| value.get("execution").and_then(|execution| execution.get("executor")).and_then(Value::as_str).map(str::to_owned))
+    else { return false; };
+    let push_agent = format!("{executor}:{task_id}");
+    let last_seen: Option<u64> = db.query_row(
+        "SELECT last_seen_ms FROM creator_agent_connections WHERE agent_id=?1", [&push_agent], |row| row.get(0)).ok();
+    if last_seen.is_some_and(|last_seen| now_ms().saturating_sub(last_seen) < EXECUTOR_LOST_AFTER_MS) { return false; }
+    let now = now_ms();
+    let Ok(tx) = db.unchecked_transaction() else { return false };
+    let updated = tx.execute("UPDATE creator_jobs SET status='failed',failure_json=?2,updated_at_ms=?3 WHERE job_id=?1 AND status='executing'",
+        rusqlite::params![task_id, json!({"code":"executor_lost","executor":executor}).to_string(), now]).unwrap_or(0);
+    let tasks_updated = tx.execute("UPDATE creator_studio_tasks SET phase='failed',updated_at_ms=?2 WHERE task_id=?1 AND phase='executing'",
+        rusqlite::params![task_id, now]).unwrap_or(0);
+    if updated == 0 || tasks_updated == 0 { return false; }
+    let _ = append_event(&tx, task_id, "failure", executor.as_str(), "host-observed",
+        "执行器进程已中断（宿主可能重启过），任务如实收尾为失败", &json!({"code":"executor_lost","executor":executor}));
+    let _ = tx.execute("UPDATE creator_agent_connections SET state='offline',last_stable_error='executor_lost',updated_at_ms=?2 WHERE agent_id=?1",
+        rusqlite::params![push_agent, now]);
+    tx.commit().is_ok()
 }
 
 fn execution_cancellations() -> &'static Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>> {
@@ -2293,6 +2340,86 @@ mod tests {
         let tasks = status["data"]["tasks"].as_array().unwrap();
         assert_eq!(tasks.len(), 30);
         assert_eq!(status["data"]["tasksTruncated"], json!(true));
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn stale_executing_task_lazily_finalizes_executor_lost() {
+        let home = temp_home();
+        let session = session_open(&home, &json!({"agentId":"studio-local","projectId":"project-1"})).unwrap();
+        prepare_artifact(&home, "project-1", 3);
+        let session_id = session["data"]["sessionId"].as_str().unwrap().to_owned();
+        let created = task_dispatch(&home, "creator.task.create", &studio_goal(&session_id, "lost-goal"), None).unwrap();
+        let task_id = created["taskId"].as_str().unwrap().to_owned();
+        task_dispatch(&home, "creator.task.plan.submit", &studio_plan(&task_id, 1, "lost-plan"), None).unwrap();
+        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"operationId":"lost-approve"}), None).unwrap();
+        // 手工构造「宿主重启」现场：executing + 执行器 progress + 过期心跳。
+        {
+            let db = open_db(&sessions_db(&home).unwrap(), false).unwrap();
+            let now = now_ms();
+            db.execute("UPDATE creator_jobs SET status='executing',progress_json=?2,updated_at_ms=?3 WHERE job_id=?1",
+                rusqlite::params![task_id, json!({"execution":{"operationId":"lost-execute","executor":"codex-cli","status":"executing"}}).to_string(), now]).unwrap();
+            db.execute("UPDATE creator_studio_tasks SET phase='executing',updated_at_ms=?2 WHERE task_id=?1", rusqlite::params![task_id, now]).unwrap();
+            db.execute("INSERT INTO creator_agent_connections(agent_id,session_id,executor,transport,last_seen_ms,state,capabilities_json,last_stable_error,created_at_ms,updated_at_ms)
+                VALUES(?1,?2,'codex-cli','mcp-stdio',?3,'busy','[]',NULL,?4,?4)",
+                rusqlite::params![format!("codex-cli:{task_id}"), session_id, now - 60_000, now]).unwrap();
+        }
+        let recovered = task_dispatch(&home, "creator.task.status", &json!({"taskId":&task_id}), None).unwrap();
+        assert_eq!(recovered["phase"], "failed");
+        {
+            let db = open_db(&sessions_db(&home).unwrap(), false).unwrap();
+            let failure_json: String = db.query_row("SELECT failure_json FROM creator_jobs WHERE job_id=?1", [&task_id], |row| row.get(0)).unwrap();
+            assert!(failure_json.contains("executor_lost"), "failure_json={failure_json}");
+            let failures: i64 = db.query_row("SELECT COUNT(*) FROM creator_task_events WHERE task_id=?1 AND kind='failure'", [&task_id], |row| row.get(0)).unwrap();
+            assert_eq!(failures, 1);
+            let state: String = db.query_row("SELECT state FROM creator_agent_connections WHERE agent_id=?1", [format!("codex-cli:{task_id}")], |row| row.get(0)).unwrap();
+            assert_eq!(state, "offline");
+        }
+        // 幂等：重复读取不追加 failure 事件。
+        let _ = task_dispatch(&home, "creator.task.status", &json!({"taskId":&task_id}), None).unwrap();
+        {
+            let db = open_db(&sessions_db(&home).unwrap(), false).unwrap();
+            let failures: i64 = db.query_row("SELECT COUNT(*) FROM creator_task_events WHERE task_id=?1 AND kind='failure'", [&task_id], |row| row.get(0)).unwrap();
+            assert_eq!(failures, 1);
+        }
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn fresh_heartbeat_and_in_process_execution_keep_executing() {
+        let home = temp_home();
+        let session = session_open(&home, &json!({"agentId":"studio-local","projectId":"project-1"})).unwrap();
+        prepare_artifact(&home, "project-1", 3);
+        let session_id = session["data"]["sessionId"].as_str().unwrap().to_owned();
+        let created = task_dispatch(&home, "creator.task.create", &studio_goal(&session_id, "alive-goal"), None).unwrap();
+        let task_id = created["taskId"].as_str().unwrap().to_owned();
+        task_dispatch(&home, "creator.task.plan.submit", &studio_plan(&task_id, 1, "alive-plan"), None).unwrap();
+        task_dispatch(&home, "creator.task.plan.approve", &json!({"taskId":task_id,"planRevision":1,"expectedArtifactRevision":3,"operationId":"alive-approve"}), None).unwrap();
+        {
+            let db = open_db(&sessions_db(&home).unwrap(), false).unwrap();
+            let now = now_ms();
+            db.execute("UPDATE creator_jobs SET status='executing',progress_json=?2,updated_at_ms=?3 WHERE job_id=?1",
+                rusqlite::params![task_id, json!({"execution":{"operationId":"alive-execute","executor":"codex-cli","status":"executing"}}).to_string(), now]).unwrap();
+            db.execute("UPDATE creator_studio_tasks SET phase='executing',updated_at_ms=?2 WHERE task_id=?1", rusqlite::params![task_id, now]).unwrap();
+            // 新鲜心跳（5s 前一跳）＝本进程执行线程还活着。
+            db.execute("INSERT INTO creator_agent_connections(agent_id,session_id,executor,transport,last_seen_ms,state,capabilities_json,last_stable_error,created_at_ms,updated_at_ms)
+                VALUES(?1,?2,'codex-cli','mcp-stdio',?3,'busy','[]',NULL,?4,?4)",
+                rusqlite::params![format!("codex-cli:{task_id}"), session_id, now - 5_000, now]).unwrap();
+        }
+        let status = task_dispatch(&home, "creator.task.status", &json!({"taskId":&task_id}), None).unwrap();
+        assert_eq!(status["phase"], "executing");
+        // 进程内活跃执行登记优先于过期心跳：即便心跳缺失也不收尾（防多进程误判）。
+        {
+            let db = open_db(&sessions_db(&home).unwrap(), false).unwrap();
+            let now = now_ms();
+            db.execute("UPDATE creator_agent_connections SET last_seen_ms=?2 WHERE agent_id=?1",
+                rusqlite::params![format!("codex-cli:{task_id}"), now - 60_000]).unwrap();
+        }
+        execution_cancellations().lock().unwrap_or_else(|error| error.into_inner())
+            .insert(task_id.clone(), Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        let status = task_dispatch(&home, "creator.task.status", &json!({"taskId":&task_id}), None).unwrap();
+        assert_eq!(status["phase"], "executing");
+        execution_cancellations().lock().unwrap_or_else(|error| error.into_inner()).remove(&task_id);
         std::fs::remove_dir_all(home).unwrap();
     }
 

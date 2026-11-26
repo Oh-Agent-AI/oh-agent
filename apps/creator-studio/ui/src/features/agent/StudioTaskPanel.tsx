@@ -38,6 +38,8 @@ function taskErrorLabel(code: string): string {
       return "作品版本已变化。请重新打开作品并生成预览。";
     case "creator_task_confirmation_pending":
       return "上一次保存仍待确认结果。请先重试确认保存。";
+    case "executor_lost":
+      return "Agent 进程已中断（宿主可能重启过）。可以恢复原指令重新发送。";
     default:
       return code;
   }
