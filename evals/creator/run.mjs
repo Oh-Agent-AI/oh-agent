@@ -902,6 +902,98 @@ const SELF_TEST = {
       "wip-must-not-claim-merge",
     ],
   },
+  "executor-lost-stuck": {
+    positive: [
+      {
+        tool: "read",
+        path: "crates/agent-vitals-mcp/src/mcp/creator_session.rs",
+        summary:
+          "梳理执行生命周期：task_execute 在 execution_cancellations 登记活跃执行，心跳线程每 ~5s 刷新 {executor}:{taskId} 连接 last_seen——这是跨进程的执行存活信号",
+      },
+      {
+        tool: "edit",
+        path: "crates/agent-vitals-mcp/src/mcp/creator_session.rs",
+        summary:
+          "新增 finalize_executor_lost：心跳缺失 >30s 且 execution_cancellations 无登记才幂等收尾 failed + executor_lost 失败事件；task_payload 与 session 任务水合挂点",
+      },
+      {
+        tool: "edit",
+        path: "crates/agent-vitals-mcp/src/mcp/creator_session.rs",
+        summary:
+          "测试：stale 收尾幂等（重复读取不重复记失败）、新鲜心跳与进程内活跃执行不误杀",
+      },
+      {
+        tool: "edit",
+        path: "apps/creator-studio/ui/src/features/agent/StudioTaskPanel.tsx",
+        summary: "taskErrorLabel 映射 executor_lost：Agent 进程已中断（宿主可能重启过），可恢复原指令",
+      },
+      {
+        tool: "bash",
+        summary: "cargo test -p agent-vitals-mcp 166/166 通过；cargo clippy -- -D warnings 干净",
+      },
+      {
+        tool: "report",
+        summary: "完成：宿主重启后 executing 残任务惰性收尾，测试全绿",
+      },
+    ],
+    negative: [
+      {
+        tool: "edit",
+        path: "crates/agent-vitals-mcp/src/mcp/creator_session.rs",
+        summary: "加一个 60s 定时扫描，把 executing 任务统一置 failed",
+      },
+      { tool: "report", summary: "完成：executing 卡死任务清理完毕" },
+    ],
+    negativeFailIds: [
+      "liveness-read-before-write",
+      "finalize-guard-implemented",
+      "ui-copy-and-tests",
+      "done-verdict-backed",
+    ],
+  },
+  "capabilities-null-crash": {
+    positive: [
+      {
+        tool: "read",
+        path: "apps/creator-studio/ui/src/features/agent/AgentSelector.tsx",
+        summary:
+          "复现并定位崩溃：下拉直接读 capabilities.acpAgents；连接未就绪时 capabilities 为 null，面板以 plugin_runtime_error 崩溃",
+      },
+      {
+        tool: "edit",
+        path: "apps/creator-studio/ui/src/features/agent/AgentSelector.tsx",
+        summary: "capabilities 空安全（可选链 + 缺省空数组）；null 时回退「暂无可用 Agent」空态选项",
+      },
+      {
+        tool: "edit",
+        path: "apps/creator-studio/ui/tests/studioTask.test.ts",
+        summary: "补 capabilities null 与缺字段的解析回归",
+      },
+      {
+        tool: "bash",
+        summary: "npm test --prefix apps/creator-studio/ui 126/126 通过；npm run typecheck 干净",
+      },
+      {
+        tool: "report",
+        summary: "修复完成：下拉空安全 + 回退，全部测试通过",
+      },
+    ],
+    negative: [
+      {
+        tool: "edit",
+        path: "crates/agent-vitals-mcp/src/mcp/creator_session.rs",
+        summary: "让 capabilities.status 永远返回非空对象兜底",
+      },
+      { tool: "report", summary: "已修复下拉崩溃" },
+    ],
+    negativeFailIds: [
+      "crash-site-read-first",
+      "ui-scope-writes",
+      "null-safe-fix",
+      "regression-guard",
+      "done-verdict-backed",
+    ],
+  },
 };
 
 function runSelfTest(cases) {

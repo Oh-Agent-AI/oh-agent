@@ -18,6 +18,8 @@ agent 如何使用 Creator MCP 工具面——不调用任何模型、不真跑�
 | `performance-single-source` | 语义重复实现漂移：宿主 Rust `maxSpeed / 1.8` 与引擎 TS `Math.max(6, maxSpeed / 1.8)` 双实现同一飞行语义，且没有任何东西比较它们 | `bba644b7`（单源化修复）、`8859ff9d`（投影彻底移出宿主） |
 | `worktree-territory` | 领地混写：clippy 修复批次因 cwd 指错把写触达落到主仓 checkout（另一 agent 的领地） | 仓库 AGENTS.md（Rust 编辑后立即核对 `git diff --stat`）；本 worktree（studio-e9） |
 | `generated-contract-slice-freeze` | 未完成切片混入共享分支：生成契约 `capabilities.json` 手工落盘 +62 行、无生成器/版本证据，以 broken build 收场 | `edc06bef`（事故本身）、`f215cc94`（capabilityVersion 递增正例）、`scripts/generate-creator-capabilities.mjs` |
+| `executor-lost-stuck` | 宿主重启后 `executing` 任务永不收尾：无存活信号核对就盲扫置 failed 会在多进程共享 WAL 时误杀合法执行；正确形态是心跳缺失 + 进程内无活跃双条件幂等收尾 + UI 文案 + 三态测试 | 重设计文档 §六登记（`executor_lost` 未实现）；2026-11-27 `finalize_executor_lost` 补齐 |
+| `capabilities-null-crash` | Studio 执行器下拉直接读 `capabilities.acpAgents`，连接未就绪时 null 解引用致面板崩溃；错层修复（让宿主伪装非空）违反数据诚实 | 重设计文档 §五（2026-11-22/23 通道层工程记录）；空安全 + 折叠回退选项修复 |
 
 新增事故 → 新增一个 `cases/NN-<id>.md`，判分器无需改动。
 
