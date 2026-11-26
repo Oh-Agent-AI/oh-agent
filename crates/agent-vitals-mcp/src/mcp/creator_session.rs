@@ -37,7 +37,7 @@ pub fn specs() -> Vec<ToolSpec> {
         spec("creator_session_open", "Open (or resume) a Creator Agent session. Resuming an open session with the same agentId and scope returns the same sessionId plus every pending operation and job, so a reconnect restores full context in one call. Read-only bookkeeping; never grants capabilities.", json!({"agentId":{"type":"string","minLength":1,"maxLength":128},"sessionId":{"type":"string","minLength":1,"maxLength":128},"createNew":{"type":"boolean"},"label":{"type":"string","minLength":1,"maxLength":80},"projectId":{"type":"string","minLength":1,"maxLength":128},"cityId":{"type":"string","minLength":1,"maxLength":128},"executor":{"type":"string","enum":["unknown","studio","codex-cli","acp","pull"]},"transport":{"type":"string","enum":["unknown","mcp-stdio","acp-stdio","studio-webview"]},"capabilities":{"type":"array","maxItems":16}}), &["agentId"]),
         spec("creator_session_list", "List Creator Agent sessions for one agent and exact Project/City scope, including restorable closed sessions and their local Studio profile.", json!({"agentId":{"type":"string","minLength":1,"maxLength":128},"projectId":{"type":"string","minLength":1,"maxLength":128},"cityId":{"type":"string","minLength":1,"maxLength":128},"limit":{"type":"integer","minimum":1,"maximum":50}}), &["agentId"]),
         spec("creator_session_update", "Update the local Studio profile for one owned session: display label, unsent composer draft or preferred executor. Task and evidence authority are unchanged.", json!({"agentId":{"type":"string","minLength":1,"maxLength":128},"sessionId":{"type":"string","minLength":1,"maxLength":128},"label":{"type":"string","minLength":1,"maxLength":80},"draft":{"type":"string","maxLength":16000},"preferredExecutor":{"type":"string","maxLength":128}}), &["agentId","sessionId"]),
-        spec("creator_session_status", "Read one Creator Agent session: its state, the bounded operation timeline (commits and playtests observed in scope), and open jobs.", json!({"sessionId":{"type":"string","minLength":1,"maxLength":128}}), &["sessionId"]),
+        spec("creator_session_status", "Read one Creator Agent session: its state, the bounded operation timeline (commits and playtests observed in scope), the bounded studio-task history (newest 30, with tasksTruncated), and open jobs.", json!({"sessionId":{"type":"string","minLength":1,"maxLength":128}}), &["sessionId"]),
         spec("creator_session_close", "Close a Creator Agent session and report how many tracked operations were cleared. Closed sessions are retained for 7 days for auditing, then pruned.", json!({"sessionId":{"type":"string","minLength":1,"maxLength":128}}), &["sessionId"]),
         spec("creator_connection_heartbeat", "Register or refresh one agent connection in the shared local ledger. Connections are scoped by agentId+sessionId and expire offline after 15 seconds without a heartbeat.", json!({"agentId":{"type":"string"},"sessionId":{"type":"string"},"executor":{"type":"string","enum":["unknown","studio","codex-cli","acp","pull"]},"transport":{"type":"string","enum":["unknown","mcp-stdio","acp-stdio","studio-webview"]},"state":{"type":"string","enum":["online","busy","degraded"]},"capabilities":{"type":"array","maxItems":16},"lastStableError":{"type":["string","null"],"maxLength":128}}), &["agentId","sessionId"]),
         spec("creator_connection_disconnect", "Mark one agent connection offline without changing any job or task authority.", json!({"agentId":{"type":"string"},"sessionId":{"type":"string"}}), &["agentId","sessionId"]),
@@ -662,9 +662,32 @@ fn session_payload(data_home: &Path, session_id: &str, project_id: Option<&str>,
     operations.extend(host_playtests);
     operations.extend(host_operations);
     let jobs = session_jobs(data_home, session_id)?;
+    // 会话任务历史（Studio 时间线水合）：newest-first、上限 30 条。多取 1 条
+    // 只用于判定截断、不进返回体——有界返回纪律（对比文档 §7-D10）。
+    let mut tasks: Vec<Value> = Vec::new();
+    let mut tasks_truncated = false;
+    if let Ok(mut statement) = db.prepare(
+        "SELECT j.job_id, j.status, t.human_request, t.artifact_json, j.updated_at_ms
+         FROM creator_jobs j JOIN creator_studio_tasks t ON t.task_id = j.job_id
+         WHERE j.session_id=?1 AND j.kind='studio-task'
+         ORDER BY j.updated_at_ms DESC, j.job_id DESC LIMIT 31") {
+        if let Ok(rows) = statement.query_map([session_id], |row| {
+            let artifact: String = row.get(3)?;
+            let artifact_value: Value = serde_json::from_str(&artifact).unwrap_or(Value::Null);
+            Ok(json!({"taskId":row.get::<_, String>(0)?,"phase":row.get::<_, String>(1)?,
+                "humanRequest":row.get::<_, String>(2)?,
+                "artifactKind":artifact_value.get("kind").and_then(Value::as_str).unwrap_or("unknown"),
+                "expectedRevision":artifact_value.get("expectedRevision").and_then(Value::as_u64),
+                "updatedAtMs":row.get::<_, i64>(4)?}))
+        }) {
+            for item in rows.flatten() { tasks.push(item); }
+        }
+    }
+    if tasks.len() > 30 { tasks_truncated = true; tasks.truncate(30); }
     Ok(json!({"ok":true,"data":{"sessionId":session_id,"agentId":agent_id,"state":state,
         "scope":{"projectId":scope_project,"cityId":scope_city},
         "operations":operations,"jobs":jobs,
+        "tasks":tasks,"tasksTruncated":tasks_truncated,
         "hostLedgerAvailable":host_available,
         "notes":if project_id.is_some() || city_id.is_some() { json!({"projectId":project_id,"cityId":city_id}) } else { Value::Null }}}))
 }
@@ -2216,6 +2239,61 @@ mod tests {
         assert_eq!(steps[1]["ordinal"], 1);
         payload["steps"][1]["ordinal"] = json!(0);
         assert_eq!(task_steps(&payload).unwrap_err().code, "invalid_argument");
+    }
+
+    #[test]
+    fn session_payload_lists_bounded_studio_task_history() {
+        let home = temp_home();
+        let session = session_open(&home, &json!({"agentId":"studio-local","projectId":"project-1"})).unwrap();
+        prepare_artifact(&home, "project-1", 3);
+        let session_id = session["data"]["sessionId"].as_str().unwrap().to_owned();
+        let other = session_open(&home, &json!({"agentId":"studio-local","projectId":"project-1","createNew":true})).unwrap();
+        let other_id = other["data"]["sessionId"].as_str().unwrap().to_owned();
+        let mut task_ids = Vec::new();
+        for index in 0..3 {
+            let created = task_dispatch(&home, "creator.task.create", &studio_goal(&session_id, &format!("history-goal-{index}")), None).unwrap();
+            task_ids.push(created["taskId"].as_str().unwrap().to_owned());
+        }
+        task_dispatch(&home, "creator.task.create", &studio_goal(&other_id, "history-goal-other"), None).unwrap();
+        // 同毫秒创建的任务以 job_id 决胜（随机 id，不可依赖）：直接改 updated_at_ms 固定排序。
+        {
+            let db = open_db(&sessions_db(&home).unwrap(), false).unwrap();
+            for (offset, task_id) in task_ids.iter().enumerate() {
+                db.execute("UPDATE creator_jobs SET updated_at_ms=?1 WHERE job_id=?2",
+                    rusqlite::params![1_000 + offset as i64, task_id]).unwrap();
+            }
+        }
+        let status = session_status(&home, &json!({"sessionId":&session_id})).unwrap();
+        let tasks = status["data"]["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 3);
+        // newest-first：最后创建的任务排最前。
+        assert_eq!(tasks[0]["taskId"], json!(task_ids[2]));
+        assert_eq!(tasks[0]["phase"], json!("planning"));
+        assert_eq!(tasks[0]["humanRequest"], json!("Review the saved game without executing an agent"));
+        assert_eq!(tasks[0]["artifactKind"], json!("creator-project"));
+        assert_eq!(tasks[0]["expectedRevision"], json!(3));
+        assert_eq!(tasks[0]["updatedAtMs"], json!(1_002));
+        assert_eq!(status["data"]["tasksTruncated"], json!(false));
+        // 另一会话的任务不串线。
+        let other_status = session_status(&home, &json!({"sessionId":&other_id})).unwrap();
+        assert_eq!(other_status["data"]["tasks"].as_array().unwrap().len(), 1);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn session_payload_truncates_task_history_at_thirty() {
+        let home = temp_home();
+        let session = session_open(&home, &json!({"agentId":"studio-local","projectId":"project-1"})).unwrap();
+        prepare_artifact(&home, "project-1", 3);
+        let session_id = session["data"]["sessionId"].as_str().unwrap().to_owned();
+        for index in 0..32 {
+            task_dispatch(&home, "creator.task.create", &studio_goal(&session_id, &format!("bulk-goal-{index}")), None).unwrap();
+        }
+        let status = session_status(&home, &json!({"sessionId":&session_id})).unwrap();
+        let tasks = status["data"]["tasks"].as_array().unwrap();
+        assert_eq!(tasks.len(), 30);
+        assert_eq!(status["data"]["tasksTruncated"], json!(true));
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
