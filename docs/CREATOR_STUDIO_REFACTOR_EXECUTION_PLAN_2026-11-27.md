@@ -36,7 +36,7 @@
 | 05 · City Snapshot Test | MCP→Host→SDK 冻结快照 | ✅ MCP+桌面臂完成（渲染器导出待 PR08 接线） | `ed3eb4b7` + `4f5cfb90` | 见 §4.6 |
 | 06 · Scenario/Evidence | verdict 拆分与断言 | ✅ 完成（2026-11-27） | `3b5ca9eb` | 见 §4.8 |
 | 07 · Candidate/Release 门禁 | Host 统一证据检查 | ✅ 完成（2026-11-27） | `d4e14d02` | 见 §4.7 |
-| 08 · Automated Visual Playtest | 隔离 Preview 自动试玩 | 进行中 | — | — |
+| 08 · Automated Visual Playtest | 隔离 Preview 自动试玩 | ✅ 完成（2026-11-28） | `0ab0b7b4` | 见 §4.9 |
 | 09 · Candidate Workspace | 基线隔离 + CAS 接受 | 未开始 | — | — |
 | 10 · Code Game Task Adapter | StudioArtifactRef 统一 | 未开始 | — | — |
 | 11 · 有预算的自动修复 | 冻结验收标准 | 未开始 | — | — |
@@ -160,7 +160,29 @@ Tool spec 变更必须通过 `crates/agent-vitals-mcp/src/mcp/mod.rs` 的注册�
 - **事实链（已核实）**：`CityWorldSnapshotV4` 唯一生产者是 live 渲染器（`createCitySnapshotV4`，需活体 terrain sampler + generator identity digests）；宿主此前只持久化 layout 快照（`CityLayoutSnapshotV3`），渲染器从不向宿主发送世界快照。
 - **实现**：预览窗口新增窄白名单 `plugin_message` 通道 `city.snapshot.export`（label↔previewId 配对守卫）；宿主缓存 `state/creator/code-games/city-snapshots/<cityId>-<revision>.json`（原子写，≤1MiB−4KiB，每城保留最新 2 版），入库三重绑定（preview source 非合成且同城 + 权威 revision 现势 + header 身份自洽）；broker 服务 `creator.code.test.city_snapshot`（`creator_row` 管线 + Studio 在场 poll 拦截 + headless 臂三面同答），描述符响应预算提至 1MiB（§5.5 IPC 钳制上限），超限 `plugin_call_too_large` → MCP `creator_city_snapshot_unavailable`；同时新增 `creator.code.test.record` 桌面路由（UI 证据中心回读记录）。
 - **检查**：桌面 lib 576（+8，含 1MiB 满预算真实 respond_with_budget 回旋）。
-- **残留**：① 渲染器导出发射端（`startCodeGamePreviewV2` 物化快照后发一条 `city.snapshot.export`）**待 PR08 接线**——未接线前 City 路径诚实 fail-closed；② >1MiB 快照按策略钳制拒绝（调高需改 §5.5 钳制，桌面策略决定，本波不动）；③ 宿主校验为结构/身份一致性，密码学校验仍在 runner。
+- **残留**：① 渲染器导出发射端（`startCodeGamePreviewV2` 物化快照后发一条 `city.snapshot.export`）**待 PR08 接线**——未接线前 City 路径诚实 fail-closed（PR08 已接线，见 §4.9）；② >1MiB 快照按策略钳制拒绝（调高需改 §5.5 钳制，桌面策略决定，本波不动）；③ 宿主校验为结构/身份一致性，密码学校验仍在 runner。
+
+### 4.9 PR08 实施记录（`0ab0b7b4`）
+
+- **渲染器/SDK**：`CodeGameHostV2.setInput()`（≤32 个有界标量键、run 域、dispose 清空，游戏仅经 `ctx.input.actions()` 读取）；`CodeGameRunV2.setInput` 透传；`codeGamePreviewV2` 在真实城市快照物化后发射一次 `city.snapshot.export`（**PR05 导出环闭合**，仅带 `__AV_CODE_PREVIEW_ID__` 且非合成源）；playtest 控制信封并入既有 `city.code.preview.next` 拉取联合（`playtest.input/capture/end`）；`useCodeGamePreview` 防御性形状复核 + 应用到本窗口自己的 run + ack 发布（V1 run 诚实回 `game_run_not_found`）+ 经 `CityEngine.captureFrame` 截图 + `playtest.end` 释放按住键。
+- **桌面宿主**：每 preview 的会话层（`playtest.json`/`capture-request.json`/`screenshot.json`）；封闭动作词表（1..8 键、`[A-Za-z0-9_.-]`、bool 或有限数 ≤1e6）+ 常量上限（64 动作、120s 窗口、4 批队列、5s 按住、64 steps，预算计入排队动作）；每 preview 单活跃会话；run `finished/error` 时会话终态化并撤销截屏请求；serve 臂搭既有 `city.code.preview.next` 拉取（优先级 end→capture→input）；按 sessionId+seq 记录 ack；有界截屏存储（350K dataUrl 字符/512KiB 文件，绑 previewId/buildId/tick）；`studio_status_for` 增加 `playtest` 投影（lastInputAcceptedAtMs/lastError/acceptedActions）。**永不自动断言 passed**（结论留给 PR06 场景机制）。`code_preview_window.rs` 新增两个白名单 `plugin_message` 类型（`playtest.input.result`/`playtest.screenshot`，置于既有 label↔previewId 配对之后）。
+- **MCP**：新模块 `creator_code_playtest.rs`——`creator_code_playtest_input`（词表+上限，需 `--allow-local-writes`，preview 缺失/未运行 → `not_found`/`failed_precondition`）、`creator_code_playtest_screenshot`（有界，复用 `capture_result_envelope` 图像块纪律，诚实 `creator_capture_unavailable`）、`creator_code_playtest_stop`（幂等）、`creator_code_playtest_result`（只读，绑 previewId/buildId + 缓存时的城市快照摘要；**verdict-safe，无 passed/failed 字段**，断言指向 `creator_code_test`）；`mod.rs` 注册+权限闸；`creator_code_preview_status` 增加可选 playtest 投影。MCP 写侧与宿主 serve 侧独立执行同一封闭词表（篡改队列文件无法夹带越权动作）。
+- **关键设计**：无新宿主→webview 通道（控制搭既有轮询拉取；焦点隔离是结构性的——只有配对窗口的轮询能认领，setInput 只达本窗口的 run）；MCP 会话文件直写 `previews/<previewId>/`（`stage_preview` 先例，Studio 关闭时可用，不占 creator-studio 信箱）。
+- **检查**：桌面 lib 580（+4）、MCP 196（+5）、SDK 87 + typecheck、agent-city typecheck、UI 135（未触及）+ typecheck、clippy、`git diff --check` 全部干净。
+- **残留/待真机验证**：① webview 跳跃无法在宿主单元测试运行——input→serve→setInput→ack 全链按宿主侧测试（队列/serve/ack/预算/终态清理）+ 渲染器逻辑 typecheck 验证；**input/截屏往返、预览窗口截图、渲染器导出发射均待真机验证**；② 主 City 窗口导出接线按计划暂缓（合成与主窗口路径有意跳过导出，宿主无 previewId 无法配对）；③ apps/agent-city 对此 hook 无单元测试 harness（window/DOM 依赖），如实记为缺口；④ 自动试玩的输入/断言预算尚未与 PR11 的修复轮次预算挂钩（Wave 3 工作）。
+
+### 4.10 Wave 2 边界全套检查（2026-11-28，全部通过）
+
+| 检查 | 结果 |
+|---|---|
+| `cargo test -p agent-vitals-mcp` | 196 passed / 0 failed |
+| `npm run typecheck --prefix apps/creator-studio/ui` | 干净 |
+| `npm test --prefix apps/creator-studio/ui` | 135 passed / 0 failed |
+| `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib` | 580 passed / 0 failed |
+| `packages/city-game-sdk` npm test + typecheck | 87 passed / typecheck 干净 |
+| `npm run typecheck --prefix apps/agent-city/ui` | 干净（exit 0） |
+| `cargo clippy -p agent-vitals-mcp --all-targets -- -D warnings` | 干净 |
+| `git diff --check`（每次 Rust 提交前后） | 干净；未运行任何 Rust 格式化器 |
 
 ## 5. 待真机验证项（自动化覆盖不到，最终 MVP 验收由用户在桌面构建执行）
 
