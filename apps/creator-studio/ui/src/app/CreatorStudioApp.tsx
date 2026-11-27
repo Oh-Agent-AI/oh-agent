@@ -16,7 +16,7 @@ import { exportBlockMessage, exportClickBlock } from "../exportClick";
 import { AgentApprovalGate, matchesPreviewBase, type AgentCommit } from "../features/agent/agentApproval";
 import { useAgentActivity } from "../features/agent/useAgentActivity";
 import { AgentWorkspace } from "../features/agent/AgentWorkspace";
-import { useStudioTasks } from "../features/agent/useStudioTasks";
+import { useStudioTasks, type TaskScope } from "../features/agent/useStudioTasks";
 import { useWorkspaceFocusCycling } from "../features/workspace/workspaceFocus";
 import { taskCommitBlockedReason, taskHasSceneObjectPreview } from "../features/agent/taskCommit";
 import { useCreatorHostBridge } from "./useCreatorHostBridge";
@@ -246,7 +246,15 @@ export function CreatorStudioApp() {
   const agentPreviewEngineRef = useRef<CityEngine | null>(null);
   const selectedEntity = selection?.scope === selectionScope ? selection.reference ?? null : null;
   useEffect(() => { setSelection(null); setEntityDiagnostic(idlePreviewEntityDiagnostic); }, [selectionScope, route.section, installedWorldView]);
-  const studioTasks = useStudioTasks(creatorRequest, taskScope, !browserPreview && !!activeSessionId, !!(draftCityView || projectCityKey), activeSessionId,
+  // 单一任务控制器按活动工件切换 scope：Story 工具打开时整条链路（订阅、任务、
+  // 历史）切到 story 工件，杜绝 Story 面板自建第二套会话逻辑。
+  const [storyTaskScope, setStoryTaskScope] = useState<TaskScope>(null);
+  const storyTaskActive = activePanel === "story" && !!storyTool;
+  const activeTaskScope = storyTaskActive ? storyTaskScope : taskScope;
+  const studioTasks = useStudioTasks(creatorRequest, activeTaskScope,
+    !browserPreview && (storyTaskActive ? true : !!activeSessionId),
+    storyTaskActive ? false : !!(draftCityView || projectCityKey),
+    storyTaskActive ? null : activeSessionId,
     executor => { void studioSessions.savePreferredExecutor(executor); });
   // 会话档案里的首选执行器只在"切进这个会话"时回填一次；回填不写回 Host，
   // 否则每次切换都会把默认值当成用户偏好存下来。
@@ -1547,7 +1555,7 @@ export function CreatorStudioApp() {
           onOpenProject={() => openWorkspacePanel("project")} onMessage={setMessage}
         />}</>}
           {storyTool && <div hidden={activePanel !== "story"} className="workspace-story-tool">
-            <StoryEditorPanel request={creatorRequest} browserPreview={browserPreview} initialStoryId={storyTool.storyId} agentSlot={storyAgentSlot} onDraftStateChange={setStoryHasDraft} />
+            <StoryEditorPanel request={creatorRequest} browserPreview={browserPreview} initialStoryId={storyTool.storyId} agentSlot={storyAgentSlot} onDraftStateChange={setStoryHasDraft} taskController={studioTasks} onTaskScopeChange={setStoryTaskScope} />
           </div>}
         </WorkspaceContentDrawer>}
         releaseRequest={releaseRequest} onAction={handleWorkspaceAction} playtest={candidatePanel} diagnostics={diagnostics}

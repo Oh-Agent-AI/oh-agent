@@ -10,7 +10,7 @@ import {
 } from "./storyEditorModel";
 import { StoryPlaytestPanel } from "./StoryPlaytestPanel";
 import { AgentWorkspace } from "../agent/AgentWorkspace";
-import { useStudioTasks } from "../agent/useStudioTasks";
+import type { StudioTaskController, TaskScope } from "../agent/useStudioTasks";
 import { taskCommitBlockedReason } from "../agent/taskCommit";
 
 function JsonField(props: Readonly<{
@@ -107,7 +107,7 @@ function StoryBranchOverview({ document }: Readonly<{ document: StoryDocument }>
   </section>;
 }
 
-export function StoryEditorPanel({ request, browserPreview, initialStoryId, agentSlot, onDraftStateChange }: Readonly<{ request: CreatorRequest; browserPreview: boolean; initialStoryId?: string; agentSlot: HTMLDivElement | null; onDraftStateChange: (dirty: boolean) => void }>) {
+export function StoryEditorPanel({ request, browserPreview, initialStoryId, agentSlot, onDraftStateChange, taskController, onTaskScopeChange }: Readonly<{ request: CreatorRequest; browserPreview: boolean; initialStoryId?: string; agentSlot: HTMLDivElement | null; onDraftStateChange: (dirty: boolean) => void; taskController: StudioTaskController; onTaskScopeChange: (scope: TaskScope | null) => void }>) {
   const [projects, setProjects] = useState<readonly StoryProjectRow[]>([]);
   const [document, setDocument] = useState<StoryDocument | null>(null);
   const [savedDocument, setSavedDocument] = useState("");
@@ -139,7 +139,8 @@ export function StoryEditorPanel({ request, browserPreview, initialStoryId, agen
   const characters = document ? storyCharacterOptions(document.canon) : [];
   const character = characters.find(item => item.id === characterId);
   useEffect(() => { setCharacterId(""); }, [document?.storyId, document?.revision]);
-  const studioTasks = useStudioTasks(request, storyTaskScope, !browserPreview);
+  const studioTasks = taskController;
+  useEffect(() => { onTaskScopeChange(storyTaskScope); }, [storyTaskScope, onTaskScopeChange]);
 
   const loadProjects = async () => {
     setLoading(true); setError("");

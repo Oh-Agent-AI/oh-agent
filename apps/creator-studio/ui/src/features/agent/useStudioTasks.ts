@@ -6,7 +6,7 @@ import {
   type StudioCapabilityStatus, type StudioConnection, type StudioSessionHistory, type StudioTask, type StudioTaskEvent,
 } from "../../contracts/studioTask";
 
-type TaskScope = Readonly<{ kind: "creator-project"; projectId: string; revision: number } | { kind: "creator-city"; cityId: string; revision: number } | { kind: "creator-story"; storyId: string; revision: number }> | null;
+export type TaskScope = Readonly<{ kind: "creator-project"; projectId: string; revision: number } | { kind: "creator-city"; cityId: string; revision: number } | { kind: "creator-story"; storyId: string; revision: number }> | null;
 export type StudioSubscriptionStatus = "idle" | "connecting" | "live" | "reconnecting";
 
 export function useStudioTasks(request: CreatorRequest, scope: TaskScope, enabled = true, hasIsolatedViewport = false, sessionId: string | null = null,
