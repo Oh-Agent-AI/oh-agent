@@ -29,10 +29,10 @@
 
 | PR | 范围 | 状态 | 提交 | 实施记录 |
 |---|---|---|---|---|
-| 01 · Preview 身份隔离 | UI 绑定 previewId | 未开始 | — | — |
-| 02 · Workspace 幂等 | operationId 回执 | 未开始 | — | — |
-| 03 · TargetRefs 权威校验 | Host 创建/执行/提交校验 | 未开始 | — | — |
-| 04 · Runner 资源边界 | 超时/预算/环境清理/进程树回收 | 未开始 | — | — |
+| 01 · Preview 身份隔离 | UI 绑定 previewId | ✅ 完成（2026-11-27） | `3f2136ba` | 见 §4.1 |
+| 02 · Workspace 幂等 | operationId 回执 | ✅ 完成（2026-11-27） | `c4847bc0` | 见 §4.2 |
+| 03 · TargetRefs 权威校验 | Host 创建/执行/提交校验 | ✅ 完成（2026-11-27） | `e5293bed` | 见 §4.3 |
+| 04 · Runner 资源边界 | 超时/预算/环境清理/进程回收 | ✅ 完成（2026-11-27） | `cbdbf670` | 见 §4.4 |
 | 05 · City Snapshot Test | MCP→Host→SDK 冻结快照 | 未开始 | — | — |
 | 06 · Scenario/Evidence | verdict 拆分与断言 | 未开始 | — | — |
 | 07 · Candidate/Release 门禁 | Host 统一证据检查 | 未开始 | — | — |
@@ -75,12 +75,58 @@
 
 Tool spec 变更必须通过 `crates/agent-vitals-mcp/src/mcp/mod.rs` 的注册一致性测试（`tool_specs_and_dispatch_agree` 等）。Golden（`golden/`，vitals 数据面）仅在审查过的合同变更时刷新，本改造预计不触及。
 
-## 4. Wave 1 设计要点（已批准）
+## 4. Wave 1 设计要点（已批准）与实施记录（已完成）
 
-- **PR01**：`start()` 保存 `previewId`（组件态 + sessionStorage 按 workspace 持久化，支持重开恢复）；轮询/停止均带已存 ID；ID 失效显示未运行，不回退 legacy 全局状态；Host 双写保持兼容。测试：轮询带 ID、并行 A/B 不串线（`tests/code-game-preview.test.ts`）。
+**设计要点：**
+
+- **PR01**：`start()` 保存 `previewId`（组件态 + localStorage 按 build 持久化，支持重开恢复）；轮询/停止均带已存 ID；ID 失效显示未运行，不回退 legacy 全局状态；Host 双写保持兼容。
 - **PR02**：`state/creator/code-games/operations/<operationId>.json` 回执（请求 sha256 + 结果快照）；同 ID 同 hash 重放返回原结果，同 ID 异载荷报 `operation_id_conflict`；`WorkspaceMeta` 戳记 `operationId` 覆盖"已建未写回执"崩溃窗口。移植 `task_receipt` 模式。
-- **PR03**：task_create 校验 ref 归属（preview 属于任务 artifact scope、revision 一致，复用 `task_check_artifact` scope 表模式）；执行前复检；submit/confirm 校验 base revision + scope；错误码 `creator_target_ref_not_found/_stale/_scope_conflict`；TS 定义 `StudioTargetRef` tagged union 并保留 targetRefs。
-- **PR04**：`run_node` 移植 `creator_agent_executor.rs` 模式（env 白名单、墙钟超时轮询 + 进程组 kill、有界输出 + 截断标记、结构化超时诊断），build/test 分别设预算；SDK `previewGame.ts`/`headless.ts` 加自身 ticks 上界与墙钟保护。
+- **PR03**：task_create 校验 ref 归属（preview 属于任务 artifact scope、revision 一致，复用 `task_check_artifact` scope 表模式）；执行前复检；submit 校验 base revision + scope；错误码 `creator_target_ref_not_found/_stale/_scope_conflict`；TS 定义 `StudioTargetRef` tagged union 并保留 targetRefs。
+- **PR04**：`run_node` 移植 `creator_agent_executor.rs` 模式（env 白名单、墙钟超时轮询 + 进程回收、有界输出 + 截断标记、结构化超时诊断），build/test 分别设预算；SDK `previewGame.ts`/`headless.ts` 加自身 ticks 上界与墙钟保护。
+
+### 4.1 PR01 实施记录（`3f2136ba`）
+
+- **修改**：`src/codeGamePreview.ts`（新增 `CodePreviewCreatedV1`/`parseCodePreviewCreated`、previewId 校验、localStorage 绑定助手 `read/remember/clearCodePreviewId`、`boundCodePreviewRequest`、`isTerminalCodePreviewStatus`）；`features/preview/CodeGamePreviewPanel.tsx`（start 保存 previewId、轮询/停止仅走绑定身份、未绑定不发请求、终态解绑）；`tests/code-game-preview.test.ts`（+5 测试）。
+- **复用合同**：Host `studio_preview`/`studio_status_for`/`studio_stop`（均已有 per-previewId 权威面）；legacy 响应形状解析保持兼容。**无新合同**。
+- **Schema/golden**：无。localStorage 键 `oh-agent.studio.code-preview.v1:<buildId>`。
+- **检查**：UI typecheck 干净；`npm test` 131 通过（含 5 个新测试）。身份贯通：create 响应 previewId → localStorage → 轮询/停止载荷。
+- **残留**：绑定键为面板选中 buildId（组件无 workspaceId prop）；同一 build 的两个并行 Preview 共享一键（后 start 者获胜）；真实窗口级并行隔离**待真机验证**。
+
+### 4.2 PR02 实施记录（`c4847bc0`）
+
+- **修改**：仅 `creator_code_workspace.rs`。`OperationReceipt`（`state/creator/code-games/operations/<operationId>.json`，请求 sha256 覆盖 `{template,title}`）；重放同 hash 返回原结果，异载荷 `operation_id_conflict`；`WorkspaceMeta.operationId`（Option，向后兼容）先于回执落盘，崩溃扫描按 meta 补写回执；operationId 增加宿主 preview-id 同款字符集规则（回执文件名防路径注入）。
+- **复用**：creator_session `task_receipt`/`task_canonical_json` 模式与 `operation_id_conflict` 错误码；无新表（MCP 文件态，不经宿主 SQLite）。
+- **检查**：`cargo test -p agent-vitals-mcp` 173 通过（+5 新测试：重放/冲突/崩溃恢复/meta 兼容/字符集）。
+- **残留**：回执重放不复查工作区目录仍存在（回执即完成凭证）；幂等仅覆盖 project_create，工作区删除/改名不在合同内。
+
+### 4.3 PR03 实施记录（`e5293bed`）
+
+- **修改**：`creator_session.rs`（新 `task_check_target_refs`：projectRevision 对照 artifact 权威 revision；entityId 成员资格对照 project scene 文档 / story graph+canon；entityKind 域检查；cityRevision/worldRevision 对照绑定 City 快照；previewId 经 `creator.task.preview.verify` broker 核对台账。接入 create / execute 启动前 / submit 三段式复核（事务外，不持写锁））；`contracts/studioTask.ts`（类型化 `StudioTargetRef` union，线上扁平形状不变，`parseStudioTask` 保留 targetRefs）；`StudioTaskPanel.tsx`（仅带 previewId 的引用构造结构化绑定）；`useStudioTasks.ts`（签名类型化）；`tests/studio-task.test.ts`（+1）。
+- **新错误码**：`creator_target_ref_not_found / _stale / _scope_conflict`；宿主缺席 fail-closed `plugin_unavailable`。
+- **Schema/MCP spec**：无（`target_refs_json` 列已存在；tool spec 不变）。
+- **检查**：`cargo test -p agent-vitals-mcp` 179 通过（+3 新测试矩阵：伪造/过期/跨项目/scope 冲突 × 三种 artifact、fail-closed、全链路）；UI typecheck + 132 测试。
+- **残留（如实）**：① creator-city 的 city-building/city-decor 成员库在 City 运行时，本层只做 kind 域检查；② city/story preview 无 project 场景台账面，不做台账核对（scope+revision 仍强制）；③ 旧 City 文档无 worldRevision 时跳过该项（cityRevision 仍核对）；④ task_claim 不复检（拉取任务可超出 preview TTL，submit 是裁决闸）。
+- **UI 行为说明**：从 live 视口选取（无 previewId）不再发送结构化 ref（以前会 create 失败），人读名称保留在目标文本。
+
+### 4.4 PR04 实施记录（`cbdbf670`）
+
+- **修改**：`creator_code_workspace.rs`（`run_node` → `run_node_with_limits`：墙钟预算 build 120s / test 60s 常量、`env_clear` + `PATH/HOME/TMPDIR/TEMP/TMP/AGENT_VITALS_HOME` 白名单（NODE_OPTIONS 永不透传）、单流 256KiB 有界采集+截断标记、unix `process_group(0)`、超时 kill+wait、读取线程 2s 有界 join；build 超时 → `status=failed` + `game_execution_timeout` 结构化 diagnostics；test 超时 → 同码 ToolError 并入脚本错误码映射）；`previewGame.ts`（本地 3600 ticks 上限 + 50s 墙钟 deadline，双循环检查）；`headless.ts`（`TickGuardV1` 注入时钟，`advanceTicks` 可选守卫，默认行为不变）；`tests/runner-boundary.test.ts`（新）。
+- **偏差说明**：复用封闭诊断词表既有 `game_execution_timeout`，未新造 `runner_timeout`（诊断 union 不在本次范围）。
+- **Schema/MCP spec**：无（输入 schema 不变）。
+- **检查**：`cargo test -p agent-vitals-mcp` 179 通过（+3：死循环脚本预算内被杀、300KB 输出截断标记、env 泄漏探针）；city-game-sdk 79 通过 + typecheck 干净。
+- **残留（如实）**：未实现 CPU/内存 rlimit（需 libc/wait4，未引入新依赖）；孙进程（esbuild/tsc）不随进程组被信号终止，靠管道关闭退出、2s 有界 join 保证 MCP 不挂死。
+
+### 4.5 Wave 1 边界全套检查（2026-11-27，全部通过）
+
+| 检查 | 结果 |
+|---|---|
+| `cargo test -p agent-vitals-mcp` | 179 passed / 0 failed |
+| `npm run typecheck --prefix apps/creator-studio/ui` | 干净 |
+| `npm test --prefix apps/creator-studio/ui` | 132 passed / 0 failed |
+| `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib` | 566 passed / 0 failed |
+| `packages/city-game-sdk` npm test + typecheck | 79 passed / typecheck 干净 |
+| `cargo clippy -p agent-vitals-mcp --all-targets -- -D warnings` | 干净（修一处 PR03 测试 `single_match` lint：match→if let） |
+| `git diff --check`（每次 Rust 提交前后） | 干净；未运行任何 Rust 格式化器 |
 
 ## 5. 待真机验证项（自动化覆盖不到，最终 MVP 验收由用户在桌面构建执行）
 
