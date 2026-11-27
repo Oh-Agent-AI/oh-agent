@@ -37,8 +37,8 @@
 | 06 · Scenario/Evidence | verdict 拆分与断言 | ✅ 完成（2026-11-27） | `3b5ca9eb` | 见 §4.8 |
 | 07 · Candidate/Release 门禁 | Host 统一证据检查 | ✅ 完成（2026-11-27） | `d4e14d02` | 见 §4.7 |
 | 08 · Automated Visual Playtest | 隔离 Preview 自动试玩 | ✅ 完成（2026-11-28） | `0ab0b7b4` | 见 §4.9 |
-| 09 · Candidate Workspace | 基线隔离 + CAS 接受 | 未开始 | — | — |
-| 10 · Code Game Task Adapter | StudioArtifactRef 统一 | 未开始 | — | — |
+| 09 · Candidate Workspace | 基线隔离 + CAS 接受 | ✅ 完成（2026-11-28） | `f9047a00` | 见 §4.11 |
+| 10 · Code Game Task Adapter | StudioArtifactRef 统一 | 进行中 | — | — |
 | 11 · 有预算的自动修复 | 冻结验收标准 | 未开始 | — | — |
 | 12 · Template Registry | 统一模板元数据 | 未开始 | — | — |
 | 13 · Binding Resolver/Migration | 绑定提案与迁移 | 未开始 | — | — |
@@ -183,6 +183,17 @@ Tool spec 变更必须通过 `crates/agent-vitals-mcp/src/mcp/mod.rs` 的注册�
 | `npm run typecheck --prefix apps/agent-city/ui` | 干净（exit 0） |
 | `cargo clippy -p agent-vitals-mcp --all-targets -- -D warnings` | 干净 |
 | `git diff --check`（每次 Rust 提交前后） | 干净；未运行任何 Rust 格式化器 |
+
+### 4.11 PR09 实施记录（`f9047a00`）
+
+- **新模块 `creator_code_candidate.rs`**（含 ~600 测试行）：候选层镜像模块约定（中文文档、有界 IO、tmp+rename 原子性、sqlite 写锁、PR02 回执）。存储 `state/creator/code-games/candidates/<candidateId>/{candidate.json, tree/, baseline-pending/（瞬态）, commit.json（回执）}`；创建回执在 `candidate-operations/<operationId>.json`；锁在 `workspace-write-locks/candidate-<id>.sqlite`（同基线机制）。fork 为基线全树副本（≤128 文件/64MiB）；`candidate.json` 先于树副本落盘（中途崩溃可经 operationId 恢复）；树摘要每次操作重算。
+- **提交崩溃恢复不变量**：固定锁序（候选锁→基线锁，无环）；换树 = 两次 rename（`workspaces/<id>` → `baseline-pending`，再 `tree` → `workspaces/<id>`，tree 在换树前已补写完整 workspace.json）；崩溃点 (a) 首个 rename 前 = 无变化、(b) 两 rename 之间 = 下次提交补完、(c) 换树后回执前 = 下次提交只记账不重换、(d) 回执后 = 重放成功且绝不覆盖用户后续改动的基线。测试忠实复现 (b)(c)（手工 rename）+ 提交后篡改基线 → 重放原载荷且基线不动。
+- **CAS 双条件**：live 基线摘要必须等于调用方声明的 `expectedBaseRevision` 且仍等于 fork 时 `baseRevision`，任一不符 → `creator_candidate_baseline_changed`。
+- **工具面**：新增 `creator_code_candidate_create`（operationId 幂等 + expectedBaseRevision CAS + title）/`status`/`commit`/`discard`（幂等墓碑）/`list`（新序）/`submit`（诚实 `reviewBasis: tests-passed|tests-failed|tests-inconclusive|untested`，不因测试阻塞提交）；`file_read/file_write/build/test` 增加可选 `candidateId`（缺省时基线路径字节一致；候选写只取候选锁、CAS 候选摘要；`awaiting-review` 冻结树）；build 经扩展的 `buildGame.ts --candidate-id`（与 `--workspace-id` 互斥）密封 `candidate:<cid>:<digest>`（`candidate:` 前缀使候选构建对基线消费者不可见，防泄漏）。新稳定错误码：`creator_candidate_baseline_changed/_discarded/_committed/_locked_for_review/_limit`。
+- **身份链**：candidateId → candidateRevision（全树 sha256，与 workspace 同配方）→ buildId（`sourceRevision=candidate:<cid>:<digest>`，`build_candidate_revision` 校验）→ 测试记录（`tests/<buildId>.json` 携带候选摘要 + candidateId）→ `candidate.json.lastBuildId` 闭环。
+- **状态机**：`draft|building|testing|awaiting-review|accepted|rejected` 逐候选持久化；build/test 分别置 building/testing；discard 即删树留墓碑（构建/测试/证据在 state/ 下保留）。
+- **检查**：MCP 213（+25）；SDK 87 + typecheck；clippy 干净；真实 hello-city 构建端到端验证 candidate/workspace 两形态密封与 source map 归一化。
+- **残留（如实）**：候选写不共享基线锁（隔离按构造成立，仅 commit 取双锁）；fork 为全量副本（≤64MiB 下可接受，`dist/node_modules/.git` 排除并在提交后重建）；archive 即删除 + 墓碑至 prune；无 operationId 的 fork 崩溃可能留下孤立 draft（仅同 operationId 重试可恢复，否则 discard）；`awaiting-review` 不可撤销；`status/list` 为无锁读（与基线 `workspace_info` 同一致性级）；build/test-against-candidate 在身份管道 + 真实 builder CLI 层验证，MCP→Node 候选构建全路径未在 Rust 测试中执行（与既有基线路径测试惯例一致）。
 
 ## 5. 待真机验证项（自动化覆盖不到，最终 MVP 验收由用户在桌面构建执行）
 
