@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { canStopCodePreview, parseCodeBuilds, parseCodePreviewStatus, parseCodeStoryEvidence, type CodeBuildRowV1, type CodePreviewStatusV1, type CodeStoryEvidenceV1 } from "../../codeGamePreview";
+import { boundCodePreviewRequest, canStopCodePreview, clearCodePreviewId, isTerminalCodePreviewStatus, parseCodeBuilds, parseCodePreviewCreated, parseCodePreviewStatus, parseCodeStoryEvidence, rememberCodePreviewId, type CodeBuildRowV1, type CodePreviewStatusV1, type CodeStoryEvidenceV1 } from "../../codeGamePreview";
 import { parseCityListPage, type LibraryCityRow } from "../library/cityGameLibraryModel";
 
 type Request = <T>(method: string, payload: Record<string, unknown>) => Promise<T>;
@@ -37,9 +37,17 @@ export function CodeGamePreviewPanel(props: Readonly<{
     } catch (cause) { setError(cause instanceof Error ? cause.message : "creator_city_list_unavailable"); }
   }, [request]);
   const refreshStatus = useCallback(async () => {
-    try { setStatus(parseCodePreviewStatus(await request("creator.code.preview.status", {}))); }
-    catch { setStatus(null); }
-  }, [request]);
+    // 身份隔离：只按本 workspace 绑定的 previewId 走宿主权威状态；未绑定时呈现
+    // "未在运行"，绝不回退到最后写入者获胜的 legacy 全局投影。
+    const bound = boundCodePreviewRequest(buildId);
+    if (!bound) { setStatus(null); return; }
+    try {
+      const next = parseCodePreviewStatus(await request("creator.code.preview.status", bound));
+      if (!next.available) { setStatus(null); return; }
+      if (isTerminalCodePreviewStatus(next)) clearCodePreviewId(buildId);
+      setStatus(next);
+    } catch { setStatus(null); }
+  }, [request, buildId]);
   useEffect(() => {
     void loadBuilds();
     void loadCities();
@@ -76,18 +84,23 @@ export function CodeGamePreviewPanel(props: Readonly<{
     }
     setBusy(true);
     try {
-      await request("creator.code.preview", { buildId, seed: 7,
-        ...(sourceCity ? { source: { cityId: sourceCity.cityId, cityRevision: sourceCity.revision } } : {}) });
+      const created = parseCodePreviewCreated(await request("creator.code.preview", { buildId, seed: 7,
+        ...(sourceCity ? { source: { cityId: sourceCity.cityId, cityRevision: sourceCity.revision } } : {}) }));
+      if (created.buildId !== buildId) throw new Error("creator_code_preview_created_invalid");
+      rememberCodePreviewId(buildId, created.previewId);
       onMessage("已请求独立 Preview 窗口；不会打开、替换或聚焦主 City。");
       await refreshStatus();
     } catch (cause) { onMessage(`无法启动独立预览（${cause instanceof Error ? cause.message : "creator_preview_failed"}）。`); }
     finally { setBusy(false); }
   };
   const stop = async () => {
-    if (!status || !canStopCodePreview(status) || busy) return;
+    // 停止与轮询共用同一绑定身份：不得使用 legacy 状态里"别人的" previewId。
+    const bound = boundCodePreviewRequest(buildId);
+    if (!status || !bound || !canStopCodePreview(status) || busy) return;
     setBusy(true);
     try {
-      await request("creator.code.preview.stop", { previewId: status.previewId! });
+      await request("creator.code.preview.stop", bound);
+      clearCodePreviewId(buildId);
       onMessage("已请求停止当前 Preview。");
     } catch (cause) { onMessage(`无法停止 Preview（${cause instanceof Error ? cause.message : "game_run_not_found"}）。`); }
     finally { setBusy(false); }

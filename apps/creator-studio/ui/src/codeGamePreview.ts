@@ -47,6 +47,69 @@ export function parseCodePreviewStatus(value: unknown): CodePreviewStatusV1 {
     runId: text(raw.runId, 64), outcome, reason: text(raw.reason, 120), tick: count(raw.tick), entities: count(raw.entities), updatedAtMs: count(raw.updatedAtMs) });
 }
 
+/** `creator.code.preview`（创建）的响应：宿主 `studio_preview` 返回 requestId、
+ * previewId、buildId、seed 与 `status:"queued"`。previewId 是后续轮询/停止的唯一身份。 */
+export type CodePreviewCreatedV1 = Readonly<{
+  requestId: string;
+  previewId: string;
+  buildId: string;
+  seed: number | null;
+  status: string;
+}>;
+
+/** 与宿主 `valid_preview_id` 对齐：≤128、首字符字母数字、只含 [A-Za-z0-9_-]。 */
+export function isValidCodePreviewId(value: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value);
+}
+
+export function parseCodePreviewCreated(value: unknown): CodePreviewCreatedV1 {
+  if (!value || typeof value !== "object") throw new Error("creator_code_preview_created_invalid");
+  const raw = value as Record<string, unknown>;
+  const previewId = text(raw.previewId, 128);
+  const buildId = text(raw.buildId, 64);
+  if (!previewId || !isValidCodePreviewId(previewId) || !buildId || !/^[a-f0-9]{64}$/.test(buildId)) throw new Error("creator_code_preview_created_invalid");
+  return Object.freeze({ requestId: text(raw.requestId, 128) ?? "", previewId, buildId, seed: count(raw.seed), status: text(raw.status, 32) ?? "unknown" });
+}
+
+/**
+ * Preview 身份隔离：每个 workspace（本面板当前选中的 build）只绑定自己 start 出来的
+ * previewId，轮询与停止都带这个 ID 走宿主按 previewId 的权威状态路径，不再依赖
+ * "最后写入者获胜" 的 legacy 全局投影。用 localStorage（非 sessionStorage）保证关闭
+ * 并重开 Studio 后仍能接回自己的 Preview。存储内容按不可信输入校验（同 workspaceLayout）。
+ */
+const previewIdStorageKey = (scope: string): string => `oh-agent.studio.code-preview.v1:${scope}`;
+
+export function readCodePreviewId(scope: string): string | null {
+  if (!scope) return null;
+  try {
+    const raw = window.localStorage.getItem(previewIdStorageKey(scope));
+    return typeof raw === "string" && isValidCodePreviewId(raw) ? raw : null;
+  } catch { return null; }
+}
+
+export function rememberCodePreviewId(scope: string, previewId: string): void {
+  if (!scope || !isValidCodePreviewId(previewId)) return;
+  try { window.localStorage.setItem(previewIdStorageKey(scope), previewId); } catch { /* 绑定失败不挡创作；下次 start 重新绑定 */ }
+}
+
+export function clearCodePreviewId(scope: string): void {
+  if (!scope) return;
+  try { window.localStorage.removeItem(previewIdStorageKey(scope)); } catch { /* 清理失败无害：读到终态会再清 */ }
+}
+
+/** 本 workspace 绑定 Preview 的请求载荷（轮询与停止共用同一身份来源）；未绑定 → null，
+ * 此时 UI 必须呈现"未在运行"，不得回退 legacy 全局投影。 */
+export function boundCodePreviewRequest(scope: string): Readonly<{ previewId: string }> | null {
+  const previewId = readCodePreviewId(scope);
+  return previewId ? Object.freeze({ previewId }) : null;
+}
+
+/** 只有宿主确认的终态（finished/error）才允许清掉本地绑定；创建后、游戏首次上报前的
+ * `available:false` 不是终态，不能据此解绑，否则启动窗口期的轮询会丢失身份。 */
+export function isTerminalCodePreviewStatus(status: CodePreviewStatusV1): boolean {
+  return status.available && (status.status === "finished" || status.status === "error");
+}
+
 export type CodeStoryEvidenceV1 = Readonly<{
   available: boolean;
   storyRevision: string | null;
