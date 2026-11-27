@@ -33,10 +33,10 @@
 | 02 · Workspace 幂等 | operationId 回执 | ✅ 完成（2026-11-27） | `c4847bc0` | 见 §4.2 |
 | 03 · TargetRefs 权威校验 | Host 创建/执行/提交校验 | ✅ 完成（2026-11-27） | `e5293bed` | 见 §4.3 |
 | 04 · Runner 资源边界 | 超时/预算/环境清理/进程回收 | ✅ 完成（2026-11-27） | `cbdbf670` | 见 §4.4 |
-| 05 · City Snapshot Test | MCP→Host→SDK 冻结快照 | 🔄 MCP 侧完成（`ed3eb4b7`），桌面服务臂进行中 | `ed3eb4b7` + 待补 | 见 §4.6 |
-| 06 · Scenario/Evidence | verdict 拆分与断言 | 进行中 | — | — |
+| 05 · City Snapshot Test | MCP→Host→SDK 冻结快照 | ✅ MCP+桌面臂完成（渲染器导出待 PR08 接线） | `ed3eb4b7` + `4f5cfb90` | 见 §4.6 |
+| 06 · Scenario/Evidence | verdict 拆分与断言 | ✅ 完成（2026-11-27） | `3b5ca9eb` | 见 §4.8 |
 | 07 · Candidate/Release 门禁 | Host 统一证据检查 | ✅ 完成（2026-11-27） | `d4e14d02` | 见 §4.7 |
-| 08 · Automated Visual Playtest | 隔离 Preview 自动试玩 | 未开始 | — | — |
+| 08 · Automated Visual Playtest | 隔离 Preview 自动试玩 | 进行中 | — | — |
 | 09 · Candidate Workspace | 基线隔离 + CAS 接受 | 未开始 | — | — |
 | 10 · Code Game Task Adapter | StudioArtifactRef 统一 | 未开始 | — | — |
 | 11 · 有预算的自动修复 | 冻结验收标准 | 未开始 | — | — |
@@ -145,6 +145,22 @@ Tool spec 变更必须通过 `crates/agent-vitals-mcp/src/mcp/mod.rs` 的注册�
 - **测试种子**：`seed_host_verified_candidate` 助手（return_consumed=1、created_at_ms=1，不进 return_context、历史排序恒最旧）；`plugin_host.rs` headless 臂测试按协调者批准做仅测试代码最小修改（保持"无特例"性质，走同一道闸）。
 - **检查**：桌面 lib 567（+1 门禁矩阵测试）、MCP 188、UI 133、`git diff --check` 干净。
 - **残留（如实）**：人工评审记录（Review Record）未建模（PR06/PR09 落地时扩展）；MCP 门绑定 workspaceRevision，PR05 记录带 snapshotDigest 后可加强为摘要相等；桌面门禁错误码为 `&'static str`，面板展示宿主拒绝码需要新的状态线（范围外）。
+
+### 4.8 PR06 实施记录（`3b5ca9eb`；含 digest 对齐）与 PR05 桌面服务臂（`4f5cfb90`）
+
+**PR06（执行成功 ≠ 测试通过）：**
+- **SDK**：`src/testing/scenario.ts` 定义 `GameTestScenarioV1`（封闭断言词表 7 种：outcome / entityCountAtLeast / entityCountAtMost / hudFlag / counterAtLeast / counterEquals / finishedWithinTicks，全部 end-of-run 确定性求值；不可评定的断言报 `unknown`，verdict 降级 `inconclusive`，绝不静默通过；`entityPresent` 因 telemetry 无实体清单而明确不设）。evaluator 取结构化 `GameTestRunObservationV1`，`src/` 保持边界干净（无墙钟）。verdict 决策表：断言有 unknown → inconclusive；有 failed → failed（即使预算截断）；全过但游戏仍在 running → inconclusive/tick_budget_exhausted；全过且游戏自达终态 → passed。
+- **MCP**：`creator_code_test` 接受 ≤8KiB inline `scenario`（MCP 小形状检查，深度校验在 runner），响应恒有 `executionOk + verdict`（无场景 → inconclusive/no_scenario）；MCP 交叉复核 runner 的 verdict（不可信的 passed 降级 inconclusive）；失败路径记录 executionOk=false + verdict=failed。测试记录扩展同字段；PR07 发布门收紧为 `verdict==="passed"`（pre-PR06 无 verdict 记录 → stale）。新增只读 `creator_code_test_record` 工具（仅 buildId 入参，64KiB 界）。
+- **UI**：Evidence Center fail-closed 解析记录并渲染 executionOk/verdict/scenarioId/来源身份与逐断言结果（折叠）。
+- **digest 对齐（同提交）**：真实 SDK 快照 `snapshotDigest` 为 `sha256:<64hex>` 前缀格式——回执声明必须与 header 逐字相等（新增 verbatim 测试），原样传给 runner `--snapshot-digest`，接受前缀或裸 64-hex（兼容）。
+- **检查**：SDK 87（+7，含真实 sealed-build 无头运行）、MCP 192、UI 135、clippy 干净。
+- **残留**：无逐 tick 断言（runner 无历史）；场景仅请求级，无持久化库（PR09/PR11）；UI 经桌面路由回读记录（路由见下）。
+
+**PR05 桌面服务臂（`4f5cfb90`）：**
+- **事实链（已核实）**：`CityWorldSnapshotV4` 唯一生产者是 live 渲染器（`createCitySnapshotV4`，需活体 terrain sampler + generator identity digests）；宿主此前只持久化 layout 快照（`CityLayoutSnapshotV3`），渲染器从不向宿主发送世界快照。
+- **实现**：预览窗口新增窄白名单 `plugin_message` 通道 `city.snapshot.export`（label↔previewId 配对守卫）；宿主缓存 `state/creator/code-games/city-snapshots/<cityId>-<revision>.json`（原子写，≤1MiB−4KiB，每城保留最新 2 版），入库三重绑定（preview source 非合成且同城 + 权威 revision 现势 + header 身份自洽）；broker 服务 `creator.code.test.city_snapshot`（`creator_row` 管线 + Studio 在场 poll 拦截 + headless 臂三面同答），描述符响应预算提至 1MiB（§5.5 IPC 钳制上限），超限 `plugin_call_too_large` → MCP `creator_city_snapshot_unavailable`；同时新增 `creator.code.test.record` 桌面路由（UI 证据中心回读记录）。
+- **检查**：桌面 lib 576（+8，含 1MiB 满预算真实 respond_with_budget 回旋）。
+- **残留**：① 渲染器导出发射端（`startCodeGamePreviewV2` 物化快照后发一条 `city.snapshot.export`）**待 PR08 接线**——未接线前 City 路径诚实 fail-closed；② >1MiB 快照按策略钳制拒绝（调高需改 §5.5 钳制，桌面策略决定，本波不动）；③ 宿主校验为结构/身份一致性，密码学校验仍在 runner。
 
 ## 5. 待真机验证项（自动化覆盖不到，最终 MVP 验收由用户在桌面构建执行）
 
