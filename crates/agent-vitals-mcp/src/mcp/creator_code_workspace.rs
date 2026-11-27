@@ -112,12 +112,14 @@ pub fn specs() -> Vec<ToolSpec> {
         ),
         spec(
             "creator_code_test",
-            "Run a built Code Game headlessly for a bounded number of fixed ticks with a seeded world and return telemetry (status, outcome, tick, entities, HUD). This is the automated feedback loop; it does not replace the visual City acceptance. Requires `--allow-local-writes`.",
+            "Run a built Code Game headlessly for a bounded number of fixed ticks with a seeded world and return telemetry (status, outcome, tick, entities, HUD). The test source is explicit and mutually exclusive: pass `cityId` + `cityRevision` (both together) to run against the desktop host's frozen snapshot for exactly that City revision, or omit both to run the clearly-marked synthetic fixture. The response records which source actually ran; an unavailable or stale City is a structured non-executable error, never a silent fallback to the synthetic world. This is the automated feedback loop; it does not replace the visual City acceptance. Requires `--allow-local-writes`.",
             json!({
                 "workspaceId":{"type":"string","minLength":20,"maxLength":32},
                 "buildId":{"type":"string","minLength":64,"maxLength":64,"pattern":"^[0-9a-f]{64}$"},
                 "seed":{"type":"integer","minimum":0,"maximum":4294967295u32},
                 "ticks":{"type":"integer","minimum":1,"maximum":3600},
+                "cityId":{"type":"string","minLength":1,"maxLength":128},
+                "cityRevision":{"type":"integer","minimum":0},
             }),
             &["workspaceId", "buildId"],
         ),
@@ -701,29 +703,43 @@ fn code_test(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     if ticks == 0 || ticks > MAX_TICKS {
         return Err(ToolError::new("invalid_argument", format!("`ticks` must be from 1 to {MAX_TICKS}")));
     }
+    // 测试源显式化（PR05）：cityId+cityRevision 成对给出 → 宿主冻结的 City 快照；
+    // 都不给 → 合成 fixture。解析失败是结构化非可执行诊断，绝不静默回退合成世界。
+    let city_snapshot = code_test_city_source(args, data_home)?;
     let directory = workspace_dir(data_home, &workspace_id)?;
     let meta = read_meta(&directory)?;
     let revision = build_workspace_revision(data_home, &build_id, &meta)?;
     let repo = repo_root()?;
+    let mut runner_args = vec![
+        "--build".to_string(),
+        build_id.to_string(),
+        "--builds-dir".to_string(),
+        data_home.join("code-games").join("builds").to_string_lossy().to_string(),
+        "--seed".to_string(),
+        seed.to_string(),
+        "--ticks".to_string(),
+        ticks.to_string(),
+    ];
+    if let Some(snapshot) = &city_snapshot {
+        // City 路径：runner 侧 validateCityWorldSnapshot + header.snapshotDigest
+        // 对照是真正的密码学校验执行点；这里只负责把有界暂存的快照与 digest 交给它。
+        runner_args.push("--snapshot".to_string());
+        runner_args.push(snapshot.staged_path.to_string_lossy().to_string());
+        runner_args.push("--snapshot-digest".to_string());
+        runner_args.push(snapshot.digest.clone());
+    }
     let output = run_node_with_limits(
         &repo,
         "packages/city-game-sdk/scripts/previewGame.ts",
-        &[
-            "--build".to_string(),
-            build_id.to_string(),
-            "--builds-dir".to_string(),
-            data_home.join("code-games").join("builds").to_string_lossy().to_string(),
-            "--seed".to_string(),
-            seed.to_string(),
-            "--ticks".to_string(),
-            ticks.to_string(),
-        ],
+        &runner_args,
         &NodeRunLimits::test(),
     )?;
     // 与脚本自身的 `game_execution_timeout`（previewGame 的墙钟 deadline）同码：
     // 无头运行有界是 creator_code_test 既有响应形态的一部分——失败按 ToolError
     // 映射稳定错误码，绝不静默成功，也绝不挂死工具调用。
     if output.timed_out {
+        let source = code_test_source_record(city_snapshot.as_ref(), &Value::Null);
+        write_test_record(data_home, &build_id, &revision, false, seed, ticks, &source)?;
         return Err(ToolError::new(
             "game_execution_timeout",
             format!(
@@ -732,8 +748,15 @@ fn code_test(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
             ),
         ));
     }
-    let parsed: Value = serde_json::from_slice(&output.stdout)
-        .map_err(|_| ToolError::new("data_unavailable", "The headless runner returned no JSON result."))?;
+    let parsed: Value = match serde_json::from_slice(&output.stdout) {
+        Ok(parsed) => parsed,
+        // runner 跑了但没有可解析结果：同样是一条 ok:false 的门记录，再结构化报错。
+        Err(_) => {
+            let source = code_test_source_record(city_snapshot.as_ref(), &Value::Null);
+            write_test_record(data_home, &build_id, &revision, false, seed, ticks, &source)?;
+            return Err(ToolError::new("data_unavailable", "The headless runner returned no JSON result."));
+        }
+    };
     if parsed.get("ok").and_then(Value::as_bool) != Some(true) {
         let code: &'static str = match parsed.get("error").and_then(|error| error.get("code")).and_then(Value::as_str) {
             Some("game_entry_invalid") => "game_entry_invalid",
@@ -742,19 +765,236 @@ fn code_test(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
             Some("game_argument_invalid") => "game_argument_invalid",
             Some("game_world_object_missing") => "game_world_object_missing",
             Some("game_execution_timeout") => "game_execution_timeout",
+            // City 快照路径（PR05）：digest 不符是 runner 的执行点在把关，原样透出。
+            Some("game_package_integrity_failed") => "game_package_integrity_failed",
+            Some("game_manifest_unsupported") => "game_manifest_unsupported",
             _ => "game_runtime_fault",
         };
         let message = parsed.get("error").and_then(|error| error.get("message")).and_then(Value::as_str).unwrap_or("The headless run failed.");
+        let source = code_test_source_record(city_snapshot.as_ref(), &Value::Null);
+        write_test_record(data_home, &build_id, &revision, false, seed, ticks, &source)?;
         return Err(ToolError::new(code, message.to_string()));
     }
+    let telemetry = parsed.get("telemetry").cloned().unwrap_or(Value::Null);
+    let source = code_test_source_record(city_snapshot.as_ref(), &telemetry);
+    write_test_record(data_home, &build_id, &revision, true, seed, ticks, &source)?;
     Ok(json!({"ok":true,"data":{
         "workspaceId": workspace_id,
         "gameId": meta.game_id,
         "buildId": build_id,
         "gameRevision": revision,
-        "synthetic": true,
-        "telemetry": parsed.get("telemetry").cloned().unwrap_or(Value::Null),
+        "source": source,
+        "telemetry": telemetry,
     }}))
+}
+
+// ── City Snapshot Test（PR05）───────────────────────────────────────
+
+/// broker 等待预算：PR03 的 creator.task.preview.verify 同款 3s。
+const CITY_SNAPSHOT_BROKER_TIMEOUT_MS: u64 = 3_000;
+
+/// 一次 City 路径 code_test 的冻结快照：宿主解析、MCP 复核后有界暂存。
+#[derive(Debug)]
+struct CityTestSnapshot {
+    city_id: String,
+    city_revision: u64,
+    digest: String,
+    staged_path: PathBuf,
+}
+
+/// 测试源选择：`cityId`+`cityRevision` 必须成对出现（只给一半是无效请求，不是
+/// 静默降级）；都不给 = 明确标记的合成 fixture（允许但响应如实标注）。
+fn code_test_city_source(args: &Value, data_home: &Path) -> Result<Option<CityTestSnapshot>, ToolError> {
+    let city_id = args.get("cityId").and_then(Value::as_str);
+    let city_revision = args.get("cityRevision").and_then(Value::as_u64);
+    match (city_id, city_revision) {
+        (None, None) => Ok(None),
+        (Some(city_id), Some(revision)) => resolve_city_test_snapshot(data_home, city_id, revision).map(Some),
+        _ => Err(ToolError::new(
+            "invalid_argument",
+            "`cityId` and `cityRevision` must be passed together, or omit both to run the synthetic fixture.",
+        )),
+    }
+}
+
+/// 响应/记录里的来源声明：合成 → `{source:"synthetic"}`；City → `{source:"city",
+/// cityId, cityRevision, snapshotDigest}`。runner telemetry 报告的世界身份可用时
+/// 以它为准（回显 runner 实际跑的世界），否则回退宿主冻结的解析结果。
+fn code_test_source_record(city_snapshot: Option<&CityTestSnapshot>, telemetry: &Value) -> Value {
+    match city_snapshot {
+        None => json!({"source":"synthetic"}),
+        Some(snapshot) => {
+            let city_id = telemetry.get("cityId").and_then(Value::as_str).unwrap_or(&snapshot.city_id);
+            let city_revision = telemetry.get("cityRevision").and_then(Value::as_u64).unwrap_or(snapshot.city_revision);
+            let digest = telemetry.get("snapshotDigest").and_then(Value::as_str).unwrap_or(&snapshot.digest);
+            json!({"source":"city","cityId":city_id,"cityRevision":city_revision,"snapshotDigest":digest})
+        }
+    }
+}
+
+/// 解析 `cityId + cityRevision` 的宿主冻结 City 世界快照。权限链（每步都
+/// fail-closed，绝不回退合成世界）：
+///
+/// 1. MCP 直读权威 scope 表（PR03 task_check_target_refs 同源）复核 revision：
+///    请求的 revision 已被更新 → `creator_city_revision_stale`；
+/// 2. broker 请宿主冻结快照（`creator-studio` / `creator.code.test.city_snapshot`，
+///    载荷 `{cityId, cityRevision}`，回执 `{snapshotDigest, snapshotJson}`）：
+///    宿主是 City 数据与 live 视口的权威——`creator_cities.document_json` 是配方
+///    （name/seed/profile/planPatch），不是 `CityWorldSnapshotV4`， terrain/roads/
+///    digests 只能由宿主侧 City 生成器确定，MCP 无法离线重算；
+/// 3. MCP 复核回执自洽（声明的 digest/cityId/cityRevision 必须与快照 header 一致，
+///    `creator_city_snapshot_invalid`）；真正的密码学校验在 runner 的
+///    validateCityWorldSnapshot + `--snapshot-digest` 对照；
+/// 4. 有界（MAX_SNAPSHOT_BYTES）暂存到 MCP 状态区
+///    `state/creator/code-games/test-snapshots/<cityId>-<revision>.json`（tmp+rename）。
+///
+/// 新错误码（本 crate 词表风格）：`creator_city_snapshot_unavailable`（城市缺失 /
+/// 宿主缺席 / broker 不可达 / 回执不可用）、`creator_city_revision_stale`、
+/// `creator_city_snapshot_too_large`、`creator_city_snapshot_invalid`。
+fn resolve_city_test_snapshot(data_home: &Path, city_id: &str, city_revision: u64) -> Result<CityTestSnapshot, ToolError> {
+    use rusqlite::OptionalExtension;
+    if !valid_city_id(city_id) {
+        return Err(ToolError::new("invalid_argument", "`cityId` must look like a saved City id (at most 128 characters: letters/digits, then `:`/`.`/`_`/`-`)."));
+    }
+    // 1) 本地权威 revision 复核。
+    let host_db = data_home.join("state/creator/projects.sqlite");
+    if !host_db.is_file() {
+        return Err(city_snapshot_unavailable("The desktop host has no saved City data in this data home; run the desktop app and load the City first."));
+    }
+    let db = rusqlite::Connection::open_with_flags(&host_db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| city_snapshot_unavailable(&format!("The authoritative City store is unavailable ({error}).")))?;
+    db.busy_timeout(std::time::Duration::from_millis(2_000))
+        .map_err(|_| city_snapshot_unavailable("The authoritative City store is busy."))?;
+    let current: Option<u64> = db
+        .query_row("SELECT revision FROM creator_cities WHERE city_id=?1", [city_id], |row| row.get(0))
+        .optional()
+        .map_err(|error| city_snapshot_unavailable(&format!("The authoritative City table is unreadable ({error}).")))?;
+    let current = match current {
+        Some(current) => current,
+        None => return Err(city_snapshot_unavailable("No saved City with that cityId exists in this data home.")),
+    };
+    if current != city_revision {
+        return Err(ToolError::new(
+            "creator_city_revision_stale",
+            format!("City `{city_id}` is now at revision {current}; revision {city_revision} can no longer be tested. Re-read the City and retry with the current revision."),
+        ));
+    }
+    // 2) broker：宿主冻结快照（PR03 creator.task.preview.verify 同模式）。
+    let response = agent_vitals_query::query::plugin_calls::call(
+        data_home,
+        "creator-studio",
+        "creator.code.test.city_snapshot",
+        &json!({"cityId": city_id, "cityRevision": city_revision}),
+        CITY_SNAPSHOT_BROKER_TIMEOUT_MS,
+    );
+    let response = match response {
+        Ok(response) => response,
+        // 传输层不可达 = 宿主缺席：诚实失败（fail-closed），绝不降级采信合成世界。
+        Err(code) => return Err(city_snapshot_unavailable(&format!(
+            "The desktop host did not serve the frozen City snapshot ({code}); start the desktop app with the City loaded and retry."
+        ))),
+    };
+    if response["ok"] != true {
+        let code = response["error"]["code"].as_str().unwrap_or_default();
+        return Err(match code {
+            "creator_city_revision_stale" | "creator_city_revision_mismatch" => ToolError::new(
+                "creator_city_revision_stale",
+                "The host reports the requested City revision is no longer authoritative; re-read the City and retry.",
+            ),
+            _ => city_snapshot_unavailable(&format!("The host could not resolve the City snapshot ({code}).")),
+        });
+    }
+    // 3) 回执自洽复核（宿主声明 vs 快照 header 的世界身份）。
+    let result = &response["result"];
+    let digest = result["snapshotDigest"].as_str().filter(|value| {
+        value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    });
+    let Some(digest) = digest else {
+        return Err(city_snapshot_unavailable("The host's snapshot receipt carries no usable snapshotDigest."));
+    };
+    let Some(snapshot_json) = result["snapshotJson"].as_str() else {
+        return Err(city_snapshot_unavailable("The host's snapshot receipt carries no snapshot bytes."));
+    };
+    let parsed: Value = serde_json::from_str(snapshot_json)
+        .map_err(|_| ToolError::new("creator_city_snapshot_invalid", "The host's frozen City snapshot is not valid JSON."))?;
+    let header = &parsed["header"];
+    if header["snapshotDigest"].as_str() != Some(digest)
+        || header["cityId"].as_str() != Some(city_id)
+        || header["cityRevision"].as_u64() != Some(city_revision)
+    {
+        return Err(ToolError::new(
+            "creator_city_snapshot_invalid",
+            "The host's frozen City snapshot does not match its declared identity (cityId/cityRevision/snapshotDigest).",
+        ));
+    }
+    // 4) 有界暂存（tmp+rename，回执同款）。
+    let staged_path = stage_city_snapshot(data_home, city_id, city_revision, snapshot_json.as_bytes())?;
+    Ok(CityTestSnapshot {
+        city_id: city_id.to_owned(),
+        city_revision,
+        digest: digest.to_owned(),
+        staged_path,
+    })
+}
+
+fn city_snapshot_unavailable(message: &str) -> ToolError {
+    ToolError::new("creator_city_snapshot_unavailable", message)
+}
+
+/// 宿主 city id 词表（city_runtime::valid_id 同规则）：字母数字开头，后续允许
+/// `:`/`.`/`_`/`-`。cityId 会成为暂存文件名的一部分，先挡路径注入。
+fn valid_city_id(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 128
+        && value.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && value.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '.' | '_' | '-'))
+}
+
+fn stage_city_snapshot(data_home: &Path, city_id: &str, city_revision: u64, bytes: &[u8]) -> Result<PathBuf, ToolError> {
+    if bytes.len() as u64 > MAX_SNAPSHOT_BYTES {
+        return Err(ToolError::new(
+            "creator_city_snapshot_too_large",
+            format!("The frozen City snapshot exceeds the {} byte staging budget.", MAX_SNAPSHOT_BYTES),
+        ));
+    }
+    let root = data_home.join("state/creator/code-games").join("test-snapshots");
+    std::fs::create_dir_all(&root)
+        .map_err(|_| city_snapshot_unavailable("Cannot create the City snapshot staging directory."))?;
+    // cityId 已按宿主词表校验（无路径分隔符），revision 是 u64：目标恒为单一安全
+    // 组件，调用方无法借 cityId 传任意路径。
+    let target = root.join(format!("{city_id}-{city_revision}.json"));
+    let temporary = root.join(format!("{city_id}-{city_revision}.json.tmp"));
+    std::fs::write(&temporary, bytes)
+        .map_err(|_| city_snapshot_unavailable("Cannot stage the frozen City snapshot."))?;
+    std::fs::rename(&temporary, &target)
+        .map_err(|_| city_snapshot_unavailable("Cannot publish the staged City snapshot."))?;
+    Ok(target)
+}
+
+/// PR07 发布门消费的最小试玩记录（PR06 将扩展 verdict/scenario/assertions 字段；
+/// 本 PR 不接任何消费方）。每次真正跑到 runner 的 code_test（合成与 City 两条路径
+/// 都算）落一条：ok 反映 runner 结果；解析期诊断（城市缺失/stale/宿主缺席）没有
+/// 运行发生，不落记录，由结构化 ToolError 负责。落盘
+/// `<data_home>/state/creator/code-games/tests/<buildId>.json`，tmp+rename 原子发布。
+fn write_test_record(data_home: &Path, build_id: &str, workspace_revision: &str, ok: bool, seed: u64, ticks: u64, source: &Value) -> Result<(), ToolError> {
+    let record = json!({
+        "buildId": build_id,
+        "workspaceRevision": workspace_revision,
+        "ok": ok,
+        "seed": seed,
+        "ticks": ticks,
+        "source": source,
+        "atMs": now_ms(),
+    });
+    let root = data_home.join("state/creator/code-games").join("tests");
+    std::fs::create_dir_all(&root)
+        .map_err(|_| ToolError::new("storage_unavailable", "Cannot create the code test record directory."))?;
+    let bytes = serde_json::to_vec(&record)
+        .map_err(|_| ToolError::new("internal_error", "Cannot encode the code test record."))?;
+    let temporary = root.join(format!("{build_id}.json.tmp"));
+    std::fs::write(&temporary, bytes)
+        .map_err(|_| ToolError::new("storage_unavailable", "Cannot write the code test record."))?;
+    std::fs::rename(&temporary, root.join(format!("{build_id}.json")))
+        .map_err(|_| ToolError::new("storage_unavailable", "Cannot publish the code test record."))
 }
 
 // ── filesystem helpers ─────────────────────────────────────────────
@@ -1468,5 +1708,205 @@ mod tests {
         assert!(!child_env.contains_key("NODE_OPTIONS"), "NODE_OPTIONS must never be forwarded");
         std::fs::remove_dir_all(marker_home).ok();
         std::fs::remove_dir_all(script.parent().unwrap()).ok();
+    }
+
+    // ── PR05 City Snapshot Test ─────────────────────────────────────
+
+    /// 权威源夹具：creator_cities 表 + city-1（rev 7），PR03 targetRefs 同款。
+    fn prepare_city_fixture(home: &Path) {
+        std::fs::create_dir_all(home.join("state/creator")).unwrap();
+        let db = rusqlite::Connection::open(home.join("state/creator/projects.sqlite")).unwrap();
+        db.execute_batch(
+            "CREATE TABLE creator_cities(city_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, document_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+             INSERT INTO creator_cities VALUES('city-1',7,'{\"cityId\":\"city-1\",\"cityRevision\":7,\"worldRevision\":\"world-v7\"}',1,1);",
+        ).unwrap();
+    }
+
+    /// 自洽的最小快照 fixture：header 携带 PR05 复核的三元组（真实密码学校验由
+    /// runner 的 validateCityWorldSnapshot 承担，本层测试不重算 canonical digest）。
+    fn fixture_snapshot(city_id: &str, revision: u64, digest: &str) -> String {
+        json!({
+            "schemaVersion": 4,
+            "header": {"schemaVersion": 1, "cityId": city_id, "cityRevision": revision, "snapshotDigest": digest, "seed": 7},
+            "terrain": {"format": "heightfield-tiles-v1", "tiles": []},
+        }).to_string()
+    }
+
+    /// 假宿主冻结快照服务：替答 creator.code.test.city_snapshot broker 调用（测试
+    /// 环境没有桌面宿主进程）。response 按 PR05 合同：ok → {snapshotDigest,
+    /// snapshotJson}，宿主错误 → {ok:false, error:{code}}。返回停止位；home 目录
+    /// 消失时线程自行退出。
+    fn fake_snapshot_host(home: &Path, response: Value) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread_home = home.to_path_buf();
+        let thread_response = response;
+        let thread_stop = stop.clone();
+        std::thread::spawn(move || {
+            let methods = [String::from("creator.code.test.city_snapshot")];
+            while !thread_stop.load(std::sync::atomic::Ordering::Relaxed) && thread_home.exists() {
+                if let Ok(claimed) = agent_vitals_query::query::plugin_calls::claim_pending(&thread_home, "creator-studio", "test-host", &methods, 4) {
+                    for call in claimed {
+                        let _ = agent_vitals_query::query::plugin_calls::respond(&thread_home, "creator-studio", "test-host",
+                            call["callId"].as_str().unwrap_or_default(), &thread_response);
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        });
+        stop
+    }
+
+    fn no_run_artifacts(home: &Path) {
+        assert!(!home.join("state/creator/code-games/test-snapshots").exists(), "no snapshot may be staged for a failed resolution");
+        assert!(!home.join("state/creator/code-games/tests").exists(), "no test record may be written for a run that never happened");
+    }
+
+    /// City 路径解析：本地 revision 复核 → 宿主冻结回执 → 自洽复核 → 有界暂存；
+    /// source 声明优先回显 runner telemetry 的世界身份，无 telemetry 时回退宿主
+    /// 冻结身份；合成路径的声明是显式的 `{source:"synthetic"}`。
+    #[test]
+    fn city_test_source_resolves_via_the_host_and_stages_the_frozen_snapshot() {
+        let home = std::env::temp_dir().join(format!("code-game-city-resolve-{}-{}", now_ms(), std::process::id()));
+        prepare_city_fixture(&home);
+        let digest = sha256_hex(b"city-fixture");
+        let snapshot_json = fixture_snapshot("city-1", 7, &digest);
+        let host = fake_snapshot_host(&home, json!({"ok":true,"result":{"snapshotDigest":digest,"snapshotJson":snapshot_json}}));
+        let resolved = resolve_city_test_snapshot(&home, "city-1", 7).unwrap();
+        assert_eq!(resolved.city_id, "city-1");
+        assert_eq!(resolved.city_revision, 7);
+        assert_eq!(resolved.digest, digest);
+        let staged = home.join("state/creator/code-games/test-snapshots/city-1-7.json");
+        assert_eq!(resolved.staged_path, staged);
+        assert_eq!(std::fs::read(&staged).unwrap(), snapshot_json.as_bytes(), "staged bytes must be the frozen snapshot");
+        assert!(!staged.with_extension("json.tmp").exists(), "staging must be atomic (tmp+rename)");
+        let fallback = code_test_source_record(Some(&resolved), &Value::Null);
+        assert_eq!(fallback, json!({"source":"city","cityId":"city-1","cityRevision":7,"snapshotDigest":digest}));
+        let telemetry = json!({"cityId":"city-1","cityRevision":7,"snapshotDigest":sha256_hex(b"telemetry"),"worldRevision":"world-9"});
+        let echoed = code_test_source_record(Some(&resolved), &telemetry);
+        assert_eq!(echoed, json!({"source":"city","cityId":"city-1","cityRevision":7,"snapshotDigest":sha256_hex(b"telemetry")}));
+        assert_eq!(code_test_source_record(None, &Value::Null), json!({"source":"synthetic"}));
+        host.store(true, std::sync::atomic::Ordering::Relaxed);
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// 成对选择是硬约束：只给一半是无效请求（不是静默降级）；cityId 走宿主词表
+    /// （挡路径注入）。
+    #[test]
+    fn code_test_city_source_requires_a_paired_valid_selection() {
+        let home = std::env::temp_dir().join(format!("code-game-city-pairing-{}-{}", now_ms(), std::process::id()));
+        assert!(code_test_city_source(&json!({}), &home).unwrap().is_none());
+        assert_eq!(code_test_city_source(&json!({"cityId":"city-1"}), &home).unwrap_err().code, "invalid_argument");
+        assert_eq!(code_test_city_source(&json!({"cityRevision":7}), &home).unwrap_err().code, "invalid_argument");
+        for id in ["../escape", "a/b", ".hidden", ""] {
+            assert_eq!(code_test_city_source(&json!({"cityId":id,"cityRevision":7}), &home).unwrap_err().code, "invalid_argument", "accepted {id}");
+        }
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// 本地权威 revision 已前进 → 结构化 stale，不碰 broker、不暂存、不落记录、
+    /// 绝不回退合成世界。
+    #[test]
+    fn stale_city_revision_is_structured_without_a_run_or_fallback() {
+        let home = std::env::temp_dir().join(format!("code-game-city-stale-{}-{}", now_ms(), std::process::id()));
+        prepare_city_fixture(&home);
+        let digest = sha256_hex(b"city-fixture");
+        // 宿主在场且乐于服务 rev 7：stale 仍必须在本地复核处短路。
+        let host = fake_snapshot_host(&home, json!({"ok":true,"result":{"snapshotDigest":digest,"snapshotJson":fixture_snapshot("city-1", 7, &digest)}}));
+        let error = resolve_city_test_snapshot(&home, "city-1", 6).unwrap_err();
+        assert_eq!(error.code, "creator_city_revision_stale");
+        no_run_artifacts(&home);
+        host.store(true, std::sync::atomic::Ordering::Relaxed);
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// 宿主复核报告 stale（本地复核通过后权威又前进）→ 同一结构化码。
+    #[test]
+    fn host_reported_stale_maps_to_the_structured_code() {
+        let home = std::env::temp_dir().join(format!("code-game-city-host-stale-{}-{}", now_ms(), std::process::id()));
+        prepare_city_fixture(&home);
+        let host = fake_snapshot_host(&home, json!({"ok":false,"error":{"code":"creator_city_revision_stale"}}));
+        let error = resolve_city_test_snapshot(&home, "city-1", 7).unwrap_err();
+        assert_eq!(error.code, "creator_city_revision_stale");
+        no_run_artifacts(&home);
+        host.store(true, std::sync::atomic::Ordering::Relaxed);
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// 城市缺失（权威表查无）→ 结构化不可执行，宿主服务线程无关紧要。
+    #[test]
+    fn missing_city_fails_closed_without_a_fallback() {
+        let home = std::env::temp_dir().join(format!("code-game-city-missing-{}-{}", now_ms(), std::process::id()));
+        prepare_city_fixture(&home);
+        let digest = sha256_hex(b"city-fixture");
+        let host = fake_snapshot_host(&home, json!({"ok":true,"result":{"snapshotDigest":digest,"snapshotJson":fixture_snapshot("city-none", 7, &digest)}}));
+        let error = resolve_city_test_snapshot(&home, "city-none", 7).unwrap_err();
+        assert_eq!(error.code, "creator_city_snapshot_unavailable");
+        no_run_artifacts(&home);
+        host.store(true, std::sync::atomic::Ordering::Relaxed);
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// 宿主缺席（broker 3s 超时）→ fail-closed 结构化不可执行，绝不静默降级为
+    /// 合成 fixture（与 PR03 的 fail-closed 语义同款）。
+    #[test]
+    fn absent_host_fails_closed_without_a_synthetic_fallback() {
+        let home = std::env::temp_dir().join(format!("code-game-city-absent-{}-{}", now_ms(), std::process::id()));
+        prepare_city_fixture(&home);
+        let error = resolve_city_test_snapshot(&home, "city-1", 7).unwrap_err();
+        assert_eq!(error.code, "creator_city_snapshot_unavailable");
+        no_run_artifacts(&home);
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// 回执自洽复核：声明的 digest 与快照 header 世界身份不一致 → 拒收，不留暂存。
+    #[test]
+    fn snapshot_receipt_identity_mismatch_is_rejected() {
+        let home = std::env::temp_dir().join(format!("code-game-city-mismatch-{}-{}", now_ms(), std::process::id()));
+        prepare_city_fixture(&home);
+        let header_digest = sha256_hex(b"header");
+        let declared = sha256_hex(b"declared");
+        let host = fake_snapshot_host(&home, json!({"ok":true,"result":{"snapshotDigest":declared,"snapshotJson":fixture_snapshot("city-1", 7, &header_digest)}}));
+        let error = resolve_city_test_snapshot(&home, "city-1", 7).unwrap_err();
+        assert_eq!(error.code, "creator_city_snapshot_invalid");
+        no_run_artifacts(&home);
+        host.store(true, std::sync::atomic::Ordering::Relaxed);
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// 暂存预算：超过 MAX_SNAPSHOT_BYTES 的冻结快照按结构化 too_large 拒绝。
+    #[test]
+    fn oversized_snapshot_is_rejected_at_the_staging_budget() {
+        let home = std::env::temp_dir().join(format!("code-game-city-oversize-{}-{}", now_ms(), std::process::id()));
+        let bytes = vec![b'a'; MAX_SNAPSHOT_BYTES as usize + 1];
+        let error = stage_city_snapshot(&home, "city-1", 7, &bytes).unwrap_err();
+        assert_eq!(error.code, "creator_city_snapshot_too_large");
+        assert!(!home.join("state/creator/code-games/test-snapshots").exists());
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// PR07 门最小记录：合成与 City 两条路径的记录形状、原子发布（无 .tmp 残留）
+    /// 与同 buildId 覆盖语义。PR06 将扩展 verdict/scenario/assertions 字段。
+    #[test]
+    fn test_records_are_atomic_and_reflect_the_source() {
+        let home = std::env::temp_dir().join(format!("code-game-city-record-{}-{}", now_ms(), std::process::id()));
+        let build_id = "a".repeat(64);
+        let synthetic = json!({"source":"synthetic"});
+        write_test_record(&home, &build_id, "b".repeat(64).as_str(), true, 7, 600, &synthetic).unwrap();
+        let path = home.join("state/creator/code-games/tests").join(format!("{build_id}.json"));
+        let record: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(record["buildId"], build_id);
+        assert_eq!(record["workspaceRevision"], "b".repeat(64));
+        assert_eq!(record["ok"], true);
+        assert_eq!(record["seed"], 7);
+        assert_eq!(record["ticks"], 600);
+        assert_eq!(record["source"], synthetic);
+        assert!(record["atMs"].is_u64());
+        assert!(!path.with_extension("json.tmp").exists(), "records must publish atomically");
+        let city = json!({"source":"city","cityId":"city-1","cityRevision":7,"snapshotDigest":sha256_hex(b"city-fixture")});
+        write_test_record(&home, &build_id, "b".repeat(64).as_str(), false, 7, 600, &city).unwrap();
+        let overwritten: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(overwritten["ok"], false);
+        assert_eq!(overwritten["source"], city);
+        std::fs::remove_dir_all(home).ok();
     }
 }
