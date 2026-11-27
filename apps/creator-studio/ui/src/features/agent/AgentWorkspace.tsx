@@ -34,10 +34,12 @@ export function AgentWorkspace(props: Readonly<{
   commitBlockedReason?: string | null;
   /** 任务构件是否就绪（project 或 City scope 均可）；City 只读预览下 project 为空但仍可创作。 */
   scopeReady?: boolean;
+  /** 窄屏（≤800px）Sessions 抽屉开关；按钮只在窄屏媒体查询里可见。 */
+  onToggleSessions?: () => void;
 }>) {
-  const { project, taskController, browserPreview, agentCommit, agentActivity, agentCityPreview, agentPreviewStatus, busy, goal, onGoalChange, onResolve, commitBlockedReason, scopeReady } = props;
+  const { project, taskController, browserPreview, agentCommit, agentActivity, agentCityPreview, agentPreviewStatus, busy, goal, onGoalChange, onResolve, commitBlockedReason, scopeReady, onToggleSessions } = props;
   const [demoAgent, setDemoAgent] = useState("Codex ACP");
-  if (browserPreview) return <section className="agent-panel agent-workspace" {...workspaceAreaProps("agent", 2, "Agent 创作伙伴")}>
+  if (browserPreview) return <section className="agent-panel agent-workspace" {...workspaceAreaProps("agent", 1, "Agent 创作伙伴")}>
     <label className="agent-executor">选择 Agent（演示）
       <select aria-label="选择 Agent（演示）" value={demoAgent} onChange={event => setDemoAgent(event.target.value)}>
         {["Codex ACP", "Kimi Code", "DeepSeek Harness"].map(name => <option key={name}>{name}</option>)}
@@ -52,9 +54,9 @@ export function AgentWorkspace(props: Readonly<{
   const selected = taskController.capabilities?.executors.find(item => item.id === taskController.executor);
   const connectionLabel = !taskController.capabilities ? "正在检查连接" : !taskController.capabilities.studioOnline ? "Studio 离线"
     : selected?.available && selected.modes.some(mode => mode.restricted) ? "可用于创作" : "请选择可用 Agent";
-  return <section className="agent-panel agent-workspace" {...workspaceAreaProps("agent", 2, "Agent 面板")}>
+  return <section className="agent-panel agent-workspace" {...workspaceAreaProps("agent", 1, "Agent 面板")}>
     <AgentSelector controller={taskController} />
-    <div className="agent-workspace-heading"><div><span className="section-title">当前作品</span><p className="muted">{scope}</p></div><span className="agent-connection">{connectionLabel}</span></div>
+    <div className="agent-workspace-heading"><div><span className="section-title">当前作品</span><p className="muted">{scope}</p></div><span className="agent-connection">{connectionLabel}</span><button className="agent-sessions-toggle" type="button" onClick={props.onToggleSessions}>Sessions</button></div>
     <StudioTaskPanel target={props.target} targetReference={props.targetReference} targetReferenceStatus={props.targetReferenceStatus} onClearTarget={props.onClearTarget} onViewChanges={props.onViewChanges} controller={taskController} goal={goal} onGoalChange={onGoalChange} projectReady={(scopeReady ?? (!!project && !busy))} commitBlockedReason={commitBlockedReason} tools={<>
     <details className="agent-copy-brief"><summary>复制目标给外部 Agent</summary>
       <GoalBriefComposer goal={goal} onGoalChange={onGoalChange} scope={scope} context={props.target} />

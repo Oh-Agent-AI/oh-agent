@@ -48,7 +48,7 @@ export function WorkspacePreview({ children, title, saveStatus, step, busy, hasP
     onOpenCity();
     setOpen(tab === "game" ? "playtest" : tab === "tests" ? "diagnostics" : null);
   };
-  return <section className="workspace-preview" {...workspaceAreaProps("preview", 1, "游戏预览工作区")}>
+  return <section className="workspace-preview" {...workspaceAreaProps("preview", 2, "游戏预览工作区")}>
     <div ref={previewHeading} tabIndex={-1} className="workspace-preview-heading">
       <div className="workspace-preview-identity">
         <strong title={title}>{title}</strong>

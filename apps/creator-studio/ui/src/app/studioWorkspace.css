@@ -368,16 +368,23 @@
 .session-rename { display: grid; gap: 6px; }
 .session-rename input { border-color: #5f9781; font-size: 12px; }
 .session-rename button { min-height: 24px; padding: 2px 8px; font-size: 10px; }
+.agent-sessions-toggle { display: none; }
 @media (max-width: 1050px) {
   /* 1049px 只剩 ~1000px 可用：三栏最小宽 220+360+420 仍装得下，宽度交给
      useWorkspaceLayout 按容器实测值夹取，这里只收紧内边距。 */
   .session-sidebar { padding: 10px 8px; }
 }
 @media (max-width: 800px) {
-  .session-centric-workspace { grid-template-columns: minmax(0, 1fr); grid-template-areas: "sessions" "agent" "preview"; overflow-y: auto; }
-  /* 单栏堆叠时分隔条没有可拖的方向，直接收起（否则它会以 auto-place 占一行）。 */
+  /* 窄屏不三栏堆叠（设计原则：先折叠 Sessions）：Sessions 收成抽屉，Agent + Preview 纵向滚动。 */
+  .session-centric-workspace { grid-template-columns: minmax(0, 1fr); grid-template-areas: "agent" "preview"; overflow-y: auto; }
   .session-centric-workspace > .workspace-splitter { display: none; }
-  .session-sidebar { max-height: 230px; }
+  .agent-sessions-toggle { display: inline-flex; }
+  .session-centric-workspace > .session-sidebar { display: none; }
+  .session-centric-workspace[data-sessions-open] > .session-sidebar {
+    display: flex; position: fixed; z-index: 40; inset: 0 20% 0 0; max-height: none;
+    background: var(--studio-panel-bg, #fff); box-shadow: 0 8px 32px rgba(9, 42, 34, 0.24);
+    overflow-y: auto;
+  }
   .session-centric-workspace > .workspace-preview { min-height: 520px; }
 }
 
