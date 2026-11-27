@@ -33,9 +33,9 @@
 | 02 · Workspace 幂等 | operationId 回执 | ✅ 完成（2026-11-27） | `c4847bc0` | 见 §4.2 |
 | 03 · TargetRefs 权威校验 | Host 创建/执行/提交校验 | ✅ 完成（2026-11-27） | `e5293bed` | 见 §4.3 |
 | 04 · Runner 资源边界 | 超时/预算/环境清理/进程回收 | ✅ 完成（2026-11-27） | `cbdbf670` | 见 §4.4 |
-| 05 · City Snapshot Test | MCP→Host→SDK 冻结快照 | 未开始 | — | — |
-| 06 · Scenario/Evidence | verdict 拆分与断言 | 未开始 | — | — |
-| 07 · Candidate/Release 门禁 | Host 统一证据检查 | 未开始 | — | — |
+| 05 · City Snapshot Test | MCP→Host→SDK 冻结快照 | 🔄 MCP 侧完成（`ed3eb4b7`），桌面服务臂进行中 | `ed3eb4b7` + 待补 | 见 §4.6 |
+| 06 · Scenario/Evidence | verdict 拆分与断言 | 进行中 | — | — |
+| 07 · Candidate/Release 门禁 | Host 统一证据检查 | ✅ 完成（2026-11-27） | `d4e14d02` | 见 §4.7 |
 | 08 · Automated Visual Playtest | 隔离 Preview 自动试玩 | 未开始 | — | — |
 | 09 · Candidate Workspace | 基线隔离 + CAS 接受 | 未开始 | — | — |
 | 10 · Code Game Task Adapter | StudioArtifactRef 统一 | 未开始 | — | — |
@@ -127,6 +127,24 @@ Tool spec 变更必须通过 `crates/agent-vitals-mcp/src/mcp/mod.rs` 的注册�
 | `packages/city-game-sdk` npm test + typecheck | 79 passed / typecheck 干净 |
 | `cargo clippy -p agent-vitals-mcp --all-targets -- -D warnings` | 干净（修一处 PR03 测试 `single_match` lint：match→if let） |
 | `git diff --check`（每次 Rust 提交前后） | 干净；未运行任何 Rust 格式化器 |
+
+### 4.6 PR05 实施记录（MCP 侧 `ed3eb4b7`；桌面服务臂进行中）
+
+- **解析机制（已核实三选一）**：`creator_cities.document_json` 是配方（name/seed/profile/planPatch）而非 `CityWorldSnapshotV4`；唯一快照生产者是 live 渲染器（`citySnapshot.ts::createCitySnapshotV4`，需活体 terrain sampler）。选择 **broker 模式**：MCP 本地权威 revision 复核（`creator_cities.revision`，PR03 同源）→ broker `creator-studio`/`creator.code.test.city_snapshot`（3s fail-closed）→ 回执自洽复核（声明的 digest/cityId/cityRevision 必须等于快照 header）→ 有界暂存（`MAX_SNAPSHOT_BYTES`，tmp+rename）→ runner `--snapshot/--snapshot-digest`（runner 侧 `validateCityWorldSnapshot` + header digest 对照是密码学校验执行点，不匹配经 `game_package_integrity_failed` 透出）。
+- **响应**：移除硬编码 `synthetic:true`，改为 `source:{source:"synthetic"}` 或 `{source:"city",cityId,cityRevision,snapshotDigest}`（优先回显 runner telemetry 报告的世界身份）。
+- **新错误码**：`creator_city_revision_stale`、`creator_city_snapshot_unavailable`、`creator_city_snapshot_too_large`、`creator_city_snapshot_invalid`；cityId/cityRevision 必须成对；无任何静默回退合成。
+- **测试记录**：`state/creator/code-games/tests/<buildId>.json`（{buildId, workspaceRevision, ok, seed, ticks, source, atMs}），每次真正跑到 runner 的测试都落一条（含失败），供 PR07 发布门消费；PR06 扩展 verdict/scenario/assertions。
+- **检查**：`cargo test -p agent-vitals-mcp` 188（+9）；clippy 干净。
+- **残留/缺口**：① 桌面宿主尚未提供 `creator.code.test.city_snapshot` 服务臂（本 PR 范围内 MCO 侧 fail-closed 诚实报错；宿主臂另行补全，见跟踪表）；② broker 默认 64KiB 响应预算，真实快照超限会以 `creator_city_snapshot_unavailable` 报错直到宿主提高每方法预算；③ 单测覆盖解析/暂存/参数/记录 seam，真实端到端 runner 运行待宿主臂落地后验证。
+
+### 4.7 PR07 实施记录（`d4e14d02`）
+
+- **门禁矩阵**：桌面 accept 拒绝 `hostDisagreement`（`creator_candidate_host_disagreement`，本地接受仍容忍 city-client-reported）；桌面直接发布强闸（仅新建 Release 过闸，幂等重发布与 `creator_release_conflict` 保持原行为）要求同 (project, revision) 候选 + 快照摘要一致 + 最新 run completed + 证据一致 + `evidenceSource=host-verified` + 无 hostDisagreement（`creator_release_evidence_required`）；MCP `creator_code_publish` 要求同 buildId 的通过测试记录且 workspaceRevision 现势（`creator_code_test_evidence_required/_stale`）；install 不设冗余闸（只登记已发布包，发布闸不可绕过）。
+- **流程盘点**：`publish_project_release`/`insert_project_release` 无模板引导/迁移导入等生产旁路（全仓检索确认）；全部非测试调用点已审计。
+- **UI**：`canAcceptCandidate` 增加 hostDisagreement 拒绝；新增 `canReleaseCandidate`（host-verified 档）；`CandidatePanel` 直接发布按钮按发布档禁用并给出解释文案（仅呈现，宿主仍为裁决者）。
+- **测试种子**：`seed_host_verified_candidate` 助手（return_consumed=1、created_at_ms=1，不进 return_context、历史排序恒最旧）；`plugin_host.rs` headless 臂测试按协调者批准做仅测试代码最小修改（保持"无特例"性质，走同一道闸）。
+- **检查**：桌面 lib 567（+1 门禁矩阵测试）、MCP 188、UI 133、`git diff --check` 干净。
+- **残留（如实）**：人工评审记录（Review Record）未建模（PR06/PR09 落地时扩展）；MCP 门绑定 workspaceRevision，PR05 记录带 snapshotDigest 后可加强为摘要相等；桌面门禁错误码为 `&'static str`，面板展示宿主拒绝码需要新的状态线（范围外）。
 
 ## 5. 待真机验证项（自动化覆盖不到，最终 MVP 验收由用户在桌面构建执行）
 
