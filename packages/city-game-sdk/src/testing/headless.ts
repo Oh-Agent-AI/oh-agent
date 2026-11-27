@@ -36,13 +36,25 @@ export type TestManifestOverridesV1 = Readonly<{
   assets?: readonly CodeGameAssetV1[];
 }>;
 
+/** Optional wall-clock guard for bounded stepping (PR04). The clock is
+ * injected so the simulation stays deterministic; `deadlineMs` is an absolute
+ * reading of `now()` chosen by the caller (e.g. the wall clock plus a budget
+ * in a script, or a synthetic clock in tests). Omitting the guard keeps the
+ * previous unguarded behavior. */
+export type TickGuardV1 = Readonly<{
+  deadlineMs: number;
+  now(): number;
+}>;
+
 export type GameTestRunV1 = Readonly<{
   host: CodeGameHostV1;
   runId: string;
   /** One authoritative tick per call, same as the City frame hook. */
   step(times?: number): void;
-  /** Alias used by the spec's headless example (§9.3). */
-  advanceTicks(ticks: number): void;
+  /** Alias used by the spec's headless example (§9.3). When `guard` is given
+   * and the deadline passes before the next tick, it throws a structured
+   * `game_execution_timeout` error instead of looping forever. */
+  advanceTicks(ticks: number, guard?: TickGuardV1): void;
   telemetry(): GameTelemetryV1;
   dispose(): void;
   assertNoLeakedEntities(): void;
@@ -169,8 +181,16 @@ export function createGameTestWorld(options: GameTestWorldOptionsV1 = {}): GameT
         step(times = 1) {
           for (let index = 0; index < times; index += 1) host.step();
         },
-        advanceTicks(ticks: number) {
-          for (let index = 0; index < ticks; index += 1) host.step();
+        advanceTicks(ticks: number, guard?: TickGuardV1) {
+          for (let index = 0; index < ticks; index += 1) {
+            if (guard && guard.now() >= guard.deadlineMs) {
+              throw Object.assign(
+                new Error(`Headless run exceeded its wall-clock deadline (${guard.deadlineMs}) after ${index} ticks.`),
+                { code: "game_execution_timeout" },
+              );
+            }
+            host.step();
+          }
         },
         telemetry: () => host.telemetry(),
         dispose: () => host.dispose(),

@@ -9,10 +9,14 @@
 //! - 构建不是任意 shell：固定 Node 脚本 + 固定参数，工作区由 ID 解析。Node 或
 //!   仓库脚本不存在时**失败关闭**（`data_unavailable`），绝不回退到别的命令。
 //! - 构建失败是**正常结果**：返回结构化 diagnostics 让 Agent 修复，而不是 ToolError。
+//! - Runner 有硬资源边界（PR04）：墙钟预算（build 120s / test 60s）、有界
+//!   stdout/stderr 采集、环境白名单（不透传 NODE_OPTIONS/密钥）。超时同样是
+//!   正常结果：build 走 status=failed + diagnostics，test 走 `game_execution_timeout`。
 //!
 //! 当前是 P0 本机受控构建进程；打包产物如何携带 Node/构建器是后续架构决定。
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -27,6 +31,15 @@ const MAX_WRITE_BYTES: usize = 256 * 1024;
 const MAX_PATH: usize = 200;
 const MAX_TICKS: u64 = 3_600;
 const MAX_SNAPSHOT_BYTES: u64 = 64 * 1024 * 1024;
+/// Runner 资源边界（PR04）。构建（tsc + esbuild 全量编译）给更长的墙钟预算；
+/// 无头测试只回放有界 tick，预算更短。两者都是常量：Agent 不能要求更长的
+/// 无界运行，卡死的构建/测试以 `game_execution_timeout` 结构化返回。
+const RUNNER_BUILD_BUDGET_SECS: u64 = 120;
+const RUNNER_TEST_BUDGET_SECS: u64 = 60;
+/// 每个输出流的有界采集上限：足够容纳编译器诊断（写预算 MAX_WRITE_BYTES 同量级），
+/// 同时保证 MCP 进程内存不随子进程输出体量增长。
+const RUNNER_MAX_OUTPUT_BYTES: usize = 256 * 1024;
+const RUNNER_POLL_MS: u64 = 25;
 const TEMPLATE: &str = "hello-city";
 const META_FILE: &str = "workspace.json";
 
@@ -520,8 +533,29 @@ fn build(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
             data_home.to_string_lossy().to_string(),
         ],
     )?;
+    // 墙钟预算耗尽是**正常失败结果**（见文件头）：status=failed + 结构化
+    // diagnostics（预算 + 输出尾部），Agent 可以据此收缩输入重试，而不是收到
+    // ToolError 断掉修复回路。
+    if output.timed_out {
+        return Ok(json!({"ok":true,"data":{
+            "status": "failed",
+            "workspaceId": workspace_id,
+            "gameRevision": meta.revision,
+            "buildId": Value::Null,
+            "diagnostics": [json!({
+                "code": "game_execution_timeout",
+                "severity": "error",
+                "stage": "build",
+                "message": format!("The build runner exceeded its {}s wall-clock budget and was killed.{}", RUNNER_BUILD_BUDGET_SECS, runner_output_tail(&output)),
+            })],
+        }}));
+    }
     let parsed: Value = serde_json::from_slice(&output.stdout)
-        .map_err(|_| ToolError::new("data_unavailable", "The build runner returned no JSON result."))?;
+        .map_err(|_| if output.stdout_truncated {
+            ToolError::new("game_build_failed", "The build runner output exceeded the 256 KiB collection cap before a JSON result was produced.")
+        } else {
+            ToolError::new("data_unavailable", "The build runner returned no JSON result.")
+        })?;
     let data = if parsed.get("ok").and_then(Value::as_bool) == Some(true) {
         let build_id = build_id_arg(&parsed)?;
         let revision = build_workspace_revision(data_home, &build_id, &meta)?;
@@ -671,7 +705,7 @@ fn code_test(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     let meta = read_meta(&directory)?;
     let revision = build_workspace_revision(data_home, &build_id, &meta)?;
     let repo = repo_root()?;
-    let output = run_node(
+    let output = run_node_with_limits(
         &repo,
         "packages/city-game-sdk/scripts/previewGame.ts",
         &[
@@ -684,7 +718,20 @@ fn code_test(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
             "--ticks".to_string(),
             ticks.to_string(),
         ],
+        &NodeRunLimits::test(),
     )?;
+    // 与脚本自身的 `game_execution_timeout`（previewGame 的墙钟 deadline）同码：
+    // 无头运行有界是 creator_code_test 既有响应形态的一部分——失败按 ToolError
+    // 映射稳定错误码，绝不静默成功，也绝不挂死工具调用。
+    if output.timed_out {
+        return Err(ToolError::new(
+            "game_execution_timeout",
+            format!(
+                "The headless run exceeded its {}s wall-clock budget; the runner was killed.{}",
+                RUNNER_TEST_BUDGET_SECS, runner_output_tail(&output)
+            ),
+        ));
+    }
     let parsed: Value = serde_json::from_slice(&output.stdout)
         .map_err(|_| ToolError::new("data_unavailable", "The headless runner returned no JSON result."))?;
     if parsed.get("ok").and_then(Value::as_bool) != Some(true) {
@@ -694,6 +741,7 @@ fn code_test(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
             Some("game_permission_denied") => "game_permission_denied",
             Some("game_argument_invalid") => "game_argument_invalid",
             Some("game_world_object_missing") => "game_world_object_missing",
+            Some("game_execution_timeout") => "game_execution_timeout",
             _ => "game_runtime_fault",
         };
         let message = parsed.get("error").and_then(|error| error.get("message")).and_then(Value::as_str).unwrap_or("The headless run failed.");
@@ -917,27 +965,156 @@ fn repo_root_from(current_exe: Option<PathBuf>) -> Result<PathBuf, ToolError> {
     Ok(root)
 }
 
-fn run_node(repo: &Path, script: &str, args: &[String]) -> Result<std::process::Output, ToolError> {
+/// Node runner 的资源边界配置（PR04）：墙钟预算 + 单流输出上限。测试注入更短
+/// 的预算/更小的上限；生产方分别用 `NodeRunLimits::build()` / `::test()`。
+struct NodeRunLimits {
+    budget: Duration,
+    max_output_bytes: usize,
+}
+
+impl NodeRunLimits {
+    fn build() -> Self {
+        Self { budget: Duration::from_secs(RUNNER_BUILD_BUDGET_SECS), max_output_bytes: RUNNER_MAX_OUTPUT_BYTES }
+    }
+    fn test() -> Self {
+        Self { budget: Duration::from_secs(RUNNER_TEST_BUDGET_SECS), max_output_bytes: RUNNER_MAX_OUTPUT_BYTES }
+    }
+}
+
+/// run_node 的统一返回：有界采集的 stdout/stderr + 超时与截断标记。退出状态
+/// 在 runner 内部消费（非零退出且无 stdout → fail-closed ToolError；超时除外），
+/// 调用方按 `timed_out` 给出各自的结构化结果（build → status=failed +
+/// diagnostics；test → `game_execution_timeout`）。
+struct NodeRunOutput {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    timed_out: bool,
+    stdout_truncated: bool,
+    stderr_truncated: bool,
+}
+
+/// 生产入口（签名不变，构建预算为默认档）；需要 test 预算或测试注入短预算时
+/// 用 [`run_node_with_limits`]。
+fn run_node(repo: &Path, script: &str, args: &[String]) -> Result<NodeRunOutput, ToolError> {
+    run_node_with_limits(repo, script, args, &NodeRunLimits::build())
+}
+
+fn run_node_with_limits(repo: &Path, script: &str, args: &[String], limits: &NodeRunLimits) -> Result<NodeRunOutput, ToolError> {
     let node = std::env::var("AGENT_VITALS_NODE").ok().unwrap_or_else(|| {
         let bundled = std::env::var("AGENT_VITALS_CODE_GAME_HOME").ok().map(PathBuf::from).unwrap_or_else(|| repo.to_path_buf())
             .join("bin").join(if cfg!(windows) { "node.exe" } else { "node" });
         if bundled.is_file() { bundled.to_string_lossy().to_string() } else { "node".to_string() }
     });
-    let output = Command::new(node)
-        .arg("--experimental-transform-types")
+    let mut command = Command::new(node);
+    command.arg("--experimental-transform-types")
         .arg("--import")
         .arg(repo.join("scripts/mecha-ts-register.mjs"))
         .arg(repo.join(script))
         .args(args)
-        .output()
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // 环境白名单（对齐 creator_agent_executor 的做法）：MCP 进程环境可能携带
+    // 密钥，一律不透传。buildGame.ts / previewGame.ts 的输入全部走 argv（
+    // data-home 有显式参数，脚本仅回读 AGENT_VITALS_HOME 兜底）；子进程需要
+    // PATH 找系统工具、HOME/TMPDIR 走常规目录解析。NODE_OPTIONS 永不透传。
+    command.env_clear();
+    for key in ["PATH", "HOME", "TMPDIR", "TEMP", "TMP", "AGENT_VITALS_HOME"] {
+        if let Some(value) = std::env::var_os(key) { command.env(key, value); }
+    }
+    // 进程组隔离：子进程自成一个进程组，与 MCP 进程组的终端信号隔离。
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn()
         .map_err(|_| ToolError::new("data_unavailable", "Node is unavailable; the local Code Game build runner cannot start."))?;
-    if !output.status.success() && output.stdout.is_empty() {
+    let stdout = child.stdout.take().ok_or_else(|| ToolError::new("data_unavailable", "Node runner stdout is unavailable."))?;
+    let stderr = child.stderr.take().ok_or_else(|| ToolError::new("data_unavailable", "Node runner stderr is unavailable."))?;
+    let max_output_bytes = limits.max_output_bytes;
+    let (stdout_sender, stdout_receiver) = std::sync::mpsc::channel();
+    let (stderr_sender, stderr_receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || { let _ = stdout_sender.send(read_bounded(stdout, max_output_bytes)); });
+    std::thread::spawn(move || { let _ = stderr_sender.send(read_bounded(stderr, max_output_bytes)); });
+    let started = Instant::now();
+    let mut timed_out = false;
+    let status = loop {
+        if started.elapsed() >= limits.budget {
+            // 预算耗尽：kill 直接子进程并 wait() 收尸。libc 不是本 crate 依赖，
+            // 不为 killpg 引入新依赖，因此无法对整个进程组发信号——node 派生的
+            // 孙进程（如 esbuild/tsc 服务）依赖管道断开自行退出（esbuild 监听
+            // stdin 关闭）。这是如实记录的限制。
+            let _ = child.kill();
+            let _ = child.wait();
+            timed_out = true;
+            break None;
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status.code(),
+            Ok(None) => std::thread::sleep(Duration::from_millis(RUNNER_POLL_MS)),
+            Err(_) => { let _ = child.kill(); let _ = child.wait(); break None; }
+        }
+    };
+    // 有界收尾：孙进程若长期握住管道写端，读线程可能迟迟等不到 EOF；限时收
+    // 结果，超时按截断处理并放任线程自行结束，不让 MCP 卡死。
+    let join_deadline = Instant::now() + Duration::from_secs(2);
+    let collect = |receiver: std::sync::mpsc::Receiver<(Vec<u8>, bool)>| {
+        let remaining = join_deadline.saturating_duration_since(Instant::now());
+        receiver.recv_timeout(remaining).unwrap_or((Vec::new(), true))
+    };
+    let (stdout_bytes, stdout_truncated) = collect(stdout_receiver);
+    let (stderr_bytes, stderr_truncated) = collect(stderr_receiver);
+    let success = !timed_out && status == Some(0);
+    if !success && !timed_out && stdout_bytes.is_empty() {
+        let exited = status.map(|code| format!("exit status: {code}")).unwrap_or_else(|| "a signal".to_string());
         return Err(ToolError::new(
             "game_build_failed",
-            format!("The build runner exited with {}: {}", output.status, String::from_utf8_lossy(&output.stderr).chars().take(200).collect::<String>()),
+            format!("The build runner exited with {exited}: {}", String::from_utf8_lossy(&stderr_bytes).chars().take(200).collect::<String>()),
         ));
     }
-    Ok(output)
+    Ok(NodeRunOutput {
+        stdout: stdout_bytes,
+        stderr: stderr_bytes,
+        timed_out,
+        stdout_truncated,
+        stderr_truncated,
+    })
+}
+
+/// 有界读取：只保留前 `max_output_bytes` 字节；之后继续排空管道（让子进程
+/// 写完退出）但不再缓存。返回 `(bytes, truncated)`，恰好写满上限也按截断
+/// 标记（保守），小于上限则未截断。
+fn read_bounded<R: std::io::Read>(mut reader: R, max_output_bytes: usize) -> (Vec<u8>, bool) {
+    let mut bytes = Vec::new();
+    let mut buffer = [0u8; 2048];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => {
+                if bytes.len() < max_output_bytes {
+                    let remaining = max_output_bytes - bytes.len();
+                    bytes.extend_from_slice(&buffer[..count.min(remaining)]);
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    let truncated = bytes.len() >= max_output_bytes;
+    (bytes, truncated)
+}
+
+/// 超时诊断附带的输出尾部（有界）：给 Agent 一个「卡在哪」的可读线索。
+fn runner_output_tail(output: &NodeRunOutput) -> String {
+    let combined = format!(
+        "{}{} {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        if output.stdout_truncated { "…" } else { "" },
+        String::from_utf8_lossy(&output.stderr),
+        if output.stderr_truncated { "…" } else { "" },
+    );
+    let trimmed = combined.trim();
+    if trimmed.is_empty() { return String::new(); }
+    let tail: String = trimmed.chars().rev().take(400).collect();
+    format!(" Output tail: {}", tail.chars().rev().collect::<String>())
 }
 
 fn game_id_for(title: &str) -> String {
@@ -1214,5 +1391,82 @@ mod tests {
         assert_eq!(meta.project_id, "project-old");
         assert_eq!(meta.operation_id, None);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    // ── PR04 runner 资源边界 ─────────────────────────────────────────
+
+    fn runner_limits(budget_secs: u64, max_output_bytes: usize) -> NodeRunLimits {
+        NodeRunLimits { budget: Duration::from_secs(budget_secs), max_output_bytes }
+    }
+
+    fn dev_repo_root() -> PathBuf {
+        std::fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap()
+    }
+
+    /// 测试脚本写到独立临时目录；绝对路径传给 run_node（Path::join 对绝对路径
+    /// 直接覆盖 repo 前缀），只依赖仓库里真实的 node 与 mecha-ts-register。
+    fn write_runner_script(name: &str, body: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("code-game-runner-{}-{}-{}", name, now_ms(), std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{name}.mjs"));
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    /// 死循环脚本必须在预算内被 kill，且返回结构化超时（timed_out 标记）。
+    #[test]
+    fn runner_kills_an_endless_script_within_its_budget() {
+        let repo = dev_repo_root();
+        let script = write_runner_script("endless", "const start = Date.now(); while (Date.now() - start < 60_000) {}\n");
+        let started = Instant::now();
+        let output = run_node_with_limits(&repo, script.to_str().unwrap(), &[], &runner_limits(2, 64 * 1024)).unwrap();
+        let elapsed = started.elapsed();
+        assert!(output.timed_out, "an endless script must be reported as timed out");
+        assert!(elapsed >= Duration::from_secs(2), "the budget must be respected, got {elapsed:?}");
+        assert!(elapsed < Duration::from_secs(20), "the kill must happen promptly after the budget, got {elapsed:?}");
+        std::fs::remove_dir_all(script.parent().unwrap()).ok();
+    }
+
+    /// 超大输出被有界采集：内存不随子进程输出增长，截断有标记。
+    #[test]
+    fn runner_bounds_and_marks_oversized_output() {
+        let repo = dev_repo_root();
+        let script = write_runner_script("noisy", "process.stdout.write(\"A\".repeat(300000)); process.stdout.write(\"B\");\n");
+        let output = run_node_with_limits(&repo, script.to_str().unwrap(), &[], &runner_limits(30, 16 * 1024)).unwrap();
+        assert!(!output.timed_out);
+        assert!(output.stdout.len() <= 16 * 1024, "collected {} bytes, cap is 16384", output.stdout.len());
+        assert!(output.stdout_truncated, "oversized output must set the truncation marker");
+        assert!(output.stdout.starts_with(b"AAAA"));
+        std::fs::remove_dir_all(script.parent().unwrap()).ok();
+    }
+
+    /// 环境白名单：父进程里的标记变量不进子进程环境，白名单键（HOME 标记值、
+    /// 继承的 TMPDIR/PATH）照常转发，NODE_OPTIONS 永不透传。
+    #[test]
+    fn runner_forwards_only_the_whitelisted_environment() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let repo = dev_repo_root();
+        let script = write_runner_script("envdump", "console.log(JSON.stringify(process.env));\n");
+        let original_home = std::env::var_os("HOME");
+        let marker_home = std::env::temp_dir().join(format!("code-game-env-marker-{}", random_hex(16)));
+        std::fs::create_dir_all(&marker_home).unwrap();
+        std::env::set_var("HOME", &marker_home);
+        std::env::set_var("AGENT_VITALS_RUNNER_SECRET", "leaky-marker");
+        let outcome = run_node_with_limits(&repo, script.to_str().unwrap(), &[], &runner_limits(30, 64 * 1024));
+        match original_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+        std::env::remove_var("AGENT_VITALS_RUNNER_SECRET");
+        let output = outcome.unwrap();
+        assert!(!output.timed_out);
+        let child_env: std::collections::HashMap<String, String> = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(!child_env.contains_key("AGENT_VITALS_RUNNER_SECRET"), "parent secrets must not leak into the runner env");
+        assert_eq!(child_env.get("HOME").map(String::as_str), Some(marker_home.to_string_lossy().as_ref()));
+        assert!(child_env.contains_key("TMPDIR"), "TMPDIR must be whitelisted");
+        assert!(child_env.contains_key("PATH"), "PATH must be whitelisted");
+        assert!(!child_env.contains_key("NODE_OPTIONS"), "NODE_OPTIONS must never be forwarded");
+        std::fs::remove_dir_all(marker_home).ok();
+        std::fs::remove_dir_all(script.parent().unwrap()).ok();
     }
 }

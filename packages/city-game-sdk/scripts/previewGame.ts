@@ -37,6 +37,30 @@ const incompleteRequest = Boolean(buildId && !buildsDir) || Boolean(buildsDir &&
   Boolean(legacyBundlePath && !legacyManifestPath) || Boolean(legacyManifestPath && !legacyBundlePath) ||
   Boolean(snapshotPath && !expectedSnapshotDigest) || Boolean(expectedSnapshotDigest && !snapshotPath);
 
+/** Defense in depth (PR04): mirrors the MCP `creator_code_test` cap, so a
+ * direct invocation cannot request an unbounded run either. */
+const MAX_TICKS = 3_600;
+/** Wall-clock deadline for the run loops (PR04). A bundle whose step() never
+ * returns would otherwise hang this process forever; the deadline sits below
+ * the MCP runner's own test budget (60 s) so the structured reason usually
+ * wins the race against the host-side kill. Normal bounded runs never reach it. */
+const RUN_DEADLINE_MS = 50_000;
+const deadlineMs = Date.now() + RUN_DEADLINE_MS;
+
+function assertWithinDeadline(tick: number): void {
+  if (Date.now() >= deadlineMs) {
+    throw Object.assign(
+      new Error(`The headless run exceeded its ${RUN_DEADLINE_MS} ms wall-clock deadline at tick ${tick}.`),
+      { code: "game_execution_timeout" },
+    );
+  }
+}
+
+if (Number.isSafeInteger(ticks) && ticks > MAX_TICKS) {
+  process.stdout.write(`${JSON.stringify({ ok: false, error: { code: "game_argument_invalid", message: `\`ticks\` must be at most ${MAX_TICKS}; the headless runner has no unbounded mode` } })}\n`);
+  process.exit(0);
+}
+
 if (incompleteRequest || (!sealedRequest && !legacyRequest) || !Number.isSafeInteger(seed) || !Number.isSafeInteger(ticks) || ticks <= 0) {
   process.stdout.write(`${JSON.stringify({ ok: false, error: { code: "invalid_argument", message: "use --build <id> --builds-dir <dir> (or --build-dir <dir>), with positive seed/ticks; --snapshot also requires --snapshot-digest" } })}\n`);
   process.exit(0);
@@ -90,7 +114,10 @@ try {
     });
     await host.prepare(module.default as GameDefinitionV2);
     await host.start();
-    for (let index = 0; index < ticks && host.status === "running"; index += 1) host.step();
+    for (let index = 0; index < ticks && host.status === "running"; index += 1) {
+      assertWithinDeadline(index);
+      host.step();
+    }
     const telemetry = host.telemetry();
     await host.stop();
     process.stdout.write(`${JSON.stringify({
@@ -114,7 +141,10 @@ try {
     const host = createCodeGameHostV1(manifest, { world: worldSource, seed, runId });
     await host.prepare(module.default as GameDefinitionV1);
     host.start();
-    for (let index = 0; index < ticks; index += 1) host.step();
+    for (let index = 0; index < ticks; index += 1) {
+      assertWithinDeadline(index);
+      host.step();
+    }
     const telemetry = host.telemetry();
     host.dispose();
     if (host.entityCount !== 0) throw new Error("The run leaked entities after disposal.");

@@ -7,4 +7,5 @@ export type {
   GameTestWorldOptionsV1,
   GameTestWorldV1,
   TestManifestOverridesV1,
+  TickGuardV1,
 } from "./headless";
