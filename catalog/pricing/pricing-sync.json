@@ -1,7 +1,7 @@
 {
   "schema": "agent-vitals-pricing-sync/v1",
   "_doc": "由 scripts/pricing_sync.py 每日生成，勿手改。只含相对底表（pricing.json / codex_pricing.json）新增或改价的条目；app 拉取后与内置底表合并成完整快照。每张卡的 _sync 记录采纳它的源。",
-  "updated_at": "2026-11-19",
+  "updated_at": "2026-11-26",
   "sources": {
     "models.dev": "https://models.dev/api.json",
     "litellm": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
@@ -272,7 +272,8 @@
             "kind": "new",
             "agreed_by": [
               "litellm",
-              "models.dev"
+              "models.dev",
+              "openrouter"
             ]
           }
         },
@@ -294,10 +295,35 @@
     "zai": {
       "currency": "USD",
       "models": {
+        "glm-4-32b-0414-128k": {
+          "input_uncached": 0.1,
+          "input_cached": 0.1,
+          "output": 0.1,
+          "_sync": {
+            "kind": "new",
+            "agreed_by": [
+              "litellm",
+              "models.dev"
+            ]
+          }
+        },
         "glm-4.5": {
           "input_uncached": 0.6,
           "input_cached": 0.11,
           "output": 2.2,
+          "_sync": {
+            "kind": "new",
+            "agreed_by": [
+              "litellm",
+              "models.dev",
+              "openrouter"
+            ]
+          }
+        },
+        "glm-4.5-air": {
+          "input_uncached": 0.2,
+          "input_cached": 0.03,
+          "output": 1.1,
           "_sync": {
             "kind": "new",
             "agreed_by": [
@@ -354,7 +380,8 @@
             "kind": "new",
             "agreed_by": [
               "litellm",
-              "models.dev"
+              "models.dev",
+              "openrouter"
             ]
           }
         },
@@ -393,7 +420,8 @@
             "kind": "new",
             "agreed_by": [
               "litellm",
-              "models.dev"
+              "models.dev",
+              "openrouter"
             ]
           }
         },
@@ -438,6 +466,18 @@
           }
         },
         "glm-5.3-flashx": {
+          "input_uncached": 0.37,
+          "input_cached": 0.075,
+          "output": 1.25,
+          "_sync": {
+            "kind": "new",
+            "agreed_by": [
+              "models.dev",
+              "openrouter"
+            ]
+          }
+        },
+        "glm-5.3-flashx-legal": {
           "input_uncached": 0.37,
           "input_cached": 0.075,
           "output": 1.25,
@@ -596,6 +636,21 @@
       }
     },
     {
+      "modelPrefix": "gpt-6-astra-healthcare",
+      "speed": "standard",
+      "uncachedInputUsdPerMTok": "10",
+      "cacheReadUsdPerMTok": "1",
+      "outputUsdPerMTok": "50",
+      "usInferenceMultiplierBps": 10000,
+      "_sync": {
+        "kind": "new",
+        "agreed_by": [
+          "litellm",
+          "models.dev"
+        ]
+      }
+    },
+    {
       "modelPrefix": "gpt-6-luna",
       "speed": "standard",
       "uncachedInputUsdPerMTok": "0.1",
@@ -647,6 +702,21 @@
       }
     },
     {
+      "modelPrefix": "gpt-6.1-sol-healthcare",
+      "speed": "standard",
+      "uncachedInputUsdPerMTok": "2",
+      "cacheReadUsdPerMTok": "0.1",
+      "outputUsdPerMTok": "10",
+      "usInferenceMultiplierBps": 10000,
+      "_sync": {
+        "kind": "new",
+        "agreed_by": [
+          "litellm",
+          "models.dev"
+        ]
+      }
+    },
+    {
       "modelPrefix": "gpt-6.1-terra",
       "speed": "standard",
       "uncachedInputUsdPerMTok": "1",
@@ -681,6 +751,22 @@
       }
     },
     {
+      "modelPrefix": "gpt-6.2-astra-healthcare",
+      "speed": "standard",
+      "uncachedInputUsdPerMTok": "8",
+      "cacheReadUsdPerMTok": "0.4",
+      "outputUsdPerMTok": "40",
+      "usInferenceMultiplierBps": 10000,
+      "cacheWrite5mUsdPerMTok": "10",
+      "_sync": {
+        "kind": "new",
+        "agreed_by": [
+          "litellm",
+          "models.dev"
+        ]
+      }
+    },
+    {
       "modelPrefix": "gpt-6.2-sol",
       "speed": "standard",
       "uncachedInputUsdPerMTok": "2",
@@ -696,6 +782,22 @@
           "openrouter"
         ]
       }
+    },
+    {
+      "modelPrefix": "gpt-6.2-sol-healthcare",
+      "speed": "standard",
+      "uncachedInputUsdPerMTok": "2",
+      "cacheReadUsdPerMTok": "0.1",
+      "outputUsdPerMTok": "10",
+      "usInferenceMultiplierBps": 10000,
+      "cacheWrite5mUsdPerMTok": "2.5",
+      "_sync": {
+        "kind": "new",
+        "agreed_by": [
+          "litellm",
+          "models.dev"
+        ]
+      }
     }
   ],
   "rejected": [
@@ -703,11 +805,6 @@
       "provider": "moonshot",
       "model": "kimi-k2.5",
       "reason": "input 没有两个以上的源一致"
-    },
-    {
-      "provider": "zai",
-      "model": "glm-4.5-air",
-      "reason": "cache_read 没有两个以上的源一致"
     },
     {
       "provider": "zai",
