@@ -9,7 +9,7 @@ import { useStopPhase } from "./useStopPhase";
 import { useLiveRegion } from "./useLiveRegion";
 import { executorBadge } from "./AgentSelector";
 import { previewSummary } from "./taskCommit";
-import { studioEntityTaskContext, hasVerifiedEntityEvidence, type PreviewEntityReferenceStatus, type StudioEntityTarget } from "../../contracts/previewContext";
+import { studioEntityTaskContext, entityVerificationLevel, type EntityVerificationLevel, type PreviewEntityReferenceStatus, type StudioEntityTarget } from "../../contracts/previewContext";
 
 function taskErrorLabel(code: string): string {
   switch (code) {
@@ -78,8 +78,10 @@ export function StudioTaskPanel({ controller, goal, onGoalChange, projectReady, 
     && item.planRevision === task.planRevision) ?? null;
   const previewId = typeof (previewEvidence?.data as Record<string, unknown> | null)?.previewId === "string"
     ? String((previewEvidence!.data as Record<string, unknown>).previewId) : "";
-  // 「已验证」只有 City 试玩证据这一条通道；Story 目标如实停在未验证。
-  const entityVerified = task && targetReference?.kind === "city" ? hasVerifiedEntityEvidence(task.evidence, targetReference.reference) : false;
+  // 验证状态分三级：Host 独立验证 > City 客户端回报（试玩通过）> 未验证；
+  // Story 目标没有客户端试玩通道，如实停在未验证。
+  const entityVerification = task && targetReference?.kind === "city"
+    ? entityVerificationLevel(task.evidence, targetReference.reference) : "none";
   const confirmSaveNow = async () => {
     if (!task || !previewEvidence || !previewId || committing) return;
     setCommitting(true); setCommitResult("");
@@ -180,7 +182,7 @@ export function StudioTaskPanel({ controller, goal, onGoalChange, projectReady, 
     {previewEvidence && <div className="agent-result-state" aria-label="修改状态">
       <span className="active">已生成修改</span>
       <span className={task.phase === "accepted" ? "active" : ""}>{task.phase === "accepted" ? "已保存" : "未保存"}</span>
-      <span className={entityVerified ? "active" : ""}>{entityVerified ? "已验证" : "未验证"}</span>
+      <span className={entityVerification === "host-verified" ? "active" : ""}>{entityVerification === "host-verified" ? "Host 验证通过" : entityVerification === "client-reported" ? "试玩通过（客户端回报）" : "未验证"}</span>
     </div>}
     {task.phase === "failed" ? <AgentDecisionCard tone="error" title={failedExecutor ? `${failedExecutor} · 执行失败` : "执行失败"}>
       <p role="alert">{error || failureCode ? taskErrorLabel(error || failureCode) : "可以检查执行详情，或重新准备任务。"}</p>

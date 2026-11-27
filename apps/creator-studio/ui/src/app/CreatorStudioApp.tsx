@@ -49,7 +49,7 @@ import { normalizeStudioGoal } from "../contracts/studioTask";
 import { STUDIO_NAVIGATION, STUDIO_PROJECTS_ROUTE, STUDIO_WORKSPACE_ROUTE, studioRouteTitle, type StudioRoute } from "./studioRoute";
 import { readCityAppearancePreference } from "../../../../agent-city/ui/src/engine/cityWorldProfile";
 import type { CityEngine, CityEntitySelection } from "../../../../agent-city/ui/src/engine/CityEngine";
-import { attachPreviewEntitySupport, hasVerifiedEntityEvidence, parsePreviewEntityReference, previewEntityReferenceStatus, type PreviewEntityReference, type PreviewEntityScope } from "../contracts/previewContext";
+import { attachPreviewEntitySupport, entityVerificationLevel, parsePreviewEntityReference, previewEntityReferenceStatus, type PreviewEntityReference, type PreviewEntityScope } from "../contracts/previewContext";
 import { parseGroundInspection } from "../features/evidence/evidenceCenterModel";
 import { idlePreviewEntityDiagnostic, type PreviewEntityDiagnosticState } from "../features/preview/PreviewEntityContext";
 import { useProjectSceneAssets } from "../features/preview/useProjectSceneAssets";
@@ -272,6 +272,8 @@ export function CreatorStudioApp() {
   const [agentCommit, setAgentCommit] = useState<AgentCommit | null>(null);
   const [agentPreviewStatus, setAgentPreviewStatus] = useState<{ context: object; status: "loading" | "ready" | "failed"; code?: string } | null>(null);
   const [agentRevealSignal, setAgentRevealSignal] = useState(0);
+  // 窄屏（≤800px）不三栏堆叠：Sessions 折叠成抽屉，按需打开（设计原则：先折叠 Sessions）。
+  const [narrowSessionsOpen, setNarrowSessionsOpen] = useState(false);
   useEffect(() => {
     if (!agentCommit) return;
     const timer = window.setTimeout(() => {
@@ -1329,7 +1331,7 @@ export function CreatorStudioApp() {
   };
   const selectedEntityScope = selectedEntity ? entityScopeFor(selectedEntitySource.current) : null;
   const selectedEntityStatus = selectedEntity ? previewEntityReferenceStatus(selectedEntity, selectedEntityScope) : "wrong-project" as const;
-  const selectedEntityVerified = selectedEntity ? hasVerifiedEntityEvidence(studioTasks.task?.evidence ?? [], selectedEntity) : false;
+  const selectedEntityVerification = selectedEntity ? entityVerificationLevel(studioTasks.task?.evidence ?? [], selectedEntity) : "none" as const;
   const selectPreviewEntity = (picked: CityEntitySelection | null, source: PreviewViewportSource) => {
     if (!picked) {
       if (selectedEntitySource.current === source) { setSelection(null); setEntityDiagnostic(idlePreviewEntityDiagnostic); }
@@ -1442,7 +1444,7 @@ export function CreatorStudioApp() {
       : task?.phase === "failed" ? "本次任务未生成可预览的改动" : null}
     selectionScope={activePanel === "story" ? "" : selectionScope} getProjectEngine={() => baseViewportStatusRef.current === "ready" ? isolatedProjectEngineRef.current : null}
     onSelectTarget={target => { setSelection({ scope: selectionScope, target }); setEntityDiagnostic(idlePreviewEntityDiagnostic); openWorkspacePanel("agent"); }}
-    onEntitySelect={selectPreviewEntity} selectedEntity={selectedEntity} selectedEntityStatus={selectedEntityStatus} selectedEntityVerified={selectedEntityVerified}
+    onEntitySelect={selectPreviewEntity} selectedEntity={selectedEntity} selectedEntityStatus={selectedEntityStatus} selectedEntityVerification={selectedEntityVerification}
     entityDiagnostic={entityDiagnostic} onFocusEntity={focusSelectedEntity} onInspectEntity={() => void inspectSelectedEntity()} projectSceneView={projectSceneView}
     installedWorldView={installedWorldView} draftCityView={draftCityView} draftCityViewRef={draftCityViewRef} draftEngineRef={draftEngineRef}
     draftViewStatusRef={draftViewStatusRef} draftViewFailureRef={draftViewFailureRef} recordCityDiagnostic={recordCityDiagnostic}
@@ -1491,6 +1493,7 @@ export function CreatorStudioApp() {
     </div>}
     {(route.section === "workspace" || route.section === "evidence") && <div ref={workspaceRef} style={route.section === "workspace" ? workspaceLayout.style : undefined}
       data-focus={route.section === "workspace" ? workspaceLayout.focus : undefined}
+      data-sessions-open={narrowSessionsOpen ? "true" : undefined}
       className={route.section === "evidence" ? "workspace studio-workspace evidence-workspace-layout" : "workspace studio-workspace session-centric-workspace"}>
       {route.section === "workspace" && <SessionSidebar scopeTitle={draftCityView?.name ?? project?.title ?? "未选择 Project"}
         projectRevision={taskScope?.revision ?? null} worldRevision={baseViewport.engine?.getCitySdkLayoutView()?.worldRevision ?? project?.cityLayout?.worldRevision ?? null}
@@ -1557,7 +1560,7 @@ export function CreatorStudioApp() {
         <div className="inspector-heading"><h2>Agent 创作伙伴</h2></div>
         {message && <p className="status status-banner" role="status">{message}</p>}
 
-        <div hidden={activePanel === "story"}><AgentWorkspace project={project} taskController={studioTasks} browserPreview={browserPreview} agentCommit={agentCommit} agentActivity={agentActivity} agentCityPreview={agentCityPreview} agentPreviewStatus={agentPreviewStatus} busy={busy}
+        <div hidden={activePanel === "story"}><AgentWorkspace project={project} taskController={studioTasks} browserPreview={browserPreview} agentCommit={agentCommit} agentActivity={agentActivity} agentCityPreview={agentCityPreview} agentPreviewStatus={agentPreviewStatus} busy={busy} onToggleSessions={() => setNarrowSessionsOpen(value => !value)}
           goal={activeSessionId ? studioSessions.draft : draftCityView?.cityId ? cityGoals.get(draftCityView.cityId) ?? "" : project ? projectGoals.get(project.projectId) ?? "" : ""}
           onGoalChange={goal => { if (activeSessionId) studioSessions.setDraft(goal); else if (draftCityView) updateCityGoal(draftCityView.cityId, goal); else if (project) updateProjectGoal(project.projectId, goal); }} onResolve={resolveAgentCommit}
           commitBlockedReason={studioTasks.task ? taskCommitBlockedReason(studioTasks.task, taskScope ? ("projectId" in taskScope ? taskScope.projectId : taskScope.cityId) : null, taskScope?.revision ?? null, hasUncommittedProjectEdits)

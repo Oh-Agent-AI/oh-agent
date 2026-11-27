@@ -92,20 +92,34 @@ export function attachPreviewEntitySupport(
   return parsePreviewEntityReference({ ...reference, support });
 }
 
-export function hasVerifiedEntityEvidence(
+/**
+ * 实体验证的三级信任状态——客户端回报成功不等于 Host 独立验证，
+ * 两者都不能与「Agent 已生成」混用同一个词（发布到商店时只认最高级）。
+ */
+export type EntityVerificationLevel = "none" | "client-reported" | "host-verified";
+
+const sameVersionEntityTestEvidence = (
+  item: Readonly<{ kind: string; trustLevel: string; data: unknown }>,
+  reference: PreviewEntityReference,
+  trustLevel: "city-client-reported" | "host-verified",
+): boolean => {
+  if (item.kind !== "test" || item.trustLevel !== trustLevel || !item.data || typeof item.data !== "object" || Array.isArray(item.data)) return false;
+  const data = item.data as Record<string, unknown>;
+  const inspection = data.inspection && typeof data.inspection === "object" && !Array.isArray(data.inspection)
+    ? data.inspection as Record<string, unknown> : null;
+  return data.entityId === reference.entityId && data.projectRevision === reference.projectRevision
+    && data.cityRevision === reference.cityRevision && data.worldRevision === reference.worldRevision
+    && data.previewId === reference.previewId && inspection?.status === "ready"
+    && typeof inspection.worldRevision === "string" && inspection.worldRevision.length > 0;
+};
+
+export function entityVerificationLevel(
   evidence: readonly Readonly<{ kind: string; trustLevel: string; data: unknown }>[],
   reference: PreviewEntityReference,
-): boolean {
-  return evidence.some(item => {
-    if (item.kind !== "test" || item.trustLevel !== "city-client-reported" || !item.data || typeof item.data !== "object" || Array.isArray(item.data)) return false;
-    const data = item.data as Record<string, unknown>;
-    const inspection = data.inspection && typeof data.inspection === "object" && !Array.isArray(data.inspection)
-      ? data.inspection as Record<string, unknown> : null;
-    return data.entityId === reference.entityId && data.projectRevision === reference.projectRevision
-      && data.cityRevision === reference.cityRevision && data.worldRevision === reference.worldRevision
-      && data.previewId === reference.previewId && inspection?.status === "ready"
-      && typeof inspection.worldRevision === "string" && inspection.worldRevision.length > 0;
-  });
+): EntityVerificationLevel {
+  if (evidence.some(item => sameVersionEntityTestEvidence(item, reference, "host-verified"))) return "host-verified";
+  if (evidence.some(item => sameVersionEntityTestEvidence(item, reference, "city-client-reported"))) return "client-reported";
+  return "none";
 }
 
 /**

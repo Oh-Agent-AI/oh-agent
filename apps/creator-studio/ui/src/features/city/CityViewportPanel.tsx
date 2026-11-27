@@ -4,7 +4,7 @@ import type { CityViewStatus, CityWorldSnapshot, Project, ProjectCityState } fro
 // 视口与 City 插件共享同一份引擎与装配管线，保证 Studio 看到的是同一座城市。
 import { CityViewport } from "../../../../../agent-city/ui/src/viewport/CityViewport";
 import type { CityEngine, CityEntitySelection } from "../../../../../agent-city/ui/src/engine/CityEngine";
-import type { PreviewEntityReference, PreviewEntityReferenceStatus } from "../../contracts/previewContext";
+import type { EntityVerificationLevel, PreviewEntityReference, PreviewEntityReferenceStatus } from "../../contracts/previewContext";
 import { PreviewEntityDiagnosticCard, type PreviewEntityDiagnosticState } from "../preview/PreviewEntityContext";
 import type { ProjectSceneView } from "../preview/projectSceneView";
 
@@ -32,7 +32,7 @@ export function CityViewportPanel(props: Readonly<{
   onEntitySelect: (selection: CityEntitySelection | null, source: PreviewViewportSource) => void;
   selectedEntity: PreviewEntityReference | null;
   selectedEntityStatus: PreviewEntityReferenceStatus;
-  selectedEntityVerified: boolean;
+  selectedEntityVerification: EntityVerificationLevel;
   entityDiagnostic: PreviewEntityDiagnosticState;
   onFocusEntity: () => void;
   onInspectEntity: () => void;
@@ -76,7 +76,7 @@ export function CityViewportPanel(props: Readonly<{
     recordCityDiagnostic, projectCityKey, projectCity, project, projectSceneView, viewportSeed, viewportUnavailable, worldProfile, focusSignal, busy, browserPreview,
     agentCityPreview, agentPreviewId, onResetView, onCloseInstalledWorld, onCloseDraftCity, onOpenProject, onExportCitySource, onMessage,
     setBaseEngine, setAgentEngine, setBaseStatus, commitPatchRef, onAgentViewportStatus,
-    onEntitySelect, selectedEntity, selectedEntityStatus, selectedEntityVerified, entityDiagnostic, onFocusEntity, onInspectEntity,
+    onEntitySelect, selectedEntity, selectedEntityStatus, selectedEntityVerification, entityDiagnostic, onFocusEntity, onInspectEntity,
   } = props;
   const comparisonEngine = useRef<CityEngine | null>(null);
   const [baseForPreview, setBaseForPreview] = useState<string | null>(null);
@@ -139,7 +139,7 @@ export function CityViewportPanel(props: Readonly<{
         onAgentViewportStatus(status, code);
       }} />
       <div className="viewport-savebar" role="status">Agent 临时预览 · 不会保存到城市</div></div>}
-    {selectedEntity && <PreviewEntityDiagnosticCard reference={selectedEntity} status={selectedEntityStatus} verified={selectedEntityVerified} diagnostic={entityDiagnostic}
+    {selectedEntity && <PreviewEntityDiagnosticCard reference={selectedEntity} status={selectedEntityStatus} verification={selectedEntityVerification} diagnostic={entityDiagnostic}
       onInspect={onInspectEntity} onFocus={onFocusEntity} />}
   </section>;
 }

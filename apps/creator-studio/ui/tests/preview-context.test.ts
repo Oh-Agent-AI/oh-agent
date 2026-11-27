@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  attachPreviewEntitySupport, composeStudioTaskRequest, hasVerifiedEntityEvidence,
+  attachPreviewEntitySupport, composeStudioTaskRequest, entityVerificationLevel,
   parsePreviewEntityReference, previewEntityReferenceStatus, previewEntityTaskContext,
 } from "../src/contracts/previewContext.ts";
 
@@ -39,12 +39,19 @@ test("task request carries bounded structured context and refuses stale objects"
   assert.throws(() => composeStudioTaskRequest("x".repeat(4_000), reference, scope), /creator_task_request_too_long/);
 });
 
-test("verified state requires matching real runtime evidence, not Agent prose or static preview", () => {
+test("verification levels separate client playtest reports from Host verification", () => {
   const inspection = { status: "ready", worldRevision: "city-world-v2:sha256:surface", wheels: [1, 1, 1, 1] };
   const data = { entityId: "taxi-17", projectRevision: 4, cityRevision: 8, worldRevision: "world-v3", previewId: "preview-a", inspection };
-  assert.equal(hasVerifiedEntityEvidence([{ kind: "test", trustLevel: "city-client-reported", data }], reference), true);
-  assert.equal(hasVerifiedEntityEvidence([{ kind: "preview", trustLevel: "host-observed", data }], reference), false);
-  assert.equal(hasVerifiedEntityEvidence([{ kind: "test", trustLevel: "city-client-reported", data: { ...data, entityId: "taxi-18" } }], reference), false);
-  assert.equal(hasVerifiedEntityEvidence([{ kind: "test", trustLevel: "city-client-reported", data: { ...data, worldRevision: "world-v4" } }], reference), false);
-  assert.equal(hasVerifiedEntityEvidence([{ kind: "test", trustLevel: "city-client-reported", data: { ...data, inspection: { ...inspection, status: "unsupported" } } }], reference), false);
+  // 客户端回报到「试玩通过」这一级为止，绝不冒充 Host 验证。
+  assert.equal(entityVerificationLevel([{ kind: "test", trustLevel: "city-client-reported", data }], reference), "client-reported");
+  assert.equal(entityVerificationLevel([{ kind: "preview", trustLevel: "host-observed", data }], reference), "none");
+  assert.equal(entityVerificationLevel([{ kind: "test", trustLevel: "city-client-reported", data: { ...data, entityId: "taxi-18" } }], reference), "none");
+  assert.equal(entityVerificationLevel([{ kind: "test", trustLevel: "city-client-reported", data: { ...data, worldRevision: "world-v4" } }], reference), "none");
+  assert.equal(entityVerificationLevel([{ kind: "test", trustLevel: "city-client-reported", data: { ...data, inspection: { ...inspection, status: "unsupported" } } }], reference), "none");
+  // Host 可信检查证据是唯一的最高级；它不被客户端回报降级，反之亦然。
+  assert.equal(entityVerificationLevel([{ kind: "test", trustLevel: "host-verified", data }], reference), "host-verified");
+  assert.equal(entityVerificationLevel([
+    { kind: "test", trustLevel: "city-client-reported", data },
+    { kind: "test", trustLevel: "host-verified", data },
+  ], reference), "host-verified");
 });
