@@ -423,6 +423,174 @@ pub(crate) fn close_preview(city_instance: &str, payload: &Value) -> Result<Valu
     Ok(json!({"closed":true}))
 }
 
+// ── PR05 City Snapshot Test（桌面臂）：CityWorldSnapshotV4 冻结缓存 + broker 服务 ──
+// 快照只能由 live 渲染端确定（citySnapshot.ts::createCitySnapshotV4 需要 CityEngine
+// 的地形采样器与生成器身份摘要，宿主不重算、绝不合成）：真实 City 的 Code 预览
+// webview 经 code_preview_window 的 plugin_message 窄面 `city.snapshot.export` 上报
+// 一份，宿主做三重身份绑定（preview 请求 source、权威 revision、header 自洽）后
+// 原子落盘 `state/creator/code-games/city-snapshots/<cityId>-<cityRevision>.json`，
+// 每城只保留最新 MAX_CITY_SNAPSHOT_REVISIONS 份。broker 方法
+// `creator.code.test.city_snapshot`（creator-studio 描述符，headless 臂与 Studio
+// 在场拦截同答一个 handler）从这里服务：先复核 creator_cities.revision，再校验
+// 缓存 header 自洽。真正的密码学校验（validateCityWorldSnapshot +
+// header.snapshotDigest 对照）在无头 runner 执行——宿主只做结构/身份一致性，
+// 不重算 canonical digest。字节上限与 §5.5 描述符响应预算联动：broker 响应 =
+// snapshotDigest + snapshotJson 信封，预算取描述符 localCallBudgets（1 MiB 平台
+// 上限），信封开销另留 4 KiB 余量；超限快照在 store 侧就按 too_large 拒收。
+const MAX_CITY_SNAPSHOT_BYTES: usize = (1024 * 1024) - (4 * 1024);
+const MAX_CITY_SNAPSHOT_REVISIONS: usize = 2;
+
+fn city_snapshots_root(home: &Path) -> PathBuf {
+    code_games_root(home).join("city-snapshots")
+}
+
+/// `sha256:` + 64 位小写十六进制（CityWorldSnapshotV4 header.snapshotDigest 词表，
+/// city-sdk digest.ts canonicalDigest 输出格式）。
+fn valid_snapshot_digest(value: &str) -> bool {
+    value.len() == 71 && value.starts_with("sha256:")
+        && value[7..].bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+/// V4 快照的 header 世界身份：schemaVersion、cityId/cityRevision 与 digest 词表
+/// 必须自洽；返回声明的 snapshotDigest（供服务臂回显与 store 侧落盘记录）。
+fn snapshot_header_identity(snapshot: &Value, city_id: &str, city_revision: u64) -> Result<String, &'static str> {
+    if snapshot.get("schemaVersion").and_then(Value::as_u64) != Some(4) { return Err("creator_city_snapshot_invalid"); }
+    let header = snapshot.get("header").ok_or("creator_city_snapshot_invalid")?;
+    if header.get("cityId").and_then(Value::as_str) != Some(city_id)
+        || header.get("cityRevision").and_then(Value::as_u64) != Some(city_revision) {
+        return Err("creator_city_snapshot_invalid");
+    }
+    let digest = header.get("snapshotDigest").and_then(Value::as_str).ok_or("creator_city_snapshot_invalid")?;
+    if !valid_snapshot_digest(digest) { return Err("creator_city_snapshot_invalid"); }
+    Ok(digest.to_owned())
+}
+
+/// 权威 revision 复核：creator_cities.revision 是唯一权威（MCP 侧同表先行复核，
+/// broker 到达后这里独立复核，两侧同源不互信）。城市缺失与不可用是不同失败。
+fn authoritative_city_revision(home: &Path, city_id: &str) -> Result<u64, &'static str> {
+    use rusqlite::OptionalExtension;
+    if !crate::creator_store::valid_id(city_id) { return Err("creator_city_invalid"); }
+    let db = crate::creator_store::database(home)?;
+    db.query_row("SELECT revision FROM creator_cities WHERE city_id=?1", [city_id], |row| row.get::<_, i64>(0))
+        .optional().map_err(|_| "creator_store_unavailable")?
+        .ok_or("creator_city_not_found")
+        .and_then(|revision| u64::try_from(revision).map_err(|_| "creator_store_corrupt"))
+}
+
+/// 预览 webview 的快照上报唯一入口（code_preview_window plugin_message 窄面）：
+/// 入参就是渲染端序列化的快照 JSON 字符串。先在字符串层执行预算，再解析并做
+/// 三重绑定；同一 (cityId, revision) 的缓存可被同身份重复导出覆盖（tmp+rename
+/// 原子发布），过期 revision 拒收（缓存只服务当前权威）。
+pub(crate) fn store_city_test_snapshot(home: &Path, preview_id: &str, snapshot_json: &str) -> Result<Value, &'static str> {
+    if !valid_preview_id(preview_id) { return Err("code_game_preview_request_invalid"); }
+    // 入口预算（渲染端发紧凑序列化）：超限在解析前就按 too_large 拒收，权威上限
+    // 仍是落盘前的 canonical 字节数。
+    if snapshot_json.is_empty() || snapshot_json.len() > MAX_CITY_SNAPSHOT_BYTES { return Err("creator_city_snapshot_too_large"); }
+    let snapshot: Value = serde_json::from_str(snapshot_json).map_err(|_| "creator_city_snapshot_invalid")?;
+    let header = snapshot.get("header").ok_or("creator_city_snapshot_invalid")?;
+    let city_id = header.get("cityId").and_then(Value::as_str)
+        .filter(|value| crate::creator_store::valid_id(value)).ok_or("creator_city_snapshot_invalid")?;
+    let city_revision = header.get("cityRevision").and_then(Value::as_u64)
+        .filter(|revision| *revision <= i64::MAX as u64).ok_or("creator_city_snapshot_invalid")?;
+    let current = authoritative_city_revision(home, city_id)?;
+    if current != city_revision { return Err("creator_city_revision_stale"); }
+    // preview 绑定：快照必须来自装载这座 City 的这个预览；synthetic 预览没有权威
+    // 世界（宿主无法离线重算 terrain），显式拒绝。
+    let request = read_json(&preview_dir(home, preview_id).map_err(|_| "code_game_state_unavailable")?.join("request.json"), MAX_PREVIEW_REQUEST_BYTES)
+        .map_err(|_| "code_game_state_unavailable")?
+        .ok_or("code_game_preview_request_invalid")?;
+    let source = request.get("source").ok_or("code_game_preview_request_invalid")?;
+    if source.get("synthetic").and_then(Value::as_bool) == Some(true)
+        || source.get("cityId").and_then(Value::as_str) != Some(city_id)
+        || source.get("cityRevision").and_then(Value::as_u64).is_some_and(|revision| revision != city_revision) {
+        return Err("creator_city_snapshot_source_mismatch");
+    }
+    let digest = snapshot_header_identity(&snapshot, city_id, city_revision)?;
+    let bytes = canonical_json(&snapshot).map_err(|_| "creator_city_snapshot_invalid")?;
+    if bytes.len() > MAX_CITY_SNAPSHOT_BYTES { return Err("creator_city_snapshot_too_large"); }
+    let _guard = preview_io_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let root = city_snapshots_root(home);
+    std::fs::create_dir_all(&root).map_err(|_| "code_game_state_unavailable")?;
+    // cityId 已过宿主词表（无路径分隔符），revision 是 u64：目标恒为单一安全组件。
+    let target = root.join(format!("{city_id}-{city_revision}.json"));
+    let temporary = root.join(format!("{city_id}-{city_revision}.json.tmp"));
+    std::fs::write(&temporary, bytes.as_bytes()).map_err(|_| "code_game_state_unavailable")?;
+    if std::fs::rename(&temporary, &target).is_err() {
+        std::fs::remove_file(&temporary).ok();
+        return Err("code_game_state_unavailable");
+    }
+    prune_city_snapshots(home, city_id).map_err(|_| "code_game_state_unavailable")?;
+    Ok(json!({"stored":true,"cityId":city_id,"cityRevision":city_revision,"snapshotDigest":digest}))
+}
+
+/// 每城只保留最新 MAX_CITY_SNAPSHOT_REVISIONS 份（按 revision 排序修剪），给磁盘
+/// 一个确定的界；其他 City 的文件不受影响。
+fn prune_city_snapshots(home: &Path, city_id: &str) -> Result<(), String> {
+    let prefix = format!("{city_id}-");
+    let mut revisions: Vec<(u64, PathBuf)> = Vec::new();
+    for entry in std::fs::read_dir(city_snapshots_root(home)).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with(&prefix) || !name.ends_with(".json") { continue; }
+        // get() 而非切片：外来文件名可能非 ASCII 边界，parse 失败即忽略。
+        if let Some(revision_text) = name.get(prefix.len()..name.len().saturating_sub(5)) {
+            if let Ok(revision) = revision_text.parse::<u64>() {
+                revisions.push((revision, entry.path()));
+            }
+        }
+    }
+    revisions.sort();
+    while revisions.len() > MAX_CITY_SNAPSHOT_REVISIONS {
+        let (_, path) = revisions.remove(0);
+        std::fs::remove_file(&path).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// broker `creator.code.test.city_snapshot` 服务臂（creator-studio 描述符）：权威
+/// revision 复核 → 缓存读取 → header 自洽校验 → `{snapshotDigest, snapshotJson}`。
+/// 缓存缺席（City 还没在 Studio 里开过 Code 预览、渲染端无从物化快照）按
+/// `creator_city_snapshot_not_cached` 结构化失败，绝不回退合成世界。
+pub(crate) fn city_test_snapshot(home: &Path, payload: &Value) -> Result<Value, &'static str> {
+    let city_id = payload.get("cityId").and_then(Value::as_str)
+        .filter(|value| crate::creator_store::valid_id(value)).ok_or("creator_request_invalid")?;
+    let city_revision = payload.get("cityRevision").and_then(Value::as_u64)
+        .filter(|revision| *revision <= i64::MAX as u64).ok_or("creator_request_invalid")?;
+    let current = authoritative_city_revision(home, city_id)?;
+    if current != city_revision { return Err("creator_city_revision_stale"); }
+    let path = city_snapshots_root(home).join(format!("{city_id}-{city_revision}.json"));
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err("creator_city_snapshot_not_cached"),
+        Err(_) => return Err("code_game_state_unavailable"),
+    };
+    if bytes.len() > MAX_CITY_SNAPSHOT_BYTES { return Err("creator_city_snapshot_invalid"); }
+    let snapshot: Value = serde_json::from_slice(&bytes).map_err(|_| "creator_city_snapshot_invalid")?;
+    let digest = snapshot_header_identity(&snapshot, city_id, city_revision)?;
+    // bytes 刚被 serde_json::from_slice 成功解析，必为 UTF-8；照原字节回执（MCP
+    // 按同一字符串暂存给 runner）。
+    let snapshot_json = String::from_utf8(bytes).map_err(|_| "creator_city_snapshot_invalid")?;
+    Ok(json!({"snapshotDigest":digest,"snapshotJson":snapshot_json}))
+}
+
+/// PR06 无头测试记录的宿主读面（creator.task.preview.verify 家族同模式）：
+/// UI 经 creator.* 行表读取，与 MCP 的 `creator_code_test_record` 读同一份
+/// `state/creator/code-games/tests/<buildId>.json`，内容逐字透传（写入侧已保证
+/// 原子性与上限）；字段级解释由 UI 的 fail-closed 解析器负责，缺记录是明确缺席。
+pub(crate) fn code_test_record(home: &Path, payload: &Value) -> Result<Value, &'static str> {
+    let build_id = payload.get("buildId").and_then(Value::as_str)
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()))
+        .ok_or("game_argument_invalid")?;
+    let path = code_games_root(home).join("tests").join(format!("{build_id}.json"));
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) if bytes.len() <= 64 * 1024 => bytes,
+        Ok(_) => return Err("creator_store_unavailable"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err("creator_code_test_record_not_found"),
+        Err(_) => return Err("creator_store_unavailable"),
+    };
+    serde_json::from_slice::<Value>(&bytes).map_err(|_| "creator_store_unavailable")
+}
+
 pub(crate) fn studio_builds(home: &Path, limit: u64) -> Result<Value, &'static str> {
     let path = home.join("state/creator/code-games/index.json");
     let value = match std::fs::read(&path) {
@@ -740,5 +908,185 @@ mod tests {
         let db = crate::creator_store::database(home).ok()?;
         db.query_row("SELECT preview_id FROM city_preview_clocks WHERE preview_id=?1", [preview_id],
             |row| row.get::<_, String>(0)).optional().ok().flatten().map(|id| (id,))
+    }
+
+    // ── PR05 City Snapshot Test（桌面臂）────────────────────────────
+
+    fn snapshot_city_fixture(home: &Path, city_id: &str, revision: u64) {
+        let db = crate::creator_store::database(home).unwrap();
+        // city_id 是主键：revision 前进用 upsert（模拟编辑推进权威 revision）。
+        db.execute("INSERT INTO creator_cities(city_id,revision,document_json,created_at_ms,updated_at_ms) VALUES(?1,?2,'{}',1,1) ON CONFLICT(city_id) DO UPDATE SET revision=?2",
+            rusqlite::params![city_id, revision as i64]).unwrap();
+    }
+
+    /// 与 city-sdk canonicalDigest 同词表的自洽最小快照（header 三元组 + V4 形状；
+    /// 真实密码学校验由 runner 的 validateCityWorldSnapshot 承担，这里测宿主的
+    /// 结构/身份一致性臂）。
+    fn fixture_city_snapshot(city_id: &str, revision: u64, digest: &str) -> String {
+        json!({
+            "schemaVersion": 4,
+            "header": {"schemaVersion": 1, "cityId": city_id, "cityRevision": revision, "snapshotDigest": digest, "seed": 7},
+            "terrain": {"format": "heightfield-tiles-v1", "tiles": []},
+        }).to_string()
+    }
+
+    fn snapshot_preview_fixture(home: &Path, preview_id: &str, source: Value) {
+        let directory = preview_dir(home, preview_id).unwrap();
+        std::fs::create_dir_all(&directory).unwrap();
+        write_json_atomic(&directory.join("request.json"), &json!({"previewId":preview_id,"buildId":"a","source":source})).unwrap();
+    }
+
+    /// 导出（preview 上报）→ 落盘 → broker 服务臂回执的全链路：digest 照 header
+    /// 原样回显，快照字节可原样交回 runner。
+    #[test]
+    fn city_snapshot_export_stores_and_the_broker_arm_serves_it() {
+        let home = std::env::temp_dir().join(format!("code-game-snapshot-ok-{}-{}", now_ms(), std::process::id()));
+        snapshot_city_fixture(&home, "city:pr05", 7);
+        let digest = bytes_digest(b"city-pr05-world");
+        let snapshot_json = fixture_city_snapshot("city:pr05", 7, &digest);
+        snapshot_preview_fixture(&home, "preview-snap-ok", json!({"cityId":"city:pr05","cityRevision":7}));
+        let receipt = store_city_test_snapshot(&home, "preview-snap-ok", &snapshot_json).unwrap();
+        assert_eq!(receipt, json!({"stored":true,"cityId":"city:pr05","cityRevision":7,"snapshotDigest":digest}));
+        let cached = city_snapshots_root(&home).join("city:pr05-7.json");
+        assert!(cached.exists(), "cache file must exist at <cityId>-<revision>.json");
+        assert!(!cached.with_extension("json.tmp").exists(), "cache writes must be atomic (tmp+rename)");
+        let served = city_test_snapshot(&home, &json!({"cityId":"city:pr05","cityRevision":7})).unwrap();
+        assert_eq!(served["snapshotDigest"], json!(digest));
+        let roundtrip: Value = serde_json::from_str(served["snapshotJson"].as_str().unwrap()).unwrap();
+        assert_eq!(roundtrip["header"]["snapshotDigest"], json!(digest));
+        assert_eq!(roundtrip["header"]["cityId"], json!("city:pr05"));
+        assert_eq!(roundtrip["header"]["cityRevision"], json!(7));
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// 权威 revision 前进后：serve 旧 revision 与 store 旧 revision 都按 stale 拒绝，
+    /// 不落盘、不服务（与 MCP 侧同源复核同一稳定码）。
+    #[test]
+    fn stale_city_revision_is_rejected_on_store_and_serve() {
+        let home = std::env::temp_dir().join(format!("code-game-snapshot-stale-{}-{}", now_ms(), std::process::id()));
+        snapshot_city_fixture(&home, "city:pr05", 8);
+        let digest = bytes_digest(b"city-pr05-world");
+        snapshot_preview_fixture(&home, "preview-snap-stale", json!({"cityId":"city:pr05","cityRevision":8}));
+        assert_eq!(city_test_snapshot(&home, &json!({"cityId":"city:pr05","cityRevision":7})).unwrap_err(), "creator_city_revision_stale");
+        assert_eq!(store_city_test_snapshot(&home, "preview-snap-stale", &fixture_city_snapshot("city:pr05", 7, &digest)).unwrap_err(), "creator_city_revision_stale");
+        assert!(!city_snapshots_root(&home).join("city:pr05-7.json").exists(), "stale export must not be cached");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// 缓存缺席（City 还没开过 Code 预览）与城市缺失是不同稳定码；绝不合成回退。
+    #[test]
+    fn missing_cache_entry_fails_structured_without_a_synthetic_fallback() {
+        let home = std::env::temp_dir().join(format!("code-game-snapshot-miss-{}-{}", now_ms(), std::process::id()));
+        snapshot_city_fixture(&home, "city:pr05", 7);
+        assert_eq!(city_test_snapshot(&home, &json!({"cityId":"city:pr05","cityRevision":7})).unwrap_err(), "creator_city_snapshot_not_cached");
+        assert_eq!(city_test_snapshot(&home, &json!({"cityId":"city:none","cityRevision":7})).unwrap_err(), "creator_city_not_found");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// 损坏缓存 fail-closed：非 JSON、cityId 不符、digest 词表不符都按 invalid 拒绝。
+    #[test]
+    fn malformed_cached_snapshot_is_rejected_by_the_serving_arm() {
+        let home = std::env::temp_dir().join(format!("code-game-snapshot-bad-{}-{}", now_ms(), std::process::id()));
+        snapshot_city_fixture(&home, "city:pr05", 7);
+        let root = city_snapshots_root(&home);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("city:pr05-7.json"), b"{not json").unwrap();
+        assert_eq!(city_test_snapshot(&home, &json!({"cityId":"city:pr05","cityRevision":7})).unwrap_err(), "creator_city_snapshot_invalid");
+        std::fs::write(root.join("city:pr05-7.json"), fixture_city_snapshot("city:other", 7, &bytes_digest(b"x"))).unwrap();
+        assert_eq!(city_test_snapshot(&home, &json!({"cityId":"city:pr05","cityRevision":7})).unwrap_err(), "creator_city_snapshot_invalid");
+        std::fs::write(root.join("city:pr05-7.json"), fixture_city_snapshot("city:pr05", 7, "deadbeef")).unwrap();
+        assert_eq!(city_test_snapshot(&home, &json!({"cityId":"city:pr05","cityRevision":7})).unwrap_err(), "creator_city_snapshot_invalid");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// 导出三重绑定：synthetic 预览、装载别的 City 的预览、未知预览都拒收；请求
+    /// 未写 cityRevision（跟随权威）时按 cityId 绑定放行。
+    #[test]
+    fn snapshot_export_requires_the_matching_real_preview() {
+        let home = std::env::temp_dir().join(format!("code-game-snapshot-bind-{}-{}", now_ms(), std::process::id()));
+        snapshot_city_fixture(&home, "city:pr05", 7);
+        let digest = bytes_digest(b"city-pr05-world");
+        let snapshot_json = fixture_city_snapshot("city:pr05", 7, &digest);
+        snapshot_preview_fixture(&home, "preview-snap-synth", json!({"cityId":"city:pr05","synthetic":true}));
+        assert_eq!(store_city_test_snapshot(&home, "preview-snap-synth", &snapshot_json).unwrap_err(), "creator_city_snapshot_source_mismatch");
+        snapshot_preview_fixture(&home, "preview-snap-other", json!({"cityId":"city:other","cityRevision":7}));
+        assert_eq!(store_city_test_snapshot(&home, "preview-snap-other", &snapshot_json).unwrap_err(), "creator_city_snapshot_source_mismatch");
+        assert_eq!(store_city_test_snapshot(&home, "preview-unknown", &snapshot_json).unwrap_err(), "code_game_preview_request_invalid");
+        snapshot_preview_fixture(&home, "preview-snap-open", json!({"cityId":"city:pr05"}));
+        assert!(store_city_test_snapshot(&home, "preview-snap-open", &snapshot_json).is_ok());
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// 每城只保留最新 MAX_CITY_SNAPSHOT_REVISIONS 份；其他 City 的缓存不受影响。
+    #[test]
+    fn snapshot_cache_keeps_only_the_latest_revisions_per_city() {
+        let home = std::env::temp_dir().join(format!("code-game-snapshot-prune-{}-{}", now_ms(), std::process::id()));
+        snapshot_preview_fixture(&home, "preview-snap-prune", json!({"cityId":"city:pr05"}));
+        let digest = bytes_digest(b"city-pr05-world");
+        for revision in 7..=9_u64 {
+            snapshot_city_fixture(&home, "city:pr05", revision);
+            store_city_test_snapshot(&home, "preview-snap-prune", &fixture_city_snapshot("city:pr05", revision, &digest)).unwrap();
+        }
+        let root = city_snapshots_root(&home);
+        assert!(root.join("city:pr05-9.json").exists() && root.join("city:pr05-8.json").exists());
+        assert!(!root.join("city:pr05-7.json").exists(), "oldest revision must be pruned");
+        snapshot_city_fixture(&home, "city:other", 3);
+        snapshot_preview_fixture(&home, "preview-snap-prune2", json!({"cityId":"city:other"}));
+        store_city_test_snapshot(&home, "preview-snap-prune2", &fixture_city_snapshot("city:other", 3, &digest)).unwrap();
+        assert!(root.join("city:pr05-9.json").exists(), "other cities' caches must survive");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// 预算联动：入口 too_large 拒收超限上报；满预算（≤1 MiB 信封）的缓存经
+    /// plugin_calls 真实 respond_with_budget（描述符 responseBytes 上限）回执成功。
+    #[test]
+    fn snapshot_budgets_bound_the_export_and_the_broker_response() {
+        let home = std::env::temp_dir().join(format!("code-game-snapshot-budget-{}-{}", now_ms(), std::process::id()));
+        snapshot_city_fixture(&home, "city:pr05", 7);
+        snapshot_preview_fixture(&home, "preview-snap-big", json!({"cityId":"city:pr05"}));
+        let digest = bytes_digest(b"city-pr05-world");
+        let oversized = format!("{{\"header\":{{}},\"padding\":\"{}\"}}", "x".repeat(MAX_CITY_SNAPSHOT_BYTES + 1));
+        assert_eq!(store_city_test_snapshot(&home, "preview-snap-big", &oversized).unwrap_err(), "creator_city_snapshot_too_large");
+        // 满预算但合规的快照：canonical 字节数贴近上限，仍可落盘并被服务臂取回。
+        let mut padded: Value = serde_json::from_str(&fixture_city_snapshot("city:pr05", 7, &digest)).unwrap();
+        let canonical_base = canonical_json(&padded).unwrap().len();
+        // 键排序插入 "notes" 会新增一个逗号，预算里一并扣除。
+        let slack = MAX_CITY_SNAPSHOT_BYTES - canonical_base - "\"notes\":\"\"".len() - 1;
+        padded["notes"] = json!("x".repeat(slack));
+        let big = canonical_json(&padded).unwrap();
+        assert!(big.len() <= MAX_CITY_SNAPSHOT_BYTES, "{} must fit the store budget", big.len());
+        store_city_test_snapshot(&home, "preview-snap-big", &big).unwrap();
+        let served = city_test_snapshot(&home, &json!({"cityId":"city:pr05","cityRevision":7})).unwrap();
+        let envelope = json!({"ok": true, "result": served});
+        assert!(serde_json::to_string(&envelope).unwrap().len() <= 1024 * 1024, "serve envelope must fit the descriptor response budget");
+        let call_id = agent_vitals_runtime::query::plugin_calls::submit_with_budget(&home, "creator-studio",
+            "creator.code.test.city_snapshot", &json!({"cityId":"city:pr05","cityRevision":7}), 60_000, 16384).unwrap();
+        agent_vitals_runtime::query::plugin_calls::claim_pending(&home, "creator-studio", "budget-instance",
+            &["creator.code.test.city_snapshot".to_string()], 4).unwrap();
+        agent_vitals_runtime::query::plugin_calls::respond_with_budget(&home, "creator-studio", "budget-instance",
+            &call_id, &envelope, 1024 * 1024).expect("full-budget snapshot must pass the descriptor response budget");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// PR06 无头测试记录读面：逐字透传 `tests/<buildId>.json`；缺记录是明确缺席
+    /// （`creator_code_test_record_not_found`），buildId 必须是 64 位小写 hex。
+    #[test]
+    fn code_test_record_reads_the_mcp_written_record_verbatim() {
+        let home = std::env::temp_dir().join(format!("code-game-test-record-{}-{}", now_ms(), std::process::id()));
+        let build_id = "a".repeat(64);
+        let record = json!({
+            "buildId": build_id, "workspaceRevision": format!("sha256:{}", "b".repeat(64)), "ok": true,
+            "executionOk": true, "verdict": "passed", "seed": 7, "ticks": 120,
+            "source": {"source": "synthetic"}, "atMs": 42,
+        });
+        let tests = code_games_root(&home).join("tests");
+        std::fs::create_dir_all(&tests).unwrap();
+        std::fs::write(tests.join(format!("{build_id}.json")), serde_json::to_vec(&record).unwrap()).unwrap();
+        let served = code_test_record(&home, &json!({"buildId": build_id})).unwrap();
+        assert_eq!(served, record, "the route must return the record verbatim for the UI's fail-closed parser");
+        assert_eq!(code_test_record(&home, &json!({"buildId": "c".repeat(64)})).unwrap_err(), "creator_code_test_record_not_found");
+        assert_eq!(code_test_record(&home, &json!({"buildId": "../escape"})).unwrap_err(), "game_argument_invalid");
+        assert_eq!(code_test_record(&home, &json!({})).unwrap_err(), "game_argument_invalid");
+        std::fs::remove_dir_all(home).ok();
     }
 }

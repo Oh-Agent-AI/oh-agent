@@ -577,6 +577,8 @@
         "creator.code.install.preview",
         "creator.code.install.commit",
         "creator.code.install.list",
+        "creator.code.test.city_snapshot",
+        "creator.code.test.record",
         "creator.story.project.create",
         "creator.story.project.read",
         "creator.story.project.preview",
@@ -611,6 +613,7 @@
         "creator.story.graph.inspect": { "requestBytes": 8192, "responseBytes": 393216 },
         "creator.story.timeline.inspect": { "requestBytes": 8192, "responseBytes": 393216 },
         "creator.game.intent.simulate": { "requestBytes": 16384, "responseBytes": 65536 },
+        "creator.code.test.city_snapshot": { "requestBytes": 16384, "responseBytes": 1048576 },
         "creator.story.project.create": {
           "requestBytes": 393216,
           "responseBytes": 65536

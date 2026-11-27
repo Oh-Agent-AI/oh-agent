@@ -95,6 +95,21 @@ fn handle_preview_request(home: &Path, window_label: &str, request: &Value) -> R
                     crate::creator_code_game::record_preview_state(home, &state).map_err(|_| "code_game_state_invalid".to_string())?;
                     Ok(json!({"ok":true}))
                 }
+                // PR05 City Snapshot Test 的导出面：真实 City 的 Code 预览把渲染端
+                // 物化的 CityWorldSnapshotV4 序列化上报，宿主三重绑定身份后有界落盘
+                // （creator_code_game::store_city_test_snapshot）。宿主不重算快照，
+                // 拒绝细节按稳定码记日志，webview 只回信封级错误码。
+                Some("city.snapshot.export") => {
+                    let snapshot_json = message.get("snapshotJson").and_then(Value::as_str).unwrap_or_default();
+                    match crate::creator_code_game::store_city_test_snapshot(home, preview_id, snapshot_json) {
+                        Ok(receipt) => Ok(json!({"ok":true,"receipt":receipt})),
+                        Err(code) => {
+                            agent_vitals_runtime::logging::log_warn("code_preview",
+                                &format!("city snapshot export rejected code={code}"));
+                            Err("code_game_snapshot_invalid".into())
+                        }
+                    }
+                }
                 Some("plugin.performance") => Ok(json!({"ok":true})),
                 _ => Err("preview_message_unavailable".into()),
             }
@@ -221,6 +236,38 @@ mod tests {
         let performance = handle_preview_request(&home, "code-preview-preview-a", &json!({"previewId":"preview-a","command":"plugin_message",
             "args":{"message":{"type":"plugin.performance"}}})).unwrap();
         assert_eq!(performance["ok"], true);
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// PR05：city.snapshot.export 窄面——配对预览上报真实 City 快照，宿主三重绑定
+    /// 身份后落盘（broker 服务臂据此回执）；未配对窗口进不了消息面，装载别的
+    /// City 的窗口按源绑定拒绝（与 code-game.state 同款信封级稳定码）。
+    #[test]
+    fn city_snapshot_export_flows_through_the_preview_message_surface() {
+        let home = home("snapshot-export");
+        let db = crate::creator_store::database(&home).unwrap();
+        db.execute("INSERT INTO creator_cities(city_id,revision,document_json,created_at_ms,updated_at_ms) VALUES('city:pr05',7,'{}',1,1)", []).unwrap();
+        let request_directory = home.join("state/creator/code-games/previews/preview-snap-win");
+        std::fs::create_dir_all(&request_directory).unwrap();
+        std::fs::write(request_directory.join("request.json"), serde_json::to_vec(&json!({"previewId":"preview-snap-win","buildId":"a","source":{"cityId":"city:pr05","cityRevision":7}})).unwrap()).unwrap();
+        let digest = crate::creator_store::bytes_digest(b"city-pr05-world");
+        let snapshot = json!({"schemaVersion":4,"header":{"schemaVersion":1,"cityId":"city:pr05","cityRevision":7,"snapshotDigest":digest,"seed":7},"terrain":{"format":"heightfield-tiles-v1","tiles":[]}}).to_string();
+        let accepted = handle_preview_request(&home, "code-preview-preview-snap-win", &json!({"previewId":"preview-snap-win","command":"plugin_message",
+            "args":{"message":{"type":"city.snapshot.export","snapshotJson":snapshot}}})).unwrap();
+        assert_eq!(accepted["ok"], true);
+        assert_eq!(accepted["receipt"]["snapshotDigest"], json!(digest));
+        assert!(home.join("state/creator/code-games/city-snapshots/city:pr05-7.json").exists());
+        // label ≠ previewId 的伪造窗口根本进不了消息面。
+        let forged = handle_preview_request(&home, "code-preview-preview-other", &json!({"previewId":"preview-snap-win","command":"plugin_message",
+            "args":{"message":{"type":"city.snapshot.export","snapshotJson":snapshot}}}));
+        assert_eq!(forged.unwrap_err(), "preview_instance_mismatch");
+        // 装载别的 City 的窗口上报这座 City 的快照 → 源绑定拒绝。
+        let other_directory = home.join("state/creator/code-games/previews/preview-snap-win2");
+        std::fs::create_dir_all(&other_directory).unwrap();
+        std::fs::write(other_directory.join("request.json"), serde_json::to_vec(&json!({"previewId":"preview-snap-win2","buildId":"a","source":{"cityId":"city:other","cityRevision":7}})).unwrap()).unwrap();
+        let mismatched = handle_preview_request(&home, "code-preview-preview-snap-win2", &json!({"previewId":"preview-snap-win2","command":"plugin_message",
+            "args":{"message":{"type":"city.snapshot.export","snapshotJson":snapshot}}}));
+        assert_eq!(mismatched.unwrap_err(), "code_game_snapshot_invalid");
         std::fs::remove_dir_all(home).ok();
     }
 }

@@ -1738,6 +1738,17 @@ fn run_install_list(home: &Path, _owner: &str, _instance: &str, payload: &Value)
     crate::city_game_install::list(home, payload)
 }
 
+/// PR05 City Snapshot Test 的宿主服务面（creator.task.preview.verify 同模式：
+/// 纯宿主本地、headless 臂与 Studio 在场拦截都能作答）。payload 形状由
+/// creator_row 的 exact 校验与 creator_code_game::city_test_snapshot 双重把关。
+fn run_city_test_snapshot(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_code_game::city_test_snapshot(home, payload)
+}
+
+fn run_code_test_record(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    crate::creator_code_game::code_test_record(home, payload)
+}
+
 fn run_actor_register(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
     crate::actor_adapter::register(home, payload)
 }
@@ -2095,6 +2106,10 @@ static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.code.install.preview", &["buildId", "targetCityId", "expectedCityRevision", "operationId"], &["runAfterInstall", "replaceCurrentView", "allowOfficialStoryWrites"], run_install_preview),
     creator_row!("creator.code.install.commit", &["previewId", "operationId"], &["updateConfirmation"], run_install_commit),
     creator_row!("creator.code.install.list", &[], &["cityId", "gameId", "limit"], run_install_list),
+    // PR05：宿主冻结 City 快照的只读服务面（无渲染端依赖，不进 task/session 派发）。
+    creator_row!("creator.code.test.city_snapshot", &["cityId", "cityRevision"], &[], run_city_test_snapshot),
+    // PR06：无头测试记录的只读服务面（UI 证据中心经此回读 tests/<buildId>.json）。
+    creator_row!("creator.code.test.record", &["buildId"], &[], run_code_test_record),
     creator_row!("creator.actor.register", &["storyId", "characterId", "sessionIdentifier", "allowedKinds", "maxIntentsPerWindow", "operationId"], &["sessionLabel"], run_actor_register),
     creator_row!("creator.actor.turn.context", &["actorId", "scope"], &[], run_actor_turn_context),
     creator_row!("creator.actor.intent.submit", &["actorId", "intent"], &[], run_actor_intent_submit),

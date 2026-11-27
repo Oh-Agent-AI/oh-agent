@@ -789,6 +789,28 @@ fn poll_plugin_call_queue(app: &tauri::AppHandle) {
         // 方法请求预算（§5.5）：宿主按描述符执行；信封包装开销单独留余量。
         let method = call["method"].as_str().unwrap_or_default().to_owned();
         let (request_budget, response_budget) = transport_budget_for(definition, &method);
+        // PR05 纯宿主本地方法：City 冻结快照服务不依赖视口，Studio 在场也由宿主
+        // 直接作答（webview 没有 handler，投递只会得到 plugin_call_method_unavailable）；
+        // 预算由描述符 localCallBudgets 执行，超预算由 respond_with_budget 终结。
+        if method == "creator.code.test.city_snapshot" || method == "creator.code.test.record" {
+            let payload = call.get("payload").filter(|value| value.is_object()).cloned().unwrap_or_else(|| json!({}));
+            let result = if method == "creator.code.test.city_snapshot" {
+                crate::creator_code_game::city_test_snapshot(&home, &payload)
+            } else {
+                crate::creator_code_game::code_test_record(&home, &payload)
+            };
+            let response = match result {
+                Ok(value) => json!({"ok": true, "result": value}),
+                Err(code) => json!({"ok": false, "error": {"code": code}}),
+            };
+            if let Some(call_id) = call["callId"].as_str() {
+                if let Err(code) = agent_vitals_runtime::query::plugin_calls::respond_with_budget(
+                    &home, &plugin_id, &instance_id, call_id, &response, response_budget) {
+                    agent_vitals_runtime::logging::log_warn("plugin_host", &format!("local snapshot response not recorded code={code}"));
+                }
+            }
+            continue;
+        }
         let envelope = json!({"kind":"plugin.call.request", "call":call});
         let delivery_limit = request_budget.saturating_add(CALL_ENVELOPE_SLACK_BYTES);
         if deliver_host_payload_capped(app, &plugin_id, &envelope, delivery_limit) { continue; }
@@ -886,6 +908,11 @@ fn headless_creator_methods() -> Vec<String> {
         // pull 模式 submit 的服务端复核：纯宿主本地检查（内存 preview 表），
         // Studio 不在场时也必须可作答，否则任何 Agent 的提交都会 15s 超时。
         "creator.task.preview.verify",
+        // PR05 City Snapshot Test：宿主本地冻结快照服务（缓存读 + 权威 revision
+        // 复核，无视口依赖；Studio 在场时由 poll_plugin_call_queue 拦截作答）。
+        "creator.code.test.city_snapshot",
+        // PR06 无头测试记录读面（UI 证据中心回读；同为宿主本地文件读取）。
+        "creator.code.test.record",
     ].into_iter().map(str::to_owned).collect()
 }
 
@@ -1066,7 +1093,10 @@ fn answer_headless_call(home: &std::path::Path, method: &str, payload: &Value) -
         | "creator.story.resident.lease.acquire" | "creator.story.resident.lease.release"
         | "creator.game.rules.inspect" | "creator.story.graph.inspect"
         | "creator.story.timeline.inspect" | "creator.game.intent.simulate"
-        | "creator.task.preview.verify" => {
+        | "creator.task.preview.verify"
+        // PR05：宿主本地冻结快照服务走 dispatch_as 的 creator_row（与 Studio 在场
+        // 时同一条宿主管线），无 headless 特例。PR06 记录读面同管线。
+        | "creator.code.test.city_snapshot" | "creator.code.test.record" => {
             let transformed = match method {
                 "creator.city.edit.preview" => headless_world_edit_payload(home, payload)?,
                 "creator.city.create" => headless_city_create_payload(home, payload)?,
@@ -2904,6 +2934,13 @@ mod tests {
         assert!(studio.local_calls.iter().any(|method| method == "creator.project.playtest.cancel"));
         assert!(studio.local_calls.iter().any(|method| method == "creator.project.playtest.return_context"));
         assert!(studio.local_calls.iter().any(|method| method == "creator.project.publication"));
+        // PR05：宿主冻结快照服务面已授予，且描述符把响应预算提到 §5.5 上限（缓存
+        // 里的整份 CityWorldSnapshotV4 要装进一个 broker 回执；上限仍是 1 MiB）。
+        assert!(studio.local_calls.iter().any(|method| method == "creator.code.test.city_snapshot"));
+        let (request, response) = transport_budget_for(studio, "creator.code.test.city_snapshot");
+        assert_eq!((request, response), (16384, TRANSPORT_BUDGET_MAX_BYTES as usize));
+        // PR06 无头测试记录读面：记录远小于快照，走描述符默认预算即可。
+        assert!(studio.local_calls.iter().any(|method| method == "creator.code.test.record"));
     }
 
     #[test]
