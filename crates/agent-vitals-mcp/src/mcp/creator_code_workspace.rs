@@ -24,13 +24,15 @@ use sha2::{Digest, Sha256};
 
 use super::{ToolError, ToolSpec};
 
-const MAX_TITLE: usize = 80;
-const MAX_FILES: usize = 128;
-const MAX_FILE_BYTES: usize = 64 * 1024;
-const MAX_WRITE_BYTES: usize = 256 * 1024;
+pub(crate) const MAX_TITLE: usize = 80;
+// 以下预算常量与 META_FILE 由 creator_code_candidate（PR09 候选隔离层）复用：
+// 候选树与基线工作区同预算、同 host-owned 名单，保持同一套边界词表。
+pub(crate) const MAX_FILES: usize = 128;
+pub(crate) const MAX_FILE_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_WRITE_BYTES: usize = 256 * 1024;
 const MAX_PATH: usize = 200;
 const MAX_TICKS: u64 = 3_600;
-const MAX_SNAPSHOT_BYTES: u64 = 64 * 1024 * 1024;
+pub(crate) const MAX_SNAPSHOT_BYTES: u64 = 64 * 1024 * 1024;
 /// Runner 资源边界（PR04）。构建（tsc + esbuild 全量编译）给更长的墙钟预算；
 /// 无头测试只回放有界 tick，预算更短。两者都是常量：Agent 不能要求更长的
 /// 无界运行，卡死的构建/测试以 `game_execution_timeout` 结构化返回。
@@ -41,7 +43,7 @@ const RUNNER_TEST_BUDGET_SECS: u64 = 60;
 const RUNNER_MAX_OUTPUT_BYTES: usize = 256 * 1024;
 const RUNNER_POLL_MS: u64 = 25;
 const TEMPLATE: &str = "hello-city";
-const META_FILE: &str = "workspace.json";
+pub(crate) const META_FILE: &str = "workspace.json";
 
 fn spec(name: &'static str, description: &'static str, properties: Value, required: &[&str]) -> ToolSpec {
     ToolSpec {
@@ -72,21 +74,23 @@ pub fn specs() -> Vec<ToolSpec> {
         ),
         spec(
             "creator_code_file_read",
-            "Read one UTF-8 file from a Code Game workspace by workspace-relative path (at most 64 KiB). Returns the content, its sha256 and the workspace revision the caller must pass back to a write.",
+            "Read one UTF-8 file from a Code Game workspace by workspace-relative path (at most 64 KiB). Returns the content, its sha256 and the workspace revision the caller must pass back to a write. Optional `candidateId` reads the isolated candidate tree instead of the user's baseline; the returned revision is then the candidate revision.",
             json!({
                 "workspaceId":{"type":"string","minLength":20,"maxLength":32},
                 "relativePath":{"type":"string","minLength":1,"maxLength":200},
+                "candidateId":{"type":"string","minLength":26,"maxLength":26,"pattern":"^candidate-[0-9a-f]{16}$"},
             }),
             &["workspaceId", "relativePath"],
         ),
         spec(
             "creator_code_file_write",
-            "Write one UTF-8 file in a Code Game workspace (at most 256 KiB, text extensions only). `expectedRevision` is a content CAS: a stale value is rejected with workspace_revision_conflict instead of clobbering the Agent's unread edits. Requires `--allow-local-writes`.",
+            "Write one UTF-8 file in a Code Game workspace (at most 256 KiB, text extensions only). `expectedRevision` is a content CAS: a stale value is rejected with workspace_revision_conflict instead of clobbering the Agent's unread edits. Optional `candidateId` writes the isolated candidate tree (CAS against the candidate revision; the user's baseline is never touched). Requires `--allow-local-writes`.",
             json!({
                 "workspaceId":{"type":"string","minLength":20,"maxLength":32},
                 "relativePath":{"type":"string","minLength":1,"maxLength":200},
                 "content":{"type":"string","maxLength":262144},
                 "expectedRevision":{"type":"string","minLength":16,"maxLength":64},
+                "candidateId":{"type":"string","minLength":26,"maxLength":26,"pattern":"^candidate-[0-9a-f]{16}$"},
             }),
             &["workspaceId", "relativePath", "content"],
         ),
@@ -103,16 +107,17 @@ pub fn specs() -> Vec<ToolSpec> {
         ),
         spec(
             "creator_code_build",
-            "Build a Code Game workspace with the pinned local toolchain. Success returns buildId + byte length; a compile failure returns status=failed with bounded diagnostics (code, stage, relative path, line, column) for the Agent to repair. Requires `--allow-local-writes`.",
+            "Build a Code Game workspace with the pinned local toolchain. Success returns buildId + byte length; a compile failure returns status=failed with bounded diagnostics (code, stage, relative path, line, column) for the Agent to repair. Optional `candidateId` builds the isolated candidate tree instead (the sealed build carries the candidate revision). Requires `--allow-local-writes`.",
             json!({
                 "workspaceId":{"type":"string","minLength":20,"maxLength":32},
                 "expectedRevision":{"type":"string","minLength":16,"maxLength":64},
+                "candidateId":{"type":"string","minLength":26,"maxLength":26,"pattern":"^candidate-[0-9a-f]{16}$"},
             }),
             &["workspaceId"],
         ),
         spec(
             "creator_code_test",
-            "Run a built Code Game headlessly for a bounded number of fixed ticks with a seeded world and return telemetry (status, outcome, tick, entities, HUD). The test source is explicit and mutually exclusive: pass `cityId` + `cityRevision` (both together) to run against the desktop host's frozen snapshot for exactly that City revision, or omit both to run the clearly-marked synthetic fixture. The response records which source actually ran; an unavailable or stale City is a structured non-executable error, never a silent fallback to the synthetic world. Optional `scenario` is inline JSON (at most 8192 bytes) with 1..8 closed-vocabulary assertions (outcome / entityCountAtLeast / entityCountAtMost / hudFlag / counterAtLeast / counterEquals / finishedWithinTicks); the response then carries executionOk plus a verdict (passed/failed/inconclusive) so a completed run is never conflated with a passing game. This is the automated feedback loop; it does not replace the visual City acceptance. Requires `--allow-local-writes`.",
+            "Run a built Code Game headlessly for a bounded number of fixed ticks with a seeded world and return telemetry (status, outcome, tick, entities, HUD). The test source is explicit and mutually exclusive: pass `cityId` + `cityRevision` (both together) to run against the desktop host's frozen snapshot for exactly that City revision, or omit both to run the clearly-marked synthetic fixture. The response records which source actually ran; an unavailable or stale City is a structured non-executable error, never a silent fallback to the synthetic world. Optional `scenario` is inline JSON (at most 8192 bytes) with 1..8 closed-vocabulary assertions (outcome / entityCountAtLeast / entityCountAtMost / hudFlag / counterAtLeast / counterEquals / finishedWithinTicks); the response then carries executionOk plus a verdict (passed/failed/inconclusive) so a completed run is never conflated with a passing game. This is the automated feedback loop; it does not replace the visual City acceptance. Optional `candidateId` runs the test against a build sealed from that candidate (the record then carries the candidate revision). Requires `--allow-local-writes`.",
             json!({
                 "workspaceId":{"type":"string","minLength":20,"maxLength":32},
                 "buildId":{"type":"string","minLength":64,"maxLength":64,"pattern":"^[0-9a-f]{64}$"},
@@ -121,6 +126,7 @@ pub fn specs() -> Vec<ToolSpec> {
                 "cityId":{"type":"string","minLength":1,"maxLength":128},
                 "cityRevision":{"type":"integer","minimum":0},
                 "scenario":{"type":"string","minLength":1,"maxLength":8192},
+                "candidateId":{"type":"string","minLength":26,"maxLength":26,"pattern":"^candidate-[0-9a-f]{16}$"},
             }),
             &["workspaceId", "buildId"],
         ),
@@ -162,7 +168,7 @@ pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool)
     }
 }
 
-fn require_writes(allowed: bool, action: &str) -> Result<(), ToolError> {
+pub(crate) fn require_writes(allowed: bool, action: &str) -> Result<(), ToolError> {
     if allowed {
         Ok(())
     } else {
@@ -310,7 +316,7 @@ fn project_create(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
 
 /// 与宿主 `valid_preview_id`（creator_code.rs）同规则的 operationId 约束：
 /// 回执以 operationId 命名落盘，先挡掉路径注入（`../`、绝对路径、`.`）。
-fn valid_operation_id(value: &str) -> bool {
+pub(crate) fn valid_operation_id(value: &str) -> bool {
     !value.is_empty() && value.len() <= 128
         && value.starts_with(|c: char| c.is_ascii_alphanumeric())
         && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
@@ -319,7 +325,7 @@ fn valid_operation_id(value: &str) -> bool {
 /// 与 creator_session 的任务回执同思路：请求先折成键排序的 canonical JSON
 /// 再取 sha256，网络重试与首次请求得到同一 requestHash。只覆盖影响结果的
 /// 请求字段（operationId 本身是回据的键，不进哈希）。
-fn canonical_json(value: &Value) -> String {
+pub(crate) fn canonical_json(value: &Value) -> String {
     fn write(value: &Value, out: &mut String) {
         match value {
             Value::Object(object) => {
@@ -432,7 +438,12 @@ fn workspace_info(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     }}))
 }
 
-fn file_read(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
+pub(crate) fn file_read(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
+    // PR09 候选隔离层：带 `candidateId` 时路径解析进候选树，不触碰基线；
+    // 不带时保持基线行为逐字节不变。
+    if args.get("candidateId").is_some() {
+        return super::creator_code_candidate::candidate_file_read(args, data_home);
+    }
     let workspace_id = workspace_id_arg(args)?;
     let relative = safe_relative_path(args)?;
     let directory = workspace_dir(data_home, &workspace_id)?;
@@ -452,7 +463,12 @@ fn file_read(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     }}))
 }
 
-fn file_write(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
+pub(crate) fn file_write(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
+    // PR09 候选隔离层：带 `candidateId` 时写入候选树（CAS 对候选 revision，
+    // 不取基线写锁）；不带时保持基线行为逐字节不变。
+    if args.get("candidateId").is_some() {
+        return super::creator_code_candidate::candidate_file_write(args, data_home);
+    }
     let workspace_id = workspace_id_arg(args)?;
     let relative = safe_relative_path(args)?;
     if !is_writable_text_path(&relative) {
@@ -514,43 +530,69 @@ fn file_write(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
 
 fn build(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     let workspace_id = workspace_id_arg(args)?;
-    let directory = workspace_dir(data_home, &workspace_id)?;
-    let meta = read_meta(&directory)?;
+    // PR09 候选隔离层：可选 `candidateId` 构建隔离候选树（sealed sourceRevision
+    // 为 `candidate:<candidateId>:<digest>`）；缺席时保持基线路径逐字节不变。
+    let candidate = super::creator_code_candidate::build_target(args, data_home, &workspace_id)?;
+    let directory = match &candidate {
+        Some(target) => target.tree.clone(),
+        None => workspace_dir(data_home, &workspace_id)?,
+    };
+    let meta = read_meta(&workspace_dir(data_home, &workspace_id)?)?;
+    let revision = match &candidate {
+        Some(target) => target.revision.clone(),
+        None => meta.revision.clone(),
+    };
     if let Some(expected) = args.get("expectedRevision").and_then(Value::as_str) {
-        if expected != meta.revision {
+        if expected != revision {
             return Err(ToolError::new(
                 "workspace_revision_conflict",
                 "The workspace changed since you read it; build the revision you actually inspected.",
             ));
         }
     }
-    let snapshot = WorkspaceBuildSnapshot::capture(&directory, &meta.revision)?;
+    if let Some(target) = &candidate {
+        super::creator_code_candidate::mark_status(data_home, &target.candidate_id, "building")?;
+    }
+    let snapshot = WorkspaceBuildSnapshot::capture(&directory, &revision)?;
     let repo = repo_root()?;
     let out_dir = data_home.join("code-games").join("builds");
+    let mut runner_args = vec![
+        "--workspace".to_string(),
+        snapshot.path.to_string_lossy().to_string(),
+    ];
+    // builder CLI 只接受 workspace/candidate 两种密封身份之一；候选构建不携带
+    // workspace-id，防止候选构建被基线消费者（preview/CAS 校验）误认。
+    match &candidate {
+        Some(target) => {
+            runner_args.push("--candidate-id".to_string());
+            runner_args.push(target.candidate_id.clone());
+        }
+        None => {
+            runner_args.push("--workspace-id".to_string());
+            runner_args.push(meta.workspace_id.clone());
+        }
+    }
+    runner_args.extend([
+        "--source-revision".to_string(),
+        revision.clone(),
+        "--out".to_string(),
+        out_dir.to_string_lossy().to_string(),
+        "--data-home".to_string(),
+        data_home.to_string_lossy().to_string(),
+    ]);
     let output = run_node(
         &repo,
         "packages/city-game-sdk/scripts/buildGame.ts",
-        &[
-            "--workspace".to_string(),
-            snapshot.path.to_string_lossy().to_string(),
-            "--workspace-id".to_string(),
-            meta.workspace_id.clone(),
-            "--source-revision".to_string(),
-            meta.revision.clone(),
-            "--out".to_string(),
-            out_dir.to_string_lossy().to_string(),
-            "--data-home".to_string(),
-            data_home.to_string_lossy().to_string(),
-        ],
+        &runner_args,
     )?;
     // 墙钟预算耗尽是**正常失败结果**（见文件头）：status=failed + 结构化
     // diagnostics（预算 + 输出尾部），Agent 可以据此收缩输入重试，而不是收到
     // ToolError 断掉修复回路。
     if output.timed_out {
-        return Ok(json!({"ok":true,"data":{
+        let mut data = json!({
             "status": "failed",
             "workspaceId": workspace_id,
-            "gameRevision": meta.revision,
+            "gameRevision": revision,
             "buildId": Value::Null,
             "diagnostics": [json!({
                 "code": "game_execution_timeout",
@@ -558,7 +600,11 @@ fn build(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
                 "stage": "build",
                 "message": format!("The build runner exceeded its {}s wall-clock budget and was killed.{}", RUNNER_BUILD_BUDGET_SECS, runner_output_tail(&output)),
             })],
-        }}));
+        });
+        if let Some(target) = &candidate {
+            data["candidateId"] = json!(target.candidate_id);
+        }
+        return Ok(json!({"ok":true,"data":data}));
     }
     let parsed: Value = serde_json::from_slice(&output.stdout)
         .map_err(|_| if output.stdout_truncated {
@@ -568,26 +614,47 @@ fn build(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
         })?;
     let data = if parsed.get("ok").and_then(Value::as_bool) == Some(true) {
         let build_id = build_id_arg(&parsed)?;
-        let revision = build_workspace_revision(data_home, &build_id, &meta)?;
-        if revision != meta.revision {
-            return Err(ToolError::new("workspace_revision_conflict", "The sealed build does not match the requested source revision."));
+        if let Some(target) = &candidate {
+            let sealed = super::creator_code_candidate::build_candidate_revision(
+                data_home,
+                &build_id,
+                &target.candidate_id,
+                &meta.game_id,
+            )?;
+            if sealed != target.revision {
+                return Err(ToolError::new("workspace_revision_conflict", "The sealed build does not match the requested source revision."));
+            }
+            super::creator_code_candidate::note_build(data_home, &target.candidate_id, &build_id)?;
+        } else {
+            let sealed = build_workspace_revision(data_home, &build_id, &meta)?;
+            if sealed != meta.revision {
+                return Err(ToolError::new("workspace_revision_conflict", "The sealed build does not match the requested source revision."));
+            }
         }
-        json!({
+        let mut data = json!({
             "status": "succeeded",
             "workspaceId": workspace_id,
-            "gameRevision": meta.revision,
+            "gameRevision": revision,
             "buildId": build_id,
             "byteLength": parsed.get("byteLength").cloned().unwrap_or(Value::Null),
             "diagnostics": parsed.get("warnings").cloned().unwrap_or_else(|| json!([])),
-        })
+        });
+        if let Some(target) = &candidate {
+            data["candidateId"] = json!(target.candidate_id);
+        }
+        data
     } else {
-        json!({
+        let mut data = json!({
             "status": "failed",
             "workspaceId": workspace_id,
-            "gameRevision": meta.revision,
+            "gameRevision": revision,
             "buildId": Value::Null,
             "diagnostics": parsed.get("diagnostics").cloned().unwrap_or_else(|| json!([])),
-        })
+        });
+        if let Some(target) = &candidate {
+            data["candidateId"] = json!(target.candidate_id);
+        }
+        data
     };
     Ok(json!({"ok":true,"data":data}))
 }
@@ -659,12 +726,12 @@ pub(crate) fn build_workspace_revision(data_home: &Path, build_id: &str, meta: &
     Err(ToolError::new("workspace_build_mismatch", "This build is not attributed to this workspace. Build the workspace again and use the returned buildId."))
 }
 
-struct WorkspaceBuildSnapshot {
-    path: PathBuf,
+pub(crate) struct WorkspaceBuildSnapshot {
+    pub(crate) path: PathBuf,
 }
 
 impl WorkspaceBuildSnapshot {
-    fn capture(directory: &Path, revision: &str) -> Result<Self, ToolError> {
+    pub(crate) fn capture(directory: &Path, revision: &str) -> Result<Self, ToolError> {
         let files = list_files(directory)?;
         let total_bytes = files.iter().map(|(_, bytes)| *bytes).sum::<u64>();
         if total_bytes > MAX_SNAPSHOT_BYTES {
@@ -718,9 +785,17 @@ fn code_test(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     // 测试源显式化（PR05）：cityId+cityRevision 成对给出 → 宿主冻结的 City 快照；
     // 都不给 → 合成 fixture。解析失败是结构化非可执行诊断，绝不静默回退合成世界。
     let city_snapshot = code_test_city_source(args, data_home)?;
-    let directory = workspace_dir(data_home, &workspace_id)?;
-    let meta = read_meta(&directory)?;
-    let revision = build_workspace_revision(data_home, &build_id, &meta)?;
+    let meta = read_meta(&workspace_dir(data_home, &workspace_id)?)?;
+    // PR09 候选隔离层：可选 `candidateId`——buildId 必须密封该候选的摘要
+    // （`candidate:<candidateId>:<digest>`），否则拒绝；缺席时保持基线校验。
+    let candidate = super::creator_code_candidate::test_target(args, data_home, &workspace_id, &build_id, &meta.game_id)?;
+    let revision = match &candidate {
+        Some(target) => target.revision.clone(),
+        None => build_workspace_revision(data_home, &build_id, &meta)?,
+    };
+    if let Some(target) = &candidate {
+        super::creator_code_candidate::mark_status(data_home, &target.candidate_id, "testing")?;
+    }
     let repo = repo_root()?;
     let mut runner_args = vec![
         "--build".to_string(),
@@ -757,7 +832,7 @@ fn code_test(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     if output.timed_out {
         let source = code_test_source_record(city_snapshot.as_ref(), &Value::Null);
         let verdict = code_test_failure_verdict(scenario.as_ref(), "runner_timeout");
-        write_test_record(data_home, &build_id, &revision, seed, ticks, &CodeTestOutcome { ok: false, source: &source, verdict: &verdict })?;
+        write_test_record(data_home, &build_id, &revision, seed, ticks, &CodeTestOutcome { ok: false, source: &source, verdict: &verdict }, candidate.as_ref().map(|target| target.candidate_id.as_str()))?;
         return Err(ToolError::new(
             "game_execution_timeout",
             format!(
@@ -772,7 +847,7 @@ fn code_test(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
         Err(_) => {
             let source = code_test_source_record(city_snapshot.as_ref(), &Value::Null);
             let verdict = code_test_failure_verdict(scenario.as_ref(), "runner_output_invalid");
-            write_test_record(data_home, &build_id, &revision, seed, ticks, &CodeTestOutcome { ok: false, source: &source, verdict: &verdict })?;
+            write_test_record(data_home, &build_id, &revision, seed, ticks, &CodeTestOutcome { ok: false, source: &source, verdict: &verdict }, candidate.as_ref().map(|target| target.candidate_id.as_str()))?;
             return Err(ToolError::new("data_unavailable", "The headless runner returned no JSON result."));
         }
     };
@@ -792,13 +867,13 @@ fn code_test(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
         let message = parsed.get("error").and_then(|error| error.get("message")).and_then(Value::as_str).unwrap_or("The headless run failed.");
         let source = code_test_source_record(city_snapshot.as_ref(), &Value::Null);
         let verdict = code_test_failure_verdict(scenario.as_ref(), "runner_failed");
-        write_test_record(data_home, &build_id, &revision, seed, ticks, &CodeTestOutcome { ok: false, source: &source, verdict: &verdict })?;
+        write_test_record(data_home, &build_id, &revision, seed, ticks, &CodeTestOutcome { ok: false, source: &source, verdict: &verdict }, candidate.as_ref().map(|target| target.candidate_id.as_str()))?;
         return Err(ToolError::new(code, message.to_string()));
     }
     let telemetry = parsed.get("telemetry").cloned().unwrap_or(Value::Null);
     let source = code_test_source_record(city_snapshot.as_ref(), &telemetry);
     let verdict = code_test_success_verdict(scenario.as_ref(), parsed.get("scenario"), city_snapshot.as_ref(), &telemetry);
-    write_test_record(data_home, &build_id, &revision, seed, ticks, &CodeTestOutcome { ok: true, source: &source, verdict: &verdict })?;
+    write_test_record(data_home, &build_id, &revision, seed, ticks, &CodeTestOutcome { ok: true, source: &source, verdict: &verdict }, candidate.as_ref().map(|target| target.candidate_id.as_str()))?;
     // PR06：data 增加 executionOk/verdict/scenarioId?/assertions?/worldSnapshotDigest?
     // （verdict 恒存在：无场景 → inconclusive + verdictReason=no_scenario，消费方
     // 无需处理缺失分支）。
@@ -807,6 +882,9 @@ fn code_test(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     data.insert("gameId".into(), json!(meta.game_id));
     data.insert("buildId".into(), json!(build_id));
     data.insert("gameRevision".into(), json!(revision));
+    if let Some(target) = &candidate {
+        data.insert("candidateId".into(), json!(target.candidate_id));
+    }
     data.insert("source".into(), source);
     data.insert("telemetry".into(), telemetry);
     if let Some(extras) = verdict.as_object() {
@@ -822,10 +900,10 @@ fn code_test(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
 /// 一次 code_test 的执行结论：runner 是否跑完（executionOk 同源）、来源声明
 /// 与裁决块（executionOk/verdict/verdictReason/scenarioId?/assertions?/
 /// worldSnapshotDigest?）。响应与门记录共用同一形状。
-struct CodeTestOutcome<'a> {
-    ok: bool,
-    source: &'a Value,
-    verdict: &'a Value,
+pub(crate) struct CodeTestOutcome<'a> {
+    pub(crate) ok: bool,
+    pub(crate) source: &'a Value,
+    pub(crate) verdict: &'a Value,
 }
 
 /// MCP 侧最大场景 JSON 与 runner（MAX_SCENARIO_JSON=8192）对齐。
@@ -1189,7 +1267,7 @@ fn stage_city_snapshot(data_home: &Path, city_id: &str, city_revision: u64, byte
 /// 两条路径都算）落一条：ok 反映 runner 结果；解析期诊断（城市缺失/stale/宿主
 /// 缺席）没有运行发生，不落记录，由结构化 ToolError 负责。落盘
 /// `<data_home>/state/creator/code-games/tests/<buildId>.json`，tmp+rename 原子发布。
-fn write_test_record(data_home: &Path, build_id: &str, workspace_revision: &str, seed: u64, ticks: u64, outcome: &CodeTestOutcome) -> Result<(), ToolError> {
+pub(crate) fn write_test_record(data_home: &Path, build_id: &str, workspace_revision: &str, seed: u64, ticks: u64, outcome: &CodeTestOutcome, candidate: Option<&str>) -> Result<(), ToolError> {
     let mut record = json!({
         "buildId": build_id,
         "workspaceRevision": workspace_revision,
@@ -1199,6 +1277,11 @@ fn write_test_record(data_home: &Path, build_id: &str, workspace_revision: &str,
         "source": outcome.source,
         "atMs": now_ms(),
     });
+    // PR09 候选隔离层：候选构建的测试记录带 candidateId（workspaceRevision 已是
+    // 候选摘要）；基线路径传 None，记录形状不变。
+    if let Some(candidate_id) = candidate {
+        record["candidateId"] = json!(candidate_id);
+    }
     if let (Some(base), Some(extras)) = (record.as_object_mut(), outcome.verdict.as_object()) {
         for (key, value) in extras {
             base.insert(key.clone(), value.clone());
@@ -1218,7 +1301,7 @@ fn write_test_record(data_home: &Path, build_id: &str, workspace_revision: &str,
 
 // ── filesystem helpers ─────────────────────────────────────────────
 
-fn workspace_path(data_home: &Path, workspace_id: &str) -> Result<PathBuf, ToolError> {
+pub(crate) fn workspace_path(data_home: &Path, workspace_id: &str) -> Result<PathBuf, ToolError> {
     if workspace_id.len() != 20 || !workspace_id.starts_with("gws-") {
         return Err(ToolError::new("invalid_argument", "`workspaceId` must look like gws-<16 hex>."));
     }
@@ -1240,7 +1323,7 @@ fn workspace_id_arg(args: &Value) -> Result<String, ToolError> {
     required_str(args, "workspaceId", 32)
 }
 
-fn safe_relative_path(args: &Value) -> Result<String, ToolError> {
+pub(crate) fn safe_relative_path(args: &Value) -> Result<String, ToolError> {
     let value = required_str(args, "relativePath", MAX_PATH)?;
     if value.starts_with('/') || value.contains('\\') || value.contains(':') || value.chars().any(|c| c.is_control()) {
         return Err(ToolError::new("invalid_argument", "`relativePath` must be workspace-relative with no drive or scheme."));
@@ -1251,7 +1334,7 @@ fn safe_relative_path(args: &Value) -> Result<String, ToolError> {
     Ok(value)
 }
 
-fn resolve_inside(root: &Path, relative: &str) -> Result<PathBuf, ToolError> {
+pub(crate) fn resolve_inside(root: &Path, relative: &str) -> Result<PathBuf, ToolError> {
     let path = root.join(relative);
     let canonical_root = std::fs::canonicalize(root)
         .map_err(|_| ToolError::new("storage_unavailable", "Workspace root is unavailable."))?;
@@ -1272,7 +1355,7 @@ fn resolve_inside(root: &Path, relative: &str) -> Result<PathBuf, ToolError> {
     Ok(target)
 }
 
-fn is_writable_text_path(path: &str) -> bool {
+pub(crate) fn is_writable_text_path(path: &str) -> bool {
     let extension = Path::new(path).extension().and_then(|value| value.to_str()).unwrap_or("");
     matches!(extension, "ts" | "tsx" | "js" | "mjs" | "json" | "md" | "txt" | "css" | "html")
 }
@@ -1286,7 +1369,7 @@ pub(crate) fn read_meta(directory: &Path) -> Result<WorkspaceMeta, ToolError> {
     Ok(meta)
 }
 
-fn write_meta(directory: &Path, meta: &WorkspaceMeta) -> Result<(), ToolError> {
+pub(crate) fn write_meta(directory: &Path, meta: &WorkspaceMeta) -> Result<(), ToolError> {
     let bytes = serde_json::to_vec_pretty(meta).map_err(|_| ToolError::new("internal_error", "Cannot encode workspace metadata."))?;
     let temporary = directory.join(format!("{META_FILE}.tmp"));
     std::fs::write(&temporary, bytes).map_err(|_| ToolError::new("storage_unavailable", "Cannot write workspace metadata."))?;
@@ -1294,7 +1377,7 @@ fn write_meta(directory: &Path, meta: &WorkspaceMeta) -> Result<(), ToolError> {
         .map_err(|_| ToolError::new("storage_unavailable", "Cannot commit workspace metadata."))
 }
 
-fn list_files(directory: &Path) -> Result<Vec<(String, u64)>, ToolError> {
+pub(crate) fn list_files(directory: &Path) -> Result<Vec<(String, u64)>, ToolError> {
     let mut files = Vec::new();
     collect_files(directory, directory, &mut files)?;
     files.sort_by(|left, right| left.0.cmp(&right.0));
@@ -1329,7 +1412,7 @@ fn collect_files(root: &Path, current: &Path, out: &mut Vec<(String, u64)>) -> R
     Ok(())
 }
 
-fn digest_workspace(directory: &Path) -> Result<String, ToolError> {
+pub(crate) fn digest_workspace(directory: &Path) -> Result<String, ToolError> {
     let files = list_files(directory)?;
     if files.iter().map(|(_, bytes)| *bytes).sum::<u64>() > MAX_SNAPSHOT_BYTES {
         return Err(ToolError::new("invalid_argument", "The Code Game workspace exceeds the build input byte budget."));
@@ -1605,7 +1688,7 @@ pub(crate) fn random_hex(length: usize) -> String {
     hex(&digest)[..length].to_string()
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     hex(&Sha256::digest(bytes))
 }
 
@@ -1617,7 +1700,7 @@ fn hex(bytes: &[u8]) -> String {
     output
 }
 
-fn required_str(args: &Value, key: &str, max: usize) -> Result<String, ToolError> {
+pub(crate) fn required_str(args: &Value, key: &str, max: usize) -> Result<String, ToolError> {
     args.get(key)
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty() && value.len() <= max)
@@ -1625,7 +1708,7 @@ fn required_str(args: &Value, key: &str, max: usize) -> Result<String, ToolError
         .ok_or_else(|| ToolError::new("invalid_argument", format!("`{key}` is required and must be at most {max} bytes")))
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
@@ -2130,7 +2213,7 @@ mod tests {
         let build_id = "a".repeat(64);
         let synthetic = json!({"source":"synthetic"});
         let verdict = json!({"executionOk": true, "verdict": "passed"});
-        write_test_record(&home, &build_id, "b".repeat(64).as_str(), 7, 600, &CodeTestOutcome { ok: true, source: &synthetic, verdict: &verdict }).unwrap();
+        write_test_record(&home, &build_id, "b".repeat(64).as_str(), 7, 600, &CodeTestOutcome { ok: true, source: &synthetic, verdict: &verdict }, None).unwrap();
         let path = home.join("state/creator/code-games/tests").join(format!("{build_id}.json"));
         let record: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(record["buildId"], build_id);
@@ -2145,7 +2228,7 @@ mod tests {
         assert!(!path.with_extension("json.tmp").exists(), "records must publish atomically");
         let city = json!({"source":"city","cityId":"city-1","cityRevision":7,"snapshotDigest":sha256_hex(b"city-fixture")});
         let failed_verdict = json!({"executionOk": false, "verdict": "failed", "verdictReason": "runner_failed"});
-        write_test_record(&home, &build_id, "b".repeat(64).as_str(), 7, 600, &CodeTestOutcome { ok: false, source: &city, verdict: &failed_verdict }).unwrap();
+        write_test_record(&home, &build_id, "b".repeat(64).as_str(), 7, 600, &CodeTestOutcome { ok: false, source: &city, verdict: &failed_verdict }, None).unwrap();
         let overwritten: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(overwritten["ok"], false);
         assert_eq!(overwritten["source"], city);
@@ -2252,7 +2335,7 @@ mod tests {
         assert_eq!(missing.code, "not_found");
         let source = json!({"source":"synthetic"});
         let verdict = json!({"executionOk": true, "verdict": "passed", "scenarioId": "s.win"});
-        write_test_record(&home, &build_id, "b".repeat(64).as_str(), 7, 600, &CodeTestOutcome { ok: true, source: &source, verdict: &verdict }).unwrap();
+        write_test_record(&home, &build_id, "b".repeat(64).as_str(), 7, 600, &CodeTestOutcome { ok: true, source: &source, verdict: &verdict }, None).unwrap();
         let read = run("creator_code_test_record", &json!({"buildId": build_id}), &home, false).unwrap();
         assert_eq!(read["ok"], true);
         assert_eq!(read["data"]["verdict"], "passed");

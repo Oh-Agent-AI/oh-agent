@@ -41,6 +41,8 @@ pub mod creator_agent_executor;
 pub mod host_delivery;
 mod creator_code;
 mod creator_code_workspace;
+// PR09 候选隔离层：候选树与基线工作区的读写隔离、提交/丢弃/审阅状态机。
+mod creator_code_candidate;
 mod creator_code_playtest;
 mod creator_code_experience;
 mod creator_studio;
@@ -110,6 +112,7 @@ pub fn tool_specs_with_city(include_city: bool) -> Vec<ToolSpec> {
     out.extend(creator_session::specs());
     out.extend(creator_code::specs());
     out.extend(creator_code_workspace::specs());
+    out.extend(creator_code_candidate::specs());
     out.extend(creator_code_playtest::specs());
     out.extend(creator_code_experience::specs());
     out.extend(city_world::specs());
@@ -332,6 +335,11 @@ pub fn dispatch_with_permissions_options(
         // 与同模块的写工具共用 run() 的分发闸。
         | "creator_code_test_record" =>
             creator_code_workspace::run(name, args, data_home, allow_local_writes),
+        // PR09 候选隔离层：status/list 只读，create/commit/discard/submit 走
+        // --allow-local-writes（模块 run() 的分发闸内处理）。
+        "creator_code_candidate_create" | "creator_code_candidate_status" | "creator_code_candidate_commit"
+        | "creator_code_candidate_discard" | "creator_code_candidate_list" | "creator_code_candidate_submit" =>
+            creator_code_candidate::run(name, args, data_home, allow_local_writes),
         // PR08 自动化视觉试玩：input/screenshot/stop 走 --allow-local-writes，
         // result 只读（同一模块 run() 的分发闸内处理）。
         "creator_code_playtest_input" | "creator_code_playtest_screenshot" | "creator_code_playtest_stop"
@@ -512,8 +520,13 @@ mod tests {
     #[test]
     fn code_game_status_tools_are_registered_and_read_only() {
         let names: Vec<_> = tool_specs().iter().map(|tool| tool.name).collect();
-        for name in ["creator_code_builds_list", "creator_code_build_status", "creator_code_preview_status", "creator_code_project_create", "creator_code_workspace_info", "creator_code_file_read", "creator_code_file_write", "creator_code_preview", "creator_code_build", "creator_code_test", "creator_code_test_record", "creator_code_publish", "creator_code_experience_list", "creator_code_experience_install", "creator_code_experience_uninstall"] {
+        for name in ["creator_code_builds_list", "creator_code_build_status", "creator_code_preview_status", "creator_code_project_create", "creator_code_workspace_info", "creator_code_file_read", "creator_code_file_write", "creator_code_preview", "creator_code_build", "creator_code_test", "creator_code_test_record", "creator_code_candidate_create", "creator_code_candidate_status", "creator_code_candidate_commit", "creator_code_candidate_discard", "creator_code_candidate_list", "creator_code_candidate_submit", "creator_code_publish", "creator_code_experience_list", "creator_code_experience_install", "creator_code_experience_uninstall"] {
             assert!(names.contains(&name), "Code Game MCP tool missing: {name}");
+        }
+        // PR09：候选写工具必须显式 --allow-local-writes；读工具离线可用。
+        for name in ["creator_code_candidate_create", "creator_code_candidate_commit", "creator_code_candidate_discard", "creator_code_candidate_submit"] {
+            let error = dispatch(name, &json!({}), Path::new("/nonexistent-code-game-data-home")).unwrap_err();
+            assert_eq!(error.code, "permission_denied", "{name} must require --allow-local-writes");
         }
         let missing = Path::new("/nonexistent-code-game-data-home");
         let listed = dispatch("creator_code_builds_list", &json!({"limit": 5}), missing).unwrap();

@@ -163,7 +163,7 @@ export async function buildCodeGame(options: CodeGameBuildOptions): Promise<Code
     const bundle = fs.readFileSync(stagingBundle);
     if (bundle.byteLength === 0) return failure("game_build_failed", "esbuild produced an empty bundle.");
     const sourceMapPath = path.join(stagingDir, "game.js.map");
-    const sourceMap = options.sourceRevision?.startsWith("workspace:")
+    const sourceMap = options.sourceRevision?.startsWith("workspace:") || options.sourceRevision?.startsWith("candidate:")
       ? normalizeWorkspaceSourceMap(sourceMapPath, workspaceDir)
       : fs.readFileSync(sourceMapPath);
     if (!sourceMap) return failure("game_build_failed", "Build sources must come from the workspace or City SDK.");
@@ -433,15 +433,29 @@ async function main(argv: readonly string[]): Promise<void> {
     throw new Error("Usage: buildGame.ts --workspace <game dir> --out <builds dir>");
   }
   const workspaceId = args.get("workspace-id");
+  // PR09 候选隔离层：candidate 构建密封 `candidate:<candidateId>:<digest>`，
+  // 与 workspace 形态互斥；source map 与 workspace 路径同规则归一化。
+  const candidateId = args.get("candidate-id");
   const revision = args.get("source-revision");
-  if ((workspaceId || revision) && (!/^gws-[a-f0-9]{16}$/.test(workspaceId ?? "") || !/^[a-f0-9]{64}$/.test(revision ?? ""))) {
-    throw new Error("Workspace builds require a valid workspace ID and source revision.");
+  const ids = [workspaceId, candidateId].filter((id) => id !== undefined);
+  if (
+    (ids.length > 1) ||
+    (revision === undefined ? ids.length > 0 : ids.length !== 1) ||
+    (workspaceId !== undefined && !/^gws-[a-f0-9]{16}$/.test(workspaceId)) ||
+    (candidateId !== undefined && !/^candidate-[a-f0-9]{16}$/.test(candidateId)) ||
+    (revision !== undefined && !/^[a-f0-9]{64}$/.test(revision))
+  ) {
+    throw new Error("Workspace builds require a valid workspace or candidate ID and source revision.");
   }
+  const sourceRevision =
+    workspaceId !== undefined ? `workspace:${workspaceId}:${revision}`
+    : candidateId !== undefined ? `candidate:${candidateId}:${revision}`
+    : undefined;
   const result = await buildCodeGame({
     workspaceDir,
     outDir,
     ...(dataHome ? { dataHome } : {}),
-    ...(workspaceId && revision ? { sourceRevision: `workspace:${workspaceId}:${revision}` } : {}),
+    ...(sourceRevision !== undefined ? { sourceRevision } : {}),
   });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   if (!result.ok) process.exitCode = 1;
