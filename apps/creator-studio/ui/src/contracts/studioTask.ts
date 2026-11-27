@@ -28,15 +28,20 @@ export type StudioStoryTargetRef = Readonly<{
 }>;
 export type StudioTargetRef = StudioCityTargetRef | StudioStoryTargetRef;
 export function studioTaskScopeId(task: Pick<StudioTask, "artifact">): string {
-  return task.artifact.projectId ?? task.artifact.cityId ?? task.artifact.storyId ?? "";
+  return task.artifact.projectId ?? task.artifact.cityId ?? task.artifact.storyId ?? task.artifact.workspaceId ?? "";
 }
+/**
+ * 任务工件（PR10 起 4 种）：creator-project/city/story 的 expectedRevision 是宿主
+ * scope 表的 u64 修订号；code-game 的身份住在文件系统（workspaceId + 64-hex 工作
+ * 区内容摘要，digest_workspace 配方），可选 baseBuildId 锚定基线密封构建。
+ */
 export type StudioTask = Readonly<{
   taskId: string;
   sessionId: string;
   goalId: string;
   goalRevision: number;
   humanRequest: string;
-  artifact: Readonly<{ kind: "creator-project" | "creator-city" | "creator-story"; projectId?: string; cityId?: string; storyId?: string; expectedRevision: number }>;
+  artifact: Readonly<{ kind: "creator-project" | "creator-city" | "creator-story" | "code-game"; projectId?: string; cityId?: string; storyId?: string; workspaceId?: string; baseBuildId?: string; expectedRevision: number | string }>;
   targetRefs: readonly StudioTargetRef[];
   planRevision: number;
   stepIds: readonly string[];
@@ -51,6 +56,8 @@ export type StudioTask = Readonly<{
 const text = (value: unknown, maxLength = 512): string | null => typeof value === "string" && value.length > 0 && value.length <= maxLength ? value : null;
 const count = (value: unknown): number | null => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 const object = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+/** 64 位小写 hex 内容摘要（code-game 工作区 digest_workspace 的输出形态）。 */
+const digest = (value: unknown): string | null => typeof value === "string" && /^[0-9a-f]{64}$/.test(value) ? value : null;
 const TASK_PHASES = ["planning", "awaiting-plan-approval", "ready", "executing", "validating", "awaiting-review", "accepted", "rejected", "failed", "cancelled"];
 const taskPhase = (value: unknown): StudioTaskPhase => TASK_PHASES.includes(String(value)) ? String(value) as StudioTaskPhase : "unknown";
 
@@ -91,12 +98,19 @@ export function parseStudioTask(value: unknown): StudioTask {
   const goalId = text(row?.goalId);
   const humanRequest = text(row?.humanRequest, 4_000);
   const artifact = object(row?.artifact);
-  if (!artifact || (artifact.kind !== "creator-project" && artifact.kind !== "creator-city" && artifact.kind !== "creator-story")) throw new Error("creator_task_invalid");
-  if (Object.keys(artifact).length !== 3) throw new Error("creator_task_invalid");
+  if (!artifact || (artifact.kind !== "creator-project" && artifact.kind !== "creator-city" && artifact.kind !== "creator-story" && artifact.kind !== "code-game")) throw new Error("creator_task_invalid");
+  // 键数规则与宿主一致：project/city/story 恰好 3 键；code-game 恰好 3 或 4 键，
+  // 第 4 键只能是可选 baseBuildId。
+  const isCodeGame = artifact.kind === "code-game";
+  const artifactKeys = Object.keys(artifact).length;
+  if (artifactKeys !== 3 && !(isCodeGame && artifactKeys === 4 && "baseBuildId" in artifact)) throw new Error("creator_task_invalid");
   const kind = artifact.kind;
-  const idKey = kind === "creator-city" ? "cityId" : kind === "creator-story" ? "storyId" : "projectId";
+  const idKey = kind === "creator-city" ? "cityId" : kind === "creator-story" ? "storyId" : isCodeGame ? "workspaceId" : "projectId";
   const scopeId = text(artifact[idKey]);
-  const expectedRevision = count(artifact?.expectedRevision);
+  // code-game 的 expectedRevision 是 64-hex 内容摘要（不是数字修订号）。
+  const expectedRevision = isCodeGame ? digest(artifact?.expectedRevision) : count(artifact?.expectedRevision);
+  const baseBuildId = isCodeGame ? digest(artifact?.baseBuildId) : null;
+  if (isCodeGame && "baseBuildId" in artifact && baseBuildId === null) throw new Error("creator_task_invalid");
   const planRevision = count(row?.planRevision);
   const goalRevision = count(row?.goalRevision);
   if (!row || !taskId || !goalId || !humanRequest || !scopeId || expectedRevision === null || planRevision === null || goalRevision === null) throw new Error("creator_task_invalid");
@@ -125,7 +139,10 @@ export function parseStudioTask(value: unknown): StudioTask {
   }) : [];
   const execution = object(row.execution);
   return Object.freeze({ taskId, sessionId: text(row.sessionId) ?? "", goalId, goalRevision, humanRequest,
-    artifact: Object.freeze({ kind, [idKey]: scopeId, expectedRevision }), targetRefs: parseStudioTargetRefs(row.targetRefs), planRevision, stepIds: Object.freeze(stepIds), phase,
+    artifact: Object.freeze(isCodeGame
+      ? { kind, workspaceId: scopeId, expectedRevision, ...(baseBuildId !== null ? { baseBuildId } : {}) }
+      : { kind, [idKey]: scopeId, expectedRevision }),
+    targetRefs: parseStudioTargetRefs(row.targetRefs), planRevision, stepIds: Object.freeze(stepIds), phase,
     proposedChangeSetId: text(row.proposedChangeSetId), lastEvidenceId: text(row.lastEvidenceId), steps: Object.freeze(steps), evidence: Object.freeze(evidence),
     execution: execution ? Object.freeze({ status: text(execution.status) ?? "unknown", ...(text(execution.previewId) ? { previewId: text(execution.previewId)! } : {}) }) : null });
 }
@@ -282,10 +299,11 @@ export function parseStudioSessionHistory(value: unknown): StudioSessionHistory 
   return Object.freeze({ tasks: Object.freeze(tasks), truncated: row?.tasksTruncated === true });
 }
 
-/** 把活动任务折算成历史条目（本会话内连续创作时落史；重开由宿主水合）。 */
+/** 把活动任务折算成历史条目（本会话内连续创作时落史；重开由宿主水合）。
+ *  会话历史面仍是数字修订号投影：code-game 的内容摘要不进该面（PR14 会话面扩展）。 */
 export function studioSessionTaskFromTask(task: Pick<StudioTask, "taskId" | "phase" | "humanRequest" | "artifact">): StudioSessionTask {
   return Object.freeze({ taskId: task.taskId, phase: task.phase, humanRequest: task.humanRequest,
-    artifactKind: task.artifact.kind, expectedRevision: task.artifact.expectedRevision, updatedAtMs: Date.now() });
+    artifactKind: task.artifact.kind, expectedRevision: typeof task.artifact.expectedRevision === "number" ? task.artifact.expectedRevision : null, updatedAtMs: Date.now() });
 }
 
 /** 会话侧栏状态（T3 Sidebar.logic 优先级语义：待确认 > 失败 > 进行中 > 已结束 > 空闲）。 */

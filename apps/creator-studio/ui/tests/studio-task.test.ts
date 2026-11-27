@@ -48,6 +48,24 @@ test("City and story artifacts keep their scope id through the parse", () => {  
   assert.throws(() => parseStudioTask({ ...task, artifact: { kind: "creator-story", storyId: "story-1", expectedRevision: 2, extra: true } }), /creator_task_invalid/);
 });
 
+test("Code-game artifacts carry the workspace digest identity through the parse", () => {
+  const digest = "a".repeat(64);
+  const codeGame = parseStudioTask({ ...task, artifact: { kind: "code-game", workspaceId: "gws-0123456789abcdef", expectedRevision: digest } });
+  assert.equal(codeGame.artifact.kind, "code-game");
+  assert.equal(codeGame.artifact.workspaceId, "gws-0123456789abcdef");
+  assert.equal(codeGame.artifact.expectedRevision, digest);
+  assert.equal(studioTaskScopeId(codeGame), "gws-0123456789abcdef");
+  // baseBuildId 是 code-game 的可选第 4 键（宿主归一化后原样回显）。
+  const anchored = parseStudioTask({ ...task, artifact: { kind: "code-game", workspaceId: "gws-0123456789abcdef", expectedRevision: digest, baseBuildId: "b".repeat(64) } });
+  assert.equal(anchored.artifact.baseBuildId, "b".repeat(64));
+  // 键数/形态严格性：数字摘要、5 键、坏 baseBuildId、数字工件带 baseBuildId 全拒。
+  assert.throws(() => parseStudioTask({ ...task, artifact: { kind: "code-game", workspaceId: "gws-0123456789abcdef", expectedRevision: 3 } }), /creator_task_invalid/);
+  assert.throws(() => parseStudioTask({ ...task, artifact: { kind: "code-game", workspaceId: "gws-0123456789abcdef", expectedRevision: digest, extra: true } }), /creator_task_invalid/);
+  assert.throws(() => parseStudioTask({ ...task, artifact: { kind: "code-game", workspaceId: "gws-0123456789abcdef", expectedRevision: digest, baseBuildId: "zz" } }), /creator_task_invalid/);
+  assert.throws(() => parseStudioTask({ ...task, artifact: { kind: "creator-project", projectId: "project-1", expectedRevision: 3, baseBuildId: "b".repeat(64) } }), /creator_task_invalid/);
+  assert.throws(() => parseStudioTask({ ...task, artifact: { kind: "code-game", projectId: "project-1", expectedRevision: digest } }), /creator_task_invalid/);
+});
+
 test("Parsed tasks retain typed targetRefs and drop malformed entries", () => {
   // 未绑定目标任务：targetRefs 为空数组（旧宿主/无绑定回显一致）。
   assert.deepEqual(parseStudioTask(task).targetRefs, []);

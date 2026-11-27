@@ -323,7 +323,9 @@ fn read_record_at(directory: &Path) -> Result<Option<CandidateRecord>, ToolError
     Ok(Some(record))
 }
 
-fn read_candidate_record(data_home: &Path, candidate_id: &str) -> Result<Option<CandidateRecord>, ToolError> {
+/// PR10：creator_session 的任务工作闸（verify_code_game_build）需要读候选记录
+/// 核对身份链（workspaceId/baseRevision/status），故导出。
+pub(crate) fn read_candidate_record(data_home: &Path, candidate_id: &str) -> Result<Option<CandidateRecord>, ToolError> {
     read_record_at(&candidate_dir(data_home, candidate_id))
 }
 

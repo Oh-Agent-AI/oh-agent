@@ -61,28 +61,54 @@ pub fn execution_prompt(request: &AgentExecutionRequest) -> String {
     let artifact_id = match artifact_kind {
         "creator-city" => request.artifact["cityId"].as_str().unwrap_or("unknown"),
         "creator-story" => request.artifact["storyId"].as_str().unwrap_or("unknown"),
+        // PR10：code-game 工件的身份键是 workspaceId。
+        "code-game" => request.artifact["workspaceId"].as_str().unwrap_or("unknown"),
         _ => request.artifact["projectId"].as_str().unwrap_or("unknown"),
     };
-    let proposal_contract = match artifact_kind {
-        "creator-city" => "Return exactly one JSON object with this shape: {\"summary\":\"bounded outcome\",\"operations\":[{\"op\":\"world.set\",\"preset\":\"...\",\"params\":{...}}]}.\noperations must contain 1..=16 world.set steps; capability keys, ranges and presets come from creator_capabilities_list category `worlds`.",
-        "creator-story" => "Return exactly one JSON object with this shape: {\"summary\":\"bounded outcome\",\"document\":{\"title\":\"...\",\"schemaVersion\":1,\"storyVersion\":\"...\",\"graph\":{...},\"canon\":{...}}}.\ndocument must be one complete story document: graph carries nodes and canon carries established facts.",
-        _ => "Return exactly one JSON object with this shape: {\"summary\":\"bounded outcome\",\"operations\":[...]}.\n\
+    // expectedRevision：project/city/story 是 u64 修订号；code-game 是 64-hex 内容摘要。
+    let expected_revision = match request.artifact["expectedRevision"].as_str() {
+        Some(digest) => digest.to_owned(),
+        None => request.artifact["expectedRevision"].as_u64().map(|value| value.to_string()).unwrap_or_else(|| "unknown".into()),
+    };
+    let (tool_contract, proposal_contract, work_contract) = match artifact_kind {
+        "creator-city" => (
+            "creator_project_read, creator_scene_preview, creator_game_preview, creator_scene_describe, creator_scene_validate, creator_city_view, creator_city_view_status, creator_city_read, creator_city_capture, creator_layout_list, creator_capabilities_list, creator_project_list, creator_story_project_read, creator_story_graph_inspect, creator_operation_status",
+            "Return exactly one JSON object with this shape: {\"summary\":\"bounded outcome\",\"operations\":[{\"op\":\"world.set\",\"preset\":\"...\",\"params\":{...}}]}.\noperations must contain 1..=16 world.set steps; capability keys, ranges and presets come from creator_capabilities_list category `worlds`.",
+            "The host will independently create and validate any Preview.\nUse no operations and no document only when no change is justified; a Preview is required for a successful task."),
+        "creator-story" => (
+            "creator_project_read, creator_scene_preview, creator_game_preview, creator_scene_describe, creator_scene_validate, creator_city_view, creator_city_view_status, creator_city_read, creator_city_capture, creator_layout_list, creator_capabilities_list, creator_project_list, creator_story_project_read, creator_story_graph_inspect, creator_operation_status",
+            "Return exactly one JSON object with this shape: {\"summary\":\"bounded outcome\",\"document\":{\"title\":\"...\",\"schemaVersion\":1,\"storyVersion\":\"...\",\"graph\":{...},\"canon\":{...}}}.\ndocument must be one complete story document: graph carries nodes and canon carries established facts.",
+            "The host will independently create and validate any Preview.\nUse no operations and no document only when no change is justified; a Preview is required for a successful task."),
+        // PR10：code-game 任务绑定 CODE GAME 工作区 + 候选工作流。本执行会话的
+        // creator MCP 不带 --allow-local-writes，写/构建/测试工具会被结构化拒绝——
+        // 真实工作由带写权限的 pull Agent 或 Studio 侧完成；执行器做只读分析，
+        // 仅当候选构建与通过的无头测试已存在时如实指认 buildId，宿主会独立核对
+        // （sealed 构建记录 + 测试记录），绝不采信自述。
+        "code-game" => (
+            "creator_code_workspace_info, creator_code_file_read, creator_code_candidate_list, creator_code_candidate_status, creator_code_test_record, creator_project_list",
+            "You are operating on a CODE GAME workspace, not a scene/city/story project.\n\
+           The real work chain is: creator_code_candidate_create (fork the bound baseline revision) → candidate file edits (creator_code_file_write with candidateId) → creator_code_build (sealed buildId) → creator_code_test (verdict passed).\n\
+           If a candidate build with a passing headless test already satisfies this goal, return exactly one JSON object with this shape: {\"summary\":\"bounded outcome\",\"buildId\":\"<64-hex buildId>\"} — the host re-verifies the build chain and the test record. Otherwise return {\"summary\":\"bounded outcome\"} with your findings and the concrete candidate plan; never name a buildId you have not verified via creator_code_test_record.",
+            "The host will independently verify any buildId you name against the sealed build record and the headless test record.\nA verified candidate build with a passing headless test is required for a successful task; return only the summary when that verified work does not exist yet."),
+        _ => (
+            "creator_project_read, creator_scene_preview, creator_game_preview, creator_scene_describe, creator_scene_validate, creator_city_view, creator_city_view_status, creator_city_read, creator_city_capture, creator_layout_list, creator_capabilities_list, creator_project_list, creator_story_project_read, creator_story_graph_inspect, creator_operation_status",
+            "Return exactly one JSON object with this shape: {\"summary\":\"bounded outcome\",\"operations\":[...]}.\n\
            For a gameplay or rules change, return {\"summary\":\"bounded outcome\",\"game\":{...}} instead, with one complete game definition based on creator_project_read. For a scene change use 1..=128 operations:\n\
            - add/update one object: {\"op\":\"scene.object.upsert\",\"object\":{\"id\":\"<stable-id>\",\"kind\":\"model\",\"asset\":{\"package\":{\"kind\":\"city-minigame\",\"id\":\"<package-id>\",\"version\":\"<version>\",\"digest\":\"sha256:<64hex>\"},\"assetId\":\"<assetId>\",\"digest\":\"sha256:<64hex>\"},\"transform\":{\"positionMeters\":{\"x\":0,\"y\":0,\"z\":0},\"rotationRadians\":{\"x\":0,\"y\":0,\"z\":0},\"scale\":{\"x\":1,\"y\":1,\"z\":1}}}}.\n\
            - add a box collision obstacle as a scene object, not a game rules change: {\"op\":\"scene.object.upsert\",\"object\":{\"id\":\"<stable-id>\",\"kind\":\"collider\",\"shape\":\"box\",\"sizeMeters\":{\"x\":4,\"y\":2,\"z\":3},\"transform\":{\"positionMeters\":{\"x\":0,\"y\":1,\"z\":0},\"rotationRadians\":{\"x\":0,\"y\":0,\"z\":0},\"scale\":{\"x\":1,\"y\":1,\"z\":1}}}}. This kind needs no model asset. Use the requested size and a grounded position based on available scene context; the example transform is illustrative.\n\
            - remove one object: {\"op\":\"scene.object.remove\",\"objectId\":\"<id>\"}.\n\
            Before proposing, call creator_project_read with the projectId only — that tool accepts no revision argument and rejects unknown ones. Compare the returned document's \"revision\" with the expected revision stated below; if it differs, return no operations and explain that the artifact moved on. Call creator_scene_describe (it accepts an optional revision) to inspect the current scene first. For model objects, reuse EXACT asset entries already registered on the project (assets/assetRefs carry package id/version/digest and assetId) — never invent digests. Adding a new visible object is a justified change: return at least one operation whenever the goal asks for one.",
+            "The host will independently create and validate any Preview.\nUse no operations and no document only when no change is justified; a Preview is required for a successful task."),
     };
     format!(
         "You are assisting with one Creator Studio task. Analyze only and propose content operations.\n\
          Do not commit, publish, install, write files, or claim that changes were saved.\n\
-         Use only these Creator tools: creator_project_read, creator_scene_preview, creator_game_preview, creator_scene_describe, creator_scene_validate, creator_city_view, creator_city_view_status, creator_city_read, creator_city_capture, creator_layout_list, creator_capabilities_list, creator_project_list, creator_story_project_read, creator_story_graph_inspect, creator_operation_status. Do not call any other tool.\n\
-         The host will independently create and validate any Preview.\n\
+         Use only these Creator tools: {tool_contract}. Do not call any other tool.\n\
+         {work_contract}\n\
          {proposal_contract}\n\
-         Use no operations and no document only when no change is justified; a Preview is required for a successful task.\n\
          Goal: {}\nHuman request: {}\nArtifact: {} {} at expected revision {}.\nPlan revision: {}.\n{}.",
         request.goal, request.human_request, artifact_kind, artifact_id,
-        request.artifact["expectedRevision"].as_u64().unwrap_or(0), request.plan_revision, target_refs_block,
+        expected_revision, request.plan_revision, target_refs_block,
     )
 }
 
@@ -281,7 +307,20 @@ fn acp_prompt(request: &AgentExecutionRequest, initialized: &Value) -> Result<Ve
 /// 提案 → 宿主独立校验的 Preview（push 执行器共用收尾）。Agent 永远不落库；
 /// preview 由宿主面（scene/city/story preview）生成并绑定 baseRevision，
 /// 提交仍在人工确认后由 Studio 发起。
+/// PR10：code-game 没有宿主 Preview 面——执行器回块的 buildId 只做形状校验后
+/// 原样透传，真正的链核对（sealed 构建记录 + 无头测试记录）在任务执行层
+/// （creator_session::verify_code_game_build）完成。
 fn finish_with_host_preview(request: AgentExecutionRequest, proposal: Value) -> Result<AgentExecutionSuccess, ToolError> {
+    if request.artifact["kind"].as_str() == Some("code-game") {
+        let build_id = proposal["buildId"].as_str()
+            .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()))
+            .map(str::to_owned)
+            .ok_or_else(|| ToolError::new("preview_required", format!("Code Game proposals must name a verified sealed candidate buildId ({}).", proposal_outline(&proposal))))?;
+        return Ok(AgentExecutionSuccess {
+            summary: proposal["summary"].as_str().unwrap_or("Agent proposal received.").chars().take(MAX_SUMMARY_CHARS).collect(),
+            preview: json!({"buildId":build_id}),
+        });
+    }
     let response = match request.artifact["kind"].as_str().unwrap_or("creator-project") {
         "creator-city" => finish_city_preview(&request, &proposal)?,
         "creator-story" => finish_story_preview(&request, &proposal)?,
@@ -754,7 +793,7 @@ impl AcpAgentExecutor {
         }
         progress(callback, "progress", "正在请 Agent 补齐可预览的提案", json!({"stage":"proposal-repair"}));
         let correction = vec![json!({"type":"text","text":
-            "Your previous reply did not provide a usable proposal. Using the original goal and artifact, return only one JSON object with summary and exactly one of operations (non-empty), game, or document, as specified for this artifact. If you called a preview tool, return the proposal content you sent to it, not the preview receipt. A box collider uses scene.object.upsert with kind collider, shape box, sizeMeters and transform. Do not save or publish."})];
+            "Your previous reply did not provide a usable proposal. Using the original goal and artifact, return only one JSON object with summary and exactly one of operations (non-empty), game, document, or buildId (code-game), as specified for this artifact. If you called a preview tool, return the proposal content you sent to it, not the preview receipt. A box collider uses scene.object.upsert with kind collider, shape box, sizeMeters and transform. Do not save or publish."})];
         let response = Self::prompt(stdin, receiver, &session_id, &mut next_id, correction, cancelled, deadline, callback)?;
         parse_proposal(&response).map_err(|error| ToolError::new("acp_output_invalid", error.message))
     }
@@ -1056,7 +1095,9 @@ fn is_proposal(value: &Value) -> bool {
         .is_some_and(|summary| !summary.trim().is_empty() && summary.chars().count() <= MAX_SUMMARY_CHARS);
     let has_payload = object.get("operations").is_some_and(Value::is_array)
         || object.get("game").is_some_and(Value::is_object)
-        || object.get("document").is_some_and(Value::is_object);
+        || object.get("document").is_some_and(Value::is_object)
+        // PR10：code-game 提案的有效载荷是密封候选构建 id（宿主在任务执行层独立核对）。
+        || object.get("buildId").is_some_and(Value::is_string);
     summary_ok && has_payload
 }
 
@@ -1326,10 +1367,16 @@ done
         pub fn failure(code: &'static str) -> Self {
             Self { response: Mutex::new(Some(Err(ToolError::new(code, "Fake executor failure.")))) }
         }
+        /// PR10：code-game 执行器回块携带真实指认的密封构建 id（宿主独立核对）。
+        pub fn code_game(build_id: &str) -> Self {
+            Self { response: Mutex::new(Some(Ok(AgentExecutionSuccess { summary: "Fake code game build".into(), preview: json!({"buildId":build_id}) }))) }
+        }
     }
     impl CreatorAgentExecutor for FakeExecutor {
         fn execute(&self, request: AgentExecutionRequest, cancelled: &AtomicBool) -> Result<AgentExecutionSuccess, ToolError> {
-            assert_eq!(request.artifact["expectedRevision"], 3);
+            // PR10：code-game 工件的 expectedRevision 是内容摘要（字符串），数字
+            // 断言只对数字修订号工件保持。
+            if request.artifact["expectedRevision"].is_u64() { assert_eq!(request.artifact["expectedRevision"], 3); }
             if cancelled.load(Ordering::Relaxed) { return Err(ToolError::new("codex_cancelled", "Cancelled by test.")); }
             self.response.lock().unwrap().take().unwrap()
         }
@@ -1352,6 +1399,33 @@ done
         assert!(prompt.contains("\"entityId\":\"barrier-3\""), "目标身份应逐字进入简报");
         let bare = AgentExecutionRequest { target_refs: None, ..request };
         assert!(execution_prompt(&bare).contains("No structured target objects are bound"), "无绑定时应如实说明");
+    }
+
+    /// PR10：code-game 任务的执行简报必须携带 CODE GAME 工作区绑定（workspaceId、
+    /// 基线摘要逐字出现）与候选工作流指令；只读红线保持不变。
+    #[test]
+    fn execution_prompt_carries_the_code_game_binding() {
+        let home = std::env::temp_dir().join(format!("prompt-code-game-{}", std::process::id()));
+        let digest = "a".repeat(64);
+        let request = AgentExecutionRequest { target_refs: None, data_home: home.clone(), goal: "给塔防加一个暂停按钮".into(), human_request: "给塔防加一个暂停按钮".into(),
+            artifact: serde_json::json!({"kind":"code-game","workspaceId":"gws-0123456789abcdef","expectedRevision":digest}),
+            plan_revision: 1, timeout: Duration::from_secs(15), include_viewport: false };
+        let prompt = execution_prompt(&request);
+        assert!(prompt.contains("CODE GAME workspace"), "简报应说明这是 CODE GAME 工作区任务");
+        assert!(prompt.contains("gws-0123456789abcdef"), "workspaceId 应逐字进入简报");
+        assert!(prompt.contains(digest.as_str()), "基线内容摘要应逐字进入简报");
+        assert!(prompt.contains("creator_code_candidate_create"), "候选工作流指令应出现在简报");
+        assert!(prompt.contains("creator_code_test_record"), "buildId 指认的核对入口应出现在简报");
+        assert!(prompt.contains("Do not commit, publish, install, write files"), "只读红线保持不变");
+        assert!(!prompt.contains(home.to_string_lossy().as_ref()), "简报不得携带路径");
+    }
+
+    /// PR10：code-game 提案的有效载荷是 buildId（与 operations/game/document 并列）。
+    #[test]
+    fn code_game_proposals_accept_a_build_id_payload() {
+        let proposal = super::parse_proposal(r#"前置说明。{"summary":"候选已通过无头测试","buildId":"b64hex"}"#).unwrap();
+        assert_eq!(proposal["buildId"], "b64hex");
+        assert!(super::parse_proposal(r#"{"summary":"只有总结没有载荷"}"#).is_err());
     }
 }
 

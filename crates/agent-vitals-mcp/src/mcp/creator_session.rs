@@ -54,18 +54,23 @@ pub fn specs() -> Vec<ToolSpec> {
         spec("creator_job_wait", "Block until a Creator job reaches a terminal state or the timeout expires (30 s cap). A timeout returns the running snapshot, not an error.", json!({"jobId":{"type":"string","minLength":1,"maxLength":128},"timeoutMs":{"type":"integer","minimum":100,"maximum":30000}}), &["jobId"]),
         spec("creator_job_cancel", "Request cooperative cancellation of a queued/running Creator job. Cancellation takes effect at the engine's next safe point; playtest jobs route to creator_playtest_cancel.", json!({"jobId":{"type":"string","minLength":1,"maxLength":128}}), &["jobId"]),
         spec("creator_task_create", "Create a durable Studio goal and artifact in the shared Creator session/job ledger. This does not execute an Agent.", json!({"sessionId":{"type":"string"},"goal":{"type":"string"},"humanRequest":{"type":"string"},"artifact":{"type":"object"},"acceptanceCriteria":{"type":"array"},"operationId":{"type":"string"}}), &["sessionId","goal","humanRequest","artifact","acceptanceCriteria","operationId"]),
-        spec("creator_task_plan_submit", "Submit or revise a task plan with CAS-checked plan and artifact revisions.", json!({"taskId":{"type":"string"},"expectedPlanRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"steps":{"type":"array"},"operationId":{"type":"string"}}), &["taskId","expectedPlanRevision","expectedArtifactRevision","steps","operationId"]),
-        spec("creator_task_plan_approve", "Approve the current task plan; this records approval but never claims execution or completion.", json!({"taskId":{"type":"string"},"planRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"operationId":{"type":"string"}}), &["taskId","planRevision","expectedArtifactRevision","operationId"]),
+        // PR10：expectedArtifactRevision 在 code-game 工件上是 64-hex 工作区内容摘要
+        // （字符串），其余三种工件仍是 u64 修订号；严格性由逐 kind 的 CAS 比对承担。
+        spec("creator_task_plan_submit", "Submit or revise a task plan with CAS-checked plan and artifact revisions.", json!({"taskId":{"type":"string"},"expectedPlanRevision":{"type":"integer"},"expectedArtifactRevision":{"type":["integer","string"]},"steps":{"type":"array"},"operationId":{"type":"string"}}), &["taskId","expectedPlanRevision","expectedArtifactRevision","steps","operationId"]),
+        spec("creator_task_plan_approve", "Approve the current task plan; this records approval but never claims execution or completion.", json!({"taskId":{"type":"string"},"planRevision":{"type":"integer"},"expectedArtifactRevision":{"type":["integer","string"]},"operationId":{"type":"string"}}), &["taskId","planRevision","expectedArtifactRevision","operationId"]),
         spec("creator_task_status", "Read durable goal, plan, steps and evidence for a Studio task.", json!({"taskId":{"type":"string"}}), &["taskId"]),
-        spec("creator_task_execute", "Execute an approved task with a real push executor (default Codex CLI; \"acp\" drives the configured ACP agent, \"acp:<agentId>\" picks one from the acp-agents.json registry) and a read-only Preview-only tool policy. Returns host-generated Preview evidence, never a saved-change claim.", json!({"taskId":{"type":"string"},"expectedPlanRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"operationId":{"type":"string"},"mode":{"type":"string","enum":["restricted","full-access"],"description":"Execution mode; defaults to restricted (ACP agents switch to a restricted proposal mode and codex exec rejects restricted requests; request full-access explicitly to bypass the gate)."},"timeoutMs":{"type":"integer","minimum":100,"maximum":600000},"executor":{"type":"string","description":"codex (default), acp (configured default) or acp:<agentId> from the registry"}}), &["taskId","expectedPlanRevision","expectedArtifactRevision","operationId"]),
-        spec("creator_task_evidence_append", "Append typed evidence with explicit trust level. Host verification cannot be self-declared.", json!({"taskId":{"type":"string"},"planRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"criterionId":{"type":"string"},"kind":{"type":"string"},"trustLevel":{"type":"string"},"summary":{"type":"string"},"operationId":{"type":"string"}}), &["taskId","planRevision","expectedArtifactRevision","criterionId","kind","trustLevel","summary","operationId"]),
+        spec("creator_task_execute", "Execute an approved task with a real push executor (default Codex CLI; \"acp\" drives the configured ACP agent, \"acp:<agentId>\" picks one from the acp-agents.json registry) and a read-only Preview-only tool policy. Returns host-generated Preview evidence, never a saved-change claim. Code Game tasks run a read-only workspace analysis instead and succeed only by naming a sealed candidate buildId the host re-verifies.", json!({"taskId":{"type":"string"},"expectedPlanRevision":{"type":"integer"},"expectedArtifactRevision":{"type":["integer","string"]},"operationId":{"type":"string"},"mode":{"type":"string","enum":["restricted","full-access"],"description":"Execution mode; defaults to restricted (ACP agents switch to a restricted proposal mode and codex exec rejects restricted requests; request full-access explicitly to bypass the gate)."},"timeoutMs":{"type":"integer","minimum":100,"maximum":600000},"executor":{"type":"string","description":"codex (default), acp (configured default) or acp:<agentId> from the registry"}}), &["taskId","expectedPlanRevision","expectedArtifactRevision","operationId"]),
+        spec("creator_task_evidence_append", "Append typed evidence with explicit trust level. Host verification cannot be self-declared.", json!({"taskId":{"type":"string"},"planRevision":{"type":"integer"},"expectedArtifactRevision":{"type":["integer","string"]},"criterionId":{"type":"string"},"kind":{"type":"string"},"trustLevel":{"type":"string"},"summary":{"type":"string"},"operationId":{"type":"string"}}), &["taskId","planRevision","expectedArtifactRevision","criterionId","kind","trustLevel","summary","operationId"]),
         spec("creator_task_evidence_list", "List durable evidence for a Studio task.", json!({"taskId":{"type":"string"}}), &["taskId"]),
-        spec("creator_task_review_accept", "Accept a task only after all acceptance criteria have real evidence and a human reviewer accepts it.", json!({"taskId":{"type":"string"},"planRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"reviewerNote":{"type":"string"},"operationId":{"type":"string"}}), &["taskId","planRevision","expectedArtifactRevision","reviewerNote","operationId"]),
-        spec("creator_task_review_reject", "Reject the current task plan during human review.", json!({"taskId":{"type":"string"},"planRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"reason":{"type":"string"},"operationId":{"type":"string"}}), &["taskId","planRevision","expectedArtifactRevision","reason","operationId"]),
+        spec("creator_task_review_accept", "Accept a task only after all acceptance criteria have real evidence and a human reviewer accepts it.", json!({"taskId":{"type":"string"},"planRevision":{"type":"integer"},"expectedArtifactRevision":{"type":["integer","string"]},"reviewerNote":{"type":"string"},"operationId":{"type":"string"}}), &["taskId","planRevision","expectedArtifactRevision","reviewerNote","operationId"]),
+        spec("creator_task_review_reject", "Reject the current task plan during human review.", json!({"taskId":{"type":"string"},"planRevision":{"type":"integer"},"expectedArtifactRevision":{"type":["integer","string"]},"reason":{"type":"string"},"operationId":{"type":"string"}}), &["taskId","planRevision","expectedArtifactRevision","reason","operationId"]),
         spec("creator_task_cancel", "Cancel a non-terminal Studio task without deleting its goal, plan or evidence.", json!({"taskId":{"type":"string"},"operationId":{"type":"string"}}), &["taskId","operationId"]),
         spec("creator_task_list_open", "List approved Studio tasks that are ready to be claimed (pull mode). Read-only; an empty list is a truthful empty queue.", json!({"limit":{"type":"integer","minimum":1,"maximum":50}}), &[]),
-        spec("creator_task_claim", "Claim an approved task (pull mode) with a plain agentId: no per-CLI spawn adapter is needed, any MCP-capable desktop agent participates. First claim sets phase=executing and binds the claimant; re-claim by the same agentId is idempotent.", json!({"taskId":{"type":"string"},"agentId":{"type":"string","minLength":1,"maxLength":128},"expectedPlanRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"operationId":{"type":"string"}}), &["taskId","agentId","expectedPlanRevision","expectedArtifactRevision","operationId"]),
-        spec("creator_task_submit_result", "Submit the claimed task's result: the host re-verifies the submitted preview server-side (exists, bound to the artifact project and revision, unexpired) before recording host-observed evidence and moving the task to human review. Self-declared completion is never accepted.", json!({"taskId":{"type":"string"},"agentId":{"type":"string","minLength":1,"maxLength":128},"planRevision":{"type":"integer"},"expectedArtifactRevision":{"type":"integer"},"summary":{"type":"string","minLength":1,"maxLength":2000},"previewId":{"type":"string"},"operationId":{"type":"string"}}), &["taskId","agentId","planRevision","expectedArtifactRevision","summary","previewId","operationId"]),
+        spec("creator_task_claim", "Claim an approved task (pull mode) with a plain agentId: no per-CLI spawn adapter is needed, any MCP-capable desktop agent participates. First claim sets phase=executing and binds the claimant; re-claim by the same agentId is idempotent.", json!({"taskId":{"type":"string"},"agentId":{"type":"string","minLength":1,"maxLength":128},"expectedPlanRevision":{"type":"integer"},"expectedArtifactRevision":{"type":["integer","string"]},"operationId":{"type":"string"}}), &["taskId","agentId","expectedPlanRevision","expectedArtifactRevision","operationId"]),
+        // PR10：提交产物按工件二选一——creator-project 仍必填 previewId；code-game
+        // 必填 buildId（sealed 候选构建）。schema 不再一刀切必填 previewId，严格性
+        // 由逐 kind 校验承担。
+        spec("creator_task_submit_result", "Submit the claimed task's result: the host re-verifies the submitted work server-side before recording host-observed evidence and moving the task to human review. creator-project tasks submit previewId (the host preview ledger re-checks existence, artifact binding and revision); code-game tasks submit buildId (the host re-checks the sealed candidate build chain and the passing headless test record). Self-declared completion is never accepted.", json!({"taskId":{"type":"string"},"agentId":{"type":"string","minLength":1,"maxLength":128},"planRevision":{"type":"integer"},"expectedArtifactRevision":{"type":["integer","string"]},"summary":{"type":"string","minLength":1,"maxLength":2000},"previewId":{"type":"string"},"buildId":{"type":"string","minLength":64,"maxLength":64,"pattern":"^[0-9a-f]{64}$"},"operationId":{"type":"string"}}), &["taskId","agentId","planRevision","expectedArtifactRevision","summary","operationId"]),
         spec("creator_task_progress", "Append a bounded typed progress projection for a claimed pull task. Only stage codes, step ids and optional percent are accepted; raw prompts, paths, logs and executor output text are not event fields.", json!({"taskId":{"type":"string"},"agentId":{"type":"string"},"planRevision":{"type":"integer"},"kind":{"type":"string","enum":["plan","progress","executor-output"]},"code":{"type":"string","enum":["analysis-started","artifact-read","operations-proposed","preview-requested","preview-ready","validation-started","validation-completed","waiting-host","other"]},"stepId":{"type":"string"},"percent":{"type":"integer","minimum":0,"maximum":100},"operationId":{"type":"string"}}), &["taskId","agentId","planRevision","kind","code","operationId"]),
         spec("creator_game_type_list", "List registered game types with their runtime contract and whether each is actually playable (playtestSupported derives from the app adapter registry state, never from template existence). Read-only and offline.", json!({"status":{"type":"string","enum":["builtin-adapter","prototype","planned"]}}), &[]),
     ]
@@ -1036,6 +1041,29 @@ fn task_save_receipt(tx: &rusqlite::Transaction<'_>, operation_id: &str, hash: &
         rusqlite::params![operation_id,hash,canonical,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     Ok(())
 }
+/// 64 位小写 hex 内容摘要（code-game 工作区 digest_workspace 的输出形态）。
+fn valid_content_digest(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+/// expectedArtifactRevision 的 CAS 读取：creator-project/city/story 是 u64 修订号，
+/// code-game 是 64-hex 工作区内容摘要（PR10）。两种形态都收；真正的现势比对在
+/// artifact_revision_matches（按 artifact 身份逐值比对，不猜形态）。
+fn task_artifact_revision_arg(payload: &Value) -> Result<Value, ToolError> {
+    let value = payload.get("expectedArtifactRevision")
+        .ok_or_else(|| ToolError::new("invalid_argument", "expectedArtifactRevision is required."))?;
+    match value {
+        Value::Number(number) if number.is_u64() => Ok(value.clone()),
+        Value::String(text) if valid_content_digest(text) => Ok(value.clone()),
+        _ => Err(ToolError::new("invalid_argument", "expectedArtifactRevision must be a revision integer or a 64-hex content digest.")),
+    }
+}
+
+/// artifact.expectedRevision 与请求期望值的 CAS 比对（修订号或内容摘要原值相等）。
+fn artifact_revision_matches(artifact: &Value, expected: &Value) -> bool {
+    artifact.get("expectedRevision") == Some(expected)
+}
+
 fn task_artifact(payload: &Value) -> Result<Value, ToolError> {
     let artifact = payload.get("artifact").and_then(Value::as_object).ok_or_else(|| ToolError::new("invalid_argument", "artifact is required."))?;
     let kind = artifact.get("kind").and_then(Value::as_str).ok_or_else(|| ToolError::new("invalid_argument", "artifact.kind is required."))?;
@@ -1043,20 +1071,62 @@ fn task_artifact(payload: &Value) -> Result<Value, ToolError> {
         "creator-project" => "projectId",
         "creator-city" => "cityId",
         "creator-story" => "storyId",
-        _ => return Err(ToolError::new("invalid_argument", "artifact.kind must be creator-project, creator-city or creator-story.")),
+        // PR10：code-game 工作区作为第四种 Studio Task 工件。身份住在文件系统
+        // （data_home/code-games/workspaces/<workspaceId>/workspace.json 注册表），
+        // expectedRevision 是 64-hex 内容摘要（digest_workspace 同配方），不是
+        // projects.sqlite 里的 u64 修订号。
+        "code-game" => "workspaceId",
+        _ => return Err(ToolError::new("invalid_argument", "artifact.kind must be creator-project, creator-city, creator-story or code-game.")),
     };
-    if artifact.len() != 3 { return Err(ToolError::new("invalid_argument", "artifact must contain exactly kind, the scope id and expectedRevision.")); }
+    // 键数规则（严格）：project/city/story 恰好 3 键；code-game 恰好 3 或 4 键，
+    // 第 4 键只能是可选 baseBuildId（任务锚定的基线密封构建）。
+    let keys_ok = artifact.len() == 3 || (kind == "code-game" && artifact.len() == 4 && artifact.contains_key("baseBuildId"));
+    if !keys_ok { return Err(ToolError::new("invalid_argument", "artifact must contain exactly kind, the scope id and expectedRevision, plus optional baseBuildId for code-game.")); }
     let scope_id = artifact.get(id_key).and_then(Value::as_str).filter(|value| valid_playtest_run_id(value))
         .ok_or_else(|| ToolError::new("invalid_argument", format!("artifact.{id_key} is invalid.")))?;
-    let expected_revision = artifact.get("expectedRevision").and_then(Value::as_u64)
-        .ok_or_else(|| ToolError::new("invalid_argument", "artifact.expectedRevision is required."))?;
+    let expected_revision = if kind == "code-game" {
+        let digest = artifact.get("expectedRevision").and_then(Value::as_str).filter(|value| valid_content_digest(value))
+            .ok_or_else(|| ToolError::new("invalid_argument", "artifact.expectedRevision must be a 64-hex workspace content digest."))?;
+        json!(digest)
+    } else {
+        json!(artifact.get("expectedRevision").and_then(Value::as_u64)
+            .ok_or_else(|| ToolError::new("invalid_argument", "artifact.expectedRevision is required."))?)
+    };
     let mut normalized = serde_json::Map::new();
     normalized.insert("kind".into(), json!(kind));
     normalized.insert(id_key.to_string(), json!(scope_id));
-    normalized.insert("expectedRevision".into(), json!(expected_revision));
+    normalized.insert("expectedRevision".into(), expected_revision);
+    if let Some(base) = artifact.get("baseBuildId").and_then(Value::as_str).filter(|value| valid_content_digest(value)) {
+        if kind != "code-game" { return Err(ToolError::new("invalid_argument", "artifact.baseBuildId only applies to code-game artifacts.")); }
+        normalized.insert("baseBuildId".into(), json!(base));
+    } else if artifact.contains_key("baseBuildId") {
+        return Err(ToolError::new("invalid_argument", "artifact.baseBuildId must be a 64-hex sealed build id."));
+    }
     Ok(Value::Object(normalized))
 }
 fn task_check_artifact(data_home: &Path, artifact: &Value) -> Result<(), ToolError> {
+    // PR10：code-game 的权威源是文件系统而非 projects.sqlite——code-game 身份不在
+    // 宿主 scope 表里。workspace.json 是 PR02 原子落盘的注册表（含 workspaceId/
+    // gameId），read_meta 每次用 digest_workspace 现场重算整树摘要——这正是
+    // PR02–09 全链（文件 CAS、候选 fork、sealed build）共同采信的 CAS token，
+    // 对照它就是对照权威现势，与 scope 表 CAS 同语义：不等即 revision_conflict。
+    if artifact["kind"].as_str() == Some("code-game") {
+        let workspace_id = artifact["workspaceId"].as_str().unwrap_or_default();
+        let meta = super::creator_code_workspace::workspace_dir(data_home, workspace_id)
+            .and_then(|directory| super::creator_code_workspace::read_meta(&directory))?;
+        if meta.revision != artifact["expectedRevision"].as_str().unwrap_or_default() {
+            return Err(ToolError::new("revision_conflict", "Task artifact revision does not match the authoritative workspace digest."));
+        }
+        // 可选 baseBuildId：必须是密封了该工作区该摘要的构建（builder 落盘的
+        // build.json 是唯一证据面）；锚定失效同样按 revision_conflict 拒绝。
+        if let Some(base_build_id) = artifact["baseBuildId"].as_str() {
+            let sealed = super::creator_code_workspace::build_workspace_revision(data_home, base_build_id, &meta)?;
+            if sealed != meta.revision {
+                return Err(ToolError::new("revision_conflict", "Task artifact baseBuildId does not seal the bound workspace revision."));
+            }
+        }
+        return Ok(());
+    }
     let host = data_home.join("state/creator/projects.sqlite");
     let db = open_db(&host, false)?;
     let scope_id = artifact["projectId"].as_str()
@@ -1105,9 +1175,35 @@ fn scope_document(db: &rusqlite::Connection, table: &str, column: &str, scope_id
 fn task_check_target_refs(data_home: &Path, artifact: &Value, target_refs: &Value) -> Result<(), ToolError> {
     const PREVIEW_VERIFY_TIMEOUT_MS: u64 = 3_000;
     let Some(refs) = target_refs.as_array().filter(|refs| !refs.is_empty()) else { return Ok(()); };
+    let kind = artifact["kind"].as_str().unwrap_or("creator-project");
+    // PR10：code-game 引用的权威源是工作区文件系统（与 artifact 同源）。entityId
+    // 必须是工作区里真实存在的相对路径文件；projectRevision 必须等于任务绑定的
+    // 内容摘要。code-game 的 Preview 是独立 code-preview 窗口，宿主场景 Preview
+    // 台账无法核对——如实跳过该子项核对（残留限制：code-preview 请求与任务的
+    // 绑定不在本层验证；scope 与 revision 检查仍然强制）。
+    if kind == "code-game" {
+        let workspace_id = artifact["workspaceId"].as_str().unwrap_or_default();
+        let expected = artifact["expectedRevision"].as_str().unwrap_or_default();
+        let directory = super::creator_code_workspace::workspace_dir(data_home, workspace_id)?;
+        let files = super::creator_code_workspace::list_files(&directory)?;
+        for (index, item) in refs.iter().enumerate() {
+            if item["projectRevision"].as_str() != Some(expected) {
+                return Err(target_ref_error("creator_target_ref_stale", index, "projectRevision does not match the task artifact's authoritative workspace digest."));
+            }
+            if item["entityKind"].as_str().unwrap_or_default() != "code-file" {
+                return Err(target_ref_error("creator_target_ref_scope_conflict", index, "entityKind does not belong to a code-game artifact."));
+            }
+            let entity_id = item["entityId"].as_str().unwrap_or_default();
+            let in_workspace = super::creator_code_workspace::safe_relative_path(&json!({"relativePath": entity_id})).is_ok()
+                && files.iter().any(|(path, _)| path == entity_id);
+            if !in_workspace {
+                return Err(target_ref_error("creator_target_ref_not_found", index, "entityId is not a file in the authoritative Code Game workspace."));
+            }
+        }
+        return Ok(());
+    }
     let host = data_home.join("state/creator/projects.sqlite");
     let db = open_db(&host, false)?;
-    let kind = artifact["kind"].as_str().unwrap_or("creator-project");
     let scope_id = artifact["projectId"].as_str()
         .or_else(|| artifact["cityId"].as_str())
         .or_else(|| artifact["storyId"].as_str()).unwrap_or_default();
@@ -1210,6 +1306,70 @@ fn task_check_target_refs(data_home: &Path, artifact: &Value, target_refs: &Valu
     Ok(())
 }
 
+/// 有界读取 sealed 构建记录（code-games/builds/<buildId>/build.json，≤64KiB，
+/// 与 creator_code_workspace 同预算）。buildId 已由调用方按 64-hex 校验，无路径注入。
+fn code_build_record(data_home: &Path, build_id: &str) -> Result<Value, ToolError> {
+    let path = data_home.join("code-games").join("builds").join(build_id).join("build.json");
+    let bytes = std::fs::read(&path).map_err(|_| ToolError::new("not_found", "No sealed build for that buildId in this data home."))?;
+    if bytes.len() > 64 * 1024 { return Err(ToolError::new("data_unavailable", "The sealed build record exceeds the read budget.")); }
+    serde_json::from_slice(&bytes).map_err(|_| ToolError::new("data_unavailable", "The sealed build record is malformed."))
+}
+
+/// 有界读取无头测试记录（state/creator/code-games/tests/<buildId>.json）。
+fn code_test_record_for(data_home: &Path, build_id: &str) -> Result<Value, ToolError> {
+    let path = data_home.join("state/creator/code-games").join("tests").join(format!("{build_id}.json"));
+    let bytes = std::fs::read(&path).map_err(|_| ToolError::new("not_found", "No headless test record for that buildId in this data home."))?;
+    if bytes.len() > 64 * 1024 { return Err(ToolError::new("data_unavailable", "The test record exceeds the read budget.")); }
+    serde_json::from_slice(&bytes).map_err(|_| ToolError::new("data_unavailable", "The test record is malformed."))
+}
+
+/// PR10 code-game 真实工作闸（push 执行成功与 pull 提交共用）：buildId 必须密封
+/// 「从任务绑定摘要 fork 出的候选」的整树摘要（`candidate:<C>:<digest>`，PR09
+/// 构建密封身份），候选记录必须属于本工作区且 fork 自任务绑定的摘要，且该构建
+/// 的无头测试记录 verdict=passed。全部证据读自宿主/MCP 自有状态（code-games/
+/// builds、candidates、state/creator/code-games/tests），绝不采信 Agent 自述。
+/// 返回核对后的事实块（buildId/candidateId/candidateRevision/verdict）。
+pub(crate) fn verify_code_game_build(data_home: &Path, artifact: &Value, build_id: &str) -> Result<Value, ToolError> {
+    if !valid_content_digest(build_id) { return Err(ToolError::new("invalid_argument", "buildId must be a 64-hex sealed build id.")); }
+    let workspace_id = artifact["workspaceId"].as_str().unwrap_or_default();
+    let expected = artifact["expectedRevision"].as_str().unwrap_or_default();
+    let record = code_build_record(data_home, build_id)?;
+    if record["buildId"].as_str() != Some(build_id) {
+        return Err(ToolError::new("workspace_build_mismatch", "The sealed build record does not match the submitted buildId."));
+    }
+    // 基线构建（workspace: 前缀）带不进新工作：任务 CAS 钉住基线摘要，候选提交前
+    // 基线不动，所以真实工作只能经候选链证明。
+    let Some((candidate_id, candidate_revision)) = record["sourceRevision"].as_str()
+        .and_then(|source| source.strip_prefix("candidate:"))
+        .and_then(|rest| rest.split_once(':'))
+        .filter(|(_, digest)| valid_content_digest(digest))
+        .map(|(id, digest)| (id.to_owned(), digest.to_owned())) else {
+        return Err(ToolError::new("workspace_build_mismatch", "This build is not a sealed candidate build. Run creator_code_build inside a candidate forked from the bound revision and submit that buildId."));
+    };
+    if record["gameId"].as_str().map(str::to_owned)
+        != super::creator_code_workspace::workspace_dir(data_home, workspace_id)
+            .and_then(|directory| super::creator_code_workspace::read_meta(&directory))
+            .map(|meta| meta.game_id).ok() {
+        return Err(ToolError::new("workspace_build_mismatch", "This build was sealed for a different game identity."));
+    }
+    let Some(candidate) = super::creator_code_candidate::read_candidate_record(data_home, &candidate_id)? else {
+        return Err(ToolError::new("workspace_build_mismatch", "This build's candidate record is missing; rebuild the candidate and submit the new buildId."));
+    };
+    if candidate.workspace_id != workspace_id || candidate.base_revision != expected {
+        return Err(ToolError::new("workspace_build_mismatch", "This build's candidate is not forked from the task's bound workspace revision."));
+    }
+    // 已被用户丢弃的候选不再接受提交（构建/测试记录仍在，但工作已被放弃）。
+    if candidate.status == "rejected" {
+        return Err(ToolError::new("creator_candidate_discarded", "This candidate was discarded; fork a new candidate from the bound baseline to continue."));
+    }
+    let test = code_test_record_for(data_home, build_id)?;
+    let verdict = test["verdict"].as_str().unwrap_or("missing");
+    if verdict != "passed" {
+        return Err(ToolError::new("creator_task_test_not_passed", format!("The sealed build's headless test verdict is {verdict}; passed is required.")));
+    }
+    Ok(json!({"buildId":build_id,"workspaceId":workspace_id,"candidateId":candidate_id,"candidateRevision":candidate_revision,"verdict":"passed"}))
+}
+
 fn task_criteria(payload: &Value) -> Result<Vec<Value>, ToolError> {
     let criteria = payload.get("acceptanceCriteria").and_then(Value::as_array).filter(|items| (1..=16).contains(&items.len()))
         .ok_or_else(|| ToolError::new("invalid_argument", "acceptanceCriteria must contain 1..=16 entries."))?;
@@ -1291,13 +1451,16 @@ fn task_payload(data_home: &Path, task_id: &str) -> Result<Value, ToolError> {
 fn task_terminal(phase: &str) -> bool { matches!(phase, "accepted" | "rejected" | "failed" | "cancelled") }
 
 /// 结构化目标对象引用（P1-5）：对象身份由宿主绑定与校验，不拼进自然语言需求。
-/// 上限 8 条；entityId/entityKind/previewId 必填且有界，projectRevision 必填。
-/// 本函数只把关「形状」；存在性/归属/revision 的权威校验在 task_check_target_refs
-/// （PR03），由 create/execute/submit 三个入口共用。
-fn task_target_refs(payload: &Value) -> Result<Option<Value>, ToolError> {
+/// 上限 8 条；entityId/entityKind 必填且有界，projectRevision 必填，previewId 在
+/// project/city/story 上必填（宿主 Preview 台账核对），code-game 上如实不要求
+/// （其 Preview 是独立 code-preview 窗口，不在场景台账内）。本函数只把关「形状」；
+/// 存在性/归属/revision 的权威校验在 task_check_target_refs（PR03/PR10），
+/// 由 create/execute/submit 三个入口共用。
+fn task_target_refs(payload: &Value, artifact_kind: &str) -> Result<Option<Value>, ToolError> {
     let value = match payload.get("targetRefs") { None => return Ok(None), Some(value) => value };
     let items = value.as_array().ok_or_else(|| ToolError::new("invalid_argument", "targetRefs must be an array."))?;
     if items.len() > 8 { return Err(ToolError::new("invalid_argument", "targetRefs accepts at most 8 entries.")); }
+    let code_game = artifact_kind == "code-game";
     let mut refs = Vec::with_capacity(items.len());
     for item in items {
         let object = item.as_object().ok_or_else(|| ToolError::new("invalid_argument", "targetRefs entries must be objects."))?;
@@ -1306,12 +1469,28 @@ fn task_target_refs(payload: &Value) -> Result<Option<Value>, ToolError> {
                 .filter(|value| !value.is_empty() && value.chars().count() <= 128)
                 .ok_or_else(|| ToolError::new("invalid_argument", format!("targetRefs entry needs a bounded {key}.")))
         };
-        let project_revision = object.get("projectRevision").and_then(Value::as_u64)
-            .ok_or_else(|| ToolError::new("invalid_argument", "targetRefs entry needs projectRevision."))?;
-        refs.push(json!({"entityId":text("entityId")?,"entityKind":text("entityKind")?,"previewId":text("previewId")?,
-            "projectRevision":project_revision,
-            "cityRevision":object.get("cityRevision").and_then(Value::as_u64),
-            "worldRevision":object.get("worldRevision").and_then(Value::as_str).map(|value| value.trim().to_owned())}));
+        // projectRevision：project/city/story 是 u64 修订号；code-game 携带工作区
+        // 内容摘要（同一 CAS token 的字符串形态）。
+        let project_revision = if code_game {
+            let digest = object.get("projectRevision").and_then(Value::as_str).filter(|value| valid_content_digest(value))
+                .ok_or_else(|| ToolError::new("invalid_argument", "targetRefs entry needs a 64-hex content digest projectRevision."))?;
+            json!(digest)
+        } else {
+            json!(object.get("projectRevision").and_then(Value::as_u64)
+                .ok_or_else(|| ToolError::new("invalid_argument", "targetRefs entry needs projectRevision."))?)
+        };
+        let preview_id = text("previewId").ok();
+        if !code_game && preview_id.is_none() {
+            return Err(ToolError::new("invalid_argument", "targetRefs entry needs a bounded previewId."));
+        }
+        // code-game 归一化丢弃 previewId（无处核对，避免看似已验证的悬空指针）。
+        let mut entry = json!({"entityId":text("entityId")?,"entityKind":text("entityKind")?,"projectRevision":project_revision});
+        if !code_game {
+            entry["previewId"] = json!(preview_id.unwrap_or_default());
+            entry["cityRevision"] = object.get("cityRevision").and_then(Value::as_u64).into();
+            entry["worldRevision"] = object.get("worldRevision").and_then(Value::as_str).map(|value| value.trim().to_owned()).into();
+        }
+        refs.push(entry);
     }
     Ok(if refs.is_empty() { None } else { Some(Value::Array(refs)) })
 }
@@ -1322,7 +1501,7 @@ fn task_create(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
     let human_request = task_text_arg(payload, "humanRequest", 4_000)?;
     let artifact = task_artifact(payload)?;
     task_check_artifact(data_home, &artifact)?;
-    let target_refs = task_target_refs(payload)?;
+    let target_refs = task_target_refs(payload, artifact["kind"].as_str().unwrap_or("creator-project"))?;
     // PR03：形状通过后立即做权威校验（存在、归属、revision），伪造引用进不了台账。
     if let Some(refs) = &target_refs { task_check_target_refs(data_home, &artifact, refs)?; }
     let criteria = task_criteria(payload)?;
@@ -1354,7 +1533,7 @@ fn task_create(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
 fn task_plan_submit(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
     let task_id = task_id_arg(payload, "taskId")?;
     let expected_revision = task_revision_arg(payload, "expectedPlanRevision")?;
-    let expected_artifact_revision = task_revision_arg(payload, "expectedArtifactRevision")?;
+    let expected_artifact_revision = task_artifact_revision_arg(payload)?;
     let steps = task_steps(payload)?;
     let operation_id = task_id_arg(payload, "operationId")?;
     let hash = task_hash(payload)?;
@@ -1364,7 +1543,7 @@ fn task_plan_submit(data_home: &Path, payload: &Value) -> Result<Value, ToolErro
     if let Some(result) = task_receipt(&tx, &operation_id, &hash)? { return Ok(result); }
     task_require_no_pending_confirm(&tx, &task_id)?;
     let (task, _, plan_revision, phase) = task_row(&tx, &task_id)?;
-    if task["artifact"]["expectedRevision"].as_u64() != Some(expected_artifact_revision) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
+    if !artifact_revision_matches(&task["artifact"], &expected_artifact_revision) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
     task_check_artifact(data_home, &task["artifact"])?;
     if plan_revision + 1 != expected_revision { return Err(ToolError::new("plan_revision_conflict", "expectedPlanRevision must be current + 1.")); }
     if !matches!(phase.as_str(), "planning" | "ready" | "awaiting-review" | "rejected" | "failed" | "cancelled") {
@@ -1399,7 +1578,7 @@ fn task_plan_approve(data_home: &Path, payload: &Value) -> Result<Value, ToolErr
     if let Some(result) = task_receipt(&tx, &operation_id, &hash)? { return Ok(result); }
     let (task, _, current_revision, phase) = task_row(&tx, &task_id)?;
     if phase != "awaiting-plan-approval" || current_revision != plan_revision { return Err(ToolError::new("plan_revision_conflict", "Plan approval is stale or not pending.")); }
-    if task["artifact"]["expectedRevision"].as_u64() != Some(task_revision_arg(payload, "expectedArtifactRevision")?) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
+    if !artifact_revision_matches(&task["artifact"], &task_artifact_revision_arg(payload)?) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
     task_check_artifact(data_home, &task["artifact"])?;
     tx.execute("UPDATE creator_studio_tasks SET phase='ready',updated_at_ms=?2 WHERE task_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     tx.execute("UPDATE creator_jobs SET status='ready',updated_at_ms=?2 WHERE job_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
@@ -1435,7 +1614,7 @@ fn task_evidence_append(data_home: &Path, payload: &Value) -> Result<Value, Tool
     if current_revision != plan_revision || !matches!(phase.as_str(), "ready" | "executing" | "validating" | "awaiting-review") {
         return Err(ToolError::new("creator_task_invalid_transition", format!("Cannot append evidence from {phase}.")));
     }
-    if task["artifact"]["expectedRevision"].as_u64() != Some(task_revision_arg(payload, "expectedArtifactRevision")?) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
+    if !artifact_revision_matches(&task["artifact"], &task_artifact_revision_arg(payload)?) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
     task_check_artifact(data_home, &task["artifact"])?;
     let criterion = task["acceptanceCriteria"].as_array().and_then(|criteria| criteria.iter().find(|criterion| criterion["criterionId"].as_str() == Some(&criterion_id)))
         .ok_or_else(|| ToolError::new("invalid_argument", "criterionId is not part of this task."))?;
@@ -1503,7 +1682,7 @@ fn execution_cancellations() -> &'static Mutex<HashMap<String, Arc<std::sync::at
 pub fn task_execute_with_executor(data_home: &Path, payload: &Value, executor: &dyn super::creator_agent_executor::CreatorAgentExecutor) -> Result<Value, ToolError> {
     let task_id = task_id_arg(payload, "taskId")?;
     let expected_plan_revision = task_revision_arg(payload, "expectedPlanRevision")?;
-    let expected_artifact_revision = task_revision_arg(payload, "expectedArtifactRevision")?;
+    let expected_artifact_revision = task_artifact_revision_arg(payload)?;
     let operation_id = task_id_arg(payload, "operationId")?;
     let include_viewport = match payload.get("includeViewport") {
         None => false,
@@ -1529,10 +1708,22 @@ pub fn task_execute_with_executor(data_home: &Path, payload: &Value, executor: &
     if phase == "executing" { return task_payload(data_home, &task_id); }
     if phase != "ready" { return Err(ToolError::new("creator_task_invalid_transition", format!("Cannot execute from {phase}."))); }
     if plan_revision != expected_plan_revision { return Err(ToolError::new("plan_revision_conflict", "Execution plan revision is stale.")); }
-    if task["artifact"]["expectedRevision"].as_u64() != Some(expected_artifact_revision) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
+    if !artifact_revision_matches(&task["artifact"], &expected_artifact_revision) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
     task_check_artifact(data_home, &task["artifact"])?;
-    if !task["acceptanceCriteria"].as_array().is_some_and(|criteria| criteria.iter().any(|criterion| criterion["criterionId"].as_str() == Some("agent-preview") && criterion["requiredEvidenceKind"].as_str() == Some("preview"))) {
-        return Err(ToolError::new("creator_task_acceptance_missing", "Task requires an agent-preview acceptance criterion before execution."));
+    // PR10：code-game 任务的真实工作面是 build/test 判据（代码工具族产出），不是
+    // 宿主 Preview；project/city/story 仍要求 agent-preview。
+    let code_game_task = task["artifact"]["kind"].as_str() == Some("code-game");
+    let has_work_criterion = task["acceptanceCriteria"].as_array().is_some_and(|criteria| criteria.iter().any(|criterion| {
+        if code_game_task {
+            matches!(criterion["requiredEvidenceKind"].as_str(), Some("build") | Some("test"))
+        } else {
+            criterion["criterionId"].as_str() == Some("agent-preview") && criterion["requiredEvidenceKind"].as_str() == Some("preview")
+        }
+    }));
+    if !has_work_criterion {
+        return Err(ToolError::new("creator_task_acceptance_missing", if code_game_task {
+            "Task requires a build or test acceptance criterion before execution." } else {
+            "Task requires an agent-preview acceptance criterion before execution." }));
     }
     // PR03：启动执行器前的廉价复核（Preview 仍活 + revision 仍现势）。失败在进入
     // executing 前返回——与其他 pre-execute 失败一致，任务保持 ready 可重发。
@@ -1606,27 +1797,61 @@ pub fn task_execute_with_executor(data_home: &Path, payload: &Value, executor: &
     }
     let result = match result {
         Ok(success) => {
-            let preview_id = success.preview["previewId"].as_str().filter(|id| valid_playtest_run_id(id)).map(str::to_owned);
-            match preview_id {
-                Some(id) if success.preview["baseRevision"].as_u64() == Some(expected_artifact_revision) => Ok((success, id)),
-                _ => Err(ToolError::new("preview_required", "Executor did not produce a preview for the task revision.")),
+            if code_game_task {
+                // code-game：宿主不产 Preview。执行器回块必须携带它真实指认的
+                // buildId，宿主按 sealed 构建记录 + 无头测试记录独立核对（与 pull
+                // 提交同一真实工作闸）；核对不过任务如实失败（走下方失败臂）。
+                let verified = match success.preview["buildId"].as_str().filter(|value| valid_content_digest(value)).map(str::to_owned) {
+                    Some(build_id) => verify_code_game_build(data_home, &task["artifact"], &build_id).map(|verified| (build_id, verified)),
+                    None => Err(ToolError::new("preview_required", "Executor did not name a sealed candidate buildId for the Code Game task.")),
+                };
+                verified.map(|(build_id, verified)| (success, build_id, verified))
+            } else {
+                let preview_id = success.preview["previewId"].as_str().filter(|id| valid_playtest_run_id(id)).map(str::to_owned);
+                match preview_id {
+                    Some(id) if success.preview["baseRevision"] == expected_artifact_revision => Ok((success, id, Value::Null)),
+                    _ => Err(ToolError::new("preview_required", "Executor did not produce a preview for the task revision.")),
+                }
             }
         }
         Err(error) => Err(error),
     };
     match result {
-        Ok((success, preview_id)) => {
-            let evidence_id = new_id("evidence-");
-            tx.execute("INSERT INTO creator_studio_task_evidence(evidence_id,task_id,plan_revision,step_id,criterion_id,kind,trust_level,summary,data_json,created_at_ms)
-                VALUES(?1,?2,?3,'human-review','agent-preview','preview','host-observed',?4,?5,?6)",
-                rusqlite::params![evidence_id,task_id,expected_plan_revision,success.summary,success.preview.to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
-            append_event(&tx,&task_id,"preview",executor_name,"host-observed","Host 已生成并校验执行器 Preview",&json!({"previewId":preview_id,"baseRevision":expected_artifact_revision,"executor":executor_name}))?;
-            append_event(&tx,&task_id,"evidence","host","host-observed","Host Preview 证据已记录",&json!({"evidenceId":evidence_id,"criterionId":"agent-preview","kind":"preview","trustLevel":"host-observed"}))?;
+        Ok((success, work_id, verified)) => {
+            let mut last_evidence_id = String::new();
+            if code_game_task {
+                // code-game：为 build/test 判据落 host-observed 证据（宿主已核对
+                // 构建链与测试结论），proposedChangeSetId 指向 buildId。判据在执行
+                // 闸已验证存在，循环必然至少落一条。
+                for criterion in task["acceptanceCriteria"].as_array().unwrap_or(&Vec::new()).iter()
+                    .filter(|criterion| matches!(criterion["requiredEvidenceKind"].as_str(), Some("build") | Some("test"))) {
+                    let criterion_id = criterion["criterionId"].as_str().unwrap_or_default().to_owned();
+                    let evidence_kind = criterion["requiredEvidenceKind"].as_str().unwrap_or_default().to_owned();
+                    let evidence_id = new_id("evidence-");
+                    tx.execute("INSERT INTO creator_studio_task_evidence(evidence_id,task_id,plan_revision,step_id,criterion_id,kind,trust_level,summary,data_json,created_at_ms)
+                        VALUES(?1,?2,?3,'human-review',?4,?5,'host-observed',?6,?7,?8)",
+                        rusqlite::params![evidence_id,task_id,expected_plan_revision,criterion_id,evidence_kind,success.summary,verified.to_string(),now_ms()])
+                        .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+                    append_event(&tx,&task_id,"evidence","host","host-observed","Host 已核对执行器命中的候选构建链",&json!({"evidenceId":evidence_id,"criterionId":criterion_id,"kind":evidence_kind,"trustLevel":"host-observed"}))?;
+                    last_evidence_id = evidence_id;
+                }
+                append_event(&tx,&task_id,"preview",executor_name,"host-observed","Host 已核对 Code Game 执行器回块的构建链",&json!({"buildId":work_id,"executor":executor_name}))?;
+            } else {
+                let evidence_id = new_id("evidence-");
+                tx.execute("INSERT INTO creator_studio_task_evidence(evidence_id,task_id,plan_revision,step_id,criterion_id,kind,trust_level,summary,data_json,created_at_ms)
+                    VALUES(?1,?2,?3,'human-review','agent-preview','preview','host-observed',?4,?5,?6)",
+                    rusqlite::params![evidence_id,task_id,expected_plan_revision,success.summary,success.preview.to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+                append_event(&tx,&task_id,"preview",executor_name,"host-observed","Host 已生成并校验执行器 Preview",&json!({"previewId":work_id,"baseRevision":expected_artifact_revision,"executor":executor_name}))?;
+                append_event(&tx,&task_id,"evidence","host","host-observed","Host Preview 证据已记录",&json!({"evidenceId":evidence_id,"criterionId":"agent-preview","kind":"preview","trustLevel":"host-observed"}))?;
+                last_evidence_id = evidence_id;
+            }
+            let mut execution = json!({"operationId":operation_id,"executor":executor_name,"status":"awaiting-review"});
+            if code_game_task { execution["buildId"] = json!(work_id); } else { execution["previewId"] = json!(work_id); }
             tx.execute("UPDATE creator_studio_tasks SET phase='awaiting-review',last_evidence_id=?2,proposed_change_set_id=?3,updated_at_ms=?4 WHERE task_id=?1",
-                rusqlite::params![task_id,evidence_id,preview_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+                rusqlite::params![task_id,last_evidence_id,work_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
             tx.execute("UPDATE creator_jobs SET status='awaiting-review',progress_json=?2,updated_at_ms=?3 WHERE job_id=?1",
-                rusqlite::params![task_id,json!({"execution":{"operationId":operation_id,"executor":executor_name,"status":"awaiting-review","previewId":preview_id} }).to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
-            let result = json!({"taskId":task_id,"phase":"awaiting-review","proposedChangeSetId":preview_id,"lastEvidenceId":evidence_id});
+                rusqlite::params![task_id,json!({"execution":execution}).to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            let result = json!({"taskId":task_id,"phase":"awaiting-review","proposedChangeSetId":work_id,"lastEvidenceId":last_evidence_id});
             task_save_receipt(&tx, &operation_id, &hash, &result)?;
             tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
             connection_upsert(&db,&push_agent_id,&session_id,ConnectionUpdate { executor:None,transport:None,state:"offline",capabilities:None,stable_error:Some(None),at_ms:now_ms() })?;
@@ -1691,6 +1916,12 @@ pub fn confirm_task_save(
         return Err(ToolError::new("revision_conflict", "Task artifact revision changed."));
     }
     let kind = artifact["kind"].as_str().unwrap_or("creator-project");
+    // PR10：code-game 的保存面是候选提交（creator_code_candidate_commit，CAS 基线
+    // 摘要），统一确认桥没有 code-game commit 路径——如实拒绝而不是误走 project
+    // 提交桥。
+    if kind == "code-game" {
+        return Err(ToolError::new("creator_task_scope_unsupported", "Code Game tasks save through the Code Game candidate commit (creator_code_candidate_commit), not the unified confirm bridge."));
+    }
     let intent = tx.query_row(
         "SELECT task_id,plan_revision,preview_id,expected_revision,artifact_kind,state FROM creator_studio_task_confirm_intents WHERE operation_id=?1",
         [&operation_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?, row.get::<_, String>(2)?,
@@ -1793,7 +2024,7 @@ fn task_review_accept(data_home: &Path, payload: &Value) -> Result<Value, ToolEr
     task_require_no_pending_confirm(&tx, &task_id)?;
     let (task, _, current_revision, phase) = task_row(&tx, &task_id)?;
     if phase != "awaiting-review" || current_revision != plan_revision { return Err(ToolError::new("creator_task_invalid_transition", "Task is not awaiting review with current evidence.")); }
-    if task["artifact"]["expectedRevision"].as_u64() != Some(task_revision_arg(payload, "expectedArtifactRevision")?) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
+    if !artifact_revision_matches(&task["artifact"], &task_artifact_revision_arg(payload)?) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
     task_check_artifact(data_home, &task["artifact"])?;
     let criteria = task["acceptanceCriteria"].as_array().ok_or_else(|| ToolError::new("storage_unavailable", "Task acceptance is damaged."))?;
     for criterion in criteria {
@@ -1826,7 +2057,7 @@ fn task_review_reject(data_home: &Path, payload: &Value) -> Result<Value, ToolEr
     task_require_no_pending_confirm(&tx, &task_id)?;
     let (task, _, current_revision, phase) = task_row(&tx, &task_id)?;
     if phase != "awaiting-review" || current_revision != plan_revision { return Err(ToolError::new("creator_task_invalid_transition", "Task is not awaiting review.")); }
-    if task["artifact"]["expectedRevision"].as_u64() != Some(task_revision_arg(payload, "expectedArtifactRevision")?) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
+    if !artifact_revision_matches(&task["artifact"], &task_artifact_revision_arg(payload)?) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
     task_check_artifact(data_home, &task["artifact"])?;
     tx.execute("UPDATE creator_studio_tasks SET phase='rejected',updated_at_ms=?2 WHERE task_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     tx.execute("UPDATE creator_jobs SET status='rejected',failure_json=?2,updated_at_ms=?3 WHERE job_id=?1", rusqlite::params![task_id,json!({"code":"human_rejected","reason":reason}).to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
@@ -1840,8 +2071,9 @@ fn task_review_reject(data_home: &Path, payload: &Value) -> Result<Value, ToolEr
 
 /// Pull 模式任务面（通用接入）：任何 MCP 客户端（桌面 Agent / CLI / 交互式会话）
 /// 用同一个 agentId 即可认领与交结果，不需要宿主逐家 spawn 适配。诚实闸不松动：
-/// submit 的预览由宿主服务端复核（存在、绑定 artifact、baseRevision 匹配、未过期），
-/// 证据永远是 host-observed，人工复核仍走 review.accept/reject。
+/// submit 的预览由宿主服务端复核（存在、绑定 artifact、baseRevision 匹配、未过期）；
+/// PR10 起 code-game 任务提交 buildId，宿主复核 sealed 候选构建链与无头测试记录
+/// （verify_code_game_build），证据永远是 host-observed，人工复核仍走 review.accept/reject。
 fn task_brief(task: &Value) -> Value {
     json!({"taskId":task["taskId"],"goal":task["humanRequest"],"artifact":task["artifact"],
         "planRevision":task["planRevision"],"stepIds":task["stepIds"],
@@ -1871,7 +2103,7 @@ pub fn task_claim(data_home: &Path, payload: &Value) -> Result<Value, ToolError>
     let task_id = task_id_arg(payload, "taskId")?;
     let agent_id = task_text_arg(payload, "agentId", 128)?;
     let plan_revision = task_revision_arg(payload, "expectedPlanRevision")?;
-    let expected_artifact_revision = task_revision_arg(payload, "expectedArtifactRevision")?;
+    let expected_artifact_revision = task_artifact_revision_arg(payload)?;
     let operation_id = task_id_arg(payload, "operationId")?;
     let hash = task_hash(payload)?;
     let mut db = open_db(&sessions_db(data_home)?, false)?;
@@ -1880,7 +2112,7 @@ pub fn task_claim(data_home: &Path, payload: &Value) -> Result<Value, ToolError>
     if let Some(result) = task_receipt(&tx, &operation_id, &hash)? { return Ok(result); }
     let (task, session_id, current_revision, phase) = task_row(&tx, &task_id)?;
     if current_revision != plan_revision { return Err(ToolError::new("plan_revision_conflict", "Task plan moved on; re-read the task and claim the current revision.")); }
-    if task["artifact"]["expectedRevision"].as_u64() != Some(expected_artifact_revision) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
+    if !artifact_revision_matches(&task["artifact"], &expected_artifact_revision) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
     let existing_claim = task_claim_row(&tx, &task_id)?;
     match phase.as_str() {
         "ready" => {}
@@ -1894,9 +2126,21 @@ pub fn task_claim(data_home: &Path, payload: &Value) -> Result<Value, ToolError>
         "executing" => return Err(ToolError::new("creator_task_already_claimed", format!("Task is claimed by another agent ({}).", existing_claim.as_ref().map(|(owner,_)| owner.as_str()).unwrap_or("unknown")))),
         other => return Err(ToolError::new("creator_task_invalid_transition", format!("Cannot claim from {other}."))),
     }
-    let has_preview_criterion = task["acceptanceCriteria"].as_array().is_some_and(|criteria| criteria.iter().any(|criterion|
-        criterion["criterionId"].as_str() == Some("agent-preview") && criterion["requiredEvidenceKind"].as_str() == Some("preview")));
-    if !has_preview_criterion { return Err(ToolError::new("creator_task_acceptance_missing", "Task requires an agent-preview acceptance criterion before claiming.")); }
+    // PR10：认领闸与执行闸同语义——code-game 要求 build/test 判据，其余要求
+    // agent-preview。
+    let code_game_task = task["artifact"]["kind"].as_str() == Some("code-game");
+    let has_work_criterion = task["acceptanceCriteria"].as_array().is_some_and(|criteria| criteria.iter().any(|criterion| {
+        if code_game_task {
+            matches!(criterion["requiredEvidenceKind"].as_str(), Some("build") | Some("test"))
+        } else {
+            criterion["criterionId"].as_str() == Some("agent-preview") && criterion["requiredEvidenceKind"].as_str() == Some("preview")
+        }
+    }));
+    if !has_work_criterion {
+        return Err(ToolError::new("creator_task_acceptance_missing", if code_game_task {
+            "Task requires a build or test acceptance criterion before claiming." } else {
+            "Task requires an agent-preview acceptance criterion before claiming." }));
+    }
     let now = now_ms();
     tx.execute("INSERT INTO creator_studio_task_claims(task_id,agent_id,claimed_at_ms) VALUES(?1,?2,?3)
         ON CONFLICT(task_id) DO UPDATE SET agent_id=excluded.agent_id,claimed_at_ms=excluded.claimed_at_ms",
@@ -1912,11 +2156,18 @@ pub fn task_claim(data_home: &Path, payload: &Value) -> Result<Value, ToolError>
     notify_event_subscribers();
     let mut result = task_payload(data_home, &task_id)?;
     result["claimant"] = json!(agent_id);
-    result["next"] = json!({"steps":[
+    // PR10：code-game 的 pull 工作链是候选 fork → 编辑 → sealed 构建 → 通过无头
+    // 测试，再凭 buildId 提交（宿主复核构建链与测试记录）。
+    result["next"] = if code_game_task { json!({"steps":[
+        "Fork an isolated candidate from the bound baseline: creator_code_candidate_create with expectedBaseRevision = the task artifact's expectedRevision.",
+        "Edit files inside the candidate (creator_code_file_write with candidateId), then seal it: creator_code_build and creator_code_test until the verdict is passed.",
+        "Call creator_task_submit_result with that buildId."],
+        "note":"Submit re-verifies the build chain and the headless test record server-side; the host records the evidence and moves the task to human review."}) }
+    else { json!({"steps":[
         "Analyze the artifact with the read-only creator tools (never claim saved changes).",
         "Create one host preview bound to the artifact: creator_vehicle_preview / creator_game_preview / creator_city_edit_preview, or creator_scene_preview with Studio open.",
         "Call creator_task_submit_result with that previewId within its 10-minute TTL."],
-        "note":"Submit re-verifies the preview server-side; the host records the evidence and moves the task to human review."});
+        "note":"Submit re-verifies the preview server-side; the host records the evidence and moves the task to human review."}) };
     Ok(result)
 }
 
@@ -1971,16 +2222,19 @@ pub fn task_submit_result(data_home: &Path, payload: &Value) -> Result<Value, To
     let task_id = task_id_arg(payload, "taskId")?;
     let agent_id = task_text_arg(payload, "agentId", 128)?;
     let plan_revision = task_revision_arg(payload, "planRevision")?;
-    let expected_artifact_revision = task_revision_arg(payload, "expectedArtifactRevision")?;
+    let expected_artifact_revision = task_artifact_revision_arg(payload)?;
     let summary = task_text_arg(payload, "summary", 2_000)?;
-    let preview_id = task_id_arg(payload, "previewId")?;
+    // PR10：提交产物按工件二选一——creator-project 用 previewId，code-game 用
+    // buildId。schema 层不再一刀切必填 previewId；严格性由第 (A) 段逐 kind 校验。
+    let preview_id = payload.get("previewId").and_then(Value::as_str).filter(|value| valid_playtest_run_id(value)).map(str::to_owned);
+    let build_id = payload.get("buildId").and_then(Value::as_str).filter(|value| valid_content_digest(value)).map(str::to_owned);
     let operation_id = task_id_arg(payload, "operationId")?;
     let hash = task_hash(payload)?;
     // 评审 P2：宿主复核是最长 15s 的 broker 往返，必须在任务库写事务之外完成——
     // BEGIN IMMEDIATE 期间持有写锁会阻塞同库其他写入（含 task.cancel）。三段式：
     // (A) 短事务校验并释放写锁 → (B) 事务外宿主复核 → (C) 短事务复查（捕获期间的
     // 取消/变更/换领人）+ 落盘证据与回执。
-    let (project_id,session_id,artifact,target_refs) = {
+    let (project_id,session_id,artifact,target_refs,code_game) = {
         let mut db = open_db(&sessions_db(data_home)?, false)?;
         ensure_schema(&db)?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
@@ -1991,37 +2245,55 @@ pub fn task_submit_result(data_home: &Path, payload: &Value) -> Result<Value, To
         if claimant.as_ref().map(|(owner,_)| owner.as_str()) != Some(agent_id.as_str()) {
             return Err(ToolError::new("creator_task_claim_mismatch", "Only the claiming agent may submit the result."));
         }
-        if task["artifact"]["expectedRevision"].as_u64() != Some(expected_artifact_revision) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
+        if !artifact_revision_matches(&task["artifact"], &expected_artifact_revision) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
         task_check_artifact(data_home, &task["artifact"])?;
-        // Pull 模式的预览复核 broker 只覆盖宿主持有的 project 场景预览；
-        // City/Story 的预览校验在 push 执行器里完成，pull 提交明确拒绝。
-        let project_id = task["artifact"]["projectId"].as_str()
-            .filter(|_| task["artifact"]["kind"].as_str().unwrap_or("creator-project") == "creator-project")
-            .ok_or_else(|| ToolError::new("pull_result_scope_unsupported", "Pull submissions support creator-project artifacts; City and Story tasks submit through the Studio push executor."))?.to_owned();
+        // 提交产物逐 kind 裁决：creator-project 仍走宿主 Preview 台账；code-game
+        // 走 sealed 候选构建链 + 无头测试记录（Phase B 核对）；City/Story 的预览
+        // 校验在 push 执行器里完成，pull 提交明确拒绝。
+        let code_game = task["artifact"]["kind"].as_str() == Some("code-game");
+        let project_id = if code_game {
+            if build_id.is_none() { return Err(ToolError::new("invalid_argument", "code-game submissions must carry the sealed candidate buildId.")); }
+            None
+        } else {
+            let project_id = task["artifact"]["projectId"].as_str()
+                .filter(|_| task["artifact"]["kind"].as_str().unwrap_or("creator-project") == "creator-project")
+                .ok_or_else(|| ToolError::new("pull_result_scope_unsupported", "Pull submissions support creator-project and code-game artifacts; City and Story tasks submit through the Studio push executor."))?.to_owned();
+            if preview_id.is_none() { return Err(ToolError::new("invalid_argument", "previewId must be a stable id.")); }
+            Some(project_id)
+        };
         tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
-        (project_id,session_id,task["artifact"].clone(),task["targetRefs"].clone())
+        (project_id,session_id,task["artifact"].clone(),task["targetRefs"].clone(),code_game)
     };
     // PR03：三段式 (B) 的一部分——targetRefs 在提交时必须仍在 scope 内（revision
     // 现势 + Preview 台账仍可核对）。broker 往返在写事务之外，不持任务库写锁。
     task_check_target_refs(data_home, &artifact, &target_refs)?;
-    // 服务端复核（诚实闸的核心）：预览由宿主进程持有（内存、TTL 600s），submit 经
-    // broker 回宿主确认「存在、绑定本 artifact、baseRevision 匹配、未过期」。复用
-    // Studio 域错误码映射；宿主不在场时诚实报 plugin_unavailable，绝不降级采信。
-    let verified = match super::creator_studio::call(data_home, "creator.task.preview.verify",
-        &json!({"projectId":project_id,"previewId":preview_id}), 15_000) {
-        Ok(value) => value,
-        Err(error) => {
-            if let Ok(db) = open_db(&sessions_db(data_home)?,false) {
-                let _ = connection_upsert(&db,&agent_id,&session_id,ConnectionUpdate { executor:Some("pull"),transport:Some("mcp-stdio"),state:"degraded",capabilities:None,stable_error:Some(Some(if valid_connection_error(error.code) { error.code } else { "executor_failed" })),at_ms:now_ms() });
+    // 服务端复核（诚实闸的核心）。creator-project：预览由宿主进程持有（内存、
+    // TTL 600s），submit 经 broker 回宿主确认「存在、绑定本 artifact、baseRevision
+    // 匹配、未过期」，复用 Studio 域错误码映射；宿主不在场时诚实报
+    // plugin_unavailable，绝不降级采信。code-game：宿主直接读自有状态核对
+    // sealed 候选构建链 + 无头测试记录（verify_code_game_build）。
+    let verified = if code_game {
+        verify_code_game_build(data_home, &artifact, build_id.as_deref().unwrap_or_default())?
+    } else {
+        let project_id = project_id.as_deref().unwrap_or_default();
+        let preview_id = preview_id.as_deref().unwrap_or_default();
+        let verified = match super::creator_studio::call(data_home, "creator.task.preview.verify",
+            &json!({"projectId":project_id,"previewId":preview_id}), 15_000) {
+            Ok(value) => value,
+            Err(error) => {
+                if let Ok(db) = open_db(&sessions_db(data_home)?,false) {
+                    let _ = connection_upsert(&db,&agent_id,&session_id,ConnectionUpdate { executor:Some("pull"),transport:Some("mcp-stdio"),state:"degraded",capabilities:None,stable_error:Some(Some(if valid_connection_error(error.code) { error.code } else { "executor_failed" })),at_ms:now_ms() });
+                }
+                let _ = append_event_db(data_home,&task_id,"failure","host","host-observed","Pull 提交的 Preview 复核失败",&json!({"code":error.code,"phase":"executing"}));
+                return Err(error);
             }
-            let _ = append_event_db(data_home,&task_id,"failure","host","host-observed","Pull 提交的 Preview 复核失败",&json!({"code":error.code,"phase":"executing"}));
-            return Err(error);
+        };
+        let verified = verified.get("data").cloned().unwrap_or(verified);
+        if verified["projectId"].as_str() != Some(project_id) || verified["baseRevision"] != expected_artifact_revision {
+            return Err(ToolError::new("preview_required", "Submitted preview does not match the task artifact (project or base revision)."));
         }
+        verified
     };
-    let verified = verified.get("data").cloned().unwrap_or(verified);
-    if verified["projectId"].as_str() != Some(project_id.as_str()) || verified["baseRevision"].as_u64() != Some(expected_artifact_revision) {
-        return Err(ToolError::new("preview_required", "Submitted preview does not match the task artifact (project or base revision)."));
-    }
     // (C) 复查：复核等待期间任务可能已被取消/换领人/推进——全部以当前行状态裁决。
     let mut db = open_db(&sessions_db(data_home)?, false)?;
     ensure_schema(&db)?;
@@ -2033,28 +2305,48 @@ pub fn task_submit_result(data_home: &Path, payload: &Value) -> Result<Value, To
     if claimant.as_ref().map(|(owner,_)| owner.as_str()) != Some(agent_id.as_str()) {
         return Err(ToolError::new("creator_task_claim_mismatch", "Only the claiming agent may submit the result."));
     }
-    if task["artifact"]["expectedRevision"].as_u64() != Some(expected_artifact_revision) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
+    if !artifact_revision_matches(&task["artifact"], &expected_artifact_revision) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
     let criteria = task["acceptanceCriteria"].as_array().ok_or_else(|| ToolError::new("storage_unavailable", "Task acceptance is damaged."))?;
     let now = now_ms();
+    let work_id = if code_game { build_id.clone().unwrap_or_default() } else { preview_id.clone().unwrap_or_default() };
     connection_upsert(&tx,&agent_id,&session_id,ConnectionUpdate { executor:Some("pull"),transport:Some("mcp-stdio"),state:"online",capabilities:None,stable_error:Some(None),at_ms:now })?;
-    append_event(&tx,&task_id,"preview","host","host-observed","Host 已复核 Pull 提交的 Preview",&json!({"previewId":preview_id,"projectId":project_id,"baseRevision":expected_artifact_revision}))?;
+    if code_game {
+        append_event(&tx,&task_id,"evidence","host","host-observed","Host 已复核 Pull 提交的候选构建链",&json!({"buildId":work_id,"verdict":"passed"}))?;
+    } else {
+        append_event(&tx,&task_id,"preview","host","host-observed","Host 已复核 Pull 提交的 Preview",&json!({"previewId":work_id,"projectId":project_id.as_deref().unwrap_or_default(),"baseRevision":expected_artifact_revision}))?;
+    }
     let mut last_evidence_id = String::new();
-    for criterion in criteria.iter().filter(|criterion| criterion["requiredEvidenceKind"].as_str() == Some("preview")) {
+    // code-game 为 build/test 判据落证据，creator-project 为 preview 判据落证据
+    // （认领闸保证对应判据存在）。
+    for criterion in criteria.iter().filter(|criterion| {
+        let kind = criterion["requiredEvidenceKind"].as_str().unwrap_or_default();
+        if code_game { matches!(kind, "build" | "test") } else { kind == "preview" }
+    }) {
         let criterion_id = criterion["criterionId"].as_str().unwrap_or_default().to_owned();
+        let evidence_kind = criterion["requiredEvidenceKind"].as_str().unwrap_or_default().to_owned();
         let evidence_id = new_id("evidence-");
         tx.execute("INSERT INTO creator_studio_task_evidence(evidence_id,task_id,plan_revision,step_id,criterion_id,kind,trust_level,summary,data_json,created_at_ms)
-            VALUES(?1,?2,?3,NULL,?4,'preview','host-observed',?5,?6,?7)",
-            rusqlite::params![evidence_id,task_id,plan_revision,criterion_id,summary,verified.to_string(),now])
+            VALUES(?1,?2,?3,NULL,?4,?5,'host-observed',?6,?7,?8)",
+            rusqlite::params![evidence_id,task_id,plan_revision,criterion_id,evidence_kind,summary,verified.to_string(),now])
             .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
-        append_event(&tx,&task_id,"evidence","host","host-observed","Host Preview 证据已记录",&json!({"evidenceId":evidence_id.clone(),"criterionId":criterion_id,"kind":"preview","trustLevel":"host-observed"}))?;
+        append_event(&tx,&task_id,"evidence","host","host-observed","Host 提交复核证据已记录",&json!({"evidenceId":evidence_id.clone(),"criterionId":criterion_id,"kind":evidence_kind,"trustLevel":"host-observed"}))?;
         last_evidence_id = evidence_id;
     }
-    if last_evidence_id.is_empty() { return Err(ToolError::new("creator_task_acceptance_missing", "Task has no preview acceptance criterion to satisfy.")); }
+    if last_evidence_id.is_empty() {
+        return Err(ToolError::new("creator_task_acceptance_missing", if code_game {
+            "Task has no build/test acceptance criterion to satisfy." } else {
+            "Task has no preview acceptance criterion to satisfy." }));
+    }
     tx.execute("UPDATE creator_studio_tasks SET phase='awaiting-review',last_evidence_id=?2,proposed_change_set_id=?3,updated_at_ms=?4 WHERE task_id=?1",
-        rusqlite::params![task_id,last_evidence_id,preview_id,now]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+        rusqlite::params![task_id,last_evidence_id,work_id,now]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     tx.execute("UPDATE creator_jobs SET status='awaiting-review',updated_at_ms=?2 WHERE job_id=?1", rusqlite::params![task_id,now])
         .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
-    task_save_receipt(&tx, &operation_id, &hash, &json!({"taskId":task_id,"phase":"awaiting-review","previewId":preview_id}))?;
+    let receipt = if code_game {
+        json!({"taskId":task_id,"phase":"awaiting-review","buildId":work_id})
+    } else {
+        json!({"taskId":task_id,"phase":"awaiting-review","previewId":work_id})
+    };
+    task_save_receipt(&tx, &operation_id, &hash, &receipt)?;
     tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     notify_event_subscribers();
     let mut result = task_payload(data_home, &task_id)?;
@@ -2244,17 +2536,17 @@ mod tests {
 
     #[test]
     fn task_target_refs_are_validated_and_normalised() {
-        let ok = task_target_refs(&serde_json::json!({"targetRefs":[{"entityId":" barrier-3 ","entityKind":"scene-model","previewId":"preview-a","projectRevision":4,"worldRevision":"world-v3"}]})).unwrap().unwrap();
+        let ok = task_target_refs(&serde_json::json!({"targetRefs":[{"entityId":" barrier-3 ","entityKind":"scene-model","previewId":"preview-a","projectRevision":4,"worldRevision":"world-v3"}]}), "creator-project").unwrap().unwrap();
         assert_eq!(ok[0]["entityId"], json!("barrier-3"));
         assert_eq!(ok[0]["cityRevision"], json!(null));
-        assert!(task_target_refs(&json!({})).unwrap().is_none(), "缺席 targetRefs = 无绑定");
-        assert!(task_target_refs(&json!({"targetRefs":[]}) ).unwrap().is_none(), "空数组视同无绑定");
-        assert_eq!(task_target_refs(&json!({"targetRefs":[{"entityId":"x","previewId":"p","projectRevision":1}]})).unwrap_err().code, "invalid_argument");
-        assert_eq!(task_target_refs(&json!({"targetRefs":[{"entityId":"x","entityKind":"model","previewId":"p"}]})).unwrap_err().code, "invalid_argument");
-        assert_eq!(task_target_refs(&json!({"targetRefs":"barrier-3"})).unwrap_err().code, "invalid_argument");
-        assert_eq!(task_target_refs(&json!({"targetRefs":[{"entityId":"x","entityKind":"model","previewId":"p","projectRevision":"3"}]})).unwrap_err().code, "invalid_argument");
+        assert!(task_target_refs(&json!({}), "creator-project").unwrap().is_none(), "缺席 targetRefs = 无绑定");
+        assert!(task_target_refs(&json!({"targetRefs":[]}), "creator-project").unwrap().is_none(), "空数组视同无绑定");
+        assert_eq!(task_target_refs(&json!({"targetRefs":[{"entityId":"x","previewId":"p","projectRevision":1}]}), "creator-project").unwrap_err().code, "invalid_argument");
+        assert_eq!(task_target_refs(&json!({"targetRefs":[{"entityId":"x","entityKind":"model","previewId":"p"}]}), "creator-project").unwrap_err().code, "invalid_argument");
+        assert_eq!(task_target_refs(&json!({"targetRefs":"barrier-3"}), "creator-project").unwrap_err().code, "invalid_argument");
+        assert_eq!(task_target_refs(&json!({"targetRefs":[{"entityId":"x","entityKind":"model","previewId":"p","projectRevision":"3"}]}), "creator-project").unwrap_err().code, "invalid_argument");
         let many: Vec<_> = (0..9).map(|index| json!({"entityId":format!("e{index}"),"entityKind":"model","previewId":"p","projectRevision":1})).collect();
-        assert_eq!(task_target_refs(&json!({"targetRefs":many})).unwrap_err().code, "invalid_argument");
+        assert_eq!(task_target_refs(&json!({"targetRefs":many}), "creator-project").unwrap_err().code, "invalid_argument");
     }
 
     /// 权威源夹具：project-1（rev 3，绑定 city-1，scene 对象 taxi/barrier-3）、
@@ -3248,6 +3540,287 @@ mod tests {
     fn unknown_session_fails_closed() {
         let home = temp_home();
         assert_eq!(session_status(&home, &json!({"sessionId":"csession-missing"})).unwrap_err().code, "creator_session_not_found");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    // ── PR10：code-game 工件接入 Studio Task ────────────────────────────
+
+    /// 基线工作区夹具（与 PR02/PR09 测试同款形状：src/index.ts +
+    /// game.manifest.json + workspace.json 注册表），返回基线摘要。
+    fn code_game_workspace_fixture(home: &Path, workspace_id: &str) -> String {
+        let workspace = home.join("code-games/workspaces").join(workspace_id);
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        std::fs::write(workspace.join("src/index.ts"), "export default 0;\n").unwrap();
+        std::fs::write(workspace.join("game.manifest.json"), r#"{"gameId":"community.test"}"#).unwrap();
+        let revision = super::super::creator_code_workspace::digest_workspace(&workspace).unwrap();
+        super::super::creator_code_workspace::write_meta(&workspace, &super::super::creator_code_workspace::WorkspaceMeta {
+            workspace_id: workspace_id.into(), project_id: "project-code".into(), game_id: "community.test".into(),
+            title: "Test".into(), template: "hello-city".into(), created_at_ms: 1, revision: revision.clone(),
+            operation_id: None,
+        }).unwrap();
+        revision
+    }
+
+    /// sealed 候选构建夹具：builder 未在 Rust 测试中执行，手工构造 builder 落盘的
+    /// build.json 形状（与 workspace/candidate 层测试同惯例）。
+    fn seal_candidate_build(home: &Path, candidate_id: &str, candidate_revision: &str) -> String {
+        let build_id = format!("{}{}", super::super::creator_code_workspace::random_hex(32), super::super::creator_code_workspace::random_hex(32));
+        let build = home.join("code-games/builds").join(&build_id);
+        std::fs::create_dir_all(&build).unwrap();
+        for file in ["game.js", "manifest.json"] { std::fs::write(build.join(file), b"{}").unwrap(); }
+        std::fs::write(build.join("build.json"), json!({
+            "buildId":build_id,"gameId":"community.test",
+            "sourceRevision":format!("candidate:{candidate_id}:{candidate_revision}")}).to_string()).unwrap();
+        build_id
+    }
+
+    /// sealed 基线构建夹具（workspace: 前缀；供 baseBuildId 锚定与「非候选构建」反例）。
+    fn seal_workspace_build(home: &Path, workspace_id: &str, revision: &str) -> String {
+        let build_id = format!("{}{}", super::super::creator_code_workspace::random_hex(32), super::super::creator_code_workspace::random_hex(32));
+        let build = home.join("code-games/builds").join(&build_id);
+        std::fs::create_dir_all(&build).unwrap();
+        for file in ["game.js", "manifest.json"] { std::fs::write(build.join(file), b"{}").unwrap(); }
+        std::fs::write(build.join("build.json"), json!({
+            "buildId":build_id,"gameId":"community.test",
+            "sourceRevision":format!("workspace:{workspace_id}:{revision}")}).to_string()).unwrap();
+        build_id
+    }
+
+    /// 通过 PR09 候选工作流 fork 候选并写入改动，返回（candidateId, 候选摘要）。
+    fn fork_and_edit_candidate(home: &Path, workspace_id: &str, base: &str, operation_id: &str) -> (String, String) {
+        let created = super::super::creator_code_candidate::run("creator_code_candidate_create",
+            &json!({"workspaceId":workspace_id,"expectedBaseRevision":base,"operationId":operation_id}), home, true).unwrap();
+        let candidate_id = created["data"]["candidateId"].as_str().unwrap().to_owned();
+        let written = super::super::creator_code_workspace::run("creator_code_file_write",
+            &json!({"workspaceId":workspace_id,"candidateId":candidate_id,"relativePath":"src/index.ts",
+                "content":"export default 1;\n","expectedRevision":base}), home, true).unwrap();
+        let candidate_revision = written["data"]["candidateRevision"].as_str().unwrap().to_owned();
+        (candidate_id, candidate_revision)
+    }
+
+    /// 落一条 verdict=passed 的无头测试记录（PR06 记录形状）。
+    fn record_passing_test(home: &Path, build_id: &str, candidate_revision: &str, candidate_id: &str) {
+        super::super::creator_code_workspace::write_test_record(home, build_id, candidate_revision, 7, 600,
+            &super::super::creator_code_workspace::CodeTestOutcome { ok: true, source: &json!({"source":"synthetic"}), verdict: &json!({"executionOk":true,"verdict":"passed"}) },
+            Some(candidate_id)).unwrap();
+    }
+
+    fn code_game_goal(session_id: &str, operation_id: &str, workspace_id: &str, digest: &str) -> Value {
+        json!({"sessionId":session_id,"goal":"给塔防加暂停","humanRequest":"在候选里给塔防加暂停按钮",
+            "artifact":{"kind":"code-game","workspaceId":workspace_id,"expectedRevision":digest},
+            "acceptanceCriteria":[
+                {"criterionId":"code-build","description":"候选构建成功","requiredEvidenceKind":"build"},
+                {"criterionId":"code-test","description":"无头测试通过","requiredEvidenceKind":"test"},
+                {"criterionId":"manual-review","description":"人工审阅","requiredEvidenceKind":"human-note"}],
+            "operationId":operation_id})
+    }
+
+    fn code_game_plan(task_id: &str, revision: u64, operation_id: &str, digest: &str) -> Value {
+        json!({"taskId":task_id,"expectedPlanRevision":revision,"expectedArtifactRevision":digest,"operationId":operation_id,
+            "steps":[{"stepId":"code-candidate","title":"候选内实现改动","kind":"change"}]})
+    }
+
+    /// PR10 全链路（pull 模式）：create（文件系统摘要 CAS）→ plan（摘要形态 CAS）
+    /// → claim（build/test 判据闸 + 候选工作流指引）→ 候选链构建与测试 → submit
+    /// 凭 buildId 过真实工作闸 → awaiting-review + host-observed 证据 → 人工验收。
+    /// 陈旧摘要在 create/plan 双双被拒；基线漂移后的提交被 CAS 拒绝。
+    #[test]
+    fn code_game_task_flow_verifies_the_candidate_build_chain() {
+        let home = temp_home();
+        let workspace_id = "gws-0123456789abcdef";
+        let base = code_game_workspace_fixture(&home, workspace_id);
+        let session = session_open(&home, &json!({"agentId":"studio-local"})).unwrap();
+        let session_id = session["data"]["sessionId"].as_str().unwrap();
+        // create：陈旧摘要在创建即被拒（文件系统 CAS）。
+        let stale_goal = code_game_goal(session_id, "cg-create-stale", workspace_id, &"0".repeat(64));
+        assert_eq!(task_create(&home, &stale_goal).unwrap_err().code, "revision_conflict");
+        // create：合法摘要 + targetRefs（工作区文件引用）原样入库回显；伪造文件在
+        // create 即被拒（previewId 对 code-game 如实不要求）。
+        let mut goal = code_game_goal(session_id, "cg-create", workspace_id, &base);
+        goal["targetRefs"] = json!([{"entityId":"src/index.ts","entityKind":"code-file","projectRevision":base}]);
+        let created = task_create(&home, &goal).unwrap();
+        let task_id = created["taskId"].as_str().unwrap().to_owned();
+        assert_eq!(created["artifact"]["kind"], "code-game");
+        assert_eq!(created["artifact"]["expectedRevision"], json!(base));
+        assert_eq!(created["targetRefs"][0]["entityId"], json!("src/index.ts"));
+        assert_eq!(created["targetRefs"][0]["projectRevision"], json!(base));
+        assert!(created["targetRefs"][0].get("previewId").is_none(), "code-game 引用不带无处核对的 previewId");
+        let mut forged = code_game_goal(session_id, "cg-create-forged", workspace_id, &base);
+        forged["targetRefs"] = json!([{"entityId":"src/missing.ts","entityKind":"code-file","projectRevision":base}]);
+        assert_eq!(task_create(&home, &forged).unwrap_err().code, "creator_target_ref_not_found");
+        // plan：数字形态的 expectedArtifactRevision 与摘要身份不符 → revision_conflict。
+        let numeric_plan = json!({"taskId":&task_id,"expectedPlanRevision":1,"expectedArtifactRevision":3,"operationId":"cg-plan-num",
+            "steps":[{"stepId":"code-candidate","title":"候选内实现改动","kind":"change"}]});
+        assert_eq!(task_plan_submit(&home, &numeric_plan).unwrap_err().code, "revision_conflict");
+        task_plan_submit(&home, &code_game_plan(&task_id, 1, "cg-plan", &base)).unwrap();
+        task_plan_approve(&home, &json!({"taskId":&task_id,"planRevision":1,"expectedArtifactRevision":base,"operationId":"cg-approve"})).unwrap();
+        // claim：无 build/test 判据的 code-game 任务不可认领。
+        let mut preview_only = code_game_goal(session_id, "cg-create-preview", workspace_id, &base);
+        preview_only["acceptanceCriteria"] = json!([{"criterionId":"agent-preview","description":"Host preview","requiredEvidenceKind":"preview"}]);
+        let preview_task = task_create(&home, &preview_only).unwrap()["taskId"].as_str().unwrap().to_owned();
+        task_plan_submit(&home, &code_game_plan(&preview_task, 1, "cg-plan-preview", &base)).unwrap();
+        task_plan_approve(&home, &json!({"taskId":&preview_task,"planRevision":1,"expectedArtifactRevision":base,"operationId":"cg-approve-preview"})).unwrap();
+        assert_eq!(task_claim(&home, &json!({"taskId":&preview_task,"agentId":"agent-a","expectedPlanRevision":1,"expectedArtifactRevision":base,"operationId":"cg-claim-preview"})).unwrap_err().code, "creator_task_acceptance_missing");
+        // claim：合法任务进入 executing，指引换成候选工作流。
+        let claimed = task_claim(&home, &json!({"taskId":&task_id,"agentId":"agent-a","expectedPlanRevision":1,"expectedArtifactRevision":base,"operationId":"cg-claim"})).unwrap();
+        assert_eq!(claimed["phase"], "executing");
+        assert!(claimed["next"]["steps"][0].as_str().unwrap().contains("creator_code_candidate_create"));
+        // 候选工作流（真实 PR09 面）：fork → 候选内编辑 → sealed 构建 → 通过无头测试。
+        let (candidate_id, candidate_revision) = fork_and_edit_candidate(&home, workspace_id, &base, "cg-cand");
+        let build_id = seal_candidate_build(&home, &candidate_id, &candidate_revision);
+        record_passing_test(&home, &build_id, &candidate_revision, &candidate_id);
+        // submit：宿主核对构建链 + 测试记录（都是宿主自有状态，不是 Agent 自述）。
+        let submitted = task_submit_result(&home, &json!({"taskId":&task_id,"agentId":"agent-a","planRevision":1,
+            "expectedArtifactRevision":base,"summary":"候选构建与测试通过","buildId":build_id,"operationId":"cg-submit"})).unwrap();
+        assert_eq!(submitted["phase"], "awaiting-review");
+        assert_eq!(submitted["proposedChangeSetId"], json!(build_id));
+        let evidence = submitted["evidence"].as_array().unwrap();
+        let build_row = evidence.iter().find(|row| row["criterionId"] == "code-build").unwrap();
+        assert_eq!(build_row["kind"], "build");
+        assert_eq!(build_row["trustLevel"], "host-observed");
+        assert_eq!(build_row["data"]["candidateId"], json!(candidate_id));
+        assert_eq!(build_row["data"]["verdict"], "passed");
+        assert!(evidence.iter().any(|row| row["criterionId"] == "code-test" && row["kind"] == "test" && row["trustLevel"] == "host-observed"));
+        // 人工验收：manual-review 判据仍需真人证据。
+        assert_eq!(task_review_accept(&home, &json!({"taskId":&task_id,"planRevision":1,"expectedArtifactRevision":base,"reviewerNote":"ok","operationId":"cg-accept-early"})).unwrap_err().code, "creator_task_evidence_required");
+        task_evidence_append(&home, &json!({"taskId":&task_id,"planRevision":1,"expectedArtifactRevision":base,
+            "criterionId":"manual-review","kind":"human-note","trustLevel":"creator-declared","summary":"reviewed","operationId":"cg-note"})).unwrap();
+        let accepted = task_review_accept(&home, &json!({"taskId":&task_id,"planRevision":1,"expectedArtifactRevision":base,"reviewerNote":"accept","operationId":"cg-accept"})).unwrap();
+        assert_eq!(accepted["phase"], "accepted");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// PR10 真实工作闸的反例：非候选构建（workspace: 前缀）、测试未通过、候选被
+    /// 丢弃、提交时基线已漂移——全部结构化拒绝，绝不采信 Agent 自述。
+    #[test]
+    fn code_game_submit_rejects_unverified_work() {
+        let home = temp_home();
+        let workspace_id = "gws-0123456789abcdef";
+        let base = code_game_workspace_fixture(&home, workspace_id);
+        let session = session_open(&home, &json!({"agentId":"studio-local"})).unwrap();
+        let session_id = session["data"]["sessionId"].as_str().unwrap();
+        let claimed_task = |operation_id: &str| -> String {
+            let created = task_create(&home, &code_game_goal(session_id, &format!("{operation_id}-create"), workspace_id, &base)).unwrap();
+            let task_id = created["taskId"].as_str().unwrap().to_owned();
+            task_plan_submit(&home, &code_game_plan(&task_id, 1, &format!("{operation_id}-plan"), &base)).unwrap();
+            task_plan_approve(&home, &json!({"taskId":&task_id,"planRevision":1,"expectedArtifactRevision":base,"operationId":format!("{operation_id}-approve")})).unwrap();
+            task_claim(&home, &json!({"taskId":&task_id,"agentId":"agent-a","expectedPlanRevision":1,"expectedArtifactRevision":base,"operationId":format!("{operation_id}-claim")})).unwrap();
+            task_id
+        };
+        let submit = |task_id: &str, build_id: &str, operation_id: &str| task_submit_result(&home, &json!({"taskId":task_id,"agentId":"agent-a","planRevision":1,
+            "expectedArtifactRevision":base,"summary":"x","buildId":build_id,"operationId":operation_id}));
+        // 1) 非候选构建（workspace: 前缀）：带不进新工作 → workspace_build_mismatch。
+        let baseline_build = seal_workspace_build(&home, workspace_id, &base);
+        let task = claimed_task("cg-rej-baseline");
+        assert_eq!(submit(&task, &baseline_build, "cg-rej-baseline-submit").unwrap_err().code, "workspace_build_mismatch");
+        task_cancel(&home, &json!({"taskId":&task,"operationId":"cg-rej-baseline-cancel"})).unwrap();
+        // 2) 测试未通过：verdict=failed → creator_task_test_not_passed。
+        let task = claimed_task("cg-rej-failed");
+        let (candidate_id, candidate_revision) = fork_and_edit_candidate(&home, workspace_id, &base, "cg-rej-failed-cand");
+        let build_id = seal_candidate_build(&home, &candidate_id, &candidate_revision);
+        super::super::creator_code_workspace::write_test_record(&home, &build_id, &candidate_revision, 7, 600,
+            &super::super::creator_code_workspace::CodeTestOutcome { ok: true, source: &json!({"source":"synthetic"}), verdict: &json!({"executionOk":true,"verdict":"failed","verdictReason":"assertion"}) },
+            Some(&candidate_id)).unwrap();
+        assert_eq!(submit(&task, &build_id, "cg-rej-failed-submit").unwrap_err().code, "creator_task_test_not_passed");
+        task_cancel(&home, &json!({"taskId":&task,"operationId":"cg-rej-failed-cancel"})).unwrap();
+        // 3) 无测试记录 → not_found。
+        let task = claimed_task("cg-rej-untested");
+        let (candidate_id, candidate_revision) = fork_and_edit_candidate(&home, workspace_id, &base, "cg-rej-untested-cand");
+        let build_id = seal_candidate_build(&home, &candidate_id, &candidate_revision);
+        assert_eq!(submit(&task, &build_id, "cg-rej-untested-submit").unwrap_err().code, "not_found");
+        task_cancel(&home, &json!({"taskId":&task,"operationId":"cg-rej-untested-cancel"})).unwrap();
+        // 4) 候选被丢弃后再提交 → creator_candidate_discarded。
+        let task = claimed_task("cg-rej-discard");
+        let (candidate_id, candidate_revision) = fork_and_edit_candidate(&home, workspace_id, &base, "cg-rej-discard-cand");
+        let build_id = seal_candidate_build(&home, &candidate_id, &candidate_revision);
+        record_passing_test(&home, &build_id, &candidate_revision, &candidate_id);
+        super::super::creator_code_candidate::run("creator_code_candidate_discard", &json!({"candidateId":candidate_id}), &home, true).unwrap();
+        assert_eq!(submit(&task, &build_id, "cg-rej-discard-submit").unwrap_err().code, "creator_candidate_discarded");
+        task_cancel(&home, &json!({"taskId":&task,"operationId":"cg-rej-discard-cancel"})).unwrap();
+        // 5) 提交时基线已漂移：artifact CAS 先拒（候选尚未提交，基线不该动）。
+        let task = claimed_task("cg-rej-drift");
+        let (candidate_id, candidate_revision) = fork_and_edit_candidate(&home, workspace_id, &base, "cg-rej-drift-cand");
+        let build_id = seal_candidate_build(&home, &candidate_id, &candidate_revision);
+        record_passing_test(&home, &build_id, &candidate_revision, &candidate_id);
+        super::super::creator_code_workspace::run("creator_code_file_write",
+            &json!({"workspaceId":workspace_id,"relativePath":"src/index.ts","content":"export default 2;\n","expectedRevision":base}), &home, true).unwrap();
+        assert_eq!(submit(&task, &build_id, "cg-rej-drift-submit").unwrap_err().code, "revision_conflict");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// PR10 push 执行：执行器回块指认的 buildId 由宿主按同一真实工作闸核对；
+    /// 不指认 buildId 的回块 → preview_required，任务如实失败。
+    #[test]
+    fn code_game_push_execute_verifies_the_named_build() {
+        let home = temp_home();
+        let workspace_id = "gws-0123456789abcdef";
+        let base = code_game_workspace_fixture(&home, workspace_id);
+        let session = session_open(&home, &json!({"agentId":"studio-local"})).unwrap();
+        let session_id = session["data"]["sessionId"].as_str().unwrap();
+        let created = task_create(&home, &code_game_goal(session_id, "cg-exec-create", workspace_id, &base)).unwrap();
+        let task_id = created["taskId"].as_str().unwrap().to_owned();
+        task_plan_submit(&home, &code_game_plan(&task_id, 1, "cg-exec-plan", &base)).unwrap();
+        task_plan_approve(&home, &json!({"taskId":&task_id,"planRevision":1,"expectedArtifactRevision":base,"operationId":"cg-exec-approve"})).unwrap();
+        // 候选链先就绪（真实工作已经发生），执行器只负责如实指认。
+        let (candidate_id, candidate_revision) = fork_and_edit_candidate(&home, workspace_id, &base, "cg-exec-cand");
+        let build_id = seal_candidate_build(&home, &candidate_id, &candidate_revision);
+        record_passing_test(&home, &build_id, &candidate_revision, &candidate_id);
+        let executor = super::super::creator_agent_executor::tests::FakeExecutor::code_game(&build_id);
+        let executed = task_execute_with_executor(&home, &json!({"taskId":&task_id,"expectedPlanRevision":1,"expectedArtifactRevision":base,"operationId":"cg-exec-run"}), &executor).unwrap();
+        assert_eq!(executed["phase"], "awaiting-review");
+        assert_eq!(executed["proposedChangeSetId"], json!(build_id));
+        assert_eq!(executed["execution"]["buildId"], json!(build_id));
+        assert!(executed["evidence"].as_array().unwrap().iter().all(|row| row["trustLevel"] == "host-observed"));
+        // 不指认 buildId 的执行器回块：任务如实失败（preview_required）。
+        let mut preview_only = code_game_goal(session_id, "cg-exec-plain-create", workspace_id, &base);
+        preview_only["acceptanceCriteria"] = json!([{"criterionId":"code-build","description":"build","requiredEvidenceKind":"build"}]);
+        let plain_task = task_create(&home, &preview_only).unwrap()["taskId"].as_str().unwrap().to_owned();
+        task_plan_submit(&home, &code_game_plan(&plain_task, 1, "cg-exec-plain-plan", &base)).unwrap();
+        task_plan_approve(&home, &json!({"taskId":&plain_task,"planRevision":1,"expectedArtifactRevision":base,"operationId":"cg-exec-plain-approve"})).unwrap();
+        let plain_executor = super::super::creator_agent_executor::tests::FakeExecutor::success();
+        assert_eq!(task_execute_with_executor(&home, &json!({"taskId":&plain_task,"expectedPlanRevision":1,"expectedArtifactRevision":base,"operationId":"cg-exec-plain-run"}), &plain_executor).unwrap_err().code, "preview_required");
+        assert_eq!(task_payload(&home, &plain_task).unwrap()["phase"], "failed");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// PR10 targetRefs 权威校验（code-game）：entityId 必须是工作区里真实存在的
+    /// 相对路径文件，projectRevision 必须等于任务绑定摘要；previewId 如实跳过
+    /// （code-preview 窗口不在宿主场景台账内），宿主缺席不再构成 fail-closed。
+    #[test]
+    fn code_game_target_refs_are_checked_against_the_workspace_filesystem() {
+        let home = temp_home();
+        let workspace_id = "gws-0123456789abcdef";
+        let base = code_game_workspace_fixture(&home, workspace_id);
+        let artifact = json!({"kind":"code-game","workspaceId":workspace_id,"expectedRevision":base});
+        // 合法引用：真实文件 + 摘要一致；无 previewId 也放行（与 project 路径的
+        // 宿主缺席 fail-closed 不同，code-game 没有那道台账）。
+        task_check_target_refs(&home, &artifact, &json!([{"entityId":"src/index.ts","entityKind":"code-file","projectRevision":base}])).unwrap();
+        // 摘要漂移。
+        assert_eq!(task_check_target_refs(&home, &artifact, &json!([{"entityId":"src/index.ts","entityKind":"code-file","projectRevision":"0".repeat(64)}])).unwrap_err().code, "creator_target_ref_stale");
+        // entityKind 与 code-game 工件域不符。
+        assert_eq!(task_check_target_refs(&home, &artifact, &json!([{"entityId":"src/index.ts","entityKind":"scene-model","projectRevision":base}])).unwrap_err().code, "creator_target_ref_scope_conflict");
+        // 文件不在权威工作区。
+        assert_eq!(task_check_target_refs(&home, &artifact, &json!([{"entityId":"src/missing.ts","entityKind":"code-file","projectRevision":base}])).unwrap_err().code, "creator_target_ref_not_found");
+        // 路径注入形状（../ 等）不是工作区文件。
+        assert_eq!(task_check_target_refs(&home, &artifact, &json!([{"entityId":"../escape.ts","entityKind":"code-file","projectRevision":base}])).unwrap_err().code, "creator_target_ref_not_found");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// baseBuildId 锚定：必须是密封了该工作区该摘要的构建；锚错按 revision_conflict。
+    #[test]
+    fn code_game_base_build_id_must_seal_the_bound_revision() {
+        let home = temp_home();
+        let workspace_id = "gws-0123456789abcdef";
+        let base = code_game_workspace_fixture(&home, workspace_id);
+        let sealed = seal_workspace_build(&home, workspace_id, &base);
+        let ok = json!({"kind":"code-game","workspaceId":workspace_id,"expectedRevision":base,"baseBuildId":sealed});
+        task_check_artifact(&home, &ok).unwrap();
+        // 锚定的构建封的是别的摘要 → revision_conflict。
+        let drifted = seal_workspace_build(&home, workspace_id, &"9".repeat(64));
+        assert_eq!(task_check_artifact(&home, &json!({"kind":"code-game","workspaceId":workspace_id,"expectedRevision":base,"baseBuildId":drifted})).unwrap_err().code, "revision_conflict");
+        // 锚定的构建属于别的密封身份（candidate 前缀）→ build_workspace_revision 拒绝。
+        let foreign = seal_candidate_build(&home, "candidate-0123456789abcdef", &base);
+        assert_eq!(task_check_artifact(&home, &json!({"kind":"code-game","workspaceId":workspace_id,"expectedRevision":base,"baseBuildId":foreign})).unwrap_err().code, "workspace_build_mismatch");
         std::fs::remove_dir_all(home).unwrap();
     }
 }

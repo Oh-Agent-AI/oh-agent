@@ -6,7 +6,14 @@ import {
   type StudioCapabilityStatus, type StudioConnection, type StudioSessionHistory, type StudioTargetRef, type StudioTask, type StudioTaskEvent,
 } from "../../contracts/studioTask";
 
-export type TaskScope = Readonly<{ kind: "creator-project"; projectId: string; revision: number } | { kind: "creator-city"; cityId: string; revision: number } | { kind: "creator-story"; storyId: string; revision: number }> | null;
+/**
+ * 任务作用域（PR10 起 4 种）。code-game 的 revision 是 64-hex 工作区内容摘要；
+ * 会话面（creator.session）仍按 project/city 作用域建模，code-game 会话作用域
+ * 扩展与 Studio 面板绑定是 PR14 工作——本 hook 已能承载该作用域，但 UI 尚不构造它。
+ */
+export type TaskScope = Readonly<{ kind: "creator-project"; projectId: string; revision: number } | { kind: "creator-city"; cityId: string; revision: number } | { kind: "creator-story"; storyId: string; revision: number } | { kind: "code-game"; workspaceId: string; revision: string }> | null;
+const taskScopeId = (scope: NonNullable<TaskScope>): string =>
+  scope.kind === "creator-city" ? scope.cityId : scope.kind === "creator-story" ? scope.storyId : scope.kind === "code-game" ? scope.workspaceId : scope.projectId;
 export type StudioSubscriptionStatus = "idle" | "connecting" | "live" | "reconnecting";
 
 export function useStudioTasks(request: CreatorRequest, scope: TaskScope, enabled = true, hasIsolatedViewport = false, sessionId: string | null = null,
@@ -72,7 +79,7 @@ export function useStudioTasks(request: CreatorRequest, scope: TaskScope, enable
     if (!enabled || !scope) { setSessionStatus("unavailable"); return; }
     setSessionStatus("loading");
     let heartbeat: number | undefined;
-    const scopeId = scope.kind === "creator-city" ? scope.cityId : scope.kind === "creator-story" ? scope.storyId : scope.projectId;
+    const scopeId = taskScopeId(scope);
     const refreshConnections = async (sessionId: string) => {
       const [connectionRows, capabilityRows] = await Promise.all([
         request("creator.connection.status", {}), request("creator.capabilities.status", {}),
@@ -85,7 +92,11 @@ export function useStudioTasks(request: CreatorRequest, scope: TaskScope, enable
     void (async () => {
       try {
         const opened = await request<{ sessionId: string; jobs?: unknown[] }>("creator.session.open", {
-          agentId: "creator-studio-local", ...(scope.kind === "creator-city" ? { cityId: scopeId } : { projectId: scopeId }), ...(sessionId ? { sessionId } : {}),
+          agentId: "creator-studio-local",
+          // code-game 会话作用域扩展是 PR14 工作：先按无 scope 会话打开（宿主
+          // session 作用域仍只建模 project/city）。
+          ...(scope.kind === "creator-city" ? { cityId: scopeId } : scope.kind === "creator-project" ? { projectId: scopeId } : {}),
+          ...(sessionId ? { sessionId } : {}),
           executor: "studio", transport: "studio-webview",
           capabilities: ["studio.webview", "preview.scene", "preview.game", "operation.review"],
         });
@@ -118,7 +129,7 @@ export function useStudioTasks(request: CreatorRequest, scope: TaskScope, enable
       }
     })();
     return () => { generationRef.current += 1; if (heartbeat !== undefined) window.clearInterval(heartbeat); };
-  }, [enabled, scope?.kind, scope && ("projectId" in scope ? scope.projectId : "cityId" in scope ? scope.cityId : scope.storyId), sessionId, request]);
+  }, [enabled, scope?.kind, scope && taskScopeId(scope), sessionId, request]);
 
   useEffect(() => {
     const taskId = task?.taskId;
@@ -158,17 +169,24 @@ export function useStudioTasks(request: CreatorRequest, scope: TaskScope, enable
     finally { setBusy(false); }
   };
   /** 目标 → 建任务 + 提交默认计划；返回已提交的任务供快速通道继续批准/执行。
-   *  targetRefs 按 P1-5/PR03 契约透传（线上扁平 ref 形状不变；权威校验在宿主）。 */
+   *  targetRefs 按 P1-5/PR03 契约透传（线上扁平 ref 形状不变；权威校验在宿主）。
+   *  PR10：code-game 工件携带 workspaceId + 内容摘要，验收判据是 build/test
+   * （代码工具族的真实工作面），不是宿主 Preview。 */
   const planSubmit = async (goal: string, targetRefs?: readonly StudioTargetRef[]): Promise<StudioTask> => {
     const requestText = normalizeStudioGoal(goal);
     const generation = generationRef.current;
     if (!scope || !sessionIdRef.current || !requestText) throw new Error("creator_task_scope_unavailable");
-    const scopeId = scope.kind === "creator-city" ? scope.cityId : scope.kind === "creator-story" ? scope.storyId : scope.projectId;
-    const artifact = { kind: scope.kind, [scope.kind === "creator-city" ? "cityId" : scope.kind === "creator-story" ? "storyId" : "projectId"]: scopeId, expectedRevision: scope.revision };
+    const artifact = scope.kind === "code-game"
+      ? { kind: scope.kind, workspaceId: scope.workspaceId, expectedRevision: scope.revision }
+      : { kind: scope.kind, [scope.kind === "creator-city" ? "cityId" : scope.kind === "creator-story" ? "storyId" : "projectId"]: taskScopeId(scope), expectedRevision: scope.revision };
     const created = parseStudioTask(await request("creator.task.create", {
       sessionId: sessionIdRef.current, goal: requestText, humanRequest: requestText, artifact,
       ...(targetRefs && targetRefs.length > 0 ? { targetRefs: targetRefs.map(item => ({ ...item })) } : {}),
-      acceptanceCriteria: [
+      acceptanceCriteria: scope.kind === "code-game" ? [
+        { criterionId: "code-build", description: "候选构建成功（sealed buildId 由宿主核对）", requiredEvidenceKind: "build" },
+        { criterionId: "code-test", description: "无头测试 verdict=passed", requiredEvidenceKind: "test" },
+        { criterionId: "manual-review", description: "人工审阅真实证据并确认结果", requiredEvidenceKind: "human-note" },
+      ] : [
         { criterionId: "agent-preview", description: "必须生成真实 Preview 证据", requiredEvidenceKind: "preview" },
         { criterionId: "manual-review", description: "人工审阅真实证据并确认结果", requiredEvidenceKind: "human-note" },
       ], operationId: operation("goal-create"),
