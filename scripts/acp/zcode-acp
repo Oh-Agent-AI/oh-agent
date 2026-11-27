@@ -1,0 +1,158 @@
+#!/usr/bin/env node
+// zcode-acp:把 ZCode CLI 的 headless prompt(`zcode -p`)包成最小 ACP v1 agent,
+// 供 Creator Studio 的 ACP 执行器驱动。与 claude-code-acp 同位:
+//   initialize / session/new / session/prompt / session/update 流 / permission 拒绝。
+// 会话使用 --mode plan(只分析不落盘),诚实闸由宿主 Preview 面把守。
+const { spawn } = require("node:child_process");
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+
+const ZCODE = process.env.ZCODE_ACP_ZCODE_BIN ?? path.join(process.env.HOME ?? os.homedir(), ".local/bin/zcode");
+const ORIGINAL_HOME = process.env.HOME ?? os.homedir();
+const CREDENTIALS_HOME = process.env.ZCODE_DATA_BASE_DIR ?? ORIGINAL_HOME;
+const sessions = new Map(); // sessionId -> isolated workspace
+
+const reply = id => payload => {
+  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, ...payload }) + "\n");
+};
+const notify = update => {
+  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { sessionId: current, update } }) + "\n");
+};
+
+let current = null;
+let buffer = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", chunk => {
+  buffer += chunk;
+  let index;
+  while ((index = buffer.indexOf("\n")) >= 0) {
+    const line = buffer.slice(0, index).trim();
+    buffer = buffer.slice(index + 1);
+    if (line) handle(line);
+  }
+});
+process.stdin.on("end", () => process.exit(0));
+function creatorMcpConfig(servers) {
+  // Host supplies only its scoped Creator MCP. Do not accept arbitrary child
+  // processes from ACP session/new input.
+  const entry = Array.isArray(servers) ? servers.find(item => item?.name === "creator") : null;
+  if (!entry || path.basename(entry.command ?? "") !== "agent-vitals" ||
+      JSON.stringify(entry.args ?? []) !== JSON.stringify(["data-mcp", "serve"])) return {};
+  const env = {};
+  for (const item of Array.isArray(entry.env) ? entry.env : []) {
+    if (item?.name === "AGENT_VITALS_HOME" && typeof item.value === "string" && path.isAbsolute(item.value)) {
+      env.AGENT_VITALS_HOME = item.value;
+    }
+  }
+  if (!env.AGENT_VITALS_HOME) return {};
+  return { creator: { type: "stdio", command: entry.command, args: entry.args, env } };
+}
+
+function createWorkspace(servers) {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "oh-agent-zcode-acp-"));
+  const configDir = path.join(workspace, ".zcode");
+  fs.mkdirSync(configDir, { mode: 0o700 });
+  const userConfigDir = path.join(configDir, "cli");
+  fs.mkdirSync(userConfigDir, { mode: 0o700 });
+  let userConfig = {};
+  try {
+    userConfig = JSON.parse(fs.readFileSync(path.join(ORIGINAL_HOME, ".zcode", "cli", "config.json"), "utf8"));
+    if (!userConfig || typeof userConfig !== "object" || Array.isArray(userConfig)) userConfig = {};
+  } catch {}
+  // Keep the user's model preferences, but never inherit their unrelated MCP tools.
+  delete userConfig.mcp;
+  fs.writeFileSync(path.join(userConfigDir, "config.json"), JSON.stringify(userConfig), { mode: 0o600 });
+  fs.writeFileSync(path.join(configDir, "config.json"), JSON.stringify({
+    mcp: { servers: creatorMcpConfig(servers) },
+  }), { mode: 0o600 });
+  return workspace;
+}
+
+function handle(line) {
+  let msg;
+  try { msg = JSON.parse(line); } catch { return; }
+  const { id, method, params } = msg;
+  if (method === "initialize") {
+    reply(id)({ result: { protocolVersion: 1, agentCapabilities: { promptCapabilities: {} }, authMethods: [],
+      agentInfo: { name: "zcode-acp", title: "ZCode CLI", version: "1.0.0" } } });
+    return;
+  }
+  if (method === "authenticate") {
+    reply(id)({ error: { code: -32603, message: "Internal error", data: { details: "Method not implemented; ZCode uses its own login." } } });
+    return;
+  }
+  if (method === "session/new") {
+    const sessionId = `zcode-${crypto.randomUUID()}`;
+    sessions.set(sessionId, { mcpServers: params?.mcpServers ?? [] });
+    reply(id)({ result: { sessionId, modes: {
+      currentModeId: "plan",
+      availableModes: [{ id: "plan", name: "受限提案（只读）", description: "ZCode 每轮均以 --mode plan 运行。" }],
+    } } });
+    return;
+  }
+  if (method === "session/set_mode") {
+    if (params?.modeId !== "plan" || !sessions.has(params?.sessionId)) {
+      reply(id)({ error: { code: -32602, message: "Only the plan mode is supported." } });
+    } else {
+      reply(id)({ result: { modeId: "plan" } });
+    }
+    return;
+  }
+  if (method === "session/prompt") {
+    current = params?.sessionId ?? "";
+    const session = sessions.get(current);
+    if (!session) {
+      reply(id)({ error: { code: -32602, message: "Unknown session." } });
+      return;
+    }
+    const workspace = createWorkspace(session.mcpServers);
+    const text = (params?.prompt ?? []).filter(part => part?.type === "text").map(part => part.text).join("\n");
+    runPrompt(id, workspace, text);
+    return;
+  }
+  if (method === "session/request_permission") {
+    reply(id)({ result: { outcome: { outcome: "cancelled" } } });
+    return;
+  }
+  if (method?.startsWith("fs/") || method?.startsWith("terminal/") || method === "elicitation/create") {
+    reply(id)({ error: { code: -32601, message: "Client capabilities not enabled; use the creator MCP tools." } });
+    return;
+  }
+  if (id !== undefined) reply(id)({ error: { code: -32601, message: `Method not found: ${method}` } });
+}
+
+function runPrompt(id, workspace, text) {
+  const cleanup = () => { try { fs.rmSync(workspace, { recursive: true, force: true }); } catch {} };
+  const env = {};
+  for (const key of ["PATH", "USER", "TMPDIR", "LANG", "LC_ALL", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"]) {
+    if (process.env[key] !== undefined) env[key] = process.env[key];
+  }
+  env.HOME = workspace;
+  env.ZCODE_DATA_BASE_DIR = CREDENTIALS_HOME;
+  const child = spawn(ZCODE, ["-p", text, "--cwd", workspace, "--mode", "plan", "--verbose"],
+    { stdio: ["ignore", "pipe", "pipe"], cwd: workspace, env });
+  let stderrTail = "";
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", chunk => {
+    // 行级转发为 agent_message_chunk,流式呈现给 Studio 事件面。
+    notify({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: chunk } });
+  });
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", chunk => { stderrTail = (stderrTail + chunk).slice(-4000); });
+  child.on("error", error => {
+    cleanup();
+    reply(id)({ error: { code: -32603, message: `Internal error: ${error.message}` } });
+  });
+  child.on("exit", code => {
+    cleanup();
+    if (code === 0) reply(id)({ result: { stopReason: "end_turn" } });
+    else {
+      // 优先转发 "Cause:" 行（如 余额不足/登录失效），比 traceId 对创作者更有用。
+      const cause = stderrTail.split("\n").reverse().find(line => line.startsWith("Cause:"));
+      const detail = (cause ?? stderrTail.trim().split("\n").pop() ?? "").slice(0, 200);
+      reply(id)({ error: { code: -32603, message: `Internal error: zcode exited ${code}${detail ? ": " + detail : ""}` } });
+    }
+  });
+}

@@ -1,0 +1,5 @@
+#!/bin/sh
+# Studio ACP 通道 wrapper：GUI 进程 PATH 受限，这里补齐 claude/node 所在目录。
+# 可用环境变量覆盖：ACP_EXTRA_PATH（额外搜索目录）、ACP_CLAUDE_ACP_BIN（适配器路径）。
+export PATH="${ACP_EXTRA_PATH:-$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin}:$PATH"
+exec "${ACP_CLAUDE_ACP_BIN:-$HOME/.local/bin/claude-code-acp}" "$@"
