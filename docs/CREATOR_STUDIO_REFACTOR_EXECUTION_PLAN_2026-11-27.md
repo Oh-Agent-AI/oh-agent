@@ -39,7 +39,7 @@
 | 08 · Automated Visual Playtest | 隔离 Preview 自动试玩 | ✅ 完成（2026-11-28） | `0ab0b7b4` | 见 §4.9 |
 | 09 · Candidate Workspace | 基线隔离 + CAS 接受 | ✅ 完成（2026-11-28） | `f9047a00` | 见 §4.11 |
 | 10 · Code Game Task Adapter | StudioArtifactRef 统一 | ✅ 完成（2026-11-28） | `ef498f2b` | 见 §4.12 |
-| 11 · 有预算的自动修复 | 冻结验收标准 | 进行中 | — | — |
+| 11 · 有预算的自动修复 | 冻结验收标准 | ✅ 完成（2026-11-28） | `4c58ee3a` | 见 §4.13 |
 | 12 · Template Registry | 统一模板元数据 | 未开始 | — | — |
 | 13 · Binding Resolver/Migration | 绑定提案与迁移 | 未开始 | — | — |
 | 14 · Gallery/Remix/E2E | 纵向闭环 | 未开始 | — | — |
@@ -203,6 +203,29 @@ Tool spec 变更必须通过 `crates/agent-vitals-mcp/src/mcp/mod.rs` 的注册�
 - **测试**：MCP +7（pull 全链路含真实 PR09 候选 fork/编辑/提交、create/plan 的过期摘要拒绝、伪造 targetRef、submit 反例矩阵、push execute FakeExecutor、文件系统权威、baseBuildId 锚定）；UI +1（parse 规则含 5 键/坏 baseBuildId/project 带 baseBuildId 拒绝）。
 - **检查**：MCP 220（+7）、UI 136（+1）、clippy 干净、`git diff --check` 干净。
 - **残留（如实）**：① UI 面板 scope 接线推迟到 PR14（合同 + 控制器已就绪，`CreatorStudioApp.tsx` 与 code-game 会话 scope 未动）；② code-preview 与任务的绑定验证缺口（同上，宿主场景台账看不到 code-preview 窗口）；③ push 执行器无写权限（MCP 不带 `--allow-local-writes`），push execute 仅在候选构建+测试链已存在时成功——生产工作流走 pull 模式；④ 会话历史对 code-game 输出 null 修订号（线上兼容投影）；⑤ 8 个任务 spec 的 `expectedArtifactRevision` 类型放宽为 `["integer","string"]`。
+
+### 4.13 PR11 实施记录（`4c58ee3a`）与 Wave 3 边界全套检查
+
+**PR11（预算化自动修复 + 冻结验收标准）：**
+- **冻结护栏（强制而非文档）**：首轮执行冻结 `criteriaRevision = sha256({goal, acceptanceCriteria})`（task_hash 同配方）+ 快照 + 事件；`task_assert_criteria_intact` 每轮执行入口与两个提案工具现场重算 digest——任何绕过提案/审批的判据写入都会以 `creator_task_criteria_frozen` 结构化失败（直接 SQL 篡改测试验证）；唯一合规变更路径是 `creator_task_criteria_propose`（记录提案+digest+理由，不应用）→ `creator_task_criteria_approve`（digest 核验 + bump 版本 + 重冻结，人类决策事件）；修复循环结构性不持有两者。
+- **修复轮语义**：attempt = repair_rounds + 1（总尝试 = 1 + maxRounds，默认 3 为初版策略可配置 0..=5）；仅宿主验证失败进入 `repairing` 相位（执行器自身超时/崩溃/取消仍终态失败）；每轮失败落 repair_last_json（PR06 诊断：verdict/reason/断言摘录/buildId/候选链/测试记录 digest）+ 带轮次的 host-observed build/test 失败证据；执行器请求 `repair_diagnostics` + REPAIR ROUND 提示块（冻结红线："只有实现可改"）；候选在失败轮保持活跃（PR09：失败构建不提交），fork-or-reuse 由执行器按诊断决策。
+- **预算**：`repairPolicy {maxRounds 0..=5, wallClockMs, maxTokens}` create 时校验；第 2 次起的执行经预算闸（轮次/墙钟/token 门），耗尽 → 任务如实 `failed` + 结构化 failure_json + `creator_task_repair_budget_exhausted`——计划、候选、最后测试记录、逐轮证据全部保持可读；绝不静默放宽。墙钟从首轮 executing 起算（覆盖"先批准后冻结"边界）。Token 会计为诚实常量 0 的 hook（执行器层未向台账暴露用量），未造假。
+- **相位移交**：`plan_submit` 接受 `repairing`（用户修订路径），轮次/预算跨计划修订累计；`creator_jobs.status` 镜像 `repairing`。TS：`repairing` 相位 + `StudioTaskRepair` 宽松解析（旧宿主 → null）+ 面板修复状态行与决策卡 + SessionSidebar 标签。
+- **Schema**：`creator_studio_tasks` 7 列（pragma-check 迁移模式 + CREATE TABLE 同步）；无桌面改动；pull 模式（claim/submit）保持一次性验证（PR10 语义不变）。
+- **检查**：MCP 226（+6：冻结+护栏、修复轮诊断、maxRounds=0 与墙钟耗尽、提案/审批、策略校验）、UI 137（+1）、clippy 干净、`git diff --check` 干净。
+
+**Wave 3 边界全套检查（2026-11-28，全部通过）：**
+
+| 检查 | 结果 |
+|---|---|
+| `cargo test -p agent-vitals-mcp` | 226 passed / 0 failed |
+| `npm run typecheck --prefix apps/creator-studio/ui` | 干净 |
+| `npm test --prefix apps/creator-studio/ui` | 137 passed / 0 failed |
+| `packages/city-game-sdk` npm test + typecheck | 87 passed / typecheck 干净 |
+| `cargo clippy -p agent-vitals-mcp --all-targets -- -D warnings` | 干净 |
+| `git diff --check`（每次 Rust 提交前后） | 干净；未运行任何 Rust 格式化器 |
+
+**PR11 残留（如实）**：Token/成本会计待未来执行器集成（仅 hook）；criteria 提案/审批无 UI 面（仅 MCP 工具，面板不显示待审提案 digest）；pull 模式无修复循环；修复轮仅限 code-game（唯一有候选层的 artifact）；墙钟仅在修复轮入口强制（单轮内仍受执行器自身 600s 上限约束）。
 
 ## 5. 待真机验证项（自动化覆盖不到，最终 MVP 验收由用户在桌面构建执行）
 
