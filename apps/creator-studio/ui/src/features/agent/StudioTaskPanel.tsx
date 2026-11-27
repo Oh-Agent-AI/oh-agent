@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { canApproveTaskPlan, canCancelTask, canExecuteTask, canReviewTask, canReviseTaskPlan, isDefaultStudioPlan, normalizeStudioGoal, studioPhaseLabel, type StudioTargetRef, type StudioTaskPhase } from "../../contracts/studioTask";
+import { canApproveTaskPlan, canCancelTask, canContinueRepairTask, canExecuteTask, canReviewTask, canReviseTaskPlan, isDefaultStudioPlan, normalizeStudioGoal, studioPhaseLabel, type StudioTargetRef, type StudioTaskPhase } from "../../contracts/studioTask";
 import type { StudioTaskController } from "./useStudioTasks";
 import { AgentDecisionCard } from "./AgentDecisionCard";
 import { AgentErrorBanner } from "./AgentErrorBanner";
@@ -40,6 +40,10 @@ function taskErrorLabel(code: string): string {
       return "上一次保存仍待确认结果。请先重试确认保存。";
     case "executor_lost":
       return "Agent 进程已中断（宿主可能重启过）。可以恢复原指令重新发送。";
+    case "creator_task_repair_budget_exhausted":
+      return "修复预算已用完，任务仍未通过验收。可以在详情里查看每轮诊断与证据，修改目标后重新发送（验收标准不会被自动放宽）。";
+    case "creator_task_criteria_frozen":
+      return "验收标准已冻结：Agent 或工具试图绕过审批修改标准，已被拒绝。如需调整标准，请通过验收标准提案并由人工批准。";
     default:
       return code;
   }
@@ -200,6 +204,8 @@ export function StudioTaskPanel({ controller, goal, onGoalChange, projectReady, 
       {nextGoal && <small>输入区已有草稿。</small>}
     </AgentDecisionCard> : <>
       {!canApproveTaskPlan(task) && !canExecuteTask(task) && !canReviewTask(task) && <strong role="status">{studioPhaseLabel(task.phase as StudioTaskPhase)}</strong>}
+      {/* PR11：修复轮预算面（已用轮次/上限）就地可见；预算耗尽的任务在失败卡里给出诊断指引。 */}
+      {task.repair && task.repair.rounds > 0 && <p className="muted" role="status">修复轮 {task.repair.rounds}/{task.repair.maxRounds} 已记录{task.phase === "repairing" ? " · 上一轮验收未通过，可继续修复" : ""}</p>}
       {/* T3 activity-log 折叠纪律：最近一条过程摘要就地显示，完整历史在详情折叠。 */}
       {(task.phase === "executing" || task.phase === "validating") && (fold.latest || fold.foldCount > 0) &&
         <p className="agent-latest-event">已执行 {events.length} 步{fold.latest ? ` · 最近：${fold.latest}` : ""}</p>}
@@ -230,6 +236,15 @@ export function StudioTaskPanel({ controller, goal, onGoalChange, projectReady, 
     {task && canReviewTask(task) && !previewEvidence && <AgentDecisionCard title="验收任务">
       <label>人工验收意见<textarea aria-label="人工验收意见" value={reviewNote} disabled={busy} onChange={event => setReviewNote(event.target.value)} /></label>
       <div className="actions"><button disabled={busy || !reviewNote.trim()} onClick={() => void controller.acceptReview(reviewNote)}>接受任务</button><button className="secondary" disabled={busy || !reviewNote.trim()} onClick={() => void rejectReview(reviewNote)}>退回任务</button></div>
+    </AgentDecisionCard>}
+    {/* PR11：预算内修复轮——继续修复复用 execute（宿主按轮次/墙钟/token 预算闸裁决）；
+      验收标准已冻结，Agent 无法删改判据或测试用例。 */}
+    {task && canContinueRepairTask(task) && <AgentDecisionCard title="预算内自动修复">
+      <p>第 {task.repair?.rounds ?? 0} 轮验收未通过。验收标准已冻结，修复只能修改候选实现。</p>
+      <div className="actions">
+        <button disabled={busy || !studioOnline || chosenUnavailable} onClick={() => { void executeTask(executor, false); }}>继续修复</button>
+        <button className="secondary" disabled={busy} onClick={() => void revisePlan()}>退回计划</button>
+      </div>
     </AgentDecisionCard>}
     {task && canCancelTask(task) && <div className="agent-task-controls"><button className="secondary"
       disabled={stopPhase === "pending" || stopPhase === "landed" || (busy && task.phase !== "executing")}

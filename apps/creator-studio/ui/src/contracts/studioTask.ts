@@ -1,4 +1,4 @@
-export type StudioTaskPhase = "planning" | "awaiting-plan-approval" | "ready" | "executing" | "validating" | "awaiting-review" | "accepted" | "rejected" | "failed" | "cancelled" | "unknown";
+export type StudioTaskPhase = "planning" | "awaiting-plan-approval" | "ready" | "executing" | "validating" | "repairing" | "awaiting-review" | "accepted" | "rejected" | "failed" | "cancelled" | "unknown";
 
 export function normalizeStudioGoal(value: string) {
   return value.replace(/\p{Cc}+/gu, " ").trim();
@@ -35,6 +35,20 @@ export function studioTaskScopeId(task: Pick<StudioTask, "artifact">): string {
  * scope 表的 u64 修订号；code-game 的身份住在文件系统（workspaceId + 64-hex 工作
  * 区内容摘要，digest_workspace 配方），可选 baseBuildId 锚定基线密封构建。
  */
+/**
+ * PR11 预算化修复循环投影（旧宿主无此字段 → null）：rounds 是已授权修复轮数，
+ * maxRounds 是预算上限（默认 3、上限 5——初版策略）；lastFailure 是上一轮验收
+ * 复核失败的结构化事实（verdict/断言摘录/buildId/candidateId/testRecordDigest）。
+ * 验收标准冻结后只有人工批准的 criteria 提案流程能改它（criteriaRevision 变更）。
+ */
+export type StudioTaskRepair = Readonly<{
+  rounds: number;
+  maxRounds: number;
+  maxTokens: number | null;
+  wallClockMs: number | null;
+  startedAtMs: number | null;
+  lastFailure: unknown;
+}>;
 export type StudioTask = Readonly<{
   taskId: string;
   sessionId: string;
@@ -51,6 +65,8 @@ export type StudioTask = Readonly<{
   execution: Readonly<{ status: string; previewId?: string }> | null;
   steps: readonly StudioTaskStep[];
   evidence: readonly StudioTaskEvidence[];
+  criteriaRevision: number | null;
+  repair: StudioTaskRepair | null;
 }>;
 
 const text = (value: unknown, maxLength = 512): string | null => typeof value === "string" && value.length > 0 && value.length <= maxLength ? value : null;
@@ -58,7 +74,7 @@ const count = (value: unknown): number | null => typeof value === "number" && Nu
 const object = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 /** 64 位小写 hex 内容摘要（code-game 工作区 digest_workspace 的输出形态）。 */
 const digest = (value: unknown): string | null => typeof value === "string" && /^[0-9a-f]{64}$/.test(value) ? value : null;
-const TASK_PHASES = ["planning", "awaiting-plan-approval", "ready", "executing", "validating", "awaiting-review", "accepted", "rejected", "failed", "cancelled"];
+const TASK_PHASES = ["planning", "awaiting-plan-approval", "ready", "executing", "validating", "repairing", "awaiting-review", "accepted", "rejected", "failed", "cancelled"];
 const taskPhase = (value: unknown): StudioTaskPhase => TASK_PHASES.includes(String(value)) ? String(value) as StudioTaskPhase : "unknown";
 
 const CITY_TARGET_REF_KINDS: readonly StudioCityTargetRef["entityKind"][] = ["scene-model", "scene-collider", "scene-anchor", "city-building", "city-decor"];
@@ -90,6 +106,24 @@ export function parseStudioTargetRefs(value: unknown): readonly StudioTargetRef[
     refs.push(Object.freeze({ entityKind: cityKind, entityId, previewId, projectRevision, cityRevision, worldRevision }));
   }
   return Object.freeze(refs);
+}
+
+/**
+ * PR11 修复投影解析（宽容：旧宿主无 repair/criteriaRevision 字段时按 null 处理，
+ * 不拖垮任务投影）；形状不符的 repair 整体视为缺失。
+ */
+function parseStudioTaskRepair(value: unknown): StudioTaskRepair | null {
+  const row = object(value);
+  const rounds = count(row?.rounds);
+  const maxRounds = count(row?.maxRounds);
+  if (!row || rounds === null || maxRounds === null) return null;
+  return Object.freeze({
+    rounds, maxRounds,
+    maxTokens: count(row.maxTokens),
+    wallClockMs: count(row.wallClockMs),
+    startedAtMs: count(row.startedAtMs),
+    lastFailure: row.lastFailure ?? null,
+  });
 }
 
 export function parseStudioTask(value: unknown): StudioTask {
@@ -144,6 +178,7 @@ export function parseStudioTask(value: unknown): StudioTask {
       : { kind, [idKey]: scopeId, expectedRevision }),
     targetRefs: parseStudioTargetRefs(row.targetRefs), planRevision, stepIds: Object.freeze(stepIds), phase,
     proposedChangeSetId: text(row.proposedChangeSetId), lastEvidenceId: text(row.lastEvidenceId), steps: Object.freeze(steps), evidence: Object.freeze(evidence),
+    criteriaRevision: count(row.criteriaRevision), repair: parseStudioTaskRepair(row.repair),
     execution: execution ? Object.freeze({ status: text(execution.status) ?? "unknown", ...(text(execution.previewId) ? { previewId: text(execution.previewId)! } : {}) }) : null });
 }
 
@@ -250,6 +285,11 @@ export function canExecuteTask(task: StudioTask | null): boolean {
   return task?.phase === "ready";
 }
 
+/** PR11：预算内修复轮入口——repairing 相位的任务是活跃的（可取消、可继续修复）。 */
+export function canContinueRepairTask(task: StudioTask | null): boolean {
+  return task?.phase === "repairing";
+}
+
 export function canApproveTaskPlan(task: StudioTask | null): boolean {
   return task?.phase === "awaiting-plan-approval";
 }
@@ -260,13 +300,14 @@ export function canCancelTask(task: StudioTask | null): boolean {
   return task !== null && !["accepted", "rejected", "failed", "cancelled"].includes(task.phase);
 }
 export function canReviseTaskPlan(task: StudioTask | null): boolean {
-  return task !== null && ["ready", "awaiting-review", "rejected", "failed", "cancelled"].includes(task.phase);
+  // PR11：repairing 也允许退回计划（用户决策路径；宿主侧修复预算跨计划累计）。
+  return task !== null && ["ready", "awaiting-review", "rejected", "failed", "cancelled", "repairing"].includes(task.phase);
 }
 
 export function studioPhaseLabel(phase: StudioTaskPhase): string {
   return ({
     planning: "规划中", "awaiting-plan-approval": "等待计划批准", ready: "计划已批准，可执行", executing: "执行中",
-    validating: "验证中", "awaiting-review": "等待人工验收", accepted: "已接受", rejected: "已退回", failed: "失败", cancelled: "已取消", unknown: "状态未知",
+    validating: "验证中", repairing: "修复中（预算内自动修复）", "awaiting-review": "等待人工验收", accepted: "已接受", rejected: "已退回", failed: "失败", cancelled: "已取消", unknown: "状态未知",
   })[phase];
 }
 
@@ -312,7 +353,7 @@ export function resolveSessionStatus(latestTask: Readonly<{ phase: string }> | n
   switch (latestTask?.phase) {
     case "awaiting-review": return "awaiting-confirmation";
     case "failed": return "failed";
-    case "planning": case "awaiting-plan-approval": case "ready": case "executing": case "validating": return "working";
+    case "planning": case "awaiting-plan-approval": case "ready": case "executing": case "validating": case "repairing": return "working";
     case "accepted": case "rejected": case "cancelled": return "settled";
     default: return "idle";
   }

@@ -23,6 +23,11 @@ pub struct AgentExecutionRequest {
     pub plan_revision: u64,
     pub timeout: Duration,
     pub include_viewport: bool,
+    /// PR11 修复轮诊断：上一轮验收复核失败的结构化事实（verdict、断言摘录、
+    /// buildId/candidateId、轮次与预算、冻结标准的版本摘要），仅第 2 次起的执行
+    /// （预算内修复轮）携带；首轮为 None。诊断不含判据集，也没有任何改标准的
+    /// 通道——验收标准由宿主冻结，变更只能走人工审批的 criteria 提案流程。
+    pub repair_diagnostics: Option<Value>,
 }
 
 #[derive(Clone, Debug)]
@@ -57,6 +62,16 @@ pub fn execution_prompt(request: &AgentExecutionRequest) -> String {
     let target_refs_block = request.target_refs.as_ref()
         .map(|refs| format!("Target objects (Host-bound identity; verify each with creator_scene_describe at the expected revision before proposing; never guess coordinates from names alone): {refs}"))
         .unwrap_or_else(|| "No structured target objects are bound to this task.".into());
+    // PR11 修复轮简报：上一轮验收复核失败的事实 + 冻结标准红线。修复只改实现；
+    // 删弱改判据/测试用例都不可用（宿主每轮现场核对冻结摘要，变更走人工审批）。
+    let repair_block = request.repair_diagnostics.as_ref().map(|diagnostics| format!(
+        "REPAIR ROUND: this is attempt {attempt}; the previous attempt FAILED acceptance verification.\n\
+         The acceptance criteria are FROZEN by the host (revision digest {digest}): you must not weaken, delete, replace or reinterpret criteria or test cases, and you cannot change them at all from this channel — only the implementation may change.\n\
+         Previous failure facts: {diagnostics}\n\
+         Continue the same workflow. For a code-game workspace, reuse the existing candidate (creator_code_candidate_list / creator_code_candidate_status) or fork a new candidate from the bound baseline, rebuild, and re-run the headless test; only name a buildId whose test verdict is passed.",
+        attempt = diagnostics.get("attempt").and_then(Value::as_u64).unwrap_or(0),
+        digest = diagnostics.get("criteriaRevision").and_then(Value::as_str).unwrap_or("unknown"),
+    )).unwrap_or_default();
     let artifact_kind = request.artifact["kind"].as_str().unwrap_or("creator-project");
     let artifact_id = match artifact_kind {
         "creator-city" => request.artifact["cityId"].as_str().unwrap_or("unknown"),
@@ -106,9 +121,10 @@ pub fn execution_prompt(request: &AgentExecutionRequest) -> String {
          Use only these Creator tools: {tool_contract}. Do not call any other tool.\n\
          {work_contract}\n\
          {proposal_contract}\n\
-         Goal: {}\nHuman request: {}\nArtifact: {} {} at expected revision {}.\nPlan revision: {}.\n{}.",
+         Goal: {}\nHuman request: {}\nArtifact: {} {} at expected revision {}.\nPlan revision: {}.\n{}.{}",
         request.goal, request.human_request, artifact_kind, artifact_id,
         expected_revision, request.plan_revision, target_refs_block,
+        if repair_block.is_empty() { String::new() } else { format!("\n{repair_block}") },
     )
 }
 
@@ -1170,7 +1186,7 @@ done
 
     fn acp_request(home: &Path) -> AgentExecutionRequest {
         AgentExecutionRequest { target_refs: None, data_home: home.to_path_buf(), goal: "Small goal".into(), human_request: "Review only".into(),
-            artifact: json!({"projectId":"project-1","expectedRevision":3}), plan_revision: 1, timeout: Duration::from_secs(15), include_viewport: false }
+            artifact: json!({"projectId":"project-1","expectedRevision":3}), plan_revision: 1, timeout: Duration::from_secs(15), include_viewport: false, repair_diagnostics: None }
     }
 
     #[test]
@@ -1274,7 +1290,7 @@ done
     fn prompt_and_config_never_expose_paths_or_write_capabilities() {
         let home = std::env::temp_dir().join("private-creator-home");
         let request = AgentExecutionRequest { target_refs: None, data_home: home.clone(), goal: "Small goal".into(), human_request: "Review only".into(),
-            artifact: json!({"projectId":"project-1","expectedRevision":3}), plan_revision: 1, timeout: Duration::from_secs(1), include_viewport: false };
+            artifact: json!({"projectId":"project-1","expectedRevision":3}), plan_revision: 1, timeout: Duration::from_secs(1), include_viewport: false, repair_diagnostics: None };
         let prompt = execution_prompt(&request);
         assert!(!prompt.contains(home.to_string_lossy().as_ref()));
         assert!(prompt.contains("Do not commit, publish, install, write files"));
@@ -1393,7 +1409,7 @@ done
             {"entityId":"barrier-3","entityKind":"collider","previewId":"preview-a","projectRevision":4,"cityRevision":8,"worldRevision":"world-v3"},
         ])), data_home: home, goal: "把路障移上桥".into(), human_request: "把路障移上桥".into(),
             artifact: serde_json::json!({"kind":"creator-project","projectId":"project-1","expectedRevision":4}),
-            plan_revision: 1, timeout: Duration::from_secs(15), include_viewport: false };
+            plan_revision: 1, timeout: Duration::from_secs(15), include_viewport: false, repair_diagnostics: None };
         let prompt = execution_prompt(&request);
         assert!(prompt.contains("Target objects (Host-bound identity"), "结构化目标块应出现在简报中");
         assert!(prompt.contains("\"entityId\":\"barrier-3\""), "目标身份应逐字进入简报");
@@ -1409,7 +1425,7 @@ done
         let digest = "a".repeat(64);
         let request = AgentExecutionRequest { target_refs: None, data_home: home.clone(), goal: "给塔防加一个暂停按钮".into(), human_request: "给塔防加一个暂停按钮".into(),
             artifact: serde_json::json!({"kind":"code-game","workspaceId":"gws-0123456789abcdef","expectedRevision":digest}),
-            plan_revision: 1, timeout: Duration::from_secs(15), include_viewport: false };
+            plan_revision: 1, timeout: Duration::from_secs(15), include_viewport: false, repair_diagnostics: None };
         let prompt = execution_prompt(&request);
         assert!(prompt.contains("CODE GAME workspace"), "简报应说明这是 CODE GAME 工作区任务");
         assert!(prompt.contains("gws-0123456789abcdef"), "workspaceId 应逐字进入简报");
@@ -1426,6 +1442,33 @@ done
         let proposal = super::parse_proposal(r#"前置说明。{"summary":"候选已通过无头测试","buildId":"b64hex"}"#).unwrap();
         assert_eq!(proposal["buildId"], "b64hex");
         assert!(super::parse_proposal(r#"{"summary":"只有总结没有载荷"}"#).is_err());
+    }
+
+    /// PR11：修复轮简报——上一轮失败事实与冻结标准红线逐字进入 prompt；首轮
+    /// （repair_diagnostics=None）不携带修复块。
+    #[test]
+    fn execution_prompt_carries_repair_diagnostics_and_the_frozen_criteria_line() {
+        let home = std::env::temp_dir().join(format!("prompt-repair-{}", std::process::id()));
+        let digest = "a".repeat(64);
+        let request = AgentExecutionRequest { target_refs: None, data_home: home.clone(), goal: "g".into(), human_request: "g".into(),
+            artifact: serde_json::json!({"kind":"code-game","workspaceId":"gws-0123456789abcdef","expectedRevision":digest}),
+            plan_revision: 1, timeout: Duration::from_secs(15), include_viewport: false,
+            repair_diagnostics: Some(serde_json::json!({
+                "attempt":2,"maxRepairRounds":3,"criteriaRevision":"sha256:abc",
+                "lastFailure":{"attempt":1,"code":"creator_task_test_not_passed","verdict":"failed",
+                    "assertions":[{"id":"a","status":"failed"}]}})) };
+        let prompt = execution_prompt(&request);
+        assert!(prompt.contains("REPAIR ROUND"), "修复轮标记应出现在简报");
+        assert!(prompt.contains("attempt 2"), "轮次应进入简报");
+        assert!(prompt.contains("sha256:abc"), "冻结标准版本摘要应进入简报");
+        assert!(prompt.contains("creator_task_test_not_passed"), "上一轮失败事实应进入简报");
+        assert!(prompt.contains("FROZEN"), "标准冻结红线应出现在简报");
+        assert!(prompt.contains("creator_code_candidate_status"), "修复指引应指向候选工作流");
+        assert!(prompt.contains("Do not commit, publish, install, write files"), "只读红线保持不变");
+        assert!(!prompt.contains(home.to_string_lossy().as_ref()), "简报不得携带路径");
+        let bare = AgentExecutionRequest { repair_diagnostics: None, ..request };
+        assert!(!execution_prompt(&bare).contains("REPAIR ROUND"), "首轮不携带修复块");
+        let _ = std::fs::remove_dir_all(home);
     }
 }
 

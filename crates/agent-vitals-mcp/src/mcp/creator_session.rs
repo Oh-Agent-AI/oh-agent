@@ -27,6 +27,13 @@ const EXECUTOR_LOST_AFTER_MS: u64 = 30_000;
 const EVENT_WAIT_MAX_MS: u64 = 30_000;
 const EVENT_WAIT_SLICE_MS: u64 = 250;
 const EVENT_LIMIT_MAX: u64 = 100;
+/// PR11 预算化修复循环（重构计划 §6.3）：默认 3 轮、上限 5 轮——「3」是初版
+/// 策略，不是不可变协议；墙钟预算上限 1 小时。token/成本预算本层拿不到执行器
+/// 核算，先落强制点钩子（repair_tokens_used），接入前如实恒 0、不伪造。
+const DEFAULT_REPAIR_ROUNDS: u64 = 3;
+const MAX_REPAIR_ROUNDS: u64 = 5;
+const MAX_REPAIR_WALL_CLOCK_MS: u64 = 3_600_000;
+const MAX_REPAIR_TOKENS: u64 = 100_000_000;
 
 fn spec(name: &'static str, description: &'static str, properties: Value, required: &[&str]) -> ToolSpec {
     ToolSpec {
@@ -53,7 +60,7 @@ pub fn specs() -> Vec<ToolSpec> {
         spec("creator_job_status", "Read one Creator job. Playtest jobs resolve their live status from the host playtest ledger.", json!({"jobId":{"type":"string","minLength":1,"maxLength":128}}), &["jobId"]),
         spec("creator_job_wait", "Block until a Creator job reaches a terminal state or the timeout expires (30 s cap). A timeout returns the running snapshot, not an error.", json!({"jobId":{"type":"string","minLength":1,"maxLength":128},"timeoutMs":{"type":"integer","minimum":100,"maximum":30000}}), &["jobId"]),
         spec("creator_job_cancel", "Request cooperative cancellation of a queued/running Creator job. Cancellation takes effect at the engine's next safe point; playtest jobs route to creator_playtest_cancel.", json!({"jobId":{"type":"string","minLength":1,"maxLength":128}}), &["jobId"]),
-        spec("creator_task_create", "Create a durable Studio goal and artifact in the shared Creator session/job ledger. This does not execute an Agent.", json!({"sessionId":{"type":"string"},"goal":{"type":"string"},"humanRequest":{"type":"string"},"artifact":{"type":"object"},"acceptanceCriteria":{"type":"array"},"operationId":{"type":"string"}}), &["sessionId","goal","humanRequest","artifact","acceptanceCriteria","operationId"]),
+        spec("creator_task_create", "Create a durable Studio goal and artifact in the shared Creator session/job ledger. This does not execute an Agent.", json!({"sessionId":{"type":"string"},"goal":{"type":"string"},"humanRequest":{"type":"string"},"artifact":{"type":"object"},"acceptanceCriteria":{"type":"array"},"repairPolicy":{"type":"object","description":"Optional bounded repair budget: maxRounds 0..=5 (default 3), wallClockMs and maxTokens (positive bounded integers)."},"operationId":{"type":"string"}}), &["sessionId","goal","humanRequest","artifact","acceptanceCriteria","operationId"]),
         // PR10：expectedArtifactRevision 在 code-game 工件上是 64-hex 工作区内容摘要
         // （字符串），其余三种工件仍是 u64 修订号；严格性由逐 kind 的 CAS 比对承担。
         spec("creator_task_plan_submit", "Submit or revise a task plan with CAS-checked plan and artifact revisions.", json!({"taskId":{"type":"string"},"expectedPlanRevision":{"type":"integer"},"expectedArtifactRevision":{"type":["integer","string"]},"steps":{"type":"array"},"operationId":{"type":"string"}}), &["taskId","expectedPlanRevision","expectedArtifactRevision","steps","operationId"]),
@@ -65,6 +72,11 @@ pub fn specs() -> Vec<ToolSpec> {
         spec("creator_task_review_accept", "Accept a task only after all acceptance criteria have real evidence and a human reviewer accepts it.", json!({"taskId":{"type":"string"},"planRevision":{"type":"integer"},"expectedArtifactRevision":{"type":["integer","string"]},"reviewerNote":{"type":"string"},"operationId":{"type":"string"}}), &["taskId","planRevision","expectedArtifactRevision","reviewerNote","operationId"]),
         spec("creator_task_review_reject", "Reject the current task plan during human review.", json!({"taskId":{"type":"string"},"planRevision":{"type":"integer"},"expectedArtifactRevision":{"type":["integer","string"]},"reason":{"type":"string"},"operationId":{"type":"string"}}), &["taskId","planRevision","expectedArtifactRevision","reason","operationId"]),
         spec("creator_task_cancel", "Cancel a non-terminal Studio task without deleting its goal, plan or evidence.", json!({"taskId":{"type":"string"},"operationId":{"type":"string"}}), &["taskId","operationId"]),
+        // PR11 冻结验收标准的唯一变更路径：Agent/用户可以「提议」新判据（只记录、
+        // 不生效），生效必须经人工批准（approve 逐摘要核对提案并 bump 版本重新
+        // 冻结）。修复循环永不调用这两个工具。
+        spec("creator_task_criteria_propose", "Propose a new acceptance-criteria set for a task. Records the proposal (digest, criteria, reason) without applying it; the frozen criteria keep governing execution and repair rounds until a human approves via creator_task_criteria_approve.", json!({"taskId":{"type":"string"},"acceptanceCriteria":{"type":"array"},"reason":{"type":"string","maxLength":500},"operationId":{"type":"string"}}), &["taskId","acceptanceCriteria","reason","operationId"]),
+        spec("creator_task_criteria_approve", "Apply a pending criteria proposal after explicit human approval. Verifies the proposal digest, bumps the criteria revision and re-freezes the snapshot. The repair loop never calls this.", json!({"taskId":{"type":"string"},"expectedProposalDigest":{"type":"string"},"operationId":{"type":"string"}}), &["taskId","expectedProposalDigest","operationId"]),
         spec("creator_task_list_open", "List approved Studio tasks that are ready to be claimed (pull mode). Read-only; an empty list is a truthful empty queue.", json!({"limit":{"type":"integer","minimum":1,"maximum":50}}), &[]),
         spec("creator_task_claim", "Claim an approved task (pull mode) with a plain agentId: no per-CLI spawn adapter is needed, any MCP-capable desktop agent participates. First claim sets phase=executing and binds the claimant; re-claim by the same agentId is idempotent.", json!({"taskId":{"type":"string"},"agentId":{"type":"string","minLength":1,"maxLength":128},"expectedPlanRevision":{"type":"integer"},"expectedArtifactRevision":{"type":["integer","string"]},"operationId":{"type":"string"}}), &["taskId","agentId","expectedPlanRevision","expectedArtifactRevision","operationId"]),
         // PR10：提交产物按工件二选一——creator-project 仍必填 previewId；code-game
@@ -131,6 +143,12 @@ fn ensure_schema(db: &rusqlite::Connection) -> Result<(), ToolError> {
             human_request TEXT NOT NULL, acceptance_json TEXT NOT NULL, artifact_json TEXT NOT NULL,
             target_refs_json TEXT, plan_revision INTEGER NOT NULL, step_ids_json TEXT NOT NULL, phase TEXT NOT NULL,
             proposed_change_set_id TEXT, last_evidence_id TEXT,
+            -- PR11 冻结验收标准 + 预算化修复循环：criteria_revision>0 表示已在首轮
+            -- 执行冻结（快照 + 摘要）；repair_* 记录修复轮计数、预算与上一轮失败
+            -- 诊断（执行器请求与 UI 的数据源）。
+            criteria_revision INTEGER NOT NULL DEFAULT 0, criteria_frozen_json TEXT,
+            criteria_proposed_json TEXT, repair_rounds INTEGER NOT NULL DEFAULT 0,
+            repair_budget_json TEXT, repair_started_at_ms INTEGER, repair_last_json TEXT,
             created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS creator_studio_task_steps (
             task_id TEXT NOT NULL, plan_revision INTEGER NOT NULL, step_id TEXT NOT NULL,
@@ -177,6 +195,23 @@ fn ensure_schema(db: &rusqlite::Connection) -> Result<(), ToolError> {
                 .map_err(|error| ToolError::new("storage_unavailable", format!("sessions schema unavailable: {error}")))?;
         }
     }
+    // PR11 冻结验收标准 + 修复预算列：存量库逐列补齐（与 target_refs_json 同模式）。
+    for (column, definition) in [
+        ("criteria_revision", "INTEGER NOT NULL DEFAULT 0"),
+        ("criteria_frozen_json", "TEXT"),
+        ("criteria_proposed_json", "TEXT"),
+        ("repair_rounds", "INTEGER NOT NULL DEFAULT 0"),
+        ("repair_budget_json", "TEXT"),
+        ("repair_started_at_ms", "INTEGER"),
+        ("repair_last_json", "TEXT"),
+    ] {
+        let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('creator_studio_tasks') WHERE name=?1)",
+            [column], |row| row.get(0)).map_err(|error| ToolError::new("storage_unavailable", format!("sessions schema unavailable: {error}")))?;
+        if !exists {
+            db.execute(&format!("ALTER TABLE creator_studio_tasks ADD COLUMN {column} {definition}"), [])
+                .map_err(|error| ToolError::new("storage_unavailable", format!("sessions schema unavailable: {error}")))?;
+        }
+    }
     for (column, definition) in [("draft", "TEXT NOT NULL DEFAULT ''"), ("preferred_executor", "TEXT NOT NULL DEFAULT ''")] {
         let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('creator_studio_session_profiles') WHERE name=?1)",
             [column], |row| row.get(0)).map_err(|error| ToolError::new("storage_unavailable", format!("sessions schema unavailable: {error}")))?;
@@ -203,6 +238,7 @@ fn valid_connection_error(value: &str) -> bool {
         | "acp_image_unsupported" | "creator_capture_unavailable" | "creator_capture_budget_exceeded"
         | "preview_required" | "preview_expired" | "plugin_unavailable" | "storage_unavailable" | "revision_conflict"
         | "creator_task_invalid_transition" | "creator_task_claim_mismatch" | "creator_task_already_claimed"
+        | "creator_task_repair_budget_exhausted" | "creator_task_criteria_frozen"
         | "creator_preview_not_found" | "creator_preview_project_mismatch" | "permission_denied" | "invalid_argument"
         | "busy" | "data_unavailable" | "executor_failed" | "agent_disconnected" | "agent_crashed" | "agent_timeout" | "authentication_required" | "transport_closed")
 }
@@ -1384,6 +1420,126 @@ fn task_criteria(payload: &Value) -> Result<Vec<Value>, ToolError> {
         Ok(json!({"criterionId":criterion_id,"description":description,"requiredEvidenceKind":kind}))
     }).collect()
 }
+
+// ── PR11 冻结验收标准 + 预算化修复循环（重构计划 §6.3）────────────────
+//
+// 不变式：用户目标与验收标准在首轮执行前冻结（revision=1，快照 + 摘要落列）。
+// 修复轮只能改候选实现，永不改判据/测试用例；标准变更只有一条显式路径——
+// creator_task_criteria_propose（记录提案，不生效）→ creator_task_criteria_approve
+// （人工批准后 bump 版本并重新冻结）。修复循环不持有这条路径。
+
+/// 版本摘要 = 规范化（目标文本 + 判据集）的 sha256（与 task_hash 同配方）。
+/// 目标文本与判据任一变化都会改变摘要。
+fn criteria_revision_digest(goal: &str, criteria: &Value) -> Result<String, ToolError> {
+    task_hash(&json!({"goal": goal, "acceptanceCriteria": criteria}))
+}
+
+/// 首轮执行冻结验收标准：revision 0→1，快照落 criteria_frozen_json，同时落
+/// 修复计时起点（repair_started_at_ms）。幂等：已冻结时无操作。
+fn task_freeze_criteria(tx: &rusqlite::Transaction<'_>, task_id: &str, task: &Value) -> Result<(), ToolError> {
+    if task["criteriaRevision"].as_u64().unwrap_or(0) > 0 { return Ok(()); }
+    let digest = criteria_revision_digest(task["humanRequest"].as_str().unwrap_or_default(), &task["acceptanceCriteria"])?;
+    let snapshot = json!({"criteriaRevision":1,"digest":digest,"criteria":task["acceptanceCriteria"],"frozenAtMs":now_ms()});
+    tx.execute("UPDATE creator_studio_tasks SET criteria_revision=1,criteria_frozen_json=?2,repair_started_at_ms=COALESCE(repair_started_at_ms,?3),updated_at_ms=?3 WHERE task_id=?1",
+        rusqlite::params![task_id,snapshot.to_string(),now_ms()])
+        .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    append_event(tx, task_id, "progress", "studio", "host-observed",
+        "验收标准已冻结（第 1 版）；修复轮只改实现、不改标准", &json!({"criteriaRevision":1,"digest":digest}))?;
+    Ok(())
+}
+
+/// 冻结护栏：revision>0 时现场重算「当前判据+目标」摘要并与冻结摘要比对，
+/// 不一致即标准被绕过冻结流程改动 → 结构化拒绝（creator_task_criteria_frozen）。
+/// 判据今天只在 create 写入，但护栏在执行/修复轮入口与提案审批三个改动敏感点
+/// 现场核对——未来任何判据写入路径都逃不过这道闸，而不是只靠文档约定。
+fn task_assert_criteria_intact(task: &Value) -> Result<String, ToolError> {
+    let digest = criteria_revision_digest(task["humanRequest"].as_str().unwrap_or_default(), &task["acceptanceCriteria"])?;
+    let revision = task["criteriaRevision"].as_u64().unwrap_or(0);
+    if revision == 0 { return Ok(digest); }
+    if task["criteriaDigest"].as_str().unwrap_or_default() != digest {
+        return Err(ToolError::new("creator_task_criteria_frozen",
+            format!("The task's current criteria no longer match the frozen snapshot (revision {revision}); criteria changes require creator_task_criteria_propose plus explicit human approval via creator_task_criteria_approve.")));
+    }
+    Ok(digest)
+}
+
+/// PR11：create 时的可选修复预算（repairPolicy）。形状与 task_criteria 同纪律：
+/// 只允许已知键、有界整数；缺席 = 默认 maxRounds=3（初版策略，可配置不可伪造）。
+fn task_repair_policy(payload: &Value) -> Result<Value, ToolError> {
+    let Some(value) = payload.get("repairPolicy") else { return Ok(json!({"maxRounds": DEFAULT_REPAIR_ROUNDS})); };
+    let object = value.as_object().filter(|object| object.len() <= 3
+        && object.keys().all(|key| matches!(key.as_str(), "maxRounds" | "wallClockMs" | "maxTokens")))
+        .ok_or_else(|| ToolError::new("invalid_argument",
+            "repairPolicy accepts only maxRounds (0..=5), wallClockMs and maxTokens (positive bounded integers)."))?;
+    let mut policy = json!({"maxRounds": DEFAULT_REPAIR_ROUNDS});
+    if let Some(rounds) = object.get("maxRounds") {
+        let rounds = rounds.as_u64().filter(|rounds| *rounds <= MAX_REPAIR_ROUNDS)
+            .ok_or_else(|| ToolError::new("invalid_argument", "repairPolicy.maxRounds must be an integer from 0 to 5."))?;
+        policy["maxRounds"] = json!(rounds);
+    }
+    for (key, bound) in [("wallClockMs", MAX_REPAIR_WALL_CLOCK_MS), ("maxTokens", MAX_REPAIR_TOKENS)] {
+        if let Some(value) = object.get(key) {
+            let amount = value.as_u64().filter(|amount| (1..=bound).contains(amount))
+                .ok_or_else(|| ToolError::new("invalid_argument", format!("repairPolicy.{key} must be a positive integer no larger than {bound}.")))?;
+            policy[key] = json!(amount);
+        }
+    }
+    Ok(policy)
+}
+
+/// PR11 token/成本预算钩子：执行器层今天不向任务账本暴露 token 核算，本函数是
+/// 未来接入的唯一强制点（预算闸在修复轮入口消费它的返回值）。接入前恒 0——
+/// 钩子不伪造数据（deferred，见重构计划 §6.3）。
+fn repair_tokens_used(_task: &Value) -> u64 { 0 }
+
+/// 修复轮预算闸（第 2 次起的执行才检查；首轮只负责冻结 + 计时起点）。轮次与
+/// 墙钟超限都返回结构化错误，任务随后转入 failed（诊断与候选保留可复核）。
+fn task_repair_budget_allows(task: &Value, now: u64) -> Result<(), ToolError> {
+    let repair = &task["repair"];
+    let rounds = repair["rounds"].as_u64().unwrap_or(0);
+    let max_rounds = repair["maxRounds"].as_u64().unwrap_or(DEFAULT_REPAIR_ROUNDS);
+    if rounds > max_rounds {
+        return Err(ToolError::new("creator_task_repair_budget_exhausted",
+            format!("Repair budget exhausted: {rounds} failed repair rounds recorded, policy allows {max_rounds}.")));
+    }
+    if let (Some(budget), Some(started)) = (repair["wallClockMs"].as_u64(), repair["startedAtMs"].as_u64()) {
+        if now.saturating_sub(started) > budget {
+            return Err(ToolError::new("creator_task_repair_budget_exhausted",
+                format!("Repair wall-clock budget exhausted: {} ms elapsed, policy allows {budget} ms.", now.saturating_sub(started))));
+        }
+    }
+    if repair["maxTokens"].as_u64().is_some_and(|max| repair_tokens_used(task) > max) {
+        return Err(ToolError::new("creator_task_repair_budget_exhausted",
+            format!("Repair token budget exhausted: policy allows {} tokens.", repair["maxTokens"].as_u64().unwrap_or(0))));
+    }
+    Ok(())
+}
+
+/// PR11：从失败事实组装修复轮诊断（进执行器请求、修复轮事件与 repair_last 列）。
+/// 断言摘录有界（≤8 条，只保留 id/status），测试记录摘要为规范 JSON 的 sha256。
+fn repair_failure_diagnostics(data_home: &Path, build_id: Option<&str>, error: &ToolError, attempt: u64) -> Value {
+    let mut diagnostics = json!({
+        "attempt": attempt,
+        "code": error.code,
+        "message": error.message.chars().take(400).collect::<String>(),
+    });
+    let Some(build_id) = build_id else { return diagnostics; };
+    diagnostics["buildId"] = json!(build_id);
+    let Ok(test) = code_test_record_for(data_home, build_id) else { return diagnostics; };
+    diagnostics["verdict"] = test.get("verdict").cloned().unwrap_or(Value::Null);
+    diagnostics["verdictReason"] = test.get("verdictReason").cloned().unwrap_or(Value::Null);
+    diagnostics["candidateId"] = test.get("candidateId").cloned().unwrap_or(Value::Null);
+    diagnostics["candidateRevision"] = test.get("workspaceRevision").cloned().unwrap_or(Value::Null);
+    if let Ok(digest) = task_hash(&test) { diagnostics["testRecordDigest"] = json!(digest); }
+    if let Some(assertions) = test.get("assertions").and_then(Value::as_array) {
+        let excerpt: Vec<Value> = assertions.iter().take(8).map(|item| json!({
+            "id": item.get("id").cloned().unwrap_or(Value::Null),
+            "status": item.get("status").cloned().unwrap_or(Value::Null),
+        })).collect();
+        diagnostics["assertions"] = json!(excerpt);
+    }
+    diagnostics
+}
 fn task_steps(payload: &Value) -> Result<Vec<Value>, ToolError> {
     let steps = payload.get("steps").and_then(Value::as_array).filter(|items| (1..=32).contains(&items.len()))
         .ok_or_else(|| ToolError::new("invalid_argument", "steps must contain 1..=32 entries."))?;
@@ -1402,21 +1558,43 @@ fn task_steps(payload: &Value) -> Result<Vec<Value>, ToolError> {
     }).collect()
 }
 fn task_row(db: &rusqlite::Connection, task_id: &str) -> Result<(Value, String, u64, String), ToolError> {
-    let row = db.query_row("SELECT t.goal_id,t.goal_revision,t.human_request,t.acceptance_json,t.artifact_json,t.plan_revision,t.step_ids_json,t.phase,t.proposed_change_set_id,t.last_evidence_id,t.created_at_ms,t.updated_at_ms,t.target_refs_json,j.session_id
+    let row = db.query_row("SELECT t.goal_id,t.goal_revision,t.human_request,t.acceptance_json,t.artifact_json,t.plan_revision,t.step_ids_json,t.phase,t.proposed_change_set_id,t.last_evidence_id,t.created_at_ms,t.updated_at_ms,t.target_refs_json,j.session_id,t.criteria_revision,t.criteria_frozen_json,t.criteria_proposed_json,t.repair_rounds,t.repair_budget_json,t.repair_started_at_ms,t.repair_last_json
         FROM creator_studio_tasks t JOIN creator_jobs j ON j.job_id=t.task_id WHERE t.task_id=?1", [task_id], |row| {
         Ok((row.get::<_,String>(0)?,row.get::<_,u64>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,String>(4)?,
             row.get::<_,u64>(5)?,row.get::<_,String>(6)?,row.get::<_,String>(7)?,row.get::<_,Option<String>>(8)?,row.get::<_,Option<String>>(9)?,
-            row.get::<_,u64>(10)?,row.get::<_,u64>(11)?,row.get::<_,Option<String>>(12)?,row.get::<_,Option<String>>(13)?))
+            row.get::<_,u64>(10)?,row.get::<_,u64>(11)?,row.get::<_,Option<String>>(12)?,row.get::<_,Option<String>>(13)?,
+            row.get::<_,u64>(14)?,row.get::<_,Option<String>>(15)?,row.get::<_,Option<String>>(16)?,row.get::<_,u64>(17)?,
+            row.get::<_,Option<String>>(18)?,row.get::<_,Option<u64>>(19)?,row.get::<_,Option<String>>(20)?))
     }).optional().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?
         .ok_or_else(|| ToolError::new("creator_task_not_found", "Unknown taskId."))?;
-    let (goal_id, goal_revision, human_request, acceptance, artifact, plan_revision, step_ids, phase, proposed, last_evidence, created, updated, target_refs_json, session_id) = row;
+    let (goal_id, goal_revision, human_request, acceptance, artifact, plan_revision, step_ids, phase, proposed, last_evidence, created, updated, target_refs_json, session_id,
+        criteria_revision, criteria_frozen_json, criteria_proposed_json, repair_rounds, repair_budget_json, repair_started_at_ms, repair_last_json) = row;
     let acceptance: Value = serde_json::from_str(&acceptance).map_err(|_| ToolError::new("storage_unavailable", "Task acceptance is damaged."))?;
     let artifact: Value = serde_json::from_str(&artifact).map_err(|_| ToolError::new("storage_unavailable", "Task artifact is damaged."))?;
     let step_ids: Value = serde_json::from_str(&step_ids).map_err(|_| ToolError::new("storage_unavailable", "Task steps are damaged."))?;
     let target_refs: Value = target_refs_json.and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or(Value::Null);
+    // PR11 冻结验收标准 + 修复预算投影：损坏的预算/快照按缺省处理（默认预算、
+    // 未冻结），读路径不因附注列损坏而失败；maxRounds 读取时钳制在策略上限内。
+    let frozen: Value = criteria_frozen_json.and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or(Value::Null);
+    let proposal: Value = criteria_proposed_json.and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or(Value::Null);
+    let budget: Value = repair_budget_json.and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_else(|| json!({"maxRounds": DEFAULT_REPAIR_ROUNDS}));
+    let last_failure: Value = repair_last_json.and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or(Value::Null);
+    let repair = json!({
+        "rounds": repair_rounds,
+        "maxRounds": budget.get("maxRounds").and_then(Value::as_u64).unwrap_or(DEFAULT_REPAIR_ROUNDS).min(MAX_REPAIR_ROUNDS),
+        "maxTokens": budget.get("maxTokens").and_then(Value::as_u64),
+        "wallClockMs": budget.get("wallClockMs").and_then(Value::as_u64),
+        "startedAtMs": repair_started_at_ms,
+        "lastFailure": last_failure,
+    });
     Ok((json!({"goalId":goal_id,"goalRevision":goal_revision,"humanRequest":human_request,"acceptanceCriteria":acceptance,
         "artifact":artifact,"planRevision":plan_revision,"stepIds":step_ids,"phase":phase,"proposedChangeSetId":proposed,"lastEvidenceId":last_evidence,
-        "targetRefs":target_refs,"createdAtMs":created,"updatedAtMs":updated}), session_id.unwrap_or_default(), plan_revision, phase))
+        "targetRefs":target_refs,"createdAtMs":created,"updatedAtMs":updated,
+        "criteriaRevision":if criteria_revision == 0 { Value::Null } else { json!(criteria_revision) },
+        "criteriaDigest":frozen.get("digest").cloned().unwrap_or(Value::Null),
+        "criteriaProposal":if proposal.is_object() { json!(proposal) } else { Value::Null },
+        "repair":repair}), session_id.unwrap_or_default(), plan_revision, phase))
 }
 fn task_payload(data_home: &Path, task_id: &str) -> Result<Value, ToolError> {
     let db = open_db(&sessions_db(data_home)?, false)?;
@@ -1446,7 +1624,8 @@ fn task_payload(data_home: &Path, task_id: &str) -> Result<Value, ToolError> {
         "failure":failure,"cancelRequested":task["phase"] == json!("cancelled"),"createdAtMs":task["createdAtMs"],"updatedAtMs":task["updatedAtMs"],
         "goalId":task["goalId"],"goalRevision":task["goalRevision"],"humanRequest":task["humanRequest"],"acceptanceCriteria":task["acceptanceCriteria"],
         "artifact":task["artifact"],"targetRefs":task["targetRefs"],"planRevision":task["planRevision"],"stepIds":task["stepIds"],"phase":task["phase"],
-        "proposedChangeSetId":task["proposedChangeSetId"],"lastEvidenceId":task["lastEvidenceId"],"steps":steps,"evidence":evidence,"execution":execution}))
+        "proposedChangeSetId":task["proposedChangeSetId"],"lastEvidenceId":task["lastEvidenceId"],"steps":steps,"evidence":evidence,"execution":execution,
+        "criteriaRevision":task["criteriaRevision"],"criteriaDigest":task["criteriaDigest"],"criteriaProposal":task["criteriaProposal"],"repair":task["repair"]}))
 }
 fn task_terminal(phase: &str) -> bool { matches!(phase, "accepted" | "rejected" | "failed" | "cancelled") }
 
@@ -1505,6 +1684,8 @@ fn task_create(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
     // PR03：形状通过后立即做权威校验（存在、归属、revision），伪造引用进不了台账。
     if let Some(refs) = &target_refs { task_check_target_refs(data_home, &artifact, refs)?; }
     let criteria = task_criteria(payload)?;
+    // PR11：修复预算随 create 落库（缺席 = 默认 maxRounds=3）；形状在入口校验。
+    let repair_policy = task_repair_policy(payload)?;
     let operation_id = task_id_arg(payload, "operationId")?;
     let hash = task_hash(payload)?;
     let mut db = open_db(&sessions_db(data_home)?, false)?;
@@ -1519,8 +1700,8 @@ fn task_create(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
     tx.execute("INSERT INTO creator_jobs(job_id,kind,status,subject_json,progress_json,failure_json,cancel_requested,session_id,created_at_ms,updated_at_ms)
         VALUES(?1,'studio-task','planning',?2,'{}','{}',0,?3,?4,?4)", rusqlite::params![task_id,json!({"goalId":goal_id,"artifact":artifact}).to_string(),session_id,now])
         .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
-    tx.execute("INSERT INTO creator_studio_tasks(task_id,goal_id,goal_revision,human_request,acceptance_json,artifact_json,target_refs_json,plan_revision,step_ids_json,phase,created_at_ms,updated_at_ms)
-        VALUES(?1,?2,1,?3,?4,?5,?6,0,'[]','planning',?7,?7)", rusqlite::params![task_id,goal_id,human_request,serde_json::to_string(&criteria).unwrap(),artifact.to_string(),target_refs.as_ref().map(|refs| refs.to_string()),now])
+    tx.execute("INSERT INTO creator_studio_tasks(task_id,goal_id,goal_revision,human_request,acceptance_json,artifact_json,target_refs_json,plan_revision,step_ids_json,phase,repair_budget_json,created_at_ms,updated_at_ms)
+        VALUES(?1,?2,1,?3,?4,?5,?6,0,'[]','planning',?7,?8,?8)", rusqlite::params![task_id,goal_id,human_request,serde_json::to_string(&criteria).unwrap(),artifact.to_string(),target_refs.as_ref().map(|refs| refs.to_string()),repair_policy.to_string(),now])
         .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     let result = json!({"taskId":task_id,"goalId":goal_id,"goal":goal,"phase":"planning"});
     append_event(&tx,&task_id,"accepted","studio","creator-declared","持久任务已受理",&json!({"goalId":goal_id,"phase":"planning"}))?;
@@ -1546,7 +1727,9 @@ fn task_plan_submit(data_home: &Path, payload: &Value) -> Result<Value, ToolErro
     if !artifact_revision_matches(&task["artifact"], &expected_artifact_revision) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
     task_check_artifact(data_home, &task["artifact"])?;
     if plan_revision + 1 != expected_revision { return Err(ToolError::new("plan_revision_conflict", "expectedPlanRevision must be current + 1.")); }
-    if !matches!(phase.as_str(), "planning" | "ready" | "awaiting-review" | "rejected" | "failed" | "cancelled") {
+    // PR11：repairing 也允许退回计划（用户决策路径）；修复轮计数与预算跨计划
+    // 修订累计，不会被计划重置。
+    if !matches!(phase.as_str(), "planning" | "ready" | "awaiting-review" | "rejected" | "failed" | "cancelled" | "repairing") {
         return Err(ToolError::new("creator_task_invalid_transition", format!("Cannot submit a plan from {phase}.")));
     }
     let step_ids: Vec<String> = steps.iter().map(|step| step["stepId"].as_str().unwrap_or_default().to_owned()).collect();
@@ -1706,13 +1889,21 @@ pub fn task_execute_with_executor(data_home: &Path, payload: &Value, executor: &
     if task_receipt(&tx, &operation_id, &hash)?.is_some() { return task_payload(data_home, &task_id); }
     let (task, session_id, plan_revision, phase) = task_row(&tx, &task_id)?;
     if phase == "executing" { return task_payload(data_home, &task_id); }
-    if phase != "ready" { return Err(ToolError::new("creator_task_invalid_transition", format!("Cannot execute from {phase}."))); }
-    if plan_revision != expected_plan_revision { return Err(ToolError::new("plan_revision_conflict", "Execution plan revision is stale.")); }
-    if !artifact_revision_matches(&task["artifact"], &expected_artifact_revision) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
-    task_check_artifact(data_home, &task["artifact"])?;
     // PR10：code-game 任务的真实工作面是 build/test 判据（代码工具族产出），不是
     // 宿主 Preview；project/city/story 仍要求 agent-preview。
     let code_game_task = task["artifact"]["kind"].as_str() == Some("code-game");
+    // PR11：ready 是首轮执行；repairing 是预算内修复轮入口（只有 code-game 会进入
+    // 该相位）。其余相位不可执行。
+    let repair_entry = phase == "repairing";
+    if phase != "ready" && !(repair_entry && code_game_task) {
+        return Err(ToolError::new("creator_task_invalid_transition", format!("Cannot execute from {phase}.")));
+    }
+    if plan_revision != expected_plan_revision { return Err(ToolError::new("plan_revision_conflict", "Execution plan revision is stale.")); }
+    if !artifact_revision_matches(&task["artifact"], &expected_artifact_revision) { return Err(ToolError::new("revision_conflict", "Task artifact revision changed.")); }
+    task_check_artifact(data_home, &task["artifact"])?;
+    // PR11 冻结护栏：每轮执行前现场核对冻结验收标准未被改动（任何绕过提案/审批
+    // 的判据写入都会在这里结构化失败，而不是悄悄用新标准继续修复）。
+    let frozen_digest = task_assert_criteria_intact(&task)?;
     let has_work_criterion = task["acceptanceCriteria"].as_array().is_some_and(|criteria| criteria.iter().any(|criterion| {
         if code_game_task {
             matches!(criterion["requiredEvidenceKind"].as_str(), Some("build") | Some("test"))
@@ -1728,15 +1919,35 @@ pub fn task_execute_with_executor(data_home: &Path, payload: &Value, executor: &
     // PR03：启动执行器前的廉价复核（Preview 仍活 + revision 仍现势）。失败在进入
     // executing 前返回——与其他 pre-execute 失败一致，任务保持 ready 可重发。
     task_check_target_refs(data_home, &task["artifact"], &task["targetRefs"])?;
+    // PR11 预算闸：第 2 次起的执行（修复轮，含计划修订后的重执行）必须仍有轮次/
+    // 墙钟/token 预算；超限时任务如实收尾为 failed（候选与诊断保留可复核），
+    // 并返回结构化错误——绝不静默放宽预算。
+    let repair_rounds = task["repair"]["rounds"].as_u64().unwrap_or(0);
+    if repair_entry || repair_rounds > 0 {
+        if let Err(error) = task_repair_budget_allows(&task, now_ms()) {
+            tx.execute("UPDATE creator_studio_tasks SET phase='failed',updated_at_ms=?2 WHERE task_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            tx.execute("UPDATE creator_jobs SET status='failed',failure_json=?2,updated_at_ms=?3 WHERE job_id=?1",
+                rusqlite::params![task_id,json!({"code":"creator_task_repair_budget_exhausted"}).to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            append_event(&tx,&task_id,"failure","host","host-observed","修复预算已耗尽，任务如实收尾为失败（候选与诊断保留可复核）",
+                &json!({"code":"creator_task_repair_budget_exhausted","phase":"failed","criteriaRevision":frozen_digest}))?;
+            tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            notify_event_subscribers();
+            return Err(error);
+        }
+    }
+    // PR11：总轮次（首轮 = 1；修复轮从 2 起）。首轮执行同时冻结验收标准（幂等）；
+    // 计时起点在首次转入 executing 时落定（批准路径先行冻结的场景也覆盖）。
+    let attempt = repair_rounds + 1;
+    task_freeze_criteria(&tx, &task_id, &task)?;
     let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    tx.execute("UPDATE creator_studio_tasks SET phase='executing',updated_at_ms=?2 WHERE task_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    tx.execute("UPDATE creator_studio_tasks SET phase='executing',repair_started_at_ms=COALESCE(repair_started_at_ms,?2),updated_at_ms=?2 WHERE task_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     tx.execute("UPDATE creator_jobs SET status='executing',progress_json=?2,updated_at_ms=?3 WHERE job_id=?1",
-        rusqlite::params![task_id,json!({"execution":{"operationId":operation_id,"executor":executor_name,"status":"executing"} }).to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+        rusqlite::params![task_id,json!({"execution":{"operationId":operation_id,"executor":executor_name,"status":"executing","attempt":attempt} }).to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     let push_agent_id = format!("{executor_name}:{task_id}");
     connection_upsert(&tx,&push_agent_id,&session_id,ConnectionUpdate { executor:Some(connection_executor),transport:Some(if executor_name.starts_with("acp") { "acp-stdio" } else { "mcp-stdio" }),state:"busy",capabilities:Some(vec!["task.execute".into(),"events.publish".into()]),stable_error:None,at_ms:now_ms() })?;
     tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     execution_cancellations().lock().unwrap_or_else(|error| error.into_inner()).insert(task_id.clone(), cancelled.clone());
-    let _ = append_event_db(data_home,&task_id,"progress",executor_name,"host-observed","执行器进程已启动",&json!({"executor":executor_name,"phase":"executing"}));
+    let _ = append_event_db(data_home,&task_id,"progress",executor_name,"host-observed","执行器进程已启动",&json!({"executor":executor_name,"phase":"executing","attempt":attempt}));
     let progress_home = data_home.to_path_buf();
     let progress_task = task_id.clone();
     let progress_session = session_id.clone();
@@ -1749,11 +1960,23 @@ pub fn task_execute_with_executor(data_home: &Path, payload: &Value, executor: &
             let _ = connection_upsert(&db,&progress_agent,&progress_session,ConnectionUpdate { executor:Some(connection_executor),transport:None,state,capabilities:None,stable_error:None,at_ms:now_ms() });
         }
     });
+    // PR11：修复轮诊断只随第 2 次起的执行进入执行器请求（上一轮验收复核失败的
+    // 结构化事实：verdict/断言摘录/buildId/candidateId/轮次与预算）。诊断不含
+    // 判据集，也不含任何改标准的通道——标准已冻结，执行器没有改它的面。
+    let repair_diagnostics = if attempt > 1 {
+        Some(json!({
+            "attempt": attempt,
+            "maxRepairRounds": task["repair"]["maxRounds"],
+            "criteriaRevision": frozen_digest,
+            "lastFailure": task["repair"]["lastFailure"],
+        }))
+    } else { None };
     let request = super::creator_agent_executor::AgentExecutionRequest {
         data_home: data_home.to_path_buf(), goal: task["humanRequest"].as_str().unwrap_or_default().to_owned(),
         human_request: task["humanRequest"].as_str().unwrap_or_default().to_owned(), artifact: task["artifact"].clone(),
         target_refs: if task["targetRefs"].is_null() { None } else { Some(task["targetRefs"].clone()) },
         plan_revision: expected_plan_revision, timeout: std::time::Duration::from_millis(timeout_ms), include_viewport,
+        repair_diagnostics,
     };
     let heartbeat_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let heartbeat_home = data_home.to_path_buf();
@@ -1795,12 +2018,20 @@ pub fn task_execute_with_executor(data_home: &Path, payload: &Value, executor: &
     if current_phase != "executing" || current_plan != expected_plan_revision {
         return Err(ToolError::new("creator_task_invalid_transition", "The task changed while the executor was running."));
     }
+    // PR11：区分「执行器自身失败」（崩溃/超时/取消——终态失败，既有语义不变）
+    // 与「执行器回块后的验收复核失败」（code-game 修复轮的唯一入口）。执行器回块
+    // 里真实指认的 buildId 用于修复轮诊断（verdict/断言摘录/测试记录摘要）。
+    let executor_returned = result.is_ok();
+    let named_build_id = result.as_ref().ok()
+        .and_then(|success| success.preview["buildId"].as_str())
+        .filter(|value| valid_content_digest(value))
+        .map(str::to_owned);
     let result = match result {
         Ok(success) => {
             if code_game_task {
                 // code-game：宿主不产 Preview。执行器回块必须携带它真实指认的
                 // buildId，宿主按 sealed 构建记录 + 无头测试记录独立核对（与 pull
-                // 提交同一真实工作闸）；核对不过任务如实失败（走下方失败臂）。
+                // 提交同一真实工作闸）；核对不过走下方失败臂（预算内转修复轮）。
                 let verified = match success.preview["buildId"].as_str().filter(|value| valid_content_digest(value)).map(str::to_owned) {
                     Some(build_id) => verify_code_game_build(data_home, &task["artifact"], &build_id).map(|verified| (build_id, verified)),
                     None => Err(ToolError::new("preview_required", "Executor did not name a sealed candidate buildId for the Code Game task.")),
@@ -1859,6 +2090,63 @@ pub fn task_execute_with_executor(data_home: &Path, payload: &Value, executor: &
             task_payload(data_home, &task_id)
         }
         Err(error) => {
+            // PR11：code-game 执行器回块后的验收复核失败 → 预算内转修复轮
+            // （phase=repairing，下一轮执行从该相位进入）；预算耗尽或执行器自身
+            // 失败 → 终态失败（候选、测试记录与诊断保留可复核）。轮次语义：
+            // attempt 是总轮次（首轮=1）；repair_rounds 记已授权修复轮数（上限
+            // maxRounds，默认 3——初版策略，可配置不是协议）。
+            if code_game_task && executor_returned {
+                let diagnostics = repair_failure_diagnostics(data_home, named_build_id.as_deref(), &error, attempt);
+                let max_rounds = task["repair"]["maxRounds"].as_u64().unwrap_or(DEFAULT_REPAIR_ROUNDS);
+                if attempt <= max_rounds {
+                    // 预算内：repairing 相位 + 轮次 +1 + 失败事实落 repair_last
+                    // （下一轮执行器请求与 UI 的诊断源）；build/test 判据各落一条
+                    // host-observed 失败证据（带轮次）。候选仍活跃（PR09：失败构建
+                    // 不提交），下一轮 fork-or-reuse 由执行器按诊断自行决策。
+                    let used_rounds = attempt;
+                    tx.execute("UPDATE creator_studio_tasks SET phase='repairing',repair_rounds=?2,repair_last_json=?3,updated_at_ms=?4 WHERE task_id=?1",
+                        rusqlite::params![task_id,used_rounds,diagnostics.to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+                    tx.execute("UPDATE creator_jobs SET status='repairing',progress_json=?2,updated_at_ms=?3 WHERE job_id=?1",
+                        rusqlite::params![task_id,json!({"execution":{"operationId":operation_id,"executor":executor_name,"status":"repairing","attempt":attempt} }).to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+                    for criterion in task["acceptanceCriteria"].as_array().unwrap_or(&Vec::new()).iter()
+                        .filter(|criterion| matches!(criterion["requiredEvidenceKind"].as_str(), Some("build") | Some("test"))) {
+                        let criterion_id = criterion["criterionId"].as_str().unwrap_or_default().to_owned();
+                        let evidence_kind = criterion["requiredEvidenceKind"].as_str().unwrap_or_default().to_owned();
+                        let evidence_id = new_id("evidence-");
+                        tx.execute("INSERT INTO creator_studio_task_evidence(evidence_id,task_id,plan_revision,step_id,criterion_id,kind,trust_level,summary,data_json,created_at_ms)
+                            VALUES(?1,?2,?3,'human-review',?4,?5,'host-observed',?6,?7,?8)",
+                            rusqlite::params![evidence_id,task_id,expected_plan_revision,criterion_id,evidence_kind,
+                                format!("第 {attempt} 轮验收复核未通过（修复轮已记录）"),
+                                json!({"round":attempt,"code":error.code,"verdict":diagnostics["verdict"],"buildId":diagnostics["buildId"],"testRecordDigest":diagnostics["testRecordDigest"]}).to_string(),now_ms()])
+                            .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+                        append_event(&tx,&task_id,"evidence","host","host-observed","修复轮验收复核失败证据已记录",&json!({"evidenceId":evidence_id,"round":attempt,"criterionId":criterion_id,"kind":evidence_kind,"trustLevel":"host-observed"}))?;
+                    }
+                    append_event(&tx,&task_id,"failure","host","host-observed","验收复核未通过；任务进入预算内修复轮（验收标准已冻结，只改实现不改标准）",
+                        &json!({"code":"creator_task_repair_round","round":attempt,"repairRound":attempt - 1,"repairRoundsUsed":used_rounds,
+                            "maxRepairRounds":max_rounds,"criteriaRevision":frozen_digest,"phase":"repairing","executor":executor_name,
+                            "verdict":diagnostics["verdict"],"buildId":diagnostics["buildId"],"candidateId":diagnostics["candidateId"],
+                            "candidateRevision":diagnostics["candidateRevision"],"testRecordDigest":diagnostics["testRecordDigest"],
+                            "message":diagnostics["message"]}))?;
+                    let result = json!({"taskId":task_id,"phase":"repairing","round":attempt,"repairRoundsUsed":used_rounds,"maxRepairRounds":max_rounds});
+                    task_save_receipt(&tx, &operation_id, &hash, &result)?;
+                    tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+                    connection_upsert(&db,&push_agent_id,&session_id,ConnectionUpdate { executor:None,transport:None,state:"offline",capabilities:None,stable_error:Some(Some(if valid_connection_error(error.code) { error.code } else { "executor_failed" })),at_ms:now_ms() })?;
+                    notify_event_subscribers();
+                    return task_payload(data_home, &task_id);
+                }
+                // 预算耗尽：终态失败（结构化原因 + 上一轮诊断），控制权交还用户。
+                let exhausted = json!({"code":"creator_task_repair_budget_exhausted","round":attempt,"maxRepairRounds":max_rounds,"lastFailure":diagnostics});
+                tx.execute("UPDATE creator_studio_tasks SET phase='failed',repair_last_json=?2,updated_at_ms=?3 WHERE task_id=?1",
+                    rusqlite::params![task_id,diagnostics.to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+                tx.execute("UPDATE creator_jobs SET status='failed',progress_json=?2,failure_json=?3,updated_at_ms=?4 WHERE job_id=?1",
+                    rusqlite::params![task_id,json!({"execution":{"operationId":operation_id,"executor":executor_name,"status":"failed","code":"creator_task_repair_budget_exhausted"} }).to_string(),exhausted.to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+                append_event(&tx,&task_id,"failure","host","host-observed","修复预算已耗尽，任务如实收尾为失败（候选、测试记录与诊断保留可复核）",&exhausted)?;
+                tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+                connection_upsert(&db,&push_agent_id,&session_id,ConnectionUpdate { executor:None,transport:None,state:"offline",capabilities:None,stable_error:Some(Some("creator_task_repair_budget_exhausted")),at_ms:now_ms() })?;
+                notify_event_subscribers();
+                return Err(ToolError::new("creator_task_repair_budget_exhausted",
+                    format!("Code Game task failed acceptance after {attempt} round(s); the repair budget ({max_rounds} repair rounds) is exhausted. Candidate, test records and diagnostics remain reviewable.")));
+            }
             tx.execute("UPDATE creator_studio_tasks SET phase='failed',updated_at_ms=?2 WHERE task_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
             tx.execute("UPDATE creator_jobs SET status='failed',progress_json=?2,failure_json=?3,updated_at_ms=?4 WHERE job_id=?1",
                 rusqlite::params![task_id,json!({"execution":{"operationId":operation_id,"executor":executor_name,"status":"failed","code":error.code} }).to_string(),json!({"code":error.code}).to_string(),now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
@@ -2378,6 +2666,80 @@ fn task_cancel(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
     task_payload(data_home, &task_id)
 }
 
+/// PR11 冻结验收标准的唯一变更入口（第 1 步）：提议新判据集——只记录提案
+/// （摘要 + 判据 + 理由）到 criteria_proposed_json，绝不改动生效判据。修复循环
+/// 永不调用本工具；生效必须经 creator_task_criteria_approve 的人工批准。
+fn task_criteria_propose(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
+    let task_id = task_id_arg(payload, "taskId")?;
+    let criteria = task_criteria(payload)?;
+    let reason = task_text_arg(payload, "reason", 500)?;
+    let operation_id = task_id_arg(payload, "operationId")?;
+    let hash = task_hash(payload)?;
+    let mut db = open_db(&sessions_db(data_home)?, false)?;
+    ensure_schema(&db)?;
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    if let Some(result) = task_receipt(&tx, &operation_id, &hash)? { return Ok(result); }
+    let (task, _, _, phase) = task_row(&tx, &task_id)?;
+    if task_terminal(&phase) { return Err(ToolError::new("creator_task_invalid_transition", format!("Task is already {phase}."))); }
+    // 冻结护栏：提案的基线必须可信——现行标准若已被绕过改动，提案直接拒绝。
+    task_assert_criteria_intact(&task)?;
+    let proposal_digest = criteria_revision_digest(task["humanRequest"].as_str().unwrap_or_default(), &json!(criteria))?;
+    let proposal = json!({"digest":proposal_digest,"criteria":criteria,"reason":reason,
+        "baseCriteriaRevision":task["criteriaRevision"],"proposedAtMs":now_ms()});
+    tx.execute("UPDATE creator_studio_tasks SET criteria_proposed_json=?2,updated_at_ms=?3 WHERE task_id=?1",
+        rusqlite::params![task_id,proposal.to_string(),now_ms()])
+        .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let result = json!({"taskId":task_id,"phase":phase,"proposalDigest":proposal_digest,"applied":false});
+    append_event(&tx,&task_id,"plan","studio","creator-declared","验收标准修订已提议（未生效；等待人工批准）",
+        &json!({"proposalDigest":proposal_digest,"criteriaCount":criteria.len(),
+            "reason":reason.chars().take(200).collect::<String>(),"baseCriteriaRevision":task["criteriaRevision"]}))?;
+    task_save_receipt(&tx, &operation_id, &hash, &result)?;
+    tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    notify_event_subscribers();
+    task_payload(data_home, &task_id)
+}
+
+/// PR11 冻结验收标准的唯一变更入口（第 2 步）：人工批准后生效——逐摘要核对
+/// 待批提案（expectedProposalDigest 必须与存储提案一致），bump criteriaRevision
+/// 并重新冻结（新快照 + 新摘要），清除提案。生效后每轮执行的冻结护栏按新版本
+/// 核对。修复循环永不调用本工具；这是任务变更，与计划批准同闸。
+fn task_criteria_approve(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
+    let task_id = task_id_arg(payload, "taskId")?;
+    let expected_proposal_digest = task_id_arg(payload, "expectedProposalDigest")?;
+    let operation_id = task_id_arg(payload, "operationId")?;
+    let hash = task_hash(payload)?;
+    let mut db = open_db(&sessions_db(data_home)?, false)?;
+    ensure_schema(&db)?;
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    if let Some(result) = task_receipt(&tx, &operation_id, &hash)? { return Ok(result); }
+    task_require_no_pending_confirm(&tx, &task_id)?;
+    let (task, _, _, phase) = task_row(&tx, &task_id)?;
+    if task_terminal(&phase) { return Err(ToolError::new("creator_task_invalid_transition", format!("Task is already {phase}."))); }
+    // 现行标准必须仍与冻结快照一致（在可信基线上 bump 版本），随后以提案内容
+    // 重写生效判据并重新冻结。
+    task_assert_criteria_intact(&task)?;
+    let proposal = task["criteriaProposal"].as_object()
+        .ok_or_else(|| ToolError::new("creator_task_criteria_proposal_missing", "No pending criteria proposal for this task; propose one with creator_task_criteria_propose first."))?;
+    let stored_digest = proposal.get("digest").and_then(Value::as_str).unwrap_or_default();
+    if stored_digest != expected_proposal_digest {
+        return Err(ToolError::new("creator_task_criteria_proposal_mismatch", "expectedProposalDigest does not match the pending proposal; re-read the task and approve the current digest."));
+    }
+    let new_criteria = proposal.get("criteria").cloned().unwrap_or(Value::Null);
+    let new_revision = task["criteriaRevision"].as_u64().unwrap_or(0) + 1;
+    let new_digest = criteria_revision_digest(task["humanRequest"].as_str().unwrap_or_default(), &new_criteria)?;
+    let snapshot = json!({"criteriaRevision":new_revision,"digest":new_digest,"criteria":new_criteria,"frozenAtMs":now_ms()});
+    tx.execute("UPDATE creator_studio_tasks SET acceptance_json=?2,criteria_revision=?3,criteria_frozen_json=?4,criteria_proposed_json=NULL,updated_at_ms=?5 WHERE task_id=?1",
+        rusqlite::params![task_id,new_criteria.to_string(),new_revision,snapshot.to_string(),now_ms()])
+        .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    let result = json!({"taskId":task_id,"phase":phase,"criteriaRevision":new_revision,"criteriaDigest":new_digest,"applied":true});
+    append_event(&tx,&task_id,"review","studio","creator-declared","验收标准修订已获人工批准并生效",
+        &json!({"criteriaRevision":new_revision,"criteriaDigest":new_digest,"previousCriteriaRevision":task["criteriaRevision"]}))?;
+    task_save_receipt(&tx, &operation_id, &hash, &result)?;
+    tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    notify_event_subscribers();
+    task_payload(data_home, &task_id)
+}
+
 /// Shared by Desktop creator.task.* and MCP creator_task_*: one state machine and
 /// one sessions.sqlite authority. No TypeScript lifecycle mirror is involved.
 pub fn task_dispatch(data_home: &Path, method: &str, payload: &Value, creator_binary: Option<&std::path::Path>) -> Result<Value, ToolError> {
@@ -2395,6 +2757,10 @@ pub fn task_dispatch(data_home: &Path, method: &str, payload: &Value, creator_bi
         "creator.task.review.accept" => task_review_accept(data_home, payload),
         "creator.task.review.reject" => task_review_reject(data_home, payload),
         "creator.task.cancel" => task_cancel(data_home, payload),
+        // PR11：冻结验收标准的显式变更路径（提议 → 人工批准）。修复循环不持有
+        // 这两个方法——判据只能在人类批准后以新版本生效。
+        "creator.task.criteria.propose" => task_criteria_propose(data_home, payload),
+        "creator.task.criteria.approve" => task_criteria_approve(data_home, payload),
         "creator.task.list_open" => task_list_open(data_home, payload),
         "creator.task.claim" => task_claim(data_home, payload),
         "creator.task.submit_result" => task_submit_result(data_home, payload),
@@ -2454,6 +2820,8 @@ pub fn run(name: &str, args: &Value, data_home: &Path, _allow_local_writes: bool
         "creator_task_review_accept" => task_mcp(data_home, "creator.task.review.accept", args),
         "creator_task_review_reject" => task_mcp(data_home, "creator.task.review.reject", args),
         "creator_task_cancel" => task_mcp(data_home, "creator.task.cancel", args),
+        "creator_task_criteria_propose" => task_mcp(data_home, "creator.task.criteria.propose", args),
+        "creator_task_criteria_approve" => task_mcp(data_home, "creator.task.criteria.approve", args),
         "creator_task_list_open" => task_list_open(data_home, args),
         "creator_task_claim" => task_claim(data_home, args),
         "creator_task_submit_result" => task_submit_result(data_home, args),
@@ -3771,14 +4139,24 @@ mod tests {
         assert_eq!(executed["proposedChangeSetId"], json!(build_id));
         assert_eq!(executed["execution"]["buildId"], json!(build_id));
         assert!(executed["evidence"].as_array().unwrap().iter().all(|row| row["trustLevel"] == "host-observed"));
-        // 不指认 buildId 的执行器回块：任务如实失败（preview_required）。
+        // PR11：不指认 buildId 的执行器回块 → 验收复核失败（preview_required），
+        // 预算内转修复轮（诊断带 preview_required 事实）；预算（默认 3 轮）耗尽后
+        // 任务如实收尾为 failed。非 code-game 工件仍是一轮终态失败（见
+        // studio_task_execute_honors_revision_and_failure_modes）。
         let mut preview_only = code_game_goal(session_id, "cg-exec-plain-create", workspace_id, &base);
         preview_only["acceptanceCriteria"] = json!([{"criterionId":"code-build","description":"build","requiredEvidenceKind":"build"}]);
         let plain_task = task_create(&home, &preview_only).unwrap()["taskId"].as_str().unwrap().to_owned();
         task_plan_submit(&home, &code_game_plan(&plain_task, 1, "cg-exec-plain-plan", &base)).unwrap();
         task_plan_approve(&home, &json!({"taskId":&plain_task,"planRevision":1,"expectedArtifactRevision":base,"operationId":"cg-exec-plain-approve"})).unwrap();
-        let plain_executor = super::super::creator_agent_executor::tests::FakeExecutor::success();
-        assert_eq!(task_execute_with_executor(&home, &json!({"taskId":&plain_task,"expectedPlanRevision":1,"expectedArtifactRevision":base,"operationId":"cg-exec-plain-run"}), &plain_executor).unwrap_err().code, "preview_required");
+        let plain_executor = ScriptedCodeGameExecutor::from_previews(vec![json!({}), json!({}), json!({}), json!({})]);
+        for round in 1..=3 {
+            let executed = task_execute_with_executor(&home, &json!({"taskId":&plain_task,"expectedPlanRevision":1,"expectedArtifactRevision":base,
+                "operationId":format!("cg-exec-plain-run{round}")}), &plain_executor).unwrap();
+            assert_eq!(executed["phase"], "repairing", "第 {round} 轮失败后仍在修复预算内");
+            assert_eq!(executed["repair"]["rounds"], round);
+            assert_eq!(executed["repair"]["lastFailure"]["code"], "preview_required");
+        }
+        assert_eq!(task_execute_with_executor(&home, &json!({"taskId":&plain_task,"expectedPlanRevision":1,"expectedArtifactRevision":base,"operationId":"cg-exec-plain-run4"}), &plain_executor).unwrap_err().code, "creator_task_repair_budget_exhausted");
         assert_eq!(task_payload(&home, &plain_task).unwrap()["phase"], "failed");
         std::fs::remove_dir_all(home).unwrap();
     }
@@ -3821,6 +4199,269 @@ mod tests {
         // 锚定的构建属于别的密封身份（candidate 前缀）→ build_workspace_revision 拒绝。
         let foreign = seal_candidate_build(&home, "candidate-0123456789abcdef", &base);
         assert_eq!(task_check_artifact(&home, &json!({"kind":"code-game","workspaceId":workspace_id,"expectedRevision":base,"baseBuildId":foreign})).unwrap_err().code, "workspace_build_mismatch");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    // ── PR11：冻结验收标准 + 预算化修复循环 ─────────────────────────────
+
+    /// 修复轮测试执行器：按脚本逐个回块预览载荷（buildId 或空载荷——宿主会独立
+    /// 核对构建链与测试记录），并记录收到的执行请求供断言诊断传播。
+    struct ScriptedCodeGameExecutor {
+        previews: std::sync::Mutex<Vec<Value>>,
+        requests: std::sync::Mutex<Vec<super::super::creator_agent_executor::AgentExecutionRequest>>,
+    }
+    impl ScriptedCodeGameExecutor {
+        fn new(builds: Vec<String>) -> Self {
+            Self::from_previews(builds.into_iter().map(|build_id| json!({"buildId": build_id})).collect())
+        }
+        fn from_previews(previews: Vec<Value>) -> Self {
+            Self { previews: std::sync::Mutex::new(previews), requests: std::sync::Mutex::new(Vec::new()) }
+        }
+        fn requests(&self) -> Vec<super::super::creator_agent_executor::AgentExecutionRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+    impl super::super::creator_agent_executor::CreatorAgentExecutor for ScriptedCodeGameExecutor {
+        fn execute(&self, request: super::super::creator_agent_executor::AgentExecutionRequest, _cancelled: &std::sync::atomic::AtomicBool)
+            -> Result<super::super::creator_agent_executor::AgentExecutionSuccess, ToolError> {
+            self.requests.lock().unwrap().push(request);
+            let preview = self.previews.lock().unwrap().remove(0);
+            Ok(super::super::creator_agent_executor::AgentExecutionSuccess {
+                summary: "scripted build".into(), preview })
+        }
+    }
+
+    /// verdict=failed 且带断言结果的无头测试记录（PR06 形状：assertions[id,status]）。
+    fn record_failed_test(home: &Path, build_id: &str, candidate_revision: &str, candidate_id: &str) {
+        super::super::creator_code_workspace::write_test_record(home, build_id, candidate_revision, 7, 600,
+            &super::super::creator_code_workspace::CodeTestOutcome { ok: true, source: &json!({"source":"synthetic"}),
+                verdict: &json!({"executionOk":true,"verdict":"failed","verdictReason":"assertion",
+                    "assertions":[{"id":"pause-button","status":"failed"}]}) },
+            Some(candidate_id)).unwrap();
+    }
+
+    fn prepare_code_game_task(home: &Path, workspace_id: &str, base: &str, operation_id: &str, repair_policy: Value) -> String {
+        let session = session_open(home, &json!({"agentId":"studio-local"})).unwrap();
+        let session_id = session["data"]["sessionId"].as_str().unwrap();
+        let mut goal = code_game_goal(session_id, &format!("{operation_id}-create"), workspace_id, base);
+        goal["repairPolicy"] = repair_policy;
+        let created = task_create(home, &goal).unwrap();
+        let task_id = created["taskId"].as_str().unwrap().to_owned();
+        task_plan_submit(home, &code_game_plan(&task_id, 1, &format!("{operation_id}-plan"), base)).unwrap();
+        task_plan_approve(home, &json!({"taskId":&task_id,"planRevision":1,"expectedArtifactRevision":base,"operationId":format!("{operation_id}-approve")})).unwrap();
+        task_id
+    }
+
+    /// 冻结在首轮执行落盘（revision=1 + 快照摘要），修复轮只改实现；绕过冻结流程
+    /// 改判据在下一轮执行的护栏处结构化失败（creator_task_criteria_frozen）。
+    #[test]
+    fn criteria_freeze_is_recorded_at_first_execute_and_guarded() {
+        let home = temp_home();
+        let workspace_id = "gws-0123456789abcdef";
+        let base = code_game_workspace_fixture(&home, workspace_id);
+        let task_id = prepare_code_game_task(&home, workspace_id, &base, "cg-freeze", json!({"maxRounds":1}));
+        let (candidate_id, candidate_revision) = fork_and_edit_candidate(&home, workspace_id, &base, "cg-freeze-cand");
+        let build_id = seal_candidate_build(&home, &candidate_id, &candidate_revision);
+        record_failed_test(&home, &build_id, &candidate_revision, &candidate_id);
+        let executor = ScriptedCodeGameExecutor::new(vec![build_id.clone()]);
+        let executed = task_execute_with_executor(&home, &json!({"taskId":&task_id,"expectedPlanRevision":1,"expectedArtifactRevision":base,"operationId":"cg-freeze-run"}), &executor).unwrap();
+        // 首轮失败 → repairing（不是终态 failed），冻结标准与预算落列。
+        assert_eq!(executed["phase"], "repairing");
+        assert_eq!(executed["criteriaRevision"], 1);
+        assert!(executed["criteriaDigest"].as_str().unwrap().starts_with("sha256:"));
+        assert_eq!(executed["repair"]["rounds"], 1);
+        assert_eq!(executed["repair"]["maxRounds"], 1);
+        assert_eq!(executed["repair"]["lastFailure"]["verdict"], "failed");
+        assert_eq!(executed["repair"]["lastFailure"]["buildId"], json!(build_id));
+        assert_eq!(executed["repair"]["lastFailure"]["assertions"][0]["id"], "pause-button");
+        let events = events_subscribe(&home,&json!({"taskId":task_id,"limit":100})).unwrap();
+        let serialized = serde_json::to_string(&events).unwrap();
+        assert!(serialized.contains("验收标准已冻结"), "冻结事件应记录：{serialized}");
+        assert!(serialized.contains("creator_task_repair_round"), "修复轮事件应记录");
+        assert!(serialized.contains(executed["repair"]["lastFailure"]["testRecordDigest"].as_str().unwrap()), "测试记录摘要应进修复轮事件");
+        // 绕过冻结流程直改判据（模拟任何未来的判据写入路径）：下一轮执行被护栏拒绝。
+        {
+            let db = open_db(&sessions_db(&home).unwrap(), false).unwrap();
+            let tampered = json!([{"criterionId":"weakened","description":"改弱后的标准","requiredEvidenceKind":"human-note"}]);
+            db.execute("UPDATE creator_studio_tasks SET acceptance_json=?2 WHERE task_id=?1",
+                rusqlite::params![task_id, tampered.to_string()]).unwrap();
+        }
+        let tampered_payload = json!({"taskId":&task_id,"expectedPlanRevision":1,"expectedArtifactRevision":base,"operationId":"cg-freeze-run2"});
+        let error = task_execute_with_executor(&home, &tampered_payload, &executor).unwrap_err();
+        assert_eq!(error.code, "creator_task_criteria_frozen");
+        assert_eq!(task_payload(&home, &task_id).unwrap()["phase"], "repairing", "护栏拒绝后任务保持 repairing，不动终态");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// 修复轮循环：fail → 修复轮记录（轮次/诊断/证据）→ 第二轮通过 → awaiting-review；
+    /// 第二轮执行器请求携带上一轮结构化诊断（verdict/断言/buildId/candidateId/
+    /// 测试记录摘要/冻结摘要），首轮请求不带诊断。
+    #[test]
+    fn repair_loop_records_rounds_passes_on_second_attempt_with_diagnostics() {
+        let home = temp_home();
+        let workspace_id = "gws-0123456789abcdef";
+        let base = code_game_workspace_fixture(&home, workspace_id);
+        let task_id = prepare_code_game_task(&home, workspace_id, &base, "cg-loop", json!({}));
+        let (candidate_id, candidate_revision) = fork_and_edit_candidate(&home, workspace_id, &base, "cg-loop-cand");
+        let failed_build = seal_candidate_build(&home, &candidate_id, &candidate_revision);
+        record_failed_test(&home, &failed_build, &candidate_revision, &candidate_id);
+        let passing_build = seal_candidate_build(&home, &candidate_id, &candidate_revision);
+        record_passing_test(&home, &passing_build, &candidate_revision, &candidate_id);
+        let executor = ScriptedCodeGameExecutor::new(vec![failed_build.clone(), passing_build.clone()]);
+        let first = task_execute_with_executor(&home, &json!({"taskId":&task_id,"expectedPlanRevision":1,"expectedArtifactRevision":base,"operationId":"cg-loop-run1"}), &executor).unwrap();
+        assert_eq!(first["phase"], "repairing");
+        assert_eq!(first["repair"]["rounds"], 1);
+        let requests = executor.requests();
+        assert_eq!(requests.len(), 1, "首轮已执行");
+        assert!(requests[0].repair_diagnostics.is_none(), "首轮执行不带修复诊断");
+        let second = task_execute_with_executor(&home, &json!({"taskId":&task_id,"expectedPlanRevision":1,"expectedArtifactRevision":base,"operationId":"cg-loop-run2"}), &executor).unwrap();
+        assert_eq!(second["phase"], "awaiting-review");
+        assert_eq!(second["proposedChangeSetId"], json!(passing_build));
+        assert_eq!(second["repair"]["rounds"], 1, "通过后不再累计修复轮");
+        // 修复轮执行器请求携带上一轮结构化诊断（verdict/断言/buildId/candidateId/
+        // 测试记录摘要/冻结摘要）。
+        let requests = executor.requests();
+        assert_eq!(requests.len(), 2, "两次执行都已发生");
+        let diagnostics = requests[1].repair_diagnostics.as_ref().expect("修复轮必须携带诊断");
+        assert_eq!(diagnostics["attempt"], 2);
+        assert_eq!(diagnostics["maxRepairRounds"], 3);
+        assert_eq!(diagnostics["lastFailure"]["verdict"], "failed");
+        assert_eq!(diagnostics["lastFailure"]["buildId"], json!(failed_build));
+        assert_eq!(diagnostics["lastFailure"]["candidateId"], json!(candidate_id));
+        assert_eq!(diagnostics["lastFailure"]["candidateRevision"], json!(candidate_revision));
+        assert!(diagnostics["lastFailure"]["testRecordDigest"].as_str().unwrap().starts_with("sha256:"));
+        assert_eq!(diagnostics["lastFailure"]["assertions"][0]["id"], "pause-button");
+        // 冻结标准红线：执行器请求里没有判据集，也没有任何改标准的通道。
+        assert!(serde_json::to_string(diagnostics).unwrap().contains("criteriaRevision"), "诊断携带冻结摘要");
+        assert!(!serde_json::to_string(diagnostics).unwrap().contains("acceptanceCriteria"), "诊断不含判据集");
+        assert_eq!(requests[1].human_request, "在候选里给塔防加暂停按钮", "目标文本不变（修复轮不重写需求）");
+        // 修复轮证据：失败轮的 host-observed 证据带轮次，通过轮的证据在 awaiting-review 面可读。
+        let evidence = second["evidence"].as_array().unwrap();
+        assert!(evidence.iter().any(|row| row["trustLevel"] == "host-observed" && row["data"]["round"] == 1 && row["data"]["verdict"] == "failed"), "失败轮证据带轮次");
+        assert!(evidence.iter().any(|row| row["data"]["verdict"] == "passed"), "通过轮证据在场");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// 预算耗尽（maxRounds=0 与墙钟超限两条路）：结构化拒绝 + 终态 failed，但
+    /// 候选、最后测试记录与诊断都保留可复核（不静默放宽预算）。
+    #[test]
+    fn repair_budget_exhaustion_is_structured_and_still_reviewable() {
+        let home = temp_home();
+        let workspace_id = "gws-0123456789abcdef";
+        let base = code_game_workspace_fixture(&home, workspace_id);
+        // maxRounds=0：首轮验收失败即预算耗尽 → failed（结构化原因）。
+        let task_id = prepare_code_game_task(&home, workspace_id, &base, "cg-budget0", json!({"maxRounds":0}));
+        let (candidate_id, candidate_revision) = fork_and_edit_candidate(&home, workspace_id, &base, "cg-budget0-cand");
+        let build_id = seal_candidate_build(&home, &candidate_id, &candidate_revision);
+        record_failed_test(&home, &build_id, &candidate_revision, &candidate_id);
+        let executor = ScriptedCodeGameExecutor::new(vec![build_id.clone()]);
+        let error = task_execute_with_executor(&home, &json!({"taskId":&task_id,"expectedPlanRevision":1,"expectedArtifactRevision":base,"operationId":"cg-budget0-run"}), &executor).unwrap_err();
+        assert_eq!(error.code, "creator_task_repair_budget_exhausted");
+        let failed = task_payload(&home, &task_id).unwrap();
+        assert_eq!(failed["phase"], "failed");
+        assert_eq!(failed["failure"]["code"], "creator_task_repair_budget_exhausted");
+        assert_eq!(failed["repair"]["lastFailure"]["verdict"], "failed", "诊断保留可复核");
+        // 候选与测试记录仍在原位可读（PR09/PR06 面不被修复循环触碰）。
+        let candidate = super::super::creator_code_candidate::read_candidate_record(&home, &candidate_id).unwrap().unwrap();
+        assert_eq!(candidate.workspace_id, workspace_id);
+        assert_eq!(code_test_record_for(&home, &build_id).unwrap()["verdict"], "failed");
+        assert_eq!(task_execute_with_executor(&home, &json!({"taskId":&task_id,"expectedPlanRevision":1,"expectedArtifactRevision":base,"operationId":"cg-budget0-run2"}), &executor).unwrap_err().code, "creator_task_invalid_transition");
+        // 墙钟预算：修复轮入口检查 elapsed > wallClockMs → 同一结构化码。
+        let wall_task = prepare_code_game_task(&home, workspace_id, &base, "cg-wall", json!({"maxRounds":3,"wallClockMs":60_000}));
+        let (candidate_id, candidate_revision) = fork_and_edit_candidate(&home, workspace_id, &base, "cg-wall-cand");
+        let build_id = seal_candidate_build(&home, &candidate_id, &candidate_revision);
+        record_failed_test(&home, &build_id, &candidate_revision, &candidate_id);
+        let executor = ScriptedCodeGameExecutor::new(vec![build_id]);
+        let first = task_execute_with_executor(&home, &json!({"taskId":&wall_task,"expectedPlanRevision":1,"expectedArtifactRevision":base,"operationId":"cg-wall-run1"}), &executor).unwrap();
+        assert_eq!(first["phase"], "repairing");
+        {
+            let db = open_db(&sessions_db(&home).unwrap(), false).unwrap();
+            db.execute("UPDATE creator_studio_tasks SET repair_started_at_ms=?2 WHERE task_id=?1",
+                rusqlite::params![wall_task, now_ms().saturating_sub(61_000)]).unwrap();
+        }
+        let error = task_execute_with_executor(&home, &json!({"taskId":&wall_task,"expectedPlanRevision":1,"expectedArtifactRevision":base,"operationId":"cg-wall-run2"}), &executor).unwrap_err();
+        assert_eq!(error.code, "creator_task_repair_budget_exhausted");
+        assert_eq!(task_payload(&home, &wall_task).unwrap()["phase"], "failed");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// 判据修订必须走 propose → 人工批准：propose 只记录不生效；修复轮的执行器
+    /// 请求没有任何改标准通道；批准逐摘要核对，bump 版本并重新冻结。
+    #[test]
+    fn criteria_proposal_requires_explicit_human_approval() {
+        let home = temp_home();
+        let workspace_id = "gws-0123456789abcdef";
+        let base = code_game_workspace_fixture(&home, workspace_id);
+        let task_id = prepare_code_game_task(&home, workspace_id, &base, "cg-propose", json!({"maxRounds":3}));
+        let (candidate_id, candidate_revision) = fork_and_edit_candidate(&home, workspace_id, &base, "cg-propose-cand");
+        let failed_build = seal_candidate_build(&home, &candidate_id, &candidate_revision);
+        record_failed_test(&home, &failed_build, &candidate_revision, &candidate_id);
+        let executor = ScriptedCodeGameExecutor::new(vec![failed_build.clone()]);
+        let first = task_execute_with_executor(&home, &json!({"taskId":&task_id,"expectedPlanRevision":1,"expectedArtifactRevision":base,"operationId":"cg-propose-run1"}), &executor).unwrap();
+        assert_eq!(first["phase"], "repairing");
+        let original = task_payload(&home, &task_id).unwrap();
+        let original_criteria = original["acceptanceCriteria"].clone();
+        // 提议：只记录（digest + 判据 + 理由），生效判据不变。
+        let proposed_criteria = json!([
+            {"criterionId":"code-build","description":"候选构建成功（提议版）","requiredEvidenceKind":"build"},
+            {"criterionId":"code-test","description":"无头测试通过（提议版）","requiredEvidenceKind":"test"},
+            {"criterionId":"manual-review","description":"人工审阅（提议版）","requiredEvidenceKind":"human-note"}]);
+        let proposed = task_criteria_propose(&home, &json!({"taskId":&task_id,"acceptanceCriteria":proposed_criteria,
+            "reason":"首版判据覆盖不足","operationId":"cg-propose-propose"})).unwrap();
+        let digest = proposed["criteriaProposal"]["digest"].as_str().unwrap().to_owned();
+        assert!(digest.starts_with("sha256:"));
+        assert_eq!(proposed["acceptanceCriteria"], original_criteria, "提案不改动生效判据");
+        assert_eq!(proposed["criteriaRevision"], 1, "版本号在批准前不变");
+        // 修复轮继续：执行器请求仍没有判据面，提案保持未生效。
+        let passing_build = seal_candidate_build(&home, &candidate_id, &candidate_revision);
+        record_passing_test(&home, &passing_build, &candidate_revision, &candidate_id);
+        let executor = ScriptedCodeGameExecutor::new(vec![passing_build.clone()]);
+        let second = task_execute_with_executor(&home, &json!({"taskId":&task_id,"expectedPlanRevision":1,"expectedArtifactRevision":base,"operationId":"cg-propose-run2"}), &executor).unwrap();
+        assert_eq!(second["phase"], "awaiting-review");
+        assert_eq!(second["acceptanceCriteria"], original_criteria, "修复轮永不应用提案");
+        assert!(second["criteriaProposal"].is_object(), "提案在批准前保持待批");
+        // 错误摘要的批准被拒；正确摘要批准后 bump 版本并重新冻结。
+        assert_eq!(task_criteria_approve(&home, &json!({"taskId":&task_id,"expectedProposalDigest":"sha256:wrong","operationId":"cg-propose-criteria-approve-wrong"})).unwrap_err().code, "creator_task_criteria_proposal_mismatch");
+        let approved = task_criteria_approve(&home, &json!({"taskId":&task_id,"expectedProposalDigest":digest,"operationId":"cg-propose-criteria-approve"})).unwrap();
+        assert_eq!(approved["criteriaRevision"], 2);
+        assert_eq!(approved["acceptanceCriteria"], proposed_criteria, "批准后新判据生效");
+        assert!(approved["criteriaProposal"].is_null(), "提案已清除");
+        assert_eq!(approved["criteriaDigest"].as_str().unwrap(),
+            criteria_revision_digest(approved["humanRequest"].as_str().unwrap(), &approved["acceptanceCriteria"]).unwrap(), "重新冻结的摘要与新判据一致");
+        let events = events_subscribe(&home,&json!({"taskId":task_id,"limit":100})).unwrap();
+        let serialized = serde_json::to_string(&events).unwrap();
+        assert!(serialized.contains("验收标准修订已提议"), "提议事件应记录");
+        assert!(serialized.contains("验收标准修订已获人工批准"), "批准事件应记录");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// 修复策略形状纪律：默认 maxRounds=3；越界/未知键/非正整数结构化拒绝；
+    /// create 入口同样拒绝（与 task_criteria 同级把关）。
+    #[test]
+    fn repair_policy_is_validated_and_defaults_to_three_rounds() {
+        // 缺席 = 默认 maxRounds=3；空对象 = 全部默认；越界/未知键/非正整数拒绝。
+        assert_eq!(task_repair_policy(&json!({})).unwrap()["maxRounds"], 3);
+        assert_eq!(task_repair_policy(&json!({"repairPolicy":{}})).unwrap()["maxRounds"], 3);
+        assert_eq!(task_repair_policy(&json!({"repairPolicy":{"maxRounds":5}})).unwrap()["maxRounds"], 5);
+        assert_eq!(task_repair_policy(&json!({"repairPolicy":{"maxRounds":0}})).unwrap()["maxRounds"], 0);
+        assert_eq!(task_repair_policy(&json!({"repairPolicy":{"wallClockMs":1}})).unwrap()["wallClockMs"], 1);
+        assert_eq!(task_repair_policy(&json!({"repairPolicy":{"maxTokens":1}})).unwrap()["maxTokens"], 1);
+        assert_eq!(task_repair_policy(&json!({"repairPolicy":{"maxRounds":6}})).unwrap_err().code, "invalid_argument");
+        assert_eq!(task_repair_policy(&json!({"repairPolicy":{"maxRounds":-1}})).unwrap_err().code, "invalid_argument");
+        assert_eq!(task_repair_policy(&json!({"repairPolicy":{"wallClockMs":0}})).unwrap_err().code, "invalid_argument");
+        assert_eq!(task_repair_policy(&json!({"repairPolicy":{"wallClockMs":3_600_001}})).unwrap_err().code, "invalid_argument");
+        assert_eq!(task_repair_policy(&json!({"repairPolicy":{"maxTokens":0}})).unwrap_err().code, "invalid_argument");
+        assert_eq!(task_repair_policy(&json!({"repairPolicy":{"unknown":1}})).unwrap_err().code, "invalid_argument");
+        assert_eq!(task_repair_policy(&json!({"repairPolicy":"bogus"})).unwrap_err().code, "invalid_argument");
+        // create 入口：坏策略进不了台账。
+        let home = temp_home();
+        let workspace_id = "gws-0123456789abcdef";
+        let base = code_game_workspace_fixture(&home, workspace_id);
+        let session = session_open(&home, &json!({"agentId":"studio-local"})).unwrap();
+        let session_id = session["data"]["sessionId"].as_str().unwrap();
+        let mut goal = code_game_goal(session_id, "cg-policy-create", workspace_id, &base);
+        goal["repairPolicy"] = json!({"maxRounds":6});
+        assert_eq!(task_create(&home, &goal).unwrap_err().code, "invalid_argument");
         std::fs::remove_dir_all(home).unwrap();
     }
 }

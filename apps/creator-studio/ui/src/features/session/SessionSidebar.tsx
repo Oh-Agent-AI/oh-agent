@@ -5,7 +5,7 @@ import type { StudioSessionSummary } from "./studioSessions";
 
 const phaseLabel = (phase: string) => ({
   planning: "规划中", "awaiting-plan-approval": "待批准计划", ready: "待执行", executing: "执行中", validating: "校验中",
-  "awaiting-review": "待确认", accepted: "已保存", rejected: "已退回", failed: "失败", cancelled: "已取消",
+  repairing: "修复中", "awaiting-review": "待确认", accepted: "已保存", rejected: "已退回", failed: "失败", cancelled: "已取消",
 } as Record<string, string>)[phase] ?? "无任务";
 
 export function SessionSidebar(props: Readonly<{

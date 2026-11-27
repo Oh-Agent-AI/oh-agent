@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  canApproveTaskPlan, canCancelTask, canExecuteTask, canReviewTask, canReviseTaskPlan, defaultStudioPlanSteps,
-  isDefaultStudioPlan, mergeStudioEvents, parseStudioCapabilityStatus, parseStudioConnections, parseStudioEventBatch, parseStudioTargetRefs, parseStudioTask, studioPhaseLabel, studioTaskScopeId,
+  canApproveTaskPlan, canCancelTask, canContinueRepairTask, canExecuteTask, canReviewTask, canReviseTaskPlan, defaultStudioPlanSteps,
+  isDefaultStudioPlan, mergeStudioEvents, parseStudioCapabilityStatus, parseStudioConnections, parseStudioEventBatch, parseStudioTargetRefs, parseStudioTask, resolveSessionStatus, studioPhaseLabel, studioTaskScopeId,
 } from "../src/contracts/studioTask.ts";
 import { taskHasSceneObjectPreview } from "../src/features/agent/taskCommit.ts";
 
@@ -201,4 +201,42 @@ test("task human requests accept the Host 4000-character context contract", () =
   const humanRequest = `修改对象 Preview entity context: ${JSON.stringify({ previewEntity: { entityId: "decor:site:civic", pose: "x".repeat(600) } })}`;
   assert.equal(parseStudioTask({ ...task, humanRequest }).humanRequest, humanRequest);
   assert.throws(() => parseStudioTask({ ...task, humanRequest: "x".repeat(4_001) }), /creator_task_invalid/);
+});
+
+test("PR11 repairing phase and repair budget projection parse with frozen criteria revision", () => {
+  // repairing 是预算内修复轮的活跃相位：可继续修复、可退回计划、可取消，侧栏算「进行中」。
+  const repairing = parseStudioTask({
+    ...task,
+    phase: "repairing",
+    criteriaRevision: 1,
+    repair: { rounds: 1, maxRounds: 3, maxTokens: null, wallClockMs: 600_000, startedAtMs: 1_000,
+      lastFailure: { attempt: 1, code: "creator_task_test_not_passed", verdict: "failed", buildId: "b".repeat(64), assertions: [{ id: "a", status: "failed" }] } },
+  });
+  assert.equal(repairing.phase, "repairing");
+  assert.equal(canContinueRepairTask(repairing), true);
+  assert.equal(canExecuteTask(repairing), false);
+  assert.equal(canCancelTask(repairing), true);
+  assert.equal(canReviseTaskPlan(repairing), true);
+  assert.equal(resolveSessionStatus(repairing), "working");
+  assert.equal(studioPhaseLabel(repairing.phase), "修复中（预算内自动修复）");
+  assert.equal(repairing.criteriaRevision, 1);
+  assert.equal(repairing.repair?.rounds, 1);
+  assert.equal(repairing.repair?.maxRounds, 3);
+  assert.equal(repairing.repair?.wallClockMs, 600_000);
+  assert.equal(typeof (repairing.repair?.lastFailure as Record<string, unknown> | null)?.verdict, "string");
+  // 预算耗尽的失败任务：轮次与上一轮失败事实仍可读（诊断保留可复核）。
+  const exhausted = parseStudioTask({ ...task, phase: "failed", criteriaRevision: 1,
+    repair: { rounds: 3, maxRounds: 3, maxTokens: null, wallClockMs: null, startedAtMs: 1_000, lastFailure: { code: "creator_task_repair_budget_exhausted" } } });
+  assert.equal(canContinueRepairTask(exhausted), false);
+  assert.equal(canReviseTaskPlan(exhausted), true);
+  assert.equal(exhausted.repair?.rounds, 3);
+  assert.equal(resolveSessionStatus(exhausted), "failed");
+  // 旧宿主（无 repair/criteriaRevision 字段）：宽容回退，不拖垮任务投影。
+  assert.equal(parseStudioTask(task).criteriaRevision, null);
+  assert.equal(parseStudioTask(task).repair, null);
+  // 形状不符的 repair 整体视为缺失（rounds/maxRounds 缺一即弃）。
+  assert.equal(parseStudioTask({ ...task, repair: { rounds: 1 } }).repair, null);
+  assert.equal(parseStudioTask({ ...task, repair: "bogus" }).repair, null);
+  // 未冻结（criteriaRevision=0/null）与 unknown 相位守卫保持既有语义。
+  assert.equal(parseStudioTask({ ...task, phase: "repairing", repair: { rounds: 0, maxRounds: 0, maxTokens: null, wallClockMs: null, startedAtMs: null, lastFailure: null } }).repair?.rounds, 0);
 });
