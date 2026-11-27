@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   canApproveTaskPlan, canCancelTask, canExecuteTask, canReviewTask, canReviseTaskPlan, defaultStudioPlanSteps,
-  isDefaultStudioPlan, mergeStudioEvents, parseStudioCapabilityStatus, parseStudioConnections, parseStudioEventBatch, parseStudioTask, studioPhaseLabel, studioTaskScopeId,
+  isDefaultStudioPlan, mergeStudioEvents, parseStudioCapabilityStatus, parseStudioConnections, parseStudioEventBatch, parseStudioTargetRefs, parseStudioTask, studioPhaseLabel, studioTaskScopeId,
 } from "../src/contracts/studioTask.ts";
 import { taskHasSceneObjectPreview } from "../src/features/agent/taskCommit.ts";
 
@@ -46,6 +46,31 @@ test("City and story artifacts keep their scope id through the parse", () => {  
   assert.equal(story.artifact.storyId, "story-1");
   assert.equal(studioTaskScopeId(story), "story-1");
   assert.throws(() => parseStudioTask({ ...task, artifact: { kind: "creator-story", storyId: "story-1", expectedRevision: 2, extra: true } }), /creator_task_invalid/);
+});
+
+test("Parsed tasks retain typed targetRefs and drop malformed entries", () => {
+  // 未绑定目标任务：targetRefs 为空数组（旧宿主/无绑定回显一致）。
+  assert.deepEqual(parseStudioTask(task).targetRefs, []);
+  const cityRef = { entityId: "taxi", entityKind: "scene-model", previewId: "preview-live", projectRevision: 3, cityRevision: 7, worldRevision: "world-v7" };
+  const checked = parseStudioTask({ ...task, targetRefs: [cityRef] });
+  assert.deepEqual(checked.targetRefs, [cityRef]);
+  assert.equal(checked.targetRefs[0]?.entityKind, "scene-model");
+  // Story 条目没有 City 字段，仍是有效引用。
+  const storyRef = { entityId: "clue", entityKind: "story-node", previewId: "preview-live", projectRevision: 4 };
+  assert.deepEqual(parseStudioTask({ ...task, targetRefs: [storyRef] }).targetRefs, [storyRef]);
+  // 宿主归一化后 cityRevision/worldRevision 为 null 的场景条目不完整 → 丢弃。
+  assert.deepEqual(parseStudioTask({ ...task, targetRefs: [{ ...cityRef, cityRevision: null, worldRevision: null }] }).targetRefs, []);
+  // 缺 previewId / 未知 entityKind / 非对象条目：逐条丢弃，不拖垮任务投影。
+  const mixed = parseStudioTask({ ...task, targetRefs: [
+    { entityId: "taxi", entityKind: "scene-model", projectRevision: 3, cityRevision: 7, worldRevision: "world-v7" },
+    { entityId: "ghost", entityKind: "story-beat", previewId: "preview-live", projectRevision: 3 },
+    "barrier-3",
+    storyRef,
+  ] });
+  assert.deepEqual(mixed.targetRefs, [storyRef]);
+  // targetRefs 不是数组（旧宿主损坏回显）：按无绑定处理。
+  assert.deepEqual(parseStudioTargetRefs("barrier-3"), []);
+  assert.deepEqual(parseStudioTargetRefs(null), []);
 });
 
 test("Default plan is reviewable without an executor", () => {

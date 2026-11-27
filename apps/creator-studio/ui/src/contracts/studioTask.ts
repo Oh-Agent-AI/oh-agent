@@ -5,6 +5,28 @@ export function normalizeStudioGoal(value: string) {
 }
 export type StudioTaskStep = Readonly<{ stepId: string; ordinal: number; title: string; kind: "analysis" | "change" | "validation" | "review" }>;
 export type StudioTaskEvidence = Readonly<{ evidenceId: string; planRevision: number; stepId: string | null; criterionId: string; kind: string; trustLevel: string; summary: string; data: unknown; createdAtMs: number }>;
+/**
+ * 宿主绑定的结构化目标对象（P1-5/PR03）。线上保持扁平 ref 形状
+ * （entityId/entityKind/previewId/projectRevision + 可选 cityRevision/worldRevision）；
+ * 按 entityKind 判别：City/场景实体绑定 City 快照（cityRevision + worldRevision 必在，
+ * 宿主会对照权威快照核对），Story 实体没有 City 坐标系。宿主在 task.create/execute/
+ * submit 三个入口做权威校验（成员资格、归属、revision），UI 只透传。
+ */
+export type StudioCityTargetRef = Readonly<{
+  entityKind: "scene-model" | "scene-collider" | "scene-anchor" | "city-building" | "city-decor";
+  entityId: string;
+  previewId: string;
+  projectRevision: number;
+  cityRevision: number;
+  worldRevision: string;
+}>;
+export type StudioStoryTargetRef = Readonly<{
+  entityKind: "story-node" | "story-character";
+  entityId: string;
+  previewId: string;
+  projectRevision: number;
+}>;
+export type StudioTargetRef = StudioCityTargetRef | StudioStoryTargetRef;
 export function studioTaskScopeId(task: Pick<StudioTask, "artifact">): string {
   return task.artifact.projectId ?? task.artifact.cityId ?? task.artifact.storyId ?? "";
 }
@@ -15,6 +37,7 @@ export type StudioTask = Readonly<{
   goalRevision: number;
   humanRequest: string;
   artifact: Readonly<{ kind: "creator-project" | "creator-city" | "creator-story"; projectId?: string; cityId?: string; storyId?: string; expectedRevision: number }>;
+  targetRefs: readonly StudioTargetRef[];
   planRevision: number;
   stepIds: readonly string[];
   phase: StudioTaskPhase;
@@ -30,6 +53,37 @@ const count = (value: unknown): number | null => typeof value === "number" && Nu
 const object = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 const TASK_PHASES = ["planning", "awaiting-plan-approval", "ready", "executing", "validating", "awaiting-review", "accepted", "rejected", "failed", "cancelled"];
 const taskPhase = (value: unknown): StudioTaskPhase => TASK_PHASES.includes(String(value)) ? String(value) as StudioTaskPhase : "unknown";
+
+const CITY_TARGET_REF_KINDS: readonly StudioCityTargetRef["entityKind"][] = ["scene-model", "scene-collider", "scene-anchor", "city-building", "city-decor"];
+const STORY_TARGET_REF_KINDS: readonly StudioStoryTargetRef["entityKind"][] = ["story-node", "story-character"];
+/**
+ * 解析宿主回显的 targetRefs（PR03 权威校验后的既有线上形状）。不符合契约的条目
+ * 丢弃、不拖垮整个任务投影（与 stepIds 的宽容过滤一致）；宿主归一化后缺失的
+ * cityRevision/worldRevision 为 null，City/场景条目缺这两项即视为不完整而丢弃。
+ */
+export function parseStudioTargetRefs(value: unknown): readonly StudioTargetRef[] {
+  if (!Array.isArray(value)) return [];
+  const refs: StudioTargetRef[] = [];
+  for (const item of value) {
+    const row = object(item);
+    const entityId = text(row?.entityId, 128);
+    const entityKind = text(row?.entityKind, 128);
+    const previewId = text(row?.previewId, 128);
+    const projectRevision = count(row?.projectRevision);
+    if (!row || !entityId || !entityKind || !previewId || projectRevision === null) continue;
+    const storyKind = STORY_TARGET_REF_KINDS.find(kind => kind === entityKind);
+    if (storyKind) {
+      refs.push(Object.freeze({ entityKind: storyKind, entityId, previewId, projectRevision }));
+      continue;
+    }
+    const cityKind = CITY_TARGET_REF_KINDS.find(kind => kind === entityKind);
+    const cityRevision = count(row?.cityRevision);
+    const worldRevision = text(row?.worldRevision, 256);
+    if (!cityKind || cityRevision === null || !worldRevision) continue;
+    refs.push(Object.freeze({ entityKind: cityKind, entityId, previewId, projectRevision, cityRevision, worldRevision }));
+  }
+  return Object.freeze(refs);
+}
 
 export function parseStudioTask(value: unknown): StudioTask {
   const row = object(value);
@@ -71,7 +125,7 @@ export function parseStudioTask(value: unknown): StudioTask {
   }) : [];
   const execution = object(row.execution);
   return Object.freeze({ taskId, sessionId: text(row.sessionId) ?? "", goalId, goalRevision, humanRequest,
-    artifact: Object.freeze({ kind, [idKey]: scopeId, expectedRevision }), planRevision, stepIds: Object.freeze(stepIds), phase,
+    artifact: Object.freeze({ kind, [idKey]: scopeId, expectedRevision }), targetRefs: parseStudioTargetRefs(row.targetRefs), planRevision, stepIds: Object.freeze(stepIds), phase,
     proposedChangeSetId: text(row.proposedChangeSetId), lastEvidenceId: text(row.lastEvidenceId), steps: Object.freeze(steps), evidence: Object.freeze(evidence),
     execution: execution ? Object.freeze({ status: text(execution.status) ?? "unknown", ...(text(execution.previewId) ? { previewId: text(execution.previewId)! } : {}) }) : null });
 }

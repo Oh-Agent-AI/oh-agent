@@ -3,7 +3,7 @@ import type { CreatorRequest } from "../../adapters/creatorHost";
 import {
   defaultStudioPlanSteps, mergeStudioEvents, normalizeStudioGoal, parseStudioCapabilityStatus, parseStudioConnections, parseStudioEventBatch, parseStudioSessionHistory,
   parseStudioTask, studioSessionTaskFromTask,
-  type StudioCapabilityStatus, type StudioConnection, type StudioSessionHistory, type StudioTask, type StudioTaskEvent,
+  type StudioCapabilityStatus, type StudioConnection, type StudioSessionHistory, type StudioTargetRef, type StudioTask, type StudioTaskEvent,
 } from "../../contracts/studioTask";
 
 export type TaskScope = Readonly<{ kind: "creator-project"; projectId: string; revision: number } | { kind: "creator-city"; cityId: string; revision: number } | { kind: "creator-story"; storyId: string; revision: number }> | null;
@@ -157,8 +157,9 @@ export function useStudioTasks(request: CreatorRequest, scope: TaskScope, enable
     catch (cause) { setError(cause instanceof Error ? cause.message : "creator_task_failed"); }
     finally { setBusy(false); }
   };
-  /** 目标 → 建任务 + 提交默认计划；返回已提交的任务供快速通道继续批准/执行。 */
-  const planSubmit = async (goal: string, targetRefs?: readonly Record<string, unknown>[]): Promise<StudioTask> => {
+  /** 目标 → 建任务 + 提交默认计划；返回已提交的任务供快速通道继续批准/执行。
+   *  targetRefs 按 P1-5/PR03 契约透传（线上扁平 ref 形状不变；权威校验在宿主）。 */
+  const planSubmit = async (goal: string, targetRefs?: readonly StudioTargetRef[]): Promise<StudioTask> => {
     const requestText = normalizeStudioGoal(goal);
     const generation = generationRef.current;
     if (!scope || !sessionIdRef.current || !requestText) throw new Error("creator_task_scope_unavailable");
@@ -183,7 +184,7 @@ export function useStudioTasks(request: CreatorRequest, scope: TaskScope, enable
   });
   /** 快速通道：默认计划不携带信息，提交即批准并执行；配额同意就是这一次点击。 */
   const startTask = async (goal: string, selected: string, includeViewport = false,
-    targetRefs?: readonly Record<string, unknown>[]) => run(async () => {
+    targetRefs?: readonly StudioTargetRef[]) => run(async () => {
     if (!usableExecutors.some(item => item.id === selected) || selected !== executor) throw new Error("请选择支持受限提案的 Agent。");
     const generation = generationRef.current;
     const submitted = await planSubmit(goal, targetRefs);

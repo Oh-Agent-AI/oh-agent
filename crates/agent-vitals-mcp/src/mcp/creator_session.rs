@@ -1074,6 +1074,142 @@ fn task_check_artifact(data_home: &Path, artifact: &Value) -> Result<(), ToolErr
     Ok(())
 }
 
+/// targetRefs 单条错误的稳定封装：码 + 条目下标定位，消息可执行。
+fn target_ref_error(code: &'static str, index: usize, message: &str) -> ToolError {
+    ToolError::new(code, format!("targetRefs[{index}] {message}"))
+}
+
+/// 读取 scope 表的 JSON 文档列（损坏文档按空对象处理：成员资格查不到即 not_found，
+/// 绝不因文档损坏而放行引用）。与 task_check_artifact 一致以读写方式打开 WAL 库。
+fn scope_document(db: &rusqlite::Connection, table: &str, column: &str, scope_id: &str, json_column: &str) -> Result<Option<Value>, ToolError> {
+    let raw: Option<String> = db.query_row(&format!("SELECT {json_column} FROM {table} WHERE {column}=?1"), [scope_id],
+        |row| row.get(0)).optional().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+    Ok(raw.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()))
+}
+
+/// PR03 targetRefs 权威校验（task_target_refs 只保证形状）：逐条对照宿主权威源。
+/// 权威源与各自能核对的面：
+/// - `projectRevision` 必须等于任务 artifact 的 expectedRevision（artifact 已被
+///   task_check_artifact 对照 scope 表 CAS 校验，链条权威）→ 不等即 stale；
+/// - entityId 成员资格（可达权威源处强制）：creator-project 的 scene.objects、
+///   Story 的 graph.nodes / canon.characters；City 建筑实体属于 City 运行时库，
+///   不在本层可读范围——如实跳过（残留限制，不是放行依据）；
+/// - cityRevision/worldRevision 出现时必须匹配 artifact 绑定的 City 权威快照
+///   （creator_cities.revision 与 document.worldRevision）；artifact 无 City 绑定
+///   或绑定 City 不存在 = scope conflict；
+/// - previewId 对照宿主 Preview 台账（creator.task.preview.verify broker，带 TTL
+///   清扫）核对存在与 project 归属。台账只覆盖 creator-project 场景 Preview
+///   （宿主 run_task_preview_verify 只查 project 预览注册表），City/Story Preview
+///   无此权威面——如实跳过。宿主不在场时诚实失败（fail-closed），绝不把不可
+///   校验的引用当有效放行。
+fn task_check_target_refs(data_home: &Path, artifact: &Value, target_refs: &Value) -> Result<(), ToolError> {
+    const PREVIEW_VERIFY_TIMEOUT_MS: u64 = 3_000;
+    let Some(refs) = target_refs.as_array().filter(|refs| !refs.is_empty()) else { return Ok(()); };
+    let host = data_home.join("state/creator/projects.sqlite");
+    let db = open_db(&host, false)?;
+    let kind = artifact["kind"].as_str().unwrap_or("creator-project");
+    let scope_id = artifact["projectId"].as_str()
+        .or_else(|| artifact["cityId"].as_str())
+        .or_else(|| artifact["storyId"].as_str()).unwrap_or_default();
+    let expected_revision = artifact["expectedRevision"].as_u64().unwrap_or(u64::MAX);
+    let project_document = if kind == "creator-project" { scope_document(&db, "creator_projects", "project_id", scope_id, "document_json")? } else { None };
+    let story_documents = if kind == "creator-story" {
+        let row: Option<(String, String)> = db.query_row("SELECT graph_json,canon_json FROM story_projects WHERE story_id=?1", [scope_id],
+            |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+        row.map(|(graph, canon)| (serde_json::from_str::<Value>(&graph).ok(), serde_json::from_str::<Value>(&canon).ok()))
+    } else { None };
+    // artifact → 权威 City 绑定：city 字段只在能落到绑定 City 的权威快照时才可核对。
+    let bound_city_id = match kind {
+        "creator-city" => Some(scope_id.to_owned()),
+        "creator-project" => project_document.as_ref().and_then(|document| document["cityId"].as_str()).map(str::to_owned),
+        _ => None,
+    };
+    for (index, item) in refs.iter().enumerate() {
+        // 1) projectRevision：与任务 artifact 的权威 revision 一致。
+        if item["projectRevision"].as_u64() != Some(expected_revision) {
+            return Err(target_ref_error("creator_target_ref_stale", index, "projectRevision does not match the task artifact's authoritative revision."));
+        }
+        let entity_id = item["entityId"].as_str().unwrap_or_default();
+        let entity_kind = item["entityKind"].as_str().unwrap_or_default();
+        // 2) entityId 成员资格（权威源可达处强制）。
+        match kind {
+            "creator-project" => {
+                if !entity_kind.starts_with("scene-") {
+                    return Err(target_ref_error("creator_target_ref_scope_conflict", index, "entityKind does not belong to a creator-project scene."));
+                }
+                let present = project_document.as_ref()
+                    .and_then(|document| document["scene"]["objects"].as_array())
+                    .is_some_and(|objects| objects.iter().any(|object| object["id"].as_str() == Some(entity_id)));
+                if !present {
+                    return Err(target_ref_error("creator_target_ref_not_found", index, "entityId is not a scene object of the authoritative project document."));
+                }
+            }
+            "creator-story" => match entity_kind {
+                "story-node" if story_documents.as_ref().and_then(|(graph, _)| graph.as_ref())
+                    .and_then(|graph| graph["nodes"].as_array())
+                    .is_some_and(|nodes| nodes.iter().any(|node| node["id"].as_str() == Some(entity_id))) => {}
+                "story-character" if story_documents.as_ref().and_then(|(_, canon)| canon.as_ref())
+                    .and_then(|canon| canon["characters"].as_array())
+                    .is_some_and(|characters| characters.iter().any(|character| character["id"].as_str() == Some(entity_id))) => {}
+                "story-node" | "story-character" => {
+                    return Err(target_ref_error("creator_target_ref_not_found", index, "entityId is not in the authoritative story graph/canon."));
+                }
+                _ => return Err(target_ref_error("creator_target_ref_scope_conflict", index, "entityKind does not belong to a creator-story artifact.")),
+            },
+            // creator-city：city-building/city-decor 的成员库（City 运行时）不在本层
+            // 可读范围，只做 kind 域检查；其余 entityKind 与 City 工件不符。
+            _ => if !matches!(entity_kind, "city-building" | "city-decor") {
+                return Err(target_ref_error("creator_target_ref_scope_conflict", index, "entityKind does not belong to a creator-city artifact."));
+            },
+        }
+        // 3) city 字段：匹配绑定 City 的权威快照（revision + worldRevision）。
+        if item["cityRevision"].is_u64() || item["worldRevision"].is_string() {
+            let Some(city_id) = bound_city_id.as_deref() else {
+                return Err(target_ref_error("creator_target_ref_scope_conflict", index, "the task artifact has no authoritative City binding, so city fields cannot be honoured."));
+            };
+            let city_row: Option<(u64, String)> = db.query_row("SELECT revision,document_json FROM creator_cities WHERE city_id=?1", [city_id],
+                |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            let Some((city_revision, city_raw)) = city_row else {
+                return Err(target_ref_error("creator_target_ref_scope_conflict", index, "the artifact's bound City does not exist in the authoritative scope table."));
+            };
+            if item["cityRevision"].as_u64() != Some(city_revision) {
+                return Err(target_ref_error("creator_target_ref_stale", index, "cityRevision does not match the bound City's authoritative revision."));
+            }
+            let authoritative_world = serde_json::from_str::<Value>(&city_raw).ok()
+                .and_then(|document| document["worldRevision"].as_str().map(str::to_owned));
+            // 旧 City 快照可能没有 worldRevision 概念：该子项不可核时如实跳过（cityRevision 已核对）。
+            if let (Some(expected_world), Some(actual_world)) = (item["worldRevision"].as_str(), authoritative_world.as_deref()) {
+                if expected_world != actual_world {
+                    return Err(target_ref_error("creator_target_ref_stale", index, "worldRevision does not match the bound City's authoritative world revision."));
+                }
+            }
+        }
+        // 4) previewId：宿主 Preview 台账（仅 creator-project 场景 Preview 有权威面）。
+        if kind == "creator-project" {
+            let response = match agent_vitals_query::query::plugin_calls::call(data_home, "creator-studio",
+                "creator.task.preview.verify", &json!({"projectId":scope_id,"previewId":item["previewId"].as_str().unwrap_or_default()}),
+                PREVIEW_VERIFY_TIMEOUT_MS) {
+                Ok(response) => response,
+                // 传输层不可达 = 宿主 Preview 台账不可用：诚实失败（fail-closed），
+                // 并跳过余下条目（宿主缺席时逐条再等超时没有意义）。
+                Err(code) => return Err(ToolError::new("plugin_unavailable",
+                    format!("targetRefs[{index}] preview could not be verified against the host preview ledger ({code}); retry with the desktop host running."))),
+            };
+            if response["ok"] != true {
+                let code = response["error"]["code"].as_str().unwrap_or_default();
+                return Err(match code {
+                    "creator_preview_not_found" => target_ref_error("creator_target_ref_not_found", index,
+                        "previewId is unknown to the host preview ledger (expired, consumed or forged)."),
+                    "creator_preview_project_mismatch" => target_ref_error("creator_target_ref_scope_conflict", index,
+                        "previewId belongs to a different project's preview."),
+                    _ => ToolError::new("data_unavailable", format!("targetRefs[{index}] preview verification failed ({code}).")),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 fn task_criteria(payload: &Value) -> Result<Vec<Value>, ToolError> {
     let criteria = payload.get("acceptanceCriteria").and_then(Value::as_array).filter(|items| (1..=16).contains(&items.len()))
         .ok_or_else(|| ToolError::new("invalid_argument", "acceptanceCriteria must contain 1..=16 entries."))?;
@@ -1156,6 +1292,8 @@ fn task_terminal(phase: &str) -> bool { matches!(phase, "accepted" | "rejected" 
 
 /// 结构化目标对象引用（P1-5）：对象身份由宿主绑定与校验，不拼进自然语言需求。
 /// 上限 8 条；entityId/entityKind/previewId 必填且有界，projectRevision 必填。
+/// 本函数只把关「形状」；存在性/归属/revision 的权威校验在 task_check_target_refs
+/// （PR03），由 create/execute/submit 三个入口共用。
 fn task_target_refs(payload: &Value) -> Result<Option<Value>, ToolError> {
     let value = match payload.get("targetRefs") { None => return Ok(None), Some(value) => value };
     let items = value.as_array().ok_or_else(|| ToolError::new("invalid_argument", "targetRefs must be an array."))?;
@@ -1185,6 +1323,8 @@ fn task_create(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
     let artifact = task_artifact(payload)?;
     task_check_artifact(data_home, &artifact)?;
     let target_refs = task_target_refs(payload)?;
+    // PR03：形状通过后立即做权威校验（存在、归属、revision），伪造引用进不了台账。
+    if let Some(refs) = &target_refs { task_check_target_refs(data_home, &artifact, refs)?; }
     let criteria = task_criteria(payload)?;
     let operation_id = task_id_arg(payload, "operationId")?;
     let hash = task_hash(payload)?;
@@ -1394,6 +1534,9 @@ pub fn task_execute_with_executor(data_home: &Path, payload: &Value, executor: &
     if !task["acceptanceCriteria"].as_array().is_some_and(|criteria| criteria.iter().any(|criterion| criterion["criterionId"].as_str() == Some("agent-preview") && criterion["requiredEvidenceKind"].as_str() == Some("preview"))) {
         return Err(ToolError::new("creator_task_acceptance_missing", "Task requires an agent-preview acceptance criterion before execution."));
     }
+    // PR03：启动执行器前的廉价复核（Preview 仍活 + revision 仍现势）。失败在进入
+    // executing 前返回——与其他 pre-execute 失败一致，任务保持 ready 可重发。
+    task_check_target_refs(data_home, &task["artifact"], &task["targetRefs"])?;
     let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     tx.execute("UPDATE creator_studio_tasks SET phase='executing',updated_at_ms=?2 WHERE task_id=?1", rusqlite::params![task_id,now_ms()]).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     tx.execute("UPDATE creator_jobs SET status='executing',progress_json=?2,updated_at_ms=?3 WHERE job_id=?1",
@@ -1837,7 +1980,7 @@ pub fn task_submit_result(data_home: &Path, payload: &Value) -> Result<Value, To
     // BEGIN IMMEDIATE 期间持有写锁会阻塞同库其他写入（含 task.cancel）。三段式：
     // (A) 短事务校验并释放写锁 → (B) 事务外宿主复核 → (C) 短事务复查（捕获期间的
     // 取消/变更/换领人）+ 落盘证据与回执。
-    let (project_id,session_id) = {
+    let (project_id,session_id,artifact,target_refs) = {
         let mut db = open_db(&sessions_db(data_home)?, false)?;
         ensure_schema(&db)?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
@@ -1856,8 +1999,11 @@ pub fn task_submit_result(data_home: &Path, payload: &Value) -> Result<Value, To
             .filter(|_| task["artifact"]["kind"].as_str().unwrap_or("creator-project") == "creator-project")
             .ok_or_else(|| ToolError::new("pull_result_scope_unsupported", "Pull submissions support creator-project artifacts; City and Story tasks submit through the Studio push executor."))?.to_owned();
         tx.commit().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
-        (project_id,session_id)
+        (project_id,session_id,task["artifact"].clone(),task["targetRefs"].clone())
     };
+    // PR03：三段式 (B) 的一部分——targetRefs 在提交时必须仍在 scope 内（revision
+    // 现势 + Preview 台账仍可核对）。broker 往返在写事务之外，不持任务库写锁。
+    task_check_target_refs(data_home, &artifact, &target_refs)?;
     // 服务端复核（诚实闸的核心）：预览由宿主进程持有（内存、TTL 600s），submit 经
     // broker 回宿主确认「存在、绑定本 artifact、baseRevision 匹配、未过期」。复用
     // Studio 域错误码映射；宿主不在场时诚实报 plugin_unavailable，绝不降级采信。
@@ -2106,8 +2252,182 @@ mod tests {
         assert_eq!(task_target_refs(&json!({"targetRefs":[{"entityId":"x","previewId":"p","projectRevision":1}]})).unwrap_err().code, "invalid_argument");
         assert_eq!(task_target_refs(&json!({"targetRefs":[{"entityId":"x","entityKind":"model","previewId":"p"}]})).unwrap_err().code, "invalid_argument");
         assert_eq!(task_target_refs(&json!({"targetRefs":"barrier-3"})).unwrap_err().code, "invalid_argument");
+        assert_eq!(task_target_refs(&json!({"targetRefs":[{"entityId":"x","entityKind":"model","previewId":"p","projectRevision":"3"}]})).unwrap_err().code, "invalid_argument");
         let many: Vec<_> = (0..9).map(|index| json!({"entityId":format!("e{index}"),"entityKind":"model","previewId":"p","projectRevision":1})).collect();
         assert_eq!(task_target_refs(&json!({"targetRefs":many})).unwrap_err().code, "invalid_argument");
+    }
+
+    /// 权威源夹具：project-1（rev 3，绑定 city-1，scene 对象 taxi/barrier-3）、
+    /// project-2（rev 5，无 City 绑定）、city-1（rev 7，world-v7）、story-1（rev 4）。
+    fn prepare_target_ref_sources(home: &Path) {
+        std::fs::create_dir_all(home.join("state/creator")).unwrap();
+        let db = rusqlite::Connection::open(home.join("state/creator/projects.sqlite")).unwrap();
+        db.execute_batch(r#"CREATE TABLE creator_projects(project_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, document_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+            CREATE TABLE creator_cities(city_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, document_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+            CREATE TABLE story_projects(story_id TEXT PRIMARY KEY, title TEXT NOT NULL, schema_version INTEGER NOT NULL, story_version TEXT NOT NULL, graph_json TEXT NOT NULL, canon_json TEXT NOT NULL, content_digest TEXT NOT NULL, revision INTEGER NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+            INSERT INTO creator_projects VALUES('project-1',3,'{"schemaVersion":1,"projectId":"project-1","cityId":"city-1","cityRevision":7,"scene":{"schemaVersion":1,"objects":[{"id":"taxi"},{"id":"barrier-3"}]}}',1,1);
+            INSERT INTO creator_projects VALUES('project-2',5,'{"schemaVersion":1,"projectId":"project-2","scene":{"schemaVersion":1,"objects":[{"id":"other-object"}]}}',1,1);
+            INSERT INTO creator_cities VALUES('city-1',7,'{"cityId":"city-1","cityRevision":7,"worldRevision":"world-v7"}',1,1);
+            INSERT INTO story_projects VALUES('story-1','侦探线',1,'1.0.0','{"nodes":[{"id":"start","kind":"beat"},{"id":"clue","kind":"beat"}]}','{"characters":[{"id":"resident:linxia","name":"小夏"}]}','digest',4,1,1);"#).unwrap();
+    }
+
+    /// 假宿主 Preview 台账：替答 creator.task.preview.verify broker 调用（测试环境
+    /// 没有桌面宿主进程）。registry 按 previewId 记录 projectId/baseRevision，语义
+    /// 对齐宿主 run_task_preview_verify（存在 + project 归属，TTL 由台账语义承担）。
+    /// 返回停止位；home 目录消失时线程自行退出。
+    fn fake_preview_ledger(home: &Path, registry: &Value) -> Arc<std::sync::atomic::AtomicBool> {
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread_home = home.to_path_buf();
+        let thread_registry = registry.clone();
+        let thread_stop = stop.clone();
+        std::thread::spawn(move || {
+            let methods = [String::from("creator.task.preview.verify")];
+            while !thread_stop.load(std::sync::atomic::Ordering::Relaxed) && thread_home.exists() {
+                if let Ok(claimed) = agent_vitals_query::query::plugin_calls::claim_pending(&thread_home, "creator-studio", "test-host", &methods, 4) {
+                    for call in claimed {
+                        let preview_id = call["payload"]["previewId"].as_str().unwrap_or_default();
+                        let entry = thread_registry.get(preview_id).cloned().unwrap_or(Value::Null);
+                        let response = if entry.is_null() {
+                            json!({"ok":false,"error":{"code":"creator_preview_not_found"}})
+                        } else if entry["projectId"].as_str() != call["payload"]["projectId"].as_str() {
+                            json!({"ok":false,"error":{"code":"creator_preview_project_mismatch"}})
+                        } else {
+                            json!({"ok":true,"result":{"previewId":preview_id,"projectId":entry["projectId"],"baseRevision":entry["baseRevision"]}})
+                        };
+                        let _ = agent_vitals_query::query::plugin_calls::respond(&thread_home, "creator-studio", "test-host",
+                            call["callId"].as_str().unwrap_or_default(), &response);
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        });
+        stop
+    }
+
+    /// PR03 权威校验：成员资格（scene/story 文档）、city 字段（绑定 City 快照）、
+    /// previewId（宿主台账）与 projectRevision（artifact 权威 revision）逐条对照。
+    #[test]
+    fn task_target_refs_authority_rejects_forged_stale_and_foreign_refs() {
+        let home = temp_home();
+        prepare_target_ref_sources(&home);
+        let ledger = fake_preview_ledger(&home, &json!({
+            "preview-live":{"projectId":"project-1","baseRevision":3},
+            "preview-other":{"projectId":"project-2","baseRevision":5}}));
+        let artifact = json!({"kind":"creator-project","projectId":"project-1","expectedRevision":3});
+        let refs = |item: Value| json!([item]);
+        // 合法引用逐字段通过（成员资格 + City 绑定 + 台账归属 + 现势 revision）。
+        task_check_target_refs(&home, &artifact, &refs(json!({"entityId":"taxi","entityKind":"scene-model","previewId":"preview-live","projectRevision":3,"cityRevision":7,"worldRevision":"world-v7"}))).unwrap();
+        task_check_target_refs(&home, &artifact, &refs(json!({"entityId":"barrier-3","entityKind":"scene-collider","previewId":"preview-live","projectRevision":3}))).unwrap();
+        // 伪造 previewId（宿主台账查无）。
+        assert_eq!(task_check_target_refs(&home, &artifact, &refs(json!({"entityId":"taxi","entityKind":"scene-model","previewId":"preview-forged","projectRevision":3}))).unwrap_err().code, "creator_target_ref_not_found");
+        // previewId 属于另一个 project 的台账条目。
+        assert_eq!(task_check_target_refs(&home, &artifact, &refs(json!({"entityId":"taxi","entityKind":"scene-model","previewId":"preview-other","projectRevision":3}))).unwrap_err().code, "creator_target_ref_scope_conflict");
+        // projectRevision 落后于权威 revision。
+        assert_eq!(task_check_target_refs(&home, &artifact, &refs(json!({"entityId":"taxi","entityKind":"scene-model","previewId":"preview-live","projectRevision":2}))).unwrap_err().code, "creator_target_ref_stale");
+        // entityId 不在权威 scene 文档里。
+        assert_eq!(task_check_target_refs(&home, &artifact, &refs(json!({"entityId":"ghost","entityKind":"scene-model","previewId":"preview-live","projectRevision":3}))).unwrap_err().code, "creator_target_ref_not_found");
+        // entityKind 与工件域不符。
+        assert_eq!(task_check_target_refs(&home, &artifact, &refs(json!({"entityId":"taxi","entityKind":"city-building","previewId":"preview-live","projectRevision":3}))).unwrap_err().code, "creator_target_ref_scope_conflict");
+        // city 字段陈旧 / world 版本不匹配。
+        assert_eq!(task_check_target_refs(&home, &artifact, &refs(json!({"entityId":"taxi","entityKind":"scene-model","previewId":"preview-live","projectRevision":3,"cityRevision":6,"worldRevision":"world-v7"}))).unwrap_err().code, "creator_target_ref_stale");
+        assert_eq!(task_check_target_refs(&home, &artifact, &refs(json!({"entityId":"taxi","entityKind":"scene-model","previewId":"preview-live","projectRevision":3,"cityRevision":7,"worldRevision":"world-v6"}))).unwrap_err().code, "creator_target_ref_stale");
+        // 无 City 绑定的 project 携带 city 字段：无处权威落点 → scope conflict。
+        let unbound = json!({"kind":"creator-project","projectId":"project-2","expectedRevision":5});
+        assert_eq!(task_check_target_refs(&home, &unbound, &refs(json!({"entityId":"other-object","entityKind":"scene-model","previewId":"preview-other","projectRevision":5,"cityRevision":1,"worldRevision":"world-v1"}))).unwrap_err().code, "creator_target_ref_scope_conflict");
+        // Story 工件：graph/canon 成员资格；city 字段在 story 上没有权威落点。
+        let story = json!({"kind":"creator-story","storyId":"story-1","expectedRevision":4});
+        task_check_target_refs(&home, &story, &refs(json!({"entityId":"clue","entityKind":"story-node","previewId":"preview-live","projectRevision":4}))).unwrap();
+        task_check_target_refs(&home, &story, &refs(json!({"entityId":"resident:linxia","entityKind":"story-character","previewId":"preview-live","projectRevision":4}))).unwrap();
+        assert_eq!(task_check_target_refs(&home, &story, &refs(json!({"entityId":"missing-node","entityKind":"story-node","previewId":"preview-live","projectRevision":4}))).unwrap_err().code, "creator_target_ref_not_found");
+        assert_eq!(task_check_target_refs(&home, &story, &refs(json!({"entityId":"clue","entityKind":"story-beat","previewId":"preview-live","projectRevision":4}))).unwrap_err().code, "creator_target_ref_scope_conflict");
+        assert_eq!(task_check_target_refs(&home, &story, &refs(json!({"entityId":"clue","entityKind":"story-node","previewId":"preview-live","projectRevision":4,"cityRevision":7}))).unwrap_err().code, "creator_target_ref_scope_conflict");
+        // City 工件：city-building 成员库不在本层可读范围（如实跳过，仅 kind 域检查）；
+        // city 字段核对 City 自身权威快照。
+        let city = json!({"kind":"creator-city","cityId":"city-1","expectedRevision":7});
+        task_check_target_refs(&home, &city, &refs(json!({"entityId":"building:9","entityKind":"city-building","previewId":"preview-live","projectRevision":7,"cityRevision":7,"worldRevision":"world-v7"}))).unwrap();
+        assert_eq!(task_check_target_refs(&home, &city, &refs(json!({"entityId":"building:9","entityKind":"city-building","previewId":"preview-live","projectRevision":7,"cityRevision":6,"worldRevision":"world-v7"}))).unwrap_err().code, "creator_target_ref_stale");
+        assert_eq!(task_check_target_refs(&home, &city, &refs(json!({"entityId":"building:9","entityKind":"scene-model","previewId":"preview-live","projectRevision":7}))).unwrap_err().code, "creator_target_ref_scope_conflict");
+        ledger.store(true, std::sync::atomic::Ordering::Relaxed);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// 宿主不在场时 fail-closed：Preview 无法核对 = 引用不可采信，诚实报
+    /// plugin_unavailable，绝不静默放行。
+    #[test]
+    fn target_ref_preview_verification_fails_closed_when_host_is_absent() {
+        let home = temp_home();
+        prepare_target_ref_sources(&home);
+        let artifact = json!({"kind":"creator-project","projectId":"project-1","expectedRevision":3});
+        let error = task_check_target_refs(&home, &artifact, &json!([{"entityId":"taxi","entityKind":"scene-model","previewId":"preview-live","projectRevision":3}])).unwrap_err();
+        assert_eq!(error.code, "plugin_unavailable");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// PR03 全链路：create 拒伪造/回显合法引用；execute 前复核失败时任务保持
+    /// ready（可重发，执行器未被启动）；submit 复核通过落 awaiting-review，引用
+    /// 漂移时提交被拒。
+    #[test]
+    fn studio_task_flows_keep_target_refs_in_scope_at_create_execute_and_submit() {
+        let home = temp_home();
+        prepare_target_ref_sources(&home);
+        let ledger = fake_preview_ledger(&home, &json!({"preview-live":{"projectId":"project-1","baseRevision":3}}));
+        let session = session_open(&home, &json!({"agentId":"studio-local","projectId":"project-1"})).unwrap();
+        let session_id = session["data"]["sessionId"].as_str().unwrap();
+        // create：合法引用原样入库回显；伪造 previewId 在 create 即被拒。
+        let mut goal = studio_goal_with_preview(session_id, "refs-create");
+        goal["targetRefs"] = json!([{"entityId":"taxi","entityKind":"scene-model","previewId":"preview-live","projectRevision":3,"cityRevision":7,"worldRevision":"world-v7"}]);
+        let created = task_create(&home, &goal).unwrap();
+        let task_id = created["taskId"].as_str().unwrap().to_owned();
+        let status = task_payload(&home, &task_id).unwrap();
+        assert_eq!(status["targetRefs"][0]["entityId"], json!("taxi"));
+        assert_eq!(status["targetRefs"][0]["previewId"], json!("preview-live"));
+        assert_eq!(status["targetRefs"][0]["projectRevision"], json!(3));
+        assert_eq!(status["targetRefs"][0]["cityRevision"], json!(7));
+        assert_eq!(status["targetRefs"][0]["worldRevision"], json!("world-v7"));
+        let mut forged = studio_goal_with_preview(session_id, "refs-forged");
+        forged["targetRefs"] = json!([{"entityId":"taxi","entityKind":"scene-model","previewId":"preview-forged","projectRevision":3}]);
+        assert_eq!(task_create(&home, &forged).unwrap_err().code, "creator_target_ref_not_found");
+        // execute：启动前复核。City 权威 revision 漂移 → creator_target_ref_stale，
+        // 任务保持 ready（pre-execute 失败不进 executing，执行器未被启动）。
+        task_plan_submit(&home, &studio_plan(&task_id, 1, "refs-plan")).unwrap();
+        task_plan_approve(&home, &json!({"taskId":&task_id,"planRevision":1,"expectedArtifactRevision":3,"operationId":"refs-approve"})).unwrap();
+        {
+            let db = rusqlite::Connection::open(home.join("state/creator/projects.sqlite")).unwrap();
+            db.execute("UPDATE creator_cities SET revision=8 WHERE city_id='city-1'", []).unwrap();
+        }
+        let executor = super::super::creator_agent_executor::tests::FakeExecutor::success();
+        let error = task_execute_with_executor(&home, &json!({"taskId":&task_id,"expectedPlanRevision":1,"expectedArtifactRevision":3,"operationId":"refs-execute"}), &executor).unwrap_err();
+        assert_eq!(error.code, "creator_target_ref_stale");
+        assert_eq!(task_payload(&home, &task_id).unwrap()["phase"], "ready");
+        // submit：引用仍在 scope 内时宿主复核通过并落证据；漂移后的提交被拒。
+        {
+            let db = rusqlite::Connection::open(home.join("state/creator/projects.sqlite")).unwrap();
+            db.execute("UPDATE creator_cities SET revision=7 WHERE city_id='city-1'", []).unwrap();
+        }
+        let mut goal2 = studio_goal_with_preview(session_id, "refs-submit-create");
+        goal2["targetRefs"] = json!([{"entityId":"barrier-3","entityKind":"scene-collider","previewId":"preview-live","projectRevision":3,"cityRevision":7,"worldRevision":"world-v7"}]);
+        let created2 = task_create(&home, &goal2).unwrap();
+        let task2 = created2["taskId"].as_str().unwrap().to_owned();
+        task_plan_submit(&home, &studio_plan(&task2, 1, "refs-submit-plan")).unwrap();
+        task_plan_approve(&home, &json!({"taskId":&task2,"planRevision":1,"expectedArtifactRevision":3,"operationId":"refs-submit-approve"})).unwrap();
+        task_claim(&home, &json!({"taskId":&task2,"agentId":"agent-a","expectedPlanRevision":1,"expectedArtifactRevision":3,"operationId":"refs-claim"})).unwrap();
+        let submitted = task_submit_result(&home, &json!({"taskId":&task2,"agentId":"agent-a","planRevision":1,"expectedArtifactRevision":3,"summary":"移完路障","previewId":"preview-live","operationId":"refs-submit"})).unwrap();
+        assert_eq!(submitted["phase"], "awaiting-review");
+        // 引用在提交时已漂移（city 前进）→ 三段式复核拒绝。
+        let mut goal3 = studio_goal_with_preview(session_id, "refs-submit-drift");
+        goal3["targetRefs"] = json!([{"entityId":"taxi","entityKind":"scene-model","previewId":"preview-live","projectRevision":3,"cityRevision":7,"worldRevision":"world-v7"}]);
+        let created3 = task_create(&home, &goal3).unwrap();
+        let task3 = created3["taskId"].as_str().unwrap().to_owned();
+        task_plan_submit(&home, &studio_plan(&task3, 1, "refs-drift-plan")).unwrap();
+        task_plan_approve(&home, &json!({"taskId":&task3,"planRevision":1,"expectedArtifactRevision":3,"operationId":"refs-drift-approve"})).unwrap();
+        task_claim(&home, &json!({"taskId":&task3,"agentId":"agent-a","expectedPlanRevision":1,"expectedArtifactRevision":3,"operationId":"refs-drift-claim"})).unwrap();
+        {
+            let db = rusqlite::Connection::open(home.join("state/creator/projects.sqlite")).unwrap();
+            db.execute("UPDATE creator_cities SET revision=9 WHERE city_id='city-1'", []).unwrap();
+        }
+        assert_eq!(task_submit_result(&home, &json!({"taskId":&task3,"agentId":"agent-a","planRevision":1,"expectedArtifactRevision":3,"summary":"x","previewId":"preview-live","operationId":"refs-drift-submit"})).unwrap_err().code, "creator_target_ref_stale");
+        ledger.store(true, std::sync::atomic::Ordering::Relaxed);
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

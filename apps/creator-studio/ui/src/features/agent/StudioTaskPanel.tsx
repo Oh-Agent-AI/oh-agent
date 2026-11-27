@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { canApproveTaskPlan, canCancelTask, canExecuteTask, canReviewTask, canReviseTaskPlan, isDefaultStudioPlan, normalizeStudioGoal, studioPhaseLabel, type StudioTaskPhase } from "../../contracts/studioTask";
+import { canApproveTaskPlan, canCancelTask, canExecuteTask, canReviewTask, canReviseTaskPlan, isDefaultStudioPlan, normalizeStudioGoal, studioPhaseLabel, type StudioTargetRef, type StudioTaskPhase } from "../../contracts/studioTask";
 import type { StudioTaskController } from "./useStudioTasks";
 import { AgentDecisionCard } from "./AgentDecisionCard";
 import { AgentErrorBanner } from "./AgentErrorBanner";
@@ -93,11 +93,12 @@ export function StudioTaskPanel({ controller, goal, onGoalChange, projectReady, 
   const studioOnline = capabilities?.studioOnline === true;
   const nextGoal = normalizeStudioGoal(goal);
   // P1-5：对象身份走结构化 targetRefs 由宿主绑定校验；自然语言里只留人读的名称提示。
+  // 只有携带宿主 Preview 台账可核对的 previewId 的引用才构造（宿主 PR03 权威校验
+  // 按 previewId 核对存在与归属）；从 live 视口选取（无 previewId）不带结构化绑定。
   const cityTarget = targetReference?.kind === "city" && targetReferenceStatus === "current" ? targetReference.reference : null;
-  const targetRefs = cityTarget ? [{
-    entityId: cityTarget.entityId, entityKind: cityTarget.entityKind,
-    previewId: cityTarget.previewId, projectRevision: cityTarget.projectRevision,
-    cityRevision: cityTarget.cityRevision, worldRevision: cityTarget.worldRevision,
+  const targetRefs: readonly StudioTargetRef[] = cityTarget && cityTarget.previewId ? [{
+    entityKind: cityTarget.entityKind, entityId: cityTarget.entityId, previewId: cityTarget.previewId,
+    projectRevision: cityTarget.projectRevision, cityRevision: cityTarget.cityRevision, worldRevision: cityTarget.worldRevision,
   }] : [];
   const targetSuffix = cityTarget ? `（关联对象：${cityTarget.label}）` : target ? `（关联对象：${target}）` : "";
   const submissionGoal = nextGoal + targetSuffix;
