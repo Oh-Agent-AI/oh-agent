@@ -163,6 +163,31 @@ pub(crate) struct WorkspaceMeta {
     #[serde(rename = "createdAtMs")]
     pub(crate) created_at_ms: u64,
     pub(crate) revision: String,
+    #[serde(rename = "operationId", default, skip_serializing_if = "Option::is_none")]
+    pub(crate) operation_id: Option<String>,
+}
+
+/// `creator_code_project_create` 的幂等回执：同一 `operationId` 的重试按
+/// requestHash 重放原结果或拒绝（`operation_id_conflict`）。落盘在
+/// `<data_home>/state/creator/code-games/operations/<operationId>.json`，
+/// 与 creator_session 的任务回据同思路，只是这里用文件而不是宿主 SQLite。
+#[derive(Debug, Serialize, Deserialize)]
+struct OperationReceipt {
+    #[serde(rename = "operationId")]
+    operation_id: String,
+    #[serde(rename = "requestHash")]
+    request_hash: String,
+    #[serde(rename = "workspaceId")]
+    workspace_id: String,
+    #[serde(rename = "projectId")]
+    project_id: String,
+    #[serde(rename = "gameId")]
+    game_id: String,
+    #[serde(rename = "gameRevision")]
+    game_revision: String,
+    #[serde(rename = "createdAtMs")]
+    created_at_ms: u64,
+    template: String,
 }
 
 fn project_create(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
@@ -171,7 +196,50 @@ fn project_create(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     if template != TEMPLATE {
         return Err(ToolError::new("invalid_argument", "Only the `hello-city` template is available in P0."));
     }
-    let _operation_id = required_str(args, "operationId", 128)?;
+    let operation_id = required_str(args, "operationId", 128)?;
+    if !valid_operation_id(&operation_id) {
+        return Err(ToolError::new(
+            "invalid_argument",
+            "`operationId` must be 1-128 characters: ASCII letters/digits (plus `_`/`-` after the first)",
+        ));
+    }
+    let request_hash = create_request_hash(&title, template);
+    let operations = operations_dir(data_home)?;
+    // Idempotent replay: a retried create with the same operationId and payload
+    // returns the original result without creating anything.
+    if let Some(receipt) = read_receipt(&operations, &operation_id)? {
+        if receipt.request_hash == request_hash {
+            return Ok(receipt_result(&receipt));
+        }
+        return Err(ToolError::new(
+            "operation_id_conflict",
+            "operationId was already used for a different workspace create request.",
+        ));
+    }
+    // Crash recovery: workspace.json is committed before the receipt, so a meta
+    // carrying this operationId means a previous attempt died in between; finish
+    // it idempotently instead of creating a second workspace.
+    if let Some(meta) = find_workspace_by_operation(data_home, &operation_id)? {
+        if meta.title != title || meta.template != template {
+            return Err(ToolError::new(
+                "operation_id_conflict",
+                "operationId was already used for a different workspace create request.",
+            ));
+        }
+        let receipt = OperationReceipt {
+            operation_id,
+            request_hash,
+            workspace_id: meta.workspace_id,
+            project_id: meta.project_id,
+            game_id: meta.game_id,
+            game_revision: meta.revision,
+            created_at_ms: meta.created_at_ms,
+            template: meta.template,
+        };
+        write_receipt(&operations, &receipt)?;
+        return Ok(receipt_result(&receipt));
+    }
+
     let repo = repo_root()?;
     let template_dir = repo.join("games").join(TEMPLATE);
     if !template_dir.join("game.manifest.json").is_file() {
@@ -196,15 +264,133 @@ fn project_create(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
         template: TEMPLATE.to_string(),
         created_at_ms: now_ms(),
         revision: revision.clone(),
+        operation_id: Some(operation_id.clone()),
     };
+    // Order matters for crash recovery: the workspace identity is durable
+    // before the receipt that vouches for the completed operation.
     write_meta(&directory, &meta)?;
-    Ok(json!({"ok":true,"data":{
-        "workspaceId": workspace_id,
-        "projectId": project_id,
-        "gameId": game_id,
-        "gameRevision": revision,
-        "template": TEMPLATE,
-    }}))
+    let receipt = OperationReceipt {
+        operation_id,
+        request_hash,
+        workspace_id,
+        project_id,
+        game_id,
+        game_revision: revision,
+        created_at_ms: meta.created_at_ms,
+        template: meta.template.clone(),
+    };
+    write_receipt(&operations, &receipt)?;
+    Ok(receipt_result(&receipt))
+}
+
+// ── create idempotency (operationId receipts) ─────────────────────
+
+/// 与宿主 `valid_preview_id`（creator_code.rs）同规则的 operationId 约束：
+/// 回执以 operationId 命名落盘，先挡掉路径注入（`../`、绝对路径、`.`）。
+fn valid_operation_id(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 128
+        && value.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+/// 与 creator_session 的任务回执同思路：请求先折成键排序的 canonical JSON
+/// 再取 sha256，网络重试与首次请求得到同一 requestHash。只覆盖影响结果的
+/// 请求字段（operationId 本身是回据的键，不进哈希）。
+fn canonical_json(value: &Value) -> String {
+    fn write(value: &Value, out: &mut String) {
+        match value {
+            Value::Object(object) => {
+                out.push('{');
+                let mut keys: Vec<&String> = object.keys().collect();
+                keys.sort();
+                for (index, key) in keys.iter().enumerate() {
+                    if index > 0 { out.push(','); }
+                    out.push_str(&serde_json::to_string(key).unwrap_or_else(|_| "\"\"".into()));
+                    out.push(':');
+                    write(&object[*key], out);
+                }
+                out.push('}');
+            }
+            Value::Array(items) => {
+                out.push('[');
+                for (index, item) in items.iter().enumerate() {
+                    if index > 0 { out.push(','); }
+                    write(item, out);
+                }
+                out.push(']');
+            }
+            _ => out.push_str(&serde_json::to_string(value).unwrap_or_else(|_| "null".into())),
+        }
+    }
+    let mut out = String::new();
+    write(value, &mut out);
+    out
+}
+
+fn create_request_hash(title: &str, template: &str) -> String {
+    sha256_hex(canonical_json(&json!({"title": title, "template": template})).as_bytes())
+}
+
+fn operations_dir(data_home: &Path) -> Result<PathBuf, ToolError> {
+    let root = data_home.join("state/creator/code-games").join("operations");
+    std::fs::create_dir_all(&root)
+        .map_err(|_| ToolError::new("storage_unavailable", "Cannot create the operation receipt directory."))?;
+    Ok(root)
+}
+
+fn read_receipt(root: &Path, operation_id: &str) -> Result<Option<OperationReceipt>, ToolError> {
+    let bytes = match std::fs::read(root.join(format!("{operation_id}.json"))) {
+        Ok(bytes) => bytes,
+        Err(_) => return Ok(None),
+    };
+    let receipt: OperationReceipt = serde_json::from_slice(&bytes)
+        .map_err(|_| ToolError::new("storage_unavailable", "The operation receipt is damaged."))?;
+    if receipt.operation_id != operation_id {
+        return Err(ToolError::new("storage_unavailable", "The operation receipt is damaged."));
+    }
+    Ok(Some(receipt))
+}
+
+fn write_receipt(root: &Path, receipt: &OperationReceipt) -> Result<(), ToolError> {
+    let bytes = serde_json::to_vec_pretty(receipt)
+        .map_err(|_| ToolError::new("internal_error", "Cannot encode the operation receipt."))?;
+    let temporary = root.join(format!("{}.json.tmp", receipt.operation_id));
+    std::fs::write(&temporary, bytes)
+        .map_err(|_| ToolError::new("storage_unavailable", "Cannot write the operation receipt."))?;
+    std::fs::rename(&temporary, root.join(format!("{}.json", receipt.operation_id)))
+        .map_err(|_| ToolError::new("storage_unavailable", "Cannot publish the operation receipt."))
+}
+
+/// 重放载荷必须与全新创建完全同形（同一组字段、同一来源）。
+fn receipt_result(receipt: &OperationReceipt) -> Value {
+    json!({"ok":true,"data":{
+        "workspaceId": receipt.workspace_id,
+        "projectId": receipt.project_id,
+        "gameId": receipt.game_id,
+        "gameRevision": receipt.game_revision,
+        "template": receipt.template,
+    }})
+}
+
+/// Crash recovery 扫描：每个 data home 的工作区数量很少，有界目录扫描足够；
+/// 损坏或不带该 operationId 的条目直接跳过。read_meta 会重算 revision，
+/// 因此回执拿到的是工作区的真实内容摘要。
+fn find_workspace_by_operation(data_home: &Path, operation_id: &str) -> Result<Option<WorkspaceMeta>, ToolError> {
+    let root = data_home.join("code-games").join("workspaces");
+    let entries = match std::fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(None),
+    };
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let Ok(meta) = read_meta(&entry.path()) else { continue; };
+        if meta.operation_id.as_deref() == Some(operation_id) {
+            return Ok(Some(meta));
+        }
+    }
+    Ok(None)
 }
 
 fn workspace_info(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
@@ -813,6 +999,10 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
 
+    /// 进程级串行锁：repo_root() 读取环境变量，需要触碰环境的测试共享这把
+    /// 锁，避免并发的 set_var/remove_var 让别的测试读到中间状态。
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn args(path: &str) -> Value {
         json!({"workspaceId": "gws-0000000000000000", "relativePath": path})
     }
@@ -862,6 +1052,7 @@ mod tests {
         write_meta(&workspace, &WorkspaceMeta {
             workspace_id: workspace_id.into(), project_id: "project-test".into(), game_id: "community.test".into(),
             title: "Test".into(), template: "hello-city".into(), created_at_ms: 1, revision: revision.clone(),
+            operation_id: None,
         }).unwrap();
 
         let results = std::thread::scope(|scope| {
@@ -890,6 +1081,7 @@ mod tests {
         write_meta(&workspace, &WorkspaceMeta {
             workspace_id: workspace_id.to_string(), project_id: "project-test".to_string(), game_id: "community.test".to_string(),
             title: "Test".to_string(), template: "hello-city".to_string(), created_at_ms: 1, revision: "sha256:test".to_string(),
+            operation_id: None,
         }).unwrap();
         let build_id = "a".repeat(64);
         let build = home.join("code-games/builds").join(&build_id);
@@ -921,7 +1113,6 @@ mod tests {
 
     #[test]
     fn bundled_builder_root_precedes_the_compile_time_repo() {
-        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _guard = ENV_LOCK.lock().unwrap();
         let root = std::env::temp_dir().join(format!("code-game-bundled-{}-{}", now_ms(), std::process::id()));
         std::fs::create_dir_all(root.join("packages/city-game-sdk/scripts")).unwrap();
@@ -936,5 +1127,92 @@ mod tests {
         let exe = root.join("Oh Agent.app/Contents/Resources/bin/agent-vitals");
         assert_eq!(repo_root_from(Some(exe)).unwrap(), std::fs::canonicalize(&packaged).unwrap());
         std::fs::remove_dir_all(root).ok();
+    }
+
+    fn create_args(title: &str, operation_id: &str) -> Value {
+        json!({"title": title, "template": "hello-city", "operationId": operation_id})
+    }
+
+    /// operationId 会成为回执文件名：沿用宿主 valid_preview_id 规则挡路径注入。
+    #[test]
+    fn operation_ids_reject_path_injection() {
+        for id in ["../escape", "a/b", "", ".", "..", ".hidden", "a b", "op with-dash_1"] {
+            assert!(!valid_operation_id(id), "accepted {id}");
+        }
+        for id in ["op-1", "a", "01890b2e-d47c-7c40-b4d1-bc6f65342d3f"] {
+            assert!(valid_operation_id(id), "rejected {id}");
+        }
+    }
+
+    /// 同 operationId + 同载荷的重试返回同一工作区身份，且只创建一个工作区目录。
+    #[test]
+    fn retried_project_create_replays_the_same_workspace() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let home = std::env::temp_dir().join(format!("code-game-create-replay-{}-{}", now_ms(), std::process::id()));
+        let first = project_create(&create_args("Tower Defense", "op-replay-1"), &home).unwrap();
+        let second = project_create(&create_args("Tower Defense", "op-replay-1"), &home).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first["data"]["template"], "hello-city");
+        let workspaces = home.join("code-games/workspaces");
+        assert_eq!(std::fs::read_dir(&workspaces).unwrap().count(), 1);
+        let workspace_id = first["data"]["workspaceId"].as_str().unwrap();
+        let meta = read_meta(&workspaces.join(workspace_id)).unwrap();
+        assert_eq!(meta.operation_id.as_deref(), Some("op-replay-1"));
+        let receipt: Value = serde_json::from_slice(&std::fs::read(home.join("state/creator/code-games/operations/op-replay-1.json")).unwrap()).unwrap();
+        assert_eq!(receipt["requestHash"], create_request_hash("Tower Defense", "hello-city"));
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// 同 operationId 但载荷不同 → operation_id_conflict，且不新建工作区。
+    #[test]
+    fn reused_operation_id_with_a_different_payload_conflicts() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let home = std::env::temp_dir().join(format!("code-game-create-conflict-{}-{}", now_ms(), std::process::id()));
+        project_create(&create_args("Tower Defense", "op-conflict-1"), &home).unwrap();
+        let error = project_create(&create_args("Tower Defense II", "op-conflict-1"), &home).unwrap_err();
+        assert_eq!(error.code, "operation_id_conflict");
+        assert_eq!(std::fs::read_dir(home.join("code-games/workspaces")).unwrap().count(), 1);
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// 崩溃恢复：workspace.json 已带 operationId 但回执缺失 → 补写回执并返回
+    /// 既有工作区，不产生第二个工作区；不同载荷仍按 conflict 拒绝。
+    #[test]
+    fn project_create_recovers_a_partially_created_operation() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let home = std::env::temp_dir().join(format!("code-game-create-crash-{}-{}", now_ms(), std::process::id()));
+        let workspace_id = "gws-deadbeefdeadbeef";
+        let workspace = home.join("code-games/workspaces").join(workspace_id);
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        std::fs::write(workspace.join("src/index.ts"), "export default 0;\n").unwrap();
+        write_meta(&workspace, &WorkspaceMeta {
+            workspace_id: workspace_id.into(), project_id: "project-crash".into(), game_id: "community.crash".into(),
+            title: "Tower Defense".into(), template: "hello-city".into(), created_at_ms: 42, revision: "sha256:test".into(),
+            operation_id: Some("op-crash-1".into()),
+        }).unwrap();
+        let recovered = project_create(&create_args("Tower Defense", "op-crash-1"), &home).unwrap();
+        assert_eq!(recovered["data"]["workspaceId"], workspace_id);
+        assert_eq!(recovered["data"]["projectId"], "project-crash");
+        assert_eq!(recovered["data"]["gameId"], "community.crash");
+        assert_eq!(recovered["data"]["gameRevision"], digest_workspace(&workspace).unwrap());
+        assert!(home.join("state/creator/code-games/operations/op-crash-1.json").is_file());
+        assert_eq!(std::fs::read_dir(home.join("code-games/workspaces")).unwrap().count(), 1);
+        assert_eq!(project_create(&create_args("Tower Defense", "op-crash-1"), &home).unwrap(), recovered);
+        let conflict = project_create(&create_args("Other Title", "op-crash-1"), &home).unwrap_err();
+        assert_eq!(conflict.code, "operation_id_conflict");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// 旧版 workspace.json 没有 operationId 字段仍可解析（缺省 None）。
+    #[test]
+    fn workspace_meta_without_operation_id_still_parses() {
+        let dir = std::env::temp_dir().join(format!("code-game-meta-compat-{}-{}", now_ms(), std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(META_FILE), r#"{"workspaceId":"gws-0000000000000000","projectId":"project-old","gameId":"community.old","title":"Old","template":"hello-city","createdAtMs":1,"revision":"sha256:test"}"#).unwrap();
+        let meta = read_meta(&dir).unwrap();
+        assert_eq!(meta.workspace_id, "gws-0000000000000000");
+        assert_eq!(meta.project_id, "project-old");
+        assert_eq!(meta.operation_id, None);
+        std::fs::remove_dir_all(dir).ok();
     }
 }
