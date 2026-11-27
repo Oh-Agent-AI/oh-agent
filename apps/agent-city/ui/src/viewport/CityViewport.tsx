@@ -12,6 +12,7 @@ import { PlanRepairSession, type RepairCandidate } from "../planRepair/session";
 import { noteBusy } from "../host";
 import { cityText, useCityLanguage } from "../i18n";
 import { citySceneFailureMessage, classifyCitySceneFailure, type CitySceneFailure } from "../engine/sceneAvailability";
+import { cityScenePresentation } from "../cityScenePresentation";
 import { replayStartMs } from "../replayRange";
 import type { PlanningWorkSnapshot } from "../engine/planner/operationBudget";
 import { projectionSessionRows, type CityViewportWindowDays } from "./projectionRows";
@@ -354,8 +355,15 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
     return () => preparation.abort();
   }, [projection, seed, profile, patch, isolatedDraft]);
 
-  const dataAvailable = projection !== null && projection.status !== "unavailable";
-  const cityLoading = !sceneUnavailable && (!dataLoaded || (isolatedDraft ? !firstModelFrame : dataAvailable && projection.status !== "empty" && !firstModelFrame));
+  const presentation = cityScenePresentation({
+    boot: isolatedDraft,
+    dataLoaded,
+    status: projection?.status ?? null,
+    sceneUnavailable,
+    firstModelFrame,
+    gameActive: false,
+  });
+  const cityLoading = presentation.awaitFirstFrame;
   // 与 CityApp 的 __AV_CITY_PROBE__ 同款轻量调试口：工作台/自动化用它读视口装配状态。
   useEffect(() => {
     if (!registerProbe) return;
@@ -381,9 +389,10 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
     });
     return () => { delete (window as Window & { __CITY_VIEWPORT_PROBE__?: () => Record<string, unknown> }).__CITY_VIEWPORT_PROBE__; };
   });
-  const sceneMessage = sceneUnavailable ? `${cityText(citySceneFailureMessage(sceneFailure ?? { surface: "webgl", code: "webgl_context_unavailable", summarySafe: true }), language)}${sceneFailure?.surface === "layout" ? ` (${sceneFailure.code})` : ""}`
-    : !isolatedDraft && dataLoaded && !dataAvailable ? cityText("City 数据暂不可用", language)
-    : projection?.status === "empty" ? cityText("当前时间范围没有会话", language)
+  const sceneMessage = presentation.caption === "failure"
+    ? `${cityText(citySceneFailureMessage(sceneFailure ?? { surface: "webgl", code: "webgl_context_unavailable", summarySafe: true }), language)}${sceneFailure?.surface === "layout" ? ` (${sceneFailure.code})` : ""}`
+    : presentation.caption === "data-unavailable" ? cityText("City 数据暂不可用", language)
+    : presentation.caption === "empty-note" ? cityText("当前时间范围没有会话", language)
     : null;
   return (
     <section className="city-app city-viewport" aria-label="Creator Studio City 视口">
@@ -397,7 +406,7 @@ export function CityViewport({ seed, windowDays, worldProfile, onEngineChange, e
           <small>{cityLoad.stage === "planning" && cityLoad.work !== null ? "显示规划器实际完成的工作量，不代表百分比" : "复杂城市需要一些时间，请稍候"}</small>
         </div>
       </div>}
-      {sceneMessage && !cityLoading && <div className="city-scene-message" role="status">{sceneMessage}{!isolatedDraft && dataErrorCode && <><span>（{dataErrorCode}）</span> <button onClick={() => setDataRetry(value => value + 1)}>重试</button></>}</div>}
+      {sceneMessage && !cityLoading && <div className={presentation.caption === "empty-note" ? "city-scene-note" : "city-scene-message"} role="status">{sceneMessage}{presentation.caption !== "empty-note" && !isolatedDraft && dataErrorCode && <><span>（{dataErrorCode}）</span> <button onClick={() => setDataRetry(value => value + 1)}>重试</button></>}</div>}
       {isolatedDraft && !cityLoading && stalePatchCount > 0 && <div className="city-scene-message" role="status">{stalePatchCount} 项城市编辑未能应用，请检查布局和生成器版本。</div>}
       {editable && saveState && <div className="viewport-savebar" role="status">{saveState === "pending" ? "城市视图修改保存中…"
         : saveState === "failed" ? <>城市视图存储不可用或存在冲突，修改可能仅在当前视图生效。 <button onClick={() => {
