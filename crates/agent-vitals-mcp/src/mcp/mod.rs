@@ -41,6 +41,7 @@ pub mod creator_agent_executor;
 pub mod host_delivery;
 mod creator_code;
 mod creator_code_workspace;
+mod creator_code_playtest;
 mod creator_code_experience;
 mod creator_studio;
 mod city_world;
@@ -109,6 +110,7 @@ pub fn tool_specs_with_city(include_city: bool) -> Vec<ToolSpec> {
     out.extend(creator_session::specs());
     out.extend(creator_code::specs());
     out.extend(creator_code_workspace::specs());
+    out.extend(creator_code_playtest::specs());
     out.extend(creator_code_experience::specs());
     out.extend(city_world::specs());
     #[cfg(feature = "mcp-internal")]
@@ -330,6 +332,11 @@ pub fn dispatch_with_permissions_options(
         // 与同模块的写工具共用 run() 的分发闸。
         | "creator_code_test_record" =>
             creator_code_workspace::run(name, args, data_home, allow_local_writes),
+        // PR08 自动化视觉试玩：input/screenshot/stop 走 --allow-local-writes，
+        // result 只读（同一模块 run() 的分发闸内处理）。
+        "creator_code_playtest_input" | "creator_code_playtest_screenshot" | "creator_code_playtest_stop"
+        | "creator_code_playtest_result" =>
+            creator_code_playtest::run(name, args, data_home, allow_local_writes),
         "creator_code_publish" | "creator_code_experience_list" | "creator_code_experience_install"
         | "creator_code_experience_uninstall" =>
             creator_code_experience::run(name, args, data_home, allow_local_writes),

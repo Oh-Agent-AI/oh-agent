@@ -110,6 +110,31 @@ fn handle_preview_request(home: &Path, window_label: &str, request: &Value) -> R
                         }
                     }
                 }
+                // PR08 自动化试玩的 webview 回执面：输入应用结果（按 sessionId+seq
+                // 记步骤）与有界 JPEG 截图（绑定 previewId/buildId 落盘）。身份以
+                // 窗口 label↔previewId 配对为准，信封内不采信调用方自报 previewId。
+                Some("playtest.input.result") => {
+                    let result = message.get("result").cloned().ok_or("playtest_input_result_invalid")?;
+                    match crate::creator_code_game::record_playtest_ack(home, preview_id, &result) {
+                        Ok(recorded) => Ok(json!({"ok":true,"recorded":recorded})),
+                        Err(code) => {
+                            agent_vitals_runtime::logging::log_warn("code_preview",
+                                &format!("playtest input result rejected code={code}"));
+                            Err("playtest_input_result_invalid".into())
+                        }
+                    }
+                }
+                Some("playtest.screenshot") => {
+                    let screenshot = message.get("screenshot").cloned().ok_or("playtest_screenshot_invalid")?;
+                    match crate::creator_code_game::store_preview_screenshot(home, preview_id, &screenshot) {
+                        Ok(stored) => Ok(json!({"ok":true,"stored":stored})),
+                        Err(code) => {
+                            agent_vitals_runtime::logging::log_warn("code_preview",
+                                &format!("playtest screenshot rejected code={code}"));
+                            Err("playtest_screenshot_invalid".into())
+                        }
+                    }
+                }
                 Some("plugin.performance") => Ok(json!({"ok":true})),
                 _ => Err("preview_message_unavailable".into()),
             }
@@ -268,6 +293,45 @@ mod tests {
         let mismatched = handle_preview_request(&home, "code-preview-preview-snap-win2", &json!({"previewId":"preview-snap-win2","command":"plugin_message",
             "args":{"message":{"type":"city.snapshot.export","snapshotJson":snapshot}}}));
         assert_eq!(mismatched.unwrap_err(), "code_game_snapshot_invalid");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// PR08：playtest 回执窄面——配对窗口才能上报输入回执与截图；类型不在
+    /// 名单仍按 preview_message_unavailable 拒绝；畸形回执走信封级稳定码。
+    #[test]
+    fn playtest_message_surfaces_are_paired_and_allowlisted() {
+        let home = home("playtest-messages");
+        let preview_id = "preview-pt-msg";
+        let directory = home.join("state/creator/code-games/previews").join(preview_id);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("request.json"), serde_json::to_vec(&json!({"previewId":preview_id,"buildId":"a","source":{"cityId":"city:one"}})).unwrap()).unwrap();
+        crate::creator_code_game::record_preview_state(&home, &json!({"status":"running","previewId":preview_id,"gameId":"game.test","tick":2})).unwrap();
+        // 会话不存在时输入回执：结构上可接受但按未记录处理（recorded=false）。
+        let ack = handle_preview_request(&home, "code-preview-preview-pt-msg", &json!({"previewId":preview_id,"command":"plugin_message",
+            "args":{"message":{"type":"playtest.input.result","result":{"sessionId":"playtest-x","seq":1,"ok":true}}}})).unwrap();
+        assert_eq!(ack["ok"], true);
+        assert_eq!(ack["recorded"], false);
+        // 畸形回执 → 信封级稳定码（不透传细节）。
+        let malformed = handle_preview_request(&home, "code-preview-preview-pt-msg", &json!({"previewId":preview_id,"command":"plugin_message",
+            "args":{"message":{"type":"playtest.input.result","result":{"seq":1}}}}));
+        assert_eq!(malformed.unwrap_err(), "playtest_input_result_invalid");
+        // 截图：合法 JPEG dataUrl 落盘并绑定 previewId。
+        let data_url = format!("data:image/jpeg;base64,{}", "A".repeat(32));
+        let shot = handle_preview_request(&home, "code-preview-preview-pt-msg", &json!({"previewId":preview_id,"command":"plugin_message",
+            "args":{"message":{"type":"playtest.screenshot","screenshot":{"captureId":"cap-1","dataUrl":data_url,"width":1100,"height":760,"downscaled":false}}}})).unwrap();
+        assert_eq!(shot["ok"], true);
+        assert!(home.join("state/creator/code-games/previews").join(preview_id).join("screenshot.json").exists());
+        // 非 JPEG / 越界尺寸 → playtest_screenshot_invalid。
+        let bad_shot = handle_preview_request(&home, "code-preview-preview-pt-msg", &json!({"previewId":preview_id,"command":"plugin_message",
+            "args":{"message":{"type":"playtest.screenshot","screenshot":{"captureId":"cap-2","dataUrl":"data:image/png;base64,AA","width":1,"height":1,"downscaled":false}}}}));
+        assert_eq!(bad_shot.unwrap_err(), "playtest_screenshot_invalid");
+        // 未配对窗口进不了消息面；未知类型维持 preview_message_unavailable。
+        let forged = handle_preview_request(&home, "code-preview-other", &json!({"previewId":preview_id,"command":"plugin_message",
+            "args":{"message":{"type":"playtest.screenshot","screenshot":{"captureId":"cap-3","dataUrl":data_url,"width":1,"height":1,"downscaled":false}}}}));
+        assert_eq!(forged.unwrap_err(), "preview_instance_mismatch");
+        let unknown = handle_preview_request(&home, "code-preview-preview-pt-msg", &json!({"previewId":preview_id,"command":"plugin_message",
+            "args":{"message":{"type":"playtest.debug","state":{}}}}));
+        assert_eq!(unknown.unwrap_err(), "preview_message_unavailable");
         std::fs::remove_dir_all(home).ok();
     }
 }

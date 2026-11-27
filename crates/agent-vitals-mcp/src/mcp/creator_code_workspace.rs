@@ -1593,7 +1593,8 @@ fn game_id_for(title: &str) -> String {
     format!("community.{slug}-{}", random_hex(6))
 }
 
-fn random_hex(length: usize) -> String {
+/// PR08：creator_code_playtest（sessionId/captureId）复用同一随机后缀源。
+pub(crate) fn random_hex(length: usize) -> String {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

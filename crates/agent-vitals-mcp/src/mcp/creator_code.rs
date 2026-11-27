@@ -117,7 +117,8 @@ fn valid_preview_id(value: &str) -> bool {
 
 /// 按 previewId 的权威读法：`previews/<previewId>/state.json`（宿主
 /// `studio_status_for` 同源数据）。previewId 字段回显请求值，记录缺失时
-/// 返回结构化 absent，而不是错误。
+/// 返回结构化 absent，而不是错误。PR08：试玩会话存在时附加 `playtest`
+/// 投影（预算/最近接受时刻/最近错误），与宿主 `studio_status_for` 同形。
 fn preview_status_for(root: &Path, preview_id: &str) -> Result<Value, ToolError> {
     if !valid_preview_id(preview_id) {
         return Err(ToolError::new("invalid_argument",
@@ -126,7 +127,26 @@ fn preview_status_for(root: &Path, preview_id: &str) -> Result<Value, ToolError>
     let Some(value) = read_json(&root.join("previews").join(preview_id).join("state.json")) else {
         return Ok(json!({"ok":true,"data":{"available":false,"status":"unavailable","previewId":preview_id,"reason":"no_preview"}}));
     };
-    Ok(json!({"ok":true,"data":preview_record(&value, Some(preview_id))}))
+    let mut record = preview_record(&value, Some(preview_id));
+    if let Some(playtest) = playtest_projection(root, preview_id) {
+        record["playtest"] = playtest;
+    }
+    Ok(json!({"ok":true,"data":record}))
+}
+
+/// PR08 试玩投影：只读 `playtest.json` 的白名单字段；无会话不附加键（保持
+/// 既有读法的字段全集稳定）。
+fn playtest_projection(root: &Path, preview_id: &str) -> Option<Value> {
+    let session = read_json(&root.join("previews").join(preview_id).join("playtest.json"))?;
+    Some(json!({
+        "sessionId": session.get("sessionId").and_then(Value::as_str).map(String::from),
+        "status": session.get("status").and_then(Value::as_str).map(String::from),
+        "reason": session.get("reason").and_then(Value::as_str).map(String::from),
+        "acceptedActions": session.get("acceptedActions").and_then(Value::as_u64),
+        "deliveredBatches": session.get("deliveredBatches").and_then(Value::as_u64),
+        "lastInputAcceptedAtMs": session.get("lastInputAcceptedAtMs").and_then(Value::as_u64),
+        "lastError": session.get("lastError").and_then(Value::as_str).map(String::from),
+    }))
 }
 
 /// Legacy 读法（隔离 Spec §5.2 兼容面）：只反映最近一个 Preview（最后写者）。

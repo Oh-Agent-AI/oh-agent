@@ -31,7 +31,14 @@ export type CityCodePreviewEnvelopeV1 = Readonly<{
 
 export type CityCodePreviewControlV1 = Readonly<{ control: "stop"; previewId: string; buildId: string; runId: string }>;
 
-export async function takeCityCodePreview(): Promise<CityCodePreviewEnvelopeV1 | CityCodePreviewControlV1 | null> {
+/// PR08 自动化试玩的宿主→webview 控制信封：与 stop control 同一条 pull 通道
+/// （city.code.preview.next 轮询），宿主已做白名单/预算校验，这里只做防御性
+/// 形状复核后再应用到本窗口自己的 game host（焦点隔离：主 City 窗口收不到）。
+export type PlaytestInputControlV1 = Readonly<{ control: "playtest.input"; previewId: string; sessionId: string; seq: number; actions: Readonly<Record<string, number | boolean>>; holdMs: number }>;
+export type PlaytestCaptureControlV1 = Readonly<{ control: "playtest.capture"; previewId: string; captureId: string }>;
+export type PlaytestEndControlV1 = Readonly<{ control: "playtest.end"; previewId: string; sessionId: string; reason: string }>;
+
+export async function takeCityCodePreview(): Promise<CityCodePreviewEnvelopeV1 | CityCodePreviewControlV1 | PlaytestInputControlV1 | PlaytestCaptureControlV1 | PlaytestEndControlV1 | null> {
   if (!desktopAvailable()) return null;
   return hostCall("city.code.preview.next", {});
 }

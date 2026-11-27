@@ -139,6 +139,14 @@ export class CodeGameHostV2 {
     return Object.freeze({ ...this.inner.telemetry(), status: this.statusValue });
   }
 
+  /** Host-side input push (PR08 automated playtest). Delegates to the V1 host's
+   * bounded normalization (≤32 scalar keys, run-scoped, cleared on dispose) —
+   * only the preview host that owns this run may call it; games still read the
+   * snapshot through ctx.input.actions() and can never mutate it. */
+  setInput(next: Readonly<Record<string, number | boolean>>): void {
+    this.inner.setInput(next);
+  }
+
   private checkPermission(permission: GamePermissionV2): void {
     const decision = evaluateGameInvocation(permission, {
       runId: this.runId,

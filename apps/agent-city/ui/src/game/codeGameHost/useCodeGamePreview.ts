@@ -16,6 +16,7 @@ import type { DialogueAPIV1 } from "../../../../../../packages/city-game-sdk/src
 export type CodeGameDialogueStateV1 = Parameters<DialogueAPIV1["open"]>[0];
 import { createThreeCodeGameRender } from "./threeRenderPort";
 import { closeCityCodePreview, readCityCodePreviewBytes, takeCityCodePreview } from "./cityRuntimeCalls";
+import type { PlaytestCaptureControlV1, PlaytestEndControlV1, PlaytestInputControlV1 } from "./cityRuntimeCalls";
 
 /**
  * Dev preview entry: fetch a trusted build, import it from a Blob URL, and run
@@ -256,11 +257,78 @@ export function useCodeGamePreview(options: Readonly<{
     return !!(engine?.currentLayout && engine.getCitySdkLayoutView());
   }, [engineRef]);
 
+  // ── PR08 自动化试玩（有界输入 / 截图）────────────────────────────
+  // 宿主经 city.code.preview.next 的 control 信封下发（已做动作白名单与预算），
+  // 这里防御性复核形状后应用到**本窗口自己的** game host（setInput 是宿主侧
+  // 推送，游戏经 ctx.input.actions() 轮询读取）；结果经 plugin_message 窄面
+  // playtest.input.result 回执，宿主记入会话步骤。V1 dev 运行没有输入面：
+  // 如实回 game_run_not_found，绝不静默丢弃。
+
+  const publishInputResult = useCallback((sessionId: string | null, seq: number | null, ok: boolean, errorCode?: string): void => {
+    void publish("playtest.input.result", {
+      result: { sessionId, seq, ok, ...(errorCode ? { errorCode } : {}) },
+    }).catch(() => {});
+  }, []);
+
+  const applyPlaytestInput = useCallback((control: PlaytestInputControlV1): void => {
+    const sessionId = typeof control.sessionId === "string" && control.sessionId.length <= 128 ? control.sessionId : null;
+    const seq = typeof control.seq === "number" && Number.isInteger(control.seq) && control.seq > 0 ? control.seq : null;
+    const actions = control.actions;
+    const validActions = !!actions && typeof actions === "object" && !Array.isArray(actions)
+      && Object.entries(actions).every(([key, value]) => key.length >= 1 && key.length <= 64
+        && (typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value))))
+      && Object.keys(actions).length <= 32;
+    if (!sessionId || !seq || !validActions) {
+      publishInputResult(sessionId, seq, false, "playtest_input_invalid");
+      return;
+    }
+    const run = runRef.current;
+    if (!(run instanceof CodeGameRunV2) || run.isDisposed) {
+      publishInputResult(sessionId, seq, false, "game_run_not_found");
+      return;
+    }
+    try {
+      run.setInput(actions);
+      publishInputResult(sessionId, seq, true);
+    } catch {
+      publishInputResult(sessionId, seq, false, "game_argument_invalid");
+    }
+  }, [publishInputResult]);
+
+  const capturePlaytestScreenshot = useCallback(async (control: PlaytestCaptureControlV1): Promise<void> => {
+    const captureId = typeof control.captureId === "string" && control.captureId.length <= 128 ? control.captureId : null;
+    if (!captureId) return;
+    const engine = engineRef.current;
+    const frame = engine?.captureFrame(330_000);
+    if (!frame || !frame.ok) {
+      void publish("playtest.screenshot", {
+        screenshot: { captureId, errorCode: frame && !frame.ok ? frame.code : "creator_capture_unavailable" },
+      }).catch(() => {});
+      return;
+    }
+    void publish("playtest.screenshot", {
+      screenshot: { captureId, dataUrl: frame.dataUrl, width: frame.width, height: frame.height, downscaled: frame.downscaled },
+    }).catch(() => {});
+  }, [engineRef]);
+
+  const releasePlaytestInput = useCallback((_control: PlaytestEndControlV1): void => {
+    // 会话结束：释放仍按下的动作（setInput 空表），避免悬停键位污染下一次试玩。
+    const run = runRef.current;
+    if (run instanceof CodeGameRunV2 && !run.isDisposed) {
+      try { run.setInput({}); } catch { /* run is being torn down */ }
+    }
+  }, []);
+
   const startNextPreview = useCallback(async (): Promise<boolean> => {
     const pending = await takeCityCodePreview();
     if (!pending) return false;
     if ("control" in pending) {
       const previewMatches = !window.__AV_CODE_PREVIEW_ID__ || window.__AV_CODE_PREVIEW_ID__ === pending.previewId;
+      // PR08 自动化试玩控制信封（宿主已做白名单/预算校验，这里只做防御性复核
+      // 并应用到本窗口自己的 game host——主 City 窗口收不到这些信封）。
+      if (pending.control === "playtest.input") { if (previewMatches) applyPlaytestInput(pending); return true; }
+      if (pending.control === "playtest.capture") { if (previewMatches) await capturePlaytestScreenshot(pending); return true; }
+      if (pending.control === "playtest.end") { if (previewMatches) releasePlaytestInput(pending); return true; }
       if (previewMatches && activeBuildIdRef.current === pending.buildId && stateRef.current.runId === pending.runId) stop();
       return true;
     }
@@ -291,7 +359,7 @@ export function useCodeGamePreview(options: Readonly<{
     } finally {
       await closeCityCodePreview(pending.snapshotId).catch(() => undefined);
     }
-  }, [ready, start]);
+  }, [applyPlaytestInput, capturePlaytestScreenshot, ready, releasePlaytestInput, start]);
 
   const stop = useCallback((): void => {
     const run = runRef.current;

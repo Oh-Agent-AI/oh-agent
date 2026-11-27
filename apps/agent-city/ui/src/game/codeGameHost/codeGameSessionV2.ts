@@ -54,6 +54,12 @@ export class CodeGameRunV2<Visual> {
   pause(): void { if (!this.disposed) this.host.pause(); }
   resume(): void { if (!this.disposed) this.host.resume(); }
 
+  /** PR08 自动化试玩的有界输入推送（宿主侧 setInput 白名单归一化，游戏经
+   * ctx.input.actions() 读取；run 已停止时静默忽略）。 */
+  setInput(actions: Readonly<Record<string, number | boolean>>): void {
+    if (!this.disposed) this.host.setInput(actions);
+  }
+
   stop(reason = "stopped"): Promise<void> {
     if (this.stopPromise) return this.stopPromise;
     this.stopPromise = this.stopInternal(reason);

@@ -179,6 +179,8 @@ pub(crate) fn record_preview_state(home: &Path, state: &Value) -> Result<(), Str
         write_json_atomic(&directory.join("state.json"), &record)?;
         if matches!(status, "finished" | "error") {
             std::fs::remove_file(directory.join("control.json")).ok();
+            // PR08：run 终态即终态化试玩会话（保结果可读）并撤销未消费的截图请求。
+            finish_playtest_on_terminal(home, &preview_id);
             crate::city_runtime::forget_preview_clock(home, &preview_id);
             crate::city_runtime::forget_story_fork(home, &preview_id);
         }
@@ -382,9 +384,9 @@ fn next_preview_result(home: &Path, city_instance: &str) -> Result<Value, String
     migrate_legacy_preview_request(home)?;
     if let Some(control) = take_preview_control(home, city_instance)? { return Ok(control); }
     let path = preview_dir(home, city_instance)?.join("request.json");
-    let Some(request) = read_json(&path, MAX_PREVIEW_REQUEST_BYTES)? else { return Ok(Value::Null); };
+    let Some(request) = read_json(&path, MAX_PREVIEW_REQUEST_BYTES)? else { return Ok(idle_preview_envelope(home, city_instance)); };
     if request.get("status").and_then(Value::as_str) != Some("queued")
-        || terminal_preview_state(home, city_instance)? { return Ok(Value::Null); }
+        || terminal_preview_state(home, city_instance)? { return Ok(idle_preview_envelope(home, city_instance)); }
     let request_id = request_string(&request, "requestId", 128)?;
     let build_id = request_string(&request, "buildId", 64)?;
     let seed = request.get("seed").and_then(Value::as_u64).ok_or_else(|| "code_game_preview_request_invalid".to_string())?;
@@ -643,7 +645,8 @@ pub(crate) fn studio_status(home: &Path) -> Result<Value, &'static str> {
 }
 
 /// 按 previewId 的权威状态：读该 Preview 自己的 `state.json`，多 Preview
-/// 并存时不互相覆盖。
+/// 并存时不互相覆盖。PR08：会话存在时附加 `playtest` 投影（预算/最近接受
+/// 时刻/最近错误）——只是同一目录下 playtest.json 的补缺，不是新状态系统。
 pub(crate) fn studio_status_for(home: &Path, preview_id: &str) -> Result<Value, &'static str> {
     let path = match preview_dir(home, preview_id) {
         Ok(directory) => directory.join("state.json"),
@@ -653,10 +656,14 @@ pub(crate) fn studio_status_for(home: &Path, preview_id: &str) -> Result<Value, 
         Some(value) => value,
         None => return Ok(json!({"available":false,"status":"unavailable","previewId":preview_id})),
     };
-    Ok(json!({"available":true,"previewId":preview_id,"status":bounded(&value,"status",32),"gameId":bounded(&value,"gameId",128),
+    let mut status = json!({"available":true,"previewId":preview_id,"status":bounded(&value,"status",32),"gameId":bounded(&value,"gameId",128),
         "buildId":bounded(&value,"buildId",64),"runId":bounded(&value,"runId",64),"reason":bounded(&value,"reason",120),
         "outcome":bounded(&value,"outcome",16),"tick":bounded_count(&value,"tick",MAX_TICK),
-        "entities":bounded_count(&value,"entities",MAX_ENTITIES),"updatedAtMs":bounded_count(&value,"updatedAtMs",u64::MAX)}))
+        "entities":bounded_count(&value,"entities",MAX_ENTITIES),"updatedAtMs":bounded_count(&value,"updatedAtMs",u64::MAX)});
+    if let Some(playtest) = playtest_status_projection(home, preview_id) {
+        status["playtest"] = playtest;
+    }
+    Ok(status)
 }
 
 pub(crate) fn studio_stop(home: &Path, preview_id: &str) -> Result<Value, &'static str> {
@@ -670,6 +677,361 @@ pub(crate) fn studio_stop(home: &Path, preview_id: &str) -> Result<Value, &'stat
     let request = json!({"requestId":request_id,"previewId":preview_id,"buildId":status["buildId"],"runId":status["runId"],"status":"stop_requested","createdAtMs":now_ms()});
     write_json_atomic(&directory.join("control.json"), &request).map_err(|_| "creator_store_unavailable")?;
     Ok(json!({"requestId":request_id,"previewId":preview_id,"status":"stop_requested"}))
+}
+
+// ── PR08 自动化视觉试玩（Automated Visual Playtest）────────────────
+// 隔离 preview 窗口的有界输入注入 + 渲染证据截图。会话状态落在每个 Preview
+// 自己的目录（`playtest.json` / `capture-request.json` / `screenshot.json`），
+// MCP 与宿主共用同一份文件面：MCP 侧按 creator_code_workspace::stage_preview
+// 的既有先例直接做有界写入（不占用 creator-studio 邮箱，Studio 在场与否都
+// 可用），宿主在 `city.code.preview.next` 的既有 pull 轮询里消费队列——与
+// stop control 完全同通道，不新增 host→webview 通道。所有上限都是常量：
+// Agent 不能要求更长/更大的会话；动作词表是封闭形状（1..=8 键、键 1..64 个
+// [A-Za-z0-9_.-]、值 bool 或 |v|≤1e6 的有限数），经由宿主侧 setInput 归一化
+// 后由游戏 ctx.input.actions() 读取。截图是**渲染证据**：只有像素，几何/
+// 物理断言仍然只能来自 code-game.state 观测（tick/entities）与宿主运行时。
+// 本模块的报告永不自动断言“passed”——结论留给 PR06 的场景机制。会话是
+// 顺序的：预算耗尽/超时/stop 终态化后允许开新会话（每段各有完整上限），
+// 单 Preview 任一时刻只有一个活跃会话。
+const MAX_PLAYTEST_ACTIONS: u64 = 64;
+const MAX_PLAYTEST_WINDOW_MS: u64 = 120_000;
+const MAX_PLAYTEST_BATCH_KEYS: usize = 8;
+const MAX_PLAYTEST_BATCHES: usize = 4;
+const MAX_PLAYTEST_HOLD_MS: u64 = 5_000;
+const MAX_PLAYTEST_STEPS: usize = 64;
+const MAX_PLAYTEST_INPUT_VALUE: f64 = 1_000_000.0;
+/// 与 MCP 捕获面同一数据Url 预算（creator_studio::MAX_CAPTURE_ENCODED_CHARS 同数）。
+const MAX_PLAYTEST_SCREENSHOT_CHARS: usize = 350_000;
+const MAX_PLAYTEST_SCREENSHOT_FILE: usize = 512 * 1024;
+
+fn playtest_path(home: &Path, preview_id: &str) -> Result<PathBuf, String> {
+    Ok(preview_dir(home, preview_id)?.join("playtest.json"))
+}
+
+fn playtest_session_is_active(session: &Value) -> bool {
+    session.get("status").and_then(Value::as_str) == Some("active")
+}
+
+/// 动作词表（封闭形状）：对象、1..=MAX_PLAYTEST_BATCH_KEYS 个键、键为
+/// 1..64 个 [A-Za-z0-9_.-]、值为 bool 或有限数（|v| ≤ 1e6）。返回归一化后的
+/// (keys, count)，宿主落盘与 serve 双侧共用同一判定。
+fn validate_playtest_actions(actions: &Value) -> Result<(Vec<String>, usize), String> {
+    let object = actions.as_object().ok_or("playtest_invalid_actions")?;
+    if object.is_empty() || object.len() > MAX_PLAYTEST_BATCH_KEYS { return Err("playtest_invalid_actions".into()); }
+    let mut keys = Vec::with_capacity(object.len());
+    for (key, value) in object {
+        let valid_key = !key.is_empty() && key.len() <= 64
+            && key.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'));
+        let valid_value = match value {
+            Value::Bool(_) => true,
+            Value::Number(number) => number.as_f64().is_some_and(|raw| raw.is_finite() && raw.abs() <= MAX_PLAYTEST_INPUT_VALUE),
+            _ => false,
+        };
+        if !valid_key || !valid_value { return Err("playtest_invalid_actions".into()); }
+        keys.push(key.clone());
+    }
+    Ok((keys, object.len()))
+}
+
+/// MCP 直写面同款校验（creator_code_playtest.rs 镜像同一规则）：预览必须存在
+/// 且 run 处于 starting/running；会话终态或过期则开新会话；预算/窗口上限在
+/// 这里收口。返回回执（sessionId/seq/预算状态）。
+pub(crate) fn playtest_input(home: &Path, preview_id: &str, actions: &Value, hold_ms: Option<u64>, now: u64) -> Result<Value, String> {
+    let (_keys, count) = validate_playtest_actions(actions)?;
+    let hold = hold_ms.unwrap_or(0);
+    if hold > MAX_PLAYTEST_HOLD_MS { return Err("playtest_invalid_actions".into()); }
+    let state = studio_status_for(home, preview_id).map_err(|code| code.to_string())?;
+    if !matches!(state.get("status").and_then(Value::as_str), Some("starting" | "running")) {
+        return Err("game_run_not_found".into());
+    }
+    let _guard = preview_io_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let path = playtest_path(home, preview_id)?;
+    let mut session = read_json(&path, 256 * 1024)?.unwrap_or_else(|| json!({}));
+    let expired = session.get("expiresAtMs").and_then(Value::as_u64).is_some_and(|expiry| now >= expiry);
+    if !session.is_object() || !playtest_session_is_active(&session) || expired { session = json!({}); }
+    let object = session.as_object_mut().ok_or_else(|| "code_game_state_unavailable".to_string())?;
+    let new_session = !object.contains_key("sessionId");
+    if new_session {
+        object.clear();
+        let request = read_json(&preview_dir(home, preview_id)?.join("request.json"), MAX_PREVIEW_REQUEST_BYTES)?
+            .ok_or_else(|| "code_game_preview_request_invalid".to_string())?;
+        let source = request.get("source").cloned().unwrap_or_else(|| json!({}));
+        object.insert("sessionId".into(), json!(new_id("playtest-")?));
+        object.insert("status".into(), json!("active"));
+        object.insert("previewId".into(), json!(preview_id));
+        object.insert("buildId".into(), request.get("buildId").cloned().unwrap_or(Value::Null));
+        object.insert("cityId".into(), source.get("cityId").cloned().unwrap_or(Value::Null));
+        object.insert("cityRevision".into(), source.get("cityRevision").cloned().unwrap_or(Value::Null));
+        object.insert("startedAtMs".into(), json!(now));
+        object.insert("expiresAtMs".into(), json!(now.saturating_add(MAX_PLAYTEST_WINDOW_MS)));
+        object.insert("maxActions".into(), json!(MAX_PLAYTEST_ACTIONS));
+        object.insert("acceptedActions".into(), json!(0));
+        object.insert("deliveredBatches".into(), json!(0));
+        object.insert("lastInputAcceptedAtMs".into(), Value::Null);
+        object.insert("lastError".into(), Value::Null);
+        object.insert("pending".into(), json!([]));
+        object.insert("steps".into(), json!([]));
+        // 步骤序列号是会话内单调递增计数器（steps 超过 MAX_PLAYTEST_STEPS 会
+        // 从头部修剪，长度不能反推 seq），只能由显式计数器续接。
+        object.insert("nextSeq".into(), json!(1));
+    }
+    let delivered = object.get("acceptedActions").and_then(Value::as_u64).unwrap_or(0);
+    // 预算收口按 已投递 + 队列中 待投递 动作合计：入队不能绕过 64 动作上限。
+    let pending_actions: u64 = object.get("pending").and_then(Value::as_array).map(|items| items.iter()
+        .filter_map(|batch| batch.get("actions").and_then(Value::as_object).map(|actions| actions.len() as u64))
+        .sum()).unwrap_or(0);
+    if delivered.saturating_add(pending_actions).saturating_add(count as u64) > MAX_PLAYTEST_ACTIONS {
+        return Err("playtest_budget_exhausted".into());
+    }
+    let pending_len = object.get("pending").and_then(Value::as_array).map(Vec::len).unwrap_or(0);
+    if pending_len >= MAX_PLAYTEST_BATCHES { return Err("playtest_queue_full".into()); }
+    let seq = object.get("nextSeq").and_then(Value::as_u64).unwrap_or(1);
+    object.insert("nextSeq".into(), json!(seq + 1));
+    {
+        let pending = object.get_mut("pending").and_then(Value::as_array_mut).ok_or_else(|| "code_game_state_unavailable".to_string())?;
+        pending.push(json!({"seq":seq,"actions":actions,"holdMs":hold}));
+    }
+    object.insert("updatedAtMs".into(), json!(now));
+    write_json_atomic(&path, &Value::Object(object.clone()))?;
+    Ok(json!({"sessionId":object["sessionId"],"seq":seq,"queued":true,"holdMs":hold,
+        "budget":{"maxActions":MAX_PLAYTEST_ACTIONS,"acceptedActions":delivered,
+            "expiresAtMs":object["expiresAtMs"],"queuedBatches":pending_len + 1}}))
+}
+
+/// MCP stop 面：终态化会话（清空 pending），下一次轮询由 serve 发出一次
+/// playtest.end，渲染端释放仍按下的动作。无会话是幂等成功。
+pub(crate) fn playtest_stop(home: &Path, preview_id: &str, now: u64) -> Result<Value, String> {
+    if !valid_preview_id(preview_id) { return Err("code_game_preview_request_invalid".into()); }
+    let _guard = preview_io_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let path = playtest_path(home, preview_id)?;
+    let Some(mut session) = read_json(&path, 256 * 1024)? else { return Ok(json!({"stopped":false,"reason":"no_session"})); };
+    if !playtest_session_is_active(&session) { return Ok(json!({"stopped":false,"reason":"already_finished"})); }
+    let object = session.as_object_mut().ok_or_else(|| "code_game_state_unavailable".to_string())?;
+    object.insert("status".into(), json!("finished"));
+    object.insert("reason".into(), json!("stopped"));
+    object.insert("pending".into(), json!([]));
+    object.insert("updatedAtMs".into(), json!(now));
+    write_json_atomic(&path, &Value::Object(object.clone()))?;
+    Ok(json!({"stopped":true,"sessionId":object["sessionId"].clone(),"reason":"stopped"}))
+}
+
+/// 终态清理：preview 进入 finished/error 时终止活跃会话（保结果可读）并撤销
+/// 未消费的截图请求。record_preview_state 的终态分支与窗口销毁都会走到这里。
+fn finish_playtest_on_terminal(home: &Path, preview_id: &str) {
+    let Ok(path) = playtest_path(home, preview_id) else { return };
+    let mut session = match read_json(&path, 256 * 1024) {
+        Ok(Some(session)) => session,
+        _ => return,
+    };
+    if playtest_session_is_active(&session) {
+        if let Some(object) = session.as_object_mut() {
+            object.insert("status".into(), json!("finished"));
+            object.insert("reason".into(), json!("preview_closed"));
+            object.insert("pending".into(), json!([]));
+            object.insert("updatedAtMs".into(), json!(now_ms()));
+        }
+        write_json_atomic(&path, &session).ok();
+    }
+    if let Ok(directory) = preview_dir(home, preview_id) {
+        std::fs::remove_file(directory.join("capture-request.json")).ok();
+    }
+}
+
+/// 轮询空闲臂的入口：无 claim / 无 stop control 时，把试玩投递（终态通知 →
+/// 截图请求 → 输入批次）并入既有 pull 通道，否则维持 Null（渲染端继续等待）。
+fn idle_preview_envelope(home: &Path, preview_id: &str) -> Value {
+    serve_preview_playtest(home, preview_id, now_ms()).unwrap_or(Value::Null)
+}
+
+/// 轮询空闲臂（city.code.preview.next 在无 claim/无 stop control 时）：按
+/// 优先级投递 终态通知 → 截图请求 → 输入批次。所有失败路径都安静地退回
+/// None——试玩投递绝不能打断 preview 生命周期轮询。
+fn serve_preview_playtest(home: &Path, preview_id: &str, now: u64) -> Option<Value> {
+    let path = playtest_path(home, preview_id).ok()?;
+    let mut session = match read_json(&path, 256 * 1024) {
+        Ok(Some(session)) => session,
+        Ok(None) => return serve_preview_capture(home, preview_id),
+        // 损坏/超限的会话文件 fail-closed：移除并继续轮询，绝不卡死预览。
+        Err(_) => { std::fs::remove_file(&path).ok(); return serve_preview_capture(home, preview_id); }
+    };
+    let Some(object) = session.as_object_mut() else {
+        std::fs::remove_file(&path).ok();
+        return serve_preview_capture(home, preview_id);
+    };
+    let active = object.get("status").and_then(Value::as_str) == Some("active");
+    if active {
+        let expired = object.get("expiresAtMs").and_then(Value::as_u64).is_some_and(|expiry| now >= expiry);
+        let delivered = object.get("acceptedActions").and_then(Value::as_u64).unwrap_or(0);
+        if expired {
+            object.insert("status".into(), json!("finished"));
+            object.insert("reason".into(), json!("expired"));
+        } else if delivered >= object.get("maxActions").and_then(Value::as_u64).unwrap_or(MAX_PLAYTEST_ACTIONS) {
+            object.insert("status".into(), json!("finished"));
+            object.insert("reason".into(), json!("budget"));
+        }
+    }
+    // 终态通知只发一次：渲染端收到后释放仍按下的动作。
+    if object.get("status").and_then(Value::as_str) != Some("active")
+        && object.get("endNotified").and_then(Value::as_bool) != Some(true) {
+        object.insert("endNotified".into(), json!(true));
+        object.insert("pending".into(), json!([]));
+        object.insert("updatedAtMs".into(), json!(now));
+        let envelope = json!({"control":"playtest.end","previewId":preview_id,
+            "sessionId":object.get("sessionId").cloned().unwrap_or(Value::Null),
+            "reason":object.get("reason").cloned().unwrap_or(json!("finished"))});
+        write_json_atomic(&path, &Value::Object(object.clone())).ok();
+        return Some(envelope);
+    }
+    if object.get("status").and_then(Value::as_str) == Some("active")
+        && object.get("pending").and_then(Value::as_array).is_some_and(|items| !items.is_empty()) {
+        let batch = object.get_mut("pending").and_then(Value::as_array_mut)
+            .and_then(|items| if items.is_empty() { None } else { Some(items.remove(0)) });
+        if let Some(batch) = batch {
+            let seq = batch.get("seq").and_then(Value::as_u64).unwrap_or(0);
+            let actions = batch.get("actions").cloned().unwrap_or_else(|| json!({}));
+            // 队列里的动作在 serve 时复验（文件可能被外部改写）：不合格的
+            // 批次直接丢弃（批次已从内存队列移除，落盘即持久化丢弃）并继续，
+            // 绝不下发越界动作。
+            let validated = validate_playtest_actions(&actions);
+            if let Ok((keys, count)) = validated {
+                let delivered = object.get("acceptedActions").and_then(Value::as_u64).unwrap_or(0).saturating_add(count as u64);
+                object.insert("acceptedActions".into(), json!(delivered));
+                object.insert("deliveredBatches".into(), json!(object.get("deliveredBatches").and_then(Value::as_u64).unwrap_or(0) + 1));
+                let observed = studio_status_for(home, preview_id).ok();
+                let step = json!({"seq":seq,"keys":keys,"holdMs":batch.get("holdMs").cloned().unwrap_or(json!(0)),
+                    "deliveredAtMs":now,
+                    "tick":observed.as_ref().and_then(|state| state.get("tick")).cloned().unwrap_or(Value::Null),
+                    "entities":observed.as_ref().and_then(|state| state.get("entities")).cloned().unwrap_or(Value::Null),
+                    "ok":Value::Null,"ackAtMs":Value::Null,"errorCode":Value::Null});
+                if let Some(steps) = object.get_mut("steps").and_then(Value::as_array_mut) {
+                    steps.push(step);
+                    if steps.len() > MAX_PLAYTEST_STEPS { let overflow = steps.len() - MAX_PLAYTEST_STEPS; steps.drain(0..overflow); }
+                }
+                object.insert("updatedAtMs".into(), json!(now));
+                let envelope = json!({"control":"playtest.input","previewId":preview_id,
+                    "sessionId":object.get("sessionId").cloned().unwrap_or(Value::Null),
+                    "seq":seq,"actions":actions,"holdMs":batch.get("holdMs").cloned().unwrap_or(json!(0))});
+                write_json_atomic(&path, &Value::Object(object.clone())).ok();
+                return Some(envelope);
+            }
+            write_json_atomic(&path, &Value::Object(object.clone())).ok();
+            return None;
+        }
+    }
+    serve_preview_capture(home, preview_id)
+}
+
+/// 截图请求消费：MCP 直写 capture-request.json，宿主在轮询里取走并下发
+/// playtest.capture 信封；渲染端回 playtest.screenshot 后落 screenshot.json。
+/// 请求无论有效与否都取走（fail-closed 移除），坏请求绝不反复重投。
+fn serve_preview_capture(home: &Path, preview_id: &str) -> Option<Value> {
+    let path = preview_dir(home, preview_id).ok()?.join("capture-request.json");
+    let request = match read_json(&path, 4_096) {
+        Ok(Some(request)) => request,
+        Ok(None) => return None,
+        Err(_) => { std::fs::remove_file(&path).ok(); return None; }
+    };
+    std::fs::remove_file(&path).ok();
+    let capture_id = request.get("captureId").and_then(Value::as_str)
+        .filter(|id| !id.is_empty() && id.len() <= 128
+            && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')))
+        .map(ToString::to_string)?;
+    Some(json!({"control":"playtest.capture","previewId":preview_id,"captureId":capture_id}))
+}
+
+/// 渲染端回执（plugin_message playtest.input.result）：按 sessionId+seq 记录
+/// 应用结果；会话已被替换/终止时回执按未记录处理（陈旧回执不是伪造）。
+pub(crate) fn record_playtest_ack(home: &Path, preview_id: &str, result: &Value) -> Result<bool, &'static str> {
+    let session_id = result.get("sessionId").and_then(Value::as_str)
+        .filter(|id| !id.is_empty() && id.len() <= 128).ok_or("playtest_input_result_invalid")?;
+    let seq = result.get("seq").and_then(Value::as_u64).filter(|seq| *seq > 0).ok_or("playtest_input_result_invalid")?;
+    let ok = result.get("ok").and_then(Value::as_bool).ok_or("playtest_input_result_invalid")?;
+    let error_code = match result.get("errorCode") {
+        None | Some(Value::Null) => None,
+        Some(code) => Some(code.as_str().filter(|text| !text.is_empty() && text.len() <= 48
+            && text.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'))
+            .ok_or("playtest_input_result_invalid")?.to_owned()),
+    };
+    let _guard = preview_io_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let path = playtest_path(home, preview_id).map_err(|_| "code_game_preview_request_invalid")?;
+    let Some(mut session) = read_json(&path, 256 * 1024).map_err(|_| "playtest_input_result_invalid")? else { return Ok(false) };
+    let Some(object) = session.as_object_mut() else { return Ok(false) };
+    if object.get("sessionId").and_then(Value::as_str) != Some(session_id) { return Ok(false); }
+    let now = now_ms();
+    for step in object.get_mut("steps").and_then(Value::as_array_mut).into_iter().flatten() {
+        if step.get("seq").and_then(Value::as_u64) == Some(seq) {
+            step["ok"] = json!(ok);
+            step["ackAtMs"] = json!(now);
+            step["errorCode"] = error_code.clone().map(|code| json!(code)).unwrap_or(Value::Null);
+        }
+    }
+    if ok {
+        object.insert("lastInputAcceptedAtMs".into(), json!(now));
+    } else if let Some(code) = error_code {
+        object.insert("lastError".into(), json!(code));
+    }
+    object.insert("updatedAtMs".into(), json!(now));
+    write_json_atomic(&path, &session).map_err(|_| "playtest_input_result_invalid")?;
+    Ok(true)
+}
+
+/// 渲染端截图回执（plugin_message playtest.screenshot）：绑定 previewId/buildId
+/// 与 captureId 后有界落盘 screenshot.json（≤512KiB，tmp+rename 原子发布）。
+/// 这是渲染证据面：像素之外不带任何几何/物理语义。
+pub(crate) fn store_preview_screenshot(home: &Path, preview_id: &str, screenshot: &Value) -> Result<bool, &'static str> {
+    let capture_id = screenshot.get("captureId").and_then(Value::as_str)
+        .filter(|id| !id.is_empty() && id.len() <= 128
+            && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')))
+        .ok_or("playtest_screenshot_invalid")?;
+    // 失败回执（errorCode）不带像素：按 invalid 拒收（只进宿主日志）；MCP 侧
+    // 等不到匹配 captureId 的帧时按 creator_capture_unavailable 诚实超时。
+    if let Some(error_code) = screenshot.get("errorCode") {
+        if !error_code.is_null() {
+            return Err("playtest_screenshot_invalid");
+        }
+    }
+    let data_url = screenshot.get("dataUrl").and_then(Value::as_str)
+        .filter(|url| url.starts_with("data:image/jpeg;base64,") && url.len() <= MAX_PLAYTEST_SCREENSHOT_CHARS)
+        .ok_or("playtest_screenshot_invalid")?;
+    let width = screenshot.get("width").and_then(Value::as_u64).filter(|value| *value <= 16_384).ok_or("playtest_screenshot_invalid")?;
+    let height = screenshot.get("height").and_then(Value::as_u64).filter(|value| *value <= 16_384).ok_or("playtest_screenshot_invalid")?;
+    let downscaled = screenshot.get("downscaled").and_then(Value::as_bool).ok_or("playtest_screenshot_invalid")?;
+    let directory = preview_dir(home, preview_id).map_err(|_| "code_game_preview_request_invalid")?;
+    let build_id = read_json(&directory.join("request.json"), MAX_PREVIEW_REQUEST_BYTES)
+        .map_err(|_| "playtest_screenshot_invalid")?
+        .and_then(|request| request.get("buildId").and_then(Value::as_str).map(ToString::to_string));
+    let tick = read_json(&directory.join("state.json"), 16 * 1024).ok().flatten()
+        .map(|state| state.get("tick").cloned().unwrap_or(Value::Null))
+        .unwrap_or(Value::Null);
+    let record = json!({"captureId":capture_id,"previewId":preview_id,"buildId":build_id,
+        "dataUrl":data_url,"width":width,"height":height,"downscaled":downscaled,
+        "bytes":data_url.len(),"tick":tick,"capturedAtMs":now_ms()});
+    let bytes = serde_json::to_vec(&record).map_err(|_| "playtest_screenshot_invalid")?;
+    if bytes.len() > MAX_PLAYTEST_SCREENSHOT_FILE { return Err("playtest_screenshot_invalid"); }
+    let _guard = preview_io_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let target = directory.join("screenshot.json");
+    let temporary = directory.join("screenshot.json.tmp");
+    std::fs::write(&temporary, bytes).map_err(|_| "code_game_state_unavailable")?;
+    if std::fs::rename(&temporary, &target).is_err() {
+        std::fs::remove_file(&temporary).ok();
+        return Err("code_game_state_unavailable");
+    }
+    Ok(true)
+}
+
+/// studio_status_for 的试玩投影（观察面补缺）：只补会话预算/最近接受时刻/
+/// 最近错误三个字段，绝不复制一份新状态系统。
+fn playtest_status_projection(home: &Path, preview_id: &str) -> Option<Value> {
+    let session = read_json(&playtest_path(home, preview_id).ok()?, 256 * 1024).ok()??;
+    Some(json!({
+        "sessionId": session.get("sessionId").cloned().unwrap_or(Value::Null),
+        "status": session.get("status").cloned().unwrap_or(Value::Null),
+        "reason": session.get("reason").cloned().unwrap_or(Value::Null),
+        "acceptedActions": bounded_count(&session, "acceptedActions", MAX_PLAYTEST_ACTIONS),
+        "deliveredBatches": bounded_count(&session, "deliveredBatches", MAX_PLAYTEST_ACTIONS),
+        "lastInputAcceptedAtMs": bounded_count(&session, "lastInputAcceptedAtMs", u64::MAX),
+        "lastError": session.get("lastError").cloned().unwrap_or(Value::Null),
+    }))
 }
 
 #[cfg(test)]
@@ -1087,6 +1449,189 @@ mod tests {
         assert_eq!(code_test_record(&home, &json!({"buildId": "c".repeat(64)})).unwrap_err(), "creator_code_test_record_not_found");
         assert_eq!(code_test_record(&home, &json!({"buildId": "../escape"})).unwrap_err(), "game_argument_invalid");
         assert_eq!(code_test_record(&home, &json!({})).unwrap_err(), "game_argument_invalid");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    // ── PR08 自动化视觉试玩 ────────────────────────────────────────
+
+    fn playtest_preview_fixture(home: &Path, preview_id: &str) {
+        let directory = preview_dir(home, preview_id).unwrap();
+        std::fs::create_dir_all(&directory).unwrap();
+        write_json_atomic(&directory.join("request.json"), &json!({"previewId":preview_id,"buildId":"b".repeat(64),
+            "source":{"cityId":"city:pr08","cityRevision":3}})).unwrap();
+        record_preview_state(home, &json!({"status":"running","previewId":preview_id,"gameId":"game.pr08",
+            "buildId":"b".repeat(64),"runId":"run-pr08","tick":5,"entities":2})).unwrap();
+    }
+
+    /// 输入白名单/预算收口 + 队列投递（每轮一次）+ 回执记录：只有封闭形状的
+    /// 动作能进入会话；serve 只在空闲轮询投递一个批次；回执按 sessionId+seq
+    /// 落步骤；陈旧回执按未记录处理（不是伪造，配对窗口才能到达这里）。
+    #[test]
+    fn playtest_input_whitelist_caps_queue_and_ack_are_enforced() {
+        let home = std::env::temp_dir().join(format!("code-game-playtest-input-{}-{}", now_ms(), std::process::id()));
+        playtest_preview_fixture(&home, "preview-pt-input");
+        // 没有 run 状态的 preview：输入被拒绝（game_run_not_found）。
+        assert_eq!(playtest_input(&home, "preview-pt-ghost", &json!({"forward":true}), None, 1).unwrap_err(), "game_run_not_found");
+        // 白名单：空对象 / 超键数 / 非法键字符 / 非法值 / 超长 hold。
+        assert_eq!(playtest_input(&home, "preview-pt-input", &json!({}), None, 1).unwrap_err(), "playtest_invalid_actions");
+        assert_eq!(playtest_input(&home, "preview-pt-input",
+            &json!({"a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9}), None, 1).unwrap_err(), "playtest_invalid_actions");
+        assert_eq!(playtest_input(&home, "preview-pt-input", &json!({"bad key!":true}), None, 1).unwrap_err(), "playtest_invalid_actions");
+        assert_eq!(playtest_input(&home, "preview-pt-input", &json!({"forward":"yes"}), None, 1).unwrap_err(), "playtest_invalid_actions");
+        assert_eq!(playtest_input(&home, "preview-pt-input", &json!({"throttle":1.0e7}), None, 1).unwrap_err(), "playtest_invalid_actions");
+        assert_eq!(playtest_input(&home, "preview-pt-input", &json!({"forward":true}), Some(MAX_PLAYTEST_HOLD_MS + 1), 1).unwrap_err(), "playtest_invalid_actions");
+        // 合法入队：会话建立，预算回执可读。
+        let first = playtest_input(&home, "preview-pt-input", &json!({"forward":true}), Some(400), 1_000).unwrap();
+        assert_eq!(first["seq"], 1);
+        assert_eq!(first["queued"], true);
+        let session_id = first["sessionId"].as_str().unwrap().to_string();
+        let second = playtest_input(&home, "preview-pt-input", &json!({"forward":false,"steer":0.5}), None, 1_100).unwrap();
+        assert_eq!(second["seq"], 2);
+        assert_eq!(second["sessionId"], json!(session_id));
+        assert_eq!(second["budget"]["queuedBatches"], 2);
+        // serve 每轮投递一个批次，动作照原样下发，观察态绑定 tick/entities。
+        let served_first = serve_preview_playtest(&home, "preview-pt-input", 1_200).unwrap();
+        assert_eq!(served_first["control"], "playtest.input");
+        assert_eq!(served_first["sessionId"], json!(session_id));
+        assert_eq!(served_first["seq"], 1);
+        assert_eq!(served_first["actions"], json!({"forward":true}));
+        assert_eq!(served_first["holdMs"], 400);
+        let served_second = serve_preview_playtest(&home, "preview-pt-input", 1_300).unwrap();
+        assert_eq!(served_second["seq"], 2);
+        // 队列空了：不再投递（截图请求由独立文件面走）。
+        assert_eq!(serve_preview_playtest(&home, "preview-pt-input", 1_400), None);
+        // 回执：seq 1 失败（合法错误码），seq 2 成功。
+        assert_eq!(record_playtest_ack(&home, "preview-pt-input", &json!({"sessionId":session_id,"seq":1,
+            "ok":false,"errorCode":"game_run_not_found"})).unwrap(), true);
+        assert_eq!(record_playtest_ack(&home, "preview-pt-input", &json!({"sessionId":session_id,"seq":2,"ok":true})).unwrap(), true);
+        let session = read_json(&playtest_path(&home, "preview-pt-input").unwrap(), 256 * 1024).unwrap().unwrap();
+        assert_eq!(session["lastError"], "game_run_not_found");
+        assert!(session["lastInputAcceptedAtMs"].as_u64().is_some());
+        assert_eq!(session["steps"].as_array().unwrap()[0]["ok"], false);
+        assert_eq!(session["steps"].as_array().unwrap()[1]["ok"], true);
+        // 陈旧回执（会话 id 不符）与畸形回执。
+        assert_eq!(record_playtest_ack(&home, "preview-pt-input", &json!({"sessionId":"playtest-other","seq":2,"ok":true})).unwrap(), false);
+        assert_eq!(record_playtest_ack(&home, "preview-pt-input", &json!({"sessionId":session_id,"seq":2,"ok":"yes"})).unwrap_err(), "playtest_input_result_invalid");
+        assert_eq!(record_playtest_ack(&home, "preview-pt-input", &json!({"sessionId":session_id,"seq":2,"ok":true,"errorCode":"BAD CODE"})).unwrap_err(), "playtest_input_result_invalid");
+        // 投影：studio_status_for 附带 playtest 子对象。
+        let status = studio_status_for(&home, "preview-pt-input").unwrap();
+        assert_eq!(status["playtest"]["lastError"], "game_run_not_found");
+        assert_eq!(status["playtest"]["acceptedActions"], 3);
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// 预算/过期终态只通知一次；stop 幂等；preview 终态（record_preview_state
+    /// finished/error）终态化会话并撤销未消费的截图请求。
+    #[test]
+    fn playtest_sessions_end_by_budget_stop_and_preview_terminal() {
+        let home = std::env::temp_dir().join(format!("code-game-playtest-end-{}-{}", now_ms(), std::process::id()));
+        playtest_preview_fixture(&home, "preview-pt-end");
+        // 过期：now 越过 expiresAtMs → serve 发出一次 playtest.end。
+        playtest_input(&home, "preview-pt-end", &json!({"forward":true}), None, 1_000).unwrap();
+        let ended = serve_preview_playtest(&home, "preview-pt-end", 1_000 + MAX_PLAYTEST_WINDOW_MS).unwrap();
+        assert_eq!(ended["control"], "playtest.end");
+        assert_eq!(ended["reason"], "expired");
+        assert_eq!(serve_preview_playtest(&home, "preview-pt-end", 1_000 + MAX_PLAYTEST_WINDOW_MS + 1), None);
+        // 预算：队列中的待投递动作也计入上限；接近满预算时入队被拒；
+        // 正常跑满 64 动作后 serve 发出一次 budget end（新会话另起预算）。
+        let home_budget = std::env::temp_dir().join(format!("code-game-playtest-budget-{}-{}", now_ms(), std::process::id()));
+        playtest_preview_fixture(&home_budget, "preview-pt-budget");
+        // 快进到接近上限的活跃会话（61 已投递 + 待投 4 = 65 > 64 → 拒绝）。
+        playtest_input(&home_budget, "preview-pt-budget", &json!({"a":true,"b":true,"c":true,"d":true}), None, 1_000).unwrap();
+        serve_preview_playtest(&home_budget, "preview-pt-budget", 1_100);
+        let budget_session_path = playtest_path(&home_budget, "preview-pt-budget").unwrap();
+        let mut budget_session = read_json(&budget_session_path, 256 * 1024).unwrap().unwrap();
+        budget_session["acceptedActions"] = json!(61);
+        write_json_atomic(&budget_session_path, &budget_session).unwrap();
+        assert_eq!(playtest_input(&home_budget, "preview-pt-budget", &json!({"e":true,"f":true,"g":true,"h":true}), None, 1_200).unwrap_err(), "playtest_budget_exhausted");
+        // 正常流（新 preview = 新会话）：8 批 × 8 动作 = 64 → 恰好触发 budget end。
+        playtest_preview_fixture(&home_budget, "preview-pt-budget2");
+        let full_batch = json!({"a":true,"b":true,"c":true,"d":true,"e":true,"f":true,"g":true,"h":true});
+        let mut served_batches = 0;
+        let mut end_reason: Option<Value> = None;
+        'budget_flow: for _ in 0..40 {
+            if playtest_input(&home_budget, "preview-pt-budget2", &full_batch, None, 1_000).is_err() { break; }
+            while let Some(envelope) = serve_preview_playtest(&home_budget, "preview-pt-budget2", 2_000) {
+                if envelope["control"] == "playtest.end" {
+                    end_reason = Some(envelope["reason"].clone());
+                    break 'budget_flow;
+                }
+                assert_eq!(envelope["control"], "playtest.input");
+                served_batches += 1;
+            }
+        }
+        assert_eq!(served_batches, (MAX_PLAYTEST_ACTIONS / 8) as usize);
+        assert_eq!(end_reason, Some(json!("budget")));
+        let session = read_json(&playtest_path(&home_budget, "preview-pt-budget2").unwrap(), 256 * 1024).unwrap().unwrap();
+        assert_eq!(session["acceptedActions"], MAX_PLAYTEST_ACTIONS);
+        // stop：终态化并清空 pending；再 stop 幂等。
+        let home_stop = std::env::temp_dir().join(format!("code-game-playtest-stop-{}-{}", now_ms(), std::process::id()));
+        playtest_preview_fixture(&home_stop, "preview-pt-stop");
+        playtest_input(&home_stop, "preview-pt-stop", &json!({"forward":true}), None, 1_000).unwrap();
+        playtest_input(&home_stop, "preview-pt-stop", &json!({"forward":true}), None, 1_100).unwrap();
+        let stopped = playtest_stop(&home_stop, "preview-pt-stop", 1_200).unwrap();
+        assert_eq!(stopped["stopped"], true);
+        let session = read_json(&playtest_path(&home_stop, "preview-pt-stop").unwrap(), 256 * 1024).unwrap().unwrap();
+        assert_eq!(session["status"], "finished");
+        assert_eq!(session["reason"], "stopped");
+        assert_eq!(session["pending"].as_array().unwrap().len(), 0);
+        assert_eq!(playtest_stop(&home_stop, "preview-pt-stop", 1_300).unwrap()["stopped"], false);
+        assert_eq!(playtest_stop(&home_stop, "preview-no-session", 1_300).unwrap()["reason"], "no_session");
+        // preview 终态：活跃会话按 preview_closed 终态化（结果保留可读），截图请求撤销。
+        let home_terminal = std::env::temp_dir().join(format!("code-game-playtest-terminal-{}-{}", now_ms(), std::process::id()));
+        playtest_preview_fixture(&home_terminal, "preview-pt-terminal");
+        playtest_input(&home_terminal, "preview-pt-terminal", &json!({"forward":true}), None, 1_000).unwrap();
+        write_json_atomic(&preview_dir(&home_terminal, "preview-pt-terminal").unwrap().join("capture-request.json"),
+            &json!({"captureId":"cap-1","requestedAtMs":1_000})).unwrap();
+        record_preview_state(&home_terminal, &json!({"status":"finished","previewId":"preview-pt-terminal","gameId":"game.pr08"})).unwrap();
+        let session = read_json(&playtest_path(&home_terminal, "preview-pt-terminal").unwrap(), 256 * 1024).unwrap().unwrap();
+        assert_eq!(session["status"], "finished");
+        assert_eq!(session["reason"], "preview_closed");
+        assert!(!preview_dir(&home_terminal, "preview-pt-terminal").unwrap().join("capture-request.json").exists());
+        std::fs::remove_dir_all(home).ok();
+        std::fs::remove_dir_all(home_budget).ok();
+        std::fs::remove_dir_all(home_stop).ok();
+        std::fs::remove_dir_all(home_terminal).ok();
+    }
+
+    /// 截图是渲染证据面：只接受绑定 captureId 的有界 JPEG dataUrl，落盘绑定
+    /// previewId/buildId/tick；请求经轮询取走一次，坏请求 fail-closed 移除。
+    #[test]
+    fn preview_screenshot_request_capture_and_storage_are_bounded() {
+        let home = std::env::temp_dir().join(format!("code-game-playtest-shot-{}-{}", now_ms(), std::process::id()));
+        playtest_preview_fixture(&home, "preview-pt-shot");
+        let directory = preview_dir(&home, "preview-pt-shot").unwrap();
+        // 请求消费：合法 captureId → playtest.capture 信封 + 文件取走；坏请求移除。
+        write_json_atomic(&directory.join("capture-request.json"), &json!({"captureId":"cap-shot-1","requestedAtMs":1})).unwrap();
+        let served = serve_preview_playtest(&home, "preview-pt-shot", 2).unwrap();
+        assert_eq!(served["control"], "playtest.capture");
+        assert_eq!(served["captureId"], "cap-shot-1");
+        assert!(!directory.join("capture-request.json").exists());
+        write_json_atomic(&directory.join("capture-request.json"), &json!({"captureId":"../escape","requestedAtMs":1})).unwrap();
+        assert_eq!(serve_preview_playtest(&home, "preview-pt-shot", 3), None);
+        assert!(!directory.join("capture-request.json").exists());
+        // 落盘：绑定 previewId/buildId/tick；像素预算与词表在入口收口。
+        let data_url = format!("data:image/jpeg;base64,{}", "A".repeat(64));
+        assert_eq!(store_preview_screenshot(&home, "preview-pt-shot", &json!({"captureId":"cap-shot-1",
+            "dataUrl":data_url,"width":1100,"height":760,"downscaled":false})).unwrap(), true);
+        let stored: Value = serde_json::from_slice(&std::fs::read(directory.join("screenshot.json")).unwrap()).unwrap();
+        assert_eq!(stored["captureId"], "cap-shot-1");
+        assert_eq!(stored["previewId"], "preview-pt-shot");
+        assert_eq!(stored["buildId"], json!("b".repeat(64)));
+        assert_eq!(stored["tick"], 5);
+        assert_eq!(stored["bytes"], data_url.len());
+        // 拒绝：非 JPEG 前缀、超预算 dataUrl、尺寸越界、失败回执、未知预览。
+        assert_eq!(store_preview_screenshot(&home, "preview-pt-shot", &json!({"captureId":"cap-shot-2",
+            "dataUrl":"data:text/html;base64,AAAA","width":1,"height":1,"downscaled":false})).unwrap_err(), "playtest_screenshot_invalid");
+        let oversized = format!("data:image/jpeg;base64,{}", "A".repeat(MAX_PLAYTEST_SCREENSHOT_CHARS + 1));
+        assert_eq!(store_preview_screenshot(&home, "preview-pt-shot", &json!({"captureId":"cap-shot-2",
+            "dataUrl":oversized,"width":1,"height":1,"downscaled":false})).unwrap_err(), "playtest_screenshot_invalid");
+        assert_eq!(store_preview_screenshot(&home, "preview-pt-shot", &json!({"captureId":"cap-shot-2",
+            "dataUrl":data_url,"width":999_999,"height":1,"downscaled":false})).unwrap_err(), "playtest_screenshot_invalid");
+        assert_eq!(store_preview_screenshot(&home, "preview-pt-shot", &json!({"captureId":"cap-shot-2",
+            "errorCode":"creator_capture_unavailable"})).unwrap_err(), "playtest_screenshot_invalid");
+        assert!(store_preview_screenshot(&home, "preview-unknown", &json!({"captureId":"cap-shot-2",
+            "dataUrl":data_url,"width":1,"height":1,"downscaled":false})).is_err());
         std::fs::remove_dir_all(home).ok();
     }
 }

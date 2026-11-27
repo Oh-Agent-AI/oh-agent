@@ -8,6 +8,7 @@ import { CodeGameRunV2 } from "./codeGameSessionV2";
 import { InstalledGameRegistryV1, InteractionRouter, type GameLaunchRequestV1 } from "../../../../../../packages/agent-vitals-city-game-runtime/src/interaction";
 import { createCitySnapshotV4 } from "./citySnapshot";
 import { createThreeCodeGameRender } from "./threeRenderPort";
+import { publish } from "../../host";
 import type { CityEngine } from "../../engine/CityEngine";
 import type { CityActivityCoordinator } from "../activity/CityActivityCoordinator";
 import { cancelCityStory, listCityStory, readCityTime, scheduleCityStory, startCityGameRun, stopCityGameRun } from "./cityRuntimeCalls";
@@ -39,6 +40,13 @@ export async function startCodeGamePreviewV2(input: CodeGamePreviewStartV2): Pro
     layout,
     view,
   });
+  // PR05 渲染端导出（PR08 补齐）：真实 City 的独立 Preview 在快照物化后上报一份
+  // 给宿主缓存（code_preview_window 的 plugin_message 窄面 city.snapshot.export；
+  // 宿主做三重身份绑定后有界落盘）。身份取自注入的 boot source——绝不在这里自报
+  // cityRevision，宿主按 preview 请求源与权威 revision 复核。合成 fixture 与
+  // 主 City 窗口（无独立 previewId）不上报：主窗口的 plugin_message 面没有该
+  // 类型，宿主无法做 preview 配对。
+  exportCitySnapshotOnce(snapshot);
   const world = createSnapshotWorldAPIV2(snapshot, {
     terrain: (x, z) => ({
       height: layout.terrain.height(x, z),
@@ -153,4 +161,17 @@ export async function startCodeGamePreviewV2(input: CodeGamePreviewStartV2): Pro
       };
     })();
   }
+}
+
+/// PR05/PR08：真实 City 的独立 Preview 上报一次物化快照。仅当宿主注入了
+/// `__AV_CODE_PREVIEW_ID__`（隔离 preview 窗口）且 boot source 非 synthetic 时
+/// 才发；重复 start 会在新快照物化时重新上报（宿主按 (cityId, revision) 覆盖
+/// 同身份缓存，天然幂等）。上报失败静默——宿主侧缓存缺席是显式的
+/// `creator_city_snapshot_not_cached`，绝不回退合成世界。
+function exportCitySnapshotOnce(snapshot: ReturnType<typeof createCitySnapshotV4>): void {
+  const boot = window.__AV_CODE_PREVIEW_BOOT__ as
+    | { previewId?: unknown; source?: { synthetic?: unknown } | undefined }
+    | undefined;
+  if (!window.__AV_CODE_PREVIEW_ID__ || !boot || boot.source?.synthetic === true) return;
+  void publish("city.snapshot.export", { snapshotJson: JSON.stringify(snapshot) }).catch(() => {});
 }
