@@ -9,7 +9,7 @@ import { useStopPhase } from "./useStopPhase";
 import { useLiveRegion } from "./useLiveRegion";
 import { executorBadge } from "./AgentSelector";
 import { previewSummary } from "./taskCommit";
-import { studioEntityTaskContext, entityVerificationLevel, type EntityVerificationLevel, type PreviewEntityReferenceStatus, type StudioEntityTarget } from "../../contracts/previewContext";
+import { entityVerificationLevel, type EntityVerificationLevel, type PreviewEntityReferenceStatus, type StudioEntityTarget } from "../../contracts/previewContext";
 
 function taskErrorLabel(code: string): string {
   switch (code) {
@@ -92,7 +92,14 @@ export function StudioTaskPanel({ controller, goal, onGoalChange, projectReady, 
   const connection = sessionStatus === "available" ? `事件订阅 ${subscriptionStatus}` : sessionStatus === "loading" ? "正在连接" : "不可用";
   const studioOnline = capabilities?.studioOnline === true;
   const nextGoal = normalizeStudioGoal(goal);
-  const targetSuffix = targetReference ? studioEntityTaskContext(targetReference) : target ? `（关联对象：${target}）` : "";
+  // P1-5：对象身份走结构化 targetRefs 由宿主绑定校验；自然语言里只留人读的名称提示。
+  const cityTarget = targetReference?.kind === "city" && targetReferenceStatus === "current" ? targetReference.reference : null;
+  const targetRefs = cityTarget ? [{
+    entityId: cityTarget.entityId, entityKind: cityTarget.entityKind,
+    previewId: cityTarget.previewId, projectRevision: cityTarget.projectRevision,
+    cityRevision: cityTarget.cityRevision, worldRevision: cityTarget.worldRevision,
+  }] : [];
+  const targetSuffix = cityTarget ? `（关联对象：${cityTarget.label}）` : target ? `（关联对象：${target}）` : "";
   const submissionGoal = nextGoal + targetSuffix;
   const composerInput = useRef<HTMLTextAreaElement>(null);
   const canStart = !task || ["accepted", "rejected", "failed", "cancelled"].includes(task.phase);
@@ -135,7 +142,7 @@ export function StudioTaskPanel({ controller, goal, onGoalChange, projectReady, 
     pendingDraft.current = { previousTaskId: task?.taskId, submitted: text + targetSuffix, draft };
     setViewportExecutor("");
     setReviewNote(""); setCommitResult("");
-    void startTask(text + targetSuffix, executor, withViewport);
+    void startTask(text + targetSuffix, executor, withViewport, targetRefs);
   };
   const send = () => { if (canSend) dispatchGoal(goal, includeViewport); };
   // 排队下一条：任务落终态且勾选「结束后自动发送」时发送草稿（回合边界排队）。

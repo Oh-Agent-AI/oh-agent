@@ -158,7 +158,7 @@ export function useStudioTasks(request: CreatorRequest, scope: TaskScope, enable
     finally { setBusy(false); }
   };
   /** 目标 → 建任务 + 提交默认计划；返回已提交的任务供快速通道继续批准/执行。 */
-  const planSubmit = async (goal: string): Promise<StudioTask> => {
+  const planSubmit = async (goal: string, targetRefs?: readonly Record<string, unknown>[]): Promise<StudioTask> => {
     const requestText = normalizeStudioGoal(goal);
     const generation = generationRef.current;
     if (!scope || !sessionIdRef.current || !requestText) throw new Error("creator_task_scope_unavailable");
@@ -166,6 +166,7 @@ export function useStudioTasks(request: CreatorRequest, scope: TaskScope, enable
     const artifact = { kind: scope.kind, [scope.kind === "creator-city" ? "cityId" : scope.kind === "creator-story" ? "storyId" : "projectId"]: scopeId, expectedRevision: scope.revision };
     const created = parseStudioTask(await request("creator.task.create", {
       sessionId: sessionIdRef.current, goal: requestText, humanRequest: requestText, artifact,
+      ...(targetRefs && targetRefs.length > 0 ? { targetRefs: targetRefs.map(item => ({ ...item })) } : {}),
       acceptanceCriteria: [
         { criterionId: "agent-preview", description: "必须生成真实 Preview 证据", requiredEvidenceKind: "preview" },
         { criterionId: "manual-review", description: "人工审阅真实证据并确认结果", requiredEvidenceKind: "human-note" },
@@ -181,10 +182,11 @@ export function useStudioTasks(request: CreatorRequest, scope: TaskScope, enable
     applyTask(await planSubmit(goal));
   });
   /** 快速通道：默认计划不携带信息，提交即批准并执行；配额同意就是这一次点击。 */
-  const startTask = async (goal: string, selected: string, includeViewport = false) => run(async () => {
+  const startTask = async (goal: string, selected: string, includeViewport = false,
+    targetRefs?: readonly Record<string, unknown>[]) => run(async () => {
     if (!usableExecutors.some(item => item.id === selected) || selected !== executor) throw new Error("请选择支持受限提案的 Agent。");
     const generation = generationRef.current;
-    const submitted = await planSubmit(goal);
+    const submitted = await planSubmit(goal, targetRefs);
     const approved = parseStudioTask(await request("creator.task.plan.approve", {
       taskId: submitted.taskId, planRevision: submitted.planRevision, expectedArtifactRevision: submitted.artifact.expectedRevision, operationId: operation("plan-approve"),
     }));

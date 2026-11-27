@@ -124,7 +124,7 @@ fn ensure_schema(db: &rusqlite::Connection) -> Result<(), ToolError> {
         CREATE TABLE IF NOT EXISTS creator_studio_tasks (
             task_id TEXT PRIMARY KEY, goal_id TEXT NOT NULL, goal_revision INTEGER NOT NULL,
             human_request TEXT NOT NULL, acceptance_json TEXT NOT NULL, artifact_json TEXT NOT NULL,
-            plan_revision INTEGER NOT NULL, step_ids_json TEXT NOT NULL, phase TEXT NOT NULL,
+            target_refs_json TEXT, plan_revision INTEGER NOT NULL, step_ids_json TEXT NOT NULL, phase TEXT NOT NULL,
             proposed_change_set_id TEXT, last_evidence_id TEXT,
             created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS creator_studio_task_steps (
@@ -164,6 +164,14 @@ fn ensure_schema(db: &rusqlite::Connection) -> Result<(), ToolError> {
             UNIQUE(task_id, seq));
         CREATE INDEX IF NOT EXISTS creator_task_events_cursor ON creator_task_events(task_id,event_id);",
     ).map_err(|error| ToolError::new("storage_unavailable", format!("sessions schema unavailable: {error}")))?;
+    {
+        let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('creator_studio_tasks') WHERE name='target_refs_json')",
+            [], |row| row.get(0)).map_err(|error| ToolError::new("storage_unavailable", format!("sessions schema unavailable: {error}")))?;
+        if !exists {
+            db.execute("ALTER TABLE creator_studio_tasks ADD COLUMN target_refs_json TEXT", [])
+                .map_err(|error| ToolError::new("storage_unavailable", format!("sessions schema unavailable: {error}")))?;
+        }
+    }
     for (column, definition) in [("draft", "TEXT NOT NULL DEFAULT ''"), ("preferred_executor", "TEXT NOT NULL DEFAULT ''")] {
         let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('creator_studio_session_profiles') WHERE name=?1)",
             [column], |row| row.get(0)).map_err(|error| ToolError::new("storage_unavailable", format!("sessions schema unavailable: {error}")))?;
@@ -1098,20 +1106,21 @@ fn task_steps(payload: &Value) -> Result<Vec<Value>, ToolError> {
     }).collect()
 }
 fn task_row(db: &rusqlite::Connection, task_id: &str) -> Result<(Value, String, u64, String), ToolError> {
-    let row = db.query_row("SELECT t.goal_id,t.goal_revision,t.human_request,t.acceptance_json,t.artifact_json,t.plan_revision,t.step_ids_json,t.phase,t.proposed_change_set_id,t.last_evidence_id,t.created_at_ms,t.updated_at_ms,j.session_id
+    let row = db.query_row("SELECT t.goal_id,t.goal_revision,t.human_request,t.acceptance_json,t.artifact_json,t.plan_revision,t.step_ids_json,t.phase,t.proposed_change_set_id,t.last_evidence_id,t.created_at_ms,t.updated_at_ms,t.target_refs_json,j.session_id
         FROM creator_studio_tasks t JOIN creator_jobs j ON j.job_id=t.task_id WHERE t.task_id=?1", [task_id], |row| {
         Ok((row.get::<_,String>(0)?,row.get::<_,u64>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,String>(4)?,
             row.get::<_,u64>(5)?,row.get::<_,String>(6)?,row.get::<_,String>(7)?,row.get::<_,Option<String>>(8)?,row.get::<_,Option<String>>(9)?,
-            row.get::<_,u64>(10)?,row.get::<_,u64>(11)?,row.get::<_,Option<String>>(12)?))
+            row.get::<_,u64>(10)?,row.get::<_,u64>(11)?,row.get::<_,Option<String>>(12)?,row.get::<_,Option<String>>(13)?))
     }).optional().map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?
         .ok_or_else(|| ToolError::new("creator_task_not_found", "Unknown taskId."))?;
-    let (goal_id, goal_revision, human_request, acceptance, artifact, plan_revision, step_ids, phase, proposed, last_evidence, created, updated, session_id) = row;
+    let (goal_id, goal_revision, human_request, acceptance, artifact, plan_revision, step_ids, phase, proposed, last_evidence, created, updated, target_refs_json, session_id) = row;
     let acceptance: Value = serde_json::from_str(&acceptance).map_err(|_| ToolError::new("storage_unavailable", "Task acceptance is damaged."))?;
     let artifact: Value = serde_json::from_str(&artifact).map_err(|_| ToolError::new("storage_unavailable", "Task artifact is damaged."))?;
     let step_ids: Value = serde_json::from_str(&step_ids).map_err(|_| ToolError::new("storage_unavailable", "Task steps are damaged."))?;
+    let target_refs: Value = target_refs_json.and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or(Value::Null);
     Ok((json!({"goalId":goal_id,"goalRevision":goal_revision,"humanRequest":human_request,"acceptanceCriteria":acceptance,
         "artifact":artifact,"planRevision":plan_revision,"stepIds":step_ids,"phase":phase,"proposedChangeSetId":proposed,"lastEvidenceId":last_evidence,
-        "createdAtMs":created,"updatedAtMs":updated}), session_id.unwrap_or_default(), plan_revision, phase))
+        "targetRefs":target_refs,"createdAtMs":created,"updatedAtMs":updated}), session_id.unwrap_or_default(), plan_revision, phase))
 }
 fn task_payload(data_home: &Path, task_id: &str) -> Result<Value, ToolError> {
     let db = open_db(&sessions_db(data_home)?, false)?;
@@ -1140,10 +1149,34 @@ fn task_payload(data_home: &Path, task_id: &str) -> Result<Value, ToolError> {
         "subject":{"goalId":task["goalId"],"artifact":task["artifact"]},"progress":{"planRevision":task["planRevision"],"stepIds":task["stepIds"]},
         "failure":failure,"cancelRequested":task["phase"] == json!("cancelled"),"createdAtMs":task["createdAtMs"],"updatedAtMs":task["updatedAtMs"],
         "goalId":task["goalId"],"goalRevision":task["goalRevision"],"humanRequest":task["humanRequest"],"acceptanceCriteria":task["acceptanceCriteria"],
-        "artifact":task["artifact"],"planRevision":task["planRevision"],"stepIds":task["stepIds"],"phase":task["phase"],
+        "artifact":task["artifact"],"targetRefs":task["targetRefs"],"planRevision":task["planRevision"],"stepIds":task["stepIds"],"phase":task["phase"],
         "proposedChangeSetId":task["proposedChangeSetId"],"lastEvidenceId":task["lastEvidenceId"],"steps":steps,"evidence":evidence,"execution":execution}))
 }
 fn task_terminal(phase: &str) -> bool { matches!(phase, "accepted" | "rejected" | "failed" | "cancelled") }
+
+/// 结构化目标对象引用（P1-5）：对象身份由宿主绑定与校验，不拼进自然语言需求。
+/// 上限 8 条；entityId/entityKind/previewId 必填且有界，projectRevision 必填。
+fn task_target_refs(payload: &Value) -> Result<Option<Value>, ToolError> {
+    let value = match payload.get("targetRefs") { None => return Ok(None), Some(value) => value };
+    let items = value.as_array().ok_or_else(|| ToolError::new("invalid_argument", "targetRefs must be an array."))?;
+    if items.len() > 8 { return Err(ToolError::new("invalid_argument", "targetRefs accepts at most 8 entries.")); }
+    let mut refs = Vec::with_capacity(items.len());
+    for item in items {
+        let object = item.as_object().ok_or_else(|| ToolError::new("invalid_argument", "targetRefs entries must be objects."))?;
+        let text = |key: &str| -> Result<String, ToolError> {
+            object.get(key).and_then(Value::as_str).map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty() && value.chars().count() <= 128)
+                .ok_or_else(|| ToolError::new("invalid_argument", format!("targetRefs entry needs a bounded {key}.")))
+        };
+        let project_revision = object.get("projectRevision").and_then(Value::as_u64)
+            .ok_or_else(|| ToolError::new("invalid_argument", "targetRefs entry needs projectRevision."))?;
+        refs.push(json!({"entityId":text("entityId")?,"entityKind":text("entityKind")?,"previewId":text("previewId")?,
+            "projectRevision":project_revision,
+            "cityRevision":object.get("cityRevision").and_then(Value::as_u64),
+            "worldRevision":object.get("worldRevision").and_then(Value::as_str).map(|value| value.trim().to_owned())}));
+    }
+    Ok(if refs.is_empty() { None } else { Some(Value::Array(refs)) })
+}
 
 fn task_create(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
     let session_id = task_id_arg(payload, "sessionId")?;
@@ -1151,6 +1184,7 @@ fn task_create(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
     let human_request = task_text_arg(payload, "humanRequest", 4_000)?;
     let artifact = task_artifact(payload)?;
     task_check_artifact(data_home, &artifact)?;
+    let target_refs = task_target_refs(payload)?;
     let criteria = task_criteria(payload)?;
     let operation_id = task_id_arg(payload, "operationId")?;
     let hash = task_hash(payload)?;
@@ -1166,8 +1200,8 @@ fn task_create(data_home: &Path, payload: &Value) -> Result<Value, ToolError> {
     tx.execute("INSERT INTO creator_jobs(job_id,kind,status,subject_json,progress_json,failure_json,cancel_requested,session_id,created_at_ms,updated_at_ms)
         VALUES(?1,'studio-task','planning',?2,'{}','{}',0,?3,?4,?4)", rusqlite::params![task_id,json!({"goalId":goal_id,"artifact":artifact}).to_string(),session_id,now])
         .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
-    tx.execute("INSERT INTO creator_studio_tasks(task_id,goal_id,goal_revision,human_request,acceptance_json,artifact_json,plan_revision,step_ids_json,phase,created_at_ms,updated_at_ms)
-        VALUES(?1,?2,1,?3,?4,?5,0,'[]','planning',?6,?6)", rusqlite::params![task_id,goal_id,human_request,serde_json::to_string(&criteria).unwrap(),artifact.to_string(),now])
+    tx.execute("INSERT INTO creator_studio_tasks(task_id,goal_id,goal_revision,human_request,acceptance_json,artifact_json,target_refs_json,plan_revision,step_ids_json,phase,created_at_ms,updated_at_ms)
+        VALUES(?1,?2,1,?3,?4,?5,?6,0,'[]','planning',?7,?7)", rusqlite::params![task_id,goal_id,human_request,serde_json::to_string(&criteria).unwrap(),artifact.to_string(),target_refs.as_ref().map(|refs| refs.to_string()),now])
         .map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
     let result = json!({"taskId":task_id,"goalId":goal_id,"goal":goal,"phase":"planning"});
     append_event(&tx,&task_id,"accepted","studio","creator-declared","持久任务已受理",&json!({"goalId":goal_id,"phase":"planning"}))?;
@@ -1384,6 +1418,7 @@ pub fn task_execute_with_executor(data_home: &Path, payload: &Value, executor: &
     let request = super::creator_agent_executor::AgentExecutionRequest {
         data_home: data_home.to_path_buf(), goal: task["humanRequest"].as_str().unwrap_or_default().to_owned(),
         human_request: task["humanRequest"].as_str().unwrap_or_default().to_owned(), artifact: task["artifact"].clone(),
+        target_refs: if task["targetRefs"].is_null() { None } else { Some(task["targetRefs"].clone()) },
         plan_revision: expected_plan_revision, timeout: std::time::Duration::from_millis(timeout_ms), include_viewport,
     };
     let heartbeat_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -2059,6 +2094,20 @@ mod tests {
         assert_eq!(task_check_artifact(&home, &json!({"kind":"creator-city","cityId":"city-1","expectedRevision":8})).unwrap_err().code, "revision_conflict");
         assert_eq!(task_check_artifact(&home, &json!({"kind":"creator-story","storyId":"story-missing","expectedRevision":1})).unwrap_err().code, "revision_conflict");
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn task_target_refs_are_validated_and_normalised() {
+        let ok = task_target_refs(&serde_json::json!({"targetRefs":[{"entityId":" barrier-3 ","entityKind":"scene-model","previewId":"preview-a","projectRevision":4,"worldRevision":"world-v3"}]})).unwrap().unwrap();
+        assert_eq!(ok[0]["entityId"], json!("barrier-3"));
+        assert_eq!(ok[0]["cityRevision"], json!(null));
+        assert!(task_target_refs(&json!({})).unwrap().is_none(), "缺席 targetRefs = 无绑定");
+        assert!(task_target_refs(&json!({"targetRefs":[]}) ).unwrap().is_none(), "空数组视同无绑定");
+        assert_eq!(task_target_refs(&json!({"targetRefs":[{"entityId":"x","previewId":"p","projectRevision":1}]})).unwrap_err().code, "invalid_argument");
+        assert_eq!(task_target_refs(&json!({"targetRefs":[{"entityId":"x","entityKind":"model","previewId":"p"}]})).unwrap_err().code, "invalid_argument");
+        assert_eq!(task_target_refs(&json!({"targetRefs":"barrier-3"})).unwrap_err().code, "invalid_argument");
+        let many: Vec<_> = (0..9).map(|index| json!({"entityId":format!("e{index}"),"entityKind":"model","previewId":"p","projectRevision":1})).collect();
+        assert_eq!(task_target_refs(&json!({"targetRefs":many})).unwrap_err().code, "invalid_argument");
     }
 
     #[test]

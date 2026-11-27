@@ -18,6 +18,8 @@ pub struct AgentExecutionRequest {
     pub goal: String,
     pub human_request: String,
     pub artifact: Value,
+    /// 宿主绑定的结构化目标对象（P1-5）：身份由宿主校验，不依赖模型从文本猜。
+    pub target_refs: Option<Value>,
     pub plan_revision: u64,
     pub timeout: Duration,
     pub include_viewport: bool,
@@ -52,6 +54,9 @@ pub trait CreatorAgentExecutor: Send + Sync {
 }
 
 pub fn execution_prompt(request: &AgentExecutionRequest) -> String {
+    let target_refs_block = request.target_refs.as_ref()
+        .map(|refs| format!("Target objects (Host-bound identity; verify each with creator_scene_describe at the expected revision before proposing; never guess coordinates from names alone): {refs}"))
+        .unwrap_or_else(|| "No structured target objects are bound to this task.".into());
     let artifact_kind = request.artifact["kind"].as_str().unwrap_or("creator-project");
     let artifact_id = match artifact_kind {
         "creator-city" => request.artifact["cityId"].as_str().unwrap_or("unknown"),
@@ -75,9 +80,9 @@ pub fn execution_prompt(request: &AgentExecutionRequest) -> String {
          The host will independently create and validate any Preview.\n\
          {proposal_contract}\n\
          Use no operations and no document only when no change is justified; a Preview is required for a successful task.\n\
-         Goal: {}\nHuman request: {}\nArtifact: {} {} at expected revision {}.\nPlan revision: {}.",
+         Goal: {}\nHuman request: {}\nArtifact: {} {} at expected revision {}.\nPlan revision: {}.\n{}.",
         request.goal, request.human_request, artifact_kind, artifact_id,
-        request.artifact["expectedRevision"].as_u64().unwrap_or(0), request.plan_revision,
+        request.artifact["expectedRevision"].as_u64().unwrap_or(0), request.plan_revision, target_refs_block,
     )
 }
 
@@ -1123,7 +1128,7 @@ done
     }
 
     fn acp_request(home: &Path) -> AgentExecutionRequest {
-        AgentExecutionRequest { data_home: home.to_path_buf(), goal: "Small goal".into(), human_request: "Review only".into(),
+        AgentExecutionRequest { target_refs: None, data_home: home.to_path_buf(), goal: "Small goal".into(), human_request: "Review only".into(),
             artifact: json!({"projectId":"project-1","expectedRevision":3}), plan_revision: 1, timeout: Duration::from_secs(15), include_viewport: false }
     }
 
@@ -1227,7 +1232,7 @@ done
     #[test]
     fn prompt_and_config_never_expose_paths_or_write_capabilities() {
         let home = std::env::temp_dir().join("private-creator-home");
-        let request = AgentExecutionRequest { data_home: home.clone(), goal: "Small goal".into(), human_request: "Review only".into(),
+        let request = AgentExecutionRequest { target_refs: None, data_home: home.clone(), goal: "Small goal".into(), human_request: "Review only".into(),
             artifact: json!({"projectId":"project-1","expectedRevision":3}), plan_revision: 1, timeout: Duration::from_secs(1), include_viewport: false };
         let prompt = execution_prompt(&request);
         assert!(!prompt.contains(home.to_string_lossy().as_ref()));
@@ -1333,4 +1338,20 @@ done
             self.execute(request,cancelled)
         }
     }
+
+    #[test]
+    fn execution_prompt_binds_structured_target_refs() {
+        let home = std::env::temp_dir().join(format!("prompt-targets-{}", std::process::id()));
+        let request = AgentExecutionRequest { target_refs: Some(serde_json::json!([
+            {"entityId":"barrier-3","entityKind":"collider","previewId":"preview-a","projectRevision":4,"cityRevision":8,"worldRevision":"world-v3"},
+        ])), data_home: home, goal: "把路障移上桥".into(), human_request: "把路障移上桥".into(),
+            artifact: serde_json::json!({"kind":"creator-project","projectId":"project-1","expectedRevision":4}),
+            plan_revision: 1, timeout: Duration::from_secs(15), include_viewport: false };
+        let prompt = execution_prompt(&request);
+        assert!(prompt.contains("Target objects (Host-bound identity"), "结构化目标块应出现在简报中");
+        assert!(prompt.contains("\"entityId\":\"barrier-3\""), "目标身份应逐字进入简报");
+        let bare = AgentExecutionRequest { target_refs: None, ..request };
+        assert!(execution_prompt(&bare).contains("No structured target objects are bound"), "无绑定时应如实说明");
+    }
 }
+
